@@ -13618,6 +13618,75 @@ gate_judgment_fields_ok() {
   return 0
 }
 
+gate_judgment_adoption_row() {
+  # gate_judgment_adoption_row <measure|append> <폭> <세그먼트> <해소 승인> <키=값>...
+  #
+  # THE ADOPTION ROW IS MEASURED AND WRITTEN BY ONE DEFINITION, so the row that
+  # was measured and the row that lands cannot be different rows. The adopting
+  # append carries the caller's whole argv raw, and a row past `GATE_ROW_MAX`
+  # is not truncated — `gate_append` calls `die`. On the acting path at grade 2
+  # the closing `승인` row is committed FIRST, so the process died between the
+  # two writes and left the run with an answer and no adoption; resubmitting the
+  # same fields died again at the same line, which is a question a person had
+  # already answered and could never spend.
+  #
+  # ONLY THE THREE FREE-TEXT FIELDS ARE NARROWED, and that is a constraint and
+  # not a preference: the judgment approval's id is the hash of `기준 — 근거`
+  # itself, so shortening those before the id is derived produces a different id
+  # and loses the answer already given. The id is derived from the caller's argv
+  # upstream of here and stays on the original text; what this narrows is the
+  # COPY that goes on the row. Every other element passes through untouched and
+  # in order, because reassembling them is how a reader loses a field.
+  local mode="$1" jaw="$2" jaseg="$3" jaap="$4"; shift 4
+  local f k v n_args=$# i=0
+  # Rotated through the positional parameters, the bash 3.2 idiom `gate_row_body`
+  # uses: the interpreter floor has no arrays and the argument list is the one
+  # ordered container there is.
+  while [ "$i" -lt "$n_args" ]; do
+    f="$1"; shift; i=$((i + 1))
+    case "$f" in
+      기준=*|근거=*|'되돌리는 법='*)
+        k="${f%%=*}"; v="${f#*=}"
+        f="$k=$(gate_row_safe "$v" "$jaw")" ;;
+    esac
+    set -- "$@" "$f"
+  done
+  case "$mode" in
+    measure)
+      gate_row_projected_bytes '자율 승인' "kind=judgment" "결정=채택" \
+        "세그먼트=$jaseg" "해소 승인=$jaap" "$@" ;;
+    append)
+      gate_append '자율 승인' "kind=judgment" "결정=채택" \
+        "세그먼트=$jaseg" "해소 승인=$jaap" "$@" ;;
+    *) die "gate_judgment_adoption_row: unknown mode '$mode'" ;;
+  esac
+}
+
+gate_judgment_adoption_width() {
+  # gate_judgment_adoption_width <세그먼트> <해소 승인> <키=값>... — the widest of
+  # the declining widths at which the adoption row fits, printed; 1 when even the
+  # narrowest does not fit.
+  #
+  # The start, the step and the floor are the `handoff` arm's, because they are
+  # the same problem: a Korean free-text field at its declared ceiling is past
+  # the row cap on its own, so the ceiling and the cap are reconciled by a loop
+  # rather than colliding at 3am. A failure here means the excess is OUTSIDE the
+  # three fields this narrows — in an element the caller added — and no amount of
+  # narrowing reaches it, which is why the answer is a refusal and not a shorter
+  # row.
+  local jaseg="$1" jaap="$2"; shift 2
+  local jaw=300 jalen
+  while [ "$jaw" -ge 40 ]; do
+    jalen=$(gate_judgment_adoption_row measure "$jaw" "$jaseg" "$jaap" "$@")
+    if [ "${jalen:-0}" -le "$GATE_ROW_MAX" ]; then
+      printf '%s' "$jaw"
+      return 0
+    fi
+    jaw=$((jaw - 40))
+  done
+  return 1
+}
+
 gate_notify_segment_park() {
   # gate_notify_segment_park <segment>
   #
@@ -14544,7 +14613,7 @@ EOF
       # The field floor is per grade and lives in one place, because the acting
       # path has to apply it BEFORE the auto-adoption floor reads those same
       # fields — see `gate_judgment_fields_ok`.
-      local jcls jgrade
+      local jcls jgrade jaw
       gate_judgment_fields_ok "$@" || return "$GATE_EXIT_VOCAB"
       jcls=$(gate_field_of '판단 부류' "$@")
       jgrade=$(gate_field_of '등급' "$@")
@@ -14628,8 +14697,20 @@ EOF
       # whether an answer has already been spent, and a judgment approval has no
       # binding tuple to expire — so one answered question opened every later
       # judgment that hashed to the same id.
-      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=${seg:--}" \
-        "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
+      #
+      # THE ROW IS NARROWED TO FIT BEFORE IT IS WRITTEN. `gate_append` answers a
+      # row over the cap with `die`, and the two writes of a grade-2 adoption are
+      # ordered so that the closing `승인` row is already committed when that
+      # happens — an answered question with no adoption to spend it, and a
+      # resubmission that dies at the same line. The refusal at the acting verb
+      # has already run for an act, so the arm below is reached only by a row
+      # that fits; leaving it as a defined refusal rather than a `die` is what
+      # keeps the other entry points to this function off the fatal path.
+      jaw=$(gate_judgment_adoption_width "${seg:--}" "${GATE_RESOLVED_APPROVAL:--}" "$@") || {
+        warn "the adoption row is over the ${GATE_ROW_MAX}-byte cap even with \`기준\`, \`근거\` and \`되돌리는 법\` narrowed to the floor — the excess is in another field"
+        return "$GATE_EXIT_VOCAB"
+      }
+      gate_judgment_adoption_row append "$jaw" "${seg:--}" "${GATE_RESOLVED_APPROVAL:--}" "$@"
       # The grade is read from the row rather than hard-coded: a grade-2 judgment
       # whose question has been answered lands here too, and a line claiming
       # grade 1 for it would misdescribe the one event the morning most needs to
@@ -16562,6 +16643,23 @@ gate_verb_act() {
     # approval gets WRITTEN, so the run then carries an open question nobody
     # asked and termination waits on it.
     gate_judgment_fields_ok "$@" || exit "$GATE_EXIT_VOCAB"
+    # A SUBMISSION WHOSE ADOPTION ROW CANNOT FIT IS REFUSED HERE, BEFORE ANYTHING
+    # IS WRITTEN AND BEFORE ANY APPROVAL IS READ. The adoption row is narrowed to
+    # fit when it is written, but a row whose excess lies outside the three
+    # free-text fields cannot be narrowed at all — and every later place to
+    # notice that is past a write: grade 1 escalates to an approval and a person
+    # answers a question whose adoption will die anyway, and grade 2 commits the
+    # closing `승인` row first. Both of those spend a person's answer on a
+    # submission that can never be recorded.
+    #
+    # `해소 승인` IS MEASURED AT ITS WIDEST, because its value is not known yet:
+    # an approval id is `J-` and eight hex digits, so a submission that fits with
+    # this stand-in fits with `-` and with any real id.
+    gate_judgment_adoption_width "${segment:--}" "J-00000000" "$@" >/dev/null || {
+      warn "this judgment's adoption row is over the ${GATE_ROW_MAX}-byte cap even with \`기준\`, \`근거\` and \`되돌리는 법\` narrowed to the floor"
+      warn "the excess is in the other fields of the submission — shorten those rather than the standard and the grounds, which are what the approval id is derived from"
+      exit "$GATE_EXIT_VOCAB"
+    }
     GATE_JUDGMENT_CLASS=$(gate_field_of '판단 부류' "$@")
     GATE_REVERT=$(gate_field_of '되돌리는 법' "$@")
     GATE_REVERT_SURFACE=$(gate_revert_surface "$GATE_REVERT")

@@ -11422,6 +11422,106 @@ case "$(last_judgment_approval)" in
   *) ok "자르지 않은 값에는 잘림 표시가 붙지 않는다" ;;
 esac
 
+# --- 31s-2. The adoption row is narrowed to fit, or refused before any write -
+# --- section: 31s-2 | group: cone | covers: act | anchors: 상한을 넘는 기준·근거를 실은 채택도 좁혀진 행으로 기록된다 ---
+#
+# The adopting append carried the caller's whole argv raw, so a submission whose
+# row came out over the cap met `gate_append`'s `die`. At grade 2 the closing
+# `승인` row is committed first, so what survived was an answer with no adoption
+# — and every resubmission of the same fields died at the same line, which made
+# an answered question unspendable. The three free-text fields are narrowed
+# instead; the standard and the grounds keep their full text where the approval
+# id is derived from them, because narrowing them there would produce a
+# different id and lose the answer.
+#
+# THE OVER-CAP VALUE IS BUILT HERE AND NOT BORROWED FROM 31s. A section that
+# leans on a neighbour's variable dies as `unbound variable` under a narrowed
+# run while the whole-file run stays green.
+d3long=$(awk 'BEGIN{ s=""; for (i = 0; i < 40; i++) s = s "판단 문면이 길어지는 한국어 문장 "; printf "%s", s }')
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=$d3long" "근거=$d3long" \
+         "되돌리는 법=아침에 문서를 다시 읽는다"
+check "상한을 넘는 기준·근거를 실은 채택도 좁혀진 행으로 기록된다" "$rc" "0"
+d3row=$(last_adoption_row)
+d3n=$(printf '%s' "$d3row" | wc -c | tr -d ' ')
+if [ "${d3n:-0}" -gt 0 ] && [ "${d3n:-0}" -le 1024 ]; then
+  ok "그 채택 행이 원장 행 상한 안에 있다 (${d3n} 바이트)"
+else
+  bad "채택 행 상한" "채택 행이 ${d3n} 바이트다 — 좁힘이 상한을 지키지 못했다"
+fi
+case "$d3row" in
+  *"(잘림)"*) ok "좁혀진 값이 좁혀졌다고 말한다" ;;
+  *) bad "채택 행 잘림 표시" "무음 절단은 아침에 판단의 전문으로 읽힌다: $d3row" ;;
+esac
+# THE NARROWING TOUCHES THE THREE FREE-TEXT FIELDS AND NOTHING ELSE. Reassembling
+# an argv is where a row loses a field, and the two fields the morning reads to
+# tell one adoption from another are the ones that must survive it.
+check "좁힌 행의 판단 부류가 제출된 값 그대로다" "$(row_field "$d3row" '판단 부류')" "문서-신선도"
+check "좁힌 행의 등급이 제출된 값 그대로다" "$(row_field "$d3row" '등급')" "1"
+check "좁힌 행의 되돌리는 법이 제출된 값 그대로다" "$(row_field "$d3row" '되돌리는 법')" "아침에 문서를 다시 읽는다"
+# AND THE SAME SUBMISSION AGAIN. The old failure was not one dead call: the row
+# died after the approval side had already moved, so a resubmission met the same
+# `die` at the same line and the state could never be worked out of.
+d3before=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -cF '결정=채택' || true)
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" "기준=$d3long" "근거=$d3long" \
+         "되돌리는 법=아침에 문서를 다시 읽는다"
+check "같은 제출을 다시 해도 같은 결과다" "$rc" "0"
+d3after=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -cF '결정=채택' || true)
+check "재제출이 채택 행을 하나 더한다" "${d3after:-0}" "$(( ${d3before:-0} + 1 ))"
+d3n2=$(printf '%s' "$(last_adoption_row)" | wc -c | tr -d ' ')
+if [ "${d3n2:-0}" -gt 0 ] && [ "${d3n2:-0}" -le 1024 ]; then
+  ok "재제출의 채택 행도 상한 안에 있다 (${d3n2} 바이트)"
+else
+  bad "재제출 채택 행 상한" "채택 행이 ${d3n2} 바이트다"
+fi
+# GRADE 2 IS THE PATH THAT LOST A PERSON'S ANSWER. The closing `승인` row is
+# committed before the adoption is attempted, so the old `die` left the run with
+# an answer it could not spend and a question it would ask again.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 "기준=$d3long" "근거=긴 문면의 등급 2 판단이 답 뒤에 채택된다"
+check "상한을 넘는 등급 2 판단은 승인을 연다" "$rc" "5"
+d3id=$(row_field "$(last_judgment_approval)" '승인 id')
+d3q=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$d3id " | tail -1)" '질문 문면')
+D3SID="22222222-3434-5656-7878-909090909090"
+: > "$NTX/$D3SID.jsonl"; auq_frame "$NTX/$D3SID.jsonl" "$d3id" "$d3q" "승인" >/dev/null
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$D3SID" gate_inproc close --manifest "$NM" --approval "$d3id" 2>&1); rc=$?
+check "그 승인이 승인으로 닫힌다" "$rc" "0"
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 "기준=$d3long" "근거=긴 문면의 등급 2 판단이 답 뒤에 채택된다"
+check "답이 온 긴 문면의 등급 2 판단은 재제출로 채택된다" "$rc" "0"
+d3row2=$(last_adoption_row)
+case "$d3row2" in
+  *"해소 승인=$d3id"*) ok "그 채택 행이 어느 답이 그것을 열었는지 남긴다" ;;
+  *) bad "등급 2 좁힘 채택" "$d3row2" ;;
+esac
+d3n3=$(printf '%s' "$d3row2" | wc -c | tr -d ' ')
+if [ "${d3n3:-0}" -gt 0 ] && [ "${d3n3:-0}" -le 1024 ]; then
+  ok "답으로 열린 채택 행도 상한 안에 있다 (${d3n3} 바이트)"
+else
+  bad "등급 2 채택 행 상한" "채택 행이 ${d3n3} 바이트다 — 답은 있는데 채택 행이 없는 상태가 남는다"
+fi
+# THE EXCESS OUTSIDE THE THREE FIELDS IS REFUSED, AND BEFORE ANYTHING IS WRITTEN.
+# Narrowing cannot reach a field it does not narrow, so the only honest answer is
+# a refusal — and it has to land before the approval side moves, or a person
+# answers a question whose adoption will die whatever they say.
+d3rows_before=$(wc -l < "$LEDGER2" | tr -d ' ')
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=문서-신선도" 기준="짧은 기준" 근거="짧은 근거" \
+         "되돌리는 법=git checkout -- ." "메모=$(printf '%0900d' 0)"
+check "세 문면 밖으로 넘치는 제출은 어휘 오류로 거절된다" "$rc" "2"
+case "$msg" in
+  *"the excess is in the other fields of the submission"*) ok "거절이 넘치는 쪽이 세 문면 밖임을 지목한다" ;;
+  *) bad "초과 필드 거절 문면" "$msg" ;;
+esac
+check "그 거절은 원장에 아무 행도 남기지 않는다" "$(wc -l < "$LEDGER2" | tr -d ' ')" "$d3rows_before"
+
 # --- 31t. A `|` in a field value cannot splice the row ----------------------
 # --- section: 31t | group: cone | covers: - | needs: 31b | anchors: 필드 값 안의 파이프가 새 필드를 만들지 못한다 ---
 #
@@ -13616,11 +13716,16 @@ fi
 # class that may be adopted, whose adoption row never got written, opened a class
 # that hands risk to the user with nobody asked.
 #
-# THE ADOPTION ROW IS WHERE THE GATE DIES. The judgment arm puts the router's
-# whole field list on that row with no key allowlist and no length cap, so one
-# 900-byte field pushes it past the row cap AFTER auto-resolution has closed the
-# approval in a separate, already-completed append. The ledger is append-only and
-# there is no compensating write, so what survives is "answered and unspent".
+# THE ADOPTION ROW IS NO LONGER WHERE THE GATE DIES, AND THE STATE IT LEFT IS
+# STILL REACHABLE. One 900-byte field used to push that row past the cap AFTER
+# auto-resolution had closed the approval in a separate, already-completed
+# append, and the append-only ledger kept the result: "answered and unspent". The
+# acting path now refuses such a submission before anything is written, which is
+# asserted first below — so the state is PLANTED for the arms that follow, the
+# way `plant_seg_row` plants what the gate no longer writes. It is not a
+# hypothetical shape: the emission path still carries the router's fields onto
+# that row raw, and a ledger written before this repair carries rows of exactly
+# this kind.
 #
 # THE MIDDLE ASSERTIONS ARE WHAT KEEP THIS HONEST. Asserting only that the
 # resubmission is refused would stay green under a repair that puts the class
@@ -13652,16 +13757,32 @@ au_spent_count() {
   { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$1 |" || true; } | grep -c . || true
 }
 
+au_rows_before=$(wc -l < "$LEDGER2" | tr -d ' ')
 au_act 2 감사-발견 "메모=$au_pad"
 case "$rc" in
   0) bad "상한 초과 채택 행" "채택 행이 행 상한을 넘었는데 0 으로 끝났다: $out" ;;
   *) ok "상한 초과 채택 행을 실은 판단 제출이 비영으로 끝난다 (rc=$rc)" ;;
 esac
+check "그 제출은 원장에 아무 행도 남기지 않는다 (답이 먼저 커밋되지 않는다)" \
+      "$(wc -l < "$LEDGER2" | tr -d ' ')" "$au_rows_before"
+# THE PREMISE, PLANTED. The question is opened for real so the id is the gate's
+# own derivation — the section is about an id that carries no class, so computing
+# it here instead would assert against the fixture's arithmetic rather than the
+# gate's. Auto-resolution is OFF for that call, so the question stays `대기` and
+# no adoption is written; the answer row is then written past the gate, because
+# the path that used to leave one is the path just refused above.
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+      gate_inproc act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="$au_std" 근거="$au_why" "판단 부류=감사-발견" 2>&1); rc=$?
+check "부류 대여 실험용 물음이 승인으로 올라간다" "$rc" "5"
 au_id=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F '절단점=판단' || true; } \
   | { grep -F "$au_std" || true; } | tail -1)" '승인 id')
 if [ -z "$au_id" ]; then
   bad "부류 대여" "그 물음의 승인이 발행되지 않았다: $out"
 else
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 처분 사유=자동 해소 | 해소 시각=테스트 | prev=x\n' \
+    "$au_id" >> "$LEDGER2"
   check "그 물음의 마지막 상태는 승인이다" "$(row_field "$(au_last_row "$au_id")" '상태')" "승인"
   check "그 답은 자동 해소가 닫은 것이다" "$(row_field "$(au_last_row "$au_id")" '처분 사유')" "자동 해소"
   check "그런데 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
