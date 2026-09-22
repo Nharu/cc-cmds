@@ -6017,38 +6017,62 @@ rr_graded() {
     surface_of_argv0 "$@"
   ' _ "$@"
 }
+# 헬퍼가 죽어 빈 값을 내도 가드는 `읽기` 가 아닌 모든 값에서 스캔으로 진행해 rc 3 을
+# 내므로, rc 만 보는 단언은 등급 계산 없이도 초록이다. 그래서 가드 단언마다 앞에서
+# 등급이 실제로 나왔는지 먼저 세고, 나오지 않았으면 그 가드 단언을 건너뛰어 실패만
+# 남긴다.
+rr_g_must() {
+  # rr_g_must <값> — 비었으면 실패로 세고 1 을 반환한다.
+  [ -n "$1" ] && return 0
+  bad "rr_graded 가 등급을 내지 못했다" "헬퍼가 죽었거나 게이트를 소싱하지 못했다 — 뒤의 가드 단언은 등급 계산을 재지 않는다"
+  return 1
+}
 rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';')
 check "등급 미상 primary 뒤에 읽기 primary 가 와도 등급 미상이다" "$rr_g" "등급 미상"
-rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';'
-check "설치본 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
-case "$rr_pguard_msg" in
-  *'orchestrator or hook script of the installed plugin'*)
-    ok "설치본 가드: 등급 미상 다중 primary 거부가 설치본 팔의 것이다" ;;
-  *) bad "설치본 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
-esac
+if rr_g_must "$rr_g"; then
+  rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';'
+  check "설치본 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'orchestrator or hook script of the installed plugin'*)
+      ok "설치본 가드: 등급 미상 다중 primary 거부가 설치본 팔의 것이다" ;;
+    *) bad "설치본 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+  esac
+fi
 rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';')
-rr_guard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';'
-check "배시 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_guard_rc" "3"
-case "$rr_guard_msg" in
-  *'this is another run directory'*) ok "배시 가드: 등급 미상 다중 primary 거부가 형제 런 팔의 것이다" ;;
-  *) bad "배시 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
-esac
+if rr_g_must "$rr_g"; then
+  rr_guard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';'
+  check "배시 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'this is another run directory'*) ok "배시 가드: 등급 미상 다중 primary 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+  esac
+fi
 # 안쪽 `find` 의 `-execdir` 가 답한 `형태 미상` 도 같은 폴드를 지난다. 바깥 `-execdir`
 # 가 앞에 오는 모양은 벗기기가 그 자리에서 반환하므로 수리 전에도 rc 3 인 상한 고정 행이다.
+#
+# 아래 두 가드 행은 **가드 단위 시험이며 종단간 경로를 재지 않는다.** 실제 `exec` 는
+# `형태 미상` 을 등급 직후 거부하므로(exit 2) 이 argv 로는 가드가 호출조차 되지 않는다.
+# 그 종단간 거부는 scripts/test-gate.sh 30b-1 절이 실제 `gate.sh exec` 로 잰다.
 rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';')
 check "안쪽 find 의 형태 미상이 옆 읽기 primary 에 지워지지 않는다" "$rr_g" "형태 미상"
-rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';'
-check "설치본 가드: 안쪽 find 의 -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
-case "$rr_pguard_msg" in
-  *'each match'"'"'s own directory'*) ok "설치본 가드: 안쪽 -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
-  *) bad "설치본 가드: 안쪽 -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
-esac
-rr_pguard "$(rr_graded find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';')" find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';'
-check "설치본 가드: -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
-case "$rr_pguard_msg" in
-  *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
-  *) bad "설치본 가드: -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
-esac
+if rr_g_must "$rr_g"; then
+  rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';'
+  check "설치본 가드: 안쪽 find 의 -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'each match'"'"'s own directory'*) ok "설치본 가드: 안쪽 -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+    *) bad "설치본 가드: 안쪽 -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+  esac
+fi
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';')
+if rr_g_must "$rr_g"; then
+  rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';'
+  check "설치본 가드: -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+    *) bad "설치본 가드: -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+  esac
+fi
+unset -f rr_g_must
 unset RR_G_CWD rr_g
 
 # 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.
