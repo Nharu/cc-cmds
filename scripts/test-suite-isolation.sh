@@ -50,6 +50,16 @@
 
 set -uo pipefail
 
+# THE NOTIFIER IS OFF FOR THIS WHOLE PROCESS. This suite runs the real pre-tool
+# hook and two suites that call the gate a hundred times over, and every one of
+# those paths can raise a real banner on the user's screen. Nothing here asserts
+# anything about a banner, so killing the channel at the process level costs
+# this file nothing and is what keeps a scratch fixture from reaching a person.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_SESSION_NOTIFY=0
+export CC_CMDS_SESSION_NOTIFY
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 
