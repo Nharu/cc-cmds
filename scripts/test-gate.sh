@@ -149,10 +149,10 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # helpers and the fixture repository every section stands on — and
 # `CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
 
-# --- epilogue-begin ---` opens the tail, which is the totals line and the
-# exit status. Line numbers move whenever a section is added or a banner is
-# edited; a marker moves only when someone moves it, which is what makes it
-# the unit a later change can carry.
+# --- epilogue-begin ---` opens the tail, which is the cone-derivation drain,
+# the totals line and the exit status. Line numbers move whenever a section is
+# added or a banner is edited; a marker moves only when someone moves it, which
+# is what makes it the unit a later change can carry.
 #
 # A SECTION OPENS IN ONE OF TWO SHAPES. The boxed shape is a rule line
 # (`# ---…`) followed by a numbered title line (`# <id>. …`), and the section
@@ -2239,7 +2239,8 @@ pre_cone() {
     # THE FAILURE GOES TO A FILE RATHER THAN TO `bad`. Every caller is
     # `x=$(cone_of …)`, which is a subshell, so a counter incremented here never
     # reaches the totals — the exact shape this suite is being repaired for. The
-    # file is read once at the end of the section, in the parent.
+    # file is drained once in the unconditional tail, in the parent, so the claim
+    # covers every call the run made rather than one section's worth of them.
     if [ "$rc" != "0" ]; then
       printf '앵커 %s rc=%s — %s\n' "$1" "$rc" "$msg" >> "$CONE_OF_FAILURES"
       printf '유도-실패'
@@ -12262,15 +12263,6 @@ else
   bad "픽스처 복구" "깨뜨린 HEAD 를 되돌리지 못했다"
 fi
 
-# EVERY CONE ABOVE WAS READ FROM A ROW THIS SECTION ACTUALLY WROTE. The
-# derivations run in subshells, so this is where their refusals become visible.
-n=$(grep -c . "$CONE_OF_FAILURES" || true)
-if [ "${n:-0}" = "0" ]; then
-  ok "원뿔 유도 호출이 전부 새 행을 남겼다 (어느 판정도 직전 호출의 원뿔을 다시 읽지 않았다)"
-else
-  bad "원뿔 유도" "${n} 건의 원뿔 행 쓰기가 거절됐다 — 그 뒤의 판정은 stale 한 원뿔을 읽었다: $(tr '\n' ' ' < "$CONE_OF_FAILURES")"
-fi
-
 # --- 31ai. `close` reads the answer by LABEL EQUALITY, and a flag only agrees -
 # --- section: 31ai | group: cone | covers: act, close, snapshot | anchors: 거부 라벨 실험용 판단이 승인으로 올라간다 ---
 #
@@ -20935,8 +20927,30 @@ fi
 
 # --- epilogue-begin ---
 #
-# THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
-# its own exit status, so the cut copy gets these two lines appended exactly as
-# they stand here.
+# THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
+# own exit status, and drain the cone-derivation failures, so the cut copy gets
+# this block appended exactly as it stands here.
+#
+# THE DRAIN BELONGS HERE RATHER THAN IN A SECTION. The claim is about every
+# `cone_of` call the run made, and a section can only claim the calls its own cut
+# happened to contain — narrow the cut and the claim silently covers less while
+# printing the same line. The tail is copied into every cut, so here the claim
+# covers exactly what that cut actually did.
+#
+# THE GUARD IS REQUIRED. `CONE_OF_FAILURES` is set in `pre_cone`, so a cut
+# carrying no cone section never sets it and an unguarded read dies under
+# `set -u` — trading a silent defect for a loud one.
+#
+# IT IS SILENT ON SUCCESS. The census attributes a `PASS:` line to the most
+# recent section stamp, and the tail carries no stamp, so a line printed here
+# would be recorded against whichever section each run happened to end on — one
+# spurious difference per cone-carrying shard. A failure still speaks, and is
+# attributed the same way, which is the case where being loud is worth it.
+if [ -n "${CONE_OF_FAILURES:-}" ]; then
+  n=$(grep -c . "$CONE_OF_FAILURES" || true)
+  if [ "${n:-0}" != "0" ]; then
+    bad "원뿔 유도" "${n} 건의 원뿔 행 쓰기가 거절됐다 — 그 뒤의 판정은 stale 한 원뿔을 읽었다: $(tr '\n' ' ' < "$CONE_OF_FAILURES")"
+  fi
+fi
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
