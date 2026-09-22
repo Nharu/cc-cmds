@@ -1462,6 +1462,14 @@ for pair in entry-plan; do
   else
     bad "스키마" "$pair.schema.json 가 유효한 JSON 이 아님"
   fi
+  # 단계 id 의 하한은 세 자리에 흩어진 산문 술어(「비어 있지 않은 id」)가 기대는 성질이다.
+  # 하한이 빠지면 빈 문자열 id 가 스키마를 통과해 계획이 그대로 얼고, 그 계획에서 두 판독기가
+  # 갈린다 — 게이트는 빈 줄을 지워 「설계 단계 없음」으로 거절하고 라우터는 값 하나를 받는다.
+  if [ "$(jq -r '.properties.steps.items.properties.id.minLength' "$script_dir/prompts/$pair.schema.json" 2>/dev/null)" = "1" ]; then
+    ok "킥오프 스키마의 단계 id 에 최소 길이 1 이 있다: $pair"
+  else
+    bad "스키마" "$pair.schema.json 의 steps[].id 에 minLength 1 이 없음"
+  fi
 done
 
 # ---------------------------------------------------------------------------
@@ -1745,6 +1753,159 @@ else
   bad "kill 가드" "경계 멱등 스테이지까지 막았다 — 가드가 과도하다"
 fi
 
+# (5) 여유 좌석 판정 — 센서가 발행한 상태를 읽을 뿐 여기서 계산하지 않는다.
+# 모름은 「여유 없음」이다: 상태가 없거나, 오래됐거나, 스키마가 다르거나, 이 좌석
+# 항목이 없으면 1 — 센서 없는 기기가 이 함수를 두기 전과 같은 답을 받는다. 좌석은
+# 호출마다 다시 풀리므로 1층(환경)으로 고정해 어느 항목과 결합하는지를 정한다.
+ACC_PACE="$ACC_DIR/pace"; mkdir -p "$ACC_PACE"
+acc_state() {  # acc_state <오프셋 초> <allow> <session_pct> [schema] [home]
+  jq -cn --arg schema "${4:-cc-pace-state v1}" --arg home "${5:-$ACC_DIR/seat}" \
+     --argjson now "$(( $(date -u +%s) - $1 ))" --argjson allow "$2" --argjson pct "$3" \
+     '{schema: $schema, computed_at_epoch: $now, burn_per_stage_4h: 0.5,
+       seats: [{home: $home, allow: $allow, session_pct: $pct}]}' > "$ACC_PACE/state.json"
+}
+acc_room() {
+  ( CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" account_has_headroom; printf '%s' "$?" )
+}
+rm -f "$ACC_PACE/state.json"
+check "센서 상태가 없으면 여유 없음(1)" "$(acc_room)" "1"
+acc_state 400 1 10
+check "세 주기(180초)보다 오래된 상태는 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10
+check "신선한 상태에서 allow 가 한 스테이지 소모 이상이고 창이 80% 미만이면 여유(0)" "$(acc_room)" "0"
+acc_state 0 1 80
+check "세션 창이 80% 에 닿으면 allow 가 남아도 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 0.1 10
+check "allow 가 한 스테이지 소모(0.5)에 못 미치면 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10 'cc-pace-state v1' "$ACC_DIR/other-seat"
+check "이 좌석 항목이 없는 상태는 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10 'cc-pace-state v2'
+check "다른 스키마의 상태는 여유 없음(1)" "$(acc_room)" "1"
+check "정지 임계가 센서의 것과 같은 값으로 박혀 있다" "$RUN_PACE_STALE_SECONDS" "180"
+
+# (6) 조인이 성립하는 상태에서 `stage_wait_all` 을 실제로 지난다 — 센서는 사다리를
+#     줄일 수 있을 뿐 0 으로 만들지 못한다.
+# 위 (5) 는 술어만 잰다. 술어가 참을 내는 순간 회수 갈래가 살아나므로, 여기서는
+# 좌석 조인(`CLAUDE_CONFIG_DIR` = `seats[].home`)과 여유 있는 상태를 그대로 두고
+# 대기 루프를 돌린다. `resume_verdict` 는 「한도-형상」 만 내고, `stage_alive` 는
+# 정해진 횟수만 살아 있다고 답하며, `sleep` 은 함수로 가려 백오프 단이 벽시계를
+# 쓰지 않게 한다. `reap_orphan` 은 (2) 의 감시 스텁이 그대로 관측한다.
+eval "swa_real_backoff_wait() $(declare -f backoff_wait | sed 1d)"
+SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=0
+backoff_wait()    { SWA_BW=$(( SWA_BW + 1 )); swa_real_backoff_wait "$@"; }
+resume_verdict()  { printf '한도-형상'; }
+stage_alive()     { SWA_POLLS=$(( SWA_POLLS + 1 )); [ "$SWA_POLLS" -le "$SWA_ALIVE_FOR" ]; }
+stage_collect()   { SWA_COLLECTED="$SWA_COLLECTED $1"; rm -f "$RUN_DIR/$1.pid"; }
+sleep()           { :; }
+swa_run() {  # swa_run <stage> <살아 있는 폴 수>
+  REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR="$2"; SWA_COLLECTED=""
+  rm -f "$RUN_DIR/$1.backoff" "$RUN_DIR/$1.reap-cause" "$RUN_DIR/$1.reaped"
+  printf '99999\n' > "$RUN_DIR/$1.pid"
+  CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$1" 2>/dev/null
+}
+SWA_STAGE="S4:acc:1"
+acc_state 0 1 10
+check "전제: 조인이 성립하고 여유가 있다" "$(acc_room)" "0"
+if kill_permitted "$SWA_STAGE"; then ok "전제: $SWA_STAGE 는 경계 멱등이라 회수 대상이다"; else bad "전제" "$SWA_STAGE 가 회수 대상이 아니다"; fi
+
+# 첫 관측: 여유가 있어도 죽이지 않고 백오프 한 단을 잔다.
+swa_run "$SWA_STAGE" 1
+check "첫 한도-형상 관측은 여유 계정이라도 회수하지 않는다" "$REAPED" ""
+check "대신 백오프 한 단을 잔다" "$SWA_BW" "1"
+check "그 뒤 스테이지가 스스로 끝나면 수거된다" "$SWA_COLLECTED" " $SWA_STAGE"
+if [ -e "$RUN_DIR/$SWA_STAGE.reap-cause" ]; then bad "회수 표시" "회수하지 않았는데 reap-cause 가 있다"; else ok "회수하지 않은 스테이지에는 reap-cause 가 없다"; fi
+
+# 둘째 관측: 한 단을 지속한 뒤에야 여유 계정이 회수 근거가 된다.
+swa_run "$SWA_STAGE" 2
+check "백오프 한 단을 넘겨 지속된 한도-형상은 여유 계정에서 회수된다" "$REAPED" " $SWA_STAGE"
+check "회수는 둘째 단을 자기 전에 일어난다" "$SWA_BW" "1"
+check "회수 사유가 파일로 남는다" "$(cat "$RUN_DIR/$SWA_STAGE.reap-cause")" "여유 계정"
+check "회수된 스테이지의 종단 부류는 크래시가 아니다" "$(classify_termination "$SWA_STAGE" 1 1)" "한도-형상 회수"
+check "회수는 백오프 누산기를 비운다" "$(ls "$RUN_DIR/$SWA_STAGE.backoff" 2>/dev/null)" ""
+if [ -e "$RUN_DIR/$SWA_STAGE.rc" ]; then bad "rc" "회수 경로가 .rc 를 썼다"; else ok "회수 경로는 .rc 를 쓰지 않는다 — 부류는 표시 파일이 진다"; fi
+
+# 대조군: 여유가 없으면 한 단을 넘겨도 사다리를 계속 오른다.
+acc_state 0 1 80
+check "전제: 세션 창이 80% 라 여유 없음" "$(acc_room)" "1"
+swa_run "$SWA_STAGE" 2
+check "여유 없는 좌석은 한 단을 넘겨도 회수하지 않는다" "$REAPED" ""
+check "사다리는 둘째 단으로 오른다" "$SWA_BW" "2"
+check "회수하지 않은 스테이지는 종단 부류가 rc 로 정해진다" "$(classify_termination "$SWA_STAGE" 1 1)" "크래시"
+
+# 대조군: 상한 갈래도 같은 표시를 남긴다 — 누산기를 상한에 두고 여유 없는 상태로 한 번 관측.
+printf '%s 1\n' "$BACKOFF_WALLCLOCK_CAP_SECONDS" > "$RUN_DIR/$SWA_STAGE.backoff"
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "백오프 상한에서는 경계 멱등 스테이지를 회수한다" "$REAPED" " $SWA_STAGE"
+check "상한 회수의 사유도 파일로 남는다" "$(cat "$RUN_DIR/$SWA_STAGE.reap-cause")" "백오프 상한"
+check "상한 회수의 종단 부류도 한도-형상 회수다" "$(classify_termination "$SWA_STAGE" 1 1)" "한도-형상 회수"
+
+# 대조군: 비멱등 스테이지는 여유가 있고 한 단을 넘겨도 회수되지 않는다.
+acc_state 0 1 10
+swa_run "$ACC_STAGE" 3
+check "비멱등 스테이지는 여유 계정에서도 회수되지 않는다" "$REAPED" ""
+check "비멱등 스테이지는 사다리만 오른다" "$SWA_BW" "3"
+
+# 재기동은 앞 점유자의 표시를 물려받지 않는다.
+printf '%s\n' '여유 계정' > "$RUN_DIR/$SWA_STAGE.reap-cause"
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '.reap-cause'; then
+  ok "stage_spawn 이 .rc 와 함께 .reap-cause 를 지운다"
+else
+  bad "표시 상속" "stage_spawn 이 .reap-cause 를 지우지 않는다 — 같은 id 의 재기동이 앞 회수로 분류된다"
+fi
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.backoff"
+
+# 파견 경계의 한 단 보장 — 「첫 한도-형상 관측은 언제나 한 단을 기다린다」가 두
+# 번째 파견에서도 성립한다.
+#
+# 위 (6) 의 단언들은 이것을 재지 못한다. `swa_run` 이 자기 전제로 `.backoff` 를
+# 지우므로 거기서 성립하는 한 단 보장은 **단일 파견 수명 안**의 것이고, 실제로
+# 깨지는 자리는 파견 경계다. 앞 파견이 누산기를 남기는 경로는 실재한다 — 비멱등
+# 갈래(`human_reconcile`)는 신호를 보내지 않고 빠지면서 누산기를 지우지 않는다.
+# 그래서 여기서는 그 잔여를 전제로 두고, 대조군으로 빨간불을 먼저 확인한 뒤,
+# `stage_spawn` 이 실제로 선적한 청소 줄만 돌려 보장이 회복되는지 잰다.
+acc_state 0 1 10
+check "전제: 조인이 성립하고 여유가 있다" "$(acc_room)" "0"
+
+# 대조군 — 누산기가 남아 있으면 첫 관측이 한 단도 자지 않고 곧바로 회수된다.
+# 이 블록이 없으면 아래 단언이 「청소가 듣는다」가 아니라 「원래 회수되지
+# 않는다」로도 통과해 공허해진다.
+printf '60 2\n' > "$RUN_DIR/$SWA_STAGE.backoff"
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "대조군: 앞 파견의 누산기가 남으면 첫 관측이 곧바로 회수된다" "$REAPED" " $SWA_STAGE"
+check "대조군: 그때는 한 단도 자지 않는다" "$SWA_BW" "0"
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.backoff"
+
+# 같은 잔여를 다시 두고, 이번에는 그 사이에 파견이 일어난다. 선적된 청소 줄을
+# 원문에서 뽑아 그대로 돌리므로 이 단언은 소스 문자열 대조가 아니라 그 줄의
+# 효과를 잰다 — 목록에서 `.backoff` 가 빠지면 뽑힌 줄이 그것을 남기고 아래 둘이
+# 함께 뒤집힌다.
+printf '60 2\n' > "$RUN_DIR/$SWA_STAGE.backoff"
+spawn_cleanup=$(sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep -E '^[[:space:]]*rm -f "\$RUN_DIR/\$stage\.rc"')
+check "stage_spawn 의 청소 줄을 정확히 하나 뽑았다" "$(printf '%s' "$spawn_cleanup" | grep -c .)" "1"
+( stage="$SWA_STAGE"; eval "$spawn_cleanup" )
+if backoff_served "$SWA_STAGE"; then
+  bad "파견 경계" "stage_spawn 청소가 .backoff 를 남긴다 — 두 번째 파견의 첫 관측이 앞 파견의 사다리 위에서 판정된다"
+else
+  ok "stage_spawn 이 파견마다 .backoff 를 비운다"
+fi
+
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "두 번째 파견의 첫 한도-형상 관측도 회수하지 않는다" "$REAPED" ""
+check "두 번째 파견의 첫 관측도 백오프 한 단을 잔다" "$SWA_BW" "1"
+
+unset spawn_cleanup
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.pid" "$RUN_DIR/$SWA_STAGE.backoff" "$RUN_DIR/$ACC_STAGE.pid" "$RUN_DIR/$ACC_STAGE.backoff"
+unset -f swa_run backoff_wait resume_verdict stage_alive stage_collect sleep
+eval "backoff_wait() $(declare -f swa_real_backoff_wait | sed 1d)"
+unset -f swa_real_backoff_wait
+unset -f acc_state acc_room
+
 # `unset -f` REMOVES the watcher rather than restoring the driver's definition —
 # bash has no function shadowing, so the original is gone for the rest of this
 # process. That is why this block sits last: a later assertion calling it would
@@ -2017,6 +2178,7 @@ arm21_case() {
     case "$docst" in
       사람) printf '# 사람이 쓴 설계\n\n## 합의된 아키텍처\n\n본문\n' > "$DOC" ;;
       동결) printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC" ;;
+      스텁) printf '# 설계\n\n<!-- cc-design-ledger v3\nrow: agentId | state\n- a1 | running\n-->\n' > "$DOC" ;;
     esac
     [ "$prior" = "-" ] || printf -- '- `stage-result` | 세그먼트=- | 스테이지=S1design | 파견 id=S1design | 종단 부류=%s\n' "$prior" >> "$LEDGER"
     [ -z "${6:-}" ] || ORCH_DIR="$6"
@@ -2075,6 +2237,36 @@ arm21_case resumed-halt "$MFARM" 사람 '의도된 park' '정상 완료'
 check "앞선 시도가 중단한 런은 다시 설계하지도 감사로 넘기지도 않고 park 한다" \
   "$(arm21_rc resumed-halt)/$(arm21_disp resumed-halt)/$(grep -c 'S1design run' "$ARM21/resumed-halt/parked" 2>/dev/null || printf 0)" "1/0/1"
 
+# 스폰 시점 스텁은 앞의 셋과 다른 부류다 — 설계가 스스로 만든 파일이고 아직
+# 아무 내용도 없다. 존재만으로 건너뛰면 스폰 뒤 죽은 설계가 자기 스텁 때문에
+# 다시 파견되지 않으므로, 그 한 부류만 통과시키는지 잰다.
+arm21_case stub "$MFARM" 스텁 - '정상 완료'
+check "스폰 시점 스텁만 있으면 건너뛰지 않고 파견한다" \
+  "$(arm21_rc stub)/$(arm21_disp stub)" "0/1"
+
+# 한도 소진 같은 런 밖 원인이 크래시로 기록되는데, 그 크래시가 남긴 것이 스텁뿐
+# 이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
+arm21_case resumed-crash "$MFARM" 스텁 '크래시' '정상 완료'
+check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-crash)/$(arm21_disp resumed-crash)/$(grep -c 'S1design run' "$ARM21/resumed-crash/parked" 2>/dev/null || printf 0)" "0/1/0"
+
+# 반대쪽 — 크래시라도 저장된 문서가 남았으면 덮어쓸 것이 있으므로 park 그대로다.
+arm21_case resumed-crash-saved "$MFARM" 사람 '크래시' '정상 완료'
+check "크래시라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-crash-saved)/$(arm21_disp resumed-crash-saved)/$(grep -c 'S1design run' "$ARM21/resumed-crash-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# 프로세스가 죽지 않고 rc 0 으로 끝났는데 산출물이 없는 경우도 같은 모양이다 —
+# 팀원이 증인 없이 턴을 끝내 기다릴 작업이 사라졌거나, 저장 직전 턴 경계에서
+# 끝났거나, 토론 중에 대기 천장에 잘렸거나. 죽었는지 아닌지는 재시도가 무엇을
+# 덮어쓸지에 대해 아무것도 말하지 않으므로, 판별자는 크래시 쪽과 같이 문서다.
+arm21_case resumed-hollow "$MFARM" 스텁 '공허한 성공' '정상 완료'
+check "앞선 시도가 공허한 성공으로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-hollow)/$(arm21_disp resumed-hollow)/$(grep -c 'S1design run' "$ARM21/resumed-hollow/parked" 2>/dev/null || printf 0)" "0/1/0"
+
+arm21_case resumed-hollow-saved "$MFARM" 사람 '공허한 성공' '정상 완료'
+check "공허한 성공이라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-hollow-saved)/$(arm21_disp resumed-hollow-saved)/$(grep -c 'S1design run' "$ARM21/resumed-hollow-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
+
 arm21_case halted "$MFARM" 없음 - '의도된 park'
 check "파견한 스테이지가 중단하면 런을 park 한다" \
   "$(arm21_rc halted)/$(arm21_disp halted)/$(grep -c 'S1design run' "$ARM21/halted/parked" 2>/dev/null || printf 0)" "1/1/1"
@@ -2085,6 +2277,55 @@ mkdir -p "$ARM21/noskill/orchestrator"
 arm21_case noskill "$MFARM" 없음 - '정상 완료' "$ARM21/noskill/orchestrator"
 check "스킬 파일이 없으면 파견하지 않고 park 한다" \
   "$(arm21_rc noskill)/$(arm21_disp noskill)/$(grep -c '스킬 파일 부재' "$ARM21/noskill/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# --- 21c-2 라우터 경로가 같은 계획을 읽는 자리 — 스냅숏 직렬화와 설계 단계 id ------
+# 라우터가 구동하는 런에서는 위 팔이 돌지 않고, 교대는 스냅숏 말고 입력이 없다. 그래서
+# 드라이버가 `manifest_plan_field` 로 읽는 같은 얼린 계획을 게이트가 스냅숏의
+# `design_required`·`steps` 로 싣고, `--segment -` 설계 파견의 파일 키를 그 계획의 설계
+# 단계 id 로 정한다. 드라이버와 게이트가 한 계획을 서로 다르게 읽으면 두 경로가 한 행
+# 모양으로 모이지 않으므로, 여기서는 위 팔이 읽은 바로 그 픽스처들을 게이트에 넣는다.
+# 선언된 `false` 가 부재로 접히지 않는지도 같은 이유로 잰다.
+# 별도 프로세스인 이유는 25h 와 같다 — 게이트를 소싱하면 드라이버가 다시 소싱되며 이
+# 하네스의 경로 변수가 초기화된다.
+SER21="$WORK/plan-serialize"; mkdir -p "$SER21"
+MFOBJ="$SER21/manifest-obj.md"
+write_manifest "$MFOBJ" "" "" main "docs/x.md"
+sed 's/{ "steps": \["audit", "implement"\] }/{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "s", "depends_on": [] }, { "id": "A2", "skill": "design-audit", "summary": "s", "depends_on": ["D1"] } ] }/' \
+  "$MFOBJ" > "$MFOBJ.t" && mv "$MFOBJ.t" "$MFOBJ"
+MFTWO="$SER21/manifest-two.md"
+sed 's/"id": "A2", "skill": "design-audit"/"id": "D2", "skill": "design"/' "$MFOBJ" > "$MFTWO"
+cat > "$SER21/burn.sh" <<'SEREOF'
+#!/usr/bin/env bash
+set -uo pipefail
+GATE="$1"; shift
+HP="$PATH"
+CC_GATE_SOURCE_ONLY=1
+export CC_GATE_SOURCE_ONLY
+# shellcheck disable=SC1090
+. "$GATE" || exit 9
+PATH="$HP"
+unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+set +e
+for mf in "$@"; do
+  MANIFEST="$mf"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  step=$(gate_run_scope_design_step) || step="(없음)"
+  printf '%s\t%s\t%s\n' "$(gate_snapshot_design_required_json)" "$(gate_snapshot_steps_json)" "$step"
+done
+SEREOF
+ser21=$(bash "$SER21/burn.sh" "$script_dir/gate.sh" "$MFDSG" "$MFDSG2" "$MFARM" "$MFOBJ" "$MFTWO" 2>/dev/null)
+ser21_line() { printf '%s\n' "$ser21" | sed -n "${1}p"; }
+check "스냅숏 직렬화 — 선언되지 않은 design_required 는 null, 단계는 이름만 있고 id 가 없다" \
+  "$(ser21_line 1)" "$(printf 'null\t[{"id":null,"skill":"audit","depends_on":[]},{"id":null,"skill":"implement","depends_on":[]}]\t(없음)')"
+check "스냅숏 직렬화 — 선언된 false 는 false 로 실린다 (부재로 접히지 않는다)" \
+  "$(ser21_line 2 | cut -f1)" "false"
+check "드라이버 팔이 설계를 요구한다고 읽은 픽스처를 게이트도 true 로 싣는다" \
+  "$(ser21_line 3 | cut -f1)" "true"
+check "id 없는 옛 모양의 설계 단계로는 --segment - 의 파일 키를 정하지 않는다" \
+  "$(ser21_line 3 | cut -f3)" "(없음)"
+check "스냅숏 직렬화 — 객체 단계의 id·skill·depends_on 이 그대로 실리고 설계 단계 id 가 정해진다" \
+  "$(ser21_line 4)" "$(printf 'true\t[{"id":"D1","skill":"design","depends_on":[]},{"id":"A2","skill":"design-audit","depends_on":["D1"]}]\tD1')"
+check "설계 단계가 둘인 계획에서는 게이트가 하나를 고르지 않는다" \
+  "$(ser21_line 5 | cut -f3)" "(없음)"
 
 # --- 21d 드라이버가 파견한 스테이지의 판단 흡수 --------------------------------
 # 흡수는 별도 프로세스가 게이트를 소싱해 한다. 드라이버 셸에 게이트를 들이면 게이트가
@@ -2143,6 +2384,21 @@ check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 �
   "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "5"
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
+
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷을 포함해 아홉)가 압축 창·레인·기록자
+# 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 아홉의 방어는
+# 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
+WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
+  index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
+  cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
+  END { print "N " n+0 }
+' "$DRIVER")
+check "드라이버의 stage-result 호출부가 아홉이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "9"
+check "아홉 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+  "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
+check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
+  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "9"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -3691,14 +3947,43 @@ FEED_SH="$(dirname "$DRIVER")/feed.sh"
 if [ -f "$FEED_SH" ]; then
   ok "진행 채널 스크립트가 있다"
   # A WHITELIST, NOT A DENYLIST. Asking "does it source the emitter" only closes
-  # the door that is already named; asking "is `liveness.sh` the only thing it
-  # sources" also closes the one a future emitter under another name would use.
+  # the door that is already named; asking which files it may source at all also
+  # closes the one a future emitter under another name would use.
+  #
+  # THE LIST IS TWO NAMES, AND THE SECOND ONE PAYS ITS WAY BELOW. `pin.sh` joined
+  # it because the feed has to hop into the run's pinned copy before it writes
+  # anything, and the predicate that decides that is shared with the gate and the
+  # watcher rather than re-implemented here. Widening a whitelist weakens it
+  # unless the new entry is fenced too, so the assertions after this one hold
+  # `pin.sh` to the same rule: it sources nothing and names no emitter.
   feed_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$FEED_SH" || true; } \
-                    | { grep -v 'liveness\.sh' || true; } )
+                    | { grep -v 'liveness\.sh' || true; } \
+                    | { grep -v 'pin\.sh' || true; } )
   if [ -n "$feed_src_other" ]; then
-    bad "피드 울타리" "feed.sh 가 liveness.sh 밖의 것을 소스한다: $feed_src_other"
+    bad "피드 울타리" "feed.sh 가 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $feed_src_other"
   else
-    ok "feed.sh 가 소스하는 것은 liveness.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+    ok "feed.sh 가 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+  fi
+  PIN_SH="$(dirname "$DRIVER")/pin.sh"
+  if [ -f "$PIN_SH" ]; then
+    pin_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$PIN_SH" || true )
+    if [ -n "$pin_src_any" ]; then
+      bad "피드 울타리" "pin.sh 가 무언가를 소스한다 — 허용 목록이 그만큼 넓어진다: $pin_src_any"
+    else
+      ok "pin.sh 는 아무것도 소스하지 않는다 (허용 목록이 이 한 파일로 닫힌다)"
+    fi
+    # THE NOTIFIER'S NAME IS SPLIT ACROSS TWO LITERALS. `lint-notify-fire-sites.sh`
+    # counts the lines under `orchestrator/` that name the binary and expects
+    # exactly the emitter's two, so a pattern that spells it whole turns this
+    # fence into a lint violation — the check would be reported as the thing it
+    # is checking against.
+    if grep -qE 'notify-run\.sh|cc_notify_fire|cc_notify_clear|terminal-''notifier' "$PIN_SH"; then
+      bad "피드 울타리" "pin.sh 가 방출 경로를 이름으로 담고 있다"
+    else
+      ok "pin.sh 의 어디에도 방출 경로가 없다"
+    fi
+  else
+    bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
   fi
   # And the name reaches no executable line. A header sentence explaining the
   # fence is not a breach of it, so the comment lines are excluded rather than
@@ -3944,10 +4229,18 @@ if printf '%s' "$crash_arm" | grep_all_q '크래시 2회'; then
 else
   bad "park 사유" "크래시 2회의 park 사유가 첫 실패와 구별되지 않는다"
 fi
-# 재시도는 정확히 1회다. 두 갈래가 각각 하나씩이라 드라이버 전체에서 `.retry`
-# 스폰은 둘이어야 하고, 셋이 되면 어느 갈래가 예산을 넘긴 것이다.
-check "재시도 스폰은 갈래당 1회 (전체 2회)" \
-  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+# 재시도는 갈래당 정확히 1회다. 갈래마다 하나씩 세고 총합도 함께 재는 이유는,
+# 총합만 재면 한 갈래가 둘을 갖고 다른 갈래가 0 을 갖는 배분도 통과하기 때문이다.
+# 갈래는 셋이다 — 「공허한 성공」·「크래시」·「한도-형상 회수」. 셋째는 드라이버
+# 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다.
+for retry_arm in '공허한 성공' '크래시' '한도-형상 회수'; do
+  # `${...}` 를 쓰는 것은 취향이 아니다 — 뒤따르는 닫는 낫표가 ASCII 가 아니라서
+  # 하한 인터프리터가 그 바이트를 이름에 붙여 읽고 unbound variable 로 죽는다.
+  check "재시도 스폰이 「${retry_arm}」 갈래에 정확히 1회" \
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || printf '0')" "1"
+done
+check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 3회)" \
+  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "3"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파
@@ -4374,6 +4667,11 @@ RUN_ID="lane-init"
 RI="$LD/state/cc-cmds/run/lane-init"
 check "rundir_init 이 레인을 기록한다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/homerec"
 check "rundir_init 이 오케스트레이터 디렉터리를 기록한다" "$(cat "$RI/orchestrator-dir" 2>/dev/null)" "$ORCH_DIR"
+# 공유 세대 디렉터리는 런 개시에 리드 좌석이 빈 채로 만든다 — 교대는 그 아래
+# `shared/<gen>/` 에만 쓸 수 있고 `shared/` 자체를 만들 권한이 없으므로, 여기서
+# 만들어 두지 않으면 첫 교대의 첫 발행이 그 자리에서 거부된다.
+check "rundir_init 이 공유 세대 디렉터리 shared/ 를 빈 채로 만든다" \
+  "$( [ -d "$RI/shared" ] && printf '%s' "$(ls -A "$RI/shared" | grep -c . || true)" )" "0"
 # 재기동한 드라이버가 살아 있는 스테이지의 레인을 옮기면 안 된다.
 printf '%s\n' "$LD/runrec" > "$RI/config-dir"
 ( unset CLAUDE_CONFIG_DIR
@@ -4831,6 +5129,15 @@ check "런 매니페스트 plan.md 는 계획 파일이 아니다" \
   "$(hook_decide_rd "$FRD" "$FRD/plan.md")" "deny"
 check "하위 디렉터리의 계획 파일은 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/sub/x.plan.md")" "deny"
+# 공유 세대 디렉터리는 둘째 예외이고 한 단계 아래만이다 — 교대의 산출물이 놓이는
+# `shared/<gen>/` 이 예외이고, 세대 없이 `shared/` 바로 아래 놓인 파일은 `*/*` 거부로
+# 떨어진다. 게이트의 Bash 가드가 같은 두 갈래를 싣고, `scripts/test-gate.sh` 가
+# 두 파일의 리터럴이 같은지를 핀한다.
+mkdir -p "$FRD/shared/1"
+check "shared/<gen>/ 아래 한 단계의 쓰기는 허용" \
+  "$(hook_decide_rd "$FRD" "$FRD/shared/1/snapshot.json")" "allow"
+check "shared/ 바로 아래의 파일은 예외가 아니다" \
+  "$(hook_decide_rd "$FRD" "$FRD/shared/loose.json")" "deny"
 check "상위 참조를 낀 런 디렉터리 철자도 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/../fixrun/surface-digest")" "deny"
 if [ -d "$WORK/rd-link" ]; then
@@ -4913,6 +5220,17 @@ check "형제 런의 중단 기록도 거부 (허용 이름은 이 런의 것일
   "$(hook_decide_rr "$RR/cc-cmds/run/victim/halt/impl.md")" "deny"
 check "형제 런의 계획 파일도 거부" \
   "$(hook_decide_rr "$RR/cc-cmds/run/victim/x.plan.md")" "deny"
+# 판본 고정이 런 디렉터리 안에 **실행되는 코드**를 놓는다. 그 런의 모든 게이트
+# 호출·감시자·피드가 그 사본으로 건너뛰므로, 사본에 쓸 수 있는 스테이지는 자기
+# 런을 강제하는 코드를 고쳐 쓸 수 있다. 자기 런과 형제 런 양쪽을 함께 잰다.
+check "자기 런의 고정 사본은 거부 (이 런을 강제하는 코드다)" \
+  "$(hook_decide_rr "$MYRUN/plugin/cc-cmds/orchestrator/gate.sh")" "deny"
+check "자기 런의 핀도 거부" \
+  "$(hook_decide_rr "$MYRUN/plugin-pin")" "deny"
+check "형제 런의 고정 사본 안 룰 파일도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/rules/x.rule")" "deny"
+check "형제 런의 핀도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/plugin-pin")" "deny"
 # 아직 열리지 않은 런. 글롭도 아이노드도 없는 자리이고, 그 창이야말로 이 결정이
 # 덮겠다고 선언한 것이다 — 열리지 않은 런에 기록을 심어 두면 그 런의 초기화가
 # 그것을 보존한 채 시작한다.
@@ -4932,12 +5250,854 @@ check "음성 대조군: 런 루트 밖의 평범한 경로는 그대로 허용"
 check "자기 런의 레인 기록은 그대로 거부" \
   "$(hook_decide_rr "$MYRUN/config-dir")" "deny"
 case "$(hook_reason_rr "$RR/cc-cmds/run/victim/config-dir")" in
-  *'다른 런의 디렉터리'*) ok "형제 런 거부가 다른 런을 지목한다" ;;
+  *'this is another run directory'*) ok "형제 런 거부가 다른 런을 지목한다" ;;
   *) bad "형제 런 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
 esac
 case "$(hook_reason_rr "$MYRUN/config-dir")" in
-  *'다른 런의 디렉터리'*) bad "자기 런 거부 사유" "새 팔이 자기 런까지 삼켰다 — 순서가 뒤집혔다" ;;
+  *'this is another run directory'*) bad "자기 런 거부 사유" "새 팔이 자기 런까지 삼켰다 — 순서가 뒤집혔다" ;;
   *) ok "자기 런 거부는 종전 팔이 낸다 (새 팔이 앞으로 오지 않았다)" ;;
+esac
+
+# --- 배시 경로 가드도 같은 답을 내는가 -----------------------------------------
+# 훅은 `Write`/`Edit` 만 본다. 같은 쓰기가 `Bash` 로 오면 판정하는 것은
+# `gate_rundir_write_guard` 이고, 그 함수는 자기 런만 알아 형제 런에는 rc 0 을
+# 주고 있었다(실측). 고정 사본이 그 구멍에 실행되는 코드를 놓으므로, 여기서 두
+# 경로가 같은 답을 내는지 함께 잰다 — 한쪽만 닫히면 닫힌 쪽의 초록이 다른 쪽의
+# 열림을 가린다.
+rr_guard() {
+  # rr_guard <등급> <argv…> — 게이트를 소싱해 배시 경로 가드만 직접 물린다.
+  # rc 는 `rr_guard_rc`, 문면은 `rr_guard_msg` 에 남는다. `RR_G_RUN` 은 런
+  # 디렉터리(기본 `$MYRUN`), `RR_G_GATEDIR` 는 주면 `GATE_DIR` 을 그 값으로 둔다 —
+  # 고정된 런에서 게이트가 사본 안에서 도는 모양을 만든다.
+  rr_guard_msg=$( RR_G_RUNDIR="${RR_G_RUN:-$MYRUN}" RR_G_GATE="$script_dir/gate.sh" XDG_STATE_HOME="$RR" \
+    RR_G_CWD="${RR_G_CWD:-$PWD}" RR_G_GATEDIR="${RR_G_GATEDIR:-}" \
+    bash -c '
+      g_surface="$1"; shift
+      CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+      . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+      unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      set +e
+      RUN_DIR="$RR_G_RUNDIR"
+      if [ -n "$RR_G_GATEDIR" ]; then GATE_DIR="$RR_G_GATEDIR"; fi
+      # 상대 경로 철자를 재려면 등급 기준 디렉터리가 있어야 한다 — 가드가 인자를
+      # `gate_lexical_abs` 로 절대화하고, 그 기준이 이 값이다.
+      GATE_GRADE_CWD="$RR_G_CWD"
+      gate_rundir_write_guard "$g_surface" "$@" 2>&1
+      exit $?
+    ' _ "$@" )
+  rr_guard_rc=$?
+}
+rr_guard 워크트리쓰기 cp x "$MYRUN/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 자기 런의 고정 사본 쓰기는 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 cp x "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 형제 런의 고정 사본 쓰기도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 형제 런 거부가 다른 런을 지목한다" ;;
+  *) bad "배시 가드: 형제 런 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 워크트리쓰기 cp x "$MYRUN/halt/x.md"
+check "배시 가드: 음성 대조군 — 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 cp x "$WORK/outside.txt"
+check "배시 가드: 음성 대조군 — 런 루트 밖은 rc 0" "$rr_guard_rc" "0"
+rr_guard 읽기 cat "$RR/cc-cmds/run/victim/plugin-pin"
+check "배시 가드: 형제 런이라도 읽기는 그대로 통과한다" "$rr_guard_rc" "0"
+
+# --- 네 가지 철자. 위 다섯 호출은 전부 평범한 절대 경로를 별도 인자로 넘긴다 -----
+# 인자별 루프가 구분자만 접고 `..` 를 풀지 않으며 상대 경로를 절대화하지 않고 더 큰
+# 토큰 안의 경로를 꺼내지 않았으므로, 아래 넷은 모두 통과했다. 첫째는 위트니스 허용
+# 예외를 거쳐 자기 런의 **고정 사본** 자신에 닿는다 — 훅이 거부를 단언하는 그 파일이다.
+rr_guard 워크트리쓰기 cp x "$MYRUN/cc-team-witness-x/../plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 위트니스 예외를 거친 상위 참조도 rc 3" "$rr_guard_rc" "3"
+RR_G_CWD="$MYRUN"
+rr_guard 워크트리쓰기 cp x ../victim/settings/x.json
+check "배시 가드: 상대 경로로 가리킨 형제 런도 rc 3" "$rr_guard_rc" "3"
+unset RR_G_CWD
+rr_guard 워크트리쓰기 git diff "--output=$RR/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 옵션 토큰 안의 경로도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cat > $RR/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 인터프리터 포장 안의 경로도 rc 3" "$rr_guard_rc" "3"
+rr_guard 읽기 bash -c "cat $RR/cc-cmds/run/victim/plugin-pin"
+check "배시 가드: 음성 대조군 — 포장된 읽기는 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 cp x "$MYRUN/halt/x.md"
+check "배시 가드: 음성 대조군 — 정규화 뒤에도 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+
+# --- 다섯째 철자. 목적지가 런 디렉터리 **자신** 인 쓰기 -------------------------
+# 위 아홉 호출은 전부 만들어질 파일을 argv 에 적는다. 목적지가 디렉터리인 동사는
+# 만들어지는 이름이 소스의 basename 에서 오므로 그 이름이 argv 에 아예 나타나지
+# 않고, 분류기가 런 디렉터리 자신을 통과시키면 두 줄로 고정의 양쪽 절반이 심긴다.
+# `Write`/`Edit` 는 디렉터리를 목적지로 지명할 수 없어 이 형태는 오직 Bash 로만
+# 존재하고, 따라서 이 가드가 두 층 중 하나가 아니라 유일한 층이다.
+rr_guard 워크트리쓰기 mv x "$MYRUN"
+check "배시 가드: 런 디렉터리 자신을 목적지로 한 쓰기는 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 mv x "$RR/cc-cmds/run/victim"
+check "배시 가드: 형제 런 디렉터리 자신을 목적지로 한 쓰기도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 형제 런 디렉터리 자신의 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 형제 런 디렉터리 자신의 거부 사유" "다른 팔이 먼저 거부했다 — 새 팔이 형제 런 팔을 앞질렀다: $rr_guard_msg" ;;
+esac
+rr_guard 읽기 ls "$MYRUN"
+check "배시 가드: 음성 대조군 — 런 디렉터리 자신을 읽는 것은 rc 0" "$rr_guard_rc" "0"
+# 위트니스 디렉터리 **생성** 은 이 변경 이전에도 거부됐다(`rel` 이 예외 어느 팔에도
+# 매치하지 않는다). 새 팔이 그 답을 바꾸지 않는다는 것을 같이 못박는다 — 바뀌면
+# 무인 런의 팀 스테이지가 발행을 못 하게 되고, 그 손해는 조용히 나타난다.
+rr_guard 워크트리쓰기 mv x "$MYRUN/cc-team-witness-x.AbCdEf"
+check "배시 가드: 위트니스 디렉터리 생성은 이 변경 전후로 같은 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 mv x "$MYRUN/cc-team-witness-x.AbCdEf/round-2.md"
+check "배시 가드: 음성 대조군 — 위트니스 산출물 발행은 그대로 rc 0" "$rr_guard_rc" "0"
+
+# --- hop 을 수행하는 설치본 진입점 ----------------------------------------------
+# 고정은 hop **이후** 의 바이트를 굳힌다. hop 을 수행하는 설치본 `orchestrator/*.sh`
+# 와 `hooks/*.sh` 는 고정이 굳히지 못하면서 모든 스테이지에 쓰기 가능했고, 훅의 어느
+# 팔도 그 이름을 거부하지 않는다. 세그먼트 워크트리의 같은 이름 파일이 허용되는 것이
+# 이 가드의 안전 조건이다 — 이 레포를 고치는 구현 스테이지는 자기 워크트리에서 바로
+# 그 파일들을 고치기 때문이다.
+RRP_INST="$WORK/installed/plugins/cc-cmds"
+RRP_WT="$WORK/segwt/plugins/cc-cmds"
+mkdir -p "$RRP_INST/orchestrator" "$RRP_INST/hooks" "$RRP_WT/orchestrator"
+rr_pguard() {
+  # rr_pguard <등급> <argv…> — 설치본 루트 가드만 직접 물린다. 고정되지 않은 런의
+  # 모양, 즉 `GATE_DIR` 이 설치본 사본의 `orchestrator/` 인 상태를 만든다.
+  # `RR_P_RUNDIR` 를 주면 그것이 `RUN_DIR` 이 되어 그 런 핀의 `source` 가 루트로
+  # 잡힌다(기본은 빈 값 — 핀 없음). `RR_P_GATEDIR` 는 `GATE_DIR` 을 바꾼다 — 고정된
+  # 런의 게이트가 사본에서 돌아 설치본 루트를 핀으로만 아는 모양이다.
+  rr_pguard_msg=$( RR_G_GATE="$script_dir/gate.sh" RR_P_DIR="${RR_P_GATEDIR:-$RRP_INST/orchestrator}" \
+    RR_G_CWD="${RR_G_CWD:-$PWD}" RR_P_RUNDIR="${RR_P_RUNDIR:-}" \
+    bash -c '
+      g_surface="$1"; shift
+      CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+      . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+      unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      set +e
+      RUN_DIR="$RR_P_RUNDIR"
+      GATE_DIR="$RR_P_DIR"
+      GATE_GRADE_CWD="$RR_G_CWD"
+      gate_plugin_root_write_guard "$g_surface" "$@" 2>&1
+      exit $?
+    ' _ "$@" )
+  rr_pguard_rc=$?
+}
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 설치본 orchestrator 스크립트 쓰기는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/hooks/gate-pretool.sh"
+check "설치본 가드: 설치본 훅 스크립트 쓰기도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 bash -c "cat > $RRP_INST/orchestrator/run.sh"
+check "설치본 가드: 인터프리터 포장 안의 경로도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git diff "--output=$RRP_INST/orchestrator/pin.sh"
+check "설치본 가드: 옵션 토큰 안의 경로도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_WT/orchestrator/gate.sh"
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 같은 이름은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 읽기 cat "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 음성 대조군 — 같은 경로 읽기는 rc 0" "$rr_pguard_rc" "0"
+
+# --- 같은 결함의 두 번째 인스턴스 — 컨테이너를 지명한 철자 ----------------------
+# 위 여섯 행은 전부 디렉터리 **아래** 파일을 지명한다. 바늘이 디렉터리 이름 뒤에
+# 성분을 요구하면 디렉터리 자신을 지명한 인자는 매치하지 않고, `cp x <root>/orchestrator`
+# 한 줄이 게이트를 통째로 교체한다. 후행 슬래시 행이 재는 것은 바늘이 아니라
+# `gate_lexical_abs` 의 마지막 성분 버리기다 — 그 철자는 `case` 에 닿기 전에 이미
+# 후행 슬래시를 잃으므로, 바늘에 후행 슬래시 형태를 더하는 수정은 아무것도 바꾸지
+# 않는다. 이 주석이 없으면 뒤에 정규화가 바뀌어도 이 행이 계속 초록이다.
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator"
+check "설치본 가드: orchestrator 디렉터리 자신을 목적지로 한 쓰기는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator/"
+check "설치본 가드: 후행 슬래시 철자도 rc 3 (바늘이 아니라 정규화를 못박는다)" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 mv x "$RRP_INST/hooks"
+check "설치본 가드: hooks 디렉터리 자신을 목적지로 한 쓰기도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 rm -rf "$RRP_INST/orchestrator"
+check "설치본 가드: 디렉터리 자신의 삭제도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_WT/orchestrator"
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 같은 디렉터리는 rc 0" "$rr_pguard_rc" "0"
+# 컨테이너 팔은 문자열 **끝** 을 요구한다. 형제 이름을 함께 삼키면 정당한 편집이
+# 막히므로, 넓히지 않았다는 것을 음성 대조군으로 고정한다.
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator-backup/gate.sh"
+check "설치본 가드: 음성 대조군 — 접두가 같은 형제 이름은 삼키지 않는다" "$rr_pguard_rc" "0"
+
+# --- 실행은 쓰기가 아니다 — 직접 실행된 argv0 --------------------------------
+# 스킬이 규정한 위트니스 생성은 `<plugin root>/orchestrator/cc-team-witness-init.sh
+# <slug>` 이고, 등급표가 그 헬퍼를 이름으로 `트리밖쓰기` 로 고정하므로 두 가드가
+# argv0 까지 본다. 두 가드 모두 argv0 를 쓰기 피연산자로 읽어, 비고정 런에서는
+# 설치본 가드가, 고정 런에서는 사본 경로가 런 디렉터리 가드에도 걸려 rc 3 이었다.
+# 면제는 절대 경로로 직접 실행된 argv0 하나뿐이다 — 인터프리터로 감싸거나 뒤따르는
+# 피연산자로 지명하면 쓰기 목적지와 구별되지 않으므로 계속 거부된다.
+PRUN="$RR/cc-cmds/run/pinself"
+mkdir -p "$PRUN/plugin/cc-cmds/orchestrator" "$PRUN/halt"
+printf 'schema\t1\nplugin-dir\t%s\nsource\t%s\n' "$PRUN/plugin/cc-cmds" "$RRP_INST" > "$PRUN/plugin-pin"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-init.sh" review-x
+check "설치본 가드: 설치본 orchestrator 스크립트를 argv0 로 직접 실행하면 rc 0" "$rr_pguard_rc" "0"
+RR_P_RUNDIR="$PRUN"; RR_P_GATEDIR="$PRUN/plugin/cc-cmds/orchestrator"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-init.sh" review-x
+check "설치본 가드: 핀의 source 로만 아는 루트의 직접 실행도 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 같은 고정 런에서 핀 source 루트에 쓰는 것은 rc 3" "$rr_pguard_rc" "3"
+unset RR_P_RUNDIR RR_P_GATEDIR
+RR_G_RUN="$PRUN"; RR_G_GATEDIR="$PRUN/plugin/cc-cmds/orchestrator"
+rr_guard 트리밖쓰기 "$PRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" review-x
+check "배시 가드: 고정 런 사본의 스크립트를 argv0 로 직접 실행하면 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 cp x "$PRUN/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 같은 사본을 쓰기 피연산자로 지명하면 rc 3" "$rr_guard_rc" "3"
+unset RR_G_RUN RR_G_GATEDIR
+rr_pguard 트리밖쓰기 bash "$RRP_INST/orchestrator/cc-team-witness-init.sh" review-x
+check "설치본 가드: 인터프리터로 감싼 실행은 면제되지 않는다 (rc 3)" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-init.sh" "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 면제는 argv0 하나뿐이다 — 뒤의 피연산자는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/../hooks/gate-pretool.sh"
+check "설치본 가드: 상위 참조로 orchestrator 밖을 가리킨 argv0 는 면제되지 않는다" "$rr_pguard_rc" "3"
+
+# --- 포장 안의 경로 — 원문 철자와 단어 단위 평가 -----------------------------
+# 두 가드는 어휘 정규화 결과와 그 물리 철자만 봤다. 정규화는 경로가 아닌 토큰에도
+# 기준을 붙이고 `..` 를 되감으므로, 프로그램 문자열 끝의 `: /../../..` 가 루트를
+# 지우고 `--output=../../…` 의 `..` 는 디렉터리가 아니라 토큰 조각을 지운다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e $RRP_INST/orchestrator/gate.sh; : /../../.."
+check "설치본 가드: 꼬리의 상위 참조로 루트를 지운 포장도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cp /tmp/e $RR/cc-cmds/run/victim/settings/x.json; : /../../../.."
+check "배시 가드: 꼬리의 상위 참조로 런 루트를 지운 포장도 rc 3" "$rr_guard_rc" "3"
+mkdir -p "$WORK/segwt/plugins" "$WORK/installed" "$WORK/elsewhere"
+RR_G_CWD="$WORK/segwt/plugins"
+rr_pguard 워크트리쓰기 git diff "--output=../../installed/plugins/cc-cmds/orchestrator/pin.sh"
+check "설치본 가드: 옵션 토큰 안의 상대 철자도 rc 3" "$rr_pguard_rc" "3"
+unset RR_G_CWD
+# 런 루트의 부모에서 채점한다 — 토큰 전체의 어휘 정규화도 원문도 런 루트 철자를
+# 담지 않으므로, 답할 수 있는 것은 단어 판정 팔뿐이다. 런 안에서 채점하면 정규화가
+# 자기 런 접두로 시작해 자기 런 팔이 먼저 답하고, 그 행은 단어 판정 팔을 지워도
+# 초록이었다.
+RR_G_CWD="$RR/cc-cmds"
+rr_guard 워크트리쓰기 bash -c "cp /tmp/e run/victim/settings/x.json"
+check "배시 가드: 런 루트 밖에서 채점해도 포장 안의 상대 단어가 형제 런으로 해소되면 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: 포장 안 상대 단어의 거부가 단어 판정 팔의 것이다" ;;
+  *) bad "배시 가드: 포장 안 상대 단어의 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+unset RR_G_CWD
+# 단어는 등급 기준 디렉터리에 대해 해소된다 — 같은 문면이 설치본 안에서는 거부되고
+# 세그먼트 워크트리에서는 통과해야 이것이 꼬리 대조가 아니라는 증거다.
+RR_G_CWD="$WORK/installed"
+rr_pguard 워크트리쓰기 git commit -m "fix: plugins/cc-cmds/orchestrator/gate.sh 를 고친다"
+check "설치본 가드: 설치본 안에서 해소되는 단어는 rc 3" "$rr_pguard_rc" "3"
+unset RR_G_CWD
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 git commit -m "fix: plugins/cc-cmds/orchestrator/gate.sh 를 고친다"
+check "설치본 가드: 음성 대조군 — 같은 문면도 세그먼트 워크트리에서는 rc 0" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+rr_guard 워크트리쓰기 bash -c "cat > $WORK/elsewhere/x.json"
+check "배시 가드: 음성 대조군 — 보호 루트 밖을 쓰는 포장은 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 git diff "--output=$WORK/elsewhere/x.json"
+check "배시 가드: 음성 대조군 — 보호 루트 밖을 쓰는 옵션 토큰은 rc 0" "$rr_guard_rc" "0"
+rr_pguard 워크트리쓰기 bash -c "cat > $WORK/elsewhere/x.json"
+check "설치본 가드: 음성 대조군 — 보호 루트 밖을 쓰는 포장은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 git diff "--output=$WORK/elsewhere/x.json"
+check "설치본 가드: 음성 대조군 — 보호 루트 밖을 쓰는 옵션 토큰은 rc 0" "$rr_pguard_rc" "0"
+
+# --- 보호 디렉터리 자신과 그 조상 --------------------------------------------
+# 모든 팔이 보호 디렉터리 이름에 앵커돼 있어 루트 자신과 그 위는 어느 팔에도
+# 걸리지 않았다. 디렉터리를 목적지로 받는 동사는 원본 이름으로 그 아래를 만들거나
+# 병합하므로(macOS `cp -R`) 루트 전체에 닿는다.
+rr_pguard 워크트리쓰기 cp -R x "$RRP_INST"
+check "설치본 가드: 플러그인 루트 자신을 목적지로 한 쓰기는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 rm -rf "$RRP_INST"
+check "설치본 가드: 플러그인 루트 자신의 삭제도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp -R x "$RRP_INST/.."
+check "설치본 가드: 플러그인 루트의 조상도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 cp -R x "$RR/cc-cmds"
+check "배시 가드: 런 루트의 부모를 목적지로 한 쓰기는 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'ancestor directory of the run root'*) ok "배시 가드: 런 루트 부모의 거부가 조상 팔의 것이다" ;;
+  *) bad "배시 가드: 런 루트 부모의 거부 사유" "조상 팔이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 cp -R x "$RRP_WT"
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 플러그인 루트는 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 git commit -m "a / b"
+check "설치본 가드: 음성 대조군 — 복합 토큰에는 조상 팔이 걸리지 않는다" "$rr_pguard_rc" "0"
+
+# --- 조상의 나머지 두 철자 — `/` 없는 한 토큰과 포장 안 ------------------------
+# 위 조상 팔은 `/` 를 담은 비복합 인자에만 닿았다. 두 갈래가 남아 있었다. (i) 루프
+# 첫머리의 `/` 사전 거름이 `..`·맨 디렉터리 이름을 아무 팔에도 닿기 전에 버렸고,
+# 이 배치에서는 세그먼트 워크트리가 설치본 체크아웃의 형제라 `..` 가 곧 설치본
+# 루트의 조상이다. (ii) 조상 팔이 복합 토큰을 제외하고, 복합 토큰을 맡는 단어 판정
+# 팔은 「보호 디렉터리 아래」만 대조해서 포장 안과 옵션 대입 값 안의 조상이 통과했다.
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e $RRP_INST"
+check "설치본 가드: 포장 안의 플러그인 루트 자신도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 bash -c "rm -rf $RRP_INST"
+check "설치본 가드: 포장 안의 루트 삭제도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e $RRP_INST/.."
+check "설치본 가드: 포장 안의 조상도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cp -R /tmp/e $RR/cc-cmds"
+check "배시 가드: 포장 안의 런 루트 조상도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'ancestor directory of the run root'*) ok "배시 가드: 포장 안 조상의 거부가 조상 검사의 것이다" ;;
+  *) bad "배시 가드: 포장 안 조상의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+# `/` 하나로 해소되는 단어. 이것을 억제하면 루트 자신을 목적지로 한 포장이 열린다.
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/evil/x /"
+check "설치본 가드: 포장 안에서 루트 하나로 해소되는 단어도 rc 3" "$rr_pguard_rc" "3"
+# 옵션 대입 토큰의 값은 셸이 한 덩어리로 넘기는 경로다 — 토큰 전체가 복합이라고
+# 조상 검사에서 빠지면 `--directory=<루트>` 가 그대로 지난다.
+rr_pguard 워크트리쓰기 tar -xf e "--directory=$RRP_INST"
+check "설치본 가드: 옵션 대입 값의 루트도 rc 3" "$rr_pguard_rc" "3"
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e .."
+check "설치본 가드: 포장 안의 맨 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 tar -xf e "--directory=.."
+check "설치본 가드: 옵션 대입 값의 맨 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp -R x ..
+check "설치본 가드: 구분자 없는 맨 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 세그먼트 워크트리의 현재 디렉터리는 설치본 루트의 조상이 아니다.
+rr_pguard 워크트리쓰기 git add .
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 현재 디렉터리는 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 cp x README.md
+check "설치본 가드: 음성 대조군 — 맨 파일 이름은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 cp -R x --
+check "설치본 가드: 음성 대조군 — 옵션 토큰은 건너뛴다" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+RR_G_CWD="$WORK/installed"
+rr_pguard 워크트리쓰기 cp -R x plugins
+check "설치본 가드: 맨 디렉터리 이름으로 지명한 조상도 rc 3" "$rr_pguard_rc" "3"
+# 메인 워크트리에서 현재 디렉터리는 설치본 루트의 조상이다. 이 선택의 대가는
+# 거기서 git add . 가 막히는 것이고, 우회로는 경로를 지정하는 것이다.
+rr_pguard 워크트리쓰기 git add .
+check "설치본 가드: 메인 워크트리의 현재 디렉터리는 조상으로 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 인터프리터가 아닌 복합 토큰의 단어에는 조상 검사가 걸리지 않는다.
+rr_pguard 워크트리쓰기 git commit -m "docs: touch plugins/ only"
+check "설치본 가드: 음성 대조군 — 커밋 메시지 속 상대 조상은 rc 0" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+RR_G_CWD="$MYRUN"
+rr_guard 워크트리쓰기 cp -R x ..
+check "배시 가드: 구분자 없는 맨 상위 참조도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'ancestor directory of the run root'*) ok "배시 가드: 맨 상위 참조의 거부가 조상 검사의 것이다" ;;
+  *) bad "배시 가드: 맨 상위 참조의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+# 음성 대조군 — 맨 이름을 해소하게 돼도 자기 런의 계획 파일 예외는 그대로다.
+rr_guard 워크트리쓰기 cp x slice-D.plan.md
+check "배시 가드: 음성 대조군 — 자기 런의 계획 파일은 맨 이름이라도 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+rr_guard 워크트리쓰기 git commit -m "a / b"
+check "배시 가드: 음성 대조군 — 복합 토큰에는 조상 팔이 걸리지 않는다" "$rr_guard_rc" "0"
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e $WORK/elsewhere"
+check "설치본 가드: 음성 대조군 — 포장 안이라도 보호 루트와 무관한 목적지는 rc 0" "$rr_pguard_rc" "0"
+
+# --- 말단 파일 링크 -----------------------------------------------------------
+# 조상 물리화는 실재하는 가장 깊은 디렉터리에서만 접으므로, 파일을 가리키는 말단
+# 링크는 링크 이름 그대로 남아 두 가드를 모두 지났다.
+: > "$RRP_INST/orchestrator/gate.sh"
+mkdir -p "$RR/cc-cmds/run/victim/settings" "$WORK/lk"
+: > "$RR/cc-cmds/run/victim/settings/x.json"
+: > "$WORK/plain.txt"
+ln -sfn "$RRP_INST/orchestrator/gate.sh" "$WORK/Lf" 2>/dev/null
+ln -sfn "$RR/cc-cmds/run/victim/settings/x.json" "$WORK/Lr" 2>/dev/null
+ln -sfn ../installed/plugins/cc-cmds/orchestrator/gate.sh "$WORK/lk/Lrel" 2>/dev/null
+ln -sfn "$WORK/plain.txt" "$WORK/Lok" 2>/dev/null
+if [ -L "$WORK/Lf" ] && [ -L "$WORK/Lr" ] && [ -L "$WORK/lk/Lrel" ] && [ -L "$WORK/Lok" ]; then
+  rr_pguard 워크트리쓰기 cp x "$WORK/Lf"
+  check "설치본 가드: 설치본 스크립트를 가리키는 말단 링크는 rc 3" "$rr_pguard_rc" "3"
+  rr_guard 워크트리쓰기 cp x "$WORK/Lr"
+  check "배시 가드: 형제 런 파일을 가리키는 말단 링크는 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'this is another run directory'*) ok "배시 가드: 말단 링크 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 말단 링크 거부 사유" "다른 팔이 먼저 거부했다: $rr_guard_msg" ;;
+  esac
+  rr_pguard 워크트리쓰기 cp x "$WORK/lk/Lrel"
+  check "설치본 가드: 상대 링크 문면은 링크가 있는 디렉터리 기준으로 해소된다 (rc 3)" "$rr_pguard_rc" "3"
+  rr_pguard 워크트리쓰기 cp x "$WORK/Lok"
+  check "설치본 가드: 음성 대조군 — 평범한 파일을 가리키는 말단 링크는 rc 0" "$rr_pguard_rc" "0"
+  rr_guard 워크트리쓰기 cp x "$WORK/Lok"
+  check "배시 가드: 음성 대조군 — 평범한 파일을 가리키는 말단 링크는 rc 0" "$rr_guard_rc" "0"
+else
+  printf 'NOTE: 말단 파일 링크 픽스처를 만들지 못해 건너뛴다\n'
+fi
+
+# --- 사후 리뷰 수리 1. 구분자가 없는 포장 토큰 ---------------------------------
+# 맨 이름 검사를 복합 토큰에 물으면 `[ -e "<등급 기준>/rm -rf .." ]` 를 재게 되어
+# 항상 거짓이다. 그래서 `/` 를 하나도 갖지 않은 프로그램 문자열은 단어 팔에 닿기
+# 전에 통째로 건너뛰어졌고, 같은 프로그램에 `/` 가 하나만 있으면 거부됐다. 위쪽의
+# 「포장 안의 맨 상위 참조」 행이 초록인 것은 피연산자 `/tmp/e` 가 토큰에 `/` 를
+# 넣어 주기 때문이라 이 부류를 재지 못한다 — 그 피연산자 없는 행을 나란히 둔다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 bash -c "rm -rf .."
+check "설치본 가드: 구분자 없는 포장 토큰의 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'ancestor of it is buried inside an interpreter program string'*)
+    ok "설치본 가드: 구분자 없는 포장의 거부가 단어 팔의 조상 검사의 것이다" ;;
+  *) bad "설치본 가드: 구분자 없는 포장의 거부 사유" "단어 팔이 아닌 다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 bash -c "cp -R x .."
+check "설치본 가드: 구분자 없는 포장의 복사 목적지도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 경로를 가리키지 않는 구분자 없는 포장은 그대로 지난다. 없으면 위
+# 둘의 초록이 「구분자 없는 포장을 통째로 거부한다」와 구별되지 않는다.
+rr_pguard 워크트리쓰기 bash -c "echo hi"
+check "설치본 가드: 음성 대조군 — 경로 없는 구분자 없는 포장은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 워크트리쓰기 bash -c "echo hi"
+check "배시 가드: 음성 대조군 — 경로 없는 구분자 없는 포장은 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+# 런 루트의 **부모**에서 채점한다. 런 루트 안에서 채점하면 토큰의 어휘 절대화가
+# 등급 기준 디렉터리를 앞에 달아 그 문자열 자체가 런 루트를 담게 되고, 묻힌 경로
+# 팔이 단어 팔보다 먼저 답해 이 행이 공허해진다. 여기서는 토큰도 그 절대화도 런
+# 루트 문면을 담지 않으므로, rc 3 을 낼 수 있는 팔은 단어 팔뿐이다.
+RR_G_CWD="$RR/cc-cmds"
+rr_guard 워크트리쓰기 bash -c "rm -rf run"
+check "배시 가드: 구분자 없는 포장 안의 맨 이름이 런 루트로 해소되면 rc 3" "$rr_guard_rc" "3"
+unset RR_G_CWD
+
+# --- 사후 리뷰 수리 2. 대소문자를 구별하지 않는 파일 시스템 ---------------------
+# 두 가드의 비교는 전부 바이트 검사였다. APFS 는 기본이 대소문자 비구별이고
+# `pwd -P` 는 호출자가 적은 대소문자를 그대로 보존하므로, 철자만 다른 같은 파일이
+# 어느 팔에도 맞지 않고 실제 설치본·형제 런 파일에 썼다. 파일 시스템이 대소문자를
+# 구별하면 이 부류가 존재하지 않으므로 통째로 건너뛴다 — 그 조건이 없으면 Linux
+# 레그가 붉어진다.
+mkdir -p "$WORK/CIPROBE"
+if [ -d "$WORK/ciprobe" ]; then
+  rr_pguard 워크트리쓰기 cp x "$RRP_INST/Orchestrator/gate.sh"
+  check "설치본 가드: 대소문자만 다른 설치본 철자도 rc 3" "$rr_pguard_rc" "3"
+  # 루트 접두 자신을 변형한다. 마지막 성분만 바꾸면 기존 바이트 검사가 접두로
+  # 이미 잡아 이 행이 공허해진다.
+  rr_guard 워크트리쓰기 cp x "$WORK/Runroot/cc-cmds/run/victim/settings/x.json"
+  check "배시 가드: 루트 접두를 변형한 형제 런 철자도 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'this is another run directory'*) ok "배시 가드: 대소문자 변형 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 대소문자 변형 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+  esac
+  # 음성 대조군 둘. 동일성 비교가 자기 런의 예외와 워크트리를 함께 삼키면 이
+  # 수리는 파이프라인 자신을 멈춘다.
+  rr_guard 워크트리쓰기 cp x "$WORK/Runroot/cc-cmds/run/mine/halt/x.md"
+  check "배시 가드: 음성 대조군 — 대소문자 변형이라도 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+  rr_pguard 워크트리쓰기 cp x "$RRP_WT/Orchestrator/gate.sh"
+  check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 대소문자 변형은 rc 0" "$rr_pguard_rc" "0"
+else
+  printf 'NOTE: 대소문자를 구별하는 파일 시스템이라 대소문자 변형 행을 건너뛴다\n'
+fi
+
+# --- 사후 리뷰 수리 3. 링크 홉 상한은 닫힌 쪽으로 실패한다 ----------------------
+# 물리화는 여덟 홉에서 멈추고 자기가 멈춘 링크를 그대로 돌려줬다. 그래서 아홉 걸음
+# 이상의 사슬은 해소되지 않은 링크 **이름** 으로 돌아와 어느 팔에도 걸리지 않았고,
+# 커널은 그것을 끝까지 따라가(맥 32홉·리눅스 40홉) 쓰기를 수행했다. 이제 넘침은
+# 철자로 지워지지 않고 보고되며 두 가드가 거부한다 — 훅의 Write/Edit 절반이 자기
+# 걷기가 넘칠 때 이미 내는 답과 같다.
+mkdir -p "$WORK/hopc"
+: > "$RRP_INST/orchestrator/gate.sh"
+: > "$WORK/plain.txt"
+hop_ok=1
+ln -sfn "$RRP_INST/orchestrator/gate.sh" "$WORK/hopc/g0" 2>/dev/null || hop_ok=0
+ln -sfn "$WORK/plain.txt" "$WORK/hopc/p0" 2>/dev/null || hop_ok=0
+hop_i=1
+while [ "$hop_i" -le 12 ]; do
+  ln -sfn "g$((hop_i - 1))" "$WORK/hopc/g$hop_i" 2>/dev/null || hop_ok=0
+  ln -sfn "p$((hop_i - 1))" "$WORK/hopc/p$hop_i" 2>/dev/null || hop_ok=0
+  hop_i=$((hop_i + 1))
+done
+if [ "$hop_ok" = 1 ] && [ -L "$WORK/hopc/g12" ] && [ -L "$WORK/hopc/p12" ]; then
+  # 상한 **안쪽** 대조군이 먼저다. 이것이 없으면 수리가 링크를 전부 막아 버려도
+  # 아래 넘침 행이 초록이라, 이 절 전체가 「모든 링크 거부」로 만족된다.
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/g2"
+  check "설치본 가드: 상한 안쪽 사슬은 말단 팔이 해소해 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'orchestrator or hook script of the installed plugin'*)
+      ok "설치본 가드: 상한 안쪽 사슬의 거부가 해소된 말단 팔의 것이다" ;;
+    *) bad "설치본 가드: 상한 안쪽 사슬의 거부 사유" "해소되지 않은 채 거부됐다 — 수리가 링크를 통째로 막았다: $rr_pguard_msg" ;;
+  esac
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/p2"
+  check "설치본 가드: 음성 대조군 — 상한 안쪽에서 평범한 파일을 가리키는 사슬은 rc 0" "$rr_pguard_rc" "0"
+  # 그리고 넘침은 거부다.
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/g12"
+  check "설치본 가드: 상한을 넘는 사슬은 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'could not resolve'*) ok "설치본 가드: 넘침 거부가 판정 불가 문면으로 나온다" ;;
+    *) bad "설치본 가드: 넘침 거부 사유" "다른 팔이 답했다 — 상한이 여전히 열린 쪽으로 실패한다: $rr_pguard_msg" ;;
+  esac
+  # 넘침은 가리키는 곳과 무관하게 거부다 — 판정 불가는 허용이 아니고, 어디를
+  # 가리키는지 알 수 없다는 것이 바로 거부의 사유다.
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/p12"
+  check "설치본 가드: 평범한 파일을 가리키더라도 넘치면 rc 3" "$rr_pguard_rc" "3"
+  # 배시 가드도 같은 답을 내는가.
+  rr_guard 워크트리쓰기 cp x "$WORK/hopc/g12"
+  check "배시 가드: 상한을 넘는 사슬은 rc 3" "$rr_guard_rc" "3"
+  rr_guard 워크트리쓰기 cp x "$WORK/hopc/p2"
+  check "배시 가드: 음성 대조군 — 상한 안쪽에서 평범한 파일을 가리키는 사슬은 rc 0" "$rr_guard_rc" "0"
+else
+  printf 'NOTE: 홉 사슬 픽스처를 만들지 못해 건너뛴다\n'
+fi
+
+# --- 사후 리뷰 수리 4. 프로그램 문자열 안의 나머지 물결 철자 --------------------
+# 전개되는 것은 `~` 와 `~/` 뿐이었다. 다섯 중 둘이다 — `~<사용자>/…` 와 `~+/…` 는
+# 적힌 그대로 남아 `/` 로 시작하지 않으므로 등급 기준 디렉터리가 앞에 붙었고, 그
+# 결과 형제 런의 설정 파일과 설치본 스크립트를 가리키는 문면이 두 가드의 모든 팔을
+# 지났다. `~-` 와 디렉터리 스택 물결은 이 프로세스가 갖지 않은 디렉터리를 가리키므로
+# 해소 불가로 보고되고 호출자가 거부한다 — 추측하지 않는다.
+RR_G_CWD="$WORK/segwt/plugins"
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~+/../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: 포장 안의 ~+ 는 등급 기준 디렉터리로 전개돼 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 같은 철자로 보호 루트 밖을 가리키면 지난다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~+/../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — ~+ 가 보호 루트 밖으로 해소되면 rc 0" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+# 해소할 수 없는 물결 철자는 거부다. 계정이 없는 이름과 이전 디렉터리 물결 둘 다
+# 「어디에 떨어지는지 미정」이고, 쓰기 등급에서 미정은 허용이 아니다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~no-such-account-9x7/x"
+check "설치본 가드: 계정 없는 ~<이름> 은 해소 불가로 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'home-directory spelling this gate cannot resolve'*)
+    ok "설치본 가드: 물결 거부가 해소 불가 문면으로 나온다" ;;
+  *) bad "설치본 가드: 물결 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~-/x"
+check "설치본 가드: 이전 디렉터리 물결도 해소 불가로 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cp /tmp/e ~-/x"
+check "배시 가드: 이전 디렉터리 물결도 해소 불가로 rc 3" "$rr_guard_rc" "3"
+# 기존 `~` 전개에도 핀을 둔다 — 이 절 이전에는 `~` 를 쓰는 행이 스위트에 하나도
+# 없었으므로, 수리가 기존 두 철자를 깨뜨려도 아무 행도 붉어지지 않았다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~/some-ordinary-name"
+check "설치본 가드: 음성 대조군 — ~/ 는 홈으로 전개되고 보호 루트 밖이면 rc 0" "$rr_pguard_rc" "0"
+# `~<사용자>/…` 가 보호 루트에 닿는 것은 픽스처가 홈 아래 있을 때만 잴 수 있다.
+# 임시 디렉터리는 보통 홈 밖이므로 그때는 건너뛴다 — 건너뛰는 사실을 적는다.
+case "$RR" in
+  "$HOME"/*)
+    rr_guard 워크트리쓰기 bash -c "cp /tmp/e ~$USER${RR#"$HOME"}/cc-cmds/run/victim/settings/x.json"
+    check "배시 가드: 포장 안의 ~<사용자> 도 전개돼 rc 3" "$rr_guard_rc" "3" ;;
+  *) printf 'NOTE: 픽스처가 홈 아래가 아니라 ~<사용자> 행을 건너뛴다\n' ;;
+esac
+
+# --- 사후 리뷰 수리 5. argv 수준 chdir 옵션 뒤의 상대 경로 ----------------------
+# `-C <dir>` 는 허용된 전역 옵션이라 등급표가 두 토큰으로 건너뛰고 `diff --output=`
+# 는 트리밖쓰기로 등급된다. 선언도 등급도 정직한데, 가드는 상대 경로를 등급 기준
+# 디렉터리에서 해소하고 git 은 `-C` 디렉터리에서 해소해 **기준이 어긋났다** — 그
+# 상대 철자가 실제로 설치본 gate.sh 를 0바이트로 잘랐다. 선언된 잔여인 「포장 안의
+# `cd`」 와는 다른 모양이다: 포장이 필요 없고 형제 디렉터리와 상대 경로 두 토큰이면
+# 된다.
+#
+# 두 기준의 **깊이를 다르게** 둔다. 같은 깊이면 한 기준에서 보호 루트에 닿는 상대
+# 철자가 다른 기준에서도 닿아, 수리 없이도 초록이 된다.
+mkdir -p "$WORK/other/deep" "$WORK/elsewhere"
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: -C 디렉터리 기준으로 해소되는 상대 옵션값도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 같은 모양인데 보호 루트 밖을 가리키면 지난다. 없으면 위 행의 초록이
+# 「-C 가 있으면 통째로 거부한다」와 구별되지 않는다.
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — -C 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: -C 디렉터리 기준으로 해소되는 상대 옵션값도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — -C 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+# 그리고 `-C` 가 없으면 둘째 기준이 아예 서지 않는다 — 같은 상대 철자가 등급 기준
+# 디렉터리에서만 해소돼 지난다. 이 행이 없으면 둘째 기준이 `-C` 와 무관하게 늘
+# 서는 변경도 위 둘을 초록으로 만족시킨다.
+rr_guard 워크트리쓰기 git diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 음성 대조군 — -C 가 없으면 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+
+# --- 사후 리뷰 수리 6. 분리 토큰과 전체 경로 피연산자도 둘째 기준에서 잰다 --------
+# 위 절은 `--output=<상대>` 한 철자만 닫았다. 둘째 기준은 옵션의 `=` 값과 복합
+# 토큰의 단어에만 적용됐고, 전체 인수는 등급 기준 디렉터리에서만 절대화됐다 — 그래서
+# 같은 경로를 `--output <상대>`(두 토큰), `archive -o <상대>`, `checkout HEAD -- <상대>`
+# 로 적으면 두 가드를 그대로 지났다(실측, 세 리뷰어 독립 재현). 가드에는 옵션 표가
+# 없어 `--output` 의 피연산자와 경로 지정을 가르지 못하지만 가를 필요도 없다 — git 은
+# 둘 다 `-C` 디렉터리에서 푼다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: 분리 토큰 --output 의 상대 피연산자도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 분리 토큰 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 분리 토큰 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" archive -o ../../installed/plugins/cc-cmds/orchestrator/gate.sh HEAD
+check "설치본 가드: archive -o 의 상대 피연산자도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" checkout HEAD -- ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: checkout 의 상대 경로 지정도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" restore --source=HEAD~3 ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: restore 의 상대 경로 지정도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 같은 모양인데 보호 루트 밖을 가리키면 지난다.
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../elsewhere/x
+check "설치본 가드: 음성 대조군 — 분리 토큰이라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: 분리 토큰 --output 의 상대 피연산자도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 분리 토큰 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 분리 토큰 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" archive -o ../../runroot/cc-cmds/run/victim/settings/x.json HEAD
+check "배시 가드: archive -o 의 상대 피연산자도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" checkout HEAD -- ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: checkout 의 상대 경로 지정도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../elsewhere/x
+check "배시 가드: 음성 대조군 — 분리 토큰이라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+# `-C` 가 없으면 분리 토큰에도 둘째 기준이 서지 않는다 — 위 절의 마지막 행과 같은
+# 이유로, 둘째 기준이 `-C` 와 무관하게 늘 서는 변경을 막는다.
+rr_guard 워크트리쓰기 git diff --output ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: 음성 대조군 — -C 가 없으면 분리 토큰에도 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+# `/` 없는 맨 이름도 같은 결함의 한 철자다. `..` 는 맨 이름 검사를 늘 통과하지만
+# 등급 기준 디렉터리에서만 절대화됐으므로, `-C` 디렉터리의 부모가 보호 루트일 때
+# 어느 팔에도 걸리지 않았다. 등급 기준은 그 `..` 가 보호 루트 밖으로 풀리는 깊이에
+# 둔다 — 그렇지 않으면 첫째 기준의 조상 팔이 답해 이 행이 공허해진다.
+RR_G_CWD="$WORK/segwt/plugins"
+mkdir -p "$RRP_INST/skills"
+rr_pguard 워크트리쓰기 git -C "$RRP_INST/skills" checkout HEAD -- ..
+check "설치본 가드: -C 디렉터리 기준으로 보호 루트에 닿는 맨 이름 .. 도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$MYRUN/halt" checkout HEAD -- ..
+check "배시 가드: -C 디렉터리 기준으로 런 디렉터리 자신에 닿는 맨 이름 .. 도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'run directory write'*) ok "배시 가드: 맨 이름 .. 의 거부가 허용 목록 팔의 것이다" ;;
+  *) bad "배시 가드: 맨 이름 .. 의 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+# 음성 대조군 — `-C` 디렉터리가 허용된 하위 트리이고 맨 이름이 그 안에 머물면 지난다.
+rr_guard 워크트리쓰기 git -C "$MYRUN/halt" checkout HEAD -- .
+check "배시 가드: 음성 대조군 — 허용된 하위 트리 안에 머무는 맨 이름은 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+
+# --- 사후 리뷰 수리 7. 래퍼와 두 토큰 전역 옵션 뒤의 `-C` -----------------------
+# 둘째 기준은 argv0 의 basename 이 정확히 `git` 일 때만, 그리고 `-C`·`-c`·`--work-tree=`
+# 밖의 모든 `-*` 를 값 없는 옵션으로 읽는 접기로만 섰다. 등급표는 `nohup`·`timeout`·
+# `env`·`nice` 를 벗겨 안쪽 git 의 등급을 그대로 돌려주고 `--namespace <값>`·`--git-dir
+# <값>`·`--work-tree <값>` 을 두 토큰으로 건너뛰므로, 일곱 형태 전부 정직한 `트리밖쓰기`
+# 로 게이트를 지나면서 둘째 기준은 서지 않았다 — 이미 닫힌 `--output=<상대>` 철자까지
+# 다시 열렸다(실측). 앞 절과 독립된 결함이다: 여기서는 피연산자 철자가 닫힌 `=` 형태인데
+# 기준 자체가 없다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: nohup 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 래퍼 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 래퍼 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 timeout 5 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: timeout 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 env GIT_X=1 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: env 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 nice -n 5 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: nice 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --namespace x -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --namespace <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --git-dir "$WORK/other" -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --git-dir <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --work-tree "$WORK/other" -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --work-tree <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 둘 — 래퍼가 있어도 보호 루트 밖이면 지나고, 두 토큰 전역 옵션만으로는
+# 둘째 기준이 서지 않는다(`-C` 가 없다).
+rr_pguard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 트리밖쓰기 git --namespace x diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_pguard_rc" "0"
+rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: nohup 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+# `--output=<상대>` 는 `=` 를 가진 복합 토큰이라 단어 팔이 답한다 — 앞 절의 같은 철자와
+# 같은 팔이고, 그 문구가 묻힌 경로 문구다.
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: 래퍼 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: 래퍼 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 timeout 5 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: timeout 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 env GIT_X=1 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: env 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 nice -n 5 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: nice 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --namespace x -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --namespace <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --git-dir "$WORK/other" -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --git-dir <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --work-tree "$WORK/other" -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --work-tree <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+rr_guard 트리밖쓰기 git --namespace x diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+
+# 같은 결함의 두 철자가 더 있었다. 등급표는 `lockf` 와 `find -exec` 도 벗겨 안쪽 git 으로
+# 등급하는데 둘째 기준을 세우는 벗기기에는 두 이름이 없어, `lockf -k -t 0 <잠금> git -C
+# <형제> diff --output=<상대>` 와 `find <d> -exec git -C <형제> … {} ;` 가 정직한
+# `트리밖쓰기` 로 두 가드를 지났다(실측). `lockf` 는 무인 스킬이 설계 문서 쓰기마다
+# 요구하는 래퍼라 파이프라인이 실제로 만드는 형태다. 잠금 파일은 두 보호 루트 밖에 둔다.
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: lockf 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: find -exec 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: lockf 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: find -exec 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+
+# --- 사후 리뷰 수리 8. find 의 primary 는 하나가 아니다 -------------------------
+# 벗기기가 `-exec` 계열을 만나면 **그 뒤 전부**를 안쪽 명령으로 보고 즉시 반환했다.
+# `find` 문법에서 `;` 와 `{} +` 다음 토큰은 그 명령의 인자가 아니라 **다음 primary** 인데
+# 꼬리로 읽혔다 — 그래서 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv
+# 전체가 `읽기` 로 등급되고 네 가드가 전부 첫 줄에서 반환했다(실측, 세 리뷰어 독립
+# 재현). 아래 넷은 부류를 둘로 나눈다. 앞 둘은 목적지를 argv 에 **평문 절대 경로**로
+# 적으므로 등급만 넘기면 가드의 전체 경로 팔이 잡고, 뒤 둘은 목적지가 `-C` 기준
+# 상대 경로라 **둘째 기준이 다중 primary 를 지나 서야만** 닫힌다 — 그래서 등급표만
+# 고친 절반 수리는 뒤 둘에서 rc 0 을 남긴다. 등급 쪽 짝은 `scripts/test-gate.sh`
+# 절 30b-1 에 있다. 각 양성 바로 아래에 같은 argv 의 단일 primary 판을 둬, 양성의
+# rc 3 이 「`find` 를 통째로 거부한다」와 구별되게 한다.
+rr_pguard 워크트리쓰기 find "$RRP_INST/orchestrator" -name nonexistent-9x7 -exec cat {} ';' -delete
+check "설치본 가드: 첫 primary 뒤에 온 -delete 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$RRP_INST/orchestrator" -name nonexistent-9x7 -delete
+check "설치본 가드: 단일 primary 대조군 — 같은 -delete 는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -name nonexistent-9x7 -exec cat {} ';' -fprintf "$RRP_INST/orchestrator/gate.sh" x
+check "설치본 가드: 첫 primary 뒤에 온 -fprintf 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -name nonexistent-9x7 -fprintf "$RRP_INST/orchestrator/gate.sh" x
+check "설치본 가드: 단일 primary 대조군 — 같은 -fprintf 는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec true {} ';' -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: 앞선 primary 가 있어도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 다중 primary 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: 단일 primary 대조군 — 같은 철자는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec echo {} ';' -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: 앞선 primary 가 있어도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: 다중 primary 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: 단일 primary 대조군 — 같은 철자는 그대로 rc 3" "$rr_guard_rc" "3"
+
+# --- 사후 리뷰 수리 9. 기준을 세울 수 없는 모양은 기준이 없는 모양이 아니다 ------
+# `-execdir`·`-okdir` 는 안쪽 명령을 **매치마다 그 디렉터리에서** 돌린다. 벗기기의
+# 계약이 「빈 문자열 = 기준 없음」이고 기준 없음은 허용 방향이라, `-C` 가 없거나
+# `-C .` 이거나 `-okdir` 이거나 맨 이름 피연산자이면 `cb` 가 아예 서지 않아 두 가드가
+# rc 0 으로 통과시켰다(실측). 이제 벗기기가 거부 방향의 제3상태를 답하고 가드가 그것을
+# 「기준 없음」이 아니라 거부로 읽는다. `exec` 경로는 이 argv 를 등급에서 한 걸음 먼저
+# 거부하므로, 아래 행이 재는 것은 가드를 직접 무는 경로다.
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: -C 없는 -execdir 는 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 거부가 기준 불가 팔의 것이다" ;;
+  *) bad "설치본 가드: -execdir 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git -C . diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: -C . 인 -execdir 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -maxdepth 0 -okdir rm x {} ';'
+check "설치본 가드: -okdir 도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: -C 없는 -execdir 는 rc 3" "$rr_guard_rc" "3"
+# 음성 대조군 — 같은 자리의 `-exec` 는 기준을 세울 수 있으므로 보호 루트 밖이면 지난다.
+# 없으면 위 넷의 rc 3 이 「`find` 를 통째로 거부한다」와 구별되지 않는다.
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../elsewhere/x" {} ';'
+check "배시 가드: 음성 대조군 — -exec 는 기준이 서고 보호 루트 밖이면 rc 0" "$rr_guard_rc" "0"
+
+# --- 사후 리뷰 수리 10. 등급을 모르는 primary 는 옆 primary 에 지워지지 않는다 -----
+# 다중 primary 를 접는 결합자가 「인식되지 않는 쪽이 진다」 규약이라, 등급표에 없는
+# 안쪽 명령 뒤에 `-exec cat {} ';'` 한 마디만 붙이면 `등급 미상` 이 지워지고 argv 전체가
+# `읽기` 가 됐다. 두 가드는 `읽기` 에서 첫 줄에 반환하므로, 안쪽 명령의 인자가 보호
+# 경로를 축자로 들고 있어도 rc 0 이었다(실측). 검색 루트가 보호 경로인 모양은 가드의
+# 축자 스캔이 루트 자체를 잡아 수리 전후 모두 rc 3 이라 이 결함을 재지 못하므로,
+# 보호 경로를 안쪽 명령의 인자로 든다.
+#
+# 가드는 `exec` 가 계산한 등급을 받으므로, 여기서도 등급을 리터럴로 적지 않고
+# 게이트의 등급표에 물어 넘긴다 — 리터럴 `워크트리쓰기` 를 넘기면 폴드가 `읽기` 로
+# 세탁해도 가드는 보지 못해 이 행들이 수리 전에도 초록이다(실측).
+rr_graded() {
+  # rr_graded <argv…> — 게이트를 소싱해 `exec` 경로와 같은 `surface_of_argv0` 답을 낸다.
+  RR_G_GATE="$script_dir/gate.sh" bash -c '
+    CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+    . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+    surface_of_argv0 "$@"
+  ' _ "$@"
+}
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';')
+check "등급 미상 primary 뒤에 읽기 primary 가 와도 등급 미상이다" "$rr_g" "등급 미상"
+rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';'
+check "설치본 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 등급 미상 다중 primary 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';')
+rr_guard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';'
+check "배시 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 등급 미상 다중 primary 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+# 안쪽 `find` 의 `-execdir` 가 답한 `형태 미상` 도 같은 폴드를 지난다. 바깥 `-execdir`
+# 가 앞에 오는 모양은 벗기기가 그 자리에서 반환하므로 수리 전에도 rc 3 인 상한 고정 행이다.
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';')
+check "안쪽 find 의 형태 미상이 옆 읽기 primary 에 지워지지 않는다" "$rr_g" "형태 미상"
+rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';'
+check "설치본 가드: 안쪽 find 의 -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'each match'"'"'s own directory'*) ok "설치본 가드: 안쪽 -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+  *) bad "설치본 가드: 안쪽 -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard "$(rr_graded find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';')" find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';'
+check "설치본 가드: -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+  *) bad "설치본 가드: -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+unset RR_G_CWD rr_g
+
+# 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.
+# 그래서 이름을 하나씩 고정하는 대신 두 집합을 대조한다: 등급표가 `surface_of_<이름>`
+# 으로 보내고 그 함수가 `gate_unwrap_*` 로 안쪽 명령을 푸는 이름은 전부, 둘째 기준의
+# 벗기기에도 팔이 있어야 한다. `rg` 만 이름 붙여 뺀다 — `--pre` 뒤 한 단어만 넘기므로
+# `-C <디렉터리>` 와 피연산자를 함께 실을 수 없다. 모은 집합이 비면 추출이 깨진 것이라
+# 그것도 실패로 센다 — 그렇지 않으면 이 대조는 아무것도 비교하지 않고 초록이 된다.
+rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  table=$(declare -f surface_of_argv0)
+  peel=$(declare -f gate_argv_chdir_base_of)
+  n=0; missing=""
+  for f in $(declare -F | sed -n "s/^declare -f surface_of_//p"); do
+    [ "$f" = argv0 ] && continue
+    case "$(declare -f "surface_of_$f")" in *gate_unwrap_*) ;; *) continue ;; esac
+    case "$table" in *"surface_of_$f "*) ;; *) continue ;; esac
+    n=$((n + 1))
+    [ "$f" = rg ] && continue
+    grep -Eq "(^|[[:space:]|])$f([[:space:]]*[|)])" <<<"$peel" || missing="$missing $f"
+  done
+  [ "$n" -gt 0 ] || { echo "위임 이름을 하나도 모으지 못했다"; exit 0; }
+  echo "n=$n missing=[${missing# }]"
+' )
+case "$rr_unwrap_parity" in
+  *'missing=[]') ok "둘째 기준의 벗기기가 등급표의 위임 이름을 rg 말고 모두 덮는다 ($rr_unwrap_parity)" ;;
+  *) bad "둘째 기준 벗기기와 등급표 위임 목록의 대조" "어긋났다: $rr_unwrap_parity" ;;
+esac
+
+# --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
+# 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
+# 스크립트를 규약이 정한 경로로 부르면 argv0 자신이 런 디렉터리 아래로 떨어진다.
+# 그것을 쓰기 대상으로 읽으면 `plugin/…` 이 어느 허용 가지에도 맞지 않아 거부되고,
+# 실측으로 무인 설계 스테이지가 팀원을 하나도 못 띄운 채 런이 닫혔다. 파일은
+# 실행된다고 쓰이지 않으므로 이 원소를 건너뛰어도 허용 목록이 잃는 것은 없다.
+rr_guard 트리밖쓰기 "$MYRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" some-slug
+check "배시 가드: 자기 런 고정 사본의 스크립트를 실행하는 것은 rc 0" "$rr_guard_rc" "0"
+# 음성 대조군 — 같은 경로가 쓰기 **대상** 자리에 오면 그대로 거부다. 없으면 위
+# 단언의 초록이 「고정 사본이 통째로 열렸다」와 구별되지 않는다.
+rr_guard 워크트리쓰기 cp x "$MYRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh"
+check "배시 가드: 음성 대조군 — 같은 경로가 쓰기 대상이면 rc 3" "$rr_guard_rc" "3"
+# 그리고 형제 런의 고정 사본을 **실행**하는 것은 argv0 이라도 거부다 — 그 팔은
+# 쓰기 대상 판정에 기대지 않는다.
+rr_guard 트리밖쓰기 "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" some-slug
+check "배시 가드: 형제 런 고정 사본의 실행은 argv0 이어도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 그 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 형제 런 argv0 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
 esac
 
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
@@ -4963,7 +6123,7 @@ if [ -L "$WORK/L-victim" ] && [ -d "$WORK/L-victim" ]; then
   # `deny` 만 재면 어느 팔이 답했는지 모른다. 사이클 2 가 실측으로 확정한 것이
   # 정확히 이것이다 — 한쪽 팔은 `deny` 단언으로 잡히지 않고 사유 문면 단언만이 잡는다.
   case "$(hook_reason_rr "$WORK/L-victim/config-dir")" in
-    *'다른 런의 디렉터리'*) ok "심링크 조상 거부가 형제 런 팔의 것이다" ;;
+    *'this is another run directory'*) ok "심링크 조상 거부가 형제 런 팔의 것이다" ;;
     *) bad "심링크 조상 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언들이 공허하다" ;;
   esac
   # 음성 대조군 넷. 없으면 위 넷의 통과가 「런 루트 밖 링크를 통째로 거부한다」와
@@ -4975,9 +6135,49 @@ if [ -L "$WORK/L-victim" ] && [ -d "$WORK/L-victim" ]; then
   check "음성 대조군: 자기 런을 가리키는 심링크의 기준선은 그대로 거부" \
     "$(hook_decide_rr "$WORK/L-self/config-dir")" "deny"
   case "$(hook_reason_rr "$WORK/L-self/config-dir")" in
-    *'다른 런의 디렉터리'*) bad "자기 런 심링크 거부 사유" "새 팔이 자기 런까지 삼켰다" ;;
+    *'this is another run directory'*) bad "자기 런 심링크 거부 사유" "새 팔이 자기 런까지 삼켰다" ;;
     *) ok "자기 런 심링크 거부는 종전 팔이 낸다" ;;
   esac
+
+  # --- 그리고 배시 절반은 그 링크 셋에 대해 한 행도 갖지 않았다 -----------------
+  # 위 여덟 단언은 전부 `hook_decide_rr` 에 대한 것이다. 같은 벡터를 `Bash` 로
+  # 보내면 판정하는 것은 두 배시 가드이고, 둘 다 경로를 어휘적으로만 해소했다 —
+  # `pwd -P` 는 루트에만 쓰고 인자에는 쓰지 않으며 `stat` 이 없다. 심링크 조상을
+  # 거친 인자는 `..` 도 없고 상대 경로도 아니며 어휘적으로 정규형인 데다 어느
+  # 루트와도 부분 문자열을 공유하지 않아 모든 팔을 빗나간다. 한쪽만 닫히면 닫힌
+  # 쪽의 초록이 다른 쪽의 열림을 가린다(이 파일 위쪽의 같은 규범).
+  rr_guard 워크트리쓰기 cp x "$WORK/L-victim/settings/x.json"
+  check "배시 가드: 형제 런을 가리키는 심링크 조상도 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'this is another run directory'*) ok "배시 가드: 심링크 조상 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 심링크 조상 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+  esac
+  rr_guard 워크트리쓰기 cp x "$WORK/L-root/victim/settings/x.json"
+  check "배시 가드: 런 루트를 가리키는 심링크 조상도 rc 3" "$rr_guard_rc" "3"
+  rr_guard 워크트리쓰기 cp x "$WORK/L-self/config-dir"
+  check "배시 가드: 자기 런을 가리키는 심링크의 기준선은 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'this is another run directory'*) bad "배시 가드: 자기 런 심링크 거부 사유" "물리 철자가 자기 런 배제를 지나치고 형제 런으로 읽혔다" ;;
+    *) ok "배시 가드: 자기 런 심링크 거부는 종전 팔이 낸다" ;;
+  esac
+  # 음성 대조군 둘. 없으면 위 셋의 통과가 「링크를 통째로 거부한다」와 구별되지
+  # 않고, 통째 거부는 이 파이프라인 자신이 쓰는 두 이름을 함께 막는다.
+  rr_guard 워크트리쓰기 cp x "$WORK/L-self/halt/x.md"
+  check "배시 가드: 음성 대조군 — 자기 런 심링크의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+  rr_guard 워크트리쓰기 cp x "$WORK/L-self/slice-D.plan.md"
+  check "배시 가드: 음성 대조군 — 자기 런 심링크의 계획 파일도 rc 0" "$rr_guard_rc" "0"
+
+  ln -sfn "$RRP_INST" "$WORK/L-inst" 2>/dev/null
+  if [ -L "$WORK/L-inst" ] && [ -d "$WORK/L-inst" ]; then
+    rr_pguard 워크트리쓰기 cp x "$WORK/L-inst/orchestrator/gate.sh"
+    check "설치본 가드: 심링크 조상을 통한 설치본 스크립트도 rc 3" "$rr_pguard_rc" "3"
+    rr_pguard 워크트리쓰기 cp x "$WORK/L-inst/orchestrator"
+    check "설치본 가드: 심링크 조상 + 컨테이너 철자도 rc 3" "$rr_pguard_rc" "3"
+    rr_pguard 워크트리쓰기 cp x "$RRP_WT/orchestrator/gate.sh"
+    check "설치본 가드: 음성 대조군 — 세그먼트 워크트리는 링크 팔 뒤에도 rc 0" "$rr_pguard_rc" "0"
+  else
+    printf 'NOTE: 설치본 심링크 픽스처를 만들지 못해 건너뛴다\n'
+  fi
 else
   printf 'NOTE: 형제 런 심링크 픽스처를 만들지 못해 건너뛴다\n'
 fi
@@ -5037,16 +6237,16 @@ leaf_row() {
     *) bad "두 철자 발산: $nm" "직접 철자와 링크 철자가 다른 팔에 답해진다 — 앵커 목록이 갈렸다" ;;
   esac
 }
-leaf_row "형제 런의 레인 기록"        "$RR/cc-cmds/run/victim/config-dir"        '다른 런의 디렉터리'
-leaf_row "형제 런의 스테이지 설정"    "$RR/cc-cmds/run/victim/settings/impl.json" '다른 런의 디렉터리'
-leaf_row "자기 런의 레인 기록"        "$MYRUN/config-dir"                        '런 디렉터리에서 스테이지가 쓰도록 선언된 것은'
-leaf_row "자기 레인의 트랜스크립트"   "$HH/.claude-x/projects/p/a.jsonl"         '세션 트랜스크립트는 승인 판독 채널'
-leaf_row "형제 레인의 트랜스크립트"   "$HH/.claude-y/projects/a.jsonl"           '형제 레인의 세션 트랜스크립트'
-leaf_row "운영자 스코프의 레인 기록"  "$HH/.config/cc-cmds/lanes/x.json"         '운영자 스코프 설정 디렉터리'
+leaf_row "형제 런의 레인 기록"        "$RR/cc-cmds/run/victim/config-dir"        'this is another run directory'
+leaf_row "형제 런의 스테이지 설정"    "$RR/cc-cmds/run/victim/settings/impl.json" 'this is another run directory'
+leaf_row "자기 런의 레인 기록"        "$MYRUN/config-dir"                        'the only paths in the run directory a stage is declared to write'
+leaf_row "자기 레인의 트랜스크립트"   "$HH/.claude-x/projects/p/a.jsonl"         'session transcripts are the approval-reading channel'
+leaf_row "형제 레인의 트랜스크립트"   "$HH/.claude-y/projects/a.jsonl"           'the session transcripts of a sibling lane'
+leaf_row "운영자 스코프의 레인 기록"  "$HH/.config/cc-cmds/lanes/x.json"         'the operator-scope configuration directory'
 # 일곱째. 이것만 종전에도 `deny` 였고 — 그 자리에 파일 앵커가 있었기 때문이다 —
 # 이번 변경 뒤에도 **같은 문면**이어야 한다. 2차 패스를 1차 **뒤**에 두는 것이
 # 그것을 보장하고, 앞에 두면 이 행의 사유 단언이 함께 붉어진다.
-leaf_row "사용자 스코프 설정"         "$HH/.claude-x/settings.json"              '사용자 스코프 설정은 훅 설치 채널'
+leaf_row "사용자 스코프 설정"         "$HH/.claude-x/settings.json"              'user-scope settings are the hook installation channel'
 # 여덟째부터 열째. 이 셋은 1차 패스에만 팔이 있고 2차 말단 패스에는 없어서, 병합
 # 트리에서 **직접 철자는 `deny`, 말단 심링크는 `allow`** 로 갈렸던 자리다. 어느 쪽
 # 브랜치 단독으로도 성립하지 않고 오직 병합에서만 성립하는 부류라 양쪽 스위트가
@@ -5056,13 +6256,13 @@ mkdir -p "$HH/.claude-x/backups" "$HH/.claude-x/file-history" "$WORK/proj"
 : > "$HH/.claude-x/backups/b.md"
 : > "$HH/.claude-x/file-history/h.md"
 : > "$WORK/proj/CLAUDE.md"
-leaf_row "롤백 기준선"                "$HH/.claude-x/backups/b.md"               '롤백 기준선과 판본 이력'
-leaf_row "판본 이력"                  "$HH/.claude-x/file-history/h.md"          '롤백 기준선과 판본 이력'
-leaf_row "라이브 프리픽스"            "$WORK/proj/CLAUDE.md"                     'git 이 추적하지 않는 라이브 프리픽스'
+leaf_row "롤백 기준선"                "$HH/.claude-x/backups/b.md"               'the rollback baseline and the version history'
+leaf_row "판본 이력"                  "$HH/.claude-x/file-history/h.md"          'the rollback baseline and the version history'
+leaf_row "라이브 프리픽스"            "$WORK/proj/CLAUDE.md"                     'a live prefix git does not track'
 # 자기 런 거부가 형제 런 팔에 삼켜지지 않았는지. `$RUN_DIR` 이 런 루트 아래라
 # 순서가 뒤집히면 이 런의 허용 이름까지 형제 런 문면으로 거부된다.
 case "$(hook_reason_rr "$WORK/LEAF-3")" in
-  *'다른 런의 디렉터리'*) bad "말단 링크 순서" "자기 런의 말단 링크가 형제 런 문면으로 거부됐다 — 2차 패스의 순서가 뒤집혔다" ;;
+  *'this is another run directory'*) bad "말단 링크 순서" "자기 런의 말단 링크가 형제 런 문면으로 거부됐다 — 2차 패스의 순서가 뒤집혔다" ;;
   *) ok "말단 링크: 자기 런 거부가 형제 런 팔에 삼켜지지 않는다" ;;
 esac
 
@@ -5140,13 +6340,13 @@ anc_row() {
 mkdir -p "$HH/.claude-x/projects/p/deep" "$HH/.claude-y/projects" \
          "$HH/.config/cc-cmds/lanes"
 anc_row "사용자 스코프 projects 1단"  "$HH/.claude-x/projects/p"        "a.jsonl" \
-  '세션 트랜스크립트는 승인 판독 채널'
+  'session transcripts are the approval-reading channel'
 anc_row "사용자 스코프 projects 2단"  "$HH/.claude-x/projects/p/deep"   "a.jsonl" \
-  '세션 트랜스크립트는 승인 판독 채널'
+  'session transcripts are the approval-reading channel'
 anc_row "운영자 스코프 1단"           "$HH/.config/cc-cmds/lanes"       "x.json" \
-  '운영자 스코프 설정 디렉터리'
+  'the operator-scope configuration directory'
 anc_row "형제 레인 projects 1단"      "$HH/.claude-y/projects"          "a.jsonl" \
-  '형제 레인의 세션 트랜스크립트'
+  'the session transcripts of a sibling lane'
 # 거짓 양성 대조군 둘. 물리 접기를 넓히면 「링크를 조상으로 지나면 통째로 거부」로
 # 퇴화하기 쉽고, 그 퇴화는 이 파이프라인 자신이 쓰는 경로를 함께 막는다.
 mkdir -p "$WORK/anc-plain/sub"
@@ -5202,17 +6402,17 @@ hard_row() {
 # 그대로이고 문면만 갈리므로, 이 행의 하중은 전적으로 문면 단언이 진다. 그리고
 # 하드링크에서 런 디렉터리 안의 이 넷만 앵커로 닫히는 것이 이 커밋의 실질 이득이라,
 # 다음 사이클에 누가 「스위트가 안 재니 중복이다」로 읽고 지우면 여기서 붉어진다.
-hard_row "자기 런의 레인 기록" "$MYRUN/config-dir" '런 디렉터리에서 스테이지가 쓰도록 선언된 것은'
+hard_row "자기 런의 레인 기록" "$MYRUN/config-dir" 'the only paths in the run directory a stage is declared to write'
 # 파일 앵커가 **없는** 이름. 런 디렉터리 안의 이름 집합은 유한하지 않아 열거로
 # 닫을 수 없고, 그 나머지를 링크 수 술어가 받는다.
 : > "$MYRUN/surface-digest"
-hard_row "런 디렉터리의 미앵커 파일" "$MYRUN/surface-digest" '하드링크입니다'
+hard_row "런 디렉터리의 미앵커 파일" "$MYRUN/surface-digest" 'the edit target is a hard link'
 # 운영자 스코프의 레인 기록. 여기 쓰면 이 런이 끝난 뒤의 모든 런의 레인이 정해지고,
 # 앵커할 이름 집합이 무한해 열거가 애초에 서지 않는 자리다.
-hard_row "운영자 스코프의 레인 기록" "$HH/.config/cc-cmds/lanes/x.json" '하드링크입니다'
+hard_row "운영자 스코프의 레인 기록" "$HH/.config/cc-cmds/lanes/x.json" 'the edit target is a hard link'
 # 그리고 형제 레인의 세션 트랜스크립트. 이름이 무한한 두 번째 자리이고, 실측된
 # 관통 세 자리 중 하나다.
-hard_row "형제 레인의 트랜스크립트" "$HH/.claude-y/projects/a.jsonl" '하드링크입니다'
+hard_row "형제 레인의 트랜스크립트" "$HH/.claude-y/projects/a.jsonl" 'the edit target is a hard link'
 # 거짓 양성 대조군 셋. 없으면 위 넷의 통과가 「실재하는 말단은 통째로 거부한다」와
 # 구별되지 않고, 통째 거부는 이 파이프라인 자신의 스테이지가 아무것도 못 하게 만든다.
 : > "$WORK/hard-plain.txt"
@@ -5250,7 +6450,7 @@ else
   # 판정만 재면 말단 패스가 답했는지 링크 수 술어가 답했는지 갈리지 않는다. 사유
   # 조각까지 재야 이 단언이 공허해지지 않는다 — `hard_row` 와 같은 이유다.
   case "$(hook_reason_rr "$hardw_link")" in
-    *'하드링크입니다'*) ok "하드링크: 감싼 형태의 거부 문면이 그 자리의 것이다" ;;
+    *'the edit target is a hard link'*) ok "하드링크: 감싼 형태의 거부 문면이 그 자리의 것이다" ;;
     *) bad "하드링크 거부 사유: 감싼 형태" "다른 팔이 답했다 — 이 단언이 공허하다: $(hook_reason_rr "$hardw_link")" ;;
   esac
 fi
@@ -5280,23 +6480,37 @@ hook_decide_bash() {
 BNL='
 '
 check "맨 게이트 호출은 허용" "$(hook_decide_bash "$GATEP snapshot --manifest m")" "allow"
-# 특례는 하나뿐이고 꼬리에서만 성립한다. 거부 문면이 처방하는 1번 명령이 이
-# 파이프를 쓰므로, 전면 거부하면 허용 목록이 자기 처방을 다시 거부한다.
-check "특례 파이프 '| jq -r .H' 는 허용" \
-  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H")" "allow"
-check "특례 파이프의 후행 공백도 허용" \
-  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H  ")" "allow"
+# 파이프 특례는 없다. 예전에는 `| jq -r .H` 꼬리 하나를 허용했는데, 그 처방이 필요로
+# 하던 값은 이제 `snapshot --fields H` 가 파이프 없이 한 줄로 내므로 허용 목록이
+# 자기 처방을 거부하는 일이 없고, 특례의 자리는 모든 파이프 거부로 닫힌다.
+check "옛 특례 파이프 '| jq -r .H' 도 이제 거부" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H")" "deny"
+check "후행 공백을 붙인 옛 특례도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H  ")" "deny"
+check "특례를 대신하는 --fields H 는 맨 게이트 호출이라 허용" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m --fields H")" "allow"
 check "세미콜론 체인은 거부" "$(hook_decide_bash "$GATEP snapshot; touch $WORK/rider")" "deny"
 check "AND 체인은 거부" "$(hook_decide_bash "$GATEP snapshot && touch $WORK/rider")" "deny"
 check "백그라운드+체인은 거부" "$(hook_decide_bash "$GATEP snapshot & touch $WORK/rider")" "deny"
 check "개행 체인은 거부" "$(hook_decide_bash "$GATEP snapshot${BNL}touch $WORK/rider")" "deny"
 check "명령 치환 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \$(whoami) -- ls")" "deny"
 check "백틱 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \`whoami\` -- ls")" "deny"
-check "특례가 아닌 파이프는 거부" "$(hook_decide_bash "$GATEP snapshot | grep x")" "deny"
+check "모든 파이프 거부 — grep 꼬리" "$(hook_decide_bash "$GATEP snapshot | grep x")" "deny"
 check "리다이렉션도 거부 (원장 없이 셸이 파일을 여는 자리다)" \
   "$(hook_decide_bash "$GATEP snapshot > $WORK/rider")" "deny"
-check "특례 뒤에 이어 붙인 체인은 거부 (특례는 꼬리에서 한 번뿐이다)" \
+check "모든 파이프 거부 — 옛 특례 뒤에 체인을 이어 붙인 형태" \
   "$(hook_decide_bash "$GATEP snapshot | jq -r .H; touch $WORK/rider")" "deny"
+# 거부 문면이 처방하는 대체 명령은 파이프가 아니라 `--fields H` 다 — 처방이 옛 특례로
+# 되돌아가면 훅이 자기 처방을 거부하는 모양이 다시 생기므로 문면을 함께 고정한다.
+case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+          "$(printf '%s' "$GATEP snapshot --manifest m | jq -r .H" | jq -Rs .)" \
+        | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'--fields H'*) ok "파이프 거부 문면이 --fields H 를 처방한다" ;;
+  *) bad "파이프 거부 문면" "대체 명령 --fields H 를 처방하지 않는다" ;;
+esac
 # 인용된 제어 문자는 게이트의 정당한 인자다. 이 둘이 없으면 위 거부들의 통과가
 # 「세미콜론을 통째로 거부한다」와 구별되지 않고, 통째 거부는 이 훅이 처방하는
 # `--rationale` 을 스테이지가 쓸 수 없게 만든다.
@@ -5318,7 +6532,7 @@ case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
           XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
           bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
         | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
-  *'인용되지 않은 셸 제어 연산자'*) ok "체인 거부가 새 검사의 것이다" ;;
+  *'unquoted shell control operator'*) ok "체인 거부가 새 검사의 것이다" ;;
   *) bad "체인 거부 사유" "다른 팔이 먼저 거부했다 — 위 체인 단언들이 공허하다" ;;
 esac
 
@@ -5376,7 +6590,7 @@ case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
           XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
           bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
         | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
-  *'인용되지 않은 셸 제어 연산자'*) ok "ANSI-C 라이더 거부가 새 검사의 것이다" ;;
+  *'unquoted shell control operator'*) ok "ANSI-C 라이더 거부가 새 검사의 것이다" ;;
   *) bad "ANSI-C 라이더 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
 esac
 
@@ -5397,7 +6611,7 @@ check "stat 이 dev:ino 를 내지 못하면 판정하지 않고 거부한다" \
 # 그리고 그 거부가 이 분기의 것인지 확인한다. 다른 분기가 먼저 거부하면 위
 # 단언은 통과하면서 아무것도 검증하지 않는다.
 case "$(printf '%s' "$stat_probe_out" | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
-  *'디바이스:아이노드'*) ok "그 거부가 stat 철자 확정 실패를 지목한다" ;;
+  *'device:inode'*) ok "그 거부가 stat 철자 확정 실패를 지목한다" ;;
   *) bad "stat 부재 거부 사유" "다른 분기가 먼저 거부했다 — 위 단언이 공허하다" ;;
 esac
 
@@ -5490,7 +6704,7 @@ if [ -d "$LK/dirlink" ] && [ -L "$LK/dirlink" ]; then
   check "어휘 해소와 커널 해소가 다른 파일을 가리키면 거부" \
     "$(hook_decide "$LK/dirlink/../plain.txt")" "deny"
   case "$(hook_reason "$LK/dirlink/../plain.txt")" in
-    *'어휘 해소와 커널 해소가 다른 파일'*) ok "그 거부가 말단 해소 대조의 것이다" ;;
+    *'the lexical resolution and the kernel resolution of this path point at different files'*) ok "그 거부가 말단 해소 대조의 것이다" ;;
     *) bad "말단 해소 대조 사유" "다른 팔이 먼저 거부했다 — 위 단언이 공허하다" ;;
   esac
   # 상위 대조용. 같은 철자에서 말단만 양쪽 다 부재하게 하면 위 팔은 두 값이 함께
@@ -5498,7 +6712,7 @@ if [ -d "$LK/dirlink" ] && [ -L "$LK/dirlink" ]; then
   check "상위 디렉터리가 어휘 해소와 커널 해소에서 다르면 거부" \
     "$(hook_decide "$LK/dirlink/../absent.txt")" "deny"
   case "$(hook_reason "$LK/dirlink/../absent.txt")" in
-    *'상위 디렉터리가 어휘 해소와 커널 해소'*) ok "그 거부가 상위 해소 대조의 것이다" ;;
+    *'the parent directory of this path differs between the lexical resolution and the kernel resolution'*) ok "그 거부가 상위 해소 대조의 것이다" ;;
     *) bad "상위 해소 대조 사유" "다른 팔이 먼저 거부했다 — 위 단언이 공허하다" ;;
   esac
   # 음성 대조군. 링크를 끼지 않은 같은 자리의 파일은 그대로 허용돼야 한다 —
@@ -5786,6 +7000,83 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '원회수=미상'; then
   ok "회수 스탬프가 없으면 행이 미상 을 싣는다"
 else
   bad "stage-result 행" "스탬프 부재인데 미상 이 없다: $REC_ROWS"
+fi
+
+# --- (3b) 압축 창·레인·기록자 — 파견 id 의 `.window` 기록이 행에 옮겨진다 ---------
+# 여기의 `stage_spawn` 은 스파이라 `.window` 를 쓰지 않으므로, 실제 기동이 남겼을
+# 두 줄을 파일로 세운다. 단언 대상은 「행이 그 파일을 읽어 싣는가」와 「파일이 없을
+# 때 (미상) 으로 쓰되 행을 막지 않는가」다. 기동이 그 파일을 쓰는 것은 아래 (4) 의
+# 소스 핀이 잡는다.
+REC_RSID="S5R:segR:0"
+printf '%s\n%s\n' '200000(런설정)' '~/lane30' > "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok "stage-result 행이 $want 를 싣는다 (.window 에서)"
+  else
+    bad "stage-result 행" "$want 가 없다: $REC_ROWS"
+  fi
+done
+rm -f "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
+  ok ".window 가 없으면 행이 압축 창=(미상) 을 싣고 그대로 쓰인다"
+else
+  bad "stage-result 행" ".window 부재인데 (미상) 이 없다: $REC_ROWS"
+fi
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '레인=~'; then
+  ok ".window 가 없으면 레인은 이 드라이버가 해소한 레인의 물결 표기다"
+else
+  bad "stage-result 행" ".window 부재인데 레인 물결 표기가 없다: $REC_ROWS"
+fi
+
+# --- (3c) stage_window_read — 세 층, (꺼짐), (미상), - ------------------------
+WR="$WORK/window-read"; rm -rf "$WR"; mkdir -p "$WR/proj/.claude" "$WR/cfg" "$WR/empty"
+check "세 층이 전부 비면 -" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "-"
+printf '{"autoCompactWindow": 100000}\n' > "$WR/cfg/settings.json"
+check "레인 층만 서면 <n>(레인)" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{"autoCompactWindow": 150000}\n' > "$WR/proj/.claude/settings.json"
+check "프로젝트 층이 레인을 이긴다" "$(stage_window_read "$WR/none.json" "$WR/proj" "$WR/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 200000}\n' > "$WR/run.json"
+check "런설정 층이 프로젝트를 이긴다" "$(stage_window_read "$WR/run.json" "$WR/proj" "$WR/cfg")" "200000(런설정)"
+printf '{"autoCompactEnabled": false}\n' > "$WR/off.json"
+check "가장 앞선 층이 끄면 (꺼짐)" "$(stage_window_read "$WR/off.json" "$WR/proj" "$WR/cfg")" "(꺼짐)"
+# 키 단위 병합 — 두 키는 각각 자기를 정의한 가장 앞선 층에서 온다.
+printf '{"autoCompactWindow": 150000}\n' > "$WR/win.json"
+printf '{"autoCompactEnabled": false}\n' > "$WR/proj/.claude/settings.local.json"
+check "런설정 창 150000 위에 프로젝트로컬 enabled:false 는 (꺼짐)" "$(stage_window_read "$WR/win.json" "$WR/proj" "$WR/cfg")" "(꺼짐)"
+printf '{"autoCompactEnabled": true}\n' > "$WR/on.json"
+printf '{"autoCompactEnabled": false, "autoCompactWindow": 90000}\n' > "$WR/proj/.claude/settings.local.json"
+check "런설정 enabled:true 위에 프로젝트로컬 false+90000 은 90000(프로젝트)" "$(stage_window_read "$WR/on.json" "$WR/proj" "$WR/cfg")" "90000(프로젝트)"
+rm -f "$WR/proj/.claude/settings.local.json"
+printf '{"autoCompactWindow": "300k"}\n' > "$WR/fmt.json"
+check "정수 아닌 창은 그 층을 건너뛴다" "$(stage_window_read "$WR/fmt.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{not json\n' > "$WR/broken.json"
+check "깨진 JSON 은 (미상)" "$(stage_window_read "$WR/broken.json" "$WR/proj" "$WR/cfg")" "(미상)"
+check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" "$(lane_label_of "$HOME/.claude-x")" "~/.claude-x"
+check "HOME 밖의 레인은 그대로다" "$(lane_label_of "$WR/cfg")" "$WR/cfg"
+check "드라이버의 판독은 (argv) 를 낼 수 없다 (argv 층이 없다)" \
+  "$(sed -n '/^stage_window_read()/,/^}/p' "$DRIVER" | grep -c 'argv' || true)" "0"
+
+# --- (4) 기동이 `.window` 를 쓴다 — 소스 핀 --------------------------------------
+# 이 스위트는 진짜 CLI 를 띄우지 않으므로 기동 본문의 두 줄을 문면으로 잡는다:
+# 기동 직전에 두 줄 파일을 쓰고, 다음 기동이 앞의 것을 `.rc` 와 함께 지운다.
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '> "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 .window 를 쓴다"
+else
+  bad "stage_spawn" ".window 를 쓰는 줄이 없다"
+fi
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 앞 기동의 .window 를 .rc 와 함께 지운다 (수집이 아니라 다음 기동에서)"
+else
+  bad "stage_spawn" ".window 를 .rc 옆에서 지우는 줄이 없다"
+fi
+if sed -n '/^stage_collect()/,/^}/p' "$DRIVER" | grep_all_q -F '.window'; then
+  bad "stage_collect" "수집이 .window 를 지운다 — stage-result 행은 수집 뒤에 쓰이므로 값이 사라진다"
+else
+  ok "stage_collect 는 .window 를 건드리지 않는다 (행이 수집 뒤에 읽는다)"
 fi
 if kill_permitted "S5R:segR:0"; then
   ok "복구 파견 id 가 경계 멱등으로 인정된다 (정체하면 신호를 받는다)"

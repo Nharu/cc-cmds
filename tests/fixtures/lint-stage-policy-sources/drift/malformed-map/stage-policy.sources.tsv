@@ -1,0 +1,7 @@
+source	anchor	sha256	disposition	note
+user-scope	alpha	481e0bba2f5269928d9f543e356a067428cbee095a262740769fc84b77928f35	policy:Artifacts	
+user-scope	beta	52ad116489a62e8f6f3ec968ac8aec615125a9c85b1de9d337c6203a8f963208	policy:Artifacts	
+user-scope	gamma	6dd7e899a526bf21c7a74daf48055374821e8acb4e6c1b91cda87a055997449e	policy:Artifacts	
+workspace	# workspace preface	4a93c5eed5cf9f16b2e04187120564eada1046d0ee41df29ab6ee4275118f9f6	policy:Delegation	
+workspace	## One	3c60d8bf20f287d2fe44a20ef28f1997e7ca632bb07d47b97a0597e6a6211b9a	policy:Delegation	
+workspace	## Two	01c26d5ee36dfabd70f0ee105c49dbd18aafaf774e810a63a37000ac1b4b0c14	policy:Delegation	

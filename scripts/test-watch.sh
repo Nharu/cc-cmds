@@ -1688,5 +1688,288 @@ runb >/dev/null
 sleep 0.2
 check "게이트가 이미 알린 승인 id 를 감시자가 존중한다" "$(notify_lines)" "0"
 
+# ---------------------------------------------------------------------------
+# A STAGE WEDGED WHILE THE ROUTER KEEPS WORKING — the seventh arm.
+#
+# Every arm above times the ROUTER's silence. This one times how long a single
+# STAGE has been alive, and the commercial failure mode — a stage hung while the
+# router goes on writing rows normally — is invisible to all of them and to every
+# boundary in the gate, because a hung stage produces no acts and those
+# boundaries count acts.
+#
+# THE CLOCK IS THE STAGE'S START FINGERPRINT. It is written once when the stage
+# spawns and never touched again, so its mtime IS the age. The stream log's mtime
+# was the other candidate and it measures "how long since it last spoke", which
+# loses the stage that is wedged while its log keeps growing.
+# ---------------------------------------------------------------------------
+fresh
+: > "$NOTIFY_LOG"
+FX_RUN_DIR="$RD"; FX_PIDS=""
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+# THE ROUTER IS WORKING IN THIS FIXTURE, and the three thresholds below are the
+# PRODUCTION ones rather than large numbers. The ledger was just written and the
+# gate was just called, so the sibling arms are silent because their conditions
+# genuinely do not hold — not because a test put them out of reach. That is what
+# makes this case say "fires even while the router is fine" instead of merely
+# "fires".
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+fx_stage_live S1
+fx_age_file "$RD/S1.start" 7300
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"스테이지 S1 이"*"살아 있습니다"*) ok "스테이지가 임계를 넘게 살아 있으면 발화한다" ;;
+  *) bad "스테이지 연령 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+case "$out" in
+  *"라이브니스 침묵"*) bad "형제 arm" "라우터가 정상인 픽스처에서 정체 arm 이 함께 발화했다" ;;
+  *) ok "라우터가 계속 행을 쓰고 있어도 이 팔만 발화한다 (형제 arm 은 침묵한다)" ;;
+esac
+# NOTIFY ONLY; NO BLOCK ROW. An unresolved run-scope block stands up a
+# termination condition, so one long legitimate stage would stop the run from
+# ending all night and would need a person to write the resolving row — which
+# spends the very tolerance for false positives this arm's threshold rests on.
+if [ -f "$RD/stall" ]; then
+  bad "스테이지 연령 arm" "막힘 관측 파일을 남겼다 — 정당한 긴 스테이지 하나가 밤새 런의 종료를 막는다"
+else
+  ok "이 팔은 막힘 관측을 남기지 않는다 (통지만 한다)"
+fi
+
+# The once-guard is a DEDICATED PER-STAGE MARKER for the same reason the arms
+# above use one: the gate empties `stall` on every act, so a guard reading that
+# file would come back to life and this arm would re-fire every pass.
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"스테이지 S1 이"*"살아 있습니다"*) bad "재발화" "매 pass 마다 같은 스테이지를 다시 알린다" ;;
+  *) ok "같은 스테이지를 다시 알리지 않는다" ;;
+esac
+if ls "$RD"/watch.announced-stage-age-S1-* >/dev/null 2>&1; then
+  ok "그 억제가 스테이지 인스턴스별 전용 마커 파일이다"
+else
+  bad "once 가드" "$(ls "$RD" | tr '\n' ' ')"
+fi
+
+# THE SEGMENT AND THE STAGE ARE NOT THE SAME THING, and the pair above cannot
+# tell them apart on its own: this fixture's segment id and stage name are both
+# `S1`, so a segment-keyed marker and a stage-keyed marker land on byte-identical
+# paths. Everything up to here therefore passes under either model while the
+# comment claims the stronger one — the same shape as an assertion whose anchor
+# has drifted out of the file, with the fixture's granularity standing where the
+# anchor would be.
+#
+# What separates them is a SECOND stage on the SAME segment. The gate rewrites
+# `<seg>.start` on each launch and removes it on exit, so the clock resets while
+# a segment-keyed marker does not, and nothing in the tree clears these markers.
+# Under the segment-keyed model the second stage is silent for the rest of the
+# run — which spends this arm's whole tolerance for false positives, since that
+# tolerance was argued from "a firing costs one line in the morning".
+#
+# The age is 7400 rather than 7300 so the two instances cannot share an mtime.
+# `fx_age_file` computes its stamp from the current second, so re-aging by the
+# same amount inside one second would reproduce the collision this assertion
+# exists to catch.
+fx_reap
+rm -f "$RD"/S1.pid "$RD"/S1.start
+fx_stage_live S1
+fx_age_file "$RD/S1.start" 7400
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"스테이지 S1 이"*"살아 있습니다"*) ok "같은 세그먼트의 새 스테이지에는 다시 발화한다 (마커가 세그먼트가 아니라 인스턴스에 걸린다)" ;;
+  *) bad "once 가드 입도" "같은 세그먼트라는 이유로 새 스테이지가 침묵했다 — 한 번의 오탐이 그 세그먼트의 탐지기를 런 내내 소비한다" ;;
+esac
+fx_reap
+
+# The threshold is a threshold. A stage that started moments ago has not hung.
+fresh
+FX_RUN_DIR="$RD"; FX_PIDS=""
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+fx_stage_live S2
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"살아 있습니다"*) bad "스테이지 연령 arm" "막 시작한 스테이지를 걸린 것으로 지목했다" ;;
+  *) ok "임계 이전에는 발화하지 않는다" ;;
+esac
+fx_reap
+
+# AND A DEAD STAGE IS NOT AN OLD ONE. The pid file outlives a stage that crashed
+# without cleaning up, and its fingerprint file keeps ageing forever — so without
+# the liveness conjunct this arm would report every crashed stage of the night,
+# repeatedly, as a hang.
+fresh
+FX_RUN_DIR="$RD"; FX_PIDS=""
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+fx_stage_dead S3
+fx_age_file "$RD/S3.start" 7300
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"살아 있습니다"*) bad "스테이지 연령 arm" "죽은 스테이지의 낡은 지문을 걸린 스테이지로 읽었다" ;;
+  *) ok "죽은 스테이지에는 발화하지 않는다 (연령만이 아니라 생존도 본다)" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# The fifth threshold is PINNED, here rather than in the lint that pins the other
+# four — that script is outside this change's declared file set. The property is
+# the same one: the launch line a run actually consumes has to spell the script's
+# own default, or the sentence beside it saying these are the defaults becomes
+# false and nothing says so.
+# ---------------------------------------------------------------------------
+SKILL_MD="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+sa_decl=$( { grep -oE '(^|[;[:space:]])STAGE_AGE=[0-9]+' "$WATCH" || true; } \
+           | sed -E 's/.*STAGE_AGE=//')
+check "watch.sh 가 STAGE_AGE 기본값을 정확히 하나 선언한다" \
+  "$(printf '%s\n' "$sa_decl" | grep -c . || true)" "1"
+sa_launch=$( { grep -E 'watch\.sh .*--run-dir' "$SKILL_MD" || true; } \
+             | { grep -oE -- '--stage-age [0-9]+' || true; } | sed -E 's/^--stage-age //')
+check "기동 줄이 --stage-age 를 정확히 하나 싣는다" \
+  "$(printf '%s\n' "$sa_launch" | grep -c . || true)" "1"
+check "기동 줄의 값이 watch.sh 의 기본값과 축자로 같다" "$sa_launch" "$sa_decl"
+# The launch line is not the only place the document writes this number — the
+# paragraph under it restates it, and that paragraph is where the claim about
+# defaults lives. A scan anchored on the launch line never reaches it.
+sa_stale=$( { grep -oE -- '--stage-age [0-9]+' "$SKILL_MD" || true; } \
+            | sed -E 's/^--stage-age //' | { grep -vxF "$sa_decl" || true; } )
+check "문서 안의 다른 기재도 같은 값을 못 박는다" \
+  "$(printf '%s' "$sa_stale" | grep -c . || true)" "0"
+
+# ---------------------------------------------------------------------------
+# `cc_mtime` — the helper the arm above names, ON BOTH PLATFORMS.
+#
+# The claim is that BSD and GNU answer the same epoch for the same file, and no
+# single leg can compare two hosts. What makes the comparison possible is that
+# the expected values are LITERALS: both CI legs already run this file, so both
+# assert against the same numbers, and a divergence arrives as a red leg rather
+# than as a difference nobody is in a position to observe. Asserting "the two
+# hosts agree" by hand instead would close once and re-open on the next change.
+#
+# TWO HELPERS CARRY THIS BODY — one in `liveness.sh` and one in the gate — so the
+# one under test is NAMED rather than found. An assertion measuring the other
+# copy would stay green while the arm's own reading diverged.
+#
+# Taken as source text and run on its own, the way `iso_to_epoch` is read above:
+# driving it through the arm would need a run directory and a live process per
+# row, and neither is what these rows are about.
+# ---------------------------------------------------------------------------
+LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+mtime_fn=$(sed -n '/^cc_mtime() {/,/^}/p' "$LIVENESS")
+if [ -n "$mtime_fn" ]; then
+  ok "liveness.sh 에서 cc_mtime 을 떼어냈다"
+else
+  bad "cc_mtime 추출" "함수를 찾지 못했다 — 아래 행들은 잴 것이 없다"
+fi
+# The zone is attached to `bash` and not to the function name: for a shell
+# function a prefix assignment does NOT scope to the call, which this file
+# already had to learn once for the host seam.
+cc_mtime_of() {
+  # cc_mtime_of <path> [TZ]
+  CC_MTIME_FN="$mtime_fn" TZ="${2:-UTC}" \
+    bash -c 'eval "$CC_MTIME_FN"; cc_mtime "$1"' _ "$1"
+}
+
+# `perl`, and not `touch -t`, for the reason the shared fixture already gives:
+# computing the stamp `touch` wants means formatting an epoch, and that is the
+# one operation where the two date implementations take incompatible flags.
+# `utime` takes the number directly. The rows are the epoch itself, a round
+# stamp, a 400-year leap day and the signed-32-bit cliff.
+MT="$WORK/mtime-probe"
+for mt_row in 0 1577836800 951782400 2147483648; do
+  : > "$MT"
+  perl -e 'my ($f, $t) = @ARGV; utime $t, $t, $f or die "utime: $!";' "$MT" "$mt_row"
+  check "cc_mtime 이 epoch $mt_row 을 그대로 낸다 (두 레그가 같은 리터럴을 단언한다)" \
+    "$(cc_mtime_of "$MT")" "$mt_row"
+done
+
+# AND THE ANSWER MUST NOT DEPEND ON THE HOST'S ZONE. `date -r` without `-u`
+# answers a local calendar time, and the two legs do not share a zone — so a
+# dropped `-u` would show up as a platform divergence when it is nothing of the
+# kind. Two zones, one file, one expected number.
+: > "$MT"
+perl -e 'my ($f, $t) = @ARGV; utime $t, $t, $f or die "utime: $!";' "$MT" 1577836800
+check "시간대가 달라도 같은 값을 낸다 (Asia/Seoul)" \
+  "$(cc_mtime_of "$MT" Asia/Seoul)" "1577836800"
+check "시간대가 달라도 같은 값을 낸다 (UTC)" \
+  "$(cc_mtime_of "$MT" UTC)" "1577836800"
+
+# No file is "cannot judge", not "epoch zero" — the arm above skips a stage whose
+# fingerprint it cannot read, and a number here would make it judge one.
+check "없는 파일에는 빈 값을 낸다" "$(cc_mtime_of "$WORK/없는파일")" ""
+
+# And the arm really does read THIS helper. Without this line the rows above
+# measure a function the watcher might not be calling.
+if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -F 'cc_mtime "$RUN_DIR/$sseg.start"'; then
+  ok "스테이지 연령 팔이 지목된 헬퍼 cc_mtime 으로 기점을 읽는다"
+else
+  bad "헬퍼 지목" "워처 팔이 cc_mtime 을 읽지 않는다 — 위 단언이 다른 사본을 재고 있다"
+fi
+
+# ---------------------------------------------------------------------------
+# 판본 고정 — 감시자의 hop 은 첫 쓰기보다 앞서고 pid 를 보존한다
+#
+# `exec` 는 pid 와 시작 시각 지문을 그대로 넘기고 EXIT 트랩은 잃는다. 그래서 hop
+# 앞에서 쓴 표지는 「검증에 성공하는 유령」이 되고, hop 뒤에 쓴 것만 정상이다. 여기서
+# 재는 것은 두 가지다 — 사본이 **같은 pid 로** 이어받는가, 그리고 설치본 쪽이 hop
+# 전에 `watch.pid`·`watch.state`·`watch.heartbeat` 중 하나라도 남기지 않는가.
+# ---------------------------------------------------------------------------
+HOPRD="$WORK/hop-run"
+HOPPLUG="$HOPRD/plugin/cc-cmds"
+mkdir -p "$HOPPLUG/orchestrator"
+for hopf in liveness.sh notify-run.sh pin.sh; do
+  cp "$repo_root/plugins/cc-cmds/orchestrator/$hopf" "$HOPPLUG/orchestrator/$hopf"
+done
+# `pin_hop_target` 은 사본의 `gate.sh` 가 있어야 표적을 낸다 — 사본이 실재하는지의
+# 대리 검사다. 이 케이스는 감시자만 재므로 그 자리는 빈 파일로 채운다.
+: > "$HOPPLUG/orchestrator/gate.sh"
+cat > "$HOPPLUG/orchestrator/watch.sh" <<'HOPEOF'
+#!/usr/bin/env bash
+# 고정 사본의 감시자 스텁 — 자기 pid 만 적고 끝낸다.
+HOP_RD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run-dir) HOP_RD="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' "$$" > "$HOP_RD/hop.pid"
+exit 0
+HOPEOF
+printf 'schema\t1\nplugin-dir\t%s\n' "$HOPPLUG" > "$HOPRD/plugin-pin"
+HOPLG="$WORK/hop-ledger.md"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$HOPLG"
+bash "$WATCH" --run-dir "$HOPRD" --ledger "$HOPLG" --once &
+hop_pid=$!
+wait "$hop_pid"
+check "감시자 hop — 사본이 원래 pid 그대로 이어받는다" \
+  "$(sed -n '1p' "$HOPRD/hop.pid" 2>/dev/null)" "$hop_pid"
+check "감시자 hop — hop 앞에서 watch.pid 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.pid" ] && printf yes || printf no )" "no"
+check "감시자 hop — hop 앞에서 watch.state 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.state" ] && printf yes || printf no )" "no"
+check "감시자 hop — hop 앞에서 watch.heartbeat 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.heartbeat" ] && printf yes || printf no )" "no"
+# 음성 대조군 — 핀이 없으면 설치본 감시자가 그대로 돌고 표지를 남긴다. 없으면 위
+# 세 단언이 「이 픽스처에서는 원래 아무것도 안 쓴다」와 구별되지 않는다.
+HOPRD2="$WORK/hop-run-nopin"
+mkdir -p "$HOPRD2"
+bash "$WATCH" --run-dir "$HOPRD2" --ledger "$HOPLG" --once >/dev/null 2>&1
+check "음성 대조군 — 핀이 없으면 설치본 감시자가 watch.pid 를 남긴다" \
+  "$( [ -e "$HOPRD2/watch.pid" ] && printf yes || printf no )" "yes"
+# 핀이 **이 런의 사본이 아닌 곳**을 가리키는 경우. 게이트는 이 상태에서 멈추지만
+# 감시자는 경고하고 계속한다 — 감시자까지 죽으면 왜 멈췄는지 읽을 표면이 함께
+# 사라진다. 여기 심는 핀은 앞 케이스의 사본을 가리키므로 실행 가능한 표적이 실재하고,
+# 그래서 hop 하지 않았다는 단언이 「표적이 없어서 못 했다」와 구별된다.
+HOPRD3="$WORK/hop-run-foreign"
+mkdir -p "$HOPRD3"
+printf 'schema\t1\nplugin-dir\t%s\n' "$HOPPLUG" > "$HOPRD3/plugin-pin"
+hop_foreign=$(bash "$WATCH" --run-dir "$HOPRD3" --ledger "$HOPLG" --once 2>&1)
+check "감시자 hop — 남의 사본을 가리키는 핀으로는 hop 하지 않는다" \
+  "$( [ -e "$HOPRD3/hop.pid" ] && printf yes || printf no )" "no"
+check "감시자 hop — 그때도 감시자는 계속 돈다" \
+  "$( [ -e "$HOPRD3/watch.pid" ] && printf yes || printf no )" "yes"
+# `case` 를 명령 치환 안에 두지 않는다 — bash 3.2 는 `$( )` 안의 `case` 패턴이 닫는
+# 괄호를 치환의 끝으로 읽어 구문 오류를 낸다.
+hop_foreign_hit=no
+case "$hop_foreign" in *'이 런의 사본이 아닌 곳'*) hop_foreign_hit=yes ;; esac
+check "감시자 hop — 경고가 핀이 남의 자리를 가리킨다고 적는다" "$hop_foreign_hit" "yes"
+
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

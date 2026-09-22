@@ -41,16 +41,34 @@ for fixture in "$fixtures"/*/; do
   esac
 
   set +e
-  SKILLS_ROOT="$fixture" bash "$script_dir/lint-unattended-surfaces.sh" >/dev/null 2>&1
+  out=$(SKILLS_ROOT="$fixture" bash "$script_dir/lint-unattended-surfaces.sh" 2>&1)
   ec=$?
   set -e
 
-  if [[ "$ec" == "$want" ]]; then
+  # The exit code alone cannot tell a verdict from a crash: a lint aborted by
+  # `set -e` mid-report also exits non-zero. Every run that reaches its verdict
+  # prints a terminal banner, so its presence is asserted as well. The match
+  # is a bash regex rather than a pipe into `grep -q`, whose early exit would
+  # SIGPIPE the writer and, under `pipefail`, invert the result on a match.
+  case "$want" in
+    0) banner='lint-unattended-surfaces: [0-9]' ;;
+    1) banner='lint-unattended-surfaces: violations found' ;;
+  esac
+  banner_re=$'\n'"$banner"
+  has_banner=0
+  if [[ $'\n'"$out" =~ $banner_re ]]; then
+    has_banner=1
+  fi
+
+  if [[ "$ec" == "$want" && "$has_banner" == 1 ]]; then
     passed=$((passed + 1))
     echo "PASS: $fixture_name (exit=$ec, expected=$want)"
-  else
+  elif [[ "$ec" != "$want" ]]; then
     failures=$((failures + 1))
     echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
+  else
+    failures=$((failures + 1))
+    echo "FAIL: $fixture_name (exit=$ec as expected, but the terminal banner /^${banner}/ is missing — the lint stopped before its verdict)" >&2
   fi
 done
 

@@ -807,8 +807,13 @@ judgment_class_forbidden() {
 warn_once() {
   # warn_once <slug> <message>
   local slug="$1" msg="$2" d
-  d="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/${RUN_ID:-}/warn-once"
-  if [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
+  # A REFUSED RUN ID LOSES THE SUPPRESSION, NOT THE WARNING. `rundir_of_run_id`
+  # refuses an id that is not a single directory name, and here that has to fall
+  # through to speaking: dying on this path would let a warning kill the run, and
+  # the suppression directory is only a deduplication.
+  d=""
+  d="$(rundir_of_run_id "${RUN_ID:-}")/warn-once" || d=""
+  if [ -n "$d" ] && [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
     mkdir "$d/$slug" 2>/dev/null || return 0
   fi
   warn "$msg"
@@ -2225,8 +2230,40 @@ check_inflight() {
 # TMPDIR because /var/folders is swept without a reboot, and "no record implies
 # no process" must not be falsified by a sweep.
 # ---------------------------------------------------------------------------
+rundir_of_run_id() {
+  # rundir_of_run_id <run-id> — the run directory for that id, or rc 2 when the
+  # id is not a single directory name.
+  #
+  # THE FORMULA IS SPELLED ONCE, HERE. It used to be spelled at each of its two
+  # uses, which was harmless while both ran after `RUN_ID` was assigned. The pin
+  # hop changed that: it has to find `<run-dir>/plugin-pin` BEFORE `rundir_init`
+  # has run, from a run id it read out of the manifest, so a third spelling
+  # would have appeared in `gate.sh` — and the day two of the three drift, a run
+  # pins one directory and reads another. `scripts/test-gate.sh` asserts that
+  # this file holds exactly one occurrence of the literal.
+  #
+  # ONE FORMULA MEANS ONE PLACE TO CHECK THE INPUT, and the input stopped being
+  # trusted when the hop started reading it. The id the hop passes comes from a
+  # manifest header, which is caller-supplied bytes the header/body cross-check
+  # has not yet compared and which no reader constrains to a character set — so
+  # an id carrying `../` would concatenate into a directory anywhere on the host,
+  # and the pin found there would choose the program that runs next.
+  #
+  # ONLY PATH ESCAPE IS REFUSED, NOT A SHAPE. The fixtures in this tree open runs
+  # under ids like `R57` and `victim`, and a pattern for the ids the driver mints
+  # would refuse those along with the attack. Rejecting `/`, `.` and `..` is
+  # complete against escape on its own terms: `/` is the only component separator,
+  # so an id without one names exactly one entry under the run root.
+  case "$1" in
+    ''|.|..) return 2 ;;
+    */*) return 2 ;;
+  esac
+  printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$1"
+}
+
 rundir_init() {
-  RUN_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$RUN_ID"
+  RUN_DIR=$(rundir_of_run_id "$RUN_ID") \
+    || die "런 id 에 경로 성분이 있습니다 — 런 디렉터리 이름은 한 칸이어야 합니다: $RUN_ID"
   # `digest/` IS A QUARANTINE, not a tidier layout. The gate's `--emit-digest`
   # write is graded by nothing, guarded by nothing and recorded in no ledger
   # field — so the directory it lands in is the whole of its containment. The
@@ -2240,7 +2277,14 @@ rundir_init() {
   # ledger's mutual exclusion hold. Nothing owns this
   # subdirectory but the emission, so an ungraded write inside it can destroy
   # only a value the next caller re-derives anyway.
-  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest"
+  #
+  # `shared/` IS CREATED EMPTY AND NEVER FILLED HERE. The lead seat publishes a
+  # generation under it (`shared/<gen>/`) by building it in a sibling temp
+  # directory and renaming it in; the reader verifies each generation against
+  # its own manifest on every read. Making the parent exist is the driver's
+  # whole part — a publisher that had to `mkdir -p` its parent would be writing
+  # one level above what the run directory guards allow it.
+  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
   LOG_FILE="$RUN_DIR/log/driver.log"
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
   # The lane this run opened in, and the orchestrator directory it actually
@@ -2598,7 +2642,64 @@ resolve_account() {
 
   printf '%s' "$HOME/.claude"
 }
-account_has_headroom() { return 1; }   # trivial resolver: no alternate account
+
+# ---------------------------------------------------------------------------
+# Headroom, read from the pacing sensor and never computed here.
+#
+# `fleet.sh sensor` publishes `pace/state.json` once a minute with one entry
+# per seat: the allowance the tracker grants that seat (`allow`, %p/h), how far
+# into its five-hour session window it is (`session_pct`), and — at the top —
+# the burn one stage costs over the four-hour window (`burn_per_stage_4h`).
+# This reader joins the seat this run dispatches on to that entry and answers
+# ONE question: is there room for one more stage on this seat right now.
+#
+# THE SEAT IS RE-RESOLVED ON EVERY CALL, for the same reason `resolve_account`
+# itself is called per dispatch and not per run: the setting file is editable
+# while the run is going, and an answer cached at run start would be about a
+# seat the run may no longer be on.
+#
+# UNKNOWN IS "NO HEADROOM". A state that is absent, unreadable, on another
+# schema, older than three sensor periods, or missing this seat answers 1 — the
+# same value the trivial resolver this replaces always returned, so a machine
+# without the sensor keeps the behaviour it had. The threshold is the sensor's
+# own (`FLEET_STATE_STALE_SECONDS`), and `scripts/lint-pace-threshold-pins.sh`
+# refuses the two drifting apart.
+#
+# WHAT THIS DOES NOT CHANGE. The `kill_permitted` conjunction at the call site
+# and the set of stages the reap path may take are untouched: this function only
+# widens the branch that used to be unreachable, and it does so only when the
+# sensor has positively said there is room.
+# ---------------------------------------------------------------------------
+readonly RUN_PACE_STALE_SECONDS=180
+readonly RUN_PACE_SCHEMA='cc-pace-state v1'
+readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=80
+
+run_pace_root() {
+  printf '%s' "${RUN_PACE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace}"
+}
+
+account_has_headroom() {
+  local home f now verdict
+  home=$(resolve_account 2>/dev/null) || return 1
+  [ -n "$home" ] || return 1
+  f="$(run_pace_root)/state.json"
+  [ -r "$f" ] || return 1
+  now=$(date -u +%s)
+  verdict=$(jq -r \
+    --arg schema "$RUN_PACE_SCHEMA" --arg home "$home" \
+    --argjson now "$now" --argjson stale "$RUN_PACE_STALE_SECONDS" \
+    --argjson pctmax "$RUN_PACE_SESSION_WINDOW_PCT_MAX" '
+    if .schema != $schema then "unknown"
+    elif (($now - (.computed_at_epoch // 0)) > $stale) then "unknown"
+    else
+      (.burn_per_stage_4h) as $need
+      | ([.seats[]? | select(.home == $home)] | first) as $seat
+      | if ($seat == null) or ($seat.allow == null) or ($seat.session_pct == null) or ($need == null) then "unknown"
+        elif ($seat.allow >= $need) and ($seat.session_pct < $pctmax) then "room"
+        else "full" end
+    end' "$f" 2>/dev/null) || return 1
+  [ "$verdict" = "room" ]
+}
 
 # ---------------------------------------------------------------------------
 # Notification seat. Three operations. `can_send` is a ONE-TIME adapter choice
@@ -3118,6 +3219,103 @@ transcript_path() {
   printf '%s' "$p"
 }
 
+# --- compaction window: what a driver-spawned stage runs under ---------------
+#
+# The driver does not source the gate, so the gate's reading of the same three
+# settings layers is spelled again here, same grammar and same order: the run's
+# per-kind settings file, the stage cwd's `.claude/settings.local.json` then
+# `.claude/settings.json`, the lane's `settings.json`. There is no argv layer on
+# this path — the driver injects no window — so a driver row can never say
+# `(argv)`. The value is written to `<stage>.window` (two lines: the window,
+# the lane in tilde form) beside the pid record, and read back onto the
+# `stage-result` row; a row for a stage that was never spawned reads `(미상)`.
+lane_label_of() {
+  # lane_label_of <config-dir> — `$HOME` prefix as `~`, anything else as is.
+  local d="${1%/}"
+  case "$d" in
+    "${HOME:-/nonexistent}") printf '~' ;;
+    "${HOME:-/nonexistent}"/*) printf '~%s' "${d#"$HOME"}" ;;
+    *) printf '%s' "$d" ;;
+  esac
+}
+
+stage_window_layer() {
+  # stage_window_layer <settings-file> — `<enabled>\t<window>` for one layer,
+  # nothing for a missing file, return 1 when the file exists and cannot be
+  # read (no jq, or the JSON refuses to parse). `has(…)` rather than `//`: a
+  # `false` on the right of `//` reads as absent, and an explicit "disabled"
+  # is the value this layer must not lose.
+  local f="$1" out
+  [ -f "$f" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 1
+  out=$(jq -r '[(if has("autoCompactEnabled") then .autoCompactEnabled | tostring else "" end), (if has("autoCompactWindow") then .autoCompactWindow | tostring else "" end)] | join("\t")' "$f" 2>/dev/null) || return 1
+  printf '%s\n' "$out"
+}
+
+stage_window_read() {
+  # stage_window_read <settings-file> <project-dir> <config-dir>
+  # `-` | `(꺼짐)` | `(미상)` | `<정수>(런설정|프로젝트|레인)`. The same per-key
+  # merge as the gate's `gate_autocompact_effective`, minus the injected-flag
+  # layer the driver does not have:
+  # `autoCompactEnabled` comes from the highest layer that defines it and the
+  # window from the highest layer holding a plain integer, each on its own, so
+  # a layer that only disables does not hide a window below it and vice
+  # versa. All layers are read first; an unreadable file anywhere is `(미상)`.
+  # A window that is not a plain integer means "this layer sets none".
+  local settings="$1" proj="$2" cfg="${3%/}"
+  local f tok reading layer_enabled layer_window
+  local enabled="" window="" window_tok=""
+  for tok in 런설정 프로젝트로컬 프로젝트 레인; do
+    case "$tok" in
+      런설정) f="$settings" ;;
+      프로젝트로컬) f="$proj/.claude/settings.local.json"; tok=프로젝트 ;;
+      프로젝트) f="$proj/.claude/settings.json" ;;
+      레인) f="$cfg/settings.json" ;;
+    esac
+    [ -n "$f" ] || continue
+    reading=$(stage_window_layer "$f") || { printf '(미상)'; return 0; }
+    [ -n "$reading" ] || continue
+    layer_enabled="${reading%%	*}"
+    layer_window="${reading#*	}"
+    [ -n "$enabled" ] || enabled="$layer_enabled"
+    if [ -z "$window_tok" ]; then
+      case "$layer_window" in
+        ''|*[!0-9]*) : ;;
+        *) window="$layer_window"; window_tok="$tok" ;;
+      esac
+    fi
+  done
+  if [ "$enabled" = "false" ]; then
+    printf '(꺼짐)'
+    return 0
+  fi
+  if [ -n "$window_tok" ]; then
+    printf '%s(%s)' "$window" "$window_tok"
+    return 0
+  fi
+  printf '%s' '-'
+}
+
+stage_window_of() {
+  # stage_window_of <stage-id> — line 1 of `<stage>.window`, or `(미상)`.
+  local f="$RUN_DIR/$1.window" v=""
+  [ -f "$f" ] && v=$(sed -n '1p' "$f" 2>/dev/null || true)
+  printf '%s' "${v:-(미상)}"
+}
+
+stage_lane_of() {
+  # stage_lane_of <stage-id> — line 2 of `<stage>.window`, or the lane this
+  # driver resolves now. `|| true` on the resolver: a refusal here must not
+  # stop a row from being written, so the lane falls to the default label.
+  local f="$RUN_DIR/$1.window" v="" cfg
+  [ -f "$f" ] && v=$(sed -n '2p' "$f" 2>/dev/null || true)
+  if [ -z "$v" ]; then
+    cfg=$(resolve_account 2>/dev/null || true)
+    v=$(lane_label_of "${cfg:-$HOME/.claude}")
+  fi
+  printf '%s' "$v"
+}
+
 stage_spawn() {
   # stage_spawn <stage-id> <cwd> <prompt> [extra-cli-args...] — returns at once.
   # Spawn and collect are separate so the driver can hold a stage open while it
@@ -3139,7 +3337,25 @@ stage_spawn() {
   cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
-  rm -f "$RUN_DIR/$stage.rc"
+  # All four are verdicts about the PREVIOUS holder of this id; a re-spawn
+  # under the same id must not inherit any of them.
+  #
+  # THE BACKOFF ACCUMULATOR IS CLEARED HERE BECAUSE THE ONE-RUNG GUARANTEE IS A
+  # PROPERTY OF A DISPATCH, NOT OF A STAGE ID. `backoff_served` reads the file's
+  # presence as "this stage has already sat out a rung", and the limit-shape arm
+  # consults it on its FIRST observation — so a dispatch that inherits the file
+  # reaps at once, which is exactly the live-stage kill the rung exists to
+  # prevent. Every teardown path did call `backoff_reset`, and relying on that
+  # was the defect: the guarantee then held only as long as every future exit
+  # remembered to reset, and one already did not — the non-idempotent branch
+  # parks the stage and hands it to `human_reconcile` with the accumulator still
+  # on disk. Clearing at spawn makes the guarantee hold by construction, so a
+  # teardown that forgets costs nothing.
+  #
+  # `.window` goes with `.rc`, not with `.pid`: the `stage-result` row is written
+  # after `stage_collect` has removed the pid record, so the window record must
+  # outlive collection and is replaced here, at the next spawn of the same stage.
+  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window" "$RUN_DIR/$stage.reap-cause" "$RUN_DIR/$stage.backoff"
   # Pin this dispatch's attempt number before anything derives a path from it,
   # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
   # it per derivation is how the session uuid and the stream path came from two
@@ -3247,6 +3463,11 @@ stage_spawn() {
   else
     id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
   fi
+  # The window this launch will run under, read from the same settings file
+  # and cwd the wrapper is about to be handed, and recorded before the launch so
+  # the row can carry it whatever the stage does next.
+  printf '%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
+    > "$RUN_DIR/$stage.window"
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -3320,18 +3541,42 @@ stage_wait_all() {
             # anything, and `reap_orphan` kills a process group on the strength
             # of a COMMENT ("`implement` is re-invocation idempotent"), which is
             # a comment and not a check. Guarding one branch and shipping is
-            # strictly worse than shipping neither: today the backoff bug
-            # accidentally protects a long apply, and repairing the backoff
-            # alone would hand a live SIGKILL to the first stage that goes
-            # quiet for a few minutes.
-            if kill_permitted "$s" && account_has_headroom; then
-              log "$s: 한도 형상 + 여유 계정 — 경계에서 재실행"
+            # strictly worse than shipping neither: while the backoff accumulator
+            # was being discarded, that bug accidentally protected a long apply,
+            # and repairing the backoff alone would have handed a live SIGKILL to
+            # the first stage that went quiet for a few minutes. The accumulator
+            # persists now, so what stands in that bug's place is the rung the
+            # next paragraph requires.
+            #
+            # THE SENSOR SHORTENS THE LADDER; IT DOES NOT REMOVE IT. The shape
+            # this arm reacts to is transcript silence, not a 429 — a stage
+            # inside one long tool call looks exactly like a stage that hit a
+            # limit. With `account_has_headroom` answering from a real sensor,
+            # consulting it on the FIRST observation reaps a live stage about
+            # sixty seconds after its transcript last grew, and the reap goes
+            # to a stage that was doing what it was told. So headroom is
+            # consulted only once the stage has already sat out at least one
+            # backoff rung: `backoff_served` is true only after `backoff_wait`
+            # has slept once and written the accumulator, and a `진행중` verdict
+            # in between resets it. The cap branch below is unchanged.
+            #
+            # THE REAP LEAVES A CLASS, NOT A CRASH. Nothing runs `stage_collect`
+            # for a reaped stage, so no `.rc` is written and every consumer
+            # reads the absence as 1 — which `classify_termination` turned into
+            # `크래시` and the crash arms re-bought the whole stage under the
+            # wrong name. `reap_mark` writes the reason down before the signal
+            # goes out; the classifier reads it and answers `한도-형상 회수`, and
+            # the consumers dispose of that class under its own name.
+            if backoff_served "$s" && kill_permitted "$s" && account_has_headroom; then
+              log "$s: 한도 형상이 백오프 한 단을 넘겨 지속 + 여유 계정 — 회수(reap)하고 종단 부류 「한도-형상 회수」로 남긴다; 소비자가 그 부류로 처분한다"
+              reap_mark "$s" "여유 계정"
               reap_orphan "$s"; backoff_reset "$s"
               continue
             fi
             if backoff_wait "$s"; then still="$still $s"; continue; fi
             if kill_permitted "$s"; then
-              warn "$s: 백오프 벽시계 상한 — 경계 멱등이므로 회수 후 경계에서 재실행"
+              warn "$s: 백오프 벽시계 상한 — 경계 멱등이므로 회수(reap)하고 종단 부류 「한도-형상 회수」로 남긴다; 소비자가 그 부류로 처분한다"
+              reap_mark "$s" "백오프 상한"
               reap_orphan "$s"; backoff_reset "$s"
             else
               # No signal, at all. The stage keeps running; the run stops
@@ -3430,6 +3675,24 @@ predicate_reconverge()  { grep -qF "$LIT_RECONVERGE_TERMINAL" "$(stage_log_path 
 # writing this line, so "no such line" describes nearly every document a person
 # wrote, and reading it as "not designed yet" aimed the design arm at those.
 doc_is_frozen()         { [ -n "$1" ] && [ -f "$1" ] && grep -qE '^\*\*상태\*\*: 동결됨$' "$1"; }
+# The SPAWN-TIME STUB, which is the one state at the document path that carries
+# nothing to lose. The design stage creates the file before it discusses
+# anything — an H1 and the team's ledger comment block, no `##` section yet —
+# so a stage that dies after spawning leaves behind the very file that then
+# reads as "a document is already there". Measured: a design stage died on an
+# API usage limit and its own stub became the reason it was never dispatched
+# again, which ended the run within minutes of an error that resets by itself.
+# The two axes are the stage's own target-document guard, not a second opinion:
+# does the ledger block parse, and does the body carry at least one `##`
+# heading. A person's document fails the first and a saved one fails the
+# second, so neither is mistaken for a stub — which is what `doc_is_frozen`
+# above is careful NOT to be asked here, because nearly every document a person
+# wrote is unfrozen and dispatching over those is the failure it warns about.
+doc_is_early_stub() {
+  [ -n "$1" ] && [ -f "$1" ] \
+    && grep -qF '<!-- cc-design-ledger' "$1" \
+    && ! grep -qE '^## ' "$1"
+}
 # A stage whose only output is a document has no un-fabricable predicate (see
 # the note above). Two authored facts are crossed anyway — the freeze literal in
 # the stage's own stream and the frozen-status line in the document — so a stage
@@ -3652,6 +3915,10 @@ classify_termination() {
   # classify_termination <stage> <exit-rc> <predicate-rc>
   local stage="$1" exit_rc="$2" pred_rc="$3"
   if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
+  # A stage the driver signalled from the limit-shape arm never reaches
+  # `stage_collect`, so its `.rc` is the consumer's default and not an
+  # observation. The mark the arm left is; it outranks the rc rows below.
+  if reap_marked "$stage"; then printf '한도-형상 회수'; return 0; fi
   if [ "$exit_rc" = "0" ] && [ "$pred_rc" = "0" ]; then printf '정상 완료'; return 0; fi
   # A stage that REACHED a decision point and declined to decide for the user is
   # not a stage that attempted nothing, and until this class existed the two
@@ -3796,6 +4063,22 @@ backoff_wait() {
 }
 
 backoff_reset() { rm -f "$RUN_DIR/$1.backoff"; }
+
+# True once this stage has sat out at least one rung IN THIS DISPATCH. The
+# accumulator file is written only after a sleep completes, is removed by
+# `backoff_reset`, and is cleared again by `stage_spawn`, so its presence is
+# exactly "one full rung since the last sign of progress, within the dispatch
+# now running". The dispatch scope is what the sidecar's "the first limit-shape
+# observation always waits one rung" means: without the spawn-time clear the
+# sentence would be true of a stage's first dispatch only.
+backoff_served() { [ -f "$RUN_DIR/$1.backoff" ]; }
+
+# reap_mark <stage-id> <reason> — written by the limit-shape arm BEFORE it
+# signals, so the classifier can tell a reap from a process that died on its
+# own. The file carries the reason for the driver log's reader; the class it
+# produces is one value, `한도-형상 회수`, for both reap branches.
+reap_mark()   { printf '%s\n' "$2" > "$RUN_DIR/$1.reap-cause"; }
+reap_marked() { [ -f "$RUN_DIR/$1.reap-cause" ]; }
 
 # The single predicate every signalling path must consult.
 #
@@ -4175,8 +4458,11 @@ apply_stage() {
   # A handover, not a degradation. The pipeline finished at merge and the
   # command travels to the morning report as an opaque string — reporting a
   # command is not performing it, so no new authorization vocabulary is needed.
+  # S9 spawns no CLI session, so no `.window` record exists for it and the
+  # three window fields read `(미상)` — a stage-less row, spelled the same way.
   if [ "$actor" != "파이프라인" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=적용 주체가 사람 — 인계"
     report_append "적용 인계" "$seg — 사람이 실행할 명령: $cmd"
     return 0
@@ -4206,6 +4492,7 @@ apply_stage() {
   apply_probe "$wt" "$probe"; pre=$?
   case "$pre" in
     0) ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+         "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
          "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 프로브 0 — 적용할 변경 없음"
        apply_teardown "$seg" "$wt"
        return 0 ;;
@@ -4223,6 +4510,7 @@ apply_stage() {
   apply_probe "$wt" "$probe"; post=$?
   if [ "$rc" = "0" ] && [ "$post" = "0" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 2 → 사후 0, 수렴"
     apply_teardown "$seg" "$wt"
     return 0
@@ -4233,6 +4521,7 @@ apply_stage() {
   # A normal teardown here would delete the only reproduction of a half-applied
   # state, which is the one artifact a person will need in the morning.
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=$rc" \
+    "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
     "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 2 → 사후 $post"
   park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
@@ -4771,10 +5060,18 @@ rebase_onto_base() {
 # backoff and lands on `human_reconcile` instead of being signalled.
 review_recover() {
   local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7"
-  [ "$class" = "크래시" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+  # A review the driver reaped from the limit-shape arm is in the same state a
+  # crashed one is — gone mid-flight, witness directory possibly on disk — and
+  # it was reaped BECAUSE `S5` is boundary idempotent, so the recovery dispatch
+  # is its disposition too. It arrives under its own class rather than as a
+  # crash, which is what keeps the two countable apart on the ledger.
+  case "$class" in
+    '크래시'|'한도-형상 회수') : ;;
+    *) park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1 ;;
+  esac
   if predicate_review "$rp"; then
     park "$seg" cone 무효화 "게이트 park" \
-      "리뷰 크래시 — 리포트에 종료 술어 줄이 이미 있어 복구를 파견하지 않는다"
+      "리뷰 $class — 리포트에 종료 술어 줄이 이미 있어 복구를 파견하지 않는다"
     return 1
   fi
   local att dirs n=0
@@ -4788,16 +5085,16 @@ review_recover() {
   [ -z "$dirs" ] || n=$(printf '%s\n' "$dirs" | grep -c .)
   if [ "$n" = "0" ]; then
     park "$seg" cone 무효화 "게이트 park" \
-      "리뷰 크래시 — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
+      "리뷰 $class — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
     return 1
   fi
   if [ "$n" != "1" ]; then
     park "$seg" cone 무효화 "게이트 park" \
-      "리뷰 크래시 — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
+      "리뷰 $class — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
     return 1
   fi
   local rsid="S5R:$seg:$cycle" rc pred rclass reaped
-  log "$seg: 리뷰 크래시 — 복구 스테이지 파견 (scratch $dirs)"
+  log "$seg: 리뷰 $class — 복구 스테이지 파견 (scratch $dirs)"
   # Dispatching on top of a still-running original gives the report path two
   # writers, which is the risk the publication rule is built to close. What this
   # call does about that is less than it looks, and the honest statement is:
@@ -4829,6 +5126,7 @@ review_recover() {
   rclass=$(classify_termination "$rsid" "$rc" "$pred")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
+    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" "기록자=드라이버" \
     "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
   absorb_stage_judgment "$rsid" "$seg" "$(seg_alias "$seg")"
   [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
@@ -4941,7 +5239,9 @@ segment_cycle() {
     # id it actually dispatched, and nothing else in the row carries it.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class"
+      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
+      "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
@@ -4981,6 +5281,20 @@ segment_cycle() {
         stage_wait_all "$sid.retry"
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
           park "$seg" cone 무효화 "게이트 park" "크래시 2회 — 산출물 없음"; return 1
+        fi ;;
+      '한도-형상 회수')
+        # The driver itself signalled this stage, from the limit-shape arm,
+        # because it is boundary idempotent and re-dispatching it is what that
+        # arm exists for. One re-dispatch under its own name, and it does not
+        # spend the crash retry: a reap is a decision the driver made, not a
+        # process that died, and the two must stay countable apart. A second
+        # reap parks under the same name rather than falling through to any
+        # other arm.
+        log "$seg: 한도-형상 회수 ($(cat "$RUN_DIR/$sid.reap-cause" 2>/dev/null)) — 경계에서 1회 재파견"
+        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\""
+        stage_wait_all "$sid.retry"
+        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
+          park "$seg" cone 무효화 "게이트 park" "한도-형상 회수 후 재파견 — 산출물 없음"; return 1
         fi ;;
       *) park "$seg" cone 무효화 "게이트 park" "종단 부류 $class"; return 1 ;;
     esac
@@ -5040,6 +5354,7 @@ segment_cycle() {
     # re-attached and had to be paid for again.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
     if [ "$class" != "정상 완료" ]; then
@@ -5285,13 +5600,35 @@ design_arm() {
       log "S1 설계 건너뜀 — 이 런의 설계 스테이지가 이미 완주했다 ($DOC_KEY)"
       return 0
     fi
-    park "S1design" run 무효화 "게이트 park" \
-      "이 런의 설계 스테이지가 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 설계하지도 감사로 넘기지도 않는다" \
-      "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"
-    return 1
+    # A CRASH THAT SAVED NOTHING IS DISPATCHED AGAIN. `크래시` is the class every
+    # non-zero exit gets, so a transient API usage limit is filed beside a stage
+    # that is genuinely broken, and parking on it ends the run for a cause that
+    # clears by itself. The document decides instead: nothing at the path, or
+    # the spawn-time stub, means the crash carried nothing off.
+    # A HOLLOW SUCCESS IS THE SAME SHAPE FROM THE OTHER SIDE. The stage exited 0
+    # and the artifact predicate said no document — a team member that ended its
+    # turn with no witness left, a save that never happened before the turn
+    # boundary, a background-wait ceiling reached mid-discussion. Nothing about
+    # those is more permanent than a crash, and the test is identical: the
+    # document decides, so a retry that would overwrite saved work is still
+    # refused and one that would overwrite nothing is allowed.
+    if { [ "$prior_class" = "크래시" ] || [ "$prior_class" = "공허한 성공" ]; } \
+       && { [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; then
+      log "S1 설계 재파견 — 앞선 시도가 $prior_class 로 끝났고 저장된 문서가 없다 ($DOC_KEY)"
+    else
+      park "S1design" run 무효화 "게이트 park" \
+        "이 런의 설계 스테이지가 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 설계하지도 감사로 넘기지도 않는다" \
+        "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"
+      return 1
+    fi
   fi
 
-  if [ -e "$DOC" ]; then
+  # THE ONE FILE THIS BRANCH LETS THROUGH IS THE STAGE'S OWN SPAWN-TIME STUB.
+  # Existence alone read that stub as a finished design, so a stage that died
+  # after spawning left behind the very file that stopped it being dispatched
+  # again. Everything else at the path — a person's document, a completed
+  # dispatch's, a hand dispatch's — still stops the arm exactly as before.
+  if [ -e "$DOC" ] && ! doc_is_early_stub "$DOC"; then
     log "S1 설계 건너뜀 — 설계 문서가 이미 있다 ($DOC_KEY)"
     ledger_row '자율 승인' "kind=design-composition" "결정=설계 스테이지를 띄우지 않는다" \
       "기각된 대안=있는 문서 위로 설계를 띄운다" "등급=1" \
@@ -5329,7 +5666,9 @@ design_arm() {
   class1=$(classify_termination S1design "$rc1" "$pred1")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
     "아티팩트 술어 결과=$pred1" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-    "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" "종단 부류=$class1"
+    "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" \
+    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" "기록자=드라이버" \
+    "종단 부류=$class1"
   absorb_stage_judgment S1design - "$(home_alias)"
   # An unfrozen document does not go on to the audit or the segment plan —
   # both read the freeze as a precondition.
@@ -5346,15 +5685,20 @@ design_arm() {
 # ---------------------------------------------------------------------------
 main_loop() {
   log "런 시작 run-id=$RUN_ID doc=$DOC slug=$SLUG base=$BASE"
-  # The two the morning reads. The surface digest excludes the plugin files on
-  # purpose — a redeploy must not kill a running run — so the code that actually
-  # enforced this run is otherwise unrecorded. These do not detect a mid-run
-  # change; they record what it started from, which is what lets the morning tell
-  # a clean night apart from one that ran unreviewed working-copy enforcement.
+  # The two the morning reads. They describe the TARGET BASE — its HEAD at
+  # kickoff and whether that worktree was clean — not the code that judged the
+  # run; the gate's `run` row records that separately in its three version
+  # fields. These do not detect a mid-run change either; they record what the
+  # run started from, which is what lets the morning tell a clean night apart
+  # from one that ran against an unreviewed working copy.
+  #
+  # `--no-optional-locks`: a plain `git status` rewrites the index and locks it
+  # for a quarter of a second, which is enough to fail a concurrent
+  # `git pull --ff-only` — the command every apply in this tree uses.
   ledger_row 'run' "run-id=$RUN_ID" "시작=$(now_iso)" "설계 문서=$DOC_KEY" \
     "전체 sha256=$(whole_digest)" \
-    "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
-    "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+    "강제 코드=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
+    "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
     "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
   report_append "개시" "run-id=$RUN_ID · 문서 $DOC_KEY · 권한 절단점 $(grant_field "$RUN_ID" '권한 절단점')"
 
@@ -5411,7 +5755,9 @@ main_loop() {
   class2=$(classify_termination S2 "$rc2" "$pred2")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-      "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" "종단 부류=$class2"
+      "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" "기록자=드라이버" \
+      "종단 부류=$class2"
   absorb_stage_judgment S2 - "$(home_alias)"
   case "$class2" in
     '정상 완료') : ;;

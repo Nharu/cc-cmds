@@ -2,12 +2,13 @@
 
 The payload schemas for the autonomous pipeline's durable state. Generic mechanics — path and slug derivation, the header grammar and `owner-doc=` provenance guard, the atomic compare-and-swap write, the never-delete lifetime, the version token — are **not restated here**: they live in `_common/sidecar.md` §1 and this file cites them read-only. What follows is only what §1 delegates to a payload schema: the kinds, their block grammars, their field sets, their mutability splits, and their write forms.
 
-Four sidecar kinds and one non-sidecar record are defined:
+Five sidecar kinds and one non-sidecar record are defined:
 
 | Artifact | Kind token | Writer | Location |
 | --- | --- | --- | --- |
 | Run manifest | `cc-run-manifest v1` | `autopilot` (kickoff) **only** | `<run 디렉터리>/plan.md` |
 | Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-grant/{slug}.md` |
+| Interview record | `cc-run-interview v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.interview.md` |
 | Run ledger | `cc-pipeline-run v1` | the driver **only** | `<base>/docs/pipeline-run/{slug}.md` |
 | Approval sidecar | `cc-pipeline-approval v1` | the gate **only** | `<base>/docs/pipeline-approval/<run-id>.md` |
 | Halt record | `cc-pipeline-halt v1` | the halting stage | volatile run directory (§4) — **not a sidecar** |
@@ -18,7 +19,7 @@ Four sidecar kinds and one non-sidecar record are defined:
 
 ## 1. Writer partition — and why it is total
 
-**The driver is read-only against the grant.** The only writer of `cc-pipeline-grant` is the kickoff skill `autopilot`; the driver reaches it by no path at all. An append gate can refuse edits to a frozen block but cannot refuse a **well-formed new block that grants more** — that is an ordinary append. Giving the all-night process no write access does not mitigate that residual, it **deletes** it: a process with no write path cannot widen its own authorization no matter how it fails. What remains is misbehaviour by the kickoff skill itself, which happens with a human watching.
+**The driver is read-only against the grant.** The only writer of `cc-pipeline-grant` is the kickoff skill `autopilot`; the driver reaches it by no path at all. An append gate can refuse edits to a frozen block but cannot refuse a **well-formed new block that grants more** — that is an ordinary append. Giving the all-night process no write access does not mitigate that residual, it **deletes** it: a process with no write path cannot widen its own authorization no matter how it fails. What remains is misbehaviour by the kickoff skill itself, which happens with a human watching. The interview record (§2b.5) has the same single writer: it holds the person's own words, so it is written once, whole, while that person is present. **No gate refuses a write to it** the way one refuses a write to the manifest or the grant — what makes a later change visible is its hash row inside the frozen set, not a guard.
 
 **The driver is the sole writer of the ledger, from the main worktree.** Stage processes emit structured output on stdout and **never write a sidecar** — not the ledger, not the grant. `sidecar.md` §1.3 states plainly that its compare-and-swap narrows the check-then-act window to a single process spawn rather than eliminating it, so N segment processes resolving to one `<base>` would contend in that residual window and destroy the loser's block. A single writer does not arbitrate that contention; it removes it by construction.
 
@@ -152,10 +153,24 @@ once per run rather than on every append.
 **미선언 상황 처분**: park | 선언된 기본값 진행
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
 - `자동 채택` | 판단 부류=<열 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
+- `사전 인가` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>     ← 설계 요구사항 인터뷰가 있었을 때만
+- `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>     ← 팀 티어 설계 스테이지가 있을 때만, 한 팀원 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
 ````
+
+**`설계 문서` is the kickoff's to name, and on a design run `(없음)` is a refused
+value.** That field is what the dispatch, its guards and the audit all resolve the
+document through, so a run whose frozen plan requires a design must carry a real
+path in it — the kickoff derives one from the intent when it reads the roster
+back to the person, and writes it before the freeze. `(없음)` stays legitimate on
+a run that requires no design. Two checks hold the line and **neither of them
+invents a path**: the kickoff's own pre-freeze self-check refuses to write a
+manifest pairing a design-requiring plan with `(없음)`, and the gate's
+design-dispatch exemption refuses the act rather than reading that value as a
+path. A router that composed a path here instead would name a document no guard
+and no audit is looking for.
 
 **The manifest freezes the GOAL AND THE CONSTRAINTS, not the plan.** The plan
 digest is gone, and its absence is the point rather than an omission: the step
@@ -166,7 +181,8 @@ whole contract exists to remove, arriving as a leftover.
 What IS frozen, and what `구속 다이제스트` covers: the goal, the termination
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
-irreversible acts, **the `자동 채택` rows**, and the optional deadline. The gate
+irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, the cost
+ceiling and the stagnation bound when declared, and the deadline. The gate
 compares that digest at entry.
 
 The `자동 채택` rows are in that list because they were not, and the omission was
@@ -184,9 +200,13 @@ rather than reported as "something in the frozen set moved".
 
 **The stage's authorization list is re-derived, and that is what keeps a run able to finish.** It used to be written once at run open and never again, on the ground that a surface which changes because the gate touched it is a surface whose comparison means nothing. The ground is real; the remedy was too wide. Kickoff happens **before** segmentation, so a segment's own worktree is never in the manifest — it reaches the list through the ledger's `segment` rows, and a list frozen at run open had no way to get it. Measured: a run produced its review and then could not remediate at all, ending with its goal marked unreachable for want of a directory rather than for want of work.
 
-What keeps the comparison meaningful is not that the surface never moves. It is that it moves **only through the gate**, and leaves a row when it does. So the list is a pure function of the manifest's target rows and the set of worktrees the ledger's `segment` rows name — the last row per segment id, kept only when its `워크트리` is an absolute path to an existing directory sharing a declared target's common git directory — and when that function yields different bytes the gate rewrites, re-baselines, and appends a `대상 추가` row naming what widened. That row is a record, not an input. The ledger's growth is not an input either: only a new worktree value moves the derivation, so the call after the one that wrote a segment row — normally that segment's dispatch — widens the list before the stage starts. **The re-derivation runs only from a baseline that still matches.** If the surface has already moved, the gate does not repair it: repairing would erase the evidence the surface check reads, and an edit by anything that is not the gate still lands as exit 7.
+What keeps the comparison meaningful is not that the surface never moves. It is that it moves **only through the gate**, and leaves a field when it does. So the list is a pure function of the manifest's target rows and the set of worktrees the ledger's `segment` rows name — the last row per segment id, kept only when its `워크트리` is an absolute path to an existing directory sharing a declared target's common git directory — and **the moment that function can change is the moment a non-terminal `segment` row is written.** The re-derivation runs there, inside the `segment` arm of the row writer, with the row about to be written counted as that segment's last: when the render yields different bytes the gate rewrites, re-baselines, and puts `인가면=<before>→<after>` on **that row** — the two enforcement-surface digests, before and after. **A `segment` row without `인가면` reads as "this row widened nothing"**, and no more than that: a terminal row, a row whose inputs were the ones already settled so no render ran, a row whose render yielded the same bytes so nothing was rewritten, a row written before this field existed, and a row whose failure marker did not fit the row cap all look alike, and the row alone does not tell them apart. **A row on which the re-derivation did not land carries `인가면=실패(<사유>)` instead of nothing**, with the reason from a closed set — `런 디렉터리 없음`, `락 대기 초과`, `기준선 불일치`, `프로브 렌더`, `렌더` — and a `warn` on the writer's stderr; the worktree that row names is not on the list until the next non-terminal `segment` row from any segment re-derives it, and that next row does re-derive, because no failure arm records the settled key. The row itself is kept on every failure arm: it is a state transition, and refusing it over a lock a sibling holds or a render that failed would lose the transition to a condition the writer did not cause. The current surface is what `RUN_DIR/surface-digest` holds, never what the last row says. `인가면=생략(행 길이)` means the rewrite did happen and only the value was left off the row (§3.1a); a failure marker is never rewritten as `생략(행 길이)`, because that spelling asserts a rewrite that did not happen. Every path the list carries is emitted in both spellings, as the row wrote it and as `pwd -P` resolves it, because the harness compares directories as strings and a worktree reached through a link is touched by either.
 
-The widening is bounded by construction — every directory it can add is a worktree of a target the run already acts in. Nothing there grants a cutpoint, and the cutpoint is what governs whatever leaves the machine.
+> **Old wording** (for re-deriving citations): "and when that function yields different bytes the gate rewrites, re-baselines, and appends a `대상 추가` row naming what widened. That row is a record, not an input. The ledger's growth is not an input either: only a new worktree value moves the derivation, so the call after the one that wrote a segment row — normally that segment's dispatch — widens the list before the stage starts." — The trigger moved from the next call's prelude to the row itself, and the record moved from a `대상 추가` row to a field on the `segment` row, for two reasons that can each be checked in `gate.sh`. First, the prelude re-derivation ran after the caller's snapshot digest had been taken and before `gate_verb_act`'s staleness check read it, so the call that widened invalidated its own caller's digest. Second, the `대상 추가` series means "a repository joined the run" — `gate_undeclared_target` writes it with an actual alias and remote, and `feed.sh` renders it as such — and the rows the re-derivation appended there carried `별칭=-` and every target field as `-`: nothing refused them (the manifest census, `manifest_targets` in `run.sh`, reads the manifest alone and never saw them), but they put a non-target on the target-shaped series and every reader of that series had to know to skip them.
+
+Nothing but a row written through the gate moves the list. A manifest edit, a row planted past the gate, or an act on a segment whose row already exists all leave it where it was until the next non-terminal `segment` row; a worktree that has been removed leaves the list at that same moment, because the derivation keeps only directories that exist. **Before the first `segment` row the surface is exactly the manifest's**: every declared target's main and execution worktree, the run directory, the document directories and the plugin directory — zero segment worktrees. Kickoff, a shift launch and a run that never segments all run on that set. **The re-derivation runs only from a baseline that still matches.** If the surface has already moved, the gate does not repair it: repairing would erase the evidence the surface check reads, and an edit by anything that is not the gate still lands as exit 7.
+
+The widening is bounded by check, not by claim — a non-terminal `segment` row whose `워크트리` carries a double quote, a backslash, a pipe or a control byte, or is not an absolute path, not an existing directory, or not a worktree sharing some declared target's common git directory is **refused at write time** (exit 2), so the ledger never carries a live row naming a directory the settings could not admit. Every directory the list can add is therefore inside a worktree of a target the run already acts in — **inside**, because the check is on the common git directory and a subdirectory of an admitted worktree shares it. That is why the byte condition is one of the six and not a nicety: the row grammar maps a newline to a space and a pipe to a slash, and the settings file is line-delimited JSON, so a name carrying a newline would be admitted as text the row cannot repeat and the renderer reads as two entries, the second of them a directory no target declares — and a name carrying a pipe would be admitted as written while the row records a different directory, one with a slash where the pipe was, which the next re-derivation reads back from the ledger. The set is closed by an invariant rather than by a list: on every accepted non-terminal row, the `워크트리` the row carries and the entry the settings admit are the same bytes. The renderer escapes each entry as well, so neither half stands alone. Nothing there grants a cutpoint, and the cutpoint is what governs whatever leaves the machine. **Terminal rows — `완료`, `머지됨`, `park` — are exempt from all three**: the boundary check, the re-derivation and the field. A segment's worktree is routinely removed by the merge that lands it, so a terminal row naming a directory that no longer exists is the ordinary shape and is recorded as written; the vanished path then leaves the list at the next non-terminal row, which is the direction that widens nothing.
 
 **`실행 워크트리` is optional and exists because one field could not carry two duties.** `메인 워크트리` is pinned to the main worktree so that N linked worktrees of one repository converge on one sidecar location — that is what keeps the state a single writer owns from splitting N ways. But the act has to run where the branch actually **is**, and for a `pr` or `branch` anchor that is never the main worktree, because git refuses to check one branch out twice. With only the first field, a stage woke on the main worktree's branch every time: it started normally, the files were readable, and what it read was a different version. Nothing mechanical noticed — the one observation that caught it was a stage comparing its own HEAD against the branch name in its instructions, which is goodwill rather than a check.
 
@@ -255,6 +275,30 @@ floor.** The floor is the union; a document-producing stage has no unforgeable
 severity predicate, and non-critical findings mostly pass because they are mostly
 reversible rather than because of their grade.
 
+**The `설계 로스터` rows are the design team a person approved at kickoff**, one
+member per row, and a design stage dispatched by the run instantiates its team
+from exactly these rows. They are written only when the graph carries a team-tier
+design stage. **They do not reuse `사전 인가`.** That list is the one an act is
+checked against, and a roster mixed into it is a row two readers read with two
+meanings. **They are row-shaped because a new field would not freeze.** A `## 요소` field
+enters neither digest, and a `**키**: 값` line inside `## 인가` enters one only
+when the serializer names that field — the same ground `리뷰 정책 상한` records
+below — while a row of this shape is
+collected into `구속 다이제스트` over the whole file, like the `자동 채택` rows. A
+manifest with no such row contributes zero bytes, so no run in flight moves, and
+the design stage then instantiates the default roster frozen in its own skill
+file. Nothing is chosen at runtime on either path, which is what keeps `팀-구성`
+— a class the gate never adopts on its own — out of the stage's hands.
+
+**The interview-record row is spelled as a `사전 인가` row, and it authorizes
+nothing.** It carries no `형태=`, and the pre-authorization rule skips a row
+without one, so no act matches it. What the spelling buys is that the row is
+collected with the other `사전 인가` rows and the record's whole-file hash is
+therefore inside `구속 다이제스트`. **What it does not buy is a comparison
+against the file.** No gate re-hashes the record at runtime; the claim is that
+the hash the person's kickoff took is frozen where editing it moves the digest,
+and that anyone can compare the file against it with one `shasum`.
+
 **The example above is fenced with FOUR backticks** because it contains
 three-backtick fences of its own. Any document that explains this grammar has
 the same shape, which is why the parser that reads it has to skip fenced spans
@@ -269,7 +313,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가` and `자동 채택` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택` and `설계 로스터` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** Written in the most natural-looking place the
 ceiling would freeze nothing, and the tamper-evidence argument for it would be
@@ -324,7 +368,8 @@ never compared.
    A mismatch is a **hard stop before the driver starts**, not a park.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
-   target rows, rule settings, pre-authorization rows, deadline. The PLAN is not
+   target rows, rule settings, pre-authorization rows, auto-adoption rows, design
+   roster rows, the cost ceiling and stagnation bound when declared, deadline. The PLAN is not
    in it: the router decides the step graph one act at a time, so a frozen plan
    would be recorded and never compared.
 7. **Every cutpoint token** is in `CUTPOINTS` — an unrecognized token is a hard
@@ -493,6 +538,81 @@ flight stays conforming with no migration. That holds however large the
 population turns out to be, which is why it replaces the count instead of
 correcting it.
 
+### 2b.5 The interview record — what the design stage cannot ask for
+
+````
+# 파이프라인 런 인터뷰 기록 — <run-id>
+<!-- cc-run-interview v1; writer=autopilot; reader=design-discuss-unattended (driver dispatch) and the morning report; run-id=<run-id>;
+     NOT a design doc; mechanism-local, never staged by a skill -->
+
+## 과제
+<과제 문면, 축자>
+
+## 요구사항 문답
+### 문 1
+<질문, 축자>
+### 답 1
+<답, 축자>
+
+## 배포 형상
+**레포**: <답> | 없음
+**슬라이스 수**: <답> | 없음
+**적용 위치**: <답> | 없음
+**적용 주체**: <답> | 없음
+**실패 시 파킹**: <답> | 없음
+
+## 재현 근거
+<사람이 가리킨 재현 절차와 관측> | 없음
+
+## 검증 선결
+<설계 전에 참으로 확인돼야 하는 전제> | 없음
+
+## 골격 사전 판정
+<사람이 바꾸면 안 된다고 말한 것> | 없음
+
+## 로스터
+매니페스트 `## 인가` 의 `설계 로스터` 행을 따른다 | 없음(기본 로스터)
+````
+
+Written by the kickoff when the run's plan requires a design and the interview was
+held — once, whole, **creation-only, with no append form**, the posture of the
+manifest. Its whole-file `sha256` is taken immediately and enters the manifest as
+the interview-record row of §2b.1. The question-and-answer pairs repeat as many
+times as the interview had turns, numbered in order. **`없음` is a value**: a
+section with no answer carries it, and an omitted section is a different fact.
+
+**Every answer is verbatim.** The record is the disk anchor for the requirement's
+own words. Without it, a requirement lives in the kickoff conversation, which is
+compacted, and in nothing else — so a design stage, a reviewer or the morning
+report checking a decision against the requirement has nothing to check against.
+A paraphrase would be the kickoff's reading of the person, which is exactly what
+that anchor exists to keep apart from the person's words.
+
+**It does not carry the roster.** The approved roster lives in the manifest's
+`설계 로스터` rows and is frozen there. Two artifacts carrying the same roster
+under two digests can disagree, and nothing decides which of them is the
+authorization — so the authorization lives where every other one does, and this
+record only refers to it.
+
+**What reads it, and how it finds it.** A design stage dispatched by the run
+opens this file and takes it as the requirement input for the discussion. It is
+found by **path convention, not by argv**: the stage already holds
+`CC_PIPELINE_RUN_ID` and the manifest's path, and this record sits beside the
+manifest's own directory under that run id. Nothing is added to the dispatch, so
+the driver's design arm and the gate's `--segment -` dispatch both reach it
+without a second shape — an argv slot would have had to be added to two callers
+and kept in step forever.
+
+**The hash is re-taken and compared, and a disagreement is a halt.** The stage
+takes the whole-file `sha256` and compares it against the interview-record row of
+§2b.1. Three states stop it before the team spawns: the two values differ, the
+row exists and the file does not, or the file exists and the row does not. A
+record whose bytes have moved is no longer the record the manifest vouches for,
+and the requirement is the one input the stage cannot re-derive from anything
+else. When **neither** the row nor the file is there the stage runs from the task
+sentence and `## 의도` alone, which is what every run did before this reader
+existed.
+
 ## 3. `cc-pipeline-run v1` — the run ledger
 
 ```
@@ -520,32 +640,36 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at seventeen
+**One field, and only one, is relaxed under the cap: `segment.인가면`.** It is 144 bytes on the row — separator, name, two sha256 hexes and the arrow — and the rows it lands on are the planning rows that already carry a long `선언 파일 집합`, so the worst row and the field meet. A `segment` row that would cross the cap with the field lands **without** it, carrying `인가면=생략(행 길이)` instead, and without even that when the marker does not fit; the settings are rewritten either way, and what degrades is the record, never the widening. A failure marker (`인가면=실패(<사유>)`) that would cross the cap is dropped outright rather than rewritten as `생략(행 길이)` — that spelling means a rewrite happened, and on a failure arm none did; the `warn` the arm already emitted is the record then. Refusing the row would leave that segment unable to record its plan, which costs more than the field's observability is worth. This is not a general rule — "drop the last field when over the cap" would silently lose a failing check from a row that lists them, indistinguishable from none having failed — and every other series decides for itself what it may drop, which today is nothing.
 
-> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at sixteen` — `경계 억제` arrived as the seventeenth kind, and a heading that states a count states a falsehood the moment the count moves.
+### 3.2 The row series is closed at twenty
 
-> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fifteen` — `교대 기동` arrived as the sixteenth kind, and a heading that states a count states a falsehood the moment the count moves.
-
-> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen` — `handoff` arrived as the fifteenth kind, and a heading that states a count states a falsehood the moment the count moves.
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen`, then `### 3.2 The row series is closed at fifteen`, then `### 3.2 The row series is closed at sixteen`, then `### 3.2 The row series is closed at seventeen`, then `### 3.2 The row series is closed at eighteen` and `### 3.2 The row series is closed at nineteen` — `handoff` arrived as the fifteenth kind, `의무 종결`·`의무 포기` as the sixteenth and seventeenth, `교대 기동` as the eighteenth, `경계 억제` as the nineteenth and `pace` as the twentieth. A heading that states a count states a falsehood the moment the count moves, and it has moved six times; every one of those spellings is kept here rather than replaced so a citation written against any of them still lands.
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
 
 The count moved from nine to eleven when the gate acquired two records the existing series could not carry: an approval is not a decision the run made (`자율 승인`) and not a stop (`blocked`), and a deferred review obligation is neither. Both are **non-terminal states with their own lifecycle**, which is precisely what no existing kind models — every one of the nine is either a fact about something that already happened or a stop. Extending the definition rather than overloading a kind is what this section's own rule requires, and the two additions are stated here rather than improvised at the call site.
 
-**The sixteenth exists because a launch and an attempt to launch had no way to be told apart.** `handoff` names a shift that ENDED and the authorisation row names one that was DECIDED ON, and neither says a successor actually started — the authorisation row is written before the dispatch and survives a launcher that turns back. `교대 기동` is the record of the start itself, written immediately before it, and it is what the shift ordinal is counted from. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
+**The eighteenth exists because a launch and an attempt to launch had no way to be told apart.** `handoff` names a shift that ENDED and the authorisation row names one that was DECIDED ON, and neither says a successor actually started — the authorisation row is written before the dispatch and survives a launcher that turns back. `교대 기동` is the record of the start itself, written immediately before it, and it is what the shift ordinal is counted from. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
 
-**The seventeenth exists because a suppression is frequent and silent, and nothing else could hold it.** The stagnation boundary now forgives a short stretch of reads before it fires, and a suppression that leaves no row is the one event in this ledger that happens often and cannot be seen afterwards — so a morning reader cannot tell a boundary that stayed quiet because the run was healthy from one that stayed quiet because it was suppressed. `blocked` is the series the trace would otherwise belong to, and it is the one series it may not use: the obligation boundary reads `blocked`, so a trace written there would make one boundary's suppression move another boundary's input. That is why the name is fixed here rather than at the call site — **the load-bearing property is a property of the NAME**: no boundary reads it. Choosing it during implementation would mean choosing it without that constraint written down, and a name that collides with a series some boundary does read reintroduces exactly the coupling this separation avoids. `크레딧 잔량` is on the row because the suppression is bounded, and a reader who cannot see how much of the allowance is left cannot tell a burst that is about to be interrupted from one that just started.
+**The nineteenth exists because a suppression is frequent and silent, and nothing else could hold it.** The stagnation boundary now forgives a short stretch of reads before it fires, and a suppression that leaves no row is the one event in this ledger that happens often and cannot be seen afterwards — so a morning reader cannot tell a boundary that stayed quiet because the run was healthy from one that stayed quiet because it was suppressed. `blocked` is the series the trace would otherwise belong to, and it is the one series it may not use: the obligation boundary reads `blocked`, so a trace written there would make one boundary's suppression move another boundary's input. That is why the name is fixed here rather than at the call site — **the load-bearing property is a property of the NAME**: no boundary reads it. Choosing it during implementation would mean choosing it without that constraint written down, and a name that collides with a series some boundary does read reintroduces exactly the coupling this separation avoids. `크레딧 잔량` is on the row because the suppression is bounded, and a reader who cannot see how much of the allowance is left cannot tell a burst that is about to be interrupted from one that just started.
+
+**The twentieth exists because the pacing verdict is state that lives outside the run, and the ledger has to say what the run saw of it.** `pace` is written by the gate on the record path of `act` and `exec` — immediately after the `자율 승인` row, and never by `snapshot`, which is a read and stays one — and only when the verdict differs from the last `pace` row of THIS run's ledger, or when the run has none yet. That basis is run-scoped on purpose: the sensor keeps its own previous verdict across every run on the machine, and a run keyed on that would write nothing all night when the verdict never moved, so the 8-row ancestry window would carry no `pace` row at all. One row per run plus one per change is what that window can absorb. An absent, unreadable, foreign-schema or stale state (older than three sensor periods, 180s) is written as `판정=(미상)` with `기준 틱=-` and `관측=-` rather than skipped — the row says the gate looked and found no verdict, which a reader has to tell apart from the gate never looking. **Two closed token sets, never mixed**: `판정` and `이전` take the sensor's verdict vocabulary (`가속` · `유지` · `제동` · `(미상)`), and `사유` takes the sensor's reason vocabulary (`brake` · `idle` · `lanes-below-target` · `default` · `tracker-skip` · `truncated` · `(미상)`); a dispatch refusal clause (`lane` · `window` · `burn` · `brake`) is a third vocabulary and belongs to `fleet.sh`'s own refusal log, not to this row. With `pace` the series counts twenty; the prose below that says "nine to eleven" and "the fifteenth" is the history of earlier counts and is left as written.
 
 **The last two are a reconciliation rather than an extension, and the difference matters.** `종료 절` and `문서 해시` were already being written by the gate while this table did not list them — so the table was not a closed definition at all, it was a partial inventory that read like one. A contract that under-reports what its writer emits is worse than one that over-reports: a reader checking whether a series exists gets "no" for something the ledger is full of. They are listed now with the fields the gate actually writes.
 
+**Sixteen and seventeen are `의무 종결` and `의무 포기`, and they exist because a `problem` obligation had no exit.** The open set was derived from `problem` rows and nothing subtracted from it: `obligation` closes review obligations only, and the one other exit — the exemption — opens for a creating grade at or below `워크트리쓰기`, while a REFUSED act structurally carries `등급 미상`. Refusal is the main way a `problem` row comes to exist, so the exemption missed the dominant case by construction and termination condition 3 could not be satisfied at all. The two are separate series rather than one with a state field because they differ in **tense**, and the tense decides when each is checked: `종결` cites a past act row and is never re-verified, `포기` cites a segment being terminal — a reversible, present-tense fact — and is re-verified every time the open set is computed.
+
+Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text identity) that the reader computes rather than the writer stores, so a `problem` row written before these series existed is closable with no migration. Neither carries the identity verbatim: §3.1a's 1024-byte cap makes unbounded free text unsafe on a row, so `표시 동일성` is a truncated label that **no predicate reads**. `세그먼트` is inherited from the row being closed and never accepted from argv, the same discipline `리뷰 의무` already applies to its carried fields.
+
 | `계열` | Fields |
 | --- | --- |
-| `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `강제 코드` · `베이스 청결` · `RUN_DIR` · `보고서` |
+| `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `강제 코드` · `베이스 청결` · `판본` · `판본 트리` · `판본 다이제스트` · `RUN_DIR` · `보고서` |
 | `generation` | `세대` · `전체 sha256` · `구속면 다이제스트` · `세그먼트 계획` · `segmentation`(`ok` \| `low-confidence`) |
-| `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` · `리뷰 정책`(optional) |
-| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드`(`-` on a settlement row) · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모`(`-` on a settlement row) · `종단 부류` · `관측`(settlement row only) |
+| `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` · `리뷰 정책`(optional) · `인가면`(optional, gate-written: `<sha256>→<sha256>` \| `생략(행 길이)` \| `실패(런 디렉터리 없음)` \| `실패(락 대기 초과)` \| `실패(기준선 불일치)` \| `실패(프로브 렌더)` \| `실패(렌더)`; absent means this row widened nothing, a `실패(…)` value means the re-derivation did not land and the next non-terminal row re-derives, and `RUN_DIR/surface-digest` is the current surface either way; never on a terminal row; a caller-supplied value is refused) |
+| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드`(`-` on a settlement row) · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모`(`-` on a settlement row) · `압축 창`(effective compaction window and its source: `-` \| `(꺼짐)` \| `(미상)` \| `<정수>(argv\|런설정\|프로젝트\|레인)`) · `레인`(config home, tilde form) · `기록자`(`게이트` \| `드라이버`) · `종단 부류` · `관측`(settlement row only) |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` · `모드`(optional: `전체` \| `델타`; absent reads as `전체`) · `기준 사이클`(optional; required iff `모드=델타`, refused otherwise) |
-| `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
+| `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `생성 등급`(축 2) · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `행위자`(`리드` \| `교대` \| `스테이지`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` · `도달 판정`(도달 park 행 전용) · `세그먼트`(같음) · `스테이지`(같음) · `축2`(같음) · `도달`(같음) · `행위 다이제스트`(같음) |
@@ -555,8 +679,19 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
 | `handoff` | `교대` · `대상` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` · `기록 시각` |
-| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` |
+| `의무 종결` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`종결`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
+| `의무 포기` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`포기`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
+| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` · `세션 id` · `레인` · `압축 창` |
 | `경계 억제` | `경계` · `사유` · `크레딧 잔량` · `기록 시각` |
+| `pace` | `판정` · `이전` · `기준 틱` · `관측` · `사유` |
+
+**The `run` row's three version fields say what code JUDGED the run, and the two beside them say what code was being judged.** `판본` is the pinned commit (`<40hex>` \| `(미상)` \| `(고정 안 함)`), `판본 트리` the pinned plugin subtree's git tree (`<40hex>` \| `(미커밋)` \| `(미상)` \| `(고정 안 함)`), and `판본 다이제스트` the content digest of the copy itself (`<sha256>` \| `(고정 안 함)`). `(고정 안 함)` is not a failure: a run opened before pinning existed, or one opened under the test seam, is deliberately left unpinned, and a reader has to be able to tell that apart from a pin whose value could not be determined. `(미커밋)` means the plugin subtree was dirty when the copy was taken, so no tree object names those bytes.
+
+**`강제 코드` and `베이스 청결` are about the TARGET BASE, not about the judge** — the base's HEAD at run open and whether that worktree was clean. The earlier wording here said those two recorded "the code actually enforcing this run", which was never true and is now also unnecessary: the three fields above record that, and `plugin-pin` holds the rest.
+
+**Restoring a pinned version.** When `판본 트리` is a hash, `git archive <tree> | tar -x` in the plugin repository reproduces the copy, and the result's content digest — computed by the same `pin_digest` the pin used — must equal `판본 다이제스트`. That works even when `판본` names a local commit that a later reset removed, because the subtree it points at is shared with its parent. When `판본 트리` is `(미커밋)` there is nothing to restore from: the copy under the run directory is the only one that ever existed, and once the reaper collects that directory the digest identifies the version without reproducing it. **That is a stated residual, not an oversight.**
+
+**The copy's files are NOT part of the enforcement-surface digest.** The exclusion of plugin files from `gate_surface_digest_raw` stays exactly as it was: that digest's mismatch is exit 7, which is unrecoverable, so a false positive there is the incident that exclusion was introduced to prevent. Two write layers already cover the copy — the run hook's allow-list and the gate's own Bash path guard, both of which refuse every name under a run directory that is not a halt record, a segment plan or a witness product.
 
 **This table is held equal to the gate's call sites by `scripts/lint-sidecar-field-table.sh`, and the first run of that lint was a reconciliation.** Per series, the union of literal `<키>=` names across every `gate_append '<계열>' …` call must be listed here; where no call site forwards `"$@"`, the listed set must also be written by some call site. `교대` and `prev` are outside the comparison — `gate_append` adds both to every row itself. What that first run found and this table now says: `run` also carries `강제 코드` and `베이스 청결`; `problem` carries `세그먼트`; `자율 승인` carries `대상`·`세그먼트`·`절단점`·`축2` on the acting path and `출처` when absorbed from a stage's terminal line; `handoff` carries `대상` and `기록 시각`; and `stage-result` never spelled `아티팩트 술어 결과` — the predicate's result is folded into `종단 부류` — so that name is gone from the row rather than kept as a field nothing writes. **No cell carries the `writer pending` marker today, and the mechanism stays written down anyway.** `사유` on a `철회` row was listed one landing ahead of its writer and said so in its cell; the boundary evaluation that withdraws an approval now writes it, so the marker came off with the writer's arrival rather than being left standing. The mechanism is documented because the next field listed early will need it: a cell marked `writer pending` is the one shape the lint's reverse direction passes over, and it reports that field by name rather than skipping it silently — which is what keeps such a marker from outliving the writer's arrival unnoticed.
 
@@ -564,13 +699,15 @@ The count moved from nine to eleven when the gate acquired two records the exist
 
 They are written from three different places, because the three have different knowledge. `run` is written once at run open, by the gate. `stage-result` and `cost` are written by the gate's detached stage supervisor when a stage terminates, from the stage's **own** terminal result line — its cost, its subtype, its session id — so nothing here depends on a stage reporting anything about itself. `problem` is an `act` kind like `segment` and `cycle`: recognising that a finding is the same finding as last cycle's is a judgment, and the router is where judgment lives.
 
+**`stage-result` has two writers, and the row says which.** The gate's supervisor writes the rows of stages it dispatched (and its prelude the settlement rows), the driver writes the rows of stages it spawned itself and the stage-less apply rows; `기록자=게이트` or `기록자=드라이버` names the one that wrote this row. Both carry `압축 창` — the compaction window the launch read, with the layer it came from — and `레인`, the CLI config home the stage ran under, so a reader can tell a stage compacted under the lane's default from one the gate handed a window on its argv. The layers are read in one fixed order on both paths: the window the gate injects on the argv (`argv`; the driver injects none, so a driver row never says it), the run's per-kind settings file (`런설정`), the stage cwd's `.claude/settings.local.json` then `.claude/settings.json` (`프로젝트`), the lane's `settings.json` (`레인`). The two keys are merged per key across those layers, the way the CLI merges settings: `autoCompactEnabled` is taken from the highest layer that defines it and the window from the highest layer that holds an integer, each on its own. `(꺼짐)` is that highest `autoCompactEnabled` reading false — it wins over the argv value too, and then nothing is injected — `(미상)` a layer whose file exists but could not be read (every layer is read before anything is decided, so an argv value never stands in for a failed reading), `-` no layer at all. The launch leaves the two values in `<seg>.window` beside the pid record so a settlement that runs after the supervisor is gone can still put them on the row — **and that file is never a precondition of anything**: a settlement or a collection that finds it absent writes `압축 창=(미상)` and proceeds, and its presence is not a liveness input. A row with none of the three keys was written before they existed; that absence is a third state and is not read as `(미상)`. The gate injects a window for one stage kind (`review`) today, and `CC_ORCH_STAGE_AUTOCOMPACT=off` switches that injection off for every kind without touching the settings layers. `교대 기동` carries the same `레인` and `압축 창` for the successor routing session, with its `세션 id` to join on; a shift is not a stage kind, so it never gets an argv window.
+
 **`generation` is deliberately still unwritten.** Nothing reads it. A writer for it would put a value in the ledger that is recorded and never compared, which is the exact defect class this contract exists to remove — so the writer arrives with the reader or not at all.
 
 **The terminal class the gate writes is a strict subset, and the omission is deliberate.** From outside a stage it can distinguish `크래시` (a non-zero status, or a subtype that is not success), `정상 완료` (the stage performed at least one gated act — a `자율 승인` row stamped `행위자=스테이지` for that segment, landing after that attempt's dispatch row; router rows written while the stage ran do not count), `산출물 없는 정지` and `공허한 성공` — the last two separated by whether the stage's own transcript carries a `permission_denials` entry, which is precisely the "trace of reaching a decision point" this contract asks for. `의도된 park` is read from the stage's halt record, which the halt contract owns. `적용 불명` alone is **not** written from here: it is a claim about an apply step's outcome, and its only writer is the driver's apply-outcome-unknown arm.
 
 **`외부 종료` is written by a different path and is defined by an absence.** Every class above presumes the stage emitted a `type=result` envelope and reads that envelope's fields. `외부 종료` is written by the gate's prelude — on every verb but `plan` — when it settles a lost dispatch: a record the gate itself dispatched (`<seg>.kind` present, a non-empty fingerprint, `<seg>.attempt` present) whose CLI process and supervisor are both gone, with no `stage-result` row for that attempt. Its defining check is that no envelope exists, so it is disjoint from `공허한 성공`: a CLI that exits 0 having produced nothing is still reporting, while a process that simply vanished reports nothing. **It is the one class the gate writes about a stage it never classified**, and it does not name which outside force ended the stage. A settlement row carries `종료 코드=-` and `부모=-` (the settler is not the session that dispatched), a prose `관측`, and no accompanying `cost` row — there is no envelope to read a cost from. Exactly one `stage-result` row exists per `(세그먼트, 실행 버전)`: the settlement looks for an existing row before appending, and a driver-spawned record (no `.kind`) is never settled, because the driver collects it itself.
 
-**`segment` and `cycle` have a writer on the router path, and both are `act` kinds rather than a seventh verb.** The fixed-graph loop used to be their only writer, which the router never enters — and the absence was not a gap in bookkeeping. The merge rule reads a `cycle` row, so with no writer it refused **every** merge for want of a row no path could produce; termination condition 1 counts `segment` rows, so a run could never propose that it was done. Both read as the mechanism working. `act --kind segment` and `act --kind cycle` take **`키=값` fields after `--` instead of a command**, because what they perform *is* the row; they grade `읽기`, since a row reaches nothing a cutpoint or a credential could widen. A `segment` row is refused without a `상태` in the vocabulary below and without a `워크트리` — the merge rule enters that directory to read the branch's current HEAD, so a row missing it turns a review refusal into one that names a missing worktree. A `cycle` row is refused without `사이클`, `P0`, `P1`, `리뷰 HEAD` and `리포트 경로`, which are exactly the five that rule reads — the last one because the rule opens that file and looks for a findings summary, so a row whose report is a stub is refused rather than believed.
+**`segment` and `cycle` have a writer on the router path, and both are `act` kinds rather than a seventh verb.** The fixed-graph loop used to be their only writer, which the router never enters — and the absence was not a gap in bookkeeping. The merge rule reads a `cycle` row, so with no writer it refused **every** merge for want of a row no path could produce; termination condition 1 counts `segment` rows, so a run could never propose that it was done. Both read as the mechanism working. `act --kind segment` and `act --kind cycle` take **`키=값` fields after `--` instead of a command**, because what they perform *is* the row; they grade `읽기`, since a row reaches nothing a cutpoint or a credential could widen. A `segment` row is refused without a `상태` in the vocabulary below and without a `워크트리` — the merge rule enters that directory to read the branch's current HEAD, so a row missing it turns a review refusal into one that names a missing worktree. A row in a non-terminal state is further refused unless that `워크트리` is free of double quotes, backslashes, pipes and control bytes and is an absolute path inside an existing worktree of some declared target (§2b.1), and it is the row on which the gate re-derives the stage settings and writes `인가면`; a terminal row (`완료` · `머지됨` · `park`) is exempt from that check and carries no such field. A `cycle` row is refused without `사이클`, `P0`, `P1`, `리뷰 HEAD` and `리포트 경로`, which are exactly the five that rule reads — the last one because the rule opens that file and looks for a findings summary, so a row whose report is a stub is refused rather than believed.
 
 **A `cycle` row may carry `모드` and `기준 사이클`, and a delta claim is refused at write time on eight checks.** `모드` is optional and **absence reads as `전체`** — in the gate's basis search, in the snapshot's `cycles[]` consumer, in the router and in check 8 alike. A delta review read only the files changed since this segment's last full cycle and re-adjudicated that cycle's P0/P1, while the merge rule reads `P0`/`P1` off the newest row without knowing the mode, so everything that makes the claim sound is refused before the row exists rather than believed after it. **Checks 1–7 run only on a `모드=델타` row** (check 1 whenever the field is present at all): (1) `모드` is `전체` or `델타`; (2) `기준 사이클` is present and a positive integer — digits only, compared everywhere below **by integer value**, so `04` and `4` name the same cycle — and the row's own `사이클` is an integer **greater than** it, so a delta cannot name itself or a later cycle as its basis; a `모드=전체` (or absent) row carrying a `기준 사이클` is refused, since a full review asserts no basis; (3) a `cycle` row of the **same segment** exists whose `사이클` **equals** `기준 사이클` as a field value — never a `grep -F` substring, since `사이클=1` is a substring of `사이클=10` — and when several rows share the number, the last `전체`/absent one among them is the basis, falling back to the last of them only when none is full, so a delta row an older gate accepted under its own number cannot shadow the full row beside it and turn check 4 into a refusal no later cycle escapes; (4) that basis row's `모드` is `전체` or absent, so a delta never stacks on a delta; (5) the basis is the **largest** `전체`/absent `사이클` of this segment by integer value, and the refusal names the one that is; (6) inside the segment's last `segment` row's `워크트리`, `git merge-base --is-ancestor <기준 행 리뷰 HEAD> <이 행 리뷰 HEAD>` exits 0 — exit 1 (not an ancestor) and exit ≥2 or a missing worktree (undecidable) are refused **with different wording**, because folding 128 into "not an ancestor" would read a missing object as merely unrelated; (7) the basis row's `리포트 경로` resolves to a file that exists and matches `^[-*[:space:]]*\*\*발견 요약\*\*`. **Check 8 runs on every `cycle` row**: the row's own `리포트 경로` is opened, the one line matching `^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타)( |$)` is anchored first and the values are read off that line only; no such line reads as `전체`, no `모드` on the row reads as `전체`, and the two must agree; when both say `델타`, the line's `기준 사이클 <n>` must equal the row's `기준 사이클` by integer value, and the line's `` 기준 리뷰 HEAD `<sha>` `` and the basis row's `리뷰 HEAD` must resolve — `git rev-parse --verify <x>^{commit}` in the segment worktree — to the **same commit**, so a short and a long sha of one commit agree and an unresolvable one is refused as undecidable. A report that cannot be opened refuses a `델타` row and passes a `전체`/absent one: no new refusal is added to the existing path, and that absence is what the merge rule already catches at merge time. Check 8 runs on full rows because the dangerous direction is **under-claiming, not over-claiming** — a report that says `델타` under a row that stays silent reads as `전체`, is picked as the next cycle's full basis, and a delta then stacks on a review that read part of the tree. Both sides absent read as the same `전체`, so no row or report written before these fields existed is refused. Every refusal here is exit 2, and **the repair depends on which check refused**. A mode mismatch is repaired by rewriting the row to the mode the report says. Every other refusal of a delta row that still stands once the row's `사이클` is this cycle's number and its `기준 사이클` matches the report line is repaired by **no** row — rewritten as `델타` it meets the same check again, and rewritten as `전체` it meets the mode comparison, because the report still says `델타` — so that refusal's wording says so, and the router re-dispatches the segment's review as a full review without the three basis flags and writes no `cycle` row until a report the gate accepts exists. Before this split the only repair written anywhere was the row rewrite, and following it left a segment with no writable `cycle` row, so the merge rule refused it for good. A relative `리포트 경로` is resolved the way the merge rule resolves it — two directory levels above the manifest — by one helper the gate uses for checks 7 and 8 alike.
 
@@ -590,7 +727,7 @@ They are written from three different places, because the three have different k
 
 **The judgment tuple is serialized into the one `구속 튜플` field as four `/`-separated components** — `<세그먼트>/<질문 전문의 sha256>/<선택지판>/<스냅숏 다이제스트 앞 12자>`, e.g. `S2-slice-A/3f1a…(64 hex)/v1/298c3e07b3c6` — the same shape the act tuple already takes, and no separate `질문 다이제스트` or `선택지판` field exists. The question digest is of the FULL question text, which the approval sidecar (§3b) holds under the block the row's `사이드카 앵커` names, so the row's digest has something to be compared against. `선택지판` is a version token (`v1`) rather than a digest: the option set is a compile-time constant of the gate, its sha256 would be the same 64 characters on every row, and a 2-character token says the same thing — which menu the row MEANT. It does not prove what a person saw; that comparison is made at close, by re-deriving the labels from the gate's table and matching them against the transcript's `options[].label`. Where the segment is unknown the first component is `-`.
 
-**The boundary tuple's second component is the value the boundary's own predicate read** — B1 the progress digest, B2 the open-obligation digest, B3 the act-budget window key (the progress vector with `acts=` removed), B4 the progress digest until a bucket width is decided — and the approval id is `<경계 이름>-<sha256(RUN_ID + 경계 이름 + 결속값) 앞 8자>`. `RUN_ID` stays in the salt so the same condition in two runs does not share an id. There is no clock component: `발행 시각` is the only time on the row. Duplicate suppression is "the last row for that id is `대기`", not "any row exists" — a resolved id re-opens with a fresh `대기` row when the same binding value recurs, and the row sequence says what happened to it.
+**The boundary tuple's second component is the value the boundary's own predicate read** — B1 the progress digest, B2 the digest of the obligations its count is waiting on and that are not yet disposed (the ones open when the count last restarted, less every identity in the disposition latch — so a new identity opened and closed again, or a parked segment toggled, does not move it), B3 the act-budget window key (the progress vector with `acts=` removed; the vector carries no obligation component), B4 the progress digest until a bucket width is decided — and the approval id is `<경계 이름>-<sha256(RUN_ID + 경계 이름 + 결속값) 앞 8자>`. `RUN_ID` stays in the salt so the same condition in two runs does not share an id. There is no clock component: `발행 시각` is the only time on the row. Duplicate suppression is "the last row for that id is `대기`", not "any row exists" — a resolved id re-opens with a fresh `대기` row when the same binding value recurs, and the row sequence says what happened to it.
 
 **A pending approval has two ends, not one.** `무효` is reachable through the same transcript binding as `승인`, and it exists because the alternative to granting was pending forever: a pending row counts against termination condition 2 and suspends the stagnation boundaries, so one approval nobody wants to grant stalls the rest of the run. Voiding **removes a blocker**, so it is not the conservative direction and does not get a looser gate — it keeps the requirement that the answer be a real answer frame in the harness-written transcript. What it buys is the ability to answer *this should not have been asked* without also granting the act.
 
@@ -606,7 +743,7 @@ They are written from three different places, because the three have different k
 
 **`철회` is the one closing state with no answer behind it, and it has no clock.** A boundary approval whose raising condition has gone away is withdrawn by the gate's own boundary evaluation — never by the router, which has no verb for it — with `사유=` naming the condition that lapsed; the transition is refused while an answer frame for the id exists in this run's lineage, and while a `다이얼로그 취소` was observed in the same cycle. A later real answer may still close a `철회` approval: `close` admits `철회` as the one non-`대기` starting state. The entry point that writes `철회` lands with the boundary predicates; this vocabulary accepts the token ahead of it.
 
-**`대상 추가` records a repository the run reached that the manifest did not name, and it is a RECORD rather than a grant.** The distinction is the whole of it. A declared target already has a cutpoint the manifest gave it, and an approval there opens one act inside that grant; an undeclared repository has no cutpoint to open, so a row that conferred one would move the seat of authorization from the manifest to a file the run writes. That is the property the split-writer rule exists to hold, and it does not depend on whether the row could be forged.
+**`대상 추가` records a repository the run reached that the manifest did not name, and it is a RECORD rather than a grant.** The distinction is the whole of it. A declared target already has a cutpoint the manifest gave it, and an approval there opens one act inside that grant; an undeclared repository has no cutpoint to open, so a row that conferred one would move the seat of authorization from the manifest to a file the run writes. That is the property the split-writer rule exists to hold, and it does not depend on whether the row could be forged. A widening of the stage settings by a segment's own worktree is **not** this series — it is recorded as `인가면` on the `segment` row that caused it (§2b.1, the paragraph opening "The stage's authorization list is re-derived"), so every row here names an actual repository with an actual alias.
 
 So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clone, fetch, read, run that repository's tests — already reachable with arbitrary bash, so refusing it buys nothing and recording it buys the morning report. Layer 1 is local commits and branches, capped at `브랜치`, and the cap is **hardcoded rather than inherited or chosen**: nothing above `브랜치` leaves the machine, so no approval is needed and the split-writer rule is untouched. A layer-1 row is admissible only after the same preflight a manifest target gets — the main worktree exists and the common git directory matches — because stash attribution is per-REPOSITORY rather than per-worktree, and this very tree already has two working trees sharing one `.git` and one `refs/stash`.
 
@@ -661,7 +798,9 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
-| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` \| `외부 종료` |
+| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` \| `외부 종료` \| `한도-형상 회수` |
+| `stage-result.기록자` | `게이트` \| `드라이버` |
+| `압축 창.출처` | `argv` \| `런설정` \| `프로젝트` \| `레인` \| `꺼짐` \| `미상` (the parenthesised token of `압축 창` on `stage-result` and `교대 기동`; `-` carries no source) |
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `완료` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
 
@@ -859,13 +998,14 @@ Skills do emit next-step command strings; the rule binds the **reader**, not the
 | `design-audit` | the terminal literal *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."* + the `docs/design-audit/{slug}.reader-<k>.md` reader copies |
 | `review` | the summary line `- **발견 요약**: 🔴 P0 N건 \| 🟠 P1 N건 \| 🟡 P2 N건 \| 🟢 P3 N건` in the report; the filename glob must accept the `review-pr{N}_{YYYY-MM-DD}[_v{N}].md` variants |
 | `implement` | a git-state ladder — commit → branch ref → PR number, in the order the permission cutpoint authorizes. Evaluated by the driver **in the main tree** |
-| `design-reconverge` | `docs/design-reconverge/{slug}.md` carrying `재수렴 sha256` and a two-value verdict (`재설계 필요` \| `불필요`), plus its confirming fixed literal. A terminal verdict returns to segment planning **unconditionally** |
+| `design-reconverge` | `docs/design-reconverge/{slug}.md` carrying `재수렴 sha256` and a two-value verdict (`재설계 필요` \| `불필요`), plus its confirming fixed literal. A terminal verdict returns to segment planning **unconditionally**, inside the same run — a moved document digest is recorded as a `문서 해시` row and needs no new run. Dispatched from the driver's ladder on a review finding, and by the routing shift on an implement stage's Step 1.5d halt; either way the document argument is the **main-worktree absolute path**, because `docs/` is absent from every linked worktree |
+| `design-discuss-unattended` (dispatched by the run) | the fixed literal *"설계 문서를 동결했습니다."* in the stage's own stream **and** a line reading exactly `**상태**: 동결됨` in the document it wrote. A halt record at `${RUN_DIR}/halt/<stage id>.md` makes it an intentional park. **One destination**: the stage emits the freeze literal, the document path and its whole-file `sha256`, then stops, naming no next step — the next step is the driver's or the router's graph, and a document that is not frozen goes to neither the audit nor segment planning |
 
 **The predicates are not equally strong, and pretending otherwise makes the table read stronger than it is.**
 
 > **A predicate over state the stage cannot fabricate — a git ref, a remote ref, a PR number — is immune to a hollow success. A predicate over an artifact the stage authors is not.**
 
-`implement` meets that bar: a run that answered in prose and moved on produces no commit, so the ladder is false and the driver never consults the stage's self-report. `design-audit` and `review` do **not** meet it — a model that improvised past a question still reaches the skill's normal exit, emits the terminal literal, writes the reader copies, and writes a well-formed summary line. **For a stage whose only output is a document, no un-fabricable predicate exists.** That is recorded rather than papered over.
+`implement` meets that bar: a run that answered in prose and moved on produces no commit, so the ladder is false and the driver never consults the stage's self-report. `design-audit`, `review` and the dispatched design stage do **not** meet it — the last crosses two authored facts, which catches a stage that said it froze without writing so, and no more — a model that improvised past a question still reaches the skill's normal exit, emits the terminal literal, writes the reader copies, and writes a well-formed summary line. **For a stage whose only output is a document, no un-fabricable predicate exists.** That is recorded rather than papered over.
 
 ### 5.2 The four termination classes
 
@@ -877,8 +1017,11 @@ Exit status and the artifact predicate are **independent axes**, and the halt re
 | success | false | present | `의도된 park` | blocked queue, no retry |
 | success | false | absent | `공허한 성공` | retry **once**, then blocked queue under a distinct reason |
 | non-zero | false | — | `크래시` | retry at the boundary, `시도+1` |
+| (none) | — | absent | `한도-형상 회수` | one re-dispatch under its own name (implement), the recovery dispatch (review), or blocked queue |
 
-Priority on read: **a halt record present ⇒ halt.** Absent and terminated ⇒ judge by the predicate.
+Priority on read: **a halt record present ⇒ halt.** Then a reap mark present ⇒ `한도-형상 회수`. Absent and terminated ⇒ judge by the predicate.
+
+The fifth row has no exit status because the driver itself ended the stage: the limit-shape arm of its wait loop signalled a boundary-idempotent stage whose transcript had been silent through at least one backoff rung, and it wrote a reap mark (`<stage>.reap-cause`, carrying `여유 계정` or `백오프 상한`) before the signal went out. Nothing collects such a stage, so it has no `.rc`; without the mark the consumer's default of 1 would read as `크래시` and the stage would be re-bought under the wrong name and out of the crash retry. The mark is what keeps the two countable apart. The sensor's headroom verdict can shorten that arm's ladder; it cannot make it zero — the first limit-shape observation always waits one rung, because transcript silence alone cannot tell a stage at a limit from a stage inside one long tool call. **"First" is scoped to the dispatch, and the scope is enforced at the spawn rather than at the teardown**: `stage_spawn` clears the accumulator alongside the reap mark, so a re-dispatch under the same stage id starts the ladder from zero however its predecessor ended. Leaving it to each exit path to reset was the same sentence resting on every future exit remembering, and the non-idempotent branch — which parks the stage and signals nothing — already did not.
 
 The third row is a measured failure mode, and its retry count is argued in both directions: not zero, because one observation cannot rule out a transient cause; not the full retry budget, because a clean exit with no artifact is itself evidence that the next attempt does the same. Improvisation is deterministic, so a blind retry loop would reproduce it identically and burn the whole budget before reaching the ladder. **This does not restore the stop that the unattended arm removed** — nothing on the skill side can. It converts an unobservable failure into an observable one, which is the most the driver can do from outside.
 
@@ -903,27 +1046,35 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `plan.md` | `autopilot` (kickoff) | the run manifest of §2b — frozen whole, creation-only |
 | `started-at` | driver (`run.sh`) | run open time, epoch seconds |
 | `config-dir` | driver (`run.sh`) | the **lane** this run opened in — tier 2 of the account resolver, written once at run open so every later stage dispatch resolves to the same lane |
-| `orchestrator-dir` | driver (`run.sh`) | the absolute path of the orchestrator directory this run actually loaded |
+| `orchestrator-dir` | driver (`run.sh`) | the absolute path of the orchestrator directory this run actually loaded — in a pinned run that is the copy's `orchestrator/`, not the installed checkout's |
 | `generation` | driver (`run.sh`) | segment-plan generation counter |
 | `plan.tsv` · `done.txt` | driver (`run.sh`) | the segment rows, and the segments already merged |
 | `<stage>.pid` | driver (`run.sh`) | the spawned stage's pid |
 | `<stage>.pgid` | driver (`run.sh`) | its process-group id — the **fallback** identity handle |
 | `<stage>.start` | driver (`run.sh`) | its start-time fingerprint; `(pid, start time)` is the identity and the pid alone is not |
 | `<stage>.rc` | driver (`run.sh`) | the collected exit status |
+| `<stage>.window` | driver (`run.sh`) · gate (`gate.sh`) | two lines — the effective compaction window in the `압축 창` grammar and the lane in tilde form — written at launch and copied onto the `stage-result` row; **a record, never a liveness input or a settlement precondition** (absent → `(미상)`) |
+| `<stage>.backoff` | driver (`run.sh`) | the limit ladder's accumulator for a stage in the limit shape — `elapsed sleep_s`, written after each rung, removed on the next sign of progress, and cleared again by `stage_spawn` so the ladder is per dispatch rather than per stage id; its presence is what admits the sensor's headroom verdict to the reap decision |
+| `<stage>.reap-cause` | driver (`run.sh`) | written before the limit-shape arm signals a stage (`여유 계정` or `백오프 상한`); the classifier reads it as `한도-형상 회수` so the reaped stage does not land as `크래시` |
+| `<stage>.reaped` | driver (`run.sh`) | `<pid> alive` or `<pid> dead` — the `kill -0` verdict stamped by `reap_orphan` before it removes the pid file |
 | `<stage>.transcript` | driver (`run.sh`) | cached path of the stage's session transcript |
 | `log/driver.log` · `log/<stage>.json` | driver (`run.sh`) | driver log, and each stage's result envelope |
 | `gh.err` | driver (`run.sh`) | captured stderr of the last `gh` call |
 | `halt/<stage-id>.md` | **the halting stage** | the halt record of §4 — the one file a stage writes here |
 | `<segment>.plan.md` | the `implement` stage | the plan emitted by that segment's first process, and the admission token its second one is checked against |
+| `designdoc.lock` | driver (`run.sh`) · **a stage that edits the design document** | the empty `lockf -k -t 0` target every design-document writer wraps its write in — the implementation arm's token writes, the audit's reconciliation pass, the re-convergence pass. It detects a second writer and queues nobody; absent when the run opens and read by no baseline |
 | `cc-team-witness-<slug>[.<stage-id>].XXXXXX/` | **a team member (stage)** | the witness scratch directory — where a member publishes its round product, minted by `orchestrator/cc-team-witness-init.sh` and recorded verbatim as that member's `scratchDir`. The row is here because the Writer column is an enforcement rule: without it a member's publish is denied, and a lead that cannot read its team's witness either parks forever or synthesizes a round product it never observed |
+| `shared/<gen>/` | **the lead seat** (the directory itself: driver, `run.sh`, created empty at run open) | a generation of the shared snapshot the seats read instead of each collecting its own — `manifest.tsv`, `blob/<id>`, `diff/<target>.patch`. Built in a sibling temp directory and renamed in, so a generation is either whole or absent, and never edited once published: an invalidation is a new generation. The row is here because the Writer column is an enforcement rule — the run hook and the gate's Bash-path guard both except exactly one level below `shared/` (`shared/<gen>/…`), and a file directly under `shared/` is refused by both, with `..` folded before either list is consulted. The routing seat is refused any argv element naming a path under here by a separate gate arm that stands on both argv-running verbs (`exec`, and `act` of every kind but the two dispatch kinds); its settings variant carries no directory grant, so that arm is what keeps the Bash path as narrow as the tool path |
+| `plugin/cc-cmds/` | gate (`gate.sh`) | this run's own copy of the plugin root, taken once at run open. Every later gate call, watcher and feed `exec`s into it, so it is the code that actually enforces this run. **Stages read it and never write it** — the run-directory allow-list refuses every name under here, on the hook path and on the Bash path alike |
+| `plugin-pin` | gate (`gate.sh`) | written once and never overwritten; `키<TAB>값` lines: `schema` · `plugin-dir` · `source` · `method`(`archive` \| `copy`) · `commit` · `tree` · `dirty` · `digest` · `version` · `pinned-at`, plus the optional diagnostic `commit-on-origin`. Published by a single `link(2)`, so simultaneous run-open entries yield exactly one pin and one copy |
 | `settings/` | gate (`gate.sh`) | the per-run settings the stage wrapper launches with, hook included |
-| `settings.lock` | gate (`gate.sh`) | `mkdir` mutex over the settings directory, held by readers and writer alike |
+| `settings.lock` | gate (`gate.sh`) | `mkdir` mutex over the settings directory, held by readers and writer alike; the `segment` row writer holds it from before its re-derivation until after the row's append, so a sibling's render cannot read the ledger without this row. A holder that dies leaves the directory behind, and every later re-derivation then lands as `인가면=실패(락 대기 초과)` until it is removed |
 | `ledger.lock` | gate (`gate.sh`) | the ledger's advisory lock |
 | `ledger-path` | gate (`gate.sh`) | where this run's ledger is, for readers that have only the run directory |
 | `session-lineage` | gate (`gate.sh`) | session id → run id, the ancestry index |
 | `surface-digest` | gate (`gate.sh`) | the enforcement-surface baseline compared at each act |
 | `progress-digest` · `progress-repeat` | gate (`gate.sh`) | the stagnation boundary's previous value and its repeat count |
-| `obligation-digest` · `obligation-repeat` | gate (`gate.sh`) | the same pair for open obligations |
+| `obligation-window` · `obligation-window-done` · `obligation-repeat` | gate (`gate.sh`) | the obligation boundary's state — the obligations its count is waiting on, and which of them have been seen disposed since that count started — and its repeat count |
 | `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
 | `cost-resolved-pct` | gate (`gate.sh`) | the cost share a B4 approval was closed at; B4 stays quiet until spending climbs ten points past it |
 | `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |
@@ -943,7 +1094,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 **What that asymmetry demands of a reader is the sibling's CONTENT, not its presence, and reading only its presence is the same bug one level down.** The gate's `<stage>.start` is the output redirection target of a `ps | sed` pipeline, so the shell creates and truncates the file before `ps` emits a byte — an EMPTY sibling is on disk for the whole of that window (measured: 300 samples out of 300, about 3.9 ms wide), and if `ps` prints nothing at all, which it may since it runs with stderr discarded and its output unchecked, the file stays empty for the stage's entire lifetime. A reader that accepts the file's existence therefore admits a record the census then declines to count, and an uncounted live stage publishes as the count `0` — the answer that authorizes a swap, arriving for a run the gate has just started. The test has to be that one of the two handles is **non-empty**, and it has to be the UNION of them rather than `<stage>.start` alone: a driver-spawned directory can carry an empty `<stage>.start` beside a valid `<stage>.pgid`, and the census calls that alive.
 
-**The Writer column also decides who may WRITE here with an editing tool, not merely who does.** The run hook the gate installs treats this directory as an allow-list for `Write`/`Edit`: `halt/<stage-id>.md`, `<segment>.plan.md` and anything under a `cc-team-witness-*/` directory are permitted, and every other path **this arm judges** is denied. **The gate's `Bash` path carries the same three**, so a write is not refused through one tool and allowed through the other; the two lists are stated once each and `scripts/test-gate.sh` pins that they agree. **It does not judge every path under `RUN_DIR`**: the arm is entered by walking the edit target's own spelling upward until an ancestor's inode matches the run directory, so a spelling whose ancestors never meet it is never judged here — whatever the bytes finally land on. That is this table read back as an enforcement rule — those rows are exactly the ones naming a stage, or a member of one, as the writer. It matters most for the gate-owned rows: `surface-digest`, `act-budget-*`, `progress-*`, `obligation-*`, `ledger-path`, `session-lineage` and `done` are re-read as the baseline of each act, so a stage able to write one of them re-baselines the enforcement check against itself — and the `Write`/`Edit` path carries no ledger requirement, so that write would leave no row either.
+**The Writer column also decides who may WRITE here with an editing tool, not merely who does.** The run hook the gate installs treats this directory as an allow-list for `Write`/`Edit`: `halt/<stage-id>.md`, `<segment>.plan.md`, `designdoc.lock`, anything under a `cc-team-witness-*/` directory, anything one generation down under `shared/<gen>/`, and the unattended design stage's `design/` and `preimage/` are permitted, and every other path **this arm judges** is denied. **The gate's `Bash` path carries the same list**, so a write is not refused through one tool and allowed through the other; the two lists are stated once each and `scripts/test-gate.sh` pins that they agree. **It does not judge every path under `RUN_DIR`**: the arm is entered by walking the edit target's own spelling upward until an ancestor's inode matches the run directory, so a spelling whose ancestors never meet it is never judged here — whatever the bytes finally land on. That is this table read back as an enforcement rule — those rows are exactly the ones naming a stage, or a member of one, as the writer. It matters most for the gate-owned rows: `surface-digest`, `act-budget-*`, `progress-*`, `obligation-*`, `ledger-path`, `session-lineage` and `done` are re-read as the baseline of each act, so a stage able to write one of them re-baselines the enforcement check against itself — and the `Write`/`Edit` path carries no ledger requirement, so that write would leave no row either.
 
 **Both permitted names are narrower than they read, and the hook enforces the narrower reading.** `halt/<stage-id>.md` is a **direct child and one level only** — a path burrowing below it, `halt/<anything>/<anything>.md`, is not on this list and is denied, because the halt record is one file per stage and a subtree under that name is a second storage area nothing declared. And what the list permits is **the file sitting at that name, not the name itself**: a leaf that is a symlink is denied even where its name matches — whether or not the link resolves — since a name-only match lands wherever the link points and every gate-owned row above sits one `ln -s` away. **That sentence is narrower than it reads. The gaps below are the ones known today, and this is not a claim that the list is complete — an earlier revision made that claim in this position and it was false when it was written.**
 
@@ -953,4 +1104,4 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 None of these is new — before this allow-list existed the whole run directory was default-allow, so all of them were open then too — but the sentence above closes none of them either.
 
-**`config-dir` and `orchestrator-dir` are written once and never overwritten.** A driver restarting against a live run directory must not move the lane a stage is already spending, and the file's presence is the record that some stage may already have read it. A run directory laid down before these two existed simply has neither; a reader reports that as "unrecorded" rather than as an error, because otherwise the whole history becomes unreadable at once.
+**`config-dir`, `orchestrator-dir`, `plugin-pin` and `plugin/` are written once and never overwritten.** A driver restarting against a live run directory must not move the lane a stage is already spending, and the file's presence is the record that some stage may already have read it. The pin carries that further: a second copy taken mid-run would mean two versions enforcing one run, so a pin that exists is never replaced, and a pin naming a copy that is gone is a hard stop for the gate rather than an invitation to take a new one. A run directory laid down before these two existed simply has neither; a reader reports that as "unrecorded" rather than as an error, because otherwise the whole history becomes unreadable at once.

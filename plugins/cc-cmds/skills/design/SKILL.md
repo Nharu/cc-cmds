@@ -146,7 +146,7 @@ Step 3 and Step 4 through the save run in a separate headless session, the **leg
     ```bash
     mkdir -p "$STATE"          # leg.json is written here first, so this comes first
     : "${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR is unset - refusing to launch the leg}"
-    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=14400000
     CLI=$(type -P claude)      # absolute path: a bare `claude` is intercepted by this machine's shell guard
     PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd)}"
     [ -x "$CLI" ]        || { echo "leg: CLI not executable: $CLI" >&2; exit 2; }
@@ -254,6 +254,7 @@ A single-surface change with no contract change does not need a full design team
     - 테스트 설계 (대상 프로젝트에 테스트 환경과 기존 테스트 파일이 있는 경우 필수 포함; 둘 중 하나라도 없으면 생략)
     - 구현 슬라이싱 (Step 1의 배포 형상 답변이 있는 경우에 한해 포함; 없으면 생략) — 이 표제를 쓰면 `권장 구현 순서`는 쓰지 않는다
     - 권장 구현 순서 (구현 슬라이싱을 쓰지 않는 경우)
+- **Runtime classification default.** If a runtime point in the product being designed maps unstructured input to a closed set of outcomes, Read `${CLAUDE_SKILL_DIR}/../_common/runtime-classification.md` and apply it before finishing this step — it fixes the predicate, the two exits, and where the decision, the UR entry, and the R-item land. The predicate excludes judgment this same session makes about its own pipeline or design work (topology test, not this-repository test) — see the file.
 - **`## 재현·근본원인` section** (issue/bug tasks only — omitted for feature-design tasks). The section records the reproduction findings produced in Step 1 or Round 0 so the design rests on an observed cause, not a guess.
     - **Placement & heading**: at the **very top** of the document, before 합의된 아키텍처 (for a bug fix the root cause is upstream of architecture and decisions). The heading is exactly `## 재현·근본원인` with **no leading section number** — `## 0.` / `## 1.` etc. is forbidden because the fixed anchor `§재현·근본원인` (used by the Tier-2 pointer below) would dangle.
     - **Fields**: `재현 절차` (a re-runnable recipe — literal commands or an inline fenced script, **no `/tmp` paths** since those are deleted, plus a `tracked-source 무변경 확인` note; if the observation depended on an out-of-tree driver/instrumentation, write that logic *inline as a fenced script* so the recorded recipe is self-contained and re-runnable) / `관측된 증상` ("미관측" when only hypothesized) / `근본 원인` (grade-neutral field name — whether it is confirmed lives in `근거 등급`, not here) / `근거 등급` / `재현 차단요인` (only when the hypothesis is due to a reproduction failure; carries `차단 사유` + `필요한 것`).

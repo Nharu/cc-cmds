@@ -135,28 +135,33 @@ for file in "${FILES[@]}"; do
   fi
 
   file_violations=0
-  line_no=0
-  while IFS= read -r line; do
-    line_no=$((line_no + 1))
-    stripped=$(printf '%s\n' "$line" | sed -e "$STRIP_SED_BARE" -e "$STRIP_SED_BRACED")
-    # CAPTURED, NOT `grep -q`. An early-exiting reader on the right of a pipe
-    # kills the writer with SIGPIPE, and under `pipefail` the pipeline then
-    # reports failure even though the match was found.
-    banned_hit=$(printf '%s\n' "$stripped" | grep -cE "$BANNED_RE" || true)
-    if [[ "${banned_hit:-0}" != "0" ]]; then
-      echo "FAIL: $file — line $line_no: $line" >&2
-      file_violations=$((file_violations + 1))
-    fi
-    # The RAW line, not the stripped one: the `${CLAUDE_CONFIG_DIR:-…}` strips
-    # above exist to hide a permitted fallback from the `.claude` rule and have
-    # nothing to say about a witness path, so running this branch on the
-    # stripped text would only add a way for the two rules to interfere.
-    witness_hit=$(printf '%s\n' "$line" | grep -cE "$WITNESS_BANNED_RE" || true)
-    if [[ "${witness_hit:-0}" != "0" ]]; then
-      echo "FAIL: $file — line $line_no (위트니스 경로): $line" >&2
-      file_violations=$((file_violations + 1))
-    fi
-  done < "$file"
+  # ONE sed AND TWO greps PER FILE, NOT PER LINE. The loop this replaces forked
+  # three processes for every line of every runtime document — measured at
+  # 163 seconds for the tree while the two sibling lints took 0.3 and 6 — so
+  # each rule now runs once over the whole file and reports line numbers, and
+  # the per-line work below happens only for a hit, which is rare.
+  #
+  # `|| true` on each pipeline: a clean file makes `grep -n` exit 1, which
+  # under `pipefail` would abort the script instead of reporting a pass.
+  banned_nos=$(sed -e "$STRIP_SED_BARE" -e "$STRIP_SED_BRACED" "$file" | grep -nE "$BANNED_RE" | cut -d: -f1 || true)
+  # The RAW file, not the stripped one: the `${CLAUDE_CONFIG_DIR:-…}` strips
+  # above exist to hide a permitted fallback from the `.claude` rule and have
+  # nothing to say about a witness path, so running this rule on the stripped
+  # text would only add a way for the two rules to interfere.
+  witness_nos=$(grep -nE "$WITNESS_BANNED_RE" "$file" | cut -d: -f1 || true)
+  if [[ -n "$banned_nos" || -n "$witness_nos" ]]; then
+    for line_no in $(printf '%s\n%s\n' "$banned_nos" "$witness_nos" | grep -v '^$' | sort -un); do
+      line=$(sed -n "${line_no}p" "$file")
+      if grep -qxF "$line_no" <<<"$banned_nos"; then
+        echo "FAIL: $file — line $line_no: $line" >&2
+        file_violations=$((file_violations + 1))
+      fi
+      if grep -qxF "$line_no" <<<"$witness_nos"; then
+        echo "FAIL: $file — line $line_no (위트니스 경로): $line" >&2
+        file_violations=$((file_violations + 1))
+      fi
+    done
+  fi
 
   if (( file_violations > 0 )); then
     violation_lines=$((violation_lines + file_violations))
