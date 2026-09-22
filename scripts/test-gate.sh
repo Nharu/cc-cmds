@@ -2334,6 +2334,23 @@ pre_cone() {
     pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
     pafter=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
   }
+
+  # THE ANCHOR ROWS THE CONE SECTIONS SHARE ARE PLANTED HERE, not in whichever
+  # section happens to run first. Every cone derivation stands on `SA`, and the
+  # exclusion assertions scattered through the later sections name `SC` and `SX`
+  # as the rows that must stay OUT of a cone. A section that reaches those
+  # assertions without these rows present does not fail — the derivation returns
+  # `유도-실패` and an exclusion `case` accepts that string — so the assertion
+  # runs, passes, and excludes nothing. Planting the rows in the preamble is what
+  # makes a narrowed run assert the same thing a full run asserts.
+  #
+  # `SX` MUST BE PLANTED PAST THE GATE. That its worktree belongs to another
+  # repository is refused at write time is itself asserted below; seeding it
+  # through `seg_row` would write no row and leave nothing to assert against.
+  seg_row       SA "$CONE_A" 상태=실행중 선행=없음
+  seg_row       SB "$CONE_B" 상태=실행중 선행=없음
+  seg_row       SC "$CONE_C" 상태=실행중 선행=없음
+  plant_seg_row SX "$REPO2"  상태=실행중 선행=없음
 }
 
 # `sa` — the container of section 35: the `SA_*` state and the `sa_*`/`sag`
@@ -10585,7 +10602,7 @@ esac
 plant_seg_row SX "$REPO2" 상태=실행중 선행=없음
 
 # --- 31c. The cone's two axes cover different windows ----------------------
-# --- section: 31c | group: cone | covers: act | needs: 31b | anchors: 앵커는 무조건 원뿔에 든다 ---
+# --- section: 31c | group: cone | covers: act | anchors: 앵커는 무조건 원뿔에 든다 ---
 cone1=$(cone_of SA "SA 가 감사 발견으로 멈췄다")
 case ",$cone1," in
   *,SA,*) ok "앵커는 무조건 원뿔에 든다" ;;
@@ -10639,7 +10656,7 @@ case "$msg" in
 esac
 
 # --- 31d. The cone is a predicate, not a frozen set ------------------------
-# --- section: 31d | group: cone | covers: act | needs: 31b | anchors: 아직 A 와 무관한 F 의 행이 기록된다 ---
+# --- section: 31d | group: cone | covers: act | anchors: 아직 A 와 무관한 F 의 행이 기록된다 ---
 seg_row SF "$CONE_F" 상태=실행중 선행=없음
 check "아직 A 와 무관한 F 의 행이 기록된다" "$rc" "0"
 cone3=$(cone_of SA "리베이스 전")
@@ -10655,7 +10672,7 @@ case ",$cone4," in
 esac
 
 # --- 31e. An unmeasurable ancestry is FAIL-CLOSED --------------------------
-# --- section: 31e | group: cone | covers: act | needs: 31b | anchors: 곧 사라질 워크트리의 세그먼트 행이 기록된다 ---
+# --- section: 31e | group: cone | covers: act | anchors: 곧 사라질 워크트리의 세그먼트 행이 기록된다 ---
 #
 # `--is-ancestor` answers 1 for "no" and 128 for "that object is not here".
 # Folding them turns every fault into "not in the cone, so nothing is held",
@@ -10692,7 +10709,7 @@ case ",$cone5," in
 esac
 
 # --- 31f. A file-set escape raises its own cone ----------------------------
-# --- section: 31f | group: cone | covers: act | needs: 31b | anchors: 선언 파일 집합을 실은 세그먼트 행이 기록된다 ---
+# --- section: 31f | group: cone | covers: act | needs: 31e | anchors: 선언 파일 집합을 실은 세그먼트 행이 기록된다 ---
 #
 # git answers "was B built on A" and cannot answer "did this segment touch
 # something it did not declare" at all. The only input to that judgment is
@@ -10745,7 +10762,7 @@ gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --sur
 check "상위집합 선언은 통과한다 (넓히는 방향은 열려 있다)" "$rc" "0"
 
 # --- 31h. `선행` has a SECOND consumer, and that is what costs the lie ------
-# --- section: 31h | group: cone | covers: act | needs: 31c,31f | anchors: 선행이 착지하지 않았으면 후행 디스패치가 막힌다 ---
+# --- section: 31h | group: cone | covers: act | needs: 31c | anchors: 선행이 착지하지 않았으면 후행 디스패치가 막힌다 ---
 #
 # With only the cone reading it, declaring narrowly would be free — a segment
 # that names nobody simply stays out of the cone, and staying out is the
@@ -11456,7 +11473,7 @@ case "$(last_judgment_approval)" in
 esac
 
 # --- 31t. A `|` in a field value cannot splice the row ----------------------
-# --- section: 31t | group: cone | covers: - | needs: 31b | anchors: 필드 값 안의 파이프가 새 필드를 만들지 못한다 ---
+# --- section: 31t | group: cone | covers: - | anchors: 필드 값 안의 파이프가 새 필드를 만들지 못한다 ---
 #
 # The write-time checks read the argv LIST and every reader splits the row TEXT,
 # so a pipe inside one argv element was invisible to the first and a new field
@@ -11481,7 +11498,7 @@ case "$( { grep -F '`blocked`' "$LEDGER2" || true; } | tail -1)" in
 esac
 
 # --- 31u. `선행` — one normalization for the reader and the floor -----------
-# --- section: 31u | group: cone | covers: act | needs: 31b | anchors: 공백 스펠링 픽스처의 첫 세그먼트 행이 기록된다 ---
+# --- section: 31u | group: cone | covers: act | anchors: 공백 스펠링 픽스처의 첫 세그먼트 행이 기록된다 ---
 #
 # The reader split on comma AND whitespace; the floor deleted whitespace and
 # split on comma only. So `선행=SA SB` — the spacing a design document's slice
@@ -11513,7 +11530,7 @@ case "$msg" in
 esac
 
 # --- 31v. An over-long declared cone is refused by LENGTH -------------------
-# --- section: 31v | group: cone | covers: act | needs: 31b | anchors: 상한을 넘는 「의존 세그먼트」 선언은 append 이전에 거절된다 ---
+# --- section: 31v | group: cone | covers: act | anchors: 상한을 넘는 「의존 세그먼트」 선언은 append 이전에 거절된다 ---
 LONGDEP=$(awk 'BEGIN{ s="SEG0000"; for (i = 1; i < 60; i++) s = s ",SEG" i; printf "%s", s }')
 gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(HN)" --rationale x \
@@ -12105,7 +12122,7 @@ case ",$cone8," in
 esac
 
 # --- 31af. A path with a space and a Korean path survive the escape check ---
-# --- section: 31af | group: cone | covers: act | needs: 31b | anchors: 공백과 한글이 든 파일 집합을 선언한 세그먼트 행이 기록된다 ---
+# --- section: 31af | group: cone | covers: act | anchors: 공백과 한글이 든 파일 집합을 선언한 세그먼트 행이 기록된다 ---
 #
 # `for f in $(git diff --name-only)` tore `docs/설계 노트.md` into two fragments,
 # and the identical splitting on the declaration side tore `설계 문서/` into two
@@ -12193,7 +12210,7 @@ case ",$cone10," in
 esac
 
 # --- 31ah. The ancestry probe's undecidable answer is actually REACHED -------
-# --- section: 31ah | group: cone | covers: act | needs: 31b | anchors: 곧 팁을 잴 수 없게 될 세그먼트 행이 기록된다 ---
+# --- section: 31ah | group: cone | covers: act | anchors: 곧 팁을 잴 수 없게 될 세그먼트 행이 기록된다 ---
 #
 # 31e removes a worktree, which settles the pair inside `gate_cone_edge`'s
 # repository arm — `gate_ancestor_of` is never called there, so its undecidable
