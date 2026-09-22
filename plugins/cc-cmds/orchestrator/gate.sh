@@ -1253,7 +1253,9 @@ gate_surface_max() {
   # The higher of two effect-surface tokens, by the ordering `SURFACES` fixes.
   # An unrecognized token loses rather than winning: the caller has already
   # checked the vocabulary, and answering "the unknown one is higher" here would
-  # turn a typo into a tightening nobody asked for.
+  # turn a typo into a tightening nobody asked for. That rule does not fit a fold
+  # over several primaries, whose unrecognized answers are verdicts rather than
+  # typos, so the `find` grader folds with `gate_surface_fold_find` instead.
   local a="$1" b="$2" ai bi
   ai=$(surface_index "$a" 2>/dev/null) || { printf '%s' "$b"; return 0; }
   bi=$(surface_index "$b" 2>/dev/null) || { printf '%s' "$a"; return 0; }
@@ -1261,12 +1263,33 @@ gate_surface_max() {
   printf '%s' "$b"
 }
 
-# The other two ways an unwrap folds several answers into one. A `find` with more
-# than one primary asks its resolver once per primary, and the resolvers do not
-# all speak the same type — the grading table answers an effect surface, the
-# second base answers a DIRECTORY and the history predicate answers `0`/`1`. So
-# the fold is a parameter of the unwrap rather than one fixed rule, and each
-# consumer names the one that fits its own answers.
+# The ways an unwrap folds several answers into one. A `find` with more than one
+# primary asks its resolver once per primary, and the resolvers do not all speak
+# the same type — the grading table answers an effect surface (folded by
+# `gate_surface_fold_find`), the second base answers a DIRECTORY and the history
+# predicate answers `0`/`1`. So the fold is a parameter of the unwrap rather than
+# one fixed rule, and each consumer names the one that fits its own answers.
+gate_surface_fold_find() {
+  # The grade of two primaries of one `find`: `형태 미상` over any other answer,
+  # then any answer `surface_index` does not recognize (`등급 미상`), then the
+  # higher of two recognized surfaces.
+  #
+  # THE UNRECOGNIZED ANSWER WINS HERE, which is the opposite of
+  # `gate_surface_max`. There an unknown token is a typo in a declaration; here
+  # it is the grading table saying it cannot tell what one primary does, and the
+  # grade of the other primaries says nothing about that one's effect. Folding
+  # with `gate_surface_max` let `find . -exec unknowncmd {} ';' -exec cat {} ';'`
+  # come back `읽기`, and both write guards return on `읽기` before they scan argv
+  # for a protected path — the same argv with one primary was `등급 미상` and was
+  # refused.
+  local a="$1" b="$2"
+  [ "$a" = "$GATE_FORM_UNKNOWN" ] && { printf '%s' "$a"; return 0; }
+  [ "$b" = "$GATE_FORM_UNKNOWN" ] && { printf '%s' "$b"; return 0; }
+  surface_index "$a" >/dev/null 2>&1 || { printf '%s' "$a"; return 0; }
+  surface_index "$b" >/dev/null 2>&1 || { printf '%s' "$b"; return 0; }
+  gate_surface_max "$a" "$b"
+}
+
 gate_answer_first() {
   # The first of two answers that is not empty.
   #
@@ -4123,15 +4146,19 @@ gate_call_prefix() {
 gate_unwrap_find() {
   # gate_unwrap_find <resolver> <walk-only> <writes> <form-unknown> <combiner> <find's args after argv0...>
   #
-  # EVERY PRIMARY IS READ, NOT JUST THE FIRST. `;` and `+` terminate an `-exec`,
-  # and what follows one is the NEXT primary rather than a further argument of
-  # the inner command. Handing the whole remainder to the resolver and returning
+  # EVERY PRIMARY IS READ, NOT JUST THE FIRST. `;` always terminates an `-exec`
+  # and `+` terminates one only directly after `{}` — anywhere else a `+` is an
+  # argument of the inner command, as `find` itself reads it. What follows a
+  # terminator is the NEXT primary rather than a further argument of the inner
+  # command. Handing the whole remainder to the resolver and returning
   # read `find <d> -name f -exec cat {} ';' -delete` as the inner command
   # `[cat {} ; -delete]`, so the deletion was graded as an argument of `cat`:
   # argv came back `읽기` and both write guards returned on their first line.
   # The scan now consumes one primary at a time and folds the answers with
   # <combiner>, which each consumer supplies because their answers are of
-  # different types.
+  # different types. The grader's combiner lets an unrecognized answer WIN over
+  # a recognized one, so one primary the table cannot grade makes the whole argv
+  # ungradable rather than being erased by a `-exec cat` beside it.
   #
   # `-execdir` AND `-okdir` ANSWER <form-unknown> AND STOP. They run the inner
   # command from EACH MATCH's directory, which the gate does not know and cannot
@@ -4162,18 +4189,24 @@ gate_unwrap_find() {
   # states that cost in place: without it every read that walks the manifest's
   # directory becomes a refusal.
   local resolver="$1" walk_only="$2" writes="$3" form_unknown="$4" combiner="$5"; shift 5
-  local acc="" seen=0 ans="" n term a
+  local acc="" seen=0 ans="" n term a prev
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -execdir|-okdir) printf '%s' "$form_unknown"; return 0 ;;
       -exec|-ok)
         shift
-        # The inner command is the words up to `;` or `+`. A `-exec` with
-        # nothing behind it has no command to defer to, which is the shape the
-        # old early return already answered `writes`.
-        n=0; term=0
+        # The inner command is the words up to `;`, or up to a `+` that stands
+        # directly after `{}`. Taking every bare `+` as the terminator cut
+        # `-exec curl + -X POST https://x ';'` down to `curl` and graded it
+        # `읽기`. A `-exec` with nothing behind it has no command to defer to,
+        # which is the shape the old early return already answered `writes`.
+        n=0; term=0; prev=""
         for a in "$@"; do
-          case "$a" in ';'|'+') term=1; break ;; esac
+          case "$a" in
+            ';') term=1; break ;;
+            '+') [ "$prev" = '{}' ] && { term=1; break; } ;;
+          esac
+          prev="$a"
           n=$((n + 1))
         done
         if [ "$n" -eq 0 ]; then
@@ -4224,7 +4257,7 @@ gate_unwrap_rg() {
 # understand and the gate refuses, while the predicate answers `1` and keeps the
 # act under the check.
 surface_of_command() { gate_unwrap_command surface_of_argv0 '읽기' '등급 미상' "$@"; }
-surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$GATE_FORM_UNKNOWN" gate_surface_max "$@"; }
+surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$GATE_FORM_UNKNOWN" gate_surface_fold_find "$@"; }
 surface_of_rg()      { gate_unwrap_rg      surface_of_argv0 '읽기' '등급 미상' "$@"; }
 
 gate_history_integration() {

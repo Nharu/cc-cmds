@@ -5939,7 +5939,7 @@ check "배시 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 
 
 # --- 사후 리뷰 수리 8. find 의 primary 는 하나가 아니다 -------------------------
 # 벗기기가 `-exec` 계열을 만나면 **그 뒤 전부**를 안쪽 명령으로 보고 즉시 반환했다.
-# `find` 문법에서 `;`/`+` 다음 토큰은 그 명령의 인자가 아니라 **다음 primary** 인데
+# `find` 문법에서 `;` 와 `{} +` 다음 토큰은 그 명령의 인자가 아니라 **다음 primary** 인데
 # 꼬리로 읽혔다 — 그래서 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv
 # 전체가 `읽기` 로 등급되고 네 가드가 전부 첫 줄에서 반환했다(실측, 세 리뷰어 독립
 # 재현). 아래 넷은 부류를 둘로 나눈다. 앞 둘은 목적지를 argv 에 **평문 절대 경로**로
@@ -5997,7 +5997,59 @@ check "배시 가드: -C 없는 -execdir 는 rc 3" "$rr_guard_rc" "3"
 # 없으면 위 넷의 rc 3 이 「`find` 를 통째로 거부한다」와 구별되지 않는다.
 rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../elsewhere/x" {} ';'
 check "배시 가드: 음성 대조군 — -exec 는 기준이 서고 보호 루트 밖이면 rc 0" "$rr_guard_rc" "0"
-unset RR_G_CWD
+
+# --- 사후 리뷰 수리 10. 등급을 모르는 primary 는 옆 primary 에 지워지지 않는다 -----
+# 다중 primary 를 접는 결합자가 「인식되지 않는 쪽이 진다」 규약이라, 등급표에 없는
+# 안쪽 명령 뒤에 `-exec cat {} ';'` 한 마디만 붙이면 `등급 미상` 이 지워지고 argv 전체가
+# `읽기` 가 됐다. 두 가드는 `읽기` 에서 첫 줄에 반환하므로, 안쪽 명령의 인자가 보호
+# 경로를 축자로 들고 있어도 rc 0 이었다(실측). 검색 루트가 보호 경로인 모양은 가드의
+# 축자 스캔이 루트 자체를 잡아 수리 전후 모두 rc 3 이라 이 결함을 재지 못하므로,
+# 보호 경로를 안쪽 명령의 인자로 든다.
+#
+# 가드는 `exec` 가 계산한 등급을 받으므로, 여기서도 등급을 리터럴로 적지 않고
+# 게이트의 등급표에 물어 넘긴다 — 리터럴 `워크트리쓰기` 를 넘기면 폴드가 `읽기` 로
+# 세탁해도 가드는 보지 못해 이 행들이 수리 전에도 초록이다(실측).
+rr_graded() {
+  # rr_graded <argv…> — 게이트를 소싱해 `exec` 경로와 같은 `surface_of_argv0` 답을 낸다.
+  RR_G_GATE="$script_dir/gate.sh" bash -c '
+    CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+    . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+    surface_of_argv0 "$@"
+  ' _ "$@"
+}
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';')
+check "등급 미상 primary 뒤에 읽기 primary 가 와도 등급 미상이다" "$rr_g" "등급 미상"
+rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';'
+check "설치본 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 등급 미상 다중 primary 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';')
+rr_guard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';'
+check "배시 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 등급 미상 다중 primary 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+# 안쪽 `find` 의 `-execdir` 가 답한 `형태 미상` 도 같은 폴드를 지난다. 바깥 `-execdir`
+# 가 앞에 오는 모양은 벗기기가 그 자리에서 반환하므로 수리 전에도 rc 3 인 상한 고정 행이다.
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';')
+check "안쪽 find 의 형태 미상이 옆 읽기 primary 에 지워지지 않는다" "$rr_g" "형태 미상"
+rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';'
+check "설치본 가드: 안쪽 find 의 -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'each match'"'"'s own directory'*) ok "설치본 가드: 안쪽 -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+  *) bad "설치본 가드: 안쪽 -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard "$(rr_graded find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';')" find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';'
+check "설치본 가드: -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+  *) bad "설치본 가드: -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+unset RR_G_CWD rr_g
 
 # 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.
 # 그래서 이름을 하나씩 고정하는 대신 두 집합을 대조한다: 등급표가 `surface_of_<이름>`
