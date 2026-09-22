@@ -5945,8 +5945,10 @@ unset RR_G_CWD
 # 파서로 넘기는 셸이고, 본문은 둘째 기준이 아니라 조각 단위로 따로 읽힌다.
 #
 # 하한은 `-gt 0` 이 아니라 알려진 크기다. 추출 지점이 옮겨져 집합이 줄어도 초록이던
-# 것이 이 단언을 붉게 만들었던 공허화의 모양이므로, 파서 팔 열넷을 모으지 못하면
-# 그것도 실패로 센다.
+# 것이 이 단언을 붉게 만들었던 공허화의 모양이므로, 파서 팔 열다섯을 모으지 못하면
+# 그것도 실패로 센다. 열다섯째는 `find` 다 — 등급표는 오래전부터 `-exec` 뒤를
+# 벗겼는데 파서 목록에만 없어서 두 층이 같은 argv 를 다르게 읽었다. 하한을 함께
+# 올리지 않으면 그 팔이 다시 빠져도 이 단언은 초록이다.
 rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
   CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
   . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
@@ -5972,7 +5974,7 @@ rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
     [ "$f" = rg ] && continue
     case " $names " in *" $f "*) ;; *) names="$names $f" ;; esac
   done
-  [ "$nw" -ge 14 ] || { echo "파서 팔 이름을 $nw 개만 모았다 — 열넷 미만이면 추출이 깨졌다"; exit 0; }
+  [ "$nw" -ge 15 ] || { echo "파서 팔 이름을 $nw 개만 모았다 — 열다섯 미만이면 추출이 깨졌거나 팔이 빠졌다"; exit 0; }
   [ "$nt" -gt 0 ] || { echo "등급표 위임 이름을 하나도 모으지 못했다"; exit 0; }
   missing=""
   for f in $names; do
@@ -5993,13 +5995,18 @@ rr_unwrap_behave=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" 
   CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
   . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
   n=0; empty=""
-  for f in env genv command nice gnice nohup gnohup timeout gtimeout stdbuf gstdbuf time gtime lockf; do
+  for f in env genv command nice gnice nohup gnohup timeout gtimeout stdbuf gstdbuf time gtime lockf find; do
+    suf=""
     case "$f" in
       timeout|gtimeout) pre="5" ;;
       lockf) pre="$RR_G_DIR/x.lock" ;;
+      # `find` takes its starting point and the primary BEFORE the command and a
+      # terminator after it, which is why it used to sit out of this list. Out of
+      # the list it was the one peeled name whose second base nobody measured.
+      find) pre="$RR_G_DIR -maxdepth 0 -exec"; suf=";" ;;
       *) pre="" ;;
     esac
-    b=$(gate_argv_chdir_base_of "$f" $pre git -C "$RR_G_DIR" diff --output=x)
+    b=$(gate_argv_chdir_base_of "$f" $pre git -C "$RR_G_DIR" diff --output=x $suf)
     n=$((n + 1))
     [ -n "$b" ] && [ "$b" != "$GATE_CHDIR_UNREAD" ] || empty="$empty $f"
   done
@@ -6010,6 +6017,71 @@ rr_unwrap_behave=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" 
 case "$rr_unwrap_behave" in
   *'empty=[]') ok "파서가 벗기는 런처마다 둘째 기준이 실제로 서고, 읽지 못한 옵션은 미상으로 답한다 ($rr_unwrap_behave)" ;;
   *) bad "런처별 둘째 기준" "서지 않았다: $rr_unwrap_behave" ;;
+esac
+
+# --- 읽지 못한 런처 옵션은 철자를 가리지 않고 거부다 -------------------------
+# 위 블록의 rc 2 줄은 `gnohup --bogus` 하나였는데, 그 철자는 파서가 먼저 거부해
+# 해석기까지 가지 않는다. 그래서 해석기에 **실제로 도달하는** 철자는 한 줄도
+# 훈련되지 않았고, 그 중 하나는 거부가 아니라 조용한 오답이었다.
+#
+# 두 묶음으로 나눠 단언한다. 한 묶음으로 쓰면 어느 철자가 답한 것인지 구별되지
+# 않아, 하나가 틀린 채로도 초록이 된다.
+#
+# 묶음 1 — 값 있는 옵션을 분리·단문자로 적은 철자. 오늘도 닫는 방향이다.
+# 묶음 2 — 같은 옵션을 `=` 로 적은 철자. `gate_unwrap_env` 의 `*=*` 팔이 `-*` 보다
+# 앞서 있던 동안 이것만 환경 대입으로 삼켜져 **빈 둘째 기준**을 냈다. 거부가 아니라
+# 통과라, 가드는 대조할 것이 없는 채로 통과시켰다. 두 묶음이 같은 답을 내는 것이
+# 그 팔 순서가 서 있다는 증거다.
+rr_unread_opt=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  sep=""; eq=""
+  probe() {
+    b=$(gate_argv_chdir_base_of "$@")
+    [ "$b" = "$GATE_CHDIR_UNREAD" ] && return 0
+    return 1
+  }
+  probe env -C "$RR_G_DIR" git -C "$RR_G_DIR" diff --output=x     || sep="$sep env-C"
+  probe nice --adjustment 5 git -C "$RR_G_DIR" diff --output=x    || sep="$sep nice-long"
+  probe nice -5 git -C "$RR_G_DIR" diff --output=x                || sep="$sep nice-short"
+  probe stdbuf --output L git -C "$RR_G_DIR" diff --output=x      || sep="$sep stdbuf"
+  probe time -f fmt git -C "$RR_G_DIR" diff --output=x            || sep="$sep time"
+  probe lockf -w 5 "$RR_G_DIR/x.lock" git -C "$RR_G_DIR" diff --output=x || sep="$sep lockf"
+  probe env --chdir="$RR_G_DIR" git -C "$RR_G_DIR" diff --output=x || eq="$eq env-chdir"
+  probe env --split-string="git -C $RR_G_DIR diff" true            || eq="$eq env-split"
+  echo "분리=[${sep# }] 등호=[${eq# }]"
+' )
+case "$rr_unread_opt" in
+  '분리=[] 등호=[]') ok "읽지 못한 런처 옵션은 분리 철자도 등호 철자도 미상으로 답한다 ($rr_unread_opt)" ;;
+  *) bad "읽지 못한 런처 옵션의 철자별 거부" "미상으로 답하지 않은 철자가 있다: $rr_unread_opt" ;;
+esac
+
+# --- 상대 `-C` 를 두 독자가 같은 디렉터리로 해소한다 -------------------------
+# `-C` 를 읽는 곳이 둘이고, 하나는 덮어쓰고 하나는 누적했다. git 은 각 `-C` 를 앞의
+# 것에 대해 해소하므로 누적이 맞고, 덮어쓰는 쪽은 `git -C <절대> -C <상대>` 에서
+# **상대 조각만** 들고 남아 검사가 해소하는 디렉터리와 행위가 쓰는 디렉터리를
+# 갈랐다. 이 줄이 없으면 다음에 한쪽만 고쳐져도 초록이다.
+rr_c_fold=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  mkdir -p "$RR_G_DIR/a/b" || { echo "픽스처 실패"; exit 0; }
+  _gp_git_scan -C "$RR_G_DIR/a" -C b diff --output=x
+  p=$(gate_path_spelling "$(gate_real_prefix "$_GP_GIT_C")")
+  q=$(gate_argv_chdir_base_of git -C "$RR_G_DIR/a" -C b diff --output=x)
+  w=$(gate_path_spelling "$(gate_real_prefix "$RR_G_DIR/a/b")")
+  echo "파서=[$p] 둘째기준=[$q] 기대=[$w]"
+' )
+case "$rr_c_fold" in
+  '파서=['*'] 둘째기준=['*'] 기대=['*']')
+    rr_c_p=${rr_c_fold#파서=[}; rr_c_p=${rr_c_p%%]*}
+    rr_c_q=${rr_c_fold#*둘째기준=[}; rr_c_q=${rr_c_q%%]*}
+    rr_c_w=${rr_c_fold#*기대=[}; rr_c_w=${rr_c_w%%]*}
+    if [ -n "$rr_c_w" ] && [ "$rr_c_p" = "$rr_c_w" ] && [ "$rr_c_q" = "$rr_c_w" ]; then
+      ok "두 -C 독자가 누적 폴드로 같은 디렉터리를 답한다 ($rr_c_fold)"
+    else
+      bad "상대 -C 누적 폴드" "두 독자의 답이 갈리거나 기대와 다르다: $rr_c_fold"
+    fi ;;
+  *) bad "상대 -C 누적 폴드" "프로브가 형식대로 답하지 않았다: $rr_c_fold" ;;
 esac
 
 # --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
