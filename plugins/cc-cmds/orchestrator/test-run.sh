@@ -17,6 +17,19 @@
 
 set -uo pipefail
 
+# THE WHOLE PIPELINE ENVIRONMENT IS CLEARED BEFORE ANYTHING ELSE RUNS. This suite
+# can run inside a pipeline stage, which exports all eleven `CC_PIPELINE_*`
+# names, and the hook-decision sections (T13 onward) call the real pre-tool
+# hook: an inherited `CC_PIPELINE_MANIFEST` reaches it, and the hook opens the
+# real manifest's ledger and appends fixture rows to the run that is executing
+# this suite. All eleven are cleared, not just that one, because which name a
+# gate path reads next is not something this file can know. The top of the file
+# is the only place that covers every section.
+unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
+      CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION
+
 # THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The gate, the driver and the
 # watcher all raise real banners, and their fire path prepends the Homebrew
 # directories to PATH itself — so a stub this suite puts on PATH is shadowed by

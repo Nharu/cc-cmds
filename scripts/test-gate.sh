@@ -71,13 +71,30 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
-# THE THREE SEAT MARKERS ARE CLEARED FOR THE WHOLE PROCESS. The stagnation
-# boundaries are evaluated only on a ROUTER's judgment, and the gate reads that
-# off `CC_PIPELINE_SEGMENT` / `CC_PIPELINE_STAGE_ID`; this suite runs from
-# whatever process starts it — including a pipeline stage, which exports both —
-# so an inherited marker would turn every B1 fixture below into a stage call
-# that judges nothing, and the suite would report the boundary as silent.
-# Sections that need a seat set it explicitly on the call.
+# THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — all eleven
+# `CC_PIPELINE_*` names, here and nowhere later. This suite runs from whatever
+# process starts it, including a pipeline stage, which exports every one of them.
+#
+# The name that moves ledger writes today is `CC_PIPELINE_MANIFEST`: the pre-tool
+# hook the fixtures drive passes it to `gate.sh digest-path --manifest`, so an
+# inherited value opened the REAL manifest's ledger and appended fixture rows to
+# the run that was executing this suite. The other ten are cleared as well
+# because which of them a gate path starts reading tomorrow is not something this
+# file can know, and the cost is one line.
+#
+# The seat markers are the older reason. The stagnation boundaries are evaluated
+# only on a ROUTER's judgment, read off `CC_PIPELINE_SEGMENT` /
+# `CC_PIPELINE_STAGE_ID`, so an inherited marker turned every B1 fixture into a
+# stage call that judges nothing. The gate also keeps a stage session out of the
+# lineage, so an inherited stage or shift marker kept every `close` fixture from
+# finding its transcript.
+#
+# THE TOP OF THE FILE IS THE ONLY PLACE THAT COVERS EVERY SECTION. Clearing
+# inside a section relies on no earlier section calling the gate or the hook,
+# which is true only by accident, and a section inserted in front brings the
+# exposure back. The section selector's cut copies carry this preamble, so the
+# same line covers every `--sections` and `--run-one` cut. Sections that need a
+# seat or a pipeline value set it explicitly on the call.
 #
 # `GATE_ACT_CWD` GOES WITH THEM, and it is the one whose absence was MEASURED as
 # a defect rather than reasoned about. A target-undeclared `act` does not choose
@@ -88,7 +105,10 @@ export CC_CMDS_SESSION_NOTIFY
 # `git pull --ff-only` every apply in this tree uses. The value is captured
 # first so a failure can say what was inherited.
 GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
-unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID GATE_ACT_CWD
+unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
+      CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
 # VERSION PINNING IS OFF FOR THE WHOLE SUITE, and this seam only ever turns off
 # the taking of a NEW pin — it can never make the gate ignore one that exists.
 # Every fixture run below would otherwise copy the plugin root into its fixture
@@ -1216,15 +1236,6 @@ graded_as() {
 # fixture manifest — and the driver itself runs from the home worktree, which is
 # the shape this reproduces.
 rc=0; msg=""
-# THE SEAT IS DECLARED, NOT INHERITED, FROM THE FIRST SECTION ON. This suite
-# runs from whatever process starts it — including a pipeline stage, which
-# exports a stage id — and the gate enrols a session into the run's lineage
-# only when no stage or shift marker is present. Inherited, the marker kept
-# every `close` fixture below from ever finding its transcript: the section
-# that first cleared it sits after the first three `close` sections, so those
-# read "transcript not found" in exactly the environment the suite is most
-# likely to run in. Set explicitly where a seat is the thing under test.
-unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
 gate() {
   local out
   out=$(cd "$WT" && gate_inproc "$@" 2>&1); rc=$?
@@ -2066,20 +2077,6 @@ drain_act() {
     --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
 }
 
-# The suite's normal execution context is INSIDE a pipeline stage — which
-# exports this whole group. The gate branches on `CC_PIPELINE_STAGE_ID` at entry
-# (a stage session is kept out of the lineage so it cannot answer the approvals
-# gating itself) and the banner seat reads the same markers, so an inherited
-# value makes every call take that branch and the assertions that read the
-# lineage or the notifier fail for a reason unrelated to what they assert.
-# Cleared here rather than in section 33, which cleared it first, because 12b's
-# banner assertions stand on the same known state; a sub-case that needs a
-# stage sets what it needs and unsets it again.
-unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
-      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
-
 # `cone` — the container of section 31, moved here whole: the pipeline
 # environment cleared, the run id derived from the manifest and asserted to
 # differ, the collision guard on the three paths, the cone manifest, grant
@@ -2090,12 +2087,12 @@ unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
 pre_cone() {
   [ -n "${PRE_CONE_DONE:-}" ] && return 0
   PRE_CONE_DONE=1
-  # The pipeline environment group, cleared AGAIN. Section 33 (the self-parked
-  # stage) clears it for its own reasons and this family needs the same thing for
-  # the same reason — a stage session is deliberately kept out of the lineage, so
-  # an inherited `CC_PIPELINE_STAGE_ID` makes every call below take that branch.
-  # Leaning on an earlier section having done it is the shape this repair exists
-  # to remove, and a cut of one cone section has no earlier section at all.
+  # The pipeline environment group, cleared AGAIN. The top of this file clears
+  # what the suite inherited; this clears what an earlier section may have set
+  # since — a stage session is deliberately kept out of the lineage, so a
+  # leftover `CC_PIPELINE_STAGE_ID` makes every call below take that branch.
+  # Leaning on every earlier section having cleaned up after itself is the shape
+  # this repair exists to remove.
   unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
         CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
         CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
