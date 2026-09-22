@@ -12780,6 +12780,40 @@ done
 check "형태 픽스처의 전제 — 열린 경계 승인이 하나도 없다" \
       "$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
          | jq -r '.pending_approvals[].id' | grep -cE '^B[1-4]-' || true)" "0"
+# AND THE SUPPRESSION HALF OF THE PREMISE, WHICH THE DRAIN ABOVE CANNOT REACH.
+# The issuer returns without writing a row along exactly two paths: the id's last
+# row is `대기`, or the id already carries a row in some terminal state AND the
+# `boundary-<name>.asked` marker in the run directory still holds the binding
+# value being passed now. Draining does not remove the second path, it MOVES ids
+# onto it — a terminal row is what the second path wants — so the drain above
+# leaves this premise half-standing, and the count below then read three rows for
+# four boundaries.
+#
+# WHY B1 AND ONLY B1. The marker is compared against the binding this fixture
+# passes, so a boundary is suppressed only where the two coincide. B1's own
+# predicate binds to the progress digest and so does the value passed below, and
+# B1's marker is cleared only when that digest moves — an approval row does not
+# move it — so a firing anywhere earlier in this cone run leaves a marker still
+# equal to it. B2 binds to the hash of the obligation set its window waits on,
+# which the sections above have already moved. B3's own binding is the window key
+# while the value passed below is the progress digest, so the id differs and no
+# marker of that id exists. B4 has not fired in this run at all, so it has
+# neither row nor marker.
+#
+# THE MARKERS MOVE, NOT THE BINDINGS. Passing the value each predicate would pass
+# is this section's design; substituting fixture-only bindings would make the
+# shape assertion measure ids and tuples that never occur in a real run.
+rm -f "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"/boundary-B[1-4].asked
+bshape_marks=""
+for bmk in "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"/boundary-B[1-4].asked; do
+  [ -e "$bmk" ] || continue
+  bshape_marks="$bshape_marks ${bmk##*/}"
+done
+# THE PREMISE IS ASSERTED AND NOT ONLY PERFORMED. A clearing step nobody checks
+# is how this hole opened: the drain ran, the count went to three, and the
+# verdict named a shape defect that was never there.
+check "형태 픽스처의 전제 — 발행 억제 표식이 하나도 남아 있지 않다" \
+      "${bshape_marks:- 없음}" " 없음"
 ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_NOTIFY=0 bash -c '
     . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
     MANIFEST="'"$NM"'"; LEDGER="'"$LEDGER2"'"; RUN_ID="'"$CONE_RUN_ID"'"; RUN_DIR="'"$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"'"
