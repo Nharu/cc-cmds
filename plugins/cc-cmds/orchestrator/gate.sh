@@ -1311,6 +1311,22 @@ gate_answer_or() {
   printf '0'
 }
 
+gate_answer_ladder_max() {
+  # The higher of two cutpoint rungs; an empty answer or one `cutpoint_index`
+  # does not recognize loses to the other.
+  #
+  # The ladder folded with `gate_answer_first`, so the ORDER the primaries were
+  # written in chose the rung: `find <d> -exec git commit -m x ';' -exec
+  # terraform apply ';'` derived `커밋` and the reverse order `배포`, and the
+  # derived rung is what refuses a low declaration. `gate_answer_first` stays on
+  # the path axis only, where there is no order between two directories.
+  local a="$1" b="$2" ai bi
+  ai=$(cutpoint_index "$a" 2>/dev/null) || { printf '%s' "$b"; return 0; }
+  bi=$(cutpoint_index "$b" 2>/dev/null) || { printf '%s' "$a"; return 0; }
+  [ "$ai" -ge "$bi" ] && { printf '%s' "$a"; return 0; }
+  printf '%s' "$b"
+}
+
 reach_index() {
   local want="$1" i=0 r
   for r in $REACHES; do
@@ -4187,9 +4203,15 @@ gate_call_prefix() {
 gate_unwrap_find() {
   # gate_unwrap_find <resolver> <walk-only> <writes> <form-unknown> <combiner> <find's args after argv0...>
   #
-  # EVERY PRIMARY IS READ, NOT JUST THE FIRST. `;` always terminates an `-exec`
-  # and `+` terminates one only directly after `{}` — anywhere else a `+` is an
-  # argument of the inner command, as `find` itself reads it. What follows a
+  # EVERY PRIMARY IS READ, NOT JUST THE FIRST. A word whose FIRST CHARACTER is
+  # `;` always terminates an `-exec`, and one whose first character is `+`
+  # terminates it only directly after `{}` — anywhere else a `+` word is an
+  # argument of the inner command. That is how the BSD `find` on macOS reads
+  # them: `-exec cat {} ';;' -delete` ends the `-exec` at `;;` and deletes.
+  # Comparing the whole word let that `-delete` be swallowed as an argument of
+  # `cat` and graded `읽기`. GNU `find` compares the whole word, so there the
+  # first-character rule grades a later primary it would not have split off —
+  # over-reading, which is the safe side on both hosts. What follows a
   # terminator is the NEXT primary rather than a further argument of the inner
   # command. Handing the whole remainder to the resolver and returning
   # read `find <d> -name f -exec cat {} ';' -delete` as the inner command
@@ -4236,16 +4258,17 @@ gate_unwrap_find() {
       -execdir|-okdir) printf '%s' "$form_unknown"; return 0 ;;
       -exec|-ok)
         shift
-        # The inner command is the words up to `;`, or up to a `+` that stands
-        # directly after `{}`. Taking every bare `+` as the terminator cut
+        # The inner command is the words up to one starting with `;`, or up to
+        # one starting with `+` that stands directly after `{}`. Taking every
+        # bare `+` as the terminator cut
         # `-exec curl + -X POST https://x ';'` down to `curl` and graded it
         # `읽기`. A `-exec` with nothing behind it has no command to defer to,
         # which is the shape the old early return already answered `writes`.
         n=0; term=0; prev=""
         for a in "$@"; do
           case "$a" in
-            ';') term=1; break ;;
-            '+') [ "$prev" = '{}' ] && { term=1; break; } ;;
+            ';'*) term=1; break ;;
+            '+'*) [ "$prev" = '{}' ] && { term=1; break; } ;;
           esac
           prev="$a"
           n=$((n + 1))
@@ -5169,9 +5192,45 @@ surface_of_docker() {
 # named THIS destructive word — a shape that carries the mark but a different
 # word is not authorization for this one.
 # ---------------------------------------------------------------------------
+
+# The answer with no mark, for the unwrap terminals below. Built with `printf`
+# for the reason `GATE_FLOOR_NONE` gives.
+GATE_MARK_NONE=$(printf '\t')
+readonly GATE_MARK_NONE
+
+gate_answer_mark_max() {
+  # The stronger of two `<표지>\t<트리거>` answers: `비밀출력`, then `파괴`, then
+  # none. The fold for a `find` whose primaries are marked one by one.
+  local am="${1%%	*}" bm="${2%%	*}"
+  case "$bm" in
+    비밀출력) [ "$am" = "비밀출력" ] || { printf '%s' "$2"; return 0; } ;;
+    파괴) [ -z "$am" ] && { printf '%s' "$2"; return 0; } ;;
+  esac
+  printf '%s' "$1"
+}
+
 gate_act_mark() {
   local cmd="${1##*/}"; shift 2>/dev/null || true
   local all=" $* "
+
+  # ---- 래퍼 -------------------------------------------------------------
+  # THE SAME PEEL THE GRADE AND THE OPAQUE AXIS APPLY, with the same unwraps.
+  # This axis asked for argv0 once and stopped, so `lockf -k <lock> aws ssm
+  # get-parameter --with-decryption` carried no `비밀출력` while its bare
+  # spelling did, and the floor's rescue runs only for an opaque or ungraded
+  # argv — a wrapped `aws` is neither. `xargs` and `sudo` stay unpeeled for the
+  # reason `gate_argv_opaque` gives; both grade `등급 미상`, so the floor scans
+  # their payload and recovers the mark there.
+  case "$cmd" in
+    lockf)   gate_unwrap_lockf   gate_act_mark "$GATE_MARK_NONE" "$GATE_MARK_NONE" "$@"; return 0 ;;
+    command) gate_unwrap_command gate_act_mark "$GATE_MARK_NONE" "$GATE_MARK_NONE" "$@"; return 0 ;;
+    time)    gate_unwrap_time    gate_act_mark "$GATE_MARK_NONE" "$GATE_MARK_NONE" "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "$cmd" gate_act_mark "$GATE_MARK_NONE" "$GATE_MARK_NONE" "$@"; return 0 ;;
+    find)
+      gate_unwrap_find gate_act_mark "$GATE_MARK_NONE" "$GATE_MARK_NONE" "$GATE_MARK_NONE" \
+        gate_answer_mark_max "$@"; return 0 ;;
+  esac
 
   # ---- 비밀출력 -----------------------------------------------------------
   case "$cmd" in
@@ -5283,7 +5342,9 @@ gate_act_mark() {
           *) rest_has_cmd=1; break ;;
         esac
       done
-      [ "$rest_has_cmd" = "0" ] && { printf '비밀출력\tenv'; return 0; } ;;
+      [ "$rest_has_cmd" = "0" ] && { printf '비밀출력\tenv'; return 0; }
+      # A command after the assignments: its own mark is the answer.
+      gate_unwrap_env gate_act_mark "$GATE_MARK_NONE" "$GATE_MARK_NONE" "$@"; return 0 ;;
     printenv)
       [ "$#" -eq 0 ] && { printf '비밀출력\tprintenv'; return 0; }
       local n
@@ -5519,9 +5580,11 @@ gate_opaque_floor() {
     time)    gate_unwrap_time    gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     timeout|nice|nohup|stdbuf)
       gate_unwrap_wrapper "$cmd" gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    # A write primary (`-delete`, `-fprint` …) is a worktree write whatever
+    # stands beside it, so that terminal is not "nothing readable".
     find)
-      gate_unwrap_find gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" \
-        gate_answer_floor_max "$@"; return 0 ;;
+      gate_unwrap_find gate_opaque_floor_find_inner "$GATE_FLOOR_NONE" "$(printf '워크트리쓰기\t\t')" \
+        "$GATE_FLOOR_NONE" gate_answer_floor_max "$@"; return 0 ;;
   esac
   local payload="" a next_is_c=0
   case "$cmd" in
@@ -5583,6 +5646,39 @@ $a"; next_is_c=0; continue; fi
 $(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed 's/\$//g')
 EOF
   printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
+}
+
+gate_opaque_floor_find_inner() {
+  # The floor of ONE `-exec` inner command of a `find`.
+  #
+  # `gate_opaque_floor` drops its own argv0 before it scans, which is right for
+  # `sh -c` — the shell is not the act — and wrong for an inner command, where
+  # argv0 IS the act. `find <d> -exec unknowncmd {} ';' -exec curl -X POST …
+  # ';'` handed `[curl -X POST …]` to it, `curl` was dropped, the leading `-X`
+  # made the scanner skip the line, and the floor came back `읽기`. The grade of
+  # that argv is `등급 미상` (one primary the table cannot read), so the floor was
+  # the only thing the declaration was compared against, and `--surface 읽기`
+  # was admitted for a network write.
+  #
+  # So a non-opaque inner command is graded the way it would be graded bare — by
+  # the table, straight from its argv0 — and its mark is read the same way. Only
+  # a recognized surface raises the floor: `등급 미상` and `형태 미상` are verdicts
+  # the grade itself carries, not floors. The inner argv is NOT re-joined into a
+  # payload string for this: the payload splitter breaks on `{`, and `-exec curl
+  # {} …` would leave only `curl ` on the first line.
+  #
+  # An opaque inner command (`sh -c`, `make` …) keeps the payload scan alone,
+  # which is what the same command gets written bare.
+  local base g mk
+  base=$(gate_opaque_floor "$@")
+  [ "$(gate_argv_opaque "$@")" = "1" ] && { printf '%s' "$base"; return 0; }
+  g=$(surface_of_argv0 "$@")
+  case "$g" in
+    읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;;
+    *) g='읽기' ;;
+  esac
+  mk=$(gate_act_mark "$@")
+  gate_answer_floor_max "$base" "$(printf '%s\t%s' "$g" "$mk")"
 }
 
 gate_unwrap_env() {
@@ -5707,7 +5803,7 @@ ladder_of_argv0() {
     # asserts nothing, the same as any other name with no row.
     lockf)   gate_unwrap_lockf   ladder_of_argv0 '' '' "$@" ;;
     command) gate_unwrap_command ladder_of_argv0 '' '' "$@" ;;
-    find)    gate_unwrap_find    ladder_of_argv0 '' '' '' gate_answer_first "$@" ;;
+    find)    gate_unwrap_find    ladder_of_argv0 '' '' '' gate_answer_ladder_max "$@" ;;
     rg)      gate_unwrap_rg      ladder_of_argv0 '' '' "$@" ;;
     env)     gate_unwrap_env     ladder_of_argv0 '' '' "$@" ;;
     timeout) gate_unwrap_wrapper timeout ladder_of_argv0 '' '' "$@" ;;
