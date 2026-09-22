@@ -204,7 +204,7 @@ run-gate-census-selftest:
 # every section alone, the whole suite once and every shard once — about an hour
 # on an idle machine — and what it writes is a file to review and commit.
 census:
-	bash scripts/gate-census.sh --out scripts/gate-census.tsv
+	bash scripts/gate-census.sh --shards $(GATE_SHARDS) --out scripts/gate-census.tsv
 
 test-active-notify: $(NOTIFY_TESTS:%=run/%)
 
