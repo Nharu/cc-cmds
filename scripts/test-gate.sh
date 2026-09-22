@@ -9029,8 +9029,8 @@ graded_as '워크트리쓰기' 'find -fprint 도 같다'                      --
 graded_as '워크트리쓰기' 'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
 graded_as '워크트리쓰기' 'find -fls 도 같다'                         -- find . -fls /tmp/out.md
 graded_as '읽기'         '-print 는 표준출력이라 읽기로 남는다'       -- find . -name '*.md' -print
-# `;`/`+` 다음 토큰은 안쪽 명령의 인자가 아니라 **다음 primary** 인데 벗기기가 꼬리로
-# 읽어, 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv 전체가 `읽기` 로
+# `;` 다음 토큰과 `{} +` 다음 토큰은 안쪽 명령의 인자가 아니라 **다음 primary** 인데
+# 벗기기가 꼬리로 읽어, 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv 전체가 `읽기` 로
 # 등급됐다 — 그 등급에서 두 쓰기 가드가 첫 줄에 반환하므로 정직한 과잉 선언으로도
 # 닫히지 않았다. 각 양성에 단일 primary 판을 짝으로 두고, 마지막 행이 `-exec` 자체는
 # 여전히 안쪽 명령으로 등급된다는 상한을 고정한다.
@@ -9045,6 +9045,24 @@ graded_as '읽기'         '읽기 primary 만 여럿이면 계속 읽기다'   
 graded_as '형태 미상'    '-execdir 는 기준을 세울 수 없는 모양이다'   -- find . -execdir git diff --output=x {} \;
 graded_as '형태 미상'    '-okdir 도 같다'                             -- find . -okdir rm {} \;
 graded_as '트리밖쓰기'   '음성 대조군 — 같은 자리의 -exec 는 안쪽 명령으로 등급된다' -- find . -exec git diff --output=x {} \;
+# 여러 primary 의 등급을 접는 결합자가 「인식되지 않는 쪽이 진다」 규약이면, 등급표에
+# 없는 안쪽 명령 뒤에 `-exec cat {} ';'` 한 마디만 붙여도 `등급 미상` 이 지워져 argv
+# 전체가 `읽기` 가 된다 — 단일 primary 판은 `등급 미상` 으로 거부되는데. 한 primary 의
+# 등급을 모르면 argv 의 등급도 모르는 것이므로, 접을 때는 인식되지 않은 답이 이긴다.
+# 순서를 뒤집은 판과 단일 primary 판을 짝으로 둔다. `-execdir` 가 앞에 오는 행은
+# 벗기기가 그 자리에서 반환하므로 수리 전에도 초록인 상한 고정 행이고, 안쪽 `find` 의
+# `-execdir` 가 답한 `형태 미상` 이 옆 primary 에 지워지지 않는지는 그다음 행이 잰다.
+graded_as '등급 미상'    '등급 미상 primary 는 뒤의 읽기 primary 에 지워지지 않는다' -- find . -exec unknowncmd {} \; -exec cat {} \;
+graded_as '등급 미상'    '순서를 뒤집어도 같다'                        -- find . -exec cat {} \; -exec unknowncmd {} \;
+graded_as '등급 미상'    '단일 primary 대조군 — 모르는 안쪽 명령은 등급 미상이다' -- find . -exec unknowncmd {} \;
+graded_as '등급 미상'    '형태가 깨진 git 도 뒤의 읽기 primary 에 지워지지 않는다' -- find . -exec git --upload-pack=x fetch {} \; -exec cat {} \;
+graded_as '형태 미상'    '-execdir 뒤에 읽기 primary 가 와도 형태 미상이다' -- find . -execdir rm {} \; -exec cat {} \;
+graded_as '형태 미상'    '안쪽 find 의 형태 미상도 옆 primary 에 지워지지 않는다' -- find . -exec find . -execdir rm {} \; -exec cat {} \;
+# `+` 는 `{}` 바로 뒤에서만 `-exec` 를 끝낸다. 그 밖의 `+` 는 안쪽 명령의 인자인데
+# 종단자로 읽으면 뒤의 인자가 잘려 나가 `curl` 한 단어만 등급된다.
+graded_as '외부상태변경' '인자 자리의 맨 + 는 종단자가 아니다'          -- find . -exec curl + -X POST https://x \;
+graded_as '읽기'         '{} 바로 뒤의 + 는 배치 종단자로 남는다'       -- find . -exec cat {} +
+graded_as '워크트리쓰기' '배치 종단 뒤의 primary 도 계속 읽힌다'        -- find . -exec cat {} + -delete
 # 여섯 래퍼는 이제 자기 옵션만 소비하고 안의 명령을 등급표에 넘긴다 — 등급·표지·
 # 이력 술어·사다리·불투명 판정 다섯이 같은 풀기를 쓴다. 등급만 풀고 이력 술어를 두면
 # `env X=1 git merge seg` 가 워크트리 쓰기로 등급되면서 「이력을 통합하지 않는다」고
