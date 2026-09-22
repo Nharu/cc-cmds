@@ -2334,6 +2334,82 @@ pre_cone() {
     pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
     pafter=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
   }
+
+  # THE CONTEXT-CAP FIXTURES (34b 계측 · 34c 강제) SHARE THESE. Both drive the
+  # launcher on an isolated ledger of their own with hand-picked usage numbers —
+  # that is how a 460,000-token session is modelled for zero real tokens. They
+  # live here rather than in whichever section needed them first because
+  # `--run-one 34c` must stand alone; a helper left in 34b's body dies as
+  # `command not found` there while the whole-file run stays green.
+  CAP_STUB="$WORK/bin/claude-capstub"
+  mkdir -p "$WORK/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$CAP_STUB"
+  chmod +x "$CAP_STUB"
+  CAP_OUT="$WORK/cap-out.txt"; CAP_ERR="$WORK/cap-err.txt"
+  cap_usage_line() {
+    # cap_usage_line <읽기> <생성> <입력> — one synthetic usage record.
+    #
+    # THE TWO CACHE KEYS COME BEFORE `input_tokens`, AND THAT ORDER IS THE
+    # ASSERTION'S FORCE. The scan takes the first match of each pattern, so an
+    # input pattern that lost its opening quote matches inside a cache key only
+    # when the cache key stands earlier on the line. Ordering the object the way
+    # a real usage record does would let that defect pass every case below.
+    printf '{"message":{"usage":{"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"input_tokens":%s}}}\n' \
+      "$1" "$2" "$3"
+  }
+  cap_fx_new() {
+    # cap_fx_new <run-id> — an isolated manifest, grant, ledger and run directory,
+    # left in `CAP_NM`/`CAP_GRANT`/`CAP_LEDGER`/`CAP_DIR`. The id splits the
+    # ledger, so a collision with a section already written merges two fixtures'
+    # rows and every count below reads both.
+    local rid="$1"
+    if [ "$rid" = "$CONE_RUN_ID" ] || [ "$rid" = "$DONE_RUN_ID" ]; then
+      printf 'cap: 상한 픽스처의 런 id 가 앞선 절과 겹친다 (%s)\n' "$rid" >&2
+      exit 1
+    fi
+    CAP_NM="$WORK/cap-$rid-plan.md"
+    sed -e "s/run-id=$CONE_RUN_ID;/run-id=$rid;/" \
+        -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $rid/" "$NM" > "$CAP_NM"
+    CAP_GRANT="$WT/docs/pipeline-grant/$rid.md"
+    sed "s/$CONE_RUN_ID/$rid/g" "$CONE_GRANT" > "$CAP_GRANT"
+    CAP_LEDGER="$WT/docs/pipeline-run/$rid.md"
+    {
+      printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
+      printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$rid"
+    } > "$CAP_LEDGER"
+    CAP_DIR="$STATE_CONE/cc-cmds/run/$rid"
+    mkdir -p "$CAP_DIR"
+  }
+  cap_snap() {
+    # cap_snap <세션 id> <교대 id> [argv…] — the snapshot as that caller's own
+    # environment sees it. Both positions are required, the shift id as the empty
+    # string for a seat: the digest depends on the session variables the gate was
+    # handed, so a read taken bare and an act taken with them set disagree and
+    # every call comes back exit 4.
+    local sid="$1" shid="$2"; shift 2
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$sid" CC_CLAUDE_BIN="$CAP_STUB" \
+      CC_PIPELINE_SHIFT_ID="$shid" \
+      bash "$GATE" snapshot --manifest "$CAP_NM" "$@" 2>/dev/null )
+  }
+  cap_H() {  # cap_H <세션 id> <교대 id>
+    cap_snap "$1" "$2" | jq -r .H
+  }
+  cap_gate() {
+    # cap_gate <세션 id> <교대 id> <argv…> — leaves `rc`, and the act's stdout and
+    # the gate's stderr in SEPARATE files. They are split because the cap signal is
+    # told from an act that ended with the same code by what came with it: a
+    # `gate:` line on stderr and no output of the act's own.
+    local sid="$1" shid="$2"; shift 2
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$sid" CC_CLAUDE_BIN="$CAP_STUB" \
+      CC_PIPELINE_SHIFT_ID="$shid" \
+      bash "$GATE" "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
+    msg=$( { grep -h -vE '\[run\] ' "$CAP_OUT" "$CAP_ERR" || true; } | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  cap_rows() {  # cap_rows <계열> — that series' rows in the cap ledger
+    { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
+  }
 }
 
 # `sa` — the container of section 35: the `SA_*` state and the `sa_*`/`sag`
@@ -17841,6 +17917,94 @@ esac
 check "(f) 거부된 교대는 기동 행을 남기지 않는다" "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "$f_launch1"
 check "(f) 거부된 교대는 진행 표지를 남기지 않는다" "$( [ -e "$SHIFT_DIR/shift.in-progress" ] && printf 'left' || printf 'none' )" "none"
 check "(f) 거부된 교대는 후속자를 실행하지 않는다" "$( [ -e "$WORK/shift-argv-np.txt" ] && printf 'ran' || printf 'not run' )" "not run"
+
+# --- 34b. 계측 — 마지막 턴 컨텍스트가 읽기+생성+입력이다 ---------------------
+# --- section: 34b | group: cone | covers: snapshot | needs: 31al | anchors: 34b: 마지막 턴 컨텍스트가 읽기+생성+입력으로 계산된다 ---
+#
+# MEASUREMENT ONLY, AND THAT IS WHY IT IS A SEPARATE SECTION. Every assertion
+# here passes on a tree with the enforcement taken out, so this section witnesses
+# arithmetic and never enforcement; 34c is the one that must fail without it.
+# Mixing the two would leave nobody able to say which fixture the enforcement is
+# bought with.
+cap_fx_new R6
+CAPB_SID="66666666-1111-2222-3333-444444444444"
+# THE THREE VALUES ARE DIFFERENT AND NONE IS ZERO. A pattern that lost its
+# opening quote reads the input component as 100,000 — the read it matched
+# inside `cache_read_input_tokens` — and answers 250,000, so these numbers break
+# that trap incidentally. Making two of them equal, or one of them zero, removes
+# that defence without removing any assertion.
+{ cap_usage_line 40000 30000 5000
+  cap_usage_line 100000 50000 20000; } > "$NTX/$CAPB_SID.jsonl"
+check "34b: 마지막 턴 컨텍스트가 읽기+생성+입력으로 계산된다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r .shift.context)" "170000"
+check "34b A2: 바닥은 첫 턴의 읽기+생성이고 입력은 더해지지 않는다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r .shift.floor)" "70000"
+
+# A3. THE SKIP PREDICATE WAS NOT WIDENED. A line carrying input alone is still
+# not a turn, even as the first line — if it counted, the floor would become
+# 90,000 and the context would read the same line as the last turn.
+CAPB_SID_SKIP="66666666-1111-2222-3333-44444444444a"
+{ printf '{"message":{"usage":{"input_tokens":90000}}}\n'
+  cap_usage_line 40000 30000 5000; } > "$NTX/$CAPB_SID_SKIP.jsonl"
+check "34b A3: 캐시 두 필드가 없는 줄은 첫 줄이어도 바닥을 움직이지 않는다" \
+  "$(cap_snap "$CAPB_SID_SKIP" '' | jq -r .shift.floor)" "70000"
+check "34b A3: 그 줄은 마지막 턴으로도 읽히지 않는다" \
+  "$(cap_snap "$CAPB_SID_SKIP" '' | jq -r .shift.context)" "75000"
+
+# A4. THE SNAPSHOT CONTRACT. `over_hard` is added INSIDE the `shift` object, and
+# the pins that could have broken are all on the top level — asserted here too,
+# beside the change, so this section says on its own that the addition stayed
+# inside.
+check "34b A4: shift 블록이 over_hard 를 그 자리에 갖는다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r '.shift | keys_unsorted | join(",")')" \
+  "n,context,soft,hard,over_soft,over_hard,floor"
+check "34b A4: 170,000 은 하드 상한 아래이므로 over_hard 가 거짓이다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r .shift.over_hard)" "false"
+check "34b A4: pace 블록이 여전히 shift 바로 뒤에 온다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r 'keys_unsorted | (index("pace") - index("shift"))')" "1"
+check "34b A4: H 는 여전히 마지막 키다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r 'keys_unsorted | last')" "H"
+check "34b A4: --fields 의 기본 투영이 그대로다" \
+  "$(cap_snap "$CAPB_SID" '' --fields | jq -r 'keys_unsorted | join(",")')" \
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+
+# A5. THE LAUNCH ROW CARRIES THE OUTGOING SHIFT'S CONTEXT.
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind segment --target infra --segment CB1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34b A5: 계측 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale "픽스처 — 나가는 교대가 없는 킥오프 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34b A5: 킥오프 기동이 돈다" "$rc" "0"
+capb_row1=$(cap_rows '교대 기동' | tail -1)
+check "34b A5: 나가는 교대가 없는 킥오프 기동은 컨텍스트=- 를 싣는다" \
+  "$(row_field "$capb_row1" '컨텍스트')" "-"
+
+# THE SUCCESSOR'S SESSION ID IS READ OFF THE ROW rather than re-derived here: the
+# derivation is the code under test, and a fixture that recomputes it asserts
+# that the expression equals itself. The transcript is planted under that id, so
+# the next launch has a predecessor with a context of its own.
+capb_sid1=$(row_field "$capb_row1" '세션 id')
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 200000 30000 7000; } > "$NTX/$capb_sid1.jsonl"
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale "픽스처 — 나가는 교대가 있는 둘째 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34b A5: 둘째 기동도 돈다" "$rc" "0"
+capb_row2=$(cap_rows '교대 기동' | tail -1)
+check "34b A5: 둘째 기동은 나가는 교대의 컨텍스트를 싣는다" \
+  "$(row_field "$capb_row2" '컨텍스트')" "237000"
+check "34b A5: 그 값은 기동자(좌석)의 컨텍스트가 아니다" \
+  "$( [ "$(row_field "$capb_row2" '컨텍스트')" != "$(cap_snap "$CAPB_SID" '' | jq -r .shift.context)" ] \
+     && printf 'different' || printf 'same' )" "different"
+# `GATE_ROW_MAX` is 1024 and `gate_append` dies on a row past it, so the field
+# has to fit in the projection a real run writes, not only in this fixture's.
+capb_bytes=$(printf '%s' "$capb_row2" | wc -c | tr -d ' ')
+check "34b A5: 컨텍스트를 실은 기동 행의 투영 바이트가 1024 미만이다" \
+  "$( [ "$capb_bytes" -lt 1024 ] && printf 'under' || printf '%s' "$capb_bytes" )" "under"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조

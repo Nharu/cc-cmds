@@ -20487,29 +20487,44 @@ gate_transcript_of_session() {
 }
 
 gate_usage_scan() {
-  # Reads a JSONL stream on stdin and prints "<첫 턴 총 컨텍스트> <마지막 턴 cache_read>".
+  # Reads a JSONL stream on stdin and prints
+  # "<첫 턴 총 컨텍스트> <마지막 턴 읽기+생성+입력>".
   #
   # THE TWO ENDS ARE MEASURED DIFFERENTLY BECAUSE THEY ARE DIFFERENT QUANTITIES.
-  # The current context is the last turn's `cache_read_input_tokens`: by then the
-  # prefix is cached and the read is the whole of it. The FLOOR is the first
-  # turn's read PLUS its creation — on a session's opening turn the cache
-  # breakpoint has not been established, so most of the prefix is billed as
-  # creation and the read component alone reports a floor several times too
-  # small. Conflating the two is the error this file's own measurement history
-  # records: a floor quoted at 21,736 was the read component of a turn whose
-  # actual context was 116,055.
+  # The FLOOR is the first turn's read PLUS its creation — on a session's opening
+  # turn the cache breakpoint has not been established, so most of the prefix is
+  # billed as creation and the read component alone reports a floor several times
+  # too small. Conflating the two is the error this file's own measurement
+  # history records: a floor quoted at 21,736 was the read component of a turn
+  # whose actual context was 116,055.
+  #
+  # THE CURRENT CONTEXT IS THE LAST TURN'S READ + CREATION + INPUT. Read alone
+  # assumed the prefix was already cached, and on a turn before the breakpoint
+  # settles it is not: 210 of 6,804 measured turns reported less than 60% of
+  # their actual context that way. A cap compared against that number does not
+  # give a wrong answer, it does not fire on that act at all. The floor keeps
+  # read + creation and does not add input — the two ends are independent
+  # outputs, and `SHIFT_FLOOR_MAX` is compared against the first alone, so this
+  # sum cannot move the livelock guard.
+  #
+  # THE INPUT PATTERN CARRIES ITS OPENING QUOTE. Without it `input_tokens":`
+  # also matches inside both cache field names, and the first match would add a
+  # cache component a second time — a plausible number nobody catches by eye.
   awk '
     {
-      r = 0; c = 0
+      r = 0; c = 0; i = 0
       if (match($0, /"cache_read_input_tokens":[ ]*[0-9]+/)) {
         s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); r = s + 0
       }
       if (match($0, /"cache_creation_input_tokens":[ ]*[0-9]+/)) {
         s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); c = s + 0
       }
+      if (match($0, /"input_tokens":[ ]*[0-9]+/)) {
+        s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); i = s + 0
+      }
       if (r == 0 && c == 0) next
       if (first == 0) first = r + c
-      last = r
+      last = r + c + i
     }
     END { printf "%d %d", first + 0, last + 0 }
   ' 2>/dev/null
@@ -20538,6 +20553,28 @@ gate_router_context() {
   printf '%s' "$v"
 }
 
+gate_shift_context_of() {
+  # gate_shift_context_of <ordinal> — the current context of routing shift
+  # <ordinal>, in tokens, or nothing when its transcript cannot be found.
+  #
+  # IT READS ONE SESSION, NAMED BY ITS ORDINAL, AND NEVER FALLS BACK. The id is
+  # the one `gate_launch_shift` handed that shift as `--session-id`, derived here
+  # by the same expression. `gate_router_context` reads the transcript of the
+  # process RUNNING THIS CODE and falls back to the lineage, and both of those are
+  # the seat whenever the caller is not the shift in question — the launcher
+  # measuring its outgoing shift, above all. The floor guard in the launcher
+  # already records this confusion once, and an empty answer is what stops it
+  # recurring: no number is better than the seat's number under a shift's name.
+  local n="$1" f v
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -ge 1 ] || return 0
+  f=$(gate_transcript_of_session "$(session_uuid "shift" "$n")")
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
+  case "${v:-}" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
 gate_shift_floor() {
   # The context this routing session STARTED at — the price of having restarted.
   #
@@ -20559,14 +20596,16 @@ gate_shift_floor() {
 
 gate_shift_state() {
   # The `shift` block of the snapshot, as a JSON object.
-  local n ctx floor over
+  local n ctx floor over over_hard
   n=$(gate_shift_number)
   ctx=$(gate_router_context)
   floor=$(gate_shift_floor)
   over=false
   [ "${ctx:-0}" -ge "$SHIFT_SOFT_TOKENS" ] && over=true
-  printf '{"n": %s, "context": %s, "soft": %s, "hard": %s, "over_soft": %s, "floor": %s}' \
-    "${n:-0}" "${ctx:-0}" "$SHIFT_SOFT_TOKENS" "$SHIFT_HARD_TOKENS" "$over" "${floor:-0}"
+  over_hard=false
+  [ "${ctx:-0}" -ge "$SHIFT_HARD_TOKENS" ] && over_hard=true
+  printf '{"n": %s, "context": %s, "soft": %s, "hard": %s, "over_soft": %s, "over_hard": %s, "floor": %s}' \
+    "${n:-0}" "${ctx:-0}" "$SHIFT_SOFT_TOKENS" "$SHIFT_HARD_TOKENS" "$over" "$over_hard" "${floor:-0}"
 }
 
 gate_snapshot_segments_json() {
@@ -20809,10 +20848,22 @@ gate_launch_shift() {
   # argv window — the injection table is per stage kind and the shift is not
   # one — so the reading below has no argv layer, and the row carries what the
   # settings and lane give the successor, with the session id to join on.
-  local window
+  #
+  # `컨텍스트` IS THE OUTGOING SHIFT'S, NOT THE LAUNCHER'S. Launches are serial,
+  # so the shift this one replaces is ordinal n-1, and it has already ended by the
+  # time the seat's `act --kind router-shift` reaches this line. Calling today's
+  # context function here would read the transcript of the process doing the
+  # launching — the seat — which is the confusion the floor guard above records.
+  # A kickoff launch has no outgoing shift and an unresolved transcript has no
+  # honest number, so both carry `-`.
+  local window prev_ctx=''
   window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
+  if [ "$n" -gt 1 ]; then
+    prev_ctx=$(gate_shift_context_of "$((n - 1))")
+  fi
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
-    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window"
+    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
+    "컨텍스트=${prev_ctx:--}"
   log "교대 $n 시작 — 사유 $reason"
   # THE SUCCESSOR'S SEAT IS THIS LAUNCHER'S PROPERTY, NOT ITS CALLER'S AMBIENT
   # ENVIRONMENT. A prefix assignment adds and overwrites; it never unsets. So a
