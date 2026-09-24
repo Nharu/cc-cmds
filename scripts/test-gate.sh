@@ -5252,12 +5252,24 @@ case "$row" in
   *) bad "압축 창" "$row" ;;
 esac
 case "$row" in
-  *"레인=~"*) ok "행의 레인이 물결 표기다" ;;
+  *"레인=~/x "*) ok ".window 2행이 레인으로 행에 옮겨진다" ;;
   *) bad "레인" "$row" ;;
 esac
 case "$row" in
   *"기록자=게이트 "*) ok "게이트의 기록기는 기록자=게이트 를 적는다" ;;
   *) bad "기록자" "$row" ;;
+esac
+# THE LANE ON THE ROW IS THE ONE THE LAUNCH RECORDED, not the one the recording
+# process resolves when it writes. The two part exactly when the recorder's
+# `CLAUDE_CONFIG_DIR` differs from the launch's, so the probe runs under a
+# different one; a recorder that re-resolves prints that path instead of `~/x`.
+mkdir -p "$WORK/lane-elsewhere"
+printf '%s\n%s\n' '300000(argv)' '~/x' > "$RD/SP.window"
+CLAUDE_CONFIG_DIR="$WORK/lane-elsewhere" outcome_probe 0 success 0.01 ''
+row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
+case "$row" in
+  *"레인=~/x "*) ok "기록 프로세스의 CLAUDE_CONFIG_DIR 이 사이드카와 어긋나도 행의 레인은 사이드카를 따른다" ;;
+  *) bad "어긋난 환경의 레인" "$row" ;;
 esac
 rm -f "$RD/SP.window"
 outcome_probe 0 success 0.01 ''
@@ -5265,6 +5277,10 @@ row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
 case "$row" in
   *"압축 창=(미상) "*) ok ".window 가 없으면 압축 창=(미상) 이고 행은 그대로 쓰인다" ;;
   *) bad "압축 창 부재" "$row" ;;
+esac
+case "$row" in
+  *"레인=(미상) "*) ok ".window 가 없으면 레인=(미상) 이고 기록 프로세스의 레인으로 채우지 않는다" ;;
+  *) bad "레인 부재" "$row" ;;
 esac
 
 # The effective reading itself, in-process, one layer at a time. Each fixture
@@ -5324,6 +5340,23 @@ check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
   "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
 check "HOME 밖의 레인은 그대로 적는다" \
   "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC/empty" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "$AC/cfg"
+# The label rides on the driver's resolver, so it walks the same four tiers.
+# The gate's own copy had three: with the environment and the run record both
+# absent it skipped the operator's setting file and printed `~/.claude`, which
+# is how the two writers came to name different lanes for one run. And a
+# recorded lane that is not a directory is a broken record that the resolver
+# refuses; the copy printed it as the lane.
+mkdir -p "$AC/xdg/cc-cmds" "$AC/badrun"
+printf '%s\n' "$AC/cfg" > "$AC/xdg/cc-cmds/config-dir"
+printf '%s\n' "$AC/not-a-dir" > "$AC/badrun/config-dir"
+check "환경도 런 기록도 없으면 설정 파일의 config-dir 이 레인이다 (~/.claude 가 아니다)" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR -u RUN_DIR CC_GATE_SOURCE_ONLY=1 HOME="$AC" XDG_CONFIG_HOME="$AC/xdg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
+check "디렉터리가 아닌 런 기록은 레인으로 적히지 않는다" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR CC_GATE_SOURCE_ONLY=1 HOME="$AC" XDG_CONFIG_HOME="$AC/xdg" bash -c '. "'"$GATE"'"; RUN_DIR="'"$AC/badrun"'"; gate_lane_label' 2>/dev/null)" "~/.claude"
+check "게이트 자체의 레인 해석기는 더 없다" \
+  "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; declare -F gate_lane_dir >/dev/null && printf defined || printf absent')" "absent"
+check "레인 층은 해석기가 런 기록을 거부하면 (미상) 이다 (- 로 접히지 않는다)" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR CC_GATE_SOURCE_ONLY=1 HOME="$AC" XDG_CONFIG_HOME="$AC/xdg" bash -c '. "'"$GATE"'"; RUN_DIR="'"$AC/badrun"'"; gate_autocompact_effective "" "'"$AC/none.json"'" "'"$AC/empty"'"' 2>/dev/null)" "(미상)"
 
 # `plan_sha256` — the implement arm splits into two processes and process B
 # enters ONLY when this field is on the row; its admission predicate says so and
@@ -19105,12 +19138,19 @@ check "A 정산 행의 세션 id 는 스트림의 init 줄에서 읽는다" "$(p
 # `plant41` plants no `.window`, so the settlement above ran WITHOUT the record
 # and still settled: its absence is not a precondition, and the row says so.
 check "A .window 없는 정산 행의 압축 창은 (미상) 이고 정산은 정상 진행했다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "(미상)"
+# The settler is a later process with its own environment; the lane it would
+# resolve is not the lane the dead stage ran on, so without the record it has
+# no lane to write.
+check "A .window 없는 정산 행의 레인은 (미상) 이다 (정산 프로세스의 레인으로 채우지 않는다)" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *레인=//p' | sed 's/[[:space:]]*$//')" "(미상)"
 check "A 정산 행의 기록자는 게이트다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *기록자=//p' | sed 's/[[:space:]]*$//')" "게이트"
 # A2. THE SAME SHAPE WITH THE RECORD PLANTED: the two lines are copied onto the
-# row verbatim, and the record is removed with the rest.
+# row verbatim, and the record is removed with the rest. The settler runs under
+# a `CLAUDE_CONFIG_DIR` that differs from the record, so a row that followed the
+# settler's own environment would not read `~/lane41`.
 plant41 S41A2
 printf '%s\n%s\n' '300000(레인)' '~/lane41' > "$RD40/S41A2.window"
-snap41 >/dev/null
+mkdir -p "$WORK/lane41-elsewhere"
+CLAUDE_CONFIG_DIR="$WORK/lane41-elsewhere" snap41 >/dev/null
 row41a2=$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F '세그먼트=S41A2 ' | tail -1)
 check "A2 .window 가 있으면 그 1행이 정산 행의 압축 창이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "300000(레인)"
 check "A2 그 2행이 정산 행의 레인이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *레인=//p' | sed 's/[[:space:]]*$//')" "~/lane41"

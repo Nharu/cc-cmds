@@ -236,6 +236,14 @@ done
 check "(2) A.window 의 첫 줄이 argv 출처의 창이다" \
   "$(sed -n '1p' "$RD/A.window" 2>/dev/null)" "300000(argv)"
 check "(2) A.window 는 두 줄이다" "$(wc -l < "$RD/A.window" 2>/dev/null | tr -d '[:space:]')" "2"
+# The row's lane is read from this record, never re-resolved by the process
+# that writes the row. The supervisor inherits the launch's environment, so a
+# re-resolving recorder would print the same lane by coincidence; replacing the
+# recorded lane with one no environment resolves to is what tells them apart.
+# Line 1 is kept as written; the swap is a rename so the recorder never reads a
+# half-written file.
+A_WIN=$(sed -n '1p' "$RD/A.window" 2>/dev/null)
+printf '%s\n%s\n' "$A_WIN" '~/lane-recorded' > "$RD/A.window.tmp" && mv -f "$RD/A.window.tmp" "$RD/A.window"
 PID_A=$( { cat "$RD/A.pid" 2>/dev/null || true; } | tr -d '[:space:]')
 
 # (3) THE ENEMY, pointed at the process that issued the dispatch.
@@ -302,8 +310,8 @@ case "$row_a" in
   *) bad "(3) 감독자가 쓴 행은 기동에 실린 창을 적는다" "$row_a" ;;
 esac
 case "$row_a" in
-  *"레인=~"*|*"레인=/"*) ok "(3) 감독자가 쓴 행은 레인을 적는다" ;;
-  *) bad "(3) 감독자가 쓴 행은 레인을 적는다" "$row_a" ;;
+  *"레인=~/lane-recorded "*) ok "(3) 감독자가 쓴 행의 레인은 A.window 2행이다" ;;
+  *) bad "(3) 감독자가 쓴 행의 레인은 A.window 2행이다" "$row_a" ;;
 esac
 left=""
 for f in pid start kind sup sup.start launch launch.taken window; do
