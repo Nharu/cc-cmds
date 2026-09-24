@@ -151,6 +151,7 @@ once per run rather than on every append.
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
+- `종료 절` | id=C<n> | 문면=<종료 지점을 대조 가능한 한 절로 나눈 문면>     ← 한 절 한 행, 하나 이상
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
 - `자동 채택` | 판단 부류=<열 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
 - `사전 인가` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>     ← 설계 요구사항 인터뷰가 있었을 때만
@@ -298,6 +299,19 @@ therefore inside `구속 다이제스트`. **What it does not buy is a compariso
 against the file.** No gate re-hashes the record at runtime; the claim is that
 the hash the person's kickoff took is frozen where editing it moves the digest,
 and that anyone can compare the file against it with one `shasum`.
+
+**The `종료 절` rows are `종료 지점` split into clauses the gate can check**, one
+clause per row and at least one row. The gate collects the rows that match
+``^- `종료 절` `` and reads each row's `id=` field; a clause counts as settled
+only when a `종료 절` row in the ledger — the one the router writes through
+`act --kind clause` — names the same id. Termination condition 10 refuses
+`propose-done` for every id no ledger row settles, and refuses it as well when
+no row parses at all, because `종료 지점` in prose alone is compared against
+nothing and the empty list would otherwise pass vacuously. **An id carries no
+space and no `|`**: a row is split on `|` and the id list goes through shell
+word splitting, so either character leaves an id no ledger row can name. These
+rows are inside the frozen set (the freeze list below names them), and the
+`C<n>` numbering is the convention existing manifests already use.
 
 **The example above is fenced with FOUR backticks** because it contains
 three-backtick fences of its own. Any document that explains this grammar has
