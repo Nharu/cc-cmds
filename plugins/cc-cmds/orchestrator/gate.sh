@@ -20451,6 +20451,14 @@ gate_live_stages() {
 # ---------------------------------------------------------------------------
 readonly SHIFT_SOFT_TOKENS=300000
 readonly SHIFT_HARD_TOKENS=450000
+# THE SEAT'S CEILING HAS ITS OWN NAME, NOT THE SHIFT'S SOFT CONSTANT. The value
+# happens to equal `SHIFT_SOFT_TOKENS`, and the same 300000 is also spelled
+# across the scripts as the AUTOCOMPACT WINDOW, a different quantity entirely;
+# sharing a constant because the numbers agree is how moving one of them makes
+# grep pick the other. The name is what tells them apart. No pin lint guards it:
+# pins keep a value equal across a file boundary, and this one never leaves this
+# file.
+readonly SEAT_HARD_TOKENS=300000
 readonly SHIFT_TURN_TRIPWIRE=400
 readonly SHIFT_HANDOFF_CAP=3
 readonly SHIFT_FLOOR_MAX=130000
@@ -20692,16 +20700,22 @@ gate_shift_state() {
 
 gate_cap_directive() {
   # gate_cap_directive <verb> <kind> — ends the calling SHIFT when its context
-  # has reached the hard cap, by exiting `GATE_EXIT_CAP`. Returns 0 when the
-  # caller may go on. Spelled once and called from every arm that enforces it.
+  # has reached the hard cap, by exiting `GATE_EXIT_CAP`, and refuses the
+  # calling SEAT's act when its context has reached `SEAT_HARD_TOKENS`, by
+  # exiting `GATE_EXIT_RULE`. Returns 0 when the caller may go on. Spelled once
+  # and called from every arm that enforces it.
   #
   # IT RUNS BEFORE ANY ROW IS WRITTEN. The cap is a routing instruction and not
   # a refusal, and a refusal leaves no row in this ledger — so the signal has to
   # come back before the undeclared-target registration, the rule catalog, the
   # approval issuance and the row append, all of which can write.
   #
-  # ONLY A SHIFT IS CAPPED HERE. A stage runs under its own process and its own
-  # budget, and a seat is capped by a different arm with a different code.
+  # TWO CALLERS ARE CAPPED, EACH BY ITS OWN ARM AND ITS OWN CODE. A stage runs
+  # under its own process and its own budget and is not capped here at all. A
+  # shift is told to END (15): its successor takes over and nothing it asked
+  # for was wrong. A seat — a caller that is neither a stage nor a shift — is
+  # REFUSED (3): it cannot end itself, so what it is told is to pick the one act
+  # that moves the work off it, `router-shift`.
   #
   # BOOKKEEPING KINDS ARE EXEMPT BY CALLING THE SET, NOT BY COPYING IT. The one
   # thing a capped shift must still be able to do is write
@@ -20717,7 +20731,33 @@ gate_cap_directive() {
   # grew a row would be indistinguishable from an act that happened.
   local verb="$1" kind="${2:-}" n ctx
   n=$(gate_shift_self_ordinal)
-  [ -n "$n" ] || return 0
+  if [ -z "$n" ]; then
+    # THE SEAT ARM. A caller carrying `CC_PIPELINE_SHIFT_ID` that did not parse
+    # to an ordinal is not a seat, and a stage is never one.
+    cc_caller_is_stage && return 0
+    [ -z "${CC_PIPELINE_SHIFT_ID:-}" ] || return 0
+    # It stands on act, exec and plan only. A seat does not `wait` on a stage;
+    # it waits for its synchronous `router-shift` call to come back, and the
+    # argument for capping `wait` is about a shift blocked on a long stage.
+    [ "$verb" != "wait" ] || return 0
+    # The exemption is the bookkeeping set, CALLED, plus `router-shift`, which
+    # is not in that set and dispatches from its own arm. Refusing
+    # `router-shift` would leave a capped seat no way to hand over at all. Its
+    # argv is not inspected: the first token after `--` is a handoff reason,
+    # not a command, and grading it would add a refusal path to the one call a
+    # seat must always be able to make.
+    gate_kind_is_bookkeeping "$kind" && return 0
+    [ "$kind" != "router-shift" ] || return 0
+    # THE CAP BINDS ONLY THE RUN ACTS THAT PASS THROUGH THIS GATE, and no other
+    # property of the session. It does not make the seat's context smaller; it
+    # stops the seat from growing it by doing the shift's work.
+    ctx=$(gate_router_context)
+    case "${ctx:-}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$ctx" -ge "$SEAT_HARD_TOKENS" ] || return 0
+    printf 'gate: 좌석의 컨텍스트가 %s 토큰으로 좌석 상한 %s 에 닿아 이 행위를 거절합니다 — `act --kind router-shift` 로 교대를 내어 라우팅을 넘기십시오 (%s)\n' \
+      "$ctx" "$SEAT_HARD_TOKENS" "$verb" >&2
+    exit "$GATE_EXIT_RULE"
+  fi
   gate_kind_is_bookkeeping "$kind" && return 0
   ctx=$(gate_shift_context_of "$n")
   case "${ctx:-}" in

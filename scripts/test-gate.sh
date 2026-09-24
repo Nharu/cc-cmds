@@ -1124,6 +1124,14 @@ trap 'rm -rf "$WORK"' EXIT
 FXREPORT="$WORK/fixture-review.md"
 printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
+# THE AMBIENT SESSION ID IS DROPPED, so a run from inside a Claude session reads
+# the same as CI, which has none. The gate reads the caller's context from that
+# session's transcript, and a caller that is neither a stage nor a shift is
+# refused past `SEAT_HARD_TOKENS` — so a suite run from a long interactive
+# session would otherwise see every seat act of a section that clears the stage
+# markers refused for the size of the session running it. Sections that model a
+# session set their own id.
+unset CLAUDE_CODE_SESSION_ID
 
 # THE CLI THE LAUNCHER EXECS IS OFF FOR THIS WHOLE PROCESS, for the same reason
 # the notifier above is: the call sites cannot be made exhaustive.
@@ -18167,6 +18175,67 @@ cap_gate "$capc_sid1" "$CAPC_RID#1" exec --manifest "$CAP_NM" --target infra --s
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid1" "$CAPC_RID#1")" \
          --rationale "픽스처 — 경계, 상한 바로 아래" -- ls "$CONE_A"
 check "34c A15: 449,999 이면 상한이 아니다" "$rc" "0"
+
+# THE SEAT ARM. A seat is a caller carrying neither `CC_PIPELINE_STAGE_ID` nor
+# `CC_PIPELINE_SHIFT_ID`, modelled by an empty shift id and a transcript under
+# its own session id. Its own session, not the first seat's: that one launched
+# the shifts above, and moving its context would move what they asserted.
+CAPC_BIGSEAT_SID="77777777-1111-2222-3333-44444444444c"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 40000 20000; } > "$NTX/$CAPC_BIGSEAT_SID.jsonl"
+
+# A12. PAST ITS LIMIT A SEAT'S ORDINARY ACT IS REFUSED, AND THE REFUSAL LEAVES
+# NO ROW. It is a rule refusal (3) and not the shift's 15: a seat cannot end
+# itself, so what it is told is to pick another act.
+capc_before=$(wc -l < "$CAP_LEDGER" | tr -d ' ')
+cap_gate "$CAPC_BIGSEAT_SID" '' exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 평범한 읽기" -- ls "$CONE_A"
+check "34c A12: 상한을 넘긴 좌석의 일반 행위는 3 으로 거절된다" "$rc" "3"
+check "34c A12: 그 거절은 gate: 줄로 좌석 상한과 router-shift 를 지목한다" \
+  "$( { grep -qF 'gate: 좌석의 컨텍스트가 460000 토큰으로 좌석 상한 300000' "$CAP_ERR" \
+        && grep -qF 'router-shift' "$CAP_ERR" && printf 'named'; } || printf 'unnamed')" \
+  "named"
+check "34c A12: 행위 자신의 출력은 없다" \
+  "$( [ -s "$CAP_OUT" ] && printf 'printed' || printf 'none' )" "none"
+check "34c A12: 좌석 상한 거절은 원장 행을 하나도 늘리지 않는다" \
+  "$(wc -l < "$CAP_LEDGER" | tr -d ' ')" "$capc_before"
+# The seat arm stands on the acting verbs only. A seat waits on its synchronous
+# `router-shift` call, not on a stage, so `wait` answers here exactly as it
+# would below the limit — `CC1` was never dispatched, which is 11.
+cap_gate "$CAPC_BIGSEAT_SID" '' wait --manifest "$CAP_NM" --segment CC1 --timeout 5
+check "34c A12: 좌석의 wait 에는 좌석 상한이 서지 않는다" "$rc" "11"
+
+# A13. THE SAME SEAT CAN STILL HAND OVER. Refusing `router-shift` or a
+# bookkeeping act here would leave a capped seat no move at all, and the night
+# would end at the first crossing.
+cap_gate "$CAPC_BIGSEAT_SID" '' act --manifest "$CAP_NM" --kind handoff --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 기록 종류 행위" \
+         -- 교대=5 대상=infra 사유=상한 '버린 선택지=없음' '막힌 지점=좌석 상한' '다음 후보=CC1'
+check "34c A13: 상한을 넘긴 좌석의 기록 종류 행위는 거절되지 않는다" "$rc" "0"
+capc_launch_before=$( { cap_rows '교대 기동' | grep -c '' || true; } )
+cap_gate "$CAPC_BIGSEAT_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 인계" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34c A13: 상한을 넘긴 좌석의 router-shift 는 거절되지 않는다" "$rc" "0"
+check "34c A13: 그 router-shift 가 교대를 실제로 기동한다" \
+  "$( { cap_rows '교대 기동' | grep -c '' || true; } )" "$((capc_launch_before + 1))"
+
+# A15, seat. The same one-value boundary against `SEAT_HARD_TOKENS`.
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 250000 40000 10000; } > "$NTX/$CAPC_BIGSEAT_SID.jsonl"
+cap_gate "$CAPC_BIGSEAT_SID" '' exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 좌석 경계, 정확히 좌석 상한" -- ls "$CONE_A"
+check "34c A15: 좌석은 정확히 300,000 이면 거절된다" "$rc" "3"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 250000 39999 10000; } > "$NTX/$CAPC_BIGSEAT_SID.jsonl"
+cap_gate "$CAPC_BIGSEAT_SID" '' exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 좌석 경계, 좌석 상한 바로 아래" -- ls "$CONE_A"
+check "34c A15: 좌석은 299,999 이면 거절되지 않는다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
