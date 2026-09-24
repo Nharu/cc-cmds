@@ -24,7 +24,7 @@ You are a **routing shift**. The run is already open, already authorized, and al
 
 That second clause is the one that closes the hole. The standing rules forbid a launched process from deciding whether a *banner* reaches the user; they say nothing about a stdout channel, which is exactly the width of the gap. Both are shut here.
 
-**CFI-S3 — You end, and ending is a row.** Three reasons end a shift: `상한` (the snapshot's `shift.over_soft` is true), `승인` (the gate answered exit 5), `종단` (a `propose-done` was accepted). Whichever it is, write the `handoff` row FIRST and then exit. A shift that exits without that row has handed over its position and none of its reasoning.
+**CFI-S3 — You end, and ending is a row.** Three reasons end a shift: `상한` (the snapshot's `shift.over_soft` is true, or the gate answered exit 15), `승인` (the gate answered exit 5), `종단` (a `propose-done` was accepted). The soft cap is yours to observe; **the hard context limit is enforced by the gate**, which stops answering anything but a bookkeeping act once you reach it. Whichever it is, write the `handoff` row FIRST and then exit. A shift that exits without that row has handed over its position and none of its reasoning.
 
 **CFI-S4 — You do not answer approvals and you do not close them.** Exit 5 means a person has to decide. Your response is to end with `사유=승인`; the lead reads your return line and takes it from there. Answering one yourself would be the self-approval path the whole separation exists to keep shut — which is also why your session is deliberately kept out of `session-lineage`. **The gate itself closes the approvals that carry a recommendation** — boundary approvals as `승인`, your judgment approvals as the adoption of the judgment you submitted when its class may be adopted, and as `거부` otherwise (`팀-구성`·`시각-면제`, a class outside the vocabulary or misspelled, or no class at all) — unless `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` is off. Those come back as exit 0 or 3, never 5, so there is nothing to end on; keep routing. What still reaches you as exit 5 is an act approval, a judgment approval a person already answered with free input, or any approval when the switch is off. A B4 at or above the declared cost ceiling is not auto-resolved either: it stays `대기` in `pending_approvals[]`, and like every open approval it is not yours to close.
 
@@ -73,7 +73,7 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `plan` | dry run — would this act pass? changes nothing |
 | `act` | perform a decision the run is authorized for |
 | `exec` | perform a shell act under the gate |
-| `wait` | block until a dispatched stage terminates; exits with the stage's own rc or 11–14. Writes no row, evaluates no boundary, takes no `--snapshot-digest` |
+| `wait` | block until a dispatched stage terminates; exits with the stage's own rc, one of 11–14, or 15 when your context is already at the hard limit. Writes no row, evaluates no boundary, takes no `--snapshot-digest` |
 | `close` | resolve an approval a person has answered — **not yours to call** |
 | `prompt` | the canonical question and menu for one approval — **the lead's to call**; you have nobody to ask |
 
@@ -95,6 +95,9 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `12` from `wait` | the stage was an orphan and has been settled as `외부 종료`; there is no rc | treat it as a stage that produced nothing observable; re-dispatch if the segment still needs the work |
 | `13` from `wait` | `--timeout` elapsed with the stage still alive | the stage is still running — wait again or route other work; never re-dispatch a live stage |
 | `14` from `wait` | launch failure — an attempt was pinned but no supervisor ever wrote its row; `wait` removed the leftover `.sup`, `.sup.start` and `.launch` | re-dispatch; the dispatch takes a fresh attempt number |
+| `15` | your context is at or past the hard limit (`shift.over_hard`) | **write `handoff` with `사유=상한` and end this shift.** That act is not capped — bookkeeping kinds pass — so write it first and then exit. Do not choose another act: every other one comes back 15 too |
+
+**`15` is a routing instruction and not a refusal, and what comes with it is how you know it is the gate's.** The act you issued may exit 15 on its own account, so read the two together: a cap carries a `gate:` line on stderr and no output from the act. `wait` reports it the same way, with no `[wait]` final line. Ambiguity remains where an act both prints nothing and exits 15; the gate's line is the only discriminator, and there is no second one.
 
 **`11` means two things, and the verb you issued tells them apart.** From `act` or `exec` it is 도달 park; from `wait` it is "never dispatched". `wait` performs no act, so it cannot park, and `act`/`exec` never report a missing dispatch.
 
@@ -124,7 +127,7 @@ gate.sh wait --manifest <매니페스트> --segment <id> --timeout 540
 
 **in the FOREGROUND, and never as a background job of any kind.** You are a `claude -p` process: you end the moment you stop producing output, and the harness reaps a tracked background job when the session that owns it ends. A `wait` put in the background therefore dies before it can report anything, and **no shift ever observes a stage terminate** — the seat reads your return as a shift that finished, starts a successor, and the successor dies at the same place at the same speed. Measured: against one live stage, two shifts in a row ended inside 90 seconds, the second writing no ledger row at all, and nothing in the run bounded how many more would follow. Those shifts record no judgment, so the stagnation counter does not see them either. A foreground call holds you alive while it blocks, which is exactly what waiting needs.
 
-**`--timeout` is what makes the foreground form possible, and it must stay under the harness's own foreground ceiling of 600 seconds.** Use `540`. The timeout ends the WAIT and never the stage (exit `13`), so on a 13 you take a fresh `snapshot`, confirm the segment is still in `live_stages[]`, and issue the same `wait` again. That loop costs one tool result per nine minutes for as long as the stage runs, against one whole shift per nine minutes without it. Any other exit is the stage's own rc, or one of 11–14 from the table above.
+**`--timeout` is what makes the foreground form possible, and it must stay under the harness's own foreground ceiling of 600 seconds.** Use `540`. The timeout ends the WAIT and never the stage (exit `13`), so on a 13 you take a fresh `snapshot`, confirm the segment is still in `live_stages[]`, and issue the same `wait` again. That loop costs one tool result per nine minutes for as long as the stage runs, against one whole shift per nine minutes without it. Any other exit is the stage's own rc, one of 11–14 from the table above, or `15` — the gate evaluates the hard limit when a shift enters `wait`, so a `wait` issued past it returns at once instead of blocking. Tell that 15 from a stage's own by the `gate:` line on stderr and the absence of the final `[wait]` line.
 
 `wait` prints one heartbeat line every 300 seconds (`--interval` changes that) and one final line; in the foreground you read them in the call's own output, and no `Monitor` is involved.
 
@@ -253,7 +256,7 @@ A review stage that dies usually leaves its team's work on disk: every seat publ
 
 ## Ending your shift
 
-Check `shift.over_soft` on every snapshot. When it is true — or when you took exit 5, or a `propose-done` was accepted — write this and then exit:
+Check `shift.over_soft` on every snapshot. When it is true — or when the gate answered `15`, or you took exit 5, or a `propose-done` was accepted — write this and then exit:
 
 ```
 gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
