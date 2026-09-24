@@ -8682,29 +8682,22 @@ gate_autocompact_argv_value() {
   esac
 }
 
-gate_lane_dir() {
-  # The CLI config home the stage will read: the explicit env var, then the
-  # run's recorded lane, then the default. The same order the driver's account
-  # resolution walks, so both writers name one lane.
-  local d=""
-  d="${CLAUDE_CONFIG_DIR:-}"
-  if [ -z "$d" ] && [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/config-dir" ]; then
-    d=$(sed -n '1p' "$RUN_DIR/config-dir" 2>/dev/null || true)
-  fi
-  [ -n "$d" ] || d="${HOME:-}${HOME:+/.claude}"
-  printf '%s' "${d%/}"
-}
-
 gate_lane_label() {
-  # The lane in tilde form — a `$HOME` prefix becomes `~`, anything else is
-  # printed as is — so a row does not spell the account's home directory.
-  local d
-  d=$(gate_lane_dir)
-  case "$d" in
-    "${HOME:-/nonexistent}") printf '~' ;;
-    "${HOME:-/nonexistent}"/*) printf '~%s' "${d#"$HOME"}" ;;
-    *) printf '%s' "$d" ;;
-  esac
+  # The lane this process resolves now, in tilde form. Resolved by the driver's
+  # `resolve_account` and labelled by its `lane_label_of`, both sourced with
+  # `run.sh`, so the gate and the driver name one lane by one resolver. The
+  # gate used to keep its own copy of the resolver, and the copy drifted: it
+  # lacked the operator's setting-file tier and printed a recorded lane that is
+  # not a directory where the driver refuses it. A refusal here falls to the
+  # CLI's default directory, as the driver's `stage_lane_of` does, because a
+  # label must not stop a row or a launch record from being written.
+  #
+  # ONLY A LAUNCH RESOLVES. A row written after the stage has gone reads the
+  # lane its launch recorded (`gate_lane_sidecar_read`); resolving again there
+  # names the recording process's lane, not the stage's.
+  local cfg
+  cfg=$(resolve_account 2>/dev/null || true)
+  lane_label_of "${cfg:-${HOME:-}/.claude}"
 }
 
 gate_autocompact_layer() {
@@ -8738,14 +8731,18 @@ gate_autocompact_effective() {
   # that is not a plain integer is "this layer sets none" (a format the CLI
   # may accept is not a read failure).
   local argv_val="$1" settings="$2" proj="$3"
-  local f tok reading layer_enabled layer_window
+  local f tok reading layer_enabled layer_window lane_dir
   local enabled="" window="" window_tok=""
+  # The lane layer is the directory the driver's resolver names. A refusal is
+  # a lane layer that cannot be read, which is `(미상)` like any other layer
+  # that cannot be read — never the default directory's settings instead.
+  lane_dir=$(resolve_account 2>/dev/null) || { printf '(미상)'; return 0; }
   for tok in 런설정 프로젝트로컬 프로젝트 레인; do
     case "$tok" in
       런설정) f="$settings" ;;
       프로젝트로컬) f="$proj/.claude/settings.local.json"; tok=프로젝트 ;;
       프로젝트) f="$proj/.claude/settings.json" ;;
-      레인) f="$(gate_lane_dir)/settings.json" ;;
+      레인) f="${lane_dir%/}/settings.json" ;;
     esac
     [ -n "$f" ] || continue
     reading=$(gate_autocompact_layer "$f") || { printf '(미상)'; return 0; }
@@ -8785,12 +8782,14 @@ gate_window_sidecar_read() {
 }
 
 gate_lane_sidecar_read() {
-  # gate_lane_sidecar_read <segment> — line 2 of `<seg>.window`, or the lane
-  # this process resolves.
+  # gate_lane_sidecar_read <segment> — line 2 of `<seg>.window`, or `(미상)`.
+  # The lane is what the launch recorded. The process writing the row is a
+  # supervisor or a later settler with its own environment, so the lane it
+  # would resolve is not evidence of where the stage ran; without the record
+  # the row says it does not know.
   local f="$RUN_DIR/$1.window" v=""
   [ -f "$f" ] && v=$(sed -n '2p' "$f" 2>/dev/null || true)
-  [ -n "$v" ] || v=$(gate_lane_label)
-  printf '%s' "$v"
+  printf '%s' "${v:-(미상)}"
 }
 
 gate_settings_key() {
@@ -18962,6 +18961,10 @@ gate_record_stage_outcome() {
   # with neither the row says `(미상)` rather than guessing a layer.
   local window="${8:-}"
   [ -n "$window" ] || window=$(gate_window_sidecar_read "$seg")
+  # THE LANE IS NOT HANDED DOWN AND NOT RESOLVED HERE. The launch wrote it to
+  # the same record before the CLI started, and the record outlives this call.
+  local lane
+  lane=$(gate_lane_sidecar_read "$seg")
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   # A launch that never STARTED is reported as such. With no result line the
@@ -19149,13 +19152,13 @@ gate_record_stage_outcome() {
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
-      "압축 창=$window" "레인=$(gate_lane_label)" "기록자=게이트" \
+      "압축 창=$window" "레인=$lane" "기록자=게이트" \
       "plan_sha256=$psha" "종단 부류=$klass"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
-      "압축 창=$window" "레인=$(gate_lane_label)" "기록자=게이트" \
+      "압축 창=$window" "레인=$lane" "기록자=게이트" \
       "종단 부류=$klass"
   fi
 
