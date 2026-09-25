@@ -3675,6 +3675,24 @@ predicate_reconverge()  { grep -qF "$LIT_RECONVERGE_TERMINAL" "$(stage_log_path 
 # writing this line, so "no such line" describes nearly every document a person
 # wrote, and reading it as "not designed yet" aimed the design arm at those.
 doc_is_frozen()         { [ -n "$1" ] && [ -f "$1" ] && grep -qE '^\*\*상태\*\*: 동결됨$' "$1"; }
+# The SPAWN-TIME STUB, which is the one state at the document path that carries
+# nothing to lose. The design stage creates the file before it discusses
+# anything — an H1 and the team's ledger comment block, no `##` section yet —
+# so a stage that dies after spawning leaves behind the very file that then
+# reads as "a document is already there". Measured: a design stage died on an
+# API usage limit and its own stub became the reason it was never dispatched
+# again, which ended the run within minutes of an error that resets by itself.
+# The two axes are the stage's own target-document guard, not a second opinion:
+# does the ledger block parse, and does the body carry at least one `##`
+# heading. A person's document fails the first and a saved one fails the
+# second, so neither is mistaken for a stub — which is what `doc_is_frozen`
+# above is careful NOT to be asked here, because nearly every document a person
+# wrote is unfrozen and dispatching over those is the failure it warns about.
+doc_is_early_stub() {
+  [ -n "$1" ] && [ -f "$1" ] \
+    && grep -qF '<!-- cc-design-ledger' "$1" \
+    && ! grep -qE '^## ' "$1"
+}
 # A stage whose only output is a document has no un-fabricable predicate (see
 # the note above). Two authored facts are crossed anyway — the freeze literal in
 # the stage's own stream and the frozen-status line in the document — so a stage
@@ -5582,13 +5600,35 @@ design_arm() {
       log "S1 설계 건너뜀 — 이 런의 설계 스테이지가 이미 완주했다 ($DOC_KEY)"
       return 0
     fi
-    park "S1design" run 무효화 "게이트 park" \
-      "이 런의 설계 스테이지가 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 설계하지도 감사로 넘기지도 않는다" \
-      "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"
-    return 1
+    # A CRASH THAT SAVED NOTHING IS DISPATCHED AGAIN. `크래시` is the class every
+    # non-zero exit gets, so a transient API usage limit is filed beside a stage
+    # that is genuinely broken, and parking on it ends the run for a cause that
+    # clears by itself. The document decides instead: nothing at the path, or
+    # the spawn-time stub, means the crash carried nothing off.
+    # A HOLLOW SUCCESS IS THE SAME SHAPE FROM THE OTHER SIDE. The stage exited 0
+    # and the artifact predicate said no document — a team member that ended its
+    # turn with no witness left, a save that never happened before the turn
+    # boundary, a background-wait ceiling reached mid-discussion. Nothing about
+    # those is more permanent than a crash, and the test is identical: the
+    # document decides, so a retry that would overwrite saved work is still
+    # refused and one that would overwrite nothing is allowed.
+    if { [ "$prior_class" = "크래시" ] || [ "$prior_class" = "공허한 성공" ]; } \
+       && { [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; then
+      log "S1 설계 재파견 — 앞선 시도가 $prior_class 로 끝났고 저장된 문서가 없다 ($DOC_KEY)"
+    else
+      park "S1design" run 무효화 "게이트 park" \
+        "이 런의 설계 스테이지가 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 설계하지도 감사로 넘기지도 않는다" \
+        "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"
+      return 1
+    fi
   fi
 
-  if [ -e "$DOC" ]; then
+  # THE ONE FILE THIS BRANCH LETS THROUGH IS THE STAGE'S OWN SPAWN-TIME STUB.
+  # Existence alone read that stub as a finished design, so a stage that died
+  # after spawning left behind the very file that stopped it being dispatched
+  # again. Everything else at the path — a person's document, a completed
+  # dispatch's, a hand dispatch's — still stops the arm exactly as before.
+  if [ -e "$DOC" ] && ! doc_is_early_stub "$DOC"; then
     log "S1 설계 건너뜀 — 설계 문서가 이미 있다 ($DOC_KEY)"
     ledger_row '자율 승인' "kind=design-composition" "결정=설계 스테이지를 띄우지 않는다" \
       "기각된 대안=있는 문서 위로 설계를 띄운다" "등급=1" \

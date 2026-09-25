@@ -2178,6 +2178,7 @@ arm21_case() {
     case "$docst" in
       사람) printf '# 사람이 쓴 설계\n\n## 합의된 아키텍처\n\n본문\n' > "$DOC" ;;
       동결) printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC" ;;
+      스텁) printf '# 설계\n\n<!-- cc-design-ledger v3\nrow: agentId | state\n- a1 | running\n-->\n' > "$DOC" ;;
     esac
     [ "$prior" = "-" ] || printf -- '- `stage-result` | 세그먼트=- | 스테이지=S1design | 파견 id=S1design | 종단 부류=%s\n' "$prior" >> "$LEDGER"
     [ -z "${6:-}" ] || ORCH_DIR="$6"
@@ -2235,6 +2236,36 @@ check "이 런이 설계를 완주했으면 재개에서 다시 파견하지 않
 arm21_case resumed-halt "$MFARM" 사람 '의도된 park' '정상 완료'
 check "앞선 시도가 중단한 런은 다시 설계하지도 감사로 넘기지도 않고 park 한다" \
   "$(arm21_rc resumed-halt)/$(arm21_disp resumed-halt)/$(grep -c 'S1design run' "$ARM21/resumed-halt/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# 스폰 시점 스텁은 앞의 셋과 다른 부류다 — 설계가 스스로 만든 파일이고 아직
+# 아무 내용도 없다. 존재만으로 건너뛰면 스폰 뒤 죽은 설계가 자기 스텁 때문에
+# 다시 파견되지 않으므로, 그 한 부류만 통과시키는지 잰다.
+arm21_case stub "$MFARM" 스텁 - '정상 완료'
+check "스폰 시점 스텁만 있으면 건너뛰지 않고 파견한다" \
+  "$(arm21_rc stub)/$(arm21_disp stub)" "0/1"
+
+# 한도 소진 같은 런 밖 원인이 크래시로 기록되는데, 그 크래시가 남긴 것이 스텁뿐
+# 이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
+arm21_case resumed-crash "$MFARM" 스텁 '크래시' '정상 완료'
+check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-crash)/$(arm21_disp resumed-crash)/$(grep -c 'S1design run' "$ARM21/resumed-crash/parked" 2>/dev/null || printf 0)" "0/1/0"
+
+# 반대쪽 — 크래시라도 저장된 문서가 남았으면 덮어쓸 것이 있으므로 park 그대로다.
+arm21_case resumed-crash-saved "$MFARM" 사람 '크래시' '정상 완료'
+check "크래시라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-crash-saved)/$(arm21_disp resumed-crash-saved)/$(grep -c 'S1design run' "$ARM21/resumed-crash-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# 프로세스가 죽지 않고 rc 0 으로 끝났는데 산출물이 없는 경우도 같은 모양이다 —
+# 팀원이 증인 없이 턴을 끝내 기다릴 작업이 사라졌거나, 저장 직전 턴 경계에서
+# 끝났거나, 토론 중에 대기 천장에 잘렸거나. 죽었는지 아닌지는 재시도가 무엇을
+# 덮어쓸지에 대해 아무것도 말하지 않으므로, 판별자는 크래시 쪽과 같이 문서다.
+arm21_case resumed-hollow "$MFARM" 스텁 '공허한 성공' '정상 완료'
+check "앞선 시도가 공허한 성공으로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-hollow)/$(arm21_disp resumed-hollow)/$(grep -c 'S1design run' "$ARM21/resumed-hollow/parked" 2>/dev/null || printf 0)" "0/1/0"
+
+arm21_case resumed-hollow-saved "$MFARM" 사람 '공허한 성공' '정상 완료'
+check "공허한 성공이라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-hollow-saved)/$(arm21_disp resumed-hollow-saved)/$(grep -c 'S1design run' "$ARM21/resumed-hollow-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
 
 arm21_case halted "$MFARM" 없음 - '의도된 park'
 check "파견한 스테이지가 중단하면 런을 park 한다" \
@@ -5869,7 +5900,208 @@ rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../el
 check "배시 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
 rr_guard 트리밖쓰기 git --namespace x diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
 check "배시 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
-unset RR_G_CWD
+
+# 같은 결함의 두 철자가 더 있었다. 등급표는 `lockf` 와 `find -exec` 도 벗겨 안쪽 git 으로
+# 등급하는데 둘째 기준을 세우는 벗기기에는 두 이름이 없어, `lockf -k -t 0 <잠금> git -C
+# <형제> diff --output=<상대>` 와 `find <d> -exec git -C <형제> … {} ;` 가 정직한
+# `트리밖쓰기` 로 두 가드를 지났다(실측). `lockf` 는 무인 스킬이 설계 문서 쓰기마다
+# 요구하는 래퍼라 파이프라인이 실제로 만드는 형태다. 잠금 파일은 두 보호 루트 밖에 둔다.
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: lockf 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: find -exec 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: lockf 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: find -exec 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+
+# --- 사후 리뷰 수리 8. find 의 primary 는 하나가 아니다 -------------------------
+# 벗기기가 `-exec` 계열을 만나면 **그 뒤 전부**를 안쪽 명령으로 보고 즉시 반환했다.
+# `find` 문법에서 `;` 와 `{} +` 다음 토큰은 그 명령의 인자가 아니라 **다음 primary** 인데
+# 꼬리로 읽혔다 — 그래서 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv
+# 전체가 `읽기` 로 등급되고 네 가드가 전부 첫 줄에서 반환했다(실측, 세 리뷰어 독립
+# 재현). 아래 넷은 부류를 둘로 나눈다. 앞 둘은 목적지를 argv 에 **평문 절대 경로**로
+# 적으므로 등급만 넘기면 가드의 전체 경로 팔이 잡고, 뒤 둘은 목적지가 `-C` 기준
+# 상대 경로라 **둘째 기준이 다중 primary 를 지나 서야만** 닫힌다 — 그래서 등급표만
+# 고친 절반 수리는 뒤 둘에서 rc 0 을 남긴다. 등급 쪽 짝은 `scripts/test-gate.sh`
+# 절 30b-1 에 있다. 각 양성 바로 아래에 같은 argv 의 단일 primary 판을 둬, 양성의
+# rc 3 이 「`find` 를 통째로 거부한다」와 구별되게 한다.
+rr_pguard 워크트리쓰기 find "$RRP_INST/orchestrator" -name nonexistent-9x7 -exec cat {} ';' -delete
+check "설치본 가드: 첫 primary 뒤에 온 -delete 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$RRP_INST/orchestrator" -name nonexistent-9x7 -delete
+check "설치본 가드: 단일 primary 대조군 — 같은 -delete 는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -name nonexistent-9x7 -exec cat {} ';' -fprintf "$RRP_INST/orchestrator/gate.sh" x
+check "설치본 가드: 첫 primary 뒤에 온 -fprintf 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -name nonexistent-9x7 -fprintf "$RRP_INST/orchestrator/gate.sh" x
+check "설치본 가드: 단일 primary 대조군 — 같은 -fprintf 는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec true {} ';' -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: 앞선 primary 가 있어도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 다중 primary 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: 단일 primary 대조군 — 같은 철자는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec echo {} ';' -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: 앞선 primary 가 있어도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: 다중 primary 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: 단일 primary 대조군 — 같은 철자는 그대로 rc 3" "$rr_guard_rc" "3"
+
+# --- 사후 리뷰 수리 9. 기준을 세울 수 없는 모양은 기준이 없는 모양이 아니다 ------
+# `-execdir`·`-okdir` 는 안쪽 명령을 **매치마다 그 디렉터리에서** 돌린다. 벗기기의
+# 계약이 「빈 문자열 = 기준 없음」이고 기준 없음은 허용 방향이라, `-C` 가 없거나
+# `-C .` 이거나 `-okdir` 이거나 맨 이름 피연산자이면 `cb` 가 아예 서지 않아 두 가드가
+# rc 0 으로 통과시켰다(실측). 이제 벗기기가 거부 방향의 제3상태를 답하고 가드가 그것을
+# 「기준 없음」이 아니라 거부로 읽는다. `exec` 경로는 이 argv 를 등급에서 한 걸음 먼저
+# 거부하므로, 아래 행이 재는 것은 가드를 직접 무는 경로다.
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: -C 없는 -execdir 는 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 거부가 기준 불가 팔의 것이다" ;;
+  *) bad "설치본 가드: -execdir 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git -C . diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: -C . 인 -execdir 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -maxdepth 0 -okdir rm x {} ';'
+check "설치본 가드: -okdir 도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: -C 없는 -execdir 는 rc 3" "$rr_guard_rc" "3"
+# 음성 대조군 — 같은 자리의 `-exec` 는 기준을 세울 수 있으므로 보호 루트 밖이면 지난다.
+# 없으면 위 넷의 rc 3 이 「`find` 를 통째로 거부한다」와 구별되지 않는다.
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../elsewhere/x" {} ';'
+check "배시 가드: 음성 대조군 — -exec 는 기준이 서고 보호 루트 밖이면 rc 0" "$rr_guard_rc" "0"
+
+# --- 사후 리뷰 수리 10. 등급을 모르는 primary 는 옆 primary 에 지워지지 않는다 -----
+# 다중 primary 를 접는 결합자가 「인식되지 않는 쪽이 진다」 규약이라, 등급표에 없는
+# 안쪽 명령 뒤에 `-exec cat {} ';'` 한 마디만 붙이면 `등급 미상` 이 지워지고 argv 전체가
+# `읽기` 가 됐다. 두 가드는 `읽기` 에서 첫 줄에 반환하므로, 안쪽 명령의 인자가 보호
+# 경로를 축자로 들고 있어도 rc 0 이었다(실측). 검색 루트가 보호 경로인 모양은 가드의
+# 축자 스캔이 루트 자체를 잡아 수리 전후 모두 rc 3 이라 이 결함을 재지 못하므로,
+# 보호 경로를 안쪽 명령의 인자로 든다.
+#
+# 가드는 `exec` 가 계산한 등급을 받으므로, 여기서도 등급을 리터럴로 적지 않고
+# 게이트의 등급표에 물어 넘긴다 — 리터럴 `워크트리쓰기` 를 넘기면 폴드가 `읽기` 로
+# 세탁해도 가드는 보지 못해 이 행들이 수리 전에도 초록이다(실측).
+rr_graded() {
+  # rr_graded <argv…> — 게이트를 소싱해 `exec` 경로와 같은 `surface_of_argv0` 답을 낸다.
+  RR_G_GATE="$script_dir/gate.sh" bash -c '
+    CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+    . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+    surface_of_argv0 "$@"
+  ' _ "$@"
+}
+# 헬퍼가 죽어 빈 값을 내도 가드는 `읽기` 가 아닌 모든 값에서 스캔으로 진행해 rc 3 을
+# 내므로, rc 만 보는 단언은 등급 계산 없이도 초록이다. 그래서 가드 단언마다 앞에서
+# 등급이 실제로 나왔는지 먼저 세고, 나오지 않았으면 그 가드 단언을 건너뛰어 실패만
+# 남긴다.
+rr_g_must() {
+  # rr_g_must <값> — 비었으면 실패로 세고 1 을 반환한다.
+  [ -n "$1" ] && return 0
+  bad "rr_graded 가 등급을 내지 못했다" "헬퍼가 죽었거나 게이트를 소싱하지 못했다 — 뒤의 가드 단언은 등급 계산을 재지 않는다"
+  return 1
+}
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';')
+check "등급 미상 primary 뒤에 읽기 primary 가 와도 등급 미상이다" "$rr_g" "등급 미상"
+if rr_g_must "$rr_g"; then
+  rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RRP_INST/orchestrator/gate.sh" {} ';' -exec cat {} ';'
+  check "설치본 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'orchestrator or hook script of the installed plugin'*)
+      ok "설치본 가드: 등급 미상 다중 primary 거부가 설치본 팔의 것이다" ;;
+    *) bad "설치본 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+  esac
+fi
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';')
+if rr_g_must "$rr_g"; then
+  rr_guard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec unknowncmd "$RR/cc-cmds/run/victim/settings/x.json" {} ';' -exec cat {} ';'
+  check "배시 가드: 등급 미상 primary 뒤에 읽기 primary 가 와도 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'this is another run directory'*) ok "배시 가드: 등급 미상 다중 primary 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 등급 미상 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+  esac
+fi
+# 안쪽 `find` 의 `-execdir` 가 답한 `형태 미상` 도 같은 폴드를 지난다. 바깥 `-execdir`
+# 가 앞에 오는 모양은 벗기기가 그 자리에서 반환하므로 수리 전에도 rc 3 인 상한 고정 행이다.
+#
+# 아래 두 가드 행은 **가드 단위 시험이며 종단간 경로를 재지 않는다.** 실제 `exec` 는
+# `형태 미상` 을 등급 직후 거부하므로(exit 2) 이 argv 로는 가드가 호출조차 되지 않는다.
+# 그 종단간 거부는 scripts/test-gate.sh 30b-1 절이 실제 `gate.sh exec` 로 잰다.
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';')
+check "안쪽 find 의 형태 미상이 옆 읽기 primary 에 지워지지 않는다" "$rr_g" "형태 미상"
+if rr_g_must "$rr_g"; then
+  rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';'
+  check "설치본 가드: 안쪽 find 의 -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'each match'"'"'s own directory'*) ok "설치본 가드: 안쪽 -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+    *) bad "설치본 가드: 안쪽 -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+  esac
+fi
+rr_g=$(rr_graded find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';')
+if rr_g_must "$rr_g"; then
+  rr_pguard "$rr_g" find "$WORK/other/deep" -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';'
+  check "설치본 가드: -execdir 뒤에 읽기 primary 가 와도 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 다중 primary 거부가 기준 불가 팔의 것이다" ;;
+    *) bad "설치본 가드: -execdir 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+  esac
+fi
+unset -f rr_g_must
+unset RR_G_CWD rr_g
+
+# 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.
+# 그래서 이름을 하나씩 고정하는 대신 두 집합을 대조한다: 등급표가 `surface_of_<이름>`
+# 으로 보내고 그 함수가 `gate_unwrap_*` 로 안쪽 명령을 푸는 이름은 전부, 둘째 기준의
+# 벗기기에도 팔이 있어야 한다. `rg` 만 이름 붙여 뺀다 — `--pre` 뒤 한 단어만 넘기므로
+# `-C <디렉터리>` 와 피연산자를 함께 실을 수 없다. 모은 집합이 비면 추출이 깨진 것이라
+# 그것도 실패로 센다 — 그렇지 않으면 이 대조는 아무것도 비교하지 않고 초록이 된다.
+rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  table=$(declare -f surface_of_argv0)
+  peel=$(declare -f gate_argv_chdir_base_of)
+  n=0; missing=""
+  for f in $(declare -F | sed -n "s/^declare -f surface_of_//p"); do
+    [ "$f" = argv0 ] && continue
+    case "$(declare -f "surface_of_$f")" in *gate_unwrap_*) ;; *) continue ;; esac
+    case "$table" in *"surface_of_$f "*) ;; *) continue ;; esac
+    n=$((n + 1))
+    [ "$f" = rg ] && continue
+    grep -Eq "(^|[[:space:]|])$f([[:space:]]*[|)])" <<<"$peel" || missing="$missing $f"
+  done
+  [ "$n" -gt 0 ] || { echo "위임 이름을 하나도 모으지 못했다"; exit 0; }
+  echo "n=$n missing=[${missing# }]"
+' )
+case "$rr_unwrap_parity" in
+  *'missing=[]') ok "둘째 기준의 벗기기가 등급표의 위임 이름을 rg 말고 모두 덮는다 ($rr_unwrap_parity)" ;;
+  *) bad "둘째 기준 벗기기와 등급표 위임 목록의 대조" "어긋났다: $rr_unwrap_parity" ;;
+esac
 
 # --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
 # 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
