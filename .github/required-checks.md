@@ -2,8 +2,8 @@
 
 `master` 에 브랜치 보호를 걸 때 required status check 로 지정할 이름의 전수다. **손으로 적은 것이 아니라 전부 초록인 실행에서 채취했다** — 이름은 워크플로 파일의 잡 키가 아니라 GitHub 이 렌더한 체크 이름이고, matrix 잡은 `<잡 이름> (<값>)` 으로 갈라지므로 파일만 보고 적으면 어긋난다.
 
-- **채취한 실행**: `Nharu/cc-cmds#924`, head `67061f299d4ad87d3d83cedb4c79db73f1ac1c66`
-  (워크플로 실행 `35513536513` gate · `35513536363` lint · `35513536400` notify-macos, 2026-09-20, 13개 전부 success)
+- **채취한 실행**: `Nharu/cc-cmds#1051`, head `af71552a4f7000092e9a975cf3062c8dbd6ff967`
+  (워크플로 실행 `36156429929` gate · `36156429890` lint · `36156429802` notify-macos, 2026-09-25, 18개 전부 success)
 
 ## 게이트 소속 (13) — `.github/workflows/gate.yml` 의 샤드 matrix
 
