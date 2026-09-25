@@ -5,6 +5,32 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.26.0] - 2026-09-25
+
+GitHub 이슈를 등록하기 직전과 이슈에서 출발한 설계를 착수할 때, 열린 이슈 전체에서 비슷한 이슈를 찾아 후보로 보여 주는 조회 도구를 더한다. 어휘 겹침으로 후보 20건을 고르고, 타입 결정 전용 분류 모델이 쌍마다 「같은 자리」 확률을 매겨 다시 줄 세운 뒤 상위 3건을 보인다. 조회는 후보를 **보여 주기만** 하며, 등록이나 착수를 막거나 미루지 않고 어떤 이슈도 닫거나 고치지 않는다.
+
+### Added
+
+- **`orchestrator/similar-items.py`** — 유사 항목 조회 도구. 어댑터는 `github`(`gh issue list --state open --limit 3000`)와 `file`(JSON 코퍼스) 둘이다. `--issue N` 은 착수 형태, `--title` + `--body-file` 은 등록 전 초안 형태다. 출력은 `similar-items: status=… source=… corpus=… shortlist=… judged=… model=…` 머리줄, 있으면 `notice:` 한 줄, 그리고 후보 3건이다. 상태는 `semantic`·`partial`·`lexical`·`unavailable` 이고 모두 종료 코드 0 이다.
+    - 판정 키(`~/.config/cc-cmds/typesafe.env`, 모드 600)가 없거나 쓸 수 없거나 판정이 실패하면 어휘 순서로 보이고 사유를 한 줄로 알린다. 코퍼스를 얻지 못하면 `status=unavailable` 로 끝나고 부른 쪽은 그대로 진행한다.
+    - `--lexical-only` 와 `--replay-log` 아래에서는 HTTP 전송을 만들지 않는다. 키 값은 출력·로그 어디에도 나가지 않는다. 판정 엔드포인트 재정의는 루프백만 받는다.
+    - 접두 약어 옵션은 사용 오류(종료 코드 2)로 거부한다. 게이트가 읽는 옵션 철자와 도구가 받는 철자를 같게 두기 위해서다.
+- **`orchestrator/cc_tracker.py`** — 두 실행 파일이 import 하는 공유 모듈. 자격 파일 읽기, 토크나이저와 IDF, 판정 요청의 구성·전송·재생을 담는다. 요청 바이트는 기록된 측정 요청과 바이트까지 같다.
+- **github-ops `## 6. Before creating an issue — similar-issue lookup`** — `gh issue create` 직전에 초안으로 조회하고, 등록한 뒤 같은 메시지에서 새 번호 곁에 후보를 보고한다. 무인 파이프라인 스테이지 안에서는 `--lexical-only` 를 붙인다.
+- **design Step 1 「Scan the other open issues in the same breath」** — `gh issue list` 대신 조회 도구를 부르고, 그 목록을 판정이 아닌 출발 집합으로 다룬다. 바로 다음 줄의 제안·병합 흐름은 그대로다.
+- **게이트 등급 행** — `similar-items.py` 는 오프라인 인자(`--lexical-only`·`--replay-log`)가 있으면 `읽기`, 거기에 `--log` 가 더해지면 `트리밖쓰기`, 오프라인 인자가 없으면 `외부상태변경` 이다. `measure-similar-items.py` 는 `--live` 가 있으면 `외부상태변경`, 없으면 `읽기` 다. `similar-items.py github …` 은 도달 범위 신고가 필요하고 `file` 어댑터는 필요 없다. 등급 행이 없는 오래된 게이트 사본이 `orchestrator/` 의 `.py` 이름을 만나도 버전 어긋남 안내가 붙는다.
+- **`scripts/test-similar-items.sh`** — 루프백 판정 스텁과 `gh` PATH 스텁으로 도는 오프라인 시험(`ORCH_TESTS` 에 등록). 요청 바이트, 재순위, 키 없음·모드 644·거부·재시도·마감·부분 실패, 오프라인 인자 아래 요청 0건, 재생, gh 어댑터, 트리 무오염을 고정한다.
+- **`scripts/measure-similar-items.py`** — 측정 하니스(CI 시험 아님). 기록된 측정 로그를 재생하는 다리와 키 없는 다리를 돌린다. 이 릴리즈의 기록: 재생 상위 3 13/17, 상위 1 9/17, 요청 해시 적중 400/400, 후보 목록 일치 20/20, `status=semantic` 20/20, 어휘 전용 상위 3 13/17·상위 1 7/17, 무키 60/60, `__pycache__` 없음.
+
+### Why
+
+- 이슈를 등록할 때 모델이 기본 한도 30건의 목록만 훑어서는 이미 열린 같은 자리의 이슈를 놓친다. 열린 이슈 전체를 대조하되 판단은 사람과 모델에게 남기려고, 조회는 후보를 보여 주기만 한다.
+- 인자 없는 호출은 이슈 제목과 본문을 기계 밖의 분류 모델로 보내므로 게이트가 `외부상태변경` 으로 매긴다. 송신이 없다는 것을 argv 로 증명할 수 있는 두 인자에서만 `읽기` 로 내린다.
+
+### Post-install notes
+
+- 의미 재순위를 쓰려면 `~/.config/cc-cmds/typesafe.env` 에 `TYPESAFE_API_KEY=` 줄을 두고 모드를 600 으로 맞춘다. 없으면 조회는 어휘 순서로 돌고 그 사실을 알린다.
+
 ## [2.25.3] - 2026-09-25
 
 무인 스테이지가 매번 읽는 공유 계약 여섯 파일과 무인 스킬 본문 셋에서, 규칙을 떠받치지 않는 서사(과거 판본의 경위, 실측 일화, 비용 계산, 되풀이된 이유)를 걷어 내고 규칙마다 이유 한 구만 남긴다. 같은 릴리즈에서 위트니스 없이 돌아온 팀 구성원의 처방을 「그 자리에서 사망 판정」에서 「먼저 재개」로 바꾼다.
