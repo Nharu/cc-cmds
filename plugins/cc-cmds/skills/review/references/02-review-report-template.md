@@ -6,10 +6,34 @@ The lead synthesizes all review results into a Korean document using this templa
 
 | Level | Icon | Meaning | Merge Impact |
 |-------|------|---------|--------------|
-| P0 | 🔴 | Immediate fix (security vulnerability, data corruption, complete feature block) | Merge blocked |
-| P1 | 🟠 | Fix recommended before merge | Merge block recommended |
+| P0 | 🔴 | Real harm in normal use, and one of (a)–(e) below | Merge blocked |
+| P1 | 🟠 | Partial harm that surfaces on its own and can be undone | Merge block recommended |
 | P2 | 🟡 | Register as follow-up issue recommended | Mergeable |
 | P3 | 🟢 | Improvement suggestion (includes nitpick) | Optional |
+
+**Judgment criterion.** This is the only place the criterion is written. The unattended review and the interactive `/review` grade against the same text, and item 10 of `01-reviewer-context-package.md` maps the reviewers' five internal levels onto it without restating it. The question it asks of every finding is: **if this merges, does normal use suffer real harm?**
+
+**P0 — merging causes real harm in normal use, and the defect is one of the following.**
+
+- (a) Data loss or corruption, monetary loss, or leakage of a secret or credential.
+- (b) A permission or security defect that a realistic actor can use, or that holds under a standard, a regulation, or an observed spelling. A bypass of review-before-merge (`선리뷰후머지`), a bypass of pre-authorization (`사전 인가`), and a defect that overturns a person's answer all belong here.
+- (c) A silently wrong result, or a safety check that is silently switched off.
+- (d) On the delivery path, a normal input halts every run, stage, or dispatch of one kind. The delivery path is CI and deployment in a product repository, and the autopilot pipeline in cc-cmds.
+- (e) A test or script that actually performs a destructive, external, or credential-bearing act.
+
+**P1 — the harm is partial, surfaces on its own, and can be undone.**
+
+**Lowered to P2 — the finding stays in the report; lowering is never dropping.** Each row's exclusion takes precedence over the lowering: when the exclusion applies, the finding keeps its level.
+
+| Lowering reason | Exclusion — when it applies, do not lower |
+|---|---|
+| A gate bypass that holds only with an argv a cooperating model would never type | It holds under a standard, a regulation, or an observed spelling. A bypass of review-before-merge, of pre-authorization, or of the park on a destructive act is never lowered, whatever the spelling |
+| A test gap (a mutation survives, but there is no behaviour defect) | A behaviour defect comes with it. The test actually performs an external, destructive, or credential-bearing act |
+| A wording mismatch in a document or comment | Applies only to text people read (`docs/`, README, CHANGELOG, comments). SKILL.md, `_common`, prompts, and schemas are instructions a model executes, so a mismatch there is judged as a behaviour defect |
+| An extreme condition with no path to occur in practice | Lower only when the report states why it is unreachable. If an unrefuted argument that it is reachable stands, the level is kept |
+| A pre-existing defect this PR did not create (`(기존 결함)`, judged against the base sha) | This diff makes that code reachable or makes it bear load. A defect inherited from an earlier cycle. A regression introduced by a fix commit is not pre-existing |
+
+The internal-level mapping below is subordinate to this criterion: a reviewer assigns the internal level that corresponds to the P level the criterion gives, never the other way round.
 
 Internal 5-level → document 4-level mapping:
 - critical → P0
