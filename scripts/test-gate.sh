@@ -153,10 +153,10 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # helpers and the fixture repository every section stands on — and
 # `CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
 
-# --- epilogue-begin ---` opens the tail, which is the totals line and the
-# exit status. Line numbers move whenever a section is added or a banner is
-# edited; a marker moves only when someone moves it, which is what makes it
-# the unit a later change can carry.
+# --- epilogue-begin ---` opens the tail, which is the cone-derivation drain,
+# the totals line and the exit status. Line numbers move whenever a section is
+# added or a banner is edited; a marker moves only when someone moves it, which
+# is what makes it the unit a later change can carry.
 #
 # A SECTION OPENS IN ONE OF TWO SHAPES. The boxed shape is a rule line
 # (`# ---…`) followed by a numbered title line (`# <id>. …`), and the section
@@ -2248,7 +2248,8 @@ pre_cone() {
     # THE FAILURE GOES TO A FILE RATHER THAN TO `bad`. Every caller is
     # `x=$(cone_of …)`, which is a subshell, so a counter incremented here never
     # reaches the totals — the exact shape this suite is being repaired for. The
-    # file is read once at the end of the section, in the parent.
+    # file is drained once in the unconditional tail, in the parent, so the claim
+    # covers every call the run made rather than one section's worth of them.
     if [ "$rc" != "0" ]; then
       printf '앵커 %s rc=%s — %s\n' "$1" "$rc" "$msg" >> "$CONE_OF_FAILURES"
       printf '유도-실패'
@@ -2343,6 +2344,23 @@ pre_cone() {
     pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
     pafter=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
   }
+
+  # THE ANCHOR ROWS THE CONE SECTIONS SHARE ARE PLANTED HERE, not in whichever
+  # section happens to run first. Every cone derivation stands on `SA`, and the
+  # exclusion assertions scattered through the later sections name `SC` and `SX`
+  # as the rows that must stay OUT of a cone. A section that reaches those
+  # assertions without these rows present does not fail — the derivation returns
+  # `유도-실패` and an exclusion `case` accepts that string — so the assertion
+  # runs, passes, and excludes nothing. Planting the rows in the preamble is what
+  # makes a narrowed run assert the same thing a full run asserts.
+  #
+  # `SX` MUST BE PLANTED PAST THE GATE. That its worktree belongs to another
+  # repository is refused at write time is itself asserted below; seeding it
+  # through `seg_row` would write no row and leave nothing to assert against.
+  seg_row       SA "$CONE_A" 상태=실행중 선행=없음
+  seg_row       SB "$CONE_B" 상태=실행중 선행=없음
+  seg_row       SC "$CONE_C" 상태=실행중 선행=없음
+  plant_seg_row SX "$REPO2"  상태=실행중 선행=없음
 }
 
 # `sa` — the container of section 35: the `SA_*` state and the `sa_*`/`sag`
@@ -10672,7 +10690,7 @@ esac
 plant_seg_row SX "$REPO2" 상태=실행중 선행=없음
 
 # --- 31c. The cone's two axes cover different windows ----------------------
-# --- section: 31c | group: cone | covers: act | needs: 31b | anchors: 앵커는 무조건 원뿔에 든다 ---
+# --- section: 31c | group: cone | covers: act | anchors: 앵커는 무조건 원뿔에 든다 ---
 cone1=$(cone_of SA "SA 가 감사 발견으로 멈췄다")
 case ",$cone1," in
   *,SA,*) ok "앵커는 무조건 원뿔에 든다" ;;
@@ -10726,7 +10744,7 @@ case "$msg" in
 esac
 
 # --- 31d. The cone is a predicate, not a frozen set ------------------------
-# --- section: 31d | group: cone | covers: act | needs: 31b | anchors: 아직 A 와 무관한 F 의 행이 기록된다 ---
+# --- section: 31d | group: cone | covers: act | anchors: 아직 A 와 무관한 F 의 행이 기록된다 ---
 seg_row SF "$CONE_F" 상태=실행중 선행=없음
 check "아직 A 와 무관한 F 의 행이 기록된다" "$rc" "0"
 cone3=$(cone_of SA "리베이스 전")
@@ -10742,7 +10760,7 @@ case ",$cone4," in
 esac
 
 # --- 31e. An unmeasurable ancestry is FAIL-CLOSED --------------------------
-# --- section: 31e | group: cone | covers: act | needs: 31b | anchors: 곧 사라질 워크트리의 세그먼트 행이 기록된다 ---
+# --- section: 31e | group: cone | covers: act | anchors: 곧 사라질 워크트리의 세그먼트 행이 기록된다 ---
 #
 # `--is-ancestor` answers 1 for "no" and 128 for "that object is not here".
 # Folding them turns every fault into "not in the cone, so nothing is held",
@@ -10779,7 +10797,7 @@ case ",$cone5," in
 esac
 
 # --- 31f. A file-set escape raises its own cone ----------------------------
-# --- section: 31f | group: cone | covers: act | needs: 31b | anchors: 선언 파일 집합을 실은 세그먼트 행이 기록된다 ---
+# --- section: 31f | group: cone | covers: act | needs: 31e | anchors: 선언 파일 집합을 실은 세그먼트 행이 기록된다 ---
 #
 # git answers "was B built on A" and cannot answer "did this segment touch
 # something it did not declare" at all. The only input to that judgment is
@@ -10832,7 +10850,7 @@ gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --sur
 check "상위집합 선언은 통과한다 (넓히는 방향은 열려 있다)" "$rc" "0"
 
 # --- 31h. `선행` has a SECOND consumer, and that is what costs the lie ------
-# --- section: 31h | group: cone | covers: act | needs: 31c,31f | anchors: 선행이 착지하지 않았으면 후행 디스패치가 막힌다 ---
+# --- section: 31h | group: cone | covers: act | needs: 31c | anchors: 선행이 착지하지 않았으면 후행 디스패치가 막힌다 ---
 #
 # With only the cone reading it, declaring narrowly would be free — a segment
 # that names nobody simply stays out of the cone, and staying out is the
@@ -10970,7 +10988,13 @@ else
 fi
 
 # --- 31l. Termination condition 2 excludes the question approval ------------
-# --- section: 31l | group: cone | covers: act | anchors: 픽스처가 대기 중인 절단점=판단 승인을 실제로 들고 있다 (아래 단언이 공허하지 않다) ---
+# --- section: 31l | group: cone | covers: act | needs: 31i | anchors: 픽스처가 대기 중인 절단점=판단 승인을 실제로 들고 있다 (아래 단언이 공허하지 않다) ---
+#
+# `needs: 31i` BECAUSE THE PENDING QUESTION APPROVAL IS 31i's. That section's
+# grade-2 judgment is what leaves a `절단점=판단` approval waiting in the ledger,
+# and nothing in the cone prelude writes one. Cut alone, this section finds none
+# and its own fixture guard fails; the sharded run stayed green only because the
+# partition happened to put both sections in one shard.
 #
 # An act approval's answer is valid NOW and its window closes with the night; a
 # question's answer is an input to work that has not begun, so it is durable and
@@ -11543,7 +11567,7 @@ case "$(last_judgment_approval)" in
 esac
 
 # --- 31t. A `|` in a field value cannot splice the row ----------------------
-# --- section: 31t | group: cone | covers: - | needs: 31b | anchors: 필드 값 안의 파이프가 새 필드를 만들지 못한다 ---
+# --- section: 31t | group: cone | covers: - | anchors: 필드 값 안의 파이프가 새 필드를 만들지 못한다 ---
 #
 # The write-time checks read the argv LIST and every reader splits the row TEXT,
 # so a pipe inside one argv element was invisible to the first and a new field
@@ -11568,7 +11592,7 @@ case "$( { grep -F '`blocked`' "$LEDGER2" || true; } | tail -1)" in
 esac
 
 # --- 31u. `선행` — one normalization for the reader and the floor -----------
-# --- section: 31u | group: cone | covers: act | needs: 31b | anchors: 공백 스펠링 픽스처의 첫 세그먼트 행이 기록된다 ---
+# --- section: 31u | group: cone | covers: act | anchors: 공백 스펠링 픽스처의 첫 세그먼트 행이 기록된다 ---
 #
 # The reader split on comma AND whitespace; the floor deleted whitespace and
 # split on comma only. So `선행=SA SB` — the spacing a design document's slice
@@ -11600,7 +11624,7 @@ case "$msg" in
 esac
 
 # --- 31v. An over-long declared cone is refused by LENGTH -------------------
-# --- section: 31v | group: cone | covers: act | needs: 31b | anchors: 상한을 넘는 「의존 세그먼트」 선언은 append 이전에 거절된다 ---
+# --- section: 31v | group: cone | covers: act | anchors: 상한을 넘는 「의존 세그먼트」 선언은 append 이전에 거절된다 ---
 LONGDEP=$(awk 'BEGIN{ s="SEG0000"; for (i = 1; i < 60; i++) s = s ",SEG" i; printf "%s", s }')
 gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(HN)" --rationale x \
@@ -12192,7 +12216,7 @@ case ",$cone8," in
 esac
 
 # --- 31af. A path with a space and a Korean path survive the escape check ---
-# --- section: 31af | group: cone | covers: act | needs: 31b | anchors: 공백과 한글이 든 파일 집합을 선언한 세그먼트 행이 기록된다 ---
+# --- section: 31af | group: cone | covers: act | anchors: 공백과 한글이 든 파일 집합을 선언한 세그먼트 행이 기록된다 ---
 #
 # `for f in $(git diff --name-only)` tore `docs/설계 노트.md` into two fragments,
 # and the identical splitting on the declaration side tore `설계 문서/` into two
@@ -12280,7 +12304,7 @@ case ",$cone10," in
 esac
 
 # --- 31ah. The ancestry probe's undecidable answer is actually REACHED -------
-# --- section: 31ah | group: cone | covers: act | needs: 31b | anchors: 곧 팁을 잴 수 없게 될 세그먼트 행이 기록된다 ---
+# --- section: 31ah | group: cone | covers: act | anchors: 곧 팁을 잴 수 없게 될 세그먼트 행이 기록된다 ---
 #
 # 31e removes a worktree, which settles the pair inside `gate_cone_edge`'s
 # repository arm — `gate_ancestor_of` is never called there, so its undecidable
@@ -12330,15 +12354,6 @@ if ( cd "$CONE_I" && git rev-parse HEAD ) >/dev/null 2>&1; then
   ok "픽스처가 만든 조건을 되돌린다 (뒤따르는 절이 이 세그먼트를 다시 잴 수 있다)"
 else
   bad "픽스처 복구" "깨뜨린 HEAD 를 되돌리지 못했다"
-fi
-
-# EVERY CONE ABOVE WAS READ FROM A ROW THIS SECTION ACTUALLY WROTE. The
-# derivations run in subshells, so this is where their refusals become visible.
-n=$(grep -c . "$CONE_OF_FAILURES" || true)
-if [ "${n:-0}" = "0" ]; then
-  ok "원뿔 유도 호출이 전부 새 행을 남겼다 (어느 판정도 직전 호출의 원뿔을 다시 읽지 않았다)"
-else
-  bad "원뿔 유도" "${n} 건의 원뿔 행 쓰기가 거절됐다 — 그 뒤의 판정은 stale 한 원뿔을 읽었다: $(tr '\n' ' ' < "$CONE_OF_FAILURES")"
 fi
 
 # --- 31ai. `close` reads the answer by LABEL EQUALITY, and a flag only agrees -
@@ -21013,8 +21028,30 @@ fi
 
 # --- epilogue-begin ---
 #
-# THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
-# its own exit status, so the cut copy gets these two lines appended exactly as
-# they stand here.
+# THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
+# own exit status, and drain the cone-derivation failures, so the cut copy gets
+# this block appended exactly as it stands here.
+#
+# THE DRAIN BELONGS HERE RATHER THAN IN A SECTION. The claim is about every
+# `cone_of` call the run made, and a section can only claim the calls its own cut
+# happened to contain — narrow the cut and the claim silently covers less while
+# printing the same line. The tail is copied into every cut, so here the claim
+# covers exactly what that cut actually did.
+#
+# THE GUARD IS REQUIRED. `CONE_OF_FAILURES` is set in `pre_cone`, so a cut
+# carrying no cone section never sets it and an unguarded read dies under
+# `set -u` — trading a silent defect for a loud one.
+#
+# IT IS SILENT ON SUCCESS. The census attributes a `PASS:` line to the most
+# recent section stamp, and the tail carries no stamp, so a line printed here
+# would be recorded against whichever section each run happened to end on — one
+# spurious difference per cone-carrying shard. A failure still speaks, and is
+# attributed the same way, which is the case where being loud is worth it.
+if [ -n "${CONE_OF_FAILURES:-}" ]; then
+  n=$(grep -c . "$CONE_OF_FAILURES" || true)
+  if [ "${n:-0}" != "0" ]; then
+    bad "원뿔 유도" "${n} 건의 원뿔 행 쓰기가 거절됐다 — 그 뒤의 판정은 stale 한 원뿔을 읽었다: $(tr '\n' ' ' < "$CONE_OF_FAILURES")"
+  fi
+fi
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
