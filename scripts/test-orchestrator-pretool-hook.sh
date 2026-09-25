@@ -663,5 +663,227 @@ else
   bad "shared/ 예외 합의" "훅과 게이트의 shared/*/* 철자가 어긋난다"
 fi
 
+# ---------------------------------------------------------------------------
+# 8. 라우터 입력 디렉터리 — cc-lane 설정·상태 디렉터리와 페이싱 디렉터리
+#
+# 셋 다 이 런이 끝난 뒤 라우터·게이트·디스패처가 읽는 입력이라 파일 편집 도구로
+# 쓸 수 없어야 한다. 루트마다 같은 행을 세우고, 판정과 함께 어느 루트의 문면이
+# 답했는지를 단언한다 — 판정만 보면 다른 팔이 우연히 거부한 것과 구별되지 않는다.
+#
+# 루트가 없는 상태의 행이 핵심이다. 루트가 실재하면 공통 아이노드 층이 대부분의
+# 철자를 이미 막으므로, 운영자 스코프 팔을 문자 그대로 복제한 팔과 이 팔을 가르는
+# 것은 루트 부재의 대소문자 변형(행 3), 합집합 철자(행 6), 조상 링크의 대문자 꼬리
+# (행 8), 루트 부재의 펌링크 철자(행 11), 부모 부재의 대소문자 변형(행 13)이다.
+#
+# 이 파일은 CI 에서 리눅스에서만 돈다. 행 11 은 데이터 볼륨 철자가 실제로 같은
+# 디렉터리로 해소될 때만 서므로 다윈 로컬 실행에서만 단언되고, 그 행이 부모
+# 아이노드 비교를 홀로 가리는 유일한 행이다. 부모마저 없을 때의 펌링크 철자는
+# 어휘 비교만 남아 통과하는 잔여라 통과로도 거부로도 고정하지 않는다.
+# ---------------------------------------------------------------------------
+t_ino() {
+  # t_ino <경로> — 이 호스트에서 통하는 철자로 dev:ino 를 낸다. 통하는 철자가 없으면
+  # 아무것도 내지 않는다. BSD 는 `-f` 가 포맷 지정자이고 GNU 는 `-f` 가
+  # `--file-system` 이라, 한 철자만 적으면 다른 쪽에서는 에러 없이 엉뚱한 것을 찍는다.
+  local o
+  o=$(stat -L -f '%d:%i' "$1" 2>/dev/null)
+  case "$o" in [0-9]*:[0-9]*) printf '%s' "$o"; return 0 ;; esac
+  o=$(stat -L -c '%d:%i' "$1" 2>/dev/null)
+  case "$o" in [0-9]*:[0-9]*) printf '%s' "$o"; return 0 ;; esac
+  return 1
+}
+
+# 앵커를 만드는 넷(`HOME`·`CLAUDE_CONFIG_DIR`·`XDG_CONFIG_HOME`·`XDG_STATE_HOME`)을
+# 매 호출에 전부 고정한다. 하나라도 물려받으면 훅이 개발자의 실제 홈을 앵커하거나,
+# XDG 가 설정된 CI 러너에서만 픽스처 밖을 앵커해 러너에서만 붉어진다 — 형제 시험
+# 파일이 그 사고를 한 번 겪었다.
+HH=""; XC=""; XS=""; rh_n=0; reason=""
+decide_home() {
+  out=$(printf '%s' "$1" | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$XC" XDG_STATE_HOME="$XS" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATE" \
+          --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" 2>/dev/null)
+  dec=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
+  reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null)
+}
+# 빈 `HOME` 은 위 헬퍼로 표현할 수 없다. 같은 넷을 고정하되 `HOME` 은 빈 값, XDG 둘은
+# unset 이다.
+decide_emptyhome() {
+  out=$(printf '%s' "$1" | env -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+          HOME= CLAUDE_CONFIG_DIR="$WORK/.claude-empty" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATE" \
+          --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" 2>/dev/null)
+  dec=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
+  reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null)
+}
+tool_json() {
+  # tool_json <도구> <경로> — NotebookEdit 는 `notebook_path` 로 싣는다.
+  case "$1" in
+    NotebookEdit) jq -n --arg t "$1" --arg p "$2" '{"tool_name":$t,"tool_input":{"notebook_path":$p}}' ;;
+    *)            jq -n --arg t "$1" --arg p "$2" '{"tool_name":$t,"tool_input":{"file_path":$p}}' ;;
+  esac
+}
+row_decider=decide_home
+router_row() {
+  # router_row <이름> <도구> <경로> <기대 판정> [<기대 문면 조각>] — 판정과 문면
+  # 조각을 둘 다 단언한다.
+  local label="$1" want="$4" frag="${5:-}"
+  "$row_decider" "$(tool_json "$2" "$3")"
+  if [ "$dec" != "$want" ]; then
+    bad "$label" "got '$dec' ($reason), want '$want'"; return
+  fi
+  if [ -n "$frag" ]; then
+    case "$reason" in
+      *"$frag"*) ;;
+      *) bad "$label" "문면에 '$frag' 가 없다: $reason"; return ;;
+    esac
+  fi
+  ok "$label"
+}
+fresh_home() {
+  # 행마다 독립 픽스처 홈. 루트와 부모의 실재·부재를 행이 스스로 정한다.
+  rh_n=$((rh_n + 1))
+  HH="$WORK/rh$rh_n"; mkdir -p "$HH/.claude-x" "$HH/w"
+  XC="$HH/.config"; XS="$HH/.local/state"
+}
+root_spec() {
+  # root_spec <종류> — 홈 기준 부모, XDG 기준 부모 꼬리와 그 XDG 변수, 이름, 문면
+  # 조각, 대소문자 변형, 접두 이웃.
+  case "$1" in
+    config) R_PAR=.config;             R_XVAR=XC; R_XSUB="";       R_N=cc-lane
+            R_FRAG='the cc-lane configuration directory'; R_VARS='CC-LANE Cc-Lane'
+            R_NB='cc-lane-other/x cc-lanex' ;;
+    state)  R_PAR=.local/state;        R_XVAR=XS; R_XSUB="";       R_N=cc-lane
+            R_FRAG='the cc-lane state directory';         R_VARS='CC-LANE Cc-Lane'
+            R_NB='cc-lane-other/x cc-lanex' ;;
+    pace)   R_PAR=.local/state/cc-cmds; R_XVAR=XS; R_XSUB=/cc-cmds; R_N=pace
+            R_FRAG='the pacing directory';                R_VARS='PACE Pace'
+            R_NB='pace-other/x paced' ;;
+  esac
+  R_UP="${R_VARS%% *}"
+}
+
+for kind in config state pace; do
+  root_spec "$kind"
+  row_decider=decide_home
+
+  # 1. 루트 부재·부모 실재, 직접 철자.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P"
+  router_row "라우터 입력 $kind 1: 루트 부재 직접 철자 거부" Write "$P/$R_N/x.json" deny "$R_FRAG"
+
+  # 2. 루트 실재, 직접 철자.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P/$R_N"
+  router_row "라우터 입력 $kind 2: 루트 실재 직접 철자 거부" Write "$P/$R_N/x.json" deny "$R_FRAG"
+
+  # 3. 루트 부재, 마지막 성분의 대소문자 변형.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P"
+  for v in $R_VARS; do
+    router_row "라우터 입력 $kind 3: 루트 부재 대소문자 변형 $v 거부" Write "$P/$v/x.json" deny "$R_FRAG"
+  done
+
+  # 4. 루트 실재, 대소문자 변형 — 조건 없이 선다. 다윈에서는 아이노드 경로가,
+  # 대소문자를 구분하는 리눅스 볼륨에서는 부모 아이노드의 대소문자 무시 꼬리와
+  # 어휘 비교가 답한다. 어느 쪽이든 거부여야 한다.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P/$R_N"
+  for v in $R_VARS; do
+    router_row "라우터 입력 $kind 4: 루트 실재 대소문자 변형 $v 거부" Write "$P/$v/x.json" deny "$R_FRAG"
+  done
+
+  # 5. 상위 참조 철자.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P/sib"
+  router_row "라우터 입력 $kind 5: 상위 참조 철자 거부" Write "$P/sib/../$R_N/x.json" deny "$R_FRAG"
+
+  # 6. XDG 를 HOME 밖으로 옮긴다. XDG 철자도, HOME 기본 철자도 거부(합집합)이고, 이
+  # 런의 허용 이름은 그대로 허용이다.
+  fresh_home; XC="$WORK/xdg$rh_n/config"; XS="$WORK/xdg$rh_n/state"
+  eval "XP=\"\$$R_XVAR$R_XSUB\""
+  P="$HH/$R_PAR"; mkdir -p "$P" "$XP"
+  router_row "라우터 입력 $kind 6: XDG 재지정 시 XDG 철자 거부" Write "$XP/$R_N/x.json" deny "$R_FRAG"
+  router_row "라우터 입력 $kind 6: XDG 재지정 시 HOME 기본 철자도 거부" Write "$P/$R_N/x.json" deny "$R_FRAG"
+  router_row "라우터 입력 $kind 6: XDG 재지정 시 이 런의 halt 기록은 허용" Write "$RUN_DIR/halt/x.md" allow
+
+  # 7. 말단 심링크 — 앵커 밖의 링크가 앵커 안 파일을 가리킨다.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P/$R_N"; : > "$P/$R_N/t.json"
+  ln -s "$P/$R_N/t.json" "$HH/w/leaf-link"
+  router_row "라우터 입력 $kind 7: 말단 심링크 거부" Write "$HH/w/leaf-link" deny "$R_FRAG"
+
+  # 8. 조상 심링크 깊이 1, 루트 부재·부모 실재. 루트가 실재하면 기존 아이노드 층이
+  # 답해 복제한 팔과 구별되지 않으므로 반드시 부재로 세운다. 복제한 팔과 가르는 것은
+  # 대문자 예다.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P"
+  ln -s "$P" "$HH/w/anc"
+  router_row "라우터 입력 $kind 8: 조상 심링크 소문자 거부" Write "$HH/w/anc/$R_N/L2.json" deny "$R_FRAG"
+  router_row "라우터 입력 $kind 8: 조상 심링크 대문자 $R_UP 거부" Write "$HH/w/anc/$R_UP/usage.json" deny "$R_FRAG"
+
+  # 9. 기존 파일로의 하드링크 — 새 팔이 아니라 링크 수 술어가 일반 문면으로 거부한다.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P/$R_N"; : > "$P/$R_N/usage.json"
+  ln "$P/$R_N/usage.json" "$HH/w/HARD-usage"
+  router_row "라우터 입력 $kind 9: 하드링크 거부" Write "$HH/w/HARD-usage" deny 'the edit target is a hard link'
+
+  # 10. 기존 파일 하나에 대한 나머지 편집 도구.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P/$R_N"; : > "$P/$R_N/f.json"
+  for t in Edit MultiEdit NotebookEdit; do
+    router_row "라우터 입력 $kind 10: 기존 파일 $t 거부" "$t" "$P/$R_N/f.json" deny "$R_FRAG"
+  done
+
+  # 11. 루트 부재·부모 실재, 펌링크 철자. 기존 층이 허용하는 철자라 부모 아이노드
+  # 비교만 답한다. 부모의 두 철자가 같은 아이노드일 때만 서고, 아니면 건너뛴 사실을
+  # 한 줄로 남긴다 — 세지 않는 건너뜀은 커버리지가 사라진 것과 구별되지 않는다.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P"
+  PP=$(cd "$P" 2>/dev/null && pwd -P)
+  FIRM="/System/Volumes/Data${PP:-$P}"
+  if [ -n "$(t_ino "$FIRM")" ] && [ "$(t_ino "$FIRM")" = "$(t_ino "$P")" ]; then
+    router_row "라우터 입력 $kind 11: 루트 부재 펌링크 철자 거부" Write "$FIRM/$R_N/x.json" deny "$R_FRAG"
+  else
+    printf 'NOTE: 데이터 볼륨 철자가 부모에 해소되지 않아 라우터 입력 %s 행 11 을 건너뛴다 (%s)\n' "$kind" "$FIRM"
+  fi
+
+  # 12. 루트 부재, 루트 자신을 파일 경로로(꼬리 없음).
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P"
+  router_row "라우터 입력 $kind 12: 루트 자신을 파일로 쓰기 거부" Write "$P/$R_N" deny "$R_FRAG"
+
+  # 13. 부모 부재. 어휘 비교와 접힌 패스의 합이 지키는 행이다 — 두 패스의 문면이
+  # 같아 어느 쪽이 답했는지는 가르지 않는다.
+  fresh_home; P="$HH/$R_PAR"
+  router_row "라우터 입력 $kind 13: 부모 부재 직접 철자 거부" Write "$P/$R_N/x.json" deny "$R_FRAG"
+  router_row "라우터 입력 $kind 13: 부모 부재 대소문자 변형 $R_UP 거부" Write "$P/$R_UP/x.json" deny "$R_FRAG"
+
+  # 음성 대조 — 접두 이웃은 허용이다. XDG 재지정 유무 양쪽에서.
+  fresh_home; P="$HH/$R_PAR"; mkdir -p "$P/$R_N"
+  for nb in $R_NB; do
+    router_row "라우터 입력 $kind 대조: 접두 이웃 $nb 허용" Write "$P/$nb" allow
+  done
+  fresh_home; XC="$WORK/xdg$rh_n/config"; XS="$WORK/xdg$rh_n/state"
+  eval "XP=\"\$$R_XVAR$R_XSUB\""
+  P="$HH/$R_PAR"; mkdir -p "$P/$R_N" "$XP/$R_N"
+  for nb in $R_NB; do
+    router_row "라우터 입력 $kind 대조: XDG 재지정 시 XDG 쪽 접두 이웃 $nb 허용" Write "$XP/$nb" allow
+    router_row "라우터 입력 $kind 대조: XDG 재지정 시 HOME 쪽 접두 이웃 $nb 허용" Write "$P/$nb" allow
+  done
+done
+
+# 평범한 소스 파일은 고정 홈 아래에서도 허용이다.
+row_decider=decide_home
+fresh_home
+router_row "라우터 입력 대조: 평범한 소스 파일 허용" Write "$WORK/src/main.ts" allow
+
+# 기존 팔의 대조군은 각자의 문면으로 거부된다 — 새 팔이 앞에서 가로채지 않는다.
+fresh_home; mkdir -p "$HH/.config" "$HH/.local/state/cc-cmds/run"
+router_row "라우터 입력 대조: 운영자 스코프는 기존 문면으로 거부" Write "$HH/.config/cc-cmds/x" deny 'the operator-scope configuration directory'
+router_row "라우터 입력 대조: 형제 런은 기존 문면으로 거부" Write "$HH/.local/state/cc-cmds/run/other/x" deny 'this is another run directory'
+
+# 빈 `HOME` 에 XDG 가 없으면 앵커를 만들지 않는다. 뒤의 것은 빈 기반에 `/cc-cmds` 를
+# 합성한 부모 철자라, 부모 문자열만 보고 앵커하는 구현을 이 대조가 잡는다. 같은
+# 환경에서 페이싱 루트의 기본 철자가 되는 자리는 보호되지 않는 잔여라 넣지 않는다.
+row_decider=decide_emptyhome
+router_row "라우터 입력 대조: 빈 HOME 에서 /cc-lane/x 허용" Write "/cc-lane/x" allow
+router_row "라우터 입력 대조: 빈 HOME 에서 /cc-cmds/pace/x 허용" Write "/cc-cmds/pace/x" allow
+row_decider=decide_home
+
+# 앵커 변수에 제어 문자가 있으면 레코드가 쪼개져 엉뚱한 앵커가 서므로 판정 불가다.
+fresh_home
+XC="$HH/.config
+/tmp"
+router_row "라우터 입력: 앵커 변수의 제어 문자는 판정 불가로 거부" Write "$WORK/src/main.ts" deny 'carries a control character'
+
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
