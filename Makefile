@@ -167,7 +167,7 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 # per-shard dispatch and the union check all take their N from one place; a
 # workflow that spelled the number itself would let the matrix and the check
 # disagree, and the sections in the gap would belong to nobody.
-GATE_SHARDS ?= 8
+GATE_SHARDS ?= 13
 
 # So CI can read the number instead of spelling it a second time.
 print-gate-shards:

@@ -5,7 +5,7 @@
 - **채취한 실행**: `Nharu/cc-cmds#924`, head `67061f299d4ad87d3d83cedb4c79db73f1ac1c66`
   (워크플로 실행 `35513536513` gate · `35513536363` lint · `35513536400` notify-macos, 2026-09-20, 13개 전부 success)
 
-## 게이트 소속 (8) — `.github/workflows/gate.yml` 의 샤드 matrix
+## 게이트 소속 (13) — `.github/workflows/gate.yml` 의 샤드 matrix
 
 ```
 gate-shards (1)
@@ -16,6 +16,11 @@ gate-shards (5)
 gate-shards (6)
 gate-shards (7)
 gate-shards (8)
+gate-shards (9)
+gate-shards (10)
+gate-shards (11)
+gate-shards (12)
+gate-shards (13)
 ```
 
 샤드 수는 `Makefile` 의 `GATE_SHARDS` 하나가 정한다. 그 값을 바꾸면 이 목록도 함께 바뀌므로, matrix·`--check`·이 파일 셋을 같은 커밋에서 맞춘다.
@@ -32,7 +37,7 @@ lint-and-test-macos .github/workflows/notify-macos.yml
 
 ## 이 목록을 그대로 required 로 걸기 전에 읽을 것
 
-**세 워크플로 전부 `pull_request` 에 경로 필터를 달고 있어 「항상 도는」 잡은 하나도 없다.** GitHub 은 경로 필터로 건너뛴 워크플로에 체크 런을 만들지 않고, required 로 지정된 체크가 없으면 그 PR 을 무기한 대기로 둔다. 따라서 위 13개를 그대로 required 로 걸면 **그 경로를 건드리지 않는 PR 은 영원히 머지할 수 없다.**
+**세 워크플로 전부 `pull_request` 에 경로 필터를 달고 있어 「항상 도는」 잡은 하나도 없다.** GitHub 은 경로 필터로 건너뛴 워크플로에 체크 런을 만들지 않고, required 로 지정된 체크가 없으면 그 PR 을 무기한 대기로 둔다. 따라서 위 18개를 그대로 required 로 걸면 **그 경로를 건드리지 않는 PR 은 영원히 머지할 수 없다.**
 
 거는 쪽이 고를 수 있는 것은 둘이다.
 
