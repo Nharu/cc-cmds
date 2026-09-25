@@ -5,6 +5,26 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.25.1] - 2026-09-25
+
+무인 설계 감사 스테이지(`design-audit-unattended`)가 매번 싣는 본문에서, 실행자의 결정을 바꾸지 않는 서사·해명 산문을 걷어 냈다. 규칙·문면 핀·종단 문면·감사 인원·리더 프롬프트·공개 문면은 그대로다.
+
+### Changed
+
+- **`design-audit-unattended/SKILL.md` 서사 축소** — 이전 문면 이야기, 측정 일화, 옛 드라이버 호환 해명, 해명 논증을 걷어 내고 규칙마다 한 구절 이유만 남겼다. 표제 이름·frontmatter·CFI-0 상수 블록·CFI-U0 치환 문장·CFI-6 금지 토큰 열거·custody 세 의무·증인 초기화 호출 형태·리더 모델과 바이트 동일 프롬프트 규칙·종단 리터럴·`--base` 치환 블록·`_common` 참조는 바이트 그대로이거나 문면 그대로다. 규범 문장은 하나도 빠지지 않았다.
+- **크기** (기준선 `2306045` 대비, `wc -c`)
+  - 선언 파일: `design-audit-unattended/SKILL.md` 33,437 → 29,301 바이트 (−4,136, −12.4%).
+  - 다섯 스테이지 스킬 폐포 합(스킬 본문 + 본문이 가리키는 `_common` 파일 + Read 지시 대상 절, `pipeline-sidecar.md` 는 파일 전체): 1,874,517 → 1,870,381 바이트 (−4,136, −0.22%).
+    - `design-audit-unattended`: 453,256 → 449,120 (−0.91%)
+    - `design-discuss-unattended`: 499,820 → 499,820 (0%, `design/SKILL.md` Step 3–4 구간 36,458 포함)
+    - `implement-unattended`: 442,619 → 442,619 (0%)
+    - `review-unattended`: 342,754 → 342,754 (0%)
+    - `autopilot-router-shift`: 136,068 → 136,068 (0%) — 폐포 변화가 0이므로 「폐포 × 런당 교대 트리거 수」의 변화도 0이다.
+
+### Why
+
+무인 감사 스테이지가 매번 읽는 바이트를 줄이되, 권한·판정 장치와 그것을 묶는 린트 핀은 건드리지 않는다.
+
 ## [2.25.0] - 2026-09-24
 
 일반 CC 세션에서 사용자의 행위가 필요해진 순간에 배너가 뜬다 — 질문 대화상자가 뜰 때, 그리고 모델이 평문으로 턴을 마치며 사용자에게 차례를 넘길 때. 같은 릴리즈에서 무인 런의 질문 배너 문면을 명령형에서 상태문으로 바꿔, 배너가 질문보다 먼저 떠서 생기던 어긋남을 닫는다.
