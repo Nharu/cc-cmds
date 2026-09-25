@@ -10901,7 +10901,13 @@ else
 fi
 
 # --- 31l. Termination condition 2 excludes the question approval ------------
-# --- section: 31l | group: cone | covers: act | anchors: 픽스처가 대기 중인 절단점=판단 승인을 실제로 들고 있다 (아래 단언이 공허하지 않다) ---
+# --- section: 31l | group: cone | covers: act | needs: 31i | anchors: 픽스처가 대기 중인 절단점=판단 승인을 실제로 들고 있다 (아래 단언이 공허하지 않다) ---
+#
+# `needs: 31i` BECAUSE THE PENDING QUESTION APPROVAL IS 31i's. That section's
+# grade-2 judgment is what leaves a `절단점=판단` approval waiting in the ledger,
+# and nothing in the cone prelude writes one. Cut alone, this section finds none
+# and its own fixture guard fails; the sharded run stayed green only because the
+# partition happened to put both sections in one shard.
 #
 # An act approval's answer is valid NOW and its window closes with the night; a
 # question's answer is an input to work that has not begun, so it is durable and
