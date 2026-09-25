@@ -1214,7 +1214,71 @@ gate_argv_is_git_push() {
     for a in "$@"; do [ "$a" = push ] && return 2; done
     return 1
   fi
-  [ "$_GP_GIT_SUB" = push ]
+  [ "$_GP_GIT_SUB" != push ] || return 0
+  # An alias can expand to a push, and nobody can say from the argv that it
+  # does not. git never expands an alias over one of its own commands, so a
+  # subcommand with an alias configured is either a real command — whose alias
+  # is dead — or this.
+  local _ad="${GATE_ACT_CWD:-.}"
+  [ -z "$_GP_GIT_C" ] || _ad=$(gate_git_chdir_fold "$_ad" "$_GP_GIT_C")
+  gate_git_sub_is_alias "$_ad" "$_GP_GIT_GITDIR" "$_GP_GIT_SUB" && return 2
+  return 1
+}
+
+# `gate_push_scan <words after git's globals...>` — the operands of a `push`, read
+# once for both readers below. It leaves the repository operand in
+# `_GATE_PUSH_REMOTE`, the `--repo` value in `_GATE_PUSH_REPO`, every refspec in
+# `_GATE_PUSH_SPECS` (one per line), `_GATE_PUSH_ALL=1` when an option pushes
+# refs no refspec names, and `_GATE_PUSH_BAD=1` when a word could not be read.
+#
+# THE TWO READERS WALKED THE WORDS SEPARATELY AND SKIPPED EVERY `-*`. So an
+# option that takes a value left the value standing as an operand: in
+# `git push -o origin <foreign URL> HEAD:feature` the push option's value was
+# read as the remote and matched the target, while git pushed to the URL; and
+# in `… HEAD:master -o x` the rung took `x` for the destination. The rung also
+# kept only the LAST refspec, so `git push origin HEAD:master HEAD:tmp` was a
+# `push` that moved the base branch. An option this list does not know is not
+# guessed at — it may take the next word — and both readers close on it.
+gate_push_scan() {
+  _GATE_PUSH_REMOTE=''; _GATE_PUSH_REPO=''; _GATE_PUSH_SPECS=''
+  _GATE_PUSH_ALL=0; _GATE_PUSH_BAD=0
+  local a seen_push=0 want='' ended=0 have_remote=0
+  for a in "$@"; do
+    if [ "$seen_push" = 0 ]; then
+      [ "$a" = push ] && seen_push=1
+      continue
+    fi
+    if [ -n "$want" ]; then
+      [ "$want" = repo ] && _GATE_PUSH_REPO="$a"
+      want=''
+      continue
+    fi
+    if [ "$ended" = 0 ]; then
+      case "$a" in
+        --) ended=1; continue ;;
+        -o|--push-option|--receive-pack|--exec) want=value; continue ;;
+        --repo) want=repo; continue ;;
+        --repo=*) _GATE_PUSH_REPO="${a#--repo=}"; continue ;;
+        -o?*|--push-option=*|--receive-pack=*|--exec=*) continue ;;
+        --all|--branches|--mirror) _GATE_PUSH_ALL=1; continue ;;
+        -u|--set-upstream|-f|--force|--force-with-lease|--force-with-lease=*|--force-if-includes|--no-force-if-includes) continue ;;
+        -n|--dry-run|--no-verify|--verify|--atomic|--no-atomic|--tags|--follow-tags|--no-follow-tags) continue ;;
+        -q|--quiet|-v|--verbose|--progress|--no-progress|--porcelain|--thin|--no-thin) continue ;;
+        --signed|--signed=*|--no-signed|--recurse-submodules=*|--no-recurse-submodules) continue ;;
+        -4|-6|--ipv4|--ipv6|-d|--delete|--prune) continue ;;
+        -*) _GATE_PUSH_BAD=1; return 0 ;;
+      esac
+    fi
+    if [ "$have_remote" = 0 ]; then
+      _GATE_PUSH_REMOTE="$a"; have_remote=1
+    else
+      _GATE_PUSH_SPECS="$_GATE_PUSH_SPECS$a$_GP_LF"
+    fi
+  done
+  # A value-taking option with nothing after it is not a push git would run as
+  # this reader would read it.
+  [ -z "$want" ] || _GATE_PUSH_BAD=1
+  return 0
 }
 
 gate_push_remote_match() {
@@ -1255,19 +1319,11 @@ gate_push_remote_match() {
   # operand behind and read as a push that named no remote at all — the pass
   # below. git documents the option as equivalent to the positional argument,
   # and gives the positional precedence when both are written.
-  local a rname="" repo_opt="" seen_push=0 url="" want_repo=0
-  for a in "$@"; do
-    if [ "$want_repo" = "1" ]; then repo_opt="$a"; want_repo=0; continue; fi
-    case "$a" in
-      push) seen_push=1; continue ;;
-      --repo) want_repo=1; continue ;;
-      --repo=*) repo_opt="${a#--repo=}"; continue ;;
-      -*) continue ;;
-    esac
-    [ "$seen_push" = "1" ] || continue
-    [ -n "$rname" ] || { rname="$a"; }
-  done
-  [ -n "$rname" ] || rname="$repo_opt"
+  local rname="" url=""
+  gate_push_scan "$@"
+  [ "$_GATE_PUSH_BAD" = 0 ] || return 1
+  rname="$_GATE_PUSH_REMOTE"
+  [ -n "$rname" ] || rname="$_GATE_PUSH_REPO"
   if [ -z "$rname" ]; then
     # NOTHING NAMES A DESTINATION, so the push goes to the branch's upstream —
     # which is a remote OF THE REPOSITORY THE ACT STANDS IN. That is the target's
@@ -1358,23 +1414,28 @@ $rn
 "*) base="${base#*/}" ;;
       esac ;;
   esac
-  case " $* " in
-    *" --all "*|*" --mirror "*) printf '머지'; return 0 ;;
-  esac
-  local a seen_push=0 seen_remote=0 dst="" last=""
-  for a in "$@"; do
-    case "$a" in
-      push) seen_push=1; continue ;;
-      -*) continue ;;
-    esac
-    [ "$seen_push" = "1" ] || continue
-    if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
-    last="$a"
-  done
-  if [ -n "$last" ]; then
-    dst="${last#*:}"
-    case "$last" in *:*) ;; *) dst="$last" ;; esac
-    dst="${dst#+}"; dst="${dst#refs/heads/}"
+  gate_push_scan "$@"
+  [ "$_GATE_PUSH_BAD" = 0 ] || { printf '머지'; return 0; }
+  [ "$_GATE_PUSH_ALL" = 0 ] || { printf '머지'; return 0; }
+  # EVERY REFSPEC IS A DESTINATION. One of them landing on the base branch makes
+  # the push the merge, whatever the others say. A pattern (`*`) or the matching
+  # refspec (`:`) can land on it without naming it, so it takes the higher rung.
+  local s dst=""
+  if [ -n "$_GATE_PUSH_SPECS" ]; then
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      s="${s#+}"
+      case "$s" in *:*) dst="${s#*:}" ;; *) dst="$s" ;; esac
+      dst="${dst#refs/heads/}"
+      case "$dst" in
+        ''|*'*'*) printf '머지'; return 0 ;;
+      esac
+      [ "$dst" != "$base" ] || { printf '머지'; return 0; }
+    done <<EOF
+$_GATE_PUSH_SPECS
+EOF
+    printf 'push'
+    return 0
   else
     # No refspec: the destination is whatever branch the act's worktree is on,
     # and a worktree that cannot answer takes the higher rung rather than the
@@ -2362,8 +2423,33 @@ _gp_leaf() {
     return 0
   fi
   GP_FAMILY=raw
+  if [ "$GP_ARGV0" = git ]; then _gp_git_config_home; fi
   if [ "$GP_STATUS" != form ]; then
     if _gp_is_tool "$@"; then GP_STATUS=tool; else GP_STATUS=ok; fi
+  fi
+  return 0
+}
+
+# `HOME` AND `XDG_CONFIG_HOME` ARE WHERE git FINDS ITS GLOBAL CONFIGURATION, so an
+# assignment in front of git hands it a `remote.*.pushurl`, a `url.*.insteadOf`
+# or an `alias.*` this gate never read — the push check resolves the remote in
+# its own process and would compare the repository on disk. Only the assignments
+# still in force count: one cleared by `env -i` or unset after it does not reach
+# git.
+_gp_git_config_home() {
+  local k="$_GP_ENV_BASE" e home='' xdg=''
+  while [ "$k" -lt "${#GP_ENV[@]}" ]; do
+    e="${GP_ENV[$k]}"
+    case "$e" in
+      HOME=*) home=1 ;;
+      -HOME) home='' ;;
+      XDG_CONFIG_HOME=*) xdg=1 ;;
+      -XDG_CONFIG_HOME) xdg='' ;;
+    esac
+    k=$((k + 1))
+  done
+  if [ -n "$home" ]; then _gp_form env:exec-identity:HOME
+  elif [ -n "$xdg" ]; then _gp_form env:exec-identity:XDG_CONFIG_HOME
   fi
   return 0
 }
@@ -2704,7 +2790,17 @@ _gp_env_unset() {
 #
 #   execution identity   PATH, BASH_ENV, ENV, DYLD_*, LD_*, GIT_EXEC_PATH,
 #                        GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*
-#                        — the binary that runs changes, so the act is `form`
+#                        — the binary that runs changes, so the act is `form`.
+#                        GIT_CONFIG_PARAMETERS, GIT_CONFIG_GLOBAL,
+#                        GIT_CONFIG_SYSTEM, GIT_CONFIG, GIT_SSH and
+#                        GIT_PROXY_COMMAND are here for the same reason: each
+#                        carries or selects configuration that can name a
+#                        program or a push URL, which the `-c` spelling of the
+#                        same key is already refused for. HOME and
+#                        XDG_CONFIG_HOME select git's global configuration
+#                        too, but every other tool reads them for its own
+#                        purposes, so `_gp_leaf` refuses them only when the
+#                        command they reach is git
 #   command value        GIT_SSH_COMMAND, GIT_EDITOR, EDITOR, VISUAL, PAGER,
 #                        GIT_PAGER, GIT_SEQUENCE_EDITOR, GIT_ASKPASS, SSH_ASKPASS
 #                        — a shell runs the value later, so it is parsed as a
@@ -2743,6 +2839,8 @@ _gp_env_unset() {
 _gp_env_class() {
   case "$1" in
     PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+      _GP_ENV_CLASS=exec-identity ;;
+    GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG|GIT_SSH|GIT_PROXY_COMMAND)
       _GP_ENV_CLASS=exec-identity ;;
     GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
       _GP_ENV_CLASS=repo-selector ;;
@@ -3248,6 +3346,11 @@ _gpb_endcmd() {
   esac
   case "$a" in
     eval|source|.|alias) _gpb_form sh:non-literal-command-word; cw=(); cf=(); return 0 ;;
+  esac
+  # The leaf asks this for an argv; a body's git piece is not parsed as a leaf
+  # here, and the assignments the body made are already on the chain.
+  case "${a##*/}" in
+    git) _gp_git_config_home ;;
   esac
   frag=("${cw[@]:k}")
   x=$((k + 1))
@@ -4094,16 +4197,33 @@ gp_gh_repo() {
   return "$rc"
 }
 
+# THE HOST IS READ THE WAY A URL PARSER READS IT. The authority ends at the first
+# `/`, `?` or `#`, and the user part ends at the LAST `@` in it — so
+# `https://evil.example?@github.com/o/r` names `evil.example`, not `github.com`.
+# Cutting at `/` alone and dropping up to the FIRST `@` reduced that spelling to
+# the default host and the target's slug, and both the push remote check and the
+# `gh -R` comparison passed a foreign destination. A repository spelling that
+# carries `?` or `#` at all is refused rather than read: no remote this tree
+# pushes to needs one. A URL must name a scheme git transports over and a host,
+# because an empty host is what the default-host test accepts for a slug spelled
+# without one — `file:///o/r` read as the target.
 _gp_repo_reduce() {
-  local v="$1" host='' rest owner repo url=0
+  local v="$1" host='' rest owner repo url=0 auth
   _GP_RR=''
   _GP_RH=''
   case "$v" in
+    *'?'*|*'#'*) return 1 ;;
+  esac
+  case "$v" in
     *://*)
       url=1
+      case "$(printf '%s' "${v%%://*}" | tr '[:upper:]' '[:lower:]')" in
+        https|http|ssh|git) ;;
+        *) return 1 ;;
+      esac
       rest="${v#*://}"
-      host="${rest%%/*}"
-      host="${host#*@}"
+      auth="${rest%%/*}"
+      host="${auth##*@}"
       host="${host%%:*}"
       case "$rest" in
         */*) rest="${rest#*/}" ;;
@@ -4111,11 +4231,12 @@ _gp_repo_reduce() {
       esac ;;
     *@*:*)
       url=1
-      host="${v%%:*}"
-      host="${host#*@}"
+      auth="${v%%:*}"
+      host="${auth##*@}"
       rest="${v#*:}" ;;
     *) rest="$v" ;;
   esac
+  if [ "$url" = 1 ] && [ -z "$host" ]; then return 1; fi
   rest="${rest%/}"
   if [ "$url" = 0 ]; then
     case "$rest" in
@@ -5195,13 +5316,42 @@ gate_git_config_key_execs() {
   # stdout is not a terminal, and every act this gate runs is captured — measured
   # on this machine with `git -c core.pager='touch …' log -1 >/dev/null`, which
   # created no file.
-  case "$1" in
-    core.sshCommand|core.gitProxy|core.editor|core.fsmonitor|core.hooksPath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packObjectsHook|web.browser)
+  #
+  # THE KEY IS COMPARED LOWERCASED. git reads a section and a variable name
+  # without regard to case, so `Core.SshCommand` is the key `core.sshCommand`,
+  # and a list matched as spelled let the first spelling through.
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    core.sshcommand|core.gitproxy|core.editor|core.fsmonitor|core.hookspath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packobjectshook|web.browser)
       return 0 ;;
-    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeIf.*|browser.*)
+    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeif.*|browser.*)
       return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# `gate_git_config_key_persists_exec <key>` — the keys a WRITTEN configuration
+# makes git run later, which is wider than what a `-c` for one captured act can
+# run. The pager keys are off the `-c` list because git starts no pager when its
+# output is captured; a value written to the repository's configuration waits
+# for the next git run on a terminal, and that one is not captured.
+gate_git_config_key_persists_exec() {
+  gate_git_config_key_execs "$1" && return 0
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    core.pager|pager.*) return 0 ;;
+  esac
+  return 1
+}
+
+# `gate_git_sub_is_alias <dir> <git-dir> <subcommand>` — rc 0 when git would run
+# `<subcommand>` as an alias from the configuration it reads in `<dir>`. git
+# expands an alias only for a name that is not one of its own commands, so the
+# callers ask this only where the name is not a command they know.
+gate_git_sub_is_alias() {
+  local d="${1:-.}" gd="$2" s="$3" v
+  case "$s" in ''|-*) return 1 ;; esac
+  v=$( { cd "$d" 2>/dev/null \
+         && git ${gd:+--git-dir="$gd"} config --get "alias.$s" 2>/dev/null; } || true)
+  [ -n "$v" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -5290,7 +5440,7 @@ _gp_git_scan() {
 # remote check resolved `origin` from the repository on disk and reported a
 # match for a push that never went near it.
 _gp_git_key_redirects() {
-  case "$1" in
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
     remote.*.url|remote.*.pushurl|url.*) return 0 ;;
     *) return 1 ;;
   esac
@@ -5426,7 +5576,20 @@ EOF
     # `push` and `pull` stay — one publishes and the other merges what it fetched.
     push|pull)
       printf '외부상태변경' ;;
-    *) printf '등급 미상' ;;
+    # A NAME THIS TABLE DOES NOT KNOW MAY BE AN ALIAS, and an alias runs whatever
+    # it expands to — `push` to any URL, or a shell command with `!`. As `등급
+    # 미상` it could be rescued by a local-write declaration before the push
+    # check was ever asked, and the alias itself can be planted by a `git config`
+    # act. It is resolved where the act runs and refused as a form; a name with
+    # no alias behind it stays `등급 미상`.
+    *)
+      local _ad="${GATE_ACT_CWD:-.}"
+      [ -z "$_GP_GIT_C" ] || _ad=$(gate_git_chdir_fold "$_ad" "$_GP_GIT_C")
+      if gate_git_sub_is_alias "$_ad" "$_GP_GIT_GITDIR" "${1:-}"; then
+        printf '%s' "$GATE_FORM_UNKNOWN"
+      else
+        printf '등급 미상'
+      fi ;;
   esac
 }
 
@@ -5513,7 +5676,16 @@ surface_of_git_config() {
   # while letting a rewrite of $HOME through as a read is the hole this repair
   # exists to close. A query spelled with `--get` still grades exactly `읽기`,
   # so the form the pipeline actually runs loses nothing.
-  local a skip=1 want=0 scope='' query=0
+  #
+  # A WRITE IS ALSO JUDGED BY THE KEY IT WRITES. The keys the `-c` spelling is
+  # refused for — a program git runs, a remote git pushes to — were written to
+  # the repository's own configuration as a plain worktree write, so `git config
+  # alias.z push` or `git config core.sshCommand <command>` planted what a later
+  # act would run. Every word that is not an option is asked, not only the one
+  # in the key's position: an option this row does not know may take a value,
+  # and a value that happens to spell such a key costs a refusal, not a pass.
+  local a skip=1 want=0 scope='' query=0 unknown=0
+  local -a words=()
   for a in "$@"; do
     # The first word is `config` itself.
     if [ "$skip" = 1 ]; then skip=0; continue; fi
@@ -5525,12 +5697,19 @@ surface_of_git_config() {
       --file|-f)          scope='트리밖쓰기'; want=1 ;;
       --file=*)           scope='트리밖쓰기' ;;
       --local|--worktree) : ;;
-      -*) printf '등급 미상'; return 0 ;;
-      # A key or a value. Neither decides anything on its own — the options
-      # above already did.
-      *) : ;;
+      -*) unknown=1 ;;
+      # A key or a value. Neither decides the scope — the options above did.
+      *) words[${#words[@]}]="$a" ;;
     esac
   done
+  if [ "$query" = 0 ]; then
+    for a in ${words[@]+"${words[@]}"}; do
+      if gate_git_config_key_persists_exec "$a" || _gp_git_key_redirects "$a"; then
+        printf '%s' "$GATE_FORM_UNKNOWN"; return 0
+      fi
+    done
+  fi
+  [ "$unknown" = 1 ] && { printf '등급 미상'; return 0; }
   [ "$want" = 1 ] && { printf '등급 미상'; return 0; }
   [ "$query" = 1 ] && { printf '읽기'; return 0; }
   printf '%s' "${scope:-워크트리쓰기}"
