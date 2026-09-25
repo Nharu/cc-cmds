@@ -2380,25 +2380,25 @@ AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   pend { cont = ($0 ~ /\\$/) }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "5"
+check "파견 팔의 stage-result 행 자리가 여섯이다 — 계속 시도 하나 포함 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "6"
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
-# 드라이버의 stage-result 행 전부(S9 셸 적용 넷을 포함해 아홉)가 압축 창·레인·기록자
-# 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 아홉의 방어는
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷과 계속 시도 하나를 포함해 열)가 압축
+# 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
   cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "드라이버의 stage-result 호출부가 아홉이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "9"
-check "아홉 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+check "드라이버의 stage-result 호출부가 열이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "10"
+check "열 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
   "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
 check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
-  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "9"
+  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "10"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -4231,16 +4231,150 @@ else
 fi
 # 재시도는 갈래당 정확히 1회다. 갈래마다 하나씩 세고 총합도 함께 재는 이유는,
 # 총합만 재면 한 갈래가 둘을 갖고 다른 갈래가 0 을 갖는 배분도 통과하기 때문이다.
-# 갈래는 셋이다 — 「공허한 성공」·「크래시」·「한도-형상 회수」. 셋째는 드라이버
+# 직접 스폰하는 갈래는 둘이다 — 「크래시」·「한도-형상 회수」. 둘째는 드라이버
 # 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다.
-for retry_arm in '공허한 성공' '크래시' '한도-형상 회수'; do
+# 「공허한 성공」은 스스로 스폰하지 않고 `continue_or_park` 를 거친다(아래 절).
+for retry_arm in '크래시' '한도-형상 회수'; do
   # `${...}` 를 쓰는 것은 취향이 아니다 — 뒤따르는 닫는 낫표가 ASCII 가 아니라서
   # 하한 인터프리터가 그 바이트를 이름에 붙여 읽고 unbound variable 로 죽는다.
   check "재시도 스폰이 「${retry_arm}」 갈래에 정확히 1회" \
-    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || printf '0')" "1"
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || true)" "1"
+  check "「${retry_arm}」 갈래는 계속하지 않는다" \
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park'; } || true)" "0"
 done
-check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 3회)" \
-  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "3"
+check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 2회)" \
+  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+
+# ---------------------------------------------------------------------------
+# 텍스트로 끝난 턴의 계속 — `continue_or_park`
+#
+# `공허한 성공` 은 새로 다시 돌리지 않고 같은 세션을 계속 메시지로 재개한다. 새
+# 프로세스는 문맥을 잃고 그 값을 다시 낸다. 트랜스크립트가 없거나 0턴이면 재개할
+# 곳이 없으므로 새 프로세스 재시도 1회를 쓴다. 구현·설계·감사 세 스테이지가 한
+# 헬퍼를 거치고, 계속과 재시도는 모두 자기 시도 번호의 `stage-result` 행을 쓴다.
+#
+# `stage_spawn` 만 스텁한다 — `dispatch_stage`·`stage_wait_all`·분류기·행 기록은
+# 실물이 돈다. 스텁은 이 시도의 핀을 잡고, 재개 세션 id 와 프롬프트를 적고, 시나리오
+# 대로 스트림을 쓴다.
+# ---------------------------------------------------------------------------
+check "구현 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^      '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park "\$sid" "\$seg" S4'; } || true)" "1"
+check "설계 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S1design - S1design'; } || true)" "1"
+check "감사 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S2 - S2'; } || true)" "1"
+# 재개는 최초 기동과 같은 합성 경로를 탄다 — 시도 하나를 띄우는 곳은
+# `dispatch_stage`(→ `stage_spawn`) 하나뿐이고, 재개는 STAGE_RESUME 로만 갈린다.
+check "계속 시도는 dispatch_stage 로만 띄운다 (재개 전용 기동 경로가 없다)" \
+  "$(sed -n '/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'dispatch_stage "\$did" "\$cwd" "\$prompt"')" "1"
+check "계속 헬퍼 안에 CLI 직접 호출이 없다" \
+  "$(sed -n '/^continue_or_park() {/,/^}/p;/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'CLI_BIN\|stage-wrapper')" "0"
+
+CONT="$WORK/continue"; mkdir -p "$CONT"
+# cont_case <라벨> <모드> <앞선 계속 수> — 모드: hollow(끝까지 산출물 없음) ·
+# done1(첫 계속에서 산출) · notr(트랜스크립트 없음) · zero(0턴) · judg(대기 판단)
+cont_case() {
+  local d="$CONT/$1" mode="$2" spent="${3:-0}"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+    DOC_KEY="docs/x.md"
+    : > "$LEDGER"
+    CONT_SID="11111111-2222-3333-4444-555555555555"
+    resolve_account() { printf '%s' "$d/cfg"; }
+    stage_parent_id() { printf 'parent'; }
+    absorb_stage_judgment() { :; }
+    log() { :; }
+    stage_spawn() {
+      local s="$1" att turns
+      att=$(stage_pin_attempt "$s")
+      printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "$3" >> "$d/spawned"
+      turns=7; [ "$mode" = "zero" ] && turns=0
+      printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":%s}\n' \
+        "$CONT_SID" "$turns" > "$(stage_log_path "$s")"
+      [ "$mode" = "done1" ] && [ -n "${STAGE_RESUME:-}" ] && : > "$d/artifact"
+      printf '0' > "$RUN_DIR/$s.rc"
+      return 0
+    }
+    cont_pred() { [ -f "$d/artifact" ]; }
+    [ "$mode" = "notr" ] || : > "$d/cfg/projects/p/$CONT_SID.jsonl"
+    if [ "$mode" = "judg" ]; then
+      printf -- '- `승인` | 승인 id=J-1 | 상태=대기 | 절단점=판단 | 막는 세그먼트=S4:sg:1\n' >> "$LEDGER"
+    fi
+    # 첫 시도 — 호출자가 하는 일을 그대로 한다.
+    stage_spawn "S4:sg:1" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
+    ledger_row 'stage-result' "세그먼트=sg" "스테이지=S4" "파견 id=S4:sg:1" "종료 코드=0" \
+      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "S4:sg:1")" \
+      "종단 부류=$(classify_termination "S4:sg:1" 0 1)"
+    [ "$spent" = "0" ] || printf '%s\n' "$spent" > "$(continue_counter_file "S4:sg:1")"
+    : > "$d/spawned"
+    if continue_or_park "S4:sg:1" sg S4 "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+         "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" home -- cont_pred; then
+      printf 'rc=0\n'
+    else
+      printf 'rc=1\nblocked=%s\nreason=%s\n' "$CONTINUE_BLOCKED" "$CONTINUE_PARK_REASON"
+    fi
+  ) > "$d/out" 2>/dev/null
+}
+cont_field() { sed -n "s/^$2=//p" "$CONT/$1/out" | tail -1; }
+cont_spawns() { grep -c . "$CONT/$1/spawned" 2>/dev/null || true; }
+cont_rows() { grep -F '`stage-result`' "$CONT/$1/ledger.md" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' '; }
+
+check "계속 메시지가 충족되지 않은 술어를 이름으로 댄다" \
+  "$(continue_message '동결된 설계 문서도 정지 기록도 없다' | grep -c '동결된 설계 문서도 정지 기록도 없다')" "1"
+check "계속 메시지는 스테이지 프롬프트(슬래시 명령)를 싣지 않는다" \
+  "$(continue_message 'x' | grep -c '/cc-cmds:')" "0"
+check "계속 메시지가 종단 집합을 닫는다 (산출물 · 정지 기록 · 판단 표지)" \
+  "$(continue_message 'x' | grep -c '산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다')" "1"
+
+printf '{"type":"result","num_turns":85}\n{"type":"assistant"}\n{"type":"result","num_turns":6}\n' > "$CONT/nt.json"
+check "num_turns 는 마지막 result 줄에서 읽는다 (단조가 아니다)" "$(stream_last_num_turns "$CONT/nt.json")" "6"
+check "result 줄이 없으면 num_turns 는 빈 값이다" "$(stream_last_num_turns "$CONT/none.json")" ""
+
+cont_case hollow hollow
+check "산출물 없는 공허한 성공은 같은 세션을 두 번 재개한 뒤 park 한다" \
+  "$(cont_field hollow rc)/$(cont_spawns hollow)" "1/2"
+check "재개는 직전 행의 세션 id 로 붙는다" \
+  "$(cut -f2 "$CONT/hollow/spawned" | sort -u)" "11111111-2222-3333-4444-555555555555"
+check "재개 프롬프트는 계속 메시지다 — 스테이지 프롬프트를 다시 싣지 않는다" \
+  "$(cut -f3 "$CONT/hollow/spawned" | grep -c '^이 스테이지의 턴이 끝났지만 산출물 술어가 충족되지 않았다: 세그먼트 브랜치에 새 커밋도 정지 기록도 없다')" "2"
+# `cut -c` 는 바이트로 자르는 구현이 있어 한글 접두를 비교하지 못한다 — 접두는 grep 으로 잰다.
+check "계속 소진은 구별되는 park 사유다" "$(cont_field hollow reason | grep -c '^계속 소진 — ' || true)" "1"
+check "계속 시도마다 새 시도 번호의 stage-result 행이 하나씩 쓰인다 (실행 버전 = 시도 번호)" \
+  "$(cont_rows hollow)" "1 2 3 "
+if grep -F '| `공허한 성공` |' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" | grep_all_q -F '`계속 소진`'; then
+  ok "계약 5.2 표의 공허한 성공 행이 드라이버와 같은 park 사유를 적는다"
+else
+  bad "계약·드라이버 일치" "5.2 표 공허한 성공 행에 「계속 소진」이 없다"
+fi
+check "계속 계수기가 디스크에 남는다 (드라이버 재시작을 넘긴다)" \
+  "$(cat "$CONT/hollow/run/continue/S4:sg:1" 2>/dev/null)" "2"
+
+cont_case restarted hollow 2
+check "계수기가 이미 상한이면 재시작한 드라이버도 더 계속하지 않는다" \
+  "$(cont_field restarted rc)/$(cont_spawns restarted)" "1/0"
+
+cont_case done1 done1
+check "첫 계속에서 산출물이 생기면 통과한다" "$(cont_field done1 rc)/$(cont_spawns done1)" "0/1"
+
+cont_case notr notr
+check "트랜스크립트가 없으면 새 프로세스 재시도 1회" \
+  "$(cont_field notr rc)/$(cont_spawns notr)/$(cut -f1 "$CONT/notr/spawned")" "1/1/S4:sg:1.retry"
+check "재시도는 재개가 아니고 원래 프롬프트를 쓴다" \
+  "$(cut -f2,3 "$CONT/notr/spawned")" "$(printf '\t/cc-cmds:implement-unattended 재시도 프롬프트')"
+check "재시도 소진은 구별되는 park 사유다" "$(cont_field notr reason | grep -c '^재시도 소진 — ' || true)" "1"
+check "재시도도 자기 stage-result 행을 쓴다" \
+  "$(grep -cF '파견 id=S4:sg:1.retry ' "$CONT/notr/ledger.md")" "1"
+
+cont_case zero zero
+check "0턴이면 새 프로세스 재시도 1회" \
+  "$(cont_spawns zero)/$(cut -f1 "$CONT/zero/spawned")" "1/S4:sg:1.retry"
+
+cont_case judg judg
+check "대기 중인 판단 승인이 있으면 계속하지 않는다" \
+  "$(cont_field judg rc)/$(cont_spawns judg)/$(cont_field judg blocked)" "1/0/1"
+check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (세 호출부 모두)" \
+  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "3"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파

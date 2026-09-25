@@ -916,7 +916,7 @@ Exit status and the artifact predicate are **independent axes**, and the halt re
 | --- | --- | --- | --- | --- |
 | success | true | — | `정상 완료` | next stage |
 | success | false | present | `의도된 park` | blocked queue, no retry |
-| success | false | absent | `공허한 성공` | retry **once**, then blocked queue under a distinct reason |
+| success | false | absent | `공허한 성공` | resume the same session with the continue message up to **twice**, or re-run fresh **once** when there is no transcript or zero turns, then blocked queue under a distinct reason (`계속 소진`, `재시도 소진`); not continued while a judgment it raised is pending (`판단 승인 대기`) |
 | non-zero | false | — | `크래시` | retry at the boundary, `시도+1` |
 | (none) | — | absent | `한도-형상 회수` | one re-dispatch under its own name (implement), the recovery dispatch (review), or blocked queue |
 
