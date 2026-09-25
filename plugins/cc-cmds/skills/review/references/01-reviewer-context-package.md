@@ -25,10 +25,10 @@ Item 18 below is conditional on delta mode and is not counted in the heading.
 10. **Severity system definition**: Reviewers use 5 levels:
     - `critical`: the finding meets the P0 criterion (→ P0)
     - `high`: the finding meets the P1 criterion (→ P1)
-    - `medium`: below P1, including a finding the criterion's lowering table moves to P2 — lowered, never dropped (→ P2)
+    - `medium`: no real harm in normal use but worth a follow-up issue, or a finding the criterion's lowering table moves to P2 — lowered, never dropped (→ P2)
     - `low`: minor code smell, future tech debt, style inconsistency (→ P3)
     - `nitpick`: pure cosmetic or marginal optimization (→ P3)
-    - **The criterion is not restated here.** It is written once, in the `## Severity System (P0~P3)` section of `review/references/02-review-report-template.md`, and the unattended and interactive reviews share it. Carry that section into each reviewer's package, or point the reviewer at it, so the reviewer grades against the criterion itself rather than against these one-line labels.
+    - **The criterion is not restated here.** It is written once, in the `## Severity System (P0~P3)` section of `02-review-report-template.md` — the file beside this one in the same `references/` directory, located from where this file was read and never from the reviewed repository's working directory — and the unattended and interactive reviews share it. Copy that section verbatim into each reviewer's package, and again on every resume, so the reviewer grades against the criterion itself rather than against these one-line labels; a copy made at dispatch is not a second source. If the lead cannot read that section, it does not dispatch reviewers with the labels alone.
 11. **(Large PR, with scope-coordination role)** **Round 0 analysis results**: This reviewer's focus areas, high-risk file list, priority check areas.
 12. **Positive findings**: *"If you find well-implemented patterns or noteworthy positive aspects, include them with a `[POSITIVE]` tag briefly."*
 13. **(Optional) Lead's codebase exploration summary** from Step 2b — key dependencies, related test files, existing pattern summary. Include within context size limits.
