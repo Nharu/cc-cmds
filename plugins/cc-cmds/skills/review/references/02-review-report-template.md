@@ -8,7 +8,7 @@ The lead synthesizes all review results into a Korean document using this templa
 |-------|------|---------|--------------|
 | P0 | 🔴 | Real harm in normal use, and one of (a)–(e) below | Merge blocked |
 | P1 | 🟠 | Partial harm that surfaces on its own and can be undone | Merge block recommended |
-| P2 | 🟡 | Register as follow-up issue recommended | Mergeable |
+| P2 | 🟡 | No real harm in normal use, or a finding the lowering table below moves here — follow-up issue recommended | Mergeable |
 | P3 | 🟢 | Improvement suggestion (includes nitpick) | Optional |
 
 **Judgment criterion.** This is the only place the criterion is written. The unattended review and the interactive `/review` grade against the same text, and item 10 of `01-reviewer-context-package.md` maps the reviewers' five internal levels onto it without restating it. The question it asks of every finding is: **if this merges, does normal use suffer real harm?**
@@ -22,6 +22,8 @@ The lead synthesizes all review results into a Korean document using this templa
 - (e) A test or script that actually performs a destructive, external, or credential-bearing act.
 
 **P1 — the harm is partial, surfaces on its own, and can be undone.**
+
+**Remainder — real harm in normal use that is not P0 and that the lowering table below does not move is P1.** Failing one of the three P1 conditions above does not drop it to P2. A change that fails on every invocation of an interactive-only skill, and a silent cost or throughput regression, belong here.
 
 **Lowered to P2 — the finding stays in the report; lowering is never dropping.** Each row's exclusion takes precedence over the lowering: when the exclusion applies, the finding keeps its level.
 
