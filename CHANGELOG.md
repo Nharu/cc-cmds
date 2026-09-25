@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.25.1] - 2026-09-25
+## [2.25.2] - 2026-09-25
 
 대화형 스킬 본문(`autopilot`·`design`·`implement`)에서 측정 일화와 이력 서사를 걷어냈다. 규칙 문장과 핀으로 잡힌 문면·표제·CFI 번호는 그대로 두고, 그 규칙이 왜 생겼는지를 사건 단위로 풀어 쓴 문장만 덜어 매 호출이 읽는 바이트를 줄였다.
 
@@ -23,6 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `autopilot` 의 「재유도를 동사별로 조건화해도 바뀌지 않는다」 문장 — 유지보수자 대상 설계 논평이라 제거.
   - `autopilot` 의 CFI 번호 보존 문장 셋 — 「CFI 번호는 옮기거나 재사용하지 않는다」 한 문장으로 합쳤다.
   - 종료 코드 9를 비워 두는 까닭, 알림 도우미를 무장하지 않는 까닭 등은 사유 서사를 덜고 규칙을 한 문장으로 다시 적었다.
+
+## [2.25.1] - 2026-09-25
+
+무인 설계 감사 스테이지(`design-audit-unattended`)가 매번 싣는 본문에서, 실행자의 결정을 바꾸지 않는 서사·해명 산문을 걷어 냈다. 규칙·문면 핀·종단 문면·감사 인원·리더 프롬프트·공개 문면은 그대로다.
+
+### Changed
+
+- **`design-audit-unattended/SKILL.md` 서사 축소** — 이전 문면 이야기, 측정 일화, 옛 드라이버 호환 해명, 해명 논증을 걷어 내고 규칙마다 한 구절 이유만 남겼다. 표제 이름·frontmatter·CFI-0 상수 블록·CFI-U0 치환 문장·CFI-6 금지 토큰 열거·custody 세 의무·증인 초기화 호출 형태·리더 모델과 바이트 동일 프롬프트 규칙·종단 리터럴·`--base` 치환 블록·`_common` 참조는 바이트 그대로이거나 문면 그대로다. 규범 문장은 하나도 빠지지 않았다.
+- **크기** (기준선 `2306045` 대비, `wc -c`)
+  - 선언 파일: `design-audit-unattended/SKILL.md` 33,437 → 29,301 바이트 (−4,136, −12.4%).
+  - 다섯 스테이지 스킬 폐포 합(스킬 본문 + 본문이 가리키는 `_common` 파일 + Read 지시 대상 절, `pipeline-sidecar.md` 는 파일 전체): 1,874,517 → 1,870,381 바이트 (−4,136, −0.22%).
+    - `design-audit-unattended`: 453,256 → 449,120 (−0.91%)
+    - `design-discuss-unattended`: 499,820 → 499,820 (0%, `design/SKILL.md` Step 3–4 구간 36,458 포함)
+    - `implement-unattended`: 442,619 → 442,619 (0%)
+    - `review-unattended`: 342,754 → 342,754 (0%)
+    - `autopilot-router-shift`: 136,068 → 136,068 (0%) — 폐포 변화가 0이므로 「폐포 × 런당 교대 트리거 수」의 변화도 0이다.
+
+### Why
+
+무인 감사 스테이지가 매번 읽는 바이트를 줄이되, 권한·판정 장치와 그것을 묶는 린트 핀은 건드리지 않는다.
 
 ## [2.25.0] - 2026-09-24
 
