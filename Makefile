@@ -135,6 +135,7 @@ ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
 	scripts/test-gate.sh \
 	scripts/test-team-witness-init.sh \
+	scripts/test-similar-items.sh \
 	scripts/test-gate-chain-equiv.sh \
 	scripts/test-measure-gate-cost.sh \
 	scripts/test-snapshot.sh \
