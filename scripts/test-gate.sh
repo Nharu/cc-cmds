@@ -5342,12 +5342,24 @@ case "$row" in
   *) bad "압축 창" "$row" ;;
 esac
 case "$row" in
-  *"레인=~"*) ok "행의 레인이 물결 표기다" ;;
+  *"레인=~/x "*) ok ".window 2행이 레인으로 행에 옮겨진다" ;;
   *) bad "레인" "$row" ;;
 esac
 case "$row" in
   *"기록자=게이트 "*) ok "게이트의 기록기는 기록자=게이트 를 적는다" ;;
   *) bad "기록자" "$row" ;;
+esac
+# THE LANE ON THE ROW IS THE ONE THE LAUNCH RECORDED, not the one the recording
+# process resolves when it writes. The two part exactly when the recorder's
+# `CLAUDE_CONFIG_DIR` differs from the launch's, so the probe runs under a
+# different one; a recorder that re-resolves prints that path instead of `~/x`.
+mkdir -p "$WORK/lane-elsewhere"
+printf '%s\n%s\n' '300000(argv)' '~/x' > "$RD/SP.window"
+CLAUDE_CONFIG_DIR="$WORK/lane-elsewhere" outcome_probe 0 success 0.01 ''
+row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
+case "$row" in
+  *"레인=~/x "*) ok "기록 프로세스의 CLAUDE_CONFIG_DIR 이 사이드카와 어긋나도 행의 레인은 사이드카를 따른다" ;;
+  *) bad "어긋난 환경의 레인" "$row" ;;
 esac
 rm -f "$RD/SP.window"
 outcome_probe 0 success 0.01 ''
@@ -5355,6 +5367,10 @@ row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
 case "$row" in
   *"압축 창=(미상) "*) ok ".window 가 없으면 압축 창=(미상) 이고 행은 그대로 쓰인다" ;;
   *) bad "압축 창 부재" "$row" ;;
+esac
+case "$row" in
+  *"레인=(미상) "*) ok ".window 가 없으면 레인=(미상) 이고 기록 프로세스의 레인으로 채우지 않는다" ;;
+  *) bad "레인 부재" "$row" ;;
 esac
 
 # The effective reading itself, in-process, one layer at a time. Each fixture
@@ -5414,6 +5430,23 @@ check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
   "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
 check "HOME 밖의 레인은 그대로 적는다" \
   "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC/empty" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "$AC/cfg"
+# The label rides on the driver's resolver, so it walks the same four tiers.
+# The gate's own copy had three: with the environment and the run record both
+# absent it skipped the operator's setting file and printed `~/.claude`, which
+# is how the two writers came to name different lanes for one run. And a
+# recorded lane that is not a directory is a broken record that the resolver
+# refuses; the copy printed it as the lane.
+mkdir -p "$AC/xdg/cc-cmds" "$AC/badrun"
+printf '%s\n' "$AC/cfg" > "$AC/xdg/cc-cmds/config-dir"
+printf '%s\n' "$AC/not-a-dir" > "$AC/badrun/config-dir"
+check "환경도 런 기록도 없으면 설정 파일의 config-dir 이 레인이다 (~/.claude 가 아니다)" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR -u RUN_DIR CC_GATE_SOURCE_ONLY=1 HOME="$AC" XDG_CONFIG_HOME="$AC/xdg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
+check "디렉터리가 아닌 런 기록은 레인으로 적히지 않는다" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR CC_GATE_SOURCE_ONLY=1 HOME="$AC" XDG_CONFIG_HOME="$AC/xdg" bash -c '. "'"$GATE"'"; RUN_DIR="'"$AC/badrun"'"; gate_lane_label' 2>/dev/null)" "~/.claude"
+check "게이트 자체의 레인 해석기는 더 없다" \
+  "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; declare -F gate_lane_dir >/dev/null && printf defined || printf absent')" "absent"
+check "레인 층은 해석기가 런 기록을 거부하면 (미상) 이다 (- 로 접히지 않는다)" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR CC_GATE_SOURCE_ONLY=1 HOME="$AC" XDG_CONFIG_HOME="$AC/xdg" bash -c '. "'"$GATE"'"; RUN_DIR="'"$AC/badrun"'"; gate_autocompact_effective "" "'"$AC/none.json"'" "'"$AC/empty"'"' 2>/dev/null)" "(미상)"
 
 # `plan_sha256` — the implement arm splits into two processes and process B
 # enters ONLY when this field is on the row; its admission predicate says so and
@@ -9164,9 +9197,17 @@ opaque_is '1/외부상태변경/' 'find -exec 로 넘긴 인터프리터도 같�
 # 음성 대조군 — 벗기기가 불투명을 만들어 내지는 않는다. 처방된 두 형태가 그 상한이다.
 opaque_is '0/읽기/' '음성 대조군 — lockf 가 감싼 커밋은 불투명이 아니다'   -- lockf -k -t 0 /tmp/l.lock git commit -m x
 opaque_is '0/읽기/' '음성 대조군 — 무인 스킬이 처방하는 잠금 쓰기도 같다' -- lockf -k -t 0 /tmp/l.lock tee /tmp/doc.md
+# `find` 의 안쪽 명령은 argv0 **째로** 하한에 들어야 한다. 하한이 자기 argv0 를 버리는
+# 규약을 그대로 적용하면 `curl` 이 사라지고 남은 `-X` 로 시작하는 줄은 건너뛰어져
+# 하한이 `읽기` 였다. 옆에 등급 미상 primary 가 있으면 argv 의 등급이 `등급 미상` 이라
+# 선언을 재는 것은 이 하한뿐이므로, `--surface 읽기` 로 네트워크 쓰기가 수용됐다.
+opaque_is '0/외부상태변경/' 'find 안쪽 명령은 argv0 째로 하한에 든다'    -- find . -exec unknowncmd {} ';' -exec curl -X POST https://x ';'
+opaque_is '0/워크트리쓰기/' '등급 미상 옆의 -delete 도 하한을 올린다'    -- find . -exec unknowncmd {} ';' -delete
+opaque_is '0/읽기/비밀출력' 'find 안쪽의 비밀 출력은 하한 표지로 잡힌다' -- find . -exec unknowncmd {} ';' -exec gh auth token ';'
+opaque_is '0/읽기/'         '음성 대조군 — 읽기 안쪽 명령은 하한을 올리지 않는다' -- find . -exec unknowncmd {} ';' -exec cat {} ';'
 
 # --- 30b-1. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
-# --- section: 30b-1 | group: base | covers: grade ---
+# --- section: 30b-1 | group: base | covers: grade, exec ---
 #
 # 셋 다 `읽기` 행에 무조건으로 앉아 있었다. 그래서 `command git merge` 가 정직하게
 # `--surface 읽기` 를 신고하면 신고와 등급이 일치했고, 리뷰 룰은 읽기 등급에서 조기
@@ -9226,6 +9267,92 @@ graded_as '형태 미상'    '안쪽 find 의 형태 미상도 옆 primary 에 �
 graded_as '외부상태변경' '인자 자리의 맨 + 는 종단자가 아니다'          -- find . -exec curl + -X POST https://x \;
 graded_as '읽기'         '{} 바로 뒤의 + 는 배치 종단자로 남는다'       -- find . -exec cat {} +
 graded_as '워크트리쓰기' '배치 종단 뒤의 primary 도 계속 읽힌다'        -- find . -exec cat {} + -delete
+# macOS 의 BSD find 는 **첫 글자**가 `;` 인 낱말을 늘 종단자로, 첫 글자가 `+` 인 낱말을
+# `{}` 바로 뒤에서 종단자로 읽는다. 낱말 전체를 비교하면 `';;'` 뒤의 `-delete` 가 `cat`
+# 의 인자로 삼켜져 `읽기` 로 등급됐다 — 그 등급에서는 `--surface 읽기` 선언도 정직해서
+# 두 쓰기 가드와 사전 인가 룰이 모두 건너뛰어졌다. 마지막 행이 `{}` 뒤가 아닌 `+x` 는
+# 여전히 인자라는 상한을 고정한다.
+graded_as '워크트리쓰기' "';;' 도 -exec 를 끝내 뒤의 -delete 가 등급된다" -- find . -exec cat {} ';;' -delete
+graded_as '워크트리쓰기' "';x' 도 같다"                                   -- find . -exec cat {} ';x' -delete
+graded_as '워크트리쓰기' "{} 뒤의 '+x' 도 배치 종단자다"                  -- find . -exec cat {} '+x' -delete
+graded_as '외부상태변경' "';;' 뒤의 -exec curl 도 등급된다"               -- find . -exec cat {} ';;' -exec curl -X POST https://x \;
+graded_as '외부상태변경' "음성 대조군 — {} 뒤가 아닌 '+x' 는 계속 인자다" -- find . -exec curl '+x' -X POST https://x \;
+
+# 등급 말고도 `find` 를 벗기는 축 둘. 둘 다 자기 동사가 없어 `opaque_is` 와 같은 소싱
+# 시임으로 잰다. 답의 탭은 `/` 로 바꿔 비교한다.
+axis_is() {
+  # axis_is <함수> <기대> <label> -- <argv...>
+  local fn="$1" want="$2" label="$3"; shift 4
+  local got
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    fn="$1"; shift
+    "$fn" "$@" | tr "\t" "/"
+  ' _ "$fn" "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+# 사다리는 첫 답이 이기는 결합자로 접혀서, primary 를 **쓴 순서**가 칸을 정했다 —
+# 무해한 커밋을 앞에 두면 `배포` 가 `커밋` 으로 다섯 칸 내려가고, 낮은 선언을 거부하는
+# 파생 칸도 함께 내려갔다. 두 순서가 같은 칸을 내는 것이 단언의 형태다.
+axis_is ladder_of_argv0 '배포' '커밋 뒤의 terraform apply 도 사다리를 올린다' -- find . -exec git commit -m x ';' -exec terraform apply ';'
+axis_is ladder_of_argv0 '배포' '순서를 뒤집어도 같다'                         -- find . -exec terraform apply ';' -exec git commit -m x ';'
+axis_is ladder_of_argv0 '커밋' '칸이 없는 primary 는 옆 칸을 지우지 않는다'   -- find . -exec git commit -m x ';' -exec cat {} ';'
+# 표지 축만 래퍼를 벗기지 않아, 감싼 명령의 `비밀출력` 이 붙지 않았다. 하한의 구제는
+# 불투명·등급 미상일 때만 돌므로 감싼 `aws`·`gh` 는 건지지 못한다. 맨 판과 **같은**
+# 트리거가 나오는 것이 단언의 형태이고, 그래서 첫 양성에 맨 판이 짝으로 든다.
+axis_is gate_act_mark '비밀출력/--with-decryption' '맨 판 대조군 — 복호화 조회는 비밀출력이다' -- aws ssm get-parameter --with-decryption --name x
+axis_is gate_act_mark '비밀출력/--with-decryption' 'lockf 가 감싼 복호화 조회도 같다'          -- lockf -k /tmp/l aws ssm get-parameter --with-decryption --name x
+axis_is gate_act_mark '비밀출력/token'             'command 가 감싼 토큰 출력도 같다'          -- command gh auth token
+axis_is gate_act_mark '비밀출력/token'             'env 가 감싼 토큰 출력도 같다'              -- env X=1 gh auth token
+axis_is gate_act_mark '비밀출력/read'              'nice 가 감싼 vault read 도 같다'           -- nice vault read x
+axis_is gate_act_mark '비밀출력//x/.aws/credentials' 'find 안쪽의 자격 파일 출력도 같다'       -- find . -exec cat /x/.aws/credentials ';'
+axis_is gate_act_mark '비밀출력/token'             'find 의 표지는 파괴보다 비밀출력이 이긴다' -- find . -exec curl -X DELETE https://x ';' -exec gh auth token ';'
+axis_is gate_act_mark '비밀출력/env'               '명령 없는 맨 env 는 그대로 비밀출력이다'   -- env
+axis_is gate_act_mark '/'                          '음성 대조군 — lockf 가 감싼 평범한 읽기는 표지가 없다' -- lockf -k /tmp/l cat README.md
+unset -f axis_is
+
+# 위 행들은 등급·하한을 함수로 잰다. 수리가 닿아야 하는 곳은 `exec` 의 판정이므로
+# 같은 argv 를 실제 게이트에 넣는다. 검색 루트는 없는 경로라 통과해도 아무것도 하지
+# 않는다. 등급이 `등급 미상` 이면 선언을 재는 것은 하한이고, 하한이 안쪽 argv0 를
+# 버리던 때는 `--surface 읽기` 가 네트워크 쓰기에 대해 수용됐다.
+gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     -- find ./zz-30b1-none -exec unknowncmd {} ';' -exec curl -X POST https://example.invalid/30b1 ';'
+check "등급 미상 옆의 curl POST 를 읽기로 선언하면 과소신고다" "$rc" "6"
+case "$msg" in
+  *"lower than the floor '외부상태변경'"*) ok "그 거부는 하한 외부상태변경 과의 비교다" ;;
+  *) bad "그 거부는 하한 외부상태변경 과의 비교다" "got '$msg'" ;;
+esac
+gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     -- find ./zz-30b1-none -exec unknowncmd {} ';' -delete
+check "등급 미상 옆의 -delete 를 읽기로 선언하면 과소신고다" "$rc" "6"
+# 음성 대조군 — 하한을 넘는 선언은 과소신고로 거부되지 않는다(선언 경로가 남는다).
+gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     -- find ./zz-30b1-none -exec unknowncmd {} ';' -exec cat {} ';'
+case "$rc:$msg" in
+  6:*|*under-declaration*) bad "음성 대조군 — 읽기 하한 위의 선언은 과소신고가 아니다" "rc=$rc '$msg'" ;;
+  *) ok "음성 대조군 — 읽기 하한 위의 선언은 과소신고가 아니다" ;;
+esac
+# 형태 미상 다중 primary 는 `exec` 가 등급 직후 거부한다 — 쓰기 가드에 닿기 전이다.
+# test-run.sh 의 가드 단위 행(사후 리뷰 수리 10)이 재지 않는 종단간 경로가 이것이다.
+gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 트리밖쓰기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     -- find ./zz-30b1-none -maxdepth 0 -exec find . -execdir rm x {} ';' -exec cat {} ';'
+check "안쪽 -execdir 뒤에 읽기 primary 가 와도 exec 는 형태 미상으로 거부한다" "$rc" "2"
+case "$msg" in
+  *'형태 미상'*) ok "그 거부는 형태 미상 팔의 것이다" ;;
+  *) bad "그 거부는 형태 미상 팔의 것이다" "got '$msg'" ;;
+esac
+gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 트리밖쓰기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     -- find ./zz-30b1-none -maxdepth 0 -execdir rm x {} ';' -exec cat {} ';'
+check "-execdir 뒤에 읽기 primary 가 와도 exec 는 형태 미상으로 거부한다" "$rc" "2"
+case "$msg" in
+  *'형태 미상'*) ok "그 거부도 형태 미상 팔의 것이다" ;;
+  *) bad "그 거부도 형태 미상 팔의 것이다" "got '$msg'" ;;
+esac
 # 여섯 래퍼는 이제 자기 옵션만 소비하고 안의 명령을 등급표에 넘긴다 — 등급·표지·
 # 이력 술어·사다리·불투명 판정 다섯이 같은 풀기를 쓴다. 등급만 풀고 이력 술어를 두면
 # `env X=1 git merge seg` 가 워크트리 쓰기로 등급되면서 「이력을 통합하지 않는다」고
@@ -19406,12 +19533,19 @@ check "A 정산 행의 세션 id 는 스트림의 init 줄에서 읽는다" "$(p
 # `plant41` plants no `.window`, so the settlement above ran WITHOUT the record
 # and still settled: its absence is not a precondition, and the row says so.
 check "A .window 없는 정산 행의 압축 창은 (미상) 이고 정산은 정상 진행했다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "(미상)"
+# The settler is a later process with its own environment; the lane it would
+# resolve is not the lane the dead stage ran on, so without the record it has
+# no lane to write.
+check "A .window 없는 정산 행의 레인은 (미상) 이다 (정산 프로세스의 레인으로 채우지 않는다)" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *레인=//p' | sed 's/[[:space:]]*$//')" "(미상)"
 check "A 정산 행의 기록자는 게이트다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *기록자=//p' | sed 's/[[:space:]]*$//')" "게이트"
 # A2. THE SAME SHAPE WITH THE RECORD PLANTED: the two lines are copied onto the
-# row verbatim, and the record is removed with the rest.
+# row verbatim, and the record is removed with the rest. The settler runs under
+# a `CLAUDE_CONFIG_DIR` that differs from the record, so a row that followed the
+# settler's own environment would not read `~/lane41`.
 plant41 S41A2
 printf '%s\n%s\n' '300000(레인)' '~/lane41' > "$RD40/S41A2.window"
-snap41 >/dev/null
+mkdir -p "$WORK/lane41-elsewhere"
+CLAUDE_CONFIG_DIR="$WORK/lane41-elsewhere" snap41 >/dev/null
 row41a2=$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F '세그먼트=S41A2 ' | tail -1)
 check "A2 .window 가 있으면 그 1행이 정산 행의 압축 창이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "300000(레인)"
 check "A2 그 2행이 정산 행의 레인이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *레인=//p' | sed 's/[[:space:]]*$//')" "~/lane41"
