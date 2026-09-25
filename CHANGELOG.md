@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.25.5] - 2026-09-25
+
+설계를 런의 첫 스테이지로 두는 런(`design_required=true`)에서, 매니페스트의 `설계 문서` 키가 레포 밖 문서를 가리키면 드라이버가 그 키를 레포 상대 경로로 잘못 해소하던 문제를 고친다. 설계 스테이지가 `<레포>/Users/…` 아래에 문서를 쓰고 이후 단계가 그것을 찾지 못했다.
+
+### Fixed
+
+- **아직 없는 문서의 경로 해소** (`orchestrator/run.sh` 의 `derive_paths_from_manifest`) — 키에는 레포 상대인지 절대인지 표시가 없어 파일 존재로 갈래를 갈랐는데, 문서가 아직 없으면 두 검사가 모두 실패해 레포 상대 쪽으로 떨어졌다. 파일 검사 뒤에 같은 순서로 문서를 담을 디렉터리의 존재를 보는 두 단계를 더한다. 어느 쪽 디렉터리도 없으면 이전과 같이 레포 상대 조합으로 남는다.
+
+### Why
+
+폴리레포 워크스페이스에서 여러 레포를 가로지르는 설계 문서는 어느 레포에도 속하지 않는 것이 정상 배치다. 레포 안 문서는 대체 분기가 우연히 맞는 답이라 이 결함이 드러나지 않았다.
+
 ## [2.25.4] - 2026-09-25
 
 무인 스테이지의 편집 도구 훅(`hooks/gate-pretool.sh`)이 라우터 입력 디렉터리 세 곳 — cc-lane 설정 디렉터리, cc-lane 상태 디렉터리, 페이싱 디렉터리 — 으로의 쓰기를 거부한다. 셋 다 이 런이 끝난 뒤 라우터·게이트·디스패처가 읽는 입력이라, 스테이지가 거기에 쓰면 자기가 소유하지 않은 뒤따르는 런의 배정·페이싱·기동을 바꿀 수 있었다.
