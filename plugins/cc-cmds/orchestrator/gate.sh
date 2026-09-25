@@ -20664,6 +20664,14 @@ gate_usage_scan() {
   # THE INPUT PATTERN CARRIES ITS OPENING QUOTE. Without it `input_tokens":`
   # also matches inside both cache field names, and the first match would add a
   # cache component a second time — a plausible number nobody catches by eye.
+  #
+  # NO SCORED LINE PRINTS `-` AS THE SECOND FIELD, NEVER `0`. A transcript that
+  # resolves but holds no line past the skip — a shift that died on its first
+  # request, whose only record is an error with every token field at zero — has
+  # no current context, and a `0` there is read downstream as a measurement: it
+  # lands on the launch row's `컨텍스트` as a number and lets the hard cap pass
+  # without the line an unresolved context owes. The floor keeps printing `0`;
+  # its readers already take `0` as "no floor".
   awk '
     {
       r = 0; c = 0; i = 0
@@ -20679,8 +20687,12 @@ gate_usage_scan() {
       if (r == 0 && c == 0) next
       if (first == 0) first = r + c
       last = r + c + i
+      scored = 1
     }
-    END { printf "%d %d", first + 0, last + 0 }
+    END {
+      if (scored) printf "%d %d", first + 0, last + 0
+      else printf "%d -", first + 0
+    }
   ' 2>/dev/null
 }
 
@@ -20744,7 +20756,8 @@ gate_shift_self_ordinal() {
 
 gate_shift_context_of() {
   # gate_shift_context_of <ordinal> — the current context of routing shift
-  # <ordinal>, in tokens, or nothing when its transcript cannot be found.
+  # <ordinal>, in tokens, or nothing when its transcript cannot be found or
+  # holds no usage line to score.
   #
   # IT READS ONE SESSION, NAMED BY ITS ORDINAL, AND NEVER FALLS BACK. The id is
   # the one `gate_launch_shift` handed that shift as `--session-id`, derived here
@@ -20861,7 +20874,7 @@ gate_cap_directive() {
   ctx=$(gate_shift_context_of "$n")
   case "${ctx:-}" in
     ''|*[!0-9]*)
-      printf 'gate: 교대 %s 의 트랜스크립트를 해소하지 못해 하드 상한을 평가하지 않았습니다 (%s)\n' \
+      printf 'gate: 교대 %s 의 트랜스크립트를 해소하지 못해(또는 점수 매길 사용량 줄이 없어) 하드 상한을 평가하지 않았습니다 (%s)\n' \
         "$n" "$verb" >&2
       return 0 ;;
   esac

@@ -18147,6 +18147,26 @@ capb_bytes=$(printf '%s' "$capb_row2" | wc -c | tr -d ' ')
 check "34b A5: 컨텍스트를 실은 기동 행의 투영 바이트가 1024 미만이다" \
   "$( [ "$capb_bytes" -lt 1024 ] && printf 'under' || printf '%s' "$capb_bytes" )" "under"
 
+# A TRANSCRIPT THAT RESOLVES BUT HOLDS NO SCORED LINE IS NOT A ZERO CONTEXT.
+# The outgoing shift here died on its first request: its only usage record is an
+# error with every token field at zero, so the skip predicate drops it and the
+# scan has nothing to report. `-` is the value the launch row owes then — a `0`
+# would be read as a measurement by whoever retunes the cap from this field.
+capb_sid2=$(row_field "$capb_row2" '세션 id')
+{ printf '{"type":"user","message":{"content":"x"}}\n'
+  cap_usage_line 0 0 0; } > "$NTX/$capb_sid2.jsonl"
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale "픽스처 — 첫 요청에서 죽은 교대 뒤의 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34b: 사용량 줄 없는 교대 뒤의 기동도 돈다" "$rc" "0"
+capb_row3=$(cap_rows '교대 기동' | tail -1)
+check "34b: 셋째 기동 행이 새로 쓰였다" \
+  "$( [ "$(row_field "$capb_row3" '세션 id')" != "$capb_sid2" ] && [ -n "$(row_field "$capb_row3" '세션 id')" ] \
+     && printf 'new' || printf 'stale' )" "new"
+check "34b: 점수 매길 사용량 줄이 없는 나가는 교대는 컨텍스트=- 로 기록된다" \
+  "$(row_field "$capb_row3" '컨텍스트')" "-"
+
 # --- 34c. 강제 — 하드 상한에서 교대가 넘어간다 -------------------------------
 # --- section: 34c | group: cone | covers: snapshot | needs: 31al,34 | anchors: 34c: 하드 상한에서 교대가 강제로 넘어간다 ---
 #
