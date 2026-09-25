@@ -2310,6 +2310,12 @@ _gp_wrap_add() {
 # this layer does not model, so they stay `tool`. A top-level `exec` stays `tool`
 # too — there is no `exec` binary, only the shell builtin, which the body parser
 # handles.
+#
+# `find` IS NOT A WRAPPER HERE EITHER. Its expression can hand the match to any
+# number of commands, each ending at its own terminator, beside primaries that
+# write on `find`'s own account — so there is no single inner argv to peel to.
+# The grading table's `gate_unwrap_find` reads every primary and folds the
+# answers, and it is only reached when this layer leaves `find` as the argv0.
 _gp_walk() {
   local w
   while [ "$#" -gt 0 ]; do
@@ -2326,7 +2332,6 @@ _gp_walk() {
       stdbuf|gstdbuf)       _gp_peel_stdbuf "$@" ;;
       time|gtime)           _gp_peel_time "$@" ;;
       lockf)                _gp_peel_lockf "$@" ;;
-      find)                 _gp_peel_find "$@" ;;
       sh|bash|zsh|dash|ksh) _gp_shell "$@"; return 0 ;;
     esac
     case "$_GP_PEEL" in
@@ -2536,52 +2541,6 @@ _gp_peel_lockf() {
   _gp_wrap_add "lockf${_GP_TAB}file=${_GP_REST[0]}"
   _GP_REST=("${_GP_REST[@]:1}")
   _GP_PEEL=peeled
-  return 0
-}
-
-# `find … -exec <command> …` HANDS THE MATCH TO ANOTHER COMMAND, and the grading
-# table has peeled that for a long time — `surface_of_find` sends everything
-# after the primary to the scorer. The parser's list did not carry `find`, so
-# the two layers read one argv two ways: `find . -maxdepth 0 -exec bash -c
-# '<body>' \;` was scored `워크트리쓰기` off the inner `bash` while
-# `gate_argv_opaque` looked at `find`, answered 0, and the floor block was
-# skipped — the body's external act never reached a floor and no mark was left.
-# ONE LIST, BOTH LAYERS: the boundary here is `gate_unwrap_find`'s, primaries
-# included.
-#
-# THE TERMINATOR IS CUT, WHICH THE GRADING TABLE NEVER HAD TO DO. That table
-# reads argv0 and nothing else, so a trailing `;` or `+` costs it nothing; here
-# those words would become operands of the inner command. `find` itself refuses
-# an `-exec` with no terminator, so that spelling stops at `find` and takes the
-# table's write answer rather than a guess about where the command ends.
-_gp_peel_find() {
-  shift
-  local inner=()
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      -exec|-execdir|-ok|-okdir)
-        shift
-        while [ "$#" -gt 0 ]; do
-          case "$1" in
-            ';'|'+')
-              [ "${#inner[@]}" -ge 1 ] || { _GP_PEEL=stop; return 0; }
-              _gp_wrap_add "find"
-              _GP_REST=("${inner[@]}")
-              _GP_PEEL=peeled
-              return 0 ;;
-          esac
-          inner[${#inner[@]}]="$1"
-          shift
-        done
-        _GP_PEEL=stop
-        return 0 ;;
-      # `find` acting on its own account. There is no inner command to peel to,
-      # and the table already answers these a write.
-      -delete|-fprintf|-fprint|-fprint0|-fls) _GP_PEEL=stop; return 0 ;;
-      *) shift ;;
-    esac
-  done
-  _GP_PEEL=stop
   return 0
 }
 
@@ -2798,6 +2757,10 @@ _gp_env_assign() {
 # first operand is a script file this layer cannot read, and the act is the
 # shell itself — raw, answered by the grading table's constant row as before.
 # `bash -- -c x` names a FILE called `-c`, which is why `--` ends the scan.
+#
+# A BARE `+` IS AN EMPTY OPTION CLUSTER, NOT THE END OF OPTIONS. bash reads
+# `bash + -c '<body>'` and runs the body; taking `+` as `--` left a leaf with no
+# `-c`, so the body was never parsed and no floor was computed over it.
 _gp_shell() {
   local name="${1##*/}" a j c mode_c=0 noexec=0 i=1 n="$#"
   local -a args
@@ -2805,7 +2768,8 @@ _gp_shell() {
   while [ "$i" -lt "$n" ]; do
     a="${args[$i]}"
     case "$a" in
-      --|-|+) i=$((i + 1)); break ;;
+      --|-) i=$((i + 1)); break ;;
+      +) ;;
       --norc|--noprofile|--login|--posix|--restricted|--verbose|--noediting) ;;
       --rcfile|--init-file) i=$((i + 1)) ;;
       --*) _gp_form ''; return 0 ;;
@@ -6436,6 +6400,11 @@ gate_opaque_floor() {
         return 0
       fi ;;
   esac
+  # THE HAND SCAN BRANCHES ON THE PEELED ARGV, as the opaque axis does. On the
+  # raw argv0 `env bash -c '<body>'` put `env` in the switch below, and its whole
+  # argument list — `bash`, `-c`, the body as one word — became the payload, so
+  # the body's first command never stood in a command position.
+  if gate_peel_argv "$@"; then set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}; fi
   local cmd="${1##*/}"; shift 2>/dev/null || true
   # THE SAME PEEL THE OPAQUE AXIS APPLIES, and it has to be here rather than
   # only there. `lockf -k -t 0 <lock> sh -c 'curl …'` has `-k` in the first word

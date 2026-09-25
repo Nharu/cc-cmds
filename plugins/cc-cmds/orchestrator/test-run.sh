@@ -6113,10 +6113,11 @@ unset RR_G_CWD rr_g
 # 파서로 넘기는 셸이고, 본문은 둘째 기준이 아니라 조각 단위로 따로 읽힌다.
 #
 # 하한은 `-gt 0` 이 아니라 알려진 크기다. 추출 지점이 옮겨져 집합이 줄어도 초록이던
-# 것이 이 단언을 붉게 만들었던 공허화의 모양이므로, 파서 팔 열다섯을 모으지 못하면
-# 그것도 실패로 센다. 열다섯째는 `find` 다 — 등급표는 오래전부터 `-exec` 뒤를
-# 벗겼는데 파서 목록에만 없어서 두 층이 같은 argv 를 다르게 읽었다. 하한을 함께
-# 올리지 않으면 그 팔이 다시 빠져도 이 단언은 초록이다.
+# 것이 이 단언을 붉게 만들었던 공허화의 모양이므로, 파서 팔 열넷을 모으지 못하면
+# 그것도 실패로 센다. `find` 는 파서 팔이 아니다 — 식 하나가 안쪽 명령 여럿과 자기
+# 쓰기 원소를 함께 품으므로 벗겨 낼 안쪽 argv 가 하나로 서지 않고, 등급표의
+# `gate_unwrap_find` 가 원소마다 읽어 접는다. 그 이름은 등급표 위임 쪽에서 이
+# 대조에 들어온다.
 rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
   CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
   . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
@@ -6142,7 +6143,7 @@ rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
     [ "$f" = rg ] && continue
     case " $names " in *" $f "*) ;; *) names="$names $f" ;; esac
   done
-  [ "$nw" -ge 15 ] || { echo "파서 팔 이름을 $nw 개만 모았다 — 열다섯 미만이면 추출이 깨졌거나 팔이 빠졌다"; exit 0; }
+  [ "$nw" -ge 14 ] || { echo "파서 팔 이름을 $nw 개만 모았다 — 열넷 미만이면 추출이 깨졌거나 팔이 빠졌다"; exit 0; }
   [ "$nt" -gt 0 ] || { echo "등급표 위임 이름을 하나도 모으지 못했다"; exit 0; }
   missing=""
   for f in $names; do
@@ -6169,8 +6170,9 @@ rr_unwrap_behave=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" 
       timeout|gtimeout) pre="5" ;;
       lockf) pre="$RR_G_DIR/x.lock" ;;
       # `find` takes its starting point and the primary BEFORE the command and a
-      # terminator after it, which is why it used to sit out of this list. Out of
-      # the list it was the one peeled name whose second base nobody measured.
+      # terminator after it, which is why it used to sit out of this list. The
+      # parser does not peel it, but the second base does, element by element,
+      # and out of the list it was the one name whose second base nobody measured.
       find) pre="$RR_G_DIR -maxdepth 0 -exec"; suf=";" ;;
       *) pre="" ;;
     esac
