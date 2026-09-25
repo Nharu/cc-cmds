@@ -18349,6 +18349,122 @@ gate_pin_attempt() {
   printf '%s' "$attempt"
 }
 
+gate_judgment_keyed_on_stage() {
+  # gate_judgment_keyed_on_stage <stage-key> <승인 id> — 0 when that approval is
+  # a `절단점=판단` question this stage raised: its issuing row's `막는 세그먼트`
+  # is the key or one of its attempts (`<key>#<n>`), or — for the run-scope
+  # design step — the step itself, which `gate_approval_keyed_on_design_step`
+  # already answers. The ISSUING row is read because a transition row need not
+  # carry the field, and whole fields are matched so a judgment citing another
+  # id in its text does not speak for it.
+  local key="$1" id="$2" first blk dstep
+  if dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$key" ] \
+     && gate_approval_keyed_on_design_step "$id"; then
+    return 0
+  fi
+  first=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } \
+           | { grep -F '| 절단점=판단 |' || true; } | sed -n '1p')
+  [ -n "$first" ] || return 1
+  blk=$(gate_row_field "$first" '막는 세그먼트')
+  case "$blk" in "$key"|"$key#"*) return 0 ;; esac
+  return 1
+}
+
+gate_stage_has_unspent_answer() {
+  # gate_stage_has_unspent_answer <stage-key> — 0 when a person answered a
+  # judgment this stage raised and no adoption row has consumed the answer yet.
+  # That is the re-attachment that carries an answer, the same candidate the
+  # snapshot's answered array names; it is never a continuation.
+  local key="$1" id row
+  for id in $(gate_rows '승인' | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } | tail -1)
+    [ "$(gate_row_field "$row" '상태')" = "승인" ] || continue
+    if gate_has_row '자율 승인' "| 해소 승인=$id |"; then continue; fi
+    gate_judgment_keyed_on_stage "$key" "$id" && return 0
+  done
+  return 1
+}
+
+gate_stage_has_open_judgment() {
+  # gate_stage_has_open_judgment <stage-key> — 0 when a judgment this stage
+  # raised is still `대기`. The design step keeps its own predicate, which asks
+  # the same question about the step.
+  local key="$1" id dstep
+  if dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$key" ] \
+     && [ -z "$(gate_segment_field "$key" '상태')" ]; then
+    gate_design_step_has_open_approval
+    return $?
+  fi
+  for id in $(gate_pending_approval_ids 판단); do
+    gate_judgment_keyed_on_stage "$key" "$id" && return 0
+  done
+  return 1
+}
+
+gate_continuation_argv() {
+  # gate_continuation_argv <stage-key> <stage-kind> <cli args...> — decide
+  # whether a `--resume` dispatch is a CONTINUATION. On one, GATE_CONTINUED is
+  # non-empty and GATE_CONTINUE_ARGV holds the argv to launch; otherwise the
+  # caller's argv stands. Returns 0, or GATE_EXIT_RULE on a refusal.
+  #
+  # A continuation is a resume of a stage whose last row is `공허한 성공`: it
+  # ended its turn in prose, with no gate act and no halt record. What it needs
+  # is the fixed continue message naming the unmet predicate, not the stage
+  # prompt again — resent into a full context, the prompt restarts the stage
+  # from the top. So the gate substitutes the message the driver sends from the
+  # same definition, and the router's prompt is not used. A resume that carries
+  # an answer, or one that picks up a crash, is not a continuation and its
+  # argv passes through unchanged.
+  #
+  # The refusals come before the attempt pin and the launch token, so a refused
+  # continuation consumes neither an attempt number nor a continuation.
+  local key="$1" skind="$2"
+  shift 2
+  GATE_CONTINUED=""
+  local last sess att turns n unmet i
+  last=$(gate_stage_result_rows_of "$key" | tail -1)
+  [ "$(gate_row_field "$last" '종단 부류')" = '공허한 성공' ] || return 0
+  gate_stage_has_unspent_answer "$key" && return 0
+  if gate_stage_has_open_judgment "$key"; then
+    warn "the stage raised a judgment that is still pending, so it is not continued — the answer re-attaches to the same session ($key)"
+    return "$GATE_EXIT_RULE"
+  fi
+  sess=$(gate_row_field "$last" '세션 id')
+  if [ "$sess" != "$GATE_RESUME" ]; then
+    warn "a continuation resumes the last attempt's session ($key: ${sess:-미상}), not $GATE_RESUME — with no session on that row, dispatch the stage afresh"
+    return "$GATE_EXIT_RULE"
+  fi
+  att=$(gate_row_field "$last" '실행 버전')
+  turns=$(stream_last_num_turns "$RUN_DIR/log/$key#$att.json")
+  if [ "${turns:-0}" = "0" ]; then
+    warn "the last attempt ran zero turns, so there is nothing to continue — dispatch the stage afresh instead ($key#$att)"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$(continue_count "$key")" -ge "$CONTINUE_MAX" ]; then
+    warn "this stage has been continued $CONTINUE_MAX times with no artifact — it is not continued again; record it as blocked ($key)"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$skind" in
+    design) unmet="동결된 설계 문서도 정지 기록도 없다" ;;
+    *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
+  esac
+  GATE_CONTINUE_ARGV=()
+  i=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_CONTINUE_ARGV+=(-p "$(continue_message "$unmet")"); shift 2; i=1
+    else
+      GATE_CONTINUE_ARGV+=("$1"); shift
+    fi
+  done
+  [ "$i" = "1" ] || GATE_CONTINUE_ARGV+=(-p "$(continue_message "$unmet")")
+  GATE_CONTINUED=1
+  n=$(continue_spend "$key")
+  log "스테이지 계속 — $key ← 세션 $GATE_RESUME, 계속 메시지 ($n/$CONTINUE_MAX)"
+  return 0
+}
+
 gate_launch_stage() {
   # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
@@ -18458,6 +18574,13 @@ gate_launch_stage() {
   # record after it both come later on purpose.
   local instr
   instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  # A RESUME OF A STAGE THAT ENDED IN PROSE carries the continue message instead
+  # of the router's prompt, and is refused here — still before the pin — when it
+  # may not be continued.
+  if [ -n "${GATE_RESUME:-}" ]; then
+    gate_continuation_argv "$seg" "$kind" "$@" || return $?
+    [ -z "$GATE_CONTINUED" ] || set -- "${GATE_CONTINUE_ARGV[@]}"
+  fi
   local attempt out suplog nonce tmp sup
   attempt=$(gate_pin_attempt "$seg")
   if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then

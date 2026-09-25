@@ -249,6 +249,16 @@ A review stage that dies usually leaves its team's work on disk: every seat publ
    - **`리뷰 HEAD` present** → write the `cycle` row: `P0` and `P1` from the `발견 요약` line, `리뷰 HEAD` from that line's sha, the report path as `리포트 경로`, the crashed review's cycle number as `사이클`, and no `모드`·`기준 사이클` fields.
    - **`리뷰 HEAD` absent** → the recovery arm is not bound to emit that line and nothing may stand in for it, so a required field of the row has no source. Do not park the segment for that: write no `cycle` row and re-dispatch the segment's review as a full review **without the three basis flags**, carrying an absolute `--report-path` like every review dispatch. That is what a crashed review got before this subsection existed, so a clean recovery never leaves the night worse off than no recovery would. This re-dispatch is a review, not a second recovery.
 
+#### Continuing a stage that ended its turn in prose
+
+A stage whose last `stage-result` row reads `종단 부류=공허한 성공` exited cleanly without its artifact — no gate act (for the design step, no frozen document) and no halt record — and most often it ended its turn on a progress report. **Resume it; do not run it again.** A fresh dispatch loses the context and pays for the same exploration a second time. Read the row as the crash arm does (`grep -nF '| 세그먼트=<id> | 스테이지=<id> | 종류=' "$CC_PIPELINE_LEDGER"`, last line; for the design step, item 1 of 「Dispatching the design stage」 names the row) and take its `세션 id`.
+
+1. **When it applies.** The last row is `공허한 성공`, its `세션 id` is not `미상`, the segment is in neither `live_stages[]` nor `orphan_stages[]`, and no element of the snapshot's `answered_judgments[]` names the segment — an answered judgment is re-attached with its answer, not continued. For the run-scope design step this is evaluated before item 1 of 「Dispatching the design stage」 stops the design, and item 1 applies once the gate refuses the continuation.
+2. **The dispatch is the one the stage had, plus `--resume`.** Same stage kind, same `--target` and `--segment` (`-` for the design step), `--resume <그 세션 id>`. The prompt you pass is not used: the gate sends the fixed continue message naming the unmet artifact predicate and counts the continuation on disk.
+3. **Exit 3 is the gate declining.** It declines when the stage was already continued twice, when a judgment it raised is still pending (the answer re-attaches later), and when the attempt ran zero turns or the session is not the last attempt's. After two continuations, write the crash arm's `blocked` form with `사유=계속 소진 — 같은 세션을 두 번 재개했으나 산출물이 없다`. For zero turns, dispatch the stage afresh once. For a pending judgment, wait for the answer.
+
+A stage that made gate acts and then ended in prose is recorded `정상 완료` and is not this case.
+
 ## Ending your shift
 
 Check `shift.over_soft` on every snapshot. When it is true — or when you took exit 5, or a `propose-done` was accepted — write this and then exit:
