@@ -25,7 +25,7 @@ on:
       - master
 
 jobs:
-  # `fail-fast: false` because a red shard must not cancel the other seven. The
+  # `fail-fast: false` because a red shard must not cancel the other twelve. The
   # first thing anyone asks of a sharded failure is whether it is one section or
   # the whole suite, and a cancelled run cannot answer it.
   gate-shards:
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     steps:
       - uses: actions/checkout@v4
 
