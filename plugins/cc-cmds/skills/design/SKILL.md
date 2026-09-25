@@ -159,6 +159,7 @@ Step 3 and Step 4 through the save run in a separate headless session, the **leg
       --plugin-dir "$PLUGIN_DIR" \
       --session-id "$LEG_SID" \
       --model opus \
+      --effort high \
       --permission-mode bypassPermissions \
       --dangerously-skip-permissions \
       --output-format json \

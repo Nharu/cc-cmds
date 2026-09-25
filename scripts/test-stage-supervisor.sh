@@ -38,8 +38,9 @@ unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST CC_PIPELINE_LE
       CC_PIPELINE_GRANT CC_PIPELINE_GATE CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT \
       CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION
 # The compaction-window kill switch would turn the `(argv)` assertions below
-# into a property of the caller's shell rather than of the gate.
-unset CC_ORCH_STAGE_AUTOCOMPACT
+# into a property of the caller's shell rather than of the gate, and the effort
+# and model switches would do the same to every launch argv.
+unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -572,6 +573,17 @@ CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
 check "(11) -- 앞의 --autocompact 옵션은 --instructions 아래에서도 exit 0" "$wrap_rc3" "0"
 check "(11) 그 옵션은 CLI argv 에 --strict-mcp-config 바로 뒤에 한 번 실린다" \
   "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 ' || true; } | { grep -c . || true; })" "1"
+
+# The effort and model options land right after the window, in that order, and
+# do not displace it.
+: > "$WORK/wrap-argv.out"
+CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
+  bash "$WRAP" --settings "$WORK/wrap-settings.json" --plugin-dir "$WORK/wrap-plugin" \
+    --session-id x --instructions "$WORK/wrap-instructions.md" --autocompact 300000 \
+    --effort high --model opus -- -p x >/dev/null 2>&1; wrap_rc4=$?
+check "(11) --effort·--model 옵션도 --instructions 아래에서 exit 0" "$wrap_rc4" "0"
+check "(11) 그 둘은 --autocompact 바로 뒤에 순서대로 한 번 실린다" \
+  "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 --effort high --model opus ' || true; } | { grep -c . || true; })" "1"
 
 printf '\ntest-stage-supervisor: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

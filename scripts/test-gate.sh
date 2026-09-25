@@ -89,6 +89,10 @@ export CC_CMDS_SESSION_NOTIFY
 # first so a failure can say what was inherited.
 GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
 unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID GATE_ACT_CWD
+# The launch switches go too: the effort, model and window on every launch argv
+# the suite measures would otherwise be a property of the caller's shell. The
+# sections that exercise a switch set it on the call.
+unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
 # VERSION PINNING IS OFF FOR THE WHOLE SUITE, and this seam only ever turns off
 # the taking of a NEW pin — it can never make the gate ignore one that exists.
 # Every fixture run below would otherwise copy the plugin root into its fixture
@@ -1968,13 +1972,18 @@ pre_base() {
   # With `CC_STUB_ECHO_SID=1` the result's `session_id` is the `--session-id` or
   # `-r` value on the argv, which is what the real CLI answers — the resume
   # fixtures need the ledger's session id to be the one the gate recorded its
-  # instructions under. What is under test is the gate's launch path, not the CLI.
+  # instructions under. With `CC_STUB_MODEL` set it first emits the system/init
+  # frame naming that model, which is where the recorders read the served model.
+  # What is under test is the gate's launch path, not the CLI.
   STUB="$WORK/stub-cli"
   cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "${CC_STUB_ARGV_OUT:-/dev/null}"
 { printf 'MDS=%s\n' "${CLAUDE_CODE_DISABLE_CLAUDE_MDS-unset}"
   printf 'MEM=%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
+if [ -n "${CC_STUB_MODEL:-}" ]; then
+  printf '{"type":"system","subtype":"init","model":"%s"}\n' "$CC_STUB_MODEL"
+fi
 sid=stub-session
 if [ "${CC_STUB_ECHO_SID:-}" = 1 ]; then
   prev=""
@@ -5336,6 +5345,29 @@ ac_kind() {
 check "review 는 300000 을 낸다" "$(ac_kind AC_KIND=review)" "300000"
 check "표 밖 종류는 빈 값을 낸다" "$(ac_kind AC_KIND=implement):$(ac_kind AC_KIND=generic):$(ac_kind AC_KIND=shift)" "::"
 check "끄기 스위치는 review 도 빈 값으로 만든다" "$(ac_kind AC_KIND=review CC_ORCH_STAGE_AUTOCOMPACT=off)" ""
+# The effort and model the launchers inject come from the driver's table,
+# reached through the gate's source of `run.sh`: the gate holds no copy, so a
+# gate-side definition that drifts from the driver's is a failure here.
+lf_kind() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL "$@" \
+    bash -c '. "'"$GATE"'"; stage_launch_flags "$LF_KIND"' _
+}
+for lf_k in design reconverge audit; do
+  check "$lf_k 기동 플래그는 high 와 opus 다" "$(lf_kind LF_KIND=$lf_k)" "--effort high --model opus"
+done
+for lf_k in implement review shift generic; do
+  check "$lf_k 기동 플래그는 medium 과 opus 다" "$(lf_kind LF_KIND=$lf_k)" "--effort medium --model opus"
+done
+check "review:low 재정의는 review 만 낮춘다" \
+  "$(lf_kind LF_KIND=review CC_ORCH_STAGE_EFFORT=review:low)|$(lf_kind LF_KIND=implement CC_ORCH_STAGE_EFFORT=review:low)" \
+  "--effort low --model opus|--effort medium --model opus"
+check "닫힌 집합 밖의 수준은 무시된다" "$(lf_kind LF_KIND=design CC_ORCH_STAGE_EFFORT=design:ultra)" "--effort high --model opus"
+check "effort 끄기 스위치는 --effort 만 뺀다" "$(lf_kind LF_KIND=design CC_ORCH_STAGE_EFFORT=off)" "--model opus"
+check "model 끄기 스위치는 --model 만 뺀다" "$(lf_kind LF_KIND=design CC_ORCH_STAGE_MODEL=off)" "--effort high"
+check "off 가 아닌 model 값은 무시된다" "$(lf_kind LF_KIND=design CC_ORCH_STAGE_MODEL=sonnet)" "--effort high --model opus"
+lf_defs=$(grep -cE '^(stage_kind_of|stage_effort_of|stage_model_of|stage_launch_flags|stage_served_model_of)\(\)' \
+  "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" || true)
+check "게이트는 종류·effort·model 함수를 스스로 정의하지 않는다" "$lf_defs" "0"
 check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
   "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
 check "HOME 밖의 레인은 그대로 적는다" \
@@ -5791,6 +5823,44 @@ esac
 check "두 review 기동의 압축 창 값이 스위치에서 갈린다" \
   "$( [ "$(printf '%s' "$sl_row" | sed -n 's/.*압축 창=\([^|]*\) |.*/\1/p')" != "$(printf '%s' "$sl5_row" | sed -n 's/.*압축 창=\([^|]*\) |.*/\1/p')" ] && printf differ || printf same )" "differ"
 
+# --- EFFORT AND MODEL: on every kind's argv, and the effort on its row -------
+#
+# Unlike the window, the effort and the model go on every kind. The row carries
+# the effort string the argv carried and the model the stream's init frame
+# named; the stub above emitted no init frame, so the model reads `(미상)`.
+check "review 기동의 argv 에 --effort medium 이 있다" "$(si_argv_value "$WORK/stub-argv.txt" --effort)" "medium"
+check "review 기동의 argv 에 --model opus 가 있다" "$(si_argv_value "$WORK/stub-argv.txt" --model)" "opus"
+check "--effort 와 --model 은 argv 에 한 번씩만 있다" \
+  "$(si_argv_has "$WORK/stub-argv.txt" --effort):$(si_argv_has "$WORK/stub-argv.txt" --model)" "1:1"
+check "표 밖 종류(generic)의 argv 에도 --effort medium 이 있다" "$(si_argv_value "$WORK/stub-argv-sl4.txt" --effort)" "medium"
+case "$sl_row" in
+  *"기록자=게이트 | effort=medium | 서빙 모델=(미상) |"*) ok "게이트 행이 effort 와 서빙 모델을 싣는다 (init 프레임 없으면 (미상))" ;;
+  *) bad "effort 기록" "$sl_row" ;;
+esac
+# Under both switches the argv loses exactly what each switch names, and the
+# row says `-` for the effort. The stub now emits an init frame with the `[1m]`
+# suffix the long-context lane reports, and the row carries the id without it.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL6 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+rm -f "$WORK/stub-argv-sl6.txt"
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl6.txt" \
+      CC_STUB_MODEL='claude-opus-5-5[1m]' CC_ORCH_STAGE_EFFORT=off CC_ORCH_STAGE_MODEL=off \
+      bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL6 \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+check "두 끄기 스위치 아래의 기동도 끝까지 간다" "$rc" "0"
+wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL6 --interval 1 --timeout 60 2>&1); wait_rc=$?
+check "끄기 스위치 아래의 argv 에는 --effort 도 --model 도 없다" \
+  "$(si_argv_has "$WORK/stub-argv-sl6.txt" --effort):$(si_argv_has "$WORK/stub-argv-sl6.txt" --model)" "0:0"
+check "끄기 스위치는 압축 창 주입을 건드리지 않는다" "$(si_argv_value "$WORK/stub-argv-sl6.txt" --autocompact)" "300000"
+sl6_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL6 ' | tail -1)
+case "$sl6_row" in
+  *"effort=- | 서빙 모델=claude-opus-5-5 |"*) ok "끈 effort 는 - 로, 서빙 모델은 접미사 없는 init 모델로 적힌다" ;;
+  *) bad "effort 끄기 기록" "$sl6_row" ;;
+esac
+
 # --- STAGE INSTRUCTIONS: what the launch injected in place of CLAUDE.md -------
 #
 # The launch above ran with automatic CLAUDE.md discovery switched off and the
@@ -6033,13 +6103,14 @@ si_wrap() {
 si_reserved_ok=0; si_reserved_bad=""
 for si_flag in --append-system-prompt --append-system-prompt-file --append-subagent-system-prompt \
                --append-subagent-system-prompt-file --system-prompt --system-prompt-file \
-               --setting-sources --bare --exclude-dynamic-system-prompt-sections --autocompact; do
+               --setting-sources --bare --exclude-dynamic-system-prompt-sections --autocompact \
+               --effort --model; do
   si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag" y; si_rc=$?
   [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag=$si_rc"
   si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag=z"; si_rc=$?
   [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag==$si_rc"
 done
-check "래퍼는 --instructions 와 함께 온 예약 플래그 10종(= 형 포함)을 모두 exit 2 로 거부한다" "$si_reserved_ok:$si_reserved_bad" "20:"
+check "래퍼는 --instructions 와 함께 온 예약 플래그 12종(= 형 포함)을 모두 exit 2 로 거부한다" "$si_reserved_ok:$si_reserved_bad" "24:"
 case "$(cat "$WORK/wrap-err.txt")" in
   *"reserved flag after --"*) ok "거부가 예약 플래그라고 말한다" ;;
   *) bad "예약 플래그 거부 문면" "$(tr '\n' ' ' < "$WORK/wrap-err.txt")" ;;
@@ -6066,6 +6137,22 @@ check "래퍼의 --autocompact 는 --strict-mcp-config 뒤, append 앞에 놓인
 si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --autocompact 300000 -- -p a; si_rc=$?
 check "재개·지침 없는 분기도 --autocompact 를 같은 자리에 받는다" "$(cat "$WORK/wrap-argv.txt")" \
   "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --autocompact 300000 -p a"
+# `--effort` and `--model` ride right after the window on all four branches.
+# The resume branches are asserted on their own: a resumed session does not
+# keep the effort it started with, so a resume that dropped the flag would run
+# at the default without a trace.
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --autocompact 300000 --effort high --model opus --instructions "$SI_F" -- -p a; si_rc=$?
+check "래퍼의 --effort·--model 은 --autocompact 바로 뒤, append 앞에 놓인다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config --autocompact 300000 --effort high --model opus --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --autocompact 300000 --effort high --model opus --instructions "$SI_F" -- -p a; si_rc=$?
+check "재개·지침 분기도 --effort·--model 을 같은 자리에 싣는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --autocompact 300000 --effort high --model opus --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --effort medium --model opus -- -p a; si_rc=$?
+check "재개·지침 없는 분기도 창 없이 --effort·--model 을 --strict-mcp-config 뒤에 싣는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --effort medium --model opus -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --effort medium -- -p a; si_rc=$?
+check "새 기동·지침 없는 분기는 넘긴 것만 싣는다 (--model 없이 --effort 만)" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config --effort medium -p a"
 # Source order in the launcher: the synthesis sits before the attempt pin, so a
 # refusal consumes no attempt number.
 ord_synth=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n 'gate_stage_instructions_for_launch' | sed 's/:.*//' | tail -1)
@@ -17708,6 +17795,12 @@ case "$a_shift_row" in
   *"압축 창="*) ok "(a) 기동 행이 (argv) 아닌 압축 창을 싣는다" ;;
   *) bad "(a) 교대 기동 압축 창" "$a_shift_row" ;;
 esac
+# The effort, unlike the window, is injected into the shift too, and the row
+# carries the value the argv got.
+case "$a_shift_row" in
+  *" | effort=medium | "*) ok "(a) 기동 행이 교대의 effort 를 싣는다" ;;
+  *) bad "(a) 교대 기동 effort" "$a_shift_row" ;;
+esac
 # THE LIVE STAGE IS STILL THERE AFTERWARDS. The launch did not touch it — the
 # stage's liveness is the supervisor's business, not the shift launcher's.
 check "(a) 기동이 살아 있는 스테이지를 건드리지 않는다" \
@@ -17939,6 +18032,8 @@ case "$f_shift_f" in
   *) bad "(f) 교대 합성 파일 위치" "$f_shift_f" ;;
 esac
 check "(f) 교대 argv 에 동적 절 제외가 있다" "$(si_argv_has "$WORK/shift-argv.txt" --exclude-dynamic-system-prompt-sections)" "1"
+check "(f) 교대 argv 가 shift 종류의 effort 와 opus 를 싣는다" \
+  "$(si_argv_value "$WORK/shift-argv.txt" --effort):$(si_argv_value "$WORK/shift-argv.txt" --model)" "medium:opus"
 check "(f) 교대 환경에 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/shift-env.txt")" "1"
 check "(f) 교대도 자동 메모리는 끄지 않는다" "$(sed -n 's/^MEM=//p' "$WORK/shift-env.txt")" "unset"
 f_shift_sid=$(si_argv_value "$WORK/shift-argv.txt" --session-id)

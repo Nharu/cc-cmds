@@ -18628,6 +18628,16 @@ gate_verb_supervise_stage() {
   window=$(gate_autocompact_effective "$ac_val" "$(gate_settings_file "$kind")" "$PWD")
   case "$window" in *"(argv)") ac_flags="--autocompact ${window%(argv)}" ;; esac
 
+  # EFFORT AND MODEL COME FROM THE DRIVER'S TABLE, sourced rather than copied, so
+  # a stage the router launches and one the driver spawns cannot run the same
+  # kind at two efforts. Like the window, the effort is read once: the value on
+  # the argv and the value on the row are the same string. Both ride the resume
+  # re-attachment too — a resumed session does not keep the effort it started
+  # with.
+  local effort launch_flags
+  effort=$(stage_effort_of "$kind")
+  launch_flags=$(stage_launch_flags "$kind")
+
   local rc=0 spid
   # THE STAGE IS HANDED WHAT THE HOOK WILL DEMAND OF IT. Layer 1 routes every
   # Bash line, Write and Edit through the gate, and the gate's argv needs a
@@ -18696,6 +18706,7 @@ gate_verb_supervise_stage() {
     ${instr:+--instructions "$instr"} \
     $id_flag \
     $ac_flags \
+    $launch_flags \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
   # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper, and
   # the wrapper `exec`s into the CLI, so this pid is the stage's own. This is
@@ -18754,7 +18765,7 @@ gate_verb_supervise_stage() {
   # recorder the power to end the supervisor before the row. `|| rec_rc=$?`
   # restores that posture for the whole body and keeps the status for the log.
   local rec_rc=0
-  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" || rec_rc=$?
+  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" "${effort:--}" || rec_rc=$?
   [ "$rec_rc" = "0" ] || warn "the stage result recorder ended non-zero ($seg#$attempt rc=$rec_rc)"
   # THE SAME SET THE SETTLEMENT PATH REMOVES, including the three files the
   # dispatch act wrote hours ago — that act returned long since, so this is the
@@ -18826,9 +18837,13 @@ gate_settle_lost_dispatches() {
     if [ -z "$( gate_stage_result_rows_of "$seg" \
                 | { grep -F "실행 버전=$attempt " || true; } )" ]; then
       sid=$(stage_session_id "$seg")
+      # No effort was recorded anywhere the settlement can read, so it says
+      # `(미상)`; the served model is in the stream's first frame if the stage
+      # got that far.
       gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$seg" "${kind:-}")" "스테이지=$seg" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
         "압축 창=$window" "레인=$lane" "기록자=게이트" \
+        "effort=(미상)" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$seg")")" \
         "종단 부류=외부 종료" \
         "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
       log "잃어버린 파견 정산 — $seg#$attempt (외부 종료)"
@@ -18934,7 +18949,7 @@ gate_verb_wait() {
 }
 
 gate_record_stage_outcome() {
-  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream] [window]
+  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream] [window] [effort]
   #
   # Two of the five row kinds that had no writer at all. Their absence was not
   # bookkeeping: `cost` is the only input `gate_b4_cost` has, so the cost
@@ -18965,6 +18980,12 @@ gate_record_stage_outcome() {
   # the same record before the CLI started, and the record outlives this call.
   local lane
   lane=$(gate_lane_sidecar_read "$seg")
+  # THE EFFORT THE LAUNCH PUT ON THE ARGV, handed down like the window; `-` when
+  # the switch turned it off or the caller predates the argument. The served
+  # model is read from the stream, not handed down: it is what answered, not
+  # what was asked for.
+  local effort="${9:--}" served
+  served=$(stage_served_model_of "$out")
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   # A launch that never STARTED is reported as such. With no result line the
@@ -19153,12 +19174,14 @@ gate_record_stage_outcome() {
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
       "압축 창=$window" "레인=$lane" "기록자=게이트" \
+      "effort=$effort" "서빙 모델=$served" \
       "plan_sha256=$psha" "종단 부류=$klass"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
       "압축 창=$window" "레인=$lane" "기록자=게이트" \
+      "effort=$effort" "서빙 모델=$served" \
       "종단 부류=$klass"
   fi
 
@@ -20908,10 +20931,17 @@ gate_launch_shift() {
   # argv window — the injection table is per stage kind and the shift is not
   # one — so the reading below has no argv layer, and the row carries what the
   # settings and lane give the successor, with the session id to join on.
-  local window
+  #
+  # EFFORT AND MODEL ARE INJECTED, unlike the window: they come from the same
+  # sourced table the stages use, under the kind `shift`, and the effort the
+  # argv carries is the one the row records.
+  local window effort launch_flags
   window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
+  effort=$(stage_effort_of shift)
+  launch_flags=$(stage_launch_flags shift)
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
-    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window"
+    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
+    "effort=${effort:--}"
   log "교대 $n 시작 — 사유 $reason"
   # THE SUCCESSOR'S SEAT IS THIS LAUNCHER'S PROPERTY, NOT ITS CALLER'S AMBIENT
   # ENVIRONMENT. A prefix assignment adds and overwrites; it never unsets. So a
@@ -20943,6 +20973,7 @@ gate_launch_shift() {
     --plugin-dir "$plugin_dir" \
     --instructions "$instr" \
     --session-id "$(session_uuid "shift" "$n")" \
+    $launch_flags \
     -- "$@" > "$RUN_DIR/log/shift-$n.json" 2> "$RUN_DIR/log/shift-$n.err" < /dev/null &
   # BACKGROUNDED SO THERE IS A PID TO RECORD, then waited on — the call still
   # blocks for the successor's whole life exactly as before. `$!` IS CORRECT

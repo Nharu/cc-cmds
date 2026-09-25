@@ -3359,6 +3359,90 @@ stage_kind_of() {
   esac
 }
 
+# --- effort and model: what every stage, shift and judgment call is launched at
+#
+# ONE TABLE, READ BY BOTH LAUNCHERS. The gate sources this file, so the router's
+# stages, the shift successor and the driver's own spawns all come through these
+# functions; a copy in the gate would let one kind run at two efforts depending
+# on who launched it. Design, reconverge and audit get `high`; every other kind,
+# the three judgment calls among them, gets `medium`. The model is always
+# `opus` — the family alias, so the harness resolves it to the current Opus.
+#
+# Two switches, each dropping only its own half. `CC_ORCH_STAGE_EFFORT=off`
+# drops `--effort`; `CC_ORCH_STAGE_EFFORT=<kind>:<level>[,…]` overrides the
+# listed kinds, with the level taken only from the closed set the CLI accepts
+# (anything else is ignored, not passed through). `CC_ORCH_STAGE_MODEL=off`
+# drops `--model`; any other value is ignored, because a per-kind model is not a
+# setting this table offers.
+stage_effort_of() {
+  # stage_effort_of <kind> — the level, or nothing when the switch is off.
+  local kind="$1" sw="${CC_ORCH_STAGE_EFFORT:-}" v rest item
+  if [ "$sw" = "off" ]; then
+    return 0
+  fi
+  case "$kind" in
+    design|reconverge|audit) v=high ;;
+    *)                       v=medium ;;
+  esac
+  rest="$sw"
+  while [ -n "$rest" ]; do
+    item="${rest%%,*}"
+    case "$rest" in
+      *,*) rest="${rest#*,}" ;;
+      *)   rest="" ;;
+    esac
+    case "$item" in
+      "$kind:low"|"$kind:medium"|"$kind:high"|"$kind:xhigh"|"$kind:max") v="${item#*:}" ;;
+    esac
+  done
+  printf '%s' "$v"
+}
+
+stage_model_of() {
+  # stage_model_of — `opus`, or nothing when the switch is off.
+  if [ "${CC_ORCH_STAGE_MODEL:-}" = "off" ]; then
+    return 0
+  fi
+  printf 'opus'
+}
+
+stage_launch_flags() {
+  # stage_launch_flags <kind> — `--effort <level> --model opus`, each half
+  # dropped by its own switch. Spliced unquoted: both values are closed-set
+  # tokens, never read off disk.
+  local e m out=""
+  e=$(stage_effort_of "$1")
+  m=$(stage_model_of)
+  [ -z "$e" ] || out="--effort $e"
+  [ -z "$m" ] || out="${out:+$out }--model $m"
+  printf '%s' "$out"
+}
+
+stage_served_model_of() {
+  # stage_served_model_of <stream> — the model the stream's first system/init
+  # frame names, with the context suffix (`[1m]`) removed, or `(미상)`.
+  #
+  # THE INIT FRAME, NOT THE TERMINAL `modelUsage`. The result line counts every
+  # model the session touched, and a team member on another model can outspend
+  # the lead, so "the key with the most tokens" names the wrong one. The init
+  # frame is the lead's own model and is written before any work.
+  local f="$1" m=""
+  if [ -f "$f" ] && command -v jq >/dev/null 2>&1; then
+    m=$( { grep -m1 '"subtype":"init"' "$f" 2>/dev/null || true; } \
+         | jq -r 'select(.type == "system") | .model // empty' 2>/dev/null || true)
+  fi
+  m="${m%%\[*}"
+  printf '%s' "${m:-(미상)}"
+}
+
+stage_effort_rec_of() {
+  # stage_effort_rec_of <stage-id> — line 3 of `<stage>.window`, the effort the
+  # spawn put on the argv (`-` under the switch), or `(미상)`.
+  local f="$RUN_DIR/$1.window" v=""
+  [ -f "$f" ] && v=$(sed -n '3p' "$f" 2>/dev/null || true)
+  printf '%s' "${v:-(미상)}"
+}
+
 stage_spawn() {
   # stage_spawn <stage-id> <cwd> <prompt> [extra-cli-args...] — returns at once.
   # Spawn and collect are separate so the driver can hold a stage open while it
@@ -3501,9 +3585,15 @@ stage_spawn() {
   fi
   # The window this launch will run under, read from the same settings file
   # and cwd the wrapper is about to be handed, and recorded before the launch so
-  # the row can carry it whatever the stage does next.
-  printf '%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
-    > "$RUN_DIR/$stage.window"
+  # the row can carry it whatever the stage does next. The effort rides the same
+  # record as line 3, from the same reading the argv gets, and the flags go on
+  # the fresh and the re-attached launch alike: a resumed session does not keep
+  # the effort it was started with.
+  local launch_flags effort
+  effort=$(stage_effort_of "$kind")
+  launch_flags=$(stage_launch_flags "$kind")
+  printf '%s\n%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
+    "${effort:--}" > "$RUN_DIR/$stage.window"
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -3513,6 +3603,7 @@ stage_spawn() {
         --settings "$stage_settings" \
         --plugin-dir "$plugin_dir" \
         "${id_flag[@]}" \
+        $launch_flags \
         -- -p "$prompt" "$@" \
         >> "$out" 2>> "$err" < /dev/null ) &
   pid=$!
@@ -4597,12 +4688,21 @@ judgment_call() {
   [ -f "$prompt" ] || { warn "판단 호출 프롬프트 부재: $prompt"; return 1; }
   [ -f "$schema" ] || { warn "판단 호출 스키마 부재: $schema"; return 1; }
 
+  # The call's name is its kind in the effort table. There is no stream here,
+  # only the one result object, so the served model is read from its
+  # `modelUsage` keys — a single-turn call spawns no team to muddy them.
+  local effort
+  effort=$(stage_effort_of "$name")
   "$CLI_BIN" -p "$(cat "$prompt")
 
 --- INPUT ---
 $(cat "$input")" \
     --json-schema "$(cat "$schema")" --output-format json --strict-mcp-config \
+    $(stage_launch_flags "$name") \
     > "$out" 2>/dev/null || { warn "판단 호출 실패: $name"; return 1; }
+  local served
+  served=$(jq -r '(.modelUsage // {}) | keys | map(sub("\\[.*$"; "")) | unique | join(",")' "$out" 2>/dev/null || true)
+  log "판단 호출 $name — effort=${effort:--} 서빙 모델=${served:-(미상)}"
 
   # The schema is enforced only on a SUCCESSFUL termination — a turn-exhausted
   # run carries a null result and says nothing about the judgment. Classify the
@@ -5163,6 +5263,7 @@ review_recover() {
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" "기록자=드라이버" \
+    "effort=$(stage_effort_rec_of "$rsid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$rsid")")" \
     "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
   absorb_stage_judgment "$rsid" "$seg" "$(seg_alias "$seg")"
   [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
@@ -5277,6 +5378,7 @@ segment_cycle() {
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
       "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
+      "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
 
@@ -5391,6 +5493,7 @@ segment_cycle() {
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
+      "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
     if [ "$class" != "정상 완료" ]; then
@@ -5704,6 +5807,7 @@ design_arm() {
     "아티팩트 술어 결과=$pred1" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
     "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" "기록자=드라이버" \
+    "effort=$(stage_effort_rec_of S1design)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S1design)")" \
     "종단 부류=$class1"
   absorb_stage_judgment S1design - "$(home_alias)"
   # An unfrozen document does not go on to the audit or the segment plan —
@@ -5793,6 +5897,7 @@ main_loop() {
     "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" "기록자=드라이버" \
+      "effort=$(stage_effort_rec_of S2)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2)")" \
       "종단 부류=$class2"
   absorb_stage_judgment S2 - "$(home_alias)"
   case "$class2" in
