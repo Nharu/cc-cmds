@@ -2222,7 +2222,8 @@ gate_tree_root() {
 # `GP_REASON` CARRIES A CODE FROM A CLOSED SET — `gh:unknown-flag:<word>`,
 # `gh:flag-not-on-leaf:<word>`, `gh:unknown-path:<word>`, `gh:bool-literal:<word>`,
 # `env:split-string-expansion`, `env:argv0-override`, `env:exec-identity:<name>`,
-# `env:repo-selector:<name>`, `sh:non-literal-command-word`, `wrap:depth` — or
+# `env:repo-selector:<name>`, `env:gate-state:<name>`,
+# `sh:non-literal-command-word`, `wrap:depth` — or
 # is empty when none of them
 # names the cause. A new code goes into this list before anything emits it.
 #
@@ -2735,20 +2736,51 @@ _gp_env_unset() {
 #                        recorded; `gp_gh_repo` reads GH_REPO and GH_HOST
 #                        from the recorded chain
 #   everything else      recorded only
+#
+# The table lives in `_gp_env_class` alone, because two callers read it: an
+# assignment spelled on the line, and a name whose value comes from somewhere
+# the line does not show (`_gp_env_unseen`).
+_gp_env_class() {
+  case "$1" in
+    PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+      _GP_ENV_CLASS=exec-identity ;;
+    GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
+      _GP_ENV_CLASS=repo-selector ;;
+    GATE_*)
+      _GP_ENV_CLASS=gate-state ;;
+    GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
+      _GP_ENV_CLASS=command-value ;;
+    *) _GP_ENV_CLASS='' ;;
+  esac
+  return 0
+}
+
 _gp_env_assign() {
   local name="$1" value="$2"
   GP_ENV[${#GP_ENV[@]}]="$name=$value"
-  case "$name" in
-    '') _gp_form '' ;;
-    PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
-      _gp_form "env:exec-identity:$name" ;;
-    GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
-      _gp_form "env:repo-selector:$name" ;;
-    GATE_*)
-      _gp_form "env:gate-state:$name" ;;
-    GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
+  [ -n "$name" ] || { _gp_form ''; return 0; }
+  _gp_env_class "$name"
+  case "$_GP_ENV_CLASS" in
+    '') ;;
+    command-value)
       _gp_body "$value"
       if [ "$_GP_BODY_ST" != list ]; then _gp_form "$_GP_BODY_RS"; fi ;;
+    *) _gp_form "env:$_GP_ENV_CLASS:$name" ;;
+  esac
+  return 0
+}
+
+# A NAME SET FROM A VALUE THE LINE DOES NOT CARRY — `read PATH`, `printf -v PATH
+# …` — changes what a later word runs exactly as `PATH=…` does, and the value
+# that decides it is on standard input or behind a format. So every class the
+# table gives a consequence makes the act `form`; a command value cannot be
+# parsed when it is not there, and has no code of its own.
+_gp_env_unseen() {
+  _gp_env_class "$1"
+  case "$_GP_ENV_CLASS" in
+    '') ;;
+    command-value) _gp_form '' ;;
+    *) _gp_form "env:$_GP_ENV_CLASS:$1" ;;
   esac
   return 0
 }
@@ -3235,11 +3267,32 @@ _gpb_endcmd() {
   GP_SUB[${#GP_SUB[@]}]="$el"
   case "$a" in
     cd) _gpb_cd ;;
-    export)
+    export|local)
       x=$((k + 1))
       while [ "$x" -lt "$m" ]; do
         case "${cw[$x]}" in
           [A-Za-z_]*=*) _gp_env_assign "${cw[$x]%%=*}" "${cw[$x]#*=}" ;;
+        esac
+        x=$((x + 1))
+      done ;;
+    # `read` names its variables as operands, and an option value that happens
+    # to spell a classified name is refused along with them — the cost is a
+    # prompt text, the alternative is reading every option of every shell.
+    read)
+      x=$((k + 1))
+      while [ "$x" -lt "$m" ]; do
+        _gp_env_unseen "${cw[$x]}"
+        x=$((x + 1))
+      done ;;
+    printf)
+      x=$((k + 1))
+      while [ "$x" -lt "$m" ]; do
+        case "${cw[$x]}" in
+          -v) x=$((x + 1)); [ "$x" -ge "$m" ] || _gp_env_unseen "${cw[$x]}" ;;
+          -v?*) _gp_env_unseen "${cw[$x]#-v}" ;;
+          --) break ;;
+          -*) ;;
+          *) break ;;
         esac
         x=$((x + 1))
       done ;;
@@ -3251,8 +3304,9 @@ _gpb_endcmd() {
       done ;;
     # `trap` and `compgen` are off this list for the reason `_gp_frag_grade`
     # gives: they carry a command string that runs later, so the string has to
-    # be parsed as a piece rather than stepped over.
-    echo|printf|pwd|true|false|:|test|'['|'[['|set|unset|shift|read|local|wait|return|exit|type|hash|ulimit|umask) ;;
+    # be parsed as a piece rather than stepped over. `hash` is off it for the
+    # reason `_gp_frag_grade` gives too: `hash -p` changes what a later word runs.
+    echo|pwd|true|false|:|test|'['|'[['|set|unset|shift|wait|return|exit|type|ulimit|umask) ;;
     *) _gpb_recurse ;;
   esac
   cw=(); cf=()
@@ -4184,10 +4238,17 @@ _gp_frag_grade() {
     # and `compgen -C <command>` runs one immediately in a subshell (`-F` calls a
     # function). So `sh -c 'trap "gh repo delete o/r --yes" EXIT'` scored as a
     # read. Off the list they fall through to the table, answer `등급 미상`, and
-    # the piece floor raises them to `외부상태변경`. The rest of the list carries
-    # no command string and stays; a command substitution inside one is already
-    # a `form`.
-    cd|echo|printf|pwd|true|false|:|test|'['|'[['|set|export|unset|shift|read|local|wait|return|exit|type|hash|ulimit|umask)
+    # the piece floor raises them to `외부상태변경`.
+    #
+    # THE TEST FOR STAYING IS THAT THE BUILTIN DOES NOT CHANGE WHAT A LATER WORD
+    # RUNS, and carrying no command string is only half of it. `hash -p /bin/rm
+    # cat` carries none, yet the next `cat` runs `rm`, so `hash` left the list
+    # too. `export`, `local`, `read` and `printf -v` can set `PATH` the same way;
+    # they stay because the body walk hands every name they set to the
+    # environment table, which makes a classified one `form` before this grade is
+    # asked. `cd` stays because the walk records where later pieces run. A
+    # command substitution inside any of them is already a `form`.
+    cd|echo|printf|pwd|true|false|:|test|'['|'[['|set|export|unset|shift|read|local|wait|return|exit|type|ulimit|umask)
       printf '읽기'
       return 0 ;;
     awk)
@@ -12812,7 +12873,7 @@ gate_claudemd_slot_guard() {
   # target as an element, which the sanctioned form already does.
   argv0=${1##*/}
   case "$argv0" in
-    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf|genv|gnice|gnohup|gtime|gtimeout|gstdbuf)
       joined=$(printf '%s ' "$@")
       case "$joined" in
         *CLAUDE.md*|*CLAUDE.local.md*)
@@ -13183,8 +13244,15 @@ gate_argv0_wraps() {
   # gate_argv0_wraps <argv0> — rc 0 when argv0 is an interpreter or a wrapper
   # whose later arguments are program text: the list the CLAUDE.md slot guard
   # and the manifest guard's second arm already read that way.
+  #
+  # THE THREE LISTS ARE ONE LIST SPELLED THREE TIMES, and every launcher the
+  # parser peels belongs in it — the `g` spellings included. Without them
+  # `gnohup bash -c '…'` was graded as its inner `bash` while this answered 1,
+  # so the interpreter-word checks of both write guards were skipped for a
+  # program the plain `nohup` spelling had refused. `test-run.sh` holds the
+  # three spellings equal and the parser's launcher names inside them.
   case "${1##*/}" in
-    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf|genv|gnice|gnohup|gtime|gtimeout|gstdbuf)
       return 0 ;;
   esac
   return 1
@@ -14329,7 +14397,7 @@ gate_manifest_write_guard() {
   # is an upper bound this suite already holds green.
   argv0=${1##*/}
   case "$argv0" in
-    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf|genv|gnice|gnohup|gtime|gtimeout|gstdbuf)
       joined=$(printf '%s ' "$@")
       case "$joined" in *"$mbase"*|*CC_PIPELINE_MANIFEST*|*MANIFEST*)
         gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;

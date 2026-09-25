@@ -19062,8 +19062,24 @@ check "62: 목록에 없는 셸 단어 조각은 하한을 올린다" \
   "외부상태변경
 외부상태변경"
 check "62: 목록에 있는 조회 내장은 하한을 올리지 않는다" \
-  "$(s62 'F sh -c "type ls"; F sh -c "hash -r"')" "읽기
+  "$(s62 'F sh -c "type ls"; F sh -c "pwd"')" "읽기
 읽기"
+# `hash` 는 명령 문자열을 싣지 않지만 `hash -p <경로> <이름>` 은 뒤의 `<이름>`
+# 이 실행할 파일을 바꾼다. 읽기 목록에 있던 동안 `cat` 으로 적힌 `rm` 이 읽기
+# 하한으로 지났다.
+check "62: 실행 신원을 바꾸는 hash 는 하한을 올린다" \
+  "$(s62 'F sh -c "hash -r"; F sh -c "hash -p /bin/rm cat; cat -rf somedir"')" \
+  "외부상태변경
+외부상태변경"
+# `read`·`printf -v` 는 줄에 없는 값으로 이름을 세운다. 그 이름이 `PATH` 면 뒤
+# 낱말이 실행하는 것이 바뀌므로, 줄에 적힌 `PATH=` 와 같은 형태 거절을 받는다.
+check "62: 줄에 없는 값으로 실행 신원 이름을 세우는 내장은 형태 미상이다" \
+  "$(s62 'gp_parse sh -c "read PATH; ls"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"
+          gp_parse sh -c "printf -v PATH %s /tmp; ls"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"
+          gp_parse sh -c "read line; ls"; printf "%s\n" "$GP_STATUS"')" \
+  "form env:exec-identity:PATH
+form env:exec-identity:PATH
+list"
 
 # 몸통 안에서 디렉터리를 옮긴 행위도 같은 하한을 받고, 옮겼다는 사실 자체가
 # 파서에 남는다 — 암묵 저장소가 대상의 것인지는 그 자리에서 알 수 없다.

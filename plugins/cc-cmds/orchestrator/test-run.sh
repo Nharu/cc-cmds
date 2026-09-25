@@ -5963,6 +5963,46 @@ esac
 rr_guard 트리밖쓰기 gnohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
 check "배시 가드: 음성 대조군 — gnohup 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
 
+# 두 가드는 날 argv0 을 `gate_argv0_wraps` 에 물어 인터프리터 프로그램 안의 낱말을
+# 조상 검사에 올린다. 그 목록에 `g` 이름이 없어서, 등급은 안쪽 `bash` 로 매기면서
+# 프로그램 안의 조상은 보지 않았다 — `nohup` 철자로 거절되는 프로그램이 `gnohup`
+# 철자로는 지났다.
+rr_guard 워크트리쓰기 gnohup bash -c "cp -R /tmp/e $RR/cc-cmds"
+check "배시 가드: gnohup 뒤 포장 안의 런 루트 조상도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'ancestor directory of the run root'*) ok "배시 가드: gnohup 뒤 포장 안 조상의 거부가 조상 검사의 것이다" ;;
+  *) bad "배시 가드: gnohup 뒤 포장 안 조상의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 genv bash -c "cp -R /tmp/e $RRP_INST/.."
+check "설치본 가드: genv 뒤 포장 안의 조상도 rc 3" "$rr_pguard_rc" "3"
+
+# 그 목록은 세 자리에 같은 철자로 적혀 있고(`gate_argv0_wraps`, CLAUDE.md 슬롯
+# 가드, 매니페스트 가드), 파서가 벗기는 런처 이름은 모두 그 안에 있어야 한다. 셋이
+# 같은지와 파서 팔의 이름이 빠지지 않았는지를 함께 본다.
+rr_wraps_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  lists=$(grep -E "^[[:space:]]*bash\|sh\|zsh\|dash\|ksh\|python\|" "$RR_G_GATE" | sed "s/[[:space:]]//g" | sort -u)
+  nl=$(grep -cE "^[[:space:]]*bash\|sh\|zsh\|dash\|ksh\|python\|" "$RR_G_GATE")
+  nd=$(printf "%s\n" "$lists" | grep -c .)
+  walk=$(declare -f _gp_walk | awk '"'"'
+    /case "\$w" in/ { on = 1; next }
+    on && /^[[:space:]]*esac/ { exit }
+    on && /^[[:space:]]*[a-z][a-z |]*\)/ {
+      sub(/\).*/, ""); gsub(/[[:space:]]/, "")
+      n = split($0, a, "|"); for (i = 1; i <= n; i++) print a[i]
+    }'"'"')
+  missing=""
+  for f in $walk; do
+    gate_argv0_wraps "$f" || missing="$missing $f"
+  done
+  echo "nl=$nl nd=$nd missing=[${missing# }]"
+' )
+case "$rr_wraps_parity" in
+  *'nl=3 nd=1 missing=[]') ok "인터프리터 목록 셋이 같고 파서 런처 이름을 모두 담는다 ($rr_wraps_parity)" ;;
+  *) bad "인터프리터 목록 셋과 파서 런처 이름의 대조" "어긋났다: $rr_wraps_parity" ;;
+esac
+
 # --- 사후 리뷰 수리 8. find 의 primary 는 하나가 아니다 -------------------------
 # 벗기기가 `-exec` 계열을 만나면 **그 뒤 전부**를 안쪽 명령으로 보고 즉시 반환했다.
 # `find` 문법에서 `;` 와 `{} +` 다음 토큰은 그 명령의 인자가 아니라 **다음 primary** 인데
