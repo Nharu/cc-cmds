@@ -5,6 +5,25 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.25.2] - 2026-09-25
+
+대화형 스킬 본문(`autopilot`·`design`·`implement`)에서 측정 일화와 이력 서사를 걷어냈다. 규칙 문장과 핀으로 잡힌 문면·표제·CFI 번호는 그대로 두고, 그 규칙이 왜 생겼는지를 사건 단위로 풀어 쓴 문장만 덜어 매 호출이 읽는 바이트를 줄였다.
+
+### Changed
+
+- **스킬 파일 크기** (바이트, 이전 → 이후, 감소량):
+  - `autopilot/SKILL.md` 171879 → 162322 (−9557, −5.56%)
+  - `design/SKILL.md` 147436 → 145751 (−1685, −1.14%)
+  - `implement/SKILL.md` 53513 → 52639 (−874, −1.63%)
+  - `fanout-policy/SKILL.md` 9126 → 9126 (0%, 걷어낼 서사가 없었다)
+  - 네 파일 합 381954 → 369838 (−12116, −3.17%)
+- **무인 스테이지 스킬의 클로저 합** (SKILL.md + 본문이 가리키는 `_common` 파일 + Read 지시 대상): `design-discuss-unattended` 499820 → 499343 (−477, −0.10%, `design` 의 Step 3–4 범위가 줄어든 몫). `design-audit-unattended`·`implement-unattended`·`review-unattended`·`autopilot-router-shift` 는 변화 없음 — 라우터 교대는 클로저가 그대로라 교대 횟수를 곱해도 절감이 0이다.
+- **덜어낸 규범 문장의 처분** — 코드로 옮긴 문장은 0건이다. 규칙 자체를 지운 문장은 모두 실행자에게 지시하지 않는 부류로만 제거했다.
+  - `design` Step 3 머리의 「본문 이관은 보류된 편집」 문장 — 실행 규칙이 아니라 이행 계획 메모라 제거.
+  - `autopilot` 의 「재유도를 동사별로 조건화해도 바뀌지 않는다」 문장 — 유지보수자 대상 설계 논평이라 제거.
+  - `autopilot` 의 CFI 번호 보존 문장 셋 — 「CFI 번호는 옮기거나 재사용하지 않는다」 한 문장으로 합쳤다.
+  - 종료 코드 9를 비워 두는 까닭, 알림 도우미를 무장하지 않는 까닭 등은 사유 서사를 덜고 규칙을 한 문장으로 다시 적었다.
+
 ## [2.25.1] - 2026-09-25
 
 무인 설계 감사 스테이지(`design-audit-unattended`)가 매번 싣는 본문에서, 실행자의 결정을 바꾸지 않는 서사·해명 산문을 걷어 냈다. 규칙·문면 핀·종단 문면·감사 인원·리더 프롬프트·공개 문면은 그대로다.
