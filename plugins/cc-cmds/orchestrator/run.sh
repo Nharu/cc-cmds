@@ -87,6 +87,17 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/liveness.sh"
 
+# The account router. Its top level is function definitions and guarded
+# `readonly` constants only, because the gate sources this file on every entry
+# and inherits whatever the router puts at top level. Nothing in this driver
+# calls `route_*` yet: the switch below keeps the router dormant, and
+# `route_resolve` reads it with a `:-0` default so a shell that sources
+# `route.sh` alone can never turn routing on.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/route.sh"
+  # 라우팅을 켜는 변경이 이 줄의 두 자리의 0 을 1 로 뒤집으며, 줄을 지우지 않는다.
+  case "${ROUTE_ROUTING_BUILD_COMPLETE:-}" in 0) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -5540,7 +5551,7 @@ absorb_stage_judgment() {
   CC_GATE_SOURCE_ONLY=1 bash -c '
     g=$1; out=$2; al=$3; sg=$4; mf=$5; rid=$6; rd=$7; led=$8; gr=$9
     set --
-    . "$g" >/dev/null 2>&1 || exit 9
+    . "$g" >/dev/null 2>&1 || exit 9  # lint-harness-global-collisions: child-shell
     set +e
     unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
     MANIFEST=$mf; RUN_ID=$rid; RUN_DIR=$rd; LEDGER=$led; GRANT=$gr
