@@ -5,6 +5,40 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.25.1] - 2026-09-25
+
+무인 스테이지가 매번 읽는 공유 계약 여섯 파일과 무인 스킬 본문 셋에서, 규칙을 떠받치지 않는 서사(과거 판본의 경위, 실측 일화, 비용 계산, 되풀이된 이유)를 걷어 내고 규칙마다 이유 한 구만 남긴다. 같은 릴리즈에서 위트니스 없이 돌아온 팀 구성원의 처방을 「그 자리에서 사망 판정」에서 「먼저 재개」로 바꾼다.
+
+### Changed
+
+- **위트니스 없이 반환한 구성원은 재생성 전에 재개한다** (`_common/agent-team-protocol.md` 의 **Returned-without-witness** 갈래). 완료 알림이 왔는데 위트니스가 없으면 같은 턴에 같은 `agentId` 로 고정 문면의 `SendMessage` 를 최대 두 번 보내고, 두 번째 뒤에도 없을 때만 같은 라운드 재생성으로 간다. `SendMessage` 를 싣지 않는 독립 복제 팬아웃은 예외로 곧바로 재생성한다. 재개 횟수는 `stallMark.reentryCount` 가 아니라 행의 반환 요약 머리의 `witness-nudge <n>/2` 토큰으로 센다. 무인 설계 팔의 해당 문장도 같은 처방을 가리키도록 맞췄다.
+- **서사 축소** — 표제, 표, 코드 블록, 닫힌 어휘, 린트가 읽는 줄, 옛 표제 블록, 종료 문장은 바이트 그대로다. 규범 문장은 하나도 떨어지지 않았다. 파일별 크기(바이트):
+
+  | 파일 | 전 | 후 | 감소 |
+  | --- | ---: | ---: | ---: |
+  | `_common/agent-team-protocol.md` | 84,707 | 67,475 | −17,232 (−20.3%) |
+  | `_common/verification.md` | 72,629 | 54,259 | −18,370 (−25.3%) |
+  | `_common/sidecar.md` | 80,783 | 58,805 | −21,978 (−27.2%) |
+  | `_common/pipeline-sidecar.md` | 162,366 | 131,713 | −30,653 (−18.9%) |
+  | `_common/judgment-grade.md` | 6,944 | 5,094 | −1,850 (−26.6%) |
+  | `_common/team-cleanup.md` | 6,463 | 3,907 | −2,556 (−39.5%) |
+  | `design-discuss-unattended/SKILL.md` | 49,470 | 43,964 | −5,506 (−11.1%) |
+  | `implement-unattended/SKILL.md` | 35,190 | 31,641 | −3,549 (−10.1%) |
+  | `autopilot-router-shift/SKILL.md` | 55,285 | 51,947 | −3,338 (−6.0%) |
+  | 합계 | 553,837 | 448,805 | −105,032 (−19.0%) |
+
+- **스테이지 한 번이 읽는 양(폐포)** — 스킬 본문과 그것이 가리키는 `_common` 파일의 합이다. `design-discuss-unattended` 는 빌려 읽는 `design/SKILL.md` 의 Step 3·Step 4 구간(38,638 바이트, 이번에 바뀌지 않음)을 더했다.
+
+  | 스테이지 | 전 | 후 | 감소 |
+  | --- | ---: | ---: | ---: |
+  | `design-discuss-unattended` | 502,000 | 403,855 | −98,145 (−19.6%) |
+  | `design-audit-unattended` | 453,256 | 360,617 | −92,639 (−20.4%) |
+  | `implement-unattended` | 442,619 | 348,987 | −93,632 (−21.2%) |
+  | `review-unattended` | 342,754 | 290,463 | −52,291 (−15.3%) |
+  | `autopilot-router-shift` | 136,068 | 110,752 | −25,316 (−18.6%) |
+
+  라우터 교대는 한 런에 여러 번 뜨므로 교대 하나당 25,316 바이트가 런마다 교대 수만큼 곱해진다. 기존 런 원장 79개의 `handoff` 행 수(교대 수의 하한)는 중앙값 2, 범위 1–22 였다.
+
 ## [2.25.0] - 2026-09-24
 
 일반 CC 세션에서 사용자의 행위가 필요해진 순간에 배너가 뜬다 — 질문 대화상자가 뜰 때, 그리고 모델이 평문으로 턴을 마치며 사용자에게 차례를 넘길 때. 같은 릴리즈에서 무인 런의 질문 배너 문면을 명령형에서 상태문으로 바꿔, 배너가 질문보다 먼저 떠서 생기던 어긋남을 닫는다.
