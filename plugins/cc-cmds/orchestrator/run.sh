@@ -3327,6 +3327,38 @@ stage_lane_of() {
   printf '%s' "$v"
 }
 
+# --- stage kind: which settings variant a driver-spawned id runs under --------
+#
+# THE ID'S HEAD IS READ FIRST, because the head is the driver's own key and the
+# rest of the id is free text. `S1'` ids splice in a finding's path and `S4`/`S5`
+# ids splice in a segment name, so a substring match sent a reconverge on
+# `plugins/cc-cmds/skills/design/…` to `design` and an implement stage of a
+# segment named `review-fix` to `review`. The head is the part before the first
+# `:`, then before the first `.` (so `S4:seg:1.retry` and `S1design.retry` keep
+# their kind). An id whose head is not in the table falls to the substring match
+# this function replaced, unchanged, and to `generic` when that matches nothing
+# either — so an id outside the table behaves as it did before.
+stage_kind_of() {
+  local stage="$1" head
+  head="${stage%%:*}"
+  head="${head%%.*}"
+  case "$head" in
+    S1design) printf 'design'; return 0 ;;
+    S2)       printf 'audit'; return 0 ;;
+    S4)       printf 'implement'; return 0 ;;
+    S5|S5R)   printf 'review'; return 0 ;;
+    "S1'")    printf 'reconverge'; return 0 ;;
+  esac
+  case "$stage" in
+    *design-audit*|*audit*) printf 'audit' ;;
+    *reconverge*)           printf 'reconverge' ;;
+    *design*)               printf 'design' ;;
+    *implement*)            printf 'implement' ;;
+    *review*)               printf 'review' ;;
+    *)                      printf 'generic' ;;
+  esac
+}
+
 stage_spawn() {
   # stage_spawn <stage-id> <cwd> <prompt> [extra-cli-args...] — returns at once.
   # Spawn and collect are separate so the driver can hold a stage open while it
@@ -3386,14 +3418,7 @@ stage_spawn() {
   # without them.
   local plugin_dir stage_settings kind
   plugin_dir=$(cd "$ORCH_DIR/.." && pwd)
-  case "$stage" in
-    *design-audit*|*audit*) kind=audit ;;
-    *reconverge*)           kind=reconverge ;;
-    *design*)               kind=design ;;
-    *implement*)            kind=implement ;;
-    *review*)               kind=review ;;
-    *)                      kind=generic ;;
-  esac
+  kind=$(stage_kind_of "$stage")
   stage_settings="$RUN_DIR/settings/$kind.json"
   if [ ! -f "$stage_settings" ]; then
     warn "스테이지 설정이 없습니다: $stage_settings — 게이트가 런 개시 시 만듭니다"

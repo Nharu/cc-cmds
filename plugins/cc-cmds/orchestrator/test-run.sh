@@ -7120,5 +7120,42 @@ unset -f park predicate_review stage_attempt_pinned stage_spawn stage_wait_all \
          doc_arg reap_orphan mk_wit rec_reset
 RUN_DIR="$REC_RUN_SAVE"; LEDGER="$REC_LEDGER_SAVE"; BASE="$REC_BASE_SAVE"
 
+# ---------------------------------------------------------------------------
+# 31. 스테이지 종류는 id 앞머리 표로 먼저 판별한다
+# ---------------------------------------------------------------------------
+# 앞머리(첫 `:` 앞, 다시 첫 `.` 앞)가 표에 있으면 그것이 이기고, 없을 때만 예전의
+# 부분 문자열 판별로 넘어간다. 자유 문자열에 종류 이름이 든 id 둘이 그 순서를 묶는다 —
+# 부분 문자열이 먼저 이기면 둘 다 다른 종류가 된다.
+while IFS='|' read -r sk_id sk_want; do
+  [ -n "$sk_id" ] || continue
+  check "stage_kind_of $sk_id → $sk_want" "$(stage_kind_of "$sk_id")" "$sk_want"
+done <<'SKEOF'
+S1design|design
+S1design.retry|design
+S2|audit
+S4:seg:1|implement
+S4:seg:1.retry|implement
+S5:seg:1|review
+S5R:seg:1|review
+S1':seg:1:path|reconverge
+S1':seg:1:plugins-cc-cmds-skills-design-SKILL.md|reconverge
+S4:review-fix:1|implement
+S5:design-seg:2|review
+Sx|generic
+t8-implement-a|implement
+x-design-audit-y|audit
+x-reconverge|reconverge
+SKEOF
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'kind=$(stage_kind_of "$stage")'; then
+  ok "stage_spawn 의 설정 선택이 stage_kind_of 하나를 부른다"
+else
+  bad "종류 판별" "stage_spawn 이 stage_kind_of 를 부르지 않는다 — 설정과 effort 가 다른 판별을 탈 수 있다"
+fi
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '*design-audit*|*audit*'; then
+  bad "종류 판별" "stage_spawn 에 인라인 부분 문자열 case 가 남아 있다"
+else
+  ok "stage_spawn 에 인라인 부분 문자열 case 가 남아 있지 않다"
+fi
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
