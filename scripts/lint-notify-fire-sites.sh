@@ -19,6 +19,13 @@
 # notification helper skill is a separate dispatcher that stays as it is, so a
 # tree-wide count would be measuring two unrelated systems as one.
 #
+# A BANNER SEAT NOW LIVES OUTSIDE THAT SCOPE, and this lint does not see it. The
+# ordinary session's hook seats sit in the plugin's `hooks/` directory, a sibling
+# of the orchestrator. Today that costs nothing: they source the emitter and fire
+# through its fire function, so no new line anywhere launches the binary and the
+# two counted here are still the only two. The blind spot turns real the moment
+# a hook launches the notifier itself — widen the scope in that same change.
+#
 # Rules:
 #   1  exactly two lines in the orchestrator EXECUTE the notifier         [fail]
 #   2  both of them are in the emitter file                               [fail]

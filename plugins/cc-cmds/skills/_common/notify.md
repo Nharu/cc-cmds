@@ -44,13 +44,15 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
   the turn on a permission dialog and strand the notification (SKILL.md
   §4.5); when unsure an ARM is live, it fires regardless, since the
   dispatcher silently no-ops an absent flag (SKILL.md §4.6).
-  Banner copy is supplied verbatim
-  via the `<workflow>` and `<summary>` positional arguments — no
-  transcript scrape, no marker mechanism, no Bash-tool-result
-  fallback, no fresh verification call — the summary is synthesized from
-  the completion signal already in the model's context (exit code,
-  output tail). A banner that fires beats a precise banner that never
-  fires.
+  An `active-notify` banner's copy is supplied verbatim via the
+  `<workflow>` and `<summary>` positional arguments — for this helper
+  there is no transcript scrape, no marker mechanism, no Bash-tool-result
+  fallback, no fresh verification call. (The ordinary session's hook
+  seats are a separate system that does read a marker; they state their
+  own sourcing rule and none of this binds them.) The summary is
+  synthesized from the completion signal already in the model's context
+  (exit code, output tail). A banner that fires beats a precise banner
+  that never fires.
 
     Banner title is `[cc-cmds] ${workflow}` and body is `${summary}`.
 
@@ -128,9 +130,12 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      button (which cannot be suppressed via terminal-notifier 2.0.0 CLI
      flags) clicks through to nothing observable. The fundamental "no
      button" path is tracked as a roadmap item (custom UN-API binary).
-  3. **Single dispatch surface — model-driven, no Stop hook.** All
-     notify.sh invocations originate from the model: ARM, fire-now, and
-     CANCEL. There is no hook-driven turn-end auto-fire. fire-now is
+  3. **Single dispatch surface — model-driven, no Stop hook.** This
+     holds for `active-notify`, not for the plugin as a whole — the
+     ordinary session's banner seats are hooks, and a separate system.
+     All notify.sh invocations originate from the model: ARM, fire-now,
+     and CANCEL. `active-notify` has no hook-driven turn-end auto-fire.
+     fire-now is
      called at each sub-event observation point as the model evaluates
      §4 of SKILL.md (when-to-invoke criteria). Single mode is armCount-
      aware: intermediate fires (fire_count + 1 < arm_count) increment

@@ -13,8 +13,8 @@
 #
 # 소리는 축이 아니라 상수라 열을 두지 않는다. 시험은 아홉 행 전부에 대해
 # 소리가 default 임을 단언하며, 하나라도 비면 실패다.
-answer	cc-cmds · 답하세요	cc-cmds-autopilot-<RUN>-<KEY>	stack
-answer-run	cc-cmds · 답하세요	cc-cmds-autopilot-<RUN>-답	replace
+answer	cc-cmds · 답할 것이 생겼습니다	cc-cmds-autopilot-<RUN>-<KEY>	stack
+answer-run	cc-cmds · 답할 것이 생겼습니다	cc-cmds-autopilot-<RUN>-답	replace
 overflow	cc-cmds · 답할 것이 더 있습니다	cc-cmds-autopilot-<RUN>-대기	replace
 hands	cc-cmds · 직접 손대세요	cc-cmds-autopilot-<RUN>-<KEY>	stack
 resume	cc-cmds · 세션으로 돌아가세요	cc-cmds-autopilot-<RUN>	replace

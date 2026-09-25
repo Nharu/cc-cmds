@@ -1448,7 +1448,7 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 approval_row A1
 runb >/dev/null
 notify_settle 1
-check "answer — 제목" "$(has_title 'cc-cmds · 답하세요')" "1"
+check "answer — 제목" "$(has_title 'cc-cmds · 답할 것이 생겼습니다')" "1"
 check "answer — 그룹이 승인 id 별이다" "$(has_group "cc-cmds-autopilot-$(basename "$RD")-A1")" "1"
 check "answer — 소리가 있다" "$(n_sound)" "1"
 
@@ -1489,7 +1489,7 @@ printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
 approval_row A1
 runb >/dev/null
 notify_settle 2
-check "answer-run — 제목은 답하세요" "$(has_title 'cc-cmds · 답하세요')" "2"
+check "answer-run — 제목은 답할 것이 생겼습니다" "$(has_title 'cc-cmds · 답할 것이 생겼습니다')" "2"
 check "answer-run — 자기 슬롯을 갖는다" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")-답")" "1"
 check "answer-run — 생애주기 슬롯을 쓰지 않는다" \
@@ -1548,8 +1548,8 @@ check "그 자리는 상태 슬롯과 다른 자리다" \
 # The overflow notice has a title OF ITS OWN, and that is new. While every
 # answer-shaped token shared one string, "the ninth arrived" and "answer this
 # one" were indistinguishable on screen; now the eight individual notices say
-# 답하세요 and the collapsed one says there is more waiting.
-check "개별 여덟은 답하세요 제목을 쓴다" "$(has_title 'cc-cmds · 답하세요')" "8"
+# 답할 것이 생겼습니다 and the collapsed one says there is more waiting.
+check "개별 여덟은 답할 것이 생겼습니다 제목을 쓴다" "$(has_title 'cc-cmds · 답할 것이 생겼습니다')" "8"
 check "넘침 자리는 자기 제목을 쓴다" "$(has_title 'cc-cmds · 답할 것이 더 있습니다')" "1"
 
 approval_row A10

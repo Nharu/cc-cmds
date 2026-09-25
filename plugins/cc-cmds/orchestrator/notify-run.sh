@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
-# notify-run.sh — the one place an autopilot banner's title, group and sound are
-# chosen, sourced by BOTH the liveness watcher and the adjudication gate.
+# notify-run.sh — the one place the title, group and sound are chosen for the
+# banners of an unattended run and of an ordinary session's hook seats. Every
+# process raising one of those sources this file: the run's liveness watcher and
+# adjudication gate, and the session hooks. (`active-notify` has its own
+# dispatcher and does not come through here.)
 #
 # WHY A SHARED FILE AND NOT A CONVENTION. Two processes raise banners for this
 # pipeline, and they have to agree on the group string, because a group is a
@@ -245,12 +248,29 @@ cc_notify_title() {
   # an unknown token. Collapsing them is what would hurt — three different
   # instructions under one title is a banner that cannot say what to do.
   #
+  # IMPERATIVE ONLY WHEN THE BANNER AND THE ACTION MEET. When the banner is
+  # raised at the same moment the thing it asks for is on the screen, the title
+  # may be an instruction; when the gap between the two can grow without bound,
+  # the title states a condition instead. `session-ask` fires while its dialog
+  # is already open, so it is imperative. `answer` and `answer-run` are
+  # statements, because the process that raises them is not the one that asks:
+  # the gate opens an approval and fires, and the router puts the question up on
+  # its next turn — later still for `answer-run`, which only the watcher fires.
+  # Someone who returns inside that gap finds nothing to answer, and an
+  # imperative title then contradicts the screen. Moving the seat does not close
+  # it — the gate knows it opened an approval, not when the router will ask — so
+  # the words are what change: "there is something to answer" is true at both
+  # ends of the gap.
+  #
+  # `overflow` IS WORDED RELATIVE TO `answer` — its "more" is measured against
+  # that title's noun phrase. Whoever rewords `answer` again rechecks `overflow`.
+  #
   # `cc-cmds` STAYS IN FRONT because the application name is permanently
   # `Terminal`, so the title is the only marker of origin, and a value starting
   # with `c` was measured safe against the swallowing set above.
   case "$1" in
-    answer)     printf 'cc-cmds · 답하세요' ;;
-    answer-run) printf 'cc-cmds · 답하세요' ;;
+    answer)     printf 'cc-cmds · 답할 것이 생겼습니다' ;;
+    answer-run) printf 'cc-cmds · 답할 것이 생겼습니다' ;;
     overflow)   printf 'cc-cmds · 답할 것이 더 있습니다' ;;
     hands)      printf 'cc-cmds · 직접 손대세요' ;;
     resume)     printf 'cc-cmds · 세션으로 돌아가세요' ;;
@@ -274,7 +294,7 @@ cc_notify_group() {
   # both waiting for a session and finished — so one slot is right and the later
   # notice erasing the earlier one is the correct behaviour. `answer-run` is NOT
   # in that set: a run can hold open approvals at the same time as any of the
-  # three, so sharing would let "세션으로 돌아가세요" erase "답하세요" or the other
+  # three, so sharing would let "세션으로 돌아가세요" erase "답할 것이 생겼습니다" or the other
   # way round, and the person would be told whichever arrived last regardless of
   # what is actually outstanding. It gets its own suffix instead, which keeps
   # per-run replacement intact without the collision.

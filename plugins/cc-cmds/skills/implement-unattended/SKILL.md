@@ -24,11 +24,11 @@ Plan and then implement based on the provided design document, **without ever as
 
 ## What this sibling is, and what it is not
 
-This is the unattended arm of `/cc-cmds:implement`. It exists as a **separate file** rather than a flag inside that skill, and that is the whole mechanism: one arm per file means a whole-file predicate *is* an arm-level predicate, so "this arm contains no human-question surface" becomes checkable (`scripts/lint-unattended-surfaces.sh`) instead of merely asserted. `/cc-cmds:implement` is unchanged, byte for byte, and a human running it gets exactly what it always did.
+This is the unattended arm of `/cc-cmds:implement`. It exists as a **separate file** rather than a flag: one file holds one arm, so "this arm contains no human-question surface" is a whole-file predicate `scripts/lint-unattended-surfaces.sh` checks. `/cc-cmds:implement` is unchanged.
 
-**What the split does not buy.** It removes the *instruction* to ask; it does not remove the model's ability to ask in prose and answer itself. That residual is real, is not closed here, and its compensating control is the run ledger's enumeration of every autonomous decision — audited in the morning, not gated at runtime.
+**What the split does not buy.** It removes the *instruction* to ask, not the model's ability to ask in prose and answer itself. That residual is not closed here; its compensating control is the run ledger's enumeration of every autonomous decision — audited in the morning, not gated at runtime.
 
-`references/` is **shared with the base skill, not copied** — every reference path below points into `../implement/references/`. That tree is written for the interactive arm and one file in it does route to a question, so what makes sharing safe is a disposition, not an absence. The disposition is stated here, in the form `scripts/lint-unattended-surfaces.sh` reads:
+`references/` is **shared with the base skill, not copied** — every reference path below points into `../implement/references/`. One file in it routes to a question, so sharing is safe by disposition, stated here in the form `scripts/lint-unattended-surfaces.sh` reads:
 
 **Inherited question point** — `visual-fidelity-gate.md`: its Tier C fallback routes to a question when neither headless renderer is available — the system Chrome/Chromium binary of Tier A and the `npx playwright screenshot` fallback of Tier B. A recipe is a different thing in that file and is one of the options the Tier C question offers, not the input that went missing. This arm never arrives there — a design document carrying the visual marker halts before implementation (CFI-U5) — so the disposition is a halt, never an improvised answer.
 
@@ -41,9 +41,9 @@ ${RUN_DIR}/halt/<stage-id>.md
 RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 ```
 
-- **`<run-id>` is handed down; re-derivation is the fallback.** Prefer the driver-exported `CC_PIPELINE_RUN_ID`, and take `RUN_DIR` from `CC_PIPELINE_RUN_DIR` and the grant path from `CC_PIPELINE_GRANT` when those are set. Only when they are unset — a driver older than these variables — re-derive: design document path → document key → `{slug}` (`${CLAUDE_SKILL_DIR}/../_common/sidecar.md` §1.1) → read `<base>/docs/pipeline-grant/{slug}.md` → the `## 인가 <run-id>` block whose `<run-id>` this run owns. **Re-derivation cannot be the primary path**: it resolves only for a run started from a document, and a run started from a manifest keys its grant on the run id instead, so the arm looked for a file the driver never wrote and could not reach the record it must write when it halts. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`; if it is unset, use this skill's own name.
+- **`<run-id>` is handed down; re-derivation is the fallback.** Prefer the driver-exported `CC_PIPELINE_RUN_ID`, and take `RUN_DIR` from `CC_PIPELINE_RUN_DIR` and the grant path from `CC_PIPELINE_GRANT` when those are set. Only when they are unset, re-derive: design document path → document key → `{slug}` (`${CLAUDE_SKILL_DIR}/../_common/sidecar.md` §1.1) → read `<base>/docs/pipeline-grant/{slug}.md` → the `## 인가 <run-id>` block whose `<run-id>` this run owns. **Re-derivation cannot be the primary path**: a run started from a manifest keys its grant on the run id, not the document. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`; if it is unset, use this skill's own name.
 - Write it with the atomic form of `sidecar.md` §1.3 (temp file in the same directory, then rename). The closing fence is the terminator.
-- Record the question **verbatim** — the Korean question that would have been asked, every option label and description, and the harness error string where there is one. Summarizing is forbidden: the human reading it in the morning has no other copy.
+- Record the question **verbatim** — the Korean question that would have been asked, every option label and description, and the harness error string where there is one. Summarizing is forbidden: the morning reader has no other copy.
 - **Then take no further step.** No cleanup beyond what the halting step already committed, no partial progress, no fallback act. End the turn normally.
 - **Never write a sidecar.** This arm reads `pipeline-grant` and `pipeline-run`; the driver is their only writer. The halt record lives in the volatile run directory, which is not a sidecar.
 
@@ -53,9 +53,8 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 The base skill marks each of its ask points with a judgment grade
 (`${CLAUDE_SKILL_DIR}/../_common/judgment-grade.md`). This arm's disposition is
-per grade, not one blanket rule — a blanket rule is what made the inversion
-undecidable, because "it would have asked" says nothing about whether an answer
-was choosable.
+per grade, not one blanket rule, because "it would have asked" says nothing
+about whether an answer was choosable.
 
 - **`등급 0`** — no disposition is needed. An already-written rule fully
   determines the answer, so there was never a question at this point.
@@ -69,29 +68,27 @@ was choosable.
   absorbs them through the same auto-adoption floor an `act --kind judgment`
   meets. Emitting is not adopting: a judgment that does not clear the floor
   becomes an approval instead of a row.
-- **`등급 2`** — write the halt record above and stop. This is the branch that
-  keeps "leave most of it to the orchestrator" from becoming "the orchestrator
-  waived the check you asked for".
+- **`등급 2`** — write the halt record above and stop, so the orchestrator never
+  waives a check the user asked for.
 
-The grades are a marking, not a proof. Nothing here checks that a point marked
-`등급 1` deserved it; `scripts/lint-judgment-grade.sh` counts marks and matches
-dispositions, and says so.
+The grades are a marking, not a proof: `scripts/lint-judgment-grade.sh` counts
+marks and matches dispositions, and does not check that a `등급 1` mark was deserved.
 
 ## Control-Flow Invariants
 
 **CFI-U1 — There is no human-question surface.** `AskUserQuestion` and `EnterPlanMode` are absent from the Step 0 roster and from every step below. Reaching a point that needs one is a **halt**, never an improvised answer and never a silent default. This holds for `_common/agent-team-protocol.md` too: wherever its reconcile ladder terminates in `AskUserQuestion`, **this arm resolves that terminus to `park`** — write the halt record and stop. The protocol file itself is not forked and not edited; this sentence is the substitution rule.
 
-**CFI-U2 — The plan gate survives as a two-process bracket.** Plan approval cannot come from a human here, so it is replaced by an emission gate that is *strictly stronger* on binding force and strictly weaker on human consent — which is precisely the trade the unattended arm is authorized to make. Process A emits a plan and its digest; process B is admitted only against that digest (Step 2, Step 3).
+**CFI-U2 — The plan gate survives as a two-process bracket.** Plan approval cannot come from a human here, so it is replaced by an emission gate that is *strictly stronger* on binding force and strictly weaker on human consent. Process A emits a plan and its digest; process B is admitted only against that digest (Step 2, Step 3).
 
-**CFI-U3 — BT-STOP: a binding-tier deviation is never taken.** The moment implementation would require diverging from the design's binding tier, stop **before the edit**, write **nothing** to the drift sidecar (no deviation occurred, so its schema has nothing to record), and halt. This arm never redesigns — it surfaces, and the orchestrator routes. The sidecar's `승인` vocabulary makes the alternative unwritable anyway: a binding-tier block requires `사용자 승인`, and no user is present to give it.
+**CFI-U3 — BT-STOP: a binding-tier deviation is never taken.** The moment implementation would require diverging from the design's binding tier, stop **before the edit**, write **nothing** to the drift sidecar (no deviation occurred, so its schema has nothing to record), and halt. This arm never redesigns — it surfaces, and the orchestrator routes; a binding-tier block requires `사용자 승인`, which no one here can give.
 
-**CFI-U4 — `승인: 사용자 승인` is never written by this arm.** The scope matters: interactive `implement` writes it legitimately, so the ban is on this file, not on the mechanism.
+**CFI-U4 — `승인: 사용자 승인` is never written by this arm.** Interactive `implement` writes it legitimately, so the ban is on this file, not on the mechanism.
 
-**CFI-U5 — A visual-fidelity marker parks the segment.** If the design document carries a `## 시각 정합 기준` section, this arm does **not** implement that segment: it halts with `분류: gate-unanswerable`. The gate's own cap clause forbids both auto-abandon and auto-advance, which are the only two moves available without a human — so it is unattended-ineligible by construction. **Ignoring the marker is explicitly rejected**: that gate writes zero bytes, so skipping it leaves no trace and work the user asked to be visually verified merges without it.
+**CFI-U5 — A visual-fidelity marker parks the segment.** If the design document carries a `## 시각 정합 기준` section, this arm does **not** implement that segment: it halts with `분류: gate-unanswerable`, because the gate's cap clause forbids both auto-abandon and auto-advance. **Ignoring the marker is explicitly rejected**: that gate writes zero bytes, so skipping it leaves no trace.
 
 **CFI-U6 — The design document's write surface is exactly W1/W2.** Unchanged from the base skill, gate and all (Step 3).
 
-**CFI-U7 — Declare where each act LANDS, and take a park as final.** Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상`, and `--destructive` besides on an act that deletes or destroys. Seven obligations, and each one closes a hole that was measured rather than imagined:
+**CFI-U7 — Declare where each act LANDS, and take a park as final.** Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상`, and `--destructive` besides on an act that deletes or destroys. Seven obligations:
 
 - **Declare honestly, and prefer `미상` over a guess.** The gate parks `미상`, which is the outcome an unsure stage should get; a confident wrong `dev` is the one it must not.
 - **A script the manifest does not name is capped at read and run-local however it is declared.** Do not route around that by rewrapping the same script in an interpreter, or by moving it behind `xargs` or `sudo`: the cap is the user's decision about scripts this gate cannot read, and the wrapper spelling does not change what the script does.
@@ -99,7 +96,7 @@ dispositions, and says so.
 - **Judge, record and refuse for the secret-printing forms the gate's list does not cover** (a project `.env`, `echo $VAR`, `curl -v`): say in `--rationale` why the act does not print a secret, and where you are unsure do not run it. The gate does not park reads, so declaring `미상` on a read does not stop it — only you can.
 - **Call external commands directly rather than inside `bash -c`.** The wrapper hides the verb from the grading table, so the ledger records a network act as a worktree write.
 - **On exit 11 do not retry and do not re-declare.** The `blocked` row already names the cell. Continue with the work that does not need that act; if the act was essential, write a halt record with `분류: gate-unanswerable` and stop.
-- **`gate-unanswerable` is this tree's existing classification** for a gate a person has to answer, and the driver does not branch on `분류` — the value is for the morning reader.
+- **`gate-unanswerable` is this tree's existing classification** for a gate a person has to answer; the driver does not branch on `분류`.
 
 ---
 
@@ -122,16 +119,16 @@ Execute strictly in this order: **Step 0 → Step 1 → Step 1.5 → Step 2 → 
 
 Load via `ToolSearch("select:TaskCreate,TaskList,TaskUpdate,TaskGet")`.
 
-**`AskUserQuestion` and `EnterPlanMode` are deliberately absent from this roster.** They are absent from *every* headless process regardless, so enumerating them would make this skill fail-loud at Step 0 forever. Their removal is not a hole in the fail-loud rule — the rule is scoped to "the tools enumerated in Step 0", so a shorter roster narrows the trigger without carving an exception.
+**`AskUserQuestion` and `EnterPlanMode` are deliberately absent from this roster.** They are absent from *every* headless process anyway. Their removal is not a hole in the fail-loud rule — the rule is scoped to "the tools enumerated in Step 0", so a shorter roster narrows the trigger without carving an exception.
 
-**Fail-loud, durably.** If a `ToolSearch` for a Step-0-enumerated tool returns no result, or a later call to one fails because its schema was never loaded, **halt**: write the record with `분류: tool-unavailable`, carrying the harness error string verbatim. This is the durable form of the plain-text failure report the interactive rule already prescribes — a proper subset of it, not a replacement.
+**Fail-loud, durably.** If a `ToolSearch` for a Step-0-enumerated tool returns no result, or a later call to one fails because its schema was never loaded, **halt**: write the record with `분류: tool-unavailable`, carrying the harness error string verbatim.
 
 **Phase resolution (which process am I?).** Read the run ledger `<base>/docs/pipeline-run/{slug}.md` after the `sidecar.md` §1.2 read guard passes, and look for a `stage-result` row for this segment's implement stage carrying a `plan_sha256`:
 
 - **No such row → this is process A.** Steps 0 → 2, ending in a plan emission. Do not edit anything.
 - **Such a row exists → this is process B.** Its `plan_sha256` is the admission token for Step 3.
 
-Deriving the phase from durable state rather than from an input flag is what makes re-dispatch idempotent: a killed and re-dispatched process lands in the same phase it was in.
+The phase comes from durable state, not an input flag, so a re-dispatch lands in the same phase.
 
 ---
 
@@ -158,7 +155,7 @@ Runs BEFORE Step 2, fail-fast, so implementation never builds on a refuted desig
     4. `검증 등급` is a save-time token;
     5. `검증 시점` is `구현 전` / `구현 중(<phase>)` / `구현 후` — **absence is not a violation** (it reads as `구현 전`), but report which items rely on that default, because that default is what puts a (c) or (e) item behind a gate nobody can open unattended.
 
-    Reporting only the axis that happened to be hit first makes a document cost **one run per axis**, and each run is a full one: fixing an axis moves the document's `sha256`, the manifest freezes that value and is creation-only, so every axis costs a new run id, a new manifest, a new authorization record and a new watcher. Measured: two runs for two axes, after a third had already been discarded. The halts themselves were right — the document really was unconsumable both times — so the cost bought no information that a single pass could not have produced.
+    Reporting only the first axis hit makes a document cost **one run per axis**: fixing an axis moves the document's `sha256`, which the manifest freezes, so every axis costs a new run.
 - **1.5b — Consent is unobtainable, so category decides.** There is no consent surface here, and the design session's consent does not carry into this process.
     - **(a)/(b)/(d) read-only-local recipes run** as they do interactively.
     - **A (c) external probe, an (e) worktree recipe, or an `실행 주의`-flagged item is never auto-run.** Its disposition depends on when it was due:
@@ -167,11 +164,11 @@ Runs BEFORE Step 2, fail-fast, so implementation never builds on a refuted desig
     - An unflagged recipe is killed at 10 minutes, or 3× its declared `예상 소요`, whichever is larger.
 - **1.5c — Execute, zero document writes.** Hold verdicts in memory. Capture both baselines (`git status --porcelain` + `git worktree list --porcelain`) on entry and gate after each worktree recipe and on exit — the comparison is "no new change vs. entry", not "clean". **Declare the pipeline's reserved worktree infix `-run-` as the boundary gate's exception pattern** (`_common/verification.md` §6, assertion 2a) so a sibling segment's worktree does not fail this stage. This stage declares no measurement surface, so assertion 1 stays whole-tree equality against the entry baseline, which is what catches this stage's own recipes dirtying the tree.
 - **1.5d — Failure branch.** A `반증됨(실패)` or `검증불가(드리프트)` verdict → **no design-document write at all**, then persist the finding to the re-convergence carrier, then **halt** with `분류: precondition-failed` carrying 주장 / 기대 vs 관측 / the flipped decision from `실패 시 영향`.
-    - **The design document stays untouched.** Writing a refutation token with nobody to approve it is the forbidden side effect, and it is the *document* that is protected here, not the finding.
-    - **The finding is persisted, because a halt would otherwise lose it.** Interactively the verdict may travel as report text and be re-derived cheaply by re-running the recipe; here the process ends and nobody is reading. Append one `## 회차 <N>` block to `docs/design-reconverge/{slug}.md` using the **append** write form of `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 2` — all nineteen applicable fields, `상태: 대기`, and `사용자 라우팅: 미응답`, which is the value that contract defines for exactly this case: a non-interactive run where the writer nonetheless chose to persist the finding. Apply §2.5's truncation check to the incoming bytes first and fail closed on a missing terminator; evaluate the append form's diff constraint before the `mv`.
-    - **This is not the pipeline sidecar ban.** That ban covers `pipeline-grant` and `pipeline-run`, whose single writer is the driver. The re-convergence carrier's declared writer is the implementation side, and `/cc-cmds:design-reconverge` is its reader — which is what finally gives that schema both roles.
-    - **One waiting block per item.** When the carrier already holds a block for the same `R<n>` reading `상태: 대기`, do not append a second one — a second copy of the same finding would be counted as its own corroborating evidence. Name the existing block in `관측 상세` instead.
-    - **The halt record's fields are fixed where the router reads them.** `**스텝**` begins with the literal `Step 1.5d` (free text may follow after ` — `): the routing shift matches that token, not prose. `**선택지**` carries a `재수렴` option whose text says what actually happens — the same run's routing shift dispatches `/cc-cmds:design-reconverge <document> R<n>`, and its terminal verdict returns this segment to planning **inside this run**. Never write that re-convergence needs a new run id, manifest or authorization record: a moved document digest is recorded by the gate as a `문서 해시` row and refused by nothing, and an option that says otherwise sends a person to open a new run for work this one routes on its own.
+    - **The design document stays untouched.** Writing a refutation token with nobody to approve it is the forbidden side effect; the *document* is protected here, not the finding.
+    - **The finding is persisted, because a halt would otherwise lose it.** Append one `## 회차 <N>` block to `docs/design-reconverge/{slug}.md` using the **append** write form of `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 2` — all nineteen applicable fields, `상태: 대기`, and `사용자 라우팅: 미응답`, which is the value that contract defines for exactly this case: a non-interactive run where the writer nonetheless chose to persist the finding. Apply §2.5's truncation check to the incoming bytes first and fail closed on a missing terminator; evaluate the append form's diff constraint before the `mv`.
+    - **This is not the pipeline sidecar ban.** That ban covers `pipeline-grant` and `pipeline-run`, whose single writer is the driver. The re-convergence carrier's declared writer is the implementation side, and `/cc-cmds:design-reconverge` is its reader.
+    - **One waiting block per item.** When the carrier already holds a block for the same `R<n>` reading `상태: 대기`, do not append a second one, which would count as its own corroborating evidence. Name the existing block in `관측 상세` instead.
+    - **The halt record's fields are fixed where the router reads them.** `**스텝**` begins with the literal `Step 1.5d` (free text may follow after ` — `): the routing shift matches that token, not prose. `**선택지**` carries a `재수렴` option whose text says what actually happens — the same run's routing shift dispatches `/cc-cmds:design-reconverge <document> R<n>`, and its terminal verdict returns this segment to planning **inside this run**. Never write that re-convergence needs a new run id, manifest or authorization record: a moved document digest is recorded by the gate as a `문서 해시` row and refused by nothing.
     - The orchestrator — the routing shift, or the fixed-graph driver's ladder — decides whether this becomes a local fix, a re-convergence, or a park; **this skill never redesigns.**
 
 ---
@@ -182,9 +179,7 @@ Process A ends here. Emit, do not implement.
 
 - **Posture.** The driver brackets this process with a whole-file `sha256` of the design document taken immediately before launch and immediately after exit.
 
-    **It does NOT pass `--permission-mode plan` or `--json-schema`, and this text used to say it did.** Both flags exist on the CLI; neither is on the stage launch path, and the consequence was not cosmetic — the return came back as prose, every extraction the gate tried missed, no `plan_sha256` reached the row, and process B could therefore never enter. Re-dispatching produced process A again, each time, at full cost. Measured: one segment, 11m37s, $7.20, and the tree left clean — which is correct behaviour for process A, so "A finished" and "B will never arrive" looked identical from outside.
-
-    The flags are not simply added because **processes A and B share one dispatch**: the gate cannot know which it is launching, so a blanket `--permission-mode plan` would trap B — the process whose entire job is editing files — in a mode that forbids editing. Making the emission form below readable is what closes the gap; wiring the flags per-process is a larger change and is not this one. **That bracket is a detector, not a preventer**, and it is load-bearing rather than belt-and-braces: plan mode's evidence is behavioural and self-reported, and the one channel that remains open (Bash) is exactly the channel plan mode covers only behaviourally. An invariant that rests on a model reporting its own restraint is not mechanically enforced no matter how many bypass attempts it survived.
+    **It does NOT pass `--permission-mode plan` or `--json-schema`.** There is no structured-output contract, so the return is prose and the emission form below must be readable from prose. The flags are not added because **processes A and B share one dispatch**, and a blanket `--permission-mode plan` would trap B in a mode that forbids editing. **That bracket is a detector, not a preventer**, and it is load-bearing: plan mode's restraint is self-reported.
 - **Emit** `{plan, verdict_table, plan_sha256, disposition}` — **and emit `plan_sha256` in a form the gate can read from a prose return.** There is no structured-output contract on this dispatch, so the object above may arrive as text. Put the digest on its own line as `**plan_sha256**: <64 hex>` inside the terminal message, and write the plan to `<RUN_DIR>/<segment>.plan.md`. The gate reads both — the line first, the file as a fallback — and either one puts the token on the row.
     - `plan` — the edit-scoped plan, with `Scope: <directive>` as its first line when a scope directive was parsed.
     - `verdict_table` — one row per R-item flagged as a flip target: R-id / current token / verdict-to-record / one-line observation / waiver marker. **Non-executing items are not rows** — a row is by definition a flip target. An in-scope `구현 중` item is not a row either: it flips at phase arrival in Step 3.
@@ -197,7 +192,7 @@ Process A ends here. Emit, do not implement.
 
 ### Step 3: Implementation (requires the ledger admission token)
 
-**Before any action, resolve the admission predicate.** The interactive skill's reverse transcript scan is replaced by a **ledger predicate**: a `stage-result` row for this segment's implement stage exists, carries a `plan_sha256`, and that digest equals the sha256 of the plan text this process was handed. If it does not — or if no such row exists — **STOP and halt** with `분류: precondition-failed`. Do not re-derive a plan and proceed; re-derivation is exactly the hole this predicate closes, and it is why the predicate binds more tightly than a transcript scan does even though it binds a machine rather than a human.
+**Before any action, resolve the admission predicate.** The interactive skill's reverse transcript scan is replaced by a **ledger predicate**: a `stage-result` row for this segment's implement stage exists, carries a `plan_sha256`, and that digest equals the sha256 of the plan text this process was handed. If it does not — or if no such row exists — **STOP and halt** with `분류: precondition-failed`. Do not re-derive a plan and proceed; re-derivation is exactly the hole this predicate closes.
 
 - **First document-write action: the batched flip write + diff gate.** Identical to the base skill and unchanged by unattended operation. The write surface is exactly two byte-enumerated forms inside a `### R<n>` of `## 구현 시 검증 항목`:
     - **W1**: locate the grade line with `^(- )?(\*\*검증 등급\*\*|검증 등급): 구현 시 검증$` (`grep -E`/`sed -E` only — never perl), then rewrite the whole line to the canonical `**검증 등급**: <terminal token>` (bold key, no leading bullet; no line creation or deletion).
@@ -214,11 +209,11 @@ Process A ends here. Emit, do not implement.
 
 ## W3 — the unattended design arm's write form (defined here, never written by this arm)
 
-W1 and W2 above are the two byte-enumerated forms this arm may write into a `### R<n>`. **W3 is a third form of the same family, and it lives in this file because the family lives here** — the snapshot-diff gate that makes W1/W2 safe is the same device that makes W3 safe, and one definition site keeps the three from drifting into three-and-a-half. **This arm never writes W3.** CFI-U6 stands unchanged: this arm's write surface is exactly W1/W2. The writer of W3 is `design-discuss-unattended` when the autopilot driver dispatches it as a stage, on the second rung of its residual-item ladder.
+W1 and W2 above are the two byte-enumerated forms this arm may write into a `### R<n>`. **W3 is a third form of the same family, and it lives in this file because the family lives here** — one snapshot-diff gate and one definition site for all three. **This arm never writes W3.** CFI-U6 stands unchanged: this arm's write surface is exactly W1/W2. The writer of W3 is `design-discuss-unattended` when the autopilot driver dispatches it as a stage, on the second rung of its residual-item ladder.
 
 - **What W3 records.** That a verification item's declared credential *exists* in the operator's credential store — and nothing else. The ladder's second rung asks the store by name (`credentials.sh store-has <name>`) and receives 있음/없음; a 있음 is written as W3, a 없음 is written nowhere.
 - **W3 form.** Inside the `### R<n>` of `## 구현 시 검증 항목`, locate `^(- )?(\*\*필요한 것\*\*|필요한 것): .*$` (`grep -E`/`sed -E` only — never perl) and rewrite that whole line to the canonical `**필요한 것**: 저장소 <경로> · 프로필 <이름> — 존재 확인 <YYYY-MM-DD>` (bold key, no leading bullet; no line creation or deletion). If the item carries no such line, append exactly one line of that form immediately after its `**차단 사유**` line.
-- **The slots are a path and a name, and that is the credential fence.** `<경로>` is the store directory as the caller resolved it (`~/.config/cc-cmds` by default) and `<이름>` is the file's bare name. There is no slot for a value, a status string or a free-text note, so a secret cannot be written through W3 by any spelling — the restraint is structural, not a rule the writer is asked to follow. **Widening W3 with a free-text slot is what removes that fence** and is not done: the ladder's first and third rungs (self-document contradiction, reachability) produce evidence for an escalation and write nothing.
+- **The slots are a path and a name, and that is the credential fence.** `<경로>` is the store directory as the caller resolved it (`~/.config/cc-cmds` by default) and `<이름>` is the file's bare name. There is no slot for a value, a status string or a free-text note, so a secret cannot be written through W3 by any spelling. **Widening W3 with a free-text slot is what removes that fence** and is not done: the ladder's first and third rungs (self-document contradiction, reachability) produce evidence for an escalation and write nothing.
 - **Diff gate.** The same snapshot-based gate as W1/W2, with two more accepted line shapes: `^-(- )?(\*\*필요한 것\*\*|필요한 것): .*$` (removed side, tolerant) and `^\+\*\*필요한 것\*\*: 저장소 [^ ]+ · 프로필 [^ ]+ — 존재 확인 [0-9]{4}-[0-9]{2}-[0-9]{2}$` (added side, strict-canonical). Any other changed line → revert this batch's non-matching changes against the snapshot, then halt. The lock (`/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock"`) and the `git diff` prohibition apply as written for W1/W2.
 - **W3 does not flip the grade.** It records that a blocker is gone; the item's `검증 등급` stays `구현 시 검증` and is flipped by W1 when the recipe actually runs in an implementation stage. Retiring an item or re-grading it is covered by no W form, which is why the skeleton predicate routes those to a person.
 
@@ -226,11 +221,11 @@ W1 and W2 above are the two byte-enumerated forms this arm may write into a `###
 
 ## Constraints
 
-- **Binding tiers (section identity, not content inspection).** A design document is both a faithful record of a discussion and an instruction set, and those two jobs do not agree byte for byte. The contract is keyed to **which section a sentence sits in**:
+- **Binding tiers (section identity, not content inspection).** A design document is both a record of a discussion and an instruction set. The contract is keyed to **which section a sentence sits in**:
     - **Binding** — `## 합의된 아키텍처`; the *decision* sentences of `## 주요 결정사항과 근거`; entries of `## 미해결 이슈 / 트레이드오프` whose `상태` is `해결`; `## 구현 시 검증 항목`; `## 구현 슬라이싱` (the driver parses it mechanically and cannot ask what was meant, so its declared files, precedence and cutpoints bind exactly as an architecture sentence does); and a `## 재현·근본원인` whose `근거 등급` is `확인됨(재현·관측)`.
     - **Reference** — the rationale prose of `## 주요 결정사항과 근거`; unresolved entries of `## 미해결 이슈 / 트레이드오프`; `## 권장 구현 순서` (the heading a document carries when it has **no** `## 구현 슬라이싱` — the two are mutually exclusive: a document with a slicing section has no ordering prose to bind, and one without it has only prose, which informs and does not bind); examples and illustrations anywhere; and completed `### V<n>` entries of `## 검증 기록`.
 - **Do NOT deviate from the binding tier.** Where the interactive skill would ask, this arm applies **CFI-U3 (BT-STOP)**: stop before the edit and halt. Deviating from the **reference** tier needs no approval — but record it: append an entry to `docs/design-drift/{slug}.md` per `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1` + `## 3`, with `티어: 참고` and `승인: 불요(참고 티어)`.
 - **The drift sidecar is a report, not a self-assessment.** This arm records *that* it diverged and *why*; whether the divergence was acceptable is judged downstream by a reviewer who did not write the code.
 - **Do NOT modify the design document** outside W1/W2. No other byte may change.
-- **Never reach a notification surface.** No `PushNotification`, no `notify.sh`, no `terminal-notifier`. Notifying a sleeping user is the driver's exclusive job, and a working stage that also notifies is forbidden without exception. This is `grep`-checkable and is checked.
+- **Never reach a notification surface.** No `PushNotification`, no `notify.sh`, no `terminal-notifier`. Notifying is the driver's exclusive job, without exception. This is `grep`-checkable and is checked.
 - **No new deferred tools** beyond the Step 0 roster.
