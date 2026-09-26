@@ -147,7 +147,20 @@ GRANTEOF
 : > "$LEDGER"
 
 g() { ( cd "$WT" && bash "$GATE" "$@" >/dev/null 2>&1 ); }
-snap() { g snapshot --manifest "$MANIFEST"; }
+# 회차는 게이트 동사가 띄운 분리 자식에서 돈다 — 동사는 스탬프·잠금·발사만 치르고 돌아온다.
+# 회차 결과를 단언하는 곳은 자식이 잠금을 풀 때까지 기다린 뒤에 단언한다. 잠금은 동사가
+# 돌아오기 전에 잡히므로, 동사 뒤에 잠금이 없으면 회차가 없었거나 이미 끝난 것이다.
+ROUND_LOG="$STATE_ROOT/run/$RUN/log/metrics-round.log"
+wait_round() {
+  local i=0
+  while [ -d "$STATE_ROOT/.metrics.lock" ]; do
+    [ "$i" -lt 300 ] || { bad "회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+snap_nowait() { g snapshot --manifest "$MANIFEST"; }
+snap() { snap_nowait; wait_round; }
 calls() { if [ -f "$WORK/calls" ]; then grep -c '' "$WORK/calls"; else printf 0; fi; }
 LEDGER_MARK=0
 fresh() {
@@ -372,36 +385,96 @@ check "8: plan 동사는 스탬프를 쓰지 않는다" "$([ -f "$STATE_ROOT/met
 fresh; round T3/review
 before=$(calls)
 export CC_STUB_SLEEP=2
-snap & p1=$!
-snap & p2=$!
+snap_nowait & p1=$!
+snap_nowait & p2=$!
 wait "$p1"; wait "$p2"
+wait_round
 unset CC_STUB_SLEEP
 check "8: 스탬프 만료 뒤 동시 진입 둘에 수집기는 한 번만 돈다" "$(( $(calls) - before ))" "1"
 check "8: 동시 진입 둘에 등록 시도는 한 번이다" "$(ghcount '| issue create ')" "1"
 
 # --- 8b. 멈춘 gh 호출 --------------------------------------------------------------------
-# 회차는 호출한 게이트 동사 안에서 돈다. 멈춘 GitHub 호출은 호출당 타임아웃으로 끊기고, 그
-# 호출이 실패한 것과 같은 분기를 탄다 — 새 사유를 만들지 않는다. 멈춤(6초)을 타임아웃(1초)과
-# 게이트 자신의 기동 시간을 더한 것보다 넉넉히 길게 두어, 경과가 멈춤보다 짧다는 단언이
-# 타임아웃 말고는 설명되지 않게 한다.
+# 회차는 게이트 동사가 띄운 분리 자식에서 돈다. 멈춘 GitHub 호출은 호출당 타임아웃으로 끊기고,
+# 그 호출이 실패한 것과 같은 분기를 탄다 — 새 사유를 만들지 않는다. 동사 자체의 경과와 회차가
+# 끝나기까지의 경과를 따로 잰다: 동사는 회차를 기다리지 않고, 회차는 타임아웃 덕에 멈춤보다
+# 먼저 끝난다. 멈춤(6초)을 타임아웃(1초)과 게이트 자신의 기동 시간을 더한 것보다 넉넉히 길게
+# 두어, 회차 경과가 멈춤보다 짧다는 단언이 타임아웃 말고는 설명되지 않게 한다.
 fresh; round T3/review
 printf '6\n' > "$WORK/gh-sleep/issue-list"
 t0=$SECONDS
-( export CC_METRICS_GH_TIMEOUT_S=1; snap )
+( export CC_METRICS_GH_TIMEOUT_S=1; snap_nowait )
+el_call=$((SECONDS - t0))
+wait_round
 el=$((SECONDS - t0))
 check "8b: (선행) 멈춘 조회가 실제로 불렸다" "$(ghcount '| issue list ')" "1"
-check "8b: 멈춘 조회는 끊겨 게이트 동사가 멈춤보다 먼저 끝난다" "$([ "$el" -lt 6 ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8b: 멈춘 조회가 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt 6 ] && printf 예 || printf "아니오(${el_call}초)")" "예"
+check "8b: 멈춘 조회는 끊겨 회차가 멈춤보다 먼저 끝난다" "$([ "$el" -lt 6 ] && printf 예 || printf "아니오(${el}초)")" "예"
 check "8b: 끊긴 조회는 조회 실패 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "조회 실패"
 check "8b: 끊긴 조회 뒤에는 등록하지 않는다" "$(ghcount '| issue create ')" "0"
 fresh; round T3/review
 printf '6\n' > "$WORK/gh-sleep/issue-create"
 t0=$SECONDS
-( export CC_METRICS_GH_TIMEOUT_S=1; snap )
+( export CC_METRICS_GH_TIMEOUT_S=1; snap_nowait )
+el_call=$((SECONDS - t0))
+wait_round
 el=$((SECONDS - t0))
 check "8b: (선행) 멈춘 등록이 실제로 불렸다" "$(ghcount '| issue create ')" "1"
-check "8b: 멈춘 등록은 끊겨 게이트 동사가 멈춤보다 먼저 끝난다" "$([ "$el" -lt 6 ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8b: 멈춘 등록이 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt 6 ] && printf 예 || printf "아니오(${el_call}초)")" "예"
+check "8b: 멈춘 등록은 끊겨 회차가 멈춤보다 먼저 끝난다" "$([ "$el" -lt 6 ] && printf 예 || printf "아니오(${el}초)")" "예"
 check "8b: 끊긴 등록은 조회 실패 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "조회 실패"
 check "8b: 끊긴 등록은 필링 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
+
+# --- 8c. 분리 회차 · 기한 · 난스 ------------------------------------------------------------
+# 동사는 회차를 기다리지 않는다. 수집기가 5초 걸려도 동사는 곧바로 돌아오고, 그때 잠금은
+# 아직 회차가 쥐고 있으며, 회차가 끝나면 필링은 동기로 돌던 때와 같다.
+fresh; round T3/review
+before=$(calls)
+export CC_STUB_SLEEP=5
+t0=$SECONDS
+snap_nowait
+el_call=$((SECONDS - t0))
+lock_after=$([ -d "$STATE_ROOT/.metrics.lock" ] && printf 있음 || printf 없음)
+wait_round
+unset CC_STUB_SLEEP
+check "8c: 수집기가 오래 걸려도 게이트 동사는 곧바로 돌아온다" "$([ "$el_call" -lt 3 ] && printf 예 || printf "아니오(${el_call}초)")" "예"
+check "8c: 동사가 돌아왔을 때 잠금은 아직 회차가 쥐고 있다" "$lock_after" "있음"
+check "8c: 분리 회차가 수집기를 한 번 부른다" "$(( $(calls) - before ))" "1"
+check "8c: 분리 회차가 끝나면 잠금이 풀린다" "$([ -d "$STATE_ROOT/.metrics.lock" ] && printf 있음 || printf 없음)" "없음"
+check "8c: 분리 회차의 등록은 issue create 한 번이다" "$(ghcount '| issue create ')" "1"
+check "8c: 분리 회차도 등록 필링 행을 남긴다" "$(field "$(file_rows)" '결정')" "등록"
+
+# 기한이 수집기를 끊는다. 끊긴 수집기는 실패한 수집기와 같은 갈래를 타고(rc 143), 잠금은
+# 풀리며, 필링은 없다. 수집기의 남은 자식이 출력을 쥐고 있어도 회차는 기다리지 않는다 —
+# 회차 경과가 멈춤(5초)보다 짧다는 단언이 그것을 잰다.
+fresh; round T3/review
+before=$(calls)
+lb=$(grep -c -F '계측 회차 실패 — 수집기 rc=143' "$ROUND_LOG" 2>/dev/null || true)
+t0=$SECONDS
+( export CC_METRICS_ROUND_TIMEOUT_S=1 CC_STUB_SLEEP=5; snap )
+el=$((SECONDS - t0))
+la=$(grep -c -F '계측 회차 실패 — 수집기 rc=143' "$ROUND_LOG" 2>/dev/null || true)
+check "8c: (선행) 기한 사례의 수집기가 실제로 불렸다" "$(( $(calls) - before ))" "1"
+check "8c: 기한을 넘긴 수집기는 rc=143 실패로 회차 로그에 남는다" "$(( ${la:-0} - ${lb:-0} ))" "1"
+check "8c: 기한에 끊긴 회차는 멈춤보다 먼저 끝난다" "$([ "$el" -lt 5 ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8c: 기한에 끊긴 회차는 잠금을 푼다" "$([ -d "$STATE_ROOT/.metrics.lock" ] && printf 있음 || printf 없음)" "없음"
+check "8c: 기한에 끊긴 회차는 gh 를 부르지 않는다" "$(grep -c '' "$GH_LOG")" "0"
+check "8c: 기한에 끊긴 회차는 필링 행도 건너뜀 행도 남기지 않는다" "$(( $(nrows "$(file_rows)") + $(nrows "$(skip_rows)") ))" "0"
+
+# 내부 동사를 직접 부르면 잠금의 난스와 맞지 않는 한 아무것도 하지 않는다 — 잠그지 않은
+# 회차를 돌리지도, 남의 잠금을 풀지도 않는다.
+fresh; round T3/review
+before=$(calls)
+mkdir -p "$STATE_ROOT/.metrics.lock"
+printf '1 %s\n' "$(date -u +%s)" > "$STATE_ROOT/.metrics.lock/owner"
+printf 'the-real-nonce\n' > "$STATE_ROOT/.metrics.lock/nonce"
+rc_n=0; g metrics-round --manifest "$MANIFEST" --nonce not-the-nonce || rc_n=$?
+check "8c: 난스가 다른 metrics-round 직접 호출은 exit 3" "$rc_n" "3"
+rc_n=0; g metrics-round --manifest "$MANIFEST" || rc_n=$?
+check "8c: 난스 없는 metrics-round 직접 호출은 exit 2" "$rc_n" "2"
+check "8c: 거부된 직접 호출은 수집기를 부르지 않는다" "$(( $(calls) - before ))" "0"
+check "8c: 거부된 직접 호출은 남의 잠금과 난스를 그대로 둔다" "$(cat "$STATE_ROOT/.metrics.lock/nonce" 2>/dev/null)" "the-real-nonce"
+check "8c: 거부된 직접 호출은 필링 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
+rm -rf "$STATE_ROOT/.metrics.lock"
 
 # --- 9. 전 케이스를 가로지르는 불변 ---------------------------------------------------
 cat "$GH_LOG" >> "$WORK/gh.all" 2>/dev/null || true

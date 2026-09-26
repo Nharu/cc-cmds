@@ -817,7 +817,7 @@ The report lives at `<base>/docs/pipeline-run/{runId}.md` — the same `<kind>` 
 
 ### 3.6 The metrics summary beside the ledger
 
-The run metrics collector (`orchestrator/collect-run-metrics.sh`) is run by the gate from its prelude — every verb but `plan`, never from a stage seat, at most once per six hours per state root (stamp `<state root>/metrics.stamp`, one-attempt lock `<state root>/.metrics.lock` with a fifteen-minute expiry). It is the only writer of the five files below; the gate reads its stdout and nothing else.
+The run metrics collector (`orchestrator/collect-run-metrics.sh`) is started by the gate from its prelude — every verb but `plan` and `digest-path`, never from a stage seat, at most once per six hours per state root (stamp `<state root>/metrics.stamp`, one-attempt lock `<state root>/.metrics.lock` with a two-hour expiry). The verb that meets the expired stamp pays only for the stamp, the lock and the launch: the round runs in a detached child (`gate.sh metrics-round`, bound to the lock by a nonce written into it), which cuts the collector after one hour, files, and releases the lock; its output goes to `<RUN_DIR>/log/metrics-round.log`. It is the only writer of the five files below; the gate reads its stdout and nothing else.
 
 | File | Where | What |
 | --- | --- | --- |

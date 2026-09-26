@@ -20983,16 +20983,29 @@ printf 'account\ttester\n' > "$P60_CONF"
 
 p60_gate() {
   # 인프로세스 호출. 수집기·설정 경로는 게이트가 호출 시점에 읽으므로 소싱 시점 입력
-  # 검사에 걸리지 않는다.
-  ( cd "$WT" && XDG_STATE_HOME="$P60_STATE" CC_METRICS_COLLECTOR="$P60_COLLECTOR" \
-      CC_METRICS_FILING_FILE="$P60_CONF" gate_inproc "$@" >/dev/null 2>&1 )
+  # 검사에 걸리지 않는다. 함수 앞의 임시 대입이 아니라 서브셸 안의 `export` 다 — 회차는
+  # 게이트가 띄우는 분리 자식(새 bash 프로세스)에서 돌고, 그 자식은 수출된 값만 받는다.
+  ( cd "$WT" && export XDG_STATE_HOME="$P60_STATE" CC_METRICS_COLLECTOR="$P60_COLLECTOR" \
+      CC_METRICS_FILING_FILE="$P60_CONF" && gate_inproc "$@" >/dev/null 2>&1 )
 }
+p60_wait_round() {
+  # 회차를 띄운 호출 뒤, 분리 자식이 잠금을 풀 때까지 유계로 기다린다. 잠금은 동사가
+  # 돌아오기 전에 잡히므로, 없으면 회차가 없었거나 이미 끝난 것이다.
+  local i=0
+  while [ -d "$P60_LOCK" ]; do
+    [ "$i" -lt 300 ] || { bad "60: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+P60_ROUND_LOG="$P60_STATE/cc-cmds/run/$P60_RID/log/metrics-round.log"
 p60_calls() { if [ -f "$P60_CALLS" ]; then grep -c '' "$P60_CALLS"; else printf 0; fi; }
 p60_rows() { { grep -cF "\`계측 필링 건너뜀\`" "$P60_LEDGER" || true; }; }
 p60_old_stamp() { printf '%s\n' "$(( $(date -u +%s) - 86400 ))" > "$P60_STAMP"; }
 
 # A — 첫 진입.
 p60_gate snapshot --manifest "$P60_MAN"
+p60_wait_round
 check "60: 첫 진입은 수집기를 부른다" "$(p60_calls)" "1"
 check "60: 첫 진입은 스탬프를 쓴다" "$([ -f "$P60_STAMP" ] && printf 있음 || printf 없음)" "있음"
 check "60: 첫 진입이 끝나면 잠금이 풀려 있다" "$([ -d "$P60_LOCK" ] && printf 있음 || printf 없음)" "없음"
@@ -21006,15 +21019,17 @@ check "60: 스탬프 안의 재진입은 부르지 않는다" "$(p60_calls)" "1"
 check "60: 부르지 않은 재진입은 행을 남기지 않는다" "$(p60_rows)" "1"
 
 # C — 스탬프는 만료됐지만 잠금이 살아 있다(소유자 줄 없이 방금 만든 디렉터리 — 나이는
-# 디렉터리 mtime 으로 잰다).
+# 디렉터리 mtime 으로 잰다). 회차를 띄우지 않는 것이 이 사례의 단언이라 기다리지 않는다
+# — 잠금은 이 사례가 만든 것이라 기다려도 풀리지 않는다.
 p60_old_stamp
 mkdir -p "$P60_LOCK"
 p60_gate snapshot --manifest "$P60_MAN"
 check "60: 잠금이 살아 있으면 부르지 않는다" "$(p60_calls)" "1"
 
-# D — 잠금이 만료 시간(900초)을 넘겼다.
-fx_age_file "$P60_LOCK" 1800
+# D — 잠금이 만료 시간(7200초)을 넘겼다.
+fx_age_file "$P60_LOCK" 10800
 p60_gate snapshot --manifest "$P60_MAN"
+p60_wait_round
 check "60: 만료된 잠금은 깨고 부른다" "$(p60_calls)" "2"
 check "60: 깨고 잡은 잠금도 끝에 풀린다" "$([ -d "$P60_LOCK" ] && printf 있음 || printf 없음)" "없음"
 
@@ -21038,6 +21053,8 @@ check "60: digest-path 는 스탬프를 쓰지 않는다" "$(cat "$P60_STAMP")" 
 
 # G — 수집기가 0 이 아닌 코드로 끝난다. 회차는 동사를 실패시키지 않는다는 계약이므로,
 # 동사는 제 종료 코드와 출력을 그대로 내고, 잠금은 풀리고, 실패는 로그 한 줄로 남는다.
+# 회차는 분리 자식에서 돌므로 그 로그는 동사의 stderr 가 아니라 런 디렉터리의
+# `log/metrics-round.log` 에 남는다.
 # 종료 코드는 파일로 넘긴다 — 함수 호출 앞의 임시 대입이 게이트가 띄우는 자식까지
 # 내려가는지에 기대지 않는다.
 P60_FAILING="$P60ROOT/collector-failing"
@@ -21053,24 +21070,26 @@ p60_gate_io() {
   # 아니라 새 bash 프로세스다: 결함은 run.sh 가 소싱 시점에 거는 errexit 아래에서만 서고,
   # 인프로세스 호출은 그 셸 옵션을 싣지 않아 고치기 전 게이트에서도 이 사례가 초록이었다.
   local col="$1"; shift
-  ( cd "$WT" && XDG_STATE_HOME="$P60_STATE" CC_METRICS_COLLECTOR="$col" \
-      CC_METRICS_FILING_FILE="$P60_CONF" bash "$GATE" "$@" >"$P60ROOT/out" 2>"$P60ROOT/err" )
+  ( cd "$WT" && export XDG_STATE_HOME="$P60_STATE" CC_METRICS_COLLECTOR="$col" \
+      CC_METRICS_FILING_FILE="$P60_CONF" && bash "$GATE" "$@" >"$P60ROOT/out" 2>"$P60ROOT/err" )
 }
 p60_fail_case() {
   # p60_fail_case <label> <collector> [env...] — 스탬프를 만료시키고 snapshot 한 번.
-  local label="$1" col="$2" vrc=0 before
+  local label="$1" col="$2" vrc=0 before lb la
   shift 2
   p60_old_stamp
   # 앞 사례가 남긴 잠금이 이 사례의 수집기 호출을 막지 않게 한다 — 사례마다 독립이다.
   rm -rf "$P60_LOCK"
   before=$(p60_calls)
+  lb=$(grep -c '계측 회차 실패' "$P60_ROUND_LOG" 2>/dev/null || true)
   ( [ $# -eq 0 ] || export "$@"; p60_gate_io "$col" snapshot --manifest "$P60_MAN" ) || vrc=$?
+  p60_wait_round
+  la=$(grep -c '계측 회차 실패' "$P60_ROUND_LOG" 2>/dev/null || true)
   check "60: $label — 동사가 0 으로 끝난다" "$vrc" "0"
   check "60: $label — 동사가 제 출력을 낸다" \
     "$(jq -e 'type == "object"' "$P60ROOT/out" >/dev/null 2>&1 && printf 객체 || printf 아님)" "객체"
   check "60: $label — 잠금이 풀려 있다" "$([ -d "$P60_LOCK" ] && printf 있음 || printf 없음)" "없음"
-  check "60: $label — 실패가 로그에 남는다" \
-    "$(grep -c '계측 회차 실패' "$P60ROOT/err" || true)" "1"
+  check "60: $label — 실패가 로그에 남는다" "$(( ${la:-0} - ${lb:-0} ))" "1"
   p60_after=$(p60_calls)
   p60_called=$([ "$p60_after" -gt "$before" ] && printf 불림 || printf 안불림)
 }
