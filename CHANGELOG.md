@@ -5,6 +5,14 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.26.3] - 2026-09-26
+
+계측 회차가 그 회차를 부른 게이트 동사를 기한 없이 붙잡던 자리를 고친다.
+
+### Fixed
+
+- **계측 회차가 게이트 동사를 붙잡지 않는다** — 회차는 `plan`·`digest-path` 를 뺀 거의 모든 게이트 동사 안에서 동기로, 기한 없이 돌았다. 수집기의 모집단 판독은 회차 예산 밖이라 원장이 쌓일수록 그 동사를 부른 쪽이 판독 시간을 통째로 치렀고, 수집기가 멈추면 동사도 함께 멈췄다. 이제 동사는 스탬프·잠금·발사만 치르고 돌아오며, 회차는 내부 동사 `gate.sh metrics-round` 가 분리 자식으로 돈다. 자식은 잠금에 적힌 난스와 일치할 때만 돌고 그 난스가 남아 있을 때만 잠금을 풀며, 수집기 전체를 한 시간(`CC_METRICS_ROUND_TIMEOUT_S`)에 끊는다. 잠금 만료는 15분에서 두 시간으로 늘었다. 회차의 메시지는 `<RUN_DIR>/log/metrics-round.log` 에 남는다. 모집단 판독 시간 자체는 줄지 않았다 — 호출자의 경로에서 빠졌을 뿐이고, 한 시간 기한을 넘기는 판독은 그 회차를 실패로 끝낸다.
+
 ## [2.26.2] - 2026-09-26
 
 2.26.1 이 계측 회차에 둔 벽시계 예산이, 원장이 쌓이면 모든 회차를 판정 없이 끝내던 자리를 고친다.
