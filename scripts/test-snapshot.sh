@@ -618,8 +618,9 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # shipped router already lost the design dispatch that way, with nothing to
 # catch it. The two sections are not byte-identical prose, so what is asserted
 # is the load-bearing literals: without any one of them the dispatch cannot be
-# issued, waited on, held back while the stage runs, re-attached after a cut, or
-# dispatched again after a stage ended without carrying anything off.
+# issued, waited on, held back while the stage runs, re-attached after a cut,
+# dispatched again after a stage ended without carrying anything off, or held to
+# one fresh dispatch after an ending that does not clear by itself.
 # ---------------------------------------------------------------------------
 design_section() {
   # design_section <skill file> — the design-dispatch subsection body, read up
@@ -646,7 +647,9 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     'only when it was opened by the design step' \
     'the last such row decides' \
     'Take 「Re-attaching a cut stage」 first' \
-    '`외부 종료`, `크래시` and `공허한 성공` may be dispatched afresh, and only onto an absent document'
+    '`외부 종료`, `크래시` and `공허한 성공` may be dispatched afresh, and only onto an absent document' \
+    'Two of the three buy one fresh dispatch and no more: a `크래시` whose stream holds no 429 envelope, and a `공허한 성공`.' \
+    'When the last row is one of these two and two or more fresh attempts already stand, stop the design as below'
   do
     # A count, not `grep -q`: the early exit on the right of a pipe SIGPIPEs the
     # left under pipefail. `case` would drop the pipe but reads `[]` as a glob.
