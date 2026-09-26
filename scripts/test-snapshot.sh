@@ -618,8 +618,8 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # shipped router already lost the design dispatch that way, with nothing to
 # catch it. The two sections are not byte-identical prose, so what is asserted
 # is the load-bearing literals: without any one of them the dispatch cannot be
-# issued, waited on, held back while the stage runs, or dispatched again after a
-# stage ended unobserved before it placed the document.
+# issued, waited on, held back while the stage runs, re-attached after a cut, or
+# dispatched again after a stage ended without carrying anything off.
 # ---------------------------------------------------------------------------
 design_section() {
   # design_section <skill file> — the design-dispatch subsection body, read up
@@ -645,7 +645,8 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     'The gate records that proposal as `무효화`, never as satisfied.' \
     'only when it was opened by the design step' \
     'the last such row decides' \
-    '`종단 부류=외부 종료` is the one class that may be dispatched again, and only onto an absent document.'
+    'Take 「Re-attaching a cut stage」 first' \
+    '`외부 종료`, `크래시` and `공허한 성공` may be dispatched afresh, and only onto an absent document'
   do
     # A count, not `grep -q`: the early exit on the right of a pipe SIGPIPEs the
     # left under pipefail. `case` would drop the pipe but reads `[]` as a glob.
@@ -677,6 +678,57 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   if [ -z "$design_sel" ]; then design_sel="$sel"; else design_sel_rs="$sel"; fi
 done
 check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$design_sel_rs" "$design_sel"
+
+# ---------------------------------------------------------------------------
+# 6e. Re-attaching a cut stage is carried by BOTH router copies
+#
+# The gate has accepted `act --kind skill --resume <세션 id>` for a long time,
+# and every re-attachment a run ever made was improvised by a shift reading the
+# gate's source — no router text offered one. Where nothing was improvised, a
+# design stage cut by the account's session limit was re-kicked as a new run five
+# times, each paying again for the discussion round the last one had published.
+# The literals below are what the re-attachment needs to be issued at all and
+# issued safely: the two cut classes and the envelope that tells a limit crash
+# from a broken stage, the session-started probe, the attempt cap, the reset-time
+# hold, the flag itself, and the continuation prompt — which must be one string
+# in both copies, since a slash command in its place restarts the skill.
+# ---------------------------------------------------------------------------
+reattach_section() {
+  awk '/^#### Re-attaching a cut stage$/ { f = 1; next } f && /^#+ / { exit } f' "$1"
+}
+reattach_prompt=""
+reattach_prompt_rs=""
+for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+  who=${pair%%:*}
+  sec=$(reattach_section "${pair#*:}")
+  if [ -n "$sec" ]; then
+    ok "$who 사본에 재부착 절이 있다"
+  else
+    bad "$who 사본의 재부착 절" "표제가 없거나 본문이 비었다"
+  fi
+  for lit in \
+    '`종단 부류=크래시` and that attempt'"'"'s stream carries the usage-limit envelope' \
+    '"api_error_status":429' \
+    '`종단 부류=외부 종료`' \
+    '"session_id":"<세션 id>"' \
+    'Four or more means the original and three re-attachments all ended cut' \
+    'A limit must have cleared first.' \
+    '--resume <세션 id>' \
+    'never the slash command again'
+  do
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 재부착 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 재부착 절" "「${lit}」이 없다"
+    fi
+  done
+  prompt=$(printf '%s\n' "$sec" | grep -oE -- '-p "계정 사용량 한도[^"]*"' | sort -u)
+  check "$who 사본의 재부착 절에 이어 가기 프롬프트가 한 벌 실린다" \
+    "$(printf '%s\n' "$prompt" | grep -c '^-p ')" "1"
+  if [ -z "$reattach_prompt" ]; then reattach_prompt="$prompt"; else reattach_prompt_rs="$prompt"; fi
+done
+check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
 
 # ---------------------------------------------------------------------------
 # 7. The chain is what covers the ledger
