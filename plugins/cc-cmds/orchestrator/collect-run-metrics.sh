@@ -30,7 +30,9 @@
 #                             `CC_METRICS_ROUND_BUDGET_S`). 상한이나 예산에 걸린 런은 수집하지
 #                             않고 미수집으로 센다 — 그 회차는 차단되어 판정을 내지 않고, 기록이
 #                             없는 그 런은 다음 회차의 모집단에 그대로 다시 든다. 이 회차는 게이트
-#                             호출 안에서 동기로 돌기 때문에 두는 상한이다.
+#                             호출 안에서 동기로 돌기 때문에 두는 상한이다. 회차의 첫 새 수집은
+#                             상한·예산과 무관하게 시도하므로(0 이면 회차당 한 런) 적체가 있어도
+#                             회차마다 전진한다. 예산은 모집단 판독이 끝난 뒤부터 잰다.
 #
 # 출력.
 #   <ledger-dir>/metrics.json              요약(`jq -S`, 시각 없음 — 같은 입력이면 같은 바이트)
@@ -818,7 +820,7 @@ cm_append_journal() {
 cm_main() {
   local tmp line rid state ledger rd rec input_files=0 confirmed
   local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 n_attempt=0 new_runs="" blocked=false
-  local summary round at body counts journal_line all_f delta_f prior_f
+  local summary round at body counts journal_line all_f delta_f prior_f t0
   cm_args "$@"
   : > "$CM_LEDGER_DIR/metrics.json.pending"
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics.XXXXXX") || exit 1
@@ -828,6 +830,10 @@ cm_main() {
   confirmed="
 $(cm_confirmed_runs)
 "
+  # 모집단을 먼저 다 읽고 나서 예산의 기준 시각을 잡는다 — 판독 비용은 원장 수에 비례해
+  # 늘기만 하므로, 예산에 넣으면 언젠가 판독만으로 예산이 다 쓰여 한 런도 수집하지 못한다.
+  cm_population > "$tmp/pop.tsv"
+  t0=$SECONDS
   while IFS=$'\t' read -r rid state ledger rd; do
     [ -n "$rid" ] || continue
     input_files=$((input_files + 1))
@@ -859,8 +865,10 @@ $rid
       n_gone=$((n_gone + 1)); continue
     fi
     # 새 수집에만 거는 상한과 예산. 이미 기록이 있어 건너뛴 런은 비용이 없으므로 세지 않는다.
-    # 경과는 이 프로세스가 뜬 뒤의 `SECONDS` 다 — 모집단 판독에 쓴 시간도 예산에 든다.
-    if [ "$n_attempt" -ge "$CM_MAX_NEW" ] || [ "$SECONDS" -ge "$CM_BUDGET" ]; then
+    # 경과는 수집 루프가 시작된 뒤부터 재고 모집단 판독은 들지 않는다. 회차의 첫 새 수집은
+    # 상한·예산과 무관하게 시도하므로, 적체가 있어도(상한·예산이 0 이어도) 회차마다 적어도
+    # 한 런씩 전진한다.
+    if [ "$n_attempt" -gt 0 ] && { [ "$n_attempt" -ge "$CM_MAX_NEW" ] || [ $((SECONDS - t0)) -ge "$CM_BUDGET" ]; }; then
       n_uncollected=$((n_uncollected + 1))
       cm_diag "런 $rid 는 이 회차의 수집 상한에 걸려 다음 회차로 미룬다"
       continue
@@ -874,9 +882,7 @@ $rid
       n_uncollected=$((n_uncollected + 1))
       cm_diag "런 $rid 의 기록을 만들지 못했다"
     fi
-  done <<POP
-$(cm_population)
-POP
+  done < "$tmp/pop.tsv"
   [ "$n_uncollected" -gt 0 ] && blocked=true
 
   # 전수 재계산 — 기록 디렉터리의 모든 런별 기록.

@@ -746,12 +746,40 @@ collect
 check "10: 다음 회차는 미룬 런을 수집한다" "$(counts4)" "2,0,0,0"
 check "10: 미룬 런이 다음 회차의 new_runs 에 든다" "$(jline ".new_runs | index(\"$R10B\") != null")" "true"
 check "10: 상한이 풀린 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
+# 회차의 첫 새 수집은 상한·예산과 무관하게 시도한다 — 그렇지 않으면 예산이 다 쓰인 채 시작하는
+# 회차(예산 0, 또는 판독만으로 예산을 넘긴 회차)가 한 런도 수집하지 못한 채 매번 차단된다.
+R10D=20260910-aaaaaa04
 n_run "$R10C" 100000
+n_run "$R10D" 100000
 collect --budget 0
-check "10: 예산이 다한 회차는 새 런을 수집하지 않고 이미 기록이 있는 런은 수집됨으로 남는다" "$(counts4)" "2,1,0,0"
-check "10: 예산에 걸린 런의 기록은 만들어지지 않는다" \
-  "$([ -e "$LEDGER_DIR/metrics/$R10C.json" ] && printf 있음 || printf 없음)" "없음"
-check "10: 예산이 다한 회차는 차단된다" "$(jline '.probe')" "차단"
+check "10: 예산 0 이어도 회차의 첫 새 런은 수집하고 나머지는 미수집으로 센다" "$(counts4)" "3,1,0,0"
+check "10: 먼저 든 런의 기록은 만들어지고 예산에 걸린 런의 기록은 만들어지지 않는다" \
+  "$([ -e "$LEDGER_DIR/metrics/$R10C.json" ] && printf 있음 || printf 없음),$([ -e "$LEDGER_DIR/metrics/$R10D.json" ] && printf 있음 || printf 없음)" "있음,없음"
+check "10: 미수집이 남은 회차는 차단된다" "$(jline '.probe')" "차단"
+collect --budget 0
+check "10: 예산 0 인 다음 회차도 전진해 남은 런을 수집한다" "$(counts4)" "4,0,0,0"
+check "10: 그 런이 new_runs 에 든다" "$(jline ".new_runs | index(\"$R10D\") != null")" "true"
+check "10: 남은 런이 없어진 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
+R10E=20260910-aaaaaa05; R10F=20260910-aaaaaa06
+n_run "$R10E" 100000
+n_run "$R10F" 100000
+collect --max-new 0
+check "10: 상한 0 이어도 회차의 첫 새 런은 수집한다" "$(counts4)" "5,1,0,0"
+check "10: 상한 0 에 걸린 런이 남으면 차단된다" "$(jline '.probe')" "차단"
+collect --max-new 0
+check "10: 상한 0 인 다음 회차가 남은 런을 수집한다" "$(counts4)" "6,0,0,0"
+check "10: 그 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
+# 상한보다 많은 런이 쌓여 있어도 회차마다 전진해 적체가 줄어든다.
+R10G=20260910-aaaaaa07; R10H=20260910-aaaaaa08; R10I=20260910-aaaaaa09
+n_run "$R10G" 100000
+n_run "$R10H" 100000
+n_run "$R10I" 100000
+collect --max-new 1
+check "10: 적체의 첫 회차는 한 런을 수집하고 나머지를 미룬다" "$(counts4),$(jline '.probe')" "7,2,0,0,차단"
+collect --max-new 1
+check "10: 적체의 둘째 회차도 한 런을 더 수집한다" "$(counts4),$(jline '.probe')" "8,1,0,0,차단"
+collect --max-new 1
+check "10: 적체가 비워진 회차는 차단되지 않는다" "$(counts4),$(jline '.probe')" "9,0,0,0,ok"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --max-new abc 2>/dev/null); rc=$?
 check "10: 상한이 정수가 아니면 exit 2 다" "$rc" "2"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --budget abc 2>/dev/null); rc=$?
@@ -799,6 +827,27 @@ check "11: 다시 든 런은 다시 수집하지 않는다(기록 바이트가 �
   "$(cmp -s "$WORK/rec11.json" "$LEDGER_DIR/metrics/$R11D.json" && printf 같음 || printf 다름)" "같음"
 collect
 check "11: 그 다음 회차에는 다시 들지 않는다" "$(jline '.new_runs | length')" "0"
+
+# --- 12. 예산은 모집단 판독을 세지 않는다 ------------------------------------------------------
+# 모집단 판독은 원장마다 `cc_run_state` 를 부르므로 원장 수에 비례해 늘기만 한다. 그 시간이
+# 예산에 들면 원장이 쌓인 어느 날부터 판독만으로 예산이 다 쓰여 모든 회차가 차단된다. 판독을
+# 느리게 만든 수집기 복사본으로, 판독이 예산을 넘겨도 수집이 예산 안에서 도는지 잰다.
+SLOW="$WORK/slow"
+mkdir -p "$SLOW"
+cp "$COLLECT" "$SLOW/collect-run-metrics.sh"
+cat > "$SLOW/liveness.sh" <<EOF
+. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+eval "\$(declare -f cc_run_state | sed '1s/^cc_run_state/cm_test_orig_run_state/')"
+cc_run_state() { sleep 2; cm_test_orig_run_state "\$@"; }
+EOF
+reset_all
+n_run 20260912-aaaaaa01 100000
+n_run 20260912-aaaaaa02 100000
+OUT=$(bash "$SLOW/collect-run-metrics.sh" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" \
+      --config-home "$HOME_A" --config-home "$HOME_B" --config-home "$HOME_C" \
+      --journal "$JOURNAL" --now "$NOW" --budget 3 2>"$WORK/err"); rc=$?
+check "12: 판독이 예산보다 오래 걸려도 수집은 예산 안에서 모두 끝난다" "$(counts4)" "2,0,0,0"
+check "12: 그 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
