@@ -1352,13 +1352,29 @@ gate_push_remote_match() {
   if [ -z "$rname" ]; then
     # NOTHING NAMES A DESTINATION, so the push goes to the branch's upstream —
     # which is a remote OF THE REPOSITORY THE ACT STANDS IN. That is the target's
-    # repository only while the act has not moved, so an implicit push is passed
+    # repository only while the act has not moved, so an implicit push is judged
     # only then. `-C`/`--git-dir` move it, and the `gh` side already draws the
     # line in this same place rather than the other one
     # (`gate_gh_repo_is_target` refuses an implicit repository once the parse
     # recorded a directory change).
     [ "$_moved" = "0" ] || return 1
-    return 0
+    # AND THE REMOTE IS THE ONE GIT PICKS, NOT A PASS. This returned 0 here, so a
+    # remote chosen by configuration — `remote.pushDefault` or
+    # `branch.<b>.pushRemote` set by an earlier `git config` act, or a
+    # `branch.<b>.remote` naming a remote an earlier `git remote add` planted —
+    # went unread. git's own order is read from the act's directory and the
+    # remote it lands on is compared like a named one; git falls back to
+    # `origin` when nothing is configured.
+    local _cur
+    _cur=$( { cd "$_dir" 2>/dev/null && git symbolic-ref --short -q HEAD 2>/dev/null; } || true)
+    if [ -n "$_cur" ]; then
+      rname=$( { cd "$_dir" 2>/dev/null && git config --get "branch.$_cur.pushRemote" 2>/dev/null; } || true)
+    fi
+    [ -n "$rname" ] || rname=$( { cd "$_dir" 2>/dev/null && git config --get remote.pushDefault 2>/dev/null; } || true)
+    if [ -z "$rname" ] && [ -n "$_cur" ]; then
+      rname=$( { cd "$_dir" 2>/dev/null && git config --get "branch.$_cur.remote" 2>/dev/null; } || true)
+    fi
+    [ -n "$rname" ] || rname=origin
   fi
   case "$rname" in
     *://*|*@*:*) url="$rname" ;;
@@ -1445,13 +1461,28 @@ $rn
   # EVERY REFSPEC IS A DESTINATION. One of them landing on the base branch makes
   # the push the merge, whatever the others say. A pattern (`*`) or the matching
   # refspec (`:`) can land on it without naming it, so it takes the higher rung.
-  local s dst=""
+  #
+  # THE DESTINATION IS READ THE WAY GIT RESOLVES IT, NOT AS A STRING. It was
+  # compared with the base branch as spelled, so `HEAD:heads/master` — which git
+  # completes to `refs/heads/master` — was a `push`. A destination under
+  # `heads/` is a branch like one under `refs/heads/`, and a refspec with no
+  # destination whose source is `HEAD` or `@` pushes the branch the worktree is
+  # on.
+  local s dst="" _here
+  _here=$( { cd "$_dir" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
   if [ -n "$_GATE_PUSH_SPECS" ]; then
     while IFS= read -r s; do
       [ -n "$s" ] || continue
       s="${s#+}"
-      case "$s" in *:*) dst="${s#*:}" ;; *) dst="$s" ;; esac
+      case "$s" in
+        *:*) dst="${s#*:}" ;;
+        HEAD|@)
+          [ -n "$_here" ] || { printf '머지'; return 0; }
+          dst="$_here" ;;
+        *) dst="$s" ;;
+      esac
       dst="${dst#refs/heads/}"
+      dst="${dst#heads/}"
       case "$dst" in
         ''|*'*'*) printf '머지'; return 0 ;;
       esac
@@ -1462,14 +1493,120 @@ EOF
     printf 'push'
     return 0
   else
-    # No refspec: the destination is whatever branch the act's worktree is on,
-    # and a worktree that cannot answer takes the higher rung rather than the
-    # convenient one.
-    dst=$( { cd "$_dir" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    # NO REFSPEC: WHAT GOES IS WHAT THE CONFIGURATION SAYS. A `remote.<r>.push`
+    # or `remote.<r>.mirror` in the repository, or `push.default=matching`,
+    # pushes refs no word of argv names — `mirror` deletes as well — so the
+    # push takes the higher rung. Otherwise the destination is the branch's
+    # `@{push}`, which `push.default=upstream` can point at the base branch
+    # from a branch of another name; a worktree that cannot answer falls back
+    # to its current branch, and one that cannot answer that takes the higher
+    # rung rather than the convenient one.
+    local _cfg
+    _cfg=$( { cd "$_dir" 2>/dev/null \
+              && git config --get-regexp '^remote\..*\.(push|mirror)$' 2>/dev/null; } || true)
+    [ -z "$_cfg" ] || { printf '머지'; return 0; }
+    _cfg=$( { cd "$_dir" 2>/dev/null && git config --get push.default 2>/dev/null; } || true)
+    [ "$_cfg" != matching ] || { printf '머지'; return 0; }
+    dst=$( { cd "$_dir" 2>/dev/null && git rev-parse --abbrev-ref '@{push}' 2>/dev/null; } || true)
+    case "$dst" in
+      */*) dst="${dst#*/}" ;;
+      *) dst="$_here" ;;
+    esac
     [ -n "$dst" ] || { printf '머지'; return 0; }
   fi
   [ "$dst" = "$base" ] && { printf '머지'; return 0; }
   printf 'push'
+}
+
+# `gate_push_pieces <alias> <argv...>` — the pushes an act carries BELOW its top
+# level: every piece of a shell body, nested bodies included, and every `-exec`
+# or `-ok` inner command of a `find`. One line per push piece, `ok` or `bad`
+# with its rung after a TAB, and one line `form TAB -` per piece that is not a
+# push and whose own grade is `형태 미상`. The top level itself is not reported;
+# its callers already ask `gate_argv_is_git_push` about it.
+#
+# THE PUSH CHECKS KEYED ON THE TOP-LEVEL argv0. The remote check and the rung
+# ran only where the peeled argv0 was `git`, so `bash -c 'git push <foreign URL>
+# HEAD:master'` matched a `git push` pre-authorization row piece by piece, had
+# its opaque cap lifted, and reached dev, prod and the deploy trigger with no
+# remote compared and no merge rung — while the same push written bare was
+# refused as `push원격불일치`. `find . -exec git push <foreign URL> HEAD:master ';'`
+# was a table-graded external write that neither check ever saw. A piece is now
+# checked the way the same command written bare is checked.
+#
+# A `-c` KEY THE GRADE REFUSES IS PART OF THE VERDICT. The remote check reads
+# the remote a push names and not the configuration it was handed, and a bare
+# `git -c remote.origin.pushurl=<other> push` is refused by its grade before the
+# check is asked. A piece has no grade of its own on the way to the rules, so a
+# push piece whose grade is `형태 미상` answers `bad` here.
+#
+# A `cd` IN THE BODY moves the pieces after it somewhere the remote cannot be
+# resolved from, and the body walk records that a directory changed rather than
+# where each piece ran. A push piece in a body that changed directory is `bad`
+# and the merge rung, which is what the top-level check answers for the same
+# `GP_CWD`.
+gate_push_pieces() {
+  local alias="$1"; shift
+  ( _GATE_PP_ALIAS="$alias"; _GATE_PP_CD=0; _GATE_PP_TOP=1
+    _gate_push_piece "$@" ) || true
+  return 0
+}
+
+_gate_push_piece() {
+  # Parses in a subshell of its own, so the parse the caller stands on survives.
+  ( _top="${_GATE_PP_TOP:-0}"; _GATE_PP_TOP=0
+    [ "$_top" = 1 ] || _GP_ENTRY_DEPTH=$((${GP_DEPTH:-0} + 1))
+    _prc=0; gate_argv_is_git_push "$@" || _prc=$?
+    case "$GP_STATUS" in
+      list|opaque)
+        [ -z "${GP_CWD:-}" ] || _GATE_PP_CD=1
+        gp_each_sub _gate_push_piece
+        exit 0 ;;
+    esac
+    if [ "$_top" = 0 ]; then
+      _g=$(_gp_frag_grade "$@") || _g=''
+      case "$_prc" in
+        0)
+          if [ "$_GATE_PP_CD" = 1 ] || [ "$_g" = "$GATE_FORM_UNKNOWN" ]; then
+            printf 'bad\t머지\n'
+          else
+            _v=ok
+            gate_push_remote_match "$_GATE_PP_ALIAS" "$@" || _v=bad
+            printf '%s\t%s\n' "$_v" "$(gate_push_rung "$_GATE_PP_ALIAS" "$@")"
+          fi
+          exit 0 ;;
+        2) printf 'bad\t머지\n'; exit 0 ;;
+      esac
+      [ "$_g" != "$GATE_FORM_UNKNOWN" ] || { printf 'form\t-\n'; exit 0; }
+    fi
+    [ "$_prc" = 1 ] || exit 0
+    gate_peel_argv "$@" || exit 0
+    set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+    [ "$#" -ge 1 ] && [ "${1##*/}" = find ] || exit 0
+    shift
+    _o=$(gate_unwrap_find _gate_push_find_inner '' '' '' _gate_push_join "$@") || _o=''
+    [ -z "$_o" ] || printf '%s\n' "$_o" ) || true
+  return 0
+}
+
+_gate_push_find_inner() {
+  _GATE_PP_TOP=0 _gate_push_piece "$@"
+}
+
+_gate_push_join() {
+  if [ -z "$1" ]; then printf '%s' "$2"
+  elif [ -z "$2" ]; then printf '%s' "$1"
+  else printf '%s\n%s' "$1" "$2"; fi
+}
+
+# `gate_push_pieces_rung <lines>` — the highest rung among the push pieces, or
+# nothing when there is no push piece.
+gate_push_pieces_rung() {
+  case "$1" in
+    *"	머지"*) printf '머지' ;;
+    *"	push"*) printf 'push' ;;
+  esac
+  return 0
 }
 
 gate_destructive_source() {
@@ -1563,6 +1700,20 @@ gate_reach_disposition() {
       미상) case "$1" in */*) lift=1 ;; esac ;;
     esac
   fi
+  # A SHAPE MATCHED PIECE BY PIECE NAMES THE PIECES' COMMANDS, NOT WHAT THEY
+  # CARRY. The canonical form drops git's globals and every `-*=*` word, so a
+  # body piece whose own grade is `형태 미상` — `git -c
+  # remote.origin.pushurl=<other> push`, refused when written bare — matched a
+  # `git push` row as `완전` and lifted the cap the refusal was supposed to keep.
+  # A body holding such a piece is not lifted. A push piece is lifted and then
+  # bound in cell 7 like a bare push, where a mismatch is named as one.
+  local _pp
+  _pp=$(gate_push_pieces "$alias" "$@")
+  if [ "$lift" = "1" ]; then
+    case "$_pp" in
+      form*|*"$_GP_LF"form*) lift=0 ;;
+    esac
+  fi
 
   # 4 — the opaque and unknown classes. The cap is the user's decision: a payload
   # the gate cannot see is read-and-run-local unless the manifest named the exact
@@ -1601,6 +1752,10 @@ gate_reach_disposition() {
   case "$_gpush" in
     0) gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치'; return 0; } ;;
     2) printf 'push원격불일치'; return 0 ;;
+  esac
+  # The same check for every push the act carries below its top level.
+  case "$_pp" in
+    bad*|*"$_GP_LF"bad*) printf 'push원격불일치'; return 0 ;;
   esac
 
   case "$Reff" in
@@ -3319,7 +3474,10 @@ _gpb_endcmd() {
     a="${cw[$k]}"
     case "$a" in
       [A-Za-z_]*=*)
+        # `NAME+=value` is an assignment too — the shell appends, and on an
+        # unset name that is the plain assignment.
         name="${a%%=*}"
+        name="${name%+}"
         case "$name" in
           *[!A-Za-z0-9_]*) break ;;
         esac
@@ -3399,11 +3557,23 @@ _gpb_endcmd() {
   GP_SUB[${#GP_SUB[@]}]="$el"
   case "$a" in
     cd) _gpb_cd ;;
+    # THE NAME IS CHECKED THE WAY THE LEADING ASSIGNMENTS CHECK IT. It was cut at
+    # the first `=` and handed on as spelled, so `export GIT_SSH_COMMAND+=<cmd>`
+    # asked the environment table about `GIT_SSH_COMMAND+`, matched no row, and
+    # set the variable unclassified — `/bin/sh` takes `+=` and on an unset name
+    # it is the plain assignment. The one `+` comes off, and a name that is
+    # still not an identifier is not read.
     export|local)
       x=$((k + 1))
       while [ "$x" -lt "$m" ]; do
         case "${cw[$x]}" in
-          [A-Za-z_]*=*) _gp_env_assign "${cw[$x]%%=*}" "${cw[$x]#*=}" ;;
+          [A-Za-z_]*=*)
+            name="${cw[$x]%%=*}"
+            name="${name%+}"
+            case "$name" in
+              *[!A-Za-z0-9_]*) _gpb_form ''; cw=(); cf=(); return 0 ;;
+            esac
+            _gp_env_assign "$name" "${cw[$x]#*=}" ;;
         esac
         x=$((x + 1))
       done ;;
@@ -4267,25 +4437,33 @@ _gp_repo_reduce() {
   esac
   if [ "$url" = 1 ] && [ -z "$host" ]; then return 1; fi
   rest="${rest%/}"
+  # THE PATH IS EXACTLY `<owner>/<repo>`. A URL's path was cut to its first two
+  # segments and the rest dropped, so `https://github.com/Nharu/cc-cmds/../../other/repo`
+  # reduced to the target's slug — and the server folds the `..` segments and
+  # answers for `other/repo`. A third segment, a `.` or `..` segment and a
+  # percent escape (which can spell either) are not read at all.
+  case "$rest" in
+    *%*) return 1 ;;
+  esac
   if [ "$url" = 0 ]; then
     case "$rest" in
       */*/*/*) return 1 ;;
       */*/*) host="${rest%%/*}"; rest="${rest#*/}" ;;
     esac
-    owner="${rest%%/*}"
-    repo="${rest#*/}"
   else
-    owner="${rest%%/*}"
-    repo="${rest#*/}"
-    repo="${repo%%/*}"
+    case "$rest" in
+      */*/*) return 1 ;;
+    esac
   fi
+  owner="${rest%%/*}"
+  repo="${rest#*/}"
   [ "$owner" != "$rest" ] || return 1
   repo="${repo%.git}"
   case "$owner" in
-    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
   case "$repo" in
-    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
   case "$host" in
     *[!A-Za-z0-9.:-]*) return 1 ;;
@@ -5493,9 +5671,19 @@ _gp_git_scan() {
 # git honours `-c remote.origin.pushurl=<other>` and pushes there, and the
 # remote check resolved `origin` from the repository on disk and reported a
 # match for a push that never went near it.
+#
+# THE KEYS THAT CHOOSE THE REMOTE OR THE REFS ARE REDIRECTS TOO. A push that
+# names no remote goes where `branch.<b>.pushRemote`, `remote.pushDefault` and
+# `branch.<b>.remote` send it, so `git -c remote.pushDefault=<other> push`
+# pushed to `<other>` while the remote check, asked about a push that named
+# nothing, passed it. `remote.*.push`, `remote.*.mirror` and `push.*` choose
+# WHICH refs go — `mirror` pushes and deletes every one — so the rung that reads
+# the refspecs written in argv cannot see where they land.
 _gp_git_key_redirects() {
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
     remote.*.url|remote.*.pushurl|url.*) return 0 ;;
+    remote.pushdefault|branch.*.pushremote|branch.*.remote|branch.*.merge) return 0 ;;
+    remote.*.push|remote.*.mirror|push.*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -5622,7 +5810,26 @@ EOF
     worktree) surface_of_git_worktree "$@" ;;
     branch)   surface_of_git_branch "$@" ;;
     config)   surface_of_git_config "$@" ;;
-    add|commit|checkout|switch|restore|rebase|merge|cherry-pick|revert|stash|apply|am|reset|tag)
+    # `rebase -x <cmd>` RUNS <cmd> THROUGH THE SHELL after every commit it
+    # replays, so it is not the local write its verb says. It sat on the write
+    # arm below and `git rebase -x 'gh repo delete <o>/<r> --yes' HEAD~1` was
+    # admitted on a run-local declaration, while the same command in `bash -c`
+    # floored at an external write with the destructive mark. Refused as a form,
+    # like `--ext-diff` and `--upload-pack` above. A short-option bundle holding
+    # `x`, and the abbreviations git accepts for `--exec`, are the same option.
+    rebase)
+      local a
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --exec|--exec=*|--exe|--exe=*|--ex|--ex=*)
+            printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+          --*) ;;
+          -*x*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+        esac
+      done
+      printf '워크트리쓰기' ;;
+    add|commit|checkout|switch|restore|merge|cherry-pick|revert|stash|apply|am|reset|tag)
       printf '워크트리쓰기' ;;
     remote)   surface_of_git_remote "$@" ;;
     # `fetch` and `clone` left this arm: the first only moves remote-tracking
@@ -17771,12 +17978,19 @@ gate_verb_act() {
     # Recognized past the launchers and git's globals: `git -C <wt> push … HEAD:<base>`
     # is the merge whichever spelling carried it. An unreadable globals list
     # with a push in it is answered by `gate_push_rung` itself as the merge.
-    local _gpush=0
+    #
+    # A push carried in a shell body or behind `find -exec` takes the same rung:
+    # the highest one among its push pieces. Without this a base-branch push in
+    # a body stood at whatever cutpoint was declared, `커밋` included.
+    local _gpush=0 _pr=''
     gate_argv_is_git_push "$@" || _gpush=$?
     case "$_gpush" in
-      0|2)
-        local _pr _pi _ei
-        _pr=$(gate_push_rung "$alias" "$@")
+      0|2) _pr=$(gate_push_rung "$alias" "$@") ;;
+      *) _pr=$(gate_push_pieces_rung "$(gate_push_pieces "$alias" "$@")") ;;
+    esac
+    case "$_pr" in
+      ?*)
+        local _pi _ei
         GATE_ACT_DERIVED="$_pr"
         _pi=$(cutpoint_index "$_pr") || exit "$GATE_EXIT_VOCAB"
         _ei=$(cutpoint_index "$GATE_ACT_EFFECTIVE") || exit "$GATE_EXIT_VOCAB"
