@@ -2063,6 +2063,24 @@ else
 fi
 RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
 
+# 아직 쓰이지 않은 문서의 키도 두 갈래 중 맞는 쪽으로 해소한다. 설계를 런의 첫
+# 스테이지로 두는 런은 경로를 파생하는 시점에 문서가 없으므로 파일 존재로는 두
+# 갈래가 갈리지 않는다. 담을 디렉터리가 레포 밖에만 있는 키가 레포 상대로 떨어지면
+# 설계 스테이지는 `<repo>/Users/…` 아래에 문서를 쓰고, 그 뒤 누구도 그것을 찾지 못한다.
+DOC_SAVE_N="$DOC"; DOC_KEY_SAVE_N="${DOC_KEY:-}"; DOC_DIR_SAVE_N="${DOC_DIR:-}"; BASE_SAVE_N="$BASE"
+PW_DIR="$WORK/polyrepo-ws/docs/server"; mkdir -p "$PW_DIR"
+PW_KEY="${PW_DIR#/}/not-yet-written.md"
+MFP="$MF_DIR/plan-doc-pending.md"
+write_manifest "$MFP" "" "" "" "$PW_KEY"
+MANIFEST="$MFP"; RUN_ID="20260825-deadbeef"
+derive_paths_from_manifest
+check "아직 없는 레포 밖 문서는 절대 경로로 해소한다" "$DOC" "/$PW_KEY"
+RB_KEY="plugins/cc-cmds/orchestrator/not-yet-written.md"
+write_manifest "$MFP" "" "" "" "$RB_KEY"
+derive_paths_from_manifest
+check "아직 없는 레포 안 문서는 레포 상대 경로로 해소한다" "$DOC" "$BASE/$RB_KEY"
+MANIFEST="$MF"; DOC="$DOC_SAVE_N"; DOC_KEY="$DOC_KEY_SAVE_N"; DOC_DIR="$DOC_DIR_SAVE_N"; BASE="$BASE_SAVE_N"
+
 # --- 21b 설계 스테이지의 술어와 발화 조건 ------------------------------------
 # 설계 스테이지는 문서만 내므로 위조 불가능한 술어가 없다. 그래서 저작된 사실
 # **둘**을 교차한다 — 스트림의 동결 리터럴과 문서의 동결 상태 줄. 하나만 보면

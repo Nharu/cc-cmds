@@ -6400,6 +6400,10 @@ graded_as '트리밖쓰기' '붙여 쓴 --log= 도 트리 밖 쓰기다' \
 graded_as '읽기'       '측정 하니스의 재생·무키 경로는 읽기다' -- measure-similar-items.py --data-dir d
 graded_as '외부상태변경' '측정 하니스의 --live 는 외부 상태 변경이다' \
   -- measure-similar-items.py --data-dir d --live
+graded_as '외부상태변경' 'ClickUp 티켓 생성은 외부 상태 변경이다' \
+  -- clickup-create.py --list 1 --name x --description-file f
+graded_as '외부상태변경' '경로로 부른 ClickUp 티켓 생성도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/clickup-create.py --list 1 --name x --description-file f
 # The same wrong spelling as above, pinned for the lookup: with an interpreter
 # in front the row above no longer applies and the default path's external
 # call grades as a worktree write.
@@ -6419,6 +6423,10 @@ gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
   --surface 읽기 -- similar-items.py github --issue 1 --lexical-only
 check "트래커 어댑터의 어휘 전용 읽기도 도달 신고가 필수다" "$rc" "2"
 case "$msg" in *"--reach is required"*) ok "그 거절이 도달 신고를 이름으로 말한다" ;; *) bad "그 거절이 도달 신고를 이름으로 말한다" "$msg" ;; esac
+gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+  --surface 읽기 -- similar-items.py clickup --task x --lexical-only
+check "ClickUp 어댑터의 어휘 전용 읽기도 도달 신고가 필수다" "$rc" "2"
+case "$msg" in *"--reach is required"*) ok "ClickUp 어댑터의 거절도 도달 신고를 이름으로 말한다" ;; *) bad "ClickUp 어댑터의 거절도 도달 신고를 이름으로 말한다" "$msg" ;; esac
 gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
   --surface 읽기 -- similar-items.py file --corpus x --issue 1 --lexical-only
 case "$rc:$msg" in
