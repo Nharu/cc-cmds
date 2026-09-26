@@ -285,6 +285,14 @@ A stage whose last `stage-result` row reads `종단 부류=공허한 성공` exi
 
 A stage that made gate acts and then ended in prose is recorded `정상 완료` and is not this case.
 
+### Merging a segment and recording it
+
+**Bind a remote merge to the segment worktree's HEAD.** Spell it `gh pr merge <방식> --match-head-commit <워크트리 HEAD> --delete-branch`, or for the REST form add `-f sha=<워크트리 HEAD>`, with the full 40-character sha. Under `선리뷰후머지` with `리뷰-후-머지` on, a merge argv for a segment that has a `segment` row is refused with exit `2` before the rules run when the binding is missing, names another commit, or the worktree HEAD cannot be read; the message names the argument and the HEAD. Add the argument and call again. A local `git push` to the base is not a remote merge spelling and is not affected.
+
+**`머지 대조`, `최종 사이클` and `수렴` are written by the gate and never passed by you** — a `segment` row carrying any of them is refused with exit `2`. On a `상태=머지됨` row the gate compares the merge against the segment's last `cycle` row and writes both fields itself. The same row is refused with exit `2` when the worktree tip has not landed on the base. A `완료` or `park` row carrying a `커밋` that has already landed is refused with exit `2` too, unless the segment already has a `머지됨` row or the commit landed inside a sibling's `머지됨` row that carries a `커밋`: if you merged, write `상태=머지됨`; if the segment has no commit of its own, drop `커밋`.
+
+**Termination condition 11** holds a segment under `선리뷰후머지` whose last row carrying `머지 대조` reads `위반(…)`, `리뷰 없음` or `판정 불가`, while `리뷰-후-머지` is not set to `끔`. The violating row stays; the last row carrying `머지 대조` is the answer, and a later row without the field — a `완료` after the merge — does not clear it. To resolve it, dispatch a review that covers the merged commit, write its `cycle` row, then write a second `상태=머지됨` row.
+
 ## Ending your shift
 
 Check `shift.over_soft` on every snapshot. When it is true — or when the gate answered `15`, or you took exit 5, or a `propose-done` was accepted — write this and then exit:

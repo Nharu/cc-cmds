@@ -5986,6 +5986,109 @@ ladder_of_gh_api() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# The head a remote merge is bound to.
+#
+# The review rule compares the review against the segment worktree's HEAD, and
+# a remote merge merges whatever the pull request's head is on the server at
+# that moment. Nothing tied the two together: a push after the check, or a
+# worktree that never pushed its last commit, merged a head the rule had not
+# looked at, and the ledger recorded a pass. Both remote spellings carry an
+# argument that makes the server refuse any other head — `gh pr merge
+# --match-head-commit <sha>` and the REST merge's `sha` field — so the gate
+# requires that argument and requires it to name the worktree HEAD.
+# ---------------------------------------------------------------------------
+gate_merge_binding_of_argv0() {
+  # gate_merge_binding_of_argv0 <argv...> — prints `해당없음` when the argv is
+  # not a remote merge spelling, `없음` when it is one carrying no usable
+  # binding, and the bound sha otherwise. The wrapper unwraps are the ones
+  # `ladder_of_argv0` shares, so a merge the ladder sees through a wrapper is
+  # the merge this reads.
+  local out=""
+  if [ "$#" -ge 1 ]; then
+    local cmd="${1##*/}"
+    shift
+    case "$cmd" in
+      lockf)   out=$(gate_unwrap_lockf   gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
+      command) out=$(gate_unwrap_command gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
+      find)    out=$(gate_unwrap_find    gate_merge_binding_of_argv0 '해당없음' '해당없음' '해당없음' gate_merge_binding_combine "$@") ;;
+      rg)      out=$(gate_unwrap_rg      gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
+      env)     out=$(gate_unwrap_env     gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
+      timeout|nice|nohup|stdbuf)
+               out=$(gate_unwrap_wrapper "$cmd" gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
+      time)    out=$(gate_unwrap_time    gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
+      gh)      out=$(gate_merge_binding_of_gh "$@") ;;
+    esac
+  fi
+  printf '%s' "${out:-해당없음}"
+}
+
+gate_merge_binding_combine() {
+  # Folds two answers for `find`, which can run several commands: a merge
+  # anywhere in the argv decides, and an unbound one wins over a bound one.
+  local a="$1" b="$2"
+  if [ "$a" = '해당없음' ]; then printf '%s' "$b"
+  elif [ "$b" = '해당없음' ]; then printf '%s' "$a"
+  elif [ "$a" = "$b" ]; then printf '%s' "$a"
+  else printf '%s' '없음'
+  fi
+}
+
+gate_merge_binding_value() {
+  # A binding is a full lowercase sha. An abbreviation or a revision name is
+  # resolved by the server against its own refs, which is the thing the
+  # binding exists not to trust.
+  case "$1" in
+    *[!0-9a-f]*|'') printf '%s' '없음' ;;
+    *) if [ "${#1}" = 40 ]; then printf '%s' "$1"; else printf '%s' '없음'; fi ;;
+  esac
+}
+
+gate_merge_binding_of_gh() {
+  # gate_merge_binding_of_gh <gh's args after argv0...>. The LAST occurrence of
+  # the argument wins, as it does for gh's own flag parsing.
+  local have=0 v=""
+  case "${1:-}" in
+    pr)
+      [ "${2:-}" = merge ] || { printf '%s' '해당없음'; return 0; }
+      shift 2
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --match-head-commit)
+            have=1; v="${2:-}"
+            if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+          --match-head-commit=*) have=1; v="${1#--match-head-commit=}"; shift ;;
+          *) shift ;;
+        esac
+      done ;;
+    api)
+      [ "$(ladder_of_gh_api "$@")" = '머지' ] || { printf '%s' '해당없음'; return 0; }
+      shift
+      # `-F sha=@<file>` and `--input` put the value in a file this gate does
+      # not read, so they bind nothing it can compare.
+      local fv input=0
+      while [ "$#" -gt 0 ]; do
+        fv=""
+        case "$1" in
+          --input|--input=*) input=1; shift ;;
+          -f|-F|--field|--raw-field)
+            fv="${2:-}"
+            if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+          --field=*|--raw-field=*) fv="${1#*=}"; shift ;;
+          -f?*|-F?*) fv="${1#-?}"; shift ;;
+          *) shift ;;
+        esac
+        case "$fv" in
+          sha=*) have=1; v="${fv#sha=}" ;;
+        esac
+      done
+      if [ "$input" = 1 ]; then printf '%s' '없음'; return 0; fi
+      case "$v" in @*) v="" ;; esac ;;
+    *) printf '%s' '해당없음'; return 0 ;;
+  esac
+  if [ "$have" = 1 ]; then gate_merge_binding_value "$v"; else printf '%s' '없음'; fi
+}
+
 ladder_of_terraform() {
   # The same global skip `surface_of_terraform` performs, so `terraform -chdir=x
   # apply` reads like `terraform apply`.
@@ -6837,6 +6940,40 @@ gate_row_field() {
   printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
+gate_rows_field_eq() {
+  # stdin: rows. gate_rows_field_eq <key> <value> — prints each row whose LAST
+  # field with that key equals <value> exactly, the same "last wins" reading
+  # `gate_row_field` gives.
+  #
+  # NOT `grep -F "<key>=<value> "`. A substring match picks up any field whose
+  # key merely ends in <key> and any value that merely begins with <value>, so a
+  # segment `A` selected the rows of `A2`, and `세그먼트=` was matched inside a
+  # key like `선행 세그먼트=`. The values travel through the environment rather
+  # than `-v`, which would read a backslash in them as an escape.
+  GATE_FEQ_K="$1" GATE_FEQ_V="$2" awk '
+    { n = split($0, f, "|"); have = 0; last = ""
+      for (i = 2; i <= n; i++) {
+        s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
+        p = index(s, "=")
+        if (p > 0 && substr(s, 1, p - 1) == ENVIRON["GATE_FEQ_K"]) { have = 1; last = substr(s, p + 1) }
+      }
+      if (have && last == ENVIRON["GATE_FEQ_V"]) print }'
+}
+
+gate_rows_having_field() {
+  # stdin: rows. gate_rows_having_field <key> — prints each row that carries a
+  # field with exactly that key, whatever its value. A substring match would
+  # also take a row whose free-text value merely mentions `<key>=`.
+  GATE_FEQ_K="$1" awk '
+    { n = split($0, f, "|"); have = 0
+      for (i = 2; i <= n; i++) {
+        s = f[i]; sub(/^ +/, "", s)
+        p = index(s, "=")
+        if (p > 0 && substr(s, 1, p - 1) == ENVIRON["GATE_FEQ_K"]) have = 1
+      }
+      if (have) print }'
+}
+
 # ---------------------------------------------------------------------------
 # `stage-lease` / `stage-wait`: envelope to row, and the three readers.
 #
@@ -7591,7 +7728,7 @@ readonly GATE_OBLIGATION_CAP=50
 # front of this list — which pushes the singleton tails off it, and those tails
 # (the review obligation, "no termination clause parses") are exactly the answer
 # to "why can this run not end". The number list is deduplicated and cannot
-# exceed ten values, so it survives any night. There is no arrangement that keeps
+# exceed eleven values, so it survives any night. There is no arrangement that keeps
 # the cap and drops the numbers: dropping them means dropping the cap too.
 readonly GATE_UNMET_CAP=20
 
@@ -7679,7 +7816,7 @@ gate_snapshot() {
   printf '  ],\n'
   printf '  "unmet_conditions_total": %s,\n' "${unmet_total:-0}"
   # UNCAPPED, and that is the point of carrying it beside the capped list. It is
-  # deduplicated, ascending, and cannot exceed ten values, so it never loses its
+  # deduplicated, ascending, and cannot exceed eleven values, so it never loses its
   # tail — while the text list loses precisely the singleton causes once a long
   # night fills its front with per-segment and per-obligation lines.
   printf '  "unmet_condition_numbers": [%s],\n' \
@@ -11199,8 +11336,15 @@ gate_emit_worktree_spellings() {
 }
 
 gate_segment_tip() {
-  local wt out
-  wt=$(gate_segment_worktree "$1")
+  gate_worktree_tip "$(gate_segment_worktree "$1")"
+}
+
+gate_worktree_tip() {
+  # gate_worktree_tip <worktree> — the commit that worktree's HEAD names, or
+  # return 1. Split out of `gate_segment_tip` for the writer of a segment row,
+  # which has to read the tip of the worktree THAT ROW names before the row is
+  # on the ledger; after the append the two answer the same thing.
+  local wt="$1" out
   [ -n "$wt" ] || return 1
   [ -d "$wt" ] || return 1
   # `--verify` AND `^{commit}`: on an unborn branch a bare `git rev-parse HEAD`
@@ -14316,6 +14460,111 @@ gate_record_row() {
         fi
       fi
 
+      # --- the record of a merge: `머지 대조` and `최종 사이클` ---
+      #
+      # A `머지됨` row used to be a claim and nothing else. The merge rule is the
+      # one place that compares a merge against its review, and it runs only
+      # when the merge goes through the gate with the rule on; a merge made any
+      # other way reached `상태=머지됨` with no trace of whether the review had
+      # closed its findings or had even looked at the merged commit. So the
+      # comparison is made HERE, at the row that says the merge happened, and
+      # written on that row — unconditionally, whatever `룰 설정` says, because
+      # this is an observation and not a refusal. What refuses is termination
+      # condition 11, which reads this field and is the half the setting turns
+      # off.
+      #
+      # THE NAMES ARE CHOSEN AGAINST THE READERS OF THIS LEDGER. Neither ends in
+      # `세그먼트` or `id` — both are matched as suffixes by readers elsewhere, so
+      # such a key would be read as the row's segment or id — and neither is a
+      # bare `판정`, which another series already uses with another meaning.
+      local rpol_eff="${rpol:-선리뷰후머지}" k
+      local mc_field="" fc_field=""
+
+      # THE GATE'S FIELDS ARE THE GATE'S ALONE, in every state. `수렴` is refused
+      # with them because it is the cycle-row value of the same derivation, and a
+      # segment row carrying it would read as a verdict nothing computed.
+      for k in '머지 대조' '최종 사이클' '수렴'; do
+        if [ -n "$(gate_field_of "$k" "$@")" ]; then
+          warn "segment 행의 「${k}」는 게이트가 유도해 적는 필드입니다 — 호출자가 넘길 수 없습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      done
+
+      # A LANDED `커밋` ON A `완료` OR `park` ROW IS A MERGE RECORDED UNDER
+      # ANOTHER NAME. Condition 11 reads `머지됨` rows, so a segment whose commit
+      # is already on the base branch and whose row says `완료` walks past it with
+      # no comparison ever made. The two exemptions are the two honest ways to be
+      # there: this segment already has a `머지됨` row, or its commit reached the
+      # base inside a sibling's merge that is itself on the ledger. This is an
+      # acceptance check on the row being written — it does not depend on the
+      # policy or on `룰 설정`, and it does not reach back to rows already written.
+      local cm_commit
+      cm_commit=$(gate_field_of '커밋' "$@")
+      case "$st" in
+        완료|park)
+          if [ -n "$cm_commit" ]; then
+            gate_obligation_landing "$alias" "$cm_commit"
+            case "$GATE_LANDING_VERDICT" in
+              착지)
+                if ! gate_segment_landed_exempt "$seg" "$alias" "$cm_commit"; then
+                  warn "segment 행의 「커밋」 $cm_commit 이 이미 베이스에 착지해 있습니다 ($GATE_LANDING_WHY) — 상태=${st} 로는 머지 대조 없이 머지를 기록하게 됩니다"
+                  warn "머지했으면 상태=머지됨 으로 다시 쓰고, 자기 커밋이 없는 세그먼트이면 「커밋」 을 빼고 다시 씁니다"
+                  return "$GATE_EXIT_VOCAB"
+                fi ;;
+              '판정 불가')
+                if [ "$rpol_eff" = '선리뷰후머지' ]; then
+                  warn "segment 행의 「커밋」 $cm_commit 의 착지를 판정할 수 없다 — 레포 접근이 돌아온 뒤 다시 쓴다: $GATE_LANDING_WHY"
+                  return "$GATE_EXIT_VOCAB"
+                fi ;;
+            esac
+          fi ;;
+      esac
+
+      # A `머지됨` ROW WHOSE TIP IS NOT ON THE BASE IS REFUSED, whatever the
+      # policy: the row would record a merge that did not happen, and the
+      # comparison below would then be made against a commit nothing merged. An
+      # unreadable tip or an unanswerable landing is not refused — the row is
+      # the record that the merge happened, and the tree is routinely gone by
+      # then — and the coverage half then reads `판정 불가`, which condition 11
+      # holds on.
+      if [ "$st" = '머지됨' ]; then
+        local mtip=""
+        mtip=$(gate_worktree_tip "$wt") || mtip=""
+        if [ -n "$mtip" ]; then
+          gate_obligation_landing "$alias" "$mtip"
+          if [ "$GATE_LANDING_VERDICT" = '미착지' ]; then
+            warn "segment 행이 상태=머지됨 을 적지만 워크트리 팁 $mtip 이 베이스에 착지하지 않았습니다: $GATE_LANDING_WHY"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        fi
+        gate_segment_cycle_verdict "$seg" "$alias" "$mtip"
+        mc_field="머지 대조=$(gate_merge_check_value "$rpol_eff" "$GATE_CYCLE_COUNT_VERDICT" "$GATE_CYCLE_COVER_VERDICT")"
+        fc_field="최종 사이클=$GATE_CYCLE_NUMBER"
+        set -- "$@" "$mc_field" "$fc_field"
+      fi
+
+      # THE ROW IS PROJECTED BEFORE IT IS WRITTEN, AND REFUSED RATHER THAN
+      # TRIMMED. The two fields above cannot be dropped to make room: a merged
+      # row without its comparison is the gap this record exists to close. So a
+      # row over the cap is refused here with the caller field to shorten named,
+      # instead of reaching `gate_append`'s cap and dying with the series name
+      # alone. The exit code is the one that death gives, so a caller reading
+      # codes sees nothing new, and it is not the vocabulary code — resending
+      # the same argv cannot fit any better.
+      local proj
+      proj=$(gate_row_projected_bytes 'segment' "id=$seg" "$@")
+      if [ "$proj" -gt "$GATE_ROW_MAX" ]; then
+        local f big_k="" big_n=0 fn
+        for f in "$@"; do
+          [ "$f" = "$mc_field" ] && continue
+          [ "$f" = "$fc_field" ] && continue
+          fn=$(printf '%s' "$f" | wc -c | tr -d ' ')
+          if [ "$fn" -gt "$big_n" ]; then big_n="$fn"; big_k="${f%%=*}"; fi
+        done
+        warn "the segment row is over the cap (projected ${proj} > ${GATE_ROW_MAX} bytes) — the longest caller field is \`${big_k}\` (${big_n} bytes): shorten it or move it out to a sidecar and write the row again; the fields the gate writes are not trimmed to make room"
+        return 1
+      fi
+
       # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
       # deliberately. `cycle` and `problem` below carry the same shape for
       # `세그먼트=`, so all three share this note.
@@ -14811,7 +15060,7 @@ EOF
           done
           # ONE QUESTION HOLDS ONE CLAUSE.
           #
-          # Condition 10 is the only one of the ten that measures what the USER
+          # Condition 10 is the only one of the eleven that measures what the USER
           # authorized the run against, and `보류` settles a clause for it — so
           # with no constraint here a single grade-2 judgment, submitted once,
           # could be cited by every clause in the manifest and the run would
@@ -17190,6 +17439,46 @@ gate_verb_act() {
   # still saw it would reopen a slot the segment already fulfilled.
   gate_check_merge_anchor "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$kind" || exit $?
 
+  # THE MERGE ARGV IS BOUND TO THE HEAD THE RULE READS. The review rule compares
+  # the review against the segment worktree's HEAD; a remote merge merges the
+  # pull request's head as the server holds it. An argv that does not pin the
+  # server to that HEAD is refused here, before the rule runs, so the head the
+  # rule approved is the only head the merge can take.
+  #
+  # THIS SITE CHANGES WHICH CODE AN UNBOUND MERGE GETS. A remote merge argv
+  # with no binding, or one naming another commit, now gets 2 from this line
+  # where before it reached a `--admin` refusal (3), an act outside
+  # pre-authorization (5) or the cutpoint ceiling (3). The repair is one
+  # argument, and every one of those later checks still runs once it is there.
+  #
+  # NOT IN THE RULE FILE AND NOT IN THE ANCHOR CHECK. The rule files carry the
+  # review predicate and are kept byte-identical, so a check added there would
+  # be a change to the predicate's own file; and the argv unwraps this reading
+  # needs live in this file, not in a `/bin/sh` checker. The anchor check answers a
+  # different question — whether a deferred review has a commit to anchor to —
+  # and returns early outside `선머지후리뷰`, the one policy this check is not
+  # for.
+  #
+  # WHAT STAYS OPEN: a merge made outside the gate, from the web UI or another
+  # machine, binds nothing. The record of such a merge is the segment row's
+  # `머지 대조`, which compares what landed rather than what was requested.
+  if [ "$GATE_ACT_EFFECTIVE" = '머지' ] && ! gate_kind_is_bookkeeping "$kind" \
+     && [ "${GATE_REVIEW_POLICY:-}" = '선리뷰후머지' ] \
+     && [ -n "$segment" ] && [ "$segment" != '-' ] \
+     && [ -n "$(gate_segment_field "$segment" '상태')" ] \
+     && gate_rule_enabled '리뷰-후-머지'; then
+    local mbind mhead=""
+    mbind=$(gate_merge_binding_of_argv0 "$@")
+    if [ "$mbind" != '해당없음' ]; then
+      mhead=$(gate_segment_tip "$segment") || mhead=""
+      if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
+        warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
+        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다"
+        exit "$GATE_EXIT_VOCAB"
+      fi
+    fi
+  fi
+
   # WHAT THE ORDER PREDICATE READS. The checker is a separate `/bin/sh` and
   # cannot call the reader above it, and letting it grep the ledger itself would
   # put a THIRD copy of "which obligations are open" beside this file's reader
@@ -17455,7 +17744,7 @@ gate_verb_act() {
     done
   fi
 
-  # The ten conditions are evaluated on EVERY act, not only on a done proposal.
+  # The eleven conditions are evaluated on EVERY act, not only on a done proposal.
   # A gate that can refuse a proposal but never cause one leaves the router
   # alone deciding when the night ends — so when every condition holds and the
   # router reaches for something else, it has to name what is left.
@@ -17573,9 +17862,11 @@ gate_verb_act() {
     # "is this still going?" without knowing the row grammar.
     #
     # A THIRD TERMINAL CLASS, because a run may now end while questions are
-    # still open. No eleventh termination condition is created for it — a
-    # condition exists to REFUSE a proposal, and an open question must not
-    # refuse one; that refusal is the defect being removed. So the residual is
+    # still open. No termination condition is created for the open question —
+    # a condition exists to REFUSE a proposal, and an open question must not
+    # refuse one; that refusal is the defect being removed. That rules out a
+    # condition for this residual and does not fix how many conditions there
+    # are: condition 11 was added later for a reason of its own. So the residual is
     # recorded in the `done` file beside `무효화`, which already sits there for
     # the same structural reason, and the morning tells the three apart at a
     # glance.
@@ -17586,7 +17877,7 @@ gate_verb_act() {
     # hold leaves no trace in the unmet list — and a run that answered every
     # authorized clause and one that deferred all of them behind questions would
     # otherwise write the same terminal line. This is the residual class the
-    # design put in this file rather than in an eleventh condition, so it has to
+    # design put in this file rather than in a condition of its own, so it has to
     # carry what is actually outstanding.
     held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
     if [ -n "$qids" ]; then
@@ -17818,8 +18109,11 @@ gate_verb_act() {
   # has to be as legible as one that reaches `act` — and the progress vector's
   # `dispatches=` positively selects on this field, so a row missing it is a row
   # that cannot be attributed. It costs at most 25 bytes (`| 행위자=` plus the
-  # longest value); the longest act row this repository has ever written is 678,
-  # so the shared site has the room. On the exec site the budget pays for it
+  # longest value). The shared site has no spare room to spend it from — `근거`
+  # takes what `gate_free_budget` leaves, so a long rationale fills the row to
+  # the cap, and the longest non-exec act row in this repository's ledgers
+  # measures 1023 bytes by the gate's ruler — which is why `행위자` is in that
+  # budget's field list and not added after it. On the exec site the budget pays for it
   # explicitly — `${#actor}` is in `_row_fixed` and the constant carries the key,
   # so the argv excerpt shrinks rather than the row growing.
   if [ "$verb" = "exec" ]; then
@@ -18353,8 +18647,8 @@ gate_clause_settled() {
   # `보류` COUNTS AS SETTLED HERE, DELIBERATELY, and the reason is worth stating
   # because the opposite reading is the obvious one. A condition exists to
   # REFUSE a proposal, and an open question must not refuse one — that refusal
-  # is the defect this slice removes, and it is why no eleventh condition was
-  # created. What keeps `보류` from being a free pass is not this function: it is
+  # is the defect this slice removes, and it is why no condition was created
+  # for an open question. What keeps `보류` from being a free pass is not this function: it is
   # the write-time floor (the evidence must be an OPEN `절단점=판단` approval,
   # and no two clauses may lean on the same one) plus the `done` file recording
   # every held clause with the question holding it. The state's disposition is
@@ -18922,6 +19216,122 @@ gate_obligation_covers() {
   fi
   GATE_COVER_WHY="review HEAD $r does not contain the merge commit and its tree differs"
   GATE_COVER_VERDICT='덮지 않는다'; return 0
+}
+
+# The three answers `gate_segment_cycle_verdict` leaves, in globals for the same
+# reason the landing and cover verdicts are: a caller reading them through
+# `$(…)` would run the function in a subshell and lose two of the three.
+GATE_CYCLE_COUNT_VERDICT=""
+GATE_CYCLE_COVER_VERDICT=""
+GATE_CYCLE_NUMBER=""
+
+gate_segment_cycle_verdict() {
+  # gate_segment_cycle_verdict <세그먼트> <대상 별칭> <머지 팁>
+  #
+  # What that segment's LAST `cycle` row says about a merge of <머지 팁>:
+  #   GATE_CYCLE_COUNT_VERDICT  충족 | 위반 | 판정 불가 | 리뷰 없음
+  #   GATE_CYCLE_COVER_VERDICT  덮는다 | 덮지 않는다 | 판정 불가
+  #   GATE_CYCLE_NUMBER         the row's `사이클`, or 없음
+  #
+  # THE ONE DERIVATION. The `머지 대조` of a merged segment row is formatted from
+  # this, and the convergence value a later change writes on the cycle row is
+  # meant to read the same function rather than a second reading of the same
+  # row. The count half restates the P0/P1 predicate that three places already
+  # enforce — the driver's review-verdict check in `run.sh` and the two review
+  # rules, `리뷰-후-머지` and `리뷰-후-적용` — so this is the FOURTH place a run
+  # that changes that predicate has to change with them.
+  #
+  # A MISSING COUNT IS NOT ZERO. The merge rule fills an absent `P0`/`P1` with 0
+  # before comparing; that reading is left alone there, and not copied here —
+  # a row that states no count has not said the findings are closed, and the
+  # record of the merge is the place that has to be able to say so.
+  local seg="$1" al="$2" tip="$3" row p0 p1 rh n
+  GATE_CYCLE_COUNT_VERDICT=""
+  GATE_CYCLE_COVER_VERDICT=""
+  GATE_CYCLE_NUMBER='없음'
+  row=$(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" | tail -1)
+  if [ -z "$row" ]; then
+    GATE_CYCLE_COUNT_VERDICT='리뷰 없음'
+  else
+    p0=$(gate_row_field "$row" 'P0')
+    p1=$(gate_row_field "$row" 'P1')
+    # `0` or a digit string without a leading zero, and nothing else.
+    for n in "$p0" "$p1"; do
+      case "$n" in
+        0) : ;;
+        ''|*[!0-9]*|0*) GATE_CYCLE_COUNT_VERDICT='판정 불가' ;;
+      esac
+    done
+    if [ -z "$GATE_CYCLE_COUNT_VERDICT" ]; then
+      if [ "$p0" = 0 ] && [ "$p1" = 0 ]; then
+        GATE_CYCLE_COUNT_VERDICT='충족'
+      else
+        GATE_CYCLE_COUNT_VERDICT='위반'
+      fi
+    fi
+    n=$(gate_row_field "$row" '사이클')
+    case "$n" in
+      ''|*[!0-9]*|0*) : ;;
+      *) GATE_CYCLE_NUMBER="$n" ;;
+    esac
+  fi
+  if [ -z "$tip" ]; then
+    GATE_CYCLE_COVER_VERDICT='판정 불가'
+  else
+    rh=""
+    [ -z "$row" ] || rh=$(gate_row_field "$row" '리뷰 HEAD')
+    gate_obligation_covers "$al" "$tip" "$rh"
+    GATE_CYCLE_COVER_VERDICT="$GATE_COVER_VERDICT"
+  fi
+}
+
+gate_segment_landed_exempt() {
+  # gate_segment_landed_exempt <세그먼트> <대상 별칭> <커밋> — returns 0 when a
+  # `완료`/`park` row may carry a `커밋` that has already landed:
+  #   1. this segment already has a `상태=머지됨` row, so its merge was recorded
+  #      and compared there; or
+  #   2. another segment's `상태=머지됨` row carries a `커밋` that contains this
+  #      one — as an ancestor, or as the same tree after a rewriting merge — so
+  #      the change landed inside a merge the ledger already compared.
+  # A sibling row with no `커밋` exempts nothing: it names no commit this one
+  # could have landed inside.
+  local seg="$1" al="$2" c="$3" root row sid sc
+  [ -n "$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_eq '상태' '머지됨')" ] && return 0
+  root=$(alias_root "$al" 2>/dev/null) || root=""
+  [ -n "$root" ] && [ -d "$root" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    sid=$(gate_row_field "$row" 'id')
+    [ "$sid" != "$seg" ] || continue
+    sc=$(gate_row_field "$row" '커밋')
+    [ -n "$sc" ] || continue
+    ( cd "$root" && git merge-base --is-ancestor "$c" "$sc" >/dev/null 2>&1 ) && return 0
+    gate_landing_rewritten_landed "$root" "$sc" "$c" && return 0
+  done <<EOF
+$(gate_rows 'segment' | gate_rows_field_eq '상태' '머지됨')
+EOF
+  return 1
+}
+
+gate_merge_check_value() {
+  # gate_merge_check_value <리뷰 정책> <카운트 판정> <커버리지 판정> — the
+  # `머지 대조` value. Closed set: 충족 · 위반(카운트) · 위반(미포함) ·
+  # 위반(카운트·미포함) · 리뷰 없음 · 판정 불가 · 정책 면제.
+  #
+  # `판정 불가` OUTRANKS A PARTIAL VIOLATION. A value that names one violation
+  # while the other half went unmeasured reads as the whole answer, and the
+  # repair it points to may not be the one that is missing.
+  local pol="$1" cnt="$2" cov="$3"
+  if [ "$pol" != '선리뷰후머지' ]; then printf '%s' '정책 면제'; return 0; fi
+  if [ "$cnt" = '리뷰 없음' ]; then printf '%s' '리뷰 없음'; return 0; fi
+  if [ "$cnt" = '판정 불가' ] || [ "$cov" = '판정 불가' ]; then printf '%s' '판정 불가'; return 0; fi
+  case "$cnt:$cov" in
+    '충족:덮는다') printf '%s' '충족' ;;
+    '위반:덮는다') printf '%s' '위반(카운트)' ;;
+    '충족:덮지 않는다') printf '%s' '위반(미포함)' ;;
+    '위반:덮지 않는다') printf '%s' '위반(카운트·미포함)' ;;
+    *) printf '%s' '판정 불가' ;;
+  esac
 }
 
 gate_issue_review_obligation() {
@@ -20889,7 +21299,7 @@ gate_close() {
 }
 
 # ---------------------------------------------------------------------------
-# Termination — nine conditions on the gate side, and a router-side proposal
+# Termination — eleven conditions on the gate side, and a router-side proposal
 # that must carry evidence rather than prose.
 #
 # The disagreement runs BOTH ways and the draft had only one direction. A gate
@@ -20956,7 +21366,7 @@ gate_unmet_summary() {
   # The row this feeds has a 1024-byte cap and the full list grows with the run
   # — one line per non-terminal segment, one per unsettled clause — so joining
   # the text made a run with enough of them unable to record its own rejection.
-  # The numbers cannot exceed ten distinct values, so this field cannot.
+  # The numbers cannot exceed eleven distinct values, so this field cannot.
   local unmet="$1" n ids
   n=$(printf '%s\n' "$unmet" | grep -c . || true)
   ids=$(printf '%s\n' "$unmet" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' \
@@ -20967,25 +21377,26 @@ gate_unmet_summary() {
 gate_unmet_numbers() {
   # gate_unmet_summary's numbers alone, deduplicated and ascending, one per line.
   # Carried separately from the capped text list because it is the half that
-  # cannot be truncated: it answers "why can this run not end" in ten values at
+  # cannot be truncated: it answers "why can this run not end" in eleven values at
   # most, while the text grows without bound and loses its tail exactly when the
   # night has been long enough for the tail to matter.
   printf '%s\n' "$1" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' | sort -un
 }
 
 gate_done_conditions() {
-  # Prints one line per UNMET condition, numbered. Empty output means all TEN
-  # hold. Never silently empty on an unreadable ledger — that is condition 4.
+  # Prints one line per UNMET condition, numbered. Empty output means all
+  # ELEVEN hold. Never silently empty on an unreadable ledger — that is
+  # condition 4.
   #
-  # Ten and not nine: condition 10 splits into two arms and both print `10`, so
-  # the numbering runs 1..10 while the count of printable causes is larger.
+  # Condition 10 splits into two arms and both print `10`, so the numbering runs
+  # 1..11 while the count of printable causes is larger.
   local sid st n
 
   # 1 — every segment in a terminal state.
   #
   # And at least one segment must exist. Over the empty set "every segment is
-  # terminal" is vacuously TRUE, so a run that has not started yet satisfies all
-  # nine — which made the very first act of every run trip the rule below that
+  # terminal" is vacuously TRUE, so a run that has not started yet satisfied
+  # every condition — which made the very first act of every run trip the rule below that
   # demands a next obligation when everything is already done. A run with no
   # segments has not finished; it has not begun.
   #
@@ -21196,7 +21607,7 @@ gate_done_conditions() {
 
   # 10 — every authorized termination clause is settled.
   #
-  # The other nine measure the ledger's SHAPE — segments terminal, approvals
+  # Conditions 1 to 9 measure the ledger's SHAPE — segments terminal, approvals
   # closed, no damage, no live stage. None of them measures the thing the user
   # actually authorized the run against, so a run with five of six clauses
   # unsettled passed all nine and ended as `충족`. The clauses were frozen into
@@ -21232,6 +21643,34 @@ gate_done_conditions() {
   # declare that mode, so the first run of it against itself takes this path.
   n=$(gate_unfulfilled_review_obligations | gate_count)
   [ "$n" = "0" ] || printf '9 미이행 리뷰 의무가 %s건입니다\n' "$n"
+
+  # 11 — no segment under `선리뷰후머지` whose merge was recorded against a
+  # review that did not clear it. The merge rule refuses such a merge only when
+  # the merge goes through the gate; this reads what the merged row recorded,
+  # so a merge made any other way is held here instead.
+  #
+  # THE LAST ROW CARRYING `머지 대조` ANSWERS, not the last row. A later row
+  # without the field — a `완료` written after the merge — says nothing about
+  # the comparison and does not clear it. What clears it is a review covering
+  # the merged commit, its `cycle` row, and a second `머지됨` row whose
+  # comparison then reads `충족`.
+  #
+  # `룰 설정: 끔` turns this off with the rule, and only this: the field is still
+  # written, so the morning can read what the setting let through.
+  if gate_rule_enabled '리뷰-후-머지'; then
+    local pol mcv
+    for sid in $(gate_segment_ids); do
+      [ -n "$sid" ] || continue
+      pol=$(gate_segment_field "$sid" '리뷰 정책')
+      [ "${pol:-선리뷰후머지}" = '선리뷰후머지' ] || continue
+      mcv=$(gate_row_field "$(gate_rows 'segment' | gate_rows_field_eq 'id' "$sid" \
+              | gate_rows_having_field '머지 대조' | tail -1)" '머지 대조')
+      case "$mcv" in
+        '위반('*|'리뷰 없음'|'판정 불가')
+          printf '11 세그먼트 %s 의 머지 대조가 %s 입니다\n' "$sid" "$mcv" ;;
+      esac
+    done
+  fi
 }
 
 gate_pending_approval_ids() {
