@@ -286,6 +286,22 @@ cc_shift_is_live() {
   [ "$rec" = "$now" ]
 }
 
+cc_pid_exists() {
+  # cc_pid_exists <pid> — succeeds when some process holds that pid, and says
+  # nothing about WHICH process that is.
+  #
+  # A BARE EXISTENCE TEST, and the name says so, because every other predicate
+  # here answers "is it still the process that was started" and this one cannot:
+  # its caller is the gate's `checks` drain lock, whose owner line records a pid
+  # and a time and no start fingerprint. It lives here rather than inline because
+  # a `kill -0` written in the gate is a liveness judgement of the gate's own,
+  # which is the divergence this file exists to prevent. Pid reuse is bounded by
+  # that caller instead: it also takes a lock over on age, so a recycled pid
+  # keeps a dead owner's lock for at most the sixty seconds that arm allows.
+  [ -n "${1:-}" ] || return 1
+  kill -0 "$1" 2>/dev/null
+}
+
 cc_proc_fingerprint() {
   # cc_proc_fingerprint <pid> — the pid's start time, whitespace-normalised.
   # The pair (pid, start time) is the identity; the pid alone is not.

@@ -4062,7 +4062,11 @@ fi
 #     What keeps it off `local ts seg pr sha st` and `read -r ts seg pr sha st` is
 #     that there `pr` follows a bare identifier run — a variable name. The first
 #     version demanded a quote or a `)` in front, so the unquoted and the
-#     braced expansions walked through;
+#     braced expansions walked through. `pr` and its verb may be quoted, since
+#     `$GH pr "merge"` is the same call;
+#   - an expansion in command position followed by any word, which is what a
+#     variable command word looks like whichever subcommand it runs —
+#     `$GH api -X PUT …/merge` carries no `pr` for the rule above to read;
 #   - `eval`, or a `command -v`/`which`/`type` resolution of the binary, because
 #     indirection defeats any line-based rule and banning it is cheaper than
 #     parsing it.
@@ -4079,7 +4083,16 @@ GH_FORM_RE='(^|[^A-Za-z0-9_-])gh -R "\$slug" pr [a-z][a-z-]*'
 # `:-` is let in front of `gh` because `${GH:-gh}` spells the binary's name as a
 # default, and `-` alone stays out so a hyphenated name ending in `gh` does not.
 GH_WORD_RE='(^|[^A-Za-z0-9_-]|:-)(gh|-R)([^A-Za-z0-9_-]|$)'
-GH_PR_RE="([\"')}]|\\]|\\\$[A-Za-z_][A-Za-z0-9_]*)[[:space:]]+pr[[:space:]]+[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
+GH_PR_RE="([\"')}]|\\]|\\\$[A-Za-z_][A-Za-z0-9_]*)[[:space:]]+[\"']?pr[\"']?[[:space:]]+[\"']?[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
+# AN EXPANSION IN COMMAND POSITION followed by a word, whatever that word is.
+# The rule above knows `pr` and nothing else, so `$GH api -X PUT …/merge` — the
+# generic escape hatch that can do anything a verb can — carried no token it
+# reads. Command position is the start of a line or what follows `;` `&` `|`
+# `(` or a backquote, or a word that runs the next one (`then`, `do`, `else`,
+# `exec`, `command`, `env`, `nohup`, `time`, `!`). A quoted path after the
+# expansion is not a word, which keeps `exec "${BASH:-/bin/bash}" "$…/checks.sh"`
+# off it.
+GH_CMDVAR_RE="(^|[;&|(\`]|(^|[^A-Za-z0-9_])(then|do|else|exec|command|env|nohup|time|!))[[:space:]]*\"?\\\$(\\{[^}]*\\}|[A-Za-z_][A-Za-z0-9_]*)\"?[[:space:]]+[\"']?[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
 GH_INDIRECT_RE='(^|[^A-Za-z0-9_-])(eval|command[[:space:]]+-v|which|type)[[:space:]]+[^[:space:]]*gh([^A-Za-z0-9_-]|$)'
 GH_EVAL_RE='(^|[^A-Za-z0-9_-])eval([^A-Za-z0-9_-]|$)'
 
@@ -4097,7 +4110,7 @@ gh_verbs_of() {
       | sed -E 's/.* pr ([a-z][a-z-]*)$/pr \1/'
     printf '%s\n' "$src" \
       | sed -E "s/$GH_FORM_RE/\\1 /g" \
-      | { grep -E "$GH_WORD_RE|$GH_PR_RE" || true; } \
+      | { grep -E "$GH_WORD_RE|$GH_PR_RE|$GH_CMDVAR_RE" || true; } \
       | sed 's/.*/(추출 실패)/'
     printf '%s\n' "$src" \
       | { grep -E "$GH_INDIRECT_RE|$GH_EVAL_RE" || true; } \
@@ -4139,6 +4152,13 @@ if [ -f "$CHECKS_SH" ]; then
     '  "$GH" pr merge "$n" --squash' \
     '  ${GH:-gh} pr merge "$n"' \
     '  $GH pr merge "$n"' \
+    '  ${GH} pr merge "$n"' \
+    '  "${GH:-gh}" pr merge "$n"' \
+    '  "${gh[@]}" pr merge "$n"' \
+    '  $GH pr "merge" "$n"' \
+    '  "$GH" "pr" "merge" "$n"' \
+    '  $GH api -X PUT "repos/$slug/pulls/$n/merge"' \
+    '  out=$($GH api -X PUT "repos/$slug/pulls/$n/merge")' \
     '  out=$(gh -R "$slug" pr checks "$n"); gh -R "$slug" pr merge "$n"'
   do
     GH_FX=$(mktemp "${TMPDIR:-/tmp}/cc-checks-gh.XXXXXX") \

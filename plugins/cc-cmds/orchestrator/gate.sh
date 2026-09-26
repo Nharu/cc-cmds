@@ -15189,9 +15189,10 @@ gate_checks_drain_lock() {
   # very case the sweep exists for is a drain that died mid-way — `gate_append`
   # calls `die` — and a plain `mkdir` lock left behind by that death would stop
   # every later drain for the rest of the run. So the owner line carries the pid,
-  # and a waiter that finds that pid gone takes the lock over. The rename is what
-  # names one winner when two waiters find it gone together, the shape
-  # `gate_index_lock` already arrived at.
+  # and a waiter that finds that pid gone takes the lock over — through
+  # `gate_checks_drain_takeover`, which judges again under a mutex of its own,
+  # because a rename alone lets a waiter acting on a stale read remove the fresh
+  # lock the other waiter has just taken.
   #
   # IT WAITS RATHER THAN GIVES UP. A drain that skipped would let the merge check
   # a few lines later read a ledger missing the poller's newest `실패`. A live
@@ -15218,16 +15219,67 @@ gate_checks_drain_lock() {
       continue
     fi
     now=$(date -u +%s)
-    if { [ -n "$opid" ] && ! kill -0 "$opid" 2>/dev/null; } || [ $((now - ots)) -ge 60 ]; then
-      dead="$lockdir.dead.$$.$now"
-      if mv "$lockdir" "$dead" 2>/dev/null; then
-        rm -rf "$dead" 2>/dev/null || true
-      fi
+    if { [ -n "$opid" ] && ! cc_pid_exists "$opid"; } || [ $((now - ots)) -ge 60 ]; then
+      gate_checks_drain_takeover "$lockdir" "$owner"
       continue
     fi
     sleep 0.05
   done
   printf '%s %s\n' "$$" "$(date -u +%s)" > "$lockdir/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_checks_drain_takeover() {
+  # gate_checks_drain_takeover <lockdir> <owner line judged dead> — remove a dead
+  # holder's lock, and only that lock.
+  #
+  # THE VERDICT IS TAKEN AGAIN UNDER A SECOND MUTEX, BECAUSE THE RENAME ALONE
+  # NAMES ONE WINNER ONLY WHEN BOTH WAITERS STILL LOOK AT THE SAME LOCK. Two
+  # waiters read the dead owner; the first renames the lock away, takes a fresh
+  # one and starts its section; the second, still acting on what it read before,
+  # renames THAT fresh lock away and takes one of its own. Both then hold the
+  # drain, and the row-by-row interleaving the lock exists to stop is back — a
+  # stale `통과` landing after a real `실패`. The death of a holder is the very
+  # case this lock is for, so the double-waiter window opens exactly when it
+  # matters.
+  #
+  # Under `<lockdir>.takeover` the owner line is read again and has to be the one
+  # judged dead; a lock with no owner line yet has to be old by its own mtime,
+  # because a fresh `mkdir` also has no owner line for a moment. A waiter that
+  # finds anything else leaves the lock alone and goes back to waiting. The only
+  # way to change the lock between that read and the rename is its holder's own
+  # release, and a holder judged dead has none — except under the sixty-second
+  # arm, where the holder may be a recycled pid that is alive; that residual is
+  # two consecutive commands wide and is not closed here.
+  #
+  # A TAKEOVER SECTION IS A READ AND A RENAME, so a `.takeover` older than ten
+  # seconds belongs to a taker that died inside it and is removed. Two waiters
+  # removing it together can both enter, which needs a dead drain AND a dead
+  # taker in the same run.
+  local lockdir="$1" seen="$2" tk="$1.takeover" tts now cur lts dead
+  if ! mkdir "$tk" 2>/dev/null; then
+    tts=$(gate_mtime "$tk"); now=$(date -u +%s)
+    if [ -n "$tts" ] && [ $((now - tts)) -ge 10 ]; then
+      rmdir "$tk" 2>/dev/null || true
+    fi
+    sleep 0.05
+    return 0
+  fi
+  cur=$(cat "$lockdir/owner" 2>/dev/null || true)
+  if [ -d "$lockdir" ] && [ "$cur" = "$seen" ]; then
+    if [ -z "$cur" ]; then
+      lts=$(gate_mtime "$lockdir"); now=$(date -u +%s)
+      if [ -z "$lts" ] || [ $((now - lts)) -lt 60 ]; then
+        rmdir "$tk" 2>/dev/null || true
+        return 0
+      fi
+    fi
+    dead="$lockdir.dead.$$.$(date -u +%s)"
+    if mv "$lockdir" "$dead" 2>/dev/null; then
+      rm -rf "$dead" 2>/dev/null || true
+    fi
+  fi
+  rmdir "$tk" 2>/dev/null || true
   return 0
 }
 
@@ -17274,8 +17326,9 @@ gate_verb_act() {
   # the park cell rather than by returning, so the block immediately below
   # writes the row — no new exit code is minted for it. It takes the effective
   # rung for the same reason the anchor check does: an under-declared merge
-  # must not skip it.
-  gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
+  # must not skip it. And it takes the kind for the reason the anchor check
+  # does: a bookkeeping row labelled `머지` merges nothing.
+  gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE" "$kind"
 
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
@@ -18212,8 +18265,9 @@ gate_check_merge_anchor() {
 }
 
 gate_check_merge_checks() {
-  # gate_check_merge_checks <segment> <cutpoint> — refuse a merge whose PR has a
-  # recorded CI failure. THE SIBLING, and the sibling-ness is load-bearing.
+  # gate_check_merge_checks <segment> <cutpoint> [<kind>] — refuse a merge whose
+  # PR has a recorded CI failure. THE SIBLING, and the sibling-ness is
+  # load-bearing.
   #
   # WHY IT IS NOT FOLDED INTO `gate_check_merge_anchor`. That check returns at
   # once unless the review policy is `선머지후리뷰`, and every slice this design
@@ -18235,9 +18289,18 @@ gate_check_merge_checks() {
   # which is the behaviour of a run with no poller at all. The only stale value
   # that could matter is `실패`, and the poller writes a new row on the
   # `실패 → 통과` transition while this reads the LAST row of the pair.
-  local seg="$1" cut="$2" row tip st req
+  local seg="$1" cut="$2" kind="${3:-}" row tip st req
   [ "$cut" = "머지" ] || return 0
   [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+  # A BOOKKEEPING ACT MERGES NOTHING, and the router labels every act with the
+  # target's cutpoint, so on a `머지` target its `segment` and park rows arrive
+  # here spelled `--cutpoint 머지`. Parked on a red check, the very row that
+  # records the park would itself be parked, and the run could not write down
+  # why its segment stopped. The anchor check exempts the same set for the same
+  # reason.
+  if gate_kind_is_bookkeeping "$kind"; then
+    return 0
+  fi
 
   # The trailing space is not cosmetic: without it segment `D` also matches a row
   # written for `D2`, and the merge of one segment would be refused by another's

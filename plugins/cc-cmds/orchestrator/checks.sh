@@ -460,6 +460,11 @@ pass_once() {
     # state, and the gate does with that exactly what it did with the broken pair
     # — nothing — so the deferral opens no window the old row had closed. Only
     # `실패` waits: it is the one state whose verdict reads `필수 집합`.
+    # A `--required` that never answers defers the pair for good, and that is
+    # accepted: the verdict table answers a `실패` with `필수 집합=판정 불가`
+    # exactly as it answers the earlier state — no refusal — so writing the pair
+    # would change nothing but the morning's reading, while this stderr line
+    # repeats every pass and says so.
     if [ "$status" = "실패" ] && [ "$req" = "판정 불가" ]; then
       printf 'checks: %s 의 필수 집합 조회가 깨져 실패 전이를 다음 패스로 미룹니다\n' "$slug#$n" >&2
       continue
