@@ -619,8 +619,10 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # catch it. The two sections are not byte-identical prose, so what is asserted
 # is the load-bearing literals: without any one of them the dispatch cannot be
 # issued, waited on, held back while the stage runs, re-attached after a cut,
-# dispatched again after a stage ended without carrying anything off, or held to
-# one fresh dispatch after an ending that does not clear by itself.
+# dispatched again after a stage ended without carrying anything off, held to
+# one fresh dispatch after an ending that does not clear by itself, or closed
+# by the gate on the same depth — the claim that condition 1 stays on its plain
+# line after that stop was false, and it must not come back.
 # ---------------------------------------------------------------------------
 design_section() {
   # design_section <skill file> — the design-dispatch subsection body, read up
@@ -649,7 +651,8 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     'Take 「Re-attaching a cut stage」 first' \
     '`외부 종료`, `크래시` and `공허한 성공` may be dispatched afresh, and only onto an absent document' \
     'Two of the three buy one fresh dispatch and no more: a `크래시` whose stream holds no 429 envelope, and a `공허한 성공`.' \
-    'When the last row is one of these two and two or more fresh attempts already stand, stop the design as below'
+    'When the last row is one of these two and two or more fresh attempts already stand, stop the design as below' \
+    'counts the same fresh attempts by the same definition'
   do
     # A count, not `grep -q`: the early exit on the right of a pipe SIGPIPEs the
     # left under pipefail. `case` would drop the pipe but reads `[]` as a glob.
@@ -660,6 +663,15 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
       bad "$who 사본의 설계 파견 절" "「${lit}」이 없다"
     fi
   done
+  # The absence is pinned, not the sentence: the depth stop once told the router
+  # that condition 1 keeps its plain line, and the gate then refused every
+  # proposal that sentence sent it to make.
+  nlit=$(printf '%s\n' "$sec" | grep -cF -- 'stays on its plain line' || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "$who 사본의 설계 파견 절이 깊이 멈춤 뒤 평이한 줄이 남는다고 말하지 않는다"
+  else
+    bad "$who 사본의 설계 파견 절" "깊이 멈춤 뒤 조건 1 이 평이한 줄에 머문다는 주장이 남아 있다"
+  fi
   # The step id selector is the one literal both copies must agree on to the
   # byte: it reads the frozen plan's graph, and two spellings of it are two
   # answers to "which step is the design" on the two paths that dispatch it.

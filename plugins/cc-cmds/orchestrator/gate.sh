@@ -17778,6 +17778,43 @@ gate_design_step_has_open_approval() {
   return 1
 }
 
+gate_design_fresh_attempts() {
+  # stdin: the design step's `stage-result` rows in ledger order. Prints how
+  # many of them are fresh attempts rather than re-attachments.
+  #
+  # THE ROUTERS' DEFINITION, WORD FOR WORD: a row is a re-attachment when its
+  # `세션 id` is not `미상` and stands on an earlier row of the step, and every
+  # other row is a fresh attempt. The routers stop the design on this count and
+  # condition 1 closes its window on it; two definitions would let one side
+  # stop on a state the other still reads as retryable.
+  local row sid seen=' ' n=0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    sid=$(gate_row_field "$row" '세션 id')
+    case "$sid" in
+      '' | '미상') n=$((n + 1)) ;;
+      *) case "$seen" in
+           *" $sid "*) ;;
+           *) n=$((n + 1)); seen="$seen$sid " ;;
+         esac ;;
+    esac
+  done
+  printf '%s' "$n"
+}
+
+gate_design_row_has_limit_envelope() {
+  # gate_design_row_has_limit_envelope <step id> <row> — 0 when that attempt's
+  # stream carries the usage-limit envelope. The same file and the same string
+  # the routers read before re-attaching, so a limit crash is told apart the
+  # same way on both sides. No attempt number, no run directory or no stream
+  # reads as no envelope: that is the side where the depth applies, and the
+  # depth is what lets a stalled run close.
+  local ver
+  ver=$(gate_row_field "$2" '실행 버전')
+  [ -n "$ver" ] && [ -n "${RUN_DIR:-}" ] || return 1
+  grep -qF '"api_error_status":429' "$RUN_DIR/log/$1#$ver.json" 2>/dev/null
+}
+
 gate_clause_settled() {
   # A clause is settled when a `종료 절` row in the LEDGER names it — written by
   # the router through `act --kind clause` with its evidence, or marked
@@ -20130,7 +20167,8 @@ gate_done_conditions() {
   # path (a saved document is not dispatched over, while the stage's own
   # spawn-time stub is), or the manifest names no document (the dispatch
   # refuses that value).
-  # Any of the three prints a different line with its own fixed head, and
+  # A fourth reason joins them: the step's fresh-attempt depth is spent (below).
+  # Any of the four prints a different line with its own fixed head, and
   # `gate_done_disposition` drops that head the way it drops condition 5's — the
   # run may then record its end, as invalidated and never as satisfied.
   #
@@ -20157,10 +20195,16 @@ gate_done_conditions() {
   # target-document guard passes that stub rather than parking on it. So the
   # class is not read alone — it is read together with what sits at the path.
   #
-  # THE RETRY BUDGET IS NOT HERE. This function reports whether the run can
-  # still produce a segment; how many times the step is dispatched is the
-  # router's ladder, which has its own declared depth. Putting a cap here would
-  # give one run two of them that cannot see each other.
+  # THE RETRY DEPTH IS READ HERE, AND DECLARED IN THE ROUTER. The gate refuses no
+  # dispatch and caps nothing: the routers stop the design themselves. But a
+  # `크래시` with no usage-limit envelope and a `공허한 성공` do not clear by
+  # themselves, so the routers buy each of them one fresh attempt and then stop
+  # the design and propose done. This function counts the same attempts by the
+  # same definition (`gate_design_fresh_attempts`) and reads a spent depth as
+  # closing the window. Counted on one side only, the router stopped on a state
+  # this line still read as the retry window: it printed the plain zero-segment
+  # line, `gate_done_disposition` kept it, and every proposal the router was
+  # told to make was refused — a run that could neither dispatch nor end.
   #
   # This does not open an empty end. The line only decides the disposition when
   # it is the last one left: condition 7 still holds the run while the design
@@ -20168,14 +20212,15 @@ gate_done_conditions() {
   # clause is settled, which on the normal path means the segments the frozen
   # document goes on to produce. Only a router that settles the document's
   # clauses as impossible, with evidence, leaves this line standing alone.
-  local n_seg dstep dwhy dname drows dlast
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
     dwhy=""
     if dstep=$(gate_run_scope_design_step); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
-      dlast=$(gate_row_field "$(printf '%s\n' "$drows" | tail -1)" '종단 부류')
+      dlastrow=$(printf '%s\n' "$drows" | tail -1)
+      dlast=$(gate_row_field "$dlastrow" '종단 부류')
       # `공허한 성공` joins `크래시` in the redispatch window. The two names
       # describe one situation — the stage is over and carried nothing off — and
       # which of them is written depends only on whether the process died or
@@ -20201,6 +20246,19 @@ gate_done_conditions() {
                dwhy='설계 문서가 이미 있음'
              fi ;;
         esac
+        # Inside the window, the depth the routers declare: a `공허한 성공`, or
+        # a `크래시` whose stream holds no usage-limit envelope, gets one fresh
+        # attempt. Once two stand the routers stop the design, and this line
+        # names the step so the proposal they make closes the run. `외부 종료`
+        # and a limit crash keep the window whatever the count.
+        if [ -z "$dwhy" ] && [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
+           && { [ "$dlast" = '공허한 성공' ] \
+                || ! gate_design_row_has_limit_envelope "$dstep" "$dlastrow"; }; then
+          dfresh=$(printf '%s\n' "$drows" | gate_design_fresh_attempts)
+          if [ "${dfresh:-0}" -ge 2 ]; then
+            dwhy="새 시도 깊이 소진(${dfresh}회)"
+          fi
+        fi
       fi
     fi
     if [ -n "$dwhy" ]; then
