@@ -284,6 +284,108 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 check "흔적이 없으면 여전히 공허한 성공" "$(classify_termination Sw 0 1)" "공허한 성공"
 if decision_point_reached Snone; then bad "결정 지점 탐지기" "ndjson 이 없는데 참을 냈다"; else ok "결정 지점 탐지기는 ndjson 이 없으면 거짓"; fi
 
+# 한도 종료 판정. 스테이지가 사용량 한도로 스스로 끝났는지는 그 시도 자신의
+# 스트림에서 타입이 있는 필드로만 읽는다. 최소 한도 스트림은 init · allowed
+# 프레임 · rejected 프레임 · 429 봉투 네 줄이고, 아래 변형은 그중 적힌 부분만
+# 바꿔 기대한 글자 하나만 거짓이 되게 한다.
+LIM_INIT='{"type":"system","subtype":"init","session_id":"s-lim"}'
+LIM_ALLOWED='{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790390000}}'
+LIM_REJECTED='{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790390000,"overageStatus":"rejected"}}'
+LIM_ENV429='{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s-lim","result":"You have hit your session limit · resets 3pm (Asia/Seoul)"}'
+LIM_OK='{"type":"result","subtype":"success","is_error":false,"session_id":"s-lim","result":"done"}'
+LIMD="$WORK/limit"; mkdir -p "$LIMD"
+sle() { local out rc; out=$(stage_limit_exit "$@"); rc=$?; printf '%s:%s' "$rc" "$out"; }
+
+# a. 실제 사망 모양 — rejected 가 뒤따르는 init 셋보다 앞이고 봉투가 파일 끝에
+# 몰려 있으며 init 8 / result 9 다. init 으로 창을 자르는 판정은 이것을 놓친다.
+{ for i in 1 2 3 4 5; do printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK"; done
+  printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" "$LIM_INIT" "$LIM_INIT" "$LIM_OK" "$LIM_OK" "$LIM_OK" "$LIM_ENV429"
+} > "$LIMD/a.json"
+check "한도 판정 a: 실제 사망 모양은 한도" "$(sle "$LIMD/a.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" > "$LIMD/b.json"
+check "한도 판정 b: 봉투 없음은 한도 아님" "$(sle "$LIMD/b.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1790390000}}' \
+  "$LIM_ENV429" > "$LIMD/c.json"
+check "한도 판정 c: 마지막 프레임이 rejected 가 아니면 F" "$(sle "$LIMD/c.json")" "3:F"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" "$LIM_ENV429" \
+  '{"type":"result","subtype":"succ' > "$LIMD/d.json"
+check "한도 판정 d: 봉투 뒤의 찢긴 줄은 T" "$(sle "$LIMD/d.json")" "3:T"
+printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"result":"Overloaded"}' \
+  > "$LIMD/e.json"
+check "한도 판정 e: 429 가 아닌 오류 봉투는 옛 rejected 가 있어도 한도 아님" "$(sle "$LIMD/e.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" "$LIM_INIT" > "$LIMD/f.json"
+check "한도 판정 f: 옛 한도 뒤 봉투 없는 init 은 P" "$(sle "$LIMD/f.json")" "3:P"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}"}]}}' \
+  "$LIM_ENV429" \
+  '{"type":"assistant","message":{"content":[{"type":"result","subtype":"success","is_error":false}]}}' \
+  > "$LIMD/g.json"
+check "한도 판정 g: 이스케이프된 프레임 문자열과 중첩 result 객체는 영향 없음" "$(sle "$LIMD/g.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}' "$LIM_ENV429" > "$LIMD/h.json"
+check "한도 판정 h: resetsAt 없는 rejected 는 R" "$(sle "$LIMD/h.json")" "3:R"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" \
+  "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK" > "$LIMD/i.json"
+check "한도 판정 i: 앞선 한도 뒤 성공 봉투와 allowed 는 한도 아님" "$(sle "$LIMD/i.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_ENV429" > "$LIMD/j.json"
+check "한도 판정 j: resetsAt 를 가진 allowed 프레임과 429 봉투는 F" "$(sle "$LIMD/j.json")" "3:F"
+check "한도 판정 k: 없는 파일은 한도 아님" "$(sle "$LIMD/none.json")" "1:"
+check "한도 판정 k: 빈 인자는 한도 아님" "$(sle '')" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" 'null' > "$LIMD/l.json"
+check "한도 판정 l: 봉투 뒤 객체가 아닌 JSON 줄은 건너뛴다" "$(sle "$LIMD/l.json")" "0:"
+# 찢김 글자는 다른 거짓 글자와 함께 순서대로 이어진다.
+printf '%s\n' "$LIM_INIT" "$LIM_ENV429" '{"torn' > "$LIMD/m.json"
+check "한도 판정: 거짓 글자는 F,R,P,T 순서로 이어진다" "$(sle "$LIMD/m.json")" "3:F,R,T"
+
+check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
+for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \
+                '적용 불명' '외부 종료' '한도-형상 회수'; do
+  check "읽기 사상: $rc_class 는 그대로" "$(terminal_route_class "$rc_class")" "$rc_class"
+done
+
+# 경로 A. 판정은 시도 핀과 거둔 종료(`.rc`)가 함께 있을 때만 서고, stdout 은
+# 부류만 싣는다 — 호출부가 `$(classify_termination …)` 로 부류를 받는다.
+lim_pin() {  # lim_pin <stage> <attempt> <stream-file> [rc]
+  printf '%s\n' "$2" > "$RUN_DIR/$1.attempt"
+  cp "$3" "$RUN_DIR/log/$1#$2.json"
+  if [ -n "${4:-}" ]; then printf '%s\n' "$4" > "$RUN_DIR/$1.rc"; fi
+}
+lim_pin Lk1 1 "$LIMD/a.json" 1
+check "경로 A: 한도 스트림 rc 1 은 한도 종료 (stdout 은 부류뿐)" \
+  "$(classify_termination Lk1 1 1 2>"$WORK/lk1.err")" "한도 종료"
+check "경로 A: 한도 종료는 경고를 내지 않는다" "$(grep -c . "$WORK/lk1.err")" "0"
+lim_pin Lk2 1 "$LIMD/a.json"
+check "경로 A: 거두지 않은 스테이지(.rc 없음)는 크래시" "$(classify_termination Lk2 1 1)" "크래시"
+lim_pin Lk3 1 "$LIMD/c.json" 1
+check "경로 A: 형상 불완전은 정확히 크래시" \
+  "$(classify_termination Lk3 1 1 2>"$WORK/lk3.err")" "크래시"
+check "경로 A: 형상 불완전 경고는 stderr 에 F 를 이름하는 한 줄" \
+  "$(grep -c "\[warn\] 한도 형상 불완전 (F) $RUN_DIR/log/Lk3#1.json\$" "$WORK/lk3.err")" "1"
+lim_pin Lk4 1 "$LIMD/a.json" 1; reap_mark Lk4 한도형상
+check "경로 A: 회수 표지는 한도 스트림보다 앞선다" "$(classify_termination Lk4 1 1)" "한도-형상 회수"
+lim_pin Lk5 1 "$LIMD/a.json" 1
+cp "$RUN_DIR/halt/Sx.md" "$RUN_DIR/halt/Lk5#1.md"
+check "경로 A: 멈춤 기록은 한도 스트림보다 앞선다" "$(classify_termination Lk5 1 1)" "의도된 park"
+lim_pin Lk6 1 "$LIMD/a.json" 0
+check "경로 A: rc 0 은 rc=0 부류 (정상 완료)" "$(classify_termination Lk6 0 0)" "정상 완료"
+check "경로 A: rc 0 은 rc=0 부류 (공허한 성공)" "$(classify_termination Lk6 0 1)" "공허한 성공"
+cp "$LIMD/a.json" "$RUN_DIR/log/Lk7.json"; printf '1\n' > "$RUN_DIR/Lk7.rc"
+check "경로 A: 핀 없는 범위 밖 스트림은 크래시" "$(classify_termination Lk7 1 1)" "크래시"
+printf '%s\n' "$LIM_INIT" > "$LIMD/crash.json"
+cp "$LIMD/a.json" "$RUN_DIR/log/Lk8#1.json"
+lim_pin Lk8 2 "$LIMD/crash.json" 1
+check "경로 A: 핀이 가리키는 시도 2 가 보통 크래시면 시도 1 의 한도는 읽지 않는다" \
+  "$(classify_termination Lk8 1 1)" "크래시"
+# 한 세션을 재부착으로 이어 간 세 시도는 session_id 를 공유하면서 부류가 다르다.
+# 시도의 정체는 핀이 가리키는 파일이다.
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK" > "$LIMD/ok.json"
+lim_pin Lk9 1 "$LIMD/a.json" 1;  lk9_1=$(classify_termination Lk9 1 1)
+lim_pin Lk9 2 "$LIMD/ok.json" 0; lk9_2=$(classify_termination Lk9 0 0)
+lim_pin Lk9 3 "$LIMD/a.json" 1;  lk9_3=$(classify_termination Lk9 1 1)
+check "경로 A: 한 세션의 세 시도는 시도별로 분류된다" "$lk9_1/$lk9_2/$lk9_3" "한도 종료/정상 완료/한도 종료"
+
 # ---------------------------------------------------------------------------
 # 6. Worktree teardown guard — BOTH conditions required
 # ---------------------------------------------------------------------------
@@ -2262,8 +2364,8 @@ arm21_case stub "$MFARM" 스텁 - '정상 완료'
 check "스폰 시점 스텁만 있으면 건너뛰지 않고 파견한다" \
   "$(arm21_rc stub)/$(arm21_disp stub)" "0/1"
 
-# 한도 소진 같은 런 밖 원인이 크래시로 기록되는데, 그 크래시가 남긴 것이 스텁뿐
-# 이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
+# 한도 소진 같은 런 밖 원인은 크래시나 한도 종료로 기록되는데, 그 시도가 남긴 것이
+# 스텁뿐이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
 arm21_case resumed-crash "$MFARM" 스텁 '크래시' '정상 완료'
 check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다시 파견한다" \
   "$(arm21_rc resumed-crash)/$(arm21_disp resumed-crash)/$(grep -c 'S1design run' "$ARM21/resumed-crash/parked" 2>/dev/null || printf 0)" "0/1/0"
@@ -2272,6 +2374,14 @@ check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다
 arm21_case resumed-crash-saved "$MFARM" 사람 '크래시' '정상 완료'
 check "크래시라도 저장된 문서가 남았으면 park 한다" \
   "$(arm21_rc resumed-crash-saved)/$(arm21_disp resumed-crash-saved)/$(grep -c 'S1design run' "$ARM21/resumed-crash-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# 한도 종료 는 크래시와 똑같이 읽는다 — 두 짝 모두.
+arm21_case resumed-limit "$MFARM" 스텁 '한도 종료' '정상 완료'
+check "앞선 시도가 한도 종료로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-limit)/$(arm21_disp resumed-limit)/$(grep -c 'S1design run' "$ARM21/resumed-limit/parked" 2>/dev/null || printf 0)" "0/1/0"
+arm21_case resumed-limit-saved "$MFARM" 사람 '한도 종료' '정상 완료'
+check "한도 종료라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-limit-saved)/$(arm21_disp resumed-limit-saved)/$(grep -c 'S1design run' "$ARM21/resumed-limit-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
 
 # 프로세스가 죽지 않고 rc 0 으로 끝났는데 산출물이 없는 경우도 같은 모양이다 —
 # 팀원이 증인 없이 턴을 끝내 기다릴 작업이 사라졌거나, 저장 직전 턴 경계에서
@@ -2731,6 +2841,33 @@ else
   bad "종료 잔여" "EXIT 경로에 보고가 걸려 있지 않다 — 순회 꼬리에 닿지 못한 런의 잔여는 아침에 도달하지 않는다"
 fi
 RUN_DIR="$RUN_DIR_SAVE3"; BASE="$BASE_SAVE3"; RUN_ID="$RUN_ID_SAVE3"
+# 한도 종료 는 런 끝 정산에서 따로 센다. 정산 블록은 main_loop 끝에 있어 그대로
+# 구동할 수 없으므로, 그 블록만 뽑아 원장 읽기와 리포트 쓰기를 대신한 채 돌린다.
+# N=0 인 런의 보고는 이 줄이 생기기 전과 바이트가 같아야 한다.
+settle_block=$(sed -n '/^  local last_cost settled limit_n$/,/^  report_run_residual$/p' "$DRIVER" | sed '$d')
+settle_run() {  # settle_run <stage-result 행 파일> — 보고 줄을 출력한다
+  (
+    SETTLE_ROWS="$1"
+    run_section_rows() { if [ "$1" = 'stage-result' ]; then cat "$SETTLE_ROWS"; fi; }
+    report_append() { printf '%s: %s\n' "$1" "$2"; }
+    ledger_row() { :; }
+    eval "settle_body() {
+$settle_block
+}"
+    settle_body
+  )
+}
+printf -- '- `stage-result` | 스테이지=S2 | 종단 부류=크래시 |\n- `stage-result` | 스테이지=S3 | 종단 부류=외부 종료 |\n' \
+  > "$WORK/settle0.md"
+{ cat "$WORK/settle0.md"
+  printf -- '- `stage-result` | 스테이지=S4 | 종단 부류=한도 종료 |\n- `stage-result` | 스테이지=S5 | 종단 부류=한도 종료 |\n'
+} > "$WORK/settle2.md"
+SETTLE_COST='비용: 비용 불명 — 이 런의 cost 행이 없다 · 정산됨(비용 불명) 1건'
+if [ -n "$settle_block" ]; then ok "정산 블록을 드라이버에서 뽑았다 (아래가 공허하지 않다)"; else bad "정산 블록" "뽑힌 블록이 비었다"; fi
+check "한도 종료 가 없는 런의 정산 보고는 비용 줄 하나뿐이다" "$(settle_run "$WORK/settle0.md")" "$SETTLE_COST"
+check "한도 종료 가 있는 런은 그 수를 따로 한 줄로 보고한다" "$(settle_run "$WORK/settle2.md")" \
+  "$SETTLE_COST
+한도 종료: 2건 — 크래시와 같게 처분, 계정 이동 없음"
 # 종료 요약의 단어. `보류` 는 사람의 답을 기다리는 종료 절의 처분이고 이 계수기는
 # 드라이버가 park 한 세그먼트를 센다 — 같은 리포트에 둘 다 나오므로, 한 단어가 두
 # 뜻을 가지면 읽는 사람이 줄마다 어느 쪽인지 짐작해야 한다.
@@ -4259,6 +4396,11 @@ for retry_arm in '공허한 성공' '크래시' '한도-형상 회수'; do
 done
 check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 3회)" \
   "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "3"
+# 한도 종료 는 제 갈래를 갖지 않고 크래시 갈래를 타서 그 1회 재시도를 공유한다.
+# 위 핀들은 이 행동이 없어도 초록이라 그것을 배제하지 못하므로, 구현 팔의 case
+# 주어가 읽기 사상을 거치는지를 같은 소스 문면 형태로 단언한다.
+check "구현 팔의 case 주어가 읽기 사상을 거친다 (한도 종료 가 크래시 갈래를 탄다)" \
+  "$( { grep -cxF '    case "$(terminal_route_class "$class")" in' "$DRIVER" || true; } )" "1"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파
@@ -7073,6 +7215,24 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '레인=~'; then
 else
   bad "stage-result 행" ".window 부재인데 레인 물결 표기가 없다: $REC_ROWS"
 fi
+
+# 한도 종료 는 크래시와 똑같이 처분한다 — 앞 부류가 한도 종료 면 복구를 파견하고,
+# 복구가 한도 종료 로 끝나면 크래시로 끝난 복구처럼 park 한다. park 사유는 참
+# 부류를 싣는다.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "한도 종료" >/dev/null; REC_RC=$?
+check "앞 부류가 한도 종료 면 복구된다 (반환 0)" "$REC_RC" "0"
+check "앞 부류가 한도 종료 면 정확히 1회 파견한다" \
+  "$( { printf '%s' "$REC_SPAWN" | grep -c 'review-unattended' || true; } )" "1"
+rec_reset; REC_RCLASS="한도 종료"
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null; REC_RC=$?
+check "복구가 한도 종료 로 끝나면 반환 1" "$REC_RC" "1"
+if printf '%s' "$REC_PARK" | grep_all_q -F '리뷰 복구 종단 부류 한도 종료'; then
+  ok "복구가 한도 종료 로 끝난 park 사유가 참 부류를 싣는다"
+else
+  bad "park 사유" "복구가 한도 종료 로 끝났는데 사유가 그것을 말하지 않는다: $REC_PARK"
+fi
+REC_RCLASS="정상 완료"
 
 # --- (3c) stage_window_read — 세 층, (꺼짐), (미상), - ------------------------
 WR="$WORK/window-read"; rm -rf "$WR"; mkdir -p "$WR/proj/.claude" "$WR/cfg" "$WR/empty"
