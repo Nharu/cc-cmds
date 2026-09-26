@@ -7824,7 +7824,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다, 15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -8245,6 +8245,50 @@ propose15x plan "$WORK/plan-R15J.md"
 check "15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
 rm -f "$WT/docs/fixture-design-15j.md"
 
+# R15K — the same hollow design stage, CONTINUED up to the cap. Both routers
+# continue a `공허한 성공` step in its own session rather than dispatching it
+# afresh, and once the gate refuses a third continuation they stop the design:
+# the step has no `segment` row for a `blocked` form, and a fresh dispatch buys
+# the discussion again. That stop is only a stop if the gate records it, so
+# condition 1 reads the continuation counter and leaves the redispatch window
+# at the cap. Before the cap the window is still open, as in R15J.
+resume15x() {
+  # resume15x <manifest> <stub> <session id> — continue the design step, then
+  # wait on it when the gate launched it. Sets rc and out from the act.
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
+    --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x --resume "$3" \
+    -- design -p "$design15c" 2>&1); rc=$?
+  [ "$rc" = "0" ] || return 0
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
+}
+fresh15x R15K 'docs/fixture-design-15k.md' K1
+settle15x "$WORK/plan-R15K.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 계속 상한 픽스처의 절을 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15K.md" "$STUB15C"
+check "15c: 계속 상한 픽스처의 첫 시도가 공허한 성공이다 (아래가 공허하지 않다)" \
+  "$(dclass15x R15K)" "공허한 성공"
+resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+check "15c: 공허한 성공 설계 단계의 첫 계속이 기동한다" "$rc/$(design_rows15x R15K)" "0/2"
+propose15x plan "$WORK/plan-R15K.md"
+check "15c: 상한 전에 계속한 설계 단계의 재파견 창은 열려 있다" "$rc" "3"
+resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+check "15c: 둘째 계속도 기동하고 계수기가 상한에 이른다" \
+  "$rc/$(cat "$STATE_LATE/cc-cmds/run/R15K/continue/D1" 2>/dev/null)" "0/2"
+resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+check "15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다" "$rc" "3"
+case "$out" in
+  *"stop the design"*"무효화"*) ok "15c: 그 거부는 막힘 행이 아니라 설계 중단을 가리킨다" ;;
+  *) bad "15c 설계 계속 상한 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+propose15x plan "$WORK/plan-R15K.md"
+check "15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 계속 상한 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 계속 상한 종료 문면" "$msg" ;;
+esac
+
 # R15H — the design stage ended unobserved before its team placed a file at the
 # path. The prelude settles such a dispatch as `외부 종료` without looking at the
 # document, and the routers dispatch that step again onto the absent document, so
@@ -8305,14 +8349,16 @@ rm -f "$WT/docs/fixture-design-15f.md"
 
 # ---------------------------------------------------------------------------
 # 15d. A stage that ended its turn in prose is CONTINUED, not re-run
-# --- section: 15d | group: base | covers: act, snapshot | anchors: 15d: 공허한 성공의 재개는 계속 메시지를 싣는다, 15d: 계속 상한에 이른 세그먼트의 재개는 exit 3 이다, 15d: 대기 판단 승인이 있는 세그먼트는 계속하지 않는다, 15d: 0턴 시도는 계속하지 않는다, 15d: 크래시 재개는 계속이 아니다 ---
+# --- section: 15d | group: base | covers: act, snapshot | anchors: 15d: 공허한 성공의 재개는 계속 메시지를 싣는다, 15d: 계속 상한에 이른 세그먼트의 재개는 exit 3 이다, 15d: 대기 판단 승인이 있는 세그먼트는 계속하지 않는다, 15d: 같은 세그먼트의 다른 파견이 낸 대기 판단은 계속을 막지 않는다, 15d: 0턴 시도는 계속하지 않는다, 15d: 크래시 재개는 계속이 아니다, 15d: 라우터 사본 item 1 이 계속 상한에 닿은 설계 단계를 설계 중단으로 보낸다 ---
 #
 # A stage that exits 0 having written no gate row and no halt record is a hollow
 # success, and what it usually did was end its turn on a progress report. The
 # router re-dispatches it with `--resume <session id>`; the gate then sends the
 # fixed continue message instead of the router's prompt, counts the
-# continuation on disk, and refuses once the count reaches the cap, while a
-# judgment it raised is pending, or when the attempt ran zero turns. A resume
+# continuation on disk, and refuses once the count reaches the cap, while the
+# judgment its last attempt emitted is pending, or when the attempt ran zero
+# turns. A question another dispatch of the same segment raised does not hold
+# it. A resume
 # of a stage that did not end hollow keeps the router's prompt. Driven through
 # the real launch path with a stub CLI that records the prompt it was handed.
 # ---------------------------------------------------------------------------
@@ -8397,6 +8443,34 @@ case "$out" in
   *"still pending"*) ok "15d: 그 거부는 대기 중인 판단을 든다" ;;
   *) bad "15d 대기 판단 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
+case "$out" in
+  *"re-attaches"*) bad "15d 대기 판단 문면" "수행되지 않는 재부착을 약속한다: $(printf '%s' "$out" | tr '\n' ' ')" ;;
+  *"(approval J-"*) ok "15d: 그 거부는 이 시도가 방출한 판단의 승인 id 를 대고 재부착을 약속하지 않는다" ;;
+  *) bad "15d 대기 판단 승인 id" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# A pending judgment ANOTHER dispatch of the same segment raised does not hold
+# this one. The absorber keys every stage of a segment on the bare segment, so
+# the first dispatch's open question and this dispatch share `막는 세그먼트`;
+# only the question this dispatch's own last attempt emitted may hold it.
+seg15d SO15
+( export CC_STUB15D_JUDGE=1; launch15d SO15 )
+so_jid=$( { grep -F '`승인`' "$FX_LEDGER" || true; } | { grep -F '막는 세그먼트=SO15 ' || true; } \
+  | sed -n '1p' | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+check "15d 다른 파견 픽스처가 세그먼트를 막는 대기 판단을 연다 (아래가 공허하지 않다)" \
+  "$( [ -n "$so_jid" ] && printf found || printf missing )" "found"
+launch15d SO15
+check "15d 다른 파견 픽스처의 둘째 파견도 공허한 성공이다" "$(last15d SO15 '종단 부류')" "공허한 성공"
+launch15d SO15 --resume "$(last15d SO15 '세션 id')"
+check "15d: 같은 세그먼트의 다른 파견이 낸 대기 판단은 계속을 막지 않는다" "$rc" "0"
+if grep -qF '이 스테이지의 턴이 끝났지만 산출물 술어가 충족되지 않았다' "$WORK/p15d.txt"; then
+  ok "15d: 그 재개는 계속 메시지를 싣는다"
+else
+  bad "15d 다른 파견 계속 메시지" "$(cat "$WORK/p15d.txt")"
+fi
+check "15d: 첫 파견의 판단 승인은 여전히 대기다" \
+  "$( { grep -F '`승인`' "$FX_LEDGER" || true; } | { grep -F "| 승인 id=$so_jid |" || true; } | tail -1 \
+      | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//')" "대기"
 
 # Zero turns: nothing to continue.
 seg15d SZ15
@@ -8455,6 +8529,36 @@ for c15d in "$RS15D" "$LD15D"; do
     *) bad "15d 라우터 사본 item 1 드라이버 문장" "$c15d" ;;
   esac
 done
+# A design step continued up to the cap has exactly one disposition the gate
+# accepts: the design stop, whose proposal condition 1 records as `무효화` once
+# it reads the same counter. The cone `blocked` form needs a `segment` row the
+# step does not have, and a fresh dispatch buys the discussion again, so item 1
+# must send the capped step to the stop in both copies — R15K in 15c drives the
+# gate half of the same claim.
+case "$RS15D" in
+  *"never gets here"*) bad "15d 교대 사본 item 1 상한" "상한에 닿은 설계 단계를 막힘 행으로 보낸다" ;;
+  *) ok "15d: 교대 사본 item 1 이 상한에 닿은 설계 단계를 막힘 행으로 보내지 않는다" ;;
+esac
+for c15d in "$RS15D" "$LD15D"; do
+  case "$c15d" in
+    *"is not dispatched afresh either"*"continue/<step id>"*"stop the design as below"*)
+      ok "15d: 라우터 사본 item 1 이 계속 상한에 닿은 설계 단계를 설계 중단으로 보낸다" ;;
+    *) bad "15d 라우터 사본 item 1 상한 처분" "$c15d" ;;
+  esac
+done
+cont3_15d=$(awk '/^#### Continuing a stage that ended its turn in prose$/ { f = 1; next }
+                 f && /^#+ / { exit }
+                 f && /^3\. \*\*Exit 3 is the gate declining\.\*\*/ { print; exit }' \
+            "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+case "$cont3_15d" in
+  *"the design step has no \`segment\` row, so that form is refused for it"*"stops the design instead"*)
+    ok "15d: 교대 사본 계속 절 item 3 이 막힘 행을 세그먼트로 한정하고 설계 단계를 설계 중단으로 보낸다" ;;
+  *) bad "15d 교대 사본 계속 절 item 3" "${cont3_15d:-(절을 찾지 못했다)}" ;;
+esac
+case "$cont3_15d" in
+  *"re-attaches"*) bad "15d 교대 사본 계속 절 item 3" "수행되지 않는 재부착을 약속한다" ;;
+  *) ok "15d: 교대 사본 계속 절 item 3 이 재부착을 약속하지 않는다" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none

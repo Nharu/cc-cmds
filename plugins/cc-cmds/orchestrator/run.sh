@@ -3958,7 +3958,8 @@ redispatch_spend() {
 continue_counter_file() {
   # continue_counter_file <key> — the stage id on the driver path, the segment
   # id on the gate path. `/` cannot appear in a file name, so it is folded.
-  mkdir -p "$RUN_DIR/continue"
+  # Only the writer creates the directory: the gate's termination condition 1
+  # reads the count, and a read leaves nothing behind.
   printf '%s/continue/%s' "$RUN_DIR" "$(printf '%s' "$1" | tr '/' '_')"
 }
 
@@ -3975,6 +3976,7 @@ continue_spend() {
   # continue_spend <key> — record one more continuation, echo the new count.
   local n
   n=$(( $(continue_count "$1") + 1 ))
+  mkdir -p "$RUN_DIR/continue"
   printf '%s\n' "$n" > "$(continue_counter_file "$1")"
   printf '%s' "$n"
 }
@@ -5734,11 +5736,13 @@ absorb_stage_judgment() {
 # THE PARK REASON SAYS WHAT HAPPENS NEXT, AND ONLY THAT. The run does not
 # continue the stage and does not wait: the caller parks it `막힘` under its
 # own scope.
-# On the implement stage the answer is read back by `answered_judgment_stage`
-# when that segment's implement stage is next dispatched, which re-attaches the
-# session that asked — but a parked segment is not dispatched again in this
-# run, and the reason says so. The design and audit stages have no such
-# reader, so nothing re-attaches them and the reason does not promise it.
+# Nothing on this driver carries the answer back to a parked stage.
+# `answered_judgment_stage` reads an answer only in the next implement cycle of
+# a segment that was NOT parked; a parked segment is not dispatched again in
+# this run, a same-run-id invocation is refused by `check_inflight`, and a new
+# run id cannot find the stream that asked. So the reason names the approval
+# and says a person relaunches the stage to act on the answer; it names no
+# resume command, because this driver cannot name one that would run.
 # ---------------------------------------------------------------------------
 continue_or_park() {
   local sid="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" retry_prompt="$6" unmet="$7" alias="$8"
@@ -5753,8 +5757,8 @@ continue_or_park() {
       log "$sid: 공허한 성공 — 이 스테이지가 낸 판단 승인 $OPEN_JUDGMENT_ID 가 대기 중이라 계속하지 않는다"
       CONTINUE_BLOCKED=1
       case "$rkind" in
-        S4) CONTINUE_PARK_REASON="판단 승인 대기 $OPEN_JUDGMENT_ID — 이 런은 이 스테이지를 계속하지 않고 여기서 멈추며, 이 런 안에서 이 세그먼트를 다시 디스패치하지 않는다. 답이 온 뒤 이 세그먼트의 구현 스테이지가 다시 디스패치되면 드라이버가 원장에서 답을 읽어 질문한 세션에 재부착한다" ;;
-        *)  CONTINUE_PARK_REASON="판단 승인 대기 $OPEN_JUDGMENT_ID — 이 런은 이 스테이지를 계속하지 않고 여기서 멈춘다. 이 단계에는 답을 읽어 재부착하는 경로가 없으므로, 답을 반영하려면 사람이 이 스테이지를 다시 띄운다" ;;
+        S4) CONTINUE_PARK_REASON="판단 승인 대기 $OPEN_JUDGMENT_ID — 이 런은 이 스테이지를 계속하지 않고 여기서 멈추며, 이 런 안에서 이 세그먼트를 다시 디스패치하지 않는다. 이 드라이버에는 멈춘 스테이지에 답을 되돌리는 경로가 없으므로, 답을 반영하려면 사람이 이 세그먼트를 다시 띄운다" ;;
+        *)  CONTINUE_PARK_REASON="판단 승인 대기 $OPEN_JUDGMENT_ID — 이 런은 이 스테이지를 계속하지 않고 여기서 멈춘다. 이 드라이버에는 멈춘 스테이지에 답을 되돌리는 경로가 없으므로, 답을 반영하려면 사람이 이 스테이지를 다시 띄운다" ;;
       esac
       return 1
     fi
