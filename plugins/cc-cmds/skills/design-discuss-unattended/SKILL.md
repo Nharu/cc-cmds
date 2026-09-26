@@ -149,13 +149,24 @@ The roster this stage instantiates when the manifest carries no `설계 로스�
 
 ### Step 1: Read the brief and guard it
 
-Under **driver dispatch there is no brief**: `$ARGUMENTS` is the design-document path followed by the task sentence, and the interview product is the interview record when this run has one and otherwise the task sentence plus the manifest's `## 의도` block; exploration findings and reproduction data are gathered by the Step 3 team's own reading of the tree (the base skill's Step 3 already has them do this against the codebase); the roster is the one instantiated at Step 0; the baseline is `git status --porcelain` + `git worktree list --porcelain` taken **now**, before any spawn. Skip the brief guards below and the target-document guard — the document-present guard at Step 0 is its driver-dispatch form — and proceed to Step 2.
+Under **driver dispatch there is no brief**: `$ARGUMENTS` is the design-document path followed by the task sentence, and the interview product is the interview record when this run has one and otherwise the task sentence plus the manifest's `## 의도` block; exploration findings and reproduction data start from the record's `## 탐색 결과` and `## 재현 근거` when it carries them, and the Step 3 team re-checks every one the design rests on and reads the tree for everything else (the base skill's Step 3 already has them do this against the codebase); the roster is the one instantiated at Step 0; the baseline is `git status --porcelain` + `git worktree list --porcelain` taken **now**, before any spawn. Skip the brief guards below and the target-document guard — the document-present guard at Step 0 is its driver-dispatch form — and proceed to Step 2.
 
 **The interview record, when this run has one.** The kickoff freezes the person's interview answers verbatim; this stage is its reader. Resolve it by **path convention** — `$(dirname "$CC_PIPELINE_MANIFEST")/${CC_PIPELINE_RUN_ID}.interview.md`, the same `<base>/docs/pipeline-run/` directory the manifest sits in — and not from the row, so that the resolution does not depend on the very row it is about to be checked against. Then:
 
-- **File present** — read it whole and take its six content sections as the requirement input in place of the task sentence: `## 과제`, `## 요구사항 문답`, `## 배포 형상`, `## 재현 근거`, `## 검증 선결`, `## 골격 사전 판정`. `없음` is a value in each of them and an omitted section is not. `## 로스터` is **not** read here — the roster was instantiated at Step 0 from the manifest, and reading a second source for it is how a stage starts composing a team. Measure the file with `shasum -a 256` and compare it against the manifest `## 인가` row `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>`.
+- **File present** — read the version token on its header comment and read it whole, and take the content sections its version lists below as the requirement input in place of the task sentence. `없음` is a value in each of them and an omitted section is not. `## 로스터` is **not** read here — the roster was instantiated at Step 0 from the manifest, and reading a second source for it is how a stage starts composing a team. Measure the file with `shasum -a 256` and compare it against the manifest `## 인가` row `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>`.
+    - Version 2 (`cc-run-interview v2`): `## 과제`, `## 요구사항 문답`, `## 확인된 요구`, `## 배포 형상`, `## 탐색 결과`, `## 재현 근거`, `## 검증 선결`, `## 골격 사전 판정`.
+    - Version 1 (`cc-run-interview v1`): `## 과제`, `## 요구사항 문답`, `## 배포 형상`, `## 재현 근거`, `## 검증 선결`, `## 골격 사전 판정`.
+- **Any other version token, or none** → **halt before spawning**, `자리 id: ledger-missing`, `분류: precondition-failed`, with the resolved path and the token observed in `관측 상세`. A format this stage does not know is not read as "no record": filling it from the task sentence would bring back the silent shallowness the record exists to prevent.
 - **The hash disagrees, or the row exists with no file, or the file exists with no row** → **halt before spawning**, `자리 id: ledger-missing`, `분류: precondition-failed`, with the resolved path, the expected hash and the observed hash in `관측 상세`, because the record's hash sits inside the frozen set.
 - **Neither row nor file** → this run held no design interview. Proceed on the task sentence and `## 의도`, exactly as before.
+
+**Reading the record.**
+
+- An answer is read against its question's `**선택지**`. An answer equal in normal form to an offered label means that label and its description.
+- `## 확인된 요구` is the requirement baseline. Where its `완료 기준` differs from the manifest's `종료 절`, the `종료 절` wins the baseline — it is what the person answered last, in the kickoff's boundary questions — and the matching line of `### 확인된 요구와의 대응` reads `해석 — 매니페스트 종료 절`.
+- `없음` is a value.
+- A section that is missing, or a value that does not fit its section, becomes a requirement-decision list entry `기록 형식 — <빠진 절 또는 어긋난 값>`, not a halt.
+- `## 탐색 결과` and `## 재현 근거` are claims observed at the record's commit. The Step 3 team re-checks against the current tree every one the design rests on, and reads the tree for the rest, so that a kickoff's exploration never becomes design input unchecked.
 
 The manifest's `## 의도` block stays in force either way. It is the run's intent, decided by the entry judgment; the record is the person's answers. They are not the same sentence and neither replaces the other.
 
@@ -177,15 +188,20 @@ Under driver dispatch `STATE="${CC_PIPELINE_RUN_DIR}/design/{slug}"` with `{slug
 
 ### Step 3 · Step 4: Interim body
 
-**Read `${CLAUDE_SKILL_DIR}/../design/SKILL.md` from `### Step 3: Design Discussion (English, internal only)` through Step 4's `Save the design document …` bullet** and follow it, with five substitutions:
+**Read `${CLAUDE_SKILL_DIR}/../design/SKILL.md` from `### Step 3: Design Discussion (English, internal only)` through Step 4's `Save the design document …` bullet** and follow it, with these substitutions:
 
 1. every `AskUserQuestion` terminus → a park at one of the nine sites (CFI-U0);
 2. interview product, exploration findings, reproduction data and the approved roster come from the brief's blocks, not from any conversation;
 3. the boundary-gate baseline is the brief's `## 기준선`;
 4. the post-save Korean notices, the aggregate line and the presentation are **not** emitted — they become the three blocks of `presentation.md` (Step 5 below);
-5. before `team-cleanup.md` is applied, and inside the window in which each ledger row is flipped to `done`, the witness corpus is made durable (below).
+5. before `team-cleanup.md` is applied, and inside the window in which each ledger row is flipped to `done`, the witness corpus is made durable (below);
+6. (driver dispatch only) the interview record governs, and what the team decides in its place is listed:
+    - every member prompt carries the record's absolute path and the sentence "Read it whole; any summary in this prompt is a convenience and the record governs.", and tells the member to write a `## 요구 결정` section in its witness — the requirement-level decisions it would take that the record does not answer;
+    - synthesis writes `## 팀이 정한 요구 결정` immediately after `## 재현·근본원인` (first, when the document has none) and before `## 합의된 아키텍처`, in the form of `### The requirement-decision list (driver dispatch)` below;
+    - a requirement-level choice the record left open is decided and listed, and is never written as an unresolved entry;
+    - a record hypothesis (`가설(추측)`) the team could not reproduce is listed as `재현 가설` and creates no Tier-2 unresolved pointer.
 
-Under driver dispatch substitutions 2 and 3 read their inputs from Step 0 and Step 1 above instead of a brief — substitution 2's interview product is the interview record's six content sections when Step 1 resolved one, and the task sentence plus `## 의도` when it did not — and substitution 4 does not apply: after the save the stage writes no `presentation.md` and continues into Step 5U.
+Under driver dispatch substitutions 2 and 3 read their inputs from Step 0 and Step 1 above instead of a brief — substitution 2's interview product is the interview record's sections Step 1 took when Step 1 resolved one, and the task sentence plus `## 의도` when it did not — and substitution 4 does not apply: after the save the stage writes no `presentation.md` and continues into Step 5U. Substitution 6 applies under driver dispatch only.
 
 When that body is relocated into this file, this section is replaced by it.
 
@@ -226,16 +242,27 @@ Step 6U is a **destination** — Step 5U's `재설계` items and Step 4's two es
 
 ### Step 7U: Coherence, slicing self-check, residual ladder, freeze (driver dispatch)
 
-Three jobs in this order, then the freeze; the ladder needs final R-items and writes, and nothing follows the freeze (CFI-3c of the base skill).
+The jobs below run in this order, then the freeze; the ladder needs final R-items and writes, and nothing follows the freeze (CFI-3c of the base skill).
 
-1. **Coherence pass.** Resume this session's Step 3 team by `agentId` (the base skill's permitted resume #3 — this is the one session that can address them), phase token `coherence`, `epoch` re-stamp and `witnessNonce` per the base skill's Step 7 and the protocol, one round, collect by witness under CFI-U0. Apply each finding directly to the document. **A finding that contradicts a converged decision → halt `step7-coherence-conflict`**, naming the finding and the decision. Clear each consumed `[Step 7 정합 점검 대상]` note. Then apply `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`.
+1. **Coherence pass.** Resume this session's Step 3 team by `agentId` (the base skill's permitted resume #3 — this is the one session that can address them), phase token `coherence`, `epoch` re-stamp and `witnessNonce` per the base skill's Step 7 and the protocol, one round, collect by witness under CFI-U0. Apply each finding directly to the document. **A finding that contradicts a converged decision → halt `step7-coherence-conflict`**, naming the finding and the decision. A finding that the document departs from a recorded interview answer is not such a contradiction: it is listed by the requirement-decision job below as `벗어남 — 문 <n>`. Clear each consumed `[Step 7 정합 점검 대상]` note. Then apply `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`.
 2. **Slicing self-check** (only when `## 구현 슬라이싱` is present): the base skill's two rules — declared ⊇ actual, and `SKILL.md` implies `README.md`. Repair the declaration in place; a repair that needs a decision the authors did not make → halt `slicing-unknown`.
-3. **Residual ladder.** For every `### R<n>` still at `**검증 등급**: 구현 시 검증`, descend until one rung settles it:
+3. **Requirement-decision list.** Re-read the whole document against the interview record and its `## 확인된 요구`, and fill `### 확인된 요구와의 대응`. A requirement-level decision not yet in `## 팀이 정한 요구 결정` is added, whether it came from synthesis, a Step 5U `해결`, a coherence correction or a slicing repair. A requirement-level entry of `## 미해결 이슈 / 트레이드오프` left at `상태: 보류` is listed as `미결 — 보류로 동결`. A decision that departs from a recorded answer is listed as `벗어남 — 문 <n>` and never goes to `step7-coherence-conflict`; the run does not stop for it. This job follows the coherence pass and the slicing repair because it collects what they decided, and precedes the ladder because the ladder follows the last write.
+4. **Residual ladder.** For every `### R<n>` still at `**검증 등급**: 구현 시 검증`, descend until one rung settles it:
     - **Rung 1 — self-document check** (read-only, no external contact): is the item's premise still true against the rest of the frozen-to-be document? A refuted premise is **evidence only** — retiring the item fits no write form, so the item is escalated as a `설계-골격` judgment (`등급 2`) with the evidence, and nothing is written.
     - **Rung 2 — declared-store lookup**: if the recipe names a credential, `credentials.sh store-has <name>` (`${CLAUDE_SKILL_DIR}/../../orchestrator/credentials.sh`, through the gate; the manifest's `사전 인가` targets this spelling because `test -f` has no grade row). 있음 → write **W3** (form and diff gate in `implement-unattended/SKILL.md`), which records existence and moves no value anywhere; 없음 → the item stays blocked, evidence only.
     - **Rung 3 — reachability**: **off by default**, because every probing client is graded `외부상태변경` and the `design` settings variant denies `WebFetch`, so this rung costs the very cutpoint it would verify. It runs only when the manifest opens it for that item by a `사전 인가` row naming the item; then the result is evidence only.
     - An item no rung settles → halt `ladder-unsettled` **as a `설계-골격` judgment**: the halt record's `질문 문면` is the item and its blocker, `관측 상세` carries the rung-1 and rung-3 evidence. Halt after all items have been walked, not at the first, so the record lists every unsettled item at once.
-4. **Freeze.** Write `**상태**: 동결됨` on the document's status line (this is the last document edit). Then emit, in the terminal message: the freeze literal *"설계 문서를 동결했습니다."* on its own line — byte-identical to the first sentence of the attended skill's freeze notice, and the driver's artifact predicate reads exactly it — followed by the document path and its whole-file `sha256`, then the one bundled judgment of Step 5U when any `해결` was applied. Name no next step (CFI-L4(d)). End the turn.
+5. **Freeze.** Write `**상태**: 동결됨` on the document's status line (this is the last document edit). Then emit, in the terminal message: the freeze literal *"설계 문서를 동결했습니다."* on its own line — byte-identical to the first sentence of the attended skill's freeze notice, and the driver's artifact predicate reads exactly it — followed by the document path and its whole-file `sha256`, then the one bundled judgment of Step 5U when any `해결` was applied. Name no next step (CFI-L4(d)). End the turn.
+
+### The requirement-decision list (driver dispatch)
+
+`## 팀이 정한 요구 결정` lists the requirement-level decisions the team took because the interview record did not answer them, so that the person reads what was decided in their place before reading how it is built. Only a driver-dispatched stage writes it.
+
+- **Entry.** One heading `### 요구 결정 <n>. <제목>` and, under it, four bold-key fields: `**정한 것**` · `**기록과의 관계**` · `**근거**` · `**버린 대안**`. The `### 확인된 요구와의 대응` block in the same section is not an entry.
+- **`**기록과의 관계**` is a closed vocabulary**: `미답 — <기록의 절 | 문답 밖>` · `위임 — 문 <n>` · `위임 — 문 <n> (선택지 설명)` · `해석 — 문 <n>` · `벗어남 — 문 <n>` · `재현 가설` · `킥오프 탐색 확정 — 확인된 요구에 없음` · `미결 — 보류로 동결` · `기록 v1` · `기록 없음` · `기록 형식 — <…>`.
+- **`### 확인된 요구와의 대응`** carries one line per line the kickoff read back: `- <읽어 준 줄, 축자> → 그대로 | 해석 — … | 벗어남 — …`.
+- **First line.** An empty list is `없음`. Under a v1 record the section opens with 「인터뷰 기록이 v1 이라 확인된 요구·탐색 결과·제시한 선택지 칸이 없습니다.」; with no record, 「이 런에는 인터뷰 기록이 없습니다 — 과제 문장과 의도로 설계했습니다.」.
+- **Tier.** The section is reference tier and carries no `상태`, `검증 등급` or `근거 등급` key. Its heading holds neither `미해결` nor `이슈`, so Step 5U's section regex does not reach it.
 
 ### Resumed turns
 
@@ -251,6 +278,6 @@ Three jobs in this order, then the freeze; the ladder needs final R-items and wr
 - Call external commands directly, never inside `bash -c`.
 - **Never reach a notification surface** and **never write a pipeline sidecar** (CFI-L3).
 - **Under driver dispatch every Bash command goes through `gate.sh exec`**, with the `--reach` discipline of `implement-unattended`'s CFI-U7 — declare where an act lands (`런로컬`·`기기전역`·`dev`·`prod`·`협업`·`배포트리거`·`미상`), prefer `미상` to a guess, read pipeline variables by name and never with bare `env`, and on exit 11 neither retry nor re-declare. This includes every member the Step 3 team spawns: the gate hook is inherited by the stage's children, so a member's plain Bash is refused rather than silently unrecorded. Under seat dispatch no gate engages, as stated in the blast-radius paragraph above.
-- **The design document's only writes under driver dispatch** are: the Step 4 save; Step 5U transitions and their pre-images; Step 7U's coherence corrections, slicing repair, W3 lines and the freeze line. `preimage/`, `halt/` and `design/{slug}/` under `CC_PIPELINE_RUN_DIR` are the only other writes.
+- **The design document's only writes under driver dispatch** are: the Step 4 save; Step 5U transitions and their pre-images; Step 7U's coherence corrections, slicing repair, the `## 팀이 정한 요구 결정` entries and its `### 확인된 요구와의 대응` block, W3 lines and the freeze line. `preimage/`, `halt/` and `design/{slug}/` under `CC_PIPELINE_RUN_DIR` are the only other writes.
 
 Task: $ARGUMENTS

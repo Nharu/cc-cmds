@@ -250,7 +250,7 @@ check "clickup-create.py 셔뱅" "$(head -1 "$CREATE")" "#!/usr/bin/env python3"
 # have to write something other than the tool's file name.
 CALL='<plugin root>/orchestrator/similar-items.py'
 CLICKUP_OPS=plugins/cc-cmds/skills/clickup-ops/SKILL.md
-for pair in "github-ops/SKILL.md similar-items.py" "design/SKILL.md similar-items.py" \
+for pair in "github-ops/SKILL.md similar-items.py" "_common/requirements-interview.md similar-items.py" \
             "clickup-ops/SKILL.md similar-items.py" "clickup-ops/SKILL.md clickup-create.py"; do
   f="plugins/cc-cmds/skills/${pair%% *}"
   name="${pair#* }"
@@ -271,9 +271,9 @@ done
 DEF='is the directory holding `orchestrator/` and `skills/`'
 sec6=$(sed -n '/^## 6\. /,$p' "$repo_root/plugins/cc-cmds/skills/github-ops/SKILL.md")
 has "github-ops — 호출 절에 <plugin root> 정의 문장이 있다" "$sec6" "$DEF"
-design_line=$(grep -F "$CALL" "$repo_root/plugins/cc-cmds/skills/design/SKILL.md" || true)
-has "design — 호출 글머리에 <plugin root> 정의 문장이 있다" "$design_line" "$DEF"
-has "design — ClickUp 티켓은 clickup --task 로 부른다" "$design_line" \
+interview_line=$(grep -F "$CALL" "$repo_root/plugins/cc-cmds/skills/_common/requirements-interview.md" || true)
+has "requirements-interview — 호출 글머리에 <plugin root> 정의 문장이 있다" "$interview_line" "$DEF"
+has "requirements-interview — ClickUp 티켓은 clickup --task 로 부른다" "$interview_line" \
   '`<plugin root>/orchestrator/similar-items.py clickup --task <ID|URL>`'
 cu_sec3=$(sed -n '/^## 3\. /,/^## 4\. /p' "$repo_root/$CLICKUP_OPS")
 cu_sec4=$(sed -n '/^## 4\. /,$p' "$repo_root/$CLICKUP_OPS")
