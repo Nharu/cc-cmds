@@ -7447,17 +7447,22 @@ fi
 # 때 (미상) 으로 쓰되 행을 막지 않는가」다. 기동이 그 파일을 쓰는 것은 아래 (4) 의
 # 소스 핀이 잡는다.
 REC_RSID="S5R:segR:0"
-printf '%s\n%s\n' '200000(런설정)' '~/lane30' > "$RUN_DIR/$REC_RSID.window"
+printf '%s\n%s\n%s\n' '200000(런설정)' '~/lane30' 'medium' > "$RUN_DIR/$REC_RSID.window"
+# 서빙 모델은 이 파견의 스트림 첫 init 프레임에서 온다. 긴 문맥 레인이 붙이는
+# `[1m]` 접미사는 떼고 적는다.
+REC_STREAM=$(stage_log_path "$REC_RSID")
+mkdir -p "$(dirname "$REC_STREAM")"
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}' > "$REC_STREAM"
 rec_reset
 review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
-for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버'; do
+for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버' 'effort=medium' '서빙 모델=claude-opus-5-5'; do
   if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
     ok "stage-result 행이 $want 를 싣는다 (.window 에서)"
   else
     bad "stage-result 행" "$want 가 없다: $REC_ROWS"
   fi
 done
-rm -f "$RUN_DIR/$REC_RSID.window"
+rm -f "$RUN_DIR/$REC_RSID.window" "$REC_STREAM"
 rec_reset
 review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
 if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
@@ -7465,6 +7470,13 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
 else
   bad "stage-result 행" ".window 부재인데 (미상) 이 없다: $REC_ROWS"
 fi
+for want in 'effort=(미상)' '서빙 모델=(미상)'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok ".window 와 스트림이 없으면 행이 $want 를 싣는다"
+  else
+    bad "stage-result 행" "기록 부재인데 $want 가 없다: $REC_ROWS"
+  fi
+done
 if printf '%s' "$REC_ROWS" | grep_all_q -F -- '레인=~'; then
   ok ".window 가 없으면 레인은 이 드라이버가 해소한 레인의 물결 표기다"
 else
@@ -7534,6 +7546,175 @@ unset -f park predicate_review stage_attempt_pinned stage_spawn stage_wait_all \
          classify_termination ledger_row stage_session_id stage_parent_id log \
          doc_arg reap_orphan mk_wit rec_reset
 RUN_DIR="$REC_RUN_SAVE"; LEDGER="$REC_LEDGER_SAVE"; BASE="$REC_BASE_SAVE"
+
+# ---------------------------------------------------------------------------
+# 31. 스테이지 종류는 id 앞머리 표로 먼저 판별한다
+# ---------------------------------------------------------------------------
+# 앞머리(첫 `:` 앞, 다시 첫 `.` 앞)가 표에 있으면 그것이 이기고, 없을 때만 예전의
+# 부분 문자열 판별로 넘어간다. 자유 문자열에 종류 이름이 든 id 둘이 그 순서를 묶는다 —
+# 부분 문자열이 먼저 이기면 둘 다 다른 종류가 된다.
+while IFS='|' read -r sk_id sk_want; do
+  [ -n "$sk_id" ] || continue
+  check "stage_kind_of $sk_id → $sk_want" "$(stage_kind_of "$sk_id")" "$sk_want"
+done <<'SKEOF'
+S1design|design
+S1design.retry|design
+S2|audit
+S4:seg:1|implement
+S4:seg:1.retry|implement
+S5:seg:1|review
+S5R:seg:1|review
+S1':seg:1:path|reconverge
+S1':seg:1:plugins-cc-cmds-skills-design-SKILL.md|reconverge
+S4:review-fix:1|implement
+S5:design-seg:2|review
+Sx|generic
+t8-implement-a|implement
+x-design-audit-y|audit
+x-reconverge|reconverge
+SKEOF
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'kind=$(stage_kind_of "$stage")'; then
+  ok "stage_spawn 의 설정 선택이 stage_kind_of 하나를 부른다"
+else
+  bad "종류 판별" "stage_spawn 이 stage_kind_of 를 부르지 않는다 — 설정과 effort 가 다른 판별을 탈 수 있다"
+fi
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '*design-audit*|*audit*'; then
+  bad "종류 판별" "stage_spawn 에 인라인 부분 문자열 case 가 남아 있다"
+else
+  ok "stage_spawn 에 인라인 부분 문자열 case 가 남아 있지 않다"
+fi
+
+# ---------------------------------------------------------------------------
+# 32. effort 와 model — 표, 두 스위치, 기동 argv, 판단 호출, 행, 서빙 모델
+# ---------------------------------------------------------------------------
+# 물려받은 스위치가 기댓값을 바꾸지 않게 먼저 지운다. 이 절의 스위치 값은 전부
+# 호출마다 앞에 붙여 그 호출에만 건다.
+unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
+while IFS='|' read -r ef_kind ef_want; do
+  [ -n "$ef_kind" ] || continue
+  check "stage_effort_of $ef_kind → $ef_want" "$(stage_effort_of "$ef_kind")" "$ef_want"
+done <<'EFEOF'
+design|high
+reconverge|high
+audit|high
+implement|medium
+review|medium
+shift|medium
+generic|medium
+triage|medium
+segment-plan|medium
+redesign-impact|medium
+EFEOF
+check "표에 없는 이름도 medium 이다" "$(stage_effort_of no-such-kind)" "medium"
+check "기본 기동 플래그는 effort 와 opus 를 함께 싣는다" "$(stage_launch_flags design)" "--effort high --model opus"
+check "CC_ORCH_STAGE_EFFORT=off 는 --effort 만 뺀다" "$(CC_ORCH_STAGE_EFFORT=off stage_launch_flags design)" "--model opus"
+check "CC_ORCH_STAGE_MODEL=off 는 --model 만 뺀다" "$(CC_ORCH_STAGE_MODEL=off stage_launch_flags review)" "--effort medium"
+check "두 스위치를 다 끄면 아무 플래그도 없다" \
+  "$(CC_ORCH_STAGE_EFFORT=off CC_ORCH_STAGE_MODEL=off stage_launch_flags review)" ""
+check "off 가 아닌 model 값은 무시된다 (종류별 모델은 없다)" \
+  "$(CC_ORCH_STAGE_MODEL=sonnet stage_launch_flags review)" "--effort medium --model opus"
+check "review:low 는 review 만 낮춘다" \
+  "$(CC_ORCH_STAGE_EFFORT=review:low stage_effort_of review):$(CC_ORCH_STAGE_EFFORT=review:low stage_effort_of implement)" "low:medium"
+check "triage:low 는 triage 만 낮춘다" \
+  "$(CC_ORCH_STAGE_EFFORT=triage:low stage_effort_of triage):$(CC_ORCH_STAGE_EFFORT=triage:low stage_effort_of segment-plan)" "low:medium"
+check "쉼표로 여러 종류를 한 번에 재정의한다" \
+  "$(CC_ORCH_STAGE_EFFORT=design:max,review:xhigh stage_effort_of design):$(CC_ORCH_STAGE_EFFORT=design:max,review:xhigh stage_effort_of review)" "max:xhigh"
+check "닫힌 집합 밖의 수준은 무시되고 표 값이 남는다" "$(CC_ORCH_STAGE_EFFORT=design:ultra stage_effort_of design)" "high"
+
+# 서빙 모델 — init 프레임의 것이고, 접미사를 떼며, 종단 modelUsage 의 큰 키가 아니다.
+SMD="$WORK/served-model"; rm -rf "$SMD"; mkdir -p "$SMD"
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"a"}' \
+  '{"type":"result","subtype":"success","modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":10},"claude-sonnet-5":{"inputTokens":99999}}}' \
+  > "$SMD/long.json"
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5-5","session_id":"b"}' > "$SMD/plain.json"
+printf '%s\n' '{"type":"result","subtype":"success","modelUsage":{"claude-opus-5-5":{"inputTokens":1}}}' > "$SMD/noinit.json"
+check "[1m] 접미사가 붙은 init 모델과 붙지 않은 것이 같은 값이다" \
+  "$(stage_served_model_of "$SMD/long.json")|$(stage_served_model_of "$SMD/plain.json")" "claude-opus-5-5|claude-opus-5-5"
+check "종단 modelUsage 에서 토큰이 더 많은 키가 있어도 init 모델을 적는다" \
+  "$(stage_served_model_of "$SMD/long.json")" "claude-opus-5-5"
+check "init 프레임이 없으면 (미상) 이다 (종단 줄로 메우지 않는다)" "$(stage_served_model_of "$SMD/noinit.json")" "(미상)"
+check "스트림이 없으면 (미상) 이다" "$(stage_served_model_of "$SMD/none.json")" "(미상)"
+
+# 진짜 stage_spawn 의 래퍼 argv — 새 기동과 재부착 둘 다. 앞 절들이 `stage_spawn`
+# 과 `log` 를 이 프로세스에서 지웠으므로 드라이버를 새로 소싱한 자식에서 돌린다.
+# 래퍼 자리에는 argv 만 적는 스텁을 두고, 수집까지 기다려 파일이 다 쓰인 뒤에 읽는다.
+SPD="$WORK/spawn-flags"; rm -rf "$SPD"; mkdir -p "$SPD/orch" "$SPD/run/settings" "$SPD/run/log" "$SPD/cfg"
+printf '{}\n' > "$SPD/run/settings/review.json"
+printf '{}\n' > "$SPD/run/settings/design.json"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" > "$SP_ARGV_OUT"' > "$SPD/orch/stage-wrapper.sh"
+cat > "$SPD/probe.sh" <<'SPEOF'
+sp_drv="$1"; SP_ROOT="$2"; sp_sid="$3"; set --
+. "$sp_drv"
+set +e
+RUN_DIR="$SP_ROOT/run"; ORCH_DIR="$SP_ROOT/orch"; CLI_BIN=/usr/bin/true
+RUN_ID=sp-run; DOC_KEY=sp; GRANT=""; LEDGER=""; MANIFEST=""
+resolve_account() { printf '%s' "$SP_ROOT/cfg"; }
+home_alias() { printf 'sp'; }
+STAGE_RESUME="${SP_RESUME:-}"
+stage_spawn "$sp_sid" "$SP_ROOT" "prompt" 2>/dev/null
+stage_collect "$sp_sid"
+SPEOF
+sp_spawn() {  # sp_spawn <stage-id> <argv-out> [VAR=value...]
+  local sid="$1" argv_out="$2"; shift 2
+  rm -f "$argv_out"
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL SP_ARGV_OUT="$argv_out" "$@" \
+    bash "$SPD/probe.sh" "$DRIVER" "$SPD" "$sid" >/dev/null 2>&1
+  cat "$argv_out" 2>/dev/null || true
+}
+sp_fresh=$(sp_spawn "S5:segF:1" "$SPD/fresh.txt")
+case "$sp_fresh" in
+  *"--session-id "*" --effort medium --model opus -- -p prompt"*) ok "새 기동의 래퍼 argv 가 --effort medium --model opus 를 싣는다" ;;
+  *) bad "기동 argv" "새 기동: $sp_fresh" ;;
+esac
+check "새 기동이 .window 셋째 줄에 argv 의 effort 를 남긴다" "$(sed -n '3p' "$SPD/run/S5:segF:1.window" 2>/dev/null)" "medium"
+sp_resume=$(sp_spawn "S5:segF:1" "$SPD/resume.txt" SP_RESUME=12121212-3434-5656-7878-909090909090)
+case "$sp_resume" in
+  *"--resume 12121212-3434-5656-7878-909090909090 --effort medium --model opus -- -p prompt"*)
+    ok "재부착의 래퍼 argv 도 effort 와 model 을 싣는다 (재개된 세션은 effort 를 잃는다)" ;;
+  *) bad "재부착 argv" "재부착: $sp_resume" ;;
+esac
+sp_design=$(sp_spawn "S1design" "$SPD/design.txt")
+case "$sp_design" in
+  *" --effort high --model opus -- "*) ok "S1design 기동은 high 를 싣는다" ;;
+  *) bad "기동 argv" "S1design: $sp_design" ;;
+esac
+sp_off=$(sp_spawn "S5:segG:1" "$SPD/off.txt" CC_ORCH_STAGE_EFFORT=off CC_ORCH_STAGE_MODEL=off)
+case "$sp_off" in
+  *"--effort"*|*"--model"*) bad "끄기 스위치" "두 스위치 아래에도 플래그가 실렸다: $sp_off" ;;
+  *" -- -p prompt"*) ok "두 끄기 스위치 아래의 기동에는 --effort 도 --model 도 없다" ;;
+  *) bad "끄기 스위치" "기동 argv 를 읽지 못했다: $sp_off" ;;
+esac
+check "끈 effort 는 .window 에 - 로 남는다" "$(sed -n '3p' "$SPD/run/S5:segG:1.window" 2>/dev/null)" "-"
+
+# 판단 호출 — CLI argv 에 플래그가 실리고, 종류·effort·서빙 모델이 log 한 줄로 남는다.
+JCD="$WORK/judge-flags"; rm -rf "$JCD"; mkdir -p "$JCD/run/log"
+printf 'input\n' > "$JCD/input"
+cat > "$JCD/cli" <<'JCEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$JC_ARGV_OUT"
+printf '%s\n' '{"subtype":"success","structured_output":{},"modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":1},"claude-sonnet-5":{"inputTokens":9}}}'
+JCEOF
+chmod +x "$JCD/cli"
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL JC_ARGV_OUT="$JCD/argv.txt" \
+  bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
+           RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli"; judgment_call triage "$jc_root/input"' \
+  _ "$DRIVER" "$JCD" >/dev/null 2>"$JCD/log.txt"
+if grep_all_q -F -- '--strict-mcp-config --effort medium --model opus' "$JCD/argv.txt"; then
+  ok "판단 호출의 CLI argv 가 --effort medium --model opus 를 싣는다"
+else
+  bad "판단 호출 argv" "$(tr '\n' ' ' < "$JCD/argv.txt" 2>/dev/null | tail -c 200)"
+fi
+if grep_all_q -F -- '판단 호출 triage — effort=medium 서빙 모델=claude-opus-5-5,claude-sonnet-5' "$JCD/log.txt"; then
+  ok "판단 호출이 종류·effort·접미사 뗀 서빙 모델을 log 한 줄로 남긴다"
+else
+  bad "판단 호출 log" "$(tr '\n' ' ' < "$JCD/log.txt")"
+fi
+
+# 드라이버 stage-result 호출부 — S9 적용 행을 뺀 다섯이 effort 와 서빙 모델을 싣는다.
+check "드라이버 stage-result 호출부 다섯이 effort 를 싣는다" \
+  "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "5"
+check "그 다섯이 서빙 모델도 싣는다" \
+  "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "5"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
