@@ -1,4 +1,4 @@
-.PHONY: lint readme check policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest
+.PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -69,6 +69,85 @@ readme:
 
 check: lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
+	@$(MAKE) --no-print-directory check-gate-suite
+
+# `check` runs the gate suite, but only when the change touches gate.sh.
+# scripts/test-gate.sh is the one suite that catches a broken grading table —
+# `make lint` passes a gate.sh that no longer grades `gh pr merge` — and the
+# procedure every commit goes through was `lint readme` alone, so a change to
+# gate.sh that followed the procedure to the letter had no local step that ever
+# ran it. Running it unconditionally would be worse than not running it: the
+# suite alone takes some forty minutes, and a procedure that costs that on
+# every commit is one people skip, which puts back the very state this closes.
+# PR CI already runs the suite on the merge ref, so this adds no new duty; it
+# runs the same suite earlier, on the machine that made the change.
+#
+# The comparison is against the merge-base with the base branch and the diff is
+# taken against the working tree, so committed, staged and unstaged edits all
+# count. A tree with no base to compare against runs the suite rather than
+# skipping it — skipping there in silence is the gap this target exists to
+# close — and a `git diff` that fails is a failure, never an empty change list.
+# The suite path stays a literal default so `make -n check` still shows it.
+GATE_SUITE_TRIGGER := plugins/cc-cmds/orchestrator/gate.sh
+GATE_SUITE_CMD ?= bash scripts/test-gate.sh
+GATE_SUITE_BASE ?=
+
+check-gate-suite:
+	@base='$(GATE_SUITE_BASE)'; \
+	if [ -z "$$base" ]; then \
+	  for ref in origin/HEAD origin/master master; do \
+	    if git rev-parse --verify --quiet "$$ref^{commit}" >/dev/null; then base=$$ref; break; fi; \
+	  done; \
+	fi; \
+	mb=; \
+	if [ -n "$$base" ]; then mb=$$(git merge-base "$$base" HEAD 2>/dev/null) || mb=; fi; \
+	if [ -z "$$mb" ]; then \
+	  echo "check-gate-suite: 비교할 베이스를 해소하지 못해 게이트 스위트를 돌린다 (base='$$base')"; \
+	  $(GATE_SUITE_CMD); exit $$?; \
+	fi; \
+	changed=$$(git diff --name-only "$$mb" -- '$(GATE_SUITE_TRIGGER)') \
+	  || { echo "check-gate-suite: git diff 가 실패해 $(GATE_SUITE_TRIGGER) 의 변경 여부를 판정할 수 없다" >&2; exit 1; }; \
+	if [ -z "$$changed" ]; then \
+	  echo "check-gate-suite: $(GATE_SUITE_TRIGGER) 가 $$base 대비 바뀌지 않아 게이트 스위트를 건너뛴다"; \
+	  exit 0; \
+	fi; \
+	echo "check-gate-suite: $(GATE_SUITE_TRIGGER) 가 $$base 대비 바뀌어 게이트 스위트를 돌린다"; \
+	$(GATE_SUITE_CMD)
+
+# Whether check-gate-suite decides anything. `make -n check | grep test-gate`
+# passes just as well for a condition that is always false, so this runs the
+# target in a scratch repository and watches whether the suite command actually
+# ran: not when only another file changed, yes when gate.sh changed on the
+# branch, yes when it changed only in the working tree, and a failing suite
+# fails make. The first two are each other's control — either one alone passes
+# an implementation that always runs the suite or one that never does. The base
+# is left to the default resolution so the `master` fallback is what runs.
+# The make binary is taken through a second variable on purpose: a recipe line
+# that names $(MAKE) directly is executed even under `make -n`.
+CHECK_GATE_SELFTEST_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
+CHECK_GATE_SELFTEST_MAKE := $(MAKE)
+
+run-check-gate-selftest:
+	@unset MAKEFLAGS MFLAGS MAKELEVEL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GATE_SUITE_BASE; \
+	t=$$(mktemp -d) || exit 1; trap 'rm -rf "$$t"' EXIT; \
+	r=$$t/repo; mk='$(CHECK_GATE_SELFTEST_MAKEFILE)'; trig='$(GATE_SUITE_TRIGGER)'; \
+	fail() { echo "run-check-gate-selftest: $$*" >&2; exit 1; }; \
+	gc() { git -c user.name=selftest -c user.email=selftest@invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$$@"; }; \
+	suite() { rm -f "$$t/ran"; '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check-gate-suite GATE_SUITE_CMD="$$1" >"$$t/out" 2>&1; }; \
+	mkdir -p "$$r/$${trig%/*}" && cd "$$r" && gc init -q -b master . \
+	  && echo a > "$$trig" && echo a > other && gc add -A && gc commit -qm base \
+	  && gc checkout -q -b only-other || fail "임시 저장소를 만들지 못했다"; \
+	echo b > other && gc commit -qam other || fail "경우 A 를 준비하지 못했다"; \
+	suite "touch $$t/ran" || fail "경우 A: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ ! -e "$$t/ran" ] || fail "경우 A: gate.sh 를 건드리지 않은 변경에서 스위트가 돌았다"; \
+	echo b > "$$trig" && gc commit -qam gate || fail "경우 B 를 준비하지 못했다"; \
+	suite "touch $$t/ran" || fail "경우 B: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ -e "$$t/ran" ] || fail "경우 B: 브랜치에서 커밋한 gate.sh 변경에 스위트가 돌지 않았다"; \
+	gc checkout -q master && gc checkout -q -b worktree-only && echo c > "$$trig" || fail "경우 C 를 준비하지 못했다"; \
+	suite "touch $$t/ran" || fail "경우 C: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ -e "$$t/ran" ] || fail "경우 C: 작업 트리에만 있는 gate.sh 변경에 스위트가 돌지 않았다"; \
+	if suite false; then fail "경우 D: 스위트가 실패했는데 make 가 성공했다"; fi; \
+	echo "run-check-gate-selftest: 네 경우 통과"
 
 # The source half of the stage-policy drift check: does the policy the gate
 # injects into unattended stages still say what the user-scope CLAUDE.md and
@@ -170,7 +249,7 @@ $(TEST_GOALS): run/%:
 	bash $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
 
 # How many shards the gate suite is cut into. CI reads it so the matrix, the
 # per-shard dispatch and the union check all take their N from one place; a
@@ -189,7 +268,7 @@ print-gate-shards:
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
 test-rest: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
-	run-gate-shard-selftest run-gate-census-selftest
+	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
 
 # One shard of the gate suite. SHARD is 1-based. An empty assignment is a
 # success and not a failure — the partitioner exits 4 when the requested shard
