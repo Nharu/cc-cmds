@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Find open tracker items similar to one issue or to a draft.
 
-    similar-items.py github [--repo OWNER/NAME] (--issue N | --title T --body-file F) [common]
-    similar-items.py file   --corpus FILE.json   (--issue N | --title T --body-file F) [common]
+    similar-items.py github  [--repo OWNER/NAME] (--issue N | --title T --body-file F) [common]
+    similar-items.py clickup (--task ID|URL | --list ID --title T --body-file F) [common]
+    similar-items.py file    --corpus FILE.json   (--issue N | --title T --body-file F) [common]
     common: [--format text|json] [--lexical-only] [--replay-log FILE [--replay-tag-prefix P]]
             [--question measured|generic] [--log PATH] [--patient]
 
@@ -28,6 +29,8 @@ import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
+import time  # noqa: E402
+import urllib.parse  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import cc_tracker  # noqa: E402
@@ -35,6 +38,13 @@ import cc_tracker  # noqa: E402
 GH_LIMIT = 3000
 GH_TIMEOUT = 60
 GH_FIELDS = "number,title,body,url"
+
+# The wording a judgment request carries, by adapter. ClickUp has no labelled
+# pairs to measure either wording on, and the measured wording describes a
+# repository, which a ClickUp space is not.
+DEFAULT_QUESTION = {"github": "measured", "file": "measured", "clickup": "generic"}
+
+SAME_LIST = "같은 리스트"
 
 LEXICAL = "의미 판정 없이 어휘 겹침만으로 고른 후보다"
 NOTICE = {
@@ -47,6 +57,9 @@ NOTICE = {
     "query": "질의 이슈를 가져오지 못해 유사 이슈 조회를 하지 못했다 — 착수는 그대로 진행한다.",
     "corpus": "열린 이슈 목록을 가져오지 못해 유사 이슈 조회를 하지 못했다 — 등록·착수는 그대로 진행한다.",
     "no-overlap": "겹치는 열린 항목이 없다.",
+    "tracker-key": "ClickUp 토큰이 ~/.config/cc-cmds/clickup.env 에 없어 유사 티켓 조회를 하지 못했다 — 진행은 막지 않는다.",
+    "tracker-key-invalid": "ClickUp 토큰 파일을 쓸 수 없어 유사 티켓 조회를 하지 못했다 — "
+                           "chmod 600 ~/.config/cc-cmds/clickup.env 가 필요하다. 진행은 막지 않는다.",
 }
 
 
@@ -96,22 +109,34 @@ def build_parser():
 
     parser = argparse.ArgumentParser(prog="similar-items.py", allow_abbrev=False,
                                      description="Find open tracker items similar to an issue or a draft.")
-    sub = parser.add_subparsers(dest="adapter", metavar="{github,file}")
+    sub = parser.add_subparsers(dest="adapter", metavar="{github,clickup,file}")
     sub.required = True
     gh = sub.add_parser("github", parents=[query, common], allow_abbrev=False)
     gh.add_argument("--repo")
+    cu = sub.add_parser("clickup", parents=[common], allow_abbrev=False)
+    cu.add_argument("--task")
+    cu.add_argument("--list")
+    cu.add_argument("--title")
+    cu.add_argument("--body-file")
     fl = sub.add_parser("file", parents=[query, common], allow_abbrev=False)
     fl.add_argument("--corpus", required=True)
-    return parser, {"github": gh, "file": fl}
+    return parser, {"github": gh, "clickup": cu, "file": fl}
 
 
 def check_args(args, subparsers):
     sp = subparsers[args.adapter]
     draft = args.title is not None or args.body_file is not None
-    if args.issue is not None and draft:
-        sp.error("--issue cannot be combined with --title/--body-file")
-    if args.issue is None and not (args.title is not None and args.body_file is not None):
-        sp.error("give --issue N, or both --title and --body-file")
+    if args.adapter == "clickup":
+        if args.task is not None and (draft or args.list is not None):
+            sp.error("--task cannot be combined with --list/--title/--body-file")
+        if args.task is None and not (args.list is not None and args.title is not None
+                                      and args.body_file is not None):
+            sp.error("give --task ID|URL, or all of --list, --title and --body-file")
+    else:
+        if args.issue is not None and draft:
+            sp.error("--issue cannot be combined with --title/--body-file")
+        if args.issue is None and not (args.title is not None and args.body_file is not None):
+            sp.error("give --issue N, or both --title and --body-file")
     if args.adapter == "github" and args.issue is not None and not args.issue.isdigit():
         sp.error("--issue takes an issue number")
     if args.replay_tag_prefix is not None and args.replay_log is None:
@@ -200,6 +225,125 @@ def file_corpus(args):
     return source, corpus, False, None, query
 
 
+def task_id_of(value):
+    """A ticket id, or the id taken from a ticket URL.
+
+    A URL's id is the last non-empty path segment after `/t/`, which also
+    covers the `/t/<team>/<custom id>` form. Anything else is the id as given.
+    """
+    path = urllib.parse.urlsplit(value).path if "://" in value else value
+    if "/t/" in path:
+        parts = [p for p in path.split("/t/", 1)[1].split("/") if p]
+        if parts:
+            return parts[-1]
+    return value
+
+
+def ref_of(obj, key):
+    """The `id` of a nested ClickUp reference such as `list` or `space`."""
+    ref = obj.get(key) if isinstance(obj, dict) else None
+    ident = ref.get("id") if isinstance(ref, dict) else None
+    return None if ident is None else str(ident)
+
+
+def as_ticket(x):
+    body = x.get("text_content") or x.get("description") or ""
+    return {"id": str(x.get("id")), "title": x.get("name") or "", "body": body, "url": x.get("url") or "",
+            "list_id": ref_of(x, "list")}
+
+
+class ClickUp:
+    """The ClickUp reads of one lookup, under one 60 s budget.
+
+    Each request is capped at 15 s and at what is left of the budget; a
+    budget that runs out is a failure like any other read.
+    """
+
+    def __init__(self, token):
+        self.token = token
+        self.end = time.monotonic() + cc_tracker.CLICKUP_TOTAL_TIMEOUT
+
+    def get(self, path):
+        left = self.end - time.monotonic()
+        if left <= 0:
+            raise cc_tracker.TrackerError("timeout")
+        data = cc_tracker.clickup_get(path, self.token, min(cc_tracker.CLICKUP_PAGE_TIMEOUT, left))
+        if not isinstance(data, dict):
+            raise cc_tracker.TrackerError("json")
+        return data
+
+
+def q(value):
+    return urllib.parse.quote(str(value), safe="")
+
+
+def clickup_team_of_space(cu, space):
+    """The workspace holding the space, asked of every workspace the token sees.
+
+    The token can see more than one workspace, so the first one is not taken
+    on trust.
+    """
+    teams = cu.get("/team").get("teams")
+    for team in teams if isinstance(teams, list) else []:
+        tid = team.get("id") if isinstance(team, dict) else None
+        if tid is None:
+            continue
+        spaces = cu.get("/team/%s/space" % q(tid)).get("spaces")
+        if any(isinstance(s, dict) and str(s.get("id")) == space for s in spaces if isinstance(spaces, list)):
+            return str(tid)
+    return None
+
+
+def clickup_corpus(args):
+    """(source, corpus, truncated, limit, query, query list id) for a space.
+
+    The corpus is every open ticket (subtasks included) in the space that holds
+    the query's list, fetched page by page until `last_page` or an empty page.
+    """
+    source = "clickup:-"
+    token, why = cc_tracker.read_clickup_token()
+    if token is None:
+        raise Unavailable(why, source)
+    cu = ClickUp(token)
+    del token
+    query = None
+    try:
+        if args.task is not None:
+            try:
+                t = cu.get("/task/%s" % q(task_id_of(args.task)))
+            except cc_tracker.TrackerError:
+                raise Unavailable("query", source)
+            if t.get("id") is None:
+                raise Unavailable("query", source)
+            query = as_ticket(t)
+            list_id, space, team = query["list_id"], ref_of(t, "space"), t.get("team_id")
+            team = None if team is None else str(team)
+        else:
+            list_id = args.list
+            space = ref_of(cu.get("/list/%s" % q(list_id)), "space")
+            team = None if space is None else clickup_team_of_space(cu, space)
+        if space is None or team is None:
+            raise Unavailable("corpus", source)
+        source = "clickup:space/" + space
+        corpus, page, truncated = [], 0, False
+        while True:
+            data = cu.get("/team/%s/task?space_ids[]=%s&page=%d&include_closed=false&subtasks=true"
+                          % (q(team), q(space), page))
+            tasks = data.get("tasks")
+            if not isinstance(tasks, list):
+                raise Unavailable("corpus", source)
+            corpus.extend(as_ticket(x) for x in tasks if isinstance(x, dict))
+            if len(corpus) >= cc_tracker.CLICKUP_LIMIT:
+                corpus, truncated = corpus[:cc_tracker.CLICKUP_LIMIT], True
+                break
+            if not tasks or data.get("last_page"):
+                break
+            page += 1
+    except cc_tracker.TrackerError:
+        raise Unavailable("corpus", source)
+    return source, corpus, truncated, cc_tracker.CLICKUP_LIMIT, query, list_id
+
+
 # ---------------------------------------------------------------------------
 # Lookup
 # ---------------------------------------------------------------------------
@@ -221,9 +365,12 @@ def failure_reason(results):
 
 
 def lookup(args):
-    question = args.question or "measured"
+    question = args.question or DEFAULT_QUESTION[args.adapter]
+    query_list = None
     if args.adapter == "github":
         source, corpus, truncated, limit, query = github_corpus(args)
+    elif args.adapter == "clickup":
+        source, corpus, truncated, limit, query, query_list = clickup_corpus(args)
     else:
         source, corpus, truncated, limit, query = file_corpus(args)
     if query is None:
@@ -293,8 +440,11 @@ def lookup(args):
     for rank, i in enumerate(order, 1):
         item = ranked[i]
         p = results[i][0] if status != "lexical" else None
-        candidates.append({"rank": rank, "id": item["id"], "title": item["title"], "url": item["url"],
-                           "lexical": i + 1, "p": p})
+        cand = {"rank": rank, "id": item["id"], "title": item["title"], "url": item["url"],
+                "lexical": i + 1, "p": p}
+        if args.adapter == "clickup":
+            cand["same_list"] = query_list is not None and item.get("list_id") == str(query_list)
+        candidates.append(cand)
     return {
         "status": status, "source": source, "corpus": len(corpus), "shortlist": k, "judged": judged,
         "model": cc_tracker.MODEL if status != "lexical" else "-",
@@ -315,15 +465,20 @@ def one_line(s):
     return re.sub(r"[\t\r\n]+", " ", str(s))
 
 
-def render_text(res):
+def render_text(res, adapter):
     lines = ["similar-items: status=%s source=%s corpus=%d shortlist=%d judged=%d model=%s" % (
         res["status"], res["source"], res["corpus"], res["shortlist"], res["judged"], res["model"])]
     if res["notice"]:
         lines.append("notice: " + res["notice"])
     for c in res["candidates"][:cc_tracker.SHOWN]:
-        ident = "#%s" % c["id"] if isinstance(c["id"], int) or str(c["id"]).isdigit() else str(c["id"])
+        # A ClickUp ticket id is printed as it is, even when it is all digits.
+        numeric = isinstance(c["id"], int) or str(c["id"]).isdigit()
+        ident = "#%s" % c["id"] if adapter != "clickup" and numeric else str(c["id"])
         p = "-" if c["p"] is None else "%.2f" % c["p"]
-        lines.append("\t".join([str(c["rank"]), ident, p, one_line(c["title"]), one_line(c["url"])]))
+        fields = [str(c["rank"]), ident, p, one_line(c["title"]), one_line(c["url"])]
+        if c.get("same_list"):
+            fields.append(SAME_LIST)
+        lines.append("\t".join(fields))
     return "\n".join(lines) + "\n"
 
 
@@ -333,6 +488,8 @@ def main(argv=None):
     check_args(args, subparsers)
     try:
         cc_tracker.judge_url()
+        if args.adapter == "clickup":
+            cc_tracker.clickup_base()
         try:
             res = lookup(args)
         except Unavailable as e:
@@ -346,7 +503,7 @@ def main(argv=None):
     if args.format == "json":
         out = json.dumps(res, ensure_ascii=False) + "\n"
     else:
-        out = render_text(res)
+        out = render_text(res, args.adapter)
     sys.stdout.buffer.write(out.encode("utf-8"))
     sys.stdout.flush()
     return 0
