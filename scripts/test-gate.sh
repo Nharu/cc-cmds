@@ -20918,7 +20918,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 60. CI 체크 계열 — 전사·행 예산·진전 벡터, 그리고 머지 거절의 아홉 갈래
-# --- section: 60 | group: sa | covers: act, plan | anchors: 60: 관측 세 줄이 checks 행 세 개로 전사된다, 60: 어휘 밖 상태의 줄은 전사되지 않는다, 60: 드레인 앞에서 뜬 다이제스트가 드레인 뒤에도 받아들여진다, 60: 진전 해시가 checks 드레인에 불변이다, 60: 죽은 드레인이 남긴 파일을 오래된 것부터 회수한다, 60: 살아 있는 소유자의 잠금 아래서는 전사하지 않는다, 60: 실패+이름 목록은 거절한다, 60: 그 행의 도달 판정이 CI실패 다, 60: 기록 행위는 실패 행이 있어도 머지 절단점에서 기록된다 ---
+# --- section: 60 | group: sa | covers: act, plan, exec | anchors: 60: 관측 세 줄이 checks 행 세 개로 전사된다, 60: 어휘 밖 상태의 줄은 전사되지 않는다, 60: 드레인 앞에서 뜬 다이제스트가 드레인 뒤에도 받아들여진다, 60: 진전 해시가 checks 드레인에 불변이다, 60: 죽은 드레인이 남긴 파일을 오래된 것부터 회수한다, 60: 살아 있는 소유자의 잠금 아래서는 전사하지 않는다, 60: 실패+이름 목록은 거절한다, 60: 그 행의 도달 판정이 CI실패 다, 60: 기록 행위는 실패 행이 있어도 머지 절단점에서 기록된다, 60: 스테이지 기동 예보는 실패 행이 있어도 CI실패 로 park 되지 않는다, 60: 머지 라벨을 단 세그먼트 읽기는 실패 행이 있어도 수행된다, 60: 이력을 통합하는 로컬 머지는 여전히 CI실패 로 거절된다 ---
 #
 # 폴러(`checks.sh`)가 쓰는 것은 파일이고 원장의 writer 는 게이트 하나이므로, 관측이
 # 행이 되는 자리는 `gate_drain_checks` 다. 이 절은 그 전사와, 전사가 건드리면 안 되는
@@ -21275,6 +21275,46 @@ check "60: 그 기록 행위는 blocked 행을 더하지 않는다" \
   "$( { grep -cF '`blocked`' "$SA_LEDGER" || true; } )" "$ck60_nblk"
 sa_merge CK
 check "60: 같은 원장에서 머지 행위는 여전히 거절된다 (위가 공허하지 않다)" "$rc" "11"
+
+# (6) 머지하지 않는 행위는 머지 라벨을 달아도 CI실패 로 park 되지 않는다 ------------------
+#
+# 라우터는 스테이지 기동·교대·종료 제안·읽기에도 대상의 절단점을 라벨로 단다. 그
+# 행위들은 아무것도 머지하지 않는데 이 검사가 그것까지 park 하면, CI 가 빨간
+# 세그먼트는 그 실패를 고칠 수정 스테이지를 띄울 수도, 실패 로그를 읽을 수도 없어
+# 스스로 복구할 길이 없어진다 — 게이트 자신이 안내하는 「고치고 새 head 를 push」가
+# 도달 불가능해진다. 입력은 여전히 위 루프의 마지막 픽스처다.
+#
+# 스테이지 기동은 `plan` 으로 잰다. `act --kind skill` 은 실제로 스테이지를 띄우고,
+# `plan` 이 `act` 와 같은 코드·같은 칸으로 답한다는 것은 (4) 가 이미 고정한다.
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment CK \
+    --cutpoint 머지 --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+    -- implement x
+check "60: 스테이지 기동 예보는 실패 행이 있어도 CI실패 로 park 되지 않는다" "$rc" "0"
+sag plan --manifest "$SA_MANIFEST" --kind router-shift --target main --segment CK \
+    --cutpoint 머지 --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상한 x
+check "60: 교대 예보는 실패 행이 있어도 CI실패 로 park 되지 않는다" "$rc" "0"
+# 종료 제안은 여기서 따로 단언하지 않는다. 이 픽스처에서는 종료 조건이 CI 검사보다
+# 먼저 rc 3 으로 거절하므로, 단언을 두면 수정이 있든 없든 통과한다. 종료 제안은
+# `읽기` 로 등급되어 아래 읽기와 같은 갈래로 면제되고, 그 갈래는 아래 단언이 잰다.
+#
+# 읽기는 `exec` 로 실제로 수행한다. park 되면 blocked 행이 하나 늘므로 그것도 센다.
+ck60_nblk=$( { grep -cF '`blocked`' "$SA_LEDGER" || true; } )
+sag exec --manifest "$SA_MANIFEST" --target main --segment CK --cutpoint 머지 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale x -- cat a.txt
+check "60: 머지 라벨을 단 세그먼트 읽기는 실패 행이 있어도 수행된다" "$rc" "0"
+check "60: 그 읽기는 blocked 행을 더하지 않는다" \
+  "$( { grep -cF '`blocked`' "$SA_LEDGER" || true; } )" "$ck60_nblk"
+# 음성 대조 — 좁히기가 워크트리쓰기 칸 전체를 연 것이 아니다. 이력을 통합하는 로컬
+# 머지는 같은 칸에 살지만 여전히 거절된다.
+sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CK \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git merge --ff-only "$SA_SEGBR"
+check "60: 이력을 통합하는 로컬 머지는 여전히 CI실패 로 거절된다" "$rc" "11"
+case "$msg" in
+  *'park 예상: 도달 판정=CI실패'*) ok "60: 그 거절의 칸이 CI실패 다 (다른 park 가 11 을 낸 것이 아니다)" ;;
+  *) bad "60 로컬 머지 거절 칸" "$msg" ;;
+esac
 
 # --- epilogue-begin ---
 #

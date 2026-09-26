@@ -17326,9 +17326,11 @@ gate_verb_act() {
   # the park cell rather than by returning, so the block immediately below
   # writes the row — no new exit code is minted for it. It takes the effective
   # rung for the same reason the anchor check does: an under-declared merge
-  # must not skip it. And it takes the kind for the reason the anchor check
-  # does: a bookkeeping row labelled `머지` merges nothing.
-  gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE" "$kind"
+  # must not skip it. It does not take the kind: what decides whether an act
+  # merges is the surface and history-integration values set above, so a stage
+  # launch or a read labelled `머지` is let through on what it does rather than
+  # on what it is called.
+  gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
 
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
@@ -18265,7 +18267,7 @@ gate_check_merge_anchor() {
 }
 
 gate_check_merge_checks() {
-  # gate_check_merge_checks <segment> <cutpoint> [<kind>] — refuse a merge whose
+  # gate_check_merge_checks <segment> <cutpoint> — refuse a merge whose
   # PR has a recorded CI failure. THE SIBLING, and the sibling-ness is
   # load-bearing.
   #
@@ -18289,16 +18291,33 @@ gate_check_merge_checks() {
   # which is the behaviour of a run with no poller at all. The only stale value
   # that could matter is `실패`, and the poller writes a new row on the
   # `실패 → 통과` transition while this reads the LAST row of the pair.
-  local seg="$1" cut="$2" kind="${3:-}" row tip st req
+  local seg="$1" cut="$2" row tip st req
   [ "$cut" = "머지" ] || return 0
   [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
-  # A BOOKKEEPING ACT MERGES NOTHING, and the router labels every act with the
-  # target's cutpoint, so on a `머지` target its `segment` and park rows arrive
-  # here spelled `--cutpoint 머지`. Parked on a red check, the very row that
-  # records the park would itself be parked, and the run could not write down
-  # why its segment stopped. The anchor check exempts the same set for the same
-  # reason.
-  if gate_kind_is_bookkeeping "$kind"; then
+  # WHAT IS REFUSED IS WHAT MERGES, and the `머지` label does not say that. The
+  # router labels every act with the target's cutpoint, so on a `머지` target the
+  # stage launch that would fix the red check, the routing shift, the proposal to
+  # stop, a `gh pr checks` read and every bookkeeping row all arrive here spelled
+  # `--cutpoint 머지`. Refusing them parked the one stage able to push the new
+  # head the refusal below asks for, so a segment whose CI went red once could
+  # never recover on its own.
+  #
+  # THE NARROWING IS `리뷰-후-머지`'s, ON THE SAME TWO argv-DERIVED VALUES. A
+  # read changes nothing, and a worktree write that integrates no history merges
+  # nothing — the kind-pinned stage launch and routing shift land there, and the
+  # bookkeeping kinds grade `읽기`. What stays refused is every surface that
+  # leaves the worktree (`git push`, `gh pr merge`) and a worktree write that
+  # does integrate history, which covers an opaque runner and a command with no
+  # row as well, because both are answered 1.
+  #
+  # IT IS NOT A LIST OF KIND NAMES. `--kind` carries any word and `exec` takes
+  # none, so a name-based exemption would let `act --kind skill`'s spelling vouch
+  # for whatever argv came with it; the surface is what the gate proved.
+  #
+  # THE EXEMPTION IS "IS 0", NOT "IS NOT 1": a path that reaches here without the
+  # value set is then refused rather than waved through.
+  [ "${GATE_SURFACE:-}" = "읽기" ] && return 0
+  if [ "${GATE_SURFACE:-}" = "워크트리쓰기" ] && [ "${GATE_HISTORY_INTEGRATION:-}" = "0" ]; then
     return 0
   fi
 
