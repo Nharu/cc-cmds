@@ -1976,7 +1976,10 @@ pre_base() {
   # With `CC_STUB_ECHO_SID=1` the result's `session_id` is the `--session-id` or
   # `-r` value on the argv, which is what the real CLI answers — the resume
   # fixtures need the ledger's session id to be the one the gate recorded its
-  # instructions under. What is under test is the gate's launch path, not the CLI.
+  # instructions under. `CC_STUB_RC` sets its exit status: 14g's stage is a cut
+  # one, and a stage that exits 0 having written nothing is a hollow success,
+  # whose resume is a continuation rather than a re-attachment (15d). What is
+  # under test is the gate's launch path, not the CLI.
   STUB="$WORK/stub-cli"
   cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
@@ -1992,7 +1995,7 @@ if [ "${CC_STUB_ECHO_SID:-}" = 1 ]; then
   done
 fi
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.5,"session_id":"%s","num_turns":1}\n' "$sid"
-exit 0
+exit "${CC_STUB_RC:-0}"
 STUBEOF
   chmod +x "$STUB"
 
@@ -5645,8 +5648,9 @@ H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq 
 gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SG --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
 sg_launch() {  # sg_launch <argv-out> <env-out> [--resume <id>] — a stub launch of SG, waited on
+  # The stage exits non-zero: what this fixture resumes is a stage that was CUT.
   local argv_out="$1" env_out="$2"; shift 2
-  out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ECHO_SID=1 \
+  out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ECHO_SID=1 CC_STUB_RC=1 \
         CC_STUB_ARGV_OUT="$argv_out" CC_STUB_ENV_OUT="$env_out" \
         bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SG \
         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x "$@" \
@@ -7820,7 +7824,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다, 15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -8241,6 +8245,50 @@ propose15x plan "$WORK/plan-R15J.md"
 check "15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
 rm -f "$WT/docs/fixture-design-15j.md"
 
+# R15K — the same hollow design stage, CONTINUED up to the cap. Both routers
+# continue a `공허한 성공` step in its own session rather than dispatching it
+# afresh, and once the gate refuses a third continuation they stop the design:
+# the step has no `segment` row for a `blocked` form, and a fresh dispatch buys
+# the discussion again. That stop is only a stop if the gate records it, so
+# condition 1 reads the continuation counter and leaves the redispatch window
+# at the cap. Before the cap the window is still open, as in R15J.
+resume15x() {
+  # resume15x <manifest> <stub> <session id> — continue the design step, then
+  # wait on it when the gate launched it. Sets rc and out from the act.
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
+    --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x --resume "$3" \
+    -- design -p "$design15c" 2>&1); rc=$?
+  [ "$rc" = "0" ] || return 0
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
+}
+fresh15x R15K 'docs/fixture-design-15k.md' K1
+settle15x "$WORK/plan-R15K.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 계속 상한 픽스처의 절을 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15K.md" "$STUB15C"
+check "15c: 계속 상한 픽스처의 첫 시도가 공허한 성공이다 (아래가 공허하지 않다)" \
+  "$(dclass15x R15K)" "공허한 성공"
+resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+check "15c: 공허한 성공 설계 단계의 첫 계속이 기동한다" "$rc/$(design_rows15x R15K)" "0/2"
+propose15x plan "$WORK/plan-R15K.md"
+check "15c: 상한 전에 계속한 설계 단계의 재파견 창은 열려 있다" "$rc" "3"
+resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+check "15c: 둘째 계속도 기동하고 계수기가 상한에 이른다" \
+  "$rc/$(cat "$STATE_LATE/cc-cmds/run/R15K/continue/D1" 2>/dev/null)" "0/2"
+resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+check "15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다" "$rc" "3"
+case "$out" in
+  *"stop the design"*"무효화"*) ok "15c: 그 거부는 막힘 행이 아니라 설계 중단을 가리킨다" ;;
+  *) bad "15c 설계 계속 상한 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+propose15x plan "$WORK/plan-R15K.md"
+check "15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 계속 상한 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 계속 상한 종료 문면" "$msg" ;;
+esac
+
 # R15H — the design stage ended unobserved before its team placed a file at the
 # path. The prelude settles such a dispatch as `외부 종료` without looking at the
 # document, and the routers dispatch that step again onto the absent document, so
@@ -8298,6 +8346,219 @@ case "$msg" in
   *) bad "15c 문서만 있는 경로 종료 문면" "$msg" ;;
 esac
 rm -f "$WT/docs/fixture-design-15f.md"
+
+# ---------------------------------------------------------------------------
+# 15d. A stage that ended its turn in prose is CONTINUED, not re-run
+# --- section: 15d | group: base | covers: act, snapshot | anchors: 15d: 공허한 성공의 재개는 계속 메시지를 싣는다, 15d: 계속 상한에 이른 세그먼트의 재개는 exit 3 이다, 15d: 대기 판단 승인이 있는 세그먼트는 계속하지 않는다, 15d: 같은 세그먼트의 다른 파견이 낸 대기 판단은 계속을 막지 않는다, 15d: 0턴 시도는 계속하지 않는다, 15d: 크래시 재개는 계속이 아니다, 15d: 라우터 사본 item 1 이 계속 상한에 닿은 설계 단계를 설계 중단으로 보낸다 ---
+#
+# A stage that exits 0 having written no gate row and no halt record is a hollow
+# success, and what it usually did was end its turn on a progress report. The
+# router re-dispatches it with `--resume <session id>`; the gate then sends the
+# fixed continue message instead of the router's prompt, counts the
+# continuation on disk, and refuses once the count reaches the cap, while the
+# judgment its last attempt emitted is pending, or when the attempt ran zero
+# turns. A question another dispatch of the same segment raised does not hold
+# it. A resume
+# of a stage that did not end hollow keeps the router's prompt. Driven through
+# the real launch path with a stub CLI that records the prompt it was handed.
+# ---------------------------------------------------------------------------
+STUB15D="$WORK/bin/claude-stub-15d"
+mkdir -p "$WORK/bin"
+cat > "$STUB15D" <<'STUB15DEOF'
+#!/usr/bin/env bash
+sid=s15d-fresh
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    --session-id|-r) sid="$a" ;;
+    -p) printf '%s\n' "$a" > "${CC_STUB15D_PROMPT:-/dev/null}" ;;
+  esac
+  prev="$a"
+done
+res=""
+if [ -n "${CC_STUB15D_JUDGE:-}" ]; then
+  res=',"result":"**판단 부류**: 설계-골격 **판단 등급**: 2 **판단 기준**: 사람이 정해야 한다 **판단 되돌리는 법**: 다음 런에서 다시 정한다 **판단 근거**: 결정되지 않았다"'
+fi
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"%s","num_turns":%s%s}\n' \
+  "$sid" "${CC_STUB15D_TURNS:-3}" "$res"
+exit "${CC_STUB15D_RC:-0}"
+STUB15DEOF
+chmod +x "$STUB15D"
+RD15D="$XDG_STATE_HOME/cc-cmds/run/R1"
+seg15d() {  # seg15d <segment> — the segment row a dispatch needs
+  gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+}
+launch15d() {  # launch15d <segment> [--resume <id>] — dispatch through the stub, then wait
+  local s="$1"; shift
+  : > "$WORK/p15d.txt"
+  out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB15D" CC_STUB15D_PROMPT="$WORK/p15d.txt" \
+        bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment "$s" \
+        --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x "$@" \
+        -- implement -p "/cc-cmds:implement-unattended 원래 프롬프트" 2>&1); rc=$?
+  [ "$rc" = "0" ] || return 0
+  ( cd "$WT" && CC_CLAUDE_BIN="$STUB15D" \
+    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment "$s" --interval 1 --timeout 60 >/dev/null 2>&1 )
+}
+last15d() {  # last15d <segment> <field> — that field of the segment's last stage-result row
+  { grep '^- `stage-result` ' "$FX_LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } | tail -1 \
+    | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'
+}
+rows15d() { { grep '^- `stage-result` ' "$FX_LEDGER" || true; } | { grep -cF "세그먼트=$1 " || true; }; }
+
+# A hollow success, continued twice and then refused.
+seg15d SC15
+launch15d SC15
+check "15d 픽스처의 첫 시도가 공허한 성공이다 (아래가 공허하지 않다)" "$(last15d SC15 '종단 부류')" "공허한 성공"
+sc_sid=$(last15d SC15 '세션 id')
+launch15d SC15 --resume "$sc_sid"
+check "15d: 공허한 성공의 재개가 기동한다" "$rc" "0"
+if grep -qF '이 스테이지의 턴이 끝났지만 산출물 술어가 충족되지 않았다: 게이트를 거친 행위도 정지 기록도 없다' "$WORK/p15d.txt" \
+   && ! grep -qF '/cc-cmds:' "$WORK/p15d.txt"; then
+  ok "15d: 공허한 성공의 재개는 계속 메시지를 싣는다"
+else
+  bad "15d 계속 메시지" "$(cat "$WORK/p15d.txt")"
+fi
+check "15d: 계속 계수기가 디스크에 1 로 남는다" "$(cat "$RD15D/continue/SC15" 2>/dev/null)" "1"
+check "15d: 계속한 시도도 자기 stage-result 행을 쓴다" "$(rows15d SC15)" "2"
+launch15d SC15 --resume "$(last15d SC15 '세션 id')"
+check "15d: 둘째 계속도 기동한다" "$rc/$(cat "$RD15D/continue/SC15" 2>/dev/null)" "0/2"
+n15d=$(rows15d SC15)
+launch15d SC15 --resume "$(last15d SC15 '세션 id')"
+check "15d: 계속 상한에 이른 세그먼트의 재개는 exit 3 이다" "$rc" "3"
+case "$out" in
+  *"continued 2 times with no artifact"*) ok "15d: 그 거부는 상한을 든다" ;;
+  *) bad "15d 상한 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+check "15d: 거부된 계속은 시도도 계수기도 쓰지 않는다" \
+  "$(rows15d SC15)/$(cat "$RD15D/continue/SC15" 2>/dev/null)" "$n15d/2"
+
+# A pending judgment the stage raised holds the continuation.
+seg15d SJ15
+( export CC_STUB15D_JUDGE=1; launch15d SJ15 )
+check "15d 판단 픽스처도 공허한 성공이다" "$(last15d SJ15 '종단 부류')" "공허한 성공"
+launch15d SJ15 --resume "$(last15d SJ15 '세션 id')"
+check "15d: 대기 판단 승인이 있는 세그먼트는 계속하지 않는다" "$rc" "3"
+case "$out" in
+  *"still pending"*) ok "15d: 그 거부는 대기 중인 판단을 든다" ;;
+  *) bad "15d 대기 판단 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+case "$out" in
+  *"re-attaches"*) bad "15d 대기 판단 문면" "수행되지 않는 재부착을 약속한다: $(printf '%s' "$out" | tr '\n' ' ')" ;;
+  *"(approval J-"*) ok "15d: 그 거부는 이 시도가 방출한 판단의 승인 id 를 대고 재부착을 약속하지 않는다" ;;
+  *) bad "15d 대기 판단 승인 id" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# A pending judgment ANOTHER dispatch of the same segment raised does not hold
+# this one. The absorber keys every stage of a segment on the bare segment, so
+# the first dispatch's open question and this dispatch share `막는 세그먼트`;
+# only the question this dispatch's own last attempt emitted may hold it.
+seg15d SO15
+( export CC_STUB15D_JUDGE=1; launch15d SO15 )
+so_jid=$( { grep -F '`승인`' "$FX_LEDGER" || true; } | { grep -F '막는 세그먼트=SO15 ' || true; } \
+  | sed -n '1p' | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+check "15d 다른 파견 픽스처가 세그먼트를 막는 대기 판단을 연다 (아래가 공허하지 않다)" \
+  "$( [ -n "$so_jid" ] && printf found || printf missing )" "found"
+launch15d SO15
+check "15d 다른 파견 픽스처의 둘째 파견도 공허한 성공이다" "$(last15d SO15 '종단 부류')" "공허한 성공"
+launch15d SO15 --resume "$(last15d SO15 '세션 id')"
+check "15d: 같은 세그먼트의 다른 파견이 낸 대기 판단은 계속을 막지 않는다" "$rc" "0"
+if grep -qF '이 스테이지의 턴이 끝났지만 산출물 술어가 충족되지 않았다' "$WORK/p15d.txt"; then
+  ok "15d: 그 재개는 계속 메시지를 싣는다"
+else
+  bad "15d 다른 파견 계속 메시지" "$(cat "$WORK/p15d.txt")"
+fi
+check "15d: 첫 파견의 판단 승인은 여전히 대기다" \
+  "$( { grep -F '`승인`' "$FX_LEDGER" || true; } | { grep -F "| 승인 id=$so_jid |" || true; } | tail -1 \
+      | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//')" "대기"
+
+# Zero turns: nothing to continue.
+seg15d SZ15
+( export CC_STUB15D_TURNS=0; launch15d SZ15 )
+launch15d SZ15 --resume "$(last15d SZ15 '세션 id')"
+check "15d: 0턴 시도는 계속하지 않는다" "$rc" "3"
+case "$out" in
+  *"zero turns"*) ok "15d: 그 거부는 새 파견을 가리킨다" ;;
+  *) bad "15d 0턴 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# A crashed stage's resume is a re-attachment: the router's prompt stands and
+# nothing is counted.
+seg15d SK15
+( export CC_STUB15D_RC=1; launch15d SK15 )
+check "15d 크래시 픽스처의 종단 부류" "$(last15d SK15 '종단 부류')" "크래시"
+launch15d SK15 --resume "$(last15d SK15 '세션 id')"
+check "15d: 크래시 재개는 계속이 아니다" \
+  "$rc/$(cat "$WORK/p15d.txt")/$( [ -e "$RD15D/continue/SK15" ] && printf counted || printf none )" \
+  "0//cc-cmds:implement-unattended 원래 프롬프트/none"
+
+# The router's design-stage item 1 must agree with the continuation above. The
+# item lists what is taken before a fresh dispatch; if it names only the cut-
+# stage re-attachment, a router reading it dispatches a hollow design stage
+# afresh and buys the published discussion rounds again, and nothing else in
+# the tree — no merge conflict, no fixture — says the two instructions clash.
+# The driver half of its old closing clause is false as well: the driver
+# continues a hollow design stage before it runs a fresh one. The item keeps
+# the two literals scripts/test-snapshot.sh reads in both copies, so what is
+# asserted here is what now surrounds them: the continuation section is named
+# next to the re-attachment, and the fresh-dispatch clause is scoped past both.
+item1_15d() {  # item1_15d <SKILL.md> — item 1 of 「Dispatching the design stage」
+  awk '/^#### Dispatching the design stage$/ { f = 1; next }
+       f && /^1\. \*\*Resume is decided by the ledger\.\*\*/ { print; exit }' "$1"
+}
+RS15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+LD15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md")
+check "15d: 두 라우터 사본에서 설계 단계 item 1 을 찾는다" \
+  "$( [ -n "$RS15D" ] && [ -n "$LD15D" ] && printf found || printf missing )" "found"
+case "$RS15D" in
+  *"Take 「Re-attaching a cut stage」 first, and 「Continuing a stage that ended its turn in prose」 right after it"*)
+    ok "15d: 교대 사본의 설계 단계 item 1 이 계속 절을 재부착 절 곁에 먼저 취한다" ;;
+  *) bad "15d 교대 사본 item 1 우선순위" "$RS15D" ;;
+esac
+case "$RS15D" in
+  *'Past those two sections, `외부 종료`, `크래시` and `공허한 성공` may be dispatched afresh'*)
+    ok "15d: 교대 사본의 item 1 은 계속이 닿지 않은 공허한 성공만 새로 파견한다" ;;
+  *) bad "15d 교대 사본 item 1" "새로 파견 절이 두 절 뒤로 한정되지 않았다" ;;
+esac
+for c15d in "$RS15D" "$LD15D"; do
+  case "$c15d" in
+    *"and the fixed-graph driver read these three the same way"*)
+      bad "15d 라우터 사본 item 1" "드라이버가 세 부류를 같게 읽는다고 적는다" ;;
+    *"it continues the same session, and runs a fresh process only when there is no transcript or the attempt ran zero turns"*)
+      ok "15d: 라우터 사본 item 1 이 드라이버는 공허한 성공 설계를 먼저 계속한다고 적는다" ;;
+    *) bad "15d 라우터 사본 item 1 드라이버 문장" "$c15d" ;;
+  esac
+done
+# A design step continued up to the cap has exactly one disposition the gate
+# accepts: the design stop, whose proposal condition 1 records as `무효화` once
+# it reads the same counter. The cone `blocked` form needs a `segment` row the
+# step does not have, and a fresh dispatch buys the discussion again, so item 1
+# must send the capped step to the stop in both copies — R15K in 15c drives the
+# gate half of the same claim.
+case "$RS15D" in
+  *"never gets here"*) bad "15d 교대 사본 item 1 상한" "상한에 닿은 설계 단계를 막힘 행으로 보낸다" ;;
+  *) ok "15d: 교대 사본 item 1 이 상한에 닿은 설계 단계를 막힘 행으로 보내지 않는다" ;;
+esac
+for c15d in "$RS15D" "$LD15D"; do
+  case "$c15d" in
+    *"is not dispatched afresh either"*"continue/<step id>"*"stop the design as below"*)
+      ok "15d: 라우터 사본 item 1 이 계속 상한에 닿은 설계 단계를 설계 중단으로 보낸다" ;;
+    *) bad "15d 라우터 사본 item 1 상한 처분" "$c15d" ;;
+  esac
+done
+cont3_15d=$(awk '/^#### Continuing a stage that ended its turn in prose$/ { f = 1; next }
+                 f && /^#+ / { exit }
+                 f && /^3\. \*\*Exit 3 is the gate declining\.\*\*/ { print; exit }' \
+            "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+case "$cont3_15d" in
+  *"the design step has no \`segment\` row, so that form is refused for it"*"stops the design instead"*)
+    ok "15d: 교대 사본 계속 절 item 3 이 막힘 행을 세그먼트로 한정하고 설계 단계를 설계 중단으로 보낸다" ;;
+  *) bad "15d 교대 사본 계속 절 item 3" "${cont3_15d:-(절을 찾지 못했다)}" ;;
+esac
+case "$cont3_15d" in
+  *"re-attaches"*) bad "15d 교대 사본 계속 절 item 3" "수행되지 않는 재부착을 약속한다" ;;
+  *) ok "15d: 교대 사본 계속 절 item 3 이 재부착을 약속하지 않는다" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none

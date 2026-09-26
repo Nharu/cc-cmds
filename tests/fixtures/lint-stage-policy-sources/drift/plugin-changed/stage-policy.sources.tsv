@@ -1,0 +1,5 @@
+source	anchor	sha256	disposition	note
+user-scope	alpha	481e0bba2f5269928d9f543e356a067428cbee095a262740769fc84b77928f35	policy:Artifacts	
+user-scope	beta	52ad116489a62e8f6f3ec968ac8aec615125a9c85b1de9d337c6203a8f963208	policy:Artifacts	
+user-scope	gamma	6dd7e899a526bf21c7a74daf48055374821e8acb4e6c1b91cda87a055997449e	policy:Artifacts	
+plugin	skills/rule.md:- ending:	ecb1488102e8cd1af41fe2f595b22d9a21212ec8301109a6d778759161eb0cdb	policy:Ending the turn	

@@ -25,13 +25,15 @@
 #          prescribes is itself the instruction to spawn it (so the delegation
 #          rule cannot be read as "review alone");
 #   (v)    the manifest is well formed: the exact header, five tab-separated
-#          columns, `source` in {user-scope, workspace, memory}, `disposition`
-#          in the closed vocabulary;
+#          columns, `source` in {user-scope, workspace, memory, plugin},
+#          `disposition` in the closed vocabulary, and a `plugin` anchor of
+#          the form `<path>:<line prefix>`;
 #   (vi)   every `policy:<heading>` disposition names a `## ` heading that
 #          exists in the policy;
 #   (vii)  every `## ` heading of the policy is named by at least one row —
 #          a section nothing maps to is a rule with no source;
-#   (viii) every `user-scope` anchor is unique within the manifest;
+#   (viii) every `user-scope` anchor and every `plugin` anchor is unique
+#          within the manifest;
 #   (ix)   `memory` rows carry hash `-` and every other row a 64-hex sha256.
 #
 # Usage:
@@ -143,11 +145,13 @@ while IFS= read -r row || [[ -n "$row" ]]; do
 
   checked=$((checked + 1))
   case "$source" in
-    user-scope|workspace|memory) : ;;
-    *) failf "stage-policy.sources.tsv:$lineno — source must be user-scope, workspace or memory: '$source'" ;;
+    user-scope|workspace|memory|plugin) : ;;
+    *) failf "stage-policy.sources.tsv:$lineno — source must be user-scope, workspace, memory or plugin: '$source'" ;;
   esac
   if [[ -z "$anchor" ]]; then
     failf "stage-policy.sources.tsv:$lineno — empty anchor"
+  elif [[ "$source" == plugin && ! "$anchor" =~ ^[^/:][^:]*:.+$ ]]; then
+    failf "stage-policy.sources.tsv:$lineno — a plugin anchor is '<path relative to the plugin root>:<line prefix>': '$anchor'"
   fi
   if [[ ! "$disp" =~ $DISPOSITION_RE ]]; then
     failf "stage-policy.sources.tsv:$lineno — disposition outside the closed vocabulary: '$disp'"
@@ -185,16 +189,18 @@ while IFS= read -r heading; do
   fi
 done <<< "$policy_headings"
 
-# ---------- (viii) user-scope anchors unique within the manifest -------------
+# ---------- (viii) user-scope and plugin anchors unique within the manifest --
 
-checked=$((checked + 1))
-dupes=$(awk -F'\t' 'NR > 1 && $1 == "user-scope" { print $2 }' "$MANIFEST" | sort | uniq -d || true)
-if [[ -n "$dupes" ]]; then
-  while IFS= read -r d; do
-    [[ -n "$d" ]] || continue
-    failf "stage-policy.sources.tsv — user-scope anchor appears more than once: $d"
-  done <<< "$dupes"
-fi
+for kind in user-scope plugin; do
+  checked=$((checked + 1))
+  dupes=$(awk -F'\t' -v k="$kind" 'NR > 1 && $1 == k { print $2 }' "$MANIFEST" | sort | uniq -d || true)
+  if [[ -n "$dupes" ]]; then
+    while IFS= read -r d; do
+      [[ -n "$d" ]] || continue
+      failf "stage-policy.sources.tsv — $kind anchor appears more than once: $d"
+    done <<< "$dupes"
+  fi
+done
 
 if (( fail == 0 )); then
   echo "OK:   stage policy sources — $checked check(s) passed, policy $policy_bytes bytes"

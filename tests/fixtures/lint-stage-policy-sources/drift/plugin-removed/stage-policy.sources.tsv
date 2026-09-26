@@ -1,0 +1,3 @@
+source	anchor	sha256	disposition	note
+plugin	skills/rule.md:- ending:	ecb1488102e8cd1af41fe2f595b22d9a21212ec8301109a6d778759161eb0cdb	policy:Ending the turn	
+plugin	skills/gone.md:- ending:	ecb1488102e8cd1af41fe2f595b22d9a21212ec8301109a6d778759161eb0cdb	policy:Ending the turn	

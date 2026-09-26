@@ -215,6 +215,11 @@ readonly BACKOFF_MAX_SLEEP_SECONDS=1800  # per-sleep ceiling
 # re-submission is instructed in prose — a stage that reads the instruction and
 # does not act on it comes back as the same candidate next cycle, forever.
 readonly REDISPATCH_MAX=2
+# How many times one stage that ended its turn in prose is resumed with the
+# continue message before it parks. Counted apart from REDISPATCH_MAX: that cap
+# bounds re-attachments driven by an answer, this one bounds re-attachments
+# driven by an unmet artifact predicate, and the gate reads the same value.
+readonly CONTINUE_MAX=2
 readonly BACKOFF_WALLCLOCK_CAP_SECONDS=21600   # 6h, then park
 # Consecutive silent polls before a live stage is classed as the limit shape.
 #
@@ -3230,7 +3235,16 @@ transcript_path() {
   # The attempt number is READ BACK FROM THE PIN rather than recomputed. This
   # function derives the session uuid, and a second count of the same thing is
   # how the uuid and the stream path came from two different attempts.
-  uuid=$(session_uuid "$stage" "$(stage_attempt_pinned "$stage")")
+  #
+  # A RESUMED ATTEMPT WRITES INTO THE SESSION IT RESUMED, not into the one its
+  # attempt number derives, so `stage_spawn` records that id in `<stage>.session`
+  # and it wins here. Without it the progress oracle watched a file that never
+  # existed and a healthy resumed stage fell to the limit shape.
+  if [ -s "$RUN_DIR/$stage.session" ]; then
+    uuid=$(sed -n '1p' "$RUN_DIR/$stage.session")
+  else
+    uuid=$(session_uuid "$stage" "$(stage_attempt_pinned "$stage")")
+  fi
   # The resolver is called into a VARIABLE rather than inline. Inline, a refusal
   # substitutes the empty string and `find /projects` is an ordinary miss — the
   # fail-closed tier would report "no transcript" in exactly the case it exists
@@ -3482,8 +3496,10 @@ stage_spawn() {
   local -a id_flag
   if [ -n "${STAGE_RESUME:-}" ]; then
     id_flag=(--resume "$STAGE_RESUME")
+    printf '%s\n' "$STAGE_RESUME" > "$RUN_DIR/$stage.session"
     log "$stage: 세션 $STAGE_RESUME 재부착"
   else
+    rm -f "$RUN_DIR/$stage.session"
     id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
   fi
   # The window this launch will run under, read from the same settings file
@@ -3863,7 +3879,9 @@ answered_judgment_stage() {
   #
   # `막는 세그먼트` HOLDS THE STAGE ID, not the segment id: the gate learns it
   # from `CC_PIPELINE_SEGMENT`, and this driver sets that variable to the stage
-  # id when it spawns. So the field already names the re-dispatch candidate.
+  # id when it spawns. The implement stage's absorber in `segment_cycle` keys an
+  # emitted judgment on the same dispatch id. So the field already names the
+  # re-dispatch candidate.
   #
   # THE STAGE KIND IS PART OF THE MEMBERSHIP TEST, and the `:<segment>:` infix
   # alone was not. A stage id is `<종류>:<세그먼트>:<사이클>`, so the kind sits in
@@ -3902,7 +3920,10 @@ answered_judgment_stage() {
     # A session that left no stream cannot be re-attached, and a derived id
     # would name a session the harness never opened. Falling through to a fresh
     # dispatch is the honest outcome; claiming a resume that cannot happen is not.
-    [ -f "$RUN_DIR/log/$stg.json" ] || continue
+    # The stream is found through `stage_log_path`, which honours the attempt
+    # pin: this driver pins every dispatch, so its streams are `<stg>#<n>.json`
+    # and the unscoped name exists only for a stream an older driver left.
+    [ -f "$(stage_log_path "$stg")" ] || continue
     printf '%s %s' "$id" "$stg"
     return 0
   done
@@ -3926,6 +3947,100 @@ redispatch_spend() {
   n=$((n + 1))
   printf '%s\n' "$n" > "$f"
   printf '%s' "$n"
+}
+
+# ---------------------------------------------------------------------------
+# Continuing a stage that ended its turn in prose. Shared with the gate, which
+# sources this file: the driver continues from `continue_or_park`, the gate
+# from a router's `act --resume` on a `공허한 성공` row, and both read one
+# counter, one cap and one message so the two paths cannot drift apart.
+# ---------------------------------------------------------------------------
+continue_counter_file() {
+  # continue_counter_file <key> — the stage id on the driver path, the segment
+  # id on the gate path. `/` cannot appear in a file name, so it is folded.
+  # Only the writer creates the directory: the gate's termination condition 1
+  # reads the count, and a read leaves nothing behind.
+  printf '%s/continue/%s' "$RUN_DIR" "$(printf '%s' "$1" | tr '/' '_')"
+}
+
+continue_count() {
+  # continue_count <key> — continuations already spent. On disk, like
+  # `redispatch_spend`, so a restarted driver or supervisor keeps counting.
+  local n
+  n=$(cat "$(continue_counter_file "$1")" 2>/dev/null || printf '0')
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+continue_spend() {
+  # continue_spend <key> — record one more continuation, echo the new count.
+  local n
+  n=$(( $(continue_count "$1") + 1 ))
+  mkdir -p "$RUN_DIR/continue"
+  printf '%s\n' "$n" > "$(continue_counter_file "$1")"
+  printf '%s' "$n"
+}
+
+continue_message() {
+  # continue_message <unmet predicate> — the whole prompt of a continuation.
+  # The stage prompt is NOT sent again: resent into a full context it restarts
+  # the stage from the top.
+  printf '%s' "이 스테이지의 턴이 끝났지만 산출물 술어가 충족되지 않았다: $1. 처음부터 다시 시작하지 말고 멈춘 자리에서 이어 가라. 턴은 셋 중 하나로만 끝난다 — 지시가 지목한 산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다. 진행 요약·다음 할 일 예고·계속할지 묻기는 종단이 아니다."
+}
+
+stream_last_num_turns() {
+  # stream_last_num_turns <stream> — `num_turns` of the LAST result line, empty
+  # when there is none. One process may write several result lines and their
+  # counts are not monotone, so the last one is the only defined reading.
+  local res
+  res=$( { grep '"type":"result"' "$1" 2>/dev/null || true; } | tail -1)
+  printf '%s' "$res" | sed -n 's/.*"num_turns":\([0-9][0-9]*\).*/\1/p' | sed -n '1p'
+}
+
+transcript_of_session() {
+  # transcript_of_session <session id> — the transcript the harness keeps for
+  # that session, found by the id a row recorded rather than one an attempt
+  # number derives. Return 1 when there is none.
+  local sid="$1" cfg p
+  case "$sid" in ''|미상) return 1 ;; esac
+  cfg=$(resolve_account 2>/dev/null) || return 1
+  p=$(find "$cfg/projects" -name "$sid.jsonl" 2>/dev/null | sed -n '1p')
+  [ -n "$p" ] || return 1
+  printf '%s' "$p"
+}
+
+stage_open_judgment() {
+  # stage_open_judgment <judgment key> — 0 when a `절단점=판단` approval whose
+  # issuing row's `막는 세그먼트` is that key, or one of its attempts
+  # (`<key>#<n>`), is still `대기`, with its id left in OPEN_JUDGMENT_ID. A
+  # stage that emitted a judgment and stopped is waiting on a person, not
+  # stuck: continuing it would ask it to answer its own question.
+  #
+  # THE KEY IS THE ONE THIS DISPATCH'S ABSORBER USED, and nothing wider. It does
+  # not match the bare segment or the run-scope `-`, so a judgment another stage
+  # raised — the previous cycle's review, or the design stage before an audit —
+  # does not stop this one. Matching those turned any open question anywhere in
+  # the segment or run into a park of a stage that had asked nothing. On the
+  # implement stage the key is a dispatch id, `<종류>:<세그먼트>:<사이클>`, the
+  # shape `answered_judgment_stage` selects on — so the question this refuses
+  # to continue and the answer that later comes back are keyed alike.
+  local key="$1" id row st iss blk
+  OPEN_JUDGMENT_ID=""
+  for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "| 승인 id=$id |" || true; } | tail -1)
+    st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$st" = "대기" ] || continue
+    iss=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "| 승인 id=$id |" || true; } \
+           | { grep -F '| 절단점=판단 |' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    blk=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "$blk" in "$key"|"$key#"*) OPEN_JUDGMENT_ID=$id; return 0 ;; esac
+  done
+  return 1
 }
 
 stage_parent_id() {
@@ -5227,10 +5342,18 @@ segment_cycle() {
     # judgment array. Both readings compute from the same ledger facts, so they
     # cannot disagree about which answers are outstanding — but only one of them
     # is reached on any given run.
-    local aj aj_id aj_stage prompt
+    local aj aj_id aj_stage prompt jkey
     aj=$(answered_judgment_stage "$seg" S4)
     prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
     STAGE_RESUME=""
+    # THE KEY A JUDGMENT THIS DISPATCH EMITS IS FILED UNDER. The dispatch id, so
+    # the open-judgment check in `continue_or_park` sees this stage's questions
+    # and no other stage's, and `answered_judgment_stage` can select the answer
+    # later. A cycle that re-attaches an answer keeps the key of the stage that
+    # asked: the approval id derives from the key and the question text, so the
+    # re-emission the prompt asks for reaches the answered approval and records
+    # it spent, where a new key would open a second question instead.
+    jkey="$sid"
     if [ -n "$aj" ]; then
       aj_id=${aj%% *}; aj_stage=${aj#* }
       # THE CAP IS ON THIS SIDE BECAUSE THE PROMPT ALONE CANNOT CLOSE THE LOOP.
@@ -5245,6 +5368,7 @@ segment_cycle() {
       fi
     fi
     if [ -n "$aj" ]; then
+      jkey="$aj_stage"
       STAGE_RESUME=$(stage_session_id_strict "$aj_stage")
       prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 그리고 끝내기 전에 반드시 같은 판단을 다시 방출하라 — 같은 \`판단 기준\`·\`판단 근거\`로 재제출해야 게이트가 닫힌 승인의 상태를 읽어 \`해소 승인=$aj_id\` 를 담은 \`자율 승인\` 행을 남긴다. 그 행이 없으면 이 답은 소비되지 않은 것으로 남아 다음 사이클에 같은 스테이지가 같은 답을 다시 받는다. 선언 파일: $files"
       log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
@@ -5261,11 +5385,11 @@ segment_cycle() {
     # kind because the gate's readers group on it; the attempt counter needs the
     # id it actually dispatched, and nothing else in the row carries it.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
-      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+      "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
       "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
       "종단 부류=$class"
-    absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
+    absorb_stage_judgment "$sid" "$jkey" "$(seg_alias "$seg")"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
@@ -5276,15 +5400,19 @@ segment_cycle() {
         park "$seg" cone 무효화 "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
         return 1 ;;
       '공허한 성공')
-        # One retry, then a DISTINCT park reason. Not zero, because one
-        # observation cannot rule out a transient cause; not the whole budget,
-        # because a clean exit with no artifact is itself evidence the next
-        # attempt does the same — improvisation is deterministic.
-        log "$seg: 공허한 성공 — 1회만 재시도"
-        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
-        stage_wait_all "$sid.retry"
-        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
-          park "$seg" cone 무효화 "게이트 park" "공허한 성공 2회 — 산출물 없음"; return 1
+        # Resume first, a fresh process only for the shape resuming cannot
+        # help, then a park under the reason `continue_or_park` names. The
+        # continued attempts can write files too, so the escape checks run
+        # again on the tree they left.
+        if continue_or_park "$sid" "$jkey" "$seg" S4 "$wt" \
+             "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" \
+             "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" "$(seg_alias "$seg")" \
+             -- predicate_implement "$branch" "$pre_head" "$seg"; then
+          fileset_escape "$seg" "$files" "$wt" || return 1
+          stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+        else
+          [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+          park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi ;;
       '크래시')
         # The same one retry as the arm three lines up, and for a stronger
@@ -5576,6 +5704,129 @@ absorb_stage_judgment() {
 }
 
 # ---------------------------------------------------------------------------
+# continue_or_park — what the driver does with a `공허한 성공`, for the
+# implement, design and audit stages alike.
+#
+#   continue_or_park <stage id> <judgment key> <row segment> <row kind> <cwd>
+#                    <retry prompt> <unmet predicate> <alias> -- <predicate cmd...>
+#
+# The judgment key is what every attempt's absorber keys an emitted judgment on,
+# and what the open-judgment check below reads: the dispatch id on the
+# implement stage (or, on a cycle that re-attached an answer, the stage id that
+# raised it, so a re-emission reaches the same approval), and the stage's own
+# name on the design and audit stages. The row segment is only the `세그먼트=`
+# field of the attempt rows.
+#
+# Returns 0 when a later attempt completed normally. Returns 1 with
+# CONTINUE_PARK_REASON (and CONTINUE_PARK_RECALL for a halt) set, and
+# CONTINUE_BLOCKED non-empty when the stage waits on a person rather than
+# having failed; the caller parks under its own scope. The predicate command is
+# run with the attempt's stage id appended, so a predicate that reads a stream
+# reads that attempt's.
+#
+# RESUME FIRST. A turn that ended in a status report is not a defect a fresh
+# process fixes — it loses the context and pays for it again. So the same
+# session is resumed with a fixed message naming the unmet predicate, up to
+# CONTINUE_MAX times, each one a new attempt with its own row. A fresh process
+# is kept for the one shape resuming cannot help: no transcript, or zero turns.
+# A stage whose own judgment is still open — one keyed on the judgment key, not
+# any open question in its segment or run — is waiting on a person and is not
+# continued. The limit-shape and crash classes never reach here.
+#
+# THE PARK REASON SAYS WHAT HAPPENS NEXT, AND ONLY THAT. The run does not
+# continue the stage and does not wait: the caller parks it `막힘` under its
+# own scope.
+# Nothing on this driver carries the answer back to a parked stage.
+# `answered_judgment_stage` reads an answer only in the next implement cycle of
+# a segment that was NOT parked; a parked segment is not dispatched again in
+# this run, a same-run-id invocation is refused by `check_inflight`, and a new
+# run id cannot find the stream that asked. So the reason names the approval
+# and says a person relaunches the stage to act on the answer; it names no
+# resume command, because this driver cannot name one that would run.
+# ---------------------------------------------------------------------------
+continue_or_park() {
+  local sid="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" retry_prompt="$6" unmet="$7" alias="$8"
+  shift 8
+  [ "${1:-}" = "--" ] && shift
+  local sess turns n
+  CONTINUE_BLOCKED=""
+  CONTINUE_PARK_REASON=""
+  CONTINUE_PARK_RECALL=""
+  while :; do
+    if stage_open_judgment "$jkey"; then
+      log "$sid: 공허한 성공 — 이 스테이지가 낸 판단 승인 $OPEN_JUDGMENT_ID 가 대기 중이라 계속하지 않는다"
+      CONTINUE_BLOCKED=1
+      case "$rkind" in
+        S4) CONTINUE_PARK_REASON="판단 승인 대기 $OPEN_JUDGMENT_ID — 이 런은 이 스테이지를 계속하지 않고 여기서 멈추며, 이 런 안에서 이 세그먼트를 다시 디스패치하지 않는다. 이 드라이버에는 멈춘 스테이지에 답을 되돌리는 경로가 없으므로, 답을 반영하려면 사람이 이 세그먼트를 다시 띄운다" ;;
+        *)  CONTINUE_PARK_REASON="판단 승인 대기 $OPEN_JUDGMENT_ID — 이 런은 이 스테이지를 계속하지 않고 여기서 멈춘다. 이 드라이버에는 멈춘 스테이지에 답을 되돌리는 경로가 없으므로, 답을 반영하려면 사람이 이 스테이지를 다시 띄운다" ;;
+      esac
+      return 1
+    fi
+    sess=$(stage_session_id_strict "$sid")
+    turns=$(stream_last_num_turns "$(stage_log_path "$sid")")
+    if [ -z "$sess" ] || ! transcript_of_session "$sess" >/dev/null || [ "${turns:-0}" = "0" ]; then
+      # The base-defect shape: nothing to resume into. One fresh process, then
+      # a park under its own reason.
+      log "$sid: 공허한 성공 — 트랜스크립트가 없거나 0턴이라 새 프로세스로 1회만 재시도"
+      STAGE_RESUME=""
+      continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$alias" -- "$@"
+      case "$CONTINUE_CLASS" in
+        '정상 완료') return 0 ;;
+        '의도된 park') return 1 ;;
+        *) CONTINUE_PARK_REASON="재시도 소진 — 새 프로세스 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
+      esac
+    fi
+    if [ "$(continue_count "$sid")" -ge "$CONTINUE_MAX" ]; then
+      CONTINUE_PARK_REASON="계속 소진 — 같은 세션을 계속 메시지로 ${CONTINUE_MAX}회 재개했으나 산출물이 없다"
+      return 1
+    fi
+    n=$(continue_spend "$sid")
+    log "$sid: 공허한 성공 — 같은 세션 $sess 를 계속 메시지로 재개 ($n/$CONTINUE_MAX)"
+    STAGE_RESUME="$sess"
+    continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
+    case "$CONTINUE_CLASS" in
+      '정상 완료') return 0 ;;
+      '의도된 park') return 1 ;;
+      '공허한 성공') : ;;
+      *) CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
+    esac
+  done
+}
+
+continue_attempt() {
+  # continue_attempt <dispatch id> <judgment key> <row segment> <row kind> <cwd>
+  #                  <prompt> <alias> -- <predicate cmd...>
+  # One attempt of `continue_or_park`: dispatch (resuming when the caller set
+  # STAGE_RESUME), classify, write its own `stage-result` row, absorb a judgment
+  # it emitted under the judgment key. Leaves the class in CONTINUE_CLASS, and
+  # the halt reason and recall command in CONTINUE_PARK_* when it halted.
+  local did="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" prompt="$6" alias="$7" rc pred
+  shift 7
+  [ "${1:-}" = "--" ] && shift
+  rm -f "$RUN_DIR/$did.rc"
+  quiet_window_begin
+  dispatch_stage "$did" "$cwd" "$prompt" || true
+  STAGE_RESUME=""
+  quiet_window_end
+  rc=$(cat "$RUN_DIR/$did.rc" 2>/dev/null || printf '1')
+  if "$@" "$did"; then pred=0; else pred=1; fi
+  CONTINUE_CLASS=$(classify_termination "$did" "$rc" "$pred")
+  # One row per attempt. `실행 버전` is the attempt this dispatch pinned — the
+  # value the gate writes for its own rows — so "one row per (segment,
+  # attempt)" holds on driver rows too.
+  ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=$rc" \
+    "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$did")" \
+    "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
+    "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" "기록자=드라이버" \
+    "종단 부류=$CONTINUE_CLASS"
+  absorb_stage_judgment "$did" "$jkey" "$alias"
+  if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
+    CONTINUE_PARK_REASON="중단 기록"
+    CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$did")" 2>/dev/null || true)
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # S1 DESIGN — headless, one pass, BEFORE the audit: the audit reads a frozen
 # document and this is the stage that writes and freezes one. Returns 0 when the
 # run goes on to the audit and 1 when it was parked here.
@@ -5688,16 +5939,28 @@ design_arm() {
   if predicate_design S1design; then pred1=0; else pred1=1; fi
   class1=$(classify_termination S1design "$rc1" "$pred1")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
-    "아티팩트 술어 결과=$pred1" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+    "아티팩트 술어 결과=$pred1" "실행 버전=$(stage_attempt_pinned S1design)" \
     "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" "기록자=드라이버" \
     "종단 부류=$class1"
-  absorb_stage_judgment S1design - "$(home_alias)"
+  absorb_stage_judgment S1design S1design "$(home_alias)"
+  # The absorber above keys on the stage, not on the run-scope `-`: a `-` key is
+  # every run-scope stage's at once, and the open-judgment check could not tell
+  # this stage's question from another's.
   # An unfrozen document does not go on to the audit or the segment plan —
   # both read the freeze as a precondition.
   case "$class1" in
     '정상 완료') report_append "설계" "문서 동결 — $DOC_KEY" ;;
     '의도된 park') park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
+    '공허한 성공')
+      if continue_or_park S1design S1design - S1design "$(alias_root "$(home_alias)")" \
+           "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\"" \
+           "동결된 설계 문서도 정지 기록도 없다" "$(home_alias)" -- predicate_design; then
+        report_append "설계" "문서 동결 — $DOC_KEY"
+      else
+        [ -z "$CONTINUE_BLOCKED" ] || { park "S1design" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+        park "S1design" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+      fi ;;
     *) park "S1design" run 무효화 "게이트 park" "종단 부류 $class1"; return 1 ;;
   esac
   return 0
@@ -5777,14 +6040,24 @@ main_loop() {
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
-    "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+    "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" "기록자=드라이버" \
       "종단 부류=$class2"
-  absorb_stage_judgment S2 - "$(home_alias)"
+  absorb_stage_judgment S2 S2 "$(home_alias)"
+  # Keyed on the stage for the reason the design stage's absorber is.
   case "$class2" in
     '정상 완료') : ;;
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
+    '공허한 성공')
+      if continue_or_park S2 S2 - S2 "$(alias_root "$(home_alias)")" \
+           "/cc-cmds:design-audit-unattended $DOC" \
+           "감사 리더 리포트와 종단 문면도 정지 기록도 없다" "$(home_alias)" -- predicate_audit; then
+        :
+      else
+        [ -z "$CONTINUE_BLOCKED" ] || { park "S2" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 0; }
+        park "S2" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 0
+      fi ;;
     *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
   fi

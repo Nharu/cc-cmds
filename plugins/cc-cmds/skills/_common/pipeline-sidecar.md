@@ -900,6 +900,8 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 Skills do emit next-step command strings; the rule binds the **reader**, not the writer, which is why no skill text needs editing. Such a line is disqualified as a control signal anyway: it is emitted on the success path (so it cannot separate a finished audit from an aborted one) and it is cwd-relative (so it resolves against the wrong tree in a segment worktree). It is copied **verbatim as an opaque string** into the morning report, for the human who may run it.
 
+**A stage's turn ends only when its own terminal artifact exists, when it has written a halt record, or when it has handed a judgment marker to the gate; prose is never a terminal, and a routing shift ends with its own skill's handoff.**
+
 ### 5.1 Artifact predicates
 
 | Stage | Predicate |
@@ -925,7 +927,7 @@ Exit status and the artifact predicate are **independent axes**, and the halt re
 | --- | --- | --- | --- | --- |
 | success | true | — | `정상 완료` | next stage |
 | success | false | present | `의도된 park` | blocked queue, no retry |
-| success | false | absent | `공허한 성공` | retry **once**, then blocked queue under a distinct reason |
+| success | false | absent | `공허한 성공` | resume the same session with the continue message up to **twice**, or re-run fresh **once** when there is no transcript or zero turns, then blocked queue under a distinct reason (`계속 소진`, `재시도 소진`); not continued while a judgment it raised is pending (`판단 승인 대기`) |
 | non-zero | false | — | `크래시` | retry at the boundary, `시도+1` |
 | (none) | — | absent | `한도-형상 회수` | one re-dispatch under its own name (implement), the recovery dispatch (review), or blocked queue |
 
