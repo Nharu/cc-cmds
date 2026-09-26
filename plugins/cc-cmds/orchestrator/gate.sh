@@ -6004,8 +6004,31 @@ ladder_of_terraform() {
 # turns into a silent exit of the snapshot. The first act of the first run is
 # exactly when a router most needs the snapshot to answer, so the tolerance is
 # not defensive padding: it is the case that always happens.
+#
+# THE READ-ZONE MEMO. The four `GATE_ROWS_MEMO_*` names exist only as `local`s
+# of a warming function (see `gate_ledger_warm`), so they are cleared here at
+# load. A caller whose environment carried one of them in would otherwise have
+# that scalar read as element 0 of the memo, and `gate_rows` would answer rows
+# the ledger does not hold.
+unset GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
 gate_rows() {
   # gate_rows <series>
+  #
+  # Inside a warmed zone a series the zone warmed is answered from the memo,
+  # with builtins only, so the read spawns no process. The memo is consulted
+  # only while `LEDGER` is still the path it was filled from; a string compare,
+  # not a freshness probe — a probe would be a process per call, the very cost
+  # the memo removes. Everything else falls through to the grep, unchanged.
+  if [ -n "${GATE_ROWS_MEMO_LEDGER:-}" ] && [ "$GATE_ROWS_MEMO_LEDGER" = "$LEDGER" ]; then
+    local m=0
+    while [ "$m" -lt "${GATE_ROWS_MEMO_N:-0}" ]; do
+      if [ "${GATE_ROWS_MEMO_KINDS[$m]}" = "$1" ]; then
+        [ -z "${GATE_ROWS_MEMO_ROWS[$m]}" ] || printf '%s\n' "${GATE_ROWS_MEMO_ROWS[$m]}"
+        return 0
+      fi
+      m=$((m + 1))
+    done
+  fi
   grep -E "^- \`$1\`" "$LEDGER" 2>/dev/null || true
 }
 
@@ -6031,6 +6054,35 @@ gate_count() {
   # invalid snapshot object rather than a wrong number, so nothing downstream
   # could even read far enough to notice.
   grep -c . || true
+}
+
+gate_ledger_warm() {
+  # gate_ledger_warm <series>... — read each named series from the ledger ONCE
+  # and hold it for the rest of the calling function.
+  #
+  # THE CALLER DECLARES THE FOUR `GATE_ROWS_MEMO_*` NAMES `local` BEFORE CALLING.
+  # That is what bounds the memo: bash scopes dynamically, so everything the
+  # caller calls — `$( )` subshells included — reads these values, nothing above
+  # the caller sees them, and they are gone when the caller returns. There is no
+  # invalidation because the zone has no append in it: a warmed function reads
+  # one ledger state from top to bottom, where unwarmed it could see a different
+  # state on every call. A row another process appends mid-zone shows up in the
+  # next zone.
+  #
+  # The grep is called directly, never through `gate_rows` or `gate_has_row` —
+  # the cost pins in `scripts/test-measure-gate-cost.sh` rest on the fixed paths
+  # not calling `gate_has_row`. Command substitution strips the trailing newline
+  # and `gate_rows` puts it back with `printf '%s\n'`; every matched line starts
+  # with `` - ` `` and so is never empty, which makes the final newline the only
+  # one stripped and the answer byte-identical to the grep.
+  local k n=0
+  for k in "$@"; do
+    GATE_ROWS_MEMO_KINDS[$n]="$k"
+    GATE_ROWS_MEMO_ROWS[$n]=$(grep -E "^- \`$k\`" "$LEDGER" 2>/dev/null || true)
+    n=$((n + 1))
+  done
+  GATE_ROWS_MEMO_N=$n
+  GATE_ROWS_MEMO_LEDGER="$LEDGER"
 }
 
 gate_chain_tip() {
@@ -6413,6 +6465,8 @@ gate_append() {
 # ---------------------------------------------------------------------------
 gate_progress_vector() {
   local a
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  gate_ledger_warm segment cycle '자율 승인' stage-result '종료 절' blocked
   printf 'goal=%s\n' "$(manifest_field '인가' '종료 지점' | shasum -a 256 | cut -d' ' -f1)"
   for a in $(target_aliases); do
     printf 'target=%s|%s|%s\n' "$a" \
@@ -10551,6 +10605,8 @@ gate_answered_judgments_json() {
   # included, never reaches the reader. The ledger a reader most needs a verdict
   # about is precisely the malformed one.
   local LC_CTYPE=C; export LC_CTYPE
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  gate_ledger_warm '승인' '자율 승인'
   # ALL THREE LOOKUPS ARE WHOLE FIELDS — `| 승인 id=<id> |`, `| 절단점=판단 |`
   # and `| 해소 승인=<id> |` — the way every other reader of these series is.
   # A judgment that cites another's id in its `기준` carries that text into its
@@ -20373,6 +20429,8 @@ gate_unfulfilled_review_obligations() {
   # and the answer would be wrong in the permissive direction for the issuer and
   # in the refusing direction for the predicate.
   local want="${1:-}" id st row seg
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  gate_ledger_warm '리뷰 의무'
   for id in $(gate_rows '리뷰 의무' | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
     row=$( { gate_rows '리뷰 의무' | grep -F "의무 id=$id " || true; } | tail -1)
