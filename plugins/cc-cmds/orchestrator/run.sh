@@ -1289,10 +1289,22 @@ derive_paths_from_manifest() {
   # two branches are textually indistinguishable. The repo-relative reading is
   # tried first since it is the primary branch, and the composed form is kept on
   # total failure so the error names a path rather than an empty string.
+  #
+  # BUT EXISTENCE IS UNDEFINED ON A RUN WHOSE DOCUMENT IS YET TO BE WRITTEN.
+  # `design_required=true` is exactly that run: neither candidate is a file at
+  # derivation time, so both checks fail and the fallback silently picks the
+  # repo-relative reading. In a polyrepo workspace that is the wrong branch, and
+  # the design stage then writes its document to `<repo>/Users/…/docs/x.md` —
+  # measured, on a run whose design stage produced a document nothing could
+  # find. The containing DIRECTORY is the discriminator on that path: it exists
+  # before the document does, in the same order the file checks are tried, so a
+  # key that resolves nowhere still ends on the fallback.
   case "$DOC" in ''|'(없음)') DOC=""; DOC_KEY="$ANCHOR_KEY"; DOC_DIR="$BASE" ;;
     *) DOC_KEY=$(manifest_field '요소' '설계 문서')
        if [ -f "$BASE/$DOC" ]; then DOC="$BASE/$DOC"
        elif [ -f "/$DOC" ];   then DOC="/$DOC"
+       elif [ -d "$BASE/$(dirname "$DOC")" ]; then DOC="$BASE/$DOC"
+       elif [ -d "/$(dirname "$DOC")" ];       then DOC="/$DOC"
        else DOC="$BASE/$DOC"
        fi
        DOC_DIR=$(dirname "$DOC") ;;
