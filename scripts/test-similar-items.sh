@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Test the similar-item lookup (`plugins/cc-cmds/orchestrator/similar-items.py`)
-# and its measurement harness, offline.
+# Test the similar-item lookup (`plugins/cc-cmds/orchestrator/similar-items.py`),
+# its ClickUp adapter, the ClickUp ticket creator (`clickup-create.py`) and the
+# measurement harness, offline.
 #
-# The judgment endpoint is a loopback `http.server` stub that records every
-# request it receives, and `gh` is a PATH stub. Nothing here reaches a network
-# or reads a real credential: the credential store is always pointed into the
-# work directory. Temporary files live under one `mktemp -d` only.
+# The judgment endpoint and the ClickUp API (under the `/cu` path prefix) are
+# one loopback `http.server` stub that records every request it receives, and
+# `gh` is a PATH stub. Nothing here reaches a network or reads a real
+# credential: the credential store is always pointed into the work directory.
+# Temporary files live under one `mktemp -d` only.
 #
 # WHAT THE GATE'S OWN SUITE CANNOT SEE. `scripts/test-gate.sh` pins how the gate
 # grades this tool's argv — a read under `--lexical-only`/`--replay-log`, an
@@ -28,6 +30,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
 SI="$ORCH/similar-items.py"
+CREATE="$ORCH/clickup-create.py"
 TRACKER="$ORCH/cc_tracker.py"
 MEASURE="$repo_root/scripts/measure-similar-items.py"
 
@@ -53,8 +56,11 @@ status_before=$(cd "$repo_root" && git status --porcelain)
 # Fixtures
 # ---------------------------------------------------------------------------
 
-# The judgment stub. The mode file is re-read on every request, so a case
-# switches behaviour without restarting the server.
+# The judgment stub, which also answers the ClickUp API under `/cu`. The mode
+# files are re-read on every request, so a case switches behaviour without
+# restarting the server. A ClickUp GET is answered from `cu.json` (path with
+# its query string → response) and a ClickUp POST by `cu-mode.json`; every
+# ClickUp request is logged to `cu-reqlog.jsonl`.
 cat > "$WORK/stub.py" <<'PYEOF'
 import json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -69,8 +75,35 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+    def clickup(self, method, raw):
+        path = self.path[len("/cu"):]
+        with lock, open(os.path.join(work, "cu-reqlog.jsonl"), "a") as f:
+            f.write(json.dumps({"method": method, "path": path, "auth": self.headers.get("Authorization"),
+                                "body": raw.decode("utf-8")}) + "\n")
+        if method == "POST":
+            with open(os.path.join(work, "cu-mode.json")) as f:
+                code = json.load(f).get("create", 200)
+            if code != 200:
+                self.reply(code, b'{"err": "stub"}')
+                return
+            self.reply(200, json.dumps({"id": "NEW1", "url": "https://app.clickup.com/t/NEW1"}).encode())
+            return
+        with open(os.path.join(work, "cu.json")) as f:
+            routes = json.load(f)
+        if path not in routes:
+            self.reply(404, b'{"err": "not found"}')
+            return
+        self.reply(200, json.dumps(routes[path]).encode())
+    def do_GET(self):
+        if self.path.startswith("/cu/"):
+            self.clickup("GET", b"")
+            return
+        self.reply(404)
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if self.path.startswith("/cu/"):
+            self.clickup("POST", raw)
+            return
         with lock, open(os.path.join(work, "reqlog.jsonl"), "a") as f:
             f.write(json.dumps({"auth": self.headers.get("Authorization"), "body": raw.decode("utf-8")}) + "\n")
         with open(os.path.join(work, "mode.json")) as f:
@@ -198,42 +231,60 @@ hasnt() { case "$2" in *"$3"*) bad "$1" "'$3' 있음" ;; *) ok "$1" ;; esac; }
 # ---------------------------------------------------------------------------
 # 1. Syntax, executable bits, documented call spelling, abbreviations
 # ---------------------------------------------------------------------------
-if PYTHONPYCACHEPREFIX="$WORK/pycache" python3 -m py_compile "$SI" "$TRACKER" "$MEASURE"; then
-  ok "세 파일이 컴파일된다"
+if PYTHONPYCACHEPREFIX="$WORK/pycache" python3 -m py_compile "$SI" "$TRACKER" "$MEASURE" "$CREATE"; then
+  ok "네 파일이 컴파일된다"
 else
-  bad "세 파일이 컴파일된다" "py_compile 실패"
+  bad "네 파일이 컴파일된다" "py_compile 실패"
 fi
-for f in "$SI" "$MEASURE"; do
+for f in "$SI" "$MEASURE" "$CREATE"; do
   if [ -x "$f" ]; then ok "$(basename "$f") 에 실행 비트가 있다"
   else bad "$(basename "$f") 에 실행 비트가 있다" "인터프리터를 앞에 두면 게이트가 불투명한 워크트리 쓰기로 매긴다"; fi
 done
 check "similar-items.py 셔뱅" "$(head -1 "$SI")" "#!/usr/bin/env python3"
 check "measure-similar-items.py 셔뱅" "$(head -1 "$MEASURE")" "#!/usr/bin/env python3"
+check "clickup-create.py 셔뱅" "$(head -1 "$CREATE")" "#!/usr/bin/env python3"
 
-# EVERY occurrence of the tool name must sit in a code span that begins with
-# `<plugin root>/orchestrator/`. The call sits mid-bullet, so this is judged per
-# occurrence, not per line start. Prose naming a wrong spelling would have to
-# write something other than the tool's file name.
+# EVERY occurrence of a tool name must sit in a code span that begins with
+# `<plugin root>/orchestrator/<that name>`. The call sits mid-bullet, so this is
+# judged per occurrence, not per line start. Prose naming a wrong spelling would
+# have to write something other than the tool's file name.
 CALL='<plugin root>/orchestrator/similar-items.py'
-for f in plugins/cc-cmds/skills/github-ops/SKILL.md plugins/cc-cmds/skills/design/SKILL.md; do
-  total=$(grep -o 'similar-items\.py' "$repo_root/$f" | wc -l | tr -d ' ')
+CLICKUP_OPS=plugins/cc-cmds/skills/clickup-ops/SKILL.md
+for pair in "github-ops/SKILL.md similar-items.py" "design/SKILL.md similar-items.py" \
+            "clickup-ops/SKILL.md similar-items.py" "clickup-ops/SKILL.md clickup-create.py"; do
+  f="plugins/cc-cmds/skills/${pair%% *}"
+  name="${pair#* }"
+  pat=$(printf '%s' "$name" | sed 's/\./\\./g')
+  total=$(grep -o "$pat" "$repo_root/$f" | wc -l | tr -d ' ')
   good=0
   while IFS= read -r span; do
     case "$span" in
-      *similar-items.py*)
+      *"$name"*)
         case "$span" in
-          '`'"$CALL"*) good=$((good + $(printf '%s\n' "$span" | grep -o 'similar-items\.py' | wc -l | tr -d ' '))) ;;
+          '`<plugin root>/orchestrator/'"$name"*) good=$((good + $(printf '%s\n' "$span" | grep -o "$pat" | wc -l | tr -d ' '))) ;;
         esac ;;
     esac
   done < <(grep -o '`[^`]*`' "$repo_root/$f")
-  if [ "$total" -gt 0 ]; then ok "$f — 도구 호출이 있다"; else bad "$f — 도구 호출이 있다" "매치 없음"; fi
-  check "$f — 모든 출현이 \`<plugin root>/orchestrator/\` 로 시작하는 코드 스팬 안이다" "$good" "$total"
+  if [ "$total" -gt 0 ]; then ok "$f — $name 호출이 있다"; else bad "$f — $name 호출이 있다" "매치 없음"; fi
+  check "$f — $name 의 모든 출현이 \`<plugin root>/orchestrator/\` 로 시작하는 코드 스팬 안이다" "$good" "$total"
 done
 DEF='is the directory holding `orchestrator/` and `skills/`'
 sec6=$(sed -n '/^## 6\. /,$p' "$repo_root/plugins/cc-cmds/skills/github-ops/SKILL.md")
 has "github-ops — 호출 절에 <plugin root> 정의 문장이 있다" "$sec6" "$DEF"
 design_line=$(grep -F "$CALL" "$repo_root/plugins/cc-cmds/skills/design/SKILL.md" || true)
 has "design — 호출 글머리에 <plugin root> 정의 문장이 있다" "$design_line" "$DEF"
+has "design — ClickUp 티켓은 clickup --task 로 부른다" "$design_line" \
+  '`<plugin root>/orchestrator/similar-items.py clickup --task <ID|URL>`'
+cu_sec3=$(sed -n '/^## 3\. /,/^## 4\. /p' "$repo_root/$CLICKUP_OPS")
+cu_sec4=$(sed -n '/^## 4\. /,$p' "$repo_root/$CLICKUP_OPS")
+has "clickup-ops ## 3. — <plugin root> 정의 문장이 있다" "$cu_sec3" "$DEF"
+has "clickup-ops ## 4. — <plugin root> 정의 문장이 있다" "$cu_sec4" "$DEF"
+STAGE_SENTENCE='When you are running as an unattended pipeline stage (`CC_PIPELINE_RUN_ID` is set), add `--lexical-only`, do not propose the candidates or ask about them, and copy the output lines — the `similar-items:` line, any `notice:` line and the candidate lines — verbatim into the report the stage writes when it finishes. Proceed with the original ticket'"'"'s scope.'
+if printf '%s\n' "$cu_sec4" | grep -qxF "$STAGE_SENTENCE"; then
+  ok "clickup-ops ## 4. — 무인 스테이지 문장이 바이트 그대로 있다"
+else
+  bad "clickup-ops ## 4. — 무인 스테이지 문장이 바이트 그대로 있다" "한 줄로 일치하는 문장 없음"
+fi
 
 "$SI" file --corpus "$WORK/lex.json" --issue 1 --lo x > /dev/null 2>&1
 check "similar-items.py — 접두 약어 --lo 는 2" "$?" "2"
@@ -458,6 +509,188 @@ rc=$?
 check "질의도 못 얻으면 — 종료 코드 0" "$rc" "0"
 check "질의도 못 얻으면 — unavailable" "$(jf 'd["status"]')" "unavailable"
 check "질의도 못 얻으면 — reason" "$(jf 'd["reason"]')" "query"
+
+# ---------------------------------------------------------------------------
+# ClickUp fixtures
+# ---------------------------------------------------------------------------
+# Two workspaces; the query's space S1 sits in the SECOND one, so a lookup that
+# took the first workspace on trust reads the wrong team. The space corpus is
+# two pages. T2 has no `text_content`, so its body comes from `description`.
+CU_SENTINEL='pk-cu-sentinel-81d2e4'
+CU_BARE='pk-cu-bare-3c77a0'
+mkdir -p "$WORK/store-cu" "$WORK/store-cu-644" "$WORK/store-cu-bare"
+cp "$WORK/store-good/typesafe.env" "$WORK/store-cu/typesafe.env"
+printf 'CLICKUP_API_TOKEN="%s"\n' "$CU_SENTINEL" > "$WORK/store-cu/clickup.env"
+printf 'CLICKUP_API_TOKEN="%s"\n' "$CU_SENTINEL" > "$WORK/store-cu-644/clickup.env"
+printf '%s\n' "$CU_BARE" > "$WORK/store-cu-bare/clickup.env"
+chmod 600 "$WORK/store-cu/typesafe.env" "$WORK/store-cu/clickup.env" "$WORK/store-cu-bare/clickup.env"
+chmod 644 "$WORK/store-cu-644/clickup.env"
+python3 - "$WORK" <<'PYEOF'
+import json, os, sys
+w = sys.argv[1]
+def t(i, name, lst, text="", desc=""):
+    return {"id": i, "name": name, "text_content": text, "description": desc,
+            "url": "https://app.clickup.com/t/" + i, "list": {"id": lst}, "space": {"id": "S1"}, "team_id": "200"}
+T1 = t("T1", "게이트 잠금 lockf 실패", "L1", text="lockf 75 잠금")
+T2 = t("T2", "lockf 잠금 충돌", "L1", desc="lockf 75 재현")
+T3 = t("T3", "잠금 파일 경로", "L2", text="lockf 경로")
+T4 = t("T4", "README 생성기", "L2", text="yq 없음")
+T5 = t("T5", "lockf 잠금 재시도", "L1", text="lockf 75")
+page = "/team/200/task?space_ids[]=S1&page=%d&include_closed=false&subtasks=true"
+routes = {
+    "/task/T1": T1,
+    "/list/L1": {"id": "L1", "space": {"id": "S1"}},
+    "/list/L9": {"id": "L9", "space": {"id": "S404"}},
+    "/team": {"teams": [{"id": "100"}, {"id": "200"}]},
+    "/team/100/space": {"spaces": [{"id": "S9"}]},
+    "/team/200/space": {"spaces": [{"id": "S1"}]},
+    page % 0: {"tasks": [T1, T2, T3], "last_page": False},
+    page % 1: {"tasks": [T4, T5], "last_page": True},
+}
+json.dump(routes, open(os.path.join(w, "cu.json"), "w"), ensure_ascii=False)
+PYEOF
+printf '{"create": 200}\n' > "$WORK/cu-mode.json"
+printf '잠금 lockf 75 충돌 초안\n' > "$WORK/cu-draft.md"
+CC_SIMILAR_CLICKUP_URL="http://127.0.0.1:$PORT/cu"; export CC_SIMILAR_CLICKUP_URL
+cu_reqs() { if [ -f "$WORK/cu-reqlog.jsonl" ]; then wc -l < "$WORK/cu-reqlog.jsonl" | tr -d ' '; else echo 0; fi; }
+cu_reset() { : > "$WORK/cu-reqlog.jsonl"; }
+cu_log() { python3 -c 'import json,sys; print(eval(sys.argv[2], {"r": [json.loads(l) for l in open(sys.argv[1])]}))' "$WORK/cu-reqlog.jsonl" "$1"; }
+
+# ---------------------------------------------------------------------------
+# 15. ClickUp lookup
+# ---------------------------------------------------------------------------
+cu_reset
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --task T1 --lexical-only --format json
+rc=$?
+check "ClickUp --task — 종료 코드 0" "$rc" "0"
+check "ClickUp --task — lexical" "$(jf 'd["status"]')" "lexical"
+check "ClickUp --task — source 는 스페이스" "$(jf 'd["source"]')" "clickup:space/S1"
+check "ClickUp --task — 두 쪽을 last_page 까지 받는다" "$(jf 'd["corpus"]')" "5"
+check "ClickUp --task — 질의 티켓은 후보에서 빠진다" "$(jf 'sorted(c["id"] for c in d["candidates"])')" "['T2', 'T3', 'T4', 'T5']"
+check "ClickUp --task — 같은 리스트 표지" \
+  "$(jf 'sorted((c["id"], c["same_list"]) for c in d["candidates"])')" \
+  "[('T2', True), ('T3', False), ('T4', False), ('T5', True)]"
+check "ClickUp --task — 요청 경로" "$(cu_log '[x["path"] for x in r]')" \
+  "['/task/T1', '/team/200/task?space_ids[]=S1&page=0&include_closed=false&subtasks=true', '/team/200/task?space_ids[]=S1&page=1&include_closed=false&subtasks=true']"
+check "ClickUp — 인증 헤더는 Bearer 없는 토큰 그대로다" "$(cu_log 'sorted({x["auth"] for x in r})')" "['$CU_SENTINEL']"
+hasnt "ClickUp — 토큰 값이 출력에 없다" "$(cat "$WORK/out" "$WORK/err")" "$CU_SENTINEL"
+
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --task T1 --lexical-only
+has "ClickUp text — 같은 리스트 후보 줄 끝에 표지" "$(grep "$(printf '\tT2\t')" "$WORK/out")" "$(printf '\thttps://app.clickup.com/t/T2\t같은 리스트')"
+hasnt "ClickUp text — 다른 리스트 후보에는 표지가 없다" "$(grep "$(printf '\tT3\t')" "$WORK/out" || true)" "같은 리스트"
+hasnt "ClickUp text — 티켓 id 앞에 # 가 없다" "$(sed -n '2,$p' "$WORK/out")" "#T"
+
+cu_reset
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --task https://app.clickup.com/t/T1 --lexical-only --format json
+check "ClickUp --task URL — 경로에서 id 를 꺼낸다" "$(cu_log 'r[0]["path"]')" "/task/T1"
+check "ClickUp --task URL — 같은 코퍼스" "$(jf 'd["corpus"]')" "5"
+
+cu_reset
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --list L1 --title "잠금 충돌 초안" --body-file "$WORK/cu-draft.md" --lexical-only --format json
+check "ClickUp --list — lexical" "$(jf 'd["status"]')" "lexical"
+check "ClickUp --list — 초안은 코퍼스에 없으므로 전부 후보다" "$(jf 'd["shortlist"]')" "5"
+has "ClickUp --list — 스페이스를 가진 둘째 팀으로 코퍼스를 받는다" "$(cu_log '[x["path"] for x in r]')" "/team/200/task?space_ids[]=S1&page=0"
+hasnt "ClickUp --list — 첫 팀으로 코퍼스를 받지 않는다" "$(cu_log '[x["path"] for x in r]')" "/team/100/task"
+check "ClickUp --list — 인자 리스트로 같은 리스트 표지" \
+  "$(jf 'sorted(c["id"] for c in d["candidates"] if c["same_list"])')" "['T1', 'T2', 'T5']"
+
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --list L9 --title x --body-file "$WORK/cu-draft.md" --lexical-only --format json
+rc=$?
+check "ClickUp 스페이스를 가진 팀이 없으면 — 종료 코드 0" "$rc" "0"
+check "ClickUp 스페이스를 가진 팀이 없으면 — unavailable" "$(jf 'd["status"]')" "unavailable"
+check "ClickUp 스페이스를 가진 팀이 없으면 — reason" "$(jf 'd["reason"]')" "corpus"
+
+cu_reset
+run_si clickup --task T1 --lexical-only --format json
+rc=$?
+check "ClickUp 토큰 없음 — 종료 코드 0" "$rc" "0"
+check "ClickUp 토큰 없음 — unavailable" "$(jf 'd["status"]')" "unavailable"
+check "ClickUp 토큰 없음 — reason" "$(jf 'd["reason"]')" "tracker-key"
+has "ClickUp 토큰 없음 — 알림이 규칙 위치를 적는다" "$(jf 'd["notice"]')" "~/.config/cc-cmds/clickup.env"
+check "ClickUp 토큰 없음 — ClickUp 요청 0건" "$(cu_reqs)" "0"
+
+CC_CMDS_CRED_STORE="$WORK/store-cu-644" run_si clickup --task T1 --lexical-only --format json
+check "ClickUp 토큰 모드 644 — reason" "$(jf 'd["reason"]')" "tracker-key-invalid"
+has "ClickUp 토큰 모드 644 — 알림이 chmod 600 을 가리킨다" "$(jf 'd["notice"]')" "chmod 600"
+hasnt "ClickUp 토큰 모드 644 — 토큰 값이 출력에 없다" "$(cat "$WORK/out" "$WORK/err")" "$CU_SENTINEL"
+check "ClickUp 토큰 모드 644 — ClickUp 요청 0건" "$(cu_reqs)" "0"
+
+cu_reset
+CC_CMDS_CRED_STORE="$WORK/store-cu-bare" run_si clickup --task T1 --lexical-only --format json
+check "ClickUp = 없는 한 줄 토큰 파일을 받는다" "$(cu_log 'sorted({x["auth"] for x in r})')" "['$CU_BARE']"
+
+reset_reqs
+set_mode '{"kind": "fixed"}'
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --task T1 --format json
+check "ClickUp 판정 — 후보마다 요청 1건" "$(reqs)" "4"
+check "ClickUp 판정 — semantic" "$(jf 'd["status"]')" "semantic"
+check "ClickUp 판정 — 상태 키는 item_a/item_b 이고 일반화 문면이다" \
+  "$(python3 -c 'import json,sys; b=json.loads(json.loads(open(sys.argv[1]).readline())["body"]); print(sorted(b["state"]), b["questions"]["same_place"]["instructions"].startswith("`item_a` and `item_b` are two open work items"))' "$WORK/reqlog.jsonl")" \
+  "['item_a', 'item_b'] True"
+reset_reqs
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --task T1 --question measured --format json
+check "ClickUp 판정 — --question measured 로 덮어쓴다" \
+  "$(python3 -c 'import json,sys; b=json.loads(json.loads(open(sys.argv[1]).readline())["body"]); print(sorted(b["state"]))' "$WORK/reqlog.jsonl")" \
+  "['issue_a', 'issue_b']"
+
+CC_SIMILAR_CLICKUP_URL='https://example.com' CC_CMDS_CRED_STORE="$WORK/store-cu" run_si clickup --task T1 --lexical-only
+check "루프백이 아닌 ClickUp 기점 재정의는 2" "$?" "2"
+run_si clickup --task T1 --list L1 --lexical-only
+check "ClickUp --task 와 --list 를 섞으면 2" "$?" "2"
+run_si clickup --issue 1 --lexical-only
+check "ClickUp 어댑터에 --issue 는 2" "$?" "2"
+
+# ---------------------------------------------------------------------------
+# 16. ClickUp ticket creation
+# ---------------------------------------------------------------------------
+run_create() { "$CREATE" "$@" > "$WORK/out" 2> "$WORK/err"; }
+printf '## 문제\n잠금이 75 를 돌려준다.\n' > "$WORK/cu-desc.md"
+cu_reset
+printf '{"create": 200}\n' > "$WORK/cu-mode.json"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name "새 티켓" --description-file "$WORK/cu-desc.md"
+rc=$?
+check "생성 — 종료 코드 0" "$rc" "0"
+check "생성 — 출력은 id 와 url 한 줄" "$(cat "$WORK/out")" "$(printf 'NEW1\thttps://app.clickup.com/t/NEW1')"
+check "생성 — POST 한 건이 리스트 경로로 간다" "$(cu_log '[(x["method"], x["path"]) for x in r]')" "[('POST', '/list/L1/task')]"
+check "생성 — 본문은 name 과 markdown_description 뿐이다" \
+  "$(python3 -c 'import json,sys; print(sorted(json.loads(json.loads(open(sys.argv[1]).readline())["body"])))' "$WORK/cu-reqlog.jsonl")" \
+  "['markdown_description', 'name']"
+check "생성 — 본문 값" \
+  "$(python3 -c 'import json,sys; b=json.loads(json.loads(open(sys.argv[1]).readline())["body"]); print(b["name"], "assignees" in b, "status" in b, b["markdown_description"] == open(sys.argv[2]).read())' "$WORK/cu-reqlog.jsonl" "$WORK/cu-desc.md")" \
+  "새 티켓 False False True"
+check "생성 — 인증 헤더는 Bearer 없는 토큰 그대로다" "$(cu_log 'r[0]["auth"]')" "$CU_SENTINEL"
+hasnt "생성 — 토큰 값이 출력에 없다" "$(cat "$WORK/out" "$WORK/err")" "$CU_SENTINEL"
+
+cu_reset
+CC_PIPELINE_MANIFEST="$WORK/manifest.md" CC_CMDS_CRED_STORE="$WORK/store-cu" \
+  run_create --list L1 --name x --description-file "$WORK/cu-desc.md"
+check "생성 — 무인 런 안에서는 5" "$?" "5"
+check "생성 — 무인 런 거부는 요청 0건" "$(cu_reqs)" "0"
+
+run_create --list L1 --name x --description-file "$WORK/cu-desc.md"
+check "생성 — 토큰 없음은 3" "$?" "3"
+check "생성 — 토큰 없음은 요청 0건" "$(cu_reqs)" "0"
+
+printf '{"create": 500}\n' > "$WORK/cu-mode.json"
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name x --description-file "$WORK/cu-desc.md"
+check "생성 — API 오류는 4" "$?" "4"
+check "생성 — API 오류는 재시도하지 않는다" "$(cu_reqs)" "1"
+hasnt "생성 — API 오류 문면에 토큰이 없다" "$(cat "$WORK/out" "$WORK/err")" "$CU_SENTINEL"
+printf '{"create": 200}\n' > "$WORK/cu-mode.json"
+
+cu_reset
+CC_CMDS_CRED_STORE="$WORK/store-cu" run_create --list L1 --name x --description-file "$WORK/cu-desc.md" --descr "$WORK/cu-desc.md"
+check "생성 — 접두 약어 --descr 는 2" "$?" "2"
+check "생성 — 접두 약어 거부는 요청 0건" "$(cu_reqs)" "0"
+CC_SIMILAR_CLICKUP_URL='https://example.com' CC_CMDS_CRED_STORE="$WORK/store-cu" \
+  run_create --list L1 --name x --description-file "$WORK/cu-desc.md"
+check "생성 — 루프백이 아닌 ClickUp 기점 재정의는 2" "$?" "2"
+
+if grep -q 'POST' "$SI"; then
+  bad "조회 도구 파일에 POST 코드가 없다" "$SI"
+else
+  ok "조회 도구 파일에 POST 코드가 없다"
+fi
 
 # ---------------------------------------------------------------------------
 # 14. The checkout stays clean
