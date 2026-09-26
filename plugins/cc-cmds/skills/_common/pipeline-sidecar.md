@@ -567,6 +567,8 @@ An approval and a deferred review obligation are **non-terminal states with thei
 
 **`교대 기동` is the record of a successor's start itself**, written immediately before it, and it is what the shift ordinal is counted from; `handoff` and the authorisation row do not say a successor started. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
 
+**`컨텍스트` is the OUTGOING shift's last-turn context — read + creation + input — and not the launcher's.** Launches are serial, so the shift being replaced is `서수` minus one, and the process writing this row is the seat that launched both. A kickoff launch has no outgoing shift, and a launch whose predecessor's transcript could not be resolved, or resolved but holds no usage line to score (a shift that died on its first request), has no honest number; both carry `-`, which is a third state and is not read as zero. A row without the field at all was written before the field existed.
+
 **`경계 억제` records a suppression, which is frequent and otherwise silent.** It may not be written to `blocked`, because the obligation boundary reads `blocked` — **the load-bearing property is a property of the NAME**: no boundary reads it. `크레딧 잔량` is on the row because the suppression is bounded.
 
 **`pace` records what the run saw of a pacing verdict that lives outside the run.** It is written by the gate on the record path of `act` and `exec` — immediately after the `자율 승인` row, and never by `snapshot`, which is a read and stays one — and only when the verdict differs from the last `pace` row of THIS run's ledger, or when the run has none yet; the basis is run-scoped so the 8-row ancestry window carries a `pace` row. An absent, unreadable, foreign-schema or stale state (older than three sensor periods, 180s) is written as `판정=(미상)` with `기준 틱=-` and `관측=-` rather than skipped — the row says the gate looked and found no verdict, which a reader has to tell apart from the gate never looking. **Two closed token sets, never mixed**: `판정` and `이전` take the sensor's verdict vocabulary (`가속` · `유지` · `제동` · `(미상)`), and `사유` takes the sensor's reason vocabulary (`brake` · `idle` · `lanes-below-target` · `default` · `tracker-skip` · `truncated` · `(미상)`); a dispatch refusal clause (`lane` · `window` · `burn` · `brake`) is a third vocabulary and belongs to `fleet.sh`'s own refusal log, not to this row. With `pace` the series counts twenty.
@@ -596,7 +598,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `handoff` | `교대` · `대상` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` · `기록 시각` |
 | `의무 종결` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`종결`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
 | `의무 포기` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`포기`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
-| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` · `세션 id` · `레인` · `압축 창` |
+| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` · `세션 id` · `레인` · `압축 창` · `컨텍스트` |
 | `경계 억제` | `경계` · `사유` · `크레딧 잔량` · `기록 시각` |
 | `pace` | `판정` · `이전` · `기준 틱` · `관측` · `사유` |
 
