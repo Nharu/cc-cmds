@@ -176,8 +176,21 @@ cc_orphan_stages() {
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
     seg=${f##*/}; seg=${seg%.pid}
-    # The watcher's own record lives here too and is not a stage.
-    [ "$seg" = "watch" ] && continue
+    # THE RUN-SCOPE PROCESSES' OWN RECORDS LIVE HERE TOO AND ARE NOT STAGES.
+    # `watch.pid` and `checks.pid` are written by loops the gate never dispatched
+    # and never blocks on, so the reasoning above — "the line after the block
+    # never ran" — has no counterpart for them. Left in, each normal exit of
+    # either loop raises a false orphan alarm on every single run.
+    #
+    # THIS EXEMPTION IS BY NAME, AND IT IS A DIFFERENT MECHANISM FROM THE ONE
+    # THE LIVE CENSUS USES. `cc_live_stages`/`cc_stage_is_live` above exempt the
+    # same two files STRUCTURALLY — they require a `.start`/`.pgid` sibling and
+    # neither loop writes one — so nothing there needs a name. Here the question
+    # is only "is this pid still here", which any pid file answers, so the name
+    # is the only handle there is. Reading the two exemptions as one mechanism
+    # leads to deleting this line on the grounds that the structural check
+    # already covers it, and then the alarm returns.
+    case "$seg" in watch|checks) continue ;; esac
     pid=$(cat "$f" 2>/dev/null)
     [ -n "$pid" ] || continue
     if ! kill -0 "$pid" 2>/dev/null; then
@@ -271,6 +284,22 @@ cc_shift_is_live() {
   kill -0 "$pid" 2>/dev/null || return 1
   now=$(cc_proc_fingerprint "$pid")
   [ "$rec" = "$now" ]
+}
+
+cc_pid_exists() {
+  # cc_pid_exists <pid> — succeeds when some process holds that pid, and says
+  # nothing about WHICH process that is.
+  #
+  # A BARE EXISTENCE TEST, and the name says so, because every other predicate
+  # here answers "is it still the process that was started" and this one cannot:
+  # its caller is the gate's `checks` drain lock, whose owner line records a pid
+  # and a time and no start fingerprint. It lives here rather than inline because
+  # a `kill -0` written in the gate is a liveness judgement of the gate's own,
+  # which is the divergence this file exists to prevent. Pid reuse is bounded by
+  # that caller instead: it also takes a lock over on age, so a recycled pid
+  # keeps a dead owner's lock for at most the sixty seconds that arm allows.
+  [ -n "${1:-}" ] || return 1
+  kill -0 "$1" 2>/dev/null
 }
 
 cc_proc_fingerprint() {
