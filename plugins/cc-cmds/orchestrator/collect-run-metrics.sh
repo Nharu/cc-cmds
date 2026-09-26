@@ -35,7 +35,9 @@
 # 출력.
 #   <ledger-dir>/metrics.json              요약(`jq -S`, 시각 없음 — 같은 입력이면 같은 바이트)
 #   <ledger-dir>/metrics.json.pending      회차 시작 표지. 정상 종료가 지운다.
-#   <ledger-dir>/metrics/<run-id>.json     런별 수집 기록(멱등 — 있으면 다시 만들지 않는다)
+#   <ledger-dir>/metrics/<run-id>.json     런별 수집 기록(멱등 — 있으면 다시 만들지 않는다).
+#                                          기록이 있다는 것은 수집됐다는 뜻일 뿐 판정됐다는
+#                                          뜻이 아니다 — 델타 소속은 아래 저널이 정한다.
 #   <저널>                                 회차마다 한 줄 JSON 추가. 회차 수·연속 수·시각은
 #                                          여기에만 있다. 첫 키 `schema` 는 층 값의 단위이고,
 #                                          앞선 단위의 줄은 기준선·연속 계수에서 빠진다.
@@ -47,6 +49,13 @@
 # 없어 판정 대상이 아니라 `사라짐` 으로 센다 — 거르지 않으면 실험 이전의 원장 전체가 첫
 # 회차의 델타가 된다. 한 세션의 자료는 종단 줄이 있는 시도에 귀속하고, 같은 세션의 다른
 # 시도는 그 자료도 벽시계도 다시 싣지 않는다.
+#
+# 델타. 한 회차의 델타는 이 회차에 새로 수집한 런과, 기록은 있으나 아직 확정되지 않은
+# 런이다. 확정된 런은 저널에서 `probe` 가 `차단` 이 아닌 줄들의 `new_runs` 에 오른 런이다.
+# 기록이 저널 줄보다 먼저 확정되므로, 차단된 회차에서 수집됐거나 기록을 쓴 뒤 저널 줄을
+# 남기기 전에 회차가 끝난 런은 기록만으로 세면 트리거를 한 번도 거치지 않는다. 그런 런은
+# 다시 수집하지 않고 다음 회차의 델타에 다시 넣는다. `프로브 실패` 는 기록 자체의 성질이라
+# 다시 넣어도 바뀌지 않으므로 확정으로 친다.
 #
 # 판독 규칙. 성공·실패는 원장의 `종단 부류` 로만 판정한다 — 스트림 result 줄의
 # `subtype`·`is_error` 는 전수가 성공이라고 말하면서 그중 일부가 오류 플래그를 다는
@@ -650,6 +659,14 @@ cm_journal_tail() {
   fi
 }
 
+cm_confirmed_runs() {
+  # cm_confirmed_runs — 확정된 런 id, 한 줄에 하나. 저널에서 `probe` 가 `차단` 이 아닌
+  # 줄들의 `new_runs` 합집합이다. 저널이 없으면 비어 있다.
+  [ -f "$CM_JOURNAL" ] || return 0
+  jq -Rrn '[inputs | fromjson? | objects | select(.probe != "차단") | .new_runs[]? | strings]
+           | unique | .[]' "$CM_JOURNAL" 2>/dev/null || true
+}
+
 cm_triggers() {
   # cm_triggers <델타 기록 배열 파일> <저널 배열 파일> <차단 여부> — 저널 줄의 본체
   # (probe · mixed_window · strata · fired · close · excluded). 트리거는 델타에만 건다.
@@ -799,7 +816,7 @@ cm_append_journal() {
 # --- 본체 ------------------------------------------------------------------------
 
 cm_main() {
-  local tmp line rid state ledger rd rec input_files=0
+  local tmp line rid state ledger rd rec input_files=0 confirmed
   local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 n_attempt=0 new_runs="" blocked=false
   local summary round at body counts journal_line all_f delta_f prior_f
   cm_args "$@"
@@ -807,6 +824,10 @@ cm_main() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics.XXXXXX") || exit 1
   all_f="$tmp/all.json"; delta_f="$tmp/delta.json"; prior_f="$tmp/prior.json"
   : > "$tmp/delta.list"
+  # 앞뒤 줄바꿈으로 감싸 소속을 `case` 한 번으로 본다(연관 배열 없음).
+  confirmed="
+$(cm_confirmed_runs)
+"
   while IFS=$'\t' read -r rid state ledger rd; do
     [ -n "$rid" ] || continue
     input_files=$((input_files + 1))
@@ -816,7 +837,17 @@ cm_main() {
     esac
     rec="$CM_LEDGER_DIR/metrics/$rid.json"
     if [ -f "$rec" ] && [ "$CM_RECOLLECT" = "0" ] && jq -e . "$rec" >/dev/null 2>&1; then
-      n_collected=$((n_collected + 1)); continue
+      n_collected=$((n_collected + 1))
+      # 기록은 있으나 확정되지 않은 런은 다시 수집하지 않고 이 회차의 델타에 다시 넣는다.
+      # 수집 비용이 없으므로 아래 상한·예산을 쓰지 않는다.
+      case "$confirmed" in
+        *"
+$rid
+"*) ;;
+        *) printf '%s\n' "$rid" >> "$tmp/delta.list"
+           new_runs="$new_runs $rid" ;;
+      esac
+      continue
     fi
     if [ ! -d "$rd/log" ]; then
       n_gone=$((n_gone + 1)); continue

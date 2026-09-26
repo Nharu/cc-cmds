@@ -757,5 +757,48 @@ check "10: 상한이 정수가 아니면 exit 2 다" "$rc" "2"
 OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --budget abc 2>/dev/null); rc=$?
 check "10: 예산이 정수가 아니면 exit 2 다" "$rc" "2"
 
+# --- 11. 델타는 기록 존재가 아니라 저널 확정이다 ----------------------------------------------
+# 기록은 저널 줄보다 먼저 확정된다. 차단된 회차에서 수집된 런, 그리고 기록을 쓴 뒤 저널 줄을
+# 남기기 전에 끝난 회차의 런은 기록만 보면 이미 센 런이라 트리거를 한 번도 거치지 않는다.
+in_new() { jline "[.new_runs[] | select(. == \"$1\")] | length"; }
+reset_all
+R11A=20260911-aaaaaa01; R11B=20260911-aaaaaa02; R11C=20260911-aaaaaa03; R11D=20260911-aaaaaa04
+n_run "$R11A" 100000
+collect
+check "11: (선행) 앞선 런은 판정된 회차에서 확정된다" "$(jline '.probe')" "ok"
+# R11B 는 종단 줄 없는 정상 완료 스테이지라 T2 조건을 갖는다. 상한 1 이면 R11B 만 수집되고
+# R11C 는 미뤄져 그 회차가 차단된다 — 차단 회차에 수집된 런이 생긴다.
+mk_rundir "$R11B"
+mk_ledger "$R11B" "$(sr_row S1 S1 review 1 "sid-$R11B" '정상 완료' '300000(argv)' '~/.claude')" "$(cycle_row S1 1 0)"
+{ tl_assist 10 e1 1000 1000 1000; tl_boundary 20 "sid-$R11B" "" auto 267000 50000 100 217000; tl_assist 21 e2 1 1 1; } \
+  | mk_transcript "$HOME_A" -repo "sid-$R11B"
+n_run "$R11C" 100000
+collect --max-new 1
+check "11: (선행) 그 회차는 차단된다" "$(jline '.probe')" "차단"
+check "11: (선행) 차단 회차는 발화하지 않는다" "$(jline '.fired | length')" "0"
+check "11: (선행) 차단 회차에 수집된 런의 기록이 생긴다" \
+  "$([ -e "$LEDGER_DIR/metrics/$R11B.json" ] && printf 있음 || printf 없음)" "있음"
+collect
+check "11: 차단 회차에 수집된 런이 다음 회차 델타에 다시 든다" "$(in_new "$R11B")" "1"
+check "11: 미뤄진 런도 그 회차에 수집돼 델타에 든다" "$(in_new "$R11C")" "1"
+check "11: 판정된 회차에서 확정된 런은 다시 들지 않는다" "$(in_new "$R11A")" "0"
+check "11: 다시 든 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
+check "11: 다시 든 런의 조건으로 트리거가 발화한다" "$(fire_ids)" "T2/review"
+check "11: 다시 든 런은 수집 수를 부풀리지 않는다" "$(counts4)" "3,0,0,0"
+collect
+check "11: 확정된 뒤의 회차에는 다시 들지 않는다(멱등)" "$(jline '.new_runs | length')" "0"
+# 기록을 쓴 뒤 저널 줄을 남기기 전에 끝난 회차 — 저널의 마지막 줄을 지워 재현한다.
+n_run "$R11D" 100000
+collect
+check "11: (선행) 새 런이 델타에 든다" "$(in_new "$R11D")" "1"
+cp "$LEDGER_DIR/metrics/$R11D.json" "$WORK/rec11.json"
+sed '$d' "$JOURNAL" > "$WORK/j11.tmp" && mv "$WORK/j11.tmp" "$JOURNAL"
+collect
+check "11: 저널 줄 없이 끝난 회차의 런은 다음 회차 델타에 다시 든다" "$(in_new "$R11D")" "1"
+check "11: 다시 든 런은 다시 수집하지 않는다(기록 바이트가 같다)" \
+  "$(cmp -s "$WORK/rec11.json" "$LEDGER_DIR/metrics/$R11D.json" && printf 같음 || printf 다름)" "같음"
+collect
+check "11: 그 다음 회차에는 다시 들지 않는다" "$(jline '.new_runs | length')" "0"
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

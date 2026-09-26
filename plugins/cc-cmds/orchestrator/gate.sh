@@ -18993,6 +18993,12 @@ gate_metrics_cycle() {
     return 0
   fi
   line=$(printf '%s\n' "$out" | sed -n '$p')
+  # A blocked round judges nothing and files nothing; its runs return in the
+  # next round's delta. Only a log line — the row series and the skip reasons
+  # are closed vocabularies.
+  if [ "$(printf '%s' "$line" | jq -r '.probe // empty' 2>/dev/null || true)" = "차단" ]; then
+    log "계측 회차 차단 — 미수집 $(printf '%s' "$line" | jq -r '.counts["미수집"] // "-"' 2>/dev/null || true), 다음 회차에 델타로 다시 든다"
+  fi
   gate_metrics_file "$line" "$ledger_dir" || true
   gate_metrics_unlock "$root"
   return 0
