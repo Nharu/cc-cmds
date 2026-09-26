@@ -4055,6 +4055,11 @@ surface_of_argv0() {
     # runs the no-key leg against a closed loopback port — nothing leaves.
     measure-similar-items.py)
       if gate_argv_has_opt - live "$@"; then printf '외부상태변경'; else printf '읽기'; fi ;;
+    # The ClickUp ticket creator. It is one POST that files a ticket, and no
+    # argument lowers that. It is a separate file from the lookup on purpose, so
+    # a tracker write never sits behind the lookup's name and its read grade.
+    clickup-create.py)
+      printf '외부상태변경' ;;
     # The note above says `openssl` may not sit in the digest row because one
     # name would cover both hashing and opening a socket. That reasoning holds
     # and is not overturned here — it is the reason this is a subcommand table

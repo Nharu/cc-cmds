@@ -5,6 +5,29 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.30.0] - 2026-09-26
+
+유사 항목 조회가 ClickUp 티켓까지 덮는다. ClickUp 티켓을 만들기 직전에는 초안으로, ClickUp 티켓에서 출발한 작업을 착수할 때는 그 티켓으로, 같은 스페이스의 열린 티켓 전체에서 비슷한 티켓을 찾아 후보로 보인다. 조회는 GitHub 쪽과 같이 후보를 **보여 주기만** 하며 생성이나 착수를 막거나 미루지 않는다. 티켓 생성은 조회와 다른 파일인 전용 도구가 맡는다.
+
+### Added
+
+- **`similar-items.py clickup`** — ClickUp 어댑터. `--task ID|URL` 은 착수 형태, `--list ID --title T --body-file F` 는 생성 전 초안 형태다. 질의 리스트가 속한 스페이스의 열린 티켓(하위 작업 포함)을 `last_page` 나 빈 쪽까지 받아 코퍼스로 쓰고, 2000건에서 자르며 자른 사실을 알린다. 토큰이 보이는 워크스페이스가 여럿이면 그 스페이스를 가진 워크스페이스를 찾아 쓴다.
+    - 질의와 같은 리스트의 후보에는 텍스트 출력 줄 끝에 `같은 리스트`, JSON 출력에 `same_list` 를 단다. 티켓 id 앞에는 `#` 를 붙이지 않는다.
+    - 판정 문면의 기본값은 일반화 문면(`--question generic`)이다. `--question measured` 로 덮어쓸 수 있다.
+    - 토큰(`~/.config/cc-cmds/clickup.env`)이 없거나 모드 600 이 아니면 요청을 하나도 보내지 않고 `status=unavailable` 과 사유 한 줄로 끝나며, 진행은 막지 않는다. 토큰 값은 출력 어디에도 나가지 않는다. ClickUp 기점 재정의는 루프백만 받는다.
+- **`orchestrator/clickup-create.py`** — ClickUp 티켓 생성 도구. 리스트에 이름과 마크다운 설명만 실은 `POST` 한 건을 보내고 새 티켓의 `<id>` 와 `<url>` 을 한 줄로 낸다. 담당자·상태·우선순위는 보내지 않는다. 응답이 아예 오지 않았을 때만 한 번 다시 보내고, HTTP 오류·시간 초과·읽을 수 없는 응답은 티켓이 이미 만들어졌을 수 있으므로 다시 보내지 않는다. 종료 코드는 0 생성, 2 사용 오류, 3 토큰 없음, 4 API 오류, 5 무인 파이프라인 런 안에서의 거부, 1 내부 오류다.
+- **`clickup-ops` 정책 스킬** — 티켓 설명 규칙(GitHub 이슈 본문과 같음), 생성 시 담당자·상태 미지정, 생성 직전 유사 티켓 조회 후 생성, design 을 거치지 않는 착수 시 유사 티켓 조회의 네 절. 수락한 티켓은 PR 본문에 `Closes #N` 이 아니라 URL 로 잇는다.
+- **게이트 등급 행** — `clickup-create.py` 는 인자와 무관하게 `외부상태변경` 이다. `similar-items.py clickup …` 은 `github` 어댑터처럼 도달 범위 신고가 필요하다.
+- **`scripts/test-similar-items.sh`** — 루프백 스텁으로 ClickUp 조회(쪽 넘김, 둘째 워크스페이스, URL 형태, 같은 리스트 표지, 토큰 없음·모드 644·`=` 없는 한 줄 토큰, 판정 문면)와 생성(요청 본문, 무인 런 거부, 토큰 없음, API 오류 무재시도, 접두 약어 거부)을 고정한다.
+
+### Changed
+
+- **design Step 1 의 이슈 출발 설계** — ClickUp 티켓 id·URL 에서 출발한 설계도 덮는다. 그때는 `similar-items.py clickup --task <ID|URL>` 로 조회하고, 수락한 ClickUp 티켓은 PR 본문에 URL 로 잇는다.
+
+### Post-install notes
+
+- ClickUp 조회와 생성을 쓰려면 `~/.config/cc-cmds/clickup.env` 에 `CLICKUP_API_TOKEN=` 줄을 두고 모드를 600 으로 맞춘다. `CLICKUP_TOKEN=` 줄이나 토큰 한 줄만 담은 파일도 받는다. 없으면 조회는 건너뛰고 그 사실을 알리며, 생성 도구는 종료 코드 3 으로 끝난다.
+
 ## [2.29.2] - 2026-09-26
 
 설계를 런의 첫 스테이지로 두는 런(`design_required=true`)을 연기 기동해 고정 그래프 드라이버가 설계 단계를 돌릴 때, 매니페스트의 `설계 문서` 키가 레포 밖 문서를 가리키면 드라이버가 그 키를 레포 상대 경로로 잘못 해소하던 문제를, 문서를 담을 디렉터리가 이미 있는 경우에 한해 고친다. 설계 스테이지가 `<레포>/Users/…` 아래에 문서를 쓰고 이후 단계가 그것을 찾지 못했다. 즉시 기동(기본)에서 설계 단계를 파견하는 라우터는 문서 인자를 따로 조합하므로 이 수정이 닿지 않는다. 그 경로와 담을 디렉터리가 아직 없는 경우는 #1048 에 남는다.
