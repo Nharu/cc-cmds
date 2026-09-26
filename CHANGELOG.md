@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.30.0] - 2026-09-26
+## [2.31.0] - 2026-09-27
 
 산출물도 정지 기록도 없이 텍스트로 턴을 끝낸 무인 스테이지(`공허한 성공`)를 새 프로세스로 다시 돌리거나 곧장 보류하던 것을, **같은 세션을 고정된 계속 메시지로 재개**하는 쪽으로 바꾼다. 드라이버 경로와 라우터 경로가 같은 정의(계속 메시지·계수기·상한)를 쓴다. 함께, 무인 스테이지가 받는 정책에 턴이 끝나는 세 가지 경우를 적는 「Ending the turn」 절을 두고, 그 규칙의 원천을 플러그인 자신의 계약 파일 한 줄로 두는 네 번째 원천 종류 `plugin` 을 들인다.
 
@@ -35,6 +35,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **범위 밖** — 게이트 경로에서 게이트 행위를 하나라도 한 비설계 스테이지가 산문으로 끝나면 분류기가 `정상 완료` 로 판정하므로 계속이 닿지 않는다. 이 릴리스는 분류를 바꾸지 않는다.
 - **적용 범위** — 「Ending the turn」 절은 게이트가 띄운 스테이지에만 실린다. 드라이버의 연기 경로 스테이지에는 정책 파일이 주입되지 않으므로, 그 경로의 텍스트 종료는 스테이지 수준 계속만 다룬다.
 - **재개 argv 의 effort** — 재개는 최초 기동과 같은 argv 합성 경로를 탄다. 스테이지 effort·model 배분이 아직 master 에 없으므로 재개 argv 에 두 플래그가 실린다는 단언은 그 변경이 머지될 때 함께 더해진다.
+
+## [2.30.0] - 2026-09-26
+
+유사 항목 조회가 ClickUp 티켓까지 덮는다. ClickUp 티켓을 만들기 직전에는 초안으로, ClickUp 티켓에서 출발한 작업을 착수할 때는 그 티켓으로, 같은 스페이스의 열린 티켓 전체에서 비슷한 티켓을 찾아 후보로 보인다. 조회는 GitHub 쪽과 같이 후보를 **보여 주기만** 하며 생성이나 착수를 막거나 미루지 않는다. 티켓 생성은 조회와 다른 파일인 전용 도구가 맡는다.
+
+### Added
+
+- **`similar-items.py clickup`** — ClickUp 어댑터. `--task ID|URL` 은 착수 형태, `--list ID --title T --body-file F` 는 생성 전 초안 형태다. 질의 리스트가 속한 스페이스의 열린 티켓(하위 작업 포함)을 `last_page` 나 빈 쪽까지 받아 코퍼스로 쓰고, 2000건에서 자르며 자른 사실을 알린다. 토큰이 보이는 워크스페이스가 여럿이면 그 스페이스를 가진 워크스페이스를 찾아 쓴다.
+    - 질의와 같은 리스트의 후보에는 텍스트 출력 줄 끝에 `같은 리스트`, JSON 출력에 `same_list` 를 단다. 티켓 id 앞에는 `#` 를 붙이지 않는다.
+    - 판정 문면의 기본값은 일반화 문면(`--question generic`)이다. `--question measured` 로 덮어쓸 수 있다.
+    - 토큰(`~/.config/cc-cmds/clickup.env`)이 없거나 모드 600 이 아니면 요청을 하나도 보내지 않고 `status=unavailable` 과 사유 한 줄로 끝나며, 진행은 막지 않는다. 토큰 값은 출력 어디에도 나가지 않는다. ClickUp 기점 재정의는 루프백만 받는다.
+- **`orchestrator/clickup-create.py`** — ClickUp 티켓 생성 도구. 리스트에 이름과 마크다운 설명만 실은 `POST` 한 건을 보내고 새 티켓의 `<id>` 와 `<url>` 을 한 줄로 낸다. 담당자·상태·우선순위는 보내지 않는다. 응답이 아예 오지 않았을 때만 한 번 다시 보내고, HTTP 오류·시간 초과·읽을 수 없는 응답은 티켓이 이미 만들어졌을 수 있으므로 다시 보내지 않는다. 종료 코드는 0 생성, 2 사용 오류, 3 토큰 없음, 4 API 오류, 5 무인 파이프라인 런 안에서의 거부, 1 내부 오류다.
+- **`clickup-ops` 정책 스킬** — 티켓 설명 규칙(GitHub 이슈 본문과 같음), 생성 시 담당자·상태 미지정, 생성 직전 유사 티켓 조회 후 생성, design 을 거치지 않는 착수 시 유사 티켓 조회의 네 절. 수락한 티켓은 PR 본문에 `Closes #N` 이 아니라 URL 로 잇는다.
+- **게이트 등급 행** — `clickup-create.py` 는 인자와 무관하게 `외부상태변경` 이다. `similar-items.py clickup …` 은 `github` 어댑터처럼 도달 범위 신고가 필요하다.
+- **`scripts/test-similar-items.sh`** — 루프백 스텁으로 ClickUp 조회(쪽 넘김, 둘째 워크스페이스, URL 형태, 같은 리스트 표지, 토큰 없음·모드 644·`=` 없는 한 줄 토큰, 판정 문면)와 생성(요청 본문, 무인 런 거부, 토큰 없음, API 오류 무재시도, 접두 약어 거부)을 고정한다.
+
+### Changed
+
+- **design Step 1 의 이슈 출발 설계** — ClickUp 티켓 id·URL 에서 출발한 설계도 덮는다. 그때는 `similar-items.py clickup --task <ID|URL>` 로 조회하고, 수락한 ClickUp 티켓은 PR 본문에 URL 로 잇는다.
+
+### Post-install notes
+
+- ClickUp 조회와 생성을 쓰려면 `~/.config/cc-cmds/clickup.env` 에 `CLICKUP_API_TOKEN=` 줄을 두고 모드를 600 으로 맞춘다. `CLICKUP_TOKEN=` 줄이나 토큰 한 줄만 담은 파일도 받는다. 없으면 조회는 건너뛰고 그 사실을 알리며, 생성 도구는 종료 코드 3 으로 끝난다.
 
 ## [2.29.2] - 2026-09-26
 
