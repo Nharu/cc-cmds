@@ -135,6 +135,7 @@ ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
 	scripts/test-gate.sh \
 	scripts/test-team-witness-init.sh \
+	scripts/test-similar-items.sh \
 	scripts/test-gate-chain-equiv.sh \
 	scripts/test-measure-gate-cost.sh \
 	scripts/test-snapshot.sh \
@@ -169,7 +170,7 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 # per-shard dispatch and the union check all take their N from one place; a
 # workflow that spelled the number itself would let the matrix and the check
 # disagree, and the sections in the gap would belong to nobody.
-GATE_SHARDS ?= 8
+GATE_SHARDS ?= 13
 
 # So CI can read the number instead of spelling it a second time.
 print-gate-shards:
@@ -206,7 +207,7 @@ run-gate-census-selftest:
 # every section alone, the whole suite once and every shard once — about an hour
 # on an idle machine — and what it writes is a file to review and commit.
 census:
-	bash scripts/gate-census.sh --out scripts/gate-census.tsv
+	bash scripts/gate-census.sh --shards $(GATE_SHARDS) --out scripts/gate-census.tsv
 
 test-active-notify: $(NOTIFY_TESTS:%=run/%)
 
