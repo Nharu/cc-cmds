@@ -10418,8 +10418,9 @@ gate_main() {
   [ "$verb" = "plan" ] || gate_settle_lost_dispatches
   # The metrics round rides the same prelude for the same reason and is kept
   # out of `plan` by the same contract; it is stamped, so almost every call
-  # stops at one read.
-  [ "$verb" = "plan" ] || gate_metrics_cycle
+  # stops at one read. `|| true` as the reaper has it: whatever the round runs
+  # into, it is not the verb's work.
+  [ "$verb" = "plan" ] || gate_metrics_cycle || true
 
   case "$verb" in
     digest-path)
@@ -18970,7 +18971,12 @@ gate_metrics_cycle() {
   fi
   printf '%s\n' "$now" > "$stampf" 2>/dev/null || true
   collector=$(gate_metrics_collector)
-  out=$(bash "$collector" --ledger-dir "$ledger_dir" --state-root "$root" 2>/dev/null); rc=$?
+  # `|| rc=$?`, never `; rc=$?`: run.sh leaves errexit on, and a plain
+  # assignment carries the substitution's status, so a collector that exited
+  # non-zero ended the whole gate here — before the verb, with the collector's
+  # code as the gate's own.
+  rc=0
+  out=$(bash "$collector" --ledger-dir "$ledger_dir" --state-root "$root" 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
     log "계측 회차 실패 — 수집기 rc=$rc (다음 회차에 다시 센다)"
     gate_metrics_unlock "$root"

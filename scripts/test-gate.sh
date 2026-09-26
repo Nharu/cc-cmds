@@ -21030,6 +21030,54 @@ p60_gate plan --manifest "$P60_MAN" --kind x --target infra --cutpoint 커밋 --
 check "60: plan 은 부르지 않는다" "$(p60_calls)" "2"
 check "60: plan 은 스탬프를 쓰지 않는다" "$(cat "$P60_STAMP")" "$p60_stamp_before"
 
+# G — 수집기가 0 이 아닌 코드로 끝난다. 회차는 동사를 실패시키지 않는다는 계약이므로,
+# 동사는 제 종료 코드와 출력을 그대로 내고, 잠금은 풀리고, 실패는 로그 한 줄로 남는다.
+# 종료 코드는 파일로 넘긴다 — 함수 호출 앞의 임시 대입이 게이트가 띄우는 자식까지
+# 내려가는지에 기대지 않는다.
+P60_FAILING="$P60ROOT/collector-failing"
+P60_FAIL_RC="$P60ROOT/collector-rc"
+cat > "$P60_FAILING" <<P60EOF
+#!/usr/bin/env bash
+printf '1\n' >> "$P60_CALLS"
+exit "\$(cat "$P60_FAIL_RC")"
+P60EOF
+chmod +x "$P60_FAILING"
+p60_gate_io() {
+  # p60_gate_io <collector> <verb args...> — stdout·stderr 를 파일로 받는다. 인프로세스가
+  # 아니라 새 bash 프로세스다: 결함은 run.sh 가 소싱 시점에 거는 errexit 아래에서만 서고,
+  # 인프로세스 호출은 그 셸 옵션을 싣지 않아 고치기 전 게이트에서도 이 사례가 초록이었다.
+  local col="$1"; shift
+  ( cd "$WT" && XDG_STATE_HOME="$P60_STATE" CC_METRICS_COLLECTOR="$col" \
+      CC_METRICS_FILING_FILE="$P60_CONF" bash "$GATE" "$@" >"$P60ROOT/out" 2>"$P60ROOT/err" )
+}
+p60_fail_case() {
+  # p60_fail_case <label> <collector> [env...] — 스탬프를 만료시키고 snapshot 한 번.
+  local label="$1" col="$2" vrc=0 before
+  shift 2
+  p60_old_stamp
+  # 앞 사례가 남긴 잠금이 이 사례의 수집기 호출을 막지 않게 한다 — 사례마다 독립이다.
+  rm -rf "$P60_LOCK"
+  before=$(p60_calls)
+  ( [ $# -eq 0 ] || export "$@"; p60_gate_io "$col" snapshot --manifest "$P60_MAN" ) || vrc=$?
+  check "60: $label — 동사가 0 으로 끝난다" "$vrc" "0"
+  check "60: $label — 동사가 제 출력을 낸다" \
+    "$(jq -e 'type == "object"' "$P60ROOT/out" >/dev/null 2>&1 && printf 객체 || printf 아님)" "객체"
+  check "60: $label — 잠금이 풀려 있다" "$([ -d "$P60_LOCK" ] && printf 있음 || printf 없음)" "없음"
+  check "60: $label — 실패가 로그에 남는다" \
+    "$(grep -c '계측 회차 실패' "$P60ROOT/err" || true)" "1"
+  p60_after=$(p60_calls)
+  p60_called=$([ "$p60_after" -gt "$before" ] && printf 불림 || printf 안불림)
+}
+printf '1\n' > "$P60_FAIL_RC"
+p60_fail_case "수집기 rc=1" "$P60_FAILING"
+check "60: 수집기 rc=1 — 수집기가 실제로 불렸다" "$p60_called" "불림"
+printf '2\n' > "$P60_FAIL_RC"
+p60_fail_case "수집기 rc=2" "$P60_FAILING"
+check "60: 수집기 rc=2 — 수집기가 실제로 불렸다" "$p60_called" "불림"
+# 결정적 재현: 실제 수집기는 정수가 아닌 전환 구간 폭을 인자 오류(2)로 거부한다.
+p60_fail_case "실제 수집기 인자 오류" "$repo_root/plugins/cc-cmds/orchestrator/collect-run-metrics.sh" \
+  CC_METRICS_SWITCH_WINDOW_S=abc
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
