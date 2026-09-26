@@ -15,6 +15,13 @@
 # keep: 1024 and 1025 bytes, the exact boundary two independent measurements put
 # the corruption threshold at. An off-by-one in the byte accounting — forgetting
 # that the newline occupies a byte on disk — flips exactly one of the two.
+#
+# `OK-4-verbatim-line-not-a-row` and `FAIL-4-run-row-over-cap` are the pair
+# that pins which lines are rows. The first is an interview record in the same
+# directory whose verbatim answer line opens with a dash and a backtick and runs
+# past the cap: the old dash-and-backtick predicate failed it, the row-grammar
+# predicate must not. The second is an over-cap `run` row, which the narrowed
+# predicate must still catch.
 
 set -uo pipefail
 

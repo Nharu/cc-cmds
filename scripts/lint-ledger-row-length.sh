@@ -24,7 +24,11 @@
 #      incremental-rollout posture the sibling lints take.
 #   3. [fail] No row in any run ledger under the ledger root exceeds `<n>`
 #      bytes including its newline. A ledger that does not exist is not a
-#      failure; a ledger with an over-cap row is.
+#      failure; a ledger with an over-cap row is. A row is a line in the row
+#      grammar — `- ` then a backticked kind then ` | ` — not every line that
+#      opens with a dash and a backtick: the same directory holds interview
+#      records and kickoff traces, whose verbatim lines may open that way and
+#      are no row the gate ever appends.
 #
 # Usage: bash scripts/lint-ledger-row-length.sh
 #
@@ -93,16 +97,14 @@ if [[ ! -d "$ledger_root" ]]; then
   echo "SKIP: $ledger_root — 원장 없음"
 else
   found=0
+  row_re='^- `[^`]+` \|'
   while IFS= read -r ledger; do
     [[ -n "$ledger" ]] || continue
     found=1
     line_no=0
     while IFS= read -r row; do
       line_no=$((line_no + 1))
-      case "$row" in
-        '- `'*) ;;
-        *) continue ;;
-      esac
+      [[ "$row" =~ $row_re ]] || continue
       # +1 for the newline the row occupies on disk.
       n=$(( $(printf '%s' "$row" | wc -c | tr -d ' ') + 1 ))
       if [[ "$n" -gt "$cap" ]]; then
