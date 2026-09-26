@@ -4,9 +4,11 @@
 #
 # `stage-policy.md` is a distillation: every rule in it comes from a bullet of
 # the user-scope CLAUDE.md, a section of the workspace instruction file the
-# host map points at, or a promoted memory item. The distillation is bytes the
-# gate injects into every unattended stage, and the sources are files a person
-# edits by hand, so the two drift apart in silence. `stage-policy.sources.tsv`
+# host map points at, a promoted memory item, or one line of a plugin file (the
+# `plugin` source: a rule the plugin itself owns, such as how a stage's turn
+# ends). The distillation is bytes the gate injects into every unattended
+# stage, and the sources are files edited by hand, so the two drift apart in
+# silence. `stage-policy.sources.tsv`
 # is the only link between them: one row per source item, carrying the verbatim
 # anchor that finds the item in its source and the sha256 of the item's body
 # at the time the policy was written.
@@ -22,7 +24,7 @@
 # unattended implementation stage's `make check` red.
 #
 # Usage:
-#   bash stage-policy-drift.sh [--sources-map <file>]
+#   bash stage-policy-drift.sh [--sources-map <file>] [--plugin-root <dir>]
 #
 #   The manifest is `stage-policy.sources.tsv` next to this script. The
 #   user-scope source is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md` — the
@@ -36,8 +38,17 @@
 #   that host injects the source verbatim and loses nothing when the
 #   distillation goes stale.
 #
+#   A `plugin` row locates its source in the manifest itself: the anchor is
+#   `<path>:<line prefix>`, split at the first `:`, and <path> is relative to
+#   the plugin root — the directory above this script, overridable with
+#   `--plugin-root`. The item is the one line of that file that begins with the
+#   prefix, and the hashed body is that line with its newline. The rest of a
+#   plugin file is not policy material, so a plugin source never reports
+#   `added`.
+#
 # Output — one finding per line, then a verdict on the last line:
 #   added <source> <candidate text>   an item in the source no anchor resolves to
+#                                     (user-scope and workspace only)
 #   removed <source> <anchor>         an anchor that resolves to no item
 #   changed <source> <anchor>         resolved to one item whose body hash differs
 #   non-unique <source> <anchor>      resolved to more than one item (never
@@ -54,7 +65,9 @@
 #
 # Anchor resolution is a byte-prefix match of the stored anchor against each
 # candidate item's first line (user-scope: the bullet text after `- `;
-# workspace: the heading line verbatim). Exactly one match resolves; zero is
+# workspace: the heading line verbatim; plugin: every line of the named file,
+# against the part of the anchor after its first `:`, and a missing file is
+# `removed`). Exactly one match resolves; zero is
 # `removed`; two or more is `non-unique`, reported as its own kind because
 # collapsing it into either neighbour would let an anchor that matches several
 # places pass as resolved or be discarded as missing.
@@ -146,10 +159,19 @@ validate_manifest() {
     sha=$(printf '%s\n' "$row" | awk -F'\t' '{ print $3 }')
     disp=$(printf '%s\n' "$row" | awk -F'\t' '{ print $4 }')
     case "$source" in
-      user-scope|workspace|memory) : ;;
-      *) die_format "manifest line $n: unknown source '$source' (user-scope|workspace|memory)" ;;
+      user-scope|workspace|memory|plugin) : ;;
+      *) die_format "manifest line $n: unknown source '$source' (user-scope|workspace|memory|plugin)" ;;
     esac
     [ -n "$anchor" ] || die_format "manifest line $n: empty anchor"
+    if [ "$source" = plugin ]; then
+      case "$anchor" in
+        ?*:?*) : ;;
+        *) die_format "manifest line $n: a plugin anchor is '<path>:<line prefix>', found '$anchor'" ;;
+      esac
+      case "${anchor%%:*}" in
+        /*|..|../*|*/..|*/../*) die_format "manifest line $n: a plugin anchor's path is relative to the plugin root and stays inside it: '$anchor'" ;;
+      esac
+    fi
     if [ "$source" = memory ]; then
       [ "$sha" = "-" ] || die_format "manifest line $n: a memory row carries hash '-', found '$sha'"
     else
@@ -234,15 +256,48 @@ compare_source() {
   done < <(printf '%s\n' "$candidates")
 }
 
+# compare_plugin <plugin-root> <manifest>
+# Each plugin row names its own file, so there is no candidate set to report
+# `added` from: only removed, non-unique and changed.
+compare_plugin() {
+  local root="$1" manifest="$2" a anchor asha rel prefix file line n found_hash
+  compared=$((compared + 1))
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    anchor="${a%	*}"
+    asha="${a##*	}"
+    rel="${anchor%%:*}"
+    prefix="${anchor#*:}"
+    file="$root/$rel"
+    n=0; found_hash=""
+    if [ -f "$file" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        if [ "${line:0:${#prefix}}" = "$prefix" ]; then
+          n=$((n + 1)); found_hash=$(printf '%s\n' "$line" | sha_stdin)
+        fi
+      done < "$file"
+    fi
+    if [ "$n" -eq 0 ]; then
+      printf 'removed plugin %s\n' "$anchor"; findings=$((findings + 1))
+    elif [ "$n" -gt 1 ]; then
+      printf 'non-unique plugin %s\n' "$anchor"; findings=$((findings + 1))
+    elif [ "$found_hash" != "$asha" ]; then
+      printf 'changed plugin %s\n' "$anchor"; findings=$((findings + 1))
+    fi
+  done < <(awk -F'\t' 'NR > 1 && $1 == "plugin" { print $2 "\t" $3 }' "$manifest")
+}
+
 main() {
-  local script_dir manifest map cfgdir user_file ws_file
+  local script_dir manifest map cfgdir user_file ws_file plugin_root
   script_dir=$(cd "$(dirname "$0")" && pwd)
   manifest="$script_dir/stage-policy.sources.tsv"
   map="${HOME:-}/.config/cc-cmds/stage-policy-sources"
+  plugin_root=$(cd "$script_dir/.." && pwd)
   while [ $# -gt 0 ]; do
     case "$1" in
       --sources-map) [ $# -ge 2 ] || die_format "--sources-map needs a file"; map="$2"; shift 2 ;;
-      -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+      --plugin-root) [ $# -ge 2 ] || die_format "--plugin-root needs a directory"; plugin_root="$2"; shift 2 ;;
+      -h|--help) sed -n '2,80p' "$0"; exit 0 ;;
       *) die_format "unknown argument: $1" ;;
     esac
   done
@@ -273,6 +328,15 @@ main() {
       else
         compare_source workspace "$ws_file" "$manifest"
       fi
+    fi
+  fi
+
+  # plugin — each row names its file relative to the plugin root
+  if awk -F'\t' 'NR > 1 && $1 == "plugin" { f = 1 } END { exit !f }' "$manifest"; then
+    if [ -d "$plugin_root" ]; then
+      compare_plugin "$plugin_root" "$manifest"
+    else
+      printf 'SKIP plugin root not found: %s\n' "$plugin_root"
     fi
   fi
 

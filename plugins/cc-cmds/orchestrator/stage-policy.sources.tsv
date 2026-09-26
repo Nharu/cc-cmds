@@ -52,3 +52,4 @@ memory	feedback_econ_heading_scope	-	repo:CLAUDE.md
 memory	feedback_delegated_judgment_residual	-	repo:CLAUDE.md	
 memory	feedback_no_standing_trackers	-	repo:CLAUDE.md	
 memory	project_unattended_observation_restaging	-	repo:CLAUDE.md	
+plugin	skills/_common/pipeline-sidecar.md:**A stage's turn ends only when its own terminal artifact exists	b6516f4c5ac8e1b649a20b0851abb4e791ddcf51019d21361434a40fd66d360e	policy:Ending the turn	the plugin owns this rule; the driver and the gate continue a stage that ended its turn in prose

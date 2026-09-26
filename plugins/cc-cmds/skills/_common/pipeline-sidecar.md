@@ -891,6 +891,8 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 Skills do emit next-step command strings; the rule binds the **reader**, not the writer, which is why no skill text needs editing. Such a line is disqualified as a control signal anyway: it is emitted on the success path (so it cannot separate a finished audit from an aborted one) and it is cwd-relative (so it resolves against the wrong tree in a segment worktree). It is copied **verbatim as an opaque string** into the morning report, for the human who may run it.
 
+**A stage's turn ends only when its own terminal artifact exists, when it has written a halt record, or when it has handed a judgment marker to the gate; prose is never a terminal, and a routing shift ends with its own skill's handoff.**
+
 ### 5.1 Artifact predicates
 
 | Stage | Predicate |

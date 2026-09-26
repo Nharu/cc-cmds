@@ -11,7 +11,9 @@
 # a volatile token, an oversize policy, a pin sentence absent or doubled, a
 # policy heading no row names, a `policy:` row naming a heading that does not
 # exist, a disposition outside the closed vocabulary, a duplicated user-scope
-# anchor, a four-column row, a memory row carrying a hash.
+# anchor, a four-column row, a memory row carrying a hash, a plugin anchor
+# without its `<path>:` part, a duplicated plugin anchor, a source outside the
+# closed set.
 #
 # Source half — `plugins/cc-cmds/orchestrator/stage-policy-drift.sh`. Each
 # case under `drift/` carries the manifest and the fake sources it is compared
@@ -23,7 +25,9 @@
 # therefore written at run time into the scratch directory, naming the staged
 # workspace file when the case has one. A case carrying `map.malformed` gets
 # that file as its map instead. A case with neither gets a map path that does
-# not exist. The person's real global files are never read.
+# not exist. The person's real global files are never read. A case carrying a
+# `plugin/` directory gets it as `--plugin-root`, so its `plugin` rows resolve
+# against the fixture rather than against this repository's plugin.
 #
 # THE FIXTURE SOURCES ARE STORED AS `source.md` AND STAGED UNDER THE NAME THE
 # CHECKER LOOKS FOR. They used to be stored as `cfg/CLAUDE.md` and `ws/CLAUDE.md`
@@ -83,6 +87,7 @@ done
 # run_drift <case> — runs the checker for one case; sets DRIFT_OUT and DRIFT_EC.
 run_drift() {
   local case_dir="$fixtures/drift/$1" scratch map
+  local -a extra=()
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/cc-policy-drift.XXXXXX")
   cp "$checker" "$scratch/stage-policy-drift.sh"
   cp "$case_dir/stage-policy.sources.tsv" "$scratch/stage-policy.sources.tsv"
@@ -104,8 +109,11 @@ run_drift() {
   else
     map="$scratch/no-such-map"
   fi
+  if [[ -d "$case_dir/plugin" ]]; then
+    extra=(--plugin-root "$case_dir/plugin")
+  fi
   set +e
-  DRIFT_OUT=$(CLAUDE_CONFIG_DIR="$scratch/cfg" bash "$scratch/stage-policy-drift.sh" --sources-map "$map" 2>/dev/null)
+  DRIFT_OUT=$(CLAUDE_CONFIG_DIR="$scratch/cfg" bash "$scratch/stage-policy-drift.sh" --sources-map "$map" ${extra[@]+"${extra[@]}"} 2>/dev/null)
   DRIFT_EC=$?
   set -e
   rm -rf "$scratch"
@@ -157,6 +165,14 @@ expect_drift workspace-changed 1 'mismatch 1' 'changed workspace ## Two'
 expect_drift workspace-match 0 match
 expect_drift malformed-manifest 2 ''
 expect_drift malformed-map 2 ''
+# A plugin row is compared without ending the run in a format error, the
+# user-scope rows beside it are still compared, and the plugin file's other
+# lines are never reported as `added` (plugin-match asserts no stray line).
+expect_drift plugin-match 0 match
+expect_drift plugin-changed 1 'mismatch 1' 'changed plugin skills/rule.md:- ending:'
+expect_drift plugin-removed 1 'mismatch 2' 'removed plugin skills/rule.md:- ending:' 'removed plugin skills/gone.md:- ending:'
+expect_drift plugin-non-unique 1 'mismatch 1' 'non-unique plugin skills/rule.md:- ending:'
+expect_drift plugin-user-changed 1 'mismatch 1' 'changed user-scope alpha'
 
 # `non-unique` must not be folded into `removed`, and a SKIP source must be
 # named as such in the one-compared case.
@@ -174,6 +190,39 @@ if [[ "${hits:-0}" == "1" ]]; then
 else
   failures=$((failures + 1)); echo "FAIL: drift/one-compared — expected one 'SKIP workspace' line, found ${hits:-0}" >&2
 fi
+
+# The repository's own plugin rows resolve against the shipped plugin: the
+# anchor line exists exactly once and its hash matches. User-scope and
+# workspace sources are pointed at nothing so only the plugin rows are judged.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/cc-policy-drift.XXXXXX")
+mkdir -p "$scratch/cfg"
+set +e
+real_out=$(CLAUDE_CONFIG_DIR="$scratch/cfg" bash "$checker" --sources-map "$scratch/no-such-map" 2>/dev/null)
+real_ec=$?
+set -e
+rm -rf "$scratch"
+real_rows=$(awk -F'\t' 'NR > 1 && $1 == "plugin"' "$repo_root/plugins/cc-cmds/orchestrator/stage-policy.sources.tsv" | wc -l | tr -d ' ')
+real_hits=$(printf '%s\n' "$real_out" | grep -cE '^(removed|changed|non-unique|added) plugin ' || true)
+real_last=$(printf '%s\n' "$real_out" | tail -n 1)
+# exit 2 prints nothing, which would otherwise read as "no finding"; the
+# plugin rows are the only source compared here, so the verdict must be match.
+if [[ "$real_ec" == "0" && "$real_last" == "match" && "$real_rows" -ge 1 && "${real_hits:-0}" == "0" ]]; then
+  passed=$((passed + 1)); echo "PASS: repository plugin rows ($real_rows) resolve with no finding"
+else
+  failures=$((failures + 1)); echo "FAIL: repository plugin rows — $real_rows row(s), exit=$real_ec, output: $real_out" >&2
+fi
+
+# The checker's header and the autopilot kickoff's drift paragraph name the
+# plugin source, so a `changed plugin` finding is not explained as an edit to a
+# person's file.
+for doc in "$checker" "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"; do
+  hits=$(grep -c '`plugin`' "$doc" || true)
+  if [[ "${hits:-0}" != "0" ]]; then
+    passed=$((passed + 1)); echo "PASS: ${doc#"$repo_root"/} names the plugin source"
+  else
+    failures=$((failures + 1)); echo "FAIL: ${doc#"$repo_root"/} does not name the plugin source" >&2
+  fi
+done
 
 echo "test-lint-stage-policy-sources: $passed passed, $failures failed"
 

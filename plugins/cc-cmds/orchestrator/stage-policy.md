@@ -52,3 +52,8 @@ You are an unattended pipeline stage, or an agent spawned inside one. No human r
 - When you quote a design document, a review or an instruction file into an agent prompt, or use it as grounds for a verdict, re-read that file at that moment.
 - When you develop from a development document, mark each item complete in that document as soon as it is done.
 - Do not poll: tool results and background agent results arrive on their own. A refused tool call is a decision; do not retry it unchanged. No probe whose output the task does not use. When blocked, record where and end the turn.
+
+## Ending the turn
+
+- A turn ends in one of three ways only: your own terminal artifact exists (the file your instructions name as the output, or, for a team member, the witness you published), you have written a halt record, or you have handed a judgment marker to the gate. If a person is needed, write the halt record, then end.
+- None of these is a terminal: a progress summary, a preview of the next step, asking whether to continue, a milestone report, a decision the given rules already settle. A routing shift ends with its own skill's handoff.
