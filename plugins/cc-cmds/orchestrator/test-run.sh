@@ -4276,11 +4276,24 @@ check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전�
 # 대로 스트림을 쓴다.
 # ---------------------------------------------------------------------------
 check "구현 갈래의 공허한 성공이 continue_or_park 를 거친다" \
-  "$( { sed -n "/^      '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park "\$sid" "\$seg" S4'; } || true)" "1"
+  "$( { sed -n "/^      '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park "\$sid" "\$jkey" "\$seg" S4'; } || true)" "1"
 check "설계 갈래의 공허한 성공이 continue_or_park 를 거친다" \
-  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S1design - S1design'; } || true)" "1"
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S1design S1design - S1design'; } || true)" "1"
 check "감사 갈래의 공허한 성공이 continue_or_park 를 거친다" \
-  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S2 - S2'; } || true)" "1"
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S2 S2 - S2'; } || true)" "1"
+# 판단 키는 그 판단을 낸 스테이지다. 맨 세그먼트나 런 범위 `-` 로 흡수하면 대기
+# 판정이 그 세그먼트·런의 아무 판단에나 걸리고, 답 재부착(`<종류>:<세그먼트>:`
+# 꼴만 고른다)은 그 판단을 영영 고르지 못한다.
+check "구현 스테이지의 흡수기는 판단 키로 흡수한다 (맨 세그먼트가 아니다)" \
+  "$(grep -c 'absorb_stage_judgment "\$sid" "\$jkey"' "$DRIVER")" "1"
+check "설계·감사 스테이지의 흡수기는 런 범위 - 를 넘기지 않는다" \
+  "$(grep -cE 'absorb_stage_judgment (S1design|S2) - ' "$DRIVER" || true)" "0"
+check "설계·감사 스테이지의 흡수기는 자기 이름으로 흡수한다" \
+  "$(grep -cE 'absorb_stage_judgment (S1design S1design|S2 S2) ' "$DRIVER")" "2"
+check "계속 시도의 흡수기는 판단 키로 흡수한다 (행 세그먼트가 아니다)" \
+  "$(sed -n '/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'absorb_stage_judgment "\$did" "\$jkey"')" "1"
+check "답을 재부착하는 사이클은 질문한 스테이지의 키를 유지한다" \
+  "$(grep -c 'jkey="\$aj_stage"' "$DRIVER")" "1"
 # 재개는 최초 기동과 같은 합성 경로를 탄다 — 시도 하나를 띄우는 곳은
 # `dispatch_stage`(→ `stage_spawn`) 하나뿐이고, 재개는 STAGE_RESUME 로만 갈린다.
 check "계속 시도는 dispatch_stage 로만 띄운다 (재개 전용 기동 경로가 없다)" \
@@ -4290,9 +4303,14 @@ check "계속 헬퍼 안에 CLI 직접 호출이 없다" \
 
 CONT="$WORK/continue"; mkdir -p "$CONT"
 # cont_case <라벨> <모드> <앞선 계속 수> — 모드: hollow(끝까지 산출물 없음) ·
-# done1(첫 계속에서 산출) · notr(트랜스크립트 없음) · zero(0턴) · judg(대기 판단)
+# done1(첫 계속에서 산출) · notr(트랜스크립트 없음) · zero(0턴) · judg(이 파견
+# id 로 대기 판단). 환경으로 파견 id(CONT_DID, 기본 S4:sg:1)·행 세그먼트
+# (CONT_RSEG, 기본 sg)·행 종류(CONT_RKIND, 기본 S4)와, 다른 스테이지가 낸 대기
+# 판단의 `막는 세그먼트` 목록(CONT_OPEN, 공백 구분)을 사례마다 준다. 판단 키는
+# 드라이버 호출부와 같이 파견 id 다.
 cont_case() {
   local d="$CONT/$1" mode="$2" spent="${3:-0}"
+  local did="${CONT_DID:-S4:sg:1}" rseg="${CONT_RSEG:-sg}" rkind="${CONT_RKIND:-S4}" k n=0
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
   (
     RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
@@ -4317,16 +4335,20 @@ cont_case() {
     cont_pred() { [ -f "$d/artifact" ]; }
     [ "$mode" = "notr" ] || : > "$d/cfg/projects/p/$CONT_SID.jsonl"
     if [ "$mode" = "judg" ]; then
-      printf -- '- `승인` | 승인 id=J-1 | 상태=대기 | 절단점=판단 | 막는 세그먼트=S4:sg:1\n' >> "$LEDGER"
+      printf -- '- `승인` | 승인 id=J-1 | 상태=대기 | 절단점=판단 | 막는 세그먼트=%s\n' "$did" >> "$LEDGER"
     fi
+    for k in ${CONT_OPEN:-}; do
+      n=$((n + 1))
+      printf -- '- `승인` | 승인 id=J-o%s | 상태=대기 | 절단점=판단 | 막는 세그먼트=%s\n' "$n" "$k" >> "$LEDGER"
+    done
     # 첫 시도 — 호출자가 하는 일을 그대로 한다.
-    stage_spawn "S4:sg:1" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
-    ledger_row 'stage-result' "세그먼트=sg" "스테이지=S4" "파견 id=S4:sg:1" "종료 코드=0" \
-      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "S4:sg:1")" \
-      "종단 부류=$(classify_termination "S4:sg:1" 0 1)"
-    [ "$spent" = "0" ] || printf '%s\n' "$spent" > "$(continue_counter_file "S4:sg:1")"
+    stage_spawn "$did" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
+    ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=0" \
+      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "$did")" \
+      "종단 부류=$(classify_termination "$did" 0 1)"
+    [ "$spent" = "0" ] || printf '%s\n' "$spent" > "$(continue_counter_file "$did")"
     : > "$d/spawned"
-    if continue_or_park "S4:sg:1" sg S4 "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+    if continue_or_park "$did" "$did" "$rseg" "$rkind" "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
          "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" home -- cont_pred; then
       printf 'rc=0\n'
     else
@@ -4393,6 +4415,58 @@ check "대기 중인 판단 승인이 있으면 계속하지 않는다" \
   "$(cont_field judg rc)/$(cont_spawns judg)/$(cont_field judg blocked)" "1/0/1"
 check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (세 호출부 모두)" \
   "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "3"
+# park 사유는 실제로 일어날 일만 적는다 — 승인 id 를 대고, 이 런 안에서 다시
+# 디스패치하지 않는다고 말하며, 수행되지 않는 「답이 오면 같은 세션에 재부착」을
+# 약속하지 않는다.
+check "막힘 사유가 계약의 판단 승인 대기 토큰 뒤에 대기 중인 승인 id 를 댄다" \
+  "$(cont_field judg reason | grep -c '^판단 승인 대기 J-1 — ' || true)" "1"
+check "구현 스테이지 막힘 사유는 이 런 안에서 다시 디스패치하지 않는다고 적는다" \
+  "$(cont_field judg reason | grep -c '이 런 안에서 이 세그먼트를 다시 디스패치하지 않는다' || true)" "1"
+check "막힘 사유가 수행되지 않는 재부착을 약속하지 않는다" \
+  "$(cont_field judg reason | grep -c '답이 오면 같은 세션에 재부착한다' || true)" "0"
+
+# 다른 스테이지가 낸 판단은 이 스테이지를 막지 않는다. 앞 사이클 리뷰가 맨
+# 세그먼트로 흡수한 판단과 다른 스테이지 id 로 흡수된 판단이 대기 중이어도, 이
+# 구현 스테이지는 자기 판단이 없으니 같은 세션을 계속한다.
+CONT_OPEN="sg S5:sg:1 S4:sg:10" cont_case otherseg hollow
+check "세그먼트의 다른 대기 판단은 구현 스테이지의 계속을 막지 않는다" \
+  "$(cont_field otherseg rc)/$(cont_spawns otherseg)/$(cont_field otherseg blocked)" "1/2/"
+check "그 경우의 park 는 계속 소진이다 (막힘이 아니다)" \
+  "$(cont_field otherseg reason | grep -c '^계속 소진 — ' || true)" "1"
+
+# 런 범위. 설계 스테이지가 문서를 동결하며 낸 판단(`S1design`)이나 옛 흡수기가
+# 런 범위 `-` 로 흡수한 판단이 대기 중이어도, 이어진 감사 스테이지는 막히지
+# 않는다. 막는 것은 감사 스테이지 자신의 판단뿐이다.
+CONT_DID=S2 CONT_RSEG=- CONT_RKIND=S2 CONT_OPEN="- S1design" cont_case runscope hollow
+check "런 범위의 다른 대기 판단은 감사 스테이지의 계속을 막지 않는다" \
+  "$(cont_field runscope rc)/$(cont_spawns runscope)/$(cont_field runscope blocked)" "1/2/"
+CONT_DID=S2 CONT_RSEG=- CONT_RKIND=S2 CONT_OPEN="- S1design" cont_case runscopeown judg
+check "감사 스테이지 자신의 대기 판단은 계속을 막는다" \
+  "$(cont_field runscopeown rc)/$(cont_spawns runscopeown)/$(cont_field runscopeown blocked)" "1/0/1"
+check "감사 스테이지 막힘 사유는 답 재부착 경로가 없다고 적는다" \
+  "$(cont_field runscopeown reason | grep -c '답을 읽어 재부착하는 경로가 없' || true)" "1"
+check "감사 스테이지 막힘 사유가 자기 승인 id 를 댄다 (다른 스테이지의 것이 아니다)" \
+  "$(cont_field runscopeown reason | grep -c '^판단 승인 대기 J-1 — ' || true)" "1"
+
+# 대기 판정과 답 재부착은 같은 키 꼴을 읽는다. 구현 스테이지가 파견 id 로 흡수한
+# 판단에 답이 오면 `answered_judgment_stage` 가 그것을 고르고, 스트림은 시도 핀이
+# 붙은 이름(`stage_log_path`)으로 찾는다.
+AJ="$WORK/answered"; rm -rf "$AJ"; mkdir -p "$AJ/run/log"
+aj_out=$(
+  RUN_DIR="$AJ/run"; LEDGER="$AJ/ledger.md"
+  printf -- '- `승인` | 승인 id=J-a | 상태=승인 | 절단점=판단 | 막는 세그먼트=S4:sg:1\n' > "$LEDGER"
+  printf '1\n' > "$RUN_DIR/S4:sg:1.attempt"
+  printf '{"type":"result"}\n' > "$RUN_DIR/log/S4:sg:1#1.json"
+  printf '%s|' "$(answered_judgment_stage sg S4)"
+  printf -- '- `승인` | 승인 id=J-b | 상태=승인 | 절단점=판단 | 막는 세그먼트=S5:sg:1\n' > "$LEDGER"
+  printf '1\n' > "$RUN_DIR/S5:sg:1.attempt"
+  printf '{"type":"result"}\n' > "$RUN_DIR/log/S5:sg:1#1.json"
+  printf '%s|' "$(answered_judgment_stage sg S4)"
+  printf -- '- `승인` | 승인 id=J-c | 상태=승인 | 절단점=판단 | 막는 세그먼트=sg\n' > "$LEDGER"
+  printf '%s' "$(answered_judgment_stage sg S4)"
+)
+check "파견 id 로 흡수된 답은 핀된 시도의 스트림으로 재부착 후보가 된다; 다른 종류·맨 세그먼트는 아니다" \
+  "$aj_out" "J-a S4:sg:1||"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파

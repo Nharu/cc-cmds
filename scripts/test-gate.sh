@@ -8410,6 +8410,44 @@ check "15d: 크래시 재개는 계속이 아니다" \
   "$rc/$(cat "$WORK/p15d.txt")/$( [ -e "$RD15D/continue/SK15" ] && printf counted || printf none )" \
   "0//cc-cmds:implement-unattended 원래 프롬프트/none"
 
+# The router's design-stage item 1 must agree with the continuation above. The
+# item lists what is taken before a fresh dispatch; if it names only the cut-
+# stage re-attachment, a router reading it dispatches a hollow design stage
+# afresh and buys the published discussion rounds again, and nothing else in
+# the tree — no merge conflict, no fixture — says the two instructions clash.
+# The driver half of its old closing clause is false as well: the driver
+# continues a hollow design stage before it runs a fresh one. The item keeps
+# the two literals scripts/test-snapshot.sh reads in both copies, so what is
+# asserted here is what now surrounds them: the continuation section is named
+# next to the re-attachment, and the fresh-dispatch clause is scoped past both.
+item1_15d() {  # item1_15d <SKILL.md> — item 1 of 「Dispatching the design stage」
+  awk '/^#### Dispatching the design stage$/ { f = 1; next }
+       f && /^1\. \*\*Resume is decided by the ledger\.\*\*/ { print; exit }' "$1"
+}
+RS15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
+LD15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md")
+check "15d: 두 라우터 사본에서 설계 단계 item 1 을 찾는다" \
+  "$( [ -n "$RS15D" ] && [ -n "$LD15D" ] && printf found || printf missing )" "found"
+case "$RS15D" in
+  *"Take 「Re-attaching a cut stage」 first, and 「Continuing a stage that ended its turn in prose」 right after it"*)
+    ok "15d: 교대 사본의 설계 단계 item 1 이 계속 절을 재부착 절 곁에 먼저 취한다" ;;
+  *) bad "15d 교대 사본 item 1 우선순위" "$RS15D" ;;
+esac
+case "$RS15D" in
+  *'Past those two sections, `외부 종료`, `크래시` and `공허한 성공` may be dispatched afresh'*)
+    ok "15d: 교대 사본의 item 1 은 계속이 닿지 않은 공허한 성공만 새로 파견한다" ;;
+  *) bad "15d 교대 사본 item 1" "새로 파견 절이 두 절 뒤로 한정되지 않았다" ;;
+esac
+for c15d in "$RS15D" "$LD15D"; do
+  case "$c15d" in
+    *"and the fixed-graph driver read these three the same way"*)
+      bad "15d 라우터 사본 item 1" "드라이버가 세 부류를 같게 읽는다고 적는다" ;;
+    *"it continues the same session, and runs a fresh process only when there is no transcript or the attempt ran zero turns"*)
+      ok "15d: 라우터 사본 item 1 이 드라이버는 공허한 성공 설계를 먼저 계속한다고 적는다" ;;
+    *) bad "15d 라우터 사본 item 1 드라이버 문장" "$c15d" ;;
+  esac
+done
+
 # ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none
 # --- section: 16 | group: base | covers: act, exec | needs: 14e | anchors: 근거 없는 해소 행은 거부된다 ---
