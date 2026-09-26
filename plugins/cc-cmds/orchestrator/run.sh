@@ -87,6 +87,17 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/liveness.sh"
 
+# The account router. Its top level is function definitions and guarded
+# `readonly` constants only, because the gate sources this file on every entry
+# and inherits whatever the router puts at top level. Nothing in this driver
+# calls `route_*` yet: the switch below keeps the router dormant, and
+# `route_resolve` reads it with a `:-0` default so a shell that sources
+# `route.sh` alone can never turn routing on.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/route.sh"
+  # 라우팅을 켜는 변경이 이 줄의 두 자리의 0 을 1 로 뒤집으며, 줄을 지우지 않는다.
+  case "${ROUTE_ROUTING_BUILD_COMPLETE:-}" in 0) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -1278,10 +1289,22 @@ derive_paths_from_manifest() {
   # two branches are textually indistinguishable. The repo-relative reading is
   # tried first since it is the primary branch, and the composed form is kept on
   # total failure so the error names a path rather than an empty string.
+  #
+  # BUT EXISTENCE IS UNDEFINED ON A RUN WHOSE DOCUMENT IS YET TO BE WRITTEN.
+  # `design_required=true` is exactly that run: neither candidate is a file at
+  # derivation time, so both checks fail and the fallback silently picks the
+  # repo-relative reading. In a polyrepo workspace that is the wrong branch, and
+  # the design stage then writes its document to `<repo>/Users/…/docs/x.md` —
+  # measured, on a run whose design stage produced a document nothing could
+  # find. The containing DIRECTORY is the discriminator on that path: it exists
+  # before the document does, in the same order the file checks are tried, so a
+  # key that resolves nowhere still ends on the fallback.
   case "$DOC" in ''|'(없음)') DOC=""; DOC_KEY="$ANCHOR_KEY"; DOC_DIR="$BASE" ;;
     *) DOC_KEY=$(manifest_field '요소' '설계 문서')
        if [ -f "$BASE/$DOC" ]; then DOC="$BASE/$DOC"
        elif [ -f "/$DOC" ];   then DOC="/$DOC"
+       elif [ -d "$BASE/$(dirname "$DOC")" ]; then DOC="$BASE/$DOC"
+       elif [ -d "/$(dirname "$DOC")" ];       then DOC="/$DOC"
        else DOC="$BASE/$DOC"
        fi
        DOC_DIR=$(dirname "$DOC") ;;
@@ -5540,7 +5563,7 @@ absorb_stage_judgment() {
   CC_GATE_SOURCE_ONLY=1 bash -c '
     g=$1; out=$2; al=$3; sg=$4; mf=$5; rid=$6; rd=$7; led=$8; gr=$9
     set --
-    . "$g" >/dev/null 2>&1 || exit 9
+    . "$g" >/dev/null 2>&1 || exit 9  # lint-harness-global-collisions: child-shell
     set +e
     unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
     MANIFEST=$mf; RUN_ID=$rid; RUN_DIR=$rd; LEDGER=$led; GRANT=$gr
