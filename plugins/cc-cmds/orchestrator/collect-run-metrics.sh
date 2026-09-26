@@ -24,6 +24,13 @@
 #                             `CC_METRICS_SWITCH_WINDOW_S` 로도 지정). 미확정 기본값이며
 #                             요약의 `switch_window_s` 가 쓰인 값을 인쇄한다.
 #   --recollect               이미 있는 런별 기록도 다시 만든다(시험용).
+#   --max-new <n>             한 회차에 새로 수집을 시도하는 런 수의 상한(기본 20, 환경변수
+#                             `CC_METRICS_ROUND_MAX`).
+#   --budget <초>             한 회차의 벽시계 예산(기본 20, 환경변수
+#                             `CC_METRICS_ROUND_BUDGET_S`). 상한이나 예산에 걸린 런은 수집하지
+#                             않고 미수집으로 센다 — 그 회차는 차단되어 판정을 내지 않고, 기록이
+#                             없는 그 런은 다음 회차의 모집단에 그대로 다시 든다. 이 회차는 게이트
+#                             호출 안에서 동기로 돌기 때문에 두는 상한이다.
 #
 # 출력.
 #   <ledger-dir>/metrics.json              요약(`jq -S`, 시각 없음 — 같은 입력이면 같은 바이트)
@@ -55,7 +62,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 . "$script_dir/liveness.sh"
 
 cm_usage() {
-  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect]\n' >&2
+  printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>]\n' >&2
 }
 
 cm_diag() { printf 'collect-run-metrics: %s\n' "$*" >&2; }
@@ -69,6 +76,8 @@ CM_JOURNAL=""
 CM_NOW=""
 CM_SWITCH_WINDOW="${CC_METRICS_SWITCH_WINDOW_S:-900}"
 CM_RECOLLECT=0
+CM_MAX_NEW="${CC_METRICS_ROUND_MAX:-20}"
+CM_BUDGET="${CC_METRICS_ROUND_BUDGET_S:-20}"
 
 cm_args() {
   while [ $# -gt 0 ]; do
@@ -81,6 +90,8 @@ $2"; shift 2 ;;
       --now)           [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_NOW="$2"; shift 2 ;;
       --switch-window) [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_SWITCH_WINDOW="$2"; shift 2 ;;
       --recollect)     CM_RECOLLECT=1; shift ;;
+      --max-new)       [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_MAX_NEW="$2"; shift 2 ;;
+      --budget)        [ $# -ge 2 ] || { cm_usage; exit 2; }; CM_BUDGET="$2"; shift 2 ;;
       -h|--help)       cm_usage; exit 2 ;;
       *) cm_diag "알 수 없는 인자: $1"; cm_usage; exit 2 ;;
     esac
@@ -88,6 +99,12 @@ $2"; shift 2 ;;
   [ -n "$CM_LEDGER_DIR" ] || { cm_usage; exit 2; }
   case "$CM_SWITCH_WINDOW" in
     ''|*[!0-9]*) cm_diag "--switch-window 는 초 단위 정수여야 한다: '$CM_SWITCH_WINDOW'"; exit 2 ;;
+  esac
+  case "$CM_MAX_NEW" in
+    ''|*[!0-9]*) cm_diag "--max-new 는 정수여야 한다: '$CM_MAX_NEW'"; exit 2 ;;
+  esac
+  case "$CM_BUDGET" in
+    ''|*[!0-9]*) cm_diag "--budget 은 초 단위 정수여야 한다: '$CM_BUDGET'"; exit 2 ;;
   esac
   if [ -n "$CM_NOW" ]; then
     case "$CM_NOW" in
@@ -783,7 +800,7 @@ cm_append_journal() {
 
 cm_main() {
   local tmp line rid state ledger rd rec input_files=0
-  local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 new_runs="" blocked=false
+  local n_collected=0 n_uncollected=0 n_gone=0 n_open=0 n_attempt=0 new_runs="" blocked=false
   local summary round at body counts journal_line all_f delta_f prior_f
   cm_args "$@"
   : > "$CM_LEDGER_DIR/metrics.json.pending"
@@ -810,6 +827,14 @@ cm_main() {
     if ! cm_has_lane_record "$ledger"; then
       n_gone=$((n_gone + 1)); continue
     fi
+    # 새 수집에만 거는 상한과 예산. 이미 기록이 있어 건너뛴 런은 비용이 없으므로 세지 않는다.
+    # 경과는 이 프로세스가 뜬 뒤의 `SECONDS` 다 — 모집단 판독에 쓴 시간도 예산에 든다.
+    if [ "$n_attempt" -ge "$CM_MAX_NEW" ] || [ "$SECONDS" -ge "$CM_BUDGET" ]; then
+      n_uncollected=$((n_uncollected + 1))
+      cm_diag "런 $rid 는 이 회차의 수집 상한에 걸려 다음 회차로 미룬다"
+      continue
+    fi
+    n_attempt=$((n_attempt + 1))
     if cm_collect_run "$rid" "$ledger" "$rd" "$state" "$rec"; then
       n_collected=$((n_collected + 1))
       printf '%s\n' "$rid" >> "$tmp/delta.list"

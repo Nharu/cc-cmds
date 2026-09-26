@@ -20935,7 +20935,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 60. 계측 필링 관문 — 케이던스·잠금·좌석·plan
-# --- section: 60 | group: base | covers: snapshot, plan | anchors: 60: 첫 진입은 수집기를 부른다, 60: 스탬프 안의 재진입은 부르지 않는다, 60: 잠금이 살아 있으면 부르지 않는다, 60: 스테이지 좌석은 부르지 않는다, 60: plan 은 부르지 않는다, 60: 번호 없음 행이 남는다 ---
+# --- section: 60 | group: base | covers: snapshot, plan, digest-path | anchors: 60: 첫 진입은 수집기를 부른다, 60: 스탬프 안의 재진입은 부르지 않는다, 60: 잠금이 살아 있으면 부르지 않는다, 60: 스테이지 좌석은 부르지 않는다, 60: plan 은 부르지 않는다, 60: digest-path 는 부르지 않는다, 60: 번호 없음 행이 남는다 ---
 #
 # 게이트 프렐류드가 계측 수집기를 언제 부르고 언제 부르지 않는지를 잰다. 수집기와 그
 # 트리거는 `scripts/test-collect-run-metrics.sh` 가, gh 를 부르는 필링 본체는
@@ -21029,6 +21029,12 @@ check "60: 스테이지 좌석은 스탬프를 쓰지 않는다" "$(cat "$P60_ST
 p60_gate plan --manifest "$P60_MAN" --kind x --target infra --cutpoint 커밋 -- ls
 check "60: plan 은 부르지 않는다" "$(p60_calls)" "2"
 check "60: plan 은 스탬프를 쓰지 않는다" "$(cat "$P60_STAMP")" "$p60_stamp_before"
+
+# H — digest-path. PreToolUse 훅이 도구 호출마다 부르는 동사라, 여기서 회차가 돌면 도구 호출
+# 하나가 회차 전체를 기다린다. 스탬프는 만료된 채로 남아 다음 비제외 동사가 회차를 돈다.
+p60_gate digest-path --manifest "$P60_MAN"
+check "60: digest-path 는 부르지 않는다" "$(p60_calls)" "2"
+check "60: digest-path 는 스탬프를 쓰지 않는다" "$(cat "$P60_STAMP")" "$p60_stamp_before"
 
 # G — 수집기가 0 이 아닌 코드로 끝난다. 회차는 동사를 실패시키지 않는다는 계약이므로,
 # 동사는 제 종료 코드와 출력을 그대로 내고, 잠금은 풀리고, 실패는 로그 한 줄로 남는다.

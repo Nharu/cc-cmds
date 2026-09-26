@@ -7949,6 +7949,10 @@ readonly GATE_REAP_INTERVAL=21600
 # collector that died mid-round is the same kind of stale holder.
 readonly GATE_METRICS_INTERVAL=21600
 readonly GATE_METRICS_LOCK_TTL=900
+# Per `gh` call of the filing path. The round runs inside the caller's gate
+# call, so a GitHub call that hangs would hang that call; a timed-out call takes
+# the branch a failed one already takes.
+readonly GATE_METRICS_GH_TIMEOUT_S=10
 
 gate_reap_root() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
@@ -10419,8 +10423,14 @@ gate_main() {
   # The metrics round rides the same prelude for the same reason and is kept
   # out of `plan` by the same contract; it is stamped, so almost every call
   # stops at one read. `|| true` as the reaper has it: whatever the round runs
-  # into, it is not the verb's work.
-  [ "$verb" = "plan" ] || gate_metrics_cycle || true
+  # into, it is not the verb's work. `digest-path` is kept out too: the
+  # PreToolUse hook calls it before every tool call, and a round there makes one
+  # tool call wait for the whole round. The stamp is not touched, so the round
+  # runs on the next verb that is not excluded.
+  case "$verb" in
+    plan|digest-path) ;;
+    *) gate_metrics_cycle || true ;;
+  esac
 
   case "$verb" in
     digest-path)
@@ -19010,17 +19020,55 @@ gate_metrics_absent() {
   fi
 }
 
+gate_metrics_gh_timeout() {
+  # `CC_METRICS_GH_TIMEOUT_S` overrides the constant for tests; a value that is
+  # not an integer reads as the constant.
+  local t="${CC_METRICS_GH_TIMEOUT_S:-}"
+  case "$t" in ''|*[!0-9]*) t=$GATE_METRICS_GH_TIMEOUT_S ;; esac
+  printf '%s' "$t"
+}
+
+gate_metrics_timed() {
+  # gate_metrics_timed <seconds> <command>... — the command's rc, or the rc of
+  # a TERM once it has run longer than <seconds>.
+  #
+  # THE COMMAND MUST BE AN EXTERNAL PROGRAM, not a function: `&` on a simple
+  # external command makes the background pid the program itself, so the TERM
+  # reaches the process that holds the caller's stdout. A function would put a
+  # subshell there, the TERM would stop the subshell, and a caller reading
+  # through `$( )` would go on waiting for the orphaned program. The watcher's
+  # own output goes to /dev/null for the same reason, and it removes its `sleep`
+  # when it is itself stopped, so nothing outlives the call.
+  local secs="$1" pid wpid rc=0
+  shift
+  "$@" &
+  pid=$!
+  (
+    s=""
+    trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & s=$!
+    wait "$s"
+    kill -TERM "$pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  wpid=$!
+  wait "$pid" || rc=$?
+  kill -TERM "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  return "$rc"
+}
+
 gate_metrics_gh_write() {
   # gate_metrics_gh_write <base> <token> <gh-args>... — `gh` under the
   # WRITE-scoped credential, exported inside a subshell only, so the token
   # neither outlives the call nor appears on any argv. `gh auth switch` is never
   # the answer: it changes the machine's account for every other process.
-  local base="$1" tok="$2"; shift 2
+  local base="$1" tok="$2" t; shift 2
+  t=$(gate_metrics_gh_timeout)
   (
     export GH_TOKEN="$tok"
     export GITHUB_TOKEN=""
     cd "$base" 2>/dev/null || exit 1
-    gh "$@"
+    gate_metrics_timed "$t" gh "$@"
   )
 }
 
@@ -19071,7 +19119,8 @@ gate_metrics_file() {
   if [ -z "$login" ] || [ "$login" != "$account" ]; then
     gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0
   fi
-  list=$(GATE_ACT_CWD="$base" gate_run_readonly gh issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
+  list=$(GATE_ACT_CWD="$base" gate_run_readonly gate_metrics_timed "$(gate_metrics_gh_timeout)" \
+           gh issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
     || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
   nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
 

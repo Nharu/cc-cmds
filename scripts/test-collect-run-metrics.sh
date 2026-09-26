@@ -727,5 +727,35 @@ check "9: 그 회차에도 T6 분모는 형제의 스트림 소요를 다시 더
 check "9: 형제 행만 남은 층은 여전히 다른 층이 재는 것으로 적힌다" \
   "$(jline '.strata["audit|250000"].unevaluable')" "owned_elsewhere"
 
+# --- 10. 회차당 수집 상한과 벽시계 예산 ---------------------------------------------------
+# 회차는 게이트 호출 안에서 동기로 돈다. 상한이나 예산에 걸린 런은 수집하지 않고 미수집으로
+# 세어, 그 회차가 판정 없이 차단되고 미룬 런이 다음 회차에 다시 들게 한다 — 새 수나 어휘를
+# 만들지 않고 이미 있는 차단 규칙을 탄다.
+counts4() { jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")'; }
+reset_all
+R10A=20260910-aaaaaa01; R10B=20260910-aaaaaa02; R10C=20260910-aaaaaa03
+n_run "$R10A" 100000
+n_run "$R10B" 100000
+collect --max-new 1
+check "10: 상한에 걸린 런은 수집하지 않고 미수집으로 센다" "$(counts4)" "1,1,0,0"
+check "10: 상한에 걸린 회차는 차단된다" "$(jline '.probe')" "차단"
+check "10: 차단된 회차는 트리거를 내지 않는다" "$(jline '.fired | length')" "0"
+check "10: 미룬 런의 기록은 만들어지지 않는다" \
+  "$([ -e "$LEDGER_DIR/metrics/$R10B.json" ] && printf 있음 || printf 없음)" "없음"
+collect
+check "10: 다음 회차는 미룬 런을 수집한다" "$(counts4)" "2,0,0,0"
+check "10: 미룬 런이 다음 회차의 new_runs 에 든다" "$(jline ".new_runs | index(\"$R10B\") != null")" "true"
+check "10: 상한이 풀린 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
+n_run "$R10C" 100000
+collect --budget 0
+check "10: 예산이 다한 회차는 새 런을 수집하지 않고 이미 기록이 있는 런은 수집됨으로 남는다" "$(counts4)" "2,1,0,0"
+check "10: 예산에 걸린 런의 기록은 만들어지지 않는다" \
+  "$([ -e "$LEDGER_DIR/metrics/$R10C.json" ] && printf 있음 || printf 없음)" "없음"
+check "10: 예산이 다한 회차는 차단된다" "$(jline '.probe')" "차단"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --max-new abc 2>/dev/null); rc=$?
+check "10: 상한이 정수가 아니면 exit 2 다" "$rc" "2"
+OUT=$(bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --budget abc 2>/dev/null); rc=$?
+check "10: 예산이 정수가 아니면 exit 2 다" "$rc" "2"
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

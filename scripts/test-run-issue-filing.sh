@@ -40,12 +40,14 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'";
 
 # --- 스텁 ------------------------------------------------------------------------
 
-mkdir -p "$WORK/bin" "$WORK/gh-script" "$WORK/gh-fail"
+mkdir -p "$WORK/bin" "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep"
 export GH_LOG="$WORK/gh.log"
 export GH_STUB_DIR="$WORK"
 # gh 스텁. argv 한 줄과 어느 자격으로 불렸는지(쓰기·읽기·주변)를 적는다 — 토큰 값은
-# 적지 않는다. 키마다 $WORK/gh-fail/<키> 가 있으면 rc 1, $WORK/gh-script/<키> 가 있으면
-# 그 내용을 낸다. 없으면 기본 출력.
+# 적지 않는다. 키마다 $WORK/gh-sleep/<키> 가 있으면 그 초만큼 먼저 멈추고(멈춘 GitHub
+# 호출), $WORK/gh-fail/<키> 가 있으면 rc 1, $WORK/gh-script/<키> 가 있으면 그 내용을 낸다.
+# 없으면 기본 출력. 멈춤의 `sleep` 은 출력을 /dev/null 로 둔다 — 스텁이 타임아웃으로 죽어도
+# 남은 `sleep` 이 게이트의 명령 치환 파이프를 쥐고 있지 않게.
 cat > "$WORK/bin/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "${GH_TOKEN:-}" in
@@ -56,6 +58,7 @@ esac
 printf '%s | %s\n' "$tok" "$*" >> "$GH_LOG"
 key="$1-${2:-}"
 [ "$1" = "api" ] && key="api-user"
+if [ -e "$GH_STUB_DIR/gh-sleep/$key" ]; then sleep "$(cat "$GH_STUB_DIR/gh-sleep/$key")" >/dev/null 2>&1; fi
 if [ -e "$GH_STUB_DIR/gh-fail/$key" ]; then exit 1; fi
 if [ -e "$GH_STUB_DIR/gh-script/$key" ]; then cat "$GH_STUB_DIR/gh-script/$key"; exit 0; fi
 case "$key" in
@@ -150,8 +153,8 @@ LEDGER_MARK=0
 fresh() {
   # 한 케이스의 시작 — 스탬프를 지우고 gh 로그·스크립트를 비우고 원장 위치를 표시한다.
   rm -f "$STATE_ROOT/metrics.stamp"
-  rm -rf "$WORK/gh-script" "$WORK/gh-fail" "$REPO/docs/pipeline-run/metrics.unfiled"
-  mkdir -p "$WORK/gh-script" "$WORK/gh-fail"
+  rm -rf "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep" "$REPO/docs/pipeline-run/metrics.unfiled"
+  mkdir -p "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep"
   cat "$GH_LOG" >> "$WORK/gh.all" 2>/dev/null || true
   : > "$GH_LOG"
   printf 'project\t7\naccount\ttester\n' > "$WORK/metrics-filing"
@@ -375,6 +378,30 @@ wait "$p1"; wait "$p2"
 unset CC_STUB_SLEEP
 check "8: 스탬프 만료 뒤 동시 진입 둘에 수집기는 한 번만 돈다" "$(( $(calls) - before ))" "1"
 check "8: 동시 진입 둘에 등록 시도는 한 번이다" "$(ghcount '| issue create ')" "1"
+
+# --- 8b. 멈춘 gh 호출 --------------------------------------------------------------------
+# 회차는 호출한 게이트 동사 안에서 돈다. 멈춘 GitHub 호출은 호출당 타임아웃으로 끊기고, 그
+# 호출이 실패한 것과 같은 분기를 탄다 — 새 사유를 만들지 않는다. 멈춤(6초)을 타임아웃(1초)과
+# 게이트 자신의 기동 시간을 더한 것보다 넉넉히 길게 두어, 경과가 멈춤보다 짧다는 단언이
+# 타임아웃 말고는 설명되지 않게 한다.
+fresh; round T3/review
+printf '6\n' > "$WORK/gh-sleep/issue-list"
+t0=$SECONDS
+( export CC_METRICS_GH_TIMEOUT_S=1; snap )
+el=$((SECONDS - t0))
+check "8b: (선행) 멈춘 조회가 실제로 불렸다" "$(ghcount '| issue list ')" "1"
+check "8b: 멈춘 조회는 끊겨 게이트 동사가 멈춤보다 먼저 끝난다" "$([ "$el" -lt 6 ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8b: 끊긴 조회는 조회 실패 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "조회 실패"
+check "8b: 끊긴 조회 뒤에는 등록하지 않는다" "$(ghcount '| issue create ')" "0"
+fresh; round T3/review
+printf '6\n' > "$WORK/gh-sleep/issue-create"
+t0=$SECONDS
+( export CC_METRICS_GH_TIMEOUT_S=1; snap )
+el=$((SECONDS - t0))
+check "8b: (선행) 멈춘 등록이 실제로 불렸다" "$(ghcount '| issue create ')" "1"
+check "8b: 멈춘 등록은 끊겨 게이트 동사가 멈춤보다 먼저 끝난다" "$([ "$el" -lt 6 ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8b: 끊긴 등록은 조회 실패 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "조회 실패"
+check "8b: 끊긴 등록은 필링 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
 
 # --- 9. 전 케이스를 가로지르는 불변 ---------------------------------------------------
 cat "$GH_LOG" >> "$WORK/gh.all" 2>/dev/null || true
