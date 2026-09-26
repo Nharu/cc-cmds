@@ -11,4 +11,13 @@ name: 사전-인가-대조
   당사자가 정하게 된다. 대신 축 2 등급으로 나눈다 — 외부상태변경은 인가
   목록을 요구하고, 트리밖쓰기는 되돌리는 명령의 기록을 요구하며, 그 아래는
   자유다.
-읽는 값: GATE_SURFACE GATE_ARGV GATE_MANIFEST
+정규 argv 를 선택적으로 읽는다:
+  게이트가 argv 를 단어 경계째로 실어 줄 때만 `GATE_ARGV_CANON` 이 설정된다.
+  없으면 `GATE_ARGV` 를 옛 방식대로 깎아 쓴다. 설정됐는데 빈 값인 것은 게이트의
+  버그이므로 통과가 아니라 미매칭으로 다룬다 — 빈 전송을 통과로 접으면 그
+  버그가 모든 행위를 인가된 것으로 만든다.
+저장소를 따로 대조한다:
+  형태는 명령을 적지 저장소를 적지 않는다. 게이트가 행위의 저장소를 해소해
+  `GATE_ARGV_REPO` 로 실어 주면(행위가 저장소를 명시했을 때만) 대상의
+  `GATE_TARGET_REPO` 와 같은지 따로 본다. 다르면 형태가 맞아도 목록 밖이다.
+읽는 값: GATE_SURFACE GATE_ARGV GATE_ARGV_CANON GATE_ARGV_REPO GATE_TARGET_REPO GATE_MANIFEST

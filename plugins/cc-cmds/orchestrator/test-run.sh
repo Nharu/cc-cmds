@@ -5955,6 +5955,72 @@ esac
 rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
 check "배시 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
 
+# 파서는 Homebrew coreutils 가 까는 `g` 접두 이름(`gnohup`·`gtimeout`·`genv` …)도 벗겨
+# 안쪽 git 을 정직하게 `트리밖쓰기` 로 등급하는데, 둘째 기준의 벗기기에는 그 팔이 없어
+# 두 가드가 `-C` 를 보지 못했다. 그리고 벗긴 런처의 옵션을 읽지 못한 경우는 「둘째
+# 기준 없음」이 아니라 거절이다 — 안쪽 명령이 `-C` 를 품었는지 알 수 없다.
+rr_guard 트리밖쓰기 gnohup git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: gnohup 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: gnohup 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: gnohup 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 gtimeout 5 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: gtimeout 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: gtimeout 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: gtimeout 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_guard 트리밖쓰기 gnohup --bogus git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 벗긴 런처의 옵션을 읽지 못하면 보호 루트 밖이라도 거절 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'second-base resolver cannot read'*) ok "배시 가드: 읽지 못한 런처 옵션의 거부가 미상 기준 팔의 것이다" ;;
+  *) bad "배시 가드: 읽지 못한 런처 옵션의 거부 사유" "다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 gnohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — gnohup 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+
+# 두 가드는 날 argv0 을 `gate_argv0_wraps` 에 물어 인터프리터 프로그램 안의 낱말을
+# 조상 검사에 올린다. 그 목록에 `g` 이름이 없어서, 등급은 안쪽 `bash` 로 매기면서
+# 프로그램 안의 조상은 보지 않았다 — `nohup` 철자로 거절되는 프로그램이 `gnohup`
+# 철자로는 지났다.
+rr_guard 워크트리쓰기 gnohup bash -c "cp -R /tmp/e $RR/cc-cmds"
+check "배시 가드: gnohup 뒤 포장 안의 런 루트 조상도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'ancestor directory of the run root'*) ok "배시 가드: gnohup 뒤 포장 안 조상의 거부가 조상 검사의 것이다" ;;
+  *) bad "배시 가드: gnohup 뒤 포장 안 조상의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 genv bash -c "cp -R /tmp/e $RRP_INST/.."
+check "설치본 가드: genv 뒤 포장 안의 조상도 rc 3" "$rr_pguard_rc" "3"
+
+# 그 목록은 세 자리에 같은 철자로 적혀 있고(`gate_argv0_wraps`, CLAUDE.md 슬롯
+# 가드, 매니페스트 가드), 파서가 벗기는 런처 이름은 모두 그 안에 있어야 한다. 셋이
+# 같은지와 파서 팔의 이름이 빠지지 않았는지를 함께 본다.
+rr_wraps_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  lists=$(grep -E "^[[:space:]]*bash\|sh\|zsh\|dash\|ksh\|python\|" "$RR_G_GATE" | sed "s/[[:space:]]//g" | sort -u)
+  nl=$(grep -cE "^[[:space:]]*bash\|sh\|zsh\|dash\|ksh\|python\|" "$RR_G_GATE")
+  nd=$(printf "%s\n" "$lists" | grep -c .)
+  walk=$(declare -f _gp_walk | awk '"'"'
+    /case "\$w" in/ { on = 1; next }
+    on && /^[[:space:]]*esac/ { exit }
+    on && /^[[:space:]]*[a-z][a-z |]*\)/ {
+      sub(/\).*/, ""); gsub(/[[:space:]]/, "")
+      n = split($0, a, "|"); for (i = 1; i <= n; i++) print a[i]
+    }'"'"')
+  missing=""
+  for f in $walk; do
+    gate_argv0_wraps "$f" || missing="$missing $f"
+  done
+  echo "nl=$nl nd=$nd missing=[${missing# }]"
+' )
+case "$rr_wraps_parity" in
+  *'nl=3 nd=1 missing=[]') ok "인터프리터 목록 셋이 같고 파서 런처 이름을 모두 담는다 ($rr_wraps_parity)" ;;
+  *) bad "인터프리터 목록 셋과 파서 런처 이름의 대조" "어긋났다: $rr_wraps_parity" ;;
+esac
+
 # --- 사후 리뷰 수리 8. find 의 primary 는 하나가 아니다 -------------------------
 # 벗기기가 `-exec` 계열을 만나면 **그 뒤 전부**를 안쪽 명령으로 보고 즉시 반환했다.
 # `find` 문법에서 `;` 와 `{} +` 다음 토큰은 그 명령의 인자가 아니라 **다음 primary** 인데
@@ -6093,32 +6159,157 @@ fi
 unset -f rr_g_must
 unset RR_G_CWD rr_g
 
-# 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.
-# 그래서 이름을 하나씩 고정하는 대신 두 집합을 대조한다: 등급표가 `surface_of_<이름>`
-# 으로 보내고 그 함수가 `gate_unwrap_*` 로 안쪽 명령을 푸는 이름은 전부, 둘째 기준의
-# 벗기기에도 팔이 있어야 한다. `rg` 만 이름 붙여 뺀다 — `--pre` 뒤 한 단어만 넘기므로
-# `-C <디렉터리>` 와 피연산자를 함께 실을 수 없다. 모은 집합이 비면 추출이 깨진 것이라
-# 그것도 실패로 센다 — 그렇지 않으면 이 대조는 아무것도 비교하지 않고 초록이 된다.
+# 두 이름이 빠진 원인은 벗기기 목록이 다른 목록과 따로 적혀 있다는 것이다. 그래서
+# 이름을 하나씩 고정하는 대신 집합을 대조한다. 기대 집합은 벗김이 실제로 일어나는
+# 자리에서 유도한다 — 파서 `_gp_walk` 의 첫 `case` 팔에 적힌 이름 전부(`g` 접두
+# 런처 포함)와, 등급표 `_surface_of_argv0_table` 이 `surface_of_<이름>` 으로 보내고
+# 그 함수가 `gate_unwrap_*` 로 안쪽 명령을 푸는 이름 전부다. 그 이름은 모두 둘째
+# 기준의 벗기기에도 팔이 있어야 한다.
+#
+# 빼는 이름은 사유와 함께 적는다. `rg` 는 `--pre` 뒤 한 단어만 넘기므로 `-C
+# <디렉터리>` 와 피연산자를 함께 실을 수 없다. `sh|bash|zsh|dash|ksh` 는 파서가 본문
+# 파서로 넘기는 셸이고, 본문은 둘째 기준이 아니라 조각 단위로 따로 읽힌다.
+#
+# 하한은 `-gt 0` 이 아니라 알려진 크기다. 추출 지점이 옮겨져 집합이 줄어도 초록이던
+# 것이 이 단언을 붉게 만들었던 공허화의 모양이므로, 파서 팔 열넷을 모으지 못하면
+# 그것도 실패로 센다. `find` 는 파서 팔이 아니다 — 식 하나가 안쪽 명령 여럿과 자기
+# 쓰기 원소를 함께 품으므로 벗겨 낼 안쪽 argv 가 하나로 서지 않고, 등급표의
+# `gate_unwrap_find` 가 원소마다 읽어 접는다. 그 이름은 등급표 위임 쪽에서 이
+# 대조에 들어온다.
 rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
   CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
   . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
-  table=$(declare -f surface_of_argv0)
+  walk=$(declare -f _gp_walk | awk '"'"'
+    /case "\$w" in/ { on = 1; next }
+    on && /^[[:space:]]*esac/ { exit }
+    on && /^[[:space:]]*[a-z][a-z |]*\)/ {
+      sub(/\).*/, ""); gsub(/[[:space:]]/, "")
+      n = split($0, a, "|"); for (i = 1; i <= n; i++) print a[i]
+    }'"'"')
+  table=$(declare -f _surface_of_argv0_table)
   peel=$(declare -f gate_argv_chdir_base_of)
-  n=0; missing=""
+  nw=0; nt=0; names=""
+  for f in $walk; do
+    case "$f" in sh|bash|zsh|dash|ksh) continue ;; esac
+    nw=$((nw + 1)); names="$names $f"
+  done
   for f in $(declare -F | sed -n "s/^declare -f surface_of_//p"); do
     [ "$f" = argv0 ] && continue
     case "$(declare -f "surface_of_$f")" in *gate_unwrap_*) ;; *) continue ;; esac
     case "$table" in *"surface_of_$f "*) ;; *) continue ;; esac
-    n=$((n + 1))
+    nt=$((nt + 1))
     [ "$f" = rg ] && continue
+    case " $names " in *" $f "*) ;; *) names="$names $f" ;; esac
+  done
+  [ "$nw" -ge 14 ] || { echo "파서 팔 이름을 $nw 개만 모았다 — 열넷 미만이면 추출이 깨졌거나 팔이 빠졌다"; exit 0; }
+  [ "$nt" -gt 0 ] || { echo "등급표 위임 이름을 하나도 모으지 못했다"; exit 0; }
+  missing=""
+  for f in $names; do
     grep -Eq "(^|[[:space:]|])$f([[:space:]]*[|)])" <<<"$peel" || missing="$missing $f"
   done
-  [ "$n" -gt 0 ] || { echo "위임 이름을 하나도 모으지 못했다"; exit 0; }
-  echo "n=$n missing=[${missing# }]"
+  echo "nw=$nw nt=$nt missing=[${missing# }]"
 ' )
 case "$rr_unwrap_parity" in
-  *'missing=[]') ok "둘째 기준의 벗기기가 등급표의 위임 이름을 rg 말고 모두 덮는다 ($rr_unwrap_parity)" ;;
-  *) bad "둘째 기준 벗기기와 등급표 위임 목록의 대조" "어긋났다: $rr_unwrap_parity" ;;
+  *'missing=[]') ok "둘째 기준의 벗기기가 파서 팔과 등급표 위임 이름을 모두 덮는다 ($rr_unwrap_parity)" ;;
+  *) bad "둘째 기준 벗기기와 파서·등급표 이름 목록의 대조" "어긋났다: $rr_unwrap_parity" ;;
+esac
+
+# 이름이 `case` 에 있다는 것만으로는 부족하다 — 팔이 헬퍼에 넘기는 이름이 틀리면
+# 문면은 맞고 벗김은 일어나지 않는다. 그래서 파서가 벗기는 런처마다 `git -C <절대
+# 경로>` 를 감싸 실제로 둘째 기준이 서는지 본다. `timeout` 은 기간 피연산자를,
+# `lockf` 는 잠금 파일 피연산자를 먼저 받는다.
+rr_unwrap_behave=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  n=0; empty=""
+  for f in env genv command nice gnice nohup gnohup timeout gtimeout stdbuf gstdbuf time gtime lockf find; do
+    suf=""
+    case "$f" in
+      timeout|gtimeout) pre="5" ;;
+      lockf) pre="$RR_G_DIR/x.lock" ;;
+      # `find` takes its starting point and the primary BEFORE the command and a
+      # terminator after it, which is why it used to sit out of this list. The
+      # parser does not peel it, but the second base does, element by element,
+      # and out of the list it was the one name whose second base nobody measured.
+      find) pre="$RR_G_DIR -maxdepth 0 -exec"; suf=";" ;;
+      *) pre="" ;;
+    esac
+    b=$(gate_argv_chdir_base_of "$f" $pre git -C "$RR_G_DIR" diff --output=x $suf)
+    n=$((n + 1))
+    [ -n "$b" ] && [ "$b" != "$GATE_CHDIR_UNREAD" ] || empty="$empty $f"
+  done
+  u=$(gate_argv_chdir_base_of gnohup --bogus git -C "$RR_G_DIR" diff --output=x)
+  [ "$u" = "$GATE_CHDIR_UNREAD" ] || empty="$empty unread"
+  echo "n=$n empty=[${empty# }]"
+' )
+case "$rr_unwrap_behave" in
+  *'empty=[]') ok "파서가 벗기는 런처마다 둘째 기준이 실제로 서고, 읽지 못한 옵션은 미상으로 답한다 ($rr_unwrap_behave)" ;;
+  *) bad "런처별 둘째 기준" "서지 않았다: $rr_unwrap_behave" ;;
+esac
+
+# --- 읽지 못한 런처 옵션은 철자를 가리지 않고 거부다 -------------------------
+# 위 블록의 rc 2 줄은 `gnohup --bogus` 하나였는데, 그 철자는 파서가 먼저 거부해
+# 해석기까지 가지 않는다. 그래서 해석기에 **실제로 도달하는** 철자는 한 줄도
+# 훈련되지 않았고, 그 중 하나는 거부가 아니라 조용한 오답이었다.
+#
+# 두 묶음으로 나눠 단언한다. 한 묶음으로 쓰면 어느 철자가 답한 것인지 구별되지
+# 않아, 하나가 틀린 채로도 초록이 된다.
+#
+# 묶음 1 — 값 있는 옵션을 분리·단문자로 적은 철자. 오늘도 닫는 방향이다.
+# 묶음 2 — 같은 옵션을 `=` 로 적은 철자. `gate_unwrap_env` 의 `*=*` 팔이 `-*` 보다
+# 앞서 있던 동안 이것만 환경 대입으로 삼켜져 **빈 둘째 기준**을 냈다. 거부가 아니라
+# 통과라, 가드는 대조할 것이 없는 채로 통과시켰다. 두 묶음이 같은 답을 내는 것이
+# 그 팔 순서가 서 있다는 증거다.
+rr_unread_opt=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  sep=""; eq=""
+  probe() {
+    b=$(gate_argv_chdir_base_of "$@")
+    [ "$b" = "$GATE_CHDIR_UNREAD" ] && return 0
+    return 1
+  }
+  probe env -C "$RR_G_DIR" git -C "$RR_G_DIR" diff --output=x     || sep="$sep env-C"
+  probe nice --adjustment 5 git -C "$RR_G_DIR" diff --output=x    || sep="$sep nice-long"
+  probe nice -5 git -C "$RR_G_DIR" diff --output=x                || sep="$sep nice-short"
+  probe stdbuf --output L git -C "$RR_G_DIR" diff --output=x      || sep="$sep stdbuf"
+  probe time -f fmt git -C "$RR_G_DIR" diff --output=x            || sep="$sep time"
+  probe lockf -w 5 "$RR_G_DIR/x.lock" git -C "$RR_G_DIR" diff --output=x || sep="$sep lockf"
+  probe env --chdir="$RR_G_DIR" git -C "$RR_G_DIR" diff --output=x || eq="$eq env-chdir"
+  probe env --split-string="git -C $RR_G_DIR diff" true            || eq="$eq env-split"
+  echo "분리=[${sep# }] 등호=[${eq# }]"
+' )
+case "$rr_unread_opt" in
+  '분리=[] 등호=[]') ok "읽지 못한 런처 옵션은 분리 철자도 등호 철자도 미상으로 답한다 ($rr_unread_opt)" ;;
+  *) bad "읽지 못한 런처 옵션의 철자별 거부" "미상으로 답하지 않은 철자가 있다: $rr_unread_opt" ;;
+esac
+
+# --- 상대 `-C` 를 두 독자가 같은 디렉터리로 해소한다 -------------------------
+# `-C` 를 읽는 곳이 둘이고, 하나는 덮어쓰고 하나는 누적했다. git 은 각 `-C` 를 앞의
+# 것에 대해 해소하므로 누적이 맞고, 덮어쓰는 쪽은 `git -C <절대> -C <상대>` 에서
+# **상대 조각만** 들고 남아 검사가 해소하는 디렉터리와 행위가 쓰는 디렉터리를
+# 갈랐다. 이 줄이 없으면 다음에 한쪽만 고쳐져도 초록이다.
+rr_c_fold=$( RR_G_GATE="$script_dir/gate.sh" RR_G_DIR="$WORK/other/deep" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  mkdir -p "$RR_G_DIR/a/b" || { echo "픽스처 실패"; exit 0; }
+  _gp_git_scan -C "$RR_G_DIR/a" -C b diff --output=x
+  p=$(gate_path_spelling "$(gate_real_prefix "$_GP_GIT_C")")
+  q=$(gate_argv_chdir_base_of git -C "$RR_G_DIR/a" -C b diff --output=x)
+  w=$(gate_path_spelling "$(gate_real_prefix "$RR_G_DIR/a/b")")
+  echo "파서=[$p] 둘째기준=[$q] 기대=[$w]"
+' )
+case "$rr_c_fold" in
+  '파서=['*'] 둘째기준=['*'] 기대=['*']')
+    rr_c_p=${rr_c_fold#파서=[}; rr_c_p=${rr_c_p%%]*}
+    rr_c_q=${rr_c_fold#*둘째기준=[}; rr_c_q=${rr_c_q%%]*}
+    rr_c_w=${rr_c_fold#*기대=[}; rr_c_w=${rr_c_w%%]*}
+    if [ -n "$rr_c_w" ] && [ "$rr_c_p" = "$rr_c_w" ] && [ "$rr_c_q" = "$rr_c_w" ]; then
+      ok "두 -C 독자가 누적 폴드로 같은 디렉터리를 답한다 ($rr_c_fold)"
+    else
+      bad "상대 -C 누적 폴드" "두 독자의 답이 갈리거나 기대와 다르다: $rr_c_fold"
+    fi ;;
+  *) bad "상대 -C 누적 폴드" "프로브가 형식대로 답하지 않았다: $rr_c_fold" ;;
 esac
 
 # --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------

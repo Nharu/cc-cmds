@@ -797,6 +797,11 @@ gate_reach_required() {
   # to say, and forcing a formal `런로컬` onto it would make the field noise in
   # the one place the morning report reads it.
   local graded="$1"; shift
+  # THE FLOOR RAISES THE GRADE THIS ASKS ABOUT, and it can only raise it. An
+  # opaque runner's table grade says a shell ran; the floor says what the shell
+  # was going to do, and a body that deletes a repository has somewhere to land
+  # whatever the word `bash` implies.
+  [ -n "${GATE_FLOOR:-}" ] && graded=$(gate_surface_max "$graded" "$GATE_FLOOR")
   case "$GATE_GRADE_SOURCE" in
     불투명|미상) [ "${GATE_DECLARED:-}" != "읽기" ] && return 0 ;;
   esac
@@ -869,68 +874,180 @@ gate_deploy_trigger_match() {
   # here RAISES the reach rather than being the only thing that can.
   local ids; ids=$(target_field "$alias" '배포트리거 식별자' 2>/dev/null) || return 1
   [ -n "$ids" ] || return 1
-  local IFS=','; local id rest kind val a
-  for id in $ids; do
+
+  # ELEMENT-WISE, AND NEVER A SUBSTRING OF THE FLATTENED ARGV. `" $* "` matches
+  # inside a word and across word boundaries at once, so it answered both ways
+  # wrong: a `workflow` element matched only when the act happened to spell
+  # `workflow run <val>` with exactly those words adjacent — which `gh -R o/r
+  # workflow run <val>` does not — and an `argv` element written as several
+  # words matched a longer word that merely contained it.
+  local _words=()
+  if gate_peel_argv "$@"; then
+    _words=(${GATE_PEELED[@]+"${GATE_PEELED[@]}"})
+  elif [ "$#" -gt 0 ]; then
+    _words=("$@")
+  fi
+
+  local _oldifs="$IFS"
+  IFS=','
+  # shellcheck disable=SC2086
+  set -- $ids
+  IFS="$_oldifs"
+
+  local id kind val a _vw _i _j _k _ok _n _wn="${#_words[@]}"
+  for id in "$@"; do
     kind="${id%%:*}"; val="${id#*:}"
     [ -n "$val" ] || continue
     case "$kind" in
       branch)
-        for a in "$@"; do
+        for a in ${_words[@]+"${_words[@]}"}; do
           case "$a" in
             "$val"|*":$val"|"+$val"|*":refs/heads/$val") return 0 ;;
           esac
         done ;;
       workflow)
-        case " $* " in
-          *" workflow run $val "*|*"/actions/workflows/$val/dispatches"*) return 0 ;;
+        # The verb path and the first operand, not two words that happened to
+        # sit next to each other. The repository has to be the target's own:
+        # another repository's workflow of the same name is not this target's
+        # deploy, and the cells that judge a stranger's repository are elsewhere.
+        if [ "${GP_PATH[*]:-}" = "workflow run" ] && [ "${GP_POS[0]:-}" = "$val" ] \
+           && gate_gh_repo_is_target "$alias"; then
+          return 0
+        fi
+        case "${GP_POS[0]:-}" in
+          *"/actions/workflows/$val/dispatches"*)
+            gate_gh_repo_is_target "$alias" && return 0 ;;
         esac ;;
       jenkins-job)
-        for a in "$@"; do
+        for a in ${_words[@]+"${_words[@]}"}; do
           case "$a" in "$val"|*"/job/$val/"*) return 0 ;; esac
         done ;;
       argv)
-        case " $* " in *" $val "*|*" $val") return 0 ;; esac ;;
+        # A value of several words matches a run of CONSECUTIVE words, so the
+        # element keeps the boundaries the manifest wrote it with.
+        IFS=' '
+        # shellcheck disable=SC2206
+        _vw=($val)
+        IFS="$_oldifs"
+        _n="${#_vw[@]}"
+        [ "$_n" -gt 0 ] || continue
+        _i=0
+        while [ "$_i" -le $((_wn - _n)) ]; do
+          _ok=1; _j=0
+          while [ "$_j" -lt "$_n" ]; do
+            _k=$((_i + _j))
+            [ "${_words[$_k]}" = "${_vw[$_j]}" ] || { _ok=0; break; }
+            _j=$((_j + 1))
+          done
+          [ "$_ok" = "1" ] && return 0
+          _i=$((_i + 1))
+        done ;;
     esac
   done
   return 1
 }
 
+gate_gh_repo_is_target() {
+  # gate_gh_repo_is_target <alias> — 0 when the repository this gh act names is
+  # the target's own, or is not named at all and therefore comes from the
+  # worktree the target row already fixes. A spelling the accessor cannot
+  # resolve answers no: an unreadable repository is not the target's.
+  #
+  # A HOST OTHER THAN THE DEFAULT ONE IS NOT THE TARGET'S, whatever the slug.
+  # The target row carries a slug and no host, so `gh -R
+  # https://ghe.example/Nharu/cc-cmds issue create` compared equal on the slug
+  # alone and read as collaboration on the target — on a server the run was
+  # never authorized for. `GH_HOST` and `--hostname` count the same way.
+  local _r _rrc=0 _want
+  _r=$(gp_gh_repo) || _rrc=$?
+  [ "$_rrc" = "0" ] || return 1
+  gate_gh_host_is_default "$(printf '%s' "$_r" | cut -f3)" || return 1
+  if [ "$(printf '%s' "$_r" | cut -f2)" != "1" ]; then
+    # AN IMPLICIT REPOSITORY IS THE ONE THE ACT IS STANDING IN, and the target
+    # row fixes that directory only while nothing has moved. `env --chdir=/x gh
+    # pr merge 1` names no repository and used to answer yes on the strength of
+    # a worktree it had already left. Where the parser recorded a change of
+    # directory, the repository is not knowable from here and the cell says no
+    # rather than guessing the target's.
+    [ -z "${GP_CWD:-}" ] || return 1
+    return 0
+  fi
+  _want=$(target_field "$1" '원격 슬러그' 2>/dev/null) || return 1
+  [ -n "$_want" ] || return 1
+  [ "$(printf '%s' "$_r" | cut -f1)" = "$_want" ]
+}
+
 gate_collaboration_surface() {
-  # gate_collaboration_surface <derived-reach> <argv...> — 1 when this act is the
-  # collaboration surface the user authorized to proceed unattended: issues,
-  # comments, labels, projects, and a push that is not a deploy trigger.
+  # gate_collaboration_surface <alias> <derived-reach> <argv...> — 1 when this
+  # act is the collaboration surface the user authorized to proceed unattended:
+  # issues, comments, labels, projects, and a push that is not a deploy trigger.
   #
   # `gh run rerun`/`cancel` are NOT here. Re-running CI can start the very deploy
   # workflow the deploy-trigger cell exists to hold, so they take that cell.
+  #
+  # THE ALIAS ARRIVES BECAUSE THE CELL IS ABOUT A REPOSITORY, not about a verb.
+  # Filing an issue is collaboration on the repository the run was authorized
+  # for; the same verb aimed somewhere else is an act on a stranger's repository
+  # that this cell was reading as authorized. Without the alias there is nothing
+  # to compare the spelled repository against.
+  local alias="$1"; shift
   local rd="$1"; shift
-  local cmd="${1##*/}"; shift
   [ "$GATE_GRADE_SOURCE" = "표" ] || return 1
+  # The cell is about where the act lands, and a launcher's name says nothing
+  # about that. `env GH_REPO=o/r gh pr merge 1` dispatched on `env` and fell out
+  # of the cell, so the same merge was collaboration or not depending on whether
+  # anyone had written `env` in front of it.
+  gate_peel_argv "$@" || return 1
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || return 1
+  local cmd="${1##*/}"; shift
   case "$cmd" in
     gh)
-      case "${1:-}" in
+      # THE PARSE IS THE ACT'S, NOT THIS ARM'S. Re-parsing the peeled words here
+      # would throw the wrapper chain away, and the chain is where `GH_REPO=` was
+      # spelled — `env GH_REPO=evil/x gh pr merge 1` came back with no explicit
+      # repository at all and passed as collaboration on the target.
+      case "$GP_STATUS" in form) return 1 ;; esac
+      # An EXPLICIT repository (`-R`, `--repo`, `GH_REPO`) has to be the target's
+      # own. Collaboration is a claim about WHERE the act lands, and every verb
+      # below reached this cell without anyone asking — so `gh -R stranger/x
+      # issue create` was the authorized collaboration surface.
+      gate_gh_repo_is_target "$alias" || return 1
+      case "${GP_PATH[0]:-}" in
         issue|label) return 0 ;;
         project) return 0 ;;
         pr)
-          case "${2:-}" in
+          case "${GP_PATH[1]:-}" in
             merge) [ "$rd" != "배포트리거" ] && return 0 ;;
             *) return 0 ;;
           esac ;;
         api)
-          case " $* " in
+          # The endpoint is the first positional, not any word that looks like
+          # one: a header value or a `--jq` expression mentioning `/issues` used
+          # to answer for the request it was not the target of.
+          case "${GP_POS[0]:-}" in
             *"/issues"*|*"/comments"*|*"/reviews"*|*"/requested_reviewers"*|*"/labels"*) return 0 ;;
             *"/pulls/"*"/merge"*) [ "$rd" != "배포트리거" ] && return 0 ;;
-          esac
-          case " $* " in
-            *" graphql "*)
-              case " $* " in
+            graphql)
+              case " ${GP_OV[*]:-} ${GP_POS[*]:-} " in
                 *"enablePullRequestAutoMerge"*|*"createDeployment"*) return 1 ;;
                 *) return 0 ;;
               esac ;;
           esac ;;
       esac ;;
     git)
-      case "${1:-}" in
-        push) [ "$rd" != "배포트리거" ] && return 0 ;;
+      # THE SUBCOMMAND IS NOT NECESSARILY THE FIRST WORD. This arm read `$1`,
+      # so `git -C <wt> push` and `git --git-dir=… push` presented `-C` and
+      # `--git-dir=…` as the subcommand and fell out of the cell — the stage
+      # that had to push from a linked worktree had no spelling that worked.
+      _gp_git_scan "$@"
+      [ -z "$_GP_GIT_BAD" ] || return 1
+      case "$_GP_GIT_SUB" in
+        # `pull` and `fetch` join `push`. A declared application point of
+        # `git pull --ff-only` graded `외부상태변경` and then contradicted every
+        # reach it could be declared with, because this cell recognized only the
+        # direction that sends.
+        push|pull|fetch) [ "$rd" != "배포트리거" ] && return 0 ;;
       esac ;;
   esac
   return 1
@@ -949,16 +1066,76 @@ gate_dev_identifier_check() {
   local alias="$1"; shift
   local ids; ids=$(target_field "$alias" 'dev 식별자' 2>/dev/null) || ids=""
   [ -n "$ids" ] || { printf '미선언'; return 0; }
-  local cmd="${1##*/}" a val="" primary="" next=""
-  case "$cmd" in
-    aws)                      primary=aws-profile ;;
-    kubectl|helm)             primary=kube-context ;;
-    terraform)                primary=dir ;;
-    curl|wget)                primary=host ;;
-    ssh|scp|rsync)            primary=host ;;
-    psql|pg_dump|pg_restore|mysql|mysqldump|redis-cli|mongosh|mongo) primary=host ;;
-    *) printf '대조불가'; return 0 ;;
+  # THE PEEL CHANGES WHAT FAILURE LOOKS LIKE HERE, so the environment has to be
+  # read in the same change. Before it, `env AWS_PROFILE=prod aws s3 rm …`
+  # dispatched on `env`, fell to `대조불가`, and parked — accidentally safe.
+  # Peeled, the same act reaches the `aws` row, finds no `--profile` in argv,
+  # and would fall through to the gate's OWN environment, answering with the
+  # orchestrator's profile about an act that set its own. So the chain's
+  # assignments are consulted between the two, and a variable the chain cleared
+  # answers `부재` rather than borrowing the gate's.
+  gate_peel_argv "$@" || { printf '대조불가'; return 0; }
+  local _cleared=0
+  [ "${GP_ENV_CLEAR:-0}" = "1" ] && _cleared=1
+  # A SHELL FRAGMENT RUNS THE TOOL TOO. `sh -c 'export AWS_PROFILE=prod; aws s3
+  # rm …'` has `sh` for its argv0 and answered `대조불가` on that alone, while
+  # the assignment it makes is already recorded on the chain. Every fragment
+  # that names a tool with a primary kind is checked and the strictest answer
+  # wins — a second fragment that contradicts the target is not excused by a
+  # first one that agreed with it.
+  if [ "${GP_STATUS:-}" = list ] && [ -z "$(gate_dev_primary_of "${GATE_PEELED[0]##*/}")" ]; then
+    _GATE_DEV_ANS=""
+    gp_each_sub gate_dev_identifier_frag "$ids" "$_cleared"
+    [ -n "$_GATE_DEV_ANS" ] || _GATE_DEV_ANS=대조불가
+    printf '%s' "$_GATE_DEV_ANS"
+    return 0
+  fi
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || { printf '대조불가'; return 0; }
+  gate_dev_identifier_of "$ids" "$_cleared" "$@"
+}
+
+gate_dev_primary_of() {
+  # The kind of identifier a tool's own spelling carries. Split out because the
+  # fragment path has to ask the question before it commits to an answer.
+  case "$1" in
+    aws)                      printf 'aws-profile' ;;
+    kubectl|helm)             printf 'kube-context' ;;
+    terraform)                printf 'dir' ;;
+    curl|wget)                printf 'host' ;;
+    ssh|scp|rsync)            printf 'host' ;;
+    psql|pg_dump|pg_restore|mysql|mysqldump|redis-cli|mongosh|mongo) printf 'host' ;;
   esac
+  return 0
+}
+
+_GATE_DEV_ANS=''
+gate_dev_identifier_frag() {
+  # `gp_each_sub` callback — one fragment of a shell body. Keeps the strictest
+  # answer seen so far; fragments that name no tool are passed over, so an
+  # `echo` beside an `aws` does not turn the act uncomparable.
+  local ids="$1" cleared="$2"; shift 2
+  [ "$#" -ge 1 ] || return 0
+  [ -n "$(gate_dev_primary_of "${1##*/}")" ] || return 0
+  local got; got=$(gate_dev_identifier_of "$ids" "$cleared" "$@")
+  case "$_GATE_DEV_ANS" in
+    불일치) return 0 ;;
+    부재) [ "$got" = 불일치 ] || return 0 ;;
+    일치) case "$got" in 불일치|부재) ;; *) return 0 ;; esac ;;
+  esac
+  _GATE_DEV_ANS="$got"
+  return 0
+}
+
+gate_dev_identifier_of() {
+  # gate_dev_identifier_of <ids> <cleared> <argv...> — the resolution itself,
+  # with no parsing of its own: it reads `GP_ENV` through the accessors, which
+  # the caller has already filled for the act as a whole. That is what lets a
+  # fragment be answered without re-parsing it out of its own body.
+  local ids="$1" _cleared="$2"; shift 2
+  local cmd="${1##*/}" a val="" primary="" next=""
+  primary=$(gate_dev_primary_of "$cmd")
+  [ -n "$primary" ] || { printf '대조불가'; return 0; }
   [ "$GATE_GRADE_SOURCE" = "표" ] || { printf '대조불가'; return 0; }
   # Does the target declare this tool's primary kind at all?
   case ",$ids," in
@@ -981,22 +1158,41 @@ gate_dev_identifier_check() {
       host:*://*) val=$(printf '%s' "$a" | sed -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#[/:].*$##') ;;
     esac
   done
-  if [ -z "$val" ]; then
-    # `env NAME=VAL` riding in the same argv, then the gate's own environment.
-    for a in "$@"; do
-      case "$primary:$a" in
-        aws-profile:AWS_PROFILE=*|aws-profile:AWS_DEFAULT_PROFILE=*) val="${a#*=}" ;;
-        host:PGHOST=*) val="${a#*=}" ;;
-      esac
+  # The assignments the chain carries, whichever spelling put them there — an
+  # `env NAME=VAL` operand, a shell prefix assignment, an `export` inside a
+  # fragment. The parser records them all, which is why this reads the chain
+  # rather than scanning the words again for `NAME=` the way it used to: that
+  # scan saw only the first spelling, and it also matched the word wherever it
+  # sat, so `aws s3 cp AWS_PROFILE=prod s3://x` was read as a profile.
+  local _names=""
+  case "$primary" in
+    aws-profile) _names="AWS_PROFILE AWS_DEFAULT_PROFILE" ;;
+    host)        _names="PGHOST" ;;
+  esac
+  if [ -z "$val" ] && [ -n "$_names" ]; then
+    for a in $_names; do
+      val=$(gp_env_get "$a") && break
+      val=""
     done
   fi
-  if [ -z "$val" ]; then
+  # THE GATE'S OWN ENVIRONMENT IS LAST, AND ONLY WHERE THE CHAIN SAID NOTHING.
+  # A chain that cleared the variable (`env -u NAME`, `env -i`) said something:
+  # the act runs without it, so the tool will reach for its own default. Reading
+  # the gate's value there would answer about a process that is not this one.
+  if [ -z "$val" ] && [ -n "$_names" ] && [ "$_cleared" = "0" ]; then
+    for a in $_names; do
+      gate_env_chain_cleared "$a" && { _cleared=1; break; }
+    done
+  fi
+  if [ -z "$val" ] && [ "$_cleared" = "0" ]; then
     case "$primary" in
       aws-profile) val="${AWS_PROFILE:-${AWS_DEFAULT_PROFILE:-}}" ;;
       host) val="${PGHOST:-}" ;;
-      dir) val="${GATE_ACT_CWD:-}" ;;
     esac
   fi
+  # `dir` never rode in the environment; its widest source is the act's own
+  # working directory, which no chain can clear.
+  if [ -z "$val" ] && [ "$primary" = dir ]; then val="${GATE_ACT_CWD:-}"; fi
   [ -n "$val" ] || { printf '부재'; return 0; }
   local IFS=','; local id kind dval
   for id in $ids; do
@@ -1019,6 +1215,97 @@ gate_dev_identifier_check() {
   printf '불일치'
 }
 
+gate_argv_is_git_push() {
+  # gate_argv_is_git_push <argv...> — 0 when the act is a `git push` once the
+  # launchers and git's global options are off, 2 when git's globals could not
+  # be read and a `push` word stands after them, 1 otherwise.
+  #
+  # THE CELLS THAT ACT ON A PUSH HAVE TO RECOGNIZE IT THE WAY THE COLLABORATION
+  # CELL DOES. They dispatched on `${1##*/}:${2:-}`, so `git -C <wt> push <any
+  # URL> HEAD:master` presented `git:-C`, never reached the remote check or the
+  # rung, and was approved by the collaboration cell that DID find the push —
+  # the one spelling a linked-worktree stage produces in normal operation. `env
+  # … git push`, `git -c … push` and `git --git-dir=… push` fell out the same way.
+  #
+  # rc 2 IS NOT A NO. An argv whose globals the scanner refuses is one nobody can
+  # say is not a push, and the callers close on it rather than skip it.
+  gate_peel_argv "$@" || return 1
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] && [ "${1##*/}" = git ] || return 1
+  shift
+  _gp_git_scan "$@"
+  if [ -n "$_GP_GIT_BAD" ]; then
+    local a
+    for a in "$@"; do [ "$a" = push ] && return 2; done
+    return 1
+  fi
+  [ "$_GP_GIT_SUB" != push ] || return 0
+  # An alias can expand to a push, and nobody can say from the argv that it
+  # does not. git never expands an alias over one of its own commands, so a
+  # subcommand with an alias configured is either a real command — whose alias
+  # is dead — or this.
+  local _ad="${GATE_ACT_CWD:-.}"
+  [ -z "$_GP_GIT_C" ] || _ad=$(gate_git_chdir_fold "$_ad" "$_GP_GIT_C")
+  gate_git_sub_is_alias "$_ad" "$_GP_GIT_GITDIR" "$_GP_GIT_SUB" && return 2
+  return 1
+}
+
+# `gate_push_scan <words after git's globals...>` — the operands of a `push`, read
+# once for both readers below. It leaves the repository operand in
+# `_GATE_PUSH_REMOTE`, the `--repo` value in `_GATE_PUSH_REPO`, every refspec in
+# `_GATE_PUSH_SPECS` (one per line), `_GATE_PUSH_ALL=1` when an option pushes
+# refs no refspec names, and `_GATE_PUSH_BAD=1` when a word could not be read.
+#
+# THE TWO READERS WALKED THE WORDS SEPARATELY AND SKIPPED EVERY `-*`. So an
+# option that takes a value left the value standing as an operand: in
+# `git push -o origin <foreign URL> HEAD:feature` the push option's value was
+# read as the remote and matched the target, while git pushed to the URL; and
+# in `… HEAD:master -o x` the rung took `x` for the destination. The rung also
+# kept only the LAST refspec, so `git push origin HEAD:master HEAD:tmp` was a
+# `push` that moved the base branch. An option this list does not know is not
+# guessed at — it may take the next word — and both readers close on it.
+gate_push_scan() {
+  _GATE_PUSH_REMOTE=''; _GATE_PUSH_REPO=''; _GATE_PUSH_SPECS=''
+  _GATE_PUSH_ALL=0; _GATE_PUSH_BAD=0
+  local a seen_push=0 want='' ended=0 have_remote=0
+  for a in "$@"; do
+    if [ "$seen_push" = 0 ]; then
+      [ "$a" = push ] && seen_push=1
+      continue
+    fi
+    if [ -n "$want" ]; then
+      [ "$want" = repo ] && _GATE_PUSH_REPO="$a"
+      want=''
+      continue
+    fi
+    if [ "$ended" = 0 ]; then
+      case "$a" in
+        --) ended=1; continue ;;
+        -o|--push-option|--receive-pack|--exec) want=value; continue ;;
+        --repo) want=repo; continue ;;
+        --repo=*) _GATE_PUSH_REPO="${a#--repo=}"; continue ;;
+        -o?*|--push-option=*|--receive-pack=*|--exec=*) continue ;;
+        --all|--branches|--mirror) _GATE_PUSH_ALL=1; continue ;;
+        -u|--set-upstream|-f|--force|--force-with-lease|--force-with-lease=*|--force-if-includes|--no-force-if-includes) continue ;;
+        -n|--dry-run|--no-verify|--verify|--atomic|--no-atomic|--tags|--follow-tags|--no-follow-tags) continue ;;
+        -q|--quiet|-v|--verbose|--progress|--no-progress|--porcelain|--thin|--no-thin) continue ;;
+        --signed|--signed=*|--no-signed|--recurse-submodules=*|--no-recurse-submodules) continue ;;
+        -4|-6|--ipv4|--ipv6|-d|--delete|--prune) continue ;;
+        -*) _GATE_PUSH_BAD=1; return 0 ;;
+      esac
+    fi
+    if [ "$have_remote" = 0 ]; then
+      _GATE_PUSH_REMOTE="$a"; have_remote=1
+    else
+      _GATE_PUSH_SPECS="$_GATE_PUSH_SPECS$a$_GP_LF"
+    fi
+  done
+  # A value-taking option with nothing after it is not a push git would run as
+  # this reader would read it.
+  [ -z "$want" ] || _GATE_PUSH_BAD=1
+  return 0
+}
+
 gate_push_remote_match() {
   # gate_push_remote_match <alias> <argv...> — does this push go to the remote
   # the target row names? Two working trees in this very tree carry an `origin`
@@ -1027,27 +1314,99 @@ gate_push_remote_match() {
   local alias="$1"; shift
   local want; want=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || want=""
   [ -n "$want" ] || return 0
-  local a rname="" seen_push=0 url=""
-  for a in "$@"; do
-    case "$a" in
-      push) seen_push=1; continue ;;
-      -*) continue ;;
-    esac
-    [ "$seen_push" = "1" ] || continue
-    [ -n "$rname" ] || { rname="$a"; }
-  done
-  [ -n "$rname" ] || return 0
+  # The same peel as every other cell: a push is a push whatever launcher was
+  # written in front of it, and an argv the parser could not read is not a push
+  # this check may pass.
+  gate_peel_argv "$@" || return 1
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  # THE REMOTE IS RESOLVED WHERE THE PUSH RUNS, not where the gate stands. A
+  # stage pushing from a linked worktree writes `git -C <wt> push origin …`,
+  # and `origin` was looked up in the gate's own directory — a different
+  # repository, whose `origin` answered for a push it had nothing to do with.
+  local _dir="${GATE_ACT_CWD:-.}" _gd='' _moved=0
+  case "${1##*/}" in
+    git)
+      shift
+      _gp_git_scan "$@"
+      [ -z "$_GP_GIT_BAD" ] || return 1
+      # A relative `-C` is relative to where the act runs, as in the rung, and
+      # the join is the same fold the scanner accumulated with.
+      [ -z "$_GP_GIT_C" ] || { _dir=$(gate_git_chdir_fold "$_dir" "$_GP_GIT_C"); _moved=1; }
+      _gd="$_GP_GIT_GITDIR"
+      [ -z "$_gd" ] || _moved=1
+      shift "$_GP_GIT_NSKIP" ;;
+  esac
+  # A `cd` the parser saw in the body puts the push somewhere this check cannot
+  # resolve a remote from, so it is not a push this check may pass.
+  [ -z "${GP_CWD:-}" ] || return 1
+  # `--repo=<repository>` IS THE DESTINATION, SPELLED AS AN OPTION. Every `-*`
+  # word used to be skipped, so `git push --repo=<url> HEAD:master` left no
+  # operand behind and read as a push that named no remote at all — the pass
+  # below. git documents the option as equivalent to the positional argument,
+  # and gives the positional precedence when both are written.
+  local rname="" url=""
+  gate_push_scan "$@"
+  [ "$_GATE_PUSH_BAD" = 0 ] || return 1
+  rname="$_GATE_PUSH_REMOTE"
+  [ -n "$rname" ] || rname="$_GATE_PUSH_REPO"
+  if [ -z "$rname" ]; then
+    # NOTHING NAMES A DESTINATION, so the push goes to the branch's upstream —
+    # which is a remote OF THE REPOSITORY THE ACT STANDS IN. That is the target's
+    # repository only while the act has not moved, so an implicit push is judged
+    # only then. `-C`/`--git-dir` move it, and the `gh` side already draws the
+    # line in this same place rather than the other one
+    # (`gate_gh_repo_is_target` refuses an implicit repository once the parse
+    # recorded a directory change).
+    [ "$_moved" = "0" ] || return 1
+    # AND THE REMOTE IS THE ONE GIT PICKS, NOT A PASS. This returned 0 here, so a
+    # remote chosen by configuration — `remote.pushDefault` or
+    # `branch.<b>.pushRemote` set by an earlier `git config` act, or a
+    # `branch.<b>.remote` naming a remote an earlier `git remote add` planted —
+    # went unread. git's own order is read from the act's directory and the
+    # remote it lands on is compared like a named one; git falls back to
+    # `origin` when nothing is configured.
+    local _cur
+    _cur=$( { cd "$_dir" 2>/dev/null && git symbolic-ref --short -q HEAD 2>/dev/null; } || true)
+    if [ -n "$_cur" ]; then
+      rname=$( { cd "$_dir" 2>/dev/null && git config --get "branch.$_cur.pushRemote" 2>/dev/null; } || true)
+    fi
+    [ -n "$rname" ] || rname=$( { cd "$_dir" 2>/dev/null && git config --get remote.pushDefault 2>/dev/null; } || true)
+    if [ -z "$rname" ] && [ -n "$_cur" ]; then
+      rname=$( { cd "$_dir" 2>/dev/null && git config --get "branch.$_cur.remote" 2>/dev/null; } || true)
+    fi
+    [ -n "$rname" ] || rname=origin
+  fi
   case "$rname" in
     *://*|*@*:*) url="$rname" ;;
-    *) url=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git remote get-url --push "$rname" 2>/dev/null; } || true) ;;
+    *) url=$( { cd "$_dir" 2>/dev/null \
+                && git ${_gd:+--git-dir="$_gd"} remote get-url --push "$rname" 2>/dev/null; } || true) ;;
   esac
-  [ -n "$url" ] || return 0
-  local slug
-  slug=$(printf '%s' "$url" \
-    | sed -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#^www\.##' \
-          -e 's#^[^/:]*[:/]##' \
-    | tr '[:upper:]' '[:lower:]')
-  [ "$slug" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
+  # AN UNRESOLVABLE REMOTE IS A MISMATCH, NOT A PASS. This returned 0 on an
+  # empty URL, so a remote name the repository does not know — or a directory
+  # the gate could not enter — read as "the remote is the target's". The case
+  # where nothing is named at all is handled above, and passes only while the
+  # act has not moved.
+  [ -n "$url" ] || return 1
+  # THE HOST IS PART OF THE DESTINATION. Only the slug was compared — scheme,
+  # `user@` and THE WHOLE HOST were stripped — so `git push
+  # https://<foreign host>/<target owner>/<target repo> HEAD:master` reduced to
+  # the target's own slug and passed the remote check. That is the same host
+  # drop the `gh` side closes with `gate_gh_host_is_default`; it was left
+  # standing here. The target row carries no host field, so the question this
+  # can ask is the one the `gh` side asks: is it the default host. A run
+  # legitimately aimed at a non-default host is parked by that, which is the
+  # closing direction; widening it belongs to the row schema, not here.
+  #
+  # ONE REDUCER, NOT TWO. `_gp_repo_reduce` is what the `gh` side reduces a
+  # repository spelling with. A second pipeline saying almost the same thing is
+  # how the two drifted: this one carried an `s#^www\.##` the other never had,
+  # stripping a label out of a host it then discarded anyway.
+  local _rr _rh
+  _gp_repo_reduce "$url" || return 1
+  _rr="$_GP_RR"; _rh="$_GP_RH"
+  gate_gh_host_is_default "$_rh" || return 1
+  [ "$(printf '%s' "$_rr" | tr '[:upper:]' '[:lower:]')" \
+    = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
 }
 
 gate_push_rung() {
@@ -1064,6 +1423,20 @@ gate_push_rung() {
   local alias="$1"; shift
   local base; base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null) || base=""
   [ -n "$base" ] || { printf '머지'; return 0; }
+  # THE PUSH IS READ PAST ITS LAUNCHERS AND git's GLOBALS, as the remote check
+  # reads it, and the repository it asks is the one `-C` names. A globals list
+  # the scanner refuses takes the higher rung.
+  gate_peel_argv "$@" || { printf '머지'; return 0; }
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  local _dir="${GATE_ACT_CWD:-.}"
+  case "${1##*/}" in
+    git)
+      shift
+      _gp_git_scan "$@"
+      [ -z "$_GP_GIT_BAD" ] || { printf '머지'; return 0; }
+      [ -z "$_GP_GIT_C" ] || _dir=$(gate_git_chdir_fold "$_dir" "$_GP_GIT_C")
+      shift "$_GP_GIT_NSKIP" ;;
+  esac
   # `origin/main` and `code-1398/main` are both spellings this tree's manifests
   # use; strip a leading remote name the repository actually knows.
   case "$base" in
@@ -1073,7 +1446,7 @@ gate_push_rung() {
       # whole compound — so the branch that should fire on a KNOWN remote name is
       # the one that reports failure. The suite lints for this shape.
       local rn="${base%%/*}" _remotes
-      _remotes=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git remote 2>/dev/null; } || true)
+      _remotes=$( { cd "$_dir" 2>/dev/null && git remote 2>/dev/null; } || true)
       case "
 $_remotes
 " in
@@ -1082,32 +1455,158 @@ $rn
 "*) base="${base#*/}" ;;
       esac ;;
   esac
-  case " $* " in
-    *" --all "*|*" --mirror "*) printf '머지'; return 0 ;;
-  esac
-  local a seen_push=0 seen_remote=0 dst="" last=""
-  for a in "$@"; do
-    case "$a" in
-      push) seen_push=1; continue ;;
-      -*) continue ;;
-    esac
-    [ "$seen_push" = "1" ] || continue
-    if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
-    last="$a"
-  done
-  if [ -n "$last" ]; then
-    dst="${last#*:}"
-    case "$last" in *:*) ;; *) dst="$last" ;; esac
-    dst="${dst#+}"; dst="${dst#refs/heads/}"
+  gate_push_scan "$@"
+  [ "$_GATE_PUSH_BAD" = 0 ] || { printf '머지'; return 0; }
+  [ "$_GATE_PUSH_ALL" = 0 ] || { printf '머지'; return 0; }
+  # EVERY REFSPEC IS A DESTINATION. One of them landing on the base branch makes
+  # the push the merge, whatever the others say. A pattern (`*`) or the matching
+  # refspec (`:`) can land on it without naming it, so it takes the higher rung.
+  #
+  # THE DESTINATION IS READ THE WAY GIT RESOLVES IT, NOT AS A STRING. It was
+  # compared with the base branch as spelled, so `HEAD:heads/master` — which git
+  # completes to `refs/heads/master` — was a `push`. A destination under
+  # `heads/` is a branch like one under `refs/heads/`, and a refspec with no
+  # destination whose source is `HEAD` or `@` pushes the branch the worktree is
+  # on.
+  local s dst="" _here
+  _here=$( { cd "$_dir" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+  if [ -n "$_GATE_PUSH_SPECS" ]; then
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      s="${s#+}"
+      case "$s" in
+        *:*) dst="${s#*:}" ;;
+        HEAD|@)
+          [ -n "$_here" ] || { printf '머지'; return 0; }
+          dst="$_here" ;;
+        *) dst="$s" ;;
+      esac
+      dst="${dst#refs/heads/}"
+      dst="${dst#heads/}"
+      case "$dst" in
+        ''|*'*'*) printf '머지'; return 0 ;;
+      esac
+      [ "$dst" != "$base" ] || { printf '머지'; return 0; }
+    done <<EOF
+$_GATE_PUSH_SPECS
+EOF
+    printf 'push'
+    return 0
   else
-    # No refspec: the destination is whatever branch the act's worktree is on,
-    # and a worktree that cannot answer takes the higher rung rather than the
-    # convenient one.
-    dst=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    # NO REFSPEC: WHAT GOES IS WHAT THE CONFIGURATION SAYS. A `remote.<r>.push`
+    # or `remote.<r>.mirror` in the repository, or `push.default=matching`,
+    # pushes refs no word of argv names — `mirror` deletes as well — so the
+    # push takes the higher rung. Otherwise the destination is the branch's
+    # `@{push}`, which `push.default=upstream` can point at the base branch
+    # from a branch of another name; a worktree that cannot answer falls back
+    # to its current branch, and one that cannot answer that takes the higher
+    # rung rather than the convenient one.
+    local _cfg
+    _cfg=$( { cd "$_dir" 2>/dev/null \
+              && git config --get-regexp '^remote\..*\.(push|mirror)$' 2>/dev/null; } || true)
+    [ -z "$_cfg" ] || { printf '머지'; return 0; }
+    _cfg=$( { cd "$_dir" 2>/dev/null && git config --get push.default 2>/dev/null; } || true)
+    [ "$_cfg" != matching ] || { printf '머지'; return 0; }
+    dst=$( { cd "$_dir" 2>/dev/null && git rev-parse --abbrev-ref '@{push}' 2>/dev/null; } || true)
+    case "$dst" in
+      */*) dst="${dst#*/}" ;;
+      *) dst="$_here" ;;
+    esac
     [ -n "$dst" ] || { printf '머지'; return 0; }
   fi
   [ "$dst" = "$base" ] && { printf '머지'; return 0; }
   printf 'push'
+}
+
+# `gate_push_pieces <alias> <argv...>` — the pushes an act carries BELOW its top
+# level: every piece of a shell body, nested bodies included, and every `-exec`
+# or `-ok` inner command of a `find`. One line per push piece, `ok` or `bad`
+# with its rung after a TAB, and one line `form TAB -` per piece that is not a
+# push and whose own grade is `형태 미상`. The top level itself is not reported;
+# its callers already ask `gate_argv_is_git_push` about it.
+#
+# THE PUSH CHECKS KEYED ON THE TOP-LEVEL argv0. The remote check and the rung
+# ran only where the peeled argv0 was `git`, so `bash -c 'git push <foreign URL>
+# HEAD:master'` matched a `git push` pre-authorization row piece by piece, had
+# its opaque cap lifted, and reached dev, prod and the deploy trigger with no
+# remote compared and no merge rung — while the same push written bare was
+# refused as `push원격불일치`. `find . -exec git push <foreign URL> HEAD:master ';'`
+# was a table-graded external write that neither check ever saw. A piece is now
+# checked the way the same command written bare is checked.
+#
+# A `-c` KEY THE GRADE REFUSES IS PART OF THE VERDICT. The remote check reads
+# the remote a push names and not the configuration it was handed, and a bare
+# `git -c remote.origin.pushurl=<other> push` is refused by its grade before the
+# check is asked. A piece has no grade of its own on the way to the rules, so a
+# push piece whose grade is `형태 미상` answers `bad` here.
+#
+# A `cd` IN THE BODY moves the pieces after it somewhere the remote cannot be
+# resolved from, and the body walk records that a directory changed rather than
+# where each piece ran. A push piece in a body that changed directory is `bad`
+# and the merge rung, which is what the top-level check answers for the same
+# `GP_CWD`.
+gate_push_pieces() {
+  local alias="$1"; shift
+  ( _GATE_PP_ALIAS="$alias"; _GATE_PP_CD=0; _GATE_PP_TOP=1
+    _gate_push_piece "$@" ) || true
+  return 0
+}
+
+_gate_push_piece() {
+  # Parses in a subshell of its own, so the parse the caller stands on survives.
+  ( _top="${_GATE_PP_TOP:-0}"; _GATE_PP_TOP=0
+    [ "$_top" = 1 ] || _GP_ENTRY_DEPTH=$((${GP_DEPTH:-0} + 1))
+    _prc=0; gate_argv_is_git_push "$@" || _prc=$?
+    case "$GP_STATUS" in
+      list|opaque)
+        [ -z "${GP_CWD:-}" ] || _GATE_PP_CD=1
+        gp_each_sub _gate_push_piece
+        exit 0 ;;
+    esac
+    if [ "$_top" = 0 ]; then
+      _g=$(_gp_frag_grade "$@") || _g=''
+      case "$_prc" in
+        0)
+          if [ "$_GATE_PP_CD" = 1 ] || [ "$_g" = "$GATE_FORM_UNKNOWN" ]; then
+            printf 'bad\t머지\n'
+          else
+            _v=ok
+            gate_push_remote_match "$_GATE_PP_ALIAS" "$@" || _v=bad
+            printf '%s\t%s\n' "$_v" "$(gate_push_rung "$_GATE_PP_ALIAS" "$@")"
+          fi
+          exit 0 ;;
+        2) printf 'bad\t머지\n'; exit 0 ;;
+      esac
+      [ "$_g" != "$GATE_FORM_UNKNOWN" ] || { printf 'form\t-\n'; exit 0; }
+    fi
+    [ "$_prc" = 1 ] || exit 0
+    gate_peel_argv "$@" || exit 0
+    set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+    [ "$#" -ge 1 ] && [ "${1##*/}" = find ] || exit 0
+    shift
+    _o=$(gate_unwrap_find _gate_push_find_inner '' '' '' _gate_push_join "$@") || _o=''
+    [ -z "$_o" ] || printf '%s\n' "$_o" ) || true
+  return 0
+}
+
+_gate_push_find_inner() {
+  _GATE_PP_TOP=0 _gate_push_piece "$@"
+}
+
+_gate_push_join() {
+  if [ -z "$1" ]; then printf '%s' "$2"
+  elif [ -z "$2" ]; then printf '%s' "$1"
+  else printf '%s\n%s' "$1" "$2"; fi
+}
+
+# `gate_push_pieces_rung <lines>` — the highest rung among the push pieces, or
+# nothing when there is no push piece.
+gate_push_pieces_rung() {
+  case "$1" in
+    *"	머지"*) printf '머지' ;;
+    *"	push"*) printf 'push' ;;
+  esac
+  return 0
 }
 
 gate_destructive_source() {
@@ -1170,6 +1669,11 @@ gate_reach_disposition() {
   esac
 
   local C=0 lift=0 P=0 Pd=0 pkind='없음' probe=''
+  # The probe below reads the same parsed argv the catalog's copy of the rule
+  # read: the caller set or cleared `GATE_ARGV_CANON` before running the rules
+  # and this runs after them, so the two see one value. Exporting it again here
+  # would undo that — the caller clears it for an argv no grading read, and a
+  # second export would hand the probe words the rule never compared.
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="$GATE_MARK" GATE_MARK_TRIGGER="$GATE_MARK_TRIGGER" \
           GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
@@ -1196,6 +1700,20 @@ gate_reach_disposition() {
       미상) case "$1" in */*) lift=1 ;; esac ;;
     esac
   fi
+  # A SHAPE MATCHED PIECE BY PIECE NAMES THE PIECES' COMMANDS, NOT WHAT THEY
+  # CARRY. The canonical form drops git's globals and every `-*=*` word, so a
+  # body piece whose own grade is `형태 미상` — `git -c
+  # remote.origin.pushurl=<other> push`, refused when written bare — matched a
+  # `git push` row as `완전` and lifted the cap the refusal was supposed to keep.
+  # A body holding such a piece is not lifted. A push piece is lifted and then
+  # bound in cell 7 like a bare push, where a mismatch is named as one.
+  local _pp
+  _pp=$(gate_push_pieces "$alias" "$@")
+  if [ "$lift" = "1" ]; then
+    case "$_pp" in
+      form*|*"$_GP_LF"form*) lift=0 ;;
+    esac
+  fi
 
   # 4 — the opaque and unknown classes. The cap is the user's decision: a payload
   # the gate cannot see is read-and-run-local unless the manifest named the exact
@@ -1213,7 +1731,7 @@ gate_reach_disposition() {
       C=0 ;;
     *)
       C=0
-      gate_collaboration_surface "$_rd" "$@" && C=1 ;;
+      gate_collaboration_surface "$alias" "$_rd" "$@" && C=1 ;;
   esac
 
   local Geff
@@ -1227,10 +1745,17 @@ gate_reach_disposition() {
   [ "$Reff" = "미상" ] && { printf '도달미상'; return 0; }
   [ "$Reff" = "기기전역" ] && { printf '기기전역'; return 0; }
 
-  # 7 — a push whose remote is not the target's.
-  case "${1##*/}:${2:-}" in
-    git:push)
-      gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치'; return 0; } ;;
+  # 7 — a push whose remote is not the target's, recognized past the launchers
+  # and git's globals exactly as the collaboration cell recognizes it.
+  local _gpush=0
+  gate_argv_is_git_push "$@" || _gpush=$?
+  case "$_gpush" in
+    0) gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치'; return 0; } ;;
+    2) printf 'push원격불일치'; return 0 ;;
+  esac
+  # The same check for every push the act carries below its top level.
+  case "$_pp" in
+    bad*|*"$_GP_LF"bad*) printf 'push원격불일치'; return 0 ;;
   esac
 
   case "$Reff" in
@@ -1326,6 +1851,18 @@ gate_answer_first() {
   # base exists at all: losing it puts the guard back on the grading directory.
   [ -n "$1" ] && { printf '%s' "$1"; return 0; }
   printf '%s' "$2"
+}
+
+gate_answer_chdir_fold() {
+  # The second-base fold for `find`: `gate_answer_first`, except that a
+  # refusal from ANY primary wins — `형태 미상` first, then an unreadable
+  # launcher option. A later `-exec` the resolver could not read may well carry
+  # its own `-C`, so a base an earlier primary established does not describe it.
+  local x
+  for x in "$GATE_FORM_UNKNOWN" "$GATE_CHDIR_UNREAD"; do
+    { [ "$1" = "$x" ] || [ "$2" = "$x" ]; } && { printf '%s' "$x"; return 0; }
+  done
+  gate_answer_first "$1" "$2"
 }
 
 gate_answer_or() {
@@ -1930,7 +2467,8 @@ gate_tree_root() {
 # `GP_REASON` CARRIES A CODE FROM A CLOSED SET — `gh:unknown-flag:<word>`,
 # `gh:flag-not-on-leaf:<word>`, `gh:unknown-path:<word>`, `gh:bool-literal:<word>`,
 # `env:split-string-expansion`, `env:argv0-override`, `env:exec-identity:<name>`,
-# `env:repo-selector:<name>`, `sh:non-literal-command-word`, `wrap:depth` — or
+# `env:repo-selector:<name>`, `env:gate-state:<name>`,
+# `sh:non-literal-command-word`, `wrap:depth` — or
 # is empty when none of them
 # names the cause. A new code goes into this list before anything emits it.
 #
@@ -2018,6 +2556,12 @@ _gp_wrap_add() {
 # this layer does not model, so they stay `tool`. A top-level `exec` stays `tool`
 # too — there is no `exec` binary, only the shell builtin, which the body parser
 # handles.
+#
+# `find` IS NOT A WRAPPER HERE EITHER. Its expression can hand the match to any
+# number of commands, each ending at its own terminator, beside primaries that
+# write on `find`'s own account — so there is no single inner argv to peel to.
+# The grading table's `gate_unwrap_find` reads every primary and folds the
+# answers, and it is only reached when this layer leaves `find` as the argv0.
 _gp_walk() {
   local w
   while [ "$#" -gt 0 ]; do
@@ -2063,8 +2607,33 @@ _gp_leaf() {
     return 0
   fi
   GP_FAMILY=raw
+  if [ "$GP_ARGV0" = git ]; then _gp_git_config_home; fi
   if [ "$GP_STATUS" != form ]; then
     if _gp_is_tool "$@"; then GP_STATUS=tool; else GP_STATUS=ok; fi
+  fi
+  return 0
+}
+
+# `HOME` AND `XDG_CONFIG_HOME` ARE WHERE git FINDS ITS GLOBAL CONFIGURATION, so an
+# assignment in front of git hands it a `remote.*.pushurl`, a `url.*.insteadOf`
+# or an `alias.*` this gate never read — the push check resolves the remote in
+# its own process and would compare the repository on disk. Only the assignments
+# still in force count: one cleared by `env -i` or unset after it does not reach
+# git.
+_gp_git_config_home() {
+  local k="$_GP_ENV_BASE" e home='' xdg=''
+  while [ "$k" -lt "${#GP_ENV[@]}" ]; do
+    e="${GP_ENV[$k]}"
+    case "$e" in
+      HOME=*) home=1 ;;
+      -HOME) home='' ;;
+      XDG_CONFIG_HOME=*) xdg=1 ;;
+      -XDG_CONFIG_HOME) xdg='' ;;
+    esac
+    k=$((k + 1))
+  done
+  if [ -n "$home" ]; then _gp_form env:exec-identity:HOME
+  elif [ -n "$xdg" ]; then _gp_form env:exec-identity:XDG_CONFIG_HOME
   fi
   return 0
 }
@@ -2405,7 +2974,17 @@ _gp_env_unset() {
 #
 #   execution identity   PATH, BASH_ENV, ENV, DYLD_*, LD_*, GIT_EXEC_PATH,
 #                        GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*
-#                        — the binary that runs changes, so the act is `form`
+#                        — the binary that runs changes, so the act is `form`.
+#                        GIT_CONFIG_PARAMETERS, GIT_CONFIG_GLOBAL,
+#                        GIT_CONFIG_SYSTEM, GIT_CONFIG, GIT_SSH and
+#                        GIT_PROXY_COMMAND are here for the same reason: each
+#                        carries or selects configuration that can name a
+#                        program or a push URL, which the `-c` spelling of the
+#                        same key is already refused for. HOME and
+#                        XDG_CONFIG_HOME select git's global configuration
+#                        too, but every other tool reads them for its own
+#                        purposes, so `_gp_leaf` refuses them only when the
+#                        command they reach is git
 #   command value        GIT_SSH_COMMAND, GIT_EDITOR, EDITOR, VISUAL, PAGER,
 #                        GIT_PAGER, GIT_SEQUENCE_EDITOR, GIT_ASKPASS, SSH_ASKPASS
 #                        — a shell runs the value later, so it is parsed as a
@@ -2437,20 +3016,53 @@ _gp_env_unset() {
 #                        recorded; `gp_gh_repo` reads GH_REPO and GH_HOST
 #                        from the recorded chain
 #   everything else      recorded only
+#
+# The table lives in `_gp_env_class` alone, because two callers read it: an
+# assignment spelled on the line, and a name whose value comes from somewhere
+# the line does not show (`_gp_env_unseen`).
+_gp_env_class() {
+  case "$1" in
+    PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+      _GP_ENV_CLASS=exec-identity ;;
+    GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG|GIT_SSH|GIT_PROXY_COMMAND)
+      _GP_ENV_CLASS=exec-identity ;;
+    GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
+      _GP_ENV_CLASS=repo-selector ;;
+    GATE_*)
+      _GP_ENV_CLASS=gate-state ;;
+    GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
+      _GP_ENV_CLASS=command-value ;;
+    *) _GP_ENV_CLASS='' ;;
+  esac
+  return 0
+}
+
 _gp_env_assign() {
   local name="$1" value="$2"
   GP_ENV[${#GP_ENV[@]}]="$name=$value"
-  case "$name" in
-    '') _gp_form '' ;;
-    PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
-      _gp_form "env:exec-identity:$name" ;;
-    GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
-      _gp_form "env:repo-selector:$name" ;;
-    GATE_*)
-      _gp_form "env:gate-state:$name" ;;
-    GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
+  [ -n "$name" ] || { _gp_form ''; return 0; }
+  _gp_env_class "$name"
+  case "$_GP_ENV_CLASS" in
+    '') ;;
+    command-value)
       _gp_body "$value"
       if [ "$_GP_BODY_ST" != list ]; then _gp_form "$_GP_BODY_RS"; fi ;;
+    *) _gp_form "env:$_GP_ENV_CLASS:$name" ;;
+  esac
+  return 0
+}
+
+# A NAME SET FROM A VALUE THE LINE DOES NOT CARRY — `read PATH`, `printf -v PATH
+# …` — changes what a later word runs exactly as `PATH=…` does, and the value
+# that decides it is on standard input or behind a format. So every class the
+# table gives a consequence makes the act `form`; a command value cannot be
+# parsed when it is not there, and has no code of its own.
+_gp_env_unseen() {
+  _gp_env_class "$1"
+  case "$_GP_ENV_CLASS" in
+    '') ;;
+    command-value) _gp_form '' ;;
+    *) _gp_form "env:$_GP_ENV_CLASS:$1" ;;
   esac
   return 0
 }
@@ -2459,6 +3071,10 @@ _gp_env_assign() {
 # first operand is a script file this layer cannot read, and the act is the
 # shell itself — raw, answered by the grading table's constant row as before.
 # `bash -- -c x` names a FILE called `-c`, which is why `--` ends the scan.
+#
+# A BARE `+` IS AN EMPTY OPTION CLUSTER, NOT THE END OF OPTIONS. bash reads
+# `bash + -c '<body>'` and runs the body; taking `+` as `--` left a leaf with no
+# `-c`, so the body was never parsed and no floor was computed over it.
 _gp_shell() {
   local name="${1##*/}" a j c mode_c=0 noexec=0 i=1 n="$#"
   local -a args
@@ -2466,7 +3082,8 @@ _gp_shell() {
   while [ "$i" -lt "$n" ]; do
     a="${args[$i]}"
     case "$a" in
-      --|-|+) i=$((i + 1)); break ;;
+      --|-) i=$((i + 1)); break ;;
+      +) ;;
       --norc|--noprofile|--login|--posix|--restricted|--verbose|--noediting) ;;
       --rcfile|--init-file) i=$((i + 1)) ;;
       --*) _gp_form ''; return 0 ;;
@@ -2857,7 +3474,10 @@ _gpb_endcmd() {
     a="${cw[$k]}"
     case "$a" in
       [A-Za-z_]*=*)
+        # `NAME+=value` is an assignment too — the shell appends, and on an
+        # unset name that is the plain assignment.
         name="${a%%=*}"
+        name="${name%+}"
         case "$name" in
           *[!A-Za-z0-9_]*) break ;;
         esac
@@ -2914,6 +3534,11 @@ _gpb_endcmd() {
   case "$a" in
     eval|source|.|alias) _gpb_form sh:non-literal-command-word; cw=(); cf=(); return 0 ;;
   esac
+  # The leaf asks this for an argv; a body's git piece is not parsed as a leaf
+  # here, and the assignments the body made are already on the chain.
+  case "${a##*/}" in
+    git) _gp_git_config_home ;;
+  esac
   frag=("${cw[@]:k}")
   x=$((k + 1))
   while [ "$x" -lt "$m" ]; do
@@ -2932,11 +3557,44 @@ _gpb_endcmd() {
   GP_SUB[${#GP_SUB[@]}]="$el"
   case "$a" in
     cd) _gpb_cd ;;
-    export)
+    # THE NAME IS CHECKED THE WAY THE LEADING ASSIGNMENTS CHECK IT. It was cut at
+    # the first `=` and handed on as spelled, so `export GIT_SSH_COMMAND+=<cmd>`
+    # asked the environment table about `GIT_SSH_COMMAND+`, matched no row, and
+    # set the variable unclassified — `/bin/sh` takes `+=` and on an unset name
+    # it is the plain assignment. The one `+` comes off, and a name that is
+    # still not an identifier is not read.
+    export|local)
       x=$((k + 1))
       while [ "$x" -lt "$m" ]; do
         case "${cw[$x]}" in
-          [A-Za-z_]*=*) _gp_env_assign "${cw[$x]%%=*}" "${cw[$x]#*=}" ;;
+          [A-Za-z_]*=*)
+            name="${cw[$x]%%=*}"
+            name="${name%+}"
+            case "$name" in
+              *[!A-Za-z0-9_]*) _gpb_form ''; cw=(); cf=(); return 0 ;;
+            esac
+            _gp_env_assign "$name" "${cw[$x]#*=}" ;;
+        esac
+        x=$((x + 1))
+      done ;;
+    # `read` names its variables as operands, and an option value that happens
+    # to spell a classified name is refused along with them — the cost is a
+    # prompt text, the alternative is reading every option of every shell.
+    read)
+      x=$((k + 1))
+      while [ "$x" -lt "$m" ]; do
+        _gp_env_unseen "${cw[$x]}"
+        x=$((x + 1))
+      done ;;
+    printf)
+      x=$((k + 1))
+      while [ "$x" -lt "$m" ]; do
+        case "${cw[$x]}" in
+          -v) x=$((x + 1)); [ "$x" -ge "$m" ] || _gp_env_unseen "${cw[$x]}" ;;
+          -v?*) _gp_env_unseen "${cw[$x]#-v}" ;;
+          --) break ;;
+          -*) ;;
+          *) break ;;
         esac
         x=$((x + 1))
       done ;;
@@ -2946,7 +3604,11 @@ _gpb_endcmd() {
           *'system('*|*'|'*|*'>'*|-f|-f?*) _gpb_opaque ;;
         esac
       done ;;
-    echo|printf|pwd|true|false|:|test|'['|'[['|set|unset|shift|read|local|wait|return|exit|type|hash|compgen|trap|ulimit|umask) ;;
+    # `trap` and `compgen` are off this list for the reason `_gp_frag_grade`
+    # gives: they carry a command string that runs later, so the string has to
+    # be parsed as a piece rather than stepped over. `hash` is off it for the
+    # reason `_gp_frag_grade` gives too: `hash -p` changes what a later word runs.
+    echo|pwd|true|false|:|test|'['|'[['|set|unset|shift|wait|return|exit|type|ulimit|umask) ;;
     *) _gpb_recurse ;;
   esac
   cw=(); cf=()
@@ -3649,6 +4311,23 @@ gp_wrap_has() {
 # `gp_env_get NAME` — NAME's value after the chain: the last assignment since
 # the last clear, unless a later `-NAME` removed it. rc 1 when the chain leaves
 # it unset; what the process environment holds is the caller's to consult.
+gate_env_chain_cleared() {
+  # 0 when the chain REMOVED NAME and nothing put it back. `gp_env_get` answers
+  # rc 1 for this and for "the chain never mentioned it", and the two are not
+  # the same fact: one says the act runs without the variable, the other says
+  # the act says nothing and whatever the gate holds still applies.
+  local k="$_GP_ENV_BASE" e cleared=0
+  while [ "$k" -lt "${#GP_ENV[@]}" ]; do
+    e="${GP_ENV[$k]}"
+    case "$e" in
+      "-$1") cleared=1 ;;
+      "$1="*) cleared=0 ;;
+    esac
+    k=$((k + 1))
+  done
+  [ "$cleared" = 1 ]
+}
+
 gp_env_get() {
   local k="$_GP_ENV_BASE" e set=0 val=''
   while [ "$k" -lt "${#GP_ENV[@]}" ]; do
@@ -3717,16 +4396,33 @@ gp_gh_repo() {
   return "$rc"
 }
 
+# THE HOST IS READ THE WAY A URL PARSER READS IT. The authority ends at the first
+# `/`, `?` or `#`, and the user part ends at the LAST `@` in it — so
+# `https://evil.example?@github.com/o/r` names `evil.example`, not `github.com`.
+# Cutting at `/` alone and dropping up to the FIRST `@` reduced that spelling to
+# the default host and the target's slug, and both the push remote check and the
+# `gh -R` comparison passed a foreign destination. A repository spelling that
+# carries `?` or `#` at all is refused rather than read: no remote this tree
+# pushes to needs one. A URL must name a scheme git transports over and a host,
+# because an empty host is what the default-host test accepts for a slug spelled
+# without one — `file:///o/r` read as the target.
 _gp_repo_reduce() {
-  local v="$1" host='' rest owner repo url=0
+  local v="$1" host='' rest owner repo url=0 auth
   _GP_RR=''
   _GP_RH=''
   case "$v" in
+    *'?'*|*'#'*) return 1 ;;
+  esac
+  case "$v" in
     *://*)
       url=1
+      case "$(printf '%s' "${v%%://*}" | tr '[:upper:]' '[:lower:]')" in
+        https|http|ssh|git) ;;
+        *) return 1 ;;
+      esac
       rest="${v#*://}"
-      host="${rest%%/*}"
-      host="${host#*@}"
+      auth="${rest%%/*}"
+      host="${auth##*@}"
       host="${host%%:*}"
       case "$rest" in
         */*) rest="${rest#*/}" ;;
@@ -3734,31 +4430,40 @@ _gp_repo_reduce() {
       esac ;;
     *@*:*)
       url=1
-      host="${v%%:*}"
-      host="${host#*@}"
+      auth="${v%%:*}"
+      host="${auth##*@}"
       rest="${v#*:}" ;;
     *) rest="$v" ;;
   esac
+  if [ "$url" = 1 ] && [ -z "$host" ]; then return 1; fi
   rest="${rest%/}"
+  # THE PATH IS EXACTLY `<owner>/<repo>`. A URL's path was cut to its first two
+  # segments and the rest dropped, so `https://github.com/Nharu/cc-cmds/../../other/repo`
+  # reduced to the target's slug — and the server folds the `..` segments and
+  # answers for `other/repo`. A third segment, a `.` or `..` segment and a
+  # percent escape (which can spell either) are not read at all.
+  case "$rest" in
+    *%*) return 1 ;;
+  esac
   if [ "$url" = 0 ]; then
     case "$rest" in
       */*/*/*) return 1 ;;
       */*/*) host="${rest%%/*}"; rest="${rest#*/}" ;;
     esac
-    owner="${rest%%/*}"
-    repo="${rest#*/}"
   else
-    owner="${rest%%/*}"
-    repo="${rest#*/}"
-    repo="${repo%%/*}"
+    case "$rest" in
+      */*/*) return 1 ;;
+    esac
   fi
+  owner="${rest%%/*}"
+  repo="${rest#*/}"
   [ "$owner" != "$rest" ] || return 1
   repo="${repo%.git}"
   case "$owner" in
-    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
   case "$repo" in
-    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
   case "$host" in
     *[!A-Za-z0-9.:-]*) return 1 ;;
@@ -3797,6 +4502,15 @@ gp_canon() {
   line="$_GP_ESC"
   if [ "$GP_FAMILY" = raw ]; then
     k=1
+    # git's GLOBALS ARE NOT PART OF THE SHAPE. `--git-dir=…` already fell out
+    # here because it carries an `=`, but `-C <wt>` is two plain words and
+    # stayed, so the same push from a linked worktree could match no shape a
+    # manifest had written — and the only spelling that did match was the one
+    # that changed the gate's own directory.
+    if [ "$GP_ARGV0" = git ]; then
+      _gp_git_scan ${GP_INNER[@]+"${GP_INNER[@]:1}"}
+      [ -n "$_GP_GIT_BAD" ] || k=$((1 + _GP_GIT_NSKIP))
+    fi
     while [ "$k" -lt "${#GP_INNER[@]}" ]; do
       case "${GP_INNER[$k]}" in
         -*=*) ;;
@@ -3845,7 +4559,24 @@ _gp_argv0_ident() {
 _gp_frag_grade() {
   local a
   case "$1" in
-    cd|echo|printf|pwd|true|false|:|test|'['|'[['|set|export|unset|shift|read|local|wait|return|exit|type|hash|compgen|trap|ulimit|umask)
+    # `trap` AND `compgen` ARE NOT ON THIS LIST, and the two are the only names
+    # that left it: a builtin here is graded `읽기` before the table is ever
+    # consulted, and these two carry a COMMAND STRING that runs later. `trap`
+    # runs its argument in this same shell on `EXIT`/`ERR`/`DEBUG` or a signal,
+    # and `compgen -C <command>` runs one immediately in a subshell (`-F` calls a
+    # function). So `sh -c 'trap "gh repo delete o/r --yes" EXIT'` scored as a
+    # read. Off the list they fall through to the table, answer `등급 미상`, and
+    # the piece floor raises them to `외부상태변경`.
+    #
+    # THE TEST FOR STAYING IS THAT THE BUILTIN DOES NOT CHANGE WHAT A LATER WORD
+    # RUNS, and carrying no command string is only half of it. `hash -p /bin/rm
+    # cat` carries none, yet the next `cat` runs `rm`, so `hash` left the list
+    # too. `export`, `local`, `read` and `printf -v` can set `PATH` the same way;
+    # they stay because the body walk hands every name they set to the
+    # environment table, which makes a classified one `form` before this grade is
+    # asked. `cd` stays because the walk records where later pieces run. A
+    # command substitution inside any of them is already a `form`.
+    cd|echo|printf|pwd|true|false|:|test|'['|'[['|set|export|unset|shift|read|local|wait|return|exit|type|ulimit|umask)
       printf '읽기'
       return 0 ;;
     awk)
@@ -3871,6 +4602,47 @@ _gp_canon_frag() {
   g=$(_gp_frag_grade "$@") || g=''
   [ "$g" != '읽기' ] || return 0
   ( _GP_ENTRY_DEPTH=$((GP_DEPTH + 1)); gp_parse "$@"; gp_canon ) || true
+  return 0
+}
+
+# `gp_each_sub` callback — for each write piece of a body that is a `gh` act,
+# one line `<rc> TAB <repo> TAB <explicit> TAB <host>` from `gp_gh_repo`. It
+# walks the same pieces `_gp_canon_frag` carries, nested bodies included, so a
+# piece that puts a line into the canonical form is a piece whose repository is
+# resolved here too.
+#
+# THE BODY LAYER'S ASSIGNMENTS ARE CARRIED INTO THE PIECE, and without that the
+# repository check never saw an environment spelling at all. A repository can be
+# named by `GH_REPO`, and `gp_gh_repo` reads it exactly one way — `gp_env_get`
+# over `GP_ENV`. But the piece is re-parsed in a subshell, `gp_parse` begins with
+# `gp_reset`, and `gp_reset` empties `GP_ENV`; meanwhile `_gpb_endcmd` has
+# already lifted the piece's leading `NAME=VAL` words and its `export NAME=VAL`
+# into the BODY layer. So the piece answered `explicit=0` with no host, the
+# `_fx = 1` arm below never ran, neither `_bad` nor `_ok` stood, `GATE_ARGV_REPO`
+# went out empty and the rule read that as "no repository was named" and skipped
+# the comparison outright. `env GH_REPO=… bash -c '…'` on the OUTER chain was
+# lost the same way. The host travels on the same wire, so one re-seed closes
+# both.
+#
+# THE OUTER ENTRIES GO UNDERNEATH, not on top: `gp_env_get` takes the effective
+# value, and a piece's own assignment has to beat the one it inherited.
+_gp_repo_frag() {
+  local g
+  g=$(_gp_frag_grade "$@") || g=''
+  [ "$g" != '읽기' ] || return 0
+  ( _gprf_env=(${GP_ENV[@]+"${GP_ENV[@]}"})
+    _gprf_clear="${GP_ENV_CLEAR:-0}"
+    _GP_ENTRY_DEPTH=$((GP_DEPTH + 1)); gp_parse "$@"
+    if [ "${#_gprf_env[@]}" -gt 0 ]; then
+      GP_ENV=("${_gprf_env[@]}" ${GP_ENV[@]+"${GP_ENV[@]}"})
+    fi
+    [ "$_gprf_clear" != "1" ] || GP_ENV_CLEAR=1
+    case "$GP_STATUS" in
+      list|opaque) gp_each_sub _gp_repo_frag; exit 0 ;;
+    esac
+    [ "$GP_FAMILY" = gh ] || exit 0
+    _rrc=0; _r=$(gp_gh_repo) || _rrc=$?
+    printf '%s%s%s\n' "$_rrc" "$_GP_TAB" "$_r" ) || true
   return 0
 }
 
@@ -3920,7 +4692,234 @@ _gp_unesc() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# THE CONSUMERS' ENTRY POINT. One parse per act: the first caller parses and
+# every later caller with the same argv reads what is already in `GP_*`. The key
+# is a length-prefixed join of the words, so two argvs that flatten to the same
+# string (`a b`+`c` against `a`+`b c`) do not share a parse. A `$( )` subshell
+# inherits the globals and the key together, so a grader running inside one
+# does not parse again either.
+#
+# The key is written BEFORE the parse, not after: a probe the parser itself runs
+# for the same argv (membership of the innermost argv0 in the grading table)
+# lands back here, and finding the key already set is what keeps that from
+# descending forever.
+# ---------------------------------------------------------------------------
+_GATE_GP_KEY=''
+gate_gp_ensure() {
+  local key="$#" w
+  for w in "$@"; do key="$key ${#w}:$w"; done
+  if [ "$key" != "$_GATE_GP_KEY" ]; then
+    _GATE_GP_KEY="$key"
+    gp_parse "$@"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE WRAPPER CHAIN COMES OFF IN ONE PLACE. `env X=1 gh pr merge 1` is a merge,
+# and the tables that answer for an act have to see the merge rather than the
+# launcher's name. Three tables used to peel it themselves and four did not, so
+# the same act got different answers depending on which table asked: the mark,
+# the ladder rung, the collaboration cell and the deploy trigger all dispatched
+# on `env` and never reached the command inside.
+#
+# THE THREE THAT DID PEEL DISAGREED WITH EACH OTHER TOO, because each rewrote
+# the launcher's option grammar by hand. `env --split-string='gh repo delete
+# o/r --yes' true` was read as an ASSIGNMENT — the `*=*` arm stood above the
+# `-*` arm — so the option was consumed as if it were `NAME=VAL`, the scan moved
+# on to `true`, and a repository deletion graded `읽기`.
+#
+# rc 1 IS A REFUSAL TO GUESS, NOT AN ANSWER. A spelling the parser could not
+# read leaves `GATE_PEELED` empty and the caller decides what its own table says
+# about an argv nobody understood — the grade answers `형태 미상`, the mark and
+# the ladder stay silent, the cells answer no. Choosing one value here would
+# hand every caller the grading table's answer.
+#
+# In `list`, `opaque` and `tool` the parser leaves `GP_INNER` verbatim, so a
+# shell fragment and an unregistered wrapper arrive as the same words they do
+# today.
+# ---------------------------------------------------------------------------
+GATE_PEELED=()
+gate_peel_argv() {
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    form) GATE_PEELED=(); return 1 ;;
+  esac
+  if [ "${#GP_INNER[@]}" -gt 0 ]; then
+    GATE_PEELED=(${GP_INNER[@]+"${GP_INNER[@]}"})
+  else
+    GATE_PEELED=("$@")
+  fi
+  return 0
+}
+
+gate_peel_wrote() {
+  # 0 when the chain that was just peeled WRITES on its own account, so the
+  # grade may not fall below a write. `time -o <file>` is the whole of it today:
+  # the wrapper is gone from the dispatch after the peel and its file operand
+  # would go with it.
+  local r
+  for r in ${GP_WRAP[@]+"${GP_WRAP[@]}"}; do
+    case "$r" in *"${_GP_TAB}output="*) return 0 ;; esac
+  done
+  return 1
+}
+
+# WHAT THE PRE-AUTHORIZATION RULE COMPARES. The rule is a `/bin/sh` process and
+# reads `GATE_ARGV` as one flat string, so a word that carries a space or a
+# newline is split again there: a two-line `--body` made `gh pr create` miss its
+# own `gh pr` row, because the rule saw the second line as a second command.
+# `GATE_ARGV_CANON` is the parsed argv instead — one escaped word per column,
+# one line per command — and the rule compares that whenever it is set.
+#
+# SET OR UNSET ON EVERY ACT. An exported value left over from the previous act
+# would be inherited by the next one and compared in place of its own argv, so
+# the variable is cleared first and set only for the argv in hand. A body the
+# parser split into pieces (`list`, `opaque`) stays on the flat path for now:
+# the runner rows a manifest carries today match the shell word, and moving
+# those onto the pieces belongs with the shell unwrap.
+#
+# THE REPOSITORY RIDES BESIDE THE ARGV, NOT INSIDE IT. A shape names a command,
+# never a repository, so `gh --repo=stranger/x pr merge 1` matches the row `gh
+# pr` word for word — the authorization was for this run's repository and the
+# act is aimed at another one, and nothing in the comparison can see that. The
+# option is deliberately absent from the canonical form (the shape would never
+# match if it were there), so the resolved repository is carried as its own
+# field and compared as its own thing. It is exported only when the act spells
+# a repository: an implicit one is the worktree's remote, which the target row
+# already fixes.
+#
+# THE HOST IS PART OF WHAT IS COMPARED. `gp_gh_repo` splits
+# `https://ghe.example/Nharu/cc-cmds` into a slug and a host, and the slug alone
+# made another server's repository of the same name read as the target's own.
+# The target row has no host field, so the only host it can mean is the default
+# one: an act that spells any other host (`-R` URL, `HOST/OWNER/REPO`,
+# `--hostname`, `GH_HOST`) carries `<host>/<slug>` as its repository — or
+# `<host>/` with no slug named — which the rule's comparison against the bare
+# slug finds unequal.
+#
+# A BODY'S REPOSITORY IS KEYED ON ITS PIECES, NOT ON THE OUTER FAMILY. The
+# canonical form carries a shell body piece by piece, and the repository used to
+# be read only when the OUTER family was `gh` — so `bash -c 'gh -R evil/x pr
+# merge 1'` carried the line `gh pr merge 1` with no repository beside it and
+# the comparison never ran, while the same merge unwrapped parked. Every write
+# piece that is a `gh` act is resolved on its own, the first one that is not the
+# target's is what is carried, and a piece whose named repository cannot be
+# resolved carries its spelling (or `GATE_REPO_UNREAD`) so the comparison fails
+# rather than being skipped.
+GATE_REPO_UNREAD='<unresolvable repository>'
+gate_gh_host_is_default() {
+  # gate_gh_host_is_default <host> — 0 for no host at all or the default one.
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    ''|github.com) return 0 ;;
+  esac
+  return 1
+}
+
+gate_preauth_export() {
+  # gate_preauth_export <alias> <argv...>
+  local alias="$1"; shift
+  local canon r rrc=0 _h
+  unset GATE_ARGV_CANON GATE_ARGV_REPO GATE_TARGET_REPO
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    # A BODY IS CARRIED PIECE BY PIECE, one line per piece that writes, and the
+    # rule requires every line to match a shape of its own. Carrying only the
+    # highest-graded piece would let a manifest that authorized `git push`
+    # carry a release deletion standing next to it through on the same shape.
+    #
+    # A body of nothing but reads produces no lines at all, and that is left
+    # UNSET rather than exported empty: the rule reads an empty value as a
+    # refusal, and "this act wrote nothing" is not a refusal.
+    ok|tool|list|opaque)
+      if canon=$(gp_canon) && [ -n "$canon" ]; then
+        GATE_ARGV_CANON="$canon"
+        export GATE_ARGV_CANON
+      fi ;;
+  esac
+  case "$GP_FAMILY" in
+    gh)
+      r=$(gp_gh_repo) || rrc=$?
+      if [ "$rrc" != "0" ]; then
+        # An unresolvable spelling is carried VERBATIM with no target to match
+        # it, so the rule finds them unequal and issues an approval. Dropping
+        # the field instead would read as "no repository was named", which is
+        # the one thing this argv did do.
+        GATE_ARGV_REPO=$(printf '%s' "$r" | cut -f1)
+        export GATE_ARGV_REPO
+      elif [ "$(printf '%s' "$r" | cut -f2)" = "1" ]; then
+        GATE_ARGV_REPO=$(printf '%s' "$r" | cut -f1)
+        GATE_TARGET_REPO=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || GATE_TARGET_REPO=''
+        export GATE_ARGV_REPO GATE_TARGET_REPO
+      fi
+      _h=$(printf '%s' "$r" | cut -f3)
+      if [ "$rrc" = "0" ] && ! gate_gh_host_is_default "$_h"; then
+        GATE_ARGV_REPO="$_h/$(printf '%s' "$r" | cut -f1)"
+        GATE_TARGET_REPO=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || GATE_TARGET_REPO=''
+        export GATE_ARGV_REPO GATE_TARGET_REPO
+      fi ;;
+  esac
+  case "$GP_STATUS" in
+    list|opaque)
+      local _lines _ln _rest _frc _fr _fx _fh _want _bad='' _ok=''
+      _lines=$(gp_each_sub _gp_repo_frag)
+      [ -n "$_lines" ] || return 0
+      _want=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || _want=''
+      while IFS= read -r _ln; do
+        [ -n "$_ln" ] || continue
+        # Split by hand: TAB is whitespace to `read`, and an empty repository
+        # field between two tabs would shift every field after it.
+        _frc="${_ln%%"$_GP_TAB"*}"; _rest="${_ln#*"$_GP_TAB"}"
+        _fr="${_rest%%"$_GP_TAB"*}"; _rest="${_rest#*"$_GP_TAB"}"
+        _fx="${_rest%%"$_GP_TAB"*}"; _fh="${_rest#*"$_GP_TAB"}"
+        if [ "$_frc" != "0" ]; then
+          [ -n "$_bad" ] || _bad="${_fr:-$GATE_REPO_UNREAD}"
+        elif ! gate_gh_host_is_default "$_fh"; then
+          [ -n "$_bad" ] || _bad="$_fh/$_fr"
+        elif [ "$_fx" = "1" ]; then
+          if [ "$_fr" = "$_want" ]; then _ok="$_fr"
+          else [ -n "$_bad" ] || _bad="$_fr"; fi
+        fi
+      done <<EOF
+$_lines
+EOF
+      if [ -n "$_bad" ]; then
+        GATE_ARGV_REPO="$_bad"; GATE_TARGET_REPO="$_want"
+        export GATE_ARGV_REPO GATE_TARGET_REPO
+      elif [ -n "$_ok" ]; then
+        GATE_ARGV_REPO="$_ok"; GATE_TARGET_REPO="$_want"
+        export GATE_ARGV_REPO GATE_TARGET_REPO
+      fi ;;
+  esac
+  return 0
+}
+
 surface_of_argv0() {
+  # THE PEEL IS THE FIRST THING, so every row below answers about the command
+  # that actually runs. What used to happen here instead was a launcher row per
+  # name, each delegating to a hand-written option scan, and the grade a
+  # launcher produced was only as good as that scan — see `gate_peel_argv`.
+  if ! gate_peel_argv "$@"; then printf '%s' "$GATE_FORM_UNKNOWN"; return 0; fi
+  local _wrote=0
+  gate_peel_wrote && _wrote=1
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ $# -gt 0 ] || { printf '읽기'; return 0; }
+  if [ "$_wrote" = "1" ]; then
+    # The wrapper's own write floors the answer. The inner grade still wins when
+    # it is higher — a wrapper that writes a timing file does not make a merge
+    # smaller than a merge.
+    local _inner; _inner=$(_surface_of_argv0_table "$@")
+    case "$_inner" in
+      읽기|워크트리쓰기) printf '트리밖쓰기' ;;
+      *) printf '%s' "$_inner" ;;
+    esac
+    return 0
+  fi
+  _surface_of_argv0_table "$@"
+}
+
+_surface_of_argv0_table() {
   local cmd="${1##*/}"
   shift
   case "$cmd" in
@@ -4434,6 +5433,19 @@ gate_history_integration() {
   # unwraps so the two tables cannot disagree about which word was wrapped. IF A
   # WRAPPER IS ESCAPING THIS CHECK, LOOK AT ITS GRADE FIRST — the grade decides
   # whether the rule ever gets here.
+  #
+  # THE LAUNCHER CHAIN COMES OFF THE SAME WAY THE GRADE TAKES IT OFF, and for
+  # the same reason the arms below give: two spellings of one skip loop are two
+  # chances to disagree about which word is the command. They did disagree —
+  # `env --split-string='… git merge …' true` was read as an assignment here and
+  # the predicate answered about `true`. An argv the parser could not read
+  # answers 1, which is this table's own direction: over-check, never exempt.
+  if gate_peel_argv "$@"; then
+    set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+    [ "$#" -ge 1 ] || { printf '0'; return 0; }
+  else
+    printf '1'; return 0
+  fi
   local cmd="${1##*/}"
   case "$cmd" in
     # `lockf` wraps, so unwrap it with the same routine the grader uses and ask
@@ -4541,11 +5553,142 @@ gate_git_config_key_execs() {
   # stdout is not a terminal, and every act this gate runs is captured — measured
   # on this machine with `git -c core.pager='touch …' log -1 >/dev/null`, which
   # created no file.
-  case "$1" in
-    core.sshCommand|core.gitProxy|core.editor|core.fsmonitor|core.hooksPath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packObjectsHook|web.browser)
+  #
+  # THE KEY IS COMPARED LOWERCASED. git reads a section and a variable name
+  # without regard to case, so `Core.SshCommand` is the key `core.sshCommand`,
+  # and a list matched as spelled let the first spelling through.
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    core.sshcommand|core.gitproxy|core.editor|core.fsmonitor|core.hookspath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packobjectshook|web.browser)
       return 0 ;;
-    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeIf.*|browser.*)
+    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeif.*|browser.*)
       return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# `gate_git_config_key_persists_exec <key>` — the keys a WRITTEN configuration
+# makes git run later, which is wider than what a `-c` for one captured act can
+# run. The pager keys are off the `-c` list because git starts no pager when its
+# output is captured; a value written to the repository's configuration waits
+# for the next git run on a terminal, and that one is not captured.
+gate_git_config_key_persists_exec() {
+  gate_git_config_key_execs "$1" && return 0
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    core.pager|pager.*) return 0 ;;
+  esac
+  return 1
+}
+
+# `gate_git_sub_is_alias <dir> <git-dir> <subcommand>` — rc 0 when git would run
+# `<subcommand>` as an alias from the configuration it reads in `<dir>`. git
+# expands an alias only for a name that is not one of its own commands, so the
+# callers ask this only where the name is not a command they know.
+gate_git_sub_is_alias() {
+  local d="${1:-.}" gd="$2" s="$3" v
+  case "$s" in ''|-*) return 1 ;; esac
+  v=$( { cd "$d" 2>/dev/null \
+         && git ${gd:+--git-dir="$gd"} config --get "alias.$s" 2>/dev/null; } || true)
+  [ -n "$v" ]
+}
+
+# ---------------------------------------------------------------------------
+# git's GLOBAL OPTIONS, SCANNED IN ONE PLACE. Four readers used to find git's
+# subcommand and each did it differently: the grading table walked a loop of
+# its own, the collaboration cell read `$1` and therefore called `-C` the
+# subcommand, the push-remote check skipped every `-*` word and took the first
+# operand after `push`, and the canonical form kept the globals in the shape it
+# compared. So `git -C <wt> push` was a push to the grader, not a push to the
+# collaboration cell, a push to an undeclared remote for the remote check, and
+# a shape no manifest could authorize.
+#
+# THE ATTACHED SPELLINGS ARE NOT GIT'S. Real git rejects `-C/tmp` and
+# `-cfoo=bar` outright, so accepting them here would be inventing a grammar and
+# grading argv nobody can run — `_GP_GIT_BAD` says `form` for them, the same as
+# for an option this scanner does not know.
+# ---------------------------------------------------------------------------
+_GP_GIT_SUB=''
+_GP_GIT_NSKIP=0
+_GP_GIT_C=''
+_GP_GIT_GITDIR=''
+_GP_GIT_BAD=''
+_GP_GIT_CKEY=''
+gate_git_chdir_fold() {
+  # gate_git_chdir_fold <so far> <next -C value> — git resolves each `-C`
+  # against the directory the previous ones already selected, so an absolute
+  # value replaces what came before and a relative one extends it.
+  #
+  # ONE RULE, THREE READERS. The parser overwrote (`_GP_GIT_C="$2"`) while the
+  # second-base resolver folded, so the directory a check resolved was not the
+  # directory the act wrote in — a two-`-C` push was measured against the first
+  # `-C` by one reader and the last by the other. Every reader of `-C` calls
+  # this now; a fold written out a second time is how the two drifted apart.
+  case "$2" in
+    /*) printf '%s' "$2" ;;
+    *)  if [ -n "$1" ]; then printf '%s/%s' "$1" "$2"; else printf '%s' "$2"; fi ;;
+  esac
+}
+_gp_git_scan() {
+  # _gp_git_scan <git's args after argv0...>
+  _GP_GIT_SUB=''; _GP_GIT_NSKIP=0; _GP_GIT_C=''; _GP_GIT_GITDIR=''
+  _GP_GIT_BAD=''; _GP_GIT_CKEY=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C)
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_C=$(gate_git_chdir_fold "$_GP_GIT_C" "$2")
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      -c)
+        # EVERY key, not the last one. A second `-c` used to overwrite the
+        # first, so an exec key could be hidden behind a harmless one standing
+        # after it.
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_CKEY="$_GP_GIT_CKEY${2%%=*}$_GP_LF"
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      # `--exec-path` moves the directory git runs its own subcommands from and
+      # `--config-env` names an environment variable holding one of the same
+      # keys `-c` carries; neither is readable here.
+      --exec-path|--exec-path=*|--config-env|--config-env=*)
+        _GP_GIT_BAD=form; return 0 ;;
+      --git-dir)
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_GITDIR="$2"; _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      --git-dir=*)
+        _GP_GIT_GITDIR="${1#*=}"; _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      --work-tree|--namespace|--attr-source)
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      --work-tree=*|--namespace=*|--attr-source=*|--list-cmds=*)
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--no-advice|--no-lazy-fetch)
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      -*) _GP_GIT_BAD=form; return 0 ;;
+      *)  _GP_GIT_SUB="$1"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# `_gp_git_key_redirects <key>` — 0 when this `-c` key changes WHERE a push
+# goes. It is separate from the exec predicate because the two say different
+# things: one names a program git will run, this one names a destination. Real
+# git honours `-c remote.origin.pushurl=<other>` and pushes there, and the
+# remote check resolved `origin` from the repository on disk and reported a
+# match for a push that never went near it.
+#
+# THE KEYS THAT CHOOSE THE REMOTE OR THE REFS ARE REDIRECTS TOO. A push that
+# names no remote goes where `branch.<b>.pushRemote`, `remote.pushDefault` and
+# `branch.<b>.remote` send it, so `git -c remote.pushDefault=<other> push`
+# pushed to `<other>` while the remote check, asked about a push that named
+# nothing, passed it. `remote.*.push`, `remote.*.mirror` and `push.*` choose
+# WHICH refs go — `mirror` pushes and deletes every one — so the rung that reads
+# the refspecs written in argv cannot see where they land.
+_gp_git_key_redirects() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    remote.*.url|remote.*.pushurl|url.*) return 0 ;;
+    remote.pushdefault|branch.*.pushremote|branch.*.remote|branch.*.merge) return 0 ;;
+    remote.*.push|remote.*.mirror|push.*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -4591,37 +5734,30 @@ surface_of_git() {
   # next word. Guessing wrong would shift the subcommand out of view and grade a
   # `push` by whatever word landed in its place — a wrong grade is worse here
   # than no grade, because `등급 미상` refuses and a wrong grade performs.
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      # `-c <key>=<value>` CAN NAME A PROGRAM. A dozen git configuration keys are
-      # command lines git runs itself — a pager, an ssh command, a credential
-      # helper, a filter driver — so `git -c core.sshCommand=… fetch` is not the
-      # fetch its verb says it is. The keys are refused as a FORM rather than
-      # graded, because what they run is arbitrary and invisible to this table.
-      -c)
-        [ $# -ge 2 ] || { printf '등급 미상'; return 0; }
-        if gate_git_config_key_execs "${2%%=*}"; then
-          printf '%s' "$GATE_FORM_UNKNOWN"; return 0
-        fi
-        shift 2 ;;
-      # `--exec-path` moves the directory git runs its own subcommands from and
-      # `--config-env` names an environment variable holding one of those same
-      # keys; neither is readable here.
-      --exec-path|--exec-path=*|--config-env|--config-env=*)
-        printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-      -C|--git-dir|--work-tree|--namespace)
-        [ $# -ge 2 ] || { printf '등급 미상'; return 0; }
-        shift 2 ;;
-      --git-dir=*|--work-tree=*|--namespace=*)
-        shift ;;
-      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects)
-        shift ;;
-      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
-        shift ;;
-      -*) printf '등급 미상'; return 0 ;;
-      *)  break ;;
-    esac
-  done
+  _gp_git_scan "$@"
+  case "$_GP_GIT_BAD" in
+    form)    printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+    unknown) printf '등급 미상'; return 0 ;;
+  esac
+  # `-c <key>=<value>` CAN NAME A PROGRAM. A dozen git configuration keys are
+  # command lines git runs itself — a pager, an ssh command, a credential
+  # helper, a filter driver — so `git -c core.sshCommand=… fetch` is not the
+  # fetch its verb says it is. The keys are refused as a FORM rather than
+  # graded, because what they run is arbitrary and invisible to this table. A
+  # key that redirects the remote is refused the same way and for the same
+  # reason: what it reaches is not what the verb says it reaches.
+  if [ -n "$_GP_GIT_CKEY" ]; then
+    local _k
+    while IFS= read -r _k; do
+      [ -n "$_k" ] || continue
+      if gate_git_config_key_execs "$_k" || _gp_git_key_redirects "$_k"; then
+        printf '%s' "$GATE_FORM_UNKNOWN"; return 0
+      fi
+    done <<EOF
+$_GP_GIT_CKEY
+EOF
+  fi
+  shift "$_GP_GIT_NSKIP"
   case "${1:-}" in
     status|log|show|diff|rev-parse|rev-list|merge-base|blame|cat-file|ls-files|ls-tree|check-ignore|check-attr|for-each-ref|show-ref|diff-tree|describe|name-rev|shortlog|count-objects|cherry|range-diff|version|merge-tree|grep|ls-remote)
       # These print and do not change a ref — EXCEPT where an option turns one
@@ -4679,7 +5815,26 @@ surface_of_git() {
     worktree) surface_of_git_worktree "$@" ;;
     branch)   surface_of_git_branch "$@" ;;
     config)   surface_of_git_config "$@" ;;
-    add|commit|checkout|switch|restore|rebase|merge|cherry-pick|revert|stash|apply|am|reset|tag)
+    # `rebase -x <cmd>` RUNS <cmd> THROUGH THE SHELL after every commit it
+    # replays, so it is not the local write its verb says. It sat on the write
+    # arm below and `git rebase -x 'gh repo delete <o>/<r> --yes' HEAD~1` was
+    # admitted on a run-local declaration, while the same command in `bash -c`
+    # floored at an external write with the destructive mark. Refused as a form,
+    # like `--ext-diff` and `--upload-pack` above. A short-option bundle holding
+    # `x`, and the abbreviations git accepts for `--exec`, are the same option.
+    rebase)
+      local a
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --exec|--exec=*|--exe|--exe=*|--ex|--ex=*)
+            printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+          --*) ;;
+          -*x*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+        esac
+      done
+      printf '워크트리쓰기' ;;
+    add|commit|checkout|switch|restore|merge|cherry-pick|revert|stash|apply|am|reset|tag)
       printf '워크트리쓰기' ;;
     remote)   surface_of_git_remote "$@" ;;
     # `fetch` and `clone` left this arm: the first only moves remote-tracking
@@ -4687,7 +5842,20 @@ surface_of_git() {
     # `push` and `pull` stay — one publishes and the other merges what it fetched.
     push|pull)
       printf '외부상태변경' ;;
-    *) printf '등급 미상' ;;
+    # A NAME THIS TABLE DOES NOT KNOW MAY BE AN ALIAS, and an alias runs whatever
+    # it expands to — `push` to any URL, or a shell command with `!`. As `등급
+    # 미상` it could be rescued by a local-write declaration before the push
+    # check was ever asked, and the alias itself can be planted by a `git config`
+    # act. It is resolved where the act runs and refused as a form; a name with
+    # no alias behind it stays `등급 미상`.
+    *)
+      local _ad="${GATE_ACT_CWD:-.}"
+      [ -z "$_GP_GIT_C" ] || _ad=$(gate_git_chdir_fold "$_ad" "$_GP_GIT_C")
+      if gate_git_sub_is_alias "$_ad" "$_GP_GIT_GITDIR" "${1:-}"; then
+        printf '%s' "$GATE_FORM_UNKNOWN"
+      else
+        printf '등급 미상'
+      fi ;;
   esac
 }
 
@@ -4774,7 +5942,16 @@ surface_of_git_config() {
   # while letting a rewrite of $HOME through as a read is the hole this repair
   # exists to close. A query spelled with `--get` still grades exactly `읽기`,
   # so the form the pipeline actually runs loses nothing.
-  local a skip=1 want=0 scope='' query=0
+  #
+  # A WRITE IS ALSO JUDGED BY THE KEY IT WRITES. The keys the `-c` spelling is
+  # refused for — a program git runs, a remote git pushes to — were written to
+  # the repository's own configuration as a plain worktree write, so `git config
+  # alias.z push` or `git config core.sshCommand <command>` planted what a later
+  # act would run. Every word that is not an option is asked, not only the one
+  # in the key's position: an option this row does not know may take a value,
+  # and a value that happens to spell such a key costs a refusal, not a pass.
+  local a skip=1 want=0 scope='' query=0 unknown=0
+  local -a words=()
   for a in "$@"; do
     # The first word is `config` itself.
     if [ "$skip" = 1 ]; then skip=0; continue; fi
@@ -4786,139 +5963,172 @@ surface_of_git_config() {
       --file|-f)          scope='트리밖쓰기'; want=1 ;;
       --file=*)           scope='트리밖쓰기' ;;
       --local|--worktree) : ;;
-      -*) printf '등급 미상'; return 0 ;;
-      # A key or a value. Neither decides anything on its own — the options
-      # above already did.
-      *) : ;;
+      -*) unknown=1 ;;
+      # A key or a value. Neither decides the scope — the options above did.
+      *) words[${#words[@]}]="$a" ;;
     esac
   done
+  if [ "$query" = 0 ]; then
+    for a in ${words[@]+"${words[@]}"}; do
+      if gate_git_config_key_persists_exec "$a" || _gp_git_key_redirects "$a"; then
+        printf '%s' "$GATE_FORM_UNKNOWN"; return 0
+      fi
+    done
+  fi
+  [ "$unknown" = 1 ] && { printf '등급 미상'; return 0; }
   [ "$want" = 1 ] && { printf '등급 미상'; return 0; }
   [ "$query" = 1 ] && { printf '읽기'; return 0; }
   printf '%s' "${scope:-워크트리쓰기}"
 }
 
 surface_of_gh() {
-  # `-R/--repo` rides BEFORE the verb, so it is skipped by name — otherwise
-  # `gh -R o/r pr view` reads `-R` as the group and grades unknown.
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -R|--repo)
-        [ $# -ge 2 ] || { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; }
-        shift 2 ;;
-      --repo=*) shift ;;
-      *) break ;;
-    esac
-  done
+  # THE FORM IS READ BY THE PARSER, NOT BY A SCAN OF `$*`. The rows below are
+  # the same rows; what changed is what reaches them. Skipping `-R` by name
+  # answered for the one spelling it was written against and left `-Ro/r`,
+  # `-R=o/r` and every bundled short flag arriving as a different argv shape —
+  # `gh -qRo/r pr merge` put `-qRo/r` in the slot the group is read from. And a
+  # substring scan of `" $* "` cannot tell a flag from an operand that happens
+  # to spell one, so `--web` inside a pull request's body refused the act.
+  #
+  # `gh` is spelled literally rather than taken from argv0: the family is chosen
+  # by basename and the gh grammar does not change with where the binary sits.
+  # WHICH path argv0 named is the pre-authorization rule's question, and it is
+  # answered there — putting it here would grade two runs of the same command
+  # differently for a reason this axis does not measure.
+  #
+  # The parse already in `GP_*` is the whole act's, wrapper chain included, and
+  # this row does not make another one: a second parse of the peeled words alone
+  # would drop everything the chain carried.
+  case "$GP_STATUS" in
+    # An unreadable form is not an unknown tool. The parser refuses a verb gh
+    # itself does not have, so everything that reaches the rows below is a real
+    # command and the unknown arm keeps its old meaning: a command with no row,
+    # which a declaration may still rescue.
+    form) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+  esac
+  local grp="${GP_PATH[0]:-}" leaf="${GP_PATH[1]:-}"
   # `--web` and its short spelling open a BROWSER, which is a program this table
   # cannot answer for. Refused as a form wherever it appears, before the verb is
-  # read: `gh pr view -w` is not the read that `gh pr view` is.
-  case " $* " in
-    *" --web "*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-  esac
-  case "${1:-}" in
-    pr|issue|run|workflow|repo|release|project|label|cache|secret|ssh-key|gpg-key|variable|gist|config|alias|ruleset|org|search|status|browse|codespace|extension)
-      case " $* " in
-        *" -w "*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-      esac ;;
-  esac
-  case "${1:-}" in
+  # read: `gh pr view -w` is not the read that `gh pr view` is. All three
+  # spellings — `-w`, `--web`, `--web=true` — are one option to the parser, so
+  # the same act no longer takes three different grades.
+  if gp_has web; then printf '%s' "$GATE_FORM_UNKNOWN"; return 0; fi
+  case "$grp" in
     api) surface_of_gh_api "$@" ;;
     # THE READ VERBS OF EACH GROUP, enumerated positively. Blanket-grading a
     # group by its noun is what made `gh pr view`, `gh issue list` and `gh run
     # view` issue approvals — 12 of the 13 recoverable act approvals in the
     # corpus were exactly these three shapes.
     pr)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|status|diff|checks) printf '읽기' ;;
         checkout) printf '워크트리쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     issue)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|status) printf '읽기' ;;
-        develop) case " $* " in *" --list "*) printf '읽기' ;; *) printf '외부상태변경' ;; esac ;;
+        develop) if gp_has list; then printf '읽기'; else printf '외부상태변경'; fi ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     run)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|watch) printf '읽기' ;;
         download) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     workflow)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     repo)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
-        set-default) case " $* " in *" --view "*) printf '읽기' ;; *) printf '워크트리쓰기' ;; esac ;;
+        set-default) if gp_has view; then printf '읽기'; else printf '워크트리쓰기'; fi ;;
         clone) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     release)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
         download) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     project)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|field-list|item-list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     label|cache|secret|ssh-key|gpg-key)
-      case "${2:-}" in
+      case "$leaf" in
         list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     variable)
-      case "${2:-}" in
+      case "$leaf" in
         list|get) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     gist)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
         clone) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     config)
-      case "${2:-}" in
+      case "$leaf" in
         get|list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '트리밖쓰기' ;;
       esac ;;
     alias)
-      case "${2:-}" in
+      case "$leaf" in
         list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '트리밖쓰기' ;;
       esac ;;
     ruleset)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|check) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     org)
-      case "${2:-}" in
+      case "$leaf" in
         list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     search|status) printf '읽기' ;;
+    # TWO GROUPS THAT USED TO FALL THROUGH TO THE UNKNOWN ARM, and falling
+    # through was the wrong direction for both. `등급 미상` is rescuable by a
+    # declaration, so a run could declare either of these a read and perform it.
+    #
+    # `browse` opens a browser for the same reason `--web` does, and the arm
+    # above already refuses that as a form — the bare spelling has to give the
+    # same answer or the refusal depends on which flag the caller reached for.
+    browse) printf '%s' "$GATE_FORM_UNKNOWN" ;;
+    # An extension is third-party code installed outside the worktree and then
+    # RUN by gh. `exec` takes no row at all: what it runs is not in this argv,
+    # so nothing here can answer for it, and the form token is the answer that
+    # no declaration widens.
+    extension)
+      case "$leaf" in
+        list) printf '읽기' ;;
+        install|upgrade|remove|create) printf '트리밖쓰기' ;;
+        *) printf '%s' "$GATE_FORM_UNKNOWN" ;;
+      esac ;;
     # `project` sits beside `issue` because filing an issue and putting it on the
     # board are one obligation, not two. A run that files the issue and then
     # cannot reach the board leaves the tracking half-done in the direction that
@@ -4931,7 +6141,7 @@ surface_of_gh() {
     # rewrites the credential the whole separation rests on, so it stays unknown:
     # an act that reached it would be editing the thing that limits it.
     auth)
-      case "${2:-}" in
+      case "$leaf" in
         status|token) printf '읽기' ;;
         *) printf '등급 미상' ;;
       esac ;;
@@ -4946,26 +6156,24 @@ surface_of_gh_api() {
   # spelling that submits several inline comments as ONE review
   # (`POST …/pulls/{n}/reviews`; `gh pr review` carries no comments array), and
   # every read of a value `gh pr view --json` does not expose along with it.
-  shift
-  local m="" body=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -X|--method)
-        [ $# -ge 2 ] || break
-        m="$2"; shift 2 ;;
-      --method=*) m="${1#--method=}"; shift ;;
-      -X*)        m="${1#-X}"; shift ;;
-      -f|-F|--field|--raw-field|--input)
-        body=1
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      -f*|-F*)    body=1; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      *) shift ;;
-    esac
-  done
+  # THE OPTIONS COME FROM THE PARSE, and the caller has already made it — this
+  # is reached from the row above, which parsed the same argv. The loop this
+  # replaces read `-X DELETE` and `-XDELETE` and missed `-X=DELETE`,
+  # `--method=DELETE` bundled behind another short flag, and `-iXDELETE`
+  # entirely; every one of those is the same request to gh.
+  #
+  # The same loop also walked past `--field=body=x` into the `*) shift` arm, so
+  # a request that gh sends as a POST was graded as the GET it is not.
+  # `gp_has` asks whether a BOOL option is true, which is not the question here:
+  # a body flag carries a value, so what matters is that it was given at all.
+  # `gp_opt` answering rc 0 is that presence.
+  local m body=0
+  m=$(gp_opt method) || m=''
+  if gp_opt field >/dev/null 2>&1 \
+     || gp_opt raw-field >/dev/null 2>&1 \
+     || gp_opt input >/dev/null 2>&1; then
+    body=1
+  fi
   # An explicit method wins. Otherwise a field or an input body is exactly what
   # makes gh itself switch from GET to POST, so the table reads the same signal
   # the tool does rather than a second, divergent one.
@@ -5269,6 +6477,14 @@ gate_answer_mark_max() {
 }
 
 gate_act_mark() {
+  # A mark is a claim about what the act DOES, so it is made about the peeled
+  # command. Before the peel `env AWS_PROFILE=x aws secretsmanager
+  # get-secret-value` dispatched on `env`, found no row, and the credential read
+  # carried no mark at all. An unreadable argv takes no mark, for the reason the
+  # gh arm below already states.
+  gate_peel_argv "$@" || { printf '\t'; return 0; }
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || { printf '\t'; return 0; }
   local cmd="${1##*/}"; shift 2>/dev/null || true
   local all=" $* "
 
@@ -5294,14 +6510,18 @@ gate_act_mark() {
   # ---- 비밀출력 -----------------------------------------------------------
   case "$cmd" in
     gh)
-      case "${1:-}:${2:-}" in
-        auth:token) printf '비밀출력\ttoken'; return 0 ;;
-      esac
-      case "${1:-}:${2:-}" in
-        auth:status)
-          case "$all" in
-            *" -t "*|*" --show-token "*) printf '비밀출력\t--show-token'; return 0 ;;
-          esac ;;
+      # READ FROM THE PARSE for the same reason the grading table does: `-at` is
+      # how the flag is actually typed and the substring scan below saw neither
+      # half of it, nor `--show-token=true`. A form the parser refuses takes no
+      # mark — the grade already answers `형태 미상` there, and a mark on an argv
+      # nobody could read would be a claim about words that were not understood.
+      # The parse is the act's, made once at the peel above.
+      case "$GP_STATUS" in form) ;; *)
+        case "${GP_PATH[*]:-}" in
+          'auth token') printf '비밀출력\ttoken'; return 0 ;;
+          'auth status')
+            if gp_has show-token; then printf '비밀출력\t--show-token'; return 0; fi ;;
+        esac ;;
       esac ;;
     aws)
       case "${1:-}" in
@@ -5470,11 +6690,23 @@ gate_act_mark() {
         [ "$g" = "delete" ] && { printf '파괴\tdelete'; return 0; }
       done ;;
     gh)
-      case "${2:-}" in
-        delete|item-delete|field-delete) printf '파괴\t%s' "$2"; return 0 ;;
-      esac
-      case "${1:-}" in
-        api) case "$all" in *" -X DELETE "*|*" --method DELETE "*) printf '파괴\tDELETE'; return 0 ;; esac ;;
+      # Same parse as the mark above, made once at the peel.
+      case "$GP_STATUS" in form) ;; *)
+        case "${GP_PATH[1]:-}" in
+          delete|item-delete|field-delete)
+            printf '파괴\t%s' "${GP_PATH[1]}"; return 0 ;;
+        esac
+        # `gh api` deletes by METHOD, and the method has six spellings. The
+        # scan this replaces knew two of them, so `-XDELETE`, `-X=DELETE`,
+        # `--method=DELETE` and a DELETE bundled behind another short flag all
+        # reached the ledger with no mark at all — the same request, four ways,
+        # and only one of them declared destructive.
+        case "${GP_PATH[0]:-}" in
+          api)
+            case "$(gp_opt method)" in
+              DELETE|delete) printf '파괴\tDELETE'; return 0 ;;
+            esac ;;
+        esac ;;
       esac ;;
     curl)
       case "$all" in
@@ -5532,6 +6764,13 @@ gate_act_mark() {
 # the table has never listed (`dash`, `python`, `perl`) is not opaque, it is
 # unknown, and it keeps taking the unknown path in both modes.
 #
+# THE SWITCH READS THE PEELED ARGV, like every other table. It read `${1##*/}`,
+# so `env bash -c 'gh repo delete o/r --yes'` graded the peeled `bash` row while
+# this answered 0 on `env` — the floor was never computed and the body's
+# external act passed as the shell's worktree write. An argv the parser could
+# not read is refused as `형태 미상` before this matters, so the raw words are
+# kept only for that case.
+#
 # THE REGISTERED WRAPPERS ARE PEELED FIRST, with the table's own helpers. This
 # axis asked `case "${1##*/}"` once and stopped, so a wrapper in front of an
 # interpreter answered 0 — and 0 is not a small error here: the floor and the
@@ -5544,6 +6783,7 @@ gate_act_mark() {
 # at. `xargs` and `sudo` stay unpeeled here for the reason the table gives: what
 # they run is not a word this file can honestly read.
 gate_argv_opaque() {
+  if gate_peel_argv "$@"; then set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}; fi
   local cmd="${1##*/}"; shift 2>/dev/null || true
   case "$cmd" in
     lockf)   gate_unwrap_lockf   gate_argv_opaque '0' '1' "$@"; return 0 ;;
@@ -5622,6 +6862,55 @@ gate_answer_floor_max() {
 }
 
 gate_opaque_floor() {
+  # THE PIECES THE PARSER ALREADY CUT, WHEN IT COULD CUT ANY. The hand scan
+  # below splits on separator bytes and then hopes the first word of each piece
+  # is a command; the parser knows which words are command positions, which are
+  # assignments and which are data, so where it produced pieces they are what
+  # the floor is computed over. The scan stays for what the parser leaves
+  # whole — `xargs`, `sudo`, a table-less argv0 whose operands name a command.
+  #
+  # A PIECE WITH NO ROW CONTRIBUTES `외부상태변경`, and that is the fail-open
+  # this changes. The old loop promoted only the four real grades, so a piece
+  # naming a tool the table has never heard of was skipped in silence and a
+  # body of nothing but unregistered tools floored at `읽기` — the widest
+  # possible answer for the case where the gate knows the least.
+  #
+  # A REDIRECTION IS A WRITE THE PIECES DO NOT SHOW. The parser takes `> file`
+  # out of the piece's words and records it in `GP_REDIR`, so `bash -c 'cat a >
+  # /outside/x'` was a body of one read piece and floored at `읽기` — declared
+  # `읽기`, the write was accepted and recorded as a read. A redirection that
+  # writes a file contributes the local write it implies, which is the part of
+  # the floor contract that was never wired.
+  #
+  # THE REDIRECTION IS ENOUGH ON ITS OWN — IT DOES NOT NEED A PIECE TO STAND
+  # BESIDE. `sh -c '> /outside/x'` has the redirection as its ONLY effect: the
+  # tokenizer files it in `GP_REDIR` and marks the body opaque, but the piece
+  # list comes back empty because there is no command word, so this whole branch
+  # was skipped. The hand scan then read a line whose first word is `>`, got
+  # `등급 미상`, promoted nothing, and floored the write at `읽기`. That is the
+  # same outside-the-worktree write the piece-bearing spelling already closes,
+  # reached by a SHORTER argv.
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    list|opaque)
+      local _redir_w=0
+      ! gate_redir_writes_file || _redir_w=1
+      if [ "${#GP_SUB[@]}" -gt 0 ] || [ "$_redir_w" = "1" ]; then
+        _GATE_FLOOR_G='읽기'; _GATE_FLOOR_I=$(surface_index '읽기')
+        _GATE_FLOOR_M=''; _GATE_FLOOR_T=''
+        if [ "$_redir_w" = "1" ]; then
+          _GATE_FLOOR_G='워크트리쓰기'; _GATE_FLOOR_I=$(surface_index '워크트리쓰기')
+        fi
+        gp_each_sub gate_opaque_floor_frag
+        printf '%s\t%s\t%s' "$_GATE_FLOOR_G" "$_GATE_FLOOR_M" "$_GATE_FLOOR_T"
+        return 0
+      fi ;;
+  esac
+  # THE HAND SCAN BRANCHES ON THE PEELED ARGV, as the opaque axis does. On the
+  # raw argv0 `env bash -c '<body>'` put `env` in the switch below, and its whole
+  # argument list — `bash`, `-c`, the body as one word — became the payload, so
+  # the body's first command never stood in a command position.
+  if gate_peel_argv "$@"; then set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}; fi
   local cmd="${1##*/}"; shift 2>/dev/null || true
   # THE SAME PEEL THE OPAQUE AXIS APPLIES, and it has to be here rather than
   # only there. `lockf -k -t 0 <lock> sh -c 'curl …'` has `-k` in the first word
@@ -5707,6 +6996,80 @@ EOF
   printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
 }
 
+# `gate_redir_writes_file` — 0 when the parsed body redirects output into a
+# file: any output operator whose target is not `/dev/null`, and a descriptor
+# duplication whose target is a word rather than a descriptor (`>&file` writes
+# the file). Input operators and here-documents read, and are not counted.
+gate_redir_writes_file() {
+  local r op tgt
+  for r in ${GP_REDIR[@]+"${GP_REDIR[@]}"}; do
+    op="${r#*"$_GP_TAB"}"; tgt="${op#*"$_GP_TAB"}"; op="${op%%"$_GP_TAB"*}"
+    case "$op" in
+      '>&')
+        case "$tgt" in [0-9]|[0-9][0-9]|-|/dev/null) ;; *) return 0 ;; esac ;;
+      '>'|'>>'|'>|'|'&>'|'&>>'|'<>')
+        [ "$tgt" = /dev/null ] || return 0 ;;
+    esac
+  done
+  return 1
+}
+
+_GATE_FLOOR_G=''
+_GATE_FLOOR_I=''
+_GATE_FLOOR_M=''
+_GATE_FLOOR_T=''
+gate_opaque_floor_frag() {
+  # `gp_each_sub` callback — one simple command out of the body. Builtins and
+  # keywords answer `읽기` through `_gp_frag_grade`, which is the same helper
+  # the canonical form uses, so the two cannot disagree about which piece is a
+  # write.
+  [ "$#" -ge 1 ] || return 0
+  local g fi_ mk
+  g=$(_gp_frag_grade "$@") || g=''
+  case "$g" in
+    읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;;
+    # A piece with no row, and a piece whose own spelling the parser refused.
+    # The second cannot normally arrive — a body holding one parses `form` as a
+    # whole and is refused before any floor is asked for — so it is answered
+    # here the same way rather than left to fall through to a read.
+    *) g='외부상태변경' ;;
+  esac
+  fi_=$(surface_index "$g" 2>/dev/null) || fi_=''
+  if [ -n "$fi_" ] && [ "$fi_" -gt "$_GATE_FLOOR_I" ]; then
+    _GATE_FLOOR_I="$fi_"; _GATE_FLOOR_G="$g"
+  fi
+  mk=$(gate_act_mark "$@")
+  case "$mk" in
+    비밀출력*) _GATE_FLOOR_M='비밀출력'; _GATE_FLOOR_T="${mk#*	}" ;;
+    파괴*) [ "$_GATE_FLOOR_M" = "비밀출력" ] || { _GATE_FLOOR_M='파괴'; _GATE_FLOOR_T="${mk#*	}"; } ;;
+  esac
+  return 0
+}
+
+# `gate_floor_defined <argv...>` — 0 when this act HAS something the floor was
+# computed from, which is the domain the floor is defined on. An act the parser
+# left whole (`ok`, `tool`) has one thing in it and the grading table already
+# answered about that thing; printing a floor beside that answer would be
+# printing the answer twice.
+#
+# THE DOMAIN IS THE SAME ONE `gate_opaque_floor` RAISES ON. A redirection with
+# no command word beside it — `sh -c '> /outside/x'` — has a floor of
+# `워크트리쓰기` and no pieces at all, so a predicate keyed on the piece count
+# alone answered "no floor" for the very body whose floor had just been
+# computed. The value reached the comparator, which reads `GATE_FLOOR`
+# directly, and stopped short of everything that asks here first: the `하한=`
+# field on the row and the second line of `grade`. The morning report then
+# showed an act with no floor where a floor had refused one.
+gate_floor_defined() {
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    list|opaque)
+      [ "${#GP_SUB[@]}" -gt 0 ] && return 0
+      gate_redir_writes_file && return 0 ;;
+  esac
+  return 1
+}
+
 gate_opaque_floor_find_inner() {
   # The floor of ONE `-exec` inner command of a `find`.
   #
@@ -5759,8 +7122,15 @@ gate_unwrap_env() {
       -i|-0|-v|--) shift ;;
       -u) [ $# -ge 2 ] || { printf '%s' "$unknown_opt"; return 0; }; shift 2 ;;
       -u*) shift ;;
-      *=*) shift ;;
+      # AN OPTION IS TESTED BEFORE AN ASSIGNMENT, because `--chdir=/x` and
+      # `--split-string=…` match both shapes and only one of them is right.
+      # With `*=*` first, every option carrying an `=` was eaten as a `NAME=VAL`
+      # assignment and the scan walked on: the unreadable option produced no
+      # refusal, just a silently empty second base — the one fail-OPEN spelling
+      # left among the launchers, which all the separated forms close. An
+      # assignment cannot start with a dash, so this order does not reach one.
       -*) printf '%s' "$unknown_opt"; return 0 ;;
+      *=*) shift ;;
       *) break ;;
     esac
   done
@@ -5850,6 +7220,11 @@ surface_of_time()    { gate_unwrap_time            surface_of_argv0 '읽기' "$G
 
 ladder_of_argv0() {
   [ "$#" -ge 1 ] || return 0
+  # Same peel, same reason as the grading table: the rung belongs to the command
+  # that runs, and an argv the parser could not read claims no rung at all.
+  gate_peel_argv "$@" || return 0
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || return 0
   local cmd="${1##*/}"
   shift
   case "$cmd" in
@@ -5911,10 +7286,16 @@ ladder_of_git() {
 }
 
 ladder_of_gh() {
-  case "${1:-}" in
+  # SILENCE ON AN UNREADABLE FORM, not a rung. This table's default is already
+  # the empty string, and a form the parser refused is exactly the case where
+  # asserting a rung would be guessing from words nobody could read. The grading
+  # table answers `형태 미상` for the same argv and that is what parks it.
+  # The parse is the act's, made once at the peel in `ladder_of_argv0`.
+  case "$GP_STATUS" in form) return 0 ;; esac
+  case "${GP_PATH[0]:-}" in
     api) ladder_of_gh_api "$@" ;;
     pr)
-      case "${2:-}" in
+      case "${GP_PATH[1]:-}" in
         merge)  printf '머지' ;;
         create) printf 'PR' ;;
         # `view`, `list`, `review`, `comment` and everything else this row does
@@ -5934,30 +7315,18 @@ ladder_of_gh_api() {
   # method resolution `surface_of_gh_api` does is done here, and the PATH decides
   # on top of it: a non-GET against `…/pulls/<n>/merge` is a merge, and every
   # other endpoint asserts nothing.
-  shift
-  local m="" body=0 path=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -X|--method)
-        [ $# -ge 2 ] || break
-        m="$2"; shift 2 ;;
-      --method=*) m="${1#--method=}"; shift ;;
-      -X*)        m="${1#-X}"; shift ;;
-      -f|-F|--field|--raw-field|--input)
-        body=1
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      -f*|-F*)    body=1; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      # The first bare word is the endpoint. Anything later is a positional this
-      # table has no use for, so the first one wins and the scan continues —
-      # stopping here would leave a trailing `-X` unread.
-      -*) shift ;;
-      *)  [ -n "$path" ] || path="$1"; shift ;;
-    esac
-  done
+  # The caller parsed this argv; the endpoint is the first positional and the
+  # method is an option, both already separated from each other. The loop this
+  # replaces had to decide which bare word was the endpoint while skipping
+  # option VALUES by a hand-kept list of flag names — a list that went stale
+  # against gh's own and then read an option's value as the endpoint.
+  local m body=0 path="${GP_POS[0]:-}"
+  m=$(gp_opt method) || m=''
+  if gp_opt field >/dev/null 2>&1 \
+     || gp_opt raw-field >/dev/null 2>&1 \
+     || gp_opt input >/dev/null 2>&1; then
+    body=1
+  fi
   if [ -z "$m" ]; then
     if [ "$body" = "1" ]; then m=POST; else m=GET; fi
   fi
@@ -10460,6 +11829,14 @@ gate_main() {
       local g
       g=$(surface_of_argv0 "$@")
       printf '축2=%s\n' "$g"
+      # THE SECOND LINE, FOR ACTS THAT HAVE PIECES. `grade` is what a caller
+      # runs to find out what to declare, and for a shell body the answer it
+      # needs is not the shell's row — it is the floor the comparator will hold
+      # the declaration to. Printed only where the floor is defined, so a caller
+      # never has to tell an empty field from an absent one.
+      if gate_floor_defined "$@"; then
+        printf '하한=%s\n' "$(gate_opaque_floor "$@" | cut -f1)"
+      fi
       # `[ … ] && exit` as the arm's last command hands the FALSE test's status
       # to the caller — a successful grade then exits 1 and reads as a refusal.
       #
@@ -11953,7 +13330,7 @@ gate_claudemd_slot_guard() {
   # target as an element, which the sanctioned form already does.
   argv0=${1##*/}
   case "$argv0" in
-    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf|genv|gnice|gnohup|gtime|gtimeout|gstdbuf)
       joined=$(printf '%s ' "$@")
       case "$joined" in
         *CLAUDE.md*|*CLAUDE.local.md*)
@@ -12324,8 +13701,15 @@ gate_argv0_wraps() {
   # gate_argv0_wraps <argv0> — rc 0 when argv0 is an interpreter or a wrapper
   # whose later arguments are program text: the list the CLAUDE.md slot guard
   # and the manifest guard's second arm already read that way.
+  #
+  # THE THREE LISTS ARE ONE LIST SPELLED THREE TIMES, and every launcher the
+  # parser peels belongs in it — the `g` spellings included. Without them
+  # `gnohup bash -c '…'` was graded as its inner `bash` while this answered 1,
+  # so the interpreter-word checks of both write guards were skipped for a
+  # program the plain `nohup` spelling had refused. `test-run.sh` holds the
+  # three spellings equal and the parser's launcher names inside them.
   case "${1##*/}" in
-    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf|genv|gnice|gnohup|gtime|gtimeout|gstdbuf)
       return 0 ;;
   esac
   return 1
@@ -12374,11 +13758,21 @@ gate_argv_chdir_base() {
   # `--work-tree=` IS TAKEN CONSERVATIVELY. It does not chdir the process, so a
   # relative operand does not always resolve from it; including it can only
   # refuse an act git would have landed elsewhere, never miss one.
+  #
+  # rc 2 IS "A LAUNCHER WAS PEELED AND ITS OPTIONS COULD NOT BE READ". That is
+  # not "no second base": the command inside may well carry a `-C`, and reading
+  # the silence as its absence is how the relative `--output=` reached the
+  # installed file. The two write guards refuse on it.
   local b
   b=$(gate_argv_chdir_base_of "$@")
+  [ "$b" != "$GATE_CHDIR_UNREAD" ] || return 2
   [ -n "$b" ] || return 1
   printf '%s' "$b"
 }
+
+# What `gate_argv_chdir_base_of` prints for a launcher option it does not know.
+# It is not a path any command can spell, so it cannot be mistaken for a base.
+GATE_CHDIR_UNREAD='<unreadable launcher option>'
 
 gate_argv_chdir_base_of() {
   # gate_argv_chdir_base_of <argv...> — the body of `gate_argv_chdir_base`, with
@@ -12398,23 +13792,36 @@ gate_argv_chdir_base_of() {
   # already delegated them, so `lockf -k -t 0 <lock> git -C <sibling> diff
   # --output=<relative path>` — the lock the unattended skills require around
   # every document write — was graded as the inner `git` and passed both write
-  # guards with no second base. `test-run.sh` checks that every name the GRADING
-  # TABLE delegates to an unwrap has an arm here, which is a containment in one
-  # direction and not a comparison of two sets: a name added to the table turns
-  # the suite red, a name added only here is caught by no assertion. The two empty terminal
-  # answers mean "no command" and "unknown option" both come back as no base,
-  # which is the same discipline the table keeps — a guess about whether an
-  # option eats the next word is a guess about where the operands land.
+  # guards with no second base.
+  #
+  # THE NAMES ARE THE PARSER'S, `g` PREFIX INCLUDED. `_gp_walk` peels `genv`,
+  # `gnice`, `gnohup`, `gtimeout`, `gstdbuf` and `gtime` — the names Homebrew
+  # coreutils installs — and this case had none of them, so `gnohup git -C
+  # <sibling> diff --output=<relative path>` graded the inner `git` honestly as
+  # `트리밖쓰기` while both guards saw no second base. The prefix is stripped
+  # before the helper is called, because each helper knows its launcher by the
+  # plain name. `test-run.sh` derives the expected set from `_gp_walk`'s own
+  # arms, so a name added to the parser only turns the suite red.
+  #
+  # "No command" still comes back as no base. "Unknown option" does not: it
+  # prints `GATE_CHDIR_UNREAD`, which `gate_argv_chdir_base` turns into rc 2 and
+  # the guards into a refusal — a guess about whether an option eats the next
+  # word is a guess about where the operands land.
   local argv0="$1" base d
   shift
   case "${argv0##*/}" in
-    timeout|nice|nohup|stdbuf)
-      gate_unwrap_wrapper "${argv0##*/}" gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
-    env)     gate_unwrap_env     gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
-    command) gate_unwrap_command gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
-    time)    gate_unwrap_time    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
-    lockf)   gate_unwrap_lockf   gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
-    find)    gate_unwrap_find    gate_argv_chdir_base_of '' '' "$GATE_FORM_UNKNOWN" gate_answer_first "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf|gtimeout|gnice|gnohup|gstdbuf)
+      local _w="${argv0##*/}"; _w="${_w#g}"
+      gate_unwrap_wrapper "$_w" gate_argv_chdir_base_of '' "$GATE_CHDIR_UNREAD" "$@"; return 0 ;;
+    env|genv)     gate_unwrap_env     gate_argv_chdir_base_of '' "$GATE_CHDIR_UNREAD" "$@"; return 0 ;;
+    command)      gate_unwrap_command gate_argv_chdir_base_of '' "$GATE_CHDIR_UNREAD" "$@"; return 0 ;;
+    time|gtime)   gate_unwrap_time    gate_argv_chdir_base_of '' "$GATE_CHDIR_UNREAD" "$@"; return 0 ;;
+    lockf)        gate_unwrap_lockf   gate_argv_chdir_base_of '' "$GATE_CHDIR_UNREAD" "$@"; return 0 ;;
+    # `find` folds every primary. A write primary on its own is "no base", not
+    # an option it could not read; `-execdir`/`-okdir` run from each match's
+    # directory, which no base describes, so they answer `형태 미상` and both
+    # guards refuse it by name.
+    find)         gate_unwrap_find    gate_argv_chdir_base_of '' '' "$GATE_FORM_UNKNOWN" gate_answer_chdir_fold "$@"; return 0 ;;
     git) ;;
     *) return 0 ;;
   esac
@@ -12423,9 +13830,10 @@ gate_argv_chdir_base_of() {
   while [ "$#" -ge 1 ]; do
     case "$1" in
       # `-C` IS CUMULATIVE — git resolves each one against the directory the
-      # previous ones already selected, so the fold does too.
-      -C) shift; [ "$#" -ge 1 ] || break; d=$(gate_lexical_abs "$1" "$d") ;;
-      -C?*) d=$(gate_lexical_abs "${1#-C}" "$d") ;;
+      # previous ones already selected, and `gate_git_chdir_fold` is where that
+      # rule lives so the parser's accumulator cannot drift away from it.
+      -C) shift; [ "$#" -ge 1 ] || break; d=$(gate_lexical_abs "$(gate_git_chdir_fold "$d" "$1")") ;;
+      -C?*) d=$(gate_lexical_abs "$(gate_git_chdir_fold "$d" "${1#-C}")") ;;
       --work-tree=*) d=$(gate_lexical_abs "${1#--work-tree=}" "$d") ;;
       --work-tree) shift; [ "$#" -ge 1 ] || break; d=$(gate_lexical_abs "$1" "$d") ;;
       # `-c <name>=<value>`, `--git-dir <dir>` and `--namespace <name>` take
@@ -12626,8 +14034,16 @@ gate_rundir_write_guard() {
   if gate_argv0_wraps "$1"; then wraps=1; fi
   # THE DIRECTORY THE COMMAND ITSELF RESOLVES FROM, when it is not this one.
   # `gate_argv_chdir_base` states the defect; every relative option value and
-  # word below is measured from this base as well as from the grading one.
-  cb=$(gate_argv_chdir_base "$@") || cb=""
+  # word below is measured from this base as well as from the grading one. A
+  # launcher option it could not read leaves the base unknown, and an unknown
+  # base is refused rather than read as none.
+  local cbrc=0
+  cb=$(gate_argv_chdir_base "$@") || cbrc=$?
+  if [ "$cbrc" = 2 ]; then
+    warn "rule refused: a launcher in front of this command carries an option the second-base resolver cannot read, so where its relative operands land is unknown. Respell the launcher with options it is known to take: $*"
+    return "$GATE_EXIT_RULE"
+  fi
+  [ "$cbrc" = 0 ] || cb=""
   # "THE BASE CANNOT BE COMPUTED" IS NOT "THERE IS NO BASE". Both arrived here as
   # the empty string, and empty is the allowing direction — so a shape the unwrap
   # could not read passed this guard for the same reason a plain `cp` does. The
@@ -13029,9 +14445,15 @@ gate_plugin_root_write_guard() {
   rl=$GATE_PR_RL; rp=$GATE_PR_RP; hl=$GATE_PR_HL; hp=$GATE_PR_HP
   wraps=0
   if gate_argv0_wraps "$1"; then wraps=1; fi
-  # The directory the command itself resolves from, as the run directory guard
-  # states at the same place.
-  cb=$(gate_argv_chdir_base "$@") || cb=""
+  # The directory the command itself resolves from, and the refusal of an
+  # unknown one, as the run directory guard states at the same place.
+  local cbrc=0
+  cb=$(gate_argv_chdir_base "$@") || cbrc=$?
+  if [ "$cbrc" = 2 ]; then
+    warn "rule refused: a launcher in front of this command carries an option the second-base resolver cannot read, so where its relative operands land is unknown. Respell the launcher with options it is known to take: $*"
+    return "$GATE_EXIT_RULE"
+  fi
+  [ "$cbrc" = 0 ] || cb=""
   # The unreadable-shape arm, as the run directory guard states at the same place.
   if [ "$cb" = "$GATE_FORM_UNKNOWN" ]; then
     warn "rule refused: this shape runs its inner command from a directory the gate cannot name — each match's own directory rather than this one — so where a relative destination inside it lands cannot be judged. Respell it with \`-exec\` and an absolute destination: $1"
@@ -13432,7 +14854,7 @@ gate_manifest_write_guard() {
   # is an upper bound this suite already holds green.
   argv0=${1##*/}
   case "$argv0" in
-    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf|genv|gnice|gnohup|gtime|gtimeout|gstdbuf)
       joined=$(printf '%s ' "$@")
       case "$joined" in *"$mbase"*|*CC_PIPELINE_MANIFEST*|*MANIFEST*)
         gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
@@ -16389,7 +17811,7 @@ gate_verb_act() {
   # and `미상` is a command with no row at all. The three take different
   # comparators and leave different marks on the row, and collapsing any two of
   # them loses exactly the distinction the axis was added for.
-  GATE_GRADE_SOURCE='표'; GATE_OPAQUE=0; GATE_FLOOR=''
+  GATE_GRADE_SOURCE='표'; GATE_OPAQUE=0; GATE_FLOOR=''; GATE_FLOOR_FIELD=''
   GATE_MARK=''; GATE_MARK_TRIGGER=''
   export GATE_GRADE_SOURCE GATE_OPAQUE GATE_FLOOR GATE_MARK GATE_MARK_TRIGGER
   if [ "$argv_graded" = "1" ]; then
@@ -16408,6 +17830,11 @@ gate_verb_act() {
       if [ -z "$GATE_MARK" ] || { [ "$GATE_MARK" = "파괴" ] && [ "$_fmark" = "비밀출력" ]; }; then
         [ -n "$_fmark" ] && { GATE_MARK="$_fmark"; GATE_MARK_TRIGGER="$_ftrig"; }
       fi
+      # THE ROWS CARRY IT ONLY WHERE IT MEANS SOMETHING. An act the parser left
+      # whole has no floor, and a field spelled with an empty value there would
+      # read as "the floor was computed and it was nothing" — which is the one
+      # reading the morning report must not be able to make.
+      gate_floor_defined "$@" && GATE_FLOOR_FIELD="하한=$GATE_FLOOR"
     fi
     [ "$GATE_OPAQUE" = "1" ] && GATE_GRADE_SOURCE='불투명'
     [ "$graded" = "등급 미상" ] && GATE_GRADE_SOURCE='미상'
@@ -16426,8 +17853,27 @@ gate_verb_act() {
   if [ -n "$surface" ]; then
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
     local _bound="$graded" _bi _si
-    if [ "$GATE_GRADE_SOURCE" = "불투명" ] && gate_auto_resolve_enabled; then
-      _bound="${GATE_FLOOR:-읽기}"
+    # THE FLOOR IS NOT A COURTESY OF THE AUTO-RESOLVE MODE. It used to be read
+    # only where auto-resolve was on, so turning that mode off handed an opaque
+    # act the SHELL's table grade as its bound — `bash -c 'gh repo delete …'`
+    # compared against `워크트리쓰기` and a declaration of exactly that passed,
+    # in the one mode a run chooses when it wants the gate to be stricter. An
+    # empty floor falls back to the grade rather than to a read: the default
+    # that used to sit here answered `읽기` for an act nobody had read.
+    #
+    # THE FLOOR RAISES THE BOUND; IT DOES NOT REPLACE IT. `${GATE_FLOOR:-…}`
+    # SUBSTITUTED the floor for the grade, so a floor BELOW the table's answer
+    # pulled the bound down and a declaration the table alone would have refused
+    # was accepted. A floor is a statement about the part of the payload the
+    # gate could read, so it can only ever ADD to what the table already proved
+    # — which is why the reach requirement already takes this same maximum.
+    # Every place a newly wired floor fails to reach its case reduces to this
+    # one substitution, so the maximum stands above those fixes as well as
+    # beside them. The `미상` arm keeps its `읽기` default: there the floor is
+    # the only statement there is, and the architecture leaves that default in
+    # that arm alone.
+    if [ "$GATE_GRADE_SOURCE" = "불투명" ]; then
+      _bound=$(gate_surface_max "$graded" "${GATE_FLOOR:-읽기}")
     elif [ "$GATE_GRADE_SOURCE" = "미상" ]; then
       _bound="${GATE_FLOOR:-읽기}"
     fi
@@ -16510,15 +17956,46 @@ gate_verb_act() {
     gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" || exit $?
   fi
 
+  # WHERE THE ACT RUNS IS RESOLVED BEFORE ANYTHING READS IT. A declared target
+  # names its own worktree and the act belongs there; an undeclared one has no
+  # row to read, so the act stays in the caller's directory and is bounded by
+  # the layers above instead. The resolution itself lives in gate_act_worktree,
+  # which the approval's freeze and staleness comparison call too — a stage woke
+  # on the main worktree's branch every time until this was resolved in one
+  # place.
+  #
+  # IT IS ASSIGNED ABOVE THE RUNG, NOT BELOW IT. The rung falls back to
+  # `${GATE_ACT_CWD:-.}` and used to run twenty lines before this line, so it
+  # resolved a relative `-C` against the inherited value or the gate's own
+  # directory while `gate_push_remote_match` — which runs later, from the
+  # disposition — resolved the SAME `-C` against the value assigned here. One
+  # relative path, two directories, two answers.
+  if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
+    GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
+    export GATE_ACT_CWD
+  fi
+
   # THE PUSH RUNG IS RE-DERIVED HERE, and here is the earliest it can be: the
   # base branch it compares against lives on the target row. Raising only — an
   # honest `머지` declaration on a base-branch push keeps the review rule in
   # front of it, and the generic ladder seam would have pulled that back down.
   if [ "$argv_graded" = "1" ] && [ "${GATE_UNDECLARED:-0}" != "1" ]; then
-    case "${1##*/}:${2:-}" in
-      git:push)
-        local _pr _pi _ei
-        _pr=$(gate_push_rung "$alias" "$@")
+    # Recognized past the launchers and git's globals: `git -C <wt> push … HEAD:<base>`
+    # is the merge whichever spelling carried it. An unreadable globals list
+    # with a push in it is answered by `gate_push_rung` itself as the merge.
+    #
+    # A push carried in a shell body or behind `find -exec` takes the same rung:
+    # the highest one among its push pieces. Without this a base-branch push in
+    # a body stood at whatever cutpoint was declared, `커밋` included.
+    local _gpush=0 _pr=''
+    gate_argv_is_git_push "$@" || _gpush=$?
+    case "$_gpush" in
+      0|2) _pr=$(gate_push_rung "$alias" "$@") ;;
+      *) _pr=$(gate_push_pieces_rung "$(gate_push_pieces "$alias" "$@")") ;;
+    esac
+    case "$_pr" in
+      ?*)
+        local _pi _ei
         GATE_ACT_DERIVED="$_pr"
         _pi=$(cutpoint_index "$_pr") || exit "$GATE_EXIT_VOCAB"
         _ei=$(cutpoint_index "$GATE_ACT_EFFECTIVE") || exit "$GATE_EXIT_VOCAB"
@@ -16546,7 +18023,11 @@ gate_verb_act() {
   # exemptions — the review rule returns early on a read, so a `merge-seg.sh`
   # declared as a local read would merge with no review record at all.
   case "$GATE_GRADE_SOURCE" in
-    불투명) GATE_SURFACE=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}") ;;
+    # The floor joins the maximum here, which is the whole of what the rules
+    # were missing: the part of the payload the gate could actually read never
+    # left the comparator, so a rule narrowing on the surface saw a shell's
+    # worktree write where the body deleted a repository.
+    불투명) GATE_SURFACE=$(gate_surface_max "$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")" "${GATE_FLOOR:-읽기}") ;;
     미상)   GATE_SURFACE=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기') ;;
     *)      GATE_SURFACE="$graded" ;;
   esac
@@ -16698,6 +18179,14 @@ gate_verb_act() {
   export GATE_SEGMENT_OPEN_OBLIGATIONS
 
   local rules_rc=0
+  # The parsed argv the pre-authorization checker compares, or nothing: an argv
+  # a kind fixed (a bookkeeping row, a stage dispatch) was never graded from its
+  # words and is not compared on them either.
+  if [ "$argv_graded" = "1" ]; then
+    gate_preauth_export "$alias" "$@"
+  else
+    unset GATE_ARGV_CANON GATE_ARGV_REPO GATE_TARGET_REPO
+  fi
   # THE CHECKERS ARE NOT TOUCHED BY THIS AXIS AT ALL, and that is the point of
   # putting the seam upstream: `GATE_ACT` arrives already corrected, so not one
   # line of the catalog changes and no checker acquires a second copy of the
@@ -17013,10 +18502,11 @@ gate_verb_act() {
       local _void_free
       _void_free=$(gate_free_budget "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-        "축2=$graded" "등급=1" "기준=무효화 종료" "되돌리는 법=새 런으로 다시 킥오프")
+        "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "등급=1" "기준=무효화 종료" \
+        "되돌리는 법=새 런으로 다시 킥오프")
       gate_append '자율 승인' "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-        "축2=$graded" "등급=1" "기준=무효화 종료" \
+        "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$(gate_row_safe "$rationale" "$_void_free")"
       gate_done_note "$(printf '%s 종단 — 무효화 · 근거 %s' "$(now_iso)" "$rationale")"
       # The itemised dispositions land beside `done`, never inside it — the file
@@ -17057,7 +18547,7 @@ gate_verb_act() {
       # many, bounded by construction.
       gate_append '자율 승인' "kind=$kind" "결정=기각" "대상=$alias" "세그먼트=$segment" \
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-        "축2=$graded" "등급=0" "기준=종료 조건 아홉" \
+        "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "등급=0" "기준=종료 조건 아홉" \
         "되돌리는 법=해당 없음(거부)" \
         "근거=$(gate_unmet_summary "$unmet")"
       exit "$GATE_EXIT_RULE"
@@ -17181,7 +18671,7 @@ gate_verb_act() {
     _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
     gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
       "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
-      "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
+      "스테이지=$_stg" "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "도달=${GATE_REACH:--}" \
       "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
@@ -17302,15 +18792,21 @@ gate_verb_act() {
   # explicitly — `${#actor}` is in `_row_fixed` and the constant carries the key,
   # so the argv excerpt shrinks rather than the row growing.
   if [ "$verb" = "exec" ]; then
-    local _row_fixed _argv_budget _ad2
+    local _row_fixed _argv_budget _ad2 _ff
     _ad2=$(printf '%s' "$*" | shasum -a 256 | cut -d' ' -f1)
-    _row_fixed=$(( ${#alias} + ${#segment} + ${#GATE_ACT_EFFECTIVE} + ${#graded} + ${#actor} + 336 ))
+    # The floor field rides on this row too when the act has one. Its bytes go
+    # into the FIXED part, so the argv excerpt shrinks by exactly what the field
+    # costs instead of the row growing past the cap and being refused.
+    _ff=0
+    [ -z "${GATE_FLOOR_FIELD:-}" ] \
+      || _ff=$(printf '%s | ' "$GATE_FLOOR_FIELD" | wc -c | tr -d ' ')
+    _row_fixed=$(( ${#alias} + ${#segment} + ${#GATE_ACT_EFFECTIVE} + ${#graded} + ${#actor} + _ff + 336 ))
     _argv_budget=$(( 1024 - 16 - _row_fixed ))
     [ "$_argv_budget" -gt 128 ] && _argv_budget=128
     [ "$_argv_budget" -lt 0 ] && _argv_budget=0
     gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor" \
+      "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "자격=$credmode" "행위자=$actor" \
       "등급 출처=$GATE_GRADE_SOURCE" "선언=${GATE_DECLARED:--}" \
       "표지=${GATE_MARK:--}" "파괴 출처=$(gate_destructive_source)" \
       "도달=${GATE_REACH:--}" "유도 도달=$(gate_reach_derived "$alias" "$@")" \
@@ -17322,10 +18818,10 @@ gate_verb_act() {
     local _act_free
     _act_free=$(gate_free_budget "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor")
+      "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "자격=$credmode" "행위자=$actor")
     gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor" \
+      "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "자격=$credmode" "행위자=$actor" \
       "근거=$(gate_row_safe "$rationale" "$_act_free")"
   fi
   log "게이트 통과 — $verb $GATE_ACT_EFFECTIVE ($alias)"
@@ -17409,7 +18905,7 @@ gate_verb_act() {
     warn "the act failed (rc=$rc) — the row is already in the ledger"
     gate_append '자율 승인' "kind=$kind" "결정=결과" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "근거=rc=$rc"
+      "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "근거=rc=$rc"
   fi
   return "$rc"
 }
