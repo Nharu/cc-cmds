@@ -3,9 +3,11 @@
 Imported by the executables beside it, never run on its own. Standard library
 only, Python 3.9 syntax.
 
-What lives here: reading the judgment key from the credential store, the
-lexical tokenizer / IDF / overlap that picks the shortlist, building and
-sending one pair-judgment request, and replaying a recorded judgment log.
+What lives here: reading the judgment key and the ClickUp token from the
+credential store, the ClickUp GET used to fetch a corpus, the lexical
+tokenizer / IDF / overlap that picks the shortlist, building and sending one
+pair-judgment request, and replaying a recorded judgment log. No tracker write
+lives here: the one ClickUp POST is in `clickup-create.py` alone.
 
 The tokenizer, the IDF and the request bytes are defined to match the
 recorded measurement byte for byte. The request hash of every recorded pair
@@ -31,6 +33,13 @@ MODEL = "jev-1.13.0"
 JUDGE_URL = "https://api.typesafe.ai/v1/systemone"
 KEY_FILE = "typesafe.env"
 KEY_VAR = "TYPESAFE_API_KEY"
+
+CLICKUP_URL = "https://api.clickup.com/api/v2"
+CLICKUP_FILE = "clickup.env"
+CLICKUP_VARS = ("CLICKUP_API_TOKEN", "CLICKUP_TOKEN")
+CLICKUP_LIMIT = 2000
+CLICKUP_PAGE_TIMEOUT = 15.0
+CLICKUP_TOTAL_TIMEOUT = 60.0
 
 SHORTLIST = 20
 SHOWN = 3
@@ -67,6 +76,14 @@ REJECT_CODES = (401, 403, 422)
 
 class UsageError(Exception):
     """A caller mistake; the executables turn it into exit code 2."""
+
+
+class TrackerError(Exception):
+    """A tracker read that did not produce a usable answer.
+
+    The message names the failure kind only; it never carries the token or a
+    response body.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +138,38 @@ def read_judge_key():
     return None, "key-invalid"
 
 
+def read_clickup_token():
+    """(token, reason). reason is None, 'tracker-key' or 'tracker-key-invalid'.
+
+    `CLICKUP_API_TOKEN=` is looked for first, then `CLICKUP_TOKEN=`; with
+    neither, a file holding exactly one non-empty line without `=` is taken as
+    the bare token, so a token file moved into the store as it was still works.
+    The same file condition as the judgment key applies. No path here prints a
+    line of the file.
+    """
+    path = os.path.join(cred_store(), CLICKUP_FILE)
+    state = usable_cred_file(path)
+    if state == "absent":
+        return None, "tracker-key"
+    if state != "ok":
+        return None, "tracker-key-invalid"
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None, "tracker-key-invalid"
+    for var in CLICKUP_VARS:
+        prefix = var + "="
+        for line in lines:
+            if line.startswith(prefix):
+                value = line[len(prefix):].strip().strip('"')
+                return (value, None) if value else (None, "tracker-key")
+    bare = [line.strip() for line in lines if line.strip() and "=" not in line]
+    if len(bare) == 1:
+        return bare[0], None
+    return None, "tracker-key"
+
+
 def loopback_override(var, default):
     """An endpoint override is for tests only, and only toward this machine.
 
@@ -137,6 +186,10 @@ def loopback_override(var, default):
 
 def judge_url():
     return loopback_override("CC_SIMILAR_JEV_URL", JUDGE_URL)
+
+
+def clickup_base():
+    return loopback_override("CC_SIMILAR_CLICKUP_URL", CLICKUP_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +306,28 @@ def opener_for(url):
     if url.startswith("http://127.0.0.1:") or url.startswith("http://localhost:"):
         return urllib.request.build_opener(urllib.request.ProxyHandler({}))
     return urllib.request.build_opener()
+
+
+def clickup_get(path, token, timeout):
+    """GET one ClickUp API path (query string included) and decode its JSON.
+
+    The token goes in `Authorization` as it is, with no `Bearer` in front.
+    Every failure - an HTTP error, a network error, a timeout, a body that is
+    not JSON - is raised as one TrackerError.
+    """
+    base = clickup_base()
+    req = urllib.request.Request(base + path, method="GET", headers={"Authorization": token})
+    try:
+        with opener_for(base).open(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        raise TrackerError("http:%s" % e.code)
+    except (urllib.error.URLError, socket.timeout, OSError, http.client.HTTPException):
+        raise TrackerError("net")
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise TrackerError("json")
 
 
 def _send_one(opener, url, key, body, budget, end):
