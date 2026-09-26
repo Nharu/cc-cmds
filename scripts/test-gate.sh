@@ -1256,6 +1256,25 @@ HH7() { cd "$WT" && XDG_STATE_HOME="$STATE7" gate_inproc snapshot --manifest "$F
 PD() { cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" --render 2>/dev/null \
        | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
 
+# The id of the approval most recently issued that is STILL pending — the last
+# row of that id reads `상태=대기`, the way `gate_approval_state` reads it. The
+# last `상태=대기` line of the ledger is not that: an id issued by an earlier
+# section and resolved since keeps its old `대기` line, and picking it hands a
+# resolved approval to a section that means to close a pending one.
+pending_approval_id() {
+  grep -E '^- `승인`' "$1" | awk -F ' [|] ' '
+    { id = ""; st = ""
+      for (i = 1; i <= NF; i++) {
+        f = $i; sub(/[[:space:]]+$/, "", f)
+        if (f ~ /^승인 id=/) { sub(/^승인 id=/, "", f); id = f }
+        else if (f ~ /^상태=/) { sub(/^상태=/, "", f); st = f }
+      }
+      if (id != "") { last[id] = st; seen[id] = NR } }
+    END { best = ""; n = 0
+          for (k in last) if (last[k] == "대기" && seen[k] > n) { n = seen[k]; best = k }
+          print best }'
+}
+
 # THE TRANSCRIPT FIXTURE IS THE HARNESS'S SHAPE, NOT A ONE-LINE STAND-IN.
 # `close` reads an answer by FRAME: the line must be the `tool_result` of an
 # `AskUserQuestion` whose question carried the approval id, joined through
@@ -4751,6 +4770,15 @@ fi
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
+# AN EARLIER SECTION MAY ALREADY HAVE FIRED B1 ON THIS VERY DIGEST. Section 6's
+# acts do, on a shard that runs it first: the id is a hash of the binding, the
+# loop above just answered it, and `boundary-B1.asked` still equals the binding,
+# so the answered arm keeps B1 quiet here and 13 and 14 are handed nothing to
+# close. Clearing the marker is the state a recurrence leaves — the binding
+# moved away and came back — which is the state in which an answered B1 asks
+# again, so this section issues its own approval whatever ran before it.
+rm -f "$RD/boundary-B1.asked"
+b1_issued_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
 
 # `RD` is set in `pre_base`, in the head.
 printf '%s\n' "$(PD)" > "$RD/progress-digest"
@@ -4770,7 +4798,10 @@ printf '%s\n' "$( { grep -c '^- `' "$FX_LEDGER" || true; } | tr -d ' ')" > "$RD/
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "S9" -- touch "$WORK/t2"
-if grep -q '구속 튜플=B1' "$FX_LEDGER"; then
+# COUNTED, NOT GREPPED: a row an earlier section wrote satisfies a bare `grep -q`
+# without this section's act having fired anything.
+if [ "$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)" -gt "$b1_issued_before" ] \
+   && [ -n "$(pending_approval_id "$FX_LEDGER")" ]; then
   ok "B1 이 발동하면 park 이 아니라 승인 대기를 발행한다"
 else
   bad "B1" "무진전이 연속으로 쌓였는데 경계 승인이 없다"
@@ -4802,8 +4833,7 @@ check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "
 # boundary approval pending, which is what puts this block on the `if` arm in a
 # serial run; a section that reaches here without one is a broken precondition
 # and must say so.
-aid=$(grep -E '^- `승인`' "$FX_LEDGER" | grep '상태=대기' | tail -1 \
-      | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
+aid=$(pending_approval_id "$FX_LEDGER")
 if [ -n "$aid" ]; then
   gate close --manifest "$FX_MANIFEST" --approval "$aid"
   check "트랜스크립트가 없으면 승인은 닫히지 않는다" "$rc" "5"
@@ -4866,8 +4896,7 @@ fi
 # ---------------------------------------------------------------------------
 # Same shape as section 13: with no pending approval the four assertions below
 # used to vanish rather than fail, so the `else` arm now records the absence.
-vaid=$(grep -E '^- `승인`' "$FX_LEDGER" | grep '상태=대기' | tail -1 \
-       | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
+vaid=$(pending_approval_id "$FX_LEDGER")
 if [ -n "$vaid" ]; then
   vq=$(grep -E '^- `승인`' "$FX_LEDGER" | grep -F "승인 id=$vaid " | tail -1 \
        | tr '|' '\n' | sed -n 's/^ *질문 문면=//p' | sed 's/[[:space:]]*$//' | tail -1)
