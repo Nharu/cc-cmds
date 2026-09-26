@@ -817,6 +817,12 @@ gate_reach_required() {
       for a in "$@"; do
         case "$a" in fetch|pull|push|clone|ls-remote) return 0 ;; esac
       done ;;
+    # The lookup's tracker adapters read the remote through a child `gh` or an
+    # HTTP call this gate never sees. Without this row, the reach a direct
+    # `gh issue list` must record vanishes the moment the same read is wrapped
+    # behind the tool's name. The `file` adapter reads a local file only.
+    similar-items.py)
+      case "${2:-}" in github|clickup) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -1901,9 +1907,13 @@ gate_orchestrator_script_hint() {
   # A false positive costs one advisory sentence, so both tests are loose on
   # purpose. What they must not be is silent in the normal case, which is what
   # the first version was.
+  #
+  # `.py` is let through as well: `orchestrator/` ships Python executables too,
+  # and a gate copy older than their grading rows meets them exactly as it
+  # meets a shell script.
   local b="${1##*/}" hit='' parent=''
   case "$b" in
-    *.sh) ;;
+    *.sh|*.py) ;;
     *) return 0 ;;
   esac
   case "$1" in
@@ -4824,6 +4834,31 @@ _surface_of_argv0_table() {
     # running.
     cc-team-witness-init.sh)
       printf '트리밖쓰기' ;;
+    # The similar-item lookup. Called with no offline flag it sends issue titles
+    # and bodies to a classification model off this machine — whether a key is
+    # present is only known at run time, so argv cannot prove the send does not
+    # happen, and the honest grade is the external one. `--lexical-only` and
+    # `--replay-log` are the two spellings under which the tool builds no HTTP
+    # transport at all; the unit test pins zero requests under both, which is
+    # what makes the read grade here safe to hand out.
+    #
+    # `--log` IS THE TOOL'S ONLY FILE WRITE, and the run-directory write guard
+    # skips a read grade, so leaving it `읽기` would let that write happen with
+    # the guard never looking. The tool refuses option abbreviations, so the
+    # spellings read here are the spellings it accepts.
+    similar-items.py)
+      if gate_argv_has_opt - lexical-only "$@" || gate_argv_has_opt - replay-log "$@"; then
+        if gate_argv_has_opt - log "$@"; then printf '트리밖쓰기'; else printf '읽기'; fi
+      else
+        printf '외부상태변경'
+      fi ;;
+    # The measurement harness runs the lookup as a child process, which this
+    # gate never sees. Its live mode sends every judgment the lookup would, so
+    # without this row the send hides behind a name the table does not carry and
+    # a `읽기` declaration passes. Without `--live` it replays a recorded log and
+    # runs the no-key leg against a closed loopback port — nothing leaves.
+    measure-similar-items.py)
+      if gate_argv_has_opt - live "$@"; then printf '외부상태변경'; else printf '읽기'; fi ;;
     # The note above says `openssl` may not sit in the digest row because one
     # name would cover both hashing and opening a socket. That reasoning holds
     # and is not overturned here — it is the reason this is a subcommand table

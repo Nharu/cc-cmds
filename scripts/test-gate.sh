@@ -6380,6 +6380,53 @@ graded_as '트리밖쓰기' '경로로 부른 초기화 스크립트도 같다' 
 graded_as '워크트리쓰기' '인터프리터를 앞에 두면 등급이 되돌아간다' \
   -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
 
+# The similar-item lookup. Its default path calls a remote judge, so an
+# adapter read is an external act unless the two local-only switches say
+# otherwise, and `--log` on either of them is a write outside the tree. Both
+# spellings of `--log` are pinned: the option matcher reads `--log=x` as the
+# same option, and a matcher that only saw the separate spelling would grade
+# the joined one as a read.
+graded_as '외부상태변경' '유사 항목 조회의 기본 경로는 외부 상태 변경이다' -- similar-items.py github --issue 1
+graded_as '외부상태변경' '경로로 부른 유사 항목 조회도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/similar-items.py github --issue 1
+graded_as '읽기'       '어휘 전용 조회는 읽기다'             -- similar-items.py github --issue 1 --lexical-only
+graded_as '읽기'       '기록 재생 조회는 읽기다'             -- similar-items.py github --issue 1 --replay-log x
+graded_as '트리밖쓰기' '어휘 전용에 --log 를 더하면 트리 밖 쓰기다' \
+  -- similar-items.py github --issue 1 --lexical-only --log x
+graded_as '트리밖쓰기' '기록 재생에 --log 를 더하면 트리 밖 쓰기다' \
+  -- similar-items.py github --issue 1 --replay-log x --log x
+graded_as '트리밖쓰기' '붙여 쓴 --log= 도 트리 밖 쓰기다' \
+  -- similar-items.py github --issue 1 --lexical-only --log=x
+graded_as '읽기'       '측정 하니스의 재생·무키 경로는 읽기다' -- measure-similar-items.py --data-dir d
+graded_as '외부상태변경' '측정 하니스의 --live 는 외부 상태 변경이다' \
+  -- measure-similar-items.py --data-dir d --live
+# The same wrong spelling as above, pinned for the lookup: with an interpreter
+# in front the row above no longer applies and the default path's external
+# call grades as a worktree write.
+graded_as '워크트리쓰기' '인터프리터를 앞에 둔 유사 항목 조회는 등급이 되돌아간다' \
+  -- python3 /opt/cc/plugins/cc-cmds/orchestrator/similar-items.py github --issue 1
+
+# Reach. The tracker adapters read the remote through a child process this gate
+# never sees, so even their local-only read must say where it lands — the same
+# refusal a direct `gh issue list` gets. The `file` adapter reads a local file
+# and needs no reach. Asked through `plan` so the answer is the gate's judgment
+# alone and does not depend on the script running. The requirement only exists
+# with auto-resolve on, so the switch is set around these two calls and
+# restored.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+  --surface 읽기 -- similar-items.py github --issue 1 --lexical-only
+check "트래커 어댑터의 어휘 전용 읽기도 도달 신고가 필수다" "$rc" "2"
+case "$msg" in *"--reach is required"*) ok "그 거절이 도달 신고를 이름으로 말한다" ;; *) bad "그 거절이 도달 신고를 이름으로 말한다" "$msg" ;; esac
+gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+  --surface 읽기 -- similar-items.py file --corpus x --issue 1 --lexical-only
+case "$rc:$msg" in
+  2:*|*"--reach is required"*) bad "파일 어댑터의 읽기는 도달 신고 없이 통과한다" "rc=$rc $msg" ;;
+  *) ok "파일 어댑터의 읽기는 도달 신고 없이 통과한다" ;;
+esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+
 # An ungraded name that this plugin SHIPS is a VERSION SKEW, not an unknown
 # tool, and the refusal has to say which.
 #
@@ -6399,6 +6446,16 @@ gate grade --manifest "$FX_MANIFEST" -- "$SKEWDIR/cc-not-yet-graded.sh" --x
 case "$msg" in
   *"$HINT"*) ok "이 게이트에 없는 오케스트레이터 스크립트는 버전 어긋남으로 안내된다" ;;
   *) bad "이 게이트에 없는 오케스트레이터 스크립트는 버전 어긋남으로 안내된다" "got '$msg'" ;;
+esac
+# The plugin ships Python scripts in the same directory, so the advisory must
+# fire for one of those as well — a helper that only recognised `.sh` would
+# send a skewed Python caller to the generic respell advice.
+printf '#!/usr/bin/env python3\n' > "$SKEWDIR/cc-not-yet-graded.py"
+chmod +x "$SKEWDIR/cc-not-yet-graded.py"
+gate grade --manifest "$FX_MANIFEST" -- "$SKEWDIR/cc-not-yet-graded.py" --x
+case "$msg" in
+  *"$HINT"*) ok "이 게이트에 없는 파이썬 오케스트레이터 스크립트도 버전 어긋남으로 안내된다" ;;
+  *) bad "이 게이트에 없는 파이썬 오케스트레이터 스크립트도 버전 어긋남으로 안내된다" "got '$msg'" ;;
 esac
 
 # THE ACTING PATH, NOT JUST `grade`. A caller hits this skew while declaring a
@@ -21325,6 +21382,39 @@ check "57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다" \
 check "57H2: 그 호출이 새 런 판정 if 안에는 없다" \
   "$(sed -n '/CC_GATE_PIN_DISABLE:-0/,/^  fi$/p' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
      | grep -c '^      gate_hop_or_die' || true)" "0"
+
+# (14) 고정 사본의 유사 항목 조회 — 인터프리터를 앞에 두면 쓰기 대상으로 읽힌다 -----
+# 스킬이 문서화한 호출은 사본 경로를 argv0 으로 둔다. 가드는 argv0 을 실행되는 것으로
+# 보고 건너뛰지만, 인터프리터를 앞에 두면 같은 경로가 인자가 되어 런 디렉터리 쓰기로
+# 거부된다. 두 행 모두 plan 으로 물어 판정만 재고, 코퍼스는 실제 호출과 같은 모양으로
+# 둔다.
+#
+# 상태 루트와 코퍼스는 매니페스트 디렉터리 밖에 둔다. 인터프리터 argv 에 매니페스트
+# 디렉터리 문자열이 들어가면 매니페스트 쓰기 가드가 런 디렉터리 가드보다 먼저 거부해,
+# 거부 코드는 같아도 어느 가드가 사본 경로를 잡았는지는 재지 못한다.
+p57_fixture R57S
+P57_STATE=$(mktemp -d "$WORK/state57s.XXXXXX")
+P57_RD="$P57_STATE/cc-cmds/run/R57S"
+p57_gate snapshot --manifest "$P57_MAN"
+check "57S: 고정이 섰다" "$rc" "0"
+P57S_DIR=$(mktemp -d "$WORK/similar57s.XXXXXX")
+printf '[{"id":1,"title":"a","body":""},{"id":2,"title":"b","body":""}]\n' > "$P57S_DIR/corpus.json"
+P57S_TOOL="$P57_RD/plugin/cc-cmds/orchestrator/similar-items.py"
+p57_gate plan --manifest "$P57_MAN" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 \
+  -- python3 "$P57S_TOOL" file --corpus "$P57S_DIR/corpus.json" --issue 1 --lexical-only
+check "57S: 인터프리터 뒤의 사본 경로는 규칙 거부다" "$rc" "3"
+case "$msg" in
+  *"run directory write"*"plugin/cc-cmds/orchestrator/similar-items.py"*) ok "57S: 그 거부가 사본 경로를 지목한다" ;;
+  *) bad "57S: 그 거부가 사본 경로를 지목한다" "$msg" ;;
+esac
+p57_gate plan --manifest "$P57_MAN" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 \
+  -- "$P57S_TOOL" file --corpus "$P57S_DIR/corpus.json" --issue 1 --lexical-only --log "$P57S_DIR/log.jsonl"
+case "$rc:$msg" in
+  3:*|*"rule refused"*) bad "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" "rc=$rc $msg" ;;
+  *) ok "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
