@@ -636,6 +636,23 @@ readonly GATE_ANCESTRY_WINDOW=8
 # field that inherited the shape.
 readonly GATE_CONE_LIST_MAX=200
 
+# The two free-text fields of a `checks` row, and the derivation is written down
+# rather than the number being asserted.
+#
+# The fixed skeleton of that row — the series marker, `교대`, `PR`, `head sha`,
+# `상태`, `관측`, `세그먼트`, the `| prev=` and its 64 hex, and the newline — is
+# 277 bytes. `GATE_ROW_MAX` less that leaves 747 for the two free fields to share,
+# and only 500 of it is handed out here. The 247 left over is deliberate: the next
+# field added to this series must not have to re-dig the same pit.
+#
+# A ROW OVER THE CAP IS NOT TRUNCATED — `gate_append` refuses it and the process
+# ends — so the assertion that holds this is in `scripts/test-gate.sh` and it
+# burns a REAL drain rather than a fixture's field list. A fixture that supplies
+# the list passes while disagreeing with the implementation, which is the same
+# failure as a hardcoded number one layer up.
+readonly GATE_CHECKS_REQ_MAX=200
+readonly GATE_CHECKS_FAIL_MAX=300
+
 # ---------------------------------------------------------------------------
 # The park-scope vocabulary, on the gate side.
 #
@@ -15139,6 +15156,241 @@ gate_drain_stall() {
   : > "$f"
 }
 
+gate_drain_checks() {
+  # Move each transition the CI poller observed into the ledger as a `checks`
+  # row. Same arrangement as the stall drain above and for the same reason: the
+  # poller is a detached process and therefore not the ledger's writer, and an
+  # unchained append from there reads as a broken chain from that row on.
+  #
+  # THE FILE IS RENAMED ASIDE, NOT READ IN PLACE AND TRUNCATED. The poller
+  # appends on its own schedule, so a `: > "$f"` after the read throws away every
+  # line that landed while this loop was running. A rename inside the same
+  # directory is atomic and sends the poller's next `>>` to a fresh file, which
+  # is the only ordering that loses nothing.
+  #
+  # A DRAIN THAT DIES BETWEEN THE RENAME AND THE `rm` LEAVES A FILE, AND THIS
+  # FUNCTION IS THE ONLY THING THAT READS IT BACK. Nothing else in the tree opens
+  # a `checks.observed.draining.*`, so without the sweep below those lines never
+  # reach the ledger — and the loss is permanent rather than merely likely,
+  # because the poller seeds its transition table from exactly those files and so
+  # treats the stranded states as ALREADY RECORDED. It writes on transitions
+  # only, so it never re-emits them; restarting it re-seeds the same state out of
+  # the ledger. A `실패` that died in a drain would stop refusing merges forever.
+  # The comment that used to sit here claimed the poller's seeding is what kept
+  # those observations visible. Seeding is what closed the door, not what opened
+  # it, and that inversion is why this path read as covered.
+  #
+  # The abort path is not hypothetical: `gate_append` calls `die` when an append
+  # fails — an unwritable lock path, a full disk, a wrong ledger path — and that
+  # `die` has no data precondition at all. The sweep also closes the `$$` reuse
+  # window, where a later gate with a recycled pid renamed over a file a dead
+  # drain had left behind: the file is consumed before that rename is attempted.
+  #
+  # OLDEST FIRST, AND IT CARRIES WEIGHT. Both consumers of this series take the
+  # LAST record — the poller's `tbl_get` and `gate_check_merge_checks` both end
+  # in `tail -1` — so the producer has to emit in age order at both layers.
+  # Draining the newest stranded file first would land a stale `통과` after a
+  # real `실패` and disarm the merge refusal, which is the exact outcome the
+  # recovery exists to prevent. `ls -tr` orders by mtime, and `mv` carries the
+  # original's mtime across, so the ordering is the order the lines were observed.
+  #
+  # NO DEDUPE HERE — IT IS THE POLLER'S JOB. What `gate_drain_stall` dedupes
+  # against is the ledger's RESOLUTION state, and a `checks` row has no such
+  # concept; no termination clause attaches to this series. The rule this series
+  # actually needs is "write only on a transition", and a transition is a
+  # property of two consecutive OBSERVATIONS. This function runs on gate acts —
+  # rare and irregular — so deciding it here would mean a reverse scan of the
+  # whole ledger on every act path. The poller holds the previous state in memory
+  # and answers in O(1).
+  #
+  # NO BANNER. A CI result is an input for the router, not news for a person.
+  #
+  # THE ANCESTRY WINDOW IS THIS SERIES' ONE REAL EXPOSURE, and it is worth naming
+  # because it is invisible from here. A snapshot digest compares its chain tip
+  # against the last `GATE_ANCESTRY_WINDOW` rows' `prev`, and those rows are
+  # counted by DISTANCE, not by kind — so a drain that appends that many rows at
+  # once can make a sibling seat's held digest read as stale even though nothing
+  # it cares about moved. The two rules above bound it: rows are written only on
+  # transitions, and one `(PR, head sha)` lifecycle transitions a handful of
+  # times. A single-segment run cannot reach the window; THREE OR MORE SEGMENTS
+  # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with the
+  # concurrent-stage cap rather than with anything here.
+  #
+  # THE SWEEP, THE RENAME AND THE TRANSCRIPTION RUN UNDER ONE LOCK, and without it
+  # the sweep undid the ordering it was written to keep. `gate_verb_act` holds no
+  # lock of its own and `ledger.lock` is taken and dropped per row, so two acts
+  # draining at once interleave row by row: one picks up a stranded `통과` and
+  # blocks on the ledger lock, the other transcribes the same file, removes it and
+  # appends the poller's newer `실패`, and then the first lands its `통과` last.
+  # `ls -tr` orders FILES; it cannot order two processes' appends. The same lock
+  # also keeps the sweep off a sibling's file while that sibling is still reading
+  # it, so every `draining.*` its holder sees really is stranded.
+  local f="$RUN_DIR/checks.observed" t lk="$RUN_DIR/checks.drain.lock" held=1
+  [ -d "$RUN_DIR" ] || return 0
+  # A lock that cannot be MADE — as opposed to one somebody holds — falls back to
+  # the unlocked drain rather than to no drain: skipping would hand the merge
+  # check below a ledger without the poller's newest observation.
+  gate_checks_drain_lock "$lk" || {
+    held=0
+    warn "could not create the \`checks\` drain lock and drains without it: $lk"
+  }
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    gate_drain_checks_file "$t"
+    rm -f "$t"
+  done <<EOF
+$( { ls -tr "$RUN_DIR"/checks.observed.draining.* 2>/dev/null || true; } )
+EOF
+  if [ -s "$f" ]; then
+    t="$f.draining.$$"
+    if mv "$f" "$t" 2>/dev/null; then
+      gate_drain_checks_file "$t"
+      rm -f "$t"
+    fi
+  fi
+  [ "$held" = "0" ] || gate_checks_drain_unlock "$lk"
+}
+
+gate_checks_drain_lock() {
+  # gate_checks_drain_lock <lockdir> — the drain's own mutex. NOT `ledger.lock`:
+  # that one is held per row by `gate_append`, which this section calls, so taking
+  # it here would wait on itself.
+  #
+  # IT IS RELEASED BY THE HOLDER'S DEATH, and that is the property it needs. The
+  # very case the sweep exists for is a drain that died mid-way — `gate_append`
+  # calls `die` — and a plain `mkdir` lock left behind by that death would stop
+  # every later drain for the rest of the run. So the owner line carries the pid,
+  # and a waiter that finds that pid gone takes the lock over — through
+  # `gate_checks_drain_takeover`, which judges again under a mutex of its own,
+  # because a rename alone lets a waiter acting on a stale read remove the fresh
+  # lock the other waiter has just taken.
+  #
+  # IT WAITS RATHER THAN GIVES UP. A drain that skipped would let the merge check
+  # a few lines later read a ledger missing the poller's newest `실패`. A live
+  # holder's section is a handful of appends; the only way to wait long is a
+  # holder whose pid has been recycled by an unrelated process, and the owner
+  # line's own timestamp — or the directory's mtime when that line cannot be read
+  # — bounds that at the same sixty seconds `gate_index_lock` uses.
+  local lockdir="$1" owner opid ots now dead undated=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    owner=$(cat "$lockdir/owner" 2>/dev/null || true)
+    opid=$(printf '%s' "$owner" | sed -n 's/^\([0-9][0-9]*\)[[:space:]][[:space:]]*[0-9][0-9]*$/\1/p')
+    ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+    [ -n "$ots" ] || ots=$(gate_mtime "$lockdir")
+    if [ -z "$ots" ]; then
+      # "THE LOCK IS GONE" AND "THE LOCK CANNOT BE MADE" read the same from here,
+      # and only the first may loop. One more attempt separates them, and a lock
+      # that stays present yet undateable gives up after a bounded number of
+      # looks rather than spinning.
+      mkdir "$lockdir" 2>/dev/null && break
+      [ -d "$lockdir" ] || return 1
+      undated=$(( undated + 1 ))
+      [ "$undated" -gt 20 ] && return 1
+      sleep 0.05
+      continue
+    fi
+    now=$(date -u +%s)
+    if { [ -n "$opid" ] && ! cc_pid_exists "$opid"; } || [ $((now - ots)) -ge 60 ]; then
+      gate_checks_drain_takeover "$lockdir" "$owner"
+      continue
+    fi
+    sleep 0.05
+  done
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lockdir/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_checks_drain_takeover() {
+  # gate_checks_drain_takeover <lockdir> <owner line judged dead> — remove a dead
+  # holder's lock, and only that lock.
+  #
+  # THE VERDICT IS TAKEN AGAIN UNDER A SECOND MUTEX, BECAUSE THE RENAME ALONE
+  # NAMES ONE WINNER ONLY WHEN BOTH WAITERS STILL LOOK AT THE SAME LOCK. Two
+  # waiters read the dead owner; the first renames the lock away, takes a fresh
+  # one and starts its section; the second, still acting on what it read before,
+  # renames THAT fresh lock away and takes one of its own. Both then hold the
+  # drain, and the row-by-row interleaving the lock exists to stop is back — a
+  # stale `통과` landing after a real `실패`. The death of a holder is the very
+  # case this lock is for, so the double-waiter window opens exactly when it
+  # matters.
+  #
+  # Under `<lockdir>.takeover` the owner line is read again and has to be the one
+  # judged dead; a lock with no owner line yet has to be old by its own mtime,
+  # because a fresh `mkdir` also has no owner line for a moment. A waiter that
+  # finds anything else leaves the lock alone and goes back to waiting. The only
+  # way to change the lock between that read and the rename is its holder's own
+  # release, and a holder judged dead has none — except under the sixty-second
+  # arm, where the holder may be a recycled pid that is alive; that residual is
+  # two consecutive commands wide and is not closed here.
+  #
+  # A TAKEOVER SECTION IS A READ AND A RENAME, so a `.takeover` older than ten
+  # seconds belongs to a taker that died inside it and is removed. Two waiters
+  # removing it together can both enter, which needs a dead drain AND a dead
+  # taker in the same run.
+  local lockdir="$1" seen="$2" tk="$1.takeover" tts now cur lts dead
+  if ! mkdir "$tk" 2>/dev/null; then
+    tts=$(gate_mtime "$tk"); now=$(date -u +%s)
+    if [ -n "$tts" ] && [ $((now - tts)) -ge 10 ]; then
+      rmdir "$tk" 2>/dev/null || true
+    fi
+    sleep 0.05
+    return 0
+  fi
+  cur=$(cat "$lockdir/owner" 2>/dev/null || true)
+  if [ -d "$lockdir" ] && [ "$cur" = "$seen" ]; then
+    if [ -z "$cur" ]; then
+      lts=$(gate_mtime "$lockdir"); now=$(date -u +%s)
+      if [ -z "$lts" ] || [ $((now - lts)) -lt 60 ]; then
+        rmdir "$tk" 2>/dev/null || true
+        return 0
+      fi
+    fi
+    dead="$lockdir.dead.$$.$(date -u +%s)"
+    if mv "$lockdir" "$dead" 2>/dev/null; then
+      rm -rf "$dead" 2>/dev/null || true
+    fi
+  fi
+  rmdir "$tk" 2>/dev/null || true
+  return 0
+}
+
+gate_checks_drain_unlock() {
+  # One rename, for the reason `gate_index_unlock` gives: `rm -rf` unlinks the
+  # owner line first and passes through an owner-less lock on every release.
+  local dead="$1.dead.$$.$(date -u +%s)"
+  if mv "$1" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+}
+
+gate_drain_checks_file() {
+  # gate_drain_checks_file <path> — transcribe one drained file into `checks`
+  # rows. Split out of its caller because TWO sources feed it and they must be
+  # transcribed identically: the file this act renamed aside, and any file a
+  # previous drain left behind when it died before its `rm`.
+  local src="$1" ts seg pr sha st req fail
+  [ -f "$src" ] || return 0
+  while IFS="$(printf '\t')" read -r ts seg pr sha st req fail; do
+    [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || {
+      warn "a line of \`checks.observed\` is missing required columns and is not transcribed: '${ts:-}'"
+      continue
+    }
+    case "$st" in
+      대기|통과|실패|미등록|'판정 불가') : ;;
+      *) warn "the \`상태\` of a \`checks.observed\` line is out of vocabulary and is not transcribed: '$st'"
+         continue ;;
+    esac
+    # EVERY FIELD SPELLED AS A LITERAL, never forwarded as `"$@"`. The field-table
+    # lint compares this call site against the contract in both directions, and a
+    # forwarded list switches off the direction that catches a field which exists
+    # in the table and is written by nobody — which is the defect that lint is for.
+    gate_append 'checks' "PR=$pr" "head sha=$sha" "상태=$st" \
+      "필수 집합=$(gate_row_safe "$req" "$GATE_CHECKS_REQ_MAX")" \
+      "실패 체크=$(gate_row_safe "$fail" "$GATE_CHECKS_FAIL_MAX")" \
+      "관측=$ts" "세그먼트=${seg:--}"
+  done < "$src"
+}
+
 gate_drain_notify_state() {
   # The emitter's own active state, moved from the run directory into the report
   # as one line of prose.
@@ -16488,6 +16740,13 @@ gate_verb_act() {
   # records them as a file precisely because it is not the ledger's writer; this
   # is the writer, so this is where they become rows.
   gate_drain_stall
+  # The CI poller's observations, on the same seat and for the same reason. IT IS
+  # HERE AND NOT IN THE PRELUDE, and the position is the whole of its safety: the
+  # caller's digest has already passed the staleness test above, so an append
+  # made now cannot retroactively invalidate the very call that made it.
+  # "Simplifying" this up into the prelude brings the #592 ordering defect back to
+  # life in a new series, which is why the reason is written down beside the call.
+  gate_drain_checks
   # This seat's own state, then the watcher's — both go through the same file, so
   # whichever wrote it first is the one line the report carries and the two seats
   # cannot leave two lines for one fact.
@@ -17137,6 +17396,22 @@ gate_verb_act() {
     fi
   fi
 
+  # THE CI VERDICT, AND ITS SEAT IS THREE PROPERTIES AT ONCE: after the rule
+  # loop so a CI refusal is not confused with a rule refusal, upstream of both
+  # appends — the `자율 승인` row below and the obligation row the issuer writes —
+  # so a refused merge leaves no obligation nothing can close, and above the
+  # forecast arm so `plan` answers with the same code `act` would. The merge
+  # anchor check moved above the approval block; this one does not follow it,
+  # because up there it would run before the rule loop. It refuses by setting
+  # the park cell rather than by returning, so the block immediately below
+  # writes the row — no new exit code is minted for it. It takes the effective
+  # rung for the same reason the anchor check does: an under-declared merge
+  # must not skip it. It does not take the kind: what decides whether an act
+  # merges is the surface and history-integration values set above, so a stage
+  # launch or a read labelled `머지` is let through on what it does rather than
+  # on what it is called.
+  gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
+
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
   # two is a refusal axis that would have stopped this act anyway, and a park row
@@ -17200,6 +17475,8 @@ gate_verb_act() {
         warn "repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
       도달모순)
         warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+      CI실패)
+        warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
     esac
     exit "$GATE_EXIT_PARK"
   fi
@@ -18066,6 +18343,99 @@ gate_check_merge_anchor() {
   # which the refusal and the row disagree about the same worktree.
   GATE_MERGE_ANCHOR="$tip"
   export GATE_MERGE_ANCHOR
+  return 0
+}
+
+gate_check_merge_checks() {
+  # gate_check_merge_checks <segment> <cutpoint> — refuse a merge whose
+  # PR has a recorded CI failure. THE SIBLING, and the sibling-ness is
+  # load-bearing.
+  #
+  # WHY IT IS NOT FOLDED INTO `gate_check_merge_anchor`. That check returns at
+  # once unless the review policy is `선머지후리뷰`, and every slice this design
+  # ships is `선리뷰후머지` — folded in, this would be dead code in 5 of 5. It
+  # would reproduce, one layer down, the very defect this design named elsewhere:
+  # a reader that does not exist. For the same reason it is not a rule in the
+  # catalogue either — every entry there can be switched off by configuration.
+  #
+  # THE POLARITY IS REFUSAL, NOT SKIPPING, AND SILENCE IS THE DEFAULT. There is
+  # no wait here to skip and there must not be one: a gate holding the router's
+  # turn has no path back to wakefulness either. So a run with no poller behaves
+  # exactly as it does today, and that co-existence costs nothing.
+  #
+  # NO `gh` CALL IS MADE HERE. The head being compared is the worktree's local
+  # `git rev-parse`, so a force-push — which opens a new CI lifecycle — makes the
+  # recorded row mismatch and this check says nothing about it.
+  #
+  # A STALE `통과` ROW CANNOT CAUSE A BAD MERGE: all it can do is fail to refuse,
+  # which is the behaviour of a run with no poller at all. The only stale value
+  # that could matter is `실패`, and the poller writes a new row on the
+  # `실패 → 통과` transition while this reads the LAST row of the pair.
+  local seg="$1" cut="$2" row tip st req
+  [ "$cut" = "머지" ] || return 0
+  [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+  # WHAT IS REFUSED IS WHAT MERGES, and the `머지` label does not say that. The
+  # router labels every act with the target's cutpoint, so on a `머지` target the
+  # stage launch that would fix the red check, the routing shift, the proposal to
+  # stop, a `gh pr checks` read and every bookkeeping row all arrive here spelled
+  # `--cutpoint 머지`. Refusing them parked the one stage able to push the new
+  # head the refusal below asks for, so a segment whose CI went red once could
+  # never recover on its own.
+  #
+  # THE NARROWING IS `리뷰-후-머지`'s, ON THE SAME TWO argv-DERIVED VALUES. A
+  # read changes nothing, and a worktree write that integrates no history merges
+  # nothing — the kind-pinned stage launch and routing shift land there, and the
+  # bookkeeping kinds grade `읽기`. What stays refused is every surface that
+  # leaves the worktree (`git push`, `gh pr merge`) and a worktree write that
+  # does integrate history, which covers an opaque runner and a command with no
+  # row as well, because both are answered 1.
+  #
+  # IT IS NOT A LIST OF KIND NAMES. `--kind` carries any word and `exec` takes
+  # none, so a name-based exemption would let `act --kind skill`'s spelling vouch
+  # for whatever argv came with it; the surface is what the gate proved.
+  #
+  # THE EXEMPTION IS "IS 0", NOT "IS NOT 1": a path that reaches here without the
+  # value set is then refused rather than waved through.
+  [ "${GATE_SURFACE:-}" = "읽기" ] && return 0
+  if [ "${GATE_SURFACE:-}" = "워크트리쓰기" ] && [ "${GATE_HISTORY_INTEGRATION:-}" = "0" ]; then
+    return 0
+  fi
+
+  # The trailing space is not cosmetic: without it segment `D` also matches a row
+  # written for `D2`, and the merge of one segment would be refused by another's
+  # CI failure. `세그먼트` is the last field this series writes, so `gate_append`'s
+  # own ` | prev=` guarantees the space is there.
+  # BOTH GREPS CARRY `|| true`, and the second one is the load-bearing half. This
+  # file runs under `set -e` with `pipefail`, so a pipeline whose last failing
+  # stage is an unmatched `grep` makes the assignment itself fail and the process
+  # ends at exit 1 with nothing printed. The state that reaches it is the ordinary
+  # one: a run with no poller has no `checks` row at all, so the match is empty and
+  # EVERY merge on such a run died — the exact opposite of the co-existence this
+  # function is built to have. Measured on the first merge of a fresh fixture.
+  row=$( { grep '^- `checks`' "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "세그먼트=$seg " || true; } | tail -1)
+  # NOTHING RECORDED IS NOT A VERDICT. The gate has nothing to say, so it says
+  # nothing — that is what makes the poller optional rather than a new dependency.
+  [ -n "$row" ] || return 0
+
+  tip=$(gate_segment_tip "$seg") || tip=""
+  [ -n "$tip" ] || return 0
+  [ "$(gate_row_field "$row" 'head sha')" = "$tip" ] || return 0
+
+  st=$(gate_row_field "$row" '상태')
+  case "$st" in 실패) : ;; *) return 0 ;; esac
+  req=$(gate_row_field "$row" '필수 집합')
+  # A BROKEN QUESTION IS NOT READ AS AN ANSWER — that is the whole reason
+  # `판정 불가` exists as a value of its own on both fields.
+  [ "$req" = "판정 불가" ] && return 0
+
+  warn "CI on the PR of segment '$seg' failed at this very head ($tip) — 필수 집합 '$req', 실패 체크 '$(gate_row_field "$row" '실패 체크')'"
+  warn "an unattended run parks on a failing check whether or not it is required; fix the failing check and push a new head, and the poller opens a new lifecycle for it"
+  # NO NEW EXIT CODE. The refusal leaves through the park dispatch immediately
+  # below, so it becomes an act-scope `blocked` row like every other reach park
+  # and `plan` forecasts it with the same code.
+  [ -n "${GATE_PARK_CELL:-}" ] || GATE_PARK_CELL="CI실패"
+  export GATE_PARK_CELL
   return 0
 }
 
