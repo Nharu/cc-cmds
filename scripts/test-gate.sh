@@ -1166,6 +1166,23 @@ export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
 # that test the map name their own fixture map on the call, which wins over this.
 export CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map"
 
+# THE METRICS ROUND IS INERT FOR THIS WHOLE PROCESS, for the same two reasons.
+# Every verb but `plan` runs the collector from the prelude once the stamp is
+# stale, so without this the first gate call of each state root would run the
+# real collector over a fixture ledger directory and could append a filing row
+# into a ledger whose rows another section counts. And the filing settings file
+# lives under the developer's `~/.config`: a Project number there would send a
+# unit suite to real `gh`. Section 60 names its own collector and settings file
+# on the call, which wins over this; the collector and the filing are measured
+# by their own suites.
+cat > "$WORK/bin/metrics-noop" <<'METRICSNOOP'
+#!/bin/sh
+printf '%s\n' '{"fired":[],"close":[]}'
+METRICSNOOP
+chmod +x "$WORK/bin/metrics-noop"
+export CC_METRICS_COLLECTOR="$WORK/bin/metrics-noop"
+export CC_METRICS_FILING_FILE="$WORK/no-such-metrics-filing"
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -21843,6 +21860,176 @@ case "$msg" in
   *'park 예상: 도달 판정=CI실패'*) ok "60: 그 거절의 칸이 CI실패 다 (다른 park 가 11 을 낸 것이 아니다)" ;;
   *) bad "60 로컬 머지 거절 칸" "$msg" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 61. 계측 필링 관문 — 케이던스·잠금·좌석·plan
+# --- section: 61 | group: base | covers: snapshot, plan, digest-path | anchors: 61: 첫 진입은 수집기를 부른다, 61: 스탬프 안의 재진입은 부르지 않는다, 61: 잠금이 살아 있으면 부르지 않는다, 61: 스테이지 좌석은 부르지 않는다, 61: plan 은 부르지 않는다, 61: digest-path 는 부르지 않는다, 61: 번호 없음 행이 남는다 ---
+#
+# 게이트 프렐류드가 계측 수집기를 언제 부르고 언제 부르지 않는지를 잰다. 수집기와 그
+# 트리거는 `scripts/test-collect-run-metrics.sh` 가, gh 를 부르는 필링 본체는
+# `scripts/test-run-issue-filing.sh` 가 잰다 — 여기서는 수집기를 호출 수만 세는 스텁으로
+# 바꾸고, 설정 파일에 Project 번호를 두지 않아 gh 에 닿지 않게 한다. 번호가 없을 때
+# 이슈를 만들지 않고 건너뜀 행만 남기는 분기가 곧 이 절의 마지막 단언이다.
+#
+# 이 절은 픽스처를 자기가 만든다(절 59 와 같은 이유 — `--sections 61` 로 잘라 돌릴 때
+# 앞 절의 변수가 없다).
+# ---------------------------------------------------------------------------
+P61ROOT=$(mktemp -d "$WORK/m61.XXXXXX")
+P61_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P61_PREV" ]; then
+  printf '61: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+P61_RID=R61
+P61_MAN="$P61ROOT/$P61_RID.plan.md"
+P61_GRANT="$WT/docs/pipeline-grant/$P61_RID.md"
+P61_LEDGER="$WT/docs/pipeline-run/$P61_RID.md"
+P61_STATE="$P61ROOT/state"
+P61_SROOT="$P61_STATE/cc-cmds"
+P61_STAMP="$P61_SROOT/metrics.stamp"
+P61_LOCK="$P61_SROOT/.metrics.lock"
+P61_CALLS="$P61ROOT/calls"
+P61_COLLECTOR="$P61ROOT/collector-stub"
+P61_CONF="$P61ROOT/metrics-filing"
+sed -e "s/run-id=$P61_PREV;/run-id=$P61_RID;/" \
+    -e "s/^\*\*런 id\*\*: $P61_PREV\$/**런 id**: $P61_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P61_MAN"
+sed "s/R1/$P61_RID/g" "$GBAK" > "$P61_GRANT"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$P61_RID"
+  printf '런 id %s · 계측 필링 관문 픽스처\n' "$P61_RID"
+} > "$P61_LEDGER"
+rm -rf "$P61_STATE"
+mkdir -p "$P61_STATE"
+cat > "$P61_COLLECTOR" <<P61EOF
+#!/usr/bin/env bash
+printf '1\n' >> "$P61_CALLS"
+printf '%s\n' '{"round":1,"at":"2026-01-01T00:00:00Z","repo":"-x","counts":{},"new_runs":[],"probe":"ok","mixed_window":false,"strata":{},"fired":[{"id":"T3","kind":"review","signature":"T3/review","body":"x"}],"close":[],"excluded":{}}'
+P61EOF
+chmod +x "$P61_COLLECTOR"
+printf 'account\ttester\n' > "$P61_CONF"
+
+p61_gate() {
+  # 인프로세스 호출. 수집기·설정 경로는 게이트가 호출 시점에 읽으므로 소싱 시점 입력
+  # 검사에 걸리지 않는다. 함수 앞의 임시 대입이 아니라 서브셸 안의 `export` 다 — 회차는
+  # 게이트가 띄우는 분리 자식(새 bash 프로세스)에서 돌고, 그 자식은 수출된 값만 받는다.
+  ( cd "$WT" && export XDG_STATE_HOME="$P61_STATE" CC_METRICS_COLLECTOR="$P61_COLLECTOR" \
+      CC_METRICS_FILING_FILE="$P61_CONF" && gate_inproc "$@" >/dev/null 2>&1 )
+}
+p61_wait_round() {
+  # 회차를 띄운 호출 뒤, 분리 자식이 잠금을 풀 때까지 유계로 기다린다. 잠금은 동사가
+  # 돌아오기 전에 잡히므로, 없으면 회차가 없었거나 이미 끝난 것이다.
+  local i=0
+  while [ -d "$P61_LOCK" ]; do
+    [ "$i" -lt 300 ] || { bad "61: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+P61_ROUND_LOG="$P61_STATE/cc-cmds/run/$P61_RID/log/metrics-round.log"
+p61_calls() { if [ -f "$P61_CALLS" ]; then grep -c '' "$P61_CALLS"; else printf 0; fi; }
+p61_rows() { { grep -cF "\`계측 필링 건너뜀\`" "$P61_LEDGER" || true; }; }
+p61_old_stamp() { printf '%s\n' "$(( $(date -u +%s) - 86400 ))" > "$P61_STAMP"; }
+
+# A — 첫 진입.
+p61_gate snapshot --manifest "$P61_MAN"
+p61_wait_round
+check "61: 첫 진입은 수집기를 부른다" "$(p61_calls)" "1"
+check "61: 첫 진입은 스탬프를 쓴다" "$([ -f "$P61_STAMP" ] && printf 있음 || printf 없음)" "있음"
+check "61: 첫 진입이 끝나면 잠금이 풀려 있다" "$([ -d "$P61_LOCK" ] && printf 있음 || printf 없음)" "없음"
+check "61: 번호 없음 행이 남는다" "$(p61_rows)" "1"
+check "61: 그 행의 사유는 번호 없음이다" \
+  "$({ grep -F "\`계측 필링 건너뜀\`" "$P61_LEDGER" || true; } | tail -1 | tr '|' '\n' | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//')" "번호 없음"
+
+# B — 스탬프 안의 재진입.
+p61_gate snapshot --manifest "$P61_MAN"
+check "61: 스탬프 안의 재진입은 부르지 않는다" "$(p61_calls)" "1"
+check "61: 부르지 않은 재진입은 행을 남기지 않는다" "$(p61_rows)" "1"
+
+# C — 스탬프는 만료됐지만 잠금이 살아 있다(소유자 줄 없이 방금 만든 디렉터리 — 나이는
+# 디렉터리 mtime 으로 잰다). 회차를 띄우지 않는 것이 이 사례의 단언이라 기다리지 않는다
+# — 잠금은 이 사례가 만든 것이라 기다려도 풀리지 않는다.
+p61_old_stamp
+mkdir -p "$P61_LOCK"
+p61_gate snapshot --manifest "$P61_MAN"
+check "61: 잠금이 살아 있으면 부르지 않는다" "$(p61_calls)" "1"
+
+# D — 잠금이 만료 시간(7200초)을 넘겼다.
+fx_age_file "$P61_LOCK" 10800
+p61_gate snapshot --manifest "$P61_MAN"
+p61_wait_round
+check "61: 만료된 잠금은 깨고 부른다" "$(p61_calls)" "2"
+check "61: 깨고 잡은 잠금도 끝에 풀린다" "$([ -d "$P61_LOCK" ] && printf 있음 || printf 없음)" "없음"
+
+# E — 스테이지 좌석.
+p61_old_stamp
+p61_stamp_before=$(cat "$P61_STAMP")
+( CC_PIPELINE_STAGE_ID="$P61_RID#1" CC_PIPELINE_SEGMENT=S61 p61_gate snapshot --manifest "$P61_MAN" )
+check "61: 스테이지 좌석은 부르지 않는다" "$(p61_calls)" "2"
+check "61: 스테이지 좌석은 스탬프를 쓰지 않는다" "$(cat "$P61_STAMP")" "$p61_stamp_before"
+
+# F — plan.
+p61_gate plan --manifest "$P61_MAN" --kind x --target infra --cutpoint 커밋 -- ls
+check "61: plan 은 부르지 않는다" "$(p61_calls)" "2"
+check "61: plan 은 스탬프를 쓰지 않는다" "$(cat "$P61_STAMP")" "$p61_stamp_before"
+
+# H — digest-path. PreToolUse 훅이 도구 호출마다 부르는 동사라, 여기서 회차가 돌면 도구 호출
+# 하나가 회차 전체를 기다린다. 스탬프는 만료된 채로 남아 다음 비제외 동사가 회차를 돈다.
+p61_gate digest-path --manifest "$P61_MAN"
+check "61: digest-path 는 부르지 않는다" "$(p61_calls)" "2"
+check "61: digest-path 는 스탬프를 쓰지 않는다" "$(cat "$P61_STAMP")" "$p61_stamp_before"
+
+# G — 수집기가 0 이 아닌 코드로 끝난다. 회차는 동사를 실패시키지 않는다는 계약이므로,
+# 동사는 제 종료 코드와 출력을 그대로 내고, 잠금은 풀리고, 실패는 로그 한 줄로 남는다.
+# 회차는 분리 자식에서 돌므로 그 로그는 동사의 stderr 가 아니라 런 디렉터리의
+# `log/metrics-round.log` 에 남는다.
+# 종료 코드는 파일로 넘긴다 — 함수 호출 앞의 임시 대입이 게이트가 띄우는 자식까지
+# 내려가는지에 기대지 않는다.
+P61_FAILING="$P61ROOT/collector-failing"
+P61_FAIL_RC="$P61ROOT/collector-rc"
+cat > "$P61_FAILING" <<P61EOF
+#!/usr/bin/env bash
+printf '1\n' >> "$P61_CALLS"
+exit "\$(cat "$P61_FAIL_RC")"
+P61EOF
+chmod +x "$P61_FAILING"
+p61_gate_io() {
+  # p61_gate_io <collector> <verb args...> — stdout·stderr 를 파일로 받는다. 인프로세스가
+  # 아니라 새 bash 프로세스다: 결함은 run.sh 가 소싱 시점에 거는 errexit 아래에서만 서고,
+  # 인프로세스 호출은 그 셸 옵션을 싣지 않아 고치기 전 게이트에서도 이 사례가 초록이었다.
+  local col="$1"; shift
+  ( cd "$WT" && export XDG_STATE_HOME="$P61_STATE" CC_METRICS_COLLECTOR="$col" \
+      CC_METRICS_FILING_FILE="$P61_CONF" && bash "$GATE" "$@" >"$P61ROOT/out" 2>"$P61ROOT/err" )
+}
+p61_fail_case() {
+  # p61_fail_case <label> <collector> [env...] — 스탬프를 만료시키고 snapshot 한 번.
+  local label="$1" col="$2" vrc=0 before lb la
+  shift 2
+  p61_old_stamp
+  # 앞 사례가 남긴 잠금이 이 사례의 수집기 호출을 막지 않게 한다 — 사례마다 독립이다.
+  rm -rf "$P61_LOCK"
+  before=$(p61_calls)
+  lb=$(grep -c '계측 회차 실패' "$P61_ROUND_LOG" 2>/dev/null || true)
+  ( [ $# -eq 0 ] || export "$@"; p61_gate_io "$col" snapshot --manifest "$P61_MAN" ) || vrc=$?
+  p61_wait_round
+  la=$(grep -c '계측 회차 실패' "$P61_ROUND_LOG" 2>/dev/null || true)
+  check "61: $label — 동사가 0 으로 끝난다" "$vrc" "0"
+  check "61: $label — 동사가 제 출력을 낸다" \
+    "$(jq -e 'type == "object"' "$P61ROOT/out" >/dev/null 2>&1 && printf 객체 || printf 아님)" "객체"
+  check "61: $label — 잠금이 풀려 있다" "$([ -d "$P61_LOCK" ] && printf 있음 || printf 없음)" "없음"
+  check "61: $label — 실패가 로그에 남는다" "$(( ${la:-0} - ${lb:-0} ))" "1"
+  p61_after=$(p61_calls)
+  p61_called=$([ "$p61_after" -gt "$before" ] && printf 불림 || printf 안불림)
+}
+printf '1\n' > "$P61_FAIL_RC"
+p61_fail_case "수집기 rc=1" "$P61_FAILING"
+check "61: 수집기 rc=1 — 수집기가 실제로 불렸다" "$p61_called" "불림"
+printf '2\n' > "$P61_FAIL_RC"
+p61_fail_case "수집기 rc=2" "$P61_FAILING"
+check "61: 수집기 rc=2 — 수집기가 실제로 불렸다" "$p61_called" "불림"
+# 결정적 재현: 실제 수집기는 정수가 아닌 전환 구간 폭을 인자 오류(2)로 거부한다.
+p61_fail_case "실제 수집기 인자 오류" "$repo_root/plugins/cc-cmds/orchestrator/collect-run-metrics.sh" \
+  CC_METRICS_SWITCH_WINDOW_S=abc
 
 # --- epilogue-begin ---
 #

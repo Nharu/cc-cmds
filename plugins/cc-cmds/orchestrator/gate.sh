@@ -40,6 +40,12 @@
 #              its `stage-result` row, removes the per-segment files. A router
 #              cannot usefully spell it — without the token it refuses (exit 3)
 #              and starts nothing.
+#   metrics-round
+#              INTERNAL. The detached half of the metrics round: the prelude
+#              stamps, locks and writes a nonce into the lock, then starts this
+#              verb and returns; this verb runs the collector and the filing and
+#              releases the lock. Without the lock's nonce it refuses (exit 3)
+#              and runs nothing.
 #   close      resolve a pending approval from the harness-written transcript
 #   prompt     the canonical question and menu the router must ask for one
 #              approval, as JSON — changes nothing
@@ -92,6 +98,9 @@
 #   gate.sh supervise-stage
 #                    --manifest <path> --target <alias> --segment <id> --nonce <hex>
 #                    -- <stage-kind> <cli args...>          (internal; see above)
+#   gate.sh metrics-round
+#                    --manifest <path> [--target <alias>] --nonce <hex>
+#                                                           (internal; see above)
 #   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
 #   gate.sh prompt   --manifest <path> --approval <id>
 #
@@ -8018,9 +8027,71 @@ readonly GATE_REAP_RETENTION=2592000
 readonly GATE_REAP_MAX=20
 readonly GATE_REAP_BUDGET_S=12
 readonly GATE_REAP_INTERVAL=21600
+# The metrics collector shares the reaper's cadence and lock SHAPE, not its
+# state: a separate stamp, a separate lock directory, so neither cycle can
+# switch the other off. Same interval because both are "once in a while, from
+# whichever gate call happens to be first".
+#
+# THE ROUND DOES NOT RUN INSIDE THE CALLER'S GATE CALL. The caller pays for the
+# stamp, the lock and the launch; the collector and the filing run in a
+# detached `metrics-round` child. The collector's population read sits outside
+# its own budget on purpose — counting it there once starved the first
+# collection for good — and it grows with the number of ledgers, so a round run
+# inside the caller made every verb that happened to meet an expired stamp wait
+# for it, with nothing bounding the wait.
+#
+# The child's collector is cut after `GATE_METRICS_ROUND_TIMEOUT_S`. That is a
+# guard against a hang, not a plan for a backlog. The lock expiry is longer than
+# the deadline plus the filing tail (at most 5+k `gh` calls of
+# `GATE_METRICS_GH_TIMEOUT_S` each), so a live round's lock is never broken
+# under it, and shorter than the interval, so a child that died with the lock
+# held does not hold the next round off.
+readonly GATE_METRICS_INTERVAL=21600
+readonly GATE_METRICS_LOCK_TTL=7200
+readonly GATE_METRICS_ROUND_TIMEOUT_S=3600
+# Per `gh` call of the filing path. A GitHub call that hangs would hold the
+# round's lock for as long as it hangs; a timed-out call takes the branch a
+# failed one already takes.
+readonly GATE_METRICS_GH_TIMEOUT_S=10
 
 gate_reap_root() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
+}
+
+gate_metrics_stamp() {
+  printf '%s' "$(gate_reap_root)/metrics.stamp"
+}
+
+gate_metrics_lockdir() {
+  printf '%s' "$(gate_reap_root)/.metrics.lock"
+}
+
+gate_metrics_config_file() {
+  printf '%s' "${CC_METRICS_FILING_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/metrics-filing}"
+}
+
+gate_metrics_config() {
+  # gate_metrics_config <key> — one value from the filing settings file, or
+  # empty. `키<TAB>값` lines, the same shape as `plugin-pin`, and READ WITH awk
+  # RATHER THAN SOURCED: the file sits in the user's config directory beside
+  # credential files, and sourcing would execute whatever is there. Only the
+  # two known keys are answered; `project` must be all digits or it reads as
+  # absent, because a Project number is the only thing it can be.
+  local f v
+  f=$(gate_metrics_config_file)
+  [ -f "$f" ] || return 0
+  case "$1" in project|account) ;; *) return 0 ;; esac
+  v=$(awk -F'\t' -v k="$1" '$1 == k { v = $2 } END { printf "%s", v }' "$f" 2>/dev/null || true)
+  if [ "$1" = "project" ]; then
+    case "$v" in ''|*[!0-9]*) v="" ;; esac
+  fi
+  printf '%s' "$v"
+}
+
+gate_metrics_collector() {
+  # Resolved at CALL time, not at source time, so a test that sources this file
+  # in-process can still point it at a stub.
+  printf '%s' "${CC_METRICS_COLLECTOR:-$GATE_DIR/collect-run-metrics.sh}"
 }
 
 gate_reap_day_epoch() {
@@ -10027,7 +10098,7 @@ gate_main() {
 
   # ACCEPTED ONLY WHERE THEY DECIDE SOMETHING — the `--reach` precedent below.
   # `--interval`/`--timeout` govern one verb's loop and `--nonce` is the launch
-  # token only `supervise-stage` consumes; a flag that is silently inert is a
+  # token only the two detached verbs consume; a flag that is silently inert is a
   # flag a caller believes is working. Non-numeric values are refused for the
   # same reason a vocabulary miss is: a loop bound that reads as text degrades
   # to a shell arithmetic error deep inside a poll nobody is watching.
@@ -10043,8 +10114,8 @@ gate_main() {
   fi
   if [ -n "$nonce" ]; then
     case "$verb" in
-      supervise-stage) ;;
-      *) printf 'gate: --nonce is used only with supervise-stage (verb received: %s)\n' "$verb" >&2
+      supervise-stage|metrics-round) ;;
+      *) printf 'gate: --nonce is used only with supervise-stage and metrics-round (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -10202,6 +10273,23 @@ gate_main() {
   fi
 
   rundir_init
+
+  # THE DETACHED METRICS ROUND LEAVES HERE, before anything below writes. What
+  # follows is the per-entry bookkeeping of a caller — the ledger handle, the
+  # session index, lineage, the run-open block, lost-dispatch settlement and the
+  # metrics hook itself — and a child started by another gate call is none of
+  # those: settling dispatches from here would write `외부 종료` rows beside the
+  # caller doing the same. The manifest, the grant and the run directory above
+  # are what the round needs, and all of them have been checked by now.
+  if [ "$verb" = "metrics-round" ]; then
+    [ -n "$nonce" ] || { printf 'gate: metrics-round requires --nonce\n' >&2; exit 2; }
+    if [ "$(cat "$(gate_metrics_lockdir)/nonce" 2>/dev/null || true)" != "$nonce" ]; then
+      printf 'gate: metrics-round nonce mismatch — the lock does not carry this nonce, so nothing runs\n' >&2
+      exit "$GATE_EXIT_RULE"
+    fi
+    gate_metrics_round "$nonce"
+    exit 0
+  fi
 
   # THE GATE CHOOSES THE PATH. THE CALLER DOES NOT NAME ONE.
   #
@@ -10461,6 +10549,19 @@ gate_main() {
 
   GATE_SETTLED_SEGMENTS=""
   [ "$verb" = "plan" ] || gate_settle_lost_dispatches
+  # The metrics round is started from the same prelude for the same reason and
+  # is kept out of `plan` by the same contract; it is stamped, so almost every
+  # call stops at one read. The call that meets an expired stamp pays for the
+  # lock and the launch only — the round itself runs in a detached child — so
+  # no verb waits for the collector. `|| true` as the reaper has it: whatever
+  # the round runs into, it is not the verb's work. `digest-path` is kept out
+  # too: the PreToolUse hook calls it before every tool call, and it has no
+  # business paying even for the launch. The stamp is not touched, so the round
+  # starts on the next verb that is not excluded.
+  case "$verb" in
+    plan|digest-path) ;;
+    *) gate_metrics_cycle || true ;;
+  esac
 
   case "$verb" in
     digest-path)
@@ -10509,6 +10610,7 @@ gate_main() {
       [ $# -ge 1 ] || { printf 'gate: supervise-stage needs the stage kind and the CLI argv after --\n' >&2; exit 2; }
       gate_verb_supervise_stage "$alias" "$segment" "$nonce" "$@"
       ;;
+    # `metrics-round` never arrives here: it leaves right after `rundir_init`.
     close)
       [ -n "$approval" ] || { printf 'gate: close requires --approval\n' >&2; exit 2; }
       # The two refusing dispositions are different CLAIMS about the same
@@ -19289,6 +19391,391 @@ gate_settle_lost_dispatches() {
           "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken" \
           "$RUN_DIR/$seg.window"
     GATE_SETTLED_SEGMENTS="$GATE_SETTLED_SEGMENTS $seg"
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Run metrics — the collector round and the filing it feeds.
+#
+# The collector (`collect-run-metrics.sh`) reads every finished run's ledger,
+# stream logs and transcripts and prints one journal line per round; the
+# trigger predicates are ITS output. This side only decides whether a round is
+# due, runs it as a separate process, and turns what fired into at most one
+# GitHub issue per round. Nothing here reads a transcript or computes a number.
+# ---------------------------------------------------------------------------
+
+gate_metrics_lock() {
+  # gate_metrics_lock <root> — one attempt, no waiting, the reaper's lock shape
+  # (owner line straight after the `mkdir`, the directory's mtime when the line
+  # is unreadable, broken after `GATE_METRICS_LOCK_TTL`). Its own directory, so
+  # a stuck collector cannot switch the reaper off or the other way round.
+  local root="$1" lock owner ots now
+  lock="$root/.metrics.lock"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+    return 0
+  fi
+  owner=$(cat "$lock/owner" 2>/dev/null || true)
+  ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+  [ -n "$ots" ] || ots=$(gate_mtime "$lock")
+  [ -n "$ots" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ots)) -ge "$GATE_METRICS_LOCK_TTL" ] || return 1
+  rm -rf "$lock" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_metrics_unlock() {
+  # One rename, then the removal — the same release as the reaper's, so no
+  # moment exists in which the lock stands without its owner line.
+  local lock dead
+  lock="$1/.metrics.lock"
+  dead="$lock.dead.$$"
+  if mv "$lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+  return 0
+}
+
+gate_metrics_cycle() {
+  # Called from the prelude on every verb but `plan`. Always returns 0: a
+  # metrics round is never a reason for the verb the caller asked for to fail.
+  #
+  # THE ORDER IS FIXED. (1) A stage seat does nothing, not even the stamp — a
+  # stage has no business spending its turn on a collector round, and a stamp it
+  # wrote would silence the router's round for six hours. (2) The cadence stamp
+  # is one cheap read. (3) The lock is one attempt. (4) The stamp is written
+  # BEFORE the collector runs, so a collector that dies does not make every
+  # following gate call retry it; the leftover `.pending` beside the summary is
+  # the evidence. (5) The round is started detached, holding the lock, and this
+  # call returns — see `gate_metrics_round` for what runs there.
+  #
+  # THE NONCE BINDS THE CHILD TO THIS LOCK. It is written into the lock
+  # directory before the launch and the child refuses without it, so the
+  # internal verb cannot be spelled into running a round nobody locked; and the
+  # child releases the lock only while it still carries that nonce, so a child
+  # that outlived the expiry does not remove a lock another round has since
+  # taken. No trap: a child that dies leaves the lock to the expiry, which is
+  # the recovery the in-call round always had.
+  local root stampf stamp now ledger_dir nonce tmp pid
+  cc_caller_is_stage && return 0
+  [ -n "${LEDGER:-}" ] || return 0
+  ledger_dir=$(dirname "$LEDGER")
+  [ -d "$ledger_dir" ] || return 0
+  root=$(gate_reap_root)
+  stampf=$(gate_metrics_stamp)
+  now=$(date -u +%s)
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_METRICS_INTERVAL" ]; then
+    return 0
+  fi
+  mkdir -p "$root" 2>/dev/null || return 0
+  gate_metrics_lock "$root" || return 0
+  # Read again inside the lock: two gates that both saw an expired stamp would
+  # otherwise run the round one after the other, and file twice.
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_METRICS_INTERVAL" ]; then
+    gate_metrics_unlock "$root"
+    return 0
+  fi
+  printf '%s\n' "$now" > "$stampf" 2>/dev/null || true
+  nonce=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
+  tmp=""
+  if [ -n "$nonce" ]; then
+    tmp=$(mktemp "$root/.metrics.lock/.nonce.XXXXXX" 2>/dev/null || true)
+  fi
+  if [ -z "$tmp" ] || ! printf '%s\n' "$nonce" > "$tmp" 2>/dev/null \
+     || ! mv "$tmp" "$root/.metrics.lock/nonce" 2>/dev/null; then
+    [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null || true
+    log "계측 회차 실패 — 회차를 띄우지 못했다(다음 회차에 다시 센다)"
+    gate_metrics_unlock "$root"
+    return 0
+  fi
+  mkdir -p "$RUN_DIR/log" 2>/dev/null || true
+  # `|| pid=""`: run.sh leaves errexit on, and a plain assignment carries the
+  # substitution's status, so a launcher that returned 127 would end the whole
+  # gate here — before the verb. Two spellings rather than an optional-argument
+  # array, because an empty array under `set -u` is an error on bash 3.2.
+  if [ -n "${alias:-}" ]; then
+    pid=$( cc_detach_exec "$RUN_DIR/log/metrics-round.log" "$RUN_DIR/log/metrics-round.log" \
+             bash "$GATE_DIR/gate.sh" metrics-round --manifest "$MANIFEST" \
+               --target "$alias" --nonce "$nonce" ) || pid=""
+  else
+    pid=$( cc_detach_exec "$RUN_DIR/log/metrics-round.log" "$RUN_DIR/log/metrics-round.log" \
+             bash "$GATE_DIR/gate.sh" metrics-round --manifest "$MANIFEST" \
+               --nonce "$nonce" ) || pid=""
+  fi
+  if [ -z "$pid" ]; then
+    log "계측 회차 실패 — 회차를 띄우지 못했다(다음 회차에 다시 센다)"
+    gate_metrics_unlock "$root"
+  fi
+  return 0
+}
+
+gate_metrics_round_timeout() {
+  # `CC_METRICS_ROUND_TIMEOUT_S` overrides the constant for tests; a value that
+  # is not a positive integer reads as the constant.
+  local t="${CC_METRICS_ROUND_TIMEOUT_S:-}"
+  case "$t" in ''|*[!0-9]*|0) t=$GATE_METRICS_ROUND_TIMEOUT_S ;; esac
+  printf '%s' "$t"
+}
+
+gate_metrics_round() {
+  # gate_metrics_round <nonce> — the body of the detached `metrics-round` verb:
+  # the collector, the read of its last line, the filing, the release. Always
+  # returns 0.
+  #
+  # THE COLLECTOR IS CUT AT THE DEADLINE, and its stdout goes to a file rather
+  # than through `$( )`: a program the TERM stopped can leave children that
+  # still hold a pipe, and a substitution would wait for them, which is the
+  # unbounded wait the deadline exists to remove. The deadline's rc (143)
+  # takes the branch every failed collector already takes.
+  local nonce="$1" root ledger_dir collector outf rc line
+  ledger_dir=$(dirname "$LEDGER")
+  root=$(gate_reap_root)
+  collector=$(gate_metrics_collector)
+  outf=$(mktemp "${TMPDIR:-/tmp}/cc-metrics-round.XXXXXX" 2>/dev/null || true)
+  rc=0
+  if [ -z "$outf" ]; then
+    rc=1
+  else
+    # `|| rc=$?`, never `; rc=$?`: run.sh leaves errexit on, so a collector that
+    # exited non-zero would otherwise end the round before its release.
+    gate_metrics_timed "$(gate_metrics_round_timeout)" \
+      bash "$collector" --ledger-dir "$ledger_dir" --state-root "$root" \
+      >"$outf" 2>/dev/null || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    [ -z "$outf" ] || rm -f "$outf" 2>/dev/null || true
+    log "계측 회차 실패 — 수집기 rc=$rc (다음 회차에 다시 센다)"
+    gate_metrics_round_release "$root" "$nonce"
+    return 0
+  fi
+  line=$(sed -n '$p' "$outf" 2>/dev/null || true)
+  rm -f "$outf" 2>/dev/null || true
+  # A blocked round judges nothing and files nothing; its runs return in the
+  # next round's delta. Only a log line — the row series and the skip reasons
+  # are closed vocabularies.
+  if [ "$(printf '%s' "$line" | jq -r '.probe // empty' 2>/dev/null || true)" = "차단" ]; then
+    log "계측 회차 차단 — 미수집 $(printf '%s' "$line" | jq -r '.counts["미수집"] // "-"' 2>/dev/null || true), 다음 회차에 델타로 다시 든다"
+  fi
+  gate_metrics_file "$line" "$ledger_dir" || true
+  gate_metrics_round_release "$root" "$nonce"
+  return 0
+}
+
+gate_metrics_round_release() {
+  # gate_metrics_round_release <root> <nonce> — the release, only while the
+  # lock still carries this round's nonce. A round that ran past the expiry
+  # finds another round's lock there and leaves it alone.
+  if [ "$(cat "$1/.metrics.lock/nonce" 2>/dev/null || true)" = "$2" ]; then
+    gate_metrics_unlock "$1"
+  else
+    log "계측 회차 — 잠금이 이 회차의 것이 아니어서 풀지 않는다"
+  fi
+  return 0
+}
+
+gate_metrics_skip() {
+  # gate_metrics_skip <사유> <signatures> — the row that says filing did not
+  # happen. Without it an unfiled trigger and a round with nothing to file read
+  # the same in the morning.
+  gate_append '계측 필링 건너뜀' "사유=$1" "세그먼트=-" \
+    "트리거=$(gate_row_safe "${2:--}" 240)" "기록 시각=$(now_iso)" || true
+}
+
+gate_metrics_absent() {
+  # gate_metrics_absent <사유> <fired count> <fired signatures> — a missing
+  # prerequisite becomes a skip row only when the round fired something. A
+  # close-only round has nothing to file, so "could not file" is not true of
+  # it; and because the collector restates a close every round for as long as
+  # the condition stays gone, writing the row here made it permanent,
+  # six-hourly, and byte-identical to the real signal it exists to carry.
+  if [ "${2:-0}" -gt 0 ]; then
+    gate_metrics_skip "$1" "$3"
+  else
+    log "계측 필링 전제 부재($1) — 이 회차는 닫기만 있어 행을 남기지 않는다"
+  fi
+}
+
+gate_metrics_gh_timeout() {
+  # `CC_METRICS_GH_TIMEOUT_S` overrides the constant for tests; a value that is
+  # not an integer reads as the constant.
+  local t="${CC_METRICS_GH_TIMEOUT_S:-}"
+  case "$t" in ''|*[!0-9]*) t=$GATE_METRICS_GH_TIMEOUT_S ;; esac
+  printf '%s' "$t"
+}
+
+gate_metrics_timed() {
+  # gate_metrics_timed <seconds> <command>... — the command's rc, or the rc of
+  # a TERM once it has run longer than <seconds>.
+  #
+  # THE COMMAND MUST BE AN EXTERNAL PROGRAM, not a function: `&` on a simple
+  # external command makes the background pid the program itself, so the TERM
+  # reaches the process that holds the caller's stdout. A function would put a
+  # subshell there, the TERM would stop the subshell, and a caller reading
+  # through `$( )` would go on waiting for the orphaned program. The watcher's
+  # own output goes to /dev/null for the same reason, and it removes its `sleep`
+  # when it is itself stopped, so nothing outlives the call.
+  local secs="$1" pid wpid rc=0
+  shift
+  "$@" &
+  pid=$!
+  (
+    s=""
+    trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & s=$!
+    wait "$s"
+    kill -TERM "$pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  wpid=$!
+  wait "$pid" || rc=$?
+  kill -TERM "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  return "$rc"
+}
+
+gate_metrics_gh_write() {
+  # gate_metrics_gh_write <base> <token> <gh-args>... — `gh` under the
+  # WRITE-scoped credential, exported inside a subshell only, so the token
+  # neither outlives the call nor appears on any argv. `gh auth switch` is never
+  # the answer: it changes the machine's account for every other process.
+  local base="$1" tok="$2" t; shift 2
+  t=$(gate_metrics_gh_timeout)
+  (
+    export GH_TOKEN="$tok"
+    export GITHUB_TOKEN=""
+    cd "$base" 2>/dev/null || exit 1
+    gate_metrics_timed "$t" gh "$@"
+  )
+}
+
+gate_metrics_row() {
+  # gate_metrics_row <결정> <issue number> <signatures> <revert verb> <reason>
+  gate_append '자율 승인' "kind=metrics-filing" "결정=$1" "대상=${alias:--}" "세그먼트=-" \
+    "절단점=필링" "유도 절단점=-" "등급=1" "기준=계측 트리거 $(gate_row_safe "$3" 200)" \
+    "되돌리는 법=gh issue $4 $2" "근거=$(gate_row_safe "$5" 240)" || true
+}
+
+gate_metrics_file() {
+  # gate_metrics_file <journal line> <ledger dir> — what fired becomes at most
+  # one issue; what the collector judged recovered is closed.
+  #
+  # THE SKIP REASONS ARE FOUR AND CLOSED: `번호 없음` (no observation Project
+  # number configured, so no issue is created at all — an issue that lands in
+  # no Project is invisible to the triage it exists for), `자격 없음` (no
+  # write-scoped credential), `조회 실패` (the write credential's identity is
+  # not the configured account, or a GitHub call failed), `상한 도달` (an
+  # instrument issue is already open). A failure to add a created issue to the
+  # Project is NOT a skip: the issue stands, the missing step is written beside
+  # the ledger as a command, and the filing row is still written.
+  #
+  # `gh issue reopen` is not called anywhere — a closed instrument issue that
+  # fires again is a new issue, and reopening is a human's call.
+  local line="$1" ledger_dir="$2" base fired close nf nc sigs project account tok login
+  local list nopen open_t6 others tmp url num sig round body_lines title why
+  base=$(dirname "$(dirname "$ledger_dir")")
+  # A line that is not one JSON object is no round at all. Without this an
+  # empty line reads as an empty count, the zero test below fails as an error
+  # rather than as false, and a skip row would name a trigger that never fired.
+  printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || return 0
+  fired=$(printf '%s' "$line" | jq -c '.fired // []' 2>/dev/null) || return 0
+  close=$(printf '%s' "$line" | jq -c '.close // []' 2>/dev/null) || return 0
+  nf=$(printf '%s' "$fired" | jq 'length')
+  nc=$(printf '%s' "$close" | jq 'length')
+  [ "$nf" -eq 0 ] && [ "$nc" -eq 0 ] && return 0
+  # `트리거` carries the fired signatures and nothing else — never the close
+  # list, which is what the collector judged gone, not what fired.
+  sigs=$(printf '%s' "$fired" | jq -r '[.[].signature] | join(",")')
+  round=$(printf '%s' "$line" | jq -r '.round // "-"')
+  project=$(gate_metrics_config project)
+  if [ -z "$project" ]; then gate_metrics_absent '번호 없음' "$nf" "$sigs"; return 0; fi
+  tok=$(cred_write_token 2>/dev/null) || tok=""
+  if [ -z "$tok" ]; then gate_metrics_absent '자격 없음' "$nf" "$sigs"; return 0; fi
+  account=$(gate_metrics_config account)
+  login=$(gate_metrics_gh_write "$base" "$tok" api user --jq .login 2>/dev/null) || login=""
+  if [ -z "$login" ] || [ "$login" != "$account" ]; then
+    gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0
+  fi
+  list=$(GATE_ACT_CWD="$base" gate_run_readonly gate_metrics_timed "$(gate_metrics_gh_timeout)" \
+           gh issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
+    || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
+  nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
+
+  body_lines=$(printf '%s' "$fired" | jq -r '.[] | "- `\(.signature)` — \(.body)"')
+  tmp=$(mktemp "${TMPDIR:-/tmp}/cc-metrics-issue.XXXXXX") || return 0
+  if [ "$nf" -gt 0 ]; then
+    {
+      printf '런 계측 수집기의 회차 %s 에서 다음 트리거가 발화했다.\n\n' "$round"
+      printf '%s\n\n' "$body_lines"
+      printf -- '- 이 회차에 새로 수집된 런: %s\n' "$(printf '%s' "$line" | jq -r '.new_runs | join(", ")')"
+      printf -- '- 수집 수: %s\n' "$(printf '%s' "$line" | jq -c '.counts')"
+      printf -- '- 요약 파일: `%s/metrics.json`\n' "$ledger_dir"
+    } > "$tmp"
+    if [ "$nopen" -gt 0 ]; then
+      # An open T6 issue takes the other triggers as a comment: T6 is the slow
+      # verdict about the window value, and a defect-shaped trigger arriving
+      # while it is open is evidence about the same instrument, not a second
+      # thread. Anything else open is the cap.
+      open_t6=$(printf '%s' "$list" | jq -r '[.[] | select(.title | startswith("[cc-metrics] T6/"))][0].number // empty')
+      others=""
+      if [ -n "$open_t6" ]; then
+        others=$(printf '%s' "$list" | jq -r --argjson f "$fired" --argjson n "$open_t6" \
+          '(.[] | select(.number == $n) | .title | ltrimstr("[cc-metrics] ")) as $t
+           | [$f[].signature | select(. != $t)] | join(",")')
+      fi
+      if [ -n "$open_t6" ] && [ -n "$others" ]; then
+        if gate_metrics_gh_write "$base" "$tok" issue comment "$open_t6" --body-file "$tmp" >/dev/null 2>&1; then
+          gate_metrics_row '코멘트' "$open_t6" "$others" close "$body_lines"
+        else
+          gate_metrics_skip '조회 실패' "$sigs"
+        fi
+      else
+        gate_metrics_skip '상한 도달' "$sigs"
+      fi
+    else
+      sig=$(printf '%s' "$fired" | jq -r '.[0].signature')
+      title="[cc-metrics] $sig"
+      url=$(gate_metrics_gh_write "$base" "$tok" issue create --title "$title" \
+              --label cc-metrics --body-file "$tmp" 2>/dev/null | sed -n '$p') || url=""
+      num=$(printf '%s' "$url" | sed -n 's#.*/issues/\([0-9][0-9]*\)$#\1#p')
+      if [ -z "$num" ]; then
+        gate_metrics_skip '조회 실패' "$sigs"
+      else
+        if ! gate_metrics_gh_write "$base" "$tok" project item-add "$project" --owner "$account" --url "$url" >/dev/null 2>&1; then
+          mkdir -p "$ledger_dir/metrics.unfiled" 2>/dev/null || true
+          {
+            printf '# 이슈 #%s 를 관측 Project 에 담지 못했다\n\n' "$num"
+            printf '이슈는 만들어졌고 Project 담기만 실패했다. 아래 명령으로 담는다.\n\n'
+            printf '```\ngh project item-add %s --owner %s --url %s\n```\n' "$project" "$account" "$url"
+          } > "$ledger_dir/metrics.unfiled/$num.md" 2>/dev/null || true
+        fi
+        gate_metrics_row '등록' "$num" "$sigs" close "$body_lines"
+      fi
+    fi
+  fi
+  rm -f "$tmp"
+
+  # Closing uses the list read above. A signature is closed only when the
+  # collector put it in `close` — three consecutive rounds from the journal in
+  # either family, so one round never closes anything. The two families reach it
+  # by different evidence, and the row says which: the threshold trigger by its
+  # two signs turning good, a defect-shaped one by not being observed again.
+  for sig in $(printf '%s' "$close" | jq -r '.[]'); do
+    num=$(printf '%s' "$list" | jq -r --arg t "[cc-metrics] $sig" '[.[] | select(.title == $t)][0].number // empty')
+    [ -n "$num" ] || continue
+    case "$sig" in
+      T6/*) why="같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다" ;;
+      *)    why="그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다" ;;
+    esac
+    if gate_metrics_gh_write "$base" "$tok" issue close "$num" >/dev/null 2>&1; then
+      gate_metrics_row '닫힘' "$num" "$sig" reopen "$why"
+    else
+      log "계측 이슈 #$num 닫기 실패 — 다음 회차에 다시 본다"
+    fi
   done
   return 0
 }
