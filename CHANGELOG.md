@@ -5,6 +5,31 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.26.0] - 2026-09-26
+
+무인 파이프라인이 띄우는 모든 세션 — 드라이버가 띄우는 스테이지, 게이트 감독자가 띄우는 스테이지, 교대 후속자, 드라이버의 판단 호출 — 이 이제 `--model opus` 와 스테이지 종류별 `--effort` 를 argv 로 받는다. 설계·재수렴·감사는 `high`, 구현·리뷰·교대·기타 스테이지와 판단 호출 셋은 `medium` 이다. 함께 드라이버의 스테이지 종류 판별을 id 앞머리 표로 바꿔, 경로나 이름에 `design` 이 든 스테이지가 설계 종류로 잘못 떨어지던 일을 없앴다.
+
+### Added
+
+- **종류별 effort 표와 모델** — `run.sh` 의 `stage_effort_of`·`stage_model_of`·`stage_launch_flags` 한 곳에만 정의하고 게이트는 소싱한 정의를 부른다. 라우터가 띄운 스테이지와 드라이버가 띄운 스테이지가 같은 종류를 서로 다른 effort 로 돌 수 없다.
+- **두 끄기 스위치** — `CC_ORCH_STAGE_EFFORT=off` 는 `--effort` 만, `CC_ORCH_STAGE_MODEL=off` 는 `--model` 만 뺀다. `CC_ORCH_STAGE_EFFORT=<kind>:<level>[,…]` 는 `low`·`medium`·`high`·`xhigh`·`max` 안에서만 종류별로 덮어쓰고 그 밖의 수준은 무시한다. 모델 스위치에는 `off` 밖의 값이 없다(종류별 모델 덮어쓰기는 제공하지 않는다).
+- **원장 필드** — `stage-result` 행에 `effort`(argv 에 실린 값, 끄면 `-`, 잃어버린 파견 정산 행은 `(미상)`)와 `서빙 모델`(스트림 첫 init 프레임의 `model` 에서 `[1m]` 접미사를 뗀 값, 없으면 `(미상)`)을, `교대 기동` 행에 `effort` 를 더했다. 종단 `modelUsage` 는 팀 구성원 모델이 섞이므로 서빙 모델의 출처로 쓰지 않는다.
+- **판단 호출 기록** — 트리아지·세그먼트 계획·재설계 영향 판단 호출이 같은 플래그를 CLI argv 에 싣고, 종류·effort·서빙 모델을 로그 한 줄로 남긴다.
+- **설계 레그** — `design` 스킬의 헤드리스 설계 레그 호출에 `--effort high` 를 더했다.
+
+### Changed
+
+- **`stage-wrapper.sh`** — `--effort`·`--model` 옵션을 받아 네 분기 모두 `--autocompact` 바로 뒤에 싣는다. 재개된 세션은 시작 때의 effort 를 이어받지 않으므로 재개 분기에도 싣는다. 넘기지 않으면 argv 는 전과 바이트 동일하다. `--instructions` 아래에서 `--` 뒤에 올 수 없는 예약 플래그가 10종에서 12종이 됐다.
+
+### Fixed
+
+- **스테이지 종류 판별** — 드라이버가 스테이지 id 를 부분 문자열로 훑어 종류를 정하던 것을 id 앞머리 표(`S1design`→design, `S2`→audit, `S4`→implement, `S5`·`S5R`→review, `S1'`→reconverge)로 바꿨다. 표에 없는 id 만 예전 부분 문자열 판별로 넘어간다. **권한이 바뀌는 자리가 하나 있다** — 경로·이름에 `design` 이 든 재수렴·구현·리뷰 id 가 이제 제 종류의 설정을 받으므로, 그 스테이지에서 설계 설정의 WebFetch·WebSearch 거부가 풀린다. 나머지 종류 사이의 이동은 설정 파일이 바이트 동일해 권한 중립이다.
+
+### Post-install notes
+
+- 팀 구성원도 리드의 argv effort 를 물려받는다는 것을 확인했다. 따라서 이 릴리스 뒤로는 구성원 세션도 표의 effort 로 돈다.
+- 문맥 창 크기는 모델 id 의 `[1m]` 접미사가 아니라 `modelUsage.<id>.contextWindow` 로만 읽는다.
+
 ## [2.25.5] - 2026-09-26
 
 리뷰 심각도를 「머지하면 정상 사용에서 실제 피해가 나는가」라는 판정 기준 하나로 고정했다. 기준은 리뷰 리포트 템플릿의 심각도 절 한 곳에만 있고, 무인 리뷰와 대화형 `/review` 가 같은 파일을 읽으므로(`review-lite` 도 같은 01·02 를 읽는다) **사람이 직접 돌리는 `/review` 도 이 기준으로 바뀐다.** 의도된 변경이다 — 기준이 경로마다 다르면 같은 결함이 경로에 따라 다른 등급을 받는다. 사람이 쓰는 리뷰에서도 P1 이 이전보다 줄어든다.
