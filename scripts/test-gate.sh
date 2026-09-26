@@ -1124,6 +1124,14 @@ trap 'rm -rf "$WORK"' EXIT
 FXREPORT="$WORK/fixture-review.md"
 printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
+# THE AMBIENT SESSION ID IS DROPPED, so a run from inside a Claude session reads
+# the same as CI, which has none. The gate reads the caller's context from that
+# session's transcript, and a caller that is neither a stage nor a shift is
+# refused past `SEAT_HARD_TOKENS` — so a suite run from a long interactive
+# session would otherwise see every seat act of a section that clears the stage
+# markers refused for the size of the session running it. Sections that model a
+# session set their own id.
+unset CLAUDE_CODE_SESSION_ID
 
 # THE CLI THE LAUNCHER EXECS IS OFF FOR THIS WHOLE PROCESS, for the same reason
 # the notifier above is: the call sites cannot be made exhaustive.
@@ -2352,6 +2360,88 @@ pre_cone() {
   seg_row       SB "$CONE_B" 상태=실행중 선행=없음
   seg_row       SC "$CONE_C" 상태=실행중 선행=없음
   plant_seg_row SX "$REPO2"  상태=실행중 선행=없음
+
+  # THE CONTEXT-CAP FIXTURES (34b 계측 · 34c 강제) SHARE THESE. Both drive the
+  # launcher on an isolated ledger of their own with hand-picked usage numbers —
+  # that is how a 460,000-token session is modelled for zero real tokens. They
+  # live here rather than in whichever section needed them first because
+  # `--run-one 34c` must stand alone; a helper left in 34b's body dies as
+  # `command not found` there while the whole-file run stays green.
+  CAP_STUB="$WORK/bin/claude-capstub"
+  mkdir -p "$WORK/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$CAP_STUB"
+  chmod +x "$CAP_STUB"
+  CAP_OUT="$WORK/cap-out.txt"; CAP_ERR="$WORK/cap-err.txt"
+  cap_usage_line() {
+    # cap_usage_line <읽기> <생성> <입력> — one synthetic usage record.
+    #
+    # THE TWO CACHE KEYS COME BEFORE `input_tokens`, AND THAT ORDER IS THE
+    # ASSERTION'S FORCE. The scan takes the first match of each pattern, so an
+    # input pattern that lost its opening quote matches inside a cache key only
+    # when the cache key stands earlier on the line. Ordering the object the way
+    # a real usage record does would let that defect pass every case below.
+    printf '{"message":{"usage":{"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"input_tokens":%s}}}\n' \
+      "$1" "$2" "$3"
+  }
+  cap_fx_new() {
+    # cap_fx_new <run-id> — an isolated manifest, grant, ledger and run directory,
+    # left in `CAP_NM`/`CAP_GRANT`/`CAP_LEDGER`/`CAP_DIR`. The id splits the
+    # ledger, so a collision with a section already written merges two fixtures'
+    # rows and every count below reads both.
+    local rid="$1"
+    if [ "$rid" = "$CONE_RUN_ID" ] || [ "$rid" = "$DONE_RUN_ID" ]; then
+      printf 'cap: 상한 픽스처의 런 id 가 앞선 절과 겹친다 (%s)\n' "$rid" >&2
+      exit 1
+    fi
+    CAP_NM="$WORK/cap-$rid-plan.md"
+    sed -e "s/run-id=$CONE_RUN_ID;/run-id=$rid;/" \
+        -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $rid/" "$NM" > "$CAP_NM"
+    CAP_GRANT="$WT/docs/pipeline-grant/$rid.md"
+    sed "s/$CONE_RUN_ID/$rid/g" "$CONE_GRANT" > "$CAP_GRANT"
+    CAP_LEDGER="$WT/docs/pipeline-run/$rid.md"
+    {
+      printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
+      printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$rid"
+    } > "$CAP_LEDGER"
+    CAP_DIR="$STATE_CONE/cc-cmds/run/$rid"
+    mkdir -p "$CAP_DIR"
+  }
+  cap_snap() {
+    # cap_snap <세션 id> <교대 id> [argv…] — the snapshot as that caller's own
+    # environment sees it. Both positions are required, the shift id as the empty
+    # string for a seat: the digest depends on the session variables the gate was
+    # handed, so a read taken bare and an act taken with them set disagree and
+    # every call comes back exit 4.
+    local sid="$1" shid="$2"; shift 2
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$sid" CC_CLAUDE_BIN="$CAP_STUB" \
+      CC_PIPELINE_SHIFT_ID="$shid" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+      bash "$GATE" snapshot --manifest "$CAP_NM" "$@" 2>/dev/null )
+  }
+  cap_H() {  # cap_H <세션 id> <교대 id>
+    cap_snap "$1" "$2" | jq -r .H
+  }
+  cap_gate() {
+    # cap_gate <세션 id> <교대 id> <argv…> — leaves `rc`, and the act's stdout and
+    # the gate's stderr in SEPARATE files. They are split because the cap signal is
+    # told from an act that ended with the same code by what came with it: a
+    # `gate:` line on stderr and no output of the act's own.
+    local sid="$1" shid="$2"; shift 2
+    # THE TWO STAGE MARKERS ARE CLEARED, NOT LEFT TO THE AMBIENT ENVIRONMENT.
+    # `cc_caller_is_stage` reads `CC_PIPELINE_SEGMENT` and `CC_PIPELINE_STAGE_ID`,
+    # and a stage is exempt from the cap — so this suite run inside a pipeline
+    # stage would inherit those markers and every enforcement assertion below
+    # would pass no matter what the gate does. CI has neither variable, so the
+    # clearing changes nothing there and makes the two runs agree.
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$sid" CC_CLAUDE_BIN="$CAP_STUB" \
+      CC_PIPELINE_SHIFT_ID="$shid" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+      bash "$GATE" "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
+    msg=$( { grep -h -vE '\[run\] ' "$CAP_OUT" "$CAP_ERR" || true; } | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  cap_rows() {  # cap_rows <계열> — that series' rows in the cap ledger
+    { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
+  }
 }
 
 # `sa` — the container of section 35: the `SA_*` state and the `sa_*`/`sag`
@@ -17983,6 +18073,331 @@ esac
 check "(f) 거부된 교대는 기동 행을 남기지 않는다" "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "$f_launch1"
 check "(f) 거부된 교대는 진행 표지를 남기지 않는다" "$( [ -e "$SHIFT_DIR/shift.in-progress" ] && printf 'left' || printf 'none' )" "none"
 check "(f) 거부된 교대는 후속자를 실행하지 않는다" "$( [ -e "$WORK/shift-argv-np.txt" ] && printf 'ran' || printf 'not run' )" "not run"
+
+# --- 34b. 계측 — 마지막 턴 컨텍스트가 읽기+생성+입력이다 ---------------------
+# --- section: 34b | group: cone | covers: snapshot | needs: 31al | anchors: 34b: 마지막 턴 컨텍스트가 읽기+생성+입력으로 계산된다 ---
+#
+# MEASUREMENT ONLY, AND THAT IS WHY IT IS A SEPARATE SECTION. Every assertion
+# here passes on a tree with the enforcement taken out, so this section witnesses
+# arithmetic and never enforcement; 34c is the one that must fail without it.
+# Mixing the two would leave nobody able to say which fixture the enforcement is
+# bought with.
+cap_fx_new R6
+CAPB_SID="66666666-1111-2222-3333-444444444444"
+# THE THREE VALUES ARE DIFFERENT AND NONE IS ZERO. A pattern that lost its
+# opening quote reads the input component as 100,000 — the read it matched
+# inside `cache_read_input_tokens` — and answers 250,000, so these numbers break
+# that trap incidentally. Making two of them equal, or one of them zero, removes
+# that defence without removing any assertion.
+{ cap_usage_line 40000 30000 5000
+  cap_usage_line 100000 50000 20000; } > "$NTX/$CAPB_SID.jsonl"
+check "34b: 마지막 턴 컨텍스트가 읽기+생성+입력으로 계산된다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r .shift.context)" "170000"
+check "34b A2: 바닥은 첫 턴의 읽기+생성이고 입력은 더해지지 않는다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r .shift.floor)" "70000"
+
+# A3. THE SKIP PREDICATE WAS NOT WIDENED. A line carrying input alone is still
+# not a turn, even as the first line — if it counted, the floor would become
+# 90,000 and the context would read the same line as the last turn.
+CAPB_SID_SKIP="66666666-1111-2222-3333-44444444444a"
+{ printf '{"message":{"usage":{"input_tokens":90000}}}\n'
+  cap_usage_line 40000 30000 5000; } > "$NTX/$CAPB_SID_SKIP.jsonl"
+check "34b A3: 캐시 두 필드가 없는 줄은 첫 줄이어도 바닥을 움직이지 않는다" \
+  "$(cap_snap "$CAPB_SID_SKIP" '' | jq -r .shift.floor)" "70000"
+check "34b A3: 그 줄은 마지막 턴으로도 읽히지 않는다" \
+  "$(cap_snap "$CAPB_SID_SKIP" '' | jq -r .shift.context)" "75000"
+
+# A4. THE SNAPSHOT CONTRACT. `over_hard` is added INSIDE the `shift` object, and
+# the pins that could have broken are all on the top level — asserted here too,
+# beside the change, so this section says on its own that the addition stayed
+# inside.
+check "34b A4: shift 블록이 over_hard 를 그 자리에 갖는다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r '.shift | keys_unsorted | join(",")')" \
+  "n,context,soft,hard,over_soft,over_hard,floor"
+check "34b A4: 170,000 은 하드 상한 아래이므로 over_hard 가 거짓이다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r .shift.over_hard)" "false"
+check "34b A4: pace 블록이 여전히 shift 바로 뒤에 온다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r 'keys_unsorted | (index("pace") - index("shift"))')" "1"
+check "34b A4: H 는 여전히 마지막 키다" \
+  "$(cap_snap "$CAPB_SID" '' | jq -r 'keys_unsorted | last')" "H"
+check "34b A4: --fields 의 기본 투영이 그대로다" \
+  "$(cap_snap "$CAPB_SID" '' --fields | jq -r 'keys_unsorted | join(",")')" \
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+
+# A5. THE LAUNCH ROW CARRIES THE OUTGOING SHIFT'S CONTEXT.
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind segment --target infra --segment CB1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34b A5: 계측 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale "픽스처 — 나가는 교대가 없는 킥오프 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34b A5: 킥오프 기동이 돈다" "$rc" "0"
+capb_row1=$(cap_rows '교대 기동' | tail -1)
+check "34b A5: 나가는 교대가 없는 킥오프 기동은 컨텍스트=- 를 싣는다" \
+  "$(row_field "$capb_row1" '컨텍스트')" "-"
+
+# THE SUCCESSOR'S SESSION ID IS READ OFF THE ROW rather than re-derived here: the
+# derivation is the code under test, and a fixture that recomputes it asserts
+# that the expression equals itself. The transcript is planted under that id, so
+# the next launch has a predecessor with a context of its own.
+capb_sid1=$(row_field "$capb_row1" '세션 id')
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 200000 30000 7000; } > "$NTX/$capb_sid1.jsonl"
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale "픽스처 — 나가는 교대가 있는 둘째 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34b A5: 둘째 기동도 돈다" "$rc" "0"
+capb_row2=$(cap_rows '교대 기동' | tail -1)
+check "34b A5: 둘째 기동은 나가는 교대의 컨텍스트를 싣는다" \
+  "$(row_field "$capb_row2" '컨텍스트')" "237000"
+check "34b A5: 그 값은 기동자(좌석)의 컨텍스트가 아니다" \
+  "$( [ "$(row_field "$capb_row2" '컨텍스트')" != "$(cap_snap "$CAPB_SID" '' | jq -r .shift.context)" ] \
+     && printf 'different' || printf 'same' )" "different"
+# `GATE_ROW_MAX` is 1024 and `gate_append` dies on a row past it, so the field
+# has to fit in the projection a real run writes, not only in this fixture's.
+capb_bytes=$(printf '%s' "$capb_row2" | wc -c | tr -d ' ')
+check "34b A5: 컨텍스트를 실은 기동 행의 투영 바이트가 1024 미만이다" \
+  "$( [ "$capb_bytes" -lt 1024 ] && printf 'under' || printf '%s' "$capb_bytes" )" "under"
+
+# A TRANSCRIPT THAT RESOLVES BUT HOLDS NO SCORED LINE IS NOT A ZERO CONTEXT.
+# The outgoing shift here died on its first request: its only usage record is an
+# error with every token field at zero, so the skip predicate drops it and the
+# scan has nothing to report. `-` is the value the launch row owes then — a `0`
+# would be read as a measurement by whoever retunes the cap from this field.
+capb_sid2=$(row_field "$capb_row2" '세션 id')
+{ printf '{"type":"user","message":{"content":"x"}}\n'
+  cap_usage_line 0 0 0; } > "$NTX/$capb_sid2.jsonl"
+cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
+         --rationale "픽스처 — 첫 요청에서 죽은 교대 뒤의 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34b: 사용량 줄 없는 교대 뒤의 기동도 돈다" "$rc" "0"
+capb_row3=$(cap_rows '교대 기동' | tail -1)
+check "34b: 셋째 기동 행이 새로 쓰였다" \
+  "$( [ "$(row_field "$capb_row3" '세션 id')" != "$capb_sid2" ] && [ -n "$(row_field "$capb_row3" '세션 id')" ] \
+     && printf 'new' || printf 'stale' )" "new"
+check "34b: 점수 매길 사용량 줄이 없는 나가는 교대는 컨텍스트=- 로 기록된다" \
+  "$(row_field "$capb_row3" '컨텍스트')" "-"
+
+# --- 34c. 강제 — 하드 상한에서 교대가 넘어간다 -------------------------------
+# --- section: 34c | group: cone | covers: snapshot | needs: 31al,34 | anchors: 34c: 하드 상한에서 교대가 강제로 넘어간다 ---
+#
+# THIS IS THE WITNESS SECTION, and it is separate from 34b for one reason: take
+# the enforcement out of the tree and every assertion in 34b still passes, while
+# the ones here must fail. A fixture that cannot fail buys nothing.
+#
+# A SHIFT IS MODELLED BY TWO THINGS AND NOTHING ELSE — `CC_PIPELINE_SHIFT_ID`
+# carrying its ordinal, and a synthetic transcript under the session id THE
+# LAUNCHER MINTED for that ordinal. The id is read off the `교대 기동` row rather
+# than recomputed here: the derivation is the code under test.
+cap_fx_new R7
+CAPC_RID="R7"
+CAPC_SEAT_SID="77777777-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000
+  cap_usage_line 30000 10000 2000; } > "$NTX/$CAPC_SEAT_SID.jsonl"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind segment --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+capc_seg_rc="$rc"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 첫 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+capc_launch_rc="$rc"
+capc_row1=$(cap_rows '교대 기동' | tail -1)
+capc_sid1=$(row_field "$capc_row1" '세션 id')
+# 460,000 — past the hard cap. The FIRST line is small on purpose: the floor is
+# read from it, and a floor over `SHIFT_FLOOR_MAX` opens the livelock approval
+# that the handoff assertion below would then meet instead of the exemption.
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 40000 20000; } > "$NTX/$capc_sid1.jsonl"
+capc_before=$(wc -l < "$CAP_LEDGER" | tr -d ' ')
+cap_gate "$capc_sid1" "$CAPC_RID#1" exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid1" "$CAPC_RID#1")" \
+         --rationale "픽스처 — 상한을 넘긴 교대의 평범한 읽기" -- ls "$CONE_A"
+check "34c: 하드 상한에서 교대가 강제로 넘어간다" "$rc" "15"
+check "34c A6: 픽스처의 세그먼트 행과 첫 기동이 실제로 섰다" \
+  "$capc_seg_rc/$capc_launch_rc" "0/0"
+# THE CODE ALONE DOES NOT IDENTIFY THE SIGNAL. An act may exit 15 on its own
+# account, so the discriminator is what came with it — a `gate:` line on stderr
+# and no output of the act's own. Asserting the pair is asserting the contract.
+check "34c A6: 상한 신호가 stderr 에 gate: 줄을 남긴다" \
+  "$( { grep -qF 'gate: 교대 1 의 컨텍스트가 460000 토큰으로' "$CAP_ERR" && printf 'present'; } || printf 'absent')" \
+  "present"
+check "34c A6: 행위 자신의 출력은 없다" \
+  "$( [ -s "$CAP_OUT" ] && printf 'printed' || printf 'none' )" "none"
+check "34c A6: 상한 신호는 원장 행을 하나도 늘리지 않는다" \
+  "$(wc -l < "$CAP_LEDGER" | tr -d ' ')" "$capc_before"
+cap_gate "$capc_sid1" "$CAPC_RID#1" wait --manifest "$CAP_NM" --segment CC1 --timeout 5
+check "34c A6: 같은 조건의 wait 도 15 로 끝난다" "$rc" "15"
+check "34c A6: wait 의 상한도 gate: 줄을 남기고 최종 줄을 내지 않는다" \
+  "$( { grep -qF 'gate: 교대 1 의 컨텍스트가' "$CAP_ERR" && [ ! -s "$CAP_OUT" ] && printf 'capped'; } || printf 'waited')" \
+  "capped"
+check "34c A6: wait 의 상한도 원장 행을 늘리지 않는다" \
+  "$(wc -l < "$CAP_LEDGER" | tr -d ' ')" "$capc_before"
+
+# A7. THE CAP IS A ROUTING INSTRUCTION, NOT AN APPROVAL. An approval would stop
+# the run until a person answered, and at night nobody does.
+check "34c A7: 상한 경로는 대기 승인을 열지 않는다" \
+  "$( { cap_rows '승인' | grep -cF '상태=대기' || true; } )" "0"
+
+# A8. THE ONE ACT A CAPPED SHIFT MUST STILL BE ABLE TO PERFORM. Asserting only
+# that the shift ended would pass on the shape that costs most in the morning —
+# a shift that died without its handoff row.
+cap_gate "$capc_sid1" "$CAPC_RID#1" act --manifest "$CAP_NM" --kind handoff --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid1" "$CAPC_RID#1")" \
+         --rationale "픽스처 — 상한으로 끝내는 교대의 인계" \
+         -- 교대=1 대상=infra 사유=상한 '버린 선택지=없음' '막힌 지점=하드 상한' '다음 후보=CC1'
+check "34c A8: 상한을 넘긴 교대의 handoff 는 통과한다 (기록 종류 면제)" "$rc" "0"
+capc_hrow=$(cap_rows 'handoff' | tail -1)
+check "34c A8: 그 handoff 행이 사유=상한 으로 실제로 기록된다" \
+  "$(row_field "$capc_hrow" '사유')" "상한"
+
+# A9. THE SUCCESSOR'S LAUNCH ROW CARRIES THE OUTGOING SHIFT'S CONTEXT, which is
+# the one question the ledger could not answer before: in what context did the
+# cap fire.
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 상한으로 끝난 교대의 후속" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34c A9: 상한 뒤 후속 교대가 기동한다" "$rc" "0"
+capc_row2=$(cap_rows '교대 기동' | tail -1)
+check "34c A9: 그 기동 행이 사유=상한 을 싣는다" "$(row_field "$capc_row2" '사유')" "상한"
+check "34c A9: 그 기동 행이 나가는 교대의 컨텍스트를 싣는다" \
+  "$(row_field "$capc_row2" '컨텍스트')" "460000"
+check "34c A9: 그 값은 기동자(좌석)의 컨텍스트가 아니다" \
+  "$( [ "$(row_field "$capc_row2" '컨텍스트')" != "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r .shift.context)" ] \
+     && printf 'different' || printf 'same' )" "different"
+
+# A10. THE CONTROL. Written as "the rows a passing act writes today", never as
+# "no row is added" — every act that passes writes its `자율 승인` row, so the
+# stricter wording would fail a correct implementation.
+capc_sid2=$(row_field "$capc_row2" '세션 id')
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 60000 30000 10000; } > "$NTX/$capc_sid2.jsonl"
+capc_rows_before=$(wc -l < "$CAP_LEDGER" | tr -d ' ')
+capc_auth_before=$( { cap_rows '자율 승인' | grep -c '' || true; } )
+capc_hand_before=$( { cap_rows 'handoff' | grep -c '' || true; } )
+capc_launch_before=$( { cap_rows '교대 기동' | grep -c '' || true; } )
+cap_gate "$capc_sid2" "$CAPC_RID#2" exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid2" "$CAPC_RID#2")" \
+         --rationale "픽스처 — 상한 미만 교대의 같은 읽기" -- ls "$CONE_A"
+check "34c A10: 상한 미만의 교대는 같은 행위로 거절되지 않는다" "$rc" "0"
+check "34c A10: 늘어난 자율 승인은 그 행위의 하나뿐이다" \
+  "$( { cap_rows '자율 승인' | grep -c '' || true; } )" "$((capc_auth_before + 1))"
+check "34c A10: 원장에 늘어난 행도 그 하나뿐이다" \
+  "$(wc -l < "$CAP_LEDGER" | tr -d ' ')" "$((capc_rows_before + 1))"
+check "34c A10: 상한에서 비롯한 handoff 가 생기지 않는다" \
+  "$( { cap_rows 'handoff' | grep -c '' || true; } )" "$capc_hand_before"
+check "34c A10: 상한에서 비롯한 교대 기동이 생기지 않는다" \
+  "$( { cap_rows '교대 기동' | grep -c '' || true; } )" "$capc_launch_before"
+
+# A11. THE HANDOFF PAYLOAD IS BOUNDED. Four handoffs, and the snapshot folds at
+# most `SHIFT_HANDOFF_CAP` of them — the successor reads a payload whose size
+# does not grow with the night.
+for capc_n in 2 3 4; do
+  cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind handoff --target infra \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+           --rationale "픽스처 — 인계 캡 확인" \
+           -- "교대=$capc_n" 대상=infra 사유=상한 '버린 선택지=없음' '막힌 지점=하드 상한' '다음 후보=CC1'
+done
+check "34c A11: 네 번 인계해도 스냅숏의 handoff 는 세 개를 넘지 않는다" \
+  "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '.handoff | length')" "3"
+
+# A14. THE CAP DOES NOT FIRE ON A CONTEXT IT COULD NOT RESOLVE. Shift 9 was
+# never launched, so its deterministic session id names no transcript, while
+# `CLAUDE_CODE_SESSION_ID` points at a 570,000-token one belonging to somebody
+# else. Firing on that number would end every shift of the night on its first
+# act — worse than no cap at all.
+CAPC_BIG_SID="77777777-1111-2222-3333-44444444444b"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 500000 50000 20000; } > "$NTX/$CAPC_BIG_SID.jsonl"
+cap_gate "$CAPC_BIG_SID" "$CAPC_RID#9" exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIG_SID" "$CAPC_RID#9")" \
+         --rationale "픽스처 — 해소되지 않는 교대 세션" -- ls "$CONE_A"
+check "34c A14: 교대의 세션을 해소하지 못하면 상한이 발화하지 않는다" "$rc" "0"
+check "34c A14: 발화하지 않았다는 사실은 stderr 에 남는다" \
+  "$( { grep -qF 'gate: 교대 9 의 트랜스크립트를 해소하지 못해' "$CAP_ERR" && printf 'said'; } || printf 'silent')" \
+  "said"
+
+# A15. THE BOUNDARY. `>=` and `>` differ on exactly one value, and that value is
+# the one a cap is most often met at.
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 40000 10000; } > "$NTX/$capc_sid1.jsonl"
+cap_gate "$capc_sid1" "$CAPC_RID#1" exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid1" "$CAPC_RID#1")" \
+         --rationale "픽스처 — 경계, 정확히 하드 상한" -- ls "$CONE_A"
+check "34c A15: 정확히 450,000 이면 상한이다" "$rc" "15"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 39999 10000; } > "$NTX/$capc_sid1.jsonl"
+cap_gate "$capc_sid1" "$CAPC_RID#1" exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid1" "$CAPC_RID#1")" \
+         --rationale "픽스처 — 경계, 상한 바로 아래" -- ls "$CONE_A"
+check "34c A15: 449,999 이면 상한이 아니다" "$rc" "0"
+
+# THE SEAT ARM. A seat is a caller carrying neither `CC_PIPELINE_STAGE_ID` nor
+# `CC_PIPELINE_SHIFT_ID`, modelled by an empty shift id and a transcript under
+# its own session id. Its own session, not the first seat's: that one launched
+# the shifts above, and moving its context would move what they asserted.
+CAPC_BIGSEAT_SID="77777777-1111-2222-3333-44444444444c"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 40000 20000; } > "$NTX/$CAPC_BIGSEAT_SID.jsonl"
+
+# A12. PAST ITS LIMIT A SEAT'S ORDINARY ACT IS REFUSED, AND THE REFUSAL LEAVES
+# NO ROW. It is a rule refusal (3) and not the shift's 15: a seat cannot end
+# itself, so what it is told is to pick another act.
+capc_before=$(wc -l < "$CAP_LEDGER" | tr -d ' ')
+cap_gate "$CAPC_BIGSEAT_SID" '' exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 평범한 읽기" -- ls "$CONE_A"
+check "34c A12: 상한을 넘긴 좌석의 일반 행위는 3 으로 거절된다" "$rc" "3"
+check "34c A12: 그 거절은 gate: 줄로 좌석 상한과 router-shift 를 지목한다" \
+  "$( { grep -qF 'gate: 좌석의 컨텍스트가 460000 토큰으로 좌석 상한 300000' "$CAP_ERR" \
+        && grep -qF 'router-shift' "$CAP_ERR" && printf 'named'; } || printf 'unnamed')" \
+  "named"
+check "34c A12: 행위 자신의 출력은 없다" \
+  "$( [ -s "$CAP_OUT" ] && printf 'printed' || printf 'none' )" "none"
+check "34c A12: 좌석 상한 거절은 원장 행을 하나도 늘리지 않는다" \
+  "$(wc -l < "$CAP_LEDGER" | tr -d ' ')" "$capc_before"
+# The seat arm stands on the acting verbs only. A seat waits on its synchronous
+# `router-shift` call, not on a stage, so `wait` answers here exactly as it
+# would below the limit — `CC1` was never dispatched, which is 11.
+cap_gate "$CAPC_BIGSEAT_SID" '' wait --manifest "$CAP_NM" --segment CC1 --timeout 5
+check "34c A12: 좌석의 wait 에는 좌석 상한이 서지 않는다" "$rc" "11"
+
+# A13. THE SAME SEAT CAN STILL HAND OVER. Refusing `router-shift` or a
+# bookkeeping act here would leave a capped seat no move at all, and the night
+# would end at the first crossing.
+cap_gate "$CAPC_BIGSEAT_SID" '' act --manifest "$CAP_NM" --kind handoff --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 기록 종류 행위" \
+         -- 교대=5 대상=infra 사유=상한 '버린 선택지=없음' '막힌 지점=좌석 상한' '다음 후보=CC1'
+check "34c A13: 상한을 넘긴 좌석의 기록 종류 행위는 거절되지 않는다" "$rc" "0"
+capc_launch_before=$( { cap_rows '교대 기동' | grep -c '' || true; } )
+cap_gate "$CAPC_BIGSEAT_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 인계" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34c A13: 상한을 넘긴 좌석의 router-shift 는 거절되지 않는다" "$rc" "0"
+check "34c A13: 그 router-shift 가 교대를 실제로 기동한다" \
+  "$( { cap_rows '교대 기동' | grep -c '' || true; } )" "$((capc_launch_before + 1))"
+
+# A15, seat. The same one-value boundary against `SEAT_HARD_TOKENS`.
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 250000 40000 10000; } > "$NTX/$CAPC_BIGSEAT_SID.jsonl"
+cap_gate "$CAPC_BIGSEAT_SID" '' exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 좌석 경계, 정확히 좌석 상한" -- ls "$CONE_A"
+check "34c A15: 좌석은 정확히 300,000 이면 거절된다" "$rc" "3"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 250000 39999 10000; } > "$NTX/$CAPC_BIGSEAT_SID.jsonl"
+cap_gate "$CAPC_BIGSEAT_SID" '' exec --manifest "$CAP_NM" --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 좌석 경계, 좌석 상한 바로 아래" -- ls "$CONE_A"
+check "34c A15: 좌석은 299,999 이면 거절되지 않는다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조

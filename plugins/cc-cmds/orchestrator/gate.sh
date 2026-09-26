@@ -32,7 +32,8 @@
 #   exec       check, record, perform one bash line (the unit B3 counts)
 #   wait       block until a dispatched stage terminates; writes no row and
 #              evaluates no boundary — its exit status is the stage's own rc,
-#              or one of 11..14 below
+#              or one of 11..14 below. Called by a shift it evaluates the hard
+#              context cap on the way in and can end at 15 without waiting
 #   supervise-stage
 #              INTERNAL. The detached half of `act --kind skill`: consumes the
 #              one-shot launch token the dispatch wrote, runs the stage, writes
@@ -475,6 +476,24 @@ readonly GATE_EXIT_WAIT_NONE=11
 readonly GATE_EXIT_WAIT_SETTLED=12
 readonly GATE_EXIT_WAIT_TIMEOUT=13
 readonly GATE_EXIT_WAIT_NOROW=14
+
+# THE SHIFT'S CONTEXT CAP. Not a refusal and deliberately outside the 2..7 band:
+# it belongs with 8, 10 and 11, the codes the gate writes to say WHAT TO DO next
+# rather than that something is wrong. It says one thing — "you are at the cap;
+# write `handoff` with `사유=상한` and end this shift".
+#
+# NOT 3 and NOT 5. 3 means "that act is unusable, choose another", and a shift
+# over the cap would find every other act capped too, so it would choose forever
+# and never end. 5 means "an approval landed, end this shift with `사유=승인`",
+# and a cap is not an approval — routing it through the approval machinery would
+# open a `상태=대기` row that nobody is there to answer.
+#
+# 15 IS UNUSED IN THIS TREE and does not collide with a shell-reserved status.
+# An act that exits 15 on its own account is not distinguished from this signal
+# BY THE CODE — it is told apart by what comes with it, a `gate:` line on stderr
+# and no output from the act, which is the same condition 3, 8, 10 and 11 all
+# carry.
+readonly GATE_EXIT_CAP=15
 
 # THE `wait` DEFAULTS. 300 seconds between heartbeats rather than 30: a shift
 # runs `Monitor` on the heartbeat stream and every line is a turn, so a
@@ -10371,6 +10390,18 @@ gate_main() {
   # then `orphan_stages[]` is computed. `GATE_SETTLED_SEGMENTS` is the shell
   # variable `wait` reads as its fast path — the same process, so no file and
   # no cleanup, and it cannot go stale because it cannot outlive the call.
+  # THE CONTEXT CAP STANDS ON `wait` TOO, AND AHEAD OF THE SETTLEMENT ABOVE IT —
+  # that settlement writes rows, and a capped shift is to come back having
+  # written none. Exempting `wait` would let a shift past the cap go on routing
+  # for as long as the stage it watches runs, which on a long stage postpones
+  # the cap by hours and is the cap's whole point undone. Waiting is not
+  # ownership: the stage's supervisor is detached and writes the result and cost
+  # rows itself, so the successor has only to wait on the same segment again.
+  # `wait` carries no `--kind`, so nothing on this verb is exempt. The other
+  # verbs meet the same predicate inside `gate_verb_act`, after the digest
+  # comparison, where their own first writer is.
+  if [ "$verb" = "wait" ]; then gate_cap_directive wait ''; fi
+
   GATE_SETTLED_SEGMENTS=""
   [ "$verb" = "plan" ] || gate_settle_lost_dispatches
 
@@ -16004,6 +16035,15 @@ gate_verb_act() {
       exit "$GATE_EXIT_STALE"
     fi
   fi
+
+  # THE CONTEXT CAP, AHEAD OF EVERYTHING BELOW THAT CAN WRITE. Under this line
+  # come the undeclared-target registration, the rule catalog, the approval
+  # issuance and the row append, and the cap must come back with no row at all —
+  # so it stands here, after the digest comparison and before the first writer.
+  # All three verbs pass through: `plan` previews an act, and a shift at the cap
+  # is to end rather than preview.
+  gate_cap_directive "$verb" "$kind"
+
   case " $(target_aliases | tr '\n' ' ') " in
     *" $alias "*) : ;;
     # THE EFFECTIVE RUNG AND NOT THE DECLARED ONE, here and at the six sites
@@ -18860,6 +18900,13 @@ gate_verb_wait() {
   # fingerprint (`cc_stage_is_live`), and a boundary evaluated on entry to a
   # two-hour block would fire B1 on a router doing exactly the right thing.
   #
+  # THE ONE THING IT DOES EVALUATE IS THE SHIFT'S HARD CONTEXT CAP, and that
+  # happens on the dispatch arm before this function is entered, so it still
+  # writes no row here: a shift already over the cap comes back 15 instead of
+  # blocking, and everything below stays as it was. A boundary is a question for
+  # a person; the cap is a routing instruction, which is why one is excluded
+  # here and the other is not.
+  #
   # RESOLUTION ORDER on every poll:
   #   (1) settled by this call's prelude → 12
   #   (2) stage alive, or its supervisor alive → heartbeat, keep polling
@@ -20503,6 +20550,14 @@ gate_live_stages() {
 # ---------------------------------------------------------------------------
 readonly SHIFT_SOFT_TOKENS=300000
 readonly SHIFT_HARD_TOKENS=450000
+# THE SEAT'S CEILING HAS ITS OWN NAME, NOT THE SHIFT'S SOFT CONSTANT. The value
+# happens to equal `SHIFT_SOFT_TOKENS`, and the same 300000 is also spelled
+# across the scripts as the AUTOCOMPACT WINDOW, a different quantity entirely;
+# sharing a constant because the numbers agree is how moving one of them makes
+# grep pick the other. The name is what tells them apart. No pin lint guards it:
+# pins keep a value equal across a file boundary, and this one never leaves this
+# file.
+readonly SEAT_HARD_TOKENS=300000
 readonly SHIFT_TURN_TRIPWIRE=400
 readonly SHIFT_HANDOFF_CAP=3
 readonly SHIFT_FLOOR_MAX=130000
@@ -20586,31 +20641,58 @@ gate_transcript_of_session() {
 }
 
 gate_usage_scan() {
-  # Reads a JSONL stream on stdin and prints "<첫 턴 총 컨텍스트> <마지막 턴 cache_read>".
+  # Reads a JSONL stream on stdin and prints
+  # "<첫 턴 총 컨텍스트> <마지막 턴 읽기+생성+입력>".
   #
   # THE TWO ENDS ARE MEASURED DIFFERENTLY BECAUSE THEY ARE DIFFERENT QUANTITIES.
-  # The current context is the last turn's `cache_read_input_tokens`: by then the
-  # prefix is cached and the read is the whole of it. The FLOOR is the first
-  # turn's read PLUS its creation — on a session's opening turn the cache
-  # breakpoint has not been established, so most of the prefix is billed as
-  # creation and the read component alone reports a floor several times too
-  # small. Conflating the two is the error this file's own measurement history
-  # records: a floor quoted at 21,736 was the read component of a turn whose
-  # actual context was 116,055.
+  # The FLOOR is the first turn's read PLUS its creation — on a session's opening
+  # turn the cache breakpoint has not been established, so most of the prefix is
+  # billed as creation and the read component alone reports a floor several times
+  # too small. Conflating the two is the error this file's own measurement
+  # history records: a floor quoted at 21,736 was the read component of a turn
+  # whose actual context was 116,055.
+  #
+  # THE CURRENT CONTEXT IS THE LAST TURN'S READ + CREATION + INPUT. Read alone
+  # assumed the prefix was already cached, and on a turn before the breakpoint
+  # settles it is not: 210 of 6,804 measured turns reported less than 60% of
+  # their actual context that way. A cap compared against that number does not
+  # give a wrong answer, it does not fire on that act at all. The floor keeps
+  # read + creation and does not add input — the two ends are independent
+  # outputs, and `SHIFT_FLOOR_MAX` is compared against the first alone, so this
+  # sum cannot move the livelock guard.
+  #
+  # THE INPUT PATTERN CARRIES ITS OPENING QUOTE. Without it `input_tokens":`
+  # also matches inside both cache field names, and the first match would add a
+  # cache component a second time — a plausible number nobody catches by eye.
+  #
+  # NO SCORED LINE PRINTS `-` AS THE SECOND FIELD, NEVER `0`. A transcript that
+  # resolves but holds no line past the skip — a shift that died on its first
+  # request, whose only record is an error with every token field at zero — has
+  # no current context, and a `0` there is read downstream as a measurement: it
+  # lands on the launch row's `컨텍스트` as a number and lets the hard cap pass
+  # without the line an unresolved context owes. The floor keeps printing `0`;
+  # its readers already take `0` as "no floor".
   awk '
     {
-      r = 0; c = 0
+      r = 0; c = 0; i = 0
       if (match($0, /"cache_read_input_tokens":[ ]*[0-9]+/)) {
         s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); r = s + 0
       }
       if (match($0, /"cache_creation_input_tokens":[ ]*[0-9]+/)) {
         s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); c = s + 0
       }
+      if (match($0, /"input_tokens":[ ]*[0-9]+/)) {
+        s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); i = s + 0
+      }
       if (r == 0 && c == 0) next
       if (first == 0) first = r + c
-      last = r
+      last = r + c + i
+      scored = 1
     }
-    END { printf "%d %d", first + 0, last + 0 }
+    END {
+      if (scored) printf "%d %d", first + 0, last + 0
+      else printf "%d -", first + 0
+    }
   ' 2>/dev/null
 }
 
@@ -20623,10 +20705,27 @@ gate_router_context() {
   # lineage holds lead sessions only, and a shift asking lineage how big it is
   # would be handed the lead's number instead of its own.
   #
+  # A SHIFT IS RESOLVED BY ITS ORDINAL AND NEVER BY EITHER OF THOSE TWO. Its
+  # `CLAUDE_CODE_SESSION_ID` may have been inherited from the seat that launched
+  # it, and the lineage holds lead sessions only, so both roads lead to the
+  # lead's transcript — a plausible number belonging to another session. With a
+  # cap comparing against this value that is worse than no number at all: a
+  # newborn shift would read the lead's context as its own and end on its first
+  # act, and so would its successor. Unresolved therefore reads `0` here, which
+  # is what the cap predicate sees too — one number for the snapshot and the
+  # enforcement both.
+  #
   # Bounded read. The tail is where the last turn is, and 256KB of it is many
   # records; on a 42MB transcript this costs milliseconds, which is what makes it
   # affordable on a path the gate takes often.
-  local f v
+  local f v n
+  n=$(gate_shift_self_ordinal)
+  if [ -n "$n" ]; then
+    v=$(gate_shift_context_of "$n")
+    case "${v:-}" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+    printf '%s' "$v"
+    return 0
+  fi
   f=$(gate_transcript_of_session "${CLAUDE_CODE_SESSION_ID:-}")
   if [ -z "$f" ]; then
     f=$( { gate_transcript_files 2>/dev/null || true; } | tail -1)
@@ -20634,6 +20733,47 @@ gate_router_context() {
   [ -n "$f" ] && [ -f "$f" ] || { printf '0'; return 0; }
   v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
   case "${v:-}" in ''|*[!0-9]*) v=0 ;; esac
+  printf '%s' "$v"
+}
+
+gate_shift_self_ordinal() {
+  # gate_shift_self_ordinal — the ordinal of the shift RUNNING THIS PROCESS, or
+  # nothing when the caller is not a shift.
+  #
+  # THE TEST IS THE ONE THE SHARED FENCE AND THE APPROVAL ROW ALREADY USE: a
+  # caller that is not a stage and carries `CC_PIPELINE_SHIFT_ID` is the routing
+  # shard. A stage a shift launched inherits that variable and is a stage first,
+  # so it answers nothing here — a stage is not capped, and reading the launching
+  # shift's ordinal for it would cap it under someone else's context.
+  local n
+  cc_caller_is_stage && return 0
+  [ -n "${CC_PIPELINE_SHIFT_ID:-}" ] || return 0
+  n="${CC_PIPELINE_SHIFT_ID##*#}"
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -ge 1 ] || return 0
+  printf '%s' "$n"
+}
+
+gate_shift_context_of() {
+  # gate_shift_context_of <ordinal> — the current context of routing shift
+  # <ordinal>, in tokens, or nothing when its transcript cannot be found or
+  # holds no usage line to score.
+  #
+  # IT READS ONE SESSION, NAMED BY ITS ORDINAL, AND NEVER FALLS BACK. The id is
+  # the one `gate_launch_shift` handed that shift as `--session-id`, derived here
+  # by the same expression. `gate_router_context` reads the transcript of the
+  # process RUNNING THIS CODE and falls back to the lineage, and both of those are
+  # the seat whenever the caller is not the shift in question — the launcher
+  # measuring its outgoing shift, above all. The floor guard in the launcher
+  # already records this confusion once, and an empty answer is what stops it
+  # recurring: no number is better than the seat's number under a shift's name.
+  local n="$1" f v
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -ge 1 ] || return 0
+  f=$(gate_transcript_of_session "$(session_uuid "shift" "$n")")
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
+  case "${v:-}" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s' "$v"
 }
 
@@ -20658,14 +20798,90 @@ gate_shift_floor() {
 
 gate_shift_state() {
   # The `shift` block of the snapshot, as a JSON object.
-  local n ctx floor over
+  local n ctx floor over over_hard
   n=$(gate_shift_number)
   ctx=$(gate_router_context)
   floor=$(gate_shift_floor)
   over=false
   [ "${ctx:-0}" -ge "$SHIFT_SOFT_TOKENS" ] && over=true
-  printf '{"n": %s, "context": %s, "soft": %s, "hard": %s, "over_soft": %s, "floor": %s}' \
-    "${n:-0}" "${ctx:-0}" "$SHIFT_SOFT_TOKENS" "$SHIFT_HARD_TOKENS" "$over" "${floor:-0}"
+  over_hard=false
+  [ "${ctx:-0}" -ge "$SHIFT_HARD_TOKENS" ] && over_hard=true
+  printf '{"n": %s, "context": %s, "soft": %s, "hard": %s, "over_soft": %s, "over_hard": %s, "floor": %s}' \
+    "${n:-0}" "${ctx:-0}" "$SHIFT_SOFT_TOKENS" "$SHIFT_HARD_TOKENS" "$over" "$over_hard" "${floor:-0}"
+}
+
+gate_cap_directive() {
+  # gate_cap_directive <verb> <kind> — ends the calling SHIFT when its context
+  # has reached the hard cap, by exiting `GATE_EXIT_CAP`, and refuses the
+  # calling SEAT's act when its context has reached `SEAT_HARD_TOKENS`, by
+  # exiting `GATE_EXIT_RULE`. Returns 0 when the caller may go on. Spelled once
+  # and called from every arm that enforces it.
+  #
+  # IT RUNS BEFORE ANY ROW IS WRITTEN. The cap is a routing instruction and not
+  # a refusal, and a refusal leaves no row in this ledger — so the signal has to
+  # come back before the undeclared-target registration, the rule catalog, the
+  # approval issuance and the row append, all of which can write.
+  #
+  # TWO CALLERS ARE CAPPED, EACH BY ITS OWN ARM AND ITS OWN CODE. A stage runs
+  # under its own process and its own budget and is not capped here at all. A
+  # shift is told to END (15): its successor takes over and nothing it asked
+  # for was wrong. A seat — a caller that is neither a stage nor a shift — is
+  # REFUSED (3): it cannot end itself, so what it is told is to pick the one act
+  # that moves the work off it, `router-shift`.
+  #
+  # BOOKKEEPING KINDS ARE EXEMPT BY CALLING THE SET, NOT BY COPYING IT. The one
+  # thing a capped shift must still be able to do is write
+  # `act --kind handoff … 사유=상한`, and that act comes back through here. A
+  # second copy of that set is how a terminal shift once failed to write the one
+  # row the protocol requires of it.
+  #
+  # AN UNRESOLVED CONTEXT DOES NOT FIRE, it only says so. A shift whose own
+  # transcript cannot be found has no honest number, and the only numbers within
+  # reach belong to other sessions; a cap that fires on one of those ends the
+  # night at the first act of every shift in turn. No row is written for it
+  # either — a line on stderr is what a morning reader gets, and a refusal that
+  # grew a row would be indistinguishable from an act that happened.
+  local verb="$1" kind="${2:-}" n ctx
+  n=$(gate_shift_self_ordinal)
+  if [ -z "$n" ]; then
+    # THE SEAT ARM. A caller carrying `CC_PIPELINE_SHIFT_ID` that did not parse
+    # to an ordinal is not a seat, and a stage is never one.
+    cc_caller_is_stage && return 0
+    [ -z "${CC_PIPELINE_SHIFT_ID:-}" ] || return 0
+    # It stands on act, exec and plan only. A seat does not `wait` on a stage;
+    # it waits for its synchronous `router-shift` call to come back, and the
+    # argument for capping `wait` is about a shift blocked on a long stage.
+    [ "$verb" != "wait" ] || return 0
+    # The exemption is the bookkeeping set, CALLED, plus `router-shift`, which
+    # is not in that set and dispatches from its own arm. Refusing
+    # `router-shift` would leave a capped seat no way to hand over at all. Its
+    # argv is not inspected: the first token after `--` is a handoff reason,
+    # not a command, and grading it would add a refusal path to the one call a
+    # seat must always be able to make.
+    gate_kind_is_bookkeeping "$kind" && return 0
+    [ "$kind" != "router-shift" ] || return 0
+    # THE CAP BINDS ONLY THE RUN ACTS THAT PASS THROUGH THIS GATE, and no other
+    # property of the session. It does not make the seat's context smaller; it
+    # stops the seat from growing it by doing the shift's work.
+    ctx=$(gate_router_context)
+    case "${ctx:-}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$ctx" -ge "$SEAT_HARD_TOKENS" ] || return 0
+    printf 'gate: 좌석의 컨텍스트가 %s 토큰으로 좌석 상한 %s 에 닿아 이 행위를 거절합니다 — `act --kind router-shift` 로 교대를 내어 라우팅을 넘기십시오 (%s)\n' \
+      "$ctx" "$SEAT_HARD_TOKENS" "$verb" >&2
+    exit "$GATE_EXIT_RULE"
+  fi
+  gate_kind_is_bookkeeping "$kind" && return 0
+  ctx=$(gate_shift_context_of "$n")
+  case "${ctx:-}" in
+    ''|*[!0-9]*)
+      printf 'gate: 교대 %s 의 트랜스크립트를 해소하지 못해(또는 점수 매길 사용량 줄이 없어) 하드 상한을 평가하지 않았습니다 (%s)\n' \
+        "$n" "$verb" >&2
+      return 0 ;;
+  esac
+  [ "$ctx" -ge "$SHIFT_HARD_TOKENS" ] || return 0
+  printf 'gate: 교대 %s 의 컨텍스트가 %s 토큰으로 하드 상한 %s 에 닿았습니다 — `act --kind handoff` 를 `사유=상한` 으로 쓰고 이 교대를 끝내십시오 (%s)\n' \
+    "$n" "$ctx" "$SHIFT_HARD_TOKENS" "$verb" >&2
+  exit "$GATE_EXIT_CAP"
 }
 
 gate_snapshot_segments_json() {
@@ -20908,10 +21124,22 @@ gate_launch_shift() {
   # argv window — the injection table is per stage kind and the shift is not
   # one — so the reading below has no argv layer, and the row carries what the
   # settings and lane give the successor, with the session id to join on.
-  local window
+  #
+  # `컨텍스트` IS THE OUTGOING SHIFT'S, NOT THE LAUNCHER'S. Launches are serial,
+  # so the shift this one replaces is ordinal n-1, and it has already ended by the
+  # time the seat's `act --kind router-shift` reaches this line. Calling today's
+  # context function here would read the transcript of the process doing the
+  # launching — the seat — which is the confusion the floor guard above records.
+  # A kickoff launch has no outgoing shift and an unresolved transcript has no
+  # honest number, so both carry `-`.
+  local window prev_ctx=''
   window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
+  if [ "$n" -gt 1 ]; then
+    prev_ctx=$(gate_shift_context_of "$((n - 1))")
+  fi
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
-    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window"
+    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
+    "컨텍스트=${prev_ctx:--}"
   log "교대 $n 시작 — 사유 $reason"
   # THE SUCCESSOR'S SEAT IS THIS LAUNCHER'S PROPERTY, NOT ITS CALLER'S AMBIENT
   # ENVIRONMENT. A prefix assignment adds and overwrites; it never unsets. So a
