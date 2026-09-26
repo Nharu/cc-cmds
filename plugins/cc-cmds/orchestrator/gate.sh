@@ -7979,7 +7979,7 @@ gate_metrics_config() {
   case "$1" in project|account) ;; *) return 0 ;; esac
   v=$(awk -F'\t' -v k="$1" '$1 == k { v = $2 } END { printf "%s", v }' "$f" 2>/dev/null || true)
   if [ "$1" = "project" ]; then
-    printf '%s' "$v" | grep -Eq '^[0-9]+$' || v=""
+    case "$v" in ''|*[!0-9]*) v="" ;; esac
   fi
   printf '%s' "$v"
 }
