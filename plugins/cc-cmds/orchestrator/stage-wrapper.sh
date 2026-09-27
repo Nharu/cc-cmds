@@ -49,22 +49,29 @@
 #   stage-wrapper.sh --settings <file> --plugin-dir <dir> --session-id <uuid>
 #                    [--mode A|B] [--fifo <path>] [--resume <session-id>]
 #                    [--instructions <file>] [--autocompact <n>]
+#                    [--effort <level>] [--model <model>]
 #                    -- <cli args...>
 #
 # With `--instructions`, the arguments after `--` must not contain any of the
-# flags the gate owns when it injects instructions (`--append-system-prompt`,
-# `--append-system-prompt-file`, `--append-subagent-system-prompt`,
-# `--append-subagent-system-prompt-file`, `--system-prompt`,
-# `--system-prompt-file`, `--setting-sources`, `--bare`,
-# `--exclude-dynamic-system-prompt-sections`, `--autocompact`), bare or in
-# `<flag>=` form. Without `--instructions` the argv is byte-identical to what it
-# was before the option existed.
+# twelve flags the gate owns when it injects instructions
+# (`--append-system-prompt`, `--append-system-prompt-file`,
+# `--append-subagent-system-prompt`, `--append-subagent-system-prompt-file`,
+# `--system-prompt`, `--system-prompt-file`, `--setting-sources`, `--bare`,
+# `--exclude-dynamic-system-prompt-sections`, `--autocompact`, `--effort`,
+# `--model`), bare or in `<flag>=` form. Without `--instructions` the argv is
+# byte-identical to what it was before the option existed.
 #
 # `--autocompact <n>` is the compaction window the gate read and recorded for
 # this launch; the wrapper puts it on the CLI argv and nothing else. It is on
 # the reserved list because a repeated flag lets the later one win silently, so
 # a caller's copy after `--` would make the recorded window and the running one
 # differ without a trace.
+#
+# `--effort <level>` and `--model <model>` are the same kind of pass-through:
+# the caller chose them from the stage kind and recorded the effort, and the
+# wrapper only puts them on the CLI argv. They are reserved for the same reason
+# as `--autocompact` — a later copy after `--` would make the recorded effort
+# and the running one differ without a trace.
 #
 # Exit codes: the CLI's own, transparently — this process `exec`s in Mode A and
 # is not in the exit path at all.
@@ -74,6 +81,7 @@
 set -uo pipefail
 
 SETTINGS=""; PLUGIN_DIR=""; SESSION_ID=""; MODE="A"; FIFO=""; RESUME=""; INSTRUCTIONS=""; AUTOCOMPACT=""
+EFFORT=""; MODEL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --settings)   SETTINGS="$2"; shift 2 ;;
@@ -84,6 +92,8 @@ while [ $# -gt 0 ]; do
     --resume)     RESUME="$2"; shift 2 ;;
     --instructions) INSTRUCTIONS="$2"; shift 2 ;;
     --autocompact) AUTOCOMPACT="$2"; shift 2 ;;
+    --effort)     EFFORT="$2"; shift 2 ;;
+    --model)      MODEL="$2"; shift 2 ;;
     --)           shift; break ;;
     *) printf 'stage-wrapper: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -121,6 +131,8 @@ if [ -n "$INSTRUCTIONS" ]; then
       --setting-sources|--setting-sources=*|\
       --bare|--bare=*|\
       --autocompact|--autocompact=*|\
+      --effort|--effort=*|\
+      --model|--model=*|\
       --exclude-dynamic-system-prompt-sections|--exclude-dynamic-system-prompt-sections=*)
         printf 'stage-wrapper: reserved flag after --: %s (the gate owns the system prompt when --instructions is given)\n' "$arg" >&2
         exit 2 ;;
@@ -188,13 +200,16 @@ CLI_BIN="${CC_CLAUDE_BIN:-}"
 # The window rides on every branch the same way: `${AUTOCOMPACT:+…}` expands to
 # the flag and its value when the gate passed one and to no word at all when it
 # did not, so a launch without a window is byte-identical to one before the
-# option existed.
+# option existed. Effort and model ride the same way, right after the window,
+# and on the resume branches too: a resumed session does not keep the effort it
+# was started with, so a resume that dropped the flag would run at the default.
 if [ -n "$RESUME" ]; then
   if [ -n "$INSTRUCTIONS" ]; then
     export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            -r "$RESUME" --strict-mcp-config \
            ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \
+           ${EFFORT:+--effort "$EFFORT"} ${MODEL:+--model "$MODEL"} \
            --append-system-prompt-file "$INSTRUCTIONS" \
            --append-subagent-system-prompt-file "$INSTRUCTIONS" \
            --exclude-dynamic-system-prompt-sections "$@"
@@ -202,7 +217,8 @@ if [ -n "$RESUME" ]; then
     unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            -r "$RESUME" --strict-mcp-config \
-           ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} "$@"
+           ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \
+           ${EFFORT:+--effort "$EFFORT"} ${MODEL:+--model "$MODEL"} "$@"
   fi
 else
   if [ -n "$INSTRUCTIONS" ]; then
@@ -210,6 +226,7 @@ else
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            --session-id "$SESSION_ID" --strict-mcp-config \
            ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \
+           ${EFFORT:+--effort "$EFFORT"} ${MODEL:+--model "$MODEL"} \
            --append-system-prompt-file "$INSTRUCTIONS" \
            --append-subagent-system-prompt-file "$INSTRUCTIONS" \
            --exclude-dynamic-system-prompt-sections "$@"
@@ -217,7 +234,8 @@ else
     unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            --session-id "$SESSION_ID" --strict-mcp-config \
-           ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} "$@"
+           ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \
+           ${EFFORT:+--effort "$EFFORT"} ${MODEL:+--model "$MODEL"} "$@"
   fi
 fi
 
