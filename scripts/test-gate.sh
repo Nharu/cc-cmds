@@ -7824,7 +7824,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다, 15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 새 시도 두 번의 공허한 성공 뒤 종료 제안은 무효화로 통과한다, 15c: 429 봉투 없는 크래시 두 번 뒤 종료 제안은 무효화로 통과한다, 15c: 429 봉투를 실은 크래시는 새 시도가 둘이어도 재파견 창 안이다, 15c: 앞 행의 세션 id 를 이은 행은 새 시도로 세지 않아 재파견 창 안이다, 15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다, 15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -8245,13 +8245,120 @@ propose15x plan "$WORK/plan-R15J.md"
 check "15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
 rm -f "$WT/docs/fixture-design-15j.md"
 
-# R15K — the same hollow design stage, CONTINUED up to the cap. Both routers
+# R15K..R15N — THE DEPTH IS SHARED WITH THE ROUTERS. A `공허한 성공` and a
+# `크래시` with no usage-limit envelope do not clear by themselves, so the
+# routers buy each one fresh attempt, then stop the design and propose done.
+# Condition 1 once counted nothing: after the second fresh attempt it still read
+# the retry window, printed the plain zero-segment line, and refused the very
+# proposal the routers were told to make — a run that could neither dispatch nor
+# end. It now counts fresh attempts by the routers' definition (a row whose
+# `세션 id` is not `미상` and stands on an earlier row is a re-attachment, every
+# other row is fresh), and the four runs below pin both edges of that count:
+# spent on two fresh `공허한 성공` and on two crashes, not spent while the
+# limit envelope stands, and not spent on a re-attachment.
+dsids15x() {
+  # dsids15x <run id> — the design step's `세션 id` values, one per row.
+  { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } \
+    | { grep -F '| 세그먼트=- | 스테이지=D1 | 종류=design |' || true; } \
+    | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//'
+}
+STUB15K="$WORK/bin/claude-stub-15k"
+cat > "$STUB15K" <<'STUB15KEOF'
+#!/usr/bin/env bash
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s15k-%s","num_turns":1}\n' "$CC_PIPELINE_STAGE_ID"
+exit 0
+STUB15KEOF
+chmod +x "$STUB15K"
+fresh15x R15K 'docs/fixture-design-15k.md' K1
+settle15x "$WORK/plan-R15K.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 깊이 픽스처(공허한 성공)의 절을 파견 전에 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15K.md" "$STUB15K"
+check "15c: 새 시도 하나 뒤 설계 단계의 종단 부류는 공허한 성공이다" "$(dclass15x R15K)" "공허한 성공"
+propose15x plan "$WORK/plan-R15K.md"
+check "15c: 새 시도가 하나뿐인 공허한 성공은 아직 재파견 창 안이다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 깊이 한 번 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 새 시도 한 번 뒤의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 깊이 한 번 문면" "$msg" ;;
+esac
+launch15x "$WORK/plan-R15K.md" "$STUB15K"
+check "15c: 깊이 픽스처(공허한 성공)에 설계 단계 행이 둘이고 세션 id 가 서로 다르다 (아래가 공허하지 않다)" \
+  "$(design_rows15x R15K)/$(dsids15x R15K | sort -u | grep -c . || true)/$(dclass15x R15K)" "2/2/공허한 성공"
+propose15x plan "$WORK/plan-R15K.md"
+check "15c: 새 시도 두 번의 공허한 성공 뒤 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 깊이를 다 쓴 공허한 성공 경로의 예상은 무효화 종료다" ;;
+  *) bad "15c 깊이 소진 공허한 성공 문면" "$msg" ;;
+esac
+propose15x act "$WORK/plan-R15K.md"
+check "15c: 깊이를 다 쓴 런의 종료 제안을 act 로 내면 받아들여진다" "$rc" "0"
+check "15c: 깊이를 다 쓴 런의 원장에 무효화 종료 행이 하나 남는다" \
+  "$( { grep -F 'kind=propose-done' "$WT/docs/pipeline-run/R15K.md" 2>/dev/null || true; } \
+      | { grep -F '기준=무효화 종료' || true; } | grep -c . || true)" "1"
+check "15c: 깊이를 다 쓴 런의 done 파일이 런을 무효화로 기록한다" \
+  "$( { grep -F '무효화' "$STATE_LATE/cc-cmds/run/R15K/done" 2>/dev/null || true; } | grep -c . || true)" "1"
+
+fresh15x R15L 'docs/fixture-design-15l.md' K1
+settle15x "$WORK/plan-R15L.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 깊이 픽스처(크래시)의 절을 파견 전에 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15L.md" "$STUB15G"
+launch15x "$WORK/plan-R15L.md" "$STUB15G"
+check "15c: 깊이 픽스처(크래시)에 설계 단계 크래시 행이 둘이다 (아래가 공허하지 않다)" \
+  "$(design_rows15x R15L)/$(dclass15x R15L)" "2/크래시"
+propose15x plan "$WORK/plan-R15L.md"
+check "15c: 429 봉투 없는 크래시 두 번 뒤 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 깊이를 다 쓴 크래시 경로의 예상은 무효화 종료다" ;;
+  *) bad "15c 깊이 소진 크래시 문면" "$msg" ;;
+esac
+
+STUB15M="$WORK/bin/claude-stub-15m"
+cat > "$STUB15M" <<'STUB15MEOF'
+#!/usr/bin/env bash
+printf '{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"total_cost_usd":0.1,"session_id":"s15m-%s","num_turns":1,"result":"limit reached, resets 1:50pm (Asia/Tokyo)"}\n' "$CC_PIPELINE_STAGE_ID"
+exit 1
+STUB15MEOF
+chmod +x "$STUB15M"
+fresh15x R15M 'docs/fixture-design-15m.md' K1
+settle15x "$WORK/plan-R15M.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 깊이 픽스처(한도 크래시)의 절을 파견 전에 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15M.md" "$STUB15M"
+launch15x "$WORK/plan-R15M.md" "$STUB15M"
+check "15c: 깊이 픽스처(한도 크래시)에 크래시 행이 둘이고 마지막 시도의 스트림이 429 봉투를 싣는다 (아래가 공허하지 않다)" \
+  "$(design_rows15x R15M)/$(dclass15x R15M)/$( { grep -cF '"api_error_status":429' "$STATE_LATE/cc-cmds/run/R15M/log/D1#2.json" 2>/dev/null || true; } )" \
+  "2/크래시/1"
+propose15x plan "$WORK/plan-R15M.md"
+check "15c: 429 봉투를 실은 크래시는 새 시도가 둘이어도 재파견 창 안이다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 한도 크래시 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 한도 크래시 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 한도 크래시 창 문면" "$msg" ;;
+esac
+
+fresh15x R15N 'docs/fixture-design-15n.md' K1
+settle15x "$WORK/plan-R15N.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 깊이 픽스처(재부착 모양)의 절을 파견 전에 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15N.md" "$STUB15C"
+launch15x "$WORK/plan-R15N.md" "$STUB15C"
+check "15c: 깊이 픽스처(재부착 모양)에 공허한 성공 행이 둘이고 세션 id 가 하나다 (아래가 공허하지 않다)" \
+  "$(design_rows15x R15N)/$(dsids15x R15N | sort -u | grep -c . || true)/$(dclass15x R15N)" "2/1/공허한 성공"
+propose15x plan "$WORK/plan-R15N.md"
+check "15c: 앞 행의 세션 id 를 이은 행은 새 시도로 세지 않아 재파견 창 안이다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 재부착 모양 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 재부착 모양의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 재부착 모양 문면" "$msg" ;;
+esac
+
+# R15O — the same hollow design stage, CONTINUED up to the cap. Both routers
 # continue a `공허한 성공` step in its own session rather than dispatching it
 # afresh, and once the gate refuses a third continuation they stop the design:
 # the step has no `segment` row for a `blocked` form, and a fresh dispatch buys
 # the discussion again. That stop is only a stop if the gate records it, so
 # condition 1 reads the continuation counter and leaves the redispatch window
-# at the cap. Before the cap the window is still open, as in R15J.
+# at the cap. Before the cap the window is still open, as in R15J: every
+# continuation row carries the first attempt's session id on, so the fresh
+# attempt depth R15K..R15N pin stays at one.
 resume15x() {
   # resume15x <manifest> <stub> <session id> — continue the design step, then
   # wait on it when the gate launched it. Sets rc and out from the act.
@@ -8263,26 +8370,26 @@ resume15x() {
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
 }
-fresh15x R15K 'docs/fixture-design-15k.md' K1
-settle15x "$WORK/plan-R15K.md" K1 불가능 "설계 문서가 동결되지 않는다"
+fresh15x R15O 'docs/fixture-design-15o.md' K1
+settle15x "$WORK/plan-R15O.md" K1 불가능 "설계 문서가 동결되지 않는다"
 check "15c: 계속 상한 픽스처의 절을 불가능으로 정산한다" "$rc" "0"
-launch15x "$WORK/plan-R15K.md" "$STUB15C"
+launch15x "$WORK/plan-R15O.md" "$STUB15C"
 check "15c: 계속 상한 픽스처의 첫 시도가 공허한 성공이다 (아래가 공허하지 않다)" \
-  "$(dclass15x R15K)" "공허한 성공"
-resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
-check "15c: 공허한 성공 설계 단계의 첫 계속이 기동한다" "$rc/$(design_rows15x R15K)" "0/2"
-propose15x plan "$WORK/plan-R15K.md"
+  "$(dclass15x R15O)" "공허한 성공"
+resume15x "$WORK/plan-R15O.md" "$STUB15C" s15c-session
+check "15c: 공허한 성공 설계 단계의 첫 계속이 기동한다" "$rc/$(design_rows15x R15O)" "0/2"
+propose15x plan "$WORK/plan-R15O.md"
 check "15c: 상한 전에 계속한 설계 단계의 재파견 창은 열려 있다" "$rc" "3"
-resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+resume15x "$WORK/plan-R15O.md" "$STUB15C" s15c-session
 check "15c: 둘째 계속도 기동하고 계수기가 상한에 이른다" \
-  "$rc/$(cat "$STATE_LATE/cc-cmds/run/R15K/continue/D1" 2>/dev/null)" "0/2"
-resume15x "$WORK/plan-R15K.md" "$STUB15C" s15c-session
+  "$rc/$(cat "$STATE_LATE/cc-cmds/run/R15O/continue/D1" 2>/dev/null)" "0/2"
+resume15x "$WORK/plan-R15O.md" "$STUB15C" s15c-session
 check "15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다" "$rc" "3"
 case "$out" in
   *"stop the design"*"무효화"*) ok "15c: 그 거부는 막힘 행이 아니라 설계 중단을 가리킨다" ;;
   *) bad "15c 설계 계속 상한 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
-propose15x plan "$WORK/plan-R15K.md"
+propose15x plan "$WORK/plan-R15O.md"
 check "15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다" "$rc" "0"
 case "$msg" in
   *"통과 예상: 무효화 종료"*) ok "15c: 계속 상한 경로의 예상도 무효화 종료다" ;;
