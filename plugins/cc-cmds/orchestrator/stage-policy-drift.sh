@@ -358,7 +358,7 @@ compare_source() {
       if [ "$akind" != table ] && [ "$n" -ne 1 ]; then
         continue
       fi
-      live="$live$anchor	$asha	$adisp	$akind"$'\n'
+      live="${live}${anchor}	${asha}	${adisp}	${akind}"$'\n'
       if [ "$n" -eq 0 ]; then
         case "$adisp" in
           excluded:*)
