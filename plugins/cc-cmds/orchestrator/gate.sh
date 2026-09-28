@@ -19656,7 +19656,10 @@ gate_record_stage_outcome() {
   # THE STREAM THIS DISPATCH ACTUALLY WROTE, handed down rather than re-derived.
   # Re-deriving is how the writer and the reader came apart once already; the
   # unsuffixed name stays as the fallback for a caller that predates the argument.
-  local out="${7:-}" res cost subtype sid klass after denials n_stage psha iserr
+  # `given` keeps whether the stream was handed down at all, before the fallback
+  # below overwrites `out`: only a handed-down stream is the pinned attempt's own,
+  # and only that one is judged for a usage-limit death.
+  local out="${7:-}" given="${7:-}" res cost subtype sid klass after denials n_stage psha iserr lx why
   [ -n "$out" ] || out="$RUN_DIR/log/$seg.json"
   # THE WINDOW THE LAUNCH READ, handed down by the supervisor that also put it
   # on the argv; a caller without it falls back to the `.window` record, and
@@ -19701,7 +19704,8 @@ gate_record_stage_outcome() {
   # the arm below reads it from the stage's halt record, which the halt
   # contract owns — and `외부 종료` is written by the prelude's settlement,
   # never by this function, because its defining check is the ABSENCE of the
-  # result envelope this function reads.
+  # result envelope this function reads. `한도 종료` is written here, and only
+  # from inside the `크래시` arm.
   #
   # THE FOURTH CONDITION: a `자율 승인` row stamped `행위자=스테이지` for THIS
   # segment, landing AFTER this attempt's dispatch row. Router rows written
@@ -19750,6 +19754,21 @@ gate_record_stage_outcome() {
     klass='의도된 park'
   elif [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
     klass='크래시'
+    # A STAGE THAT DIED OF THE USAGE LIMIT BY ITSELF is `한도 종료`, carved out
+    # of this arm only: every such row is one this arm used to file as `크래시`,
+    # and readers dispose of the two alike. It needs a non-zero exit, a stream
+    # handed down by the caller, and no halt record — the halt arm above stands
+    # only at rc 0, so a halted attempt with a non-zero exit arrives here and
+    # stays `크래시`. A limit-shaped stream that misses one of those, or whose
+    # shape is incomplete, stays `크래시` and says so on stderr, which is the
+    # supervisor's log.
+    if [ -n "$given" ] && [ ! -s "$haltf" ]; then
+      lx=0; why=$(stage_limit_exit "$out") || lx=$?
+      if [ "$lx" = "0" ] && [ "$rc" != "0" ]; then klass='한도 종료'
+      elif [ "$lx" = "0" ]; then warn "한도 형상 불완전 (rc) $out"
+      elif [ "$lx" = "3" ]; then warn "한도 형상 불완전 ($why) $out"
+      fi
+    fi
   # A DESIGN STAGE IS ASKED FOR ITS ARTIFACT, because the row-count arm below
   # accepts a ledger row as proof of production and a design stage writes rows
   # all through its discussion. The driver's own arm has always crossed the two
@@ -20777,10 +20796,12 @@ gate_done_conditions() {
   # again carries one row per attempt, and only the latest says how it stands
   # now.
   #
-  # A CRASH THAT SAVED NOTHING IS LEFT OUT FOR THE SAME REASON. Every non-zero
-  # exit is classified `크래시`, so an API usage limit — which resets on its own
-  # — lands in the same bucket as a stage that is genuinely broken, and this
-  # line then declares the run dead minutes after a transient error. Measured:
+  # A CRASH THAT SAVED NOTHING IS LEFT OUT FOR THE SAME REASON. A stage that
+  # died of an API usage limit — which resets on its own — is written
+  # `한도 종료` when its own stream shows it and `크래시` otherwise, and this
+  # line reads both as `크래시`: without that, a transient limit sits in the same
+  # place as a stage that is genuinely broken, and this line then declares the
+  # run dead minutes after a transient error. Measured:
   # a design stage died on HTTP 429 with the limit's own reset time in the
   # result envelope, and the next router settled all five termination clauses
   # as `불가능` on that one row, three minutes later, with the limit already
@@ -20828,7 +20849,7 @@ gate_done_conditions() {
       # same question again and bills for it. A crashed stage never emits, so
       # the arm above cannot reach this state and asks nothing about it.
       if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
-         && ! { { [ "$dlast" = '크래시' ] \
+         && ! { { [ "$(terminal_route_class "$dlast")" = '크래시' ] \
                   || { [ "$dlast" = '공허한 성공' ] \
                        && ! gate_design_step_has_open_approval; }; } \
                 && { [ -z "${DOC:-}" ] || [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; }; then
