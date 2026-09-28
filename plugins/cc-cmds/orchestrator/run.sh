@@ -3578,10 +3578,13 @@ transcript_path() {
 # per-kind settings file, the stage cwd's `.claude/settings.local.json` then
 # `.claude/settings.json`, the lane's `settings.json`. There is no argv layer on
 # this path — the driver injects no window — so a driver row can never say
-# `(argv)`. The value is written to `<stage>.window` (the window, the lane in
-# tilde form, and a third line for the routed account that nothing writes until
-# routing launches stages) beside the pid record, and read back onto the
-# `stage-result` row; a row for a stage that was never spawned reads `(미상)`.
+# `(argv)`. The value is written to `<stage>.window` beside the pid record, and
+# read back onto the `stage-result` row; a row for a stage that was never
+# spawned reads `(미상)`. The record has four lines: 1 the window, 2 the lane in
+# tilde form, 3 the effort the launch put on the argv (only the driver's launch
+# writes it today), 4 the routed account, which nothing writes until routing
+# launches stages. A launch that writes line 4 fills line 3 first, the gate's
+# two-line launch included — an account on line 3 would be read as the effort.
 lane_label_of() {
   # lane_label_of <config-dir> — `$HOME` prefix as `~`, anything else as is.
   local d="${1%/}"
@@ -3671,9 +3674,12 @@ stage_lane_of() {
 
 stage_account_of() {
   # stage_account_of <stage-id> — the `계정` of this stage's `stage-result` row,
-  # read from line 3 of `<stage>.window`, the inventory id the launch ran under.
+  # read from line 4 of `<stage>.window` — the line after the effort — the
+  # inventory id the launch ran under. Line 3 is the effort's
+  # (`stage_effort_rec_of`), which the driver's launch already writes, so an
+  # account there would put the effort on every driver row as `계정=`.
   #
-  # FOUR STATES, AND ONE OF THEM IS SILENCE. No third line → nothing, and the
+  # FOUR STATES, AND ONE OF THEM IS SILENCE. No fourth line → nothing, and the
   # caller puts no `계정=` on the row at all: that is every row written before
   # routing, byte for byte. `-` → `-`, a seat. An id the account rule accepts →
   # that id. Anything else → `(미상)`, and the row is still written — losing a
@@ -3684,7 +3690,7 @@ stage_account_of() {
   # its launch, and today's resolver answers a different question.
   local f="${RUN_DIR:-}/$1.window" v=""
   [ -f "$f" ] || return 0
-  v=$(awk 'NR == 3 { printf "L%s", $0; exit }' "$f" 2>/dev/null || true)
+  v=$(awk 'NR == 4 { printf "L%s", $0; exit }' "$f" 2>/dev/null || true)
   [ -n "$v" ] || return 0
   v="${v#L}"
   if [ "$v" = "-" ]; then
@@ -3955,7 +3961,8 @@ stage_spawn() {
   # The window this launch will run under, read from the same settings file
   # and cwd the wrapper is about to be handed, and recorded before the launch so
   # the row can carry it whatever the stage does next. The effort rides the same
-  # record as line 3, from the same reading the argv gets, and the flags go on
+  # record as line 3, from the same reading the argv gets — line 4, the routed
+  # account, goes after it and is not written yet — and the flags go on
   # the fresh and the re-attached launch alike: a resumed session does not keep
   # the effort it was started with.
   local launch_flags effort

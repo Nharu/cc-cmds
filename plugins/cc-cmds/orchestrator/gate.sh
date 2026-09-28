@@ -6933,7 +6933,7 @@ gate_resume_grant_ok() {
   #
   # - A dormant `GRANT` has no account to compare, so it passes only with no
   #   binding (empty) or a seat binding (`-`). Every binding is empty until the
-  #   launch writes the record's third line, so today's resumes are unchanged.
+  #   launch writes the record's fourth line, so today's resumes are unchanged.
   # - An account `GRANT` passes when `.account` equals the binding exactly; a
   #   seat binding passes on a seat envelope. Nothing else passes.
   # - A `resume-bound-*` `WAIT` is held to the same rule: route.sh's live-lease
@@ -19401,7 +19401,9 @@ gate_verb_supervise_stage() {
   # `.window` IS A RECORD, NOT A LIVENESS INPUT. Two lines — the effective
   # window and the lane — kept beside the three above so a settlement that runs
   # after this process is gone can still put them on the row. No reader makes
-  # its presence a precondition: absent, the row says `(미상)`.
+  # its presence a precondition: absent, the row says `(미상)`. The effort and
+  # the routed account are lines 3 and 4 of the same record; this launch writes
+  # neither yet, and one that adds the account writes the effort line first.
   printf '%s\n%s\n' "$window" "$(gate_lane_label)" > "$RUN_DIR/$seg.window"
 
   # THE TERM TRAP, NEW WITH THE SUPERVISOR. A person who wants a detached stage
@@ -19503,7 +19505,7 @@ gate_settle_lost_dispatches() {
     window=$(gate_window_sidecar_read "$seg")
     lane=$(gate_lane_sidecar_read "$seg")
     # The account is read with the other two, BEFORE the record is removed below;
-    # an absent third line is an absent field, never a re-resolution.
+    # an absent fourth line is an absent field, never a re-resolution.
     acct=$(stage_account_of "$seg")
     if [ -z "$( gate_stage_result_rows_of "$seg" \
                 | { grep -F "실행 버전=$attempt " || true; } )" ]; then
@@ -19658,8 +19660,8 @@ gate_record_stage_outcome() {
   # the same record before the CLI started, and the record outlives this call.
   local lane acct
   lane=$(gate_lane_sidecar_read "$seg")
-  # The account the launch wrote on the record's third line, through the one
-  # parser both writers use; no third line means no `계정` field on the row.
+  # The account the launch wrote on the record's fourth line, through the one
+  # parser both writers use; no fourth line means no `계정` field on the row.
   acct=$(stage_account_of "$seg")
   # THE EFFORT THE LAUNCH PUT ON THE ARGV, handed down like the window; `-` when
   # the switch turned it off or the caller predates the argument. The served

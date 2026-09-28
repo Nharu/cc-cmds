@@ -22647,43 +22647,50 @@ case "$(lsr65_feed)" in
 esac
 
 # ---------------------------------------------------------------------------
-# 66. 창 파일의 셋째 줄과 세 판독기
+# 66. 창 파일의 넷째 줄과 세 판독기
 # --- section: 66 | group: ledger_series | covers: act, snapshot | anchors: 66: 섞인 계정 토큰은 rc 4 다 ---
 #
-# `stage-result` 의 `계정` 은 `<stage>.window` 셋째 줄에서 온다. 줄이 없으면 필드도
-# 없고(오늘의 모든 행), `-` 는 좌석, 신원 규칙에 맞는 id 는 그 id, 그 밖은 `(미상)`
-# 이다. 재개 구속 판독기는 그 필드를 세션별로 모아 한 답만 돌려주고, 갈리면 rc 4
-# 로 거부한다. 임대 판독기는 임시 pace 루트 아래의 표만 읽는다.
+# `stage-result` 의 `계정` 은 `<stage>.window` 넷째 줄에서 온다. 셋째 줄은 발사가
+# argv 에 올린 effort 의 자리이고 드라이버 발사가 이미 쓰므로, 셋째 줄만 있는 기록은
+# 계정이 없는 기록이다. 넷째 줄이 없으면 필드도 없고(오늘의 모든 행), `-` 는 좌석,
+# 신원 규칙에 맞는 id 는 그 id, 그 밖은 `(미상)` 이다. 재개 구속 판독기는 그 필드를
+# 세션별로 모아 한 답만 돌려주고, 갈리면 rc 4 로 거부한다. 임대 판독기는 임시 pace
+# 루트 아래의 표만 읽는다.
 # ---------------------------------------------------------------------------
 lsr66_l=$(lsr_ledger r66)
 lsr66_rd="${lsr66_l%/*}"
 printf '1790000000\n~/.claude\n' > "$lsr66_rd/W0.window"
-printf '1790000000\n~\n-\n' > "$lsr66_rd/W1.window"
-printf '1790000000\n~/.claude-a\nacct-a\n' > "$lsr66_rd/W2.window"
-printf '1790000000\n~/.claude-a\n123e4567-e89b-12d3-a456-426614174000\n' > "$lsr66_rd/W3.window"
-printf '1790000000\n~/.claude-a\na|b\n' > "$lsr66_rd/W4.window"
-check "66: 창 파일 셋째 줄 네 상태 — 없음·좌석·id·규칙 밖" \
+printf '1790000000\n~\nmedium\n-\n' > "$lsr66_rd/W1.window"
+printf '1790000000\n~/.claude-a\nmedium\nacct-a\n' > "$lsr66_rd/W2.window"
+printf '1790000000\n~/.claude-a\nmedium\n123e4567-e89b-12d3-a456-426614174000\n' > "$lsr66_rd/W3.window"
+printf '1790000000\n~/.claude-a\nmedium\na|b\n' > "$lsr66_rd/W4.window"
+# 드라이버 발사가 오늘 쓰는 세 줄 기록 — effort 값과 스위치가 꺼진 `-`.
+printf '1790000000\n~/.claude\nmedium\n' > "$lsr66_rd/W5.window"
+printf '1790000000\n~/.claude\n-\n' > "$lsr66_rd/W6.window"
+check "66: 창 파일 넷째 줄 네 상태 — 없음·좌석·id·규칙 밖" \
   "[$(lsr_in - "$lsr66_l" - stage_account_of W0)]/[$(lsr_in - "$lsr66_l" - stage_account_of W1)]/[$(lsr_in - "$lsr66_l" - stage_account_of W2)]/[$(lsr_in - "$lsr66_l" - stage_account_of W3)]/[$(lsr_in - "$lsr66_l" - stage_account_of W4)]" \
   "[]/[-]/[acct-a]/[(미상)]/[(미상)]"
+check "66: 셋째 줄에 effort 만 있는 기록은 계정을 내지 않는다 (medium, -)" \
+  "[$(lsr_in - "$lsr66_l" - stage_account_of W5)]/[$(lsr_in - "$lsr66_l" - stage_account_of W6)]" "[]/[]"
 check "66: 창 파일이 없으면 아무것도 내지 않는다" "[$(lsr_in - "$lsr66_l" - stage_account_of W9)]" "[]"
 
 # 같은 네 상태를 게이트의 `stage-result` 자리에서. 결과 줄이 없는 스테이지는 크래시로
 # 분류되어 알림 없이 행 하나만 남으므로, 판독기가 아니라 행을 쓰는 자리 자체를 부른다.
 # 문서 해시 행은 이 사례의 관심 밖이라 `DOC` 를 비운다.
 lsr66_sl=$(lsr_ledger r66-site)
-for lsr66_w in W0 W1 W2 W3 W4; do
+for lsr66_w in W0 W1 W2 W3 W4 W5 W6; do
   cp "$lsr66_rd/$lsr66_w.window" "${lsr66_sl%/*}/"
 done
 lsr66_outcome() { DOC=""; gate_record_stage_outcome cc-cmds "$1" review 1 0 ''; }
-for lsr66_w in W0 W1 W2 W3 W4; do
+for lsr66_w in W0 W1 W2 W3 W4 W5 W6; do
   lsr_in Linux "$lsr66_sl" - lsr66_outcome "$lsr66_w" >/dev/null 2>&1 || true
 done
-check "66: 게이트 stage-result 자리가 창 파일 네 상태대로 계정= 을 싣는다" \
+check "66: 게이트 stage-result 자리가 창 파일 넷째 줄대로 계정= 을 싣고, 셋째 줄 effort 는 싣지 않는다" \
   "$( { grep '^- `stage-result` ' "$lsr66_sl" || true; } | awk -F' [|] ' '{
        v = "-없음-"
        for (i = 1; i <= NF; i++) if (index($i, "계정=") == 1) v = substr($i, length("계정=") + 1)
        printf "[%s]", v }')" \
-  "[-없음-][-][acct-a][(미상)][(미상)]"
+  "[-없음-][-][acct-a][(미상)][(미상)][-없음-][-없음-]"
 
 lsr66_u() { printf '00000000-0000-4000-8000-00000000000%s' "$1"; }
 {
