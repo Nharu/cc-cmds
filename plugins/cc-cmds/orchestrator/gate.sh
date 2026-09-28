@@ -18060,6 +18060,43 @@ gate_design_step_has_open_approval() {
   return 1
 }
 
+gate_design_fresh_attempts() {
+  # stdin: the design step's `stage-result` rows in ledger order. Prints how
+  # many of them are fresh attempts rather than re-attachments.
+  #
+  # THE ROUTERS' DEFINITION, WORD FOR WORD: a row is a re-attachment when its
+  # `세션 id` is not `미상` and stands on an earlier row of the step, and every
+  # other row is a fresh attempt. The routers stop the design on this count and
+  # condition 1 closes its window on it; two definitions would let one side
+  # stop on a state the other still reads as retryable.
+  local row sid seen=' ' n=0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    sid=$(gate_row_field "$row" '세션 id')
+    case "$sid" in
+      '' | '미상') n=$((n + 1)) ;;
+      *) case "$seen" in
+           *" $sid "*) ;;
+           *) n=$((n + 1)); seen="$seen$sid " ;;
+         esac ;;
+    esac
+  done
+  printf '%s' "$n"
+}
+
+gate_design_row_has_limit_envelope() {
+  # gate_design_row_has_limit_envelope <step id> <row> — 0 when that attempt's
+  # stream carries the usage-limit envelope. The same file and the same string
+  # the routers read before re-attaching, so a limit crash is told apart the
+  # same way on both sides. No attempt number, no run directory or no stream
+  # reads as no envelope: that is the side where the depth applies, and the
+  # depth is what lets a stalled run close.
+  local ver
+  ver=$(gate_row_field "$2" '실행 버전')
+  [ -n "$ver" ] && [ -n "${RUN_DIR:-}" ] || return 1
+  grep -qF '"api_error_status":429' "$RUN_DIR/log/$1#$ver.json" 2>/dev/null
+}
+
 gate_clause_settled() {
   # A clause is settled when a `종료 절` row in the LEDGER names it — written by
   # the router through `act --kind clause` with its evidence, or marked
@@ -19078,6 +19115,16 @@ gate_verb_supervise_stage() {
   window=$(gate_autocompact_effective "$ac_val" "$(gate_settings_file "$kind")" "$PWD")
   case "$window" in *"(argv)") ac_flags="--autocompact ${window%(argv)}" ;; esac
 
+  # EFFORT AND MODEL COME FROM THE DRIVER'S TABLE, sourced rather than copied, so
+  # a stage the router launches and one the driver spawns cannot run the same
+  # kind at two efforts. Like the window, the effort is read once: the value on
+  # the argv and the value on the row are the same string. Both ride the resume
+  # re-attachment too — a resumed session does not keep the effort it started
+  # with.
+  local effort launch_flags
+  effort=$(stage_effort_of "$kind")
+  launch_flags=$(stage_launch_flags "$kind")
+
   local rc=0 spid
   # THE STAGE IS HANDED WHAT THE HOOK WILL DEMAND OF IT. Layer 1 routes every
   # Bash line, Write and Edit through the gate, and the gate's argv needs a
@@ -19146,6 +19193,7 @@ gate_verb_supervise_stage() {
     ${instr:+--instructions "$instr"} \
     $id_flag \
     $ac_flags \
+    $launch_flags \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
   # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper, and
   # the wrapper `exec`s into the CLI, so this pid is the stage's own. This is
@@ -19204,7 +19252,7 @@ gate_verb_supervise_stage() {
   # recorder the power to end the supervisor before the row. `|| rec_rc=$?`
   # restores that posture for the whole body and keeps the status for the log.
   local rec_rc=0
-  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" || rec_rc=$?
+  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" "${effort:--}" || rec_rc=$?
   [ "$rec_rc" = "0" ] || warn "the stage result recorder ended non-zero ($seg#$attempt rc=$rec_rc)"
   # THE SAME SET THE SETTLEMENT PATH REMOVES, including the three files the
   # dispatch act wrote hours ago — that act returned long since, so this is the
@@ -19276,9 +19324,13 @@ gate_settle_lost_dispatches() {
     if [ -z "$( gate_stage_result_rows_of "$seg" \
                 | { grep -F "실행 버전=$attempt " || true; } )" ]; then
       sid=$(stage_session_id "$seg")
+      # No effort was recorded anywhere the settlement can read, so it says
+      # `(미상)`; the served model is in the stream's first frame if the stage
+      # got that far.
       gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$seg" "${kind:-}")" "스테이지=$seg" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
         "압축 창=$window" "레인=$lane" "기록자=게이트" \
+        "effort=(미상)" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$seg")")" \
         "종단 부류=외부 종료" \
         "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
       log "잃어버린 파견 정산 — $seg#$attempt (외부 종료)"
@@ -19391,7 +19443,7 @@ gate_verb_wait() {
 }
 
 gate_record_stage_outcome() {
-  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream] [window]
+  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream] [window] [effort]
   #
   # Two of the five row kinds that had no writer at all. Their absence was not
   # bookkeeping: `cost` is the only input `gate_b4_cost` has, so the cost
@@ -19425,6 +19477,12 @@ gate_record_stage_outcome() {
   # the same record before the CLI started, and the record outlives this call.
   local lane
   lane=$(gate_lane_sidecar_read "$seg")
+  # THE EFFORT THE LAUNCH PUT ON THE ARGV, handed down like the window; `-` when
+  # the switch turned it off or the caller predates the argument. The served
+  # model is read from the stream, not handed down: it is what answered, not
+  # what was asked for.
+  local effort="${9:--}" served
+  served=$(stage_served_model_of "$out")
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   # A launch that never STARTED is reported as such. With no result line the
@@ -19629,12 +19687,14 @@ gate_record_stage_outcome() {
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
       "압축 창=$window" "레인=$lane" "기록자=게이트" \
+      "effort=$effort" "서빙 모델=$served" \
       "plan_sha256=$psha" "종단 부류=$klass"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
       "압축 창=$window" "레인=$lane" "기록자=게이트" \
+      "effort=$effort" "서빙 모델=$served" \
       "종단 부류=$klass"
   fi
 
@@ -20524,7 +20584,8 @@ gate_done_conditions() {
   # path (a saved document is not dispatched over, while the stage's own
   # spawn-time stub is), or the manifest names no document (the dispatch
   # refuses that value).
-  # Any of the three prints a different line with its own fixed head, and
+  # A fourth reason joins them: the step's fresh-attempt depth is spent (below).
+  # Any of the four prints a different line with its own fixed head, and
   # `gate_done_disposition` drops that head the way it drops condition 5's — the
   # run may then record its end, as invalidated and never as satisfied.
   #
@@ -20553,10 +20614,16 @@ gate_done_conditions() {
   # target-document guard passes that stub rather than parking on it. So the
   # class is not read alone — it is read together with what sits at the path.
   #
-  # THE RETRY BUDGET IS NOT HERE. This function reports whether the run can
-  # still produce a segment; how many times the step is dispatched is the
-  # router's ladder, which has its own declared depth. Putting a cap here would
-  # give one run two of them that cannot see each other.
+  # THE RETRY DEPTH IS READ HERE, AND DECLARED IN THE ROUTER. The gate refuses no
+  # dispatch and caps nothing: the routers stop the design themselves. But a
+  # `크래시` with no usage-limit envelope and a `공허한 성공` do not clear by
+  # themselves, so the routers buy each of them one fresh attempt and then stop
+  # the design and propose done. This function counts the same attempts by the
+  # same definition (`gate_design_fresh_attempts`) and reads a spent depth as
+  # closing the window. Counted on one side only, the router stopped on a state
+  # this line still read as the retry window: it printed the plain zero-segment
+  # line, `gate_done_disposition` kept it, and every proposal the router was
+  # told to make was refused — a run that could neither dispatch nor end.
   #
   # This does not open an empty end. The line only decides the disposition when
   # it is the last one left: condition 7 still holds the run while the design
@@ -20564,14 +20631,15 @@ gate_done_conditions() {
   # clause is settled, which on the normal path means the segments the frozen
   # document goes on to produce. Only a router that settles the document's
   # clauses as impossible, with evidence, leaves this line standing alone.
-  local n_seg dstep dwhy dname drows dlast
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
     dwhy=""
     if dstep=$(gate_run_scope_design_step); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
-      dlast=$(gate_row_field "$(printf '%s\n' "$drows" | tail -1)" '종단 부류')
+      dlastrow=$(printf '%s\n' "$drows" | tail -1)
+      dlast=$(gate_row_field "$dlastrow" '종단 부류')
       # `공허한 성공` joins `크래시` in the redispatch window. The two names
       # describe one situation — the stage is over and carried nothing off — and
       # which of them is written depends only on whether the process died or
@@ -20597,6 +20665,19 @@ gate_done_conditions() {
                dwhy='설계 문서가 이미 있음'
              fi ;;
         esac
+        # Inside the window, the depth the routers declare: a `공허한 성공`, or
+        # a `크래시` whose stream holds no usage-limit envelope, gets one fresh
+        # attempt. Once two stand the routers stop the design, and this line
+        # names the step so the proposal they make closes the run. `외부 종료`
+        # and a limit crash keep the window whatever the count.
+        if [ -z "$dwhy" ] && [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
+           && { [ "$dlast" = '공허한 성공' ] \
+                || ! gate_design_row_has_limit_envelope "$dstep" "$dlastrow"; }; then
+          dfresh=$(printf '%s\n' "$drows" | gate_design_fresh_attempts)
+          if [ "${dfresh:-0}" -ge 2 ]; then
+            dwhy="새 시도 깊이 소진(${dfresh}회)"
+          fi
+        fi
       fi
     fi
     if [ -n "$dwhy" ]; then
@@ -21556,6 +21637,10 @@ gate_launch_shift() {
   # one — so the reading below has no argv layer, and the row carries what the
   # settings and lane give the successor, with the session id to join on.
   #
+  # EFFORT AND MODEL ARE INJECTED, unlike the window: they come from the same
+  # sourced table the stages use, under the kind `shift`, and the effort the
+  # argv carries is the one the row records.
+  #
   # `컨텍스트` IS THE OUTGOING SHIFT'S, NOT THE LAUNCHER'S. Launches are serial,
   # so the shift this one replaces is ordinal n-1, and it has already ended by the
   # time the seat's `act --kind router-shift` reaches this line. Calling today's
@@ -21563,14 +21648,16 @@ gate_launch_shift() {
   # launching — the seat — which is the confusion the floor guard above records.
   # A kickoff launch has no outgoing shift and an unresolved transcript has no
   # honest number, so both carry `-`.
-  local window prev_ctx=''
+  local window effort launch_flags prev_ctx=''
   window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
+  effort=$(stage_effort_of shift)
+  launch_flags=$(stage_launch_flags shift)
   if [ "$n" -gt 1 ]; then
     prev_ctx=$(gate_shift_context_of "$((n - 1))")
   fi
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
     "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
-    "컨텍스트=${prev_ctx:--}"
+    "컨텍스트=${prev_ctx:--}" "effort=${effort:--}"
   log "교대 $n 시작 — 사유 $reason"
   # THE SUCCESSOR'S SEAT IS THIS LAUNCHER'S PROPERTY, NOT ITS CALLER'S AMBIENT
   # ENVIRONMENT. A prefix assignment adds and overwrites; it never unsets. So a
@@ -21602,6 +21689,7 @@ gate_launch_shift() {
     --plugin-dir "$plugin_dir" \
     --instructions "$instr" \
     --session-id "$(session_uuid "shift" "$n")" \
+    $launch_flags \
     -- "$@" > "$RUN_DIR/log/shift-$n.json" 2> "$RUN_DIR/log/shift-$n.err" < /dev/null &
   # BACKGROUNDED SO THERE IS A PID TO RECORD, then waited on — the call still
   # blocks for the successor's whole life exactly as before. `$!` IS CORRECT
