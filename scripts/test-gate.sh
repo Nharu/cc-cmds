@@ -3285,7 +3285,7 @@ check "모든 변종이 유효한 JSON 이다" "$bad_json" "0"
 if [ "$n_variants" -ge 2 ]; then
   ok "스테이지 종류마다 변종이 하나씩 생긴다 (${n_variants}종)"
 else
-  bad "변종 수" "${n_variants}종 — 단일 파일이면 design 전용 제약을 표현할 자리가 없다"
+  bad "변종 수" "${n_variants}종 — 단일 파일이면 교대 변종의 축소를 표현할 자리가 없다"
 fi
 
 # THE STAGE MUST BE ABLE TO READ ITS OWN SKILL'S DOCUMENTS. Every skill here
@@ -3347,7 +3347,7 @@ fi
 # Asserted on SHAPE, not on this machine's paths: the list is derived from the
 # config directory and the base worktree's ancestors precisely so it is not a
 # literal that is true on one box.
-allow_n=$(jq -r '.permissions.allow // [] | length' "$SETTINGS_DIR/generic.json" 2>/dev/null)
+allow_n=$(jq -r '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$"))) | length' "$SETTINGS_DIR/generic.json" 2>/dev/null)
 if [ "${allow_n:-0}" -gt 0 ] 2>/dev/null; then
   ok "설정에 CLAUDE.md 읽기 allow 목록이 있다 (${allow_n}개)"
 else
@@ -3359,14 +3359,23 @@ if jq -e '.permissions.allow // [] | map(select(test("^Read\\(/.*/CLAUDE\\.md\\)
 else
   bad "allow 형태" "$(jq -c '.permissions.allow' "$SETTINGS_DIR/generic.json")"
 fi
-# Nothing but CLAUDE.md. An entry that widened past that would be the directory
-# expansion arriving through the narrow door.
-if jq -e '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | length == 0' \
-     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
-  ok "allow 목록에 CLAUDE.md 아닌 항목이 없다"
-else
-  bad "allow 범위" "$(jq -c '.permissions.allow' "$SETTINGS_DIR/generic.json")"
-fi
+# Nothing but CLAUDE.md and the two web research tools. An entry that widened
+# past that would be the directory expansion arriving through the narrow door.
+# The two tool names are matched by equality, not by `test`, so a third entry of
+# any spelling still fails. The allow-list is assembled per kind, so every
+# variant but the shift one is checked; the shift variant's empty allow-list is
+# asserted with its web denial below.
+allow_wide=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  [ "$(basename "$f")" = "shift.json" ] && continue
+  if ! jq -e '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | sort == ["WebFetch","WebSearch"]' \
+       "$f" >/dev/null 2>&1; then
+    allow_wide=$((allow_wide + 1))
+    printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.allow' "$f")" >&2
+  fi
+done
+check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구 말고는 없다" "$allow_wide" "0"
 
 # The attempt term of the session id is DERIVED, not passed as argv. Without it
 # a stage that died before producing anything kept its session id and every
@@ -3394,16 +3403,33 @@ case "$hook_cmd" in
     bad "훅 명령줄" "'$hook_cmd' — 환경에서 읽는 형태라면 스테이지가 env 하나로 훅을 끌 수 있다" ;;
 esac
 
-d_design=$(jq -r '.permissions.deny | join(",")' "$SETTINGS_DIR/design.json" 2>/dev/null)
-d_review=$(jq -r '.permissions.deny | join(",")' "$SETTINGS_DIR/review.json" 2>/dev/null)
-case "$d_design" in
-  *WebFetch*) ok "design 변종만 네트워크 취득 도구를 불허한다" ;;
-  *) bad "design 변종" "'$d_design' — 이 상한은 등급표로는 강제할 수 없어 여기가 유일한 지점이다" ;;
-esac
-case "$d_review" in
-  *WebFetch*) bad "변종 구분" "review 변종까지 네트워크를 막았다 — design 전용 제약이 아니다" ;;
-  *) ok "다른 변종은 그 제약을 받지 않는다" ;;
-esac
+# Web research is open in every stage variant and closed in the shift variant
+# only. Removing a deny is not enough — a headless stage whose variant named
+# neither tool has had those calls denied — so every stage variant has to carry
+# the allow. The exception is named by file, as with the directory list above,
+# so a NEW kind arriving without the allow is still counted.
+web_bad=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  [ "$(basename "$f")" = "shift.json" ] && continue
+  if ! jq -e '(.permissions.allow // [] | index("WebFetch") != null and index("WebSearch") != null)
+              and (.permissions.deny // [] | index("WebFetch") == null and index("WebSearch") == null)' \
+       "$f" >/dev/null 2>&1; then
+    web_bad=$((web_bad + 1))
+    printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions' "$f")" >&2
+  fi
+done
+check "교대를 뺀 모든 변종이 웹 조사 도구를 허용하고 거부하지 않는다" "$web_bad" "0"
+if [ -f "$SETTINGS_DIR/shift.json" ]; then
+  if jq -e '(.permissions.deny // [] | index("WebFetch") != null and index("WebSearch") != null)
+            and (.permissions.allow == [])' "$SETTINGS_DIR/shift.json" >/dev/null 2>&1; then
+    ok "교대 변종만 웹 조사 도구를 거부하고 allow 가 비어 있다"
+  else
+    bad "교대 변종 웹" "$(jq -c '.permissions' "$SETTINGS_DIR/shift.json")"
+  fi
+else
+  bad "교대 변종 웹" "shift.json 이 없다 — 위 예외가 아무것도 면제하지 않았다"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Vocabulary — closed sets refuse by status, never by `die`
