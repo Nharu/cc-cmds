@@ -5414,7 +5414,7 @@ check "행위 동사 밖에서는 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer
-# --- section: 14d | group: base | covers: snapshot, act | anchors: 생성 등급 없는 problem 행은 거부된다 ---
+# --- section: 14d | group: base | covers: snapshot, act | anchors: 생성 등급 없는 problem 행은 거부된다, 14d: 인자 7 이 주어진 한도 스트림 rc 1 은 한도 종료다, 14d: 마지막 프레임 allowed 는 경고 F 를 한 줄 낸다, 14d: 한 세션의 세 시도는 시도별로 한도 종료 / 정상 완료 / 한도 종료 다 ---
 #
 # Five of the twelve declared series were written by nothing, and each one made
 # a check that reads it answer the same thing forever: the cost boundary read an
@@ -5517,6 +5517,121 @@ case "$row" in
   *"종단 부류=크래시"*) ok "0 이 아닌 종료 코드는 크래시다" ;;
   *) bad "종단 부류" "$row" ;;
 esac
+
+# `한도 종료` — a stage that died of the usage limit by itself, judged on the
+# stream the caller HANDS DOWN as the seventh argument, which is the pinned
+# attempt's own. The probes above pass six arguments, so they never reach the
+# judgment and their pins stay as they were. This probe builds its own pin,
+# stream and halt record inside the section, so a narrowed run does not lean on
+# another section's state, and keeps the recorder's stderr in a file: the
+# shape-incomplete warning belongs there and nowhere else.
+LIM14="$WORK/lim14d"; rm -rf "$LIM14"; mkdir -p "$LIM14"
+L_INIT='{"type":"system","subtype":"init","session_id":"sid-lim"}'
+L_ALLOWED='{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790390000}}'
+L_REJ='{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790390000,"overageStatus":"rejected"}}'
+L_ENV='{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"total_cost_usd":0.5,"session_id":"sid-lim","result":"You have hit your session limit"}'
+L_OK='{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.5,"session_id":"sid-lim","result":"done"}'
+printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_REJ" "$L_ENV" > "$LIM14/limit.json"
+printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_REJ" "$L_ENV" "$L_INIT" "$L_ALLOWED" "$L_REJ" "$L_ENV" '{"type":"assis' \
+  > "$LIM14/torn.json"
+printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_ENV" > "$LIM14/allowed.json"
+printf '%s\n' "$L_INIT" "$L_ALLOWED" '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}' "$L_ENV" \
+  > "$LIM14/noreset.json"
+printf '%s\n' "$L_INIT" "$L_REJ" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"total_cost_usd":0.1,"session_id":"sid-lim","result":"Overloaded"}' \
+  > "$LIM14/other.json"
+printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_REJ" > "$LIM14/noenv.json"
+printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_OK" > "$LIM14/ok.json"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=LH; run=x -->' \
+  '**분류**: gate-unanswerable' '<!-- /cc-pipeline-halt v1 -->' > "$LIM14/halt.md"
+limit_probe() {
+  # limit_probe <seg> <attempt> <rc> <stream-file> <hand-down: 1|0> [halt]
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$FX_MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log" "$RUN_DIR/halt"
+    printf "%s\n" "$2" > "$RUN_DIR/$1.attempt"
+    cp "$4" "$RUN_DIR/log/$1#$2.json"
+    if [ "${6:-}" = halt ]; then cp "'"$LIM14"'/halt.md" "$RUN_DIR/halt/$1#$2.md"; fi
+    nb=$(gate_rows "자율 승인" | gate_count)
+    if [ "$5" = 1 ]; then
+      gate_record_stage_outcome infra "$1" review "$2" "$3" "$nb" "$RUN_DIR/log/$1#$2.json" >/dev/null
+    else
+      gate_record_stage_outcome infra "$1" review "$2" "$3" "$nb" >/dev/null
+    fi
+  ' _ "$@" 2>"$LIM14/err"
+}
+lim_row()  { grep '^- `stage-result` ' "$FX_LEDGER" | tail -1; }
+lim_warn() { { grep -c "\[warn\] 한도 형상 불완전 ($1) " "$LIM14/err" || true; }; }
+lim_any()  { { grep -c '한도 형상 불완전 (' "$LIM14/err" || true; }; }
+
+limit_probe LA 1 1 "$LIM14/limit.json" 1
+case "$(lim_row)" in
+  *"종단 부류=한도 종료 "*) ok "14d: 인자 7 이 주어진 한도 스트림 rc 1 은 한도 종료다" ;;
+  *) bad "한도 종료" "$(lim_row)" ;;
+esac
+check "14d: 한도 종료는 경고를 내지 않는다" "$(lim_any)" "0"
+limit_probe LB 1 0 "$LIM14/limit.json" 1
+case "$(lim_row)" in
+  *"종단 부류=크래시 "*) ok "14d: 같은 스트림이 rc 0 이면 크래시다" ;;
+  *) bad "rc 0 한도 스트림" "$(lim_row)" ;;
+esac
+check "14d: rc 0 한도 스트림은 경고 rc 를 한 줄 낸다" "$(lim_warn rc)" "1"
+limit_probe LC 1 1 "$LIM14/limit.json" 0
+case "$(lim_row)" in
+  *"종단 부류=크래시 "*) ok "14d: 인자 7 없이 기록하면 한도 스트림도 크래시다" ;;
+  *) bad "인자 7 없음" "$(lim_row)" ;;
+esac
+check "14d: 인자 7 없이는 판정하지 않으므로 형상 경고가 없다" "$(lim_any)" "0"
+limit_probe LD 1 1 "$LIM14/allowed.json" 1
+case "$(lim_row)" in
+  *"종단 부류=크래시 "*) ok "14d: 429 봉투에 마지막 프레임이 allowed 면 크래시다" ;;
+  *) bad "allowed 프레임" "$(lim_row)" ;;
+esac
+check "14d: 마지막 프레임 allowed 는 경고 F 를 한 줄 낸다" "$(lim_warn F)" "1"
+limit_probe LE 1 1 "$LIM14/other.json" 1
+case "$(lim_row)" in
+  *"종단 부류=크래시 "*) ok "14d: rejected 에 429 가 아닌 오류 봉투는 크래시다" ;;
+  *) bad "429 아닌 오류" "$(lim_row)" ;;
+esac
+check "14d: 429 가 아닌 오류는 형상 경고를 내지 않는다" "$(lim_any)" "0"
+limit_probe LF 1 1 "$LIM14/torn.json" 1
+case "$(lim_row)" in
+  *"종단 부류=크래시 "*) ok "14d: 찢긴 마지막 줄의 한도 스트림은 크래시다" ;;
+  *) bad "찢긴 꼬리" "$(lim_row)" ;;
+esac
+check "14d: 찢긴 마지막 줄은 경고 T 를 한 줄 낸다" "$(lim_warn T)" "1"
+limit_probe LG 1 1 "$LIM14/noreset.json" 1
+case "$(lim_row)" in
+  *"종단 부류=크래시 "*) ok "14d: resetsAt 없는 rejected 는 크래시다" ;;
+  *) bad "resetsAt 없음" "$(lim_row)" ;;
+esac
+check "14d: resetsAt 없는 rejected 는 경고 R 을 한 줄 낸다" "$(lim_warn R)" "1"
+limit_probe LI 1 1 "$LIM14/noenv.json" 1
+case "$(lim_row)" in
+  *"종단 부류=크래시 "*) ok "14d: 봉투 없는 rejected 는 크래시다" ;;
+  *) bad "봉투 없음" "$(lim_row)" ;;
+esac
+limit_probe LH 1 0 "$LIM14/limit.json" 1 halt
+case "$(lim_row)" in
+  *"종단 부류=의도된 park "*) ok "14d: 멈춤 기록이 있는 rc 0 은 한도 스트림이어도 의도된 park 다" ;;
+  *) bad "멈춤 기록" "$(lim_row)" ;;
+esac
+# One session carried across attempts by re-attachment shares its session id
+# while the attempts end differently. The attempt is the file the pin names, so
+# three recorder calls give three rows, and the limit rows count two. The middle
+# attempt's `정상 완료` needs a stage row after its dispatch line.
+limit_probe LT 1 1 "$LIM14/limit.json" 1
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=infra | 세그먼트=LT | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=한도 픽스처 | prev=x\n' >> "$FX_LEDGER"
+limit_probe LT 2 0 "$LIM14/ok.json" 1
+limit_probe LT 3 1 "$LIM14/limit.json" 1
+lt_rows=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '| 세그먼트=LT ' | sed -n 's/.*종단 부류=\([^|]*\) |.*/\1/p' | tr '\n' '/')
+check "14d: 한 세션의 세 시도는 시도별로 한도 종료 / 정상 완료 / 한도 종료 다" "$lt_rows" "한도 종료/정상 완료/한도 종료/"
+check "14d: 그 세 행에서 한도 종료 는 둘이다" \
+  "$( { grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '| 세그먼트=LT ' | grep -cF '종단 부류=한도 종료 ' || true; } )" "2"
 
 # --- THE WINDOW FIELDS on the row, and the reading they come from -------------
 #
@@ -8070,7 +8185,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 새 시도 두 번의 공허한 성공 뒤 종료 제안은 무효화로 통과한다, 15c: 429 봉투 없는 크래시 두 번 뒤 종료 제안은 무효화로 통과한다, 15c: 429 봉투를 실은 크래시는 새 시도가 둘이어도 재파견 창 안이다, 15c: 앞 행의 세션 id 를 이은 행은 새 시도로 세지 않아 재파견 창 안이다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 아무것도 저장하지 못하고 한도로 끝난 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 한도 종료의 재파견 창은 열려 있다, 15c: 한도 종료 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 새 시도 두 번의 공허한 성공 뒤 종료 제안은 무효화로 통과한다, 15c: 429 봉투 없는 크래시 두 번 뒤 종료 제안은 무효화로 통과한다, 15c: 429 봉투를 실은 크래시는 새 시도가 둘이어도 재파견 창 안이다, 15c: 앞 행의 세션 id 를 이은 행은 새 시도로 세지 않아 재파견 창 안이다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -8408,10 +8523,11 @@ esac
 # alone: its clause is already settled.
 #
 # A CRASH THAT SAVED NOTHING LEAVES THE RETRY WINDOW OPEN, the same window
-# R15H measures for `외부 종료`. Every non-zero exit is classified `크래시`, so
-# an API usage limit that resets by itself is filed beside a genuinely broken
-# stage; closing the run on that class alone ended a night three minutes after
-# a transient error. What closes the window is a SAVED document at the path,
+# R15H measures for `외부 종료`. A usage limit that resets by itself is filed
+# `한도 종료` when the stage's own stream shows it and `크래시` when it does not,
+# and condition 1 reads both as `크래시` — R15O below measures the first; closing
+# the run on either class alone ended a night three minutes after a transient
+# error. What closes the window is a SAVED document at the path,
 # because a retry would write over it — and the stage's own spawn-time stub is
 # not one, which is the arm measured in between.
 STUB15G="$WORK/bin/claude-stub-15g"
@@ -8490,6 +8606,45 @@ printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n## 합의된 �
 propose15x plan "$WORK/plan-R15J.md"
 check "15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
 rm -f "$WT/docs/fixture-design-15j.md"
+
+# R15O — the design stage dies of the usage limit by itself: one turn, then a
+# refused turn whose stream ends on a 429 envelope and a `rejected` frame with a
+# numeric reset time, and exit 1. The row is `한도 종료`, and the window is
+# R15G's window, open with no document and with the spawn-time stub, and closed
+# by a saved document.
+STUB15O="$WORK/bin/claude-stub-15o"
+cat > "$STUB15O" <<'STUB15OEOF'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"s15o-session"}' \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790390000}}' \
+  '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"num_turns":1,"session_id":"s15o-session","result":"done"}' \
+  '{"type":"system","subtype":"init","session_id":"s15o-session"}' \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790390000}}' \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"total_cost_usd":0,"session_id":"s15o-session","result":"You have hit your session limit"}'
+exit 1
+STUB15OEOF
+chmod +x "$STUB15O"
+fresh15x R15O 'docs/fixture-design-15o.md' K1
+settle15x "$WORK/plan-R15O.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 한도 종료 픽스처의 절을 파견 전에 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15O.md" "$STUB15O"
+check "15c: 한도로 스스로 끝난 설계 단계의 종단 부류는 한도 종료다" "$(dclass15x R15O)" "한도 종료"
+propose15x plan "$WORK/plan-R15O.md"
+check "15c: 아무것도 저장하지 못하고 한도로 끝난 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 한도 종료 재파견 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 한도 종료 재파견 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 한도 종료 재파견 창 문면" "$msg" ;;
+esac
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | running\n-->\n' > "$WT/docs/fixture-design-15o.md"
+propose15x plan "$WORK/plan-R15O.md"
+check "15c: 스폰 시점 스텁이 놓여도 한도 종료의 재파견 창은 열려 있다" "$rc" "3"
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n## 합의된 아키텍처\n\n본문\n' \
+  > "$WT/docs/fixture-design-15o.md"
+propose15x plan "$WORK/plan-R15O.md"
+check "15c: 한도 종료 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
+rm -f "$WT/docs/fixture-design-15o.md"
 
 # R15K..R15N — THE DEPTH IS SHARED WITH THE ROUTERS. A `공허한 성공` and a
 # `크래시` with no usage-limit envelope do not clear by themselves, so the
