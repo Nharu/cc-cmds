@@ -1988,6 +1988,319 @@ declared_field_for_row() {
   fi
 }
 
+# --- the chained row frame, shared by both writers ---------------------------
+#
+# The gate's writer stamps every row with `교대=<n>` and ends it with
+# `prev=<sha256>` of the previous row, read inside the ledger lock. This
+# writer does neither for the series it has always written, and those rows stay
+# exactly as they were. For `stage-lease` and `stage-wait` both writers must put
+# the SAME bytes on the SAME chain, and two copies of a frame agree only for as
+# long as nobody edits one of them — so the frame lives here once and the gate's
+# old names are one-line wrappers over it (the gate sources this file).
+#
+# NOTHING BELOW MAY NAME A `GATE_*` CONSTANT OR A `gate_*` FUNCTION. The driver
+# runs under `set -euo pipefail` without the gate loaded, where the first is an
+# unbound variable and the second is command not found — on the path that
+# writes a row, which is where a death is least visible.
+
+run_shift_number() {
+  # The number of the shift that HOLDS THE ROUTING SEAT as this row is written.
+  # A shift reads its own marker — `CC_PIPELINE_SHIFT_ID` is `<run-id>#<n>` and
+  # the launcher wrote that `<n>` — and the absence of the marker is the lead's
+  # seat, `0`, never a count of launches. `gate_shift_number` records why each
+  # of those two halves replaced an earlier expression.
+  local n
+  if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+    n="${CC_PIPELINE_SHIFT_ID##*#}"
+    case "$n" in ''|*[!0-9]*) n='' ;; esac
+    if [ -n "$n" ]; then printf '%s' "$n"; return 0; fi
+  fi
+  printf '0'
+}
+
+run_row_body() {
+  # run_row_body <계열> <field=value> ... — the row text minus the
+  # ` | prev=<sha256>` tail: separators mapped out of every key and value, the
+  # shift number added unless the caller supplied one. THE ONE DEFINITION OF THE
+  # ROW GRAMMAR for every chained row, whichever writer appends it.
+  #
+  # `%%=*` cuts the key at the first `=`, so reassembling cannot change how many
+  # fields the row has. Rotated through the positional parameters rather than an
+  # array: the interpreter floor is bash 3.2 and the argument list is the one
+  # ordered container available without one.
+  local series="$1"; shift
+  local body f k v has_shift=0
+  local n_args=$# i=0
+  while [ "$i" -lt "$n_args" ]; do
+    f="$1"; shift; i=$((i + 1))
+    case "$f" in
+      *=*) k="${f%%=*}"; v="${f#*=}"
+           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+           f="$k=$v" ;;
+    esac
+    set -- "$@" "$f"
+  done
+  for f in "$@"; do case "$f" in 교대=*) has_shift=1 ;; esac; done
+  body="- \`$series\`"
+  [ "$has_shift" = "1" ] || body="$body | 교대=$(run_shift_number)"
+  for f in "$@"; do body="$body | $f"; done
+  printf '%s' "$body"
+}
+
+run_row_bytes_of_body() {
+  # run_row_bytes_of_body <body> — the bytes the row will occupy: the body, a
+  # 64-character stand-in for `prev` (a sha256 in every case, so its width is
+  # known before its value is) and the newline. BYTES, BY `wc -c`: the rows are
+  # Korean, and a character count reads three to four times under the byte
+  # count the cap is about. It knows no cap; each caller compares against its own.
+  printf '%s | prev=%s\n' "$1" "0000000000000000000000000000000000000000000000000000000000000000" \
+    | wc -c | tr -d ' '
+}
+
+run_chain_tip() {
+  # The digest of the ledger's last ROW, or of the run block heading when no row
+  # has been written yet. Rows and not lines: the ledger is also the morning
+  # report, so prose lands in it between rows, and hashing the last LINE made an
+  # untouched ledger read as broken at row 1.
+  #
+  # The character-type axis is pinned for the verifier's sake — this is the
+  # value `gate_chain_verify`'s walk is compared against, and a locale that
+  # changed one side and not the other would manufacture breaks. The locked
+  # script in `run_chained_append` does NOT pin it, and that difference is
+  # carried as it was found rather than repaired: repairing it changes the tip
+  # an existing ledger computes.
+  local last
+  local LC_CTYPE=C; export LC_CTYPE
+  last=$( { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  [ -n "$last" ] || last="## 실행 $RUN_ID"
+  printf '%s' "$last" | shasum -a 256 | cut -d' ' -f1
+}
+
+run_chained_append() {
+  # run_chained_append <body> — append `<body> | prev=<tip>`, the tip read
+  # INSIDE the ledger lock. Returns the append's status and never dies: the two
+  # writers stop with their own words (`gate_append`'s I/O `die`, this file's
+  # `die` in `ledger_row`), so the shared tail must not choose for them.
+  #
+  # The tip logic is inlined in the locked command because `/bin/sh` cannot see
+  # this shell's functions, and the row prefix travels as a positional argument
+  # so the backtick in it is parsed by neither shell. This is the gate's
+  # unguarded tail; the transition guard stays in `gate_append`, whose fallback
+  # needs functions only the gate defines.
+  #
+  # THE TOOL IS SELECTED BY PLATFORM AND USED ONLY IF IT IS THERE — a suite
+  # injecting the host OS reaches this on a runner without the BSD path, and
+  # absence falls through to the same sequence without the lock.
+  local body="$1" tool prev rc=0
+  tool=$(lock_tool)
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+    "$tool" -k "$RUN_DIR/ledger.lock" \
+      /bin/sh -c '
+        last=$(grep "$3" "$2" 2>/dev/null | tail -1)
+        [ -n "$last" ] || last="$4"
+        prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
+        printf "%s | prev=%s\n" "$1" "$prev" >> "$2"
+      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" || rc=$?
+  else
+    prev=$(run_chain_tip) || rc=$?
+    if [ "$rc" = "0" ]; then
+      printf '%s | prev=%s\n' "$body" "$prev" >> "$LEDGER" || rc=$?
+    fi
+  fi
+  return "$rc"
+}
+
+# --- stage-lease / stage-wait: the check both writers run --------------------
+#
+# The patterns sit on lines of their own. `--self-check` strips each line from
+# its first `#`, and the identity character set carries one, so a call written
+# after a pattern on the same line would vanish from the call-site count.
+RUN_LEDGER_ID_RE='^[A-Za-z0-9._:#+-]{1,64}$'
+RUN_LEDGER_UUID_RE='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+RUN_LEDGER_LONGHEX_RE='^[0-9A-Fa-f]{16,}$'
+RUN_LEDGER_BP_RE='^(0\.[0-9]{4}|1\.0000)/(0\.[0-9]{4}|1\.0000)$'
+RUN_LEDGER_ISO_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+RUN_LEDGER_SRC_RE='^[A-Za-z0-9._-]{1,64}$'
+RUN_LEDGER_EPOCH_RE='^[0-9][0-9.eE+-]{0,31}$'
+RUN_LEDGER_ORG_RE='^org:[0-9a-f]{16}$'
+
+run_ledger_identity_ok() {
+  # run_ledger_identity_ok <value> — 0 when the value may stand as an identity on
+  # a row: the character set above, at least one alphanumeric, and neither of
+  # the two spellings that already MEAN something on a row (`-` is the empty
+  # value, `(미상)` the unreadable one). Nothing is trimmed or mapped: two ids
+  # that land on one row spelling would bind a lease or a resume to the wrong
+  # one, so a value that does not fit is refused as it is.
+  local v="${1:-}"
+  [[ $v =~ $RUN_LEDGER_ID_RE ]] || return 1
+  [[ $v =~ [A-Za-z0-9] ]] || return 1
+  case "$v" in -|'(미상)') return 1 ;; esac
+  return 0
+}
+
+run_ledger_account_ok() {
+  # run_ledger_account_ok <value> — an identity that may stand as an ACCOUNT:
+  # the inventory id, never an organisation uuid or a hash, so a uuid shape and
+  # an all-hex run of sixteen or more are refused on top of the identity rule.
+  local v="${1:-}"
+  run_ledger_identity_ok "$v" || return 1
+  [[ $v =~ $RUN_LEDGER_UUID_RE ]] && return 1
+  [[ $v =~ $RUN_LEDGER_LONGHEX_RE ]] && return 1
+  return 0
+}
+
+run_ledger_lane_ok() {
+  # `~`, or a path under `~/` or `/`, not ending in `/`, and free of the row
+  # separator, line breaks and `@` — a config directory named after an email
+  # must not reach a row, and a `|` mapped to `/` would record a lane that
+  # does not exist.
+  local v="${1:-}"
+  case "$v" in
+    '~'|'~/'*|/*) ;;
+    *) return 1 ;;
+  esac
+  case "$v" in
+    */|*'|'*|*@*|*"$(printf '\r')"*) return 1 ;;
+  esac
+  case "$v" in
+    *'
+'*) return 1 ;;
+  esac
+  return 0
+}
+
+run_ledger_observed_ok() {
+  # `none`, `-`, or `<출처>@<epoch>` with exactly one `@`. The source is copied
+  # from a usage file without a shape check upstream, so this is where it gets
+  # one; refused rather than clipped, because a clipped observation reads as a
+  # real one.
+  local v="${1:-}" src ep
+  case "$v" in none|-) return 0 ;; esac
+  case "$v" in *@*@*) return 1 ;; *@*) ;; *) return 1 ;; esac
+  src="${v%%@*}"; ep="${v#*@}"
+  [[ $src =~ $RUN_LEDGER_SRC_RE ]] || return 1
+  [[ $ep =~ $RUN_LEDGER_EPOCH_RE ]] || return 1
+  return 0
+}
+
+run_ledger_series_check() {
+  # run_ledger_series_check <계열> <field=value> ... — 0 when these arguments
+  # may become a `stage-lease` or `stage-wait` row, and otherwise LITERALLY 2
+  # with one line on stderr naming the refused field and nothing written.
+  #
+  # IT READS THE ARGUMENTS AS THE CALLER PASSED THEM, before either writer's
+  # normalization: after `|` became `/` a check could no longer see that
+  # `계정=a|b` was two ids, and the row would carry a third that exists nowhere.
+  # The key list is fixed letter for letter and in order, so the two writers'
+  # different normalizations (the gate maps keys too, the driver only values)
+  # meet only inputs on which both are the identity.
+  local series="$1"; shift
+  local keys want f k v seat=0 bound=0
+  local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
+  local acct="" basis="" worst n
+  case "$series" in
+    stage-lease) want='파견 id|계보|계정|레인|예약|근거|관측' ;;
+    stage-wait)  want='계보|그룹|계정|까지|근거' ;;
+    *) printf '%s [run][거부] 원장 계열 검사: 이 검사가 모르는 계열이다 (%s)\n' "$(now_iso)" "$series" >&2; return 2 ;;
+  esac
+  keys=""
+  for f in "$@"; do
+    case "$f" in
+      *=*) k="${f%%=*}" ;;
+      *) printf '%s [run][거부] %s: 「키=값」 모양이 아닌 인자가 있다\n' "$(now_iso)" "$series" >&2; return 2 ;;
+    esac
+    if [ "$k" = "교대" ]; then
+      printf '%s [run][거부] %s: 「교대」 는 기록자가 붙인다 — 호출자가 넘길 수 없다\n' "$(now_iso)" "$series" >&2
+      return 2
+    fi
+    keys="${keys:+$keys|}$k"
+  done
+  if [ "$keys" != "$want" ]; then
+    printf '%s [run][거부] %s: 키 목록이 「%s」 와 글자 그대로·같은 순서로 같아야 한다\n' "$(now_iso)" "$series" "$want" >&2
+    return 2
+  fi
+  for f in "$@"; do
+    k="${f%%=*}"; v="${f#*=}"
+    case "$series:$k" in
+      'stage-lease:파견 id'|stage-lease:계보|stage-wait:계보)
+        run_ledger_identity_ok "$v" || { run_ledger_refuse "$series" "$k" '신원 규칙'; return 2; } ;;
+      *:계정)
+        acct="$v"
+        if [ "$v" != "-" ]; then
+          run_ledger_account_ok "$v" || { run_ledger_refuse "$series" "$k" '계정 id 규칙'; return 2; }
+        fi ;;
+      stage-lease:레인)
+        if [ "$v" != "-" ]; then
+          run_ledger_lane_ok "$v" || { run_ledger_refuse "$series" "$k" '레인 모양'; return 2; }
+        fi ;;
+      stage-lease:예약)
+        if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_BP_RE ]]; then
+          run_ledger_refuse "$series" "$k" 'I.FFFF/I.FFFF 모양'; return 2
+        fi ;;
+      stage-lease:근거)
+        basis="$v"
+        case "$lease_basis" in *" $v "*) ;; *) run_ledger_refuse "$series" "$k" '닫힌 어휘'; return 2 ;; esac ;;
+      stage-lease:관측)
+        run_ledger_observed_ok "$v" || { run_ledger_refuse "$series" "$k" '관측 모양'; return 2; } ;;
+      stage-wait:그룹)
+        case "$v" in
+          -) ;;
+          org:*) [[ $v =~ $RUN_LEDGER_ORG_RE ]] || { run_ledger_refuse "$series" "$k" 'org:<16 소문자 hex>'; return 2; } ;;
+          acct:*) run_ledger_account_ok "${v#acct:}" || { run_ledger_refuse "$series" "$k" 'acct:<계정 id>'; return 2; } ;;
+          *) run_ledger_refuse "$series" "$k" '그룹 모양'; return 2 ;;
+        esac ;;
+      stage-wait:까지)
+        if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_ISO_RE ]]; then
+          run_ledger_refuse "$series" "$k" 'YYYY-MM-DDTHH:MM:SSZ 모양'; return 2
+        fi ;;
+      stage-wait:근거)
+        basis="$v"
+        case "$wait_reason" in *" $v "*) ;; *) run_ledger_refuse "$series" "$k" '닫힌 어휘'; return 2 ;; esac ;;
+    esac
+  done
+  # THE PAIRING RULES. A seat grant is the one grant without an account, and an
+  # account on a wait is the one that is already bound — stated here so that
+  # holds on the row without leaning on how the router happens to behave today.
+  case "$series:$basis" in
+    stage-lease:single-seat|stage-lease:shift-seat-fallback) seat=1 ;;
+    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room) bound=1 ;;
+  esac
+  if [ "$series" = "stage-lease" ]; then
+    if { [ "$seat" = "1" ] && [ "$acct" != "-" ]; } || { [ "$seat" = "0" ] && [ "$acct" = "-" ]; }; then
+      run_ledger_refuse "$series" '계정' '좌석 근거일 때만 「-」'; return 2
+    fi
+  else
+    if { [ "$bound" = "1" ] && [ "$acct" = "-" ]; } || { [ "$bound" = "0" ] && [ "$acct" != "-" ]; }; then
+      run_ledger_refuse "$series" '계정' '재개 구속 원인일 때만 값'; return 2
+    fi
+  fi
+  # THE LENGTH, MEASURED ON THE WORST FRAME. `교대=999` in front, the 64-hex
+  # `prev=` behind, the newline — and eight bytes more, because the shift number
+  # has no bound of its own and those eight cover it to eleven digits. Then once
+  # more with the real shift number, so the gate's cap `die` cannot be reached
+  # by these two series at all.
+  worst="- \`$series\` | 교대=999"
+  for f in "$@"; do worst="$worst | $f"; done
+  n=$(run_row_bytes_of_body "$worst")
+  if [ $((n + 8)) -gt "$RUN_ROW_MAX" ]; then
+    run_ledger_refuse "$series" '(행 전체)' "최악 틀 ${n}+8 바이트가 상한 ${RUN_ROW_MAX} 를 넘는다"; return 2
+  fi
+  n=$(run_row_bytes_of_body "$(run_row_body "$series" "$@")")
+  if [ "$n" -gt "$RUN_ROW_MAX" ]; then
+    run_ledger_refuse "$series" '(행 전체)' "${n} 바이트가 상한 ${RUN_ROW_MAX} 를 넘는다"; return 2
+  fi
+  return 0
+}
+
+run_ledger_refuse() {
+  # run_ledger_refuse <계열> <필드> <규칙> — the one stderr line of a refusal.
+  # The value is not echoed: what was refused may be exactly the organisation
+  # uuid or the email this check exists to keep off every surface.
+  printf '%s [run][거부] %s: 필드 「%s」 가 %s 에 맞지 않는다 — 행을 쓰지 않는다\n' "$(now_iso)" "$1" "$2" "$3" >&2
+}
+
 ledger_row() {
   # ledger_row <계열> <field=value> ...
   #
@@ -2044,6 +2357,22 @@ ledger_row() {
       [ -n "$_pv" ] && set -- "$@" "리뷰 정책=$_pv"
     fi
   fi
+  # `stage-lease` AND `stage-wait` ARE WRITTEN IN THE GATE'S FRAME, and only
+  # they. The gate writes the same two series, and a row both writers can put on
+  # one ledger has to be the same bytes on the same chain — which this path's
+  # own grammar (no `교대`, no `prev`, no lock) cannot give. Every other series
+  # stays on the path below, byte for byte. A refusal is 2 and no row; a failed
+  # append is a lost row, which this writer answers the way it answers every
+  # other lost row.
+  case "$series" in
+    stage-lease|stage-wait)
+      local _body _rc=0
+      run_ledger_series_check "$series" "$@" || return 2
+      _body=$(run_row_body "$series" "$@")
+      run_chained_append "$_body" || _rc=$?
+      [ "$_rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=${_rc}, 계열 ${series}) — 기록 없는 행위는 수행하지 않습니다"
+      return 0 ;;
+  esac
   local line="- \`$series\`"
   local f k v n longest lmax fl idx side
   for f in "$@"; do
@@ -3263,9 +3592,13 @@ transcript_path() {
 # per-kind settings file, the stage cwd's `.claude/settings.local.json` then
 # `.claude/settings.json`, the lane's `settings.json`. There is no argv layer on
 # this path — the driver injects no window — so a driver row can never say
-# `(argv)`. The value is written to `<stage>.window` (two lines: the window,
-# the lane in tilde form) beside the pid record, and read back onto the
-# `stage-result` row; a row for a stage that was never spawned reads `(미상)`.
+# `(argv)`. The value is written to `<stage>.window` beside the pid record, and
+# read back onto the `stage-result` row; a row for a stage that was never
+# spawned reads `(미상)`. The record has four lines: 1 the window, 2 the lane in
+# tilde form, 3 the effort the launch put on the argv (only the driver's launch
+# writes it today), 4 the routed account, which nothing writes until routing
+# launches stages. A launch that writes line 4 fills line 3 first, the gate's
+# two-line launch included — an account on line 3 would be read as the effort.
 lane_label_of() {
   # lane_label_of <config-dir> — `$HOME` prefix as `~`, anything else as is.
   local d="${1%/}"
@@ -3351,6 +3684,36 @@ stage_lane_of() {
     v=$(lane_label_of "${cfg:-$HOME/.claude}")
   fi
   printf '%s' "$v"
+}
+
+stage_account_of() {
+  # stage_account_of <stage-id> — the `계정` of this stage's `stage-result` row,
+  # read from line 4 of `<stage>.window` — the line after the effort — the
+  # inventory id the launch ran under. Line 3 is the effort's
+  # (`stage_effort_rec_of`), which the driver's launch already writes, so an
+  # account there would put the effort on every driver row as `계정=`.
+  #
+  # FOUR STATES, AND ONE OF THEM IS SILENCE. No fourth line → nothing, and the
+  # caller puts no `계정=` on the row at all: that is every row written before
+  # routing, byte for byte. `-` → `-`, a seat. An id the account rule accepts →
+  # that id. Anything else → `(미상)`, and the row is still written — losing a
+  # terminal row loses what `--resume` admission and settlement dedup read.
+  #
+  # NOT `stage_lane_of`'s fallback. A missing line is a missing field, never a
+  # reason to resolve again now: the account a stage ran under is a fact about
+  # its launch, and today's resolver answers a different question.
+  local f="${RUN_DIR:-}/$1.window" v=""
+  [ -f "$f" ] || return 0
+  v=$(awk 'NR == 4 { printf "L%s", $0; exit }' "$f" 2>/dev/null || true)
+  [ -n "$v" ] || return 0
+  v="${v#L}"
+  if [ "$v" = "-" ]; then
+    printf '%s' '-'
+  elif run_ledger_account_ok "$v"; then
+    printf '%s' "$v"
+  else
+    printf '%s' '(미상)'
+  fi
 }
 
 # --- stage kind: which settings variant a driver-spawned id runs under --------
@@ -3614,7 +3977,8 @@ stage_spawn() {
   # The window this launch will run under, read from the same settings file
   # and cwd the wrapper is about to be handed, and recorded before the launch so
   # the row can carry it whatever the stage does next. The effort rides the same
-  # record as line 3, from the same reading the argv gets, and the flags go on
+  # record as line 3, from the same reading the argv gets — line 4, the routed
+  # account, goes after it and is not written yet — and the flags go on
   # the fresh and the re-attached launch alike: a resumed session does not keep
   # the effort it was started with.
   local launch_flags effort
@@ -3964,14 +4328,24 @@ stage_session_id_strict() {
   if [ -f "$out" ]; then
     sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
   fi
-  case "$sid" in
-    ????????-????-????-????-????????????) ;;
-    *) sid="" ;;
-  esac
-  case "$sid" in
-    *[!0-9a-fA-F-]*) sid="" ;;
-  esac
+  run_session_id_shape_ok "$sid" || sid=""
   printf '%s' "$sid"
+}
+
+run_session_id_shape_ok() {
+  # run_session_id_shape_ok <sid> — 0 for the shape a harness session id has:
+  # 8-4-4-4-12 and nothing outside `0-9a-fA-F-`. ONE PREDICATE FOR TWO READERS:
+  # the re-attachment above, and the gate's resume-binding reader, which must
+  # never group the `미상` a settlement writes into one "session" across
+  # attempts and runs. Two copies of the check are how one of them drifts.
+  case "${1:-}" in
+    ????????-????-????-????-????????????) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *[!0-9a-fA-F-]*) return 1 ;;
+  esac
+  return 0
 }
 
 answered_judgment_stage() {
@@ -4702,7 +5076,7 @@ apply_probe() {
 }
 
 apply_stage() {
-  local seg="$1" cmd actor radius wt root pre post rc
+  local seg="$1" cmd actor radius wt root pre post rc acct
   cmd=$(apply_unquote "$(apply_field "$seg" '적용 명령')")
   [ -n "$cmd" ] && [ "$cmd" != "(없음)" ] || return 0     # no apply declared
 
@@ -4714,9 +5088,12 @@ apply_stage() {
   # command is not performing it, so no new authorization vocabulary is needed.
   # S9 spawns no CLI session, so no `.window` record exists for it and the
   # three window fields read `(미상)` — a stage-less row, spelled the same way.
+  # `계정` is read before each row rather than inside it, so no row's argument
+  # list grows a statement between it and whatever must follow it.
   if [ "$actor" != "파이프라인" ]; then
+    acct=$(stage_account_of "S9-$seg")
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
-      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
+      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=적용 주체가 사람 — 인계"
     report_append "적용 인계" "$seg — 사람이 실행할 명령: $cmd"
     return 0
@@ -4744,9 +5121,10 @@ apply_stage() {
   fi
 
   apply_probe "$wt" "$probe"; pre=$?
+  acct=$(stage_account_of "S9-$seg")
   case "$pre" in
     0) ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
-         "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
+         "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
          "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 프로브 0 — 적용할 변경 없음"
        apply_teardown "$seg" "$wt"
        return 0 ;;
@@ -4762,9 +5140,10 @@ apply_stage() {
   ( cd "$wt" && sh -c "$cmd" ) >"$RUN_DIR/log/S9-$seg.out" 2>"$RUN_DIR/log/S9-$seg.err"; rc=$?
 
   apply_probe "$wt" "$probe"; post=$?
+  acct=$(stage_account_of "S9-$seg")
   if [ "$rc" = "0" ] && [ "$post" = "0" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
-      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
+      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 2 → 사후 0, 수렴"
     apply_teardown "$seg" "$wt"
     return 0
@@ -4775,7 +5154,7 @@ apply_stage() {
   # A normal teardown here would delete the only reproduction of a half-applied
   # state, which is the one artifact a person will need in the morning.
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=$rc" \
-    "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
+    "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
     "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 2 → 사후 $post"
   park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
@@ -5356,7 +5735,7 @@ review_recover() {
       "리뷰 $class — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
     return 1
   fi
-  local rsid="S5R:$seg:$cycle" rc pred rclass reaped
+  local rsid="S5R:$seg:$cycle" rc pred rclass reaped acct
   log "$seg: 리뷰 $class — 복구 스테이지 파견 (scratch $dirs)"
   # Dispatching on top of a still-running original gives the report path two
   # writers, which is the risk the publication rule is built to close. What this
@@ -5387,9 +5766,10 @@ review_recover() {
   rc=$(cat "$RUN_DIR/$rsid.rc" 2>/dev/null || printf '1')
   if predicate_review "$rp"; then pred=0; else pred=1; fi
   rclass=$(classify_termination "$rsid" "$rc" "$pred")
+  acct=$(stage_account_of "$rsid")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$rsid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$rsid")")" \
     "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
   absorb_stage_judgment "$rsid" "$seg" "$(seg_alias "$seg")"
@@ -5503,17 +5883,18 @@ segment_cycle() {
     STAGE_RESUME=""
     stage_wait_all "$sid"
     quiet_window_end
-    local rc pred class
+    local rc pred class acct
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
     if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
+    acct=$(stage_account_of "$sid")
     # `파견 id=` carries the FULL dispatch id beside the kind. `스테이지=` stays the
     # kind because the gate's readers group on it; the attempt counter needs the
     # id it actually dispatched, and nothing else in the row carries it.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
       "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
+      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$jkey" "$(seg_alias "$seg")"
@@ -5624,6 +6005,7 @@ segment_cycle() {
     if predicate_review "$rp"; then pred=0; else pred=1; fi
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
     class=$(classify_termination "$sid" "$rc" "$pred")
+    acct=$(stage_account_of "$sid")
     # The session lineage is on THIS row too. The separation rule reads `세션 id`
     # and `부모` from both sides and treats an unrecorded one as a refusal rather
     # than a pass, so a review row without them refused every merge on the fixed
@@ -5632,7 +6014,7 @@ segment_cycle() {
     # re-attached and had to be paid for again.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
+      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
@@ -6065,14 +6447,15 @@ design_arm() {
   dispatch_stage S1design "$(alias_root "$(home_alias)")" \
     "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\""
   quiet_window_end
-  local rc1 pred1 class1
+  local rc1 pred1 class1 acct1
   rc1=$(cat "$RUN_DIR/S1design.rc" 2>/dev/null || printf '1')
   if predicate_design S1design; then pred1=0; else pred1=1; fi
   class1=$(classify_termination S1design "$rc1" "$pred1")
+  acct1=$(stage_account_of S1design)
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
     "아티팩트 술어 결과=$pred1" "실행 버전=$(stage_attempt_pinned S1design)" \
     "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" "기록자=드라이버" \
+    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" ${acct1:+"계정=$acct1"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of S1design)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S1design)")" \
     "종단 부류=$class1"
   absorb_stage_judgment S1design S1design "$(home_alias)"
@@ -6167,14 +6550,15 @@ main_loop() {
   quiet_window_begin
   dispatch_stage S2 "$(alias_root "$(home_alias)")" "/cc-cmds:design-audit-unattended $DOC"
   quiet_window_end
-  local rc2 pred2 class2
+  local rc2 pred2 class2 acct2
   rc2=$(cat "$RUN_DIR/S2.rc" 2>/dev/null || printf '1')
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
+  acct2=$(stage_account_of S2)
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" "기록자=드라이버" \
+      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of S2)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2)")" \
       "종단 부류=$class2"
   absorb_stage_judgment S2 S2 "$(home_alias)"
