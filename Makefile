@@ -73,9 +73,10 @@ check: lint readme
 # the workspace instruction file say? Deliberately NOT part of `lint` — those
 # sources are a person's global files, and editing them must not turn an
 # unrelated unattended stage's `make check` red. Run by hand, at autopilot
-# kickoff, and logged at run open.
+# kickoff, and logged at run open. `--explain` puts the diff of each changed
+# item under its finding, which is what a person needs to judge an `--ack`.
 policy-drift:
-	bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh
+	bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh --explain
 
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe
@@ -141,6 +142,7 @@ ORCH_TESTS := \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-stage-policy-edit-hook.sh \
 	scripts/test-watch.sh \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \

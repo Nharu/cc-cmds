@@ -33,6 +33,9 @@
 #          a section nothing maps to is a rule with no source;
 #   (viii) every `user-scope` anchor is unique within the manifest;
 #   (ix)   `memory` rows carry hash `-` and every other row a 64-hex sha256.
+#          An `excluded:*` row keeps the form although the checker compares
+#          only its anchor, and the column stays the shipped baseline that a
+#          host's acknowledgement store is read against.
 #
 # Usage:
 #   bash scripts/lint-stage-policy-sources.sh

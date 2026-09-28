@@ -11,6 +11,12 @@ which `docs/` does not, because that directory is gitignored in this repo; and a
 lint can scan it, which is what makes the kill-switch sentence at the bottom an
 anchor rather than a good intention.
 
+The two banner seats are not the only hooks in this directory.
+`active-notify-pretool.sh` belongs to the `active-notify` skill, and
+`stage-policy-edit-drift.sh` is the edit-time seat of the stage-policy drift
+check, whose contract is the last section of this file. Neither raises a
+session banner, and the rules below are written for the two seats alone.
+
 ## The two seats, and there are only two
 
 | Seat | Event | Matcher | What it reads | Token |
@@ -189,3 +195,44 @@ those shell function definitions still carry `--plugin-dir`?
 Where the reach does not extend, the seats do not exist, and their absence shows
 up on no screen at all. This design does not guarantee that a banner appears. It
 guarantees that a banner never blocks anything.
+
+## The edit-time drift hook
+
+`stage-policy-edit-drift.sh` is registered under a top-level `PostToolUse` key
+with the matcher `Edit|Write|MultiEdit` and `"timeout": 10`. It does not raise a
+banner. It exists because `../orchestrator/stage-policy.md` is a distillation of
+two files a person edits by hand, and the session that just made the edit is the
+one that knows what the edit meant.
+
+**When it acts.** Only when `.tool_input.file_path` is the user-scope
+`CLAUDE.md` (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md`) or the file the
+host map's `workspace` line names (`~/.config/cc-cmds/stage-policy-sources`).
+Both sides are compared with their directory resolved by `pwd -P`, so a path
+that came in through a linked settings directory is the same file. Every other
+edit ends after one `jq` call.
+
+**What it does.** It runs `../orchestrator/stage-policy-drift.sh --explain`, and
+when the last line is `mismatch` it writes one object to stdout:
+`{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"…"}}`.
+The context, cut at 6000 bytes, carries the findings and their diffs, the policy
+section to compare each one with, the instruction to run `--ack` only after the
+user confirms that the distillation still holds, the rule that an `added` item
+is recorded with `--ack-added` when it is excluded or belongs to a skill and
+needs a repository change when it belongs in the policy, and the prohibition on
+recording anything without that confirmation. The instructions come before the
+findings, so the cap cuts findings and never the prohibition.
+
+**Why stdout is used here.** The banner seats keep stdout empty because it is
+the harness's control channel. For a `PostToolUse` hook that channel is exactly
+how text reaches the model, so this hook writes to it on the one path that has
+something to say and on no other.
+
+**Unattended runs are left alone.** With `CC_PIPELINE_RUN_ID` set the hook does
+nothing: an acknowledgement is a person's claim, an unattended stage has nobody
+to make it, and the checker refuses `--ack` and `--ack-added` there as well.
+
+**Every path exits 0 and nothing reaches stderr.** It runs under
+`set -uo pipefail`, never `-e`, because the checker answers `mismatch` with exit
+1 and that is the case the hook exists for. The checker's stderr goes to
+`/dev/null`, and a missing `jq` exits 0 after the same Homebrew PATH prepend the
+banner seats use.
