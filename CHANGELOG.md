@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.32.1] - 2026-09-28
+## [2.33.1] - 2026-09-28
 
 사용량 한도로 스스로 끝난 무인 스테이지를 `크래시` 와 가른 새 종단 부류 `한도 종료` 로 적는다. 지금까지는 0 이 아닌 종료가 모두 `크래시` 였기 때문에, 저절로 풀리는 한도 사망이 진짜로 망가진 스테이지와 같은 칸에 섞여 원장과 아침 보고서에서 따로 셀 수 없었다. 처분은 바뀌지 않는다 — `한도 종료` 는 재시도·복구·재부착·재파견 창에서 `크래시` 와 똑같이 읽힌다.
 
@@ -19,6 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 아침 보고서가 한도 사망을 따로 세지 못하면, 계정 이동이나 리셋 대기 같은 후속 조치가 필요한지 판단할 근거가 없다. 부류만 가르고 처분을 그대로 두면, 이미 검증된 크래시 처리 경로를 바꾸지 않은 채 그 수를 드러낼 수 있다. 재부착이 이 부류를 429 바이트 탐침 없이 받는 이유는, 판정이 파싱된 값을 읽어 숫자·문자열·공백이 든 직렬화를 모두 받는 반면 탐침은 공백 없는 숫자 직렬화의 바이트만 세기 때문이다. 탐침을 조건으로 두면 다르게 직렬화된 한도 사망이 경고 없이 재부착에서 빠진다.
+
+## [2.33.0] - 2026-09-28
+
+스테이지 정책 드리프트를 레포 커밋 없이 호스트에서 확인해 기록할 수 있다. 지금까지는 사용자 전역 CLAUDE.md 를 한 글자만 고쳐도 검사가 `mismatch` 가 되고, 증류문이 여전히 맞아도 출처 표의 해시를 다시 고정하려면 레포 브랜치·커밋·PR 이 필요했다. 이제 레포 표의 해시는 출하 기준선으로 남고, 사람이 확인한 해시와 그때의 본문은 `~/.config/cc-cmds/stage-policy-ack/` 에 호스트 로컬로 쌓인다. 레포 변경은 정책 문구나 레포 지침을 고쳐야 하는 경우에만 남는다.
+
+### Added
+
+- **검사기 확인 플래그** (`orchestrator/stage-policy-drift.sh`) — `--explain` 은 `changed` 밑에 행의 처분과 직전 확인 본문 대비 unified diff 를, `added` 밑에 본문 전체를 두 칸 들여 붙인다(판정 수에는 들어가지 않는다). `--ack` 는 `policy:*`·`skill:*` 행의 `changed` 와 `excluded:*` 행의 `removed` 를 한 번에 모두 기록하고(행 단위 형태는 없다) 해소된 모든 행의 본문을 남긴다. `--ack-added <앵커 접두> <처분>` 은 추가된 불릿에 `excluded:<사유>`·`skill:<이름>` 처분을 호스트 로컬로 준다. 접두는 출처의 모든 후보 중 정확히 하나에 맞고 그 항목이 `added` 여야 하며, 뒤에 더해진 불릿 때문에 여러 항목에 맞게 된 로컬 처분 행은 `non-unique` 로 보고되지 않고 무시되어 그 항목들이 `added` 로 돌아온다. `--ack-store <dir>` 로 저장소 위치를 바꾼다.
+- **확인 저장소** — `acks.tsv`(`source`·`anchor`·`sha256`·`disposition`·`acked-at`)와 `bodies/<sha256>`. 디렉터리는 mode 700, 파일은 mode 600 이고, 쓰기는 같은 디렉터리의 임시 파일 뒤 `mv` 다. 없는 저장소는 빈 저장소로 읽으므로 저장소가 없는 호스트는 전과 똑같이 동작한다.
+- **편집 시점 훅** (`hooks/stage-policy-edit-drift.sh`, `PostToolUse` · `Edit|Write|MultiEdit`) — 전역 CLAUDE.md 나 호스트 맵의 워크스페이스 파일을 편집한 직후 `--explain` 을 돌려, `mismatch` 이면 발견과 diff, 대조할 정책 절, 사용자 확인 뒤에만 `--ack`/`--ack-added` 를 돌리라는 안내를 `additionalContext` 로 넣는다(6000 바이트 상한). 잘리지 않는 지시문에 총 발견 수와 `--ack` 전에 `--explain` 을 직접 돌려 전체를 읽으라는 안내를 싣고, 상한을 넘는 발견 목록은 줄 경계에서 자른 뒤 총 개수를 담은 `[truncated: …]` 표시로 끝낸다. 링크된 설정 디렉터리로 들어온 경로도 같은 파일로 알아본다.
+- **스테이지 정책 v5** — `## Artifacts` 에 `docs/` 아래 설계·개발 문서를 스테이징·커밋하지 않고 커밋을 제안하지 않는 규칙을, `## Delegation` 에 띄운 에이전트를 결과를 다 받은 턴 안에 내리고 남은 것이 없는지 확인하는 규칙을 더했다. 출처 표에 두 행을 더했다.
+- **시험** — `scripts/test-lint-stage-policy-sources.sh` 에 확인 저장소 경로 40건, 새 `scripts/test-stage-policy-edit-hook.sh`(단언 46건, `make test` 의 오케스트레이터 목록에 등록).
+
+### Changed
+
+- **제외 행 비교** — `excluded:*` 처분 행은 본문이 어떤 스테이지에도 닿지 않으므로 앵커가 하나로 해소되는지만 보고 해시는 비교하지 않는다. `removed`·`non-unique` 는 그대로 보고한다.
+- **확인의 무인 거부** — `--ack`·`--ack-added` 는 `CC_PIPELINE_RUN_ID` 가 있으면 exit 2 로 거부하고 저장소를 만들지 않는다. 편집 훅도 무인 런에서는 아무것도 하지 않는다.
+- **autopilot 킥오프** — 드리프트 검사를 `--explain` 으로 돌리고, `mismatch` 이면 `changed` 행마다 증류문이 여전히 맞는지 판단해 추천과 함께 묻는다. `--ack` 는 대기 중인 발견을 모두 기록하므로, 확인 가능한 발견을 모두 먼저 묻고 전부 승인됐을 때만 `--ack` 를 한 번 돌리며, 하나라도 거부되면 돌리지 않는다. 추가 불릿은 처분을 추천해 묻고, 정책 처분이면 레포 변경이 필요하다고 알린다. 여전히 알림이지 멈춤이 아니다.
+- **`make policy-drift`** — `--explain` 을 붙여 부른다.
+
+### Post-install notes
+
+- 확인은 사람의 주장이다. 이 호스트에서 남아 있는 드리프트(예: 자격증명 불릿)는 대화형 세션에서 `bash <plugin root>/orchestrator/stage-policy-drift.sh --explain` 으로 diff 를 본 뒤, 증류문이 여전히 맞다고 판단될 때 사람이 `--ack` 로 기록한다. 첫 `--ack` 전에는 저장소에 이전 본문이 없어 diff 대신 현재 본문이 보인다.
+- 게이트는 바뀌지 않았다. 런 개시 로그 한 줄은 같은 검사기를 부르고 기본 위치의 확인 저장소를 읽으므로, 확인을 마친 호스트에서는 `match` 가 찍힌다.
 
 ## [2.32.0] - 2026-09-28
 
