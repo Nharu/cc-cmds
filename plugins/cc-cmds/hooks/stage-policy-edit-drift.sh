@@ -25,6 +25,12 @@
 # the checker's own stderr goes to /dev/null, because a line there would land in
 # the person's transcript after an ordinary edit.
 #
+# THE CONTEXT IS CAPPED AT 6000 BYTES, AND A CUT SAYS SO. The instructions are
+# never cut; they carry the checker's finding count and tell the session to run
+# `--explain` itself before any `--ack`. When the findings do not fit, they are
+# cut at a line boundary and end in a `[truncated: ...]` marker with the same
+# count, so a session cannot mistake a partial list for the whole of it.
+#
 # AN UNATTENDED STAGE IS LEFT ALONE. With `CC_PIPELINE_RUN_ID` set there is nobody
 # to confirm an acknowledgement, and the checker refuses one there anyway.
 set -uo pipefail
@@ -73,20 +79,48 @@ checker="$plugin_root/orchestrator/stage-policy-drift.sh"
 [ -f "$checker" ] || exit 0
 
 report=$(bash "$checker" --explain 2>/dev/null)
-case "$(printf '%s\n' "$report" | tail -n 1)" in
+verdict=$(printf '%s\n' "$report" | tail -n 1)
+case "$verdict" in
   mismatch*) : ;;
   *) exit 0 ;;
 esac
+total="${verdict#mismatch }"
 
 # The instructions come before the findings, so the byte cap cuts findings and
-# never the rule that an acknowledgement needs the person's confirmation.
+# never the rule that an acknowledgement needs the person's confirmation. The
+# instructions also carry the checker's own finding count and the command that
+# prints the whole list, because `--ack` records every pending finding and the
+# list below may not show them all.
 context="The file just edited ($edited) is a source of the cc-cmds stage policy ($plugin_root/orchestrator/stage-policy.md), an English distillation injected into unattended stages, and the edit moved an item the policy tracks.
+The checker reported $total finding(s). The list below may be cut short by the context size cap, so before any --ack run bash \"$checker\" --explain yourself and read its full output.
 For each 'changed' item, compare the edited item with the policy section its disposition names (policy:<Section> is the '## <Section>' heading of stage-policy.md; skill:<name> is that skill's SKILL.md) and judge whether the distillation still says what the item now says. If it does, tell the user and ask them to confirm; only after they confirm, run: bash \"$checker\" --ack
 For an 'added' item, recommend a disposition and ask the user. If it is excluded:<reason> or skill:<name>, record it after their confirmation with: bash \"$checker\" --ack-added '<anchor prefix>' <disposition>. If it belongs in the policy, tell the user it needs a repository change to stage-policy.md and stage-policy.sources.tsv; do not record it.
 Do not run --ack or --ack-added without the user's explicit confirmation: an acknowledgement is the user's claim that the policy still holds, not yours.
 Findings and diffs (stage-policy-drift.sh --explain):
-$report"
-context=$(printf '%s' "$context" | head -c 6000)
+"
+
+# Past the cap, the findings are cut at a line boundary — which also keeps a
+# multibyte character whole — and a marker naming the total takes the place of
+# what was cut. Byte counts need LC_ALL=C.
+cap=6000
+LC_ALL=C
+if [ $(( ${#context} + ${#report} )) -le "$cap" ]; then
+  context="$context$report"
+else
+  marker="
+[truncated: the checker reported $total finding(s); run bash \"$checker\" --explain for the full list]"
+  budget=$(( cap - ${#context} - ${#marker} ))
+  cut=""
+  if [ "$budget" -gt 0 ]; then
+    cut=$(printf '%s' "$report" | head -c "$budget")
+    case "$cut" in
+      *$'\n'*) cut="${cut%$'\n'*}" ;;
+      *) cut="" ;;
+    esac
+  fi
+  context="$context$cut$marker"
+fi
+context=$(printf '%s' "$context" | head -c "$cap")
 
 jq -cn --arg c "$context" \
   '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}' 2>/dev/null

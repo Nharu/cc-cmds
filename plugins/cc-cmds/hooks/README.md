@@ -220,7 +220,12 @@ user confirms that the distillation still holds, the rule that an `added` item
 is recorded with `--ack-added` when it is excluded or belongs to a skill and
 needs a repository change when it belongs in the policy, and the prohibition on
 recording anything without that confirmation. The instructions come before the
-findings, so the cap cuts findings and never the prohibition.
+findings, so the cap cuts findings and never the prohibition. They also state
+the checker's finding count (from the `mismatch <n>` line) and tell the session
+to run `--explain` itself before any `--ack`. When the findings do not fit, they
+are cut at a line boundary and end in
+`[truncated: the checker reported <n> finding(s); run bash "<checker>" --explain for the full list]`,
+so a partial list never reads as the whole one.
 
 **Why stdout is used here.** The banner seats keep stdout empty because it is
 the harness's control channel. For a `PostToolUse` hook that channel is exactly
