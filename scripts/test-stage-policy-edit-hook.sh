@@ -106,6 +106,15 @@ spoke() {
     *"--explain yourself"*) ok "$1: 문맥에 --explain 직접 확인 안내" ;;
     *) bad "$1: 문맥에 --explain 직접 확인 안내" "$ctx" ;;
   esac
+  # --ack records every pending finding, so the context must not ask per row
+  case "$ctx" in
+    *"only when the user has confirmed every one run once"*) ok "$1: 전부 확인 뒤 --ack 한 번" ;;
+    *) bad "$1: 전부 확인 뒤 --ack 한 번" "$ctx" ;;
+  esac
+  case "$ctx" in
+    *"If they reject any, do not run --ack at all"*) ok "$1: 하나라도 거부되면 --ack 금지" ;;
+    *) bad "$1: 하나라도 거부되면 --ack 금지" "$ctx" ;;
+  esac
 }
 
 # spoke_whole <label> <count> — the list fitted: the count is stated and no cut is marked.

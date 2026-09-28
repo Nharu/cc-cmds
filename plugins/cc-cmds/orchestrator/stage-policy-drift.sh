@@ -47,7 +47,9 @@
 #   --ack         record every finding a person can acknowledge — `changed` on a
 #                 `policy:*` or `skill:*` row at its current hash, `removed` on
 #                 an `excluded:*` row at hash `-` — then store the current body of
-#                 every resolved row, then compare again and print as usual.
+#                 every resolved row, then compare again and print as usual. It
+#                 records every pending finding at once; there is no per-row
+#                 form, so a caller confirms them all before running it.
 #                 `non-unique`, `removed` on a `policy:*` or `skill:*` row, and
 #                 `added` with no disposition cannot be acknowledged and stay.
 #   --ack-added <anchor prefix> <disposition>

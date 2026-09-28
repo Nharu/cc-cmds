@@ -215,8 +215,9 @@ edit ends after one `jq` call.
 when the last line is `mismatch` it writes one object to stdout:
 `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"…"}}`.
 The context, cut at 6000 bytes, carries the findings and their diffs, the policy
-section to compare each one with, the instruction to run `--ack` only after the
-user confirms that the distillation still holds, the rule that an `added` item
+section to compare each one with, the instruction to run `--ack` once and only
+after the user confirms every pending finding — `--ack` has no per-row form and
+records them all, so a single rejection means it is not run — the rule that an `added` item
 is recorded with `--ack-added` when it is excluded or belongs to a skill and
 needs a repository change when it belongs in the policy, and the prohibition on
 recording anything without that confirmation. The instructions come before the

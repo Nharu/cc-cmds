@@ -318,6 +318,22 @@ ack_expect policy-explain-diff 1 'mismatch 1' 'changed user-scope alpha' \
   '  disposition: policy:Artifacts' '  -    continued alpha, edited' '  +    continued alpha, edited twice'
 rm -rf "$ACK_DIR"
 
+# --ack has no per-row form: one run records every pending changed row, which
+# is why the kickoff and the edit hook ask about all of them before running it
+ack_case
+ack_source '- alpha rule one
+    continued alpha, edited
+- beta rule two
+- gamma rule three
+    grown a line
+'
+ack_run
+ack_expect ack-all-before 1 'mismatch 2' 'changed user-scope alpha' 'changed user-scope gamma'
+ack_run --ack
+ack_expect ack-all-one-run 0 match
+ack_assert ack-all-records-both test "$(awk -F'\t' 'NR > 1 && ($2 == "alpha" || $2 == "gamma")' "$ACK_STORE/acks.tsv" | wc -l | tr -d ' ')" = 2
+rm -rf "$ACK_DIR"
+
 # an added bullet: refused as policy, ambiguous prefix, then excluded locally
 ack_case
 ack_source "$ACK_BASE"'- delta rule four
