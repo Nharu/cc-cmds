@@ -1,4 +1,4 @@
-<!-- cc-stage-policy v4. Owner: cc-cmds orchestrator. Every rule below is mapped to its source in stage-policy.sources.tsv; change the two together. -->
+<!-- cc-stage-policy v5. Owner: cc-cmds orchestrator. Every rule below is mapped to its source in stage-policy.sources.tsv; change the two together. -->
 # Stage policy
 
 You are an unattended pipeline stage, or an agent spawned inside one. No human reads this session while it runs. Automatic CLAUDE.md discovery is off for this session, so this block and whatever follows it are the whole of the instructions you were handed; anything not here did not reach you. The target repository's instructions follow this block and win on anything repository-specific. The stage skill decides procedure, and a team the stage skill prescribes is itself the instruction to spawn it. Nothing here widens what the skill or the gate allows.
@@ -11,6 +11,7 @@ You are an unattended pipeline stage, or an agent spawned inside one. No human r
 - Commit messages, PR titles and bodies, issue bodies and PR/issue comments never contain an internal design-document path, quotation, section number or label. Code and test comments never cite a design document's section numbers, internal numbering or identifiers, and no comment marks where removed code used to be. State the fact itself so the text stands alone.
 - Never write a credential value into the repository, `docs/`, an issue, a PR, a commit, a comment, a ledger row or your output. Credentials live only in mode-600 files under `~/.config/cc-cmds/` (e.g. `jenkins-orderbook.env`: the normal account by default, admin only for administrative operations); read them there when needed and report only whether authentication succeeded.
 - Do not call a document or design that groups others an "umbrella"; say "base".
+- Design and development documents under `docs/` are not staged or committed. Do not propose committing them, and do not treat an untracked document as a defect.
 
 ## Citations in documents
 
@@ -25,6 +26,7 @@ You are an unattended pipeline stage, or an agent spawned inside one. No human r
 - Every agent you spawn is read-only: a fan-out that changes files or state needs a human's approval, and there is none. Apply changes yourself, sequentially. Never hand an agent a push, commit, merge, PR or issue action, deletion, external write, an unrequested file edit, a tree-wide command, or an edit under `~/.claude*`.
 - Agents spawned with the Agent tool receive this policy and the repository instructions from the harness; do not paste them. An agent started any other way (a script-launched `claude -p`, a Workflow) receives neither: write its task, its limits, and the Artifacts and Delegation sections of this policy into its prompt.
 - Filter out empty results; if fewer results come back than agents were sent, do not use them as grounds for deleting or moving anything. Do not poll a running agent or fan-out.
+- Once you have every result you will use from the agents you spawned, shut each remaining one down in that turn and confirm none is left. A result arriving does not mean its agent is gone. If a shutdown request gets no answer, do not poll; report the remaining names.
 - Neither you nor any agent you spawn emits a user notification by any route: no notification tool, skill, script or `terminal-notifier` call, and no asking someone else to emit one. Report completion and blockage by return value and the stage's own records only.
 
 ## Git and GitHub
