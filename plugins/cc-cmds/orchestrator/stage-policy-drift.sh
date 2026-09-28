@@ -56,7 +56,8 @@
 #                 `policy:*` and `repo:CLAUDE.md` mean the policy text or the
 #                 repository instructions must change, which is a repository
 #                 change, and are exit 2. The prefix must match exactly one
-#                 `added` item and overlap no manifest anchor, else exit 2 and
+#                 candidate item of the sources, that item must be `added`, and
+#                 the prefix must overlap no manifest anchor, else exit 2 and
 #                 the store is left as it was.
 #   --ack-store <dir>
 #                 the acknowledgement store; defaults to
@@ -82,9 +83,12 @@
 # is fresh when the anchor resolves to exactly one item, or when it resolves to
 # none and the store holds (source, anchor, `-`). A store row whose disposition
 # is `excluded:*` or `skill:*` and whose anchor is no manifest anchor is a
-# host-local disposition: it is compared by the same rules, the item it
-# resolves to is not `added`, and when it resolves to nothing it is ignored,
-# because the manifest is what the verdict answers to.
+# host-local disposition: it is compared by the same rules and the item it
+# resolves to is not `added`. When it resolves to nothing it is ignored,
+# because the manifest is what the verdict answers to. When it resolves to
+# several items — a bullet added later shares its prefix — it is ignored too
+# and never reported `non-unique`: it resolves nothing, so each of those items
+# reads as `added` again and can be given a longer prefix with `--ack-added`.
 #
 # Output — one finding per line, then a verdict on the last line:
 #   added <source> <candidate text>   an item in the source no anchor resolves to
@@ -256,6 +260,9 @@ BODY_TMP=""
 ACK_PENDING=""
 RESOLVED=""
 ADDED_ITEMS=""
+# every candidate item of every compared source, `source<TAB>sha256<TAB>text`;
+# the text is last so that a TAB inside it cannot shift the hash
+ALL_ITEMS=""
 
 # load_store — reads acks.tsv into ACKS; an absent store reads as empty.
 load_store() {
@@ -308,7 +315,13 @@ explain_changed() {
 compare_source() {
   local source="$1" file="$2" manifest="$3"
   local candidates anchors local_rows cand text hash anchor asha adisp akind n found_hash matched
+  local live=""
   candidates=$(drift_entries "$source" "$file" "$BODY_TMP")
+  if [ -n "$candidates" ]; then
+    while IFS= read -r cand; do
+      ALL_ITEMS="${ALL_ITEMS}${source}	${cand##*	}	${cand%	*}"$'\n'
+    done < <(printf '%s\n' "$candidates")
+  fi
   anchors=$(awk -F'\t' -v s="$source" 'NR > 1 && $1 == s { print $2 "\t" $3 "\t" $4 "\ttable" }' "$manifest")
   # host-local dispositions: store rows for an anchor the manifest does not carry
   if [ -f "$ACK_FILE" ]; then
@@ -337,9 +350,14 @@ compare_source() {
           fi
         done < <(printf '%s\n' "$candidates")
       fi
+      # a host-local row that resolves to nothing, or to several items, is
+      # ignored: it resolves nothing, so the items it matches read as `added`
+      # again and can each be given a longer prefix
+      if [ "$akind" != table ] && [ "$n" -ne 1 ]; then
+        continue
+      fi
+      live="$live$anchor	$asha	$adisp	$akind"$'\n'
       if [ "$n" -eq 0 ]; then
-        # a host-local row that resolves to nothing is ignored
-        [ "$akind" = table ] || continue
         case "$adisp" in
           excluded:*)
             acked "$source" "$anchor" - && continue
@@ -366,10 +384,11 @@ compare_source() {
     text="${cand%	*}"
     hash="${cand##*	}"
     matched=0
-    if [ -n "$anchors" ]; then
+    if [ -n "$live" ]; then
       while IFS=$'\t' read -r anchor asha adisp akind; do
+        [ -n "$anchor" ] || continue
         if [ "${text:0:${#anchor}}" = "$anchor" ]; then matched=1; break; fi
-      done < <(printf '%s\n' "$anchors")
+      done < <(printf '%s' "$live")
     fi
     if [ "$matched" -eq 0 ]; then
       printf 'added %s %s\n' "$source" "$text"; findings=$((findings + 1))
@@ -385,7 +404,7 @@ compare_source() {
 # compare_all <manifest> <map> — one full comparison pass over every source.
 compare_all() {
   local manifest="$1" map="$2" cfgdir user_file ws_file
-  findings=0; compared=0; ACK_PENDING=""; RESOLVED=""; ADDED_ITEMS=""
+  findings=0; compared=0; ACK_PENDING=""; RESOLVED=""; ADDED_ITEMS=""; ALL_ITEMS=""
 
   # user-scope — the same derivation the gate uses for the user settings directory
   cfgdir="${CLAUDE_CONFIG_DIR:-}"
@@ -456,18 +475,26 @@ store_bodies() {
 }
 
 # ack_added <manifest> <prefix> <disposition> — records one host-local disposition.
+# Uniqueness is counted over every candidate item, not only the added ones: a
+# prefix that also matches an item something else already resolves would be
+# stored as a row that resolves to two items from its first comparison on.
 ack_added() {
-  local manifest="$1" prefix="$2" disp="$3" source text hash hits=0 hit_source="" hit_hash="" a
-  if [ -n "$ADDED_ITEMS" ]; then
-    while IFS=$'\t' read -r source text hash; do
+  local manifest="$1" prefix="$2" disp="$3" source text hash hits=0
+  local hit_source="" hit_hash="" hit_text="" a
+  if [ -n "$ALL_ITEMS" ]; then
+    while IFS=$'\t' read -r source hash text; do
       [ -n "$source" ] || continue
       if [ "${text:0:${#prefix}}" = "$prefix" ]; then
-        hits=$((hits + 1)); hit_source="$source"; hit_hash="$hash"
+        hits=$((hits + 1)); hit_source="$source"; hit_hash="$hash"; hit_text="$text"
       fi
-    done < <(printf '%s' "$ADDED_ITEMS")
+    done < <(printf '%s' "$ALL_ITEMS")
   fi
   [ "$hits" -eq 1 ] \
-    || die_format "--ack-added: the prefix must match exactly one added item, it matches $hits: $prefix"
+    || die_format "--ack-added: the prefix must match exactly one item of the sources, it matches $hits: $prefix"
+  case $'\n'"$ADDED_ITEMS" in
+    *$'\n'"${hit_source}	${hit_text}	${hit_hash}"$'\n'*) : ;;
+    *) die_format "--ack-added: the item the prefix matches is not added (an anchor already resolves it): $prefix" ;;
+  esac
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     if [ "${a:0:${#prefix}}" = "$prefix" ] || [ "${prefix:0:${#a}}" = "$a" ]; then

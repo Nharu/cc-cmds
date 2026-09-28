@@ -355,6 +355,61 @@ ack_run
 ack_expect local-skill-changed 1 'mismatch 1' 'changed user-scope epsilon'
 rm -rf "$ACK_DIR"
 
+acks_sum() { shasum -a 256 "$ACK_STORE/acks.tsv" | cut -d' ' -f1; }
+no_non_unique() { ! printf '%s\n' "$ACK_OUT" | grep -q '^non-unique '; }
+
+# --ack-added counts every candidate item, not only the added ones: a prefix
+# that also matches an item a host-local row already resolves is refused, so
+# no stored row can resolve to two items from its first comparison on
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+ack_run --ack-added 'delta rule four' excluded:interactive-only
+ack_expect local-first 0 match
+sum_before=$(acks_sum)
+ack_source "$ACK_BASE"'- delta rule four
+- delta rule five
+'
+ack_run --ack-added 'delta rule' excluded:interactive-only
+ack_expect local-prefix-over-resolved-refused 2 ''
+ack_assert local-prefix-over-resolved-store-untouched test "$(acks_sum)" = "$sum_before"
+ack_run
+ack_expect local-prefix-over-resolved-after 1 'mismatch 1' 'added user-scope delta rule five'
+ack_assert local-prefix-over-resolved-no-non-unique no_non_unique
+rm -rf "$ACK_DIR"
+
+# a prefix whose only match is an item something already resolves is refused
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+ack_run --ack-added delta excluded:interactive-only
+ack_expect local-short 0 match
+sum_before=$(acks_sum)
+ack_run --ack-added 'delta rule' skill:autopilot
+ack_expect local-prefix-not-added-refused 2 ''
+ack_assert local-prefix-not-added-store-untouched test "$(acks_sum)" = "$sum_before"
+rm -rf "$ACK_DIR"
+
+# a host-local row that a later bullet makes match two items resolves nothing:
+# no non-unique finding, both items read as added, and longer prefixes settle them
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+ack_run --ack-added delta excluded:interactive-only
+ack_expect local-shared-first 0 match
+ack_source "$ACK_BASE"'- delta rule four
+- delta rule five
+'
+ack_run
+ack_expect local-shared-prefix 1 'mismatch 2' 'added user-scope delta rule four' \
+  'added user-scope delta rule five'
+ack_assert local-shared-prefix-no-non-unique no_non_unique
+ack_run --ack-added 'delta rule four' excluded:interactive-only
+ack_expect local-shared-longer-one 1 'mismatch 1' 'added user-scope delta rule five'
+ack_run --ack-added 'delta rule five' excluded:interactive-only
+ack_expect local-shared-longer-two 0 match
+rm -rf "$ACK_DIR"
+
 # removed: an excluded row can be acknowledged, a policy row cannot
 ack_case
 ack_source '- alpha rule one
