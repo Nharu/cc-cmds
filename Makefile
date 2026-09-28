@@ -36,6 +36,8 @@ lint:
 	bash scripts/lint-gate-banner-fields.sh
 	bash scripts/lint-stage-policy-sources.sh
 	bash scripts/lint-terminal-literals.sh
+	bash scripts/lint-interview-record-sections.sh
+	bash scripts/lint-interview-convention-refs.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -129,7 +131,9 @@ LINT_TESTS := \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
 	scripts/test-lint-stage-policy-sources.sh \
-	scripts/test-lint-terminal-literals.sh
+	scripts/test-lint-terminal-literals.sh \
+	scripts/test-lint-interview-record-sections.sh \
+	scripts/test-lint-interview-convention-refs.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
