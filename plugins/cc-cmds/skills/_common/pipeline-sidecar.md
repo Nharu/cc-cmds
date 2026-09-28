@@ -2,13 +2,14 @@
 
 The payload schemas for the autonomous pipeline's durable state. Generic mechanics — path and slug derivation, the header grammar and `owner-doc=` provenance guard, the atomic compare-and-swap write, the never-delete lifetime, the version token — are **not restated here**: they live in `_common/sidecar.md` §1 and this file cites them read-only. What follows is only what §1 delegates to a payload schema: the kinds, their block grammars, their field sets, their mutability splits, and their write forms.
 
-Five sidecar kinds and one non-sidecar record are defined:
+The sidecar kinds below and one non-sidecar record are defined:
 
 | Artifact | Kind token | Writer | Location |
 | --- | --- | --- | --- |
 | Run manifest | `cc-run-manifest v1` | `autopilot` (kickoff) **only** | `<run 디렉터리>/plan.md` |
 | Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-grant/{slug}.md` |
-| Interview record | `cc-run-interview v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.interview.md` |
+| Interview record | `cc-run-interview v2` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.interview.md` |
+| Kickoff trace | `cc-run-kickoff v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.kickoff.md` |
 | Run ledger | `cc-pipeline-run v1` | the driver **only** | `<base>/docs/pipeline-run/{slug}.md` |
 | Approval sidecar | `cc-pipeline-approval v1` | the gate **only** | `<base>/docs/pipeline-approval/<run-id>.md` |
 | Halt record | `cc-pipeline-halt v1` | the halting stage | volatile run directory (§4) — **not a sidecar** |
@@ -19,7 +20,7 @@ Five sidecar kinds and one non-sidecar record are defined:
 
 ## 1. Writer partition — and why it is total
 
-**The driver is read-only against the grant.** The only writer of `cc-pipeline-grant` is the kickoff skill `autopilot`; the driver reaches it by no path at all, so it cannot append a **well-formed new block that grants more**. The interview record (§2b.5) has the same single writer: it holds the person's own words, so it is written once, whole, while that person is present. **No gate refuses a write to it** the way one refuses a write to the manifest or the grant — what makes a later change visible is its hash row inside the frozen set, not a guard.
+**The driver is read-only against the grant.** The only writer of `cc-pipeline-grant` is the kickoff skill `autopilot`; the driver reaches it by no path at all, so it cannot append a **well-formed new block that grants more**. The interview record (§2b.5) has the same single writer: it holds the person's own words, so it is written once, whole, while that person is present. **No gate refuses a write to it** the way one refuses a write to the manifest or the grant — what makes a later change visible is its hash row inside the frozen set, not a guard. The kickoff trace (§2b.6) has the same single writer too: the kickoff appends its progress lines while Act 1 runs, and nothing else writes it.
 
 **The driver is the sole writer of the ledger, from the main worktree.** Stage processes emit structured output on stdout and **never write a sidecar** — not the ledger, not the grant — because `sidecar.md` §1.3's compare-and-swap only narrows the window N segment processes would contend in.
 
@@ -470,7 +471,7 @@ conforming with no migration.
 
 ````
 # 파이프라인 런 인터뷰 기록 — <run-id>
-<!-- cc-run-interview v1; writer=autopilot; reader=design-discuss-unattended (driver dispatch) and the morning report; run-id=<run-id>;
+<!-- cc-run-interview v2; writer=autopilot; reader=design-discuss-unattended (driver dispatch); run-id=<run-id>;
      NOT a design doc; mechanism-local, never staged by a skill -->
 
 ## 과제
@@ -479,21 +480,46 @@ conforming with no migration.
 ## 요구사항 문답
 ### 문 1
 <질문, 축자>
+**선택지**:
+- 라벨: <라벨, 축자>
+  설명: <설명, 축자>
+  미리보기: <미리보기, 축자>
 ### 답 1
 <답, 축자>
 
+## 확인된 요구
+**확인 문항**: 문 <n>
+**해야 할 것**:
+<읽어 드린 문면, 축자> | 없음
+**바꾸지 않는 것**:
+<읽어 드린 문면, 축자> | 없음
+**완료 기준**:
+<읽어 드린 문면, 축자> | 없음
+
 ## 배포 형상
-**레포**: <답> | 없음
-**슬라이스 수**: <답> | 없음
-**적용 위치**: <답> | 없음
-**적용 주체**: <답> | 없음
-**실패 시 파킹**: <답> | 없음
+**레포**: <답의 실질> | 설계에 위임 — 문 <n> | 없음
+**슬라이스 수**: <답의 실질> | 설계에 위임 — 문 <n> | 없음
+**적용 위치**: <답의 실질> | 설계에 위임 — 문 <n> | 없음
+**적용 주체**: <5m 시점에 효력 있는 값 — 5c 가 돌았으면 5c 의 답, 아니면 5j 의 답> | 설계에 위임 — 문 <n> | 없음
+**실패 시 파킹**: <답의 실질> | 설계에 위임 — 문 <n> | 없음
+
+## 탐색 결과
+- 사실: <정한 사실>
+  근거: <경로:줄 또는 명령> → <관측값> @<커밋>
+| 없음 — <이유>
 
 ## 재현 근거
-<사람이 가리킨 재현 절차와 관측> | 없음
+**재현 절차**: …
+**관측된 증상**: …
+**근본 원인**: …
+**재현 차단요인**: …
+**근거 등급**: 확인됨(재현·관측) | 가설(추측)
+| 해당 없음 — <판정>
 
 ## 검증 선결
-<설계 전에 참으로 확인돼야 하는 전제> | 없음
+- 전제: <전제>
+  판정: 확인됨 — <근거> | 미확인 — <이유>
+| 없음 — <이유>
 
 ## 골격 사전 판정
 <사람이 바꾸면 안 된다고 말한 것> | 없음
@@ -505,12 +531,51 @@ conforming with no migration.
 Written by the kickoff when the run's plan requires a design and the interview was
 held — once, whole, **creation-only, with no append form**, the posture of the
 manifest. Its whole-file `sha256` is taken immediately and enters the manifest as
-the interview-record row of §2b.1. The question-and-answer pairs repeat as many
-times as the interview had turns, numbered in order. **`없음` is a value**: a
-section with no answer carries it, and an omitted section is a different fact.
+the interview-record row of §2b.1. The question-and-answer pairs repeat once for
+every question asked from the Step 4 plan through the closing read-back, numbered
+in order. **`없음` is a value**: a section with no answer carries it, and an
+omitted section is a different fact.
 
 **Every answer is verbatim.** The record is the disk anchor for the requirement's
-own words, kept apart from the kickoff's reading of the person.
+own words, kept apart from the kickoff's reading of the person. An answer carries
+no mark; an answer whose normal form equals an offered label means that label and
+its description.
+
+**The options offered are part of the question.** One option is `- 라벨:`,
+`  설명:` and an optional `  미리보기:`; a value longer than one line continues
+on indented lines. A multi-select question writes `**선택지** (복수 선택):`. A
+question that had to be asked in prose after the question tool collapsed
+repeatedly writes `**선택지**: 없음(자유 입력)`.
+
+**A derived section carries the substance of the answer.** The values of
+`## 배포 형상` are what the answer meant: a suffix such as `← 추천` stays in
+`## 요구사항 문답` only, and a derived value is not copied so that its normal form
+equals an offered label.
+
+**`## 확인된 요구` is what was shown, as it was shown.** Anything read back
+outside the three labels stays verbatim where it was shown. The `### 문 n` of the
+confirming question carries the one line `(읽어 드린 요구: ## 확인된 요구 에 축자)`.
+
+**Several reproduction claims** each take a `### 주장 <k>` sub-block under
+`## 재현 근거`.
+
+**No structured line begins with a backtick.** Each begins with a fixed Korean
+token or a bold key, so none of them takes the shape of a backticked ledger row
+such as the approval row a provenance check anchors on.
+
+**Not read by the design stage**: `## 로스터` — the stage takes the roster from
+the manifest's `설계 로스터` rows, never from this record.
+
+**Previous version** `cc-run-interview v1`: `## 과제` · `## 요구사항 문답` · `## 배포 형상` · `## 재현 근거` · `## 검증 선결` · `## 골격 사전 판정` · `## 로스터`.
+A v1 record carries no options under a question, no confirmed-requirement
+section and no exploration section, and records already written in v1 stay as
+they are. That the design
+stage reads both v1 and v2 is an exception to `sidecar.md` §1.5's strict
+equality. The second exception sits beside it: on any other version token the
+design stage **halts** rather than following §1.5's "skip the file, report it",
+because a record of an unknown form handled as if there were no record brings
+back the silent shallowness this record exists to prevent — the stage would
+design from the task sentence while the person's answers sit unread.
 
 **It does not carry the roster.** The approved roster lives in the manifest's
 `설계 로스터` rows and is frozen there; this record only refers to it.
@@ -527,6 +592,56 @@ takes the whole-file `sha256` and compares it against the interview-record row o
 row exists and the file does not, or the file exists and the row does not. When
 **neither** the row nor the file is there the stage runs from the task sentence
 and `## 의도` alone.
+
+### 2b.6 The kickoff trace — where Act 1 stopped
+
+Path: `<base>/docs/pipeline-run/<run-id>.kickoff.md`. One header comment, then
+one appended line per Act 1 boundary:
+
+````
+<!-- cc-run-kickoff v1; writer=autopilot (kickoff); reader=autopilot (kickoff resume, next kickoff Step 2, --report); run-id=<run-id>; NOT a design doc; mechanism-local, never staged by a skill -->
+- <ISO8601> | 단계=<토큰>
+- <ISO8601> | 단계=인터뷰 동결 | 경로=<기록 경로> | sha256=<기록 해시>
+- <ISO8601> | 단계=대상 변경 | 새 base=<경로>
+````
+
+There is no H1. Only two stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`)
+and `대상 변경` (`새 base=`). Every other line ends at `단계=<토큰>`.
+
+**The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
+`요구사항 인터뷰` · `요구 확인` · `경계 질문` · `로스터` · `승인` · `인터뷰 동결` ·
+`매니페스트 기록` · `문답(텍스트)` · `기동 직전` · `연기` · `중단`.
+
+**When a trace is finished — one test for every reader.** A trace is finished when
+its last stage is `연기` or `중단`, when it is a `대상 변경` carrying `새 base=`, or
+when it is `기동 직전` and `<base>/docs/pipeline-run/<run-id>.md` holds a line
+beginning `` - `run` | ``. Anything else is "stopped or still in progress".
+
+**A line carries progress only** — the stage token, and a count, a path or a hash
+where the stage has a field. The person's words are never written here; they
+belong to the interview record, which is frozen and hashed.
+
+**One creation, then appends.** Step 2 creates the trace once, in a form that
+refuses to overwrite a file already there. An append fails and creates nothing
+when the file is missing. No line is rewritten or deleted, and no hash is taken
+of the trace.
+
+**A change of home target after the trace exists.** When an answer after Step 2
+(for instance to the Step 4 plan) changes the home target, Step 2's confirmation
+and verification run again; if `<base>` then differs, append
+`- <ISO8601> | 단계=대상 변경 | 새 base=<경로>` to the old trace, then create the
+trace under the new base with the same run id in Step 2's creation form and write
+`대상 확인`. This is the only second creation, and it happens inside the Step 2
+that ran again. The first trace exists only once the home target is settled, so a
+home change at the first Step 2's confirmation question ends before any trace
+exists and never reaches this rule. Without it, every later append fails on the
+new base for want of a file, and the old trace stays unfinished and shows up in
+the next kickoff's notice as a stopped kickoff.
+
+**What reads it**: the same kickoff resuming Act 1, the next kickoff's Step 2,
+`--report`, and a person. The orchestrator opens files under
+`docs/pipeline-run/` only by exact name and never globs that directory, so a trace
+never reaches the driver.
 
 ## 3. `cc-pipeline-run v1` — the run ledger
 
