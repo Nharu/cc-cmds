@@ -104,8 +104,10 @@ run_drift() {
   else
     map="$scratch/no-such-map"
   fi
+  # a store that does not exist, so the host's own acknowledgements are never read
   set +e
-  DRIFT_OUT=$(CLAUDE_CONFIG_DIR="$scratch/cfg" bash "$scratch/stage-policy-drift.sh" --sources-map "$map" 2>/dev/null)
+  DRIFT_OUT=$(CLAUDE_CONFIG_DIR="$scratch/cfg" bash "$scratch/stage-policy-drift.sh" \
+    --sources-map "$map" --ack-store "$scratch/no-such-store" 2>/dev/null)
   DRIFT_EC=$?
   set -e
   rm -rf "$scratch"
@@ -174,6 +176,297 @@ if [[ "${hits:-0}" == "1" ]]; then
 else
   failures=$((failures + 1)); echo "FAIL: drift/one-compared — expected one 'SKIP workspace' line, found ${hits:-0}" >&2
 fi
+
+# ---------- host acknowledgement store ---------------------------------------
+#
+# These cases edit the source between runs, so they are built here rather than
+# stored: the manifest hashes are taken from the base source with the checker's
+# own item extraction, and every run points `--ack-store` at a scratch store.
+# The stage running this test inherits `CC_PIPELINE_RUN_ID`, which the checker
+# refuses to acknowledge under, so every run clears it unless the case sets it.
+
+ACK_BASE='- alpha rule one
+    continued alpha
+- beta rule two
+- gamma rule three
+'
+
+# ack_case — a fresh scratch: the checker beside a manifest of three rows, the
+# base source as the user-scope file, and a store path that does not exist yet.
+ack_case() {
+  ACK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-policy-ack.XXXXXX")
+  ACK_STORE="$ACK_DIR/store"
+  cp "$checker" "$ACK_DIR/stage-policy-drift.sh"
+  mkdir -p "$ACK_DIR/cfg"
+  printf '%s' "$ACK_BASE" > "$ACK_DIR/cfg/CLAUDE.md"
+  {
+    printf 'source\tanchor\tsha256\tdisposition\tnote\n'
+    printf 'user-scope\talpha\t%s\tpolicy:Artifacts\t\n' "$(ack_hash alpha)"
+    printf 'user-scope\tbeta\t%s\texcluded:interactive-only\t\n' "$(ack_hash beta)"
+    printf 'user-scope\tgamma\t%s\tskill:autopilot\t\n' "$(ack_hash gamma)"
+  } > "$ACK_DIR/stage-policy.sources.tsv"
+}
+
+# ack_hash <anchor> — the body hash of the item <anchor> resolves to now.
+ack_hash() {
+  ( . "$checker"; drift_entries user-scope "$ACK_DIR/cfg/CLAUDE.md" ) \
+    | awk -F'\t' -v a="$1" 'index($1, a) == 1 { print $2 }'
+}
+
+# ack_source <text> — replaces the user-scope source.
+ack_source() { printf '%s' "$1" > "$ACK_DIR/cfg/CLAUDE.md"; }
+
+# ack_run [<arg>...] — sets ACK_OUT and ACK_EC.
+ack_run() {
+  set +e
+  ACK_OUT=$(env -u CC_PIPELINE_RUN_ID CLAUDE_CONFIG_DIR="$ACK_DIR/cfg" \
+    bash "$ACK_DIR/stage-policy-drift.sh" --sources-map "$ACK_DIR/no-such-map" \
+    --ack-store "$ACK_STORE" "$@" 2>/dev/null)
+  ACK_EC=$?
+  set -e
+}
+
+# ack_expect <label> <exit> <last-line> [<line>...] — each <line> must appear
+# exactly once in ACK_OUT.
+ack_expect() {
+  local label="$1" want_ec="$2" want_last="$3" ok=1 last line hits
+  shift 3
+  last=$(printf '%s\n' "$ACK_OUT" | tail -n 1)
+  if [[ "$ACK_EC" != "$want_ec" ]]; then
+    echo "FAIL: ack/$label — exit=$ACK_EC, expected=$want_ec" >&2; ok=0
+  fi
+  if [[ "$last" != "$want_last" ]]; then
+    echo "FAIL: ack/$label — last line '$last', expected '$want_last'" >&2; ok=0
+  fi
+  for line in "$@"; do
+    hits=$(printf '%s\n' "$ACK_OUT" | grep -Fxc -- "$line" || true)
+    if [[ "${hits:-0}" != "1" ]]; then
+      echo "FAIL: ack/$label — expected exactly one line '$line', found ${hits:-0}" >&2; ok=0
+    fi
+  done
+  if (( ok == 1 )); then
+    passed=$((passed + 1)); echo "PASS: ack/$label"
+  else
+    failures=$((failures + 1)); echo "     output was: $ACK_OUT" >&2
+  fi
+}
+
+# ack_assert <label> <condition command...>
+ack_assert() {
+  local label="$1"
+  shift
+  if "$@"; then
+    passed=$((passed + 1)); echo "PASS: ack/$label"
+  else
+    failures=$((failures + 1)); echo "FAIL: ack/$label" >&2
+  fi
+}
+
+# store_modes_ok — the store and bodies/ are 700, every file in them is 600.
+store_modes_ok() {
+  local f
+  [[ "$(ls -ld "$ACK_STORE" | cut -c1-10)" == drwx------ ]] || return 1
+  [[ "$(ls -ld "$ACK_STORE/bodies" | cut -c1-10)" == drwx------ ]] || return 1
+  [[ -f "$ACK_STORE/acks.tsv" ]] || return 1
+  for f in "$ACK_STORE/acks.tsv" "$ACK_STORE"/bodies/*; do
+    [[ -f "$f" ]] || return 1
+    [[ "$(ls -l "$f" | cut -c1-10)" == -rw------- ]] || return 1
+  done
+}
+
+no_store() { [[ ! -e "$ACK_STORE" ]]; }
+out_has() { printf '%s\n' "$ACK_OUT" | grep -Fxq -- "$1"; }
+
+# an excluded row is compared by its anchor alone
+ack_case
+ack_source '- alpha rule one
+    continued alpha
+- beta rule two, reworded
+- gamma rule three
+'
+ack_run
+ack_expect excluded-body-only 0 match
+rm -rf "$ACK_DIR"
+
+# a policy row: changed → acknowledged → changed again, with a diff
+ack_case
+ack_run --explain
+ack_expect baseline-explain 0 match
+ack_source '- alpha rule one
+    continued alpha, edited
+- beta rule two
+- gamma rule three
+'
+ack_run
+ack_expect policy-changed 1 'mismatch 1' 'changed user-scope alpha'
+ack_run --explain
+ack_expect policy-changed-first-explain 1 'mismatch 1' 'changed user-scope alpha' \
+  '  disposition: policy:Artifacts' '  no previous body on this host; current body:' \
+  '      continued alpha, edited'
+ack_run --ack
+ack_expect policy-ack 0 match
+ack_assert store-modes store_modes_ok
+ack_source '- alpha rule one
+    continued alpha, edited twice
+- beta rule two
+- gamma rule three
+'
+ack_run
+ack_expect policy-changed-after-ack 1 'mismatch 1' 'changed user-scope alpha'
+ack_run --explain
+ack_expect policy-explain-diff 1 'mismatch 1' 'changed user-scope alpha' \
+  '  disposition: policy:Artifacts' '  -    continued alpha, edited' '  +    continued alpha, edited twice'
+rm -rf "$ACK_DIR"
+
+# --ack has no per-row form: one run records every pending changed row, which
+# is why the kickoff and the edit hook ask about all of them before running it
+ack_case
+ack_source '- alpha rule one
+    continued alpha, edited
+- beta rule two
+- gamma rule three
+    grown a line
+'
+ack_run
+ack_expect ack-all-before 1 'mismatch 2' 'changed user-scope alpha' 'changed user-scope gamma'
+ack_run --ack
+ack_expect ack-all-one-run 0 match
+ack_assert ack-all-records-both test "$(awk -F'\t' 'NR > 1 && ($2 == "alpha" || $2 == "gamma")' "$ACK_STORE/acks.tsv" | wc -l | tr -d ' ')" = 2
+rm -rf "$ACK_DIR"
+
+# an added bullet: refused as policy, ambiguous prefix, then excluded locally
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+ack_run
+ack_expect added 1 'mismatch 1' 'added user-scope delta rule four'
+ack_run --ack-added delta policy:Conduct
+ack_expect added-policy-refused 2 ''
+ack_assert added-policy-store-untouched no_store
+ack_run --ack
+ack_expect added-not-ackable 1 'mismatch 1' 'added user-scope delta rule four'
+ack_run --ack-added delta excluded:interactive-only
+ack_expect added-excluded 0 match
+rm -rf "$ACK_DIR"
+
+ack_case
+ack_source "$ACK_BASE"'- delta one
+- delta two
+'
+ack_run --ack-added delta excluded:interactive-only
+ack_expect added-two-candidates 2 ''
+ack_assert added-two-candidates-store-untouched no_store
+rm -rf "$ACK_DIR"
+
+# a bullet given skill: locally is hash-compared from then on
+ack_case
+ack_source "$ACK_BASE"'- epsilon rule five
+'
+ack_run --ack-added epsilon skill:autopilot
+ack_expect local-skill 0 match
+ack_source "$ACK_BASE"'- epsilon rule five
+    grown a line
+'
+ack_run
+ack_expect local-skill-changed 1 'mismatch 1' 'changed user-scope epsilon'
+rm -rf "$ACK_DIR"
+
+acks_sum() { shasum -a 256 "$ACK_STORE/acks.tsv" | cut -d' ' -f1; }
+no_non_unique() { ! printf '%s\n' "$ACK_OUT" | grep -q '^non-unique '; }
+
+# --ack-added counts every candidate item, not only the added ones: a prefix
+# that also matches an item a host-local row already resolves is refused, so
+# no stored row can resolve to two items from its first comparison on
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+ack_run --ack-added 'delta rule four' excluded:interactive-only
+ack_expect local-first 0 match
+sum_before=$(acks_sum)
+ack_source "$ACK_BASE"'- delta rule four
+- delta rule five
+'
+ack_run --ack-added 'delta rule' excluded:interactive-only
+ack_expect local-prefix-over-resolved-refused 2 ''
+ack_assert local-prefix-over-resolved-store-untouched test "$(acks_sum)" = "$sum_before"
+ack_run
+ack_expect local-prefix-over-resolved-after 1 'mismatch 1' 'added user-scope delta rule five'
+ack_assert local-prefix-over-resolved-no-non-unique no_non_unique
+rm -rf "$ACK_DIR"
+
+# a prefix whose only match is an item something already resolves is refused
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+ack_run --ack-added delta excluded:interactive-only
+ack_expect local-short 0 match
+sum_before=$(acks_sum)
+ack_run --ack-added 'delta rule' skill:autopilot
+ack_expect local-prefix-not-added-refused 2 ''
+ack_assert local-prefix-not-added-store-untouched test "$(acks_sum)" = "$sum_before"
+rm -rf "$ACK_DIR"
+
+# a host-local row that a later bullet makes match two items resolves nothing:
+# no non-unique finding, both items read as added, and longer prefixes settle them
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+ack_run --ack-added delta excluded:interactive-only
+ack_expect local-shared-first 0 match
+ack_source "$ACK_BASE"'- delta rule four
+- delta rule five
+'
+ack_run
+ack_expect local-shared-prefix 1 'mismatch 2' 'added user-scope delta rule four' \
+  'added user-scope delta rule five'
+ack_assert local-shared-prefix-no-non-unique no_non_unique
+ack_run --ack-added 'delta rule four' excluded:interactive-only
+ack_expect local-shared-longer-one 1 'mismatch 1' 'added user-scope delta rule five'
+ack_run --ack-added 'delta rule five' excluded:interactive-only
+ack_expect local-shared-longer-two 0 match
+rm -rf "$ACK_DIR"
+
+# removed: an excluded row can be acknowledged, a policy row cannot
+ack_case
+ack_source '- alpha rule one
+    continued alpha
+- gamma rule three
+'
+ack_run
+ack_expect excluded-removed 1 'mismatch 1' 'removed user-scope beta'
+ack_run --ack
+ack_expect excluded-removed-ack 0 match
+ack_source '- gamma rule three
+'
+ack_run --ack
+ack_expect policy-removed-ack 1 'mismatch 1' 'removed user-scope alpha'
+rm -rf "$ACK_DIR"
+
+# non-unique cannot be acknowledged
+ack_case
+ack_source "$ACK_BASE"'- alpha again
+'
+ack_run --ack
+ack_expect non-unique-ack 1 'mismatch 1' 'non-unique user-scope alpha'
+rm -rf "$ACK_DIR"
+
+# an unattended stage is refused and no store is created
+ack_case
+ack_source "$ACK_BASE"'- delta rule four
+'
+set +e
+CC_PIPELINE_RUN_ID=x CLAUDE_CONFIG_DIR="$ACK_DIR/cfg" bash "$ACK_DIR/stage-policy-drift.sh" \
+  --sources-map "$ACK_DIR/no-such-map" --ack-store "$ACK_STORE" --ack >/dev/null 2>&1
+ec_ack=$?
+CC_PIPELINE_RUN_ID=x CLAUDE_CONFIG_DIR="$ACK_DIR/cfg" bash "$ACK_DIR/stage-policy-drift.sh" \
+  --sources-map "$ACK_DIR/no-such-map" --ack-store "$ACK_STORE" \
+  --ack-added delta excluded:interactive-only >/dev/null 2>&1
+ec_add=$?
+set -e
+ack_assert unattended-ack-refused test "$ec_ack" = 2
+ack_assert unattended-ack-added-refused test "$ec_add" = 2
+ack_assert unattended-store-untouched no_store
+rm -rf "$ACK_DIR"
 
 echo "test-lint-stage-policy-sources: $passed passed, $failures failed"
 

@@ -22,7 +22,9 @@
 # unattended implementation stage's `make check` red.
 #
 # Usage:
-#   bash stage-policy-drift.sh [--sources-map <file>]
+#   bash stage-policy-drift.sh [--sources-map <file>] [--ack-store <dir>]
+#                              [--explain] [--ack]
+#                              [--ack-added <anchor prefix> <disposition>]
 #
 #   The manifest is `stage-policy.sources.tsv` next to this script. The
 #   user-scope source is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md` — the
@@ -35,6 +37,60 @@
 #   no such line, so its `workspace` rows are always `SKIP` — accepted, because
 #   that host injects the source verbatim and loses nothing when the
 #   distillation goes stale.
+#
+#   --explain     under each `changed` finding, print the row's disposition and
+#                 a unified diff of the body this host last acknowledged against
+#                 the current body; with no previous body on this host, say so
+#                 and print the current body. Under each `added` finding, print
+#                 the current body. Every such line is indented by two spaces;
+#                 it is not a finding and is not counted in the verdict.
+#   --ack         record every finding a person can acknowledge — `changed` on a
+#                 `policy:*` or `skill:*` row at its current hash, `removed` on
+#                 an `excluded:*` row at hash `-` — then store the current body of
+#                 every resolved row, then compare again and print as usual. It
+#                 records every pending finding at once; there is no per-row
+#                 form, so a caller confirms them all before running it.
+#                 `non-unique`, `removed` on a `policy:*` or `skill:*` row, and
+#                 `added` with no disposition cannot be acknowledged and stay.
+#   --ack-added <anchor prefix> <disposition>
+#                 give an added item a host-local disposition. Only
+#                 `excluded:<closed reason>` and `skill:<name>` are accepted;
+#                 `policy:*` and `repo:CLAUDE.md` mean the policy text or the
+#                 repository instructions must change, which is a repository
+#                 change, and are exit 2. The prefix must match exactly one
+#                 candidate item of the sources, that item must be `added`, and
+#                 the prefix must overlap no manifest anchor, else exit 2 and
+#                 the store is left as it was.
+#   --ack-store <dir>
+#                 the acknowledgement store; defaults to
+#                 `~/.config/cc-cmds/stage-policy-ack`.
+#
+#   An acknowledgement is a person's claim that the distillation still says
+#   what the source says. This checker cannot judge that claim, so `--ack` and
+#   `--ack-added` are refused (exit 2, store untouched) whenever
+#   `CC_PIPELINE_RUN_ID` is set: an unattended stage has nobody to confirm.
+#
+# Acknowledgement store — host-local, never in the repository, because it
+# holds the text of a person's own files. The directory is mode 700 and every
+# file in it mode 600; a store that does not exist reads as empty.
+#   acks.tsv          `source<TAB>anchor<TAB>sha256<TAB>disposition<TAB>acked-at`
+#   bodies/<sha256>   the bytes of an item body as they were when acknowledged,
+#                     the base of the next `--explain` diff
+# Writes go to a temporary file in the same directory and are moved into place.
+#
+# Freshness. The manifest's sha256 column stays the shipped baseline. A
+# `policy:*` or `skill:*` row is fresh when its current body hash equals the
+# manifest hash or the store holds the same (source, anchor, sha256). An
+# `excluded:*` row's body reaches no stage, so only its anchor is checked: it
+# is fresh when the anchor resolves to exactly one item, or when it resolves to
+# none and the store holds (source, anchor, `-`). A store row whose disposition
+# is `excluded:*` or `skill:*` and whose anchor is no manifest anchor is a
+# host-local disposition: it is compared by the same rules and the item it
+# resolves to is not `added`. When it resolves to nothing it is ignored,
+# because the manifest is what the verdict answers to. When it resolves to
+# several items — a bullet added later shares its prefix — it is ignored too
+# and never reported `non-unique`: it resolves nothing, so each of those items
+# reads as `added` again and can be given a longer prefix with `--ack-added`.
 #
 # Output — one finding per line, then a verdict on the last line:
 #   added <source> <candidate text>   an item in the source no anchor resolves to
@@ -59,8 +115,9 @@
 # collapsing it into either neighbour would let an anchor that matches several
 # places pass as resolved or be discarded as missing.
 #
-# Exit codes: 0 — `match` or `skipped`; 1 — `mismatch`; 2 — the manifest or the
-# map is malformed (the check could not be carried out; never a drift verdict).
+# Exit codes: 0 — `match` or `skipped`; 1 — `mismatch`; 2 — the manifest, the
+# map or the store is malformed, or an acknowledgement was refused (the check
+# or the record could not be carried out; never a drift verdict).
 #
 # Compatibility: bash 3.2, no python, no perl. Hashes use the gate's idiom
 # `shasum -a 256 | cut -d' ' -f1`. `LC_ALL=C` so that `${#s}` and `${s:0:n}`
@@ -71,10 +128,12 @@ export LC_ALL=C
 
 MANIFEST_HEADER=$'source\tanchor\tsha256\tdisposition\tnote'
 DISPOSITION_RE='^(policy:[^	]+|skill:[^	]+|repo:CLAUDE\.md|excluded:(mcp-unavailable|interactive-only|driver-owned|superseded|host-mutation|workspace-local|no-stage-login))$'
+LOCAL_DISPOSITION_RE='^(skill:[^[:space:]]+|excluded:(mcp-unavailable|interactive-only|driver-owned|superseded|host-mutation|workspace-local|no-stage-login))$'
+ACK_HEADER=$'source\tanchor\tsha256\tdisposition\tacked-at'
 
 sha_stdin() { shasum -a 256 | cut -d' ' -f1; }
 
-# drift_entries <source> <file>
+# drift_entries <source> <file> [<body dir>]
 # Prints one `<text><TAB><sha256>` line per item of <file> read as <source>.
 #   user-scope — every top-level bullet (`- ` at column 0). <text> is the first
 #                line without its `- `; the hashed body is that line plus every
@@ -83,11 +142,15 @@ sha_stdin() { shasum -a 256 | cut -d' ' -f1; }
 #   workspace  — every `# ` or `## ` heading. <text> is the heading line
 #                verbatim; the hashed body is everything after it up to the next
 #                such heading, each line with its newline.
+# With <body dir>, the hashed bytes of each item are also written to
+# `<body dir>/<sha256>`, so a body can be shown or stored without re-reading.
 drift_entries() {
-  local source="$1" file="$2" line text="" body="" open=0
+  local source="$1" file="$2" bodydir="${3:-}" line text="" body="" open=0 h
   emit() {
     [ "$open" = 1 ] || return 0
-    printf '%s\t%s\n' "$text" "$(printf '%s' "$body" | sha_stdin)"
+    h=$(printf '%s' "$body" | sha_stdin)
+    [ -z "$bodydir" ] || printf '%s' "$body" > "$bodydir/$h"
+    printf '%s\t%s\n' "$text" "$h"
   }
   case "$source" in
     user-scope)
@@ -188,65 +251,162 @@ map_lookup() {
 
 findings=0
 compared=0
+EXPLAIN=0
+STORE=""
+ACK_FILE=""
+# ACKS — the store's rows between newlines, so that a (source, anchor, sha256)
+# key is one literal `case` pattern.
+ACKS=$'\n'
+BODY_TMP=""
+# Filled by every comparison pass, read by the acknowledgement writers.
+ACK_PENDING=""
+RESOLVED=""
+ADDED_ITEMS=""
+# every candidate item of every compared source, `source<TAB>sha256<TAB>text`;
+# the text is last so that a TAB inside it cannot shift the hash
+ALL_ITEMS=""
+
+# load_store — reads acks.tsv into ACKS; an absent store reads as empty.
+load_store() {
+  local rows n row
+  ACK_FILE="$STORE/acks.tsv"
+  ACKS=$'\n'
+  [ -f "$ACK_FILE" ] || return 0
+  [ "$(head -n 1 "$ACK_FILE")" = "$ACK_HEADER" ] \
+    || die_format "store header must be 'source<TAB>anchor<TAB>sha256<TAB>disposition<TAB>acked-at': $ACK_FILE"
+  rows=$(awk -F'\t' 'NR > 1 { print NR "\t" NF }' "$ACK_FILE")
+  if [ -n "$rows" ]; then
+    while IFS=$'\t' read -r n row; do
+      [ "$row" = 5 ] || die_format "store line $n has $row column(s), expected 5: $ACK_FILE"
+    done < <(printf '%s\n' "$rows")
+  fi
+  ACKS=$'\n'"$(tail -n +2 "$ACK_FILE")"$'\n'
+}
+
+# acked <source> <anchor> <sha256> — the store holds that exact row key.
+acked() {
+  case "$ACKS" in
+    *$'\n'"$1	$2	$3	"*) return 0 ;;
+  esac
+  return 1
+}
+
+# explain_changed <source> <anchor> <manifest sha256 or -> <current sha256> <disposition>
+# The diff base is the body stored for the last hash this host acknowledged
+# for the anchor, else for the manifest hash.
+explain_changed() {
+  local source="$1" anchor="$2" asha="$3" cur="$4" disp="$5" prev="" h
+  printf '  disposition: %s\n' "$disp"
+  if [ -f "$ACK_FILE" ]; then
+    h=$(S="$source" A="$anchor" awk -F'\t' \
+      'NR > 1 && $1 == ENVIRON["S"] && $2 == ENVIRON["A"] && $3 != "-" { h = $3 } END { print h }' "$ACK_FILE")
+    [ -n "$h" ] && [ -f "$STORE/bodies/$h" ] && prev="$h"
+  fi
+  if [ -z "$prev" ] && [ "$asha" != "-" ] && [ -f "$STORE/bodies/$asha" ]; then
+    prev="$asha"
+  fi
+  if [ -n "$prev" ]; then
+    { diff -u -L acknowledged -L current "$STORE/bodies/$prev" "$BODY_TMP/$cur" || true; } | sed 's/^/  /'
+  else
+    printf '  no previous body on this host; current body:\n'
+    sed 's/^/  /' "$BODY_TMP/$cur"
+  fi
+}
 
 # compare_source <source> <file> <manifest>
 compare_source() {
   local source="$1" file="$2" manifest="$3"
-  local candidates anchors cand text hash a anchor asha n found_hash matched
-  candidates=$(drift_entries "$source" "$file")
-  anchors=$(awk -F'\t' -v s="$source" 'NR > 1 && $1 == s { print $2 "\t" $3 }' "$manifest")
+  local candidates anchors local_rows cand text hash anchor asha adisp akind n found_hash matched
+  local live=""
+  candidates=$(drift_entries "$source" "$file" "$BODY_TMP")
+  if [ -n "$candidates" ]; then
+    while IFS= read -r cand; do
+      ALL_ITEMS="${ALL_ITEMS}${source}	${cand##*	}	${cand%	*}"$'\n'
+    done < <(printf '%s\n' "$candidates")
+  fi
+  anchors=$(awk -F'\t' -v s="$source" 'NR > 1 && $1 == s { print $2 "\t" $3 "\t" $4 "\ttable" }' "$manifest")
+  # host-local dispositions: store rows for an anchor the manifest does not carry
+  if [ -f "$ACK_FILE" ]; then
+    local_rows=$(awk -F'\t' -v s="$source" '
+      FNR == NR { if (FNR > 1 && $1 == s) t[$2] = 1; next }
+      FNR > 1 && $1 == s && !($2 in t) && $4 ~ /^(excluded|skill):/ {
+        if (!($2 in d)) order[++k] = $2
+        d[$2] = $4
+      }
+      END { for (i = 1; i <= k; i++) print order[i] "\t-\t" d[order[i]] "\tlocal" }' "$manifest" "$ACK_FILE")
+    if [ -n "$local_rows" ]; then
+      if [ -n "$anchors" ]; then anchors="$anchors"$'\n'"$local_rows"; else anchors="$local_rows"; fi
+    fi
+  fi
   compared=$((compared + 1))
-  [ -n "$anchors" ] || return 0
-  # each anchor against every candidate: 0 → removed, 1 → hash compare, 2+ → non-unique
-  while IFS= read -r a; do
-    anchor="${a%	*}"
-    asha="${a##*	}"
-    n=0; found_hash=""
-    if [ -n "$candidates" ]; then
-      while IFS= read -r cand; do
-        text="${cand%	*}"
-        hash="${cand##*	}"
-        if [ "${text:0:${#anchor}}" = "$anchor" ]; then
-          n=$((n + 1)); found_hash="$hash"
-        fi
-      done < <(printf '%s\n' "$candidates")
-    fi
-    if [ "$n" -eq 0 ]; then
-      printf 'removed %s %s\n' "$source" "$anchor"; findings=$((findings + 1))
-    elif [ "$n" -gt 1 ]; then
-      printf 'non-unique %s %s\n' "$source" "$anchor"; findings=$((findings + 1))
-    elif [ "$found_hash" != "$asha" ]; then
-      printf 'changed %s %s\n' "$source" "$anchor"; findings=$((findings + 1))
-    fi
-  done < <(printf '%s\n' "$anchors")
+  if [ -n "$anchors" ]; then
+    # each anchor against every candidate: 0 → removed, 1 → compare, 2+ → non-unique
+    while IFS=$'\t' read -r anchor asha adisp akind; do
+      n=0; found_hash=""
+      if [ -n "$candidates" ]; then
+        while IFS= read -r cand; do
+          text="${cand%	*}"
+          hash="${cand##*	}"
+          if [ "${text:0:${#anchor}}" = "$anchor" ]; then
+            n=$((n + 1)); found_hash="$hash"
+          fi
+        done < <(printf '%s\n' "$candidates")
+      fi
+      # a host-local row that resolves to nothing, or to several items, is
+      # ignored: it resolves nothing, so the items it matches read as `added`
+      # again and can each be given a longer prefix
+      if [ "$akind" != table ] && [ "$n" -ne 1 ]; then
+        continue
+      fi
+      live="${live}${anchor}	${asha}	${adisp}	${akind}"$'\n'
+      if [ "$n" -eq 0 ]; then
+        case "$adisp" in
+          excluded:*)
+            acked "$source" "$anchor" - && continue
+            ACK_PENDING="${ACK_PENDING}${source}	${anchor}	-	${adisp}"$'\n' ;;
+        esac
+        printf 'removed %s %s\n' "$source" "$anchor"; findings=$((findings + 1))
+      elif [ "$n" -gt 1 ]; then
+        printf 'non-unique %s %s\n' "$source" "$anchor"; findings=$((findings + 1))
+      else
+        RESOLVED="$RESOLVED$found_hash"$'\n'
+        # an excluded row's body reaches no stage: its anchor is all that is checked
+        case "$adisp" in excluded:*) continue ;; esac
+        [ "$akind" = table ] && [ "$found_hash" = "$asha" ] && continue
+        acked "$source" "$anchor" "$found_hash" && continue
+        ACK_PENDING="${ACK_PENDING}${source}	${anchor}	${found_hash}	${adisp}"$'\n'
+        printf 'changed %s %s\n' "$source" "$anchor"; findings=$((findings + 1))
+        [ "$EXPLAIN" = 0 ] || explain_changed "$source" "$anchor" "$asha" "$found_hash" "$adisp"
+      fi
+    done < <(printf '%s\n' "$anchors")
+  fi
   # each candidate no anchor resolves to → added
   [ -n "$candidates" ] || return 0
   while IFS= read -r cand; do
     text="${cand%	*}"
+    hash="${cand##*	}"
     matched=0
-    while IFS= read -r a; do
-      anchor="${a%	*}"
-      if [ "${text:0:${#anchor}}" = "$anchor" ]; then matched=1; break; fi
-    done < <(printf '%s\n' "$anchors")
+    if [ -n "$live" ]; then
+      while IFS=$'\t' read -r anchor asha adisp akind; do
+        [ -n "$anchor" ] || continue
+        if [ "${text:0:${#anchor}}" = "$anchor" ]; then matched=1; break; fi
+      done < <(printf '%s' "$live")
+    fi
     if [ "$matched" -eq 0 ]; then
       printf 'added %s %s\n' "$source" "$text"; findings=$((findings + 1))
+      ADDED_ITEMS="${ADDED_ITEMS}${source}	${text}	${hash}"$'\n'
+      if [ "$EXPLAIN" = 1 ]; then
+        printf '  body:\n'
+        sed 's/^/  /' "$BODY_TMP/$hash"
+      fi
     fi
   done < <(printf '%s\n' "$candidates")
 }
 
-main() {
-  local script_dir manifest map cfgdir user_file ws_file
-  script_dir=$(cd "$(dirname "$0")" && pwd)
-  manifest="$script_dir/stage-policy.sources.tsv"
-  map="${HOME:-}/.config/cc-cmds/stage-policy-sources"
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --sources-map) [ $# -ge 2 ] || die_format "--sources-map needs a file"; map="$2"; shift 2 ;;
-      -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
-      *) die_format "unknown argument: $1" ;;
-    esac
-  done
-  validate_manifest "$manifest"
+# compare_all <manifest> <map> — one full comparison pass over every source.
+compare_all() {
+  local manifest="$1" map="$2" cfgdir user_file ws_file
+  findings=0; compared=0; ACK_PENDING=""; RESOLVED=""; ADDED_ITEMS=""; ALL_ITEMS=""
 
   # user-scope — the same derivation the gate uses for the user settings directory
   cfgdir="${CLAUDE_CONFIG_DIR:-}"
@@ -275,6 +435,133 @@ main() {
       fi
     fi
   fi
+  return 0
+}
+
+# store_init — creates the store (directory mode 700, bodies/ too) if absent.
+store_init() {
+  umask 077
+  mkdir -p "$STORE/bodies"
+  chmod 700 "$STORE" "$STORE/bodies"
+}
+
+# store_rows <rows> — appends `source<TAB>anchor<TAB>sha256<TAB>disposition`
+# rows the store does not already key, each stamped with the time of the record.
+store_rows() {
+  local rows="$1" tmp now source anchor sha disp
+  [ -n "$rows" ] || [ ! -f "$ACK_FILE" ] || return 0
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  tmp=$(mktemp "$STORE/.acks.XXXXXX")
+  if [ -f "$ACK_FILE" ]; then cp "$ACK_FILE" "$tmp"; else printf '%s\n' "$ACK_HEADER" > "$tmp"; fi
+  while IFS=$'\t' read -r source anchor sha disp; do
+    [ -n "$source" ] || continue
+    acked "$source" "$anchor" "$sha" && continue
+    printf '%s\t%s\t%s\t%s\t%s\n' "$source" "$anchor" "$sha" "$disp" "$now" >> "$tmp"
+    ACKS="${ACKS}${source}	${anchor}	${sha}	${disp}	${now}"$'\n'
+  done < <(printf '%s' "$rows")
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$ACK_FILE"
+}
+
+# store_bodies <hashes> — stores each body not already in bodies/.
+store_bodies() {
+  local h tmp
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    [ -f "$STORE/bodies/$h" ] && continue
+    tmp=$(mktemp "$STORE/bodies/.body.XXXXXX")
+    cp "$BODY_TMP/$h" "$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$STORE/bodies/$h"
+  done < <(printf '%s' "$1")
+}
+
+# ack_added <manifest> <prefix> <disposition> — records one host-local disposition.
+# Uniqueness is counted over every candidate item, not only the added ones: a
+# prefix that also matches an item something else already resolves would be
+# stored as a row that resolves to two items from its first comparison on.
+ack_added() {
+  local manifest="$1" prefix="$2" disp="$3" source text hash hits=0
+  local hit_source="" hit_hash="" hit_text="" a
+  if [ -n "$ALL_ITEMS" ]; then
+    while IFS=$'\t' read -r source hash text; do
+      [ -n "$source" ] || continue
+      if [ "${text:0:${#prefix}}" = "$prefix" ]; then
+        hits=$((hits + 1)); hit_source="$source"; hit_hash="$hash"; hit_text="$text"
+      fi
+    done < <(printf '%s' "$ALL_ITEMS")
+  fi
+  [ "$hits" -eq 1 ] \
+    || die_format "--ack-added: the prefix must match exactly one item of the sources, it matches $hits: $prefix"
+  case $'\n'"$ADDED_ITEMS" in
+    *$'\n'"${hit_source}	${hit_text}	${hit_hash}"$'\n'*) : ;;
+    *) die_format "--ack-added: the item the prefix matches is not added (an anchor already resolves it): $prefix" ;;
+  esac
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    if [ "${a:0:${#prefix}}" = "$prefix" ] || [ "${prefix:0:${#a}}" = "$a" ]; then
+      die_format "--ack-added: the prefix overlaps the manifest anchor '$a'"
+    fi
+  done < <(awk -F'\t' -v s="$hit_source" 'NR > 1 && $1 == s { print $2 }' "$manifest")
+  store_init
+  store_rows "${hit_source}	${prefix}	${hit_hash}	${disp}"$'\n'
+  store_bodies "$hit_hash"$'\n'
+}
+
+main() {
+  local script_dir manifest map do_ack=0 add_prefix="" add_disp="" do_add=0 explain=0
+  script_dir=$(cd "$(dirname "$0")" && pwd)
+  manifest="$script_dir/stage-policy.sources.tsv"
+  map="${HOME:-}/.config/cc-cmds/stage-policy-sources"
+  STORE="${HOME:-}/.config/cc-cmds/stage-policy-ack"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sources-map) [ $# -ge 2 ] || die_format "--sources-map needs a file"; map="$2"; shift 2 ;;
+      --ack-store) [ $# -ge 2 ] || die_format "--ack-store needs a directory"; STORE="$2"; shift 2 ;;
+      --explain) explain=1; shift ;;
+      --ack) do_ack=1; shift ;;
+      --ack-added)
+        [ $# -ge 3 ] || die_format "--ack-added needs an anchor prefix and a disposition"
+        do_add=1; add_prefix="$2"; add_disp="$3"; shift 3 ;;
+      -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+      *) die_format "unknown argument: $1" ;;
+    esac
+  done
+  # an acknowledgement is a person's claim; an unattended stage has nobody to make it
+  if { [ "$do_ack" = 1 ] || [ "$do_add" = 1 ]; } && [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then
+    die_format "refusing to record an acknowledgement: CC_PIPELINE_RUN_ID is set, and an unattended stage has nobody to confirm the distillation"
+  fi
+  if [ "$do_add" = 1 ]; then
+    [ -n "$add_prefix" ] || die_format "--ack-added: empty anchor prefix"
+    case "$add_disp" in
+      policy:*|repo:CLAUDE.md)
+        die_format "--ack-added: '$add_disp' means the policy text or the repository instructions must change, which is a repository change; edit stage-policy.md and stage-policy.sources.tsv in the repository instead" ;;
+    esac
+    [[ "$add_disp" =~ $LOCAL_DISPOSITION_RE ]] \
+      || die_format "--ack-added: disposition must be excluded:<closed reason> or skill:<name>: '$add_disp'"
+  fi
+  validate_manifest "$manifest"
+  load_store
+  if [ "$explain" = 1 ] || [ "$do_ack" = 1 ] || [ "$do_add" = 1 ]; then
+    BODY_TMP=$(mktemp -d "${TMPDIR:-/tmp}/stage-policy-drift.XXXXXX")
+    trap 'rm -rf "$BODY_TMP"' EXIT
+  fi
+
+  # recording passes are silent; the pass after them prints as usual
+  if [ "$do_add" = 1 ]; then
+    compare_all "$manifest" "$map" > /dev/null
+    ack_added "$manifest" "$add_prefix" "$add_disp"
+    load_store
+  fi
+  if [ "$do_ack" = 1 ]; then
+    compare_all "$manifest" "$map" > /dev/null
+    store_init
+    store_rows "$ACK_PENDING"
+    store_bodies "$RESOLVED"
+    load_store
+  fi
+  EXPLAIN="$explain"
+  compare_all "$manifest" "$map"
 
   # memory rows: not a drift source, no output, no part in the verdict
   if [ "$findings" -gt 0 ]; then
