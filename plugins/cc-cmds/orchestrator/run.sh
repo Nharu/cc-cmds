@@ -4541,7 +4541,7 @@ stage_parent_id() {
 
 classify_termination() {
   # classify_termination <stage> <exit-rc> <predicate-rc>
-  local stage="$1" exit_rc="$2" pred_rc="$3"
+  local stage="$1" exit_rc="$2" pred_rc="$3" lx why stream
   if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
   # A stage the driver signalled from the limit-shape arm never reaches
   # `stage_collect`, so its `.rc` is the consumer's default and not an
@@ -4559,6 +4559,19 @@ classify_termination() {
     printf '산출물 없는 정지'; return 0
   fi
   if [ "$exit_rc" = "0" ]; then printf '공허한 성공'; return 0; fi
+  # Only a non-zero exit gets here. A stage that died of the usage limit by
+  # itself is judged on its own pinned stream, and only once `.rc` exists: that
+  # file is written by `stage_collect` after the stage is reaped and removed by
+  # `stage_spawn` on every attempt, so its presence is what says this attempt's
+  # exit was observed. A stage parked but still running (one the limit-shape arm
+  # may not signal) has no `.rc`, reaches here on the caller's fallback `1`, and
+  # stays `크래시` as before. The warning goes to stderr: stdout is the class.
+  if [ -f "$RUN_DIR/$stage.attempt" ] && [ -f "$RUN_DIR/$stage.rc" ]; then
+    stream=$(stage_log_path "$stage")
+    lx=0; why=$(stage_limit_exit "$stream") || lx=$?
+    if [ "$lx" = "0" ]; then printf '한도 종료'; return 0; fi
+    if [ "$lx" = "3" ]; then warn "한도 형상 불완전 ($why) $stream"; fi
+  fi
   printf '크래시'
 }
 
@@ -4582,6 +4595,67 @@ decision_point_reached() {
   out=$(stage_log_path "$stage")
   [ -f "$out" ] || return 1
   grep -q 'AskUserQuestion' "$out" 2>/dev/null
+}
+
+stage_limit_exit() {
+  # stage_limit_exit <stream>
+  # Whether one attempt's own stream shows it died of the usage limit, read from
+  # typed fields only. The result envelope's prose, `subtype`, `terminal_reason`,
+  # the frame's window fields, init contents, session ids and the clock are not
+  # read, so re-reading after the reset cannot flip the answer.
+  #   exit 0, no output  E ∧ F ∧ R ∧ P ∧ T — a limit death
+  #   exit 3, letters    E, but some of F,R,P,T false; the false ones joined by ","
+  #   exit 1, no output  not E, and every failure (no argument, no or empty file,
+  #                      no jq, a jq error)
+  # E  the last `result` object has is_error true and api_error_status 429
+  # F  the last `rate_limit_event` has rate_limit_info.status "rejected"
+  # R  that frame's rate_limit_info.resetsAt is a number
+  # P  no more system/init objects than result objects
+  # T  no torn line after the last `result`
+  # "Last" is file order over parsed top-level `.type`, never a substring match.
+  # A non-blank line that does not parse is torn and is judged, not skipped: a
+  # skipping parse would make an older 429 in front of a torn tail the last
+  # envelope.
+  local stream="${1:-}" verdict
+  [ -n "$stream" ] && [ -s "$stream" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  verdict=$(jq -R -n -r '
+    reduce (inputs | select(test("\\S"))) as $l
+      ({n: 0, torn: -1, e: null, ei: -1, f: null, ni: 0, nr: 0};
+       ($l | try {v: fromjson} catch null) as $p
+       | if $p == null then .torn = .n
+         elif ($p.v | type) != "object" then .
+         elif $p.v.type == "result" then .e = $p.v | .ei = .n | .nr += 1
+         elif $p.v.type == "rate_limit_event" then .f = $p.v
+         elif $p.v.type == "system" and $p.v.subtype == "init" then .ni += 1
+         else . end
+       | .n += 1)
+    | if .e != null and .e.is_error == true
+         and ((.e.api_error_status | tostring) == "429") then
+        ((.f.rate_limit_info? // null) | if type == "object" then . else {} end) as $info
+        | [ (if $info.status == "rejected" then empty else "F" end),
+            (if ($info.resetsAt | type) == "number" then empty else "R" end),
+            (if .ni <= .nr then empty else "P" end),
+            (if .torn < .ei then empty else "T" end) ]
+        | if length == 0 then "=" else join(",") end
+      else "-" end' "$stream" 2>/dev/null) || return 1
+  case "$verdict" in
+    '=') return 0 ;;
+    [FRPT]*) printf '%s' "$verdict"; return 3 ;;
+    *) return 1 ;;
+  esac
+}
+
+terminal_route_class() {
+  # terminal_route_class <class>
+  # The class a reader disposes of. `한도 종료` is a subset of what used to be
+  # written `크래시` and is disposed of exactly like it, so every comparison and
+  # `case` subject goes through here; rows, log lines and park reasons keep the
+  # true class. Not named `route_…`: that prefix belongs to route.sh.
+  case "${1:-}" in
+    '한도 종료') printf '크래시' ;;
+    *) printf '%s' "${1:-}" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -5707,7 +5781,7 @@ review_recover() {
   # it was reaped BECAUSE `S5` is boundary idempotent, so the recovery dispatch
   # is its disposition too. It arrives under its own class rather than as a
   # crash, which is what keeps the two countable apart on the ledger.
-  case "$class" in
+  case "$(terminal_route_class "$class")" in
     '크래시'|'한도-형상 회수') : ;;
     *) park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1 ;;
   esac
@@ -5902,7 +5976,7 @@ segment_cycle() {
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
-    case "$class" in
+    case "$(terminal_route_class "$class")" in
       '정상 완료') : ;;
       '의도된 park')
         park "$seg" cone 무효화 "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
@@ -5935,7 +6009,7 @@ segment_cycle() {
         # A crashed stage dies near the end rather than early — median 23.6
         # minutes against 22.3 for a stage that completes — so what a crash
         # throws away is close to a whole stage.
-        log "$seg: 크래시 — 1회만 재시도"
+        log "$seg: $class — 1회만 재시도"
         stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
         stage_wait_all "$sid.retry"
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
@@ -6387,11 +6461,12 @@ design_arm() {
       log "S1 설계 건너뜀 — 이 런의 설계 스테이지가 이미 완주했다 ($DOC_KEY)"
       return 0
     fi
-    # A CRASH THAT SAVED NOTHING IS DISPATCHED AGAIN. `크래시` is the class every
-    # non-zero exit gets, so a transient API usage limit is filed beside a stage
-    # that is genuinely broken, and parking on it ends the run for a cause that
-    # clears by itself. The document decides instead: nothing at the path, or
-    # the spawn-time stub, means the crash carried nothing off.
+    # A CRASH THAT SAVED NOTHING IS DISPATCHED AGAIN. A transient API usage limit
+    # is filed `한도 종료` when the stage's own stream shows it and `크래시`
+    # otherwise, and both are read here as `크래시`: parking on either ends the
+    # run for a cause that may clear by itself. The document decides instead:
+    # nothing at the path, or the spawn-time stub, means the crash carried
+    # nothing off.
     # A HOLLOW SUCCESS IS THE SAME SHAPE FROM THE OTHER SIDE. The stage exited 0
     # and the artifact predicate said no document — a team member that ended its
     # turn with no witness left, a save that never happened before the turn
@@ -6399,7 +6474,7 @@ design_arm() {
     # those is more permanent than a crash, and the test is identical: the
     # document decides, so a retry that would overwrite saved work is still
     # refused and one that would overwrite nothing is allowed.
-    if { [ "$prior_class" = "크래시" ] || [ "$prior_class" = "공허한 성공" ]; } \
+    if { [ "$(terminal_route_class "$prior_class")" = "크래시" ] || [ "$prior_class" = "공허한 성공" ]; } \
        && { [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; then
       log "S1 설계 재파견 — 앞선 시도가 $prior_class 로 끝났고 저장된 문서가 없다 ($DOC_KEY)"
     else
@@ -6687,7 +6762,7 @@ main_loop() {
   # report LAST NIGHT'S total for it. With no row in this run the figure is
   # `비용 불명`, never `0` — the same vocabulary as the settlement count beside
   # it, so a low total is never presented bare.
-  local last_cost settled
+  local last_cost settled limit_n
   last_cost=$( { run_section_rows 'cost' || true; } | tail -1 \
                | tr '|' '\n' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
   settled=$( { run_section_rows 'stage-result' || true; } | grep -cF '종단 부류=외부 종료' || true)
@@ -6696,6 +6771,12 @@ main_loop() {
     report_append "비용" "누적 ${last_cost} USD · 정산됨(비용 불명) ${settled:-0}건"
   else
     report_append "비용" "비용 불명 — 이 런의 cost 행이 없다 · 정산됨(비용 불명) ${settled:-0}건"
+  fi
+  # Usage-limit deaths are counted apart and disposed of as `크래시`. The line
+  # appears only when there is one, so every other run's report is unchanged.
+  limit_n=$( { run_section_rows 'stage-result' || true; } | grep -cF '종단 부류=한도 종료' || true)
+  if [ "${limit_n:-0}" -gt 0 ]; then
+    report_append "한도 종료" "${limit_n}건 — 크래시와 같게 처분, 계정 이동 없음"
   fi
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
