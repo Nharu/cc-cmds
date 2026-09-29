@@ -22261,6 +22261,269 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 68. 기록 구간 메모 — 워밍 구간 안의 행 읽기는 원장을 다시 읽은 것과 바이트까지 같다
+# --- section: 68 | group: base | covers: snapshot | anchors: 68: 워밍 구간 안의 행 읽기가 원장 grep 과 바이트까지 같다, 68: 워밍된 종류의 읽기는 grep 을 띄우지 않는다, 68: 워밍 함수가 반환하면 메모가 사라지고 같은 셸의 다음 읽기가 새 행을 보인다, 68: 환경으로 주입한 메모 이름은 원장 읽기를 가리지 못한다 ---
+#
+# 집계 리더 셋(진행 벡터, 답변된 판단 목록, 미이행 리뷰 의무 목록)은 맨 위에서
+# 자기가 읽을 행 종류를 한 번씩 grep 해 지역 메모에 담고, 그 아래의 `gate_rows` 는
+# 메모된 종류를 프로세스 없이 답한다. 이 절은 그 메모가 원장 읽기와 구별되지
+# 않는다는 것 — 출력 바이트와 종료 코드가 같고, 구간을 벗어나면 남지 않으며, 밖에서
+# 주입할 수 없다는 것 — 을 잰다.
+#
+# 동일성만 재면 메모가 꺼져 있어도 통과한다. 그래서 메모가 실제로 답했다는 것도
+# 함께 단언한다: 워밍된 종류의 읽기가 grep 을 띄우지 않고, 구간 안에서 붙인 행을
+# 구간 안의 읽기가 보지 않으며, 세 리더 한 번 호출의 원장 grep 수가 워밍한 종류
+# 수와 같다(id 마다 원장을 다시 읽던 수가 아니라).
+#
+# 관측은 매번 새 bash 에서 게이트를 소싱 전용으로 읽어 한다. 픽스처는 이 절이 스스로
+# 만들고 앞 절의 상태에 기대지 않는다.
+# ---------------------------------------------------------------------------
+M68=$(mktemp -d "$WORK/memo68.XXXXXX")
+M68_PROBE="$M68/probe.sh"
+cat > "$M68_PROBE" <<'PROBE'
+#!/usr/bin/env bash
+# probe.sh <gate.sh> <모드> [인자…] — 68 절의 관측 하나. 호출마다 새 프로세스다.
+PRE_N=${GATE_ROWS_MEMO_N:-}
+GATE_PATH="$1"; mode="$2"; shift 2
+CC_GATE_SOURCE_ONLY=1 . "$GATE_PATH" </dev/null
+set +e
+OUT=$(mktemp -d "$(dirname "$0")/o.XXXXXX")
+# 메모 이전의 `gate_rows` 본문 그대로. 동일성은 이것과 잰다.
+lit() { grep -E "^- \`$1\`" "$LEDGER" 2>/dev/null || true; }
+# 워밍 함수와 같은 모양의 구간: 메모 이름 넷을 지역으로 두고 헬퍼를 부른 뒤 본문을
+# 실행한다. 워밍할 종류는 전역 KINDS 가 준다.
+zone() {
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  gate_ledger_warm "${KINDS[@]}"
+  "$@"
+}
+case "$mode" in
+  same)
+    # same <원장> <종류>… — 종류마다 구간 밖 원장 grep 과 구간 안 읽기의 바이트·rc
+    LEDGER="$1"; shift; KINDS=("$@")
+    i=0
+    for k in "${KINDS[@]}"; do
+      lit "$k" > "$OUT/ref.$i"; printf '%s\n' "$?" > "$OUT/refrc.$i"; i=$((i + 1))
+    done
+    body() {
+      local i=0 k
+      for k in "${KINDS[@]}"; do
+        gate_rows "$k" > "$OUT/memo.$i"; printf '%s\n' "$?" > "$OUT/memorc.$i"; i=$((i + 1))
+      done
+    }
+    zone body
+    i=0
+    for k in "${KINDS[@]}"; do
+      if [ "$(od -c < "$OUT/ref.$i")" = "$(od -c < "$OUT/memo.$i")" ] \
+         && [ "$(cat "$OUT/refrc.$i")" = "$(cat "$OUT/memorc.$i")" ]; then
+        printf 'same %s\n' "$k"
+      else
+        printf 'DIFF %s — ref=%s rc=%s / memo=%s rc=%s\n' "$k" \
+          "$(od -c < "$OUT/ref.$i" | tr '\n' ' ')" "$(cat "$OUT/refrc.$i")" \
+          "$(od -c < "$OUT/memo.$i" | tr '\n' ' ')" "$(cat "$OUT/memorc.$i")"
+      fi
+      i=$((i + 1))
+    done
+    ;;
+  hits)
+    # hits <원장> <스텁 디렉터리> <기록 파일> <종류>… — 워밍된 종류를 구간 안에서 읽을
+    # 때 뜨는 grep 의 수, 그리고 대조로 구간 밖에서 같은 읽기를 할 때의 수. 스텁은
+    # 워밍이 끝난 뒤에 PATH 에 올린다 — 헬퍼 자신의 grep 은 세지 않는다.
+    LEDGER="$1"; stub="$2"; log="$3"; shift 3; KINDS=("$@")
+    : > "$log"
+    body() {
+      local k
+      PATH="$stub:$PATH"
+      for k in "${KINDS[@]}"; do gate_rows "$k" >/dev/null; done
+      printf 'inside=%s ' "$(wc -l < "$log" | tr -d ' ')"
+    }
+    zone body
+    : > "$log"
+    for k in "${KINDS[@]}"; do gate_rows "$k" >/dev/null; done
+    printf 'outside=%s\n' "$(wc -l < "$log" | tr -d ' ')"
+    ;;
+  absent)
+    # absent <없는 경로> — 원장이 없을 때 구간 밖과 안의 출력 바이트 수와 rc
+    LEDGER="$1"; KINDS=(segment)
+    gate_rows segment > "$OUT/out"; r1=$?
+    body() { gate_rows segment > "$OUT/in"; printf '%s\n' "$?" > "$OUT/inrc"; }
+    zone body
+    printf '%s|%s|%s|%s\n' "$(wc -c < "$OUT/out" | tr -d ' ')" "$r1" \
+      "$(wc -c < "$OUT/in" | tr -d ' ')" "$(cat "$OUT/inrc")"
+    ;;
+  fns)
+    # fns <원장> <매니페스트> <런 디렉터리> — 세 워밍 함수의 출력을, 헬퍼를 무력화한
+    # 판본의 출력과 바이트로 비교한다. 줄 수를 함께 내 공허한 비교를 가린다.
+    LEDGER="$1"; MANIFEST="$2"; RUN_DIR="$3"; RUN_ID=R68
+    if command -v manifest_snapshot_take >/dev/null 2>&1; then manifest_snapshot_take; fi
+    run4() {
+      gate_progress_vector > "$OUT/pv.$1" 2>&1
+      gate_answered_judgments_json > "$OUT/aj.$1" 2>&1
+      gate_unfulfilled_review_obligations > "$OUT/uo.$1" 2>&1
+      gate_unfulfilled_review_obligations S1 > "$OUT/uo1.$1" 2>&1
+    }
+    run4 w
+    gate_ledger_warm() { :; }
+    run4 c
+    for f in pv aj uo uo1; do
+      if [ "$(od -c < "$OUT/$f.w")" = "$(od -c < "$OUT/$f.c")" ]; then s=same; else s=DIFF; fi
+      printf '%s %s %s\n' "$s" "$f" "$(grep -c . "$OUT/$f.w")"
+    done
+    ;;
+  fnhits)
+    # fnhits <원장> <매니페스트> <런 디렉터리> <스텁 디렉터리> <기록 파일> — 세 리더를
+    # 한 번씩 부를 때 원장 경로를 argv 에 담은 grep 의 수
+    LEDGER="$1"; MANIFEST="$2"; RUN_DIR="$3"; stub="$4"; log="$5"; RUN_ID=R68
+    if command -v manifest_snapshot_take >/dev/null 2>&1; then manifest_snapshot_take; fi
+    for fn in gate_progress_vector gate_answered_judgments_json gate_unfulfilled_review_obligations; do
+      : > "$log"
+      ( PATH="$stub:$PATH"; "$fn" >/dev/null 2>&1 )
+      printf '%s=%s ' "$fn" "$(awk -v L="$LEDGER" 'index($0, L) { c++ } END { print c + 0 }' "$log")"
+    done
+    printf '\n'
+    ;;
+  vanish)
+    # vanish <원장> — 실제 워밍 함수가 반환한 뒤 메모 이름이 남는지, 구간 안에서 붙인
+    # 행을 구간 안의 읽기가 보는지, 구간이 끝난 같은 셸의 읽기가 보는지
+    LEDGER="$1"; KINDS=('리뷰 의무')
+    gate_unfulfilled_review_obligations >/dev/null
+    left=""
+    for v in GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS; do
+      if declare -p "$v" >/dev/null 2>&1; then left="$left $v"; fi
+    done
+    body() {
+      printf -- '- `리뷰 의무` | 의무 id=O9 | 세그먼트=S9 | 상태=미이행 | prev=x\n' >> "$LEDGER"
+      gate_rows '리뷰 의무' | grep -c 'O9' > "$OUT/inside"
+    }
+    zone body
+    after=$(gate_rows '리뷰 의무' | grep -c 'O9')
+    printf 'left=[%s] inside=%s after=%s fn=%s\n' "${left# }" "$(cat "$OUT/inside")" "$after" \
+      "$(gate_unfulfilled_review_obligations S9 | tr '\n' ' ')"
+    ;;
+  nocall)
+    # nocall <원장> <기록 파일> — 헬퍼가 gate_rows·gate_has_row 를 거치지 않는지
+    LEDGER="$1"; calls="$2"; KINDS=(segment '리뷰 의무' '승인')
+    gate_rows() { printf 'gate_rows\n' >> "$calls"; }
+    gate_has_row() { printf 'gate_has_row\n' >> "$calls"; return 1; }
+    : > "$calls"
+    body() { printf 'n=%s ' "$GATE_ROWS_MEMO_N"; }
+    zone body
+    printf 'calls=%s\n' "$(wc -l < "$calls" | tr -d ' ')"
+    ;;
+  inject)
+    # inject <원장> — 메모 이름을 환경으로 들고 온 프로세스에서 구간 밖 읽기
+    LEDGER="$1"
+    if [ "$(gate_rows segment | od -c)" = "$(lit segment | od -c)" ]; then s=yes; else s=no; fi
+    printf 'pre=%s fake=%s same=%s\n' "$PRE_N" "$(gate_rows segment | grep -c 'id=FAKE')" "$s"
+    ;;
+  switch)
+    # switch <원장 A> <원장 B> — 구간 도중 LEDGER 가 바뀌면 메모를 쓰지 않는다
+    LEDGER="$1"; B="$2"; KINDS=(segment)
+    body() { LEDGER="$B"; gate_rows segment > "$OUT/sw"; }
+    zone body
+    if [ "$(od -c < "$OUT/sw")" = "$(lit segment | od -c)" ]; then s=same; else s=DIFF; fi
+    if [ "$(LEDGER="$1" lit segment | od -c)" = "$(lit segment | od -c)" ]; then d=AB-same; else d=AB-differ; fi
+    printf '%s %s\n' "$s" "$d"
+    ;;
+esac
+PROBE
+m68() { bash "$M68_PROBE" "$GATE" "$@" 2>&1; }
+
+M68_L="$M68/ledger.md"
+cat > "$M68_L" <<'LEDGER'
+# 파이프라인 런 보고서 — R68
+
+- `run` | 교대=0 | run-id=R68 | prev=x
+산문 줄 — 참고로 - `segment` 는 이 줄의 머리가 아니다
+- `segment` | 교대=1 | id=S1 | 상태=계획됨 | 워크트리=/nonexistent/S1 | prev=x
+- `segment` | 교대=1 | id=S2 | 상태=계획됨 | 워크트리=/nonexistent/S2 | prev=x
+- `자율 승인` | 교대=1 | kind=skill | 결정=act | 대상=t | 세그먼트=S1 | 절단점=머지 | 행위자=교대 | 근거=r | prev=x
+- `segment` | 교대=1 | id=S1 | 상태=실행중 | prev=x
+- `stage-result` | 교대=1 | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x
+- `cycle` | 교대=1 | 세그먼트=S1 | 종류=리뷰 | prev=x
+- `리뷰 의무` | 의무 id=O1 | 세그먼트=S1 | 상태=미이행 | prev=x
+- `리뷰 의무` | 의무 id=O2 | 세그먼트=S2 | 상태=미이행 | prev=x
+- `리뷰 의무` | 의무 id=O3 | 세그먼트=S1 | 상태=미이행 | prev=x
+- `리뷰 의무` | 의무 id=O3 | 세그먼트=S1 | 상태=이행 | prev=x
+- `승인` | 승인 id=J1 | 상태=대기 | 절단점=판단 | 막는 세그먼트=S1 | prev=x
+- `승인` | 승인 id=J1 | 상태=승인 | prev=x
+- `승인` | 승인 id=J2 | 상태=대기 | 절단점=판단 | 막는 세그먼트=S2 | prev=x
+- `승인` | 승인 id=J2 | 상태=승인 | prev=x
+- `자율 승인` | 교대=1 | kind=judgment | 결정=act | 해소 승인=J2 | prev=x
+- `종료 절` | 절=1 | prev=x
+- `blocked` | 스코프=cone | 원인=해소 | prev=x
+- `act` | 순번=1 | prev=x
+- `a.b` | 메타 문자를 가진 종류 | prev=x
+- `axb` | 점이 한 글자에 맞는 종류 | prev=x
+- `segment` | 교대=1 | id=S2 | 상태=실행중 | prev=x
+LEDGER
+# 끝 개행이 없는 판본. 마지막 줄이 행이라 그 행의 종류가 끝 개행 처리를 지난다.
+printf '%s' "$(cat "$M68_L")" > "$M68/ledger-noeol.md"
+: > "$M68/empty.md"
+printf -- '- `segment` | 교대=1 | id=SB | 상태=계획됨 | prev=x\n' > "$M68/ledger-b.md"
+cp "$M68_L" "$M68/ledger-v.md"
+mkdir -p "$M68/run/answer"
+cat > "$M68/manifest.md" <<'MANIFEST'
+# 파이프라인 런 매니페스트 — R68
+
+## 대상
+- `target` | 별칭=m68 | 메인 워크트리=/nonexistent | 공통 git 디렉터리=/nonexistent/.git | 베이스 브랜치=master | 홈=예 | 원격 슬러그=m68/m68 | 절단점=PR | 말단 행위 상한=없음
+
+## 인가
+**종료 지점**: 메모 동일성 픽스처 — 도달하지 않는다
+MANIFEST
+# grep 스텁 둘: 하나는 이름만, 하나는 argv 를 남긴다. 실제 경로는 스텁을 PATH 에
+# 올리기 전에 푼다.
+M68_REAL_GREP=$(command -v grep)
+mkdir -p "$M68/stub-n" "$M68/stub-a"
+printf '#!/bin/sh\nprintf "grep\\n" >> "%s"\nexec "%s" "$@"\n' "$M68/hits.log" "$M68_REAL_GREP" > "$M68/stub-n/grep"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$M68/argv.log" "$M68_REAL_GREP" > "$M68/stub-a/grep"
+chmod +x "$M68/stub-n/grep" "$M68/stub-a/grep"
+
+M68_KINDS=(segment cycle '자율 승인' stage-result '종료 절' blocked '승인' '리뷰 의무' act run 'a.b' 'x(' '없는 종류')
+
+# 픽스처의 전제: 메타 문자를 가진 종류가 실제로 두 행에 맞고, 끝 개행 없는 판본의
+# 마지막 바이트는 개행이 아니다.
+check "68: (전제) 메타 문자를 가진 종류가 두 행에 맞는다" "$(grep -cE '^- `a.b`' "$M68_L")" "2"
+check "68: (전제) 끝 개행 없는 원장의 마지막 바이트가 개행이 아니다" "$(tail -c 1 "$M68/ledger-noeol.md")" "x"
+
+m68_same() {
+  # m68_same <라벨> <원장> — 모든 종류가 same 으로 나오고 어긋난 줄이 없는지
+  local out
+  out=$(m68 same "$2" "${M68_KINDS[@]}")
+  check "$1" "$(printf '%s\n' "$out" | grep -c '^same ' || true)" "${#M68_KINDS[@]}"
+  check "$1 (어긋난 종류 없음)" "$(printf '%s\n' "$out" | { grep -v '^same ' || true; } | tr '\n' ' ')" ""
+}
+m68_same "68: 워밍 구간 안의 행 읽기가 원장 grep 과 바이트까지 같다" "$M68_L"
+m68_same "68: 끝 개행 없는 원장에서도 워밍 구간의 읽기가 원장 grep 과 바이트까지 같다" "$M68/ledger-noeol.md"
+m68_same "68: 빈 원장에서 워밍 구간의 읽기가 원장 grep 과 바이트까지 같다" "$M68/empty.md"
+check "68: 원장이 없으면 워밍 안팎 모두 빈 출력에 rc 0 이다" "$(m68 absent "$M68/none.md")" "0|0|0|0"
+
+check "68: 워밍된 종류의 읽기는 grep 을 띄우지 않는다" \
+  "$(m68 hits "$M68_L" "$M68/stub-n" "$M68/hits.log" segment '리뷰 의무' '승인')" "inside=0 outside=3"
+
+m68_fns=$(m68 fns "$M68_L" "$M68/manifest.md" "$M68/run")
+check "68: 세 워밍 함수의 출력이 워밍을 끈 판본과 바이트까지 같다" \
+  "$(printf '%s\n' "$m68_fns" | sed 's/ [0-9]*$//' | tr '\n' ' ')" "same pv same aj same uo same uo1 "
+check "68: (전제) 비교한 출력이 비어 있지 않다" \
+  "$(printf '%s\n' "$m68_fns" | awk '$1 != "same" || $3 == 0 { bad++ } END { print bad + 0 }')" "0"
+check "68: 답변된 판단 하나와 미이행 의무 둘·하나가 나온다" \
+  "$(printf '%s\n' "$m68_fns" | awk '$2 != "pv" { printf "%s=%s ", $2, $3 }')" "aj=1 uo=2 uo1=1 "
+check "68: 세 리더 한 번 호출의 원장 grep 수는 워밍한 종류 수다" \
+  "$(m68 fnhits "$M68_L" "$M68/manifest.md" "$M68/run" "$M68/stub-a" "$M68/argv.log")" \
+  "gate_progress_vector=6 gate_answered_judgments_json=2 gate_unfulfilled_review_obligations=1 "
+
+check "68: 워밍 함수가 반환하면 메모가 사라지고 같은 셸의 다음 읽기가 새 행을 보인다" \
+  "$(m68 vanish "$M68/ledger-v.md")" "left=[] inside=0 after=1 fn=O9 "
+check "68: 워밍 헬퍼는 gate_rows·gate_has_row 를 부르지 않는다" \
+  "$(m68 nocall "$M68_L" "$M68/calls.log")" "n=3 calls=0"
+check "68: 환경으로 주입한 메모 이름은 원장 읽기를 가리지 못한다" \
+  "$(GATE_ROWS_MEMO_LEDGER="$M68_L" GATE_ROWS_MEMO_N=1 GATE_ROWS_MEMO_KINDS=segment \
+     GATE_ROWS_MEMO_ROWS='- `segment` | id=FAKE | 상태=실행중' m68 inject "$M68_L")" "pre=1 fake=0 same=yes"
+check "68: 구간 도중 원장 경로가 바뀌면 메모가 아니라 새 경로를 읽는다" \
+  "$(m68 switch "$M68_L" "$M68/ledger-b.md")" "same AB-differ"
+
+# ---------------------------------------------------------------------------
 # 60. CI 체크 계열 — 전사·행 예산·진전 벡터, 그리고 머지 거절의 아홉 갈래
 # --- section: 60 | group: sa | covers: act, plan, exec | anchors: 60: 관측 세 줄이 checks 행 세 개로 전사된다, 60: 어휘 밖 상태의 줄은 전사되지 않는다, 60: 드레인 앞에서 뜬 다이제스트가 드레인 뒤에도 받아들여진다, 60: 진전 해시가 checks 드레인에 불변이다, 60: 죽은 드레인이 남긴 파일을 오래된 것부터 회수한다, 60: 살아 있는 소유자의 잠금 아래서는 전사하지 않는다, 60: 실패+이름 목록은 거절한다, 60: 그 행의 도달 판정이 CI실패 다, 60: 기록 행위는 실패 행이 있어도 머지 절단점에서 기록된다, 60: 스테이지 기동 예보는 실패 행이 있어도 CI실패 로 park 되지 않는다, 60: 머지 라벨을 단 세그먼트 읽기는 실패 행이 있어도 수행된다, 60: 이력을 통합하는 로컬 머지는 여전히 CI실패 로 거절된다 ---
 #
