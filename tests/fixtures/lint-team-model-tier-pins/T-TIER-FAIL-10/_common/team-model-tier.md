@@ -9,12 +9,9 @@
 | `integration` | external service integration | opus |
 | `coordinator` | Scope Coordinator | opus |
 | `logic` | control flow and correctness | sonnet |
-| `logic` | shell semantics | opus |
 | `performance` | performance | sonnet |
 | `tests` | test quality and coverage | sonnet |
 | `conformance` | conformance to a design document | sonnet |
 | `quality` | code quality, style | sonnet |
 | `portability` | shell and platform portability | sonnet |
 | `audit-reader` | every design-audit reader | opus |
-
-- `출처=표` requires `모델` to be the model of the seat's class.
