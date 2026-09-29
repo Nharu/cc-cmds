@@ -200,7 +200,7 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test.XXXXXX")
 # Replaces the earlier trap rather than adding to it — a bare `trap ... EXIT`
 # overwrites, so both directories are named here or the first one leaks.
-cleanup() { rm -rf "$WORK" "$WORK_EARLY"; }
+cleanup() { rm -rf "$WORK" "$WORK_EARLY" "${IVW:-}"; }
 trap cleanup EXIT
 
 RUN_ID="testrun"
@@ -4824,7 +4824,7 @@ check "T5 3단 fail-closed: 비영으로 끝난다" "$rc" "1"
 check "T5 3단 fail-closed: 4단의 기본값을 내지 않는다" "$v" ""
 
 # --- T6: 2단도 폴백하지 않는다 ---------------------------------------------
-# 2단의 값이 깨졌을 때 폴백하면 같은 런의 스테이지들이 서로 다른 레인에 앉는데,
+# 2단의 값이 깨졌을 때 폴백하면 이 런의 기본 좌석이 런 도중에 다른 레인으로 바뀌는데,
 # 그것이 정확히 2단을 둔 이유이므로 여기서 폴백하는 것은 기전의 자기 부정이다.
 mkdir -p "$LD/rundirbad"
 printf '%s\n' "$LD/notadir" > "$LD/rundirbad/config-dir"
@@ -5035,6 +5035,629 @@ fi
 chmod 644 "$BKS/cc-cmds/run/bk-run/ledger-path"
 rm -f "$BKS/cc-cmds/run/bk-run/ledger-path"
 
+# --- T7f: 런 기준선 — 런 디렉터리의 인벤토리 스냅숏 ------------------------
+# `rundir_init` 의 마지막 단계는 런 디렉터리의 `inventory.json` 에 인벤토리
+# 기준선을 한 번 뜬다: 살아 있는 인벤토리의 모드 600 사본, 또는 부재를 판정한
+# 설정 루트를 대상에 실은 표지 심볼릭 링크. 쓸 수 있는 이름은 다시 뜨지 않고,
+# 쓸 수 없는 이름·깨진 살아 있는 인벤토리·검사할 수 없는 진입은 부재로 접지 않고
+# 멈춘다. 멈춤은 원장이 있으면 park 행 하나를, 없으면 멈춤 줄만 남긴다.
+#
+# 모든 진입은 게이트가 도는 조건 그대로 `set -euo pipefail` 아래에서 돈다 — 문면을
+# 만드는 도중 두지 않은 변수 하나가 행도 멈춤 줄도 없이 진입을 죽이는 것이 이
+# 경로의 가장 조용한 실패이기 때문이다.
+#
+# 게이트 경로(첫 진입 park, 체인 행, 기준선 행)는 게이트를 소싱한 **별도 `bash`
+# 프로세스**에서 돈다. 이 하네스는 이미 드라이버를 소싱했고 게이트가 드라이버를
+# 다시 소싱하므로, 같은 셸에서는 `readonly` 이름이 재대입으로 죽는다. 소싱은
+# `LEDGER`·`ORCH_DIR`·`PATH` 를 다시 쓰므로 진입 스크립트가 그것들을 소싱 **뒤에**
+# 다시 세운다 — 앞서 둔 값에 기대면 원장 없는 갈래만 돌고, 「행 +0」 같은 부정
+# 단언이 아무것도 배제하지 못한 채 통과한다.
+# 픽스처 루트는 `$WORK` 가 아니라 짧은 /tmp 아래에 둔다. 거부 관측은 500 바이트에서
+# 잘리고, macOS 의 긴 TMPDIR 아래에서는 관측에 실리는 세 경로만으로 그 한도가 차
+# 꼬리의 `상태 루트=`·`호출자=` 가 사라진다 — 그러면 보통 길이의 경로에서 그 둘이
+# 실린다는 단언을 잴 수 없다. 정리는 `cleanup` 이 맡는다.
+IVW=$(mktemp -d /tmp/cciv.XXXXXX); mkdir -p "$IVW/shim-jq" "$IVW/shim-link"
+printf '#!/bin/sh\nexit 1\n' > "$IVW/shim-jq/jq"; chmod 755 "$IVW/shim-jq/jq"
+printf '#!/bin/sh\nexit 1\n' > "$IVW/shim-link/link"; chmod 755 "$IVW/shim-link/link"
+IV_MARK='/dev/null/cc-cmds-inventory-absent'
+cat > "$IVW/iv-entry.sh" <<'IVEOF'
+#!/usr/bin/env bash
+# T7f 의 별도 프로세스 진입 — 하네스가 런타임에 쓰고 따로 태운다.
+set -uo pipefail
+SRC="$1"; set --
+for v in $(compgen -e); do case "$v" in CC_PIPELINE_*) unset "$v" ;; esac; done
+unset CLAUDE_CONFIG_DIR
+if [ -n "${IV_STAGE:-}" ]; then CC_PIPELINE_STAGE_ID="$IV_STAGE"; export CC_PIPELINE_STAGE_ID; fi
+HP="$PATH"
+case "$SRC" in */gate.sh) CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY ;; esac
+CC_ORCH_SOURCE_ONLY=1
+export CC_ORCH_SOURCE_ONLY
+# shellcheck disable=SC1090
+. "$SRC" || exit 9
+PATH="$HP"
+unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+set +e
+LEDGER="$IV_LEDGER"; ORCH_DIR="$IV_ORCH"; BASE="$IV_BASE"; RUN_ID=iv-run
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+cd "$IV_CWD" || exit 9
+if [ -n "${IV_GO:-}" ]; then while [ ! -e "$IV_GO" ]; do :; done; fi
+case "${IV_MODE:-init}" in
+  verify) RUN_DIR=$(rundir_of_run_id "$RUN_ID"); gate_chain_verify ;;
+  *) ( set -euo pipefail; rundir_init ) ;;
+esac
+IVEOF
+iv_seq=0
+iv_new() {
+  # iv_new — 새 픽스처 한 벌. 레인 기록은 해석기가 통과하도록 미리 심고, 원장은
+  # 만들어 두되 `ledger-path` 는 두지 않는다(원장 없는 진입이 기본이다).
+  iv_seq=$((iv_seq + 1))
+  IVD="$IVW/f$iv_seq"
+  IVH="$IVD/home"; IVS="$IVD/state"; IVC="$IVD/cfg"; IVB="$IVD/base"
+  IVRD="$IVS/cc-cmds/run/iv-run"; IVINV="$IVRD/inventory.json"
+  IVL="$IVB/docs/pipeline-run/iv-run.md"; IVLIVE="$IVC/cc-lane/accounts.json"
+  IVGL="$IVL"
+  mkdir -p "$IVH/.claude" "$IVRD" "$IVC" "$IVB/docs/pipeline-run"
+  printf '%s\n' "$IVH/.claude" > "$IVRD/config-dir"
+  printf '# 원장\n\n## 실행 iv-run\n' > "$IVL"
+}
+iv_ledger_on() { printf '%s\n' "$IVL" > "$IVRD/ledger-path"; }
+iv_live() {
+  # iv_live <valid|torn|foreign> [config_dir 의 HOME] [파일] — 살아 있는 인벤토리
+  local f="${3:-$IVLIVE}"
+  mkdir -p "$(dirname "$f")"
+  case "$1" in
+    valid|foreign)
+      jq -cn --arg h "$( [ "$1" = valid ] && printf '%s' "${2:-$IVH}" || printf '%s' "$IVD/elsewhere" )" \
+        '{schema: "cc-lane-accounts v1", accounts: [{id: "a", config_dir: ($h + "/.claude-a"), label: "a",
+          interactive_reserved: false, unattended: "enabled", added_at: 0}]}' > "$f" ;;
+    torn) printf '{"schema":' > "$f" ;;
+  esac
+}
+iv_init() (
+  # iv_init [명령…] — 이 하네스 안의 게이트 밖 진입. IV_HOME·IV_XDG(`-unset-` 이면
+  # 미설정)·IV_PATH_PRE·IV_STAGE 로 환경을 바꾼다. 인자가 있으면 진입이 성공한 뒤
+  # 같은 셸에서 그것을 부른다.
+  unset CLAUDE_CONFIG_DIR CC_PIPELINE_STAGE_ID
+  [ -z "${IV_STAGE:-}" ] || CC_PIPELINE_STAGE_ID="$IV_STAGE"
+  if [ "${IV_HOME+x}" = x ]; then HOME="$IV_HOME"; else HOME="$IVH"; fi
+  export HOME
+  XDG_STATE_HOME="$IVS"; export XDG_STATE_HOME
+  if [ "${IV_XDG+x}" != x ]; then XDG_CONFIG_HOME="$IVC"; export XDG_CONFIG_HOME
+  elif [ "$IV_XDG" = "-unset-" ]; then unset XDG_CONFIG_HOME
+  else XDG_CONFIG_HOME="$IV_XDG"; export XDG_CONFIG_HOME; fi
+  [ -z "${IV_PATH_PRE:-}" ] || PATH="$IV_PATH_PRE:$PATH"
+  RUN_ID=iv-run ORCH_DIR="$script_dir" BASE="$IVB" LEDGER=""
+  set -euo pipefail
+  rundir_init
+  if [ "$#" -gt 0 ]; then "$@"; fi
+)
+iv_proc() {
+  # iv_proc <run|gate> [init|verify] — 별도 프로세스 진입 하나
+  local src="$script_dir/run.sh"
+  [ "$1" = gate ] && src="$script_dir/gate.sh"
+  HOME="$IVH" XDG_STATE_HOME="$IVS" XDG_CONFIG_HOME="$IVC" \
+  IV_LEDGER="${IVGL:-}" IV_ORCH="$script_dir" IV_BASE="$IVB" IV_CWD="$IVD" \
+  IV_MODE="${2:-init}" IV_GO="${IV_GO:-}" IV_STAGE="${IV_STAGE:-}" \
+    bash "$IVW/iv-entry.sh" "$src"
+}
+iv_gate() { iv_proc gate "$@"; }
+iv_rows() {
+  # iv_rows <계열> [원장] — 그 계열 행의 수
+  local n
+  n=$(grep -c "^- \`$1\`" "${2:-$IVL}" 2>/dev/null) || n=0
+  printf '%s' "${n:-0}"
+}
+iv_last() { { grep "^- \`$1\`" "${2:-$IVL}" 2>/dev/null || true; } | tail -1; }
+iv_is() { if eval "$1"; then printf yes; else printf no; fi; }
+iv_has() {
+  # iv_has <라벨> <문자열> <조각> — 조각이 들어 있으면 PASS
+  case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "'$3' 가 없다: $2" ;; esac
+}
+iv_lacks() {
+  case "$2" in *"$3"*) bad "$1" "'$3' 가 있다: $2" ;; *) ok "$1" ;; esac
+}
+iv_mode_of() { t_mode "$1" 2>/dev/null || printf '?'; }
+iv_root_guard() {
+  # 루트로 돌면 mode 000 도 읽히므로 그 경우를 재지 못한다 — T7e 와 같은 가드
+  [ "$(id -u)" != "0" ]
+}
+
+# 1. 살아 있는 파일 없음 → 표지
+iv_new
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-1 인벤토리가 없으면 진입은 성공한다" "$rc" "0"
+check "T7f-1 이름은 표지이고 대상은 상수 + 설정 루트다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+IV1D="$IVD"; IV1C="$IVC"; IV1INV="$IVINV"
+
+# 2. 살아 있는 파일 유효 → 사본
+iv_new; iv_live valid
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-2 유효한 인벤토리에서 진입은 성공한다" "$rc" "0"
+check "T7f-2 이름은 심볼릭 링크가 아닌 정규 파일이다" \
+  "$(iv_is '[ -f "$IVINV" ] && [ ! -L "$IVINV" ]')" "yes"
+check "T7f-2 사본의 바이트가 살아 있는 파일과 같다" "$(iv_is 'cmp -s "$IVINV" "$IVLIVE"')" "yes"
+check "T7f-2 사본의 모드는 600 이다" "$(iv_mode_of "$IVINV")" "600"
+IV2D="$IVD"
+
+# 3. 표지 뒤 같은 루트에 인벤토리가 생겨도 표지 그대로
+IVD="$IV1D"; IVH="$IVD/home"; IVS="$IVD/state"; IVC="$IV1C"; IVB="$IVD/base"
+IVRD="$IVS/cc-cmds/run/iv-run"; IVINV="$IV1INV"; IVLIVE="$IVC/cc-lane/accounts.json"
+IVL="$IVB/docs/pipeline-run/iv-run.md"
+iv_live valid
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-3 표지 뒤 인벤토리가 생긴 재진입도 성공한다" "$rc" "0"
+check "T7f-3 표지는 그대로다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+
+# 4. 사본 뒤 살아 있는 파일이 깨지거나 사라져도 사본 그대로
+iv_new; iv_live valid
+iv_init >/dev/null 2>&1
+cp -p "$IVINV" "$IVD/copy.saved"
+iv_live torn
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-4 살아 있는 파일이 깨진 뒤의 재진입도 성공한다" "$rc" "0"
+check "T7f-4 사본의 바이트가 그대로다 (깨짐)" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+rm -f "$IVLIVE"
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-4 살아 있는 파일이 사라진 뒤의 재진입도 성공한다" "$rc" "0"
+check "T7f-4 사본의 바이트가 그대로다 (사라짐)" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+check "T7f-4 사본의 모드가 그대로다" "$(iv_mode_of "$IVINV")" "600"
+
+# 5. 찢어진 사본 + ledger-path + BASE → SNAPSHOT park
+iv_new; iv_ledger_on
+printf '{"schema":' > "$IVINV"; chmod 600 "$IVINV"
+iv_b=$(iv_rows blocked)
+iv_out_snap=$(iv_init 2>&1); rc=$?
+check "T7f-5 찢어진 사본에서 진입은 멈춘다" "$rc" "1"
+iv_has "T7f-5 멈춤 줄이 재발행 명령을 싣는다" "$iv_out_snap" "회복: rm -rf "
+check "T7f-5 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-5 행의 사유" "$iv_row" "사유=인벤토리 스냅숏 손상"
+iv_has "T7f-5 행의 재개 명령" "$iv_row" "재개 명령=rm -rf "
+check "T7f-5 이름은 그대로다" "$(cat "$IVINV" 2>/dev/null)" '{"schema":'
+
+# 6. 5 와 같되 ledger-path 없음 → 행 +0
+rm -f "$IVRD/ledger-path"
+iv_b=$(iv_rows blocked)
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-6 원장 없는 SNAPSHOT 도 멈춘다" "$rc" "1"
+check "T7f-6 원장 없는 SNAPSHOT 은 행을 남기지 않는다" "$(( $(iv_rows blocked) - iv_b ))" "0"
+
+# 7. 남의 심볼릭 링크 → SNAPSHOT (symlink), 상수 단독 대상도
+iv_new
+ln -s "$IVD/elsewhere" "$IVINV"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-7 남의 심볼릭 링크에서 멈춘다" "$rc" "1"
+iv_has "T7f-7 이유는 symlink 다" "$iv_out" "(symlink)"
+rm -f "$IVINV"; ln -s "$IV_MARK" "$IVINV"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-7 상수 단독 대상의 링크에서도 멈춘다" "$rc" "1"
+iv_has "T7f-7 상수 단독 대상도 symlink 다" "$iv_out" "(symlink)"
+
+# 8. 디렉터리 → SNAPSHOT (not-regular), 회복 명령을 그대로 돌리면 다시 뜬다
+iv_new
+mkdir -p "$IVINV/sub"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-8 이름이 디렉터리이면 멈춘다" "$rc" "1"
+iv_has "T7f-8 이유는 not-regular 다" "$iv_out" "(not-regular)"
+iv_rec=$(printf '%s\n' "$iv_out" | sed -n 's/.*회복: //p' | tail -1)
+eval "$iv_rec"
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-8 회복 명령 뒤 재진입은 기준선을 뜬다" "$rc" "0"
+check "T7f-8 다시 뜬 기준선은 표지다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+
+# 9. 읽을 수 없는 사본 → SNAPSHOT (unreadable)
+iv_new; iv_live valid
+iv_init >/dev/null 2>&1
+chmod 000 "$IVINV"
+if iv_root_guard; then
+  iv_out=$(iv_init 2>&1); rc=$?
+  check "T7f-9 읽을 수 없는 사본에서 멈춘다" "$rc" "1"
+  iv_has "T7f-9 이유는 unreadable 이다" "$iv_out" "(unreadable)"
+else
+  bad "T7f-9 픽스처" "mode 000 파일이 읽혀 읽기 실패 상태를 만들지 못했다 (root 로 실행 중인가)"
+fi
+chmod 600 "$IVINV"
+
+# 10. 이름 비었음, 살아 있는 파일이 찢어짐 → LIVE park
+iv_new; iv_ledger_on; iv_live torn
+iv_b=$(iv_rows blocked)
+iv_out_live=$(iv_init 2>&1); rc=$?
+check "T7f-10 깨진 살아 있는 인벤토리에서 멈춘다" "$rc" "1"
+check "T7f-10 아무것도 게시하지 않는다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+check "T7f-10 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-10 행의 사유" "$iv_row" "사유=살아 있는 인벤토리 손상"
+iv_has "T7f-10 행의 재개 명령" "$iv_row" "재개 명령=cc-lane account check"
+iv_has "T7f-10 멈춤 줄이 이유 앞에 살아 있는 경로를 싣는다" "$iv_out_live" "$IVLIVE (parse)"
+
+# 11. 살아 있는 파일이 끊어진 잎 링크 → LIVE (dangling-link)
+iv_new
+mkdir -p "$IVC/cc-lane"; ln -s "$IVD/nowhere" "$IVLIVE"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-11 끊어진 잎에서 멈춘다" "$rc" "1"
+iv_has "T7f-11 이유는 dangling-link 다" "$iv_out" "(dangling-link)"
+check "T7f-11 표지를 두지 않는다" "$(iv_is '[ -L "$IVINV" ]')" "no"
+
+# 12. cc-lane/ 을 검색할 수 없음 → LIVE (unsearchable-dir)
+iv_new; iv_live valid
+chmod 000 "$IVC/cc-lane"
+if iv_root_guard; then
+  iv_out=$(iv_init 2>&1); rc=$?
+  check "T7f-12 검색할 수 없는 디렉터리에서 멈춘다" "$rc" "1"
+  iv_has "T7f-12 이유는 unsearchable-dir 이다" "$iv_out" "(unsearchable-dir)"
+  check "T7f-12 표지를 두지 않는다" "$(iv_is '[ -L "$IVINV" ]')" "no"
+else
+  bad "T7f-12 픽스처" "mode 000 디렉터리가 검색돼 검색 불가 상태를 만들지 못했다 (root 로 실행 중인가)"
+fi
+chmod 755 "$IVC/cc-lane"
+
+# 13. ROOT(사본) — HOME=A 로 뜬 뒤 HOME=B 로 원장 있는 진입
+iv_new; iv_live valid; iv_ledger_on
+iv_init >/dev/null 2>&1
+cp -p "$IVINV" "$IVD/copy.saved"
+mkdir -p "$IVD/home-b"
+iv_b=$(iv_rows blocked)
+iv_out_rootc=$(IV_HOME="$IVD/home-b" iv_init 2>&1); rc=$?
+check "T7f-13 다른 HOME 의 진입은 멈춘다" "$rc" "1"
+check "T7f-13 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-13 행의 사유" "$iv_row" "사유=인벤토리 기준선 루트 불일치"
+iv_has "T7f-13 행의 재개 명령은 명령 없음이다" "$iv_row" "재개 명령=(없음)"
+iv_lacks "T7f-13 행의 재개 명령에 rm 이 없다" "${iv_row##*재개 명령=}" "rm "
+iv_lacks "T7f-13 멈춤 줄에 회복 꼬리가 없다" "$iv_out_rootc" "회복:"
+iv_has "T7f-13 멈춤 줄이 두 갈래를 보인다" "$iv_out_rootc" "XDG_STATE_HOME="
+check "T7f-13 이름은 그대로다" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+
+# 14. config_dir 가 진입의 HOME 밖 → LIVE (config_dir-prefix)
+iv_new; iv_live foreign
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-14 HOME 밖 config_dir 의 살아 있는 인벤토리에서 멈춘다" "$rc" "1"
+iv_has "T7f-14 이유는 config_dir-prefix 다" "$iv_out" "(config_dir-prefix)"
+iv_has "T7f-14 이 진입의 HOME 을 함께 싣는다" "$iv_out" "이 진입의 HOME=$IVH"
+check "T7f-14 표지를 두지 않는다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+
+# 15. CHECK·PUBLISH
+# (a) HOME="" 이고 XDG 미설정
+iv_new
+iv_out=$(IV_HOME="" IV_XDG=-unset- iv_init 2>&1); rc=$?
+check "T7f-15a 빈 HOME 은 멈춘다" "$rc" "1"
+iv_has "T7f-15a 이유는 path 다" "$iv_out" "(path"
+check "T7f-15a 표지를 두지 않는다" "$(iv_is '[ -L "$IVINV" ]')" "no"
+# (b) 상대 XDG_CONFIG_HOME
+iv_new
+iv_out=$(IV_XDG="rel-cfg" iv_init 2>&1); rc=$?
+check "T7f-15b 상대 설정 루트는 멈춘다" "$rc" "1"
+iv_has "T7f-15b 이유는 path 다" "$iv_out" "(path"
+# (c) 실패하는 jq, 유효한 살아 있는 파일
+iv_new; iv_live valid; iv_ledger_on
+iv_out_check=$(IV_PATH_PRE="$IVW/shim-jq" iv_init 2>&1); rc=$?
+check "T7f-15c 돌지 않는 jq 는 멈춘다" "$rc" "1"
+iv_has "T7f-15c 이유는 no-jq 다" "$iv_out_check" "(no-jq"
+check "T7f-15c 아무것도 게시하지 않는다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+# (d) HOME=A 로 뜬 사본에 HOME=A/ 로 재진입
+iv_new; iv_live valid; iv_ledger_on
+iv_init >/dev/null 2>&1
+cp -p "$IVINV" "$IVD/copy.saved"
+iv_b=$(iv_rows blocked)
+iv_out=$(IV_HOME="$IVH/" iv_init 2>&1); rc=$?
+check "T7f-15d 끝 슬래시 HOME 은 멈춘다" "$rc" "1"
+iv_has "T7f-15d 이유는 home-shape 다" "$iv_out" "(home-shape"
+check "T7f-15d 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_has "T7f-15d 행의 사유" "$(iv_last blocked)" "사유=인벤토리 검사 불가"
+iv_lacks "T7f-15d 멈춤 줄에 회복 꼬리가 없다" "$iv_out" "회복:"
+check "T7f-15d 이름은 그대로다" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+# (e) 같은 사본에서 실패하는 jq
+iv_out=$(IV_PATH_PRE="$IVW/shim-jq" iv_init 2>&1); rc=$?
+check "T7f-15e 사본 위의 돌지 않는 jq 도 멈춘다" "$rc" "1"
+iv_has "T7f-15e 이유는 no-jq 다" "$iv_out" "(no-jq"
+check "T7f-15e 이름은 그대로다" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+# (f) PUBLISH — 실패하는 link
+iv_new; iv_live valid; iv_ledger_on
+iv_b=$(iv_rows blocked)
+iv_out_pub=$(IV_PATH_PRE="$IVW/shim-link" iv_init 2>&1); rc=$?
+check "T7f-15f 게시하지 못하면 멈춘다" "$rc" "1"
+iv_has "T7f-15f 이유는 publish 다" "$iv_out_pub" "(publish)"
+iv_has "T7f-15f 멈춤 줄이 온전하다" "$iv_out_pub" "link 를 쓸 수 없거나"
+iv_lacks "T7f-15f 멈춤 줄에 역따옴표가 없다" "$iv_out_pub" '`'
+check "T7f-15f 이름은 비었다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+check "T7f-15f 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_has "T7f-15f 행의 사유" "$(iv_last blocked)" "사유=인벤토리 스냅숏 게시 실패"
+check "T7f-15f 스테이징 잔여가 없다" \
+  "$(find "$IVRD" -name 'inventory.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# 16. 스위치 독립 — 새 함수 어디에도 휴면 스위치 토큰이 없다
+iv_fns=$(declare -f rundir_ledger rundir_row rundir_refuse \
+  rundir_inventory_can_check rundir_inventory_root rundir_inventory_absent rundir_inventory_judge \
+  rundir_inventory_take rundir_inventory_last_fp rundir_inventory_record rundir_inventory_drain \
+  rundir_inventory_snapshot)
+check "T7f-16 새 함수가 모두 정의돼 있다" \
+  "$(printf '%s\n' "$iv_fns" | grep -c '^rundir_[a-z_]* ()')" "12"
+check "T7f-16 새 함수에 휴면 스위치 토큰이 없다" \
+  "$(printf '%s\n' "$iv_fns" | grep -c ROUTE_ROUTING_BUILD_COMPLETE)" "0"
+
+# 17. 경쟁 — 독립 bash 경쟁자 8 개
+iv_new; iv_live valid
+iv_go="$IVD/go"; iv_pids=""
+for iv_i in 1 2 3 4 5 6 7 8; do
+  IV_GO="$iv_go" iv_proc run > "$IVD/race.$iv_i.out" 2>&1 &
+  iv_pids="$iv_pids $!"
+done
+touch "$iv_go"
+iv_bad=0
+for iv_p in $iv_pids; do wait "$iv_p" || iv_bad=$((iv_bad + 1)); done
+check "T7f-17 경쟁자 여덟이 모두 성공한다" "$iv_bad" "0"
+check "T7f-17 이름에는 정규 파일 하나가 남는다" \
+  "$(iv_is '[ -f "$IVINV" ] && [ ! -L "$IVINV" ]')" "yes"
+check "T7f-17 그 바이트가 살아 있는 파일과 같다" "$(iv_is 'cmp -s "$IVINV" "$IVLIVE"')" "yes"
+check "T7f-17 스테이징 잔여가 없다" \
+  "$(find "$IVRD" -name 'inventory.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+# 같은 경쟁을 게이트를 소싱한 진입으로 — 기준선 행은 정확히 하나
+iv_new; iv_live valid
+iv_go="$IVD/go"; iv_pids=""
+for iv_i in 1 2 3 4 5 6 7 8; do
+  IV_GO="$iv_go" iv_gate > "$IVD/race.$iv_i.out" 2>&1 &
+  iv_pids="$iv_pids $!"
+done
+touch "$iv_go"
+iv_bad=0
+for iv_p in $iv_pids; do wait "$iv_p" || iv_bad=$((iv_bad + 1)); done
+check "T7f-17 게이트 경쟁자 여덟이 모두 성공한다" "$iv_bad" "0"
+check "T7f-17 게이트 경쟁에서 기준선 행은 정확히 하나다" "$(iv_rows '인벤토리 기준선')" "1"
+
+# 18. 문면 고정 — 런이 레인을 가로질러 갈라지지 않는다는 옛 문면이 남지 않는다
+check "T7f-18 옛 TIER 2 머리 문장이 없다" \
+  "$(grep -c 'TIER 2 IS WHY A RUN DOES NOT SPLIT ACROSS LANES' "$DRIVER")" "0"
+check "T7f-18 「서로 다른 레인에 착지합니다」가 없다" \
+  "$(grep -c '서로 다른 레인에 착지합니다' "$DRIVER")" "0"
+
+# 19. 같은 루트의 재진입은 표지를 받아들이고 행을 더하지 않는다
+iv_new; iv_ledger_on
+iv_init >/dev/null 2>&1
+check "T7f-19 표지 대상이 상수 + 설정 루트다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+iv_n0=$(grep -c '^- `' "$IVL")
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-19 같은 루트의 재진입은 성공한다" "$rc" "0"
+check "T7f-19 같은 루트의 재진입은 행을 더하지 않는다" "$(( $(grep -c '^- `' "$IVL") - iv_n0 ))" "0"
+
+# 20. ROOT(표지) — 루트 A 의 부재 뒤 인벤토리가 있는 루트 B
+iv_new; iv_ledger_on
+iv_init >/dev/null 2>&1
+iv_cb="$IVD/cfg-b"; iv_live valid "$IVH" "$iv_cb/cc-lane/accounts.json"
+iv_b=$(iv_rows blocked)
+iv_out_rootm=$(IV_XDG="$iv_cb" iv_init 2>&1); rc=$?
+check "T7f-20 다른 루트의 인벤토리가 있으면 멈춘다" "$rc" "1"
+check "T7f-20 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-20 행의 사유" "$iv_row" "사유=인벤토리 기준선 루트 불일치"
+iv_has "T7f-20 관측이 기준선의 루트를 싣는다" "$iv_row" "기준선의 설정 루트=「${IVC}」"
+iv_has "T7f-20 관측이 이 진입의 루트를 싣는다" "$iv_row" "이 진입의 설정 루트=「${iv_cb}」"
+iv_has "T7f-20 관측이 상태 루트를 싣는다" "$iv_row" "상태 루트=「${IVS}」"
+iv_has "T7f-20 관측이 호출자를 싣는다" "$iv_row" "호출자=리드"
+iv_has "T7f-20 멈춤 줄이 상태 루트 갈래를 보인다" "$iv_out_rootm" "XDG_STATE_HOME="
+iv_has "T7f-20 멈춤 줄이 재발행 갈래를 보인다" "$iv_out_rootm" "rm -rf "
+iv_lacks "T7f-20 멈춤 줄에 회복 꼬리가 없다" "$iv_out_rootm" "회복:"
+check "T7f-20 이름은 그대로다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+IV20D="$IVD"
+
+# 21. 다른 루트지만 양성 부재 → ROOT 없음
+iv_new
+iv_init >/dev/null 2>&1
+IV_XDG="$IVD/cfg-none" iv_init >/dev/null 2>&1; rc=$?
+check "T7f-21 다른 루트가 양성 부재이면 받아들인다" "$rc" "0"
+
+# 22. 다른 루트의 cc-lane 이 끊어진 링크 → ROOT, 같은 디렉터리의 다른 철자는 ROOT 없음
+iv_new
+iv_init >/dev/null 2>&1
+mkdir -p "$IVD/cfg-b"; ln -s "$IVD/nowhere" "$IVD/cfg-b/cc-lane"
+iv_out=$(IV_XDG="$IVD/cfg-b" iv_init 2>&1); rc=$?
+check "T7f-22 다른 루트의 끊어진 cc-lane 은 멈춘다" "$rc" "1"
+iv_has "T7f-22 이유는 absent-root 다" "$iv_out" "(absent-root"
+ln -s "$IVC" "$IVD/cfg-alias"
+mkdir -p "$IVC/cc-lane"; ln -s "$IVD/nowhere" "$IVLIVE"
+IV_XDG="$IVD/cfg-alias" iv_init >/dev/null 2>&1; rc=$?
+check "T7f-22 같은 디렉터리의 다른 철자는 끊어진 잎이 있어도 받아들인다" "$rc" "0"
+
+# 23. CHECK 가 park 하고 관측에 호출자를 싣는다 (라우터 문맥 리드, 스테이지)
+iv_new; iv_live valid; iv_ledger_on
+IV_PATH_PRE="$IVW/shim-jq" iv_init >/dev/null 2>&1
+iv_has "T7f-23 CHECK 행이 호출자 리드를 싣는다" "$(iv_last blocked)" "호출자=리드)"
+iv_new; iv_live valid; iv_ledger_on
+IV_STAGE='S9#1' IV_PATH_PRE="$IVW/shim-jq" iv_init >/dev/null 2>&1
+iv_has "T7f-23 CHECK 행이 스테이지 id 를 싣는다" "$(iv_last blocked)" "호출자=S9#1)"
+
+# 24. CHECK marker-length
+iv_new
+iv_long="$IVD"; for iv_i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+  21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 \
+  51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 \
+  81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100; do iv_long="$iv_long/xxxxxxxxxx"; done
+iv_out=$(IV_XDG="$iv_long" iv_init 2>&1); rc=$?
+check "T7f-24 표지 대상이 너무 길면 멈춘다" "$rc" "1"
+iv_has "T7f-24 이유는 marker-length 다" "$iv_out" "(marker-length"
+iv_has "T7f-24 관측이 바이트 한도를 말한다" "$iv_out" "1023바이트를 넘습니다"
+check "T7f-24 이름은 비었다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+
+# 25. 접기 — 같은 사유의 미해소 막힘이 있으면 행을 더하지 않고, 해소 뒤에는 더한다
+iv_new; iv_ledger_on
+printf '{"schema":' > "$IVINV"
+iv_init >/dev/null 2>&1; iv_init >/dev/null 2>&1
+check "T7f-25 거부하는 진입 둘은 행 하나를 남긴다" "$(iv_rows blocked)" "1"
+( LEDGER="$IVL"; ledger_row 'blocked' "대상=iv-run" "스코프=run" "원인=해소" \
+    "사유=인벤토리 스냅숏 손상" "관측=-" "재개 명령=(없음)" )
+iv_init >/dev/null 2>&1
+check "T7f-25 해소 뒤 셋째 진입은 새 행을 남긴다" \
+  "$(grep '^- `blocked`' "$IVL" | grep -c '원인=막힘')" "2"
+
+# 26. 첫 진입 park — 게이트 경로, ledger-path 없음, 절대 LEDGER 의 디렉터리만 있음
+iv_new
+printf '{"schema":' > "$IVINV"
+mkdir -p "$IVD/gl"; IVGL="$IVD/gl/ledger.md"
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-26 게이트 첫 진입도 찢어진 사본에서 멈춘다" "$rc" "1"
+check "T7f-26 원장 파일이 생긴다" "$(iv_is '[ -f "$IVGL" ]')" "yes"
+check "T7f-26 그 원장에 blocked 행 하나" "$(iv_rows blocked "$IVGL")" "1"
+mkdir -p "$IVD/rel"; IVGL="rel/ledger.md"
+iv_gate >/dev/null 2>&1
+check "T7f-26 상대 LEDGER 로는 행을 쓰지 않는다" "$(iv_is '[ -e "$IVD/rel/ledger.md" ]')" "no"
+
+# 27. 기준선 행 — 게이트 경로
+iv_new; mkdir -p "$IVD/gl"; IVGL="$IVD/gl/ledger.md"
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-27 게이트 첫 진입은 성공한다" "$rc" "0"
+check "T7f-27 기준선 행 하나" "$(iv_rows '인벤토리 기준선' "$IVGL")" "1"
+iv_row=$(iv_last '인벤토리 기준선' "$IVGL")
+iv_has "T7f-27 형태는 부재다" "$iv_row" "형태=부재"
+iv_has "T7f-27 지문은 - 다" "$iv_row" "지문=- "
+iv_has "T7f-27 판정 루트가 온전하다" "$iv_row" "판정 루트=XDG_CONFIG_HOME=「${IVC}」"
+iv_has "T7f-27 이전 지문은 - 다" "$iv_row" "이전 지문=- "
+iv_has "T7f-27 체인 행이다" "$iv_row" "prev="
+iv_gate >/dev/null 2>&1; iv_gate >/dev/null 2>&1; iv_gate >/dev/null 2>&1
+check "T7f-27 이어진 세 진입 뒤에도 기준선 행 하나" "$(iv_rows '인벤토리 기준선' "$IVGL")" "1"
+rm -rf "$IVINV"; iv_live valid
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-27 재발행 진입은 성공한다" "$rc" "0"
+check "T7f-27 재발행 뒤 기준선 행 둘" "$(iv_rows '인벤토리 기준선' "$IVGL")" "2"
+iv_row=$(iv_last '인벤토리 기준선' "$IVGL")
+iv_has "T7f-27 둘째 행의 형태는 사본이다" "$iv_row" "형태=사본"
+check "T7f-27 둘째 행의 지문은 64 hex 다" \
+  "$(printf '%s' "$iv_row" | tr '|' '\n' | sed -n 's/^ *지문=//p' | sed 's/[[:space:]]*$//' | grep -cE '^[0-9a-f]{64}$')" "1"
+iv_has "T7f-27 둘째 행의 이전 지문은 앞 행의 - 다" "$iv_row" "이전 지문=- "
+IV27GL="$IVGL"; IV27D="$IVD"
+# 게이트 밖에서는 ledger_row 로 같은 필드
+iv_new; iv_ledger_on
+iv_init >/dev/null 2>&1
+iv_row=$(iv_last '인벤토리 기준선')
+iv_has "T7f-27 게이트 밖 기준선 행의 형태" "$iv_row" "형태=부재"
+iv_has "T7f-27 게이트 밖 기준선 행의 판정 루트" "$iv_row" "판정 루트=XDG_CONFIG_HOME=「${IVC}」"
+iv_has "T7f-27 게이트 밖 기준선 행의 이전 지문" "$iv_row" "이전 지문=-"
+
+# 28. 읽기 전용 원장 + set -e
+iv_new; iv_ledger_on
+printf '{"schema":' > "$IVINV"
+chmod 444 "$IVL"; cp -p "$IVL" "$IVD/ledger.saved"
+if iv_root_guard; then
+  iv_out=$(iv_init 2>&1); rc=$?
+  check "T7f-28 읽기 전용 원장에서도 멈춘다" "$rc" "1"
+  iv_has "T7f-28 멈춤 줄이 여전히 출력된다" "$iv_out" "init 에서 멈춥니다"
+  iv_has "T7f-28 거부 행 경고가 있다" "$iv_out" "거부 행을 원장에 쓰지 못했습니다"
+  check "T7f-28 행도 보고 줄도 없다" "$(iv_is 'cmp -s "$IVL" "$IVD/ledger.saved"')" "yes"
+  iv_new; iv_ledger_on; chmod 444 "$IVL"
+  iv_init >/dev/null 2>&1; rc=$?
+  check "T7f-28 성공 쪽은 읽기 전용 원장에서도 성공한다" "$rc" "0"
+  check "T7f-28 성공 쪽은 미기록 표지를 남긴다" "$(iv_is '[ -f "$IVRD/inventory.unrecorded" ]')" "yes"
+else
+  bad "T7f-28 픽스처" "읽기 전용 원장에 쓸 수 있다 (root 로 실행 중인가)"
+fi
+chmod 644 "$IVL"
+
+# 29. 체인 — 거부와 기준선 행을 쓴 뒤에도 게이트의 체인 검증이 통과한다
+IVD="$IV27D"; IVGL="$IV27GL"; IVH="$IVD/home"; IVS="$IVD/state"; IVC="$IVD/cfg"; IVB="$IVD/base"
+IVRD="$IVS/cc-cmds/run/iv-run"; IVINV="$IVRD/inventory.json"
+rm -rf "$IVINV"; printf '{"schema":' > "$IVINV"
+iv_gate >/dev/null 2>&1
+check "T7f-29 거부 행이 같은 원장에 붙었다" "$(iv_rows blocked "$IVGL")" "1"
+iv_gate verify >/dev/null 2>&1; rc=$?
+check "T7f-29 체인 검증이 통과한다" "$rc" "0"
+
+# 30. config-dir 거부 — 게이트 밖 멈춤 줄과 행의 바이트가 전과 같고, 접지 않는다
+iv_new; iv_ledger_on
+printf '%s\n' "$IVD/absent-lane" > "$IVRD/config-dir"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-30 config-dir 거부는 그대로 멈춘다" "$rc" "1"
+check "T7f-30 멈춤 줄의 바이트가 전과 같다" \
+  "$(printf '%s\n' "$iv_out" | sed -n 's/^.* \[run\]\[stop\] //p')" \
+  "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다. 회복: rm \"$IVRD/config-dir\""
+iv_ref="$IVD/ref.md"; : > "$iv_ref"
+( LEDGER="$iv_ref"; BASE="$IVD/ref-base"; RUN_ID=iv-run
+  park iv-run run 막힘 "게이트 park" \
+    "런 디렉터리의 레인 기록이 가리키는 디렉터리를 쓸 수 없습니다: $IVRD/config-dir" \
+    "rm \"$IVRD/config-dir\"" ) >/dev/null 2>&1
+check "T7f-30 행의 바이트가 park 가 쓰던 행과 같다" "$(iv_last blocked)" "$(iv_last blocked "$iv_ref")"
+iv_init >/dev/null 2>&1
+check "T7f-30 두 번 거부하면 행 둘 (접지 않는다)" "$(iv_rows blocked)" "2"
+
+# 31. 배수
+# (a) 원장 디렉터리가 없는 게이트 첫 진입 → 미기록 표지, 행 0; 디렉터리가 생긴 뒤 행 1
+iv_new; IVGL="$IVD/nodir/ledger.md"
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-31a 원장 디렉터리 없는 첫 진입도 성공한다" "$rc" "0"
+check "T7f-31a 미기록 표지가 생긴다" "$(iv_is '[ -f "$IVRD/inventory.unrecorded" ]')" "yes"
+check "T7f-31a 원장은 생기지 않는다" "$(iv_is '[ -e "$IVGL" ]')" "no"
+mkdir -p "$IVD/nodir"
+iv_gate >/dev/null 2>&1
+check "T7f-31a 다음 진입이 기준선 행 하나를 쓴다" "$(iv_rows '인벤토리 기준선' "$IVGL")" "1"
+check "T7f-31a 미기록 표지가 거둬진다" "$(iv_is '[ -e "$IVRD/inventory.unrecorded" ]')" "no"
+# (b) 승자 진입만 원장이 읽기 전용 → 다음 진입이 행 하나 (표지와 사본 둘 다)
+for iv_form in 부재 사본; do
+  iv_new; iv_ledger_on
+  [ "$iv_form" = 사본 ] && iv_live valid
+  chmod 444 "$IVL"
+  iv_init >/dev/null 2>&1
+  chmod 644 "$IVL"
+  if iv_root_guard; then
+    check "T7f-31b ($iv_form) 승자는 행을 쓰지 못했다" "$(iv_rows '인벤토리 기준선')" "0"
+  fi
+  iv_init >/dev/null 2>&1
+  check "T7f-31b ($iv_form) 다음 진입이 행 하나를 쓴다" "$(iv_rows '인벤토리 기준선')" "1"
+  iv_has "T7f-31b ($iv_form) 그 행의 형태" "$(iv_last '인벤토리 기준선')" "형태=$iv_form"
+  check "T7f-31b ($iv_form) 미기록 표지가 거둬진다" "$(iv_is '[ -e "$IVRD/inventory.unrecorded" ]')" "no"
+done
+# (c) 표지를 둔 채 독립 bash 배수자 둘을 동시에 → 행 정확히 1, 점유 잔여 없음
+iv_new; iv_ledger_on
+chmod 444 "$IVL"; iv_init >/dev/null 2>&1; chmod 644 "$IVL"
+iv_go="$IVD/go"; iv_pids=""
+for iv_i in 1 2; do
+  IVGL="" IV_GO="$iv_go" iv_proc run > "$IVD/drain.$iv_i.out" 2>&1 &
+  iv_pids="$iv_pids $!"
+done
+touch "$iv_go"
+for iv_p in $iv_pids; do wait "$iv_p"; done
+check "T7f-31c 동시 배수자 둘이 행 정확히 하나를 쓴다" "$(iv_rows '인벤토리 기준선')" "1"
+check "T7f-31c 점유 잔여가 없다" \
+  "$(find "$IVRD" -name 'inventory.unrecorded*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+# (d) 표지를 둔 뒤 이름을 지우고 다른 바이트로 다시 뜸 → 옛 표지는 버려지고 새 게시의 행만
+iv_new; iv_ledger_on
+chmod 444 "$IVL"; iv_init >/dev/null 2>&1; chmod 644 "$IVL"
+rm -rf "$IVINV"; iv_live valid
+iv_init >/dev/null 2>&1
+check "T7f-31d 재발행 뒤 기준선 행은 하나다" "$(iv_rows '인벤토리 기준선')" "1"
+iv_has "T7f-31d 그 행은 새 게시의 것이다" "$(iv_last '인벤토리 기준선')" "형태=사본"
+# 이름이 다른 게시로 바뀌었는데 옛 미기록 표지가 남은 경우 — 대조값이 달라 버린다
+iv_new; iv_ledger_on
+chmod 444 "$IVL"; iv_init >/dev/null 2>&1; chmod 644 "$IVL"
+rm -rf "$IVINV"; iv_live valid; cp "$IVLIVE" "$IVINV"; chmod 600 "$IVINV"
+iv_init >/dev/null 2>&1
+check "T7f-31d 대조값이 다른 옛 표지는 행을 쓰지 않는다" "$(iv_rows '인벤토리 기준선')" "0"
+check "T7f-31d 대조값이 다른 옛 표지는 버려진다" "$(iv_is '[ -e "$IVRD/inventory.unrecorded" ]')" "no"
+
+# 32. 전역 위생 — 루트를 이름할 수 없는 진입이 표지를 받아들인 뒤 이유 전역이 빈다
+iv_globals() { printf '%s|%s' "$RUN_INVENTORY_WHY" "$RUN_INVENTORY_AT"; }
+iv_new
+iv_init >/dev/null 2>&1
+check "T7f-32 표지를 받아들인 뒤 WHY·AT 가 빈다" \
+  "$(IV_XDG="rel-cfg" iv_init iv_globals 2>/dev/null)" "|"
+
+# 33. bk_init 계열 회귀 — T7c 음성 대조를 LEDGER 를 비우고 한 번 더
+iv_b=$(wc -l < "$BKL" | tr -d ' '); iv_w=$(wc -l < "$WORK/ledger.md" | tr -d ' ')
+LEDGER="" bk_init >/dev/null 2>&1
+check "T7f-33 T7c 음성 대조가 LEDGER 없이도 행을 남기지 않는다" \
+  "$(( $(wc -l < "$BKL" | tr -d ' ') - iv_b ))" "0"
+check "T7f-33 하네스 원장에도 행을 남기지 않는다" \
+  "$(( $(wc -l < "$WORK/ledger.md" | tr -d ' ') - iv_w ))" "0"
+
+# 34. 문면 — set -euo pipefail 아래 다섯 거부가 각각 온전한 멈춤 줄을 낸다
+for iv_k in snap rootc rootm live check pub; do
+  eval "iv_o=\$iv_out_$iv_k"
+  case "$iv_k" in
+    pub) iv_has "T7f-34 ($iv_k) 멈춤 줄이 있다" "$iv_o" "[run][stop] 런 디렉터리에 인벤토리 스냅숏을 쓰지 못했습니다" ;;
+    *)   iv_has "T7f-34 ($iv_k) 멈춤 줄이 있다" "$iv_o" "init 에서 멈춥니다" ;;
+  esac
+  iv_lacks "T7f-34 ($iv_k) 두지 않은 변수가 없다" "$iv_o" "unbound variable"
+  iv_lacks "T7f-34 ($iv_k) 빈 「」 가 없다" "$iv_o" "「」"
+  iv_lacks "T7f-34 ($iv_k) 역따옴표가 없다" "$iv_o" '`'
+done
+
 # --- T8: 런당 1회가 아니라 스테이지 디스패치마다 ---------------------------
 # 이 단언은 **계수**한다. 이전 형태는 `stage_spawn` 본문을 `resolve_account`
 # 토큰으로 grep 했는데, 그것은 의무가 이름 붙인 성질 — 런당 1회가 아니라 디스패치
@@ -5072,7 +5695,7 @@ check "T8a 뒤 진짜 리졸버가 복원됐다 (스텁이 남아 있지 않다)
 # 3단의 설정이 서로 다른데, 런 기록이 있으므로 값이 갈리지 않아야 한다.
 v1=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg"      resolve_account )
 v2=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgempty" resolve_account )
-check "T8b 3단이 달라도 런 기록이 있으면 한 런의 스테이지가 갈리지 않는다" "$v1" "$v2"
+check "T8b 3단이 달라도 런 기록이 있으면 한 런의 기본 좌석이 갈리지 않는다" "$v1" "$v2"
 
 # --- 런 디렉터리 초기화가 레인과 오케스트레이터를 남긴다 -------------------
 RI_SAVE="$RUN_DIR"; RID_SAVE="$RUN_ID"
