@@ -650,6 +650,7 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     'the last such row decides' \
     'Take 「Re-attaching a cut stage」 first' \
     '`외부 종료`, `크래시` and `공허한 성공` may be dispatched afresh, and only onto an absent document' \
+    '`한도 종료` is read exactly as `크래시` here' \
     'Two of the three buy one fresh dispatch and no more: a `크래시` whose stream holds no 429 envelope, and a `공허한 성공`.' \
     'When the last row is one of these two and two or more fresh attempts already stand, stop the design as below' \
     'counts the same fresh attempts by the same definition'
@@ -703,8 +704,9 @@ check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$des
 # design stage cut by the account's session limit was re-kicked as a new run five
 # times, each paying again for the discussion round the last one had published.
 # The literals below are what the re-attachment needs to be issued at all and
-# issued safely: the two cut classes and the envelope that tells a limit crash
-# from a broken stage, the session-started probe, the attempt cap, the reset-time
+# issued safely: the cut classes — `한도 종료` among them, which qualifies on its
+# class alone — and the envelope that tells a limit crash filed `크래시` from a
+# broken stage, the session-started probe, the attempt cap, the reset-time
 # hold, the flag itself, and the continuation prompt — which must be one string
 # in both copies, since a slash command in its place restarts the skill.
 # ---------------------------------------------------------------------------
@@ -725,6 +727,7 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '`종단 부류=크래시` and that attempt'"'"'s stream carries the usage-limit envelope' \
     '"api_error_status":429' \
     '`종단 부류=외부 종료`' \
+    '`종단 부류=한도 종료`' \
     '"session_id":"<세션 id>"' \
     'Four or more means the original and three re-attachments all ended cut' \
     'A limit must have cleared first.' \

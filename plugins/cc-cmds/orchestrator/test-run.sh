@@ -284,6 +284,108 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 check "흔적이 없으면 여전히 공허한 성공" "$(classify_termination Sw 0 1)" "공허한 성공"
 if decision_point_reached Snone; then bad "결정 지점 탐지기" "ndjson 이 없는데 참을 냈다"; else ok "결정 지점 탐지기는 ndjson 이 없으면 거짓"; fi
 
+# 한도 종료 판정. 스테이지가 사용량 한도로 스스로 끝났는지는 그 시도 자신의
+# 스트림에서 타입이 있는 필드로만 읽는다. 최소 한도 스트림은 init · allowed
+# 프레임 · rejected 프레임 · 429 봉투 네 줄이고, 아래 변형은 그중 적힌 부분만
+# 바꿔 기대한 글자 하나만 거짓이 되게 한다.
+LIM_INIT='{"type":"system","subtype":"init","session_id":"s-lim"}'
+LIM_ALLOWED='{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790390000}}'
+LIM_REJECTED='{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790390000,"overageStatus":"rejected"}}'
+LIM_ENV429='{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s-lim","result":"You have hit your session limit · resets 3pm (Asia/Seoul)"}'
+LIM_OK='{"type":"result","subtype":"success","is_error":false,"session_id":"s-lim","result":"done"}'
+LIMD="$WORK/limit"; mkdir -p "$LIMD"
+sle() { local out rc; out=$(stage_limit_exit "$@"); rc=$?; printf '%s:%s' "$rc" "$out"; }
+
+# a. 실제 사망 모양 — rejected 가 뒤따르는 init 셋보다 앞이고 봉투가 파일 끝에
+# 몰려 있으며 init 8 / result 9 다. init 으로 창을 자르는 판정은 이것을 놓친다.
+{ for i in 1 2 3 4 5; do printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK"; done
+  printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" "$LIM_INIT" "$LIM_INIT" "$LIM_OK" "$LIM_OK" "$LIM_OK" "$LIM_ENV429"
+} > "$LIMD/a.json"
+check "한도 판정 a: 실제 사망 모양은 한도" "$(sle "$LIMD/a.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" > "$LIMD/b.json"
+check "한도 판정 b: 봉투 없음은 한도 아님" "$(sle "$LIMD/b.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1790390000}}' \
+  "$LIM_ENV429" > "$LIMD/c.json"
+check "한도 판정 c: 마지막 프레임이 rejected 가 아니면 F" "$(sle "$LIMD/c.json")" "3:F"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" "$LIM_ENV429" \
+  '{"type":"result","subtype":"succ' > "$LIMD/d.json"
+check "한도 판정 d: 봉투 뒤의 찢긴 줄은 T" "$(sle "$LIMD/d.json")" "3:T"
+printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"result":"Overloaded"}' \
+  > "$LIMD/e.json"
+check "한도 판정 e: 429 가 아닌 오류 봉투는 옛 rejected 가 있어도 한도 아님" "$(sle "$LIMD/e.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" "$LIM_INIT" > "$LIMD/f.json"
+check "한도 판정 f: 옛 한도 뒤 봉투 없는 init 은 P" "$(sle "$LIMD/f.json")" "3:P"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}"}]}}' \
+  "$LIM_ENV429" \
+  '{"type":"assistant","message":{"content":[{"type":"result","subtype":"success","is_error":false}]}}' \
+  > "$LIMD/g.json"
+check "한도 판정 g: 이스케이프된 프레임 문자열과 중첩 result 객체는 영향 없음" "$(sle "$LIMD/g.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}' "$LIM_ENV429" > "$LIMD/h.json"
+check "한도 판정 h: resetsAt 없는 rejected 는 R" "$(sle "$LIMD/h.json")" "3:R"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" \
+  "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK" > "$LIMD/i.json"
+check "한도 판정 i: 앞선 한도 뒤 성공 봉투와 allowed 는 한도 아님" "$(sle "$LIMD/i.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_ENV429" > "$LIMD/j.json"
+check "한도 판정 j: resetsAt 를 가진 allowed 프레임과 429 봉투는 F" "$(sle "$LIMD/j.json")" "3:F"
+check "한도 판정 k: 없는 파일은 한도 아님" "$(sle "$LIMD/none.json")" "1:"
+check "한도 판정 k: 빈 인자는 한도 아님" "$(sle '')" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" 'null' > "$LIMD/l.json"
+check "한도 판정 l: 봉투 뒤 객체가 아닌 JSON 줄은 건너뛴다" "$(sle "$LIMD/l.json")" "0:"
+# 찢김 글자는 다른 거짓 글자와 함께 순서대로 이어진다.
+printf '%s\n' "$LIM_INIT" "$LIM_ENV429" '{"torn' > "$LIMD/m.json"
+check "한도 판정: 거짓 글자는 F,R,P,T 순서로 이어진다" "$(sle "$LIMD/m.json")" "3:F,R,T"
+
+check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
+for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \
+                '적용 불명' '외부 종료' '한도-형상 회수'; do
+  check "읽기 사상: $rc_class 는 그대로" "$(terminal_route_class "$rc_class")" "$rc_class"
+done
+
+# 경로 A. 판정은 시도 핀과 거둔 종료(`.rc`)가 함께 있을 때만 서고, stdout 은
+# 부류만 싣는다 — 호출부가 `$(classify_termination …)` 로 부류를 받는다.
+lim_pin() {  # lim_pin <stage> <attempt> <stream-file> [rc]
+  printf '%s\n' "$2" > "$RUN_DIR/$1.attempt"
+  cp "$3" "$RUN_DIR/log/$1#$2.json"
+  if [ -n "${4:-}" ]; then printf '%s\n' "$4" > "$RUN_DIR/$1.rc"; fi
+}
+lim_pin Lk1 1 "$LIMD/a.json" 1
+check "경로 A: 한도 스트림 rc 1 은 한도 종료 (stdout 은 부류뿐)" \
+  "$(classify_termination Lk1 1 1 2>"$WORK/lk1.err")" "한도 종료"
+check "경로 A: 한도 종료는 경고를 내지 않는다" "$(grep -c . "$WORK/lk1.err")" "0"
+lim_pin Lk2 1 "$LIMD/a.json"
+check "경로 A: 거두지 않은 스테이지(.rc 없음)는 크래시" "$(classify_termination Lk2 1 1)" "크래시"
+lim_pin Lk3 1 "$LIMD/c.json" 1
+check "경로 A: 형상 불완전은 정확히 크래시" \
+  "$(classify_termination Lk3 1 1 2>"$WORK/lk3.err")" "크래시"
+check "경로 A: 형상 불완전 경고는 stderr 에 F 를 이름하는 한 줄" \
+  "$(grep -c "\[warn\] 한도 형상 불완전 (F) $RUN_DIR/log/Lk3#1.json\$" "$WORK/lk3.err")" "1"
+lim_pin Lk4 1 "$LIMD/a.json" 1; reap_mark Lk4 한도형상
+check "경로 A: 회수 표지는 한도 스트림보다 앞선다" "$(classify_termination Lk4 1 1)" "한도-형상 회수"
+lim_pin Lk5 1 "$LIMD/a.json" 1
+cp "$RUN_DIR/halt/Sx.md" "$RUN_DIR/halt/Lk5#1.md"
+check "경로 A: 멈춤 기록은 한도 스트림보다 앞선다" "$(classify_termination Lk5 1 1)" "의도된 park"
+lim_pin Lk6 1 "$LIMD/a.json" 0
+check "경로 A: rc 0 은 rc=0 부류 (정상 완료)" "$(classify_termination Lk6 0 0)" "정상 완료"
+check "경로 A: rc 0 은 rc=0 부류 (공허한 성공)" "$(classify_termination Lk6 0 1)" "공허한 성공"
+cp "$LIMD/a.json" "$RUN_DIR/log/Lk7.json"; printf '1\n' > "$RUN_DIR/Lk7.rc"
+check "경로 A: 핀 없는 범위 밖 스트림은 크래시" "$(classify_termination Lk7 1 1)" "크래시"
+printf '%s\n' "$LIM_INIT" > "$LIMD/crash.json"
+cp "$LIMD/a.json" "$RUN_DIR/log/Lk8#1.json"
+lim_pin Lk8 2 "$LIMD/crash.json" 1
+check "경로 A: 핀이 가리키는 시도 2 가 보통 크래시면 시도 1 의 한도는 읽지 않는다" \
+  "$(classify_termination Lk8 1 1)" "크래시"
+# 한 세션을 재부착으로 이어 간 세 시도는 session_id 를 공유하면서 부류가 다르다.
+# 시도의 정체는 핀이 가리키는 파일이다.
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK" > "$LIMD/ok.json"
+lim_pin Lk9 1 "$LIMD/a.json" 1;  lk9_1=$(classify_termination Lk9 1 1)
+lim_pin Lk9 2 "$LIMD/ok.json" 0; lk9_2=$(classify_termination Lk9 0 0)
+lim_pin Lk9 3 "$LIMD/a.json" 1;  lk9_3=$(classify_termination Lk9 1 1)
+check "경로 A: 한 세션의 세 시도는 시도별로 분류된다" "$lk9_1/$lk9_2/$lk9_3" "한도 종료/정상 완료/한도 종료"
+
 # ---------------------------------------------------------------------------
 # 6. Worktree teardown guard — BOTH conditions required
 # ---------------------------------------------------------------------------
@@ -2262,8 +2364,8 @@ arm21_case stub "$MFARM" 스텁 - '정상 완료'
 check "스폰 시점 스텁만 있으면 건너뛰지 않고 파견한다" \
   "$(arm21_rc stub)/$(arm21_disp stub)" "0/1"
 
-# 한도 소진 같은 런 밖 원인이 크래시로 기록되는데, 그 크래시가 남긴 것이 스텁뿐
-# 이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
+# 한도 소진 같은 런 밖 원인은 크래시나 한도 종료로 기록되는데, 그 시도가 남긴 것이
+# 스텁뿐이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
 arm21_case resumed-crash "$MFARM" 스텁 '크래시' '정상 완료'
 check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다시 파견한다" \
   "$(arm21_rc resumed-crash)/$(arm21_disp resumed-crash)/$(grep -c 'S1design run' "$ARM21/resumed-crash/parked" 2>/dev/null || printf 0)" "0/1/0"
@@ -2272,6 +2374,14 @@ check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다
 arm21_case resumed-crash-saved "$MFARM" 사람 '크래시' '정상 완료'
 check "크래시라도 저장된 문서가 남았으면 park 한다" \
   "$(arm21_rc resumed-crash-saved)/$(arm21_disp resumed-crash-saved)/$(grep -c 'S1design run' "$ARM21/resumed-crash-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# 한도 종료 는 크래시와 똑같이 읽는다 — 두 짝 모두.
+arm21_case resumed-limit "$MFARM" 스텁 '한도 종료' '정상 완료'
+check "앞선 시도가 한도 종료로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-limit)/$(arm21_disp resumed-limit)/$(grep -c 'S1design run' "$ARM21/resumed-limit/parked" 2>/dev/null || printf 0)" "0/1/0"
+arm21_case resumed-limit-saved "$MFARM" 사람 '한도 종료' '정상 완료'
+check "한도 종료라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-limit-saved)/$(arm21_disp resumed-limit-saved)/$(grep -c 'S1design run' "$ARM21/resumed-limit-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
 
 # 프로세스가 죽지 않고 rc 0 으로 끝났는데 산출물이 없는 경우도 같은 모양이다 —
 # 팀원이 증인 없이 턴을 끝내 기다릴 작업이 사라졌거나, 저장 직전 턴 경계에서
@@ -2398,25 +2508,25 @@ AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   pend { cont = ($0 ~ /\\$/) }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "5"
+check "파견 팔의 stage-result 행 자리가 여섯이다 — 계속 시도 하나 포함 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "6"
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
-# 드라이버의 stage-result 행 전부(S9 셸 적용 넷을 포함해 아홉)가 압축 창·레인·기록자
-# 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 아홉의 방어는
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷과 계속 시도 하나를 포함해 열)가 압축
+# 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
   cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "드라이버의 stage-result 호출부가 아홉이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "9"
-check "아홉 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+check "드라이버의 stage-result 호출부가 열이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "10"
+check "열 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
   "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
 check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
-  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "9"
+  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "10"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -2731,6 +2841,33 @@ else
   bad "종료 잔여" "EXIT 경로에 보고가 걸려 있지 않다 — 순회 꼬리에 닿지 못한 런의 잔여는 아침에 도달하지 않는다"
 fi
 RUN_DIR="$RUN_DIR_SAVE3"; BASE="$BASE_SAVE3"; RUN_ID="$RUN_ID_SAVE3"
+# 한도 종료 는 런 끝 정산에서 따로 센다. 정산 블록은 main_loop 끝에 있어 그대로
+# 구동할 수 없으므로, 그 블록만 뽑아 원장 읽기와 리포트 쓰기를 대신한 채 돌린다.
+# N=0 인 런의 보고는 이 줄이 생기기 전과 바이트가 같아야 한다.
+settle_block=$(sed -n '/^  local last_cost settled limit_n$/,/^  report_run_residual$/p' "$DRIVER" | sed '$d')
+settle_run() {  # settle_run <stage-result 행 파일> — 보고 줄을 출력한다
+  (
+    SETTLE_ROWS="$1"
+    run_section_rows() { if [ "$1" = 'stage-result' ]; then cat "$SETTLE_ROWS"; fi; }
+    report_append() { printf '%s: %s\n' "$1" "$2"; }
+    ledger_row() { :; }
+    eval "settle_body() {
+$settle_block
+}"
+    settle_body
+  )
+}
+printf -- '- `stage-result` | 스테이지=S2 | 종단 부류=크래시 |\n- `stage-result` | 스테이지=S3 | 종단 부류=외부 종료 |\n' \
+  > "$WORK/settle0.md"
+{ cat "$WORK/settle0.md"
+  printf -- '- `stage-result` | 스테이지=S4 | 종단 부류=한도 종료 |\n- `stage-result` | 스테이지=S5 | 종단 부류=한도 종료 |\n'
+} > "$WORK/settle2.md"
+SETTLE_COST='비용: 비용 불명 — 이 런의 cost 행이 없다 · 정산됨(비용 불명) 1건'
+if [ -n "$settle_block" ]; then ok "정산 블록을 드라이버에서 뽑았다 (아래가 공허하지 않다)"; else bad "정산 블록" "뽑힌 블록이 비었다"; fi
+check "한도 종료 가 없는 런의 정산 보고는 비용 줄 하나뿐이다" "$(settle_run "$WORK/settle0.md")" "$SETTLE_COST"
+check "한도 종료 가 있는 런은 그 수를 따로 한 줄로 보고한다" "$(settle_run "$WORK/settle2.md")" \
+  "$SETTLE_COST
+한도 종료: 2건 — 크래시와 같게 처분, 계정 이동 없음"
 # 종료 요약의 단어. `보류` 는 사람의 답을 기다리는 종료 절의 처분이고 이 계수기는
 # 드라이버가 park 한 세그먼트를 센다 — 같은 리포트에 둘 다 나오므로, 한 단어가 두
 # 뜻을 가지면 읽는 사람이 줄마다 어느 쪽인지 짐작해야 한다.
@@ -4646,16 +4783,243 @@ else
 fi
 # 재시도는 갈래당 정확히 1회다. 갈래마다 하나씩 세고 총합도 함께 재는 이유는,
 # 총합만 재면 한 갈래가 둘을 갖고 다른 갈래가 0 을 갖는 배분도 통과하기 때문이다.
-# 갈래는 셋이다 — 「공허한 성공」·「크래시」·「한도-형상 회수」. 셋째는 드라이버
+# 직접 스폰하는 갈래는 둘이다 — 「크래시」·「한도-형상 회수」. 둘째는 드라이버
 # 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다.
-for retry_arm in '공허한 성공' '크래시' '한도-형상 회수'; do
+# 「공허한 성공」은 스스로 스폰하지 않고 `continue_or_park` 를 거친다(아래 절).
+for retry_arm in '크래시' '한도-형상 회수'; do
   # `${...}` 를 쓰는 것은 취향이 아니다 — 뒤따르는 닫는 낫표가 ASCII 가 아니라서
   # 하한 인터프리터가 그 바이트를 이름에 붙여 읽고 unbound variable 로 죽는다.
   check "재시도 스폰이 「${retry_arm}」 갈래에 정확히 1회" \
-    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || printf '0')" "1"
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || true)" "1"
+  check "「${retry_arm}」 갈래는 계속하지 않는다" \
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park'; } || true)" "0"
 done
-check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 3회)" \
-  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "3"
+check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 2회)" \
+  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+# 한도 종료 는 제 갈래를 갖지 않고 크래시 갈래를 타서 그 1회 재시도를 공유한다.
+# 위 핀들은 이 행동이 없어도 초록이라 그것을 배제하지 못하므로, 구현 팔의 case
+# 주어가 읽기 사상을 거치는지를 같은 소스 문면 형태로 단언한다. 같은 사상이
+# `공허한 성공` 은 그대로 두므로 그 갈래는 여전히 `continue_or_park` 로 간다.
+check "구현 팔의 case 주어가 읽기 사상을 거친다 (한도 종료 가 크래시 갈래를 탄다)" \
+  "$( { grep -cxF '    case "$(terminal_route_class "$class")" in' "$DRIVER" || true; } )" "1"
+check "읽기 사상은 공허한 성공 을 바꾸지 않는다 (한도 종료 만 크래시로 읽는다)" \
+  "$(terminal_route_class '공허한 성공'):$(terminal_route_class '한도 종료'):$(terminal_route_class '크래시')" \
+  "공허한 성공:크래시:크래시"
+
+# ---------------------------------------------------------------------------
+# 텍스트로 끝난 턴의 계속 — `continue_or_park`
+#
+# `공허한 성공` 은 새로 다시 돌리지 않고 같은 세션을 계속 메시지로 재개한다. 새
+# 프로세스는 문맥을 잃고 그 값을 다시 낸다. 트랜스크립트가 없거나 0턴이면 재개할
+# 곳이 없으므로 새 프로세스 재시도 1회를 쓴다. 구현·설계·감사 세 스테이지가 한
+# 헬퍼를 거치고, 계속과 재시도는 모두 자기 시도 번호의 `stage-result` 행을 쓴다.
+#
+# `stage_spawn` 만 스텁한다 — `dispatch_stage`·`stage_wait_all`·분류기·행 기록은
+# 실물이 돈다. 스텁은 이 시도의 핀을 잡고, 재개 세션 id 와 프롬프트를 적고, 시나리오
+# 대로 스트림을 쓴다.
+# ---------------------------------------------------------------------------
+check "구현 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^      '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park "\$sid" "\$jkey" "\$seg" S4'; } || true)" "1"
+check "설계 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S1design S1design - S1design'; } || true)" "1"
+check "감사 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S2 S2 - S2'; } || true)" "1"
+# 판단 키는 그 판단을 낸 스테이지다. 맨 세그먼트나 런 범위 `-` 로 흡수하면 대기
+# 판정이 그 세그먼트·런의 아무 판단에나 걸리고, 답 재부착(`<종류>:<세그먼트>:`
+# 꼴만 고른다)은 그 판단을 영영 고르지 못한다.
+check "구현 스테이지의 흡수기는 판단 키로 흡수한다 (맨 세그먼트가 아니다)" \
+  "$(grep -c 'absorb_stage_judgment "\$sid" "\$jkey"' "$DRIVER")" "1"
+check "설계·감사 스테이지의 흡수기는 런 범위 - 를 넘기지 않는다" \
+  "$(grep -cE 'absorb_stage_judgment (S1design|S2) - ' "$DRIVER" || true)" "0"
+check "설계·감사 스테이지의 흡수기는 자기 이름으로 흡수한다" \
+  "$(grep -cE 'absorb_stage_judgment (S1design S1design|S2 S2) ' "$DRIVER")" "2"
+check "계속 시도의 흡수기는 판단 키로 흡수한다 (행 세그먼트가 아니다)" \
+  "$(sed -n '/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'absorb_stage_judgment "\$did" "\$jkey"')" "1"
+check "답을 재부착하는 사이클은 질문한 스테이지의 키를 유지한다" \
+  "$(grep -c 'jkey="\$aj_stage"' "$DRIVER")" "1"
+# 재개는 최초 기동과 같은 합성 경로를 탄다 — 시도 하나를 띄우는 곳은
+# `dispatch_stage`(→ `stage_spawn`) 하나뿐이고, 재개는 STAGE_RESUME 로만 갈린다.
+check "계속 시도는 dispatch_stage 로만 띄운다 (재개 전용 기동 경로가 없다)" \
+  "$(sed -n '/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'dispatch_stage "\$did" "\$cwd" "\$prompt"')" "1"
+check "계속 헬퍼 안에 CLI 직접 호출이 없다" \
+  "$(sed -n '/^continue_or_park() {/,/^}/p;/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'CLI_BIN\|stage-wrapper')" "0"
+
+CONT="$WORK/continue"; mkdir -p "$CONT"
+# cont_case <라벨> <모드> <앞선 계속 수> — 모드: hollow(끝까지 산출물 없음) ·
+# done1(첫 계속에서 산출) · notr(트랜스크립트 없음) · zero(0턴) · judg(이 파견
+# id 로 대기 판단). 환경으로 파견 id(CONT_DID, 기본 S4:sg:1)·행 세그먼트
+# (CONT_RSEG, 기본 sg)·행 종류(CONT_RKIND, 기본 S4)와, 다른 스테이지가 낸 대기
+# 판단의 `막는 세그먼트` 목록(CONT_OPEN, 공백 구분)을 사례마다 준다. 판단 키는
+# 드라이버 호출부와 같이 파견 id 다.
+cont_case() {
+  local d="$CONT/$1" mode="$2" spent="${3:-0}"
+  local did="${CONT_DID:-S4:sg:1}" rseg="${CONT_RSEG:-sg}" rkind="${CONT_RKIND:-S4}" k n=0
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+    DOC_KEY="docs/x.md"
+    : > "$LEDGER"
+    CONT_SID="11111111-2222-3333-4444-555555555555"
+    resolve_account() { printf '%s' "$d/cfg"; }
+    stage_parent_id() { printf 'parent'; }
+    absorb_stage_judgment() { :; }
+    log() { :; }
+    stage_spawn() {
+      local s="$1" att turns
+      att=$(stage_pin_attempt "$s")
+      printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "$3" >> "$d/spawned"
+      turns=7; [ "$mode" = "zero" ] && turns=0
+      # 실물 스폰이 남기는 것 — `.window` 셋째 줄의 effort 와 init 프레임의 모델.
+      printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
+      printf '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"%s"}\n{"type":"result","num_turns":%s}\n' \
+        "$CONT_SID" "$turns" > "$(stage_log_path "$s")"
+      [ "$mode" = "done1" ] && [ -n "${STAGE_RESUME:-}" ] && : > "$d/artifact"
+      printf '0' > "$RUN_DIR/$s.rc"
+      return 0
+    }
+    cont_pred() { [ -f "$d/artifact" ]; }
+    [ "$mode" = "notr" ] || : > "$d/cfg/projects/p/$CONT_SID.jsonl"
+    if [ "$mode" = "judg" ]; then
+      printf -- '- `승인` | 승인 id=J-1 | 상태=대기 | 절단점=판단 | 막는 세그먼트=%s\n' "$did" >> "$LEDGER"
+    fi
+    for k in ${CONT_OPEN:-}; do
+      n=$((n + 1))
+      printf -- '- `승인` | 승인 id=J-o%s | 상태=대기 | 절단점=판단 | 막는 세그먼트=%s\n' "$n" "$k" >> "$LEDGER"
+    done
+    # 첫 시도 — 호출자가 하는 일을 그대로 한다.
+    stage_spawn "$did" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
+    ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=0" \
+      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "$did")" \
+      "종단 부류=$(classify_termination "$did" 0 1)"
+    [ "$spent" = "0" ] || { mkdir -p "$RUN_DIR/continue"; printf '%s\n' "$spent" > "$(continue_counter_file "$did")"; }
+    : > "$d/spawned"
+    if continue_or_park "$did" "$did" "$rseg" "$rkind" "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+         "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" home -- cont_pred; then
+      printf 'rc=0\n'
+    else
+      printf 'rc=1\nblocked=%s\nreason=%s\n' "$CONTINUE_BLOCKED" "$CONTINUE_PARK_REASON"
+    fi
+  ) > "$d/out" 2>/dev/null
+}
+cont_field() { sed -n "s/^$2=//p" "$CONT/$1/out" | tail -1; }
+cont_spawns() { grep -c . "$CONT/$1/spawned" 2>/dev/null || true; }
+cont_rows() { grep -F '`stage-result`' "$CONT/$1/ledger.md" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' '; }
+
+check "계속 메시지가 충족되지 않은 술어를 이름으로 댄다" \
+  "$(continue_message '동결된 설계 문서도 정지 기록도 없다' | grep -c '동결된 설계 문서도 정지 기록도 없다')" "1"
+check "계속 메시지는 스테이지 프롬프트(슬래시 명령)를 싣지 않는다" \
+  "$(continue_message 'x' | grep -c '/cc-cmds:')" "0"
+check "계속 메시지가 종단 집합을 닫는다 (산출물 · 정지 기록 · 판단 표지)" \
+  "$(continue_message 'x' | grep -c '산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다')" "1"
+
+printf '{"type":"result","num_turns":85}\n{"type":"assistant"}\n{"type":"result","num_turns":6}\n' > "$CONT/nt.json"
+check "num_turns 는 마지막 result 줄에서 읽는다 (단조가 아니다)" "$(stream_last_num_turns "$CONT/nt.json")" "6"
+check "result 줄이 없으면 num_turns 는 빈 값이다" "$(stream_last_num_turns "$CONT/none.json")" ""
+
+cont_case hollow hollow
+check "산출물 없는 공허한 성공은 같은 세션을 두 번 재개한 뒤 park 한다" \
+  "$(cont_field hollow rc)/$(cont_spawns hollow)" "1/2"
+check "재개는 직전 행의 세션 id 로 붙는다" \
+  "$(cut -f2 "$CONT/hollow/spawned" | sort -u)" "11111111-2222-3333-4444-555555555555"
+check "재개 프롬프트는 계속 메시지다 — 스테이지 프롬프트를 다시 싣지 않는다" \
+  "$(cut -f3 "$CONT/hollow/spawned" | grep -c '^이 스테이지의 턴이 끝났지만 산출물 술어가 충족되지 않았다: 세그먼트 브랜치에 새 커밋도 정지 기록도 없다')" "2"
+# `cut -c` 는 바이트로 자르는 구현이 있어 한글 접두를 비교하지 못한다 — 접두는 grep 으로 잰다.
+check "계속 소진은 구별되는 park 사유다" "$(cont_field hollow reason | grep -c '^계속 소진 — ' || true)" "1"
+check "계속 시도마다 새 시도 번호의 stage-result 행이 하나씩 쓰인다 (실행 버전 = 시도 번호)" \
+  "$(cont_rows hollow)" "1 2 3 "
+if grep -F '| `공허한 성공` |' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" | grep_all_q -F '`계속 소진`'; then
+  ok "계약 5.2 표의 공허한 성공 행이 드라이버와 같은 park 사유를 적는다"
+else
+  bad "계약·드라이버 일치" "5.2 표 공허한 성공 행에 「계속 소진」이 없다"
+fi
+# 계속은 재개 기동이다 — 그 행도 첫 시도의 행처럼 그 시도의 effort 와 서빙 모델을 싣는다.
+check "계속 시도의 stage-result 행이 effort 와 서빙 모델을 싣는다" \
+  "$(grep -F '`stage-result`' "$CONT/hollow/ledger.md" | grep -F '실행 버전=2 ' | grep -cF '| effort=medium | 서빙 모델=claude-opus-5-5 |' || true)" "1"
+check "계속 계수기가 디스크에 남는다 (드라이버 재시작을 넘긴다)" \
+  "$(cat "$CONT/hollow/run/continue/S4:sg:1" 2>/dev/null)" "2"
+
+cont_case restarted hollow 2
+check "계수기가 이미 상한이면 재시작한 드라이버도 더 계속하지 않는다" \
+  "$(cont_field restarted rc)/$(cont_spawns restarted)" "1/0"
+
+cont_case done1 done1
+check "첫 계속에서 산출물이 생기면 통과한다" "$(cont_field done1 rc)/$(cont_spawns done1)" "0/1"
+
+cont_case notr notr
+check "트랜스크립트가 없으면 새 프로세스 재시도 1회" \
+  "$(cont_field notr rc)/$(cont_spawns notr)/$(cut -f1 "$CONT/notr/spawned")" "1/1/S4:sg:1.retry"
+check "재시도는 재개가 아니고 원래 프롬프트를 쓴다" \
+  "$(cut -f2,3 "$CONT/notr/spawned")" "$(printf '\t/cc-cmds:implement-unattended 재시도 프롬프트')"
+check "재시도 소진은 구별되는 park 사유다" "$(cont_field notr reason | grep -c '^재시도 소진 — ' || true)" "1"
+check "재시도도 자기 stage-result 행을 쓴다" \
+  "$(grep -cF '파견 id=S4:sg:1.retry ' "$CONT/notr/ledger.md")" "1"
+
+cont_case zero zero
+check "0턴이면 새 프로세스 재시도 1회" \
+  "$(cont_spawns zero)/$(cut -f1 "$CONT/zero/spawned")" "1/S4:sg:1.retry"
+
+cont_case judg judg
+check "대기 중인 판단 승인이 있으면 계속하지 않는다" \
+  "$(cont_field judg rc)/$(cont_spawns judg)/$(cont_field judg blocked)" "1/0/1"
+check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (세 호출부 모두)" \
+  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "3"
+# park 사유는 실제로 일어날 일만 적는다 — 승인 id 를 대고, 이 런 안에서 다시
+# 디스패치하지 않는다고 말하며, 어떤 경로도 수행하지 않는 재부착을 약속하지
+# 않는다. 옛 문구 하나가 아니라 `재부착` 이라는 말 자체가 없음을 본다 — 문구만
+# 바꾼 약속이 옛 문자열 검사를 그대로 통과한 적이 있다.
+check "막힘 사유가 계약의 판단 승인 대기 토큰 뒤에 대기 중인 승인 id 를 댄다" \
+  "$(cont_field judg reason | grep -c '^판단 승인 대기 J-1 — ' || true)" "1"
+check "구현 스테이지 막힘 사유는 이 런 안에서 다시 디스패치하지 않는다고 적는다" \
+  "$(cont_field judg reason | grep -c '이 런 안에서 이 세그먼트를 다시 디스패치하지 않는다' || true)" "1"
+check "막힘 사유가 수행되지 않는 재부착을 약속하지 않는다" \
+  "$(cont_field judg reason | grep -c '재부착' || true)" "0"
+check "구현 스테이지 막힘 사유는 멈춘 스테이지에 답을 되돌리는 경로가 없다고 적는다" \
+  "$(cont_field judg reason | grep -c '멈춘 스테이지에 답을 되돌리는 경로가 없' || true)" "1"
+
+# 다른 스테이지가 낸 판단은 이 스테이지를 막지 않는다. 앞 사이클 리뷰가 맨
+# 세그먼트로 흡수한 판단과 다른 스테이지 id 로 흡수된 판단이 대기 중이어도, 이
+# 구현 스테이지는 자기 판단이 없으니 같은 세션을 계속한다.
+CONT_OPEN="sg S5:sg:1 S4:sg:10" cont_case otherseg hollow
+check "세그먼트의 다른 대기 판단은 구현 스테이지의 계속을 막지 않는다" \
+  "$(cont_field otherseg rc)/$(cont_spawns otherseg)/$(cont_field otherseg blocked)" "1/2/"
+check "그 경우의 park 는 계속 소진이다 (막힘이 아니다)" \
+  "$(cont_field otherseg reason | grep -c '^계속 소진 — ' || true)" "1"
+
+# 런 범위. 설계 스테이지가 문서를 동결하며 낸 판단(`S1design`)이나 옛 흡수기가
+# 런 범위 `-` 로 흡수한 판단이 대기 중이어도, 이어진 감사 스테이지는 막히지
+# 않는다. 막는 것은 감사 스테이지 자신의 판단뿐이다.
+CONT_DID=S2 CONT_RSEG=- CONT_RKIND=S2 CONT_OPEN="- S1design" cont_case runscope hollow
+check "런 범위의 다른 대기 판단은 감사 스테이지의 계속을 막지 않는다" \
+  "$(cont_field runscope rc)/$(cont_spawns runscope)/$(cont_field runscope blocked)" "1/2/"
+CONT_DID=S2 CONT_RSEG=- CONT_RKIND=S2 CONT_OPEN="- S1design" cont_case runscopeown judg
+check "감사 스테이지 자신의 대기 판단은 계속을 막는다" \
+  "$(cont_field runscopeown rc)/$(cont_spawns runscopeown)/$(cont_field runscopeown blocked)" "1/0/1"
+check "감사 스테이지 막힘 사유는 멈춘 스테이지에 답을 되돌리는 경로가 없다고 적는다" \
+  "$(cont_field runscopeown reason | grep -c '멈춘 스테이지에 답을 되돌리는 경로가 없' || true)" "1"
+check "감사 스테이지 막힘 사유도 재부착을 약속하지 않는다" \
+  "$(cont_field runscopeown reason | grep -c '재부착' || true)" "0"
+check "감사 스테이지 막힘 사유가 자기 승인 id 를 댄다 (다른 스테이지의 것이 아니다)" \
+  "$(cont_field runscopeown reason | grep -c '^판단 승인 대기 J-1 — ' || true)" "1"
+
+# 대기 판정과 답 재부착은 같은 키 꼴을 읽는다. 구현 스테이지가 파견 id 로 흡수한
+# 판단에 답이 오면 `answered_judgment_stage` 가 그것을 고르고, 스트림은 시도 핀이
+# 붙은 이름(`stage_log_path`)으로 찾는다.
+AJ="$WORK/answered"; rm -rf "$AJ"; mkdir -p "$AJ/run/log"
+aj_out=$(
+  RUN_DIR="$AJ/run"; LEDGER="$AJ/ledger.md"
+  printf -- '- `승인` | 승인 id=J-a | 상태=승인 | 절단점=판단 | 막는 세그먼트=S4:sg:1\n' > "$LEDGER"
+  printf '1\n' > "$RUN_DIR/S4:sg:1.attempt"
+  printf '{"type":"result"}\n' > "$RUN_DIR/log/S4:sg:1#1.json"
+  printf '%s|' "$(answered_judgment_stage sg S4)"
+  printf -- '- `승인` | 승인 id=J-b | 상태=승인 | 절단점=판단 | 막는 세그먼트=S5:sg:1\n' > "$LEDGER"
+  printf '1\n' > "$RUN_DIR/S5:sg:1.attempt"
+  printf '{"type":"result"}\n' > "$RUN_DIR/log/S5:sg:1#1.json"
+  printf '%s|' "$(answered_judgment_stage sg S4)"
+  printf -- '- `승인` | 승인 id=J-c | 상태=승인 | 절단점=판단 | 막는 세그먼트=sg\n' > "$LEDGER"
+  printf '%s' "$(answered_judgment_stage sg S4)"
+)
+check "파견 id 로 흡수된 답은 핀된 시도의 스트림으로 재부착 후보가 된다; 다른 종류·맨 세그먼트는 아니다" \
+  "$aj_out" "J-a S4:sg:1||"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파
@@ -8106,6 +8470,24 @@ else
   bad "stage-result 행" ".window 부재인데 레인 물결 표기가 없다: $REC_ROWS"
 fi
 
+# 한도 종료 는 크래시와 똑같이 처분한다 — 앞 부류가 한도 종료 면 복구를 파견하고,
+# 복구가 한도 종료 로 끝나면 크래시로 끝난 복구처럼 park 한다. park 사유는 참
+# 부류를 싣는다.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "한도 종료" >/dev/null; REC_RC=$?
+check "앞 부류가 한도 종료 면 복구된다 (반환 0)" "$REC_RC" "0"
+check "앞 부류가 한도 종료 면 정확히 1회 파견한다" \
+  "$( { printf '%s' "$REC_SPAWN" | grep -c 'review-unattended' || true; } )" "1"
+rec_reset; REC_RCLASS="한도 종료"
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null; REC_RC=$?
+check "복구가 한도 종료 로 끝나면 반환 1" "$REC_RC" "1"
+if printf '%s' "$REC_PARK" | grep_all_q -F '리뷰 복구 종단 부류 한도 종료'; then
+  ok "복구가 한도 종료 로 끝난 park 사유가 참 부류를 싣는다"
+else
+  bad "park 사유" "복구가 한도 종료 로 끝났는데 사유가 그것을 말하지 않는다: $REC_PARK"
+fi
+REC_RCLASS="정상 완료"
+
 # --- (3c) stage_window_read — 세 층, (꺼짐), (미상), - ------------------------
 WR="$WORK/window-read"; rm -rf "$WR"; mkdir -p "$WR/proj/.claude" "$WR/cfg" "$WR/empty"
 check "세 층이 전부 비면 -" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "-"
@@ -8333,11 +8715,12 @@ else
   bad "판단 호출 log" "$(tr '\n' ' ' < "$JCD/log.txt")"
 fi
 
-# 드라이버 stage-result 호출부 — S9 적용 행을 뺀 다섯이 effort 와 서빙 모델을 싣는다.
-check "드라이버 stage-result 호출부 다섯이 effort 를 싣는다" \
-  "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "5"
-check "그 다섯이 서빙 모델도 싣는다" \
-  "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "5"
+# 드라이버 stage-result 호출부 — S9 적용 행을 뺀 여섯(계속 시도 행 포함)이 effort 와
+# 서빙 모델을 싣는다.
+check "드라이버 stage-result 호출부 여섯이 effort 를 싣는다" \
+  "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "6"
+check "그 여섯이 서빙 모델도 싣는다" \
+  "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "6"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

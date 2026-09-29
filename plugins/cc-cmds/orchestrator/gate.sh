@@ -6026,8 +6026,31 @@ ladder_of_terraform() {
 # turns into a silent exit of the snapshot. The first act of the first run is
 # exactly when a router most needs the snapshot to answer, so the tolerance is
 # not defensive padding: it is the case that always happens.
+#
+# THE READ-ZONE MEMO. The four `GATE_ROWS_MEMO_*` names exist only as `local`s
+# of a warming function (see `gate_ledger_warm`), so they are cleared here at
+# load. A caller whose environment carried one of them in would otherwise have
+# that scalar read as element 0 of the memo, and `gate_rows` would answer rows
+# the ledger does not hold.
+unset GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
 gate_rows() {
   # gate_rows <series>
+  #
+  # Inside a warmed zone a series the zone warmed is answered from the memo,
+  # with builtins only, so the read spawns no process. The memo is consulted
+  # only while `LEDGER` is still the path it was filled from; a string compare,
+  # not a freshness probe — a probe would be a process per call, the very cost
+  # the memo removes. Everything else falls through to the grep, unchanged.
+  if [ -n "${GATE_ROWS_MEMO_LEDGER:-}" ] && [ "$GATE_ROWS_MEMO_LEDGER" = "$LEDGER" ]; then
+    local m=0
+    while [ "$m" -lt "${GATE_ROWS_MEMO_N:-0}" ]; do
+      if [ "${GATE_ROWS_MEMO_KINDS[$m]}" = "$1" ]; then
+        [ -z "${GATE_ROWS_MEMO_ROWS[$m]}" ] || printf '%s\n' "${GATE_ROWS_MEMO_ROWS[$m]}"
+        return 0
+      fi
+      m=$((m + 1))
+    done
+  fi
   grep -E "^- \`$1\`" "$LEDGER" 2>/dev/null || true
 }
 
@@ -6053,6 +6076,35 @@ gate_count() {
   # invalid snapshot object rather than a wrong number, so nothing downstream
   # could even read far enough to notice.
   grep -c . || true
+}
+
+gate_ledger_warm() {
+  # gate_ledger_warm <series>... — read each named series from the ledger ONCE
+  # and hold it for the rest of the calling function.
+  #
+  # THE CALLER DECLARES THE FOUR `GATE_ROWS_MEMO_*` NAMES `local` BEFORE CALLING.
+  # That is what bounds the memo: bash scopes dynamically, so everything the
+  # caller calls — `$( )` subshells included — reads these values, nothing above
+  # the caller sees them, and they are gone when the caller returns. There is no
+  # invalidation because the zone has no append in it: a warmed function reads
+  # one ledger state from top to bottom, where unwarmed it could see a different
+  # state on every call. A row another process appends mid-zone shows up in the
+  # next zone.
+  #
+  # The grep is called directly, never through `gate_rows` or `gate_has_row` —
+  # the cost pins in `scripts/test-measure-gate-cost.sh` rest on the fixed paths
+  # not calling `gate_has_row`. Command substitution strips the trailing newline
+  # and `gate_rows` puts it back with `printf '%s\n'`; every matched line starts
+  # with `` - ` `` and so is never empty, which makes the final newline the only
+  # one stripped and the answer byte-identical to the grep.
+  local k n=0
+  for k in "$@"; do
+    GATE_ROWS_MEMO_KINDS[$n]="$k"
+    GATE_ROWS_MEMO_ROWS[$n]=$(grep -E "^- \`$k\`" "$LEDGER" 2>/dev/null || true)
+    n=$((n + 1))
+  done
+  GATE_ROWS_MEMO_N=$n
+  GATE_ROWS_MEMO_LEDGER="$LEDGER"
 }
 
 gate_chain_tip() {
@@ -6431,6 +6483,8 @@ gate_append() {
 # ---------------------------------------------------------------------------
 gate_progress_vector() {
   local a
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  gate_ledger_warm segment cycle '자율 승인' stage-result '종료 절' blocked
   printf 'goal=%s\n' "$(manifest_field '인가' '종료 지점' | shasum -a 256 | cut -d' ' -f1)"
   for a in $(target_aliases); do
     printf 'target=%s|%s|%s\n' "$a" \
@@ -8863,8 +8917,9 @@ gate_reap_cycle() {
 # in any of them; two of those decisions also disagreed about its shape, one
 # calling for a single shared file and the other for a `design`-specific variant.
 # It is settled here: a DIRECTORY under the run directory with one file per stage
-# kind, the common gate hook in every variant, and the network-fetch denial in
-# the `design` variant only.
+# kind, the common gate hook in every variant, and the two web research tools
+# (`WebFetch`, `WebSearch`) allowed in every stage variant and denied in the
+# shift variant only.
 #
 # The whole directory is an enforcement surface, not one file inside it — the
 # digest set the gate re-derives on every hook consultation takes the directory
@@ -9288,19 +9343,23 @@ $(gate_segment_worktrees_for_settings)"
 
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
-    # `design` alone loses the network-fetch tools. The per-stage spend cap that
-    # motivates it cannot be enforced by the argv0 grading table at all — a
-    # `WebFetch` call has no argv0 and never reaches the gate — so the only
-    # enforcement point available is the settings file the wrapper injects.
+    # Every stage variant ALLOWS `WebFetch` / `WebSearch` explicitly (the else
+    # branch below). Removing a deny is not enough: a headless stage whose
+    # variant named neither tool has had those calls denied, so opening them
+    # means writing the allow. This does not claim a variant without the allow
+    # entry is always denied. No spend cap dedicated to web research is kept —
+    # that was a person's decision — and a `curl` GET through the gate has
+    # always passed as a read with no cap either. The settings file is not the
+    # only enforcement point for these tools: a PreToolUse hook matcher can see
+    # them too, so a later cap or check has a place to go.
     deny_extra=""
-    [ "$k" = "design" ] && deny_extra='"WebFetch", "WebSearch", '
 
     # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
     # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed
-    # ONCE above and interpolated identically into every variant; the only thing
-    # that has ever branched per kind is `deny_extra`. So adding the token to
-    # `STAGE_KINDS` without this branch writes the file and leaves the
-    # permissions wide — the file exists, the launch succeeds, and nothing says
+    # ONCE above and interpolated identically into every variant; before this
+    # branch the only thing that branched per kind was `deny_extra`. So adding
+    # the token to `STAGE_KINDS` without this branch writes the file and leaves
+    # the permissions wide — the file exists, the launch succeeds, and nothing says
     # the narrowing did not happen.
     #
     # A shift writes no files. Its loop is snapshot → decide → gate, and
@@ -9327,7 +9386,9 @@ $(gate_segment_worktrees_for_settings)"
     if [ "$k" = "shift" ]; then
       kind_dirs=""
       kind_allow=""
-      deny_extra="${deny_extra}\"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
+      deny_extra="${deny_extra}\"WebFetch\", \"WebSearch\", \"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
+    else
+      kind_allow="\"WebFetch\", \"WebSearch\"${kind_allow:+, $kind_allow}"
     fi
     # A VARIANT THAT FAILS TO WRITE FAILS THE FUNCTION. The loop used to swallow
     # the status, so a caller re-baselined and recorded a settled key over files
@@ -10754,6 +10815,8 @@ gate_answered_judgments_json() {
   # included, never reaches the reader. The ledger a reader most needs a verdict
   # about is precisely the malformed one.
   local LC_CTYPE=C; export LC_CTYPE
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  gate_ledger_warm '승인' '자율 승인'
   # ALL THREE LOOKUPS ARE WHOLE FIELDS — `| 승인 id=<id> |`, `| 절단점=판단 |`
   # and `| 해소 승인=<id> |` — the way every other reader of these series is.
   # A judgment that cites another's id in its `기준` carries that text into its
@@ -19017,6 +19080,142 @@ gate_pin_attempt() {
   printf '%s' "$attempt"
 }
 
+gate_stage_emitted_judgment_id() {
+  # gate_stage_emitted_judgment_id <stage-key> <stream> — the approval id the
+  # absorber issued for the judgment this attempt's terminal message emitted, or
+  # nothing when it emitted none (no marker, or grade 0).
+  #
+  # THE ID IS DERIVED, NOT LOOKED UP BY ROW POSITION. The absorber keys every
+  # stage of a segment on the bare segment, so `막는 세그먼트` cannot tell this
+  # dispatch's question from a review stage's or an earlier cycle's; and an
+  # issue that meets the same question already `대기` writes no new row, so the
+  # last issuing row need not be this attempt's either. The id hashes the stage
+  # key and the question text, which is exactly what the absorber hashed.
+  local key="$1" stream="$2" res
+  res=$( { grep '"type":"result"' "$stream" 2>/dev/null || true; } | tail -1)
+  gate_emitted_judgment_fields "$res" || return 0
+  gate_judgment_approval_id "$key" \
+    "$(gate_judgment_question "${GATE_EMIT_STD:-미상}" "${GATE_EMIT_WHY:-스테이지 방출}")"
+}
+
+gate_stage_has_unspent_answer() {
+  # gate_stage_has_unspent_answer <stage-key> <approval id> — 0 when a person
+  # answered the judgment this stage's last attempt emitted and no adoption row
+  # has consumed the answer yet. That is the re-attachment that carries an
+  # answer; it is never a continuation. The run-scope design step also counts
+  # any answered approval on the step, as the step's open predicate below does.
+  local key="$1" jid="${2:-}" id dstep
+  if dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$key" ] \
+     && [ -z "$(gate_segment_field "$key" '상태')" ]; then
+    for id in $(gate_rows '승인' | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+      [ -n "$id" ] || continue
+      [ "$(gate_approval_state "$id")" = "승인" ] || continue
+      if gate_has_row '자율 승인' "| 해소 승인=$id |"; then continue; fi
+      gate_approval_keyed_on_design_step "$id" && return 0
+    done
+  fi
+  [ -n "$jid" ] || return 1
+  [ "$(gate_approval_state "$jid")" = "승인" ] || return 1
+  if gate_has_row '자율 승인' "| 해소 승인=$jid |"; then return 1; fi
+  return 0
+}
+
+gate_stage_has_open_judgment() {
+  # gate_stage_has_open_judgment <stage-key> <approval id> — 0 when the
+  # judgment this stage's last attempt emitted is still `대기`. A question
+  # another dispatch of the same segment raised — a review stage, an earlier
+  # cycle — neither blocks this continuation nor is answered by it. The design
+  # step keeps its own predicate, which asks the question about the step.
+  local key="$1" jid="${2:-}" dstep
+  if dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$key" ] \
+     && [ -z "$(gate_segment_field "$key" '상태')" ]; then
+    gate_design_step_has_open_approval
+    return $?
+  fi
+  [ -n "$jid" ] || return 1
+  [ "$(gate_approval_state "$jid")" = "대기" ]
+}
+
+gate_continuation_argv() {
+  # gate_continuation_argv <stage-key> <stage-kind> <cli args...> — decide
+  # whether a `--resume` dispatch is a CONTINUATION. On one, GATE_CONTINUED is
+  # non-empty and GATE_CONTINUE_ARGV holds the argv to launch; otherwise the
+  # caller's argv stands. Returns 0, or GATE_EXIT_RULE on a refusal.
+  #
+  # A continuation is a resume of a stage whose last row is `공허한 성공`: it
+  # ended its turn in prose, with no gate act and no halt record. What it needs
+  # is the fixed continue message naming the unmet predicate, not the stage
+  # prompt again — resent into a full context, the prompt restarts the stage
+  # from the top. So the gate substitutes the message the driver sends from the
+  # same definition, and the router's prompt is not used. A resume that carries
+  # an answer, or one that picks up a crash, is not a continuation and its
+  # argv passes through unchanged.
+  #
+  # THE JUDGMENT CONSULTED IS THE ONE THE LAST ATTEMPT EMITTED, and only that
+  # one. A question another dispatch of the same segment or an earlier cycle
+  # raised neither blocks this continuation nor is answered by it.
+  #
+  # The refusals come before the attempt pin and the launch token, so a refused
+  # continuation consumes neither an attempt number nor a continuation.
+  local key="$1" skind="$2"
+  shift 2
+  GATE_CONTINUED=""
+  local last sess att turns n unmet i stream jid dstep
+  last=$(gate_stage_result_rows_of "$key" | tail -1)
+  [ "$(gate_row_field "$last" '종단 부류')" = '공허한 성공' ] || return 0
+  att=$(gate_row_field "$last" '실행 버전')
+  stream="$RUN_DIR/log/$key#$att.json"
+  jid=$(gate_stage_emitted_judgment_id "$key" "$stream")
+  gate_stage_has_unspent_answer "$key" "$jid" && return 0
+  if gate_stage_has_open_judgment "$key" "$jid"; then
+    if dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$key" ]; then
+      warn "the design step has an approval that is still pending, so it is not continued — stop the design, holding the clauses that need the document 보류 on that approval ($key)"
+    else
+      warn "the judgment this stage's last attempt emitted is still pending (approval $jid), so it is not continued — wait for the answer ($key)"
+    fi
+    return "$GATE_EXIT_RULE"
+  fi
+  sess=$(gate_row_field "$last" '세션 id')
+  if [ "$sess" != "$GATE_RESUME" ]; then
+    warn "a continuation resumes the last attempt's session ($key: ${sess:-미상}), not $GATE_RESUME — with no session on that row, dispatch the stage afresh"
+    return "$GATE_EXIT_RULE"
+  fi
+  turns=$(stream_last_num_turns "$stream")
+  if [ "${turns:-0}" = "0" ]; then
+    warn "the last attempt ran zero turns, so there is nothing to continue — dispatch the stage afresh instead ($key#$att)"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$(continue_count "$key")" -ge "$CONTINUE_MAX" ]; then
+    # THE DESIGN STEP HAS NO `blocked` ROW TO TAKE: a cone row needs a
+    # `segment` row, and the step has none. What it has is the design stop,
+    # which termination condition 1 records once the same counter reaches the cap.
+    if dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$key" ]; then
+      warn "this design step has been continued $CONTINUE_MAX times with no frozen document — it is not continued again and not dispatched afresh; stop the design: settle the clauses that need the document as 불가능 and propose done, which condition 1 records as 무효화 ($key)"
+    else
+      warn "this stage has been continued $CONTINUE_MAX times with no artifact — it is not continued again; record it as blocked ($key)"
+    fi
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$skind" in
+    design) unmet="동결된 설계 문서도 정지 기록도 없다" ;;
+    *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
+  esac
+  GATE_CONTINUE_ARGV=()
+  i=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+      GATE_CONTINUE_ARGV+=(-p "$(continue_message "$unmet")"); shift 2; i=1
+    else
+      GATE_CONTINUE_ARGV+=("$1"); shift
+    fi
+  done
+  [ "$i" = "1" ] || GATE_CONTINUE_ARGV+=(-p "$(continue_message "$unmet")")
+  GATE_CONTINUED=1
+  n=$(continue_spend "$key")
+  log "스테이지 계속 — $key ← 세션 $GATE_RESUME, 계속 메시지 ($n/$CONTINUE_MAX)"
+  return 0
+}
+
 gate_launch_stage() {
   # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
@@ -19126,6 +19325,13 @@ gate_launch_stage() {
   # record after it both come later on purpose.
   local instr
   instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  # A RESUME OF A STAGE THAT ENDED IN PROSE carries the continue message instead
+  # of the router's prompt, and is refused here — still before the pin — when it
+  # may not be continued.
+  if [ -n "${GATE_RESUME:-}" ]; then
+    gate_continuation_argv "$seg" "$kind" "$@" || return $?
+    [ -z "$GATE_CONTINUED" ] || set -- "${GATE_CONTINUE_ARGV[@]}"
+  fi
   local attempt out suplog nonce tmp sup
   attempt=$(gate_pin_attempt "$seg")
   if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then
@@ -19649,7 +19855,10 @@ gate_record_stage_outcome() {
   # THE STREAM THIS DISPATCH ACTUALLY WROTE, handed down rather than re-derived.
   # Re-deriving is how the writer and the reader came apart once already; the
   # unsuffixed name stays as the fallback for a caller that predates the argument.
-  local out="${7:-}" res cost subtype sid klass after denials n_stage psha iserr
+  # `given` keeps whether the stream was handed down at all, before the fallback
+  # below overwrites `out`: only a handed-down stream is the pinned attempt's own,
+  # and only that one is judged for a usage-limit death.
+  local out="${7:-}" given="${7:-}" res cost subtype sid klass after denials n_stage psha iserr lx why
   [ -n "$out" ] || out="$RUN_DIR/log/$seg.json"
   # THE WINDOW THE LAUNCH READ, handed down by the supervisor that also put it
   # on the argv; a caller without it falls back to the `.window` record, and
@@ -19694,7 +19903,8 @@ gate_record_stage_outcome() {
   # the arm below reads it from the stage's halt record, which the halt
   # contract owns — and `외부 종료` is written by the prelude's settlement,
   # never by this function, because its defining check is the ABSENCE of the
-  # result envelope this function reads.
+  # result envelope this function reads. `한도 종료` is written here, and only
+  # from inside the `크래시` arm.
   #
   # THE FOURTH CONDITION: a `자율 승인` row stamped `행위자=스테이지` for THIS
   # segment, landing AFTER this attempt's dispatch row. Router rows written
@@ -19743,6 +19953,21 @@ gate_record_stage_outcome() {
     klass='의도된 park'
   elif [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
     klass='크래시'
+    # A STAGE THAT DIED OF THE USAGE LIMIT BY ITSELF is `한도 종료`, carved out
+    # of this arm only: every such row is one this arm used to file as `크래시`,
+    # and readers dispose of the two alike. It needs a non-zero exit, a stream
+    # handed down by the caller, and no halt record — the halt arm above stands
+    # only at rc 0, so a halted attempt with a non-zero exit arrives here and
+    # stays `크래시`. A limit-shaped stream that misses one of those, or whose
+    # shape is incomplete, stays `크래시` and says so on stderr, which is the
+    # supervisor's log.
+    if [ -n "$given" ] && [ ! -s "$haltf" ]; then
+      lx=0; why=$(stage_limit_exit "$out") || lx=$?
+      if [ "$lx" = "0" ] && [ "$rc" != "0" ]; then klass='한도 종료'
+      elif [ "$lx" = "0" ]; then warn "한도 형상 불완전 (rc) $out"
+      elif [ "$lx" = "3" ]; then warn "한도 형상 불완전 ($why) $out"
+      fi
+    fi
   # A DESIGN STAGE IS ASKED FOR ITS ARTIFACT, because the row-count arm below
   # accepts a ledger row as proof of production and a design stage writes rows
   # all through its discussion. The driver's own arm has always crossed the two
@@ -20048,6 +20273,55 @@ gate_absorb_issue() {
   return 0
 }
 
+gate_emitted_judgment_fields() {
+  # gate_emitted_judgment_fields <result-line> — read the five judgment markers
+  # of a stage's terminal message into GATE_EMIT_CLS, GATE_EMIT_GRADE,
+  # GATE_EMIT_STD, GATE_EMIT_REVERT and GATE_EMIT_WHY. Returns 0 when there is a
+  # judgment to record, 1 when there is none: no text, no marker, or grade 0.
+  #
+  # ONE READER, because two paths ask about the same emission: the absorber
+  # records it, and the continuation check derives the approval id the absorber
+  # issued from it. Parsed twice, the two would drift and the continuation would
+  # look for an approval the absorber never wrote.
+  local res="$1" txt
+  GATE_EMIT_CLS="" GATE_EMIT_GRADE="" GATE_EMIT_STD="" GATE_EMIT_REVERT="" GATE_EMIT_WHY=""
+  txt=$(printf '%s' "$res" | jq -r '.result // empty' 2>/dev/null || true)
+  [ -n "$txt" ] || return 1
+
+  # EVERY MARKER IS READ BEFORE ANY OF THEM DECIDES. The class used to gate the
+  # rest, so a return here meant "no judgment was emitted" AND "a judgment was
+  # emitted without a class" — and the second is the shape a stage naturally
+  # produces, because the three-grade marking convention names `기준` and
+  # `되돌리는 법` and has never required a class at all. That judgment vanished:
+  # no row, no approval, no warning, while the stage had already ACTED on the
+  # decision inside its own turn. It is the exact opposite disposition from a
+  # class that is present but out of vocabulary, which escalates.
+  GATE_EMIT_CLS=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 부류\*\*: *\([^ *`]*\).*/\1/p' | sed -n '1p')
+  GATE_EMIT_GRADE=$(printf '%s' "$txt"  | sed -n 's/.*\*\*판단 등급\*\*: *\([0-9]\).*/\1/p' | sed -n '1p')
+  # THE VALUE ENDS AT THE NEXT MARKER, NOT AT THE END OF THE LINE. A stage's
+  # terminal message is one JSON string, so the five markers ordinarily arrive on
+  # a single line — and `\(.*\)` then hands each free-text field everything that
+  # follows it, markers included. Measured on that ordinary spelling: the undo
+  # command came back carrying the standard and the rationale glued onto it. The
+  # row keeps that value, and the undo command is what a person reads in the
+  # morning, so a swallowed field is worse than an absent one.
+  GATE_EMIT_STD=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 기준\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
+  GATE_EMIT_REVERT=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 되돌리는 법\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
+  GATE_EMIT_WHY=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 근거\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
+
+  # No marker of ANY kind — the stage recorded no decision, which is the common
+  # case and the only one that may return quietly.
+  if [ -z "$GATE_EMIT_CLS" ] && [ -z "$GATE_EMIT_GRADE" ] && [ -z "$GATE_EMIT_STD" ] \
+     && [ -z "$GATE_EMIT_REVERT" ] && [ -z "$GATE_EMIT_WHY" ]; then
+    return 1
+  fi
+
+  # Grade 0 records nothing by contract — an already-written rule fully
+  # determined the answer, so there was no decision to record.
+  case "$GATE_EMIT_GRADE" in 0) return 1 ;; esac
+  return 0
+}
+
 gate_absorb_emitted_judgment() {
   # gate_absorb_emitted_judgment <alias> <segment> <result-line>
   #
@@ -20061,40 +20335,10 @@ gate_absorb_emitted_judgment() {
   # bypassed by the one path that never touches it — which is the whole design
   # routed around rather than one check missed. When it does not pass, no
   # `자율 승인` row is written and an approval is issued instead.
-  local alias="$1" seg="$2" res="$3" txt cls grade std revert why
-  txt=$(printf '%s' "$res" | jq -r '.result // empty' 2>/dev/null || true)
-  [ -n "$txt" ] || return 0
-
-  # EVERY MARKER IS READ BEFORE ANY OF THEM DECIDES. The class used to gate the
-  # rest, so a return here meant "no judgment was emitted" AND "a judgment was
-  # emitted without a class" — and the second is the shape a stage naturally
-  # produces, because the three-grade marking convention names `기준` and
-  # `되돌리는 법` and has never required a class at all. That judgment vanished:
-  # no row, no approval, no warning, while the stage had already ACTED on the
-  # decision inside its own turn. It is the exact opposite disposition from a
-  # class that is present but out of vocabulary, which escalates.
-  cls=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 부류\*\*: *\([^ *`]*\).*/\1/p' | sed -n '1p')
-  grade=$(printf '%s' "$txt"  | sed -n 's/.*\*\*판단 등급\*\*: *\([0-9]\).*/\1/p' | sed -n '1p')
-  # THE VALUE ENDS AT THE NEXT MARKER, NOT AT THE END OF THE LINE. A stage's
-  # terminal message is one JSON string, so the five markers ordinarily arrive on
-  # a single line — and `\(.*\)` then hands each free-text field everything that
-  # follows it, markers included. Measured on that ordinary spelling: the undo
-  # command came back carrying the standard and the rationale glued onto it. The
-  # row keeps that value, and the undo command is what a person reads in the
-  # morning, so a swallowed field is worse than an absent one.
-  std=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 기준\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
-  revert=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 되돌리는 법\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
-  why=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 근거\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
-
-  # No marker of ANY kind — the stage recorded no decision, which is the common
-  # case and the only one that may return quietly.
-  if [ -z "$cls" ] && [ -z "$grade" ] && [ -z "$std" ] && [ -z "$revert" ] && [ -z "$why" ]; then
-    return 0
-  fi
-
-  # Grade 0 records nothing by contract — an already-written rule fully
-  # determined the answer, so there was no decision to record.
-  case "${grade:-}" in 0) return 0 ;; esac
+  local alias="$1" seg="$2" res="$3" cls grade std revert why
+  gate_emitted_judgment_fields "$res" || return 0
+  cls="$GATE_EMIT_CLS" grade="$GATE_EMIT_GRADE" std="$GATE_EMIT_STD"
+  revert="$GATE_EMIT_REVERT" why="$GATE_EMIT_WHY"
 
   if [ -z "$cls" ]; then
     warn "the stage emitted a judgment with no \`판단 부류\` — no row is written and an approval is issued"
@@ -20770,10 +21014,12 @@ gate_done_conditions() {
   # again carries one row per attempt, and only the latest says how it stands
   # now.
   #
-  # A CRASH THAT SAVED NOTHING IS LEFT OUT FOR THE SAME REASON. Every non-zero
-  # exit is classified `크래시`, so an API usage limit — which resets on its own
-  # — lands in the same bucket as a stage that is genuinely broken, and this
-  # line then declares the run dead minutes after a transient error. Measured:
+  # A CRASH THAT SAVED NOTHING IS LEFT OUT FOR THE SAME REASON. A stage that
+  # died of an API usage limit — which resets on its own — is written
+  # `한도 종료` when its own stream shows it and `크래시` otherwise, and this
+  # line reads both as `크래시`: without that, a transient limit sits in the same
+  # place as a stage that is genuinely broken, and this line then declares the
+  # run dead minutes after a transient error. Measured:
   # a design stage died on HTTP 429 with the limit's own reset time in the
   # result envelope, and the next router settled all five termination clauses
   # as `불가능` on that one row, three minutes later, with the limit already
@@ -20792,6 +21038,13 @@ gate_done_conditions() {
   # this line still read as the retry window: it printed the plain zero-segment
   # line, `gate_done_disposition` kept it, and every proposal the router was
   # told to make was refused — a run that could neither dispatch nor end.
+  #
+  # THE CONTINUATION CAP IS READ HERE, AND IT IS NOT THAT BUDGET. It is the
+  # gate's own count of `--resume` continuations on the step, the one
+  # `gate_continuation_argv` refuses at. Both routers stop the design once it
+  # is reached instead of dispatching the step afresh, so a `공허한 성공` step
+  # at the cap is not dispatched again; left in the redispatch window it would
+  # keep the plain line below standing, and the run could not end.
   #
   # This does not open an empty end. The line only decides the disposition when
   # it is the last one left: condition 7 still holds the run while the design
@@ -20820,8 +21073,11 @@ gate_done_conditions() {
       # ON PURPOSE and a person owes it an answer. Redispatching that asks the
       # same question again and bills for it. A crashed stage never emits, so
       # the arm above cannot reach this state and asks nothing about it.
-      if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
-         && ! { { [ "$dlast" = '크래시' ] \
+      if [ -n "$drows" ] && [ "$dlast" = '공허한 성공' ] \
+         && [ "$(continue_count "$dstep")" -ge "$CONTINUE_MAX" ]; then
+        dwhy='계속 소진'
+      elif [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
+         && ! { { [ "$(terminal_route_class "$dlast")" = '크래시' ] \
                   || { [ "$dlast" = '공허한 성공' ] \
                        && ! gate_design_step_has_open_approval; }; } \
                 && { [ -z "${DOC:-}" ] || [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; }; then
@@ -21018,6 +21274,8 @@ gate_unfulfilled_review_obligations() {
   # and the answer would be wrong in the permissive direction for the issuer and
   # in the refusing direction for the predicate.
   local want="${1:-}" id st row seg
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  gate_ledger_warm '리뷰 의무'
   for id in $(gate_rows '리뷰 의무' | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
     row=$( { gate_rows '리뷰 의무' | grep -F "의무 id=$id " || true; } | tail -1)

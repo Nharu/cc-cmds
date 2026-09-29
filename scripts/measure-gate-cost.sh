@@ -17,11 +17,13 @@
 #   progress — `gate_progress_vector` over a ledger holding K DISTINCT SEGMENT
 #              IDS. Reports `progress_processes_total`, and what matters about
 #              it is its SLOPE: each additional distinct id costs a fixed number
-#              of child processes (measured: 14 — four `grep`, four `sed`, four
-#              `tail`, two `tr`), because the vector reads two fields per id and
-#              each read is a pipeline. This axis guards the ENTITY term of the
-#              act path, the one that scales with what the run has recorded. It
-#              guards that ONE carrier and proves nothing about other paths.
+#              of child processes (measured: 6 — one `grep`, two `sed`, two
+#              `tail`, one `tr`), because the vector reads one field per id and
+#              that read is a pipeline over the `segment` rows, which the
+#              vector's warmed memo answers without re-reading the ledger.
+#              This axis guards the ENTITY term of the act path, the one that
+#              scales with what the run has recorded. It guards that ONE
+#              carrier and proves nothing about other paths.
 #
 # THE SLOPE AXIS IS ONLY READABLE WITH BOTH OF ITS INPUTS, and this script
 # makes them. The vector reads the manifest (`goal`, target rows) and the
@@ -87,7 +89,7 @@ while [ $# -gt 0 ]; do
     --segments) SEGMENTS="${2:?--segments needs a value}"; shift 2 ;;
     --ledger)   LEDGER_IN="${2:?--ledger needs a value}"; shift 2 ;;
     --manifest) MANIFEST_IN="${2:?--manifest needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,66p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,68p' "$0"; exit 0 ;;
     *) printf 'measure-gate-cost: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done

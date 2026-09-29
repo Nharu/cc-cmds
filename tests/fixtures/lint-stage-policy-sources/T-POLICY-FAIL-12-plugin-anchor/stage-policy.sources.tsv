@@ -1,0 +1,6 @@
+source	anchor	sha256	disposition	note
+user-scope	one	0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef	policy:Artifacts	
+user-scope	two	0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef	policy:Delegation	note
+workspace	## Section	0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef	skill:local-html	
+memory	feedback_x	-	repo:CLAUDE.md	
+plugin	skills/rule.md	0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef	policy:Ending the turn	the plugin owns this rule
