@@ -8863,8 +8863,9 @@ gate_reap_cycle() {
 # in any of them; two of those decisions also disagreed about its shape, one
 # calling for a single shared file and the other for a `design`-specific variant.
 # It is settled here: a DIRECTORY under the run directory with one file per stage
-# kind, the common gate hook in every variant, and the network-fetch denial in
-# the `design` variant only.
+# kind, the common gate hook in every variant, and the two web research tools
+# (`WebFetch`, `WebSearch`) allowed in every stage variant and denied in the
+# shift variant only.
 #
 # The whole directory is an enforcement surface, not one file inside it — the
 # digest set the gate re-derives on every hook consultation takes the directory
@@ -9288,19 +9289,23 @@ $(gate_segment_worktrees_for_settings)"
 
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
-    # `design` alone loses the network-fetch tools. The per-stage spend cap that
-    # motivates it cannot be enforced by the argv0 grading table at all — a
-    # `WebFetch` call has no argv0 and never reaches the gate — so the only
-    # enforcement point available is the settings file the wrapper injects.
+    # Every stage variant ALLOWS `WebFetch` / `WebSearch` explicitly (the else
+    # branch below). Removing a deny is not enough: a headless stage whose
+    # variant named neither tool has had those calls denied, so opening them
+    # means writing the allow. This does not claim a variant without the allow
+    # entry is always denied. No spend cap dedicated to web research is kept —
+    # that was a person's decision — and a `curl` GET through the gate has
+    # always passed as a read with no cap either. The settings file is not the
+    # only enforcement point for these tools: a PreToolUse hook matcher can see
+    # them too, so a later cap or check has a place to go.
     deny_extra=""
-    [ "$k" = "design" ] && deny_extra='"WebFetch", "WebSearch", '
 
     # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
     # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed
-    # ONCE above and interpolated identically into every variant; the only thing
-    # that has ever branched per kind is `deny_extra`. So adding the token to
-    # `STAGE_KINDS` without this branch writes the file and leaves the
-    # permissions wide — the file exists, the launch succeeds, and nothing says
+    # ONCE above and interpolated identically into every variant; before this
+    # branch the only thing that branched per kind was `deny_extra`. So adding
+    # the token to `STAGE_KINDS` without this branch writes the file and leaves
+    # the permissions wide — the file exists, the launch succeeds, and nothing says
     # the narrowing did not happen.
     #
     # A shift writes no files. Its loop is snapshot → decide → gate, and
@@ -9327,7 +9332,9 @@ $(gate_segment_worktrees_for_settings)"
     if [ "$k" = "shift" ]; then
       kind_dirs=""
       kind_allow=""
-      deny_extra="${deny_extra}\"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
+      deny_extra="${deny_extra}\"WebFetch\", \"WebSearch\", \"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
+    else
+      kind_allow="\"WebFetch\", \"WebSearch\"${kind_allow:+, $kind_allow}"
     fi
     # A VARIANT THAT FAILS TO WRITE FAILS THE FUNCTION. The loop used to swallow
     # the status, so a caller re-baselined and recorded a settled key over files

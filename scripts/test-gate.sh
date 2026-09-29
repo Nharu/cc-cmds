@@ -3288,7 +3288,7 @@ check "모든 변종이 유효한 JSON 이다" "$bad_json" "0"
 if [ "$n_variants" -ge 2 ]; then
   ok "스테이지 종류마다 변종이 하나씩 생긴다 (${n_variants}종)"
 else
-  bad "변종 수" "${n_variants}종 — 단일 파일이면 design 전용 제약을 표현할 자리가 없다"
+  bad "변종 수" "${n_variants}종 — 단일 파일이면 교대 변종의 축소를 표현할 자리가 없다"
 fi
 
 # THE STAGE MUST BE ABLE TO READ ITS OWN SKILL'S DOCUMENTS. Every skill here
@@ -3350,7 +3350,7 @@ fi
 # Asserted on SHAPE, not on this machine's paths: the list is derived from the
 # config directory and the base worktree's ancestors precisely so it is not a
 # literal that is true on one box.
-allow_n=$(jq -r '.permissions.allow // [] | length' "$SETTINGS_DIR/generic.json" 2>/dev/null)
+allow_n=$(jq -r '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$"))) | length' "$SETTINGS_DIR/generic.json" 2>/dev/null)
 if [ "${allow_n:-0}" -gt 0 ] 2>/dev/null; then
   ok "설정에 CLAUDE.md 읽기 allow 목록이 있다 (${allow_n}개)"
 else
@@ -3362,14 +3362,23 @@ if jq -e '.permissions.allow // [] | map(select(test("^Read\\(/.*/CLAUDE\\.md\\)
 else
   bad "allow 형태" "$(jq -c '.permissions.allow' "$SETTINGS_DIR/generic.json")"
 fi
-# Nothing but CLAUDE.md. An entry that widened past that would be the directory
-# expansion arriving through the narrow door.
-if jq -e '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | length == 0' \
-     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
-  ok "allow 목록에 CLAUDE.md 아닌 항목이 없다"
-else
-  bad "allow 범위" "$(jq -c '.permissions.allow' "$SETTINGS_DIR/generic.json")"
-fi
+# Nothing but CLAUDE.md and the two web research tools. An entry that widened
+# past that would be the directory expansion arriving through the narrow door.
+# The two tool names are matched by equality, not by `test`, so a third entry of
+# any spelling still fails. The allow-list is assembled per kind, so every
+# variant but the shift one is checked; the shift variant's empty allow-list is
+# asserted with its web denial below.
+allow_wide=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  [ "$(basename "$f")" = "shift.json" ] && continue
+  if ! jq -e '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | sort == ["WebFetch","WebSearch"]' \
+       "$f" >/dev/null 2>&1; then
+    allow_wide=$((allow_wide + 1))
+    printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.allow' "$f")" >&2
+  fi
+done
+check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구 말고는 없다" "$allow_wide" "0"
 
 # The attempt term of the session id is DERIVED, not passed as argv. Without it
 # a stage that died before producing anything kept its session id and every
@@ -3397,16 +3406,33 @@ case "$hook_cmd" in
     bad "훅 명령줄" "'$hook_cmd' — 환경에서 읽는 형태라면 스테이지가 env 하나로 훅을 끌 수 있다" ;;
 esac
 
-d_design=$(jq -r '.permissions.deny | join(",")' "$SETTINGS_DIR/design.json" 2>/dev/null)
-d_review=$(jq -r '.permissions.deny | join(",")' "$SETTINGS_DIR/review.json" 2>/dev/null)
-case "$d_design" in
-  *WebFetch*) ok "design 변종만 네트워크 취득 도구를 불허한다" ;;
-  *) bad "design 변종" "'$d_design' — 이 상한은 등급표로는 강제할 수 없어 여기가 유일한 지점이다" ;;
-esac
-case "$d_review" in
-  *WebFetch*) bad "변종 구분" "review 변종까지 네트워크를 막았다 — design 전용 제약이 아니다" ;;
-  *) ok "다른 변종은 그 제약을 받지 않는다" ;;
-esac
+# Web research is open in every stage variant and closed in the shift variant
+# only. Removing a deny is not enough — a headless stage whose variant named
+# neither tool has had those calls denied — so every stage variant has to carry
+# the allow. The exception is named by file, as with the directory list above,
+# so a NEW kind arriving without the allow is still counted.
+web_bad=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  [ "$(basename "$f")" = "shift.json" ] && continue
+  if ! jq -e '(.permissions.allow // [] | index("WebFetch") != null and index("WebSearch") != null)
+              and (.permissions.deny // [] | index("WebFetch") == null and index("WebSearch") == null)' \
+       "$f" >/dev/null 2>&1; then
+    web_bad=$((web_bad + 1))
+    printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions' "$f")" >&2
+  fi
+done
+check "교대를 뺀 모든 변종이 웹 조사 도구를 허용하고 거부하지 않는다" "$web_bad" "0"
+if [ -f "$SETTINGS_DIR/shift.json" ]; then
+  if jq -e '(.permissions.deny // [] | index("WebFetch") != null and index("WebSearch") != null)
+            and (.permissions.allow == [])' "$SETTINGS_DIR/shift.json" >/dev/null 2>&1; then
+    ok "교대 변종만 웹 조사 도구를 거부하고 allow 가 비어 있다"
+  else
+    bad "교대 변종 웹" "$(jq -c '.permissions' "$SETTINGS_DIR/shift.json")"
+  fi
+else
+  bad "교대 변종 웹" "shift.json 이 없다 — 위 예외가 아무것도 면제하지 않았다"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Vocabulary — closed sets refuse by status, never by `die`
@@ -8759,7 +8785,7 @@ case "$msg" in
   *) bad "15c 재부착 모양 문면" "$msg" ;;
 esac
 
-# R15O — the same hollow design stage, CONTINUED up to the cap. Both routers
+# R15P — the same hollow design stage, CONTINUED up to the cap. Both routers
 # continue a `공허한 성공` step in its own session rather than dispatching it
 # afresh, and once the gate refuses a third continuation they stop the design:
 # the step has no `segment` row for a `blocked` form, and a fresh dispatch buys
@@ -8779,26 +8805,26 @@ resume15x() {
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
 }
-fresh15x R15O 'docs/fixture-design-15o.md' K1
-settle15x "$WORK/plan-R15O.md" K1 불가능 "설계 문서가 동결되지 않는다"
+fresh15x R15P 'docs/fixture-design-15p.md' K1
+settle15x "$WORK/plan-R15P.md" K1 불가능 "설계 문서가 동결되지 않는다"
 check "15c: 계속 상한 픽스처의 절을 불가능으로 정산한다" "$rc" "0"
-launch15x "$WORK/plan-R15O.md" "$STUB15C"
+launch15x "$WORK/plan-R15P.md" "$STUB15C"
 check "15c: 계속 상한 픽스처의 첫 시도가 공허한 성공이다 (아래가 공허하지 않다)" \
-  "$(dclass15x R15O)" "공허한 성공"
-resume15x "$WORK/plan-R15O.md" "$STUB15C" s15c-session
-check "15c: 공허한 성공 설계 단계의 첫 계속이 기동한다" "$rc/$(design_rows15x R15O)" "0/2"
-propose15x plan "$WORK/plan-R15O.md"
+  "$(dclass15x R15P)/$(design_rows15x R15P)" "공허한 성공/1"
+resume15x "$WORK/plan-R15P.md" "$STUB15C" s15c-session
+check "15c: 공허한 성공 설계 단계의 첫 계속이 기동한다" "$rc/$(design_rows15x R15P)" "0/2"
+propose15x plan "$WORK/plan-R15P.md"
 check "15c: 상한 전에 계속한 설계 단계의 재파견 창은 열려 있다" "$rc" "3"
-resume15x "$WORK/plan-R15O.md" "$STUB15C" s15c-session
+resume15x "$WORK/plan-R15P.md" "$STUB15C" s15c-session
 check "15c: 둘째 계속도 기동하고 계수기가 상한에 이른다" \
-  "$rc/$(cat "$STATE_LATE/cc-cmds/run/R15O/continue/D1" 2>/dev/null)" "0/2"
-resume15x "$WORK/plan-R15O.md" "$STUB15C" s15c-session
+  "$rc/$(cat "$STATE_LATE/cc-cmds/run/R15P/continue/D1" 2>/dev/null)" "0/2"
+resume15x "$WORK/plan-R15P.md" "$STUB15C" s15c-session
 check "15c: 계속 상한에 이른 설계 단계의 셋째 계속은 exit 3 이다" "$rc" "3"
 case "$out" in
   *"stop the design"*"무효화"*) ok "15c: 그 거부는 막힘 행이 아니라 설계 중단을 가리킨다" ;;
   *) bad "15c 설계 계속 상한 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
-propose15x plan "$WORK/plan-R15O.md"
+propose15x plan "$WORK/plan-R15P.md"
 check "15c: 계속 상한에 이른 설계 단계의 0-세그먼트 런은 종료 제안이 무효화로 통과한다" "$rc" "0"
 case "$msg" in
   *"통과 예상: 무효화 종료"*) ok "15c: 계속 상한 경로의 예상도 무효화 종료다" ;;
