@@ -44,11 +44,11 @@ Handle those solo.
 
 ## 2. Ask first — the self-test, and where solo wins
 
-When work looks like it passes that test, ask: **"is this work where
-an incomplete answer becomes a wrong answer?"** If not, handle it solo.
+When work looks like it passes that test, check it against the cases below
+before firing. Each is a place where the time saved looks real but is not, so
+solo wins even though the test seemed to pass.
 
 - A request to explain how, why, or what is solo by default — an explanation does not get better by sweeping wide.
-- Solo also wins when a later stage depends on an earlier result, so parallelism never held in the first place.
 - Solo wins when more than one round of polishing is expected — fanned-out agents cannot be resumed, so refining costs a full re-run.
 - Solo wins when the content is already in this session's context.
 - Solo wins when one target's workload is smaller than the cost of spawning one agent, and bundling targets still leaves a bundle under that cost.

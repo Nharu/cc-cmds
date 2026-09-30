@@ -16,7 +16,7 @@ user-scope	Dynamic Workflow(	ea03b8dd2cffd453a5c4252da0671fc581c60c05a55f39c5881
 user-scope	팬아웃의 경계	04ccf5dc9ac62e318aaa8370d115ee889151373137c07be89e3199e10e0211ab	policy:Delegation	with no human present every spawned agent resolves to read-only
 user-scope	새 기능 기획·구현이 필요하면	159bf39779997386eb639df8589617874d45d9d47debe82b0401eca0cff78fa6	excluded:interactive-only	AskUserQuestion interview
 user-scope	설계·개발 문서는 형상관리에 담지 않는	37dc353b9cfab31c4c6cf3b076a0df693a1c7ece5c8ca3c02dc40212ff5422e0	policy:Artifacts	the backup-outside-version-control clause has no stage act
-user-scope	이슈 트래커 티켓(ClickUp	1a391db01cbf8f36563fb0b7b7ce995e47df72ed688d15678e95823ccc3cedc7	excluded:interactive-only	kickoff AskUserQuestion
+user-scope	이슈 트래커 티켓(ClickUp	1c9ccaeacfebc6385635f5781f45827d3c5cb71a8b80fd18af61dbab33e66f91	excluded:interactive-only	kickoff AskUserQuestion
 user-scope	설계·개발 문서 등 산출물에서 "우산"	bb77b0e28cb189b99390c9018f5f1212964845d2dd6110fef7a24f2bf78d5936	policy:Artifacts	
 user-scope	HTML 문서는 Artifact 가 아니라	d670c1e148f13fbfb8a9f6ebcc5607a44905e588f5b408260d53805e3b9463e8	skill:local-html	
 user-scope	그 로컬 HTML 은 경로만	cd97c4abb6ea1a9a50cef91eac3ab5c1edb814546b3cb646919ae4dfcb1df76b	skill:local-html	
@@ -36,12 +36,12 @@ user-scope	커밋 메시지·PR/이슈 본문·PR/이슈 코멘트에 내부	abf
 user-scope	PR 에 인라인 리뷰 코멘트를	d5111f3e83eb6cef103e25177d1a563608419d32b47b59688408e885e5fdd360	policy:Git and GitHub	
 user-scope	코드 주석 및 spec/test 주석에	5b979c565c2ba741700a9ed404eb98080c7033d864134092f85a4bbd5b5b783d	policy:Artifacts	
 user-scope	코드 주석 스타일은	5aee405bcbbb42fb84851cf9163c65cb005c7991ca07c322b1e46057e279cf75	policy:Code and tools	only the judge-by-rules-and-neighbours half; the memory-saving half is not a stage act
-user-scope	도구 결과가 지연·공백이어도	eb3c3080517a688cb2c7711b5ea683e92da3ad728722760aa188c4381ad9e9c6	policy:Conduct	keep going through steps that need no person; when blocked, record where and end the turn (the turn-ending shape is the Ending the turn section)
+user-scope	도구 결과가 지연·공백이어도	eb3c3080517a688cb2c7711b5ea683e92da3ad728722760aa188c4381ad9e9c6	policy:Conduct	keep going through steps that need no person; when blocked, record where and end the turn (the turn-ending shape is the Ending the turn section); the stop-before-destructive-or-external-acts half is not carried, since no person is there to stop for and the Delegation read-only rule and the gate bound those acts
 user-scope	사용자에게 알림을 보낼 때는	b2bb3aede0d88fed8053b187e320606b77e035ba805906f2cfb8936ac0aba0b9	excluded:superseded	replaced by the Delegation section ban on any notification
 user-scope	이 파일이 사용자에게 알림 배너를	87202602dbc75c8829f5a15bd55058ee081542b1b5fd252cb18cfbf24f58a687	policy:Delegation	compressed to: no notification by any route
 user-scope	다른 에이전트에게 일을 시키는 경로는	e7ff283a47e50b5f3c460a74fba42399d4154454548c7cbe8cbb739e1cce059e	policy:Delegation	Agent-tool members receive it from the harness; other agents get it written into their prompt
 user-scope	띄운 에이전트는 쓸 결과를 다 받았으면	59a1180d9d5c16155fce69de995bded2c0de1a1dc2c958cd838145c07ac47212	policy:Delegation	the ListAgents check is restated as: confirm none is left
-user-scope	자격증명은 레포·	277555db27c1384b5756eeb347999773d390531f2f1d289754e5cb54d656154c	policy:Artifacts	
+user-scope	자격증명은 레포·	41cd8118821101a28742505a4306c27ba24fff655c562e6427c62c0478f365eb	policy:Artifacts	
 workspace	# /Users/ian/dev — 작업 공간 안내	76e73a0c84d002c16515d0b655ad709eccdf86ae87bb47635396f4e2df4948ea	excluded:workspace-local	
 workspace	## 이슈 트래킹 (로컬 파일)	11231724cee656b5fb239c9fd06ed90b958c0d62d3dc302f87b8b3adaf0b8622	excluded:workspace-local	
 workspace	## 외부 사이트 자격 정보 (자동화용)	f987e94d7a2c6c298c0a29c6e2e81c28d7a2614b10e0fc8e1026682a4da43cc2	excluded:no-stage-login	
