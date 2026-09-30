@@ -89,8 +89,10 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The account router. Its top level is function definitions and guarded
 # `readonly` constants only, because the gate sources this file on every entry
-# and inherits whatever the router puts at top level. Nothing in this driver
-# calls `route_*` yet: the switch below keeps the router dormant, and
+# and inherits whatever the router puts at top level. This driver calls
+# `route_inventory_check` and `route__jq_lib`, from `rundir_init`, to check
+# the run's inventory baseline; neither reads a switch. Nothing here resolves
+# a route yet: the switch below keeps the router dormant, and
 # `route_resolve` reads it with a `:-0` default so a shell that sources
 # `route.sh` alone can never turn routing on.
 # shellcheck source=/dev/null
@@ -2002,6 +2004,12 @@ declared_field_for_row() {
 # runs under `set -euo pipefail` without the gate loaded, where the first is an
 # unbound variable and the second is command not found — on the path that
 # writes a row, which is where a death is least visible.
+#
+# A CALL TO A `gate_*` FUNCTION MADE ONLY INSIDE THE BRANCH WHERE
+# `declare -F <name>` SUCCEEDED IS THE ONE EXCEPTION. That guard is what rules
+# out the command-not-found death above, so the reason for the ban does not
+# reach it. Today the exception is `rundir_ledger` and `rundir_row` and
+# nothing else. There is no exception for a `GATE_*` constant.
 
 run_shift_number() {
   # The number of the shift that HOLDS THE ROUTING SEAT as this row is written.
@@ -2648,7 +2656,7 @@ rundir_init() {
   # loaded. `config-dir` is tier 2 of `resolve_account`, and it is written HERE
   # — before any stage exists, so the tiers below it decide the value exactly
   # once and every later dispatch reads this file instead of re-deciding. That
-  # is the whole mechanism keeping one run's stages on one lane.
+  # is what keeps this run's default seat from moving while it runs.
   #
   # NEITHER FILE IS OVERWRITTEN WHEN IT ALREADY HOLDS A USABLE RECORD. A driver
   # restarting against a live run directory must not move the lane a running
@@ -2702,12 +2710,12 @@ rundir_init() {
   # which enumerates the three legs, says which check closes which, and says why
   # the remaining one cannot be reached. The earlier form of this sentence said
   # it in the singular and it was true of one leg only.
-  local cfg cur rc lp
+  local cfg cur rc
   cur=""
   if [ -s "$RUN_DIR/config-dir" ]; then
     rc=0
     lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 기존 config-dir" \
-      "이 런의 스테이지들이 서로 다른 레인에 착지합니다" || rc=$?
+      "이 런의 기본 좌석이 런 도중에 다른 레인으로 바뀝니다" || rc=$?
     if [ "$rc" = "1" ]; then
       # THE STOP IS RIGHT AND ITS SILENCE IS NOT. Refusing to fall back is what
       # the design asks for; what it does not ask for is that the refusal leave
@@ -2727,45 +2735,14 @@ rundir_init() {
       # no such file the run has no ledger to write into and `die` alone is the
       # whole of what can be done.
       #
-      # MOVING THIS CALL AFTER THE LEDGER INIT WOULD REMOVE THE CONDITION, and
-      # it is not done here: the call site is `gate.sh`, which is outside this
-      # change's declared file set.
-      # AND THE READ THAT FEEDS THE PARK IS NOT ALLOWED TO BE SILENT EITHER.
-      # An earlier form was `lp=$(sed -n '1p' … 2>/dev/null) || lp=""`, which
-      # folds "could not read" into "not there" — the exact anti-pattern
-      # `lane_record_read` below was introduced to remove, reappearing in the
-      # code whose only purpose is to make this stop durable. Measured: with
-      # `ledger-path` at mode 000 the park did not stand and the ledger grew by
-      # zero rows, quietly. The fallback stays (a park needs a ledger and there
-      # may genuinely be none), but it stops being quiet, and the two failures
-      # are told apart the same way `lane_record_read` tells them apart —
-      # `[ -r ]` is "cannot open", the exit status is everything else. They call
-      # for different actions in a morning audit.
-      lp=""
-      if [ -s "$RUN_DIR/ledger-path" ]; then
-        if [ ! -r "$RUN_DIR/ledger-path" ]; then
-          warn "런 디렉터리의 원장 경로 기록을 읽을 수 없습니다: $RUN_DIR/ledger-path — park 를 세우지 못하고 정지만 남깁니다"
-        else
-          # `|| rc=$?` for the same reason as in `lane_record_read`: under
-          # `set -e` a failed assignment ends the shell before the next line,
-          # which would make this branch unreachable.
-          rc=0
-          lp=$(sed -n '1p' "$RUN_DIR/ledger-path" 2>/dev/null) || rc=$?
-          if [ "$rc" != "0" ]; then
-            lp=""
-            warn "런 디렉터리의 원장 경로 기록을 읽는 중 실패했습니다(rc=$rc): $RUN_DIR/ledger-path — park 를 세우지 못하고 정지만 남깁니다"
-          fi
-        fi
-      fi
-      if [ -n "$lp" ] && [ -f "$lp" ] && [ -n "${BASE:-}" ]; then
-        LEDGER="$lp"
-        park "$RUN_ID" run 막힘 "게이트 park" \
-          "런 디렉터리의 레인 기록이 가리키는 디렉터리를 쓸 수 없습니다: $RUN_DIR/config-dir" \
-          "rm \"$RUN_DIR/config-dir\""
-      fi
-      # THE REFUSAL CARRIES THE RECOVERY COMMAND VERBATIM. Without it the person
-      # reading in the morning knows a run is stuck and not which file to remove.
-      die "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다. 회복: rm \"$RUN_DIR/config-dir\""
+      # Where the ledger is found and how the row is written is `rundir_refuse`
+      # and `rundir_ledger`, shared with the inventory refusals. This one does
+      # not fold: its reason `게이트 park` is shared with rows the driver writes
+      # for other causes, and folding on it would hide this refusal behind them.
+      rundir_refuse "게이트 park" \
+        "런 디렉터리의 레인 기록이 가리키는 디렉터리를 쓸 수 없습니다: $RUN_DIR/config-dir" \
+        "rm \"$RUN_DIR/config-dir\"" \
+        "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다."
     fi
     if [ "$rc" = "0" ]; then cur="$LANE_RECORD"; fi
   fi
@@ -2847,6 +2824,564 @@ rundir_init() {
     write_run_record "$RUN_DIR/orchestrator-dir" "$ORCH_DIR" \
       || die "런 디렉터리에 오케스트레이터 기록을 쓰지 못했습니다: $RUN_DIR/orchestrator-dir"
   fi
+  rundir_inventory_snapshot
+}
+
+# ---------------------------------------------------------------------------
+# The run's inventory baseline. `$RUN_DIR/inventory.json` holds exactly one of
+# two forms: a mode-600 byte copy of the live inventory that passed the
+# inventory check, or a symlink marking that no inventory existed. It is taken
+# once per run directory and never re-taken while a usable form is there; the
+# only way to re-take it is to remove the name.
+# ---------------------------------------------------------------------------
+# THE MARKER IS A SYMLINK WHOSE TARGET IS THIS CONSTANT FOLLOWED BY THE CONFIG
+# ROOT THAT WAS JUDGED ABSENT. `/dev/null` is not a directory, so the target can
+# never exist and the router's reader sees the name as absent. The constant, the
+# two forms and the rule that the target begins with the constant and a `/` are
+# frozen across plugin versions: the driver does not hop to the pinned copy, so
+# one run's `rundir_init` and its stages' gate entries can run different
+# versions of this code.
+readonly RUN_INVENTORY_ABSENT_MARK='/dev/null/cc-cmds-inventory-absent'
+# Out-values of the functions below, the way `LANE_RECORD` is for
+# `lane_record_read`: WHY and AT say why a judge or a take refused and where;
+# PUB is what a take published; ROOT, ROOT_SRC, ROOT_VAL and LIVE are the config
+# root this entry names and the live inventory under it.
+RUN_INVENTORY_WHY=""
+RUN_INVENTORY_AT=""
+RUN_INVENTORY_PUB=""
+RUN_INVENTORY_ROOT=""
+RUN_INVENTORY_ROOT_SRC=""
+RUN_INVENTORY_ROOT_VAL=""
+RUN_INVENTORY_LIVE=""
+
+rundir_ledger() {
+  # rundir_ledger — the ledger a refusal row or a baseline row lands in, printed
+  # on one line, or nothing. Always 0; never dies.
+  #
+  # ON THE GATE'S PATH THE LEDGER IS ALREADY KNOWN BEFORE THIS FUNCTION RUNS.
+  # The gate sets `LEDGER` from the manifest ahead of `rundir_init`, and the
+  # same entry's `run` row is appended to that path and creates the file when
+  # the directory is there. So a directory that exists is the condition for the
+  # gate's own row to land, and a run's first entry parks too instead of only
+  # stopping. The path has to be absolute: a test shell that inherited a
+  # relative `LEDGER` and then sourced the gate would otherwise write into the
+  # repository's real `docs/pipeline-run/`.
+  #
+  # ELSEWHERE THE LEDGER COMES FROM `ledger-path`, which a previous gate entry
+  # wrote; on the gate's path `rundir_init` runs BEFORE that file is written.
+  # MOVING THIS CALL AFTER THE LEDGER INIT WOULD REMOVE THE CONDITION, and
+  # it is not done here: the call site is `gate.sh`, which is outside this
+  # change's declared file set.
+  #
+  # AND THE READ THAT FEEDS THE PARK IS NOT ALLOWED TO BE SILENT EITHER.
+  # An earlier form was `lp=$(sed -n '1p' … 2>/dev/null) || lp=""`, which
+  # folds "could not read" into "not there" — the exact anti-pattern
+  # `lane_record_read` below was introduced to remove, reappearing in the
+  # code whose only purpose is to make this stop durable. Measured: with
+  # `ledger-path` at mode 000 the park did not stand and the ledger grew by
+  # zero rows, quietly. The fallback stays (a park needs a ledger and there
+  # may genuinely be none), but it stops being quiet, and the two failures
+  # are told apart the same way `lane_record_read` tells them apart —
+  # `[ -r ]` is "cannot open", the exit status is everything else. They call
+  # for different actions in a morning audit.
+  #
+  # `gate_append` is the gate's function; see the exception written under the
+  # chained row frame above.
+  local lp="" rc
+  if declare -F gate_append >/dev/null 2>&1 && [ -n "${BASE:-}" ]; then
+    case "${LEDGER:-}" in
+      /*)
+        if [ -f "$LEDGER" ] || [ -d "$(dirname "$LEDGER")" ]; then
+          printf '%s\n' "$LEDGER"
+          return 0
+        fi ;;
+    esac
+  fi
+  if [ -s "$RUN_DIR/ledger-path" ]; then
+    if [ ! -r "$RUN_DIR/ledger-path" ]; then
+      warn "런 디렉터리의 원장 경로 기록을 읽을 수 없습니다: $RUN_DIR/ledger-path — park 를 세우지 못하고 정지만 남깁니다"
+    else
+      # `|| rc=$?` for the same reason as in `lane_record_read`: under
+      # `set -e` a failed assignment ends the shell before the next line,
+      # which would make this branch unreachable.
+      rc=0
+      lp=$(sed -n '1p' "$RUN_DIR/ledger-path" 2>/dev/null) || rc=$?
+      if [ "$rc" != "0" ]; then
+        lp=""
+        warn "런 디렉터리의 원장 경로 기록을 읽는 중 실패했습니다(rc=$rc): $RUN_DIR/ledger-path — park 를 세우지 못하고 정지만 남깁니다"
+      fi
+    fi
+  fi
+  if [ -n "$lp" ] && [ -f "$lp" ] && [ -n "${BASE:-}" ]; then
+    printf '%s\n' "$lp"
+  fi
+  return 0
+}
+
+rundir_row() {
+  # rundir_row <계열> <field=value> ... — one row from `rundir_init`. Under the
+  # gate it goes through `gate_append`, so it takes the ledger lock, `교대=` and
+  # ` | prev=<sha256>` and the hash chain stays whole; outside the gate it is
+  # `ledger_row`. A `park` row written here through `ledger_row` on the gate's
+  # ledger would break that chain at that row for good.
+  #
+  # THIS FILE LEANS ON A FUNCTION NAME FROM `gate.sh`, and only behind
+  # `declare -F`, which is the exception written under the chained row frame.
+  # Callers always wrap the call in a subshell and guard it: `gate_append`
+  # stops with `die` on a row it will not write.
+  if declare -F gate_append >/dev/null 2>&1; then gate_append "$@"; else ledger_row "$@"; fi
+}
+
+rundir_refuse() {
+  # rundir_refuse <사유> <관측> <재개명령> <정지문면> [접기]
+  # 현재 셸의 단순 명령으로만 부른다: $( ), ( ), 파이프라인, ||, if 아래에서 부르지 않는다.
+  #
+  # The two-tier refusal `rundir_init` uses everywhere: a ledger → one `blocked`
+  # row, a report line and the stop; no ledger → the stop alone. A row that
+  # could not be written still leaves the stop — `report_append` writes the same
+  # file unguarded, so it runs only after the row landed, and guarded, or the
+  # condition that refused the row ends the process under `set -e` before `die`.
+  #
+  # `관측` is bounded to 500 bytes, row-safe; `재개 명령` is never cut, because a
+  # cut command is a wrong command. `접기` skips the row when an unresolved
+  # run-scope block with the same `사유` is already open.
+  local lp n=0
+  lp=$(rundir_ledger)
+  if [ -n "$lp" ]; then
+    LEDGER="$lp"
+    if [ "${5:-}" = "접기" ]; then
+      n=$( { cc_unresolved_blocked "$LEDGER" | cut -f2- | grep -cxF -- "$1" || true; } )
+    fi
+    if [ "${n:-0}" = "0" ]; then
+      if ( rundir_row 'blocked' "대상=$RUN_ID" "스코프=run" "원인=막힘" "사유=$1" \
+             "관측=$(run_row_safe "$2" 500)" "재개 명령=$3" ) 2>/dev/null; then
+        ( report_append "보류" "$RUN_ID — [run/막힘] $1 — $2" ) 2>/dev/null || :
+        log "park: $RUN_ID (run/막힘 · $1)" || :
+      else
+        warn "거부 행을 원장에 쓰지 못했습니다 — 정지만 남깁니다: ${1}" || :
+      fi
+    else
+      log "같은 사유의 미해소 run 스코프 막힘이 이미 있어 행을 더하지 않습니다: $1" || :
+    fi
+  fi
+  # THE REFUSAL CARRIES THE RECOVERY COMMAND VERBATIM. Without it the person
+  # reading in the morning knows a run is stuck and not what to do about it.
+  # `(없음)` is `park`'s "no command", and then the stop line carries no tail.
+  case "$3" in '(없음)') die "$4" ;; *) die "$4 회복: $3" ;; esac
+}
+
+rundir_inventory_can_check() {
+  # 0 when this entry can run the inventory check at all. The probe goes through
+  # the path the checker really takes — the whole `route__jq_lib` compiled and
+  # the regex builtin `test()` — because a `jq` that is present and does not run
+  # would read a valid inventory as broken. The HOME shape matters because the
+  # checker builds its `config_dir` prefix from it.
+  if ! jq -n "$(route__jq_lib)"' "a" | test("a")' >/dev/null 2>&1; then
+    RUN_INVENTORY_WHY=no-jq
+    return 1
+  fi
+  case "${HOME:-}" in
+    /) RUN_INVENTORY_WHY=home-shape; return 1 ;;
+    /*/) RUN_INVENTORY_WHY=home-shape; return 1 ;;
+    /*) ;;
+    *) RUN_INVENTORY_WHY=home-shape; return 1 ;;
+  esac
+  return 0
+}
+
+rundir_inventory_root() {
+  # The config root this entry names and the live inventory under it. 3 with
+  # WHY=path when the root is not absolute, judged on the ORIGINAL value: an
+  # empty HOME with `/.config` appended would pass an absoluteness check.
+  local src val
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    src=XDG_CONFIG_HOME; val="$XDG_CONFIG_HOME"
+  else
+    src=HOME; val="${HOME:-}"
+  fi
+  case "$val" in
+    /*) ;;
+    *) RUN_INVENTORY_WHY=path; RUN_INVENTORY_AT="${src}=「${val}」"; return 3 ;;
+  esac
+  if [ "$src" = "HOME" ]; then
+    RUN_INVENTORY_ROOT="$val/.config"
+  else
+    RUN_INVENTORY_ROOT="$val"
+  fi
+  RUN_INVENTORY_ROOT_SRC="$src"
+  RUN_INVENTORY_ROOT_VAL="$val"
+  RUN_INVENTORY_LIVE="$RUN_INVENTORY_ROOT/cc-lane/accounts.json"
+  return 0
+}
+
+rundir_inventory_absent() {
+  # rundir_inventory_absent <live> — 0 only on a POSITIVE absence, 2 when the
+  # live file is there, 1 (WHY, AT) when absence cannot be told.
+  #
+  # `[ -e ]` and the checker both read a file under an unsearchable directory, a
+  # dangling ancestor and a dangling leaf as absent — and pinning any of those as
+  # "no inventory" is the back door the base design refused: a broken inventory
+  # read as none. So the walk climbs to the nearest ancestor that exists and
+  # reads absence only from a searchable directory or from an ancestor that is
+  # not a directory at all (ENOTDIR).
+  local live="$1" d
+  if [ -e "$live" ]; then return 2; fi
+  if [ -L "$live" ]; then
+    RUN_INVENTORY_WHY=dangling-link; RUN_INVENTORY_AT="$live"
+    return 1
+  fi
+  d="$live"
+  while :; do
+    d="${d%/*}"
+    [ -n "$d" ] || d="/"
+    if [ -L "$d" ] && [ ! -e "$d" ]; then
+      # dangling, or a cycle — `-e` follows it and fails either way
+      RUN_INVENTORY_WHY=dangling-link; RUN_INVENTORY_AT="$d"
+      return 1
+    fi
+    if [ -e "$d" ]; then
+      if [ -d "$d" ] && [ ! -x "$d" ]; then
+        RUN_INVENTORY_WHY=unsearchable-dir; RUN_INVENTORY_AT="$d"
+        return 1
+      fi
+      return 0
+    fi
+    if [ "$d" = "/" ]; then return 0; fi
+  done
+}
+
+rundir_inventory_judge() {
+  # rundir_inventory_judge <inv> — what is at the baseline name now.
+  #   0 usable / 1 unusable (WHY) / 2 empty / 3 cannot check (WHY)
+  # WHY and AT are cleared on entry; PUB is not — the take clears its own.
+  local inv="$1" t enc rc err
+  RUN_INVENTORY_WHY=""
+  RUN_INVENTORY_AT=""
+  if [ -L "$inv" ]; then
+    # Only a link whose target begins with the marker constant and a `/` is the
+    # marker. `[ -L ] && [ ! -e ]` would accept anybody's dangling link.
+    if ! t=$(readlink "$inv" 2>/dev/null); then
+      RUN_INVENTORY_WHY=symlink
+      return 1
+    fi
+    case "$t" in
+      "$RUN_INVENTORY_ABSENT_MARK"/*) ;;
+      *) RUN_INVENTORY_WHY=symlink; return 1 ;;
+    esac
+    enc=${t#"$RUN_INVENTORY_ABSENT_MARK"}
+    # An entry that cannot name a root has no evidence about any root, and the
+    # take in that shape is a CHECK, so that environment cannot have published
+    # the marker either.
+    if ! rundir_inventory_root; then
+      RUN_INVENTORY_WHY=""
+      RUN_INVENTORY_AT=""
+      return 0
+    fi
+    if [ "$enc" = "$RUN_INVENTORY_ROOT" ]; then return 0; fi
+    # One directory under another spelling — `/tmp` and `/private/tmp`, a
+    # trailing slash, a `~/.config` that is a symlink — is the same root.
+    if [ -d "$RUN_INVENTORY_ROOT" ] && [ "$enc" -ef "$RUN_INVENTORY_ROOT" ]; then return 0; fi
+    rc=0
+    rundir_inventory_absent "$RUN_INVENTORY_LIVE" || rc=$?
+    if [ "$rc" = "0" ]; then return 0; fi
+    # Another root whose inventory is there, or whose presence cannot be told.
+    RUN_INVENTORY_WHY=absent-root
+    RUN_INVENTORY_AT="$enc"
+    return 1
+  fi
+  if [ ! -e "$inv" ]; then return 2; fi
+  # The shape before anything is opened — a FIFO would block the check forever.
+  if [ ! -f "$inv" ]; then RUN_INVENTORY_WHY=not-regular; return 1; fi
+  if [ ! -r "$inv" ]; then RUN_INVENTORY_WHY=unreadable; return 1; fi
+  if ! rundir_inventory_can_check; then return 3; fi
+  rc=0
+  err=$(route_inventory_check "$inv" 2>&1 >/dev/null) || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    2) return 2 ;;
+  esac
+  RUN_INVENTORY_WHY=$(printf '%s\n' "$err" | sed -n 's/.*(\([^()]*\))$/\1/p' | tail -1)
+  [ -n "$RUN_INVENTORY_WHY" ] || RUN_INVENTORY_WHY=parse
+  return 1
+}
+
+rundir_inventory_take() {
+  # rundir_inventory_take <inv> — publish a baseline at an empty name.
+  #   0 a publish was attempted / 1 the live side refused (WHY, AT) /
+  #   3 cannot check or place (WHY, AT) / 4 staging failed (WHY)
+  # PUB is set only when this entry's own publish primitive returned 0:
+  # `<형태><TAB><지문><TAB><대조값>`.
+  #
+  # The live file itself is never linked or renamed. A copy is staged into a
+  # fresh `mktemp` inode, the staged bytes are checked, and exactly those bytes
+  # are published. `link` and `ln -sn` both refuse a name that is already
+  # taken, so racing entries leave one form at the name; which one won does not
+  # decide any exit — the judge after the take does — only who writes the row.
+  # There is no `ln -n` fallback for a host without `link`: it would reopen the
+  # stray hard link inside a planted directory.
+  local inv="$1" live arc target n chk tmp rc err fp
+  RUN_INVENTORY_PUB=""
+  rundir_inventory_root || return 3
+  live="$RUN_INVENTORY_LIVE"
+  arc=0
+  rundir_inventory_absent "$live" || arc=$?
+  if [ "$arc" = "1" ]; then return 1; fi
+  if [ "$arc" = "0" ]; then
+    target="$RUN_INVENTORY_ABSENT_MARK$RUN_INVENTORY_ROOT"
+    # BYTES, BY `wc -c`: `${#}` counts characters, and a symlink target is
+    # capped at 1023 bytes on macOS.
+    n=$(printf '%s' "$target" | wc -c | tr -d ' ')
+    if [ "$n" -gt 1023 ]; then
+      RUN_INVENTORY_WHY=marker-length; RUN_INVENTORY_AT="$n"
+      return 3
+    fi
+    if ln -sn "$target" "$inv" 2>/dev/null; then
+      chk=$( { printf '%s' "$target" | shasum -a 256 | cut -d' ' -f1; } 2>/dev/null ) || chk=""
+      RUN_INVENTORY_PUB="부재	-	${chk}"
+    fi
+    return 0
+  fi
+  if [ ! -f "$live" ]; then
+    RUN_INVENTORY_WHY=not-regular; RUN_INVENTORY_AT="$live"
+    return 1
+  fi
+  if [ ! -r "$live" ]; then
+    RUN_INVENTORY_WHY=unreadable; RUN_INVENTORY_AT="$live"
+    return 1
+  fi
+  if ! rundir_inventory_can_check; then
+    RUN_INVENTORY_AT="$live"
+    return 3
+  fi
+  if ! tmp=$(mktemp "$inv.tmp.XXXXXX" 2>/dev/null); then
+    RUN_INVENTORY_WHY=tmp
+    return 4
+  fi
+  if ! cat -- "$live" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || :
+    RUN_INVENTORY_WHY=copy
+    return 4
+  fi
+  rc=0
+  err=$(route_inventory_check "$tmp" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" != "0" ]; then
+    rm -f "$tmp" 2>/dev/null || :
+    if [ "$rc" = "2" ]; then
+      RUN_INVENTORY_WHY=parse
+    else
+      RUN_INVENTORY_WHY=$(printf '%s\n' "$err" | sed -n 's/.*(\([^()]*\))$/\1/p' | tail -1)
+      [ -n "$RUN_INVENTORY_WHY" ] || RUN_INVENTORY_WHY=parse
+    fi
+    RUN_INVENTORY_AT="$live"
+    return 1
+  fi
+  if link "$tmp" "$inv" 2>/dev/null; then
+    # Fingerprinted AFTER the publish and BEFORE the staged name goes, from the
+    # staged bytes. A failing `shasum` leaves `cut` printing nothing, hence `-`.
+    fp=$( { shasum -a 256 < "$tmp" | cut -d' ' -f1; } 2>/dev/null ) || fp=""
+    [ -n "$fp" ] || fp=-
+    RUN_INVENTORY_PUB="사본	${fp}	${fp}"
+  fi
+  rm -f "$tmp" 2>/dev/null || :
+  return 0
+}
+
+rundir_inventory_last_fp() {
+  # rundir_inventory_last_fp <원장> — `지문` of the ledger's last
+  # `인벤토리 기준선` row, or nothing.
+  { grep -E '^- `인벤토리 기준선` ' "$1" 2>/dev/null || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *지문=//p' | sed 's/[[:space:]]*$//'
+}
+
+rundir_inventory_record() {
+  # rundir_inventory_record <inv> <pub> <판정 루트> — the trace of a publish that
+  # this entry won and the judge after it accepted: one `인벤토리 기준선` row.
+  # With no ledger, or a row that did not land, the values go to
+  # `inventory.unrecorded` and a later entry writes the row. Always 0 — failing
+  # to leave the trace does not turn a healthy entry into a stop.
+  #
+  # `판정 루트` is carried rather than re-derived, because the entry that drains
+  # the marker may run under another environment; it is the last field, so a tab
+  # inside it cannot shift the others.
+  local inv="$1" lp pfp form fp chk rest root="$3" um tmp
+  form=${2%%	*}; rest=${2#*	}; fp=${rest%%	*}; chk=${rest#*	}
+  um="$RUN_DIR/inventory.unrecorded"
+  # An earlier baseline's unrecorded marker is stale once this publish exists.
+  rm -f "$um" 2>/dev/null || :
+  lp=$(rundir_ledger)
+  if [ -n "$lp" ]; then
+    pfp=$(rundir_inventory_last_fp "$lp")
+    if ( LEDGER="$lp"; rundir_row '인벤토리 기준선' "형태=${form}" "지문=${fp}" \
+           "판정 루트=${root}" "이전 지문=${pfp:--}" ) 2>/dev/null; then
+      return 0
+    fi
+    warn "인벤토리 기준선 행을 원장에 쓰지 못했습니다 — 다음 진입이 미기록 표지에서 다시 씁니다: ${inv}" || :
+  fi
+  tmp="$RUN_DIR/inventory.unrecorded.tmp.$$"
+  if printf '%s\t%s\t%s\t%s\n' "$form" "$fp" "$chk" "$root" > "$tmp" 2>/dev/null \
+      && mv -f "$tmp" "$um" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || :
+  warn "인벤토리 기준선의 미기록 표지를 쓰지 못했습니다 — 이 게시는 원장에 흔적을 남기지 못합니다: ${inv}" || :
+  return 0
+}
+
+rundir_inventory_drain() {
+  # rundir_inventory_drain <inv> — write the row a published baseline is still
+  # missing. The claim is a rename, so two draining entries cannot both write;
+  # the name is fingerprinted again, and a mismatch means a newer publish owns
+  # the trace, so the claim is dropped. A row that fails puts the claim back —
+  # unless a newer marker appeared meanwhile, which `mv -n` refuses. The usual
+  # cost per entry is the one `[ -e ]`.
+  local inv="$1" um="$RUN_DIR/inventory.unrecorded" claim lp rec rest form fp chk root now="" t pfp
+  [ -e "$um" ] || return 0
+  lp=$(rundir_ledger); [ -n "$lp" ] || return 0
+  claim="$um.claim.$$"
+  mv "$um" "$claim" 2>/dev/null || return 0          # 이름 바꾸기에서 진 쪽은 건너뛴다
+  rec=$(sed -n '1p' "$claim" 2>/dev/null) || rec=""
+  form=${rec%%	*}; rest=${rec#*	}; fp=${rest%%	*}; rest=${rest#*	}; chk=${rest%%	*}; root=${rest#*	}
+  if [ -L "$inv" ]; then
+    if t=$(readlink "$inv" 2>/dev/null); then
+      now=$( { printf '%s' "$t" | shasum -a 256 | cut -d' ' -f1; } 2>/dev/null ) || now=""
+    fi
+  elif [ -f "$inv" ]; then
+    now=$( { shasum -a 256 < "$inv" | cut -d' ' -f1; } 2>/dev/null ) || now=""
+  fi
+  if [ -z "$now" ] || [ "$now" != "$chk" ]; then rm -f "$claim" 2>/dev/null || :; return 0; fi
+  pfp=$(rundir_inventory_last_fp "$lp")
+  if ( LEDGER="$lp"; rundir_row '인벤토리 기준선' "형태=${form}" "지문=${fp}" \
+         "판정 루트=${root}" "이전 지문=${pfp:--}" ) 2>/dev/null; then
+    rm -f "$claim" 2>/dev/null || :
+  else
+    mv -n "$claim" "$um" 2>/dev/null || :; rm -f "$claim" 2>/dev/null || :
+  fi
+  return 0
+}
+
+rundir_inventory_snapshot() {
+  # The last step of `rundir_init`, on every entry: judge the name, take a
+  # baseline only when it is empty, judge again, leave the trace. The judge
+  # after the take decides every exit; the take's own result decides only who
+  # writes the success row. There is no retry loop.
+  #
+  # Every refusal is a plain statement inside a `case` arm, and every value its
+  # words use is built in that arm BEFORE `rundir_refuse` — the gate runs under
+  # `set -u`, and one unset variable expanded while building the arguments would
+  # die with no row, no report line and no stop line. For the same reason every
+  # local starts empty. A `$var` right before a non-ASCII byte is braced: bash
+  # 3.2 reads the `「` byte as part of an unbraced name.
+  local inv="$RUN_DIR/inventory.json" rc=0 trc=0 twhy="" tat="" tpub="" troot="" \
+    why="" at="" hint="" target="" detail="" enc="" base="" first="" sroot="" q="" qs="" \
+    caller="" roottail=""
+  rc=0; rundir_inventory_judge "$inv" || rc=$?
+  if [ "$rc" = "0" ]; then
+    rundir_inventory_drain "$inv"
+    return 0
+  fi
+  if [ "$rc" = "2" ]; then
+    trc=0; rundir_inventory_take "$inv" || trc=$?
+    # Moved out at once: the judge clears WHY and AT on entry.
+    twhy=$RUN_INVENTORY_WHY tat=$RUN_INVENTORY_AT tpub=$RUN_INVENTORY_PUB
+    if [ -n "$tpub" ]; then
+      troot=$(run_row_safe "${RUN_INVENTORY_ROOT_SRC}=「${RUN_INVENTORY_ROOT_VAL}」" "$RUN_FIELD_MAX")
+    fi
+    rc=0; rundir_inventory_judge "$inv" || rc=$?
+    if [ "$rc" = "0" ]; then
+      if [ -n "$tpub" ]; then
+        rundir_inventory_record "$inv" "$tpub" "$troot"
+      else
+        rundir_inventory_drain "$inv"
+      fi
+      return 0
+    fi
+  fi
+  # `RUN_DIR` has one formula, `<state root>/cc-cmds/run/<id>`, and an id holds
+  # no `/`, so stripping the tail gives the state root back.
+  sroot=${RUN_DIR%/cc-cmds/run/*}
+  q=$(printf %q "$inv")
+  qs=$(printf %q "$sroot")
+  caller=${CC_PIPELINE_STAGE_ID:-리드}
+  case "$rc" in
+    1)
+      why=$RUN_INVENTORY_WHY
+      case "$why" in
+        config_dir-prefix|absent-root)
+          roottail="기준선을 뜬 루트가 이 런이 쓸 루트였다면 이름을 지우지 말고 XDG_STATE_HOME=${qs} 를 둔 채 그 루트로 다시 진입하십시오 — 상태 루트가 같아야 같은 런 디렉터리에 닿습니다. 그 루트가 이 런이 쓸 루트가 아니었다면 그 루트로 진입하는 스폰 경로를 먼저 멈추고, 이 이름을 지운 뒤(rm -rf ${q}) 이 런의 루트로 다시 진입하십시오 — 먼저 멈추지 않으면 그 경로의 다음 진입이 틀린 기준선을 다시 뜹니다. 다시 뜬 기준선은 원장에 새 인벤토리 기준선 행을 남깁니다."
+          if [ "$why" = "config_dir-prefix" ]; then
+            first=$(jq -r '.accounts[0].config_dir // "-"' "$inv" 2>/dev/null) || first="-"
+            rundir_refuse "인벤토리 기준선 루트 불일치" \
+              "런 디렉터리의 인벤토리 스냅숏이 이 진입의 HOME 과 맞지 않습니다: inventory.json (config_dir-prefix; 이 진입의 HOME=「${HOME:-}」, 스냅숏의 첫 config_dir=「${first}」, 상태 루트=「${sroot}」, 호출자=${caller})" \
+              "(없음)" \
+              "런 디렉터리의 인벤토리 스냅숏이 이 진입의 HOME 과 맞지 않아 init 에서 멈춥니다: ${inv} (config_dir-prefix; 이 진입의 HOME=「${HOME:-}」, 스냅숏의 첫 config_dir=「${first}」, 상태 루트=「${sroot}」). ${roottail}" \
+              접기
+          else
+            enc=$RUN_INVENTORY_AT
+            base=$RUN_INVENTORY_ROOT
+            rundir_refuse "인벤토리 기준선 루트 불일치" \
+              "런 디렉터리의 부재 기준선은 다른 설정 루트에서 판정됐고 이 진입의 설정 루트에서는 인벤토리의 부재를 확정할 수 없습니다: inventory.json (absent-root; 기준선의 설정 루트=「${enc}」, 이 진입의 설정 루트=「${base}」, 상태 루트=「${sroot}」, 호출자=${caller})" \
+              "(없음)" \
+              "런 디렉터리의 부재 기준선은 다른 설정 루트에서 판정됐고 이 진입의 설정 루트에서는 인벤토리의 부재를 확정할 수 없어 init 에서 멈춥니다: ${inv} (absent-root; 기준선의 설정 루트=「${enc}」, 이 진입의 설정 루트=「${base}」, 상태 루트=「${sroot}」). ${roottail}" \
+              접기
+          fi ;;
+        *)
+          rundir_refuse "인벤토리 스냅숏 손상" \
+            "런 디렉터리의 인벤토리 스냅숏을 기준선으로 받아들이지 못했습니다: inventory.json (${why}) — 스냅숏을 뜬 진입과 다른 사용자의 진입이면 지우지 마십시오" \
+            "rm -rf ${q}" \
+            "런 디렉터리의 인벤토리 스냅숏을 기준선으로 받아들이지 못해 init 에서 멈춥니다: ${inv} (${why}) — 부재로도 지금의 살아 있는 인벤토리로도 대신하지 않습니다. 이 진입의 사용자가 스냅숏을 뜬 진입과 다르면 지우지 말고 그 사용자로 다시 진입하십시오. 재발행하려면 이 이름을 지우십시오 — 다음 진입이 그 시점의 살아 있는 인벤토리로 기준선을 다시 뜨고, 인벤토리가 없으면 부재로 고정합니다." \
+            접기 ;;
+      esac ;;
+    3)
+      why=$RUN_INVENTORY_WHY
+      target="$inv"
+      case "$why" in
+        no-jq) detail="jq 없음" ;;
+        home-shape) detail="HOME=「${HOME:-}」" ;;
+        *) detail="${why}" ;;
+      esac
+      rundir_refuse "인벤토리 검사 불가" \
+        "이 진입은 인벤토리를 검사할 수 없습니다: ${target} (${why}: ${detail}; 호출자=${caller})" \
+        "(없음)" \
+        "이 진입은 인벤토리를 검사할 수 없어 init 에서 멈춥니다: ${target} (${why}: ${detail}) — 검사 없이 받아들이지도, 깨진 것으로 판정하지도, 부재로 고정하지도 않습니다. 이 진입의 환경을 고쳐 다시 진입하십시오." \
+        접기 ;;
+    *)
+      case "$trc" in
+        1)
+          why=$twhy
+          at=$tat
+          if [ "$why" = "config_dir-prefix" ]; then hint="; 이 진입의 HOME=${HOME:-}"; fi
+          rundir_refuse "살아 있는 인벤토리 손상" \
+            "살아 있는 인벤토리로 이 런의 기준선을 뜰 수 없습니다: ${at} (${why})${hint}" \
+            "cc-lane account check" \
+            "살아 있는 인벤토리로 이 런의 기준선을 뜰 수 없어 init 에서 멈춥니다: ${at} (${why})${hint} — 깨졌거나 있는지 확인할 수 없는 인벤토리를 부재로 읽으면 이 런이 끝까지 한 좌석으로 고정되어 사람이 쓰려고 남겨 둔 계정 위에 무인 부하가 올라갈 수 있으므로 기준선을 쓰지 않습니다. 인벤토리를 고친 뒤 다시 진입하면 그때 기준선을 뜹니다." \
+            접기 ;;
+        3)
+          why=$twhy
+          case "$why" in
+            path|marker-length) target="$inv" ;;
+            *) target="$tat" ;;
+          esac
+          case "$why" in
+            no-jq) detail="jq 없음" ;;
+            home-shape) detail="HOME=「${HOME:-}」" ;;
+            path) detail="${tat}" ;;
+            marker-length) detail="표지 대상이 ${tat}바이트로 1023바이트를 넘습니다" ;;
+            *) detail="${why}" ;;
+          esac
+          rundir_refuse "인벤토리 검사 불가" \
+            "이 진입은 인벤토리를 검사할 수 없습니다: ${target} (${why}: ${detail}; 호출자=${caller})" \
+            "(없음)" \
+            "이 진입은 인벤토리를 검사할 수 없어 init 에서 멈춥니다: ${target} (${why}: ${detail}) — 검사 없이 받아들이지도, 깨진 것으로 판정하지도, 부재로 고정하지도 않습니다. 이 진입의 환경을 고쳐 다시 진입하십시오." \
+            접기 ;;
+        *)
+          if [ "$trc" = "0" ]; then why=publish; else why=${twhy:-publish}; fi
+          rundir_refuse "인벤토리 스냅숏 게시 실패" \
+            "런 디렉터리에 인벤토리 스냅숏을 쓰지 못했습니다(${why}): inventory.json" \
+            "(없음)" \
+            "런 디렉터리에 인벤토리 스냅숏을 쓰지 못했습니다(${why}): ${inv} — 게시한 뒤에도 이름이 비어 있다면 회복 중의 rm 이 겹쳤거나, 런 디렉터리가 다시 만들어졌거나, 이 호스트에서 link 를 쓸 수 없거나 이 파일 시스템이 하드링크를 만들지 못한 것입니다. 앞의 둘이면 다시 진입할 때 기준선을 뜨고, 이유가 tmp·copy 이거나 link·하드링크를 쓸 수 없는 호스트라면 호스트(디스크 공간·권한·link·파일 시스템)를 고친 뒤 다시 진입해야 합니다." \
+            접기 ;;
+      esac ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -2946,12 +3481,20 @@ resolve_account() {
   # `--resolve` single-field output and cannot manufacture a four-field record,
   # and the probe's own field printer refuses it there.
   #
-  # TIER 2 IS WHY A RUN DOES NOT SPLIT ACROSS LANES. This resolver is called on
-  # every stage DISPATCH and not once per run, so with only the environment and
-  # the machine setting, two stages of one run could resolve differently — the
-  # setting file is editable while the run is going, and the environment is not
-  # inherited identically by every spawn path. `rundir_init` writes the answer
-  # once and every dispatch after it reads that file.
+  # TIER 2 IS WHY A RUN'S DEFAULT SEAT DOES NOT MOVE WHILE IT RUNS. This
+  # resolver is called on every stage DISPATCH and not once per run, so with
+  # only the environment and the machine setting, two dispatches of one run
+  # could resolve differently — the setting file is editable while the run is
+  # going, and the environment is not inherited identically by every spawn
+  # path. `rundir_init` writes the answer once and every dispatch after it
+  # reads that file.
+  #
+  # WHAT IT PINS IS THE SEAT, NOT EVERY STAGE'S LANE. Wherever routing is off
+  # for this run — the router dormant, or the run's inventory baseline saying
+  # there is no inventory — every stage lands on the seat, so a fixed seat is
+  # what keeps the run on one lane. With routing on, the router places stages
+  # on inventory accounts and stages of one run on different lanes are the
+  # design; what this tier still forbids is the seat itself moving mid-run.
   #
   # TIERS 2 AND 3 DO NOT FALL THROUGH ON A BAD VALUE. A recorded path that is
   # not a directory is a BROKEN record, not an absent one; falling back would
@@ -2979,7 +3522,7 @@ resolve_account() {
   if [ -n "${RUN_DIR:-}" ]; then
     rc=0
     lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" \
-      "한 런의 스테이지들이 서로 다른 레인에 착지합니다" || rc=$?
+      "한 런의 기본 좌석이 디스패치마다 다시 정해져 다른 레인으로 바뀔 수 있습니다" || rc=$?
     if [ "$rc" = "1" ]; then return 1; fi
     if [ "$rc" = "0" ]; then
       printf '%s' "$LANE_RECORD"
