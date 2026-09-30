@@ -4,7 +4,7 @@
 # The tier exists because seat models were chosen per run from prose
 # ("size, complexity, the depth the role needs") and every seat ended up on
 # the same model anyway. Collapsing the choice to one table only helps if the
-# collapse is held in place, so four things are pinned here:
+# collapse is held in place, so five things are pinned here:
 #
 #   (i)   every class id occurs on exactly ONE row of the tier file's table,
 #         AND that row's model cell holds the model the class is supposed to
@@ -27,6 +27,11 @@
 #         block is what makes requested-vs-served comparable after the fact;
 #         zero occurrences lose the record and two make it ambiguous which
 #         one a reader fills.
+#   (v)   the tier file's record syntax carries the `출처=표` invariant exactly
+#         once: a seat recorded as taking its model from the table carries its
+#         class's model. Without it a `출처=표` record may name any model, and
+#         the next tier census has no ground to trust the `모델` field of the
+#         records it counts as table-chosen.
 #
 # Posture: skip-if-absent. With the tier file gone the whole lint skips, so
 # reverting the lever leaves the tree green instead of making the revert break
@@ -91,6 +96,7 @@ RETIRED_PHRASES=(
 
 POINTER='_common/team-model-tier.md'
 TEMPLATE_LINE='- **모델 티어**:'
+TABLE_SOURCE_INVARIANT="- \`출처=표\` requires \`모델\` to be the model of the seat's class"
 
 if [[ ! -f "$TIER" ]]; then
   echo "SKIP: _common/team-model-tier.md not found under $skills_root"
@@ -183,6 +189,15 @@ if [[ -f "$TEMPLATE" ]]; then
     echo "FAIL: review/references/02-review-report-template.md — '$TEMPLATE_LINE' must appear exactly once, found $n" >&2
     fail=1
   fi
+fi
+
+# ---------- (v) the `출처=표` record invariant ---------------------------------
+
+checked=$((checked + 1))
+n=$(count_in_file "$TABLE_SOURCE_INVARIANT" "$TIER")
+if [[ "$n" != "1" ]]; then
+  echo "FAIL: _common/team-model-tier.md — the 출처=표 record invariant must appear exactly once, found $n" >&2
+  fail=1
 fi
 
 if (( fail == 0 )); then

@@ -185,20 +185,29 @@ probe_shape_ok() {
   #
   # The structurally better form is to lift this predicate into `liveness.sh`
   # and have the census and this check call one named thing, which would make
-  # the invariant above true by construction instead of by comment. It is not
-  # done here because `liveness.sh` is outside this change's declared file set —
-  # recorded so the next reader can tell a deliberate omission from a missing one.
+  # the invariant above true by construction instead of by comment. It is still
+  # not done here, but the original ground for deferring it — that `liveness.sh`
+  # sat outside the declared file set — has lapsed; the deferral is now a scope
+  # decision, not an access one. Recorded so the next reader can tell a
+  # deliberate omission from a missing one.
   local d="$1" f pid seg
   [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || return 1
   for f in "$d"/*.pid; do
     [ -e "$f" ] || continue
     seg=${f##*/}; seg=${seg%.pid}
-    # The watcher is exempt BY NAME, not by shape. It never leaves a sibling
-    # handle, which is exactly how the census already declines to count it; if
-    # this check demanded one anyway, every watcher-only run directory on disk —
-    # and there are roughly ninety of them — would report 판정 불가 forever, and
-    # a probe that can never say 아님 stops being a gate at all.
-    [ "$seg" = "watch" ] && continue
+    # The watcher and the CI poller are exempt BY NAME, not by shape. Neither
+    # leaves a sibling handle, which is exactly how the census already declines
+    # to count them; if this check demanded one anyway, every watcher-only run
+    # directory on disk — and there are roughly ninety of them — would report
+    # 판정 불가 forever, and a probe that can never say 아님 stops being a gate
+    # at all. The poller earns the same exemption for the same reason and not by
+    # analogy: it writes `checks.pid` and no `.start`/`.pgid` beside it, so this
+    # loop's final test would fail on every run directory that has one.
+    #
+    # THIS IS THE THIRD NAME LIST, and the other two are `liveness.sh` and
+    # `statusline.sh`. They are kept in step by hand, which is the defect that
+    # put `checks` here one commit late.
+    case "$seg" in watch|checks) continue ;; esac
     [ -r "$f" ] || return 1
     pid=$( { cat "$f" 2>/dev/null || true; } | tr -d '[:space:]')
     case "$pid" in
