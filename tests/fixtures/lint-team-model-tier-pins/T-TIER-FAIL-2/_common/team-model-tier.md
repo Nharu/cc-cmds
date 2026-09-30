@@ -14,3 +14,5 @@
 | `conformance` | conformance to a design document | sonnet |
 | `quality` | code quality, style | sonnet |
 | `audit-reader` | every design-audit reader | opus |
+
+- `출처=표` requires `모델` to be the model of the seat's class.

@@ -15,3 +15,5 @@
 | `quality` | code quality, style | sonnet |
 | `portability` | shell and platform portability | sonnet |
 | `audit-reader` | every design-audit reader | opus |
+
+- `출처=표` requires `모델` to be the model of the seat's class.
