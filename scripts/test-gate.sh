@@ -20662,7 +20662,7 @@ m=$(grep 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null | grep -c '하한=' || tru
 
 # ---------------------------------------------------------------------------
 # 72. git 전역 문법과 push 원격 결속
-# --- section: 72 | group: reach | covers: grade, exec | anchors: 72: -C 뒤의 부명령이 등급을 정한다, 72: remote 재지정 -c 는 형태 미상이다, 72: 협업 팔이 push·pull·fetch 를 인정한다, 72: 전역 옵션은 사전 인가 형태에서 빠진다, 72: 원격은 -C 디렉터리에서 해소된다, 72: 빈 URL 은 통과가 아니라 불일치다, 72: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다, 72: --repo 로 적은 원격도 슬러그로 대조한다, 72: 외래 호스트의 대상 슬러그는 불일치다, 72: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다, 72: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다, 72: git config 의 모르는 옵션과 편집기는 형태 미상이다, 72: git send-pack 은 옵션과 관계없이 형태 미상이다, 72: 같은 노브의 -c 철자는 형태 미상이다, 72: 외부 diff 자리의 저장소 삭제는 읽기 신고로 지나지 않는다, 72: 두 겹 본문의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다, 72: 프로토콜 허용 환경 철자는 -c 철자처럼 형태 미상이다, 72: 프로토콜 허용 환경의 ext 전송은 배포 신고로도 지나지 않는다 ---
+# --- section: 72 | group: reach | covers: grade, exec | anchors: 72: -C 뒤의 부명령이 등급을 정한다, 72: remote 재지정 -c 는 형태 미상이다, 72: 협업 팔이 push·pull·fetch 를 인정한다, 72: 전역 옵션은 사전 인가 형태에서 빠진다, 72: 원격은 -C 디렉터리에서 해소된다, 72: 빈 URL 은 통과가 아니라 불일치다, 72: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다, 72: --repo 로 적은 원격도 슬러그로 대조한다, 72: 외래 호스트의 대상 슬러그는 불일치다, 72: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다, 72: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다, 72: git config 의 모르는 옵션과 편집기는 형태 미상이다, 72: git send-pack 은 옵션과 관계없이 형태 미상이다, 72: 같은 노브의 -c 철자는 형태 미상이다, 72: 외부 diff 자리의 저장소 삭제는 읽기 신고로 지나지 않는다, 72: 두 겹 본문의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다, 72: 프로토콜 허용 환경 철자는 -c 철자처럼 형태 미상이다, 72: 프로토콜 허용 환경의 ext 전송은 배포 신고로도 지나지 않는다, 72: 명령값 옵션은 어느 철자로든 형태 미상이다, 72: 아는 옵션만 쓴 하위 명령은 앞의 등급 그대로다, 72: 약어 upload-pack 의 fetch 는 배포 신고로도 지나지 않는다 ---
 #
 # 한 워크트리에서 다른 워크트리로 push 하는 철자 — `git -C <wt> push` — 는
 # 등급에서 읽히지 않고, 읽히더라도 원격이 게이트가 선 디렉터리에서 해소됐다.
@@ -21228,6 +21228,95 @@ check "72: git config 의 모르는 옵션과 편집기는 형태 미상이다" 
 등급 미상
 읽기
 워크트리쓰기"
+# 명령값 옵션을 가진 하위 명령은 낱말 일치가 아니라 아는 옵션 열거로 읽는다. git 은
+# 긴 옵션의 유일 접두와 짧은 옵션의 붙인 값을 받으므로, 온전한 철자만 찾던 동안
+# `--upl=`·`-O<명령>`·`-c<키>=<명령>` 이 읽기·트리 밖 쓰기 등급으로 프로그램을 돌렸다.
+check "72: 명령값 옵션은 어느 철자로든 형태 미상이다" \
+  "$(s72 "G git fetch --upl='gh repo delete t/front --yes;:' .
+          G git fetch --upload-pack=x .
+          G git fetch --upload-pack x .
+          G git ls-remote --exec=x .
+          G git ls-remote --upl=x .
+          G git grep -O'gh repo delete t/front --yes;:' x
+          G git grep --open=x x
+          G git grep -O x x
+          G git grep -nO x x
+          G git clone --upl=x . /tmp/x
+          G git clone -ux . /tmp/x
+          G git clone -c core.sshCommand=x . /tmp/x
+          G git clone -ccore.sshCommand=x . /tmp/x
+          G git clone --config core.sshCommand=x . /tmp/x
+          G git clone --config=core.sshCommand=x . /tmp/x
+          G git clone --temp=x . /tmp/x
+          G git archive --rem=x HEAD
+          G git archive --exe=x HEAD
+          G git fetch --dep 1 origin
+          G git ls-remote --frobnicate origin")" \
+  "형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상"
+# 대조군. 열거가 과잉 거부가 아니라는 것 — 이 저장소가 쓰는 철자와 아는 옵션은 앞의
+# 등급 그대로다.
+check "72: 아는 옵션만 쓴 하위 명령은 앞의 등급 그대로다" \
+  "$(s72 "G git fetch origin
+          G git fetch --prune origin
+          G git fetch -q --no-tags origin
+          G git fetch --quiet origin
+          G git fetch origin +refs/heads/*:refs/remotes/origin/*
+          G git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          G git fetch --depth 1 origin
+          G git fetch origin main:main
+          G git fetch -- origin main:main
+          G git ls-remote --heads origin
+          G git ls-remote origin
+          G git grep -n foo
+          G git grep -e foo -- x
+          G git grep -in foo
+          G git grep -A3 -e -x foo
+          G git clone --depth 1 -b main https://x/y.git /tmp/x
+          G git clone -c user.name=x https://x/y.git /tmp/x
+          G git clone -q https://x/y.git
+          G git archive -o /tmp/x.tar HEAD
+          G git archive -o/tmp/p HEAD
+          G git archive HEAD")" \
+  "읽기
+읽기
+읽기
+읽기
+읽기
+읽기
+워크트리쓰기
+워크트리쓰기
+워크트리쓰기
+읽기
+읽기
+읽기
+읽기
+읽기
+읽기
+트리밖쓰기
+트리밖쓰기
+트리밖쓰기
+트리밖쓰기
+트리밖쓰기
+읽기"
 # `--receive-pack`·`--exec` 는 저쪽 끝이 돌릴 프로그램을 적고, 로컬·`file` 전송에서
 # 저쪽 끝은 이 기계다. 같은 손잡이의 `-c remote.<r>.receivepack` 철자처럼 거절한다.
 check "72: 저쪽 프로그램을 적는 push 옵션은 형태 미상이다" \
@@ -21442,6 +21531,27 @@ check "72: 같은 노브의 -c 철자도 같은 답이다" "$rc" "2"
 gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
   --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x -- git ls-remote origin
 check "72: 프로토콜 허용 없는 ls-remote 는 읽기 신고로 지난다" "$rc" "0"
+# 약어로 적은 명령값 옵션은 어느 신고로도 지나지 않는다. 낱말 일치뿐이던 동안 fetch 는
+# 읽기 신고로, 배포 신고로는 prod 도달까지, clone 은 트리 밖 쓰기 신고로 지났다.
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x \
+  -- git fetch --upl='gh repo delete t/front --yes;:' .
+check "72: 약어 upload-pack 의 fetch 는 읽기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 배포 --surface 외부상태변경 --reach prod --rationale x \
+  -- git fetch --upl='kubectl apply -f k8s/;:' .
+check "72: 약어 upload-pack 의 fetch 는 배포 신고로도 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 트리밖쓰기 --reach 런로컬 --rationale x \
+  -- git clone --upl='gh repo delete t/front --yes;:' . /tmp/x
+check "72: 약어 upload-pack 의 clone 은 트리 밖 쓰기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 런로컬 --rationale x \
+  -- git grep -O'gh repo delete t/front --yes;:' x
+check "72: 붙인 값 -O 의 grep 은 읽기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x -- git fetch --prune origin
+check "72: 아는 옵션만 쓴 fetch 는 읽기 신고로 지난다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질

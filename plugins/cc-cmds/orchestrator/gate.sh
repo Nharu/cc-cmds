@@ -5898,33 +5898,211 @@ _gp_git_key_redirects() {
   esac
 }
 
+# `_gp_git_optwalk <short-flags> <short-values> <long-flags> <long-values>
+# <word...>` — reads a git subcommand's options the way git's parse-options
+# does, against the options that subcommand is known to have.
+#
+# A SUBCOMMAND WITH A COMMAND-VALUED OPTION IS READ BY ENUMERATION, NOT BY WORD
+# MATCH. parse-options takes any unique prefix of a long option and a short
+# option's value glued to its letter, so `git fetch --upl=<cmd> .`, `git grep
+# -O<cmd> x` and `git clone -ccore.sshCommand=<cmd>` ran a program under a read
+# or tree-write grade while `" $* "` looked for the full spelling alone. So the
+# options a subcommand has are listed exactly, and every other dash word —
+# unknown, abbreviated, or a command-valued option in any spelling — is a form.
+# Abbreviations are not listed: a list of them is reopened by every one it lacks.
+#
+# Lists are space-separated. A long flag spelled `name=` in <long-flags> also
+# takes an optional `=value`; `--no-<name>` is accepted for any listed name and
+# never takes a value. A `#` in <short-flags> admits the `-<digits>` shorthand.
+# A value-taking short letter takes the rest of its word, or the next word.
+# Everything after `--` is an operand.
+#
+# Sets `_GP_OW_NAME[]`/`_GP_OW_VAL[]` (each option met, by its long name or its
+# letter, with the value it took) and `_GP_OW_POS[]` (the operands). rc 1 is a
+# form; rc 2 is a value option with nothing after it.
+_gp_ow_push() {
+  _GP_OW_NAME[${#_GP_OW_NAME[@]}]="$1"
+  _GP_OW_VAL[${#_GP_OW_VAL[@]}]="$2"
+}
+
+_gp_git_optwalk() {
+  local sf="$1" sv="$2" lf=" $3 " lv=" $4 " a n v m c w want=''
+  shift 4
+  _GP_OW_NAME=() _GP_OW_VAL=() _GP_OW_POS=()
+  while [ $# -gt 0 ]; do
+    a="$1"; shift
+    if [ -n "$want" ]; then _gp_ow_push "$want" "$a"; want=''; continue; fi
+    case "$a" in
+      --)
+        for a in "$@"; do _GP_OW_POS[${#_GP_OW_POS[@]}]="$a"; done
+        return 0 ;;
+      --*)
+        w="${a#--}"
+        case "$w" in
+          *=*)
+            n="${w%%=*}"; v="${w#*=}"
+            case "$lv" in *" $n "*) _gp_ow_push "$n" "$v"; continue ;; esac
+            case "$lf" in *" $n= "*) _gp_ow_push "$n" "$v"; continue ;; esac
+            return 1 ;;
+        esac
+        case "$lf" in *" $w "*|*" $w= "*) _gp_ow_push "$w" ''; continue ;; esac
+        case "$lv" in *" $w "*) want="$w"; continue ;; esac
+        case "$w" in
+          no-?*)
+            m="${w#no-}"
+            case "$lf$lv" in *" $m "*|*" $m= "*) _gp_ow_push "no-$m" ''; continue ;; esac ;;
+        esac
+        return 1 ;;
+      -[0-9]*)
+        case "$sf" in *'#'*) ;; *) return 1 ;; esac
+        case "${a#-}" in *[!0-9]*) return 1 ;; esac
+        _gp_ow_push "${a#-}" '' ;;
+      -?*)
+        w="${a#-}"
+        while [ -n "$w" ]; do
+          c="${w%"${w#?}"}"; w="${w#?}"
+          case "$c" in '#') return 1 ;; esac
+          case "$sv" in
+            *"$c"*)
+              if [ -n "$w" ]; then _gp_ow_push "$c" "$w"; else want="$c"; fi
+              continue 2 ;;
+          esac
+          case "$sf" in *"$c"*) _gp_ow_push "$c" ''; continue ;; esac
+          return 1
+        done ;;
+      *) _GP_OW_POS[${#_GP_OW_POS[@]}]="$a" ;;
+    esac
+  done
+  [ -z "$want" ] || return 2
+  return 0
+}
+
+# `_gp_git_optwalk_grade <rc>` — prints the grade a failed walk stands for.
+_gp_git_optwalk_grade() {
+  case "$1" in
+    1) printf '%s' "$GATE_FORM_UNKNOWN" ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+# The option lists of the five walked subcommands are `git <sub> -h` of git
+# 2.54.0 (Apple Git-157), plus the hidden spellings that page does not print
+# (`ls-remote --heads`/`-h`). Measured on the same git: `--upl=`, `--exe=`,
+# `--open=` and `--rem=` are taken as `--upload-pack`, `--exec`,
+# `--open-files-in-pager` and `--remote`, while `diff`, `log` and `show` refuse
+# `--ext-d` and `--outp=`, so the word match the read arm keeps for those is
+# not opened by an abbreviation.
 surface_of_git_fetch() {
   # A fetch that only moves REMOTE-TRACKING refs changes nothing a later act
   # reads as its own state, so it is a read — and it is the single most common
   # act approval this pipeline ever issued. What makes a fetch a write is a
   # refspec whose DESTINATION is a local ref, or an option that rewrites the
-  # local repository's own shape.
-  case " $* " in
-    *" --upload-pack "*|*" --upload-pack="*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-    *" --depth "*|*" --depth="*|*" --deepen "*|*" --deepen="*|*" --shallow-since"*|*" --shallow-exclude"*|*" --unshallow "*|*" --update-shallow "*|*" --prune-tags "*|*" -P "*|*" --set-upstream "*|*" --update-head-ok "*|*" --refetch "*)
-      printf '워크트리쓰기'; return 0 ;;
-  esac
-  local a seen_remote=0
-  for a in "$@"; do
-    case "$a" in
-      fetch) continue ;;
-      -*) continue ;;
+  # local repository's own shape. `--upload-pack` names the program the other
+  # end runs, which over a local transport is this machine, so it is not listed.
+  shift
+  local rc i n
+  _gp_git_optwalk 'vqafmtnpPku46' 'jo' \
+    'verbose quiet all set-upstream append atomic force multiple tags prefetch prune prune-tags recurse-submodules recurse-submodules= dry-run porcelain write-fetch-head keep update-head-ok progress unshallow refetch update-shallow ipv4 ipv6 negotiate-only auto-maintenance auto-gc show-forced-updates write-commit-graph stdin' \
+    'jobs depth shallow-since shallow-exclude deepen refmap server-option negotiation-tip filter' \
+    "$@"
+  rc=$?
+  [ "$rc" = 0 ] || { _gp_git_optwalk_grade "$rc"; return 0; }
+  for n in ${_GP_OW_NAME[@]+"${_GP_OW_NAME[@]}"}; do
+    case "$n" in
+      depth|deepen|shallow-since|shallow-exclude|unshallow|update-shallow|prune-tags|P|set-upstream|update-head-ok|u|refetch)
+        printf '워크트리쓰기'; return 0 ;;
     esac
-    if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
-    # A refspec. An empty destination (`<src>` alone) and one under
-    # `refs/remotes/` leave local branches alone; anything else names a local ref.
-    case "$a" in
+  done
+  # A refspec. The first operand is the remote. An empty destination (`<src>`
+  # alone) and one under `refs/remotes/` leave local branches alone; anything
+  # else names a local ref.
+  i=1
+  while [ "$i" -lt "${#_GP_OW_POS[@]}" ]; do
+    case "${_GP_OW_POS[$i]}" in
       *:*)
-        local dst="${a#*:}"
-        case "$dst" in
+        case "${_GP_OW_POS[$i]#*:}" in
           ''|refs/remotes/*) ;;
           *) printf '워크트리쓰기'; return 0 ;;
         esac ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '읽기'
+}
+
+# `ls-remote` prints refs. `--upload-pack` and its hidden alias `--exec` name the
+# program the other end runs, so neither is listed.
+surface_of_git_ls_remote() {
+  shift
+  local rc
+  _gp_git_optwalk 'qtbh' 'o' \
+    'quiet tags branches heads refs get-url exit-code symref' \
+    'sort server-option' \
+    "$@"
+  rc=$?
+  [ "$rc" = 0 ] || { _gp_git_optwalk_grade "$rc"; return 0; }
+  printf '읽기'
+}
+
+# `grep` prints matches. `-O`/`--open-files-in-pager` hands the matching files
+# to a command of the caller's choosing, so it is not listed. Its `-o` is
+# `--only-matching`; grep has no option that writes a file.
+surface_of_git_grep() {
+  shift
+  local rc
+  _gp_git_optwalk 'viwaIrEGFPnhHlLzocpWq#' 'CBAfem' \
+    'cached index untracked exclude-standard recurse-submodules invert-match ignore-case word-regexp text textconv recursive extended-regexp basic-regexp fixed-strings perl-regexp line-number column full-name files-with-matches name-only files-without-match null only-matching count color color= break heading show-function function-context and or not quiet all-match ext-grep' \
+    'max-depth context before-context after-context threads max-count' \
+    "$@"
+  rc=$?
+  [ "$rc" = 0 ] || { _gp_git_optwalk_grade "$rc"; return 0; }
+  printf '읽기'
+}
+
+# `clone` writes a tree out of the current one, so it is a write rather than an
+# external change — but three of its options make it RUN something: an
+# upload-pack command of the caller's choosing (`-u`), a template directory
+# whose hooks execute during checkout, and clone's own `-c`/`--config` carrying
+# the exec keys the global `-c` refuses. The first two are not listed; the
+# third is read for its key in every spelling — `-c k=v`, `-ck=v`, `--config
+# k=v`, `--config=k=v`.
+surface_of_git_clone() {
+  shift
+  local rc i
+  _gp_git_optwalk 'vqnls46' 'jobc' \
+    'verbose quiet progress reject-shallow checkout bare mirror local hardlinks shared recurse-submodules recurse-submodules= recursive recursive= dissociate single-branch tags shallow-submodules ipv4 ipv6 also-filter-submodules remote-submodules sparse' \
+    'jobs reference reference-if-able origin branch revision depth shallow-since shallow-exclude separate-git-dir ref-format config server-option filter bundle-uri' \
+    "$@"
+  rc=$?
+  [ "$rc" = 0 ] || { _gp_git_optwalk_grade "$rc"; return 0; }
+  i=0
+  while [ "$i" -lt "${#_GP_OW_NAME[@]}" ]; do
+    case "${_GP_OW_NAME[$i]}" in
+      c|config)
+        if gate_git_config_key_execs "${_GP_OW_VAL[$i]%%=*}"; then
+          printf '%s' "$GATE_FORM_UNKNOWN"; return 0
+        fi ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '트리밖쓰기'
+}
+
+# `archive` writes only where told to; with no `-o` it goes to stdout. Its
+# `--remote`/`--exec` pair runs a program on another machine, so neither is
+# listed.
+surface_of_git_archive() {
+  shift
+  local rc n
+  _gp_git_optwalk 'vl#' 'o' \
+    'worktree-attributes verbose list' \
+    'format prefix add-file add-virtual-file output mtime' \
+    "$@"
+  rc=$?
+  [ "$rc" = 0 ] || { _gp_git_optwalk_grade "$rc"; return 0; }
+  for n in ${_GP_OW_NAME[@]+"${_GP_OW_NAME[@]}"}; do
+    case "$n" in
+      o|output) printf '트리밖쓰기'; return 0 ;;
     esac
   done
   printf '읽기'
@@ -5964,12 +6142,11 @@ EOF
   fi
   shift "$_GP_GIT_NSKIP"
   case "${1:-}" in
-    status|log|show|diff|rev-parse|rev-list|merge-base|blame|cat-file|ls-files|ls-tree|check-ignore|check-attr|for-each-ref|show-ref|diff-tree|describe|name-rev|shortlog|count-objects|cherry|range-diff|version|merge-tree|grep|ls-remote)
+    status|log|show|diff|rev-parse|rev-list|merge-base|blame|cat-file|ls-files|ls-tree|check-ignore|check-attr|for-each-ref|show-ref|diff-tree|describe|name-rev|shortlog|count-objects|cherry|range-diff|version|merge-tree)
       # These print and do not change a ref — EXCEPT where an option turns one
       # into a writer or a program runner. `--output=<file>` puts the result on
-      # disk, `--ext-diff` and `grep -O` hand the content to a command of the
-      # caller's choosing, and `ls-remote --upload-pack` names a program to run
-      # on the other side.
+      # disk and `--ext-diff` hands the content to a command of the caller's
+      # choosing. `grep` and `ls-remote` left this arm for an option walk, below.
       case " $* " in
         *" --ext-diff "*|*" -O "*|*" --open-files-in-pager "*|*" --upload-pack "*|*" --upload-pack="*)
           printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
@@ -5977,32 +6154,11 @@ EOF
           printf '트리밖쓰기'; return 0 ;;
       esac
       printf '읽기' ;;
-    # `archive` writes only where told to; with no `-o` it goes to stdout. Its
-    # `--remote`/`--exec` pair runs a program on another machine.
-    archive)
-      case " $* " in
-        *" --remote "*|*" --remote="*|*" --exec "*|*" --exec="*)
-          printf '%s' "$GATE_FORM_UNKNOWN" ;;
-        *) if gate_argv_has_opt -o output "$@"; then printf '트리밖쓰기'; else printf '읽기'; fi ;;
-      esac ;;
-    fetch) surface_of_git_fetch "$@" ;;
-    # `clone` writes a tree out of the current one, so it is a write rather than
-    # an external change — but three of its options make it RUN something: an
-    # upload-pack command of the caller's choosing, a template directory whose
-    # hooks execute during checkout, and clone's own `-c` carrying the same exec
-    # keys the global `-c` above refuses.
-    clone)
-      case " $* " in
-        *" -u "*|*" --upload-pack "*|*" --upload-pack="*|*" --template "*|*" --template="*)
-          printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-      esac
-      local a
-      for a in "$@"; do
-        case "$a" in
-          --config=*|-c=*) gate_git_config_key_execs "${a#*=}" && { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; } ;;
-        esac
-      done
-      printf '트리밖쓰기' ;;
+    grep)      surface_of_git_grep "$@" ;;
+    ls-remote) surface_of_git_ls_remote "$@" ;;
+    archive)   surface_of_git_archive "$@" ;;
+    fetch)     surface_of_git_fetch "$@" ;;
+    clone)     surface_of_git_clone "$@" ;;
     # Three subcommands whose NAME says nothing about their effect, and all three
     # sat on the read arm above: `git worktree add` creates a working tree,
     # `git branch -D` deletes a ref, and `git config --global` rewrites the
