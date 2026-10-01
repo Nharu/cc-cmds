@@ -22757,7 +22757,7 @@ for s71_f in "$S71ROOT"/twin-N/*-*.*; do
   if cmp -s "$s71_f" "$S71ROOT/twin-C/$s71_b"; then
     ok "71: 라벨이 서도 스킬 파견의 답은 바이트로 같다 ($s71_b)"
   else
-    bad "71: 쌍둥이 답 ($s71_b)" "$(diff "$s71_f" "$S71ROOT/twin-C/$s71_b" | head -5 | tr '\n' ' ')"
+    bad "71: 쌍둥이 답 ($s71_b)" "$(diff "$s71_f" "$S71ROOT/twin-C/$s71_b" | awk 'NR<=5' | tr '\n' ' ')"
   fi
 done
 check "71: 비교한 답은 열둘이다 (두 스킬 × 두 동사 × 세 산출물)" \
