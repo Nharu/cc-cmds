@@ -93,25 +93,42 @@ check: lint readme
 # merge-base closest to HEAD wins. Taking the first candidate that resolves
 # picked a stale origin/HEAD over a local master that is ahead of it, so a
 # gate.sh change already on local master counted as this branch's change and
-# the suite ran for a branch that never touched gate.sh. An explicit
-# GATE_SUITE_BASE that does not resolve is the no-base case and runs the suite.
+# the suite ran for a branch that never touched gate.sh. The branch that is
+# checked out is never its own base: on local master, master's merge-base with
+# HEAD is HEAD itself, which would hide every gate.sh change committed there
+# and skip the suite. An explicit GATE_SUITE_BASE that does not resolve, or no
+# candidate left at all, is the no-base case and runs the suite.
 #
 # The full suite takes some forty minutes, longer than a foreground tool call
 # is allowed to run, and the full regression is PR CI's job. A change whose
 # gate.sh edit crosses only some sections narrows the run with
 # GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' — the same
-# section choice the repository's test rules ask for. The default stays the
-# full suite; the message before the run says what it costs and how to narrow.
+# section choice the repository's test rules ask for. Interactively the default
+# stays the full suite, and the message before the run says what it costs: run
+# it as a harness-tracked background task, or narrow it. An unattended run
+# (CC_PIPELINE_RUN_ID set) has no such task to come back to, so there the
+# default is refused rather than started — `check` fails and names the choice,
+# and the stage passes GATE_SUITE_CMD, the full command included, to proceed.
+# The refusal is not a skip: nothing passes until a suite command has run.
 GATE_SUITE_TRIGGER := plugins/cc-cmds/orchestrator/gate.sh
 GATE_SUITE_CMD ?= bash scripts/test-gate.sh
 GATE_SUITE_BASE ?=
 
 check-gate-suite:
-	@base='$(GATE_SUITE_BASE)'; mb=; \
+	@run_suite() { \
+	  if [ -n "$${CC_PIPELINE_RUN_ID:-}" ] && [ '$(origin GATE_SUITE_CMD)' = file ]; then \
+	    echo "check-gate-suite: 무인 런에서는 약 40분 전량을 기본값으로 시작하지 않는다 — GATE_SUITE_CMD 를 지명해 다시 돌린다: 바꾼 축의 절만이면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>', 전량이면 GATE_SUITE_CMD='bash scripts/test-gate.sh'" >&2; \
+	    return 1; \
+	  fi; \
+	  $(GATE_SUITE_CMD); \
+	}; \
+	base='$(GATE_SUITE_BASE)'; mb=; \
 	if [ -n "$$base" ]; then \
 	  mb=$$(git merge-base "$$base" HEAD 2>/dev/null) || mb=; \
 	else \
+	  cur=$$(git symbolic-ref -q --short HEAD) || cur=; \
 	  for ref in origin/HEAD origin/master master; do \
+	    [ "$$ref" != "$$cur" ] || continue; \
 	    git rev-parse --verify --quiet "$$ref^{commit}" >/dev/null || continue; \
 	    m=$$(git merge-base "$$ref" HEAD 2>/dev/null) || continue; \
 	    if [ -z "$$mb" ] || git merge-base --is-ancestor "$$mb" "$$m"; then base=$$ref; mb=$$m; fi; \
@@ -119,7 +136,7 @@ check-gate-suite:
 	fi; \
 	if [ -z "$$mb" ]; then \
 	  echo "check-gate-suite: 비교할 베이스를 해소하지 못해 게이트 스위트를 돌린다 (base='$$base')"; \
-	  $(GATE_SUITE_CMD); exit $$?; \
+	  run_suite; exit $$?; \
 	fi; \
 	changed=$$(git diff --name-only "$$mb" -- '$(GATE_SUITE_TRIGGER)') \
 	  || { echo "check-gate-suite: git diff 가 실패해 $(GATE_SUITE_TRIGGER) 의 변경 여부를 판정할 수 없다" >&2; exit 1; }; \
@@ -128,8 +145,8 @@ check-gate-suite:
 	  exit 0; \
 	fi; \
 	echo "check-gate-suite: $(GATE_SUITE_TRIGGER) 가 $$base 대비 바뀌어 게이트 스위트를 돌린다"; \
-	echo "check-gate-suite: 전량은 약 40분 걸려 포그라운드 도구 상한을 넘는다 — 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 진다)"; \
-	$(GATE_SUITE_CMD)
+	echo "check-gate-suite: 전량은 약 40분 걸려 포그라운드 도구 상한을 넘는다 — 하니스가 추적하는 백그라운드 작업으로 돌리거나, 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 진다)"; \
+	run_suite
 
 # Whether check-gate-suite decides anything. `make -n check | grep test-gate`
 # passes just as well for a condition that is always false, so this runs the
@@ -142,14 +159,19 @@ check-gate-suite:
 # fifth case checks the no-base path: an unchanged tree skips with the default
 # base and runs once GATE_SUITE_BASE names a ref that does not resolve. The
 # sixth keeps origin/master behind a local master that already carries a
-# gate.sh change: the closer base must win and the suite must not run.
+# gate.sh change: the closer base must win and the suite must not run. The
+# seventh is the same commit with local master checked out: master is not its
+# own base, so the committed change counts and the suite runs — F and G are each
+# other's control. The eighth is a pair under CC_PIPELINE_RUN_ID: the default
+# command is refused with a message naming GATE_SUITE_CMD, and a named command
+# runs.
 # The make binary is taken through a second variable on purpose: a recipe line
 # that names $(MAKE) directly is executed even under `make -n`.
 CHECK_GATE_SELFTEST_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 CHECK_GATE_SELFTEST_MAKE := $(MAKE)
 
 run-check-gate-selftest:
-	@unset MAKEFLAGS MFLAGS MAKELEVEL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GATE_SUITE_BASE; \
+	@unset MAKEFLAGS MFLAGS MAKELEVEL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GATE_SUITE_BASE GATE_SUITE_CMD CC_PIPELINE_RUN_ID; \
 	t=$$(mktemp -d) || exit 1; trap 'rm -rf "$$t"' EXIT; \
 	r=$$t/repo; mk='$(CHECK_GATE_SELFTEST_MAKEFILE)'; trig='$(GATE_SUITE_TRIGGER)'; \
 	fail() { echo "run-check-gate-selftest: $$*" >&2; exit 1; }; \
@@ -177,7 +199,16 @@ run-check-gate-selftest:
 	  && gc update-ref refs/remotes/origin/master HEAD~1 && gc checkout -q -b after-master || fail "경우 F 를 준비하지 못했다"; \
 	suite "touch '$$t/ran'" || fail "경우 F: make 가 실패했다: $$(cat "$$t/out")"; \
 	[ ! -e "$$t/ran" ] || fail "경우 F: 로컬 master 에 이미 있는 gate.sh 변경을 낡은 origin/master 대비로 세어 스위트가 돌았다"; \
-	echo "run-check-gate-selftest: 여섯 경우 통과"
+	gc checkout -q master || fail "경우 G 를 준비하지 못했다"; \
+	suite "touch '$$t/ran'" || fail "경우 G: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ -e "$$t/ran" ] || fail "경우 G: 로컬 master 에서 커밋된 gate.sh 변경에 스위트가 돌지 않았다"; \
+	( export CC_PIPELINE_RUN_ID=selftest; rm -f "$$t/ran"; \
+	  '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check-gate-suite >"$$t/out" 2>&1 ) \
+	  && fail "경우 H: 무인 런이 기본 전량 스위트를 거절하지 않았다: $$(cat "$$t/out")"; \
+	grep -q 'GATE_SUITE_CMD 를 지명' "$$t/out" || fail "경우 H: 거절이 아닌 이유로 실패했다: $$(cat "$$t/out")"; \
+	( export CC_PIPELINE_RUN_ID=selftest; suite "touch '$$t/ran'" ) || fail "경우 H: 지명한 스위트 명령이 무인 런에서 거절됐다: $$(cat "$$t/out")"; \
+	[ -e "$$t/ran" ] || fail "경우 H: 무인 런에서 지명한 스위트 명령이 돌지 않았다"; \
+	echo "run-check-gate-selftest: 여덟 경우 통과"
 
 # The source half of the stage-policy drift check: does the policy the gate
 # injects into unattended stages still say what the user-scope CLAUDE.md and
