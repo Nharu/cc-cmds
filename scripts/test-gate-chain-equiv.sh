@@ -720,8 +720,192 @@ else
 fi
 [ "$for_each_listed_ok" = 1 ] || failed=$((failed + 1))
 
-printf 'test-gate-chain-equiv: %d passed, %d failed (golden %d, equivalence %d, conditions %s, reference accepts %d / rejects %d)\n' \
-  "$passed" "$failed" "$golden_ran" "$equiv_ran" "$ACTIVE_CONDS" "$ref_accepts" "$ref_rejects"
+# ---------- phase 3: the two writers of the routing series -----------------
+# `stage-lease` and `stage-wait` have two writers — the gate's `gate_append` and
+# the driver's `ledger_row` — and one ledger that both append to. Phases 1 and 2
+# compare the VERIFIER with a frozen reference and never compare the WRITERS, so
+# a frame that drifted between them would verify on each side and still put two
+# spellings of one row on the same chain. Here the ledgers are built live, by
+# both writers, and held to the three controls this file already trusts: the
+# live verdict, the frozen reference's verdict, and an openssl walk the
+# implementation does not share.
+#
+# THE HOST IS NOT INJECTED. On darwin `lock_tool` names the BSD lock and every
+# write below takes the locked branch; the macOS leg runs this file whole, so
+# this is where that branch is proven in CI. Off darwin the same writes take the
+# unlocked branch, and the concurrent burst at the end runs in sequence instead,
+# because unlocked appends racing for one chain tip are the defect the lock
+# exists to prevent and not a property to assert.
+#
+# EVERY WRITE RUNS IN A SUBSHELL. Both writers `die` on a failed append, and a
+# `die` in this shell would end the harness with a status that reads as a
+# verifier divergence.
+EXPECT_SERIES=16
+series_run_id=SERIES
+series_ran=0
+
+s_check() {                       # s_check <label> <got> <want>
+  series_ran=$((series_ran + 1))
+  if [ "$2" = "$3" ]; then
+    passed=$((passed + 1))
+    printf 'PASS: series %s\n' "$1"
+  else
+    failed=$((failed + 1))
+    printf 'FAIL: series %s — got (%s), want (%s)\n' "$1" "$2" "$3" >&2
+  fi
+}
+
+# series_write <writer> <ledger> <shift-id|-> <series> <field=value>...
+#
+# The shift marker is set or removed explicitly: this file may run inside a
+# pipeline stage, which exports its own `CC_PIPELINE_SHIFT_ID`, and an inherited
+# value would stamp every row with that stage's shift.
+series_write() {
+  local w="$1" l="$2" sh="$3"
+  shift 3
+  (
+    if [ "$sh" = "-" ]; then
+      unset CC_PIPELINE_SHIFT_ID
+    else
+      CC_PIPELINE_SHIFT_ID="$sh"; export CC_PIPELINE_SHIFT_ID
+    fi
+    LEDGER="$l"; RUN_DIR="${l%/*}"; RUN_ID="$series_run_id"
+    "$w" "$@"
+  ) >/dev/null 2>&1
+}
+
+# series_rows <gate_append|ledger_row|alt> <ledger> — six rows under each of the
+# three shift sources (no marker, `#7`, `#12`), eighteen in all. `alt` hands odd
+# rows to the gate and even rows to the driver.
+series_rows() {
+  local mode="$1" l="$2" sh c w i=0 rc=0
+  for sh in - "$series_run_id#7" "$series_run_id#12"; do
+    for c in 1 2 3 4 5 6; do
+      i=$((i + 1))
+      w="$mode"
+      if [ "$mode" = alt ]; then
+        if [ $((i % 2)) = 1 ]; then w=gate_append; else w=ledger_row; fi
+      fi
+      case "$c" in
+        1) set -- stage-lease '파견 id=S1-impl-1.retry' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' \
+                  '예약=0.2500/0.1000' '근거=first' '관측=usage-cache@1790000000' ;;
+        2) set -- stage-lease '파견 id=S1-impl-2' '계보=S1-impl-2' '계정=-' '레인=~' '예약=-' \
+                  '근거=single-seat' '관측=-' ;;
+        3) set -- stage-lease '파견 id=S1-impl-3' '계보=S1-impl-3' '계정=acct-b' '레인=/lanes/b' \
+                  '예약=1.0000/0.0000' '근거=resume-bound' '관측=none' ;;
+        4) set -- stage-wait '계보=S2-impl-1' '그룹=org:0123456789abcdef' '계정=-' \
+                  '까지=2026-09-27T01:02:03Z' '근거=no-room' ;;
+        5) set -- stage-wait '계보=S2-impl-2' '그룹=acct:acct-a' '계정=acct-a' '까지=-' \
+                  '근거=resume-bound-exhausted' ;;
+        6) set -- stage-wait '계보=S2-impl-3' '그룹=-' '계정=-' '까지=-' '근거=fifo-yield' ;;
+      esac
+      series_write "$w" "$l" "$sh" "$@" || rc=1
+    done
+  done
+  return "$rc"
+}
+
+# series_walk <ledger> <run-id> — "<mismatches> <tip>", with openssl alone.
+series_walk() {
+  local prev want row bad=0
+  prev=$(printf '%s' "## 실행 $2" | openssl dgst -sha256 -r | cut -d' ' -f1)
+  while IFS= read -r row; do
+    case "$row" in '- `'*) ;; *) continue ;; esac
+    want=${row##* | prev=}
+    [ "$want" = "$prev" ] || bad=$((bad + 1))
+    prev=$(printf '%s' "$row" | openssl dgst -sha256 -r | cut -d' ' -f1)
+  done < "$1"
+  printf '%s %s' "$bad" "$prev"
+}
+
+series_tip() { ( LEDGER="$1"; RUN_ID="$series_run_id"; run_chain_tip ); }
+series_nrows() { grep -c '^- `' "$1" 2>/dev/null || true; }
+
+# series_mutate <ledger> <row> <awk-sub-program> <out> — rewrite one row.
+series_mutate() {
+  awk -v n="$2" '
+    /^- `/ { k++ }
+    /^- `/ && k == n { '"$3"' }
+    { print }' "$1" > "$4"
+}
+
+SERIES_DIR="$WORK/series"
+for series_d in g d m; do
+  mkdir -p "$SERIES_DIR/$series_d"
+  printf '## 실행 %s\n' "$series_run_id" > "$SERIES_DIR/$series_d/ledger.md"
+done
+series_g="$SERIES_DIR/g/ledger.md"
+series_dl="$SERIES_DIR/d/ledger.md"
+series_m="$SERIES_DIR/m/ledger.md"
+
+series_rows gate_append "$series_g"; series_rg=$?
+series_rows ledger_row "$series_dl"; series_rd=$?
+s_check "both writers accept all eighteen rows" \
+  "$series_rg $series_rd $(series_nrows "$series_g") $(series_nrows "$series_dl")" "0 0 18 18"
+if cmp -s "$series_g" "$series_dl"; then series_same=same; else series_same=differ; fi
+s_check "the gate's ledger and the driver's ledger are byte-identical" "$series_same" "same"
+s_check "the shift source is shared — no marker 0, #7 7, #12 12" \
+  "$(grep -cF '| 교대=0 |' "$series_dl")/$(grep -cF '| 교대=7 |' "$series_dl")/$(grep -cF '| 교대=12 |' "$series_dl")" \
+  "6/6/6"
+s_check "live verdict on the gate's ledger is intact" \
+  "$(live_verdict "$series_g" "$series_run_id" "$WORK/series.err")" "0 0"
+s_check "live verdict on the driver's ledger is intact" \
+  "$(live_verdict "$series_dl" "$series_run_id" "$WORK/series.err")" "0 0"
+s_check "reference verdict on the gate's ledger is intact" \
+  "$(ref_verdict "$REFERENCE" "$series_g" "$series_run_id" "$WORK/series.err")" "0 0"
+s_check "reference verdict on the driver's ledger is intact" \
+  "$(ref_verdict "$REFERENCE" "$series_dl" "$series_run_id" "$WORK/series.err")" "0 0"
+s_check "openssl walk of the gate's ledger — no mismatch, and its end is run_chain_tip" \
+  "$(series_walk "$series_g" "$series_run_id")" "0 $(series_tip "$series_g")"
+s_check "openssl walk of the driver's ledger — no mismatch, and its end is run_chain_tip" \
+  "$(series_walk "$series_dl" "$series_run_id")" "0 $(series_tip "$series_dl")"
+
+# One byte of a value the two series introduce, flipped: row 7 is the `#7` copy
+# of the lease with a reservation, row 10 the `#7` copy of the wait with a
+# deadline. The row after the flipped one is where the chain breaks.
+series_mutate "$series_g" 7 'sub(/예약=0\.2500/, "예약=0.2501")' "$WORK/series-bp.md"
+s_check "a flipped 예약= byte breaks both verdicts at the same row" \
+  "$(live_verdict "$WORK/series-bp.md" "$series_run_id" "$WORK/series.err") / $(ref_verdict "$REFERENCE" "$WORK/series-bp.md" "$series_run_id" "$WORK/series.err")" \
+  "1 8 / 1 8"
+series_mutate "$series_g" 10 'sub(/까지=2026-09-27T01:02:03Z/, "까지=2026-09-27T01:02:04Z")' "$WORK/series-until.md"
+s_check "a flipped 까지= byte breaks both verdicts at the same row" \
+  "$(live_verdict "$WORK/series-until.md" "$series_run_id" "$WORK/series.err") / $(ref_verdict "$REFERENCE" "$WORK/series-until.md" "$series_run_id" "$WORK/series.err")" \
+  "1 11 / 1 11"
+series_mutate "$series_g" 13 'sub(/ \| prev=[0-9a-f]*$/, "")' "$WORK/series-noprev.md"
+series_v=$(live_verdict "$WORK/series-noprev.md" "$series_run_id" "$WORK/series.err")
+s_check "a stripped prev= breaks the live verdict at that row, cause 1" \
+  "$series_v $(grep -c 'prev= 를 읽을 수 없습니다' "$WORK/series.err")" "1 13 1"
+
+# Both writers on ONE ledger. Every row is the same bytes whoever writes it, so
+# alternating the writers reproduces the single-writer ledger exactly.
+series_rows alt "$series_m"; series_rm=$?
+if cmp -s "$series_m" "$series_g"; then series_same=same; else series_same=differ; fi
+s_check "alternating the two writers on one ledger reproduces the single-writer bytes" \
+  "$series_rm $series_same" "0 same"
+if [ -n "$(lock_tool)" ] && [ -x "$(lock_tool)" ]; then series_branch=locked; else series_branch=unlocked; fi
+for series_i in 1 2 3 4; do
+  if [ "$series_branch" = locked ]; then
+    series_write gate_append "$series_m" - stage-wait "계보=G$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-lock-busy' &
+    series_write ledger_row "$series_m" - stage-wait "계보=D$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-contention' &
+  else
+    series_write gate_append "$series_m" - stage-wait "계보=G$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-lock-busy'
+    series_write ledger_row "$series_m" - stage-wait "계보=D$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-contention'
+  fi
+done
+wait
+s_check "the mixed burst ($series_branch branch) leaves four rows from each writer" \
+  "$(grep -c '계보=G' "$series_m")/$(grep -c '계보=D' "$series_m")" "4/4"
+s_check "every prev in the mixed ledger is distinct ($series_branch branch)" \
+  "$(sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p' "$series_m" | sort -u | grep -c .)" "26"
+s_check "the mixed ledger's chain is intact to both verifiers ($series_branch branch)" \
+  "$(live_verdict "$series_m" "$series_run_id" "$WORK/series.err") / $(ref_verdict "$REFERENCE" "$series_m" "$series_run_id" "$WORK/series.err")" \
+  "0 0 / 0 0"
+
+[ "$series_ran" = "$EXPECT_SERIES" ] \
+  || die2 "phase 3 ran $series_ran checks, expected exactly $EXPECT_SERIES"
+
+printf 'test-gate-chain-equiv: %d passed, %d failed (golden %d, equivalence %d, series %d, conditions %s, reference accepts %d / rejects %d)\n' \
+  "$passed" "$failed" "$golden_ran" "$equiv_ran" "$series_ran" "$ACTIVE_CONDS" "$ref_accepts" "$ref_rejects"
 
 [ "$failed" = 0 ] || exit 1
 exit 0
