@@ -20407,7 +20407,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
 
 # ---------------------------------------------------------------------------
 # 71. 하한이 비교기 밖으로 나온다 — grade 둘째 줄·표면·도달·원장
-# --- section: 71 | group: reach | covers: grade, exec | anchors: 71: grade 가 하한을 둘째 줄에 찍는다, 71: 조각이 없는 행위는 하한 줄을 찍지 않는다, 71: 자동 해소를 꺼도 하한이 비교기에 선다, 71: 행 없는 도구 조각이 하한을 올린다, 71: 조각 없이 리다이렉션만 있는 몸통도 하한이 정의된다, 71: 목록에 없는 셸 단어 조각은 하한을 올린다, 71: 원장 행이 하한을 싣는다, 71: 두 겹 본문의 하한과 표식이 올라온다 ---
+# --- section: 71 | group: reach | covers: grade, exec | anchors: 71: grade 가 하한을 둘째 줄에 찍는다, 71: 조각이 없는 행위는 하한 줄을 찍지 않는다, 71: 자동 해소를 꺼도 하한이 비교기에 선다, 71: 행 없는 도구 조각이 하한을 올린다, 71: 조각 없이 리다이렉션만 있는 몸통도 하한이 정의된다, 71: 목록에 없는 셸 단어 조각은 하한을 올린다, 71: 원장 행이 하한을 싣는다, 71: 두 겹 본문의 하한과 표식이 올라온다, 71: 본문 안 find -exec 의 안쪽 본문이 하한과 표식을 올린다, 71: 본문 안 find -exec 의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다 ---
 #
 # 하한은 몸통에서 게이트가 실제로 읽어낸 부분이고, 오늘까지 그 값은 비교기
 # 지역 변수 밖으로 한 번도 나가지 않았다. 그래서 `bash -c 'gh repo delete …'`
@@ -20546,6 +20546,63 @@ check "71: 두 겹 본문의 하한과 표식이 올라온다" \
 # 메시지 안의 낱말이 명령으로 읽힌다.
 check "71: 중첩 본문의 맨 명령 조각은 메시지 낱말로 하한을 올리지 않는다" \
   "$(s71 'F bash -c "env GIT_EDITOR=true git commit -m \"fix: a; gh pr merge 1\""')" "워크트리쓰기"
+
+# 맨 형태에서 하한이 계산되는 조각은 본문 안에서도 같은 하한을 받는다. 파서가 통째로
+# 남기는 `find -exec bash -c '…'` 조각은 조각 전용으로만 다시 읽혀 아무것도 나오지
+# 않았고, 최상위 손 훑기에 건 모드 플래그는 그 아래 본문까지 새어 안쪽 조각 걷기를
+# 껐다. 두 길 모두 맨 형태가 거절하는 저장소 삭제를 워크트리 쓰기·읽기 신고로
+# 지나게 했다. 셋째 줄부터는 같은 접기 경로의 래퍼마다 한 줄이다.
+s71f() {
+  # s71f <argv...> — argv 를 그대로 받아 하한과 표식을 「<하한> <표식>」 한 줄로 낸다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 S71_GATE="$GATE" /bin/bash -c '
+      _a=("$@"); set --
+      . "$S71_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      gate_opaque_floor "${_a[@]}" | cut -f1,2 | tr "\t" " " | sed "s/ *\$//"' s71f "$@" 2>/dev/null )
+}
+S71_DEL="gh repo delete t/front --yes"
+check "71: 본문 안 find -exec 의 안쪽 본문이 하한과 표식을 올린다" \
+  "$(s71f bash -c "find . -exec bash -c '$S71_DEL' \;"
+     s71f env GIT_EDITOR=true find . -exec bash -c "env GIT_SSH_COMMAND='$S71_DEL; ssh' git fetch origin" \;
+     s71f bash -c "env X=1 find . -exec bash -c '$S71_DEL' \;"
+     s71f bash -c "timeout 5 find . -exec bash -c '$S71_DEL' \;"
+     s71f bash -c "nice find . -exec bash -c '$S71_DEL' \;"
+     s71f bash -c "command find . -exec bash -c '$S71_DEL' \;"
+     s71f bash -c "lockf -k -t 0 /tmp/s71.lock find . -exec bash -c '$S71_DEL' \;"
+     s71f bash -c "env GIT_EDITOR=true bash -c \"env GIT_SSH_COMMAND='$S71_DEL; ssh' git fetch origin\"")" \
+  "외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴"
+# 대조군. 맨 형태는 앞부터 같은 답이었고, 안쪽이 읽기뿐인 find 본문은 올라가지 않는다.
+check "71: 맨 find -exec 본문과 읽기뿐인 find 본문은 앞과 같다" \
+  "$(s71f find . -exec bash -c "$S71_DEL" \;
+     s71f bash -c "find . -exec cat {} \;")" \
+  "외부상태변경 파괴
+읽기"
+# 종단 간. 건식 실행이라 아무것도 수행하지 않는다.
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --rationale x \
+  -- bash -c "find . -exec bash -c '$S71_DEL' \;"
+check "71: 본문 안 find -exec 의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다" "$rc" "6"
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 협업 --rationale x \
+  -- env GIT_EDITOR=true find . -exec bash -c "env GIT_SSH_COMMAND='$S71_DEL; ssh' git fetch origin" \;
+check "71: 플래그가 새던 find 철자의 저장소 삭제는 읽기 신고로 지나지 않는다" "$rc" "6"
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --rationale x \
+  -- find . -exec bash -c "$S71_DEL" \;
+check "71: 맨 find -exec 의 저장소 삭제도 같은 답이다" "$rc" "6"
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --rationale x \
+  -- bash -c "find . -exec cat {} \;"
+check "71: 읽기뿐인 find 본문은 워크트리 쓰기 신고로 지난다" "$rc" "0"
 
 # (3) 비교기. 하한이 자동 해소 모드의 호의가 아니라는 것 — 끈 모드는 런이
 # 게이트를 더 엄하게 하려고 고르는 모드인데, 거기서만 셸의 표 등급이 상한으로

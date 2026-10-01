@@ -7146,13 +7146,25 @@ gate_opaque_floor() {
   # An act left whole that carries pieces through a command-valued environment
   # name is floored over those pieces the same way (`gate_floor_defined`), and
   # the hand scan below still answers for the command itself — the two folded.
+  #
+  # THE TWO MODE FLAGS BIND THIS ONE CALL, NOT THE CALLS BELOW IT. They arrive as
+  # prefix assignments, and bash scopes those dynamically, so a `_GATE_FLOOR_WHOLE`
+  # set for the hand scan of one argv reached every body that scan walked into —
+  # `env GIT_EDITOR=true find . -exec bash -c "env GIT_SSH_COMMAND='<삭제>; ssh'
+  # git fetch origin" \;` floored at the fetch's read because the inner body's
+  # piece walk was switched off. They are read here and shadowed, and the piece
+  # accumulators are shadowed with them, so a nested call cannot overwrite the
+  # fold of the call that is walking it.
+  local _flw="${_GATE_FLOOR_WHOLE:-0}" _flp="${_GATE_FLOOR_PIECES_ONLY:-0}"
+  local _GATE_FLOOR_WHOLE=0 _GATE_FLOOR_PIECES_ONLY=0
+  local _GATE_FLOOR_G='' _GATE_FLOOR_I='' _GATE_FLOOR_M='' _GATE_FLOOR_T=''
   gate_gp_ensure "$@"
   case "$GP_STATUS" in
     list|opaque|ok|tool)
       local _redir_w=0
       ! gate_redir_writes_file || _redir_w=1
       if [ "${#GP_SUB[@]}" -gt 0 ] || [ "$_redir_w" = "1" ]; then
-        case "$GP_STATUS:${_GATE_FLOOR_WHOLE:-0}" in
+        case "$GP_STATUS:$_flw" in
           ok:1|tool:1) ;;
           *)
             _GATE_FLOOR_G='읽기'; _GATE_FLOOR_I=$(surface_index '읽기')
@@ -7163,7 +7175,7 @@ gate_opaque_floor() {
             gp_each_sub gate_opaque_floor_frag
             local _pf
             _pf=$(printf '%s\t%s\t%s' "$_GATE_FLOOR_G" "$_GATE_FLOOR_M" "$_GATE_FLOOR_T")
-            case "$GP_STATUS:${_GATE_FLOOR_PIECES_ONLY:-0}" in
+            case "$GP_STATUS:$_flp" in
               ok:0|tool:0)
                 gate_answer_floor_max "$_pf" "$(_GATE_FLOOR_WHOLE=1 gate_opaque_floor "$@")" ;;
               *) printf '%s' "$_pf" ;;
@@ -7302,11 +7314,25 @@ gate_opaque_floor_frag() {
   # -m '…'` is not hand-scanned, so its message words are not read as commands.
   # The re-parse runs in a subshell one level deeper, so the parse the caller
   # stands on survives and the parser's depth bound covers the whole nest.
+  #
+  # A PIECE WHOSE FLOOR IS COMPUTED WHEN BARE GETS THE SAME FLOOR INSIDE A BODY.
+  # The parser leaves some pieces whole — `find . -exec bash -c '<삭제>' \;`,
+  # and the same behind `env`, `timeout`, `nice`, `command`, `lockf` — and those
+  # are exactly the ones `gate_argv_opaque` answers `1` for, because the hand
+  # scan and the `find` unwrapping are what read them. Re-entered as pieces only,
+  # they had no pieces and floored at the table's grade with no mark, so wrapping
+  # the bare spelling in `bash -c` passed a deletion the bare spelling refuses.
+  # Such a piece gets the whole floor; any other piece that carries pieces gets
+  # its pieces only, as before.
   [ "$#" -ge 1 ] || return 0
   local g fi_ mk inner im
   inner=$( _GP_ENTRY_DEPTH=$((${GP_DEPTH:-0} + 1))
-           gate_floor_defined "$@" || exit 0
-           _GATE_FLOOR_PIECES_ONLY=1 gate_opaque_floor "$@" ) || inner=''
+           if [ "$(gate_argv_opaque "$@")" = "1" ]; then
+             gate_opaque_floor "$@"
+           else
+             gate_floor_defined "$@" || exit 0
+             _GATE_FLOOR_PIECES_ONLY=1 gate_opaque_floor "$@"
+           fi ) || inner=''
   if [ -n "$inner" ]; then
     fi_=$(surface_index "${inner%%	*}" 2>/dev/null) || fi_=''
     if [ -n "$fi_" ] && [ "$fi_" -gt "$_GATE_FLOOR_I" ]; then
