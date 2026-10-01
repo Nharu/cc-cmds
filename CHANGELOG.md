@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.37.0] - 2026-10-01
+## [2.38.0] - 2026-10-01
 
 무인 런의 리뷰 사이클에 P1 차단 상한을 둔다. 상한 사이클(지금은 2)에 이르러 P0 가 0 이고 P1 만 남은 세그먼트는, 남은 P1 발견을 이슈로 옮기고 그 사실을 원장 `이월` 행으로 적은 뒤 머지할 수 있다. 상한 전의 P1 은 지금처럼 수정 스테이지로 간다. 자동 해소가 「계속」으로 닫은 무진전 승인(B1)도 그 원인을 런당 이슈 하나로 남기고 같은 `이월` 행으로 닫는다.
 
@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `feat(orchestrator): 리뷰 사이클에 P1 차단 상한과 이월 행을 둔다`
 - `fix(orchestrator): 이월 이슈 등록이 머지 룰에 막히지 않게 하고 이월 행 키를 닫는다`
+- origin/master(v2.37.0) 병합 — 2.37.0 으로 봉했던 이 항목을 새 베이스 위의 2.38.0 으로 옮겼다
 
 ## [2.37.0] - 2026-10-01
 
