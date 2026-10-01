@@ -1724,6 +1724,21 @@ EOF
   return 0
 }
 
+# `gate_act_has_pieces <argv...>` — 0 when the act carries pieces: a shell body
+# or a list the parser left whole, a command a command-valued environment name
+# carries, or a `find` whose `-exec`/`-ok` inner commands are pieces of their
+# own. The piece walk and the over-declaration arm read this one definition, so
+# an act the walk would fold is also an act whose fold is not lowered on.
+gate_act_has_pieces() {
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    list|opaque) return 0 ;;
+  esac
+  [ "${#GP_SUB[@]}" -eq 0 ] || return 0
+  gate_peel_argv "$@" || return 1
+  [ "${#GATE_PEELED[@]}" -ge 1 ] && [ "${GATE_PEELED[0]##*/}" = find ]
+}
+
 # `gate_piece_rungs <argv...>` — the highest rung among the pieces of an act that
 # are not pushes: every piece of a shell body, nested bodies included, the
 # pieces a command-valued environment name carries, and every `-exec` or `-ok`
@@ -1742,15 +1757,7 @@ EOF
 #
 # An act with no pieces is not walked, so a plain command pays nothing for it.
 gate_piece_rungs() {
-  gate_gp_ensure "$@"
-  case "$GP_STATUS" in
-    list|opaque) ;;
-    *)
-      if [ "${#GP_SUB[@]}" -eq 0 ]; then
-        gate_peel_argv "$@" || return 0
-        [ "${#GATE_PEELED[@]}" -ge 1 ] && [ "${GATE_PEELED[0]##*/}" = find ] || return 0
-      fi ;;
-  esac
+  gate_act_has_pieces "$@" || return 0
   local _o
   _o=$( ( _GATE_PR_TOP=1; _gate_piece_rung "$@" ) || true )
   gate_push_pieces_rung "$_o"
@@ -18136,7 +18143,8 @@ gate_verb_act() {
   # undeclared target, so a body's `terraform apply` stood at the declared `커밋`
   # there while the undeclared-target layers read that same low rung as the
   # act's. Folded before those layers, the body meets the refusal its bare
-  # spelling meets whichever target it names.
+  # spelling meets whichever target it names. The fold raises and never lowers:
+  # the over-declaration arm below does not lower an act that carries pieces.
   GATE_ACT_DERIVED=""
   case "$kind" in
     propose-done|skill|router-shift) : ;;
@@ -18180,8 +18188,20 @@ gate_verb_act() {
       # ordinary path and refusing it would be a wall. What it is not is silent:
       # the ledger carries both values and this line carries the third thing
       # neither field can say, which is that one of them was lowered.
-      warn "over-declared: argv is grade '$GATE_ACT_DERIVED' but was declared '$cutpoint' — this act is judged at the derived grade"
-      GATE_ACT_EFFECTIVE="$GATE_ACT_DERIVED"
+      #
+      # ONLY THE DERIVATION OF A BARE argv SPEAKS FOR THE WHOLE ACT. For an act
+      # carrying pieces the derivation is the highest rung among the pieces the
+      # ladder could read, and a piece it cannot read (`kubectl apply`) is
+      # silent rather than low — so that value is evidence upward and never
+      # downward. `bash -c 'gh pr create … && kubectl apply …'` declared `배포`
+      # stood at the `PR` of its one readable piece and skipped the review a
+      # bare `kubectl apply` meets.
+      if gate_act_has_pieces "$@"; then
+        warn "over-declared: argv is grade '$GATE_ACT_DERIVED' but was declared '$cutpoint' — an act carrying pieces is not lowered to the derived grade (the ladder may not have read every piece), so it is judged at the declared grade"
+      else
+        warn "over-declared: argv is grade '$GATE_ACT_DERIVED' but was declared '$cutpoint' — this act is judged at the derived grade"
+        GATE_ACT_EFFECTIVE="$GATE_ACT_DERIVED"
+      fi
     fi
   fi
   export GATE_ACT_DERIVED GATE_ACT_EFFECTIVE

@@ -2566,8 +2566,14 @@ SAGEOF
       # 유지된다 — 슬라이스 B 집합만 `gh pr` 를 실어야 하고, 그 집합의 argv 는
       # `gh pr merge` 라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
       # 멈춘다. 그 5 는 이 집합이 재려는 어떤 거절과도 구별되지 않는다.
-      [ -z "${SA_PREAUTH_EXTRA:-}" ] || \
-        printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$SA_PREAUTH_EXTRA"
+      # 줄마다 행 하나다. 한 줄 값은 앞과 같은 바이트를 낸다.
+      if [ -n "${SA_PREAUTH_EXTRA:-}" ]; then
+        while IFS= read -r _sa_pe; do
+          printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$_sa_pe"
+        done <<SAPEEOF
+$SA_PREAUTH_EXTRA
+SAPEEOF
+      fi
       if [ $# -gt 0 ]; then
         printf '\n## 룰 설정\n'
         for extra in "$@"; do printf '%s\n' "$extra"; done
@@ -19547,7 +19553,7 @@ case "$msg" in
 esac
 
 # --- 38-6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
-# --- section: 38-6 | group: sb | covers: act, plan | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다, 6: 미선언 대상에서 본문 안의 배포 조각은 커밋 신고를 저선언으로 만든다 ---
+# --- section: 38-6 | group: sb | covers: act, plan | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다, 6: 미선언 대상에서 본문 안의 배포 조각은 커밋 신고를 저선언으로 만든다, 6: 본문의 PR 조각과 kubectl 조각 — 배포 신고가 리뷰-후-머지에 걸린다 ---
 #
 # §검증 기록 V11 이 지목한 자리다. 두 방향을 함께 잰다: 저신고된 머지는 시임에서
 # 서서 `대상 추가` 행을 아예 만들지 못하고, 과신고된 커밋은 유도값 `커밋` 으로
@@ -19597,6 +19603,45 @@ case "$rc" in
   8) bad "6: 읽기뿐인 본문은 저선언으로 거절되지 않는다" "$msg" ;;
   *) ok "6: 읽기뿐인 본문은 저선언으로 거절되지 않는다" ;;
 esac
+
+# 조각 칸의 접기는 위로만 근거가 된다. 사다리가 읽지 못한 조각(`kubectl apply`)은
+# 낮은 칸이 아니라 침묵이라, 읽힌 조각 하나의 `PR` 이 행위 전체를 대변하면 정직한
+# `배포` 신고가 `PR` 로 낮아져 리뷰-후-머지를 건너뛴다. 사전 인가 행 둘을 실어야
+# 사전 인가 대조의 rc 5 가 아니라 리뷰 룰의 rc 3 을 잰다.
+sb_new '6 조각을 실은 행위의 과신고' 선머지후리뷰
+SA_PREAUTH_EXTRA='gh pr
+kubectl'
+sa_manifest 선머지후리뷰
+rm -rf "$SA_RUN"
+sa_base >/dev/null
+sb6_deploy() {
+  sag plan --manifest "$SA_MANIFEST" --target main --segment SB6D --cutpoint 배포 \
+      --surface 외부상태변경 --reach prod --worktree "$SA_SEGWT" \
+      --snapshot-digest "$(SAH)" --rationale x -- "$@"
+}
+sb6_not_lowered() {
+  # sb6_not_lowered <라벨> — 직전 판정이 rc 3 이고 유도 등급으로 낮췄다는 경고가 없다.
+  check "6: $1 — 배포 신고가 리뷰-후-머지에 걸린다" "$rc" "3"
+  case "$raw" in
+    *"judged at the derived grade"*) bad "6: $1 — 유도 등급으로 낮추지 않는다" "$raw" ;;
+    *) ok "6: $1 — 유도 등급으로 낮추지 않는다" ;;
+  esac
+}
+sb6_deploy bash -c 'gh pr create --title x --body y && kubectl apply -f k8s/'
+check "6: 본문의 PR 조각과 kubectl 조각 — 배포 신고가 리뷰-후-머지에 걸린다" "$rc" "3"
+case "$raw" in
+  *"judged at the derived grade"*) bad "6: 본문의 PR 조각과 kubectl 조각 — 유도 등급으로 낮추지 않는다" "$raw" ;;
+  *) ok "6: 본문의 PR 조각과 kubectl 조각 — 유도 등급으로 낮추지 않는다" ;;
+esac
+sb6_deploy env GH_EDITOR='kubectl apply -f k8s/' gh pr create --title x
+sb6_not_lowered '명령값 환경에 실린 kubectl'
+sb6_deploy find . -maxdepth 0 -exec gh pr create --title x \; -exec kubectl apply -f k8s/ \;
+sb6_not_lowered 'find 의 두 -exec'
+# 대조군. 조각이 없거나 kubectl 만 든 본문은 앞부터 rc 3 이었다.
+sb6_deploy kubectl apply -f k8s/
+check "6: 맨 kubectl 배포는 리뷰-후-머지에 걸린다" "$rc" "3"
+sb6_deploy bash -c 'kubectl apply -f k8s/'
+check "6: kubectl 만 든 본문도 리뷰-후-머지에 걸린다" "$rc" "3"
 
 # --- 38-6b. 미선언 대상 — 세그먼트 행이 이 행위의 워크트리를 정하지 않는다 -------
 # --- section: 38-6b | group: sb | covers: exec, plan | anchors: 6b: 미선언 대상의 세그먼트 행위가 워크트리 술어로 거부되지 않는다 ---
