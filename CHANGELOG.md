@@ -5,6 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.1] - 2026-10-01
+
+`gate.sh` 를 바꾼 변경은 이제 `make check` 에서 게이트 스위트를 돈다. 등급표 파손을 잡는 유일한 스위트가 커밋마다 거치는 로컬 필수 절차 밖에 있었다. 같은 판본에서 `github-ops` 의 CI 대기 절이 대화형 세션과 무인 파이프라인 런을 갈라 적는다.
+
+### Added
+
+- **`make check` 의 조건부 게이트 스위트(`check-gate-suite`)** — 베이스 브랜치와의 merge-base 대비 작업 트리에서 `plugins/cc-cmds/orchestrator/gate.sh` 가 바뀌었을 때만 `scripts/test-gate.sh` 를 돌리고, 그 실패가 `check` 의 실패가 된다. 커밋·스테이징·작업 트리의 편집을 모두 센다. 베이스 후보(`origin/HEAD`·`origin/master`·`master`) 가운데 HEAD 에 가장 가까운 merge-base 를 쓰므로, 낡은 원격 추적 ref 때문에 로컬 master 에 이미 있는 `gate.sh` 변경을 이 브랜치의 변경으로 세지 않는다. 베이스를 해소하지 못하면 건너뛰지 않고 돌리며, `git diff` 실패는 빈 변경 목록이 아니라 판정 불가로 실패한다.
+  - 전량은 단독으로 약 40분이라 포그라운드 도구 상한을 넘는다. 돌기 직전에 그 비용과 좁히는 방법을 한 줄로 알리고, 바꾼 축의 절만 돌리려면 `GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>'` 로 좁힌다. 기본값은 전량이고, 전량 회귀는 PR CI 가 진다.
+- **조건 판정의 자체 시험 `run-check-gate-selftest`** — 임시 저장소에서 여섯 경우를 본다: 다른 파일만 바뀜(돌지 않음), 브랜치에서 `gate.sh` 가 바뀜(돎), 작업 트리에서만 바뀜(돎), 스위트 실패(make 실패), 바뀌지 않은 트리를 기본 베이스로 보면 건너뛰고 해소되지 않는 `GATE_SUITE_BASE` 로 보면 돎, 낡은 `origin/master` 보다 앞선 로컬 master 에만 `gate.sh` 변경이 있음(돌지 않음). 첫 두 경우가 서로의 대조군이다. `test`·`test-rest` 의 선행에 들어갔다.
+
+### Fixed
+
+- **`github-ops` 의 CI 대기 절을 두 갈래로 가른다** — 백그라운드 `gh pr checks --watch` 뒤 새 세션이 재질의한다는 문장은 재질의할 세션이 있는 대화형 경로에서만 참이다. 갈래는 `CC_PIPELINE_RUN_ID` 유무 하나로 정한다. 무인 런은 백그라운드 대기를 띄우지 않고, 머지 직전 현재 head 의 `gh pr checks`(와 `--required`)를 게이트를 거친 읽기로 포그라운드에서 조회한다. 체크가 아직 진행 중이면 포그라운드로 더 기다리거나 정지 기록을 남기고 머지하지 않는다. `checks` 폴러(`orchestrator/checks.sh`)는 전이를 `<RUN_DIR>/checks.observed` 에 기록할 뿐이고, 게이트는 현재 head 에 기록된 CI 실패만 거절한다. 행이 없거나 진행 중인 head 는 통과시키므로 게이트는 대기가 아니라 백스톱이다. 결과 해석에서 질문하거나 「다시 기다린다」던 갈래도 무인 런에서는 머지하지 않고 정지 기록을 남기는 것으로 적었다.
+
+### Why
+
+전량 게이트 스위트는 단독으로 40분대라 무조건 `make check` 에 넣으면 절차를 건너뛰게 만들어 목적과 반대로 작동한다. 그래서 바뀐 경우에만 돌리고, 조건이 실제로 갈리는지는 쌍 단언으로 따로 본다. CI 워크플로는 `make check` 를 부르지 않으므로 이 변경이 CI 시간을 늘리지 않는다. 무인 머지 절차는 기다릴 주체를 남겨야 한다. 폴러와 게이트에 대기를 맡긴다고만 적으면, 수정 커밋을 push 한 직후 아직 기록이 없는 새 head 가 게이트를 통과해 CI 가 끝나기 전에 머지된다.
+
 ## [2.38.0] - 2026-10-01
 
 무인 런이 스스로를 잰다. 게이트가 가끔 한 번 런 계측 수집기를 돌려 끝난 런들의 압축·캐시·비용을 층별로 모으고, 결함 형태나 순 효과 악화가 보이면 그것을 `cc-metrics` 이슈로만 사람에게 알린다. 같은 판본이 스테이지 기동에 자동 압축 창을 주입하고 실효 창·레인·기록자를 원장에 적는 기록 쪽(앞서 머지된 부분)도 처음으로 항목에 올린다 — 그 부분은 2.23.1 부터 판본에 실려 배포됐지만 CHANGELOG 항목 없이 들어왔다.
