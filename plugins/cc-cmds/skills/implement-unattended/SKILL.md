@@ -182,6 +182,19 @@ Process A ends here. Emit, do not implement.
 - **Posture.** The driver brackets this process with a whole-file `sha256` of the design document taken immediately before launch and immediately after exit.
 
     **It does NOT pass `--permission-mode plan` or `--json-schema`.** There is no structured-output contract, so the return is prose and the emission form below must be readable from prose. The flags are not added because **processes A and B share one dispatch**, and a blanket `--permission-mode plan` would trap B in a mode that forbids editing. **That bracket is a detector, not a preventer**, and it is load-bearing: plan mode's restraint is self-reported.
+- **Read this segment's stall labels once, BEFORE the plan file is written.** The gate takes the plan digest from the plan file as well, so a digest read off the file must never predate this read.
+    1. Call the gate once, on a line of its own, with no pipe: `<gate absolute path> snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields stalls`. The first token is the gate's absolute path **written out literally** — the path `CC_PIPELINE_GATE` holds, which is the path the stage hook's refusal text shows. A variable form such as `"$CC_PIPELINE_GATE" snapshot …` is refused: the hook compares the first token as a string, unexpanded, against the gate's path.
+    2. Read the printed JSON array yourself and keep only the entries whose `세그먼트` equals `CC_PIPELINE_SEGMENT` and whose `처분` is `지시`. Do not filter it with `jq` in the same call — the hook refuses the pipe.
+    3. Put a `정체 지시:` block in the plan right after the `Scope:` line (or as the plan's first block when there is no `Scope:` line), carrying the fixed text of each kept `부류` from the table below, in the order the array lists them. The block is inside the plan, so `plan_sha256` binds it.
+    4. If the call fails or is refused, emit the plan without the block and write `정체 라벨 판독 불가` into `disposition`. There is no fallback file.
+    5. Do not read or compare HEAD. Whether a label is still current was settled by the classifier's consumption rule before it reached the array.
+
+    | `부류` | fixed text for the `정체 지시:` block |
+    | --- | --- |
+    | `NO_DRIFT` | 같은 커밋이 두 번 리뷰됐다 — 고치기로 한 발견은 새 커밋으로 끝내고, 고치지 않기로 한 발견은 그 판단을 계획에 적는다 |
+    | `SPINNING` | 같은 파일 집합이 세 리뷰 연속 P0/P1 발견을 지녔다 — 같은 수정을 반복하지 말고 접근을 바꾼다 |
+    | `OSCILLATION` | 발견의 파일 집합이 네 리뷰에 걸쳐 번갈아 나왔다 — 둘을 함께 만족하는 수정을 찾는다 |
+    | `DIMINISHING_RETURNS` | 발견의 사례가 아니라 그 부류를 고친다 |
 - **Emit** `{plan, verdict_table, plan_sha256, disposition}` — **and emit `plan_sha256` in a form the gate can read from a prose return.** There is no structured-output contract on this dispatch, so the object above may arrive as text. Put the digest on its own line as `**plan_sha256**: <64 hex>` inside the terminal message, and write the plan to `<RUN_DIR>/<segment>.plan.md`. The gate reads both — the line first, the file as a fallback — and either one puts the token on the row.
     - `plan` — the edit-scoped plan, with `Scope: <directive>` as its first line when a scope directive was parsed.
     - `verdict_table` — one row per R-item flagged as a flip target: R-id / current token / verdict-to-record / one-line observation / waiver marker. **Non-executing items are not rows** — a row is by definition a flip target. An in-scope `구현 중` item is not a row either: it flips at phase arrival in Step 3.
@@ -195,6 +208,8 @@ Process A ends here. Emit, do not implement.
 ### Step 3: Implementation (requires the ledger admission token)
 
 **Before any action, resolve the admission predicate.** The interactive skill's reverse transcript scan is replaced by a **ledger predicate**: a `stage-result` row for this segment's implement stage exists, carries a `plan_sha256`, and that digest equals the sha256 of the plan text this process was handed. If it does not — or if no such row exists — **STOP and halt** with `분류: precondition-failed`. Do not re-derive a plan and proceed; re-derivation is exactly the hole this predicate closes.
+
+**Process B does not read `stalls`.** The admitted plan already carries whatever `정체 지시:` block process A put in it.
 
 - **First document-write action: the batched flip write + diff gate.** Identical to the base skill and unchanged by unattended operation. The write surface is exactly two byte-enumerated forms inside a `### R<n>` of `## 구현 시 검증 항목`:
     - **W1**: locate the grade line with `^(- )?(\*\*검증 등급\*\*|검증 등급): 구현 시 검증$` (`grep -E`/`sed -E` only — never perl), then rewrite the whole line to the canonical `**검증 등급**: <terminal token>` (bold key, no leading bullet; no line creation or deletion).

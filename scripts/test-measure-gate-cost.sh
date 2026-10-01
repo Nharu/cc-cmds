@@ -82,14 +82,15 @@ field() { sed -n "s/^$2=//p" "$1" | sed -n 1p; }
 #    The shim below hands measure-gate-cost.sh a file to source in place of
 #    gate.sh through its EXISTING `GATE_SH` seam — no contract of that script is
 #    widened for this. All the shim owes is a `gate_chain_verify` reading the
-#    same two globals the real one reads, and a `gate_progress_vector` that the
-#    script requires to exist — an inert one here, since this section measures
-#    the chain axis only.
+#    same two globals the real one reads, and a `gate_progress_vector` and a
+#    `gate_snapshot_stalls_json` that the script requires to exist — inert ones
+#    here, since this section measures the chain axis only.
 # ---------------------------------------------------------------------------
 SHIM="$WORK/gate-reference-shim.sh"
 cat > "$SHIM" <<SHIM_EOF
 gate_chain_verify() { bash "$REFERENCE" "\$LEDGER" "\$RUN_ID"; }
 gate_progress_vector() { :; }
+gate_snapshot_stalls_json() { :; }
 SHIM_EOF
 
 GATE_SH="$SHIM" bash "$MEASURE" --rows 10 > "$WORK/ref1.txt" 2>"$WORK/ref1.err"
@@ -266,6 +267,50 @@ mdigest=$(shasum -a 256 < "$MF" | cut -d' ' -f1)
 bash "$MEASURE" --rows 5 --segments 2 --manifest "$MF" > "$WORK/run7.txt" 2>&1
 check "주어진 매니페스트로 기울기 축이 측정된다" "$?" "0"
 check "측정이 매니페스트 바이트를 바꾸지 않는다" "$(shasum -a 256 < "$MF" | cut -d' ' -f1)" "$mdigest"
+
+# ---------------------------------------------------------------------------
+# 8. The stalls axis is one `awk` at every size.
+#
+#    The snapshot's stall-label builder classifies the whole ledger in one awk
+#    pass and takes its root by parameter expansion, so its process count is 1
+#    whatever the number of review rows — the same kind of certificate as the
+#    chain pin. Two sizes, four times apart, so a per-row or per-segment fork
+#    cannot hide behind a small n. The script refuses (exit 2) when the ledger
+#    moves under it, so a 0 here is also the read-only claim.
+# ---------------------------------------------------------------------------
+bash "$MEASURE" --rows 10 --segments 3 --cycles 12 > "$WORK/st12.txt" 2>&1
+check "cycle 12행 원장에서 측정이 성공한다" "$?" "0"
+check "센 cycle 행수가 요청한 수와 같다" "$(field "$WORK/st12.txt" cycles)" "12"
+bash "$MEASURE" --rows 10 --segments 3 --cycles 48 > "$WORK/st48.txt" 2>&1
+check "cycle 48행 원장에서 측정이 성공한다" "$?" "0"
+for f in st12 st48; do
+  check "정체 라벨 빌더가 프로세스 하나다 ($f)" "$(field "$WORK/$f.txt" stalls_processes_total)" "1"
+  check "그 하나가 awk 다 ($f)" "$(field "$WORK/$f.txt" stalls_awk)" "1"
+  check "빌더가 경고 없이 끝난다 ($f)" "$(field "$WORK/$f.txt" stalls_rc)" "0"
+done
+bash "$MEASURE" --rows 10 --segments 3 --cycles 12 > "$WORK/st12b.txt" 2>&1
+if cmp -s "$WORK/st12.txt" "$WORK/st12b.txt"; then
+  ok "같은 입력의 두 측정이 같은 출력을 낸다 (정체 축 포함)"
+else
+  bad "정체 축의 재현성" "$(diff "$WORK/st12.txt" "$WORK/st12b.txt" | head -5 | tr '\n' ' ')"
+fi
+LGC="$WORK/fixed-cycles.md"
+{
+  cat "$LG"
+  printf -- '- `cycle` | 세그먼트=S1 | 사이클=1 | P0=0 | P1=2 | 리뷰 HEAD=abc1234 | 리포트 경로=docs/reviews/a.md\n'
+  printf -- '- `cycle` | 세그먼트=S1 | 사이클=2 | P0=0 | P1=2 | 리뷰 HEAD=abc1234 | 리포트 경로=docs/reviews/b.md\n'
+} > "$LGC"
+cdigest=$(shasum -a 256 < "$LGC" | cut -d' ' -f1)
+bash "$MEASURE" --ledger "$LGC" > "$WORK/stl.txt" 2>&1
+check "주어진 cycle 원장에 대한 정체 축 측정이 성공한다" "$(field "$WORK/stl.txt" stalls_rc)" "0"
+check "정체 축 측정이 원장 바이트를 바꾸지 않는다" "$(shasum -a 256 < "$LGC" | cut -d' ' -f1)" "$cdigest"
+
+# Negative control: with no cycle rows the axis is flat under a doubled row
+# count too, so the reading above is not one that moves with the ledger's
+# other rows.
+check "cycle 행이 없으면 행수를 두 배로 해도 정체 축이 평평하다" \
+  "$(field "$WORK/flat40.txt" stalls_processes_total)" "$(field "$WORK/run3.txt" stalls_processes_total)"
+check "그 평평한 값도 awk 하나다" "$(field "$WORK/flat40.txt" stalls_awk)" "1"
 
 printf 'test-measure-gate-cost: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = 0 ] || exit 1
