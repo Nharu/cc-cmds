@@ -279,6 +279,8 @@ A review stage that dies usually leaves its team's work on disk: every seat publ
 
 A segment's last `cycle` row decides what follows its review. The ceiling is the snapshot's `cycle_carry_from`; read it there and never write its value into a decision, because the gate's merge rule reads the same constant and a copy here would drift from it.
 
+**"Last" is the order of `cycles[]`, not the largest number**: take the segment's last entry in the array. **Its `사이클` is a JSON string and `cycle_carry_from` is an integer**, so compare `(.["사이클"] | tonumber)` against it — compared as they arrive, a string sorts above every number, and cycle `"1"` would take the carryover row, register an issue, and then have its `이월` row refused as below the ceiling.
+
 | Last review | Next act |
 | --- | --- |
 | `P0` > 0 | fix stage |

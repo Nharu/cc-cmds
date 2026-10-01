@@ -54,7 +54,10 @@ A seat that can write files puts a body file under `$RUN_DIR` and passes
 - **N** opens one issue per run. When `carryover_due[]` grows again later in
   the run, the new approvals get their own `이월` rows naming the same URL —
   the issue is found by its `[무진전] <run-id>` title with `gh issue list
-  --search` (a read).
+  --search` (a read). The body was written for the first approvals only, so
+  before those rows add each new approval's question text and the progress
+  digest to the issue with `gh issue comment <URL> --body <본문>`; a reused
+  URL without it leaves the later causes in the run directory alone.
 
 **Accepted residual.** Nothing records which finding went to which URL before
 the `이월` row lands. A shift that dies between `gh issue create` and the row
@@ -68,6 +71,14 @@ anything, since the merge rule reads only the row.
   standard output — means no `이월` row and no merge. Send a fix stage.
 - **N**: a registration that fails leaves the approvals due. Try again on the
   next shift, and say in the handoff report that it failed and why.
+- **The issue exists but the gate refuses the `이월` row.** A `cycle` row that
+  arrived in between, the row cap, or a cycle below `cycle_carry_from` each
+  refuse the row after `gh issue create` has already succeeded. Do not retry
+  the row with other numbers. On P send a fix stage; on N the approvals stay
+  due. Either way, name every URL the attempt created in the handoff report,
+  and the next attempt reuses those URLs instead of opening the same title
+  again. A row over the cap names fewer URLs only by carrying fewer findings,
+  which the `건수` check refuses, so on P it is a fix stage as well.
 - Neither route parks a segment or asks a person.
 
 **When auto-resolution is off** (`auto_resolve` false in the snapshot), `gh
@@ -86,10 +97,18 @@ because only an auto-resolved approval enters `carryover_due[]`.
 
 ## Gate declaration
 
-Both `gh issue create` and `gh project item-add` go through `gate.sh exec` with
-`--surface 외부상태변경 --reach 협업`, the command called directly and not
-inside `bash -c`. An exit 11 is not retried: on P it means a fix stage, on N
-the approvals stay due.
+`gh issue create`, `gh issue comment` and `gh project item-add` go through
+`gate.sh exec` with `--surface 외부상태변경 --reach 협업`, the command called
+directly and not inside `bash -c`. An exit 11 is not retried: on P it means a
+fix stage, on N the approvals stay due.
+
+**The cutpoint.** Label these acts with the target's cutpoint as you label
+every other act. The gate derives the bottom rung, `커밋`, from these three
+verbs — an issue moves no code — and judges them there, so the merge rule
+does not ask them for the `이월` row they exist to produce, and N needs no
+segment. Declaring `머지` is therefore not a refusal; an exit 3 naming
+`리뷰-후-머지` on one of these acts means the argv was not one of the three
+verbs, so check the spelling rather than writing the row first.
 
 Then write the row:
 

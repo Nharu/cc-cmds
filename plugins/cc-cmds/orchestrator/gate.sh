@@ -5948,6 +5948,23 @@ ladder_of_gh() {
         # that costs is the high one.
         *) : ;;
       esac ;;
+    # An issue and a project card move no code, so like `git commit` these rows
+    # sit on the BOTTOM rung and can only pull an over-declaration back down.
+    # They exist because the router labels the carryover registration with its
+    # target's cutpoint: left at `머지`, `gh issue create` met the review-after-
+    # merge rule, which refused it for want of the very `이월` row the
+    # registration is there to produce. Only the verbs the carryover route runs
+    # are named; `close`, `delete`, `transfer` and the rest assert nothing.
+    issue)
+      case "${2:-}" in
+        create|comment) printf '커밋' ;;
+        *) : ;;
+      esac ;;
+    project)
+      case "${2:-}" in
+        item-add) printf '커밋' ;;
+        *) : ;;
+      esac ;;
     *) : ;;
   esac
   return 0
@@ -14817,6 +14834,26 @@ EOF
         warn "an 이월 row does not take \`세그먼트=\` from the caller — the gate writes it from --segment (출처=리뷰) or as \`-\` (출처=경계)"
         return "$GATE_EXIT_VOCAB"
       fi
+      # THE KEYS ARE A CLOSED SET, EACH ONCE. The checks below read a field by
+      # its exact key and the first occurrence, while the readers downstream —
+      # the merge rule and the boundary-carryover lookup — match a key with
+      # leading spaces allowed and take the LAST occurrence. A second `건수=`, or
+      # a ` 출처=경계` beside an honest `출처=리뷰`, would therefore pass every
+      # check here and be read as something else there.
+      local ca ck cseen='|'
+      for ca in "$@"; do
+        ck=${ca%%=*}
+        case "$ck" in
+          '출처'|'사이클'|'리뷰 HEAD'|'승인 id'|'이슈'|'건수') ;;
+          *) warn "an 이월 row takes only \`출처\` \`사이클\` \`리뷰 HEAD\` \`승인 id\` \`이슈\` \`건수\`: '$ck'"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+        case "$cseen" in
+          *"|$ck|"*) warn "an 이월 row carries \`${ck}\` once"
+                     return "$GATE_EXIT_VOCAB" ;;
+        esac
+        cseen="$cseen$ck|"
+      done
       for k in '출처' '사이클' '리뷰 HEAD' '승인 id' '이슈' '건수'; do
         if [ -z "$(gate_field_of "$k" "$@")" ]; then
           warn "an 이월 row needs \`${k}\`"
