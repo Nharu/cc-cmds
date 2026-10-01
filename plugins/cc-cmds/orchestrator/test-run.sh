@@ -1143,6 +1143,49 @@ else
   ok "벽시계 마감의 「없음」이 거부된다"
 fi
 
+# 드라이버가 마감을 읽는 쪽. 검사 8 은 모양만 보므로 위 절들이 초록이어도 드라이버가
+# 그 값을 시각으로 읽는지는 말해 주지 않는다. 한 순간(2026-10-02T09:00:00Z)을 세
+# 표기로 적어 호스트 TZ 를 바꿔 가며 같은 참값이 나오는지 잰다. `Z` 를 호스트 로컬로
+# 읽으면 비 UTC 존에서, 오프셋을 떼기만 하면 모든 존에서 어긋난다.
+DL_TRUE=1790931600
+dl_set() {   # dl_set <벽시계 마감 값>
+  write_manifest "$MF"
+  sed "s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: $1/" "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+  MANIFEST="$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+}
+for dl_tz in UTC Asia/Seoul America/New_York; do
+  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00 2026-10-02T14:30:00+05:30; do
+    dl_set "$dl_v"
+    check "deadline_epoch '$dl_v' (TZ=$dl_tz) 가 참값이다" \
+      "$( export TZ="$dl_tz"; deadline_epoch )" "$DL_TRUE"
+  done
+done
+dl_set 2026-10-02T09:00:00
+check "오프셋 없는 마감은 빈 값이다" "$(deadline_epoch)" ""
+dl_set 2026-10-02T18:00:00+0900
+check "콜론 없는 오프셋은 빈 값이다" "$(deadline_epoch)" ""
+dl_set 없음
+check "「없음」 마감은 빈 값이다" "$(deadline_epoch)" ""
+
+# past_deadline 은 원래 정의 그대로 쓰고 시계만 고정한다. 마감 1초 전은 거짓,
+# 마감 시각과 그 뒤는 참이다. 고정은 서브셸 안에서만 하므로 뒤 절의 now_epoch 는
+# 드라이버의 것이다.
+dl_pd() {   # dl_pd <마감 값> <now epoch> <TZ> → 지남|남음
+  dl_set "$1"
+  ( export TZ="$3"; DL_NOW="$2"; now_epoch() { printf '%s' "$DL_NOW"; }
+    if past_deadline; then printf '지남'; else printf '남음'; fi )
+}
+for dl_tz in UTC Asia/Seoul; do
+  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00; do
+    check "past_deadline '$dl_v' 1초 전 (TZ=$dl_tz)" "$(dl_pd "$dl_v" $((DL_TRUE - 1)) "$dl_tz")" "남음"
+    check "past_deadline '$dl_v' 그 시각 (TZ=$dl_tz)" "$(dl_pd "$dl_v" "$DL_TRUE" "$dl_tz")" "지남"
+    check "past_deadline '$dl_v' 한 시간 뒤 (TZ=$dl_tz)" "$(dl_pd "$dl_v" $((DL_TRUE + 3600)) "$dl_tz")" "지남"
+  done
+done
+check "형식이 틀린 마감에서 past_deadline 은 거짓이다" "$(dl_pd 2026-10-02T09:00:00 $((DL_TRUE + 3600)) UTC)" "남음"
+check "「없음」 마감에서 past_deadline 은 거짓이다" "$(dl_pd 없음 $((DL_TRUE + 3600)) UTC)" "남음"
+write_manifest "$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+
 # 2 — append 형식이 없으므로 둘째 인가 블록은 잔재가 아니라 변조다.
 write_manifest "$MF"; printf '\n## 인가\n**런 최대 절단점**: 배포\n' >> "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then

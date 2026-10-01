@@ -5535,15 +5535,39 @@ merge_gate() {
 # is executed inline by the driver rather than spawned, so "stages in flight
 # finish" does not cover it, and a merge landing an hour after the deadline is a
 # terminal act nobody authorized for that hour.
+#
+# The deadline is read in the three spellings the manifest check accepts — `Z`,
+# `+HH:MM` and `-HH:MM` — and always as the true instant, whatever the host `TZ`
+# is: the wall-clock part is parsed as UTC and the written offset is then
+# subtracted. Any other spelling yields an empty value, so `past_deadline` reads
+# false; the manifest check refuses such a value before start, which makes that
+# branch a defence rather than a path a run takes.
 deadline_epoch() {
-  local dl
+  local dl body zone u off
   [ -n "$MANIFEST" ] || { printf ''; return 0; }
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || { printf ''; return 0; }
+  case "$dl" in
+    *Z) body=${dl%Z}; zone=Z ;;
+    *[+-][0-9][0-9]:[0-9][0-9]) body=${dl%??????}; zone=${dl#"$body"} ;;
+    *) printf ''; return 0 ;;
+  esac
+  case "$body" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;;
+    *) printf ''; return 0 ;;
+  esac
   # BSD `date -j` is the parse form, and it is correct here rather than merely
   # convenient: this driver refuses to start on any non-darwin host at entry, so
   # the portable shim would be dead code guarding a branch that cannot run.
-  date -j -f '%Y-%m-%dT%H:%M:%SZ' "${dl%%+*}" '+%s' 2>/dev/null || printf ''  # lint-bash-portability: disable=date -j
+  # `-u` makes it read the wall-clock part as UTC rather than as host-local time.
+  u=$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "$body" '+%s' 2>/dev/null) || u=''  # lint-bash-portability: disable=date -j
+  [ -n "$u" ] || { printf ''; return 0; }
+  [ "$zone" = Z ] && { printf '%s' "$u"; return 0; }
+  off=$(( 10#${zone:1:2} * 3600 + 10#${zone:4:2} * 60 ))
+  case "$zone" in
+    +*) printf '%s' $(( u - off )) ;;
+    *)  printf '%s' $(( u + off )) ;;
+  esac
 }
 
 past_deadline() {
