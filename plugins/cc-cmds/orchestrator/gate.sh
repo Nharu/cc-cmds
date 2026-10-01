@@ -1744,6 +1744,13 @@ gate_act_has_pieces() {
     list|opaque) return 0 ;;
   esac
   [ "${#GP_SUB[@]}" -eq 0 ] || return 0
+  gate_act_is_find "$@"
+}
+
+# `gate_act_is_find <argv...>` — 0 when the act, with the registered wrappers
+# peeled, is a `find`. The parser leaves a `find` whole, so its `-exec`/`-ok`
+# inner commands are pieces that only the `find` unwrapping reads.
+gate_act_is_find() {
   gate_peel_argv "$@" || return 1
   [ "${#GATE_PEELED[@]}" -ge 1 ] && [ "${GATE_PEELED[0]##*/}" = find ]
 }
@@ -2814,7 +2821,14 @@ _gp_leaf() {
 # its own process and would compare the repository on disk. Only the assignments
 # still in force count: one cleared by `env -i` or unset after it does not reach
 # git.
+#
+# A SHELL READS ITS STARTUP FILES FROM THE SAME TWO PLACES, so `_gp_shell` asks
+# the same walk: `env HOME=<dir> zsh -c true` runs `<dir>/.zshenv`.
 _gp_git_config_home() {
+  _gp_config_home_in_force
+}
+
+_gp_config_home_in_force() {
   local k="$_GP_ENV_BASE" e home='' xdg=''
   while [ "$k" -lt "${#GP_ENV[@]}" ]; do
     e="${GP_ENV[$k]}"
@@ -3169,6 +3183,8 @@ _gp_env_unset() {
 #   execution identity   PATH, BASH_ENV, ENV, DYLD_*, LD_*, GIT_EXEC_PATH,
 #                        GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*
 #                        — the binary that runs changes, so the act is `form`.
+#                        ZDOTDIR is the directory zsh reads its startup files
+#                        from, the same script-the-act-chose as BASH_ENV.
 #                        GIT_CONFIG_PARAMETERS, GIT_CONFIG_GLOBAL,
 #                        GIT_CONFIG_SYSTEM, GIT_CONFIG, GIT_SSH and
 #                        GIT_PROXY_COMMAND are here for the same reason: each
@@ -3232,7 +3248,7 @@ _gp_env_unset() {
 # the line does not show (`_gp_env_unseen`).
 _gp_env_class() {
   case "$1" in
-    PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+    PATH|BASH_ENV|ENV|ZDOTDIR|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
       _GP_ENV_CLASS=exec-identity ;;
     GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG|GIT_SSH|GIT_PROXY_COMMAND|GIT_TEMPLATE_DIR)
       _GP_ENV_CLASS=exec-identity ;;
@@ -3289,19 +3305,38 @@ _gp_env_unseen() {
 # A BARE `+` IS AN EMPTY OPTION CLUSTER, NOT THE END OF OPTIONS. bash reads
 # `bash + -c '<body>'` and runs the body; taking `+` as `--` left a leaf with no
 # `-c`, so the body was never parsed and no floor was computed over it.
+#
+# KEYWORD MODE SENDS THE ASSIGNMENT WORDS AFTER A COMMAND INTO ITS ENVIRONMENT.
+# Under `-k` or `-o keyword`, `git ls-remote GIT_ALLOW_PROTOCOL=ext 'ext::…'`
+# hands git the name the environment table refuses, but the parser reads the
+# word as an operand, so the table is never asked. Keyword mode itself is
+# therefore `form`, here and in the body's `set` (`_gpb_set`).
+#
+# A STARTUP FILE IS A SCRIPT THE ACT CHOSE AND THIS LAYER CANNOT READ, as
+# `BASH_ENV` and `ENV` are. `--rcfile`/`--init-file` name one, and `--login`,
+# `-l` and `-i` make the shell read its profile or rc file before the body runs,
+# so the earlier act that planted the file runs on this act's declaration. The
+# same goes for the names that move where the shell looks: `ZDOTDIR` in the
+# environment table, and `HOME`/`XDG_CONFIG_HOME` here, because zsh reads
+# `$HOME/.zshenv` even for `-c`.
 _gp_shell() {
   local name="${1##*/}" a j c mode_c=0 noexec=0 i=1 n="$#"
   local -a args
   args=("$@")
+  _gp_config_home_in_force
+  [ "$GP_STATUS" != form ] || return 0
   while [ "$i" -lt "$n" ]; do
     a="${args[$i]}"
     case "$a" in
       --|-) i=$((i + 1)); break ;;
       +) ;;
-      --norc|--noprofile|--login|--posix|--restricted|--verbose|--noediting) ;;
-      --rcfile|--init-file) i=$((i + 1)) ;;
+      --norc|--noprofile|--posix|--restricted|--verbose|--noediting) ;;
+      --login|--rcfile|--init-file) _gp_form sh:startup; return 0 ;;
       --*) _gp_form ''; return 0 ;;
-      -o|+o|-O|+O) i=$((i + 1)) ;;
+      -o)
+        i=$((i + 1))
+        [ "${args[$i]:-}" != keyword ] || { _gp_form sh:keyword; return 0; } ;;
+      +o|-O|+O) i=$((i + 1)) ;;
       -?*|+?*)
         j=1
         while [ "$j" -lt "${#a}" ]; do
@@ -3309,8 +3344,15 @@ _gp_shell() {
           case "$c" in
             c) [ "${a:0:1}" = + ] || mode_c=1 ;;
             n) [ "${a:0:1}" = + ] || noexec=1 ;;
-            o|O) i=$((i + 1)) ;;
-            a|b|e|f|h|k|m|p|t|u|v|x|B|C|E|H|P|T|i|l|r|s) ;;
+            k) [ "${a:0:1}" = + ] || { _gp_form sh:keyword; return 0; } ;;
+            i|l) [ "${a:0:1}" = + ] || { _gp_form sh:startup; return 0; } ;;
+            o)
+              i=$((i + 1))
+              if [ "${a:0:1}" = - ] && [ "${args[$i]:-}" = keyword ]; then
+                _gp_form sh:keyword; return 0
+              fi ;;
+            O) i=$((i + 1)) ;;
+            a|b|e|f|h|m|p|t|u|v|x|B|C|E|H|P|T|r|s) ;;
             *) _gp_form ''; return 0 ;;
           esac
           j=$((j + 1))
@@ -3716,16 +3758,18 @@ _gpb_endcmd() {
     esac
     k=$((k + 1))
   done
-  # `exec` as a prefix: `-c` clears the environment, `-l` changes nothing that
-  # matters here, `-a NAME` replaces argv0 and is `form`.
+  # `exec` as a prefix: `-c` clears the environment, `-a NAME` replaces argv0
+  # and is `form`. `-l` puts a dash before argv0, which is how a login shell is
+  # started, so a shell it runs reads the profile files the parse never sees —
+  # the same reason `bash -l` is `form`.
   if [ "$k" -lt "$m" ] && [ "${cw[$k]}" = exec ]; then
     k=$((k + 1))
     while [ "$k" -lt "$m" ]; do
       case "${cw[$k]}" in
         --) k=$((k + 1)); break ;;
         -a*) _gpb_form env:argv0-override; k="$m"; break ;;
-        -c|-cl|-lc) _gp_env_clear; _gp_wrap_add "exec${_GP_TAB}clear=1" ;;
-        -l) ;;
+        -l|-cl|-lc) _gpb_form sh:startup; k="$m"; break ;;
+        -c) _gp_env_clear; _gp_wrap_add "exec${_GP_TAB}clear=1" ;;
         -*) _gpb_form ''; k="$m"; break ;;
         *) break ;;
       esac
@@ -3769,7 +3813,29 @@ _gpb_endcmd() {
     if [ "$first" = 1 ]; then el="$x"; first=0; else el="$el$_GP_US$x"; fi
   done
   GP_SUB[${#GP_SUB[@]}]="$el"
+  # `builtin <name>` and `command <name>` run the same builtin, so the arm is
+  # chosen by the word after the prefix. What the prefixed piece was before —
+  # parsed again as a piece — it still is: `_gpb_recurse` runs after the arm.
+  local bk="$k" bw="$a" pre=0
   case "$a" in
+    builtin)
+      [ $((k + 1)) -lt "$m" ] && { bk=$((k + 1)); pre=1; } ;;
+    command)
+      x=$((k + 1))
+      while [ "$x" -lt "$m" ] && [ "${cw[$x]}" = -p ]; do x=$((x + 1)); done
+      case "${cw[$x]:-}" in
+        -v|-V|-*|'') ;;
+        *) bk="$x"; pre=1 ;;
+      esac ;;
+  esac
+  bw="${cw[$bk]}"
+  if [ "$pre" = 1 ]; then
+    case "$bw" in
+      export|local|declare|typeset|readonly|set|read|printf) ;;
+      *) bk="$k"; bw="$a"; pre=0 ;;
+    esac
+  fi
+  case "$bw" in
     cd) _gpb_cd ;;
     # THE NAME IS CHECKED THE WAY THE LEADING ASSIGNMENTS CHECK IT. It was cut at
     # the first `=` and handed on as spelled, so `export GIT_SSH_COMMAND+=<cmd>`
@@ -3777,8 +3843,15 @@ _gpb_endcmd() {
     # set the variable unclassified — `/bin/sh` takes `+=` and on an unset name
     # it is the plain assignment. The one `+` comes off, and a name that is
     # still not an identifier is not read.
-    export|local)
-      x=$((k + 1))
+    #
+    # `declare`, `typeset` and `readonly` ASSIGN THE SAME WAY `export` DOES —
+    # `declare -x GIT_SSH_COMMAND=<cmd>` exports the name — so they take the same
+    # walk, and are then parsed again as a piece the way they always were, which
+    # keeps the grade they had. `-n` makes the assigned name a reference to the
+    # name its value spells, and a later plain assignment then sets THAT name,
+    # which no word on the line shows; it is `form`.
+    export|local|declare|typeset|readonly)
+      x=$((bk + 1))
       while [ "$x" -lt "$m" ]; do
         case "${cw[$x]}" in
           [A-Za-z_]*=*)
@@ -3788,20 +3861,28 @@ _gpb_endcmd() {
               *[!A-Za-z0-9_]*) _gpb_form ''; cw=(); cf=(); return 0 ;;
             esac
             _gp_env_assign "$name" "${cw[$x]#*=}" ;;
+          -*n*)
+            case "$bw" in
+              local|declare|typeset) _gpb_form sh:nameref; cw=(); cf=(); return 0 ;;
+            esac ;;
         esac
         x=$((x + 1))
-      done ;;
+      done
+      case "$bw" in
+        declare|typeset|readonly) [ "$pre" = 1 ] || _gpb_recurse ;;
+      esac ;;
+    set) _gpb_set ;;
     # `read` names its variables as operands, and an option value that happens
     # to spell a classified name is refused along with them — the cost is a
     # prompt text, the alternative is reading every option of every shell.
     read)
-      x=$((k + 1))
+      x=$((bk + 1))
       while [ "$x" -lt "$m" ]; do
         _gp_env_unseen "${cw[$x]}"
         x=$((x + 1))
       done ;;
     printf)
-      x=$((k + 1))
+      x=$((bk + 1))
       while [ "$x" -lt "$m" ]; do
         case "${cw[$x]}" in
           -v) x=$((x + 1)); [ "$x" -ge "$m" ] || _gp_env_unseen "${cw[$x]}" ;;
@@ -3822,10 +3903,37 @@ _gpb_endcmd() {
     # gives: they carry a command string that runs later, so the string has to
     # be parsed as a piece rather than stepped over. `hash` is off it for the
     # reason `_gp_frag_grade` gives too: `hash -p` changes what a later word runs.
-    echo|pwd|true|false|:|test|'['|'[['|set|unset|shift|wait|return|exit|type|ulimit|umask) ;;
+    echo|pwd|true|false|:|test|'['|'[['|unset|shift|wait|return|exit|type|ulimit|umask) ;;
     *) _gpb_recurse ;;
   esac
+  [ "$pre" = 0 ] || _gpb_recurse
   cw=(); cf=()
+  return 0
+}
+
+# `set` turns on keyword mode with `-k` in an option cluster or with `-o
+# keyword`, and from then on the assignment words after a command go into its
+# environment (see `_gp_shell`). Any other option changes nothing this layer
+# reads. The scan stops at `--` and at the first operand.
+_gpb_set() {
+  local x=$((bk + 1)) w
+  while [ "$x" -lt "$m" ]; do
+    w="${cw[$x]}"
+    case "$w" in
+      --|-) return 0 ;;
+      -*)
+        case "$w" in *k*) _gpb_form sh:keyword; return 0 ;; esac
+        case "$w" in
+          *o*)
+            x=$((x + 1))
+            [ "${cw[$x]:-}" != keyword ] || { _gpb_form sh:keyword; return 0; } ;;
+        esac ;;
+      +*)
+        case "$w" in *o*) x=$((x + 1)) ;; esac ;;
+      *) return 0 ;;
+    esac
+    x=$((x + 1))
+  done
   return 0
 }
 
@@ -5994,9 +6102,9 @@ _gp_git_optwalk_grade() {
   esac
 }
 
-# The option lists of the five walked subcommands are `git <sub> -h` of git
-# 2.54.0 (Apple Git-157), plus the hidden spellings that page does not print
-# (`ls-remote --heads`/`-h`). Measured on the same git: `--upl=`, `--exe=`,
+# The option lists of the walked subcommands — fetch, ls-remote, grep, clone,
+# archive, pull and push — are `git <sub> -h` of git 2.54.0 (Apple Git-157), plus
+# the hidden spellings that page does not print (`ls-remote --heads`/`-h`). Measured on the same git: `--upl=`, `--exe=`,
 # `--open=` and `--rem=` are taken as `--upload-pack`, `--exec`,
 # `--open-files-in-pager` and `--remote`, while `diff`, `log` and `show` refuse
 # `--ext-d` and `--outp=`, so the word match the read arm keeps for those is
@@ -6117,6 +6225,43 @@ surface_of_git_archive() {
   printf '읽기'
 }
 
+# EVERY SUBCOMMAND THAT TAKES A COMMAND-VALUED OPTION IS READ BY ENUMERATION —
+# fetch, ls-remote, clone, archive, pull and push. `pull` passes `--upload-pack`
+# to its fetch, so `git pull --upl='<cmd>' . main` ran <cmd> on this machine over
+# a local transport while the table answered `외부상태변경` for any option. Its
+# list is the fetch half and the merge half of `git pull` in git 2.54.0, without
+# `upload-pack`. `-S`, `-j` and `-r` take an optional value glued to the letter
+# only, so they are flags here and a glued value is a form; listing them as
+# value letters would swallow the next word, option or not.
+surface_of_git_pull() {
+  shift
+  local rc
+  _gp_git_optwalk 'vqnerSafptkj46' 'sXo' \
+    'verbose quiet progress recurse-submodules= rebase= stat summary compact-summary log= signoff= squash commit edit ff ff-only verify verify-signatures autostash allow-unrelated-histories gpg-sign= all append force tags prune dry-run keep jobs= unshallow update-shallow ipv4 ipv6 show-forced-updates set-upstream' \
+    'cleanup strategy strategy-option depth shallow-since shallow-exclude deepen refmap server-option negotiation-tip' \
+    "$@"
+  rc=$?
+  [ "$rc" = 0 ] || { _gp_git_optwalk_grade "$rc"; return 0; }
+  printf '외부상태변경'
+}
+
+# `push` is read the same way. `--receive-pack` and its alias `--exec` name the
+# program the other end runs, which over a local transport is this machine, so
+# neither is listed, and their abbreviations (`--rece=`, `--exe=`) are refused
+# with them. The list is `git push` in git 2.54.0; the push check's own scanner
+# (`gate_push_scan`) reads destinations and stays separate.
+surface_of_git_push() {
+  shift
+  local rc
+  _gp_git_optwalk 'vqdnfu46' 'o' \
+    'verbose quiet all branches mirror delete tags dry-run porcelain force force-with-lease= force-if-includes thin set-upstream progress prune verify follow-tags signed= atomic ipv4 ipv6' \
+    'repo recurse-submodules push-option' \
+    "$@"
+  rc=$?
+  [ "$rc" = 0 ] || { _gp_git_optwalk_grade "$rc"; return 0; }
+  printf '외부상태변경'
+}
+
 surface_of_git() {
   # git's GLOBAL options come BEFORE the subcommand, so `git -C <path> commit`
   # puts `-C` in the slot the table reads and the whole act graded `등급 미상`.
@@ -6216,17 +6361,9 @@ EOF
     # --receive-pack="<cmd>; git-receive-pack" <remote> HEAD:topic` ran <cmd>
     # under a push declaration. The `-c remote.<r>.receivepack` spelling of the
     # same knob and `fetch --upload-pack` are already refused as a form; the argv
-    # option is the same program runner and is refused the same way.
-    push)
-      local a
-      for a in "$@"; do
-        case "$a" in
-          --) break ;;
-          --receive-pack|--receive-pack=*|--exec|--exec=*)
-            printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-        esac
-      done
-      printf '외부상태변경' ;;
+    # option is the same program runner and is refused the same way, abbreviations
+    # included (`surface_of_git_push`).
+    push)     surface_of_git_push "$@" ;;
     # `send-pack` IS A PUSH THE PUSH CHECKS DO NOT SEE. It sends refs to the URL
     # it names, but push recognition reads only the `push` word, so the remote
     # check and the merge rung never ran, and as `등급 미상` it passed on a
@@ -6234,10 +6371,12 @@ EOF
     # `--rece=<cmd>` ran a local program besides. The pipeline never runs this
     # plumbing, so it is refused as a form whatever its options are, rather than
     # given a grade nothing here can stand behind.
-    send-pack)
+    #
+    # `fetch-pack` is the same plumbing on the fetching side, and it takes
+    # `--upload-pack`/`--exec` exactly as `fetch` does; it is refused the same way.
+    send-pack|fetch-pack)
       printf '%s' "$GATE_FORM_UNKNOWN" ;;
-    pull)
-      printf '외부상태변경' ;;
+    pull)     surface_of_git_pull "$@" ;;
     # A NAME THIS TABLE DOES NOT KNOW MAY BE AN ALIAS, and an alias runs whatever
     # it expands to — `push` to any URL, or a shell command with `!`. As `등급
     # 미상` it could be rescued by a local-write declaration before the push
@@ -7499,10 +7638,17 @@ gate_opaque_floor_frag() {
   # the bare spelling in `bash -c` passed a deletion the bare spelling refuses.
   # Such a piece gets the whole floor; any other piece that carries pieces gets
   # its pieces only, as before.
+  #
+  # A `find` PIECE GETS THE WHOLE FLOOR EVEN WHEN ITS INNER COMMAND IS NOT
+  # OPAQUE. `find . -exec env GIT_SSH_COMMAND='<삭제>; ssh' git fetch origin \;`
+  # answers `0` above — the inner command is a fetch — so it was re-entered as
+  # pieces only, had none of its own, and floored at the table's read. Its
+  # inner commands are pieces all the same, and only the `find` unwrapping
+  # reaches them.
   [ "$#" -ge 1 ] || return 0
   local g fi_ mk inner im
   inner=$( _GP_ENTRY_DEPTH=$((${GP_DEPTH:-0} + 1))
-           if [ "$(gate_argv_opaque "$@")" = "1" ]; then
+           if [ "$(gate_argv_opaque "$@")" = "1" ] || gate_act_is_find "$@"; then
              gate_opaque_floor "$@"
            else
              gate_floor_defined "$@" || exit 0
@@ -19074,7 +19220,15 @@ gate_verb_act() {
     # An act the table graded is floored too when it carries pieces through a
     # command-valued environment name: its grade speaks for its own command and
     # not for the commands a shell runs out of that name later.
-    if [ "$GATE_OPAQUE" = "1" ] || [ "$graded" = "등급 미상" ] || gate_act_carries_pieces "$@"; then
+    #
+    # A `find` carries pieces without either: its `-exec`/`-ok` inner commands
+    # are pieces, and `find . -exec env GIT_SSH_COMMAND='<삭제>; ssh' git fetch
+    # origin \;` is neither opaque (the inner command is a fetch) nor carrying
+    # pieces of its own, so its floor was never computed and the deletion passed
+    # on any declaration. Every act that has pieces (`gate_act_has_pieces`) is
+    # floored.
+    if [ "$GATE_OPAQUE" = "1" ] || [ "$graded" = "등급 미상" ] || gate_act_carries_pieces "$@" \
+       || gate_act_has_pieces "$@"; then
       local _fl _rest _fmark _ftrig
       _fl=$(gate_opaque_floor "$@")
       GATE_FLOOR="${_fl%%	*}"; _rest="${_fl#*	}"
@@ -19090,7 +19244,7 @@ gate_verb_act() {
       # whole has no floor, and a field spelled with an empty value there would
       # read as "the floor was computed and it was nothing" — which is the one
       # reading the morning report must not be able to make.
-      gate_floor_defined "$@" && GATE_FLOOR_FIELD="하한=$GATE_FLOOR"
+      { gate_floor_defined "$@" || gate_act_is_find "$@"; } && GATE_FLOOR_FIELD="하한=$GATE_FLOOR"
     fi
     [ "$GATE_OPAQUE" = "1" ] && GATE_GRADE_SOURCE='불투명'
     [ "$graded" = "등급 미상" ] && GATE_GRADE_SOURCE='미상'

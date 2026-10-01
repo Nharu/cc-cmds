@@ -20431,7 +20431,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
 
 # ---------------------------------------------------------------------------
 # 71. 하한이 비교기 밖으로 나온다 — grade 둘째 줄·표면·도달·원장
-# --- section: 71 | group: reach | covers: grade, exec | anchors: 71: grade 가 하한을 둘째 줄에 찍는다, 71: 조각이 없는 행위는 하한 줄을 찍지 않는다, 71: 자동 해소를 꺼도 하한이 비교기에 선다, 71: 행 없는 도구 조각이 하한을 올린다, 71: 조각 없이 리다이렉션만 있는 몸통도 하한이 정의된다, 71: 목록에 없는 셸 단어 조각은 하한을 올린다, 71: 원장 행이 하한을 싣는다, 71: 두 겹 본문의 하한과 표식이 올라온다, 71: 본문 안 find -exec 의 안쪽 본문이 하한과 표식을 올린다, 71: 본문 안 find -exec 의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다 ---
+# --- section: 71 | group: reach | covers: grade, exec | anchors: 71: grade 가 하한을 둘째 줄에 찍는다, 71: 조각이 없는 행위는 하한 줄을 찍지 않는다, 71: 자동 해소를 꺼도 하한이 비교기에 선다, 71: 행 없는 도구 조각이 하한을 올린다, 71: 조각 없이 리다이렉션만 있는 몸통도 하한이 정의된다, 71: 목록에 없는 셸 단어 조각은 하한을 올린다, 71: 원장 행이 하한을 싣는다, 71: 두 겹 본문의 하한과 표식이 올라온다, 71: 본문 안 find -exec 의 안쪽 본문이 하한과 표식을 올린다, 71: 본문 안 find -exec 의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다, 71: 맨 find 의 명령값 환경이 하한과 표식을 올린다, 71: 맨 find 의 명령값 환경 저장소 삭제는 읽기 신고로 지나지 않는다, 71: 맨 find 의 명령값 환경 저장소 삭제는 배포 신고로도 지나지 않는다, 71: 맨 find 행위의 행이 하한을 싣는다 ---
 #
 # 하한은 몸통에서 게이트가 실제로 읽어낸 부분이고, 오늘까지 그 값은 비교기
 # 지역 변수 밖으로 한 번도 나가지 않았다. 그래서 `bash -c 'gh repo delete …'`
@@ -20627,6 +20627,95 @@ gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커�
   --surface 워크트리쓰기 --reach 런로컬 --rationale x \
   -- bash -c "find . -exec cat {} \;"
 check "71: 읽기뿐인 find 본문은 워크트리 쓰기 신고로 지난다" "$rc" "0"
+# 셸 본문 없이 find 가 바로 명령값 환경을 실은 명령을 부르는 철자. 이 행위는 조각을
+# 싣지 않는다고 판정돼 하한이 아예 계산되지 않았고, 셸 본문 조각으로 들어올 때도
+# 안쪽 명령이 불투명이 아니라는 이유로 다시 걷지 않았다. 그래서 find 의 표 등급인
+# 읽기 신고로 저장소 삭제가 지났다. 셸 본문 철자·이중 find 와 같은 답이어야 한다.
+check "71: 맨 find 의 명령값 환경이 하한과 표식을 올린다" \
+  "$(s71f find . -exec env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+     s71f find . -ok env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+     s71f find . -exec env GIT_EDITOR="$S71_DEL;:" git commit --amend \;
+     s71f bash -c "find . -exec env GIT_SSH_COMMAND='$S71_DEL; ssh' git fetch origin \;"
+     s71f find . -exec find . -exec env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \; \;
+     s71f find . -exec git status \;)" \
+  "외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+외부상태변경 파괴
+읽기"
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 협업 --rationale x \
+  -- find . -exec env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+check "71: 맨 find 의 명령값 환경 저장소 삭제는 읽기 신고로 지나지 않는다" "$rc" "6"
+# 명령값 환경 이름마다 그 이름을 읽는 명령을 붙여, 표 등급 그대로의 정직한 신고가
+# 하한에 막히는지 본다. 한 이름만 덮으면 나머지 이름이 같은 접기로 새도 모른다.
+for s71v in GIT_SSH_COMMAND GIT_EDITOR EDITOR VISUAL PAGER GIT_PAGER GIT_SEQUENCE_EDITOR \
+            GIT_ASKPASS SSH_ASKPASS GIT_EXTERNAL_DIFF GH_EDITOR GH_PAGER GH_BROWSER BROWSER; do
+  case "$s71v" in
+    GIT_EDITOR|EDITOR|VISUAL|GIT_SEQUENCE_EDITOR)
+      s71s=워크트리쓰기; s71r=런로컬; set -- git commit --amend ;;
+    GIT_EXTERNAL_DIFF) s71s=읽기; s71r=협업; set -- git diff ;;
+    GH_*|BROWSER) s71s=읽기; s71r=협업; set -- gh pr list ;;
+    *) s71s=읽기; s71r=협업; set -- git fetch origin ;;
+  esac
+  gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface "$s71s" --reach "$s71r" --rationale x \
+    -- find . -exec env "$s71v=$S71_DEL;:" "$@" \;
+  check "71: 맨 find 의 $s71v 저장소 삭제는 표 등급 신고로 지나지 않는다" "$rc" "6"
+done
+set --
+# -ok 는 -exec 와 같은 자리다. -execdir·-okdir 는 앞부터 형태 미상이다.
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 협업 --rationale x \
+  -- find . -ok env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+case "$rc" in
+  0) bad "71: 맨 find -ok 의 명령값 환경 저장소 삭제는 읽기 신고로 지나지 않는다" "rc=0" ;;
+  *) ok "71: 맨 find -ok 의 명령값 환경 저장소 삭제는 읽기 신고로 지나지 않는다" ;;
+esac
+for s71o in -execdir -okdir; do
+  gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 읽기 --reach 협업 --rationale x \
+    -- find . "$s71o" env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+  check "71: 맨 find $s71o 는 형태 미상이다" "$rc" "2"
+done
+# 같은 접기 경로의 래퍼로 감싼 철자. 래퍼를 벗긴 뒤의 find 가 같은 하한을 받는다.
+for s71w in "env X=1" "timeout 5" "nice" "nohup" "command" "stdbuf -o0" "time" \
+            "lockf -k -t 0 $WORK/s71.lock"; do
+  # shellcheck disable=SC2086
+  gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 읽기 --reach 협업 --rationale x \
+    -- $s71w find . -exec env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+  check "71: $s71w 로 감싼 맨 find 의 저장소 삭제는 읽기 신고로 지나지 않는다" "$rc" "6"
+done
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --rationale x \
+  -- bash -c "find . -exec env GIT_SSH_COMMAND='$S71_DEL; ssh' git fetch origin \;"
+check "71: 본문 안 맨 find 의 명령값 환경 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다" "$rc" "6"
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 협업 --rationale x \
+  -- env GIT_EDITOR=true find . -exec env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+check "71: 바깥 명령값 환경이 붙은 맨 find 도 같은 답이다" "$rc" "6"
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 협업 --rationale x \
+  -- find . -exec find . -exec env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \; \;
+check "71: 이중 find 의 명령값 환경 저장소 삭제도 같은 답이다" "$rc" "6"
+# 정직한 배포 신고로도 파괴 표식이 서야 한다. 하한이 계산되지 않던 동안은 표식도
+# 없어 파괴 신고 없이 지났다.
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 배포 \
+  --surface 외부상태변경 --reach prod --rationale x \
+  -- find . -exec env GIT_SSH_COMMAND="$S71_DEL; ssh" git fetch origin \;
+case "$rc" in
+  0) bad "71: 맨 find 의 명령값 환경 저장소 삭제는 배포 신고로도 지나지 않는다" "rc=0" ;;
+  *) ok "71: 맨 find 의 명령값 환경 저장소 삭제는 배포 신고로도 지나지 않는다" ;;
+esac
+# 대조군. 명령값이 없는 find 는 앞과 같은 신고로 지난다.
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --rationale x -- find . -name x -exec cat {} \;
+check "71: 명령값 없는 맨 find 는 읽기 신고로 지난다" "$rc" "0"
+gate plan --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --rationale x -- find . -exec git status \;
+check "71: 안쪽이 읽기인 맨 find 는 읽기 신고로 지난다" "$rc" "0"
 
 # (3) 비교기. 하한이 자동 해소 모드의 호의가 아니라는 것 — 끈 모드는 런이
 # 게이트를 더 엄하게 하려고 고르는 모드인데, 거기서만 셸의 표 등급이 상한으로
@@ -20683,10 +20772,19 @@ m=$(grep 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null | grep -c '하한=' || tru
 [ "${n:-0}" -ge 1 ] && [ "${m:-0}" = "0" ] \
   && ok "71: 조각 없는 행위의 행에는 하한 필드가 없다" \
   || bad "71: 조각 없는 행위의 행에는 하한 필드가 없다" "n=$n m=$m"
+# 맨 find 는 안쪽 명령이 조각이므로 하한이 비교기에 서는 행위이고, 그 값은 행에도
+# 실린다. 비교기만 올리고 행에 빠지면 아침 보고가 그 근거를 찾지 못한다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" --rationale t \
+  -- find . -maxdepth 0 -exec git status \;
+m=$(grep 'argv=find . -maxdepth 0 -exec git status' "$FX_LEDGER" 2>/dev/null | grep -c '하한=읽기' || true)
+[ "$rc" = 0 ] && [ "${m:-0}" -ge 1 ] \
+  && ok "71: 맨 find 행위의 행이 하한을 싣는다" \
+  || bad "71: 맨 find 행위의 행이 하한을 싣는다" "rc=$rc m=$m"
 
 # ---------------------------------------------------------------------------
 # 72. git 전역 문법과 push 원격 결속
-# --- section: 72 | group: reach | covers: grade, exec | anchors: 72: -C 뒤의 부명령이 등급을 정한다, 72: remote 재지정 -c 는 형태 미상이다, 72: 협업 팔이 push·pull·fetch 를 인정한다, 72: 전역 옵션은 사전 인가 형태에서 빠진다, 72: 원격은 -C 디렉터리에서 해소된다, 72: 빈 URL 은 통과가 아니라 불일치다, 72: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다, 72: --repo 로 적은 원격도 슬러그로 대조한다, 72: 외래 호스트의 대상 슬러그는 불일치다, 72: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다, 72: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다, 72: git config 의 모르는 옵션과 편집기는 형태 미상이다, 72: git send-pack 은 옵션과 관계없이 형태 미상이다, 72: 같은 노브의 -c 철자는 형태 미상이다, 72: 외부 diff 자리의 저장소 삭제는 읽기 신고로 지나지 않는다, 72: 두 겹 본문의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다, 72: 프로토콜 허용 환경 철자는 -c 철자처럼 형태 미상이다, 72: 프로토콜 허용 환경의 ext 전송은 배포 신고로도 지나지 않는다, 72: 명령값 옵션은 어느 철자로든 형태 미상이다, 72: 아는 옵션만 쓴 하위 명령은 앞의 등급 그대로다, 72: 약어 upload-pack 의 fetch 는 배포 신고로도 지나지 않는다 ---
+# --- section: 72 | group: reach | covers: grade, exec | anchors: 72: -C 뒤의 부명령이 등급을 정한다, 72: remote 재지정 -c 는 형태 미상이다, 72: 협업 팔이 push·pull·fetch 를 인정한다, 72: 전역 옵션은 사전 인가 형태에서 빠진다, 72: 원격은 -C 디렉터리에서 해소된다, 72: 빈 URL 은 통과가 아니라 불일치다, 72: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다, 72: --repo 로 적은 원격도 슬러그로 대조한다, 72: 외래 호스트의 대상 슬러그는 불일치다, 72: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다, 72: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다, 72: git config 의 모르는 옵션과 편집기는 형태 미상이다, 72: git send-pack 은 옵션과 관계없이 형태 미상이다, 72: 같은 노브의 -c 철자는 형태 미상이다, 72: 외부 diff 자리의 저장소 삭제는 읽기 신고로 지나지 않는다, 72: 두 겹 본문의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다, 72: 프로토콜 허용 환경 철자는 -c 철자처럼 형태 미상이다, 72: 프로토콜 허용 환경의 ext 전송은 배포 신고로도 지나지 않는다, 72: 명령값 옵션은 어느 철자로든 형태 미상이다, 72: 아는 옵션만 쓴 하위 명령은 앞의 등급 그대로다, 72: 약어 upload-pack 의 fetch 는 배포 신고로도 지나지 않는다, 72: 셸 키워드 모드는 어느 철자로든 형태 미상이다, 72: 대입 내장은 export 와 같은 이름으로 분류된다, 72: set -k 뒤의 프로토콜 허용 대입은 배포 신고로도 지나지 않는다, 72: pull·push 의 명령값 옵션은 어느 철자로든 형태 미상이다, 72: 명령값 upload-pack 의 pull 은 외부 상태 변경 신고로 지나지 않는다, 72: 시작 파일을 읽는 셸은 형태 미상이다, 72: find 안쪽의 로그인 셸도 형태 미상이다 ---
 #
 # 한 워크트리에서 다른 워크트리로 push 하는 철자 — `git -C <wt> push` — 는
 # 등급에서 읽히지 않고, 읽히더라도 원격이 게이트가 선 디렉터리에서 해소됐다.
@@ -21395,11 +21493,13 @@ ok 0"
 # `protocol.<이름>.allow` 의 `-c` 철자는 형태 미상인데 `GIT_ALLOW_PROTOCOL`·
 # `GIT_PROTOCOL_FROM_USER` 는 기록만 되어, URL 이 곧 명령인 `ext::` 전송을 연
 # `git ls-remote` 가 읽기로 채점됐다. `GH_CONFIG_DIR` 는 gh 가 별칭·편집기·호출기를
-# 읽는 설정을 고르므로 `GIT_CONFIG_GLOBAL` 과 같은 행이다.
+# 읽는 설정을 고르므로 `GIT_CONFIG_GLOBAL` 과 같은 행이다. `ZDOTDIR` 은 zsh 가 시작
+# 파일을 읽는 디렉터리라 `BASH_ENV`·`ENV` 와 같은 행이다.
 check "72: 프로토콜 허용과 설정 디렉터리의 환경 철자는 실행 신원 부류다" \
-  "$(s72 'for n in GIT_ALLOW_PROTOCOL GIT_PROTOCOL_FROM_USER GH_CONFIG_DIR; do
+  "$(s72 'for n in GIT_ALLOW_PROTOCOL GIT_PROTOCOL_FROM_USER GH_CONFIG_DIR ZDOTDIR; do
             _gp_env_class "$n"; printf "%s\n" "$_GP_ENV_CLASS"; done')" \
   "exec-identity
+exec-identity
 exec-identity
 exec-identity"
 check "72: 프로토콜 허용 환경 철자는 -c 철자처럼 형태 미상이다" \
@@ -21576,6 +21676,239 @@ check "72: 붙인 값 -O 의 grep 은 읽기 신고로 지나지 않는다" "$rc
 gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
   --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x -- git fetch --prune origin
 check "72: 아는 옵션만 쓴 fetch 는 읽기 신고로 지난다" "$rc" "0"
+
+# 셸의 키워드 모드. `-k` 가 켜지면 명령 뒤에 적힌 `NAME=value` 도 그 명령의 환경
+# 대입이 되는데, 파서는 그것을 인자로 읽어 환경 표에 묻지 않았다. 그래서 프로토콜
+# 허용 대입이 명령 뒤에 서면 줄 앞의 같은 대입이 받는 형태 거절을 받지 않았다.
+# 켜는 철자는 셸 옵션·`set` 내장·`-o keyword`·묶은 단일 문자 모두다.
+check "72: 셸 키워드 모드는 어느 철자로든 형태 미상이다" \
+  "$(s72 'E() { gp_parse "$@"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"; }
+          E bash -k -c "git ls-remote GIT_ALLOW_PROTOCOL=ext x"
+          E bash -kc "git status"
+          E bash -o keyword -c "git status"
+          E bash -eo keyword -c "git status"
+          E bash -c "set -k; git ls-remote GIT_ALLOW_PROTOCOL=ext x"
+          E bash -c "set -ek; git status"
+          E bash -c "set -o keyword; git status"
+          E bash -c "set -eo keyword; git status"
+          E bash -c "builtin set -k; git status"
+          E bash -c "command set -k; git status"
+          E sh -k -c "git status"
+          E zsh -k -c "git status"')" \
+  "form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword
+form sh:keyword"
+check "72: 키워드 모드를 끄거나 다른 옵션만 켜는 철자는 앞과 같다" \
+  "$(s72 'E() { gp_parse "$@"; printf "%s\n" "$GP_STATUS"; }
+          E bash +k -c "git status"
+          E bash -c "set +k; git status"
+          E bash -o pipefail -c "git status"
+          E bash -c "set -euo pipefail; git status"
+          E bash -c "set -- -k; git status"')" \
+  "list
+list
+list
+list
+list"
+# `export` 와 같은 일을 하는 대입 내장. `declare -x`·`typeset -x`·`readonly` 와
+# `builtin`·`command` 를 앞에 붙인 `export` 는 대입을 환경 표에 넣지 않아, 실행
+# 신원 이름을 바꾸는 대입이 분류 없이 지났다. 짝지은 `export` 철자는 앞부터 같은
+# 답이었다. 이름 참조(`-n`)는 대입 대상이 줄에 적힌 이름이 아니다.
+check "72: 대입 내장은 export 와 같은 이름으로 분류된다" \
+  "$(s72 'E() { gp_parse "$@"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"; }
+          E bash -c "export GIT_ALLOW_PROTOCOL=ext; git status"
+          E bash -c "typeset -x GIT_ALLOW_PROTOCOL=ext; git status"
+          E bash -c "declare -x GIT_ALLOW_PROTOCOL=ext; git status"
+          E bash -c "export PATH=/tmp; git status"
+          E bash -c "declare -gx PATH=/tmp; git status"
+          E bash -c "readonly PATH=/tmp; git status"
+          E bash -c "builtin export PATH=/tmp; git status"
+          E bash -c "command export PATH=/tmp; git status"
+          E bash -c "local -n r=PATH; git status"
+          E bash -c "declare -n r=PATH; r=/tmp; git status"')" \
+  "form env:exec-identity:GIT_ALLOW_PROTOCOL
+form env:exec-identity:GIT_ALLOW_PROTOCOL
+form env:exec-identity:GIT_ALLOW_PROTOCOL
+form env:exec-identity:PATH
+form env:exec-identity:PATH
+form env:exec-identity:PATH
+form env:exec-identity:PATH
+form env:exec-identity:PATH
+form sh:nameref
+form sh:nameref"
+check "72: 실행 신원과 무관한 대입 내장은 앞과 같다" \
+  "$(s72 'E() { gp_parse "$@"; printf "%s\n" "$GP_STATUS"; }
+          E bash -c "declare -a xs; echo ok"
+          E bash -c "readonly X=1; git status"
+          E bash -c "command -v git"')" \
+  "list
+list
+list"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x \
+  -- bash -k -c "git ls-remote GIT_ALLOW_PROTOCOL=ext 'ext::sh -c gh% repo% delete% t/front% --yes'"
+check "72: 키워드 모드 뒤의 프로토콜 허용 대입은 읽기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 배포 --surface 외부상태변경 --reach prod --rationale x \
+  -- bash -c "set -k; git ls-remote GIT_ALLOW_PROTOCOL=ext 'ext::sh -c gh% repo% delete% t/front% --yes'"
+check "72: set -k 뒤의 프로토콜 허용 대입은 배포 신고로도 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x \
+  -- bash -c "declare -x GIT_ALLOW_PROTOCOL=ext; git ls-remote 'ext::sh -c gh% repo% delete% t/front% --yes'"
+check "72: declare -x 의 프로토콜 허용 대입은 export 처럼 형태 미상이다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --rationale x \
+  -- bash -c "set -euo pipefail; git status"
+check "72: 키워드 모드를 켜지 않는 set 은 그대로 통과한다" "$rc" "0"
+
+# pull·push 의 명령값 옵션. 두 하위 명령은 옵션 열거가 없어 `--upload-pack` 의 약어와
+# 붙인 값, push 의 `--receive-pack`·`--exec` 약어가 낱말 일치를 비켜 외부 상태 변경
+# 등급으로 지났다. fetch-pack 은 send-pack 과 같은 이유로 옵션과 관계없이 형태 미상이다.
+check "72: pull·push 의 명령값 옵션은 어느 철자로든 형태 미상이다" \
+  "$(s72 'G git pull --upload-pack="gh repo delete t/front --yes;:" . main
+          G git pull --upl=x . main
+          G git pull --upload-pack x . main
+          G git pull -q --upl=x . main
+          G git pull . main --upl=x
+          G git -C . pull --upl=x . main
+          G git push --rece=x . HEAD:x
+          G git push --receive-pack=x . HEAD:x
+          G git push --exe=x . HEAD:x
+          G git push --ex=x . HEAD:x
+          G git fetch-pack --upload-pack=x .
+          G git fetch-pack .')" \
+  "형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상"
+check "72: 아는 옵션만 쓴 pull·push 는 앞의 등급 그대로다" \
+  "$(s72 'G git pull --ff-only
+          G git pull origin main
+          G git pull --rebase origin main
+          G git pull --no-rebase -q
+          G git pull -X ours origin main
+          G git push origin HEAD:topic
+          G git push -u origin topic
+          G git push --force-with-lease origin topic
+          G git push -o ci.skip origin topic
+          G git push --repo=origin HEAD:topic
+          G git push --delete origin topic
+          G git push --dry-run origin topic')" \
+  "외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경
+외부상태변경"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 외부상태변경 --reach dev --rationale x \
+  -- git pull --upload-pack='gh repo delete t/front --yes;:' . main
+check "72: 명령값 upload-pack 의 pull 은 외부 상태 변경 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 외부상태변경 --reach dev --rationale x \
+  -- git push --rece='gh repo delete t/front --yes;:' . HEAD:x
+check "72: 약어 receive-pack 의 push 는 외부 상태 변경 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 외부상태변경 --reach dev --rationale x \
+  -- git fetch-pack --upload-pack='gh repo delete t/front --yes;:' .
+check "72: fetch-pack 은 옵션과 관계없이 형태 미상이다" "$rc" "2"
+
+# 셸 시작 파일. 로그인·대화형 셸과 `--rcfile`·`--init-file` 은 줄에 없는 파일을
+# 실행하고, `HOME`·`XDG_CONFIG_HOME`·`ZDOTDIR` 은 그 파일이 어디서 읽히는지를
+# 바꾼다. 파서가 이 철자들을 받아 셸 본문만 걸었던 동안 시작 파일의 명령은 하한에
+# 들지 않았다. 본문 안의 셸·`exec -l`·find 안쪽 셸도 같은 자리다.
+check "72: 시작 파일을 읽는 셸은 형태 미상이다" \
+  "$(s72 'E() { gp_parse "$@"; printf "%s %s\n" "$GP_STATUS" "$GP_REASON"; }
+          E bash --rcfile ./x.rc -i -c true
+          E bash --init-file ./x.rc -i -c true
+          E bash -l -c true
+          E bash --login -c true
+          E bash -i -c true
+          E bash -il -c true
+          E bash -lc true
+          E env ZDOTDIR=/tmp/z zsh -c true
+          E env HOME=/tmp/h zsh -c true
+          E env HOME=/tmp/h bash --login -c true
+          E env XDG_CONFIG_HOME=/tmp/x zsh -c true
+          E bash -c "ZDOTDIR=/tmp/z zsh -c true"
+          E bash -c "export ZDOTDIR=/tmp/z; zsh -c true"
+          E bash -c "HOME=/tmp/h bash -l -c true"
+          E bash -c "exec -l bash -c true"')" \
+  "form sh:startup
+form sh:startup
+form sh:startup
+form sh:startup
+form sh:startup
+form sh:startup
+form sh:startup
+form env:exec-identity:ZDOTDIR
+form env:exec-identity:HOME
+form env:exec-identity:HOME
+form env:exec-identity:XDG_CONFIG_HOME
+form env:exec-identity:ZDOTDIR
+form env:exec-identity:ZDOTDIR
+form sh:startup
+form sh:startup"
+check "72: 시작 파일을 읽지 않는 셸은 앞과 같다" \
+  "$(s72 'E() { gp_parse "$@"; printf "%s\n" "$GP_STATUS"; }
+          E bash -c true
+          E bash --norc -c true
+          E bash --noprofile -c true
+          E bash +i -c true
+          E env HOME=/tmp/h ls')" \
+  "list
+list
+list
+list
+ok"
+for s72v in "bash --rcfile ./x.rc -i -c true" "bash -l -c true" "bash --login -c true" \
+            "bash -i -c true" "bash -lc true"; do
+  # shellcheck disable=SC2086
+  gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+    --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --rationale x -- $s72v
+  check "72: $s72v 는 워크트리 쓰기 신고로 지나지 않는다" "$rc" "2"
+done
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --rationale x \
+  -- env ZDOTDIR=/tmp/z zsh -c true
+check "72: ZDOTDIR 을 바꾼 zsh 는 워크트리 쓰기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --rationale x \
+  -- env HOME=/tmp/h bash --login -c true
+check "72: HOME 을 바꾼 로그인 셸은 워크트리 쓰기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 런로컬 --rationale x \
+  -- find . -exec bash -l -c true \;
+check "72: find 안쪽의 로그인 셸도 형태 미상이다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --rationale x -- bash --norc -c true
+check "72: 시작 파일을 끈 셸은 워크트리 쓰기 신고로 지난다" "$rc" "0"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 런로컬 --rationale x -- env HOME=/tmp/h git status
+check "72: HOME 을 바꾼 git 은 앞과 같이 형태 미상이다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질
@@ -23150,7 +23483,9 @@ S sh -c "awk '{print \$1}' f"
 B57
 )")" "opaque|
 list|"
-check "58: bash -lc 는 -c 본문을 읽는다" "$(s57 "S bash -lc 'git status'")" "list|"
+check "58: bash -ec 는 -c 본문을 읽는다" "$(s57 "S bash -ec 'git status'")" "list|"
+# 로그인 셸은 줄에 없는 프로필 파일을 먼저 실행하므로 본문만 읽어서는 답이 안 된다.
+check "58: bash -lc 는 시작 파일을 읽어 형태 미상이다" "$(s57 "S bash -lc 'git status'")" "form|sh:startup"
 check "58: bash -- -c 는 -c 라는 파일을 도는 것이다" \
   "$(s57 "gp_parse bash -- -c 'git status'; printf '%s|%s|%s' \"\$GP_STATUS\" \"\$GP_FAMILY\" \"\${#GP_WRAP[@]}\"")" "ok|raw|0"
 check "58: here-document 는 opaque 다" "$(s57 "$(cat <<'B57'
