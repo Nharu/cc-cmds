@@ -8292,7 +8292,9 @@ readonly GATE_METRICS_GH_TIMEOUT_S=10
 # They measure this plugin's own collector and compaction window, so they belong
 # to this plugin's repository; left to gh, the destination would follow the
 # hosting run's anchor checkout, its remotes and an inherited `GH_REPO`, and an
-# issue body naming local paths would land in whatever repository that was.
+# issue body naming local paths would land in whatever repository that was. The
+# tracker is public and every base files into it, so neither a title nor a body
+# names the hosting checkout: both carry `gate_metrics_repo_tag` instead.
 readonly GATE_METRICS_REPO=Nharu/cc-cmds
 
 gate_reap_root() {
@@ -20122,6 +20124,15 @@ gate_metrics_gh_write() {
   )
 }
 
+gate_metrics_repo_tag() {
+  # gate_metrics_repo_tag <base> — the first 12 hex of the sha256 of the base's
+  # repo-key (its absolute path with `/` turned into `-`). Instrument issues
+  # carry this tag instead of anything a reader could recognise the hosting
+  # checkout by. It hides the name from a reader and is not a secret: someone
+  # who guesses the path can confirm the guess by hashing it.
+  printf '%s' "$1" | tr / - | shasum -a 256 | cut -c1-12
+}
+
 gate_metrics_row() {
   # gate_metrics_row <결정> <issue number> <signatures> <revert verb> <reason>
   gate_append '자율 승인' "kind=metrics-filing" "결정=$1" "대상=${alias:--}" "세그먼트=-" \
@@ -20139,9 +20150,10 @@ gate_metrics_file() {
   # write-scoped credential), `조회 실패` (the write credential's identity is
   # not the configured account, or a GitHub call failed — the label creation
   # before an issue is created included), `상한 도달` (an
-  # instrument issue is already open). A failure to add a created issue to the
-  # Project is NOT a skip: the issue stands, the missing step is written beside
-  # the ledger as a command, and the filing row is still written.
+  # instrument issue with this base's repo tag is already open). A failure to
+  # add a created issue to the Project is NOT a skip: the issue stands, the
+  # missing step is written beside the ledger as a command, and the filing row
+  # is still written.
   #
   # `gh issue reopen` is not called anywhere — a closed instrument issue that
   # fires again is a new issue, and reopening is a human's call.
@@ -20149,9 +20161,17 @@ gate_metrics_file() {
   # Every issue call names `GATE_METRICS_REPO`, and the label is created before
   # each issue creation rather than assumed: gh resolves `--label` to an id
   # before it creates anything, so a missing label fails the whole creation.
+  #
+  # Every base's issues share that one public tracker, so each title starts
+  # with `[cc-metrics <repo tag>] ` and the round sees only the open issues
+  # carrying its own base's tag: the cap, the T6 comment and the close never
+  # reach an issue another base filed, nor an untagged `[cc-metrics] ` one. The
+  # body names the base by the same tag and never by its directory name.
   local line="$1" ledger_dir="$2" base fired close nf nc sigs project account tok login
-  local list nopen open_t6 others tmp url num sig round body_lines title why
+  local list nopen open_t6 others tmp url num sig round body_lines title why tag pre
   base=$(dirname "$(dirname "$ledger_dir")")
+  tag=$(gate_metrics_repo_tag "$base")
+  pre="[cc-metrics $tag] "
   # A line that is not one JSON object is no round at all. Without this an
   # empty line reads as an empty count, the zero test below fails as an error
   # rather than as false, and a skip row would name a trigger that never fired.
@@ -20178,6 +20198,8 @@ gate_metrics_file() {
            "$(gate_metrics_gh)" issue list --repo "$GATE_METRICS_REPO" --label cc-metrics --state open \
            --json number,title 2>/dev/null) \
     || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
+  list=$(printf '%s' "$list" | jq -c --arg p "$pre" '[.[] | select(.title | startswith($p))]' 2>/dev/null) \
+    || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
   nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
 
   body_lines=$(printf '%s' "$fired" | jq -r '.[] | "- `\(.signature)` — \(.body)"')
@@ -20188,18 +20210,18 @@ gate_metrics_file() {
       printf '%s\n\n' "$body_lines"
       printf -- '- 이 회차에 새로 수집된 런: %s\n' "$(printf '%s' "$line" | jq -r '.new_runs | join(", ")')"
       printf -- '- 수집 수: %s\n' "$(printf '%s' "$line" | jq -c '.counts')"
-      printf -- '- 요약 파일: `%s` 의 `%s/metrics.json`\n' "$(basename "$base")" "${ledger_dir#"$base"/}"
+      printf -- '- 레포 표지: `%s` — 요약 파일은 그 레포의 `%s/metrics.json`\n' "$tag" "${ledger_dir#"$base"/}"
     } > "$tmp"
     if [ "$nopen" -gt 0 ]; then
       # An open T6 issue takes the other triggers as a comment: T6 is the slow
       # verdict about the window value, and a defect-shaped trigger arriving
       # while it is open is evidence about the same instrument, not a second
       # thread. Anything else open is the cap.
-      open_t6=$(printf '%s' "$list" | jq -r '[.[] | select(.title | startswith("[cc-metrics] T6/"))][0].number // empty')
+      open_t6=$(printf '%s' "$list" | jq -r --arg p "${pre}T6/" '[.[] | select(.title | startswith($p))][0].number // empty')
       others=""
       if [ -n "$open_t6" ]; then
-        others=$(printf '%s' "$list" | jq -r --argjson f "$fired" --argjson n "$open_t6" \
-          '(.[] | select(.number == $n) | .title | ltrimstr("[cc-metrics] ")) as $t
+        others=$(printf '%s' "$list" | jq -r --argjson f "$fired" --argjson n "$open_t6" --arg p "$pre" \
+          '(.[] | select(.number == $n) | .title | ltrimstr($p)) as $t
            | [$f[].signature | select(. != $t)] | join(",")')
       fi
       if [ -n "$open_t6" ] && [ -n "$others" ]; then
@@ -20214,7 +20236,7 @@ gate_metrics_file() {
       fi
     else
       sig=$(printf '%s' "$fired" | jq -r '.[0].signature')
-      title="[cc-metrics] $sig"
+      title="$pre$sig"
       url=""
       if gate_metrics_gh_write "$base" "$tok" label create cc-metrics --repo "$GATE_METRICS_REPO" --force \
            --color 5319e7 --description '런 계측 수집기가 등록한 이슈' >/dev/null 2>&1; then
@@ -20245,7 +20267,7 @@ gate_metrics_file() {
   # by different evidence, and the row says which: the threshold trigger by its
   # two signs turning good, a defect-shaped one by not being observed again.
   for sig in $(printf '%s' "$close" | jq -r '.[]'); do
-    num=$(printf '%s' "$list" | jq -r --arg t "[cc-metrics] $sig" '[.[] | select(.title == $t)][0].number // empty')
+    num=$(printf '%s' "$list" | jq -r --arg t "$pre$sig" '[.[] | select(.title == $t)][0].number // empty')
     [ -n "$num" ] || continue
     case "$sig" in
       T6/*) why="같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다" ;;

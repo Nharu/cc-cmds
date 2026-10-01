@@ -118,12 +118,19 @@ printf 'project\t7\naccount\ttester\n' > "$WORK/metrics-filing"
 
 # --- 픽스처 레포와 런 -------------------------------------------------------------
 
-REPO="$WORK/repo"; mkdir -p "$REPO"
+# 체크아웃 이름은 알아볼 수 있는 이름으로 둔다 — 공개 트래커로 가는 본문에 그 이름이
+# 실리지 않는다는 단언(2번)이 무언가를 배제하도록.
+REPO="$WORK/acme-private-checkout"; mkdir -p "$REPO"
 ( cd "$REPO" && git init -q . && git config user.email t@example.invalid && git config user.name T \
   && mkdir -p docs/pipeline-run docs/pipeline-grant && echo one > a.txt && git add -A \
   && git commit -qm one && git branch -M main ) >/dev/null 2>&1
 WT=$(cd "$REPO" && git rev-parse --show-toplevel)
 CG=$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)
+# 레포 표지 — 게이트와 같은 규칙(베이스의 repo-key 를 sha256 한 앞 12자리). 이 레포의
+# 이슈 제목은 모두 "$PRE <서명>" 이다.
+TAG=$(printf '%s' "$WT" | tr / - | shasum -a 256 | cut -c1-12)
+PRE="[cc-metrics $TAG]"
+OTHER_PRE="[cc-metrics 000000000000]"
 row="- \`target\` | 별칭=repo | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/t | 절단점=배포 | 말단 행위 상한=없음"
 TD=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
 PLAN='{ "steps": [] }'; PD0=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' -f1)
@@ -219,7 +226,7 @@ fresh; round T3/review
 snap
 check "2: 스탬프가 만료되면 수집기를 다시 부른다" "$(calls)" "2"
 check "2: 등록은 issue create 한 번이다" "$(ghcount '| issue create ')" "1"
-check "2: 제목은 [cc-metrics] 와 서명이다" "$(grep -c -F -- "--title [cc-metrics] T3/review" "$GH_LOG")" "1"
+check "2: 제목은 [cc-metrics <레포 표지>] 와 서명이다" "$(grep -c -F -- "--title $PRE T3/review" "$GH_LOG")" "1"
 check "2: 라벨 cc-metrics 가 붙는다" "$(grep -F '| issue create ' "$GH_LOG" | grep -c -F -- '--label cc-metrics')" "1"
 check "2: 등록은 쓰기 자격으로 한다" "$(grep -F '| issue create ' "$GH_LOG" | cut -d' ' -f1)" "쓰기"
 check "2: 열린 이슈 조회는 읽기 자격으로 한다" "$(grep -F '| issue list ' "$GH_LOG" | cut -d' ' -f1)" "읽기"
@@ -247,8 +254,10 @@ ln_create=$(grep -n -F '| issue create ' "$GH_LOG" | cut -d: -f1)
 check "2: 라벨 생성이 이슈 생성보다 먼저다" "$([ "${ln_label:-0}" -gt 0 ] && [ "${ln_label:-0}" -lt "${ln_create:-0}" ] && printf 예 || printf 아니오)" "예"
 check "2: 이슈·라벨 호출은 모두 목적지 레포를 명시한다" \
   "$(grep -E '\| (issue|label) ' "$GH_LOG" | grep -v -c -F -- '--repo Nharu/cc-cmds')" "0"
-check "2: (선행) 등록 본문이 기록됐다" "$(grep -c -F '요약 파일:' "$WORK/gh-body" 2>/dev/null)" "1"
+check "2: (선행) 등록 본문이 기록됐다" "$(grep -c -F '요약 파일은' "$WORK/gh-body" 2>/dev/null)" "1"
 check "2: 본문은 로컬 절대 경로를 싣지 않는다" "$(grep -c -F -e "$WORK" -e "$WT" "$WORK/gh-body" 2>/dev/null)" "0"
+check "2: 본문은 체크아웃 디렉터리 이름을 싣지 않는다" "$(grep -c -F 'acme-private-checkout' "$WORK/gh-body" 2>/dev/null)" "0"
+check "2: 본문은 레포를 표지로 나타낸다" "$(grep -c -F -- "- 레포 표지: \`$TAG\`" "$WORK/gh-body" 2>/dev/null)" "1"
 
 # 라벨 생성이 실패하면 이슈를 만들지 않고 기존 사유 `조회 실패` 로 건너뛴다.
 fresh; round T3/review
@@ -279,24 +288,37 @@ check "3: 설정 파일이 없으면 번호 없음이다" "$(field "$(skip_rows)
 
 # --- 4. 상한 · 코멘트 -----------------------------------------------------------------
 fresh; round T3/review
-printf '[{"number":5,"title":"[cc-metrics] T3/review"}]\n' > "$WORK/gh-script/issue-list"
+printf '[{"number":5,"title":"%s T3/review"}]\n' "$PRE" > "$WORK/gh-script/issue-list"
 snap
 check "4: 같은 서명이 열려 있으면 등록하지 않는다" "$(ghcount '| issue create ')" "0"
 check "4: 같은 서명이 열려 있으면 상한 도달이다" "$(field "$(skip_rows)" '사유')" "상한 도달"
 fresh; round T2/review
-printf '[{"number":5,"title":"[cc-metrics] T3/review"}]\n' > "$WORK/gh-script/issue-list"
+printf '[{"number":5,"title":"%s T3/review"}]\n' "$PRE" > "$WORK/gh-script/issue-list"
 snap
 check "4: 다른 서명이 열려 있어도 등록하지 않는다" "$(ghcount '| issue create ')" "0"
 check "4: 다른 서명이 열려 있으면 상한 도달이다" "$(field "$(skip_rows)" '사유')" "상한 도달"
 fresh; round T2/review
-printf '[{"number":9,"title":"[cc-metrics] T6/review"}]\n' > "$WORK/gh-script/issue-list"
+printf '[{"number":9,"title":"%s T6/review"}]\n' "$PRE" > "$WORK/gh-script/issue-list"
 snap
 check "4: T6 이 열려 있는 중 다른 트리거는 그 이슈에 코멘트한다" "$(ghcount '| issue comment 9 ')" "1"
 check "4: 코멘트는 쓰기 자격으로 한다" "$(grep -F '| issue comment ' "$GH_LOG" | cut -d' ' -f1)" "쓰기"
 check "4: 코멘트할 때는 등록하지 않는다" "$(ghcount '| issue create ')" "0"
+check "4: 코멘트 회차의 이슈 호출도 모두 목적지 레포를 명시한다" \
+  "$(grep -E '\| (issue|label) ' "$GH_LOG" | grep -v -c -F -- '--repo Nharu/cc-cmds')" "0"
 fr=$(file_rows)
 check "4: 코멘트는 결정=코멘트 필링 행을 남긴다" "$(field "$fr" '결정')" "코멘트"
 check "4: 코멘트 회차에는 건너뜀 행이 없다" "$(nrows "$(skip_rows)")" "0"
+
+# 모든 레포의 회차가 한 공개 트래커로 등록하므로, 다른 레포 표지의 이슈와 표지 없는 옛
+# 제목은 이 레포의 이슈가 아니다 — 상한을 채우지도, 코멘트를 받지도 않는다.
+fresh; round T2/review
+printf '[{"number":5,"title":"%s T3/review"},{"number":9,"title":"%s T6/review"},{"number":13,"title":"[cc-metrics] T3/review"}]\n' \
+  "$OTHER_PRE" "$OTHER_PRE" > "$WORK/gh-script/issue-list"
+snap
+check "4: 다른 레포·표지 없는 이슈만 열려 있으면 등록한다" "$(ghcount '| issue create ')" "1"
+check "4: 다른 레포의 열린 이슈는 상한 도달을 만들지 않는다" "$(nrows "$(skip_rows)")" "0"
+check "4: 다른 레포의 열린 T6 에는 코멘트하지 않는다" "$(ghcount '| issue comment ')" "0"
+check "4: 그 회차의 등록 제목도 이 레포의 표지를 단다" "$(grep -c -F -- "--title $PRE T2/review" "$GH_LOG")" "1"
 
 # --- 5. 담기 실패 ---------------------------------------------------------------------
 fresh; round T3/review
@@ -330,9 +352,11 @@ check "6: 쓰기 자격이 없으면 gh 를 부르지 않는다" "$(grep -c '' "
 
 # --- 7. 닫기 --------------------------------------------------------------------------
 fresh; round - T6/review
-printf '[{"number":9,"title":"[cc-metrics] T6/review"}]\n' > "$WORK/gh-script/issue-list"
+printf '[{"number":9,"title":"%s T6/review"}]\n' "$PRE" > "$WORK/gh-script/issue-list"
 snap
 check "7: close 서명과 같은 열린 이슈를 닫는다" "$(ghcount '| issue close 9')" "1"
+check "7: 닫기 회차의 이슈 호출도 모두 목적지 레포를 명시한다" \
+  "$(grep -E '\| (issue|label) ' "$GH_LOG" | grep -v -c -F -- '--repo Nharu/cc-cmds')" "0"
 fr=$(file_rows)
 check "7: 닫기는 결정=닫힘 필링 행을 남긴다" "$(field "$fr" '결정')" "닫힘"
 check "7: 닫힘 행의 되돌리는 법은 다시 여는 명령(기록만, 실행 안 함)이다" "$(field "$fr" '되돌리는 법')" "gh issue reopen 9 --repo Nharu/cc-cmds"
@@ -343,7 +367,7 @@ check "7: T6 닫힘 행의 근거는 두 항 술어를 말한다" "$(field "$fr"
 # 결함 부류(T6 이외)도 닫히며, 그 근거는 T6 의 두 항 술어가 아니라 「다시 관측되지
 # 않았다」다 — 근거를 한 문장으로 묶으면 닫은 이유가 아닌 술어를 원장에 적게 된다.
 fresh; round - T2/review
-printf '[{"number":11,"title":"[cc-metrics] T2/review"}]\n' > "$WORK/gh-script/issue-list"
+printf '[{"number":11,"title":"%s T2/review"}]\n' "$PRE" > "$WORK/gh-script/issue-list"
 snap
 check "7: 결함 부류 서명도 같은 열린 이슈를 닫는다" "$(ghcount '| issue close 11')" "1"
 fr=$(file_rows)
@@ -352,12 +376,21 @@ check "7: 결함 부류 닫힘 행의 되돌리는 법도 다시 여는 명령�
 check "7: 결함 부류 닫힘 행의 근거는 재관측 없음이다" "$(field "$fr" '근거')" \
   "그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다"
 
+# 닫기 판정은 회차를 띄운 레포의 저널에서 나온다 — 같은 서명이라도 다른 레포 표지의
+# 이슈나 표지 없는 옛 제목은 그 판정의 대상이 아니므로 닫지 않는다.
+fresh; round - T6/review
+printf '[{"number":9,"title":"%s T6/review"},{"number":13,"title":"[cc-metrics] T6/review"}]\n' "$OTHER_PRE" \
+  > "$WORK/gh-script/issue-list"
+snap
+check "7: 다른 레포·표지 없는 같은 서명 이슈는 닫지 않는다" "$(ghcount '| issue close ')" "0"
+check "7: 그 회차는 닫힘 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
+
 # 게이트가 닫기를 처리하지 못하는 회차. 수집기에는 게이트의 성패가 돌아올 입력이 없고,
 # 조건이 사라진 뒤에는 그 서명이 다시 발화하지도 않는다 — 그래서 흘린 닫기를 다시 내지
-# 않으면 전역 열림 상한 한 자리가 영구히 막힌다. 닫기가 매 회차 다시 오는 상태 진술이라야
+# 않으면 그 레포의 열림 상한 한 자리가 영구히 막힌다. 닫기가 매 회차 다시 오는 상태 진술이라야
 # 회복되며, 같은 닫기가 두 번 와도 제목 조회가 없는 것을 무동작으로 흘린다.
 fresh; round - T2/review
-printf '[{"number":11,"title":"[cc-metrics] T2/review"}]\n' > "$WORK/gh-script/issue-list"
+printf '[{"number":11,"title":"%s T2/review"}]\n' "$PRE" > "$WORK/gh-script/issue-list"
 : > "$WORK/gh-fail/issue-close"
 snap
 check "7: 닫기 호출이 실패하면 닫힘 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
@@ -377,7 +410,7 @@ check "7: 열린 목록에 없는 서명의 닫기 제안은 무동작이다" "$
 # 등록할 것이 없고, 닫기가 매 회차 다시 오는 상태 진술이라 이 행을 남기면 Project 번호가
 # 없는 동안 6시간마다 영구히 쌓여 진짜 미등록 신호와 구별되지 않는다.
 fresh; round - T2/review
-printf '[{"number":11,"title":"[cc-metrics] T2/review"}]\n' > "$WORK/gh-script/issue-list"
+printf '[{"number":11,"title":"%s T2/review"}]\n' "$PRE" > "$WORK/gh-script/issue-list"
 printf 'account\ttester\n' > "$WORK/metrics-filing"
 snap
 check "7: Project 번호가 없으면 닫기도 부르지 않는다" "$(ghcount '| issue close ')" "0"
