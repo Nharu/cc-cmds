@@ -1724,6 +1724,69 @@ EOF
   return 0
 }
 
+# `gate_piece_rungs <argv...>` — the highest rung among the pieces of an act that
+# are not pushes: every piece of a shell body, nested bodies included, the
+# pieces a command-valued environment name carries, and every `-exec` or `-ok`
+# inner command of a `find`. Nothing when there is none above the bottom rung.
+#
+# THE RUNG OF A PIECE DOES NOT DEPEND ON THE TARGET, and that is why this walk is
+# separate from `gate_push_pieces`. The push walk needs the target row — a push
+# is compared against the target's remote and base branch — so it runs only for a
+# declared target, and the rungs of the other pieces rode on it. For an alias the
+# manifest does not declare, `bash -c 'terraform apply -auto-approve'` whose cap
+# a pre-authorization row lifted then stood at `커밋` — past the
+# under-declaration refusal the bare spelling meets, and below the undeclared
+# target's own ceiling, which reads the effective rung. This walk reads no
+# target, so the top-level derivation folds it in before the undeclared-target
+# layers are asked. The push pieces stay with the push walk.
+#
+# An act with no pieces is not walked, so a plain command pays nothing for it.
+gate_piece_rungs() {
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    list|opaque) ;;
+    *)
+      if [ "${#GP_SUB[@]}" -eq 0 ]; then
+        gate_peel_argv "$@" || return 0
+        [ "${#GATE_PEELED[@]}" -ge 1 ] && [ "${GATE_PEELED[0]##*/}" = find ] || return 0
+      fi ;;
+  esac
+  local _o
+  _o=$( ( _GATE_PR_TOP=1; _gate_piece_rung "$@" ) || true )
+  gate_push_pieces_rung "$_o"
+  return 0
+}
+
+_gate_piece_rung() {
+  # Parses in a subshell of its own, so the parse the caller stands on survives.
+  ( _top="${_GATE_PR_TOP:-0}"; _GATE_PR_TOP=0
+    [ "$_top" = 1 ] || _GP_ENTRY_DEPTH=$((${GP_DEPTH:-0} + 1))
+    _prc=0; gate_argv_is_git_push "$@" || _prc=$?
+    case "$GP_STATUS" in
+      list|opaque) gp_each_sub _gate_piece_rung; exit 0 ;;
+    esac
+    [ "${#GP_SUB[@]}" -eq 0 ] || gp_each_sub _gate_piece_rung
+    if [ "$_top" = 0 ] && [ "$_prc" = 1 ]; then
+      _r=$(ladder_of_argv0 "$@") || _r=''
+      case "$_r" in
+        ''|커밋) ;;
+        *) printf 'rung\t%s\n' "$_r" ;;
+      esac
+    fi
+    [ "$_prc" = 1 ] || exit 0
+    gate_peel_argv "$@" || exit 0
+    set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+    [ "$#" -ge 1 ] && [ "${1##*/}" = find ] || exit 0
+    shift
+    _o=$(gate_unwrap_find _gate_piece_find_inner '' '' '' _gate_push_join "$@") || _o=''
+    [ -z "$_o" ] || printf '%s\n' "$_o" ) || true
+  return 0
+}
+
+_gate_piece_find_inner() {
+  _GATE_PR_TOP=0 _gate_piece_rung "$@"
+}
+
 gate_destructive_source() {
   # WHERE THE DESTRUCTIVE VERDICT CAME FROM — the gate's own pattern, the stage's
   # `--destructive`, or both. The union is what makes the axis honest in two
@@ -3095,14 +3158,22 @@ _gp_env_unset() {
 #                        GIT_PROXY_COMMAND are here for the same reason: each
 #                        carries or selects configuration that can name a
 #                        program or a push URL, which the `-c` spelling of the
-#                        same key is already refused for. HOME and
+#                        same key is already refused for. GIT_TEMPLATE_DIR
+#                        selects the directory `git init` and `git clone` copy
+#                        hooks from, so it names programs git later runs. HOME and
 #                        XDG_CONFIG_HOME select git's global configuration
 #                        too, but every other tool reads them for its own
 #                        purposes, so `_gp_leaf` refuses them only when the
 #                        command they reach is git
 #   command value        GIT_SSH_COMMAND, GIT_EDITOR, EDITOR, VISUAL, PAGER,
-#                        GIT_PAGER, GIT_SEQUENCE_EDITOR, GIT_ASKPASS, SSH_ASKPASS
-#                        — a shell runs the value later, so it is parsed as a
+#                        GIT_PAGER, GIT_SEQUENCE_EDITOR, GIT_ASKPASS, SSH_ASKPASS,
+#                        GIT_EXTERNAL_DIFF, GH_EDITOR, GH_PAGER, GH_BROWSER,
+#                        BROWSER — the class is "a name whose value a tool hands
+#                        to a shell", not a list of names met so far: the `-c`
+#                        key of the same knob (`diff.external` for
+#                        GIT_EXTERNAL_DIFF) is refused, so the environment
+#                        spelling must not grade lower than it. A shell runs
+#                        the value later, so it is parsed as a
 #                        body; its pieces join `GP_SUB`, and a value that is not
 #                        a plain list makes the act `form`
 #   repository selector  GIT_DIR, GIT_COMMON_DIR, GIT_WORK_TREE — the
@@ -3139,13 +3210,15 @@ _gp_env_class() {
   case "$1" in
     PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
       _GP_ENV_CLASS=exec-identity ;;
-    GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG|GIT_SSH|GIT_PROXY_COMMAND)
+    GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG|GIT_SSH|GIT_PROXY_COMMAND|GIT_TEMPLATE_DIR)
       _GP_ENV_CLASS=exec-identity ;;
     GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
       _GP_ENV_CLASS=repo-selector ;;
     GATE_*)
       _GP_ENV_CLASS=gate-state ;;
     GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
+      _GP_ENV_CLASS=command-value ;;
+    GIT_EXTERNAL_DIFF|GH_EDITOR|GH_PAGER|GH_BROWSER|BROWSER)
       _GP_ENV_CLASS=command-value ;;
     *) _GP_ENV_CLASS='' ;;
   esac
@@ -5961,9 +6034,8 @@ EOF
     # --receive-pack="<cmd>; git-receive-pack" <remote> HEAD:topic` ran <cmd>
     # under a push declaration. The `-c remote.<r>.receivepack` spelling of the
     # same knob and `fetch --upload-pack` are already refused as a form; the argv
-    # option is the same program runner and is refused the same way, on `push`
-    # and on the `send-pack` plumbing that takes it too.
-    push|send-pack)
+    # option is the same program runner and is refused the same way.
+    push)
       local a
       for a in "$@"; do
         case "$a" in
@@ -5972,17 +6044,16 @@ EOF
             printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
         esac
       done
-      if [ "$1" = push ]; then
-        printf '외부상태변경'
-      else
-        local _ad="${GATE_ACT_CWD:-.}"
-        [ -z "$_GP_GIT_C" ] || _ad=$(gate_git_chdir_fold "$_ad" "$_GP_GIT_C")
-        if gate_git_sub_is_alias "$_ad" "$_GP_GIT_GITDIR" "$1"; then
-          printf '%s' "$GATE_FORM_UNKNOWN"
-        else
-          printf '등급 미상'
-        fi
-      fi ;;
+      printf '외부상태변경' ;;
+    # `send-pack` IS A PUSH THE PUSH CHECKS DO NOT SEE. It sends refs to the URL
+    # it names, but push recognition reads only the `push` word, so the remote
+    # check and the merge rung never ran, and as `등급 미상` it passed on a
+    # commit-cutpoint worktree-write declaration to a foreign URL — the abbreviated
+    # `--rece=<cmd>` ran a local program besides. The pipeline never runs this
+    # plumbing, so it is refused as a form whatever its options are, rather than
+    # given a grade nothing here can stand behind.
+    send-pack)
+      printf '%s' "$GATE_FORM_UNKNOWN" ;;
     pull)
       printf '외부상태변경' ;;
     # A NAME THIS TABLE DOES NOT KNOW MAY BE AN ALIAS, and an alias runs whatever
@@ -6100,6 +6171,15 @@ surface_of_git_config() {
   # a plain `git status` graded `읽기` ran the command. The key check reads the
   # words an act writes, and a rename writes keys that are in none of its words,
   # so both section verbs and their `--` spellings are refused as a form.
+  #
+  # AN OPTION THIS ROW DOES NOT KNOW IS A FORM, NOT `등급 미상`. git takes any
+  # unique prefix of a long option, so `--rename-s`, `--ren`, `--remove-s` and
+  # `--rem` move or drop a section exactly as the full spellings do, and as
+  # `등급 미상` they passed on a run-local worktree-write declaration. Prefixes
+  # are not listed — a list is reopened by every spelling it lacks — so the
+  # options this row knows are enumerated and every other `-*` is refused. The
+  # editor (`-e`, `--edit`, and the `edit` subcommand) writes keys no word names,
+  # the same class as a section rename.
   local a skip=1 want=0 scope='' query=0 unknown=0
   local -a words=()
   for a in "$@"; do
@@ -6115,7 +6195,20 @@ surface_of_git_config() {
       --file|-f)          scope='트리밖쓰기'; want=1 ;;
       --file=*)           scope='트리밖쓰기' ;;
       --local|--worktree) : ;;
-      -*) unknown=1 ;;
+      # Writes and type or output modifiers this row knows, which it still does
+      # not grade: the result stays `등급 미상`.
+      --add|--unset|--unset-all|--replace-all|--bool|--int|--bool-or-int|--path|--expiry-date|--no-type|--type=*|--null|-z|--name-only|--show-origin|--show-scope|--includes|--no-includes|--fixed-value|--default=*|--comment=*|--blob=*)
+        unknown=1 ;;
+      --type|-t|--default|--comment|--blob)
+        unknown=1; want=1 ;;
+      -e|--edit)
+        printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+      -*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+      # The `edit` subcommand stands where the first operand does; anywhere else
+      # the word is a value.
+      edit)
+        [ "${#words[@]}" -gt 0 ] || { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; }
+        words[${#words[@]}]="$a" ;;
       # A key or a value. Neither decides the scope — the options above did.
       *) words[${#words[@]}]="$a" ;;
     esac
@@ -7063,8 +7156,8 @@ gate_opaque_floor() {
             gp_each_sub gate_opaque_floor_frag
             local _pf
             _pf=$(printf '%s\t%s\t%s' "$_GATE_FLOOR_G" "$_GATE_FLOOR_M" "$_GATE_FLOOR_T")
-            case "$GP_STATUS" in
-              ok|tool)
+            case "$GP_STATUS:${_GATE_FLOOR_PIECES_ONLY:-0}" in
+              ok:0|tool:0)
                 gate_answer_floor_max "$_pf" "$(_GATE_FLOOR_WHOLE=1 gate_opaque_floor "$@")" ;;
               *) printf '%s' "$_pf" ;;
             esac
@@ -7189,8 +7282,35 @@ gate_opaque_floor_frag() {
   # keywords answer `읽기` through `_gp_frag_grade`, which is the same helper
   # the canonical form uses, so the two cannot disagree about which piece is a
   # write.
+  #
+  # A PIECE THAT IS ITSELF A BODY RAISES THE FLOOR WITH WHAT IS INSIDE IT. The
+  # grade below answers for the piece's own command only, so `bash -c "bash -c
+  # 'gh repo delete o/r --yes'"` floored at the inner shell's grade with no mark,
+  # and `bash -c "env GIT_SSH_COMMAND='…' git fetch origin"` floored at the
+  # fetch's read — one more layer of shell was enough to pass a destructive act
+  # on a worktree-write declaration. The push and ladder walks already descend;
+  # this one now does too. A piece is re-entered only when it carries pieces or a
+  # file redirection of its own (`gate_floor_defined`), and only its pieces are
+  # folded (`_GATE_FLOOR_PIECES_ONLY`): a plain command piece such as `git commit
+  # -m '…'` is not hand-scanned, so its message words are not read as commands.
+  # The re-parse runs in a subshell one level deeper, so the parse the caller
+  # stands on survives and the parser's depth bound covers the whole nest.
   [ "$#" -ge 1 ] || return 0
-  local g fi_ mk
+  local g fi_ mk inner im
+  inner=$( _GP_ENTRY_DEPTH=$((${GP_DEPTH:-0} + 1))
+           gate_floor_defined "$@" || exit 0
+           _GATE_FLOOR_PIECES_ONLY=1 gate_opaque_floor "$@" ) || inner=''
+  if [ -n "$inner" ]; then
+    fi_=$(surface_index "${inner%%	*}" 2>/dev/null) || fi_=''
+    if [ -n "$fi_" ] && [ "$fi_" -gt "$_GATE_FLOOR_I" ]; then
+      _GATE_FLOOR_I="$fi_"; _GATE_FLOOR_G="${inner%%	*}"
+    fi
+    inner="${inner#*	}"; im="${inner%%	*}"
+    case "$im" in
+      비밀출력) _GATE_FLOOR_M='비밀출력'; _GATE_FLOOR_T="${inner#*	}" ;;
+      파괴) [ "$_GATE_FLOOR_M" = "비밀출력" ] || { _GATE_FLOOR_M='파괴'; _GATE_FLOOR_T="${inner#*	}"; } ;;
+    esac
+  fi
   g=$(_gp_frag_grade "$@") || g=''
   case "$g" in
     읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;;
@@ -18010,11 +18130,20 @@ gate_verb_act() {
   # split is the same one `GATE_HISTORY_INTEGRATION` already makes verbatim a few
   # hundred lines below — and for the same reason, which is that the answer there
   # would be a guess rather than a fact.
+  #
+  # THE RUNGS OF A BODY'S PIECES ARE FOLDED IN HERE, NOT ONLY BELOW. They do not
+  # depend on the target, and the push-rung block below is skipped for an
+  # undeclared target, so a body's `terraform apply` stood at the declared `커밋`
+  # there while the undeclared-target layers read that same low rung as the
+  # act's. Folded before those layers, the body meets the refusal its bare
+  # spelling meets whichever target it names.
   GATE_ACT_DERIVED=""
   case "$kind" in
     propose-done|skill|router-shift) : ;;
-    *) gate_kind_is_bookkeeping "$kind" \
-         || GATE_ACT_DERIVED=$(ladder_of_argv0 "$@") ;;
+    *) if ! gate_kind_is_bookkeeping "$kind"; then
+         GATE_ACT_DERIVED=$(ladder_of_argv0 "$@")
+         GATE_ACT_DERIVED=$(gate_answer_ladder_max "$GATE_ACT_DERIVED" "$(gate_piece_rungs "$@")")
+       fi ;;
   esac
   # Set beside the derivation above because they answer the same question — is
   # this argv a COMMAND — and a second answer computed elsewhere is a second
