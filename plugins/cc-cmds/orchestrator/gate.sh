@@ -8109,6 +8109,89 @@ gate_row_projected_bytes() {
   gate_row_bytes_of_body "$(gate_row_body "$@")"
 }
 
+gate_base_tree_state() {
+  # gate_base_tree_state <dir> — two words on one line, `<tracked> <untracked>`,
+  # each `있음` / `없음`, or `(미상) (미상)` when the directory or `git status`
+  # does not answer. Tracked is every porcelain line that is not `??`: a
+  # modified, staged, deleted or conflicted tracked file. One `git status`, so
+  # the two values describe the same instant.
+  local out
+  if ! out=$( cd "$1" 2>/dev/null && git --no-optional-locks status --porcelain 2>/dev/null ); then
+    printf '(미상) (미상)\n'
+    return 0
+  fi
+  printf '%s\n' "$out" | LC_ALL=C awk '
+    BEGIN { t = "없음"; u = "없음" }
+    /^\?\? / { u = "있음"; next }
+    NF { t = "있음" }
+    END { print t, u }'
+}
+
+gate_base_check_baseline() {
+  # gate_base_check_baseline <dir> — whether every script the base's `make
+  # check` would call exists: `녹색`, `적색(<missing>, …)`, `(해당 없음)` when
+  # the base has no makefile, `(미상)` when `make -n` itself fails.
+  #
+  # `-n` PRINTS THE RECIPES AND RUNS NONE OF THEM, which is why this is cheap
+  # enough for kickoff and leaves the tree as it found it. It is not zero
+  # execution: make still evaluates the makefile's own `$(shell …)` and runs
+  # recursive `$(MAKE)` lines with `-n` passed down. What is extracted is the
+  # tokens ending in `.sh`; one carrying `$` or `=` is an expansion or an
+  # assignment and is not a path this can check, so it is left out rather
+  # than guessed at. The question answered is therefore "is a script missing",
+  # not "is the check green" — the one kind of red a nightly stage cannot have
+  # caused and would otherwise take for its own.
+  local dir="$1" out tok p missing=""
+  if [ ! -f "$dir/GNUmakefile" ] && [ ! -f "$dir/makefile" ] && [ ! -f "$dir/Makefile" ]; then
+    printf '(해당 없음)'
+    return 0
+  fi
+  if ! out=$(make -n -C "$dir" --no-print-directory check 2>/dev/null); then
+    printf '(미상)'
+    return 0
+  fi
+  # Separators are whitespace, the shell operators and the three quotes; a
+  # subshell's parentheses are stripped from the token's ends afterwards.
+  for tok in $(printf '%s\n' "$out" | LC_ALL=C awk '{
+      n = split($0, a, "[ \t;&|<>\"\047`]+")
+      for (i = 1; i <= n; i++) {
+        t = a[i]; sub(/^\(+/, "", t); sub(/\)+$/, "", t)
+        if (t ~ /^[A-Za-z0-9_.\/][A-Za-z0-9_.\/-]*\.sh$/) print t
+      }
+    }' | LC_ALL=C sort -u); do
+    case "$tok" in /*) p="$tok" ;; *) p="$dir/$tok" ;; esac
+    [ -e "$p" ] || missing="$missing${missing:+, }$tok"
+  done
+  if [ -n "$missing" ]; then printf '적색(%s)' "$missing"; else printf '녹색'; fi
+}
+
+gate_base_check_baseline_fit() {
+  # gate_base_check_baseline_fit <value> <room in bytes> — the baseline value
+  # the `run` row can carry. The row is never lost to this field: a red value
+  # that does not fit keeps its colour and its count, `적색(<n>개 — 행 길이로
+  # 생략)`, and anything that still does not fit is `생략(행 길이)` — the
+  # spelling the segment row already uses for the field it may drop. The full
+  # list goes to the log whenever it is shortened, so it is recorded
+  # somewhere a person reads.
+  local v="$1" room="$2" n short
+  if [ "$(printf '%s' "$v" | wc -c | tr -d ' ')" -le "$room" ]; then
+    printf '%s' "$v"
+    return 0
+  fi
+  warn "the base-check baseline does not fit the run row and is shortened — full value: $v"
+  case "$v" in
+    '적색('*)
+      n=$(printf '%s' "${v#'적색('}" | LC_ALL=C awk -F', ' '{ print NF }')
+      short="적색(${n}개 — 행 길이로 생략)"
+      if [ "$(printf '%s' "$short" | wc -c | tr -d ' ')" -le "$room" ]; then
+        printf '%s' "$short"
+        return 0
+      fi
+      ;;
+  esac
+  printf '생략(행 길이)'
+}
+
 gate_append() {
   # gate_append <계열> <field=value> ...
   #
@@ -12597,29 +12680,71 @@ gate_main() {
     # all lived in memory or in a file beside the ledger rather than in it. This
     # is also the row that makes the chain's first anchor a row rather than the
     # stub's prose.
-    # `강제 코드` and `베이스 청결` DESCRIBE THE TARGET BASE, NOT THE JUDGE.
-    # They are the base's HEAD at kickoff and whether that worktree had
-    # uncommitted changes — a run opened on a dirty base ran against code no
-    # review saw, and without these the morning cannot tell that apart from a
-    # clean night. What enforced the run is a different question and has its own
-    # answer now: `plugin-pin` and the three version fields below. The surface
-    # digest still excludes the plugin files on purpose — a redeploy that
-    # rewrites a rule must not kill a running run — and pinning is what makes
-    # that exclusion cost nothing, because the enforcing bytes no longer move.
+    # `강제 코드`, `베이스 추적 변경` and `베이스 미추적 파일` DESCRIBE THE
+    # TARGET BASE, NOT THE JUDGE. They are the base's HEAD at kickoff and what
+    # that worktree held beside it — a run opened on a base with uncommitted
+    # changes to tracked files ran against code no review saw, and without these
+    # the morning cannot tell that apart from a clean night. What enforced the
+    # run is a different question and has its own answer now: `plugin-pin` and
+    # the three version fields below. The surface digest still excludes the
+    # plugin files on purpose — a redeploy that rewrites a rule must not kill a
+    # running run — and pinning is what makes that exclusion cost nothing,
+    # because the enforcing bytes no longer move.
+    #
+    # TWO FIELDS, NOT ONE, and the one they replace measured the wrong thing.
+    # `git status --porcelain` lists untracked files too, and in this way of
+    # working a new file lying beside the checkout is the normal state — so a
+    # single "is the output empty" predicate answered "dirty" for a base whose
+    # tracked files were byte-for-byte committed, and the morning could not tell
+    # "code no review saw ran tonight" from "someone has a draft open". Split,
+    # the first field carries the claim the old one was written for and the
+    # second carries the ambient fact on its own. A `cd` or `git status` that
+    # fails is `(미상)` on both, where the old expression read a failed probe as
+    # an empty output and wrote "clean".
     #
     # `--no-optional-locks` ON THE PROBE, and this is a requirement rather than
     # a tidy-up. A plain `git status` rewrites the index and holds `index.lock`
     # for 0.24–0.47s; this probe runs inside the very call that takes the pin,
     # and the command it would lock out is `git pull --ff-only`, which is how
     # every slice of this design is applied.
-    gate_append 'run' "run-id=$RUN_ID" "시작=$(now_iso)" \
-      "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
-      "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
-      "강제 코드=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
-      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
-      "판본=$(gate_pin_version_field commit)" \
-      "판본 트리=$(gate_pin_version_field tree)" \
-      "판본 다이제스트=$(gate_pin_version_field digest)" \
+    #
+    # `베이스 검사 기준선` IS WHETHER THE BASE'S OWN `make check` COULD HAVE BEEN
+    # GREEN AT KICKOFF, so a stage that meets a red check at 3am can tell a
+    # failure it caused from one it inherited. Recorded, never refused on: a run
+    # does not stop because the base was already red. See
+    # `gate_base_check_baseline` for what is and is not measured, and
+    # `gate_base_check_baseline_fit` for how the value gives way to the row cap.
+    local rr_start rr_whole rr_surf rr_forced rr_tracked rr_untracked rr_check
+    local rr_pin_commit rr_pin_tree rr_pin_digest rr_fixed
+    rr_start=$(now_iso)
+    rr_whole=$(whole_digest 2>/dev/null || printf '(해당 없음)')
+    rr_surf=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')
+    rr_forced=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')
+    read -r rr_tracked rr_untracked <<< "$(gate_base_tree_state "$BASE")"
+    rr_check=$(gate_base_check_baseline "$BASE")
+    rr_pin_commit=$(gate_pin_version_field commit)
+    rr_pin_tree=$(gate_pin_version_field tree)
+    rr_pin_digest=$(gate_pin_version_field digest)
+    # The row as it would be with the baseline value empty — every other field
+    # is measured exactly as written, and only the baseline gives way.
+    rr_fixed=$(gate_row_projected_bytes 'run' "run-id=$RUN_ID" "시작=$rr_start" \
+      "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$rr_whole" \
+      "구속면 다이제스트=$rr_surf" "강제 코드=$rr_forced" \
+      "베이스 추적 변경=$rr_tracked" "베이스 미추적 파일=$rr_untracked" \
+      "베이스 검사 기준선=" \
+      "판본=$rr_pin_commit" "판본 트리=$rr_pin_tree" "판본 다이제스트=$rr_pin_digest" \
+      "RUN_DIR=$RUN_DIR" "보고서=$LEDGER")
+    rr_check=$(gate_base_check_baseline_fit "$rr_check" "$(( GATE_ROW_MAX - rr_fixed ))")
+    gate_append 'run' "run-id=$RUN_ID" "시작=$rr_start" \
+      "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$rr_whole" \
+      "구속면 다이제스트=$rr_surf" \
+      "강제 코드=$rr_forced" \
+      "베이스 추적 변경=$rr_tracked" \
+      "베이스 미추적 파일=$rr_untracked" \
+      "베이스 검사 기준선=$rr_check" \
+      "판본=$rr_pin_commit" \
+      "판본 트리=$rr_pin_tree" \
+      "판본 다이제스트=$rr_pin_digest" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
     # THE STAGE-POLICY DRIFT VERDICT, AS A LOG LINE AND NOTHING MORE. The policy
     # the gate injects into every stage was distilled from files a person edits
@@ -19797,6 +19922,10 @@ gate_verb_act() {
   # launch or a read labelled `머지` is let through on what it does rather than
   # on what it is called.
   gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
+  # THE LANDING TREE'S OWN GATE, asked before it lands. Same seat as the CI
+  # verdict above and for the same three reasons; it does nothing when that
+  # verdict already set the park cell.
+  gate_check_grade_regression "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$@"
 
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
@@ -19863,6 +19992,10 @@ gate_verb_act() {
         warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
       CI실패)
         warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
+      등급회귀)
+        warn "repair: the gate in the tree this merge would land grades the argv named above as empty or '등급 미상' where the base's gate knew it — fix the grading table and push a new head" ;;
+      등급회귀판정불가)
+        warn "repair: the grade-regression probe could not decide for this merge — a person checks the landing tree's gate and merges it" ;;
     esac
     exit "$GATE_EXIT_PARK"
   fi
@@ -20865,6 +20998,171 @@ gate_check_merge_checks() {
   # and `plan` forecasts it with the same code.
   [ -n "${GATE_PARK_CELL:-}" ] || GATE_PARK_CELL="CI실패"
   export GATE_PARK_CELL
+  return 0
+}
+
+gate_check_grade_regression() {
+  # gate_check_grade_regression <segment> <cutpoint> <alias> [argv…] — refuse a merge
+  # whose landing tree's gate grades an argv the base's gate knew as empty or
+  # `등급 미상`. The second sibling, at the same seat for the same three reasons.
+  #
+  # THE ONLY LOOK AT THE LANDING TREE BEFORE IT LANDS. Serializing the merges
+  # does not govern traffic from outside the run, and CI on the base branch is
+  # an observation after the fact that cannot stop the merge it reports on. A
+  # grading table broken so that an argv comes back empty refuses nothing and
+  # writes `축2=` with no value on every row that act leaves — a forged record,
+  # not a crash — so nothing downstream notices it either.
+  #
+  # IT IS NOT WIRED INTO THE DRIVER'S MERGE FUNCTION. The unattended router
+  # merges through this verb, so this seat covers that path; the driver's own
+  # fixed-graph merge is a path no unattended run takes, and a second copy
+  # there would double the surface without covering anything new.
+  #
+  # THE CHILD GATES ARE ASKED WITH `grade`, UNDER `env -i`, IN A THROWAWAY RUN.
+  # `plan`/`act`/`exec` enter this very function and would recurse. Even
+  # `grade` walks the whole prelude — the run opening writes a `run` row and
+  # the pin hops into the calling run's pinned copy — so pointed at this run
+  # a child would write into this ledger and grade the pinned version instead
+  # of the merged one. The probe script builds each child its own repository,
+  # manifest and state home, and `env -i` cuts every variable this process
+  # carries, `CC_GATE_SOURCE_ONLY` among them.
+  #
+  # THE PROBE IS THE BASE'S COPY. A tree under examination that could supply
+  # its own examiner could pass itself. Only when the base does not carry the
+  # probe yet is the landing tree's copy used, and that is said aloud. The
+  # installed plugin has no `scripts/`, so the gate's own directory is never
+  # searched.
+  #
+  # NO FETCH. The base ref is the same one the merge anchor check decides on,
+  # so on a stale tracking ref the tree computed here can differ from the one
+  # the host would produce. That residual is accepted, as it is there.
+  local seg="$1" cut="$2" alias="$3" tip aroot abr bref btree mb rtree mt probe out rc line
+  local mhc="" mhc_set=0 a
+  shift 3
+  [ -z "${GATE_PARK_CELL:-}" ] || return 0
+  [ "$cut" = "머지" ] || return 0
+  [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+  # The narrowing is the CI verdict's, on the same two argv-derived values and
+  # for the same reason — see that function.
+  [ "${GATE_SURFACE:-}" = "읽기" ] && return 0
+  if [ "${GATE_SURFACE:-}" = "워크트리쓰기" ] && [ "${GATE_HISTORY_INTEGRATION:-}" = "0" ]; then
+    return 0
+  fi
+  # NO OPERAND, NO VERDICT. An undeclared target, an unresolved tip or an
+  # unresolved base leave nothing to compare, and the anchor check and the CI
+  # verdict each answer those cases on their own.
+  [ "${GATE_UNDECLARED:-0}" != "1" ] || return 0
+  aroot=$(alias_root "$alias" 2>/dev/null) || aroot=""
+  abr=$(base_branch "$alias" 2>/dev/null) || abr=""
+  [ -n "$aroot" ] && [ -d "$aroot" ] && [ -n "$abr" ] || return 0
+  # THE HEAD THE LANDING ARGV NAMES IS THE ONE EXAMINED. `gh pr merge …
+  # --match-head-commit <sha>` lands exactly that commit, and the worktree's
+  # local tip can be a different one — behind a push, or ahead of it. Examining
+  # the local tip would let a tip that leaves the orchestrator alone wave
+  # through a named head that does not, at the zero-cost return below. A named
+  # sha this repository cannot resolve to a commit leaves nothing honest to
+  # compare, so it parks rather than falling back to the local tip.
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
+    case "$a" in
+      --match-head-commit) mhc_set=1; mhc="${1:-}"; [ "$#" -eq 0 ] || shift ;;
+      --match-head-commit=*) mhc_set=1; mhc="${a#--match-head-commit=}" ;;
+    esac
+  done
+  if [ "$mhc_set" = "1" ]; then
+    tip=$( cd "$aroot" && [ -n "$mhc" ] && git rev-parse --verify --quiet "$mhc^{commit}" 2>/dev/null ) || tip=""
+    if [ -z "$tip" ]; then
+      warn "the landing argv names head '${mhc}', which does not resolve to a commit in '$aroot' — the grade-regression probe has nothing to examine"
+      GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+      return 0
+    fi
+  else
+    tip=$(gate_segment_tip "$seg") || tip=""
+    [ -n "$tip" ] || return 0
+  fi
+  if ( cd "$aroot" && git remote get-url origin >/dev/null 2>&1 ); then
+    bref="refs/remotes/origin/$abr"
+  else
+    bref="refs/heads/$abr"
+  fi
+  btree=$( cd "$aroot" && git rev-parse --verify --quiet "$bref^{tree}" 2>/dev/null ) || btree=""
+  [ -n "$btree" ] || return 0
+
+  # ZERO COST WHEN THE ORCHESTRATOR DOES NOT MOVE — asked first of the segment's
+  # own side. A three-way merge takes each path from whichever side changed it,
+  # so when the tip left `plugins/cc-cmds/orchestrator` as it was at the merge
+  # base, the landing tree's copy is the base's and there is nothing to compare.
+  # Asking this before `merge-tree` is what keeps a merge that touches no
+  # orchestrator file from being parked because its history cannot be merged
+  # at all — that merge is the landing checks' business, not this one's. The
+  # directory and not `gate.sh` alone, because the gate sources its siblings.
+  # With no merge base there is no side to ask, so the tip is compared with the
+  # base itself: when the two carry the same directory, whatever lands does too.
+  #
+  # `-r` ON BOTH `diff-tree` CALLS, and without it the zero cost is a promise
+  # only. A non-recursive `diff-tree` compares the pathspec at the top-level
+  # entry `plugins`, so any change anywhere under `plugins/` — a `plugin.json`
+  # bump, which every segment of this repository makes — reads as "differs".
+  mb=$( cd "$aroot" && git merge-base "$bref" "$tip" 2>/dev/null ) || mb=""
+  if ( cd "$aroot" && git diff-tree -r --quiet "${mb:-$bref}" "$tip" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # A conflict or a failure is not "nothing changed": the tree the host would
+  # land cannot be named, so nothing was measured.
+  if ! mt=$( cd "$aroot" && git merge-tree --write-tree "$bref" "$tip" 2>/dev/null ); then
+    warn "could not compute the tree this merge would land (git merge-tree reported a conflict or failed) — the grade-regression probe did not run"
+    GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+    return 0
+  fi
+  rtree=$(printf '%s\n' "$mt" | sed -n '1p')
+
+  # The segment's change can already be on the base (a sibling landed the same
+  # edit), and then the landing tree does not move the orchestrator either.
+  if ( cd "$aroot" && git diff-tree -r --quiet "$btree" "$rtree" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
+    return 0
+  fi
+
+  probe=$(mktemp "${TMPDIR:-/tmp}/cc-grade-probe-script.XXXXXX") || probe=""
+  if [ -z "$probe" ]; then
+    warn "could not make a temporary file for the grade-regression probe"
+    GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+    return 0
+  fi
+  if ! ( cd "$aroot" && git cat-file blob "$bref:scripts/grade-regression-probe.sh" ) > "$probe" 2>/dev/null; then
+    if ( cd "$aroot" && git cat-file blob "$rtree:scripts/grade-regression-probe.sh" ) > "$probe" 2>/dev/null; then
+      warn "the base '$abr' does not carry the grade-regression probe yet, so the copy in the landing tree is used — this merge is examined by the examiner it brings"
+    else
+      rm -f "$probe"
+      warn "neither the base '$abr' nor the landing tree carries scripts/grade-regression-probe.sh, so the orchestrator change in this merge cannot be examined"
+      GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+      return 0
+    fi
+  fi
+  rc=0
+  out=$(bash "$probe" --repo "$aroot" --before "$btree" --after "$rtree" 2>&1) || rc=$?
+  rm -f "$probe"
+  # A PASS SAYS WHAT IT COMPARED. Silence on a pass would look the same as the
+  # zero-cost return above, and the positive control's line is what shows the
+  # children graded anything at all. On the log stream only, so the forecast
+  # line and the exit code are the ones a merge the probe never ran gets.
+  case "$rc" in
+    0)
+      printf '%s\n' "$out" | { grep -E '^(대조|양성 대조|변화|판정):' || true; } | while IFS= read -r line; do
+        log "grade-regression probe: $line"
+      done ;;
+    1)
+      printf '%s\n' "$out" | { grep -E '^(회귀|판정):' || true; } | while IFS= read -r line; do
+        warn "grade-regression probe: $line"
+      done
+      GATE_PARK_CELL="등급회귀" ;;
+    *)
+      printf '%s\n' "$out" | { grep -E '^판정:' || true; } | while IFS= read -r line; do
+        warn "grade-regression probe (exit $rc): $line"
+      done
+      GATE_PARK_CELL="등급회귀판정불가" ;;
+  esac
+  [ -z "${GATE_PARK_CELL:-}" ] || export GATE_PARK_CELL
   return 0
 }
 
