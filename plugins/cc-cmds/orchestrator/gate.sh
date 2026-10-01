@@ -14336,6 +14336,30 @@ gate_record_row() {
 
   case "$kind" in
     segment)
+      # A KEY IS READ AS EVERY READER TRIMS IT, so it is checked that way too.
+      # The selectors strip the blanks around a field before matching its key,
+      # while `gate_field_of` here matches the argv spelling exactly — so
+      # ` 머지 대조=충족` passed the refusal below and was then read as the
+      # gate's field, and ` 상태=머지됨` was one state at write time and another
+      # at read time. A key whose trimmed spelling differs from the one written
+      # is refused outright, whatever the key is: there is no honest reason to
+      # pad a key, and a refusal tells the caller where an accepted row would
+      # not.
+      # The key is shown with CR and tab spelled out: `printf %q` would escape
+      # every Korean byte too, and a raw CR rewinds the line it is printed on.
+      local kt kshow
+      for f in "$@"; do
+        k="${f%%=*}"
+        kt="${k#"${k%%[![:space:]]*}"}"
+        kt="${kt%"${kt##*[![:space:]]}"}"
+        if [ "$kt" != "$k" ]; then
+          kshow="${k//$'\r'/\\r}"
+          kshow="${kshow//$'\t'/\\t}"
+          warn "segment 행의 필드 키 '${kshow}' 앞뒤에 공백·CR 이 붙어 있습니다 — 키를 공백 없이 다시 씁니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      done
+
       local st wt
       st=$(gate_field_of '상태' "$@")
       wt=$(gate_field_of '워크트리' "$@")
@@ -14350,6 +14374,26 @@ gate_record_row() {
       # so a segment row without it turns a merge refusal into one that names a
       # missing worktree instead of the review — the wrong repair at 3am.
       [ -n "$wt" ] || { warn "a segment row needs \`워크트리\`"; return "$GATE_EXIT_VOCAB"; }
+
+      # A TERMINAL ROW KEEPS THE SEGMENT'S OWN WORKTREE. The merged row reads its
+      # tip there to decide whether the review covered the merge, so a row naming
+      # another checkout — one still sitting on the old base — recorded `충족`
+      # for a merge no review had looked at. The worktree is often gone by the
+      # time the merge is recorded, so the two are compared as spelled, and as
+      # `pwd -P` resolves them only when both still exist.
+      case "$st" in
+        머지됨|완료|park)
+          local rec_wt rec_p wt_p
+          rec_wt=$(gate_segment_worktree "$seg")
+          if [ -n "$rec_wt" ] && [ "$rec_wt" != "$wt" ]; then
+            rec_p=$(cd "$rec_wt" 2>/dev/null && pwd -P) || rec_p=""
+            wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
+            if [ -z "$rec_p" ] || [ "$rec_p" != "$wt_p" ]; then
+              warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 종단 행은 세그먼트 자신의 워크트리를 답니다"
+              return "$GATE_EXIT_VOCAB"
+            fi
+          fi ;;
+      esac
 
       # `선행` — the declared axis of the cone, and the two floors the ledger can
       # hold on its own. The superset check cannot supply them: it compares the
@@ -14483,11 +14527,17 @@ gate_record_row() {
       # THE GATE'S FIELDS ARE THE GATE'S ALONE, in every state. `수렴` is refused
       # with them because it is the cycle-row value of the same derivation, and a
       # segment row carrying it would read as a verdict nothing computed.
-      for k in '머지 대조' '최종 사이클' '수렴'; do
-        if [ -n "$(gate_field_of "$k" "$@")" ]; then
-          warn "segment 행의 「${k}」는 게이트가 유도해 적는 필드입니다 — 호출자가 넘길 수 없습니다"
-          return "$GATE_EXIT_VOCAB"
-        fi
+      #
+      # THE KEY'S PRESENCE IS REFUSED, NOT A NON-EMPTY VALUE. Condition 11 reads
+      # the last row carrying `머지 대조` whatever its value, so a later
+      # `머지 대조=` was that row and cleared a violation recorded before it.
+      for f in "$@"; do
+        k="${f%%=*}"
+        case "$k" in
+          '머지 대조'|'최종 사이클'|'수렴')
+            warn "segment 행의 「${k}」는 게이트가 유도해 적는 필드입니다 — 호출자가 넘길 수 없습니다"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
       done
 
       # A LANDED `커밋` ON A `완료` OR `park` ROW IS A MERGE RECORDED UNDER
@@ -14523,13 +14573,18 @@ gate_record_row() {
       # A `머지됨` ROW WHOSE TIP IS NOT ON THE BASE IS REFUSED, whatever the
       # policy: the row would record a merge that did not happen, and the
       # comparison below would then be made against a commit nothing merged. An
-      # unreadable tip or an unanswerable landing is not refused — the row is
-      # the record that the merge happened, and the tree is routinely gone by
-      # then — and the coverage half then reads `판정 불가`, which condition 11
-      # holds on.
+      # unreadable tip is not refused — the row is the record that the merge
+      # happened, and the tree is routinely gone by then — and the coverage half
+      # then reads `판정 불가`, which condition 11 holds on.
+      #
+      # THE TIP IS THE SEGMENT'S RECORDED WORKTREE'S, not the one this row names.
+      # The check above already ties the two together; reading the recorded one
+      # keeps the comparison on the segment's own tree should that check ever be
+      # loosened. A segment's first row has no record yet and reads its own.
       if [ "$st" = '머지됨' ]; then
-        local mtip=""
-        mtip=$(gate_worktree_tip "$wt") || mtip=""
+        local mtip="" mwt
+        mwt=$(gate_segment_worktree "$seg")
+        mtip=$(gate_worktree_tip "${mwt:-$wt}") || mtip=""
         if [ -n "$mtip" ]; then
           gate_obligation_landing "$alias" "$mtip"
           if [ "$GATE_LANDING_VERDICT" = '미착지' ]; then
@@ -21657,17 +21712,23 @@ gate_done_conditions() {
   #
   # `룰 설정: 끔` turns this off with the rule, and only this: the field is still
   # written, so the morning can read what the setting let through.
+  #
+  # THE PASSING VALUES ARE NAMED AND EVERYTHING ELSE HOLDS, an empty value
+  # included. Listing the failing values instead let any spelling outside the
+  # list — the one a caller could still get onto the ledger — read as a pass.
   if gate_rule_enabled '리뷰-후-머지'; then
-    local pol mcv
+    local pol mcv mrow
     for sid in $(gate_segment_ids); do
       [ -n "$sid" ] || continue
       pol=$(gate_segment_field "$sid" '리뷰 정책')
       [ "${pol:-선리뷰후머지}" = '선리뷰후머지' ] || continue
-      mcv=$(gate_row_field "$(gate_rows 'segment' | gate_rows_field_eq 'id' "$sid" \
-              | gate_rows_having_field '머지 대조' | tail -1)" '머지 대조')
+      mrow=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$sid" \
+              | gate_rows_having_field '머지 대조' | tail -1)
+      [ -n "$mrow" ] || continue
+      mcv=$(gate_row_field "$mrow" '머지 대조')
       case "$mcv" in
-        '위반('*|'리뷰 없음'|'판정 불가')
-          printf '11 세그먼트 %s 의 머지 대조가 %s 입니다\n' "$sid" "$mcv" ;;
+        '충족'|'정책 면제') ;;
+        *) printf '11 세그먼트 %s 의 머지 대조가 %s 입니다\n' "$sid" "${mcv:-(빈 값)}" ;;
       esac
     done
   fi

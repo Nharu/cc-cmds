@@ -7160,11 +7160,12 @@ case "$msg" in
   *"인가면"*) ok "그 거절이 필드 이름을 든다" ;;
   *) bad "인가면 거절 문면" "$msg" ;;
 esac
-# The section leaves SL terminal and back on the main worktree, and the
-# manifest as it found it. A terminal row re-derives nothing (D5), so the list
-# keeps `LINKED` until the next non-terminal row — asserted in 14n.
+# The section leaves SL terminal, and the manifest as it found it. The terminal
+# row carries SL's own worktree — a terminal row naming another one is refused.
+# A terminal row re-derives nothing (D5), so the list keeps `LINKED` until the
+# next non-terminal row — asserted in 14n.
 gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
-     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$WT" 선행=없음
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$LINKED" 선행=없음
 check "SL 을 종단으로 되돌리는 행이 기록된다" "$rc" "0"
 check "종단 행은 재유도하지 않는다 — 표면 기준선이 그대로다" "$(cat "$RD_L/surface-digest")" "$d1"
 set_exec_wt ""
@@ -7811,16 +7812,17 @@ if [ -d "$OV1" ] && [ -d "$OV2" ] && [ -d "$OV3" ] && [ -n "$row_max" ]; then
   without=$(proj segment "교대=$ov_shift" id=SOV1 상태=계획됨 "워크트리=$OV1" 선행=없음 "선언 파일 집합=$(pad 100)")
   check "투영도 인가면을 정확히 144 바이트로 잰다" "$((with - without))" "144"
   check "투영이 게이트가 실제로 쓴 행의 길이와 같다" "$with" "$(row_bytes "$ov1_row")"
-  seg_ov SOV1 "$WT" park 100
+  # The terminal rows carry SOV1's own worktree: one naming another is refused.
+  seg_ov SOV1 "$OV1" park 100
   check "보정용 종단 행이 기록된다" "$rc" "0"
   park_base=$(( $(row_bytes "$(seg_last SOV1)") - 100 ))
-  seg_ov SOV1 "$WT" park $((row_max - park_base))
+  seg_ov SOV1 "$OV1" park $((row_max - park_base))
   check "투영이 상한에 딱 맞는 행은 기록된다" "$rc" "0"
   check "그 행의 길이가 상한과 같다" "$(row_bytes "$(seg_last SOV1)")" "$row_max"
   check "투영이 그 행을 상한으로 잰다" \
-        "$(proj segment "교대=$ov_shift" id=SOV1 상태=park "워크트리=$WT" 선행=없음 "선언 파일 집합=$(pad $((row_max - park_base)))")" "$row_max"
+        "$(proj segment "교대=$ov_shift" id=SOV1 상태=park "워크트리=$OV1" 선행=없음 "선언 파일 집합=$(pad $((row_max - park_base)))")" "$row_max"
   n_seg=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
-  seg_ov SOV1 "$WT" park $((row_max - park_base + 1))
+  seg_ov SOV1 "$OV1" park $((row_max - park_base + 1))
   if [ "$rc" != "0" ]; then
     ok "호출자의 필드로 상한을 1 바이트 넘기는 행은 여전히 죽는다 (완화는 인가면 한정이다)"
   else
@@ -17927,10 +17929,12 @@ case "$msg" in
 esac
 check "15g: 수리 행은 의무를 발행하지 않는다" "$(sa_ob_count)" "$nb15g"
 # park 행. 수리가 다시 10 을 받았을 때 라우터에 처방되는 유일한 출구이므로, 이
-# 행이 같은 문장에 막히면 처방이 자기 자신을 막는다.
+# 행이 같은 문장에 막히면 처방이 자기 자신을 막는다. 종단 행은 세그먼트의 기록된
+# 워크트리 — 수리 행이 고쳐 적은 것 — 를 단다. 다섯째 문장은 행의 값이 아니라 그
+# 기록된 워크트리의 팁을 읽으므로 이 철자가 재는 것을 바꾸지 않는다.
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S15H \
     --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
-    -- 상태=park 워크트리="$SA_WT" 선행=없음 '리뷰 정책=선머지후리뷰'
+    -- 상태=park 워크트리="$SA_SEGWT" 선행=없음 '리뷰 정책=선머지후리뷰'
 check "15g: park 행도 머지 절단점에서 기록된다" "$rc" "0"
 case "$msg" in
   *"베이스 브랜치"*|*"워크트리가 아닙니다"*)
@@ -18331,6 +18335,31 @@ check "26: 머지 대조가 위반(미포함) 이다" "$(sa_field "$(sa_seg_last
 check "26: 미포함도 조건 11 을 낸다" \
   "$(sa_unmet11)" "11 세그먼트 S26M 의 머지 대조가 위반(미포함) 입니다"
 
+# 다른 체크아웃 — 리뷰된 옛 커밋에 머문 워크트리를 대는 둘째 머지됨 행. 그
+# 팁은 베이스에 착지해 있고 리뷰가 덮으므로, 그 워크트리에서 팁을 읽으면
+# 충족 으로 적혀 위반이 지워진다. 종단 행은 세그먼트 자신의 워크트리를 단다.
+SA_OLDWT="$SA_ROOT/old"
+( cd "$SA_REPO" && git worktree add -q --detach "$SA_OLDWT" "$T26M" ) >/dev/null 2>&1
+check "26: 옛 커밋에 머문 체크아웃이 만들어진다" \
+  "$(cd "$SA_OLDWT" 2>/dev/null && git rev-parse HEAD)" "$T26M"
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_OLDWT" 선행=없음
+check "26: 다른 워크트리를 대는 둘째 머지됨 행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"기록된 워크트리"*) ok "26: 거절 문면이 세그먼트의 기록된 워크트리를 지목한다" ;;
+  *) bad "26 다른 워크트리 문면" "$msg" ;;
+esac
+check "26: 그 거절이 원장을 늘리지 않는다 (다른 워크트리)" "$(sa_rows)" "$nb"
+check "26: 다른 워크트리의 머지됨 행이 조건 11 을 지우지 못한다" \
+  "$(sa_unmet11)" "11 세그먼트 S26M 의 머지 대조가 위반(미포함) 입니다"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=완료 워크트리="$SA_OLDWT" 선행=없음
+check "26: 다른 워크트리를 대는 완료 행도 거절된다" "$rc" "2"
+check "26: 그 완료 거절도 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+
 # 거짓 머지 — 팁이 베이스에 없는데 머지됨 을 적는다.
 sa_new '거짓 머지'
 sa_seg_row S26F ""
@@ -18383,7 +18412,7 @@ check "26: 룰 끔 — 머지 대조는 그대로 적힌다" "$(sa_field "$(sa_s
 check "26: 룰 끔 — 조건 11 이 나지 않는다" "$(sa_unmet11)" ""
 
 # --- 35-27. 게이트가 적는 필드는 호출자가 넘길 수 없고, 넘치는 행은 이름을 대며 거절된다 ---
-# --- section: 35-27 | group: sa | covers: act | anchors: 27: 호출자가 넘긴 머지 대조 는 머지됨 행에서 거절된다 ---
+# --- section: 35-27 | group: sa | covers: act, snapshot | anchors: 27: 호출자가 넘긴 머지 대조 는 머지됨 행에서 거절된다 ---
 sa_new '유도 필드'
 sa_seg_row S27 ""
 sa_commit '작업' >/dev/null
@@ -18401,6 +18430,56 @@ check "27: 호출자가 넘긴 수렴 은 park 행에서 거절된다" "$rc" "2"
 sa_seg_state S27 실행중 '머지 대조=충족'
 check "27: 비종단 행에서도 거절된다" "$rc" "2"
 check "27: 네 거절 모두 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+
+# 철자 — 키의 존재로 거절하므로 빈 값도 거절되고, 앞뒤에 공백·CR 이 붙은 키는
+# 어느 키든 거절된다. 읽는 쪽은 키 둘레의 공백을 걷어 내므로, 받아들이면
+# ` 머지 대조=충족` 이 게이트의 필드로 읽히고 ` 상태=머지됨` 은 쓸 때와 읽을 때
+# 다른 상태가 된다.
+sa_seg_state S27 머지됨 '머지 대조='
+check "27: 빈 값의 머지 대조 도 거절된다" "$rc" "2"
+case "$msg" in
+  *"게이트가 유도해 적는 필드"*) ok "27: 빈 값 거절 문면이 유도 필드임을 말한다" ;;
+  *) bad "27 빈 값 문면" "$msg" ;;
+esac
+sa_seg_state S27 완료 '최종 사이클='
+check "27: 빈 값의 최종 사이클 도 거절된다" "$rc" "2"
+sa_seg_state S27 머지됨 ' 머지 대조=충족'
+check "27: 공백 접두 머지 대조 는 거절된다" "$rc" "2"
+case "$msg" in
+  *"공백·CR"*) ok "27: 공백 접두 거절 문면이 키의 공백을 지목한다" ;;
+  *) bad "27 공백 접두 문면" "$msg" ;;
+esac
+sa_seg_state S27 머지됨 $'\r머지 대조=충족'
+check "27: CR 접두 머지 대조 는 거절된다" "$rc" "2"
+case "$msg" in
+  *"'\\r머지 대조'"*"공백·CR"*) ok "27: CR 접두 거절 문면이 CR 을 글자로 보이며 키를 댄다" ;;
+  *) bad "27 CR 접두 문면" "$msg" ;;
+esac
+sa_seg_state S27 머지됨 '머지 대조 =충족'
+check "27: 공백 접미 머지 대조 는 거절된다" "$rc" "2"
+sa_seg_state S27 실행중 ' 상태=머지됨'
+check "27: 공백 접두 일반 키도 거절된다" "$rc" "2"
+check "27: 철자 거절 모두 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+
+# 위반 뒤의 완료 행 — 조건 11 은 머지 대조 를 가진 마지막 행을 읽으므로, 그
+# 키를 싣는 완료 행이 받아들여지면 앞의 위반이 지워진다.
+sa_new '머지 대조 지우기'
+sa_seg_row S27E ""
+T27E=$(sa_commit '작업')
+sa_cycle S27E 1 1 0 "$T27E"
+sa_land
+sa_seg_state S27E 머지됨
+check "27: 열린 발견 위의 머지됨 행이 기록된다" "$rc" "0"
+check "27: 조건 11 이 위반을 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27E 의 머지 대조가 위반(카운트) 입니다"
+nb=$(sa_rows)
+sa_seg_state S27E 완료 '머지 대조='
+check "27: 빈 머지 대조 를 싣는 완료 행은 거절된다" "$rc" "2"
+sa_seg_state S27E 완료 ' 머지 대조=충족'
+check "27: 공백 접두 머지 대조 를 싣는 완료 행은 거절된다" "$rc" "2"
+check "27: 두 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+check "27: 뒤의 완료 행이 조건 11 을 지우지 못한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27E 의 머지 대조가 위반(카운트) 입니다"
 
 # 상한 — 새 필드를 단 최악 관측 머지됨 행(게이트의 자로 905 B)이 1024 B 안에
 # 든다. 관측 행 자체는 이 저장소에 없으므로, 같은 길이의 행을 게이트의 자로
