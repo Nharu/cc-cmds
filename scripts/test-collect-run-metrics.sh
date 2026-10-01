@@ -48,11 +48,12 @@ mk_ledger() {
   } > "$LEDGER_DIR/$rid.md"
 }
 sr_row() {
-  # sr_row <seg> <stage> <kind> <ver> <sid> <class> <window|__none__> <lane>
-  local win=""
+  # sr_row <seg> <stage> <kind> <ver> <sid> <class> <window|__none__> <lane> [계정]
+  local win="" acct=""
   [ "$7" = "__none__" ] || win=" | 압축 창=$7"
-  printf -- '- `stage-result` | 세그먼트=%s | 스테이지=%s | 종류=%s | 종료 코드=0 | 실행 버전=%s | 세션 id=%s | 부모=- | 기록자=게이트 | 종단 부류=%s%s | 레인=%s | 교대=0 | prev=abc' \
-    "$1" "$2" "$3" "$4" "$5" "$6" "$win" "$8"
+  [ -z "${9:-}" ] || acct=" | 계정=$9"
+  printf -- '- `stage-result` | 세그먼트=%s | 스테이지=%s | 종류=%s | 종료 코드=0 | 실행 버전=%s | 세션 id=%s | 부모=- | 기록자=게이트 | 종단 부류=%s%s | 레인=%s%s | 교대=0 | prev=abc' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$win" "$8" "$acct"
 }
 cycle_row() {
   # cycle_row <seg> <cycle> <P0|__none__>
@@ -308,13 +309,14 @@ reset_all
 R3=20260903-aaaaaaa3
 mk_rundir "$R3"
 mk_stream "$STATE/run/$R3/log/S1#1.json" 1
-mk_stream "$STATE/run/$R3/log/S2#1.json" 1
-SWITCH_AT=$(ts 1000)
+mk_stream "$STATE/run/$R3/log/S1#2.json" 1
+# 같은 세그먼트의 둘째 시도가 다른 계정으로 기동됐다 — 이것이 계정 전환이다. 그 사이의
+# `교대 기동 | 사유=상한` 행은 컨텍스트 상한 교대일 뿐 전환이 아니다.
 mk_ledger "$R3" \
-  "$(sr_row S1 S1 review 1 sid-s '정상 완료' '300000(argv)' '~/.claude')" \
-  "$(sr_row S2 S2 review 1 sid-t '정상 완료' '300000(argv)' '~/.claude')" \
-  "$(shift_row 1 상한 "$SWITCH_AT" sid-shift2 '~/.claude-cc' '300000(레인)')" \
-  "$(cycle_row S1 1 0)" "$(cycle_row S2 1 0)"
+  "$(sr_row S1 S1 review 1 sid-s '정상 완료' '300000(argv)' '~/.claude' acct-a)" \
+  "$(shift_row 1 상한 "$(ts 5)" sid-shift2 '~/.claude-cc' '300000(레인)')" \
+  "$(sr_row S1 S1 review 2 sid-t '정상 완료' '300000(argv)' '~/.claude' acct-b)" \
+  "$(cycle_row S1 1 0)"
 # sid-s: 첫 auto 기록이 창의 105% 를 넘는다(창이 켜지기 전부터 들고 있던 컨텍스트) → 그림자.
 # manual 기록 하나가 섞여 있다.
 {
@@ -326,7 +328,8 @@ mk_ledger "$R3" \
   tl_assist 41 s3 1000 7000 0
   tl_assist 50 s4 1000 0 1000
 } | mk_transcript "$HOME_A" -repo sid-s
-# sid-t: 요청 셋과 압축 하나가 전환 시각부터 900초 안에 있다 → 순 효과에서 빠진다.
+# sid-t: 요청 셋과 압축 하나가 전환 스테이지의 전사 시작(1010)부터 900초 안에 있다 → 순
+# 효과에서 빠진다. 전사는 3000 까지 이어지므로 구간 900초가 통째로 겹친다.
 {
   tl_assist 1010 t1 1000 1000 1000
   tl_boundary 1100 sid-t "" auto 200000 50000 2000 150000
@@ -342,9 +345,41 @@ check "3: manual 기록은 A3 의 압축 횟수에 들지 않는다" "$(jsum '.s
 check "3: 전환 창 안의 요청이 순 효과에서 빠지고 수가 인쇄된다" "$(jline '.excluded.switch_window')" "3"
 check "3: 전환 창 안의 압축 기록도 순 효과에서 빠진다" "$(jrec "$R3" '.stages[1].net_token')" "0"
 check "3: 요약이 쓰인 전환 창 폭을 인쇄한다" "$(jsum '.switch_window_s')" "900"
+check "3: 계정이 바뀐 행 하나가 전환 사건으로 세어진다" "$(jsum '.switch_events')" "1"
+check "3: 전환 행이 표시된다" "$(jrec "$R3" '[.stages[].switch_event] | map(tostring) | join(",")')" "false,true"
+check "3: 교대 행은 사유=상한 이어도 전환이 아니다" "$(jrec "$R3" '[.shifts[].switch_event] | map(tostring) | join(",")')" "false"
+check "3: 전환 구간과 전사의 겹침이 기록된다" "$(jrec "$R3" '.stages[1].switch_wall_ms')" "900000"
+check "3: 앞 계정의 행에는 겹침이 없다" "$(jrec "$R3" '.stages[0].switch_wall_ms')" "0"
+# 시간 항: 포함된 압축 소요(sid-s 의 둘째 auto 2000ms)를 벽시계(40s + 1990s)에서 전환 구간
+# 900s 를 뺀 분모로 나눈다. A5 의 벽시계는 구간을 빼지 않는다.
+check "3: 시간 항의 분모에서 전환 구간이 빠진다" \
+  "$(jsum '.strata["review|정상 완료|~/.claude"].net.time == (2000 / 1130000)')" "true"
+check "3: A5 벽시계는 전환 구간을 빼지 않는다" "$(jsum '.strata["review|정상 완료|~/.claude"].A5.wall_ms')" "2030000"
 collect --recollect --switch-window 30
 check "3: --switch-window 로 폭을 바꾸면 인쇄 값도 바뀐다" "$(jsum '.switch_window_s')" "30"
-check "3: 좁힌 폭(30초)에서는 전환 뒤 10초의 요청 하나만 남고 나머지는 다시 든다" "$(jline '.excluded.switch_window')" "1"
+check "3: 좁힌 폭(30초)에서는 전환 뒤 첫 요청 하나만 남고 나머지는 다시 든다" "$(jline '.excluded.switch_window')" "1"
+check "3: 좁힌 폭에서는 겹침도 그 폭이다" "$(jrec "$R3" '.stages[1].switch_wall_ms')" "30000"
+
+# 계정이 바뀌지 않은 런 — 킥오프와 상한 교대 행이 요청을 덮고 있어도 아무것도 빠지지 않는다.
+reset_all
+R3B=20260903-aaaaaab3
+mk_rundir "$R3B"
+mk_stream "$STATE/run/$R3B/log/S1#1.json" 1
+mk_stream "$STATE/run/$R3B/log/S1#2.json" 1
+mk_ledger "$R3B" \
+  "$(shift_row 1 상한 "$(ts 0)" sid-k '~/.claude-cc' '300000(레인)')" \
+  "$(sr_row S1 S1 review 1 sid-m '정상 완료' '300000(argv)' '~/.claude' acct-a)" \
+  "$(shift_row 2 상한 "$(ts 100)" sid-k2 '~/.claude-cc' '300000(레인)')" \
+  "$(sr_row S1 S1 review 2 sid-n '정상 완료' '300000(argv)' '~/.claude' acct-a)" \
+  "$(sr_row S2 S2 review 1 sid-o '정상 완료' '300000(argv)' '~/.claude' acct-b)" \
+  "$(cycle_row S1 1 0)" "$(cycle_row S2 1 0)"
+mk_stream "$STATE/run/$R3B/log/S2#1.json" 1
+{ tl_assist 10 m1 1000 1000 1000; tl_assist 50 m2 1000 0 1000; } | mk_transcript "$HOME_A" -repo sid-m
+{ tl_assist 110 n1 1000 1000 1000; tl_assist 150 n2 1000 0 1000; } | mk_transcript "$HOME_A" -repo sid-n
+{ tl_assist 120 o1 1000 1000 1000; tl_assist 160 o2 1000 0 1000; } | mk_transcript "$HOME_A" -repo sid-o
+collect
+check "3: 사유=상한 교대 행만으로는 요청이 빠지지 않는다" "$(jline '.excluded.switch_window')" "0"
+check "3: 같은 계정의 재기동과 다른 세그먼트의 다른 계정은 전환이 아니다" "$(jsum '.switch_events')" "0"
 
 # --- 4. 트리거 — T2·T3·T4·T5·T7 각각 홀로, 그리고 대조군 ---------------------------------
 fire_ids() { jline '[.fired[].signature] | sort | join(",")'; }
@@ -528,9 +563,11 @@ check "5: 바뀐 창의 층은 워밍업이다" "$(strat 250000 warmup)" "true"
 check "5: 창이 바뀐 회차는 발화하지 않는다" "$(fire_ids)" ""
 # 전환 창을 빼고 나면 표본이 부족한 회차 — 평가하지 않는다.
 R6S=20260905-aaaaaa19
-mk_rundir "$R6S"; mk_stream "$STATE/run/$R6S/log/S1#1.json" 1
-mk_ledger "$R6S" "$(sr_row S1 S1 review 1 sid-u '정상 완료' '300000(argv)' '~/.claude')" \
-  "$(shift_row 1 상한 "$(ts 5)" sid-sh '~/.claude' '300000(레인)')" "$(cycle_row S1 1 5)"
+# 둘째 시도가 다른 계정으로 기동됐고, 그 세션의 자료가 전부 전환 구간 안에 있다. 첫 시도는
+# 전사가 없어 표본을 보태지 않는다.
+mk_rundir "$R6S"; mk_stream "$STATE/run/$R6S/log/S1#1.json" 1; mk_stream "$STATE/run/$R6S/log/S1#2.json" 1
+mk_ledger "$R6S" "$(sr_row S1 S1 review 1 sid-u0 '정상 완료' '300000(argv)' '~/.claude' acct-a)" \
+  "$(sr_row S1 S1 review 2 sid-u '정상 완료' '300000(argv)' '~/.claude' acct-b)" "$(cycle_row S1 1 5)"
 { tl_assist 10 u1 1000 1000 1000; tl_boundary 20 sid-u "" auto 60000 50000 100000 10000; tl_assist 21 u2 1 5000 0; tl_assist 110 u3 1 1 1; } \
   | mk_transcript "$HOME_A" -repo sid-u
 collect

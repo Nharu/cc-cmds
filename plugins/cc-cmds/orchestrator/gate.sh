@@ -8288,6 +8288,12 @@ readonly GATE_METRICS_ROUND_TIMEOUT_S=3600
 # round's lock for as long as it hangs; a timed-out call takes the branch a
 # failed one already takes.
 readonly GATE_METRICS_GH_TIMEOUT_S=10
+# Where instrument issues go, whichever run's ledger the round was hosted by.
+# They measure this plugin's own collector and compaction window, so they belong
+# to this plugin's repository; left to gh, the destination would follow the
+# hosting run's anchor checkout, its remotes and an inherited `GH_REPO`, and an
+# issue body naming local paths would land in whatever repository that was.
+readonly GATE_METRICS_REPO=Nharu/cc-cmds
 
 gate_reap_root() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
@@ -20093,6 +20099,13 @@ gate_metrics_timed() {
   return "$rc"
 }
 
+gate_metrics_scrub_env() {
+  # The variables that would move a `gh` call to another repository or host.
+  # `--repo` names the repository, but `GH_HOST` and the enterprise tokens still
+  # pick the host it is resolved on. Called inside a subshell only.
+  unset GH_REPO GH_HOST GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+}
+
 gate_metrics_gh_write() {
   # gate_metrics_gh_write <base> <token> <gh-args>... — `gh` under the
   # WRITE-scoped credential, exported inside a subshell only, so the token
@@ -20101,6 +20114,7 @@ gate_metrics_gh_write() {
   local base="$1" tok="$2" t; shift 2
   t=$(gate_metrics_gh_timeout)
   (
+    gate_metrics_scrub_env
     export GH_TOKEN="$tok"
     export GITHUB_TOKEN=""
     cd "$base" 2>/dev/null || exit 1
@@ -20112,7 +20126,7 @@ gate_metrics_row() {
   # gate_metrics_row <결정> <issue number> <signatures> <revert verb> <reason>
   gate_append '자율 승인' "kind=metrics-filing" "결정=$1" "대상=${alias:--}" "세그먼트=-" \
     "절단점=필링" "유도 절단점=-" "등급=1" "기준=계측 트리거 $(gate_row_safe "$3" 200)" \
-    "되돌리는 법=gh issue $4 $2" "근거=$(gate_row_safe "$5" 240)" || true
+    "되돌리는 법=gh issue $4 $2 --repo $GATE_METRICS_REPO" "근거=$(gate_row_safe "$5" 240)" || true
 }
 
 gate_metrics_file() {
@@ -20123,13 +20137,18 @@ gate_metrics_file() {
   # number configured, so no issue is created at all — an issue that lands in
   # no Project is invisible to the triage it exists for), `자격 없음` (no
   # write-scoped credential), `조회 실패` (the write credential's identity is
-  # not the configured account, or a GitHub call failed), `상한 도달` (an
+  # not the configured account, or a GitHub call failed — the label creation
+  # before an issue is created included), `상한 도달` (an
   # instrument issue is already open). A failure to add a created issue to the
   # Project is NOT a skip: the issue stands, the missing step is written beside
   # the ledger as a command, and the filing row is still written.
   #
   # `gh issue reopen` is not called anywhere — a closed instrument issue that
   # fires again is a new issue, and reopening is a human's call.
+  #
+  # Every issue call names `GATE_METRICS_REPO`, and the label is created before
+  # each issue creation rather than assumed: gh resolves `--label` to an id
+  # before it creates anything, so a missing label fails the whole creation.
   local line="$1" ledger_dir="$2" base fired close nf nc sigs project account tok login
   local list nopen open_t6 others tmp url num sig round body_lines title why
   base=$(dirname "$(dirname "$ledger_dir")")
@@ -20155,8 +20174,9 @@ gate_metrics_file() {
   if [ -z "$login" ] || [ "$login" != "$account" ]; then
     gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0
   fi
-  list=$(GATE_ACT_CWD="$base" gate_run_readonly gate_metrics_timed "$(gate_metrics_gh_timeout)" \
-           "$(gate_metrics_gh)" issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
+  list=$(gate_metrics_scrub_env; GATE_ACT_CWD="$base" gate_run_readonly gate_metrics_timed "$(gate_metrics_gh_timeout)" \
+           "$(gate_metrics_gh)" issue list --repo "$GATE_METRICS_REPO" --label cc-metrics --state open \
+           --json number,title 2>/dev/null) \
     || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
   nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
 
@@ -20168,7 +20188,7 @@ gate_metrics_file() {
       printf '%s\n\n' "$body_lines"
       printf -- '- 이 회차에 새로 수집된 런: %s\n' "$(printf '%s' "$line" | jq -r '.new_runs | join(", ")')"
       printf -- '- 수집 수: %s\n' "$(printf '%s' "$line" | jq -c '.counts')"
-      printf -- '- 요약 파일: `%s/metrics.json`\n' "$ledger_dir"
+      printf -- '- 요약 파일: `%s` 의 `%s/metrics.json`\n' "$(basename "$base")" "${ledger_dir#"$base"/}"
     } > "$tmp"
     if [ "$nopen" -gt 0 ]; then
       # An open T6 issue takes the other triggers as a comment: T6 is the slow
@@ -20183,7 +20203,8 @@ gate_metrics_file() {
            | [$f[].signature | select(. != $t)] | join(",")')
       fi
       if [ -n "$open_t6" ] && [ -n "$others" ]; then
-        if gate_metrics_gh_write "$base" "$tok" issue comment "$open_t6" --body-file "$tmp" >/dev/null 2>&1; then
+        if gate_metrics_gh_write "$base" "$tok" issue comment "$open_t6" --repo "$GATE_METRICS_REPO" \
+             --body-file "$tmp" >/dev/null 2>&1; then
           gate_metrics_row '코멘트' "$open_t6" "$others" close "$body_lines"
         else
           gate_metrics_skip '조회 실패' "$sigs"
@@ -20194,8 +20215,12 @@ gate_metrics_file() {
     else
       sig=$(printf '%s' "$fired" | jq -r '.[0].signature')
       title="[cc-metrics] $sig"
-      url=$(gate_metrics_gh_write "$base" "$tok" issue create --title "$title" \
-              --label cc-metrics --body-file "$tmp" 2>/dev/null | sed -n '$p') || url=""
+      url=""
+      if gate_metrics_gh_write "$base" "$tok" label create cc-metrics --repo "$GATE_METRICS_REPO" --force \
+           --color 5319e7 --description '런 계측 수집기가 등록한 이슈' >/dev/null 2>&1; then
+        url=$(gate_metrics_gh_write "$base" "$tok" issue create --repo "$GATE_METRICS_REPO" --title "$title" \
+                --label cc-metrics --body-file "$tmp" 2>/dev/null | sed -n '$p') || url=""
+      fi
       num=$(printf '%s' "$url" | sed -n 's#.*/issues/\([0-9][0-9]*\)$#\1#p')
       if [ -z "$num" ]; then
         gate_metrics_skip '조회 실패' "$sigs"
@@ -20226,7 +20251,7 @@ gate_metrics_file() {
       T6/*) why="같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다" ;;
       *)    why="그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다" ;;
     esac
-    if gate_metrics_gh_write "$base" "$tok" issue close "$num" >/dev/null 2>&1; then
+    if gate_metrics_gh_write "$base" "$tok" issue close "$num" --repo "$GATE_METRICS_REPO" >/dev/null 2>&1; then
       gate_metrics_row '닫힘' "$num" "$sig" reopen "$why"
     else
       log "계측 이슈 #$num 닫기 실패 — 다음 회차에 다시 본다"

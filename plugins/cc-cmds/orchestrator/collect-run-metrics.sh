@@ -22,7 +22,11 @@
 #   --now <epoch>             저널 시각(시험용 주입).
 #   --switch-window <초>      계정 전환 직후 제외 구간의 폭(기본 900, 환경변수
 #                             `CC_METRICS_SWITCH_WINDOW_S` 로도 지정). 미확정 기본값이며
-#                             요약의 `switch_window_s` 가 쓰인 값을 인쇄한다.
+#                             요약의 `switch_window_s` 가 쓰인 값을 인쇄한다. 전환은 같은
+#                             세그먼트의 `stage-result` 행에서 `계정` 이 앞의 실제 계정과 다른
+#                             실제 계정으로 바뀐 행이고, 구간은 그 행 스테이지의 전사 시작부터
+#                             잰다. `교대 기동` 의 `사유=상한` 은 킥오프와 컨텍스트 상한 교대를
+#                             뜻할 뿐 계정 사건이 아니므로 전환의 출처가 아니다.
 #   --recollect               이미 있는 런별 기록도 다시 만든다(시험용).
 #   --max-new <n>             한 회차에 새로 수집을 시도하는 런 수의 상한(기본 20, 환경변수
 #                             `CC_METRICS_ROUND_MAX`).
@@ -270,36 +274,19 @@ cm_scan_session() {
     ) | del(.seen)' "$@"
 }
 
-cm_switch_windows() {
-  # cm_switch_windows <원장> — `교대 기동 | 사유=상한` 행의 `기록 시각` 부터 폭만큼의
-  # 구간을 `[[시작, 끝], …]`(epoch) 로. 전환 시각의 출처는 이 행 하나다.
-  local row t rows=""
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    [ "$(cm_field "$row" '사유')" = "상한" ] || continue
-    t=$(cm_field "$row" '기록 시각')
-    [ -n "$t" ] || continue
-    rows="$rows
-$t"
-  done <<ROWS
-$(cm_ledger_rows "$1" '교대 기동')
-ROWS
-  printf '%s\n' "$rows" | jq -R -s --argjson w "$CM_SWITCH_WINDOW" '
-    split("\n") | map(select(length > 0))
-    | map(sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null)
-    | map(select(. != null)) | map([., . + $w])'
-}
-
 # 스테이지 하나의 세션 자료를 파생 필드까지 펼치는 jq 프로그램. 인자: $win(정수 창 또는
-# null), $sw(전환 구간 배열), $dup(같은 세션의 앞 행이 이미 전사를 소비했으면 true).
+# null), $switched(이 행이 계정 전환 행인가), $sww(전환 구간 폭, 초), $dup(같은 세션의 앞
+# 행이 이미 전사를 소비했으면 true). 전환 구간은 그 스테이지 자신의 전사 시작부터 폭만큼이다
+# — 새 계정의 캐시는 그 세션의 첫 요청부터 비어 있다. 자료를 갖지 않은 행에는 구간이 없다.
 CM_JQ_STAGE='
 def ep: if . == null then null else (sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null) end;
 def median: if length == 0 then null else (sort | if length % 2 == 1 then .[((length - 1) / 2)] else ((.[length / 2 - 1] + .[length / 2]) / 2) end) end;
 def pct($q): if length == 0 then null else (sort | .[(((length * $q) | ceil) - 1) | if . < 0 then 0 else . end]) end;
-def in_switch($t): ($t != null) and any($sw[]; $t >= .[0] and $t < .[1]);
 . as $s0
 | (if $dup then {b: [], r: [], tmin: null, tmax: null} else . end) as $s
-| ($s.r | sort_by(.ts)) as $reqs
+| (if $switched and ($s.tmin | ep) != null then [($s.tmin | ep), (($s.tmin | ep) + $sww)] else null end) as $sw
+| def in_switch($t): ($sw != null) and ($t != null) and $t >= $sw[0] and $t < $sw[1];
+  ($s.r | sort_by(.ts)) as $reqs
 | ($s.b | sort_by(.ts)) as $bs
 | ($reqs | map({ts, epoch: (.ts | ep), ctx: (.input + .creation + .read), input, creation, read, sw: in_switch((.ts | ep))})) as $R
 | (reduce range(0; $bs | length) as $i ({out: [], last: {}, first: {}, probe_fail: false};
@@ -335,6 +322,10 @@ def in_switch($t): ($t != null) and any($sw[]; $t >= .[0] and $t < .[1]);
    ctx_values: ([$R[].ctx] | sort),
    cache: {read: ([$R[].read] | add // 0), creation: ([$R[].creation] | add // 0), input: ([$R[].input] | add // 0)},
    wall_ms: (if ($s.tmin | ep) != null and ($s.tmax | ep) != null then ((($s.tmax | ep) - ($s.tmin | ep)) * 1000) else null end),
+   # 전환 구간이 이 세션의 전사 구간과 겹친 시간. 시간 항의 분모에서만 빠진다 — 구간 안의
+   # 압축 소요는 이미 분자에서 빠졌으므로, 분모에 남기면 구간이 시간 항을 낮춘다.
+   switch_wall_ms: (if $sw == null or ($s.tmax | ep) == null then 0
+                    else ((([($s.tmax | ep), $sw[1]] | min) - $sw[0]) * 1000 | if . < 0 then 0 else . end) end),
    owner_wall: (($s0.tmin | ep) != null and ($s0.tmax | ep) != null),
    excluded: {manual: ([$B.out[] | select((.missing | not) and .trigger != "auto")] | length),
               shadow: ([$B.out[] | select(.shadow)] | length),
@@ -352,13 +343,11 @@ cm_collect_run() {
   # 실패하면 1 을 돌려주고 파일을 남기지 않는다.
   local rid="$1" ledger="$2" rd="$3" state="$4" out="$5"
   local tmp row seg st kind ver attempt sid class win has_win lane wint wsrc stream_f stream
-  local sess_dir seen_sids seen_streams="" sess_json dup an rejected=0 unemp=0 unk=0 sw p0 mism="" wins_seen
+  local sess_dir seen_sids seen_streams="" sess_json dup an rejected=0 unemp=0 unk=0 p0 mism="" wins_seen switched
   local rowidx odup okey okey_t6 kind0 class0 lane0 win0 wint0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-run.XXXXXX") || return 1
   sess_dir="$tmp/sess"; mkdir -p "$sess_dir"
   : > "$tmp/stages.jsonl"; : > "$tmp/shifts.jsonl"; : > "$tmp/p0.tsv"
-  sw=$(cm_switch_windows "$ledger")
-  [ -n "$sw" ] || sw='[]'
 
   # P0 는 원장의 cycle 행에서 세그먼트로 조인한다 — 필드 없는 행은 unknown 이지 0 이 아니다.
   while IFS= read -r row; do
@@ -378,9 +367,10 @@ ROWS
   # 들어오고 스트림 로그를 읽지 않는다. 스트림 봉투와 귀속 여부는 호출자가 정해 넘긴다 —
   # 한 세션의 자료를 어느 시도가 갖는지는 행 하나만 보고는 정할 수 없고, 다섯째 인자가
   # 비면 등장 순서로 정한다(교대 행). 뒤의 두 키는 자료를 가진 행의 층 키이며 이 행이
-  # 어느 소비자의 층에서 그 행과 겹치는지를 가른다.
+  # 어느 소비자의 층에서 그 행과 겹치는지를 가른다. 여덟째 인자는 이 행이 계정 전환 행인지다
+  # (교대 행은 늘 false).
   cm_row_emit() {
-    local row="$1" kind_override="$2" sink="$3" stream_in="$4" dup_in="$5" owner_key="$6" owner_key_t6="$7" seen_dup=false
+    local row="$1" kind_override="$2" sink="$3" stream_in="$4" dup_in="$5" owner_key="$6" owner_key_t6="$7" sw_in="${8:-false}" seen_dup=false
     seg=$(cm_field "$row" '세그먼트'); st=$(cm_field "$row" '스테이지')
     if [ -n "$kind_override" ]; then kind="$kind_override"; else kind=$(cm_field "$row" '종류'); fi
     [ -n "$kind" ] || kind="-"
@@ -442,13 +432,14 @@ ROWS
       sess_json=$(cat "$sess_dir/$sid.json")
       if [ -n "$dup_in" ]; then dup="$dup_in"; else dup="$seen_dup"; fi
     fi
-    an=$(printf '%s' "$sess_json" | jq -c --argjson win "${wint:-null}" --argjson sw "$sw" --argjson dup "$dup" "$CM_JQ_STAGE" 2>/dev/null) \
-      || an='{"boundaries":[],"probe_fail":true,"requests":0,"requests_included":0,"ctx":{"median":null,"p90":null,"max":null},"ctx_values":[],"cache":{"read":0,"creation":0,"input":0},"wall_ms":null,"owner_wall":false,"excluded":{"manual":0,"shadow":0,"switch_window":0},"net_token":0,"compaction_ms":0,"auto_count":0,"included_count":0,"pre_auto":[]}'
+    an=$(printf '%s' "$sess_json" | jq -c --argjson win "${wint:-null}" --argjson switched "$sw_in" \
+           --argjson sww "$CM_SWITCH_WINDOW" --argjson dup "$dup" "$CM_JQ_STAGE" 2>/dev/null) \
+      || an='{"boundaries":[],"probe_fail":true,"requests":0,"requests_included":0,"ctx":{"median":null,"p90":null,"max":null},"ctx_values":[],"cache":{"read":0,"creation":0,"input":0},"wall_ms":null,"switch_wall_ms":0,"owner_wall":false,"excluded":{"manual":0,"shadow":0,"switch_window":0},"net_token":0,"compaction_ms":0,"auto_count":0,"included_count":0,"pre_auto":[]}'
     p0=$(awk -F'\t' -v s="$seg" 'BEGIN { n = 0; u = 0 } $1 == s { n++; if ($2 == "unknown") u = 1; else t += $2 } END { if (n == 0 || u) print "unknown"; else print t }' "$tmp/p0.tsv")
     jq -cn --arg seg "$seg" --arg st "$st" --arg kind "$kind" --arg attempt "$attempt" --arg sid "$sid" \
       --arg class "$class" --arg win "$win" --argjson has_win "$has_win" --arg wint "$wint" --arg wsrc "$wsrc" \
       --arg lane "$lane" --argjson stream "$stream" --argjson an "$an" --arg p0 "$p0" --argjson dup "$dup" \
-      --arg okey "$owner_key" --arg okeyt6 "$owner_key_t6" '
+      --arg okey "$owner_key" --arg okeyt6 "$owner_key_t6" --argjson switched "$sw_in" '
       ($kind + "|" + $class + "|" + $lane) as $self_key
       | (if $wint == "" then "" else ($kind + "|" + $wint) end) as $self_key_t6
       # 벽시계 귀속을 누르는 것은 「같은 세션」이 아니라 「같은 층의 같은 세션」이다. 같은
@@ -486,6 +477,7 @@ ROWS
                      elif ($dup and $an.owner_wall) then "owned_elsewhere"
                      else "none" end),
        wall_owner: (if ($dup and $an.owner_wall and $okey != "") then $okey else null end),
+       switch_event: $switched, switch_wall_ms: ($an.switch_wall_ms // 0),
        cost_usd: $stream.cost_usd,
        requests: $an.requests, requests_included: $an.requests_included,
        ctx: $an.ctx, ctx_values: $an.ctx_values, cache: $an.cache,
@@ -501,11 +493,12 @@ ROWS
   # 둘이다: A 집계의 (종류, 종단 부류, 레인) 과 T6 의 (종류, 실효 창). 실효 창이 없는 행은
   # T6 층에 들지 않으므로 그 키를 비운다.
   rowidx=0
-  : > "$tmp/rows.txt"; : > "$tmp/sid.tsv"; : > "$tmp/key.tsv"
+  : > "$tmp/rows.txt"; : > "$tmp/sid.tsv"; : > "$tmp/key.tsv"; : > "$tmp/acct.tsv"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     rowidx=$((rowidx + 1))
     printf '%s\n' "$row" >> "$tmp/rows.txt"
+    printf '%s\t%s\t%s\n' "$rowidx" "$(cm_field "$row" '세그먼트')" "$(cm_field "$row" '계정')" >> "$tmp/acct.tsv"
     kind0=$(cm_field "$row" '종류'); [ -n "$kind0" ] || kind0="-"
     class0=$(cm_field "$row" '종단 부류'); [ -n "$class0" ] || class0="-"
     lane0=$(cm_field "$row" '레인'); [ -n "$lane0" ] || lane0="-"
@@ -543,6 +536,13 @@ ROWS
       if ($3 == "true" && !($2 in live)) live[$2] = $1
     } END { for (s in first) printf "%s\t%s\n", (s in live ? live[s] : first[s]), s }' \
     "$tmp/sid.tsv" > "$tmp/owner.tsv"
+  # 계정 전환 행 — 같은 세그먼트에서 앞의 실제 계정과 다른 실제 계정이 기록된 행. 원장에서
+  # 계정이 바뀌는 자리는 기동이 그 행에 남긴 `계정` 뿐이다. 빈 값(라우팅 휴면)·`-`(좌석)·
+  # `(미상)` 은 어느 계정인지 말하지 않으므로 비교의 어느 쪽에도 서지 않는다.
+  awk -F'\t' '$3 != "" && $3 != "-" && $3 != "(미상)" {
+      if (($2 in last) && last[$2] != $3) print $1
+      last[$2] = $3
+    }' "$tmp/acct.tsv" > "$tmp/switched.txt"
 
   rowidx=0
   while IFS= read -r row; do
@@ -561,11 +561,13 @@ ROWS
       okey_t6=$(awk -F'\t' -v r="$okey" '$1 == r { print $3 }' "$tmp/key.tsv")
       okey=$(awk -F'\t' -v r="$okey" '$1 == r { print $2 }' "$tmp/key.tsv")
     fi
-    cm_row_emit "$row" "" "$tmp/stages.jsonl" "$(cat "$tmp/stream.$rowidx.json")" "$odup" "$okey" "$okey_t6"
+    switched=false
+    if grep -qx "$rowidx" "$tmp/switched.txt"; then switched=true; fi
+    cm_row_emit "$row" "" "$tmp/stages.jsonl" "$(cat "$tmp/stream.$rowidx.json")" "$odup" "$okey" "$okey_t6" "$switched"
   done < "$tmp/rows.txt"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl" "" "" "" ""
+    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl" "" "" "" "" false
   done <<ROWS
 $(cm_ledger_rows "$ledger" '교대 기동')
 ROWS
@@ -640,7 +642,10 @@ cm_aggregate() {
                          wall_owned_elsewhere: ([$g[] | select(.wall_source == "owned_elsewhere")] | length),
                          owner_strata: ([$g[] | select(.wall_source == "owned_elsewhere") | .wall_owner | select(. != null)] | unique)},
                     net: {token: ([$g[].net_token] | add // 0),
-                          time: (([$g[].wall_ms | select(. != null)] | add // 0) as $w | if $w == 0 then null else (([$g[].compaction_ms] | add // 0) / $w) end)}})})
+                          # 분모는 전환 구간을 뺀 벽시계다. A5 의 벽시계는 그대로 둔다.
+                          time: ((([$g[].wall_ms | select(. != null)] | add // 0)
+                                  - ([$g[] | select(.wall_ms != null) | .switch_wall_ms // 0] | add // 0)) as $w
+                                 | if $w <= 0 then null else (([$g[].compaction_ms] | add // 0) / $w) end)}})})
         | from_entries),
        excluded: {manual: ([$all[].excluded.manual] | add // 0), shadow: ([$all[].excluded.shadow] | add // 0),
                   switch_window: ([$all[].excluded.switch_window] | add // 0),
@@ -649,6 +654,7 @@ cm_aggregate() {
                   unattributed_unknown: ([.[].unattributed.unknown] | add // 0),
                   incomplete: ([$all[] | select((.complete | not) or .truncated)] | length)},
        switch_window_s: $sws,
+       switch_events: ([$all[] | select(.switch_event == true)] | length),
        unattributed: {empty: ([.[].unattributed.empty] | add // 0), unknown: ([.[].unattributed.unknown] | add // 0)},
        rejected_window: ([.[].rejected_window] | add // 0),
        window_mismatch_sessions: ([.[].window_mismatch_sessions[]] | unique)}' "$1"
@@ -696,7 +702,9 @@ cm_triggers() {
          # 이미 덮은 초라 여기서 빼고, A 집계에서는 그대로 합한다 — 두 소비자의 층 키가
          # 달라서 같은 행이 한쪽에서는 독립 관측이고 다른 쪽에서는 중복이다.
          | ([$g[] | select(.wall_source != "stream:owned_t6") | .wall_ms | select(. != null)]) as $ws
-         | ($ws | add // 0) as $w
+         # 전환 구간은 분모에서도 빠진다 — 그 구간의 압축 소요는 분자에 이미 없다.
+         | (($ws | add // 0)
+            - ([$g[] | select(.wall_source != "stream:owned_t6" and .wall_ms != null) | .switch_wall_ms // 0] | add // 0)) as $w
          # 이 층의 자료를 다른 층이 갖고 있는가. 그렇다면 이 층이 평가되지 않는 것은 표본이
          # 없어서가 아니라 다른 키로 재고 있어서이며, 그 둘은 같은 침묵이 아니다 — 앞의 것은
          # 기다리면 차고 뒤의 것은 영영 차지 않으므로 이유를 적어 구별한다.
@@ -706,7 +714,7 @@ cm_triggers() {
          # 들어왔는지가 부호를 정해, 조용한 회차가 「절감이 적고 P0 가 적다」로 읽힌다.
          | ($g | length) as $n
          | (if $n == 0 then 0 else (([$g[].net_token] | add // 0) / $n) end) as $token
-         | (if $w == 0 then null else (([$g[].compaction_ms] | add // 0) / $w) end) as $time
+         | (if $w <= 0 then null else (([$g[].compaction_ms] | add // 0) / $w) end) as $time
          | (([$g[].p0] | p0sum) as $psum | if $psum == "unknown" or $n == 0 then $psum else ($psum / $n) end) as $p0
          | (($hist | length) < 3) as $warmup
          | (([$g[].included_count] | add // 0) + ([$g[].requests_included] | add // 0) == 0) as $thin

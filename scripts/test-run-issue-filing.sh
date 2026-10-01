@@ -58,6 +58,13 @@ case "${GH_TOKEN:-}" in
   *)       tok=주변 ;;
 esac
 printf '%s | %s\n' "$tok" "$*" >> "$GH_LOG"
+printf 'GH_REPO=%s GH_HOST=%s GH_ENTERPRISE_TOKEN=%s\n' "${GH_REPO:-}" "${GH_HOST:-}" "${GH_ENTERPRISE_TOKEN:-}" \
+  >> "$GH_STUB_DIR/gh-env.log"
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--body-file" ] && cat "$a" > "$GH_STUB_DIR/gh-body" 2>/dev/null
+  prev="$a"
+done
 key="$1-${2:-}"
 [ "$1" = "api" ] && key="api-user"
 if [ -e "$GH_STUB_DIR/gh-sleep/$key" ]; then sleep "$(cat "$GH_STUB_DIR/gh-sleep/$key")" >/dev/null 2>&1; fi
@@ -80,6 +87,9 @@ chmod +x "$WORK/bin/gh"
 # 알림 도구는 절대 닿지 않게 PATH 에서 가린다.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/bin/terminal-notifier"; chmod +x "$WORK/bin/terminal-notifier"
 export PATH="$WORK/bin:$PATH"
+# 목적지를 옮기는 환경 변수를 물려 둔다. 게이트가 그것을 지우지 않으면 스텁의 환경
+# 기록에 남고, 9번이 그것을 잡는다.
+export GH_REPO=decoy/decoy GH_HOST=decoy.invalid GH_ENTERPRISE_TOKEN=decoy-token
 
 # 수집기 스텁 — 호출 수를 세고 $WORK/round.json 을 그대로 낸다.
 cat > "$WORK/collector-stub" <<STUBEOF
@@ -174,7 +184,7 @@ LEDGER_MARK=0
 fresh() {
   # 한 케이스의 시작 — 스탬프를 지우고 gh 로그·스크립트를 비우고 원장 위치를 표시한다.
   rm -f "$STATE_ROOT/metrics.stamp"
-  rm -rf "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep" "$REPO/docs/pipeline-run/metrics.unfiled"
+  rm -rf "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep" "$REPO/docs/pipeline-run/metrics.unfiled" "$WORK/gh-body"
   mkdir -p "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep"
   cat "$GH_LOG" >> "$WORK/gh.all" 2>/dev/null || true
   : > "$GH_LOG"
@@ -223,10 +233,30 @@ check "2: 필링 행이 하나 남는다" "$(nrows "$fr")" "1"
 check "2: 필링 행의 결정은 등록이다" "$(field "$fr" '결정')" "등록"
 check "2: 필링 행의 kind 는 metrics-filing 이다" "$(field "$fr" 'kind')" "metrics-filing"
 check "2: 필링 행의 세그먼트는 - 다" "$(field "$fr" '세그먼트')" "-"
-check "2: 필링 행의 되돌리는 법은 그 이슈를 닫는 명령이다" "$(field "$fr" '되돌리는 법')" "gh issue close 42"
+check "2: 필링 행의 되돌리는 법은 그 이슈를 닫는 명령이다" "$(field "$fr" '되돌리는 법')" "gh issue close 42 --repo Nharu/cc-cmds"
 check "2: 필링 행에 행위자 필드가 없다" "$(printf '%s' "$fr" | grep -c -F '| 행위자=')" "0"
 check "2: 필링 행에 판단 부류 필드가 없다" "$(printf '%s' "$fr" | grep -c -F '| 판단 부류=')" "0"
 check "2: 등록된 회차에는 건너뜀 행이 없다" "$(nrows "$(skip_rows)")" "0"
+# 라벨은 있다고 가정하지 않는다 — gh 는 이슈를 만들기 전에 라벨을 id 로 해소하고, 없으면
+# 생성 전체가 실패한다. 그래서 등록 직전에 쓰기 자격으로 멱등 생성한다.
+check "2: 등록 전에 라벨을 한 번 만든다" "$(ghcount '| label create cc-metrics ')" "1"
+check "2: 라벨 생성은 --force 로 멱등이다" "$(grep -F '| label create ' "$GH_LOG" | grep -c -F -- '--force')" "1"
+check "2: 라벨 생성은 쓰기 자격으로 한다" "$(grep -F '| label create ' "$GH_LOG" | cut -d' ' -f1)" "쓰기"
+ln_label=$(grep -n -F '| label create ' "$GH_LOG" | cut -d: -f1)
+ln_create=$(grep -n -F '| issue create ' "$GH_LOG" | cut -d: -f1)
+check "2: 라벨 생성이 이슈 생성보다 먼저다" "$([ "${ln_label:-0}" -gt 0 ] && [ "${ln_label:-0}" -lt "${ln_create:-0}" ] && printf 예 || printf 아니오)" "예"
+check "2: 이슈·라벨 호출은 모두 목적지 레포를 명시한다" \
+  "$(grep -E '\| (issue|label) ' "$GH_LOG" | grep -v -c -F -- '--repo Nharu/cc-cmds')" "0"
+check "2: (선행) 등록 본문이 기록됐다" "$(grep -c -F '요약 파일:' "$WORK/gh-body" 2>/dev/null)" "1"
+check "2: 본문은 로컬 절대 경로를 싣지 않는다" "$(grep -c -F -e "$WORK" -e "$WT" "$WORK/gh-body" 2>/dev/null)" "0"
+
+# 라벨 생성이 실패하면 이슈를 만들지 않고 기존 사유 `조회 실패` 로 건너뛴다.
+fresh; round T3/review
+: > "$WORK/gh-fail/label-create"
+snap
+check "2: 라벨 생성이 실패하면 등록하지 않는다" "$(ghcount '| issue create ')" "0"
+check "2: 라벨 생성이 실패하면 조회 실패 건너뜀 행이 남는다" "$(field "$(skip_rows)" '사유')" "조회 실패"
+check "2: 라벨 생성이 실패하면 필링 행이 없다" "$(nrows "$(file_rows)")" "0"
 
 # --- 3. 번호 없음 ---------------------------------------------------------------------
 fresh; round T3/review
@@ -305,7 +335,7 @@ snap
 check "7: close 서명과 같은 열린 이슈를 닫는다" "$(ghcount '| issue close 9')" "1"
 fr=$(file_rows)
 check "7: 닫기는 결정=닫힘 필링 행을 남긴다" "$(field "$fr" '결정')" "닫힘"
-check "7: 닫힘 행의 되돌리는 법은 다시 여는 명령(기록만, 실행 안 함)이다" "$(field "$fr" '되돌리는 법')" "gh issue reopen 9"
+check "7: 닫힘 행의 되돌리는 법은 다시 여는 명령(기록만, 실행 안 함)이다" "$(field "$fr" '되돌리는 법')" "gh issue reopen 9 --repo Nharu/cc-cmds"
 check "7: 닫기만 있는 회차는 등록하지 않는다" "$(ghcount '| issue create ')" "0"
 check "7: T6 닫힘 행의 근거는 두 항 술어를 말한다" "$(field "$fr" '근거')" \
   "같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다"
@@ -318,7 +348,7 @@ snap
 check "7: 결함 부류 서명도 같은 열린 이슈를 닫는다" "$(ghcount '| issue close 11')" "1"
 fr=$(file_rows)
 check "7: 결함 부류 닫기도 결정=닫힘 행을 남긴다" "$(field "$fr" '결정')" "닫힘"
-check "7: 결함 부류 닫힘 행의 되돌리는 법도 다시 여는 명령이다" "$(field "$fr" '되돌리는 법')" "gh issue reopen 11"
+check "7: 결함 부류 닫힘 행의 되돌리는 법도 다시 여는 명령이다" "$(field "$fr" '되돌리는 법')" "gh issue reopen 11 --repo Nharu/cc-cmds"
 check "7: 결함 부류 닫힘 행의 근거는 재관측 없음이다" "$(field "$fr" '근거')" \
   "그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다"
 
@@ -489,6 +519,9 @@ cat "$GH_LOG" >> "$WORK/gh.all" 2>/dev/null || true
 check "9: (선행) 케이스 전체의 gh 호출이 모였다" "$([ -s "$WORK/gh.all" ] && printf 있음 || printf 없음)" "있음"
 check "9: gh issue reopen 은 어디서도 부르지 않았다" "$(grep -c -F '| issue reopen' "$WORK/gh.all")" "0"
 check "9: gh auth 는 어디서도 부르지 않았다" "$(grep -c -F '| auth ' "$WORK/gh.all")" "0"
+check "9: (선행) gh 호출마다 환경이 기록됐다" "$([ -s "$WORK/gh-env.log" ] && printf 있음 || printf 없음)" "있음"
+check "9: 목적지를 옮기는 환경 변수는 어느 gh 호출에도 새지 않았다" \
+  "$(grep -v -c -x 'GH_REPO= GH_HOST= GH_ENTERPRISE_TOKEN=' "$WORK/gh-env.log")" "0"
 check "9: PATH 앞의 미끼 gh 는 어디서도 불리지 않았다(게이트는 이음매로 gh 를 찾는다)" \
   "$([ -s "$GH_DECOY_LOG" ] && printf 불림 || printf 안불림)" "안불림"
 check "9: (선행) 원장에 건너뜀 행이 여럿 모였다" "$([ "$(grep -c -F -e '- `계측 필링 건너뜀` |' "$LEDGER")" -ge 8 ] && printf 예 || printf 아니오)" "예"
