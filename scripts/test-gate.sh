@@ -1170,6 +1170,23 @@ export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
 # that test the map name their own fixture map on the call, which wins over this.
 export CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map"
 
+# THE METRICS ROUND IS INERT FOR THIS WHOLE PROCESS, for the same two reasons.
+# Every verb but `plan` runs the collector from the prelude once the stamp is
+# stale, so without this the first gate call of each state root would run the
+# real collector over a fixture ledger directory and could append a filing row
+# into a ledger whose rows another section counts. And the filing settings file
+# lives under the developer's `~/.config`: a Project number there would send a
+# unit suite to real `gh`. Section 60 names its own collector and settings file
+# on the call, which wins over this; the collector and the filing are measured
+# by their own suites.
+cat > "$WORK/bin/metrics-noop" <<'METRICSNOOP'
+#!/bin/sh
+printf '%s\n' '{"fired":[],"close":[]}'
+METRICSNOOP
+chmod +x "$WORK/bin/metrics-noop"
+export CC_METRICS_COLLECTOR="$WORK/bin/metrics-noop"
+export CC_METRICS_FILING_FILE="$WORK/no-such-metrics-filing"
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -23290,7 +23307,7 @@ check "58: 소스 전용 가드는 gate_main 앞에 있다" \
 S73_DIR="$WORK/s73"
 mkdir -p "$S73_DIR"
 
-# 매니페스트 헬퍼는 절 69 도 부르므로 머리의 `pre_parse` 에 있다.
+# 매니페스트 헬퍼는 절 74 도 부르므로 머리의 `pre_parse` 에 있다.
 pre_parse
 
 s73() {
@@ -23450,8 +23467,8 @@ gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint PR \
 check "73: 두 줄 본문 행위가 게이트를 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
-# 69. The gh consumers read the parse
-# --- section: 69 | group: parse | covers: act | anchors: 69: 여섯 철자의 DELETE 가 모두 파괴다, 69: 세 철자의 --web 이 같은 값이다, 69: 남의 저장소는 협업이 아니다, 69: 배포 트리거는 요소별로 맞는다, 69: 남의 저장소는 형태가 맞아도 목록 밖이다, 69: 본문 안쪽의 GH_REPO 도 필드로 실린다, 69: 본문 바깥의 GH_HOST 도 호스트째 실린다 ---
+# 74. The gh consumers read the parse
+# --- section: 74 | group: parse | covers: act | anchors: 74: 여섯 철자의 DELETE 가 모두 파괴다, 74: 세 철자의 --web 이 같은 값이다, 74: 남의 저장소는 협업이 아니다, 74: 배포 트리거는 요소별로 맞는다, 74: 남의 저장소는 형태가 맞아도 목록 밖이다, 74: 본문 안쪽의 GH_REPO 도 필드로 실린다, 74: 본문 바깥의 GH_HOST 도 호스트째 실린다 ---
 #
 # 이 절은 gh argv 를 읽는 네 소비자(등급·표식·사다리·협업)와 배포 트리거를 한
 # 자리에서 잰다. 넷 다 예전에는 각자 `" $* "` 를 훑었고, 그래서 **같은 행위가
@@ -23492,34 +23509,34 @@ s69() {
 }
 
 # (1) 등급 — 한 행위의 여러 철자가 한 값이다.
-check "69: 세 철자의 --web 이 같은 값이다" \
+check "74: 세 철자의 --web 이 같은 값이다" \
   "$(s69 'G gh pr view 1 --web; G gh pr view 1 -wR o/r; G gh pr view 1 --web=true')" \
   "형태 미상
 형태 미상
 형태 미상"
 # 오늘 실물 gh 는 `repo delete` 잎에서 선행 `-R` 을 거부한다. 표가 그 거부를
 # 따라가지 않으면 실물이 실행하지 않을 형태에 등급이 붙는다.
-check "69: 잎이 받지 않는 -R 은 형태 미상이다" \
+check "74: 잎이 받지 않는 -R 은 형태 미상이다" \
   "$(s69 'G gh -R o/r repo delete x; G gh -R o/r auth token')" \
   "형태 미상
 형태 미상"
 # 미등록 동사는 등급 미상이 아니다 — 등급 미상은 선언으로 구제되는 칸이라,
 # 파서가 실재를 확인해 준 명령이 그 칸에 떨어지면 선언 한 줄로 읽기가 된다.
-check "69: 별칭은 자기 본체의 행을 받는다" "$(s69 'G gh co 1')" "워크트리쓰기"
-check "69: 브라우저를 여는 동사는 형태 미상이다" "$(s69 'G gh browse')" "형태 미상"
-check "69: 확장 설치는 트리 밖 쓰기다" "$(s69 'G gh extension install e/x')" "트리밖쓰기"
-check "69: 확장 실행은 형태 미상이다" "$(s69 'G gh extension exec x')" "형태 미상"
+check "74: 별칭은 자기 본체의 행을 받는다" "$(s69 'G gh co 1')" "워크트리쓰기"
+check "74: 브라우저를 여는 동사는 형태 미상이다" "$(s69 'G gh browse')" "형태 미상"
+check "74: 확장 설치는 트리 밖 쓰기다" "$(s69 'G gh extension install e/x')" "트리밖쓰기"
+check "74: 확장 실행은 형태 미상이다" "$(s69 'G gh extension exec x')" "형태 미상"
 # 본문 플래그는 gh 자신이 GET 을 POST 로 바꾸는 신호다. 옛 훑기는 `--field=`
 # 붙임 꼴을 못 보고 그 요청을 읽기로 등급했다.
-check "69: 본문 플래그의 세 철자가 모두 쓰기다" \
+check "74: 본문 플래그의 세 철자가 모두 쓰기다" \
   "$(s69 'G gh api --field=body=x /repos/o/r/issues; G gh api -f body=x /r; G gh api --input=/tmp/f /x')" \
   "외부상태변경
 외부상태변경
 외부상태변경"
-check "69: 본문도 메서드도 없으면 읽기다" "$(s69 'G gh api /repos/o/r')" "읽기"
+check "74: 본문도 메서드도 없으면 읽기다" "$(s69 'G gh api /repos/o/r')" "읽기"
 
 # (2) 표식 — 같은 요청의 여섯 철자.
-check "69: 여섯 철자의 DELETE 가 모두 파괴다" \
+check "74: 여섯 철자의 DELETE 가 모두 파괴다" \
   "$(s69 '
 for a in "-X DELETE" "-XDELETE" "-X=DELETE" "--method DELETE" "--method=DELETE" "-iXDELETE"; do
   M gh api $a /repos/o/r
@@ -23530,80 +23547,80 @@ done')" \
 파괴/DELETE
 파괴/DELETE
 파괴/DELETE"
-check "69: 묶인 -at 와 --show-token=true 가 모두 비밀출력이다" \
+check "74: 묶인 -at 와 --show-token=true 가 모두 비밀출력이다" \
   "$(s69 'M gh auth status -at; M gh auth status --show-token=true; M gh auth status -t')" \
   "비밀출력/--show-token
 비밀출력/--show-token
 비밀출력/--show-token"
-check "69: 선행 -R 을 받는 잎은 파괴 표식을 유지한다" \
+check "74: 선행 -R 을 받는 잎은 파괴 표식을 유지한다" \
   "$(s69 'M gh -R o/r release delete v1 --yes')" "파괴/delete"
 # 읽을 수 없는 형태에는 표식을 달지 않는다 — 등급이 이미 형태 미상으로 park 한다.
 # 표식 없음의 문면은 빈 출력이 아니라 빈 칸 둘(`<표지>\t<트리거>`)이라, `M` 의
 # 탭 치환을 거치면 `/` 하나로 온다.
-check "69: 읽을 수 없는 형태에는 표식이 없다" "$(s69 'M gh -R o/r auth token')" "/"
+check "74: 읽을 수 없는 형태에는 표식이 없다" "$(s69 'M gh -R o/r auth token')" "/"
 
 # (3) 사다리 — 선행 플래그가 있어도 같은 칸이다.
-check "69: 선행 -R 이 있어도 머지 칸이다" \
+check "74: 선행 -R 이 있어도 머지 칸이다" \
   "$(s69 'L gh pr merge 1; L gh -R o/r pr merge 1; L gh -Ro/r pr merge 1')" \
   "머지
 머지
 머지"
-check "69: 다른 문으로 들어온 머지도 머지 칸이다" \
+check "74: 다른 문으로 들어온 머지도 머지 칸이다" \
   "$(s69 'L gh api -X PUT repos/o/r/pulls/1/merge')" "머지"
-check "69: 읽을 수 없는 형태는 칸을 주장하지 않는다" "$(s69 'L gh -R o/r repo delete x')" ""
+check "74: 읽을 수 없는 형태는 칸을 주장하지 않는다" "$(s69 'L gh -R o/r repo delete x')" ""
 
 # (4) 협업 — 대상의 저장소일 때만이다. 저장소를 적지 않은 행위는 워크트리의
 # 원격을 쓰므로 대상 행이 이미 고정한다.
-check "69: 대상의 저장소를 향한 이슈 작성은 협업이다" \
+check "74: 대상의 저장소를 향한 이슈 작성은 협업이다" \
   "$(s69 'C gh issue create --title x; C gh -R o/r issue create --title x')" \
   "1
 1"
-check "69: 남의 저장소는 협업이 아니다" \
+check "74: 남의 저장소는 협업이 아니다" \
   "$(s69 'C gh -R evil/x issue create --title x; C gh --repo=evil/x pr merge 1')" \
   "0
 0"
 # 환경 변수도 저장소를 바꾸는 철자다. 두 줄이 함께 있어야 첫 줄이 맞은 이유로
 # 맞았음이 드러난다 — 둘째 줄까지 0 이면 셀이 저장소를 본 것이 아니라 `env` 라는
 # 이름에서 갈려 나간 것이다.
-check "69: 환경 변수로 바꾼 남의 저장소는 협업이 아니다" \
+check "74: 환경 변수로 바꾼 남의 저장소는 협업이 아니다" \
   "$(s69 'C env GH_REPO=evil/x gh pr merge 1')" "0"
-check "69: 환경 변수로 바꾼 대상의 저장소는 협업이다" \
+check "74: 환경 변수로 바꾼 대상의 저장소는 협업이다" \
   "$(s69 'C env GH_REPO=o/r gh pr merge 1')" "1"
 # 엔드포인트는 첫 위치 인자다 — 헤더 값이나 jq 식이 「/issues」 를 품었다고
 # 그 요청이 이슈에 대한 것은 아니다.
-check "69: 엔드포인트 아닌 자리의 문면은 협업을 만들지 않는다" \
+check "74: 엔드포인트 아닌 자리의 문면은 협업을 만들지 않는다" \
   "$(s69 'C gh api --jq .x/issues /repos/o/r/actions/runs; C gh api /repos/o/r/issues')" \
   "0
 1"
 
 # (5) 배포 트리거 — 요소별 대조.
 S69_IDS='workflow:deploy.yml'
-check "69: 배포 트리거는 요소별로 맞는다" \
+check "74: 배포 트리거는 요소별로 맞는다" \
   "$(s69 'D gh workflow run deploy.yml; D gh -R o/r workflow run deploy.yml')" \
   "1
 1"
-check "69: 남의 저장소의 같은 이름 워크플로는 이 대상의 배포가 아니다" \
+check "74: 남의 저장소의 같은 이름 워크플로는 이 대상의 배포가 아니다" \
   "$(s69 'D gh -R evil/x workflow run deploy.yml')" "0"
 S69_IDS='argv:deploy prod'
-check "69: 여러 단어 요소는 연속한 단어열로 맞는다" \
+check "74: 여러 단어 요소는 연속한 단어열로 맞는다" \
   "$(s69 'D ./run.sh deploy prod; D ./run.sh deploy staging; D ./run.sh deployprod')" \
   "1
 0
 0"
 S69_IDS='argv:make deploy'
-check "69: 다른 이름의 같은 첫 단어는 배포가 아니다" \
+check "74: 다른 이름의 같은 첫 단어는 배포가 아니다" \
   "$(s69 'D make deploy; D make build')" \
   "1
 0"
 # 도는 런이 실제로 쓰는 철자. 요소가 argv0 를 포함하고 행위가 그 뒤에 피연산자를
 # 더 붙인 꼴이라, 요소별 대조가 머리 단어열을 맞추는지가 여기서 갈린다.
 S69_IDS='argv:git pull --ff-only'
-check "69: 도는 런의 배포 트리거 철자가 계속 맞는다" \
+check "74: 도는 런의 배포 트리거 철자가 계속 맞는다" \
   "$(s69 'D git pull --ff-only origin master; D git pull origin master')" \
   "1
 0"
 S69_IDS='branch:release'
-check "69: 브랜치 요소는 단어 안쪽에서 맞지 않는다" \
+check "74: 브랜치 요소는 단어 안쪽에서 맞지 않는다" \
   "$(s69 'D git push origin HEAD:release; D git push origin HEAD:release-candidate')" \
   "1
 0"
@@ -23621,31 +23638,31 @@ s69_rule() {
     GATE_ARGV_REPO="$1" GATE_TARGET_REPO="$2" \
     /bin/sh "$(dirname "$GATE")/rules/사전-인가-대조.sh" 2>/dev/null )
 }
-check "69: 저장소를 적지 않은 행위는 형태만으로 인가된다" \
+check "74: 저장소를 적지 않은 행위는 형태만으로 인가된다" \
   "$(s69_rule '' '')" "P=1 형태=완전 Pd=0"
-check "69: 대상의 저장소를 적은 행위도 인가된다" \
+check "74: 대상의 저장소를 적은 행위도 인가된다" \
   "$(s69_rule 'o/r' 'o/r')" "P=1 형태=완전 Pd=0"
-check "69: 남의 저장소는 형태가 맞아도 목록 밖이다" \
+check "74: 남의 저장소는 형태가 맞아도 목록 밖이다" \
   "$(s69_rule 'evil/x' 'o/r')" "P=0 형태=없음 Pd=0"
-check "69: 대상 저장소를 못 읽으면 명시된 저장소는 목록 밖이다" \
+check "74: 대상 저장소를 못 읽으면 명시된 저장소는 목록 밖이다" \
   "$(s69_rule 'evil/x' '')" "P=0 형태=없음 Pd=0"
 
 # 게이트가 그 두 필드를 실제로 싣는지. 룰이 옳아도 필드가 오지 않으면 위 단언은
 # 아무것도 지키지 못한다.
-check "69: 게이트는 명시된 저장소를 필드로 싣는다" \
+check "74: 게이트는 명시된 저장소를 필드로 싣는다" \
   "$(s69 'gate_preauth_export tgt gh --repo=evil/x pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
   "evil/x|o/r"
-check "69: 저장소를 적지 않으면 필드를 내지 않는다" \
+check "74: 저장소를 적지 않으면 필드를 내지 않는다" \
   "$(s69 'gate_preauth_export tgt gh pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
   "|"
 # 해소되지 않는 철자는 필드를 안 내는 것이 아니라 대상 없이 그대로 실린다 —
 # 안 내면 「저장소를 적지 않았다」로 읽혀 통과한다.
-check "69: 해소되지 않는 저장소는 대조 없이 실린다" \
+check "74: 해소되지 않는 저장소는 대조 없이 실린다" \
   "$(s69 'gate_preauth_export tgt gh --repo=garbage pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
   "garbage|"
 # 셸 조각 안에 적은 저장소도 같은 필드로 실린다. 명령 전체가 불투명하다고 필드를
 # 비우면 룰은 「저장소를 적지 않았다」로 읽고 형태만으로 인가한다.
-check "69: 셸 조각 안의 남의 저장소도 필드로 실린다" \
+check "74: 셸 조각 안의 남의 저장소도 필드로 실린다" \
   "$(s69 "gate_preauth_export tgt bash -c 'gh -R evil/x pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
   "evil/x|o/r"
 # 저장소는 플래그로만 지명되는 것이 아니다. `GH_REPO` 는 조각 재파싱이 빈
@@ -23653,36 +23670,36 @@ check "69: 셸 조각 안의 남의 저장소도 필드로 실린다" \
 # 않았다」를 답하고 룰이 대조를 통째로 건너뛰었다. 본문 안쪽과 바깥쪽을 따로
 # 적는 이유는 두 자리가 서로 다른 층에 기록되기 때문이다 — 안쪽은 조각의 선행
 # 대입이 본문 층으로 떼어진 것이고, 바깥쪽은 벗겨진 `env` 사슬의 것이다.
-check "69: 본문 안쪽의 GH_REPO 도 필드로 실린다" \
+check "74: 본문 안쪽의 GH_REPO 도 필드로 실린다" \
   "$(s69 "gate_preauth_export tgt bash -c 'GH_REPO=evil/x gh pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
   "evil/x|o/r"
-check "69: 본문 바깥의 GH_REPO 도 필드로 실린다" \
+check "74: 본문 바깥의 GH_REPO 도 필드로 실린다" \
   "$(s69 "gate_preauth_export tgt env GH_REPO=evil/x bash -c 'gh pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
   "evil/x|o/r"
 # 호스트도 같은 전선을 탄다. 호스트가 안 실리면 `gate_gh_host_is_default` 는
 # 「호스트가 전혀 없다」를 기본 호스트로 읽어, 남의 호스트가 통과한다.
-check "69: 본문 안쪽의 GH_HOST 도 호스트째 실린다" \
+check "74: 본문 안쪽의 GH_HOST 도 호스트째 실린다" \
   "$(s69 "gate_preauth_export tgt bash -c 'GH_HOST=ghe.attacker.example gh -R o/r pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
   "ghe.attacker.example/o/r|o/r"
-check "69: 본문 바깥의 GH_HOST 도 호스트째 실린다" \
+check "74: 본문 바깥의 GH_HOST 도 호스트째 실린다" \
   "$(s69 "gate_preauth_export tgt env GH_HOST=ghe.attacker.example bash -c 'gh -R o/r pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
   "ghe.attacker.example/o/r|o/r"
 # 음성 대조군 — 기본 호스트와 대상 저장소를 지명한 환경은 불일치가 아니다.
-check "69: 대상과 같은 환경 지명은 불일치가 아니다" \
+check "74: 대상과 같은 환경 지명은 불일치가 아니다" \
   "$(s69 "gate_preauth_export tgt bash -c 'GH_HOST=github.com GH_REPO=o/r gh pr merge 1'; printf '%s|%s\n' \"\${GATE_ARGV_REPO:-}\" \"\${GATE_TARGET_REPO:-}\"")" \
   "o/r|o/r"
 
 # 호스트는 저장소의 일부다. 슬러그가 같아도 다른 호스트면 이 런의 저장소가 아니다.
-check "69: 다른 호스트의 같은 슬러그는 호스트째 실린다" \
+check "74: 다른 호스트의 같은 슬러그는 호스트째 실린다" \
   "$(s69 'gate_preauth_export tgt gh -R https://ghe.attacker.example/o/r issue create --title x; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
   "ghe.attacker.example/o/r|o/r"
-check "69: 다른 호스트의 같은 슬러그는 협업이 아니다" \
+check "74: 다른 호스트의 같은 슬러그는 협업이 아니다" \
   "$(s69 'C gh -R https://ghe.attacker.example/o/r issue create --title x; C gh -R https://github.com/o/r issue create --title x')" \
   "0
 1"
 # 권한부는 첫 `/`·`?`·`#` 에서 끝나고 사용자 정보는 마지막 `@` 까지다. `?@` 철자는
 # 남의 호스트를 이름 짓고, 호스트 없는 `file` 스킴은 기본 호스트가 아니다.
-check "69: ?@ 철자와 file 스킴은 협업이 아니다" \
+check "74: ?@ 철자와 file 스킴은 협업이 아니다" \
   "$(s69 "C gh -R 'https://evil.example?@github.com/o/r' issue create --title x
           C gh -R file:///o/r issue create --title x
           C gh -R https://u@x@github.com/o/r issue create --title x")" \
@@ -23690,7 +23707,7 @@ check "69: ?@ 철자와 file 스킴은 협업이 아니다" \
 0
 1"
 # 래퍼 뒤의 셸도 불투명하다. argv0 만 보면 `env` 라서 판정을 건너뛴다.
-check "69: 래퍼 뒤의 셸 조각도 불투명하다" \
+check "74: 래퍼 뒤의 셸 조각도 불투명하다" \
   "$(s69 "gate_argv_opaque env bash -c 'echo x'; echo; gate_argv_opaque env git status; echo")" \
   "1
 0"
@@ -24807,6 +24824,176 @@ case "$msg" in
   *'park 예상: 도달 판정=CI실패'*) ok "60: 그 거절의 칸이 CI실패 다 (다른 park 가 11 을 낸 것이 아니다)" ;;
   *) bad "60 로컬 머지 거절 칸" "$msg" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 69. 계측 필링 관문 — 케이던스·잠금·좌석·plan
+# --- section: 69 | group: base | covers: snapshot, plan, digest-path | anchors: 69: 첫 진입은 수집기를 부른다, 69: 스탬프 안의 재진입은 부르지 않는다, 69: 잠금이 살아 있으면 부르지 않는다, 69: 스테이지 좌석은 부르지 않는다, 69: plan 은 부르지 않는다, 69: digest-path 는 부르지 않는다, 69: 번호 없음 행이 남는다 ---
+#
+# 게이트 프렐류드가 계측 수집기를 언제 부르고 언제 부르지 않는지를 잰다. 수집기와 그
+# 트리거는 `scripts/test-collect-run-metrics.sh` 가, gh 를 부르는 필링 본체는
+# `scripts/test-run-issue-filing.sh` 가 잰다 — 여기서는 수집기를 호출 수만 세는 스텁으로
+# 바꾸고, 설정 파일에 Project 번호를 두지 않아 gh 에 닿지 않게 한다. 번호가 없을 때
+# 이슈를 만들지 않고 건너뜀 행만 남기는 분기가 곧 이 절의 마지막 단언이다.
+#
+# 이 절은 픽스처를 자기가 만든다(절 59 와 같은 이유 — `--sections 69` 로 잘라 돌릴 때
+# 앞 절의 변수가 없다).
+# ---------------------------------------------------------------------------
+P69ROOT=$(mktemp -d "$WORK/m69.XXXXXX")
+P69_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P69_PREV" ]; then
+  printf '69: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+P69_RID=R69
+P69_MAN="$P69ROOT/$P69_RID.plan.md"
+P69_GRANT="$WT/docs/pipeline-grant/$P69_RID.md"
+P69_LEDGER="$WT/docs/pipeline-run/$P69_RID.md"
+P69_STATE="$P69ROOT/state"
+P69_SROOT="$P69_STATE/cc-cmds"
+P69_STAMP="$P69_SROOT/metrics.stamp"
+P69_LOCK="$P69_SROOT/.metrics.lock"
+P69_CALLS="$P69ROOT/calls"
+P69_COLLECTOR="$P69ROOT/collector-stub"
+P69_CONF="$P69ROOT/metrics-filing"
+sed -e "s/run-id=$P69_PREV;/run-id=$P69_RID;/" \
+    -e "s/^\*\*런 id\*\*: $P69_PREV\$/**런 id**: $P69_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P69_MAN"
+sed "s/R1/$P69_RID/g" "$GBAK" > "$P69_GRANT"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$P69_RID"
+  printf '런 id %s · 계측 필링 관문 픽스처\n' "$P69_RID"
+} > "$P69_LEDGER"
+rm -rf "$P69_STATE"
+mkdir -p "$P69_STATE"
+cat > "$P69_COLLECTOR" <<P69EOF
+#!/usr/bin/env bash
+printf '1\n' >> "$P69_CALLS"
+printf '%s\n' '{"round":1,"at":"2026-01-01T00:00:00Z","repo":"-x","counts":{},"new_runs":[],"probe":"ok","mixed_window":false,"strata":{},"fired":[{"id":"T3","kind":"review","signature":"T3/review","body":"x"}],"close":[],"excluded":{}}'
+P69EOF
+chmod +x "$P69_COLLECTOR"
+printf 'account\ttester\n' > "$P69_CONF"
+
+p69_gate() {
+  # 인프로세스 호출. 수집기·설정 경로는 게이트가 호출 시점에 읽으므로 소싱 시점 입력
+  # 검사에 걸리지 않는다. 함수 앞의 임시 대입이 아니라 서브셸 안의 `export` 다 — 회차는
+  # 게이트가 띄우는 분리 자식(새 bash 프로세스)에서 돌고, 그 자식은 수출된 값만 받는다.
+  ( cd "$WT" && export XDG_STATE_HOME="$P69_STATE" CC_METRICS_COLLECTOR="$P69_COLLECTOR" \
+      CC_METRICS_FILING_FILE="$P69_CONF" && gate_inproc "$@" >/dev/null 2>&1 )
+}
+p69_wait_round() {
+  # 회차를 띄운 호출 뒤, 분리 자식이 잠금을 풀 때까지 유계로 기다린다. 잠금은 동사가
+  # 돌아오기 전에 잡히므로, 없으면 회차가 없었거나 이미 끝난 것이다.
+  local i=0
+  while [ -d "$P69_LOCK" ]; do
+    [ "$i" -lt 300 ] || { bad "69: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+P69_ROUND_LOG="$P69_STATE/cc-cmds/run/$P69_RID/log/metrics-round.log"
+p69_calls() { if [ -f "$P69_CALLS" ]; then grep -c '' "$P69_CALLS"; else printf 0; fi; }
+p69_rows() { { grep -cF "\`계측 필링 건너뜀\`" "$P69_LEDGER" || true; }; }
+p69_old_stamp() { printf '%s\n' "$(( $(date -u +%s) - 86400 ))" > "$P69_STAMP"; }
+
+# A — 첫 진입.
+p69_gate snapshot --manifest "$P69_MAN"
+p69_wait_round
+check "69: 첫 진입은 수집기를 부른다" "$(p69_calls)" "1"
+check "69: 첫 진입은 스탬프를 쓴다" "$([ -f "$P69_STAMP" ] && printf 있음 || printf 없음)" "있음"
+check "69: 첫 진입이 끝나면 잠금이 풀려 있다" "$([ -d "$P69_LOCK" ] && printf 있음 || printf 없음)" "없음"
+check "69: 번호 없음 행이 남는다" "$(p69_rows)" "1"
+check "69: 그 행의 사유는 번호 없음이다" \
+  "$({ grep -F "\`계측 필링 건너뜀\`" "$P69_LEDGER" || true; } | tail -1 | tr '|' '\n' | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//')" "번호 없음"
+
+# B — 스탬프 안의 재진입.
+p69_gate snapshot --manifest "$P69_MAN"
+check "69: 스탬프 안의 재진입은 부르지 않는다" "$(p69_calls)" "1"
+check "69: 부르지 않은 재진입은 행을 남기지 않는다" "$(p69_rows)" "1"
+
+# C — 스탬프는 만료됐지만 잠금이 살아 있다(소유자 줄 없이 방금 만든 디렉터리 — 나이는
+# 디렉터리 mtime 으로 잰다). 회차를 띄우지 않는 것이 이 사례의 단언이라 기다리지 않는다
+# — 잠금은 이 사례가 만든 것이라 기다려도 풀리지 않는다.
+p69_old_stamp
+mkdir -p "$P69_LOCK"
+p69_gate snapshot --manifest "$P69_MAN"
+check "69: 잠금이 살아 있으면 부르지 않는다" "$(p69_calls)" "1"
+
+# D — 잠금이 만료 시간(7200초)을 넘겼다.
+fx_age_file "$P69_LOCK" 10800
+p69_gate snapshot --manifest "$P69_MAN"
+p69_wait_round
+check "69: 만료된 잠금은 깨고 부른다" "$(p69_calls)" "2"
+check "69: 깨고 잡은 잠금도 끝에 풀린다" "$([ -d "$P69_LOCK" ] && printf 있음 || printf 없음)" "없음"
+
+# E — 스테이지 좌석.
+p69_old_stamp
+p69_stamp_before=$(cat "$P69_STAMP")
+( CC_PIPELINE_STAGE_ID="$P69_RID#1" CC_PIPELINE_SEGMENT=S69 p69_gate snapshot --manifest "$P69_MAN" )
+check "69: 스테이지 좌석은 부르지 않는다" "$(p69_calls)" "2"
+check "69: 스테이지 좌석은 스탬프를 쓰지 않는다" "$(cat "$P69_STAMP")" "$p69_stamp_before"
+
+# F — plan.
+p69_gate plan --manifest "$P69_MAN" --kind x --target infra --cutpoint 커밋 -- ls
+check "69: plan 은 부르지 않는다" "$(p69_calls)" "2"
+check "69: plan 은 스탬프를 쓰지 않는다" "$(cat "$P69_STAMP")" "$p69_stamp_before"
+
+# H — digest-path. PreToolUse 훅이 도구 호출마다 부르는 동사라, 여기서 회차가 돌면 도구 호출
+# 하나가 회차 전체를 기다린다. 스탬프는 만료된 채로 남아 다음 비제외 동사가 회차를 돈다.
+p69_gate digest-path --manifest "$P69_MAN"
+check "69: digest-path 는 부르지 않는다" "$(p69_calls)" "2"
+check "69: digest-path 는 스탬프를 쓰지 않는다" "$(cat "$P69_STAMP")" "$p69_stamp_before"
+
+# G — 수집기가 0 이 아닌 코드로 끝난다. 회차는 동사를 실패시키지 않는다는 계약이므로,
+# 동사는 제 종료 코드와 출력을 그대로 내고, 잠금은 풀리고, 실패는 로그 한 줄로 남는다.
+# 회차는 분리 자식에서 돌므로 그 로그는 동사의 stderr 가 아니라 런 디렉터리의
+# `log/metrics-round.log` 에 남는다.
+# 종료 코드는 파일로 넘긴다 — 함수 호출 앞의 임시 대입이 게이트가 띄우는 자식까지
+# 내려가는지에 기대지 않는다.
+P69_FAILING="$P69ROOT/collector-failing"
+P69_FAIL_RC="$P69ROOT/collector-rc"
+cat > "$P69_FAILING" <<P69EOF
+#!/usr/bin/env bash
+printf '1\n' >> "$P69_CALLS"
+exit "\$(cat "$P69_FAIL_RC")"
+P69EOF
+chmod +x "$P69_FAILING"
+p69_gate_io() {
+  # p69_gate_io <collector> <verb args...> — stdout·stderr 를 파일로 받는다. 인프로세스가
+  # 아니라 새 bash 프로세스다: 결함은 run.sh 가 소싱 시점에 거는 errexit 아래에서만 서고,
+  # 인프로세스 호출은 그 셸 옵션을 싣지 않아 고치기 전 게이트에서도 이 사례가 초록이었다.
+  local col="$1"; shift
+  ( cd "$WT" && export XDG_STATE_HOME="$P69_STATE" CC_METRICS_COLLECTOR="$col" \
+      CC_METRICS_FILING_FILE="$P69_CONF" && bash "$GATE" "$@" >"$P69ROOT/out" 2>"$P69ROOT/err" )
+}
+p69_fail_case() {
+  # p69_fail_case <label> <collector> [env...] — 스탬프를 만료시키고 snapshot 한 번.
+  local label="$1" col="$2" vrc=0 before lb la
+  shift 2
+  p69_old_stamp
+  # 앞 사례가 남긴 잠금이 이 사례의 수집기 호출을 막지 않게 한다 — 사례마다 독립이다.
+  rm -rf "$P69_LOCK"
+  before=$(p69_calls)
+  lb=$(grep -c '계측 회차 실패' "$P69_ROUND_LOG" 2>/dev/null || true)
+  ( [ $# -eq 0 ] || export "$@"; p69_gate_io "$col" snapshot --manifest "$P69_MAN" ) || vrc=$?
+  p69_wait_round
+  la=$(grep -c '계측 회차 실패' "$P69_ROUND_LOG" 2>/dev/null || true)
+  check "69: $label — 동사가 0 으로 끝난다" "$vrc" "0"
+  check "69: $label — 동사가 제 출력을 낸다" \
+    "$(jq -e 'type == "object"' "$P69ROOT/out" >/dev/null 2>&1 && printf 객체 || printf 아님)" "객체"
+  check "69: $label — 잠금이 풀려 있다" "$([ -d "$P69_LOCK" ] && printf 있음 || printf 없음)" "없음"
+  check "69: $label — 실패가 로그에 남는다" "$(( ${la:-0} - ${lb:-0} ))" "1"
+  p69_after=$(p69_calls)
+  p69_called=$([ "$p69_after" -gt "$before" ] && printf 불림 || printf 안불림)
+}
+printf '1\n' > "$P69_FAIL_RC"
+p69_fail_case "수집기 rc=1" "$P69_FAILING"
+check "69: 수집기 rc=1 — 수집기가 실제로 불렸다" "$p69_called" "불림"
+printf '2\n' > "$P69_FAIL_RC"
+p69_fail_case "수집기 rc=2" "$P69_FAILING"
+check "69: 수집기 rc=2 — 수집기가 실제로 불렸다" "$p69_called" "불림"
+# 결정적 재현: 실제 수집기는 정수가 아닌 전환 구간 폭을 인자 오류(2)로 거부한다.
+p69_fail_case "실제 수집기 인자 오류" "$repo_root/plugins/cc-cmds/orchestrator/collect-run-metrics.sh" \
+  CC_METRICS_SWITCH_WINDOW_S=abc
 
 # ---------------------------------------------------------------------------
 # 61. 휴면 기동의 원장 바이트
