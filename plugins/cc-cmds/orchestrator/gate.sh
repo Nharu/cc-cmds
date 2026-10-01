@@ -7811,6 +7811,15 @@ gate_snapshot() {
   printf '  "cycles": [\n'
   gate_snapshot_cycles_json
   printf '  ],\n'
+  # THE STALL LABELS, right after the reviews they are derived from. Always
+  # emitted, empty included, so no reader has to tell an absent key from an empty
+  # list. Outside the default `--fields` projection and outside `H`: the labels
+  # are a pure function of rows the chain already covers. And outside the
+  # dispatch path by construction — `act` reads `gate_snapshot_digest`, never
+  # this object — so no label can refuse, park or hold anything.
+  printf '  "stalls": [\n'
+  gate_snapshot_stalls_json
+  printf '  ],\n'
   printf '  "shift": %s,\n' "$(gate_shift_state)"
   # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
   # sensor's last published tick and never computed here. Absent, stale or of
@@ -14564,7 +14573,9 @@ gate_record_row() {
 
       # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
       # deliberately. `cycle` and `problem` below carry the same shape for
-      # `세그먼트=`, so all three share this note.
+      # `세그먼트=`, so all three share this note. The `cycle` arm now refuses a
+      # caller's `세그먼트=` at record time, which is the repair named below;
+      # this arm and `problem` still do not.
       #
       # REORDERING MOVES THE HOLE RATHER THAN CLOSING IT, and that is why the
       # obvious repair is not the one to reach for. Readers do not agree on
@@ -14760,6 +14771,43 @@ gate_record_row() {
       # was written and in a run that can no longer repair it; requiring it here
       # puts the refusal on the call that omitted it, which is the one place a
       # router can still add the field.
+      #
+      # THE CALLER'S KEYS ARE REFUSED FROM THE ROW READER'S POINT OF VIEW, and
+      # before any other check reads them. `gate_field_of` matches a key exactly,
+      # but the row reader (`gate_row_field`) drops the spaces in front of a key
+      # and takes the LAST value — so a check written against `gate_field_of`
+      # passes ` 세그먼트=S2`, a newline- or CR-led `세그먼트=S2` (the append
+      # turns both into a space), and ` P0=4` behind a valid `P0=0`, and every
+      # one of them is then read back as a field the checks below never saw.
+      # Three readers of this row disagree about which `세그먼트` wins — the last
+      # value, the first value, and any occurrence — and the only thing that
+      # makes them agree on a new row is refusing the second value at write
+      # time. So: a key whose spelling changes when its surrounding spaces and
+      # tabs are trimmed is refused; `세그먼트` is refused whatever its value,
+      # because the gate writes it from `--segment`; and `발견 지문` is refused
+      # because it is a field only the gate writes. A refusal writes nothing.
+      local ca ck ckt cnl cr ctb
+      cnl=$'\n'; cr=$'\r'; ctb=$'\t'
+      for ca in "$@"; do
+        case "$ca" in *=*) ;; *) continue ;; esac
+        ck=${ca%%=*}
+        ck=${ck//$cnl/ }
+        ck=${ck//$cr/ }
+        ckt=${ck#"${ck%%[! $ctb]*}"}
+        ckt=${ckt%"${ckt##*[! $ctb]}"}
+        if [ "$ck" != "$ckt" ]; then
+          warn "키 앞뒤에 공백이 있는 필드는 받지 않는다 — 공백을 지우고 다시 부른다: '${ckt}'"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        case "$ckt" in
+          세그먼트)
+            warn "\`세그먼트\` 는 게이트가 --segment 로 쓴다 — 이 필드를 빼고 다시 부른다"
+            return "$GATE_EXIT_VOCAB" ;;
+          '발견 지문')
+            warn "\`발견 지문\` 은 게이트만 쓰는 필드다 — 이 필드를 빼고 다시 부른다"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
+      done
       for k in '사이클' 'P0' 'P1' '리뷰 HEAD' '리포트 경로'; do
         if [ -z "$(gate_field_of "$k" "$@")" ]; then
           # `${k}` and not `$k`: the closing bracket that follows is multibyte,
@@ -14984,8 +15032,10 @@ EOF
         warn "cannot open the report of a cycle row with \`모드=델타\`: $rep$delta_repair"
         return "$GATE_EXIT_VOCAB"
       fi
-      # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
-      # than `id`.
+      # NO LONGER DEFERRED FOR THIS ARM. The `segment` arm still leaves its
+      # caller's `id=` free to win, but a caller's `세그먼트=` never reaches this
+      # line: the refusal at the top of the arm rejects it in every spelling the
+      # row reader would read, so the gate's value in front is the only one.
       gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
       ;;
@@ -16539,11 +16589,13 @@ gate_plan_unchecked_axes() {
   case "$kind" in
     segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop)
       # The `키=값` list after `--` is validated by the row writer, and the row
-      # writer runs only on the performing path. Four known divergences live
-      # behind this one line — a predecessor-monotonicity violation, a
-      # predecessor segment absent from the ledger, a `cycle` row missing a
-      # required field, and a missing cone anchor row — so naming the axis is
-      # what lets the router expect them instead of meeting them.
+      # writer runs only on the performing path. The record-time checks are
+      # defined by `gate_record_row` and this note does not enumerate them — a
+      # count kept here goes stale the moment one is added. The kinds, for
+      # example: predecessor monotonicity, an absent predecessor, a cycle row's
+      # required keys, HEAD shape and delta checks, the caller-key refusals, the
+      # cone anchor. Naming the axis is what lets the router expect them instead
+      # of meeting them.
       warn "  - record row field validity (${kind}) — the \`키=값\` fields after -- are checked at record time, so an act with the same argv can come back 2 or 6" ;;
   esac
 }
@@ -22727,6 +22779,35 @@ gate_snapshot_cycles_json() {
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
+}
+
+# THE STALL LABELS, computed by `stall-class.awk` from the whole ledger and
+# nothing else. ONE AWK PROCESS on the success path, whatever the ledger's size:
+# every `snapshot` call — `--fields H` included, because the projection renders
+# the whole object first — pays for this, so the root is taken by parameter
+# expansion rather than by `dirname` or `gate_report_abs`. That is the same
+# string, byte for byte: the entry normalization makes `MANIFEST` a LOGICAL
+# absolute path with no `.` or `..` in it, so stripping two components off its
+# directory is exactly what the relative arm of `gate_report_abs` gets by letting
+# a logical `cd` fold the two `..`.
+#
+# FAILURE IS OPEN AND VISIBLE. A classifier that fails leaves `"stalls": []` and
+# one warning line, never a failed snapshot: the output is taken into a variable
+# and printed only after the awk has exited 0, because an awk that printed one
+# entry and then died would otherwise leave half a JSON object inside a snapshot
+# that `--fields H` parses whole. No bash arithmetic touches these values, and
+# nothing in the body leaves the function any way but normally. The awk's own
+# stderr is dropped so that the failure is the one line below and not two.
+gate_snapshot_stalls_json() {
+  local mdir root st
+  mdir=${MANIFEST%/*}
+  root=${mdir%/*}
+  root=${root%/*}
+  st=$(LC_ALL=C awk -v mode=last -v root="$root" -f "$GATE_DIR/stall-class.awk" "$LEDGER" 2>/dev/null) \
+    || { warn "정체 라벨 계산 실패 — stalls 를 비웠습니다: $GATE_DIR/stall-class.awk"; st=''; }
+  if [ -n "$st" ]; then
+    printf '%s\n' "$st"
+  fi
 }
 
 gate_snapshot_handoff_json() {

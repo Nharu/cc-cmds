@@ -22548,6 +22548,229 @@ check "68: 구간 도중 원장 경로가 바뀌면 메모가 아니라 새 경�
   "$(m68 switch "$M68_L" "$M68/ledger-b.md")" "same AB-differ"
 
 # ---------------------------------------------------------------------------
+# 69. 정체 라벨 — cycle 팔의 호출자 키 거부, stalls 의 루트·자리, 라벨이 답을 바꾸지 않음
+# --- section: 69 | group: base | covers: act, snapshot | anchors: 69: 호출자 키 거부는 exit 2 다, 69: 그 필드가 없는 같은 호출은 한 행을 쓴다, 69: 매니페스트 철자가 달라도 같은 리포트는 한 번 센다, 69: 라벨이 서도 스킬 파견의 답은 바이트로 같다, 69: stalls 는 cycles 바로 뒤에 온다, 69: 빌더 본문에 종료·디렉터리 유도가 없다 ---
+#
+# The cycle arm now refuses, from the row reader's point of view, a caller key
+# that is padded, a `세그먼트` (the gate writes that one from `--segment`), and a
+# `발견 지문`. The snapshot carries `stalls`, derived by one awk over the ledger
+# with the root taken from the manifest path by parameter expansion — so a
+# manifest spelled relatively, through `..` or through a symlink must count one
+# report once. And no label may change what the dispatch path answers: twin
+# ledgers that differ only in whether the second review sat on the same commit
+# get byte-identical answers from `plan`/`act --kind skill` and the cycle arm.
+#
+# The section builds its own run R69 — manifest, grant, ledger and state home —
+# from the current manifest with the id swapped, the way 59 does, so a cut of
+# `--sections 69` stands on nothing an earlier section left behind.
+# ---------------------------------------------------------------------------
+S69ROOT=$(mktemp -d "$WORK/stall69.XXXXXX")
+S69_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$S69_PREV" ]; then
+  printf '69: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+S69_RID=R69
+S69_MAN="$S69ROOT/$S69_RID.plan.md"
+S69_GRANT="$WT/docs/pipeline-grant/$S69_RID.md"
+S69_LEDGER="$WT/docs/pipeline-run/$S69_RID.md"
+S69_STATE="$S69ROOT/state"
+sed -e "s/run-id=$S69_PREV;/run-id=$S69_RID;/" \
+    -e "s/^\*\*런 id\*\*: $S69_PREV\$/**런 id**: $S69_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$S69_MAN"
+sed "s/R1/$S69_RID/g" "$GBAK" > "$S69_GRANT"
+s69_reset() {
+  # A fresh ledger and state home — the twins below each start from this.
+  printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 정체 라벨 픽스처\n' "$S69_RID" "$S69_RID" > "$S69_LEDGER"
+  rm -rf "$S69_STATE"; mkdir -p "$S69_STATE"
+}
+s69_reset
+s69_gate() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$S69_STATE" gate_inproc "$@" 2>"$S69ROOT/err"); rc=$?
+  S69_OUT=$out
+  msg=$(grep -vE '\[run\] ' "$S69ROOT/err" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+s69_snap() {
+  ( cd "$WT" && XDG_STATE_HOME="$S69_STATE" gate_inproc snapshot --manifest "${S69_M:-$S69_MAN}" "$@" 2>/dev/null )
+}
+s69_h() { s69_snap | jq -r .H; }
+s69_cycle() {
+  # s69_cycle <segment> <field>... — one cycle-arm act.
+  local seg=$1; shift
+  s69_gate act --manifest "$S69_MAN" --kind cycle --target infra --segment "$seg" --cutpoint 커밋 \
+    --snapshot-digest "$(s69_h)" --rationale x -- "$@"
+}
+s69_segment() {
+  s69_gate act --manifest "$S69_MAN" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
+    --snapshot-digest "$(s69_h)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+}
+s69_lines() { wc -l < "$S69_LEDGER" | tr -d ' '; }
+s69_cycles() { grep -c '^- `cycle` ' "$S69_LEDGER" || true; }
+s69_sha() { shasum -a 256 "$S69_LEDGER" | cut -d' ' -f1; }
+s69_head=$(cd "$WT" && git rev-parse HEAD)
+s69_tree=$(cd "$WT" && git rev-parse 'HEAD^{tree}')
+s69_child=$(cd "$WT" && git commit-tree "$s69_tree" -p "$s69_head" -m 'stall69 child')
+S69REP1="$S69ROOT/rep1.md"; S69REP2="$S69ROOT/rep2.md"
+printf '# 코드 리뷰 리포트 — 사이클 1\n\n## 개요\n\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 0건 | P1 1건\n' > "$S69REP1"
+printf '# 코드 리뷰 리포트 — 사이클 2\n\n## 개요\n\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 0건 | P1 1건\n' > "$S69REP2"
+
+# (1) The caller keys the cycle arm refuses ---------------------------------------
+s69_segment SK
+check "69: (전제) 거부 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+s69_i=0
+while IFS='|' read -r s69_key s69_name; do
+  s69_i=$((s69_i + 1))
+  s69_kv=$(printf '%b' "$s69_key")
+  s69_n0=$(s69_lines); s69_s0=$(s69_sha)
+  s69_cycle SK 사이클=1 P0=0 P1=1 "리뷰 HEAD=$s69_head" "리포트 경로=$S69REP1" "$s69_kv"
+  check "69: 호출자 키 거부는 exit 2 다 (${s69_i}: ${s69_name})" "$rc" "2"
+  check "69: 거부된 호출은 원장 줄 수를 바꾸지 않는다 (${s69_i})" "$(s69_lines)" "$s69_n0"
+  check "69: 거부된 호출은 원장 바이트를 바꾸지 않는다 (${s69_i})" "$(s69_sha)" "$s69_s0"
+  case "$msg" in
+    *"$s69_name"*) ok "69: 그 거절이 키 이름 「${s69_name}」을 든다 (${s69_i})" ;;
+    *) bad "69: 거절 문면 (${s69_i})" "$msg" ;;
+  esac
+done <<'S69KEYS'
+세그먼트=S2|세그먼트
+세그먼트=SK|세그먼트
+세그먼트=|세그먼트
+ 세그먼트=S2|세그먼트
+\n세그먼트=S2|세그먼트
+\r세그먼트=S2|세그먼트
+\t세그먼트=S2|세그먼트
+ 리뷰 HEAD=abc1234|리뷰 HEAD
+ P0=4|P0
+발견 지문=aaaaaaaaaaaa|발견 지문
+ 발견 지문=aaaaaaaaaaaa|발견 지문
+S69KEYS
+check "69: 거부 경우는 열하나다" "$s69_i" "11"
+s69_n0=$(s69_cycles)
+s69_cycle SK 사이클=1 P0=0 P1=1 "리뷰 HEAD=$s69_head" "리포트 경로=$S69REP1"
+check "69: 그 필드가 없는 같은 호출은 exit 0 이다" "$rc" "0"
+check "69: 그 필드가 없는 같은 호출은 한 행을 쓴다" "$(( $(s69_cycles) - s69_n0 ))" "1"
+
+# (2) The builder's root is the gate's relative-report root -----------------------
+# Each spelling of the manifest gets its own segment whose two rows name one
+# report — relatively, and absolutely under the root that spelling reaches by a
+# logical `cd` from the gate's working directory. A control segment's second
+# spelling names another root; it MUST label, or every `[]` here is vacuous.
+mkdir -p "$S69ROOT/sub"
+ln -s "$S69ROOT" "$WORK/stall69-link"
+s69_rel="../${S69ROOT##*/}/$S69_RID.plan.md"
+check "69: (전제) 상대 철자의 매니페스트가 게이트의 작업 디렉터리에서 열린다" \
+  "$([ -f "$WT/$s69_rel" ] && echo y)" "y"
+S69_VARIANTS="abs:$S69_MAN rel:$s69_rel dotdot:$S69ROOT/sub/../$S69_RID.plan.md link:$WORK/stall69-link/$S69_RID.plan.md"
+for s69_v in $S69_VARIANTS; do
+  s69_m=${s69_v#*:}
+  s69_root=$(cd "$WT" && cd "${s69_m%/*}/../.." && pwd)
+  printf -- '- `cycle` | 세그먼트=S3-%s | 사이클=4 | P0=0 | P1=3 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/v4.md\n' "${s69_v%%:*}" "$s69_head" >> "$S69_LEDGER"
+  printf -- '- `cycle` | 세그먼트=S3-%s | 사이클=5 | P0=0 | P1=3 | 리뷰 HEAD=%s | 리포트 경로=%s/docs/reviews/v4.md\n' "${s69_v%%:*}" "$s69_head" "$s69_root" >> "$S69_LEDGER"
+done
+printf -- '- `cycle` | 세그먼트=S3X | 사이클=4 | P0=0 | P1=3 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/v4.md\n' "$s69_head" >> "$S69_LEDGER"
+printf -- '- `cycle` | 세그먼트=S3X | 사이클=5 | P0=0 | P1=3 | 리뷰 HEAD=%s | 리포트 경로=/elsewhere/docs/reviews/v4.md\n' "$s69_head" >> "$S69_LEDGER"
+for s69_v in $S69_VARIANTS; do
+  S69_M=${s69_v#*:}
+  s69_st=$(s69_snap --fields stalls)
+  check "69: 매니페스트 철자가 달라도 같은 리포트는 한 번 센다 (${s69_v%%:*})" \
+    "$(printf '%s' "$s69_st" | jq -r --arg s "S3-${s69_v%%:*}" '[.[] | select(.["세그먼트"] == $s)] | length' 2>/dev/null)" "0"
+  check "69: (대조) 다른 루트의 철자는 같은 리포트가 아니다 (${s69_v%%:*})" \
+    "$(printf '%s' "$s69_st" | jq -r '[.[] | select(.["세그먼트"] == "S3X") | .["부류"] + "/" + .["사이클"]] | join(" ")' 2>/dev/null)" "NO_DRIFT/5"
+done
+unset S69_M
+rm -f "$WORK/stall69-link"
+
+# (3) The key sits right after `cycles` and stays out of the default fields -------
+s69_full=$(s69_snap)
+check "69: stalls 는 cycles 바로 뒤에 온다" \
+  "$(printf '%s' "$s69_full" | jq -r 'keys_unsorted | index("stalls") - index("cycles")')" "1"
+check "69: 기본 --fields 투영에는 stalls 가 없다" \
+  "$(s69_snap --fields | jq -r 'has("stalls")')" "false"
+
+# (4) A same-HEAD delta row through the cycle arm ---------------------------------
+s69_reset
+s69_segment SDL
+S69REP_DL="$S69ROOT/rep-delta.md"
+printf '# 코드 리뷰 리포트 — 사이클 2\n\n## 개요\n\n- **리뷰 모드**: 델타 (기준 사이클 1, 기준 리뷰 HEAD `%s`)\n- **발견 요약**: P0 0건 | P1 1건\n' "$s69_head" > "$S69REP_DL"
+s69_cycle SDL 사이클=1 모드=전체 P0=0 P1=1 "리뷰 HEAD=$s69_head" "리포트 경로=$S69REP1"
+check "69: (전제) 델타의 기준이 될 전체 행이 기록된다" "$rc" "0"
+s69_n0=$(s69_cycles)
+s69_cycle SDL 사이클=2 모드=델타 "기준 사이클=1" P0=0 P1=1 "리뷰 HEAD=$s69_head" "리포트 경로=$S69REP_DL"
+s69_drc=$rc; s69_dn=$(( $(s69_cycles) - s69_n0 ))
+s69_dl=$(s69_snap --fields stalls | jq -r '[.[] | select(.["세그먼트"] == "SDL") | .["부류"]] | join(" ")')
+printf '69: 같은 HEAD 델타 행 — 종료 코드 %s, 원장 증가 %s 줄, 라벨 「%s」\n' "$s69_drc" "$s69_dn" "$s69_dl"
+if { [ "$s69_drc" = "0" ] && [ "$s69_dn" = "1" ] && [ "$s69_dl" = "NO_DRIFT" ]; } \
+   || { [ "$s69_drc" != "0" ] && [ "$s69_dn" = "0" ] && [ -z "$s69_dl" ]; }; then
+  ok "69: 같은 HEAD 델타 행의 기록 결과가 분류기 답과 모순되지 않는다"
+else
+  bad "69: 같은 HEAD 델타 행" "rc=$s69_drc 증가=$s69_dn 라벨='$s69_dl'"
+fi
+
+# (5) Twin ledgers N and C get the same dispatch answers -----------------------------
+# Same run, same paths, same state home rebuilt per twin, so any byte that differs
+# is the label's doing. N's second review sits on the first one's commit, C's on a
+# child of it.
+s69_twin() {
+  # s69_twin <name> <second HEAD> — writes $S69ROOT/twin-<name>/ with one file per
+  # answer: rc, stdout, and stderr with the leading UTC stamp cut. The dispatch
+  # line also names the supervisor's and the stage's process ids, which no two
+  # launches share whatever the ledger says, so those two numbers are masked.
+  local tw="$S69ROOT/twin-$1" verb skill
+  s69_reset
+  mkdir -p "$tw"
+  s69_segment ST
+  s69_cycle ST 사이클=1 P0=0 P1=1 "리뷰 HEAD=$s69_head" "리포트 경로=$S69REP1"
+  s69_cycle ST 사이클=2 P0=0 P1=1 "리뷰 HEAD=$2" "리포트 경로=$S69REP2"
+  printf '%s\n' "$rc" > "$tw/cycle.rc"
+  s69_snap --fields stalls | jq -r '[.[] | select(.["세그먼트"] == "ST") | .["부류"]] | join(" ")' > "$tw/stalls"
+  for skill in review implement; do
+    for verb in plan act; do
+      if [ "$verb" = plan ]; then
+        ( cd "$WT" && XDG_STATE_HOME="$S69_STATE" CC_CLAUDE_BIN="$STUB" \
+          bash "$GATE" plan --manifest "$S69_MAN" --kind skill --target infra --segment ST --cutpoint 커밋 \
+          -- "$skill" "/cc-cmds:$skill-unattended x" ) > "$tw/$skill-$verb.out" 2> "$tw/$skill-$verb.err"
+      else
+        ( cd "$WT" && XDG_STATE_HOME="$S69_STATE" CC_CLAUDE_BIN="$STUB" \
+          bash "$GATE" act --manifest "$S69_MAN" --kind skill --target infra --segment ST --cutpoint 커밋 \
+          --surface 워크트리쓰기 --snapshot-digest "$(s69_h)" --rationale x \
+          -- "$skill" "/cc-cmds:$skill-unattended x" ) > "$tw/$skill-$verb.out" 2> "$tw/$skill-$verb.err"
+      fi
+      printf '%s\n' "$?" > "$tw/$skill-$verb.rc"
+      sed -E -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z //' \
+        -e 's/\(감독자 [0-9]+, pid [0-9]+\)/(감독자 N, pid N)/' "$tw/$skill-$verb.err" > "$tw/$skill-$verb.err.t"
+      rm -f "$tw/$skill-$verb.err"
+      if [ "$verb" = act ]; then
+        ( cd "$WT" && XDG_STATE_HOME="$S69_STATE" CC_CLAUDE_BIN="$STUB" \
+          bash "$GATE" wait --manifest "$S69_MAN" --segment ST --interval 1 --timeout 60 ) >/dev/null 2>&1
+      fi
+    done
+  done
+}
+s69_twin N "$s69_head"
+s69_twin C "$s69_child"
+check "69: N 에서 라벨이 선다" "$(cat "$S69ROOT/twin-N/stalls")" "NO_DRIFT"
+check "69: C 에는 라벨이 없다" "$(cat "$S69ROOT/twin-C/stalls")" ""
+check "69: 같은 HEAD 의 둘째 리뷰를 쓰는 cycle 호출이 exit 0 이다" \
+  "$(cat "$S69ROOT/twin-N/cycle.rc")/$(cat "$S69ROOT/twin-C/cycle.rc")" "0/0"
+for s69_f in "$S69ROOT"/twin-N/*-*.*; do
+  s69_b=${s69_f##*/}
+  if cmp -s "$s69_f" "$S69ROOT/twin-C/$s69_b"; then
+    ok "69: 라벨이 서도 스킬 파견의 답은 바이트로 같다 ($s69_b)"
+  else
+    bad "69: 쌍둥이 답 ($s69_b)" "$(diff "$s69_f" "$S69ROOT/twin-C/$s69_b" | head -5 | tr '\n' ' ')"
+  fi
+done
+check "69: 비교한 답은 열둘이다 (두 스킬 × 두 동사 × 세 산출물)" \
+  "$(find "$S69ROOT/twin-N" -name '*-*.*' | grep -c '' || true)" "12"
+
+# (6) The builder body ---------------------------------------------------------------
+s69_body=$(awk '/^gate_snapshot_stalls_json\(\) \{$/ { f = 1; next } f && /^}$/ { exit } f' "$GATE")
+check "69: (전제) 빌더 본문을 읽었다" "$([ -n "$s69_body" ] && echo y)" "y"
+check "69: 빌더 본문에 종료·디렉터리 유도가 없다" \
+  "$(printf '%s\n' "$s69_body" | grep -cE '(^|[^a-z_])exit([^a-z_]|$)|GATE_EXIT_|return[[:space:]]+[^0[:space:]]|dirname|gate_report_abs' || true)" "0"
+rm -f "$S69_GRANT" "$S69_LEDGER"
+
+# ---------------------------------------------------------------------------
 # 60. CI 체크 계열 — 전사·행 예산·진전 벡터, 그리고 머지 거절의 아홉 갈래
 # --- section: 60 | group: sa | covers: act, plan, exec | anchors: 60: 관측 세 줄이 checks 행 세 개로 전사된다, 60: 어휘 밖 상태의 줄은 전사되지 않는다, 60: 드레인 앞에서 뜬 다이제스트가 드레인 뒤에도 받아들여진다, 60: 진전 해시가 checks 드레인에 불변이다, 60: 죽은 드레인이 남긴 파일을 오래된 것부터 회수한다, 60: 살아 있는 소유자의 잠금 아래서는 전사하지 않는다, 60: 실패+이름 목록은 거절한다, 60: 그 행의 도달 판정이 CI실패 다, 60: 기록 행위는 실패 행이 있어도 머지 절단점에서 기록된다, 60: 스테이지 기동 예보는 실패 행이 있어도 CI실패 로 park 되지 않는다, 60: 머지 라벨을 단 세그먼트 읽기는 실패 행이 있어도 수행된다, 60: 이력을 통합하는 로컬 머지는 여전히 CI실패 로 거절된다 ---
 #
