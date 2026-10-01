@@ -20662,7 +20662,7 @@ m=$(grep 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null | grep -c '하한=' || tru
 
 # ---------------------------------------------------------------------------
 # 72. git 전역 문법과 push 원격 결속
-# --- section: 72 | group: reach | covers: grade, exec | anchors: 72: -C 뒤의 부명령이 등급을 정한다, 72: remote 재지정 -c 는 형태 미상이다, 72: 협업 팔이 push·pull·fetch 를 인정한다, 72: 전역 옵션은 사전 인가 형태에서 빠진다, 72: 원격은 -C 디렉터리에서 해소된다, 72: 빈 URL 은 통과가 아니라 불일치다, 72: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다, 72: --repo 로 적은 원격도 슬러그로 대조한다, 72: 외래 호스트의 대상 슬러그는 불일치다, 72: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다, 72: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다, 72: git config 의 모르는 옵션과 편집기는 형태 미상이다, 72: git send-pack 은 옵션과 관계없이 형태 미상이다, 72: 같은 노브의 -c 철자는 형태 미상이다, 72: 외부 diff 자리의 저장소 삭제는 읽기 신고로 지나지 않는다, 72: 두 겹 본문의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다 ---
+# --- section: 72 | group: reach | covers: grade, exec | anchors: 72: -C 뒤의 부명령이 등급을 정한다, 72: remote 재지정 -c 는 형태 미상이다, 72: 협업 팔이 push·pull·fetch 를 인정한다, 72: 전역 옵션은 사전 인가 형태에서 빠진다, 72: 원격은 -C 디렉터리에서 해소된다, 72: 빈 URL 은 통과가 아니라 불일치다, 72: -C 뒤의 남의 URL push 는 도달 판정에서 멈춘다, 72: --repo 로 적은 원격도 슬러그로 대조한다, 72: 외래 호스트의 대상 슬러그는 불일치다, 72: 상대 -C 는 행위 디렉터리에서 접히고 두 번이면 누적된다, 72: 그 유도가 세그먼트 워크트리의 브랜치에서 나온다, 72: git config 의 모르는 옵션과 편집기는 형태 미상이다, 72: git send-pack 은 옵션과 관계없이 형태 미상이다, 72: 같은 노브의 -c 철자는 형태 미상이다, 72: 외부 diff 자리의 저장소 삭제는 읽기 신고로 지나지 않는다, 72: 두 겹 본문의 저장소 삭제는 워크트리 쓰기 신고로 지나지 않는다, 72: 프로토콜 허용 환경 철자는 -c 철자처럼 형태 미상이다, 72: 프로토콜 허용 환경의 ext 전송은 배포 신고로도 지나지 않는다 ---
 #
 # 한 워크트리에서 다른 워크트리로 push 하는 철자 — `git -C <wt> push` — 는
 # 등급에서 읽히지 않고, 읽히더라도 원격이 게이트가 선 디렉터리에서 해소됐다.
@@ -21278,6 +21278,36 @@ check "72: 외부 diff 명령 자리의 조각도 걷는다" \
           gp_parse git diff; printf '%s %s\n' \"\$GP_STATUS\" \"\${#GP_SUB[@]}\"")" \
   "ok 2
 ok 0"
+# 프로토콜 허용과 설정 디렉터리도 같은 노브의 환경 철자다. `protocol.allow` 와
+# `protocol.<이름>.allow` 의 `-c` 철자는 형태 미상인데 `GIT_ALLOW_PROTOCOL`·
+# `GIT_PROTOCOL_FROM_USER` 는 기록만 되어, URL 이 곧 명령인 `ext::` 전송을 연
+# `git ls-remote` 가 읽기로 채점됐다. `GH_CONFIG_DIR` 는 gh 가 별칭·편집기·호출기를
+# 읽는 설정을 고르므로 `GIT_CONFIG_GLOBAL` 과 같은 행이다.
+check "72: 프로토콜 허용과 설정 디렉터리의 환경 철자는 실행 신원 부류다" \
+  "$(s72 'for n in GIT_ALLOW_PROTOCOL GIT_PROTOCOL_FROM_USER GH_CONFIG_DIR; do
+            _gp_env_class "$n"; printf "%s\n" "$_GP_ENV_CLASS"; done')" \
+  "exec-identity
+exec-identity
+exec-identity"
+check "72: 프로토콜 허용 환경 철자는 -c 철자처럼 형태 미상이다" \
+  "$(s72 "G env GIT_ALLOW_PROTOCOL=ext git ls-remote 'ext::sh -c x'
+          G env GIT_PROTOCOL_FROM_USER=1 git ls-remote 'ext::sh -c x'
+          G bash -c \"GIT_ALLOW_PROTOCOL=ext git ls-remote 'ext::sh -c x'\"
+          G bash -c \"export GIT_PROTOCOL_FROM_USER=1; git ls-remote 'ext::sh -c x'\"
+          G env GH_CONFIG_DIR=/tmp/x gh pr list
+          G git -c protocol.ext.allow=always ls-remote 'ext::sh -c x'
+          G git -c protocol.allow=always ls-remote 'ext::sh -c x'
+          G git ls-remote origin
+          G gh pr list")" \
+  "형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+형태 미상
+읽기
+읽기"
 
 # (6) 종단 간. 위의 줄들은 `GATE_ACT_CWD` 를 손으로 놓고 판정 함수만 부르므로,
 # 동사 진입점이 그 값을 **언제** 놓는지는 재지 못한다. 한동안 그 대입은 push
@@ -21391,6 +21421,27 @@ case "$rc" in
   0) bad "72: 본문 안의 send-pack 은 런로컬 쓰기 신고로 지나지 않는다" "rc=0" ;;
   *) ok "72: 본문 안의 send-pack 은 런로컬 쓰기 신고로 지나지 않는다" ;;
 esac
+# `ext::` 전송을 연 ls-remote 는 어느 신고로도 지나지 않는다. 기록만 되던 동안 이
+# 철자는 읽기 신고로, 배포 신고로는 prod 도달까지 rc 0 이었다.
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x \
+  -- env GIT_ALLOW_PROTOCOL=ext git ls-remote 'ext::sh -c gh% repo% delete% t/front% --yes'
+check "72: 프로토콜 허용 환경의 ext 전송은 읽기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 배포 --surface 외부상태변경 --reach prod --rationale x \
+  -- env GIT_ALLOW_PROTOCOL=ext git ls-remote 'ext::sh -c gh% repo% delete% t/front% --yes'
+check "72: 프로토콜 허용 환경의 ext 전송은 배포 신고로도 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x \
+  -- env GIT_PROTOCOL_FROM_USER=1 git ls-remote 'ext::sh -c gh% repo% delete% t/front% --yes'
+check "72: 사용자 프로토콜 환경의 ext 전송도 읽기 신고로 지나지 않는다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x \
+  -- git -c protocol.ext.allow=always ls-remote 'ext::sh -c gh% repo% delete% t/front% --yes'
+check "72: 같은 노브의 -c 철자도 같은 답이다" "$rc" "2"
+gate plan --manifest "$FX_MANIFEST" --target infra --segment S72M \
+  --cutpoint 커밋 --surface 읽기 --reach 협업 --rationale x -- git ls-remote origin
+check "72: 프로토콜 허용 없는 ls-remote 는 읽기 신고로 지난다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질

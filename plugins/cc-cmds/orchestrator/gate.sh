@@ -3167,7 +3167,15 @@ _gp_env_unset() {
 #                        program or a push URL, which the `-c` spelling of the
 #                        same key is already refused for. GIT_TEMPLATE_DIR
 #                        selects the directory `git init` and `git clone` copy
-#                        hooks from, so it names programs git later runs. HOME and
+#                        hooks from, so it names programs git later runs.
+#                        GIT_ALLOW_PROTOCOL and GIT_PROTOCOL_FROM_USER are the
+#                        environment spellings of `protocol.allow` and
+#                        `protocol.<name>.allow`: they open the `ext::`
+#                        transport, whose URL is a command git runs, so
+#                        `git ls-remote 'ext::sh -c …'` stops being a read.
+#                        GH_CONFIG_DIR selects the configuration gh reads its
+#                        aliases, editor, pager and browser from, the same way
+#                        GIT_CONFIG_GLOBAL does for git. HOME and
 #                        XDG_CONFIG_HOME select git's global configuration
 #                        too, but every other tool reads them for its own
 #                        purposes, so `_gp_leaf` refuses them only when the
@@ -3218,6 +3226,8 @@ _gp_env_class() {
     PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
       _GP_ENV_CLASS=exec-identity ;;
     GIT_CONFIG_PARAMETERS|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG|GIT_SSH|GIT_PROXY_COMMAND|GIT_TEMPLATE_DIR)
+      _GP_ENV_CLASS=exec-identity ;;
+    GIT_ALLOW_PROTOCOL|GIT_PROTOCOL_FROM_USER|GH_CONFIG_DIR)
       _GP_ENV_CLASS=exec-identity ;;
     GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
       _GP_ENV_CLASS=repo-selector ;;
