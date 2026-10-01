@@ -38,8 +38,9 @@ unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST CC_PIPELINE_LE
       CC_PIPELINE_GRANT CC_PIPELINE_GATE CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT \
       CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION
 # The compaction-window kill switch would turn the `(argv)` assertions below
-# into a property of the caller's shell rather than of the gate.
-unset CC_ORCH_STAGE_AUTOCOMPACT
+# into a property of the caller's shell rather than of the gate, and the effort
+# and model switches would do the same to every launch argv.
+unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -458,6 +459,53 @@ export CC_CLAUDE_BIN="$STUB_REFUSE"
 assert_immediate F 2 "즉시 거부 종료"
 export CC_CLAUDE_BIN="$STUB"
 
+# (9d) A STAGE THAT DIED OF THE USAGE LIMIT BY ITSELF. One successful turn, then
+# a refused turn whose stream ends on a 429 envelope and a `rejected` frame with
+# a numeric reset time, and exit 1. The supervisor hands the recorder the pinned
+# attempt's own stream, so the row is `한도 종료` and not `크래시`. Two pairs
+# around it: prose on the envelope is never read, and a last frame that is not
+# `rejected` stays `크래시` with one shape warning in that attempt's supervisor
+# log and none in the ledger.
+STUB_LIMIT="$WORK/claude-stub-limit"
+cat > "$STUB_LIMIT" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '{"type":"system","subtype":"init","session_id":"stub-limit"}' \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790390000}}' \
+  '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-limit","result":"done"}' \
+  '{"type":"system","subtype":"init","session_id":"stub-limit"}' \
+  "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"${CC_STUB_LAST_STATUS:-rejected}\",\"resetsAt\":1790390000}}" \
+  "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":429,\"total_cost_usd\":0,\"session_id\":\"stub-limit\",\"result\":\"${CC_STUB_PROSE:-You have hit your session limit}\"}"
+exit 1
+STUBEOF
+chmod +x "$STUB_LIMIT"
+limit_rows() {  # limit_rows <segment> <class> — rows of that segment with that class, written by the gate
+  { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } \
+    | { grep -F "종단 부류=$2 " || true; } | { grep -cF '기록자=게이트' || true; }
+}
+limit_suplog() { cat "$RD"/log/"$1"#*.sup.log 2>/dev/null || true; }
+export CC_CLAUDE_BIN="$STUB_LIMIT"
+seg G
+dispatch G >/dev/null
+g wait --manifest "$MANIFEST" --segment G --interval 1 --timeout 60 >/dev/null; rc_g=$?
+check "(9d) 한도로 스스로 끝난 스테이지는 한도 종료 · 기록자=게이트 행이 정확히 하나" "$(limit_rows G '한도 종료')" "1"
+check "(9d) 그 세그먼트의 stage-result 행은 하나뿐이다" "$(rows_of G)" "1"
+check "(9d) 감독자 로그가 한도 종료 rc=1 을 찍는다" \
+  "$(limit_suplog G | { grep -cF ' 한도 종료 rc=1' || true; })" "1"
+check "(9d) wait 은 스테이지의 종료 코드 1 을 돌려준다" "$rc_g" "1"
+seg H
+CC_STUB_PROSE='Usage cap reached. Try again tomorrow.' dispatch H >/dev/null
+g wait --manifest "$MANIFEST" --segment H --interval 1 --timeout 60 >/dev/null
+check "(9d) 봉투 산문을 바꿔도 같은 부류다" "$(limit_rows H '한도 종료')" "1"
+seg I
+CC_STUB_LAST_STATUS=allowed dispatch I >/dev/null
+g wait --manifest "$MANIFEST" --segment I --interval 1 --timeout 60 >/dev/null
+check "(9d) 마지막 프레임이 allowed 면 크래시다" "$(limit_rows I '크래시')" "1"
+check "(9d) 그 시도의 감독자 로그에 형상 경고가 정확히 한 줄" \
+  "$(limit_suplog I | { grep -c '한도 형상 불완전 (' || true; })" "1"
+check "(9d) 형상 경고는 원장에 없다" "$( { grep -c '한도 형상 불완전 (' "$LEDGER" || true; } )" "0"
+export CC_CLAUDE_BIN="$STUB"
+
 # ---------------------------------------------------------------------------
 # (10) A RUN THAT DECLARES A DESIGN DOCUMENT, in each shape the key can take.
 #
@@ -572,6 +620,17 @@ CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
 check "(11) -- 앞의 --autocompact 옵션은 --instructions 아래에서도 exit 0" "$wrap_rc3" "0"
 check "(11) 그 옵션은 CLI argv 에 --strict-mcp-config 바로 뒤에 한 번 실린다" \
   "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 ' || true; } | { grep -c . || true; })" "1"
+
+# The effort and model options land right after the window, in that order, and
+# do not displace it.
+: > "$WORK/wrap-argv.out"
+CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
+  bash "$WRAP" --settings "$WORK/wrap-settings.json" --plugin-dir "$WORK/wrap-plugin" \
+    --session-id x --instructions "$WORK/wrap-instructions.md" --autocompact 300000 \
+    --effort high --model opus -- -p x >/dev/null 2>&1; wrap_rc4=$?
+check "(11) --effort·--model 옵션도 --instructions 아래에서 exit 0" "$wrap_rc4" "0"
+check "(11) 그 둘은 --autocompact 바로 뒤에 순서대로 한 번 실린다" \
+  "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 --effort high --model opus ' || true; } | { grep -c . || true; })" "1"
 
 printf '\ntest-stage-supervisor: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

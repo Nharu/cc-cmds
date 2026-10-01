@@ -213,7 +213,7 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test.XXXXXX")
 # Replaces the earlier trap rather than adding to it — a bare `trap ... EXIT`
 # overwrites, so both directories are named here or the first one leaks.
-cleanup() { rm -rf "$WORK" "$WORK_EARLY"; }
+cleanup() { rm -rf "$WORK" "$WORK_EARLY" "${IVW:-}"; }
 trap cleanup EXIT
 
 RUN_ID="testrun"
@@ -296,6 +296,108 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
   > "$RUN_DIR/log/Sw.json"
 check "흔적이 없으면 여전히 공허한 성공" "$(classify_termination Sw 0 1)" "공허한 성공"
 if decision_point_reached Snone; then bad "결정 지점 탐지기" "ndjson 이 없는데 참을 냈다"; else ok "결정 지점 탐지기는 ndjson 이 없으면 거짓"; fi
+
+# 한도 종료 판정. 스테이지가 사용량 한도로 스스로 끝났는지는 그 시도 자신의
+# 스트림에서 타입이 있는 필드로만 읽는다. 최소 한도 스트림은 init · allowed
+# 프레임 · rejected 프레임 · 429 봉투 네 줄이고, 아래 변형은 그중 적힌 부분만
+# 바꿔 기대한 글자 하나만 거짓이 되게 한다.
+LIM_INIT='{"type":"system","subtype":"init","session_id":"s-lim"}'
+LIM_ALLOWED='{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790390000}}'
+LIM_REJECTED='{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790390000,"overageStatus":"rejected"}}'
+LIM_ENV429='{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s-lim","result":"You have hit your session limit · resets 3pm (Asia/Seoul)"}'
+LIM_OK='{"type":"result","subtype":"success","is_error":false,"session_id":"s-lim","result":"done"}'
+LIMD="$WORK/limit"; mkdir -p "$LIMD"
+sle() { local out rc; out=$(stage_limit_exit "$@"); rc=$?; printf '%s:%s' "$rc" "$out"; }
+
+# a. 실제 사망 모양 — rejected 가 뒤따르는 init 셋보다 앞이고 봉투가 파일 끝에
+# 몰려 있으며 init 8 / result 9 다. init 으로 창을 자르는 판정은 이것을 놓친다.
+{ for i in 1 2 3 4 5; do printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK"; done
+  printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" "$LIM_INIT" "$LIM_INIT" "$LIM_OK" "$LIM_OK" "$LIM_OK" "$LIM_ENV429"
+} > "$LIMD/a.json"
+check "한도 판정 a: 실제 사망 모양은 한도" "$(sle "$LIMD/a.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" > "$LIMD/b.json"
+check "한도 판정 b: 봉투 없음은 한도 아님" "$(sle "$LIMD/b.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1790390000}}' \
+  "$LIM_ENV429" > "$LIMD/c.json"
+check "한도 판정 c: 마지막 프레임이 rejected 가 아니면 F" "$(sle "$LIMD/c.json")" "3:F"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" "$LIM_ENV429" \
+  '{"type":"result","subtype":"succ' > "$LIMD/d.json"
+check "한도 판정 d: 봉투 뒤의 찢긴 줄은 T" "$(sle "$LIMD/d.json")" "3:T"
+printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"result":"Overloaded"}' \
+  > "$LIMD/e.json"
+check "한도 판정 e: 429 가 아닌 오류 봉투는 옛 rejected 가 있어도 한도 아님" "$(sle "$LIMD/e.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" "$LIM_INIT" > "$LIMD/f.json"
+check "한도 판정 f: 옛 한도 뒤 봉투 없는 init 은 P" "$(sle "$LIMD/f.json")" "3:P"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}"}]}}' \
+  "$LIM_ENV429" \
+  '{"type":"assistant","message":{"content":[{"type":"result","subtype":"success","is_error":false}]}}' \
+  > "$LIMD/g.json"
+check "한도 판정 g: 이스케이프된 프레임 문자열과 중첩 result 객체는 영향 없음" "$(sle "$LIMD/g.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}' "$LIM_ENV429" > "$LIMD/h.json"
+check "한도 판정 h: resetsAt 없는 rejected 는 R" "$(sle "$LIMD/h.json")" "3:R"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" \
+  "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK" > "$LIMD/i.json"
+check "한도 판정 i: 앞선 한도 뒤 성공 봉투와 allowed 는 한도 아님" "$(sle "$LIMD/i.json")" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_ENV429" > "$LIMD/j.json"
+check "한도 판정 j: resetsAt 를 가진 allowed 프레임과 429 봉투는 F" "$(sle "$LIMD/j.json")" "3:F"
+check "한도 판정 k: 없는 파일은 한도 아님" "$(sle "$LIMD/none.json")" "1:"
+check "한도 판정 k: 빈 인자는 한도 아님" "$(sle '')" "1:"
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_REJECTED" "$LIM_ENV429" 'null' > "$LIMD/l.json"
+check "한도 판정 l: 봉투 뒤 객체가 아닌 JSON 줄은 건너뛴다" "$(sle "$LIMD/l.json")" "0:"
+# 찢김 글자는 다른 거짓 글자와 함께 순서대로 이어진다.
+printf '%s\n' "$LIM_INIT" "$LIM_ENV429" '{"torn' > "$LIMD/m.json"
+check "한도 판정: 거짓 글자는 F,R,P,T 순서로 이어진다" "$(sle "$LIMD/m.json")" "3:F,R,T"
+
+check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
+for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \
+                '적용 불명' '외부 종료' '한도-형상 회수'; do
+  check "읽기 사상: $rc_class 는 그대로" "$(terminal_route_class "$rc_class")" "$rc_class"
+done
+
+# 경로 A. 판정은 시도 핀과 거둔 종료(`.rc`)가 함께 있을 때만 서고, stdout 은
+# 부류만 싣는다 — 호출부가 `$(classify_termination …)` 로 부류를 받는다.
+lim_pin() {  # lim_pin <stage> <attempt> <stream-file> [rc]
+  printf '%s\n' "$2" > "$RUN_DIR/$1.attempt"
+  cp "$3" "$RUN_DIR/log/$1#$2.json"
+  if [ -n "${4:-}" ]; then printf '%s\n' "$4" > "$RUN_DIR/$1.rc"; fi
+}
+lim_pin Lk1 1 "$LIMD/a.json" 1
+check "경로 A: 한도 스트림 rc 1 은 한도 종료 (stdout 은 부류뿐)" \
+  "$(classify_termination Lk1 1 1 2>"$WORK/lk1.err")" "한도 종료"
+check "경로 A: 한도 종료는 경고를 내지 않는다" "$(grep -c . "$WORK/lk1.err")" "0"
+lim_pin Lk2 1 "$LIMD/a.json"
+check "경로 A: 거두지 않은 스테이지(.rc 없음)는 크래시" "$(classify_termination Lk2 1 1)" "크래시"
+lim_pin Lk3 1 "$LIMD/c.json" 1
+check "경로 A: 형상 불완전은 정확히 크래시" \
+  "$(classify_termination Lk3 1 1 2>"$WORK/lk3.err")" "크래시"
+check "경로 A: 형상 불완전 경고는 stderr 에 F 를 이름하는 한 줄" \
+  "$(grep -c "\[warn\] 한도 형상 불완전 (F) $RUN_DIR/log/Lk3#1.json\$" "$WORK/lk3.err")" "1"
+lim_pin Lk4 1 "$LIMD/a.json" 1; reap_mark Lk4 한도형상
+check "경로 A: 회수 표지는 한도 스트림보다 앞선다" "$(classify_termination Lk4 1 1)" "한도-형상 회수"
+lim_pin Lk5 1 "$LIMD/a.json" 1
+cp "$RUN_DIR/halt/Sx.md" "$RUN_DIR/halt/Lk5#1.md"
+check "경로 A: 멈춤 기록은 한도 스트림보다 앞선다" "$(classify_termination Lk5 1 1)" "의도된 park"
+lim_pin Lk6 1 "$LIMD/a.json" 0
+check "경로 A: rc 0 은 rc=0 부류 (정상 완료)" "$(classify_termination Lk6 0 0)" "정상 완료"
+check "경로 A: rc 0 은 rc=0 부류 (공허한 성공)" "$(classify_termination Lk6 0 1)" "공허한 성공"
+cp "$LIMD/a.json" "$RUN_DIR/log/Lk7.json"; printf '1\n' > "$RUN_DIR/Lk7.rc"
+check "경로 A: 핀 없는 범위 밖 스트림은 크래시" "$(classify_termination Lk7 1 1)" "크래시"
+printf '%s\n' "$LIM_INIT" > "$LIMD/crash.json"
+cp "$LIMD/a.json" "$RUN_DIR/log/Lk8#1.json"
+lim_pin Lk8 2 "$LIMD/crash.json" 1
+check "경로 A: 핀이 가리키는 시도 2 가 보통 크래시면 시도 1 의 한도는 읽지 않는다" \
+  "$(classify_termination Lk8 1 1)" "크래시"
+# 한 세션을 재부착으로 이어 간 세 시도는 session_id 를 공유하면서 부류가 다르다.
+# 시도의 정체는 핀이 가리키는 파일이다.
+printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK" > "$LIMD/ok.json"
+lim_pin Lk9 1 "$LIMD/a.json" 1;  lk9_1=$(classify_termination Lk9 1 1)
+lim_pin Lk9 2 "$LIMD/ok.json" 0; lk9_2=$(classify_termination Lk9 0 0)
+lim_pin Lk9 3 "$LIMD/a.json" 1;  lk9_3=$(classify_termination Lk9 1 1)
+check "경로 A: 한 세션의 세 시도는 시도별로 분류된다" "$lk9_1/$lk9_2/$lk9_3" "한도 종료/정상 완료/한도 종료"
 
 # ---------------------------------------------------------------------------
 # 6. Worktree teardown guard — BOTH conditions required
@@ -2076,6 +2178,24 @@ else
 fi
 RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
 
+# 아직 쓰이지 않은 문서의 키도 두 갈래 중 맞는 쪽으로 해소한다. 설계를 런의 첫
+# 스테이지로 두는 런은 경로를 파생하는 시점에 문서가 없으므로 파일 존재로는 두
+# 갈래가 갈리지 않는다. 담을 디렉터리가 레포 밖에만 있는 키가 레포 상대로 떨어지면
+# 설계 스테이지는 `<repo>/Users/…` 아래에 문서를 쓰고, 그 뒤 누구도 그것을 찾지 못한다.
+DOC_SAVE_N="$DOC"; DOC_KEY_SAVE_N="${DOC_KEY:-}"; DOC_DIR_SAVE_N="${DOC_DIR:-}"; BASE_SAVE_N="$BASE"
+PW_DIR="$WORK/polyrepo-ws/docs/server"; mkdir -p "$PW_DIR"
+PW_KEY="${PW_DIR#/}/not-yet-written.md"
+MFP="$MF_DIR/plan-doc-pending.md"
+write_manifest "$MFP" "" "" "" "$PW_KEY"
+MANIFEST="$MFP"; RUN_ID="20260825-deadbeef"
+derive_paths_from_manifest
+check "아직 없는 레포 밖 문서는 절대 경로로 해소한다" "$DOC" "/$PW_KEY"
+RB_KEY="plugins/cc-cmds/orchestrator/not-yet-written.md"
+write_manifest "$MFP" "" "" "" "$RB_KEY"
+derive_paths_from_manifest
+check "아직 없는 레포 안 문서는 레포 상대 경로로 해소한다" "$DOC" "$BASE/$RB_KEY"
+MANIFEST="$MF"; DOC="$DOC_SAVE_N"; DOC_KEY="$DOC_KEY_SAVE_N"; DOC_DIR="$DOC_DIR_SAVE_N"; BASE="$BASE_SAVE_N"
+
 # --- 21b 설계 스테이지의 술어와 발화 조건 ------------------------------------
 # 설계 스테이지는 문서만 내므로 위조 불가능한 술어가 없다. 그래서 저작된 사실
 # **둘**을 교차한다 — 스트림의 동결 리터럴과 문서의 동결 상태 줄. 하나만 보면
@@ -2257,8 +2377,8 @@ arm21_case stub "$MFARM" 스텁 - '정상 완료'
 check "스폰 시점 스텁만 있으면 건너뛰지 않고 파견한다" \
   "$(arm21_rc stub)/$(arm21_disp stub)" "0/1"
 
-# 한도 소진 같은 런 밖 원인이 크래시로 기록되는데, 그 크래시가 남긴 것이 스텁뿐
-# 이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
+# 한도 소진 같은 런 밖 원인은 크래시나 한도 종료로 기록되는데, 그 시도가 남긴 것이
+# 스텁뿐이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
 arm21_case resumed-crash "$MFARM" 스텁 '크래시' '정상 완료'
 check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다시 파견한다" \
   "$(arm21_rc resumed-crash)/$(arm21_disp resumed-crash)/$(grep -c 'S1design run' "$ARM21/resumed-crash/parked" 2>/dev/null || printf 0)" "0/1/0"
@@ -2267,6 +2387,14 @@ check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다
 arm21_case resumed-crash-saved "$MFARM" 사람 '크래시' '정상 완료'
 check "크래시라도 저장된 문서가 남았으면 park 한다" \
   "$(arm21_rc resumed-crash-saved)/$(arm21_disp resumed-crash-saved)/$(grep -c 'S1design run' "$ARM21/resumed-crash-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# 한도 종료 는 크래시와 똑같이 읽는다 — 두 짝 모두.
+arm21_case resumed-limit "$MFARM" 스텁 '한도 종료' '정상 완료'
+check "앞선 시도가 한도 종료로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-limit)/$(arm21_disp resumed-limit)/$(grep -c 'S1design run' "$ARM21/resumed-limit/parked" 2>/dev/null || printf 0)" "0/1/0"
+arm21_case resumed-limit-saved "$MFARM" 사람 '한도 종료' '정상 완료'
+check "한도 종료라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-limit-saved)/$(arm21_disp resumed-limit-saved)/$(grep -c 'S1design run' "$ARM21/resumed-limit-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
 
 # 프로세스가 죽지 않고 rc 0 으로 끝났는데 산출물이 없는 경우도 같은 모양이다 —
 # 팀원이 증인 없이 턴을 끝내 기다릴 작업이 사라졌거나, 저장 직전 턴 경계에서
@@ -2393,25 +2521,25 @@ AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   pend { cont = ($0 ~ /\\$/) }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "5"
+check "파견 팔의 stage-result 행 자리가 여섯이다 — 계속 시도 하나 포함 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "6"
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
-# 드라이버의 stage-result 행 전부(S9 셸 적용 넷을 포함해 아홉)가 압축 창·레인·기록자
-# 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 아홉의 방어는
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷과 계속 시도 하나를 포함해 열)가 압축
+# 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
   cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "드라이버의 stage-result 호출부가 아홉이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "9"
-check "아홉 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+check "드라이버의 stage-result 호출부가 열이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "10"
+check "열 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
   "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
 check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
-  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "9"
+  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "10"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -2726,6 +2854,33 @@ else
   bad "종료 잔여" "EXIT 경로에 보고가 걸려 있지 않다 — 순회 꼬리에 닿지 못한 런의 잔여는 아침에 도달하지 않는다"
 fi
 RUN_DIR="$RUN_DIR_SAVE3"; BASE="$BASE_SAVE3"; RUN_ID="$RUN_ID_SAVE3"
+# 한도 종료 는 런 끝 정산에서 따로 센다. 정산 블록은 main_loop 끝에 있어 그대로
+# 구동할 수 없으므로, 그 블록만 뽑아 원장 읽기와 리포트 쓰기를 대신한 채 돌린다.
+# N=0 인 런의 보고는 이 줄이 생기기 전과 바이트가 같아야 한다.
+settle_block=$(sed -n '/^  local last_cost settled limit_n$/,/^  report_run_residual$/p' "$DRIVER" | sed '$d')
+settle_run() {  # settle_run <stage-result 행 파일> — 보고 줄을 출력한다
+  (
+    SETTLE_ROWS="$1"
+    run_section_rows() { if [ "$1" = 'stage-result' ]; then cat "$SETTLE_ROWS"; fi; }
+    report_append() { printf '%s: %s\n' "$1" "$2"; }
+    ledger_row() { :; }
+    eval "settle_body() {
+$settle_block
+}"
+    settle_body
+  )
+}
+printf -- '- `stage-result` | 스테이지=S2 | 종단 부류=크래시 |\n- `stage-result` | 스테이지=S3 | 종단 부류=외부 종료 |\n' \
+  > "$WORK/settle0.md"
+{ cat "$WORK/settle0.md"
+  printf -- '- `stage-result` | 스테이지=S4 | 종단 부류=한도 종료 |\n- `stage-result` | 스테이지=S5 | 종단 부류=한도 종료 |\n'
+} > "$WORK/settle2.md"
+SETTLE_COST='비용: 비용 불명 — 이 런의 cost 행이 없다 · 정산됨(비용 불명) 1건'
+if [ -n "$settle_block" ]; then ok "정산 블록을 드라이버에서 뽑았다 (아래가 공허하지 않다)"; else bad "정산 블록" "뽑힌 블록이 비었다"; fi
+check "한도 종료 가 없는 런의 정산 보고는 비용 줄 하나뿐이다" "$(settle_run "$WORK/settle0.md")" "$SETTLE_COST"
+check "한도 종료 가 있는 런은 그 수를 따로 한 줄로 보고한다" "$(settle_run "$WORK/settle2.md")" \
+  "$SETTLE_COST
+한도 종료: 2건 — 크래시와 같게 처분, 계정 이동 없음"
 # 종료 요약의 단어. `보류` 는 사람의 답을 기다리는 종료 절의 처분이고 이 계수기는
 # 드라이버가 park 한 세그먼트를 센다 — 같은 리포트에 둘 다 나오므로, 한 단어가 두
 # 뜻을 가지면 읽는 사람이 줄마다 어느 쪽인지 짐작해야 한다.
@@ -3949,34 +4104,64 @@ fi
 RUN_DIR="$SHIFT_SAVE"
 
 # ---------------------------------------------------------------------------
-# 28. The feed's fence, which no lint can hold.
+# 28. The detached run-scope processes' fence, which no lint can hold.
 #
-# `feed.sh` cannot raise a banner because it does not source the emitter and
-# does not name its two functions. The banner-site lint counts occurrences of
-# the notifier BINARY, so a sourcing path is invisible to it — these two
-# assertions are the fence itself rather than a supplement to one.
+# Neither `feed.sh` nor `checks.sh` can raise a banner, because neither sources
+# the emitter and neither names its two functions. The banner-site lint counts
+# occurrences of the notifier BINARY, so a sourcing path is invisible to it —
+# these assertions are the fence itself rather than a supplement to one.
+#
+# THE ASSERTIONS WALK A FILE LIST RATHER THAN NAMING ONE FILE. A fence written
+# for one file has to be copied for the next one, and a copy that is not made is
+# a seat that quietly opens. `checks.sh` carries the same fence for the same
+# reason and additionally needs the verb allowlist below, because it is the first
+# detached process in this tree that calls the network at all.
 # ---------------------------------------------------------------------------
 FEED_SH="$(dirname "$DRIVER")/feed.sh"
-if [ -f "$FEED_SH" ]; then
-  ok "진행 채널 스크립트가 있다"
+CHECKS_SH="$(dirname "$DRIVER")/checks.sh"
+for fence_f in "$FEED_SH" "$CHECKS_SH"; do
+  fence_n=$(basename "$fence_f")
+  if [ ! -f "$fence_f" ]; then
+    bad "울타리" "$fence_n 이 없다 — 이 펜스가 지킬 대상이 실재하지 않는다"
+    continue
+  fi
+  ok "$fence_n 이 있다"
   # A WHITELIST, NOT A DENYLIST. Asking "does it source the emitter" only closes
   # the door that is already named; asking which files it may source at all also
   # closes the one a future emitter under another name would use.
   #
   # THE LIST IS TWO NAMES, AND THE SECOND ONE PAYS ITS WAY BELOW. `pin.sh` joined
-  # it because the feed has to hop into the run's pinned copy before it writes
-  # anything, and the predicate that decides that is shared with the gate and the
-  # watcher rather than re-implemented here. Widening a whitelist weakens it
-  # unless the new entry is fenced too, so the assertions after this one hold
+  # it because these processes have to hop into the run's pinned copy before they
+  # write anything, and the predicate that decides that is shared with the gate
+  # and the watcher rather than re-implemented here. Widening a whitelist weakens
+  # it unless the new entry is fenced too, so the assertions after this one hold
   # `pin.sh` to the same rule: it sources nothing and names no emitter.
-  feed_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$FEED_SH" || true; } \
+  fence_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$fence_f" || true; } \
                     | { grep -v 'liveness\.sh' || true; } \
                     | { grep -v 'pin\.sh' || true; } )
-  if [ -n "$feed_src_other" ]; then
-    bad "피드 울타리" "feed.sh 가 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $feed_src_other"
+  if [ -n "$fence_src_other" ]; then
+    bad "울타리" "$fence_n 이 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $fence_src_other"
   else
-    ok "feed.sh 가 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+    ok "$fence_n 이 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
   fi
+  # And the name reaches no executable line. A header sentence explaining the
+  # fence is not a breach of it, so the comment lines are excluded rather than
+  # the file being required never to mention what it refuses to load.
+  fence_notify_code=$( { grep -n 'notify-run\.sh' "$fence_f" || true; } \
+                      | { grep -vE '^[0-9]+:[[:space:]]*#' || true; } )
+  if [ -n "$fence_notify_code" ]; then
+    bad "울타리" "$fence_n 의 주석이 아닌 줄이 notify-run.sh 를 이름으로 담는다: $fence_notify_code"
+  else
+    ok "$fence_n 의 실행 줄 어디에도 notify-run.sh 가 없다"
+  fi
+  if grep -q 'cc_notify_fire\|cc_notify_clear' "$fence_f"; then
+    bad "울타리" "$fence_n 이 방출 함수를 이름으로 담고 있다"
+  else
+    ok "$fence_n 이 방출 함수를 이름으로도 부르지 않는다"
+  fi
+done
+
+if [ -f "$FEED_SH" ]; then
   PIN_SH="$(dirname "$DRIVER")/pin.sh"
   if [ -f "$PIN_SH" ]; then
     pin_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$PIN_SH" || true )
@@ -3998,23 +4183,390 @@ if [ -f "$FEED_SH" ]; then
   else
     bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
   fi
-  # And the name reaches no executable line. A header sentence explaining the
-  # fence is not a breach of it, so the comment lines are excluded rather than
-  # the file being required never to mention what it refuses to load.
-  feed_notify_code=$( { grep -n 'notify-run\.sh' "$FEED_SH" || true; } \
-                      | { grep -vE '^[0-9]+:[[:space:]]*#' || true; } )
-  if [ -n "$feed_notify_code" ]; then
-    bad "피드 울타리" "주석이 아닌 줄이 notify-run.sh 를 이름으로 담는다: $feed_notify_code"
-  else
-    ok "feed.sh 의 실행 줄 어디에도 notify-run.sh 가 없다"
-  fi
-  if grep -q 'cc_notify_fire\|cc_notify_clear' "$FEED_SH"; then
-    bad "피드 울타리" "feed.sh 가 방출 함수를 이름으로 담고 있다"
-  else
-    ok "feed.sh 가 방출 함수를 이름으로도 부르지 않는다"
-  fi
 else
   bad "진행 채널" "feed.sh 가 없다 — 라우팅이 리드를 떠난 밤에 사람이 볼 것이 없다"
+fi
+
+# ---------------------------------------------------------------------------
+# 28b. The CI poller's `gh` verb allowlist.
+#
+# The gate's enforcement is a `PreToolUse` hook matching TOOL CALLS, so a command
+# run inside a detached `bash checks.sh &` is not matched and no axis-2 grade is
+# ever consulted. That is not a bypass — the grade is simply not asked for — but
+# it means one `pr merge` added to that file would merge on an unattended night
+# with neither a record nor an approval. This assertion is the only control left.
+#
+# THE SHAPE OF THE ASSERTION CARRIES THE WEIGHT, and it is not the shape of the
+# banner fence above. That one counts an emitter name and expects zero — a check
+# for something ABSENT. Here the dangerous thing is a verb nobody has thought of,
+# so grepping for the three allowed spellings would let a fourth through in
+# silence. The verb pairs are EXTRACTED and the SET DIFFERENCE against the
+# allowlist must be empty, and a `gh` call this extractor cannot parse counts as
+# a violation too — otherwise an unparsable spelling is a hole of its own.
+#
+# RECOGNITION IS WHERE THE FIRST VERSION OF THIS FENCE WAS OPEN, and the shape of
+# the fix is that the extractor and the unparsable-detector now look at the SAME
+# lines. That version picked a token that was exactly `gh` or ended in `gh`
+# behind a shell character, and both halves of that test were anchored at the END
+# of the token — so `"gh" -R "$slug" pr merge "$n"` (quoted command word, ending
+# in `h"`) was neither, the line produced NO output at all, not even the
+# unparsable marker, and the set difference was empty on a file that merges PRs.
+# `'gh'`, `"$GH"` after a quoted assignment and `$(command -v gh)` behaved the
+# same. It failed CLOSED on shape and OPEN on recognition, and its negative
+# control planted a spelling recognition already handled, so it tested the
+# closed half twice and the open half never.
+#
+# Now every well-formed call `gh -R "$slug" pr <verb>` is extracted — whatever
+# the verb, so a fourth one reaches the set difference — and then taken OUT of
+# its line. Whatever still looks like a call afterwards is unparsable:
+#
+#   - `gh` as a word, or the repo flag `-R`. TWO RECOGNITION TOKENS, because the
+#     command word is the part an indirect call hides and the repo flag is the
+#     part it cannot: `"$GH" -R "$slug" pr merge` has no `gh` on it anywhere;
+#   - a `pr <verb>` behind anything that is NOT A BARE IDENTIFIER — a quote, a
+#     `)`, a `}`, a `]`, or a `$name` expansion. That is argument position, where
+#     a subcommand goes, and it catches `"$GH" pr merge "$n"`, `$GH pr merge "$n"`
+#     and `${GH:-gh} pr merge "$n"`, none of which carries a recognition token.
+#     What keeps it off `local ts seg pr sha st` and `read -r ts seg pr sha st` is
+#     that there `pr` follows a bare identifier run — a variable name. The first
+#     version demanded a quote or a `)` in front, so the unquoted and the
+#     braced expansions walked through. `pr` and its verb may be quoted, since
+#     `$GH pr "merge"` is the same call;
+#   - an expansion in command position followed by any word, which is what a
+#     variable command word looks like whichever subcommand it runs —
+#     `$GH api -X PUT …/merge` carries no `pr` for the rule above to read;
+#   - `eval`, or a `command -v`/`which`/`type` resolution of the binary, because
+#     indirection defeats any line-based rule and banning it is cheaper than
+#     parsing it.
+#
+# WHAT IS STILL NOT COVERED, stated rather than implied: a command word assembled
+# from pieces, or read out of a file or the environment. That is deliberate
+# obfuscation rather than the accident this fence is for — someone adding a
+# fourth verb — and every spelling that writes the binary's name down is caught.
+# ---------------------------------------------------------------------------
+# `gh` AS A WORD. A plain substring search reports every English word ending in
+# those letters — `through`, `high` — so the character before `gh` must be a
+# non-word one, which is what `$(gh`, `(gh`, `"gh` and a line-leading `gh` are.
+GH_FORM_RE='(^|[^A-Za-z0-9_-])gh -R "\$slug" pr [a-z][a-z-]*'
+# `:-` is let in front of `gh` because `${GH:-gh}` spells the binary's name as a
+# default, and `-` alone stays out so a hyphenated name ending in `gh` does not.
+GH_WORD_RE='(^|[^A-Za-z0-9_-]|:-)(gh|-R)([^A-Za-z0-9_-]|$)'
+GH_PR_RE="([\"')}]|\\]|\\\$[A-Za-z_][A-Za-z0-9_]*)[[:space:]]+[\"']?pr[\"']?[[:space:]]+[\"']?[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
+# AN EXPANSION IN COMMAND POSITION followed by a word, whatever that word is.
+# The rule above knows `pr` and nothing else, so `$GH api -X PUT …/merge` — the
+# generic escape hatch that can do anything a verb can — carried no token it
+# reads. Command position is the start of a line or what follows `;` `&` `|`
+# `(` or a backquote, or a word that runs the next one (`then`, `do`, `else`,
+# `exec`, `command`, `env`, `nohup`, `time`, `!`). A quoted path after the
+# expansion is not a word, which keeps `exec "${BASH:-/bin/bash}" "$…/checks.sh"`
+# off it.
+GH_CMDVAR_RE="(^|[;&|(\`]|(^|[^A-Za-z0-9_])(then|do|else|exec|command|env|nohup|time|!))[[:space:]]*\"?\\\$(\\{[^}]*\\}|[A-Za-z_][A-Za-z0-9_]*)\"?[[:space:]]+[\"']?[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
+GH_INDIRECT_RE='(^|[^A-Za-z0-9_-])(eval|command[[:space:]]+-v|which|type)[[:space:]]+[^[:space:]]*gh([^A-Za-z0-9_-]|$)'
+GH_EVAL_RE='(^|[^A-Za-z0-9_-])eval([^A-Za-z0-9_-]|$)'
+
+gh_verbs_of() {
+  # gh_verbs_of <file> — one `pr <verb>` pair per well-formed `gh` call on a
+  # non-comment line, and the literal `(추출 실패)` for any line that still looks
+  # like a call once those are removed, or that resolves the binary indirectly.
+  # WHOLE-LINE COMMENTS ONLY are dropped; a trailing comment stays attached to
+  # its code, which errs toward reporting rather than hiding.
+  local src
+  src=$({ grep -vE '^[[:space:]]*#' "$1" || true; })
+  {
+    printf '%s\n' "$src" \
+      | { grep -oE "$GH_FORM_RE" || true; } \
+      | sed -E 's/.* pr ([a-z][a-z-]*)$/pr \1/'
+    printf '%s\n' "$src" \
+      | sed -E "s/$GH_FORM_RE/\\1 /g" \
+      | { grep -E "$GH_WORD_RE|$GH_PR_RE|$GH_CMDVAR_RE" || true; } \
+      | sed 's/.*/(추출 실패)/'
+    printf '%s\n' "$src" \
+      | { grep -E "$GH_INDIRECT_RE|$GH_EVAL_RE" || true; } \
+      | sed 's/.*/(추출 실패)/'
+  } | sort -u
+}
+if [ -f "$CHECKS_SH" ]; then
+  gh_allowed=$(printf '%s\n' 'pr list' 'pr view' 'pr checks' | sort -u)
+  gh_seen=$(gh_verbs_of "$CHECKS_SH")
+  gh_extra=$(printf '%s\n' "$gh_seen" | { grep -v '^$' || true; } \
+             | { grep -vxF "$gh_allowed" || true; } )
+  if [ -n "$gh_extra" ]; then
+    bad "폴러 울타리" "checks.sh 의 gh 호출이 허용 집합 {pr list, pr view, pr checks} 밖이다: $(printf '%s' "$gh_extra" | tr '\n' ' ')"
+  else
+    ok "checks.sh 의 gh 호출이 전부 허용 집합 안이다 (차집합이 비었다)"
+  fi
+  # THE EXTRACTOR MUST HAVE SEEN SOMETHING. An empty extraction also gives an
+  # empty difference, and "the fence holds" and "the extractor saw nothing" are
+  # exactly the two states this section exists to tell apart.
+  if [ -n "$(printf '%s\n' "$gh_seen" | { grep -xF "$gh_allowed" || true; })" ]; then
+    ok "추출기가 진짜 파일에서 허용 동사를 실제로 읽었다 ($(printf '%s' "$gh_seen" | tr '\n' ' '))"
+  else
+    bad "폴러 울타리" "진짜 checks.sh 에서 동사를 하나도 추출하지 못했다 — 위의 빈 차집합은 아무것도 증명하지 않는다"
+  fi
+  # THE NEGATIVE CONTROL, out of tree, AND IT PLANTS THE SPELLINGS THAT BROKE THE
+  # FIRST VERSION — not only the one it already handled. An assertion whose only
+  # evidence is that the real file passes cannot tell "the fence holds" from "the
+  # extractor finds nothing", and a control that plants only the easy spelling
+  # cannot tell the recognition gate from the shape gate. The last case puts an
+  # allowed call and a forbidden one on the same line, so extraction has to take
+  # every call on a line rather than the first.
+  for gh_fx_case in \
+    '  gh -R "$slug" pr merge "$n" --squash' \
+    '  "gh" -R "$slug" pr merge "$n" --squash' \
+    "  'gh' -R \"\$slug\" pr merge \"\$n\" --squash" \
+    '  "$GH" -R "$slug" pr merge "$n" --squash' \
+    '  GH_BIN=$(command -v gh); "$GH_BIN" -R "$slug" pr merge "$n"' \
+    '  eval "$cmd -R \"$slug\" pr merge \"$n\""' \
+    '  "$GH" pr merge "$n" --squash' \
+    '  ${GH:-gh} pr merge "$n"' \
+    '  $GH pr merge "$n"' \
+    '  ${GH} pr merge "$n"' \
+    '  "${GH:-gh}" pr merge "$n"' \
+    '  "${gh[@]}" pr merge "$n"' \
+    '  $GH pr "merge" "$n"' \
+    '  "$GH" "pr" "merge" "$n"' \
+    '  $GH api -X PUT "repos/$slug/pulls/$n/merge"' \
+    '  out=$($GH api -X PUT "repos/$slug/pulls/$n/merge")' \
+    '  out=$(gh -R "$slug" pr checks "$n"); gh -R "$slug" pr merge "$n"'
+  do
+    GH_FX=$(mktemp "${TMPDIR:-/tmp}/cc-checks-gh.XXXXXX") \
+      || { bad "폴러 울타리" "음성 대조군 임시 파일을 만들지 못했다"; break; }
+    { cat "$CHECKS_SH"; printf '%s\n' "$gh_fx_case"; } > "$GH_FX"
+    gh_fx_extra=$(gh_verbs_of "$GH_FX" | { grep -v '^$' || true; } \
+                  | { grep -vxF "$gh_allowed" || true; } )
+    if [ -n "$gh_fx_extra" ]; then
+      ok "오염 사본을 차집합이 잡아낸다 ($(printf '%s' "$gh_fx_extra" | tr '\n' ' ')— $(printf '%s' "$gh_fx_case" | sed 's/^[[:space:]]*//'))"
+    else
+      bad "폴러 울타리" "오염 사본의 차집합이 비었다 — 이 철자에 대해 단언이 아무것도 지키지 않는다: $(printf '%s' "$gh_fx_case" | sed 's/^[[:space:]]*//')"
+    fi
+    rm -f "$GH_FX"
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# 28c. The poller's pid record is not an orphan.
+#
+# `cc_orphan_stages` asks only "is the process this record names still here", so
+# nothing about `checks.pid` exempts it structurally the way the live census's
+# sibling requirement does. Left unnamed there, every normal exit of the poller
+# raises a false orphan alarm — once per run, every run.
+# ---------------------------------------------------------------------------
+# `cc_orphan_stages` lives in `liveness.sh`. Sourced here rather than relied on
+# from the driver's own sourcing, so this section stands when it is run alone.
+# shellcheck source=/dev/null
+. "$(dirname "$DRIVER")/liveness.sh"
+ORPH_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-orphan-checks.XXXXXX")
+orph_dead=99999
+while kill -0 "$orph_dead" 2>/dev/null; do orph_dead=$((orph_dead - 1)); done
+printf '%s' "$orph_dead" > "$ORPH_RD/checks.pid"
+orph_out=$(cc_orphan_stages "$ORPH_RD")
+# COUNTED, NOT `grep -q` ON THE RIGHT OF A PIPE. An early-exiting reader kills the
+# writer with SIGPIPE and `pipefail` then reports the whole pipeline as failed —
+# the same trap the suite's own static check refuses everywhere else in this tree.
+orph_hit=$( { printf '%s\n' "$orph_out" | grep -cx 'checks' || true; } | tr -d ' ')
+if [ "$orph_hit" != "0" ]; then
+  bad "고아 탐지" "죽은 checks.pid 가 고아로 보고된다 — 폴러가 정상 종료할 때마다 매 런 거짓 경보가 난다"
+else
+  ok "죽은 checks.pid 는 고아로 보고되지 않는다 (이름 면제)"
+fi
+# THE POSITIVE CONTROL, so the exemption is not read as the detector being
+# broken: a record of the same shape under a stage-like name IS reported.
+printf '%s' "$orph_dead" > "$ORPH_RD/S1.pid"
+orph_out2=$(cc_orphan_stages "$ORPH_RD")
+orph_hit2=$( { printf '%s\n' "$orph_out2" | grep -cx 'S1' || true; } | tr -d ' ')
+if [ "$orph_hit2" != "0" ]; then
+  ok "같은 모양의 스테이지 이름은 그대로 고아로 보고된다 (양성 대조)"
+else
+  bad "고아 탐지" "죽은 S1.pid 가 고아로 보고되지 않는다 — 면제가 이름을 넘어 번졌다"
+fi
+rm -rf "$ORPH_RD"
+
+# ---------------------------------------------------------------------------
+# 28d. The poller, driven for real against a `gh` stub.
+#
+# `--once` runs exactly one pass, so the loop's own exits are not exercised here
+# — what is exercised is every judgment inside a pass: deriving the branch from
+# the worktree, skipping a detached HEAD, writing nothing when there is no PR,
+# writing only on a transition, surviving a restart without duplicating,
+# keeping a broken call out of `미등록`, and holding back a `실패` until its
+# `필수 집합` question settles.
+# ---------------------------------------------------------------------------
+if [ -f "$CHECKS_SH" ] && command -v git >/dev/null 2>&1; then
+  CK_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-checks-run.XXXXXX")
+  CK_BIN="$CK_RD/bin"; mkdir -p "$CK_BIN"
+  CK_WT="$CK_RD/wt"; mkdir -p "$CK_WT"
+  CK_LG="$CK_RD/ledger.md"
+  CK_MF="$CK_RD/manifest.md"
+  CK_OB="$CK_RD/checks.observed"
+  CK_LONG=$(LC_ALL=C awk 'BEGIN { s = ""; for (i = 0; i < 400; i++) s = s "x"; print s }')
+
+  cat > "$CK_BIN/gh" <<'GHSTUB'
+#!/bin/sh
+# A stand-in for `gh`, driven by the `mode` file the section writes. It accepts
+# only the one call shape the poller is allowed to make.
+mode=$(cat "$GH_STUB_DIR/mode" 2>/dev/null || printf 'empty')
+[ "$1" = "-R" ] || exit 2
+shift 2
+[ "$1" = "pr" ] || exit 2
+verb="$2"; shift 2
+case "$verb" in
+  list)
+    [ "$mode" = "empty" ] && { printf '[]\n'; exit 0; }
+    printf '[{"number":7,"headRefOid":"0123456789abcdef0123456789abcdef01234567"}]\n'
+    exit 0 ;;
+  checks)
+    req=0
+    for a in "$@"; do [ "$a" = "--required" ] && req=1; done
+    if [ "$mode" = "broken" ]; then
+      printf 'HTTP 502\n' >&2; exit 4
+    fi
+    # Only the SECOND question breaks: the status call answers `실패`.
+    if [ "$mode" = "reqbroken" ]; then
+      [ "$req" = "1" ] && { printf 'HTTP 502\n' >&2; exit 4; }
+      printf 'lint\tfail\t1s\thttp://x\n'; exit 1
+    fi
+    if [ "$req" = "1" ]; then
+      printf 'no required checks reported on the branch\n' >&2; exit 1
+    fi
+    case "$mode" in
+      pending) exit 8 ;;
+      pass)    printf 'lint\tpass\t1s\thttp://x\n'; exit 0 ;;
+      fail)    printf 'lint\tfail\t1s\thttp://x\n'; exit 1 ;;
+      faillong) printf '%s\tfail\t1s\thttp://x\n' "$GH_STUB_LONG"; exit 1 ;;
+    esac
+    exit 1 ;;
+esac
+exit 2
+GHSTUB
+  chmod +x "$CK_BIN/gh"
+
+  ( cd "$CK_WT" \
+    && git init -q . >/dev/null 2>&1 \
+    && git config user.email 't@example.invalid' \
+    && git config user.name 'checks test' \
+    && git config remote.origin.url 'https://github.com/Nharu/cc-cmds.git' \
+    && git commit -q --allow-empty -m 'x' \
+    && git checkout -q -b 'seg/ck' ) >/dev/null 2>&1
+
+  printf -- '- `run` | 교대=0 | run-id=ck | prev=aaaa\n' > "$CK_LG"
+  printf -- '- `segment` | 교대=0 | id=S1 | 상태=실행중 | 워크트리=%s | prev=bbbb\n' "$CK_WT" >> "$CK_LG"
+  printf -- '- `target` | 별칭=home | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 베이스 브랜치=master\n' > "$CK_MF"
+
+  ck_run() {
+    printf '%s' "$1" > "$CK_RD/mode"
+    GH_STUB_DIR="$CK_RD" GH_STUB_LONG="$CK_LONG" PATH="$CK_BIN:$PATH" \
+      bash "$CHECKS_SH" --run-dir "$CK_RD" --ledger "$CK_LG" --manifest "$CK_MF" --once \
+      > "$CK_RD/out" 2> "$CK_RD/err"
+  }
+  # THE ABSENT FILE IS A REAL ANSWER HERE — the first pass has no PR and writes
+  # nothing, so the file does not exist yet. `2>/dev/null` on the reader does not
+  # cover that: the redirection is the SHELL's, and its "No such file or
+  # directory" goes to the section's own stderr, printing a spurious error line
+  # in the middle of a passing run.
+  ck_lines() {
+    if [ -f "$CK_OB" ]; then { grep -c '' < "$CK_OB" || true; } | tr -d ' '; else printf '0'; fi
+  }
+
+  ck_run empty
+  if [ "$(ck_lines)" = "0" ] || [ ! -f "$CK_OB" ]; then
+    ok "PR 이 없으면 폴러가 한 줄도 쓰지 않는다 (기동 직후의 정상 상태)"
+  else
+    bad "폴러 패스" "PR 이 없는데 줄이 생겼다: $(cat "$CK_OB")"
+  fi
+
+  ck_run pending
+  if [ "$(ck_lines)" = "1" ] && { grep -q "$(printf '\t대기\t')" "$CK_OB"; }; then
+    ok "첫 관측이 전이로 기록된다 (상태=대기, 한 줄)"
+  else
+    bad "폴러 패스" "첫 대기 전이가 한 줄로 기록되지 않았다: $(cat "$CK_OB" 2>/dev/null)"
+  fi
+  # The branch came from the worktree, not from a row — the segment row above
+  # carries no `브랜치` field at all, which is the router path.
+  if grep -q 'Nharu/cc-cmds#7' "$CK_OB"; then
+    ok "브랜치와 슬러그가 워크트리에서 유도된다 (행에 브랜치 필드가 없는 라우터 경로)"
+  else
+    bad "폴러 패스" "워크트리 유도가 PR 신원을 만들지 못했다"
+  fi
+
+  ck_run pending
+  if [ "$(ck_lines)" = "1" ]; then
+    ok "같은 상태의 두 번째 패스는 줄을 늘리지 않는다 (전이에서만 쓴다)"
+  else
+    bad "폴러 패스" "같은 상태가 두 줄이 됐다 — 40분 대기가 40행을 남긴다: $(cat "$CK_OB")"
+  fi
+
+  ck_run faillong
+  if [ "$(ck_lines)" = "2" ]; then
+    ok "상태 전이가 새 줄을 만든다 (대기 → 실패)"
+  else
+    bad "폴러 패스" "전이가 새 줄을 만들지 않았다: $(cat "$CK_OB")"
+  fi
+  ck_cols=$(LC_ALL=C awk -F'\t' '{ if (NF != 7) c++ } END { print c + 0 }' "$CK_OB")
+  if [ "$ck_cols" = "0" ]; then
+    ok "관측 파일의 모든 줄이 정확히 일곱 열이다 (탭이 열을 밀지 않는다)"
+  else
+    bad "폴러 패스" "열 수가 일곱이 아닌 줄이 ${ck_cols}개다 — 원장 행의 상태 자리에 엉뚱한 값이 앉는다"
+  fi
+  ck_fail_bytes=$(LC_ALL=C awk -F'\t' 'END { print length($7) }' "$CK_OB")
+  if [ "${ck_fail_bytes:-0}" -le 300 ]; then
+    ok "실패 체크 필드가 300 바이트 이하로 클립된다 (${ck_fail_bytes} 바이트)"
+  else
+    bad "폴러 패스" "실패 체크 필드가 ${ck_fail_bytes} 바이트다 — 행 예산을 넘긴다"
+  fi
+
+  # THE RESTART. The observations are transcribed into the ledger and the file is
+  # emptied, exactly as a drain leaves things; a poller that did not seed from the
+  # ledger would re-emit the current state as if it were a transition.
+  printf -- '- `checks` | 교대=0 | PR=Nharu/cc-cmds#7 | head sha=0123456789abcdef0123456789abcdef01234567 | 상태=실패 | 필수 집합=없음 | 실패 체크=lint | 관측=t | 세그먼트=S1 | prev=cccc\n' >> "$CK_LG"
+  : > "$CK_OB"
+  ck_run fail
+  if [ "$(ck_lines)" = "0" ]; then
+    ok "재시작 시 원장 시드가 중복을 막는다 (드레인된 상태가 다시 전이로 읽히지 않는다)"
+  else
+    bad "폴러 패스" "재시작이 이미 드레인된 상태를 다시 썼다: $(cat "$CK_OB")"
+  fi
+
+  : > "$CK_OB"
+  ck_run broken
+  if grep -q "$(printf '\t판정 불가\t')" "$CK_OB" 2>/dev/null; then
+    ok "깨진 호출이 미등록이 아니라 판정 불가로 떨어진다"
+  else
+    bad "폴러 패스" "깨진 호출의 상태가 판정 불가가 아니다: $(cat "$CK_OB" 2>/dev/null)"
+  fi
+
+  # A `실패` WHOSE `필수 집합` QUESTION BROKE IS NOT COMMITTED. Written, it read
+  # as `실패 | 필수 집합=판정 불가`, the gate did not refuse on it, and the
+  # transition key — `상태` alone — skipped every later pass, so the correcting
+  # row never came. The pass after the question settles has to be the one that
+  # writes, and it has to write the settled value.
+  ck_before=$(ck_lines)
+  ck_run reqbroken
+  if [ "$(ck_lines)" = "$ck_before" ]; then
+    ok "필수 집합 조회만 깨진 실패는 기록하지 않고 다음 패스로 미룬다"
+  else
+    bad "폴러 패스" "필수 집합이 판정 불가인 실패가 그대로 기록됐다 — 그 헤드의 머지 거절이 영구히 꺼진다: $(cat "$CK_OB")"
+  fi
+  ck_run fail
+  if [ "$(ck_lines)" = "$((ck_before + 1))" ] \
+     && [ "$(tail -1 "$CK_OB" | LC_ALL=C awk -F'\t' '{ print $5 "|" $6 }')" = "실패|없음" ]; then
+    ok "필수 집합이 정착한 다음 패스가 실패를 정착된 값으로 기록한다"
+  else
+    bad "폴러 패스" "미뤄진 실패가 정착된 쌍으로 기록되지 않았다: $(cat "$CK_OB" 2>/dev/null)"
+  fi
+
+  # DETACHED HEAD. `git rev-parse --abbrev-ref HEAD` prints `HEAD` and exits 0,
+  # so a `|| fallback` never fires and the segment would be polled for a branch
+  # named `HEAD`.
+  ( cd "$CK_WT" && git checkout -q --detach HEAD ) >/dev/null 2>&1
+  : > "$CK_OB"
+  ck_run pending
+  if [ "$(ck_lines)" = "0" ]; then
+    ok "detached HEAD 워크트리는 핸들 없음으로 건너뛴다"
+  else
+    bad "폴러 패스" "detached HEAD 에서도 폴링했다: $(cat "$CK_OB")"
+  fi
+
+  rm -rf "$CK_RD"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4244,16 +4796,243 @@ else
 fi
 # 재시도는 갈래당 정확히 1회다. 갈래마다 하나씩 세고 총합도 함께 재는 이유는,
 # 총합만 재면 한 갈래가 둘을 갖고 다른 갈래가 0 을 갖는 배분도 통과하기 때문이다.
-# 갈래는 셋이다 — 「공허한 성공」·「크래시」·「한도-형상 회수」. 셋째는 드라이버
+# 직접 스폰하는 갈래는 둘이다 — 「크래시」·「한도-형상 회수」. 둘째는 드라이버
 # 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다.
-for retry_arm in '공허한 성공' '크래시' '한도-형상 회수'; do
+# 「공허한 성공」은 스스로 스폰하지 않고 `continue_or_park` 를 거친다(아래 절).
+for retry_arm in '크래시' '한도-형상 회수'; do
   # `${...}` 를 쓰는 것은 취향이 아니다 — 뒤따르는 닫는 낫표가 ASCII 가 아니라서
   # 하한 인터프리터가 그 바이트를 이름에 붙여 읽고 unbound variable 로 죽는다.
   check "재시도 스폰이 「${retry_arm}」 갈래에 정확히 1회" \
-    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || printf '0')" "1"
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || true)" "1"
+  check "「${retry_arm}」 갈래는 계속하지 않는다" \
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park'; } || true)" "0"
 done
-check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 3회)" \
-  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "3"
+check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 2회)" \
+  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+# 한도 종료 는 제 갈래를 갖지 않고 크래시 갈래를 타서 그 1회 재시도를 공유한다.
+# 위 핀들은 이 행동이 없어도 초록이라 그것을 배제하지 못하므로, 구현 팔의 case
+# 주어가 읽기 사상을 거치는지를 같은 소스 문면 형태로 단언한다. 같은 사상이
+# `공허한 성공` 은 그대로 두므로 그 갈래는 여전히 `continue_or_park` 로 간다.
+check "구현 팔의 case 주어가 읽기 사상을 거친다 (한도 종료 가 크래시 갈래를 탄다)" \
+  "$( { grep -cxF '    case "$(terminal_route_class "$class")" in' "$DRIVER" || true; } )" "1"
+check "읽기 사상은 공허한 성공 을 바꾸지 않는다 (한도 종료 만 크래시로 읽는다)" \
+  "$(terminal_route_class '공허한 성공'):$(terminal_route_class '한도 종료'):$(terminal_route_class '크래시')" \
+  "공허한 성공:크래시:크래시"
+
+# ---------------------------------------------------------------------------
+# 텍스트로 끝난 턴의 계속 — `continue_or_park`
+#
+# `공허한 성공` 은 새로 다시 돌리지 않고 같은 세션을 계속 메시지로 재개한다. 새
+# 프로세스는 문맥을 잃고 그 값을 다시 낸다. 트랜스크립트가 없거나 0턴이면 재개할
+# 곳이 없으므로 새 프로세스 재시도 1회를 쓴다. 구현·설계·감사 세 스테이지가 한
+# 헬퍼를 거치고, 계속과 재시도는 모두 자기 시도 번호의 `stage-result` 행을 쓴다.
+#
+# `stage_spawn` 만 스텁한다 — `dispatch_stage`·`stage_wait_all`·분류기·행 기록은
+# 실물이 돈다. 스텁은 이 시도의 핀을 잡고, 재개 세션 id 와 프롬프트를 적고, 시나리오
+# 대로 스트림을 쓴다.
+# ---------------------------------------------------------------------------
+check "구현 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^      '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park "\$sid" "\$jkey" "\$seg" S4'; } || true)" "1"
+check "설계 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S1design S1design - S1design'; } || true)" "1"
+check "감사 갈래의 공허한 성공이 continue_or_park 를 거친다" \
+  "$( { sed -n "/^    '공허한 성공')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park S2 S2 - S2'; } || true)" "1"
+# 판단 키는 그 판단을 낸 스테이지다. 맨 세그먼트나 런 범위 `-` 로 흡수하면 대기
+# 판정이 그 세그먼트·런의 아무 판단에나 걸리고, 답 재부착(`<종류>:<세그먼트>:`
+# 꼴만 고른다)은 그 판단을 영영 고르지 못한다.
+check "구현 스테이지의 흡수기는 판단 키로 흡수한다 (맨 세그먼트가 아니다)" \
+  "$(grep -c 'absorb_stage_judgment "\$sid" "\$jkey"' "$DRIVER")" "1"
+check "설계·감사 스테이지의 흡수기는 런 범위 - 를 넘기지 않는다" \
+  "$(grep -cE 'absorb_stage_judgment (S1design|S2) - ' "$DRIVER" || true)" "0"
+check "설계·감사 스테이지의 흡수기는 자기 이름으로 흡수한다" \
+  "$(grep -cE 'absorb_stage_judgment (S1design S1design|S2 S2) ' "$DRIVER")" "2"
+check "계속 시도의 흡수기는 판단 키로 흡수한다 (행 세그먼트가 아니다)" \
+  "$(sed -n '/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'absorb_stage_judgment "\$did" "\$jkey"')" "1"
+check "답을 재부착하는 사이클은 질문한 스테이지의 키를 유지한다" \
+  "$(grep -c 'jkey="\$aj_stage"' "$DRIVER")" "1"
+# 재개는 최초 기동과 같은 합성 경로를 탄다 — 시도 하나를 띄우는 곳은
+# `dispatch_stage`(→ `stage_spawn`) 하나뿐이고, 재개는 STAGE_RESUME 로만 갈린다.
+check "계속 시도는 dispatch_stage 로만 띄운다 (재개 전용 기동 경로가 없다)" \
+  "$(sed -n '/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'dispatch_stage "\$did" "\$cwd" "\$prompt"')" "1"
+check "계속 헬퍼 안에 CLI 직접 호출이 없다" \
+  "$(sed -n '/^continue_or_park() {/,/^}/p;/^continue_attempt() {/,/^}/p' "$DRIVER" | grep -c 'CLI_BIN\|stage-wrapper')" "0"
+
+CONT="$WORK/continue"; mkdir -p "$CONT"
+# cont_case <라벨> <모드> <앞선 계속 수> — 모드: hollow(끝까지 산출물 없음) ·
+# done1(첫 계속에서 산출) · notr(트랜스크립트 없음) · zero(0턴) · judg(이 파견
+# id 로 대기 판단). 환경으로 파견 id(CONT_DID, 기본 S4:sg:1)·행 세그먼트
+# (CONT_RSEG, 기본 sg)·행 종류(CONT_RKIND, 기본 S4)와, 다른 스테이지가 낸 대기
+# 판단의 `막는 세그먼트` 목록(CONT_OPEN, 공백 구분)을 사례마다 준다. 판단 키는
+# 드라이버 호출부와 같이 파견 id 다.
+cont_case() {
+  local d="$CONT/$1" mode="$2" spent="${3:-0}"
+  local did="${CONT_DID:-S4:sg:1}" rseg="${CONT_RSEG:-sg}" rkind="${CONT_RKIND:-S4}" k n=0
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+    DOC_KEY="docs/x.md"
+    : > "$LEDGER"
+    CONT_SID="11111111-2222-3333-4444-555555555555"
+    resolve_account() { printf '%s' "$d/cfg"; }
+    stage_parent_id() { printf 'parent'; }
+    absorb_stage_judgment() { :; }
+    log() { :; }
+    stage_spawn() {
+      local s="$1" att turns
+      att=$(stage_pin_attempt "$s")
+      printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "$3" >> "$d/spawned"
+      turns=7; [ "$mode" = "zero" ] && turns=0
+      # 실물 스폰이 남기는 것 — `.window` 셋째 줄의 effort 와 init 프레임의 모델.
+      printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
+      printf '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"%s"}\n{"type":"result","num_turns":%s}\n' \
+        "$CONT_SID" "$turns" > "$(stage_log_path "$s")"
+      [ "$mode" = "done1" ] && [ -n "${STAGE_RESUME:-}" ] && : > "$d/artifact"
+      printf '0' > "$RUN_DIR/$s.rc"
+      return 0
+    }
+    cont_pred() { [ -f "$d/artifact" ]; }
+    [ "$mode" = "notr" ] || : > "$d/cfg/projects/p/$CONT_SID.jsonl"
+    if [ "$mode" = "judg" ]; then
+      printf -- '- `승인` | 승인 id=J-1 | 상태=대기 | 절단점=판단 | 막는 세그먼트=%s\n' "$did" >> "$LEDGER"
+    fi
+    for k in ${CONT_OPEN:-}; do
+      n=$((n + 1))
+      printf -- '- `승인` | 승인 id=J-o%s | 상태=대기 | 절단점=판단 | 막는 세그먼트=%s\n' "$n" "$k" >> "$LEDGER"
+    done
+    # 첫 시도 — 호출자가 하는 일을 그대로 한다.
+    stage_spawn "$did" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
+    ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=0" \
+      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "$did")" \
+      "종단 부류=$(classify_termination "$did" 0 1)"
+    [ "$spent" = "0" ] || { mkdir -p "$RUN_DIR/continue"; printf '%s\n' "$spent" > "$(continue_counter_file "$did")"; }
+    : > "$d/spawned"
+    if continue_or_park "$did" "$did" "$rseg" "$rkind" "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+         "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" home -- cont_pred; then
+      printf 'rc=0\n'
+    else
+      printf 'rc=1\nblocked=%s\nreason=%s\n' "$CONTINUE_BLOCKED" "$CONTINUE_PARK_REASON"
+    fi
+  ) > "$d/out" 2>/dev/null
+}
+cont_field() { sed -n "s/^$2=//p" "$CONT/$1/out" | tail -1; }
+cont_spawns() { grep -c . "$CONT/$1/spawned" 2>/dev/null || true; }
+cont_rows() { grep -F '`stage-result`' "$CONT/$1/ledger.md" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' '; }
+
+check "계속 메시지가 충족되지 않은 술어를 이름으로 댄다" \
+  "$(continue_message '동결된 설계 문서도 정지 기록도 없다' | grep -c '동결된 설계 문서도 정지 기록도 없다')" "1"
+check "계속 메시지는 스테이지 프롬프트(슬래시 명령)를 싣지 않는다" \
+  "$(continue_message 'x' | grep -c '/cc-cmds:')" "0"
+check "계속 메시지가 종단 집합을 닫는다 (산출물 · 정지 기록 · 판단 표지)" \
+  "$(continue_message 'x' | grep -c '산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다')" "1"
+
+printf '{"type":"result","num_turns":85}\n{"type":"assistant"}\n{"type":"result","num_turns":6}\n' > "$CONT/nt.json"
+check "num_turns 는 마지막 result 줄에서 읽는다 (단조가 아니다)" "$(stream_last_num_turns "$CONT/nt.json")" "6"
+check "result 줄이 없으면 num_turns 는 빈 값이다" "$(stream_last_num_turns "$CONT/none.json")" ""
+
+cont_case hollow hollow
+check "산출물 없는 공허한 성공은 같은 세션을 두 번 재개한 뒤 park 한다" \
+  "$(cont_field hollow rc)/$(cont_spawns hollow)" "1/2"
+check "재개는 직전 행의 세션 id 로 붙는다" \
+  "$(cut -f2 "$CONT/hollow/spawned" | sort -u)" "11111111-2222-3333-4444-555555555555"
+check "재개 프롬프트는 계속 메시지다 — 스테이지 프롬프트를 다시 싣지 않는다" \
+  "$(cut -f3 "$CONT/hollow/spawned" | grep -c '^이 스테이지의 턴이 끝났지만 산출물 술어가 충족되지 않았다: 세그먼트 브랜치에 새 커밋도 정지 기록도 없다')" "2"
+# `cut -c` 는 바이트로 자르는 구현이 있어 한글 접두를 비교하지 못한다 — 접두는 grep 으로 잰다.
+check "계속 소진은 구별되는 park 사유다" "$(cont_field hollow reason | grep -c '^계속 소진 — ' || true)" "1"
+check "계속 시도마다 새 시도 번호의 stage-result 행이 하나씩 쓰인다 (실행 버전 = 시도 번호)" \
+  "$(cont_rows hollow)" "1 2 3 "
+if grep -F '| `공허한 성공` |' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md" | grep_all_q -F '`계속 소진`'; then
+  ok "계약 5.2 표의 공허한 성공 행이 드라이버와 같은 park 사유를 적는다"
+else
+  bad "계약·드라이버 일치" "5.2 표 공허한 성공 행에 「계속 소진」이 없다"
+fi
+# 계속은 재개 기동이다 — 그 행도 첫 시도의 행처럼 그 시도의 effort 와 서빙 모델을 싣는다.
+check "계속 시도의 stage-result 행이 effort 와 서빙 모델을 싣는다" \
+  "$(grep -F '`stage-result`' "$CONT/hollow/ledger.md" | grep -F '실행 버전=2 ' | grep -cF '| effort=medium | 서빙 모델=claude-opus-5-5 |' || true)" "1"
+check "계속 계수기가 디스크에 남는다 (드라이버 재시작을 넘긴다)" \
+  "$(cat "$CONT/hollow/run/continue/S4:sg:1" 2>/dev/null)" "2"
+
+cont_case restarted hollow 2
+check "계수기가 이미 상한이면 재시작한 드라이버도 더 계속하지 않는다" \
+  "$(cont_field restarted rc)/$(cont_spawns restarted)" "1/0"
+
+cont_case done1 done1
+check "첫 계속에서 산출물이 생기면 통과한다" "$(cont_field done1 rc)/$(cont_spawns done1)" "0/1"
+
+cont_case notr notr
+check "트랜스크립트가 없으면 새 프로세스 재시도 1회" \
+  "$(cont_field notr rc)/$(cont_spawns notr)/$(cut -f1 "$CONT/notr/spawned")" "1/1/S4:sg:1.retry"
+check "재시도는 재개가 아니고 원래 프롬프트를 쓴다" \
+  "$(cut -f2,3 "$CONT/notr/spawned")" "$(printf '\t/cc-cmds:implement-unattended 재시도 프롬프트')"
+check "재시도 소진은 구별되는 park 사유다" "$(cont_field notr reason | grep -c '^재시도 소진 — ' || true)" "1"
+check "재시도도 자기 stage-result 행을 쓴다" \
+  "$(grep -cF '파견 id=S4:sg:1.retry ' "$CONT/notr/ledger.md")" "1"
+
+cont_case zero zero
+check "0턴이면 새 프로세스 재시도 1회" \
+  "$(cont_spawns zero)/$(cut -f1 "$CONT/zero/spawned")" "1/S4:sg:1.retry"
+
+cont_case judg judg
+check "대기 중인 판단 승인이 있으면 계속하지 않는다" \
+  "$(cont_field judg rc)/$(cont_spawns judg)/$(cont_field judg blocked)" "1/0/1"
+check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (세 호출부 모두)" \
+  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "3"
+# park 사유는 실제로 일어날 일만 적는다 — 승인 id 를 대고, 이 런 안에서 다시
+# 디스패치하지 않는다고 말하며, 어떤 경로도 수행하지 않는 재부착을 약속하지
+# 않는다. 옛 문구 하나가 아니라 `재부착` 이라는 말 자체가 없음을 본다 — 문구만
+# 바꾼 약속이 옛 문자열 검사를 그대로 통과한 적이 있다.
+check "막힘 사유가 계약의 판단 승인 대기 토큰 뒤에 대기 중인 승인 id 를 댄다" \
+  "$(cont_field judg reason | grep -c '^판단 승인 대기 J-1 — ' || true)" "1"
+check "구현 스테이지 막힘 사유는 이 런 안에서 다시 디스패치하지 않는다고 적는다" \
+  "$(cont_field judg reason | grep -c '이 런 안에서 이 세그먼트를 다시 디스패치하지 않는다' || true)" "1"
+check "막힘 사유가 수행되지 않는 재부착을 약속하지 않는다" \
+  "$(cont_field judg reason | grep -c '재부착' || true)" "0"
+check "구현 스테이지 막힘 사유는 멈춘 스테이지에 답을 되돌리는 경로가 없다고 적는다" \
+  "$(cont_field judg reason | grep -c '멈춘 스테이지에 답을 되돌리는 경로가 없' || true)" "1"
+
+# 다른 스테이지가 낸 판단은 이 스테이지를 막지 않는다. 앞 사이클 리뷰가 맨
+# 세그먼트로 흡수한 판단과 다른 스테이지 id 로 흡수된 판단이 대기 중이어도, 이
+# 구현 스테이지는 자기 판단이 없으니 같은 세션을 계속한다.
+CONT_OPEN="sg S5:sg:1 S4:sg:10" cont_case otherseg hollow
+check "세그먼트의 다른 대기 판단은 구현 스테이지의 계속을 막지 않는다" \
+  "$(cont_field otherseg rc)/$(cont_spawns otherseg)/$(cont_field otherseg blocked)" "1/2/"
+check "그 경우의 park 는 계속 소진이다 (막힘이 아니다)" \
+  "$(cont_field otherseg reason | grep -c '^계속 소진 — ' || true)" "1"
+
+# 런 범위. 설계 스테이지가 문서를 동결하며 낸 판단(`S1design`)이나 옛 흡수기가
+# 런 범위 `-` 로 흡수한 판단이 대기 중이어도, 이어진 감사 스테이지는 막히지
+# 않는다. 막는 것은 감사 스테이지 자신의 판단뿐이다.
+CONT_DID=S2 CONT_RSEG=- CONT_RKIND=S2 CONT_OPEN="- S1design" cont_case runscope hollow
+check "런 범위의 다른 대기 판단은 감사 스테이지의 계속을 막지 않는다" \
+  "$(cont_field runscope rc)/$(cont_spawns runscope)/$(cont_field runscope blocked)" "1/2/"
+CONT_DID=S2 CONT_RSEG=- CONT_RKIND=S2 CONT_OPEN="- S1design" cont_case runscopeown judg
+check "감사 스테이지 자신의 대기 판단은 계속을 막는다" \
+  "$(cont_field runscopeown rc)/$(cont_spawns runscopeown)/$(cont_field runscopeown blocked)" "1/0/1"
+check "감사 스테이지 막힘 사유는 멈춘 스테이지에 답을 되돌리는 경로가 없다고 적는다" \
+  "$(cont_field runscopeown reason | grep -c '멈춘 스테이지에 답을 되돌리는 경로가 없' || true)" "1"
+check "감사 스테이지 막힘 사유도 재부착을 약속하지 않는다" \
+  "$(cont_field runscopeown reason | grep -c '재부착' || true)" "0"
+check "감사 스테이지 막힘 사유가 자기 승인 id 를 댄다 (다른 스테이지의 것이 아니다)" \
+  "$(cont_field runscopeown reason | grep -c '^판단 승인 대기 J-1 — ' || true)" "1"
+
+# 대기 판정과 답 재부착은 같은 키 꼴을 읽는다. 구현 스테이지가 파견 id 로 흡수한
+# 판단에 답이 오면 `answered_judgment_stage` 가 그것을 고르고, 스트림은 시도 핀이
+# 붙은 이름(`stage_log_path`)으로 찾는다.
+AJ="$WORK/answered"; rm -rf "$AJ"; mkdir -p "$AJ/run/log"
+aj_out=$(
+  RUN_DIR="$AJ/run"; LEDGER="$AJ/ledger.md"
+  printf -- '- `승인` | 승인 id=J-a | 상태=승인 | 절단점=판단 | 막는 세그먼트=S4:sg:1\n' > "$LEDGER"
+  printf '1\n' > "$RUN_DIR/S4:sg:1.attempt"
+  printf '{"type":"result"}\n' > "$RUN_DIR/log/S4:sg:1#1.json"
+  printf '%s|' "$(answered_judgment_stage sg S4)"
+  printf -- '- `승인` | 승인 id=J-b | 상태=승인 | 절단점=판단 | 막는 세그먼트=S5:sg:1\n' > "$LEDGER"
+  printf '1\n' > "$RUN_DIR/S5:sg:1.attempt"
+  printf '{"type":"result"}\n' > "$RUN_DIR/log/S5:sg:1#1.json"
+  printf '%s|' "$(answered_judgment_stage sg S4)"
+  printf -- '- `승인` | 승인 id=J-c | 상태=승인 | 절단점=판단 | 막는 세그먼트=sg\n' > "$LEDGER"
+  printf '%s' "$(answered_judgment_stage sg S4)"
+)
+check "파견 id 로 흡수된 답은 핀된 시도의 스트림으로 재부착 후보가 된다; 다른 종류·맨 세그먼트는 아니다" \
+  "$aj_out" "J-a S4:sg:1||"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파
@@ -4422,7 +5201,7 @@ check "T5 3단 fail-closed: 비영으로 끝난다" "$rc" "1"
 check "T5 3단 fail-closed: 4단의 기본값을 내지 않는다" "$v" ""
 
 # --- T6: 2단도 폴백하지 않는다 ---------------------------------------------
-# 2단의 값이 깨졌을 때 폴백하면 같은 런의 스테이지들이 서로 다른 레인에 앉는데,
+# 2단의 값이 깨졌을 때 폴백하면 이 런의 기본 좌석이 런 도중에 다른 레인으로 바뀌는데,
 # 그것이 정확히 2단을 둔 이유이므로 여기서 폴백하는 것은 기전의 자기 부정이다.
 mkdir -p "$LD/rundirbad"
 printf '%s\n' "$LD/notadir" > "$LD/rundirbad/config-dir"
@@ -4633,6 +5412,629 @@ fi
 chmod 644 "$BKS/cc-cmds/run/bk-run/ledger-path"
 rm -f "$BKS/cc-cmds/run/bk-run/ledger-path"
 
+# --- T7f: 런 기준선 — 런 디렉터리의 인벤토리 스냅숏 ------------------------
+# `rundir_init` 의 마지막 단계는 런 디렉터리의 `inventory.json` 에 인벤토리
+# 기준선을 한 번 뜬다: 살아 있는 인벤토리의 모드 600 사본, 또는 부재를 판정한
+# 설정 루트를 대상에 실은 표지 심볼릭 링크. 쓸 수 있는 이름은 다시 뜨지 않고,
+# 쓸 수 없는 이름·깨진 살아 있는 인벤토리·검사할 수 없는 진입은 부재로 접지 않고
+# 멈춘다. 멈춤은 원장이 있으면 park 행 하나를, 없으면 멈춤 줄만 남긴다.
+#
+# 모든 진입은 게이트가 도는 조건 그대로 `set -euo pipefail` 아래에서 돈다 — 문면을
+# 만드는 도중 두지 않은 변수 하나가 행도 멈춤 줄도 없이 진입을 죽이는 것이 이
+# 경로의 가장 조용한 실패이기 때문이다.
+#
+# 게이트 경로(첫 진입 park, 체인 행, 기준선 행)는 게이트를 소싱한 **별도 `bash`
+# 프로세스**에서 돈다. 이 하네스는 이미 드라이버를 소싱했고 게이트가 드라이버를
+# 다시 소싱하므로, 같은 셸에서는 `readonly` 이름이 재대입으로 죽는다. 소싱은
+# `LEDGER`·`ORCH_DIR`·`PATH` 를 다시 쓰므로 진입 스크립트가 그것들을 소싱 **뒤에**
+# 다시 세운다 — 앞서 둔 값에 기대면 원장 없는 갈래만 돌고, 「행 +0」 같은 부정
+# 단언이 아무것도 배제하지 못한 채 통과한다.
+# 픽스처 루트는 `$WORK` 가 아니라 짧은 /tmp 아래에 둔다. 거부 관측은 500 바이트에서
+# 잘리고, macOS 의 긴 TMPDIR 아래에서는 관측에 실리는 세 경로만으로 그 한도가 차
+# 꼬리의 `상태 루트=`·`호출자=` 가 사라진다 — 그러면 보통 길이의 경로에서 그 둘이
+# 실린다는 단언을 잴 수 없다. 정리는 `cleanup` 이 맡는다.
+IVW=$(mktemp -d /tmp/cciv.XXXXXX); mkdir -p "$IVW/shim-jq" "$IVW/shim-link"
+printf '#!/bin/sh\nexit 1\n' > "$IVW/shim-jq/jq"; chmod 755 "$IVW/shim-jq/jq"
+printf '#!/bin/sh\nexit 1\n' > "$IVW/shim-link/link"; chmod 755 "$IVW/shim-link/link"
+IV_MARK='/dev/null/cc-cmds-inventory-absent'
+cat > "$IVW/iv-entry.sh" <<'IVEOF'
+#!/usr/bin/env bash
+# T7f 의 별도 프로세스 진입 — 하네스가 런타임에 쓰고 따로 태운다.
+set -uo pipefail
+SRC="$1"; set --
+for v in $(compgen -e); do case "$v" in CC_PIPELINE_*) unset "$v" ;; esac; done
+unset CLAUDE_CONFIG_DIR
+if [ -n "${IV_STAGE:-}" ]; then CC_PIPELINE_STAGE_ID="$IV_STAGE"; export CC_PIPELINE_STAGE_ID; fi
+HP="$PATH"
+case "$SRC" in */gate.sh) CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY ;; esac
+CC_ORCH_SOURCE_ONLY=1
+export CC_ORCH_SOURCE_ONLY
+# shellcheck disable=SC1090
+. "$SRC" || exit 9
+PATH="$HP"
+unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+set +e
+LEDGER="$IV_LEDGER"; ORCH_DIR="$IV_ORCH"; BASE="$IV_BASE"; RUN_ID=iv-run
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+cd "$IV_CWD" || exit 9
+if [ -n "${IV_GO:-}" ]; then while [ ! -e "$IV_GO" ]; do :; done; fi
+case "${IV_MODE:-init}" in
+  verify) RUN_DIR=$(rundir_of_run_id "$RUN_ID"); gate_chain_verify ;;
+  *) ( set -euo pipefail; rundir_init ) ;;
+esac
+IVEOF
+iv_seq=0
+iv_new() {
+  # iv_new — 새 픽스처 한 벌. 레인 기록은 해석기가 통과하도록 미리 심고, 원장은
+  # 만들어 두되 `ledger-path` 는 두지 않는다(원장 없는 진입이 기본이다).
+  iv_seq=$((iv_seq + 1))
+  IVD="$IVW/f$iv_seq"
+  IVH="$IVD/home"; IVS="$IVD/state"; IVC="$IVD/cfg"; IVB="$IVD/base"
+  IVRD="$IVS/cc-cmds/run/iv-run"; IVINV="$IVRD/inventory.json"
+  IVL="$IVB/docs/pipeline-run/iv-run.md"; IVLIVE="$IVC/cc-lane/accounts.json"
+  IVGL="$IVL"
+  mkdir -p "$IVH/.claude" "$IVRD" "$IVC" "$IVB/docs/pipeline-run"
+  printf '%s\n' "$IVH/.claude" > "$IVRD/config-dir"
+  printf '# 원장\n\n## 실행 iv-run\n' > "$IVL"
+}
+iv_ledger_on() { printf '%s\n' "$IVL" > "$IVRD/ledger-path"; }
+iv_live() {
+  # iv_live <valid|torn|foreign> [config_dir 의 HOME] [파일] — 살아 있는 인벤토리
+  local f="${3:-$IVLIVE}"
+  mkdir -p "$(dirname "$f")"
+  case "$1" in
+    valid|foreign)
+      jq -cn --arg h "$( [ "$1" = valid ] && printf '%s' "${2:-$IVH}" || printf '%s' "$IVD/elsewhere" )" \
+        '{schema: "cc-lane-accounts v1", accounts: [{id: "a", config_dir: ($h + "/.claude-a"), label: "a",
+          interactive_reserved: false, unattended: "enabled", added_at: 0}]}' > "$f" ;;
+    torn) printf '{"schema":' > "$f" ;;
+  esac
+}
+iv_init() (
+  # iv_init [명령…] — 이 하네스 안의 게이트 밖 진입. IV_HOME·IV_XDG(`-unset-` 이면
+  # 미설정)·IV_PATH_PRE·IV_STAGE 로 환경을 바꾼다. 인자가 있으면 진입이 성공한 뒤
+  # 같은 셸에서 그것을 부른다.
+  unset CLAUDE_CONFIG_DIR CC_PIPELINE_STAGE_ID
+  [ -z "${IV_STAGE:-}" ] || CC_PIPELINE_STAGE_ID="$IV_STAGE"
+  if [ "${IV_HOME+x}" = x ]; then HOME="$IV_HOME"; else HOME="$IVH"; fi
+  export HOME
+  XDG_STATE_HOME="$IVS"; export XDG_STATE_HOME
+  if [ "${IV_XDG+x}" != x ]; then XDG_CONFIG_HOME="$IVC"; export XDG_CONFIG_HOME
+  elif [ "$IV_XDG" = "-unset-" ]; then unset XDG_CONFIG_HOME
+  else XDG_CONFIG_HOME="$IV_XDG"; export XDG_CONFIG_HOME; fi
+  [ -z "${IV_PATH_PRE:-}" ] || PATH="$IV_PATH_PRE:$PATH"
+  RUN_ID=iv-run ORCH_DIR="$script_dir" BASE="$IVB" LEDGER=""
+  set -euo pipefail
+  rundir_init
+  if [ "$#" -gt 0 ]; then "$@"; fi
+)
+iv_proc() {
+  # iv_proc <run|gate> [init|verify] — 별도 프로세스 진입 하나
+  local src="$script_dir/run.sh"
+  [ "$1" = gate ] && src="$script_dir/gate.sh"
+  HOME="$IVH" XDG_STATE_HOME="$IVS" XDG_CONFIG_HOME="$IVC" \
+  IV_LEDGER="${IVGL:-}" IV_ORCH="$script_dir" IV_BASE="$IVB" IV_CWD="$IVD" \
+  IV_MODE="${2:-init}" IV_GO="${IV_GO:-}" IV_STAGE="${IV_STAGE:-}" \
+    bash "$IVW/iv-entry.sh" "$src"
+}
+iv_gate() { iv_proc gate "$@"; }
+iv_rows() {
+  # iv_rows <계열> [원장] — 그 계열 행의 수
+  local n
+  n=$(grep -c "^- \`$1\`" "${2:-$IVL}" 2>/dev/null) || n=0
+  printf '%s' "${n:-0}"
+}
+iv_last() { { grep "^- \`$1\`" "${2:-$IVL}" 2>/dev/null || true; } | tail -1; }
+iv_is() { if eval "$1"; then printf yes; else printf no; fi; }
+iv_has() {
+  # iv_has <라벨> <문자열> <조각> — 조각이 들어 있으면 PASS
+  case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "'$3' 가 없다: $2" ;; esac
+}
+iv_lacks() {
+  case "$2" in *"$3"*) bad "$1" "'$3' 가 있다: $2" ;; *) ok "$1" ;; esac
+}
+iv_mode_of() { t_mode "$1" 2>/dev/null || printf '?'; }
+iv_root_guard() {
+  # 루트로 돌면 mode 000 도 읽히므로 그 경우를 재지 못한다 — T7e 와 같은 가드
+  [ "$(id -u)" != "0" ]
+}
+
+# 1. 살아 있는 파일 없음 → 표지
+iv_new
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-1 인벤토리가 없으면 진입은 성공한다" "$rc" "0"
+check "T7f-1 이름은 표지이고 대상은 상수 + 설정 루트다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+IV1D="$IVD"; IV1C="$IVC"; IV1INV="$IVINV"
+
+# 2. 살아 있는 파일 유효 → 사본
+iv_new; iv_live valid
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-2 유효한 인벤토리에서 진입은 성공한다" "$rc" "0"
+check "T7f-2 이름은 심볼릭 링크가 아닌 정규 파일이다" \
+  "$(iv_is '[ -f "$IVINV" ] && [ ! -L "$IVINV" ]')" "yes"
+check "T7f-2 사본의 바이트가 살아 있는 파일과 같다" "$(iv_is 'cmp -s "$IVINV" "$IVLIVE"')" "yes"
+check "T7f-2 사본의 모드는 600 이다" "$(iv_mode_of "$IVINV")" "600"
+IV2D="$IVD"
+
+# 3. 표지 뒤 같은 루트에 인벤토리가 생겨도 표지 그대로
+IVD="$IV1D"; IVH="$IVD/home"; IVS="$IVD/state"; IVC="$IV1C"; IVB="$IVD/base"
+IVRD="$IVS/cc-cmds/run/iv-run"; IVINV="$IV1INV"; IVLIVE="$IVC/cc-lane/accounts.json"
+IVL="$IVB/docs/pipeline-run/iv-run.md"
+iv_live valid
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-3 표지 뒤 인벤토리가 생긴 재진입도 성공한다" "$rc" "0"
+check "T7f-3 표지는 그대로다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+
+# 4. 사본 뒤 살아 있는 파일이 깨지거나 사라져도 사본 그대로
+iv_new; iv_live valid
+iv_init >/dev/null 2>&1
+cp -p "$IVINV" "$IVD/copy.saved"
+iv_live torn
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-4 살아 있는 파일이 깨진 뒤의 재진입도 성공한다" "$rc" "0"
+check "T7f-4 사본의 바이트가 그대로다 (깨짐)" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+rm -f "$IVLIVE"
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-4 살아 있는 파일이 사라진 뒤의 재진입도 성공한다" "$rc" "0"
+check "T7f-4 사본의 바이트가 그대로다 (사라짐)" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+check "T7f-4 사본의 모드가 그대로다" "$(iv_mode_of "$IVINV")" "600"
+
+# 5. 찢어진 사본 + ledger-path + BASE → SNAPSHOT park
+iv_new; iv_ledger_on
+printf '{"schema":' > "$IVINV"; chmod 600 "$IVINV"
+iv_b=$(iv_rows blocked)
+iv_out_snap=$(iv_init 2>&1); rc=$?
+check "T7f-5 찢어진 사본에서 진입은 멈춘다" "$rc" "1"
+iv_has "T7f-5 멈춤 줄이 재발행 명령을 싣는다" "$iv_out_snap" "회복: rm -rf "
+check "T7f-5 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-5 행의 사유" "$iv_row" "사유=인벤토리 스냅숏 손상"
+iv_has "T7f-5 행의 재개 명령" "$iv_row" "재개 명령=rm -rf "
+check "T7f-5 이름은 그대로다" "$(cat "$IVINV" 2>/dev/null)" '{"schema":'
+
+# 6. 5 와 같되 ledger-path 없음 → 행 +0
+rm -f "$IVRD/ledger-path"
+iv_b=$(iv_rows blocked)
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-6 원장 없는 SNAPSHOT 도 멈춘다" "$rc" "1"
+check "T7f-6 원장 없는 SNAPSHOT 은 행을 남기지 않는다" "$(( $(iv_rows blocked) - iv_b ))" "0"
+
+# 7. 남의 심볼릭 링크 → SNAPSHOT (symlink), 상수 단독 대상도
+iv_new
+ln -s "$IVD/elsewhere" "$IVINV"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-7 남의 심볼릭 링크에서 멈춘다" "$rc" "1"
+iv_has "T7f-7 이유는 symlink 다" "$iv_out" "(symlink)"
+rm -f "$IVINV"; ln -s "$IV_MARK" "$IVINV"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-7 상수 단독 대상의 링크에서도 멈춘다" "$rc" "1"
+iv_has "T7f-7 상수 단독 대상도 symlink 다" "$iv_out" "(symlink)"
+
+# 8. 디렉터리 → SNAPSHOT (not-regular), 회복 명령을 그대로 돌리면 다시 뜬다
+iv_new
+mkdir -p "$IVINV/sub"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-8 이름이 디렉터리이면 멈춘다" "$rc" "1"
+iv_has "T7f-8 이유는 not-regular 다" "$iv_out" "(not-regular)"
+iv_rec=$(printf '%s\n' "$iv_out" | sed -n 's/.*회복: //p' | tail -1)
+eval "$iv_rec"
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-8 회복 명령 뒤 재진입은 기준선을 뜬다" "$rc" "0"
+check "T7f-8 다시 뜬 기준선은 표지다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+
+# 9. 읽을 수 없는 사본 → SNAPSHOT (unreadable)
+iv_new; iv_live valid
+iv_init >/dev/null 2>&1
+chmod 000 "$IVINV"
+if iv_root_guard; then
+  iv_out=$(iv_init 2>&1); rc=$?
+  check "T7f-9 읽을 수 없는 사본에서 멈춘다" "$rc" "1"
+  iv_has "T7f-9 이유는 unreadable 이다" "$iv_out" "(unreadable)"
+else
+  bad "T7f-9 픽스처" "mode 000 파일이 읽혀 읽기 실패 상태를 만들지 못했다 (root 로 실행 중인가)"
+fi
+chmod 600 "$IVINV"
+
+# 10. 이름 비었음, 살아 있는 파일이 찢어짐 → LIVE park
+iv_new; iv_ledger_on; iv_live torn
+iv_b=$(iv_rows blocked)
+iv_out_live=$(iv_init 2>&1); rc=$?
+check "T7f-10 깨진 살아 있는 인벤토리에서 멈춘다" "$rc" "1"
+check "T7f-10 아무것도 게시하지 않는다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+check "T7f-10 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-10 행의 사유" "$iv_row" "사유=살아 있는 인벤토리 손상"
+iv_has "T7f-10 행의 재개 명령" "$iv_row" "재개 명령=cc-lane account check"
+iv_has "T7f-10 멈춤 줄이 이유 앞에 살아 있는 경로를 싣는다" "$iv_out_live" "$IVLIVE (parse)"
+
+# 11. 살아 있는 파일이 끊어진 잎 링크 → LIVE (dangling-link)
+iv_new
+mkdir -p "$IVC/cc-lane"; ln -s "$IVD/nowhere" "$IVLIVE"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-11 끊어진 잎에서 멈춘다" "$rc" "1"
+iv_has "T7f-11 이유는 dangling-link 다" "$iv_out" "(dangling-link)"
+check "T7f-11 표지를 두지 않는다" "$(iv_is '[ -L "$IVINV" ]')" "no"
+
+# 12. cc-lane/ 을 검색할 수 없음 → LIVE (unsearchable-dir)
+iv_new; iv_live valid
+chmod 000 "$IVC/cc-lane"
+if iv_root_guard; then
+  iv_out=$(iv_init 2>&1); rc=$?
+  check "T7f-12 검색할 수 없는 디렉터리에서 멈춘다" "$rc" "1"
+  iv_has "T7f-12 이유는 unsearchable-dir 이다" "$iv_out" "(unsearchable-dir)"
+  check "T7f-12 표지를 두지 않는다" "$(iv_is '[ -L "$IVINV" ]')" "no"
+else
+  bad "T7f-12 픽스처" "mode 000 디렉터리가 검색돼 검색 불가 상태를 만들지 못했다 (root 로 실행 중인가)"
+fi
+chmod 755 "$IVC/cc-lane"
+
+# 13. ROOT(사본) — HOME=A 로 뜬 뒤 HOME=B 로 원장 있는 진입
+iv_new; iv_live valid; iv_ledger_on
+iv_init >/dev/null 2>&1
+cp -p "$IVINV" "$IVD/copy.saved"
+mkdir -p "$IVD/home-b"
+iv_b=$(iv_rows blocked)
+iv_out_rootc=$(IV_HOME="$IVD/home-b" iv_init 2>&1); rc=$?
+check "T7f-13 다른 HOME 의 진입은 멈춘다" "$rc" "1"
+check "T7f-13 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-13 행의 사유" "$iv_row" "사유=인벤토리 기준선 루트 불일치"
+iv_has "T7f-13 행의 재개 명령은 명령 없음이다" "$iv_row" "재개 명령=(없음)"
+iv_lacks "T7f-13 행의 재개 명령에 rm 이 없다" "${iv_row##*재개 명령=}" "rm "
+iv_lacks "T7f-13 멈춤 줄에 회복 꼬리가 없다" "$iv_out_rootc" "회복:"
+iv_has "T7f-13 멈춤 줄이 두 갈래를 보인다" "$iv_out_rootc" "XDG_STATE_HOME="
+check "T7f-13 이름은 그대로다" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+
+# 14. config_dir 가 진입의 HOME 밖 → LIVE (config_dir-prefix)
+iv_new; iv_live foreign
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-14 HOME 밖 config_dir 의 살아 있는 인벤토리에서 멈춘다" "$rc" "1"
+iv_has "T7f-14 이유는 config_dir-prefix 다" "$iv_out" "(config_dir-prefix)"
+iv_has "T7f-14 이 진입의 HOME 을 함께 싣는다" "$iv_out" "이 진입의 HOME=$IVH"
+check "T7f-14 표지를 두지 않는다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+
+# 15. CHECK·PUBLISH
+# (a) HOME="" 이고 XDG 미설정
+iv_new
+iv_out=$(IV_HOME="" IV_XDG=-unset- iv_init 2>&1); rc=$?
+check "T7f-15a 빈 HOME 은 멈춘다" "$rc" "1"
+iv_has "T7f-15a 이유는 path 다" "$iv_out" "(path"
+check "T7f-15a 표지를 두지 않는다" "$(iv_is '[ -L "$IVINV" ]')" "no"
+# (b) 상대 XDG_CONFIG_HOME
+iv_new
+iv_out=$(IV_XDG="rel-cfg" iv_init 2>&1); rc=$?
+check "T7f-15b 상대 설정 루트는 멈춘다" "$rc" "1"
+iv_has "T7f-15b 이유는 path 다" "$iv_out" "(path"
+# (c) 실패하는 jq, 유효한 살아 있는 파일
+iv_new; iv_live valid; iv_ledger_on
+iv_out_check=$(IV_PATH_PRE="$IVW/shim-jq" iv_init 2>&1); rc=$?
+check "T7f-15c 돌지 않는 jq 는 멈춘다" "$rc" "1"
+iv_has "T7f-15c 이유는 no-jq 다" "$iv_out_check" "(no-jq"
+check "T7f-15c 아무것도 게시하지 않는다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+# (d) HOME=A 로 뜬 사본에 HOME=A/ 로 재진입
+iv_new; iv_live valid; iv_ledger_on
+iv_init >/dev/null 2>&1
+cp -p "$IVINV" "$IVD/copy.saved"
+iv_b=$(iv_rows blocked)
+iv_out=$(IV_HOME="$IVH/" iv_init 2>&1); rc=$?
+check "T7f-15d 끝 슬래시 HOME 은 멈춘다" "$rc" "1"
+iv_has "T7f-15d 이유는 home-shape 다" "$iv_out" "(home-shape"
+check "T7f-15d 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_has "T7f-15d 행의 사유" "$(iv_last blocked)" "사유=인벤토리 검사 불가"
+iv_lacks "T7f-15d 멈춤 줄에 회복 꼬리가 없다" "$iv_out" "회복:"
+check "T7f-15d 이름은 그대로다" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+# (e) 같은 사본에서 실패하는 jq
+iv_out=$(IV_PATH_PRE="$IVW/shim-jq" iv_init 2>&1); rc=$?
+check "T7f-15e 사본 위의 돌지 않는 jq 도 멈춘다" "$rc" "1"
+iv_has "T7f-15e 이유는 no-jq 다" "$iv_out" "(no-jq"
+check "T7f-15e 이름은 그대로다" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
+# (f) PUBLISH — 실패하는 link
+iv_new; iv_live valid; iv_ledger_on
+iv_b=$(iv_rows blocked)
+iv_out_pub=$(IV_PATH_PRE="$IVW/shim-link" iv_init 2>&1); rc=$?
+check "T7f-15f 게시하지 못하면 멈춘다" "$rc" "1"
+iv_has "T7f-15f 이유는 publish 다" "$iv_out_pub" "(publish)"
+iv_has "T7f-15f 멈춤 줄이 온전하다" "$iv_out_pub" "link 를 쓸 수 없거나"
+iv_lacks "T7f-15f 멈춤 줄에 역따옴표가 없다" "$iv_out_pub" '`'
+check "T7f-15f 이름은 비었다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+check "T7f-15f 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_has "T7f-15f 행의 사유" "$(iv_last blocked)" "사유=인벤토리 스냅숏 게시 실패"
+check "T7f-15f 스테이징 잔여가 없다" \
+  "$(find "$IVRD" -name 'inventory.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# 16. 스위치 독립 — 새 함수 어디에도 휴면 스위치 토큰이 없다
+iv_fns=$(declare -f rundir_ledger rundir_row rundir_refuse \
+  rundir_inventory_can_check rundir_inventory_root rundir_inventory_absent rundir_inventory_judge \
+  rundir_inventory_take rundir_inventory_last_fp rundir_inventory_record rundir_inventory_drain \
+  rundir_inventory_snapshot)
+check "T7f-16 새 함수가 모두 정의돼 있다" \
+  "$(printf '%s\n' "$iv_fns" | grep -c '^rundir_[a-z_]* ()')" "12"
+check "T7f-16 새 함수에 휴면 스위치 토큰이 없다" \
+  "$(printf '%s\n' "$iv_fns" | grep -c ROUTE_ROUTING_BUILD_COMPLETE)" "0"
+
+# 17. 경쟁 — 독립 bash 경쟁자 8 개
+iv_new; iv_live valid
+iv_go="$IVD/go"; iv_pids=""
+for iv_i in 1 2 3 4 5 6 7 8; do
+  IV_GO="$iv_go" iv_proc run > "$IVD/race.$iv_i.out" 2>&1 &
+  iv_pids="$iv_pids $!"
+done
+touch "$iv_go"
+iv_bad=0
+for iv_p in $iv_pids; do wait "$iv_p" || iv_bad=$((iv_bad + 1)); done
+check "T7f-17 경쟁자 여덟이 모두 성공한다" "$iv_bad" "0"
+check "T7f-17 이름에는 정규 파일 하나가 남는다" \
+  "$(iv_is '[ -f "$IVINV" ] && [ ! -L "$IVINV" ]')" "yes"
+check "T7f-17 그 바이트가 살아 있는 파일과 같다" "$(iv_is 'cmp -s "$IVINV" "$IVLIVE"')" "yes"
+check "T7f-17 스테이징 잔여가 없다" \
+  "$(find "$IVRD" -name 'inventory.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+# 같은 경쟁을 게이트를 소싱한 진입으로 — 기준선 행은 정확히 하나
+iv_new; iv_live valid
+iv_go="$IVD/go"; iv_pids=""
+for iv_i in 1 2 3 4 5 6 7 8; do
+  IV_GO="$iv_go" iv_gate > "$IVD/race.$iv_i.out" 2>&1 &
+  iv_pids="$iv_pids $!"
+done
+touch "$iv_go"
+iv_bad=0
+for iv_p in $iv_pids; do wait "$iv_p" || iv_bad=$((iv_bad + 1)); done
+check "T7f-17 게이트 경쟁자 여덟이 모두 성공한다" "$iv_bad" "0"
+check "T7f-17 게이트 경쟁에서 기준선 행은 정확히 하나다" "$(iv_rows '인벤토리 기준선')" "1"
+
+# 18. 문면 고정 — 런이 레인을 가로질러 갈라지지 않는다는 옛 문면이 남지 않는다
+check "T7f-18 옛 TIER 2 머리 문장이 없다" \
+  "$(grep -c 'TIER 2 IS WHY A RUN DOES NOT SPLIT ACROSS LANES' "$DRIVER")" "0"
+check "T7f-18 「서로 다른 레인에 착지합니다」가 없다" \
+  "$(grep -c '서로 다른 레인에 착지합니다' "$DRIVER")" "0"
+
+# 19. 같은 루트의 재진입은 표지를 받아들이고 행을 더하지 않는다
+iv_new; iv_ledger_on
+iv_init >/dev/null 2>&1
+check "T7f-19 표지 대상이 상수 + 설정 루트다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+iv_n0=$(grep -c '^- `' "$IVL")
+iv_init >/dev/null 2>&1; rc=$?
+check "T7f-19 같은 루트의 재진입은 성공한다" "$rc" "0"
+check "T7f-19 같은 루트의 재진입은 행을 더하지 않는다" "$(( $(grep -c '^- `' "$IVL") - iv_n0 ))" "0"
+
+# 20. ROOT(표지) — 루트 A 의 부재 뒤 인벤토리가 있는 루트 B
+iv_new; iv_ledger_on
+iv_init >/dev/null 2>&1
+iv_cb="$IVD/cfg-b"; iv_live valid "$IVH" "$iv_cb/cc-lane/accounts.json"
+iv_b=$(iv_rows blocked)
+iv_out_rootm=$(IV_XDG="$iv_cb" iv_init 2>&1); rc=$?
+check "T7f-20 다른 루트의 인벤토리가 있으면 멈춘다" "$rc" "1"
+check "T7f-20 원장에 행 하나" "$(( $(iv_rows blocked) - iv_b ))" "1"
+iv_row=$(iv_last blocked)
+iv_has "T7f-20 행의 사유" "$iv_row" "사유=인벤토리 기준선 루트 불일치"
+iv_has "T7f-20 관측이 기준선의 루트를 싣는다" "$iv_row" "기준선의 설정 루트=「${IVC}」"
+iv_has "T7f-20 관측이 이 진입의 루트를 싣는다" "$iv_row" "이 진입의 설정 루트=「${iv_cb}」"
+iv_has "T7f-20 관측이 상태 루트를 싣는다" "$iv_row" "상태 루트=「${IVS}」"
+iv_has "T7f-20 관측이 호출자를 싣는다" "$iv_row" "호출자=리드"
+iv_has "T7f-20 멈춤 줄이 상태 루트 갈래를 보인다" "$iv_out_rootm" "XDG_STATE_HOME="
+iv_has "T7f-20 멈춤 줄이 재발행 갈래를 보인다" "$iv_out_rootm" "rm -rf "
+iv_lacks "T7f-20 멈춤 줄에 회복 꼬리가 없다" "$iv_out_rootm" "회복:"
+check "T7f-20 이름은 그대로다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+IV20D="$IVD"
+
+# 21. 다른 루트지만 양성 부재 → ROOT 없음
+iv_new
+iv_init >/dev/null 2>&1
+IV_XDG="$IVD/cfg-none" iv_init >/dev/null 2>&1; rc=$?
+check "T7f-21 다른 루트가 양성 부재이면 받아들인다" "$rc" "0"
+
+# 22. 다른 루트의 cc-lane 이 끊어진 링크 → ROOT, 같은 디렉터리의 다른 철자는 ROOT 없음
+iv_new
+iv_init >/dev/null 2>&1
+mkdir -p "$IVD/cfg-b"; ln -s "$IVD/nowhere" "$IVD/cfg-b/cc-lane"
+iv_out=$(IV_XDG="$IVD/cfg-b" iv_init 2>&1); rc=$?
+check "T7f-22 다른 루트의 끊어진 cc-lane 은 멈춘다" "$rc" "1"
+iv_has "T7f-22 이유는 absent-root 다" "$iv_out" "(absent-root"
+ln -s "$IVC" "$IVD/cfg-alias"
+mkdir -p "$IVC/cc-lane"; ln -s "$IVD/nowhere" "$IVLIVE"
+IV_XDG="$IVD/cfg-alias" iv_init >/dev/null 2>&1; rc=$?
+check "T7f-22 같은 디렉터리의 다른 철자는 끊어진 잎이 있어도 받아들인다" "$rc" "0"
+
+# 23. CHECK 가 park 하고 관측에 호출자를 싣는다 (라우터 문맥 리드, 스테이지)
+iv_new; iv_live valid; iv_ledger_on
+IV_PATH_PRE="$IVW/shim-jq" iv_init >/dev/null 2>&1
+iv_has "T7f-23 CHECK 행이 호출자 리드를 싣는다" "$(iv_last blocked)" "호출자=리드)"
+iv_new; iv_live valid; iv_ledger_on
+IV_STAGE='S9#1' IV_PATH_PRE="$IVW/shim-jq" iv_init >/dev/null 2>&1
+iv_has "T7f-23 CHECK 행이 스테이지 id 를 싣는다" "$(iv_last blocked)" "호출자=S9#1)"
+
+# 24. CHECK marker-length
+iv_new
+iv_long="$IVD"; for iv_i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+  21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 \
+  51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 \
+  81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100; do iv_long="$iv_long/xxxxxxxxxx"; done
+iv_out=$(IV_XDG="$iv_long" iv_init 2>&1); rc=$?
+check "T7f-24 표지 대상이 너무 길면 멈춘다" "$rc" "1"
+iv_has "T7f-24 이유는 marker-length 다" "$iv_out" "(marker-length"
+iv_has "T7f-24 관측이 바이트 한도를 말한다" "$iv_out" "1023바이트를 넘습니다"
+check "T7f-24 이름은 비었다" "$(iv_is '[ -e "$IVINV" ] || [ -L "$IVINV" ]')" "no"
+
+# 25. 접기 — 같은 사유의 미해소 막힘이 있으면 행을 더하지 않고, 해소 뒤에는 더한다
+iv_new; iv_ledger_on
+printf '{"schema":' > "$IVINV"
+iv_init >/dev/null 2>&1; iv_init >/dev/null 2>&1
+check "T7f-25 거부하는 진입 둘은 행 하나를 남긴다" "$(iv_rows blocked)" "1"
+( LEDGER="$IVL"; ledger_row 'blocked' "대상=iv-run" "스코프=run" "원인=해소" \
+    "사유=인벤토리 스냅숏 손상" "관측=-" "재개 명령=(없음)" )
+iv_init >/dev/null 2>&1
+check "T7f-25 해소 뒤 셋째 진입은 새 행을 남긴다" \
+  "$(grep '^- `blocked`' "$IVL" | grep -c '원인=막힘')" "2"
+
+# 26. 첫 진입 park — 게이트 경로, ledger-path 없음, 절대 LEDGER 의 디렉터리만 있음
+iv_new
+printf '{"schema":' > "$IVINV"
+mkdir -p "$IVD/gl"; IVGL="$IVD/gl/ledger.md"
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-26 게이트 첫 진입도 찢어진 사본에서 멈춘다" "$rc" "1"
+check "T7f-26 원장 파일이 생긴다" "$(iv_is '[ -f "$IVGL" ]')" "yes"
+check "T7f-26 그 원장에 blocked 행 하나" "$(iv_rows blocked "$IVGL")" "1"
+mkdir -p "$IVD/rel"; IVGL="rel/ledger.md"
+iv_gate >/dev/null 2>&1
+check "T7f-26 상대 LEDGER 로는 행을 쓰지 않는다" "$(iv_is '[ -e "$IVD/rel/ledger.md" ]')" "no"
+
+# 27. 기준선 행 — 게이트 경로
+iv_new; mkdir -p "$IVD/gl"; IVGL="$IVD/gl/ledger.md"
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-27 게이트 첫 진입은 성공한다" "$rc" "0"
+check "T7f-27 기준선 행 하나" "$(iv_rows '인벤토리 기준선' "$IVGL")" "1"
+iv_row=$(iv_last '인벤토리 기준선' "$IVGL")
+iv_has "T7f-27 형태는 부재다" "$iv_row" "형태=부재"
+iv_has "T7f-27 지문은 - 다" "$iv_row" "지문=- "
+iv_has "T7f-27 판정 루트가 온전하다" "$iv_row" "판정 루트=XDG_CONFIG_HOME=「${IVC}」"
+iv_has "T7f-27 이전 지문은 - 다" "$iv_row" "이전 지문=- "
+iv_has "T7f-27 체인 행이다" "$iv_row" "prev="
+iv_gate >/dev/null 2>&1; iv_gate >/dev/null 2>&1; iv_gate >/dev/null 2>&1
+check "T7f-27 이어진 세 진입 뒤에도 기준선 행 하나" "$(iv_rows '인벤토리 기준선' "$IVGL")" "1"
+rm -rf "$IVINV"; iv_live valid
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-27 재발행 진입은 성공한다" "$rc" "0"
+check "T7f-27 재발행 뒤 기준선 행 둘" "$(iv_rows '인벤토리 기준선' "$IVGL")" "2"
+iv_row=$(iv_last '인벤토리 기준선' "$IVGL")
+iv_has "T7f-27 둘째 행의 형태는 사본이다" "$iv_row" "형태=사본"
+check "T7f-27 둘째 행의 지문은 64 hex 다" \
+  "$(printf '%s' "$iv_row" | tr '|' '\n' | sed -n 's/^ *지문=//p' | sed 's/[[:space:]]*$//' | grep -cE '^[0-9a-f]{64}$')" "1"
+iv_has "T7f-27 둘째 행의 이전 지문은 앞 행의 - 다" "$iv_row" "이전 지문=- "
+IV27GL="$IVGL"; IV27D="$IVD"
+# 게이트 밖에서는 ledger_row 로 같은 필드
+iv_new; iv_ledger_on
+iv_init >/dev/null 2>&1
+iv_row=$(iv_last '인벤토리 기준선')
+iv_has "T7f-27 게이트 밖 기준선 행의 형태" "$iv_row" "형태=부재"
+iv_has "T7f-27 게이트 밖 기준선 행의 판정 루트" "$iv_row" "판정 루트=XDG_CONFIG_HOME=「${IVC}」"
+iv_has "T7f-27 게이트 밖 기준선 행의 이전 지문" "$iv_row" "이전 지문=-"
+
+# 28. 읽기 전용 원장 + set -e
+iv_new; iv_ledger_on
+printf '{"schema":' > "$IVINV"
+chmod 444 "$IVL"; cp -p "$IVL" "$IVD/ledger.saved"
+if iv_root_guard; then
+  iv_out=$(iv_init 2>&1); rc=$?
+  check "T7f-28 읽기 전용 원장에서도 멈춘다" "$rc" "1"
+  iv_has "T7f-28 멈춤 줄이 여전히 출력된다" "$iv_out" "init 에서 멈춥니다"
+  iv_has "T7f-28 거부 행 경고가 있다" "$iv_out" "거부 행을 원장에 쓰지 못했습니다"
+  check "T7f-28 행도 보고 줄도 없다" "$(iv_is 'cmp -s "$IVL" "$IVD/ledger.saved"')" "yes"
+  iv_new; iv_ledger_on; chmod 444 "$IVL"
+  iv_init >/dev/null 2>&1; rc=$?
+  check "T7f-28 성공 쪽은 읽기 전용 원장에서도 성공한다" "$rc" "0"
+  check "T7f-28 성공 쪽은 미기록 표지를 남긴다" "$(iv_is '[ -f "$IVRD/inventory.unrecorded" ]')" "yes"
+else
+  bad "T7f-28 픽스처" "읽기 전용 원장에 쓸 수 있다 (root 로 실행 중인가)"
+fi
+chmod 644 "$IVL"
+
+# 29. 체인 — 거부와 기준선 행을 쓴 뒤에도 게이트의 체인 검증이 통과한다
+IVD="$IV27D"; IVGL="$IV27GL"; IVH="$IVD/home"; IVS="$IVD/state"; IVC="$IVD/cfg"; IVB="$IVD/base"
+IVRD="$IVS/cc-cmds/run/iv-run"; IVINV="$IVRD/inventory.json"
+rm -rf "$IVINV"; printf '{"schema":' > "$IVINV"
+iv_gate >/dev/null 2>&1
+check "T7f-29 거부 행이 같은 원장에 붙었다" "$(iv_rows blocked "$IVGL")" "1"
+iv_gate verify >/dev/null 2>&1; rc=$?
+check "T7f-29 체인 검증이 통과한다" "$rc" "0"
+
+# 30. config-dir 거부 — 게이트 밖 멈춤 줄과 행의 바이트가 전과 같고, 접지 않는다
+iv_new; iv_ledger_on
+printf '%s\n' "$IVD/absent-lane" > "$IVRD/config-dir"
+iv_out=$(iv_init 2>&1); rc=$?
+check "T7f-30 config-dir 거부는 그대로 멈춘다" "$rc" "1"
+check "T7f-30 멈춤 줄의 바이트가 전과 같다" \
+  "$(printf '%s\n' "$iv_out" | sed -n 's/^.* \[run\]\[stop\] //p')" \
+  "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다. 회복: rm \"$IVRD/config-dir\""
+iv_ref="$IVD/ref.md"; : > "$iv_ref"
+( LEDGER="$iv_ref"; BASE="$IVD/ref-base"; RUN_ID=iv-run
+  park iv-run run 막힘 "게이트 park" \
+    "런 디렉터리의 레인 기록이 가리키는 디렉터리를 쓸 수 없습니다: $IVRD/config-dir" \
+    "rm \"$IVRD/config-dir\"" ) >/dev/null 2>&1
+check "T7f-30 행의 바이트가 park 가 쓰던 행과 같다" "$(iv_last blocked)" "$(iv_last blocked "$iv_ref")"
+iv_init >/dev/null 2>&1
+check "T7f-30 두 번 거부하면 행 둘 (접지 않는다)" "$(iv_rows blocked)" "2"
+
+# 31. 배수
+# (a) 원장 디렉터리가 없는 게이트 첫 진입 → 미기록 표지, 행 0; 디렉터리가 생긴 뒤 행 1
+iv_new; IVGL="$IVD/nodir/ledger.md"
+iv_gate >/dev/null 2>&1; rc=$?
+check "T7f-31a 원장 디렉터리 없는 첫 진입도 성공한다" "$rc" "0"
+check "T7f-31a 미기록 표지가 생긴다" "$(iv_is '[ -f "$IVRD/inventory.unrecorded" ]')" "yes"
+check "T7f-31a 원장은 생기지 않는다" "$(iv_is '[ -e "$IVGL" ]')" "no"
+mkdir -p "$IVD/nodir"
+iv_gate >/dev/null 2>&1
+check "T7f-31a 다음 진입이 기준선 행 하나를 쓴다" "$(iv_rows '인벤토리 기준선' "$IVGL")" "1"
+check "T7f-31a 미기록 표지가 거둬진다" "$(iv_is '[ -e "$IVRD/inventory.unrecorded" ]')" "no"
+# (b) 승자 진입만 원장이 읽기 전용 → 다음 진입이 행 하나 (표지와 사본 둘 다)
+for iv_form in 부재 사본; do
+  iv_new; iv_ledger_on
+  [ "$iv_form" = 사본 ] && iv_live valid
+  chmod 444 "$IVL"
+  iv_init >/dev/null 2>&1
+  chmod 644 "$IVL"
+  if iv_root_guard; then
+    check "T7f-31b ($iv_form) 승자는 행을 쓰지 못했다" "$(iv_rows '인벤토리 기준선')" "0"
+  fi
+  iv_init >/dev/null 2>&1
+  check "T7f-31b ($iv_form) 다음 진입이 행 하나를 쓴다" "$(iv_rows '인벤토리 기준선')" "1"
+  iv_has "T7f-31b ($iv_form) 그 행의 형태" "$(iv_last '인벤토리 기준선')" "형태=$iv_form"
+  check "T7f-31b ($iv_form) 미기록 표지가 거둬진다" "$(iv_is '[ -e "$IVRD/inventory.unrecorded" ]')" "no"
+done
+# (c) 표지를 둔 채 독립 bash 배수자 둘을 동시에 → 행 정확히 1, 점유 잔여 없음
+iv_new; iv_ledger_on
+chmod 444 "$IVL"; iv_init >/dev/null 2>&1; chmod 644 "$IVL"
+iv_go="$IVD/go"; iv_pids=""
+for iv_i in 1 2; do
+  IVGL="" IV_GO="$iv_go" iv_proc run > "$IVD/drain.$iv_i.out" 2>&1 &
+  iv_pids="$iv_pids $!"
+done
+touch "$iv_go"
+for iv_p in $iv_pids; do wait "$iv_p"; done
+check "T7f-31c 동시 배수자 둘이 행 정확히 하나를 쓴다" "$(iv_rows '인벤토리 기준선')" "1"
+check "T7f-31c 점유 잔여가 없다" \
+  "$(find "$IVRD" -name 'inventory.unrecorded*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+# (d) 표지를 둔 뒤 이름을 지우고 다른 바이트로 다시 뜸 → 옛 표지는 버려지고 새 게시의 행만
+iv_new; iv_ledger_on
+chmod 444 "$IVL"; iv_init >/dev/null 2>&1; chmod 644 "$IVL"
+rm -rf "$IVINV"; iv_live valid
+iv_init >/dev/null 2>&1
+check "T7f-31d 재발행 뒤 기준선 행은 하나다" "$(iv_rows '인벤토리 기준선')" "1"
+iv_has "T7f-31d 그 행은 새 게시의 것이다" "$(iv_last '인벤토리 기준선')" "형태=사본"
+# 이름이 다른 게시로 바뀌었는데 옛 미기록 표지가 남은 경우 — 대조값이 달라 버린다
+iv_new; iv_ledger_on
+chmod 444 "$IVL"; iv_init >/dev/null 2>&1; chmod 644 "$IVL"
+rm -rf "$IVINV"; iv_live valid; cp "$IVLIVE" "$IVINV"; chmod 600 "$IVINV"
+iv_init >/dev/null 2>&1
+check "T7f-31d 대조값이 다른 옛 표지는 행을 쓰지 않는다" "$(iv_rows '인벤토리 기준선')" "0"
+check "T7f-31d 대조값이 다른 옛 표지는 버려진다" "$(iv_is '[ -e "$IVRD/inventory.unrecorded" ]')" "no"
+
+# 32. 전역 위생 — 루트를 이름할 수 없는 진입이 표지를 받아들인 뒤 이유 전역이 빈다
+iv_globals() { printf '%s|%s' "$RUN_INVENTORY_WHY" "$RUN_INVENTORY_AT"; }
+iv_new
+iv_init >/dev/null 2>&1
+check "T7f-32 표지를 받아들인 뒤 WHY·AT 가 빈다" \
+  "$(IV_XDG="rel-cfg" iv_init iv_globals 2>/dev/null)" "|"
+
+# 33. bk_init 계열 회귀 — T7c 음성 대조를 LEDGER 를 비우고 한 번 더
+iv_b=$(wc -l < "$BKL" | tr -d ' '); iv_w=$(wc -l < "$WORK/ledger.md" | tr -d ' ')
+LEDGER="" bk_init >/dev/null 2>&1
+check "T7f-33 T7c 음성 대조가 LEDGER 없이도 행을 남기지 않는다" \
+  "$(( $(wc -l < "$BKL" | tr -d ' ') - iv_b ))" "0"
+check "T7f-33 하네스 원장에도 행을 남기지 않는다" \
+  "$(( $(wc -l < "$WORK/ledger.md" | tr -d ' ') - iv_w ))" "0"
+
+# 34. 문면 — set -euo pipefail 아래 다섯 거부가 각각 온전한 멈춤 줄을 낸다
+for iv_k in snap rootc rootm live check pub; do
+  eval "iv_o=\$iv_out_$iv_k"
+  case "$iv_k" in
+    pub) iv_has "T7f-34 ($iv_k) 멈춤 줄이 있다" "$iv_o" "[run][stop] 런 디렉터리에 인벤토리 스냅숏을 쓰지 못했습니다" ;;
+    *)   iv_has "T7f-34 ($iv_k) 멈춤 줄이 있다" "$iv_o" "init 에서 멈춥니다" ;;
+  esac
+  iv_lacks "T7f-34 ($iv_k) 두지 않은 변수가 없다" "$iv_o" "unbound variable"
+  iv_lacks "T7f-34 ($iv_k) 빈 「」 가 없다" "$iv_o" "「」"
+  iv_lacks "T7f-34 ($iv_k) 역따옴표가 없다" "$iv_o" '`'
+done
+
 # --- T8: 런당 1회가 아니라 스테이지 디스패치마다 ---------------------------
 # 이 단언은 **계수**한다. 이전 형태는 `stage_spawn` 본문을 `resolve_account`
 # 토큰으로 grep 했는데, 그것은 의무가 이름 붙인 성질 — 런당 1회가 아니라 디스패치
@@ -4670,7 +6072,7 @@ check "T8a 뒤 진짜 리졸버가 복원됐다 (스텁이 남아 있지 않다)
 # 3단의 설정이 서로 다른데, 런 기록이 있으므로 값이 갈리지 않아야 한다.
 v1=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg"      resolve_account )
 v2=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgempty" resolve_account )
-check "T8b 3단이 달라도 런 기록이 있으면 한 런의 스테이지가 갈리지 않는다" "$v1" "$v2"
+check "T8b 3단이 달라도 런 기록이 있으면 한 런의 기본 좌석이 갈리지 않는다" "$v1" "$v2"
 
 # --- 런 디렉터리 초기화가 레인과 오케스트레이터를 남긴다 -------------------
 RI_SAVE="$RUN_DIR"; RID_SAVE="$RUN_ID"
@@ -7045,17 +8447,22 @@ fi
 # 때 (미상) 으로 쓰되 행을 막지 않는가」다. 기동이 그 파일을 쓰는 것은 아래 (4) 의
 # 소스 핀이 잡는다.
 REC_RSID="S5R:segR:0"
-printf '%s\n%s\n' '200000(런설정)' '~/lane30' > "$RUN_DIR/$REC_RSID.window"
+printf '%s\n%s\n%s\n' '200000(런설정)' '~/lane30' 'medium' > "$RUN_DIR/$REC_RSID.window"
+# 서빙 모델은 이 파견의 스트림 첫 init 프레임에서 온다. 긴 문맥 레인이 붙이는
+# `[1m]` 접미사는 떼고 적는다.
+REC_STREAM=$(stage_log_path "$REC_RSID")
+mkdir -p "$(dirname "$REC_STREAM")"
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}' > "$REC_STREAM"
 rec_reset
 review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
-for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버'; do
+for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버' 'effort=medium' '서빙 모델=claude-opus-5-5'; do
   if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
     ok "stage-result 행이 $want 를 싣는다 (.window 에서)"
   else
     bad "stage-result 행" "$want 가 없다: $REC_ROWS"
   fi
 done
-rm -f "$RUN_DIR/$REC_RSID.window"
+rm -f "$RUN_DIR/$REC_RSID.window" "$REC_STREAM"
 rec_reset
 review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
 if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
@@ -7063,11 +8470,36 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
 else
   bad "stage-result 행" ".window 부재인데 (미상) 이 없다: $REC_ROWS"
 fi
+for want in 'effort=(미상)' '서빙 모델=(미상)'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok ".window 와 스트림이 없으면 행이 $want 를 싣는다"
+  else
+    bad "stage-result 행" "기록 부재인데 $want 가 없다: $REC_ROWS"
+  fi
+done
 if printf '%s' "$REC_ROWS" | grep_all_q -F -- '레인=~'; then
   ok ".window 가 없으면 레인은 이 드라이버가 해소한 레인의 물결 표기다"
 else
   bad "stage-result 행" ".window 부재인데 레인 물결 표기가 없다: $REC_ROWS"
 fi
+
+# 한도 종료 는 크래시와 똑같이 처분한다 — 앞 부류가 한도 종료 면 복구를 파견하고,
+# 복구가 한도 종료 로 끝나면 크래시로 끝난 복구처럼 park 한다. park 사유는 참
+# 부류를 싣는다.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "한도 종료" >/dev/null; REC_RC=$?
+check "앞 부류가 한도 종료 면 복구된다 (반환 0)" "$REC_RC" "0"
+check "앞 부류가 한도 종료 면 정확히 1회 파견한다" \
+  "$( { printf '%s' "$REC_SPAWN" | grep -c 'review-unattended' || true; } )" "1"
+rec_reset; REC_RCLASS="한도 종료"
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null; REC_RC=$?
+check "복구가 한도 종료 로 끝나면 반환 1" "$REC_RC" "1"
+if printf '%s' "$REC_PARK" | grep_all_q -F '리뷰 복구 종단 부류 한도 종료'; then
+  ok "복구가 한도 종료 로 끝난 park 사유가 참 부류를 싣는다"
+else
+  bad "park 사유" "복구가 한도 종료 로 끝났는데 사유가 그것을 말하지 않는다: $REC_PARK"
+fi
+REC_RCLASS="정상 완료"
 
 # --- (3c) stage_window_read — 세 층, (꺼짐), (미상), - ------------------------
 WR="$WORK/window-read"; rm -rf "$WR"; mkdir -p "$WR/proj/.claude" "$WR/cfg" "$WR/empty"
@@ -7132,6 +8564,176 @@ unset -f park predicate_review stage_attempt_pinned stage_spawn stage_wait_all \
          classify_termination ledger_row stage_session_id stage_parent_id log \
          doc_arg reap_orphan mk_wit rec_reset
 RUN_DIR="$REC_RUN_SAVE"; LEDGER="$REC_LEDGER_SAVE"; BASE="$REC_BASE_SAVE"
+
+# ---------------------------------------------------------------------------
+# 31. 스테이지 종류는 id 앞머리 표로 먼저 판별한다
+# ---------------------------------------------------------------------------
+# 앞머리(첫 `:` 앞, 다시 첫 `.` 앞)가 표에 있으면 그것이 이기고, 없을 때만 예전의
+# 부분 문자열 판별로 넘어간다. 자유 문자열에 종류 이름이 든 id 둘이 그 순서를 묶는다 —
+# 부분 문자열이 먼저 이기면 둘 다 다른 종류가 된다.
+while IFS='|' read -r sk_id sk_want; do
+  [ -n "$sk_id" ] || continue
+  check "stage_kind_of $sk_id → $sk_want" "$(stage_kind_of "$sk_id")" "$sk_want"
+done <<'SKEOF'
+S1design|design
+S1design.retry|design
+S2|audit
+S4:seg:1|implement
+S4:seg:1.retry|implement
+S5:seg:1|review
+S5R:seg:1|review
+S1':seg:1:path|reconverge
+S1':seg:1:plugins-cc-cmds-skills-design-SKILL.md|reconverge
+S4:review-fix:1|implement
+S5:design-seg:2|review
+Sx|generic
+t8-implement-a|implement
+x-design-audit-y|audit
+x-reconverge|reconverge
+SKEOF
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'kind=$(stage_kind_of "$stage")'; then
+  ok "stage_spawn 의 설정 선택이 stage_kind_of 하나를 부른다"
+else
+  bad "종류 판별" "stage_spawn 이 stage_kind_of 를 부르지 않는다 — 설정과 effort 가 다른 판별을 탈 수 있다"
+fi
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '*design-audit*|*audit*'; then
+  bad "종류 판별" "stage_spawn 에 인라인 부분 문자열 case 가 남아 있다"
+else
+  ok "stage_spawn 에 인라인 부분 문자열 case 가 남아 있지 않다"
+fi
+
+# ---------------------------------------------------------------------------
+# 32. effort 와 model — 표, 두 스위치, 기동 argv, 판단 호출, 행, 서빙 모델
+# ---------------------------------------------------------------------------
+# 물려받은 스위치가 기댓값을 바꾸지 않게 먼저 지운다. 이 절의 스위치 값은 전부
+# 호출마다 앞에 붙여 그 호출에만 건다.
+unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
+while IFS='|' read -r ef_kind ef_want; do
+  [ -n "$ef_kind" ] || continue
+  check "stage_effort_of $ef_kind → $ef_want" "$(stage_effort_of "$ef_kind")" "$ef_want"
+done <<'EFEOF'
+design|high
+reconverge|high
+audit|high
+implement|medium
+review|medium
+shift|medium
+generic|medium
+triage|medium
+segment-plan|medium
+redesign-impact|medium
+EFEOF
+check "표에 없는 이름도 medium 이다" "$(stage_effort_of no-such-kind)" "medium"
+check "기본 기동 플래그는 effort 와 opus 를 함께 싣는다" "$(stage_launch_flags design)" "--effort high --model opus"
+check "CC_ORCH_STAGE_EFFORT=off 는 --effort 만 뺀다" "$(CC_ORCH_STAGE_EFFORT=off stage_launch_flags design)" "--model opus"
+check "CC_ORCH_STAGE_MODEL=off 는 --model 만 뺀다" "$(CC_ORCH_STAGE_MODEL=off stage_launch_flags review)" "--effort medium"
+check "두 스위치를 다 끄면 아무 플래그도 없다" \
+  "$(CC_ORCH_STAGE_EFFORT=off CC_ORCH_STAGE_MODEL=off stage_launch_flags review)" ""
+check "off 가 아닌 model 값은 무시된다 (종류별 모델은 없다)" \
+  "$(CC_ORCH_STAGE_MODEL=sonnet stage_launch_flags review)" "--effort medium --model opus"
+check "review:low 는 review 만 낮춘다" \
+  "$(CC_ORCH_STAGE_EFFORT=review:low stage_effort_of review):$(CC_ORCH_STAGE_EFFORT=review:low stage_effort_of implement)" "low:medium"
+check "triage:low 는 triage 만 낮춘다" \
+  "$(CC_ORCH_STAGE_EFFORT=triage:low stage_effort_of triage):$(CC_ORCH_STAGE_EFFORT=triage:low stage_effort_of segment-plan)" "low:medium"
+check "쉼표로 여러 종류를 한 번에 재정의한다" \
+  "$(CC_ORCH_STAGE_EFFORT=design:max,review:xhigh stage_effort_of design):$(CC_ORCH_STAGE_EFFORT=design:max,review:xhigh stage_effort_of review)" "max:xhigh"
+check "닫힌 집합 밖의 수준은 무시되고 표 값이 남는다" "$(CC_ORCH_STAGE_EFFORT=design:ultra stage_effort_of design)" "high"
+
+# 서빙 모델 — init 프레임의 것이고, 접미사를 떼며, 종단 modelUsage 의 큰 키가 아니다.
+SMD="$WORK/served-model"; rm -rf "$SMD"; mkdir -p "$SMD"
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"a"}' \
+  '{"type":"result","subtype":"success","modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":10},"claude-sonnet-5":{"inputTokens":99999}}}' \
+  > "$SMD/long.json"
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5-5","session_id":"b"}' > "$SMD/plain.json"
+printf '%s\n' '{"type":"result","subtype":"success","modelUsage":{"claude-opus-5-5":{"inputTokens":1}}}' > "$SMD/noinit.json"
+check "[1m] 접미사가 붙은 init 모델과 붙지 않은 것이 같은 값이다" \
+  "$(stage_served_model_of "$SMD/long.json")|$(stage_served_model_of "$SMD/plain.json")" "claude-opus-5-5|claude-opus-5-5"
+check "종단 modelUsage 에서 토큰이 더 많은 키가 있어도 init 모델을 적는다" \
+  "$(stage_served_model_of "$SMD/long.json")" "claude-opus-5-5"
+check "init 프레임이 없으면 (미상) 이다 (종단 줄로 메우지 않는다)" "$(stage_served_model_of "$SMD/noinit.json")" "(미상)"
+check "스트림이 없으면 (미상) 이다" "$(stage_served_model_of "$SMD/none.json")" "(미상)"
+
+# 진짜 stage_spawn 의 래퍼 argv — 새 기동과 재부착 둘 다. 앞 절들이 `stage_spawn`
+# 과 `log` 를 이 프로세스에서 지웠으므로 드라이버를 새로 소싱한 자식에서 돌린다.
+# 래퍼 자리에는 argv 만 적는 스텁을 두고, 수집까지 기다려 파일이 다 쓰인 뒤에 읽는다.
+SPD="$WORK/spawn-flags"; rm -rf "$SPD"; mkdir -p "$SPD/orch" "$SPD/run/settings" "$SPD/run/log" "$SPD/cfg"
+printf '{}\n' > "$SPD/run/settings/review.json"
+printf '{}\n' > "$SPD/run/settings/design.json"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" > "$SP_ARGV_OUT"' > "$SPD/orch/stage-wrapper.sh"
+cat > "$SPD/probe.sh" <<'SPEOF'
+sp_drv="$1"; SP_ROOT="$2"; sp_sid="$3"; set --
+. "$sp_drv"
+set +e
+RUN_DIR="$SP_ROOT/run"; ORCH_DIR="$SP_ROOT/orch"; CLI_BIN=/usr/bin/true
+RUN_ID=sp-run; DOC_KEY=sp; GRANT=""; LEDGER=""; MANIFEST=""
+resolve_account() { printf '%s' "$SP_ROOT/cfg"; }
+home_alias() { printf 'sp'; }
+STAGE_RESUME="${SP_RESUME:-}"
+stage_spawn "$sp_sid" "$SP_ROOT" "prompt" 2>/dev/null
+stage_collect "$sp_sid"
+SPEOF
+sp_spawn() {  # sp_spawn <stage-id> <argv-out> [VAR=value...]
+  local sid="$1" argv_out="$2"; shift 2
+  rm -f "$argv_out"
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL SP_ARGV_OUT="$argv_out" "$@" \
+    bash "$SPD/probe.sh" "$DRIVER" "$SPD" "$sid" >/dev/null 2>&1
+  cat "$argv_out" 2>/dev/null || true
+}
+sp_fresh=$(sp_spawn "S5:segF:1" "$SPD/fresh.txt")
+case "$sp_fresh" in
+  *"--session-id "*" --effort medium --model opus -- -p prompt"*) ok "새 기동의 래퍼 argv 가 --effort medium --model opus 를 싣는다" ;;
+  *) bad "기동 argv" "새 기동: $sp_fresh" ;;
+esac
+check "새 기동이 .window 셋째 줄에 argv 의 effort 를 남긴다" "$(sed -n '3p' "$SPD/run/S5:segF:1.window" 2>/dev/null)" "medium"
+sp_resume=$(sp_spawn "S5:segF:1" "$SPD/resume.txt" SP_RESUME=12121212-3434-5656-7878-909090909090)
+case "$sp_resume" in
+  *"--resume 12121212-3434-5656-7878-909090909090 --effort medium --model opus -- -p prompt"*)
+    ok "재부착의 래퍼 argv 도 effort 와 model 을 싣는다 (재개된 세션은 effort 를 잃는다)" ;;
+  *) bad "재부착 argv" "재부착: $sp_resume" ;;
+esac
+sp_design=$(sp_spawn "S1design" "$SPD/design.txt")
+case "$sp_design" in
+  *" --effort high --model opus -- "*) ok "S1design 기동은 high 를 싣는다" ;;
+  *) bad "기동 argv" "S1design: $sp_design" ;;
+esac
+sp_off=$(sp_spawn "S5:segG:1" "$SPD/off.txt" CC_ORCH_STAGE_EFFORT=off CC_ORCH_STAGE_MODEL=off)
+case "$sp_off" in
+  *"--effort"*|*"--model"*) bad "끄기 스위치" "두 스위치 아래에도 플래그가 실렸다: $sp_off" ;;
+  *" -- -p prompt"*) ok "두 끄기 스위치 아래의 기동에는 --effort 도 --model 도 없다" ;;
+  *) bad "끄기 스위치" "기동 argv 를 읽지 못했다: $sp_off" ;;
+esac
+check "끈 effort 는 .window 에 - 로 남는다" "$(sed -n '3p' "$SPD/run/S5:segG:1.window" 2>/dev/null)" "-"
+
+# 판단 호출 — CLI argv 에 플래그가 실리고, 종류·effort·서빙 모델이 log 한 줄로 남는다.
+JCD="$WORK/judge-flags"; rm -rf "$JCD"; mkdir -p "$JCD/run/log"
+printf 'input\n' > "$JCD/input"
+cat > "$JCD/cli" <<'JCEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$JC_ARGV_OUT"
+printf '%s\n' '{"subtype":"success","structured_output":{},"modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":1},"claude-sonnet-5":{"inputTokens":9}}}'
+JCEOF
+chmod +x "$JCD/cli"
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL JC_ARGV_OUT="$JCD/argv.txt" \
+  bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
+           RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli"; judgment_call triage "$jc_root/input"' \
+  _ "$DRIVER" "$JCD" >/dev/null 2>"$JCD/log.txt"
+if grep_all_q -F -- '--strict-mcp-config --effort medium --model opus' "$JCD/argv.txt"; then
+  ok "판단 호출의 CLI argv 가 --effort medium --model opus 를 싣는다"
+else
+  bad "판단 호출 argv" "$(tr '\n' ' ' < "$JCD/argv.txt" 2>/dev/null | tail -c 200)"
+fi
+if grep_all_q -F -- '판단 호출 triage — effort=medium 서빙 모델=claude-opus-5-5,claude-sonnet-5' "$JCD/log.txt"; then
+  ok "판단 호출이 종류·effort·접미사 뗀 서빙 모델을 log 한 줄로 남긴다"
+else
+  bad "판단 호출 log" "$(tr '\n' ' ' < "$JCD/log.txt")"
+fi
+
+# 드라이버 stage-result 호출부 — S9 적용 행을 뺀 여섯(계속 시도 행 포함)이 effort 와
+# 서빙 모델을 싣는다.
+check "드라이버 stage-result 호출부 여섯이 effort 를 싣는다" \
+  "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "6"
+check "그 여섯이 서빙 모델도 싣는다" \
+  "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "6"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

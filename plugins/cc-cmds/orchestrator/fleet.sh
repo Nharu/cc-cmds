@@ -881,10 +881,12 @@ fleet_dispatch() {
   fi
   fleet_backlog_unlock
 
-  # THE THREE PREPARATION STEPS, IN THIS ORDER: the report stub, then one
+  # THE FOUR PREPARATION STEPS, IN THIS ORDER: the report stub, then one
   # snapshot so the run directory exists, THEN the watcher — a watcher started
   # before the directory exists reads its absence as "the run went away" and
-  # exits quietly. Then `run.sh` in the foreground, and this job waits.
+  # exits quietly — and THEN the CI poller, which reads the directory the same
+  # way and so carries the same ordering debt. Then `run.sh` in the foreground,
+  # and this job waits.
   manifest=$(printf '%s' "$rec" | jq -r '.manifest_path')
   run_id=$(fleet_manifest_field "$manifest" run-id)
   wt=$(fleet_manifest_field "$manifest" origin-worktree)
@@ -898,6 +900,16 @@ fleet_dispatch() {
   CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
   mkdir -p "$run_dir"
   bash "$FLEET_DIR/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
+  # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
+  # merge refusal it feeds is the only thing standing between a red check and a
+  # merged branch, and this timer-driven path is the one with no session and no
+  # terminal — the path where nobody would notice the refusal never fired. It
+  # writes nothing to the ledger itself; the gate transcribes `checks.observed`
+  # on its next act. A run with no poller leaves no `checks` row, and no row
+  # reads as "nothing recorded", which the gate passes — so the absence is
+  # byte-identical to a green night. Interval is pinned to 60 for the same
+  # reason the watcher's is: they are one threshold, not two.
+  bash "$FLEET_DIR/checks.sh" --run-dir "$run_dir" --ledger "$ledger" --manifest "$manifest" --interval 60 > "$run_dir/checks.log" 2>&1 < /dev/null &
   fleet_log "dispatch $lane: $id 기동 — run $run_id (매니페스트 $manifest)"
   CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/run.sh" --manifest "$manifest" || rc=$?
   line2=$(printf '%s' "$line" | jq -c '.status = "done"')
