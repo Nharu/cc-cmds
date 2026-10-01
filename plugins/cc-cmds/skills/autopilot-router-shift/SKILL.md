@@ -26,7 +26,7 @@ The second clause shuts the stdout channel the standing banner rules do not name
 
 **CFI-S3 — You end, and ending is a row.** Three reasons end a shift: `상한` (the snapshot's `shift.over_soft` is true, or the gate answered exit 15), `승인` (the gate answered exit 5), `종단` (a `propose-done` was accepted). The soft cap is yours to observe; **the hard context limit is enforced by the gate**, which stops answering anything but a bookkeeping act once you reach it. Whichever it is, write the `handoff` row FIRST and then exit. A shift that exits without that row has handed over its position and none of its reasoning.
 
-**CFI-S4 — You do not answer approvals and you do not close them.** Exit 5 means a person has to decide. Your response is to end with `사유=승인`; the lead reads your return line and takes it from there. Answering one yourself would be self-approval, which is also why your session is kept out of `session-lineage`. **The gate itself closes the approvals that carry a recommendation** — boundary approvals as `승인`, your judgment approvals as the adoption of the judgment you submitted when its class may be adopted, and as `거부` otherwise (`팀-구성`·`시각-면제`, a class outside the vocabulary or misspelled, or no class at all) — unless `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` is off. Those come back as exit 0 or 3, never 5, so there is nothing to end on; keep routing. What still reaches you as exit 5 is an act approval, a judgment approval a person already answered with free input, or any approval when the switch is off. A B4 at or above the declared cost ceiling is not auto-resolved either: it stays `대기` in `pending_approvals[]`, and like every open approval it is not yours to close.
+**CFI-S4 — You do not answer approvals and you do not close them.** Exit 5 means a person has to decide. Your response is to end with `사유=승인`; the lead reads your return line and takes it from there. Answering one yourself would be self-approval, which is also why your session is kept out of `session-lineage`. **The gate itself closes the approvals that carry a recommendation** — boundary approvals as `승인`, your judgment approvals as the adoption of the judgment you submitted when its class may be adopted, and as `거부` otherwise (`팀-구성`·`시각-면제`, a class outside the vocabulary or misspelled, or no class at all) — unless `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` is off. Those come back as exit 0 or 3, never 5, so there is nothing to end on; keep routing. An external-state act outside the pre-authorization raises no approval while the switch is on: the reach evaluator lets it through or stops it with exit 11. What still reaches you as exit 5 is a judgment approval a person already answered with free input, or any approval — act approvals included — when the switch is off. A B4 at or above the declared cost ceiling is not auto-resolved either: it stays `대기` in `pending_approvals[]`, and like every open approval it is not yours to close.
 
 **A reach park is not an approval and does not end your shift.** With the switch on, an `exec` that lands where the run may not act comes back as exit 11 with a `blocked` row rather than a question; you route around it. With the switch off the same cells issue an ordinary act approval, which is exit 5 and does end your shift.
 
@@ -274,6 +274,29 @@ A review stage that dies usually leaves its team's work on disk: every seat publ
    From a clean report, read the `리뷰 HEAD` line with a probe anchored at the line head that also requires the value: ``grep -E '^[-*[:space:]]*\*\*리뷰 HEAD\*\*: `?[0-9a-f]{40}`?$' <report path>``. Exactly one printed line is the value; no line, or more than one, is absent. An unanchored probe is not enough — a finding that quotes the label matches it, and a label with no 40-character sha behind it is no source for the field. **No `리뷰 모드` line is required.** Item 2 already refused to recover a review dispatched with the basis flags, so the recovered report is a full review, and a report with no mode line is read by the gate as `전체`, which is the truth here.
    - **`리뷰 HEAD` present** → write the `cycle` row: `P0` and `P1` from the `발견 요약` line, `리뷰 HEAD` from that line's sha, the report path as `리포트 경로`, the crashed review's cycle number as `사이클`, and no `모드`·`기준 사이클` fields.
    - **`리뷰 HEAD` absent** → the recovery arm is not bound to emit that line and nothing may stand in for it, so a required field of the row has no source. Do not park the segment for that: write no `cycle` row and re-dispatch the segment's review as a full review **without the three basis flags**, carrying an absolute `--report-path` like every review dispatch. That is what a crashed review got before this subsection existed, so a clean recovery never leaves the night worse off than no recovery would. This re-dispatch is a review, not a second recovery.
+
+#### After a review — the P1 blocking ceiling
+
+A segment's last `cycle` row decides what follows its review. The ceiling is the snapshot's `cycle_carry_from`; read it there and never write its value into a decision, because the gate's merge rule reads the same constant and a copy here would drift from it.
+
+| Last review | Next act |
+| --- | --- |
+| `P0` > 0 | fix stage |
+| `P0` = 0, `P1` = 0 | merge |
+| `P0` = 0, `P1` > 0, `사이클` < `cycle_carry_from` | fix stage |
+| `P0` = 0, `P1` > 0, `사이클` ≥ `cycle_carry_from` | register the carryover issue → `이월` row → merge |
+
+The last row is the carryover, and `_common/carryover-issue.md` is how its issue is registered — title, body, duplicates and failure. The row is written after the issue exists, with the URLs `gh issue create` printed:
+
+```
+act --kind 이월 [--segment <seg>] -- 출처=리뷰|경계 사이클=<n> '리뷰 HEAD=<sha>' '승인 id=<B1-…|->' '이슈=<url>[,<url>…]' 건수=<n>
+```
+
+For a review, `출처=리뷰`, `--segment` the segment, `사이클` and `리뷰 HEAD` from its last `cycle` row, `승인 id=-` and `건수` that row's `P1`. The gate refuses a row that does not match that `cycle` row, and the merge rule passes a `P1` > 0 only behind a row that does. **When `auto_resolve` is false, do not carry over** — registering an issue outside the pre-authorization would then raise an approval, a question for a person — and send a fix stage, as the run did before the ceiling existed. A registration that fails, or a count of transcribed findings that is not `P1`, also means a fix stage and no row. A carried finding is judged again by the next review; carried again, it keeps its first URL.
+
+#### No-progress approvals that auto-resolution closed
+
+The snapshot's `carryover_due[]` lists the no-progress boundary approvals (`B1-…`) that auto-resolution closed as "continue" and that no `출처=경계` row has carried yet, each with its `question`. When it is not empty, register one issue for the run under `_common/carryover-issue.md`, then write one row per due approval with the same act line: `출처=경계`, no `--segment`, `사이클=-`, `'리뷰 HEAD=-'`, its `승인 id`, the issue URL and `건수=1`. Each row empties that approval from the array; a second row for the same approval is refused. A registration that fails leaves them due: try again on a later turn, and say in the handoff that it failed. Neither failure parks anything or asks anyone. An approval a person answered never enters the array, and with auto-resolution off nothing does.
 
 ## Ending your shift
 

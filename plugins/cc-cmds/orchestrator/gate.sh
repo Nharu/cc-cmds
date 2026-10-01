@@ -136,6 +136,8 @@
 #               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
 #               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
+#   gate.sh act --kind 이월    --target <alias> [--segment <id>] ... \\
+#               -- 출처=리뷰|경계 사이클=<n> '리뷰 HEAD=<sha>' '승인 id=<B1-…|->' '이슈=<url>[,<url>…]' 건수=<n>
 #   gate.sh act --kind obligation --target <alias> ... \\
 #               -- '의무 id=<RO-…>' 근거=<무엇을 보고 이행으로 판정했는가>
 #   gate.sh act --kind obligation-done --target <alias> ... \\
@@ -276,9 +278,16 @@ gate_may_raise_banner() {
 # class may be adopted. So a forbidden class, a missing class or a class outside
 # the vocabulary is not adopted by borrowing an earlier emission's answer.
 #
-# ACT approvals are not resolved. An external-state act outside the declared
-# pre-authorization has no recommendation — the question is whether the grant
-# covers it, and only the person who wrote the grant can say.
+# ACT approvals are not resolved, and with the switch on none is issued in the
+# first place. An external-state act outside the declared pre-authorization has
+# no recommendation — the question is whether the grant covers it, and only the
+# person who wrote the grant can say. So with the switch ON the pre-authorization
+# rule's approval request is replaced by the reach evaluator's verdict: an act
+# whose declared reach passes proceeds without an approval, and one that lands
+# on a park cell is stopped with exit 11 and a row naming the cell. With the
+# switch OFF the request stands and is issued as an act approval (exit 5), as
+# before. Neither mode resolves an act approval by recommendation, and this
+# note widens no auto-resolved class.
 #
 # EVERY AUTO-RESOLUTION IS A ROW. The closing row carries `처분 사유=자동 해소`
 # and `응답 토큰=-`, so the morning can tell it from an answer a person gave;
@@ -7518,6 +7527,19 @@ gate_rule_enabled() {
   return 0
 }
 
+# THE P1 BLOCKING CEILING — the review cycle from which a P1 stops blocking a
+# merge and is carried to an issue instead. From this cycle on, `리뷰-후-머지`
+# passes `P1 > 0` only when an `이월` row (`출처=리뷰`) matches the segment's
+# last `cycle` row; below it, a P1 still sends the segment back to a fix.
+#
+# ONE PLACE, AND THE TWO READERS TAKE IT FROM HERE. The rule reads it as
+# `GATE_CYCLE_CARRY_FROM` and the router reads it as the snapshot key
+# `cycle_carry_from`. A second copy in the rule or in the router's prose would
+# let the router's branch ("carry now") and the rule's verdict ("not yet")
+# disagree on the same cycle — the router would register an issue for a merge
+# the rule then refuses.
+readonly CYCLE_CARRY_FROM=2
+
 gate_run_rules() {
   # gate_run_rules <act-token> <alias> <segment> <argv-string>
   # Returns 0 when every loaded rule passes, GATE_EXIT_RULE on the first refusal.
@@ -7551,6 +7573,7 @@ gate_run_rules() {
     local rc=0
     GATE_ACT="$act" GATE_ALIAS="$alias" GATE_SEGMENT="$seg" GATE_ARGV="$argv" \
       GATE_LEDGER="$LEDGER" GATE_MANIFEST="$MANIFEST" GATE_GRANT="$GRANT" \
+      GATE_CYCLE_CARRY_FROM="$CYCLE_CARRY_FROM" \
       /bin/sh "$checker" || rc=$?
     [ "$rc" = "0" ] && continue
     # A checker may ask for an approval instead of refusing. Folding that into a
@@ -7719,6 +7742,24 @@ gate_snapshot() {
   printf '  "cycles": [\n'
   gate_snapshot_cycles_json
   printf '  ],\n'
+  # THE P1 BLOCKING CEILING AND WHAT STILL OWES AN ISSUE. `cycle_carry_from` is
+  # the constant the merge rule reads, so the router's "carry this P1 over" and
+  # the rule's "a carried P1 may merge" branch on one value. `carryover_due`
+  # lists the automatically closed stagnation approvals no `출처=경계` 이월 row
+  # names yet. `auto_resolve` is the switch the gate reads: with it off, the
+  # issue registration is an act approval and not an act, so the router does
+  # not try the carry-over at all. None of the three moves `H` — the digest
+  # hashes the progress vector and the chain tip, and all three are derived
+  # from the ledger or from constants.
+  printf '  "cycle_carry_from": %s,\n' "$CYCLE_CARRY_FROM"
+  printf '  "carryover_due": [\n'
+  gate_snapshot_carryover_due_json
+  printf '  ],\n'
+  if gate_auto_resolve_enabled; then
+    printf '  "auto_resolve": true,\n'
+  else
+    printf '  "auto_resolve": false,\n'
+  fi
   printf '  "shift": %s,\n' "$(gate_shift_state)"
   # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
   # sensor's last published tick and never computed here. Absent, stale or of
@@ -14153,10 +14194,13 @@ gate_record_row() {
   # disagree. The two obligation-closing kinds are exempt on that same ground and
   # for a sharper version of it: their bundle CROSSES segments, so a segment
   # named in argv would not even have a single right answer to be checked
-  # against.
+  # against. `이월` is exempt HERE and decided inside its own arm, because its
+  # two sources want opposite answers: a review carry-over needs the segment
+  # and a boundary carry-over must not have one.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
      && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
+     && [ "$kind" != "이월" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "a $kind row needs --segment"
     return "$GATE_EXIT_VOCAB"
@@ -14742,6 +14786,182 @@ EOF
       # than `id`.
       gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
+      ;;
+    이월)
+      # THE RECORD THAT A FINDING LEFT THIS RUN AS AN ISSUE, written before the
+      # merge it permits. Two sources write it:
+      #
+      #   출처=리뷰  a review's P1 findings, from cycle `CYCLE_CARRY_FROM` on.
+      #              `리뷰-후-머지` reads this row and passes `P1 > 0` only when
+      #              it matches the segment's last `cycle` row. Registering the
+      #              issue FIRST is what the row enforces: `docs/` is not
+      #              tracked, so a report is not guaranteed to outlive the
+      #              merge, and a registration failing after the merge would
+      #              lose the finding without a trace.
+      #   출처=경계  a stagnation approval (B1) the gate closed automatically.
+      #              The row marks that B1 as having its issue, which is what
+      #              takes it out of the snapshot's `carryover_due`. It permits
+      #              no merge — the rule reads only `출처=리뷰`.
+      #
+      # EVERY CHECK IS AT WRITE TIME, and a failed one writes nothing. The merge
+      # rule re-reads the match at merge time as well, because a later `cycle`
+      # row can move the numbers this row was checked against.
+      #
+      # `세그먼트=` IS THE GATE'S FIELD. A caller-supplied one is refused, which
+      # is the repair the `segment` arm's note above names for `id=` and
+      # `세그먼트=` and leaves unapplied there for grammar reasons that do not
+      # bind a new kind. The rule selects this row by segment, so the value is
+      # load-bearing and a second copy of it would be read differently by
+      # readers that take the first and the last duplicate.
+      if [ -n "$(gate_field_of '세그먼트' "$@")" ]; then
+        warn "an 이월 row does not take \`세그먼트=\` from the caller — the gate writes it from --segment (출처=리뷰) or as \`-\` (출처=경계)"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      for k in '출처' '사이클' '리뷰 HEAD' '승인 id' '이슈' '건수'; do
+        if [ -z "$(gate_field_of "$k" "$@")" ]; then
+          warn "an 이월 row needs \`${k}\`"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      done
+      local csrc cyc chead cid curls cn cu crest cp cown crepo cnum lrow lcyc lp0 lp1 lhead crow cseg_w
+      csrc=$(gate_field_of '출처' "$@")
+      cyc=$(gate_field_of '사이클' "$@")
+      chead=$(gate_field_of '리뷰 HEAD' "$@")
+      cid=$(gate_field_of '승인 id' "$@")
+      curls=$(gate_field_of '이슈' "$@")
+      cn=$(gate_field_of '건수' "$@")
+      # Every value of `이슈=` is an issue URL of GitHub. Whether it opens is
+      # not checked — the gate makes no outside call — so the form is what is
+      # held: owner and repository in the characters a slug can carry, and a
+      # positive issue number. An empty item (a stray comma) is refused.
+      crest="$curls,"
+      while [ -n "$crest" ]; do
+        cu=${crest%%,*}
+        crest=${crest#*,}
+        cp=${cu#https://github.com/}
+        cown=${cp%%/*}
+        crepo=''; cnum=''
+        if [ "$cp" != "$cu" ] && [ "$cown" != "$cp" ]; then
+          cp=${cp#"$cown"/}
+          crepo=${cp%%/*}
+          case "$cp" in
+            "$crepo"/issues/*) cnum=${cp#"$crepo"/issues/} ;;
+          esac
+        fi
+        case "$cown" in ''|*[!A-Za-z0-9._-]*) cnum='' ;; esac
+        case "$crepo" in ''|*[!A-Za-z0-9._-]*) cnum='' ;; esac
+        case "$cnum" in
+          ''|*[!0-9]*|0|0*)
+            warn "every value of \`이슈=\` has to be https://github.com/<owner>/<repo>/issues/<n>: '${cu}'"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
+      done
+      case "$cn" in
+        ''|*[!0-9]*)
+          warn "the \`건수\` of an 이월 row has to be a positive integer: '$cn'"
+          return "$GATE_EXIT_VOCAB" ;;
+      esac
+      if [ "$((10#$cn))" -lt 1 ]; then
+        warn "the \`건수\` of an 이월 row has to be a positive integer: '$cn'"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      case "$csrc" in
+        리뷰)
+          if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+            warn "an 이월 row with \`출처=리뷰\` needs --segment — the merge rule selects it by segment"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$cid" != "-" ]; then
+            warn "an 이월 row with \`출처=리뷰\` carries \`승인 id=-\`: '$cid'"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          # The segment's LAST cycle row, by field equality — `세그먼트=S1` is
+          # a substring of `세그먼트=S10`.
+          lrow=''
+          while IFS= read -r crow; do
+            [ -n "$crow" ] || continue
+            [ "$(gate_row_field "$crow" '세그먼트')" = "$seg" ] || continue
+            lrow="$crow"
+          done <<EOF
+$(gate_rows 'cycle')
+EOF
+          if [ -z "$lrow" ]; then
+            warn "segment $seg has no cycle row — there is no review to carry over"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          lcyc=$(gate_row_field "$lrow" '사이클')
+          lp0=$(gate_row_field "$lrow" 'P0')
+          lp1=$(gate_row_field "$lrow" 'P1')
+          lhead=$(gate_row_field "$lrow" '리뷰 HEAD')
+          # Cycle numbers are compared by INTEGER VALUE, for the reason the
+          # delta checks above give: `05` and `5` are one cycle.
+          case "$cyc" in ''|*[!0-9]*) cyc='x' ;; esac
+          case "$lcyc" in ''|*[!0-9]*) lcyc='y' ;; esac
+          if [ "$cyc" = x ] || [ "$lcyc" = y ] || [ "$((10#$cyc))" -ne "$((10#$lcyc))" ]; then
+            warn "the \`사이클\` of the 이월 row ('$(gate_field_of '사이클' "$@")') is not the cycle of segment $seg's last cycle row ('$(gate_row_field "$lrow" '사이클')')"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$chead" != "$lhead" ]; then
+            warn "the \`리뷰 HEAD\` of the 이월 row ('$chead') is not the review HEAD of segment $seg's last cycle row ('$lhead')"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$((10#$cyc))" -lt "$CYCLE_CARRY_FROM" ]; then
+            warn "cycle $cyc is below the P1 blocking ceiling ($CYCLE_CARRY_FROM) — a P1 before that cycle goes back to a fix, not to an issue"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          case "$lp0" in ''|*[!0-9]*) lp0='x' ;; esac
+          if [ "$lp0" = x ] || [ "$((10#$lp0))" -ne 0 ]; then
+            warn "segment $seg's last cycle row carries P0=$(gate_row_field "$lrow" 'P0') — a P0 is never carried over"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          case "$lp1" in ''|*[!0-9]*) lp1='x' ;; esac
+          if [ "$lp1" = x ] || [ "$((10#$cn))" -ne "$((10#$lp1))" ]; then
+            warn "the \`건수\` of the 이월 row ($cn) is not the P1 of segment $seg's last cycle row ($(gate_row_field "$lrow" 'P1'))"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          cseg_w="$seg"
+          ;;
+        경계)
+          if [ -n "$seg" ] && [ "$seg" != "-" ]; then
+            warn "an 이월 row with \`출처=경계\` takes no --segment — a stagnation approval belongs to the run, not to a segment"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$cyc" != "-" ] || [ "$chead" != "-" ]; then
+            warn "an 이월 row with \`출처=경계\` carries \`사이클=-\` and \`리뷰 HEAD=-\`"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$((10#$cn))" -ne 1 ]; then
+            warn "an 이월 row with \`출처=경계\` carries \`건수=1\` — one approval per row: '$cn'"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          case "$cid" in
+            B1-*) ;;
+            *) warn "an 이월 row with \`출처=경계\` names a stagnation approval (\`B1-…\`): '$cid'"
+               return "$GATE_EXIT_VOCAB" ;;
+          esac
+          if [ "$(gate_row_field "$(gate_approval_last_row "$cid")" '처분 사유')" != "자동 해소" ]; then
+            warn "approval $cid was not closed by auto-resolution — only an automatically closed B1 is carried to an issue"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if gate_carryover_boundary_written "$cid"; then
+            warn "approval $cid already has an 이월 row — its issue is registered, and a second row would count it twice"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          cseg_w='-'
+          ;;
+        *)
+          warn "the \`출처\` of an 이월 row is out of vocabulary: '$csrc' — \`리뷰\` \`경계\`"
+          return "$GATE_EXIT_VOCAB" ;;
+      esac
+      # A ROW OVER THE CAP IS REFUSED HERE rather than left to `gate_append`,
+      # which answers it with a `die`. Several URLs are the one field of this
+      # row that grows, and the refusal names it.
+      if [ "$(gate_row_projected_bytes '이월' "세그먼트=$cseg_w" "$@")" -gt "$GATE_ROW_MAX" ]; then
+        warn "the 이월 row would be over the $GATE_ROW_MAX-byte row cap — carry fewer issue URLs in \`이슈=\`"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      gate_append '이월' "세그먼트=$cseg_w" "$@"
+      log "이월 기록 — 출처 $csrc ($cseg_w)"
       ;;
     problem)
       # The row every open obligation is derived from. With no writer,
@@ -16291,7 +16511,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|이월)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. Four known divergences live
       # behind this one line — a predecessor-monotonicity violation, a
@@ -16322,6 +16542,7 @@ gate_kind_is_bookkeeping() {
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
     obligation-done|obligation-drop) return 0 ;;
+    이월) return 0 ;;
   esac
   return 1
 }
@@ -21712,6 +21933,65 @@ gate_snapshot_cycles_json() {
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
+}
+
+gate_carryover_boundary_written() {
+  # gate_carryover_boundary_written <승인 id> — whether an `이월` row with
+  # `출처=경계` already names this approval. FIELD EQUALITY and not a substring
+  # match: the id is a fixed-length hash today, but a reader that matched
+  # `승인 id=B1-1` inside `승인 id=B1-12` would be the first thing to break the
+  # day it is not.
+  local id="$1" row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(gate_row_field "$row" '출처')" = "경계" ] || continue
+    [ "$(gate_row_field "$row" '승인 id')" = "$id" ] && return 0
+  done <<EOF
+$(gate_rows '이월')
+EOF
+  return 1
+}
+
+gate_carryover_due_ids() {
+  # gate_carryover_due_ids — the stagnation approvals (B1) that still owe an
+  # issue: every `B1-*` whose LAST `승인` row carries `처분 사유=자동 해소`
+  # and that no `이월` row with `출처=경계` names yet.
+  #
+  # THE LAST ROW DECIDES, and both writers of that row are covered by it: the
+  # boundary evaluation that closes a fresh B1 and the sweep that closes one
+  # left open both go through `gate_auto_close_approval`, which is the one
+  # writer of `처분 사유=자동 해소`. A B1 a person closed, or one issued while
+  # the switch was off and still waiting, carries no such row and is not due —
+  # with the switch off the run behaves as it did before this key existed.
+  #
+  # `pending_approvals` cannot answer this: it holds only OPEN approvals, and a
+  # due B1 is closed.
+  local LC_CTYPE=C; export LC_CTYPE
+  local id
+  for id in $(gate_rows '승인' \
+                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    case "$id" in B1-*) ;; *) continue ;; esac
+    [ "$(gate_row_field "$(gate_approval_last_row "$id")" '처분 사유')" = "자동 해소" ] || continue
+    gate_carryover_boundary_written "$id" && continue
+    printf '%s\n' "$id"
+  done
+  return 0
+}
+
+gate_snapshot_carryover_due_json() {
+  # One object per due B1: its id and the question its closing row carries,
+  # which is the text the issue body starts from. Same line shape as the other
+  # array emitters here — objects joined by `,\n`, no trailing comma.
+  local LC_CTYPE=C; export LC_CTYPE
+  local id first=1
+  for id in $(gate_carryover_due_ids); do
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"id": "%s", "question": "%s"}' \
+      "$(gate_json_escape "$id")" \
+      "$(gate_json_escape "$(gate_row_field "$(gate_approval_last_row "$id")" '질문 문면')")"
+  done
+  [ "$first" = "1" ] || printf '\n'
 }
 
 gate_snapshot_handoff_json() {

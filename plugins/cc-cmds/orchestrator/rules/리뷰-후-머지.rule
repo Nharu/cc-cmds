@@ -29,7 +29,13 @@ name: 리뷰-후-머지
   머지 등급 이상의 행위 직전, 그 세그먼트의 리뷰 정책이 요구하는 것이
   만족되는가. 정책마다 요구하는 것이 다르다.
     리뷰 먼저   이 브랜치의 현재 HEAD 를 덮는 리뷰 기록이 원장에 있고 그
-                리뷰의 P0·P1 이 0인가 — 아래 신선도 사다리.
+                리뷰의 P0 가 0이며, P1 이 0이거나 P1 이 이월됐는가 — 아래
+                신선도 사다리. 이월은 리뷰 사이클이 P1 차단 상한
+                (`GATE_CYCLE_CARRY_FROM`, 게이트가 넘기는 정수) 이상이고,
+                이 세그먼트의 마지막 `이월` 행(출처=리뷰)이 마지막 `cycle`
+                행과 사이클·리뷰 HEAD 가 같고 건수가 그 P1 과 같을 때만
+                인정한다. 상한 아래의 P1, 이월 행이 없거나 어긋나는 P1,
+                상한 값이 정수가 아닌 경우는 전부 거절한다.
     머지 먼저   이 세그먼트에 미이행 리뷰 의무가 없는가. 첫 머지는 정당하게
                 리뷰가 없으며 그것이 이 정책이다. 거절되는 것은 빚을 갚지
                 않은 채로 오는 두 번째 머지다.
@@ -90,4 +96,4 @@ name: 리뷰-후-머지
   sh 에서 판정되지 않으므로 보수적으로 목록에 넣었고, 그래서 이 철자는
   과검사된다. `revert` 는 이 브랜치의 이력에서 만들어진 커밋을 이 브랜치
   위에서 되돌리는 것이라 목록에 넣지 않는다.
-읽는 값: GATE_ACT_INDEX GATE_MERGE_INDEX GATE_SURFACE GATE_HISTORY_INTEGRATION GATE_REVIEW_POLICY_INDEX GATE_SEGMENT_OPEN_OBLIGATIONS GATE_SEGMENT GATE_LEDGER
+읽는 값: GATE_ACT_INDEX GATE_MERGE_INDEX GATE_SURFACE GATE_HISTORY_INTEGRATION GATE_REVIEW_POLICY_INDEX GATE_SEGMENT_OPEN_OBLIGATIONS GATE_SEGMENT GATE_LEDGER GATE_CYCLE_CARRY_FROM
