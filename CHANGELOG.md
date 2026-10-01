@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.37.0] - 2026-10-01
+## [2.38.0] - 2026-10-01
 
 무인 런이 스스로를 잰다. 게이트가 가끔 한 번 런 계측 수집기를 돌려 끝난 런들의 압축·캐시·비용을 층별로 모으고, 결함 형태나 순 효과 악화가 보이면 그것을 `cc-metrics` 이슈로만 사람에게 알린다. 같은 판본이 스테이지 기동에 자동 압축 창을 주입하고 실효 창·레인·기록자를 원장에 적는 기록 쪽(앞서 머지된 부분)도 처음으로 항목에 올린다 — 그 부분은 2.23.1 부터 판본에 실려 배포됐지만 CHANGELOG 항목 없이 들어왔다.
 
