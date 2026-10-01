@@ -88,19 +88,35 @@ check: lint readme
 # skipping it — skipping there in silence is the gap this target exists to
 # close — and a `git diff` that fails is a failure, never an empty change list.
 # The suite path stays a literal default so `make -n check` still shows it.
+#
+# Without GATE_SUITE_BASE every candidate base that resolves is tried and the
+# merge-base closest to HEAD wins. Taking the first candidate that resolves
+# picked a stale origin/HEAD over a local master that is ahead of it, so a
+# gate.sh change already on local master counted as this branch's change and
+# the suite ran for a branch that never touched gate.sh. An explicit
+# GATE_SUITE_BASE that does not resolve is the no-base case and runs the suite.
+#
+# The full suite takes some forty minutes, longer than a foreground tool call
+# is allowed to run, and the full regression is PR CI's job. A change whose
+# gate.sh edit crosses only some sections narrows the run with
+# GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' — the same
+# section choice the repository's test rules ask for. The default stays the
+# full suite; the message before the run says what it costs and how to narrow.
 GATE_SUITE_TRIGGER := plugins/cc-cmds/orchestrator/gate.sh
 GATE_SUITE_CMD ?= bash scripts/test-gate.sh
 GATE_SUITE_BASE ?=
 
 check-gate-suite:
-	@base='$(GATE_SUITE_BASE)'; \
-	if [ -z "$$base" ]; then \
+	@base='$(GATE_SUITE_BASE)'; mb=; \
+	if [ -n "$$base" ]; then \
+	  mb=$$(git merge-base "$$base" HEAD 2>/dev/null) || mb=; \
+	else \
 	  for ref in origin/HEAD origin/master master; do \
-	    if git rev-parse --verify --quiet "$$ref^{commit}" >/dev/null; then base=$$ref; break; fi; \
+	    git rev-parse --verify --quiet "$$ref^{commit}" >/dev/null || continue; \
+	    m=$$(git merge-base "$$ref" HEAD 2>/dev/null) || continue; \
+	    if [ -z "$$mb" ] || git merge-base --is-ancestor "$$mb" "$$m"; then base=$$ref; mb=$$m; fi; \
 	  done; \
 	fi; \
-	mb=; \
-	if [ -n "$$base" ]; then mb=$$(git merge-base "$$base" HEAD 2>/dev/null) || mb=; fi; \
 	if [ -z "$$mb" ]; then \
 	  echo "check-gate-suite: 비교할 베이스를 해소하지 못해 게이트 스위트를 돌린다 (base='$$base')"; \
 	  $(GATE_SUITE_CMD); exit $$?; \
@@ -112,6 +128,7 @@ check-gate-suite:
 	  exit 0; \
 	fi; \
 	echo "check-gate-suite: $(GATE_SUITE_TRIGGER) 가 $$base 대비 바뀌어 게이트 스위트를 돌린다"; \
+	echo "check-gate-suite: 전량은 약 40분 걸려 포그라운드 도구 상한을 넘는다 — 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 진다)"; \
 	$(GATE_SUITE_CMD)
 
 # Whether check-gate-suite decides anything. `make -n check | grep test-gate`
@@ -121,7 +138,11 @@ check-gate-suite:
 # branch, yes when it changed only in the working tree, and a failing suite
 # fails make. The first two are each other's control — either one alone passes
 # an implementation that always runs the suite or one that never does. The base
-# is left to the default resolution so the `master` fallback is what runs.
+# is left to the default resolution so the `master` fallback is what runs. The
+# fifth case checks the no-base path: an unchanged tree skips with the default
+# base and runs once GATE_SUITE_BASE names a ref that does not resolve. The
+# sixth keeps origin/master behind a local master that already carries a
+# gate.sh change: the closer base must win and the suite must not run.
 # The make binary is taken through a second variable on purpose: a recipe line
 # that names $(MAKE) directly is executed even under `make -n`.
 CHECK_GATE_SELFTEST_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
@@ -133,21 +154,30 @@ run-check-gate-selftest:
 	r=$$t/repo; mk='$(CHECK_GATE_SELFTEST_MAKEFILE)'; trig='$(GATE_SUITE_TRIGGER)'; \
 	fail() { echo "run-check-gate-selftest: $$*" >&2; exit 1; }; \
 	gc() { git -c user.name=selftest -c user.email=selftest@invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$$@"; }; \
-	suite() { rm -f "$$t/ran"; '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check-gate-suite GATE_SUITE_CMD="$$1" >"$$t/out" 2>&1; }; \
+	suite() { rm -f "$$t/ran"; c=$$1; shift; '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check-gate-suite GATE_SUITE_CMD="$$c" "$$@" >"$$t/out" 2>&1; }; \
 	mkdir -p "$$r/$${trig%/*}" && cd "$$r" && gc init -q -b master . \
 	  && echo a > "$$trig" && echo a > other && gc add -A && gc commit -qm base \
 	  && gc checkout -q -b only-other || fail "임시 저장소를 만들지 못했다"; \
 	echo b > other && gc commit -qam other || fail "경우 A 를 준비하지 못했다"; \
-	suite "touch $$t/ran" || fail "경우 A: make 가 실패했다: $$(cat "$$t/out")"; \
+	suite "touch '$$t/ran'" || fail "경우 A: make 가 실패했다: $$(cat "$$t/out")"; \
 	[ ! -e "$$t/ran" ] || fail "경우 A: gate.sh 를 건드리지 않은 변경에서 스위트가 돌았다"; \
 	echo b > "$$trig" && gc commit -qam gate || fail "경우 B 를 준비하지 못했다"; \
-	suite "touch $$t/ran" || fail "경우 B: make 가 실패했다: $$(cat "$$t/out")"; \
+	suite "touch '$$t/ran'" || fail "경우 B: make 가 실패했다: $$(cat "$$t/out")"; \
 	[ -e "$$t/ran" ] || fail "경우 B: 브랜치에서 커밋한 gate.sh 변경에 스위트가 돌지 않았다"; \
 	gc checkout -q master && gc checkout -q -b worktree-only && echo c > "$$trig" || fail "경우 C 를 준비하지 못했다"; \
-	suite "touch $$t/ran" || fail "경우 C: make 가 실패했다: $$(cat "$$t/out")"; \
+	suite "touch '$$t/ran'" || fail "경우 C: make 가 실패했다: $$(cat "$$t/out")"; \
 	[ -e "$$t/ran" ] || fail "경우 C: 작업 트리에만 있는 gate.sh 변경에 스위트가 돌지 않았다"; \
 	if suite false; then fail "경우 D: 스위트가 실패했는데 make 가 성공했다"; fi; \
-	echo "run-check-gate-selftest: 네 경우 통과"
+	gc checkout -q -f master && gc checkout -q -b no-base || fail "경우 E 를 준비하지 못했다"; \
+	suite "touch '$$t/ran'" || fail "경우 E: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ ! -e "$$t/ran" ] || fail "경우 E: 바뀌지 않은 트리에서 기본 베이스로 스위트가 돌았다"; \
+	suite "touch '$$t/ran'" GATE_SUITE_BASE=no-such-ref || fail "경우 E: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ -e "$$t/ran" ] || fail "경우 E: 베이스를 해소하지 못했는데 스위트가 돌지 않았다"; \
+	gc checkout -q master && echo d > "$$trig" && gc commit -qam master-gate \
+	  && gc update-ref refs/remotes/origin/master HEAD~1 && gc checkout -q -b after-master || fail "경우 F 를 준비하지 못했다"; \
+	suite "touch '$$t/ran'" || fail "경우 F: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ ! -e "$$t/ran" ] || fail "경우 F: 로컬 master 에 이미 있는 gate.sh 변경을 낡은 origin/master 대비로 세어 스위트가 돌았다"; \
+	echo "run-check-gate-selftest: 여섯 경우 통과"
 
 # The source half of the stage-policy drift check: does the policy the gate
 # injects into unattended stages still say what the user-scope CLAUDE.md and
