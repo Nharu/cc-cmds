@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **구현 주의 항목** (`autopilot`) — 설계 문서 미해결 절의 `구현 주의 — ` 항목은 사람이 답할 미해결 질문으로 세지 않는다는 문장을 더했다.
 - **사이드카 필드 표** (`_common/pipeline-sidecar.md`) — `이월` 행과 그 설명을 더했다.
 
+### Fixed
+
+- **행 계열 닫힘 수** (`_common/pipeline-sidecar.md`) — `이월` 을 더한 뒤에도 표제가 「스물다섯」으로 남아 실제 계열 수보다 하나 적었다. 표제를 「스물여섯」으로 고치고, 옛 표제와 스물여섯째 계열을 옛 표제 인용 블록에 더했다.
+
 ### Why
 
 - 무인 런에서 P1 하나가 남은 세그먼트는 사이클마다 수정·리뷰를 되풀이하며 밤을 썼다. 상한 뒤의 P1 은 머지를 막는 대신 이슈로 남겨 아침에 사람이 보게 한다. P0 는 언제나 막는다.
@@ -40,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `feat(orchestrator): 리뷰 사이클에 P1 차단 상한과 이월 행을 둔다`
 - `fix(orchestrator): 이월 이슈 등록이 머지 룰에 막히지 않게 하고 이월 행 키를 닫는다`
+- `fix(pipeline-sidecar): 행 계열 닫힘 수를 이월 포함 스물여섯으로 맞춘다`
 - origin/master(v2.37.0) 병합 — 2.37.0 으로 봉했던 이 항목을 새 베이스 위의 2.38.0 으로 옮겼다
 - origin/master(v2.38.0) 병합 — 2.38.0 으로 봉했던 이 항목을 새 베이스 위의 2.39.0 으로 옮겼다
 - origin/master(v2.39.0) 병합 — 2.39.0 으로 봉했던 이 항목을 새 베이스 위의 2.40.0 으로 옮겼다
