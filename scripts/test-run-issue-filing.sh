@@ -5,8 +5,10 @@
 # 트리거 자체는 수집기의 출력이고 그 정확성은 test-collect-run-metrics.sh 가 잰다. 이
 # 스위트는 수집기를 스텁으로 바꿔 회차 줄을 고정하고, 게이트가 그 줄을 받아 무엇을 부르고
 # 무엇을 원장에 남기는지만 잰다 — 케이던스·잠금·좌석·설정·자격·상한·담기·닫기와 행 모양.
-# gh 는 PATH 앞의 스텁이 argv 를 적고 정해진 출력을 내며, 게이트는 포크로 부른다(스텁이
-# PATH 로만 끼어들 수 있으므로).
+# gh 는 스텁이 argv 를 적고 정해진 출력을 내며, 게이트는 그것을 포크로 부른다. 스텁은
+# PATH 가 아니라 `CC_METRICS_GH` 로 끼운다 — 드라이버가 시스템 접두사를 PATH 맨 앞에
+# 두므로, gh 가 /usr/bin/gh 인 호스트(우분투 CI 러너)에서는 PATH 앞의 스텁이 진짜 gh
+# 에 가려 한 번도 불리지 않는다.
 #
 # Usage: bash scripts/test-run-issue-filing.sh
 
@@ -40,7 +42,7 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'";
 
 # --- 스텁 ------------------------------------------------------------------------
 
-mkdir -p "$WORK/bin" "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep"
+mkdir -p "$WORK/bin" "$WORK/gh-bin" "$WORK/gh-script" "$WORK/gh-fail" "$WORK/gh-sleep"
 export GH_LOG="$WORK/gh.log"
 export GH_STUB_DIR="$WORK"
 # gh 스텁. argv 한 줄과 어느 자격으로 불렸는지(쓰기·읽기·주변)를 적는다 — 토큰 값은
@@ -48,7 +50,7 @@ export GH_STUB_DIR="$WORK"
 # 호출), $WORK/gh-fail/<키> 가 있으면 rc 1, $WORK/gh-script/<키> 가 있으면 그 내용을 낸다.
 # 없으면 기본 출력. 멈춤의 `sleep` 은 출력을 /dev/null 로 둔다 — 스텁이 타임아웃으로 죽어도
 # 남은 `sleep` 이 게이트의 명령 치환 파이프를 쥐고 있지 않게.
-cat > "$WORK/bin/gh" <<'GHEOF'
+cat > "$WORK/gh-bin/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "${GH_TOKEN:-}" in
   rw-stub) tok=쓰기 ;;
@@ -68,6 +70,12 @@ case "$key" in
 esac
 exit 0
 GHEOF
+chmod +x "$WORK/gh-bin/gh"
+export CC_METRICS_GH="$WORK/gh-bin/gh"
+# PATH 앞에는 미끼 gh 를 둔다. 게이트가 이음매 대신 PATH 로 gh 를 찾으면 이 미끼가
+# 불리고, 9번이 그것을 잡는다 — gh 가 /usr/bin 에 없는 호스트에서도 같은 회귀가 보인다.
+export GH_DECOY_LOG="$WORK/gh-decoy.log"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$GH_DECOY_LOG"\nexit 1\n' > "$WORK/bin/gh"
 chmod +x "$WORK/bin/gh"
 # 알림 도구는 절대 닿지 않게 PATH 에서 가린다.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/bin/terminal-notifier"; chmod +x "$WORK/bin/terminal-notifier"
@@ -481,6 +489,8 @@ cat "$GH_LOG" >> "$WORK/gh.all" 2>/dev/null || true
 check "9: (선행) 케이스 전체의 gh 호출이 모였다" "$([ -s "$WORK/gh.all" ] && printf 있음 || printf 없음)" "있음"
 check "9: gh issue reopen 은 어디서도 부르지 않았다" "$(grep -c -F '| issue reopen' "$WORK/gh.all")" "0"
 check "9: gh auth 는 어디서도 부르지 않았다" "$(grep -c -F '| auth ' "$WORK/gh.all")" "0"
+check "9: PATH 앞의 미끼 gh 는 어디서도 불리지 않았다(게이트는 이음매로 gh 를 찾는다)" \
+  "$([ -s "$GH_DECOY_LOG" ] && printf 불림 || printf 안불림)" "안불림"
 check "9: (선행) 원장에 건너뜀 행이 여럿 모였다" "$([ "$(grep -c -F -e '- `계측 필링 건너뜀` |' "$LEDGER")" -ge 8 ] && printf 예 || printf 아니오)" "예"
 bad_reason=$(grep -F -e '- `계측 필링 건너뜀` |' "$LEDGER" | sed -n 's/.*| 사유=\([^|]*\) |.*/\1/p' | sed 's/ *$//' \
   | grep -v -x -e '자격 없음' -e '상한 도달' -e '번호 없음' -e '조회 실패' || true)

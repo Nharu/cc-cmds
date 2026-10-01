@@ -8329,6 +8329,17 @@ gate_metrics_collector() {
   printf '%s' "${CC_METRICS_COLLECTOR:-$GATE_DIR/collect-run-metrics.sh}"
 }
 
+gate_metrics_gh() {
+  # The `gh` program the filing path runs, resolved at call time like the
+  # collector. A stub ahead on the caller's PATH cannot stand in for it: run.sh
+  # puts the system prefixes first, so on a host whose `gh` is /usr/bin/gh (the
+  # Ubuntu CI runner) the real program wins and the stub is never called — the
+  # identity lookup then fails and every filing case reads `조회 실패`. A test
+  # names the stub here instead. The value must name an external program, never
+  # a function, for the reason `gate_metrics_timed` gives.
+  printf '%s' "${CC_METRICS_GH:-gh}"
+}
+
 gate_reap_day_epoch() {
   # gate_reap_day_epoch <YYYYMMDD> — 00:00:00Z of that day in epoch seconds, or
   # empty for anything that is not eight digits or not a real date.
@@ -20093,7 +20104,7 @@ gate_metrics_gh_write() {
     export GH_TOKEN="$tok"
     export GITHUB_TOKEN=""
     cd "$base" 2>/dev/null || exit 1
-    gate_metrics_timed "$t" gh "$@"
+    gate_metrics_timed "$t" "$(gate_metrics_gh)" "$@"
   )
 }
 
@@ -20145,7 +20156,7 @@ gate_metrics_file() {
     gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0
   fi
   list=$(GATE_ACT_CWD="$base" gate_run_readonly gate_metrics_timed "$(gate_metrics_gh_timeout)" \
-           gh issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
+           "$(gate_metrics_gh)" issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
     || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
   nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
 
