@@ -1298,10 +1298,14 @@ gate_push_scan() {
     if [ "$ended" = 0 ]; then
       case "$a" in
         --) ended=1; continue ;;
-        -o|--push-option|--receive-pack|--exec) want=value; continue ;;
+        # `--receive-pack`/`--exec` name a program the other end runs, which over
+        # a local transport is this machine; the grading table refuses them as a
+        # form and neither reader may read such a push as one it can bind.
+        --receive-pack|--receive-pack=*|--exec|--exec=*) _GATE_PUSH_BAD=1; return 0 ;;
+        -o|--push-option) want=value; continue ;;
         --repo) want=repo; continue ;;
         --repo=*) _GATE_PUSH_REPO="${a#--repo=}"; continue ;;
-        -o?*|--push-option=*|--receive-pack=*|--exec=*) continue ;;
+        -o?*|--push-option=*) continue ;;
         --all|--branches|--mirror) _GATE_PUSH_ALL=1; continue ;;
         -u|--set-upstream|-f|--force|--force-with-lease|--force-with-lease=*|--force-if-includes|--no-force-if-includes) continue ;;
         -n|--dry-run|--no-verify|--verify|--atomic|--no-atomic|--tags|--follow-tags|--no-follow-tags) continue ;;
@@ -1393,10 +1397,16 @@ gate_push_remote_match() {
     fi
     [ -n "$rname" ] || rname=origin
   fi
+  # EVERY PUSH URL, NOT THE FIRST. git sends a push to each `pushurl` of the
+  # remote (or each `url` when there is none), and `get-url --push` without
+  # `--all` answers with the first alone — so `git remote set-url --add origin
+  # <foreign>`, a run-local write, left a plain `git push origin …` matching on
+  # the target's URL while the foreign one received the same refs. Each URL is
+  # judged below and one that is not the target's is a mismatch for the push.
   case "$rname" in
     *://*|*@*:*) url="$rname" ;;
     *) url=$( { cd "$_dir" 2>/dev/null \
-                && git ${_gd:+--git-dir="$_gd"} remote get-url --push "$rname" 2>/dev/null; } || true) ;;
+                && git ${_gd:+--git-dir="$_gd"} remote get-url --push --all "$rname" 2>/dev/null; } || true) ;;
   esac
   # AN UNRESOLVABLE REMOTE IS A MISMATCH, NOT A PASS. This returned 0 on an
   # empty URL, so a remote name the repository does not know — or a directory
@@ -1418,12 +1428,30 @@ gate_push_remote_match() {
   # repository spelling with. A second pipeline saying almost the same thing is
   # how the two drifted: this one carried an `s#^www\.##` the other never had,
   # stripping a label out of a host it then discarded anyway.
-  local _rr _rh
-  _gp_repo_reduce "$url" || return 1
-  _rr="$_GP_RR"; _rh="$_GP_RH"
-  gate_gh_host_is_default "$_rh" || return 1
-  [ "$(printf '%s' "$_rr" | tr '[:upper:]' '[:lower:]')" \
-    = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
+  #
+  # A PATH IS NOT A REMOTE THAT NAMES THE TARGET. The reducer reads a bare
+  # `o/r` as a slug because the `gh` side legitimately spells a repository that
+  # way, and an empty host passes the default-host test — so a remote whose URL
+  # is the local directory `t/infra`, `/t/infra` or `github.com/t/infra` matched
+  # the target, and git pushed into that directory instead. Only a URL with a
+  # scheme or the scp `user@host:` form names a host at all; anything else is a
+  # file-system path and a mismatch before it is reduced.
+  local _rr _rh _u _lw
+  _lw=$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')
+  while IFS= read -r _u; do
+    [ -n "$_u" ] || continue
+    case "$_u" in
+      *://*|*@*:*) ;;
+      *) return 1 ;;
+    esac
+    _gp_repo_reduce "$_u" || return 1
+    _rr="$_GP_RR"; _rh="$_GP_RH"
+    gate_gh_host_is_default "$_rh" || return 1
+    [ "$(printf '%s' "$_rr" | tr '[:upper:]' '[:lower:]')" = "$_lw" ] || return 1
+  done <<EOF
+$url
+EOF
+  return 0
 }
 
 gate_push_rung() {
@@ -1562,10 +1590,50 @@ EOF
 # where each piece ran. A push piece in a body that changed directory is `bad`
 # and the merge rung, which is what the top-level check answers for the same
 # `GP_CWD`.
+#
+# A PUSH IS BOUND AGAINST THE CONFIGURATION ON DISK WHEN THE GATE RUNS, not when
+# the push runs. Every earlier piece of the same act runs in between, so `find .
+# -exec git remote set-url origin <foreign> ';' -exec git push origin HEAD:topic
+# ';'` matched the target's remote and then pushed to the foreign one, and so
+# did `printf '… pushurl = <foreign>' >> .git/config; git push origin …`. The
+# verbs that change the configuration are not listed — a list is reopened by
+# every spelling it lacks — so a push piece binds only when every other piece of
+# the act is a read and nothing in it redirects into a file. Otherwise every push
+# line is `bad` and the merge rung. A redirecting read piece yields no canonical
+# line of its own, which is why the redirection is counted here and not left to
+# the pre-authorization match. The walk marks such pieces with an internal
+# `write` line that is folded here and never leaves this function.
+#
+# THE WALK ALSO CARRIES THE RUNG OF EVERY OTHER PIECE. The cutpoint ladder was
+# derived from the top-level argv alone, so `bash -c 'terraform apply …'` whose
+# cap a pre-authorization row lifted stood at `커밋` — past the under-declaration
+# refusal, the review rule and the target's cutpoint ceiling the bare spelling
+# meets. A piece whose own rung is above the bottom one adds a line `rung TAB
+# <rung>`, and `gate_push_pieces_rung` folds it with the push rungs.
+#
+# THE PIECES OF A COMMAND-VALUED ENVIRONMENT NAME ARE PIECES TOO. `env
+# GIT_EDITOR='git push <foreign> HEAD:master; true' git commit --amend` parses
+# `ok` with the editor's body in `GP_SUB`, and only `list|opaque` was walked, so
+# the push in it ran under the commit's worktree-write grade. Such an act is
+# walked like a body, and its own command counts as one of its pieces — a push
+# among them is bound like a body push, a write among them unbinds the others.
 gate_push_pieces() {
   local alias="$1"; shift
-  ( _GATE_PP_ALIAS="$alias"; _GATE_PP_CD=0; _GATE_PP_TOP=1
-    _gate_push_piece "$@" ) || true
+  local _o _l _w=0
+  _o=$( ( _GATE_PP_ALIAS="$alias"; _GATE_PP_CD=0; _GATE_PP_TOP=1
+          _gate_push_piece "$@" ) || true )
+  case "$_o" in
+    write*|*"$_GP_LF"write*) _w=1 ;;
+  esac
+  while IFS= read -r _l; do
+    case "$_l" in
+      ''|write*) continue ;;
+      ok"$_GP_TAB"*|bad"$_GP_TAB"*) [ "$_w" = 0 ] || _l="bad${_GP_TAB}머지" ;;
+    esac
+    printf '%s\n' "$_l"
+  done <<EOF
+$_o
+EOF
   return 0
 }
 
@@ -1577,9 +1645,25 @@ _gate_push_piece() {
     case "$GP_STATUS" in
       list|opaque)
         [ -z "${GP_CWD:-}" ] || _GATE_PP_CD=1
+        ! gate_redir_writes_file || printf 'write\t-\n'
         gp_each_sub _gate_push_piece
         exit 0 ;;
     esac
+    if [ "${#GP_SUB[@]}" -gt 0 ] || gate_redir_writes_file; then
+      [ -z "${GP_CWD:-}" ] || _GATE_PP_CD=1
+      ! gate_redir_writes_file || printf 'write\t-\n'
+      gp_each_sub _gate_push_piece
+      # The act's own command is a piece beside the ones it carries: a push is
+      # judged below like any push piece, anything else is a write unless its
+      # grade is a read.
+      if [ "$_top" = 1 ]; then
+        case "$_prc" in
+          0|2) _top=0 ;;
+          *) _g=$(_gp_frag_grade "$@") || _g=''
+             [ "$_g" = '읽기' ] || printf 'write\t-\n' ;;
+        esac
+      fi
+    fi
     if [ "$_top" = 0 ]; then
       _g=$(_gp_frag_grade "$@") || _g=''
       case "$_prc" in
@@ -1595,13 +1679,21 @@ _gate_push_piece() {
         2) printf 'bad\t머지\n'; exit 0 ;;
       esac
       [ "$_g" != "$GATE_FORM_UNKNOWN" ] || { printf 'form\t-\n'; exit 0; }
+      [ "$_g" = '읽기' ] || printf 'write\t-\n'
+      _r=$(ladder_of_argv0 "$@") || _r=''
+      case "$_r" in
+        ''|커밋) ;;
+        *) printf 'rung\t%s\n' "$_r" ;;
+      esac
     fi
     [ "$_prc" = 1 ] || exit 0
     gate_peel_argv "$@" || exit 0
     set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
     [ "$#" -ge 1 ] && [ "${1##*/}" = find ] || exit 0
     shift
-    _o=$(gate_unwrap_find _gate_push_find_inner '' '' '' _gate_push_join "$@") || _o=''
+    # A write primary (`-delete`, `-fprint` …) writes on `find`'s own account, so
+    # it unbinds a push beside it the way a writing piece does.
+    _o=$(gate_unwrap_find _gate_push_find_inner '' "$(printf 'write\t-')" '' _gate_push_join "$@") || _o=''
     [ -z "$_o" ] || printf '%s\n' "$_o" ) || true
   return 0
 }
@@ -1616,13 +1708,19 @@ _gate_push_join() {
   else printf '%s\n%s' "$1" "$2"; fi
 }
 
-# `gate_push_pieces_rung <lines>` — the highest rung among the push pieces, or
-# nothing when there is no push piece.
+# `gate_push_pieces_rung <lines>` — the highest rung among the push pieces and
+# the `rung` lines of the other pieces, or nothing when there is neither.
 gate_push_pieces_rung() {
-  case "$1" in
-    *"	머지"*) printf '머지' ;;
-    *"	push"*) printf 'push' ;;
-  esac
+  local _l _m=''
+  while IFS= read -r _l; do
+    case "$_l" in
+      ok"$_GP_TAB"*|bad"$_GP_TAB"*|rung"$_GP_TAB"*)
+        _m=$(gate_answer_ladder_max "$_m" "${_l#*"$_GP_TAB"}") ;;
+    esac
+  done <<EOF
+$1
+EOF
+  printf '%s' "$_m"
   return 0
 }
 
@@ -5857,7 +5955,35 @@ EOF
     # `fetch` and `clone` left this arm: the first only moves remote-tracking
     # refs unless a refspec names a local branch, and the second writes a tree.
     # `push` and `pull` stay — one publishes and the other merges what it fetched.
-    push|pull)
+    #
+    # `--receive-pack` AND `--exec` NAME THE PROGRAM THE OTHER END RUNS, and over
+    # a local or `file` transport the other end is this machine: `git push
+    # --receive-pack="<cmd>; git-receive-pack" <remote> HEAD:topic` ran <cmd>
+    # under a push declaration. The `-c remote.<r>.receivepack` spelling of the
+    # same knob and `fetch --upload-pack` are already refused as a form; the argv
+    # option is the same program runner and is refused the same way, on `push`
+    # and on the `send-pack` plumbing that takes it too.
+    push|send-pack)
+      local a
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --receive-pack|--receive-pack=*|--exec|--exec=*)
+            printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+        esac
+      done
+      if [ "$1" = push ]; then
+        printf '외부상태변경'
+      else
+        local _ad="${GATE_ACT_CWD:-.}"
+        [ -z "$_GP_GIT_C" ] || _ad=$(gate_git_chdir_fold "$_ad" "$_GP_GIT_C")
+        if gate_git_sub_is_alias "$_ad" "$_GP_GIT_GITDIR" "$1"; then
+          printf '%s' "$GATE_FORM_UNKNOWN"
+        else
+          printf '등급 미상'
+        fi
+      fi ;;
+    pull)
       printf '외부상태변경' ;;
     # A NAME THIS TABLE DOES NOT KNOW MAY BE AN ALIAS, and an alias runs whatever
     # it expands to — `push` to any URL, or a shell command with `!`. As `등급
@@ -5967,6 +6093,13 @@ surface_of_git_config() {
   # act would run. Every word that is not an option is asked, not only the one
   # in the key's position: an option this row does not know may take a value,
   # and a value that happens to spell such a key costs a refusal, not a pass.
+  #
+  # A SECTION RENAME MOVES KEYS WITHOUT NAMING THEM. `git config <foo>.fsmonitor
+  # <command>` writes a key no list guards, and `git config rename-section <foo>
+  # core` then turns it into `core.fsmonitor` — two run-local writes, after which
+  # a plain `git status` graded `읽기` ran the command. The key check reads the
+  # words an act writes, and a rename writes keys that are in none of its words,
+  # so both section verbs and their `--` spellings are refused as a form.
   local a skip=1 want=0 scope='' query=0 unknown=0
   local -a words=()
   for a in "$@"; do
@@ -5974,6 +6107,8 @@ surface_of_git_config() {
     if [ "$skip" = 1 ]; then skip=0; continue; fi
     if [ "$want" = 1 ]; then want=0; continue; fi
     case "$a" in
+      rename-section|remove-section|--rename-section|--remove-section)
+        printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
       --get|--get-all|--get-regexp|--get-urlmatch|--get-color|--get-colorbool|-l|--list)
         query=1 ;;
       --global|--system)  scope='트리밖쓰기' ;;
@@ -6907,20 +7042,34 @@ gate_opaque_floor() {
   # `등급 미상`, promoted nothing, and floored the write at `읽기`. That is the
   # same outside-the-worktree write the piece-bearing spelling already closes,
   # reached by a SHORTER argv.
+  #
+  # An act left whole that carries pieces through a command-valued environment
+  # name is floored over those pieces the same way (`gate_floor_defined`), and
+  # the hand scan below still answers for the command itself — the two folded.
   gate_gp_ensure "$@"
   case "$GP_STATUS" in
-    list|opaque)
+    list|opaque|ok|tool)
       local _redir_w=0
       ! gate_redir_writes_file || _redir_w=1
       if [ "${#GP_SUB[@]}" -gt 0 ] || [ "$_redir_w" = "1" ]; then
-        _GATE_FLOOR_G='읽기'; _GATE_FLOOR_I=$(surface_index '읽기')
-        _GATE_FLOOR_M=''; _GATE_FLOOR_T=''
-        if [ "$_redir_w" = "1" ]; then
-          _GATE_FLOOR_G='워크트리쓰기'; _GATE_FLOOR_I=$(surface_index '워크트리쓰기')
-        fi
-        gp_each_sub gate_opaque_floor_frag
-        printf '%s\t%s\t%s' "$_GATE_FLOOR_G" "$_GATE_FLOOR_M" "$_GATE_FLOOR_T"
-        return 0
+        case "$GP_STATUS:${_GATE_FLOOR_WHOLE:-0}" in
+          ok:1|tool:1) ;;
+          *)
+            _GATE_FLOOR_G='읽기'; _GATE_FLOOR_I=$(surface_index '읽기')
+            _GATE_FLOOR_M=''; _GATE_FLOOR_T=''
+            if [ "$_redir_w" = "1" ]; then
+              _GATE_FLOOR_G='워크트리쓰기'; _GATE_FLOOR_I=$(surface_index '워크트리쓰기')
+            fi
+            gp_each_sub gate_opaque_floor_frag
+            local _pf
+            _pf=$(printf '%s\t%s\t%s' "$_GATE_FLOOR_G" "$_GATE_FLOOR_M" "$_GATE_FLOOR_T")
+            case "$GP_STATUS" in
+              ok|tool)
+                gate_answer_floor_max "$_pf" "$(_GATE_FLOOR_WHOLE=1 gate_opaque_floor "$@")" ;;
+              *) printf '%s' "$_pf" ;;
+            esac
+            return 0 ;;
+        esac
       fi ;;
   esac
   # THE HAND SCAN BRANCHES ON THE PEELED ARGV, as the opaque axis does. On the
@@ -7077,10 +7226,31 @@ gate_opaque_floor_frag() {
 # directly, and stopped short of everything that asks here first: the `하한=`
 # field on the row and the second line of `grade`. The morning report then
 # showed an act with no floor where a floor had refused one.
+#
+# AN ACT THE PARSER LEFT WHOLE CAN STILL CARRY PIECES. A command-valued
+# environment name — `GIT_EDITOR`, `GIT_SSH_COMMAND` — is parsed as a body and
+# its pieces join `GP_SUB` while the act stays `ok`, and a shell runs them later.
+# The floor was keyed on `list|opaque`, so `env GIT_EDITOR='git push <foreign>
+# HEAD:master; true' git commit --amend` was bounded by the commit's table grade
+# alone and ran the push on a worktree-write declaration. The domain now
+# includes such an act, and `gate_act_carries_pieces` is the test.
 gate_floor_defined() {
   gate_gp_ensure "$@"
   case "$GP_STATUS" in
-    list|opaque)
+    list|opaque|ok|tool)
+      [ "${#GP_SUB[@]}" -gt 0 ] && return 0
+      gate_redir_writes_file && return 0 ;;
+  esac
+  return 1
+}
+
+# `gate_act_carries_pieces <argv...>` — 0 when an act the parser left whole
+# (`ok`, `tool`) nevertheless carries pieces or a file redirection, which only a
+# command-valued environment name gives it.
+gate_act_carries_pieces() {
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    ok|tool)
       [ "${#GP_SUB[@]}" -gt 0 ] && return 0
       gate_redir_writes_file && return 0 ;;
   esac
@@ -18314,7 +18484,10 @@ gate_verb_act() {
     GATE_OPAQUE=$(gate_argv_opaque "$@")
     local _mk; _mk=$(gate_act_mark "$@")
     GATE_MARK="${_mk%%	*}"; GATE_MARK_TRIGGER="${_mk#*	}"
-    if [ "$GATE_OPAQUE" = "1" ] || [ "$graded" = "등급 미상" ]; then
+    # An act the table graded is floored too when it carries pieces through a
+    # command-valued environment name: its grade speaks for its own command and
+    # not for the commands a shell runs out of that name later.
+    if [ "$GATE_OPAQUE" = "1" ] || [ "$graded" = "등급 미상" ] || gate_act_carries_pieces "$@"; then
       local _fl _rest _fmark _ftrig
       _fl=$(gate_opaque_floor "$@")
       GATE_FLOOR="${_fl%%	*}"; _rest="${_fl#*	}"
@@ -18372,6 +18545,11 @@ gate_verb_act() {
       _bound=$(gate_surface_max "$graded" "${GATE_FLOOR:-읽기}")
     elif [ "$GATE_GRADE_SOURCE" = "미상" ]; then
       _bound="${GATE_FLOOR:-읽기}"
+    elif [ -n "${GATE_FLOOR:-}" ]; then
+      # A table-graded act has a floor only when it carries pieces through a
+      # command-valued environment name, and the floor raises its bound the same
+      # way it raises an opaque one.
+      _bound=$(gate_surface_max "$graded" "$GATE_FLOOR")
     fi
     if [ "$_bound" = "등급 미상" ]; then
       # Off mode, unknown command: today's answer, unchanged — a declaration
@@ -18490,11 +18668,15 @@ gate_verb_act() {
     # A push carried in a shell body or behind `find -exec` takes the same rung:
     # the highest one among its push pieces. Without this a base-branch push in
     # a body stood at whatever cutpoint was declared, `커밋` included.
-    local _gpush=0 _pr=''
+    #
+    # And every other piece of such an act carries its own rung into the same
+    # maximum: `bash -c 'terraform apply …'` is the `배포` cell as the bare
+    # spelling is, whatever the top-level argv0 says.
+    local _gpush=0 _pr='' _from=push
     gate_argv_is_git_push "$@" || _gpush=$?
     case "$_gpush" in
       0|2) _pr=$(gate_push_rung "$alias" "$@") ;;
-      *) _pr=$(gate_push_pieces_rung "$(gate_push_pieces "$alias" "$@")") ;;
+      *) _pr=$(gate_push_pieces_rung "$(gate_push_pieces "$alias" "$@")"); _from=piece ;;
     esac
     case "$_pr" in
       ?*)
@@ -18503,7 +18685,11 @@ gate_verb_act() {
         _pi=$(cutpoint_index "$_pr") || exit "$GATE_EXIT_VOCAB"
         _ei=$(cutpoint_index "$GATE_ACT_EFFECTIVE") || exit "$GATE_EXIT_VOCAB"
         if [ "$_pi" -gt "$_ei" ]; then
-          warn "under-declared: the destination of this push is the base branch of the target, so it is the '$_pr' cell — '$GATE_ACT_EFFECTIVE' does not stand the review requirement up"
+          if [ "$_from" = push ]; then
+            warn "under-declared: the destination of this push is the base branch of the target, so it is the '$_pr' cell — '$GATE_ACT_EFFECTIVE' does not stand the review requirement up"
+          else
+            warn "under-declared: a piece this act carries is the '$_pr' cell — '$GATE_ACT_EFFECTIVE' does not stand the rules of that cell up"
+          fi
           warn "raise the declaration to '$_pr' and call again with the same argv"
           exit "$GATE_EXIT_LADDER"
         fi ;;
@@ -18532,7 +18718,11 @@ gate_verb_act() {
     # worktree write where the body deleted a repository.
     불투명) GATE_SURFACE=$(gate_surface_max "$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")" "${GATE_FLOOR:-읽기}") ;;
     미상)   GATE_SURFACE=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기') ;;
-    *)      GATE_SURFACE="$graded" ;;
+    *)      if [ -n "${GATE_FLOOR:-}" ]; then
+              GATE_SURFACE=$(gate_surface_max "$graded" "$GATE_FLOOR")
+            else
+              GATE_SURFACE="$graded"
+            fi ;;
   esac
   export GATE_SURFACE
 
