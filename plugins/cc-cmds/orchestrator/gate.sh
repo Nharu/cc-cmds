@@ -17904,7 +17904,7 @@ gate_verb_act() {
   # THE LANDING TREE'S OWN GATE, asked before it lands. Same seat as the CI
   # verdict above and for the same three reasons; it does nothing when that
   # verdict already set the park cell.
-  gate_check_grade_regression "$segment" "$GATE_ACT_EFFECTIVE" "$alias"
+  gate_check_grade_regression "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$@"
 
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
@@ -18975,7 +18975,7 @@ gate_check_merge_checks() {
 }
 
 gate_check_grade_regression() {
-  # gate_check_grade_regression <segment> <cutpoint> <alias> — refuse a merge
+  # gate_check_grade_regression <segment> <cutpoint> <alias> [argv…] — refuse a merge
   # whose landing tree's gate grades an argv the base's gate knew as empty or
   # `등급 미상`. The second sibling, at the same seat for the same three reasons.
   #
@@ -19010,6 +19010,8 @@ gate_check_grade_regression() {
   # so on a stale tracking ref the tree computed here can differ from the one
   # the host would produce. That residual is accepted, as it is there.
   local seg="$1" cut="$2" alias="$3" tip aroot abr bref btree mb rtree mt probe out rc line
+  local mhc="" mhc_set=0 a
+  shift 3
   [ -z "${GATE_PARK_CELL:-}" ] || return 0
   [ "$cut" = "머지" ] || return 0
   [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
@@ -19023,11 +19025,34 @@ gate_check_grade_regression() {
   # unresolved base leave nothing to compare, and the anchor check and the CI
   # verdict each answer those cases on their own.
   [ "${GATE_UNDECLARED:-0}" != "1" ] || return 0
-  tip=$(gate_segment_tip "$seg") || tip=""
-  [ -n "$tip" ] || return 0
   aroot=$(alias_root "$alias" 2>/dev/null) || aroot=""
   abr=$(base_branch "$alias" 2>/dev/null) || abr=""
   [ -n "$aroot" ] && [ -d "$aroot" ] && [ -n "$abr" ] || return 0
+  # THE HEAD THE LANDING ARGV NAMES IS THE ONE EXAMINED. `gh pr merge …
+  # --match-head-commit <sha>` lands exactly that commit, and the worktree's
+  # local tip can be a different one — behind a push, or ahead of it. Examining
+  # the local tip would let a tip that leaves the orchestrator alone wave
+  # through a named head that does not, at the zero-cost return below. A named
+  # sha this repository cannot resolve to a commit leaves nothing honest to
+  # compare, so it parks rather than falling back to the local tip.
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
+    case "$a" in
+      --match-head-commit) mhc_set=1; mhc="${1:-}"; [ "$#" -eq 0 ] || shift ;;
+      --match-head-commit=*) mhc_set=1; mhc="${a#--match-head-commit=}" ;;
+    esac
+  done
+  if [ "$mhc_set" = "1" ]; then
+    tip=$( cd "$aroot" && [ -n "$mhc" ] && git rev-parse --verify --quiet "$mhc^{commit}" 2>/dev/null ) || tip=""
+    if [ -z "$tip" ]; then
+      warn "the landing argv names head '${mhc}', which does not resolve to a commit in '$aroot' — the grade-regression probe has nothing to examine"
+      GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+      return 0
+    fi
+  else
+    tip=$(gate_segment_tip "$seg") || tip=""
+    [ -n "$tip" ] || return 0
+  fi
   if ( cd "$aroot" && git remote get-url origin >/dev/null 2>&1 ); then
     bref="refs/remotes/origin/$abr"
   else
@@ -19046,8 +19071,13 @@ gate_check_grade_regression() {
   # directory and not `gate.sh` alone, because the gate sources its siblings.
   # With no merge base there is no side to ask, so the tip is compared with the
   # base itself: when the two carry the same directory, whatever lands does too.
+  #
+  # `-r` ON BOTH `diff-tree` CALLS, and without it the zero cost is a promise
+  # only. A non-recursive `diff-tree` compares the pathspec at the top-level
+  # entry `plugins`, so any change anywhere under `plugins/` — a `plugin.json`
+  # bump, which every segment of this repository makes — reads as "differs".
   mb=$( cd "$aroot" && git merge-base "$bref" "$tip" 2>/dev/null ) || mb=""
-  if ( cd "$aroot" && git diff-tree --quiet "${mb:-$bref}" "$tip" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
+  if ( cd "$aroot" && git diff-tree -r --quiet "${mb:-$bref}" "$tip" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
     return 0
   fi
 
@@ -19062,7 +19092,7 @@ gate_check_grade_regression() {
 
   # The segment's change can already be on the base (a sibling landed the same
   # edit), and then the landing tree does not move the orchestrator either.
-  if ( cd "$aroot" && git diff-tree --quiet "$btree" "$rtree" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
+  if ( cd "$aroot" && git diff-tree -r --quiet "$btree" "$rtree" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
     return 0
   fi
 

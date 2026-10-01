@@ -23820,7 +23820,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 61c. 머지 시점 등급 회귀 프로브 — 착지할 트리의 게이트에 같은 argv 를 묻는다
-# --- section: 61c | group: sa | covers: plan | anchors: 61c: 오케스트레이터를 건드리지 않은 머지는 프로브를 부르지 않는다, 61c: 주석만 바꾼 트리에서 프로브가 돌고 양성 대조가 읽기 → 읽기 다, 61c: 프로브가 돈 예보 전후로 부모 원장 바이트가 같다, 61c: 프로브가 통과한 예보의 문면과 코드가 프로브 없는 예보와 같다, 61c: 오염된 환경과 깨끗한 환경의 프로브 출력이 같다, 61c: 한 argv 를 빈 등급으로 내는 트리의 머지는 등급회귀 로 park 된다, 61c: 게이트 사본 머리의 exit 3 은 부모를 죽이지 않고 등급회귀 로 park 된다, 61c: 양성 대조를 못 내는 베이스는 등급회귀판정불가 로 park 된다 ---
+# --- section: 61c | group: sa | covers: plan | anchors: 61c: 오케스트레이터를 건드리지 않은 머지는 프로브를 부르지 않는다, 61c: plugins 아래지만 오케스트레이터 밖인 변경은 프로브를 부르지 않는다, 61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다, 61c: 풀리지 않는 head 를 지명한 머지는 로컬 tip 으로 대체하지 않고 등급회귀판정불가 로 park 된다, 61c: 주석만 바꾼 트리에서 프로브가 돌고 양성 대조가 읽기 → 읽기 다, 61c: 프로브가 돈 예보 전후로 부모 원장 바이트가 같다, 61c: 프로브가 통과한 예보의 문면과 코드가 프로브 없는 예보와 같다, 61c: 오염된 환경과 깨끗한 환경의 프로브 출력이 같다, 61c: 한 argv 를 빈 등급으로 내는 트리의 머지는 등급회귀 로 park 된다, 61c: 게이트 사본 머리의 exit 3 은 부모를 죽이지 않고 등급회귀 로 park 된다, 61c: 양성 대조를 못 내는 베이스는 등급회귀판정불가 로 park 된다 ---
 #
 # 게이트가 머지 판정 자리에서 자기의 경쟁 판본 — 착지할 트리의 게이트 — 을 실행한다.
 # 그것이 안전하려면 여섯 가지가 서야 하고, 이 절의 단언이 하나씩 그것을 잰다:
@@ -23836,8 +23836,13 @@ fi
 # ---------------------------------------------------------------------------
 c61_new() {
   # c61_new <라벨> — 베이스에 플러그인·프로브를 커밋해 원격까지 올리고, 세그먼트를
-  # 그 위로 당긴 뒤 세그먼트 행을 쓴다.
+  # 그 위로 당긴 뒤 세그먼트 행을 쓴다. 사전 인가에 `gh pr` 를 싣는 것은 착지 argv 가
+  # 지명한 head 를 재는 `gh pr merge … --match-head-commit` 예보가 사전-인가-대조 의
+  # exit 5 에서 먼저 멈추지 않게 하려는 것이다 — 그 5 는 프로브까지 닿지 못한 답이다.
   sa_new "$1" 리뷰없음
+  SA_PREAUTH_EXTRA='gh pr'
+  sa_manifest 리뷰없음
+  rm -rf "$SA_RUN"
   mkdir -p "$SA_WT/plugins" "$SA_WT/scripts"
   cp -R "$repo_root/plugins/cc-cmds" "$SA_WT/plugins/"
   cp "$repo_root/scripts/grade-regression-probe.sh" "$SA_WT/scripts/"
@@ -23884,6 +23889,55 @@ check "61c: 오케스트레이터 밖 머지 예보가 통과한다" "$rc" "0"
 case "$raw" in
   *'grade-regression probe'*) bad "61c: 오케스트레이터를 건드리지 않은 머지는 프로브를 부르지 않는다" "$raw" ;;
   *) ok "61c: 오케스트레이터를 건드리지 않은 머지는 프로브를 부르지 않는다" ;;
+esac
+
+# (1b) 비용 0 — `plugins/` 아래지만 오케스트레이터 밖인 변경. 이 저장소의 모든 세그먼트가
+# 올리는 `plugin.json` 이 그 자리다. 재귀하지 않는 비교는 경로 필터를 최상위 항목
+# `plugins` 단위로 재므로, 이 커밋을 「오케스트레이터가 움직였다」로 읽고 프로브를 부른다.
+# 위 (1) 의 픽스처는 `plugins/` 밖만 바꾸므로 그 차이를 가르지 못한다.
+c61_pj="$SA_SEGWT/plugins/cc-cmds/.claude-plugin/plugin.json"
+sed -E 's/"version": *"[^"]*"/"version": "0.0.0-c61"/' "$c61_pj" > "$c61_pj.new" && mv "$c61_pj.new" "$c61_pj"
+( cd "$SA_SEGWT" && git add -A plugins && git commit -qm 'plugin.json 만' ) >/dev/null 2>&1
+check "61c: plugin.json 만 바꾼 픽스처 커밋이 착지했다" \
+  "$(cd "$SA_SEGWT" && git diff-tree -r --no-commit-id --name-only HEAD)" "plugins/cc-cmds/.claude-plugin/plugin.json"
+c61_plan
+check "61c: plugin.json 만 바꾼 머지 예보가 통과한다" "$rc" "0"
+case "$raw" in
+  *'grade-regression probe'*) bad "61c: plugins 아래지만 오케스트레이터 밖인 변경은 프로브를 부르지 않는다" "$raw" ;;
+  *) ok "61c: plugins 아래지만 오케스트레이터 밖인 변경은 프로브를 부르지 않는다" ;;
+esac
+
+# (1c) 검사 대상은 착지 argv 가 `--match-head-commit` 으로 지명한 head 다. 로컬 tip 은 위
+# (1b) 의 커밋 그대로 두고, 오케스트레이터를 바꾼 커밋을 곁가지에 만들어 그것을 지명한다.
+# 로컬 tip 을 보는 구현은 비용 0 반환으로 빠져 프로브 줄을 내지 않는다.
+c61_plan_mhc() {
+  # c61_plan_mhc <sha> — 세그먼트 CG 의 원격 머지 예보. 예보이므로 gh 는 실행되지 않는다.
+  sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CG \
+      --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+      -- gh pr merge 1 --match-head-commit "$1"
+}
+c61_tipb=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+( cd "$SA_SEGWT" && git checkout -q -b c61-side ) >/dev/null 2>&1
+c61_edit "$SA_SEGWT" 주석
+c61_side=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+( cd "$SA_SEGWT" && git checkout -q "$SA_SEGBR" ) >/dev/null 2>&1
+if [ "$c61_side" != "$c61_tipb" ] && [ "$(cd "$SA_SEGWT" && git rev-parse HEAD)" = "$c61_tipb" ]; then
+  ok "61c: 곁가지 커밋이 생겼고 로컬 tip 은 그대로다"
+else
+  bad "61c: 곁가지 커밋이 생겼고 로컬 tip 은 그대로다" "side=$c61_side tip=$c61_tipb"
+fi
+c61_plan_mhc "$c61_side"
+check "61c: 오케스트레이터를 바꾼 head 를 지명한 머지 예보가 통과한다" "$rc" "0"
+case "$raw" in
+  *'grade-regression probe: 양성 대조: true 읽기 → 읽기'*)
+    ok "61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다" ;;
+  *) bad "61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다" "$raw" ;;
+esac
+c61_plan_mhc deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+check "61c: 풀리지 않는 head 를 지명한 머지 예보가 11 로 끝난다" "$rc" "11"
+case "$msg" in
+  *'park 예상: 도달 판정=등급회귀판정불가 '*) ok "61c: 풀리지 않는 head 를 지명한 머지는 로컬 tip 으로 대체하지 않고 등급회귀판정불가 로 park 된다" ;;
+  *) bad "61c: 풀리지 않는 head 를 지명한 머지는 로컬 tip 으로 대체하지 않고 등급회귀판정불가 로 park 된다" "$raw" ;;
 esac
 
 # (2) 양성 대조와 부모 무기록 — 주석만 바꾼 세그먼트. 프로브가 돌아야 하고, 돌았다는
