@@ -18361,7 +18361,8 @@ check "26: 다른 워크트리를 대는 완료 행도 거절된다" "$rc" "2"
 check "26: 그 완료 거절도 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
 # 두 행 철자 — 비종단 행이 옛 체크아웃을 단 뒤 같은 체크아웃의 머지됨 행. 기록된
-# 워크트리는 세그먼트의 첫 비종단 행이 단 것이라 뒤의 행이 옮기지 못한다.
+# 워크트리는 메인 체크아웃이 아닌 워크트리를 단 세그먼트의 첫 비종단 행의 것이라
+# 뒤의 행이 옮기지 못한다.
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
     --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
     -- 상태=리뷰중 워크트리="$SA_OLDWT" 선행=없음
@@ -18372,7 +18373,7 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
     -- 상태=머지됨 워크트리="$SA_OLDWT" 선행=없음
 check "26: 비종단 행이 옮긴 옛 체크아웃의 머지됨 행은 거절된다" "$rc" "2"
 case "$msg" in
-  *"첫 비종단 행"*) ok "26: 그 거절 문면이 첫 비종단 행을 기준으로 댄다" ;;
+  *"메인 체크아웃이 아닌 워크트리를 단 첫 비종단 행"*) ok "26: 그 거절 문면이 메인 체크아웃이 아닌 첫 비종단 행을 기준으로 댄다" ;;
   *) bad "26 두 행 철자 문면" "$msg" ;;
 esac
 check "26: 그 거절이 원장을 늘리지 않는다 (두 행 철자)" "$(sa_rows)" "$nb"
@@ -18406,6 +18407,79 @@ check "26: 첫 행 머지됨 의 머지 대조가 판정 불가 다" \
   "$(sa_field "$(sa_seg_last S26Z)" '머지 대조')" "판정 불가"
 check "26: 첫 행 머지됨 의 판정 불가가 조건 11 을 낸다" \
   "$(sa_unmet11)" "11 세그먼트 S26Z 의 머지 대조가 판정 불가 입니다"
+
+# 메인 체크아웃 계획 행 — 라우터는 세그먼트 워크트리가 생기기 전에 대상의 메인
+# 체크아웃을 단 계획됨 행으로 세그먼트를 연다. 그 행은 기록된 워크트리가 아니다.
+# 메인 체크아웃의 HEAD 는 분기점에 머물러 리뷰가 덮지 않은 머지를 덮는 것처럼
+# 보이게 하므로, 메인 체크아웃을 단 머지됨 행은 거절되고 세그먼트 워크트리를 단
+# 행이 세그먼트의 팁을 읽는다.
+sa_new '메인 체크아웃 계획 행'
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26A \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_WT" 선행=없음
+check "26: 메인 체크아웃을 단 계획됨 행이 받아들여진다" "$rc" "0"
+sa_seg_row S26A ""
+T26A=$(sa_commit '리뷰된 작업')
+sa_cycle S26A 1 0 0 "$T26A"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+sa_land
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26A \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_WT" 선행=없음
+check "26: 메인 체크아웃을 단 머지됨 행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"기록된 워크트리 $SA_SEGWT "*) ok "26: 그 거절 문면이 세그먼트 워크트리를 기록된 워크트리로 댄다" ;;
+  *) bad "26 메인 체크아웃 머지됨 문면" "$msg" ;;
+esac
+check "26: 그 거절이 원장을 늘리지 않는다 (메인 체크아웃)" "$(sa_rows)" "$nb"
+sa_seg_state S26A 머지됨
+check "26: 세그먼트 워크트리를 단 머지됨 행이 기록된다 (메인 계획 행 뒤)" "$rc" "0"
+check "26: 그 행이 세그먼트의 팁을 읽어 위반(미포함) 이다" \
+  "$(sa_field "$(sa_seg_last S26A)" '머지 대조')" "위반(미포함)"
+check "26: 메인 계획 행 뒤의 미포함이 조건 11 을 낸다" \
+  "$(sa_unmet11)" "11 세그먼트 S26A 의 머지 대조가 위반(미포함) 입니다"
+
+# 메인 앞섬 — 리뷰가 덮은 머지가 착지한 뒤 메인 체크아웃이 그 팁의 조상이 아닌
+# 베이스 커밋으로 나아간다. 기록된 워크트리가 메인 체크아웃이면 리뷰된 머지가
+# 어떤 재리뷰로도 풀리지 않는 위반(미포함) 으로 남는다.
+sa_new '메인 체크아웃 앞섬'
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26B \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_WT" 선행=없음
+sa_seg_row S26B ""
+T26B=$(sa_commit '작업')
+sa_cycle S26B 1 0 0 "$T26B"
+sa_land
+( cd "$SA_REPO" && git commit -q --allow-empty -m '베이스의 다른 커밋' ) >/dev/null 2>&1
+if ( cd "$SA_REPO" && git merge-base --is-ancestor HEAD "$T26B" ) >/dev/null 2>&1; then
+  bad "26 메인 앞섬" "메인 체크아웃의 HEAD 가 리뷰된 팁의 조상이다"
+else
+  ok "26: 메인 체크아웃의 HEAD 가 리뷰된 팁의 조상이 아닌 커밋으로 나아갔다"
+fi
+sa_seg_state S26B 머지됨
+check "26: 메인 앞섬 — 세그먼트 워크트리를 단 머지됨 행이 기록된다" "$rc" "0"
+check "26: 메인 앞섬 — 리뷰된 머지가 충족이다" \
+  "$(sa_field "$(sa_seg_last S26B)" '머지 대조')" "충족"
+check "26: 메인 앞섬 — 조건 11 이 나지 않는다" "$(sa_unmet11)" ""
+
+# 메인 체크아웃만 — 세그먼트의 비종단 행이 모두 메인 체크아웃을 달면 기록된
+# 워크트리가 없다. 메인 체크아웃의 팁은 읽지 않으므로 커버리지는 판정 불가 다.
+sa_new '메인 체크아웃만'
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26C \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_WT" 선행=없음
+T26C=$(sa_commit '작업')
+sa_cycle S26C 1 0 0 "$T26C"
+sa_land
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26C \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_WT" 선행=없음
+check "26: 메인 체크아웃만 단 세그먼트의 머지됨 행이 기록된다" "$rc" "0"
+check "26: 메인 체크아웃만 — 머지 대조가 판정 불가 다" \
+  "$(sa_field "$(sa_seg_last S26C)" '머지 대조')" "판정 불가"
+check "26: 메인 체크아웃만 — 판정 불가가 조건 11 을 낸다" \
+  "$(sa_unmet11)" "11 세그먼트 S26C 의 머지 대조가 판정 불가 입니다"
 
 # 거짓 머지 — 팁이 베이스에 없는데 머지됨 을 적는다.
 sa_new '거짓 머지'
@@ -18603,6 +18677,59 @@ check "27: 정책 완화 시도가 조건 11 을 지우지 못한다" \
   "$(sa_unmet11)" "11 세그먼트 S27L 의 머지 대조가 위반(카운트) 입니다"
 sa_seg_state S27L 완료 '리뷰 정책=선리뷰후머지'
 check "27: 같은 정책을 다시 다는 행은 받아들여진다" "$rc" "0"
+
+# 머지됨 행 자신의 완화 — 머지 대조 가 아직 없는 첫 머지됨 행이 느슨한 정책을
+# 달면 정책 면제 가 적혀 조건 11 이 비었다. 그 머지는 앞 행의 정책 아래서
+# 일어났으므로 머지됨 행은 언제나 앞 행 정책과 비교된다.
+sa_new '머지됨 행 정책 완화'
+sa_seg_row S27M ""
+T27M=$(sa_commit '작업')
+sa_cycle S27M 1 1 0 "$T27M"
+sa_land
+nb=$(sa_rows)
+sa_seg_state S27M 머지됨 '리뷰 정책=선머지후리뷰'
+check "27: 첫 머지됨 행 자신이 리뷰 정책을 느슨하게 달면 거절된다" "$rc" "2"
+case "$msg" in
+  *"앞 행의 정책 아래서 일어났고"*) ok "27: 머지됨 행 완화 거절 문면이 이유를 댄다" ;;
+  *) bad "27 머지됨 행 완화 문면" "$msg" ;;
+esac
+check "27: 머지됨 행 완화 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+sa_seg_state S27M 머지됨
+check "27: 정책을 바꾸지 않은 머지됨 행은 기록된다" "$rc" "0"
+check "27: 그 행의 머지 대조가 위반(카운트) 다" \
+  "$(sa_field "$(sa_seg_last S27M)" '머지 대조')" "위반(카운트)"
+check "27: 머지됨 행 완화 시도 뒤에도 조건 11 이 그 세그먼트를 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27M 의 머지 대조가 위반(카운트) 입니다"
+
+# 게이트 밖 착지 뒤의 완화 — 머지됨 행이 아직 없어 머지 대조 도 없지만 세그먼트의
+# 팁은 이미 베이스에 있다. 그 뒤의 비종단 행이 정책을 느슨하게 달면 뒤의
+# 머지됨 행이 정책 면제 로 적혔다.
+sa_new '착지 뒤 정책 완화'
+sa_seg_row S27N ""
+sa_commit '작업' >/dev/null
+sa_land
+nb=$(sa_rows)
+sa_seg_state S27N 리뷰중 '리뷰 정책=선머지후리뷰'
+check "27: 착지 뒤 비종단 행의 정책 완화는 거절된다" "$rc" "2"
+case "$msg" in
+  *"이미 베이스에 착지했습니다"*) ok "27: 착지 뒤 완화 거절 문면이 착지를 댄다" ;;
+  *) bad "27 착지 뒤 완화 문면" "$msg" ;;
+esac
+check "27: 착지 뒤 완화 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+sa_seg_state S27N 머지됨
+check "27: 착지 뒤 완화 시도 뒤의 머지됨 행이 기록된다" "$rc" "0"
+check "27: 그 행의 머지 대조가 리뷰 없음 이다" \
+  "$(sa_field "$(sa_seg_last S27N)" '머지 대조')" "리뷰 없음"
+check "27: 착지 뒤 완화 시도 뒤에도 조건 11 이 그 세그먼트를 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27N 의 머지 대조가 리뷰 없음 입니다"
+
+# 음성 대조 — 자기 커밋이 아직 착지하지 않은 세그먼트의 완화는 상한이 허락하는
+# 착지 전 정책 선택이라 받아들여진다.
+sa_new '착지 전 정책 완화'
+sa_seg_row S27K ""
+sa_commit '작업' >/dev/null
+sa_seg_state S27K 리뷰중 '리뷰 정책=선머지후리뷰'
+check "27: 착지 전 비종단 행의 정책 완화는 받아들여진다" "$rc" "0"
 
 # 상한 — 새 필드를 단 최악 관측 머지됨 행(게이트의 자로 905 B)이 1024 B 안에
 # 든다. 관측 행 자체는 이 저장소에 없으므로, 같은 길이의 행을 게이트의 자로
