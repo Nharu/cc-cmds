@@ -22,6 +22,11 @@
 #      configuration parameter of one stage, not a new entry skill, and the
 #      enum is pinned so that a value the kickoff hands to the person cannot
 #      appear or vanish without this lint noticing.
+#   3. `entry-plan.schema.json` carries the work-class pair: `work_class`
+#      and `work_class_rationale` are in both sets, and the `work_class`
+#      enum is exactly `fix` / `feat` / `docs` / `other` / `unknown`. The
+#      recorded value is the key a later reader groups history by, so a value
+#      cannot appear or vanish without this lint noticing.
 #
 # Usage:
 #   bash scripts/lint-prompt-schemas.sh
@@ -125,6 +130,35 @@ if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
     fail=1
   else
     echo "OK:   $rel — design_tier pair present on both sides, enum pinned"
+  fi
+fi
+
+# ---------- Rule 3: the work-class pair in entry-plan -------------------------
+
+if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
+  rel=${ENTRY#"$repo_root/"}
+  class_ok=1
+  for key in work_class work_class_rationale; do
+    in_props=$(jq -r --arg k "$key" '(.properties // {}) | has($k)' "$ENTRY")
+    in_req=$(jq -r --arg k "$key" '(.required // []) | index($k) != null' "$ENTRY")
+    if [[ "$in_props" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .properties" >&2
+      class_ok=0
+    fi
+    if [[ "$in_req" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .required" >&2
+      class_ok=0
+    fi
+  done
+  class_enum=$(jq -c '.properties.work_class.enum // []' "$ENTRY")
+  if [[ "$class_enum" != '["fix","feat","docs","other","unknown"]' ]]; then
+    echo "FAIL: $rel — work_class enum must be exactly [\"fix\",\"feat\",\"docs\",\"other\",\"unknown\"], found $class_enum" >&2
+    class_ok=0
+  fi
+  if [[ "$class_ok" == "1" ]]; then
+    echo "OK:   $rel — work_class pair present on both sides, enum pinned"
+  else
+    fail=1
   fi
 fi
 

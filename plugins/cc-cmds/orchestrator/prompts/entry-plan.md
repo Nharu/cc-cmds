@@ -40,6 +40,22 @@ The judgment is the review skill's small-work gate transposed, and **risk indica
 
 **Write `design_tier` and `design_tier_rationale` even when `design_required` is false.** Produce the judged value and say in `design_tier_rationale` that it is inactive — the same posture the schema takes by requiring `design_rationale` unconditionally.
 
+## `work_class` records what kind of change the run lands — it decides nothing here
+
+`work_class` is a closed enum — `fix` | `feat` | `docs` | `other` | `unknown` — and `work_class_rationale` is its prose reason, the pair of `design_tier_rationale`. `unknown` needs a reason too.
+
+There is one rule: **which commit type would this run's main deliverable land as under the repository's version-bump rule?**
+
+- `fix` — a `fix(...)`: removing an observed failure, hardening, adjusting wording or a prompt.
+- `feat` — a `feat(...)`: a new skill, or a feature extension of an existing one.
+- `docs` — a deliverable that changes documents only (no bump).
+- `other` — anything else: a breaking change, test- or CI-only work, a mixed intent with more than one main deliverable.
+- `unknown` — the inputs available now cannot tell what the main deliverable is.
+
+**The inputs are only what exists at this judgment: the person's words at kickoff and the resolved anchor.** This judgment comes before the interview, so no interview record is an input. When those two cannot decide it, the answer is `unknown` — never write a guess as `other`.
+
+**Write both keys even when `design_required` is false** — the schema requires them unconditionally. The field is recorded and nothing else: do not use it to decide any other field of this judgment, `design_tier` included. A manifest frozen before this field existed has no such key, and a reader takes it as unknown — as it does a value outside the enum, and `unknown` itself.
+
 ## Targets are proposed here and CONFIRMED by the person
 
 List every repository the work plausibly touches in `targets`, with the alias you would give it and the remote slug. You are proposing, not deciding: the repo set is declared and verified by the human in front of you, never derived. Three reasons, and none of them is about your ability — a design document contains no absolute path, the only inference available is the convention this pipeline is retiring, and a worktree-vs-repository confusion is invisible to inference while being common on disk.
