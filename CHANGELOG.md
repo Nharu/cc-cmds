@@ -5,6 +5,26 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.39.1] - 2026-10-01
+
+`gate.sh` 를 바꾼 변경은 이제 `make check` 에서 게이트 스위트를 돈다. 등급표 파손을 잡는 유일한 스위트가 커밋마다 거치는 로컬 필수 절차 밖에 있었다. 같은 판본에서 `github-ops` 의 CI 대기 절이 대화형 세션과 무인 파이프라인 런을 갈라 적는다.
+
+### Added
+
+- **`make check` 의 조건부 게이트 스위트(`check-gate-suite`)** — 베이스 브랜치와의 merge-base 대비 작업 트리에서 `plugins/cc-cmds/orchestrator/gate.sh` 가 바뀌었을 때만 `scripts/test-gate.sh` 를 돌리고, 그 실패가 `check` 의 실패가 된다. 커밋·스테이징·작업 트리의 편집을 모두 센다. 베이스 후보(`origin/HEAD`·`origin/master`·`master`) 가운데 HEAD 에 가장 가까운 merge-base 를 쓰므로, 낡은 원격 추적 ref 때문에 로컬 master 에 이미 있는 `gate.sh` 변경을 이 브랜치의 변경으로 세지 않는다. 체크아웃된 브랜치 자신은 베이스 후보에서 빠지므로, 로컬 master 에서 돌려도 거기 커밋된 `gate.sh` 변경이 가려지지 않는다. 베이스를 해소하지 못하면 건너뛰지 않고 돌리며, `git diff` 실패는 빈 변경 목록이 아니라 판정 불가로 실패한다.
+  - 전량은 단독으로 약 40분이라 포그라운드 도구 상한을 넘는다. 대화형에서는 기본값이 전량이고, 돌기 직전에 그 비용과 함께 하니스가 추적하는 백그라운드 작업으로 돌리거나 `GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>'` 로 바꾼 축의 절만 돌리라고 알린다. 무인 런(`CC_PIPELINE_RUN_ID` 설정)에서는 기본 전량을 시작하지 않고 `GATE_SUITE_CMD` 를 지명하라며 `check` 를 실패시킨다 — 건너뛰기가 아니라, 스위트 명령이 돌기 전에는 통과하지 않는다. 전량 회귀는 PR CI 가 진다.
+- **조건 판정의 자체 시험 `run-check-gate-selftest`** — 임시 저장소에서 여덟 경우를 본다: 다른 파일만 바뀜(돌지 않음), 브랜치에서 `gate.sh` 가 바뀜(돎), 작업 트리에서만 바뀜(돎), 스위트 실패(make 실패), 바뀌지 않은 트리를 기본 베이스로 보면 건너뛰고 해소되지 않는 `GATE_SUITE_BASE` 로 보면 돎, 낡은 `origin/master` 보다 앞선 로컬 master 에만 `gate.sh` 변경이 있는 브랜치(돌지 않음)와 그 master 자신(돎), 무인 런에서 기본 명령은 거절되고 지명한 명령은 돎. 첫 두 경우가 서로의 대조군이다. `test`·`test-rest` 의 선행에 들어갔다.
+
+### Fixed
+
+- **`github-ops` 의 CI 대기 절을 두 갈래로 가른다** — 백그라운드 `gh pr checks --watch` 뒤 새 세션이 재질의한다는 문장은 재질의할 세션이 있는 대화형 경로에서만 참이다. 갈래는 `CC_PIPELINE_RUN_ID` 유무 하나로 정한다. 무인 런은 백그라운드 대기를 띄우지 않고, 머지 직전 현재 head 의 `gh pr checks`(와 `--required`)를 게이트를 거친 읽기로 포그라운드에서 조회한다. 체크가 아직 진행 중이면(실패가 아니다) 포그라운드로 더 기다리거나 머지하지 않고 멈춘다. `checks` 폴러(`orchestrator/checks.sh`)는 전이를 `<RUN_DIR>/checks.observed` 에 기록할 뿐이고, 게이트는 워크트리의 로컬 tip 에 기록된 CI 실패만 park 한다. 행이 없거나 진행 중인 tip 은 통과시키므로 게이트는 대기가 아니라 백스톱이다.
+  - 머지하지 않고 멈추는 형태는 좌석이 정한다. 스테이지 좌석(`CC_PIPELINE_STAGE_ID` 있음)은 `분류: precondition-failed` 정지 기록에 PR·head SHA·체크를 남기고, 라우터 좌석(스테이지 id 없음)은 정지 기록 대신 `act --kind blocked` 의 cone park 로 그 세그먼트만 세우고 다른 일을 계속한다. 결과 해석에서 질문하거나 「다시 기다린다」던 갈래, 그리고 head SHA 불일치가 아닌 머지 실패(보호 규칙·충돌·비활성 방식·권한)도 무인 런에서는 재시도 없이 이 멈춤으로 간다.
+  - head SHA 는 매 조회 직전에 기록해 마지막으로 초록을 읽은 조회의 것으로 머지하고, 도구 시간 상한에 끊긴 포그라운드 `--watch` 는 오류가 아니라 「여전히 진행 중」으로 읽는다.
+
+### Why
+
+전량 게이트 스위트는 단독으로 40분대라 무조건 `make check` 에 넣으면 절차를 건너뛰게 만들어 목적과 반대로 작동한다. 그래서 바뀐 경우에만 돌리고, 조건이 실제로 갈리는지는 쌍 단언으로 따로 본다. CI 워크플로는 `make check` 를 부르지 않으므로 이 변경이 CI 에 더하는 것은 `make test-rest` 가 함께 도는 수 초짜리 자체 시험뿐이다. 무인 머지 절차는 기다릴 주체를 남겨야 한다. 폴러와 게이트에 대기를 맡긴다고만 적으면, 수정 커밋을 push 한 직후 아직 기록이 없는 새 head 가 게이트를 통과해 CI 가 끝나기 전에 머지된다.
+
 ## [2.39.0] - 2026-10-01
 
 게이트가 머지 직전에 착지할 트리의 게이트에게 같은 argv 목록의 등급을 묻고, 알려져 있던 등급이 빈 값이나 `등급 미상` 으로 바뀌는 머지를 park 한다. 그리고 `run` 행이 베이스의 상태를 두 필드로 갈라 적고, 베이스의 `make check` 가 킥오프 시점에 이미 빨갰는지를 함께 적는다.
