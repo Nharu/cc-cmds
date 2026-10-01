@@ -2635,6 +2635,13 @@ SAGEOF
     raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   SAH() { cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null | jq -r .H; }
+  sa_open_run() {
+    # sa_open_run — 이 픽스처의 런을 연다(첫 게이트 호출이 run 행을 쓴다) 그리고
+    # 그 run 행을 찍는다. 베이스 상태를 재는 필드는 첫 진입에서만 값이 나오므로,
+    # 부르는 쪽은 `sa_new` 뒤·다른 게이트 호출 앞에 베이스를 꾸며 둔다.
+    SAH >/dev/null
+    { grep '^- `run` ' "$SA_LEDGER" 2>/dev/null || true; } | tail -1
+  }
 
   sa_seg_row() {
     # sa_seg_row <id> <정책|""> [워크트리] — segment 행 하나.
@@ -23979,6 +23986,330 @@ check "67: 필드표에서 계정 을 빼면 린트가 실패한다" "$rc" "1"
 case "$lsr67_out" in
   *"계열 'stage-result' 의 호출부가 필드 '계정'"*) ok "67: 그 실패가 stage-result 의 계정 을 지목한다" ;;
   *) bad "67 린트 문면" "$(printf '%s' "$lsr67_out" | tr '\n' ' ')" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
+# --- section: 61a | group: sa | covers: snapshot | anchors: 61a: 미추적 파일만 있는 베이스는 추적 변경 없음·미추적 파일 있음 이다, 61a: 추적 파일을 고친 베이스는 추적 변경 있음 이다, 61a: 두 베이스의 run 행 값이 다르다, 61a: 옛 베이스 청결 필드는 run 행에 없다 ---
+#
+# 한 필드였을 때 두 베이스는 같은 값으로 기록됐다 — 미추적 파일 하나가 생긴
+# 베이스와 추적 파일에 미커밋 변경이 걸린 베이스가 원장에서 구별되지 않았다.
+# 앞쪽은 이 트리의 매니페스트·인가 기록이 늘 만드는 평상 상태이고, 뒤쪽이 아침
+# 독자가 알아야 하는 쪽이다. 그래서 두 값을 따로 재는 것에 더해 두 행이 다르다는
+# 쌍 단언을 둔다 — 각 값만 맞히는 구현이 두 행을 같게 쓰는 경우를 잡는 것은 그쪽이다.
+#
+# `sa_new` 의 베이스는 이미 미추적 파일(매니페스트 `plan.md` 와 인가 기록)을 갖고
+# 있으므로 첫째 픽스처는 아무것도 더하지 않은 그대로가 입력이다. 값은 첫 진입에서만
+# 나오므로 픽스처마다 새 런이다.
+# ---------------------------------------------------------------------------
+sa_new "run 행 — 미추적만"
+s61a_u=$(sa_open_run)
+check "61a: 미추적 파일만 있는 베이스는 추적 변경 없음·미추적 파일 있음 이다" \
+  "$(sa_field "$s61a_u" '베이스 추적 변경')/$(sa_field "$s61a_u" '베이스 미추적 파일')" "없음/있음"
+sa_new "run 행 — 추적 변경"
+printf 'changed\n' >> "$SA_WT/a.txt"
+s61a_t=$(sa_open_run)
+check "61a: 추적 파일을 고친 베이스는 추적 변경 있음 이다" "$(sa_field "$s61a_t" '베이스 추적 변경')" "있음"
+if [ -n "$(sa_field "$s61a_u" '베이스 추적 변경')" ] \
+   && [ "$(sa_field "$s61a_u" '베이스 추적 변경')" != "$(sa_field "$s61a_t" '베이스 추적 변경')" ]; then
+  ok "61a: 두 베이스의 run 행 값이 다르다"
+else
+  bad "61a: 두 베이스의 run 행 값이 다르다" \
+    "'$(sa_field "$s61a_u" '베이스 추적 변경')' 와 '$(sa_field "$s61a_t" '베이스 추적 변경')'"
+fi
+case "$s61a_u$s61a_t" in
+  *'베이스 청결='*) bad "61a: 옛 베이스 청결 필드는 run 행에 없다" "$s61a_t" ;;
+  *) ok "61a: 옛 베이스 청결 필드는 run 행에 없다" ;;
+esac
+( cd "$SA_WT" && git checkout -q -- a.txt ) >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# 61b. 베이스 검사 기준선 — check 레시피가 부르는 스크립트가 베이스에 있는가
+# --- section: 61b | group: sa | covers: snapshot | anchors: 61b: Makefile 이 없는 베이스는 (해당 없음) 이다, 61b: 레시피가 부르는 스크립트가 다 있으면 녹색 이다, 61b: 기준선 측정은 레시피를 실행하지 않는다, 61b: 없는 스크립트를 부르면 적색 과 그 경로다, 61b: 긴 목록은 행을 거절시키지 않고 개수로 강등된다 ---
+#
+# 베이스의 `make check` 가 착지 전부터 빨간 런에서는 모든 세그먼트의 검증이 같은
+# 이유로 실패하고, 아침 독자는 그것이 세그먼트의 결함인지 베이스의 것인지 원장만으로
+# 가를 수 없었다. 이 필드는 기록일 뿐 거절하지 않으므로, 여기서 재는 것은 값의 모양과
+# 행이 살아남는다는 것 둘이다.
+#
+# 긴 목록 갈래가 하중을 진다. 기준선은 run 행의 다른 필드가 다 들어간 뒤 남는 자리에
+# 맞춰 줄어들어야 하고, 넘치는 행은 잘리는 것이 아니라 `gate_append` 에서 거절돼 런이
+# 열리지 않는다.
+# ---------------------------------------------------------------------------
+s61b_mk() {
+  # s61b_mk <레시피 줄>... — 이 픽스처 베이스의 Makefile 을 `check` 하나로 쓴다.
+  local l
+  { printf '.PHONY: check\ncheck:\n'; for l in "$@"; do printf '\t%s\n' "$l"; done; } > "$SA_WT/Makefile"
+}
+s61b_ok() { mkdir -p "$SA_WT/scripts" && printf '#!/usr/bin/env bash\nexit 0\n' > "$SA_WT/scripts/ok.sh"; }
+
+sa_new "기준선 — Makefile 없음"
+s61b_r=$(sa_open_run)
+check "61b: Makefile 이 없는 베이스는 (해당 없음) 이다" "$(sa_field "$s61b_r" '베이스 검사 기준선')" "(해당 없음)"
+
+sa_new "기준선 — 녹색"
+s61b_ok
+s61b_mk 'bash scripts/ok.sh' 'touch s61b-ran'
+s61b_r=$(sa_open_run)
+check "61b: 레시피가 부르는 스크립트가 다 있으면 녹색 이다" "$(sa_field "$s61b_r" '베이스 검사 기준선')" "녹색"
+# `make -n` 이 아니라 `make` 였다면 런을 열 때마다 대상의 검사 전체가 돈다.
+if [ -e "$SA_WT/s61b-ran" ]; then
+  bad "61b: 기준선 측정은 레시피를 실행하지 않는다" "레시피의 touch 가 실행됐다"
+else
+  ok "61b: 기준선 측정은 레시피를 실행하지 않는다"
+fi
+
+sa_new "기준선 — 적색"
+s61b_ok
+s61b_mk 'bash scripts/ok.sh' 'bash scripts/gone.sh'
+s61b_r=$(sa_open_run)
+check "61b: 없는 스크립트를 부르면 적색 과 그 경로다" "$(sa_field "$s61b_r" '베이스 검사 기준선')" "적색(scripts/gone.sh)"
+
+sa_new "기준선 — 긴 목록"
+{
+  printf '.PHONY: check\ncheck:\n'
+  s61b_i=1
+  while [ "$s61b_i" -le 60 ]; do
+    printf '\tbash scripts/missing-%02d-%s.sh\n' "$s61b_i" "$(printf '%030d' 0)"
+    s61b_i=$((s61b_i + 1))
+  done
+} > "$SA_WT/Makefile"
+s61b_r=$(sa_open_run)
+check "61b: 긴 목록은 행을 거절시키지 않고 개수로 강등된다" \
+  "$(sa_field "$s61b_r" '베이스 검사 기준선')" "적색(60개 — 행 길이로 생략)"
+s61b_max=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+s61b_len=$(printf '%s\n' "$s61b_r" | wc -c | tr -d ' ')
+if [ -n "$s61b_max" ] && [ "$s61b_len" -le "$s61b_max" ]; then
+  ok "61b: 그 run 행이 행 상한 안에 든다 (${s61b_len}B <= ${s61b_max})"
+else
+  bad "61b 행 길이" "run 행 ${s61b_len}B, 상한 '${s61b_max}'"
+fi
+
+# ---------------------------------------------------------------------------
+# 61c. 머지 시점 등급 회귀 프로브 — 착지할 트리의 게이트에 같은 argv 를 묻는다
+# --- section: 61c | group: sa | covers: plan | anchors: 61c: 오케스트레이터를 건드리지 않은 머지는 프로브를 부르지 않는다, 61c: plugins 아래지만 오케스트레이터 밖인 변경은 프로브를 부르지 않는다, 61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다, 61c: 풀리지 않는 head 를 지명한 머지는 로컬 tip 으로 대체하지 않고 등급회귀판정불가 로 park 된다, 61c: 주석만 바꾼 트리에서 프로브가 돌고 양성 대조가 읽기 → 읽기 다, 61c: 프로브가 돈 예보 전후로 부모 원장 바이트가 같다, 61c: 프로브가 통과한 예보의 문면과 코드가 프로브 없는 예보와 같다, 61c: 오염된 환경과 깨끗한 환경의 프로브 출력이 같다, 61c: 한 argv 를 빈 등급으로 내는 트리의 머지는 등급회귀 로 park 된다, 61c: 게이트 사본 머리의 exit 3 은 부모를 죽이지 않고 등급회귀 로 park 된다, 61c: 양성 대조를 못 내는 베이스는 등급회귀판정불가 로 park 된다 ---
+#
+# 게이트가 머지 판정 자리에서 자기의 경쟁 판본 — 착지할 트리의 게이트 — 을 실행한다.
+# 그것이 안전하려면 여섯 가지가 서야 하고, 이 절의 단언이 하나씩 그것을 잰다:
+# 자식이 실제로 등급을 냈다(양성 대조), 부모의 원장과 런 디렉터리를 건드리지 않았다,
+# 부모의 원장 잠금에 막히지 않는다, 통과할 때 부모의 답이 프로브 없는 머지와 같다,
+# 자식의 비정상 종료가 부모를 죽이지 않고 판정 입력이 된다, 부모가 내보낸 변수가
+# 자식의 등급을 바꾸지 않는다.
+#
+# 픽스처의 베이스에는 이 트리의 플러그인과 프로브를 커밋한다. 프로브는 베이스 ref 의
+# 사본을 쓰므로 베이스에 있어야 하고, 추적 ref 가 원격을 따라가야 게이트가 그것을
+# 베이스로 읽는다. 머지는 전부 `plan` 으로 예보한다 — 예보는 아무것도 쓰지 않으므로
+# 한 픽스처 위에서 갈래를 차례로 태울 수 있다.
+# ---------------------------------------------------------------------------
+c61_new() {
+  # c61_new <라벨> — 베이스에 플러그인·프로브를 커밋해 원격까지 올리고, 세그먼트를
+  # 그 위로 당긴 뒤 세그먼트 행을 쓴다. 사전 인가에 `gh pr` 를 싣는 것은 착지 argv 가
+  # 지명한 head 를 재는 `gh pr merge … --match-head-commit` 예보가 사전-인가-대조 의
+  # exit 5 에서 먼저 멈추지 않게 하려는 것이다 — 그 5 는 프로브까지 닿지 못한 답이다.
+  sa_new "$1" 리뷰없음
+  SA_PREAUTH_EXTRA='gh pr'
+  sa_manifest 리뷰없음
+  rm -rf "$SA_RUN"
+  mkdir -p "$SA_WT/plugins" "$SA_WT/scripts"
+  cp -R "$repo_root/plugins/cc-cmds" "$SA_WT/plugins/"
+  cp "$repo_root/scripts/grade-regression-probe.sh" "$SA_WT/scripts/"
+  ( cd "$SA_WT" && git add plugins scripts && git commit -qm base && git push -q origin main ) >/dev/null 2>&1
+  ( cd "$SA_SEGWT" && git merge -q --ff-only main ) >/dev/null 2>&1
+  sa_seg_row CG 리뷰없음
+}
+c61_edit() {
+  # c61_edit <워크트리> <모드> — 그 워크트리의 게이트 사본을 고쳐 커밋한다.
+  #   주석    등급에 영향 없는 한 줄
+  #   빈등급  `rm` 을 크래시 없이 빈 등급으로 — 기록을 위조하는 형태
+  #   exit3   파일 머리에서 곧장 끝난다 — 어떤 등급도 내지 않는 자식
+  local f="$1/plugins/cc-cmds/orchestrator/gate.sh"
+  case "$2" in
+    주석) printf '\n# 등급에 영향 없는 주석\n' >> "$f" ;;
+    빈등급)
+      awk '{ print } /^surface_of_argv0\(\) \{$/ { print "  [ \"${1##*/}\" = \"rm\" ] && return 0" }' "$f" > "$f.new" \
+        && mv "$f.new" "$f" ;;
+    exit3) awk 'NR == 1 { print; print "exit 3"; next } { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
+  esac
+  ( cd "$1" && git add -A plugins && git commit -qm "게이트 사본 — $2" ) >/dev/null 2>&1
+}
+c61_plan() {
+  # c61_plan [H] — 세그먼트 CG 의 머지 예보. H 를 주면 그 다이제스트로 부른다.
+  sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CG \
+      --cutpoint 머지 --snapshot-digest "${1:-$(SAH)}" --rationale x \
+      -- git push origin "$SA_SEGBR:$SA_BASE"
+}
+c61_argv="$WORK/c61-argv"
+printf 'true\ngit status\nrm -rf x\n' > "$c61_argv"
+c61_probe() {
+  # c61_probe [env 할당...] — 프로브를 직접. 게이트를 거치지 않아야 부모 환경을
+  # 마음대로 오염시킬 수 있다 — 인프로세스 게이트는 소싱 시점 입력이 바뀌면 멈춘다.
+  env "$@" bash "$repo_root/scripts/grade-regression-probe.sh" --repo "$SA_WT" \
+    --before main --after "$SA_SEGBR" --argv-file "$c61_argv" 2>&1
+}
+
+# (1) 비용 0 — 오케스트레이터 밖의 변경. 이 예보가 아래 (3) 의 대조가 된다.
+c61_new "등급 회귀 — 한 픽스처"
+sa_commit '오케스트레이터 밖 작업' >/dev/null
+c61_plan
+c61_rc0=$rc; c61_msg0=$msg
+check "61c: 오케스트레이터 밖 머지 예보가 통과한다" "$rc" "0"
+case "$raw" in
+  *'grade-regression probe'*) bad "61c: 오케스트레이터를 건드리지 않은 머지는 프로브를 부르지 않는다" "$raw" ;;
+  *) ok "61c: 오케스트레이터를 건드리지 않은 머지는 프로브를 부르지 않는다" ;;
+esac
+
+# (1b) 비용 0 — `plugins/` 아래지만 오케스트레이터 밖인 변경. 이 저장소의 모든 세그먼트가
+# 올리는 `plugin.json` 이 그 자리다. 재귀하지 않는 비교는 경로 필터를 최상위 항목
+# `plugins` 단위로 재므로, 이 커밋을 「오케스트레이터가 움직였다」로 읽고 프로브를 부른다.
+# 위 (1) 의 픽스처는 `plugins/` 밖만 바꾸므로 그 차이를 가르지 못한다.
+c61_pj="$SA_SEGWT/plugins/cc-cmds/.claude-plugin/plugin.json"
+sed -E 's/"version": *"[^"]*"/"version": "0.0.0-c61"/' "$c61_pj" > "$c61_pj.new" && mv "$c61_pj.new" "$c61_pj"
+( cd "$SA_SEGWT" && git add -A plugins && git commit -qm 'plugin.json 만' ) >/dev/null 2>&1
+check "61c: plugin.json 만 바꾼 픽스처 커밋이 착지했다" \
+  "$(cd "$SA_SEGWT" && git diff-tree -r --no-commit-id --name-only HEAD)" "plugins/cc-cmds/.claude-plugin/plugin.json"
+c61_plan
+check "61c: plugin.json 만 바꾼 머지 예보가 통과한다" "$rc" "0"
+case "$raw" in
+  *'grade-regression probe'*) bad "61c: plugins 아래지만 오케스트레이터 밖인 변경은 프로브를 부르지 않는다" "$raw" ;;
+  *) ok "61c: plugins 아래지만 오케스트레이터 밖인 변경은 프로브를 부르지 않는다" ;;
+esac
+
+# (1c) 검사 대상은 착지 argv 가 `--match-head-commit` 으로 지명한 head 다. 로컬 tip 은 위
+# (1b) 의 커밋 그대로 두고, 오케스트레이터를 바꾼 커밋을 곁가지에 만들어 그것을 지명한다.
+# 로컬 tip 을 보는 구현은 비용 0 반환으로 빠져 프로브 줄을 내지 않는다.
+c61_plan_mhc() {
+  # c61_plan_mhc <sha> — 세그먼트 CG 의 원격 머지 예보. 예보이므로 gh 는 실행되지 않는다.
+  sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CG \
+      --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+      -- gh pr merge 1 --match-head-commit "$1"
+}
+c61_tipb=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+( cd "$SA_SEGWT" && git checkout -q -b c61-side ) >/dev/null 2>&1
+c61_edit "$SA_SEGWT" 주석
+c61_side=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+( cd "$SA_SEGWT" && git checkout -q "$SA_SEGBR" ) >/dev/null 2>&1
+if [ "$c61_side" != "$c61_tipb" ] && [ "$(cd "$SA_SEGWT" && git rev-parse HEAD)" = "$c61_tipb" ]; then
+  ok "61c: 곁가지 커밋이 생겼고 로컬 tip 은 그대로다"
+else
+  bad "61c: 곁가지 커밋이 생겼고 로컬 tip 은 그대로다" "side=$c61_side tip=$c61_tipb"
+fi
+c61_plan_mhc "$c61_side"
+check "61c: 오케스트레이터를 바꾼 head 를 지명한 머지 예보가 통과한다" "$rc" "0"
+case "$raw" in
+  *'grade-regression probe: 양성 대조: true 읽기 → 읽기'*)
+    ok "61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다" ;;
+  *) bad "61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다" "$raw" ;;
+esac
+c61_plan_mhc deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+check "61c: 풀리지 않는 head 를 지명한 머지 예보가 11 로 끝난다" "$rc" "11"
+case "$msg" in
+  *'park 예상: 도달 판정=등급회귀판정불가 '*) ok "61c: 풀리지 않는 head 를 지명한 머지는 로컬 tip 으로 대체하지 않고 등급회귀판정불가 로 park 된다" ;;
+  *) bad "61c: 풀리지 않는 head 를 지명한 머지는 로컬 tip 으로 대체하지 않고 등급회귀판정불가 로 park 된다" "$raw" ;;
+esac
+
+# (2) 양성 대조와 부모 무기록 — 주석만 바꾼 세그먼트. 프로브가 돌아야 하고, 돌았다는
+# 증거는 `true` 의 `읽기 → 읽기` 다. 아무것도 하지 않은 자식은 회귀도 기록도 없이
+# 초록을 내므로, 그 줄이 없으면 아래 통과는 아무것도 재지 않은 것이다.
+c61_edit "$SA_SEGWT" 주석
+c61_h=$(SAH)
+c61_led0=$(shasum -a 256 < "$SA_LEDGER")
+c61_ls0=$(cd "$SA_RUN" && find . | LC_ALL=C sort)
+c61_plan "$c61_h"
+check "61c: 주석만 바꾼 머지 예보가 통과한다" "$rc" "0"
+case "$raw" in
+  *'grade-regression probe: 양성 대조: true 읽기 → 읽기'*)
+    ok "61c: 주석만 바꾼 트리에서 프로브가 돌고 양성 대조가 읽기 → 읽기 다" ;;
+  *) bad "61c: 주석만 바꾼 트리에서 프로브가 돌고 양성 대조가 읽기 → 읽기 다" "$raw" ;;
+esac
+case "$raw" in
+  *'grade-regression probe: 대조: argv '*'개 전부'*) ok "61c: 프로브가 목록의 argv 전부를 대조했다고 적는다" ;;
+  *) bad "61c: 프로브의 대조 문면" "$raw" ;;
+esac
+check "61c: 프로브가 돈 예보 전후로 부모 원장 바이트가 같다" "$(shasum -a 256 < "$SA_LEDGER")" "$c61_led0"
+check "61c: 프로브가 돈 예보 전후로 부모 런 디렉터리 목록이 같다" \
+  "$(cd "$SA_RUN" && find . | LC_ALL=C sort)" "$c61_ls0"
+
+# (3) 통과할 때 부모의 답은 프로브가 없는 머지의 것과 같다 — 로그 줄을 뺀 문면과 코드.
+# `msg` 에는 경고 줄이 남고 그 줄은 시각을 싣는다. 시각만 지워 비교한다 — 두 예보가
+# 다른 초에 불렸다는 것은 프로브가 바꾼 것이 아니다.
+c61_nots() { printf '%s' "$1" | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z //g'; }
+check "61c: 프로브가 통과한 예보의 문면과 코드가 프로브 없는 예보와 같다" \
+  "$rc | $(c61_nots "$msg")" "$c61_rc0 | $(c61_nots "$c61_msg0")"
+
+# (4) 부모가 내보낸 변수 — 소스 전용 스위치, 스테이지 좌석, 작업 디렉터리, 상태 홈 — 는
+# 자식에게 닿지 않는다. 소스 전용 스위치가 닿았다면 자식은 첫 줄에서 돌아가 양성
+# 대조가 깨지고, 작업 디렉터리가 닿았다면 등급이 바뀐다.
+c61_clean=$(c61_probe); c61_crc=$?
+c61_dirty=$(c61_probe CC_GATE_SOURCE_ONLY=1 CC_ORCH_SOURCE_ONLY=1 CC_PIPELINE_STAGE_ID=오염 \
+  GATE_ACT_CWD=/ CC_PIPELINE_RUN_DIR="$SA_RUN" XDG_STATE_HOME="$WORK/c61-poison"); c61_drc=$?
+check "61c: 깨끗한 환경의 직접 프로브가 회귀 없음으로 끝난다" "$c61_crc" "0"
+case "$c61_clean" in
+  *'양성 대조: true 읽기 → 읽기'*) ok "61c: 직접 프로브의 양성 대조가 읽기 → 읽기 다" ;;
+  *) bad "61c: 직접 프로브의 양성 대조" "$c61_clean" ;;
+esac
+check "61c: 오염된 환경과 깨끗한 환경의 프로브 출력이 같다" "$c61_drc | $c61_dirty" "$c61_crc | $c61_clean"
+
+# (5) 부모의 원장 잠금을 쥔 채로도 프로브는 판정을 낸다 — 자식의 잠금은 모래상자 안이다.
+# 잠금 도구는 게이트와 같은 것(`/usr/bin/lockf`)이고, 없는 호스트에서는 게이트도 그
+# 잠금을 쓰지 않으므로 잴 것이 없다.
+if [ -x /usr/bin/lockf ]; then
+  mkdir -p "$SA_RUN"
+  /usr/bin/lockf -k "$SA_RUN/ledger.lock" sleep 300 >/dev/null 2>&1 &
+  c61_lpid=$!
+  sleep 1
+  c61_t0=$(date -u +%s)
+  c61_locked=$(c61_probe GRADE_PROBE_CHILD_TIMEOUT=60); c61_lrc=$?
+  c61_dt=$(( $(date -u +%s) - c61_t0 ))
+  kill "$c61_lpid" 2>/dev/null; wait "$c61_lpid" 2>/dev/null
+  check "61c: 부모의 원장 잠금을 쥔 채로 프로브가 회귀 없음 판정을 낸다" "$c61_lrc" "0"
+  case "$c61_locked" in
+    *'판정: 회귀 없음'*) ok "61c: 그 판정 문면이 회귀 없음 이다 (${c61_dt}초)" ;;
+    *) bad "61c: 잠금 아래 프로브 문면" "$c61_locked" ;;
+  esac
+else
+  ok "61c: 이 호스트에는 잠금 도구가 없어 원장 잠금 갈래를 건너뛴다 (게이트도 그 잠금을 쓰지 않는다)"
+fi
+
+# (6) 회귀 — 한 argv 를 크래시 없이 빈 등급으로 내는 트리. 이것이 기록을 위조하는
+# 형태라 프로브가 막으려는 바로 그것이다.
+c61_edit "$SA_SEGWT" 빈등급
+if grep -qF '[ "${1##*/}" = "rm" ] && return 0' "$SA_SEGWT/plugins/cc-cmds/orchestrator/gate.sh"; then
+  ok "61c: 세그먼트의 게이트 사본에 빈 등급 줄이 들어갔다 (아래가 공허하지 않다)"
+else
+  bad "61c 픽스처" "surface_of_argv0 머리를 찾지 못해 빈 등급 줄을 넣지 못했다"
+fi
+c61_plan
+check "61c: 빈 등급을 내는 트리의 머지 예보가 park 된다" "$rc" "11"
+case "$msg" in
+  *'park 예상: 도달 판정=등급회귀 '*) ok "61c: 한 argv 를 빈 등급으로 내는 트리의 머지는 등급회귀 로 park 된다" ;;
+  *) bad "61c: 한 argv 를 빈 등급으로 내는 트리의 머지는 등급회귀 로 park 된다" "$raw" ;;
+esac
+case "$raw" in
+  *'grade-regression probe: 회귀: rm -rf x'*) ok "61c: 그 park 가 회귀한 argv 를 이름 댄다" ;;
+  *) bad "61c: 회귀 argv 문면" "$raw" ;;
+esac
+
+# (7) 자식의 비정상 종료는 부모의 종료가 아니라 판정 입력이다.
+c61_edit "$SA_SEGWT" exit3
+c61_plan
+check "61c: 머리에서 exit 3 하는 트리의 머지 예보가 11 로 끝난다 (3 도 1 도 아니다)" "$rc" "11"
+case "$msg" in
+  *'park 예상: 도달 판정=등급회귀 '*) ok "61c: 게이트 사본 머리의 exit 3 은 부모를 죽이지 않고 등급회귀 로 park 된다" ;;
+  *) bad "61c: 게이트 사본 머리의 exit 3 은 부모를 죽이지 않고 등급회귀 로 park 된다" "$raw" ;;
+esac
+
+# (8) 판정 불가 — 베이스의 게이트가 양성 대조를 못 낸다. 그 자리의 침묵을 「회귀 없음」
+# 으로 읽으면 아무것도 재지 않은 프로브가 초록을 낸다.
+c61_new "등급 회귀 — 판정 불가"
+c61_edit "$SA_WT" exit3
+( cd "$SA_WT" && git push -q origin main ) >/dev/null 2>&1
+( cd "$SA_SEGWT" && git merge -q --ff-only main ) >/dev/null 2>&1
+c61_edit "$SA_SEGWT" 주석
+c61_plan
+check "61c: 양성 대조를 못 내는 베이스 위의 머지 예보가 park 된다" "$rc" "11"
+case "$msg" in
+  *'park 예상: 도달 판정=등급회귀판정불가 '*) ok "61c: 양성 대조를 못 내는 베이스는 등급회귀판정불가 로 park 된다" ;;
+  *) bad "61c: 양성 대조를 못 내는 베이스는 등급회귀판정불가 로 park 된다" "$raw" ;;
 esac
 
 # --- epilogue-begin ---
