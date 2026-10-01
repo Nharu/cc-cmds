@@ -3698,8 +3698,10 @@ esac
 # 4. Self-widening is refused at every cutpoint
 # --- section: 4 | group: base | covers: act | anchors: --admin 은 배포 인가에서도 거부된다 ---
 # ---------------------------------------------------------------------------
+# 결속 인자를 붙여 둔다. 세그먼트 행이 앞서 있으면 결속 없는 머지는 룰보다 먼저
+# 2 를 받으므로, 이 절이 재는 것이 `--admin` 룰의 3 으로 남게 한다.
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S1 --cutpoint 배포 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --admin
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --admin --match-head-commit "$(wt_head)"
 check "--admin 은 배포 인가에서도 거부된다" "$rc" "3"
 case "$msg" in
   *"--admin"*) ok "거부 사유가 관리자 우회를 지목한다" ;;
