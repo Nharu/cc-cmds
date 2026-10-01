@@ -22794,8 +22794,25 @@ gate_snapshot_handoff_json() {
   # predecessor recorded hours ago as if it had just been measured; nor can it
   # tell the gate's `사유=무기록` entry — a fact that a shift ended, carrying no
   # judgment — from a shift's own handoff.
-  local out row
-  out=$( { gate_rows 'handoff' || true; } | tail -"$SHIFT_HANDOFF_CAP" | while IFS= read -r row; do
+  #
+  # `무기록` ROWS DO NOT COUNT AGAINST THE CAP. A run of shifts that die on their
+  # first request — a usage limit that has not cleared, a crash loop — each leaves
+  # one, and counting them would push the last real handoff, the only entry with a
+  # `버린 선택지` or a measured `막힌 지점`, out of every prescribed read after
+  # three of them. The window is the last `SHIFT_HANDOFF_CAP` real handoffs, plus
+  # the series' final row when that row is `무기록`: the successor still learns
+  # that its predecessor ended without a word, and the payload stays bounded at
+  # one entry over the cap however long the run of them is.
+  local out row all last
+  all=$( { gate_rows 'handoff' || true; } )
+  last=$(printf '%s\n' "$all" | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = '무기록' ] || last=''
+  out=$( { printf '%s\n' "$all" | while IFS= read -r row; do
+             [ -n "$row" ] || continue
+             [ "$(gate_row_field "$row" '사유')" = '무기록' ] || printf '%s\n' "$row"
+           done | tail -"$SHIFT_HANDOFF_CAP"
+           [ -z "$last" ] || printf '%s\n' "$last"
+         } | while IFS= read -r row; do
            [ -n "$row" ] || continue
            printf '    {"교대": "%s", "사유": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s", "기록 시각": "%s"},\n' \
              "$(gate_json_escape "$(gate_row_field "$row" '교대')")" \

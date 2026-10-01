@@ -19200,6 +19200,23 @@ check "(g) 그 교대의 두 행위가 통과했다" \
 lc_row=$(lc_unrec_row)
 check "(g) 무기록 행의 행위 수는 교대 자신의 행위만 센다" \
   "$(row_field "$lc_row" '교대'):$(row_field "$lc_row" '행위 수')" "$lc_next:2"
+
+# THREE `무기록` ROWS IN A ROW DO NOT PUSH THE LAST REAL HANDOFF OUT OF THE
+# SNAPSHOT. One real handoff, then three shifts that end without one — the limit
+# night's path. Counting `무기록` against the cap would leave three of them and no
+# real entry; the window keeps the real ones and only the last `무기록`.
+lc_seat_handoff "$(cap_H "$LC_SEAT" '')"
+check "(g) 밀어냄 픽스처의 실제 인계가 기록된다" "$rc" "0"
+for lc_i in 1 2 3; do lc_launch plain "tail$lc_i"; done
+lc_tail_last=$(row_field "$(lc_unrec_row)" '교대')
+lc_snap=$(cap_snap "$LC_SEAT" '')
+check "(g) 무기록 교대 세 번 뒤에도 마지막 실제 인계가 스냅숏에 남는다" \
+  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | last | .["사유"]')" "종단"
+check "(g) 스냅숏의 실제 인계는 상한 세 개를 채운다" \
+  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | length')" "3"
+check "(g) 스냅숏의 무기록 항목은 마지막 하나뿐이고 마지막 교대의 것이다" \
+  "$(printf '%s' "$lc_snap" | jq -r '[([.handoff[] | select(.["사유"] == "무기록")] | length), (.handoff | last | .["교대"])] | map(tostring) | join(":")')" \
+  "1:$lc_tail_last"
 CAP_STUB="$LC_CAP_STUB_SAVE"
 
 # --- 34b. 계측 — 마지막 턴 컨텍스트가 읽기+생성+입력이다 ---------------------
