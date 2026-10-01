@@ -1,6 +1,6 @@
 ---
 name: fanout-policy
-description: 다른 에이전트에게 일을 시킬 때의 규약 — 팬아웃이 맞는 일의 세 종류, 발동 전제조건, 바꾸는 팬아웃의 사용자 확인 게이트, 맡기지 않는 행위 목록, 결과 필터와 대기 규율
+description: 다른 에이전트에게 일을 시킬 때의 규약 — 팬아웃이 맞는 일의 기준(독립성·시간 대비 토큰 비용), 발동 전제조건, 바꾸는 팬아웃의 사용자 확인 게이트, 맡기지 않는 행위 목록, 결과 필터와 대기 규율
 when_to_use: 팬아웃·병렬 에이전트·워크플로 사용을 검토할 때와 발동 직전. 도구(`Workflow`·`Agent`·후속 디스패치 도구·스크립트 기동)를 가리지 않는다
 disable-model-invocation: false
 usage: "(자동 호출 — 슬래시 커맨드 없음. 다른 에이전트에게 일을 시키기 전에 모델이 열어 그대로 따른다.)"
@@ -19,32 +19,36 @@ that starts agents all receive every rule below. Where this file says
 "workflow agent" and "main session" it means *the spawned agent* and *the
 spawning side* — the same things named after one tool.
 
-## 1. The three kinds of work a fan-out is for
+## 1. When a fan-out is worth it
 
-Only three kinds:
+Fan out when both hold:
 
-1. Work that must be swept without a gap, so it is split and covered in parallel.
-2. Work you only become sure of after independent viewpoints and adversarial verification.
-3. Work too large to fit in one context.
+1. The pieces are independent of each other — no piece needs another piece's result.
+2. The wall-clock time saved is worth more than the extra tokens spent under the weekly usage limit.
 
-The user has given standing, advance opt-in for fanning out on these three
-kinds — it is the user's own request, it does not have to be repeated per task,
-and CLAUDE.md / memory instructions count as a direct user instruction for this
-purpose. So when work of these kinds arrives and **what the agents are told to
-do changes nothing**, call the fan-out without asking for approval, even
-outside a skill run. The harness may still refuse the call; that is expected
-behavior rather than a fault — proceed solo when it does.
+Typical fits are a sweep that must leave no gap, independent adversarial
+verification, and work too large for one context — but they fit because they
+pass the two tests above, not because they are on a list. Whatever comes back,
+check the evidence behind each agent's result before you rely on it.
 
-Short conversations, simple edits, and narrow-scope work are not these three
-kinds. Handle those solo.
+The user has given standing, advance opt-in for fanning out on work that passes
+this test — it is the user's own request, it does not have to be repeated per
+task, and CLAUDE.md / memory instructions count as a direct user instruction for
+this purpose. So when such work arrives and **what the agents are told to do
+changes nothing**, call the fan-out without asking for approval, even outside a
+skill run. The harness may still refuse the call; that is expected behavior
+rather than a fault — proceed solo when it does.
+
+Short conversations, simple edits, and narrow-scope work do not pass the test.
+Handle those solo.
 
 ## 2. Ask first — the self-test, and where solo wins
 
-When work looks like it belongs to the three kinds, ask: **"is this work where
-an incomplete answer becomes a wrong answer?"** If not, handle it solo.
+When work looks like it passes that test, check it against the cases below
+before firing. Each is a place where the time saved looks real but is not, so
+solo wins even though the test seemed to pass.
 
 - A request to explain how, why, or what is solo by default — an explanation does not get better by sweeping wide.
-- Solo also wins when a later stage depends on an earlier result, so parallelism never held in the first place.
 - Solo wins when more than one round of polishing is expected — fanned-out agents cannot be resumed, so refining costs a full re-run.
 - Solo wins when the content is already in this session's context.
 - Solo wins when one target's workload is smaller than the cost of spawning one agent, and bundling targets still leaves a bundle under that cost.
