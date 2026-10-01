@@ -204,10 +204,12 @@ def solve($s):
 '
 
 # kd_deadline <value> — prints `ok<TAB><absolute><TAB><상대|절대>` or
-# `<사유 토큰><TAB><사유 문면>`.
+# `<사유 토큰><TAB><사유 문면>`. jq inherits TZ exactly as it is: an unset TZ
+# means the system zone, while an empty one means UTC to libc, so the variable
+# is never re-exported here.
 kd_deadline() {
   local out
-  out=$(TZ="${TZ:-}" jq -nr --arg s "$1" --argjson now "$KD_NOW" "$KD_JQ_TIME"'
+  out=$(jq -nr --arg s "$1" --argjson now "$KD_NOW" "$KD_JQ_TIME"'
     solve($s) | if .err then "\(.err)\t\(.msg)"
                 else "ok\t\(.abs // render(.e))\t\(.kind)" end' 2>/dev/null) || out=''
   [ -n "$out" ] || out="형식 오류	마감을 해석하지 못했습니다"
@@ -393,8 +395,14 @@ kd_validate() {
       fi
       case "$f1" in 형태=*) ;; *) kd_ign "$i" '형식 오류' '필드는 정확히 형태=·사유= 둘이고 이 순서입니다'; return ;; esac
       case "$f2" in 사유=*) ;; *) kd_ign "$i" '형식 오류' '필드는 정확히 형태=·사유= 둘이고 이 순서입니다'; return ;; esac
-      f1=$(kd_trim "${f1#형태=}"); f2=$(kd_trim "${f2#사유=}")
-      if [ -z "$f1" ] || [ -z "$f2" ]; then kd_ign "$i" '형식 오류' '형태 와 사유 는 비지 않습니다'; return; fi
+      # The row goes out byte for byte, and the matcher compares the text after
+      # `형태=` with the argv head joined by single spaces, so any other spacing
+      # in the form would be confirmed here and then never match.
+      f1="${f1#형태=}"; f2=$(kd_trim "${f2#사유=}")
+      if [ -z "$(kd_trim "$f1")" ] || [ -z "$f2" ]; then kd_ign "$i" '형식 오류' '형태 와 사유 는 비지 않습니다'; return; fi
+      if [ "$f1" != "$(printf '%s' "$f1" | awk '{ $1 = $1; print }')" ]; then
+        kd_ign "$i" '형식 오류' '형태 는 = 바로 뒤에 공백 없이 낱말 사이를 한 칸으로 씁니다 — 대조기가 이 철자 그대로 비교합니다'; return
+      fi
       if [ "$(kd_words "$f1")" -lt 2 ]; then
         kd_ign "$i" '형식 오류' '형태 는 <명령> <하위 명령> 처럼 두 낱말 이상의 접두입니다 — 한 낱말은 그 명령 전부를 엽니다'; return
       fi
@@ -414,8 +422,16 @@ kd_validate() {
       esac
       # The class field's name is stripped up to its `=` (the case above fixed
       # the prefix), so the literal is not spelled here with nothing after it.
-      f1=$(kd_trim "${f1#*=}"); f2=$(kd_trim "${f2#상한=}")
-      f3=$(kd_trim "${f3#심각도 상한=}"); f4=$(kd_trim "${f4#사유=}")
+      f1="${f1#*=}"; f2="${f2#상한=}"; f3="${f3#심각도 상한=}"; f4="${f4#사유=}"
+      # The row goes out byte for byte, and the manifest check and the gate take
+      # the class from right after its `=` without trimming the front, so a
+      # space there would be confirmed here and then stop the run.
+      for e in "$f1" "$f2" "$f3" "$f4"; do
+        case "$e" in
+          [[:space:]]*) kd_ign "$i" '형식 오류' '각 필드의 값은 = 바로 뒤에 공백 없이 씁니다 — 매니페스트 검사가 이 철자 그대로 읽습니다'; return ;;
+        esac
+      done
+      f1=$(kd_trim "$f1"); f2=$(kd_trim "$f2"); f3=$(kd_trim "$f3"); f4=$(kd_trim "$f4")
       if ! kd_in "$f1" "$JUDGMENT_CLASSES"; then
         kd_ign "$i" '어휘 밖' "판단 부류 허용: $JUDGMENT_CLASSES"; return
       fi
@@ -432,7 +448,7 @@ kd_validate() {
         *) kd_ign "$i" '어휘 밖' '심각도 상한 허용: critical major minor trivial'; return ;;
       esac
       [ -n "$f4" ] || { kd_ign "$i" '형식 오류' '사유 는 비지 않습니다'; return; }
-      E_ID[$i]="$f1"; E_X[$i]="상한 $f2, $f3 이하" ;;
+      E_ID[$i]="$f1"; E_X[$i]="상한=$f2 · 심각도 상한=$f3" ;;
     apply-probe) ;;
     apply-actor)
       case "$v" in 파이프라인|사람) ;; *) kd_ign "$i" '어휘 밖' '허용: 파이프라인 사람' ;; esac ;;
@@ -854,7 +870,10 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
       KD_EFF="기본 로스터 ${k#roster-model.} 행의 모델 칸만 $v 로 바꿔 제안합니다 — 로스터 승인은 그대로 묻습니다" ;;
     auto-adopt)
       KD_WIDE=1
-      KD_EFF="이 부류의 판단을 사람 없이 채택합니다 (${E_ID[$i]}, ${E_X[$i]})" ;;
+      # The gate matches an adoption row on its class alone; the two cap fields
+      # are frozen into the manifest and read by nothing, so the line says so
+      # instead of presenting them as a limit.
+      KD_EFF="${E_ID[$i]} 부류의 판단을 개수·심각도 제한 없이 사람 없이 채택합니다 — ${E_X[$i]} 는 매니페스트에 기록만 되고 게이트가 집행하지 않습니다" ;;
     cutpoint)
       ci=$(kd_cut_i "$v")
       [ "$ci" -ge "$KD_I_PUSH" ] && KD_WIDE=1

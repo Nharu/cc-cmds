@@ -268,6 +268,32 @@ expect run auto-adopt '금지 부류' '판단 부류=팀-구성 | 상한=1 | 심
 expect run auto-adopt '어휘 밖' '판단 부류=없는부류 | 상한=1 | 심각도 상한=minor | 사유=a' '판단 부류=감사-발견 | 상한=1 | 심각도 상한=huge | 사유=a'
 expect run auto-adopt '형식 오류' '상한=1 | 판단 부류=감사-발견 | 심각도 상한=minor | 사유=a' '판단 부류=감사-발견 | 상한=1 | 심각도 상한=minor'
 
+# 공백 변형 — 목록 키는 바이트 그대로 얼려지므로, 매니페스트 검사·게이트·대조기가
+# 그 철자로 읽지 못할 값은 사람 앞에서 거부된다. 필드 끝 공백은 셋 다 깎으므로 받는다.
+expect repo act-allow '형식 오류' '형태= gh pr | 사유=a' '형태=gh  pr view | 사유=a' '형태=  | 사유=a'
+expect repo act-allow 적용 '형태=gh pr  | 사유=a' ' 형태=gh pr | 사유=a'
+expect run auto-adopt '형식 오류' '판단 부류= 감사-발견 | 상한=1 | 심각도 상한=minor | 사유=a' \
+  '판단 부류=감사-발견 | 상한= 1 | 심각도 상한=minor | 사유=a' \
+  '판단 부류=감사-발견 | 상한=1 | 심각도 상한= minor | 사유=a' \
+  '판단 부류=감사-발견 | 상한=1 | 심각도 상한=minor | 사유= a'
+expect run auto-adopt 적용 '판단 부류=감사-발견  | 상한=1 | 심각도 상한=minor | 사유=a'
+check "공백 변형 형태 거부 사유" "$(col "$(kf '[Nharu/cc-cmds]
+act-allow = 형태= gh pr | 사유=a' $T)" act-allow 7)" "형태 는 = 바로 뒤에 공백 없이 낱말 사이를 한 칸으로 씁니다 — 대조기가 이 철자 그대로 비교합니다"
+
+# 적용된 사전 인가 행을 대조기의 탐침 모드에 그대로 넣으면 그 형태의 행위와 맞는다.
+MATCHER="$ORCH/rules/사전-인가-대조.sh"
+probe_row() {   # probe_row <applied tail> <argv> → the probe's P= field
+  printf -- '- `사전 인가` | %s\n' "$1" > "$WORK/preauth.md"
+  GATE_PREAUTH_PROBE=1 GATE_MANIFEST="$WORK/preauth.md" GATE_ARGV="$2" sh "$MATCHER" 2>/dev/null \
+    | sed -n 's/^P=\([01]\).*/\1/p'
+}
+for v in '형태=gh pr | 사유=a' '형태=gh pr  | 사유=a' ' 형태=gh pr | 사유=a'; do
+  o=$(kf "[Nharu/cc-cmds]
+act-allow = $v" $T)
+  check "적용된 사전 인가 '$v' 가 대조기에서 gh pr view 와 맞는다" "$(probe_row "$(col "$o" act-allow 4)" 'gh pr view 1')" "1"
+done
+check "거부된 공백 변형은 대조기에서도 맞지 않는다 (거부 근거)" "$(probe_row '형태= gh pr | 사유=a' 'gh pr view 1')" "0"
+
 # ---------------------------------------------------------------------------
 # 어휘 원천 — 수락·거부가 run.sh 의 리터럴과 맞는다
 # ---------------------------------------------------------------------------
@@ -453,6 +479,30 @@ check "--check-deadline 은 머리 줄 없이 한 줄" "$(kd --check-deadline 20
 check "--check-deadline 형식이 틀리면 2" "$(kd --check-deadline 2026-09-21T23:30:00Z >/dev/null 2>&1; echo $?)" "2"
 check "--check-deadline 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --check-deadline 2026-09-21T23:30:00+09:00 >/dev/null 2>&1; echo $?)" "3"
 
+# TZ 배관 — 설정되지 않은 TZ 는 설정되지 않은 채 jq 에 닿아야 한다. libc 는 빈 TZ 를
+# UTC 로 읽으므로, 빈 값으로 바꿔 넘기면 시스템 zone 이 UTC 가 아닌 호스트에서
+# 벽시계 마감이 그만큼 어긋난다. 시스템 zone 이 UTC 인 CI 에서는 두 경우의 시각이
+# 같으므로, 시각이 아니라 jq 가 받은 환경을 jq 대역으로 기록해 단언한다. 대역은
+# PATH 의 파일이 아니라 내보낸 셸 함수다 — 보조가 들이는 run.sh 가 PATH 앞에
+# /usr/bin 을 붙여, 파일 대역은 시스템 jq 에 가려진다. 함수는 PATH 조회보다 먼저다.
+JQ_LOG="$WORK/jq-tz.log"
+jq_tz_probe() {   # jq_tz_probe <TZ 미설정이면 -> → TZ as jq saw it, one line per call
+  : > "$JQ_LOG"
+  (
+    if [ "$1" = "-" ]; then unset TZ; else TZ="$1"; export TZ; fi
+    jq() { printf '%s\n' "${TZ+set:$TZ}" >> "$JQ_LOG"; command jq "$@"; }
+    export -f jq
+    export JQ_LOG
+    CC_CMDS_AUTOPILOT_DEFAULTS_FILE=off CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE='07:00' kd --now "$NOW" $T
+  ) > "$WORK/jq-tz.out"
+}
+jq_tz_probe -
+check "TZ 미설정: 마감은 적용된다" "$(st "$(cat "$WORK/jq-tz.out")" deadline)" "적용"
+check "TZ 미설정: jq 대역이 한 번 이상 불렸다" "$([ -s "$JQ_LOG" ] && echo 예 || echo 아니오)" "예"
+check "TZ 미설정: jq 에 TZ 가 설정되지 않은 채 닿는다" "$(grep -c '^set:' "$JQ_LOG" || true)" "0"
+jq_tz_probe America/New_York
+check "TZ 설정: jq 에 그 값이 그대로 닿는다" "$(sort -u "$JQ_LOG")" "set:America/New_York"
+
 # ---------------------------------------------------------------------------
 # 권한 확대
 # ---------------------------------------------------------------------------
@@ -497,6 +547,11 @@ check "형태=go run 은 러너 형태" "$(runner 'go run')" "예"
 check "형태=gh pr 은 러너 형태가 아니다" "$(runner 'gh pr')" "아니오"
 eff=$(col "$(kf 'cost-ceiling = 120' $T)" cost-ceiling 7)
 check "비용 천장 효과 줄" "$eff" "96 USD 에서 승인을 열고 기다리며, 120 USD 에서 묻지 않고 런을 끝냅니다"
+# 게이트는 자동 채택 행을 부류로만 맞추고 두 상한 칸을 읽지 않는다 — 효과 줄이
+# 상한을 한도처럼 보이면, 확인 화면에서 좁혀진 답이 집행에서 넓어진다.
+eff=$(col "$(kf 'auto-adopt = 판단 부류=감사-발견 | 상한=1 | 심각도 상한=minor | 사유=a' $T)" auto-adopt 7)
+check "자동 채택 효과 줄은 상한이 집행되지 않는다고 말한다" "$eff" \
+  "감사-발견 부류의 판단을 개수·심각도 제한 없이 사람 없이 채택합니다 — 상한=1 · 심각도 상한=minor 는 매니페스트에 기록만 되고 게이트가 집행하지 않습니다"
 
 # ---------------------------------------------------------------------------
 # 매니페스트 성질 — 「적용」 값으로 만든 매니페스트가 check_manifest 를 통과하고,
@@ -518,11 +573,18 @@ out=$(kf 'ladder-rungs = 2
 stagnation-bound = 6
 cost-ceiling = 50.5
 deadline = +8h
+auto-adopt = 판단 부류=감사-발견  | 상한=없음 | 심각도 상한=major | 사유=a
 [Nharu/cc-cmds]
 cutpoint = 머지
 terminal-cap = 없음
 dev-ids = aws-profile:dev, aws-account:123456789012, dir:/srv/x
-deploy-triggers = branch:release, argv:bash scripts/deploy.sh' $T)
+deploy-triggers = branch:release, argv:bash scripts/deploy.sh
+act-allow = 형태=gh pr  | 사유=리뷰' $T)
+A_AA=$(col "$out" auto-adopt 4); A_PA=$(col "$out" act-allow 4)
+[ "$(st "$out" auto-adopt)|$(st "$out" act-allow)" = "적용|적용" ] \
+  || bad "매니페스트 성질" "픽스처의 auto-adopt·act-allow 가 적용되지 않았다"
+# Every applied list row is frozen as the row Step 6 writes, byte for byte.
+MF_ROWS=$(printf -- '- `자동 채택` | %s\n- `사전 인가` | %s' "$A_AA" "$A_PA")
 A_CUT=$(col "$out" cutpoint 4); A_CAP=$(col "$out" terminal-cap 4)
 A_DEV=$(col "$out" dev-ids 4); A_DEP=$(col "$out" deploy-triggers 4)
 A_DL=$(col "$out" deadline 4); A_LAD=$(col "$out" ladder-rungs 4)
@@ -555,6 +617,7 @@ mf_write() {
     printf '**사다리 가용 단 수**: %s\n**미선언 상황 처분**: park\n' "$A_LAD"
     [ -n "$5" ] && printf '**구속 다이제스트**: %s\n' "$5"
     printf -- '- `종료 절` | id=C1 | 문면=슬라이스가 전부 머지됐다\n'
+    [ -n "$MF_ROWS" ] && printf '%s\n' "$MF_ROWS"
   } > "$1"
 }
 # mf_run <extra> <deadline> <cost> → check_manifest's exit status (binding digest included)
@@ -584,6 +647,13 @@ $k = $v" $T)" "$k")" "형식 오류"
   mf_run " | $vec" "$A_DL" "$A_CC"; rc=$?
   if [ "$rc" != "0" ]; then ok "오류 벡터 '$v' 를 check_manifest 가 거부한다"; else bad "오류 벡터 '$v'" "check_manifest 가 통과시켰다"; fi
 done
+# 공백 변형 자동 채택 — 보조가 무시하는 철자를 그대로 얼리면 check_manifest 가 거부한다.
+v='판단 부류= 감사-발견 | 상한=없음 | 심각도 상한=major | 사유=a'
+check "오류 벡터 자동 채택 '$v' 를 보조가 무시한다" "$(kv run auto-adopt "$v")" "형식 오류"
+MF_ROWS_SAVE="$MF_ROWS"; MF_ROWS="- \`자동 채택\` | $v"
+mf_run " | dev 식별자=$A_DEV" "$A_DL" "$A_CC"; rc=$?
+if [ "$rc" != "0" ]; then ok "오류 벡터 자동 채택 '$v' 를 check_manifest 가 거부한다"; else bad "오류 벡터 자동 채택 '$v'" "check_manifest 가 통과시켰다"; fi
+MF_ROWS="$MF_ROWS_SAVE"
 # The cost vectors pair with the gate, not with check_manifest: the manifest check
 # does not read `비용 천장` at all, and the gate's consumer warns and declines to
 # enforce a value that is not a number — so an unreadable ceiling silently
