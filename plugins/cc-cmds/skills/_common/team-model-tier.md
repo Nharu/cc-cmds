@@ -53,6 +53,7 @@ The seat's model is recorded so that the requested model can be compared against
 
 - `<role-slug>` is the ledger row's leading slug and the same slug the witness filenames use.
 - `출처=승격` requires `지표≠-`.
+- `출처=표` requires `모델` to be the model of the seat's class — for a seat spanning several classes, the highest model among them. A record that breaks this is corrected by fixing the record: the invariant never changes a seat's model, which the table and the promotion triggers alone decide.
 - `재기동` is other than `-` only when the limit-error exception fired.
 - The parenthesis in `리뷰 팀 구성` and `모델=` carry the **requested** model — the one the table chose, promotion included, or the one a person chose where the instruction exception above applies. `haiku` reaches these two slots only through that exception, and always alongside `출처=사용자`. A model a limit-error respawn actually used belongs in `재기동=` and nowhere else.
 

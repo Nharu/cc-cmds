@@ -35,6 +35,9 @@ lint:
 	bash scripts/lint-triage-pins.sh
 	bash scripts/lint-gate-banner-fields.sh
 	bash scripts/lint-stage-policy-sources.sh
+	bash scripts/lint-terminal-literals.sh
+	bash scripts/lint-interview-record-sections.sh
+	bash scripts/lint-interview-convention-refs.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -72,9 +75,10 @@ check: lint readme
 # the workspace instruction file say? Deliberately NOT part of `lint` — those
 # sources are a person's global files, and editing them must not turn an
 # unrelated unattended stage's `make check` red. Run by hand, at autopilot
-# kickoff, and logged at run open.
+# kickoff, and logged at run open. `--explain` puts the diff of each changed
+# item under its finding, which is what a person needs to judge an `--ack`.
 policy-drift:
-	bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh
+	bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh --explain
 
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe
@@ -127,24 +131,30 @@ LINT_TESTS := \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh \
-	scripts/test-lint-stage-policy-sources.sh
+	scripts/test-lint-stage-policy-sources.sh \
+	scripts/test-lint-terminal-literals.sh \
+	scripts/test-lint-interview-record-sections.sh \
+	scripts/test-lint-interview-convention-refs.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
 	scripts/test-gate.sh \
 	scripts/test-team-witness-init.sh \
+	scripts/test-similar-items.sh \
 	scripts/test-gate-chain-equiv.sh \
 	scripts/test-measure-gate-cost.sh \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-stage-policy-edit-hook.sh \
 	scripts/test-watch.sh \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
-	scripts/test-design-brief.sh
+	scripts/test-design-brief.sh \
+	scripts/test-route.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh
@@ -164,7 +174,7 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 # per-shard dispatch and the union check all take their N from one place; a
 # workflow that spelled the number itself would let the matrix and the check
 # disagree, and the sections in the gap would belong to nobody.
-GATE_SHARDS ?= 8
+GATE_SHARDS ?= 13
 
 # So CI can read the number instead of spelling it a second time.
 print-gate-shards:
@@ -201,7 +211,7 @@ run-gate-census-selftest:
 # every section alone, the whole suite once and every shard once — about an hour
 # on an idle machine — and what it writes is a file to review and commit.
 census:
-	bash scripts/gate-census.sh --out scripts/gate-census.tsv
+	bash scripts/gate-census.sh --shards $(GATE_SHARDS) --out scripts/gate-census.tsv
 
 test-active-notify: $(NOTIFY_TESTS:%=run/%)
 

@@ -137,6 +137,18 @@ fi
 # below costs at most two and the symlink-leaf reading costs none at all, since
 # it is a shell builtin, and neither grows with the number of paths a decision
 # compares.
+#
+# The folded pass further down is the larger constant, stated here so the next
+# reader does not have to rediscover it. It costs one `hook_phys` subshell
+# (`cd` + `pwd -P`) per ANCHOR and runs on every Write/Edit. The three router
+# input directories add one anchor per (parent, name) pair: three when XDG is
+# unset, since the XDG and `$HOME` spellings then collapse into one, and up to
+# six when XDG points outside `$HOME`. A Write whose leaf is a symlink runs the
+# folded pass twice — once folded at the ancestors, once at the leaf target —
+# so it pays double (three become six, six become twelve), plus one `readlink`
+# per hop. All of these are bound by the number of anchors this file declares,
+# not by the number of paths a decision compares, so the budget's shape holds
+# and only its constant moved.
 # ---------------------------------------------------------------------------
 NL='
 '
@@ -407,8 +419,8 @@ hook_leaf_resolve() {
   #
   # FORK 비용: 말단이 심링크일 때에**만** 돌고, 그때 홉당 `readlink` 한 번과 끝에
   # `hook_phys` 한 번이다. 경로 개수에 비례하지 않으므로 이 파일의 fork 예산이
-  # 금하는 「경로당 fork」가 아니다(그 예산 주석의 열거는 이번에 갱신하지 않았다 —
-  # 그것은 별건이고 이번 사이클의 대상이 아니다).
+  # 금하는 「경로당 fork」가 아니다(그 예산 주석이 이 비용과 접힌 패스의 상수를
+  # 함께 적는다).
   #
   # 홉 상한 40 은 순환 링크에서 루프를 끊는다. 상한에 닿는 것은 판정 실패이지
   # 「심링크 아님」이 아니므로 거짓을 내고, 호출부가 거부한다.
@@ -565,6 +577,118 @@ hook_suffix_verdict() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# 라우터 입력 디렉터리 — 이 런이 끝난 뒤 다른 행위자가 읽는 세 자리
+#
+# cc-lane 설정 디렉터리(계정 인벤토리), cc-lane 상태 디렉터리(사용량 관측), 페이싱
+# 디렉터리(기기 임대 표·페이싱 판정·이연 킥오프 큐). 셋 다 뒤따르는 런의 계정
+# 배정과 기동을 정하는 입력이고, 이 런의 스테이지가 쓸 정당한 일이 없다. 그래서
+# 파일이 아니라 디렉터리를 통째로 막는다 — 파일 이름만 막으면 원자적 교체용 임시
+# 파일·락 파일과 아직 이름이 정해지지 않은 이웃이 열린다. 페이싱은 `leases/` 가
+# 아니라 `pace/` 전체다: 큐에 한 줄을 더하면 디스패처가 무인 런 하나를 통째로
+# 띄우고, 판정 파일은 게이트의 페이싱 판정에 들어가며, 임대 락이 `pace/` 바로
+# 아래에 서면 `leases/` 만 막는 앵커는 그것을 놓친다.
+#
+# 각 루트는 (부모 P, 이름 N) 쌍이다. 부모를 따로 쥐는 이유는 루트가 아직 없을 때
+# 실재하는 것이 보통 부모뿐이라, 대소문자 변형·펌링크 철자·조상 링크가 착지할
+# 아이노드가 부모에만 있기 때문이다.
+# ---------------------------------------------------------------------------
+# 쌍 레코드의 필드 구분자. `HOME`·XDG 값에 올 수 없는 비인쇄 바이트이고, 올 수
+# 있는지는 아래 `hook_router_pairs` 가 앵커 변수를 검사해 보장한다.
+US=$'\037'
+ROUTER_PAIRS=""; ROUTER_REST=""
+RP_KIND=""; RP_P=""; RP_N=""; RP_ROOT=""
+HOOK_ROUTER_MSG=""
+
+hook_router_msg() {
+  # hook_router_msg <종류> — 그 루트의 거부 문면을 `HOOK_ROUTER_MSG` 에 넣는다.
+  # 1차 패스와 접힌 패스가 같은 함수를 부른다. 두 패스의 문면이 다르면 문면
+  # 단언이 어느 패스가 답했는지 가르지 못하고, 나란한 사본은 병합에서 갈린다 —
+  # `hook_cfg_tail_verdict` 가 적어 둔 실패가 그것이다. 명령 치환 없이 전역에
+  # 넣는 것은 판정마다 쌍 수만큼 불리기 때문이다.
+  case "$1" in
+    config) HOOK_ROUTER_MSG='gate: the cc-lane configuration directory is an enforcement surface — the account inventory here decides which account every later stage is assigned, so a write here moves an assignment this stage does not own' ;;
+    state)  HOOK_ROUTER_MSG='gate: the cc-lane state directory is an enforcement surface — the usage observed here decides which account every later stage is assigned, so a write here moves an assignment this stage does not own' ;;
+    pace)   HOOK_ROUTER_MSG='gate: the pacing directory is an enforcement surface — the lease table, the pacing verdict and the deferred-run queue here are read by the router, the gate and the dispatcher after this stage ends, so a write here reserves an account, relaxes pacing or queues a run by the hand of this stage' ;;
+  esac
+}
+
+hook_router_pair_add() {
+  # hook_router_pair_add <종류> <기반> <기반 아래 부모 꼬리> <이름> — 쌍 하나를
+  # `ROUTER_PAIRS` 에 더한다. 같은 (종류, 부모) 는 한 번만 들어간다.
+  #
+  # 비었는지는 합성한 부모가 아니라 **기반**으로 본다. 페이싱 부모는 `<기반>/cc-cmds`
+  # 라 기반이 비어도 `/cc-cmds` 가 되어 빈 문자열이 아니고, 부모만 검사하면
+  # `/cc-cmds/pace` 라는 엉뚱한 앵커가 선다. 아래 `run_root` 유도가 합성 전에 기반을
+  # 검사하는 것과 같은 모양이다.
+  local rec
+  [ -n "$2" ] || return 0
+  hook_lexnorm "$2$3" || return 0
+  rec="$1$US$HOOK_NORM$US$4"
+  case "$NL$ROUTER_PAIRS" in
+    *"$NL$rec$NL"*) return 0 ;;
+  esac
+  ROUTER_PAIRS="$ROUTER_PAIRS$rec$NL"
+}
+
+hook_router_pairs() {
+  # 세 루트의 쌍 목록을 만든다. 순서는 설정·상태·페이싱.
+  #
+  # 부모는 XDG 유도 철자와 `$HOME` 기본 철자의 **합집합**이다. 위협은 이 런이 아니라
+  # 뒤따르는 런과 사람의 cc-lane CLI 가 읽는 파일이고, cc-lane 이 XDG 를 따를지는
+  # 아직 어느 코드도 정하지 않았다 — 한쪽 철자만 막으면 다른 쪽 환경에서 쓴 파일을
+  # 놓친다. 운영자 스코프 팔이 XDG 철자 하나로만 앵커해 XDG 를 옮긴 세션에서
+  # `$HOME/.config/cc-cmds` 를 허용하는 것이 실측된 그 구멍이다. XDG 가 없으면 두
+  # 철자가 같아 중복 제거 뒤 루트당 한 쌍이 되므로 비용이 없다.
+  #
+  # 페이싱 루트를 옮기는 재지정 변수(`GATE_PACE_ROOT` 등)는 읽지 않는다. 값을 넣는
+  # 곳이 시험뿐이라 기본 설치에서는 위 기본 자리와 같고, 훅이 그것을 읽으면 아무도
+  # 지키지 않는 환경 계약이 새로 생긴다. 운영 경로가 그 변수를 쓰게 되면 옮긴 자리는
+  # 이 팔이 지키지 않는다.
+  #
+  # 앵커 변수에 제어 문자가 있으면 판정 불가다. 쌍 목록이 줄바꿈과 위 구분자로
+  # 레코드를 가르므로, 그런 값은 레코드를 쪼개 엉뚱한 앵커를 만든다. 편집 경로의
+  # 제어 문자 검사는 앵커 변수에 닿지 않으므로 여기서 따로 본다.
+  local v
+  for v in "${HOME:-}" "${XDG_CONFIG_HOME:-}" "${XDG_STATE_HOME:-}"; do
+    case "$v" in
+      *[[:cntrl:]]*)
+        deny "$(jstr 'gate: HOME, XDG_CONFIG_HOME or XDG_STATE_HOME carries a control character, so the router input directories cannot be anchored — cannot judge is not allow')" ;;
+    esac
+  done
+  ROUTER_PAIRS=""
+  hook_router_pair_add config "${XDG_CONFIG_HOME:-}" ""                   cc-lane
+  hook_router_pair_add config "${HOME:-}"            /.config             cc-lane
+  hook_router_pair_add state  "${XDG_STATE_HOME:-}"  ""                   cc-lane
+  hook_router_pair_add state  "${HOME:-}"            /.local/state        cc-lane
+  hook_router_pair_add pace   "${XDG_STATE_HOME:-}"  /cc-cmds             pace
+  hook_router_pair_add pace   "${HOME:-}"            /.local/state/cc-cmds pace
+}
+
+hook_router_next() {
+  # `ROUTER_REST` 에서 레코드 하나를 꺼내 `RP_KIND`·`RP_P`·`RP_N`·`RP_ROOT` 에
+  # 넣는다. 남은 것이 없으면 거짓. 호출자는 `ROUTER_REST="$ROUTER_PAIRS"` 로 시작해
+  # `while hook_router_next` 로 돈다.
+  #
+  # 파이프도 히어독도 쓰지 않고 현재 셸에서 매개변수 확장으로만 꺼낸다. 파이프
+  # 오른쪽의 루프는 서브셸이라 그 안의 `deny` 가 `exit` 해도 훅이 끝나지 않고, bash
+  # 5.1 미만의 히어독은 본문을 `$TMPDIR` 임시 파일로 만들어 그것을 만들지 못하면
+  # 루프가 한 번도 돌지 않는다 — 어느 쪽이든 세 팔이 통째로 빠진 채 마지막 허용에
+  # 닿는다.
+  local line
+  [ -n "$ROUTER_REST" ] || return 1
+  line="${ROUTER_REST%%"$NL"*}"
+  case "$ROUTER_REST" in
+    *"$NL"*) ROUTER_REST="${ROUTER_REST#*"$NL"}" ;;
+    *)       ROUTER_REST="" ;;
+  esac
+  RP_KIND="${line%%"$US"*}"; line="${line#*"$US"}"
+  RP_P="${line%%"$US"*}"; RP_N="${line#*"$US"}"
+  # 부모가 `/` 일 때도 `//<이름>` 이 되지 않게 후행 `/` 를 뗀 뒤 잇는다.
+  RP_ROOT="${RP_P%/}/$RP_N"
+  return 0
+}
+
 hook_folded_verdict() {
   # hook_folded_verdict <접힌 절대 철자> — 철자를 한 번 접은 뒤 앵커 목록 전체를
   # 다시 묻는다. 거부면 여기서 끝난다.
@@ -613,6 +737,23 @@ hook_folded_verdict() {
   if [ -n "$xdgcc" ] && hook_leaf_under "$fp" "$xdgcc"; then
     deny "$(jstr 'gate: the operator-scope configuration directory is an enforcement surface — the lane recorded here is read by runs that come after this one ends, so a write here is an edit that outlives the run')"
   fi
+  # 라우터 입력 디렉터리. 루트가 아니라 **부모**에 대고 꼬리를 대소문자 무시로 본다 —
+  # 루트가 아직 없으면 접은 철자도 부모까지만 물리화되고, 그 아래 꼬리는 호출자가
+  # 준 대소문자 그대로 남기 때문이다. 부모 아래 모든 경로에서 켜므로 끄는 것도
+  # 모든 `deny` 앞과 비교 출구에서 한다.
+  ROUTER_REST="$ROUTER_PAIRS"
+  while hook_router_next; do
+    if hook_leaf_under "$fp" "$RP_P"; then
+      shopt -s nocasematch
+      case "$HOOK_LEAF_TAIL" in
+        "$RP_N"|"$RP_N"/*)
+          shopt -u nocasematch
+          hook_router_msg "$RP_KIND"
+          deny "$(jstr "$HOOK_ROUTER_MSG")" ;;
+      esac
+      shopt -u nocasematch
+    fi
+  done
   if [ -n "$LEDGER" ] && hook_leaf_under "$fp" "$LEDGER" && [ -z "$HOOK_LEAF_TAIL" ]; then
     deny "$(jstr 'gate: the gate is the only writer of the ledger — to leave a row, use gate.sh act or gate.sh exec')"
   fi
@@ -639,8 +780,8 @@ hook_folded_verdict() {
       fi
     done
   fi
-  # 접미 글롭도 접힌 철자로 한 번 더 본다. 위 여덟 자리는 앵커가 변수로 잡히지만
-  # 이 넷은 앵커가 없어 어휘 계층뿐이고, 접힌 철자가 곧 커널이 실제로 여는 파일의
+  # 접미 글롭도 접힌 철자로 한 번 더 본다. 위 자리들은 앵커가 변수(와 그 변수에서
+  # 유도한 라우터 입력 쌍)로 잡히지만 이 넷은 앵커가 없어 어휘 계층뿐이고, 접힌 철자가 곧 커널이 실제로 여는 파일의
   # 철자이므로 여기서 보는 것이 그 계층을 링크 너머까지 넓힌다.
   hook_suffix_verdict "$fp"
   return 0
@@ -676,6 +817,13 @@ tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
 # rather than the two the first draft covered: the other four were left to
 # after-the-fact digest comparison, and after-the-fact detection of a settings
 # file rewrite is detection of a boundary that was already gone.
+#
+# Those six are not the whole list any more. Three directories outside the run
+# are guarded for a different reason — the cc-lane configuration and state
+# directories and the pacing directory hold what the router, the gate and the
+# dispatcher read after this stage ends, so a write there reaches runs this one
+# does not own. This branch closes them for the four edit tools only; a write
+# through Bash is the gate's to judge, and the gate does not close it today.
 # ---------------------------------------------------------------------------
 case "$tool" in
   Write|Edit|NotebookEdit|MultiEdit)
@@ -752,6 +900,9 @@ case "$tool" in
     hook_lexnorm_var cfg
     hook_lexnorm_var xdgcc
     hook_lexnorm_var run_root
+    # 라우터 입력 쌍. 기반은 위 `xdgcc`·`run_root` 와 같은 변수이고, `HOME` 은
+    # 이미 위 일괄 정규화를 거쳤다. 각 부모는 함수 안에서 정규화된다.
+    hook_router_pairs
 
     # ONE `stat` CALL FOR THE WHOLE DECISION: the edit target's ancestor chain
     # plus every guarded path, measured together. `-L` follows symlinks, which
@@ -822,6 +973,13 @@ case "$tool" in
       stat_args[${#stat_args[@]}]="$cfg/projects"
     fi
     [ -n "$xdgcc" ] && stat_args[${#stat_args[@]}]="$xdgcc"
+    # 라우터 입력 쌍의 부모와 루트. 부모가 있어야 루트가 아직 없을 때의 철자가
+    # 착지할 아이노드가 생긴다. 같은 `stat` 한 번에 합류하므로 fork 는 늘지 않는다.
+    ROUTER_REST="$ROUTER_PAIRS"
+    while hook_router_next; do
+      stat_args[${#stat_args[@]}]="$RP_P"
+      stat_args[${#stat_args[@]}]="$RP_ROOT"
+    done
     if [ -n "${HOME:-}" ]; then
       for lane in "$HOME"/.claude*; do
         case "$lane" in *'*') continue ;; esac
@@ -1005,6 +1163,61 @@ case "$tool" in
           deny "$(jstr 'gate: the operator-scope configuration directory is an enforcement surface — the lane recorded here is read by runs that come after this one ends, so a write here is an edit that outlives the run')" ;;
       esac
     fi
+    # 라우터 입력 디렉터리 세 곳. 위 운영자 스코프 팔과 등록 자리는 같지만 비교는
+    # 더 강하다 — 그 팔을 그대로 복제하면 루트가 없을 때의 대소문자 변형과 펌링크
+    # 철자를 허용하고, XDG 를 옮긴 세션에서 `$HOME` 기본 철자를 허용하는 그 팔의
+    # 구멍 셋을 함께 물려받는다(셋 다 실측됐다). 앞의 둘은 아래 비교 2·3 이, 셋째는
+    # 쌍 목록의 합집합이 막는다. 그 팔 자신은 여기서 고치지 않는다.
+    #
+    # 쌍마다 세 비교를 둔다.
+    #
+    #   1. 루트의 정확한 아이노드. 루트가 실재하면 대소문자 변형·펌링크 철자·조상
+    #      링크가 전부 여기서 만난다.
+    #   2. 실재하는 **부모**의 아이노드와 대소문자 무시 꼬리. 루트는 아직 없어도
+    #      부모는 보통 있으므로, 루트 부재 시의 대소문자 변형·펌링크 철자·조상
+    #      링크가 부모 아이노드로 착지한다. 부모 아이노드에 루트 이름까지 대소문자
+    #      무시로 대는 형태는 이 파일에서 처음이다 — 형제 레인 팔은 **루트 자신**을
+    #      아이노드로 앵커하고 그 아래 꼬리는 대소문자를 구분해 본다. 그래서
+    #      `nocasematch` 가 부모 아래 **모든** 경로에서 켜지고, 끄는 것도 모든 `deny`
+    #      앞과 비교 출구에서 한다. 켜 둔 채 빠지면 뒤따르는 접미 글롭이 조용히
+    #      넓어진다.
+    #   3. 대소문자 무시 어휘. 부모마저 없을 때의 방어다. 다만 뒤의 접힌 패스가 모든
+    #      Write·Edit 에서 실재하는 조상까지 올라가 접으므로 부모 부재의 직접 철자와
+    #      그 대소문자 변형에는 그쪽도 답하고, 이 비교가 홀로 답하는 철자는 접힌
+    #      패스가 접지 못하는 펌링크 철자뿐이다.
+    #
+    # 대소문자 무시는 대소문자를 구분하는 볼륨(리눅스)에서 실제로 다른 `CC-Lane/`
+    # 디렉터리까지 거부한다. 편집 도구가 그런 이름의 디렉터리에 쓸 정당한 일이 없고
+    # 형제 레인 팔이 같은 교환을 이미 받아들였으므로 받아들인다.
+    #
+    # 남는 것도 적는다. 부모마저 없을 때의 펌링크 철자는 비교 3 의 어휘가 두 부모
+    # 철자와만 대므로 통과한다(`~/.config` 가 없는 새 기기, 어떤 런도 돌기 전의
+    # `…/cc-cmds`). `HOME` 이 비고 XDG 가 없으면 쌍이 만들어지지 않아 세 루트의 기본
+    # 철자가 보호되지 않는다. 그리고 이 팔은 네 편집 도구의 것이다 — Bash 로 들어오는
+    # 쓰기는 게이트의 몫이고, 게이트의 도달 하한은 오늘 이 세 자리를 거의 보지 않는다.
+    ROUTER_REST="$ROUTER_PAIRS"
+    while hook_router_next; do
+      hook_router_msg "$RP_KIND"
+      if hook_under "$RP_ROOT" || hook_is "$RP_ROOT"; then
+        deny "$(jstr "$HOOK_ROUTER_MSG")"
+      fi
+      if hook_under "$RP_P"; then
+        shopt -s nocasematch
+        case "$HOOK_TAIL" in
+          "$RP_N"|"$RP_N"/*)
+            shopt -u nocasematch
+            deny "$(jstr "$HOOK_ROUTER_MSG")" ;;
+        esac
+        shopt -u nocasematch
+      fi
+      shopt -s nocasematch
+      case "$np" in
+        "$RP_ROOT"|"$RP_ROOT"/*)
+          shopt -u nocasematch
+          deny "$(jstr "$HOOK_ROUTER_MSG")" ;;
+      esac
+      shopt -u nocasematch
+    done
     if [ -n "$LEDGER" ] && { [ "$np" = "$LEDGER" ] || hook_is "$LEDGER"; }; then
       deny "$(jstr 'gate: the gate is the only writer of the ledger — to leave a row, use gate.sh act or gate.sh exec')"
     fi
@@ -1167,8 +1380,9 @@ case "$tool" in
     # bound is the number of ANCHORS, which is fixed by this file, and not the
     # number of paths a decision compares, which is what the fork budget above
     # actually rules out — so the budget's shape holds and its constant went up.
-    # Measured: the suite's wall clock did not move. (That budget comment's
-    # enumeration is not updated here; it is a separate item and out of scope.)
+    # Measured: the suite's wall clock did not move. The budget comment at the
+    # top of this file now enumerates the constant, the router input pairs and
+    # the doubling on a symlinked leaf included.
     if hook_leaf_is_symlink "$ap" && [ -e "$ap" ]; then
       hook_leaf_resolve "$ap" \
         || deny "$(jstr 'gate: the target spelling of the leaf symlink of the edit target could not be obtained, so it cannot be judged — cannot judge is not allow')"

@@ -11,11 +11,14 @@
 # that the whole lint skips, so reverting the lever cannot turn `make check`
 # red on its way back.
 #
-# The nine FAIL fixtures are one per failure mode the lint claims to catch —
+# The ten FAIL fixtures are one per failure mode the lint claims to catch —
 # a duplicated class row, a missing class row, a class bound to the wrong
 # model, a skill that stopped pointing at the tier file, each of the three
-# retired model-choice sentences coming back, and the report template
-# carrying the record block zero or two times. Without one fixture each, a
+# retired model-choice sentences coming back, the report template carrying
+# the record block zero or two times, and the tier file losing its `출처=표`
+# record invariant (FAIL-10). Every fixture's tier copy carries that
+# invariant except FAIL-10's, so each still turns red through its own mode
+# alone. Without one fixture each, a
 # check that silently stopped firing would look identical to a tree with
 # nothing wrong in it.
 #
@@ -45,9 +48,9 @@ repo_root=$(cd "$script_dir/.." && pwd)
 fixtures="$repo_root/tests/fixtures/lint-team-model-tier-pins"
 
 # What a whole tree costs the lint: 13 class ids × (row + model) + 4 bound
-# skills + 3 fence phrases + 1 template block. Update this deliberately when a
-# check is added; a drop means one stopped running.
-OK1_EXPECTED_CHECKS=34
+# skills + 3 fence phrases + 1 template block + 1 invariant sentence. Update
+# this deliberately when a check is added; a drop means one stopped running.
+OK1_EXPECTED_CHECKS=35
 
 failures=0
 passed=0

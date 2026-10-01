@@ -211,9 +211,12 @@ check "없는 원장은 0 이 아니라 거부다" "$?" "2"
 #    Three sizes, K = 3, 4, 5 distinct segment ids. The two increments must be
 #    equal to each other — a straight line — and equal to the measured law of
 #    the act path's entity term: one more distinct id is one more field read,
-#    seven processes. The vector no longer carries the open-obligation set, and
+#    six processes. The vector no longer carries the open-obligation set, and
 #    that set was the second read of each segment row, so the law was fourteen
-#    while it did. The fixed part is deliberately not pinned.
+#    while it did. It was seven until the vector warmed its ledger reads: the
+#    `segment` rows are now read once per call instead of once per id, which
+#    took one `grep` out of every field read. The fixed part is deliberately
+#    not pinned.
 # ---------------------------------------------------------------------------
 bash "$MEASURE" --rows 10 --segments 3 > "$WORK/seg3.txt" 2>&1
 check "세그먼트 3개 원장에서 측정이 성공한다" "$?" "0"
@@ -228,10 +231,12 @@ if [ -n "$p3" ] && [ -n "$p4" ] && [ -n "$p5" ] && [ "$((p4 - p3))" = "$((p5 - p
 else
   bad "기울기 축의 선형성" "3·4·5개에서 '$p3' '$p4' '$p5' — 증분이 서로 다르면 계측기가 id 수 외의 것에 반응하고 있다"
 fi
-check "구별 세그먼트 id 하나가 정확히 7 프로세스다" "$((p4 - p3))" "7"
-# The slope's composition, so a regression is named by tool: two `grep`, two
-# `sed`, two `tail`, one `tr` per id — the one field read of one segment row.
-for pair in grep:2 sed:2 tail:2 tr:1; do
+check "구별 세그먼트 id 하나가 정확히 6 프로세스다" "$((p4 - p3))" "6"
+# The slope's composition, so a regression is named by tool: one `grep`, two
+# `sed`, two `tail`, one `tr` per id — the one field read of one segment row,
+# filtered out of the memoised `segment` rows. A second `grep` here means the
+# field read went back to the ledger.
+for pair in grep:1 sed:2 tail:2 tr:1; do
   t="${pair%%:*}"; want="${pair##*:}"
   got=$(( $(field "$WORK/seg4.txt" "progress_$t") - $(field "$WORK/seg3.txt" "progress_$t") ))
   check "id 당 증분의 $t 몫이 $want 다" "$got" "$want"

@@ -1,14 +1,14 @@
 ---
 name: github-ops
-description: GitHub 이슈·PR 작업 절차 — 이슈 본문 작성 원칙, Assignee 지정 시점, PR 발행·이슈 연결, 머지 절차와 CI 대기 분기, 인라인 리뷰 코멘트 묶음 제출
+description: GitHub 이슈·PR 작업 절차 — 이슈 본문 작성 원칙, Assignee 지정 시점, PR 발행·이슈 연결, 머지 절차와 CI 대기 분기, 인라인 리뷰 코멘트 묶음 제출, 이슈 등록 전 유사 이슈 조회
 when_to_use: 이슈를 생성·수정하거나, PR을 발행·머지하거나, PR에 인라인 리뷰 코멘트를 남기기 직전
 disable-model-invocation: false
 usage: "(자동 호출 — 슬래시 커맨드 없음. GitHub 이슈·PR 작업 직전에 모델이 열어 그대로 따른다.)"
 options: []
 notes: |
     슬래시 커맨드 surface 가 없는 model-invoked 정책 스킬이다. 모델은 frontmatter
-    `description` + `when_to_use` 로 호출을 결정하고, body 의 다섯 절을 해당 행위 직전에
-    그대로 적용한다. 이 스킬은 어떤 명령도 대신 실행하지 않는다 — 절차만 싣는다.
+    `description` + `when_to_use` 로 호출을 결정하고, body 의 여섯 절을 해당 행위 직전에
+    그대로 적용한다. 이 스킬은 어떤 명령도 대신 실행하지 않는다 — 절차만 싣는다 — 등록 전 조회 도구 하나를 가리킨다.
 ---
 
 # github-ops
@@ -60,3 +60,12 @@ explicitly skips it, waiting for CI is included.
 - When leaving several inline review comments on a PR, do NOT post them one at a time (`POST .../pulls/{n}/comments`). **Submit them bundled as a single review**: `POST .../pulls/{n}/reviews` with every inline comment in the `comments[]` array under one event (`event=COMMENT`, etc.) — the API equivalent of the GitHub UI's "Start a review → Finish your review". The author then receives one notification and the review reads as one unit.
 - A single comment may be posted on its own.
 - An intermittent 404 is a transient network/SSO error — retry.
+
+## 6. Before creating an issue — similar-issue lookup
+
+`<plugin root>` below is the directory holding `orchestrator/` and `skills/` — the parent of this skill directory's parent. Substitute it yourself before the command reaches a shell: it is not a shell variable, and `${CLAUDE_SKILL_DIR}` written into a command expands to an empty prefix.
+
+- Immediately before `gh issue create`, write the draft body to a file and run `<plugin root>/orchestrator/similar-items.py github --repo <owner/name> --title "<draft title>" --body-file <file>` — directly, with no `python3` or other interpreter in front. When you are running as an unattended pipeline stage (`CC_PIPELINE_RUN_ID` is set), add `--lexical-only`.
+- The output is candidates only. Do NOT withhold, postpone, merge or rewrite the registration because of it, and do NOT close, comment on, relabel or link any candidate. Create the issue from the same body file, then report the candidates next to the new issue number in the same message.
+- If the output carries a `notice:` line, relay it verbatim. `status=unavailable` means the lookup did not run: say so in one line and register anyway.
+- Registering several issues in one pass: run the lookup for each issue only after the previous one has been created, so that an issue registered earlier in the pass is in the next one's corpus.

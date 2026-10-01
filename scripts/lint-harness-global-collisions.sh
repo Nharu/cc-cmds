@@ -16,6 +16,23 @@
 #
 # Both populations are derived from the files' bytes; nothing is listed here.
 #
+#   gate files      — the named roots (`gate.sh`, `run.sh`) plus every sibling
+#                     their source lines name, followed from each included file
+#                     in turn. A source line is a line whose first token (after
+#                     leading blanks) is `.` or `source`; when its target is the
+#                     literal `"$ORCH_DIR/<f>"` or `"$GATE_DIR/<f>"`, the file
+#                     `<f>` beside the sourcing file is included if it exists
+#                     under the root. Whatever the gate sources runs in the
+#                     harness's shell as surely as the gate itself does, so a
+#                     sibling left out is a population nobody compares. A source
+#                     line whose target is anything else is exit 2 — skipping it
+#                     would let a future `source "$OTHER/x.sh"` leak past — unless
+#                     the same line carries `# lint-harness-global-collisions:
+#                     child-shell`, which marks a line that runs in a child shell
+#                     and never reaches the sourcing one. The statement splitter
+#                     below is deliberately not used for this: it would cut the
+#                     text of a jq program into a statement that starts with `.`.
+#
 #   harness side H  — the NAME of every column-zero `NAME=`, `export NAME=` or
 #                     `export NAME` line, where NAME is upper-case letters,
 #                     digits and underscores and starts with a letter. A line
@@ -36,7 +53,10 @@
 #                     `export NAME=`, `readonly NAME=`, `declare NAME=` and
 #                     `export NAME` (which makes a caller's value the gate's).
 #                     A statement starts at the line's first token or after
-#                     `;`, `&&`, `||`, `(`, `{`, `then`, `do` or `else`.
+#                     `;`, `&&`, `||`, `(`, `{`, `then`, `do` or `else`. A
+#                     `case` arm head `<pattern>)` in front of a statement is
+#                     read past, so the guarded-constant shape
+#                     `case … in 0) ;; *) readonly NAME=0 ;; esac` yields NAME.
 #                     Excluded: `local NAME=` and `declare` spelled with a
 #                     scope flag (the name dies with the function), `for NAME
 #                     in` (a loop variable), comment lines (first non-blank
@@ -62,14 +82,16 @@
 # Env override:
 #   ROOT        repo root (default: this script's repo root)
 #   HARNESS     harness file, root-relative (default scripts/test-gate.sh)
-#   GATE_FILES  space-separated gate files, root-relative
+#   GATE_FILES  space-separated named gate roots, root-relative; the siblings
+#               their source lines name are added to them
 #               (default plugins/cc-cmds/orchestrator/gate.sh plugins/cc-cmds/orchestrator/run.sh)
 #
 # Exit codes:
 #   0  compared, no collision
 #   1  compared, at least one collision
-#   2  the comparison could not be carried out: the harness file or a gate
-#      file is missing, or either derivation is empty
+#   2  the comparison could not be carried out: the harness file or a named
+#      gate root is missing, a source line names a target this lint cannot
+#      follow, or either derivation is empty
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no mapfile.
 
@@ -100,6 +122,68 @@ harness="$root/$harness_rel"
 [ -f "$harness" ] || die2 "하니스 파일이 없다: ${harness_rel}"
 for g in $gate_files_rel; do
   [ -f "$root/$g" ] || die2 "게이트 파일이 없다: ${g}"
+done
+
+# --- gate file set: the named roots and the siblings they source ------------
+# Walked breadth-first over an indexed array (bash 3.2 has no associative
+# ones); `gate_files` grows while it is walked and holds each file once.
+
+child_shell_marker='# lint-harness-global-collisions: child-shell'
+gate_files=()
+derived_rel=""
+
+gate_has() {
+  local x
+  for x in ${gate_files[@]+"${gate_files[@]}"}; do
+    [ "$x" = "$1" ] && return 0
+  done
+  return 1
+}
+
+for g in $gate_files_rel; do
+  gate_has "$g" || gate_files+=("$g")
+done
+
+gi=0
+while [ "$gi" -lt "${#gate_files[@]}" ]; do
+  src_rel=${gate_files[$gi]}
+  gi=$((gi + 1))
+  src_dir_rel=$(dirname "$src_rel")
+  src_lines=$(grep -n -E '^[[:space:]]*(\.|source)[[:space:]]' "$root/$src_rel" || true)
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    ln=${hit%%:*}
+    text=${hit#*:}
+    case "$text" in
+      *"$child_shell_marker"*) continue ;;
+    esac
+    tgt=${text#"${text%%[![:space:]]*}"}
+    case "$tgt" in
+      source[[:space:]]*) tgt=${tgt#source} ;;
+      *) tgt=${tgt#.} ;;
+    esac
+    tgt=${tgt#"${tgt%%[![:space:]]*}"}
+    tgt=${tgt%%[[:space:]]*}
+    case "$tgt" in
+      '"$ORCH_DIR/'*'"') sib=${tgt#'"$ORCH_DIR/'} ;;
+      '"$GATE_DIR/'*'"') sib=${tgt#'"$GATE_DIR/'} ;;
+      *) die2 "따라갈 수 없는 소스 줄: ${src_rel}:${ln} — 대상이 \"\$ORCH_DIR/<f>\" 나 \"\$GATE_DIR/<f>\" 리터럴이 아니다 (자식 셸에서만 돈다면 같은 줄에 '${child_shell_marker}')" ;;
+    esac
+    sib=${sib%\"}
+    case "$sib" in
+      ''|*/*|*'$'*|*'"'*) die2 "따라갈 수 없는 소스 줄: ${src_rel}:${ln} — 형제 파일 이름이 아니다: ${sib}" ;;
+    esac
+    if [ "$src_dir_rel" != "." ]; then
+      sib="$src_dir_rel/$sib"
+    fi
+    [ -f "$root/$sib" ] || continue
+    if ! gate_has "$sib"; then
+      gate_files+=("$sib")
+      derived_rel="${derived_rel:+$derived_rel }$sib"
+    fi
+  done <<EOF
+$src_lines
+EOF
 done
 
 # --- the shared exclusion: command-prefix environments ----------------------
@@ -186,11 +270,13 @@ H=$(printf '%s\n' "$H" | grep -v '^$' | awk -F'\t' '!seen[$1]++')
 # bare keywords; `for NAME in` has no `=` and never matches at all.
 
 gate_names=""
-for g in $gate_files_rel; do
+for g in "${gate_files[@]}"; do
   part=$(
     awk -v f="$g" '
       function emit_stmt(s,   n, t) {
         sub(/^[ \t]+/, "", s)
+        # A case arm head `<pattern>)` is not part of the statement it guards.
+        sub(/^([^ \t()|;&'"'"'"]|'"'"'[^'"'"']*'"'"'|"[^"]*")+([|]([^ \t()|;&'"'"'"]|'"'"'[^'"'"']*'"'"'|"[^"]*")+)*[)][ \t]*/, "", s)
         if (s ~ /^(export|readonly|declare)[ \t]+[A-Z][A-Z0-9_]*(=|[ \t]|$)/) {
           n = s; sub(/^(export|readonly|declare)[ \t]+/, "", n); sub(/[^A-Z0-9_].*$/, "", n)
           print n "\t" f ":" NR
@@ -254,11 +340,11 @@ g_count=$(count_lines "$g_only")
 b_count=$(count_lines "$both")
 
 if [ "$fail" -ne 0 ]; then
-  printf 'FAIL: harness-global-collisions — |H|=%d |G|=%d 교집합 %d (하니스 %s, 게이트 %s)\n' \
-    "$h_count" "$g_count" "$b_count" "$harness_rel" "$gate_files_rel" >&2
+  printf 'FAIL: harness-global-collisions — |H|=%d |G|=%d 교집합 %d (하니스 %s, 게이트 %s, 파생 %s)\n' \
+    "$h_count" "$g_count" "$b_count" "$harness_rel" "$gate_files_rel" "${derived_rel:-없음}" >&2
   exit 1
 fi
 
-printf 'OK: harness-global-collisions — |H|=%d |G|=%d 교집합 0 (하니스 %s, 게이트 %s)\n' \
-  "$h_count" "$g_count" "$harness_rel" "$gate_files_rel"
+printf 'OK: harness-global-collisions — |H|=%d |G|=%d 교집합 0 (하니스 %s, 게이트 %s, 파생 %s)\n' \
+  "$h_count" "$g_count" "$harness_rel" "$gate_files_rel" "${derived_rel:-없음}"
 exit 0
