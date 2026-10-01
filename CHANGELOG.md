@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.37.0] - 2026-10-01
+
+autopilot 킥오프의 entry-plan 판정이 런마다 작업 부류를 기록하기 시작한다. 판정 객체에 필수 키 `work_class`·`work_class_rationale` 을 더하고, 스키마 린트가 그 쌍과 열거를 고정한다. 기록만 하며, 이 값을 읽는 쪽은 아직 없다.
+
+### Added
+
+- **entry-plan 판정의 `work_class`·`work_class_rationale`** — `work_class` 는 닫힌 열거 `fix` | `feat` | `docs` | `other` | `unknown` 이고, 결정 규칙은 하나다: 이 런의 주된 산출물이 버전 bump 규칙에서 어느 커밋 종류로 착지하는가. 입력은 판정 시점에 실제로 있는 것 — 킥오프에서 사람이 준 말과 해소된 앵커 — 뿐이며, 판정은 인터뷰보다 앞서므로 인터뷰 기록은 입력이 아니다. 그 둘로 가를 수 없으면 `unknown` 이고 추측을 `other` 로 적지 않는다. `design_required` 가 거짓이어도 쓰며, 같은 판정의 다른 필드(`design_tier` 포함)를 정하는 데 쓰지 않는다. 이 필드 이전에 동결된 매니페스트에는 키가 없고, 판독 쪽은 키 없음·열거 밖 값·`unknown` 을 모두 미상으로 읽는다.
+- **`scripts/lint-prompt-schemas.sh` 규칙 3** — `entry-plan.schema.json` 이 `work_class` 쌍을 `.properties`·`.required` 양쪽에 지니고 `work_class` 열거가 정확히 위 다섯 값인지 본다. FAIL 문면은 `work_class` 를 이름으로 대고, OK 줄은 쌍과 열거가 모두 맞을 때만 나온다.
+
+### Why
+
+이력으로 설계 등급을 가늠하려면 런끼리 비교할 유사도 키가 있어야 하는데, 지금까지 원장·매니페스트 어디에도 그런 필드가 없었다. 보관된 매니페스트의 의도 문장만으로는 상당수가 갈리지 않아 소급할 수도 없으므로, 이 변경이 착지하기 전에 끝나는 런은 영구히 부류가 없는 런이 된다. 그래서 소비자 없이 기록부터 시작한다. 열거를 린트로 고정하는 것은 이 값이 나중에 이력을 묶는 키가 되므로, 값이 소리 없이 생기거나 사라지면 기록된 이력이 끊기기 때문이다.
+
+포함 커밋:
+
+- `feat(orchestrator): entry-plan 판정에 work_class 기록을 더하고 스키마 린트로 고정한다`
+
 ## [2.36.3] - 2026-10-01
 
 autopilot 킥오프가 인터뷰를 시작하기도 전에 `pipeline-sidecar.md` 전체(약 164KB)를 읽던 것을 둘로 나눈다. Act 1 부터 Step 6 까지 쓰는 앞부분만 Step 1 에서 읽고, 원장부터 끝까지는 Step 7 즉시 기동 분기에 들어설 때 읽는다. 같은 변경에서 매니페스트 템플릿에 빠져 있던 `종료 절` 행 문법을 채운다.
