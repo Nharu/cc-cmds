@@ -495,6 +495,27 @@ readonly GATE_EXIT_WAIT_NOROW=14
 # carry.
 readonly GATE_EXIT_CAP=15
 
+# A STAGE DISPATCH THE ROUTER DID NOT GRANT. With routing on, the dispatch half
+# asks the router for the launch's account before it pins an attempt; a `WAIT`,
+# a `PARK`, a resume its binding does not allow and a routing guard that
+# disagrees with the run's record all stop the dispatch here, with no pin and no
+# launch. A `WAIT` writes a `stage-wait` row and the rest an act-scope `blocked`
+# row with `사유=라우터 판정`, so the cause is recorded before the caller sees
+# this number.
+#
+# NOT 3 and NOT 11. 3 says the argv or a rule is wrong and the repair is to
+# change something; here nothing is wrong and the same dispatch may be granted
+# later. 11 is a reach judgment on an act and shares its value with `wait`'s
+# "never dispatched" already. 16 is unused in this tree, and like 15 it is told
+# apart from a stage's own status by the `gate:` line and the row beside it.
+readonly GATE_EXIT_ROUTE=16
+
+# The head of a gate-dispatched lineage. The driver's dispatch ids begin with
+# `S4:`, `S5:`, `S5R:`, `S1':`, `S1design` or `S2`, and the router strips only
+# `.retry`, so a lineage spelled from this head, the segment and the attempt can
+# never equal one the driver asks for.
+readonly GATE_ROUTE_LINEAGE_HEAD='B:'
+
 # THE `wait` DEFAULTS. 300 seconds between heartbeats rather than 30: a shift
 # runs `Monitor` on the heartbeat stream and every line is a turn, so a
 # two-hour stage at 30 seconds is 240 turns and at 300 it is 24. The poll
@@ -6840,11 +6861,14 @@ gate_row_field() {
 # ---------------------------------------------------------------------------
 # `stage-lease` / `stage-wait`: envelope to row, and the three readers.
 #
-# NOTHING CALLS THE TWO ROW WRAPPERS YET. The launch path that writes a lease
-# before each spawn and the wait loop that writes a wait row per chunk arrive
-# with their own work; until then no code writes either series. `--self-check`
-# enumerates `run.sh` functions only, so these are not reported as unwired —
-# this is where that is said.
+# TWO LAUNCH SITES CALL THESE, AND ONLY WITH ROUTING ON. The driver's
+# `stage_spawn` (through a child shell that sources this file) and the gate's
+# own `gate_launch_stage` write one `stage-lease` row per grant before the
+# spawn — a seat or dormant grant included; the gate's launch writes a
+# `stage-wait` row when the router answers `WAIT` and the dispatch is stopped.
+# With routing off neither is called and neither series is written.
+# `--self-check` enumerates `run.sh` functions only, so these are not reported
+# by it — this is where their callers are named.
 #
 # The builders live HERE and not in `run.sh`: there their only callers would be
 # gate functions nothing calls, and `--self-check` would count them as wired by
@@ -6868,8 +6892,9 @@ gate_stage_lease_row() {
   # status inside a heredoc's command substitution is lost, and the row would be
   # written from whatever the failed builder left.
   #
-  # NO DORMANT BRANCH. A valid `GRANT` renders whether or not it is dormant;
-  # whether a dormant grant gets a lease row at all is the launch path's call.
+  # NO DORMANT BRANCH. A valid `GRANT` renders whether or not it is dormant,
+  # and with routing on both launch sites write the row for every grant, a
+  # dormant or seat grant included.
   local did="${1:-}" env="${2:-}" bind="${3:-}" verdict vals lineage acct cdir lane bp basis obs
   verdict=$(printf '%s' "$env" | jq -r 'if type == "object" then (.verdict // "") else "" end' 2>/dev/null) || return 2
   [ "$verdict" = "GRANT" ] || return 2
@@ -9028,7 +9053,7 @@ gate_autocompact_layer() {
 }
 
 gate_autocompact_effective() {
-  # gate_autocompact_effective <argv-value> <settings-file> <project-dir>
+  # gate_autocompact_effective <argv-value> <settings-file> <project-dir> [<lane-dir>]
   # The effective window in the grammar above. THE TWO KEYS ARE MERGED PER KEY,
   # NOT PER LAYER: `autoCompactEnabled` is taken from the highest layer that
   # defines it and `autoCompactWindow` from the highest layer that holds a
@@ -9042,13 +9067,19 @@ gate_autocompact_effective() {
   # when <argv-value> is non-empty and beats the settings window; a window
   # that is not a plain integer is "this layer sets none" (a format the CLI
   # may accept is not a read failure).
-  local argv_val="$1" settings="$2" proj="$3"
+  local argv_val="$1" settings="$2" proj="$3" lane_given="${4:-}"
   local f tok reading layer_enabled layer_window lane_dir
   local enabled="" window="" window_tok=""
   # The lane layer is the directory the driver's resolver names. A refusal is
   # a lane layer that cannot be read, which is `(미상)` like any other layer
-  # that cannot be read — never the default directory's settings instead.
-  lane_dir=$(resolve_account 2>/dev/null) || { printf '(미상)'; return 0; }
+  # that cannot be read — never the default directory's settings instead. A
+  # routed launch passes the directory its grant named as a fourth argument,
+  # because that, not the run's seat, is where the stage reads its settings.
+  if [ -n "$lane_given" ]; then
+    lane_dir="$lane_given"
+  else
+    lane_dir=$(resolve_account 2>/dev/null) || { printf '(미상)'; return 0; }
+  fi
   for tok in 런설정 프로젝트로컬 프로젝트 레인; do
     case "$tok" in
       런설정) f="$settings" ;;
@@ -10663,8 +10694,28 @@ gate_main() {
     # would widen the sidecar contract for a signal the morning reads from the
     # log anyway. Exit status ignored, no refusal, no row — a drifted source is
     # a reason to update the policy, never a reason to stop a run.
-    local pd
-    pd=$( { bash "$GATE_DIR/stage-policy-drift.sh" --sources-map "$(gate_stage_policy_sources_map)" 2>/dev/null || true; } | tail -1)
+    #
+    # THE DIRECTORIES ARE NAMED, NOT LEFT TO THE CHECKER'S ENVIRONMENT. The
+    # stages read the run's seat, not whatever this process inherited, so the
+    # seat is always passed; with routing on and an inventory the eligible lease
+    # directories are passed too, because a routed stage reads its grant's. The
+    # checker's last line summarizes every directory, so `tail -1` still holds
+    # all of them.
+    local pd seat_dir d
+    local -a pd_dirs=()
+    seat_dir=$( { lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" "-" >/dev/null 2>&1 \
+                  && printf '%s' "$LANE_RECORD"; } || true)
+    [ -z "$seat_dir" ] || pd_dirs+=(--config-dir "$seat_dir")
+    if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] && [ -f "$RUN_DIR/inventory.json" ] \
+       && route_inventory_check "$RUN_DIR/inventory.json" >/dev/null 2>&1; then
+      while IFS= read -r d; do
+        [ -n "$d" ] && [ "$d" != "$seat_dir" ] || continue
+        pd_dirs+=(--config-dir "$d")
+      done <<GATE_DRIFT_DIRS
+$(jq -r '.accounts[]? | select(.unattended == true) | .config_dir // empty' "$RUN_DIR/inventory.json" 2>/dev/null || true)
+GATE_DRIFT_DIRS
+    fi
+    pd=$( { bash "$GATE_DIR/stage-policy-drift.sh" --sources-map "$(gate_stage_policy_sources_map)" ${pd_dirs[@]+"${pd_dirs[@]}"} 2>/dev/null || true; } | tail -1)
     log "stage policy sources: ${pd:-skipped}"
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
@@ -19069,14 +19120,24 @@ gate_pin_attempt() {
   # dispatch that dies at launch resets the stagnation counter. Same rows,
   # opposite questions — a shared helper would be wrong for one of them.
   local seg="$1" attempt
+  mkdir -p "$RUN_DIR/log"
+  attempt=$(gate_derive_attempt "$seg")
+  printf '%s\n' "$attempt" > "$RUN_DIR/$seg.attempt"
+  printf '%s' "$attempt"
+}
+
+gate_derive_attempt() {
+  # gate_derive_attempt <segment> — the number `gate_pin_attempt` would pin now,
+  # with nothing written. A routed launch derives it before asking the router,
+  # because the lineage it asks for carries the number; the pin that follows
+  # re-derives and the two are compared.
+  local seg="$1" attempt
   attempt=$( { gate_rows '자율 승인' | grep -F 'kind=skill ' || true; } \
              | { grep -cF "세그먼트=$seg " || true; } )
   [ "${attempt:-0}" -ge 1 ] || attempt=1
-  mkdir -p "$RUN_DIR/log"
   while [ -e "$RUN_DIR/log/$seg#$attempt.json" ] || [ -e "$RUN_DIR/log/$seg#$attempt.err" ]; do
     attempt=$(( attempt + 1 ))
   done
-  printf '%s\n' "$attempt" > "$RUN_DIR/$seg.attempt"
   printf '%s' "$attempt"
 }
 
@@ -19216,6 +19277,111 @@ gate_continuation_argv() {
   return 0
 }
 
+gate_launch_route_park() {
+  # gate_launch_route_park <alias> <row segment> <segment> <why> — the row a
+  # routed dispatch leaves when it stops before the pin. Act scope, like a reach
+  # park: this dispatch was not performed and nothing waits for an answer.
+  local alias="$1" rowseg="$2" seg="$3" why="$4"
+  gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=라우터 판정" \
+    "세그먼트=$rowseg" "스테이지=$seg" "근거=$(gate_row_safe "$why" 300)" \
+    "관측=$(now_iso)" "재개 명령=라우터가 부여할 때 같은 세그먼트를 다시 파견하세요" \
+    || warn "could not write the routing stop row ($seg)"
+  warn "$why — $seg is not launched"
+}
+
+gate_launch_route_drop() {
+  # gate_launch_route_drop — hand back the lease this dispatch minted, on an exit
+  # after the grant and before the supervisor takes over. A lease the lineage
+  # already had before this call is not this dispatch's to release.
+  local rc=0
+  [ "${GATE_ROUTE_MINTED:-0}" = "1" ] || return 0
+  route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_NONCE" || rc=$?
+  [ "$rc" = "0" ] || warn "the lease release ended rc=$rc ($GATE_ROUTE_LINEAGE)"
+  GATE_ROUTE_MINTED=0
+  return 0
+}
+
+gate_launch_route() {
+  # gate_launch_route <alias> <segment> <stage-kind> — routing on: derive the
+  # attempt, claim it, and ask the router for this launch. Leaves the answer in
+  # GATE_ROUTE_ATTEMPT, GATE_ROUTE_LINEAGE, GATE_ROUTE_ENV, GATE_ROUTE_NONCE
+  # (empty when the grant carries no lease), GATE_ROUTE_ACCOUNT (`-` for a
+  # seat), GATE_ROUTE_CFG, GATE_ROUTE_MINTED and GATE_ROUTE_BIND. Called in the
+  # dispatch's own shell, never in a substitution, because it sets those.
+  #
+  # THE ATTEMPT IS CLAIMED BEFORE THE ROUTER IS ASKED. Two dispatches of one
+  # segment that derive the same number would ask for the same lineage and share
+  # one lease; the exclusive create lets exactly one of them through. The claim
+  # stays for the life of the run, as the consumed attempt it names.
+  #
+  # 0 on a grant. GATE_EXIT_ROUTE, with its row written, on a `WAIT`, a `PARK`
+  # and a resume the binding does not allow — the binding is checked whatever
+  # the envelope's basis. The guard record is compared by the caller, before
+  # this, under either guard.
+  local alias="$1" seg="$2" kind="$3" rowseg why event=first reqbind="" req prior verdict dormant
+  GATE_ROUTE_ATTEMPT=""; GATE_ROUTE_LINEAGE=""; GATE_ROUTE_ENV=""; GATE_ROUTE_NONCE=""
+  GATE_ROUTE_ACCOUNT="-"; GATE_ROUTE_CFG=""; GATE_ROUTE_MINTED=0; GATE_ROUTE_BIND=""
+  rowseg=$(gate_stage_row_segment "$seg" "$kind")
+  GATE_ROUTE_ATTEMPT=$(gate_derive_attempt "$seg")
+  if ! ( set -C; : > "$RUN_DIR/$seg.attempt.$GATE_ROUTE_ATTEMPT" ) 2>/dev/null; then
+    warn "attempt $GATE_ROUTE_ATTEMPT of $seg is already claimed by another dispatch — this one is refused"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_ROUTE_LINEAGE="$GATE_ROUTE_LINEAGE_HEAD$seg#$GATE_ROUTE_ATTEMPT"
+  if [ -n "${GATE_RESUME:-}" ]; then
+    event=resume
+    GATE_ROUTE_BIND=$(gate_resume_binding_of "$seg" "$GATE_RESUME" 2>/dev/null) || GATE_ROUTE_BIND=""
+    case "$GATE_ROUTE_BIND" in ''|-) ;; *) reqbind=$GATE_ROUTE_BIND ;; esac
+  fi
+  req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
+          --arg kind "$kind" --arg bound "$reqbind" --argjson pid "$$" \
+          '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
+            bound_account: (if $bound == "" then null else $bound end)}') \
+    || { warn "could not build the router request ($seg)"; return 1; }
+  prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
+           | { jq -r '.nonce // empty' 2>/dev/null || true; })
+  GATE_ROUTE_ENV=$(route_resolve "$req") || { warn "the account resolver stopped — $seg is not launched"; return 1; }
+  verdict=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.verdict // ""' 2>/dev/null || true)
+  why=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '"라우터 판정 \(.verdict) \(.reason // "-")"
+        + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null) \
+    || why="라우터 판정 $verdict"
+  case "$verdict" in
+    GRANT) ;;
+    WAIT)
+      if gate_stage_wait_row "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_ENV" "$GATE_ROUTE_BIND"; then
+        warn "$why — $seg is not launched"
+      else
+        gate_launch_route_park "$alias" "$rowseg" "$seg" "$why (stage-wait 행 기록 거부)"
+      fi
+      return "$GATE_EXIT_ROUTE" ;;
+    PARK)
+      gate_launch_route_park "$alias" "$rowseg" "$seg" "$why"
+      return "$GATE_EXIT_ROUTE" ;;
+    *) warn "the router answered without a verdict — $seg is not launched"; return 1 ;;
+  esac
+  GATE_ROUTE_NONCE=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.nonce // empty')
+  GATE_ROUTE_ACCOUNT=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.account // "-"')
+  GATE_ROUTE_CFG=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.config_dir // empty')
+  if [ -n "$GATE_ROUTE_NONCE" ] && [ "$GATE_ROUTE_NONCE" != "$prior" ]; then GATE_ROUTE_MINTED=1; fi
+  if [ -z "$GATE_ROUTE_CFG" ]; then
+    warn "the grant names no config directory — $seg is not launched"
+    gate_launch_route_drop
+    return 1
+  fi
+  if [ "$event" = "resume" ] && ! gate_resume_grant_ok "$GATE_ROUTE_BIND" "$GATE_ROUTE_ENV"; then
+    dormant=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r 'if .dormant == true then "1" else "0" end')
+    if [ "$dormant" = "1" ] && [ -n "$GATE_ROUTE_BIND" ] && [ "$GATE_ROUTE_BIND" != "-" ]; then
+      why="휴면 구속 — 세션 $GATE_RESUME 은 계정 $GATE_ROUTE_BIND 에 구속돼 있으나 라우터가 휴면 봉투를 냈다"
+    else
+      why="재부착 구속 불일치 — 구속 ${GATE_ROUTE_BIND:-(없음)}, 봉투 계정 $GATE_ROUTE_ACCOUNT"
+    fi
+    gate_launch_route_drop
+    gate_launch_route_park "$alias" "$rowseg" "$seg" "$why"
+    return "$GATE_EXIT_ROUTE"
+  fi
+  return 0
+}
+
 gate_launch_stage() {
   # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
@@ -19284,7 +19450,7 @@ gate_launch_stage() {
   # Derived from the ledger and NOT taken as argv: adding an `--attempt` flag
   # would let a router re-type the number it used last time, which reproduces the
   # collision through the one surface that is supposed to prevent it. The
-  # derivation and the pin both live in `gate_pin_attempt` so a test can burn
+  # derivation and the pin both sit behind `gate_pin_attempt` so a test can burn
   # them. The pin is written HERE, in the dispatch half, and the supervisor only
   # reads it — one writer, so the two halves cannot disagree about the attempt.
   #
@@ -19318,22 +19484,67 @@ gate_launch_stage() {
     warn "there is no interpreter (perl or python3) to launch the supervisor — the dispatch is refused ($seg)"
     return "$GATE_EXIT_RULE"
   fi
+  # ROUTING ON: THE ROUTER IS ASKED BEFORE ANYTHING IS SYNTHESIZED OR PINNED.
+  # The instructions are synthesized against the directory the grant names, so
+  # the grant has to exist first; a `WAIT` or `PARK` stops here with no pin, so
+  # the recovery rule that reads "a pin and no row" as a consumed attempt is
+  # untouched. Every exit below that refuses after the grant hands back the
+  # lease this dispatch minted. Routing off asks nothing and inherits the
+  # environment, as before.
+  # THE GUARD RECORD IS COMPARED UNDER EITHER GUARD. A guard-0 copy launching
+  # into a run another copy opened with the guard on would seat a stage the run
+  # routes; with no record and the guard off this passes without a word, which
+  # is today's launch.
+  local routed=0 rrc=0 gwhy
+  if ! gwhy=$(routing_guard_check); then
+    gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" "$gwhy"
+    return "$GATE_EXIT_ROUTE"
+  fi
+  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+    routed=1
+    gate_launch_route "$alias" "$seg" "$kind" || return $?
+  fi
   # THE STAGE INSTRUCTIONS, SYNTHESIZED BEFORE ANY SIDE EFFECT. A refusal here
   # (127, like a missing wrapper) is a launch precondition — a host or
   # repository state a person has to change — so it must not consume an
   # attempt number or leave a session record behind: the pin below and the
   # record after it both come later on purpose.
   local instr
-  instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  if [ "$routed" = "1" ]; then
+    instr=$(CLAUDE_CONFIG_DIR="$GATE_ROUTE_CFG" gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") \
+      || { rrc=$?; gate_launch_route_drop; return "$rrc"; }
+  else
+    instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
+  fi
   # A RESUME OF A STAGE THAT ENDED IN PROSE carries the continue message instead
   # of the router's prompt, and is refused here — still before the pin — when it
   # may not be continued.
   if [ -n "${GATE_RESUME:-}" ]; then
-    gate_continuation_argv "$seg" "$kind" "$@" || return $?
+    gate_continuation_argv "$seg" "$kind" "$@" || { rrc=$?; [ "$routed" = "0" ] || gate_launch_route_drop; return "$rrc"; }
     [ -z "$GATE_CONTINUED" ] || set -- "${GATE_CONTINUE_ARGV[@]}"
   fi
   local attempt out suplog nonce tmp sup
   attempt=$(gate_pin_attempt "$seg")
+  if [ "$routed" = "1" ]; then
+    # THE PIN MUST NAME THE ATTEMPT THE LINEAGE WAS ASKED FOR. A pin that moved
+    # between the two derivations means another dispatch of this segment ran in
+    # between; the lease was granted for a lineage this launch no longer is.
+    if [ "$attempt" != "$GATE_ROUTE_ATTEMPT" ]; then
+      warn "the attempt pin ($attempt) differs from the attempt the router was asked for ($GATE_ROUTE_ATTEMPT) — $seg is not launched"
+      gate_launch_route_drop
+      return "$GATE_EXIT_RULE"
+    fi
+    # ONE ROW PER GRANT, A SEAT OR DORMANT GRANT INCLUDED, after every step
+    # likely to refuse: a row written before a refusal is a lease row nothing
+    # closes. The dispatch id is the lineage string itself, so the row's
+    # derived `계보` is the lease's.
+    gate_stage_lease_row "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_ENV" "$GATE_ROUTE_BIND" || {
+      rrc=$?
+      warn "the \`stage-lease\` row was refused (rc=$rrc) — $seg is not launched"
+      gate_launch_route_drop
+      return "$GATE_EXIT_RULE"
+    }
+  fi
   if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then
     gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
   fi
@@ -19345,9 +19556,21 @@ gate_launch_stage() {
   mkdir -p "$RUN_DIR/log"
   rm -f "$RUN_DIR/$seg.launch.taken"
   nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-  [ -n "$nonce" ] || { warn "could not create the launch nonce ($seg)"; return 1; }
+  [ -n "$nonce" ] || {
+    warn "could not create the launch nonce ($seg)"
+    [ "$routed" = "0" ] || gate_launch_route_drop
+    return 1
+  }
   tmp=$(mktemp "$RUN_DIR/.launch.$seg.XXXXXX")
   printf '%s\n%s\n%s\n' "$nonce" "${GATE_RESUME:-}" "$instr" > "$tmp"
+  # ROUTING ON ADDS FOUR LINES, after the three the supervisor reads by
+  # position: the lineage, the lease nonce (`-` with none), the account (`-` for
+  # a seat) and the config directory. The supervisor is started after this and
+  # cannot ask; everything it needs crosses here.
+  if [ "$routed" = "1" ]; then
+    printf '%s\n%s\n%s\n%s\n' "$GATE_ROUTE_LINEAGE" "${GATE_ROUTE_NONCE:--}" \
+      "$GATE_ROUTE_ACCOUNT" "$GATE_ROUTE_CFG" >> "$tmp"
+  fi
   mv "$tmp" "$RUN_DIR/$seg.launch"
   # THE SUPERVISOR'S PID COMES FROM THE COMMAND SUBSTITUTION AND NEVER FROM
   # `$!`. After a double fork `$!` names the middle process, already dead; the
@@ -19365,7 +19588,17 @@ gate_launch_stage() {
   if [ -z "$sup" ]; then
     warn "the supervisor failed to start ($seg) — the launch token is withdrawn"
     rm -f "$RUN_DIR/$seg.launch"
+    [ "$routed" = "0" ] || gate_launch_route_drop
     return 1
+  fi
+  # THE SUPERVISOR JOINS THE LEASE'S HOLDERS, because this act returns at once
+  # and its own pid stops counting the moment it does. Not fatal: the supervisor
+  # holds itself before it launches anything, and a supervisor already gone is
+  # refused as a holder — both are logged and nothing else.
+  if [ "$routed" = "1" ] && [ -n "$GATE_ROUTE_NONCE" ]; then
+    rrc=0
+    route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_NONCE" "$sup" >/dev/null 2>&1 || rrc=$?
+    [ "$rrc" = "0" ] || log "감독자 임대 보유 rc=$rrc — $seg#$attempt ($GATE_ROUTE_LINEAGE)"
   fi
   # `.sup` and `.sup.start` are the SUPERVISOR's identity, written by this side
   # because the supervisor cannot know its own pid before it exists. The
@@ -19438,6 +19671,27 @@ gate_verb_supervise_stage() {
   # path, so no whitespace stripping; empty means legacy mode.
   local instr
   instr=$(sed -n '3p' "$taken" 2>/dev/null)
+  # ROUTING LINES 4–7: the lineage, the lease nonce, the account and the config
+  # directory, read into memory once — the token's name is reused by the next
+  # attempt, so nothing below reads it again. With routing on all four must be
+  # there (`-` is a value on 5 and 6); with routing off a token that carries
+  # them was written by a dispatch half whose guard disagrees with this one.
+  local routed=0 r_lineage="" r_nonce="" r_acct="" r_cfg="" hrc
+  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+    routed=1
+    r_lineage=$(sed -n '4p' "$taken" 2>/dev/null)
+    r_nonce=$(sed -n '5p' "$taken" 2>/dev/null)
+    r_acct=$(sed -n '6p' "$taken" 2>/dev/null)
+    r_cfg=$(sed -n '7p' "$taken" 2>/dev/null)
+    if [ -z "$r_lineage" ] || [ -z "$r_nonce" ] || [ -z "$r_acct" ] || [ -z "$r_cfg" ]; then
+      warn "the launch token carries no routing lines although routing is on ($seg) — the supervisor is not started"
+      return "$GATE_EXIT_RULE"
+    fi
+    [ "$r_nonce" != "-" ] || r_nonce=""
+  elif [ "$(awk 'END { print NR }' "$taken" 2>/dev/null || printf 0)" -gt 3 ]; then
+    warn "the launch token carries routing lines although routing is off here ($seg) — the routing guard disagrees, and the supervisor is not started"
+    return "$GATE_EXIT_RULE"
+  fi
 
   # THE PIN IS READ, NEVER WRITTEN, HERE. The dispatch half wrote it; a second
   # writer would let the two halves disagree about which attempt this is.
@@ -19499,7 +19753,11 @@ gate_verb_supervise_stage() {
   # gate's own copy on the CLI argv itself.
   local window ac_val ac_flags=""
   ac_val=$(gate_autocompact_argv_value "$kind")
-  window=$(gate_autocompact_effective "$ac_val" "$(gate_settings_file "$kind")" "$PWD")
+  if [ "$routed" = "1" ]; then
+    window=$(gate_autocompact_effective "$ac_val" "$(gate_settings_file "$kind")" "$PWD" "$r_cfg")
+  else
+    window=$(gate_autocompact_effective "$ac_val" "$(gate_settings_file "$kind")" "$PWD")
+  fi
   case "$window" in *"(argv)") ac_flags="--autocompact ${window%(argv)}" ;; esac
 
   # EFFORT AND MODEL COME FROM THE DRIVER'S TABLE, sourced rather than copied, so
@@ -19562,6 +19820,27 @@ gate_verb_supervise_stage() {
   # `bash`, not `/bin/sh`: the wrapper uses `set -o pipefail`, and naming an
   # interpreter on the command line overrides the shebang — on a distribution
   # whose `/bin/sh` is dash the wrapper died at its second line.
+  #
+  # ROUTING ON: THIS PROCESS HOLDS THE LEASE BEFORE IT LAUNCHES ANYTHING. The
+  # dispatch act that took the grant has returned, so without this hold a stage
+  # could run on a lease whose holders are all dead. A stale lease is not
+  # revived (rc 5), and no stage is launched on any answer but 0. Then the
+  # four-line record goes down before the launch — a settlement reads the
+  # account from its fourth line, and it must be there however early the stage
+  # dies — and the wrapper is handed the grant's directory explicitly; the
+  # wrapper itself is not changed.
+  if [ "$routed" = "1" ]; then
+    if [ -n "$r_nonce" ]; then
+      hrc=0
+      route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" "$$" >/dev/null 2>&1 || hrc=$?
+      if [ "$hrc" != "0" ]; then
+        warn "the supervisor could not hold its lease (rc=$hrc, $r_lineage) — the stage is not launched ($seg#$attempt)"
+        return "$GATE_EXIT_RULE"
+      fi
+    fi
+    printf '%s\n%s\n%s\n%s\n' "$window" "$(lane_label_of "$r_cfg")" "${effort:--}" "$r_acct" > "$RUN_DIR/$seg.window"
+    local -x CLAUDE_CONFIG_DIR="$r_cfg"
+  fi
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
@@ -19608,9 +19887,19 @@ gate_verb_supervise_stage() {
   # window and the lane — kept beside the three above so a settlement that runs
   # after this process is gone can still put them on the row. No reader makes
   # its presence a precondition: absent, the row says `(미상)`. The effort and
-  # the routed account are lines 3 and 4 of the same record; this launch writes
-  # neither yet, and one that adds the account writes the effort line first.
-  printf '%s\n%s\n' "$window" "$(gate_lane_label)" > "$RUN_DIR/$seg.window"
+  # the routed account are lines 3 and 4 of the same record; an unrouted launch
+  # writes neither, and the routed one wrote all four before the launch above.
+  if [ "$routed" = "1" ]; then
+    # The stage joins the lease's holders, so the lease outlives this process
+    # if it is killed. Not fatal: this process already holds it.
+    if [ -n "$r_nonce" ]; then
+      hrc=0
+      route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" "$spid" >/dev/null 2>&1 || hrc=$?
+      [ "$hrc" = "0" ] || log "스테이지 임대 보유 rc=$hrc — $seg#$attempt ($r_lineage)"
+    fi
+  else
+    printf '%s\n%s\n' "$window" "$(gate_lane_label)" > "$RUN_DIR/$seg.window"
+  fi
 
   # THE TERM TRAP, NEW WITH THE SUPERVISOR. A person who wants a detached stage
   # to stop kills the CLI pid; a TERM that reaches the supervisor instead is
@@ -19641,8 +19930,21 @@ gate_verb_supervise_stage() {
   # recorder the power to end the supervisor before the row. `|| rec_rc=$?`
   # restores that posture for the whole body and keeps the status for the log.
   local rec_rc=0
-  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" "${effort:--}" || rec_rc=$?
+  if [ "$routed" = "1" ]; then
+    gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" "${effort:--}" "$r_acct" || rec_rc=$?
+  else
+    gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" "${effort:--}" || rec_rc=$?
+  fi
   [ "$rec_rc" = "0" ] || warn "the stage result recorder ended non-zero ($seg#$attempt rc=$rec_rc)"
+  # THE LEASE GOES BACK ONLY ONCE THE TERMINAL ROW IS IN, with the lineage and
+  # nonce this process read from the token at its start. A recorder that failed
+  # leaves the lease to the run's end, so a stage with no row never also loses
+  # the reservation that row would have closed.
+  if [ "$routed" = "1" ] && [ -n "$r_nonce" ] && [ "$rec_rc" = "0" ]; then
+    hrc=0
+    route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" || hrc=$?
+    [ "$hrc" = "0" ] || warn "the lease release ended rc=$hrc ($r_lineage)"
+  fi
   # THE SAME SET THE SETTLEMENT PATH REMOVES, including the three files the
   # dispatch act wrote hours ago — that act returned long since, so this is the
   # only process that can remove them. Removed ONLY when this attempt's
@@ -19835,7 +20137,7 @@ gate_verb_wait() {
 }
 
 gate_record_stage_outcome() {
-  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream] [window] [effort]
+  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream] [window] [effort] [account]
   #
   # Two of the five row kinds that had no writer at all. Their absence was not
   # bookkeeping: `cost` is the only input `gate_b4_cost` has, so the cost
@@ -19871,7 +20173,17 @@ gate_record_stage_outcome() {
   lane=$(gate_lane_sidecar_read "$seg")
   # The account the launch wrote on the record's fourth line, through the one
   # parser both writers use; no fourth line means no `계정` field on the row.
-  acct=$(stage_account_of "$seg")
+  # A routed supervisor hands down the account its launch token carried
+  # instead: the record is named by the segment and a later attempt of the same
+  # segment can have rewritten it while this one ran.
+  # Held to the same rule as the record's line: `-`, an id the account rule
+  # accepts, or `(미상)`.
+  if [ -n "${10:-}" ]; then
+    acct="${10}"
+    [ "$acct" = "-" ] || run_ledger_account_ok "$acct" || acct='(미상)'
+  else
+    acct=$(stage_account_of "$seg")
+  fi
   # THE EFFORT THE LAUNCH PUT ON THE ARGV, handed down like the window; `-` when
   # the switch turned it off or the caller predates the argument. The served
   # model is read from the stream, not handed down: it is what answered, not
@@ -20394,9 +20706,13 @@ gate_transcript_files() {
   # `--resume` sibling-file case is exactly what a pinned path gets wrong. The
   # transcript directory is keyed by cwd and therefore shared with unrelated
   # sessions, so the search is confined to this run's own lineage.
+  #
+  # THE DIRECTORY IS THE RESOLVER'S, not `$HOME/.claude` behind an empty
+  # environment: inside a run the resolver's second tier is the run's own
+  # recorded lane, so a lead started without the variable still reads its own
+  # tree. A caller that sets the variable reads what it read before.
   local dir sid
-  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
-  [ -d "$dir" ] || return 1
+  dir=$(gate_transcript_dir) || return 1
   for sid in $(gate_session_lineage); do
     [ -n "$sid" ] || continue
     find "$dir" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null
@@ -21560,10 +21876,12 @@ gate_transcript_of_session() {
   # The transcript file for one session id, or nothing. Searched by NAME for the
   # same reason `gate_transcript_files` does: the directory is keyed by cwd and
   # shared with unrelated sessions.
+  #
+  # NOT FOUND IS RC 1, so a caller can tell it from a file; every caller takes
+  # the status on the left of `||`, because this file runs under errexit.
   local sid="$1" dir f
-  [ -n "$sid" ] || return 0
-  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
-  [ -d "$dir" ] || return 0
+  [ -n "$sid" ] || return 1
+  dir=$(gate_transcript_dir) || return 1
   # Globbed rather than piped into an early-terminating reader. A reader that
   # stops at the first line kills the writer on its left, and under `pipefail`
   # that turns "found it" into a failed pipeline. The two patterns are the two
@@ -21573,7 +21891,29 @@ gate_transcript_of_session() {
     printf '%s\n' "$f"
     return 0
   done
-  return 0
+  return 1
+}
+
+gate_transcript_dir() {
+  # gate_transcript_dir — the `projects` directory the transcript readers search:
+  # under the directory the resolver names, rc 1 when it refuses or the
+  # directory is not there. The resolver's first tier is the caller's own
+  # environment, so a stage reads its own transcripts.
+  local cfg
+  cfg=$(resolve_account 2>/dev/null) || return 1
+  [ -d "${cfg%/}/projects" ] || return 1
+  printf '%s' "${cfg%/}/projects"
+}
+
+gate_transcript_miss_note() {
+  # gate_transcript_miss_note — one log line per run when a reader found no
+  # transcript and the caller's environment named no directory: the number
+  # that follows is a `0` that means "not found", and the morning reader should
+  # be able to tell it from a measurement. No row.
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || return 0
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  ( set -C; : > "$RUN_DIR/transcript-miss.noted" ) 2>/dev/null || return 0
+  log "트랜스크립트를 찾지 못했다 — 호출자 환경에 설정 디렉터리가 없고 해석된 디렉터리에도 이 세션의 파일이 없다 (런마다 한 번)"
 }
 
 gate_usage_scan() {
@@ -21662,11 +22002,11 @@ gate_router_context() {
     printf '%s' "$v"
     return 0
   fi
-  f=$(gate_transcript_of_session "${CLAUDE_CODE_SESSION_ID:-}")
+  f=$(gate_transcript_of_session "${CLAUDE_CODE_SESSION_ID:-}") || f=""
   if [ -z "$f" ]; then
     f=$( { gate_transcript_files 2>/dev/null || true; } | tail -1)
   fi
-  [ -n "$f" ] && [ -f "$f" ] || { printf '0'; return 0; }
+  [ -n "$f" ] && [ -f "$f" ] || { gate_transcript_miss_note; printf '0'; return 0; }
   v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
   case "${v:-}" in ''|*[!0-9]*) v=0 ;; esac
   printf '%s' "$v"
@@ -21706,7 +22046,7 @@ gate_shift_context_of() {
   local n="$1" f v
   case "$n" in ''|*[!0-9]*) return 0 ;; esac
   [ "$n" -ge 1 ] || return 0
-  f=$(gate_transcript_of_session "$(session_uuid "shift" "$n")")
+  f=$(gate_transcript_of_session "$(session_uuid "shift" "$n")") || f=""
   [ -n "$f" ] && [ -f "$f" ] || return 0
   v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
   case "${v:-}" in ''|*[!0-9]*) return 0 ;; esac
@@ -21722,7 +22062,7 @@ gate_shift_floor() {
   # a 37K..49K summary inside it. The difference is part of what the mechanism
   # buys, and quoting the compaction floor here would erase it.
   local f v
-  f=$(gate_transcript_of_session "${CLAUDE_CODE_SESSION_ID:-}")
+  f=$(gate_transcript_of_session "${CLAUDE_CODE_SESSION_ID:-}") || f=""
   if [ -z "$f" ]; then
     f=$( { gate_transcript_files 2>/dev/null || true; } | tail -1)
   fi

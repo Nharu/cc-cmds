@@ -6046,7 +6046,7 @@ T8_ORIG=$(declare -f resolve_account)
 resolve_account() { printf 'call\n' >> "$T8_COUNT"; printf '%s' "$LD/env"; }
 stage_spawn "t8-implement-a" "$WORK" "prompt" >/dev/null 2>&1
 stage_spawn "t8-implement-b" "$WORK" "prompt" >/dev/null 2>&1
-check "T8a 리졸버가 디스패치마다 해소된다 (런당 1회로 굳지 않는다)" \
+check "T8a 리졸버가 디스패치마다 해소된다 (런당 1회로 굳지 않는다, 가드 0)" \
   "$(grep -c . "$T8_COUNT" || true)" "2"
 eval "$T8_ORIG"
 RUN_DIR="$T8_RUN_SAVE"; CLI_BIN="$T8_CLI_SAVE"
@@ -8721,6 +8721,127 @@ check "드라이버 stage-result 호출부 여섯이 effort 를 싣는다" \
   "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "6"
 check "그 여섯이 서빙 모델도 싣는다" \
   "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "6"
+
+# ---------------------------------------------------------------------------
+# 33. 라우팅 가드 — 기록 비교, 그리고 가드 1 사본의 기동이 임대를 받고 돌려준다
+# ---------------------------------------------------------------------------
+# 출하 가드는 0 이라 위의 기동 시험은 전부 가드 0 갈래다. 여기서는 오케스트레이터
+# 디렉터리를 복사해 그 사본의 가드 줄만 1 로 뒤집고, 사본을 소싱한 자식에서
+# 진짜 `stage_spawn` 을 태운다. HOME·인벤토리·임대 표를 모두 스크래치 아래로 옮긴다
+# — 인벤토리의 계정 디렉터리는 `$HOME/.claude-` 아래여야 하고, 시험이 실제 계정으로
+# 라우팅해서는 안 된다. 단언마다 라우팅된 기동만 쓰는 파일이나 행을 짚으므로, 조용히
+# 0 에 머문 사본은 가드 0 갈래로 통과하지 못하고 여기서 실패한다.
+rg_case() {  # rg_case <driver> <record or -> — routing_guard_check 의 「rc:문면」
+  local d="$WORK/rg-$2"
+  rm -rf "$d"; mkdir -p "$d"
+  [ "$2" = "-" ] || printf '%s\n' "$2" > "$d/routing-guard"
+  bash -c 'rg_drv="$1"; rg_dir="$2"; set --; . "$rg_drv"; set +e
+           RUN_DIR="$rg_dir"; o=$(routing_guard_check); printf "%s:%s" "$?" "$o"' _ "$1" "$d" 2>/dev/null
+}
+check "가드 0 사본과 기록 없음은 오늘 그대로 통과한다 (가드 0)" "$(rg_case "$DRIVER" -)" "0:"
+check "가드 0 사본은 가드 1 이 연 런을 거부한다" "$(rg_case "$DRIVER" 1)" \
+  "1:라우팅 가드 어긋남 — 이 사본의 가드 0, 런 기록 1"
+
+RA="$WORK/route-a"; rm -rf "$RA"
+mkdir -p "$RA/home/.config/cc-lane" "$RA/run/settings" "$RA/run/log" "$RA/pace"
+cp -R "$script_dir" "$RA/orch"
+sed 's/in 0) ;; \*) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac/in 1) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac/' \
+  "$DRIVER" > "$RA/orch/run.sh"
+check "사본의 가드만 1 로 뒤집혔다 (저장소 파일은 0 그대로)" \
+  "$(grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac' "$RA/orch/run.sh" || true)/$(grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac' "$DRIVER" || true)" \
+  "1/1"
+check "가드 1 사본은 기록 1 의 런을 통과시킨다" "$(rg_case "$RA/orch/run.sh" 1)" "0:"
+check "가드 1 사본은 기록이 다른 런을 거부한다" "$(rg_case "$RA/orch/run.sh" 0)" \
+  "1:라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0"
+
+# 래퍼 자리에는 자기가 받은 설정 디렉터리를 적고 잠깐 사는 스텁을 둔다.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${CLAUDE_CONFIG_DIR-unset}" > "$RA_CFG_OUT"' 'sleep 1' \
+  > "$RA/orch/stage-wrapper.sh"
+printf '{}\n' > "$RA/run/settings/implement.json"
+ra_inv() {  # ra_inv <enabled|disabled> <file>
+  jq -cn --arg d "$RA/home/.claude-ra" --arg u "$1" \
+    '{schema: "cc-lane-accounts v1", accounts: [{id: "ra1", config_dir: $d, label: "ra1",
+      interactive_reserved: false, unattended: $u, added_at: 0}]}' > "$2"
+}
+mkdir -p "$RA/home/.claude-ra"
+cat > "$RA/probe.sh" <<'RAEOF'
+ra_drv="$1"; RA_ROOT="$2"; ra_sid="$3"; set --
+. "$ra_drv"
+set +e
+RUN_DIR="$RA_ROOT/run"; ORCH_DIR="$RA_ROOT/orch"; CLI_BIN=/usr/bin/true
+RUN_ID=ra-run; DOC_KEY=ra; GRANT=""; MANIFEST=""; LEDGER="$RA_ROOT/ledger.md"
+home_alias() { printf 'ra'; }
+ra_live() { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$1" 2>/dev/null | jq -r '.account // empty' 2>/dev/null; }
+stage_spawn "$ra_sid" "$RA_ROOT" "prompt" 2>/dev/null; rc=$?
+printf 'rc=%s\n' "$rc"
+printf 'reason=%s\n' "${STAGE_SPAWN_PARK_REASON:-}"
+printf 'window=%s/%s\n' "$( { wc -l < "$RUN_DIR/$ra_sid.window" 2>/dev/null || printf 0; } | tr -d ' ')" \
+  "$(sed -n '4p' "$RUN_DIR/$ra_sid.window" 2>/dev/null)"
+printf 'cfgrec=%s\n' "$(stage_config_dir_of "$ra_sid")"
+printf 'record=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
+printf 'live=%s\n' "$(ra_live "$ra_sid")"
+if [ "$rc" = "0" ]; then
+  stage_collect "$ra_sid"
+  spawn_lease_release "$ra_sid"
+  printf 'after=%s\n' "$(ra_live "$ra_sid")"
+  printf 'record2=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
+fi
+RAEOF
+ra_spawn() {  # ra_spawn <stage-id> — probe 출력 전체
+  env -u CC_PIPELINE_SHIFT_ID -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$RA/home" \
+    RUN_PACE_ROOT="$RA/pace" RA_CFG_OUT="$RA/cfg-out" \
+    bash "$RA/probe.sh" "$RA/orch/run.sh" "$RA" "$1" 2>/dev/null
+}
+ra_get() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+printf '# 원장 픽스처\n\n## 실행 ra-run\n\n' > "$RA/ledger.md"
+printf '1\n' > "$RA/run/routing-guard"
+ra_inv enabled "$RA/run/inventory.json"
+
+# 계정 부여 — 창 넷째 줄, 시도의 설정 디렉터리 기록, 임대 기록, 살아 있는 임대,
+# 래퍼 환경, `stage-lease` 행, 종단 뒤 반납.
+ra_out=$(ra_spawn "S4:segA:1")
+check "가드 1 기동이 성공한다" "$(ra_get "$ra_out" rc)" "0"
+check "창 기록이 네 줄이고 넷째 줄이 부여 계정이다" "$(ra_get "$ra_out" window)" "4/ra1"
+check "시도의 설정 디렉터리가 기록되고 드라이버 판독기가 그것을 읽는다" "$(ra_get "$ra_out" cfgrec)" "$RA/home/.claude-ra"
+check "부여 난스가 반납용으로 기록된다" "$(ra_get "$ra_out" record)" "yes"
+check "기동 직후 계보의 임대가 살아 있다" "$(ra_get "$ra_out" live)" "ra1"
+check "래퍼가 부여된 디렉터리를 CLAUDE_CONFIG_DIR 로 받는다" "$(cat "$RA/cfg-out" 2>/dev/null)" "$RA/home/.claude-ra"
+check "종단 반납 뒤 임대가 사라진다" "$(ra_get "$ra_out" after)" ""
+check "반납이 끝나면 기록도 지워진다" "$(ra_get "$ra_out" record2)" "no"
+case "$( { grep '^- `stage-lease`' "$RA/ledger.md" || true; } | tail -1)" in
+  *"| 파견 id=S4:segA:1 | 계보=S4:segA:1 | 계정=ra1 | 레인=~/.claude-ra | "*"| 근거=first | "*)
+    ok "드라이버 기동이 게이트의 행 빌더로 stage-lease 행을 쓴다" ;;
+  *) bad "stage-lease 행" "$(tail -1 "$RA/ledger.md")" ;;
+esac
+rc=0; bash -c 'g="$1"; l="$2"; set --; CC_GATE_SOURCE_ONLY=1 . "$g" >/dev/null 2>&1; set +e
+               unset CC_GATE_SOURCE_ONLY; LEDGER="$l"; RUN_DIR="${l%/*}"; RUN_ID=ra-run; gate_chain_verify' \
+  _ "$RA/orch/gate.sh" "$RA/ledger.md" >/dev/null 2>&1 || rc=$?
+check "드라이버가 쓴 stage-lease 행이 원장 사슬을 끊지 않는다" "$rc" "0"
+
+# 부여 뒤 이른 반환(설정 파일 없음 78)은 이 기동이 만든 임대를 돌려준다.
+mv "$RA/run/settings/implement.json" "$RA/run/settings/implement.json.off"
+ra_out=$(ra_spawn "S4:segC:1")
+check "설정이 없으면 78 이다" "$(ra_get "$ra_out" rc)" "78"
+check "그 이른 반환은 발행한 임대를 반납한다" "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)" "/no"
+mv "$RA/run/settings/implement.json.off" "$RA/run/settings/implement.json"
+
+# PARK 와 가드 어긋남은 그 스테이지만 park 할 코드로 돌아오고 아무것도 띄우지 않는다.
+ra_inv disabled "$RA/run/inventory.json"
+ra_out=$(ra_spawn "S4:segP:1")
+check "라우터 PARK 는 park 코드 79 다" "$(ra_get "$ra_out" rc)" "79"
+case "$(ra_get "$ra_out" reason)" in
+  *"라우터 판정 PARK no-enabled-account"*) ok "PARK 사유가 라우터 판정을 싣는다" ;;
+  *) bad "PARK 사유" "$(ra_get "$ra_out" reason)" ;;
+esac
+check "PARK 는 창 기록도 pid 도 남기지 않는다" \
+  "$(ra_get "$ra_out" window)/$( [ -e "$RA/run/S4:segP:1.pid" ] && printf pid || printf -- -)" "0//-"
+ra_inv enabled "$RA/run/inventory.json"
+printf '0\n' > "$RA/run/routing-guard"
+ra_out=$(ra_spawn "S4:segQ:1")
+check "가드 기록이 다르면 park 코드 79 다" "$(ra_get "$ra_out" rc)" "79"
+check "그 사유가 어긋남을 말한다" "$(ra_get "$ra_out" reason)" "라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0"
+check "가드 어긋남은 임대를 묻지도 않는다" "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)" "/no"
+printf '1\n' > "$RA/run/routing-guard"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

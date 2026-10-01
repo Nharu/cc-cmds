@@ -91,10 +91,10 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `readonly` constants only, because the gate sources this file on every entry
 # and inherits whatever the router puts at top level. This driver calls
 # `route_inventory_check` and `route__jq_lib`, from `rundir_init`, to check
-# the run's inventory baseline; neither reads a switch. Nothing here resolves
-# a route yet: the switch below keeps the router dormant, and
-# `route_resolve` reads it with a `:-0` default so a shell that sources
-# `route.sh` alone can never turn routing on.
+# the run's inventory baseline; neither reads a switch. `stage_spawn` resolves
+# every launch through `route_resolve`, and the switch below keeps that answer
+# the dormant envelope; `route_resolve` reads it with a `:-0` default so a
+# shell that sources `route.sh` alone can never turn routing on.
 # shellcheck source=/dev/null
 . "$ORCH_DIR/route.sh"
   # 라우팅을 켜는 변경이 이 줄의 두 자리의 0 을 1 로 뒤집으며, 줄을 지우지 않는다.
@@ -2825,6 +2825,46 @@ rundir_init() {
       || die "런 디렉터리에 오케스트레이터 기록을 쓰지 못했습니다: $RUN_DIR/orchestrator-dir"
   fi
   rundir_inventory_snapshot
+  routing_guard_record
+}
+
+# ---------------------------------------------------------------------------
+# The run's routing guard. One run has one guard value, and the record below is
+# how the two launch sites — the driver's `stage_spawn` and the gate's
+# `gate_launch_stage` — find out whether they agree on it. Each side opens the
+# run with its own copy of this file: the driver runs the live checkout, the
+# gate runs the pinned copy under the run directory, and the driver's child
+# shells source the live gate. Three copies can disagree, and a run that routes
+# half its stages and seats the other half cannot be read in the morning.
+#
+# WRITTEN ONCE, BY WHOEVER OPENS THE RUN WITH THE GUARD ON. Exclusive create
+# under noclobber, so a second opener never rewrites it; nothing writes it at a
+# launch. A guard-0 opener writes nothing, which is exactly today's run
+# directory.
+# ---------------------------------------------------------------------------
+routing_guard_record() {
+  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  [ -n "${RUN_DIR:-}" ] || return 0
+  ( set -C; printf '1\n' > "$RUN_DIR/routing-guard" ) 2>/dev/null || true
+  return 0
+}
+
+routing_guard_check() {
+  # routing_guard_check — 0 when this copy's guard agrees with the run's record,
+  # 1 with the reason on stdout when it does not. Agreement is 1 with a record
+  # of `1`, or 0 with no record at all; every other pair refuses the launch. The
+  # caller writes the reason to the ledger and parks the stage — a silent
+  # failure would be read as a crashed stage and retried into the same refusal.
+  local mine="${ROUTE_ROUTING_BUILD_COMPLETE:-0}" rec="없음"
+  if [ -e "${RUN_DIR:-}/routing-guard" ]; then
+    rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
+    rec=${rec:-빈 값}
+  fi
+  case "$mine:$rec" in
+    1:1|0:없음) return 0 ;;
+  esac
+  printf '라우팅 가드 어긋남 — 이 사본의 가드 %s, 런 기록 %s' "$mine" "$rec"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -3602,6 +3642,281 @@ account_has_headroom() {
 }
 
 # ---------------------------------------------------------------------------
+# The driver's half of account routing: what `stage_spawn` asks the router, the
+# lease a grant leaves behind, and when that lease goes back.
+#
+# EVERY LEASE CALL IS `|| rc=$?`. A bare call under `set -e` turns a lock
+# timeout or a refused holder into the driver's death, and a lease is never
+# worth the run.
+#
+# THE LEASE TABLE IS `run_pace_root`'s, always — the same root the router
+# reads, so a fixture that isolates the pace root isolates the leases with it.
+# ---------------------------------------------------------------------------
+
+# A launch the router did not grant, or the guard record refused. 127 and 78
+# already belong to `stage_spawn` (no CLI, no settings), and a caller reads
+# either of those as a failure of the launch itself; this one says the launch
+# was declined and why, in STAGE_SPAWN_PARK_REASON, and the caller parks that
+# stage alone rather than reading a crash and retrying into the same answer.
+readonly STAGE_SPAWN_PARK_RC=79
+
+spawn_route_request() {
+  # spawn_route_request <lineage> <event> <kind> <bound account or empty> — the
+  # router request for one launch. The holder is this driver: `$$` inside a
+  # command substitution is still the parent's pid, which is the point.
+  jq -cn --arg run "$RUN_ID" --arg lin "$1" --arg ev "$2" --arg kind "$3" --arg bound "${4:-}" \
+    --argjson pid "$$" \
+    '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
+      bound_account: (if $bound == "" then null else $bound end)}'
+}
+
+spawn_did_segment() {
+  # spawn_did_segment <dispatch id> — the `세그먼트` this dispatch's rows carry:
+  # the second colon field of a segment dispatch (`S4:<seg>:<cycle>` and its
+  # kin), `-` for a run-scope stage.
+  case "$1" in
+    *:*) printf '%s' "$1" | cut -d: -f2 ;;
+    *) printf '%s' '-' ;;
+  esac
+}
+
+run_gate_call() {
+  # run_gate_call <function> [args...] — one gate function, run in a child shell
+  # that sources the gate. The gate's row builders are defined once, there; a
+  # driver row built from the same function and the same arguments is the same
+  # bytes as the gate's. Sourced in a child for the reason `absorb_stage_judgment`
+  # states: sourcing re-initializes this shell's run state.
+  local gate="$ORCH_DIR/gate.sh"
+  [ -f "$gate" ] || { warn "게이트 파일이 없습니다 — $gate"; return 9; }
+  CC_GATE_SOURCE_ONLY=1 bash -c '
+    g=$1; mf=$2; rid=$3; rd=$4; led=$5; gr=$6; shift 6
+    cc_gate_call_argv=("$@")
+    set --
+    . "$g" >/dev/null 2>&1 || exit 9  # lint-harness-global-collisions: child-shell
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    MANIFEST=$mf; RUN_ID=$rid; RUN_DIR=$rd; LEDGER=$led; GRANT=$gr
+    "${cc_gate_call_argv[@]}"
+  ' _ "$gate" "$MANIFEST" "$RUN_ID" "$RUN_DIR" "$LEDGER" "$GRANT" "$@"
+}
+
+spawn_resume_binding() {
+  # spawn_resume_binding <dispatch id> <session id> — the binding the rows that
+  # recorded this session carry: an account, `-` for a seat, or nothing. A
+  # session no row records, and rows that disagree, are both "nothing" here;
+  # the grant check after the router is what refuses them.
+  local seg out rc=0
+  seg=$(spawn_did_segment "$1")
+  out=$(run_gate_call gate_resume_binding_of "$seg" "$2") || rc=$?
+  [ "$rc" = "0" ] || return 0
+  printf '%s' "$out"
+}
+
+spawn_route_grant() {
+  # spawn_route_grant <dispatch id> — routing on: ask the router for this launch
+  # and leave the answer in SPAWN_ENV, SPAWN_LINEAGE, SPAWN_NONCE (empty when the
+  # grant carries no lease), SPAWN_ACCOUNT (`-` for a seat), SPAWN_MINTED (1 when
+  # this call made the lease rather than sitting back on its lineage's live one)
+  # and SPAWN_BIND (the resume binding as the rows recorded it). Called in this
+  # shell, never in a substitution, because it sets those.
+  #
+  # THE EVENT IS THE CALLER'S, through CC_SPAWN_EVENT on the call, `first` when
+  # unset: only the call site knows whether this is a crash retry, a limit
+  # reclaim or a resume, and the router answers each differently.
+  #
+  # 0 on a grant the launch may use. STAGE_SPAWN_PARK_RC, with the reason in
+  # STAGE_SPAWN_PARK_REASON, on a WAIT or a PARK and on a resume its binding does
+  # not allow — checked whatever the envelope's basis, because the router's
+  # live-lease branch hands back the lease's account without reading the
+  # binding. A resolver that fails is the same stop it always was.
+  local did="$1" event="${CC_SPAWN_EVENT:-first}" kind req prior env verdict reqbind="" dormant
+  SPAWN_ENV=""; SPAWN_NONCE=""; SPAWN_ACCOUNT="-"; SPAWN_MINTED=0; SPAWN_BIND=""
+  SPAWN_LINEAGE=$(route_lineage_of "$did")
+  kind=$(stage_kind_of "$did")
+  if [ "$event" = "resume" ]; then
+    SPAWN_BIND=$(spawn_resume_binding "$did" "${STAGE_RESUME:-}")
+    case "$SPAWN_BIND" in ''|-) ;; *) reqbind=$SPAWN_BIND ;; esac
+  fi
+  req=$(spawn_route_request "$SPAWN_LINEAGE" "$event" "$kind" "$reqbind") \
+    || die "라우터 요청을 만들지 못했습니다 — $did 를 띄우지 않습니다"
+  prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$SPAWN_LINEAGE" 2>/dev/null || true; } \
+           | { jq -r '.nonce // empty' 2>/dev/null || true; })
+  env=$(route_resolve "$req") || die "계정 리졸버가 정지했습니다 — $did 를 띄우지 않습니다"
+  verdict=$(printf '%s' "$env" | jq -r '.verdict // ""' 2>/dev/null || true)
+  case "$verdict" in
+    GRANT) ;;
+    WAIT|PARK)
+      STAGE_SPAWN_PARK_REASON=$(printf '%s' "$env" | jq -r '"라우터 판정 \(.verdict) \(.reason // "-")"
+        + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null) \
+        || STAGE_SPAWN_PARK_REASON="라우터 판정 $verdict"
+      warn "$did: $STAGE_SPAWN_PARK_REASON — 띄우지 않습니다"
+      return "$STAGE_SPAWN_PARK_RC" ;;
+    *) die "라우터가 판정 없는 봉투를 냈습니다 — $did 를 띄우지 않습니다" ;;
+  esac
+  SPAWN_ENV=$env
+  SPAWN_NONCE=$(printf '%s' "$env" | jq -r '.nonce // empty')
+  SPAWN_ACCOUNT=$(printf '%s' "$env" | jq -r '.account // "-"')
+  if [ -n "$SPAWN_NONCE" ]; then
+    [ "$SPAWN_NONCE" = "$prior" ] || SPAWN_MINTED=1
+    spawn_lease_note "$did" "$SPAWN_LINEAGE" "$SPAWN_NONCE" \
+      || warn "$did: 임대 기록을 쓰지 못했다 — 종단 반납이 이 임대를 찾지 못한다"
+  fi
+  if [ "$event" = "resume" ] && ! run_gate_call gate_resume_grant_ok "$SPAWN_BIND" "$env"; then
+    dormant=$(printf '%s' "$env" | jq -r 'if .dormant == true then "1" else "0" end')
+    if [ "$dormant" = "1" ] && [ -n "$SPAWN_BIND" ] && [ "$SPAWN_BIND" != "-" ]; then
+      STAGE_SPAWN_PARK_REASON="휴면 구속 — 세션 ${STAGE_RESUME:-} 은 계정 $SPAWN_BIND 에 구속돼 있으나 라우터가 휴면 봉투를 냈다"
+    else
+      STAGE_SPAWN_PARK_REASON="재부착 구속 불일치 — 구속 ${SPAWN_BIND:-(없음)}, 봉투 계정 $SPAWN_ACCOUNT"
+    fi
+    warn "$did: $STAGE_SPAWN_PARK_REASON — 띄우지 않습니다"
+    spawn_lease_drop "$did" "$SPAWN_MINTED"
+    return "$STAGE_SPAWN_PARK_RC"
+  fi
+  return 0
+}
+
+spawn_lease_note() {
+  # spawn_lease_note <dispatch id> <lineage> <nonce> — where the release finds
+  # the grant: the launch returns at once and the terminal row is written by
+  # another function much later, so the nonce has to outlive this call.
+  # Same-directory temporary and `mv`, so a reader never sees half a record.
+  local f="$RUN_DIR/$1.lease"
+  local tmp="$f.tmp.$$"
+  { printf '%s\n%s\n' "$2" "$3" > "$tmp" && mv -f "$tmp" "$f"; } || { rm -f "$tmp" 2>/dev/null; return 1; }
+}
+
+spawn_lease_drop() {
+  # spawn_lease_drop <dispatch id> <minted 0|1> — a launch that stops after the
+  # grant and before the spawn. Releases only a lease this launch minted: a
+  # retry that sat back on its lineage's live lease hands back nothing, because
+  # the lease is the earlier dispatch's.
+  local f="$RUN_DIR/$1.lease" lin nonce rc=0
+  if [ "${2:-0}" = "1" ] && [ -f "$f" ]; then
+    lin=$(sed -n '1p' "$f"); nonce=$(sed -n '2p' "$f")
+    route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" || rc=$?
+    [ "$rc" = "0" ] || warn "$1: 임대 반납이 rc=$rc 로 끝났다"
+  fi
+  rm -f "$f"
+  return 0
+}
+
+spawn_lease_release() {
+  # spawn_lease_release <dispatch id> — hand back this dispatch's grant after its
+  # terminal row. Compare-and-delete on the nonce the launch recorded, so a lease
+  # another dispatch has since taken on the same lineage is left alone; the
+  # record goes only when the release answered 0, which makes a second call a
+  # no-op. A stage still running keeps its lease — its pid is a holder and the
+  # reservation is really in use; the run's end collects that record.
+  local did="$1" f lin nonce rc=0
+  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  f="$RUN_DIR/$did.lease"
+  if [ ! -f "$f" ]; then
+    log "$did: 반납할 임대 기록이 없다 — 반납하지 않는다"
+    return 0
+  fi
+  if stage_alive "$did"; then
+    log "$did: 스테이지가 아직 돌고 있어 임대를 반납하지 않는다"
+    return 0
+  fi
+  lin=$(sed -n '1p' "$f"); nonce=$(sed -n '2p' "$f")
+  route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" || rc=$?
+  if [ "$rc" = "0" ]; then
+    rm -f "$f"
+  else
+    warn "$did: 임대 반납이 rc=$rc 로 끝났다 — 기록을 남겨 둔다"
+  fi
+  return 0
+}
+
+spawn_lineage_release() {
+  # spawn_lineage_release <dispatch id> — the end of a lineage: the dispatch and
+  # every `.retry` of it that holds a record. A crash retry sits back on the same
+  # lease and a limit reclaim replaces it, so the family is released together
+  # where the lineage ends, not after the first row.
+  local base f n=0
+  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  base=$(route_lineage_of "$1")
+  for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease; do
+    [ -f "$f" ] || continue
+    n=$((n + 1))
+    spawn_lease_release "$(basename "$f" .lease)"
+  done
+  [ "$n" -gt 0 ] || log "$base: 반납할 임대 기록이 없다 — 반납하지 않는다"
+  return 0
+}
+
+spawn_lease_release_target() {
+  # spawn_lease_release_target <park target> — after a park's row: every record
+  # of a dispatch the target names, as the dispatch itself, its lineage, or its
+  # segment. Quiet when there is none — most parks follow no launch.
+  local target="$1" f did
+  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  for f in "$RUN_DIR"/*.lease; do
+    [ -f "$f" ] || continue
+    did=$(basename "$f" .lease)
+    if [ "$did" = "$target" ] || [ "$(route_lineage_of "$did")" = "$target" ] \
+       || [ "$(spawn_did_segment "$did")" = "$target" ]; then
+      spawn_lease_release "$did"
+    fi
+  done
+  return 0
+}
+
+spawn_lease_release_run() {
+  # spawn_lease_release_run — the run's end, after the collector. Every lease the
+  # run still holds, and every record left behind, but only when no stage or
+  # supervisor of this run is alive: a park that left its stage running kept
+  # that lease on purpose.
+  local f p rc=0
+  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  for f in "$RUN_DIR"/*.pid "$RUN_DIR"/*.sup; do
+    [ -f "$f" ] || continue
+    p=$(sed -n '1p' "$f" 2>/dev/null || true)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+      log "런 임대를 거두지 않는다 — $(basename "$f") 의 프로세스가 아직 살아 있다"
+      return 0
+    fi
+  done
+  route_lease_release_run "$(run_pace_root)/leases" "$RUN_ID" || rc=$?
+  if [ "$rc" != "0" ]; then
+    warn "런 임대 회수가 rc=$rc 로 끝났다"
+    return 0
+  fi
+  for f in "$RUN_DIR"/*.lease; do
+    [ -f "$f" ] && rm -f "$f"
+  done
+  return 0
+}
+
+reclaim_has_other_account() {
+  # reclaim_has_other_account <stage-id> — the last term of the limit-shape reap.
+  # With routing off, or with routing on and no inventory, it is
+  # `account_has_headroom` itself. With a broken inventory it is no: the router
+  # would park the re-dispatch, so the reap would buy nothing. With a valid one
+  # it asks the router, without its lock and without touching the table, the
+  # question the re-dispatch will ask — the same lineage under `limit-reclaim`,
+  # which leaves the exhausted account out — and says yes only when that answer
+  # is a known-room grant on an account other than the one this stage runs on.
+  # An account the router admits without knowing its usage is not room.
+  local s="$1" inv irc=0 req env prev
+  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || { account_has_headroom; return $?; }
+  inv="$RUN_DIR/inventory.json"
+  [ -e "$inv" ] || { account_has_headroom; return $?; }
+  route_inventory_check "$inv" 2>/dev/null || irc=$?
+  case "$irc" in
+    0) ;;
+    1) return 1 ;;
+    *) account_has_headroom; return $? ;;
+  esac
+  req=$(spawn_route_request "$(route_lineage_of "$s")" limit-reclaim "$(stage_kind_of "$s")" "") || return 1
+  env=$(route_gather_context "$req" "$(resolve_account 2>/dev/null)" | route_decide 2>/dev/null) || return 1
+  prev=$(sed -n '4p' "$RUN_DIR/$s.window" 2>/dev/null || true)
+  printf '%s' "$env" | jq -e --arg prev "$prev" '
+    .verdict == "GRANT" and .basis == "reassigned-after-limit" and .admitted_as == "known"
+    and (.dormant != true) and ((.account // "") != "") and (.account != $prev)' >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
 # Notification seat. Three operations. `can_send` is a ONE-TIME adapter choice
 # at run start, never a per-call gate: a per-call probe is exactly where
 # fail-open dies, because an ambiguous probe reads as "cannot send" and that
@@ -3699,6 +4014,10 @@ park() {
     "사유=$reason" "관측=$observed" "재개 명령=$recmd"
   report_append "보류" "$target — [$scope/$cause] $reason — $observed"
   log "park: $target ($scope/$cause · $reason)"
+  # The park row is the terminal row of whatever it names, so the leases of the
+  # dispatches it names go back here. A stage the park leaves running keeps its
+  # own; `spawn_lease_release` checks.
+  spawn_lease_release_target "$target"
 }
 
 # ---------------------------------------------------------------------------
@@ -4121,7 +4440,17 @@ transcript_path() {
   # substitutes the empty string and `find /projects` is an ordinary miss — the
   # fail-closed tier would report "no transcript" in exactly the case it exists
   # to make loud. The resolver has already named the reason on stderr.
-  cfg=$(resolve_account) || return 1
+  #
+  # WITH ROUTING ON, THE ATTEMPT'S OWN DIRECTORY, NOT THE RUN'S SEAT. A routed
+  # stage writes its transcript under the account it was handed, which the
+  # resolver here cannot know; the launch recorded that directory beside the
+  # pid. No record is no transcript — resolving instead would watch the seat's
+  # tree for a file that is written somewhere else.
+  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+    cfg=$(stage_config_dir_of "$stage") || return 1
+  else
+    cfg=$(resolve_account) || return 1
+  fi
   p=$(find "$cfg/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s\n' "$p" > "$cachef"
@@ -4138,10 +4467,10 @@ transcript_path() {
 # `(argv)`. The value is written to `<stage>.window` beside the pid record, and
 # read back onto the `stage-result` row; a row for a stage that was never
 # spawned reads `(미상)`. The record has four lines: 1 the window, 2 the lane in
-# tilde form, 3 the effort the launch put on the argv (only the driver's launch
-# writes it today), 4 the routed account, which nothing writes until routing
-# launches stages. A launch that writes line 4 fills line 3 first, the gate's
-# two-line launch included — an account on line 3 would be read as the effort.
+# tilde form, 3 the effort the launch put on the argv, 4 the routed account,
+# which only a routed launch writes. A launch that writes line 4 fills line 3
+# first — an account on line 3 would be read as the effort — so the gate's
+# unrouted launch keeps its two lines and its routed launch writes all four.
 lane_label_of() {
   # lane_label_of <config-dir> — `$HOME` prefix as `~`, anything else as is.
   local d="${1%/}"
@@ -4257,6 +4586,18 @@ stage_account_of() {
   else
     printf '%s' '(미상)'
   fi
+}
+
+stage_config_dir_of() {
+  # stage_config_dir_of <stage-id> — the config directory a routed launch handed
+  # this stage, line 1 of `<stage>.config-dir`. Return 1 when there is no
+  # record: an unrouted launch writes none, and a reader that resolved the seat
+  # instead would look in a tree the stage never wrote to.
+  local f="${RUN_DIR:-}/$1.config-dir" v
+  [ -s "$f" ] || return 1
+  v=$(sed -n '1p' "$f")
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
 }
 
 # --- stage kind: which settings variant a driver-spawned id runs under --------
@@ -4385,17 +4726,42 @@ stage_spawn() {
   # is the oracle the resume table already specifies, so using it here avoids a
   # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
-  local cfg out err pid pgid attempt
+  local cfg out err pid pgid attempt env why
+  # THE GUARD RECORD IS COMPARED BEFORE THE ROUTER IS ASKED. A copy whose guard
+  # disagrees with the run's record would route a run the other side seats, or
+  # the reverse; the launch is declined and the caller parks this stage.
+  STAGE_SPAWN_PARK_REASON=""
+  if ! why=$(routing_guard_check); then
+    warn "$stage: $why — 띄우지 않습니다"
+    STAGE_SPAWN_PARK_REASON="$why"
+    return "$STAGE_SPAWN_PARK_RC"
+  fi
   # A stage is never launched on an unresolved lane. The resolver refuses only
   # when a recorded path is broken rather than absent, and launching anyway
   # would put this stage on whichever lane the empty string happens to name.
+  # The router calls that resolver exactly once and, dormant, hands its answer
+  # back unchanged as the envelope's directory.
   #
   # `out` is NOT assigned here. It is derived from the pinned attempt further
   # down, and assigning it from an unpinned path first would leave two spellings
   # of the same log in one dispatch.
-  cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
+  local routed=0 lineage="" nonce="" acct="-" minted=0 bind="" lrc
+  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+    routed=1
+    spawn_route_grant "$stage" || return $?
+    env=$SPAWN_ENV; lineage=$SPAWN_LINEAGE; nonce=$SPAWN_NONCE; acct=$SPAWN_ACCOUNT
+    minted=$SPAWN_MINTED; bind=$SPAWN_BIND
+    cfg=$(printf '%s' "$env" | jq -j '.config_dir')
+  else
+    env=$(route_resolve '{}') || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
+    cfg=$(printf '%s' "$env" | jq -j '.config_dir')
+  fi
 
-  [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
+  [ -n "$CLI_BIN" ] || {
+    warn "CLI 바이너리를 찾지 못했습니다"
+    [ "$routed" = "0" ] || spawn_lease_drop "$stage" "$minted"
+    return 127
+  }
   # All four are verdicts about the PREVIOUS holder of this id; a re-spawn
   # under the same id must not inherit any of them.
   #
@@ -4438,7 +4804,22 @@ stage_spawn() {
   stage_settings="$RUN_DIR/settings/$kind.json"
   if [ ! -f "$stage_settings" ]; then
     warn "스테이지 설정이 없습니다: $stage_settings — 게이트가 런 개시 시 만듭니다"
+    [ "$routed" = "0" ] || spawn_lease_drop "$stage" "$minted"
     return 78
+  fi
+  # ONE `stage-lease` ROW PER GRANT, BEFORE THE SPAWN, written by the gate's own
+  # builder in a child shell so this row and the gate's are the same bytes. A
+  # seat or dormant grant gets one too: with routing on, every launch says which
+  # account it was handed. A refused row is no launch.
+  if [ "$routed" = "1" ]; then
+    lrc=0
+    run_gate_call gate_stage_lease_row "$stage" "$env" "$bind" || lrc=$?
+    if [ "$lrc" != "0" ]; then
+      warn "$stage: stage-lease 행을 쓰지 못했다 (rc=$lrc) — 띄우지 않습니다"
+      spawn_lease_drop "$stage" "$minted"
+      STAGE_SPAWN_PARK_REASON="stage-lease 행 기록 거부 (rc=$lrc)"
+      return "$STAGE_SPAWN_PARK_RC"
+    fi
   fi
 
   # BOTH STREAMS ARE OPENED FOR APPEND, NEVER FOR TRUNCATION. Truncation is a
@@ -4521,14 +4902,25 @@ stage_spawn() {
   # and cwd the wrapper is about to be handed, and recorded before the launch so
   # the row can carry it whatever the stage does next. The effort rides the same
   # record as line 3, from the same reading the argv gets — line 4, the routed
-  # account, goes after it and is not written yet — and the flags go on
-  # the fresh and the re-attached launch alike: a resumed session does not keep
-  # the effort it was started with.
+  # account (`-` for a seat), is written only with routing on — and the flags
+  # go on the fresh and the re-attached launch alike: a resumed session does
+  # not keep the effort it was started with.
+  #
+  # WITH ROUTING ON, THE DIRECTORY THE ATTEMPT RUNS UNDER IS RECORDED TOO, for
+  # the transcript readers: the stage writes its transcript under the account
+  # it was handed, and nothing else in this run directory says which.
   local launch_flags effort
   effort=$(stage_effort_of "$kind")
   launch_flags=$(stage_launch_flags "$kind")
-  printf '%s\n%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
-    "${effort:--}" > "$RUN_DIR/$stage.window"
+  if [ "$routed" = "1" ]; then
+    printf '%s\n%s\n%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
+      "${effort:--}" "$acct" > "$RUN_DIR/$stage.window"
+    write_run_record "$RUN_DIR/$stage.config-dir" "$cfg" \
+      || warn "$stage: 시도의 설정 디렉터리 기록을 쓰지 못했다 — 트랜스크립트 판독기가 찾지 못한다"
+  else
+    printf '%s\n%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
+      "${effort:--}" > "$RUN_DIR/$stage.window"
+  fi
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -4543,6 +4935,15 @@ stage_spawn() {
         >> "$out" 2>> "$err" < /dev/null ) &
   pid=$!
   set +m
+  # THE CHILD HOLDS THE LEASE FROM HERE, beside this driver. The window between
+  # the spawn and this line is the one where a dying driver leaves the stage on
+  # a lease nobody holds; it is as short as this ordering can make it. A failed
+  # hold is logged and the stage runs — the grant already counted it.
+  if [ -n "$nonce" ]; then
+    lrc=0
+    route_lease_hold "$(run_pace_root)/leases" "$RUN_ID" "$lineage" "$nonce" "$pid" >/dev/null 2>&1 || lrc=$?
+    [ "$lrc" = "0" ] || log "$stage: 스테이지 pid 보유가 rc=$lrc 로 끝났다 — 스테이지는 그대로 돈다"
+  fi
 
   pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
   # The gate's spawn leaves a start-time fingerprint and the shared liveness
@@ -4629,7 +5030,7 @@ stage_wait_all() {
             # wrong name. `reap_mark` writes the reason down before the signal
             # goes out; the classifier reads it and answers `한도-형상 회수`, and
             # the consumers dispose of that class under its own name.
-            if backoff_served "$s" && kill_permitted "$s" && account_has_headroom; then
+            if backoff_served "$s" && kill_permitted "$s" && reclaim_has_other_account "$s"; then
               log "$s: 한도 형상이 백오프 한 단을 넘겨 지속 + 여유 계정 — 회수(reap)하고 종단 부류 「한도-형상 회수」로 남긴다; 소비자가 그 부류로 처분한다"
               reap_mark "$s" "여유 계정"
               reap_orphan "$s"; backoff_reset "$s"
@@ -5031,12 +5432,19 @@ stream_last_num_turns() {
 }
 
 transcript_of_session() {
-  # transcript_of_session <session id> — the transcript the harness keeps for
-  # that session, found by the id a row recorded rather than one an attempt
-  # number derives. Return 1 when there is none.
-  local sid="$1" cfg p
+  # transcript_of_session <session id> [<stage id>] — the transcript the harness
+  # keeps for that session, found by the id a row recorded rather than one an
+  # attempt number derives. Return 1 when there is none. With routing on, the
+  # directory is the one the named stage's attempt ran under, as in
+  # `transcript_path`; without the stage there is nothing to read.
+  local sid="$1" stage="${2:-}" cfg p
   case "$sid" in ''|미상) return 1 ;; esac
-  cfg=$(resolve_account 2>/dev/null) || return 1
+  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+    [ -n "$stage" ] || return 1
+    cfg=$(stage_config_dir_of "$stage") || return 1
+  else
+    cfg=$(resolve_account 2>/dev/null) || return 1
+  fi
   p=$(find "$cfg/projects" -name "$sid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s' "$p"
@@ -6378,7 +6786,12 @@ review_recover() {
   reaped=$(cat "$RUN_DIR/$sid.reaped" 2>/dev/null || printf '')
   reaped="${reaped##* }"
   [ -n "$reaped" ] || reaped=미상
-  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\""
+  local src=0
+  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\"" || src=$?
+  if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+    park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+  fi
+  [ "$src" = "0" ] || (exit "$src")
   stage_wait_all "$rsid"
   rc=$(cat "$RUN_DIR/$rsid.rc" 2>/dev/null || printf '1')
   if predicate_review "$rp"; then pred=0; else pred=1; fi
@@ -6392,6 +6805,7 @@ review_recover() {
   absorb_stage_judgment "$rsid" "$seg" "$(seg_alias "$seg")"
   [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
       "리뷰 복구 종단 부류 $rclass — 부분 계층 복구는 종료 술어 줄을 내지 않는다"; return 1; }
+  spawn_lineage_release "$rsid"
   return 0
 }
 
@@ -6496,8 +6910,18 @@ segment_cycle() {
       prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 그리고 끝내기 전에 반드시 같은 판단을 다시 방출하라 — 같은 \`판단 기준\`·\`판단 근거\`로 재제출해야 게이트가 닫힌 승인의 상태를 읽어 \`해소 승인=$aj_id\` 를 담은 \`자율 승인\` 행을 남긴다. 그 행이 없으면 이 답은 소비되지 않은 것으로 남아 다음 사이클에 같은 스테이지가 같은 답을 다시 받는다. 선언 파일: $files"
       log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
     fi
-    stage_spawn "$sid" "$wt" "$prompt"
+    # THE ROUTER'S EVENT IS NAMED HERE, at the call: a re-attached answer is a
+    # resume, everything else on this line is a first dispatch.
+    local spawn_event=first src=0
+    [ -z "$STAGE_RESUME" ] || spawn_event=resume
+    CC_SPAWN_EVENT=$spawn_event stage_spawn "$sid" "$wt" "$prompt" || src=$?
     STAGE_RESUME=""
+    if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+      quiet_window_end
+      park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+      return 1
+    fi
+    [ "$src" = "0" ] || (exit "$src")
     stage_wait_all "$sid"
     quiet_window_end
     local rc pred class acct
@@ -6553,7 +6977,12 @@ segment_cycle() {
         # minutes against 22.3 for a stage that completes — so what a crash
         # throws away is close to a whole stage.
         log "$seg: $class — 1회만 재시도"
-        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
+        src=0
+        CC_SPAWN_EVENT=crash-retry stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" || src=$?
+        if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+          park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+        fi
+        [ "$src" = "0" ] || (exit "$src")
         stage_wait_all "$sid.retry"
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
           park "$seg" cone 무효화 "게이트 park" "크래시 2회 — 산출물 없음"; return 1
@@ -6567,13 +6996,23 @@ segment_cycle() {
         # reap parks under the same name rather than falling through to any
         # other arm.
         log "$seg: 한도-형상 회수 ($(cat "$RUN_DIR/$sid.reap-cause" 2>/dev/null)) — 경계에서 1회 재파견"
-        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\""
+        # `limit-reclaim` is what leaves the exhausted account out; any other
+        # event would sit this lineage back on the account the reap ran from.
+        src=0
+        CC_SPAWN_EVENT=limit-reclaim stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" || src=$?
+        if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+          park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+        fi
+        [ "$src" = "0" ] || (exit "$src")
         stage_wait_all "$sid.retry"
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
           park "$seg" cone 무효화 "게이트 park" "한도-형상 회수 후 재파견 — 산출물 없음"; return 1
         fi ;;
       *) park "$seg" cone 무효화 "게이트 park" "종단 부류 $class"; return 1 ;;
     esac
+    # The implementation lineage ends here — its row, any retry or continuation
+    # of it, and the escape checks are behind it.
+    spawn_lineage_release "$sid"
 
     # --- S5 REVIEW ---------------------------------------------------------
     local rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle.md"
@@ -6617,7 +7056,12 @@ segment_cycle() {
     local rscope=""
     [ -z "$seg_base" ] || rscope=" --base-sha $seg_base"
     [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
-    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\""
+    src=0
+    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\"" || src=$?
+    if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+      park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+    fi
+    [ "$src" = "0" ] || (exit "$src")
     stage_wait_all "$sid"
     if predicate_review "$rp"; then pred=0; else pred=1; fi
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
@@ -6638,6 +7082,7 @@ segment_cycle() {
     if [ "$class" != "정상 완료" ]; then
       review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
     fi
+    spawn_lineage_release "$sid"
 
     # --- S6 TRIAGE ---------------------------------------------------------
     local tri_out tri
@@ -6711,8 +7156,16 @@ segment_cycle() {
         4) park "$fid" cone 무효화 "사다리 R4" "재발이 근본 재설계를 소비한 뒤 다시 나타남"; any_park=1 ;;
         2|3)
           sid="S1':$seg:$cycle:$(printf '%s' "$fpath" | tr '/' '-')"
-          stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $(doc_arg) \"$fpath, $fcat\""
+          src=0
+          stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $(doc_arg) \"$fpath, $fcat\"" || src=$?
+          if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+            park "$fid" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; any_park=1; continue
+          fi
+          [ "$src" = "0" ] || (exit "$src")
           stage_wait_all "$sid"
+          # The reconvergence writes no row of its own; its lineage ends with
+          # the predicate below, whichever way it reads.
+          spawn_lineage_release "$sid"
           if predicate_reconverge "$sid"; then
             # The impact payload is an AUDIT record now, not a control signal.
             # What decides whether the plan is stale is a MEASUREMENT of the
@@ -6891,15 +7344,16 @@ continue_or_park() {
     fi
     sess=$(stage_session_id_strict "$sid")
     turns=$(stream_last_num_turns "$(stage_log_path "$sid")")
-    if [ -z "$sess" ] || ! transcript_of_session "$sess" >/dev/null || [ "${turns:-0}" = "0" ]; then
+    if [ -z "$sess" ] || ! transcript_of_session "$sess" "$sid" >/dev/null || [ "${turns:-0}" = "0" ]; then
       # The base-defect shape: nothing to resume into. One fresh process, then
       # a park under its own reason.
       log "$sid: 공허한 성공 — 트랜스크립트가 없거나 0턴이라 새 프로세스로 1회만 재시도"
       STAGE_RESUME=""
-      continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$alias" -- "$@"
+      CC_SPAWN_EVENT=hollow-retry continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$alias" -- "$@"
       case "$CONTINUE_CLASS" in
         '정상 완료') return 0 ;;
         '의도된 park') return 1 ;;
+        '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
         *) CONTINUE_PARK_REASON="재시도 소진 — 새 프로세스 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
       esac
     fi
@@ -6910,10 +7364,11 @@ continue_or_park() {
     n=$(continue_spend "$sid")
     log "$sid: 공허한 성공 — 같은 세션 $sess 를 계속 메시지로 재개 ($n/$CONTINUE_MAX)"
     STAGE_RESUME="$sess"
-    continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
+    CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
     case "$CONTINUE_CLASS" in
       '정상 완료') return 0 ;;
       '의도된 park') return 1 ;;
+      '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
       '공허한 성공') : ;;
       *) CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
     esac
@@ -6927,17 +7382,25 @@ continue_attempt() {
   # STAGE_RESUME), classify, write its own `stage-result` row, absorb a judgment
   # it emitted under the judgment key. Leaves the class in CONTINUE_CLASS, and
   # the halt reason and recall command in CONTINUE_PARK_* when it halted.
-  local did="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" prompt="$6" alias="$7" rc pred
+  local did="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" prompt="$6" alias="$7" rc pred acct drc=0
   shift 7
   [ "${1:-}" = "--" ] && shift
   rm -f "$RUN_DIR/$did.rc"
   quiet_window_begin
-  dispatch_stage "$did" "$cwd" "$prompt" || true
+  dispatch_stage "$did" "$cwd" "$prompt" || drc=$?
   STAGE_RESUME=""
   quiet_window_end
+  # A launch the router declined ran nothing, so there is no attempt to
+  # classify and no row to write: the class says so, and the caller parks.
+  if [ "$drc" = "$STAGE_SPAWN_PARK_RC" ]; then
+    CONTINUE_CLASS="라우터 판정"
+    CONTINUE_PARK_REASON="$STAGE_SPAWN_PARK_REASON"
+    return 0
+  fi
   rc=$(cat "$RUN_DIR/$did.rc" 2>/dev/null || printf '1')
   if "$@" "$did"; then pred=0; else pred=1; fi
   CONTINUE_CLASS=$(classify_termination "$did" "$rc" "$pred")
+  acct=$(stage_account_of "$did")
   # One row per attempt. `실행 버전` is the attempt this dispatch pinned — the
   # value the gate writes for its own rows — so "one row per (segment,
   # attempt)" holds on driver rows too. A continued attempt is a resumed launch,
@@ -6946,7 +7409,7 @@ continue_attempt() {
   ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$did")" \
     "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$did")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$did")")" \
     "종단 부류=$CONTINUE_CLASS"
   absorb_stage_judgment "$did" "$jkey" "$alias"
@@ -7062,8 +7525,15 @@ design_arm() {
   # id contains `design` and neither `audit` nor `reconverge`, which is what
   # selects the `design` settings variant in `stage_spawn`.
   quiet_window_begin
+  local src1=0
   dispatch_stage S1design "$(alias_root "$(home_alias)")" \
-    "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\""
+    "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\"" || src1=$?
+  if [ "$src1" = "$STAGE_SPAWN_PARK_RC" ]; then
+    quiet_window_end
+    park "S1design" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+    return 1
+  fi
+  [ "$src1" = "0" ] || (exit "$src1")
   quiet_window_end
   local rc1 pred1 class1 acct1
   rc1=$(cat "$RUN_DIR/S1design.rc" 2>/dev/null || printf '1')
@@ -7096,6 +7566,7 @@ design_arm() {
       fi ;;
     *) park "S1design" run 무효화 "게이트 park" "종단 부류 $class1"; return 1 ;;
   esac
+  spawn_lineage_release S1design
   return 0
 }
 
@@ -7166,7 +7637,16 @@ main_loop() {
       "근거=$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-*.md"
   else
   quiet_window_begin
-  dispatch_stage S2 "$(alias_root "$(home_alias)")" "/cc-cmds:design-audit-unattended $DOC"
+  local src2=0
+  dispatch_stage S2 "$(alias_root "$(home_alias)")" "/cc-cmds:design-audit-unattended $DOC" || src2=$?
+  # `S2.rc` is absent after a declined launch, and the line below reads that as
+  # 1 — a crash. The router's answer is not a crash.
+  if [ "$src2" = "$STAGE_SPAWN_PARK_RC" ]; then
+    quiet_window_end
+    park "S2" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+    return 0
+  fi
+  [ "$src2" = "0" ] || (exit "$src2")
   quiet_window_end
   local rc2 pred2 class2 acct2
   rc2=$(cat "$RUN_DIR/S2.rc" 2>/dev/null || printf '1')
@@ -7195,6 +7675,7 @@ main_loop() {
       fi ;;
     *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
+  spawn_lineage_release S2
   fi
 
   # S3 SEGMENT-PLAN — routed by the three-branch predicate.
@@ -7327,6 +7808,9 @@ main_loop() {
   # on a person's answer — and both appear in the same report, so the reader had
   # to guess which sense was meant on each line.
   report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · park ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
+  # The walk is over and every stage it spawned has been collected; what the run
+  # still holds goes back now, unless something of it is still running.
+  spawn_lease_release_run
   log "런 종료 (머지 $merged · 완성-미착지 $landed · park $parked)"
 }
 
