@@ -18360,6 +18360,53 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
 check "26: 다른 워크트리를 대는 완료 행도 거절된다" "$rc" "2"
 check "26: 그 완료 거절도 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
+# 두 행 철자 — 비종단 행이 옛 체크아웃을 단 뒤 같은 체크아웃의 머지됨 행. 기록된
+# 워크트리는 세그먼트의 첫 비종단 행이 단 것이라 뒤의 행이 옮기지 못한다.
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=리뷰중 워크트리="$SA_OLDWT" 선행=없음
+check "26: 옛 체크아웃을 대는 비종단 행은 받아들여진다" "$rc" "0"
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_OLDWT" 선행=없음
+check "26: 비종단 행이 옮긴 옛 체크아웃의 머지됨 행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"첫 비종단 행"*) ok "26: 그 거절 문면이 첫 비종단 행을 기준으로 댄다" ;;
+  *) bad "26 두 행 철자 문면" "$msg" ;;
+esac
+check "26: 그 거절이 원장을 늘리지 않는다 (두 행 철자)" "$(sa_rows)" "$nb"
+check "26: 두 행 철자의 머지됨 행이 조건 11 을 지우지 못한다" \
+  "$(sa_unmet11)" "11 세그먼트 S26M 의 머지 대조가 위반(미포함) 입니다"
+
+# 형제 세그먼트 자유 문면 — 다른 세그먼트 행의 값에 `id=S26M ` 이 들어가도 S26M
+# 의 기록된 워크트리가 되지 않는다. 행은 id 필드로 고른다.
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26Q \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=실행중 워크트리="$SA_OLDWT" "메모=follows id=S26M " 선행=없음
+check "26: 자유 문면에 다른 세그먼트 id 를 담은 형제 행이 받아들여진다" "$rc" "0"
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_OLDWT" 선행=없음
+check "26: 형제 행의 자유 문면이 가리킨 옛 체크아웃의 머지됨 행은 거절된다" "$rc" "2"
+check "26: 그 거절이 원장을 늘리지 않는다 (형제 자유 문면)" "$(sa_rows)" "$nb"
+check "26: 형제 자유 문면 철자가 조건 11 을 지우지 못한다" \
+  "$(sa_unmet11)" "11 세그먼트 S26M 의 머지 대조가 위반(미포함) 입니다"
+
+# 첫 행 종단 — 비종단 행이 없는 세그먼트에는 기록된 워크트리가 없다. 호출자의
+# 워크트리로 팁을 읽지 않으므로 커버리지는 판정 불가 이고, 조건 11 이 그 값을 댄다.
+sa_new '첫 행 머지됨'
+T26Z=$(sa_commit '작업')
+sa_cycle S26Z 1 0 0 "$T26Z"
+sa_land
+sa_seg_state S26Z 머지됨
+check "26: 비종단 행 없는 첫 머지됨 행이 기록된다" "$rc" "0"
+check "26: 첫 행 머지됨 의 머지 대조가 판정 불가 다" \
+  "$(sa_field "$(sa_seg_last S26Z)" '머지 대조')" "판정 불가"
+check "26: 첫 행 머지됨 의 판정 불가가 조건 11 을 낸다" \
+  "$(sa_unmet11)" "11 세그먼트 S26Z 의 머지 대조가 판정 불가 입니다"
+
 # 거짓 머지 — 팁이 베이스에 없는데 머지됨 을 적는다.
 sa_new '거짓 머지'
 sa_seg_row S26F ""
@@ -18480,6 +18527,82 @@ check "27: 공백 접두 머지 대조 를 싣는 완료 행은 거절된다" "$
 check "27: 두 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 check "27: 뒤의 완료 행이 조건 11 을 지우지 못한다" \
   "$(sa_unmet11)" "11 세그먼트 S27E 의 머지 대조가 위반(카운트) 입니다"
+
+# 덧댄 키는 행 종류와 무관하게 거절된다. cycle 행의 ` P1=0` 은 앞의 `P1=1` 을,
+# ` 리뷰 HEAD=…` 는 리뷰된 헤드를 덮어써 머지 대조와 리뷰-후-머지 룰이 읽는다.
+sa_cyc_raw() {
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S27E --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x -- "$@" "리포트 경로=$FXREPORT"
+}
+nb=$(sa_rows)
+sa_cyc_raw 사이클=2 P0=0 P1=1 ' P1=0' "리뷰 HEAD=$T27E"
+check "27: cycle 행의 공백 접두 P1 은 거절된다" "$rc" "2"
+case "$msg" in
+  *"cycle 행의 필드 키 ' P1'"*"공백·CR"*) ok "27: cycle 행 거절 문면이 행 종류와 키를 댄다" ;;
+  *) bad "27 cycle 덧댄 키 문면" "$msg" ;;
+esac
+sa_cyc_raw 사이클=2 P0=0 P1=0 "리뷰 HEAD=$T27E" ' 리뷰 HEAD=HEAD'
+check "27: cycle 행의 공백 접두 리뷰 HEAD 는 거절된다" "$rc" "2"
+sa_cyc_raw 사이클=2 P0=1 $'\rP0=0' P1=0 "리뷰 HEAD=$T27E"
+check "27: cycle 행의 CR 접두 P0 은 거절된다" "$rc" "2"
+case "$msg" in
+  *"'\\rP0'"*) ok "27: cycle 행 CR 거절 문면이 CR 을 글자로 보인다" ;;
+  *) bad "27 cycle CR 문면" "$msg" ;;
+esac
+sa_cyc_raw 사이클=2 P0=0 P1=0 $'\t리뷰 HEAD=HEAD' "리뷰 HEAD=$T27E"
+check "27: cycle 행의 탭 접두 리뷰 HEAD 는 거절된다" "$rc" "2"
+check "27: cycle 행 덧댄 키 거절 모두 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+check "27: 거절된 cycle 행이 조건 11 을 지우지 못한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27E 의 머지 대조가 위반(카운트) 입니다"
+
+# 호출자의 id — segment 행의 `id` 는 게이트가 --segment 에서 싣는다. 넘긴 `id=PV`
+# 가 받아들여지면 PW 기준으로 유도한 충족 이 PV 의 마지막 머지 대조 행으로 읽힌다.
+sa_new '호출자 id'
+sa_seg_row PV ""
+sa_seg_row PW ""
+TPV=$(sa_commit '리뷰된 작업')
+sa_cycle PV 1 0 0 "$TPV"
+TPW=$(sa_commit '리뷰 뒤의 작업')
+sa_land
+sa_seg_state PV 머지됨
+check "27: 리뷰 뒤 커밋이 쌓인 PV 의 머지가 위반(미포함) 이다" \
+  "$(sa_field "$(sa_seg_last PV)" '머지 대조')" "위반(미포함)"
+sa_cycle PW 1 0 0 "$TPW"
+nb=$(sa_rows)
+sa_seg_state PW 머지됨 'id=PV'
+check "27: segment 행의 호출자 id 는 거절된다" "$rc" "2"
+case "$msg" in
+  *"--segment 에서 싣는 필드"*) ok "27: 호출자 id 거절 문면이 게이트의 필드임을 말한다" ;;
+  *) bad "27 호출자 id 문면" "$msg" ;;
+esac
+check "27: 호출자 id 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+sa_seg_state PW 머지됨
+check "27: 덮인 PW 의 머지됨 행은 기록된다" "$rc" "0"
+check "27: PW 의 충족 이 PV 의 조건 11 을 지우지 못한다" \
+  "$(sa_unmet11)" "11 세그먼트 PV 의 머지 대조가 위반(미포함) 입니다"
+
+# 머지 뒤 정책 완화 — 상한이 선머지후리뷰 인 런에서 위반 뒤 느슨한 정책을 단
+# 행은 조건 11 이 읽는 정책을 바꾸므로 거절된다. 같은 정책의 행은 받는다.
+sa_new '머지 뒤 정책 완화'
+sa_seg_row S27L ""
+T27L=$(sa_commit '작업')
+sa_cycle S27L 1 1 0 "$T27L"
+sa_land
+sa_seg_state S27L 머지됨
+check "27: 정책 완화 픽스처의 조건 11 이 위반을 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27L 의 머지 대조가 위반(카운트) 입니다"
+nb=$(sa_rows)
+sa_seg_state S27L 완료 '리뷰 정책=선머지후리뷰'
+check "27: 머지 뒤 리뷰 정책을 느슨하게 바꾸는 행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"느슨하게 바꿀 수 없습니다"*) ok "27: 정책 완화 거절 문면이 이유를 댄다" ;;
+  *) bad "27 정책 완화 문면" "$msg" ;;
+esac
+check "27: 정책 완화 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+check "27: 정책 완화 시도가 조건 11 을 지우지 못한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27L 의 머지 대조가 위반(카운트) 입니다"
+sa_seg_state S27L 완료 '리뷰 정책=선리뷰후머지'
+check "27: 같은 정책을 다시 다는 행은 받아들여진다" "$rc" "0"
 
 # 상한 — 새 필드를 단 최악 관측 머지됨 행(게이트의 자로 905 B)이 1024 B 안에
 # 든다. 관측 행 자체는 이 저장소에 없으므로, 같은 길이의 행을 게이트의 자로
@@ -18625,6 +18748,19 @@ if sb_bound; then bad "29 REST 결속" "워크트리 HEAD 를 실은 REST 머지
 sa_merge S29
 check "29: git push 머지는 결속 없이 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
 if sb_bound; then bad "29 git push" "git push 머지가 결속 검사에 걸렸다: $msg"; else ok "29: git push 머지는 결속 검사에 걸리지 않는다"; fi
+
+# 덧댄 리뷰 HEAD — 리뷰 뒤에 커밋이 더해진 트리에서 ` 리뷰 HEAD=HEAD` 를 덧댄
+# cycle 행은 거절되고, 결속된 머지는 여전히 룰이 거절한다.
+sa_cycle S29 1 0 0 "$HEAD29"
+check "29: 리뷰된 헤드의 cycle 행이 기록된다" "$rc" "0"
+HEAD29B=$(sa_commit '리뷰 뒤의 작업')
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S29 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$HEAD29" ' 리뷰 HEAD=HEAD' "리포트 경로=$FXREPORT"
+check "29: 덧댄 리뷰 HEAD 의 cycle 행은 거절된다" "$rc" "2"
+sb_plan S29 gh pr merge 1 --match-head-commit "$HEAD29B"
+check "29: 리뷰 뒤 커밋이 더해진 결속된 머지는 여전히 룰이 거절한다" "$rc" "3"
+if sa_names_rule; then ok "29: 그 거절이 리뷰-후-머지 를 지명한다 (덧댄 리뷰 HEAD 뒤)"; else bad "29 덧댄 리뷰 HEAD 룰 이름" "$msg"; fi
 
 # 선머지후리뷰 세그먼트와 룰 끔 — 결속이 지키는 룰이 돌지 않는 두 자리.
 sa_seg_row S29P 선머지후리뷰

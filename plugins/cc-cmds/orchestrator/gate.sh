@@ -6872,9 +6872,37 @@ gate_segment_field() {
   # for a segment id that has no rows yet is ordinary — the router does it on the
   # first act of every run — and an unguarded middle `grep` turns that into a
   # `pipefail` non-zero which `set -e` reads as a fatal, message-less failure.
-  gate_rows 'segment' \
-    | { grep -F "id=$sid " || true; } | tail -1 \
+  #
+  # THE ROW IS CHOSEN BY ITS `id` FIELD, NOT BY A SUBSTRING. `grep -F "id=$sid "`
+  # also took another segment's row whose free text carried `id=<sid> `, and that
+  # row then answered this segment's worktree, state and policy without one row
+  # of this segment being written.
+  gate_rows 'segment' | gate_rows_field_eq 'id' "$sid" | tail -1 \
     | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+gate_segment_anchor_worktree() {
+  # gate_segment_anchor_worktree <segment> — the `워크트리` of the segment's
+  # FIRST NON-TERMINAL row; empty when the segment has none.
+  #
+  # A terminal row is compared against this, and a merged row reads its tip
+  # here, so it has to be a value a later row cannot move. The last row was
+  # not: a `리뷰중` row naming an old checkout re-pointed it, and the merged row
+  # naming the same checkout then passed the comparison and read the old base's
+  # tip. A non-terminal row passed the boundary check when it was written — an
+  # absolute path, an existing directory, a declared target's common git
+  # directory — so the first one is the segment's own tree.
+  local row
+  row=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$1" \
+          | awk -v ts=" $TERMINAL_SEGMENT_STATES " '
+              { n = split($0, f, "|"); st = ""
+                for (i = 2; i <= n; i++) {
+                  s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
+                  if (index(s, "상태=") == 1) st = substr(s, length("상태=") + 1)
+                }
+                if (st != "" && index(ts, " " st " ") == 0) { print; exit } }')
+  [ -n "$row" ] || return 0
+  gate_row_field "$row" '워크트리'
 }
 
 # ---------------------------------------------------------------------------
@@ -14334,28 +14362,40 @@ gate_record_row() {
     esac
   done
 
+  # A KEY IS READ AS EVERY READER TRIMS IT, so it is checked that way too, on
+  # EVERY KIND OF ROW. The selectors strip the blanks around a field before
+  # matching its key, while `gate_field_of` here matches the argv spelling
+  # exactly — so ` 머지 대조=충족` passed the segment row's refusal and was then
+  # read as the gate's field, and on a `cycle` row ` P1=0` after `P1=1`, or
+  # ` 리뷰 HEAD=<ref>`, was the value the merge comparison and the merge rule
+  # read. A key whose trimmed spelling differs from the one written is refused
+  # outright, whatever the key and the kind: there is no honest reason to pad a
+  # key, and a refusal tells the caller where an accepted row would not.
+  # The key is shown with CR and tab spelled out: `printf %q` would escape
+  # every Korean byte too, and a raw CR rewinds the line it is printed on.
+  local kt kshow
+  for f in "$@"; do
+    k="${f%%=*}"
+    kt="${k#"${k%%[![:space:]]*}"}"
+    kt="${kt%"${kt##*[![:space:]]}"}"
+    if [ "$kt" != "$k" ]; then
+      kshow="${k//$'\r'/\\r}"
+      kshow="${kshow//$'\t'/\\t}"
+      warn "$kind 행의 필드 키 '${kshow}' 앞뒤에 공백·CR 이 붙어 있습니다 — 키를 공백 없이 다시 씁니다"
+      return "$GATE_EXIT_VOCAB"
+    fi
+  done
+
   case "$kind" in
     segment)
-      # A KEY IS READ AS EVERY READER TRIMS IT, so it is checked that way too.
-      # The selectors strip the blanks around a field before matching its key,
-      # while `gate_field_of` here matches the argv spelling exactly — so
-      # ` 머지 대조=충족` passed the refusal below and was then read as the
-      # gate's field, and ` 상태=머지됨` was one state at write time and another
-      # at read time. A key whose trimmed spelling differs from the one written
-      # is refused outright, whatever the key is: there is no honest reason to
-      # pad a key, and a refusal tells the caller where an accepted row would
-      # not.
-      # The key is shown with CR and tab spelled out: `printf %q` would escape
-      # every Korean byte too, and a raw CR rewinds the line it is printed on.
-      local kt kshow
+      # `id` IS THE GATE'S FIELD, carried from `--segment`. A caller's own
+      # `id=` rode on the row next to it, and the readers that take the last
+      # value then read the row as another segment's — a `머지됨` row written
+      # for one segment carried its `머지 대조=충족` onto another and cleared
+      # that segment's condition 11.
       for f in "$@"; do
-        k="${f%%=*}"
-        kt="${k#"${k%%[![:space:]]*}"}"
-        kt="${kt%"${kt##*[![:space:]]}"}"
-        if [ "$kt" != "$k" ]; then
-          kshow="${k//$'\r'/\\r}"
-          kshow="${kshow//$'\t'/\\t}"
-          warn "segment 행의 필드 키 '${kshow}' 앞뒤에 공백·CR 이 붙어 있습니다 — 키를 공백 없이 다시 씁니다"
+        if [ "${f%%=*}" = 'id' ]; then
+          warn "segment 행의 「id」는 게이트가 --segment 에서 싣는 필드입니다 — 호출자가 넘길 수 없습니다"
           return "$GATE_EXIT_VOCAB"
         fi
       done
@@ -14381,15 +14421,26 @@ gate_record_row() {
       # for a merge no review had looked at. The worktree is often gone by the
       # time the merge is recorded, so the two are compared as spelled, and as
       # `pwd -P` resolves them only when both still exist.
+      #
+      # THE RECORD IS THE SEGMENT'S FIRST NON-TERMINAL ROW, not its last row:
+      # the last row is the one a caller writes next, so a `리뷰중` row naming
+      # an old checkout moved the record and the merged row then matched it.
+      # A non-terminal row may still name another worktree — the settings
+      # derivation follows it — but a terminal row written after it is held to
+      # the first one.
       case "$st" in
         머지됨|완료|park)
           local rec_wt rec_p wt_p
-          rec_wt=$(gate_segment_worktree "$seg")
+          rec_wt=$(gate_segment_anchor_worktree "$seg")
           if [ -n "$rec_wt" ] && [ "$rec_wt" != "$wt" ]; then
             rec_p=$(cd "$rec_wt" 2>/dev/null && pwd -P) || rec_p=""
             wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
             if [ -z "$rec_p" ] || [ "$rec_p" != "$wt_p" ]; then
-              warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 종단 행은 세그먼트 자신의 워크트리를 답니다"
+              if [ -z "$rec_p" ]; then
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리(첫 비종단 행) $rec_wt 와 다릅니다 — 기록된 디렉터리가 없어 철자로만 비교했습니다. 종단 행은 세그먼트 자신의 워크트리를 답니다"
+              else
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리(첫 비종단 행) $rec_wt 와 다릅니다 — 종단 행은 세그먼트 자신의 워크트리를 답니다"
+              fi
               return "$GATE_EXIT_VOCAB"
             fi
           fi ;;
@@ -14402,7 +14453,7 @@ gate_record_row() {
       # together and the comparison notices nothing.
       local deps prior prev_deps d nseg
       deps=$(gate_field_of '선행' "$@")
-      prior=$( { gate_rows 'segment' | grep -F "id=$seg " || true; } | tail -1)
+      prior=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | tail -1)
       nseg=$(gate_segment_count_including "$seg")
 
       # ABSENCE AND `없음` ARE DIFFERENT THINGS, and write time is the only
@@ -14502,6 +14553,21 @@ gate_record_row() {
           warn "the \`리뷰 정책\` '$rpol' of the segment row exceeds the ceiling '$rceil' of target '$alias' — a ceiling violation is refused, not tightened into place"
           return "$GATE_EXIT_VOCAB"
         fi
+        # ONCE A MERGE IS RECORDED, THE POLICY CANNOT LOOSEN. Condition 11 holds
+        # a segment whose policy resolves to `선리뷰후머지`, so a row switching
+        # to a looser policy after a `위반(…)` was recorded cleared the hold
+        # without any review. Tightening, or restating the same policy, is
+        # still accepted.
+        if [ -n "$prior" ] \
+           && [ -n "$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_having_field '머지 대조')" ]; then
+          local ppol ppi
+          ppol=$(gate_row_field "$prior" '리뷰 정책')
+          ppi=$(review_policy_index "${ppol:-선리뷰후머지}") || ppi=0
+          if [ "$rpi" -gt "$ppi" ]; then
+            warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 머지가 기록된 세그먼트의 리뷰 정책은 느슨하게 바꿀 수 없습니다(종료 조건 11 이 읽는 정책입니다)"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        fi
       fi
 
       # --- the record of a merge: `머지 대조` and `최종 사이클` ---
@@ -14577,14 +14643,22 @@ gate_record_row() {
       # happened, and the tree is routinely gone by then — and the coverage half
       # then reads `판정 불가`, which condition 11 holds on.
       #
-      # THE TIP IS THE SEGMENT'S RECORDED WORKTREE'S, not the one this row names.
-      # The check above already ties the two together; reading the recorded one
-      # keeps the comparison on the segment's own tree should that check ever be
-      # loosened. A segment's first row has no record yet and reads its own.
+      # THE TIP IS THE SEGMENT'S RECORDED WORKTREE'S — its first non-terminal
+      # row's — not the one this row names. The check above already ties the
+      # two together; reading the recorded one keeps the comparison on the
+      # segment's own tree should that check ever be loosened.
+      #
+      # A SEGMENT WITH NO NON-TERMINAL ROW HAS NO RECORD, and its tip is then
+      # left unread rather than taken from this row: the caller's worktree is
+      # the one value the comparison must not rest on. The coverage half then
+      # reads `판정 불가` and condition 11 holds. The row is not refused — a
+      # true merge claim is accepted, and this one cannot be shown false.
       if [ "$st" = '머지됨' ]; then
         local mtip="" mwt
-        mwt=$(gate_segment_worktree "$seg")
-        mtip=$(gate_worktree_tip "${mwt:-$wt}") || mtip=""
+        mwt=$(gate_segment_anchor_worktree "$seg")
+        if [ -n "$mwt" ]; then
+          mtip=$(gate_worktree_tip "$mwt") || mtip=""
+        fi
         if [ -n "$mtip" ]; then
           gate_obligation_landing "$alias" "$mtip"
           if [ "$GATE_LANDING_VERDICT" = '미착지' ]; then
@@ -14620,21 +14694,21 @@ gate_record_row() {
         return 1
       fi
 
-      # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
-      # deliberately. `cycle` and `problem` below carry the same shape for
-      # `세그먼트=`, so all three share this note.
+      # A CALLER'S OWN `id=` IS REFUSED at the top of this arm, so the gate's
+      # `id` is the only one on the row. `cycle` and `problem` below carry the
+      # same shape for `세그먼트=`, and there the caller's value is not refused
+      # yet — so for those two this note still describes an open override.
       #
       # REORDERING MOVES THE HOLE RATHER THAN CLOSING IT, and that is why the
       # obvious repair is not the one to reach for. Readers do not agree on
       # which duplicate wins: this file's three take the LAST value, and
       # `feed.sh` takes the FIRST. Putting the gate's field last would close the
-      # override for the readers here and open it for that one. The repair that
-      # closes it for every reader is to REFUSE a caller-supplied `id=` or
-      # `세그먼트=` in `gate_record_row` — the same file already refuses a
-      # spliced key there, so the shape exists.
+      # override for the readers here and open it for that one. Refusing the
+      # caller's field in `gate_record_row` closes it for every reader, which is
+      # what this arm now does for `id=`.
       #
-      # THE GRAMMAR IS ALSO PINNED, which is the second reason to leave the
-      # order alone. Fixtures assert this row in two shapes — `교대=<n> | id=<seg>`
+      # THE GRAMMAR IS ALSO PINNED, which is the reason to leave the order
+      # alone. Fixtures assert this row in two shapes — `교대=<n> | id=<seg>`
       # and `id=<seg> | <first caller field>` — so that the grammar is asserted
       # rather than assumed. One of those pins carries a note saying so; the
       # others are footing that rests on it. Counting them here would go stale
