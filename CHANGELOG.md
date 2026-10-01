@@ -11,11 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`이월` 장부 kind** (`orchestrator/gate.sh` `act --kind 이월`) — `출처=리뷰` 행은 `--segment` 가 필수이고 그 세그먼트의 마지막 `cycle` 행과 사이클·리뷰 HEAD 가 같으며, 사이클이 상한 이상이고 P0=0, `건수` 가 그 행의 P1 일 때만 쓰인다. `출처=경계` 행은 세그먼트 없이, 마지막 행이 자동 해소인 `B1-…` 승인 하나를 가리키며 같은 승인에 두 번 쓰이지 않는다. 두 형태 모두 `이슈=` 의 각 값이 GitHub 이슈 URL 꼴이어야 하고, 호출자가 실은 `세그먼트=` 는 거부한다. 부기 kind 이므로 `읽기` 로 등급된다.
+- **`이월` 장부 kind** (`orchestrator/gate.sh` `act --kind 이월`) — 키는 `출처`·`사이클`·`리뷰 HEAD`·`승인 id`·`이슈`·`건수` 여섯 개만, 각각 한 번씩 받는다. `출처=리뷰` 행은 `--segment` 가 필수이고 그 세그먼트의 마지막 `cycle` 행과 사이클·리뷰 HEAD 가 같으며, 사이클이 상한 이상이고 P0=0, `건수` 가 그 행의 P1 일 때만 쓰인다. `출처=경계` 행은 세그먼트 없이, 마지막 행이 자동 해소인 `B1-…` 승인 하나를 가리키며 같은 승인에 두 번 쓰이지 않는다. 두 형태 모두 `이슈=` 의 각 값이 GitHub 이슈 URL 꼴이어야 하고, 호출자가 실은 `세그먼트=` 는 거부한다. 부기 kind 이므로 `읽기` 로 등급된다.
 - **스냅숏 키** — `cycle_carry_from`(P1 차단 상한), `carryover_due[]`(이월 행이 아직 없는 자동 해소 B1 의 `id`·`question`), `auto_resolve`(자동 해소 스위치 값). 셋 다 스냅숏 다이제스트에는 들어가지 않는다.
 - **이월 이슈 규약** (`skills/_common/carryover-issue.md`) — 제목, 본문(P1 발견 전부와 PR 번호, 무진전은 질문 문면·진전 다이제스트·열린 세그먼트·막힌 지점), 중복 방지, 실패 처분, `Nharu/cc-cmds` 일 때의 Project 담기, 게이트 선언을 한 곳에서 정한다.
-- **라우터 분기** (`autopilot`, `autopilot-router-shift`) — 두 사본에 같은 절을 두어 리뷰 뒤 네 갈래(P0>0 수정 / 둘 다 0 머지 / 상한 전 P1 수정 / 상한 이상 P1 이월 후 머지)와 `carryover_due[]` 처리를 적는다. 자동 해소가 꺼진 런은 이월하지 않고 수정 스테이지로 간다.
-- **시험** — `scripts/test-gate.sh` 8f(룰 여섯 사례와 이월 act 거부), `scripts/test-snapshot.sh` 의 이월 절(자동 해소·스윕·사람이 닫은 B1 셋의 `carryover_due` 전후, 상한·스위치 키, 두 라우터 사본의 이월 act 줄 바이트 동일).
+- **라우터 분기** (`autopilot`, `autopilot-router-shift`) — 두 사본에 같은 절을 두어 리뷰 뒤 네 갈래(P0>0 수정 / 둘 다 0 머지 / 상한 전 P1 수정 / 상한 이상 P1 이월 후 머지)와 `carryover_due[]` 처리를 적는다. 자동 해소가 꺼진 런은 이월하지 않고 수정 스테이지로 간다. 스냅숏의 `사이클` 은 문자열이므로 정수로 바꿔 상한과 비교하고, 「마지막 리뷰」는 `cycles[]` 순서의 마지막이라고 적는다.
+- **이월 등록의 절단점 유도** (`orchestrator/gate.sh` `ladder_of_gh`) — `gh issue create`·`gh issue comment`·`gh project item-add` 는 바닥 단 `커밋` 으로 유도된다. 라우터가 대상 절단점(`머지`)으로 라벨하면 등록이 머지 룰에 걸려, 그 등록이 만들 `이월` 행이 없다는 이유로 거부되던 순환을 끊는다. 다른 `gh issue` 하위 명령은 유도하지 않는다.
+- **시험** — `scripts/test-gate.sh` 8f(룰 사례, 이월 act 거부, 머지 시점의 사이클·리뷰 HEAD 불일치 재검사, 상한 값이 비었거나 정수가 아닐 때의 거부, P·N 의 등록 행위가 `머지` 로 선언돼도 룰을 지나고 같은 상태의 머지는 여전히 거부되는 대조), `scripts/test-snapshot.sh` 의 이월 절(자동 해소·스윕·사람이 닫은 B1 셋의 `carryover_due` 전후, 상한·스위치 키, 두 라우터 사본의 이월 act 줄 바이트 동일).
 
 ### Changed
 
