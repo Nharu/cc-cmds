@@ -58,6 +58,49 @@ for fixture in "$fixtures"/*/; do
   fi
 done
 
+# --- the row lookups' argument shape ----------------------------------------
+# Scratch roots built here rather than fixture directories: each case is one
+# `gate_has_row` line, next to a `gate_append` and a table row that agree, so
+# the only thing that can move the exit code is the lookup's argument. The
+# joined spelling is what the gate's document-hash guard carried, and it is
+# the case the rule exists for; it must fail with exactly one lookup finding.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/lint-sidecar-has-row.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT
+
+has_row_case() {
+  # has_row_case <이름> <기대 exit> <기대 형태 위반 수> <gate_has_row 줄>
+  local name="$1" want="$2" want_n="$3" line="$4" d ec out n
+  d="$scratch/$name"
+  mkdir -p "$d/orchestrator" "$d/skills/_common"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'f() {\n'
+    printf '  %s || \\\n' "$line"
+    printf '    gate_append %s "a=1" "b=2"\n' "'x'"
+    printf '}\n'
+  } > "$d/orchestrator/gate.sh"
+  printf '| 계열 | 필드 |\n| --- | --- |\n| `x` | `a` · `b` |\n' > "$d/skills/_common/pipeline-sidecar.md"
+  set +e
+  out=$(ORCH_ROOT="$d/orchestrator" SKILLS_ROOT="$d/skills" \
+    bash "$script_dir/lint-sidecar-field-table.sh" 2>&1)
+  ec=$?
+  set -e
+  n=$(printf '%s\n' "$out" | grep -c '^FAIL: gate_has_row 인자 형태' || true)
+  if [[ "$ec" == "$want" && "$n" == "$want_n" ]]; then
+    passed=$((passed + 1))
+    echo "PASS: has-row $name (exit=$ec, 형태 위반=$n)"
+  else
+    failures=$((failures + 1))
+    echo "FAIL: has-row $name (exit=$ec, expected=$want; 형태 위반=$n, expected=$want_n)" >&2
+    printf '%s\n' "$out" >&2
+  fi
+}
+
+has_row_case joined-by-space 1 1 "gate_has_row 'x' \"a=1 b=2\""
+has_row_case two-arguments   0 0 "gate_has_row 'x' \"a=1\" \"b=2\""
+has_row_case anchored        0 0 "gate_has_row 'x' \"| a=1 |\""
+has_row_case no-equals       1 1 "gate_has_row 'x' \"a\""
+
 echo "test-lint-sidecar-field-table: $passed passed, $failures failed"
 
 if (( failures > 0 )); then

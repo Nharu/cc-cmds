@@ -16,15 +16,16 @@
 #                      이 절은 스위치를 1 로 뒤집은 스크래치 사본으로 한 번 더 돌고
 #                      두 실행의 단언 수가 같아야 한다.
 #   입력 판독        — 인벤토리 분류기의 사유별 거부, 사용량 두 신선도 층과 재정의,
-#                      로그 프레임의 필드·관측 시각·귀속, 판독 시점 병합과 그룹.
+#                      차용 기록의 여섯 상태와 무부작용·문맥 수집, 로그 프레임의
+#                      필드·관측 시각·귀속, 판독 시점 병합과 그룹.
 #   선택 규칙        — 부류 순위, 그룹 예약 전파, draining, 재개·유지·한도 회수, 후보
-#                      없음, 교대, 마감, FIFO.
+#                      없음, 교대, 마감, FIFO, 차용 기증자·그룹 배제와 좌석 표시.
 #   예약 산술        — 정수 bp 경계, 창마다 독립인 `k`, 5시간 상한, `c` 의 낙하, 미지
 #                      그룹 동시 1, 리셋이 돌려주지 않는 예약, 출하 상수의 전달.
 #                      `k`·`c`·상한은 문맥으로 주입하고 출하 리터럴을 단언하지 않는다.
 #   임대 표          — 세 상태와 처분, 대기 프리미티브, 생존 네 갈래, 반납·보유자 규칙,
 #                      stale-깨짐, 모르는 kind, 키 인코더, 락과 거래 프로세스, 재검증과
-#                      경합, 실패 경로, 지문의 TZ 고정.
+#                      경합, 임대 쓰기 뒤 차용 재판독과 복원, 실패 경로, 지문의 TZ 고정.
 #   전역 충돌 린트   — 소스 줄 파생의 네 스크래치 트리와 case 갈래 머리 이름 추출.
 #
 # 격리: HOME·XDG_CONFIG_HOME·XDG_STATE_HOME·RUN_PACE_ROOT 를 $WORK 아래로 두고
@@ -76,8 +77,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 721(root 가 아닐 때). root 는 권한 사례 여섯을 건너뛴다.
-ASSERTION_FLOOR=700
+# 실측 870(root 가 아닐 때). root 는 권한 사례 여섯을 건너뛴다.
+ASSERTION_FLOOR=849
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -148,16 +149,21 @@ def base:
    seat: {config_dir: "/seat"},
    config: {k: {default: {five_hour: $k5, seven_day: $k7}, shift: {five_hour: $ks, seven_day: $ks}},
             c: {five_hour: {default: $c5, by_kind: {}, by_group: {}}, seven_day: {default: $c7, by_kind: {}, by_group: {}}},
-            cap_bp: $cap, ttl_s: {"stage-log": 1800, tracker: 1800}, file_stale_factor: 3}};
+            cap_bp: $cap, ttl_s: {"stage-log": 1800, tracker: 1800}, file_stale_factor: 3},
+   borrow_path: $bp};
 def ONLY($ids): .inventory.accounts = [$ids[] | A(.)];
 def REQ($o): .request += $o;
 def ITEMS($xs): .leases.items = $xs;
 def USE($xs): .usage.accounts = $xs;
+def BRW($st; $id; $dir): {state: $st, lane_config_dir: "/seat", donor: {id: $id, config_dir: $dir}};
+def LEND($id): .borrow = BRW("borrowed"; $id; ("/h/.claude-" + $id));
 '
+# 거래 문맥의 차용 기록 경로. 작업 디렉터리 아래의 없는 파일이라 재판독은 부재를 본다.
+TR_NO_BORROW="$WORK/no-borrow/cc-lane/borrow.json"
 ctx() {
   jq -cn --argjson now "$NOW" --arg schema "$LEASE_SCHEMA" \
     --argjson k5 "$TK5" --argjson k7 "$TK7" --argjson ks "$TKS" --argjson c5 "$TC5" --argjson c7 "$TC7" \
-    --argjson cap "$TCAP" --argjson r5 "$TR5" --argjson r7 "$TR7" "$TR_JQ base | $1"
+    --argjson cap "$TCAP" --argjson r5 "$TR5" --argjson r7 "$TR7" --arg bp "$TR_NO_BORROW" "$TR_JQ base | $1"
 }
 decide() { ctx "$1" | bash "$TR_ROUTE" decide; }
 admit1() { ctx "$1" | bash "$TR_ROUTE" admit | jq -c --arg id "${2:-a}" '.[] | select(.account == $id)'; }
@@ -334,6 +340,40 @@ tr_g_cells() {
   out=$(route__resolve_as 1 "$(tr_req)" 2>/dev/null)
   expect "$lb: enabled 없는 유효 인벤토리 → PARK no-enabled-account" "$out" '.verdict == "PARK" and .reason == "no-enabled-account"'
   check "$lb: 활성 거래가 끝난 뒤 락이 남지 않는다" "$(ls -A "$b/pace-valid-1/leases" | grep -c '^\.lock$' || true)" 0
+
+  # 차용 표시. 둘째 인자는 판독기의 정규형이다.
+  local d0 bx='{"state":"borrowed","lane_config_dir":"/x","donor":{"id":"u3","config_dir":"/h/.claude-u3"}}'
+  d0='{"verdict":"GRANT","basis":"single-seat","account":null,"config_dir":"/x","dormant":true}'
+  check "$lb: 휴면 봉투의 차용 표시" "$(route__dormant /x "$bx")" "${d0%\}},\"borrow\":{\"state\":\"borrowed\",\"donor\":\"u3\"}}"
+  check "$lb: 다른 lane 의 기록은 표시하지 않는다" \
+    "$(route__dormant /x '{"state":"borrowed","lane_config_dir":"/y","donor":{"id":"u3","config_dir":"/h/.claude-u3"}}')" "$d0"
+  check "$lb: 끝 슬래시 좌석은 lane 과 다르다" "$(route__dormant "/x/" "$bx")" "$(route__dormant "/x/")"
+  check "$lb: 손상 기록의 휴면 표시" "$(route__dormant /x '{"state":"corrupt"}')" "${d0%\}},\"borrow\":{\"state\":\"corrupt\",\"donor\":null}}"
+  check "$lb: 파싱되지 않는 둘째 인자는 표시하지 않는다" "$(route__dormant /x 'not-json')" "$d0"
+  check "$lb: 빈 둘째 인자는 표시하지 않는다" "$(route__dormant /x '')" "$d0"
+  # 해석 경로. 매트릭스와 다른 상태 루트에 기록을 두고 해석기의 답을 lane 으로 쓴다.
+  local erc grc
+  export RUN_DIR="$b/cells-borrow" XDG_STATE_HOME="$b/bstate"
+  mkdir -p "$RUN_DIR" "$XDG_STATE_HOME/cc-lane"
+  erc=0; ans=$(resolve_account 2>"$b/b.e.err") || erc=$?
+  jq -cn --arg l "$ans" '{schema: "cc-lane-borrow v1", state: "intent", lane_config_dir: $l, donor: {id: "u3", config_dir: "/h/.claude-u3"}}' \
+    > "$XDG_STATE_HOME/cc-lane/borrow.json"
+  grc=0; out=$(route__resolve_as 0 "$(tr_req)" 2>"$b/b.g.err") || grc=$?
+  expect "$lb: 해석 경로의 휴면 봉투에 차용 표시" "$out" '.dormant == true and .borrow == {state: "intent", donor: "u3"}'
+  check "$lb: 해석 경로의 rc·표준 오류는 해석기와 같다" "$grc|$(sed 's/^[^ ]* //' "$b/b.g.err")" "$erc|$(sed 's/^[^ ]* //' "$b/b.e.err")"
+  # 경로를 유도할 수 없는 환경. 해석기는 1단으로 선다.
+  for st in nohome relxdg; do
+    (
+      export CLAUDE_CONFIG_DIR="$b/cfg-$st"
+      if [ "$st" = nohome ]; then unset XDG_STATE_HOME; export HOME=''; else export XDG_STATE_HOME=rel; fi
+      erc=0; resolve_account >/dev/null 2>"$b/u-$st.e.err" || erc=$?
+      grc=0; route__resolve_as 0 "$(tr_req)" >"$b/u-$st.g.out" 2>"$b/u-$st.g.err" || grc=$?
+      printf '%s %s' "$grc" "$erc" > "$b/u-$st.rc"
+    )
+    expect "$lb: 경로 유도 불가($st)의 휴면 봉투는 손상 표시" "$(cat "$b/u-$st.g.out")" '.dormant == true and .borrow == {state: "corrupt", donor: null}'
+    check "$lb: 경로 유도 불가($st)의 rc·표준 오류는 해석기와 같다" \
+      "$(cut -d' ' -f1 "$b/u-$st.rc")|$(sed 's/^[^ ]* //' "$b/u-$st.g.err")" "$(cut -d' ' -f2 "$b/u-$st.rc")|$(sed 's/^[^ ]* //' "$b/u-$st.e.err")"
+  done
 }
 
 tr_tier() {
@@ -595,6 +635,129 @@ out=$(classify '.usage.accounts[0].config_dir = "/h/.claude-a/"')
 expect "불일치는 그 계정에만 표시된다" "$out" '([.accounts[] | select(.mismatch)] | map(.id)) == ["a"]'
 
 # ===========================================================================
+# 입력 판독 — 차용 기록
+# ===========================================================================
+BRD="$WORK/borrow"
+BRO="$WORK/borrow-out"
+mkdir -p "$BRD" "$BRO"
+bfile() {
+  # bfile <파일> <jq 변형> — 유효한 차용 중 기록(기증자 u3)을 변형해 쓴다.
+  mkdir -p "${1%/*}"
+  jq -cn '{schema: "cc-lane-borrow v1", state: "borrowed", lane_config_dir: "/lane",
+    donor: {id: "u3", config_dir: "/h/.claude-u3"}, since_epoch: 1} | '"$2" > "$1"
+}
+br_read() { ( . "$TR_ROUTE"; route_borrow_read "$@" ); }
+br_tree() { find "$BRD" 2>/dev/null | LC_ALL=C sort; }
+br_case() {
+  # br_case <이름> <파일> <기대 한 줄> — 출력, rc 0, 빈 표준 오류, 트리 무변화를 한 단언으로 본다.
+  local before rc=0 out
+  before=$(br_tree)
+  out=$(br_read "$2" 2>"$BRO/err") || rc=$?
+  check "차용 기록 $1" "$rc|$out|$(wc -c < "$BRO/err" | tr -d ' ')|$([ "$(br_tree)" = "$before" ] && printf same || printf changed)" \
+    "0|$3|0|same"
+}
+CORRUPT='{"state":"corrupt"}'
+mkdir -p "$BRD/a1"
+br_case "부재" "$BRD/a1/cc-lane/borrow.json" '{"state":"absent"}'
+bfile "$BRD/none.json" '.state = "none" | .donor = null'
+br_case "none" "$BRD/none.json" '{"state":"none"}'
+bfile "$BRD/none-d.json" '.state = "none"'
+br_case "none 이 기증자를 지명" "$BRD/none-d.json" '{"state":"none"}'
+for st in intent borrowed returning; do
+  bfile "$BRD/$st.json" ".state = \"$st\""
+  br_case "$st" "$BRD/$st.json" "{\"state\":\"$st\",\"lane_config_dir\":\"/lane\",\"donor\":{\"id\":\"u3\",\"config_dir\":\"/h/.claude-u3\"}}"
+done
+printf '{"schema":' > "$BRD/broken.json"
+br_case "깨진 JSON" "$BRD/broken.json" "$CORRUPT"
+bfile "$BRD/schema.json" '.schema = "cc-lane-borrow v2"'
+br_case "모르는 스키마" "$BRD/schema.json" "$CORRUPT"
+: > "$BRD/empty.json"
+br_case "빈 파일" "$BRD/empty.json" "$CORRUPT"
+bfile "$BRD/one.json" '.'
+cat "$BRD/one.json" "$BRD/one.json" > "$BRD/two.json"
+br_case "두 문서" "$BRD/two.json" "$CORRUPT"
+bfile "$BRD/array.json" '[.]'
+br_case "배열" "$BRD/array.json" "$CORRUPT"
+bfile "$BRD/nodir.json" '.donor.config_dir = ""'
+br_case "빈 donor.config_dir" "$BRD/nodir.json" "$CORRUPT"
+bfile "$BRD/nolane.json" '.lane_config_dir = ""'
+br_case "빈 lane_config_dir" "$BRD/nolane.json" "$CORRUPT"
+mkdir -p "$BRD/isdir.json"
+br_case "경로에 디렉터리" "$BRD/isdir.json" "$CORRUPT"
+ln -s "$BRD/one.json" "$BRD/link.json"
+br_case "유효 파일을 가리키는 심링크" "$BRD/link.json" "$CORRUPT"
+ln -s "$BRD/missing.json" "$BRD/dangling.json"
+br_case "끊긴 심링크" "$BRD/dangling.json" "$CORRUPT"
+br_case "상대 경로 인자" "one.json" "$CORRUPT"
+# FIFO 는 열면 막힌다. 감시 프로세스가 시간 제한을 걸고, 판독기는 그 전에 끝나야 한다.
+mkfifo "$BRD/fifo.json"
+before=$(br_tree)
+br_read "$BRD/fifo.json" > "$BRO/fifo.out" 2>"$BRO/fifo.err" &
+p=$!
+( sleep 5; kill "$p" 2>/dev/null ) &
+w=$!
+rc=0; wait "$p" || rc=$?
+kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+check "차용 기록 FIFO 는 열지 않고 곧바로 손상" \
+  "$rc|$(cat "$BRO/fifo.out")|$(wc -c < "$BRO/fifo.err" | tr -d ' ')|$([ "$(br_tree)" = "$before" ] && printf same || printf changed)" \
+  "0|$CORRUPT|0|same"
+if [ "$(id -u)" = "0" ]; then
+  ok "차용 기록 mode 000 파일(root 는 권한을 우회하므로 생략)"
+  ok "차용 기록 mode 000 상위(root 는 권한을 우회하므로 생략)"
+else
+  bfile "$BRD/perm1/borrow.json" '.'
+  chmod 000 "$BRD/perm1/borrow.json"
+  br_case "mode 000 파일" "$BRD/perm1/borrow.json" "$CORRUPT"
+  chmod 644 "$BRD/perm1/borrow.json"
+  bfile "$BRD/perm2/cc-lane/borrow.json" '.'
+  chmod 000 "$BRD/perm2/cc-lane"
+  br_case "mode 000 상위" "$BRD/perm2/cc-lane/borrow.json" "$CORRUPT"
+  chmod 755 "$BRD/perm2/cc-lane"
+fi
+
+brr() { bash "$TR_ROUTE" borrow-read "$@"; }
+check "borrow-read 부재" "$(brr "$BRD/a1/cc-lane/borrow.json")" '{"state":"absent","donor":null}'
+check "borrow-read none" "$(brr "$BRD/none.json")" '{"state":"none","donor":null}'
+check "borrow-read none 의 기증자는 null" "$(brr "$BRD/none-d.json")" '{"state":"none","donor":null}'
+for st in intent borrowed returning; do
+  check "borrow-read $st" "$(brr "$BRD/$st.json")" "{\"state\":\"$st\",\"donor\":\"u3\"}"
+done
+check "borrow-read 손상" "$(brr "$BRD/broken.json")" '{"state":"corrupt","donor":null}'
+check "borrow-read 는 정확히 한 줄" "$(brr "$BRD/borrowed.json" | wc -l | tr -d ' ')" 1
+bfile "$BRD/tab.json" '.donor.id = "u\t3"'
+check "borrow-read 제어 문자는 JSON 이스케이프" "$(brr "$BRD/tab.json")" '{"state":"borrowed","donor":"u\t3"}'
+check "borrow-read 기본 경로를 유도할 수 없으면 손상" "$(env XDG_STATE_HOME= HOME= bash "$TR_ROUTE" borrow-read)" '{"state":"corrupt","donor":null}'
+bfile "$BRD/xdg/cc-lane/borrow.json" '.'
+check "borrow-read 기본 경로는 XDG_STATE_HOME 아래" "$(env XDG_STATE_HOME="$BRD/xdg" bash "$TR_ROUTE" borrow-read)" '{"state":"borrowed","donor":"u3"}'
+mkdir -p "$BRO/noarg"
+rc=0; out=$(cd "$BRO/noarg" && br_read) || rc=$?
+check "판독기 인자 없음 → rc 2, 빈 표준 출력, 만든 것 없음" "$rc|$out|$(ls -A "$BRO/noarg")" "2||"
+rc=0; out=$(brr a b 2>"$BRO/usage.err") || rc=$?
+check "borrow-read 인자 초과 → rc 2, 사용법은 표준 오류" "$rc|$out|$(grep -c '^usage: route.sh borrow-read' "$BRO/usage.err")" "2||1"
+
+tr_borrow_ctx_case() {
+  local b="$WORK/borrow-ctx" cfg req='{"run_id":"r1","lineage":"S1","event":"first","kind":"implement"}'
+  export RUN_DIR="$b/run" RUN_PACE_ROOT="$b/pace"
+  mkdir -p "$RUN_DIR" "$b/cwd"
+  cd "$b/cwd" || return
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  bfile "$b/xdg/cc-lane/borrow.json" '.state = "intent"'
+  cfg=$(XDG_STATE_HOME="$b/xdg" route_gather_context "$req" /seat)
+  expect "문맥 수집: 절대 XDG_STATE_HOME 의 기록과 경로" "$cfg" \
+    ".borrow.state == \"intent\" and .borrow.donor.id == \"u3\" and .borrow_path == \"$b/xdg/cc-lane/borrow.json\""
+  cfg=$(XDG_STATE_HOME=rel route_gather_context "$req" /seat)
+  expect "문맥 수집: 상대 XDG_STATE_HOME → 손상, 경로 null" "$cfg" '.borrow.state == "corrupt" and .borrow_path == null'
+  cfg=$(unset XDG_STATE_HOME; HOME='' route_gather_context "$req" /seat)
+  expect "문맥 수집: XDG 없음 + 빈 HOME → 손상, 경로 null" "$cfg" '.borrow.state == "corrupt" and .borrow_path == null'
+  cfg=$(unset XDG_STATE_HOME; HOME=relhome route_gather_context "$req" /seat)
+  expect "문맥 수집: XDG 없음 + 상대 HOME → 손상, 경로 null" "$cfg" '.borrow.state == "corrupt" and .borrow_path == null'
+  cfg=$(XDG_STATE_HOME='' HOME="$b/home" route_gather_context "$req" /seat)
+  expect "문맥 수집: XDG 빈 값 + 절대 HOME" "$cfg" \
+    ".borrow.state == \"absent\" and .borrow_path == \"$b/home/.local/state/cc-lane/borrow.json\""
+}
+tr_in_run "$TR_RUN_SH" tr_borrow_ctx_case
+
+# ===========================================================================
 # 입력 판독 — 로그 프레임
 # ===========================================================================
 FR="$WORK/frames"
@@ -766,6 +929,67 @@ out=$(decide "$FIFO | ITEMS([LR(\"r1\"; \"S1\"; \"a\"; \"wait\"; null; true; 1),
 expect "맨 앞 대기자는 입장한다" "$out" '.verdict == "GRANT" and .account == "a" and .txn.record.seq == 3'
 out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; false; 1)])")
 expect "죽은 대기자는 막지 않는다" "$out" '.verdict == "GRANT"'
+
+# 차용 기록. 문맥의 borrow 를 직접 지정한다.
+for ev in first crash-retry resume shift classify; do
+  run=decide
+  case "$ev" in
+    first) f='.' ;;
+    crash-retry) f='ITEMS([LG("r1"; "S1"; "a"; true)]) | REQ({event: "crash-retry"})' ;;
+    resume) f='ITEMS([LG("r1"; "S1"; "a"; true)]) | REQ({event: "resume"})' ;;
+    shift) f="$NOROOM | REQ({kind: \"shift\", lineage: \"shift#1\"})" ;;
+    classify) f='.'; run=classify ;;
+  esac
+  want=$($run "$f")
+  check "차용 기록 부재·none 의 $ev 출력은 키 없는 출력과 바이트가 같다" \
+    "$($run "$f | .borrow = {state: \"absent\"}")
+$($run "$f | .borrow = {state: \"none\"}")" "$want
+$want"
+done
+check "none 이 기증자를 지명해도 기록 부재와 바이트가 같다" \
+  "$(decide '.borrow = {state: "none", donor: {id: "a", config_dir: "/h/.claude-a"}}')" "$(decide '.')"
+expect "차용 중 기증자는 풀에서 빠진다" "$(decide 'LEND("a")')" '.verdict == "GRANT" and .account == "b"'
+BGRP='.inventory.accounts = [A("a"), A("b"), A("c")]
+  | USE([UA("a"; 0.2; 0.2) + {org_hash: "h"}, UA("b"; 0.3; 0.3), UA("c"; 0.1; 0.1) + {org_hash: "h"}])'
+expect "차용이 없으면 그룹 h 가 먼저다" "$(decide "$BGRP")" '.account == "a"'
+expect "기증자와 그룹을 공유하는 계정도 풀에서 빠지고 다른 그룹은 남는다" "$(decide "$BGRP | LEND(\"a\")")" '.verdict == "GRANT" and .account == "b"'
+expect "분류는 기증자와 그룹 동료를 표시한다" "$(classify "$BGRP | LEND(\"a\")")" '[.accounts[] | .borrowed // null] == ["donor", null, "group"]'
+out=$(decide "$BGRP | LEND(\"a\") | ITEMS([LG(\"r1\"; \"S1\"; \"c\"; false)]) | REQ({event: \"crash-retry\"})")
+expect "그룹 동료 위 재시도 재진입도 빠진다" "$out" '.verdict == "GRANT" and .basis == "reassigned-no-room" and .account == "b"'
+expect "기증자는 id 만 일치해도 기증자" "$(decide '.borrow = BRW("borrowed"; "a"; "/elsewhere")')" '.account == "b"'
+expect "기증자는 config_dir 만 일치해도 기증자" "$(decide '.borrow = BRW("borrowed"; "zz"; "/h/.claude-a")')" '.account == "b"'
+expect "끝 슬래시가 붙은 기증자 디렉터리는 일치가 아니다" "$(decide '.borrow = BRW("borrowed"; "zz"; "/h/.claude-a/")')" '.account == "a"'
+for acct in a c; do
+  for f in 'REQ({nonce: "n-r1-S1"})' 'REQ({event: "crash-retry"})' 'REQ({event: "resume"})'; do
+    g="$BGRP | ITEMS([LG(\"r1\"; \"S1\"; \"$acct\"; true)]) | $f"
+    out=$(decide "$g | LEND(\"a\")")
+    check "차용 중 $acct 위의 이어 가기 $f 는 기록 부재와 같다" "$out" "$(decide "$g")"
+    seen "$out"
+  done
+done
+out=$(decide "$BGRP | LEND(\"a\") | REQ({event: \"resume\", bound_account: \"c\"})")
+expect "그룹 동료의 비생존 바인딩 재개 → PARK resume-bound-ineligible" "$out" '.verdict == "PARK" and .reason == "resume-bound-ineligible"'
+BC='.borrow = {state: "corrupt"}'
+expect "손상 차용 기록: 풀 → PARK borrow-record-corrupt" "$(decide "$BC")" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
+out=$(decide "$BC | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; false)]) | REQ({event: \"crash-retry\"})")
+expect "손상 차용 기록: 재시도 재진입 → PARK" "$out" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
+out=$(decide "$BC | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "손상 차용 기록: 바인딩 재개 → PARK" "$out" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
+for f in 'REQ({nonce: "n-r1-S1"})' '.' 'REQ({event: "crash-retry"})' 'REQ({event: "resume"})'; do
+  out=$(decide "$BC | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | $f")
+  expect "손상 차용 기록에서도 살아 있는 자기 임대의 이어 가기 $f 는 진행" "$out" '.verdict == "GRANT" and .account == "a" and .nonce == "n-r1-S1"'
+done
+out=$(decide "$BC | REQ({kind: \"shift\", lineage: \"shift#1\"})")
+expect "손상 차용 기록의 교대는 손상 표시 좌석" "$out" '.basis == "shift-seat-fallback" and .borrow == {state: "corrupt", donor: null}'
+out=$(decide "$BC | .leases = {state: \"corrupt\", items: [], corrupt: [{path: \"/t/x.lease\", key: \"r9+x\", why: \"schema\"}], stale_corrupt: []}")
+expect "손상 차용 기록과 깨진 표가 겹치면 lease-table-corrupt" "$out" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
+SEAT='.inventory = {state: "absent", accounts: []}'
+out=$(decide "$SEAT | .borrow = BRW(\"borrowed\"; \"u3\"; \"/h/.claude-u3\")")
+expect "좌석 == lane 이면 single-seat 봉투 끝에 borrow" "$out" \
+  '.basis == "single-seat" and .borrow == {state: "borrowed", donor: "u3"} and (keys_unsorted | map(select(. != "txn")) | last) == "borrow"'
+check "좌석 == lane + / 이면 표시하지 않는다" "$(decide "$SEAT | .borrow = (BRW(\"borrowed\"; \"u3\"; \"/h/.claude-u3\") | .lane_config_dir = \"/seat/\")")" "$(decide "$SEAT")"
+check "좌석 ≠ lane 이면 표시하지 않는다" "$(decide "$SEAT | .borrow = (BRW(\"borrowed\"; \"u3\"; \"/h/.claude-u3\") | .lane_config_dir = \"/other\")")" "$(decide "$SEAT")"
+expect "손상 기록의 좌석 표시" "$(decide "$SEAT | $BC")" '.basis == "single-seat" and .borrow == {state: "corrupt", donor: null}'
 
 # ===========================================================================
 # 예약 산술
@@ -1239,6 +1463,182 @@ leases=$(tr_table_json "$d")
 out=$(ctx 'ONLY(["a"]) | USE([UA("a"; 0.1; 0.6)]) | REQ({run_id: "r5"})' | jq -c --argjson l "$leases" '.leases = $l' | bash "$TR_ROUTE" classify)
 expect "유지는 Σ 에 자기를 한 번만 센다" "$out" ".groups[0].sigma.seven_day == $TR7 and .groups[0].count == 1"
 
+# 임대 쓰기 뒤 차용 재판독.
+LB="$WORK/lb"
+mkdir -p "$LB"
+lb_rec() {
+  # lb_rec <파일> <state> <기증자 id> [기증자 config_dir] — 좌석 /seat 의 차용 기록을 쓴다.
+  mkdir -p "${1%/*}"
+  jq -cn --arg st "$2" --arg id "$3" --arg dir "${4:-/h/.claude-$3}" \
+    '{schema: "cc-lane-borrow v1", state: $st, lane_config_dir: "/seat", donor: {id: $id, config_dir: $dir}}' > "$1"
+}
+lb_rec "$LB/intent-a.json" intent a
+lb_rec "$LB/intent-b.json" intent b
+lb_rec "$LB/id-a.json" intent a /elsewhere
+lb_rec "$LB/dir-a.json" intent zz /h/.claude-a
+printf '{' > "$LB/broken.json"
+lb_bp() { rm -rf "$LB/$1"; mkdir -p "$LB/$1"; printf '%s' "$LB/$1/borrow.json"; }
+# lbx <표> <기록 경로> <문맥 필터> <TRH_WRITTEN 조각> [환경 할당…] — 래퍼로 거래를 돌린다.
+# 보유자는 LBH, 없으면 TR_HOLDER 다.
+lbx() {
+  local t="$1" bp="$2" f="$3" w="$4"
+  shift 4
+  ctx "$f | .borrow_path = \"$bp\"" | env TRH_WRITTEN="$w" "$@" bash "$WRAP" lease-txn --table "$t" --now "$NOW" --boot-epoch "" --holder "${LBH:-$TR_HOLDER}"
+}
+K1="$(tr_key r1 S1).lease"
+H4=$(tr_spawn)
+TR_PIDS="$TR_PIDS $H4"
+WAITC='.verdict == "WAIT" and .reason == "lease-contention"'
+
+d=$(tnew bp-missing)
+mkdir -p "$d"
+rc=0; ctx 'del(.borrow_path)' | bash "$TR_ROUTE" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER" >/dev/null 2>&1 || rc=$?
+check "borrow_path 키 없음(표 있음) → rc 2, 임대 없음" "$rc:$(count_files "$d")" "2:0"
+i=0
+for f in 'del(.borrow_path)' '.borrow_path = "rel/borrow.json"' '.borrow_path = 5'; do
+  i=$((i + 1))
+  d=$(tnew "bp-bad-$i")
+  rc=0; ctx "$f" | bash "$TR_ROUTE" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER" >/dev/null 2>&1 || rc=$?
+  check "문맥 경로 계약 위반 $f(표 부재) → rc 2, 표를 만들지 않는다" "$rc:$([ -e "$d" ] && printf 있음 || printf 없음)" "2:없음"
+done
+d=$(tnew bp-null)
+out=$(txn "$d" '.borrow_path = null')
+expect "경로 null 의 새 배치 → PARK borrow-record-corrupt" "$out" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
+check "경로 null 의 새 배치는 임대를 남기지 않는다" "$(count_files "$d")" 0
+d=$(tnew bp-null-hold)
+live_lease "$d" r1 S1 a
+out=$(txn "$d" '.borrow_path = null | REQ({nonce: "n-r1-S1"})')
+expect "경로 null 의 nonce 같은 멱등 보유 → GRANT" "$out" '.verdict == "GRANT" and .nonce == "n-r1-S1"'
+check "경로 null 의 멱등 보유는 임대를 유지한다" "$(count_files "$d")" 1
+
+d=$(tnew bd-dekker)
+BP=$(lb_bp dekker)
+out=$(lbx "$d" "$BP" '.' "cp '$LB/intent-a.json' '$BP'")
+expect "Dekker: 쓴 계정을 지명하는 intent → WAIT lease-contention" "$out" "$WAITC"
+check "Dekker: 임대가 남지 않는다" "$(count_files "$d")" 0
+BP=$(lb_bp dekker)
+out=$(lbx "$d" "$BP" 'REQ({kind: "shift", lineage: "shift#1"})' "cp '$LB/intent-a.json' '$BP'")
+expect "Dekker 의 교대는 새 표시의 좌석" "$out" '.basis == "shift-seat-fallback" and .borrow == {state: "intent", donor: "a"}'
+check "Dekker 의 교대도 임대를 남기지 않는다" "$(count_files "$d")" 0
+for rec in id-a dir-a; do
+  d=$(tnew "bd-$rec")
+  BP=$(lb_bp "$rec")
+  out=$(lbx "$d" "$BP" '.' "cp '$LB/$rec.json' '$BP'")
+  expect "재판독 적중 갈래 $rec → WAIT lease-contention" "$out" "$WAITC"
+  check "재판독 적중 갈래 $rec → 임대 없음" "$(count_files "$d")" 0
+done
+d=$(tnew bd-other)
+BP=$(lb_bp other)
+out=$(lbx "$d" "$BP" '.' "cp '$LB/intent-b.json' '$BP'")
+expect "다른 계정을 지명하는 intent 는 부여를 막지 않는다" "$out" '.verdict == "GRANT" and .account == "a"'
+check "다른 계정 지명 뒤 임대 유지" "$(count_files "$d")" 1
+d=$(tnew bd-stale)
+BP=$(lb_bp stale)
+lb_rec "$BP" borrowed a
+out=$(lbx "$d" "$BP" '.borrow = {state: "none"}' ":")
+expect "낡은 문맥(none)과 디스크의 borrowed → 되돌림" "$out" "$WAITC"
+check "낡은 문맥의 되돌림 뒤 임대 없음" "$(count_files "$d")" 0
+d=$(tnew bd-chain)
+BP=$(lb_bp chain)
+lb_rec "$BP" borrowed a
+out=$(lbx "$d" "$BP" '.borrow = BRW("borrowed"; "u3"; "/h/.claude-u3")' ":")
+expect "문맥 기증자 u3, 디스크 기증자 a 의 체인 → 되돌림" "$out" "$WAITC"
+check "체인의 되돌림 뒤 임대 없음" "$(count_files "$d")" 0
+d=$(tnew bd-corrupt)
+BP=$(lb_bp corrupt)
+out=$(lbx "$d" "$BP" '.' "cp '$LB/broken.json' '$BP'")
+expect "새 배치의 손상 재판독 → PARK borrow-record-corrupt" "$out" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
+check "새 배치의 손상 재판독 뒤 임대 없음" "$(count_files "$d")" 0
+BP=$(lb_bp corrupt)
+out=$(lbx "$d" "$BP" 'REQ({kind: "shift", lineage: "shift#1"})' "cp '$LB/broken.json' '$BP'")
+expect "손상 재판독의 교대는 손상 표시 좌석" "$out" '.basis == "shift-seat-fallback" and .borrow == {state: "corrupt", donor: null}'
+for f in '.' 'REQ({event: "crash-retry"})'; do
+  d=$(tnew bd-corrupt-cont)
+  live_lease "$d" r1 S1 a
+  BP=$(lb_bp corrupt-cont)
+  out=$(lbx "$d" "$BP" "$f" "cp '$LB/broken.json' '$BP'")
+  expect "이어 가는 쓰기 $f 는 손상 재판독에서도 진행" "$out" '.verdict == "GRANT" and .account == "a" and .nonce == "n-r1-S1"'
+  check "이어 가는 쓰기 $f 뒤 임대 유지" "$(count_files "$d")" 1
+done
+
+# 복원. 파일 비교는 cmp 다.
+d=$(tnew bd-hold)
+live_lease "$d" r1 S1 a
+cp "$d/$K1" "$LB/hold.before"
+BP=$(lb_bp hold)
+out=$(LBH=$H4 lbx "$d" "$BP" 'REQ({event: "crash-retry"})' "cp '$LB/intent-a.json' '$BP'")
+expect "보유 적중·이전 보유자 살아 있음 → WAIT lease-contention" "$out" "$WAITC"
+rc=0; cmp -s "$LB/hold.before" "$d/$K1" || rc=$?
+check "보유 적중 뒤 임대 파일은 트랜잭션 전 사본과 cmp 같다" "$rc" 0
+expect "복원된 임대는 이전 보유자와 이전 nonce 만 지닌다" "$(cat "$d/$K1")" ".nonce == \"n-r1-S1\" and [.holders[].pid] == [$TR_HOLDER]"
+d=$(tnew bd-die)
+H5=$(tr_spawn)
+TR_PIDS="$TR_PIDS $H5"
+H5_FP=$( . "$TR_ORCH/liveness.sh"; TZ=UTC0 cc_proc_fingerprint "$H5" )
+put_lease "$d" r1 S1 grant a "$RES_JSON" "$H5" "$H5_FP"
+BP=$(lb_bp die)
+out=$(ctx "REQ({event: \"resume\"}) | .borrow_path = \"$BP\"" \
+  | env TRH_DECIDED="kill $H5; cp '$LB/intent-a.json' '$BP'" bash "$WRAP" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER")
+expect "보유 중 보유자가 죽어도 적중이면 WAIT lease-contention" "$out" "$WAITC"
+expect "복원된 기록은 죽은 보유자만 지니고 요청 보유자가 없다" "$(cat "$d/$K1")" "[.holders[].pid] == [$H5]"
+d=$(tnew bd-window)
+live_lease "$d" r1 S1 a
+cp "$d/$K1" "$LB/window.before"
+BP=$(lb_bp window)
+lb_rec "$BP" intent a
+for f in 'REQ({nonce: "n-r1-S1"})' 'REQ({event: "crash-retry"})' 'REQ({event: "resume"})'; do
+  out=$(LBH=$H4 lbx "$d" "$BP" ".borrow = BRW(\"intent\"; \"a\"; \"/h/.claude-a\") | $f" ":")
+  expect "intent 창의 이어 가기 $f → WAIT lease-contention" "$out" "$WAITC"
+  rc=0; cmp -s "$LB/window.before" "$d/$K1" || rc=$?
+  check "intent 창의 이어 가기 $f 뒤 임대 파일이 사본과 cmp 같다" "$rc" 0
+done
+d=$(tnew bd-cover)
+live_lease "$d" r1 S1 a
+cp "$d/$K1" "$LB/cover.before"
+BP=$(lb_bp cover)
+out=$(lbx "$d" "$BP" 'REQ({event: "limit-reclaim"})' "cp '$LB/intent-b.json' '$BP'")
+expect "살아 있는 자기 임대를 덮은 재부여의 적중 → WAIT lease-contention" "$out" "$WAITC"
+rc=0; cmp -s "$LB/cover.before" "$d/$K1" || rc=$?
+check "덮은 재부여의 되돌림은 이전 계정의 기록을 cmp 같게 되쓴다" "$rc" 0
+# 복원 실패: 복원의 임시 파일 자리를 디렉터리로 막는다. 훅은 거래 셸 안에서 eval 되어 $$ 가 같다.
+d=$(tnew bd-undo-fail)
+live_lease "$d" r1 S1 a
+BP=$(lb_bp undo-fail)
+rc=0
+out=$(LBH=$H4 lbx "$d" "$BP" 'REQ({event: "crash-retry"})' "cp '$LB/intent-a.json' '$BP'; mkdir \"\$1/.$K1.tmp.\$\$\"") || rc=$?
+check "복원 실패 → rc 4, 빈 출력" "$rc:$out" "4:"
+expect "복원 실패 뒤 파일은 방금 쓴 기록(요청 보유자 포함)" "$(cat "$d/$K1")" "any(.holders[]; .pid == $H4)"
+out=$(txn "$d" 'REQ({event: "crash-retry"})')
+expect "복원 실패 뒤 다음 거래는 잠금 바쁨이 아니다" "$out" '.reason != "lease-lock-busy"'
+find "$d" -name ".$K1.tmp.*" -type d -exec rm -rf {} +
+# 우선순위: 손상 판정과 적중 되돌림은 재검증보다 앞선다.
+d=$(tnew bd-prio-c)
+BP=$(lb_bp prio-c)
+out=$(lbx "$d" "$BP" '.' "cp '$LB/broken.json' '$BP'" TRH_REVAL=fail)
+expect "재검증 실패 강제 + 새 배치의 손상 → PARK borrow-record-corrupt" "$out" '.verdict == "PARK" and .reason == "borrow-record-corrupt"'
+d=$(tnew bd-prio-h)
+live_lease "$d" r1 S1 a
+cp "$d/$K1" "$LB/prio.before"
+BP=$(lb_bp prio-h)
+out=$(lbx "$d" "$BP" '.' "cp '$LB/intent-a.json' '$BP'" TRH_REVAL=fail)
+expect "재검증 실패 강제 + nonce 없는 멱등 재부여의 적중 → WAIT lease-contention" "$out" "$WAITC"
+rc=0; cmp -s "$LB/prio.before" "$d/$K1" || rc=$?
+check "적중이 재검증보다 앞서 살아 있는 자기 임대가 cmp 같게 남는다" "$rc" 0
+# 차용이 없을 때 nonce 없는 멱등 재부여의 강제 재검증 실패는 nonce 로 지운다.
+d=$(tnew bd-reval)
+live_lease "$d" r1 S1 a
+out=$(ctx '.' | env TRH_REVAL=fail bash "$WRAP" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER")
+expect "nonce 없는 멱등 재부여의 강제 재검증 실패 → WAIT lease-contention" "$out" "$WAITC"
+check "그 실패는 호출자의 살아 있는 임대를 지운다" "$(count_files "$d")" 0
+# 문맥 경로 우선: 거래 프로세스는 자기 환경으로 경로를 다시 계산하지 않는다.
+lb_rec "$LB/envstate/cc-lane/borrow.json" intent a
+d=$(tnew bd-ctxpath)
+out=$(ctx '.' | env XDG_STATE_HOME="$LB/envstate" bash "$WRAP" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER")
+expect "환경의 상태 루트에 기록이 있어도 문맥 경로가 부재면 GRANT" "$out" '.verdict == "GRANT" and .account == "a"'
+d=$(tnew bd-ctxpath2)
+out=$(ctx ".borrow_path = \"$LB/envstate/cc-lane/borrow.json\"" | env XDG_STATE_HOME="$LB/nowhere" bash "$WRAP" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER")
+expect "환경의 상태 루트가 비어 있어도 문맥 경로의 intent 를 본다" "$out" "$WAITC"
+
 # 실패 경로.
 if [ "$(id -u)" = "0" ]; then
   ok "쓰기 실패 경로(root 는 권한을 우회하므로 생략)"
@@ -1372,7 +1772,7 @@ fi
 for tok in \
   "PARK inventory-corrupt" "PARK no-enabled-account" "PARK lease-table-corrupt" "PARK own-lease-corrupt" \
   "PARK resume-unbound" "PARK resume-logged-out" "PARK resume-bound-ineligible" "PARK resume-bound-unknown-account" \
-  "PARK deadline" \
+  "PARK deadline" "PARK borrow-record-corrupt" \
   "WAIT group-exhausted" "WAIT no-room" "WAIT unknown-concurrency" "WAIT resume-bound-exhausted" \
   "WAIT resume-bound-no-room" "WAIT lease-lock-busy" "WAIT lease-contention" "WAIT fifo-yield" \
   "GRANT first" "GRANT sticky" "GRANT resume-bound" "GRANT reassigned-after-limit" "GRANT reassigned-no-room" \

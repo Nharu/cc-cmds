@@ -84,6 +84,10 @@ case "${ROUTE_USAGE_SCHEMA:-}" in
   'cc-lane-usage v1') ;;
   *) readonly ROUTE_USAGE_SCHEMA='cc-lane-usage v1' ;;
 esac
+case "${ROUTE_BORROW_SCHEMA:-}" in
+  'cc-lane-borrow v1') ;;
+  *) readonly ROUTE_BORROW_SCHEMA='cc-lane-borrow v1' ;;
+esac
 
 route__dir() { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; }
 
@@ -193,6 +197,25 @@ def rt_usage_read($now; $factor; $schema):
       end
   end;
 
+def rt_borrowing: (.state == "intent") or (.state == "borrowed") or (.state == "returning");
+def rt_borrow_read($schema):
+  if length != 1 then {state: "corrupt"}
+  else first(.[])
+    | if type != "object" or .schema != $schema then {state: "corrupt"}
+      elif .state == "none" then {state: "none"}
+      elif (rt_borrowing | not) then {state: "corrupt"}
+      elif ((.lane_config_dir | type) != "string") or .lane_config_dir == ""
+           or ((.donor | type) != "object")
+           or ((.donor.id | type) != "string") or .donor.id == ""
+           or ((.donor.config_dir | type) != "string") or .donor.config_dir == "" then {state: "corrupt"}
+      else {state: .state, lane_config_dir: .lane_config_dir, donor: {id: .donor.id, config_dir: .donor.config_dir}} end
+  end;
+def rt_borrow_mark($cfg; $b):
+  if ($b | type) != "object" then {}
+  elif ($b | rt_borrowing) and ($cfg == $b.lane_config_dir) then {borrow: {state: $b.state, donor: ($b.donor.id? // null)}}
+  elif $b.state == "corrupt" then {borrow: {state: "corrupt", donor: null}}
+  else {} end;
+
 def rt_frames_of_file:
   reduce (inputs | (fromjson? // null)) as $f ({ts: null, five_hour: null, seven_day: null};
     if ($f | type) != "object" then .
@@ -270,7 +293,7 @@ def rt_rem($G):
     | 10000 - (if $x.state == "reset_elapsed" then 0 elif $x.state == "unknown" then 10000 else $x.u_bp end) - $G.sigma[$w]]
   | min;
 
-def rt_aview($c; $orgs; $fresh; $gv):
+def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
   (.) as $a
   | ([rt_uaccts($c)[] | select(.id == $a.id)] | .[0]) as $ua
   | rt_group_of($orgs; $a.id) as $g
@@ -282,7 +305,10 @@ def rt_aview($c; $orgs; $fresh; $gv):
      mismatch: ($ua != null and (($ua.config_dir | type) == "string") and ($ua.config_dir != $a.config_dir)),
      login_bad: ($fresh and $ua != null and (($ua.login | type) == "string") and ($ua.login != "ok")),
      class: rt_class_of($G; $ex),
-     remaining_bp: rt_rem($G)};
+     remaining_bp: rt_rem($G)}
+  + (if any($donors[]; . == $a.id) then {borrowed: "donor"}
+     elif any($bgroups[]; . == $g) then {borrowed: "group"}
+     else {} end);
 
 def rt_prep($schema):
   (.) as $c
@@ -297,8 +323,15 @@ def rt_prep($schema):
      + (if (($c.request.bound_account | type) == "string") and $c.request.bound_account != "" then [rt_group_of($orgs; $c.request.bound_account)] else [] end)
      | unique) as $gids
   | (reduce $gids[] as $g ({}; .[$g] = rt_gview($c; $orgs; $fresh; $inv; $items; $g))) as $gv
+  | ($c.borrow // {"state": "absent"}) as $b
+  | (if ($b | rt_borrowing)
+     then [$inv[] | select((.id == $b.donor.id) or (.config_dir == $b.donor.config_dir)) | .id]
+     else [] end) as $donors
+  | (if ($b | rt_borrowing)
+     then ([$donors[] | rt_group_of($orgs; .)] + [rt_group_of($orgs; $b.donor.id)] | unique)
+     else [] end) as $bgroups
   | {c: $c, schema: $schema, fresh: $fresh, orgs: $orgs, items: $items, groups: $gv,
-     accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv)] | sort_by(.id)),
+     accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups)] | sort_by(.id)),
      okey: (if (($c.request.run_id | type) == "string") and (($c.request.lineage | type) == "string")
             then rt_key($c.request.run_id; $c.request.lineage) else null end),
      own: $own,
@@ -307,6 +340,7 @@ def rt_prep($schema):
                      then ([$cs[] | select(.key == rt_key($c.request.run_id; $c.request.lineage)) | .path] | .[0])
                      else null end),
      table_corrupt: ($c.leases.state == "corrupt"),
+     borrow_corrupt: ($b.state == "corrupt"),
      shift: ($c.request.kind == "shift")};
 
 def rt_need_cap: if (.config.cap_bp | rt_isint | not) then error("config.cap_bp") else . end;
@@ -344,7 +378,9 @@ def rt_admit_all($schema):
       | rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) + {account: $a.id, group: $a.group, class: $a.class}];
 
 def rt_av($p; $id): [$p.accounts[] | select(.id == $id)] | .[0];
-def rt_policy_ok($a): $a != null and ($a.unattended == "enabled") and ($a.group_reserved | not) and ($a.login_bad | not) and ($a.mismatch | not);
+def rt_policy_ok($a):
+  $a != null and ($a.unattended == "enabled") and ($a.group_reserved | not) and ($a.login_bad | not) and ($a.mismatch | not)
+  and (($a.borrowed // null) == null);
 def rt_new_ok($a): rt_policy_ok($a) and ($a.class != "X");
 def rt_hold_ok($a):
   $a != null and ($a.unattended == "enabled" or $a.unattended == "draining")
@@ -364,13 +400,16 @@ def rt_mv($path): "\($path) 를 확인하고 옮기십시오: mv '\($path)' '\($
 
 def rt_env($e; $op; $rec): $e + {txn: {op: $op, record: $rec}};
 def rt_park($reason; $recovery): {verdict: "PARK", reason: $reason, recovery: $recovery};
+def rt_park_borrow_corrupt:
+  rt_park("borrow-record-corrupt"; "cc-lane 차용 기록을 읽을 수 없다 — 파일을 지우거나 옮기지 말고 cc-lane 이 기록을 다시 쓰기를 기다리거나 cc-lane borrow status 로 확인한다");
 def rt_park_deadline($until):
   {verdict: "PARK", reason: "deadline", ready_at: $until, recovery: "마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"};
 def rt_wait($g; $acct; $until; $reason): {verdict: "WAIT", group: $g, account: $acct, until_epoch: $until, reason: $reason};
-def rt_seat_of($cfg; $basis):
+def rt_seat_of($cfg; $basis; $b):
   {verdict: "GRANT", basis: $basis, account: null, config_dir: $cfg, group: null, reservation_bp: null,
-   admitted_as: null, observed: null, lease_key: null, nonce: null, dormant: false};
-def rt_seat($p; $basis): rt_seat_of($p.c.seat.config_dir; $basis);
+   admitted_as: null, observed: null, lease_key: null, nonce: null, dormant: false}
+  + rt_borrow_mark($cfg; $b);
+def rt_seat($p; $basis): rt_seat_of($p.c.seat.config_dir; $basis; $p.c.borrow);
 def rt_grant_lease($p; $o; $basis):
   {verdict: "GRANT", basis: $basis, account: $o.account, config_dir: $o.config_dir, group: rt_group_of($p.orgs; $o.account),
    reservation_bp: ($o.reservation_bp // null), admitted_as: ($o.admitted_as // null), observed: ($o.observed // null),
@@ -406,12 +445,13 @@ def rt_resume($p):
         else rt_av($p; $b) as $a
           | if $a == null then
               rt_env(rt_park("resume-bound-unknown-account"; "묶인 계정이 인벤토리에 없다 — cc-lane account check"); "none"; null)
-            elif ($a.unattended != "enabled") or $a.group_reserved or $a.mismatch then
+            elif ($a.unattended != "enabled") or $a.group_reserved or $a.mismatch or (($a.borrowed // null) != null) then
               rt_env(rt_park("resume-bound-ineligible"; "묶인 계정이 무인 사용 대상이 아니다 — 계정 정책을 확인하거나 계보를 새로 시작한다"); "none"; null)
             elif $a.login_bad then
               rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
             elif $p.table_corrupt then
               rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
+            elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
             else rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
               | if $adm.admitted then
                   rt_grant_new($p; $a; $adm; "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
@@ -453,6 +493,7 @@ def rt_new($p; $basis0; $excl):
       rt_env(rt_grant_lease($p; $o; $o.basis); "hold"; rt_rec_hold($p))
     elif $p.table_corrupt then rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
     elif $idem then rt_env(rt_grant_lease($p; $o; $o.basis); "write"; rt_rec_hold($p))
+    elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
     else
       [$p.accounts[] | select(rt_policy_ok(.)) | select(.id != $excl) | (.) as $a
         | rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
@@ -474,6 +515,7 @@ def rt_retry($p):
   | if $o != null and $o.kind == "grant" and $o.live == true and rt_hold_ok($a) then
       rt_env(rt_grant_lease($p; $o; "sticky"); "hold"; rt_rec_hold($p))
     elif $o != null and $o.kind == "grant" and ($o.live != true) and rt_new_ok($a) and ($p.table_corrupt | not)
+         and ($p.borrow_corrupt | not)
          and (rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) | .admitted) then
       rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
       | rt_grant_new($p; $a; $adm; "sticky") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
@@ -511,7 +553,8 @@ def rt_revalidate($schema; $rec):
     else all(rt_wins[]; (.) as $w | (rt_ueff($G.windows[$w]) + $G.sigma[$w] + ($rec.reservation_bp[$w] // 0)) <= 10000) end;
 
 def rt_txn_fallback($reason; $rec):
-  if .request.kind == "shift" then rt_seat_of(.seat.config_dir; "shift-seat-fallback")
+  if .request.kind == "shift" then rt_seat_of(.seat.config_dir; "shift-seat-fallback"; .borrow)
+  elif $reason == "borrow-record-corrupt" then rt_park_borrow_corrupt
   else rt_orgs(.) as $o
     | rt_wait((if $rec != null then rt_group_of($o; $rec.account) else null end); null; null; $reason) end;
 
@@ -617,6 +660,101 @@ route_usage_read() {
   printf '%s\n' "$out"
 }
 
+route__borrow_path() {
+  # route__borrow_path — cc-lane 차용 기록의 절대 경로. 기준은 비어 있지 않은
+  # `XDG_STATE_HOME`, 아니면 비어 있지 않은 `HOME` 의 `.local/state` 다. 기준이 절대
+  # 경로가 아니거나 둘 다 비면 출력 없이 rc 1 이다 — 조합 전에 검사해야 빈 `HOME` 이
+  # `/.local/state` 로 통과하지 않는다. cc-lane 도 빈 값을 미설정으로 보고 상대 경로를
+  # 거부한다. 이 경로를 쓰는 자리는 모두 이 함수 하나를 쓴다.
+  local base
+  if [ -n "${XDG_STATE_HOME:-}" ]; then
+    base="$XDG_STATE_HOME"
+  elif [ -n "${HOME:-}" ]; then
+    base="$HOME"
+  else
+    return 1
+  fi
+  case "$base" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  if [ -z "${XDG_STATE_HOME:-}" ]; then base="$base/.local/state"; fi
+  printf '%s\n' "$base/cc-lane/borrow.json"
+}
+
+route_borrow_read() {
+  # route_borrow_read <file> — 차용 기록의 정규형 한 줄: absent·none·corrupt, 또는
+  # 차용 중 세 상태의 `{state, lane_config_dir, donor: {id, config_dir}}`. 인자가
+  # 없으면 rc 2, 그 밖에는 rc 0 이고 아무것도 만들지 않으며 표준 오류에 쓰지 않는다.
+  # 첫 일치가 이긴다. 심링크·일반 파일이 아닌 것(디렉터리·FIFO)은 jq 로 열지 않고
+  # 손상이다. 부재는 가장 가까운 존재하는 상위가 검색 가능한 디렉터리일 때만이다 —
+  # 검색할 수 없는 상위 아래의 파일도 `-e` 가 거짓이라, 존재 검사 하나로는 열린 쪽으로
+  # 실패한다. jq 는 읽기 실패에서도 표준 출력에 `[]` 를 내므로 rc 로 가른다. `none`
+  # 기록의 `donor` 는 보지 않는다.
+  local f p out
+  [ $# -ge 1 ] || return 2
+  f="$1"
+  case "$f" in
+    /*) ;;
+    *) printf '%s\n' '{"state":"corrupt"}'; return 0 ;;
+  esac
+  if [ -L "$f" ]; then
+    printf '%s\n' '{"state":"corrupt"}'
+    return 0
+  fi
+  if [ -e "$f" ]; then
+    if [ ! -f "$f" ]; then
+      printf '%s\n' '{"state":"corrupt"}'
+      return 0
+    fi
+  else
+    p="$f"
+    while :; do
+      p="${p%/*}"
+      [ -n "$p" ] || p=/
+      if [ -e "$p" ] || [ -L "$p" ] || [ "$p" = / ]; then break; fi
+    done
+    if [ -d "$p" ] && [ -x "$p" ]; then
+      printf '%s\n' '{"state":"absent"}'
+    else
+      printf '%s\n' '{"state":"corrupt"}'
+    fi
+    return 0
+  fi
+  out=$(jq -c -s --arg schema "$ROUTE_BORROW_SCHEMA" "$(route__jq_lib)"' rt_borrow_read($schema)' "$f" 2>/dev/null) \
+    || out='{"state":"corrupt"}'
+  [ -n "$out" ] || out='{"state":"corrupt"}'
+  printf '%s\n' "$out"
+}
+
+route__borrow_now() {
+  # route__borrow_now — 지금 이 셸의 상태 루트에서 읽은 차용 기록. 경로를 유도할 수
+  # 없으면 손상이다.
+  local f
+  if f=$(route__borrow_path); then
+    route_borrow_read "$f"
+  else
+    printf '%s\n' '{"state":"corrupt"}'
+  fi
+}
+
+route__borrow_read_main() {
+  # borrow-read [<file>] — `{"state":S,"donor":<id|null>}` 한 줄과 rc 0. 인자가
+  # 없으면 `route__borrow_path` 의 경로를 읽는다. `donor` 는 차용 중 세 상태에서만
+  # 기증자 id 다.
+  local r
+  if [ $# -gt 1 ]; then
+    printf '%s\n' 'usage: route.sh borrow-read [<file>]' >&2
+    return 2
+  fi
+  if [ $# -eq 1 ]; then
+    r=$(route_borrow_read "$1") || return 2
+  else
+    r=$(route__borrow_now) || return 2
+  fi
+  printf '%s' "$r" | jq -c "$(route__jq_lib)"' {state: .state, donor: (if rt_borrowing then .donor.id else null end)}'
+}
+
 route__frames_of_file() {
   # route__frames_of_file <log> — 로그 한 파일의 창별 마지막 판독. 최상위
   # `utilization`·`rateLimitType` 은 읽지 않는다. 관측 시각은 그 프레임 앞의 마지막
@@ -692,7 +830,7 @@ route_gather_context() {
   # 좌석 디렉터리는 호출자가 이미 얻은 `resolve_account` 의 답이다 — 해석기를
   # 다시 부르지 않는다. 5시간 상한은 호출 시점의 `RUN_PACE_SESSION_WINDOW_PCT_MAX`
   # 에서 bp 로 옮긴다. 그 변수가 없는 셸에서는 null 이 되고 결정은 rc 2 로 닫힌다.
-  local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg
+  local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg bpath borrow bpj
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
   inv="${RUN_DIR:-}/inventory.json"
@@ -707,6 +845,15 @@ route_gather_context() {
     *) inventory='{"state":"absent","accounts":[]}' ;;
   esac
   usage=$(route_usage_read "${XDG_STATE_HOME:-$HOME/.local/state}/cc-lane/usage.json" "$now") || return 2
+  # 차용 기록과 그 경로. 경로는 `lease-txn` 의 잠금 아래 재판독이 같은 파일을 보도록
+  # 문맥으로 넘긴다 — 그 프로세스가 자기 환경으로 다시 계산하면 다른 파일을 볼 수 있다.
+  if bpath=$(route__borrow_path); then
+    borrow=$(route_borrow_read "$bpath") || return 2
+    bpj=$(jq -cn --arg p "$bpath" '$p') || return 2
+  else
+    borrow='{"state":"corrupt"}'
+    bpj=null
+  fi
   table="$(run_pace_root)/leases"
   leases=$(route__table_read "$table" "$(boot_epoch 2>/dev/null || true)") || return 2
   run_id=$(printf '%s' "$req" | jq -r '.run_id // ""') || return 2
@@ -718,9 +865,11 @@ route_gather_context() {
   cfg=$(route__config_json "$cap") || return 2
   jq -cn --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
     --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
+    --argjson borrow "$borrow" --argjson bp "$bpj" \
     '{now: $now, request: $req, inventory: $inv, usage: $usage, frames: $frames, leases: $leases,
       sticky: ([$leases.items[] | select(.run_id == $req.run_id and .kind == "grant" and .live == true) | .account] | unique),
-      seat: {config_dir: $seat}, config: $cfg, deadline: ($req.deadline // null)}' || return 2
+      seat: {config_dir: $seat}, config: $cfg, deadline: ($req.deadline // null),
+      borrow: $borrow, borrow_path: $bp}' || return 2
 }
 
 # ---------------------------------------------------------------------------
@@ -998,16 +1147,34 @@ route__txn_fallback() {
 
 route__emit() { printf '%s' "$1" | jq -c 'del(.txn)'; }
 
+route__txn_undo() {
+  # route__txn_undo <table> <key> <prior-json|''> <record-json> — 차용 때문에 방금 쓴
+  # 임대를 되돌린다. 잠금 아래 판독에서 그 키에 살아 있던 자기 기록이 있으면 그것을
+  # 되쓴다 — 쓴 기록이 이전 nonce 를 지닐 수 있어 nonce 로 지우면 아직 도는 이전
+  # 보유자의 울타리까지 지운다. 없으면 쓴 기록의 nonce 로 지운다. 되쓰기가 실패하면
+  # rc 4 이고 쓴 파일은 그대로 둔다 — 지우면 살아 있는 이전 보유자의 울타리가 사라진다.
+  if [ -n "$3" ]; then
+    route__lease_put "$1" "$2" "$3" || return 4
+    return 0
+  fi
+  route__lease_cmp_delete "$1/$2.lease" "$(printf '%s' "$4" | jq -r '.nonce')"
+}
+
 route__txn_main() {
   # lease-txn --table <dir> --now <n> --boot-epoch <n|''> --holder <pid>...
   # 표준 입력의 문맥 → 표준 출력의 봉투. 락 아래에서 표를 다시 읽고 결정한다.
+  # 모든 임대 쓰기(보유 포함) 뒤에는 문맥의 `borrow_path` 에서 차용 기록을 디스크로
+  # 다시 읽는다 — cc-lane 은 intent 를 쓴 뒤 이 표를 읽으므로, 둘 중 하나는 반드시
+  # 상대를 본다. 쓴 임대가 기증자 계정이거나 기증자 디렉터리이면 되돌리고 경합으로
+  # 물러서고, 새로 놓는 쓰기가 손상 기록을 보면 되돌리고 PARK 한다. 되돌리기는 잠금
+  # 아래 판독에서 살아 있던 자기 기록의 복원이 먼저이고, 없을 때만 nonce 로 지운다.
   # 예산을 더하는 쓰기(새 부여, 재부여, 살아 있지 않은 자기 임대 위의 재입장,
-  # 호출자가 아직 받지 못한 기존 임대의 멱등 반환)는 쓴 뒤 표를 다시 읽어 재검증하고,
+  # 호출자가 아직 받지 못한 기존 임대의 멱등 반환)는 그 뒤 표를 다시 읽어 재검증하고,
   # 어기면 자기 항목을 nonce 로 지운 뒤 WAIT 를 낸다. 타이브레이크는 두지 않는다 —
   # 어긴 집합을 본 재검증자가 자기를 철회하는 규칙만이 이중 보유에서도 안전하다.
   # 표 디렉터리가 없으면 락 없이 빈 표로 결정하고, 쓰기가 필요할 때만 만든 뒤 락
   # 아래에서 다시 결정한다.
-  local table="" now="" boot="" ctx holders nonce out op rec key rc leases absent
+  local table="" now="" boot="" ctx holders nonce out op rec key rc leases absent bpath prior bnew bv ctx2 urc
   local hs=()
   absent='{"state":"absent","items":[],"corrupt":[],"stale_corrupt":[]}'
   while [ $# -gt 0 ]; do
@@ -1032,8 +1199,13 @@ route__txn_main() {
   holders=$(route__holders_json ${hs[@]+"${hs[@]}"}) || return 2
   nonce=$(route__nonce)
   [ -n "$nonce" ] || return 4
+  # `borrow_path` 는 키가 있어야 하고 `null` 이거나 절대 경로 문자열이다. 이 검사는
+  # 표 부재 갈래보다 앞이라 두 갈래 모두에 걸린다.
   ctx=$(printf '%s' "$ctx" | jq -c --argjson now "$now" --argjson h "$holders" --arg n "$nonce" \
-        'if type == "object" then (.now = $now | .request.holders = $h | .fresh_nonce = $n) else error("ctx") end') || return 2
+        'if type == "object" and has("borrow_path")
+            and ((.borrow_path == null) or (((.borrow_path | type) == "string") and (.borrow_path | startswith("/"))))
+         then (.now = $now | .request.holders = $h | .fresh_nonce = $n) else error("ctx") end') || return 2
+  bpath=$(printf '%s' "$ctx" | jq -j '.borrow_path // empty') || return 2
 
   if [ ! -e "$table" ] && [ ! -L "$table" ]; then
     out=$(route__decide_with "$ctx" "$absent") || return 2
@@ -1062,12 +1234,49 @@ route__txn_main() {
     hold|write)
       rec=$(printf '%s' "$out" | jq -c '.txn.record') || { route__lock_release; return 2; }
       key=$(printf '%s' "$out" | jq -r '.lease_key') || { route__lock_release; return 2; }
+      # 복원 원본: 잠금 아래 판독에서 이 키의 파일이고 살아 있던 자기 기록. nonce 로
+      # 고르지 않는다 — 새로 놓는 재부여가 살아 있는 자기 임대를 덮는 경우를 놓친다.
+      prior=$(printf '%s' "$ctx" | jq -c --argjson leases "$leases" --arg path "$table/$key.lease" \
+              '.request as $r
+               | [($leases.items // [])[] | select((.run_id == $r.run_id) and (.lineage == $r.lineage))
+                  | select((.live == true) and (.path == $path))] | .[0]
+               | if . == null then empty else del(.live, .path) end') || { route__lock_release; return 2; }
       if ! route__lease_put "$table" "$key" "$rec"; then
         route__lock_release
         return 4
       fi
+      route__hook_written "$table"
+      # 차용 재판독. 판정은 위에서부터: 새로 놓는 쓰기의 손상 > 기증자 적중 > 진행.
+      # 이어 가는 쓰기(보유, 멱등 재부여)는 손상에서도 진행한다.
+      bv=""
+      if [ -n "$bpath" ]; then
+        bnew=$(route_borrow_read "$bpath") || bv=fail
+      else
+        bnew='{"state":"corrupt"}'
+      fi
+      if [ -z "$bv" ]; then
+        ctx2=$(printf '%s' "$ctx" | jq -c --argjson b "$bnew" '.borrow = $b') || bv=fail
+      fi
+      if [ -z "$bv" ]; then
+        bv=$(printf '%s' "$ctx2" | jq -r --argjson rec "$rec" "$(route__jq_lib)"'
+              .borrow as $b
+              | if $b.state == "corrupt" then (if $rec.nonce == .fresh_nonce then "corrupt" else "go" end)
+                elif ($b | rt_borrowing) and (($rec.account == $b.donor.id) or ($rec.config_dir == $b.donor.config_dir)) then "hit"
+                else "go" end') || bv=fail
+      fi
+      if [ "$bv" != "go" ]; then
+        urc=0
+        route__txn_undo "$table" "$key" "$prior" "$rec" || urc=$?
+        route__lock_release
+        [ "$urc" = "0" ] || return 4
+        case "$bv" in
+          corrupt) route__txn_fallback "$ctx2" "borrow-record-corrupt" "$rec" ;;
+          hit) route__txn_fallback "$ctx2" "lease-contention" "$rec" ;;
+          *) return 2 ;;
+        esac
+        return
+      fi
       if [ "$op" = "write" ]; then
-        route__hook_written "$table"
         rc=0
         leases=$(route__table_read "$table" "$boot") || rc=2
         route__hook_revalidate "$table"
@@ -1078,7 +1287,7 @@ route__txn_main() {
           route__lease_cmp_delete "$table/$key.lease" "$(printf '%s' "$rec" | jq -r '.nonce')"
           route__lock_release
           [ "$rc" = "1" ] || return 2
-          route__txn_fallback "$ctx" "lease-contention" "$rec"
+          route__txn_fallback "$ctx2" "lease-contention" "$rec"
           return 0
         fi
       fi ;;
@@ -1227,12 +1436,20 @@ route_lease_wait_drop() { bash "$(route__dir)/route.sh" lease-wait-drop "$@"; }
 # 진입.
 # ---------------------------------------------------------------------------
 route__dormant() {
-  # route__dormant <answer> — 휴면 봉투 한 줄. 만든 봉투에서 값을 되읽어 해석기의
-  # 답과 같은지 본다. jq 는 잘못된 UTF-8 을 대치 문자로 바꿔 쓰므로 1단 값 하나가
-  # 봉투에 바이트 그대로 실리지 않을 수 있고, 그때 다른 경로를 조용히 돌려주는 대신
-  # 아무것도 내지 않고 닫힌다. 그 밖에는 표준 오류에 한 바이트도 쓰지 않는다.
-  local ans="$1" env back
-  env=$(jq -cn --arg d "$ans" '{verdict: "GRANT", basis: "single-seat", account: null, config_dir: $d, dormant: true}') || return 1
+  # route__dormant <answer> [<borrow-json>] — 휴면 봉투 한 줄. 만든 봉투에서 값을
+  # 되읽어 해석기의 답과 같은지 본다. jq 는 잘못된 UTF-8 을 대치 문자로 바꿔 쓰므로
+  # 1단 값 하나가 봉투에 바이트 그대로 실리지 않을 수 있고, 그때 다른 경로를 조용히
+  # 돌려주는 대신 아무것도 내지 않고 닫힌다. 그 밖에는 표준 오류에 한 바이트도 쓰지
+  # 않는다. 둘째 인자는 호출자가 읽은 차용 기록이고, 좌석이 그 기록의 차용 좌석이거나
+  # 기록이 손상이면 맨 끝에 `borrow` 를 단다. 없거나 파싱되지 않으면 인자 하나일 때와
+  # 바이트가 같다.
+  local ans="$1" mark='{}' env back
+  if [ -n "${2:-}" ]; then
+    mark=$(printf '%s' "$2" | jq -c -s --arg d "$ans" "$(route__jq_lib)"' if length == 1 then rt_borrow_mark($d; .[0]) else {} end' 2>/dev/null) \
+      || mark='{}'
+    [ -n "$mark" ] || mark='{}'
+  fi
+  env=$(jq -cn --arg d "$ans" --argjson m "$mark" '{verdict: "GRANT", basis: "single-seat", account: null, config_dir: $d, dormant: true} + $m') || return 1
   back=$(printf '%s\n' "$env" | jq -j '.config_dir') || back=""
   if [ "$back" != "$ans" ]; then
     route__warn "설정 디렉터리를 바이트 그대로 실을 수 없다"
@@ -1245,7 +1462,8 @@ route__resolve_as() {
   # route__resolve_as <guard> <request-json> — 진입의 전부. `resolve_account` 를 가장
   # 먼저, 호출마다 정확히 한 번 부른다. 실패하면 표준 출력을 비우고 그 rc 다.
   #
-  #   가드 0                 → 휴면 봉투. 인벤토리·사용량·프레임·임대 표를 읽지 않는다.
+  #   가드 0                 → 휴면 봉투. 인벤토리·사용량·프레임·임대 표를 읽지 않고,
+  #                            차용 기록만 한 번 읽어 봉투에 기증자를 적는다.
   #   가드 1, 인벤토리 부재   → 휴면 봉투(오늘과 같은 답).
   #   가드 1, 인벤토리 깨짐   → PARK inventory-corrupt. 좌석으로 떨어지면 뒷문이다.
   #   가드 1, 유효·enabled 0 → PARK no-enabled-account.
@@ -1255,12 +1473,12 @@ route__resolve_as() {
   ans=$(resolve_account) || rc=$?
   if [ "$rc" != "0" ]; then return "$rc"; fi
   if [ "$guard" != "1" ]; then
-    route__dormant "$ans" || return 1
+    route__dormant "$ans" "$(route__borrow_now)" || return 1
     return 0
   fi
   inv="${RUN_DIR:-}/inventory.json"
   if [ -z "${RUN_DIR:-}" ] || [ ! -e "$inv" ]; then
-    route__dormant "$ans" || return 1
+    route__dormant "$ans" "$(route__borrow_now)" || return 1
     return 0
   fi
   route_inventory_check "$inv" || irc=$?
@@ -1270,7 +1488,7 @@ route__resolve_as() {
       printf '%s\n' '{"verdict":"PARK","reason":"inventory-corrupt","recovery":"cc-lane account check"}'
       return 0 ;;
     *)
-      route__dormant "$ans" || return 1
+      route__dormant "$ans" "$(route__borrow_now)" || return 1
       return 0 ;;
   esac
   if ! jq -e 'any(.accounts[]; .unattended == "enabled")' "$inv" >/dev/null 2>&1; then
@@ -1306,7 +1524,7 @@ route_resolve() {
 }
 
 route__usage() {
-  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop> [args]' >&2
+  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|borrow-read> [args]' >&2
 }
 
 route__main() {
@@ -1330,6 +1548,7 @@ route__main() {
     lease-of) route_lease_of "$@" ;;
     lease-wait-put) route__wait_put_main "$@" ;;
     lease-wait-drop) route__wait_drop_main "$@" ;;
+    borrow-read) route__borrow_read_main "$@" ;;
     *)
       route__usage
       return 2 ;;

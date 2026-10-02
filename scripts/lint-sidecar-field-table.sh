@@ -17,6 +17,16 @@
 #   pass-through), the table row must be a subset of the union too, so the
 #   two are EQUAL                                                       [fail]
 #
+# Rule, per `gate_has_row <계열> <인자>…` call site in gate.sh (comment lines
+# aside), on each argument after one leading and one trailing `|` and the
+# whitespace around them are dropped — the normalization the reader applies:
+#   it is one `<키>=<값>` field: it matches `^[^|=]+=`                   [fail]
+#   and carries no ` | ` inside                                         [fail]
+#   and its value holds no space followed by another `<키>=`, which is two
+#   fields joined into one argument — a field no row carries, so the
+#   lookup could never hit                                              [fail]
+#   and the call has at least one argument after the series             [fail]
+#
 # `교대` and `prev` are excluded: `gate_append` adds them to every row itself,
 # and the table documents them once in prose rather than per row. THE NUMBER
 # OF SERIES IS NOT COMPARED — the table's count is a heading the contract owns,
@@ -187,10 +197,122 @@ done <<EOF
 $series_list
 EOF
 
+# --- the row lookups' argument shape -----------------------------------------
+# `gate_has_row` matches whole fields, so an argument that is not exactly one
+# field reads as absent on every row. The words after the call are read with
+# the shell's own quoting — single quotes, double quotes with a `$( … )` that
+# nests its own quotes inside, backslash escapes — up to the first unquoted
+# `;`, `&`, `|` or `)`. The series is the first word, literal or not.
+# Byte-wise (`LC_ALL=C`): the keys are Korean and only ASCII is tested here.
+# `read -d ''` and not `$(cat <<'AWK' …)`: bash 3.2 parses a here-document
+# inside a command substitution as shell, and the program's quotes and
+# parentheses ended the substitution early.
+has_row_awk=""
+IFS= read -r -d '' has_row_awk <<'AWK' || true
+function norm(s) {
+  sub(/^[ \t]+/, "", s); sub(/^\|/, "", s); sub(/^[ \t]+/, "", s)
+  sub(/[ \t]+$/, "", s); sub(/\|$/, "", s); sub(/[ \t]+$/, "", s)
+  return s
+}
+# word(s, i) — reads one shell word of s from i; sets W to its text without
+# the quoting and returns the index after it, or 0 at a terminator.
+function word(s, i,    n, c, out, depth, q) {
+  n = length(s)
+  while (i <= n && substr(s, i, 1) ~ /[ \t]/) i++
+  c = substr(s, i, 1)
+  if (i > n || c ~ /[;&|)]/) return 0
+  out = ""
+  while (i <= n) {
+    c = substr(s, i, 1)
+    if (c ~ /[ \t;&|)]/) break
+    if (c == "\\") { out = out substr(s, i + 1, 1); i += 2; continue }
+    if (c == "'") {
+      i++
+      while (i <= n && substr(s, i, 1) != "'") { out = out substr(s, i, 1); i++ }
+      i++; continue
+    }
+    if (c == "\"") {
+      i++
+      while (i <= n && substr(s, i, 1) != "\"") {
+        c = substr(s, i, 1)
+        if (c == "\\") { out = out substr(s, i, 2); i += 2; continue }
+        if (c == "$" && substr(s, i + 1, 1) == "(") {
+          depth = 0
+          while (i <= n) {
+            c = substr(s, i, 1)
+            if (c == "'" || c == "\"") {
+              q = c; out = out c; i++
+              while (i <= n && substr(s, i, 1) != q) { out = out substr(s, i, 1); i++ }
+              out = out q; i++; continue
+            }
+            if (c == "(") depth++
+            if (c == ")") depth--
+            out = out c; i++
+            if (depth == 0) break
+          }
+          continue
+        }
+        out = out c; i++
+      }
+      i++; continue
+    }
+    out = out c; i++
+  }
+  W = out
+  return i
+}
+{
+  t = $0; sub(/^[ \t]+/, "", t)
+  if (substr(t, 1, 1) == "#") next
+  # The leading blank stands in for a line start, so one bracket expression
+  # covers both — BSD awk has no `(^|…)`.
+  rest = " " $0
+  while (match(rest, /[^A-Za-z0-9_]gate_has_row[ \t]+["'$]/)) {
+    s = substr(rest, RSTART + RLENGTH - 1)
+    calls++
+    i = word(s, 1)
+    if (i == 0) { print "계열 없음\t" FNR "번째 논리 줄"; rest = s; continue }
+    # The location names the call by its words, whole — a byte cut of the line
+    # would split a Korean key in the middle of a character.
+    sum = "gate_has_row 「" W "」"
+    s = substr(s, i); nargs = 0; nbad = 0
+    while ((i = word(s, 1)) > 0) {
+      nargs++
+      sum = sum " 「" W "」"
+      a = norm(W)
+      if (a !~ /^[^|=]+=/)
+        bad[++nbad] = "인자가 <키>=<값> 한 필드가 아니다: 「" W "」"
+      else if (index(a, " | ") > 0)
+        bad[++nbad] = "인자 안에 필드 구분자 ` | ` 가 있다: 「" W "」"
+      else if (substr(a, index(a, "=") + 1) ~ / [^ |=]+=/)
+        bad[++nbad] = "두 필드를 공백으로 이은 한 인자다 — 필드마다 따로 넘긴다: 「" W "」"
+      s = substr(s, i)
+    }
+    if (nargs == 0) bad[++nbad] = "계열 뒤에 인자가 없다"
+    for (k = 1; k <= nbad; k++) print bad[k] "\t" sum
+    rest = s
+  }
+}
+END { print "#calls\t" calls + 0 }
+AWK
+has_row_out=$(LC_ALL=C awk "$has_row_awk" <<EOF
+$joined
+EOF
+)
+nhas=0
+while IFS=$'\t' read -r why where; do
+  [[ -n "$why" ]] || continue
+  if [[ "$why" = "#calls" ]]; then nhas=$where; continue; fi
+  echo "FAIL: gate_has_row 인자 형태 — $why — $where" >&2
+  fail=1
+done <<EOF
+$has_row_out
+EOF
+
 if [[ "$fail" != "0" ]]; then
   echo "lint-sidecar-field-table: violations found" >&2
   exit 1
 fi
 
-echo "OK:   sidecar field table — 계열 ${nser}개, 호출부 필드 ${nkeys}개를 필드표와 대조"
+echo "OK:   sidecar field table — 계열 ${nser}개, 호출부 필드 ${nkeys}개를 필드표와 대조, gate_has_row 호출 ${nhas}곳의 인자 형태 확인"
 exit 0
