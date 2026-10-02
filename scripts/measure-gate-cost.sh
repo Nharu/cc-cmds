@@ -8,7 +8,7 @@
 # across runs, so a slice's effect can be stated as an integer instead of a
 # percentage with an error bar.
 #
-# TWO AXES, TWO GUARDS, ONE APPARATUS.
+# THREE AXES, THREE GUARDS, ONE APPARATUS.
 #
 #   chain    — `gate_chain_verify` over a ledger of N rows. Reports
 #              `processes_total`, expected to be 1 at EVERY size: the walk is a
@@ -24,6 +24,12 @@
 #              This axis guards the ENTITY term of the act path, the one that
 #              scales with what the run has recorded. It guards that ONE
 #              carrier and proves nothing about other paths.
+#   stalls   — `gate_snapshot_stalls_json`, the snapshot's stall-label builder,
+#              over the same ledger. Reports `stalls_processes_total`, expected
+#              to be 1 at EVERY size: the whole classification is one `awk`
+#              pass and the root is taken by parameter expansion, so a builder
+#              that grew a `dirname` or a per-segment pipeline shows up here as
+#              a number above 1. `--cycles N` gives it review rows to read.
 #
 # THE SLOPE AXIS IS ONLY READABLE WITH BOTH OF ITS INPUTS, and this script
 # makes them. The vector reads the manifest (`goal`, target rows) and the
@@ -48,24 +54,28 @@
 # and records it. A measurement that grows its own input is not a measurement,
 # and the ledgers it grows are also the morning report. So this script never
 # invokes a gate VERB. It sources gate.sh under the existing source-only seam and
-# calls the two functions directly, which only read. The check at the end
+# calls the three functions directly, which only read. The check at the end
 # fingerprints the ledger and the manifest before and after and fails loudly if
 # that ever stops being true.
 #
 # Usage:
-#   bash scripts/measure-gate-cost.sh [--rows N] [--segments K] [--ledger PATH] [--manifest PATH]
+#   bash scripts/measure-gate-cost.sh [--rows N] [--segments K] [--cycles N] [--ledger PATH] [--manifest PATH]
 #
 #   --rows N       build a synthetic ledger of N `act` rows (default 34)
 #   --segments K   append K `segment` rows with distinct ids to it (default 0)
-#   --ledger P     measure against an existing ledger instead (no rows or
-#                  segments are generated)
+#   --cycles N     append N `cycle` rows spread over those segments (over S1
+#                  when K is 0) and N/2 implement `stage-result` rows, each
+#                  with a distinct `plan_sha256` (default 0)
+#   --ledger P     measure against an existing ledger instead (no rows,
+#                  segments or cycles are generated)
 #   --manifest P   read this manifest for the progress axis instead of the
 #                  generated fixture; a path that does not exist is exit 2
 #
 # Output is one `key=value` line per tool and per axis plus totals, so a caller
 # can diff two runs without parsing prose. Keys of the progress axis are
-# prefixed `progress_` so a reader that takes the first match of a bare key
-# still finds the chain axis where it always was.
+# prefixed `progress_`, and those of the stalls axis `stalls_`, so a reader
+# that takes the first match of a bare key still finds the chain axis where it
+# always was.
 #
 # Exit codes:
 #   0 — measured
@@ -81,15 +91,17 @@ GATE="${GATE_SH:-$repo_root/plugins/cc-cmds/orchestrator/gate.sh}"
 
 ROWS=34
 SEGMENTS=0
+CYCLES=0
 LEDGER_IN=""
 MANIFEST_IN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --rows)     ROWS="${2:?--rows needs a value}"; shift 2 ;;
     --segments) SEGMENTS="${2:?--segments needs a value}"; shift 2 ;;
+    --cycles)   CYCLES="${2:?--cycles needs a value}"; shift 2 ;;
     --ledger)   LEDGER_IN="${2:?--ledger needs a value}"; shift 2 ;;
     --manifest) MANIFEST_IN="${2:?--manifest needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,68p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,78p' "$0"; exit 0 ;;
     *) printf 'measure-gate-cost: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -134,6 +146,27 @@ else
       prev=$(printf '%s' "$row" | shasum -a 256 | cut -d' ' -f1)
       i=$((i + 1))
     done
+    # The review rows go round the segments, and after every second one an
+    # implement result with a digest no earlier row carried — the shape the
+    # classifier's consumption rule reads. Values only need to be well formed:
+    # this is an input size, not a scenario.
+    nseg=$SEGMENTS
+    [ "$nseg" -gt 0 ] || nseg=1
+    i=1
+    while [ "$i" -le "$CYCLES" ]; do
+      s=$(( (i - 1) % nseg + 1 ))
+      head=$(printf 'c%06x' "$i")
+      row='- `cycle` | 세그먼트=S'"$s"' | 사이클='"$i"' | P0=0 | P1=1 | 리뷰 HEAD='"$head"' | 리포트 경로=docs/reviews/m'"$i"'.md | prev='"$prev"
+      printf '%s\n' "$row"
+      prev=$(printf '%s' "$row" | shasum -a 256 | cut -d' ' -f1)
+      if [ $((i % 2)) -eq 0 ]; then
+        d=$(printf 'plan-%s' "$i" | shasum -a 256 | cut -d' ' -f1)
+        row='- `stage-result` | 세그먼트=S'"$s"' | 스테이지=S'"$s"'-impl | 종류=implement | 종료 코드=0 | plan_sha256='"$d"' | 종단 부류=정상 완료 | prev='"$prev"
+        printf '%s\n' "$row"
+        prev=$(printf '%s' "$row" | shasum -a 256 | cut -d' ' -f1)
+      fi
+      i=$((i + 1))
+    done
   } > "$LEDGER_PATH"
 fi
 
@@ -164,14 +197,17 @@ ledger_before=$(shasum -a 256 < "$LEDGER_PATH" | cut -d' ' -f1)
 manifest_before=$(shasum -a 256 < "$MANIFEST_PATH" | cut -d' ' -f1)
 rows_seen=$(grep -c '^- `' "$LEDGER_PATH")
 segments_seen=$(grep -c '^- `segment` ' "$LEDGER_PATH" || true)
+cycles_seen=$(grep -c '^- `cycle` ' "$LEDGER_PATH" || true)
 
 # ---------- counting stubs --------------------------------------------------
 STUBDIR="$WORK/stubs"
 COUNTF="$WORK/counts"
 PROGRESS_COUNTF="$WORK/progress-counts"
+STALLS_COUNTF="$WORK/stalls-counts"
 mkdir -p "$STUBDIR"
 : > "$COUNTF"
 : > "$PROGRESS_COUNTF"
+: > "$STALLS_COUNTF"
 
 # The stub writes to whichever counter file `CC_MEASURE_COUNTF` names, so the
 # two axes use one stub directory and separate counters.
@@ -197,6 +233,8 @@ command -v gate_chain_verify >/dev/null 2>&1 \
   || die2 "gate_chain_verify not defined after sourcing $GATE"
 command -v gate_progress_vector >/dev/null 2>&1 \
   || die2 "gate_progress_vector not defined after sourcing $GATE"
+command -v gate_snapshot_stalls_json >/dev/null 2>&1 \
+  || die2 "gate_snapshot_stalls_json not defined after sourcing $GATE"
 
 LEDGER="$LEDGER_PATH"
 RUN_ID="$MEASURE_RUN_ID"
@@ -212,6 +250,12 @@ verdict=$?
 
 CC_MEASURE_COUNTF="$PROGRESS_COUNTF" PATH="$STUBDIR:$PATH" gate_progress_vector > "$WORK/vector.txt" 2>/dev/null
 progress_rc=$?
+
+# The builder prints the array body and warns on stderr when the classifier
+# fails; its own status is 0 either way, so a failure is read off the warning.
+CC_MEASURE_COUNTF="$STALLS_COUNTF" PATH="$STUBDIR:$PATH" gate_snapshot_stalls_json > "$WORK/stalls.txt" 2> "$WORK/stalls.err"
+stalls_rc=$?
+[ ! -s "$WORK/stalls.err" ] || stalls_rc=1
 
 ledger_after=$(shasum -a 256 < "$LEDGER_PATH" | cut -d' ' -f1)
 manifest_after=$(shasum -a 256 < "$MANIFEST_PATH" | cut -d' ' -f1)
@@ -240,4 +284,14 @@ printf 'segments=%s\n' "$segments_seen"
 printf 'manifest_memo=%s\n' "$manifest_memo"
 printf 'progress_processes_total=%s\n' "$ptotal"
 printf 'progress_rc=%s\n' "$progress_rc"
+
+stotal=0
+for t in $TOOLS; do
+  n=$(grep -c "^$t\$" "$STALLS_COUNTF")
+  printf 'stalls_%s=%s\n' "$t" "$n"
+  stotal=$((stotal + n))
+done
+printf 'cycles=%s\n' "$cycles_seen"
+printf 'stalls_processes_total=%s\n' "$stotal"
+printf 'stalls_rc=%s\n' "$stalls_rc"
 exit 0

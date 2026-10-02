@@ -522,6 +522,14 @@ case "$reason_pipe" in
 esac
 decide "$(bash_json "$GATE snapshot --manifest /tmp/m.md --fields H")"
 check "특례를 대신하는 --fields H 는 맨 게이트 호출이라 통과한다" "$dec" "allow"
+# The implement stage's process A reads its stall labels the same way: the
+# gate's absolute path written out as the first token. The variable spelling
+# is not a gate path to this hook, so it is refused — which is why the skill
+# writes the literal path.
+decide "$(bash_json "$GATE snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields stalls")"
+check "리터럴 게이트 경로로 부른 --fields stalls 는 통과한다" "$dec" "allow"
+decide "$(bash_json "\"\$CC_PIPELINE_GATE\" snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields stalls")"
+check "변수로 부른 게이트의 --fields stalls 는 거부된다" "$dec" "deny"
 
 # And the laundering shapes stay denied.
 decide "$(bash_json "H=\$($GATE snapshot --manifest /tmp/m.md)")"
