@@ -1030,6 +1030,12 @@ check_manifest() {
   # let trailing bytes ride along into a value the comparison never sees.
   printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' >/dev/null \
     || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl (받는 형태는 …T00:00:00Z 또는 …T00:00:00+09:00 입니다)"
+  # THE SHAPE IS NOT THE VALUE. `T24:00:00`, month 13, `09-31` and `+99:99` all
+  # match the pattern above, and the driver's reader cannot place any of them on
+  # the clock. It is asked here, with the very function the run will use, so a
+  # deadline that passes this check is one the run can enforce.
+  [ -n "$(deadline_instant "$dl")" ] \
+    || die "벽시계 마감이 실제 시각이 아닙니다: $dl (달력에 없는 날짜·시각이거나 오프셋이 ±14:00 을 넘습니다)"
 
   # 9 — an apply with no probe is refused at kickoff.
   if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
@@ -5539,35 +5545,51 @@ merge_gate() {
 # The deadline is read in the three spellings the manifest check accepts — `Z`,
 # `+HH:MM` and `-HH:MM` — and always as the true instant, whatever the host `TZ`
 # is: the wall-clock part is parsed as UTC and the written offset is then
-# subtracted. Any other spelling yields an empty value, so `past_deadline` reads
-# false; the manifest check refuses such a value before start, which makes that
-# branch a defence rather than a path a run takes.
+# subtracted.
+#
+# THE PARSE GOES THROUGH JQ, not `date`. `date -j -f` is BSD and `date -d` is
+# GNU, and the test suite that pins this reader runs on both; `fleet.sh` makes
+# the same choice for the same reason.
+#
+# A VALUE IS AN INSTANT ONLY IF IT RENDERS BACK TO ITSELF. The shape match lets
+# through `T24:00:00`, month 13 and `09-31`, which a parser either refuses or
+# silently rolls into the next day; rendering the parsed wall-clock part again
+# and comparing it with the input refuses both outcomes alike. An offset beyond
+# ±14:00 names no zone on Earth and is refused with them. The manifest check
+# calls this same function, so a value it admits is one this reader can read.
+deadline_instant() {
+  # deadline_instant <iso> — epoch seconds, or empty when the value is not a
+  # real instant in one of the three spellings.
+  jq -rn --arg s "$1" '
+    ($s | capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<z>Z|[+-][0-9]{2}:[0-9]{2})$")) as $c
+    | (($c.d + "Z") | fromdateiso8601) as $u
+    | if ($u | todate) != ($c.d + "Z") then empty
+      elif $c.z == "Z" then $u
+      else (($c.z[1:3] | tonumber) * 3600 + ($c.z[4:6] | tonumber) * 60) as $off
+        | if ($c.z[4:6] | tonumber) > 59 or $off > 50400 then empty
+          elif $c.z[0:1] == "-" then $u + $off
+          else $u - $off end
+      end' 2>/dev/null || true
+}
+
+# AN UNREADABLE DEADLINE FAILS CLOSED. A present value that does not read as an
+# instant warns and is returned as epoch 0, so `past_deadline` reads it as
+# passed: the deadline is the outermost bound of the night, and a run that
+# cannot tell where it is must stop dispatching and merging rather than carry on
+# with no bound at all. The manifest check refuses such a value before start;
+# this branch is what is left when the read still fails during the run — jq gone
+# from PATH, say — and it must not turn into a night with no bound.
 deadline_epoch() {
-  local dl body zone u off
+  local dl u
   [ -n "$MANIFEST" ] || { printf ''; return 0; }
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || { printf ''; return 0; }
-  case "$dl" in
-    *Z) body=${dl%Z}; zone=Z ;;
-    *[+-][0-9][0-9]:[0-9][0-9]) body=${dl%??????}; zone=${dl#"$body"} ;;
-    *) printf ''; return 0 ;;
-  esac
-  case "$body" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;;
-    *) printf ''; return 0 ;;
-  esac
-  # BSD `date -j` is the parse form, and it is correct here rather than merely
-  # convenient: this driver refuses to start on any non-darwin host at entry, so
-  # the portable shim would be dead code guarding a branch that cannot run.
-  # `-u` makes it read the wall-clock part as UTC rather than as host-local time.
-  u=$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "$body" '+%s' 2>/dev/null) || u=''  # lint-bash-portability: disable=date -j
-  [ -n "$u" ] || { printf ''; return 0; }
-  [ "$zone" = Z ] && { printf '%s' "$u"; return 0; }
-  off=$(( 10#${zone:1:2} * 3600 + 10#${zone:4:2} * 60 ))
-  case "$zone" in
-    +*) printf '%s' $(( u - off )) ;;
-    *)  printf '%s' $(( u + off )) ;;
-  esac
+  u=$(deadline_instant "$dl")
+  if [ -z "$u" ]; then
+    warn "벽시계 마감을 시각으로 읽지 못했습니다 ($dl) — 마감이 지난 것으로 다룹니다"
+    printf '0'; return 0
+  fi
+  printf '%s' "$u"
 }
 
 past_deadline() {

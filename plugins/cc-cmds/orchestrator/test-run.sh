@@ -1154,16 +1154,46 @@ dl_set() {   # dl_set <벽시계 마감 값>
   MANIFEST="$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 }
 for dl_tz in UTC Asia/Seoul America/New_York; do
-  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00 2026-10-02T14:30:00+05:30; do
+  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00 2026-10-02T14:30:00+05:30 \
+              2026-10-02T09:00:00+00:00 2026-10-02T09:00:00-00:00 2026-10-02T23:00:00+14:00; do
     dl_set "$dl_v"
     check "deadline_epoch '$dl_v' (TZ=$dl_tz) 가 참값이다" \
-      "$( export TZ="$dl_tz"; deadline_epoch )" "$DL_TRUE"
+      "$( export TZ="$dl_tz"; deadline_epoch 2>/dev/null )" "$DL_TRUE"
   done
 done
-dl_set 2026-10-02T09:00:00
-check "오프셋 없는 마감은 빈 값이다" "$(deadline_epoch)" ""
-dl_set 2026-10-02T18:00:00+0900
-check "콜론 없는 오프셋은 빈 값이다" "$(deadline_epoch)" ""
+
+# 시각으로 읽히지 않는 값. 앞의 둘은 검사 8 의 모양에서 걸리지만, 뒤의 다섯은 모양을
+# 통과한다 — 하루 끝 표기 `T24`, 13월, 달력에 없는 9월 31일, 범위 밖 오프셋 둘. 이
+# 값들이 「지나지 않음」으로 읽히면 마감 집행이 아무 말 없이 꺼진다. 드라이버는
+# 경고하고 epoch 0 을 내어 지난 것으로 다루며, 검사 8 은 같은 해석기로 물어 기동
+# 전에 거부한다.
+DL_BAD_SHAPE="2026-10-02T09:00:00 2026-10-02T18:00:00+0900"
+DL_BAD_VALUE="2026-10-02T24:00:00+09:00 2026-13-01T09:00:00Z 2026-09-31T10:00:00+09:00 2026-10-02T09:00:00+99:99 2026-10-02T09:00:00+14:01"
+for dl_v in $DL_BAD_SHAPE $DL_BAD_VALUE; do
+  dl_set "$dl_v"
+  check "읽히지 않는 마감 '$dl_v' 은 epoch 0 이다" "$(deadline_epoch 2>/dev/null)" "0"
+  if deadline_epoch 2>&1 >/dev/null | grep -q '벽시계 마감을 시각으로 읽지 못했습니다'; then
+    ok "읽히지 않는 마감 '$dl_v' 은 경고를 남긴다"
+  else
+    bad "벽시계 마감" "'$dl_v' 을 경고 없이 넘겼다"
+  fi
+done
+for dl_v in $DL_BAD_VALUE; do
+  dl_set "$dl_v"
+  if dl_err=$( ( check_manifest ) 2>&1 ); then
+    bad "벽시계 마감" "모양만 맞는 '$dl_v' 을 검사 8 이 받아들였다 — 드라이버가 읽지 못하는 마감으로 기동한다"
+  elif printf '%s' "$dl_err" | grep -q '벽시계 마감이 실제 시각이 아닙니다'; then
+    ok "검사 8 이 모양만 맞는 '$dl_v' 을 실제 시각이 아니라며 거부한다"
+  else
+    bad "벽시계 마감" "'$dl_v' 이 다른 이유로 거부됐다: $(printf '%s' "$dl_err" | tail -1)"
+  fi
+done
+dl_set 2026-10-02T23:00:00+14:00
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "검사 8 이 경계 오프셋 +14:00 을 받아들인다"
+else
+  bad "벽시계 마감" "+14:00 을 거부했다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
 dl_set 없음
 check "「없음」 마감은 빈 값이다" "$(deadline_epoch)" ""
 
@@ -1173,7 +1203,7 @@ check "「없음」 마감은 빈 값이다" "$(deadline_epoch)" ""
 dl_pd() {   # dl_pd <마감 값> <now epoch> <TZ> → 지남|남음
   dl_set "$1"
   ( export TZ="$3"; DL_NOW="$2"; now_epoch() { printf '%s' "$DL_NOW"; }
-    if past_deadline; then printf '지남'; else printf '남음'; fi )
+    if past_deadline 2>/dev/null; then printf '지남'; else printf '남음'; fi )
 }
 for dl_tz in UTC Asia/Seoul; do
   for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00; do
@@ -1182,7 +1212,8 @@ for dl_tz in UTC Asia/Seoul; do
     check "past_deadline '$dl_v' 한 시간 뒤 (TZ=$dl_tz)" "$(dl_pd "$dl_v" $((DL_TRUE + 3600)) "$dl_tz")" "지남"
   done
 done
-check "형식이 틀린 마감에서 past_deadline 은 거짓이다" "$(dl_pd 2026-10-02T09:00:00 $((DL_TRUE + 3600)) UTC)" "남음"
+check "형식이 틀린 마감에서 past_deadline 은 참이다 (닫힌 쪽으로 실패)" "$(dl_pd 2026-10-02T09:00:00 $((DL_TRUE - 3600)) UTC)" "지남"
+check "모양만 맞는 마감에서 past_deadline 은 참이다 (닫힌 쪽으로 실패)" "$(dl_pd 2026-10-02T24:00:00+09:00 $((DL_TRUE - 3600)) UTC)" "지남"
 check "「없음」 마감에서 past_deadline 은 거짓이다" "$(dl_pd 없음 $((DL_TRUE + 3600)) UTC)" "남음"
 write_manifest "$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 
