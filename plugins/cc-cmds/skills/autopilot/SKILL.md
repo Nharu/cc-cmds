@@ -71,6 +71,8 @@ A lead that routes on a channel event is a second router, and two routers disagr
 
 **CFI-9 — In Act 1 a message that shows the person something runs on into the next question; it is never where the turn ends.** This holds on every kickoff, with or without a design. The message that presents the plan, a read-back or a notice ends, in that same message, with the `AskUserQuestion` call for whatever is asked next — an `unresolved` entry, the tier, 5j's first question, a boundary question — or with the reads that call needs and then the call. A question written as prose is not asked; the call asks. The one lawful prose question is `askuserquestion.md`'s plain-text fallback after repeated collapse, which is recorded in the kickoff trace as `단계=문답(텍스트)`. If the tool is not callable, load it with `ToolSearch("select:AskUserQuestion")` and call it in the same turn. The message that presents the Step 4 plan and the message that shows 5j's closing read-back each end their text with the one fixed line 「런은 아직 시작되지 않았습니다 — 아래 질문에 답하셔야 이어집니다」 and then make the call; no other message carries it. An Act 1 turn ends in exactly three ways: a question (the call, or that fallback), a stop told to the person and, once Step 2 has created the trace, first appended to it as `단계=중단`, or Act 2 begun (CFI-6). A turn that resumes Act 1 reads the last `단계` of `<base>/docs/pipeline-run/<run-id>.kickoff.md` for the run id Step 2 minted; an append never creates that file, and if the file is missing or the conversation no longer holds the id, list this base's traces that are not terminal and ask the person with `AskUserQuestion` which one is this kickoff, or whether to start again at Step 2 under a new id.
 
+**CFI-10 — Kickoff defaults are answers a person wrote ahead of time, and only the kickoff reads them.** The defaults file and the environment variables 5o names are read by this skill in Act 1 and by nothing else: the gate, the driver, the fleet and the watcher never open the file or read the variables, so editing the file never changes a run that is already going. The one path from a default into a run is the person confirming it at 5o and Step 6 freezing it into the manifest, in the field and the spelling the question it answers would have produced. `scripts/lint-kickoff-defaults.sh` checks the tree for the first half.
+
 **CFI numbers are never moved or reused** — citations to them live outside this file.
 
 ---
@@ -108,7 +110,7 @@ The judgment **proposed** repositories; it did not decide them. Present the list
 
 - the main worktree root, and its common git directory (`git rev-parse --path-format=absolute --git-common-dir`),
 - the base branch,
-- the remote slug (`<owner>/<name>`),
+- the remote slug (`<owner>/<name>`) — exactly that form, with no `.git` suffix; it is the spelling the target row records and the spelling 5o hands the kickoff defaults reader as `--target`,
 - and, **when the work belongs to a branch that is checked out in a linked worktree, that worktree** — recorded as `실행 워크트리` on the target row.
 
 **That last one is not a convenience.** The main worktree is where the sidecar goes, so that N linked worktrees of one repository converge on one location; but the act has to run where the branch actually is, and for a `pr` or `branch` anchor those are never the same directory, because git refuses to check one branch out twice. Find it with `git worktree list` and record it. Omit the field when the repository has only one worktree — the driver falls back to the main one. Get this wrong and nothing announces it: the stage starts, the files are readable, and it reads a different version of them.
@@ -131,7 +133,7 @@ Every later line is appended in the append form, which fails and creates nothing
 
 Tell the person the run id and the trace path, once. Then, among this base's `*.kickoff.md` traces that are not terminal by `### 2b.6`'s rule, leave out the one just created and take the most recent; if there is one, say so in one line — 「멈췄거나 다른 세션에서 진행 중인 킥오프가 있습니다(<id>, <단계>, <경과>) — 이 킥오프는 그것을 이어받지 않습니다」. Only that one is named, and nothing is taken over from it.
 
-**At every Act 1 boundary the order is: append the trace line, then the text, then the call** (CFI-9). The token is the boundary's own: `계획 제시` as Step 4 presents the plan, `요구사항 인터뷰` as 5j begins, `요구 확인` as 5j's closing read-back is shown, `경계 질문` as 5a begins, `로스터` at 5k, `승인` at 5l, `인터뷰 동결` once 5m has its hash, `매니페스트 기록` once Step 6 has written, then `기동 직전` or `연기` in Step 7 — and `문답(텍스트)` or `중단` where CFI-9 says. A trace line carries progress tokens, counts, paths and hashes only; the person's words go into the interview record and nowhere else.
+**At every Act 1 boundary the order is: append the trace line, then the text, then the call** (CFI-9). The token is the boundary's own: `계획 제시` as Step 4 presents the plan, `요구사항 인터뷰` as 5j begins, `요구 확인` as 5j's closing read-back is shown, `기본값 고지` as 5o shows what it read, `기본값 확정` once 5o's confirmation is answered, `경계 질문` as 5a begins, `로스터` at 5k, `승인` at 5l, `인터뷰 동결` once 5m has its hash, `매니페스트 기록` once Step 6 has written, then `기동 직전` or `연기` in Step 7 — and `문답(텍스트)` or `중단` where CFI-9 says. A trace line carries progress tokens, counts, paths and hashes only; the person's words go into the interview record and nowhere else. The two 5o lines carry counts and no value: `단계=기본값 고지 | 제시=<적용 행 수> | 무시=<무시 행 수> | 파일=<파일에서 온 적용 행 수> | 환경=<환경변수에서 온 적용 행 수> | 경로=<원천 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->` and `단계=기본값 확정 | 적용=<확정한 값 수> | 해제=<해제한 값 수>`.
 
 **If the home target changes after the trace exists** — an answer to the Step 4 plan can move it — this step's confirmation and verification run again. When the new `<base>` differs, append `- <ISO8601> | 단계=대상 변경 | 새 base=<경로>` to the old trace, then create the trace in the new base under the same run id, in the creation form, starting with `대상 확인`. That is the only second creation there is.
 
@@ -193,13 +195,13 @@ The plan message ends with the trailer line and the `AskUserQuestion` call for t
 
 ### Step 5: The interview
 
-None of these has a safe default this skill may pick for the user.
+None of these has a safe default this skill may pick for the user. 킥오프 기본값은 스킬이 고른 값이 아니라 사람이 미리 써 둔 답이고 5o 에서 다시 확인받는다 — a kickoff default does not make any of these questions one this skill answers for the user.
 
-**The order of asking is: the plan's presentation (Step 4) → 5j → 5a–5i → 5k–5n.** The letters are identifiers, not order: 5j keeps its letter although it is asked first, because every citation of these letters would move with a relabelling.
+**The order of asking is: the plan's presentation (Step 4) → 5j → 5o → 5a–5i → 5p, 5q → 5k–5n.** The letters are identifiers, not order: 5j keeps its letter although it is asked first, and 5o, 5p and 5q take the next free letters although they are asked in the middle, because every citation of these letters would move with a relabelling.
 
 **5j — The requirements interview, when `design_required` is true.** This is the interview `design` would have held, taken here because the stage that writes the document cannot hold one (CFI-8), and taken before any boundary question because the boundaries are set against a settled requirement. **Read `${CLAUDE_SKILL_DIR}/../_common/requirements-interview.md`** and follow it for the whole interview — how deep to go, the discipline and the closing read-back are defined there; what follows is this kickoff's wiring of it. Ask with `AskUserQuestion`. **Keep every question, every offered option and every answer verbatim.** The interview record's whole value is that it is not a summary: a paraphrase is this conversation's reading of the person, and the record exists so that their own words survive on disk after this session has been compacted.
 
-- **The record covers every question from the Step 4 plan's presentation to the confirmation of the closing read-back** — the `unresolved` entries and the tier question included — and none of the boundary questions (5a–5i, 5k–5n), whose answers the manifest freezes.
+- **The record covers every question from the Step 4 plan's presentation to the confirmation of the closing read-back** — the `unresolved` entries and the tier question included — and none of the boundary questions (5a–5i, 5k–5n), whose answers the manifest freezes, nor 5o–5q.
 - **The options each question offered go under that question's `**선택지**` in the record, verbatim** — every label, description and preview, the ones not picked included.
 - **The five delivery-shape keys are asked by name, unconditionally** — `**레포**`, `**슬라이스 수**`, `**적용 위치**`, `**적용 주체**`, `**실패 시 파킹**` — writing `없음` where one does not apply, because an omitted answer and a negative one are different facts. The driver reads `## 구현 슬라이싱` mechanically, so a key never asked here is never filled.
 - **Reproduction** — the four data points and `근거 등급`, or `해당 없음`. On Tier-2 the record carries both `가설(추측)` and `재현 차단요인`. Reproduction handed to the team goes only as a 5k roster role, never as a prose request in the record.
@@ -208,6 +210,47 @@ None of these has a safe default this skill may pick for the user.
 - **Exploration findings and verification preconditions** — each finding with where it was observed, each precondition with whether it was confirmed — or `없음`.
 - **Only when the person offers one, a skeleton pre-judgment** — something they say the design must not change. Do not prompt a list out of them; an invented constraint binds the design as hard as a real one.
 - **The closing read-back** is shown in a message that ends its text with CFI-9's fixed line and then makes the confirmation call.
+
+**5o — Kickoff defaults: read once, show once, confirm once.** A person may have written answers to the boundary questions ahead of time — 킥오프 기본값 — in a host file, and overridden the run-wide ones for this run with environment variables. This step reads them through a helper, shows them on one screen, and takes one confirmation; a confirmed value answers its question, and every other question is asked as before. Call the helper right after 5j, with the targets Step 2 confirmed (in target order) and 5j's `적용 주체` answer (`없음` when 5j answered that there is no apply):
+
+```
+bash <plugin root>/orchestrator/kickoff-defaults.sh --target <owner>/<name> [--target …] [--apply-actor 파이프라인|사람|없음]
+```
+
+On a run without 5j, call it after Step 4, before the first boundary question, without `--apply-actor`. **When the call is refused by the user's permission settings or exits non-zero, say 「킥오프 기본값을 읽지 못했습니다 — 모든 질문을 평소처럼 묻습니다」 in one line and ask every question as before.** The helper refuses inside a pipeline run, so this step only ever runs here.
+
+**Where the values come from.** The file is `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/autopilot-defaults`, one line each of: an empty line, a whole-line `#` comment, a `[<owner>/<name>]` section header, or `<키> = <값>`. Lines before the first header are run-wide; lines under a header belong to that repository. No credential value goes into this file. `CC_CMDS_AUTOPILOT_DEFAULTS_FILE=<absolute path>` replaces the file for one run and `off` reads none; `CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS`, `CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND`, `CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING`, `CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE` and `CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL` override the run-wide keys, and a valid variable beats the file. The keys are a closed set, one per row:
+
+| 키 | 범위 | 답하는 질문 |
+|---|---|---|
+| `ladder-rungs` | 런 | 5h |
+| `stagnation-bound` | 런 | 5g |
+| `cost-ceiling` | 런 | 5f |
+| `deadline` | 런 | 5e — `+Nh[Mm]`·`+Mm`·`HH:MM`·`+Dd HH:MM`·`다음 날 HH:MM`, or an absolute time with a `±HH:MM` offset, resolved once now |
+| `roster-model` | 런 | 5k, as a proposal |
+| `roster-model.<역할>` | 런 | 5k, as a proposal for that role's row |
+| `auto-adopt` | 런 | 5q, one manifest row tail per line |
+| `cutpoint` | 레포 | 5b, the token form |
+| `review-ceiling` | 레포 | 5b's tail |
+| `terminal-cap` | 레포 | 5d |
+| `dev-ids` | 레포 | 5b's second tail |
+| `deploy-triggers` | 레포 | 5b's second tail |
+| `act-allow` | 레포 | 5p, one manifest row tail per line |
+| `apply-probe` | 레포 | 5c, as a proposal |
+| `apply-actor` | 레포 | 5c, as a proposal |
+
+`termination`, `launch`, `defer`, `notify`, `apply-command` and `apply-radius` are refused by name, and the screen says why: the termination point, the launch timing, the banner switch and the apply command and radius are never taken from a default.
+
+**What the helper prints.** The first line is `cc-kickoff-defaults v1`, then one `원천` row (path or `off`/`없음`/`해석불가`, the file's whole sha256 or `-`, the number of run-wide variables read), then `적용` rows (scope, key, value, source, a `1` in the widening column when the value widens what the run may do, and a fixed effect line) and `무시` rows (scope, key or variable, raw value, source, reason token, reason text). **Show those cells as they are — the effect lines and the widening mark come from the helper's fixed table, so do not rewrite, soften or drop them**; the only things you add are a clue the graph supplies (for example, after the deadline line on an audit-first graph, that what exists at that hour may be the audit's output alone) and, once at the end of the screen, the one line of 5e saying which bound will actually end this run.
+
+**Which screen.** With zero `적용` and zero `무시` rows — the file absent included — there is no screen and no trace line, and the interview goes on exactly as without this step. With zero `적용` and one or more `무시` rows, append the trace line `기본값 고지`, list the ignored rows, and move to the next question in the same message, without the confirmation. Otherwise append the trace line `기본값 고지`, then show the screen, then make the confirmation call. The screen, without emoji:
+
+- one line naming how many defaults were read, the file path with its sha256, and how many came from environment variables;
+- **when any `적용` row carries the widening mark**, first a block headed 「[이번 런이 새로 갖게 되는 권한] — 「이대로」 한 번으로 아래 권한이 모두 이 런에 생깁니다」 gathering every such row whatever its scope — a repository row prefixed with its slug — each in bold with the tag `[권한 확대]`; with no such row there is no such block;
+- then `[런 전체]` and one block per target slug, each row as `<질문 이름>: <값> — <효과 한 줄> (<파일|환경변수>)`;
+- then 「무시한 항목 <m>건 — 해당 질문은 평소처럼 묻습니다」 and every `무시` row with its reason.
+
+**The confirmation is one question** — header `기본값`, question 「위 기본값으로 진행할까요?」, options `이대로` and `고칠 항목 지정`, and **no recommendation suffix on either**: the skill does not recommend accepting a value that widens the run. `이대로` confirms the values shown as `적용` and nothing else, and the question each one answers is skipped. `고칠 항목 지정` leads to one multi-select question (header `고칠 항목`) whose options are only the bundles that are on the screen — `런 경계` (5f·5g·5h), `마감` (5e), `레포별 권한·식별자·적용` (5b·5c·5d), `사전 인가·자동 채택·로스터 모델` (5p·5q·5k). A chosen bundle is released whole and its questions are asked as before, with the released value as the first option, without a recommendation suffix and with the description 「킥오프 기본값」 — the value may have come from either source. A key name typed into the free-input answer releases that key alone; releasing a repository's `cutpoint` releases that repository's whole bundle, because the other values of the bundle lean on it. Right after the answer append the trace line `기본값 확정`. The confirmation utterance goes into the manifest's `사용자 확인 문면` verbatim, as every other answer does.
 
 **5a — Termination point.** What does "done" mean for this run? Free-form; it goes into the manifest verbatim and into the morning report. This is what the run is measured against. When 5j ran, propose it from the closing read-back's `완료 기준`; the answer taken here is the one that freezes.
 
@@ -252,9 +295,11 @@ At or below the chosen point the run acts on its own; the first act above it sen
 - A CLAUDE.md slot apply proceeds only when a review record covers it; every other slot write parks.
 - **Once frozen none of this can be edited**, and the switch that decides park-versus-approval cannot be changed mid-run.
 
-**Then ask, per target, in ONE `AskUserQuestion` call with two questions** (headers `dev 식별자` and `배포 트리거`): whether this target has dev identifiers, and whether it has deploy triggers. On a yes, take the `<종류>:<값>` elements as free text — kinds `aws-profile` · `aws-account` · `kube-context` · `host` · `domain` · `dir` for the first, `branch` · `workflow` · `jenkins-job` · `argv` for the second — and **read them back before freezing**. The manifest check hard-stops on a malformed element at the next gate entry, which is after the person has gone; the read-back here is the only correction opportunity there is.
+**Then ask, per target, in ONE `AskUserQuestion` call with two questions** (headers `dev 식별자` and `배포 트리거`): whether this target has dev identifiers, and whether it has deploy triggers. On a yes, take the `<종류>:<값>` elements as free text — kinds `aws-profile` · `aws-account` · `kube-context` · `host` · `domain` · `dir` for the first, `branch` · `workflow` · `jenkins-job` · `argv` for the second — and **read them back before freezing**. The manifest check hard-stops on a malformed element at the next gate entry, which is after the person has gone; the read-back here is the only correction opportunity there is. **When 5o confirmed a target's `dev-ids` or `deploy-triggers`, the 5o screen is that read-back** and the question is not asked again — the helper has already run each element through the manifest check's own element rule, and the screen in front of the person is still the only correction opportunity.
 
 **5c — Apply, if any target's cutpoint is `배포`.** Take the apply command verbatim, the read-only probe that decides whether an apply is needed, the actor (`파이프라인` or `사람` — start from 5j's `적용 주체`; once 5c has taken an answer, that answer is the one in force), and — when the actor is the pipeline — the blast radius that parks if the apply's outcome cannot be judged. The default radius is the repository and it may only be **narrowed**. State plainly that the driver executes an apply itself, with zero retries, and that an outcome it cannot judge stops the declared radius and preserves the worktree for the morning.
+
+**A confirmed `apply-probe` or `apply-actor` from 5o is a prefilled proposal, not an answer.** Ask 5c as above with those values filled in, and ask the apply command and the blast radius fresh; the answer the person accepts here is the one in force.
 
 **5d — Terminal-act cap, per target.** Default is `없음`, and say why the question is being asked at all: at this moment nobody knows how many merges the cutpoint authorizes, because segmentation happens later and a re-design can re-split it. Offer `없음` (recommended) or an integer. A number latches against the measured segment count and routes the excess to the blocked queue.
 
@@ -288,7 +333,11 @@ Say all three of these:
 
 **Say what cannot be promised.** Before writing anything, state the two limits in one line each. First: 「이 채널이 파는 것은 「깨우기」가 아니라 「처음 보는 화면」입니다 — 돌아와서 보실 때 답을 기다리는 멈춤이 한눈에 들어오는 것. 개별 배너 자리는 런 전체에 걸쳐 여덟이고 그 뒤는 묶여서 보이며, 넘어간 항목은 자리가 비어도 되돌아오지 않습니다. 전수를 보장하는 것은 배너가 아니라 디스크의 보고서입니다.」 **Say the two halves of that separately**, because they are a measurement and an ordinary fact rather than one observation: this notifier has no permission to override a focus mode, and a focus or sleep schedule suppresses banners and sounds together. "No banner wakes a sleeping person" is the *sum* of those two, and someone who reads only the first will over- or under-trust the channel. Second: **a stage that improvises past a decision point is not detectable**, which is why the report enumerates every autonomous decision the run recorded, for you to audit in the morning.
 
-**5k — The design team's roster, when the tier is `team-2` or `team-4`.** Propose the rows of `### Default roster (driver dispatch)` in `design-discuss-unattended/SKILL.md`, **read from that file and quoted verbatim** — never retyped from memory — and let the person remove a row, add one, or change a row's scope or model. Read the approved rows back in their frozen spelling, one member per row,
+**5p — Pre-authorization rows.** These are the `사전 인가` rows that carry `형태=` — each one lets the run perform the acts that start with that form without an approval, and **one row reaches every target of the run**, because the gate's pre-authorization check does not look at the target. When 5o confirmed `act-allow` values, they are the answer. When the helper listed rows that only some targets carry (reason `일부 대상만`), offer those rows in one question together with the fact that each would apply to every target of this run (「이 런의 모든 대상에 적용」), without a recommendation suffix, and take only what the person picks. When there is no default, ask as the kickoff has asked: read back the form rows for the irreversible acts the plan predicts — a form is two or more words, such as `gh pr`, `git push`, `terraform apply`, each with a `사유` — and take the confirmation with `AskUserQuestion` (header chip `사전 인가`). Say in one line that a runner form such as `npm run` opens every non-destructive act that starts with it.
+
+**5q — Auto-adoption rows.** These are the `자동 채택` rows — each names one judgment class, a count cap, a severity cap and a reason, and lets the gate adopt a judgment of that class without a person. When 5o confirmed `auto-adopt` values, they are the answer. Otherwise read back the proposed rows and take the confirmation with `AskUserQuestion` (header chip `자동 채택`). **Never offer a forbidden class**, in the proposal or as an option — the manifest check refuses it, after the person has gone.
+
+**5k — The design team's roster, when the tier is `team-2` or `team-4`.** Propose the rows of `### Default roster (driver dispatch)` in `design-discuss-unattended/SKILL.md`, **read from that file and quoted verbatim** — never retyped from memory — and let the person remove a row, add one, or change a row's scope or model. **When 5o confirmed `roster-model` or `roster-model.<역할>`, change only the model column** of the verbatim rows — the role-specific key wins over the run-wide one — say that the models were changed and from which value, and take the approval below exactly as without it; a role-specific key for a role not on the roster is used only if the person adds that role. Read the approved rows back in their frozen spelling, one member per row,
 
 ```
 - `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>
@@ -323,7 +372,7 @@ Then take its whole-file `sha256` (`shasum -a 256`) and append `단계=인터뷰
 
 **A `lead-solo` document is written after 5m**, in this conversation, out of the interview it has just held, under the contract in Step 4 (「What a `lead-solo` document owes」). Take its path and whole-file `sha256`; that record is its freeze.
 
-**5n — Immediate or deferred kickoff. This step is the criterion, and there is no other.** Ask with `AskUserQuestion` (header chip `기동 시점`) whether the run starts in this session or is frozen into the pace backlog for a lane's `fleet.sh dispatch` job to start later. Offer `즉시` (recommended) and `연기`, and say in one clause what `연기` costs: nothing is relayed into this terminal, and the authorization sitting in the backlog is spent by a job that runs while nobody is here.
+**5n — Immediate or deferred kickoff. This step is the criterion, and there is no other.** Ask with `AskUserQuestion` (header chip `기동 시점`) whether the run starts in this session or is frozen into the pace backlog for a lane's `fleet.sh dispatch` job to start later. Offer `즉시` (recommended) and `연기`, and say in one clause what `연기` costs: nothing is relayed into this terminal, and the authorization sitting in the backlog is spent by a job that runs while nobody is here. **When the answer is `연기`, say the frozen absolute deadline once more**, and in one line that a launch after it parks the run with `deadline-passed` — a relative deadline was resolved once, against this kickoff's time, and is not resolved again at launch.
 
 **Nothing else in this pipeline carries this branch, so an answer taken anywhere else is invented.** The frontmatter has no deferral option, no environment variable selects it, the entry judgment does not produce it, and the manifest contract has no field for it — Step 7 reads this step's answer and only this step's answer. A deferred record's own fields say *when* the work was authorized and by when it must start; they do not say that deferral was chosen, because by then it already had been.
 
@@ -358,10 +407,14 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 - `대상 맵 다이제스트` — sha256 over the canonical serialization of every `target` row (whitespace runs collapsed to one space, then sorted).
 - `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, the `자동 채택` rows, the `설계 로스터` rows, the cost ceiling and the stagnation bound when declared, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
 
-**Two row kinds exist only when Step 5 took their input**, and both go under `## 인가`:
+**Four row kinds exist only when Step 5 took their input**, and all four go under `## 인가`:
 
 - when 5m ran, one `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>` row. It carries no `형태=`, so it authorizes no act — the pre-authorization rule skips a row without one — and what it buys is that the record's hash is inside the frozen set;
-- when 5k ran, the approved `설계 로스터` rows, one per member, in the order the person approved them.
+- when 5k ran, the approved `설계 로스터` rows, one per member, in the order the person approved them;
+- when 5p took rows, one `- \`사전 인가\` | <값>` row each, the value being the `형태=` and `사유=` tail exactly as confirmed;
+- when 5q took rows, one `- \`자동 채택\` | <값>` row each, the value being the four-field tail exactly as confirmed.
+
+**A value confirmed at 5o lands where the answer to its question would have landed, in the same spelling** — the manifest and the authorization record have no field that says a value came from a default; the trace lines `기본값 고지` and `기본값 확정` are where that is recorded. **Re-check a deadline confirmed at 5o just before writing**: run `bash <plugin root>/orchestrator/kickoff-defaults.sh --check-deadline <절대값>`. On `지남`, do not write that value — ask 5e as before and freeze the new answer; it is never resolved again. A call refused by the user's permission settings or ending non-zero counts as `지남`: a deadline nobody could check is not frozen.
 
 **When the graph carries a design stage, the document does not exist yet, and the manifest says so rather than inventing a value.** `## 요소` → `설계 문서` is the path the stage will write — the one named in 5k, which is where the router dispatches the stage and what the audit later reads — and `설계 문서 전체 sha256` — here and in the authorization record — is `(해당 없음)`. The document's hash at each stage's end is recorded by the gate as it lands, not frozen here.
 

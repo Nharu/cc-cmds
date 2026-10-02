@@ -1007,6 +1007,50 @@ else
   bad "조건 14·15" "필드가 없는 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
 fi
 
+# 원소 검사 함수를 직접 잰다. 위 절들은 거부 여부만 보고 문면은 보지 않으므로,
+# 함수로 옮긴 뒤에도 사유 꼬리가 옮기기 전 die 문면과 같은지는 여기서만 잡힌다.
+# 이 함수는 사람이 아직 있는 자리에서 같은 원소를 거르는 다른 독자도 부른다.
+id_reason_case() {   # id_reason_case <dev|deploy> <원소> <기대 rc> <기대 사유>
+  local out rc
+  out=$(manifest_id_element_reason "$1" "$2"); rc=$?
+  if [ "$rc" = "$3" ] && [ "$out" = "$4" ]; then
+    ok "manifest_id_element_reason $1 '$2' → rc $3"
+  else
+    bad "manifest_id_element_reason $1 '$2'" "rc=$rc 사유='$out' (기대 rc=$3 사유='$4')"
+  fi
+}
+id_reason_case dev 'aws-profile' 1 "dev 식별자 원소 'aws-profile' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다"
+id_reason_case dev 'host:' 1 "dev 식별자 원소 'host:' 의 값이 비어 있습니다"
+id_reason_case dev 'aws-account:12345678901' 1 "aws-account '12345678901' 가 12자리가 아닙니다"
+id_reason_case dev 'aws-account:12345678901x' 1 "aws-account '12345678901x' 가 숫자가 아닙니다"
+id_reason_case dev 'dir:relative/path' 1 "dev 식별자 dir 'relative/path' 가 절대 경로가 아닙니다"
+id_reason_case dev 'aws-acct:dev' 1 "dev 식별자 종류 'aws-acct' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir"
+id_reason_case deploy 'release' 1 "배포트리거 식별자 원소 'release' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다"
+id_reason_case deploy 'workflow:' 1 "배포트리거 식별자 원소 'workflow:' 의 값이 비어 있습니다"
+id_reason_case deploy 'deploy:release' 1 "배포트리거 식별자 종류 'deploy' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+id_reason_case dev 'aws-profile:x' 0 ""
+id_reason_case dev 'aws-account:123456789012' 0 ""
+id_reason_case dev 'dir:/abs' 0 ""
+id_reason_case dev 'kube-context:ctx' 0 ""
+id_reason_case deploy 'branch:main' 0 ""
+id_reason_case deploy 'workflow:w' 0 ""
+id_reason_case deploy 'argv:bash scripts/deploy.sh' 0 ""
+# 한쪽의 종류가 다른 쪽에서 통과하지 않는다 — 두 어휘가 한 집합으로 접히면 잡힌다.
+id_reason_case deploy 'aws-profile:x' 1 "배포트리거 식별자 종류 'aws-profile' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+id_reason_case dev 'branch:main' 1 "dev 식별자 종류 'branch' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir"
+
+# 조립된 거부 문면도 옮기기 전과 바이트가 같다.
+mf_with " | dev 식별자=aws-account:1234"
+check "dev 식별자 거부 문면이 대상 별칭과 사유 꼬리로 조립된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 aws-account '1234' 가 12자리가 아닙니다"
+mf_with " | 배포트리거 식별자=deploy:release"
+check "배포트리거 식별자 거부 문면이 대상 별칭과 사유 꼬리로 조립된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 배포트리거 식별자 종류 'deploy' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+write_manifest "$MF" "" ""
+write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+
 # A goal edit must move it — otherwise the digest is over something that cannot
 # change and the check is vacuous.
 bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)

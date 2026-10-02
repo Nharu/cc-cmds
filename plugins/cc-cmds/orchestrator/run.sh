@@ -837,6 +837,57 @@ warn_once() {
   warn "$msg"
 }
 
+# One element of a target row's `dev 식별자` or `배포트리거 식별자` list.
+#   manifest_id_element_reason <dev|deploy> <element>
+# Returns 0 and prints nothing when the element is well formed. Otherwise prints
+# the reason — the part of the refusal that follows 「대상 '<별칭>' 의 」 — and
+# returns 1.
+#
+# ONE RULE FOR BOTH READERS. `check_manifest` assembles its hard stop from this
+# reason, and the kickoff helper sources this file to refuse the same element
+# while a person is still there to correct it. A second copy of the kind set
+# would let the two drift, and the drift would surface only as a night-time stop.
+# The `branch` inert warning is not a validity rule and stays with the caller.
+manifest_id_element_reason() {
+  local side="$1" e="$2" label kindtok valtok
+  case "$side" in
+    dev) label='dev 식별자' ;;
+    deploy) label='배포트리거 식별자' ;;
+    *) printf "식별자 쪽 '%s' 를 모릅니다 — dev 또는 deploy" "$side"; return 1 ;;
+  esac
+  case "$e" in
+    *:*) ;;
+    *) printf "%s 원소 '%s' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" "$label" "$e"; return 1 ;;
+  esac
+  kindtok="${e%%:*}"; valtok="${e#*:}"
+  if [ -z "$valtok" ]; then
+    printf "%s 원소 '%s' 의 값이 비어 있습니다" "$label" "$e"; return 1
+  fi
+  if [ "$side" = "deploy" ]; then
+    case "$kindtok" in
+      branch|workflow|jenkins-job|argv) return 0 ;;
+      *) printf "배포트리거 식별자 종류 '%s' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv" "$kindtok"; return 1 ;;
+    esac
+  fi
+  case "$kindtok" in
+    aws-profile|kube-context|host|domain) ;;
+    aws-account)
+      case "$valtok" in
+        *[!0-9]*) printf "aws-account '%s' 가 숫자가 아닙니다" "$valtok"; return 1 ;;
+      esac
+      if [ "${#valtok}" -ne 12 ]; then
+        printf "aws-account '%s' 가 12자리가 아닙니다" "$valtok"; return 1
+      fi ;;
+    dir)
+      case "$valtok" in
+        /*) ;;
+        *) printf "dev 식별자 dir '%s' 가 절대 경로가 아닙니다" "$valtok"; return 1 ;;
+      esac ;;
+    *) printf "dev 식별자 종류 '%s' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir" "$kindtok"; return 1 ;;
+  esac
+  return 0
+}
+
 check_manifest() {
   [ -f "$MANIFEST" ] || die "매니페스트가 없습니다: $MANIFEST"
 
@@ -1113,33 +1164,14 @@ EOF
   # with nothing to compare it against. So the failure of a silent skip is
   # open-ended, while the failure of this refusal is one line in a manifest.
   # Absence of the field is not a violation — it is the default.
-  local dv al kindtok valtok e
+  local dv al reason e
   for al in $(target_aliases); do
     dv=$(target_field "$al" 'dev 식별자')
     [ -n "$dv" ] || continue
     local IFS_SAVE="$IFS"; IFS=','
     for e in $dv; do
       IFS="$IFS_SAVE"
-      case "$e" in
-        *:*) ;;
-        *) die "대상 '$al' 의 dev 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
-      esac
-      kindtok="${e%%:*}"; valtok="${e#*:}"
-      [ -n "$valtok" ] || die "대상 '$al' 의 dev 식별자 원소 '$e' 의 값이 비어 있습니다"
-      case "$kindtok" in
-        aws-profile|kube-context|host|domain) ;;
-        aws-account)
-          case "$valtok" in
-            *[!0-9]*) die "대상 '$al' 의 aws-account '$valtok' 가 숫자가 아닙니다" ;;
-          esac
-          [ "${#valtok}" -eq 12 ] || die "대상 '$al' 의 aws-account '$valtok' 가 12자리가 아닙니다" ;;
-        dir)
-          case "$valtok" in
-            /*) ;;
-            *) die "대상 '$al' 의 dev 식별자 dir '$valtok' 가 절대 경로가 아닙니다" ;;
-          esac ;;
-        *) die "대상 '$al' 의 dev 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir" ;;
-      esac
+      reason=$(manifest_id_element_reason dev "$e") || die "대상 '$al' 의 $reason"
       IFS=','
     done
     IFS="$IFS_SAVE"
@@ -1156,17 +1188,8 @@ EOF
     local IFS_SAVE2="$IFS"; IFS=','
     for e in $dv; do
       IFS="$IFS_SAVE2"
-      case "$e" in
-        *:*) ;;
-        *) die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
-      esac
-      kindtok="${e%%:*}"; valtok="${e#*:}"
-      [ -n "$valtok" ] || die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 의 값이 비어 있습니다"
-      case "$kindtok" in
-        branch) has_branch=1 ;;
-        workflow|jenkins-job|argv) ;;
-        *) die "대상 '$al' 의 배포트리거 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv" ;;
-      esac
+      reason=$(manifest_id_element_reason deploy "$e") || die "대상 '$al' 의 $reason"
+      case "$e" in branch:*) has_branch=1 ;; esac
       IFS=','
     done
     IFS="$IFS_SAVE2"
