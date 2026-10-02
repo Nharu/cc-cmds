@@ -6445,6 +6445,9 @@ gate_append() {
   # `상태=승인`. Both halves take the same two maps now. `%%=*` guarantees the key
   # holds no `=`, so reassembling cannot change how many fields the row has, and
   # for every field this file writes today the key transform is the identity.
+  # An argument with no `=` skipped that split altogether and went in exactly as
+  # passed, so it could carry the same pipe or newline; every argument is now
+  # mapped as a whole before the `case`, which makes that branch row-safe too.
   # Rotated through the positional parameters rather than collected into an
   # array: the interpreter floor is bash 3.2 and the argument list is the one
   # ordered container available without one.
@@ -6476,6 +6479,7 @@ gate_append() {
   local n_args=$# i=0
   while [ "$i" -lt "$n_args" ]; do
     f="$1"; shift; i=$((i + 1))
+    f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
            k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')

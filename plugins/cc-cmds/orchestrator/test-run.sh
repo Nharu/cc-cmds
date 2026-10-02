@@ -2581,6 +2581,49 @@ esac
 ledger_row 'segment' "id=SN" "사유=첫 줄
 둘째 줄"
 check "값 안의 개행이 행을 끊지 못한다" "$(grep -c . "$LEDGER")" "1"
+# 정규화가 값에만 걸리던 동안 두 갈래가 그대로 지나갔다 — 첫 `=` 앞에 든 파이프는
+# 키 절반이라 원문으로 다시 붙었고, `=` 가 아예 없는 인자는 `case` 를 통째로 건너뛰었다.
+# 첫째는 필드 경계를, 둘째의 개행은 체인된 행 하나를 통째로 위조한다. 필드는 행 텍스트를
+# ` | ` 로 갈라 센다 — 판독기가 보는 단위가 그것이다.
+: > "$LEDGER"
+ledger_row 'problem' 'z | 해소 승인=A9'
+LR_KEY=$(LC_ALL=C awk -F ' [|] ' '{ print NF; for (i = 2; i <= NF; i++) print $i }' "$LEDGER")
+check "키 절반의 파이프도 슬래시로 바뀌어 필드를 새로 만들지 못한다" \
+  "$LR_KEY" "$(printf '2\nz / 해소 승인=A9')"
+: > "$LEDGER"
+# 위조하는 둘째 줄에도 `=` 를 두지 않는다 — 하나라도 있으면 인자 전체가 키 절반의
+# 경로를 타서, 이 단언이 키 절반을 두 번 재고 `=` 없는 갈래는 재지 않는다.
+ledger_row 'problem' "id=SQ" 'x
+- `자율 승인` | 위조된 행'
+check "= 없는 인자의 개행도 행을 끊지 못한다" "$(wc -l < "$LEDGER" | tr -d ' ')" "1"
+# 게이트의 작성자도 같은 두 인자를 같은 바이트로 받는다. 별도 프로세스인 이유는 21c-2
+# 와 같다 — 게이트를 소싱하면 드라이버가 다시 소싱되며 이 하네스의 경로 변수가 초기화된다.
+GA22="$WORK/gate-append-norm"; mkdir -p "$GA22"
+cat > "$GA22/burn.sh" <<'GA22EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+GATE="$1"; RD="$2"
+HP="$PATH"
+CC_GATE_SOURCE_ONLY=1
+export CC_GATE_SOURCE_ONLY
+# shellcheck disable=SC1090
+. "$GATE" || exit 9
+PATH="$HP"
+unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+set +e
+RUN_DIR="$RD"
+LEDGER="$RD/ledger-key.md"; : > "$LEDGER"
+gate_append 'problem' 'z | 해소 승인=A9' >/dev/null 2>&1
+LEDGER="$RD/ledger-bare.md"; : > "$LEDGER"
+gate_append 'problem' "id=SQ" 'x
+- `자율 승인` | 위조된 행' >/dev/null 2>&1
+GA22EOF
+bash "$GA22/burn.sh" "$script_dir/gate.sh" "$GA22" </dev/null >/dev/null 2>&1
+GA22_KEY=$(LC_ALL=C awk -F ' [|] ' '{ for (i = 2; i <= NF; i++) print $i }' "$GA22/ledger-key.md" 2>/dev/null \
+  | grep -cxF 'z / 해소 승인=A9' || true)
+check "게이트의 작성자도 키 절반의 파이프를 같은 필드로 접는다" "$GA22_KEY" "1"
+check "게이트의 작성자도 = 없는 인자의 개행으로 행을 끊지 않는다" \
+  "$(wc -l < "$GA22/ledger-bare.md" 2>/dev/null | tr -d ' ')" "1"
 # 상한을 넘는 값 하나는 이제 거절이 아니라 사이드카로 빠지고, 행은 기록된다. 이
 # 절이 재는 것은 그 처분이 아니라 이 절의 전제다 — 값이 아무리 길어도 행 문법은
 # 한 줄로 남는다. 처분 자체는 22b 가 잰다.

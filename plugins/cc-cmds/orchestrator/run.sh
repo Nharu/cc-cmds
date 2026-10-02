@@ -2329,7 +2329,10 @@ ledger_row() {
   # that refuses to dispatch a stage into a segment with no row. So the transform
   # is copied, and the copy is marked on BOTH sides — a change to
   # `gate_append`'s normalization that is not made here silently splits the two
-  # paths again.
+  # paths again. The copy covers the whole transform: the key half takes the
+  # same two maps as the value, and every argument is mapped as a whole before
+  # it is split, so one without `=` — which skipped the split and went in raw —
+  # cannot carry a pipe or a newline into the row either.
   #
   # The length check reserves room for a `prev=` field this writer never emits,
   # so anything this path accepts would also fit through the gate's. The
@@ -2384,9 +2387,12 @@ ledger_row() {
   local line="- \`$series\`"
   local f k v n longest lmax fl idx side
   for f in "$@"; do
+    f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
-           f="$k=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')" ;;
+           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+           f="$k=$v" ;;
     esac
     line="$line | $f"
   done
@@ -2422,8 +2428,10 @@ ledger_row() {
     idx=0
     for f in "$@"; do
       idx=$((idx + 1))
+      f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
       case "$f" in
-        *=*) k="${f%%=*}"; v=$(printf '%s' "${f#*=}" | tr '|' '/' | tr '\n\r' '  ')
+        *=*) k=$(printf '%s' "${f%%=*}" | tr '|' '/' | tr '\n\r' '  ')
+             v=$(printf '%s' "${f#*=}" | tr '|' '/' | tr '\n\r' '  ')
              fl=$(printf '%s' "$v" | wc -c | tr -d ' ')
              if [ "${fl:-0}" -gt "$RUN_FIELD_MAX" ]; then
                case "$v" in
