@@ -40,6 +40,12 @@
 #              its `stage-result` row, removes the per-segment files. A router
 #              cannot usefully spell it — without the token it refuses (exit 3)
 #              and starts nothing.
+#   metrics-round
+#              INTERNAL. The detached half of the metrics round: the prelude
+#              stamps, locks and writes a nonce into the lock, then starts this
+#              verb and returns; this verb runs the collector and the filing and
+#              releases the lock. Without the lock's nonce it refuses (exit 3)
+#              and runs nothing.
 #   close      resolve a pending approval from the harness-written transcript
 #   prompt     the canonical question and menu the router must ask for one
 #              approval, as JSON — changes nothing
@@ -92,6 +98,9 @@
 #   gate.sh supervise-stage
 #                    --manifest <path> --target <alias> --segment <id> --nonce <hex>
 #                    -- <stage-kind> <cli args...>          (internal; see above)
+#   gate.sh metrics-round
+#                    --manifest <path> [--target <alias>] --nonce <hex>
+#                                                           (internal; see above)
 #   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
 #   gate.sh prompt   --manifest <path> --approval <id>
 #
@@ -142,6 +151,10 @@
 #               -- 동일성=<problem 행이 실은 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
 #   gate.sh act --kind obligation-drop --target <alias> ... \\
 #               -- 동일성=<problem 행이 실은 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
+#   gate.sh act --kind limit-cleared --target <alias> ... \\
+#               -- 근거=<사람이 한 말의 요약>
+# `limit-cleared` is the seat's alone — a shift or a stage is refused with 3 —
+# and takes `근거` and nothing else; the gate stamps `레인` and `기록 시각`.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -6263,6 +6276,89 @@ gate_row_projected_bytes() {
   gate_row_bytes_of_body "$(gate_row_body "$@")"
 }
 
+gate_base_tree_state() {
+  # gate_base_tree_state <dir> — two words on one line, `<tracked> <untracked>`,
+  # each `있음` / `없음`, or `(미상) (미상)` when the directory or `git status`
+  # does not answer. Tracked is every porcelain line that is not `??`: a
+  # modified, staged, deleted or conflicted tracked file. One `git status`, so
+  # the two values describe the same instant.
+  local out
+  if ! out=$( cd "$1" 2>/dev/null && git --no-optional-locks status --porcelain 2>/dev/null ); then
+    printf '(미상) (미상)\n'
+    return 0
+  fi
+  printf '%s\n' "$out" | LC_ALL=C awk '
+    BEGIN { t = "없음"; u = "없음" }
+    /^\?\? / { u = "있음"; next }
+    NF { t = "있음" }
+    END { print t, u }'
+}
+
+gate_base_check_baseline() {
+  # gate_base_check_baseline <dir> — whether every script the base's `make
+  # check` would call exists: `녹색`, `적색(<missing>, …)`, `(해당 없음)` when
+  # the base has no makefile, `(미상)` when `make -n` itself fails.
+  #
+  # `-n` PRINTS THE RECIPES AND RUNS NONE OF THEM, which is why this is cheap
+  # enough for kickoff and leaves the tree as it found it. It is not zero
+  # execution: make still evaluates the makefile's own `$(shell …)` and runs
+  # recursive `$(MAKE)` lines with `-n` passed down. What is extracted is the
+  # tokens ending in `.sh`; one carrying `$` or `=` is an expansion or an
+  # assignment and is not a path this can check, so it is left out rather
+  # than guessed at. The question answered is therefore "is a script missing",
+  # not "is the check green" — the one kind of red a nightly stage cannot have
+  # caused and would otherwise take for its own.
+  local dir="$1" out tok p missing=""
+  if [ ! -f "$dir/GNUmakefile" ] && [ ! -f "$dir/makefile" ] && [ ! -f "$dir/Makefile" ]; then
+    printf '(해당 없음)'
+    return 0
+  fi
+  if ! out=$(make -n -C "$dir" --no-print-directory check 2>/dev/null); then
+    printf '(미상)'
+    return 0
+  fi
+  # Separators are whitespace, the shell operators and the three quotes; a
+  # subshell's parentheses are stripped from the token's ends afterwards.
+  for tok in $(printf '%s\n' "$out" | LC_ALL=C awk '{
+      n = split($0, a, "[ \t;&|<>\"\047`]+")
+      for (i = 1; i <= n; i++) {
+        t = a[i]; sub(/^\(+/, "", t); sub(/\)+$/, "", t)
+        if (t ~ /^[A-Za-z0-9_.\/][A-Za-z0-9_.\/-]*\.sh$/) print t
+      }
+    }' | LC_ALL=C sort -u); do
+    case "$tok" in /*) p="$tok" ;; *) p="$dir/$tok" ;; esac
+    [ -e "$p" ] || missing="$missing${missing:+, }$tok"
+  done
+  if [ -n "$missing" ]; then printf '적색(%s)' "$missing"; else printf '녹색'; fi
+}
+
+gate_base_check_baseline_fit() {
+  # gate_base_check_baseline_fit <value> <room in bytes> — the baseline value
+  # the `run` row can carry. The row is never lost to this field: a red value
+  # that does not fit keeps its colour and its count, `적색(<n>개 — 행 길이로
+  # 생략)`, and anything that still does not fit is `생략(행 길이)` — the
+  # spelling the segment row already uses for the field it may drop. The full
+  # list goes to the log whenever it is shortened, so it is recorded
+  # somewhere a person reads.
+  local v="$1" room="$2" n short
+  if [ "$(printf '%s' "$v" | wc -c | tr -d ' ')" -le "$room" ]; then
+    printf '%s' "$v"
+    return 0
+  fi
+  warn "the base-check baseline does not fit the run row and is shortened — full value: $v"
+  case "$v" in
+    '적색('*)
+      n=$(printf '%s' "${v#'적색('}" | LC_ALL=C awk -F', ' '{ print NF }')
+      short="적색(${n}개 — 행 길이로 생략)"
+      if [ "$(printf '%s' "$short" | wc -c | tr -d ' ')" -le "$room" ]; then
+        printf '%s' "$short"
+        return 0
+      fi
+      ;;
+  esac
+  printf '생략(행 길이)'
+}
+
 gate_append() {
   # gate_append <계열> <field=value> ...
   #
@@ -7744,6 +7840,15 @@ gate_snapshot() {
   printf '  "cycles": [\n'
   gate_snapshot_cycles_json
   printf '  ],\n'
+  # THE STALL LABELS, right after the reviews they are derived from. Always
+  # emitted, empty included, so no reader has to tell an absent key from an empty
+  # list. Outside the default `--fields` projection and outside `H`: the labels
+  # are a pure function of rows the chain already covers. And outside the
+  # dispatch path by construction — `act` reads `gate_snapshot_digest`, never
+  # this object — so no label can refuse, park or hold anything.
+  printf '  "stalls": [\n'
+  gate_snapshot_stalls_json
+  printf '  ],\n'
   printf '  "shift": %s,\n' "$(gate_shift_state)"
   # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
   # sensor's last published tick and never computed here. Absent, stale or of
@@ -8278,9 +8383,90 @@ readonly GATE_REAP_RETENTION=2592000
 readonly GATE_REAP_MAX=20
 readonly GATE_REAP_BUDGET_S=12
 readonly GATE_REAP_INTERVAL=21600
+# The metrics collector shares the reaper's cadence and lock SHAPE, not its
+# state: a separate stamp, a separate lock directory, so neither cycle can
+# switch the other off. Same interval because both are "once in a while, from
+# whichever gate call happens to be first".
+#
+# THE ROUND DOES NOT RUN INSIDE THE CALLER'S GATE CALL. The caller pays for the
+# stamp, the lock and the launch; the collector and the filing run in a
+# detached `metrics-round` child. The collector's population read sits outside
+# its own budget on purpose — counting it there once starved the first
+# collection for good — and it grows with the number of ledgers, so a round run
+# inside the caller made every verb that happened to meet an expired stamp wait
+# for it, with nothing bounding the wait.
+#
+# The child's collector is cut after `GATE_METRICS_ROUND_TIMEOUT_S`. That is a
+# guard against a hang, not a plan for a backlog. The lock expiry is longer than
+# the deadline plus the filing tail (at most 5+k `gh` calls of
+# `GATE_METRICS_GH_TIMEOUT_S` each), so a live round's lock is never broken
+# under it, and shorter than the interval, so a child that died with the lock
+# held does not hold the next round off.
+readonly GATE_METRICS_INTERVAL=21600
+readonly GATE_METRICS_LOCK_TTL=7200
+readonly GATE_METRICS_ROUND_TIMEOUT_S=3600
+# Per `gh` call of the filing path. A GitHub call that hangs would hold the
+# round's lock for as long as it hangs; a timed-out call takes the branch a
+# failed one already takes.
+readonly GATE_METRICS_GH_TIMEOUT_S=10
+# Where instrument issues go, whichever run's ledger the round was hosted by.
+# They measure this plugin's own collector and compaction window, so they belong
+# to this plugin's repository; left to gh, the destination would follow the
+# hosting run's anchor checkout, its remotes and an inherited `GH_REPO`, and an
+# issue body naming local paths would land in whatever repository that was. The
+# tracker is public and every base files into it, so neither a title nor a body
+# names the hosting checkout: both carry `gate_metrics_repo_tag` instead.
+readonly GATE_METRICS_REPO=Nharu/cc-cmds
 
 gate_reap_root() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
+}
+
+gate_metrics_stamp() {
+  printf '%s' "$(gate_reap_root)/metrics.stamp"
+}
+
+gate_metrics_lockdir() {
+  printf '%s' "$(gate_reap_root)/.metrics.lock"
+}
+
+gate_metrics_config_file() {
+  printf '%s' "${CC_METRICS_FILING_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/metrics-filing}"
+}
+
+gate_metrics_config() {
+  # gate_metrics_config <key> — one value from the filing settings file, or
+  # empty. `키<TAB>값` lines, the same shape as `plugin-pin`, and READ WITH awk
+  # RATHER THAN SOURCED: the file sits in the user's config directory beside
+  # credential files, and sourcing would execute whatever is there. Only the
+  # two known keys are answered; `project` must be all digits or it reads as
+  # absent, because a Project number is the only thing it can be.
+  local f v
+  f=$(gate_metrics_config_file)
+  [ -f "$f" ] || return 0
+  case "$1" in project|account) ;; *) return 0 ;; esac
+  v=$(awk -F'\t' -v k="$1" '$1 == k { v = $2 } END { printf "%s", v }' "$f" 2>/dev/null || true)
+  if [ "$1" = "project" ]; then
+    case "$v" in ''|*[!0-9]*) v="" ;; esac
+  fi
+  printf '%s' "$v"
+}
+
+gate_metrics_collector() {
+  # Resolved at CALL time, not at source time, so a test that sources this file
+  # in-process can still point it at a stub.
+  printf '%s' "${CC_METRICS_COLLECTOR:-$GATE_DIR/collect-run-metrics.sh}"
+}
+
+gate_metrics_gh() {
+  # The `gh` program the filing path runs, resolved at call time like the
+  # collector. A stub ahead on the caller's PATH cannot stand in for it: run.sh
+  # puts the system prefixes first, so on a host whose `gh` is /usr/bin/gh (the
+  # Ubuntu CI runner) the real program wins and the stub is never called — the
+  # identity lookup then fails and every filing case reads `조회 실패`. A test
+  # names the stub here instead. The value must name an external program, never
+  # a function, for the reason `gate_metrics_timed` gives.
+  printf '%s' "${CC_METRICS_GH:-gh}"
 }
 
 gate_reap_day_epoch() {
@@ -10300,7 +10486,7 @@ gate_main() {
 
   # ACCEPTED ONLY WHERE THEY DECIDE SOMETHING — the `--reach` precedent below.
   # `--interval`/`--timeout` govern one verb's loop and `--nonce` is the launch
-  # token only `supervise-stage` consumes; a flag that is silently inert is a
+  # token only the two detached verbs consume; a flag that is silently inert is a
   # flag a caller believes is working. Non-numeric values are refused for the
   # same reason a vocabulary miss is: a loop bound that reads as text degrades
   # to a shell arithmetic error deep inside a poll nobody is watching.
@@ -10316,8 +10502,8 @@ gate_main() {
   fi
   if [ -n "$nonce" ]; then
     case "$verb" in
-      supervise-stage) ;;
-      *) printf 'gate: --nonce is used only with supervise-stage (verb received: %s)\n' "$verb" >&2
+      supervise-stage|metrics-round) ;;
+      *) printf 'gate: --nonce is used only with supervise-stage and metrics-round (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -10475,6 +10661,23 @@ gate_main() {
   fi
 
   rundir_init
+
+  # THE DETACHED METRICS ROUND LEAVES HERE, before anything below writes. What
+  # follows is the per-entry bookkeeping of a caller — the ledger handle, the
+  # session index, lineage, the run-open block, lost-dispatch settlement and the
+  # metrics hook itself — and a child started by another gate call is none of
+  # those: settling dispatches from here would write `외부 종료` rows beside the
+  # caller doing the same. The manifest, the grant and the run directory above
+  # are what the round needs, and all of them have been checked by now.
+  if [ "$verb" = "metrics-round" ]; then
+    [ -n "$nonce" ] || { printf 'gate: metrics-round requires --nonce\n' >&2; exit 2; }
+    if [ "$(cat "$(gate_metrics_lockdir)/nonce" 2>/dev/null || true)" != "$nonce" ]; then
+      printf 'gate: metrics-round nonce mismatch — the lock does not carry this nonce, so nothing runs\n' >&2
+      exit "$GATE_EXIT_RULE"
+    fi
+    gate_metrics_round "$nonce"
+    exit 0
+  fi
 
   # THE GATE CHOOSES THE PATH. THE CALLER DOES NOT NAME ONE.
   #
@@ -10663,29 +10866,71 @@ gate_main() {
     # all lived in memory or in a file beside the ledger rather than in it. This
     # is also the row that makes the chain's first anchor a row rather than the
     # stub's prose.
-    # `강제 코드` and `베이스 청결` DESCRIBE THE TARGET BASE, NOT THE JUDGE.
-    # They are the base's HEAD at kickoff and whether that worktree had
-    # uncommitted changes — a run opened on a dirty base ran against code no
-    # review saw, and without these the morning cannot tell that apart from a
-    # clean night. What enforced the run is a different question and has its own
-    # answer now: `plugin-pin` and the three version fields below. The surface
-    # digest still excludes the plugin files on purpose — a redeploy that
-    # rewrites a rule must not kill a running run — and pinning is what makes
-    # that exclusion cost nothing, because the enforcing bytes no longer move.
+    # `강제 코드`, `베이스 추적 변경` and `베이스 미추적 파일` DESCRIBE THE
+    # TARGET BASE, NOT THE JUDGE. They are the base's HEAD at kickoff and what
+    # that worktree held beside it — a run opened on a base with uncommitted
+    # changes to tracked files ran against code no review saw, and without these
+    # the morning cannot tell that apart from a clean night. What enforced the
+    # run is a different question and has its own answer now: `plugin-pin` and
+    # the three version fields below. The surface digest still excludes the
+    # plugin files on purpose — a redeploy that rewrites a rule must not kill a
+    # running run — and pinning is what makes that exclusion cost nothing,
+    # because the enforcing bytes no longer move.
+    #
+    # TWO FIELDS, NOT ONE, and the one they replace measured the wrong thing.
+    # `git status --porcelain` lists untracked files too, and in this way of
+    # working a new file lying beside the checkout is the normal state — so a
+    # single "is the output empty" predicate answered "dirty" for a base whose
+    # tracked files were byte-for-byte committed, and the morning could not tell
+    # "code no review saw ran tonight" from "someone has a draft open". Split,
+    # the first field carries the claim the old one was written for and the
+    # second carries the ambient fact on its own. A `cd` or `git status` that
+    # fails is `(미상)` on both, where the old expression read a failed probe as
+    # an empty output and wrote "clean".
     #
     # `--no-optional-locks` ON THE PROBE, and this is a requirement rather than
     # a tidy-up. A plain `git status` rewrites the index and holds `index.lock`
     # for 0.24–0.47s; this probe runs inside the very call that takes the pin,
     # and the command it would lock out is `git pull --ff-only`, which is how
     # every slice of this design is applied.
-    gate_append 'run' "run-id=$RUN_ID" "시작=$(now_iso)" \
-      "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
-      "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
-      "강제 코드=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
-      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
-      "판본=$(gate_pin_version_field commit)" \
-      "판본 트리=$(gate_pin_version_field tree)" \
-      "판본 다이제스트=$(gate_pin_version_field digest)" \
+    #
+    # `베이스 검사 기준선` IS WHETHER THE BASE'S OWN `make check` COULD HAVE BEEN
+    # GREEN AT KICKOFF, so a stage that meets a red check at 3am can tell a
+    # failure it caused from one it inherited. Recorded, never refused on: a run
+    # does not stop because the base was already red. See
+    # `gate_base_check_baseline` for what is and is not measured, and
+    # `gate_base_check_baseline_fit` for how the value gives way to the row cap.
+    local rr_start rr_whole rr_surf rr_forced rr_tracked rr_untracked rr_check
+    local rr_pin_commit rr_pin_tree rr_pin_digest rr_fixed
+    rr_start=$(now_iso)
+    rr_whole=$(whole_digest 2>/dev/null || printf '(해당 없음)')
+    rr_surf=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')
+    rr_forced=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')
+    read -r rr_tracked rr_untracked <<< "$(gate_base_tree_state "$BASE")"
+    rr_check=$(gate_base_check_baseline "$BASE")
+    rr_pin_commit=$(gate_pin_version_field commit)
+    rr_pin_tree=$(gate_pin_version_field tree)
+    rr_pin_digest=$(gate_pin_version_field digest)
+    # The row as it would be with the baseline value empty — every other field
+    # is measured exactly as written, and only the baseline gives way.
+    rr_fixed=$(gate_row_projected_bytes 'run' "run-id=$RUN_ID" "시작=$rr_start" \
+      "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$rr_whole" \
+      "구속면 다이제스트=$rr_surf" "강제 코드=$rr_forced" \
+      "베이스 추적 변경=$rr_tracked" "베이스 미추적 파일=$rr_untracked" \
+      "베이스 검사 기준선=" \
+      "판본=$rr_pin_commit" "판본 트리=$rr_pin_tree" "판본 다이제스트=$rr_pin_digest" \
+      "RUN_DIR=$RUN_DIR" "보고서=$LEDGER")
+    rr_check=$(gate_base_check_baseline_fit "$rr_check" "$(( GATE_ROW_MAX - rr_fixed ))")
+    gate_append 'run' "run-id=$RUN_ID" "시작=$rr_start" \
+      "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$rr_whole" \
+      "구속면 다이제스트=$rr_surf" \
+      "강제 코드=$rr_forced" \
+      "베이스 추적 변경=$rr_tracked" \
+      "베이스 미추적 파일=$rr_untracked" \
+      "베이스 검사 기준선=$rr_check" \
+      "판본=$rr_pin_commit" \
+      "판본 트리=$rr_pin_tree" \
+      "판본 다이제스트=$rr_pin_digest" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
     # THE STAGE-POLICY DRIFT VERDICT, AS A LOG LINE AND NOTHING MORE. The policy
     # the gate injects into every stage was distilled from files a person edits
@@ -10754,6 +10999,19 @@ GATE_DRIFT_DIRS
 
   GATE_SETTLED_SEGMENTS=""
   [ "$verb" = "plan" ] || gate_settle_lost_dispatches
+  # The metrics round is started from the same prelude for the same reason and
+  # is kept out of `plan` by the same contract; it is stamped, so almost every
+  # call stops at one read. The call that meets an expired stamp pays for the
+  # lock and the launch only — the round itself runs in a detached child — so
+  # no verb waits for the collector. `|| true` as the reaper has it: whatever
+  # the round runs into, it is not the verb's work. `digest-path` is kept out
+  # too: the PreToolUse hook calls it before every tool call, and it has no
+  # business paying even for the launch. The stamp is not touched, so the round
+  # starts on the next verb that is not excluded.
+  case "$verb" in
+    plan|digest-path) ;;
+    *) gate_metrics_cycle || true ;;
+  esac
 
   case "$verb" in
     digest-path)
@@ -10802,6 +11060,7 @@ GATE_DRIFT_DIRS
       [ $# -ge 1 ] || { printf 'gate: supervise-stage needs the stage kind and the CLI argv after --\n' >&2; exit 2; }
       gate_verb_supervise_stage "$alias" "$segment" "$nonce" "$@"
       ;;
+    # `metrics-round` never arrives here: it leaves right after `rundir_init`.
     close)
       [ -n "$approval" ] || { printf 'gate: close requires --approval\n' >&2; exit 2; }
       # The two refusing dispositions are different CLAIMS about the same
@@ -14204,10 +14463,12 @@ gate_record_row() {
   # disagree. The two obligation-closing kinds are exempt on that same ground and
   # for a sharper version of it: their bundle CROSSES segments, so a segment
   # named in argv would not even have a single right answer to be checked
-  # against.
+  # against. `limit-cleared` is a statement about the run's account window, not
+  # about a part of the run, so it is exempt on the ground `blocked` is.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
      && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
+     && [ "$kind" != "limit-cleared" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "a $kind row needs --segment"
     return "$GATE_EXIT_VOCAB"
@@ -14369,7 +14630,9 @@ gate_record_row() {
 
       # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
       # deliberately. `cycle` and `problem` below carry the same shape for
-      # `세그먼트=`, so all three share this note.
+      # `세그먼트=`, so all three share this note. The `cycle` arm now refuses a
+      # caller's `세그먼트=` at record time, which is the repair named below;
+      # this arm and `problem` still do not.
       #
       # REORDERING MOVES THE HOLE RATHER THAN CLOSING IT, and that is why the
       # obvious repair is not the one to reach for. Readers do not agree on
@@ -14565,6 +14828,43 @@ gate_record_row() {
       # was written and in a run that can no longer repair it; requiring it here
       # puts the refusal on the call that omitted it, which is the one place a
       # router can still add the field.
+      #
+      # THE CALLER'S KEYS ARE REFUSED FROM THE ROW READER'S POINT OF VIEW, and
+      # before any other check reads them. `gate_field_of` matches a key exactly,
+      # but the row reader (`gate_row_field`) drops the spaces in front of a key
+      # and takes the LAST value — so a check written against `gate_field_of`
+      # passes ` 세그먼트=S2`, a newline- or CR-led `세그먼트=S2` (the append
+      # turns both into a space), and ` P0=4` behind a valid `P0=0`, and every
+      # one of them is then read back as a field the checks below never saw.
+      # Three readers of this row disagree about which `세그먼트` wins — the last
+      # value, the first value, and any occurrence — and the only thing that
+      # makes them agree on a new row is refusing the second value at write
+      # time. So: a key whose spelling changes when its surrounding spaces and
+      # tabs are trimmed is refused; `세그먼트` is refused whatever its value,
+      # because the gate writes it from `--segment`; and `발견 지문` is refused
+      # because it is a field only the gate writes. A refusal writes nothing.
+      local ca ck ckt cnl cr ctb
+      cnl=$'\n'; cr=$'\r'; ctb=$'\t'
+      for ca in "$@"; do
+        case "$ca" in *=*) ;; *) continue ;; esac
+        ck=${ca%%=*}
+        ck=${ck//$cnl/ }
+        ck=${ck//$cr/ }
+        ckt=${ck#"${ck%%[! $ctb]*}"}
+        ckt=${ckt%"${ckt##*[! $ctb]}"}
+        if [ "$ck" != "$ckt" ]; then
+          warn "키 앞뒤에 공백이 있는 필드는 받지 않는다 — 공백을 지우고 다시 부른다: '${ckt}'"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        case "$ckt" in
+          세그먼트)
+            warn "\`세그먼트\` 는 게이트가 --segment 로 쓴다 — 이 필드를 빼고 다시 부른다"
+            return "$GATE_EXIT_VOCAB" ;;
+          '발견 지문')
+            warn "\`발견 지문\` 은 게이트만 쓰는 필드다 — 이 필드를 빼고 다시 부른다"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
+      done
       for k in '사이클' 'P0' 'P1' '리뷰 HEAD' '리포트 경로'; do
         if [ -z "$(gate_field_of "$k" "$@")" ]; then
           # `${k}` and not `$k`: the closing bracket that follows is multibyte,
@@ -14789,8 +15089,10 @@ EOF
         warn "cannot open the report of a cycle row with \`모드=델타\`: $rep$delta_repair"
         return "$GATE_EXIT_VOCAB"
       fi
-      # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
-      # than `id`.
+      # NO LONGER DEFERRED FOR THIS ARM. The `segment` arm still leaves its
+      # caller's `id=` free to win, but a caller's `세그먼트=` never reaches this
+      # line: the refusal at the top of the arm rejects it in every spelling the
+      # row reader would read, so the gate's value in front is the only one.
       gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
       ;;
@@ -15135,6 +15437,51 @@ EOF
         "버린 선택지=$hd" "막힌 지점=$hb" "다음 후보=$hc" \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
+      ;;
+    limit-cleared)
+      # THE SEAT'S ONE WAY TO SAY "THE LIMIT HAS CLEARED". A person at the seat
+      # who switched accounts or saw the window reset has information no shift
+      # can derive — the cut attempt's stream still carries the old reset time —
+      # and before this row the only carrier was the seat's own prose, which no
+      # successor reads. A row survives the shift that would have acted on it.
+      #
+      # SEAT ONLY, judged in the order `gate_cap_directive`'s seat arm uses. That
+      # arm exempts a non-seat caller from the seat cap; this one refuses it,
+      # because a shift or a stage writing this row would be the run asserting
+      # its own release from a limit, which is exactly the judgment the
+      # re-attach rule exists to make from evidence.
+      if [ -n "$(gate_shift_self_ordinal)" ] || cc_caller_is_stage \
+         || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+        warn "a \`한도 해제\` row is written by the seat only — a shift or a stage cannot declare its own limit cleared"
+        return "$GATE_EXIT_RULE"
+      fi
+      # ONE KEY FROM ARGV, AND THE GATE BUILDS THE REST. `run_row_body` carries
+      # every `k=v` it is handed and de-duplicates `교대` alone, so passing argv
+      # through would put a caller's `레인=` next to the gate's on one row — and
+      # the lane and time this row testifies to have to be the gate's.
+      local lf lk lwhy lw=300 llen
+      for lf in "$@"; do
+        lk="${lf%%=*}"
+        [ "$lk" = "근거" ] && continue
+        warn "a \`한도 해제\` row takes \`근거\` and nothing else from argv: ${lk} — \`레인\` and \`기록 시각\` are the gate's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      lwhy=$(gate_field_of '근거' "$@")
+      [ -n "$lwhy" ] || { warn "a \`한도 해제\` row needs \`근거\` — a summary of what the person said"; return "$GATE_EXIT_VOCAB"; }
+      local llane lat
+      llane=$(gate_lane_label)
+      lat=$(now_iso)
+      while [ "$lw" -ge 40 ]; do
+        lwhy=$(gate_row_safe "$(gate_field_of '근거' "$@")" "$lw")
+        llen=$(gate_row_projected_bytes '한도 해제' "근거=$lwhy" "레인=$llane" "기록 시각=$lat")
+        [ "$llen" -le "$GATE_ROW_MAX" ] && break
+        lw=$((lw - 40))
+      done
+      # NOTHING READS THIS ROW BUT A SHIFT'S RE-ATTACH RULE. It enters no
+      # termination condition, no progress vector and no notification; it moves
+      # the chain tip and nothing else.
+      gate_append '한도 해제' "근거=$lwhy" "레인=$llane" "기록 시각=$lat"
+      log "한도 해제 기록 — 레인 $llane"
       ;;
     obligation)
       # THE ONLY EXIT FROM TERMINATION CONDITION 9. `리뷰 의무` rows are written
@@ -16342,13 +16689,15 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared)
       # The `키=값` list after `--` is validated by the row writer, and the row
-      # writer runs only on the performing path. Four known divergences live
-      # behind this one line — a predecessor-monotonicity violation, a
-      # predecessor segment absent from the ledger, a `cycle` row missing a
-      # required field, and a missing cone anchor row — so naming the axis is
-      # what lets the router expect them instead of meeting them.
+      # writer runs only on the performing path. The record-time checks are
+      # defined by `gate_record_row` and this note does not enumerate them — a
+      # count kept here goes stale the moment one is added. The kinds, for
+      # example: predecessor monotonicity, an absent predecessor, a cycle row's
+      # required keys, HEAD shape and delta checks, the caller-key refusals, the
+      # cone anchor. Naming the axis is what lets the router expect them instead
+      # of meeting them.
       warn "  - record row field validity (${kind}) — the \`키=값\` fields after -- are checked at record time, so an act with the same argv can come back 2 or 6" ;;
   esac
 }
@@ -16370,9 +16719,13 @@ gate_kind_is_bookkeeping() {
   # every other row kind's does: once recording costs authorization budget, the
   # router is pushed toward recording less, and that pressure is what produced
   # the defect in the first place.
+  #
+  # `limit-cleared` IS HERE FOR THE SEAT'S SAKE. The seat writes it at its own
+  # context ceiling as readily as anywhere else — a person saying "the limit is
+  # cleared" does not wait for the seat to have room — and it enters no tree.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
-    obligation-done|obligation-drop) return 0 ;;
+    obligation-done|obligation-drop|limit-cleared) return 0 ;;
   esac
   return 1
 }
@@ -17706,6 +18059,10 @@ gate_verb_act() {
   # launch or a read labelled `머지` is let through on what it does rather than
   # on what it is called.
   gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
+  # THE LANDING TREE'S OWN GATE, asked before it lands. Same seat as the CI
+  # verdict above and for the same three reasons; it does nothing when that
+  # verdict already set the park cell.
+  gate_check_grade_regression "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$@"
 
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
@@ -17772,6 +18129,10 @@ gate_verb_act() {
         warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
       CI실패)
         warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
+      등급회귀)
+        warn "repair: the gate in the tree this merge would land grades the argv named above as empty or '등급 미상' where the base's gate knew it — fix the grading table and push a new head" ;;
+      등급회귀판정불가)
+        warn "repair: the grade-regression probe could not decide for this merge — a person checks the landing tree's gate and merges it" ;;
     esac
     exit "$GATE_EXIT_PARK"
   fi
@@ -18768,6 +19129,171 @@ gate_check_merge_checks() {
   # and `plan` forecasts it with the same code.
   [ -n "${GATE_PARK_CELL:-}" ] || GATE_PARK_CELL="CI실패"
   export GATE_PARK_CELL
+  return 0
+}
+
+gate_check_grade_regression() {
+  # gate_check_grade_regression <segment> <cutpoint> <alias> [argv…] — refuse a merge
+  # whose landing tree's gate grades an argv the base's gate knew as empty or
+  # `등급 미상`. The second sibling, at the same seat for the same three reasons.
+  #
+  # THE ONLY LOOK AT THE LANDING TREE BEFORE IT LANDS. Serializing the merges
+  # does not govern traffic from outside the run, and CI on the base branch is
+  # an observation after the fact that cannot stop the merge it reports on. A
+  # grading table broken so that an argv comes back empty refuses nothing and
+  # writes `축2=` with no value on every row that act leaves — a forged record,
+  # not a crash — so nothing downstream notices it either.
+  #
+  # IT IS NOT WIRED INTO THE DRIVER'S MERGE FUNCTION. The unattended router
+  # merges through this verb, so this seat covers that path; the driver's own
+  # fixed-graph merge is a path no unattended run takes, and a second copy
+  # there would double the surface without covering anything new.
+  #
+  # THE CHILD GATES ARE ASKED WITH `grade`, UNDER `env -i`, IN A THROWAWAY RUN.
+  # `plan`/`act`/`exec` enter this very function and would recurse. Even
+  # `grade` walks the whole prelude — the run opening writes a `run` row and
+  # the pin hops into the calling run's pinned copy — so pointed at this run
+  # a child would write into this ledger and grade the pinned version instead
+  # of the merged one. The probe script builds each child its own repository,
+  # manifest and state home, and `env -i` cuts every variable this process
+  # carries, `CC_GATE_SOURCE_ONLY` among them.
+  #
+  # THE PROBE IS THE BASE'S COPY. A tree under examination that could supply
+  # its own examiner could pass itself. Only when the base does not carry the
+  # probe yet is the landing tree's copy used, and that is said aloud. The
+  # installed plugin has no `scripts/`, so the gate's own directory is never
+  # searched.
+  #
+  # NO FETCH. The base ref is the same one the merge anchor check decides on,
+  # so on a stale tracking ref the tree computed here can differ from the one
+  # the host would produce. That residual is accepted, as it is there.
+  local seg="$1" cut="$2" alias="$3" tip aroot abr bref btree mb rtree mt probe out rc line
+  local mhc="" mhc_set=0 a
+  shift 3
+  [ -z "${GATE_PARK_CELL:-}" ] || return 0
+  [ "$cut" = "머지" ] || return 0
+  [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+  # The narrowing is the CI verdict's, on the same two argv-derived values and
+  # for the same reason — see that function.
+  [ "${GATE_SURFACE:-}" = "읽기" ] && return 0
+  if [ "${GATE_SURFACE:-}" = "워크트리쓰기" ] && [ "${GATE_HISTORY_INTEGRATION:-}" = "0" ]; then
+    return 0
+  fi
+  # NO OPERAND, NO VERDICT. An undeclared target, an unresolved tip or an
+  # unresolved base leave nothing to compare, and the anchor check and the CI
+  # verdict each answer those cases on their own.
+  [ "${GATE_UNDECLARED:-0}" != "1" ] || return 0
+  aroot=$(alias_root "$alias" 2>/dev/null) || aroot=""
+  abr=$(base_branch "$alias" 2>/dev/null) || abr=""
+  [ -n "$aroot" ] && [ -d "$aroot" ] && [ -n "$abr" ] || return 0
+  # THE HEAD THE LANDING ARGV NAMES IS THE ONE EXAMINED. `gh pr merge …
+  # --match-head-commit <sha>` lands exactly that commit, and the worktree's
+  # local tip can be a different one — behind a push, or ahead of it. Examining
+  # the local tip would let a tip that leaves the orchestrator alone wave
+  # through a named head that does not, at the zero-cost return below. A named
+  # sha this repository cannot resolve to a commit leaves nothing honest to
+  # compare, so it parks rather than falling back to the local tip.
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
+    case "$a" in
+      --match-head-commit) mhc_set=1; mhc="${1:-}"; [ "$#" -eq 0 ] || shift ;;
+      --match-head-commit=*) mhc_set=1; mhc="${a#--match-head-commit=}" ;;
+    esac
+  done
+  if [ "$mhc_set" = "1" ]; then
+    tip=$( cd "$aroot" && [ -n "$mhc" ] && git rev-parse --verify --quiet "$mhc^{commit}" 2>/dev/null ) || tip=""
+    if [ -z "$tip" ]; then
+      warn "the landing argv names head '${mhc}', which does not resolve to a commit in '$aroot' — the grade-regression probe has nothing to examine"
+      GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+      return 0
+    fi
+  else
+    tip=$(gate_segment_tip "$seg") || tip=""
+    [ -n "$tip" ] || return 0
+  fi
+  if ( cd "$aroot" && git remote get-url origin >/dev/null 2>&1 ); then
+    bref="refs/remotes/origin/$abr"
+  else
+    bref="refs/heads/$abr"
+  fi
+  btree=$( cd "$aroot" && git rev-parse --verify --quiet "$bref^{tree}" 2>/dev/null ) || btree=""
+  [ -n "$btree" ] || return 0
+
+  # ZERO COST WHEN THE ORCHESTRATOR DOES NOT MOVE — asked first of the segment's
+  # own side. A three-way merge takes each path from whichever side changed it,
+  # so when the tip left `plugins/cc-cmds/orchestrator` as it was at the merge
+  # base, the landing tree's copy is the base's and there is nothing to compare.
+  # Asking this before `merge-tree` is what keeps a merge that touches no
+  # orchestrator file from being parked because its history cannot be merged
+  # at all — that merge is the landing checks' business, not this one's. The
+  # directory and not `gate.sh` alone, because the gate sources its siblings.
+  # With no merge base there is no side to ask, so the tip is compared with the
+  # base itself: when the two carry the same directory, whatever lands does too.
+  #
+  # `-r` ON BOTH `diff-tree` CALLS, and without it the zero cost is a promise
+  # only. A non-recursive `diff-tree` compares the pathspec at the top-level
+  # entry `plugins`, so any change anywhere under `plugins/` — a `plugin.json`
+  # bump, which every segment of this repository makes — reads as "differs".
+  mb=$( cd "$aroot" && git merge-base "$bref" "$tip" 2>/dev/null ) || mb=""
+  if ( cd "$aroot" && git diff-tree -r --quiet "${mb:-$bref}" "$tip" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # A conflict or a failure is not "nothing changed": the tree the host would
+  # land cannot be named, so nothing was measured.
+  if ! mt=$( cd "$aroot" && git merge-tree --write-tree "$bref" "$tip" 2>/dev/null ); then
+    warn "could not compute the tree this merge would land (git merge-tree reported a conflict or failed) — the grade-regression probe did not run"
+    GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+    return 0
+  fi
+  rtree=$(printf '%s\n' "$mt" | sed -n '1p')
+
+  # The segment's change can already be on the base (a sibling landed the same
+  # edit), and then the landing tree does not move the orchestrator either.
+  if ( cd "$aroot" && git diff-tree -r --quiet "$btree" "$rtree" -- plugins/cc-cmds/orchestrator ) >/dev/null 2>&1; then
+    return 0
+  fi
+
+  probe=$(mktemp "${TMPDIR:-/tmp}/cc-grade-probe-script.XXXXXX") || probe=""
+  if [ -z "$probe" ]; then
+    warn "could not make a temporary file for the grade-regression probe"
+    GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+    return 0
+  fi
+  if ! ( cd "$aroot" && git cat-file blob "$bref:scripts/grade-regression-probe.sh" ) > "$probe" 2>/dev/null; then
+    if ( cd "$aroot" && git cat-file blob "$rtree:scripts/grade-regression-probe.sh" ) > "$probe" 2>/dev/null; then
+      warn "the base '$abr' does not carry the grade-regression probe yet, so the copy in the landing tree is used — this merge is examined by the examiner it brings"
+    else
+      rm -f "$probe"
+      warn "neither the base '$abr' nor the landing tree carries scripts/grade-regression-probe.sh, so the orchestrator change in this merge cannot be examined"
+      GATE_PARK_CELL="등급회귀판정불가"; export GATE_PARK_CELL
+      return 0
+    fi
+  fi
+  rc=0
+  out=$(bash "$probe" --repo "$aroot" --before "$btree" --after "$rtree" 2>&1) || rc=$?
+  rm -f "$probe"
+  # A PASS SAYS WHAT IT COMPARED. Silence on a pass would look the same as the
+  # zero-cost return above, and the positive control's line is what shows the
+  # children graded anything at all. On the log stream only, so the forecast
+  # line and the exit code are the ones a merge the probe never ran gets.
+  case "$rc" in
+    0)
+      printf '%s\n' "$out" | { grep -E '^(대조|양성 대조|변화|판정):' || true; } | while IFS= read -r line; do
+        log "grade-regression probe: $line"
+      done ;;
+    1)
+      printf '%s\n' "$out" | { grep -E '^(회귀|판정):' || true; } | while IFS= read -r line; do
+        warn "grade-regression probe: $line"
+      done
+      GATE_PARK_CELL="등급회귀" ;;
+    *)
+      printf '%s\n' "$out" | { grep -E '^판정:' || true; } | while IFS= read -r line; do
+        warn "grade-regression probe (exit $rc): $line"
+      done
+      GATE_PARK_CELL="등급회귀판정불가" ;;
+  esac
+  [ -z "${GATE_PARK_CELL:-}" ] || export GATE_PARK_CELL
   return 0
 }
 
@@ -20035,6 +20561,430 @@ gate_settle_lost_dispatches() {
           "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken" \
           "$RUN_DIR/$seg.window"
     GATE_SETTLED_SEGMENTS="$GATE_SETTLED_SEGMENTS $seg"
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Run metrics — the collector round and the filing it feeds.
+#
+# The collector (`collect-run-metrics.sh`) reads every finished run's ledger,
+# stream logs and transcripts and prints one journal line per round; the
+# trigger predicates are ITS output. This side only decides whether a round is
+# due, runs it as a separate process, and turns what fired into at most one
+# GitHub issue per round. Nothing here reads a transcript or computes a number.
+# ---------------------------------------------------------------------------
+
+gate_metrics_lock() {
+  # gate_metrics_lock <root> — one attempt, no waiting, the reaper's lock shape
+  # (owner line straight after the `mkdir`, the directory's mtime when the line
+  # is unreadable, broken after `GATE_METRICS_LOCK_TTL`). Its own directory, so
+  # a stuck collector cannot switch the reaper off or the other way round.
+  local root="$1" lock owner ots now
+  lock="$root/.metrics.lock"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+    return 0
+  fi
+  owner=$(cat "$lock/owner" 2>/dev/null || true)
+  ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+  [ -n "$ots" ] || ots=$(gate_mtime "$lock")
+  [ -n "$ots" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ots)) -ge "$GATE_METRICS_LOCK_TTL" ] || return 1
+  rm -rf "$lock" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_metrics_unlock() {
+  # One rename, then the removal — the same release as the reaper's, so no
+  # moment exists in which the lock stands without its owner line.
+  local lock dead
+  lock="$1/.metrics.lock"
+  dead="$lock.dead.$$"
+  if mv "$lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+  return 0
+}
+
+gate_metrics_cycle() {
+  # Called from the prelude on every verb but `plan`. Always returns 0: a
+  # metrics round is never a reason for the verb the caller asked for to fail.
+  #
+  # THE ORDER IS FIXED. (1) A stage seat does nothing, not even the stamp — a
+  # stage has no business spending its turn on a collector round, and a stamp it
+  # wrote would silence the router's round for six hours. (2) The cadence stamp
+  # is one cheap read. (3) The lock is one attempt. (4) The stamp is written
+  # BEFORE the collector runs, so a collector that dies does not make every
+  # following gate call retry it; the leftover `.pending` beside the summary is
+  # the evidence. (5) The round is started detached, holding the lock, and this
+  # call returns — see `gate_metrics_round` for what runs there.
+  #
+  # THE NONCE BINDS THE CHILD TO THIS LOCK. It is written into the lock
+  # directory before the launch and the child refuses without it, so the
+  # internal verb cannot be spelled into running a round nobody locked; and the
+  # child releases the lock only while it still carries that nonce, so a child
+  # that outlived the expiry does not remove a lock another round has since
+  # taken. No trap: a child that dies leaves the lock to the expiry, which is
+  # the recovery the in-call round always had.
+  local root stampf stamp now ledger_dir nonce tmp pid
+  cc_caller_is_stage && return 0
+  [ -n "${LEDGER:-}" ] || return 0
+  ledger_dir=$(dirname "$LEDGER")
+  [ -d "$ledger_dir" ] || return 0
+  root=$(gate_reap_root)
+  stampf=$(gate_metrics_stamp)
+  now=$(date -u +%s)
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_METRICS_INTERVAL" ]; then
+    return 0
+  fi
+  mkdir -p "$root" 2>/dev/null || return 0
+  gate_metrics_lock "$root" || return 0
+  # Read again inside the lock: two gates that both saw an expired stamp would
+  # otherwise run the round one after the other, and file twice.
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_METRICS_INTERVAL" ]; then
+    gate_metrics_unlock "$root"
+    return 0
+  fi
+  printf '%s\n' "$now" > "$stampf" 2>/dev/null || true
+  nonce=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
+  tmp=""
+  if [ -n "$nonce" ]; then
+    tmp=$(mktemp "$root/.metrics.lock/.nonce.XXXXXX" 2>/dev/null || true)
+  fi
+  if [ -z "$tmp" ] || ! printf '%s\n' "$nonce" > "$tmp" 2>/dev/null \
+     || ! mv "$tmp" "$root/.metrics.lock/nonce" 2>/dev/null; then
+    [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null || true
+    log "계측 회차 실패 — 회차를 띄우지 못했다(다음 회차에 다시 센다)"
+    gate_metrics_unlock "$root"
+    return 0
+  fi
+  mkdir -p "$RUN_DIR/log" 2>/dev/null || true
+  # `|| pid=""`: run.sh leaves errexit on, and a plain assignment carries the
+  # substitution's status, so a launcher that returned 127 would end the whole
+  # gate here — before the verb. Two spellings rather than an optional-argument
+  # array, because an empty array under `set -u` is an error on bash 3.2.
+  if [ -n "${alias:-}" ]; then
+    pid=$( cc_detach_exec "$RUN_DIR/log/metrics-round.log" "$RUN_DIR/log/metrics-round.log" \
+             bash "$GATE_DIR/gate.sh" metrics-round --manifest "$MANIFEST" \
+               --target "$alias" --nonce "$nonce" ) || pid=""
+  else
+    pid=$( cc_detach_exec "$RUN_DIR/log/metrics-round.log" "$RUN_DIR/log/metrics-round.log" \
+             bash "$GATE_DIR/gate.sh" metrics-round --manifest "$MANIFEST" \
+               --nonce "$nonce" ) || pid=""
+  fi
+  if [ -z "$pid" ]; then
+    log "계측 회차 실패 — 회차를 띄우지 못했다(다음 회차에 다시 센다)"
+    gate_metrics_unlock "$root"
+  fi
+  return 0
+}
+
+gate_metrics_round_timeout() {
+  # `CC_METRICS_ROUND_TIMEOUT_S` overrides the constant for tests; a value that
+  # is not a positive integer reads as the constant.
+  local t="${CC_METRICS_ROUND_TIMEOUT_S:-}"
+  case "$t" in ''|*[!0-9]*|0) t=$GATE_METRICS_ROUND_TIMEOUT_S ;; esac
+  printf '%s' "$t"
+}
+
+gate_metrics_round() {
+  # gate_metrics_round <nonce> — the body of the detached `metrics-round` verb:
+  # the collector, the read of its last line, the filing, the release. Always
+  # returns 0.
+  #
+  # THE COLLECTOR IS CUT AT THE DEADLINE, and its stdout goes to a file rather
+  # than through `$( )`: a program the TERM stopped can leave children that
+  # still hold a pipe, and a substitution would wait for them, which is the
+  # unbounded wait the deadline exists to remove. The deadline's rc (143)
+  # takes the branch every failed collector already takes.
+  local nonce="$1" root ledger_dir collector outf rc line
+  ledger_dir=$(dirname "$LEDGER")
+  root=$(gate_reap_root)
+  collector=$(gate_metrics_collector)
+  outf=$(mktemp "${TMPDIR:-/tmp}/cc-metrics-round.XXXXXX" 2>/dev/null || true)
+  rc=0
+  if [ -z "$outf" ]; then
+    rc=1
+  else
+    # `|| rc=$?`, never `; rc=$?`: run.sh leaves errexit on, so a collector that
+    # exited non-zero would otherwise end the round before its release.
+    gate_metrics_timed "$(gate_metrics_round_timeout)" \
+      bash "$collector" --ledger-dir "$ledger_dir" --state-root "$root" \
+      >"$outf" 2>/dev/null || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    [ -z "$outf" ] || rm -f "$outf" 2>/dev/null || true
+    log "계측 회차 실패 — 수집기 rc=$rc (다음 회차에 다시 센다)"
+    gate_metrics_round_release "$root" "$nonce"
+    return 0
+  fi
+  line=$(sed -n '$p' "$outf" 2>/dev/null || true)
+  rm -f "$outf" 2>/dev/null || true
+  # A blocked round judges nothing and files nothing; its runs return in the
+  # next round's delta. Only a log line — the row series and the skip reasons
+  # are closed vocabularies.
+  if [ "$(printf '%s' "$line" | jq -r '.probe // empty' 2>/dev/null || true)" = "차단" ]; then
+    log "계측 회차 차단 — 미수집 $(printf '%s' "$line" | jq -r '.counts["미수집"] // "-"' 2>/dev/null || true), 다음 회차에 델타로 다시 든다"
+  fi
+  gate_metrics_file "$line" "$ledger_dir" || true
+  gate_metrics_round_release "$root" "$nonce"
+  return 0
+}
+
+gate_metrics_round_release() {
+  # gate_metrics_round_release <root> <nonce> — the release, only while the
+  # lock still carries this round's nonce. A round that ran past the expiry
+  # finds another round's lock there and leaves it alone.
+  if [ "$(cat "$1/.metrics.lock/nonce" 2>/dev/null || true)" = "$2" ]; then
+    gate_metrics_unlock "$1"
+  else
+    log "계측 회차 — 잠금이 이 회차의 것이 아니어서 풀지 않는다"
+  fi
+  return 0
+}
+
+gate_metrics_skip() {
+  # gate_metrics_skip <사유> <signatures> — the row that says filing did not
+  # happen. Without it an unfiled trigger and a round with nothing to file read
+  # the same in the morning.
+  gate_append '계측 필링 건너뜀' "사유=$1" "세그먼트=-" \
+    "트리거=$(gate_row_safe "${2:--}" 240)" "기록 시각=$(now_iso)" || true
+}
+
+gate_metrics_absent() {
+  # gate_metrics_absent <사유> <fired count> <fired signatures> — a missing
+  # prerequisite becomes a skip row only when the round fired something. A
+  # close-only round has nothing to file, so "could not file" is not true of
+  # it; and because the collector restates a close every round for as long as
+  # the condition stays gone, writing the row here made it permanent,
+  # six-hourly, and byte-identical to the real signal it exists to carry.
+  if [ "${2:-0}" -gt 0 ]; then
+    gate_metrics_skip "$1" "$3"
+  else
+    log "계측 필링 전제 부재($1) — 이 회차는 닫기만 있어 행을 남기지 않는다"
+  fi
+}
+
+gate_metrics_gh_timeout() {
+  # `CC_METRICS_GH_TIMEOUT_S` overrides the constant for tests; a value that is
+  # not an integer reads as the constant.
+  local t="${CC_METRICS_GH_TIMEOUT_S:-}"
+  case "$t" in ''|*[!0-9]*) t=$GATE_METRICS_GH_TIMEOUT_S ;; esac
+  printf '%s' "$t"
+}
+
+gate_metrics_timed() {
+  # gate_metrics_timed <seconds> <command>... — the command's rc, or the rc of
+  # a TERM once it has run longer than <seconds>.
+  #
+  # THE COMMAND MUST BE AN EXTERNAL PROGRAM, not a function: `&` on a simple
+  # external command makes the background pid the program itself, so the TERM
+  # reaches the process that holds the caller's stdout. A function would put a
+  # subshell there, the TERM would stop the subshell, and a caller reading
+  # through `$( )` would go on waiting for the orphaned program. The watcher's
+  # own output goes to /dev/null for the same reason, and it removes its `sleep`
+  # when it is itself stopped, so nothing outlives the call.
+  local secs="$1" pid wpid rc=0
+  shift
+  "$@" &
+  pid=$!
+  (
+    s=""
+    trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & s=$!
+    wait "$s"
+    kill -TERM "$pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  wpid=$!
+  wait "$pid" || rc=$?
+  kill -TERM "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  return "$rc"
+}
+
+gate_metrics_scrub_env() {
+  # The variables that would move a `gh` call to another repository or host.
+  # `--repo` names the repository, but `GH_HOST` and the enterprise tokens still
+  # pick the host it is resolved on. Called inside a subshell only.
+  unset GH_REPO GH_HOST GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+}
+
+gate_metrics_gh_write() {
+  # gate_metrics_gh_write <base> <token> <gh-args>... — `gh` under the
+  # WRITE-scoped credential, exported inside a subshell only, so the token
+  # neither outlives the call nor appears on any argv. `gh auth switch` is never
+  # the answer: it changes the machine's account for every other process.
+  local base="$1" tok="$2" t; shift 2
+  t=$(gate_metrics_gh_timeout)
+  (
+    gate_metrics_scrub_env
+    export GH_TOKEN="$tok"
+    export GITHUB_TOKEN=""
+    cd "$base" 2>/dev/null || exit 1
+    gate_metrics_timed "$t" "$(gate_metrics_gh)" "$@"
+  )
+}
+
+gate_metrics_repo_tag() {
+  # gate_metrics_repo_tag <base> — the first 12 hex of the sha256 of the base's
+  # repo-key (its absolute path with `/` turned into `-`). Instrument issues
+  # carry this tag instead of anything a reader could recognise the hosting
+  # checkout by. It hides the name from a reader and is not a secret: someone
+  # who guesses the path can confirm the guess by hashing it.
+  printf '%s' "$1" | tr / - | shasum -a 256 | cut -c1-12
+}
+
+gate_metrics_row() {
+  # gate_metrics_row <결정> <issue number> <signatures> <revert verb> <reason>
+  gate_append '자율 승인' "kind=metrics-filing" "결정=$1" "대상=${alias:--}" "세그먼트=-" \
+    "절단점=필링" "유도 절단점=-" "등급=1" "기준=계측 트리거 $(gate_row_safe "$3" 200)" \
+    "되돌리는 법=gh issue $4 $2 --repo $GATE_METRICS_REPO" "근거=$(gate_row_safe "$5" 240)" || true
+}
+
+gate_metrics_file() {
+  # gate_metrics_file <journal line> <ledger dir> — what fired becomes at most
+  # one issue; what the collector judged recovered is closed.
+  #
+  # THE SKIP REASONS ARE FOUR AND CLOSED: `번호 없음` (no observation Project
+  # number configured, so no issue is created at all — an issue that lands in
+  # no Project is invisible to the triage it exists for), `자격 없음` (no
+  # write-scoped credential), `조회 실패` (the write credential's identity is
+  # not the configured account, or a GitHub call failed — the label creation
+  # before an issue is created included), `상한 도달` (an
+  # instrument issue with this base's repo tag is already open). A failure to
+  # add a created issue to the Project is NOT a skip: the issue stands, the
+  # missing step is written beside the ledger as a command, and the filing row
+  # is still written.
+  #
+  # `gh issue reopen` is not called anywhere — a closed instrument issue that
+  # fires again is a new issue, and reopening is a human's call.
+  #
+  # Every issue call names `GATE_METRICS_REPO`, and the label is created before
+  # each issue creation rather than assumed: gh resolves `--label` to an id
+  # before it creates anything, so a missing label fails the whole creation.
+  #
+  # Every base's issues share that one public tracker, so each title starts
+  # with `[cc-metrics <repo tag>] ` and the round sees only the open issues
+  # carrying its own base's tag: the cap, the T6 comment and the close never
+  # reach an issue another base filed, nor an untagged `[cc-metrics] ` one. The
+  # body names the base by the same tag and never by its directory name.
+  local line="$1" ledger_dir="$2" base fired close nf nc sigs project account tok login
+  local list nopen open_t6 others tmp url num sig round body_lines title why tag pre
+  base=$(dirname "$(dirname "$ledger_dir")")
+  tag=$(gate_metrics_repo_tag "$base")
+  pre="[cc-metrics $tag] "
+  # A line that is not one JSON object is no round at all. Without this an
+  # empty line reads as an empty count, the zero test below fails as an error
+  # rather than as false, and a skip row would name a trigger that never fired.
+  printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || return 0
+  fired=$(printf '%s' "$line" | jq -c '.fired // []' 2>/dev/null) || return 0
+  close=$(printf '%s' "$line" | jq -c '.close // []' 2>/dev/null) || return 0
+  nf=$(printf '%s' "$fired" | jq 'length')
+  nc=$(printf '%s' "$close" | jq 'length')
+  [ "$nf" -eq 0 ] && [ "$nc" -eq 0 ] && return 0
+  # `트리거` carries the fired signatures and nothing else — never the close
+  # list, which is what the collector judged gone, not what fired.
+  sigs=$(printf '%s' "$fired" | jq -r '[.[].signature] | join(",")')
+  round=$(printf '%s' "$line" | jq -r '.round // "-"')
+  project=$(gate_metrics_config project)
+  if [ -z "$project" ]; then gate_metrics_absent '번호 없음' "$nf" "$sigs"; return 0; fi
+  tok=$(cred_write_token 2>/dev/null) || tok=""
+  if [ -z "$tok" ]; then gate_metrics_absent '자격 없음' "$nf" "$sigs"; return 0; fi
+  account=$(gate_metrics_config account)
+  login=$(gate_metrics_gh_write "$base" "$tok" api user --jq .login 2>/dev/null) || login=""
+  if [ -z "$login" ] || [ "$login" != "$account" ]; then
+    gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0
+  fi
+  list=$(gate_metrics_scrub_env; GATE_ACT_CWD="$base" gate_run_readonly gate_metrics_timed "$(gate_metrics_gh_timeout)" \
+           "$(gate_metrics_gh)" issue list --repo "$GATE_METRICS_REPO" --label cc-metrics --state open \
+           --json number,title 2>/dev/null) \
+    || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
+  list=$(printf '%s' "$list" | jq -c --arg p "$pre" '[.[] | select(.title | startswith($p))]' 2>/dev/null) \
+    || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
+  nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
+
+  body_lines=$(printf '%s' "$fired" | jq -r '.[] | "- `\(.signature)` — \(.body)"')
+  tmp=$(mktemp "${TMPDIR:-/tmp}/cc-metrics-issue.XXXXXX") || return 0
+  if [ "$nf" -gt 0 ]; then
+    {
+      printf '런 계측 수집기의 회차 %s 에서 다음 트리거가 발화했다.\n\n' "$round"
+      printf '%s\n\n' "$body_lines"
+      printf -- '- 이 회차에 새로 수집된 런: %s\n' "$(printf '%s' "$line" | jq -r '.new_runs | join(", ")')"
+      printf -- '- 수집 수: %s\n' "$(printf '%s' "$line" | jq -c '.counts')"
+      printf -- '- 레포 표지: `%s` — 요약 파일은 그 레포의 `%s/metrics.json`\n' "$tag" "${ledger_dir#"$base"/}"
+    } > "$tmp"
+    if [ "$nopen" -gt 0 ]; then
+      # An open T6 issue takes the other triggers as a comment: T6 is the slow
+      # verdict about the window value, and a defect-shaped trigger arriving
+      # while it is open is evidence about the same instrument, not a second
+      # thread. Anything else open is the cap.
+      open_t6=$(printf '%s' "$list" | jq -r --arg p "${pre}T6/" '[.[] | select(.title | startswith($p))][0].number // empty')
+      others=""
+      if [ -n "$open_t6" ]; then
+        others=$(printf '%s' "$list" | jq -r --argjson f "$fired" --argjson n "$open_t6" --arg p "$pre" \
+          '(.[] | select(.number == $n) | .title | ltrimstr($p)) as $t
+           | [$f[].signature | select(. != $t)] | join(",")')
+      fi
+      if [ -n "$open_t6" ] && [ -n "$others" ]; then
+        if gate_metrics_gh_write "$base" "$tok" issue comment "$open_t6" --repo "$GATE_METRICS_REPO" \
+             --body-file "$tmp" >/dev/null 2>&1; then
+          gate_metrics_row '코멘트' "$open_t6" "$others" close "$body_lines"
+        else
+          gate_metrics_skip '조회 실패' "$sigs"
+        fi
+      else
+        gate_metrics_skip '상한 도달' "$sigs"
+      fi
+    else
+      sig=$(printf '%s' "$fired" | jq -r '.[0].signature')
+      title="$pre$sig"
+      url=""
+      if gate_metrics_gh_write "$base" "$tok" label create cc-metrics --repo "$GATE_METRICS_REPO" --force \
+           --color 5319e7 --description '런 계측 수집기가 등록한 이슈' >/dev/null 2>&1; then
+        url=$(gate_metrics_gh_write "$base" "$tok" issue create --repo "$GATE_METRICS_REPO" --title "$title" \
+                --label cc-metrics --body-file "$tmp" 2>/dev/null | sed -n '$p') || url=""
+      fi
+      num=$(printf '%s' "$url" | sed -n 's#.*/issues/\([0-9][0-9]*\)$#\1#p')
+      if [ -z "$num" ]; then
+        gate_metrics_skip '조회 실패' "$sigs"
+      else
+        if ! gate_metrics_gh_write "$base" "$tok" project item-add "$project" --owner "$account" --url "$url" >/dev/null 2>&1; then
+          mkdir -p "$ledger_dir/metrics.unfiled" 2>/dev/null || true
+          {
+            printf '# 이슈 #%s 를 관측 Project 에 담지 못했다\n\n' "$num"
+            printf '이슈는 만들어졌고 Project 담기만 실패했다. 아래 명령으로 담는다.\n\n'
+            printf '```\ngh project item-add %s --owner %s --url %s\n```\n' "$project" "$account" "$url"
+          } > "$ledger_dir/metrics.unfiled/$num.md" 2>/dev/null || true
+        fi
+        gate_metrics_row '등록' "$num" "$sigs" close "$body_lines"
+      fi
+    fi
+  fi
+  rm -f "$tmp"
+
+  # Closing uses the list read above. A signature is closed only when the
+  # collector put it in `close` — three consecutive rounds from the journal in
+  # either family, so one round never closes anything. The two families reach it
+  # by different evidence, and the row says which: the threshold trigger by its
+  # two signs turning good, a defect-shaped one by not being observed again.
+  for sig in $(printf '%s' "$close" | jq -r '.[]'); do
+    num=$(printf '%s' "$list" | jq -r --arg t "$pre$sig" '[.[] | select(.title == $t)][0].number // empty')
+    [ -n "$num" ] || continue
+    case "$sig" in
+      T6/*) why="같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다" ;;
+      *)    why="그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다" ;;
+    esac
+    if gate_metrics_gh_write "$base" "$tok" issue close "$num" --repo "$GATE_METRICS_REPO" >/dev/null 2>&1; then
+      gate_metrics_row '닫힘' "$num" "$sig" reopen "$why"
+    else
+      log "계측 이슈 #$num 닫기 실패 — 다음 회차에 다시 본다"
+    fi
   done
   return 0
 }
@@ -22238,21 +23188,129 @@ gate_snapshot_cycles_json() {
   printf '%s\n' "${out%,}"
 }
 
+# THE STALL LABELS, computed by `stall-class.awk` from the whole ledger and
+# nothing else. ONE AWK PROCESS on the success path, whatever the ledger's size:
+# every `snapshot` call — `--fields H` included, because the projection renders
+# the whole object first — pays for this, so the root is taken by parameter
+# expansion rather than by `dirname` or `gate_report_abs`. That is the same
+# string, byte for byte: the entry normalization makes `MANIFEST` a LOGICAL
+# absolute path with no `.` or `..` in it, so stripping two components off its
+# directory is exactly what the relative arm of `gate_report_abs` gets by letting
+# a logical `cd` fold the two `..`.
+#
+# FAILURE IS OPEN AND VISIBLE. A classifier that fails leaves `"stalls": []` and
+# one warning line, never a failed snapshot: the output is taken into a variable
+# and printed only after the awk has exited 0, because an awk that printed one
+# entry and then died would otherwise leave half a JSON object inside a snapshot
+# that `--fields H` parses whole. No bash arithmetic touches these values, and
+# nothing in the body leaves the function any way but normally. The awk's own
+# stderr is dropped so that the failure is the one line below and not two.
+gate_snapshot_stalls_json() {
+  local mdir root st
+  mdir=${MANIFEST%/*}
+  root=${mdir%/*}
+  root=${root%/*}
+  st=$(LC_ALL=C awk -v mode=last -v root="$root" -f "$GATE_DIR/stall-class.awk" "$LEDGER" 2>/dev/null) \
+    || { warn "정체 라벨 계산 실패 — stalls 를 비웠습니다: $GATE_DIR/stall-class.awk"; st=''; }
+  if [ -n "$st" ]; then
+    printf '%s\n' "$st"
+  fi
+}
+
 gate_snapshot_handoff_json() {
   # The last `SHIFT_HANDOFF_CAP` handoffs and no more. The whole series would
   # grow without bound across a night, and an unbounded resume payload spends on
   # the successor's first turn exactly what the shift exists to save.
-  local out row
-  out=$( { gate_rows 'handoff' || true; } | tail -"$SHIFT_HANDOFF_CAP" | while IFS= read -r row; do
+  #
+  # `사유` AND `기록 시각` ARE WHAT MAKE AN ENTRY READABLE AS A PAST OBSERVATION.
+  # Without them a successor cannot tell how old a wall is, and repeats a wait a
+  # predecessor recorded hours ago as if it had just been measured; nor can it
+  # tell the gate's `사유=무기록` entry — a fact that a shift ended, carrying no
+  # judgment — from a shift's own handoff.
+  #
+  # `무기록` ROWS DO NOT COUNT AGAINST THE CAP. A run of shifts that die on their
+  # first request — a usage limit that has not cleared, a crash loop — each leaves
+  # one, and counting them would push the last real handoff, the only entry with a
+  # `버린 선택지` or a measured `막힌 지점`, out of every prescribed read after
+  # three of them. The window is the last `SHIFT_HANDOFF_CAP` real handoffs, plus
+  # the series' final row when that row is `무기록`: the successor still learns
+  # that its predecessor ended without a word, and the payload stays bounded at
+  # one entry over the cap however long the run of them is.
+  local out row all last
+  all=$( { gate_rows 'handoff' || true; } )
+  last=$(printf '%s\n' "$all" | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = '무기록' ] || last=''
+  out=$( { printf '%s\n' "$all" | while IFS= read -r row; do
+             [ -n "$row" ] || continue
+             [ "$(gate_row_field "$row" '사유')" = '무기록' ] || printf '%s\n' "$row"
+           done | tail -"$SHIFT_HANDOFF_CAP"
+           [ -z "$last" ] || printf '%s\n' "$last"
+         } | while IFS= read -r row; do
            [ -n "$row" ] || continue
-           printf '    {"교대": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s"},\n' \
+           printf '    {"교대": "%s", "사유": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s", "기록 시각": "%s"},\n' \
              "$(gate_json_escape "$(gate_row_field "$row" '교대')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '사유')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '버린 선택지')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '막힌 지점')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" '다음 후보')")"
+             "$(gate_json_escape "$(gate_row_field "$row" '다음 후보')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '기록 시각')")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
+}
+
+gate_shift_trace_unrecorded() {
+  # gate_shift_trace_unrecorded <alias> <ordinal> <rc> — after a shift has been
+  # reaped, write the `handoff` row it did not write itself: `사유=무기록`.
+  #
+  # A SHIFT THAT ENDS WITHOUT A HANDOFF USED TO LEAVE ONE `log` LINE AND NO ROW.
+  # The successor then read the predecessor's last handoff as the latest word,
+  # and the morning reader could not tell a shift that did nothing from one that
+  # never ran. The gate is the one process still alive at that moment, so the
+  # trace is its to write; `무기록` is a value of its own so that it is never
+  # read as the `중단` a shift chose, and the handoff arm already refuses it on
+  # argv.
+  #
+  # WHETHER THE SHIFT WROTE ONE IS READ FROM THE APPROVAL ROW, NOT THE HANDOFF
+  # ROW. The approval row's `교대` and `행위자` come from the environment the gate
+  # gave the shift, so argv cannot forge them; the handoff row's own `교대=` is
+  # whatever its caller passed. A bookkeeping act writes its row before its
+  # approval row, so a refused handoff leaves no approval row and counts as none.
+  #
+  # `행위 수` FILTERS ON `행위자=교대`. A stage the shift launched carries the same
+  # `교대=<n>` on its rows, and counting those would credit the shift with work
+  # it did not do. A snapshot call writes no row, so `0` means "no gate act",
+  # not "no request".
+  #
+  # `막힌 지점` IS DESCRIPTIVE AND FIXED. The feed carries this field to the lead,
+  # where an imperative would read as an instruction; and a fixed sentence keeps
+  # the row near a known length. It still goes through the projection, because a
+  # row over the cap is a `die` and not a truncation.
+  # Counted rather than tested with `grep -q`: under `pipefail` an early-exiting
+  # reader can leave its writer on SIGPIPE, and the pipeline would then answer
+  # "no handoff" for a shift that wrote one.
+  local alias="$1" n="$2" rc="$3" mine own acts why at
+  mine=$( { gate_rows '자율 승인' || true; } | grep -F "| 교대=$n |" \
+            | grep -F '| 행위자=교대 |' || true)
+  own=$(printf '%s\n' "$mine" | grep -cF "| 교대=$n | kind=handoff |" || true)
+  case "${own:-}" in ''|*[!0-9]*) own=0 ;; esac
+  [ "$own" -eq 0 ] || return 0
+  acts=$(printf '%s\n' "$mine" | grep -c . || true)
+  case "${acts:-}" in ''|*[!0-9]*) acts=0 ;; esac
+  why="교대 ${n} 이 인계 행 없이 끝났다 — 종료 코드 ${rc}, 게이트 행위 ${acts}회"
+  if [ "$rc" != "0" ] && stage_limit_exit "$RUN_DIR/log/shift-$n.json" >/dev/null 2>&1; then
+    why="${why}; 교대 자신의 스트림이 한도 종료 형상이다"
+  fi
+  at=$(now_iso)
+  if [ "$(gate_row_projected_bytes 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
+          "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
+          "종료 코드=$rc" "행위 수=$acts")" -gt "$GATE_ROW_MAX" ]; then
+    why='-'
+  fi
+  gate_append 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
+    "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
+    "종료 코드=$rc" "행위 수=$acts"
+  log "교대 $n 무기록 — 게이트가 인계 행을 대신 남김 (rc=$rc, 행위 ${acts}회)"
 }
 
 gate_launch_shift() {
@@ -22480,6 +23538,13 @@ gate_launch_shift() {
   wait "$spid" || rc=$?
   rm -f "$RUN_DIR/shift.in-progress" "$RUN_DIR/shift.live"
   log "교대 $n 종료 (rc=$rc)"
+  # IN A SUBSHELL, SO A FAILED TRACE CANNOT BECOME THE ACT'S EXIT CODE.
+  # `gate_append` answers a failure with `die`, and a 1 here would read at the
+  # seat as "the shift itself died". The subshell does not run the parent's EXIT
+  # trap, so the digest is still emitted once, by the parent, after this row.
+  # `gate_rows` reads the file and not a memo, so it sees what the shift wrote.
+  ( gate_shift_trace_unrecorded "$alias" "$n" "$rc" ) \
+    || warn "교대 $n 의 무기록 인계 행을 남기지 못했습니다 — 교대의 종료 코드 ${rc} 는 그대로 돌려줍니다"
   return "$rc"
 }
 
