@@ -4629,6 +4629,308 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 8f. The P1 blocking ceiling — a carried P1 merges only on its `이월` row
+# --- section: 8f | group: base | covers: act, plan | needs: 8e | anchors: 이월 행이 마지막 리뷰와 맞으면 상한 사이클의 P1 머지가 통과한다 ---
+#
+# From cycle `CYCLE_CARRY_FROM` on, a P1 stops sending the segment back to a
+# fix and leaves the run as an issue — but only once the ledger says so. The
+# merge rule passes `P1 > 0` when the segment's last `이월` row with `출처=리뷰`
+# carries the cycle, review HEAD and count of its last `cycle` row, and the gate
+# refuses to write such a row unless it matches at write time. The six merge
+# cases are the six ways the two can disagree, and only the first passes; the
+# act cases are what the writer refuses before any merge is asked.
+#
+# THE REFUSAL TEXT IS ASSERTED, NOT ONLY THE CODE. Every rule refusal and every
+# vocabulary refusal shares one code, so a case that passed on the code alone
+# could be measuring a missing field instead of the check it names.
+# ---------------------------------------------------------------------------
+cf_head=$(cd "$WT" && git rev-parse HEAD)
+cf_url='https://github.com/o/r/issues/11'
+cf_seg() {
+  printf -- '- `segment` | id=%s | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$1" "$cf_head" "$WT" >> "$FX_LEDGER"
+}
+cf_cycle() {  # cf_cycle <seg> <사이클> <P0> <P1>
+  gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment "$1" --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale x -- "사이클=$2" "P0=$3" "P1=$4" \
+       "리뷰 HEAD=$cf_head" "리포트 경로=$FXREPORT"
+}
+cf_carry() {  # cf_carry <seg|-> <키=값…>
+  local s="$1"; shift
+  if [ "$s" = "-" ]; then
+    gate act --manifest "$FX_MANIFEST" --kind 이월 --target infra --cutpoint 커밋 \
+         --snapshot-digest "$(HH)" --rationale x -- "$@"
+  else
+    gate act --manifest "$FX_MANIFEST" --kind 이월 --target infra --segment "$s" --cutpoint 커밋 \
+         --snapshot-digest "$(HH)" --rationale x -- "$@"
+  fi
+}
+cf_merge() {
+  gate plan --manifest "$FX_MANIFEST" --kind merge --target infra --segment "$1" --cutpoint 머지 \
+       -- gh pr merge 1
+}
+cf_expect() {  # cf_expect <label> <want rc> <substring of the refusal>
+  check "$1" "$rc" "$2"
+  case "$msg" in
+    *"$3"*) ok "$1 — 문면" ;;
+    *) bad "$1 — 문면" "'$3' 이 없다: '$msg'" ;;
+  esac
+}
+
+# THE CEILING IS REACHED THROUGH A FIX ROUND, never by the number alone. The
+# gate pins the cycle number at write time: a segment's first row is cycle 1
+# and a later one needs the row numbered one less, so a first review recorded
+# as cycle 2 cannot reach the ceiling. Every segment below writes its cycle 1
+# row first, as a run does.
+cf_seg SCF11
+cf_cycle SCF11 2 0 1
+cf_expect "세그먼트의 첫 리뷰를 사이클 2 로 쓰면 거부된다" "2" "has no cycle row for cycle 1"
+case "$msg" in
+  *"(1 now)"*) ok "그 거절이 원장이 기대하는 번호를 말한다" ;;
+  *) bad "다음 사이클 번호 문면" "$msg" ;;
+esac
+cf_cycle SCF11 0 0 1
+cf_expect "사이클 0 은 거부된다" "2" "has to be a positive integer"
+cf_cycle SCF11 x 0 1
+cf_expect "정수가 아닌 사이클은 거부된다" "2" "has to be a positive integer"
+cf_cycle SCF11 1 0 1
+check "세그먼트의 첫 리뷰는 사이클 1 로 기록된다" "$rc" "0"
+cf_cycle SCF11 3 0 1
+cf_expect "번호를 건너뛴 사이클은 거부된다" "2" "has no cycle row for cycle 2"
+cf_cycle SCF11 1 0 1
+check "같은 번호의 재기록은 기록된다" "$rc" "0"
+check "거부된 사이클 행은 원장에 남지 않는다" \
+  "$(grep -c '^- `cycle` | 교대=[0-9][0-9]* | 세그먼트=SCF11 ' "$FX_LEDGER" || true)" "2"
+cf_carry SCF11 출처=리뷰 사이클=1 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+cf_expect "사이클 1 만 거친 세그먼트는 이월 행을 쓸 수 없다" "2" "below the P1 blocking ceiling"
+
+# Case 2 first, on the segment case 1 then repairs: P1 at the ceiling with no
+# carry-over row is refused, and it is refused for the missing row.
+cf_seg SCF1
+cf_cycle SCF1 1 0 1
+check "SCF1 의 사이클 1 리뷰 행이 기록된다" "$rc" "0"
+cf_cycle SCF1 2 0 1
+check "상한 사이클의 P1 리뷰 행이 기록된다" "$rc" "0"
+cf_merge SCF1
+case "$msg" in
+  *"no 이월 row (출처=리뷰)"*) ok "상한 사이클의 P1 은 이월 행이 없으면 머지가 거부된다" ;;
+  *) bad "이월 행 부재" "$msg" ;;
+esac
+
+# Case 1.
+cf_carry SCF1 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+check "마지막 리뷰와 맞는 이월 행이 기록된다" "$rc" "0"
+check "이월 행의 세그먼트는 게이트가 --segment 로 붙인다" \
+  "$(grep -c '^- `이월` | 교대=[0-9][0-9]* | 세그먼트=SCF1 ' "$FX_LEDGER" || true)" "1"
+cf_merge SCF1
+case "$msg" in
+  *"rule refused: 리뷰-후-머지"*) bad "이월 머지" "이월 행이 있는데 거부됐다: '$msg'" ;;
+  *) ok "이월 행이 마지막 리뷰와 맞으면 상한 사이클의 P1 머지가 통과한다" ;;
+esac
+# The absence of the refusal is not a pass on its own: a plan that died early
+# for any other reason carries no such text either.
+check "그 머지 계획은 종료 코드 0 으로 끝난다" "$rc" "0"
+
+# Case 6 — a later review of the same cycle and HEAD moves P1 under the row.
+cf_cycle SCF1 2 0 2
+cf_merge SCF1
+case "$msg" in
+  *"does not match the last review record"*) ok "이월 행 뒤 P1 이 바뀐 리뷰 행이 오면 머지가 거부된다" ;;
+  *) bad "이월 뒤 P1 변화" "$msg" ;;
+esac
+
+# Case 3 — P0 is never carried, by the writer or by the rule. The row is planted
+# because the writer refuses to produce it, and the rule still has to hold for
+# rows that reach the ledger some other way.
+cf_seg SCF3
+cf_cycle SCF3 1 1 1
+cf_cycle SCF3 2 1 1
+cf_carry SCF3 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+cf_expect "P0 가 남은 리뷰의 이월 행은 쓰기 시점에 거부된다" "2" "a P0 is never carried over"
+printf -- '- `이월` | 세그먼트=SCF3 | 출처=리뷰 | 사이클=2 | 리뷰 HEAD=%s | 승인 id=- | 이슈=%s | 건수=1\n' \
+  "$cf_head" "$cf_url" >> "$FX_LEDGER"
+cf_merge SCF3
+case "$msg" in
+  *"unresolved findings remain (P0=1"*) ok "P0 가 남으면 이월 행이 있어도 머지가 거부된다" ;;
+  *) bad "P0 이월" "$msg" ;;
+esac
+
+# Case 4 — below the ceiling, the same shape is refused on both sides.
+cf_seg SCF4
+cf_cycle SCF4 1 0 1
+cf_carry SCF4 출처=리뷰 사이클=1 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+cf_expect "상한 아래 사이클의 이월 행은 쓰기 시점에 거부된다" "2" "below the P1 blocking ceiling"
+printf -- '- `이월` | 세그먼트=SCF4 | 출처=리뷰 | 사이클=1 | 리뷰 HEAD=%s | 승인 id=- | 이슈=%s | 건수=1\n' \
+  "$cf_head" "$cf_url" >> "$FX_LEDGER"
+cf_merge SCF4
+case "$msg" in
+  *"below the P1 blocking ceiling"*) ok "사이클 1 의 P1 은 이월 행이 있어도 머지가 거부된다" ;;
+  *) bad "상한 아래 이월" "$msg" ;;
+esac
+
+# Case 5 — a boundary carry-over row permits no merge, even one that names this
+# segment, cycle and HEAD.
+cf_seg SCF5
+cf_cycle SCF5 1 0 1
+cf_cycle SCF5 2 0 1
+printf -- '- `이월` | 세그먼트=SCF5 | 출처=경계 | 사이클=2 | 리뷰 HEAD=%s | 승인 id=B1-0000aaaa | 이슈=%s | 건수=1\n' \
+  "$cf_head" "$cf_url" >> "$FX_LEDGER"
+cf_merge SCF5
+case "$msg" in
+  *"no 이월 row (출처=리뷰)"*) ok "출처=경계 이월 행으로는 머지가 통과하지 않는다" ;;
+  *) bad "경계 이월 머지" "$msg" ;;
+esac
+
+# The writer's refusals, each on a review the row would otherwise match.
+cf_seg SCF6
+cf_cycle SCF6 1 0 2
+cf_cycle SCF6 2 0 2
+cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+cf_expect "건수가 P1 과 다른 이월 행은 거부된다" "2" "is not the P1"
+cf_carry SCF6 출처=리뷰 사이클=2 '리뷰 HEAD=0000000' '승인 id=-' "이슈=$cf_url" 건수=2
+cf_expect "리뷰 HEAD 가 다른 이월 행은 거부된다" "2" "is not the review HEAD"
+cf_carry SCF6 출처=리뷰 사이클=3 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=2
+cf_expect "사이클이 다른 이월 행은 거부된다" "2" "is not the cycle"
+for cf_bad in 'https://example.com/o/r/issues/1' 'https://github.com/o/r/pull/3' \
+              'https://github.com/o/r/issues/0' "$cf_url,"; do
+  cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_bad" 건수=2
+  cf_expect "이슈 URL 형식 위반은 거부된다 ($cf_bad)" "2" "has to be https://github.com/<owner>/<repo>/issues/<n>"
+done
+cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=2 세그먼트=SCF6
+cf_expect "호출자가 실은 세그먼트= 는 거부된다" "2" "does not take \`세그먼트=\` from the caller"
+cf_carry - 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=2
+cf_expect "--segment 없는 출처=리뷰 는 거부된다" "2" "needs --segment"
+cf_carry SCF6 출처=경계 사이클=- '리뷰 HEAD=-' '승인 id=B1-0000aaaa' "이슈=$cf_url" 건수=1
+cf_expect "--segment 를 실은 출처=경계 는 거부된다" "2" "takes no --segment"
+cf_carry - 출처=경계 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=B1-0000aaaa' "이슈=$cf_url" 건수=1
+cf_expect "사이클·리뷰 HEAD 가 - 가 아닌 출처=경계 는 거부된다" "2" "carries \`사이클=-\` and \`리뷰 HEAD=-\`"
+cf_carry - 출처=경계 사이클=- '리뷰 HEAD=-' '승인 id=B1-0000aaaa' "이슈=$cf_url" 건수=1
+cf_expect "자동 해소되지 않은 B1 의 출처=경계 는 거부된다" "2" "was not closed by auto-resolution"
+cf_carry SCF6 출처=수정 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=2
+cf_expect "어휘 밖 출처는 거부된다" "2" "out of vocabulary"
+check "거부된 이월 act 는 행을 남기지 않는다" \
+  "$(grep -c '^- `이월` | 교대=[0-9][0-9]* | 세그먼트=SCF6 ' "$FX_LEDGER" || true)" "0"
+cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' \
+  "이슈=$cf_url,https://github.com/o/r/issues/12" 건수=2
+check "쉼표로 이은 이슈 URL 둘은 기록된다" "$rc" "0"
+cf_merge SCF6
+case "$msg" in
+  *"rule refused: 리뷰-후-머지"*) bad "URL 둘 이월 머지" "$msg" ;;
+  *) ok "URL 둘을 실은 이월 행으로도 머지가 통과한다" ;;
+esac
+check "URL 둘 이월 머지 계획은 종료 코드 0 으로 끝난다" "$rc" "0"
+
+# More of the writer's refusals. The boundary cases sit after every check the
+# arm makes before them, so each one is refused for the reason it names.
+cf_carry - 출처=경계 사이클=- '리뷰 HEAD=-' '승인 id=B1-0000aaaa' "이슈=$cf_url" 건수=2
+cf_expect "건수가 1 이 아닌 출처=경계 는 거부된다" "2" "carries \`건수=1\`"
+cf_carry - 출처=경계 사이클=- '리뷰 HEAD=-' '승인 id=A2-0000aaaa' "이슈=$cf_url" 건수=1
+cf_expect "B1 이 아닌 승인 id 의 출처=경계 는 거부된다" "2" "names a stagnation approval"
+cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=B1-0000aaaa' "이슈=$cf_url" 건수=2
+cf_expect "승인 id 가 - 가 아닌 출처=리뷰 는 거부된다" "2" "carries \`승인 id=-\`"
+cf_seg SCF10
+cf_carry SCF10 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+cf_expect "cycle 행이 없는 세그먼트의 이월 행은 거부된다" "2" "has no cycle row"
+# THE KEY SET IS CLOSED. The readers match a key with leading spaces and take
+# the last copy, so a padded or repeated key would pass the writer's checks on
+# the first copy and be read as the second.
+cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=2 ' 출처=경계'
+cf_expect "앞에 공백이 붙은 키는 거부된다" "2" "takes only"
+cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=2 건수=2
+cf_expect "같은 키가 두 번 실리면 거부된다" "2" "carries \`건수\` once"
+
+# The merge-time re-check, with the writer out of the way. The rule reads the
+# segment's last 출처=리뷰 row and compares it with the last cycle row, so a row
+# that names another HEAD or another cycle is refused at the merge even when the
+# count matches. Both rows are planted because the writer refuses them.
+cf_seg SCF8
+cf_cycle SCF8 1 0 1
+cf_cycle SCF8 2 0 1
+printf -- '- `이월` | 세그먼트=SCF8 | 출처=리뷰 | 사이클=2 | 리뷰 HEAD=0000000 | 승인 id=- | 이슈=%s | 건수=1\n' \
+  "$cf_url" >> "$FX_LEDGER"
+cf_merge SCF8
+case "$msg" in
+  *"does not match the last review record"*) ok "리뷰 HEAD 가 다른 이월 행으로는 머지가 거부된다" ;;
+  *) bad "이월 HEAD 불일치 머지" "$msg" ;;
+esac
+printf -- '- `이월` | 세그먼트=SCF8 | 출처=리뷰 | 사이클=3 | 리뷰 HEAD=%s | 승인 id=- | 이슈=%s | 건수=1\n' \
+  "$cf_head" "$cf_url" >> "$FX_LEDGER"
+cf_merge SCF8
+case "$msg" in
+  *"does not match the last review record"*) ok "사이클이 다른 이월 행으로는 머지가 거부된다" ;;
+  *) bad "이월 사이클 불일치 머지" "$msg" ;;
+esac
+
+# The ceiling the rule reads has to arrive as an integer. Called directly, on a
+# segment whose carry-over row matches, so the ceiling value is the only input
+# that changes between the passing control and the two refusals.
+CF_RULE="$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-머지.sh"
+cf_rule() {  # cf_rule <seg> <ceiling>
+  rc=0
+  msg=$(cd "$WT" && GATE_ACT_INDEX=9 GATE_MERGE_INDEX=9 GATE_SURFACE=외부상태변경 \
+        GATE_REVIEW_POLICY_INDEX=0 GATE_LEDGER="$FX_LEDGER" GATE_MANIFEST="$FX_MANIFEST" \
+        GATE_SEGMENT="$1" GATE_CYCLE_CARRY_FROM="$2" /bin/sh "$CF_RULE" 2>&1) || rc=$?
+}
+cf_seg SCF9
+cf_cycle SCF9 1 0 1
+cf_cycle SCF9 2 0 1
+cf_carry SCF9 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+check "SCF9 의 이월 행이 기록된다" "$rc" "0"
+cf_rule SCF9 2
+check "상한이 정수로 오면 룰이 이월된 P1 을 통과시킨다 (대조)" "$rc" "0"
+cf_rule SCF9 ''
+cf_expect "상한이 비어 오면 룰이 거부한다" "1" "was not passed as an integer"
+cf_rule SCF9 x
+cf_expect "상한이 정수가 아니면 룰이 거부한다" "1" "was not passed as an integer"
+
+# THE REGISTRATION ITSELF. The router labels every act with its target's
+# cutpoint, so the carryover's `gh issue create` and `gh project item-add` arrive
+# declared `머지` — before any 이월 row exists, and on N with no segment at all.
+# The gate derives the bottom rung from those verbs, so the merge rule does not
+# ask them for the row they are there to produce. The controls show the rule
+# still standing in the same state: a merge, and an issue verb the derivation
+# does not name.
+cf_reg() {  # cf_reg [--segment <seg>] -- <argv…>
+  gate plan --manifest "$FX_MANIFEST" --target infra --cutpoint 머지 \
+       --surface 외부상태변경 --reach 협업 "$@"
+}
+cf_seg SCF7
+cf_cycle SCF7 1 0 1
+cf_cycle SCF7 2 0 1
+cf_reg --segment SCF7 -- gh issue create --repo o/r --title t --body b
+case "$msg" in
+  *"rule refused: 리뷰-후-머지"*) bad "P 이슈 등록" "등록이 머지 룰에 거부됐다: '$msg'" ;;
+  *"judged at the derived grade"*) ok "P 의 이슈 등록은 머지로 선언돼도 커밋 단으로 판정돼 머지 룰을 지나간다" ;;
+  *) bad "P 이슈 등록" "유도 단이 적용되지 않았다: '$msg'" ;;
+esac
+cf_reg --segment SCF7 -- gh project item-add 1 --owner o --url "$cf_url"
+case "$msg" in
+  *"rule refused: 리뷰-후-머지"*) bad "P 프로젝트 등록" "등록이 머지 룰에 거부됐다: '$msg'" ;;
+  *"judged at the derived grade"*) ok "P 의 프로젝트 담기도 커밋 단으로 판정된다" ;;
+  *) bad "P 프로젝트 등록" "유도 단이 적용되지 않았다: '$msg'" ;;
+esac
+cf_reg -- gh issue create --repo o/r --title t --body b
+case "$msg" in
+  *"rule refused: 리뷰-후-머지"*) bad "N 이슈 등록" "세그먼트 없는 등록이 머지 룰에 거부됐다: '$msg'" ;;
+  *"judged at the derived grade"*) ok "N 의 이슈 등록은 세그먼트 없이도 머지 룰을 지나간다" ;;
+  *) bad "N 이슈 등록" "유도 단이 적용되지 않았다: '$msg'" ;;
+esac
+cf_reg --segment SCF7 -- gh issue comment 3 --repo o/r --body b
+case "$msg" in
+  *"judged at the derived grade"*) ok "이슈 코멘트도 커밋 단으로 판정된다" ;;
+  *) bad "이슈 코멘트" "유도 단이 적용되지 않았다: '$msg'" ;;
+esac
+cf_merge SCF7
+case "$msg" in
+  *"no 이월 row (출처=리뷰)"*) ok "같은 상태에서 머지는 여전히 이월 행을 요구한다 (대조)" ;;
+  *) bad "등록 대조 머지" "$msg" ;;
+esac
+cf_reg --segment SCF7 -- gh issue close 3 --repo o/r
+case "$msg" in
+  *"rule refused: 리뷰-후-머지"*) ok "이름 붙지 않은 이슈 동사는 선언된 단 그대로 판정된다 (대조)" ;;
+  *) bad "이슈 close 대조" "$msg" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
 # --- section: 8c | group: base | covers: - | needs: 8e | anchors: 행마다 어느 자격으로 돌았는지가 남는다 ---
 #

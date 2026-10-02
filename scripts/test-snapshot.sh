@@ -1912,6 +1912,112 @@ check "실패한 사람의 닫기도 행을 더하지 않는다" "$(boundary_row
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
+# 8c-2. An automatically closed B1 owes an issue until an `이월` row names it
+#
+# Auto-resolution closes a stagnation approval with "keep going", and nothing
+# recorded WHY the run had stalled. `carryover_due` is the snapshot's list of
+# those closed B1s still owing an issue; the router registers one per run and
+# writes an `이월` row with `출처=경계` per due id, and that row is what takes the
+# id off the list. Three B1s are built on a run of their own, each closed by a
+# different hand: one at issue time by auto-resolution, one left open and closed
+# by the boundary sweep, and one a person answered. The first two are due and
+# the third never is — a person's answer was not the gate adopting its own
+# recommendation.
+#
+# Driven through the CLI for the act and the snapshot, on its own run, for the
+# reason section 9 gives: the R1 ledger carries a deliberately broken row.
+# ---------------------------------------------------------------------------
+C_MANIFEST="$WT/plan-r3.md"
+C_LEDGER="$WT/docs/pipeline-run/R3.md"
+sed 's/R1/R3/g' "$FIX_MANIFEST" > "$C_MANIFEST"
+sed 's/R1/R3/g' "$WT/docs/pipeline-grant/R1.md" > "$WT/docs/pipeline-grant/R3.md"
+: > "$C_LEDGER"
+LEDGER_SAVE="$LEDGER"
+RUN_DIR_SAVE="$RUN_DIR"
+RUN_ID_SAVE="$RUN_ID"
+LEDGER="$C_LEDGER"
+RUN_ID="R3"
+RUN_DIR="$WORK/rundir-carry"; mkdir -p "$RUN_DIR"
+cH() { ( cd "$WT" && bash "$GATE" snapshot --manifest "$C_MANIFEST" 2>/dev/null ) | jq -r .H; }
+c_snap() { ( cd "$WT" && bash "$GATE" snapshot --manifest "$C_MANIFEST" 2>/dev/null ) | jq -r "$1"; }
+c_carry() {
+  ( cd "$WT" && bash "$GATE" act --manifest "$C_MANIFEST" --kind 이월 --target repo \
+      --cutpoint 커밋 --snapshot-digest "$(cH)" --rationale x -- "$@" ) >/dev/null 2>&1
+}
+c_due() { c_snap '[.carryover_due[].id] | sort | join(",")'; }
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate_issue_boundary_approval B1 "무진전 A" "binding-a" 2>/dev/null
+c_auto=$GATE_BOUNDARY_AUTO_RESOLVED
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+gate_issue_boundary_approval B1 "무진전 B" "binding-b" 2>/dev/null
+c_sweep=$(gate_rows '승인' | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+gate_issue_boundary_approval B1 "무진전 C" "binding-c" 2>/dev/null
+c_human=$(gate_rows '승인' | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+gate_append '승인' "승인 id=$c_human" "상태=승인" "질문 문면=무진전 C" "답변 문면=트랜스크립트 판독" \
+  "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t" "답변 다이제스트=-" "사이드카 앵커=-"
+check "사람이 닫은 B1 은 승인이다" "$(gate_approval_state "$c_human")" "승인"
+check "스윕 대상 B1 은 아직 대기다" "$(gate_approval_state "$c_sweep")" "대기"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+( CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SHIFT_ID=''
+  export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+  gate_boundaries ) 2>/dev/null
+check "경계 스윕이 열린 B1 을 자동 해소한다" \
+  "$(gate_row_field "$(gate_approval_last_row "$c_sweep")" '처분 사유')" "자동 해소"
+check "발행 시점에 자동 해소된 B1 이 있다" \
+  "$(gate_row_field "$(gate_approval_last_row "$c_auto")" '처분 사유')" "자동 해소"
+# The three ids are distinct, or every assertion below measures one approval.
+check "세 B1 의 id 가 서로 다르다" \
+  "$(printf '%s\n' "$c_auto" "$c_sweep" "$c_human" | grep -c '^B1-' | tr -d ' ')/$(printf '%s\n' "$c_auto" "$c_sweep" "$c_human" | sort -u | grep -c '^B1-' | tr -d ' ')" "3/3"
+
+c_want=$(printf '%s\n' "$c_auto" "$c_sweep" | sort | paste -sd, -)
+check "이월 행 전 carryover_due 는 자동 해소·스윕 B1 둘이다" "$(c_due)" "$c_want"
+check "carryover_due 는 질문 문면을 싣는다" \
+  "$(c_snap ".carryover_due[] | select(.id == \"$c_auto\") | .question")" "무진전 A"
+check "스냅숏이 P1 차단 상한 2 를 싣는다" "$(c_snap '.cycle_carry_from')" "2"
+check "스냅숏의 auto_resolve 는 켜진 스위치를 따른다" "$(c_snap '.auto_resolve')" "true"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+check "스냅숏의 auto_resolve 는 꺼진 스위치를 따른다" "$(c_snap '.auto_resolve')" "false"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+
+c_carry 출처=경계 사이클=- '리뷰 HEAD=-' "승인 id=$c_human" '이슈=https://github.com/t/t/issues/7' 건수=1
+check "사람이 닫은 B1 의 경계 이월 행은 거부된다" "$?" "2"
+c_carry 출처=경계 사이클=- '리뷰 HEAD=-' "승인 id=$c_auto" '이슈=https://github.com/t/t/issues/7' 건수=1
+check "자동 해소된 B1 의 경계 이월 행이 기록된다" "$?" "0"
+c_carry 출처=경계 사이클=- '리뷰 HEAD=-' "승인 id=$c_sweep" '이슈=https://github.com/t/t/issues/7' 건수=1
+check "스윕이 닫은 B1 의 경계 이월 행이 기록된다" "$?" "0"
+check "이월 행 뒤 carryover_due 는 비었다" "$(c_snap '.carryover_due | length')" "0"
+c_n=$({ grep -E '^- `이월`' "$C_LEDGER" || true; } | gate_count)
+c_carry 출처=경계 사이클=- '리뷰 HEAD=-' "승인 id=$c_auto" '이슈=https://github.com/t/t/issues/7' 건수=1
+check "같은 B1 의 두 번째 경계 이월 행은 거부된다" "$?" "2"
+check "거부된 이월은 행을 더하지 않는다" "$({ grep -E '^- `이월`' "$C_LEDGER" || true; } | gate_count)" "$c_n"
+check "경계 이월 행의 세그먼트는 게이트가 붙인 - 다" \
+  "$({ grep -E '^- `이월`' "$C_LEDGER" || true; } | tail -1 | tr '|' '\n' | sed -n 's/^ *세그먼트=//p' | sed 's/[[:space:]]*$//')" "-"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+
+# The router writes the row from the act line its own skill carries, and the
+# lead and the shift each carry one. Held byte-identical, as the basis selection
+# of 6c is, so a field added to one copy cannot leave the other writing a row
+# the gate refuses.
+carry_ap=$(grep -E '^act --kind 이월 ' "$AP_SKILL" || true)
+carry_rs=$(grep -E '^act --kind 이월 ' "$RS_SKILL" || true)
+check "기반 라우터 문서에 이월 act 줄이 한 번 실린다" "$(printf '%s\n' "$carry_ap" | grep -c '^act')" "1"
+check "교대 라우터 문서에 이월 act 줄이 한 번 실린다" "$(printf '%s\n' "$carry_rs" | grep -c '^act')" "1"
+check "라우터 두 사본의 이월 act 줄이 바이트 동일하다" "$carry_rs" "$carry_ap"
+carry_keys=''
+for k in '출처=' '사이클=' "'리뷰 HEAD=" "'승인 id=" "'이슈=" '건수='; do
+  case "$carry_ap" in
+    *"$k"*) carry_keys="${carry_keys}y" ;;
+    *) carry_keys="${carry_keys}n" ;;
+  esac
+done
+check "이월 act 줄이 게이트가 요구하는 여섯 필드를 모두 싣는다" "$carry_keys" "yyyyyy"
+
+LEDGER="$LEDGER_SAVE"
+RUN_DIR="$RUN_DIR_SAVE"
+RUN_ID="$RUN_ID_SAVE"
+
+# ---------------------------------------------------------------------------
 # 8d. The cost ceiling's second threshold ENDS the run, and an unreadable
 #     ceiling is not a ceiling
 #

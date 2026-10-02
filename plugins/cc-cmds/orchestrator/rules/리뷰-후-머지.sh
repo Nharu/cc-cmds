@@ -107,9 +107,51 @@ p0=$(field 'P0'); p1=$(field 'P1'); reviewed=$(field '리뷰 HEAD')
 [ -n "$p0" ] || p0=0
 [ -n "$p1" ] || p1=0
 
-if [ "$p0" != "0" ] || [ "$p1" != "0" ]; then
+if [ "$p0" != "0" ]; then
   echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1)" >&2
   exit 1
+fi
+
+# P1 차단 상한. 상한 사이클부터는 P1 이 머지를 막지 않고 이슈로 이월된다 —
+# 다만 그 이월이 원장에 `이월` 행(출처=리뷰)으로 남아 있고, 그 행이 이
+# 세그먼트의 마지막 `cycle` 행과 사이클·리뷰 HEAD 가 같고 건수가 그 행의 P1 과
+# 같을 때만이다. 상한 아래에서는 P1 이 여전히 수정으로 돌려보낸다.
+#
+# 상한은 게이트가 정수로 넘긴다. 이 파일에 리터럴로 두면 라우터가 읽는 스냅샷
+# 값과 갈라져, 라우터는 이월하고 이 룰은 거절하는 사이클이 생긴다. 값이
+# 없거나 정수가 아니면 거절한다 — 판정 불가는 통과가 아니다.
+#
+# 이월 행은 이 세그먼트의 마지막 것 하나만 본다. 앞 사이클의 이월 행이 새
+# 사이클의 P1 을 갚는 것으로 읽히면, 한 번 이월한 세그먼트는 그 뒤로 무엇이
+# 나와도 지나간다.
+if [ "$p1" != "0" ]; then
+  carry_from="$GATE_CYCLE_CARRY_FROM"
+  case "$carry_from" in
+    ''|*[!0-9]*)
+      echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1), and the P1 blocking ceiling was not passed as an integer ('$carry_from')" >&2
+      exit 1 ;;
+  esac
+  cyc=$(field '사이클')
+  case "$cyc" in
+    ''|*[!0-9]*)
+      echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1), and the review record's cycle is not an integer ('$cyc')" >&2
+      exit 1 ;;
+  esac
+  [ "$cyc" -ge "$carry_from" ] || {
+    echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1) at cycle $cyc, below the P1 blocking ceiling ($carry_from)" >&2
+    exit 1
+  }
+  crow=$(grep -E '^- `이월`' "$GATE_LEDGER" | grep -F "세그먼트=$GATE_SEGMENT " | grep -F "출처=리뷰 " | tail -1)
+  [ -n "$crow" ] || {
+    echo "rule refused: 리뷰-후-머지 — P1=$p1 at cycle $cyc and no 이월 row (출처=리뷰) for 세그먼트 '$GATE_SEGMENT'" >&2
+    exit 1
+  }
+  cfield() { printf '%s' "$crow" | tr '|' '\n' | sed -n "s/^ *$1=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+  c_cyc=$(cfield '사이클'); c_head=$(cfield '리뷰 HEAD'); c_n=$(cfield '건수')
+  if [ "$c_cyc" != "$cyc" ] || [ -z "$reviewed" ] || [ "$c_head" != "$reviewed" ] || [ "$c_n" != "$p1" ]; then
+    echo "rule refused: 리뷰-후-머지 — the last 이월 row does not match the last review record (이월: 사이클=$c_cyc 리뷰 HEAD=$c_head 건수=$c_n; review: 사이클=$cyc 리뷰 HEAD=$reviewed P1=$p1)" >&2
+    exit 1
+  fi
 fi
 
 [ -n "$reviewed" ] || {
