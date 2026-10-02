@@ -46,13 +46,16 @@ cat > "$WORK/gen.py" <<'PYEOF'
 import sys
 
 variant, out = sys.argv[1], sys.argv[2]
-BODY = "이 작업은 상태 파일의 형식을 정한다.\n완료 기준: 상태 파일은 이름과 크기 두 필드를 가진다.\n"
+# Each ticket's body names its own piece, so a body written to another
+# ticket's file is caught.
+BODY = "이 작업은 상태 파일의 %d번 조각을 정한다.\n완료 기준: 상태 파일은 이름과 크기 두 필드를 가진다.\n"
 
 def ticket(n, kind, deps=(), provides=(), consumes=(), owned=("src/t%d/main.py",),
-           shared=(), nesting=None, repo="o/r", body=BODY):
+           shared=(), nesting=None, repo="o/r", body=None):
     return dict(n=n, kind=kind, deps=list(deps), provides=list(provides),
                 consumes=list(consumes), owned=[p % n if "%d" in p else p for p in owned],
-                shared=list(shared), nesting=nesting, repo=repo, body=body)
+                shared=list(shared), nesting=nesting, repo=repo,
+                body=BODY % n if body is None else body, fence=None)
 
 header = {"티켓 수": "3", "임계 경로": "T2 → T3", "병렬 폭": "2"}
 contracts = [dict(n=1, providers=["T2"], consumers=["T3"])]
@@ -85,6 +88,35 @@ elif variant == "globpos":
 elif variant == "globneg":
     tickets[0]["owned"] = ["src/lib/*.py"]
     tickets[1]["owned"] = ["src/app/core.py"]
+elif variant == "bracepos":
+    tickets[0]["owned"] = ["src/{a,b}.py"]
+    tickets[1]["owned"] = ["src/a.py"]
+elif variant == "classpos":
+    tickets[0]["owned"] = ["src/[a,b].py"]
+    tickets[1]["owned"] = ["src/a.py"]
+elif variant == "bracelist":
+    tickets[0]["owned"] = ["src/{a,b}.py", "lib/x.py"]
+    tickets[1]["owned"] = ["lib/x.py"]
+elif variant == "braceneg":
+    tickets[0]["owned"] = ["pkg/{a,b}.py"]
+    tickets[1]["owned"] = ["lib/a.py"]
+elif variant == "dirpos":
+    tickets[0]["owned"] = ["src/a/"]
+    tickets[1]["owned"] = ["src/a/x.py"]
+elif variant == "dirneg":
+    tickets[0]["owned"] = ["src/a/"]
+    tickets[1]["owned"] = ["src/ab.py"]
+elif variant == "dotpos":
+    tickets[0]["owned"] = ["./src/a.py"]
+    tickets[1]["owned"] = ["src/a.py"]
+elif variant == "shareddir":
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[0]["shared"] = ["src/shared/"]
+elif variant == "consumerside":
+    contracts[0]["consumers"] = ["T3", "T1"]
+elif variant == "fenceok":
+    tickets[0]["fence"] = ["**선행**: T9", "### 티켓 T9 — 울타리 안", "**종류**: 없는 값"]
 elif variant == "repodiff":
     tickets[0]["owned"] = ["src/shared/x.py"]
     tickets[1]["owned"] = ["src/shared/x.py"]
@@ -133,8 +165,12 @@ if split_heading:
 L += ["### 베이스 티켓", "**발행 제목**: 상태 파일 도입", "**발행 본문**:", "````text"]
 L += base_body.rstrip("\n").split("\n") + ["````", ""]
 for t in tickets:
-    L += ["### 티켓 T%d — 조각 %d" % (t["n"], t["n"]),
-          "**종류**: " + t["kind"], "**레포**: " + t["repo"],
+    L.append("### 티켓 T%d — 조각 %d" % (t["n"], t["n"]))
+    if t["fence"]:
+        # Field and heading lines inside a fence, ahead of the real ones: read
+        # as lines they would add a ticket and win the first-value rule.
+        L += ["```text"] + t["fence"] + ["```"]
+    L += ["**종류**: " + t["kind"], "**레포**: " + t["repo"],
           "**선행**: " + (", ".join(t["deps"]) or "없음"),
           "**제공 계약**: " + (", ".join(t["provides"]) or "없음"),
           "**소비 계약**: " + (", ".join(t["consumes"]) or "없음"),
@@ -178,6 +214,12 @@ expect_check many       "P1 티켓 101개 (상한 100)"
 expect_check parloss    "P2 병렬성 손실 T3→T1"
 expect_check conc       "P3 T1·T2 동시 티켓 소유 파일 중첩"
 expect_check globpos    "P3 T1·T2 동시 티켓 소유 파일 중첩"
+expect_check bracepos   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/{a,b}.py~src/a.py"
+expect_check classpos   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/[a,b].py~src/a.py"
+expect_check bracelist  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:lib/x.py"
+expect_check dirpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a/~src/a/x.py"
+expect_check dotpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a.py"
+expect_check consumerside "P2 T1 가 소비하는 C1 의 제공 티켓 T2 에 선행으로 닿지 않음"
 expect_check critpath   "P4 임계 경로 선언 T1 → T3"
 expect_check depth3     "P4 깊이 3 에 깊이 사유 없음"
 expect_check d0kind     "D0 판별자 줄 없음"
@@ -189,7 +231,7 @@ expect_check b1heading  "B1 베이스 티켓 본문에 표제 줄"
 run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
 
-for v in globneg repodiff sharedok depth3reason; do
+for v in globneg braceneg dirneg repodiff sharedok shareddir depth3reason fenceok; do
   gen "$v"
   run_bs check "$DOCS/$v.md"
   check "check $v: exits 0" "$rc" "0"
@@ -226,10 +268,10 @@ python3 - "$DOCS/ok.md" "$OUT" <<'PYEOF' && ok "plan: body files equal the docum
 import sys
 doc = open(sys.argv[1], encoding="utf-8").read()
 base = "여러 저장 단위를 하나의 상태 파일로 묶는다.\n계약을 먼저 정하고 구현을 나란히 진행한다.\n"
-tick = "이 작업은 상태 파일의 형식을 정한다.\n완료 기준: 상태 파일은 이름과 크기 두 필드를 가진다.\n"
+tick = "이 작업은 상태 파일의 %d번 조각을 정한다.\n완료 기준: 상태 파일은 이름과 크기 두 필드를 가진다.\n"
 assert open(sys.argv[2] + "/body-base.md", "rb").read() == base.encode("utf-8")
 for n in (1, 2, 3):
-    assert open(sys.argv[2] + "/body-T%d.md" % n, "rb").read() == tick.encode("utf-8")
+    assert open(sys.argv[2] + "/body-T%d.md" % n, "rb").read() == (tick % n).encode("utf-8")
 PYEOF
 
 run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행중
@@ -321,20 +363,97 @@ refused "registry recorded against other document bytes" "$DOCS/ok.md" --row "$G
 # ---------------------------------------------------------------------------
 CU_ROW='- `베이스 발행` | 트래커=clickup | 대상=901234'
 gen ok && cp "$DOCS/ok.md" "$DOCS/cu.md"
+
+# The installed ClickUp tools decide whether a ClickUp plan may exist at all:
+# `plan` emits an argv only when every tool it names is there and its own
+# parser lists every option the argv passes.
+real_ready=1
+[ -x "$ORCH/clickup-relate.py" ] || real_ready=0
+if [ "$real_ready" = 1 ]; then
+  "$ORCH/clickup-relate.py" --help 2>/dev/null | grep -qE -- '--depends-on' || real_ready=0
+  "$ORCH/clickup-create.py" --help 2>/dev/null | grep -qE -- '--parent' || real_ready=0
+fi
+printf 'stale\n' > "$OUT/plan.jsonl"
 run_bs plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+if [ "$real_ready" = 1 ]; then
+  check "plan clickup (installed tools ready): exits 0" "$rc" "0"
+else
+  check "plan clickup (installed tools not ready): refused" "$rc" "3"
+  check "plan clickup (installed tools not ready): no command" "$(wc -c < "$OUT/plan.jsonl" | tr -d ' ')" "0"
+  has "plan clickup (installed tools not ready): says which tool" "$out" "거절 ClickUp 도구 미비"
+fi
+[ ! -e "$DOCS/design-base/cu.tickets.md" ] && ok "plan clickup: writes no registry" || bad "plan clickup: writes no registry"
+
+# The plan's own shape, against stand-in tools next to a copy of the script.
+# Each stand-in parses with the option set `plan` relies on and does nothing
+# else, so running an emitted argv proves that argv parses.
+STUB_DIR="$WORK/orch"
+mkdir -p "$STUB_DIR"
+STUB_DIR=$(cd "$STUB_DIR" && pwd -P)
+cp "$BS" "$STUB_DIR/base-split.py"
+stub_tool() {  # <name> <option...>
+  local name=$1; shift
+  {
+    printf '#!/usr/bin/env python3\nimport argparse, sys\n'
+    printf 'p = argparse.ArgumentParser(prog="%s", allow_abbrev=False)\n' "$name"
+    for o in "$@"; do printf 'p.add_argument("%s")\n' "$o"; done
+    printf 'p.parse_args()\n'
+  } > "$STUB_DIR/$name"
+  chmod +x "$STUB_DIR/$name"
+}
+# Every plan that succeeds is kept, so the parse check below sees each argv.
+run_stub() {
+  rc=0; out=$("$STUB_DIR/base-split.py" "$@" 2>"$WORK/stderr") || rc=$?
+  if [ "$1" = plan ] && [ "$rc" = 0 ]; then cat "$OUT/plan.jsonl" >> "$WORK/cu-all.jsonl"; fi
+}
+
+stub_tool clickup-create.py --list --name --description-file
+stub_tool clickup-relate.py --task --depends-on
+refused_stub() {  # <label>
+  printf 'stale\n' > "$OUT/plan.jsonl"
+  run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+  check "plan clickup refuses: $1 (exit)" "$rc" "3"
+  check "plan clickup refuses: $1 (no command)" "$(wc -c < "$OUT/plan.jsonl" | tr -d ' ')" "0"
+}
+refused_stub "create tool without --parent"
+stub_tool clickup-create.py --list --name --description-file --parent
+rm -f "$STUB_DIR/clickup-relate.py"
+refused_stub "relate tool missing"
+stub_tool clickup-relate.py --task --depends-on
+
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
 check "plan clickup: exits 0" "$rc" "0"
 base_argv=$(argv_of base)
 case "$base_argv" in
-  "$ORCH/clickup-create.py --list 901234 --name 상태 파일 도입 --description-file $OUT/body-base.md") ok "plan clickup: argv0 is the absolute tool path, no interpreter" ;;
+  "$STUB_DIR/clickup-create.py --list 901234 --name 상태 파일 도입 --description-file $OUT/body-base.md") ok "plan clickup: argv0 is the absolute tool path, no interpreter" ;;
   *) bad "plan clickup: argv0 is the absolute tool path, no interpreter" "$base_argv" ;;
 esac
-run_bs record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc
+run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc
 check "record clickup: 발행됨 without a node id is refused" "$rc" "3"
-run_bs record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc --node-id abc
-run_bs plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc --node-id abc
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
 check "plan clickup: child carries --parent node" "$(argv_of T2)" \
-  "$ORCH/clickup-create.py --list 901234 --name 조각 2 구현 --description-file $OUT/body-T2.md --parent abc"
+  "$STUB_DIR/clickup-create.py --list 901234 --name 조각 2 구현 --description-file $OUT/body-T2.md --parent abc"
 has "plan clickup: dependency waits for its ticket" "$(entries)" "rel:선행:T3:T2:wait"
+run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t2 --node-id t2
+run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry T1 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t1 --node-id t1
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+run_stub record "$DOCS/cu.md" --row "$CU_ROW" --entry T3 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t3 --node-id t3
+run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+check "plan clickup: the dependency is its own relate call" "$(argv_of rel:선행:T3:T2)" \
+  "$STUB_DIR/clickup-relate.py --task t3 --depends-on t2"
+
+# Every argv the ClickUp plans emitted parses against its tool.
+python3 - "$WORK/cu-all.jsonl" <<'PYEOF' && ok "plan clickup: every emitted argv parses against its tool" || bad "plan clickup: every emitted argv parses against its tool"
+import json, subprocess, sys
+kinds = set()
+for line in open(sys.argv[1], encoding="utf-8"):
+    e = json.loads(line)
+    if e["argv"]:
+        kinds.add(e["kind"])
+        subprocess.run(e["argv"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+assert kinds == {"create", "relate"}, kinds
+PYEOF
 
 NONE_ROW='- `베이스 발행` | 트래커=없음 | 대상=-'
 cp "$DOCS/ok.md" "$DOCS/none.md"

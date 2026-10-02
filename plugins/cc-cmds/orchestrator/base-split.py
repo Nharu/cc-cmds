@@ -25,8 +25,10 @@ exact-title read), or `wait` (its argv needs a reference that does not exist
 yet). The caller runs the argvs as given, records each result with `record`,
 and calls `plan` again until no `wait` is left; it never builds an argv. A row
 with `트래커=없음`, a row that disagrees with `--tracker`/`--target`, a
-registry recorded against other document bytes, or any check violation makes
-`plan` refuse with no write command at all.
+registry recorded against other document bytes, any check violation, or — for
+`트래커=clickup` — a ClickUp tool next to this file that is missing or whose
+`--help` does not list an option the plan would pass it, makes `plan` refuse
+with no write command at all.
 
 `record` writes the registry `<doc dir>/design-base/<doc stem>.tickets.md` —
 the only writer of that file. Writing the same row twice yields the same bytes.
@@ -45,8 +47,11 @@ sys.dont_write_bytecode = True
 import argparse  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
+import fnmatch  # noqa: E402
 import os  # noqa: E402
+import posixpath  # noqa: E402
 import re  # noqa: E402
+import subprocess  # noqa: E402
 import shlex  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -178,11 +183,50 @@ def split_list(value):
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def split_paths(value):
+    """A file list, split only on commas outside code spans and brackets.
+
+    `src/{a,b}.py` and `src/[a,b].py` are one entry each: cutting them at the
+    comma would leave two fragments that match no real path.
+    """
+    if value is None:
+        return []
+    value = value.strip()
+    if value in ("", "없음"):
+        return []
+    items, cur = [], []
+    code = False
+    depth = 0
+    for ch in value:
+        if ch == "`":
+            code = not code
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]" and depth:
+            depth -= 1
+        elif ch == "," and not code and depth == 0:
+            items.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    items.append("".join(cur))
+    return [strip_code(x) for x in items if x.strip()]
+
+
 def strip_code(item):
     item = item.strip()
     if len(item) >= 2 and item.startswith("`") and item.endswith("`"):
         return item[1:-1]
     return item
+
+
+def norm_path(path):
+    """`./a//b/` → `a/b/`: the spelling differences that name the same file."""
+    is_dir = path.endswith("/")
+    p = posixpath.normpath(path)
+    if p == ".":
+        p = ""
+    return p + "/" if is_dir and p else p
 
 
 class Doc(object):
@@ -253,11 +297,18 @@ class Doc(object):
 # --------------------------------------------------------------------------
 
 def glob_prefix(path):
+    """(literal prefix, whether the entry names more than one path).
+
+    A glob is cut at its first metacharacter; a directory entry (trailing
+    `/`) is its own prefix and stands for everything under it.
+    """
     cut = len(path)
     for ch in GLOB_META:
         k = path.find(ch)
         if k != -1 and k < cut:
             cut = k
+    if cut == len(path) and path.endswith("/"):
+        return path, True
     return path[:cut], cut < len(path)
 
 
@@ -269,13 +320,25 @@ def paths_overlap(a, b):
     return pa.startswith(pb) or pb.startswith(pa)
 
 
+def covered_by(p, s):
+    """Whether shared entry s certainly contains every path owned entry p names."""
+    if p == s:
+        return True
+    ps, gp = glob_prefix(p)
+    if s.endswith("/") and glob_prefix(s)[0] == s:
+        return ps.startswith(s)
+    if not gp and glob_prefix(s)[1] and "{" not in s:
+        return fnmatch.fnmatchcase(p, s)
+    return False
+
+
 def file_overlaps(t1, t2):
     """(repo, path) pairs of t1 and t2 that overlap, both shared lists removed."""
     if t1["repo"] != t2["repo"]:
         return []
-    shared = set(t1["shared"]) | set(t2["shared"])
-    a = [p for p in t1["owned"] if p not in shared]
-    b = [p for p in t2["owned"] if p not in shared]
+    shared = list(t1["shared"]) + list(t2["shared"])
+    a = [p for p in t1["owned"] if not any(covered_by(p, s) for s in shared)]
+    b = [p for p in t2["owned"] if not any(covered_by(p, s) for s in shared)]
     hits = []
     for p in a:
         for q in b:
@@ -317,8 +380,8 @@ class Graph(object):
                 "deps": split_list(f.get("선행")),
                 "provides": split_list(f.get("제공 계약")),
                 "consumes": split_list(f.get("소비 계약")),
-                "owned": [strip_code(x) for x in split_list(f.get("소유 파일"))],
-                "shared": [strip_code(x) for x in split_list(f.get("공유 파일"))],
+                "owned": [norm_path(x) for x in split_paths(f.get("소유 파일"))],
+                "shared": [norm_path(x) for x in split_paths(f.get("공유 파일"))],
                 "nesting": bool((f.get("중첩 사유") or "").strip()),
                 "pub_title": f.get("발행 제목"), "body": f.get("발행 본문"),
             }
@@ -361,6 +424,12 @@ class Graph(object):
             for cid in self.t[tid]["provides"]:
                 if tid not in self.c[cid]["providers"]:
                     self.add("P1", "%s 가 제공 계약에 적은 %s 의 제공 티켓이 아님" % (tid, cid))
+        # A consumer named only on the contract side consumes it all the same:
+        # P2 must check that ticket's reach to the provider too.
+        for cid in sorted(self.c, key=lambda x: int(x[1:])):
+            for tid in self.c[cid]["consumers"]:
+                if cid not in self.t[tid]["consumes"]:
+                    self.t[tid]["consumes"].append(cid)
 
         declared = self.doc.header.get("티켓 수")
         if declared is None:
@@ -819,6 +888,37 @@ def build_plan(doc, g, reg, out, tracker, target):
     return entries
 
 
+CLICKUP_TOOLS = (("clickup-create.py", ("--list", "--name", "--description-file", "--parent")),
+                 ("clickup-relate.py", ("--task", "--depends-on")))
+
+
+def clickup_tools_unready(here):
+    """Why the ClickUp argvs this plan would emit cannot run here, or None.
+
+    Each tool must be an executable next to this file whose own parser lists
+    every option the plan passes it. Asking `--help` reads the parser without
+    reaching the tracker; a plan whose base creation succeeds and whose first
+    child creation then dies on an unknown option leaves an orphan behind.
+    """
+    for name, flags in CLICKUP_TOOLS:
+        path = os.path.join(here, name)
+        if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+            return "%s 가 실행 가능한 파일로 없음" % name
+        try:
+            r = subprocess.run([path, "--help"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            return "%s --help 를 읽지 못함 (%s)" % (name, type(e).__name__)
+        text = r.stdout.decode("utf-8", "replace")
+        if r.returncode != 0:
+            return "%s --help 가 %d 로 끝남" % (name, r.returncode)
+        missing = [f for f in flags
+                   if not re.search(r"(?<![A-Za-z0-9-])%s(?![A-Za-z0-9-])" % re.escape(f), text)]
+        if missing:
+            return "%s 가 %s 를 받지 않음" % (name, ", ".join(missing))
+    return None
+
+
 def cmd_check(args):
     doc = Doc(args.doc)
     violations, _ = run_checks(doc)
@@ -852,6 +952,10 @@ def cmd_plan(args):
         return refuse_plan(out, "--target 이 행의 대상과 다름")
     if tracker == "없음":
         return refuse_plan(out, "트래커=없음 — 쓰기 명령을 내지 않음 (record --doc-only)")
+    if tracker == "clickup":
+        why = clickup_tools_unready(os.path.dirname(os.path.realpath(__file__)))
+        if why:
+            return refuse_plan(out, "ClickUp 도구 미비 — %s" % why)
     violations, g = run_checks(doc)
     if violations:
         return refuse_plan(out, "점검 위반 %d건 — check 로 확인" % len(violations))
@@ -868,7 +972,11 @@ def cmd_plan(args):
         argv = " ".join(shlex.quote(a) for a in e["argv"]) if e["argv"] else "-"
         lines.append("%s\t%s\t%s\t%s\n" % (e["entry"], e["kind"], e["row"], argv))
     if not entries:
-        lines.append("계획 항목 없음 — 등록부가 모두 발행됨\n")
+        left = sum(1 for s in reg.rels.values() if s == "대기")
+        if left:
+            lines.append("계획 항목 없음 — 대기 관계 %d건은 이 트래커 도구로 걸 수 없음\n" % left)
+        else:
+            lines.append("계획 항목 없음 — 등록부가 모두 발행됨\n")
     sys.stdout.buffer.write("".join(lines).encode("utf-8"))
     sys.stdout.flush()
     return 0

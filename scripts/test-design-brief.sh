@@ -549,7 +549,8 @@ pin_in 'posture_approved_at' "$LEG" "leg"
 # mode's five halt sites, its repair-failure site and its terminal literal are
 # read by the driver and the router, which land separately; pinning them here
 # keeps a rename on this side from becoming a silent mismatch on that side.
-# Each block is gated on its own file, so the pair can land one file at a time.
+# A missing file is a failure, not a skip: both files exist, and a guard that
+# goes quiet when its subject disappears guards nothing.
 # ----------------------------------------------------------------------------
 
 BASE_SEAT="$skills_root/design-base/SKILL.md"
@@ -560,8 +561,12 @@ BASE_SPLIT_SITES=('split-check-failed' 'audit-open-items' 'publish-not-authorize
 if [[ -f "$BASE_SEAT" ]]; then
   pin_in "$BASE_BRIEF_PAIR" "$BASE_SEAT" "design-base"
   pin_in "$BRIEF_TERMINATOR" "$BASE_SEAT" "design-base"
+else
+  fail "pin: $BASE_SEAT is missing"
 fi
-if [[ -f "$BASE_ARM" ]]; then
+if [[ ! -f "$BASE_ARM" ]]; then
+  fail "pin: $BASE_ARM is missing"
+else
   pin_in 'cc-design-brief v1' "$BASE_ARM" "design-base-unattended"
   pin_in "$BASE_BRIEF_PAIR" "$BASE_ARM" "design-base-unattended"
   for s in "${BASE_SPLIT_SITES[@]}"; do
@@ -571,6 +576,18 @@ if [[ -f "$BASE_ARM" ]]; then
   pin_in '베이스 분할을 마쳤습니다.' "$BASE_ARM" "design-base-unattended"
   pin_in 'cc-pipeline-halt v1' "$BASE_ARM" "design-base-unattended"
 fi
+
+# Base linkage crosses the seat/leg boundary through three brief lines: the
+# leg writes `## 베이스 제약` only when the seat wrote them, so a rename on
+# either side drops the section without a word. The implement arm binds the
+# section by its heading, which is the other place that literal is load-bearing.
+for lit in '**베이스 문서**' '**티켓**' '**베이스 sha256**'; do
+  pin_in "$lit" "$DESIGN" "design (brief base lines)"
+  pin_in "$lit" "$LEG" "leg (brief base lines)"
+done
+pin_in '## 베이스 제약' "$DESIGN" "design"
+pin_in '## 베이스 제약' "$LEG" "leg"
+pin_in '## 베이스 제약' "$skills_root/implement-unattended/SKILL.md" "implement-unattended (Binding)"
 
 # ----------------------------------------------------------------------------
 # Load-bearing sentences — section-scoped, count-exact
