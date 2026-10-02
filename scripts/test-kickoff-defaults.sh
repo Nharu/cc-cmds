@@ -701,5 +701,12 @@ case "$p5n" in *deadline-passed*) ok "5n 문단이 deadline-passed 를 담는다
 case "$p5n" in *'no environment variable selects it'*) ok "5n 문단이 「no environment variable selects it」 을 그대로 담는다" ;;
   *) bad "5n 문단" "「no environment variable selects it」 문장이 없다" ;; esac
 
+# 5p 의 손 입력 재질문은 대조기 철자가 한 낱말이 되면 그 철자를 내놓지 않는다 — 보조는
+# 같은 입력과 그 한 낱말 철자를 모두 거부하므로, 두 입구가 같은 입력에 같게 답한다.
+expect repo act-allow '형식 오류' '형태=kubectl --context=prod | 사유=a' '형태=gh -R=org/repo | 사유=a' '형태=kubectl | 사유=a'
+p5p=$(awk '/^\*\*5p — /{f=1; print; next} f&&(/^\*\*5[a-z] — /||/^#/){exit} f' "$SKILL")
+case "$p5p" in *"When the matcher's spelling comes to fewer than two words, do not offer it"*) ok "5p 문단이 한 낱말 대조기 철자를 제안하지 않는다고 적는다" ;;
+  *) bad "5p 문단" "한 낱말 대조기 철자를 제안하지 않는다는 문장이 없다" ;; esac
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
