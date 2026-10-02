@@ -838,8 +838,18 @@ surface_index() {
 # Tokens are space-free for the reason SURFACES states above: a value with a
 # space cannot round-trip through the `for x in $LIST` word-splitting this file
 # relies on, and the one time that was skipped every lookup answered "unknown".
+#
+# `대상트리` IS THE CHECKOUT AND THE WORKTREES OF THE TARGET THIS RUN ALREADY
+# ACTS ON, outside the act's own worktree: the main checkout a review report is
+# moved into, a sibling segment worktree, a new worktree of the target. Without
+# it the vocabulary had no honest word for those writes — they are not this
+# run's state, so `런로컬` was false, and `기기전역` was the only value left and
+# the only one no authorization could open. Measured: three runs answered that
+# park by reading this file and re-spelling the act as `런로컬`. The run's state
+# root and the temp directory are deliberately not part of it; their honest
+# token stays `런로컬`, and declaring `대상트리` there parks.
 # ---------------------------------------------------------------------------
-readonly REACHES="런로컬 기기전역 dev prod 협업 배포트리거 미상"
+readonly REACHES="런로컬 대상트리 기기전역 dev prod 협업 배포트리거 미상"
 
 # Same discipline as surface_index: signal by return status, never by `die`.
 gate_reach_required() {
@@ -1180,7 +1190,10 @@ gate_reach_disposition() {
   #
   # Prints the `도달 판정` cell that parks this act, or nothing when it proceeds.
   # FIRST MATCH WINS, in the order written — the table is read top to bottom and
-  # no cell is reachable past the one that answered.
+  # no cell is reachable past the one that answered. Cell 5b (`대상트리`) sits
+  # between `도달미상` (5) and `기기전역` (6), so it is reached only by an act
+  # whose effective reach neither the declaration nor the derived floor made
+  # one of those two.
   local alias="$1" rules_rc="$2" graded="$3"; shift 3
   local R="${GATE_REACH:--}" cls="$GATE_GRADE_SOURCE" S=0 X=0
   [ -n "$R" ] || R='-'
@@ -1276,6 +1289,25 @@ gate_reach_disposition() {
 
   # 5·6 — nothing below can be judged without knowing where the act lands.
   [ "$Reff" = "미상" ] && { printf '도달미상'; return 0; }
+
+  # 5b — inside the target's own trees. SEATED BETWEEN 5 AND 6 ON PURPOSE: `Reff`
+  # stays sticky for `미상` and `기기전역`, so an act whose argv the derived floor
+  # proves machine-global (`.ssh`, a stash, a global install) has already left
+  # for cell 6 before it can claim this one. The predicate is the one the
+  # manifest check puts on a worktree — the common git directory of the target
+  # row — and not a path prefix, because a sibling worktree shares no prefix
+  # with the checkout it belongs to. An act that changes external state fails
+  # it outright: its write lands somewhere that is not a path at all, and a
+  # branch name shaped like a relative path would otherwise pass as an operand.
+  # This is the second place `rules_rc` is read, and the reason is the defect
+  # that minted the token: cell 6 answered before the authorization could be
+  # seen, so nothing a manifest said could open it.
+  if [ "$Reff" = "대상트리" ]; then
+    [ "$Geff" != "외부상태변경" ] && gate_reach_target_tree_act "$alias" "$@" \
+      && case "$rules_rc" in 0|5) return 0 ;; esac
+    printf '대상트리불일치'; return 0
+  fi
+
   [ "$Reff" = "기기전역" ] && { printf '기기전역'; return 0; }
 
   # 7 — a push whose remote is not the target's.
@@ -1323,6 +1355,186 @@ gate_reach_disposition() {
         *) printf '도달미상'; return 0 ;;
       esac ;;
   esac
+}
+
+gate_reach_target_tree_dir_ok() {
+  # gate_reach_target_tree_dir_ok <physical existing dir> — 0 when that
+  # directory belongs to a worktree whose common git directory is the one
+  # `GATE_TT_WANT` holds. Answers from `GATE_TT_CACHE` when it can.
+  local d="$1" nl tab cg cg_p
+  nl='
+'
+  printf -v tab '\t'
+  case "$GATE_TT_CACHE" in
+    *"$nl"1"$tab$d$nl"*) return 0 ;;
+    *"$nl"0"$tab$d$nl"*) return 1 ;;
+  esac
+  if cg=$(gate_common_git_of_dir "$d"); then
+    if [ "$cg" = "$GATE_TT_WANT" ]; then
+      GATE_TT_CACHE="${GATE_TT_CACHE:-$nl}1$tab$d$nl"; return 0
+    fi
+    cg_p=$(cd "$cg" 2>/dev/null && pwd -P) || cg_p=''
+    if [ -n "$cg_p" ] && [ "$cg_p" = "$GATE_TT_WANT_P" ]; then
+      GATE_TT_CACHE="${GATE_TT_CACHE:-$nl}1$tab$d$nl"; return 0
+    fi
+  fi
+  GATE_TT_CACHE="${GATE_TT_CACHE:-$nl}0$tab$d$nl"
+  return 1
+}
+
+gate_reach_target_tree_ok() {
+  # gate_reach_target_tree_ok <alias> <path>... — 0 only when the operating
+  # repository (`GATE_TT_REPO`, or the grading directory when that is empty)
+  # and every path given resolve to a directory sharing the target row's
+  # `공통 git 디렉터리`. A path that does not exist yet is measured at its
+  # deepest existing ancestor, because the destination of a move or a temp
+  # file is a name about to be created.
+  #
+  # THE RUN'S STATE ROOT FAILS WHATEVER IT RESOLVES TO. Its honest token is
+  # `런로컬`, and a cell that also admitted it would give a stage two
+  # spellings for one place — the shape every re-spelling in the corpus took.
+  #
+  # Closed in every unsure direction: no target row, no common directory, a
+  # path carrying a newline or a tab (which the cache's line format could not
+  # hold unambiguously) — each one fails rather than guessing.
+  #
+  # NO COMMAND SUBSTITUTION ON A CACHE HIT. Each `$(…)` forks, and resolving
+  # every operand through `gate_lexical_abs` and `gate_real_prefix` cost more
+  # than the `git rev-parse` the cache exists to save: measured, 859 calls of
+  # two operands took 11.6 s with every directory already cached. So an
+  # already-normal absolute path is taken as it is, and the physical spelling
+  # is resolved once per deepest existing directory and kept in
+  # `GATE_TT_PHYS`. The value compared is the one `gate_real_prefix` gives —
+  # that directory's physical spelling with the not-yet-existing tail after it.
+  local alias="$1"; shift
+  local base p abs d dp tail full rest tab nl
+  printf -v tab '\t'
+  nl='
+'
+  if [ "$GATE_TT_ALIAS" != "$alias" ]; then
+    GATE_TT_ALIAS="$alias"
+    GATE_TT_WANT=$(target_field "$alias" '공통 git 디렉터리' 2>/dev/null) || GATE_TT_WANT=''
+    GATE_TT_WANT_P=''
+    [ -n "$GATE_TT_WANT" ] && GATE_TT_WANT_P=$(cd "$GATE_TT_WANT" 2>/dev/null && pwd -P)
+    GATE_TT_CACHE=''
+    GATE_TT_PHYS=''
+    GATE_TT_SR=$(gate_real_prefix "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds")
+  fi
+  [ -n "$GATE_TT_WANT" ] || return 1
+  gate_grade_cwd >/dev/null
+  base="$GATE_GRADE_CWD"
+  for p in "${GATE_TT_REPO:-$base}" "$@"; do
+    case "$p" in *"$nl"*|*"$tab"*|'') return 1 ;; esac
+    case "$p" in
+      /*) case "$p" in
+            */./*|*/../*|*/.|*/..|*//*) abs=$(gate_lexical_abs "$p" "$base") ;;
+            *) abs="$p" ;;
+          esac ;;
+      *) abs=$(gate_lexical_abs "$p" "$base") ;;
+    esac
+    d="$abs"
+    while [ ! -d "$d" ]; do
+      d="${d%/*}"
+      [ -n "$d" ] || d=/
+    done
+    case "$GATE_TT_PHYS" in
+      *"$nl$d$tab"*)
+        rest="${GATE_TT_PHYS#*"$nl$d$tab"}"
+        dp="${rest%%"$nl"*}" ;;
+      *)
+        dp=$(cd "$d" 2>/dev/null && pwd -P) || dp=''
+        [ -n "$dp" ] || dp="$d"
+        GATE_TT_PHYS="${GATE_TT_PHYS:-$nl}$d$tab$dp$nl" ;;
+    esac
+    tail=''
+    [ "$d" = "$abs" ] || tail="${abs#"${d%/}"}"
+    full="${dp%/}$tail"
+    [ -n "$full" ] || full=/
+    case "$full" in "$GATE_TT_SR"|"$GATE_TT_SR"/*) return 1 ;; esac
+    gate_reach_target_tree_dir_ok "$dp" || return 1
+  done
+  return 0
+}
+
+gate_reach_target_tree_act() {
+  # gate_reach_target_tree_act <alias> <argv...> — reads the operating
+  # repository and the path-shaped operands out of argv and hands them to
+  # `gate_reach_target_tree_ok`.
+  #
+  # The operating repository is the grading directory, or for `git` the last
+  # `-C`, `--git-dir` or `--work-tree` before the subcommand. An operand is a
+  # word that does not start with `-` and either contains `/` or starts with
+  # `.` or `~`, plus the value of a `--opt=<value>` whose value is absolute.
+  # That over-collects — a read operand or a `sed` script containing `/` is
+  # checked too — and it over-collects on purpose: an extra operand can only
+  # fail the predicate, never pass it.
+  #
+  # `git worktree add`'s first operand is left out, because it names a
+  # directory that does not exist yet; the repository check is what binds it,
+  # and a creation path under a machine-global prefix has already been taken by
+  # the derived floor before this cell is reached.
+  local alias="$1"; shift
+  local repo='' a sub='' skipped_wt=0 base rc
+  local -a ops
+  ops=()
+  base=$(gate_grade_cwd)
+  if [ "${1##*/}" = "git" ]; then
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -C) [ "$#" -ge 2 ] || return 1
+            repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
+        --git-dir=*|--work-tree=*)
+            repo=$(gate_lexical_abs "${1#*=}" "${repo:-$base}"); shift ;;
+        --git-dir|--work-tree)
+            [ "$#" -ge 2 ] || return 1
+            repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
+        -c|--namespace|--exec-path|--config-env)
+            [ "$#" -ge 2 ] || return 1; shift 2 ;;
+        -*) shift ;;
+        *) sub="$1"; shift; break ;;
+      esac
+    done
+    if [ "$sub" = "worktree" ] && [ "${1:-}" = "add" ]; then
+      shift
+      skipped_wt=1
+    fi
+  else
+    shift
+  fi
+  local eat=0
+  for a in "$@"; do
+    # The value of `worktree add`'s branch and reason options is not its
+    # creation path, so it is consumed before the exemption can take it.
+    if [ "$eat" = "1" ]; then eat=0; continue; fi
+    case "$a" in
+      --*=/*) ops[${#ops[@]}]="${a#*=}" ;;
+      -b|-B|--reason)
+        [ "$skipped_wt" = "1" ] && eat=1 ;;
+      -*) ;;
+      '~') ops[${#ops[@]}]="$HOME" ;;
+      '~/'*) ops[${#ops[@]}]="$HOME/${a#'~/'}" ;;
+      */*|.*|'~'*)
+        if [ "$skipped_wt" = "1" ]; then skipped_wt=2; continue; fi
+        ops[${#ops[@]}]="$a" ;;
+      *)
+        # The creation path need not contain a slash: a bare name is still the
+        # first operand of `worktree add`, and it is the one being exempted.
+        [ "$skipped_wt" = "1" ] && skipped_wt=2 ;;
+    esac
+  done
+  # Relative operands of a `git -C` act are relative to that repository.
+  [ -n "$repo" ] && base="$repo"
+  local -a absops
+  absops=()
+  for a in ${ops[@]+"${ops[@]}"}; do
+    absops[${#absops[@]}]=$(gate_lexical_abs "$a" "$base")
+  done
+  GATE_TT_REPO="$repo"
+  rc=0
+  gate_reach_target_tree_ok "$alias" ${absops[@]+"${absops[@]}"} || rc=1
+  GATE_TT_REPO=''
+  return "$rc"
 }
 
 gate_surface_max() {
@@ -1659,6 +1871,23 @@ gate_argv_has_opt() {
 # dropping them to `등급 미상` outside a checkout.
 GATE_TREE_ROOT=''
 GATE_GRADE_CWD=''
+
+# The `대상트리` cell asks git the same question per operand directory, and a
+# run's worst observed act count times its operands per write is thousands of
+# `git rev-parse` calls. So the target's expected common directory is read once
+# per alias, and every directory already answered is kept as one
+# `<0|1><TAB><dir>` line in `GATE_TT_CACHE` — a plain string because this file
+# runs under bash 3.2, which has no associative arrays. `GATE_TT_PHYS` keeps
+# each directory's physical spelling the same way, and `GATE_TT_SR` the state
+# root's. `GATE_TT_REPO` is the operating repository one act names; empty
+# means the grading directory.
+GATE_TT_ALIAS=''
+GATE_TT_WANT=''
+GATE_TT_WANT_P=''
+GATE_TT_CACHE=''
+GATE_TT_PHYS=''
+GATE_TT_SR=''
+GATE_TT_REPO=''
 
 # `GATE_UNDECLARED` is written in exactly one place — `gate_undeclared_target`
 # — and read in seven, every one of them as `${GATE_UNDECLARED:-0} != 1`. The
@@ -18248,10 +18477,19 @@ gate_verb_act() {
     # record would vanish exactly when it is most needed. The fixed part is
     # measured here rather than assumed: an alias, a segment id and a stage id
     # are caller-shaped and nothing bounds their length.
+    #
+    # THE ROW CARRIES WHERE ITS GRADE CAME FROM AND WHAT THE STAGE DECLARED,
+    # beside `축2`. `축2` is the runner's grade, so a wrapper that hides a push
+    # behind `bash -c` reads as `축2=워크트리쓰기` on a row whose stage declared
+    # `외부상태변경` — and without the other two fields that row read as a
+    # misgrade, when it was the opaque-class cap answering correctly. The
+    # template below carries the same two fields: left out, the budget would
+    # undercount by up to 54 bytes and a long row would make `gate_append`
+    # refuse it outright instead of trimming it.
     local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"
     local _fixed _free _rb _ob _cb
-    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
-              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" 0 \
+    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 등급 출처=%s | 선언=%s | 도달=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
+              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_GRADE_SOURCE:--}" "${GATE_DECLARED:--}" "${GATE_REACH:--}" "$_ad" 0 \
             | wc -c | tr -d ' ')
     _free=$(( GATE_ROW_MAX - _fixed - 8 ))
     [ "$_free" -lt 0 ] && _free=0
@@ -18264,7 +18502,8 @@ gate_verb_act() {
     _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
     gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
       "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
-      "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
+      "스테이지=$_stg" "축2=$graded" "등급 출처=${GATE_GRADE_SOURCE:--}" \
+      "선언=${GATE_DECLARED:--}" "도달=${GATE_REACH:--}" \
       "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
@@ -18283,6 +18522,18 @@ gate_verb_act() {
         warn "repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
       도달모순)
         warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+      # THE FOUR BELOW USED TO HAVE NO LINE, and two of them are the cells that
+      # cannot see the authorization at all. A stage parked there was told only
+      # that re-declaring does not help, so the one answer it found was to read
+      # this file and re-spell the act under a token that passes.
+      기기전역)
+        warn "repair: the next act of this shape declares where it really lands — the temp directory or this run's state root is '런로컬', the target's checkout or one of its worktrees is '대상트리'. Under a machine-global prefix (\$HOME/.ssh, .aws, .config, .claude*, /usr/local, /opt/homebrew), a global install or setting, or the shared stash, this park is final" ;;
+      도달미상)
+        warn "repair: the next act of this shape declares the reach it actually lands at — '런로컬' for the temp directory or this run's state root, '대상트리' for the target's checkout or worktrees, or another named token" ;;
+      dev파괴)
+        warn "repair: a destructive act against dev is not taken unattended — leave it to a person" ;;
+      대상트리불일치)
+        warn "repair: '대상트리' covers only the checkouts and worktrees that share the target's common git directory. The temp directory and this run's state root are '런로컬'; another repository or a machine-global path is neither, and this park is final" ;;
       CI실패)
         warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
       등급회귀)

@@ -25157,6 +25157,147 @@ check "74: 강제 표면 분기의 조회가 그 인용을 자기 선행 기록�
 printf -- '- `blocked` | 교대=1 | 대상=front | 스코프=run | 원인=무효화 | 사유=강제 표면 이동 | 관측=t | prev=x\n' > "$WORK/ledger74b.md"
 check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WORK/ledger74b.md")" "0"
 
+# ---------------------------------------------------------------------------
+# 75. 대상트리 — 대상의 다른 워크트리에 쓰는 행위는 그 칸에서 열린다
+# --- section: 75 | group: reach | covers: exec | anchors: 75: 형제 워크트리 생성이 대상트리로 통과한다, 75: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다, 75: 기기전역 접두는 대상트리 선언을 이긴다, 75: park 행이 등급 출처와 선언을 싣는다, 75: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다 ---
+#
+# 대상의 다른 워크트리를 만들거나 그 안에 쓰는 행위는 런로컬도 기기전역도 아니라서,
+# 정직하게 신고할 토큰이 없었고 기기전역 칸이 사전 인가를 보기도 전에 답했다. 이
+# 절은 그 칸이 통과시키는 것과 통과시키지 않는 것을 같은 모양의 쌍으로 못박는다 —
+# 통과만 두면 술어가 아무것이나 받아도 초록이고, park 만 두면 칸이 아예 닫혀 있어도
+# 초록이다. 각 행위의 argv 는 이 절에만 있는 이름을 쓴다: park 의 재신고 차단은 같은
+# argv 의 앞선 blocked 행을 찾으므로, 다른 절과 argv 가 겹치면 이 절의 park 가 새 행
+# 없이 끝나 아래 행 단언이 앞 절의 행을 읽는다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR75="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+U75="$WORK/u75"
+( mkdir -p "$U75" && cd "$U75" && git init -q . \
+  && git config user.email t@example.invalid && git config user.name T \
+  && echo u > u.txt && git add -A && git commit -qm u ) >/dev/null 2>&1
+SIB75="$WORK/wt75-sibling"
+b75() { { grep -c '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true; }; }
+t75() { { grep -c '도달=대상트리' "$FX_LEDGER" 2>/dev/null || true; }; }
+x75() {
+  # x75 <surface> <argv...> — 대상트리 신고로 한 번 부르고 rc 와 msg 를 남긴다.
+  local s="$1"; shift
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface "$s" --reach 대상트리 --snapshot-digest "$(HH)" --rationale 't75' -- "$@"
+}
+
+# 통과 — 형제 워크트리 생성, 그 안의 쓰기, 체크아웃 안의 이동과 임시 파일.
+nt75=$(t75)
+x75 트리밖쓰기 git worktree add -b b75 "$SIB75"
+check "75: 형제 워크트리 생성이 대상트리로 통과한다" "$rc" "0"
+[ -d "$SIB75" ] && ok "75: 그 워크트리가 실제로 만들어졌다 (아래 쓰기가 공허하지 않다)" \
+  || bad "75: 그 워크트리가 실제로 만들어졌다" "$msg"
+x75 트리밖쓰기 cp base.txt "$SIB75/c75.txt"
+check "75: 형제 워크트리 안의 쓰기가 대상트리로 통과한다" "$rc" "0"
+printf 'm\n' > "$WT/m75a"
+x75 워크트리쓰기 mv "$WT/m75a" "$WT/m75b"
+check "75: 체크아웃 안의 이동이 대상트리로 통과한다" "$rc" "0"
+x75 트리밖쓰기 mktemp "$WT/tmp75.XXXXXX"
+check "75: 체크아웃 안의 임시 파일이 대상트리로 통과한다" "$rc" "0"
+rm -f "$WT/m75b" "$WT"/tmp75.*
+n=$(( $(t75) - nt75 ))
+[ "$n" -ge 4 ] && ok "75: 통과한 행위의 행이 도달=대상트리를 싣는다 (${n}행)" \
+  || bad "75: 통과한 행위의 행이 도달=대상트리를 싣는다" "n=$n"
+
+# park — 같은 모양이 대상의 공통 git 디렉터리 밖에 닿는다.
+nb75=$(b75)
+x75 워크트리쓰기 git -C "$U75" add -A
+check "75: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다" "$rc" "11"
+case "$msg" in *대상트리불일치*) ok "75: 그 park 의 판정이 대상트리불일치다" ;; *) bad "75: 그 park 의 판정이 대상트리불일치다" "$msg" ;; esac
+case "$msg" in
+  *"repair:"*"'대상트리'"*"'런로컬'"*) ok "75: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" ;;
+  *) bad "75: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" "$msg" ;;
+esac
+x75 트리밖쓰기 cp base.txt "$U75/c75.txt"
+check "75: 다른 저장소를 가리키는 피연산자는 park 된다" "$rc" "11"
+[ -e "$U75/c75.txt" ] && bad "75: park 된 쓰기는 일어나지 않았다" "$U75/c75.txt" \
+  || ok "75: park 된 쓰기는 일어나지 않았다"
+x75 트리밖쓰기 cp base.txt "${TMPDIR:-/tmp}/c75-$$.txt"
+check "75: 임시 디렉터리는 대상트리가 아니다 (런로컬이다)" "$rc" "11"
+check "75: park 셋이 blocked 행 셋을 남긴다" "$(( $(b75) - nb75 ))" "3"
+
+# 상태 루트 — 대상 트리 안에 놓여도 그 자리의 정직한 토큰은 런로컬이다. 시험 상태
+# 루트는 대상 트리 밖에 있으므로 exec 로는 이 갈래가 공허하다(술어가 어차피 떨어진다).
+# 그래서 술어를 직접 부르되, 상태 루트를 대상 체크아웃 안에 두고 대조 경로를 곁에 둔다.
+q75() {
+  local rc=0
+  ( cd "$WT" && XDG_STATE_HOME="$WT/.st75" bash -c \
+      'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg75="$2"; target_field() { printf "%s" "$cg75"; }; shift 2; gate_reach_target_tree_ok front "$@"' \
+      _ "$GATE" "$CG" "$@" ) >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+check "75: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다" "$(q75 "$WT/.st75/cc-cmds/run/x")" "1"
+check "75: 대조 — 같은 깊이의 이웃 경로는 대상트리다" "$(q75 "$WT/.nst75/x")" "0"
+check "75: 대조 — 다른 저장소 경로는 술어가 떨어뜨린다" "$(q75 "$U75/x")" "1"
+
+# 기기전역 접두·공유 stash 는 대상트리 신고를 이긴다 — 유도된 하한이 5b 앞에서 답한다.
+x75 워크트리쓰기 git stash push -m s75
+check "75: 공유 stash 는 대상트리 신고로도 기기전역 park 다" "$rc" "11"
+case "$msg" in *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "75: 그 판정이 기기전역이다" ;; *) bad "75: 그 판정이 기기전역이다" "$msg" ;; esac
+case "$msg" in
+  *"repair:"*"'런로컬'"*"'대상트리'"*) ok "75: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" ;;
+  *) bad "75: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" "$msg" ;;
+esac
+x75 워크트리쓰기 sed -i.bak s/a/b/ "$HOME/.claude-x75/f"
+check "75: 기기전역 접두는 대상트리 선언을 이긴다" "$rc" "11"
+x75 트리밖쓰기 git worktree add -b ssh75 "$HOME/.ssh/wt75"
+check "75: 기기전역 접두 아래의 워크트리 생성은 생성 경로 면제로 통과하지 않는다" "$rc" "11"
+[ -e "$HOME/.ssh/wt75" ] && bad "75: 그 워크트리는 만들어지지 않았다" "$HOME/.ssh/wt75" \
+  || ok "75: 그 워크트리는 만들어지지 않았다"
+x75 워크트리쓰기 cp /opt/homebrew/bin/gawk75 "$WT/g75"
+check "75: 기기전역 접두의 읽기 피연산자도 하한을 올린다" "$rc" "11"
+
+# 수리 줄이 없던 나머지 둘.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t75 -- touch u75-unknown
+check "75: 미상 신고는 park 된다" "$rc" "11"
+case "$msg" in *"repair:"*"'대상트리'"*) ok "75: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" ;; *) bad "75: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" "$msg" ;; esac
+
+# 재신고 핀이 새 칸에서도 선다 — 미상으로 park 된 argv 를 대상트리로 다시 부르면, 그
+# 칸도 그 argv 를 park 하므로 앞 행의 다이제스트가 답하고 새 행은 없다. 핀은 park
+# 칸 안에서만 조회되므로, 둘째 신고가 통과하는 칸에 닿는 재신고는 여기서 닫히지
+# 않는다 — 그것은 이 칸이 만든 구멍이 아니라 런로컬 재신고가 이미 지나던 길이다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t75 -- cp base.txt "$U75/redeclare75"
+check "75: 미상 신고는 park 된다 (재신고의 앞 행)" "$rc" "11"
+nb75=$(b75)
+x75 트리밖쓰기 cp base.txt "$U75/redeclare75"
+check "75: 같은 argv 를 대상트리로 재신고하면 앞 판정이 답하고 새 행이 없다" "$rc/$(( $(b75) - nb75 ))" "11/0"
+case "$msg" in *"already parked"*) ok "75: 그 답이 재신고 핀의 것이다" ;; *) bad "75: 그 답이 재신고 핀의 것이다" "$msg" ;; esac
+[ -e "$U75/redeclare75" ] && bad "75: 재신고한 행위는 일어나지 않았다" "$U75/redeclare75" \
+  || ok "75: 재신고한 행위는 일어나지 않았다"
+
+# park 행의 진단 필드 — 래퍼가 숨긴 push 는 축2 가 러너의 등급이므로, 신고와 출처가
+# 곁에 없으면 그 행은 오등급처럼 읽힌다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint push \
+  --surface 외부상태변경 --reach 협업 --snapshot-digest "$(HH)" --rationale t75 \
+  -- bash -c 'git push origin HEAD:refs/heads/b75-push'
+check "75: 셸 문자열 안의 push 는 park 된다" "$rc" "11"
+l75=$({ grep '^- `blocked` ' "$FX_LEDGER" || true; } | sed -n '$p')
+case "$l75" in
+  *"축2=워크트리쓰기 | 등급 출처=불투명 | 선언=외부상태변경 |"*) ok "75: park 행이 등급 출처와 선언을 싣는다" ;;
+  *) bad "75: park 행이 등급 출처와 선언을 싣는다" "$l75" ;;
+esac
+n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
+[ "${n:-0}" -le 1024 ] && ok "75: 필드가 늘어도 park 행이 원장 행 상한 안이다 (최장 ${n}B)" \
+  || bad "75: park 행 길이" "최장 ${n}B > 1024"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR75"
+
+# 스테이지 대면 사본 — 토큰이 어휘에만 있고 사본에 없으면 스테이지는 그 토큰을 모른다.
+for f75 in skills/implement-unattended/SKILL.md skills/review-unattended/SKILL.md \
+           skills/design-audit-unattended/SKILL.md skills/design-discuss-unattended/SKILL.md \
+           skills/autopilot/SKILL.md skills/_common/agent-team-protocol.md \
+           hooks/gate-pretool.sh; do
+  grep -q '대상트리' "$repo_root/plugins/cc-cmds/$f75" 2>/dev/null \
+    && ok "75: 사본 $f75 가 대상트리를 싣는다" || bad "75: 사본 $f75 가 대상트리를 싣는다" "$repo_root/plugins/cc-cmds/$f75"
+done
+grep -qE '^(readonly )?REACHES=.*대상트리' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+  && ok "75: 도달 어휘가 대상트리를 싣는다" || bad "75: 도달 어휘가 대상트리를 싣는다" "REACHES"
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
