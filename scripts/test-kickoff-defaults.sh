@@ -299,9 +299,9 @@ check "거부된 공백 변형은 대조기에서도 맞지 않는다 (거부 �
 expect repo act-allow '형식 오류' '형태=terraform -chdir=infra apply | 사유=a' '형태=/usr/bin/gh pr | 사유=a' \
   '형태=gh pr --repo=x | 사유=a' '형태=/usr/bin/npm run | 사유=a'
 expect repo act-allow 적용 '형태=terraform apply | 사유=a' '형태=git -C dir | 사유=a'
-check "정규화가 바꿀 형태의 거부 사유는 대조기가 보는 철자를 적는다" "$(col "$(kf '[Nharu/cc-cmds]
+check "정규화가 바꿀 형태의 거부 사유는 대조기가 보는 철자와 그 철자가 여는 범위, 행이 없을 때의 결과를 적는다" "$(col "$(kf '[Nharu/cc-cmds]
 act-allow = 형태=terraform -chdir=infra apply | 사유=a' $T)" act-allow 7)" \
-  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`)"
+  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`). 이 철자는 뗀 경로와 낱말의 모든 값을 엽니다 — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"
 check "거부 근거: 형태=terraform -chdir=infra apply 는 같은 철자의 행위와도 맞지 않는다" \
   "$(probe_row '형태=terraform -chdir=infra apply | 사유=a' 'terraform -chdir=infra apply -auto-approve')" "0"
 check "거부 근거: 형태=/usr/bin/gh pr 는 같은 철자의 행위와도 맞지 않는다" \
