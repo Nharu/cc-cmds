@@ -61,7 +61,12 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # of the loop below (this is a space-separated list, not a map), and the
 # sibling lint's Rule 6 reads this line back to check that every right side
 # here is also in its allowlist.
-PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge design|design-discuss-unattended"
+#
+# `design-base|design-base-unattended` is the base-design pair. The attended
+# skill borrows most of its ask points from `design` by Reading it, so the
+# marks this lint counts there are only the questions the base seat adds — the
+# borrowed ones are counted on the `design` lines above.
+PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge design|design-discuss-unattended design-base|design-base-unattended"
 
 GRADE_RE='등급 [0-9]'
 VALID_RE='등급 [012]'

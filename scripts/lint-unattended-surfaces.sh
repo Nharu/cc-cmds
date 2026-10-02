@@ -141,13 +141,17 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # headless shard. That last one carries no `-unattended` suffix and has no
 # attended counterpart, which is exactly the shape a suffix rule or the sibling
 # lint's pair table would miss — it was absent from this list when the census
-# was first taken.
+# was first taken. `design-base-unattended` is listed before any dispatcher
+# names it: the base-design seat launches it as its leg, and the driver and
+# router wiring that makes it a stage lands separately, so the arm is checked
+# from the moment its file exists rather than from the moment it is dispatched.
 UNATTENDED_SKILLS=(
   "implement-unattended"
   "design-audit-unattended"
   "review-unattended"
   "design-reconverge"
   "design-discuss-unattended"
+  "design-base-unattended"
   "autopilot-router-shift"
 )
 
@@ -179,6 +183,10 @@ REFERENCE_TREES=(
   # references/ tree; `design/references/` does not exist today, so this entry
   # is a SKIP until one appears, and Rule 5 below is what covers the leg.
   "design-discuss-unattended|design"
+  # The base-design arm Reads `design-discuss-unattended/SKILL.md`, which in
+  # turn Reads `design/SKILL.md`; neither carries a references/ tree, so this
+  # entry is a SKIP for the same reason as the line above and Rule 5 covers it.
+  "design-base-unattended|design"
   # The router shard shares nobody's tree and has none of its own.
   "autopilot-router-shift|autopilot-router-shift"
 )
@@ -202,6 +210,7 @@ DISPOSITION_PREFIX='**Inherited question point** — '
 U0_PIN='this arm resolves that terminus to `park`'
 U0_PINNED_SKILLS=(
   "design-discuss-unattended"
+  "design-base-unattended"
 )
 
 fail=0

@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# Test the base design split tool (`plugins/cc-cmds/orchestrator/base-split.py`)
+# offline: its predicates (`check`), its publication plan (`plan`) and its
+# registry writer (`record`).
+#
+# Fixture documents are generated into one `mktemp -d` directory, under a
+# `docs/` path component that exists only there. No tracker is reached — `plan`
+# only prints argvs, and nothing here runs them.
+#
+# Usage: bash scripts/test-base-split.sh
+
+set -euo pipefail
+
+# Inherited pipeline variables change nothing in this tool, but a stage that
+# runs this suite should see the same environment CI sees.
+for v in $(compgen -v CC_PIPELINE_); do unset "$v"; done
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "$script_dir/.." && pwd)
+ORCH="$repo_root/plugins/cc-cmds/orchestrator"
+BS="$ORCH/base-split.py"
+
+# Normalised, so a TMPDIR with a trailing slash does not put `//` into the
+# expected argvs while the tool prints its absolute path.
+WORK=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/cc-base-split-test.XXXXXX")" && pwd)
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+pass=0
+fail=0
+ok()    { pass=$((pass + 1)); printf 'PASS: %s\n' "$1"; }
+bad()   { fail=$((fail + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
+check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
+has()   { if printf '%s\n' "$2" | grep -qF -- "$3"; then ok "$1"; else bad "$1" "missing '$3' in: $2"; fi; }
+hasnt() { if printf '%s\n' "$2" | grep -qF -- "$3"; then bad "$1" "unexpected '$3' in: $2"; else ok "$1"; fi; }
+
+[ -x "$BS" ] && ok "base-split.py is executable" || bad "base-split.py is executable"
+
+# ---------------------------------------------------------------------------
+# Fixture generator: `gen.py <variant> <path>` writes one base design document.
+# The passing shape is three tickets — T1 (구현, independent), T2 (계약,
+# provides C1) and T3 (구현, consumes C1 after T2) — so the first layer holds a
+# contract ticket numbered after an implementation ticket.
+# ---------------------------------------------------------------------------
+cat > "$WORK/gen.py" <<'PYEOF'
+import sys
+
+variant, out = sys.argv[1], sys.argv[2]
+BODY = "이 작업은 상태 파일의 형식을 정한다.\n완료 기준: 상태 파일은 이름과 크기 두 필드를 가진다.\n"
+
+def ticket(n, kind, deps=(), provides=(), consumes=(), owned=("src/t%d/main.py",),
+           shared=(), nesting=None, repo="o/r", body=BODY):
+    return dict(n=n, kind=kind, deps=list(deps), provides=list(provides),
+                consumes=list(consumes), owned=[p % n if "%d" in p else p for p in owned],
+                shared=list(shared), nesting=nesting, repo=repo, body=body)
+
+header = {"티켓 수": "3", "임계 경로": "T2 → T3", "병렬 폭": "2"}
+contracts = [dict(n=1, providers=["T2"], consumers=["T3"])]
+tickets = [ticket(1, "구현"), ticket(2, "계약", provides=["C1"]),
+           ticket(3, "구현", deps=["T2"], consumes=["C1"])]
+kind_line, split_heading, slicing = True, True, False
+base_body = "여러 저장 단위를 하나의 상태 파일로 묶는다.\n계약을 먼저 정하고 구현을 나란히 진행한다.\n"
+
+if variant == "cycle":
+    tickets[1]["deps"] = ["T3"]
+elif variant == "unresolved":
+    tickets[2]["deps"] = ["T2", "T9"]
+elif variant == "count":
+    header["티켓 수"] = "4"
+elif variant == "twoprov":
+    contracts[0]["providers"] = ["T1", "T2"]
+    tickets[0]["provides"] = ["C1"]
+elif variant == "many":
+    tickets = [ticket(i, "구현") for i in range(1, 102)]
+    contracts = []
+    header = {"티켓 수": "101", "임계 경로": "T1", "병렬 폭": "101"}
+elif variant == "parloss":
+    tickets[2]["deps"] = ["T1", "T2"]
+elif variant == "conc":
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+elif variant == "globpos":
+    tickets[0]["owned"] = ["src/lib/*.py"]
+    tickets[1]["owned"] = ["src/lib/core.py"]
+elif variant == "globneg":
+    tickets[0]["owned"] = ["src/lib/*.py"]
+    tickets[1]["owned"] = ["src/app/core.py"]
+elif variant == "repodiff":
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[0]["repo"] = "o/other"
+elif variant == "sharedok":
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[0]["shared"] = ["src/shared/x.py"]
+elif variant == "critpath":
+    header["임계 경로"] = "T1 → T3"
+elif variant in ("depth3", "depth3reason"):
+    contracts.append(dict(n=2, providers=["T3"], consumers=["T4"]))
+    tickets[2]["provides"] = ["C2"]
+    tickets.append(ticket(4, "구현", deps=["T3"], consumes=["C2"]))
+    header = {"티켓 수": "4", "임계 경로": "T2 → T3 → T4", "병렬 폭": "2"}
+    if variant == "depth3reason":
+        header["깊이 사유"] = "상태 파일 위에 색인이 놓이고 그 위에 화면이 놓인다."
+elif variant == "d0kind":
+    kind_line = False
+elif variant == "d0slicing":
+    slicing = True
+elif variant == "b1docs":
+    tickets[0]["body"] = "자세한 내용은 docs/x 를 본다.\n"
+elif variant == "b1label":
+    tickets[1]["body"] = "이 일은 T3 보다 먼저 끝난다.\n"
+elif variant == "b1heading":
+    base_body = "## 개요\n본문이다.\n"
+elif variant != "ok":
+    raise SystemExit("unknown variant " + variant)
+
+L = ["# 상태 파일 베이스", ""]
+if kind_line:
+    L.append("**문서 종류**: 베이스 설계")
+L += ["**상태**: 초안", "", "## 합의된 아키텍처", "상태 파일과 그 위의 소비자.", "",
+      "## 티켓 간 계약", ""]
+for c in contracts:
+    L += ["### 계약 C%d — 형식 %d" % (c["n"], c["n"]),
+          "**제공 티켓**: " + ", ".join(c["providers"]),
+          "**소비 티켓**: " + ", ".join(c["consumers"]),
+          "**형태**: 파일 형식", "**인터페이스**:", "````text", "name=<이름>", "### 울타리 안 표제는 표제가 아니다",
+          "````", "**불변식**:", "- 필드는 둘이다.", ""]
+if slicing:
+    L += ["## 구현 슬라이싱", "없음", ""]
+if split_heading:
+    L += ["## 티켓 분할"] + ["**%s**: %s" % kv for kv in header.items()] + [""]
+L += ["### 베이스 티켓", "**발행 제목**: 상태 파일 도입", "**발행 본문**:", "````text"]
+L += base_body.rstrip("\n").split("\n") + ["````", ""]
+for t in tickets:
+    L += ["### 티켓 T%d — 조각 %d" % (t["n"], t["n"]),
+          "**종류**: " + t["kind"], "**레포**: " + t["repo"],
+          "**선행**: " + (", ".join(t["deps"]) or "없음"),
+          "**제공 계약**: " + (", ".join(t["provides"]) or "없음"),
+          "**소비 계약**: " + (", ".join(t["consumes"]) or "없음"),
+          "**소유 파일**: " + ", ".join("`%s`" % p for p in t["owned"]),
+          "**공유 파일**: " + (", ".join("`%s`" % p for p in t["shared"]) or "없음")]
+    if t["nesting"]:
+        L.append("**중첩 사유**: " + t["nesting"])
+    L += ["**범위**: 조각 %d 의 범위." % t["n"], "**완료 기준**:", "- 시험이 통과한다.",
+          "**발행 제목**: 조각 %d 구현" % t["n"], "**발행 본문**:", "````text"]
+    L += t["body"].rstrip("\n").split("\n") + ["````", ""]
+with open(out, "w", encoding="utf-8") as f:
+    f.write("\n".join(L))
+PYEOF
+
+DOCS="$WORK/docs"
+mkdir -p "$DOCS"
+gen() { python3 "$WORK/gen.py" "$1" "$DOCS/$1.md"; }
+
+# run_bs <var> <args...>: stdout into $out, exit code into $rc.
+run_bs() { rc=0; out=$("$BS" "$@" 2>"$WORK/stderr") || rc=$?; }
+
+# ---------------------------------------------------------------------------
+# check
+# ---------------------------------------------------------------------------
+gen ok
+run_bs check "$DOCS/ok.md"
+check "check: passing fixture exits 0" "$rc" "0"
+check "check: passing fixture prints nothing" "$out" ""
+
+expect_check() {  # <variant> <needle>
+  gen "$1"
+  run_bs check "$DOCS/$1.md"
+  check "check $1: exits 1" "$rc" "1"
+  has "check $1: reports '$2'" "$out" "$2"
+}
+expect_check cycle      "P1 선행 순환"
+expect_check unresolved "P1 T3 선행 참조 해소 안 됨 T9"
+expect_check count      "P1 티켓 수 선언 4"
+expect_check twoprov    "P1 C1 제공 티켓 2개"
+expect_check many       "P1 티켓 101개 (상한 100)"
+expect_check parloss    "P2 병렬성 손실 T3→T1"
+expect_check conc       "P3 T1·T2 동시 티켓 소유 파일 중첩"
+expect_check globpos    "P3 T1·T2 동시 티켓 소유 파일 중첩"
+expect_check critpath   "P4 임계 경로 선언 T1 → T3"
+expect_check depth3     "P4 깊이 3 에 깊이 사유 없음"
+expect_check d0kind     "D0 판별자 줄 없음"
+expect_check d0slicing  "D0 베이스 문서에 ## 구현 슬라이싱 가 있음"
+expect_check b1docs     "B1 T1 본문에 문서 경로 docs/"
+expect_check b1label    "B1 T2 본문에 라벨 T3"
+expect_check b1heading  "B1 베이스 티켓 본문에 표제 줄"
+
+run_bs check "$DOCS/cycle.md"
+hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
+
+for v in globneg repodiff sharedok depth3reason; do
+  gen "$v"
+  run_bs check "$DOCS/$v.md"
+  check "check $v: exits 0" "$rc" "0"
+  check "check $v: prints nothing" "$out" ""
+done
+
+# ---------------------------------------------------------------------------
+# plan / record — GitHub
+# ---------------------------------------------------------------------------
+GH_ROW='- `베이스 발행` | 트래커=github | 대상=o/r'
+OUT="$WORK/out"
+REG="$DOCS/design-base/ok.tickets.md"
+
+entries() {  # entry ids and kinds of the current plan, one "id:kind" per line
+  python3 -c 'import json,sys
+for l in open(sys.argv[1], encoding="utf-8"):
+    e = json.loads(l); print(e["entry"] + ":" + e["kind"])' "$OUT/plan.jsonl" | tr '\n' ' '
+}
+argv_of() {  # <entry id> — that entry's argv, space-joined
+  python3 -c 'import json,sys
+for l in open(sys.argv[1], encoding="utf-8"):
+    e = json.loads(l)
+    if e["entry"] == sys.argv[2]: print(" ".join(e["argv"]))' "$OUT/plan.jsonl" "$1"
+}
+
+run_bs plan "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT"
+check "plan: first plan exits 0" "$rc" "0"
+check "plan: base first, contract ticket before implementation, the rest wait" \
+  "$(entries)" "base:create T2:wait T1:wait T3:wait "
+check "plan: base argv" "$(argv_of base)" "gh issue create --repo o/r --title 상태 파일 도입 --body-file $OUT/body-base.md"
+[ ! -e "$REG" ] && ok "plan: writes no registry" || bad "plan: writes no registry"
+
+python3 - "$DOCS/ok.md" "$OUT" <<'PYEOF' && ok "plan: body files equal the document fields byte for byte" || bad "plan: body files equal the document fields byte for byte"
+import sys
+doc = open(sys.argv[1], encoding="utf-8").read()
+base = "여러 저장 단위를 하나의 상태 파일로 묶는다.\n계약을 먼저 정하고 구현을 나란히 진행한다.\n"
+tick = "이 작업은 상태 파일의 형식을 정한다.\n완료 기준: 상태 파일은 이름과 크기 두 필드를 가진다.\n"
+assert open(sys.argv[2] + "/body-base.md", "rb").read() == base.encode("utf-8")
+for n in (1, 2, 3):
+    assert open(sys.argv[2] + "/body-T%d.md" % n, "rb").read() == tick.encode("utf-8")
+PYEOF
+
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행중
+check "record: base 발행중 exits 0" "$rc" "0"
+has "record: base row in flight" "$(cat "$REG")" '- `베이스` | 상태=발행중 | 참조=- | 노드 id=-'
+check "record: header line" "$(head -n 1 "$REG")" \
+  "<!-- cc-design-base-tickets v1; doc=docs/ok.md; doc-sha256=$(shasum -a 256 "$DOCS/ok.md" | cut -d' ' -f1); tracker=github; target=o/r -->"
+check "record: end marker" "$(tail -n 1 "$REG")" "<!-- cc-design-base-tickets: end -->"
+has "record: relations start waiting" "$(cat "$REG")" '- `관계` | 종류=선행 | 원=T3 | 대상=T2 | 상태=대기'
+
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/1
+check "record: base 발행중 → 발행됨 exits 0" "$rc" "0"
+has "record: base row issued" "$(cat "$REG")" '- `베이스` | 상태=발행됨 | 참조=https://github.com/o/r/issues/1 | 노드 id=-'
+cp "$REG" "$WORK/reg.before"
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/1
+cmp -s "$REG" "$WORK/reg.before" && ok "record: rewriting the same row is byte-identical" || bad "record: rewriting the same row is byte-identical"
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행중
+check "record: 발행됨 → 발행중 is refused" "$rc" "3"
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/9
+check "record: a different reference is refused" "$rc" "3"
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T3 --plan "$OUT/plan.jsonl" --state 발행중
+check "record: a wait entry is refused" "$rc" "3"
+
+run_bs plan "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT"
+check "plan: after the base is issued" "$(entries)" "T2:create T1:create T3:wait "
+check "plan: child carries --parent" "$(argv_of T2)" \
+  "gh issue create --repo o/r --title 조각 2 구현 --body-file $OUT/body-T2.md --parent https://github.com/o/r/issues/1"
+
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행중
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/2
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T1 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/3
+has "record: a creation that carried --parent ties the child relation" "$(cat "$REG")" '- `관계` | 종류=하위 | 원=T2 | 대상=베이스 | 상태=걸림'
+
+run_bs plan "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT"
+check "plan: last ticket after its predecessor is issued" "$(entries)" "T3:create "
+check "plan: --blocked-by carries the predecessor" "$(argv_of T3)" \
+  "gh issue create --repo o/r --title 조각 3 구현 --body-file $OUT/body-T3.md --parent https://github.com/o/r/issues/1 --blocked-by https://github.com/o/r/issues/2"
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T3 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/4
+has "record: a creation that carried --blocked-by ties the dependency" "$(cat "$REG")" '- `관계` | 종류=선행 | 원=T3 | 대상=T2 | 상태=걸림'
+run_bs plan "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT"
+check "plan: nothing left once all is issued" "$(entries)" ""
+
+# A registry left by an interrupted run: T1 in flight, T3 issued without its
+# relations. Issued creations are skipped, only the missing relations get an
+# edit, and the in-flight row is resolved rather than created again.
+SHA=$(shasum -a 256 "$DOCS/ok.md" | cut -d' ' -f1)
+cat > "$REG" <<EOF
+<!-- cc-design-base-tickets v1; doc=docs/ok.md; doc-sha256=$SHA; tracker=github; target=o/r -->
+- \`베이스\` | 상태=발행됨 | 참조=https://github.com/o/r/issues/1 | 노드 id=-
+- \`티켓\` | id=T1 | 상태=발행중 | 참조=- | 노드 id=- | 유사 후보=없음
+- \`티켓\` | id=T2 | 상태=발행됨 | 참조=https://github.com/o/r/issues/2 | 노드 id=- | 유사 후보=없음
+- \`티켓\` | id=T3 | 상태=발행됨 | 참조=https://github.com/o/r/issues/4 | 노드 id=- | 유사 후보=없음
+- \`관계\` | 종류=하위 | 원=T1 | 대상=베이스 | 상태=대기
+- \`관계\` | 종류=하위 | 원=T2 | 대상=베이스 | 상태=걸림
+- \`관계\` | 종류=하위 | 원=T3 | 대상=베이스 | 상태=대기
+- \`관계\` | 종류=선행 | 원=T3 | 대상=T2 | 상태=대기
+<!-- cc-design-base-tickets: end -->
+EOF
+run_bs plan "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT"
+check "plan resume: resolve in flight, edit only missing relations" "$(entries)" \
+  "T1:resolve rel:하위:T3:베이스:edit rel:선행:T3:T2:edit "
+check "plan resume: dependency edit argv" "$(argv_of rel:선행:T3:T2)" \
+  "gh issue edit https://github.com/o/r/issues/4 --add-blocked-by https://github.com/o/r/issues/2"
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T1 --plan "$OUT/plan.jsonl" --state 없음
+check "record: an in-flight row resolved to nothing is dropped" "$(grep -c 'id=T1' "$REG" || true)" "0"
+run_bs plan "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT"
+has "plan resume: a dropped row is created again" "$(entries)" "T1:create"
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T1 --plan "$OUT/plan.jsonl" --similar 'https://github.com/o/r/issues/7'
+check "record: similar alone needs an existing row" "$rc" "3"
+
+# Refusals write no command at all.
+refused() {  # <label> <args...>
+  local label=$1; shift
+  printf 'stale\n' > "$OUT/plan.jsonl"
+  run_bs plan "$@"
+  check "plan refuses: $label (exit)" "$rc" "3"
+  check "plan refuses: $label (no command)" "$(wc -c < "$OUT/plan.jsonl" | tr -d ' ')" "0"
+}
+refused "트래커=없음" "$DOCS/ok.md" --row '- `베이스 발행` | 트래커=없음 | 대상=-' --out "$OUT"
+refused "--tracker disagrees with the row" "$DOCS/ok.md" --row "$GH_ROW" --tracker clickup --out "$OUT"
+refused "--target disagrees with the row" "$DOCS/ok.md" --row "$GH_ROW" --target o/x --out "$OUT"
+refused "a malformed row" "$DOCS/ok.md" --row '- `베이스 발행` | 트래커=jira | 대상=x' --out "$OUT"
+refused "check violations" "$DOCS/cycle.md" --row "$GH_ROW" --out "$OUT"
+printf '\n' >> "$DOCS/ok.md"
+refused "registry recorded against other document bytes" "$DOCS/ok.md" --row "$GH_ROW" --out "$OUT"
+
+# ---------------------------------------------------------------------------
+# plan — ClickUp; record --doc-only
+# ---------------------------------------------------------------------------
+CU_ROW='- `베이스 발행` | 트래커=clickup | 대상=901234'
+gen ok && cp "$DOCS/ok.md" "$DOCS/cu.md"
+run_bs plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+check "plan clickup: exits 0" "$rc" "0"
+base_argv=$(argv_of base)
+case "$base_argv" in
+  "$ORCH/clickup-create.py --list 901234 --name 상태 파일 도입 --description-file $OUT/body-base.md") ok "plan clickup: argv0 is the absolute tool path, no interpreter" ;;
+  *) bad "plan clickup: argv0 is the absolute tool path, no interpreter" "$base_argv" ;;
+esac
+run_bs record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc
+check "record clickup: 발행됨 without a node id is refused" "$rc" "3"
+run_bs record "$DOCS/cu.md" --row "$CU_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/abc --node-id abc
+run_bs plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
+check "plan clickup: child carries --parent node" "$(argv_of T2)" \
+  "$ORCH/clickup-create.py --list 901234 --name 조각 2 구현 --description-file $OUT/body-T2.md --parent abc"
+has "plan clickup: dependency waits for its ticket" "$(entries)" "rel:선행:T3:T2:wait"
+
+NONE_ROW='- `베이스 발행` | 트래커=없음 | 대상=-'
+cp "$DOCS/ok.md" "$DOCS/none.md"
+run_bs record "$DOCS/none.md" --row "$NONE_ROW" --doc-only
+check "record --doc-only: exits 0" "$rc" "0"
+NREG="$DOCS/design-base/none.tickets.md"
+check "record --doc-only: every row is 문서만" \
+  "$(sed -e '1d' -e '$d' "$NREG" | grep -vc '문서만' || true)" "0"
+check "record --doc-only: base + tickets + relations" "$(sed -e '1d' -e '$d' "$NREG" | wc -l | tr -d ' ')" "8"
+run_bs record "$DOCS/none.md" --row "$GH_ROW" --doc-only
+check "record --doc-only: refused when the row names a tracker" "$rc" "3"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

@@ -40,7 +40,8 @@
 #   T11 park record          check_park        tests/fixtures/design-brief/park/
 #   T13 re-dispatch floor    check_redispatch  tests/fixtures/design-brief/leg/
 #   T6  CFI-U0 pin (helper)  lint-unattended-surfaces.sh over a copied tree
-#   pin literal cross-pin    the two real SKILL.md files
+#   pin literal cross-pin    the two real SKILL.md files, and the base-design
+#                            pair when its files are present
 #
 # Usage:
 #   bash scripts/test-design-brief.sh
@@ -538,6 +539,38 @@ pin_in 'permission_posture' "$DESIGN" "design"
 pin_in 'permission_posture' "$LEG" "leg"
 pin_in 'posture_approved_at' "$DESIGN" "design"
 pin_in 'posture_approved_at' "$LEG" "leg"
+
+# ----------------------------------------------------------------------------
+# Base-design pair — the same brief, a different writer and reader
+#
+# The base-design seat writes the same brief format to a different leg, so the
+# header's writer/reader pair is the one place the two pairs differ, and the
+# leg must accept that pair while still guarding the version token. The split
+# mode's five halt sites, its repair-failure site and its terminal literal are
+# read by the driver and the router, which land separately; pinning them here
+# keeps a rename on this side from becoming a silent mismatch on that side.
+# Each block is gated on its own file, so the pair can land one file at a time.
+# ----------------------------------------------------------------------------
+
+BASE_SEAT="$skills_root/design-base/SKILL.md"
+BASE_ARM="$skills_root/design-base-unattended/SKILL.md"
+BASE_BRIEF_PAIR='writer=design-base; reader=design-base-unattended'
+BASE_SPLIT_SITES=('split-check-failed' 'audit-open-items' 'publish-not-authorized' 'duplicate-ticket' 'tracker-error')
+
+if [[ -f "$BASE_SEAT" ]]; then
+  pin_in "$BASE_BRIEF_PAIR" "$BASE_SEAT" "design-base"
+  pin_in "$BRIEF_TERMINATOR" "$BASE_SEAT" "design-base"
+fi
+if [[ -f "$BASE_ARM" ]]; then
+  pin_in 'cc-design-brief v1' "$BASE_ARM" "design-base-unattended"
+  pin_in "$BASE_BRIEF_PAIR" "$BASE_ARM" "design-base-unattended"
+  for s in "${BASE_SPLIT_SITES[@]}"; do
+    pin_in "\`$s\`" "$BASE_ARM" "design-base-unattended (split halt site)"
+  done
+  pin_in '`split-unrepairable`' "$BASE_ARM" "design-base-unattended"
+  pin_in '베이스 분할을 마쳤습니다.' "$BASE_ARM" "design-base-unattended"
+  pin_in 'cc-pipeline-halt v1' "$BASE_ARM" "design-base-unattended"
+fi
 
 # ----------------------------------------------------------------------------
 # Load-bearing sentences — section-scoped, count-exact
