@@ -510,6 +510,63 @@ cc_ledger_growth_at() {
   cc_mtime "$ledger"
 }
 
+cc_run_idle_seconds() {
+  # cc_run_idle_seconds <run-dir> <ledger> [now] — seconds since the ledger last
+  # grew, clamped at zero, or empty when there is no clock at all.
+  #
+  # ONE IDLE FOR EVERY JUDGE. `cc_run_state` crosses into 버려짐 on this value and
+  # `cc_run_settled_for_report` settles a run on it; two subtractions would let
+  # one run be abandoned to the status line and still unsettled to the reporter.
+  #
+  # Clamped, because a ledger mtime in the future is not hypothetical — one run
+  # on this host measured 28 seconds ahead. A negative idle would otherwise read
+  # as the freshest run on the screen.
+  local run_dir="$1" ledger="${2:-}" now="${3:-}" grew idle
+  grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
+  [ -n "$grew" ] || return 0
+  [ -n "$now" ] || now=$(date -u +%s)
+  idle=$((now - grew))
+  [ "$idle" -lt 0 ] && idle=0
+  printf '%s' "$idle"
+}
+
+cc_run_settled_for_report() {
+  # cc_run_settled_for_report <run-dir> <ledger> [abandon-seconds] — succeeds
+  # when the run has settled, i.e. whatever is still unresolved in it is not
+  # going to resolve on its own.
+  #
+  #   settled ⟺ state = 종단   ∧ idle ≥ 600
+  #           ∨ state = 버려짐
+  #           ∨ state = 승인대기 ∧ idle ≥ abandon
+  #
+  # THE THIRD ARM IS WHY THIS IS NOT `cc_run_state = 버려짐`. That function returns
+  # 승인대기 before it looks at the clock, so a run holding an approval nobody
+  # answers would never settle and its wait would never be reported.
+  #
+  # NO SEVENTH TOKEN. This is a predicate over the six, so `cc_run_grade` and
+  # the render's arms stay exactly as they are. `abandon` is inherited from
+  # `cc_run_state`'s declaration when the caller passes none.
+  #
+  # 600 SECONDS AFTER 종단, because a finished run's log is still being written
+  # for a while after `done` and a report taken inside that window reads a
+  # ledger that is about to change.
+  local run_dir="$1" ledger="$2" abandon="${3:-}" s idle
+  if [ -n "$abandon" ]; then
+    s=$(cc_run_state "$run_dir" "$ledger" "" "$abandon")
+  else
+    s=$(cc_run_state "$run_dir" "$ledger")
+    abandon=3600
+  fi
+  idle=$(cc_run_idle_seconds "$run_dir" "$ledger")
+  # No clock reads as infinitely idle, the same reading `cc_run_state` gives it.
+  case "$s" in
+    버려짐) return 0 ;;
+    종단)     [ -z "$idle" ] && return 0; [ "$idle" -ge 600 ] 2>/dev/null ;;
+    승인대기) [ -z "$idle" ] && return 0; [ "$idle" -ge "$abandon" ] 2>/dev/null ;;
+    *)        return 1 ;;
+  esac
+}
+
 cc_run_grade() {
   # cc_run_grade <token> — the selection rank of a state token, 1 (best) to 9.
   #
@@ -595,7 +652,7 @@ cc_run_state() {
   # path — so a predicate that only read `done` would answer "진행 중" forever
   # for runs that had plainly ended.
   local run_dir="$1" ledger="$2" stall="${3:-180}" abandon="${4:-3600}"
-  local live pend nonterm n_seg blocked_n grew now idle
+  local live pend nonterm n_seg blocked_n idle
 
   live=$(cc_live_stages "$run_dir")
   [ "$live" -gt 0 ] 2>/dev/null && { printf '도는중'; return 0; }
@@ -618,17 +675,11 @@ cc_run_state() {
 
   [ "${pend:-0}" -gt 0 ] 2>/dev/null && { printf '승인대기'; return 0; }
 
-  grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
+  idle=$(cc_run_idle_seconds "$run_dir" "$ledger")
   # NO CLOCK AT ALL IS THE STRONGEST IDLE SIGNAL, not the weakest. Neither the
   # watcher's field nor a ledger file means nothing has ever been recorded about
   # this run, and the honest reading of that is 버려짐 rather than 진행중.
-  [ -n "$grew" ] || { printf '버려짐'; return 0; }
-  now=$(date -u +%s)
-  idle=$((now - grew))
-  # Clamped, because a ledger mtime in the future is not hypothetical — one run
-  # on this host measured 28 seconds ahead. A negative idle would otherwise read
-  # as the freshest run on the screen.
-  [ "$idle" -lt 0 ] && idle=0
+  [ -n "$idle" ] || { printf '버려짐'; return 0; }
   [ "$idle" -ge "$abandon" ] 2>/dev/null && { printf '버려짐'; return 0; }
   [ "$idle" -ge "$stall" ] 2>/dev/null && { printf '정지경고'; return 0; }
 
