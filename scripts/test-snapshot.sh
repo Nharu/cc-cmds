@@ -749,6 +749,259 @@ done
 check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
 
 # ---------------------------------------------------------------------------
+# 6f. The stall classifier — `stall-class.awk` and the `stalls` key
+#
+# Every ledger here is synthetic and written to its own file under $WORK; the
+# fixture ledger is never touched, so no later section sees these rows. The
+# classifier is called directly for the row rules, and the sourced snapshot is
+# called with `LEDGER` swapped in a subshell where the key itself is the claim.
+# Rows carrying a `발견 지문` are planted by hand: the gate refuses that field
+# from a caller, which guards `act`, not a direct write.
+#
+# Expected values are compared as `세그먼트/부류/사이클` words read through jq,
+# never by grepping the JSON text, and a `처분` other than `지시` is appended to
+# the word so it cannot pass unseen.
+# ---------------------------------------------------------------------------
+SC_AWK="$repo_root/plugins/cc-cmds/orchestrator/stall-class.awk"
+SC_N=0
+sc_rep() {
+  # A bare name is a report path of the usual shape; `-`, a path and any other
+  # literal value pass through as written.
+  case "$1" in
+    -|*/*|'('*) printf '%s' "$1" ;;
+    *) printf 'docs/reviews/%s.md' "$1" ;;
+  esac
+}
+sc_c() {
+  # sc_c <segment> <cycle> <P0> <P1> <HEAD> <report> [<fingerprint>] [<extra fields>]
+  local fp=""
+  [ -n "${7:-}" ] && fp=" | 발견 지문=$7"
+  printf -- '- `cycle` | 세그먼트=%s | 사이클=%s | P0=%s | P1=%s | 리뷰 HEAD=%s | 리포트 경로=%s%s%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$(sc_rep "$6")" "$fp" "${8:-}"
+}
+sc_i() {
+  # sc_i <segment> <digest or -> [<terminal class>] — an implement stage-result.
+  local d=""
+  [ "$2" = "-" ] || d=" | plan_sha256=$2"
+  printf -- '- `stage-result` | 세그먼트=%s | 스테이지=%s-impl | 종류=implement | 종료 코드=0%s | 종단 부류=%s\n' \
+    "$1" "$1" "$d" "${3:-정상 완료}"
+}
+sc_x() {
+  printf -- '- `stage-result` | 세그먼트=%s | 스테이지=%s-impl | 종류=implement | 종료 코드=143 | 종단 부류=외부 종료\n' "$1" "$1"
+}
+sc_led() {
+  # sc_led <row>... — writes a fresh ledger and prints its path.
+  SC_N=$((SC_N + 1))
+  local f="$WORK/stall-$SC_N.md"
+  printf '%s\n' "$@" > "$f"
+  printf '%s' "$f"
+}
+sc_words() {
+  # The `stalls` items on stdin (an array body or a whole array) as words.
+  jq -r 'if type == "array" then . else [.] end
+         | [.[] | "\(.["세그먼트"])/\(.["부류"])/\(.["사이클"])" + (if .["처분"] == "지시" then "" else "/처분=\(.["처분"])" end)]
+         | join(" ")'
+}
+sc_last() {
+  { printf '[\n'; LC_ALL=C awk -v mode=last -v root=/r -f "$SC_AWK" "$1"; printf ']\n'; } | sc_words
+}
+sc_all() { LC_ALL=C awk -v mode=all -v root=/r -f "$SC_AWK" "$1"; }
+sc_case() {
+  # sc_case <title> <want> <row>...
+  local t=$1 w=$2 f
+  shift 2
+  f=$(sc_led "$@")
+  check "$t" "$(sc_last "$f")" "$w"
+}
+sc_snap() {
+  # The whole snapshot object of ledger $1, from the sourced gate.
+  ( LEDGER="$1"; gate_snapshot )
+}
+P_NEW=$(printf 'a%.0s' $(seq 64))
+P_OLD=$(printf 'b%.0s' $(seq 64))
+P_UP=$(printf 'C%.0s' $(seq 64))
+P_63=$(printf 'c%.0s' $(seq 63))
+H1=1111111; H2=2222222; H3=3333333; H4=4444444; HH=abcdef0
+
+f=$(sc_led "$(sc_c S7 1 0 1 abc1234 r1)" "$(sc_c S7 2 0 1 abc1234ef r2)")
+check "같은 커밋의 두 리뷰는 NO_DRIFT 다" "$(sc_last "$f")" "S7/NO_DRIFT/2"
+check "stalls 항목의 키는 정확히 넷이다" \
+  "$({ printf '[\n'; LC_ALL=C awk -v mode=last -v root=/r -f "$SC_AWK" "$f"; printf ']\n'; } | jq -r '.[0] | keys | length')" "4"
+sc_case "리포트 키 없는 앞 행은 같은 커밋의 뒤 행에 흡수된다" "" \
+  "$(printf -- '- `cycle` | 세그먼트=S3 | 사이클=3 | P0=0 | P1=0 | 리뷰 HEAD=%s' "$HH")" "$(sc_c S3 4 0 1 "$HH" r3)"
+sc_case "같은 번호는 한 리뷰다" "" "$(sc_c S3 4 0 1 "$HH" r4)" "$(sc_c S3 4 0 1 "$HH" r4b)"
+sc_case "거꾸로 가는 번호는 NO_DRIFT 가 아니다" "" "$(sc_c S3 5 0 1 "$HH" r5)" "$(sc_c S3 4 0 1 "$HH" r4)"
+sc_case "접두가 아닌 HEAD 는 같은 커밋이 아니다" "" "$(sc_c S3 1 0 1 abc1234 r1)" "$(sc_c S3 2 0 1 abd1234 r2)"
+sc_case "64자 HEAD 는 단절 행이다" "" "$(sc_c S7 1 0 1 abc1234 r1)" "$(sc_c S7 2 0 1 "abc1234$(printf 'e%.0s' $(seq 57))" r2)"
+
+DR_1=$(sc_c S6 1 0 3 "$H1" r1); DR_2=$(sc_c S6 2 0 2 "$H2" r2); DR_3=$(sc_c S6 3 0 3 "$H3" r3)
+sc_case "P1 이 다시 오르면 DIMINISHING_RETURNS 다" "S6/DIMINISHING_RETURNS/3" "$DR_1" "$DR_2" "$DR_3"
+sc_case "음성 — P1 이 3·2·1 로 줄면 라벨이 없다" "" "$DR_1" "$DR_2" "$(sc_c S6 3 0 1 "$H3" r3)"
+sc_case "음성 — 창 안의 P0=1 이 막는다" "" "$DR_1" "$(sc_c S6 2 1 2 "$H2" r2)" "$DR_3"
+sc_case "리포트 없는 가운데 행(-)이 창을 끊는다" "" "$DR_1" "$(sc_c S6 2 0 2 "$H2" -)" "$DR_3"
+sc_case "리포트 없는 가운데 행((없음))이 창을 끊는다" "" "$DR_1" "$(sc_c S6 2 0 2 "$H2" '(없음)')" "$DR_3"
+for v in "P1=08:S6/DIMINISHING_RETURNS/3" "P1=abc:" "사이클=x:"; do
+  kv=${v%%:*}; want=${v#*:}
+  case "$kv" in
+    P1=*) mid=$(sc_c S6 2 0 "${kv#P1=}" "$H2" r2) ;;
+    *)    mid=$(sc_c S6 "${kv#사이클=}" 0 2 "$H2" r2) ;;
+  esac
+  f=$(sc_led "$DR_1" "$mid" "$DR_3")
+  check "가운데 행 ${kv} 의 라벨" "$(sc_last "$f")" "$want"
+  ( LEDGER="$f"; gate_snapshot_digest >/dev/null 2>&1 )
+  check "가운데 행 ${kv} 에서도 스냅숏 다이제스트가 rc 0 이다" "$?" "0"
+done
+
+sc_case "같은 지문이 세 리뷰 연속이면 SPINNING 이다" "S2/SPINNING/3" \
+  "$(sc_c S2 1 1 1 "$H1" r1 X)" "$(sc_c S2 2 1 1 "$H2" r2 X)" "$(sc_c S2 3 1 1 "$H3" r3 X)"
+sc_case "음성 — 지문이 없으면 라벨이 없다" "" \
+  "$(sc_c S2 1 1 1 "$H1" r1)" "$(sc_c S2 2 1 1 "$H2" r2)" "$(sc_c S2 3 1 1 "$H3" r3)"
+sc_case "음성 — 셋째 행이 0/0 이면 라벨이 없다" "" \
+  "$(sc_c S2 1 1 1 "$H1" r1 X)" "$(sc_c S2 2 1 1 "$H2" r2 X)" "$(sc_c S2 3 0 0 "$H3" r3 X)"
+sc_case "같은 HEAD 접기는 SPINNING 창에만 걸린다" "S1/NO_DRIFT/4" \
+  "$(sc_c S1 2 1 1 "$H1" r2 X)" "$(sc_c S1 3 1 1 "$H2" r3 X)" "$(sc_c S1 4 1 1 "$H2" r4 X)"
+sc_case "지문 A,B,A,B 는 OSCILLATION 이다" "S/OSCILLATION/4" \
+  "$(sc_c S 1 1 1 "$H1" r1 A)" "$(sc_c S 2 1 1 "$H2" r2 B)" "$(sc_c S 3 1 1 "$H3" r3 A)" "$(sc_c S 4 1 1 "$H4" r4 B)"
+sc_case "음성 — 지문 A,B,A,A 는 라벨이 없다" "" \
+  "$(sc_c S 1 1 1 "$H1" r1 A)" "$(sc_c S 2 1 1 "$H2" r2 B)" "$(sc_c S 3 1 1 "$H3" r3 A)" "$(sc_c S 4 1 1 "$H4" r4 A)"
+sc_case "지문 A,A,A,A 는 SPINNING 만이다" "S/SPINNING/4" \
+  "$(sc_c S 1 1 1 "$H1" r1 A)" "$(sc_c S 2 1 1 "$H2" r2 A)" "$(sc_c S 3 1 1 "$H3" r3 A)" "$(sc_c S 4 1 1 "$H4" r4 A)"
+MIXED=("$(sc_c S1 1 0 2 "$H1" r1)" "$(sc_c S2 1 1 1 a111111 e1 X)" "$(sc_c S1 2 0 2 "$H2" r2)" \
+  "$(sc_c S2 2 1 1 a222222 e2 X)" "$(sc_c S1 3 0 2 "$H3" r3)" "$(sc_c S2 3 1 1 a333333 e3 X)" "$(sc_c S1 4 0 2 "$H3" r4)")
+sc_case "우선순위 없이 세그먼트 순서와 부류 순서로 낸다" \
+  "S1/NO_DRIFT/4 S1/DIMINISHING_RETURNS/4 S2/SPINNING/3" "${MIXED[@]}"
+sc_case "SPINNING 과 DIMINISHING_RETURNS 가 함께 선다" "S/SPINNING/3 S/DIMINISHING_RETURNS/3" \
+  "$(sc_c S 1 0 2 "$H1" r1 X)" "$(sc_c S 2 0 1 "$H2" r2 X)" "$(sc_c S 3 0 2 "$H3" r3 X)"
+sc_case "머지된 세그먼트의 라벨도 남는다(결과 필터 없음)" "S6/DIMINISHING_RETURNS/3" \
+  "$DR_1" "$DR_2" "$DR_3" '- `segment` | 세그먼트=S6 | 상태=머지됨'
+f=$(sc_led "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 "$P_NEW")")
+check "뒤따른 새 계획이 라벨을 소비한다" "$(sc_last "$f")" ""
+check "mode=all 이 소비 줄로 그 구현 행의 줄을 낸다" "$(sc_all "$f" | cut -f2,4,5,6)" \
+  "$(printf '3\tDIMINISHING_RETURNS\t4\t-')"
+sc_case "다시 실은 다이제스트는 소비하지 않는다" "S6/DIMINISHING_RETURNS/3" \
+  "$(sc_i S6 "$P_OLD")" "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 "$P_OLD")"
+sc_case "다이제스트 없는 구현 행은 소비하지 않는다" "S6/DIMINISHING_RETURNS/3" \
+  "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 -)"
+sc_case "외부 종료 정산 행은 소비하지 않는다" "S6/DIMINISHING_RETURNS/3" \
+  "$DR_1" "$DR_2" "$DR_3" "$(sc_x S6)"
+sc_case "다른 세그먼트의 계획은 소비하지 않는다" "S6/DIMINISHING_RETURNS/3" \
+  "$DR_1" "$DR_2" "$DR_3" "$(sc_i S9 "$P_NEW")"
+sc_case "대문자 다이제스트는 소비하지 않는다" "S6/DIMINISHING_RETURNS/3" \
+  "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 "$P_UP")"
+sc_case "63자 다이제스트는 소비하지 않는다" "S6/DIMINISHING_RETURNS/3" \
+  "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 "$P_63")"
+sc_case "라벨 행 앞의 계획은 소비하지 않는다" "S6/DIMINISHING_RETURNS/3" \
+  "$DR_1" "$DR_2" "$(sc_i S6 "$P_NEW")" "$DR_3"
+sc_case "새 리뷰가 라벨을 다시 켠다" "S6/DIMINISHING_RETURNS/4" \
+  "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 "$P_NEW")" "$(sc_c S6 4 0 3 "$H4" r4)"
+sc_case "크래시로 끝난 process A 의 계획도 소비한다" "" \
+  "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 "$P_NEW" 크래시)"
+sc_case "같은 번호 정정이 거짓 DIMINISHING_RETURNS 를 만들지 않는다" "" \
+  "$(sc_c S6 1 0 1 "$H1" r1)" "$(sc_c S6 2 0 2 "$H2" r2)" "$(sc_c S6 2 0 2 "$H2" r2b)"
+CORR_B=("$(sc_c S6 1 0 2 "$H1" r1)" "$(sc_c S6 2 0 2 "$H2" r2)" "$(sc_c S6 3 0 2 "$H3" r3)" \
+  "$(sc_i S6 "$P_NEW")" "$(sc_c S6 3 0 3 "$H3" r3b)")
+sc_case "이미 라벨을 지닌 행에서 창이 열려 사이의 계획이 소비한다" "" "${CORR_B[@]}"
+sc_case "리뷰 id 와 수리 id 가 다르면 소비되지 않는다" "S2C2/DIMINISHING_RETURNS/3" \
+  "$(sc_c S2C2 1 0 3 "$H1" r1)" "$(sc_c S2C2 2 0 2 "$H2" r2)" "$(sc_c S2C2 3 0 3 "$H3" r3)" "$(sc_i S2R1 "$P_NEW")"
+
+f=$(sc_led "$(sc_c 'a"b\c' 1 0 1 "$HH" r1)" "$(sc_c 'a"b\c' 2 0 1 "$HH" r2)")
+check "따옴표와 역슬래시를 품은 세그먼트가 이스케이프되어 되돌아온다" "$(sc_last "$f")" 'a"b\c/NO_DRIFT/2'
+f=$(sc_led "$(sc_c "$(printf 'S\377')" 1 0 1 "$HH" r1)" "$(sc_c "$(printf 'S\377')" 2 0 1 "$HH" r2)")
+n_ff=$({ printf '[\n'; LC_ALL=C awk -v mode=last -v root=/r -f "$SC_AWK" "$f"; printf ']\n'; } | jq -r 'length' 2>/dev/null)
+check "0xff 바이트의 세그먼트도 항목이 나오고 jq 가 읽는다" "$n_ff" "1"
+f=$(sc_led "$(sc_c "$(printf 'S\001')" 1 0 1 "$HH" r1)" "$(sc_c "$(printf 'S\001')" 2 0 1 "$HH" r2)")
+check "0x01 바이트의 세그먼트는 단절 행이다" "$(sc_last "$f")" ""
+sc_snap "$f" > "$WORK/stall-ctl.json" 2>/dev/null
+check "그 원장에서도 스냅숏이 rc 0 이다" "$?" "0"
+
+# The classifier missing, then a stand-in that prints an item and fails.
+f=$(sc_led "$(sc_c S7 1 0 1 abc1234 r1)" "$(sc_c S7 2 0 1 abc1234ef r2)")
+sc_snap "$f" > "$WORK/stall-ok.json" 2>/dev/null
+check "대조 — 분류기가 있으면 stalls 에 항목이 있다" "$(jq -r '.stalls | length' "$WORK/stall-ok.json")" "1"
+( GATE_DIR="$WORK/no-such-dir"; LEDGER="$f"; gate_snapshot ) > "$WORK/stall-miss.json" 2> "$WORK/stall-miss.err"
+check "분류기가 없어도 스냅숏은 rc 0 이다" "$?" "0"
+check "분류기가 없으면 stalls 는 빈 배열이다" "$(jq -c '.stalls' "$WORK/stall-miss.json")" "[]"
+check "분류기가 없으면 stderr 에 경고가 한 줄 있다" "$(grep -c '정체 라벨 계산 실패' "$WORK/stall-miss.err")" "1"
+check "분류기가 없어도 stalls 밖의 키는 H 를 포함해 바이트로 같다" \
+  "$(jq -S 'del(.stalls)' "$WORK/stall-miss.json")" "$(jq -S 'del(.stalls)' "$WORK/stall-ok.json")"
+mkdir -p "$WORK/fake-gate"
+printf '%s\n' 'BEGIN { printf "    {\"세그먼트\": \"Z\", \"부류\": \"NO_DRIFT\", \"사이클\": \"1\", \"처분\": \"지시\"}\n"; exit 1 }' \
+  > "$WORK/fake-gate/stall-class.awk"
+( GATE_DIR="$WORK/fake-gate"; LEDGER="$f"; gate_snapshot ) > "$WORK/stall-fake.json" 2>/dev/null
+check "항목을 찍고 실패한 분류기의 출력은 버려진다" "$(jq -c '.stalls' "$WORK/stall-fake.json" 2>/dev/null)" "[]"
+if jq -e . "$WORK/stall-fake.json" >/dev/null 2>&1; then
+  ok "실패한 분류기 뒤에도 스냅숏 전체가 유효한 JSON 이다"
+else
+  bad "실패한 분류기 뒤의 스냅숏 JSON" "실패한 분류기의 반쪽 출력이 새어 들었다"
+fi
+
+f=$(sc_led "${MIXED[@]}" "$DR_1" "$DR_2" "$DR_3" "$(sc_i S6 "$P_NEW")")
+cur_all=$(sc_all "$f" | awk -F'\t' '$6 == "현재" { printf "%s%s/%s/%s", (n++ ? " " : ""), $1, $4, $3 }')
+cur_last=$(sc_last "$f")
+check "mode=all 의 현재 줄 투영이 mode=last 와 같다" "$cur_all" "$cur_last"
+check "mode=last 가 스냅숏의 stalls 와 같다" "$(sc_snap "$f" 2>/dev/null | jq '.stalls' | sc_words)" "$cur_last"
+check "분류기에 정규식 구간 반복이 없다" "$(grep -cE '\{[0-9]' "$SC_AWK")" "0"
+check "분류기에 GNU 전용 함수가 없다" "$(grep -cE 'gensub|asort|strftime|systime' "$SC_AWK")" "0"
+check "분류기에 단어 경계 이스케이프가 없다" "$(grep -cF -e '\<' -e '\b' "$SC_AWK")" "0"
+
+sc_case "경로 모양이 아닌 리포트 값은 단절 행이다" "" \
+  "$(sc_c S 1 0 2 aaaaaa1 r1)" "$(sc_c S 2 0 2 aaaaaa2 '(선머지후리뷰 — 리뷰는 머지 뒤 S2)')" "$(sc_c S 3 0 2 aaaaaa2 r3)"
+sc_case "경로 아닌 앞 행은 같은 HEAD 의 뒤 리뷰와 NO_DRIFT 를 이루지 않는다" "" \
+  "$(sc_c S 1 0 1 "$HH" '(선머지후리뷰 — 리뷰는 머지 뒤 S2)')" "$(sc_c S 2 0 1 "$HH" r2)"
+sc_case "대조 — 경로 모양 앞 행이면 NO_DRIFT 가 선다" "S/NO_DRIFT/2" \
+  "$(sc_c S 1 0 1 "$HH" docs/reviews/x.md)" "$(sc_c S 2 0 1 "$HH" r2)"
+sc_case "흡수된 단절 행은 NO_DRIFT 를 만들지 않는다" "" "$(sc_c S 4 0 0 "$HH" -)" "$(sc_c S 5 0 1 "$HH" r5)"
+sc_case "흡수된 단절 행은 창을 끊지 않는다" "S/DIMINISHING_RETURNS/4" \
+  "$(sc_c S 1 0 2 "$H1" r1)" "$(sc_c S 2 0 0 "$H2" -)" "$(sc_c S 3 0 2 "$H2" r3)" "$(sc_c S 4 0 2 "$H3" r4)"
+sc_case "같은 리포트는 한 리뷰다" "" "$(sc_c S 4 0 1 "$HH" r)" "$(sc_c S 5 0 1 "$HH" r)"
+sc_case "첫 행의 P1 이 0 이면 DIMINISHING_RETURNS 가 아니다" "" \
+  "$(sc_c S 1 0 0 "$H1" r1)" "$(sc_c S 2 0 0 "$H2" r2)" "$(sc_c S 3 0 1 "$H3" r3)"
+sc_case "2·1·2 는 DIMINISHING_RETURNS 다" "S/DIMINISHING_RETURNS/3" \
+  "$(sc_c S 1 0 2 "$H1" r1)" "$(sc_c S 2 0 1 "$H2" r2)" "$(sc_c S 3 0 2 "$H3" r3)"
+sc_case "DIMINISHING_RETURNS 도 같은 HEAD 를 접는다" "S/NO_DRIFT/4" \
+  "$(sc_c S 1 0 3 "$H1" r1)" "$(sc_c S 2 0 1 "$H2" r2)" "$(sc_c S 3 0 1 "$H3" r3)" "$(sc_c S 4 0 1 "$H3" r4)"
+sc_case "P0 가 남는 루프에는 라벨이 없다" "" \
+  "$(sc_c S 1 1 5 "$H1" r1)" "$(sc_c S 2 1 6 "$H2" r2)" "$(sc_c S 3 1 7 "$H3" r3)"
+f=$(sc_led "$(sc_c S 1 0 2 "$H1" r1)" "$(sc_c S 2 0 2 "$H2" r2)" "$(sc_c S 3 0 1 "$H3" r3)" \
+  "$(sc_i S "$P_NEW")" "$(sc_c S 3 0 3 "$H3" r3b)")
+check "정정이 새로 세운 라벨은 정정 전 계획이 소비하지 않는다" "$(sc_last "$f")" "S/DIMINISHING_RETURNS/3"
+check "그 라벨의 mode=all 소비 줄은 - 다" "$(sc_all "$f" | cut -f2,4,5,6)" "$(printf '5\tDIMINISHING_RETURNS\t-\t현재')"
+f=$(sc_led "${CORR_B[@]}")
+check "라벨 있는 c3 는 사이의 계획이 소비한다" "$(sc_last "$f")" ""
+f=$(sc_led "$(sc_c S 1 0 2 "$H1" r1)" "$(sc_c S 2 0 2 "$H2" r2)" "$(sc_c S 3 0 2 "$H3" r3)" \
+  "$(sc_i S "$P_NEW")" "$(sc_c S 3 0 1 "$H3" r3b)")
+check "라벨을 지운 정정 뒤에는 라벨이 없다" "$(sc_last "$f")" ""
+check "라벨을 지운 정정 뒤 mode=all 은 소비된 c3 의 라벨 한 줄을 낸다" "$(sc_all "$f" | cut -f2,4,5,6)" \
+  "$(printf '3\tDIMINISHING_RETURNS\t4\t-')"
+sc_case "분류기는 모드를 읽지 않는다 — 같은 HEAD 의 델타 행도 NO_DRIFT 를 세운다" "S/NO_DRIFT/4" \
+  "$(sc_c S 3 0 2 "$HH" r3)" "$(sc_c S 4 0 2 "$HH" r4 '' ' | 모드=델타 | 기준 사이클=3')"
+LC_ALL=C awk -v mode=last -f "$SC_AWK" "$f" "$f" >/dev/null 2>&1
+check "원장 피연산자 둘은 exit 2 다" "$?" "2"
+
+# The builder's root and the morning report's root read one ledger alike.
+rt_d=${MANIFEST%/*}; rt_r=${rt_d%/*}; rt_r=${rt_r%/*}
+rt_p=$(cd "$rt_d/../.." && pwd)
+f=$(sc_led "$(sc_c S3 4 0 3 "$HH" docs/reviews/v4.md)" "$(sc_c S3 5 0 3 "$HH" "$rt_r/docs/reviews/v4.md")")
+rt_a=$(LC_ALL=C awk -v mode=all -v root="$rt_r" -f "$SC_AWK" "$f")
+rt_b=$(LC_ALL=C awk -v mode=all -v root="$rt_p" -f "$SC_AWK" "$f")
+check "빌더의 루트와 아침 보고의 루트가 같은 출력을 낸다" "$rt_a" "$rt_b"
+check "같은 리포트의 두 철자에는 라벨이 없다" "$rt_a" ""
+sc_case "사이클은 수치로 견준다" "S/NO_DRIFT/10" "$(sc_c S 9 0 1 "$HH" r9)" "$(sc_c S 10 0 1 "$HH" r10)"
+sc_case "P1 은 수치로 견준다" "S/DIMINISHING_RETURNS/3" \
+  "$(sc_c S 1 0 9 "$H1" r1)" "$(sc_c S 2 0 5 "$H2" r2)" "$(sc_c S 3 0 10 "$H3" r3)"
+
+# The four directive texts process A copies into its plan, each carried once.
+IU_SKILL="$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md"
+for lit in \
+  '같은 커밋이 두 번 리뷰됐다 — 고치기로 한 발견은 새 커밋으로 끝내고, 고치지 않기로 한 발견은 그 판단을 계획에 적는다' \
+  '같은 파일 집합이 세 리뷰 연속 P0/P1 발견을 지녔다 — 같은 수정을 반복하지 말고 접근을 바꾼다' \
+  '발견의 파일 집합이 네 리뷰에 걸쳐 번갈아 나왔다 — 둘을 함께 만족하는 수정을 찾는다' \
+  '발견의 사례가 아니라 그 부류를 고친다'
+do
+  check "지시 문면 「${lit}」이 구현 스킬에 한 번 실린다" "$(grep -c -F -- "$lit" "$IU_SKILL")" "1"
+done
+
+# ---------------------------------------------------------------------------
 # 7. The chain is what covers the ledger
 #
 # The ledger is deliberately NOT in the enforcement-surface digest: it grows on
