@@ -7019,7 +7019,34 @@ gate_segment_anchor_worktree() {
   # cleared condition 11. After a merge is recorded there is no record left to
   # establish. `완료` and `park` do not end the candidates, because a segment
   # resumes after them.
-  local seg="$1" al="${2:-}" main="" main_p="" rows row wt wt_p top_p
+  #
+  # "THE TOP LEVEL OF A CHECKOUT OTHER THAN THE MAIN ONE" IS STILL A SHAPE, and
+  # every other linked worktree of the same repository has it. A first row
+  # naming a sibling segment's tree, or a linked worktree sitting on another
+  # branch, became the record; a merge carrying commits no review had covered
+  # then read `충족` from that tree's tip, and the honest terminal row naming
+  # the segment's own tree was refused. Two conditions tie the record to the
+  # segment:
+  #
+  #   - a worktree that ANOTHER SEGMENT'S row named EARLIER in the ledger is
+  #     never this segment's record — matched as spelled, and as `pwd -P`
+  #     resolves both when both exist, so it holds after the directory is
+  #     removed. Only earlier rows count: a sibling row naming this segment's
+  #     tree later must not erase a record already established, and the
+  #     sibling cannot take that tree as its own record either, because this
+  #     segment's row naming it comes first;
+  #   - when the segment's rows carry `브랜치`, a candidate directory that
+  #     still exists and is the top level of a checkout must have one of those
+  #     branches checked out. A detached HEAD, or another branch, is skipped.
+  #     A segment whose rows name no branch is held to the structural tests
+  #     and the exclusion above only.
+  #
+  # The target's declared `실행 워크트리` is not excluded by name: it records
+  # the linked worktree the target's branch is checked out in, which for a
+  # segment inherited from an earlier run is the segment's own tree. When it
+  # has another branch checked out, the branch binding skips it.
+  local seg="$1" al="${2:-}" main="" main_p="" rows row wt wt_p top_p br branches
+  local others="" o o_p kind skip
   if [ -n "$al" ]; then
     main=$(target_field "$al" '메인 워크트리' 2>/dev/null) || main=""
     main_p=$(alias_root "$al" 2>/dev/null) || main_p=""
@@ -7027,29 +7054,66 @@ gate_segment_anchor_worktree() {
       main_p=$(cd "$main_p" 2>/dev/null && pwd -P) || main_p=""
     fi
   fi
-  rows=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
-          | awk -v ts=" $TERMINAL_SEGMENT_STATES " '
-              { n = split($0, f, "|"); st = ""
+  branches=" $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
+                | tr '|' '\n' | sed -n 's/^ *브랜치=//p' | sed -e 's/[[:space:]]*$//' -e 's#^refs/heads/##' -e '/^-$/d' \
+                | tr '\n' ' ')"
+  # One pass in ledger order: `O<TAB>path` for the worktree of another
+  # segment's row, `C<TAB>row` for this segment's non-terminal rows, stopping
+  # at this segment's first `머지됨` row. Fields are read as `gate_row_field`
+  # and `gate_rows_field_eq` read them — trimmed, the last one with a key wins.
+  rows=$(gate_rows 'segment' \
+          | GATE_ANCHOR_SEG="$seg" awk -v ts=" $TERMINAL_SEGMENT_STATES " '
+              { n = split($0, f, "|"); st = ""; id = ""; wt = ""; hid = 0
                 for (i = 2; i <= n; i++) {
                   s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
                   if (index(s, "상태=") == 1) st = substr(s, length("상태=") + 1)
+                  if (index(s, "id=") == 1) { id = substr(s, 4); hid = 1 }
+                  if (index(s, "워크트리=") == 1) wt = substr(s, length("워크트리=") + 1)
+                }
+                if (!hid || id != ENVIRON["GATE_ANCHOR_SEG"]) {
+                  if (wt != "") print "O\t" wt
+                  next
                 }
                 if (st == "머지됨") exit
-                if (st != "" && index(ts, " " st " ") == 0) print }')
+                if (st != "" && index(ts, " " st " ") == 0) print "C\t" $0 }')
   [ -n "$rows" ] || return 0
   while IFS= read -r row; do
     [ -n "$row" ] || continue
+    kind=${row%%"	"*}
+    row=${row#*"	"}
+    if [ "$kind" = 'O' ]; then
+      others="$others$row
+"
+      continue
+    fi
     wt=$(gate_row_field "$row" '워크트리')
     [ -n "$wt" ] || continue
     if [ -n "$main" ] && [ "$wt" = "$main" ]; then continue; fi
     wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
     if [ -n "$main_p" ] && [ -n "$wt_p" ] && [ "$wt_p" = "$main_p" ]; then continue; fi
+    skip=""
+    while IFS= read -r o; do
+      [ -n "$o" ] || continue
+      if [ "$o" = "$wt" ]; then skip=1; break; fi
+      if [ -n "$wt_p" ]; then
+        o_p=$(cd "$o" 2>/dev/null && pwd -P) || o_p=""
+        if [ -n "$o_p" ] && [ "$o_p" = "$wt_p" ]; then skip=1; break; fi
+      fi
+    done <<GATE_ANCHOR_OTHERS
+$others
+GATE_ANCHOR_OTHERS
+    [ -z "$skip" ] || continue
     if [ -n "$wt_p" ]; then
       top_p=$(cd "$wt_p" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || top_p=""
       if [ -n "$top_p" ]; then
         top_p=$(cd "$top_p" 2>/dev/null && pwd -P) || top_p=""
         [ "$top_p" = "$wt_p" ] || continue
         if [ -n "$main_p" ] && [ "$top_p" = "$main_p" ]; then continue; fi
+        if [ -n "${branches// /}" ]; then
+          br=$(cd "$wt_p" 2>/dev/null && git symbolic-ref --quiet --short HEAD 2>/dev/null) || br=""
+          [ -n "$br" ] || continue
+          case "$branches" in *" $br "*) ;; *) continue ;; esac
+        fi
       fi
     fi
     printf '%s' "$wt"
@@ -14743,15 +14807,20 @@ gate_record_row() {
       # `pwd -P` resolves them only when both still exist.
       #
       # THE RECORD IS THE SEGMENT'S OWN WORKTREE — the first non-terminal row,
-      # written before the segment's first `머지됨` row, that names the top
-      # level of a checkout other than the target's main one — not its last
-      # row: the last row is the one a caller writes next, so a `리뷰중` row
-      # naming an old checkout moved the record and the merged row then
-      # matched it. The router's `계획됨` row naming the main checkout, or a
-      # directory inside it, is skipped, because that is not where the segment
-      # worked (see `gate_segment_anchor_worktree`). A later non-terminal row
-      # may still name another worktree — the settings derivation follows it —
-      # but a terminal row written after it is held to the record.
+      # written before the segment's first `머지됨` row, that names neither
+      # the target's main checkout, nor a directory inside a checkout, nor a
+      # tree another segment's row named earlier, and, when the segment's rows
+      # carry `브랜치`, whose checkout has one of those branches checked out —
+      # not its last row: the last row is the one a caller writes next, so a
+      # `리뷰중` row naming an old checkout moved the record and the merged row
+      # then matched it. The router's `계획됨` row naming the main checkout, a
+      # directory inside it, or a sibling's tree is skipped, because that is
+      # not where the segment worked (see `gate_segment_anchor_worktree`). A
+      # later non-terminal row may still name another worktree — the settings
+      # derivation follows it — but a terminal row written after it is held to
+      # the record. The refusal does not tell the caller to name the record:
+      # a record established on the wrong tree is a halt, not a spelling to
+      # copy.
       case "$st" in
         머지됨|완료|park)
           local rec_wt rec_p wt_p
@@ -14761,9 +14830,9 @@ gate_record_row() {
             wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
             if [ -z "$rec_p" ] || [ "$rec_p" != "$wt_p" ]; then
               if [ -z "$rec_p" ]; then
-                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록된 디렉터리가 없어 철자로만 비교했습니다. 종단 행은 세그먼트 자신의 워크트리(첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃도, 어느 체크아웃의 하위 디렉터리도 아닌 첫 행의 것)를 답니다"
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록된 디렉터리가 없어 철자로만 비교했습니다. 기록은 첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃이 아니고, 존재하는 저장소 디렉터리라면 그 체크아웃의 최상위이며, 앞서 다른 세그먼트의 행이 단 트리가 아니고, 행에 「브랜치」 가 있으면 그 브랜치를 체크아웃한 첫 행의 워크트리입니다. 이 세그먼트가 그 트리에서 일했다면 그 트리를 답니다. 기록이 세그먼트가 일하지 않은 트리에 잘못 세워졌다면 다른 체크아웃을 대지 말고 halt 기록을 씁니다"
               else
-                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 종단 행은 세그먼트 자신의 워크트리(첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃도, 어느 체크아웃의 하위 디렉터리도 아닌 첫 행의 것)를 답니다"
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록은 첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃이 아니고, 존재하는 저장소 디렉터리라면 그 체크아웃의 최상위이며, 앞서 다른 세그먼트의 행이 단 트리가 아니고, 행에 「브랜치」 가 있으면 그 브랜치를 체크아웃한 첫 행의 워크트리입니다. 이 세그먼트가 그 트리에서 일했다면 그 트리를 답니다. 기록이 세그먼트가 일하지 않은 트리에 잘못 세워졌다면 다른 체크아웃을 대지 말고 halt 기록을 씁니다"
               fi
               return "$GATE_EXIT_VOCAB"
             fi
@@ -14907,10 +14976,23 @@ gate_record_row() {
         # nothing and accepted the row. A segment merged outside the gate from
         # the main checkout, or whose worktree was already gone, loosened its
         # policy that way, and its merged row then read `정책 면제` with
-        # condition 11 empty. So the row is accepted only when some candidate
-        # was actually tested: a landing that answered `미착지`, or a recorded
-        # tip still sitting on the fork point, which says positively that the
-        # segment has no commit of its own yet.
+        # condition 11 empty.
+        #
+        # "SOME CANDIDATE WAS TESTED" WAS NOT THE ANSWER EITHER, because it was
+        # satisfied in two shapes without asking about the code that landed. A
+        # tip matching the `사전 HEAD` or `베이스 sha` of a segment row was taken
+        # as the fork point and counted as tested — but both are values the
+        # caller writes, and the driver records the worktree's HEAD there right
+        # after creating it, which on a resumed segment is the working tip. And
+        # when the tip could not be read at all, one older `리뷰 HEAD` that an
+        # amend had abandoned answered `미착지` in its place. So the evidence is
+        # the recorded worktree's own tip: the row is accepted only when that
+        # tip was read and answered `미착지`, and no other candidate answered
+        # anything else. A tip still on the fork point is refused like a landed
+        # one — the repository cannot tell a segment with no commit of its own
+        # from one fast-forwarded onto the base outside the gate, since both
+        # tips are ancestors of the base — so a policy is chosen on the first
+        # row, or loosened after the segment's first commit.
         if [ "$st" = '머지됨' ] || [ -n "$prior" ]; then
           local ppol ppi
           ppol=""
@@ -14925,47 +15007,36 @@ gate_record_row() {
               warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 머지가 기록된 세그먼트의 리뷰 정책은 느슨하게 바꿀 수 없습니다(종료 조건 11 이 읽는 정책입니다)"
               return "$GATE_EXIT_VOCAB"
             fi
-            local lc lc_cands="" lc_wt lc_tip lc_fork lc_tested="" lc_seen=" "
-            lc_cands="$(gate_field_of '커밋' "$@") $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
-                          | tr '|' '\n' | sed -n 's/^ *커밋=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
-            lc_cands="$lc_cands $(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" \
-                          | tr '|' '\n' | sed -n 's/^ *리뷰 HEAD=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
+            local lc lc_cands lc_wt lc_tip="" lc_seen=" "
             lc_wt=$(gate_segment_anchor_worktree "$seg" "$alias")
             if [ -n "$lc_wt" ]; then
               lc_tip=$(gate_worktree_tip "$lc_wt") || lc_tip=""
-              # A tip that is still the fork point has no commit of the segment's
-              # own on it, and is "on the base" only because nothing has been
-              # done yet. The segment's rows say so when they carry the fork,
-              # and that is an answer: the tip was tested.
-              if [ -n "$lc_tip" ]; then
-                for lc_fork in $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
-                                   | tr '|' '\n' | sed -n -e 's/^ *사전 HEAD=//p' -e 's/^ *베이스 sha=//p' \
-                                   | sed 's/[[:space:]]*$//'); do
-                  [ "${#lc_fork}" -ge 7 ] || continue
-                  case "$lc_tip" in
-                    "$lc_fork"*) lc_tip=""; lc_tested=1; break ;;
-                  esac
-                done
-              fi
-              lc_cands="$lc_cands $lc_tip"
             fi
+            lc_cands="$lc_tip $(gate_field_of '커밋' "$@") $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
+                          | tr '|' '\n' | sed -n 's/^ *커밋=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
+            lc_cands="$lc_cands $(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" \
+                          | tr '|' '\n' | sed -n 's/^ *리뷰 HEAD=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
             for lc in $lc_cands; do
               [ "$lc" != '-' ] || continue
               case "$lc_seen" in *" $lc "*) continue ;; esac
               lc_seen="$lc_seen$lc "
               gate_obligation_landing "$alias" "$lc"
               case "$GATE_LANDING_VERDICT" in
+                미착지) ;;
                 착지)
-                  warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 이 세그먼트의 커밋 $lc 이 이미 베이스에 착지했습니다($GATE_LANDING_WHY). 착지한 머지는 앞 행의 정책 아래서 일어났고 종료 조건 11 이 읽는 정책이라 느슨하게 바꿀 수 없습니다"
+                  if [ "$lc" = "$lc_tip" ]; then
+                    warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 기록된 워크트리 $lc_wt 의 팁 $lc 이 이미 베이스에 착지했습니다($GATE_LANDING_WHY). 자기 커밋이 아직 없는 분기점의 팁도 베이스 위에 있어, 게이트는 그것과 게이트 밖에서 착지한 팁을 구별하지 못합니다 — 정책은 첫 행에서 고릅니다. 앞 행의 정책을 그대로 다시 적거나, 세그먼트의 커밋을 올린 뒤 다시 씁니다"
+                  else
+                    warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 이 세그먼트의 커밋 $lc 이 이미 베이스에 착지했습니다($GATE_LANDING_WHY). 착지한 머지는 앞 행의 정책 아래서 일어났고 종료 조건 11 이 읽는 정책이라 느슨하게 바꿀 수 없습니다"
+                  fi
                   return "$GATE_EXIT_VOCAB" ;;
-                '판정 불가')
-                  warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 커밋 $lc 의 착지를 판정할 수 없습니다 — 레포 접근이 돌아온 뒤 다시 쓰거나, 앞 행의 정책을 그대로 다시 적습니다(「커밋」 을 빼는 것은 복구가 아닙니다): $GATE_LANDING_WHY"
+                *)
+                  warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 커밋 $lc 의 착지를 판정할 수 없습니다 — 레포 접근이 돌아온 뒤 다시 쓰거나, 앞 행의 정책을 그대로 다시 적습니다(「커밋」 을 빼는 것은 복구가 아닙니다): ${GATE_LANDING_WHY:-${GATE_LANDING_VERDICT:-판정 없음}}"
                   return "$GATE_EXIT_VOCAB" ;;
-                미착지) lc_tested=1 ;;
               esac
             done
-            if [ -z "$lc_tested" ]; then
-              warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 착지를 물어볼 후보(커밋·리뷰 HEAD·기록된 워크트리의 팁)가 없어 착지를 판정할 수 없습니다 — 정책은 첫 행에서 고릅니다. 앞 행의 정책을 그대로 다시 적거나(생략하면 이어받습니다), 세그먼트 워크트리가 남아 있으면 그 워크트리를 단 비종단 행으로 기록을 세운 뒤 다시 씁니다"
+            if [ -z "$lc_tip" ]; then
+              warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 착지를 물어볼 후보 중 기록된 워크트리의 팁을 읽을 수 없어 착지를 판정할 수 없습니다(${lc_wt:-기록된 워크트리 없음}) — 낡은 커밋·리뷰 HEAD 의 미착지는 착지한 팁을 대신하지 못합니다. 정책은 첫 행에서 고릅니다. 앞 행의 정책을 그대로 다시 적거나(생략하면 이어받습니다), 세그먼트 워크트리가 남아 있고 머지가 아직 기록되지 않았으면 그 워크트리를 단 비종단 행으로 기록을 세운 뒤 다시 씁니다"
               return "$GATE_EXIT_VOCAB"
             fi
           fi
