@@ -232,6 +232,11 @@ def split_paths(value):
         if not e.strip() or "`" in e or e != e.strip():
             faults.append("항목 %s" % x.strip())
             continue
+        if e == x.strip() and any(ch.isspace() for ch in e):
+            # A bare entry with a space is a path plus a note (`src/x.py
+            # (신규)`); a path that holds a space goes in a code span.
+            faults.append("항목 %s" % x.strip())
+            continue
         p = norm_path(e)
         if p == ".." or p.startswith("../"):
             faults.append("항목 %s" % x.strip())
@@ -346,17 +351,43 @@ def glob_prefix(path):
     return path[:cut], cut < len(path)
 
 
+def class_hit(path, entry):
+    """Whether entry, its brackets read as character classes, matches path.
+
+    `[` is a path character, but an entry written as a class (`src/[ab].py`)
+    must not pass as a literal that meets nothing: the pair is reported.
+    """
+    return "[" in entry and fnmatch.fnmatchcase(path, entry)
+
+
 def paths_overlap(a, b):
     pa, ga = glob_prefix(a)
     pb, gb = glob_prefix(b)
     if not ga and not gb:
-        return a == b
+        return a == b or class_hit(a, b) or class_hit(b, a)
     return pa.startswith(pb) or pb.startswith(pa)
 
 
+def whole_repo_share(s):
+    """Whether shared entry s covers any path of the repository, whatever its
+    spelling: it covers a root file or a nested path made only of a letter s
+    never spells. `*`, `**`, `**/*` and `?*` do; `*.lock`, `**/*.py` and
+    `src/**` fix a name and do not.
+    """
+    if s == WHOLE_REPO:
+        return True
+    c = next(ch for ch in map(chr, range(0x61, 0x110000)) if ch.isalnum() and ch not in s)
+    n = c * 8
+    probes = (n, n + "." + n, n + "/" + n, n + "/" + n + "." + n)
+    return any(covered_by(x, s) for x in probes)
+
+
 def covered_by(p, s):
-    """Whether shared entry s certainly contains every path owned entry p names."""
-    if p == s or s == WHOLE_REPO:
+    """Whether shared entry s certainly contains every path owned entry p names.
+
+    A glob is matched with fnmatch, where `*` and `?` also match `/`.
+    """
+    if p == s:
         return True
     ps, gp = glob_prefix(p)
     if s.endswith("/") and glob_prefix(s)[0] == s:
@@ -412,11 +443,12 @@ class Graph(object):
             files = {}
             for key in ("소유 파일", "공유 파일"):
                 entries, faults = split_paths(f.get(key))
-                if key == "공유 파일" and WHOLE_REPO in entries:
+                whole = [x for x in entries if whole_repo_share(x)] if key == "공유 파일" else []
+                if whole:
                     # Shared lists exempt both tickets of a pair, so a shared
                     # whole repository would switch P3 off for every pair.
-                    entries = [x for x in entries if x != WHOLE_REPO]
-                    faults.append("레포 전체 공유 항목")
+                    entries = [x for x in entries if x not in whole]
+                    faults.append("레포 전체 공유 항목 %s" % ", ".join(whole))
                 files[key] = entries
                 if faults:
                     self.add("P1", "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(faults)))

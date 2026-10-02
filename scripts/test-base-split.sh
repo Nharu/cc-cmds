@@ -92,9 +92,42 @@ elif variant == "bracepos":
     tickets[0]["owned"] = ["src/{a,b}.py"]
     tickets[1]["owned"] = ["src/a.py"]
 elif variant == "classlit":
-    # `[` is a path character, not a class: `src/[a,b].py` names one file.
+    # Written as a class, the entry still meets the file the class matches.
     tickets[0]["owned"] = ["src/[a,b].py"]
     tickets[1]["owned"] = ["src/a.py"]
+elif variant == "classboth":
+    # The comma inside the brackets must not split the entry: both tickets
+    # own the whole `src/[a,b].py`, not the fragments `src/[a` and `b].py`.
+    tickets[0]["owned"] = ["src/[a,b].py"]
+    tickets[1]["owned"] = ["src/[a,b].py"]
+elif variant == "openbracket":
+    tickets[0]["owned_raw"] = "`src/[a,b.py`, `src/t2/main.py`"
+elif variant == "mirrordir":
+    # The narrow entry on T1 and the broad one on T2: overlap is symmetric.
+    tickets[0]["owned"] = ["src/a/x.py"]
+    tickets[1]["owned"] = ["src/a/"]
+elif variant == "mirrorglob":
+    tickets[0]["owned"] = ["src/lib/core.py"]
+    tickets[1]["owned"] = ["src/lib/*.py"]
+elif variant in ("sharedt2", "sharedboth"):
+    # A shared list on either ticket exempts the pair.
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[1]["shared"] = ["src/shared/x.py"]
+    if variant == "sharedboth":
+        tickets[0]["shared"] = ["src/shared/x.py"]
+elif variant.startswith("sharedglob-"):
+    # A shared glob that fixes no name covers every path: it is a whole
+    # repository however it is spelled.
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[0]["shared"] = [{"star": "*", "dstar": "**", "dstarstar": "**/*",
+                             "rootstar": "/*", "qstar": "?*", "dotstar": "./*",
+                             "lock": "*.lock", "py": "**/*.py"}[variant[len("sharedglob-"):]]]
+elif variant == "barenote":
+    tickets[0]["owned_raw"] = "src/t1/main.py (신규)"
+elif variant in ("dotdot2", "dotdot3"):
+    tickets[0]["owned"] = [".." if variant == "dotdot2" else "src/../.."]
 elif variant == "routeneg":
     # A dynamic-route directory is a literal path, so it does not meet its
     # sibling under the same parent.
@@ -275,6 +308,23 @@ expect_check annotated  "P1 T1 소유 파일 목록 형식 오류 항목 \`src/t
 expect_check barebrace  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/{a,b}.py~src/t2/main.py"
 expect_check bareclose  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/t2/main.py"
 expect_check sharedwhole "P1 T1 공유 파일 목록 형식 오류 레포 전체 공유 항목"
+for g in star dstar dstarstar rootstar qstar dotstar; do
+  expect_check "sharedglob-$g" "P1 T1 공유 파일 목록 형식 오류 레포 전체 공유 항목"
+done
+# A whole-repository share is dropped, so the pair it would have exempted
+# is still compared.
+run_bs check "$DOCS/sharedglob-dstar.md"
+has "check sharedglob-dstar: the overlap is still reported" "$out" "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/shared/x.py"
+expect_check sharedglob-lock "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/shared/x.py"
+hasnt "check sharedglob-lock: a share that fixes a name is not a whole repository" "$out" "레포 전체"
+expect_check classlit   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/[a,b].py~src/a.py"
+expect_check classboth  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/[a,b].py"
+expect_check openbracket "P1 T1 소유 파일 목록 형식 오류 닫히지 않은 괄호"
+expect_check mirrordir  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a/x.py~src/a/"
+expect_check mirrorglob "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/lib/core.py~src/lib/*.py"
+expect_check barenote   "P1 T1 소유 파일 목록 형식 오류 항목 src/t1/main.py (신규)"
+expect_check dotdot2    "P1 T1 소유 파일 목록 형식 오류 항목 \`..\`"
+expect_check dotdot3    "P1 T1 소유 파일 목록 형식 오류 항목 \`src/../..\`"
 expect_check bracelist  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:lib/x.py"
 expect_check dirpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a/~src/a/x.py"
 expect_check dotpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a.py"
@@ -296,7 +346,7 @@ run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
 
 for v in globneg braceneg dirneg repodiff sharedok shareddir depth3reason fenceok \
-         classlit routeneg routeshared spancomma; do
+         routeneg routeshared spancomma sharedt2 sharedboth sharedglob-py; do
   gen "$v"
   run_bs check "$DOCS/$v.md"
   check "check $v: exits 0" "$rc" "0"
