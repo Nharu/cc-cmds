@@ -6068,17 +6068,67 @@ gate_rows() {
 }
 
 gate_has_row() {
-  # gate_has_row <series> <fixed-string>
+  # gate_has_row <series> <키=값> [<키=값>…]
+  #
+  # True only when ONE row of the series carries, for every argument, a field
+  # that is byte-identical to it — the whole field between two ` | `
+  # separators (or between the last one and the end of the row), never a
+  # substring of the row. A substring read takes a key spelled inside another
+  # field's value, a key that ends another key (`사유=` inside `처분 사유=`) and
+  # an id that prefixes another id as the field asked for, and a needle that
+  # joins two fields with a space matches nothing at all, so the guard it
+  # protects never fires and no one can tell that from "correctly absent". A
+  # field split cannot read any of those as the field.
+  #
+  # Each argument is normalized first: one leading `|`, one trailing `|` and the
+  # whitespace around them are dropped, so the anchored `"| 키=값 |"` spelling
+  # the older call sites use names the same field as a bare `"키=값"`, and those
+  # sites read unchanged. An argument is ONE field; two fields are two
+  # arguments, and they are joined on the same row — two fields found on two
+  # different rows are not a hit. No argument, or one that normalizes to
+  # nothing, is "absent".
+  #
+  # WHAT THIS DOES NOT DEFEND. The answer is sound only while every writer keeps
+  # the row grammar, removing `|` and line breaks from keys and values alike. A
+  # ` | ` spliced into a row by a writer that skipped that step is, at the byte
+  # level, a real separator, and nothing on the reading side can tell it from
+  # one the writer meant; the defense for that is in the writers.
   #
   # NOT `gate_rows X | grep -qF Y`. Under `pipefail` an early-exiting reader on
   # the right of a pipe kills the writer with SIGPIPE and the pipeline reports
   # failure — so a row that IS present can come back as "absent", and every one
   # of these call sites uses absence to decide whether to append. The result
   # would be duplicate approvals and duplicate obligations, which the
-  # termination conditions then count.
-  local series="$1" needle="$2" out
+  # termination conditions then count. The match below is builtins only, so it
+  # adds no process to the one read `gate_rows` makes (none inside a warmed zone).
+  local series="$1" out w row nl=$'\n'
+  local -a want
+  shift
+  [ "$#" -gt 0 ] || return 1
+  want=()
+  for w in "$@"; do
+    w="${w#"${w%%[![:space:]]*}"}"; w="${w#|}"; w="${w#"${w%%[![:space:]]*}"}"
+    w="${w%"${w##*[![:space:]]}"}"; w="${w%|}"; w="${w%"${w##*[![:space:]]}"}"
+    [ -n "$w" ] || return 1
+    want+=("$w")
+  done
   out=$(gate_rows "$series")
-  case "$out" in *"$needle"*) return 0 ;; esac
+  [ -n "$out" ] || return 1
+  # Every field is preceded by ` | ` (the series token is the row's head and
+  # never a field), and is followed by ` | ` or by the end of its row.
+  for w in "${want[@]}"; do
+    case "$out$nl" in *" | $w | "*|*" | $w$nl"*) ;; *) return 1 ;; esac
+  done
+  [ "${#want[@]}" -gt 1 ] || return 0
+  while IFS= read -r row; do
+    row="$row | "
+    for w in "${want[@]}"; do
+      case "$row" in *" | $w | "*) ;; *) continue 2 ;; esac
+    done
+    return 0
+  done <<EOF
+$out
+EOF
   return 1
 }
 
@@ -21123,8 +21173,12 @@ gate_record_stage_outcome() {
   if [ -n "${DOC:-}" ] && [ -f "$DOC" ]; then
     dcur=$( { shasum -a 256 "$DOC" 2>/dev/null || true; } | cut -d' ' -f1)
   fi
+  # The guard names the two fields the append below writes, as two arguments:
+  # one argument joining them with a space is a field no row ever carries, and
+  # the guard read as absent at every termination, so each one appended a row
+  # for a document it had already recorded.
   if [ -n "$dcur" ]; then
-    gate_has_row '문서 해시' "스테이지=$seg 이후 sha256=$dcur" \
+    gate_has_row '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
       || gate_append '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
            "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
   fi
