@@ -7166,6 +7166,86 @@ gate_report_abs() {
   esac
 }
 
+gate_cycle_fingerprint() {
+  # gate_cycle_fingerprint <absolute report path> <P0> <P1> — the value of the
+  # `발견 지문` field the `cycle` arm writes: `-` when P0 and P1 are both zero,
+  # `(미상)` when the report is absent or yields no identifier, and otherwise
+  # the first 12 hex characters of the sha256 of the report's finding
+  # identifiers. Always returns 0: the VALUE refuses nothing.
+  #
+  # A SET, NOT A LIST. The identifiers are sorted and de-duplicated before they
+  # are hashed. As a list, a report that names the same file in two bullets
+  # hashes differently from one that names it once, and a repetition that really
+  # happened stops looking like one.
+  #
+  # THE HEADING MATCHER IS A BYTE PREFIX, NOT A REGEX: a section opens only on a
+  # line that begins `## 🔴 P0` or `## 🟠 P1`, and any other `## ` heading closes
+  # it. The emoji are octal escapes so the bytes of this source do not depend on
+  # the locale. A template change nobody foresaw makes the matcher find nothing,
+  # and the field then reads `(미상)` — it fails toward fewer labels, never
+  # toward a false one.
+  #
+  # IDENTIFIER GUARD AND SPELLING FOLD, BOTH INSIDE ONE REPORT. A token with
+  # neither `/` nor `.`, or `##`, is a table or quote fragment and is dropped.
+  # A bare identifier that another identifier of the same report ends in
+  # `/<identifier>` is the same file spelt short and is dropped. Spellings are
+  # never folded ACROSS reports.
+  #
+  # The value is fixed on the row when the row is written, so a later report
+  # overwritten at the same path does not change a past reading.
+  local rep=$1 p0=$2 p1=$3 ids
+  case "$p0" in
+    ''|*[!0]*) : ;;
+    *) case "$p1" in
+         ''|*[!0]*) : ;;
+         *) printf -- '-'; return 0 ;;
+       esac ;;
+  esac
+  if [ -z "$rep" ] || [ ! -f "$rep" ]; then
+    printf '(미상)'
+    return 0
+  fi
+  ids=$(LC_ALL=C awk '
+    function ident(b,   tok, rest, sym) {
+      if (!match(b, /`[^`]+`/)) return ""
+      tok = substr(b, RSTART + 1, RLENGTH - 2)
+      rest = substr(b, RSTART + RLENGTH)
+      sub(/[: ].*$/, "", tok)
+      if (tok == "" || tok == "##") return ""
+      if (index(tok, "/") == 0 && index(tok, ".") == 0) return ""
+      if (match(rest, /^ ?\(`[^`]+`\)/)) {
+        sym = substr(rest, RSTART, RLENGTH)
+        gsub(/[ (`)]/, "", sym)
+        tok = tok "#" sym
+      }
+      return tok
+    }
+    /^## / {
+      inl = (index($0, "## \360\237\224\264 P0") == 1 || index($0, "## \360\237\237\240 P1") == 1)
+      next
+    }
+    inl && /^- / {
+      t = ident($0)
+      if (t != "" && !(t in seen)) { seen[t] = 1; ord[++n] = t }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        a = ord[i]; drop = 0
+        for (j = 1; j <= n; j++) {
+          b = ord[j]
+          if (j == i || length(b) < length(a) + 1) continue
+          if (substr(b, length(b) - length(a)) == "/" a) { drop = 1; break }
+        }
+        if (!drop) print a
+      }
+    }' "$rep" 2>/dev/null || true)
+  if [ -z "$ids" ]; then
+    printf '(미상)'
+    return 0
+  fi
+  printf '%s\n' "$ids" | LC_ALL=C sort -u | shasum -a 256 | cut -c1-12
+}
+
 gate_problem_identities() {
   # Every distinct identity a `problem` row has ever carried, disposed or not.
   #
@@ -15042,7 +15122,29 @@ EOF
       # caller's `id=` free to win, but a caller's `세그먼트=` never reaches this
       # line: the refusal at the top of the arm rejects it in every spelling the
       # row reader would read, so the gate's value in front is the only one.
-      gate_append 'cycle' "세그먼트=$seg" "$@"
+      #
+      # The gate now also writes one field of its own BEHIND the caller's:
+      # `발견 지문`, computed from the report check 8 already resolved into
+      # `$rep`. Behind, because the row reader takes the last value — in front,
+      # a caller's value would win. The refusal at the top still rejects a
+      # caller's `발견 지문`, so here the position is a second defence, not the
+      # only one.
+      #
+      # ONE STEP OF DEGRADATION AT THE CAP, NOT TWO. A row that would cross
+      # `GATE_ROW_MAX` with the field is written without it and warns once. The
+      # `segment` arm swaps its field for a marker first; this arm has no marker
+      # because an absent key already reads exactly like "no fingerprint", and a
+      # marker would be longer than the 12-byte value it replaces. Without this
+      # step a long cycle row that is legal today — a review already paid for —
+      # would turn into a refused write.
+      local fp
+      fp=$(gate_cycle_fingerprint "$rep" "$(gate_field_of 'P0' "$@")" "$(gate_field_of 'P1' "$@")")
+      if [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp")" -gt "$GATE_ROW_MAX" ]; then
+        warn "cycle 행이 상한을 넘어 「발견 지문」 을 빼고 기록합니다 — 세그먼트 $seg, 사이클 $(gate_field_of '사이클' "$@")"
+        gate_append 'cycle' "세그먼트=$seg" "$@"
+      else
+        gate_append 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp"
+      fi
       log "리뷰 사이클 기록 — $seg"
       ;;
     problem)

@@ -7684,7 +7684,8 @@ fi
 # when it does not fit. The settings are still rewritten in every case: what
 # degrades is the record, never the widening.
 #
-# The relaxation is this field's alone. The general cap in `gate_append` is
+# The relaxation belongs to two fields only, `segment.인가면` here and
+# `cycle.발견 지문` (section 70). The general cap in `gate_append` is
 # unchanged and asserted so: a row that crosses it with the caller's own
 # fields still dies, at exactly the byte the projection says it will.
 #
@@ -23092,6 +23093,257 @@ check "71: (전제) 빌더 본문을 읽었다" "$([ -n "$s71_body" ] && echo y)
 check "71: 빌더 본문에 종료·디렉터리 유도가 없다" \
   "$(printf '%s\n' "$s71_body" | grep -cE '(^|[^a-z_])exit([^a-z_]|$)|GATE_EXIT_|return[[:space:]]+[^0[:space:]]|dirname|gate_report_abs' || true)" "0"
 rm -f "$S71_GRANT" "$S71_LEDGER"
+
+# ---------------------------------------------------------------------------
+# 70. 발견 지문 — cycle 팔이 리포트의 P0/P1 불릿에서 식별자 집합을 해시해 행에 굳힌다
+# --- section: 70 | group: base | covers: act, snapshot | anchors: 70: 행이 호출자 필드 뒤 발견 지문으로 끝난다, 70: 지문이 다시 계산한 집합 해시와 같다, 70: 불릿 순서와 중복 지목은 지문을 바꾸지 않는다, 70: 발견 하나를 바꾸면 지문이 바뀐다, 70: 상한을 넘기는 행은 발견 지문 없이 기록된다, 70: 창 밖으로 밀린 세그먼트에도 OSCILLATION 이 선다, 70: 실제 기록자를 지난 세 행이 SPINNING 을 세운다 ---
+#
+# The cycle arm writes one field of its own behind the caller's: `발견 지문`,
+# the first 12 hex characters of the sha256 of the SET of identifiers in the
+# report's P0/P1 bullets. Sections open only on a byte prefix (`## 🔴 P0`,
+# `## 🟠 P1`); a token with neither `/` nor `.`, or `##`, is dropped; a bare
+# identifier another identifier of the same report ends in `/<identifier>` is
+# folded. `-` is P0+P1=0 and `(미상)` is a report that is absent or yields
+# nothing, and neither value refuses anything. A row that would cross the cap
+# with the field lands without it.
+#
+# The section builds its own run R70 the way 71 does, so `--sections 70` stands
+# on nothing an earlier section left behind. Every report is synthetic and no
+# real ledger is read.
+# ---------------------------------------------------------------------------
+S70ROOT=$(mktemp -d "$WORK/fp70.XXXXXX")
+S70_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$S70_PREV" ]; then
+  printf '70: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+S70_RID=R70
+S70_MAN="$S70ROOT/$S70_RID.plan.md"
+S70_GRANT="$WT/docs/pipeline-grant/$S70_RID.md"
+S70_LEDGER="$WT/docs/pipeline-run/$S70_RID.md"
+S70_STATE="$S70ROOT/state"
+sed -e "s/run-id=$S70_PREV;/run-id=$S70_RID;/" \
+    -e "s/^\*\*런 id\*\*: $S70_PREV\$/**런 id**: $S70_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$S70_MAN"
+sed "s/R1/$S70_RID/g" "$GBAK" > "$S70_GRANT"
+printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 발견 지문 픽스처\n' "$S70_RID" "$S70_RID" > "$S70_LEDGER"
+mkdir -p "$S70_STATE"
+s70_gate() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$S70_STATE" gate_inproc "$@" 2>"$S70ROOT/err"); rc=$?
+  msg=$(grep -vE '\[run\] ' "$S70ROOT/err" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+s70_snap() {
+  ( cd "$WT" && XDG_STATE_HOME="$S70_STATE" gate_inproc snapshot --manifest "$S70_MAN" "$@" 2>/dev/null )
+}
+s70_h() { s70_snap | jq -r .H; }
+s70_segment() {
+  s70_gate act --manifest "$S70_MAN" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
+    --snapshot-digest "$(s70_h)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+}
+s70_n=0
+s70_cycle() {
+  # s70_cycle <segment> <cycle> <P0> <P1> <report> [field...] — one cycle-arm
+  # act on a review HEAD no earlier call of this section used.
+  local seg=$1 cyc=$2 p0=$3 p1=$4 rep=$5; shift 5
+  s70_n=$((s70_n + 1))
+  s70_gate act --manifest "$S70_MAN" --kind cycle --target infra --segment "$seg" --cutpoint 커밋 \
+    --snapshot-digest "$(s70_h)" --rationale x \
+    -- "사이클=$cyc" "P0=$p0" "P1=$p1" "리뷰 HEAD=$(printf 'c0ffee%02x' "$s70_n")" "리포트 경로=$rep" "$@"
+}
+s70_last() { grep '^- `cycle` ' "$S70_LEDGER" | grep -F "| 세그먼트=$1 |" | tail -1; }
+s70_field() {
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_row_field "$@"' _ "$GATE" "$@" )
+}
+s70_fp() { s70_field "$(s70_last "$1")" '발견 지문'; }
+s70_expect() { printf '%s\n' "$@" | LC_ALL=C sort -u | shasum -a 256 | cut -c1-12; }
+s70_lines() { wc -l < "$S70_LEDGER" | tr -d ' '; }
+s70_bytes() { printf '%s\n' "$1" | wc -c | tr -d ' '; }
+s70_pad() { printf '%*s' "$1" '' | tr ' ' a; }
+s70_stalls() {
+  # s70_stalls <segment> — the classes the snapshot carries for one segment.
+  s70_snap --fields stalls | jq -r --arg s "$1" '[.[] | select(.["세그먼트"] == $s) | .["부류"]] | join(" ")'
+}
+s70_report() {
+  # s70_report <path> — the head every synthetic report shares, then stdin.
+  { printf '# 코드 리뷰 리포트\n\n## 개요\n\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 1건 | P1 1건\n\n'; cat; } > "$1"
+}
+S70A="$S70ROOT/ra.md"; S70B="$S70ROOT/rb.md"; S70C="$S70ROOT/rc.md"
+s70_report "$S70A" <<'EOF'
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/a.sh:12` — 첫 발견
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견
+EOF
+s70_report "$S70B" <<'EOF'
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견을 먼저
+- `plugins/x/a.sh:40` — 같은 파일을 한 번 더
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/a.sh:12` — 첫 발견
+EOF
+s70_report "$S70C" <<'EOF'
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/c.sh:12` — 바뀐 발견
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견
+EOF
+S70_FPA=$(s70_expect plugins/x/a.sh 'plugins/x/b.sh#do_b')
+
+# (1) The recorded value -----------------------------------------------------------
+s70_segment SF
+check "70: (전제) 지문 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+s70_cycle SF 1 1 1 "$S70A" 비고=x
+check "70: 발견 둘을 지닌 리포트의 cycle 기록은 exit 0 이다" "$rc" "0"
+s70_row=$(s70_last SF)
+case "$s70_row" in
+  *"| 비고=x | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | prev="*)
+    ok "70: 행이 호출자 필드 뒤 발견 지문으로 끝난다" ;;
+  *) bad "70: 발견 지문의 자리" "$s70_row" ;;
+esac
+check "70: 지문이 다시 계산한 집합 해시와 같다" "$(s70_fp SF)" "$S70_FPA"
+if [ "$(s70_fp SF)" != aaaaaaaaaaaa ]; then
+  ok "70: 지문은 위조 값 aaaaaaaaaaaa 가 아니다"
+else
+  bad "70: 지문 값" "aaaaaaaaaaaa"
+fi
+
+# (2) Stable under order and repetition, sensitive to a finding --------------------
+s70_cycle SF 2 1 1 "$S70B"
+check "70: 불릿 순서와 중복 지목은 지문을 바꾸지 않는다" "$(s70_fp SF)" "$S70_FPA"
+s70_cycle SF 3 1 1 "$S70C"
+check "70: (전제) 바뀐 리포트의 기대 지문이 다르다" \
+  "$([ "$(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b')" != "$S70_FPA" ] && echo y)" "y"
+check "70: 발견 하나를 바꾸면 지문이 바뀐다" "$(s70_fp SF)" "$(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b')"
+s70_cycle SF 4 0 0 "$S70A"
+check "70: P0+P1=0 인 행은 exit 0 이다" "$rc" "0"
+check "70: P0+P1=0 인 행의 지문은 - 다" "$(s70_fp SF)" "-"
+S70N="$S70ROOT/rn.md"
+s70_report "$S70N" <<'EOF'
+## 🟡 P2 (개선 제안)
+
+- `plugins/x/a.sh:12` — P2 절의 발견
+EOF
+s70_cycle SF 5 1 1 "$S70N"
+check "70: P0/P1 절이 없는 리포트의 행은 exit 0 이다" "$rc" "0"
+check "70: P0/P1 절이 없는 리포트의 지문은 (미상) 이다" "$(s70_fp SF)" "(미상)"
+s70_cycle SF 6 1 1 "$S70ROOT/absent.md"
+check "70: 없는 리포트의 행은 exit 0 이다" "$rc" "0"
+check "70: 없는 리포트의 지문은 (미상) 이다" "$(s70_fp SF)" "(미상)"
+
+# (3) The heading matcher and the identifier guard --------------------------------
+S70H="$S70ROOT/rh.md"
+s70_report "$S70H" <<'EOF'
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/a.sh:12` — 첫 발견
+## P1-2 메모
+
+- `plugins/x/z.sh` — 메모 절의 불릿
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견
+- `F1` 표 조각
+- `##` 머리 조각
+- `|` 파이프 조각
+EOF
+s70_cycle SF 7 1 1 "$S70H"
+check "70: P1-2 메모 절의 불릿과 식별자가 아닌 토큰은 지문에 들지 않는다" "$(s70_fp SF)" "$S70_FPA"
+
+# (4) The spelling fold is inside one report, and SPINNING stands on it ------------
+S70F1="$S70ROOT/rf1.md"; S70F2="$S70ROOT/rf2.md"
+s70_report "$S70F1" <<'EOF'
+## 🟠 P1 (머지 전 수정 권장)
+
+- `a.sh:3` — 짧은 철자
+- `plugins/x/a.sh:9` — 긴 철자
+EOF
+s70_report "$S70F2" <<'EOF'
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/a.sh:9` — 긴 철자만
+EOF
+s70_segment SS
+# P0 stays above zero so the same three rows cannot also stand a
+# DIMINISHING_RETURNS, which is a P0=0 tail.
+s70_cycle SS 1 1 1 "$S70F1"
+s70_fp1=$(s70_fp SS)
+s70_cycle SS 2 1 1 "$S70F2"
+check "70: 한 리포트 안의 짧은 철자는 긴 철자로 접힌다" "$s70_fp1/$(s70_fp SS)" \
+  "$(s70_expect plugins/x/a.sh)/$(s70_expect plugins/x/a.sh)"
+s70_cycle SS 3 1 1 "$S70F1"
+check "70: 접힌 철자의 세 행이 SPINNING 하나를 세운다" "$(s70_stalls SS)" "SPINNING"
+
+# (5) A forged fingerprint is still refused ----------------------------------------
+for s70_k in '발견 지문=aaaaaaaaaaaa' ' 발견 지문=aaaaaaaaaaaa'; do
+  s70_n0=$(s70_lines)
+  s70_cycle SF 8 1 1 "$S70A" "$s70_k"
+  check "70: 호출자의 발견 지문은 여전히 exit 2 다 ('$s70_k')" "$rc" "2"
+  check "70: 그 거절은 원장 줄 수를 바꾸지 않는다 ('$s70_k')" "$(s70_lines)" "$s70_n0"
+done
+
+# (6) At the cap the row lands without the field ---------------------------------
+# Calibrated, not spelled: the fixed part is measured from a row the gate wrote.
+# The three segments have names of one length and write the same cycle number,
+# HEAD length and report, so only `비고` moves the length.
+s70_max=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+check "70: (전제) GATE_ROW_MAX 를 읽었다" "$([ -n "$s70_max" ] && echo y)" "y"
+for s70_s in SCAL SOVR SFIT; do s70_segment "$s70_s"; done
+s70_cycle SCAL 1 1 1 "$S70A" "비고=$(s70_pad 100)"
+s70_cal=$(s70_last SCAL)
+s70_fb=$(printf ' | 발견 지문=%s' "$(s70_fp SCAL)" | wc -c | tr -d ' ')
+check "70: 발견 지문 필드는 행에서 정확히 29 바이트다" "$s70_fb" "29"
+s70_base=$(( $(s70_bytes "$s70_cal") - s70_fb - 100 ))
+s70_cycle SOVR 1 1 1 "$S70A" "비고=$(s70_pad $((s70_max - s70_base - s70_fb + 1)))"
+check "70: 지문을 붙이면 상한을 1 바이트 넘기는 행은 exit 0 이다" "$rc" "0"
+s70_ovr=$(s70_last SOVR)
+case "$s70_ovr" in
+  *"| 발견 지문="*) bad "70: 상한 생략" "필드가 붙었다: $(s70_bytes "$s70_ovr")B" ;;
+  "") bad "70: 상한 생략" "행이 없다" ;;
+  *) ok "70: 상한을 넘기는 행은 발견 지문 없이 기록된다" ;;
+esac
+check "70: 그 행의 길이는 상한보다 지문만큼 짧다" "$(s70_bytes "$s70_ovr")" "$((s70_max + 1 - s70_fb))"
+case "$msg" in
+  *"상한"*"발견 지문"*) ok "70: 필드를 뺀 기록은 경고를 남긴다" ;;
+  *) bad "70: 상한 경고" "$msg" ;;
+esac
+s70_cycle SFIT 1 1 1 "$S70A" "비고=$(s70_pad $((s70_max - s70_base - s70_fb)))"
+check "70: (대조) 상한에 딱 맞는 행은 exit 0 이다" "$rc" "0"
+check "70: (대조) 상한에 딱 맞는 행은 발견 지문을 지닌다" "$(s70_fp SFIT)" "$S70_FPA"
+check "70: (대조) 그 행의 길이가 상한과 같다" "$(s70_bytes "$(s70_last SFIT)")" "$s70_max"
+
+# (7) End to end: three reviews of one report content on three commits ----------
+s70_segment SE
+for s70_i in 1 2 3; do
+  cp "$S70A" "$S70ROOT/re$s70_i.md"
+  s70_cycle SE "$s70_i" 1 1 "$S70ROOT/re$s70_i.md"
+done
+check "70: 실제 기록자를 지난 세 행이 SPINNING 을 세운다" "$(s70_stalls SE)" "SPINNING"
+
+# (8) Out of the snapshot window: the classifier reads the whole ledger ---------
+# Last, because the 21 rows below are appended by hand and carry no chain.
+s70_segment SO
+for s70_i in 1 2 3 4; do
+  case "$s70_i" in 1|3) s70_r=$S70A ;; *) s70_r=$S70C ;; esac
+  s70_cycle SO "$s70_i" 1 1 "$s70_r"
+done
+check "70: (전제) 대상 세그먼트의 네 행이 지문을 번갈아 싣는다" \
+  "$(grep '^- `cycle` ' "$S70_LEDGER" | grep -F '| 세그먼트=SO |' | sed -n 's/.*| 발견 지문=\([^ |]*\) |.*/\1/p' | tr '\n' ' ')" \
+  "$S70_FPA $(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b') $S70_FPA $(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b') "
+for s70_i in $(seq 1 21); do
+  printf -- '- `cycle` | 세그먼트=SZ | 사이클=%s | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' \
+    "$s70_i" "$(printf 'dead%04x' "$s70_i")" "$S70ROOT/rz$s70_i.md" >> "$S70_LEDGER"
+done
+check "70: 창 밖으로 밀린 세그먼트는 cycles 에 없다" \
+  "$(s70_snap --fields cycles | jq -r '[.[] | select(.["세그먼트"] == "SO")] | length')" "0"
+check "70: 창 밖으로 밀린 세그먼트에도 OSCILLATION 이 선다" "$(s70_stalls SO)" "OSCILLATION"
+rm -f "$S70_GRANT" "$S70_LEDGER"
 
 # ---------------------------------------------------------------------------
 # 60. CI 체크 계열 — 전사·행 예산·진전 벡터, 그리고 머지 거절의 아홉 갈래
