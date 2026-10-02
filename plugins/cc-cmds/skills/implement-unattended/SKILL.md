@@ -88,7 +88,7 @@ marks and matches dispositions, and does not check that a `등급 1` mark was de
 
 **CFI-U6 — The design document's write surface is exactly W1/W2.** Unchanged from the base skill, gate and all (Step 3).
 
-**CFI-U7 — Declare where each act LANDS, and take a park as final.** Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상`, and `--destructive` besides on an act that deletes or destroys. Seven obligations:
+**CFI-U7 — Declare where each act LANDS, and take a park as final.** Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `대상트리` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상`, and `--destructive` besides on an act that deletes or destroys. A write into the target's checkout or one of its worktrees outside the act's own worktree is `대상트리`; the temp directory and this run's state root are `런로컬`. Seven obligations:
 
 - **Declare honestly, and prefer `미상` over a guess.** The gate parks `미상`, which is the outcome an unsure stage should get; a confident wrong `dev` is the one it must not.
 - **A script the manifest does not name is capped at read and run-local however it is declared.** Do not route around that by rewrapping the same script in an interpreter, or by moving it behind `xargs` or `sudo`: the cap is the user's decision about scripts this gate cannot read, and the wrapper spelling does not change what the script does.
