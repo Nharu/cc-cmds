@@ -13741,7 +13741,7 @@ gate4 act --manifest "$NM4" --kind x --target infra --segment SN1 --cutpoint 커
 check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것이 없으므로" "$rc" "3"
 
 # Q3 — AND A BOOKKEEPING ACT IS NOT REFUSED BY THAT AXIS. Q2 has just shown that
-# no rationale passes here; if the axis also covered bookkeeping, then all eight
+# no rationale passes here; if the axis also covered bookkeeping, then all eleven
 # bookkeeping kinds would be refused in exactly the state where the protocol
 # requires the terminal shift to write its `handoff` row, and the morning would
 # lose the last shift's rejected alternatives whole. This suite reached the
@@ -18979,6 +18979,246 @@ check "(f) 거부된 교대는 기동 행을 남기지 않는다" "$( { grep -cF
 check "(f) 거부된 교대는 진행 표지를 남기지 않는다" "$( [ -e "$SHIFT_DIR/shift.in-progress" ] && printf 'left' || printf 'none' )" "none"
 check "(f) 거부된 교대는 후속자를 실행하지 않는다" "$( [ -e "$WORK/shift-argv-np.txt" ] && printf 'ran' || printf 'not run' )" "not run"
 
+# (g) A SHIFT THAT ENDS WITHOUT ITS OWN HANDOFF LEAVES THE GATE'S `무기록` ROW,
+# and a shift that wrote one leaves none. Before this, such an end left one `log`
+# line and no row, so the successor read an older handoff as the latest word and
+# the morning reader could not tell a shift that did nothing from one that never
+# ran.
+#
+# ONE STUB, SWITCHED BY ITS ENVIRONMENT, ON A LEDGER OF ITS OWN. Every case below
+# is a launch, and the assertions count rows written by launches, so they get an
+# isolated run (`R8`) rather than the one (a)–(f) have been filling. The stub is
+# the successor: whatever it does through `$CC_PIPELINE_GATE` is what a shift
+# does, under the identity the launcher gave it.
+cap_fx_new R8
+LC_SEAT="88888888-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000
+  cap_usage_line 30000 10000 2000; } > "$NTX/$LC_SEAT.jsonl"
+LC_OUT="$WORK/lc-out"; mkdir -p "$LC_OUT"
+LC_STUB="$WORK/bin/claude-lcstub"
+cat > "$LC_STUB" <<'STUB'
+#!/usr/bin/env bash
+g="$CC_PIPELINE_GATE"; m="$CC_PIPELINE_MANIFEST"; n="${CC_PIPELINE_SHIFT_ID##*#}"; o="$CC_TEST_LC_OUT"
+mkdir -p "$o"
+hh() { bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null; }
+rd() {  # rd <name> <argv...> — one gate-routed read: its stdout, its stderr, its code
+  local k="$1"; shift
+  bash "$g" exec --manifest "$m" --target infra --segment LC1 --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(hh)" --rationale "픽스처 — 교대의 해제 판정 읽기" -- "$@" \
+    > "$o/$k.out" 2> "$o/$k.err"
+  printf '%s\n' "$?" > "$o/$k.rc"
+}
+case "${CC_TEST_LC_MODE:-}" in
+  handoff)
+    bash "$g" act --manifest "$m" --kind handoff --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(hh)" --rationale "픽스처 — 교대 자신의 인계" \
+      -- "교대=$n" 대상=infra 사유=중단 '버린 선택지=-' '막힌 지점=한도 해제 행 없음' '다음 후보=-' \
+      > /dev/null 2>&1
+    printf '%s\n' "$?" > "$o/handoff.rc" ;;
+  refused)
+    bash "$g" act --manifest "$m" --kind handoff --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(hh)" --rationale "픽스처 — 게이트의 값을 흉내 낸 인계" \
+      -- "교대=$n" 대상=infra 사유=무기록 '버린 선택지=-' '막힌 지점=-' '다음 후보=-' \
+      > /dev/null 2>&1
+    printf '%s\n' "$?" > "$o/refused.rc" ;;
+  limit)
+    printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790828400}}' \
+      '{"type":"result","is_error":true,"api_error_status":429,"result":"x"}'
+    exit 1 ;;
+  lock)
+    chmod a-w "$CC_PIPELINE_LEDGER" ;;
+  acts)
+    rd act1 ls "$CC_TEST_CONE_A"
+    rd act2 ls "$CC_TEST_CONE_A" ;;
+  reads)
+    rd ord grep -nF "| 서수=$n |" "$CC_PIPELINE_LEDGER"
+    rd clr grep -n '^- `한도 해제` |' "$CC_PIPELINE_LEDGER"
+    rd rle jq -c 'select(.type == "rate_limit_event") | [.rate_limit_info.status, .rate_limit_info.resetsAt]' \
+      "$CC_PIPELINE_RUN_DIR/log/$CC_TEST_LC_CUT.json"
+    rd clk date +%s ;;
+esac
+exit 0
+STUB
+chmod +x "$LC_STUB"
+LC_CAP_STUB_SAVE="$CAP_STUB"
+CAP_STUB="$LC_STUB"
+lc_launch() {  # lc_launch <mode> <out-dir name> — the seat launches one shift on R8
+  CC_TEST_LC_MODE="$1" CC_TEST_LC_OUT="$LC_OUT/$2" CC_TEST_CONE_A="$CONE_A" \
+  CC_TEST_LC_CUT="LC1-cut#1" \
+    cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$LC_SEAT" '')" --emit-digest \
+      --rationale "픽스처 — 인계 흔적을 재는 교대 ($2)" \
+      -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+}
+lc_unrec() { { cap_rows 'handoff' | grep -cF '| 사유=무기록 |' || true; }; }
+lc_unrec_row() { cap_rows 'handoff' | grep -F '| 사유=무기록 |' | tail -1; }
+lc_seat_handoff() {  # lc_seat_handoff <digest> — one bookkeeping act from the seat
+  cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra \
+    --cutpoint 커밋 --surface 읽기 --snapshot-digest "$1" \
+    --rationale "픽스처 — 좌석의 장부 행위" \
+    -- 교대=0 대상=infra 사유=종단 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
+}
+
+cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment LC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$LC_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "(g) 흔적 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+
+# A shift that does nothing and exits 0: one `무기록` row, with every field whole.
+lc_n0=$(lc_unrec)
+lc_launch plain plain
+check "(g) 아무것도 쓰지 않은 교대의 기동은 0 이다" "$rc" "0"
+check "(g) 무기록 handoff 행이 정확히 하나 늘었다" "$(lc_unrec)" "$((lc_n0 + 1))"
+lc_row=$(lc_unrec_row)
+lc_fields_ok=yes
+for lc_f in '| 교대=1 |' '| 버린 선택지=- |' '| 다음 후보=- |' '| 대상=infra |' '| 종료 코드=0 |' '| 행위 수=0 |'; do
+  case "$lc_row" in *"$lc_f"*) : ;; *) lc_fields_ok="no: $lc_f" ;; esac
+done
+check "(g) 그 행이 교대 서수·빈 선택지·종료 코드·행위 수를 온전한 필드로 싣는다" "$lc_fields_ok" "yes"
+# The cap is 1024 bytes and `gate_append` dies past it; the projection the gate
+# predicted and the bytes on disk are asserted together.
+lc_bytes=$(printf '%s' "$lc_row" | wc -c | tr -d ' ')
+check "(g) 무기록 행의 바이트 길이가 행 상한 안이다" \
+  "$( [ "$lc_bytes" -le 1024 ] && printf 'under' || printf '%s' "$lc_bytes" )" "under"
+check "(g) 스냅숏 handoff[] 의 마지막 항목이 사유=무기록 이다" \
+  "$(cap_snap "$LC_SEAT" '' | jq -r '.handoff | last | .["사유"]')" "무기록"
+check "(g) 그 항목이 기록 시각을 싣는다" \
+  "$(cap_snap "$LC_SEAT" '' | jq -r '.handoff | last | .["기록 시각"] | length > 0')" "true"
+# THE DIGEST THE LAUNCH EMITTED ALREADY CONTAINS THE ROW. It is written before the
+# parent's exit trap emits, so the seat's next act on that digest is not stale.
+lc_emitted=$(jq -r .H "$CAP_DIR/digest/gate-digest-router.json" 2>/dev/null)
+lc_seat_handoff "$lc_emitted"
+check "(g) 기동이 낸 다이제스트로 좌석의 다음 장부 행위가 통과한다" "$rc" "0"
+
+# A shift that wrote its own handoff leaves no `무기록` row.
+lc_n0=$(lc_unrec)
+lc_own0=$( { cap_rows 'handoff' | grep -cF '| 사유=중단 |' || true; } )
+lc_launch handoff handoff
+check "(g) 스스로 인계한 교대의 기동은 0 이다" "$rc" "0"
+check "(g) 그 교대 자신의 인계가 통과했다" "$(cat "$LC_OUT/handoff/handoff.rc" 2>/dev/null)" "0"
+check "(g) 그 인계 행이 원장에 있다" \
+  "$( { cap_rows 'handoff' | grep -cF '| 사유=중단 |' || true; } )" "$((lc_own0 + 1))"
+check "(g) 스스로 인계한 교대에는 무기록 행이 생기지 않는다" "$(lc_unrec)" "$lc_n0"
+
+# A handoff the gate REFUSED is no handoff: the refused act left no approval row,
+# so the shift still ends unrecorded, and argv cannot write `무기록` itself.
+lc_n0=$(lc_unrec)
+lc_launch refused refused
+check "(g) 거부된 인계 뒤의 기동도 0 이다" "$rc" "0"
+check "(g) 교대가 argv 로 낸 사유=무기록 은 2 로 거부된다" "$(cat "$LC_OUT/refused/refused.rc" 2>/dev/null)" "2"
+check "(g) 거부된 인계 뒤에도 무기록 행이 정확히 하나 생긴다" "$(lc_unrec)" "$((lc_n0 + 1))"
+check "(g) 그 하나는 게이트가 쓴 것이다 (교대=3, 종료 코드=0)" \
+  "$(row_field "$(lc_unrec_row)" '교대'):$(row_field "$(lc_unrec_row)" '종료 코드')" "3:0"
+
+# A shift whose own stream has the limit shape: its code comes back unchanged and
+# the row says what the stream showed.
+lc_launch limit limit
+check "(g) 한도로 죽은 교대의 종료 코드가 그대로 돌아온다" "$rc" "1"
+lc_row=$(lc_unrec_row)
+check "(g) 그 무기록 행이 종료 코드=1 을 싣는다" "$(row_field "$lc_row" '종료 코드')" "1"
+case "$(row_field "$lc_row" '막힌 지점')" in
+  *"한도 종료 형상"*) ok "(g) 그 행의 막힌 지점이 한도 종료 형상을 덧붙인다" ;;
+  *) bad "(g) 한도 종료 덧붙임" "$lc_row" ;;
+esac
+lc_bytes=$(printf '%s' "$lc_row" | wc -c | tr -d ' ')
+check "(g) 덧붙임이 실린 무기록 행도 행 상한 안이다" \
+  "$( [ "$lc_bytes" -le 1024 ] && printf 'under' || printf '%s' "$lc_bytes" )" "under"
+
+# A TRACE THAT CANNOT BE WRITTEN DOES NOT BECOME THE SHIFT'S CODE, AND LEAVES NO
+# LOCK. `chmod` does not stop root, so a root shell skips the case and says so.
+if [ "$(id -u)" = "0" ]; then
+  printf 'NOTE: (g) root 셸이라 원장 쓰기 금지 경우를 건너뛴다\n'
+else
+  lc_launch lock lock
+  lc_lock_rc="$rc"
+  chmod u+w "$CAP_LEDGER"
+  check "(g) 무기록 행을 못 써도 교대의 0 이 그대로 돌아온다" "$lc_lock_rc" "0"
+  check "(g) 못 쓴 사실은 표준 오류의 경고로 남는다" \
+    "$( { grep -qF '무기록 인계 행을 남기지 못했습니다' "$CAP_ERR" && printf 'warned'; } || printf 'silent')" "warned"
+  lc_seat_handoff "$(cap_H "$LC_SEAT" '')"
+  check "(g) 그 뒤의 장부 행위가 남은 잠금에 막히지 않는다" "$rc" "0"
+fi
+
+# THE TWO READS A SHIFT JUDGES A CLEARED LIMIT WITH, UNDER A SHIFT'S OWN IDENTITY.
+# The cut attempt's stream and its `한도 종료` row are planted; the stub makes the
+# four reads through the gate and keeps what each one answered. The date read is
+# graded unknown and passes only on the declared path, which needs the
+# auto-resolution switch on.
+mkdir -p "$CAP_DIR/log"
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790828400}}' \
+  '{"type":"result","is_error":true,"api_error_status":429,"result":"x"}' > "$CAP_DIR/log/LC1-cut#1.json"
+printf -- '- `stage-result` | 교대=0 | id=LC1:implement#1 | 종단 부류=한도 종료 | 레인=~/.claude | prev=x\n' >> "$CAP_LEDGER"
+lc_r1=$(( $( { cap_rows '교대 기동' | grep -c . || true; } ) + 1 ))
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 lc_launch reads reads1
+check "(g) 판정 읽기를 하는 교대의 기동이 0 이다" "$rc" "0"
+lc_reads_ok() {  # lc_reads_ok <dir> — every read passed the gate, as `name:rc` pairs
+  local k out=""
+  for k in ord clr rle clk; do
+    if grep -qF '게이트 통과' "$LC_OUT/$1/$k.err" 2>/dev/null; then out="$out $k:$(cat "$LC_OUT/$1/$k.rc")"
+    else out="$out $k:refused"; fi
+  done
+  printf '%s' "${out# }"
+}
+check "(g) 교대 신원의 네 읽기가 모두 게이트를 통과한다 (한도 해제 행 없음)" \
+  "$(lc_reads_ok reads1)" "ord:0 clr:1 rle:0 clk:0"
+lc_lines() {  # lc_lines <file> [fixed string] — its non-empty lines, or those carrying the string
+  if [ -n "${2:-}" ]; then { grep -cF -- "$2" "$1" 2>/dev/null || true; } | tr -d ' '
+  else { grep -c . "$1" 2>/dev/null || true; } | tr -d ' '; fi
+}
+check "(g) 서수 읽기는 그 교대의 기동 행 한 줄이다" \
+  "$(lc_lines "$LC_OUT/reads1/ord.out"):$(lc_lines "$LC_OUT/reads1/ord.out" '`교대 기동`')" "1:1"
+check "(g) 행 머리 고정 읽기는 한도 해제 행이 없으면 아무 줄도 내지 않는다" \
+  "$(lc_lines "$LC_OUT/reads1/clr.out")" "0"
+# The trap the anchor exists for: the read's own approval row names the series.
+lc_trap=$( { cap_rows '자율 승인' | grep -F "| 교대=$lc_r1 |" | grep -cF '한도 해제' || true; } | tr -d ' ')
+check "(g) 그 읽기 자신의 승인 행은 계열 이름을 싣는다 (이름만으로 읽으면 걸린다)" \
+  "$( [ "${lc_trap:-0}" -ge 1 ] && printf 'carried' || printf 'absent')" "carried"
+check "(g) 스트림 읽기의 마지막 줄이 rejected 와 그 resetsAt 이다" \
+  "$(tail -1 "$LC_OUT/reads1/rle.out")" '["rejected",1790828400]'
+check "(g) 교대 신원의 시계 읽기는 정수 한 줄이다" \
+  "$( [ "$(lc_lines "$LC_OUT/reads1/clk.out")" = 1 ] && grep -qxE '[0-9]+' "$LC_OUT/reads1/clk.out" && printf 'int' || printf 'other')" "int"
+cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind limit-cleared --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$LC_SEAT" '')" \
+         --rationale "픽스처 — 사람이 한도가 풀렸다고 말했다" -- '근거=사람이 계정을 바꿨다고 말함'
+check "(g) 좌석의 한도 해제 행이 기록된다" "$rc" "0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 lc_launch reads reads2
+check "(g) 좌석 신호 뒤에도 네 읽기가 모두 게이트를 통과한다" \
+  "$(lc_reads_ok reads2)" "ord:0 clr:0 rle:0 clk:0"
+check "(g) 좌석 신호 뒤의 행 머리 고정 읽기는 그 행 한 줄만 낸다" \
+  "$(lc_lines "$LC_OUT/reads2/clr.out"):$(lc_lines "$LC_OUT/reads2/clr.out" '`한도 해제`')" "1:1"
+check "(g) 둘째 교대의 서수 읽기도 한 줄이다" "$(lc_lines "$LC_OUT/reads2/ord.out")" "1"
+
+# `행위 수` COUNTS THE SHIFT'S OWN ACTS. A stage the shift launched stamps the same
+# `교대=<n>`; a row of that shape is planted for the ordinal about to launch, and
+# the count must not take it.
+lc_next=$(( $( { cap_rows '교대 기동' | grep -c . || true; } ) + 1 ))
+printf -- '- `자율 승인` | 교대=%s | kind=dispatch | 결정=act | 행위자=스테이지 | prev=x\n' "$lc_next" >> "$CAP_LEDGER"
+lc_launch acts acts
+check "(g) 두 번 행위한 교대의 기동이 0 이다" "$rc" "0"
+check "(g) 그 교대의 두 행위가 통과했다" \
+  "$(cat "$LC_OUT/acts/act1.rc" 2>/dev/null):$(cat "$LC_OUT/acts/act2.rc" 2>/dev/null)" "0:0"
+lc_row=$(lc_unrec_row)
+check "(g) 무기록 행의 행위 수는 교대 자신의 행위만 센다" \
+  "$(row_field "$lc_row" '교대'):$(row_field "$lc_row" '행위 수')" "$lc_next:2"
+
+# THREE `무기록` ROWS IN A ROW DO NOT PUSH THE LAST REAL HANDOFF OUT OF THE
+# SNAPSHOT. One real handoff, then three shifts that end without one — the limit
+# night's path. Counting `무기록` against the cap would leave three of them and no
+# real entry; the window keeps the real ones and only the last `무기록`.
+lc_seat_handoff "$(cap_H "$LC_SEAT" '')"
+check "(g) 밀어냄 픽스처의 실제 인계가 기록된다" "$rc" "0"
+for lc_i in 1 2 3; do lc_launch plain "tail$lc_i"; done
+lc_tail_last=$(row_field "$(lc_unrec_row)" '교대')
+lc_snap=$(cap_snap "$LC_SEAT" '')
+check "(g) 무기록 교대 세 번 뒤에도 마지막 실제 인계가 스냅숏에 남는다" \
+  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | last | .["사유"]')" "종단"
+check "(g) 스냅숏의 실제 인계는 상한 세 개를 채운다" \
+  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | length')" "3"
+check "(g) 스냅숏의 무기록 항목은 마지막 하나뿐이고 마지막 교대의 것이다" \
+  "$(printf '%s' "$lc_snap" | jq -r '[([.handoff[] | select(.["사유"] == "무기록")] | length), (.handoff | last | .["교대"])] | map(tostring) | join(":")')" \
+  "1:$lc_tail_last"
+CAP_STUB="$LC_CAP_STUB_SAVE"
+
 # --- 34b. 계측 — 마지막 턴 컨텍스트가 읽기+생성+입력이다 ---------------------
 # --- section: 34b | group: cone | covers: snapshot | needs: 31al | anchors: 34b: 마지막 턴 컨텍스트가 읽기+생성+입력으로 계산된다 ---
 #
@@ -19303,6 +19543,89 @@ cap_gate "$CAPC_BIGSEAT_SID" '' exec --manifest "$CAP_NM" --target infra --segme
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
          --rationale "픽스처 — 좌석 경계, 좌석 상한 바로 아래" -- ls "$CONE_A"
 check "34c A15: 좌석은 299,999 이면 거절되지 않는다" "$rc" "0"
+
+# A16. THE SEAT'S `한도 해제` ROW. It is the seat's alone, takes `근거` and nothing
+# else, and the gate stamps the lane and the time — a `레인` on argv would let the
+# row name a lane the seat is not on, and the row body carries every `k=v` it is
+# handed, so the refusal is the only thing that keeps a forged one off it.
+capc_clr() { { cap_rows '한도 해제' | grep -c . || true; } | tr -d ' '; }
+capc_clr0=$(capc_clr)
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind limit-cleared --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 레인을 argv 로 준 좌석 신호" -- 근거=x 레인=forged
+check "34c A16: argv 에 레인을 실은 한도 해제는 2 로 거절된다" "$rc" "2"
+check "34c A16: 그 거절은 행을 남기지 않는다" "$(capc_clr)" "$capc_clr0"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind limit-cleared --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 좌석 신호" -- 근거=x
+check "34c A16: 근거만 실은 한도 해제는 통과한다" "$rc" "0"
+check "34c A16: 한도 해제 행이 하나 생긴다" "$(capc_clr)" "$((capc_clr0 + 1))"
+capc_crow=$(cap_rows '한도 해제' | tail -1)
+capc_occ() { printf '%s' "$capc_crow" | tr '|' '\n' | { grep -c "^ *$1=" || true; } | tr -d ' '; }
+check "34c A16: 그 행은 레인과 기록 시각을 한 번씩만 싣는다" "$(capc_occ '레인'):$(capc_occ '기록 시각')" "1:1"
+case "$(row_field "$capc_crow" '레인')" in
+  "~"*|/*) ok "34c A16: 레인은 게이트가 찍은 설정 홈이다" ;;
+  *) bad "34c A16: 한도 해제 레인" "$capc_crow" ;;
+esac
+
+# A17. A SHIFT OR A STAGE CANNOT WRITE IT. Neither is the seat a person speaks to.
+capc_clr0=$(capc_clr)
+cap_gate "$capc_sid2" "$CAPC_RID#2" act --manifest "$CAP_NM" --kind limit-cleared --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid2" "$CAPC_RID#2")" \
+         --rationale "픽스처 — 교대가 쓰려는 좌석 신호" -- 근거=x
+check "34c A17: 교대의 한도 해제는 3 으로 거절된다" "$rc" "3"
+# The code alone does not say which rule refused, so the sentence is read too.
+case "$msg" in
+  *"written by the seat only"*) ok "34c A17: 교대 거절은 좌석 전용 규칙이 낸 것이다" ;;
+  *) bad "34c A17: 교대 거절 문면" "$msg" ;;
+esac
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$CAPC_SEAT_SID" CC_CLAUDE_BIN="$CAP_STUB" \
+      CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_SEGMENT=CC1 CC_PIPELINE_STAGE_ID='CC1#1' \
+      bash "$GATE" act --manifest "$CAP_NM" --kind limit-cleared --target infra \
+      --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+          CLAUDE_CODE_SESSION_ID="$CAPC_SEAT_SID" CC_CLAUDE_BIN="$CAP_STUB" \
+          CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_SEGMENT=CC1 CC_PIPELINE_STAGE_ID='CC1#1' \
+          bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null ) | jq -r .H)" \
+      --rationale "픽스처 — 스테이지가 쓰려는 좌석 신호" -- 근거=x 2>&1); rc=$?
+check "34c A17: 스테이지의 한도 해제는 3 으로 거절된다" "$rc" "3"
+case "$out" in
+  *"written by the seat only"*) ok "34c A17: 스테이지 거절도 좌석 전용 규칙이 낸 것이다" ;;
+  *) bad "34c A17: 스테이지 거절 문면" "$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ')" ;;
+esac
+check "34c A17: 두 거절 모두 행을 남기지 않는다" "$(capc_clr)" "$capc_clr0"
+
+# A18. `근거` IS REQUIRED.
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind limit-cleared --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 근거 없는 좌석 신호"
+check "34c A18: 근거 없는 한도 해제는 2 로 거절된다" "$rc" "2"
+check "34c A18: 그 거절도 행을 남기지 않는다" "$(capc_clr)" "$capc_clr0"
+
+# A19. A SEAT PAST ITS LIMIT CAN STILL RECORD IT — it is a bookkeeping kind, and a
+# capped seat that could not would have no way to pass on what a person said.
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 40000 20000; } > "$NTX/$CAPC_BIGSEAT_SID.jsonl"
+cap_gate "$CAPC_BIGSEAT_SID" '' act --manifest "$CAP_NM" --kind limit-cleared --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_BIGSEAT_SID" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 신호" -- 근거=x
+check "34c A19: 상한을 넘긴 좌석의 한도 해제는 장부 종류로 통과한다" "$rc" "0"
+
+# A20. `무기록` IS THE GATE'S VALUE AND NOT A CALLER'S, from a seat or a shift.
+capc_unrec() { { cap_rows 'handoff' | grep -cF '| 사유=무기록 |' || true; } | tr -d ' '; }
+capc_u0=$(capc_unrec)
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind handoff --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 좌석이 흉내 낸 무기록" \
+         -- 교대=1 대상=infra 사유=무기록 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
+check "34c A20: 좌석이 argv 로 낸 사유=무기록 은 2 로 거절된다" "$rc" "2"
+cap_gate "$capc_sid2" "$CAPC_RID#2" act --manifest "$CAP_NM" --kind handoff --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid2" "$CAPC_RID#2")" \
+         --rationale "픽스처 — 교대가 흉내 낸 무기록" \
+         -- 교대=2 대상=infra 사유=무기록 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
+check "34c A20: 교대가 argv 로 낸 사유=무기록 도 2 로 거절된다" "$rc" "2"
+check "34c A20: 두 거절 모두 무기록 행을 남기지 않는다" "$(capc_unrec)" "$capc_u0"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
