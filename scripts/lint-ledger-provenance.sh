@@ -21,17 +21,26 @@
 # another field's value is not a field and is not read.
 #
 # Rules:
-#   1. [fail] In every ledger `<8 digits>-<8 hex>.md` directly under the ledger
-#      root, every `run` row whose ` | `-split fields include one beginning
-#      `RUN_DIR=` has a value beginning `<state root>/`. A `run` row with no such
-#      field has nothing to judge and is skipped. Rows of any other family are
-#      not read — a `blocked` row carries no `RUN_DIR`, so its origin cannot be
-#      told from its content.
+#   1. In every ledger `<8 digits>-<8 hex>.md` directly under the ledger root,
+#      every `run` row whose ` | `-split fields include one beginning `RUN_DIR=`
+#      has a value beginning `<state root>/`. A `run` row with no such field has
+#      nothing to judge and is skipped. Rows of any other family are not read —
+#      a `blocked` row carries no `RUN_DIR`, so its origin cannot be told from
+#      its content.
+#   2. A row that breaks rule 1 is judged by its own `시작=` field, the wall
+#      clock the gate stamped when it wrote the row:
+#        [info] strictly earlier than `history_cutoff` — history, reported on
+#               stdout with file name and run-id, and passed;
+#        [fail] equal to or later than the cutoff, no `시작=` field, or a value
+#               not shaped `YYYY-MM-DDTHH:MM:SSZ`.
+#      The unit is the row, not the ledger: a contaminated row appended today to
+#      a ledger that already holds history still fails.
 #
 # Existing contaminated rows are NOT rewritten: a ledger is an append-only hash
-# chain, and editing one row breaks every `prev=` after it. Run from a checkout
-# whose `docs/pipeline-run/` holds such rows, this lint reports them; that is
-# the detector doing its job.
+# chain, and editing one row breaks every `prev=` after it. Without the cutoff,
+# a checkout whose `docs/pipeline-run/` holds such rows would fail `make check`
+# forever. The cutoff was fixed by measuring the main checkout's ledgers: every
+# contaminated row there was stamped before it.
 #
 # Usage: bash scripts/lint-ledger-provenance.sh
 #
@@ -52,6 +61,9 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 ledger_root="${LEDGER_ROOT:-$repo_root/docs/pipeline-run}"
 state_root="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
+
+# UTC, compared as a string: the fixed-width shape makes lexical order time order.
+history_cutoff="2026-10-02T00:47:52Z"
 
 # `docs/` is untracked, so CI and a segment worktree have no ledgers at all.
 if [[ ! -d "$ledger_root" ]]; then
@@ -78,6 +90,7 @@ field_value() {
 
 fail=0
 scanned=0
+history=0
 while IFS= read -r ledger; do
   [[ -n "$ledger" ]] || continue
   case "${ledger##*/}" in
@@ -95,7 +108,22 @@ while IFS= read -r ledger; do
       "$state_root"/*) continue ;;
     esac
     rid=$(field_value "$row" run-id) || rid='(없음)'
-    echo "FAIL: $ledger — run-id=$rid RUN_DIR=$rd ; 린트 환경의 상태 뿌리($state_root) 아래가 아니다" >&2
+    if ! started=$(field_value "$row" 시작); then
+      echo "FAIL: $ledger — run-id=$rid RUN_DIR=$rd ; 상태 뿌리($state_root) 밖이고 시작= 이 없어 이력인지 가릴 수 없다" >&2
+      fail=1
+      continue
+    fi
+    if [[ ! "$started" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+      echo "FAIL: $ledger — run-id=$rid 시작=$started RUN_DIR=$rd ; 상태 뿌리($state_root) 밖이고 시작= 모양이 틀려 이력인지 가릴 수 없다" >&2
+      fail=1
+      continue
+    fi
+    if [[ "$started" < "$history_cutoff" ]]; then
+      echo "INFO: $ledger — run-id=$rid 시작=$started ; 절단 시각($history_cutoff) 전의 오염 행 — 이력으로 통과"
+      history=$((history + 1))
+      continue
+    fi
+    echo "FAIL: $ledger — run-id=$rid 시작=$started RUN_DIR=$rd ; 린트 환경의 상태 뿌리($state_root) 아래가 아니다" >&2
     fail=1
   done < "$ledger"
 done < <(find "$ledger_root" -maxdepth 1 -type f -name '*.md' | sort)
@@ -104,5 +132,5 @@ if [[ "$fail" != "0" ]]; then
   echo "lint-ledger-provenance: violations found" >&2
   exit 1
 fi
-echo "OK:   lint-ledger-provenance — 원장 ${scanned}개의 run 행 출처가 상태 뿌리 아래다"
+echo "OK:   lint-ledger-provenance — 원장 ${scanned}개의 run 행 출처가 상태 뿌리 아래다 (이력 ${history}행)"
 exit 0
