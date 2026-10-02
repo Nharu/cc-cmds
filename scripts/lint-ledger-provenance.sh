@@ -39,8 +39,10 @@
 # Existing contaminated rows are NOT rewritten: a ledger is an append-only hash
 # chain, and editing one row breaks every `prev=` after it. Without the cutoff,
 # a checkout whose `docs/pipeline-run/` holds such rows would fail `make check`
-# forever. The cutoff was fixed by measuring the main checkout's ledgers: every
-# contaminated row there was stamped before it.
+# forever. The cutoff is the instant the main checkout's ledgers were measured:
+# at 2026-10-02T01:25:06Z, 246 ledgers held 708 contaminated rows, across 51 of
+# them, and the latest was stamped 2026-10-02T01:19:44Z. A run still driving the
+# unrepaired suites keeps adding rows after that instant, and those fail.
 #
 # Usage: bash scripts/lint-ledger-provenance.sh
 #
@@ -63,7 +65,7 @@ ledger_root="${LEDGER_ROOT:-$repo_root/docs/pipeline-run}"
 state_root="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
 
 # UTC, compared as a string: the fixed-width shape makes lexical order time order.
-history_cutoff="2026-10-02T00:47:52Z"
+history_cutoff="2026-10-02T01:25:06Z"
 
 # `docs/` is untracked, so CI and a segment worktree have no ledgers at all.
 if [[ ! -d "$ledger_root" ]]; then
