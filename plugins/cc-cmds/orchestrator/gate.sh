@@ -6996,7 +6996,26 @@ gate_segment_anchor_worktree() {
   # never the record. It is matched as spelled against the target's declared
   # `메인 워크트리`, and as `pwd -P` resolves it against the anchor repository
   # root when both exist. A segment that names nothing else has no record.
-  local seg="$1" al="${2:-}" main="" main_p="" rows row wt wt_p
+  #
+  # SKIPPING THE MAIN CHECKOUT'S ROOT WAS NOT ENOUGH, because it named what the
+  # record is not instead of what it is. A row naming a subdirectory of the
+  # main checkout (`<main>/docs`) passed the skip and became the record, and a
+  # merge recorded from that directory read the main checkout's HEAD as `충족`.
+  # So a row whose directory still exists is identified positively: it has to
+  # be the top level of its own checkout (`--show-toplevel`, compared through
+  # `pwd -P`), and that top level must not be the main checkout. A directory
+  # that is gone, or that is not inside a repository, gets the spelling and
+  # realpath skips above only — a segment's worktree is routinely removed
+  # before its merge is recorded, and the record has to survive that.
+  #
+  # ONLY ROWS WRITTEN BEFORE THE SEGMENT'S FIRST `머지됨` ROW ARE CANDIDATES. A
+  # segment whose rows named only the main checkout merged with `판정 불가`,
+  # a `리뷰중` row naming another linked worktree written after it became the
+  # record, and a second merged row naming that worktree then read `충족` and
+  # cleared condition 11. After a merge is recorded there is no record left to
+  # establish. `완료` and `park` do not end the candidates, because a segment
+  # resumes after them.
+  local seg="$1" al="${2:-}" main="" main_p="" rows row wt wt_p top_p
   if [ -n "$al" ]; then
     main=$(target_field "$al" '메인 워크트리' 2>/dev/null) || main=""
     main_p=$(alias_root "$al" 2>/dev/null) || main_p=""
@@ -7011,6 +7030,7 @@ gate_segment_anchor_worktree() {
                   s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
                   if (index(s, "상태=") == 1) st = substr(s, length("상태=") + 1)
                 }
+                if (st == "머지됨") exit
                 if (st != "" && index(ts, " " st " ") == 0) print }')
   [ -n "$rows" ] || return 0
   while IFS= read -r row; do
@@ -7018,9 +7038,15 @@ gate_segment_anchor_worktree() {
     wt=$(gate_row_field "$row" '워크트리')
     [ -n "$wt" ] || continue
     if [ -n "$main" ] && [ "$wt" = "$main" ]; then continue; fi
-    if [ -n "$main_p" ]; then
-      wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
-      if [ -n "$wt_p" ] && [ "$wt_p" = "$main_p" ]; then continue; fi
+    wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
+    if [ -n "$main_p" ] && [ -n "$wt_p" ] && [ "$wt_p" = "$main_p" ]; then continue; fi
+    if [ -n "$wt_p" ]; then
+      top_p=$(cd "$wt_p" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || top_p=""
+      if [ -n "$top_p" ]; then
+        top_p=$(cd "$top_p" 2>/dev/null && pwd -P) || top_p=""
+        [ "$top_p" = "$wt_p" ] || continue
+        if [ -n "$main_p" ] && [ "$top_p" = "$main_p" ]; then continue; fi
+      fi
     fi
     printf '%s' "$wt"
     return 0
@@ -14701,15 +14727,16 @@ gate_record_row() {
       # time the merge is recorded, so the two are compared as spelled, and as
       # `pwd -P` resolves them only when both still exist.
       #
-      # THE RECORD IS THE SEGMENT'S FIRST NON-TERMINAL ROW NAMING A WORKTREE
-      # OTHER THAN THE TARGET'S MAIN CHECKOUT, not its last row: the last row
-      # is the one a caller writes next, so a `리뷰중` row naming an old
-      # checkout moved the record and the merged row then matched it. The
-      # router's `계획됨` row naming the main checkout is skipped, because that
-      # checkout is not where the segment worked (see
-      # `gate_segment_anchor_worktree`). A later non-terminal row may still
-      # name another worktree — the settings derivation follows it — but a
-      # terminal row written after it is held to the record.
+      # THE RECORD IS THE SEGMENT'S OWN WORKTREE — the first non-terminal row,
+      # written before the segment's first `머지됨` row, that names the top
+      # level of a checkout other than the target's main one — not its last
+      # row: the last row is the one a caller writes next, so a `리뷰중` row
+      # naming an old checkout moved the record and the merged row then
+      # matched it. The router's `계획됨` row naming the main checkout, or a
+      # directory inside it, is skipped, because that is not where the segment
+      # worked (see `gate_segment_anchor_worktree`). A later non-terminal row
+      # may still name another worktree — the settings derivation follows it —
+      # but a terminal row written after it is held to the record.
       case "$st" in
         머지됨|완료|park)
           local rec_wt rec_p wt_p
@@ -14719,9 +14746,9 @@ gate_record_row() {
             wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
             if [ -z "$rec_p" ] || [ "$rec_p" != "$wt_p" ]; then
               if [ -z "$rec_p" ]; then
-                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록된 디렉터리가 없어 철자로만 비교했습니다. 종단 행은 세그먼트가 작업한 워크트리(메인 체크아웃이 아닌 워크트리를 단 첫 비종단 행의 것)를 답니다"
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록된 디렉터리가 없어 철자로만 비교했습니다. 종단 행은 세그먼트 자신의 워크트리(첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃도, 어느 체크아웃의 하위 디렉터리도 아닌 첫 행의 것)를 답니다"
               else
-                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 종단 행은 세그먼트가 작업한 워크트리(메인 체크아웃이 아닌 워크트리를 단 첫 비종단 행의 것)를 답니다"
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 종단 행은 세그먼트 자신의 워크트리(첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃도, 어느 체크아웃의 하위 디렉터리도 아닌 첫 행의 것)를 답니다"
               fi
               return "$GATE_EXIT_VOCAB"
             fi
@@ -14850,13 +14877,25 @@ gate_record_row() {
         #     previous row or it names none), and that is the policy the
         #     comparison has to be made under;
         #   - any row once the segment carries `머지 대조`;
-        #   - any row once the segment's code is on the base — this row's or
-        #     the previous row's `커밋`, or the recorded worktree's tip. A merge
-        #     made outside the gate leaves no `머지 대조` behind, so landing is
-        #     asked directly. An unanswerable landing is refused as well,
-        #     closed-side, and retried once the repository can be reached. The
-        #     question is asked only when the row loosens, so no other row
-        #     reaches the network for it.
+        #   - any row once the segment's code is on the base — this row's `커밋`,
+        #     the `커밋` of every earlier row of the segment, the `리뷰 HEAD` of
+        #     its `cycle` rows, or the recorded worktree's tip. A merge made
+        #     outside the gate leaves no `머지 대조` behind, so landing is asked
+        #     directly. An unanswerable landing is refused as well, closed-side,
+        #     and retried once the repository can be reached. The question is
+        #     asked only when the row loosens, so no other row reaches the
+        #     network for it.
+        #
+        # NOTHING TO ASK IS ALSO AN UNANSWERABLE LANDING. The candidates used to
+        # be dropped silently — no record, a recorded directory already removed,
+        # no `커밋` on this row or the previous one — and the loop then tested
+        # nothing and accepted the row. A segment merged outside the gate from
+        # the main checkout, or whose worktree was already gone, loosened its
+        # policy that way, and its merged row then read `정책 면제` with
+        # condition 11 empty. So the row is accepted only when some candidate
+        # was actually tested: a landing that answered `미착지`, or a recorded
+        # tip still sitting on the fork point, which says positively that the
+        # segment has no commit of its own yet.
         if [ "$st" = '머지됨' ] || [ -n "$prior" ]; then
           local ppol ppi
           ppol=""
@@ -14871,37 +14910,49 @@ gate_record_row() {
               warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 머지가 기록된 세그먼트의 리뷰 정책은 느슨하게 바꿀 수 없습니다(종료 조건 11 이 읽는 정책입니다)"
               return "$GATE_EXIT_VOCAB"
             fi
-            local lc lc_cands="" lc_wt lc_tip lc_fork
-            lc_cands="$(gate_field_of '커밋' "$@") $(gate_row_field "$prior" '커밋')"
+            local lc lc_cands="" lc_wt lc_tip lc_fork lc_tested="" lc_seen=" "
+            lc_cands="$(gate_field_of '커밋' "$@") $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
+                          | tr '|' '\n' | sed -n 's/^ *커밋=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
+            lc_cands="$lc_cands $(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" \
+                          | tr '|' '\n' | sed -n 's/^ *리뷰 HEAD=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
             lc_wt=$(gate_segment_anchor_worktree "$seg" "$alias")
             if [ -n "$lc_wt" ]; then
               lc_tip=$(gate_worktree_tip "$lc_wt") || lc_tip=""
               # A tip that is still the fork point has no commit of the segment's
               # own on it, and is "on the base" only because nothing has been
-              # done yet. The segment's rows say so when they carry the fork.
+              # done yet. The segment's rows say so when they carry the fork,
+              # and that is an answer: the tip was tested.
               if [ -n "$lc_tip" ]; then
                 for lc_fork in $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
                                    | tr '|' '\n' | sed -n -e 's/^ *사전 HEAD=//p' -e 's/^ *베이스 sha=//p' \
                                    | sed 's/[[:space:]]*$//'); do
                   [ "${#lc_fork}" -ge 7 ] || continue
                   case "$lc_tip" in
-                    "$lc_fork"*) lc_tip=""; break ;;
+                    "$lc_fork"*) lc_tip=""; lc_tested=1; break ;;
                   esac
                 done
               fi
               lc_cands="$lc_cands $lc_tip"
             fi
             for lc in $lc_cands; do
+              [ "$lc" != '-' ] || continue
+              case "$lc_seen" in *" $lc "*) continue ;; esac
+              lc_seen="$lc_seen$lc "
               gate_obligation_landing "$alias" "$lc"
               case "$GATE_LANDING_VERDICT" in
                 착지)
                   warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 이 세그먼트의 커밋 $lc 이 이미 베이스에 착지했습니다($GATE_LANDING_WHY). 착지한 머지는 앞 행의 정책 아래서 일어났고 종료 조건 11 이 읽는 정책이라 느슨하게 바꿀 수 없습니다"
                   return "$GATE_EXIT_VOCAB" ;;
                 '판정 불가')
-                  warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 커밋 $lc 의 착지를 판정할 수 없습니다 — 레포 접근이 돌아온 뒤 다시 씁니다: $GATE_LANDING_WHY"
+                  warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 커밋 $lc 의 착지를 판정할 수 없습니다 — 레포 접근이 돌아온 뒤 다시 쓰거나, 앞 행의 정책을 그대로 다시 적습니다(「커밋」 을 빼는 것은 복구가 아닙니다): $GATE_LANDING_WHY"
                   return "$GATE_EXIT_VOCAB" ;;
+                미착지) lc_tested=1 ;;
               esac
             done
+            if [ -z "$lc_tested" ]; then
+              warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 착지를 물어볼 후보(커밋·리뷰 HEAD·기록된 워크트리의 팁)가 없어 착지를 판정할 수 없습니다 — 정책은 첫 행에서 고릅니다. 앞 행의 정책을 그대로 다시 적거나(생략하면 이어받습니다), 세그먼트 워크트리가 남아 있으면 그 워크트리를 단 비종단 행으로 기록을 세운 뒤 다시 씁니다"
+              return "$GATE_EXIT_VOCAB"
+            fi
           fi
         fi
       fi
@@ -14979,14 +15030,15 @@ gate_record_row() {
       # happened, and the tree is routinely gone by then — and the coverage half
       # then reads `판정 불가`, which condition 11 holds on.
       #
-      # THE TIP IS THE SEGMENT'S RECORDED WORKTREE'S — its first non-terminal
-      # row naming something other than the main checkout — not the one this
+      # THE TIP IS THE SEGMENT'S RECORDED WORKTREE'S — see
+      # `gate_segment_anchor_worktree` for which row that is — not the one this
       # row names. The check above already ties the two together; reading the
       # recorded one keeps the comparison on the segment's own tree should that
       # check ever be loosened.
       #
-      # A SEGMENT WITH NO SUCH ROW HAS NO RECORD — no non-terminal row at all,
-      # or only rows naming the main checkout — and its tip is then left unread
+      # A SEGMENT WITH NO SUCH ROW HAS NO RECORD — no non-terminal row before
+      # its first merge, or only rows naming the main checkout or a directory
+      # inside a checkout — and its tip is then left unread
       # rather than taken from this row: the caller's worktree is the one value
       # the comparison must not rest on, and the main checkout's HEAD is not
       # what the segment merged. The coverage half then reads `판정 불가` and

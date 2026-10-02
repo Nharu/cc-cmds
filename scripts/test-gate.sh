@@ -18397,7 +18397,7 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26M \
     -- 상태=머지됨 워크트리="$SA_OLDWT" 선행=없음
 check "26: 비종단 행이 옮긴 옛 체크아웃의 머지됨 행은 거절된다" "$rc" "2"
 case "$msg" in
-  *"메인 체크아웃이 아닌 워크트리를 단 첫 비종단 행"*) ok "26: 그 거절 문면이 메인 체크아웃이 아닌 첫 비종단 행을 기준으로 댄다" ;;
+  *"세그먼트 자신의 워크트리(첫 머지됨 행 앞에 쓰인 비종단 행 중"*) ok "26: 그 거절 문면이 세그먼트 자신의 워크트리를 기준으로 댄다" ;;
   *) bad "26 두 행 철자 문면" "$msg" ;;
 esac
 check "26: 그 거절이 원장을 늘리지 않는다 (두 행 철자)" "$(sa_rows)" "$nb"
@@ -18504,6 +18504,72 @@ check "26: 메인 체크아웃만 — 머지 대조가 판정 불가 다" \
   "$(sa_field "$(sa_seg_last S26C)" '머지 대조')" "판정 불가"
 check "26: 메인 체크아웃만 — 판정 불가가 조건 11 을 낸다" \
   "$(sa_unmet11)" "11 세그먼트 S26C 의 머지 대조가 판정 불가 입니다"
+
+# 메인 하위 디렉터리 계획 행 — 메인 체크아웃 루트만 빼던 선택에서는 `<main>/docs`
+# 를 단 계획됨 행이 기록이 되었다. 그러면 정직한 머지됨 행은 거절되고, 그
+# 디렉터리를 단 머지됨 행은 메인 체크아웃의 HEAD 를 읽어 리뷰되지 않은 머지를
+# 충족 으로 적었다.
+sa_new '메인 하위 디렉터리 계획 행'
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26D \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_WT/docs" 선행=없음
+check "26: 메인 하위 디렉터리를 단 계획됨 행이 받아들여진다" "$rc" "0"
+sa_seg_row S26D ""
+T26D=$(sa_commit '리뷰된 작업')
+sa_cycle S26D 1 0 0 "$T26D"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+sa_land
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26D \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_WT/docs" 선행=없음
+check "26: 메인 하위 디렉터리를 단 머지됨 행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"기록된 워크트리 $SA_SEGWT "*) ok "26: 그 거절 문면이 세그먼트 워크트리를 기록된 워크트리로 댄다 (하위 디렉터리)" ;;
+  *) bad "26 메인 하위 디렉터리 머지됨 문면" "$msg" ;;
+esac
+check "26: 그 거절이 원장을 늘리지 않는다 (메인 하위 디렉터리)" "$(sa_rows)" "$nb"
+sa_seg_state S26D 머지됨
+check "26: 세그먼트 워크트리를 단 머지됨 행이 기록된다 (하위 디렉터리 계획 행 뒤)" "$rc" "0"
+check "26: 하위 디렉터리 계획 행 뒤의 머지가 세그먼트의 팁을 읽어 위반(미포함) 이다" \
+  "$(sa_field "$(sa_seg_last S26D)" '머지 대조')" "위반(미포함)"
+check "26: 하위 디렉터리 계획 행 뒤의 미포함이 조건 11 을 낸다" \
+  "$(sa_unmet11)" "11 세그먼트 S26D 의 머지 대조가 위반(미포함) 입니다"
+
+# 머지 뒤의 기록 — 메인 체크아웃 행만 있던 세그먼트가 판정 불가 로 머지된 뒤,
+# 리뷰된 옛 커밋에 머문 다른 연결 워크트리를 단 비종단 행이 기록이 되면 그
+# 워크트리의 둘째 머지됨 행이 충족 으로 조건 11 을 풀었다. 첫 머지됨 행 뒤의
+# 비종단 행은 기록이 되지 못한다.
+sa_new '머지 뒤의 기록'
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26E \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_WT" 선행=없음
+T26E=$(sa_commit '리뷰된 작업')
+sa_cycle S26E 1 0 0 "$T26E"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+sa_land
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26E \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_WT" 선행=없음
+check "26: 머지 뒤의 기록 — 메인 체크아웃 머지됨 행이 판정 불가 로 기록된다" \
+  "$(sa_field "$(sa_seg_last S26E)" '머지 대조')" "판정 불가"
+SA_OTHERWT="$SA_ROOT/other"
+( cd "$SA_REPO" && git worktree add -q --detach "$SA_OTHERWT" "$T26E" ) >/dev/null 2>&1
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26E \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=리뷰중 워크트리="$SA_OTHERWT" 선행=없음
+check "26: 머지 뒤의 기록 — 다른 워크트리를 단 비종단 행은 받아들여진다" "$rc" "0"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S26E \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_OTHERWT" 선행=없음
+r26e=$(sa_seg_last S26E)
+if [ "$(sa_field "$r26e" '머지 대조')" = "충족" ]; then
+  bad "26 머지 뒤의 기록" "머지 뒤에 쓰인 비종단 행이 기록이 되어 둘째 머지됨 행이 충족 이다: $r26e"
+else
+  ok "26: 머지 뒤의 기록 — 둘째 머지됨 행이 충족 이 아니다"
+fi
+check "26: 머지 뒤의 기록 — 조건 11 이 그 세그먼트를 계속 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S26E 의 머지 대조가 판정 불가 입니다"
 
 # 거짓 머지 — 팁이 베이스에 없는데 머지됨 을 적는다.
 sa_new '거짓 머지'
@@ -18714,7 +18780,7 @@ nb=$(sa_rows)
 sa_seg_state S27M 머지됨 '리뷰 정책=선머지후리뷰'
 check "27: 첫 머지됨 행 자신이 리뷰 정책을 느슨하게 달면 거절된다" "$rc" "2"
 case "$msg" in
-  *"앞 행의 정책 아래서 일어났고"*) ok "27: 머지됨 행 완화 거절 문면이 이유를 댄다" ;;
+  *"이 머지는 앞 행의 정책 아래서 일어났고, 머지 대조와"*) ok "27: 머지됨 행 완화 거절 문면이 이유를 댄다" ;;
   *) bad "27 머지됨 행 완화 문면" "$msg" ;;
 esac
 check "27: 머지됨 행 완화 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
@@ -18754,6 +18820,85 @@ sa_seg_row S27K ""
 sa_commit '작업' >/dev/null
 sa_seg_state S27K 리뷰중 '리뷰 정책=선머지후리뷰'
 check "27: 착지 전 비종단 행의 정책 완화는 받아들여진다" "$rc" "0"
+
+# 물어볼 후보가 없는 완화 — 게이트 밖 착지 뒤 세그먼트 워크트리를 치우고, 커밋도
+# 리뷰 HEAD 도 없는 세그먼트가 메인 체크아웃 행에서 정책을 느슨하게 단다. 후보를
+# 조용히 버리던 루프는 아무것도 시험하지 않고 받아, 뒤의 머지됨 행이 정책 면제 로
+# 적혀 조건 11 이 비었다.
+sa_new '후보 없는 완화 (워크트리 치움)'
+sa_seg_row S27A ""
+sa_commit '작업' >/dev/null
+sa_land
+( cd "$SA_REPO" && git worktree remove --force "$SA_SEGWT" ) >/dev/null 2>&1
+if [ -d "$SA_SEGWT" ]; then bad "27 후보 없는 완화 전제" "세그먼트 워크트리가 치워지지 않았다"; fi
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S27A \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=실행중 워크트리="$SA_WT" 선행=없음 '리뷰 정책=선머지후리뷰'
+check "27: 물어볼 후보가 없는 정책 완화는 거절된다 (워크트리 치움)" "$rc" "2"
+case "$msg" in
+  *"착지를 물어볼 후보"*) ok "27: 그 거절 문면이 물어볼 후보가 없음을 댄다" ;;
+  *) bad "27 후보 없는 완화 문면" "$msg" ;;
+esac
+check "27: 후보 없는 완화 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+sa_seg_state S27A 머지됨
+check "27: 후보 없는 완화 시도 뒤의 머지됨 행이 기록된다" "$rc" "0"
+if [ "$(sa_field "$(sa_seg_last S27A)" '머지 대조')" = "정책 면제" ]; then
+  bad "27 후보 없는 완화" "머지됨 행이 정책 면제 로 적혔다"
+else
+  ok "27: 후보 없는 완화 시도 뒤의 머지됨 행이 정책 면제 가 아니다"
+fi
+check "27: 후보 없는 완화 시도 뒤에도 조건 11 이 그 세그먼트를 지목한다" \
+  "$(sa_unmet11)" "11 세그먼트 S27A 의 머지 대조가 리뷰 없음 입니다"
+
+# 같은 모양에 열린 발견의 사이클이 있으면 그 리뷰 HEAD 가 착지 후보다.
+sa_new '리뷰 HEAD 후보 완화'
+sa_seg_row S27B ""
+T27B=$(sa_commit '작업')
+sa_cycle S27B 1 1 0 "$T27B"
+sa_land
+( cd "$SA_REPO" && git worktree remove --force "$SA_SEGWT" ) >/dev/null 2>&1
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S27B \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=실행중 워크트리="$SA_WT" 선행=없음 '리뷰 정책=선머지후리뷰'
+check "27: 착지한 리뷰 HEAD 가 있는 세그먼트의 완화는 거절된다" "$rc" "2"
+case "$msg" in
+  *"커밋 $T27B 이 이미 베이스에 착지했습니다"*) ok "27: 그 거절 문면이 착지한 리뷰 HEAD 를 댄다" ;;
+  *) bad "27 리뷰 HEAD 후보 문면" "$msg" ;;
+esac
+check "27: 리뷰 HEAD 후보 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+
+# 메인 체크아웃만 — 비종단 행이 모두 메인 체크아웃을 달면 기록이 없다. 세그먼트
+# 워크트리를 치우지 않아도 물어볼 후보가 없다.
+sa_new '후보 없는 완화 (메인 체크아웃만)'
+sa_seg_row S27C "" "$SA_WT"
+sa_commit '작업' >/dev/null
+sa_land
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S27C \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=리뷰중 워크트리="$SA_WT" 선행=없음 '리뷰 정책=선머지후리뷰'
+check "27: 메인 체크아웃만 단 세그먼트의 후보 없는 완화는 거절된다" "$rc" "2"
+case "$msg" in
+  *"착지를 물어볼 후보"*) ok "27: 메인 체크아웃만 — 거절 문면이 물어볼 후보가 없음을 댄다" ;;
+  *) bad "27 메인 체크아웃만 완화 문면" "$msg" ;;
+esac
+check "27: 메인 체크아웃만 — 완화 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S27C \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=리뷰중 워크트리="$SA_WT" 선행=없음 '리뷰 정책=선리뷰후머지'
+check "27: 메인 체크아웃만 — 같은 정책을 다시 다는 행은 받아들여진다" "$rc" "0"
+
+# 음성 대조 — 기록된 워크트리가 분기점에 머물러 자기 커밋이 없음을 양으로 아는
+# 세그먼트의 완화는 받아들여진다. 분기점 팁은 시험된 후보다.
+sa_new '분기점 팁 완화'
+FORK27=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S27F \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=실행중 워크트리="$SA_SEGWT" 선행=없음 "사전 HEAD=$FORK27"
+sa_seg_state S27F 리뷰중 '리뷰 정책=선머지후리뷰'
+check "27: 분기점에 머문 기록된 워크트리의 완화는 받아들여진다" "$rc" "0"
 
 # 상한 — 새 필드를 단 최악 관측 머지됨 행(게이트의 자로 905 B)이 1024 B 안에
 # 든다. 관측 행 자체는 이 저장소에 없으므로, 같은 길이의 행을 게이트의 자로
