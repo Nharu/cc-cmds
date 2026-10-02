@@ -1172,20 +1172,21 @@ DL_BAD_VALUE="2026-10-02T24:00:00+09:00 2026-13-01T09:00:00Z 2026-09-31T10:00:00
 for dl_v in $DL_BAD_SHAPE $DL_BAD_VALUE; do
   dl_set "$dl_v"
   check "읽히지 않는 마감 '$dl_v' 은 epoch 0 이다" "$(deadline_epoch 2>/dev/null)" "0"
-  if deadline_epoch 2>&1 >/dev/null | grep -q '벽시계 마감을 시각으로 읽지 못했습니다'; then
-    ok "읽히지 않는 마감 '$dl_v' 은 경고를 남긴다"
-  else
-    bad "벽시계 마감" "'$dl_v' 을 경고 없이 넘겼다"
-  fi
+  dl_warn=$(deadline_epoch 2>&1 >/dev/null)
+  case "$dl_warn" in
+    *'벽시계 마감을 시각으로 읽지 못했습니다'*) ok "읽히지 않는 마감 '$dl_v' 은 경고를 남긴다" ;;
+    *) bad "벽시계 마감" "'$dl_v' 을 경고 없이 넘겼다" ;;
+  esac
 done
 for dl_v in $DL_BAD_VALUE; do
   dl_set "$dl_v"
   if dl_err=$( ( check_manifest ) 2>&1 ); then
     bad "벽시계 마감" "모양만 맞는 '$dl_v' 을 검사 8 이 받아들였다 — 드라이버가 읽지 못하는 마감으로 기동한다"
-  elif printf '%s' "$dl_err" | grep -q '벽시계 마감이 실제 시각이 아닙니다'; then
-    ok "검사 8 이 모양만 맞는 '$dl_v' 을 실제 시각이 아니라며 거부한다"
   else
-    bad "벽시계 마감" "'$dl_v' 이 다른 이유로 거부됐다: $(printf '%s' "$dl_err" | tail -1)"
+    case "$dl_err" in
+      *'벽시계 마감이 실제 시각이 아닙니다'*) ok "검사 8 이 모양만 맞는 '$dl_v' 을 실제 시각이 아니라며 거부한다" ;;
+      *) bad "벽시계 마감" "'$dl_v' 이 다른 이유로 거부됐다: $(printf '%s' "$dl_err" | tail -1)" ;;
+    esac
   fi
 done
 dl_set 2026-10-02T23:00:00+14:00
