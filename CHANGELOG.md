@@ -5,6 +5,30 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.41.0] - 2026-10-02
+
+무인 라우터가 cc-lane 차용 기록을 읽는다. 사람이 다른 계정을 빌려 쓰는 동안 그 기증자 계정과 같은 조직 그룹에는 새 임대를 놓지 않고, 잠금 아래 임대를 쓴 직후 기록을 디스크에서 다시 읽어 그 사이 시작된 차용과 서로 비켜 간다. 기록이 없거나 `none` 이면 모든 봉투가 이전과 바이트가 같다.
+
+### Added
+
+- **차용 기록 판독기 `route_borrow_read` 와 하위 명령 `route.sh borrow-read [<file>]`** — 부재·`none`·`intent`·`borrowed`·`returning`·손상 여섯 상태를 정규형 한 줄로 낸다. 심링크·디렉터리·FIFO 는 열지 않고 손상이며, 검색할 수 없는 상위 아래의 부재도 손상이다. 판독은 아무것도 만들지 않고 표준 오류에 쓰지 않는다. 경로는 비어 있지 않은 절대 `XDG_STATE_HOME`, 없으면 `HOME/.local/state` 아래 `cc-lane/borrow.json` 이다.
+- **PARK `borrow-record-corrupt`** — 새 배치(풀·재시도 재진입·바인딩 재개)가 손상 기록을 보면 멈춘다. 살아 있는 임대의 이어 가기(멱등 보유·재부여, 고정 보유, 살아 있는 재개)는 그대로 진행한다.
+- **봉투 꼬리 키 `borrow`** — 좌석·휴면 봉투는 좌석이 차용 좌석이거나 기록이 손상일 때 끝에 `{"state":…,"donor":…}` 를 단다.
+
+### Changed
+
+- **문맥에 `borrow`·`borrow_path` 가 실린다** — `lease-txn` 은 `borrow_path` 키가 없거나 `null`·절대 경로가 아니면 rc 2 로 거부한다. 경로가 `null` 이면 재판독은 손상으로 본다.
+- **모든 임대 쓰기 뒤 차용 재판독** — 쓴 계정이 기증자(id 또는 설정 디렉터리)로 지명되면 되돌리고 WAIT `lease-contention` 으로 물러선다. 되돌리기는 잠금 아래 살아 있던 자기 기록의 복원이 먼저이고, 복원 쓰기가 실패하면 쓴 파일을 남긴 채 rc 4 로 끝난다. 이 판정은 재검증보다 앞선다.
+- **`scripts/test-route.sh`** — 판독기·선택 규칙·휴면 칸·임대 재판독 사례를 더하고 단언 하한을 849 로 올렸다.
+
+### Why
+
+cc-lane 은 차용을 시작할 때 intent 를 쓴 뒤 임대 표를 읽는다. 라우터가 임대를 쓴 뒤 차용 기록을 다시 읽으면 두 순서 중 하나는 반드시 상대를 보므로, 같은 계정에 차용과 무인 임대가 함께 서는 교차가 닫힌다. 판독기가 FIFO·권한 없는 상위에서 막히거나 열린 쪽으로 실패하지 않게 하는 것이 같은 논증의 전제다.
+
+포함 커밋:
+
+- `feat(route): cc-lane 차용 기록을 읽어 기증자를 배제하고 임대 쓰기 뒤 다시 확인한다`
+
 ## [2.40.0] - 2026-10-01
 
 리뷰-수리 루프가 같은 자리를 맴도는 모양에 라벨을 붙이기 시작한다. 분류기 `stall-class.awk` 가 원장의 `cycle` 행과 구현 결과 행만 읽어 세그먼트마다 네 부류(`NO_DRIFT`·`SPINNING`·`OSCILLATION`·`DIMINISHING_RETURNS`)를 가리고, 스냅숏이 그 결과를 `stalls` 로 낸다. 라벨은 다음 구현 계획에 지시 문면으로만 실리며 어떤 파견도 막거나 세우지 않는다.
