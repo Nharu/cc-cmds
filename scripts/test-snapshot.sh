@@ -732,7 +732,10 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     'Four or more means the original and three re-attachments all ended cut' \
     'A limit must have cleared first.' \
     '--resume <세션 id>' \
-    'never the slash command again'
+    'never the slash command again' \
+    '| 서수=<n> |' \
+    '^- `한도 해제` |' \
+    'resetsAt'
   do
     nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
     if [ "${nlit:-0}" != "0" ]; then
@@ -747,6 +750,39 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   if [ -z "$reattach_prompt" ]; then reattach_prompt="$prompt"; else reattach_prompt_rs="$prompt"; fi
 done
 check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
+
+# THE RULES AROUND THE RE-ATTACHMENT, which all sit outside the section the
+# extraction above cuts out — the fourth ending reason, the gate's `무기록` row,
+# a handoff entry read as a past observation, the seat's exception for a person
+# who asks to continue, and the input contract that admits the prescribed
+# gate-routed reads. Each copy is read whole, so the section extraction above
+# keeps its own range.
+for pair in \
+  "교대:$RS_SKILL:상한·승인·종단·중단에서 인수인계 행을 남기고 끝난다" \
+  "교대:$RS_SKILL:**The gate-routed reads this skill names are input too**" \
+  "교대:$RS_SKILL:Four reasons end a shift:" \
+  "교대:$RS_SKILL:**\`무기록\` is the gate's value and never yours**" \
+  "교대:$RS_SKILL:**A \`handoff\` entry is what that shift observed at its own \`기록 시각\`, not what holds now.**" \
+  "교대:$RS_SKILL:or you are ending on \`중단\` (the gate answered exit 7, or no act is left to dispatch)" \
+  "교대:$RS_SKILL:**A live stage holds back none of the four.**" \
+  "교대:$RS_SKILL:CFI-S1 still holds: the snapshot and the gate-routed reads this skill prescribes are the input" \
+  "교대:$RS_SKILL:CFI-S1 still holds: whether to dispatch was decided from the snapshot" \
+  "리드:$AP_SKILL:**Four reasons end a shift, and a live stage holds back none of them.**" \
+  "리드:$AP_SKILL:**\`무기록\` is the gate's alone**" \
+  "리드:$AP_SKILL:or from a gate-routed read of the ledger or the run directory that this skill prescribes" \
+  "리드:$AP_SKILL:read from the snapshot, not from a read of the plan" \
+  "리드:$AP_SKILL:start the next shift only when a person at this seat asked for it or the reset has passed" \
+  "리드:$AP_SKILL:**except when the person at this seat asks to continue or says the limit has cleared.**" \
+  "리드:$AP_SKILL:a \`handoff\` row with \`사유=무기록\`, its \`종료 코드\` and its \`행위 수\`"
+do
+  who=${pair%%:*}; rest=${pair#*:}; file=${rest%%:*}; lit=${rest#*:}
+  nlit=$(grep -cF -- "$lit" "$file" || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    ok "$who 사본이 「${lit}」을 싣는다"
+  else
+    bad "$who 사본의 개정 문구" "「${lit}」이 없다"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key

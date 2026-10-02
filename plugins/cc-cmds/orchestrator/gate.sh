@@ -153,6 +153,10 @@
 #               -- 동일성=<problem 행이 실은 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
 #   gate.sh act --kind obligation-drop --target <alias> ... \\
 #               -- 동일성=<problem 행이 실은 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
+#   gate.sh act --kind limit-cleared --target <alias> ... \\
+#               -- 근거=<사람이 한 말의 요약>
+# `limit-cleared` is the seat's alone — a shift or a stage is refused with 3 —
+# and takes `근거` and nothing else; the gate stamps `레인` and `기록 시각`.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -7186,6 +7190,86 @@ gate_report_abs() {
     /*)  printf '%s' "$1" ;;
     *)   printf '%s/%s' "$(cd "$(dirname "$MANIFEST")/../.." 2>/dev/null && pwd)" "$1" ;;
   esac
+}
+
+gate_cycle_fingerprint() {
+  # gate_cycle_fingerprint <absolute report path> <P0> <P1> — the value of the
+  # `발견 지문` field the `cycle` arm writes: `-` when P0 and P1 are both zero,
+  # `(미상)` when the report is absent or yields no identifier, and otherwise
+  # the first 12 hex characters of the sha256 of the report's finding
+  # identifiers. Always returns 0: the VALUE refuses nothing.
+  #
+  # A SET, NOT A LIST. The identifiers are sorted and de-duplicated before they
+  # are hashed. As a list, a report that names the same file in two bullets
+  # hashes differently from one that names it once, and a repetition that really
+  # happened stops looking like one.
+  #
+  # THE HEADING MATCHER IS A BYTE PREFIX, NOT A REGEX: a section opens only on a
+  # line that begins `## 🔴 P0` or `## 🟠 P1`, and any other `## ` heading closes
+  # it. The emoji are octal escapes so the bytes of this source do not depend on
+  # the locale. A template change nobody foresaw makes the matcher find nothing,
+  # and the field then reads `(미상)` — it fails toward fewer labels, never
+  # toward a false one.
+  #
+  # IDENTIFIER GUARD AND SPELLING FOLD, BOTH INSIDE ONE REPORT. A token with
+  # neither `/` nor `.`, or `##`, is a table or quote fragment and is dropped.
+  # A bare identifier that another identifier of the same report ends in
+  # `/<identifier>` is the same file spelt short and is dropped. Spellings are
+  # never folded ACROSS reports.
+  #
+  # The value is fixed on the row when the row is written, so a later report
+  # overwritten at the same path does not change a past reading.
+  local rep=$1 p0=$2 p1=$3 ids
+  case "$p0" in
+    ''|*[!0]*) : ;;
+    *) case "$p1" in
+         ''|*[!0]*) : ;;
+         *) printf -- '-'; return 0 ;;
+       esac ;;
+  esac
+  if [ -z "$rep" ] || [ ! -f "$rep" ]; then
+    printf '(미상)'
+    return 0
+  fi
+  ids=$(LC_ALL=C awk '
+    function ident(b,   tok, rest, sym) {
+      if (!match(b, /`[^`]+`/)) return ""
+      tok = substr(b, RSTART + 1, RLENGTH - 2)
+      rest = substr(b, RSTART + RLENGTH)
+      sub(/[: ].*$/, "", tok)
+      if (tok == "" || tok == "##") return ""
+      if (index(tok, "/") == 0 && index(tok, ".") == 0) return ""
+      if (match(rest, /^ ?\(`[^`]+`\)/)) {
+        sym = substr(rest, RSTART, RLENGTH)
+        gsub(/[ (`)]/, "", sym)
+        tok = tok "#" sym
+      }
+      return tok
+    }
+    /^## / {
+      inl = (index($0, "## \360\237\224\264 P0") == 1 || index($0, "## \360\237\237\240 P1") == 1)
+      next
+    }
+    inl && /^- / {
+      t = ident($0)
+      if (t != "" && !(t in seen)) { seen[t] = 1; ord[++n] = t }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        a = ord[i]; drop = 0
+        for (j = 1; j <= n; j++) {
+          b = ord[j]
+          if (j == i || length(b) < length(a) + 1) continue
+          if (substr(b, length(b) - length(a)) == "/" a) { drop = 1; break }
+        }
+        if (!drop) print a
+      }
+    }' "$rep" 2>/dev/null || true)
+  if [ -z "$ids" ]; then
+    printf '(미상)'
+    return 0
+  fi
+  printf '%s\n' "$ids" | LC_ALL=C sort -u | shasum -a 256 | cut -c1-12
 }
 
 gate_problem_identities() {
@@ -14466,13 +14550,15 @@ gate_record_row() {
   # disagree. The two obligation-closing kinds are exempt on that same ground and
   # for a sharper version of it: their bundle CROSSES segments, so a segment
   # named in argv would not even have a single right answer to be checked
-  # against. `이월` is exempt HERE and decided inside its own arm, because its
-  # two sources want opposite answers: a review carry-over needs the segment
-  # and a boundary carry-over must not have one.
+  # against. `limit-cleared` is a statement about the run's account window, not
+  # about a part of the run, so it is exempt on the ground `blocked` is. `이월`
+  # is exempt HERE and decided inside its own arm, because its two sources want
+  # opposite answers: a review carry-over needs the segment and a boundary
+  # carry-over must not have one.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
      && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
-     && [ "$kind" != "이월" ] \
+     && [ "$kind" != "limit-cleared" ] && [ "$kind" != "이월" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "a $kind row needs --segment"
     return "$GATE_EXIT_VOCAB"
@@ -15134,7 +15220,29 @@ EOF
       # caller's `id=` free to win, but a caller's `세그먼트=` never reaches this
       # line: the refusal at the top of the arm rejects it in every spelling the
       # row reader would read, so the gate's value in front is the only one.
-      gate_append 'cycle' "세그먼트=$seg" "$@"
+      #
+      # The gate now also writes one field of its own BEHIND the caller's:
+      # `발견 지문`, computed from the report check 8 already resolved into
+      # `$rep`. Behind, because the row reader takes the last value — in front,
+      # a caller's value would win. The refusal at the top still rejects a
+      # caller's `발견 지문`, so here the position is a second defence, not the
+      # only one.
+      #
+      # ONE STEP OF DEGRADATION AT THE CAP, NOT TWO. A row that would cross
+      # `GATE_ROW_MAX` with the field is written without it and warns once. The
+      # `segment` arm swaps its field for a marker first; this arm has no marker
+      # because an absent key already reads exactly like "no fingerprint", and a
+      # marker would be longer than the 12-byte value it replaces. Without this
+      # step a long cycle row that is legal today — a review already paid for —
+      # would turn into a refused write.
+      local fp
+      fp=$(gate_cycle_fingerprint "$rep" "$(gate_field_of 'P0' "$@")" "$(gate_field_of 'P1' "$@")")
+      if [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp")" -gt "$GATE_ROW_MAX" ]; then
+        warn "cycle 행이 상한을 넘어 「발견 지문」 을 빼고 기록합니다 — 세그먼트 $seg, 사이클 $(gate_field_of '사이클' "$@")"
+        gate_append 'cycle' "세그먼트=$seg" "$@"
+      else
+        gate_append 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp"
+      fi
       log "리뷰 사이클 기록 — $seg"
       ;;
     이월)
@@ -15674,6 +15782,51 @@ EOF
         "버린 선택지=$hd" "막힌 지점=$hb" "다음 후보=$hc" \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
+      ;;
+    limit-cleared)
+      # THE SEAT'S ONE WAY TO SAY "THE LIMIT HAS CLEARED". A person at the seat
+      # who switched accounts or saw the window reset has information no shift
+      # can derive — the cut attempt's stream still carries the old reset time —
+      # and before this row the only carrier was the seat's own prose, which no
+      # successor reads. A row survives the shift that would have acted on it.
+      #
+      # SEAT ONLY, judged in the order `gate_cap_directive`'s seat arm uses. That
+      # arm exempts a non-seat caller from the seat cap; this one refuses it,
+      # because a shift or a stage writing this row would be the run asserting
+      # its own release from a limit, which is exactly the judgment the
+      # re-attach rule exists to make from evidence.
+      if [ -n "$(gate_shift_self_ordinal)" ] || cc_caller_is_stage \
+         || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+        warn "a \`한도 해제\` row is written by the seat only — a shift or a stage cannot declare its own limit cleared"
+        return "$GATE_EXIT_RULE"
+      fi
+      # ONE KEY FROM ARGV, AND THE GATE BUILDS THE REST. `run_row_body` carries
+      # every `k=v` it is handed and de-duplicates `교대` alone, so passing argv
+      # through would put a caller's `레인=` next to the gate's on one row — and
+      # the lane and time this row testifies to have to be the gate's.
+      local lf lk lwhy lw=300 llen
+      for lf in "$@"; do
+        lk="${lf%%=*}"
+        [ "$lk" = "근거" ] && continue
+        warn "a \`한도 해제\` row takes \`근거\` and nothing else from argv: ${lk} — \`레인\` and \`기록 시각\` are the gate's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      lwhy=$(gate_field_of '근거' "$@")
+      [ -n "$lwhy" ] || { warn "a \`한도 해제\` row needs \`근거\` — a summary of what the person said"; return "$GATE_EXIT_VOCAB"; }
+      local llane lat
+      llane=$(gate_lane_label)
+      lat=$(now_iso)
+      while [ "$lw" -ge 40 ]; do
+        lwhy=$(gate_row_safe "$(gate_field_of '근거' "$@")" "$lw")
+        llen=$(gate_row_projected_bytes '한도 해제' "근거=$lwhy" "레인=$llane" "기록 시각=$lat")
+        [ "$llen" -le "$GATE_ROW_MAX" ] && break
+        lw=$((lw - 40))
+      done
+      # NOTHING READS THIS ROW BUT A SHIFT'S RE-ATTACH RULE. It enters no
+      # termination condition, no progress vector and no notification; it moves
+      # the chain tip and nothing else.
+      gate_append '한도 해제' "근거=$lwhy" "레인=$llane" "기록 시각=$lat"
+      log "한도 해제 기록 — 레인 $llane"
       ;;
     obligation)
       # THE ONLY EXIT FROM TERMINATION CONDITION 9. `리뷰 의무` rows are written
@@ -16881,7 +17034,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|이월)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|이월)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -16911,9 +17064,13 @@ gate_kind_is_bookkeeping() {
   # every other row kind's does: once recording costs authorization budget, the
   # router is pushed toward recording less, and that pressure is what produced
   # the defect in the first place.
+  #
+  # `limit-cleared` IS HERE FOR THE SEAT'S SAKE. The seat writes it at its own
+  # context ceiling as readily as anywhere else — a person saying "the limit is
+  # cleared" does not wait for the seat to have room — and it enters no tree.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
-    obligation-done|obligation-drop) return 0 ;;
+    obligation-done|obligation-drop|limit-cleared) return 0 ;;
     이월) return 0 ;;
   esac
   return 1
@@ -23168,17 +23325,96 @@ gate_snapshot_handoff_json() {
   # The last `SHIFT_HANDOFF_CAP` handoffs and no more. The whole series would
   # grow without bound across a night, and an unbounded resume payload spends on
   # the successor's first turn exactly what the shift exists to save.
-  local out row
-  out=$( { gate_rows 'handoff' || true; } | tail -"$SHIFT_HANDOFF_CAP" | while IFS= read -r row; do
+  #
+  # `사유` AND `기록 시각` ARE WHAT MAKE AN ENTRY READABLE AS A PAST OBSERVATION.
+  # Without them a successor cannot tell how old a wall is, and repeats a wait a
+  # predecessor recorded hours ago as if it had just been measured; nor can it
+  # tell the gate's `사유=무기록` entry — a fact that a shift ended, carrying no
+  # judgment — from a shift's own handoff.
+  #
+  # `무기록` ROWS DO NOT COUNT AGAINST THE CAP. A run of shifts that die on their
+  # first request — a usage limit that has not cleared, a crash loop — each leaves
+  # one, and counting them would push the last real handoff, the only entry with a
+  # `버린 선택지` or a measured `막힌 지점`, out of every prescribed read after
+  # three of them. The window is the last `SHIFT_HANDOFF_CAP` real handoffs, plus
+  # the series' final row when that row is `무기록`: the successor still learns
+  # that its predecessor ended without a word, and the payload stays bounded at
+  # one entry over the cap however long the run of them is.
+  local out row all last
+  all=$( { gate_rows 'handoff' || true; } )
+  last=$(printf '%s\n' "$all" | tail -1)
+  [ "$(gate_row_field "$last" '사유')" = '무기록' ] || last=''
+  out=$( { printf '%s\n' "$all" | while IFS= read -r row; do
+             [ -n "$row" ] || continue
+             [ "$(gate_row_field "$row" '사유')" = '무기록' ] || printf '%s\n' "$row"
+           done | tail -"$SHIFT_HANDOFF_CAP"
+           [ -z "$last" ] || printf '%s\n' "$last"
+         } | while IFS= read -r row; do
            [ -n "$row" ] || continue
-           printf '    {"교대": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s"},\n' \
+           printf '    {"교대": "%s", "사유": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s", "기록 시각": "%s"},\n' \
              "$(gate_json_escape "$(gate_row_field "$row" '교대')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '사유')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '버린 선택지')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '막힌 지점')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" '다음 후보')")"
+             "$(gate_json_escape "$(gate_row_field "$row" '다음 후보')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '기록 시각')")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
+}
+
+gate_shift_trace_unrecorded() {
+  # gate_shift_trace_unrecorded <alias> <ordinal> <rc> — after a shift has been
+  # reaped, write the `handoff` row it did not write itself: `사유=무기록`.
+  #
+  # A SHIFT THAT ENDS WITHOUT A HANDOFF USED TO LEAVE ONE `log` LINE AND NO ROW.
+  # The successor then read the predecessor's last handoff as the latest word,
+  # and the morning reader could not tell a shift that did nothing from one that
+  # never ran. The gate is the one process still alive at that moment, so the
+  # trace is its to write; `무기록` is a value of its own so that it is never
+  # read as the `중단` a shift chose, and the handoff arm already refuses it on
+  # argv.
+  #
+  # WHETHER THE SHIFT WROTE ONE IS READ FROM THE APPROVAL ROW, NOT THE HANDOFF
+  # ROW. The approval row's `교대` and `행위자` come from the environment the gate
+  # gave the shift, so argv cannot forge them; the handoff row's own `교대=` is
+  # whatever its caller passed. A bookkeeping act writes its row before its
+  # approval row, so a refused handoff leaves no approval row and counts as none.
+  #
+  # `행위 수` FILTERS ON `행위자=교대`. A stage the shift launched carries the same
+  # `교대=<n>` on its rows, and counting those would credit the shift with work
+  # it did not do. A snapshot call writes no row, so `0` means "no gate act",
+  # not "no request".
+  #
+  # `막힌 지점` IS DESCRIPTIVE AND FIXED. The feed carries this field to the lead,
+  # where an imperative would read as an instruction; and a fixed sentence keeps
+  # the row near a known length. It still goes through the projection, because a
+  # row over the cap is a `die` and not a truncation.
+  # Counted rather than tested with `grep -q`: under `pipefail` an early-exiting
+  # reader can leave its writer on SIGPIPE, and the pipeline would then answer
+  # "no handoff" for a shift that wrote one.
+  local alias="$1" n="$2" rc="$3" mine own acts why at
+  mine=$( { gate_rows '자율 승인' || true; } | grep -F "| 교대=$n |" \
+            | grep -F '| 행위자=교대 |' || true)
+  own=$(printf '%s\n' "$mine" | grep -cF "| 교대=$n | kind=handoff |" || true)
+  case "${own:-}" in ''|*[!0-9]*) own=0 ;; esac
+  [ "$own" -eq 0 ] || return 0
+  acts=$(printf '%s\n' "$mine" | grep -c . || true)
+  case "${acts:-}" in ''|*[!0-9]*) acts=0 ;; esac
+  why="교대 ${n} 이 인계 행 없이 끝났다 — 종료 코드 ${rc}, 게이트 행위 ${acts}회"
+  if [ "$rc" != "0" ] && stage_limit_exit "$RUN_DIR/log/shift-$n.json" >/dev/null 2>&1; then
+    why="${why}; 교대 자신의 스트림이 한도 종료 형상이다"
+  fi
+  at=$(now_iso)
+  if [ "$(gate_row_projected_bytes 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
+          "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
+          "종료 코드=$rc" "행위 수=$acts")" -gt "$GATE_ROW_MAX" ]; then
+    why='-'
+  fi
+  gate_append 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
+    "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
+    "종료 코드=$rc" "행위 수=$acts"
+  log "교대 $n 무기록 — 게이트가 인계 행을 대신 남김 (rc=$rc, 행위 ${acts}회)"
 }
 
 gate_launch_shift() {
@@ -23406,6 +23642,13 @@ gate_launch_shift() {
   wait "$spid" || rc=$?
   rm -f "$RUN_DIR/shift.in-progress" "$RUN_DIR/shift.live"
   log "교대 $n 종료 (rc=$rc)"
+  # IN A SUBSHELL, SO A FAILED TRACE CANNOT BECOME THE ACT'S EXIT CODE.
+  # `gate_append` answers a failure with `die`, and a 1 here would read at the
+  # seat as "the shift itself died". The subshell does not run the parent's EXIT
+  # trap, so the digest is still emitted once, by the parent, after this row.
+  # `gate_rows` reads the file and not a memo, so it sees what the shift wrote.
+  ( gate_shift_trace_unrecorded "$alias" "$n" "$rc" ) \
+    || warn "교대 $n 의 무기록 인계 행을 남기지 못했습니다 — 교대의 종료 코드 ${rc} 는 그대로 돌려줍니다"
   return "$rc"
 }
 
