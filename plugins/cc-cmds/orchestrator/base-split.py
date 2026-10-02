@@ -70,6 +70,7 @@ TICKET_FIELDS = ("종류", "레포", "선행", "제공 계약", "소비 계약",
 CONTRACT_FIELDS = ("제공 티켓", "소비 티켓", "형태", "인터페이스")
 FENCED_FIELDS = ("인터페이스", "발행 본문")
 GLOB_META = "*?[{"
+WHOLE_REPO = "./"
 
 FIELD_RE = re.compile(r"^\*\*([^*]+)\*\*:(?: (.*))?$")
 FENCE_OPEN_RE = re.compile(r"^(`{3,})(.*)$")
@@ -184,16 +185,20 @@ def split_list(value):
 
 
 def split_paths(value):
-    """A file list, split only on commas outside code spans and brackets.
+    """(entries, faults) of a file list, split only on commas outside code
+    spans and brackets.
 
     `src/{a,b}.py` and `src/[a,b].py` are one entry each: cutting them at the
-    comma would leave two fragments that match no real path.
+    comma would leave two fragments that match no real path. A list that ends
+    inside a code span or a bracket, and an entry that is empty or still holds
+    a backtick, is a fault rather than an entry: compared as a literal path it
+    would overlap nothing, and P3 would pass in silence.
     """
     if value is None:
-        return []
+        return [], []
     value = value.strip()
     if value in ("", "없음"):
-        return []
+        return [], []
     items, cur = [], []
     code = False
     depth = 0
@@ -210,7 +215,21 @@ def split_paths(value):
             continue
         cur.append(ch)
     items.append("".join(cur))
-    return [strip_code(x) for x in items if x.strip()]
+    faults = []
+    if code:
+        faults.append("닫히지 않은 코드 스팬")
+    if depth:
+        faults.append("닫히지 않은 괄호")
+    entries = []
+    for x in items:
+        if not x.strip():
+            continue
+        e = strip_code(x)
+        if not e.strip() or "`" in e:
+            faults.append("항목 %s" % x.strip())
+        else:
+            entries.append(e)
+    return entries, faults
 
 
 def strip_code(item):
@@ -221,12 +240,15 @@ def strip_code(item):
 
 
 def norm_path(path):
-    """`./a//b/` → `a/b/`: the spelling differences that name the same file."""
+    """`./a//b/` → `a/b/`: the spelling differences that name the same file.
+
+    `./` and `.` name the whole repository and normalise to WHOLE_REPO.
+    """
     is_dir = path.endswith("/")
     p = posixpath.normpath(path)
     if p == ".":
-        p = ""
-    return p + "/" if is_dir and p else p
+        return WHOLE_REPO
+    return p + "/" if is_dir and not p.endswith("/") else p
 
 
 class Doc(object):
@@ -302,6 +324,8 @@ def glob_prefix(path):
     A glob is cut at its first metacharacter; a directory entry (trailing
     `/`) is its own prefix and stands for everything under it.
     """
+    if path == WHOLE_REPO:
+        return "", True
     cut = len(path)
     for ch in GLOB_META:
         k = path.find(ch)
@@ -322,7 +346,7 @@ def paths_overlap(a, b):
 
 def covered_by(p, s):
     """Whether shared entry s certainly contains every path owned entry p names."""
-    if p == s:
+    if p == s or s == WHOLE_REPO:
         return True
     ps, gp = glob_prefix(p)
     if s.endswith("/") and glob_prefix(s)[0] == s:
@@ -374,14 +398,20 @@ class Graph(object):
                 if f.get(key) is None:
                     self.add("P1", "%s 필드 없음 %s" % (tid, key))
             self.ids.append(tid)
+            files = {}
+            for key in ("소유 파일", "공유 파일"):
+                entries, faults = split_paths(f.get(key))
+                files[key] = [norm_path(x) for x in entries]
+                if faults:
+                    self.add("P1", "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(faults)))
             self.t[tid] = {
                 "num": num, "title": title, "kind": f.get("종류") or "",
                 "repo": f.get("레포") or "",
                 "deps": split_list(f.get("선행")),
                 "provides": split_list(f.get("제공 계약")),
                 "consumes": split_list(f.get("소비 계약")),
-                "owned": [norm_path(x) for x in split_paths(f.get("소유 파일"))],
-                "shared": [norm_path(x) for x in split_paths(f.get("공유 파일"))],
+                "owned": files["소유 파일"],
+                "shared": files["공유 파일"],
                 "nesting": bool((f.get("중첩 사유") or "").strip()),
                 "pub_title": f.get("발행 제목"), "body": f.get("발행 본문"),
             }

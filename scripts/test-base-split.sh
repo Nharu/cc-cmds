@@ -55,7 +55,7 @@ def ticket(n, kind, deps=(), provides=(), consumes=(), owned=("src/t%d/main.py",
     return dict(n=n, kind=kind, deps=list(deps), provides=list(provides),
                 consumes=list(consumes), owned=[p % n if "%d" in p else p for p in owned],
                 shared=list(shared), nesting=nesting, repo=repo,
-                body=BODY % n if body is None else body, fence=None)
+                body=BODY % n if body is None else body, fence=None, owned_raw=None)
 
 header = {"티켓 수": "3", "임계 경로": "T2 → T3", "병렬 폭": "2"}
 contracts = [dict(n=1, providers=["T2"], consumers=["T3"])]
@@ -109,6 +109,20 @@ elif variant == "dirneg":
 elif variant == "dotpos":
     tickets[0]["owned"] = ["./src/a.py"]
     tickets[1]["owned"] = ["src/a.py"]
+elif variant in ("wholerepo", "wholedot"):
+    # `./` owns the whole repository, so it meets T2's file it does not name.
+    tickets[0]["owned"] = ["./" if variant == "wholerepo" else "."]
+elif variant == "sharedwhole":
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[0]["shared"] = ["./"]
+elif variant == "emptyspan":
+    tickets[0]["owned"] = [""]
+elif variant == "opentick":
+    # The first span never closes, so the comma does not split the list.
+    tickets[0]["owned_raw"] = "`src/a.py, `src/t2/main.py`"
+elif variant == "openbrace":
+    tickets[0]["owned_raw"] = "`src/{a,b.py`, `src/t2/main.py`"
 elif variant == "shareddir":
     tickets[0]["owned"] = ["src/shared/x.py"]
     tickets[1]["owned"] = ["src/shared/x.py"]
@@ -174,7 +188,7 @@ for t in tickets:
           "**선행**: " + (", ".join(t["deps"]) or "없음"),
           "**제공 계약**: " + (", ".join(t["provides"]) or "없음"),
           "**소비 계약**: " + (", ".join(t["consumes"]) or "없음"),
-          "**소유 파일**: " + ", ".join("`%s`" % p for p in t["owned"]),
+          "**소유 파일**: " + (t["owned_raw"] or ", ".join("`%s`" % p for p in t["owned"])),
           "**공유 파일**: " + (", ".join("`%s`" % p for p in t["shared"]) or "없음")]
     if t["nesting"]:
         L.append("**중첩 사유**: " + t["nesting"])
@@ -219,6 +233,11 @@ expect_check classpos   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/[a
 expect_check bracelist  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:lib/x.py"
 expect_check dirpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a/~src/a/x.py"
 expect_check dotpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a.py"
+expect_check wholerepo  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:./~src/t2/main.py"
+expect_check wholedot   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:./~src/t2/main.py"
+expect_check emptyspan  "P1 T1 소유 파일 목록 형식 오류 항목 \`\`"
+expect_check opentick   "P1 T1 소유 파일 목록 형식 오류 닫히지 않은 코드 스팬"
+expect_check openbrace  "P1 T1 소유 파일 목록 형식 오류 닫히지 않은 괄호"
 expect_check consumerside "P2 T1 가 소비하는 C1 의 제공 티켓 T2 에 선행으로 닿지 않음"
 expect_check critpath   "P4 임계 경로 선언 T1 → T3"
 expect_check depth3     "P4 깊이 3 에 깊이 사유 없음"
@@ -231,7 +250,7 @@ expect_check b1heading  "B1 베이스 티켓 본문에 표제 줄"
 run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
 
-for v in globneg braceneg dirneg repodiff sharedok shareddir depth3reason fenceok; do
+for v in globneg braceneg dirneg repodiff sharedok shareddir sharedwhole depth3reason fenceok; do
   gen "$v"
   run_bs check "$DOCS/$v.md"
   check "check $v: exits 0" "$rc" "0"
