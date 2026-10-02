@@ -403,6 +403,24 @@ kd_validate() {
       if [ "$f1" != "$(printf '%s' "$f1" | awk '{ $1 = $1; print }')" ]; then
         kd_ign "$i" '형식 오류' '형태 는 = 바로 뒤에 공백 없이 낱말 사이를 한 칸으로 씁니다 — 대조기가 이 철자 그대로 비교합니다'; return
       fi
+      # The matcher normalizes the act's argv — argv0 to its basename, every later
+      # `-x=y` word dropped — and not the form, so a form that this normalization
+      # would change matches no act at all, not even the one spelled like it. The
+      # awk is the matcher's own; the form is refused rather than normalized here,
+      # because dropping `-chdir=infra` would freeze a wider grant than was written.
+      r=$(printf '%s' "$f1" | awk '
+        {
+          for (i = 1; i <= NF; i++) {
+            w = $i
+            if (i == 1) { n = split(w, parts, "/"); w = parts[n] }
+            else if (w ~ /^-.*=/) continue
+            printf "%s%s", (out++ ? " " : ""), w
+          }
+          print ""
+        }')
+      if [ "$f1" != "$r" ]; then
+        kd_ign "$i" '형식 오류' "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`$r\`)"; return
+      fi
       if [ "$(kd_words "$f1")" -lt 2 ]; then
         kd_ign "$i" '형식 오류' '형태 는 <명령> <하위 명령> 처럼 두 낱말 이상의 접두입니다 — 한 낱말은 그 명령 전부를 엽니다'; return
       fi

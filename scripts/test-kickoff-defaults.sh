@@ -294,6 +294,25 @@ act-allow = $v" $T)
 done
 check "거부된 공백 변형은 대조기에서도 맞지 않는다 (거부 근거)" "$(probe_row '형태= gh pr | 사유=a' 'gh pr view 1')" "0"
 
+# 대조기는 행위 argv 만 정규화한다(argv0 basename, 뒤의 `-x=y` 낱말 버림). 그 정규화가
+# 바꿀 형태는 같은 철자의 행위와도 맞지 않으므로 사람 앞에서 거부한다.
+expect repo act-allow '형식 오류' '형태=terraform -chdir=infra apply | 사유=a' '형태=/usr/bin/gh pr | 사유=a' \
+  '형태=gh pr --repo=x | 사유=a' '형태=/usr/bin/npm run | 사유=a'
+expect repo act-allow 적용 '형태=terraform apply | 사유=a' '형태=git -C dir | 사유=a'
+check "정규화가 바꿀 형태의 거부 사유는 대조기가 보는 철자를 적는다" "$(col "$(kf '[Nharu/cc-cmds]
+act-allow = 형태=terraform -chdir=infra apply | 사유=a' $T)" act-allow 7)" \
+  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`)"
+check "거부 근거: 형태=terraform -chdir=infra apply 는 같은 철자의 행위와도 맞지 않는다" \
+  "$(probe_row '형태=terraform -chdir=infra apply | 사유=a' 'terraform -chdir=infra apply -auto-approve')" "0"
+check "거부 근거: 형태=/usr/bin/gh pr 는 같은 철자의 행위와도 맞지 않는다" \
+  "$(probe_row '형태=/usr/bin/gh pr | 사유=a' '/usr/bin/gh pr view 1')" "0"
+for p in 'terraform apply|terraform -chdir=infra apply -auto-approve' 'gh pr|/usr/bin/gh pr view 1'; do
+  o=$(kf "[Nharu/cc-cmds]
+act-allow = 형태=${p%%|*} | 사유=a" $T)
+  check "안내된 철자 '${p%%|*}' 는 적용되고 대조기에서 '${p#*|}' 와 맞는다" \
+    "$(st "$o" act-allow)|$(probe_row "$(col "$o" act-allow 4)" "${p#*|}")" "적용|1"
+done
+
 # ---------------------------------------------------------------------------
 # 어휘 원천 — 수락·거부가 run.sh 의 리터럴과 맞는다
 # ---------------------------------------------------------------------------
