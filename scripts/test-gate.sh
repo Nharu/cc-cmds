@@ -4679,9 +4679,38 @@ cf_expect() {  # cf_expect <label> <want rc> <substring of the refusal>
   esac
 }
 
+# THE CEILING IS REACHED THROUGH A FIX ROUND, never by the number alone. The
+# gate pins the cycle number at write time: a segment's first row is cycle 1
+# and a later one needs the row numbered one less, so a first review recorded
+# as cycle 2 cannot reach the ceiling. Every segment below writes its cycle 1
+# row first, as a run does.
+cf_seg SCF11
+cf_cycle SCF11 2 0 1
+cf_expect "세그먼트의 첫 리뷰를 사이클 2 로 쓰면 거부된다" "2" "has no cycle row for cycle 1"
+case "$msg" in
+  *"(1 now)"*) ok "그 거절이 원장이 기대하는 번호를 말한다" ;;
+  *) bad "다음 사이클 번호 문면" "$msg" ;;
+esac
+cf_cycle SCF11 0 0 1
+cf_expect "사이클 0 은 거부된다" "2" "has to be a positive integer"
+cf_cycle SCF11 x 0 1
+cf_expect "정수가 아닌 사이클은 거부된다" "2" "has to be a positive integer"
+cf_cycle SCF11 1 0 1
+check "세그먼트의 첫 리뷰는 사이클 1 로 기록된다" "$rc" "0"
+cf_cycle SCF11 3 0 1
+cf_expect "번호를 건너뛴 사이클은 거부된다" "2" "has no cycle row for cycle 2"
+cf_cycle SCF11 1 0 1
+check "같은 번호의 재기록은 기록된다" "$rc" "0"
+check "거부된 사이클 행은 원장에 남지 않는다" \
+  "$(grep -c '^- `cycle` | 교대=[0-9][0-9]* | 세그먼트=SCF11 ' "$FX_LEDGER" || true)" "2"
+cf_carry SCF11 출처=리뷰 사이클=1 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
+cf_expect "사이클 1 만 거친 세그먼트는 이월 행을 쓸 수 없다" "2" "below the P1 blocking ceiling"
+
 # Case 2 first, on the segment case 1 then repairs: P1 at the ceiling with no
 # carry-over row is refused, and it is refused for the missing row.
 cf_seg SCF1
+cf_cycle SCF1 1 0 1
+check "SCF1 의 사이클 1 리뷰 행이 기록된다" "$rc" "0"
 cf_cycle SCF1 2 0 1
 check "상한 사이클의 P1 리뷰 행이 기록된다" "$rc" "0"
 cf_merge SCF1
@@ -4716,6 +4745,7 @@ esac
 # because the writer refuses to produce it, and the rule still has to hold for
 # rows that reach the ledger some other way.
 cf_seg SCF3
+cf_cycle SCF3 1 1 1
 cf_cycle SCF3 2 1 1
 cf_carry SCF3 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
 cf_expect "P0 가 남은 리뷰의 이월 행은 쓰기 시점에 거부된다" "2" "a P0 is never carried over"
@@ -4743,6 +4773,7 @@ esac
 # Case 5 — a boundary carry-over row permits no merge, even one that names this
 # segment, cycle and HEAD.
 cf_seg SCF5
+cf_cycle SCF5 1 0 1
 cf_cycle SCF5 2 0 1
 printf -- '- `이월` | 세그먼트=SCF5 | 출처=경계 | 사이클=2 | 리뷰 HEAD=%s | 승인 id=B1-0000aaaa | 이슈=%s | 건수=1\n' \
   "$cf_head" "$cf_url" >> "$FX_LEDGER"
@@ -4754,6 +4785,7 @@ esac
 
 # The writer's refusals, each on a review the row would otherwise match.
 cf_seg SCF6
+cf_cycle SCF6 1 0 2
 cf_cycle SCF6 2 0 2
 cf_carry SCF6 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
 cf_expect "건수가 P1 과 다른 이월 행은 거부된다" "2" "is not the P1"
@@ -4814,6 +4846,7 @@ cf_expect "같은 키가 두 번 실리면 거부된다" "2" "carries \`건수\`
 # that names another HEAD or another cycle is refused at the merge even when the
 # count matches. Both rows are planted because the writer refuses them.
 cf_seg SCF8
+cf_cycle SCF8 1 0 1
 cf_cycle SCF8 2 0 1
 printf -- '- `이월` | 세그먼트=SCF8 | 출처=리뷰 | 사이클=2 | 리뷰 HEAD=0000000 | 승인 id=- | 이슈=%s | 건수=1\n' \
   "$cf_url" >> "$FX_LEDGER"
@@ -4841,6 +4874,7 @@ cf_rule() {  # cf_rule <seg> <ceiling>
         GATE_SEGMENT="$1" GATE_CYCLE_CARRY_FROM="$2" /bin/sh "$CF_RULE" 2>&1) || rc=$?
 }
 cf_seg SCF9
+cf_cycle SCF9 1 0 1
 cf_cycle SCF9 2 0 1
 cf_carry SCF9 출처=리뷰 사이클=2 "리뷰 HEAD=$cf_head" '승인 id=-' "이슈=$cf_url" 건수=1
 check "SCF9 의 이월 행이 기록된다" "$rc" "0"
@@ -4863,6 +4897,7 @@ cf_reg() {  # cf_reg [--segment <seg>] -- <argv…>
        --surface 외부상태변경 --reach 협업 "$@"
 }
 cf_seg SCF7
+cf_cycle SCF7 1 0 1
 cf_cycle SCF7 2 0 1
 cf_reg --segment SCF7 -- gh issue create --repo o/r --title t --body b
 case "$msg" in

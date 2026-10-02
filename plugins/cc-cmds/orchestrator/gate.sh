@@ -15045,6 +15045,43 @@ EOF
         warn "cannot open the report of a cycle row with \`모드=델타\`: $rep$delta_repair"
         return "$GATE_EXIT_VOCAB"
       fi
+      # Check 9 — THE CYCLE NUMBER IS PINNED HERE, on every row. It used to be
+      # checked only on a delta row, while a full row passed with any non-empty
+      # value; that was harmless while the number only chose a delta basis. The
+      # P1 blocking ceiling now reads it (the `이월` arm below and the merge
+      # rule), so a segment whose first review was recorded as cycle 2 carried
+      # its P1 to an issue and merged without one fix round. A number above 1
+      # needs this segment's row for the number before it; re-recording a cycle
+      # under its own number stays allowed. Compared by integer value, as the
+      # delta checks above do.
+      local nc nc_n prev_ok max_n
+      nc=$(gate_field_of '사이클' "$@")
+      case "$nc" in
+        ''|*[!0-9]*) nc_n=0 ;;
+        *) nc_n=$((10#$nc)) ;;
+      esac
+      if [ "$nc_n" -lt 1 ]; then
+        warn "the \`사이클\` of a cycle row has to be a positive integer: '$nc' — a segment's first review is cycle 1"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      if [ "$nc_n" -gt 1 ]; then
+        prev_ok=0; max_n=0
+        while IFS= read -r crow; do
+          [ -n "$crow" ] || continue
+          [ "$(gate_row_field "$crow" '세그먼트')" = "$seg" ] || continue
+          cs=$(gate_row_field "$crow" '사이클')
+          case "$cs" in ''|*[!0-9]*) continue ;; esac
+          csn=$((10#$cs))
+          if [ "$csn" -eq "$((nc_n - 1))" ]; then prev_ok=1; fi
+          if [ "$csn" -gt "$max_n" ]; then max_n=$csn; fi
+        done <<EOF
+$(gate_rows 'cycle')
+EOF
+        if [ "$prev_ok" != 1 ]; then
+          warn "segment $seg has no cycle row for cycle $((nc_n - 1)), so this row cannot be cycle $nc_n — a cycle number is this segment's largest recorded cycle plus one ($((max_n + 1)) now), and a review that died before its row was written takes the number it would have had, not a count of dispatches"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      fi
       # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
       # than `id`.
       gate_append 'cycle' "세그먼트=$seg" "$@"
