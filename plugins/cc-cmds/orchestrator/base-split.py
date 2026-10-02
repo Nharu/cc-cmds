@@ -69,7 +69,9 @@ TICKET_FIELDS = ("종류", "레포", "선행", "제공 계약", "소비 계약",
                  "공유 파일", "범위", "발행 제목", "발행 본문")
 CONTRACT_FIELDS = ("제공 티켓", "소비 티켓", "형태", "인터페이스")
 FENCED_FIELDS = ("인터페이스", "발행 본문")
-GLOB_META = "*?[{"
+# `[` is not here: `app/[id]/page.tsx` is a literal path in routing trees, and
+# cutting it at `[` would make it overlap everything under `app/`.
+GLOB_META = "*?{"
 WHOLE_REPO = "./"
 
 FIELD_RE = re.compile(r"^\*\*([^*]+)\*\*:(?: (.*))?$")
@@ -190,9 +192,11 @@ def split_paths(value):
 
     `src/{a,b}.py` and `src/[a,b].py` are one entry each: cutting them at the
     comma would leave two fragments that match no real path. A list that ends
-    inside a code span or a bracket, and an entry that is empty or still holds
-    a backtick, is a fault rather than an entry: compared as a literal path it
-    would overlap nothing, and P3 would pass in silence.
+    inside a code span or a bracket, and an entry that is empty, still holds a
+    backtick, pads its code span with spaces or climbs out of the repository,
+    is a fault rather than an entry: compared as a literal path it would
+    overlap nothing, and P3 would pass in silence. Entries come back
+    normalised by norm_path.
     """
     if value is None:
         return [], []
@@ -225,10 +229,14 @@ def split_paths(value):
         if not x.strip():
             continue
         e = strip_code(x)
-        if not e.strip() or "`" in e:
+        if not e.strip() or "`" in e or e != e.strip():
+            faults.append("항목 %s" % x.strip())
+            continue
+        p = norm_path(e)
+        if p == ".." or p.startswith("../"):
             faults.append("항목 %s" % x.strip())
         else:
-            entries.append(e)
+            entries.append(p)
     return entries, faults
 
 
@@ -242,10 +250,12 @@ def strip_code(item):
 def norm_path(path):
     """`./a//b/` → `a/b/`: the spelling differences that name the same file.
 
-    `./` and `.` name the whole repository and normalise to WHOLE_REPO.
+    A leading `/` anchors at the repository root as in CODEOWNERS, so
+    `/src/a.py` and `//src/a.py` are `src/a.py`. `./`, `.` and `/` name the
+    whole repository and normalise to WHOLE_REPO.
     """
     is_dir = path.endswith("/")
-    p = posixpath.normpath(path)
+    p = posixpath.normpath(path.lstrip("/"))
     if p == ".":
         return WHOLE_REPO
     return p + "/" if is_dir and not p.endswith("/") else p
@@ -352,7 +362,8 @@ def covered_by(p, s):
     if s.endswith("/") and glob_prefix(s)[0] == s:
         return ps.startswith(s)
     if not gp and glob_prefix(s)[1] and "{" not in s:
-        return fnmatch.fnmatchcase(p, s)
+        # `[` is literal in an entry, so it must not open a class in fnmatch.
+        return fnmatch.fnmatchcase(p, s.replace("[", "[[]"))
     return False
 
 
@@ -401,7 +412,12 @@ class Graph(object):
             files = {}
             for key in ("소유 파일", "공유 파일"):
                 entries, faults = split_paths(f.get(key))
-                files[key] = [norm_path(x) for x in entries]
+                if key == "공유 파일" and WHOLE_REPO in entries:
+                    # Shared lists exempt both tickets of a pair, so a shared
+                    # whole repository would switch P3 off for every pair.
+                    entries = [x for x in entries if x != WHOLE_REPO]
+                    faults.append("레포 전체 공유 항목")
+                files[key] = entries
                 if faults:
                     self.add("P1", "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(faults)))
             self.t[tid] = {

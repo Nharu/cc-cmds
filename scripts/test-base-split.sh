@@ -91,9 +91,44 @@ elif variant == "globneg":
 elif variant == "bracepos":
     tickets[0]["owned"] = ["src/{a,b}.py"]
     tickets[1]["owned"] = ["src/a.py"]
-elif variant == "classpos":
+elif variant == "classlit":
+    # `[` is a path character, not a class: `src/[a,b].py` names one file.
     tickets[0]["owned"] = ["src/[a,b].py"]
     tickets[1]["owned"] = ["src/a.py"]
+elif variant == "routeneg":
+    # A dynamic-route directory is a literal path, so it does not meet its
+    # sibling under the same parent.
+    tickets[0]["owned"] = ["app/[id]/page.tsx"]
+    tickets[1]["owned"] = ["app/about/page.tsx"]
+elif variant == "routepos":
+    tickets[0]["owned"] = ["app/[id]/page.tsx"]
+    tickets[1]["owned"] = ["app/[id]/page.tsx"]
+elif variant == "routeglob":
+    tickets[0]["owned"] = ["app/[id]/*"]
+    tickets[1]["owned"] = ["app/[id]/page.tsx"]
+elif variant == "routeshared":
+    # The shared glob must read `[id]` literally to cover the owned path.
+    tickets[0]["owned"] = ["app/[id]/page.tsx"]
+    tickets[1]["owned"] = ["app/[id]/page.tsx"]
+    tickets[0]["shared"] = ["app/[id]/*"]
+elif variant in ("rootslash", "rootslash2"):
+    tickets[0]["owned"] = ["/src/a.py" if variant == "rootslash" else "//src/a.py"]
+    tickets[1]["owned"] = ["src/a.py"]
+elif variant in ("padspan", "padspan2"):
+    tickets[0]["owned_raw"] = "` src/t1/main.py`" if variant == "padspan" else "`src/t1/main.py `"
+elif variant == "dotdot":
+    tickets[0]["owned"] = ["src/../../x.py"]
+elif variant == "annotated":
+    tickets[0]["owned_raw"] = "`src/t1/main.py` (신규)"
+elif variant == "spancomma":
+    tickets[0]["owned_raw"] = "`src/a,b.py`, `lib/x.py`"
+elif variant == "barebrace":
+    # Without backticks the comma inside the braces must still not split.
+    tickets[0]["owned_raw"] = "src/{a,b}.py, lib/x.py"
+elif variant == "bareclose":
+    # A closing bracket with nothing open is a path character; the comma
+    # after it still splits the list.
+    tickets[0]["owned_raw"] = "src/a].py, src/t2/main.py"
 elif variant == "bracelist":
     tickets[0]["owned"] = ["src/{a,b}.py", "lib/x.py"]
     tickets[1]["owned"] = ["lib/x.py"]
@@ -229,7 +264,17 @@ expect_check parloss    "P2 병렬성 손실 T3→T1"
 expect_check conc       "P3 T1·T2 동시 티켓 소유 파일 중첩"
 expect_check globpos    "P3 T1·T2 동시 티켓 소유 파일 중첩"
 expect_check bracepos   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/{a,b}.py~src/a.py"
-expect_check classpos   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/[a,b].py~src/a.py"
+expect_check routepos   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:app/[id]/page.tsx"
+expect_check routeglob  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:app/[id]/*~app/[id]/page.tsx"
+expect_check rootslash  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a.py"
+expect_check rootslash2 "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a.py"
+expect_check padspan    "P1 T1 소유 파일 목록 형식 오류 항목 \` src/t1/main.py\`"
+expect_check padspan2   "P1 T1 소유 파일 목록 형식 오류 항목 \`src/t1/main.py \`"
+expect_check dotdot     "P1 T1 소유 파일 목록 형식 오류 항목 \`src/../../x.py\`"
+expect_check annotated  "P1 T1 소유 파일 목록 형식 오류 항목 \`src/t1/main.py\` (신규)"
+expect_check barebrace  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/{a,b}.py~src/t2/main.py"
+expect_check bareclose  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/t2/main.py"
+expect_check sharedwhole "P1 T1 공유 파일 목록 형식 오류 레포 전체 공유 항목"
 expect_check bracelist  "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:lib/x.py"
 expect_check dirpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a/~src/a/x.py"
 expect_check dotpos     "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/a.py"
@@ -250,7 +295,8 @@ expect_check b1heading  "B1 베이스 티켓 본문에 표제 줄"
 run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
 
-for v in globneg braceneg dirneg repodiff sharedok shareddir sharedwhole depth3reason fenceok; do
+for v in globneg braceneg dirneg repodiff sharedok shareddir depth3reason fenceok \
+         classlit routeneg routeshared spancomma; do
   gen "$v"
   run_bs check "$DOCS/$v.md"
   check "check $v: exits 0" "$rc" "0"
