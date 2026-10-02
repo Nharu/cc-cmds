@@ -14127,6 +14127,63 @@ for bid in $( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '형태 회�
       gate_append "승인" "승인 id='"$bid"'" "상태=무효" "질문 문면=형태 회귀 픽스처" "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"' ) >/dev/null 2>&1
 done
 
+# --- 31av. A lead started without the variable closes from where the CLI wrote ---
+# --- section: 31av | group: cone | covers: close | anchors: 환경 없이 뜬 리드가 좌석 기록이 다른 런에서 승인을 닫는다 (가드 0) ---
+#
+# THE LEAD'S OWN TRANSCRIPT IS UNDER `$HOME/.claude`, NOT UNDER THE RUN'S SEAT.
+# No launcher puts `CLAUDE_CONFIG_DIR` into a lead, so the CLI writes the lead's
+# transcript by its own rule while `rundir_init` records whatever lane the
+# operator's machine setting names. Every other close in this file sets the
+# variable and so measures only the tier both rules share; this one clears it
+# and points the seat record elsewhere, which is the pair under which a reader
+# that asked the resolver for the caller's own session refused every approval.
+#
+# A RUN OF ITS OWN, OPENED UNDER THE LEAD'S HOME FROM ITS FIRST CALL. The cone
+# run's inventory baseline was taken under the suite's HOME, and an entry under
+# another HOME is stopped at init before `close` is reached. Opening a fresh run
+# under the lead's HOME also lets `rundir_init` write the seat record the way a
+# real run does — from the machine's lane setting — instead of planting one.
+LEADSID="33333333-3434-5656-7878-909090909090"
+LEADHOME="$WORK/lead-home"; LEADTX="$LEADHOME/.claude/projects/proj"; mkdir -p "$LEADTX"
+SEATDIR="$WORK/seat-lane"; mkdir -p "$SEATDIR/projects/proj"
+mkdir -p "$LEADHOME/.config/cc-cmds"
+printf '%s\n' "$SEATDIR" > "$LEADHOME/.config/cc-cmds/config-dir"
+cap_fx_new LEAD1
+lead_gate() {  # lead_gate <argv…> — the gate as a lead started without the variable
+  out=$(cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" \
+        XDG_STATE_HOME="$STATE_CONE" CLAUDE_CODE_SESSION_ID="$LEADSID" \
+        CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+        bash "$GATE" "$@" 2>&1); rc=$?
+}
+lead_H() {
+  ( cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" \
+    XDG_STATE_HOME="$STATE_CONE" CLAUDE_CODE_SESSION_ID="$LEADSID" \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+    bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null ) | jq -r .H
+}
+lead_gate act --manifest "$CAP_NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(lead_H)" --rationale x \
+  -- 등급=2 기준="환경 없이 뜬 리드가 답했을 때" 근거="좌석 기록과 다른 리드 트랜스크립트"
+lead_row=$( { grep -F '`승인`' "$CAP_LEDGER" || true; } | grep -F '절단점=판단' | grep -F '상태=대기' | tail -1)
+pid=$(row_field "$lead_row" '승인 id'); pq=$(row_field "$lead_row" '질문 문면')
+# THE PREMISE IS ASSERTED, in two halves: the run recorded the seat the machine
+# setting names, and the resolver asked from this caller's environment returns
+# that seat and not the lead's home. Without both the close below would pass
+# under either rule and pin nothing.
+check "31av 전제 — 런 개시가 기계 레인 설정의 좌석을 기록하고 판단 승인이 열렸다" \
+  "$(sed -n 1p "$CAP_DIR/config-dir" 2>/dev/null)|$( [ -n "$pid" ] && printf open || printf none)" "$SEATDIR|open"
+check "31av 전제 — 변수 없는 호출자에게 해석기는 런의 좌석 기록을 낸다" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" CC_GATE_SOURCE_ONLY=1 \
+     bash -c '. "'"$GATE"'"; RUN_DIR="'"$CAP_DIR"'"; resolve_account' 2>/dev/null)" "$SEATDIR"
+: > "$LEADTX/$LEADSID.jsonl"
+auq_frame "$LEADTX/$LEADSID.jsonl" "$pid" "$pq" "승인" >/dev/null
+lead_gate close --manifest "$CAP_NM" --approval "$pid"
+pst=$(row_field "$( { grep -F '`승인`' "$CAP_LEDGER" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
+case "$rc:$pst" in
+  0:승인) ok "환경 없이 뜬 리드가 좌석 기록이 다른 런에서 승인을 닫는다 (가드 0)" ;;
+  *) bad "환경 없는 리드의 close" "$rc:$pst — $out" ;;
+esac
+
 # --- 31ao. The manifest guard measures the FILE through three arms ----------
 # --- section: 31ao | group: cone | covers: exec | anchors: 글로브로 한 글자 바꾼 철자도 매니페스트 쓰기로 거절된다 ---
 #

@@ -20707,10 +20707,8 @@ gate_transcript_files() {
   # transcript directory is keyed by cwd and therefore shared with unrelated
   # sessions, so the search is confined to this run's own lineage.
   #
-  # THE DIRECTORY IS THE RESOLVER'S, not `$HOME/.claude` behind an empty
-  # environment: inside a run the resolver's second tier is the run's own
-  # recorded lane, so a lead started without the variable still reads its own
-  # tree. A caller that sets the variable reads what it read before.
+  # The directory is `gate_transcript_dir`'s, which reads a lead's own session
+  # where the CLI wrote it and sends only a stage through the resolver.
   local dir sid
   dir=$(gate_transcript_dir) || return 1
   for sid in $(gate_session_lineage); do
@@ -21895,12 +21893,26 @@ gate_transcript_of_session() {
 }
 
 gate_transcript_dir() {
-  # gate_transcript_dir — the `projects` directory the transcript readers search:
-  # under the directory the resolver names, rc 1 when it refuses or the
-  # directory is not there. The resolver's first tier is the caller's own
-  # environment, so a stage reads its own transcripts.
+  # gate_transcript_dir — the `projects` directory the transcript readers search,
+  # rc 1 when it cannot be named or is not there.
+  #
+  # THE CALLER'S OWN SESSION IS READ WHERE THE CLI WROTE IT. A lead or a shift
+  # reading its own transcript — `close`, a withdrawal, the router context, the
+  # shift floor — takes `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, the rule the CLI
+  # writes by. No launcher puts the variable into a lead, so the resolver's
+  # second tier would send a lead started without it to the run's recorded seat,
+  # where its transcript is not: every approval `close` would be refused even with
+  # routing off, a withdrawal held, and the shift cap blind to its pressure.
+  #
+  # ONLY A STAGE'S TRANSCRIPT GOES THROUGH THE RESOLVER. A stage runs on the lane
+  # it was launched on, and the resolver's first tier is that stage's own
+  # environment.
   local cfg
-  cfg=$(resolve_account 2>/dev/null) || return 1
+  if cc_caller_is_stage; then
+    cfg=$(resolve_account 2>/dev/null) || return 1
+  else
+    cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  fi
   [ -d "${cfg%/}/projects" ] || return 1
   printf '%s' "${cfg%/}/projects"
 }
@@ -21913,7 +21925,7 @@ gate_transcript_miss_note() {
   [ -z "${CLAUDE_CONFIG_DIR:-}" ] || return 0
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
   ( set -C; : > "$RUN_DIR/transcript-miss.noted" ) 2>/dev/null || return 0
-  log "트랜스크립트를 찾지 못했다 — 호출자 환경에 설정 디렉터리가 없고 해석된 디렉터리에도 이 세션의 파일이 없다 (런마다 한 번)"
+  log "트랜스크립트를 찾지 못했다 — 호출자 환경에 설정 디렉터리가 없고 판독한 디렉터리에도 이 세션의 파일이 없다 (런마다 한 번)"
 }
 
 gate_usage_scan() {
