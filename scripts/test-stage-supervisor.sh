@@ -236,7 +236,7 @@ done
 # and the lane, written before the CLI is launched.
 check "(2) A.window 의 첫 줄이 argv 출처의 창이다" \
   "$(sed -n '1p' "$RD/A.window" 2>/dev/null)" "300000(argv)"
-check "(2) A.window 는 두 줄이다" "$(wc -l < "$RD/A.window" 2>/dev/null | tr -d '[:space:]')" "2"
+check "(2) A.window 는 두 줄이다 (가드 0)" "$(wc -l < "$RD/A.window" 2>/dev/null | tr -d '[:space:]')" "2"
 # The row's lane is read from this record, never re-resolved by the process
 # that writes the row. The supervisor inherits the launch's environment, so a
 # re-resolving recorder would print the same lane by coincidence; replacing the
@@ -326,7 +326,7 @@ check "(3) 종단 뒤 세그먼트별 파일이 남지 않는다" "$left" ""
 seg B
 printf 'stale-nonce\n\n' > "$RD/B.launch.taken"
 CC_STUB_SLEEP=1 dispatch B >/dev/null; rc_b=$?
-check "(6) 옛 .launch.taken 이 있어도 재파견이 통과한다" "$rc_b" "0"
+check "(6) 옛 .launch.taken 이 있어도 재파견이 통과한다 (가드 0)" "$rc_b" "0"
 g wait --manifest "$MANIFEST" --segment B --interval 1 --timeout 60 >/dev/null; rc_bw=$?
 check "(6) 그 파견의 스테이지가 실제로 끝까지 돈다" "$rc_bw" "0"
 check "(6) 그 파견이 행을 남긴다" "$(rows_of B)" "1"
@@ -336,7 +336,7 @@ printf '1\n' > "$RD/C.attempt"
 printf 'the-real-nonce\n\n' > "$RD/C.launch"
 g supervise-stage --manifest "$MANIFEST" --target repo --segment C --nonce not-the-nonce \
   -- review -p x >/dev/null; rc_c=$?
-check "(6) 난스가 다른 supervise-stage 직접 호출은 exit 3" "$rc_c" "3"
+check "(6) 난스가 다른 supervise-stage 직접 호출은 exit 3 (가드 0, 세 줄 토큰)" "$rc_c" "3"
 check "(6) 그 거부는 행을 쓰지 않는다" "$(rows_of C)" "0"
 check "(6) 그 거부는 아무것도 띄우지 않는다" "$( [ -e "$RD/C.pid" ] && printf 'yes' || printf 'no')" "no"
 g supervise-stage --manifest "$MANIFEST" --target repo --segment C --nonce the-real-nonce \
@@ -631,6 +631,192 @@ CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
 check "(11) --effort·--model 옵션도 --instructions 아래에서 exit 0" "$wrap_rc4" "0"
 check "(11) 그 둘은 --autocompact 바로 뒤에 순서대로 한 번 실린다" \
   "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 --effort high --model opus ' || true; } | { grep -c . || true; })" "1"
+
+# ---------------------------------------------------------------------------
+# (12) ROUTING ON — the same dispatch, from a copy whose guard is flipped to 1.
+#
+# Everything above runs the shipped guard, 0. This section copies the plugin,
+# flips only the guard line of the copy's driver, and opens a run with the
+# copy, so the run's pin is the flipped copy and every call below lands in it.
+# HOME, the inventory root and the lease table are all moved under the scratch
+# directory: an inventory's account directories must sit under `$HOME/.claude-`,
+# and a real one must not be routed to by a test. Each assertion names a file
+# or row only a routed launch writes, so a copy that silently stayed at 0 fails
+# here instead of passing on the guard-0 path.
+# ---------------------------------------------------------------------------
+
+# The guard-0 refusal first, on a run the shipped gate opened: a token carrying
+# routing lines was written by a dispatch half whose guard disagrees.
+seg C3
+printf '1\n' > "$RD/C3.attempt"
+printf 'n0\n\n\nB:C3#1\n-\n-\n/x\n' > "$RD/C3.launch"
+g supervise-stage --manifest "$MANIFEST" --target repo --segment C3 --nonce n0 \
+  -- review -p x >/dev/null; rc_c3r=$?
+check "(12) 가드 0 감독자는 라우팅 줄을 실은 토큰을 exit 3 으로 거부한다" "$rc_c3r" "3"
+check "(12) 그 거부는 행을 쓰지 않고 아무것도 띄우지 않는다" \
+  "$(rows_of C3)/$( [ -e "$RD/C3.pid" ] && printf 'yes' || printf 'no')" "0/no"
+
+R12="$WORK/g1"; mkdir -p "$R12"
+cp -R "$repo_root/plugins/cc-cmds" "$R12/cc-cmds"
+sed 's/in 0) ;; \*) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac/in 1) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac/' \
+  "$repo_root/plugins/cc-cmds/orchestrator/run.sh" > "$R12/cc-cmds/orchestrator/run.sh"
+check "(12) 사본의 가드만 1 로 뒤집혔다 (저장소 파일은 0 그대로)" \
+  "$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac' "$R12/cc-cmds/orchestrator/run.sh" || true; } )/$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || true; } )" \
+  "1/1"
+
+R12_GATE_SAVE="$GATE"; R12_HOME_SAVE="$HOME"
+GATE="$R12/cc-cmds/orchestrator/gate.sh"
+export HOME="$WORK/home12"
+unset XDG_CONFIG_HOME CLAUDE_CONFIG_DIR
+export RUN_PACE_ROOT="$WORK/pace12"
+R12_CFG="$HOME/.claude-r12"
+mkdir -p "$R12_CFG" "$HOME/.config/cc-lane" "$RUN_PACE_ROOT"
+r12_inv() {  # r12_inv <enabled|disabled> <file>
+  jq -cn --arg d "$R12_CFG" --arg u "$1" \
+    '{schema: "cc-lane-accounts v1", accounts: [{id: "r12a", config_dir: $d, label: "r12a",
+      interactive_reserved: false, unattended: $u, added_at: 0}]}' > "$2"
+  chmod 600 "$2"
+}
+r12_inv enabled "$HOME/.config/cc-lane/accounts.json"
+
+# A stub that also records the directory it was launched under.
+STUB_CFG="$WORK/claude-stub-cfg"
+cat > "$STUB_CFG" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "${CLAUDE_CONFIG_DIR-unset}" > "${CC_STUB_CFG_OUT:-/dev/null}"
+sleep "${CC_STUB_SLEEP:-3}" &
+sp=$!
+trap 'kill "$sp" 2>/dev/null; exit 143' TERM
+wait "$sp"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-session"}'
+exit 0
+STUBEOF
+chmod +x "$STUB_CFG"
+
+mk_run SUPR '(없음)'
+check "(12) 가드 1 사본이 연 런은 가드 기록 1 을 남긴다" "$(cat "$RD/routing-guard" 2>/dev/null)" "1"
+check "(12) 런의 인벤토리 스냅숏이 픽스처 인벤토리다" \
+  "$(jq -r '.accounts[0].id' "$RD/inventory.json" 2>/dev/null)" "r12a"
+
+r12_lease() {  # r12_lease <lineage> — the live lease's account, or nothing
+  ( . "$R12/cc-cmds/orchestrator/liveness.sh"; . "$R12/cc-cmds/orchestrator/route.sh"
+    route_lease_of "$RUN_PACE_ROOT/leases" SUPR "$1" 2>/dev/null ) | { jq -r '.account // empty' 2>/dev/null || true; }
+}
+
+# A GRANT on an account: the token carries seven lines, the supervisor writes a
+# four-line window and hands the grant's directory to the wrapper, the lease is
+# live while the stage runs and gone once its row is down, and the row's
+# account is the token's.
+seg E
+CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_CFG_OUT="$WORK/r12-cfg-E" CC_STUB_SLEEP=4 dispatch E >/dev/null; rc_e=$?
+check "(12) 계정 부여 파견이 성공으로 반환한다" "$rc_e" "0"
+wait_file "$RD/E.pid" 50 || true
+check "(12) 토큰이 일곱 줄이다" "$(wc -l < "$RD/E.launch.taken" 2>/dev/null | tr -d '[:space:]')" "7"
+check "(12) 토큰 넷째·여섯째·일곱째 줄이 계보·계정·디렉터리다" \
+  "$(sed -n '4p' "$RD/E.launch.taken" 2>/dev/null)|$(sed -n '6p' "$RD/E.launch.taken" 2>/dev/null)|$(sed -n '7p' "$RD/E.launch.taken" 2>/dev/null)" \
+  "B:E#1|r12a|$R12_CFG"
+check "(12) 토큰 다섯째 줄은 임대 난스다 (- 가 아니다)" \
+  "$( [ -n "$(sed -n '5p' "$RD/E.launch.taken" 2>/dev/null)" ] && [ "$(sed -n '5p' "$RD/E.launch.taken")" != "-" ] && printf yes || printf no)" "yes"
+check "(12) 감독자가 발사 전에 네 줄 창 기록을 쓰고 넷째 줄이 계정이다" \
+  "$(wc -l < "$RD/E.window" 2>/dev/null | tr -d '[:space:]')/$(sed -n '4p' "$RD/E.window" 2>/dev/null)" "4/r12a"
+check "(12) 스테이지가 도는 동안 계보의 임대가 살아 있다" "$(r12_lease 'B:E#1')" "r12a"
+g wait --manifest "$MANIFEST" --segment E --interval 1 --timeout 60 >/dev/null; rc_ew=$?
+check "(12) 그 스테이지가 끝까지 돈다" "$rc_ew" "0"
+check "(12) 래퍼가 부여된 디렉터리 아래에서 CLI 를 띄웠다" "$(cat "$WORK/r12-cfg-E" 2>/dev/null)" "$R12_CFG"
+row_e=$( { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F '세그먼트=E ' || true; } | tail -1)
+case "$row_e" in
+  *"| 계정=r12a |"*|*"| 계정=r12a") ok "(12) 종단 행의 계정= 이 토큰 여섯째 줄이다" ;;
+  *) bad "(12) 종단 행의 계정= 이 토큰 여섯째 줄이다" "$row_e" ;;
+esac
+lease_e=$( { grep -F '`stage-lease`' "$LEDGER" || true; } | tail -1)
+case "$lease_e" in
+  *"| 파견 id=B:E#1 | 계보=B:E#1 | 계정=r12a | 레인=~/.claude-r12 | "*"| 근거=first | "*) ok "(12) 파견 반쪽이 계보를 파견 id 로 한 stage-lease 행을 쓴다" ;;
+  *) bad "(12) stage-lease 행" "$lease_e" ;;
+esac
+check "(12) 행이 쓰인 뒤 임대가 반납된다" "$(r12_lease 'B:E#1')" ""
+case "$row_e" in
+  *"| 실행 버전=1 |"*) ok "(12) 계보·파견 id 의 시도 번호와 종단 행의 실행 버전이 같다" ;;
+  *) bad "(12) 종단 행의 실행 버전" "$row_e" ;;
+esac
+
+# The guard record is compared before anything else: a record that is not the
+# copy's own 1 disagrees with it, and the dispatch stops with the new exit code
+# and an act-scope row, before the pin. A missing record is not the case to
+# plant here — every gate entry passes the run-directory set-up, which creates
+# it exclusively — so the record is replaced by another value instead, which
+# that exclusive create leaves alone.
+rm -f "$RD/routing-guard"; printf '0\n' > "$RD/routing-guard"
+seg F
+dispatch F >/dev/null; rc_f=$?
+check "(12) 가드 기록이 사본의 가드와 다르면 exit 16 이다" "$rc_f" "16"
+row_f=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '세그먼트=F ' || true; } | tail -1)
+case "$row_f" in
+  *"스코프=act"*"사유=라우터 판정"*"라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0"*) ok "(12) 그 정지가 가드 어긋남을 실은 blocked 행을 남긴다" ;;
+  *) bad "(12) 가드 어긋남 행" "$row_f" ;;
+esac
+check "(12) 가드 어긋남은 시도 핀도 토큰도 남기지 않는다" \
+  "$( [ -e "$RD/F.attempt" ] && printf pin || printf -- -)$( [ -e "$RD/F.launch" ] && printf tok || printf -- -)" "--"
+printf '1\n' > "$RD/routing-guard"
+
+# A PARK — no enabled account — is the same stop with the router's reason.
+rm -f "$RD/inventory.json"
+r12_inv disabled "$RD/inventory.json"
+seg G
+dispatch G >/dev/null; rc_g=$?
+check "(12) 라우터 PARK 는 exit 16 이다" "$rc_g" "16"
+row_g=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '세그먼트=G ' || true; } | tail -1)
+case "$row_g" in
+  *"사유=라우터 판정"*"PARK no-enabled-account"*) ok "(12) PARK 정지가 라우터의 사유를 실은 blocked 행을 남긴다" ;;
+  *) bad "(12) PARK 행" "$row_g" ;;
+esac
+check "(12) PARK 는 시도 핀도 토큰도 남기지 않는다" \
+  "$( [ -e "$RD/G.attempt" ] && printf pin || printf -- -)$( [ -e "$RD/G.launch" ] && printf tok || printf -- -)" "--"
+rm -f "$RD/inventory.json"
+r12_inv enabled "$RD/inventory.json"
+
+# The supervisor holds the lease itself before it launches anything, and a
+# lease it cannot hold is no launch.
+seg H
+printf '1\n' > "$RD/H.attempt"
+printf 'nh\n\n\nB:H#1\nno-such-nonce\nr12a\n%s\n' "$R12_CFG" > "$RD/H.launch"
+g supervise-stage --manifest "$MANIFEST" --target repo --segment H --nonce nh \
+  -- review -p x >/dev/null; rc_h=$?
+check "(12) 잡을 수 없는 임대 난스의 토큰은 exit 3 이다" "$rc_h" "3"
+check "(12) 그 거부는 행을 쓰지 않고 아무것도 띄우지 않는다" \
+  "$(rows_of H)/$( [ -e "$RD/H.pid" ] && printf 'yes' || printf 'no')" "0/no"
+seg H2
+printf '1\n' > "$RD/H2.attempt"
+printf 'nh2\n\n\n' > "$RD/H2.launch"
+g supervise-stage --manifest "$MANIFEST" --target repo --segment H2 --nonce nh2 \
+  -- review -p x >/dev/null; rc_h2=$?
+check "(12) 가드 1 감독자는 라우팅 줄이 없는 토큰을 exit 3 으로 거부한다" "$rc_h2" "3"
+check "(12) 그 거부도 행을 쓰지 않는다" "$(rows_of H2)" "0"
+
+# No inventory on the host: the router seats the stage with no lease, the token
+# carries `-` for the nonce and the account, and the supervisor launches without
+# holding anything. A fresh run, because the inventory baseline is taken once
+# when a run opens.
+rm -f "$HOME/.config/cc-lane/accounts.json"
+mk_run SUPN '(없음)'
+check "(12) 인벤토리 없이 연 런의 기준은 부재 표지다" "$( [ -L "$RD/inventory.json" ] && printf absent || printf other)" "absent"
+seg I
+CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_SLEEP=1 dispatch I >/dev/null; rc_i=$?
+check "(12) 인벤토리 없는 가드 1 파견이 성공으로 반환한다" "$rc_i" "0"
+wait_file "$RD/I.pid" 50 || true
+check "(12) 그 토큰의 다섯째·여섯째 줄은 - 이고 일곱째 줄은 디렉터리다" \
+  "$(sed -n '5p' "$RD/I.launch.taken" 2>/dev/null)|$(sed -n '6p' "$RD/I.launch.taken" 2>/dev/null)|$( [ -n "$(sed -n '7p' "$RD/I.launch.taken" 2>/dev/null)" ] && printf dir || printf none)" \
+  "-|-|dir"
+g wait --manifest "$MANIFEST" --segment I --interval 1 --timeout 60 >/dev/null; rc_iw=$?
+check "(12) 보유 없이 뜬 스테이지가 끝까지 돈다" "$rc_iw" "0"
+check "(12) 좌석 파견은 임대 표에 아무것도 남기지 않는다" \
+  "$(find "$RUN_PACE_ROOT/leases" -type f -path '*SUPN*' 2>/dev/null | wc -l | tr -d '[:space:]')" "0"
+lease_i=$( { grep -F '`stage-lease`' "$LEDGER" || true; } | tail -1)
+case "$lease_i" in
+  *"| 파견 id=B:I#1 | 계보=B:I#1 | 계정=- | "*"| 근거=single-seat | "*) ok "(12) 좌석 파견의 stage-lease 행은 근거=single-seat, 계정=- 이다" ;;
+  *) bad "(12) 좌석 stage-lease 행" "$lease_i" ;;
+esac
+
+GATE="$R12_GATE_SAVE"; export HOME="$R12_HOME_SAVE"; unset RUN_PACE_ROOT
 
 printf '\ntest-stage-supervisor: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

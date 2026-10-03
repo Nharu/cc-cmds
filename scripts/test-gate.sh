@@ -14149,6 +14149,63 @@ for bid in $( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '형태 회�
       gate_append "승인" "승인 id='"$bid"'" "상태=무효" "질문 문면=형태 회귀 픽스처" "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"' ) >/dev/null 2>&1
 done
 
+# --- 31av. A lead started without the variable closes from where the CLI wrote ---
+# --- section: 31av | group: cone | covers: close | anchors: 환경 없이 뜬 리드가 좌석 기록이 다른 런에서 승인을 닫는다 (가드 0) ---
+#
+# THE LEAD'S OWN TRANSCRIPT IS UNDER `$HOME/.claude`, NOT UNDER THE RUN'S SEAT.
+# No launcher puts `CLAUDE_CONFIG_DIR` into a lead, so the CLI writes the lead's
+# transcript by its own rule while `rundir_init` records whatever lane the
+# operator's machine setting names. Every other close in this file sets the
+# variable and so measures only the tier both rules share; this one clears it
+# and points the seat record elsewhere, which is the pair under which a reader
+# that asked the resolver for the caller's own session refused every approval.
+#
+# A RUN OF ITS OWN, OPENED UNDER THE LEAD'S HOME FROM ITS FIRST CALL. The cone
+# run's inventory baseline was taken under the suite's HOME, and an entry under
+# another HOME is stopped at init before `close` is reached. Opening a fresh run
+# under the lead's HOME also lets `rundir_init` write the seat record the way a
+# real run does — from the machine's lane setting — instead of planting one.
+LEADSID="33333333-3434-5656-7878-909090909090"
+LEADHOME="$WORK/lead-home"; LEADTX="$LEADHOME/.claude/projects/proj"; mkdir -p "$LEADTX"
+SEATDIR="$WORK/seat-lane"; mkdir -p "$SEATDIR/projects/proj"
+mkdir -p "$LEADHOME/.config/cc-cmds"
+printf '%s\n' "$SEATDIR" > "$LEADHOME/.config/cc-cmds/config-dir"
+cap_fx_new LEAD1
+lead_gate() {  # lead_gate <argv…> — the gate as a lead started without the variable
+  out=$(cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" \
+        XDG_STATE_HOME="$STATE_CONE" CLAUDE_CODE_SESSION_ID="$LEADSID" \
+        CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+        bash "$GATE" "$@" 2>&1); rc=$?
+}
+lead_H() {
+  ( cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" \
+    XDG_STATE_HOME="$STATE_CONE" CLAUDE_CODE_SESSION_ID="$LEADSID" \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+    bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null ) | jq -r .H
+}
+lead_gate act --manifest "$CAP_NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(lead_H)" --rationale x \
+  -- 등급=2 기준="환경 없이 뜬 리드가 답했을 때" 근거="좌석 기록과 다른 리드 트랜스크립트"
+lead_row=$( { grep -F '`승인`' "$CAP_LEDGER" || true; } | grep -F '절단점=판단' | grep -F '상태=대기' | tail -1)
+pid=$(row_field "$lead_row" '승인 id'); pq=$(row_field "$lead_row" '질문 문면')
+# THE PREMISE IS ASSERTED, in two halves: the run recorded the seat the machine
+# setting names, and the resolver asked from this caller's environment returns
+# that seat and not the lead's home. Without both the close below would pass
+# under either rule and pin nothing.
+check "31av 전제 — 런 개시가 기계 레인 설정의 좌석을 기록하고 판단 승인이 열렸다" \
+  "$(sed -n 1p "$CAP_DIR/config-dir" 2>/dev/null)|$( [ -n "$pid" ] && printf open || printf none)" "$SEATDIR|open"
+check "31av 전제 — 변수 없는 호출자에게 해석기는 런의 좌석 기록을 낸다" \
+  "$(cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" CC_GATE_SOURCE_ONLY=1 \
+     bash -c '. "'"$GATE"'"; RUN_DIR="'"$CAP_DIR"'"; resolve_account' 2>/dev/null)" "$SEATDIR"
+: > "$LEADTX/$LEADSID.jsonl"
+auq_frame "$LEADTX/$LEADSID.jsonl" "$pid" "$pq" "승인" >/dev/null
+lead_gate close --manifest "$CAP_NM" --approval "$pid"
+pst=$(row_field "$( { grep -F '`승인`' "$CAP_LEDGER" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
+case "$rc:$pst" in
+  0:승인) ok "환경 없이 뜬 리드가 좌석 기록이 다른 런에서 승인을 닫는다 (가드 0)" ;;
+  *) bad "환경 없는 리드의 close" "$rc:$pst — $out" ;;
+esac
+
 # --- 31ao. The manifest guard measures the FILE through three arms ----------
 # --- section: 31ao | group: cone | covers: exec | anchors: 글로브로 한 글자 바꾼 철자도 매니페스트 쓰기로 거절된다 ---
 #
@@ -23916,15 +23973,16 @@ p69_fail_case "실제 수집기 인자 오류" "$repo_root/plugins/cc-cmds/orche
 # 61. 휴면 기동의 원장 바이트
 # --- section: 61 | group: ledger_series | covers: act, snapshot | needs: 14h | anchors: 61: 휴면 기동은 새 계열 행과 계정= 을 쓰지 않는다 ---
 #
-# 두 새 계열과 `계정` 필드는 기록할 능력만 들어왔고, 그것을 쓰는 기동 경로와 대기
-# 루프는 아직 없다. 그래서 오늘의 런이 남기는 원장은 이 변경 전과 바이트가 같아야
-# 한다 — 새 계열 행 0, `계정=` 0. 두 0 은 행이 하나도 없는 원장에서도 나오므로,
-# 14h 의 스텁 기동이 `stage-result` 행을 적어도 하나 남겼다는 것을 먼저 단언한다.
-# 원장은 이 절 앞의 모든 절이 만든 픽스처 원장 전부를 본다. 픽스처 원장 경로는
-# 절마다 옮겨 다니므로 한 변수를 믿지 않는다.
+# 두 새 계열과 `계정` 필드를 쓰는 자리는 라우팅 가드가 켜졌을 때만 닿는다. 가드 0
+# 에서 런이 남기는 원장은 이 변경 전과 바이트가 같아야 한다 — 새 계열 행 0,
+# `계정=` 0. 두 0 은 행이 하나도 없는 원장에서도 나오므로, 14h 의 스텁 기동이
+# `stage-result` 행을 적어도 하나 남겼다는 것을 먼저 단언한다. 원장은 이 절 앞의
+# 모든 절이 만든 픽스처 원장 전부를 본다. 픽스처 원장 경로는 절마다 옮겨 다니므로
+# 한 변수를 믿지 않는다.
 #
-# 래퍼를 부르는 자리가 0 인 것도 같은 사실의 다른 면이다. 주석을 떼고 세며, 정의
-# 줄은 이름 뒤의 `(` 로 빠진다.
+# 래퍼를 부르는 자리의 수는 정적으로 센다 — `stage-lease` 는 두 발사 자리(드라이버
+# 스폰과 게이트 파견)가 하나씩, `stage-wait` 는 게이트 파견의 WAIT 정지 하나다. 주석을
+# 떼고 세며, 정의 줄은 이름 뒤의 `(` 로 빠진다.
 # ---------------------------------------------------------------------------
 pre_ledger_series
 lsr61_files=$(find "$WORK" -path '*/pipeline-run/*.md' -type f 2>/dev/null | LC_ALL=C sort)
@@ -23942,14 +24000,17 @@ if [ "$lsr61_res" -ge 1 ]; then
 else
   bad "61 stage-result 행" "픽스처 원장에 stage-result 행이 없다 — 14h 가 돌지 않았다"
 fi
-check "61: 휴면 기동은 새 계열 행과 계정= 을 쓰지 않는다" "$lsr61_new/$lsr61_acct" "0/0"
+check "61: 휴면 기동은 새 계열 행과 계정= 을 쓰지 않는다 (가드 0)" "$lsr61_new/$lsr61_acct" "0/0"
 
 lsr61_re='(^|[^A-Za-z0-9_])gate_stage_(lease|wait)_row([^A-Za-z0-9_(]|$)'
-lsr61_calls=0
+lsr61_lre='(^|[^A-Za-z0-9_])gate_stage_lease_row([^A-Za-z0-9_(]|$)'
+lsr61_wre='(^|[^A-Za-z0-9_])gate_stage_wait_row([^A-Za-z0-9_(]|$)'
+lsr61_lcalls=0; lsr61_wcalls=0
 for lsr61_f in "$repo_root"/plugins/cc-cmds/orchestrator/*.sh; do
-  lsr61_calls=$(( lsr61_calls + $(sed 's/#.*//' "$lsr61_f" | { grep -cE "$lsr61_re" || true; }) ))
+  lsr61_lcalls=$(( lsr61_lcalls + $(sed 's/#.*//' "$lsr61_f" | { grep -cE "$lsr61_lre" || true; }) ))
+  lsr61_wcalls=$(( lsr61_wcalls + $(sed 's/#.*//' "$lsr61_f" | { grep -cE "$lsr61_wre" || true; }) ))
 done
-check "61: 두 래퍼를 부르는 자리가 아직 없다" "$lsr61_calls" "0"
+check "61: 래퍼를 부르는 자리는 lease 둘·wait 하나다" "$lsr61_lcalls/$lsr61_wcalls" "2/1"
 check "61: 두 래퍼의 정의는 있다 (0 이 이름이 바뀐 탓이 아니다)" \
   "$( { grep -cE '^gate_stage_(lease|wait)_row\(\) \{' "$GATE" || true; } )" "2"
 check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
@@ -24515,6 +24576,174 @@ case "$lsr67_out" in
   *"계열 'stage-result' 의 호출부가 필드 '계정'"*) ok "67: 그 실패가 stage-result 의 계정 을 지목한다" ;;
   *) bad "67 린트 문면" "$(printf '%s' "$lsr67_out" | tr '\n' ' ')" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 72. 가드 1 의 파견 반쪽 — 라우터 답마다의 정지, 선점, 발행분 반납
+# --- section: 72 | group: ledger_series | covers: act, gate_append | anchors: 72: WAIT 정지가 계보 B:SW1#1 의 stage-wait 행을 남긴다 ---
+#
+# 출하 가드는 0 이라 이 스위트의 다른 파견은 전부 가드 0 갈래다. 플러그인을 복사해
+# 그 사본의 가드 줄만 1 로 뒤집고, 사본의 게이트를 소싱한 자식에서 파견 반쪽을
+# 직접 부른다. 라우터 답은 스텁으로 고정하고 임대 표의 두 자리(앞선 임대 판독과
+# 반납)는 호출을 적는 스텁으로 바꾼다 — 재는 것은 게이트가 답을 받아 무엇을 남기고
+# 무엇을 돌려주는가이지 라우터가 아니다. 진짜 라우터를 거친 부여·반납·PARK 는
+# 감독자 스위트가 잰다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+lsr72="$lsr_root/g72"; rm -rf "$lsr72"; mkdir -p "$lsr72"
+cp -R "$repo_root/plugins/cc-cmds" "$lsr72/cc-cmds"
+sed 's/in 0) ;; \*) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac/in 1) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac/' \
+  "$repo_root/plugins/cc-cmds/orchestrator/run.sh" > "$lsr72/cc-cmds/orchestrator/run.sh"
+check "72: 사본의 가드만 1 로 뒤집혔다 (저장소 파일은 0 그대로)" \
+  "$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac' "$lsr72/cc-cmds/orchestrator/run.sh" || true; } )/$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || true; } )" \
+  "1/1"
+
+lsr72_in() {
+  # lsr72_in <원장> <봉투> <앞선 난스|""> <명령…> — 뒤집힌 사본을 소싱한 자식에서
+  # 한 명령. 반납 스텁은 「계보 난스」 한 줄씩을 원장 옆 `released` 에 적는다.
+  local l="$1" env="$2" prior="$3"
+  shift 3
+  LSR72_ENV="$env" LSR72_PRIOR="$prior" LSR72_REL="${l%/*}/released" LSR72_MF="$FX_MANIFEST" \
+  bash -c '
+    g=$1; l=$2; shift 2
+    lsr72_argv=("$@"); set --
+    CC_GATE_SOURCE_ONLY=1 . "$g" >/dev/null 2>&1 || exit 97
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_PIPELINE_SHIFT_ID
+    MANIFEST=$LSR72_MF; LEDGER=$l; RUN_DIR=${l%/*}; RUN_ID=LS; CLI_BIN=/usr/bin/true
+    route_resolve() { printf "%s" "$LSR72_ENV"; }
+    route_lease_of() { [ -z "$LSR72_PRIOR" ] || printf "{\"nonce\":\"%s\"}" "$LSR72_PRIOR"; }
+    route_lease_release() { printf "%s %s\n" "$3" "$4" >> "$LSR72_REL"; }
+    "${lsr72_argv[@]}"
+  ' _ "${LSR72_GATE:-$lsr72/cc-cmds/orchestrator/gate.sh}" "$l" "$@"
+}
+lsr72_new() {  # lsr72_new <이름> — 가드 기록 1 을 든 새 런 디렉터리의 원장
+  local l
+  l=$(lsr_ledger "$1")
+  printf '1\n' > "${l%/*}/routing-guard"
+  printf '%s' "$l"
+}
+lsr72_rc() {  # lsr72_rc <원장> <봉투> <앞선 난스> <세그먼트> — 파견 반쪽의 rc
+  local r=0
+  lsr72_in "$1" "$2" "$3" gate_launch_stage infra "$4" implement -p x >/dev/null 2>&1 || r=$?
+  printf '%s' "$r"
+}
+
+# WAIT — 새 종료 코드, 계보로 쓴 `stage-wait` 행, 핀 없음. 선점 파일은 남는다: 그
+# 시도 번호는 이 파견이 쓴 것이다.
+lsr72_w=$(lsr72_new w72)
+check "72: WAIT 는 exit 16 이다" \
+  "$(lsr72_rc "$lsr72_w" '{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}' '' SW1)" "16"
+case "$(lsr_body "$lsr72_w")" in
+  '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 근거=no-room')
+    ok "72: WAIT 정지가 계보 B:SW1#1 의 stage-wait 행을 남긴다" ;;
+  *) bad "72 WAIT 행" "$(lsr_body "$lsr72_w")" ;;
+esac
+check "72: WAIT 는 시도 핀도 토큰도 남기지 않고 선점만 남긴다" \
+  "$( [ -e "${lsr72_w%/*}/SW1.attempt" ] && printf pin || printf -- -)$( [ -e "${lsr72_w%/*}/SW1.launch" ] && printf tok || printf -- -)$( [ -e "${lsr72_w%/*}/SW1.attempt.1" ] && printf claim || printf -- -)" \
+  "--claim"
+check "72: WAIT 는 아무것도 반납하지 않는다 (발행이 없다)" "$( [ -e "${lsr72_w%/*}/released" ] && printf yes || printf no)" "no"
+
+# PARK — 같은 종료 코드, 라우터의 사유와 복구를 실은 act 스코프 blocked 행.
+lsr72_p=$(lsr72_new p69)
+check "72: PARK 는 exit 16 이다" \
+  "$(lsr72_rc "$lsr72_p" '{"verdict":"PARK","reason":"no-enabled-account","recovery":"cc-lane account check"}' '' SP1)" "16"
+case "$( { grep '^- `blocked`' "$lsr72_p" || true; } | tail -1)" in
+  *"| 대상=infra | 스코프=act | 원인=막힘 | 사유=라우터 판정 | 세그먼트="*" | 스테이지=SP1 | 근거=라우터 판정 PARK no-enabled-account — cc-lane account check |"*)
+    ok "72: PARK 정지가 라우터의 사유와 복구를 실은 blocked 행을 남긴다" ;;
+  *) bad "72 PARK 행" "$(tail -1 "$lsr72_p")" ;;
+esac
+check "72: PARK 도 시도 핀을 남기지 않는다" "$( [ -e "${lsr72_p%/*}/SP1.attempt" ] && printf pin || printf -- -)" "-"
+
+# 동시 파견 선점 — 같은 세그먼트의 같은 시도 번호를 이미 다른 파견이 잡았으면
+# 라우터에 묻기 전에 거부되고, 아무 행도 쓰지 않는다.
+lsr72_c=$(lsr72_new c72)
+: > "${lsr72_c%/*}/SC1.attempt.1"
+lsr72_csha=$(lsr_sha "$lsr72_c")
+check "72: 이미 선점된 시도 번호의 파견은 exit 3 이다" \
+  "$(lsr72_rc "$lsr72_c" '{"verdict":"WAIT","reason":"no-room"}' '' SC1)" "3"
+check "72: 선점 거부는 원장에 한 바이트도 쓰지 않는다" "$(lsr_sha "$lsr72_c")" "$lsr72_csha"
+
+# 부여 뒤의 거부는 이 파견이 발행한 임대만 돌려준다. 행 빌더가 거부할 계정 id 를
+# 실은 GRANT 를 준다 — 거부가 지시문 합성에서 나든 임대 행에서 나든 감독자가
+# 뜨기 전이므로, 재는 것은 거부 rc 의 값이 아니라 반납의 횟수와 대상이다.
+lsr72_bad='{"verdict":"GRANT","basis":"first","account":"a|b","config_dir":"/lanes/a","nonce":"n1","dormant":false,"observed":"none"}'
+lsr72_r=$(lsr72_new r72)
+lsr72_rr=$(lsr72_rc "$lsr72_r" "$lsr72_bad" '' SR1)
+check "72: 부여 뒤 거부된 파견은 발행분을 한 번 반납한다" \
+  "$( [ "$lsr72_rr" = 0 ] && printf launched || printf refused)|$(cat "${lsr72_r%/*}/released" 2>/dev/null)" "refused|B:SR1#1 n1"
+check "72: 그 거부는 토큰도 임대 행도 남기지 않는다" \
+  "$( [ -e "${lsr72_r%/*}/SR1.launch" ] && printf tok || printf -- -)$( { grep -c '^- `stage-lease`' "$lsr72_r" || true; } )" "-0"
+lsr72_m=$(lsr72_new m72)
+lsr72_mr=$(lsr72_rc "$lsr72_m" "$lsr72_bad" n1 SM1)
+check "72: 계보에 이미 있던 임대에 앉은 파견은 거부돼도 반납하지 않는다" \
+  "$( [ "$lsr72_mr" = 0 ] && printf launched || printf refused)|$( [ -e "${lsr72_m%/*}/released" ] && printf yes || printf no)" "refused|no"
+
+# 가드 기록이 사본과 다르면 라우터에 묻지도 선점하지도 않는다.
+lsr72_g=$(lsr72_new gd72)
+printf '0\n' > "${lsr72_g%/*}/routing-guard"
+check "72: 가드 기록이 다르면 exit 16 이다" \
+  "$(lsr72_rc "$lsr72_g" '{"verdict":"WAIT","reason":"no-room"}' '' SG1)" "16"
+case "$( { grep '^- `blocked`' "$lsr72_g" || true; } | tail -1)" in
+  *"근거=라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0 |"*) ok "72: 가드 어긋남의 blocked 행이 두 값을 적는다" ;;
+  *) bad "72 가드 어긋남 행" "$(tail -1 "$lsr72_g")" ;;
+esac
+check "72: 가드 어긋남은 시도 번호를 선점하지 않는다" "$( [ -e "${lsr72_g%/*}/SG1.attempt.1" ] && printf claim || printf -- -)" "-"
+# 반대쪽 — 가드 0 인 출하 게이트가 가드 1 로 열린 런에 파견해도 거부된다. 기록이
+# 없으면 가드 0 은 비교에서 아무것도 하지 않는다(이 스위트의 다른 파견 전부).
+lsr72_z=$(lsr72_new z72)
+check "72: 가드 0 게이트는 기록 1 인 런에서 exit 16 이다" \
+  "$(LSR72_GATE="$GATE" lsr72_rc "$lsr72_z" '' '' SZ1)" "16"
+case "$( { grep '^- `blocked`' "$lsr72_z" || true; } | tail -1)" in
+  *"| 스코프=act | "*"근거=라우팅 가드 어긋남 — 이 사본의 가드 0, 런 기록 1 |"*)
+    ok "72: 가드 0 쪽 거부도 두 값을 적은 blocked 행을 남긴다" ;;
+  *) bad "72 가드 0 어긋남 행" "$(tail -1 "$lsr72_z")" ;;
+esac
+
+# 경로 B 계보의 머리는 드라이버 계보의 여섯 머리 어느 것과도 겹치지 않고, 계보
+# 판독은 그것을 벗기지 않는다.
+lsr72_head=$(lsr72_in "$lsr72_w" '' '' eval 'printf "%s" "$GATE_ROUTE_LINEAGE_HEAD"' 2>/dev/null)
+lsr72_hit=""
+for lsr72_h in 'S4:' 'S5:' 'S5R:' "S1':" 'S1design' 'S2'; do
+  case "${lsr72_head}x" in "$lsr72_h"*) lsr72_hit="$lsr72_hit $lsr72_h" ;; esac
+  case "$lsr72_h" in "$lsr72_head"*) lsr72_hit="$lsr72_hit $lsr72_h" ;; esac
+done
+check "72: 경로 B 계보 머리가 B: 이고 드라이버의 여섯 머리와 겹치지 않는다" "$lsr72_head|${lsr72_hit:-없음}" "B:|없음"
+check "72: 계보 판독이 경로 B 계보를 그대로 둔다" \
+  "$(lsr72_in "$lsr72_w" '' '' route_lineage_of 'B:SW1#2' 2>/dev/null)" "B:SW1#2"
+
+# 시도 번호 유도는 아무것도 쓰지 않는다 — 핀은 유도를 다시 하고 둘을 대조한다.
+lsr72_d=$(lsr72_new d72)
+lsr72_dls=$(ls -A "${lsr72_d%/*}")
+check "72: 시도 번호 유도가 1 을 낸다" "$(lsr72_in "$lsr72_d" '' '' gate_derive_attempt SD1 2>/dev/null)" "1"
+check "72: 시도 번호 유도는 런 디렉터리에 아무것도 쓰지 않는다" "$(ls -A "${lsr72_d%/*}")" "$lsr72_dls"
+
+# 트랜스크립트 판독기 — 못 찾으면 rc 1 이고, 호출자 환경에 디렉터리가 없을 때만
+# 런마다 한 번 log 를 남긴다.
+lsr72_t=$(lsr72_new t72)
+lsr72_tc="${lsr72_t%/*}/cfg"; mkdir -p "$lsr72_tc"
+rc=0; CLAUDE_CONFIG_DIR="$lsr72_tc" lsr72_in "$lsr72_t" '' '' gate_transcript_of_session sid-x >/dev/null 2>&1 || rc=$?
+check "72: projects 가 없는 디렉터리에서 판독기는 rc 1 이다" "$rc" "1"
+mkdir -p "$lsr72_tc/projects/p"; : > "$lsr72_tc/projects/p/sid-x.jsonl"
+check "72: 있으면 그 파일을 낸다" \
+  "$(CLAUDE_CONFIG_DIR="$lsr72_tc" lsr72_in "$lsr72_t" '' '' gate_transcript_of_session sid-x 2>/dev/null)" \
+  "$lsr72_tc/projects/p/sid-x.jsonl"
+lsr72_note() {  # lsr72_note <CLAUDE_CONFIG_DIR 값> — 놓침 log 줄 수
+  CLAUDE_CONFIG_DIR="$1" lsr72_in "$lsr72_t" '' '' gate_transcript_miss_note 2>&1 \
+    | { grep -c '트랜스크립트를 찾지 못했다' || true; }
+}
+check "72: 호출자 환경에 디렉터리가 있으면 놓침 log 는 없다" "$(lsr72_note "$lsr72_tc")" "0"
+check "72: 없으면 첫 놓침은 log 한 줄, 둘째는 없다" "$(lsr72_note '')/$(lsr72_note '')" "1/0"
+
+# 런 개시 드리프트 검사 — 이름 붙인 디렉터리마다 비교하고, CLAUDE.md 가 없는
+# 디렉터리는 발견으로 센다.
+lsr72_dr="$lsr72/drift"; mkdir -p "$lsr72_dr/a" "$lsr72_dr/b" "$lsr72_dr/store"
+lsr72_dout=$(bash "$repo_root/plugins/cc-cmds/orchestrator/stage-policy-drift.sh" --sources-map "$lsr72_dr/none" \
+  --ack-store "$lsr72_dr/store" --config-dir "$lsr72_dr/a" --config-dir "$lsr72_dr/b" 2>/dev/null || true)
+check "72: 드리프트 검사가 이름 붙인 디렉터리를 차례로 적는다" \
+  "$(printf '%s\n' "$lsr72_dout" | { grep -E '^(config-dir|missing user-scope) ' || true; } | tr '\n' '|')" \
+  "config-dir $lsr72_dr/a|missing user-scope $lsr72_dr/a/CLAUDE.md|config-dir $lsr72_dr/b|missing user-scope $lsr72_dr/b/CLAUDE.md|"
+check "72: 게이트의 런 개시 호출이 좌석 디렉터리를 --config-dir 로 넘긴다" \
+  "$( { grep -cF 'pd_dirs+=(--config-dir "$seat_dir")' "$GATE" || true; } )/$( { grep -cF '${pd_dirs[@]+"${pd_dirs[@]}"}' "$GATE" || true; } )" "1/1"
 
 # ---------------------------------------------------------------------------
 # 61a. run 행의 베이스 상태는 추적 변경과 미추적 파일을 따로 싣는다
