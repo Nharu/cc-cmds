@@ -1038,6 +1038,14 @@ id_reason_case deploy 'argv:bash scripts/deploy.sh' 0 ""
 # 한쪽의 종류가 다른 쪽에서 통과하지 않는다 — 두 어휘가 한 집합으로 접히면 잡힌다.
 id_reason_case deploy 'aws-profile:x' 1 "배포트리거 식별자 종류 'aws-profile' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
 id_reason_case dev 'branch:main' 1 "dev 식별자 종류 'branch' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir"
+# 대상 행은 | 로 갈리므로 원소 안의 | 는 동결 뒤 별개 필드가 된다 — 리뷰 정책 상한이나
+# 실행 워크트리를 원소에 실어 들이는 경로가 여기서 막힌다.
+id_reason_case dev 'host:a | 리뷰 정책 상한=리뷰없음' 1 "dev 식별자 원소 'host:a | 리뷰 정책 상한=리뷰없음' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case deploy 'argv:x | 실행 워크트리=/tmp/other' 1 "배포트리거 식별자 원소 'argv:x | 실행 워크트리=/tmp/other' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case dev 'host:`a`' 1 "dev 식별자 원소 'host:\`a\`' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case dev 'host:a ' 1 "dev 식별자 원소 'host:a ' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+id_reason_case dev ' host:a' 1 "dev 식별자 원소 ' host:a' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+id_reason_case dev 'host: a' 1 "dev 식별자 원소 'host: a' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
 
 # 조립된 거부 문면도 옮기기 전과 바이트가 같다.
 mf_with " | dev 식별자=aws-account:1234"
@@ -1048,6 +1056,11 @@ mf_with " | 배포트리거 식별자=deploy:release"
 check "배포트리거 식별자 거부 문면이 대상 별칭과 사유 꼬리로 조립된다" \
   "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
   "대상 'home' 의 배포트리거 식별자 종류 'deploy' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+# 쉼표 앞 공백은 행 끝 공백과 달리 필드 읽기가 깎지 않으므로 원소 규칙이 잡아야 한다.
+mf_with " | dev 식별자=host:a ,host:b"
+check "쉼표 앞 공백 원소가 매니페스트 검사에서 거부된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 dev 식별자 원소 'host:a ' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
 write_manifest "$MF" "" ""
 write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
 

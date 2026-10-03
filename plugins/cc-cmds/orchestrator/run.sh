@@ -848,6 +848,15 @@ warn_once() {
 # while a person is still there to correct it. A second copy of the kind set
 # would let the two drift, and the drift would surface only as a night-time stop.
 # The `branch` inert warning is not a validity rule and stays with the caller.
+#
+# A `|` or a backtick is refused in every element, free values included. The
+# target row splits on `|`, so a `|` inside an element is read after freezing as
+# a separate field — `host:a | 리뷰 정책 상한=리뷰없음` would land as the row's
+# review ceiling — and the manifest check, which only sees the already-split
+# value, can never notice. Whitespace at either end of the element or right after
+# the `:` is refused too: every later comparison is by string, so `host: a` is a
+# different identifier from `host:a`. Whitespace inside a value
+# (`argv:bash scripts/deploy.sh`) is meaningful and passes.
 manifest_id_element_reason() {
   local side="$1" e="$2" label kindtok valtok
   case "$side" in
@@ -856,10 +865,20 @@ manifest_id_element_reason() {
     *) printf "식별자 쪽 '%s' 를 모릅니다 — dev 또는 deploy" "$side"; return 1 ;;
   esac
   case "$e" in
+    *'|'*|*'`'*)
+      printf "%s 원소 '%s' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다" "$label" "$e"; return 1 ;;
+    [[:space:]]*|*[[:space:]])
+      printf "%s 원소 '%s' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다" "$label" "$e"; return 1 ;;
+  esac
+  case "$e" in
     *:*) ;;
     *) printf "%s 원소 '%s' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" "$label" "$e"; return 1 ;;
   esac
   kindtok="${e%%:*}"; valtok="${e#*:}"
+  case "$valtok" in
+    [[:space:]]*)
+      printf "%s 원소 '%s' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다" "$label" "$e"; return 1 ;;
+  esac
   if [ -z "$valtok" ]; then
     printf "%s 원소 '%s' 의 값이 비어 있습니다" "$label" "$e"; return 1
   fi

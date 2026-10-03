@@ -251,9 +251,16 @@ expect repo review-ceiling '어휘 밖' 아무거나
 expect repo terminal-cap 적용 3 없음
 expect repo terminal-cap '형식 오류' 0 x
 expect repo dev-ids 적용 'aws-profile:dev' 'aws-account:123456789012, dir:/srv/x' 'kube-context:k,host:h,domain:d' 없음
-expect repo dev-ids '형식 오류' 'aws-account:12345' 'aws-account:1234567890ab' 'dir:relative/path' 'aws-acct:dev' 'aws-profile' 'host:' 'host:a,'
+expect repo dev-ids '형식 오류' 'aws-account:12345' 'aws-account:1234567890ab' 'dir:relative/path' 'aws-acct:dev' 'aws-profile' 'host:' 'host:a,' \
+  'host:a | 리뷰 정책 상한=리뷰없음' 'host:`a`' 'host: a'
 expect repo deploy-triggers 적용 'workflow:deploy.yml' 'jenkins-job:x, argv:bash scripts/deploy.sh' 없음
-expect repo deploy-triggers '형식 오류' 'release' 'deploy:release' 'workflow:'
+expect repo deploy-triggers '형식 오류' 'release' 'deploy:release' 'workflow:' 'argv:x | 실행 워크트리=/tmp/other'
+# 대상 행은 | 로 갈리므로 원소 안의 | 는 확정 뒤 별개 필드가 된다 — 거부 문면이 매니페스트
+# 검사와 같은 사유인지까지 본다.
+check "| 를 품은 식별자 원소의 거부 사유는 매니페스트 검사의 사유 꼬리와 같다" \
+  "$(col "$(kf '[Nharu/cc-cmds]
+dev-ids = host:a | 리뷰 정책 상한=리뷰없음' $T)" dev-ids 7)" \
+  "dev 식별자 원소 'host:a | 리뷰 정책 상한=리뷰없음' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
 out=$(kf '[Nharu/cc-cmds]
 cutpoint = 머지
 dev-ids = aws-profile:dev ,  host:h' $T)
