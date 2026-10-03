@@ -55,10 +55,11 @@ def ticket(n, kind, deps=(), provides=(), consumes=(), owned=("src/t%d/main.py",
     return dict(n=n, kind=kind, deps=list(deps), provides=list(provides),
                 consumes=list(consumes), owned=[p % n if "%d" in p else p for p in owned],
                 shared=list(shared), nesting=nesting, repo=repo,
-                body=BODY % n if body is None else body, fence=None, owned_raw=None)
+                body=BODY % n if body is None else body, fence=None, owned_raw=None,
+                lines={})
 
 header = {"티켓 수": "3", "임계 경로": "T2 → T3", "병렬 폭": "2"}
-contracts = [dict(n=1, providers=["T2"], consumers=["T3"])]
+contracts = [dict(n=1, providers=["T2"], consumers=["T3"], lines={})]
 tickets = [ticket(1, "구현"), ticket(2, "계약", provides=["C1"]),
            ticket(3, "구현", deps=["T2"], consumes=["C1"])]
 kind_line, split_heading, slicing = True, True, False
@@ -209,8 +210,29 @@ elif variant == "sharedok":
     tickets[0]["shared"] = ["src/shared/x.py"]
 elif variant == "critpath":
     header["임계 경로"] = "T1 → T3"
+elif variant == "ownbullet":
+    # Two concurrent tickets own one file through a bullet list under an
+    # empty field line: read as an empty list it would hide the overlap.
+    for t in tickets[:2]:
+        t["lines"]["소유 파일"] = ["**소유 파일**:", "- `src/a.py`"]
+elif variant == "ownbulletval":
+    tickets[0]["lines"]["소유 파일"] = ["**소유 파일**: `src/t1/main.py`", "- `src/t2/main.py`"]
+elif variant == "ownnone":
+    tickets[0]["owned_raw"] = "없음"
+elif variant == "depbullet":
+    tickets[2]["lines"]["선행"] = ["**선행**:", "- T2"]
+elif variant == "consempty":
+    contracts[0]["lines"]["소비 티켓"] = ["**소비 티켓**:"]
+elif variant in ("repospan", "repocase"):
+    tickets[0]["owned"] = ["src/shared/x.py"]
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[0]["repo"] = "`o/r`" if variant == "repospan" else "O/R"
+elif variant == "repoempty":
+    tickets[0]["lines"]["레포"] = ["**레포**:"]
+elif variant == "repobad":
+    tickets[0]["repo"] = "o r"
 elif variant in ("depth3", "depth3reason"):
-    contracts.append(dict(n=2, providers=["T3"], consumers=["T4"]))
+    contracts.append(dict(n=2, providers=["T3"], consumers=["T4"], lines={}))
     tickets[2]["provides"] = ["C2"]
     tickets.append(ticket(4, "구현", deps=["T3"], consumes=["C2"]))
     header = {"티켓 수": "4", "임계 경로": "T2 → T3 → T4", "병렬 폭": "2"}
@@ -229,16 +251,24 @@ elif variant == "b1heading":
 elif variant != "ok":
     raise SystemExit("unknown variant " + variant)
 
+def fields(lines, raw):
+    """The field lines, each one whose key `raw` names swapped for its lines."""
+    out = []
+    for line in lines:
+        key = line[2:line.index("**:")]
+        out += raw.get(key, [line])
+    return out
+
 L = ["# 상태 파일 베이스", ""]
 if kind_line:
     L.append("**문서 종류**: 베이스 설계")
 L += ["**상태**: 초안", "", "## 합의된 아키텍처", "상태 파일과 그 위의 소비자.", "",
       "## 티켓 간 계약", ""]
 for c in contracts:
-    L += ["### 계약 C%d — 형식 %d" % (c["n"], c["n"]),
-          "**제공 티켓**: " + ", ".join(c["providers"]),
-          "**소비 티켓**: " + ", ".join(c["consumers"]),
-          "**형태**: 파일 형식", "**인터페이스**:", "````text", "name=<이름>", "### 울타리 안 표제는 표제가 아니다",
+    L += ["### 계약 C%d — 형식 %d" % (c["n"], c["n"])]
+    L += fields(["**제공 티켓**: " + ", ".join(c["providers"]),
+                 "**소비 티켓**: " + ", ".join(c["consumers"])], c["lines"])
+    L += ["**형태**: 파일 형식", "**인터페이스**:", "````text", "name=<이름>", "### 울타리 안 표제는 표제가 아니다",
           "````", "**불변식**:", "- 필드는 둘이다.", ""]
 if slicing:
     L += ["## 구현 슬라이싱", "없음", ""]
@@ -252,12 +282,13 @@ for t in tickets:
         # Field and heading lines inside a fence, ahead of the real ones: read
         # as lines they would add a ticket and win the first-value rule.
         L += ["```text"] + t["fence"] + ["```"]
-    L += ["**종류**: " + t["kind"], "**레포**: " + t["repo"],
-          "**선행**: " + (", ".join(t["deps"]) or "없음"),
-          "**제공 계약**: " + (", ".join(t["provides"]) or "없음"),
-          "**소비 계약**: " + (", ".join(t["consumes"]) or "없음"),
-          "**소유 파일**: " + (t["owned_raw"] or ", ".join("`%s`" % p for p in t["owned"])),
-          "**공유 파일**: " + (", ".join("`%s`" % p for p in t["shared"]) or "없음")]
+    L += fields(["**종류**: " + t["kind"], "**레포**: " + t["repo"],
+                 "**선행**: " + (", ".join(t["deps"]) or "없음"),
+                 "**제공 계약**: " + (", ".join(t["provides"]) or "없음"),
+                 "**소비 계약**: " + (", ".join(t["consumes"]) or "없음"),
+                 "**소유 파일**: " + (t["owned_raw"] or ", ".join("`%s`" % p for p in t["owned"])),
+                 "**공유 파일**: " + (", ".join("`%s`" % p for p in t["shared"]) or "없음")],
+                t["lines"])
     if t["nesting"]:
         L.append("**중첩 사유**: " + t["nesting"])
     L += ["**범위**: 조각 %d 의 범위." % t["n"], "**완료 기준**:", "- 시험이 통과한다.",
@@ -341,6 +372,22 @@ expect_check d0slicing  "D0 베이스 문서에 ## 구현 슬라이싱 가 있�
 expect_check b1docs     "B1 T1 본문에 문서 경로 docs/"
 expect_check b1label    "B1 T2 본문에 라벨 T3"
 expect_check b1heading  "B1 베이스 티켓 본문에 표제 줄"
+expect_check ownbullet  "P1 T1 소유 파일 목록 형식 오류 값이 비어 있음; 값 아래 불릿 목록"
+expect_check ownbullet  "P1 T2 소유 파일 목록 형식 오류 값이 비어 있음; 값 아래 불릿 목록"
+expect_check ownbulletval "P1 T1 소유 파일 목록 형식 오류 값 아래 불릿 목록"
+expect_check ownnone    "P1 T1 소유 파일 목록 형식 오류 없음 (소유 파일은 비어 있을 수 없음)"
+expect_check depbullet  "P1 T3 선행 목록 형식 오류 값이 비어 있음; 값 아래 불릿 목록"
+expect_check consempty  "P1 C1 소비 티켓 목록 형식 오류 값이 비어 있음"
+# The repository is compared without its code span and case-folded, so a
+# spelling difference does not split one repository in two.
+expect_check repospan   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/shared/x.py"
+expect_check repocase   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/shared/x.py"
+for v in repospan repocase; do
+  run_bs check "$DOCS/$v.md"
+  hasnt "check $v: a well-formed repository is not a violation" "$out" "레포 값 형식 오류"
+done
+expect_check repoempty  "P1 T1 레포 값 형식 오류 (빈 값)"
+expect_check repobad    "P1 T1 레포 값 형식 오류 o r"
 
 run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"

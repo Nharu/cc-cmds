@@ -157,9 +157,21 @@ def fenced_value(lines, i):
     return None
 
 
+BULLET_RE = re.compile(r"^\s*[-*+]\s")
+
+
+class Fields(dict):
+    """Field values of one block; `bulleted` names the fields whose line is
+    followed at once by a bullet line, which no field reads."""
+
+    def __init__(self):
+        dict.__init__(self)
+        self.bulleted = set()
+
+
 def parse_block(lines, inside, start, end):
     """Field lines of one `###` block, outside fences, first value wins."""
-    fields = {}
+    fields = Fields()
     for i in range(start, end):
         if inside[i]:
             continue
@@ -174,7 +186,24 @@ def parse_block(lines, inside, start, end):
             fields[key] = v
         else:
             fields[key] = value.strip()
+        if i + 1 < end and not inside[i + 1] and BULLET_RE.match(lines[i + 1]):
+            fields.bulleted.add(key)
     return fields
+
+
+def list_shape_faults(fields, key):
+    """Why a list field is not written on its own line, or [].
+
+    A list value sits on the field line. An empty value, or a bullet list
+    under the field line, would read as an empty list and drop the entries
+    from every predicate in silence.
+    """
+    faults = []
+    if fields.get(key) == "":
+        faults.append("값이 비어 있음")
+    if key in getattr(fields, "bulleted", ()):
+        faults.append("값 아래 불릿 목록")
+    return faults
 
 
 def split_list(value):
@@ -440,8 +469,13 @@ class Graph(object):
                 if f.get(key) is None:
                     self.add("P1", "%s 필드 없음 %s" % (tid, key))
             self.ids.append(tid)
+            for key in ("선행", "제공 계약", "소비 계약"):
+                faults = list_shape_faults(f, key)
+                if faults:
+                    self.add("P1", "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(faults)))
             files = {}
             for key in ("소유 파일", "공유 파일"):
+                shape = list_shape_faults(f, key)
                 entries, faults = split_paths(f.get(key))
                 whole = [x for x in entries if whole_repo_share(x)] if key == "공유 파일" else []
                 if whole:
@@ -449,12 +483,26 @@ class Graph(object):
                     # whole repository would switch P3 off for every pair.
                     entries = [x for x in entries if x not in whole]
                     faults.append("레포 전체 공유 항목 %s" % ", ".join(whole))
+                if key == "소유 파일" and f.get(key) is not None and not shape:
+                    # A ticket that owns nothing is skipped by P3, so an empty
+                    # owned list would hide the overlap it was meant to show.
+                    if f.get(key).strip() == "없음":
+                        faults.append("없음 (소유 파일은 비어 있을 수 없음)")
+                    elif not entries and not faults:
+                        faults.append("비어 있음")
+                faults = shape + faults
                 files[key] = entries
                 if faults:
                     self.add("P1", "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(faults)))
+            raw_repo = f.get("레포")
+            repo = strip_code(raw_repo or "").strip()
+            if raw_repo is not None and not REPO_RE.match(repo):
+                self.add("P1", "%s 레포 값 형식 오류 %s" % (tid, raw_repo.strip() or "(빈 값)"))
             self.t[tid] = {
                 "num": num, "title": title, "kind": f.get("종류") or "",
-                "repo": f.get("레포") or "",
+                # Compared without its code span and case-folded: `o/r`, `O/R`
+                # and a span around either are one repository to P3.
+                "repo": repo.lower(),
                 "deps": split_list(f.get("선행")),
                 "provides": split_list(f.get("제공 계약")),
                 "consumes": split_list(f.get("소비 계약")),
@@ -474,6 +522,10 @@ class Graph(object):
             for key in CONTRACT_FIELDS:
                 if f.get(key) is None:
                     self.add("P1", "%s 필드 없음 %s" % (cid, key))
+            for key in ("제공 티켓", "소비 티켓"):
+                faults = list_shape_faults(f, key)
+                if faults:
+                    self.add("P1", "%s %s 목록 형식 오류 %s" % (cid, key, "; ".join(faults)))
             self.c[cid] = {"providers": split_list(f.get("제공 티켓")),
                            "consumers": split_list(f.get("소비 티켓"))}
         if doc.base is None:
