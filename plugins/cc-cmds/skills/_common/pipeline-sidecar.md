@@ -617,14 +617,20 @@ one appended line per Act 1 boundary:
 - <ISO8601> | 단계=<토큰>
 - <ISO8601> | 단계=인터뷰 동결 | 경로=<기록 경로> | sha256=<기록 해시>
 - <ISO8601> | 단계=대상 변경 | 새 base=<경로>
+- <ISO8601> | 단계=기본값 고지 | 제시=<n> | 무시=<m> | 파일=<a> | 환경=<b> | 경로=<파일 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->
+- <ISO8601> | 단계=기본값 확정 | 적용=<n> | 해제=<k>
 ````
 
-There is no H1. Only two stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`)
-and `대상 변경` (`새 base=`). Every other line ends at `단계=<토큰>`.
+There is no H1. Only four stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
+`대상 변경` (`새 base=`), `기본값 고지` (`제시=`, `무시=`, `파일=`, `환경=`,
+`경로=`, `sha256=`) and `기본값 확정` (`적용=`, `해제=`). Every other line ends at
+`단계=<토큰>`. The two kickoff-defaults lines carry counts, the defaults file's
+path and its hash, and never a value.
 
 **The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
-`요구사항 인터뷰` · `요구 확인` · `경계 질문` · `로스터` · `승인` · `인터뷰 동결` ·
-`매니페스트 기록` · `문답(텍스트)` · `기동 직전` · `연기` · `중단`.
+`요구사항 인터뷰` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·
+`로스터` · `승인` · `인터뷰 동결` · `매니페스트 기록` · `문답(텍스트)` ·
+`기동 직전` · `연기` · `중단`. `기본값 고지` and `기본값 확정` are not terminal.
 
 **When a trace is finished — one test for every reader.** A trace is finished when
 its last stage is `연기` or `중단`, when it is a `대상 변경` carrying `새 base=`, or

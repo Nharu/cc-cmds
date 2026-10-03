@@ -1007,6 +1007,63 @@ else
   bad "조건 14·15" "필드가 없는 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
 fi
 
+# 원소 검사 함수를 직접 잰다. 위 절들은 거부 여부만 보고 문면은 보지 않으므로,
+# 함수로 옮긴 뒤에도 사유 꼬리가 옮기기 전 die 문면과 같은지는 여기서만 잡힌다.
+# 이 함수는 사람이 아직 있는 자리에서 같은 원소를 거르는 다른 독자도 부른다.
+id_reason_case() {   # id_reason_case <dev|deploy> <원소> <기대 rc> <기대 사유>
+  local out rc
+  out=$(manifest_id_element_reason "$1" "$2"); rc=$?
+  if [ "$rc" = "$3" ] && [ "$out" = "$4" ]; then
+    ok "manifest_id_element_reason $1 '$2' → rc $3"
+  else
+    bad "manifest_id_element_reason $1 '$2'" "rc=$rc 사유='$out' (기대 rc=$3 사유='$4')"
+  fi
+}
+id_reason_case dev 'aws-profile' 1 "dev 식별자 원소 'aws-profile' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다"
+id_reason_case dev 'host:' 1 "dev 식별자 원소 'host:' 의 값이 비어 있습니다"
+id_reason_case dev 'aws-account:12345678901' 1 "aws-account '12345678901' 가 12자리가 아닙니다"
+id_reason_case dev 'aws-account:12345678901x' 1 "aws-account '12345678901x' 가 숫자가 아닙니다"
+id_reason_case dev 'dir:relative/path' 1 "dev 식별자 dir 'relative/path' 가 절대 경로가 아닙니다"
+id_reason_case dev 'aws-acct:dev' 1 "dev 식별자 종류 'aws-acct' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir"
+id_reason_case deploy 'release' 1 "배포트리거 식별자 원소 'release' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다"
+id_reason_case deploy 'workflow:' 1 "배포트리거 식별자 원소 'workflow:' 의 값이 비어 있습니다"
+id_reason_case deploy 'deploy:release' 1 "배포트리거 식별자 종류 'deploy' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+id_reason_case dev 'aws-profile:x' 0 ""
+id_reason_case dev 'aws-account:123456789012' 0 ""
+id_reason_case dev 'dir:/abs' 0 ""
+id_reason_case dev 'kube-context:ctx' 0 ""
+id_reason_case deploy 'branch:main' 0 ""
+id_reason_case deploy 'workflow:w' 0 ""
+id_reason_case deploy 'argv:bash scripts/deploy.sh' 0 ""
+# 한쪽의 종류가 다른 쪽에서 통과하지 않는다 — 두 어휘가 한 집합으로 접히면 잡힌다.
+id_reason_case deploy 'aws-profile:x' 1 "배포트리거 식별자 종류 'aws-profile' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+id_reason_case dev 'branch:main' 1 "dev 식별자 종류 'branch' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir"
+# 대상 행은 | 로 갈리므로 원소 안의 | 는 동결 뒤 별개 필드가 된다 — 리뷰 정책 상한이나
+# 실행 워크트리를 원소에 실어 들이는 경로가 여기서 막힌다.
+id_reason_case dev 'host:a | 리뷰 정책 상한=리뷰없음' 1 "dev 식별자 원소 'host:a | 리뷰 정책 상한=리뷰없음' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case deploy 'argv:x | 실행 워크트리=/tmp/other' 1 "배포트리거 식별자 원소 'argv:x | 실행 워크트리=/tmp/other' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case dev 'host:`a`' 1 "dev 식별자 원소 'host:\`a\`' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case dev 'host:a ' 1 "dev 식별자 원소 'host:a ' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+id_reason_case dev ' host:a' 1 "dev 식별자 원소 ' host:a' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+id_reason_case dev 'host: a' 1 "dev 식별자 원소 'host: a' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+
+# 조립된 거부 문면도 옮기기 전과 바이트가 같다.
+mf_with " | dev 식별자=aws-account:1234"
+check "dev 식별자 거부 문면이 대상 별칭과 사유 꼬리로 조립된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 aws-account '1234' 가 12자리가 아닙니다"
+mf_with " | 배포트리거 식별자=deploy:release"
+check "배포트리거 식별자 거부 문면이 대상 별칭과 사유 꼬리로 조립된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 배포트리거 식별자 종류 'deploy' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+# 쉼표 앞 공백은 행 끝 공백과 달리 필드 읽기가 깎지 않으므로 원소 규칙이 잡아야 한다.
+mf_with " | dev 식별자=host:a ,host:b"
+check "쉼표 앞 공백 원소가 매니페스트 검사에서 거부된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 dev 식별자 원소 'host:a ' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+write_manifest "$MF" "" ""
+write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+
 # A goal edit must move it — otherwise the digest is over something that cannot
 # change and the check is vacuous.
 bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
@@ -1098,6 +1155,81 @@ if ( check_manifest ) >/dev/null 2>&1; then
 else
   ok "벽시계 마감의 「없음」이 거부된다"
 fi
+
+# 드라이버가 마감을 읽는 쪽. 검사 8 은 모양만 보므로 위 절들이 초록이어도 드라이버가
+# 그 값을 시각으로 읽는지는 말해 주지 않는다. 한 순간(2026-10-02T09:00:00Z)을 세
+# 표기로 적어 호스트 TZ 를 바꿔 가며 같은 참값이 나오는지 잰다. `Z` 를 호스트 로컬로
+# 읽으면 비 UTC 존에서, 오프셋을 떼기만 하면 모든 존에서 어긋난다.
+DL_TRUE=1790931600
+dl_set() {   # dl_set <벽시계 마감 값>
+  write_manifest "$MF"
+  sed "s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: $1/" "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+  MANIFEST="$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+}
+for dl_tz in UTC Asia/Seoul America/New_York; do
+  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00 2026-10-02T14:30:00+05:30 \
+              2026-10-02T09:00:00+00:00 2026-10-02T09:00:00-00:00 2026-10-02T23:00:00+14:00; do
+    dl_set "$dl_v"
+    check "deadline_epoch '$dl_v' (TZ=$dl_tz) 가 참값이다" \
+      "$( export TZ="$dl_tz"; deadline_epoch 2>/dev/null )" "$DL_TRUE"
+  done
+done
+
+# 시각으로 읽히지 않는 값. 앞의 둘은 검사 8 의 모양에서 걸리지만, 뒤의 다섯은 모양을
+# 통과한다 — 하루 끝 표기 `T24`, 13월, 달력에 없는 9월 31일, 범위 밖 오프셋 둘. 이
+# 값들이 「지나지 않음」으로 읽히면 마감 집행이 아무 말 없이 꺼진다. 드라이버는
+# 경고하고 epoch 0 을 내어 지난 것으로 다루며, 검사 8 은 같은 해석기로 물어 기동
+# 전에 거부한다.
+DL_BAD_SHAPE="2026-10-02T09:00:00 2026-10-02T18:00:00+0900"
+DL_BAD_VALUE="2026-10-02T24:00:00+09:00 2026-13-01T09:00:00Z 2026-09-31T10:00:00+09:00 2026-10-02T09:00:00+99:99 2026-10-02T09:00:00+14:01"
+for dl_v in $DL_BAD_SHAPE $DL_BAD_VALUE; do
+  dl_set "$dl_v"
+  check "읽히지 않는 마감 '$dl_v' 은 epoch 0 이다" "$(deadline_epoch 2>/dev/null)" "0"
+  dl_warn=$(deadline_epoch 2>&1 >/dev/null)
+  case "$dl_warn" in
+    *'벽시계 마감을 시각으로 읽지 못했습니다'*) ok "읽히지 않는 마감 '$dl_v' 은 경고를 남긴다" ;;
+    *) bad "벽시계 마감" "'$dl_v' 을 경고 없이 넘겼다" ;;
+  esac
+done
+for dl_v in $DL_BAD_VALUE; do
+  dl_set "$dl_v"
+  if dl_err=$( ( check_manifest ) 2>&1 ); then
+    bad "벽시계 마감" "모양만 맞는 '$dl_v' 을 검사 8 이 받아들였다 — 드라이버가 읽지 못하는 마감으로 기동한다"
+  else
+    case "$dl_err" in
+      *'벽시계 마감이 실제 시각이 아닙니다'*) ok "검사 8 이 모양만 맞는 '$dl_v' 을 실제 시각이 아니라며 거부한다" ;;
+      *) bad "벽시계 마감" "'$dl_v' 이 다른 이유로 거부됐다: $(printf '%s' "$dl_err" | tail -1)" ;;
+    esac
+  fi
+done
+dl_set 2026-10-02T23:00:00+14:00
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "검사 8 이 경계 오프셋 +14:00 을 받아들인다"
+else
+  bad "벽시계 마감" "+14:00 을 거부했다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+dl_set 없음
+check "「없음」 마감은 빈 값이다" "$(deadline_epoch)" ""
+
+# past_deadline 은 원래 정의 그대로 쓰고 시계만 고정한다. 마감 1초 전은 거짓,
+# 마감 시각과 그 뒤는 참이다. 고정은 서브셸 안에서만 하므로 뒤 절의 now_epoch 는
+# 드라이버의 것이다.
+dl_pd() {   # dl_pd <마감 값> <now epoch> <TZ> → 지남|남음
+  dl_set "$1"
+  ( export TZ="$3"; DL_NOW="$2"; now_epoch() { printf '%s' "$DL_NOW"; }
+    if past_deadline 2>/dev/null; then printf '지남'; else printf '남음'; fi )
+}
+for dl_tz in UTC Asia/Seoul; do
+  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00; do
+    check "past_deadline '$dl_v' 1초 전 (TZ=$dl_tz)" "$(dl_pd "$dl_v" $((DL_TRUE - 1)) "$dl_tz")" "남음"
+    check "past_deadline '$dl_v' 그 시각 (TZ=$dl_tz)" "$(dl_pd "$dl_v" "$DL_TRUE" "$dl_tz")" "지남"
+    check "past_deadline '$dl_v' 한 시간 뒤 (TZ=$dl_tz)" "$(dl_pd "$dl_v" $((DL_TRUE + 3600)) "$dl_tz")" "지남"
+  done
+done
+check "형식이 틀린 마감에서 past_deadline 은 참이다 (닫힌 쪽으로 실패)" "$(dl_pd 2026-10-02T09:00:00 $((DL_TRUE - 3600)) UTC)" "지남"
+check "모양만 맞는 마감에서 past_deadline 은 참이다 (닫힌 쪽으로 실패)" "$(dl_pd 2026-10-02T24:00:00+09:00 $((DL_TRUE - 3600)) UTC)" "지남"
+check "「없음」 마감에서 past_deadline 은 거짓이다" "$(dl_pd 없음 $((DL_TRUE + 3600)) UTC)" "남음"
+write_manifest "$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 
 # 2 — append 형식이 없으므로 둘째 인가 블록은 잔재가 아니라 변조다.
 write_manifest "$MF"; printf '\n## 인가\n**런 최대 절단점**: 배포\n' >> "$MF"
