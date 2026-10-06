@@ -111,7 +111,7 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
   -- <스테이지 종류> -p "/cc-cmds:<스킬>-unattended <인자…>"
 ```
 
-**The first token after `--` is the STAGE KIND** and is consumed before the CLI sees the rest, so a form starting with `-p` hands `-p` over as the kind and the stage runs under settings that are not its own. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`generic`. `-p` is required — without it the stage gets an empty prompt and ends as a success having produced nothing. The prompt is a slash command with its leading `/`, and it must be the `-unattended` variant: the plain skills carry `disable-model-invocation: true` and a headless stage naming one resolves nothing. The one exception is `/cc-cmds:design-reconverge`, which is itself the unattended skill and has no `-unattended` pair (see 「Routing a pre-implementation refutation to re-convergence」).
+**The first token after `--` is the STAGE KIND** and is consumed before the CLI sees the rest, so a form starting with `-p` hands `-p` over as the kind and the stage runs under settings that are not its own. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`split`·`generic`. `-p` is required — without it the stage gets an empty prompt and ends as a success having produced nothing. The prompt is a slash command with its leading `/`, and it must be the `-unattended` variant: the plain skills carry `disable-model-invocation: true` and a headless stage naming one resolves nothing. The one exception is `/cc-cmds:design-reconverge`, which is itself the unattended skill and has no `-unattended` pair (see 「Routing a pre-implementation refutation to re-convergence」).
 
 **An act carrying `--segment` runs in that segment row's worktree** — the value the row's `워크트리` names, when it is an absolute existing directory sharing the target's common git directory; otherwise the target row's execution worktree, then its main worktree. The stage's settings list that worktree too, from the call after the segment row is written. An act that must run in the main worktree (updating the base branch, for instance) does not carry `--segment`. A `--kind skill` dispatch whose segment row names a worktree that fails that predicate is refused with exit `10` before the stage starts.
 
@@ -200,10 +200,36 @@ When the snapshot's `design_required` is `true` and a step in `steps[]` has `ski
      -- design -p "/cc-cmds:design-discuss-unattended <스냅숏 design_doc> \"<## 의도 의 첫 비어 있지 않은 줄>\""
    ```
 
+   **When the snapshot's `design_scope` is `base`, the slash command is `/cc-cmds:design-base-unattended`** with the same two arguments — `-- design -p "/cc-cmds:design-base-unattended <스냅숏 design_doc> \"<## 의도 의 첫 비어 있지 않은 줄>\""` — and that skill's file is the one whose existence a dispatch presumes. Everything else here is unchanged: `--segment -`, stage kind `design`, the same guards.
+
    The gate exempts exactly this form — `--kind skill`, `--segment -`, stage kind `design` — from the `segment` row and predecessor checks, and only when the frozen plan requires a design and names exactly one `design` step; it keys the stage on that step's id and refuses with exit 3 otherwise. Exit 3 means the act is not available, as the table says: do not write a `segment` row for the step to get past it — that row is what termination condition 1 counts, and a design step is not a segment. The path is the snapshot's `design_doc`, passed as it stands — never the `## 요소` key joined onto a worktree. That key is not a path: for a document outside every repository it is the absolute path with its leading `/` removed, and only the gate knows which reading applies, so a shift that joined it onto the home worktree once sent the stage to write `<worktree>/Users/…/docs/x.md`, where no freeze check, audit or implementation looked. The gate refuses with exit 3 a design dispatch whose document argument differs from `design_doc`. The task sentence is the first non-empty line inside `## 의도`'s fence, copied verbatim; it is not in the snapshot, so read it from the manifest with a gate read (`grep -n -A3 -xF '## 의도' <매니페스트>`). CFI-S1 still holds: whether to dispatch was decided from the snapshot, and that read only fetches the argv's value from the artifact that holds it — it decides nothing here, and `## 실행 계획` is not read at all. Issue it in the foreground like any dispatch, and wait on it with `gate.sh wait --manifest <매니페스트> --segment <step id>`.
 
    **The name belongs to the kickoff, and no shift supplies one.** `## 요소`'s `설계 문서` is chosen in Act 1 and frozen with the manifest; on a `design_required` run `(없음)` is a refused value there, rejected by the kickoff's own pre-freeze self-check and again by the gate's exemption. So when `design_doc` is `null`, do **not** compose a path for the argv. A path invented here names a document no other guard, no audit and no segment plan is looking for, and the run would go on around it. Let the gate refuse with exit 3 and stop the design as item 1 says.
 5. **`정상 완료` on the row is not the freeze.** On this path the gate classifies a stage by its exit, its halt record and whether it wrote a gate row, and none of those says the document was frozen. So check both authored facts before anything reads the document: the freeze literal `설계 문서를 동결했습니다.` in the stage's stream (`grep -rlF --include='<step id>#*.json' '설계 문서를 동결했습니다.' "$CC_PIPELINE_RUN_DIR/log"`) **and** a line reading exactly `**상태**: 동결됨` in the document (`grep -qxF '**상태**: 동결됨' <문서>`). Both → the next step of the graph; the stage names no next step, by contract. Either missing → stop the design as item 1 says, naming which of the two is absent in the evidence. **An unfrozen document never goes on to the audit or to segment planning.**
+
+#### Dispatching the audit stage
+
+When `steps[]` carries exactly one step whose `skill` is `design-audit`, its predecessors have passed the freeze check above, and it is not in `live_stages[]`, dispatch it as a run-scope stage — `--segment -`, stage kind `audit`:
+
+```
+gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment - \
+  --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> --emit-digest \
+  -- audit -p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>[ --base]"
+```
+
+Append ` --base` only when the snapshot's `design_scope` is `base`. Wait on it with `gate.sh wait --manifest <매니페스트> --segment <step id>`. The audit is complete when the last `| 세그먼트=- | 스테이지=<step id> | 종류=audit |` row reads `종단 부류=정상 완료`, its stream carries `이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다.`, and `<메인>/docs/design-audit/<slug>.reader-*.md` exists — each read through the gate. Anything else stops every step that depends on it exactly as 「Dispatching the design stage」 stops the design, and re-attaching and continuing go the way they go there. **Do not answer a gate refusal (exit 3) by writing a `segment` row for the audit step**: an audit step is not a segment either.
+
+#### Dispatching the split stage
+
+When the snapshot's `design_scope` is `base`, `steps[]` carries exactly one step whose `skill` is `split`, and the audit is complete as above, dispatch it — `--segment -`, stage kind `split`:
+
+```
+gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment - \
+  --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest <H> --emit-digest \
+  -- split -p "/cc-cmds:design-base-unattended --split <스냅숏 design_doc>"
+```
+
+Wait on it with `gate.sh wait --manifest <매니페스트> --segment <step id>`. The dispatch's surface is `워크트리쓰기`, the same as the design and audit dispatches — the gate grades a `skill` act from its table, so declaring `외부상태변경` here buys nothing; the tracker writes are authorized one by one, inside the stage, by their own `--reach 협업`. The stage is complete when its artifact predicate holds: the literal `베이스 분할을 마쳤습니다.` in its stream, and a registry at `<메인>/docs/design-base/<slug>.tickets.md` whose head line starts `<!-- cc-design-base-tickets v1; ` with a `doc-sha256=` equal to the document's current sha256, every `티켓` and `베이스` row `발행됨` (`문서만` when the tracker is `없음`) and every `관계` row `걸림` or `문서만`. Then propose done. When a halt record exists instead, stop, write C2 — and C3 when the manifest carries it — as `불가능` citing that record's path, and propose done. The split step is not a segment and its rows carry `세그먼트=-`.
 
 #### Routing a pre-implementation refutation to re-convergence
 

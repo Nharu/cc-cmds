@@ -153,6 +153,14 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `자동 채택` | 판단 부류=<열 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
 - `사전 인가` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>     ← 설계 요구사항 인터뷰가 있었을 때만
 - `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>     ← 팀 티어 설계 스테이지가 있을 때만, 한 팀원 한 행
+- `베이스 발행` | 트래커=github | 대상=<owner>/<name>     ← design_scope 가 base 일 때만, 정확히 한 행. 대상은 선언된 대상의 원격 슬러그
+- `베이스 발행` | 트래커=clickup | 대상=<목록 id>
+- `베이스 발행` | 트래커=없음 | 대상=-
+- `사전 인가` | 형태=gh issue create | 사유=<…>     ← 트래커=github 일 때
+- `사전 인가` | 형태=gh issue edit | 사유=<…>       ← 트래커=github 일 때 — 재개 시 관계 보충
+- `사전 인가` | 형태=clickup-create.py | 사유=<…>   ← 트래커=clickup 일 때
+- `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
+- `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -176,9 +184,19 @@ plan would be a value nothing compares against.
 What IS frozen, and what `구속 다이제스트` covers: the goal, the termination
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
-irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, the cost
-ceiling and the stagnation bound when declared, and the deadline. The gate
-compares that digest at entry.
+irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
+`베이스 발행` and `베이스 설계` rows**, the cost ceiling and the stagnation bound
+when declared, and the deadline. The gate compares that digest at entry.
+
+**The `베이스 발행` row is a base run's publication decision**, taken at kickoff
+and the only input the split stage publishes from: exactly one row when the
+plan's `design_scope` is `base`, none otherwise. Its `사전 인가` form rows are a
+supplement that lets each tracker write proceed without an approval; they decide
+nothing about where the tickets go. **The `베이스 설계` row binds a child run to
+the base ticket it designs**, at most one row. The manifest check reads its form
+and count and never the file's bytes — it runs on every gate entry and dies on a
+failure, so comparing there would kill every gate call of a child run the moment
+the base is revised; the design stage re-hashes the file before it spawns anyone.
 
 The `자동 채택` rows are in that list because they decide whether a judgment is
 taken without a person. Serialization is over the whole file rather than over
@@ -306,7 +324,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택` and `설계 로스터` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행` and `베이스 설계` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -356,7 +374,8 @@ never compared.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
    target rows, rule settings, pre-authorization rows, auto-adoption rows, design
-   roster rows, the cost ceiling and stagnation bound when declared, deadline. The PLAN is not
+   roster rows, base publication and base design rows, the cost ceiling and
+   stagnation bound when declared, deadline. The PLAN is not
    in it: the router decides the step graph one act at a time, so a frozen plan
    would be recorded and never compared.
 7. **Every cutpoint token** is in `CUTPOINTS` — an unrecognized token is a hard
@@ -400,6 +419,15 @@ never compared.
     stop**. One arm is a **warning** instead: a `branch` trigger on a target whose
     cutpoint is below `push` is inert rather than wrong, and "not checked" must
     not read the same as "checked and inert".
+16. **`design_scope` and the base rows.** An absent `design_scope` reads as
+    `single`. `base` requires the graph `design → design-audit → split` with
+    nothing after it, `design_required=true`, `design_tier=team-4`, and exactly
+    one `베이스 발행` row whose tracker is `github`, `clickup` or `없음` — a
+    `github` target equal to a declared target's `원격 슬러그`, a non-empty
+    `clickup` target, a `-` target for `없음`. `single` forbids a `split` step and
+    any `베이스 발행` row. A `베이스 설계` row may appear at most once and must
+    match its form; its `sha256` is not compared against the file here. Each
+    violation is a **hard stop**.
 
 **Both warnings fire at most once per run.** This whole conjunction re-runs on
 every gate entry, so a per-entry warning buries the morning report under its own
@@ -1116,6 +1144,7 @@ Skills do emit next-step command strings; the rule binds the **reader**, not the
 | `review` | the summary line `- **발견 요약**: 🔴 P0 N건 \| 🟠 P1 N건 \| 🟡 P2 N건 \| 🟢 P3 N건` in the report; the filename glob must accept the `review-pr{N}_{YYYY-MM-DD}[_v{N}].md` variants |
 | `implement` | a git-state ladder — commit → branch ref → PR number, in the order the permission cutpoint authorizes. Evaluated by the driver **in the main tree** |
 | `design-reconverge` | `docs/design-reconverge/{slug}.md` carrying `재수렴 sha256` and a two-value verdict (`재설계 필요` \| `불필요`), plus its confirming fixed literal. A terminal verdict returns to segment planning **unconditionally**, inside the same run — a moved document digest is recorded as a `문서 해시` row and needs no new run. Dispatched from the driver's ladder on a review finding, and by the routing shift on an implement stage's Step 1.5d or Step 3 refutation halt; either way the document argument is the **main-worktree absolute path**, because `docs/` is absent from every linked worktree |
+| `design-base-unattended --split` (dispatched by the run) | the terminal literal *"베이스 분할을 마쳤습니다."* in the stage's own stream **and** a registry `docs/design-base/{slug}.tickets.md` whose head line starts `<!-- cc-design-base-tickets v1; `, whose `doc-sha256=` equals the document's current sha256, whose every `티켓` and `베이스` row reads `발행됨` (`문서만` when the frozen tracker is `없음`) and whose every `관계` row reads `걸림` or `문서만`. A halt record at `${RUN_DIR}/halt/<stage id>.md` makes it an intentional park |
 | `design-discuss-unattended` (dispatched by the run) | the fixed literal *"설계 문서를 동결했습니다."* in the stage's own stream **and** a line reading exactly `**상태**: 동결됨` in the document it wrote. A halt record at `${RUN_DIR}/halt/<stage id>.md` makes it an intentional park. **One destination**: the stage emits the freeze literal, the document path and its whole-file `sha256`, then stops, naming no next step — the next step is the driver's or the router's graph, and a document that is not frozen goes to neither the audit nor segment planning |
 
 **The predicates are not equally strong, and pretending otherwise makes the table read stronger than it is.**

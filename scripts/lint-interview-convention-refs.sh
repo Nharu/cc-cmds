@@ -23,7 +23,7 @@
 #    5. The unattended design stage does not name the convention.
 #    6. The seven discipline phrases are in the convention and in no consumer.
 #    7. Outside its `## Consumers` section the convention names no consumer
-#       step: no `Step <digit>` and no standalone `5a`–`5n`.
+#       step: no `Step <digit>` and no standalone `5a`–`5r`.
 #    8. In autopilot, `**5j — ` comes before `**5a — `.
 #    9. The autopilot CFI block holds exactly one `**CFI-9 — ` line.
 #   10. The fixed trailer line is in autopilot exactly once, inside that block.
@@ -148,7 +148,7 @@ done <<< "$FENCE_PHRASES"
 
 # --- 7. The convention names no consumer step --------------------------------
 outside=$(awk '/^## Consumers$/ { skip = 1; next } skip && /^## / { skip = 0 } !skip { print NR ": " $0 }' "$RI")
-hits=$(printf '%s\n' "$outside" | grep -E 'Step [0-9]|(^|[^[:alnum:]])5[a-n]([^[:alnum:]]|$)' || true)
+hits=$(printf '%s\n' "$outside" | grep -E 'Step [0-9]|(^|[^[:alnum:]])5[a-r]([^[:alnum:]]|$)' || true)
 [[ -z "$hits" ]] || flag 7 "$RI" "## Consumers 밖에서 소비자의 단계를 부른다: $(printf '%s\n' "$hits" | sed -n 1p | cut -c1-120)"
 
 # --- 8–10. autopilot's order and its CFI block -------------------------------
