@@ -1302,9 +1302,19 @@ gate_reach_disposition() {
   # This is the second place `rules_rc` is read, and the reason is the defect
   # that minted the token: cell 6 answered before the authorization could be
   # seen, so nothing a manifest said could open it.
+  # A destructive act that passes the predicate still parks unless the manifest
+  # named its destructive form, exactly as `prod` and `배포트리거` do: the token
+  # opens the width of the target's worktrees to writes, and every one of them
+  # — the main checkout, another run's segment worktree — is somewhere a
+  # `git clean -fdx` or `rm -rf` destroys work nobody can restore.
   if [ "$Reff" = "대상트리" ]; then
-    [ "$Geff" != "외부상태변경" ] && gate_reach_target_tree_act "$alias" "$@" \
-      && case "$rules_rc" in 0|5) return 0 ;; esac
+    if [ "$Geff" != "외부상태변경" ] && gate_reach_target_tree_act "$alias" "$@"; then
+      case "$rules_rc" in
+        0|5)
+          { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
+          printf '파괴형태미명시'; return 0 ;;
+      esac
+    fi
     printf '대상트리불일치'; return 0
   fi
 
