@@ -1,7 +1,7 @@
 ---
 name: design-reconverge
 description: 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인)
-when_to_use: 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 또는 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것
+when_to_use: 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 또는 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것
 disable-model-invocation: true
 usage: "/cc-cmds:design-reconverge <design-doc-path> <scope>"
 options:
@@ -13,7 +13,7 @@ options:
     - name: "<scope>"
       kind: positional
       required: true
-      summary: "재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자이거나, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성."
+      summary: "재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, 또는 `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구."
       parse_note: "첫 `.md` 토큰 이후의 모든 내용. 비어 있으면 중단 기록을 남기고 정지 — 스코프 없는 재설계는 이 스킬이 하는 일이 아니다."
 notes: "전면 재수렴이 아니다. 넘겨받은 스코프 하나만 고치고, 두 값 판정과 고정 리터럴을 남기고 정지한다. 팀 라운드는 사다리 R3에서만 열린다."
 ---
@@ -21,7 +21,7 @@ notes: "전면 재수렴이 아니다. 넘겨받은 스코프 하나만 고치�
 Re-converge a design document against **one** scoped defect, then stop — **without ever asking a human**.
 Internal agent communication is in English to optimize token usage. Saved documentation is in Korean.
 
-This is a **scoped repair, not a re-run of design.** It is entered from the escalation ladder's redesign rung, or from the routing shift when an implement stage refuted a residual item, before implementing (its Step 1.5d) or during it (its Step 3); it touches only what the scope names, and its terminal verdict routes the run back to segment planning — inside the same run.
+This is a **scoped repair, not a re-run of design.** It is entered from the escalation ladder's redesign rung, from the routing shift when an implement stage refuted a residual item, before implementing (its Step 1.5d) or during it (its Step 3), or from the routing shift when a person adopted the composed requirement an audit's synthesis question asked about; it touches only what the scope names, and its terminal verdict routes the run back to segment planning — inside the same run.
 
 ## What this skill is, and what it is not
 
@@ -120,10 +120,11 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 ### Step 2: Locate the scope, and take the carrier's request block if there is one
 
-Two entry shapes, and the difference decides whether the carrier has a block to close:
+Three entry shapes, and the difference decides whether the carrier has a block to close:
 
 - **`R<n>` — a refuted or drift-graded verification item.** Read `<base>/docs/design-reconverge/{slug}.md` (`<base>` and `{slug}` per `sidecar.md` §1.1 — from the document's own directory, never the cwd) after the `sidecar.md` §1.2 read guard passes. Apply §2.5's **truncation check** first: a file whose last non-empty line outside an open fence is not `<!-- cc-design-reconverge: end -->` is truncated — fail closed, surface it, **do not write to it**, and halt. Then find the `## 회차 <N>` block whose `대상 항목` names this `R<n>` and whose `상태` is `대기`. Its frozen tail (fields 3–19) is the evidence: `주장`, `기대 결과`, `관측 요지`, `관측 결과`, `실행된 레시피`, `치환 맵`, `실패 시 영향`. **Use those bytes rather than re-running anything** — the block exists precisely so the observation survives the process that made it.
 - **A problem identity `(정규화 파일 경로, 카테고리 태그)` — a review finding routed to the redesign rung.** There is no carrier block, because the carrier's append form belongs to the implementation arm and its field set is shaped for a refuted verification item. Work from the review report the driver names in the scope. **The carrier is not written on this path**, and the terminal predicate rests on the fixed literal of Step 5 plus this skill's structured verdict.
+- **`감사 종합 요구 <halt record absolute path>` — a composed requirement an audit's synthesis question asked about, which a person adopted.** There is no carrier block, for the same reason as the shape above. Read the halt record: its `질문 문면` carries the candidate requirement verbatim and its `관측 상세` names the audit report; read the report's findings the requirement composes. **The scope is that requirement and nothing wider** — find the binding-tier material it changes or adds, and decide it in the document under Step 3's adoption criteria. A decision S1–S4 do not let this skill adopt is a halt with `분류: gate-unanswerable` naming the decision, never a narrower edit that leaves the requirement unmet while reading as done. **The carrier is not written on this path**, and the terminal predicate is the second shape's.
 
 Either way, **read the design document sections the scope reaches** and identify which binding-tier material the defect actually falsifies. If nothing in the binding tier is implicated, that is a legitimate and common outcome — the verdict is `불필요`.
 

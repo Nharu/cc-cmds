@@ -226,6 +226,37 @@ When an implement stage refutes a residual verification item before implementing
    - **`판정: 재설계 필요`** additionally parks every **other** unmerged segment whose `implement` rows carry a `plan_sha256`: its plan was derived from the binding surface that just moved, and only the segment the re-convergence ran on has the `종류=reconverge` row that makes its own plan void. `blocked` with `사유=재수렴 라우팅 — 구속면 이동(재설계 필요)으로 계획이 낡았다`, one row per segment.
    - **Either missing** — a halt, a crash, no literal, no closed block → `blocked` for the segment with `사유=재수렴 라우팅 — 재수렴 종단 술어 거짓 (<which is absent>)`, and no second re-convergence for the same item.
 
+#### Handing on a person's answer to a halt
+
+A stage that reached a question only a person can answer wrote a halt record and stopped; the seat asked the person and wrote the answer as a `중단 답` row. The snapshot's `answered_halts[]` lists each answer no stage has taken up yet — `segment` (the segment id, or the design step's id), `record` (the halt record's path), `skill`, `option` (verbatim) and `line` (the row's ledger line). **An element there is this loop's to route, not a park and not a reason to end the shift.** Take it before 「Continuing a stage that ended its turn in prose」 and before any fresh dispatch on the same key. Every read here is a gate call on the terms 「Recovering a review stage that crashed」 states. The element leaves the list by itself once a `stage-result` row of its key lands on a later line, so dispatch on it once.
+
+1. **Nothing is running on it.** The key is in neither `live_stages[]` nor `orphan_stages[]`.
+2. **Which path.** Read the record's step line: `grep -n '^\*\*스텝\*\*: ' <record>`. When `skill` is `design-audit-unattended`, the step names the synthesis question (`CFI-3b`) and `option` is `adopt as a requirement`, go to item 4. Every other answer goes to item 3.
+3. **Re-attach the halted session with the answer.** Take the key's last `stage-result` row and its `세션 id` as 「Re-attaching a cut stage」 items 2 and 3 read them; the id must not be `미상` and the attempt's stream must show the session started. Keep the halted attempt's stage kind, target and `--segment` (`-` for the design step):
+
+   ```
+   gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <id | -> \
+     --cutpoint <token> --surface <token> --snapshot-digest <H> --resume <세션 id> \
+     --rationale '중단 답 줄 <line>' \
+     -- <스테이지 종류> -p "중단 기록 <record> 의 질문에 사람이 \`<option>\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요 — 처음부터 다시 하지 말고, 중단 전에 끝낸 스텝은 다시 하지 마세요."
+   ```
+
+   The prompt is that sentence with `<record>` and `<option>` filled in, and nothing else. The gate accepts any session id on this stage's own `stage-result` rows, whatever their class, so a `정상 완료` or `의도된 park` row is no bar. With no session to continue, write the crash arm's `blocked` form for a segment with `사유=중단 답 라우팅 — 재부착할 세션이 없다`; for the design step end the shift with `사유=중단` and say so in `막힌 지점`. When the resumed stage ends without writing a new halt record, a cone `blocked` row an earlier shift anchored on this halt is resolved with `원인=해소`, its `근거` naming the new `stage-result` line.
+4. **An adopted composed requirement goes to re-convergence, then to a fresh audit.** It changes what the run is trying to reach, so the halted audit is not resumed: the frozen document is re-converged against the requirement in this run, and then audited again.
+   - **Once per key.** When the key already has a `stage-result` row reading `종류=reconverge`, write `blocked` for it with `사유=중단 답 라우팅 — 감사 종합 요구가 재수렴 뒤 다시 채택됐다` and dispatch nothing.
+   - **Exclusion** as item 4 of 「Routing a pre-implementation refutation to re-convergence」.
+   - **The dispatch** keeps the audit's `--segment` and passes the document as its main-worktree absolute path, the value the design arm builds from `## 요소`:
+
+     ```
+     gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment <id> \
+       --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> \
+       --rationale '중단 답 줄 <line>; 감사 종합 요구 채택' \
+       -- reconverge -p "/cc-cmds:design-reconverge <설계 문서 메인 워크트리 절대 경로> 감사 종합 요구 <record>"
+     ```
+
+   - **After it ends**, a key whose last `stage-result` row reads `종류=reconverge` and whose earlier rows read `종류=audit` is this item's second half. Read the terminal literal in its stream with the read item 6 of 「Routing a pre-implementation refutation to re-convergence」 makes. Present → dispatch the audit afresh on the same key with stage kind `audit` and `-p "/cc-cmds:design-audit-unattended <설계 문서 메인 워크트리 절대 경로>"`, and route it like the first audit; a verdict of `재설계 필요` in that stream additionally parks every unmerged segment holding a `plan_sha256`, exactly as item 6 of 「Routing a pre-implementation refutation to re-convergence」 says. Absent — a halt, a crash, no literal — → `blocked` for the key with `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓`, and no second re-convergence.
+   - The fresh audit's own halt comes back through this subsection; an adopted requirement a second time meets the once-per-key bullet and goes to a person.
+
 #### Dispatching a review cycle in delta mode
 
 The `cycle` row you write after a review stage takes two optional fields beyond the five required ones:
@@ -287,7 +318,7 @@ A review stage that dies usually leaves its team's work on disk: every seat publ
 
 A stage whose last `stage-result` row reads `종단 부류=공허한 성공` exited cleanly without its artifact — no gate act (for the design step, no frozen document) and no halt record — and most often it ended its turn on a progress report. **Resume it; do not run it again.** A fresh dispatch loses the context and pays for the same exploration a second time. Read the row as the crash arm does (`grep -nF '| 세그먼트=<id> | 스테이지=<id> | 종류=' "$CC_PIPELINE_LEDGER"`, last line; for the design step, item 1 of 「Dispatching the design stage」 names the row) and take its `세션 id`.
 
-1. **When it applies.** The last row is `공허한 성공`, its `세션 id` is not `미상`, the segment is in neither `live_stages[]` nor `orphan_stages[]`, and no element of the snapshot's `answered_judgments[]` names the segment — an answered judgment is re-attached with its answer, not continued. For the run-scope design step this is evaluated before item 1 of 「Dispatching the design stage」 stops the design, and item 1 applies once the gate refuses the continuation.
+1. **When it applies.** The last row is `공허한 성공`, its `세션 id` is not `미상`, the segment is in neither `live_stages[]` nor `orphan_stages[]`, and no element of the snapshot's `answered_judgments[]` or `answered_halts[]` names the segment — an answered judgment or halt is re-attached with its answer, not continued. For the run-scope design step this is evaluated before item 1 of 「Dispatching the design stage」 stops the design, and item 1 applies once the gate refuses the continuation.
 2. **The dispatch is the one the stage had, plus `--resume`.** Same stage kind, same `--target` and `--segment` (`-` for the design step), `--resume <그 세션 id>`. The prompt you pass is not used: the gate sends the fixed continue message naming the unmet artifact predicate and counts the continuation on disk.
 3. **Exit 3 is the gate declining.** It declines when the stage was already continued twice, when the judgment its last attempt emitted is still pending (a question another dispatch of the same segment raised does not count), and when the attempt ran zero turns or the session is not the last attempt's. After two continuations, a segment takes the crash arm's `blocked` form with `사유=계속 소진 — 같은 세션을 두 번 재개했으나 산출물이 없다`; the design step has no `segment` row, so that form is refused for it, and item 1 of 「Dispatching the design stage」 stops the design instead. For zero turns, dispatch the stage afresh once. For a pending judgment, a segment waits for the answer; the design step is stopped by item 1, its clauses held `보류` on that approval.
 

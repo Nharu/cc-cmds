@@ -155,6 +155,11 @@
 #               -- 근거=<사람이 한 말의 요약>
 # `limit-cleared` is the seat's alone — a shift or a stage is refused with 3 —
 # and takes `근거` and nothing else; the gate stamps `레인` and `기록 시각`.
+#   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
+#               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약>
+# `halt-answer` is the seat's alone on the same terms. `<key>` is the segment
+# id, or the step id for the design step, of the stage that halted; the gate
+# checks the record is this run's, complete, and lists the option verbatim.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -7910,6 +7915,9 @@ gate_snapshot() {
   printf '  "answered_judgments": [\n'
   gate_answered_judgments_json
   printf '  ],\n'
+  printf '  "answered_halts": [\n'
+  gate_answered_halts_json
+  printf '  ],\n'
 
   # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
   # to read every turn. The top-level keys carried the goal, the targets, the
@@ -11299,6 +11307,50 @@ gate_answered_judgments_json() {
         "$(gate_json_escape "$id")" \
         "$(gate_json_escape "${seg:--}")"
     fi
+  done
+  [ "$first" = "1" ] || printf '\n'
+}
+
+gate_answered_halts_json() {
+  # The halt records a person has ANSWERED at the seat (`중단 답` rows) that no
+  # stage has yet taken up.
+  #
+  # SPENT BY THE NEXT `stage-result` OF THE SAME KEY, on a later ledger line.
+  # The shift hands the answer on by re-attaching the halted session or by
+  # dispatching the next stage on that key, and either one lands a
+  # `stage-result` row for the key when it ends. An answer read twice would
+  # re-attach the same session with the same answer twice; an answer that
+  # stayed visible after it was used would do exactly that.
+  #
+  # ONE ELEMENT PER KEY, THE LAST ROW. A person who answers the same halt again
+  # has changed their mind, and the later answer is the one to hand on.
+  local LC_CTYPE=C; export LC_CTYPE
+  # Every reader below consumes its whole input — no `exit` in awk, no `head` —
+  # because an early-exiting reader kills the writer with SIGPIPE and, under
+  # `pipefail`, the pipeline then fails though the match was found.
+  local lines ln row key keys later first=1
+  lines=$(grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true)
+  [ -n "$lines" ] || return 0
+  keys=$(printf '%s\n' "$lines" | while IFS= read -r row; do
+           gate_row_field "${row#*:}" '세그먼트'
+         done | awk 'NF && !seen[$0]++')
+  for key in $keys; do
+    row=$( { printf '%s\n' "$lines" | grep -F "| 세그먼트=$key |" || true; } | tail -1)
+    [ -n "$row" ] || continue
+    ln=${row%%:*}
+    row=${row#*:}
+    later=$( { grep -n -F -e "세그먼트=$key " -e "세그먼트=- | 스테이지=$key | 종류=design " "$LEDGER" 2>/dev/null || true; } \
+            | { grep "^[0-9]*:- \`stage-result\` " || true; } \
+            | awk -F: -v l="$ln" '$1 > l && !p { print; p = 1 }')
+    [ -z "$later" ] || continue
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "line": %s}' \
+      "$(gate_json_escape "$key")" \
+      "$(gate_json_escape "$(gate_row_field "$row" '중단 기록')")" \
+      "$(gate_json_escape "$(gate_row_field "$row" '스킬')")" \
+      "$(gate_json_escape "$(gate_row_field "$row" '선택지')")" \
+      "$ln"
   done
   [ "$first" = "1" ] || printf '\n'
 }
@@ -15639,6 +15691,91 @@ EOF
       gate_append '한도 해제' "근거=$lwhy" "레인=$llane" "기록 시각=$lat"
       log "한도 해제 기록 — 레인 $llane"
       ;;
+    halt-answer)
+      # THE SEAT'S WAY TO CARRY A PERSON'S ANSWER TO A HALT RECORD INTO THE RUN.
+      # A stage that reached a question only a person can answer writes a halt
+      # record with the question and its options verbatim, and stops. The seat
+      # asks the person; before this row the answer travelled only as prose in
+      # the next shift's launch prompt, which the shift's procedure had no place
+      # for — measured: an audit's synthesis question was answered at the seat,
+      # two shifts read the answer and both stopped because nothing in their
+      # procedure consumed it, and the run was re-kicked from scratch.
+      #
+      # SEAT ONLY, judged as `limit-cleared` judges it. A shift or a stage
+      # writing this row would be the run answering its own question for a
+      # person.
+      if [ -n "$(gate_shift_self_ordinal)" ] || cc_caller_is_stage \
+         || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+        warn "a \`중단 답\` row is written by the seat only — a shift or a stage cannot answer a halt record for a person"
+        return "$GATE_EXIT_RULE"
+      fi
+      local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat
+      for hf in "$@"; do
+        hk="${hf%%=*}"
+        case "$hk" in 중단\ 기록|선택지|근거) continue ;; esac
+        warn "a \`중단 답\` row takes \`중단 기록\`, \`선택지\` and \`근거\` from argv and nothing else: ${hk} — the rest is the gate's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      hrec=$(gate_field_of '중단 기록' "$@")
+      hopt=$(gate_field_of '선택지' "$@")
+      hwhy=$(gate_field_of '근거' "$@")
+      [ -n "$hrec" ] && [ -n "$hopt" ] && [ -n "$hwhy" ] || {
+        warn "a \`중단 답\` row needs \`중단 기록\` (the halt record's absolute path), \`선택지\` (one option of that record, verbatim) and \`근거\` (a summary of what the person said)"
+        return "$GATE_EXIT_VOCAB"; }
+      # THE KEY NAMES A STAGE THIS RUN DISPATCHED. The shift re-attaches or
+      # re-dispatches that stage with the answer, so a key with no
+      # `stage-result` row is an answer nobody can hand on.
+      [ -n "$(gate_stage_result_rows_of "$seg")" ] || {
+        warn "no \`stage-result\` row names $seg — --segment has to be the segment id, or the step id for the design step, of the stage that halted"
+        return "$GATE_EXIT_VOCAB"; }
+      # THE RECORD IS THIS RUN'S, AND IT IS A HALT RECORD. Only the run
+      # directory's own `halt/` is accepted, by prefix and with no `..`, so a
+      # file elsewhere cannot be passed off as a question this run asked.
+      case "$hrec" in
+        "$RUN_DIR"/halt/*.md) ;;
+        *) warn "\`중단 기록\` has to be a file under this run's halt directory ($RUN_DIR/halt/): $hrec"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      case "$hrec" in
+        */../*|*/./*) warn "\`중단 기록\` cannot carry a relative segment: $hrec"; return "$GATE_EXIT_VOCAB" ;;
+      esac
+      [ -f "$hrec" ] || { warn "the halt record does not exist: $hrec"; return "$GATE_EXIT_VOCAB"; }
+      local hfirst=''
+      IFS= read -r hfirst < "$hrec" || true
+      if [ "${hfirst#<!-- cc-pipeline-halt v1;}" = "$hfirst" ] \
+         || ! grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$hrec"; then
+        warn "not a complete halt record (opening header and closing fence): $hrec"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      # THE ANSWER IS ONE OF THE OPTIONS THE STAGE WROTE, byte for byte. A free
+      # answer has no option line to match, and the stage resumed with it would
+      # be handed something its own record never offered.
+      if ! grep -qF -- "- \`$hopt\`" "$hrec"; then
+        warn "\`선택지\` is not one of the options this halt record lists verbatim: $hopt"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      hskill=$(sed -n 's/^\*\*스킬\*\*: //p' "$hrec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+      hdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1)
+      hlane=$(gate_lane_label)
+      hat=$(now_iso)
+      while [ "$hw" -ge 40 ]; do
+        hwhy=$(gate_row_safe "$(gate_field_of '근거' "$@")" "$hw")
+        hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$hrec" \
+          "스킬=${hskill:-미상}" "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" \
+          "레인=$hlane" "기록 시각=$hat")
+        [ "$hlen" -le "$GATE_ROW_MAX" ] && break
+        hw=$((hw - 40))
+      done
+      [ "$hlen" -le "$GATE_ROW_MAX" ] || {
+        warn "the \`중단 답\` row does not fit the row cap even with \`근거\` clipped — the option or the path is too long to record"
+        return "$GATE_EXIT_VOCAB"; }
+      # ITS ONE READER IS THE SNAPSHOT'S `answered_halts[]`, which a shift
+      # routes from. It enters no termination condition and no progress vector,
+      # and nothing is notified from it.
+      gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
+        "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" "레인=$hlane" "기록 시각=$hat"
+      log "중단 답 기록 — $seg ← $hopt"
+      ;;
     obligation)
       # THE ONLY EXIT FROM TERMINATION CONDITION 9. `리뷰 의무` rows are written
       # in exactly one place and always as `상태=미이행`, nothing in the tree
@@ -16845,7 +16982,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -16879,9 +17016,11 @@ gate_kind_is_bookkeeping() {
   # `limit-cleared` IS HERE FOR THE SEAT'S SAKE. The seat writes it at its own
   # context ceiling as readily as anywhere else — a person saying "the limit is
   # cleared" does not wait for the seat to have room — and it enters no tree.
+  # `halt-answer` is here on the same ground: a person's answer to a halt record
+  # arrives whenever it arrives, and recording it enters no tree.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
-    obligation-done|obligation-drop|limit-cleared) return 0 ;;
+    obligation-done|obligation-drop|limit-cleared|halt-answer) return 0 ;;
   esac
   return 1
 }
@@ -18081,7 +18220,14 @@ gate_verb_act() {
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
         "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$(gate_row_safe "$rationale" "$_void_free")"
-      gate_done_note "$(printf '%s 종단 — 무효화 · 근거 %s' "$(now_iso)" "$rationale")"
+      # THE UNREACHABLE CLAUSES ARE NAMED, for the reason the satisfied arm
+      # names held ones: the ledger rows carry `상태=불가능`, but the morning
+      # reads this line and the render, and neither said which goal was lost.
+      local _void_imp _void_held
+      _void_imp=$(gate_impossible_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+      _void_held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+      gate_done_note "$(printf '%s 종단 — 무효화%s%s · 근거 %s' "$(now_iso)" \
+        "${_void_imp:+ · 불가능 절 $_void_imp}" "${_void_held:+ · 보류 절 $_void_held}" "$rationale")"
       # The itemised dispositions land beside `done`, never inside it — the file
       # is a one-line contract with four consumers. An invalidated run gets the
       # enumeration too: what it disposed of on the way to being invalidated is
@@ -18099,7 +18245,7 @@ gate_verb_act() {
     if [ "$disposition" != "충족" ]; then
       warn "termination proposal refused — unmet conditions:"
       case "$unmet" in
-        *"종료 절"*) warn "for an unsettled clause, leave grounds with act --kind clause or mark it \`불가능\`" ;;
+        *" 미정산"*) warn "for an unsettled clause, leave grounds with act --kind clause or mark it \`불가능\`" ;;
       esac
       # A separate `case`: the one above stops at its first match, and a run
       # blocked at design carries both lines at once.
@@ -18990,6 +19136,23 @@ gate_unmet_clause_ids() {
     [ -n "$cid" ] || continue
     gate_clause_settled "$cid" || printf '%s\n' "$cid"
   done
+}
+
+gate_impossible_clause_ids() {
+  # Clauses whose LAST row is `불가능`. They settle condition 10 like any other
+  # settled clause, and that was the whole of what the gate did with them — so a
+  # run that settled every clause as unreachable read `충족` and wrote the same
+  # terminal line as a run that reached every one. Condition 10 now prints one
+  # anchored line per id from here and the disposition reads that line as an
+  # invalidation, which is what the kickoff contract already promised.
+  local cid last
+  for cid in $(gate_clause_ids); do
+    [ -n "$cid" ] || continue
+    last=$( { gate_rows '종료 절' | grep -F "id=$cid " || true; } | tail -1)
+    [ -n "$last" ] || continue
+    [ "$(gate_row_field "$last" '상태')" = "불가능" ] && printf '%s\n' "$cid"
+  done
+  return 0
 }
 
 # gate_check_merge_anchor <segment> <cutpoint> <alias> [<kind>]
@@ -22366,9 +22529,16 @@ gate_done_disposition() {
   # the path forward is closed by construction just as condition 5's is, and
   # what the run may record is its invalidation, never its satisfaction. The
   # plain zero-segment line — a run that has not begun — is not dropped.
+  #
+  # Condition 10's `불가능 정산` line is dropped on the same footing. A clause
+  # the run settled as unreachable is one it will never reach, so a run left
+  # with only those lines may record its end as invalidated, never as satisfied.
+  # The pattern is anchored at both ends: a clause id is a manifest token without
+  # spaces, and the line carries nothing after the fixed tail.
   other=$(printf '%s' "$unmet" \
     | grep -v -e '^5 런 스코프 blocked 가 해소 불가입니다 ' \
-              -e '^1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 ' || true)
+              -e '^1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 ' \
+              -e '^10 종료 절 [^ ]* 불가능 정산$' || true)
   [ -n "$other" ] || { printf '무효화'; return 0; }
   printf '미충족'
 }
@@ -22633,6 +22803,15 @@ gate_done_conditions() {
     # several clauses overflowed it and turned a rule refusal into a `die`. The
     # repair instruction belongs beside the refusal, not inside the row.
     printf '10 종료 절 %s 미정산\n' "$sid"
+  done
+  # A clause settled `불가능` is settled, and it is also a goal this run will
+  # never reach. Leaving it out of this list made such a run read `충족`, and the
+  # morning could not tell it from a run that reached every clause. The line has
+  # its own fixed head so `gate_done_disposition` can drop it the way it drops
+  # condition 5's: what the run records is then its invalidation.
+  for sid in $(gate_impossible_clause_ids); do
+    [ -n "$sid" ] || continue
+    printf '10 종료 절 %s 불가능 정산\n' "$sid"
   done
 
   # 10b — the clause list is not EMPTY. Condition 10 iterates the parsed clauses
