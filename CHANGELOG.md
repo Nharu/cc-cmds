@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.44.1] - 2026-10-06
+
+같은 저장소에서 다른 런이나 세션이 `docs/` 에 새 파일을 만들었다는 이유만으로 설계 감사가 멈추지 않는다. 동결 단언 1 은 기준선에 없던 미추적 항목이 `docs/` 아래에 새로 나타나면, 그 경로가 측정 표면 위에 있지 않은 한 차이로 세지 않는다. 측정 표면이 작업 트리 전체로 폴백한 경우에도 같다.
+
+### Fixed
+
+- **`docs/` 아래 새 미추적 파일 때문에 감사가 `freeze-mismatch` 로 멈추던 문제** — `_common/verification.md` 의 측정 표면 계약에 예외를 하나 두고, `design-audit-unattended` 에서 폴백을 설명하던 문면을 그에 맞췄다. 미추적 항목이 사라진 경우, `docs/` 아래 추적 항목이 바뀐 경우, `docs/` 밖에 새 미추적 파일이 생긴 경우는 지금처럼 위반이다.
+
+### Why
+
+- 무인 런은 킥오프 기록, 원장, 인가 기록, 설계 문서, 감사 리포트와 리더 사본을 모두 대상 저장소 메인 워크트리의 `docs/` 아래에 만든다. 한 저장소에 런이 둘 이상 돌면 감사 창 안에 남의 새 파일이 생긴다. 리더가 다른 저장소의 경로를 인용하면 측정 표면이 작업 트리 전체로 폴백하는데, 그때는 그 파일 하나로 감사가 멈췄고 자동 재감사도 없었다.
+- `git status --porcelain` 은 미추적 파일의 내용 변화를 원래 보지 못한다. 그래서 이 예외로 놓치게 되는 것은 `docs/` 아래에 새 파일이 생기는 것 하나뿐이다.
+
 ## [2.44.0] - 2026-10-06
 
 배너를 클릭하면 그 배너를 띄운 세션으로 돌아간다. active-notify 배너, autopilot 런 배너, 일반 세션 훅 배너 모두 클릭 때 그 세션의 iTerm2 창·탭을 앞으로 가져오고 tmux window·pane 까지 선택한다. iTerm2 tmux 통합(`tmux -CC`)과 iTerm2 탭 안의 일반 tmux 를 모두 다룬다. 확인할 수 없는 클릭은 화면을 바꾸지 않는다 — iTerm2 가 아닌 터미널, tmux 밖의 세션, 이미 닫힌 pane, 대상 세션에 붙은 클라이언트가 없는 경우가 그렇다.
