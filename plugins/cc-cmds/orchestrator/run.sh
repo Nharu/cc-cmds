@@ -7999,8 +7999,8 @@ main_loop() {
       "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
       "근거=앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
   elif [ "$(manifest_design_scope)" = "base" ] \
-       && run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
-          | grep -qF '종단 부류=정상 완료'; then
+       && [ "$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+              | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)" = "정상 완료" ]; then
     # A BASE RUN SKIPS ONLY AN AUDIT IT RAN ITSELF. A reader report on disk
     # names the slug, not the bytes it read, and a base run publishes tickets
     # after this — so a report left by an earlier run over an earlier revision

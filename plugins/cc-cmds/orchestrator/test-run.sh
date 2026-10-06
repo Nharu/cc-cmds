@@ -2564,7 +2564,8 @@ check "베이스 팔 픽스처가 실제로 design_scope=base 를 얻었다 (아
   "$(MANIFEST="$MFB"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_scope)" "base"
 
 armb_case() {
-  # armb_case <라벨> <리더 리포트: 있음|없음> <감사 종단 부류> <분할 종단 부류> <분할 술어 0|1>
+  # armb_case <라벨> <리더 리포트: 있음|없음> <감사 종단 부류> <분할 종단 부류> <분할 술어 0|1> [앞선 감사 행의 종단 부류]
+  # 분할 종단 부류는 쉼표로 이어 시도마다 하나씩 준다(마지막 값이 이후 시도에 반복된다).
   local d="$ARMB/$1"
   ARMB_AUDIT="$3"; ARMB_SPLIT="$4"; ARMB_PRED="$5"
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs"
@@ -2574,6 +2575,7 @@ armb_case() {
     DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; DOC_SLUG=x; DOC_BASE="$d"
     ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=x; BASE="$d"
     : > "$LEDGER"
+    [ -z "${6:-}" ] || printf -- '- `stage-result` | 스테이지=S2 | 종단 부류=%s |\n' "$6" > "$LEDGER"
     printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC"
     if [ "$2" = "있음" ]; then
       mkdir -p "$d/docs/design-audit"; : > "$d/docs/design-audit/x.reader-1.md"
@@ -2582,10 +2584,30 @@ armb_case() {
     design_arm() { return 0; }
     dispatch_stage() { printf '%s\t%s\n' "$1" "$3" >> "$d/dispatched"; printf '0' > "$RUN_DIR/$1.rc"; }
     classify_termination() {
-      case "$1" in S2) printf '%s' "$ARMB_AUDIT" ;; S2split) printf '%s' "$ARMB_SPLIT" ;; *) printf '크래시' ;; esac
+      case "$1" in
+        S2) printf '%s' "$ARMB_AUDIT" ;;
+        S2split) armb_split_class ;;
+        *) printf '크래시' ;;
+      esac
     }
     predicate_audit() { return 0; }
-    predicate_split() { return "$ARMB_PRED"; }
+    # 지금 시도의 종단 부류 — 파견 기록에 쌓인 S2split 줄 수가 시도 번호다.
+    # 드라이버는 술어를 분류보다 먼저 물으므로 둘 다 이것으로 같은 시도를 읽는다.
+    armb_split_class() {
+      local n c
+      n=$( { grep -c "^S2split$(printf '\t')" "$d/dispatched" 2>/dev/null || true; } ); n=${n:-1}
+      c=$(printf '%s' "$ARMB_SPLIT" | tr ',' '\n' | sed -n "${n}p")
+      [ -n "$c" ] || c=$(printf '%s' "$ARMB_SPLIT" | tr ',' '\n' | tail -1)
+      printf '%s' "$c"
+    }
+    # `시도별` — 그 시도의 종단 부류가 정상 완료일 때만 술어가 선다.
+    predicate_split() {
+      if [ "$ARMB_PRED" = "시도별" ]; then
+        [ "$(armb_split_class)" = "정상 완료" ]
+      else
+        return "$ARMB_PRED"
+      fi
+    }
     stage_session_id() { printf 'sid'; }
     stage_parent_id() { printf 'parent'; }
     report_append() { printf '%s\n' "$*" >> "$d/report"; }
@@ -2623,13 +2645,23 @@ check "분할이 끝나면 보고서가 레지스트리 경로를 든다" \
   "$(grep -c "베이스 분할 완료 — $ARMB/full/docs/design-base/x.tickets.md" "$ARMB/full/report" 2>/dev/null || true)" "1"
 check "정상 완료한 분할은 park 하지 않는다" "$(grep -c . "$ARMB/full/parked" 2>/dev/null || printf 0)" "0"
 
-armb_case skipped 있음 '정상 완료' '정상 완료' 0
-check "리더 리포트가 있어 감사를 건너뛴 베이스 런도 분할을 띄우고 돌아온다" \
+armb_case skipped 없음 '정상 완료' '정상 완료' 0 '정상 완료'
+check "이 런의 감사가 이미 완주한 베이스 런은 감사를 건너뛰고 분할을 띄운 뒤 돌아온다" \
   "$(armb_disp skipped)/$(armb_s3 skipped)" "S2split/없음"
 
+# 디스크의 리더 리포트는 슬러그만 말하고 어느 판본을 읽었는지는 말하지 않는다 —
+# 베이스 런은 그것으로 감사를 건너뛰지 않는다.
+armb_case reader-only 있음 '정상 완료' '정상 완료' 0
+check "리더 리포트만 있는 베이스 런은 감사를 다시 띄운다" \
+  "$(armb_disp reader-only)/$(armb_s3 reader-only)" "S2 S2split/없음"
+
 armb_case split-hollow 없음 '정상 완료' '공허한 성공' 1
-check "분할 술어가 서지 않으면 런을 무효화로 park 한다" \
-  "$(armb_s3 split-hollow)/$(grep -c '^S2split run 무효화 게이트 park 분할 술어 불성립 — 종단 부류 공허한 성공' "$ARMB/split-hollow/parked" 2>/dev/null || true)" "없음/1"
+check "공허한 성공 분할은 한 번 다시 시도하고, 그것도 서지 않으면 재시도 소진으로 park 한다" \
+  "$(armb_disp split-hollow)/$(armb_s3 split-hollow)/$(grep -c '^S2split run 무효화 게이트 park 재시도 소진 — 새 시도도 분할 술어 불성립' "$ARMB/split-hollow/parked" 2>/dev/null || true)" "S2 S2split S2split/없음/1"
+
+armb_case split-retry 없음 '정상 완료' '공허한 성공,정상 완료' 시도별
+check "공허한 성공 뒤 새 시도가 완주하면 park 하지 않는다" \
+  "$(armb_disp split-retry)/$(grep -c . "$ARMB/split-retry/parked" 2>/dev/null || printf 0)" "S2 S2split S2split/0"
 
 armb_case split-halt 없음 '정상 완료' '의도된 park' 1
 check "중단한 분할은 중단 기록을 들고 park 한다" \
