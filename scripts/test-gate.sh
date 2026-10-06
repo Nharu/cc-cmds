@@ -19387,14 +19387,17 @@ check "30: 세그먼트 워크트리를 단 머지됨 행이 충족 이다 (뒤�
 # 베이스로 가는 git push 의 소스 — `<src>:<베이스>` 는 워크트리가 무엇을
 # 체크아웃했든 src 를 올린다. 룰이 대조한 세그먼트 워크트리의 HEAD 가 아닌 소스는
 # 룰 앞에서 거절된다.
+#
+# U 는 베이스 위의 새 커밋이다. 베이스 팁 그대로인 ref 를 올리는 push 는 원격을
+# 움직이지 않으므로(게이트는 갱신될 ref 를 dry-run 으로 잰다) 거절할 것이 없다.
 sa_new '베이스로 가는 push 의 소스'
 sa_seg_row S30P ""
 sa_commit '작업' >/dev/null
-( cd "$SA_REPO" && git branch "u-$SA_ID" main ) >/dev/null 2>&1
+( cd "$SA_REPO" && git branch "u-$SA_ID" "$(git commit-tree -p main -m U 'main^{tree}')" ) >/dev/null 2>&1
 sa_merge S30P "u-$SA_ID:$SA_BASE"
 check "30: 다른 ref 를 베이스로 올리는 push 는 거절된다" "$rc" "2"
 case "$msg" in
-  *"베이스로 가는 git push 의 소스가"*"u-$SA_ID:$SA_BASE"*) ok "30: 그 거절 문면이 refspec 을 댄다" ;;
+  *"베이스로 가는 git push 의 소스가"*"u-$SA_ID:refs/heads/$SA_BASE"*) ok "30: 그 거절 문면이 갱신될 ref 를 댄다" ;;
   *) bad "30 push 소스 문면" "$msg" ;;
 esac
 case "$raw" in
@@ -19412,8 +19415,10 @@ case "$msg" in
   *"베이스로 가는 git push 의 소스가"*) ok "30: 그 거절이 소스 검사에서 난다 (뒤에 붙인 refspec)" ;;
   *) bad "30 뒤에 붙인 refspec 문면" "$msg" ;;
 esac
+# 이 픽스처의 로컬 베이스는 원격 베이스와 같아 `git push origin <베이스>` 는 아무것도
+# 올리지 않는다. 결속할 갱신이 없으니 룰로 간다. 로컬 베이스가 앞선 경우는 35-31 이 잰다.
 sa_merge S30P "$SA_BASE"
-check "30: 다른 커밋에 있는 로컬 베이스를 그대로 올리는 push 도 거절된다" "$rc" "2"
+check "30: 원격과 같은 로컬 베이스를 올리는 push 는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
 # 세그먼트의 행위는 그 세그먼트 워크트리에서 돌므로 `HEAD` 는 그 트리의 HEAD 다.
 sa_merge S30P "HEAD:$SA_BASE"
 check "30: HEAD:<베이스> 는 세그먼트 워크트리의 HEAD 로 풀려 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
@@ -19472,6 +19477,192 @@ case "$msg" in
   *) ok "30: 이 세그먼트의 행을 다시 쓰면 불일치 거절이 풀린다" ;;
 esac
 check "30: 리뷰가 덮은 머지가 통과한다 (행 선택 수리 뒤)" "$rc" "0"
+
+# --- 35-31. 베이스로 가는 push 는 git 이 갱신할 ref 로 판정되고, 올라가는 커밋이 리뷰한 HEAD 여야 한다 ---
+# --- section: 35-31 | group: sa | covers: act, snapshot | anchors: 31p: 배포 로 선언한 다른 소스의 베이스 push 는 거절된다 ---
+#
+# 게이트는 래퍼와 git 전역 옵션을 벗긴 뒤 같은 인자로 `git push --dry-run
+# --porcelain` 을 돌려 원격의 어느 ref 가 무엇으로 바뀔지 잰다. 베이스가 바뀌면
+# 선언과 무관하게 `머지` 이고, 베이스에 올라갈 커밋이 세그먼트 워크트리의 HEAD
+# 여야 한다. 철자를 읽던 판정은 `배포` 선언, `heads/<베이스>`, 빈 refspec·glob·
+# `--all`·`--mirror`·`--branches`, `-c`·`command`·`env` 앞붙이를 하나씩 놓쳤고, 그때마다
+# 리뷰되지 않은 커밋이 베이스에 착지했다.
+sp_act() {
+  # sp_act <세그먼트> <절단점> <argv...> — 머지 등급으로 라벨한 행위 하나.
+  local sid="$1" cut="$2"; shift 2
+  sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
+      --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x -- "$@"
+}
+sp_rbase() { git --git-dir="$SA_REMOTE" rev-parse "refs/heads/$SA_BASE" 2>/dev/null; }
+sp_refused() {
+  # sp_refused <라벨> <want rc> <원격 베이스 기준값> — 거절의 세 면: rc, 게이트 통과 줄
+  # 없음, 원격 베이스 불변.
+  check "$1" "$rc" "$2"
+  case "$raw" in
+    *"게이트 통과"*) bad "$1 (통과 줄)" "거절인데 게이트 통과 줄이 있다: $raw" ;;
+    *) ok "$1 — 게이트 통과 줄이 없다" ;;
+  esac
+  check "$1 — 원격 베이스가 그대로다" "$(sp_rbase)" "$3"
+}
+
+sa_new '배포 선언 push'
+sa_seg_row S31A ""
+T31A=$(sa_commit '리뷰된 작업')
+sa_cycle S31A 1 0 0 "$T31A"
+U31=$( cd "$SA_SEGWT" && git commit-tree -p HEAD -m U 'HEAD^{tree}' )
+( cd "$SA_REPO" && git branch "u-$SA_ID" "$U31" ) >/dev/null 2>&1
+B31=$(sp_rbase)
+sp_act S31A 배포 git push origin "u-$SA_ID:$SA_BASE"
+sp_refused "31p: 배포 로 선언한 다른 소스의 베이스 push 는 거절된다" 2 "$B31"
+case "$msg" in
+  *"베이스로 가는 git push 의 소스가"*) ok "31p: 그 거절이 소스 결속에서 난다 (배포)" ;;
+  *) bad "31p 배포 문면" "$msg" ;;
+esac
+if sa_names_rule; then bad "31p 배포 순서" "소스 거절보다 룰이 먼저 돌았다: $msg"; else ok "31p: 소스 거절이 룰 앞에서 난다 (배포)"; fi
+
+# heads/<베이스> — git 은 refs/heads/<베이스> 로 푼다.
+sp_act S31A push git push origin "u-$SA_ID:heads/$SA_BASE"
+sp_refused "31p: heads/<베이스> 를 push 로 선언하면 머지로 올리라고 한다" 8 "$B31"
+sp_act S31A 머지 git push origin "u-$SA_ID:heads/$SA_BASE"
+sp_refused "31p: heads/<베이스> 를 머지로 선언한 다른 소스의 push 는 거절된다" 2 "$B31"
+
+# 앞붙이 — 전역 옵션, 설정된 push refspec, command·env 래퍼.
+sp_act S31A push git -c "remote.origin.push=refs/heads/u-$SA_ID:refs/heads/$SA_BASE" push origin
+sp_refused "31p: 설정된 push refspec 의 베이스 push 를 push 로 선언하면 8" 8 "$B31"
+sp_act S31A 머지 git -c "remote.origin.push=refs/heads/u-$SA_ID:refs/heads/$SA_BASE" push origin
+sp_refused "31p: 설정된 push refspec 의 다른 소스 베이스 push 는 거절된다" 2 "$B31"
+sp_act S31A push git -c core.quotepath=false push origin "u-$SA_ID:$SA_BASE"
+sp_refused "31p: git -c … push 를 push 로 선언하면 8" 8 "$B31"
+sp_act S31A 머지 git -c core.quotepath=false push origin "u-$SA_ID:$SA_BASE"
+sp_refused "31p: git -c … push 의 다른 소스는 거절된다" 2 "$B31"
+sp_act S31A push command git push origin "u-$SA_ID:$SA_BASE"
+sp_refused "31p: command git push 를 push 로 선언하면 8" 8 "$B31"
+sp_act S31A 머지 command git push origin "u-$SA_ID:$SA_BASE"
+sp_refused "31p: command git push 의 다른 소스는 거절된다" 2 "$B31"
+sp_act S31A push env git push origin "u-$SA_ID:$SA_BASE"
+sp_refused "31p: env git push 를 push 로 선언하면 8" 8 "$B31"
+sp_act S31A 머지 env git push origin "u-$SA_ID:$SA_BASE"
+sp_refused "31p: env git push 의 다른 소스는 거절된다" 2 "$B31"
+
+# refspec 순서 — 베이스로 가는 refspec 이 앞이든 뒤든 같다.
+sp_act S31A push git push origin "$SA_SEGBR:other-$SA_ID" "u-$SA_ID:$SA_BASE"
+sp_refused "31p: 베이스 refspec 이 뒤에 있는 push 를 push 로 선언하면 8" 8 "$B31"
+sp_act S31A push git push origin "u-$SA_ID:$SA_BASE" "$SA_SEGBR:other-$SA_ID"
+sp_refused "31p: 베이스 refspec 이 앞에 있는 push 를 push 로 선언하면 8" 8 "$B31"
+
+# 로컬 베이스가 리뷰되지 않은 커밋으로 앞선 상태 — 메인 체크아웃에 아직 올리지 않은
+# 커밋이 있는 모양이다. 로컬 베이스를 올리는 철자는 모두 같은 대조를 지난다.
+( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$U31" ) >/dev/null 2>&1
+for sp_spec in ':' "refs/heads/*:refs/heads/*" "$SA_BASE"; do
+  sp_act S31A 머지 git push origin "$sp_spec"
+  sp_refused "31p: 앞선 로컬 베이스를 올리는 push origin $sp_spec 는 거절된다" 2 "$B31"
+  sp_act S31A push git push origin "$sp_spec"
+  sp_refused "31p: 앞선 로컬 베이스를 올리는 push origin $sp_spec 를 push 로 선언하면 8" 8 "$B31"
+done
+for sp_opt in --all --mirror --branches; do
+  sp_act S31A 머지 git push "$sp_opt" origin
+  sp_refused "31p: 앞선 로컬 베이스를 올리는 push $sp_opt 는 거절된다" 2 "$B31"
+  sp_act S31A push git push "$sp_opt" origin
+  sp_refused "31p: 앞선 로컬 베이스를 올리는 push $sp_opt 를 push 로 선언하면 8" 8 "$B31"
+done
+( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$B31" ) >/dev/null 2>&1
+
+# 정직한 push — 리뷰된 HEAD 를 `배포` 로 선언해 올리면 결속 거절 없이 룰을 지나 착지한다.
+sp_act S31A 배포 git push origin "HEAD:$SA_BASE"
+case "$msg" in
+  *"베이스로 가는 git push 의 소스가"*) bad "31p 정직한 push" "리뷰된 HEAD 의 push 가 소스 결속에 걸렸다: $msg" ;;
+  *) ok "31p: 리뷰된 HEAD 를 배포 로 선언한 push 는 소스 결속에 걸리지 않는다" ;;
+esac
+check "31p: 리뷰된 HEAD 를 배포 로 선언한 push 가 통과한다" "$rc" "0"
+check "31p: 그 push 가 리뷰된 HEAD 를 착지시킨다" "$(sp_rbase)" "$T31A"
+
+# 형제 행의 선택 — `배포` 선언에서도 룰과 게이트의 행 대조가 돈다.
+sa_new '배포 선언의 행 선택'
+sa_seg_row S31R ""
+T31R=$(sa_commit '작업')
+sa_cycle S31R 1 0 0 "$T31R"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31Q \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=실행중 워크트리="$SA_SEGWT" "메모=follows id=S31R " 선행=없음
+B31R=$(sp_rbase)
+sp_act S31R 배포 git push origin "HEAD:$SA_BASE"
+sp_refused "31p: 룰이 다른 segment 행을 고르는 배포 선언 push 는 거절된다" 2 "$B31R"
+case "$msg" in
+  *"마지막 segment 행이 게이트가 고르는 행과 다릅니다"*) ok "31p: 그 거절 문면이 행 선택의 불일치를 댄다 (배포)" ;;
+  *) bad "31p 배포 행 선택 문면" "$msg" ;;
+esac
+
+# 분리된 HEAD — 리뷰된 R 의 분리 체크아웃을 단 첫 행이 행에 적은 세그먼트 브랜치를
+# 받으면 그 트리가 기록이 되어, 게이트 밖에서 착지한 미리뷰 커밋의 머지가 그 트리의
+# 리뷰된 팁으로 충족 이 됐다. 분리 HEAD 후보는 브랜치를 모르는 후보다.
+sa_new '분리 HEAD 후보'
+T31D=$(sa_commit '리뷰된 작업')
+SA_DTWT="$SA_ROOT/dt"
+( cd "$SA_REPO" && git worktree add -q --detach "$SA_DTWT" "$T31D" ) >/dev/null 2>&1
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31D \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=실행중 워크트리="$SA_DTWT" 브랜치="$SA_SEGBR" 선행=없음
+check "31p: 분리 체크아웃을 단 실행중 행이 받아들여진다" "$rc" "0"
+sa_seg_row S31D ""
+sa_cycle S31D 1 0 0 "$T31D"
+sa_commit '리뷰 뒤의 작업' >/dev/null
+sa_land
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31D \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=머지됨 워크트리="$SA_DTWT" 선행=없음
+if [ "$rc" = "0" ] && [ "$(sa_field "$(sa_seg_last S31D)" '머지 대조')" = "충족" ]; then
+  bad "31p 분리 HEAD" "분리 체크아웃을 단 머지됨 행이 충족 으로 기록됐다"
+else
+  ok "31p: 분리 체크아웃을 단 머지됨 행이 충족 이 아니다"
+fi
+sa_seg_state S31D 머지됨
+check "31p: 세그먼트 워크트리를 단 머지됨 행이 기록된다 (분리 HEAD)" "$rc" "0"
+if [ "$(sa_field "$(sa_seg_last S31D)" '머지 대조')" = "충족" ]; then
+  bad "31p 분리 HEAD 대조" "리뷰 뒤 커밋이 실린 머지가 충족 이다"
+else
+  ok "31p: 리뷰 뒤 커밋이 실린 머지가 충족 이 아니다 (분리 HEAD)"
+fi
+case "$(sa_unmet11)" in
+  *"11 세그먼트 S31D "*) ok "31p: 그 머지를 조건 11 이 붙잡는다 (분리 HEAD)" ;;
+  *) bad "31p 분리 HEAD 조건 11" "조건 11 이 비었다: $(sa_unmet11)" ;;
+esac
+
+# 디스패치 뒤 완화 — 모든 행이 계획됨 이어도 이 세그먼트로 스테이지를 띄운 행이 있으면
+# 정책 완화를 거절한다. 디스패치 행이 없으면 35-27 처럼 받는다.
+sa_new '디스패치 뒤 완화'
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31L \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음
+printf -- '- `자율 승인` | 교대=1 | kind=skill | 결정=act | 대상=main | 세그먼트=S31L | 절단점=커밋 | 축2=워크트리쓰기 | 근거=x\n' >> "$SA_LEDGER"
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31L \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음 '리뷰 정책=선머지후리뷰'
+check "31p: 디스패치 행 뒤의 정책 완화는 거절된다" "$rc" "2"
+case "$msg" in
+  *"kind=skill"*) ok "31p: 그 거절 문면이 디스패치 행을 댄다" ;;
+  *) bad "31p 디스패치 완화 문면" "$msg" ;;
+esac
+check "31p: 디스패치 뒤 완화 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31M \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음
+printf -- '- `stage-result` | 세그먼트=S31M | 스테이지=S31M | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-31m | 부모=router-1 | 종단 부류=정상 완료\n' >> "$SA_LEDGER"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31M \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음 '리뷰 정책=선머지후리뷰'
+check "31p: stage-result 행 뒤의 정책 완화는 거절된다" "$rc" "2"
+case "$msg" in
+  *"stage-result 행이 있습니다"*) ok "31p: 그 거절 문면이 stage-result 행을 댄다" ;;
+  *) bad "31p stage-result 완화 문면" "$msg" ;;
+esac
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31N \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31N \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음 '리뷰 정책=선머지후리뷰'
+check "31p: 다른 세그먼트의 디스패치 행은 이 세그먼트의 완화를 막지 않는다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 36. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다

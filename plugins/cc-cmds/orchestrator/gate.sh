@@ -1112,11 +1112,18 @@ gate_push_rung() {
   # an honest `--cutpoint 머지` on a push must not be pulled back down to `push`,
   # because that is precisely the declaration that puts the review rule in front
   # of it.
+  #
+  # THIS IS THE FALLBACK READING. The cutpoint is taken from what git says the
+  # push will update (`gate_push_base_updates`); this static reading answers
+  # only when that dry-run could not, and for a push the dry-run found no base
+  # update in, so the higher of the two still stands.
   local alias="$1"; shift
   local base; base=$(gate_push_base_branch "$alias")
   [ -n "$base" ] || { printf '머지'; return 0; }
+  # `--branches` is the newer spelling of `--all`, and all three push the local
+  # base ref along with everything else.
   case " $* " in
-    *" --all "*|*" --mirror "*) printf '머지'; return 0 ;;
+    *" --all "*|*" --mirror "*|*" --branches "*) printf '머지'; return 0 ;;
   esac
   # EVERY REFSPEC IS READ, not only the last one: `git push origin U:<base>
   # x:other` lands U on the base, and reading the last refspec alone graded it
@@ -1130,10 +1137,14 @@ gate_push_rung() {
     [ "$seen_push" = "1" ] || continue
     if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
     last="$a"
+    # The empty refspec (`:`, `+:`) pushes every matching branch, the base
+    # among them, and a glob can map onto the base.
+    case "${a#+}" in
+      :|*'*'*) printf '머지'; return 0 ;;
+    esac
     dst="${a#*:}"
     case "$a" in *:*) ;; *) dst="$a" ;; esac
-    dst="${dst#+}"; dst="${dst#refs/heads/}"
-    [ "$dst" = "$base" ] && { printf '머지'; return 0; }
+    gate_push_dst_is_base "$dst" "$base" && { printf '머지'; return 0; }
   done
   if [ -z "$last" ]; then
     # No refspec: the destination is whatever branch the act's worktree is on,
@@ -1189,7 +1200,16 @@ gate_push_source_unbound() {
   # current branch is pushed, so its source is the act's HEAD. A `-C <dir>`
   # before the subcommand is followed, since that is where git resolves the
   # source; `--git-dir` and `--work-tree` are not, and an argv carrying either
-  # is reported whole. `--all` and `--mirror` are left to the rung above.
+  # is reported whole.
+  #
+  # `--all`, `--mirror`, `--branches`, the empty refspec and a glob push the
+  # LOCAL base ref, and the local base is not the reviewed HEAD whenever the
+  # main checkout carries a commit not yet pushed. Each of them passes only
+  # when `refs/heads/<base>` resolves, where the push runs, to <head>.
+  #
+  # THIS IS THE FALLBACK READING, used only when `gate_push_base_updates` could
+  # not ask git what the push updates. It reads spellings, and a spelling this
+  # loop does not know is a hole the dry-run does not have.
   local alias="$1" head="$2"; shift 2
   [ "${1##*/}" = git ] || return 0
   local base; base=$(gate_push_base_branch "$alias")
@@ -1217,7 +1237,15 @@ gate_push_source_unbound() {
     specs+=("$a")
   done
   [ "$seen_push" = "1" ] || return 0
-  case " $* " in *" --all "*|*" --mirror "*) return 0 ;; esac
+  local lbase=""
+  case " $* " in
+    *" --all "*|*" --mirror "*|*" --branches "*)
+      lbase=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
+      if [ -z "$lbase" ] || [ "$lbase" != "$head" ]; then
+        printf '%s' "$*"
+      fi
+      return 0 ;;
+  esac
   if [ "${#specs[@]}" -eq 0 ]; then
     dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
     [ "$dst" = "$base" ] || return 0
@@ -1229,14 +1257,22 @@ gate_push_source_unbound() {
     n=$((n + 1))
     r0="${a#+}"
     case "$r0" in
+      :|*'*'*)
+        lbase=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
+        if [ -z "$lbase" ] || [ "$lbase" != "$head" ]; then
+          printf '%s' "$a"
+          return 0
+        fi
+        continue ;;
+    esac
+    case "$r0" in
       *:*) src="${r0%%:*}"; dst="${r0#*:}" ;;
       *)   src="$r0"; dst="$r0" ;;
     esac
-    dst="${dst#refs/heads/}"
     if [ "$dst" = 'HEAD' ]; then
       dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
     fi
-    [ "$dst" = "$base" ] || continue
+    gate_push_dst_is_base "$dst" "$base" || continue
     sha=""
     [ -z "$src" ] || sha=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "${src}^{commit}" 2>/dev/null; } || true)
     if [ -z "$sha" ] || [ "$sha" != "$head" ]; then
@@ -1244,6 +1280,248 @@ gate_push_source_unbound() {
       return 0
     fi
   done
+  return 0
+}
+
+gate_push_dst_is_base() {
+  # gate_push_dst_is_base <destination> <base> — true when a refspec
+  # destination names the base branch the way git resolves it: a leading `+`,
+  # `refs/heads/` and `heads/` are all spellings of the same ref. `heads/<base>`
+  # read as another name, and a push spelled that way graded `push` with no
+  # review rule in front of it while git moved the remote base.
+  local d="${1#+}"
+  d="${d#refs/heads/}"
+  d="${d#heads/}"
+  [ -n "$2" ] && [ "$d" = "$2" ]
+}
+
+gate_git_subcommand() {
+  # gate_git_subcommand <git's args after argv0...> — the subcommand once git's
+  # global options are skipped, the same skip `ladder_of_git` performs; nothing
+  # when an unknown global option stands first.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+        [ "$#" -ge 2 ] || return 0
+        shift 2 ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*) shift ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects) shift ;;
+      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) shift ;;
+      -*) return 0 ;;
+      *)  printf '%s' "$1"; return 0 ;;
+    esac
+  done
+}
+
+gate_push_unwrap_of_argv0() {
+  # gate_push_unwrap_of_argv0 <argv...> — the `git … push …` the act runs once
+  # its wrappers are off, shell-quoted for `eval`; `해당없음` when what runs is
+  # not a git push, `여럿` when one act runs more than one. The unwraps are the
+  # ones `gate_merge_binding_of_argv0` uses, so a push seen through a wrapper by
+  # one reader is the push the other reads.
+  local out="" cmd
+  if [ "$#" -ge 1 ]; then
+    cmd="${1##*/}"
+    shift
+    case "$cmd" in
+      lockf)   out=$(gate_unwrap_lockf   gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
+      command) out=$(gate_unwrap_command gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
+      find)    out=$(gate_unwrap_find    gate_push_unwrap_of_argv0 '해당없음' '해당없음' '해당없음' gate_push_unwrap_combine "$@") ;;
+      rg)      out=$(gate_unwrap_rg      gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
+      env)     out=$(gate_unwrap_env     gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
+      timeout|nice|nohup|stdbuf)
+               out=$(gate_unwrap_wrapper "$cmd" gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
+      time)    out=$(gate_unwrap_time    gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
+      git)
+        if [ "$(gate_git_subcommand "$@")" = push ]; then
+          out="git $(printf '%q ' "$@")"
+        fi ;;
+    esac
+  fi
+  printf '%s' "${out:-해당없음}"
+}
+
+gate_push_unwrap_combine() {
+  # Folds two answers for `find`, which can run several commands. Two pushes in
+  # one act are not read one by one: the act is held as a base push whose
+  # source cannot be bound.
+  if [ "$1" = '해당없음' ]; then printf '%s' "$2"
+  elif [ "$2" = '해당없음' ]; then printf '%s' "$1"
+  else printf '%s' '여럿'
+  fi
+}
+
+gate_push_config_key_kept() {
+  # gate_push_config_key_kept <key> — true for a `-c` key that changes WHERE a
+  # push goes or WHAT it updates. Only those are carried into the dry-run; a
+  # key that makes git run a command (`core.sshCommand`, `core.hooksPath`, a
+  # credential helper) is left out, because the gate would otherwise run it
+  # for an act it may still refuse.
+  local k; k=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$k" in
+    remote.*.push|remote.*.url|remote.*.pushurl|remote.pushdefault|push.default) return 0 ;;
+    branch.*.remote|branch.*.pushremote|branch.*.merge) return 0 ;;
+    url.*.insteadof|url.*.pushinsteadof) return 0 ;;
+  esac
+  return 1
+}
+
+gate_push_base_updates() {
+  # gate_push_base_updates <alias> <argv...> — asks git which remote refs this
+  # push would update, and keeps those that are the target's base branch.
+  # Sets, rather than prints, so the cutpoint and the binding read one answer:
+  #
+  #   GATE_PUSH_KIND     `해당없음` (not a git push) · `여럿` (more than one
+  #                      push in one act) · `판정불가` (the dry-run answered
+  #                      nothing) · `없음` (no base update) · `갱신`
+  #   GATE_PUSH_UPDATES  for `갱신`, one line per base update:
+  #                      `<sha being pushed, empty for a delete><TAB><from>:<to>`
+  #   GATE_PUSH_GIT      the unwrapped `git … push …`, shell-quoted
+  #
+  # GIT IS ASKED, NOT THE SPELLING READ. Every reading of the refspec missed a
+  # spelling git accepts — `heads/<base>`, the empty refspec, a glob, `--all`,
+  # `--branches`, a configured `remote.<n>.push`, a `-c` in front of `push`,
+  # a `command` or `env` in front of `git` — and each one landed an unreviewed
+  # commit on the base. `git push --dry-run --porcelain` with the same
+  # arguments resolves all of them the way the push will, and prints each ref
+  # it would update as `<flag><TAB><from>:<to><TAB><summary>`. A rejected (`!`)
+  # or up-to-date (`=`) line updates nothing.
+  #
+  # WHAT IS DROPPED FROM THE DRY-RUN. Of git's global options, `-C`,
+  # `--git-dir`, `--work-tree`, `--namespace` and the `-c`/`--config-env` keys
+  # `gate_push_config_key_kept` names are kept, since they decide the
+  # repository, the remote and the refspecs. Every other global, and push's
+  # `--receive-pack`, `--exec`, `--signed` and `--recurse-submodules`, are
+  # dropped: they make git run something, and the act has not been admitted
+  # yet. `--no-verify` keeps the pre-push hook out for the same reason.
+  #
+  # WHAT STAYS OPEN. A dry-run that reaches no remote answers `판정불가` and
+  # the static reading takes over; the real push reaching the remote a moment
+  # later is a race this cannot close. An `env` that sets `GIT_DIR` or
+  # `GIT_WORK_TREE` in front of git is unwrapped without those assignments, so
+  # the dry-run reads another repository than the push will.
+  local alias="$1"; shift
+  GATE_PUSH_KIND='해당없음'; GATE_PUSH_UPDATES=""; GATE_PUSH_GIT=""
+  GATE_PUSH_DONE=1
+  local u; u=$(gate_push_unwrap_of_argv0 "$@")
+  case "$u" in
+    해당없음) return 0 ;;
+    여럿) GATE_PUSH_KIND='여럿'; return 0 ;;
+  esac
+  GATE_PUSH_GIT="$u"
+  GATE_PUSH_KIND='판정불가'
+  local base; base=$(gate_push_base_branch "$alias")
+  [ -n "$base" ] || return 0
+  local -a gv=() glob=() pargs=()
+  eval "gv=($u)"
+  local i=1 n="${#gv[@]}" a k
+  while [ "$i" -lt "$n" ]; do
+    a="${gv[$i]}"
+    i=$((i + 1))
+    case "$a" in
+      push) break ;;
+      -C|--git-dir|--work-tree|--namespace)
+        [ "$i" -lt "$n" ] || return 0
+        glob+=("$a" "${gv[$i]}"); i=$((i + 1)) ;;
+      --git-dir=*|--work-tree=*|--namespace=*) glob+=("$a") ;;
+      -c|--config-env)
+        [ "$i" -lt "$n" ] || return 0
+        k="${gv[$i]%%=*}"
+        if gate_push_config_key_kept "$k"; then glob+=("$a" "${gv[$i]}"); fi
+        i=$((i + 1)) ;;
+      --config-env=*)
+        k="${a#--config-env=}"; k="${k%%=*}"
+        if gate_push_config_key_kept "$k"; then glob+=("$a"); fi ;;
+      --exec-path) i=$((i + 1)) ;;
+      *) : ;;
+    esac
+  done
+  while [ "$i" -lt "$n" ]; do
+    a="${gv[$i]}"
+    i=$((i + 1))
+    case "$a" in
+      --receive-pack|--exec) i=$((i + 1)) ;;
+      --receive-pack=*|--exec=*|--signed|--signed=*|--recurse-submodules|--recurse-submodules=*) : ;;
+      *) pargs+=("$a") ;;
+    esac
+  done
+  local out line flag spec from to summ sha valid=0 ups=""
+  out=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null \
+            && GIT_TERMINAL_PROMPT=0 git ${glob[@]+"${glob[@]}"} push --dry-run --porcelain --no-verify \
+                 ${pargs[@]+"${pargs[@]}"} 2>/dev/null; } || true)
+  while IFS= read -r line; do
+    case "$line" in
+      Done) valid=1; continue ;;
+      ?"	"*"	"*) ;;
+      *) continue ;;
+    esac
+    valid=1
+    flag="${line%%"	"*}"
+    spec="${line#*"	"}"; summ="${spec#*"	"}"; spec="${spec%%"	"*}"
+    case "$flag" in '!'|'=') continue ;; esac
+    from="${spec%%:*}"; to="${spec#*:}"
+    [ "$to" = "refs/heads/$base" ] || continue
+    sha=""
+    if [ -n "$from" ]; then
+      sha=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null \
+                && git ${glob[@]+"${glob[@]}"} rev-parse --verify --quiet "${from}^{commit}" 2>/dev/null; } || true)
+      if [ -z "$sha" ]; then
+        summ="${summ%% *}"; summ="${summ##*.}"
+        [ -z "$summ" ] || sha=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null \
+                && git ${glob[@]+"${glob[@]}"} rev-parse --verify --quiet "${summ}^{commit}" 2>/dev/null; } || true)
+      fi
+    fi
+    ups="${ups}${sha}	${from}:${to}
+"
+  done <<GATE_PUSH_DRYRUN
+$out
+GATE_PUSH_DRYRUN
+  [ "$valid" = 1 ] || return 0
+  if [ -n "$ups" ]; then
+    GATE_PUSH_KIND='갱신'; GATE_PUSH_UPDATES="$ups"
+  else
+    GATE_PUSH_KIND='없음'
+  fi
+  return 0
+}
+
+gate_push_static_rung() {
+  # gate_push_static_rung <alias> — the spelling reading of the push
+  # `gate_push_base_updates` unwrapped.
+  local -a gv=()
+  eval "gv=($GATE_PUSH_GIT)"
+  gate_push_rung "$1" "${gv[@]}"
+}
+
+gate_push_source_mismatch() {
+  # gate_push_source_mismatch <alias> <head> — after `gate_push_base_updates`:
+  # prints what is pushed onto the base without being <head>, nothing when
+  # every base update pushes <head> or the act updates no base.
+  #
+  # ONE COMPARISON FOR EVERY SPELLING. A base update is the sha git will put on
+  # the remote base, read off the dry-run, so a refspec, `heads/<base>`, the
+  # empty refspec, a glob, `--all`, `--mirror`, `--branches` and a configured
+  # push refspec all reach this same line, and no spelling is refused as such.
+  local alias="$1" head="$2" line sha spec
+  case "${GATE_PUSH_KIND:-해당없음}" in
+    해당없음|없음) return 0 ;;
+    여럿) printf '%s' '한 행위 안의 여러 git push'; return 0 ;;
+    판정불가)
+      local -a gv=()
+      eval "gv=($GATE_PUSH_GIT)"
+      gate_push_source_unbound "$alias" "$head" "${gv[@]}"
+      return 0 ;;
+  esac
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    sha="${line%%"	"*}"; spec="${line#*"	"}"
+    if [ -z "$sha" ] || [ -z "$head" ] || [ "$sha" != "$head" ]; then
+      printf '%s (올라갈 커밋: %s)' "$spec" "${sha:-없음}"
+      return 0
+    fi
+  done <<GATE_PUSH_UPS
+$GATE_PUSH_UPDATES
+GATE_PUSH_UPS
   return 0
 }
 
@@ -7211,13 +7489,14 @@ gate_segment_anchor_worktree() {
   # tree's tip, and the honest terminal row naming the segment's own tree was
   # refused. So THE RECORD IS PINNED TO ONE BRANCH:
   #
-  #   - the segment's branch is the `브랜치` of the FIRST candidate row that
-  #     carries one. Only the first counts: a union of every row's `브랜치` let
+  #   - the segment's branch is the branch of the FIRST candidate whose branch
+  #     is known. Only the first counts: a union of every row's `브랜치` let
   #     one later row naming another branch move the record back to an earlier
   #     linked worktree on that branch;
   #   - a candidate's branch is what its directory has checked out when it
-  #     still exists and is the top level of a checkout, and the row's own
-  #     `브랜치` when the HEAD is detached or the directory is gone;
+  #     still exists and is the top level of a checkout — unknown when that
+  #     HEAD is detached — and the row's own `브랜치` only when the directory
+  #     is gone or is not inside a repository;
   #   - the record is the first candidate on the pinned branch;
   #   - with no pinned branch there is no record, and THERE IS NONE EITHER when
   #     a candidate whose branch is known is on another branch. The segment's
@@ -7285,10 +7564,17 @@ gate_segment_anchor_worktree() {
         [ "$top_p" = "$wt_p" ] || continue
         if [ -n "$main_p" ] && [ "$top_p" = "$main_p" ]; then continue; fi
         b=$(cd "$wt_p" 2>/dev/null && git symbolic-ref --quiet --short HEAD 2>/dev/null) || b=""
-        [ -z "$b" ] || br="$b"
+        # The checkout answers, and only the checkout: a detached HEAD is a
+        # candidate whose branch is unknown, and the row's `브랜치` does not
+        # stand in for it. A row naming a detached checkout of a reviewed
+        # commit with the segment's branch written beside it became the
+        # record, and an unreviewed merge read `충족` from that tree's tip.
+        # A `브랜치` naming another branch than the checkout is on is not read
+        # either, so it cannot move the record.
+        br="$b"
       fi
     fi
-    if [ -z "$first" ] && [ -n "$rbr" ]; then pin="$rbr"; first=1; fi
+    if [ -z "$first" ] && [ -n "$br" ]; then pin="$br"; first=1; fi
     cand="${cand}${br}	${wt}
 "
   done <<GATE_ANCHOR_ROWS
@@ -15320,9 +15606,20 @@ gate_record_row() {
         # planning row that left the policy off while the slice declares a
         # looser one is corrected on the `실행중` row.
         #
-        # THE GAP LEFT OPEN: stage dispatch does not read the segment's state, so
-        # a stage run while every row still says `계획됨` leaves code behind the
-        # gate cannot see, and a loosening row written after it is accepted.
+        # A DISPATCH ALSO ENDS PLANNING, whatever the rows say. A router can
+        # dispatch a stage while every row of the segment still reads `계획됨`
+        # — the ledgers carry many segments that went from `계획됨` straight
+        # to `리뷰중` or `머지됨` — and the stage leaves code the gate cannot
+        # see; a loosening row written after it was accepted and the merged
+        # row read `정책 면제`. So a `kind=skill` approval row naming this
+        # segment, or a `stage-result` row of this segment, refuses the
+        # loosening as an earlier non-`계획됨` row does. The gate's own `exec`
+        # rows are not counted: creating the segment's worktree is one, and it
+        # comes before the `실행중` row that is the documented place to
+        # correct a policy the planning row left off.
+        #
+        # THE GAP LEFT OPEN: a stage run that never went through this gate —
+        # no approval row, no `stage-result` row — leaves nothing to read.
         if [ "$st" = '머지됨' ] || [ -n "$prior" ]; then
           local ppol ppi
           ppol=""
@@ -15345,9 +15642,14 @@ gate_record_row() {
               lc_why="앞 행에 상태=${lc_late} 가 있습니다"
             elif [ -n "$(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg")" ]; then
               lc_why="이 세그먼트의 cycle 행이 있습니다"
+            elif [ -n "$( { gate_rows '자율 승인'; gate_rows '승인'; } \
+                           | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq 'kind' 'skill')" ]; then
+              lc_why="이 세그먼트로 스테이지를 디스패치한 승인 행(kind=skill)이 있습니다"
+            elif [ -n "$(gate_rows 'stage-result' | gate_rows_field_eq '세그먼트' "$seg")" ]; then
+              lc_why="이 세그먼트의 stage-result 행이 있습니다"
             fi
             if [ -n "$lc_why" ]; then
-              warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — ${lc_why}. 정책은 실행 전, 이 세그먼트의 앞 행이 모두 상태=계획됨 이고 cycle 행이 없을 때만 느슨하게 바꿀 수 있습니다. 실행이 시작된 뒤에는 게이트가 세그먼트의 코드가 베이스에 올라갔는지 가릴 수 없습니다. 앞 행의 정책을 그대로 다시 적습니다(생략하면 이어받습니다)"
+              warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — ${lc_why}. 정책은 실행 전, 이 세그먼트의 앞 행이 모두 상태=계획됨 이고 cycle 행도 스테이지 디스패치 행(kind=skill 승인, stage-result)도 없을 때만 느슨하게 바꿀 수 있습니다. 실행이 시작된 뒤에는 게이트가 세그먼트의 코드가 베이스에 올라갔는지 가릴 수 없습니다. 앞 행의 정책을 그대로 다시 적습니다(생략하면 이어받습니다)"
               return "$GATE_EXIT_VOCAB"
             fi
           fi
@@ -18297,20 +18599,41 @@ gate_verb_act() {
   # base branch it compares against lives on the target row. Raising only — an
   # honest `머지` declaration on a base-branch push keeps the review rule in
   # front of it, and the generic ladder seam would have pulled that back down.
+  #
+  # THE PUSH IS RECOGNIZED AND GRADED BY WHAT GIT SAYS IT UPDATES — see
+  # `gate_push_base_updates`. Matching `git push` as the first two words let
+  # `git -c k=v push`, `git -C <dir> push`, `command git push` and `env git
+  # push` through as something other than a push, and the approval question
+  # then showed a base merge as `push`.
+  #
+  # A BASE UPDATE IS `머지` WHATEVER WAS DECLARED. A higher declaration is
+  # brought down to `머지`, the over-declaration rule the ladder above applies,
+  # because the router labels acts with its target's cutpoint and `배포` on a
+  # base push is the ordinary label — and the binding block below is keyed on
+  # the merge rung. A push updating no base keeps its declaration.
+  GATE_PUSH_DONE=0
   if [ "$argv_graded" = "1" ] && [ "${GATE_UNDECLARED:-0}" != "1" ]; then
-    case "${1##*/}:${2:-}" in
-      git:push)
-        local _pr _pi _ei
-        _pr=$(gate_push_rung "$alias" "$@")
-        GATE_ACT_DERIVED="$_pr"
-        _pi=$(cutpoint_index "$_pr") || exit "$GATE_EXIT_VOCAB"
-        _ei=$(cutpoint_index "$GATE_ACT_EFFECTIVE") || exit "$GATE_EXIT_VOCAB"
-        if [ "$_pi" -gt "$_ei" ]; then
-          warn "under-declared: the destination of this push is the base branch of the target, so it is the '$_pr' cell — '$GATE_ACT_EFFECTIVE' does not stand the review requirement up"
-          warn "raise the declaration to '$_pr' and call again with the same argv"
-          exit "$GATE_EXIT_LADDER"
-        fi ;;
-    esac
+    gate_push_base_updates "$alias" "$@"
+    if [ "$GATE_PUSH_KIND" != '해당없음' ]; then
+      local _pr _pi _ei
+      case "$GATE_PUSH_KIND" in
+        갱신|여럿) _pr='머지' ;;
+        *)        _pr=$(gate_push_static_rung "$alias") ;;
+      esac
+      GATE_ACT_DERIVED="$_pr"
+      _pi=$(cutpoint_index "$_pr") || exit "$GATE_EXIT_VOCAB"
+      _ei=$(cutpoint_index "$GATE_ACT_EFFECTIVE") || exit "$GATE_EXIT_VOCAB"
+      if [ "$_pi" -gt "$_ei" ]; then
+        warn "under-declared: the destination of this push is the base branch of the target, so it is the '$_pr' cell — '$GATE_ACT_EFFECTIVE' does not stand the review requirement up"
+        warn "raise the declaration to '$_pr' and call again with the same argv"
+        exit "$GATE_EXIT_LADDER"
+      fi
+      if [ "$_pr" = '머지' ] && [ "$_ei" -gt "$_pi" ]; then
+        warn "over-declared: this push updates the base branch of the target, so it is the '$_pr' cell — declared '$GATE_ACT_EFFECTIVE', judged at '$_pr'"
+        GATE_ACT_EFFECTIVE="$_pr"
+        export GATE_ACT_DERIVED GATE_ACT_EFFECTIVE
+      fi
+    fi
   fi
 
   # The cutpoint export stays here and the worktree resolution does not: this one
@@ -18493,7 +18816,15 @@ gate_verb_act() {
   # WHAT STAYS OPEN: a merge made outside the gate, from the web UI or another
   # machine, binds nothing. The record of such a merge is the segment row's
   # `머지 대조`, which compares what landed rather than what was requested.
-  if [ "$GATE_ACT_EFFECTIVE" = '머지' ] && ! gate_kind_is_bookkeeping "$kind" \
+  #
+  # IT OPENS WHERE THE RULE FIRES, at `머지` AND ABOVE. Keyed on `머지` alone,
+  # a push declared `배포` — the target's cutpoint, which is how the router
+  # labels its acts — skipped every binding below while the rule approved the
+  # worktree's HEAD, and an unreviewed source landed.
+  local _mbi _mmi
+  _mbi=$(cutpoint_index "$GATE_ACT_EFFECTIVE" 2>/dev/null) || _mbi=-1
+  _mmi=$(cutpoint_index '머지' 2>/dev/null) || _mmi=0
+  if [ "$_mbi" -ge "$_mmi" ] && ! gate_kind_is_bookkeeping "$kind" \
      && [ "${GATE_REVIEW_POLICY:-}" = '선리뷰후머지' ] \
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && [ -n "$(gate_segment_field "$segment" '상태')" ] \
@@ -18517,12 +18848,14 @@ gate_verb_act() {
         exit "$GATE_EXIT_VOCAB"
       fi
     else
-      # A LOCAL PUSH TO THE BASE CARRIES NO BINDING ARGUMENT, but it names its
-      # source — see `gate_push_source_unbound`.
+      # A LOCAL PUSH TO THE BASE CARRIES NO BINDING ARGUMENT, but git can say
+      # what it will put on the base — see `gate_push_base_updates` and
+      # `gate_push_source_mismatch`.
+      [ "${GATE_PUSH_DONE:-0}" = 1 ] || gate_push_base_updates "$alias" "$@"
       mhead=$(gate_segment_tip "$segment") || mhead=""
-      mspec=$(gate_push_source_unbound "$alias" "$mhead" "$@")
+      mspec=$(gate_push_source_mismatch "$alias" "$mhead")
       if [ -n "$mspec" ]; then
-        warn "베이스로 가는 git push 의 소스가 세그먼트 $segment 의 워크트리 HEAD 가 아닙니다 — refspec: ${mspec}, 워크트리 HEAD: ${mhead:-읽지 못함}"
+        warn "베이스로 가는 git push 의 소스가 세그먼트 $segment 의 워크트리 HEAD 가 아닙니다 — 갱신: ${mspec}, 워크트리 HEAD: ${mhead:-읽지 못함}"
         warn "리뷰-후-머지 룰은 세그먼트 워크트리의 HEAD 를 대조합니다. 그 HEAD 를 올리도록 HEAD:<베이스> 나 <세그먼트 브랜치>:<베이스> 로 다시 부릅니다(세그먼트의 행위는 세그먼트 워크트리에서 돕니다)"
         exit "$GATE_EXIT_VOCAB"
       fi
