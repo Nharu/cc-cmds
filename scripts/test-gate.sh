@@ -161,6 +161,9 @@ repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # export goes. Deleting it because nobody reads it takes that coverage away
 # without failing anything.
 export GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+# The orchestrator directory itself: the gate trusts its own helpers only by
+# this path, so a grade assertion about one names it here.
+CC_ORCH="$repo_root/plugins/cc-cmds/orchestrator"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 
@@ -6922,29 +6925,38 @@ graded_as '워크트리쓰기' '인터프리터를 앞에 두면 등급이 되�
 # spellings of `--log` are pinned: the option matcher reads `--log=x` as the
 # same option, and a matcher that only saw the separate spelling would grade
 # the joined one as a read.
-graded_as '외부상태변경' '유사 항목 조회의 기본 경로는 외부 상태 변경이다' -- similar-items.py github --issue 1
-graded_as '외부상태변경' '경로로 부른 유사 항목 조회도 같다' \
-  -- /opt/cc/plugins/cc-cmds/orchestrator/similar-items.py github --issue 1
-graded_as '읽기'       '어휘 전용 조회는 읽기다'             -- similar-items.py github --issue 1 --lexical-only
-graded_as '읽기'       '기록 재생 조회는 읽기다'             -- similar-items.py github --issue 1 --replay-log x
+graded_as '외부상태변경' '유사 항목 조회의 기본 경로는 외부 상태 변경이다' \
+  -- "$CC_ORCH/similar-items.py" github --issue 1
+graded_as '읽기'       '어휘 전용 조회는 읽기다' \
+  -- "$CC_ORCH/similar-items.py" github --issue 1 --lexical-only
+graded_as '읽기'       '기록 재생 조회는 읽기다' \
+  -- "$CC_ORCH/similar-items.py" github --issue 1 --replay-log x
 graded_as '트리밖쓰기' '어휘 전용에 --log 를 더하면 트리 밖 쓰기다' \
-  -- similar-items.py github --issue 1 --lexical-only --log x
+  -- "$CC_ORCH/similar-items.py" github --issue 1 --lexical-only --log x
 graded_as '트리밖쓰기' '기록 재생에 --log 를 더하면 트리 밖 쓰기다' \
-  -- similar-items.py github --issue 1 --replay-log x --log x
+  -- "$CC_ORCH/similar-items.py" github --issue 1 --replay-log x --log x
 graded_as '트리밖쓰기' '붙여 쓴 --log= 도 트리 밖 쓰기다' \
-  -- similar-items.py github --issue 1 --lexical-only --log=x
+  -- "$CC_ORCH/similar-items.py" github --issue 1 --lexical-only --log=x
 graded_as '읽기'       '측정 하니스의 재생·무키 경로는 읽기다' -- measure-similar-items.py --data-dir d
 graded_as '외부상태변경' '측정 하니스의 --live 는 외부 상태 변경이다' \
   -- measure-similar-items.py --data-dir d --live
 graded_as '외부상태변경' 'ClickUp 티켓 생성은 외부 상태 변경이다' \
-  -- clickup-create.py --list 1 --name x --description-file f
-graded_as '외부상태변경' '경로로 부른 ClickUp 티켓 생성도 같다' \
+  -- "$CC_ORCH/clickup-create.py" --list 1 --name x --description-file f
+# The gate's own helpers are graded by where they are. The same name anywhere
+# else — a bare name the PATH does not resolve to the plugin's copy, another
+# directory, a file written into the worktree — is a program the table knows
+# nothing about.
+graded_as '등급 미상' '이름만 같은 다른 경로의 유사 항목 조회는 등급 미상이다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/similar-items.py github --issue 1 --lexical-only
+graded_as '등급 미상' '이름만 같은 다른 경로의 ClickUp 티켓 생성은 등급 미상이다' \
   -- /opt/cc/plugins/cc-cmds/orchestrator/clickup-create.py --list 1 --name x --description-file f
+graded_as '등급 미상' 'PATH 가 찾지 못하는 맨 이름의 헬퍼는 등급 미상이다' \
+  -- clickup-relate.py --task a --depends-on b
 # The same wrong spelling as above, pinned for the lookup: with an interpreter
 # in front the row above no longer applies and the default path's external
 # call grades as a worktree write.
 graded_as '워크트리쓰기' '인터프리터를 앞에 둔 유사 항목 조회는 등급이 되돌아간다' \
-  -- python3 /opt/cc/plugins/cc-cmds/orchestrator/similar-items.py github --issue 1
+  -- python3 "$CC_ORCH/similar-items.py" github --issue 1
 
 # Reach. The tracker adapters read the remote through a child process this gate
 # never sees, so even their local-only read must say where it lands — the same
@@ -6956,15 +6968,15 @@ graded_as '워크트리쓰기' '인터프리터를 앞에 둔 유사 항목 조�
 CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
-  --surface 읽기 -- similar-items.py github --issue 1 --lexical-only
+  --surface 읽기 -- "$CC_ORCH/similar-items.py" github --issue 1 --lexical-only
 check "트래커 어댑터의 어휘 전용 읽기도 도달 신고가 필수다" "$rc" "2"
 case "$msg" in *"--reach is required"*) ok "그 거절이 도달 신고를 이름으로 말한다" ;; *) bad "그 거절이 도달 신고를 이름으로 말한다" "$msg" ;; esac
 gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
-  --surface 읽기 -- similar-items.py clickup --task x --lexical-only
+  --surface 읽기 -- "$CC_ORCH/similar-items.py" clickup --task x --lexical-only
 check "ClickUp 어댑터의 어휘 전용 읽기도 도달 신고가 필수다" "$rc" "2"
 case "$msg" in *"--reach is required"*) ok "ClickUp 어댑터의 거절도 도달 신고를 이름으로 말한다" ;; *) bad "ClickUp 어댑터의 거절도 도달 신고를 이름으로 말한다" "$msg" ;; esac
 gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
-  --surface 읽기 -- similar-items.py file --corpus x --issue 1 --lexical-only
+  --surface 읽기 -- "$CC_ORCH/similar-items.py" file --corpus x --issue 1 --lexical-only
 case "$rc:$msg" in
   2:*|*"--reach is required"*) bad "파일 어댑터의 읽기는 도달 신고 없이 통과한다" "rc=$rc $msg" ;;
   *) ok "파일 어댑터의 읽기는 도달 신고 없이 통과한다" ;;
@@ -25624,6 +25636,33 @@ check "77:드라이버 이름의 행만 있다 (아래가 공허하지 않다)" 
   "$(bsx_rows RB6 '| 스테이지=S2split | 종류=split ' | grep -c . || true)/$(bsx_rows RB6 '| 종류=design ' | grep -c . || true)" "1/0"
 check "77:드라이버 이름의 행으로도 조건 1 이 선다" "$(bsx_c1 "$WORK/bsx-RB6.md")" ""
 
+# A base run kicked off again over a document that is already there: both
+# routers and the driver skip the design, so the ledger has no design row at
+# all. A frozen document stands where the design's `정상 완료` would; an
+# unfrozen one leaves the dead-design line, because nothing audits or splits it.
+# The rows are RB2's with its design rows taken out.
+bsx_redo_nodesign() {
+  # bsx_redo_nodesign <run id>
+  bsx_fresh "$1"
+  bsx_doc_frozen "$1"
+  sed -e "s/RB2/$1/g" -e '/| 스테이지=D1 | 종류=design /d' \
+    "$WT/docs/pipeline-run/RB2.md" > "$WT/docs/pipeline-run/$1.md"
+  mkdir -p "$BSX_STATE/cc-cmds/run/$1/log"
+  cp "$BSX_STATE/cc-cmds/run/RB2/log/"S1* "$BSX_STATE/cc-cmds/run/$1/log/" 2>/dev/null || true
+}
+bsx_redo_nodesign RBE
+bsx_registry RBE
+check "77:설계 행이 없는 재킥오프 런이다 (아래가 공허하지 않다)" \
+  "$(bsx_rows RBE '| 스테이지=S1 | 종류=split ' | grep -c . || true)/$(bsx_rows RBE '| 종류=design ' | grep -c . || true)" "1/0"
+check "77:설계 행 없이 동결 문서로 다시 킥오프한 런도 조건 1 이 선다" "$(bsx_c1 "$WORK/bsx-RBE.md")" ""
+bsx_redo_nodesign RBF
+sed -i.bak 's/^\*\*상태\*\*: 동결됨$/**상태**: 초안/' "$WT/docs/bsxd-RBF.md" && rm -f "$WT/docs/bsxd-RBF.md.bak"
+bsx_registry RBF
+case "$(bsx_c1 "$WORK/bsx-RBF.md")" in
+  "1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다"*"설계 문서가 이미 있음"*) ok "77:동결되지 않은 문서의 재킥오프 런은 죽은 설계 문면을 낸다" ;;
+  *) bad "77:동결되지 않은 문서의 재킥오프 런은 죽은 설계 문면을 낸다" "$(bsx_c1 "$WORK/bsx-RBF.md")" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # 78. The split stage's own acts, asked from its seat
 # --- section: 78 | group: bsplit | covers: plan, reach, rundir | anchors: 78:분할 좌석의 gh issue 발행은 협업으로 통과한다, 78:경로로 부른 clickup-create.py 는 협업으로 통과한다, 78:경로로 부른 clickup-relate.py 는 협업으로 통과한다, 78:인터프리터를 앞세운 clickup-create.py 는 통과하지 않는다, 78:base-split.py plan 의 출력 디렉터리 쓰기가 통과한다, 78:split 이웃 이름 디렉터리 쓰기는 거부된다 ---
@@ -25645,6 +25684,13 @@ bsx_launch RB7 "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
 bsx_launch RB7 "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
 BSX_CU="$repo_root/plugins/cc-cmds/orchestrator"
 BSX_PLANLOG="$WORK/bsx-RB7-plan.txt"
+# Files that only share a helper's name: a copy of a shell under each name, in
+# a directory that is not the orchestrator's.
+BSX_PLANT="$WORK/bsx-plant"
+mkdir -p "$BSX_PLANT"
+for n in clickup-create.py clickup-relate.py base-split.py; do
+  cp /bin/sh "$BSX_PLANT/$n"; chmod +x "$BSX_PLANT/$n"
+done
 rm -f "$BSX_PLANLOG" "$BSX_PLANLOG.err"
 cat > "$WORK/bin/bsx-probe-body.sh" <<BSXPROBEEOF
 p() {
@@ -25659,6 +25705,8 @@ p gh 외부상태변경 협업 gh issue create --repo t/infra --title x --body-f
 p cucreate 외부상태변경 협업 "$BSX_CU/clickup-create.py" --list 1 --name x --description-file "\$RD/split/x/T1.md" --parent p
 p curelate 외부상태변경 협업 "$BSX_CU/clickup-relate.py" --task a --depends-on b
 p cuinterp 외부상태변경 협업 python3 "$BSX_CU/clickup-create.py" --list 1 --name x
+p cuplant 외부상태변경 협업 "$BSX_PLANT/clickup-create.py" --list 1 --name x
+p curplant 외부상태변경 협업 "$BSX_PLANT/clickup-relate.py" --task a --depends-on b
 p bsplan 트리밖쓰기 런로컬 "$BSX_CU/base-split.py" plan --out "\$RD/split/\$CC_PIPELINE_STAGE_ID/"
 p touchsplit 워크트리쓰기 런로컬 touch "\$RD/split/S1/T1.md"
 p touchsplits 워크트리쓰기 런로컬 touch "\$RD/splits/T1.md"
@@ -25682,6 +25730,11 @@ check "78:경로로 부른 clickup-relate.py 는 협업으로 통과한다" "$(b
 # With an interpreter in front the grade comes from the interpreter, not from
 # the table, so the act is not the collaboration surface and is refused.
 check "78:인터프리터를 앞세운 clickup-create.py 는 통과하지 않는다" "$(bsx_plan_rc cuinterp)" "3"
+# A file that only shares the name is not the gate's helper: neither the
+# collaboration surface nor the frozen `사전 인가` form admits it, so the plan
+# answers with an approval (5) where the real helper passes.
+check "78:이름만 같은 clickup-create.py 는 통과하지 않는다" "$(bsx_plan_rc cuplant)" "5"
+check "78:이름만 같은 clickup-relate.py 는 통과하지 않는다" "$(bsx_plan_rc curplant)" "5"
 check "78:base-split.py plan 의 출력 디렉터리 쓰기가 통과한다" "$(bsx_plan_rc bsplan)" "0"
 check "78:split/ 아래 쓰기가 통과한다" "$(bsx_plan_rc touchsplit)" "0"
 check "78:split 이웃 이름 디렉터리 쓰기는 거부된다" "$(bsx_plan_rc touchsplits)" "3"
@@ -25697,13 +25750,14 @@ check "78:그 런의 조건 1 이 선다" "$(bsx_c1 "$WORK/bsx-RB7.md")" ""
 # ---------------------------------------------------------------------------
 # 79. The base split helper and the ClickUp writers in the grading table
 # --- section: 79 | group: bsplit | covers: grade | anchors: 79:base-split.py plan 은 트리 밖 쓰기다, 79:clickup-relate.py 는 외부 상태 변경이다 ---
-graded_as '읽기'         '79:base-split.py check 는 읽기다'                -- base-split.py check docs/x.md
-graded_as '트리밖쓰기'   '79:base-split.py plan 은 트리 밖 쓰기다'         -- base-split.py plan --out /tmp/x/
-graded_as '워크트리쓰기' '79:base-split.py record 는 워크트리 쓰기다'      -- base-split.py record docs/x.md
-graded_as '워크트리쓰기' '79:모르는 하위 명령은 가장 높은 쪽을 받는다'    -- base-split.py frob
-graded_as '읽기'         '79:경로로 부른 base-split.py 도 같다'            -- /x/scripts/base-split.py check d.md
-graded_as '외부상태변경' '79:clickup-relate.py 는 외부 상태 변경이다'      -- clickup-relate.py --task a --depends-on b
-graded_as '외부상태변경' '79:clickup-create.py 는 외부 상태 변경이다'      -- clickup-create.py --list 1
+graded_as '읽기'         '79:base-split.py check 는 읽기다'                -- "$CC_ORCH/base-split.py" check docs/x.md
+graded_as '트리밖쓰기'   '79:base-split.py plan 은 트리 밖 쓰기다'         -- "$CC_ORCH/base-split.py" plan --out /tmp/x/
+graded_as '워크트리쓰기' '79:base-split.py record 는 워크트리 쓰기다'      -- "$CC_ORCH/base-split.py" record docs/x.md
+graded_as '워크트리쓰기' '79:모르는 하위 명령은 가장 높은 쪽을 받는다'    -- "$CC_ORCH/base-split.py" frob
+graded_as '외부상태변경' '79:clickup-relate.py 는 외부 상태 변경이다'      -- "$CC_ORCH/clickup-relate.py" --task a --depends-on b
+graded_as '외부상태변경' '79:clickup-create.py 는 외부 상태 변경이다'      -- "$CC_ORCH/clickup-create.py" --list 1
+graded_as '등급 미상'    '79:이름만 같은 다른 경로의 base-split.py 는 등급 미상이다' -- /x/scripts/base-split.py check d.md
+graded_as '등급 미상'    '79:PATH 가 찾지 못하는 맨 이름의 base-split.py 는 등급 미상이다' -- base-split.py check d.md
 
 # ---------------------------------------------------------------------------
 # 80. The design scope and the rows only a base run may carry
@@ -25834,6 +25888,89 @@ check "81:트래커가 clickup 이 아닌 런의 clickup-relate 는 5 로 멈춘
   "$(bsx_cu "$WORK/bsx-RBB.md" clickup-relate.py --task a --depends-on b)" "5"
 check "81:트래커가 clickup 인 런의 clickup-relate 는 토큰에서 멈춘다" \
   "$(bsx_cu "$WORK/bsx-RBA.md" clickup-relate.py --task a --depends-on b)" "3"
+
+# ---------------------------------------------------------------------------
+# 82. The driver's split arm: its preconditions, a resumed run, one retry
+# --- section: 82 | group: bsplit | covers: driver-split | anchors: 82:감사 행이 없으면 분할을 파견하지 않는다, 82:동결되지 않은 문서는 분할하지 않는다, 82:완주한 분할은 다시 파견하지 않는다, 82:멈춘 분할은 파견 없이 다시 멈춘다, 82:크래시 뒤 새 시도 한 번으로 완주한다, 82:새 시도도 실패하면 재시도 소진으로 멈춘다 ---
+#
+# `split_arm` dispatches through `stage_spawn`, so the gate's precondition on a
+# router's split never sees it. It asks the same two questions itself — the
+# audit's last row in this run ended `정상 완료`, the document is frozen — reads
+# its own earlier row before dispatching, and gives a split that carried nothing
+# off one fresh attempt. The arm runs from a sourced driver with the dispatch,
+# the classifier and the ledger stubbed; each case prints the dispatch count and
+# the park reason, if any.
+# ---------------------------------------------------------------------------
+DSA_DIR="$WORK/dsa"
+mkdir -p "$DSA_DIR"
+dsa_run() {
+  # dsa_run <ledger rows> <frozen 0|1> <registry complete 0|1> <classes, one per dispatch, comma-separated>
+  printf '%s' "$1" > "$DSA_DIR/rows"
+  printf '%s\n' "$4" | tr ',' '\n' > "$DSA_DIR/classes"
+  : > "$DSA_DIR/dispatched"
+  ( cd "$WT" && DSA_DIR="$DSA_DIR" DSA_FROZEN="$2" DSA_REG="$3" bash -c '
+    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+    RUN_DIR="$DSA_DIR"; DOC="$DSA_DIR/doc.md"; DOC_KEY=doc.md
+    run_section_rows() { grep -F "\`$1\`" "$DSA_DIR/rows" || true; }
+    dispatch_stage() { printf "x\n" >> "$DSA_DIR/dispatched"; printf "0" > "$RUN_DIR/$1.rc"; return 0; }
+    classify_termination() {
+      local n; n=$(grep -c . "$DSA_DIR/dispatched")
+      sed -n "${n}p" "$DSA_DIR/classes"
+    }
+    predicate_split() { [ "$(classify_termination)" = "정상 완료" ]; }
+    doc_is_frozen() { [ "$DSA_FROZEN" = 1 ]; }
+    split_registry_complete() { [ "$DSA_REG" = 1 ]; }
+    park() { printf "park %s\n" "$5" >> "$DSA_DIR/out"; }
+    quiet_window_begin() { :; }; quiet_window_end() { :; }
+    ledger_row() { :; }; absorb_stage_judgment() { :; }; report_append() { :; }
+    spawn_lineage_release() { :; }; stage_open_judgment() { return 1; }; log() { :; }
+    stage_account_of() { :; }; stage_attempt_pinned() { :; }; stage_session_id() { :; }
+    stage_window_of() { :; }; stage_lane_of() { :; }; stage_effort_rec_of() { :; }
+    stage_served_model_of() { :; }; stage_log_path() { printf /dev/null; }
+    alias_root() { printf "%s" "$DSA_DIR"; }; home_alias() { printf x; }
+    halt_record_path() { printf /nonexistent; }
+    : > "$DSA_DIR/out"
+    split_arm; printf "ret %s\n" "$?" >> "$DSA_DIR/out"
+  ' ) >/dev/null 2>&1
+  printf '%s/%s' "$(grep -c . "$DSA_DIR/dispatched")" "$(grep '^park ' "$DSA_DIR/out" | sed 's/^park //' | cut -c1-40)"
+}
+DSA_AUDIT_OK='- `stage-result` | 세그먼트=- | 스테이지=S2 | 파견 id=S2 | 종단 부류=정상 완료'
+DSA_AUDIT_BAD='- `stage-result` | 세그먼트=- | 스테이지=S2 | 파견 id=S2 | 종단 부류=크래시'
+dsa_split_row() { printf '%s\n- `stage-result` | 세그먼트=- | 스테이지=S2split | 파견 id=S2split | 종류=split | 종단 부류=%s' "$DSA_AUDIT_OK" "$1"; }
+
+case "$(dsa_run "" 1 0 "정상 완료")" in
+  "0/이 런의 감사가 정상 완료로 끝나지 않았다"*) ok "82:감사 행이 없으면 분할을 파견하지 않는다" ;;
+  *) bad "82:감사 행이 없으면 분할을 파견하지 않는다" "$(dsa_run "" 1 0 "정상 완료")" ;;
+esac
+case "$(dsa_run "$DSA_AUDIT_BAD" 1 0 "정상 완료")" in
+  "0/이 런의 감사가 정상 완료로 끝나지 않았다"*) ok "82:감사가 정상 완료가 아니면 분할을 파견하지 않는다" ;;
+  *) bad "82:감사가 정상 완료가 아니면 분할을 파견하지 않는다" "$(dsa_run "$DSA_AUDIT_BAD" 1 0 "정상 완료")" ;;
+esac
+case "$(dsa_run "$DSA_AUDIT_OK" 0 0 "정상 완료")" in
+  "0/설계 문서가 동결돼 있지 않다"*) ok "82:동결되지 않은 문서는 분할하지 않는다" ;;
+  *) bad "82:동결되지 않은 문서는 분할하지 않는다" "$(dsa_run "$DSA_AUDIT_OK" 0 0 "정상 완료")" ;;
+esac
+check "82:선행 조건이 서면 한 번 파견해 완주한다" "$(dsa_run "$DSA_AUDIT_OK" 1 0 "정상 완료")" "1/"
+check "82:완주한 분할은 다시 파견하지 않는다" "$(dsa_run "$(dsa_split_row '정상 완료')" 1 1 "정상 완료")" "0/"
+case "$(dsa_run "$(dsa_split_row '의도된 park')" 1 0 "정상 완료")" in
+  "0/이 런의 분할이 이미 종단 부류 의도된 park"*) ok "82:멈춘 분할은 파견 없이 다시 멈춘다" ;;
+  *) bad "82:멈춘 분할은 파견 없이 다시 멈춘다" "$(dsa_run "$(dsa_split_row '의도된 park')" 1 0 "정상 완료")" ;;
+esac
+case "$(dsa_run "$(dsa_split_row '산출물 없는 정지')" 1 0 "정상 완료")" in
+  "0/이 런의 분할이 이미 종단 부류 산출물 없는 정지"*) ok "82:사람의 답을 기다리는 분할도 파견 없이 다시 멈춘다" ;;
+  *) bad "82:사람의 답을 기다리는 분할도 파견 없이 다시 멈춘다" "$(dsa_run "$(dsa_split_row '산출물 없는 정지')" 1 0 "정상 완료")" ;;
+esac
+check "82:앞선 시도가 한도 종료면 다시 파견한다" "$(dsa_run "$(dsa_split_row '한도 종료')" 1 0 "정상 완료")" "1/"
+check "82:크래시 뒤 새 시도 한 번으로 완주한다" "$(dsa_run "$DSA_AUDIT_OK" 1 0 "크래시,정상 완료")" "2/"
+check "82:공허한 성공 뒤에도 새 시도 한 번이다" "$(dsa_run "$DSA_AUDIT_OK" 1 0 "공허한 성공,정상 완료")" "2/"
+case "$(dsa_run "$DSA_AUDIT_OK" 1 0 "크래시,크래시,정상 완료")" in
+  "2/재시도 소진"*) ok "82:새 시도도 실패하면 재시도 소진으로 멈춘다" ;;
+  *) bad "82:새 시도도 실패하면 재시도 소진으로 멈춘다" "$(dsa_run "$DSA_AUDIT_OK" 1 0 "크래시,크래시,정상 완료")" ;;
+esac
+case "$(dsa_run "$DSA_AUDIT_OK" 1 0 "산출물 없는 정지,정상 완료")" in
+  "1/분할 술어 불성립"*) ok "82:사람의 답이 필요한 정지는 다시 파견하지 않는다" ;;
+  *) bad "82:사람의 답이 필요한 정지는 다시 파견하지 않는다" "$(dsa_run "$DSA_AUDIT_OK" 1 0 "산출물 없는 정지,정상 완료")" ;;
+esac
 
 # --- epilogue-begin ---
 #

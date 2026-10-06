@@ -68,8 +68,18 @@ operand_pos=$(printf '%s' "$norm" | awk '
 act_destructive=0
 [ "${GATE_MARK:-}" = "파괴" ] && act_destructive=1
 
+# 게이트 자신의 헬퍼 이름은 이름만으로 맞추지 않는다 — 워크트리에 같은 이름으로
+# 쓴 파일도 basename 은 같다. 게이트가 argv0 의 실제 경로를 자기 옆의 사본과
+# 대조해 표 등급을 준 경우(`GATE_GRADE_SOURCE=표`)에만 그 이름의 형태가 맞는다.
+own_ok=1
+case "$argv0" in
+  clickup-create.py|clickup-relate.py|base-split.py|similar-items.py)
+    [ "${GATE_GRADE_SOURCE:-}" = "표" ] || own_ok=0 ;;
+esac
+
 matched=0; matched_kind=없음; pd=0
 while IFS= read -r line; do
+  [ "$own_ok" = "1" ] || break
   case "$line" in
     '- `사전 인가`'*) ;;
     *) continue ;;

@@ -7827,49 +7827,114 @@ design_arm() {
 # publishes its tickets as the frozen `베이스 발행` row says, or records them as
 # document-only, and leaves the registry beside the document. The row's
 # `종류=split` is what tells it apart from the audit's driver row, which carries
-# no kind. Any end but a satisfied split predicate parks the run: the tracker
-# writes it may have made cannot be undone, so it is never dispatched over
-# blindly.
+# no kind.
+#
+# IT TAKES THE ROUTER'S PRECONDITIONS. The gate refuses a router's split until
+# the audit step's last row is `정상 완료` and the document is frozen, but this
+# arm dispatches through `stage_spawn` and never reaches that check, so it asks
+# the same two questions itself. The tracker writes a split makes cannot be
+# undone, so a document no audit of this run has read is not published.
+#
+# A RESUMED RUN IS JUDGED BY ITS OWN LEDGER, as the design arm is: a split that
+# finished and whose registry still matches the document is not dispatched
+# again, and one that stopped on purpose — a halt record, or a question it would
+# not answer for a person — is parked again without a dispatch, because a second
+# attempt asks the same question and bills for it.
+#
+# A SPLIT THAT CARRIED NOTHING OFF GETS ONE FRESH ATTEMPT. A crash, a usage-limit
+# end and a hollow success leave the registry partway at worst, and
+# `base-split.py` resumes from the registry, so a fresh dispatch neither repeats
+# a write nor skips one. One retry, then a park, as the design arm does.
 # ---------------------------------------------------------------------------
+split_retryable() {
+  case "$(terminal_route_class "${1:-}")" in
+    '크래시'|'한도-형상 회수'|'공허한 성공') return 0 ;;
+  esac
+  return 1
+}
+
 split_arm() {
-  local plugin_dir skill_file cmd src=0 rc pred class acct
+  local plugin_dir skill_file cmd src rc pred class acct prior prior_class audit_last try=1
   plugin_dir=$(cd "$ORCH_DIR/.." && pwd)
   skill_file="$plugin_dir/skills/design-base-unattended/SKILL.md"
   if [ ! -f "$skill_file" ]; then
     park "S2split" run 막힘 "스킬 파일 부재" "$skill_file 가 없다 — 존재하지 않는 스킬로 디스패치하지 않는다"
     return 1
   fi
-  cmd="/cc-cmds:design-base-unattended --split $DOC"
-  quiet_window_begin
-  dispatch_stage S2split "$(alias_root "$(home_alias)")" "$cmd" || src=$?
-  if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-    quiet_window_end
-    park "S2split" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+
+  prior=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2split |' || true; } | tail -1)
+  if [ -n "$prior" ]; then
+    prior_class=$(printf '%s' "$prior" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if [ "$prior_class" = "정상 완료" ] && split_registry_complete "$DOC"; then
+      log "S2split 건너뜀 — 이 런의 분할이 이미 완주했고 등록부가 지금 문서와 맞는다 ($DOC_KEY)"
+      return 0
+    fi
+    if ! split_retryable "$prior_class"; then
+      park "S2split" run 무효화 "게이트 park" \
+        "이 런의 분할이 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 파견하지 않는다" \
+        "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2split")" 2>/dev/null)"
+      return 1
+    fi
+    log "S2split 재파견 — 앞선 시도가 $prior_class 로 끝났다 ($DOC_KEY)"
+  fi
+
+  audit_last=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  if [ "$audit_last" != "정상 완료" ]; then
+    park "S2split" run 무효화 "게이트 park" \
+      "이 런의 감사가 정상 완료로 끝나지 않았다 (${audit_last:-행 없음}) — 감사가 읽지 않은 문서로 분할하지 않는다"
     return 1
   fi
-  [ "$src" = "0" ] || (exit "$src")
-  quiet_window_end
-  rc=$(cat "$RUN_DIR/S2split.rc" 2>/dev/null || printf '1')
-  if predicate_split S2split; then pred=0; else pred=1; fi
-  class=$(classify_termination S2split "$rc" "$pred")
-  acct=$(stage_account_of S2split)
-  ledger_row 'stage-result' "세그먼트=-" "스테이지=S2split" "파견 id=S2split" "종류=split" "종료 코드=$rc" \
-    "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2split)" \
-    "세션 id=$(stage_session_id "S2split")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} "기록자=드라이버" \
-    "effort=$(stage_effort_rec_of S2split)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2split)")" \
-    "종단 부류=$class"
-  absorb_stage_judgment S2split S2split "$(home_alias)"
-  if [ "$pred" = "0" ] && [ "$class" = "정상 완료" ]; then
-    report_append "분할" "베이스 분할 완료 — $(split_registry_path "$DOC")"
-    spawn_lineage_release S2split
-    return 0
+  if ! doc_is_frozen "$DOC"; then
+    park "S2split" run 무효화 "게이트 park" "설계 문서가 동결돼 있지 않다 — 동결되지 않은 문서로 분할하지 않는다"
+    return 1
   fi
+
+  cmd="/cc-cmds:design-base-unattended --split $DOC"
+  while :; do
+    src=0
+    rm -f "$RUN_DIR/S2split.rc"
+    quiet_window_begin
+    dispatch_stage S2split "$(alias_root "$(home_alias)")" "$cmd" || src=$?
+    if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+      quiet_window_end
+      park "S2split" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+      return 1
+    fi
+    [ "$src" = "0" ] || (exit "$src")
+    quiet_window_end
+    rc=$(cat "$RUN_DIR/S2split.rc" 2>/dev/null || printf '1')
+    if predicate_split S2split; then pred=0; else pred=1; fi
+    class=$(classify_termination S2split "$rc" "$pred")
+    acct=$(stage_account_of S2split)
+    ledger_row 'stage-result' "세그먼트=-" "스테이지=S2split" "파견 id=S2split" "종류=split" "종료 코드=$rc" \
+      "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2split)" \
+      "세션 id=$(stage_session_id "S2split")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} "기록자=드라이버" \
+      "effort=$(stage_effort_rec_of S2split)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2split)")" \
+      "종단 부류=$class"
+    absorb_stage_judgment S2split S2split "$(home_alias)"
+    if [ "$pred" = "0" ] && [ "$class" = "정상 완료" ]; then
+      report_append "분할" "베이스 분할 완료 — $(split_registry_path "$DOC")"
+      spawn_lineage_release S2split
+      return 0
+    fi
+    if [ "$try" = "1" ] && split_retryable "$class" && ! stage_open_judgment S2split; then
+      log "S2split: $class — 등록부에서 이어 가는 새 시도 1회"
+      try=2
+      continue
+    fi
+    break
+  done
   case "$class" in
     '의도된 park')
       park "S2split" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2split")" 2>/dev/null)" ;;
     *)
-      park "S2split" run 무효화 "게이트 park" "분할 술어 불성립 — 종단 부류 $class" ;;
+      if [ "$try" = "2" ]; then
+        park "S2split" run 무효화 "게이트 park" "재시도 소진 — 새 시도도 분할 술어 불성립, 종단 부류 $class"
+      else
+        park "S2split" run 무효화 "게이트 park" "분할 술어 불성립 — 종단 부류 $class"
+      fi ;;
   esac
   return 1
 }
@@ -7933,7 +7998,17 @@ main_loop() {
       "기준=이 런의 매니페스트가 설계 문서를 선언하지 않는다" \
       "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
       "근거=앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
-  elif [ -n "$DOC_SLUG" ] && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
+  elif [ "$(manifest_design_scope)" = "base" ] \
+       && run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+          | grep -qF '종단 부류=정상 완료'; then
+    # A BASE RUN SKIPS ONLY AN AUDIT IT RAN ITSELF. A reader report on disk
+    # names the slug, not the bytes it read, and a base run publishes tickets
+    # after this — so a report left by an earlier run over an earlier revision
+    # would send a document nobody audited to the tracker. The run's own
+    # finished audit row is the evidence instead, and the split checks it again.
+    log "S2 감사 건너뜀 — 이 런의 감사가 이미 완주했다 ($DOC_KEY)"
+  elif [ "$(manifest_design_scope)" != "base" ] && [ -n "$DOC_SLUG" ] \
+       && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
     log "S2 감사 건너뜀 — 이 문서의 감사 리포트가 이미 있다 ($DOC_SLUG)"
     ledger_row '자율 승인' "kind=audit-composition" "결정=감사 스테이지를 띄우지 않는다" \
       "기각된 대안=다시 감사한다" "등급=1" "기준=이 문서 슬러그의 리더 리포트가 이미 존재한다" \

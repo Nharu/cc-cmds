@@ -3981,6 +3981,16 @@ _gp_unesc() {
 
 surface_of_argv0() {
   local cmd="${1##*/}"
+  # THE GATE'S OWN HELPERS ARE TRUSTED BY WHERE THEY ARE, NOT BY THEIR NAME.
+  # Their rows below grade a read, a tracker write the collaboration surface
+  # admits, and a form the kickoff freezes as a `사전 인가` row — and a name is
+  # something any caller can give a file. A `./clickup-create.py` written into
+  # the worktree is an arbitrary program, so it takes `등급 미상` like any other
+  # command the table has no row for, and the refusal that grade carries.
+  case "$cmd" in
+    clickup-create.py|clickup-relate.py|base-split.py|similar-items.py)
+      gate_own_helper "$1" || { printf '등급 미상'; return 0; } ;;
+  esac
   shift
   case "$cmd" in
     # This column has no way to run some other command. `which git merge` is a
@@ -12719,6 +12729,25 @@ gate_physical_path() {
     n=$((n + 1))
   done
   printf '%s' "$p"
+}
+
+gate_own_helper() {
+  # gate_own_helper <argv0> — 0 when argv0 is the file of that name beside this
+  # gate, compared as physical paths. A bare name is what the act's PATH finds,
+  # and a relative one is read from the act's directory, because those are the
+  # files that would run.
+  local a0="$1" name="${1##*/}"
+  case "$a0" in
+    */*) ;;
+    *) a0=$(command -v -- "$a0" 2>/dev/null) || return 1 ;;
+  esac
+  case "$a0" in
+    /*) ;;
+    */*) a0="${GATE_ACT_CWD:-$PWD}/$a0" ;;
+    *) return 1 ;;
+  esac
+  [ -f "$a0" ] || return 1
+  [ "$(gate_physical_path "$a0")" = "$(gate_physical_path "$GATE_DIR/$name")" ]
 }
 
 gate_path_spelling() {
@@ -23019,8 +23048,19 @@ gate_done_conditions() {
       # that ended `정상 완료` with no segment after it can only mean the plan
       # stopped there; in a base run that is the normal road to the audit and the
       # split, which the base arm below judges.
-      if [ "$dlast" = '정상 완료' ] && [ "$(gate_snapshot_design_scope)" = "base" ]; then
-        dwhy=""
+      #
+      # So is one that was never dispatched because the document was already
+      # there and frozen. A base run kicked off again over the same document —
+      # the recovery after a split stopped and a person fixed the document —
+      # skips the design in both routers and the driver, so it has no design row
+      # at all, and the frozen document is the same input a `정상 완료` would
+      # have left. An unfrozen document keeps the line: nothing audits or splits
+      # it.
+      if [ "$(gate_snapshot_design_scope)" = "base" ]; then
+        if [ "$dlast" = '정상 완료' ] \
+           || { [ -z "$drows" ] && [ "$dwhy" = '설계 문서가 이미 있음' ] && doc_is_frozen "${DOC:-}"; }; then
+          dwhy=""
+        fi
       fi
     fi
     if [ -n "$dwhy" ]; then
