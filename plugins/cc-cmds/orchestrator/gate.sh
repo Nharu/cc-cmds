@@ -46,6 +46,11 @@
 #              verb and returns; this verb runs the collector and the filing and
 #              releases the lock. Without the lock's nonce it refuses (exit 3)
 #              and runs nothing.
+#   halt-report-round
+#              INTERNAL. The detached half of the halt-report round, started
+#              and bound to its lock the same way: it reports the settled runs'
+#              unintended stops and the fleet's new parks as GitHub issues and
+#              releases the lock. Without the lock's nonce it refuses (exit 3).
 #   close      resolve a pending approval from the harness-written transcript
 #   prompt     the canonical question and menu the router must ask for one
 #              approval, as JSON — changes nothing
@@ -101,7 +106,10 @@
 #   gate.sh metrics-round
 #                    --manifest <path> [--target <alias>] --nonce <hex>
 #                                                           (internal; see above)
-#   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
+#   gate.sh halt-report-round
+#                    --manifest <path> [--target <alias>] --nonce <hex>
+#                                                           (internal; see above)
+#   gate.sh close   --manifest <path> --approval <id> [--void|--reject]
 #   gate.sh prompt   --manifest <path> --approval <id>
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
@@ -8551,9 +8559,89 @@ readonly GATE_METRICS_GH_TIMEOUT_S=10
 # tracker is public and every base files into it, so neither a title nor a body
 # names the hosting checkout: both carry `gate_metrics_repo_tag` instead.
 readonly GATE_METRICS_REPO=Nharu/cc-cmds
+# The halt reporter has its own stamp and lock beside the two above, for the
+# same reason they have theirs. Half an hour rather than six: a run that
+# stopped for a reason nobody intended should be on the tracker before the
+# morning, and the round costs one directory listing when nothing settled.
+#
+# THE DESTINATION IS A CONSTANT, NOT A SETTING. The repository, the Project
+# number and its owner are where these reports belong whichever base the run
+# came from, and a missing setting is not a reason to file nowhere.
+readonly GATE_HALT_INTERVAL=1800
+readonly GATE_HALT_LOCK_TTL=7200
+readonly GATE_HALT_REPO=Nharu/cc-cmds
+readonly GATE_HALT_PROJECT=1
+readonly GATE_HALT_OWNER=Nharu
+# gh writes per round — creations, comments and Project adds alike. What does
+# not fit waits for the next round as `미룸`.
+readonly GATE_HALT_WRITES_MAX=8
+# A failed lookup and a failed Project add are each tried this many rounds.
+readonly GATE_HALT_RETRIES=3
+readonly GATE_HALT_SCHEMA='cc-halt-report-run v1'
+# The fleet's backlog schema and park reasons, declared again here because the
+# gate does not source `fleet.sh` (its `main` runs unguarded under errexit).
+# The gate suite holds these against the fleet's own spelling.
+readonly GATE_HALT_BACKLOG_SCHEMA='cc-pace-backlog v1'
+readonly GATE_HALT_BACKLOG_REASONS='manifest-missing clock-incoherent deadline-passed doc-changed base-moved'
 
 gate_reap_root() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
+}
+
+gate_halt_root() {
+  printf '%s' "$(gate_reap_root)/halt-report"
+}
+
+gate_halt_stamp() {
+  printf '%s' "$(gate_reap_root)/halt.stamp"
+}
+
+gate_halt_lockdir() {
+  printf '%s' "$(gate_reap_root)/.halt.lock"
+}
+
+gate_halt_record_path() {
+  # gate_halt_record_path <run-id> — the run's record. A run id is checked for
+  # being non-empty and nothing else, and names outside the usual shape exist
+  # on real hosts, so only a name that is safe as a file name is used as one;
+  # any other id is stored under the first 16 hex of its sha256, and the id
+  # itself lives inside the record.
+  #
+  # The check deletes the allowed bytes and wants nothing left, newlines
+  # included. A line-matching `grep` would pass an id whose first line is safe
+  # and whose second is not, and on the right of a pipe it can fail under
+  # `pipefail` by exiting early. The trailing `x` is there because command
+  # substitution strips trailing newlines, which would hide one at the end.
+  local id="$1" name
+  if [ -n "$id" ] && [ "$id" != "." ] && [ "$id" != ".." ] \
+     && [ "$(printf '%s' "$id" | LC_ALL=C tr -d 'A-Za-z0-9._-'; printf x)" = x ]; then
+    name="$id"
+  else
+    name=$(printf '%s' "$id" | shasum -a 256 | cut -c1-16)
+  fi
+  printf '%s' "$(gate_halt_root)/runs/$name.json"
+}
+
+gate_halt_stops() {
+  # gate_halt_stops <ledger> <run-dir> <manifest> — the classifier's lines.
+  # `CC_HALT_STOPS` names another program for tests; the gate suite exports one
+  # that prints nothing, so no fixture run ever reaches GitHub from a host that
+  # holds a write credential.
+  if [ -n "${CC_HALT_STOPS:-}" ]; then
+    "$CC_HALT_STOPS" "$1" "$2" --manifest "$3"
+  else
+    bash "$GATE_DIR/run-stops.sh" "$1" "$2" --manifest "$3"
+  fi
+}
+
+gate_halt_backlog() {
+  # The fleet backlog the round reads. `CC_HALT_BACKLOG` set to a path names
+  # another file; set and empty switches the fleet half off.
+  if [ "${CC_HALT_BACKLOG+x}" = x ]; then
+    printf '%s' "$CC_HALT_BACKLOG"
+  else
+    printf '%s' "$(gate_pace_root)/backlog.jsonl"
+  fi
 }
 
 gate_metrics_stamp() {
@@ -10636,8 +10724,8 @@ gate_main() {
   fi
   if [ -n "$nonce" ]; then
     case "$verb" in
-      supervise-stage|metrics-round) ;;
-      *) printf 'gate: --nonce is used only with supervise-stage and metrics-round (verb received: %s)\n' "$verb" >&2
+      supervise-stage|metrics-round|halt-report-round) ;;
+      *) printf 'gate: --nonce is used only with supervise-stage, metrics-round and halt-report-round (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -10810,6 +10898,16 @@ gate_main() {
       exit "$GATE_EXIT_RULE"
     fi
     gate_metrics_round "$nonce"
+    exit 0
+  fi
+  # The halt-report round leaves at the same point for the same reasons.
+  if [ "$verb" = "halt-report-round" ]; then
+    [ -n "$nonce" ] || { printf 'gate: halt-report-round requires --nonce\n' >&2; exit 2; }
+    if [ "$(cat "$(gate_halt_lockdir)/nonce" 2>/dev/null || true)" != "$nonce" ]; then
+      printf 'gate: halt-report-round nonce mismatch — the lock does not carry this nonce, so nothing runs\n' >&2
+      exit "$GATE_EXIT_RULE"
+    fi
+    gate_halt_round "$nonce"
     exit 0
   fi
 
@@ -11096,6 +11194,11 @@ GATE_DRIFT_DIRS
     fi
     pd=$( { bash "$GATE_DIR/stage-policy-drift.sh" --sources-map "$(gate_stage_policy_sources_map)" ${pd_dirs[@]+"${pd_dirs[@]}"} 2>/dev/null || true; } | tail -1)
     log "stage policy sources: ${pd:-skipped}"
+    # The run's halt-report record, created only when absent. A run whose
+    # record is missing is never reported, so a run opened before this existed
+    # is outside the reporter's population by construction. `|| true` for the
+    # reason the reap below has one.
+    gate_halt_record_open || true
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
     # that runs once per run rather than once per gate entry.
@@ -11142,9 +11245,12 @@ GATE_DRIFT_DIRS
   # too: the PreToolUse hook calls it before every tool call, and it has no
   # business paying even for the launch. The stamp is not touched, so the round
   # starts on the next verb that is not excluded.
+  # The halt-report round is started from the same place under the same
+  # exclusions, on its own stamp and lock.
   case "$verb" in
     plan|digest-path) ;;
-    *) gate_metrics_cycle || true ;;
+    *) gate_metrics_cycle || true
+       gate_halt_cycle || true ;;
   esac
 
   case "$verb" in
@@ -11194,7 +11300,8 @@ GATE_DRIFT_DIRS
       [ $# -ge 1 ] || { printf 'gate: supervise-stage needs the stage kind and the CLI argv after --\n' >&2; exit 2; }
       gate_verb_supervise_stage "$alias" "$segment" "$nonce" "$@"
       ;;
-    # `metrics-round` never arrives here: it leaves right after `rundir_init`.
+    # `metrics-round` and `halt-report-round` never arrive here: they leave
+    # right after `rundir_init`.
     close)
       [ -n "$approval" ] || { printf 'gate: close requires --approval\n' >&2; exit 2; }
       # The two refusing dispositions are different CLAIMS about the same
@@ -12336,8 +12443,37 @@ gate_judgment_approval_disposition() {
   esac
 }
 
+gate_judgment_seat() {
+  # gate_judgment_seat — the seat of this act-path caller for a judgment
+  # approval's `연 자리`: `라우터` when the caller is not a stage, otherwise the
+  # stage kind the gate recorded when it dispatched this stage, otherwise
+  # `미상`.
+  #
+  # THE KIND IS READ FROM THE DISPATCH RECORD, NOT FROM THE STAGE ID. A stage id
+  # is `<segment>#<attempt>` and a segment id names no kind, while the dispatch
+  # writes `<segment>.kind` beside the attempt it pinned. A stage the driver
+  # started has no such record and reads `미상`, which the reporter treats as
+  # not the design stage — reported rather than missed.
+  local sid seg k
+  if ! cc_caller_is_stage; then printf '라우터'; return 0; fi
+  sid="${CC_PIPELINE_STAGE_ID:-}"
+  seg="${sid%#*}"
+  case "$seg" in ''|.*|*/*) printf '미상'; return 0 ;; esac
+  k=$(sed -n '1p' "$RUN_DIR/$seg.kind" 2>/dev/null || true)
+  case " $STAGE_KINDS " in
+    *" $k "*) [ -n "$k" ] && { printf '%s' "$k"; return 0; } ;;
+  esac
+  printf '미상'
+}
+
 gate_issue_judgment_approval() {
-  # gate_issue_judgment_approval <alias> <segment> <기준> <근거>
+  # gate_issue_judgment_approval <alias> <segment> <기준> <근거> [부류] [연 자리]
+  #
+  # `연 자리` IS WHO RAISED THE JUDGMENT — a stage kind, `라우터`, or `미상` for
+  # anything else. It is carried on the row only and touches neither the id nor
+  # the tuple, so the same judgment raised from two seats is still one approval.
+  # The halt reporter reads it: a judgment the design stage left open is an
+  # intended wait, one any other seat left open is reported.
   #
   # THE BINDING TUPLE IS `<세그먼트>/<질문 sha256>/<선택지판>/<스냅숏 앞자리>`, AND
   # THAT IS THE DIFFERENCE FROM AN ACT APPROVAL. An act approval's answer is
@@ -12353,8 +12489,13 @@ gate_issue_judgment_approval() {
   # THE GATE ISSUES IT AND THE ROUTER CANNOT. The router only ever submits its
   # own recommendation through `act --kind judgment`; whether that becomes a
   # question is decided here.
-  local alias="$1" seg="$2" std="$3" why="$4" cls="${5:-}" id q qfull qdig
+  local alias="$1" seg="$2" std="$3" why="$4" cls="${5:-}" seat="${6:-}" id q qfull qdig
   GATE_AUTO_RESOLVED_APPROVAL=""
+  [ -n "$seat" ] || seat='미상'
+  case " $STAGE_KINDS 라우터 " in
+    *" $seat "*) ;;
+    *) seat='미상' ;;
+  esac
   # The full text goes to the sidecar and is what the row's digest is OF; the
   # row itself carries the 400-byte excerpt, and the id keeps hashing the excerpt
   # so every id issued before the sidecar existed still derives to itself.
@@ -12426,7 +12567,7 @@ gate_issue_judgment_approval() {
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=판단" \
     "유도 절단점=-" \
     "행위 다이제스트=-" "구속 튜플=${seg:--}/$qdig/$GATE_MENU_VERSION/$(gate_tuple_snap)" \
-    "막는 세그먼트=${seg:--}" "질문 문면=$q" "답변 문면=-" \
+    "막는 세그먼트=${seg:--}" "연 자리=$seat" "질문 문면=$q" "답변 문면=-" \
     "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
     "발행 시각=$(now_iso)" "해소 시각=-"
   if gate_auto_resolve_enabled; then
@@ -15441,7 +15582,7 @@ EOF
           else
             gate_issue_judgment_approval "$alias" "$seg" \
               "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" \
-              "$jcls" || jq_rc=$?
+              "$jcls" "$(gate_judgment_seat)" || jq_rc=$?
             # THROUGH THE TRANSLATION, not around it. Propagating the raw value
             # sent the router exit 9 for an answered-but-spent approval, which
             # is the one code the contract does not define. `이미 닫힌 물음` and
@@ -17932,7 +18073,7 @@ gate_verb_act() {
       local iss_rc=0
       gate_issue_judgment_approval "$alias" "$segment" \
         "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" \
-        "$GATE_JUDGMENT_CLASS" || iss_rc=$?
+        "$GATE_JUDGMENT_CLASS" "$(gate_judgment_seat)" || iss_rc=$?
       case "$(gate_judgment_approval_disposition "$iss_rc")" in
         발행) exit "$GATE_EXIT_APPROVAL" ;;
         답있음)
@@ -21145,6 +21286,629 @@ gate_metrics_file() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Halt reporting: a run that stopped for a reason nobody intended becomes a
+# GitHub issue once it has settled.
+#
+# NOTHING IS WRITTEN AT THE MOMENT A RUN STOPS. The run-open branch creates the
+# run's record under the state root; a detached round started from the prelude
+# later picks the records whose runs have settled, derives their stop events
+# from what the run already recorded (`run-stops.sh`, which knows no `gh`), and
+# files each unintended signature once — a comment on the open issue with the
+# same title, or a new issue added to the autopilot Project. The result is a
+# row in the ledger of the run that HOSTED the round and a disposition in the
+# stopped run's own record, and the morning report reads both.
+#
+# THE POPULATION IS EVERY OPEN RECORD ON THE HOST, not the hosting run's: the
+# run that stopped may never call the gate again, and nothing in the tree calls
+# it for that run. A run with no record is never reported.
+# ---------------------------------------------------------------------------
+
+gate_halt_record_open() {
+  # Create this run's record when there is none. NEVER TOUCH ONE THAT EXISTS:
+  # the run-open branch runs again whenever the run directory is gone, and a
+  # record rewritten there would lose its dispositions and retry counts. `ln`
+  # makes "only when absent" atomic, as the `done` record does.
+  local f dir tmp ledger mf rd
+  [ -n "${RUN_ID:-}" ] && [ -n "${LEDGER:-}" ] || return 0
+  f=$(gate_halt_record_path "$RUN_ID")
+  [ -e "$f" ] && return 0
+  dir=$(dirname "$f")
+  mkdir -p "$dir" 2>/dev/null || return 0
+  ledger="$LEDGER"; case "$ledger" in /*) ;; *) ledger="$(pwd)/$ledger" ;; esac
+  mf="${MANIFEST:-}"; case "$mf" in ''|/*) ;; *) mf="$(pwd)/$mf" ;; esac
+  rd="${RUN_DIR:-}"
+  tmp=$(mktemp "$dir/.open.XXXXXX" 2>/dev/null) || return 0
+  if jq -n --arg s "$GATE_HALT_SCHEMA" --arg run "$RUN_ID" --arg l "$ledger" \
+       --arg m "$mf" --arg rd "$rd" --arg t "$(now_iso)" \
+       '{schema: $s, run: $run, "원장": $l, "매니페스트": $m, RUN_DIR: $rd,
+         "상태": "열림", "열림 시각": $t, "정착 시각": null, "종결 시각": null,
+         "정착 토큰": null, "사건": {}, "최종 건너뜀": null, "런 처분": "정착 대기"}' \
+       > "$tmp" 2>/dev/null; then
+    ln "$tmp" "$f" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+gate_halt_lock() {
+  # One attempt, the metrics lock's shape on its own directory.
+  local lock owner ots now
+  lock=$(gate_halt_lockdir)
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+    return 0
+  fi
+  owner=$(cat "$lock/owner" 2>/dev/null || true)
+  ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+  [ -n "$ots" ] || ots=$(gate_mtime "$lock")
+  [ -n "$ots" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ots)) -ge "$GATE_HALT_LOCK_TTL" ] || return 1
+  rm -rf "$lock" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_halt_unlock() {
+  local lock dead
+  lock=$(gate_halt_lockdir)
+  dead="$lock.dead.$$"
+  if mv "$lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+  return 0
+}
+
+gate_halt_cycle() {
+  # Called from the prelude beside the metrics cycle; the same fixed order and
+  # the same nonce binding (see `gate_metrics_cycle`). Always returns 0.
+  local root stampf stamp now nonce tmp pid lock
+  cc_caller_is_stage && return 0
+  [ -n "${LEDGER:-}" ] || return 0
+  [ -d "$(dirname "$LEDGER")" ] || return 0
+  root=$(gate_reap_root)
+  stampf=$(gate_halt_stamp)
+  lock=$(gate_halt_lockdir)
+  now=$(date -u +%s)
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_HALT_INTERVAL" ]; then
+    return 0
+  fi
+  mkdir -p "$root" 2>/dev/null || return 0
+  gate_halt_lock || return 0
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_HALT_INTERVAL" ]; then
+    gate_halt_unlock
+    return 0
+  fi
+  printf '%s\n' "$now" > "$stampf" 2>/dev/null || true
+  nonce=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
+  tmp=""
+  if [ -n "$nonce" ]; then
+    tmp=$(mktemp "$lock/.nonce.XXXXXX" 2>/dev/null || true)
+  fi
+  if [ -z "$tmp" ] || ! printf '%s\n' "$nonce" > "$tmp" 2>/dev/null \
+     || ! mv "$tmp" "$lock/nonce" 2>/dev/null; then
+    [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null || true
+    log "중단 리포트 회차 실패 — 회차를 띄우지 못했다(다음 회차에 다시 본다)"
+    gate_halt_unlock
+    return 0
+  fi
+  mkdir -p "$RUN_DIR/log" 2>/dev/null || true
+  if [ -n "${alias:-}" ]; then
+    pid=$( cc_detach_exec "$RUN_DIR/log/halt-report-round.log" "$RUN_DIR/log/halt-report-round.log" \
+             bash "$GATE_DIR/gate.sh" halt-report-round --manifest "$MANIFEST" \
+               --target "$alias" --nonce "$nonce" ) || pid=""
+  else
+    pid=$( cc_detach_exec "$RUN_DIR/log/halt-report-round.log" "$RUN_DIR/log/halt-report-round.log" \
+             bash "$GATE_DIR/gate.sh" halt-report-round --manifest "$MANIFEST" \
+               --nonce "$nonce" ) || pid=""
+  fi
+  if [ -z "$pid" ]; then
+    log "중단 리포트 회차 실패 — 회차를 띄우지 못했다(다음 회차에 다시 본다)"
+    gate_halt_unlock
+  fi
+  return 0
+}
+
+# Which event dispositions are final. A record whose events are all final is
+# closed; anything else is looked at again next round.
+GATE_HALT_JQ_FINAL='def fin:
+  (.["처분"] | startswith("대상 아님:"))
+  or .["처분"] == "건너뜀:자격 없음" or .["처분"] == "건너뜀:스코프 부족"
+  or (.["처분"] == "건너뜀:조회 실패" and (.["재시도"] // 0) >= $retries)
+  or ((.["처분"] == "등록" or .["처분"] == "코멘트") and (.["담기"] == "성공" or .["담기"] == "포기"));'
+
+# The run-level disposition the morning report shows, derived from the events.
+GATE_HALT_JQ_DISP='def rundisp:
+  if .["상태"] == "열림" then "정착 대기"
+  elif .["런 처분"] == "원장 없음" then "원장 없음"
+  elif (.["사건"] | length) == 0 then "대상 없음"
+  else ([.["사건"][]]) as $e
+    | ([$e[] | select(.["처분"] == "미룸")] | length) as $m
+    | if $m > 0 then "미룸 \($m)건"
+      elif any($e[]; .["담기"] == "포기") then "담기=포기 #\([$e[] | select(.["담기"] == "포기")][0]["이슈 번호"])"
+      elif any($e[]; .["처분"] == "등록") then "등록 #\([$e[] | select(.["처분"] == "등록")][0]["이슈 번호"])"
+      elif any($e[]; .["처분"] == "코멘트") then "코멘트 #\([$e[] | select(.["처분"] == "코멘트")][0]["이슈 번호"])"
+      elif any($e[]; .["처분"] | startswith("건너뜀:")) then [$e[] | select(.["처분"] | startswith("건너뜀:"))][0]["처분"]
+      elif any($e[]; .["처분"] | startswith("대상 아님:")) then [$e[] | select(.["처분"] | startswith("대상 아님:"))][0]["처분"]
+      else "정착 대기" end
+  end;'
+
+gate_halt_write() {
+  # gate_halt_write <file> <json> — a temp file in the same directory, then a
+  # rename, so a reader never sees half a record.
+  local f="$1" tmp
+  tmp=$(mktemp "$(dirname "$f")/.w.XXXXXX" 2>/dev/null) || return 1
+  if printf '%s\n' "$2" > "$tmp" 2>/dev/null && mv "$tmp" "$f" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
+gate_halt_round() {
+  # gate_halt_round <nonce> — the body of the detached `halt-report-round`
+  # verb. Always returns 0; nothing here stops a run.
+  #
+  # Per-round state lives in globals rather than subshells, because every
+  # event of every record shares one write budget, one credential check, one
+  # issue list and one label creation.
+  local nonce="$1" dir f ts list
+  GATE_HALT_WRITES=0 GATE_HALT_CRED="" GATE_HALT_TOK="" GATE_HALT_LIST="" GATE_HALT_LIST_OK=""
+  GATE_HALT_LABEL="" GATE_HALT_EV=""
+  GATE_HALT_BASE=$(dirname "$(dirname "$(dirname "$LEDGER")")")
+  dir="$(gate_halt_root)/runs"
+  if [ -d "$dir" ]; then
+    list=""
+    for f in "$dir"/*.json; do
+      [ -f "$f" ] || continue
+      ts=$(jq -r --arg s "$GATE_HALT_SCHEMA" \
+             'select(type == "object" and .schema == $s and (.["상태"] == "열림" or .["상태"] == "정착"))
+              | .["열림 시각"] // ""' "$f" 2>/dev/null || true)
+      [ -n "$ts" ] || continue
+      list="${list}${ts}	${f}
+"
+    done
+    while IFS='	' read -r ts f; do
+      [ -n "$f" ] || continue
+      gate_halt_run "$f" || true
+    done <<HALTRUNS
+$(printf '%s' "$list" | LC_ALL=C sort)
+HALTRUNS
+  fi
+  gate_halt_backlog_round || true
+  gate_halt_prune || true
+  if [ "$(cat "$(gate_halt_lockdir)/nonce" 2>/dev/null || true)" = "$nonce" ]; then
+    gate_halt_unlock
+  else
+    log "중단 리포트 회차 — 잠금이 이 회차의 것이 아니어서 풀지 않는다"
+  fi
+  return 0
+}
+
+gate_halt_prune() {
+  # Closed records older than the reaper's retention are removed.
+  local f now mt
+  now=$(date -u +%s)
+  for f in "$(gate_halt_root)/runs"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(jq -r '.["상태"] // empty' "$f" 2>/dev/null || true)" = "종결" ] || continue
+    mt=$(gate_mtime "$f")
+    [ -n "$mt" ] || continue
+    [ $((now - mt)) -ge "$GATE_REAP_RETENTION" ] || continue
+    rm -f "$f" 2>/dev/null || true
+  done
+  return 0
+}
+
+gate_halt_pin() {
+  # gate_halt_pin <ledger> — the `판본` of the run's first `run` row, if it is
+  # one of the shapes the gate writes; `(형식 외)` for anything else.
+  local row v
+  row=$( { grep -m1 '^- `run` |' "$1" 2>/dev/null || true; } )
+  [ -n "$row" ] || { printf '(미상)'; return 0; }
+  v=$(gate_row_field "$row" '판본')
+  case "$v" in
+    '(미상)'|'(고정 안 함)') printf '%s' "$v"; return 0 ;;
+  esac
+  if [ "${#v}" -eq 40 ] && [ "$(printf '%s' "$v" | LC_ALL=C tr -d '0-9a-f'; printf x)" = x ]; then
+    printf '%s' "$v"
+  else
+    printf '(형식 외)'
+  fi
+}
+
+gate_halt_sig_ok() {
+  # A signature the body and the title may carry: a known class, and none of
+  # the characters that could end a code span, a row field or a line.
+  case "$1" in
+    run-blocked/*|stage/*|halt/*|cone/*|run-end/*|approval/*|shift/*|stage-launch/*|park/*|segment/*|backlog-park/*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in *'`'*|*'|'*|*'
+'*) return 1 ;; esac
+  [ "${#1}" -le 160 ]
+}
+
+gate_halt_body() {
+  # gate_halt_body <file> <서명> <런> <판본> <정착> <비의도 수> <미결합 0|1> —
+  # the public body, from an allowlist only. The tracker is public, so nothing
+  # here is free text, a path, a target alias or anything a reader could tell
+  # the hosting checkout by.
+  local run="$3" settle="$5"
+  # `<8 digits>-<8 hex>`, checked by length and by deleting the allowed bytes
+  # of each half, for the reasons `gate_halt_record_path` gives.
+  if [ "${#run}" -ne 17 ] || [ "${run:8:1}" != "-" ] \
+     || [ "$(printf '%s' "${run:0:8}" | LC_ALL=C tr -d '0-9'; printf x)" != x ] \
+     || [ "$(printf '%s' "${run:9}" | LC_ALL=C tr -d '0-9a-f'; printf x)" != x ]; then
+    run='(형식 외)'
+  fi
+  case "$settle" in 종단|버려짐|승인대기|관측) ;; *) settle='(형식 외)' ;; esac
+  {
+    printf '무인 런이 의도되지 않은 이유로 멈춘 채 정착했다. 이 글은 게이트가 자동으로 남겼다.\n\n'
+    printf -- '- 서명: `%s`\n' "$2"
+    printf -- '- 런: `%s`\n' "$run"
+    printf -- '- 판본: `%s`\n' "$4"
+    printf -- '- 정착: %s\n' "$settle"
+    printf -- '- 비의도 사건 수: %s\n' "$6"
+    printf -- '- 관측 시각: %s\n' "$(now_iso)"
+    if [ "$7" = "1" ]; then
+      printf -- '- 원인 셀 미결합: 이 halt 는 같은 스테이지의 도달 park 행에 결합되지 않았다.\n'
+    fi
+  } > "$1"
+}
+
+gate_halt_skip() {
+  # gate_halt_skip <사유> <런> <서명>
+  gate_append '중단 리포트 건너뜀' "사유=$1" "런=$(gate_row_safe "$2" 80)" \
+    "서명=$(gate_row_safe "$3" 200)" "세그먼트=-" "기록 시각=$(now_iso)" || true
+}
+
+gate_halt_row() {
+  # gate_halt_row <결정> <issue number> <런> <서명> <담기>
+  local undo
+  case "$1" in
+    등록) undo="gh issue close $2 --repo $GATE_HALT_REPO" ;;
+    *)    undo="gh issue comment $2 --repo $GATE_HALT_REPO --delete-last" ;;
+  esac
+  gate_append '자율 승인' "kind=halt-report" "결정=$1" "대상=-" "세그먼트=-" \
+    "절단점=필링" "유도 절단점=-" "등급=1" "기준=의도되지 않은 멈춤의 자동 리포트" \
+    "되돌리는 법=$undo" "런=$(gate_row_safe "$3" 80)" "서명=$(gate_row_safe "$4" 200)" \
+    "이슈=$2" "담기=$5" || true
+}
+
+gate_halt_cred() {
+  # Settle this round's credential once: `ok`, `자격 없음`, `스코프 부족` or
+  # `조회 실패`.
+  #
+  # THE SCOPE CHECK READS THE RESPONSE HEADER, case-insensitively, because a
+  # classic token's scopes arrive as `X-Oauth-Scopes`. A token whose header is
+  # absent (a fine-grained one) is not refused on a guess; it is tried.
+  local out hdr body login sc
+  [ -n "$GATE_HALT_CRED" ] && return 0
+  GATE_HALT_TOK=$(cred_write_token 2>/dev/null) || GATE_HALT_TOK=""
+  if [ -z "$GATE_HALT_TOK" ]; then GATE_HALT_CRED='자격 없음'; return 0; fi
+  out=$(mktemp "${TMPDIR:-/tmp}/cc-halt-user.XXXXXX" 2>/dev/null) || { GATE_HALT_CRED='조회 실패'; return 0; }
+  if ! gate_metrics_gh_write "$GATE_HALT_BASE" "$GATE_HALT_TOK" api -i user > "$out" 2>/dev/null; then
+    rm -f "$out"; GATE_HALT_CRED='조회 실패'; return 0
+  fi
+  hdr=$(awk '{ sub(/\r$/, "") } /^$/ { exit } { print }' "$out" 2>/dev/null || true)
+  body=$(awk 'f { print; next } { sub(/\r$/, "") } /^$/ { f = 1 }' "$out" 2>/dev/null || true)
+  rm -f "$out"
+  login=$(printf '%s' "$body" | jq -r '.login // empty' 2>/dev/null || true)
+  if [ -z "$login" ]; then GATE_HALT_CRED='조회 실패'; return 0; fi
+  sc=$(printf '%s\n' "$hdr" | awk 'tolower($0) ~ /^x-oauth-scopes:/ { sub(/^[^:]*:/, ""); print; exit }')
+  if printf '%s\n' "$hdr" | awk 'tolower($0) ~ /^x-oauth-scopes:/ { f = 1 } END { exit !f }'; then
+    # Matched in the shell rather than by `grep -q` on the right of a pipe:
+    # under `pipefail` an early-exiting reader can fail the pipeline it matched.
+    sc=" $(printf '%s' "$sc" | tr ',' ' ' | tr -s ' \t' '  ') "
+    case "$sc" in
+      *" repo "*|*" public_repo "*) ;;
+      *) GATE_HALT_CRED='스코프 부족'; return 0 ;;
+    esac
+    case "$sc" in
+      *" project "*) ;;
+      *) GATE_HALT_CRED='스코프 부족'; return 0 ;;
+    esac
+  fi
+  GATE_HALT_CRED='ok'
+}
+
+gate_halt_list() {
+  # The open `cc-halt` issues, read once per round with the read credential.
+  # `--limit` because gh's default of 30 would hide the 31st open signature
+  # and file it again.
+  local l
+  [ -n "$GATE_HALT_LIST_OK" ] && return 0
+  l=$(gate_metrics_scrub_env; GATE_ACT_CWD="$GATE_HALT_BASE" gate_run_readonly gate_metrics_timed "$(gate_metrics_gh_timeout)" \
+        "$(gate_metrics_gh)" issue list --repo "$GATE_HALT_REPO" --label cc-halt --state open \
+        --limit 1000 --json number,title 2>/dev/null) || return 1
+  printf '%s' "$l" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
+  GATE_HALT_LIST="$l"; GATE_HALT_LIST_OK=1
+  return 0
+}
+
+gate_halt_add() {
+  # gate_halt_add <issue number> — the autopilot Project add.
+  gate_metrics_gh_write "$GATE_HALT_BASE" "$GATE_HALT_TOK" project item-add "$GATE_HALT_PROJECT" \
+    --owner "$GATE_HALT_OWNER" --url "https://github.com/$GATE_HALT_REPO/issues/$1" >/dev/null 2>&1
+}
+
+gate_halt_event() {
+  # gate_halt_event <event json|""> <서명> <런 행 값> <본문 런> <판본> <정착>
+  # <비의도 수> <미결합 0|1> — move one reportable event one step and leave
+  # its new state in GATE_HALT_EV. Returns 1 when the step took a final
+  # credential skip, so the caller can record it on the run.
+  #
+  # THE ORDER IS FIXED: credential, identity and scope, lookup, creation or
+  # comment, Project add. A Project add that failed is retried on later rounds
+  # with no new row; a lookup that failed is retried with one row a round.
+  local ev="$1" sig="$2" runf="$3" brun="$4" pin="$5" settle="$6" cnt="$7" unb="$8"
+  local disp tries num add k ok tmp url d ttl
+  [ -n "$ev" ] || ev='{"처분":"대기","재시도":0,"이슈 번호":null,"담기":"-"}'
+  GATE_HALT_EV="$ev"
+  disp=$(printf '%s' "$ev" | jq -r '.["처분"] // "대기"')
+  tries=$(printf '%s' "$ev" | jq -r '.["재시도"] // 0')
+  num=$(printf '%s' "$ev" | jq -r '.["이슈 번호"] // empty')
+  add=$(printf '%s' "$ev" | jq -r '.["담기"] // "-"')
+  case "$disp" in
+    등록|코멘트)
+      case "$add" in
+        실패:*)
+          [ "$GATE_HALT_WRITES" -lt "$GATE_HALT_WRITES_MAX" ] || return 0
+          k=${add#실패:}; case "$k" in ''|*[!0-9]*) k=1 ;; esac
+          gate_halt_cred
+          ok=1
+          if [ "$GATE_HALT_CRED" = ok ]; then
+            GATE_HALT_WRITES=$((GATE_HALT_WRITES + 1))
+            gate_halt_add "$num" && ok=0
+          fi
+          if [ "$ok" -eq 0 ]; then add='성공'
+          elif [ $((k + 1)) -ge "$GATE_HALT_RETRIES" ]; then add='포기'
+          else add="실패:$((k + 1))"
+          fi
+          GATE_HALT_EV=$(printf '%s' "$ev" | jq -c --arg a "$add" '.["담기"] = $a')
+          ;;
+      esac
+      return 0 ;;
+    대상\ 아님:*|건너뜀:자격\ 없음|건너뜀:스코프\ 부족) return 0 ;;
+    건너뜀:조회\ 실패) [ "$tries" -lt "$GATE_HALT_RETRIES" ] || return 0 ;;
+  esac
+
+  gate_halt_cred
+  case "$GATE_HALT_CRED" in
+    자격\ 없음|스코프\ 부족)
+      gate_halt_skip "$GATE_HALT_CRED" "$runf" "$sig"
+      GATE_HALT_EV=$(printf '%s' "$ev" | jq -c --arg d "건너뜀:$GATE_HALT_CRED" '.["처분"] = $d')
+      return 1 ;;
+    조회\ 실패)
+      gate_halt_lookup_failed "$ev" "$runf" "$sig" "$tries"
+      return 0 ;;
+  esac
+  if [ $((GATE_HALT_WRITES + 2)) -gt "$GATE_HALT_WRITES_MAX" ]; then
+    GATE_HALT_EV=$(printf '%s' "$ev" | jq -c '.["처분"] = "미룸"')
+    return 0
+  fi
+  if ! gate_halt_list; then
+    gate_halt_lookup_failed "$ev" "$runf" "$sig" "$tries"
+    return 0
+  fi
+  tmp=$(mktemp "${TMPDIR:-/tmp}/cc-halt-issue.XXXXXX" 2>/dev/null) || return 0
+  gate_halt_body "$tmp" "$sig" "$brun" "$pin" "$settle" "$cnt" "$unb"
+  # The smallest open number with the exact title takes the comment; a closed
+  # issue is never reopened, so a signature whose issues are all closed files
+  # a new one.
+  ttl="[cc-halt] $sig"
+  num=$(printf '%s' "$GATE_HALT_LIST" | jq -r --arg t "$ttl" \
+          '[.[] | select(.title == $t) | .number] | min // empty' 2>/dev/null || true)
+  d=""
+  if [ -n "$num" ]; then
+    GATE_HALT_WRITES=$((GATE_HALT_WRITES + 1))
+    if gate_metrics_gh_write "$GATE_HALT_BASE" "$GATE_HALT_TOK" issue comment "$num" \
+         --repo "$GATE_HALT_REPO" --body-file "$tmp" >/dev/null 2>&1; then
+      d='코멘트'
+    fi
+  else
+    # The label is created before the first creation of the round rather
+    # than assumed: gh resolves `--label` before it creates anything.
+    if [ -z "$GATE_HALT_LABEL" ]; then
+      if gate_metrics_gh_write "$GATE_HALT_BASE" "$GATE_HALT_TOK" label create cc-halt \
+           --repo "$GATE_HALT_REPO" --force --color b60205 \
+           --description '무인 런의 의도되지 않은 멈춤 자동 리포트' >/dev/null 2>&1; then
+        GATE_HALT_LABEL=1
+      fi
+    fi
+    if [ -n "$GATE_HALT_LABEL" ]; then
+      GATE_HALT_WRITES=$((GATE_HALT_WRITES + 1))
+      url=$(gate_metrics_gh_write "$GATE_HALT_BASE" "$GATE_HALT_TOK" issue create --repo "$GATE_HALT_REPO" \
+              --title "$ttl" --label cc-halt --body-file "$tmp" 2>/dev/null | sed -n '$p') || url=""
+      num=$(printf '%s' "$url" | sed -n 's#.*/issues/\([0-9][0-9]*\)$#\1#p')
+      if [ -n "$num" ]; then
+        d='등록'
+        GATE_HALT_LIST=$(printf '%s' "$GATE_HALT_LIST" | jq -c --argjson n "$num" --arg t "$ttl" \
+                           '. + [{number: $n, title: $t}]')
+      fi
+    fi
+  fi
+  rm -f "$tmp"
+  if [ -z "$d" ]; then
+    gate_halt_lookup_failed "$ev" "$runf" "$sig" "$tries"
+    return 0
+  fi
+  GATE_HALT_WRITES=$((GATE_HALT_WRITES + 1))
+  if gate_halt_add "$num"; then
+    add='성공'
+  else
+    add='실패:1'
+    mkdir -p "$(dirname "$LEDGER")/halt-report.unfiled" 2>/dev/null || true
+    {
+      printf '# 이슈 #%s 를 autopilot Project 에 담지 못했다\n\n' "$num"
+      printf '이슈는 있고 Project 담기만 실패했다. 다음 회차가 다시 담으며, 손으로 담으려면 아래 명령을 쓴다.\n\n'
+      printf '```\ngh project item-add %s --owner %s --url https://github.com/%s/issues/%s\n```\n' \
+        "$GATE_HALT_PROJECT" "$GATE_HALT_OWNER" "$GATE_HALT_REPO" "$num"
+    } > "$(dirname "$LEDGER")/halt-report.unfiled/$num.md" 2>/dev/null || true
+  fi
+  gate_halt_row "$d" "$num" "$runf" "$sig" "${add%%:*}"
+  GATE_HALT_EV=$(printf '%s' "$ev" | jq -c --arg d "$d" --argjson n "$num" --arg a "$add" \
+                   '.["처분"] = $d | .["이슈 번호"] = $n | .["담기"] = $a')
+  return 0
+}
+
+gate_halt_lookup_failed() {
+  # gate_halt_lookup_failed <event json> <런 행 값> <서명> <tries so far>
+  gate_halt_skip '조회 실패' "$2" "$3"
+  GATE_HALT_EV=$(printf '%s' "$1" | jq -c --argjson t "$(( $4 + 1 ))" \
+                   '.["처분"] = "건너뜀:조회 실패" | .["재시도"] = $t')
+}
+
+gate_halt_run() {
+  # gate_halt_run <record file> — one record, one step.
+  local f="$1" rec st id ledger rd mf out agg sig cnt excl mark unb ev pin settle cur final
+  rec=$(jq -c --arg s "$GATE_HALT_SCHEMA" 'select(type == "object" and .schema == $s)' "$f" 2>/dev/null || true)
+  [ -n "$rec" ] || return 0
+  st=$(printf '%s' "$rec" | jq -r '.["상태"]')
+  id=$(printf '%s' "$rec" | jq -r '.run // ""')
+  ledger=$(printf '%s' "$rec" | jq -r '.["원장"] // ""')
+  rd=$(printf '%s' "$rec" | jq -r '.RUN_DIR // ""')
+  mf=$(printf '%s' "$rec" | jq -r '.["매니페스트"] // ""')
+  # A run whose ledger is gone is closed without a report. Fixture runs of
+  # other test suites leave by this door when their temporary tree is removed.
+  if [ -z "$ledger" ] || [ ! -f "$ledger" ]; then
+    rec=$(printf '%s' "$rec" | jq -c --arg t "$(now_iso)" \
+            '.["상태"] = "종결" | .["종결 시각"] = $t | .["런 처분"] = "원장 없음"')
+    gate_halt_write "$f" "$rec" || true
+    return 0
+  fi
+  if [ "$st" = "열림" ]; then
+    cc_run_settled_for_report "$rd" "$ledger" || return 0
+    settle=$(cc_run_state "$rd" "$ledger" 2>/dev/null || true)
+    rec=$(printf '%s' "$rec" | jq -c --arg t "$(now_iso)" --arg k "$settle" \
+            '.["상태"] = "정착" | .["정착 시각"] = $t | .["정착 토큰"] = $k')
+    gate_halt_write "$f" "$rec" || return 0
+  fi
+  settle=$(printf '%s' "$rec" | jq -r '.["정착 토큰"] // ""')
+  out=$(mktemp "${TMPDIR:-/tmp}/cc-halt-stops.XXXXXX" 2>/dev/null) || return 0
+  if ! gate_halt_stops "$ledger" "$rd" "$mf" > "$out" 2>/dev/null; then
+    rm -f "$out"
+    log "중단 리포트 — 분류기가 실패했다(다음 회차에 다시 본다): $(gate_row_safe "$id" 80)"
+    return 0
+  fi
+  # One line per signature: the signature, its unintended count, the first
+  # intended exclusion, the intended marker (`-` as soon as any intended event
+  # of it is an open wait) and whether any unintended event is unbound.
+  agg=$(awk -F'\t' '
+    NF < 2 { next }
+    { s = $1
+      if (!(s in seen)) { seen[s] = 1; order[++n] = s }
+      if ($2 == "비의도") { u[s]++; if ($4 == "원인 셀 미결합") ub[s] = 1 }
+      else if ($2 == "의도") {
+        if (!(s in ex)) { ex[s] = $3; mk[s] = $4 }
+        else if ($4 != "열린 대기 아님") mk[s] = $4
+      }
+    }
+    END { for (i = 1; i <= n; i++) { s = order[i]
+            printf "%s\t%d\t%s\t%s\t%d\n", s, u[s] + 0, (s in ex ? ex[s] : "-"), (s in mk ? mk[s] : "-"), ub[s] + 0 } }
+  ' "$out" 2>/dev/null || true)
+  rm -f "$out"
+  pin=$(gate_halt_pin "$ledger")
+  cur='[]'
+  # Intended signatures first: they need no credential and no gh call.
+  while IFS='	' read -r sig cnt excl mark unb; do
+    [ -n "$sig" ] || continue
+    gate_halt_sig_ok "$sig" || { log "중단 리포트 — 형식 밖 서명을 건너뛴다"; continue; }
+    cur=$(printf '%s' "$cur" | jq -c --arg k "$sig" '. + [$k]')
+    [ "$cnt" -eq 0 ] || continue
+    ev=$(printf '%s' "$rec" | jq -c --arg k "$sig" '.["사건"][$k] // empty')
+    [ -z "$ev" ] || continue
+    [ "$mark" = "열린 대기 아님" ] || gate_halt_skip '대상 아님' "$id" "$sig"
+    rec=$(printf '%s' "$rec" | jq -c --arg k "$sig" --arg d "대상 아님:$excl" \
+            '.["사건"][$k] = {"처분": $d, "재시도": 0, "이슈 번호": null, "담기": "-"}')
+  done <<HALTAGG
+$agg
+HALTAGG
+  while IFS='	' read -r sig cnt excl mark unb; do
+    [ -n "$sig" ] || continue
+    gate_halt_sig_ok "$sig" || continue
+    [ "$cnt" -gt 0 ] || continue
+    ev=$(printf '%s' "$rec" | jq -c --arg k "$sig" '.["사건"][$k] // empty')
+    if gate_halt_event "$ev" "$sig" "$id" "$id" "$pin" "$settle" "$cnt" "$unb"; then :; else
+      rec=$(printf '%s' "$rec" | jq -c --arg c "$GATE_HALT_CRED" '.["최종 건너뜀"] = $c')
+    fi
+    rec=$(printf '%s' "$rec" | jq -c --arg k "$sig" --argjson e "$GATE_HALT_EV" '.["사건"][$k] = $e')
+  done <<HALTAGG
+$agg
+HALTAGG
+  # An event that has not reached a final disposition and is no longer in the
+  # classifier's output resolved in the meantime; it is dropped.
+  rec=$(printf '%s' "$rec" | jq -c --argjson cur "$cur" --argjson retries "$GATE_HALT_RETRIES" \
+          "$GATE_HALT_JQ_FINAL"' .["사건"] |= with_entries(select((.value | fin) or (.key as $k | any($cur[]; . == $k))))')
+  final=$(printf '%s' "$rec" | jq -r --argjson retries "$GATE_HALT_RETRIES" \
+            "$GATE_HALT_JQ_FINAL"' if all(.["사건"][]; fin) then "1" else "0" end')
+  if [ "$final" = "1" ]; then
+    rec=$(printf '%s' "$rec" | jq -c --arg t "$(now_iso)" '.["상태"] = "종결" | .["종결 시각"] = $t')
+  fi
+  rec=$(printf '%s' "$rec" | jq -c "$GATE_HALT_JQ_DISP"' .["런 처분"] = rundisp')
+  gate_halt_write "$f" "$rec" || true
+  return 0
+}
+
+gate_halt_backlog_round() {
+  # The fleet's parked backlog records, read without a lock — the fleet
+  # publishes the backlog by rename, so a read sees one whole version.
+  #
+  # NO BACKFILL: the first round that finds no `fleet.seen` writes every id
+  # parked at that moment as the baseline and files nothing. An id reaches
+  # `fleet.seen` once its event is final; until then it waits in
+  # `fleet.pending` with its retry state. A park is settled the moment it is
+  # seen: nothing but a person puts a parked record back.
+  local bl root seen pend parked tmp id reason sig ev cur newp
+  bl=$(gate_halt_backlog)
+  [ -n "$bl" ] || return 0
+  root=$(gate_halt_root)
+  mkdir -p "$root" 2>/dev/null || return 0
+  seen="$root/fleet.seen"
+  pend="$root/fleet.pending"
+  parked=""
+  if [ -f "$bl" ]; then
+    parked=$(jq -R -r --arg s "$GATE_HALT_BACKLOG_SCHEMA" \
+               'fromjson? | select(type == "object" and .schema == $s and .status == "parked")
+                | [(.id | tostring), ((.park_reason // "") | tostring)] | @tsv' "$bl" 2>/dev/null || true)
+  fi
+  if [ ! -f "$seen" ]; then
+    tmp=$(mktemp "$root/.seen.XXXXXX" 2>/dev/null) || return 0
+    printf '%s\n' "$parked" | cut -f1 | sed '/^$/d' > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$seen" 2>/dev/null || rm -f "$tmp"
+    return 0
+  fi
+  cur=$(jq -c 'if type == "object" then . else {} end' "$pend" 2>/dev/null || true)
+  [ -n "$cur" ] || cur='{}'
+  newp='{}'
+  while IFS='	' read -r id reason; do
+    [ -n "$id" ] || continue
+    grep -Fxq -- "$id" "$seen" 2>/dev/null && continue
+    case " $GATE_HALT_BACKLOG_REASONS " in
+      *" $reason "*) [ -n "$reason" ] || reason='미분류' ;;
+      *) reason='미분류' ;;
+    esac
+    sig="backlog-park/$reason"
+    ev=$(printf '%s' "$cur" | jq -c --arg k "$id" '.[$k] // empty')
+    gate_halt_event "$ev" "$sig" '-' '(형식 외)' '(미상)' '관측' 1 0 || true
+    if [ "$(printf '%s' "$GATE_HALT_EV" | jq -r --argjson retries "$GATE_HALT_RETRIES" \
+              "$GATE_HALT_JQ_FINAL"' if fin then "1" else "0" end')" = "1" ]; then
+      printf '%s\n' "$id" >> "$seen"
+    else
+      newp=$(printf '%s' "$newp" | jq -c --arg k "$id" --argjson e "$GATE_HALT_EV" '.[$k] = $e')
+    fi
+  done <<HALTBL
+$parked
+HALTBL
+  gate_halt_write "$pend" "$newp" || true
+  return 0
+}
+
 gate_verb_wait() {
   # gate_verb_wait <segment> <interval-seconds> <timeout-seconds>
   #
@@ -21608,15 +22372,17 @@ gate_record_stage_outcome() {
     gate_append_cost "$cost" "${n_stage:-1}" "$(now_iso)"
   fi
 
-  gate_absorb_emitted_judgment "$alias" "$seg" "$res"
+  gate_absorb_emitted_judgment "$alias" "$seg" "$res" "$kind"
 
   log "스테이지 종단 — $seg ($kind) $klass rc=$rc${cost:+ · ${cost} USD}"
 }
 
 gate_absorb_issue() {
   # gate_absorb_issue <alias> <segment> <기준> <근거> <문맥> <판단 부류>
-  # <판단 등급> — issue the approval an emitted judgment needs and dispose of
-  # every one of the issuer's three returns. ALWAYS returns 0.
+  # <판단 등급> [스테이지 종류] — issue the approval an emitted judgment needs and
+  # dispose of every one of the issuer's three returns. ALWAYS returns 0. The
+  # kind is the seat that raised the judgment; a caller that has none passes
+  # nothing and the row says `미상`.
   #
   # THE CLASS TRAVELS WITH THE QUESTION. The issuer hands it to auto-resolution,
   # which adopts only a class it can name; calling the issuer with four arguments
@@ -21638,8 +22404,8 @@ gate_absorb_issue() {
   # acted on the decision inside its own turn; if the gate writes neither a row
   # nor an approval nor a warning, the judgment exists only in a terminal
   # message nobody will read again.
-  local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" cls="${6:-}" grade="${7:-}" rc=0
-  gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" "$cls" || rc=$?
+  local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" cls="${6:-}" grade="${7:-}" seat="${8:-}" rc=0
+  gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" "$cls" "$seat" || rc=$?
   case "$(gate_judgment_approval_disposition "$rc")" in
     발행) ;;
     답있음)
@@ -21745,7 +22511,7 @@ gate_emitted_judgment_fields() {
 }
 
 gate_absorb_emitted_judgment() {
-  # gate_absorb_emitted_judgment <alias> <segment> <result-line>
+  # gate_absorb_emitted_judgment <alias> <segment> <result-line> [스테이지 종류]
   #
   # A STAGE CANNOT REACH THE JUDGMENT PATH DIRECTLY, because it writes no
   # sidecar and holds no gate verb. Its only channel for a decision it made is
@@ -21757,24 +22523,24 @@ gate_absorb_emitted_judgment() {
   # bypassed by the one path that never touches it — which is the whole design
   # routed around rather than one check missed. When it does not pass, no
   # `자율 승인` row is written and an approval is issued instead.
-  local alias="$1" seg="$2" res="$3" cls grade std revert why
+  local alias="$1" seg="$2" res="$3" seat="${4:-}" cls grade std revert why
   gate_emitted_judgment_fields "$res" || return 0
   cls="$GATE_EMIT_CLS" grade="$GATE_EMIT_GRADE" std="$GATE_EMIT_STD"
   revert="$GATE_EMIT_REVERT" why="$GATE_EMIT_WHY"
 
   if [ -z "$cls" ]; then
     warn "the stage emitted a judgment with no \`판단 부류\` — no row is written and an approval is issued"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음" "" "$grade"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음" "" "$grade" "$seat"
     return 0
   fi
   if ! judgment_class_ok "$cls"; then
     warn "the \`판단 부류\` the stage emitted is out of vocabulary: $cls — no row is written and an approval is issued"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls" "$cls" "$grade"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls" "$cls" "$grade" "$seat"
     return 0
   fi
   if [ "${grade:-2}" = "2" ] || ! gate_autoadopt_ok "$cls" "$revert"; then
     warn "the judgment the stage emitted did not pass the union of \`자동 채택\` ($cls) — no row is written and an approval is issued"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls" "$grade"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls" "$grade" "$seat"
     return 0
   fi
   gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \

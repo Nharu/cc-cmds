@@ -1213,6 +1213,19 @@ chmod +x "$WORK/bin/metrics-noop"
 export CC_METRICS_COLLECTOR="$WORK/bin/metrics-noop"
 export CC_METRICS_FILING_FILE="$WORK/no-such-metrics-filing"
 
+# THE HALT-REPORT ROUND IS INERT FOR THIS WHOLE PROCESS, for the same reasons
+# and one more. Its destination is a constant, so unlike the metrics filing there
+# is no missing setting to stop it: on a host whose keychain holds the gate's
+# write credential, a fixture run that settled would go to the real tracker. The
+# classifier seam prints no event, so no run of this suite has anything to file;
+# the backlog seam set and empty switches off the half that reads the fleet's
+# backlog, which the classifier seam does not cover. Section 76 names its own on
+# the call, which wins over this.
+printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/halt-stops-noop"
+chmod +x "$WORK/bin/halt-stops-noop"
+export CC_HALT_STOPS="$WORK/bin/halt-stops-noop"
+export CC_HALT_BACKLOG=
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -25196,6 +25209,336 @@ q74() {
 check "74: 강제 표면 분기의 조회가 그 인용을 자기 선행 기록으로 읽지 않는다" "$(q74 "$l74")" "1"
 printf -- '- `blocked` | 교대=1 | 대상=front | 스코프=run | 원인=무효화 | 사유=강제 표면 이동 | 관측=t | prev=x\n' > "$WORK/ledger74b.md"
 check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WORK/ledger74b.md")" "0"
+
+# ---------------------------------------------------------------------------
+# 76. 중단 리포트 관문 — 런별 기록·케이던스·잠금·좌석·정리·백로그 기준선·어휘 핀
+# --- section: 76 | group: base | covers: snapshot, plan, digest-path | anchors: 76: 런 개시가 런별 기록을 연다, 76: 재진입은 종결 기록을 바이트 하나 바꾸지 않는다, 76: 첫 진입은 회차를 돈다, 76: 스탬프 안의 재진입은 회차를 돌지 않는다, 76: 잠금이 살아 있으면 회차를 돌지 않는다, 76: 스테이지 좌석은 회차를 돌지 않는다, 76: plan 은 회차를 돌지 않는다, 76: digest-path 는 회차를 돌지 않는다, 76: 기록이 없는 원장은 다루지 않는다, 76: 30일 지난 종결 기록은 지워진다, 76: fleet.seen 이 없으면 기준선만 쓴다, 76: 분류기의 런 막힘 사유는 모두 사이드카 blocked.사유 어휘에 있다 ---
+#
+# 게이트가 런을 열 때 런별 기록을 만들고, 프렐류드가 중단 리포트 회차를 언제 띄우고
+# 언제 띄우지 않는지를 잰다. 등록·코멘트·담기처럼 gh 를 부르는 갈래는
+# `scripts/test-run-issue-filing.sh` 가 잰다 — 여기서는 분류기를 인자만 적는 스텁으로
+# 바꾸고, 백로그 경로는 백로그 사례에서만 연다. 그래서 이 절의 어느 회차도 사건을 갖지
+# 않고 gh 에 닿지 않는다.
+#
+# 회차가 돌았는지는 원장이 없는 열린 기록(미끼) 하나로 본다 — 회차는 그런 기록을
+# `원장 없음` 으로 닫으므로, 미끼가 닫혔으면 회차가 돈 것이고 열려 있으면 돌지 않은
+# 것이다. 이 절은 픽스처를 자기가 만든다(절 69 와 같은 이유).
+# ---------------------------------------------------------------------------
+P76ROOT=$(mktemp -d "$WORK/h76.XXXXXX")
+P76_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P76_PREV" ]; then
+  printf '76: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+P76_RID=R76
+P76_MAN="$P76ROOT/$P76_RID.plan.md"
+P76_GRANT="$WT/docs/pipeline-grant/$P76_RID.md"
+P76_LEDGER="$WT/docs/pipeline-run/$P76_RID.md"
+P76_STATE="$P76ROOT/state"
+P76_SROOT="$P76_STATE/cc-cmds"
+P76_HROOT="$P76_SROOT/halt-report"
+P76_RUNS="$P76_HROOT/runs"
+P76_REC="$P76_RUNS/$P76_RID.json"
+P76_STAMP="$P76_SROOT/halt.stamp"
+P76_LOCK="$P76_SROOT/.halt.lock"
+P76_RUNDIR="$P76_SROOT/run/$P76_RID"
+P76_STOPS="$P76ROOT/stops-stub"
+P76_STOPS_LOG="$P76ROOT/stops.log"
+P76_SCHEMA=$(sed -n "s/^readonly GATE_HALT_SCHEMA='\(.*\)'\$/\1/p" "$GATE")
+sed -e "s/run-id=$P76_PREV;/run-id=$P76_RID;/" \
+    -e "s/^\*\*런 id\*\*: $P76_PREV\$/**런 id**: $P76_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P76_MAN"
+sed "s/R1/$P76_RID/g" "$GBAK" > "$P76_GRANT"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$P76_RID"
+  printf '런 id %s · 중단 리포트 관문 픽스처\n' "$P76_RID"
+} > "$P76_LEDGER"
+rm -rf "$P76_STATE"
+mkdir -p "$P76_STATE"
+cat > "$P76_STOPS" <<P76EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$P76_STOPS_LOG"
+exit 0
+P76EOF
+chmod +x "$P76_STOPS"
+
+p76_gate() {
+  # 인프로세스 호출. 회차는 게이트가 띄우는 분리 자식(새 bash 프로세스)에서 돌고, 그
+  # 자식은 수출된 값만 받는다 — 그래서 서브셸 안의 `export` 다(절 69 와 같다).
+  ( cd "$WT" && export XDG_STATE_HOME="$P76_STATE" CC_HALT_STOPS="$P76_STOPS" \
+      && gate_inproc "$@" >/dev/null 2>&1 )
+}
+p76_wait_round() {
+  local i=0
+  while [ -d "$P76_LOCK" ]; do
+    [ "$i" -lt 300 ] || { bad "76: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+p76_record() {
+  # p76_record <파일 이름> <상태> <원장> [정착 토큰] — 손으로 쓴 런별 기록 하나.
+  mkdir -p "$P76_RUNS"
+  jq -n --arg s "$P76_SCHEMA" --arg st "$2" --arg l "$3" --arg k "${4:-}" \
+    '{schema: $s, run: "fixture", "원장": $l, "매니페스트": "", RUN_DIR: "",
+      "상태": $st, "열림 시각": "2026-01-01T00:00:00Z", "정착 시각": null, "종결 시각": null,
+      "정착 토큰": (if $k == "" then null else $k end), "사건": {}, "최종 건너뜀": null,
+      "런 처분": "정착 대기"}' > "$P76_RUNS/$1"
+}
+p76_decoy() { p76_record decoy.json 열림 "$P76ROOT/no-such-ledger.md"; }
+p76_get() { jq -r --arg k "$2" '.[$k] // "null"' "$P76_RUNS/$1" 2>/dev/null || printf 없음; }
+p76_old_stamp() { printf '%s\n' "$(( $(date -u +%s) - 86400 ))" > "$P76_STAMP"; }
+p76_runrows() { { grep -c '^- `run` ' "$P76_LEDGER" || true; }; }
+p76_lock_state() { if [ -d "$P76_LOCK" ]; then printf 있음; else printf 없음; fi; }
+
+# A — 첫 진입. 런 개시 가지가 기록을 만들고, 프렐류드가 회차를 띄운다.
+p76_decoy
+p76_gate snapshot --manifest "$P76_MAN"
+p76_wait_round
+check "76: 런 개시가 런별 기록을 연다" "$(p76_get "$P76_RID.json" schema)/$(p76_get "$P76_RID.json" run)" "$P76_SCHEMA/$P76_RID"
+case "$(p76_get "$P76_RID.json" 원장)" in
+  */docs/pipeline-run/"$P76_RID".md) ok "76: 그 기록은 이 런의 원장을 가리킨다" ;;
+  *) bad "76: 그 기록은 이 런의 원장을 가리킨다" "$(p76_get "$P76_RID.json" 원장)" ;;
+esac
+check "76: 첫 진입은 회차를 돈다" "$(p76_get decoy.json 상태)" "종결"
+check "76: 원장이 사라진 기록은 리포트 없이 원장 없음으로 닫힌다" "$(p76_get decoy.json '런 처분')" "원장 없음"
+check "76: 첫 진입이 끝나면 잠금이 풀려 있다" "$(p76_lock_state)" "없음"
+check "76: 사건 없는 회차는 원장에 리포트 행을 쓰지 않는다" \
+  "$( { grep -c -F -e '`중단 리포트 건너뜀`' -e 'kind=halt-report' "$P76_LEDGER" || true; } )" "0"
+
+# R8 — 종결된 기록은 런 개시 가지가 다시 돌아도 바이트 하나 바뀌지 않는다. 가지가
+# 다시 돌았다는 것은 `run` 행이 하나 는 것으로 먼저 확인한다 — 돌지 않았다면 아래
+# 단언은 아무것도 배제하지 않는다.
+jq -c '.["상태"] = "종결" | .["종결 시각"] = "2026-01-02T00:00:00Z" | .["런 처분"] = "대상 없음"' \
+  "$P76_REC" > "$P76_REC.tmp" && mv "$P76_REC.tmp" "$P76_REC"
+p76_sha_before=$(shasum -a 256 "$P76_REC" | cut -d' ' -f1)
+p76_run_before=$(p76_runrows)
+rm -rf "$P76_RUNDIR/settings"
+p76_gate snapshot --manifest "$P76_MAN"
+p76_wait_round
+check "76: (선행) 설정 디렉터리가 사라진 재진입은 런 개시 가지를 다시 돈다" \
+  "$(( $(p76_runrows) - p76_run_before ))" "1"
+check "76: 재진입은 종결 기록을 바이트 하나 바꾸지 않는다" \
+  "$(shasum -a 256 "$P76_REC" | cut -d' ' -f1)" "$p76_sha_before"
+
+# B — 정착한 기록만 분류기에 닿고, 기록이 없는 원장은 회차의 모집단 밖이다.
+printf 'x\n' > "$P76ROOT/settled-ledger.md"
+printf 'x\n' > "$P76ROOT/orphan-ledger.md"
+p76_record settled.json 정착 "$P76ROOT/settled-ledger.md" 종단
+p76_old_stamp
+p76_gate snapshot --manifest "$P76_MAN"
+p76_wait_round
+check "76: 정착한 기록은 분류기를 부른다" \
+  "$( { grep -c -x -F "$P76ROOT/settled-ledger.md" "$P76_STOPS_LOG" 2>/dev/null || true; } )" "1"
+check "76: 기록이 없는 원장은 다루지 않는다" \
+  "$( { grep -c -F 'orphan-ledger.md' "$P76_STOPS_LOG" 2>/dev/null || true; } )" "0"
+check "76: 사건 없는 정착 기록은 대상 없음으로 닫힌다" \
+  "$(p76_get settled.json 상태)/$(p76_get settled.json '런 처분')" "종결/대상 없음"
+
+# C — 스탬프 안의 재진입.
+p76_decoy
+p76_gate snapshot --manifest "$P76_MAN"
+check "76: 스탬프 안의 재진입은 회차를 돌지 않는다" "$(p76_get decoy.json 상태)" "열림"
+
+# D — 스탬프는 만료됐지만 잠금이 살아 있다. 잠금은 이 사례가 만든 것이라 기다리지 않는다.
+p76_old_stamp
+mkdir -p "$P76_LOCK"
+p76_gate snapshot --manifest "$P76_MAN"
+check "76: 잠금이 살아 있으면 회차를 돌지 않는다" "$(p76_get decoy.json 상태)" "열림"
+
+# E — 잠금이 만료 시간(7200초)을 넘겼다.
+fx_age_file "$P76_LOCK" 10800
+p76_gate snapshot --manifest "$P76_MAN"
+p76_wait_round
+check "76: 만료된 잠금은 깨고 회차를 돈다" "$(p76_get decoy.json 상태)" "종결"
+check "76: 깨고 잡은 잠금도 끝에 풀린다" "$(p76_lock_state)" "없음"
+
+# F — 스테이지 좌석, plan, digest-path. 스탬프는 만료된 채로 두고, 세 호출 모두 회차도
+# 스탬프도 건드리지 않는다.
+p76_decoy
+p76_old_stamp
+p76_stamp_before=$(cat "$P76_STAMP")
+( CC_PIPELINE_STAGE_ID="$P76_RID#1" CC_PIPELINE_SEGMENT=S76 p76_gate snapshot --manifest "$P76_MAN" )
+check "76: 스테이지 좌석은 회차를 돌지 않는다" "$(p76_get decoy.json 상태)" "열림"
+check "76: 스테이지 좌석은 스탬프를 쓰지 않는다" "$(cat "$P76_STAMP")" "$p76_stamp_before"
+p76_gate plan --manifest "$P76_MAN" --kind x --target infra --cutpoint 커밋 -- ls
+check "76: plan 은 회차를 돌지 않는다" "$(p76_get decoy.json 상태)" "열림"
+check "76: plan 은 스탬프를 쓰지 않는다" "$(cat "$P76_STAMP")" "$p76_stamp_before"
+p76_gate digest-path --manifest "$P76_MAN"
+check "76: digest-path 는 회차를 돌지 않는다" "$(p76_get decoy.json 상태)" "열림"
+check "76: digest-path 는 스탬프를 쓰지 않는다" "$(cat "$P76_STAMP")" "$p76_stamp_before"
+
+# G — 내부 동사를 직접 부르면 잠금의 난스와 맞지 않는 한 아무것도 하지 않는다.
+mkdir -p "$P76_LOCK"
+printf '1 %s\n' "$(date -u +%s)" > "$P76_LOCK/owner"
+printf 'the-real-nonce\n' > "$P76_LOCK/nonce"
+p76_rc=0; p76_gate halt-report-round --manifest "$P76_MAN" --nonce not-the-nonce || p76_rc=$?
+check "76: 난스가 다른 halt-report-round 직접 호출은 exit 3" "$p76_rc" "3"
+p76_rc=0; p76_gate halt-report-round --manifest "$P76_MAN" || p76_rc=$?
+check "76: 난스 없는 halt-report-round 직접 호출은 exit 2" "$p76_rc" "2"
+check "76: 거부된 직접 호출은 회차를 돌지 않는다" "$(p76_get decoy.json 상태)" "열림"
+check "76: 거부된 직접 호출은 남의 잠금과 난스를 그대로 둔다" "$(cat "$P76_LOCK/nonce" 2>/dev/null)" "the-real-nonce"
+rm -rf "$P76_LOCK"
+
+# H — 정리. 리퍼와 같은 보존 기간(30일)을 넘긴 종결 기록만 지운다.
+p76_record closed-old.json 종결 "$P76ROOT/no-such-ledger.md"
+p76_record closed-new.json 종결 "$P76ROOT/no-such-ledger.md"
+fx_age_file "$P76_RUNS/closed-old.json" $((31 * 86400))
+fx_age_file "$P76_RUNS/closed-new.json" $((29 * 86400))
+p76_old_stamp
+p76_gate snapshot --manifest "$P76_MAN"
+p76_wait_round
+check "76: (선행) 정리 회차가 돌았다" "$(p76_get decoy.json 상태)" "종결"
+check "76: 30일 지난 종결 기록은 지워진다" "$([ -e "$P76_RUNS/closed-old.json" ] && printf 있음 || printf 없음)" "없음"
+check "76: 30일이 안 된 종결 기록은 남는다" "$([ -e "$P76_RUNS/closed-new.json" ] && printf 있음 || printf 없음)" "있음"
+
+# I — 플릿 백로그. `fleet.seen` 이 없는 첫 회차는 그때 park 된 id 를 기준선으로 쓰고
+# 아무것도 등록하지 않는다.
+P76_BACKLOG="$P76ROOT/backlog.jsonl"
+{
+  printf '{"schema":"cc-pace-backlog v1","id":"b1","status":"parked","park_reason":"doc-changed"}\n'
+  printf '{"schema":"cc-pace-backlog v1","id":"b2","status":"parked","park_reason":"base-moved"}\n'
+  printf '{"schema":"cc-pace-backlog v1","id":"b3","status":"queued"}\n'
+} > "$P76_BACKLOG"
+rm -f "$P76_HROOT/fleet.seen" "$P76_HROOT/fleet.pending"
+p76_old_stamp
+( export CC_HALT_BACKLOG="$P76_BACKLOG"; p76_gate snapshot --manifest "$P76_MAN" )
+p76_wait_round
+check "76: fleet.seen 이 없으면 기준선만 쓴다" \
+  "$(sort "$P76_HROOT/fleet.seen" 2>/dev/null | tr '\n' ' ')" "b1 b2 "
+check "76: 기준선 회차는 미결 사건을 남기지 않는다" \
+  "$([ -e "$P76_HROOT/fleet.pending" ] && printf 있음 || printf 없음)" "없음"
+
+# J — 게이트가 `fleet.sh` 를 소싱하지 않고 다시 선언한 것들의 핀. 경로는 두 덮어쓰기
+# 변수가 없을 때와 둘 다 같은 값일 때 같은 파일이어야 한다.
+P76_FLEET="$repo_root/plugins/cc-cmds/orchestrator/fleet.sh"
+p76_fleet_expr=$(sed -n 's/^PACE_ROOT="\(.*\)"$/\1/p' "$P76_FLEET")
+check "76: (선행) fleet.sh 의 PACE_ROOT 문면을 한 줄 읽었다" \
+  "$(printf '%s\n' "$p76_fleet_expr" | grep -c .)" "1"
+check "76: (선행) fleet.sh 는 백로그를 PACE_ROOT 아래 backlog.jsonl 로 둔다" \
+  "$( [ "$(grep -c -F '"$PACE_ROOT/backlog.jsonl"' "$P76_FLEET")" -ge 1 ] && printf 예 || printf 아니오)" "예"
+p76_fleet_bl() {
+  # p76_fleet_bl <XDG_STATE_HOME> [FLEET_PACE_ROOT] — fleet.sh 의 문면으로 계산한 백로그 경로.
+  ( unset FLEET_PACE_ROOT; XDG_STATE_HOME="$1"; [ -z "${2:-}" ] || FLEET_PACE_ROOT="$2"
+    eval "printf '%s' \"$p76_fleet_expr/backlog.jsonl\"" )
+}
+p76_gate_bl() {
+  # p76_gate_bl <XDG_STATE_HOME> [GATE_PACE_ROOT] — 게이트가 읽는 백로그 경로.
+  ( unset CC_HALT_BACKLOG GATE_PACE_ROOT; export XDG_STATE_HOME="$1"
+    [ -z "${2:-}" ] || export GATE_PACE_ROOT="$2"
+    bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_backlog' _ "$GATE" 2>/dev/null )
+}
+check "76: 덮어쓰기가 없으면 게이트와 플릿의 백로그 경로가 같다" \
+  "$(p76_gate_bl "$P76ROOT/xdg")" "$(p76_fleet_bl "$P76ROOT/xdg")"
+check "76: FLEET_PACE_ROOT 와 GATE_PACE_ROOT 를 같게 두면 백로그 경로가 같다" \
+  "$(p76_gate_bl "$P76ROOT/xdg" "$P76ROOT/pace")" "$(p76_fleet_bl "$P76ROOT/xdg" "$P76ROOT/pace")"
+check "76: 백로그 스키마 토큰이 fleet.sh 와 같다" \
+  "$(sed -n "s/^readonly GATE_HALT_BACKLOG_SCHEMA='\(.*\)'\$/\1/p" "$GATE")" \
+  "$(sed -n "s/^readonly FLEET_BACKLOG_SCHEMA='\(.*\)'\$/\1/p" "$P76_FLEET")"
+p76_gate_reasons=$(sed -n "s/^readonly GATE_HALT_BACKLOG_REASONS='\(.*\)'\$/\1/p" "$GATE" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort)
+p76_fleet_reasons=$(sed -n '/^fleet_dispatch_park_reason() {$/,/^}$/p' "$P76_FLEET" \
+  | grep -o "printf '[a-z-]*'" | sed "s/^printf '//; s/'\$//" | LC_ALL=C sort -u)
+check "76: (선행) fleet.sh 의 park 사유를 다섯 읽었다" "$(printf '%s\n' "$p76_fleet_reasons" | grep -c .)" "5"
+check "76: 게이트의 park 사유 다섯이 fleet.sh 의 문면과 같다" \
+  "$(printf '%s' "$p76_gate_reasons" | tr '\n' ' ')" "$(printf '%s' "$p76_fleet_reasons" | tr '\n' ' ')"
+
+# K — 분류기의 런 막힘 사유 표는 사이드카 계약의 `blocked.사유` 닫힌 어휘 안에 있다.
+p76_blk=$(grep -F -e '| `blocked.사유` |' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md")
+p76_vocab=$(bash "$repo_root/plugins/cc-cmds/orchestrator/run-stops.sh" --vocab run-blocked 2>/dev/null)
+check "76: (선행) 분류기 사유 표와 사이드카 어휘 줄을 읽었다" \
+  "$( [ -n "$p76_blk" ] && [ "$(printf '%s\n' "$p76_vocab" | grep -c .)" -ge 1 ] && printf 예 || printf 아니오)" "예"
+p76_miss=""
+while IFS= read -r p76_t; do
+  [ -n "$p76_t" ] || continue
+  case "$p76_blk" in *"\`$p76_t\`"*) ;; *) p76_miss="$p76_miss[$p76_t]" ;; esac
+done <<P76VOCAB
+$p76_vocab
+P76VOCAB
+check "76: 분류기의 런 막힘 사유는 모두 사이드카 blocked.사유 어휘에 있다" "$p76_miss" ""
+
+# ---------------------------------------------------------------------------
+# 77. 판단 승인 행의 연 자리
+# --- section: 77 | group: ledger_series | covers: act, gate_record_stage_outcome | anchors: 77: 라우터가 연 판단은 연 자리=라우터 다, 77: 디스패치 기록이 implement 인 스테이지 좌석은 연 자리=implement 다, 77: 디스패치 기록이 없는 스테이지 좌석은 연 자리=미상 이다, 77: 흡수 경로는 그 스테이지 종류를 싣는다, 77: 종류 없이 부른 흡수 경로는 연 자리=미상 이다, 77: 같은 판단은 연 자리가 달라도 승인 하나다, 77: 흡수 경로는 연 자리를 더해도 판단 부류를 그대로 넘긴다, 77: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다 ---
+#
+# 판단 승인 발행 행의 `연 자리` 는 그 판단을 연 자리다. act 경로에서는 스테이지가 게이트
+# 동사를 갖지 않으므로 사실상 라우터이고, 설계 스테이지의 판단이 실제로 지나는 곳은
+# 스테이지 결과를 기록하는 함수 안의 흡수 호출이다 — 거기서는 디스패치한 스테이지의
+# 종류가 이미 범위 안에 있다. 이 필드는 행에만 실리고 승인 id 와 구속 튜플에는 들어가지
+# 않는다. 그래서 같은 판단을 두 자리에서 열어도 승인은 하나다.
+# ---------------------------------------------------------------------------
+l77=$(lsr_ledger w77)
+d77="${l77%/*}"
+r77() { { grep -F -e '- `승인` |' "$l77" || true; } | grep -F -e "| 막는 세그먼트=$1 |" | tail -1; }
+f77() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | sed -n '1p'; }
+j77() {
+  # j77 <세그먼트> <기준> <근거> — act 경로의 발행처가 하는 그대로, 좌석을 판정해 넘긴다.
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+  gate_issue_judgment_approval cc-cmds "$1" "$2" "$3" "" "$(gate_judgment_seat)"
+}
+router77() { unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT; "$@"; }
+stage77() {
+  # stage77 <스테이지 id> <명령…> — 스테이지 런처가 수출하는 두 표지를 단 좌석.
+  CC_PIPELINE_STAGE_ID="$1"; CC_PIPELINE_SEGMENT="${1%#*}"
+  export CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  shift; "$@"
+}
+a77() {
+  # a77 <0|1 자동 해소> <세그먼트> <결과 줄> [스테이지 종류] — 스테이지 결과 기록이 부르는 흡수.
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$1"
+  unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  gate_absorb_emitted_judgment cc-cmds "$2" "$3" ${4:+"$4"}
+}
+res77() {
+  # res77 <부류> <등급> <기준> <근거> — 스테이지 종단 메시지 한 줄.
+  jq -cn --arg t "**판단 부류**: $1 **판단 등급**: $2 **판단 기준**: $3 **판단 근거**: $4" \
+    '{type: "result", subtype: "success", is_error: false, result: $t}'
+}
+
+lsr_in - "$l77" - router77 j77 S77A '연 자리 기준 A' '근거 A' >/dev/null 2>&1 || true
+check "77: 라우터가 연 판단은 연 자리=라우터 다" "$(f77 "$(r77 S77A)" '연 자리')" "라우터"
+printf 'implement\n' > "$d77/S77B.kind"
+lsr_in - "$l77" - stage77 'S77B#1' j77 S77B '연 자리 기준 B' '근거 B' >/dev/null 2>&1 || true
+check "77: 디스패치 기록이 implement 인 스테이지 좌석은 연 자리=implement 다" "$(f77 "$(r77 S77B)" '연 자리')" "implement"
+lsr_in - "$l77" - stage77 'S77C#1' j77 S77C '연 자리 기준 C' '근거 C' >/dev/null 2>&1 || true
+check "77: 디스패치 기록이 없는 스테이지 좌석은 연 자리=미상 이다" "$(f77 "$(r77 S77C)" '연 자리')" "미상"
+lsr_in - "$l77" - a77 0 S77D "$(res77 문서-신선도 2 '흡수 기준 D' '흡수 근거 D')" design >/dev/null 2>&1 || true
+check "77: 흡수 경로는 그 스테이지 종류를 싣는다" "$(f77 "$(r77 S77D)" '연 자리')" "design"
+lsr_in - "$l77" - a77 0 S77E "$(res77 문서-신선도 2 '흡수 기준 E' '흡수 근거 E')" >/dev/null 2>&1 || true
+check "77: 종류 없이 부른 흡수 경로는 연 자리=미상 이다" "$(f77 "$(r77 S77E)" '연 자리')" "미상"
+lsr_in - "$l77" - router77 gate_issue_judgment_approval cc-cmds S77F '연 자리 기준 F' '근거 F' '' bogus >/dev/null 2>&1 || true
+check "77: 어휘 밖 연 자리 값은 미상으로 접힌다" "$(f77 "$(r77 S77F)" '연 자리')" "미상"
+
+# 같은 판단을 라우터와 implement 좌석에서 차례로 연다. 승인 id 는 세그먼트와 질문
+# 문면에서만, 구속 튜플은 세그먼트·질문 다이제스트·선택지판·스냅숏에서만 유도된다.
+printf 'implement\n' > "$d77/S77G.kind"
+lsr_in - "$l77" - router77 j77 S77G '같은 기준 G' '같은 근거 G' >/dev/null 2>&1 || true
+lsr_in - "$l77" - stage77 'S77G#1' j77 S77G '같은 기준 G' '같은 근거 G' >/dev/null 2>&1 || true
+check "77: 같은 판단은 연 자리가 달라도 승인 하나다" \
+  "$( { grep -F -e '- `승인` |' "$l77" || true; } | grep -c -F -e '| 막는 세그먼트=S77G |')" "1"
+id77() { gate_judgment_approval_id S77G "$(gate_judgment_question '같은 기준 G' '같은 근거 G')"; }
+check "77: 승인 id 는 세그먼트와 질문 문면에서만 유도된다" \
+  "$(f77 "$(r77 S77G)" '승인 id')" "$(lsr_in - "$l77" - id77 2>/dev/null)"
+case "$(f77 "$(r77 S77G)" '구속 튜플')" in
+  "S77G/$(printf '%s' '같은 기준 G — 같은 근거 G' | shasum -a 256 | cut -d' ' -f1)/"*)
+    ok "77: 구속 튜플은 세그먼트와 질문 다이제스트로 시작하고 연 자리를 싣지 않는다" ;;
+  *) bad "77: 구속 튜플" "$(f77 "$(r77 S77G)" '구속 튜플')" ;;
+esac
+
+# 판단 부류는 연 자리 앞 자리 인자다. 자리가 밀리면 부류가 비어 자동 해소가 「판단 부류가
+# 없어 채택하지 않음」 으로 닫는다 — 그래서 채택 행이 그 부류를 싣는지로 잰다.
+lsr_in - "$l77" - a77 1 S77H "$(res77 문서-신선도 2 '흡수 기준 H' '흡수 근거 H')" design >/dev/null 2>&1 || true
+check "77: 흡수 경로는 연 자리를 더해도 판단 부류를 그대로 넘긴다" \
+  "$( { grep -F -e '- `자율 승인` |' "$l77" || true; } | grep -F -e '| 세그먼트=S77H |' | grep -c -F -e '| 판단 부류=문서-신선도 |')" "1"
+
+# R2 — 가장 긴 질문 문면(발췌 상한을 넘는 기준·근거)과 가장 긴 종류 값으로 연 행.
+std77=$(printf '아주 긴 기준 문면입니다 %.0s' $(seq 1 60))
+why77=$(printf '아주 긴 근거 문면입니다 %.0s' $(seq 1 60))
+lsr_in - "$l77" - a77 0 S77I "$(res77 문서-신선도 2 "$std77" "$why77")" reconverge >/dev/null 2>&1 || true
+row77=$(r77 S77I)
+check "77: (선행) 긴 문면의 발행 행이 연 자리=reconverge 로 쓰였다" "$(f77 "$row77" '연 자리')" "reconverge"
+n77=$(printf '%s' "$row77" | LC_ALL=C wc -c | tr -d ' ')
+check "77: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다" \
+  "$([ "${n77:-0}" -gt 0 ] && [ "${n77:-0}" -le 1024 ] && printf 예 || printf "아니오(${n77}바이트)")" "예"
 
 # --- epilogue-begin ---
 #
