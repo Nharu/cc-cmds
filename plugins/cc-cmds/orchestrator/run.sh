@@ -254,6 +254,8 @@ readonly LIT_RECONVERGE_TERMINAL='재수렴을 종료합니다. 판정은 여기
 # The first sentence of the attended `design` skill's freeze notice, byte for
 # byte — so the same literal marks a freeze whether a seat or a stage did it.
 readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
+# The last line of the base split stage (`design-base-unattended --split`).
+readonly LIT_SPLIT_TERMINAL='베이스 분할을 마쳤습니다.'
 
 # ---------------------------------------------------------------------------
 # Logging. Redirection is not about survival — a driver without it survives a
@@ -422,6 +424,8 @@ manifest_snapshot_take() {
   #   AA <row>     `- \`자동 채택\`` rows inside the first `## 인가` only
   #   DR <row>     every `- \`설계 로스터\`` row anywhere, in order
   #   C <row>      every `- \`종료 절\`` row, in order
+  #   BP <row>     every `- \`베이스 발행\`` row anywhere, in order
+  #   BD <row>     every `- \`베이스 설계\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -450,6 +454,8 @@ $(LC_ALL=C awk '
     index($0, "- `자동 채택`") == 1 { print "AW\t" $0; if (ina) print "AA\t" $0 }
     index($0, "- `설계 로스터`") == 1 { print "DR\t" $0 }
     index($0, "- `종료 절`") == 1 { print "C\t" $0 }
+    index($0, "- `베이스 발행`") == 1 { print "BP\t" $0 }
+    index($0, "- `베이스 설계`") == 1 { print "BD\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -625,6 +631,16 @@ manifest_clause_rows_raw() {
   grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_base_publish_rows() {
+  if manifest_memo_on; then manifest_memo_all "BP	"; return 0; fi
+  grep -E '^- `베이스 발행`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_base_design_rows() {
+  if manifest_memo_on; then manifest_memo_all "BD	"; return 0; fi
+  grep -E '^- `베이스 설계`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -700,6 +716,14 @@ binding_set_bytes() {
     # bytes, so no in-flight run's digest moves, and the stage then uses the
     # default roster frozen in its own skill file.
     manifest_design_roster_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/roster\t/'
+    # THE BASE ROWS ARE IN THE FROZEN SET, on the same terms. `베이스 발행` is the
+    # only carrier of "publish, and where" — the split stage reads nothing else —
+    # so a row any act could rewrite mid-run would turn a document-only run into
+    # one that writes to a tracker. `베이스 설계` binds a child run to the base it
+    # was kicked off against. Both are whole-file scans and contribute zero bytes
+    # when absent, so no in-flight manifest's digest moves.
+    manifest_base_publish_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basepub\t/'
+    manifest_base_design_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basedesign\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -5218,6 +5242,54 @@ doc_is_early_stub() {
 # that SAID it froze without writing it fails, and one that wrote it and died
 # before saying so fails too.
 predicate_design()      { grep -qF "$LIT_DESIGN_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && doc_is_frozen "$DOC"; }
+
+# THE BASE SPLIT'S ARTIFACT IS THE REGISTRY, and it is crossed with the stage's
+# own terminal literal for the reason the design predicate crosses two facts.
+# The registry sits beside the document as `design-base/<stem>.tickets.md` and
+# is written only by `base-split.py record`. It is complete when its header is
+# version 1 and names the document's CURRENT whole-file digest — a registry of
+# an earlier revision is not the split of this one — and every row reached its
+# end state for the frozen tracker: `발행됨` for the base and every ticket and
+# `걸림` for every relation when a tracker was chosen, `문서만` everywhere when
+# none was. A `발행중` or `대기` row is a split still under way.
+split_registry_path() {
+  # split_registry_path <document path>
+  printf '%s/design-base/%s.tickets.md' "$(dirname "$1")" "$(basename "$1" .md)"
+}
+
+split_registry_complete() {
+  # split_registry_complete <document path> — 0 when the registry is complete.
+  local doc="$1" reg sha
+  [ -n "$doc" ] && [ -f "$doc" ] || return 1
+  reg=$(split_registry_path "$doc")
+  [ -f "$reg" ] || return 1
+  sha=$(shasum -a 256 "$doc" | cut -d' ' -f1)
+  awk -v sha="$sha" '
+    NR == 1 {
+      if (index($0, "<!-- cc-design-base-tickets v1; ") != 1) exit 1
+      if (index($0, "; doc-sha256=" sha ";") == 0) exit 1
+      if (index($0, "; tracker=없음;") > 0) none = 1
+      else if (index($0, "; tracker=github;") > 0 || index($0, "; tracker=clickup;") > 0) none = 0
+      else exit 1
+      head = 1; next
+    }
+    $0 == "<!-- cc-design-base-tickets: end -->" { ended = 1; next }
+    index($0, "- `베이스` |") == 1 || index($0, "- `티켓` |") == 1 {
+      if (index($0, "- `베이스` |") == 1) base = 1
+      want = none ? "| 상태=문서만 |" : "| 상태=발행됨 |"
+      if (index($0, want) == 0) bad = 1
+      next
+    }
+    index($0, "- `관계` |") == 1 {
+      want = none ? "| 상태=문서만" : "| 상태=걸림"
+      if (substr($0, length($0) - length(want) + 1) != want) bad = 1
+      next
+    }
+    END { exit !(head && ended && base && !bad) }
+  ' "$reg"
+}
+
+predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && split_registry_complete "$DOC"; }
 
 predicate_implement() {
   # The git-state ladder, evaluated in the MAIN tree, in cutpoint order. A run

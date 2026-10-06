@@ -988,6 +988,9 @@ gate_collaboration_surface() {
       case "${1:-}" in
         push) [ "$rd" != "배포트리거" ] && return 0 ;;
       esac ;;
+    # The ClickUp ticket and dependency writers file tickets and relations,
+    # which is the same surface as `gh issue` on the other tracker.
+    clickup-create.py|clickup-relate.py) return 0 ;;
   esac
   return 1
 }
@@ -4099,6 +4102,20 @@ surface_of_argv0() {
     # a tracker write never sits behind the lookup's name and its read grade.
     clickup-create.py)
       printf '외부상태변경' ;;
+    # The ClickUp dependency writer: one POST that hangs one task on another.
+    clickup-relate.py)
+      printf '외부상태변경' ;;
+    # The base split helper is graded by its subcommand, which is its first
+    # argument. `check` only reads the document; `plan` writes its plan file
+    # under the run directory; `record` rewrites the ticket registry beside the
+    # document. Anything else is a spelling the helper refuses, and it takes the
+    # highest of the three rather than a guess.
+    base-split.py)
+      case "${1:-}" in
+        check)  printf '읽기' ;;
+        plan)   printf '트리밖쓰기' ;;
+        *)      printf '워크트리쓰기' ;;
+      esac ;;
     # The note above says `openssl` may not sit in the digest row because one
     # name would cover both hashing and opening a socket. That reasoning holds
     # and is not overturned here — it is the reason this is a subcommand table
@@ -6980,15 +6997,100 @@ gate_run_scope_design_step() {
   printf '%s' "$ids"
 }
 
+# ---------------------------------------------------------------------------
+# The run-scope step table — the design step's exemption, generalized.
+#
+#   stage kind token | plan step skill | row `종류`
+#   design           | design          | design
+#   audit            | design-audit    | audit
+#   split            | split           | split
+#
+# A base run is `design → design-audit → split` and none of the three is a
+# segment, so all three are dispatched with `--segment -` and keyed on their
+# plan step id. Each kind binds to exactly ONE plan step carrying its skill —
+# zero or several is a plan this table does not know how to read, and the
+# dispatch is refused rather than a key being picked. The design row keeps its
+# own resolver above, which also requires `design_required=true`.
+# ---------------------------------------------------------------------------
+gate_run_scope_skill_of() {
+  # gate_run_scope_skill_of <kind token> — the plan skill the table binds it to.
+  case "$1" in
+    design) printf 'design' ;;
+    audit)  printf 'design-audit' ;;
+    split)  printf 'split' ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_run_scope_step() {
+  # gate_run_scope_step <kind token> — prints the plan's single step id for that
+  # kind and returns 0, or returns 1.
+  local skill ids
+  case "$1" in
+    design) gate_run_scope_design_step; return $? ;;
+  esac
+  skill=$(gate_run_scope_skill_of "$1") || return 1
+  ids=$( { manifest_plan_json 2>/dev/null \
+           | jq -r --arg s "$skill" '.steps[]? | select(type == "object" and .skill == $s) | .id // empty' 2>/dev/null \
+           || true; } | grep -v '^$' || true)
+  [ -n "$ids" ] || return 1
+  [ "$(printf '%s\n' "$ids" | grep -c .)" = "1" ] || return 1
+  printf '%s' "$ids"
+}
+
+gate_run_scope_kind_of_key() {
+  # gate_run_scope_kind_of_key <stage-key> — prints the row kind whose run-scope
+  # step id is this key and returns 0, or returns 1. A key that also has a
+  # `segment` row is a segment, whatever the plan calls it.
+  local key="$1" k s
+  [ -z "$(gate_segment_field "$key" '상태')" ] || return 1
+  for k in design audit split; do
+    if s=$(gate_run_scope_step "$k" 2>/dev/null) && [ "$s" = "$key" ]; then
+      printf '%s' "$k"
+      return 0
+    fi
+  done
+  return 1
+}
+
+gate_run_scope_rows() {
+  # gate_run_scope_rows <step id> <row kind> — every `stage-result` row of a
+  # run-scope step in ledger order, in either writer's shape: the router's
+  # (`세그먼트=- | 스테이지=<id> | 종류=<k>`) or the driver's, which names its stage
+  # `S2` (audit, no `종류`) or `S2split` (`종류=split`). The driver's names are read
+  # only when the plan's id has no row of its own.
+  local id="$1" k="$2" rows
+  rows=$( { gate_rows 'stage-result' || true; } \
+          | { grep -F "세그먼트=- | 스테이지=$id | 종류=$k " || true; })
+  if [ -z "$rows" ]; then
+    case "$k" in
+      audit)
+        rows=$( { gate_rows 'stage-result' || true; } \
+                | { grep -F '세그먼트=- | 스테이지=S2 |' || true; } \
+                | { grep -v -F '| 종류=' || true; }) ;;
+      split)
+        rows=$( { gate_rows 'stage-result' || true; } \
+                | { grep -F '세그먼트=- | 스테이지=S2split |' || true; } \
+                | { grep -F '| 종류=split ' || true; }) ;;
+    esac
+  fi
+  printf '%s' "$rows"
+}
+
+gate_run_scope_last_row() {
+  # gate_run_scope_last_row <step id> <row kind> — the latest of those rows.
+  gate_run_scope_rows "$1" "$2" | tail -1
+}
+
 gate_stage_row_segment() {
   # gate_stage_row_segment <stage-key> <stage-kind> — the `세그먼트` value every
-  # ledger row about this stage carries: `-` for the run-scope design step, the
-  # key itself for everything else. Decided from facts the gate re-reads (the
-  # kind, the absence of a `segment` row, the plan), so the dispatch half, the
-  # supervisor and the settlement agree without handing the answer across.
-  local key="$1" skind="$2" dstep
-  if [ "$skind" = "design" ] && [ -z "$(gate_segment_field "$key" '상태')" ] \
-     && dstep=$(gate_run_scope_design_step) && [ "$dstep" = "$key" ]; then
+  # ledger row about this stage carries: `-` for a run-scope step of the table
+  # above, the key itself for everything else. Decided from facts the gate
+  # re-reads (the kind, the absence of a `segment` row, the plan), so the
+  # dispatch half, the supervisor and the settlement agree without handing the
+  # answer across.
+  local key="$1" skind="$2" rk
+  if rk=$(gate_run_scope_kind_of_key "$key") && [ "$rk" = "$skind" ]; then
     printf '%s' '-'
   else
     printf '%s' "$key"
@@ -6997,12 +7099,14 @@ gate_stage_row_segment() {
 
 gate_stage_result_rows_of() {
   # gate_stage_result_rows_of <stage-key> — this stage's `stage-result` rows in
-  # either shape: a segment's (`세그먼트=<key>`) or the run-scope design step's
-  # (`세그먼트=- | 스테이지=<key> | 종류=design`). `종류=design` is part of the second
-  # pattern so a driver row of another run-scope stage, which carries no `종류`,
-  # is never read as this one.
+  # either shape: a segment's (`세그먼트=<key>`) or a run-scope step's
+  # (`세그먼트=- | 스테이지=<key> | 종류=<k>`, `<k>` the table's row kind for that
+  # key). The kind is part of the second pattern so a driver row of another
+  # run-scope stage, which carries no `종류`, is never read as this one.
+  local rk
+  rk=$(gate_run_scope_kind_of_key "$1" 2>/dev/null) || rk=design
   { gate_rows 'stage-result' || true; } \
-    | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=design " || true; }
+    | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=$rk " || true; }
 }
 
 gate_row_field() {
@@ -7981,6 +8085,10 @@ gate_snapshot() {
   else
     printf '  "design_doc": null,\n'
   fi
+  # THE DESIGN SCOPE, because it picks which slash command the design dispatch
+  # sends and whether the audit carries `--base` and a split follows. A plan
+  # frozen before the field existed has no key and reads as `single`.
+  printf '  "design_scope": "%s",\n' "$(gate_snapshot_design_scope)"
   printf '  "steps": %s,\n' "$(gate_snapshot_steps_json)"
   printf '  "segments": [\n'
   gate_snapshot_segments_json
@@ -8082,6 +8190,17 @@ gate_snapshot_design_required_json() {
   case "$v" in
     true|false) printf '%s' "$v" ;;
     *) printf 'null' ;;
+  esac
+}
+
+gate_snapshot_design_scope() {
+  # `single` or `base`. An absent key, an unparsable plan block and a value
+  # outside the two all read `single` — the shape every run had before the field.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -r '.design_scope // "single"' 2>/dev/null; } || true)
+  case "$v" in
+    base) printf 'base' ;;
+    *) printf 'single' ;;
   esac
 }
 
@@ -9302,7 +9421,13 @@ gate_reap_cycle() {
 # the other's slot produces a shift running under settings that are not its
 # own — which is the same confusion the warning about the first token after
 # `--` already names one layer down.
-readonly STAGE_KINDS="design implement review audit reconverge generic shift"
+#
+# `split` IS ITS OWN TOKEN WITH `generic`'s SETTINGS. A base run's split stage is
+# dispatched with `--segment -`, and that exemption is keyed on the kind; were
+# the split a `generic` stage, every other generic stage would inherit a
+# segment-less dispatch. The variant below writes it exactly as it writes
+# `generic`.
+readonly STAGE_KINDS="design implement review audit reconverge generic shift split"
 
 gate_settings_dir() {
   # The override exists for ONE caller: the re-derivation probe, which needs to
@@ -13583,6 +13708,15 @@ gate_rundir_write_guard() {
         # unrestricted — the state root carries a `witness/` directory one level
         # further down — which is why these branches are not spelled like `halt/*`.
         design|design/*|preimage|preimage/*) continue ;;
+        # THE BASE SPLIT STAGE'S PLAN DIRECTORY. `base-split.py plan --out
+        # <run dir>/split/<stage id>/` writes the body files and the argv list
+        # there, and the stage's tracker writes name those body files. The
+        # directory itself is listed as well as what lies under it: the trailing
+        # `/` of `--out` is stripped before this comparison, so `split/<id>`
+        # alone would otherwise meet the refusal below. Safe on the witness
+        # exception's terms — absent when the run opens, read by no
+        # enforcement-surface check.
+        split|split/*) continue ;;
         # `mkdir -p` names the directories it creates, so `halt` itself appears as
         # an argument. Allowing the directory opens nothing beyond `halt/*`, which
         # is already allowed, and `halt/*/*` is refused above.
@@ -17402,8 +17536,63 @@ gate_verb_act() {
   # writes an approval about it. Left at the old site below the approval block,
   # the exemption would also have arrived too late to be one: the row check above
   # would already have refused the design dispatch it exists to let through.
+  #
+  # THE EXEMPTION IS A TABLE NOW, NOT ONE ROW. A base run's audit and split
+  # steps are not segments either, so `--segment -` with stage kind `audit` or
+  # `split` is exempted on the same three facts — the kind, the `-`, and a plan
+  # naming exactly one step of the table's skill for it (see
+  # `gate_run_scope_step`). Those two carry a precondition and a predecessor
+  # check of their own below; the design row's behaviour is unchanged.
   local stage_key="$segment" stage_is_run_scope_design=0
-  if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "${1:-}" = "design" ]; then
+  if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
+     && { [ "${1:-}" = "audit" ] || [ "${1:-}" = "split" ]; }; then
+    local rs_kind="${1}" rs_skill
+    rs_skill=$(gate_run_scope_skill_of "$rs_kind")
+    if ! stage_key=$(gate_run_scope_step "$rs_kind"); then
+      warn "${rs_kind} 스테이지를 --segment - 로 띄우려면 실행 계획이 skill 이 ${rs_skill} 인 단계를 정확히 하나 가져야 합니다"
+      warn "세그먼트가 아닌 런 범위 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+    stage_is_run_scope_design=1
+    case "$rs_kind" in
+      audit)
+        case "$(manifest_field '요소' '설계 문서')" in
+          '' | '없음' | '(없음)')
+            warn "감사 스테이지를 --segment - 로 띄우려면 매니페스트 ## 요소 의 설계 문서 가 실제 경로여야 합니다 — 지금은 비었거나 (없음) 입니다"
+            exit "$GATE_EXIT_RULE" ;;
+        esac ;;
+      split)
+        if [ "$(gate_snapshot_design_scope)" != "base" ]; then
+          warn "분할 스테이지는 실행 계획의 design_scope 가 base 인 런에서만 띄웁니다"
+          exit "$GATE_EXIT_RULE"
+        fi ;;
+    esac
+    # PREDECESSORS ARE RUN-SCOPE STEPS, so `선행` of the segment rows cannot say
+    # whether they landed. Each `depends_on` of this step must have ended its last
+    # run-scope row `정상 완료`, and a design predecessor must also have left the
+    # document frozen — an audit or a split over an unfinished design reads
+    # bytes nobody settled, and the split's tracker writes cannot be undone.
+    local rs_dep rs_dk rs_last
+    for rs_dep in $( { manifest_plan_json 2>/dev/null \
+                       | jq -r --arg id "$stage_key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
+                       || true; } ); do
+      [ -n "$rs_dep" ] || continue
+      if ! rs_dk=$(gate_run_scope_kind_of_key "$rs_dep"); then
+        warn "${rs_kind} 단계 ${stage_key} 의 선행 ${rs_dep} 는 런 범위 단계표의 단계가 아닙니다 — 이 그래프는 게이트가 읽지 못합니다"
+        exit "$GATE_EXIT_RULE"
+      fi
+      rs_last=$(gate_run_scope_last_row "$rs_dep" "$rs_dk")
+      if [ "$(gate_row_field "$rs_last" '종단 부류')" != '정상 완료' ]; then
+        warn "${rs_kind} 단계 ${stage_key} 의 선행 ${rs_dep} 가 아직 정상 완료로 끝나지 않았습니다 (마지막 행 종단 부류=$(gate_row_field "$rs_last" '종단 부류'))"
+        warn "선행이 정상 완료로 끝난 뒤에 다시 디스패치하세요"
+        exit "$GATE_EXIT_RULE"
+      fi
+      if [ "$rs_dk" = "design" ] && ! doc_is_frozen "${DOC:-}"; then
+        warn "${rs_kind} 단계 ${stage_key} 의 선행 설계 단계 ${rs_dep} 는 끝났지만 설계 문서가 동결되어 있지 않습니다"
+        exit "$GATE_EXIT_RULE"
+      fi
+    done
+  elif [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "${1:-}" = "design" ]; then
     if ! stage_key=$(gate_run_scope_design_step); then
       warn "설계 스테이지를 --segment - 로 띄우려면 실행 계획이 design_required=true 이고 skill 이 design 인 단계를 정확히 하나 가져야 합니다"
       warn "세그먼트가 아닌 설계 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
@@ -18306,6 +18495,8 @@ gate_verb_act() {
       case "$unmet" in
         *"1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 "*)
           warn "the design is blocked, so this run can never produce a segment — settle the termination clauses that lean on the document as \`불가능\` (a clause held by a judgment approval the design stage opened: as \`보류\` naming that approval id), and this proposal is recorded as an invalidated termination" ;;
+        *"1 베이스 분할이 더는 파견되지 않습니다 "*)
+          warn "the base audit or split will not be dispatched again, so this run can never complete its split — settle the termination clauses that lean on the split as \`불가능\`, and this proposal is recorded as an invalidated termination" ;;
       esac
       printf '%s\n' "$unmet" >&2
       # THE ROW CARRIES A SUMMARY, NOT THE WHOLE LIST. Joining every unmet
@@ -21622,6 +21813,11 @@ gate_record_stage_outcome() {
   elif [ "$kind" = "design" ] \
        && ! { grep -qF "$LIT_DESIGN_TERMINAL" "$out" 2>/dev/null && doc_is_frozen "${DOC:-}"; }; then
     klass='공허한 성공'
+  # A base split stage is asked for its artifact the same way: its terminal
+  # literal in the stream and a registry complete for the current document.
+  elif [ "$kind" = "split" ] \
+       && ! { grep -qF "$LIT_SPLIT_TERMINAL" "$out" 2>/dev/null && split_registry_complete "${DOC:-}"; }; then
+    klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
     klass='정상 완료'
   else
@@ -22589,9 +22785,14 @@ gate_done_disposition() {
   # with only those lines may record its end as invalidated, never as satisfied.
   # The pattern is anchored at both ends: a clause id is a manifest token without
   # spaces, and the line carries nothing after the fixed tail.
+  #
+  # A base run's closed-split line is dropped on the same footing: its audit or
+  # split will not be dispatched again, so the split can never complete. Its
+  # unfinished-split line is not dropped.
   other=$(printf '%s' "$unmet" \
     | grep -v -e '^5 런 스코프 blocked 가 해소 불가입니다 ' \
               -e '^1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 ' \
+              -e '^1 베이스 분할이 더는 파견되지 않습니다 ' \
               -e '^10 종료 절 [^ ]* 불가능 정산$' || true)
   [ -n "$other" ] || { printf '무효화'; return 0; }
   printf '미충족'
@@ -22619,6 +22820,61 @@ gate_unmet_numbers() {
   # most, while the text grows without bound and loses its tail exactly when the
   # night has been long enough for the tail to matter.
   printf '%s\n' "$1" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' | sort -un
+}
+
+gate_base_step_closed() {
+  # gate_base_step_closed <step id> <row kind> — prints why a base run's audit or
+  # split step will not be dispatched again and returns 0, or returns 1.
+  #
+  # The depth is the design step's, by the same counter: `공허한 성공` or a crash
+  # buys one fresh attempt and two close the step; `외부 종료` and a usage-limit
+  # crash keep it open whatever the count, because neither says the stage
+  # cannot finish. Any other class but `정상 완료` is a stage that stopped on
+  # purpose — a park, a halt with nothing to show — and is not dispatched again.
+  local id="$1" k="$2" rows last lastrow fresh
+  rows=$(gate_run_scope_rows "$id" "$k")
+  [ -n "$rows" ] || return 1
+  lastrow=$(printf '%s\n' "$rows" | tail -1)
+  last=$(gate_row_field "$lastrow" '종단 부류')
+  case "$last" in
+    '정상 완료' | '외부 종료') return 1 ;;
+  esac
+  if [ "$last" = '공허한 성공' ] || [ "$(terminal_route_class "$last")" = '크래시' ]; then
+    if [ "$last" != '공허한 성공' ] \
+       && gate_design_row_has_limit_envelope "$(gate_row_field "$lastrow" '스테이지')" "$lastrow"; then
+      return 1
+    fi
+    fresh=$(printf '%s\n' "$rows" | gate_design_fresh_attempts)
+    [ "${fresh:-0}" -ge 2 ] || return 1
+    printf '새 시도 깊이 소진(%s회)' "$fresh"
+    return 0
+  fi
+  printf '종단 부류 %s' "${last:-미상}"
+}
+
+gate_base_split_unmet() {
+  # Condition 1's base arm (see the caller). Prints at most one line.
+  local sstep astep srow skey why
+  if ! sstep=$(gate_run_scope_step split) || ! astep=$(gate_run_scope_step audit); then
+    printf '1 베이스 분할이 끝나지 않았습니다 — - · 계획에 감사·분할 단계가 하나씩 있지 않습니다\n'
+    return 0
+  fi
+  srow=$(gate_run_scope_last_row "$sstep" split)
+  if [ -n "$srow" ]; then
+    skey=$(gate_row_field "$srow" '스테이지')
+    if [ "$(gate_row_field "$srow" '종단 부류')" = '정상 완료' ] && predicate_split "$skey"; then
+      return 0
+    fi
+  fi
+  if why=$(gate_base_step_closed "$sstep" split); then
+    printf '1 베이스 분할이 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$sstep" "$why"
+  elif [ -z "$srow" ] && why=$(gate_base_step_closed "$astep" audit); then
+    printf '1 베이스 분할이 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$astep" "$why"
+  elif [ -n "$srow" ]; then
+    printf '1 베이스 분할이 끝나지 않았습니다 — %s · 종단 부류 %s, 분할 술어 불성립\n' "$sstep" "$(gate_row_field "$srow" '종단 부류')"
+  else
+    printf '1 베이스 분할이 끝나지 않았습니다 — %s · 분할 단계 행 없음\n' "$sstep"
+  fi
 }
 
 gate_done_conditions() {
@@ -22754,6 +23010,14 @@ gate_done_conditions() {
     fi
     if [ -n "$dwhy" ]; then
       printf '1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$dstep" "$dwhy"
+    elif [ "$(gate_snapshot_design_scope)" = "base" ]; then
+      # A BASE RUN NEVER HAS A SEGMENT. Its graph ends at the split, so "no
+      # segment" is its normal end and the plain line below would hold it
+      # forever. What it waits on instead is the split: met when the split step's
+      # latest attempt carries its terminal literal and the registry is complete
+      # for the current document, closed when the audit or the split will not be
+      # dispatched again, and otherwise not finished yet.
+      gate_base_split_unmet
     else
       printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
     fi
