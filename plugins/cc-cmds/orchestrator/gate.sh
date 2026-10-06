@@ -1092,8 +1092,45 @@ gate_push_rung() {
   # because that is precisely the declaration that puts the review rule in front
   # of it.
   local alias="$1"; shift
-  local base; base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null) || base=""
+  local base; base=$(gate_push_base_branch "$alias")
   [ -n "$base" ] || { printf '머지'; return 0; }
+  case " $* " in
+    *" --all "*|*" --mirror "*) printf '머지'; return 0 ;;
+  esac
+  # EVERY REFSPEC IS READ, not only the last one: `git push origin U:<base>
+  # x:other` lands U on the base, and reading the last refspec alone graded it
+  # `push` and kept the review rule out of its way.
+  local a seen_push=0 seen_remote=0 dst="" last=""
+  for a in "$@"; do
+    case "$a" in
+      push) seen_push=1; continue ;;
+      -*) continue ;;
+    esac
+    [ "$seen_push" = "1" ] || continue
+    if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
+    last="$a"
+    dst="${a#*:}"
+    case "$a" in *:*) ;; *) dst="$a" ;; esac
+    dst="${dst#+}"; dst="${dst#refs/heads/}"
+    [ "$dst" = "$base" ] && { printf '머지'; return 0; }
+  done
+  if [ -z "$last" ]; then
+    # No refspec: the destination is whatever branch the act's worktree is on,
+    # and a worktree that cannot answer takes the higher rung rather than the
+    # convenient one.
+    dst=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    [ -n "$dst" ] || { printf '머지'; return 0; }
+    [ "$dst" = "$base" ] && { printf '머지'; return 0; }
+  fi
+  printf 'push'
+}
+
+gate_push_base_branch() {
+  # gate_push_base_branch <alias> — the target's `베이스 브랜치` as a branch
+  # name a refspec destination is compared with; empty when the row has none.
+  local alias="$1" base
+  base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null) || base=""
+  [ -n "$base" ] || return 0
   # `origin/main` and `code-1398/main` are both spellings this tree's manifests
   # use; strip a leading remote name the repository actually knows.
   case "$base" in
@@ -1112,32 +1149,104 @@ $rn
 "*) base="${base#*/}" ;;
       esac ;;
   esac
-  case " $* " in
-    *" --all "*|*" --mirror "*) printf '머지'; return 0 ;;
-  esac
-  local a seen_push=0 seen_remote=0 dst="" last=""
+  printf '%s' "$base"
+}
+
+gate_push_source_unbound() {
+  # gate_push_source_unbound <alias> <head> <argv...> — for a `git push` that
+  # lands on the base branch, prints the first refspec whose source is not
+  # <head> or cannot be resolved; prints nothing when every such refspec pushes
+  # <head>, or when the argv is not a `git push`.
+  #
+  # A LOCAL PUSH NAMES ITS SOURCE, AND THE SOURCE NEED NOT BE THE WORKTREE'S
+  # HEAD. `git push origin U:<base>` lands U whatever the worktree has checked
+  # out, so the review rule approving the worktree's HEAD said nothing about
+  # what landed. Each refspec bound for the base is resolved where the push
+  # runs (`rev-parse <src>^{commit}` in the act's worktree) and compared with
+  # <head>. A bare name is its own source; a leading `+` is dropped; an empty
+  # source deletes the branch and resolves to nothing. With no refspec the
+  # current branch is pushed, so its source is the act's HEAD. A `-C <dir>`
+  # before the subcommand is followed, since that is where git resolves the
+  # source; `--git-dir` and `--work-tree` are not, and an argv carrying either
+  # is reported whole. `--all` and `--mirror` are left to the rung above.
+  local alias="$1" head="$2"; shift 2
+  [ "${1##*/}" = git ] || return 0
+  local base; base=$(gate_push_base_branch "$alias")
+  [ -n "$base" ] || return 0
+  local a seen_push=0 seen_remote=0 n=0 src dst r0 sha cwd="${GATE_ACT_CWD:-.}" want_c=0
+  local -a specs=()
+  shift
   for a in "$@"; do
-    case "$a" in
-      push) seen_push=1; continue ;;
-      -*) continue ;;
-    esac
-    [ "$seen_push" = "1" ] || continue
+    if [ "$seen_push" = "0" ]; then
+      if [ "$want_c" = "1" ]; then
+        case "$a" in /*) cwd="$a" ;; *) cwd="$cwd/$a" ;; esac
+        want_c=0
+        continue
+      fi
+      case "$a" in
+        push) seen_push=1 ;;
+        -C) want_c=1 ;;
+        -C?*) a="${a#-C}"; case "$a" in /*) cwd="$a" ;; *) cwd="$cwd/$a" ;; esac ;;
+        --git-dir|--git-dir=*|--work-tree|--work-tree=*) printf '%s' "$*"; return 0 ;;
+      esac
+      continue
+    fi
+    case "$a" in -*) continue ;; esac
     if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
-    last="$a"
+    specs+=("$a")
   done
-  if [ -n "$last" ]; then
-    dst="${last#*:}"
-    case "$last" in *:*) ;; *) dst="$last" ;; esac
-    dst="${dst#+}"; dst="${dst#refs/heads/}"
-  else
-    # No refspec: the destination is whatever branch the act's worktree is on,
-    # and a worktree that cannot answer takes the higher rung rather than the
-    # convenient one.
-    dst=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
-    [ -n "$dst" ] || { printf '머지'; return 0; }
+  [ "$seen_push" = "1" ] || return 0
+  case " $* " in *" --all "*|*" --mirror "*) return 0 ;; esac
+  if [ "${#specs[@]}" -eq 0 ]; then
+    dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    [ "$dst" = "$base" ] || return 0
+    specs=('HEAD')
+    dst="$base"
   fi
-  [ "$dst" = "$base" ] && { printf '머지'; return 0; }
-  printf 'push'
+  while [ "$n" -lt "${#specs[@]}" ]; do
+    a="${specs[$n]}"
+    n=$((n + 1))
+    r0="${a#+}"
+    case "$r0" in
+      *:*) src="${r0%%:*}"; dst="${r0#*:}" ;;
+      *)   src="$r0"; dst="$r0" ;;
+    esac
+    dst="${dst#refs/heads/}"
+    if [ "$dst" = 'HEAD' ]; then
+      dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    fi
+    [ "$dst" = "$base" ] || continue
+    sha=""
+    [ -z "$src" ] || sha=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "${src}^{commit}" 2>/dev/null; } || true)
+    if [ -z "$sha" ] || [ "$sha" != "$head" ]; then
+      printf '%s' "$a"
+      return 0
+    fi
+  done
+  return 0
+}
+
+gate_rule_row_mismatch() {
+  # gate_rule_row_mismatch <segment> — prints `segment` or `cycle` when the
+  # review rule's selector picks another row than the gate's for that series;
+  # nothing when they agree.
+  #
+  # THE RULE AND THE GATE MUST READ THE SAME ROW. The rule files are kept
+  # byte-identical and pick a row by substring and last line — ``grep -F
+  # "id=<seg> " | tail -1`` and ``grep -F "세그먼트=<seg> " | tail -1`` — while
+  # the gate selects on the field itself. A sibling row whose free text carried
+  # `id=<seg> ` became the row the rule read, the rule compared that sibling's
+  # reviewed tree, and a merge no review had covered went through. Both
+  # selectors are reproduced here and compared.
+  local seg="$1" rs gs
+  [ -f "${LEDGER:-}" ] || return 0
+  rs=$(grep -E '^- `segment`' "$LEDGER" | grep -F "id=$seg " | tail -1 || true)
+  gs=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | tail -1)
+  [ "$rs" = "$gs" ] || { printf 'segment'; return 0; }
+  rs=$(grep -E '^- `cycle`' "$LEDGER" | grep -F "세그먼트=$seg " | tail -1 || true)
+  gs=$(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" | tail -1)
+  [ "$rs" = "$gs" ] || { printf 'cycle'; return 0; }
+  return 0
 }
 
 gate_destructive_source() {
@@ -7076,31 +7185,46 @@ gate_segment_anchor_worktree() {
   #
   # "THE TOP LEVEL OF A CHECKOUT OTHER THAN THE MAIN ONE" IS STILL A SHAPE, and
   # every other linked worktree of the same repository has it. A first row
-  # naming a sibling segment's tree, or a linked worktree sitting on another
-  # branch, became the record; a merge carrying commits no review had covered
-  # then read `충족` from that tree's tip, and the honest terminal row naming
-  # the segment's own tree was refused. Two conditions tie the record to the
-  # segment:
+  # naming a linked worktree sitting on another branch became the record; a
+  # merge carrying commits no review had covered then read `충족` from that
+  # tree's tip, and the honest terminal row naming the segment's own tree was
+  # refused. So THE RECORD IS PINNED TO ONE BRANCH:
   #
-  #   - a worktree that ANOTHER SEGMENT'S row named EARLIER in the ledger is
-  #     never this segment's record — matched as spelled, and as `pwd -P`
-  #     resolves both when both exist, so it holds after the directory is
-  #     removed. Only earlier rows count: a sibling row naming this segment's
-  #     tree later must not erase a record already established, and the
-  #     sibling cannot take that tree as its own record either, because this
-  #     segment's row naming it comes first;
-  #   - when the segment's rows carry `브랜치`, a candidate directory that
-  #     still exists and is the top level of a checkout must have one of those
-  #     branches checked out. A detached HEAD, or another branch, is skipped.
-  #     A segment whose rows name no branch is held to the structural tests
-  #     and the exclusion above only.
+  #   - the segment's branch is the `브랜치` of the FIRST candidate row that
+  #     carries one. Only the first counts: a union of every row's `브랜치` let
+  #     one later row naming another branch move the record back to an earlier
+  #     linked worktree on that branch;
+  #   - a candidate's branch is what its directory has checked out when it
+  #     still exists and is the top level of a checkout, and the row's own
+  #     `브랜치` when the HEAD is detached or the directory is gone;
+  #   - the record is the first candidate on the pinned branch;
+  #   - with no pinned branch there is no record, and THERE IS NONE EITHER when
+  #     a candidate whose branch is known is on another branch. The segment's
+  #     rows then name checkouts of two branches and the gate cannot tell which
+  #     one the merge came from. A re-fork (`-A` abandoned for `-A2`) lands
+  #     here too.
+  #
+  # No record is the closed side: the terminal row passes the worktree
+  # comparison, the merged row cannot read a tip and records `머지 대조=판정
+  # 불가`, and termination condition 11 holds the run.
+  #
+  # A tree another segment named earlier is NOT excluded. A follow-up or fix
+  # segment that inherits a tree and its branch is a legitimate shape — the
+  # same shape the sibling-merge exemption of a `완료` row admits — and the spelling of a path cannot
+  # tell it from a router naming a sibling's tree. Excluding by path took the
+  # record from every segment that was not the first to name a shared tree, and
+  # their honestly reviewed merges were held as `판정 불가`.
+  #
+  # THE GAP LEFT OPEN: a router that names a sibling's tree on every row of a
+  # segment and never names the segment's own tree is, to this function, a
+  # segment that inherited that tree and its branch.
   #
   # The target's declared `실행 워크트리` is not excluded by name: it records
   # the linked worktree the target's branch is checked out in, which for a
   # segment inherited from an earlier run is the segment's own tree. When it
-  # has another branch checked out, the branch binding skips it.
-  local seg="$1" al="${2:-}" main="" main_p="" rows row wt wt_p top_p br branches
-  local others="" o o_p kind skip
+  # has another branch checked out, the branch pin rejects it.
+  local seg="$1" al="${2:-}" main="" main_p="" rows row wt wt_p top_p br rbr
+  local pin="" first="" mixed="" cand="" w b
   if [ -n "$al" ]; then
     main=$(target_field "$al" '메인 워크트리' 2>/dev/null) || main=""
     main_p=$(alias_root "$al" 2>/dev/null) || main_p=""
@@ -7108,74 +7232,93 @@ gate_segment_anchor_worktree() {
       main_p=$(cd "$main_p" 2>/dev/null && pwd -P) || main_p=""
     fi
   fi
-  branches=" $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
-                | tr '|' '\n' | sed -n 's/^ *브랜치=//p' | sed -e 's/[[:space:]]*$//' -e 's#^refs/heads/##' -e '/^-$/d' \
-                | tr '\n' ' ')"
-  # One pass in ledger order: `O<TAB>path` for the worktree of another
-  # segment's row, `C<TAB>row` for this segment's non-terminal rows, stopping
-  # at this segment's first `머지됨` row. Fields are read as `gate_row_field`
-  # and `gate_rows_field_eq` read them — trimmed, the last one with a key wins.
-  rows=$(gate_rows 'segment' \
-          | GATE_ANCHOR_SEG="$seg" awk -v ts=" $TERMINAL_SEGMENT_STATES " '
-              { n = split($0, f, "|"); st = ""; id = ""; wt = ""; hid = 0
+  # This segment's non-terminal rows in ledger order, stopping at its first
+  # `머지됨` row. Fields are read as `gate_row_field` and `gate_rows_field_eq`
+  # read them — trimmed, the last one with a key wins.
+  rows=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
+          | awk -v ts=" $TERMINAL_SEGMENT_STATES " '
+              { n = split($0, f, "|"); st = ""
                 for (i = 2; i <= n; i++) {
                   s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
                   if (index(s, "상태=") == 1) st = substr(s, length("상태=") + 1)
-                  if (index(s, "id=") == 1) { id = substr(s, 4); hid = 1 }
-                  if (index(s, "워크트리=") == 1) wt = substr(s, length("워크트리=") + 1)
-                }
-                if (!hid || id != ENVIRON["GATE_ANCHOR_SEG"]) {
-                  if (wt != "") print "O\t" wt
-                  next
                 }
                 if (st == "머지됨") exit
-                if (st != "" && index(ts, " " st " ") == 0) print "C\t" $0 }')
+                if (st != "" && index(ts, " " st " ") == 0) print $0 }')
   [ -n "$rows" ] || return 0
+  # First pass: the candidates as `<branch or empty><TAB><worktree>`, and the
+  # pinned branch.
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    kind=${row%%"	"*}
-    row=${row#*"	"}
-    if [ "$kind" = 'O' ]; then
-      others="$others$row
-"
-      continue
-    fi
     wt=$(gate_row_field "$row" '워크트리')
     [ -n "$wt" ] || continue
     if [ -n "$main" ] && [ "$wt" = "$main" ]; then continue; fi
     wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
     if [ -n "$main_p" ] && [ -n "$wt_p" ] && [ "$wt_p" = "$main_p" ]; then continue; fi
-    skip=""
-    while IFS= read -r o; do
-      [ -n "$o" ] || continue
-      if [ "$o" = "$wt" ]; then skip=1; break; fi
-      if [ -n "$wt_p" ]; then
-        o_p=$(cd "$o" 2>/dev/null && pwd -P) || o_p=""
-        if [ -n "$o_p" ] && [ "$o_p" = "$wt_p" ]; then skip=1; break; fi
-      fi
-    done <<GATE_ANCHOR_OTHERS
-$others
-GATE_ANCHOR_OTHERS
-    [ -z "$skip" ] || continue
+    rbr=$(gate_row_field "$row" '브랜치' | sed 's#^refs/heads/##')
+    [ "$rbr" != '-' ] || rbr=""
+    br="$rbr"
     if [ -n "$wt_p" ]; then
       top_p=$(cd "$wt_p" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || top_p=""
       if [ -n "$top_p" ]; then
         top_p=$(cd "$top_p" 2>/dev/null && pwd -P) || top_p=""
         [ "$top_p" = "$wt_p" ] || continue
         if [ -n "$main_p" ] && [ "$top_p" = "$main_p" ]; then continue; fi
-        if [ -n "${branches// /}" ]; then
-          br=$(cd "$wt_p" 2>/dev/null && git symbolic-ref --quiet --short HEAD 2>/dev/null) || br=""
-          [ -n "$br" ] || continue
-          case "$branches" in *" $br "*) ;; *) continue ;; esac
-        fi
+        b=$(cd "$wt_p" 2>/dev/null && git symbolic-ref --quiet --short HEAD 2>/dev/null) || b=""
+        [ -z "$b" ] || br="$b"
       fi
     fi
-    printf '%s' "$wt"
-    return 0
+    if [ -z "$first" ] && [ -n "$rbr" ]; then pin="$rbr"; first=1; fi
+    cand="${cand}${br}	${wt}
+"
   done <<GATE_ANCHOR_ROWS
 $rows
 GATE_ANCHOR_ROWS
+  [ -n "$pin" ] || return 0
+  # Second pass: refuse a record when the candidates name two branches, then
+  # take the first candidate on the pinned branch.
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    b=${row%%"	"*}
+    if [ -n "$b" ] && [ "$b" != "$pin" ]; then mixed=1; break; fi
+  done <<GATE_ANCHOR_CANDS
+$cand
+GATE_ANCHOR_CANDS
+  [ -z "$mixed" ] || return 0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    b=${row%%"	"*}
+    w=${row#*"	"}
+    if [ "$b" = "$pin" ]; then printf '%s' "$w"; return 0; fi
+  done <<GATE_ANCHOR_CANDS
+$cand
+GATE_ANCHOR_CANDS
   return 0
+}
+
+gate_segment_row_branch() {
+  # gate_segment_row_branch <alias> <worktree> — the branch checked out at
+  # <worktree> when it is the top level of a checkout other than the target's
+  # main one; empty otherwise (gone, a subdirectory, the main checkout, a
+  # detached HEAD).
+  #
+  # The record above is pinned to the first row carrying `브랜치`, and the
+  # router's row template and the driver's planning row did not carry one, so
+  # for most segments there was nothing to pin to and the record fell to
+  # whichever linked worktree came first. The gate fills the field on a
+  # non-terminal row the caller left it off, from the checkout the row names.
+  local al="$1" wt="$2" main="" main_p="" wt_p top_p
+  main=$(target_field "$al" '메인 워크트리' 2>/dev/null) || main=""
+  [ -z "$main" ] || [ "$wt" != "$main" ] || return 0
+  wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || return 0
+  main_p=$(alias_root "$al" 2>/dev/null) || main_p=""
+  if [ -n "$main_p" ]; then
+    main_p=$(cd "$main_p" 2>/dev/null && pwd -P) || main_p=""
+  fi
+  top_p=$(cd "$wt_p" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || return 0
+  top_p=$(cd "$top_p" 2>/dev/null && pwd -P) || return 0
+  [ "$top_p" = "$wt_p" ] || return 0
+  [ -z "$main_p" ] || [ "$top_p" != "$main_p" ] || return 0
+  (cd "$wt_p" 2>/dev/null && git symbolic-ref --quiet --short HEAD 2>/dev/null) || true
 }
 
 # ---------------------------------------------------------------------------
@@ -14933,6 +15076,21 @@ gate_record_row() {
       # missing worktree instead of the review — the wrong repair at 3am.
       [ -n "$wt" ] || { warn "a segment row needs \`워크트리\`"; return "$GATE_EXIT_VOCAB"; }
 
+      # `브랜치` IS FILLED ON A NON-TERMINAL ROW THAT LEAVES IT OFF, from the
+      # checkout the row names (see `gate_segment_row_branch`), so the record's
+      # branch pin does not depend on the caller remembering an optional field.
+      # A caller's own `브랜치` is kept as written. The filled field is part of
+      # the row and of the projection below.
+      case "$st" in
+        머지됨|완료|park) ;;
+        *)
+          if [ -z "$(gate_field_of '브랜치' "$@")" ]; then
+            local fill_br
+            fill_br=$(gate_segment_row_branch "$alias" "$wt")
+            [ -z "$fill_br" ] || set -- "$@" "브랜치=$fill_br"
+          fi ;;
+      esac
+
       # A TERMINAL ROW KEEPS THE SEGMENT'S OWN WORKTREE. The merged row reads its
       # tip there to decide whether the review covered the merge, so a row naming
       # another checkout — one still sitting on the old base — recorded `충족`
@@ -14942,19 +15100,18 @@ gate_record_row() {
       #
       # THE RECORD IS THE SEGMENT'S OWN WORKTREE — the first non-terminal row,
       # written before the segment's first `머지됨` row, that names neither
-      # the target's main checkout, nor a directory inside a checkout, nor a
-      # tree another segment's row named earlier, and, when the segment's rows
-      # carry `브랜치`, whose checkout has one of those branches checked out —
-      # not its last row: the last row is the one a caller writes next, so a
-      # `리뷰중` row naming an old checkout moved the record and the merged row
-      # then matched it. The router's `계획됨` row naming the main checkout, a
-      # directory inside it, or a sibling's tree is skipped, because that is
-      # not where the segment worked (see `gate_segment_anchor_worktree`). A
-      # later non-terminal row may still name another worktree — the settings
-      # derivation follows it — but a terminal row written after it is held to
-      # the record. The refusal does not tell the caller to name the record:
-      # a record established on the wrong tree is a halt, not a spelling to
-      # copy.
+      # the target's main checkout nor a directory inside a checkout, and that
+      # sits on the branch of the first such row carrying `브랜치` — not its
+      # last row: the last row is the one a caller writes next, so a `리뷰중`
+      # row naming an old checkout moved the record and the merged row then
+      # matched it. The router's `계획됨` row naming the main checkout or a
+      # directory inside it is skipped, because that is not where the segment
+      # worked, and rows naming checkouts of two branches leave no record (see
+      # `gate_segment_anchor_worktree`). A later non-terminal row may still
+      # name another worktree — the settings derivation follows it — but a
+      # terminal row written after it is held to the record. The refusal does
+      # not tell the caller to name the record: a record established on the
+      # wrong tree is a halt, not a spelling to copy.
       case "$st" in
         머지됨|완료|park)
           local rec_wt rec_p wt_p
@@ -14964,9 +15121,9 @@ gate_record_row() {
             wt_p=$(cd "$wt" 2>/dev/null && pwd -P) || wt_p=""
             if [ -z "$rec_p" ] || [ "$rec_p" != "$wt_p" ]; then
               if [ -z "$rec_p" ]; then
-                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록된 디렉터리가 없어 철자로만 비교했습니다. 기록은 첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃이 아니고, 존재하는 저장소 디렉터리라면 그 체크아웃의 최상위이며, 앞서 다른 세그먼트의 행이 단 트리가 아니고, 행에 「브랜치」 가 있으면 그 브랜치를 체크아웃한 첫 행의 워크트리입니다. 이 세그먼트가 그 트리에서 일했다면 그 트리를 답니다. 기록이 세그먼트가 일하지 않은 트리에 잘못 세워졌다면 다른 체크아웃을 대지 말고 halt 기록을 씁니다"
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록된 디렉터리가 없어 철자로만 비교했습니다. 기록은 첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃이 아니고, 존재하는 저장소 디렉터리라면 그 체크아웃의 최상위이며, 「브랜치」 를 실은 첫 행의 브랜치에 있는 첫 행의 워크트리입니다(행들이 두 브랜치의 체크아웃을 대면 기록이 없습니다). 이 세그먼트가 그 트리에서 일했다면 그 트리를 답니다. 기록이 세그먼트가 일하지 않은 트리에 잘못 세워졌다면 다른 체크아웃을 대지 말고 halt 기록을 씁니다"
               else
-                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록은 첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃이 아니고, 존재하는 저장소 디렉터리라면 그 체크아웃의 최상위이며, 앞서 다른 세그먼트의 행이 단 트리가 아니고, 행에 「브랜치」 가 있으면 그 브랜치를 체크아웃한 첫 행의 워크트리입니다. 이 세그먼트가 그 트리에서 일했다면 그 트리를 답니다. 기록이 세그먼트가 일하지 않은 트리에 잘못 세워졌다면 다른 체크아웃을 대지 말고 halt 기록을 씁니다"
+                warn "segment 행(상태=${st})의 「워크트리」 $wt 가 이 세그먼트의 기록된 워크트리 $rec_wt 와 다릅니다 — 기록은 첫 머지됨 행 앞에 쓰인 비종단 행 중 메인 체크아웃이 아니고, 존재하는 저장소 디렉터리라면 그 체크아웃의 최상위이며, 「브랜치」 를 실은 첫 행의 브랜치에 있는 첫 행의 워크트리입니다(행들이 두 브랜치의 체크아웃을 대면 기록이 없습니다). 이 세그먼트가 그 트리에서 일했다면 그 트리를 답니다. 기록이 세그먼트가 일하지 않은 트리에 잘못 세워졌다면 다른 체크아웃을 대지 말고 halt 기록을 씁니다"
               fi
               return "$GATE_EXIT_VOCAB"
             fi
@@ -15095,38 +15252,26 @@ gate_record_row() {
         #     previous row or it names none), and that is the policy the
         #     comparison has to be made under;
         #   - any row once the segment carries `머지 대조`;
-        #   - any row once the segment's code is on the base — this row's `커밋`,
-        #     the `커밋` of every earlier row of the segment, the `리뷰 HEAD` of
-        #     its `cycle` rows, or the recorded worktree's tip. A merge made
-        #     outside the gate leaves no `머지 대조` behind, so landing is asked
-        #     directly. An unanswerable landing is refused as well, closed-side,
-        #     and retried once the repository can be reached. The question is
-        #     asked only when the row loosens, so no other row reaches the
-        #     network for it.
+        #   - any row once the segment has left planning — an earlier row of
+        #     the segment in a state other than `계획됨`, or a `cycle` row of
+        #     the segment.
         #
-        # NOTHING TO ASK IS ALSO AN UNANSWERABLE LANDING. The candidates used to
-        # be dropped silently — no record, a recorded directory already removed,
-        # no `커밋` on this row or the previous one — and the loop then tested
-        # nothing and accepted the row. A segment merged outside the gate from
-        # the main checkout, or whose worktree was already gone, loosened its
-        # policy that way, and its merged row then read `정책 면제` with
-        # condition 11 empty.
+        # THE THIRD SHAPE IS DECIDED BY STATE, NOT BY ASKING WHETHER THE CODE
+        # LANDED. Landing used to be asked commit by commit — the recorded
+        # worktree's tip, the `커밋` of the segment's rows, the `리뷰 HEAD` of
+        # its `cycle` rows — and a merge made outside the gate of a commit no
+        # row named was never asked about: an unlanded tip on top of it answered
+        # `미착지`, the row was accepted, and the merged row then read `정책 면제`
+        # with condition 11 empty. Asking about the segment's whole range needs
+        # its fork point, and the gate has nowhere of its own to read that from
+        # — every candidate is a value the caller writes. Before execution the
+        # segment has no code of its own, so there is nothing to ask about; a
+        # planning row that left the policy off while the slice declares a
+        # looser one is corrected on the `실행중` row.
         #
-        # "SOME CANDIDATE WAS TESTED" WAS NOT THE ANSWER EITHER, because it was
-        # satisfied in two shapes without asking about the code that landed. A
-        # tip matching the `사전 HEAD` or `베이스 sha` of a segment row was taken
-        # as the fork point and counted as tested — but both are values the
-        # caller writes, and the driver records the worktree's HEAD there right
-        # after creating it, which on a resumed segment is the working tip. And
-        # when the tip could not be read at all, one older `리뷰 HEAD` that an
-        # amend had abandoned answered `미착지` in its place. So the evidence is
-        # the recorded worktree's own tip: the row is accepted only when that
-        # tip was read and answered `미착지`, and no other candidate answered
-        # anything else. A tip still on the fork point is refused like a landed
-        # one — the repository cannot tell a segment with no commit of its own
-        # from one fast-forwarded onto the base outside the gate, since both
-        # tips are ancestors of the base — so a policy is chosen on the first
-        # row, or loosened after the segment's first commit.
+        # THE GAP LEFT OPEN: stage dispatch does not read the segment's state, so
+        # a stage run while every row still says `계획됨` leaves code behind the
+        # gate cannot see, and a loosening row written after it is accepted.
         if [ "$st" = '머지됨' ] || [ -n "$prior" ]; then
           local ppol ppi
           ppol=""
@@ -15141,36 +15286,17 @@ gate_record_row() {
               warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 머지가 기록된 세그먼트의 리뷰 정책은 느슨하게 바꿀 수 없습니다(종료 조건 11 이 읽는 정책입니다)"
               return "$GATE_EXIT_VOCAB"
             fi
-            local lc lc_cands lc_wt lc_tip="" lc_seen=" "
-            lc_wt=$(gate_segment_anchor_worktree "$seg" "$alias")
-            if [ -n "$lc_wt" ]; then
-              lc_tip=$(gate_worktree_tip "$lc_wt") || lc_tip=""
+            local lc_late lc_why=""
+            lc_late=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
+                        | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' \
+                        | grep -v -x -F '계획됨' | head -1 || true)
+            if [ -n "$lc_late" ]; then
+              lc_why="앞 행에 상태=${lc_late} 가 있습니다"
+            elif [ -n "$(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg")" ]; then
+              lc_why="이 세그먼트의 cycle 행이 있습니다"
             fi
-            lc_cands="$lc_tip $(gate_field_of '커밋' "$@") $(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
-                          | tr '|' '\n' | sed -n 's/^ *커밋=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
-            lc_cands="$lc_cands $(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" \
-                          | tr '|' '\n' | sed -n 's/^ *리뷰 HEAD=//p' | sed 's/[[:space:]]*$//' | tr '\n' ' ')"
-            for lc in $lc_cands; do
-              [ "$lc" != '-' ] || continue
-              case "$lc_seen" in *" $lc "*) continue ;; esac
-              lc_seen="$lc_seen$lc "
-              gate_obligation_landing "$alias" "$lc"
-              case "$GATE_LANDING_VERDICT" in
-                미착지) ;;
-                착지)
-                  if [ "$lc" = "$lc_tip" ]; then
-                    warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 기록된 워크트리 $lc_wt 의 팁 $lc 이 이미 베이스에 착지했습니다($GATE_LANDING_WHY). 자기 커밋이 아직 없는 분기점의 팁도 베이스 위에 있어, 게이트는 그것과 게이트 밖에서 착지한 팁을 구별하지 못합니다 — 정책은 첫 행에서 고릅니다. 앞 행의 정책을 그대로 다시 적거나, 세그먼트의 커밋을 올린 뒤 다시 씁니다"
-                  else
-                    warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — 이 세그먼트의 커밋 $lc 이 이미 베이스에 착지했습니다($GATE_LANDING_WHY). 착지한 머지는 앞 행의 정책 아래서 일어났고 종료 조건 11 이 읽는 정책이라 느슨하게 바꿀 수 없습니다"
-                  fi
-                  return "$GATE_EXIT_VOCAB" ;;
-                *)
-                  warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 커밋 $lc 의 착지를 판정할 수 없습니다 — 레포 접근이 돌아온 뒤 다시 쓰거나, 앞 행의 정책을 그대로 다시 적습니다(「커밋」 을 빼는 것은 복구가 아닙니다): ${GATE_LANDING_WHY:-${GATE_LANDING_VERDICT:-판정 없음}}"
-                  return "$GATE_EXIT_VOCAB" ;;
-              esac
-            done
-            if [ -z "$lc_tip" ]; then
-              warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨한데, 착지를 물어볼 후보 중 기록된 워크트리의 팁을 읽을 수 없어 착지를 판정할 수 없습니다(${lc_wt:-기록된 워크트리 없음}) — 낡은 커밋·리뷰 HEAD 의 미착지는 착지한 팁을 대신하지 못합니다. 정책은 첫 행에서 고릅니다. 앞 행의 정책을 그대로 다시 적거나(생략하면 이어받습니다), 세그먼트 워크트리가 남아 있고 머지가 아직 기록되지 않았으면 그 워크트리를 단 비종단 행으로 기록을 세운 뒤 다시 씁니다"
+            if [ -n "$lc_why" ]; then
+              warn "segment 행의 「리뷰 정책」 '$rpol' 은 앞 행의 '${ppol:-선리뷰후머지}' 보다 느슨합니다 — ${lc_why}. 정책은 실행 전, 이 세그먼트의 앞 행이 모두 상태=계획됨 이고 cycle 행이 없을 때만 느슨하게 바꿀 수 있습니다. 실행이 시작된 뒤에는 게이트가 세그먼트의 코드가 베이스에 올라갔는지 가릴 수 없습니다. 앞 행의 정책을 그대로 다시 적습니다(생략하면 이어받습니다)"
               return "$GATE_EXIT_VOCAB"
             fi
           fi
@@ -15257,8 +15383,9 @@ gate_record_row() {
       # check ever be loosened.
       #
       # A SEGMENT WITH NO SUCH ROW HAS NO RECORD — no non-terminal row before
-      # its first merge, or only rows naming the main checkout or a directory
-      # inside a checkout — and its tip is then left unread
+      # its first merge, only rows naming the main checkout or a directory
+      # inside a checkout, no row carrying `브랜치`, or rows naming checkouts of
+      # two branches — and its tip is then left unread
       # rather than taken from this row: the caller's worktree is the one value
       # the comparison must not rest on, and the main checkout's HEAD is not
       # what the segment merged. The coverage half then reads `판정 불가` and
@@ -18320,13 +18447,32 @@ gate_verb_act() {
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && [ -n "$(gate_segment_field "$segment" '상태')" ] \
      && gate_rule_enabled '리뷰-후-머지'; then
-    local mbind mhead=""
+    local mbind mhead="" mrow mspec
+    # THE RULE MUST READ THE ROW THE GATE READS — see `gate_rule_row_mismatch`.
+    # Checked first: every binding below is to the HEAD of the gate's row, and
+    # is worth nothing if the rule approved another row's tree.
+    mrow=$(gate_rule_row_mismatch "$segment")
+    if [ -n "$mrow" ]; then
+      warn "리뷰-후-머지 룰이 고르는 세그먼트 $segment 의 마지막 ${mrow} 행이 게이트가 고르는 행과 다릅니다 — 다른 세그먼트의 행 문면에 「$( [ "$mrow" = segment ] && printf 'id' || printf '세그먼트')=$segment 」 가 들어 있어 룰이 그 행을 읽게 됩니다"
+      warn "이 세그먼트의 ${mrow} 행을 하나 더 써서 마지막 행이 되게 한 뒤 다시 부릅니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
     mbind=$(gate_merge_binding_of_argv0 "$@")
     if [ "$mbind" != '해당없음' ]; then
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
         warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다"
+        exit "$GATE_EXIT_VOCAB"
+      fi
+    else
+      # A LOCAL PUSH TO THE BASE CARRIES NO BINDING ARGUMENT, but it names its
+      # source — see `gate_push_source_unbound`.
+      mhead=$(gate_segment_tip "$segment") || mhead=""
+      mspec=$(gate_push_source_unbound "$alias" "$mhead" "$@")
+      if [ -n "$mspec" ]; then
+        warn "베이스로 가는 git push 의 소스가 세그먼트 $segment 의 워크트리 HEAD 가 아닙니다 — refspec: ${mspec}, 워크트리 HEAD: ${mhead:-읽지 못함}"
+        warn "리뷰-후-머지 룰은 세그먼트 워크트리의 HEAD 를 대조합니다. 그 HEAD 를 올리도록 HEAD:<베이스> 나 <세그먼트 브랜치>:<베이스> 로 다시 부릅니다(세그먼트의 행위는 세그먼트 워크트리에서 돕니다)"
         exit "$GATE_EXIT_VOCAB"
       fi
     fi
