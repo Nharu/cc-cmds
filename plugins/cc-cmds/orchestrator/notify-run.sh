@@ -73,6 +73,13 @@ CC_NOTIFY_SESSION_ENV_NAME=CC_CMDS_SESSION_NOTIFY
 # a count — see `cc_notify_stack_admit`.
 CC_NOTIFY_STACK_CAP=8
 
+# The click handler, a sibling of this file. It is run as its own process and
+# never sourced, so the set of files the watcher sources does not grow.
+case "${BASH_SOURCE[0]:-}" in
+  */*) CC_NOTIFY_FOCUS="${BASH_SOURCE[0]%/*}/notify-focus.sh" ;;
+  *)   CC_NOTIFY_FOCUS=notify-focus.sh ;;
+esac
+
 cc_notify_host_os() {
   # Seamed so the non-Darwin leg can still drive the Darwin branch. Without the
   # seam every banner assertion is unreachable there, and an unreachable path
@@ -545,6 +552,21 @@ cc_notify_seat_state() {
   if [ -z "${RUN_DIR:-}" ] || [ ! -d "${RUN_DIR:-}" ]; then
     return 0
   fi
+  # WHERE A RUN BANNER'S CLICK LANDS is recorded here, once, by the first
+  # router caller that has a tmux pane — at kickoff that is the watcher's first
+  # pass or the seat's own first `plan`/`act`/`exec`, both carrying the seat's
+  # environment. A stage or a shift is not the router and never writes it. The
+  # three conditions are judged in the shell first, so a run that already has
+  # the record spawns nothing on every later pass. It sits ahead of the kill
+  # switch: the record is a location, not a banner.
+  case "${TMUX_PANE:-}" in
+    %|%*[!0-9]*) : ;;
+    %*)
+      if cc_caller_is_router && [ ! -e "$RUN_DIR/notify.seat" ]; then
+        /bin/bash "$CC_NOTIFY_FOCUS" record "$RUN_DIR" >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
   # THE KILL SWITCH IS READ BEFORE THE ONCE-GUARD BELOW, and the order is the
   # whole point. The near-miss warning carries its own marker, so making it wait
   # behind this file's existence silences it on every run that had already raised
@@ -559,6 +581,27 @@ cc_notify_seat_state() {
   return 0
 }
 
+cc_notify_click() {
+  # cc_notify_click <token> — the `-execute` value for one banner.
+  #
+  # A session banner is raised by the process sitting in the pane it belongs
+  # to, so its own TMUX/TMUX_PANE say where the click goes. A run banner is
+  # raised by the gate or the watcher, which do not know the seat's pane, so it
+  # reads the record the seat left in the run directory. The demoted `overflow`
+  # is a run banner like the rest.
+  local v
+  case "${1:-}" in
+    session-ask|session-turn)
+      v=$(/bin/bash "$CC_NOTIFY_FOCUS" exec-arg 2>/dev/null) || v=':' ;;
+    *)
+      v=$(/bin/bash "$CC_NOTIFY_FOCUS" exec-arg --seat-file "${RUN_DIR:-}/notify.seat" 2>/dev/null) || v=':' ;;
+  esac
+  case "$v" in
+    /*) printf '%s' "$v" ;;
+    *)  printf ':' ;;
+  esac
+}
+
 cc_notify_fire() {
   # cc_notify_fire <token> <message> [item-key]
   #
@@ -566,7 +609,7 @@ cc_notify_fire() {
   # nothing and says so. Falling back to the quietest token would be the
   # characteristic failure of a table like this — an unclassified condition
   # would reach the user as a status report, or not at all.
-  local token="${1:-}" body="${2:-}" key="${3:-}" title group sound n
+  local token="${1:-}" body="${2:-}" key="${3:-}" title group sound click n
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
     session-ask|session-turn) : ;;
@@ -617,6 +660,7 @@ cc_notify_fire() {
   title=$(cc_notify_title "$token")
   group=$(cc_notify_group "$token" "$key")
   sound=$(cc_notify_sound "$token")
+  click=$(cc_notify_click "$token")
   body=$(cc_notify_body "$body")
 
   # Responsibility 4. The prepend is what makes this path untestable otherwise:
@@ -629,10 +673,12 @@ cc_notify_fire() {
     return 0
   fi
 
-  # THE CLICK IS NEUTRALIZED AT EVERY CALL SITE. Without it, clicking the notice
-  # pulls focus to whatever the notifier decides to activate — behaviour this
-  # tree has already fixed once, and a new firing point that omits the argument
-  # brings it straight back.
+  # EVERY LINE THAT RAISES A BANNER CARRIES `-execute`. Its value is what
+  # `notify-focus.sh exec-arg` built: `:`, or
+  # `/bin/bash '<handler>' focus '<socket>' '<pid>' '<pane>'`. When no value can
+  # be built it falls back to `:`, and there is no path that drops `-execute` —
+  # without it, clicking the notice pulls focus to whatever the notifier decides
+  # to activate, behaviour this tree has already fixed once.
   #
   # Responsibility 3: launched detached, status never asked.
   #
@@ -640,7 +686,7 @@ cc_notify_fire() {
   # the sound is a constant now, so the silent arm was unreachable code that read
   # like a live branch.
   { terminal-notifier -title "$title" -message "$body" -group "$group" \
-      -sound "$sound" -execute ':' >/dev/null 2>&1 & } 2>/dev/null || true
+      -sound "$sound" -execute "$click" >/dev/null 2>&1 & } 2>/dev/null || true
   return 0
 }
 

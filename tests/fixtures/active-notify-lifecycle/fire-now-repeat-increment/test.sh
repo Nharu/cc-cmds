@@ -24,4 +24,6 @@ fi
 # Unbracketed for the same reason as the single-mode fixture: a leading bracket
 # makes terminal-notifier drop the title and show the application name instead.
 grep -q -- '-title cc-cmds iter' "$NOTIFIER_LOG" || { echo "FIRE: title missing" >&2; exit 1; }
+# Fired outside tmux — the driver clears TMUX and TMUX_PANE — so the click
+# value is the `:` fallback, and `-execute` is still there.
 grep -q -- '-execute :' "$NOTIFIER_LOG" || { echo "FIRE: -execute ':' no-op missing" >&2; exit 1; }

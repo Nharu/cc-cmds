@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.44.0] - 2026-10-06
+
+배너를 클릭하면 그 배너를 띄운 세션으로 돌아간다. active-notify 배너, autopilot 런 배너, 일반 세션 훅 배너 모두 클릭 때 그 세션의 iTerm2 창·탭을 앞으로 가져오고 tmux window·pane 까지 선택한다. iTerm2 tmux 통합(`tmux -CC`)과 iTerm2 탭 안의 일반 tmux 를 모두 다룬다. 확인할 수 없는 클릭은 화면을 바꾸지 않는다 — iTerm2 가 아닌 터미널, tmux 밖의 세션, 이미 닫힌 pane, 대상 세션에 붙은 클라이언트가 없는 경우가 그렇다.
+
+### Added
+
+- **클릭 처리기 `orchestrator/notify-focus.sh`** — `exec-arg` 는 배너에 실을 `-execute` 값(`:` 또는 처리기의 focus 명령)을, `record <RUN_DIR>` 는 런 디렉터리의 `notify.seat` 을 한 번 쓰고, `focus` 는 pane 이 같은 서버에 살아 있는지·대상 세션에 클라이언트가 붙어 있는지·iTerm2 가 그 클라이언트를 보이는지를 모두 확인한 뒤에만 tmux 와 iTerm2 를 선택한다. 모든 경로가 종료 코드 0 이고 아무것도 출력하지 않는다.
+- **세 갈래 발신부가 모두 `-execute` 를 단다** — 세션 배너는 발화 프로세스의 `TMUX`·`TMUX_PANE` 으로, 런 배너는 킥오프 좌석이 처음 한 번 남긴 `notify.seat` 으로 위치를 정한다. 값을 만들지 못하면 `:` 로 떨어지며 `-execute` 를 빼는 경로는 없다.
+- **시험 `scripts/test-notify-focus.sh`** — tmux·iTerm2 스텁 묶음과 사설 tmux 서버 묶음이다. CI 의 rest-tests 잡이 tmux 를 설치해 실서버 묶음을 반드시 돌린다.
+
+### Post-install notes
+
+- 처음 배너를 클릭하면 macOS 가 iTerm2 제어(자동화)를 허용할지 한 번 묻는다. 거부하면 클릭은 아무 일도 하지 않고, 이 선택은 시스템 설정 → 개인 정보 보호 및 보안 → 자동화에서 되돌릴 수 있다.
+- iTerm2 tmux 통합(`tmux -CC`)을 쓰는 경우에도 따로 설정할 것은 없다.
+
 ## [2.43.0] - 2026-10-02
 
 autopilot 킥오프의 경계 질문에 답을 미리 써 둘 수 있다. 호스트 파일에 런 단위·레포별 기본값을 두고 환경변수로 그 런의 런 단위 값만 덮으면, 킥오프는 그 값들을 한 화면에 모아 보이고 「이대로 / 고칠 항목 지정」 을 한 번 묻는다. 확인된 값은 그 질문의 답과 같은 자리에 같은 철자로 동결되고, 확인되지 않았거나 무시된 값의 질문은 평소처럼 묻는다. 기본값은 킥오프만 읽는다 — 게이트·드라이버·fleet·감시자는 그 파일과 변수를 읽지 않으므로 돌고 있는 런은 파일을 고쳐도 바뀌지 않는다.

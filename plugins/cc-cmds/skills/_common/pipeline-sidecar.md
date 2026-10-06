@@ -1198,6 +1198,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |
 | `notify/park-<segment>` | gate (`gate.sh`) | per-segment park markers |
 | `notify.state` | notifier (`notify-run.sh`), drained by the gate | pending notification events |
+| `notify.seat` | notifier (`notify-run.sh`) | the kickoff seat's tmux socket, server pid and pane on one tab-separated line — where a run banner's click lands; written once by the first router caller with a pane, never replaced |
 | `notify.stack` | notifier (`notify-run.sh`) | the notification stack's admitted slots |
 | `notify.reported` · `notify.announced-void` | gate (`gate.sh`) | which events already reached the report |
 | `watch.pid` | watcher (`watch.sh`) | the watcher's own pid — **not a stage**, and a census that counts it answers a different question than its name |

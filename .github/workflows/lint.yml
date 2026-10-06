@@ -50,5 +50,9 @@ jobs:
       - name: Install mikefarah/yq
         uses: mikefarah/yq@v4
 
+      # The click handler's real-server suite fails under CI without tmux.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
       - name: Run tests except the gate suite
         run: make -j"$(nproc)" test-rest

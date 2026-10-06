@@ -67,6 +67,8 @@ brew install jq   # PreToolUse hook 의존성
 
 **3단계 — 최초 macOS 권한 승인** (1단계 완료 후): 첫 알림 시 macOS 권한 다이얼로그가 표시됩니다. 미리 트리거하려면 `"알림 테스트 한 번 해줘"`로 발화하여 테스트 알림을 받고 **허용**을 클릭하세요. (Claude Code의 Bash 권한 다이얼로그는 플러그인의 PreToolUse hook이 자동 승인하므로 표시되지 않습니다 — macOS 알림 권한 다이얼로그만 1회 응답하면 됩니다.) 다이얼로그를 놓쳤다면 시스템 설정 → 알림 → terminal-notifier에서 수동 활성화. 권한 거부 후 복구는 셸에서 `terminal-notifier -message 'cc-cmds permission test' -title '[cc-cmds] test' -group cc-cmds-active-notify -execute ':'` 직접 실행으로 재트리거 (스킬 bypass와 동일 형식이라 banner 외관이 일치).
 
+**배너 클릭** — active-notify 배너, autopilot 런 배너, 일반 세션 훅 배너를 클릭하면 그 배너를 띄운 세션의 iTerm2 창·탭으로 이동하고 tmux window·pane까지 선택합니다. iTerm2 tmux 통합(`tmux -CC`)에서도, iTerm2 탭 안의 일반 tmux에서도 동작합니다. iTerm2가 아닌 터미널, tmux 밖의 세션, 이미 닫힌 pane에서는 클릭해도 아무 일도 일어나지 않습니다. 처음 클릭할 때 macOS가 iTerm2 제어(자동화)를 허용할지 한 번 묻고, 거부하면 클릭은 아무 일도 하지 않습니다. 이 선택은 시스템 설정 → 개인 정보 보호 및 보안 → 자동화에서 되돌릴 수 있습니다.
+
 terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활성화됩니다.
 
 ### Claude Design 핸드오프 품질 리뷰 (선택)
