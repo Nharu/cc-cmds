@@ -6460,6 +6460,17 @@ probe_field() {
   # probe_field <run-id> — 그 런의 줄에서 run-id 를 뗀 나머지를 탭 그대로 낸다.
   printf '%s\n' "$probe_out" | awk -F'\t' -v r="$1" '$1==r{print $2 FS $3 FS $4}'
 }
+probe_pair() {
+  # probe_pair <probe-output> <run-id> <config-dir> — 그 (런, 디렉터리) 쌍의 줄에서
+  # 상태와 개수만 탭 그대로 낸다. 한 런이 여러 줄을 낼 수 있으므로 런 id 만으로는
+  # 줄을 고를 수 없다.
+  printf '%s\n' "$1" | awk -F'\t' -v r="$2" -v c="$3" '$1==r && $4==c{print $2 FS $3}'
+}
+probe_field_of() {
+  # probe_field_of <probe-output> <run-id> — probe_field 와 같되 출력을 인자로 받는다.
+  # 한 줄을 기대하는 런에 둘이 나오면 두 줄이 그대로 나와 단언이 깨진다.
+  printf '%s\n' "$1" | awk -F'\t' -v r="$2" '$1==r{print $2 FS $3 FS $4}'
+}
 check "T9 살아 있는 런은 도는중 / 스테이지 1 / 기록된 레인" \
   "$(probe_field R-live)" "도는중${TAB}1${TAB}$LD/runrec"
 check "T9 죽은 pid 의 런은 아님 / 0 / 미기록" \
@@ -6546,6 +6557,78 @@ check "T12 --resolve 가 리졸버 결과 한 줄을 낸다" "$res_out" "$LD/env
 res_out=$(env -u CLAUDE_CONFIG_DIR PATH="$PATH" HOME="$LD/home" \
             XDG_STATE_HOME="$EMPTY" XDG_CONFIG_HOME="$LD/xdg" bash "$PROBE" --resolve 2>/dev/null)
 check "T12 환경변수가 없으면 아래 단이 답한다" "$res_out" "$LD/homerec"
+
+# 프로브의 (런, 디렉터리) 행. 세그먼트가 서로 다른 계정으로 라우팅된 런은 디렉터리
+# 마다 한 줄이고, 세그먼트의 디렉터리는 그 시도의 `.window` 가 정한다 — 4번째 줄의
+# 인벤토리 id 를 런의 인벤토리 스냅숏으로 해소하고, 없거나 `-` 면 2번째 줄의 레인.
+PH="$WORK/probe-pair-home"; PS="$WORK/probe-pair-state"; PRR="$PS/cc-cmds/run"
+mkdir -p "$PH/.claude-u1" "$PH/.claude-u2" "$PH/.claude-other" "$PRR"
+sleep 60 & PA=$!
+sleep 60 & PB=$!
+sleep 60 & PC=$!
+sleep 60 & PD=$!
+pp_fp() { { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'; }
+pp_run() {
+  # pp_run <run-id> — 런 디렉터리, 런 수준 레인 u1, 두 계정의 인벤토리 스냅숏.
+  local r="$PRR/$1"
+  mkdir -p "$r"
+  printf '%s\n' "$PH/.claude-u1" > "$r/config-dir"
+  printf '{"schema":"cc-lane-accounts v1","accounts":[%s,%s]}\n' \
+    "{\"id\":\"u1\",\"config_dir\":\"$PH/.claude-u1\",\"unattended\":\"enabled\",\"interactive_reserved\":false}" \
+    "{\"id\":\"u2\",\"config_dir\":\"$PH/.claude-u2\",\"unattended\":\"enabled\",\"interactive_reserved\":false}" \
+    > "$r/inventory.json"
+}
+pp_seg() {
+  # pp_seg <run-id> <seg> <pid> <line2-lane> [<line4-id>] — 스테이지 기록과 그 시도의 .window.
+  local r="$PRR/$1"
+  printf '%s\n' "$3" > "$r/$2.pid"
+  if [ "$3" = "999999" ]; then printf 'Mon Jan 1 00:00:00 2001\n' > "$r/$2.start"; else pp_fp "$3" > "$r/$2.start"; fi
+  if [ $# -ge 5 ]; then
+    printf 'w\n%s\n-\n%s\n' "$4" "$5" > "$r/$2.window"
+  else
+    printf 'w\n%s\n-\n' "$4" > "$r/$2.window"
+  fi
+}
+pp_run R-two;   pp_seg R-two S1 "$PA" '~/.claude-u1' u1; pp_seg R-two S2 "$PB" '~/.claude-u2' u2
+pp_run R-absent; pp_seg R-absent S1 "$PA" '~/.claude-u1' u1
+rm -f "$PRR/R-absent/inventory.json"; ln -s "/dev/null/cc-cmds-inventory-absent$PH/.config" "$PRR/R-absent/inventory.json"
+pp_run R-noid;  pp_seg R-noid S1 "$PA" '~/.claude-u1' u9
+pp_run R-badid; pp_seg R-badid S1 "$PA" '~/.claude-u1' 'U_X'
+pp_run R-line2; pp_seg R-line2 S1 "$PA" '~/.claude-other' -
+pp_run R-stale; pp_seg R-stale S1 "$PA" '~/.claude-u1' u1
+printf '%s\n' "$PH/.claude-u2" > "$PRR/R-stale/S1.config-dir"
+pp_run R-shift
+printf '%s\n%s\n' "$PC" "$(pp_fp "$PC")" > "$PRR/R-shift/shift.live"
+pp_run R-half;  pp_seg R-half S1 "$PA" '~/.claude-u1' u1; pp_seg R-half S2 999999 '~/.claude-u2' u2
+pp_run R-none;  pp_seg R-none S1 999999 '~/.claude-u1' u1; pp_seg R-none S2 999999 '~/.claude-u2' u2
+pp_run R-sum
+pp_seg R-sum S1 "$PA" '~/.claude-u1' u1; pp_seg R-sum S2 "$PB" '~/.claude-u2' u2; pp_seg R-sum S3 "$PD" '~/.claude-u1' -
+# 교대는 이 하네스 자신이다 — 시험이 도는 동안 확실히 살아 있는 pid 이고, 지문은
+# 프로브가 비교하는 바로 그 함수로 만든다.
+printf '%s\n%s\n' "$$" "$( . "$script_dir/liveness.sh"; cc_proc_fingerprint "$$" )" > "$PRR/R-sum/shift.live"
+
+pp_out=$(HOME="$PH" XDG_STATE_HOME="$PS" bash "$PROBE" 2>/dev/null); pp_rc=$?
+pp_lines() { printf '%s\n' "$pp_out" | awk -F'\t' -v r="$1" '$1==r' | grep -c . || true; }
+check "프로브 (런, 디렉터리): 정상 종료" "$pp_rc" "0"
+check "서로 다른 id 두 세그먼트는 두 줄이다" "$(pp_lines R-two)" "2"
+check "그 첫 줄은 u1 의 디렉터리에 도는중 1" "$(probe_pair "$pp_out" R-two "$PH/.claude-u1")" "도는중${TAB}1"
+check "그 둘째 줄은 u2 의 디렉터리에 도는중 1" "$(probe_pair "$pp_out" R-two "$PH/.claude-u2")" "도는중${TAB}1"
+check "인벤토리 부재 표지 아래의 id 는 (미상)" "$(probe_pair "$pp_out" R-absent '(미상)')" "도는중${TAB}1"
+check "스냅숏에 없는 id 는 (미상)" "$(probe_pair "$pp_out" R-noid '(미상)')" "도는중${TAB}1"
+check "형식이 틀린 id 는 (미상)" "$(probe_pair "$pp_out" R-badid '(미상)')" "도는중${TAB}1"
+check "4번째 줄이 - 면 2번째 줄의 레인이 디렉터리다" "$(probe_field_of "$pp_out" R-line2)" "도는중${TAB}1${TAB}$PH/.claude-other"
+check "오래된 <seg>.config-dir 은 읽지 않는다" "$(probe_field_of "$pp_out" R-stale)" "도는중${TAB}1${TAB}$PH/.claude-u1"
+check "shift.live 만 살아 있으면 런 수준 디렉터리에 도는중 1" "$(probe_field_of "$pp_out" R-shift)" "도는중${TAB}1${TAB}$PH/.claude-u1"
+check "하나만 살아 있는 두 세그먼트는 한 줄이다" "$(probe_field_of "$pp_out" R-half)" "도는중${TAB}1${TAB}$PH/.claude-u1"
+check "살아 있는 것이 없으면 런 수준 아님 0 한 줄" "$(probe_field_of "$pp_out" R-none)" "아님${TAB}0${TAB}$PH/.claude-u1"
+pp_sum=$(printf '%s\n' "$pp_out" | awk -F'\t' '$1=="R-sum"{s+=$3} END{print s+0}')
+pp_live=$( . "$script_dir/liveness.sh"; cc_live_stages "$PRR/R-sum" )
+check "한 런의 줄별 개수 합은 살아 있는 스테이지 수 + 살아 있는 시프트 1" "$pp_sum" "$(( pp_live + 1 ))"
+check "그 런은 디렉터리 둘로 나뉜다 (시프트와 - 세그먼트는 런 수준 디렉터리)" "$(pp_lines R-sum)" "2"
+check "프로브 (런, 디렉터리): 모든 줄이 네 필드다" \
+  "$(printf '%s\n' "$pp_out" | awk -F'\t' 'NF!=4' | grep -c . || true)" "0"
+kill "$PA" "$PB" "$PC" "$PD" 2>/dev/null
+wait "$PA" "$PB" "$PC" "$PD" 2>/dev/null
 
 # --- T13~T16: 형제 레인의 훅 판정 -------------------------------------------
 HOOK="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"
