@@ -25750,8 +25750,87 @@ check "76: 같은 파괴를 런로컬로 재신고하면 앞 판정이 답하고
 case "$msg" in *"already parked"*) ok "76: 그 답이 재신고 핀의 것이다 (런로컬)" ;; *) bad "76: 그 답이 재신고 핀의 것이다 (런로컬)" "$msg" ;; esac
 [ -e "$SIB76/rl76b/k" ] && ok "76: 런로컬로 재신고한 파괴는 일어나지 않았다" \
   || bad "76: 런로컬로 재신고한 파괴는 일어나지 않았다" "$SIB76/rl76b/k"
+
+# 혼합 착지 — 착지점 하나가 임시 디렉터리나 저장소 밖에 있으면 「모든 착지점이 대상
+# 트리 안」이라는 술어가 떨어졌고, 런로컬 칸에서는 그 실패가 곧 진행이었다. 위의
+# 단일 착지점 쌍은 이 구멍을 보지 못한다. 판정은 이제 착지점마다 내려지므로, 피연산자
+# 하나만 형제 워크트리에 닿아도 파괴는 park 된다. 쌍마다 잔존을 단언한다.
+mkdir -p "$SIB76/rlm76" "$T76/rlm76"
+printf 'k\n' > "$SIB76/rlm76/k"; printf 'k\n' > "$SIB76/rlm76/dst"
+printf 'new\n' > "$T76/rlm76/src"; printf 'j\n' > "$T76/rlm76/junk"
+printf 'u\n' > "$SIB76/rlm76/untracked76"
+nb76=$(b76)
+rl76 rm -rf "$SIB76/rlm76/k" "$T76/rlm76/junk"
+check "76: 형제 워크트리와 임시 디렉터리에 함께 닿는 rm -rf 는 런로컬로도 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "76: 그 혼합 rm -rf 의 판정이 파괴형태미명시다" ;; *) bad "76: 그 혼합 rm -rf 의 판정이 파괴형태미명시다" "$msg" ;; esac
+[ -e "$SIB76/rlm76/k" ] && [ -e "$T76/rlm76/junk" ] && ok "76: park 된 혼합 rm -rf 의 두 피연산자가 모두 남아 있다" \
+  || bad "76: park 된 혼합 rm -rf 의 두 피연산자가 모두 남아 있다" "$SIB76/rlm76/k $T76/rlm76/junk"
+rl76 mv "$T76/rlm76/src" "$SIB76/rlm76/dst"
+check "76: 임시 디렉터리의 파일을 형제 워크트리의 기존 파일 위로 옮기는 mv 는 런로컬로도 park 된다" "$rc" "11"
+check "76: park 된 mv 의 덮일 파일이 그대로다" "$(cat "$SIB76/rlm76/dst" 2>/dev/null)" "k"
+rl76 git -C "$SIB76" clean -fdx --exclude=/nonexistent-rlm76
+check "76: 저장소 밖 --exclude 를 단 형제 워크트리의 clean -fdx 는 런로컬로도 park 된다" "$rc" "11"
+[ -e "$SIB76/rlm76/untracked76" ] && ok "76: park 된 clean 의 추적되지 않는 파일이 남아 있다" \
+  || bad "76: park 된 clean 의 추적되지 않는 파일이 남아 있다" "$SIB76/rlm76/untracked76"
+# X=1 갈래 — 판독기가 트리거를 내지 않는 쓰기라도 --destructive 를 단 런로컬 신고가
+# 형제 워크트리에 닿으면 park 된다. 신고된 표지를 런로컬 칸이 읽는다는 단언이다.
+TMPDIR="$T76" gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 --destructive --snapshot-digest "$(HH)" --rationale 't76' \
+  -- cp base.txt "$SIB76/rlm76/new76"
+check "76: --destructive 만으로 표지가 선 런로컬 쓰기는 형제 워크트리에서 park 된다" "$rc" "11"
+[ -e "$SIB76/rlm76/new76" ] && bad "76: 그 park 된 쓰기는 일어나지 않았다" "$SIB76/rlm76/new76" \
+  || ok "76: 그 park 된 쓰기는 일어나지 않았다"
+# 불투명·미상 등급 — 칸 4 는 런로컬 신고를 --destructive 를 읽지 않고 통과시켰다.
+# git rm 은 등급표가 읽지 못하는 꼴이고 unlink 는 표에 없는 동사다. 둘 다 이제 같은
+# 착지점 판정을 받고, 판독기가 내는 트리거가 park 행에 실린다.
+[ -e "$SIB76/base.txt" ] && ok "76: 칸 4 쌍의 형제 워크트리에 추적 파일이 있다 (잔존 단언이 공허하지 않다)" \
+  || bad "76: 칸 4 쌍의 형제 워크트리에 추적 파일이 있다" "$SIB76/base.txt"
+rl76 git -C "$SIB76" rm -q -f base.txt
+check "76: 형제 워크트리의 git rm -f 는 런로컬로도 park 된다 (칸 4)" "$rc" "11"
+case "$(lb76)" in
+  *"| 도달=런로컬 | 파괴 트리거=-f |"*) ok "76: 그 park 행이 파괴 트리거=-f 를 싣는다" ;;
+  *) bad "76: 그 park 행이 파괴 트리거=-f 를 싣는다" "$(lb76)" ;;
+esac
+[ -e "$SIB76/base.txt" ] && ok "76: park 된 git rm 의 추적 파일이 남아 있다" \
+  || bad "76: park 된 git rm 의 추적 파일이 남아 있다" "$SIB76/base.txt"
+rl76 unlink "$SIB76/rlm76/k"
+check "76: 형제 워크트리의 unlink 는 런로컬로도 park 된다 (칸 4)" "$rc" "11"
+[ -e "$SIB76/rlm76/k" ] && ok "76: park 된 unlink 의 파일이 남아 있다" \
+  || bad "76: park 된 unlink 의 파일이 남아 있다" "$SIB76/rlm76/k"
+check "76: 혼합 착지·X=1·칸 4 의 park 여섯이 blocked 행 여섯을 남긴다" "$(( $(b76) - nb76 ))" "6"
+# 대조 — 착지점이 모두 돌린 임시 디렉터리 안인 파괴, 그리고 형제 워크트리에 새 이름을
+# 만드는 비파괴 혼합 쓰기는 런로컬로 지나간다. rc 0 과 실제 효과를 함께 단언해, 다른
+# 이유의 거부가 「park 되지 않음」으로 읽히지 않게 한다.
+printf 'a\n' > "$T76/rlm76/a"; printf 'b\n' > "$T76/rlm76/b"
+nb76=$(b76)
+rl76 rm -rf "$T76/rlm76/a" "$T76/rlm76/b"
+check "76: 대조 — 착지점이 모두 임시 디렉터리인 rm -rf 는 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$T76/rlm76/a" ] && [ ! -e "$T76/rlm76/b" ] && ok "76: 그 rm -rf 가 실제로 지웠다 (임시 디렉터리)" \
+  || bad "76: 그 rm -rf 가 실제로 지웠다 (임시 디렉터리)" "$T76/rlm76"
+printf 'n\n' > "$T76/rlm76/src2"
+rl76 cp "$T76/rlm76/src2" "$SIB76/rlm76/fresh76"
+check "76: 대조 — 형제 워크트리에 새 이름을 만드는 비파괴 혼합 쓰기는 런로컬로 통과한다" "$rc" "0"
+[ -e "$SIB76/rlm76/fresh76" ] && ok "76: 그 쓰기가 실제로 일어났다 (혼합 비파괴)" \
+  || bad "76: 그 쓰기가 실제로 일어났다 (혼합 비파괴)" "$SIB76/rlm76/fresh76"
+check "76: 대조 — 통과한 둘은 blocked 행을 남기지 않는다" "$(( $(b76) - nb76 ))" "0"
+# 대상트리 신고의 혼합 착지 — 정직하게 대상트리로 신고하면 임시 원본 때문에
+# 대상트리불일치로 park 되던 행위가, 거짓 런로컬 신고와 같은 판정을 받는다: 비파괴는
+# 통과하고 파괴는 파괴형태미명시로 park 된다. 정직한 신고가 더 불리하지 않다.
+printf 'm\n' > "$T76/rlm76/src3"; printf 'k\n' > "$SIB76/rlm76/dst3"
+TMPDIR="$T76" x76 트리밖쓰기 cp "$T76/rlm76/src3" "$SIB76/rlm76/fresh76t"
+check "76: 임시 디렉터리에서 형제 워크트리로의 비파괴 복사는 대상트리로 통과한다" "$rc" "0"
+[ -e "$SIB76/rlm76/fresh76t" ] && ok "76: 그 복사가 실제로 일어났다 (대상트리 혼합)" \
+  || bad "76: 그 복사가 실제로 일어났다 (대상트리 혼합)" "$SIB76/rlm76/fresh76t"
+TMPDIR="$T76" x76 트리밖쓰기 mv "$T76/rlm76/src3" "$SIB76/rlm76/dst3"
+check "76: 임시 디렉터리의 파일을 형제 워크트리의 기존 파일 위로 옮기는 mv 는 대상트리로도 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*) ok "76: 그 park 는 대상트리불일치가 아니라 파괴형태미명시다" ;;
+  *) bad "76: 그 park 는 대상트리불일치가 아니라 파괴형태미명시다" "$msg" ;;
+esac
+check "76: park 된 대상트리 mv 의 덮일 파일이 그대로다" "$(cat "$SIB76/rlm76/dst3" 2>/dev/null)" "k"
+git -C "$SIB76" checkout -q -- base.txt >/dev/null 2>&1
 git -C "$WT" worktree remove --force "$SR76" >/dev/null 2>&1
-rm -rf "$SIB76/rl76" "$SIB76/rl76b" "$T76" "$SR76"
+rm -rf "$SIB76/rl76" "$SIB76/rl76b" "$SIB76/rlm76" "$T76" "$SR76"
 
 # 상태 루트 — 대상 트리 안에 놓여도 그 자리의 정직한 토큰은 런로컬이다. 시험 상태
 # 루트는 대상 트리 밖에 있으므로 exec 로는 이 갈래가 공허하다(술어가 어차피 떨어진다).
