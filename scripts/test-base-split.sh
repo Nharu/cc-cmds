@@ -219,6 +219,26 @@ elif variant == "ownbulletval":
     tickets[0]["lines"]["소유 파일"] = ["**소유 파일**: `src/t1/main.py`", "- `src/t2/main.py`"]
 elif variant == "ownnone":
     tickets[0]["owned_raw"] = "없음"
+elif variant in ("trailcomma", "emptyitem", "numbered", "blankbullet", "dupfield",
+                 "onespan", "spannote", "semicolon"):
+    # T2 owns the shared file; T1 holds it only in a spelling the field line
+    # does not carry as its own entry, so a silent drop would hide the overlap.
+    tickets[1]["owned"] = ["src/shared/x.py"]
+    tickets[0]["lines"]["소유 파일"] = {
+        "trailcomma": ["**소유 파일**: `src/t1/main.py`,", "`src/shared/x.py`"],
+        "emptyitem": ["**소유 파일**: `src/t1/main.py`, , `src/shared/x.py`"],
+        "numbered": ["**소유 파일**: `src/t1/main.py`", "1. `src/shared/x.py`"],
+        "blankbullet": ["**소유 파일**: `src/t1/main.py`", "", "- `src/shared/x.py`"],
+        "dupfield": ["**소유 파일**: `src/t1/main.py`", "**소유 파일**: `src/shared/x.py`"],
+        "onespan": ["**소유 파일**: `src/shared/x.py, src/t1/main.py`"],
+        "spannote": ["**소유 파일**: `src/shared/x.py (수정)`"],
+        "semicolon": ["**소유 파일**: src/shared/x.py;src/t1/main.py"],
+    }[variant]
+elif variant == "depempty":
+    tickets[2]["lines"]["선행"] = ["**선행**: T2, "]
+elif variant == "spacepath":
+    # A path that holds a space is one entry when it sits in a code span.
+    tickets[0]["owned_raw"] = "`src/a b.py`"
 elif variant == "depbullet":
     tickets[2]["lines"]["선행"] = ["**선행**:", "- T2"]
 elif variant == "consempty":
@@ -378,6 +398,18 @@ expect_check ownbulletval "P1 T1 소유 파일 목록 형식 오류 값 아래 �
 expect_check ownnone    "P1 T1 소유 파일 목록 형식 오류 없음 (소유 파일은 비어 있을 수 없음)"
 expect_check depbullet  "P1 T3 선행 목록 형식 오류 값이 비어 있음; 값 아래 불릿 목록"
 expect_check consempty  "P1 C1 소비 티켓 목록 형식 오류 값이 비어 있음"
+# A list whose rest sits outside its field line, and a span or bare entry
+# that holds more than one path, are reported rather than read as a shorter
+# list that overlaps nothing.
+expect_check trailcomma "P1 T1 소유 파일 목록 형식 오류 값 아래 이어지는 줄; 빈 항목"
+expect_check emptyitem  "P1 T1 소유 파일 목록 형식 오류 빈 항목"
+expect_check numbered   "P1 T1 소유 파일 목록 형식 오류 값 아래 이어지는 줄"
+expect_check blankbullet "P1 T1 소유 파일 목록 형식 오류 값 아래 불릿 목록"
+expect_check dupfield   "P1 T1 필드 중복 소유 파일"
+expect_check depempty   "P1 T3 선행 목록 형식 오류 빈 항목"
+expect_check onespan    "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py, src/t1/main.py\`"
+expect_check spannote   "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py (수정)\`"
+expect_check semicolon  "P1 T1 소유 파일 목록 형식 오류 항목 src/shared/x.py;src/t1/main.py"
 # The repository is compared without its code span and case-folded, so a
 # spelling difference does not split one repository in two.
 expect_check repospan   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/shared/x.py"
@@ -393,7 +425,7 @@ run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
 
 for v in globneg braceneg dirneg repodiff sharedok shareddir depth3reason fenceok \
-         routeneg routeshared spancomma sharedt2 sharedboth sharedglob-py; do
+         routeneg routeshared spancomma spacepath sharedt2 sharedboth sharedglob-py; do
   gen "$v"
   run_bs check "$DOCS/$v.md"
   check "check $v: exits 0" "$rc" "0"
@@ -436,6 +468,9 @@ for n in (1, 2, 3):
     assert open(sys.argv[2] + "/body-T%d.md" % n, "rb").read() == (tick % n).encode("utf-8")
 PYEOF
 
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행중 --similar 'https://github.com/o/r/issues/7'
+check "record: the base row has no similar-candidate field" "$rc" "3"
+[ ! -e "$REG" ] && ok "record: a refused base --similar writes no registry" || bad "record: a refused base --similar writes no registry"
 run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry base --plan "$OUT/plan.jsonl" --state 발행중
 check "record: base 발행중 exits 0" "$rc" "0"
 has "record: base row in flight" "$(cat "$REG")" '- `베이스` | 상태=발행중 | 참조=- | 노드 id=-'
@@ -462,8 +497,11 @@ check "plan: after the base is issued" "$(entries)" "T2:create T1:create T3:wait
 check "plan: child carries --parent" "$(argv_of T2)" \
   "gh issue create --repo o/r --title 조각 2 구현 --body-file $OUT/body-T2.md --parent https://github.com/o/r/issues/1"
 
-run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행중
+run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행중 --similar 'https://github.com/o/r/issues/7'
+check "record: a ticket row takes --similar" "$rc" "0"
 run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/2
+has "record: the similar candidates stay on the issued ticket row" "$(cat "$REG")" \
+  '- `티켓` | id=T2 | 상태=발행됨 | 참조=https://github.com/o/r/issues/2 | 노드 id=- | 유사 후보=https://github.com/o/r/issues/7'
 run_bs record "$DOCS/ok.md" --row "$GH_ROW" --entry T1 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://github.com/o/r/issues/3
 has "record: a creation that carried --parent ties the child relation" "$(cat "$REG")" '- `관계` | 종류=하위 | 원=T2 | 대상=베이스 | 상태=걸림'
 

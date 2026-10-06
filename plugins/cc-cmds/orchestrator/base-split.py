@@ -69,6 +69,7 @@ TICKET_FIELDS = ("종류", "레포", "선행", "제공 계약", "소비 계약",
                  "공유 파일", "범위", "발행 제목", "발행 본문")
 CONTRACT_FIELDS = ("제공 티켓", "소비 티켓", "형태", "인터페이스")
 FENCED_FIELDS = ("인터페이스", "발행 본문")
+FILE_LIST_FIELDS = ("소유 파일", "공유 파일")
 # `[` is not here: `app/[id]/page.tsx` is a literal path in routing trees, and
 # cutting it at `[` would make it overlap everything under `app/`.
 GLOB_META = "*?{"
@@ -158,15 +159,21 @@ def fenced_value(lines, i):
 
 
 BULLET_RE = re.compile(r"^\s*[-*+]\s")
+SPAN_NOTE_RE = re.compile(r"\s\([^()]*\)$")
 
 
 class Fields(dict):
-    """Field values of one block; `bulleted` names the fields whose line is
-    followed at once by a bullet line, which no field reads."""
+    """Field values of one block. `bulleted` names the fields whose next
+    non-blank line is a bullet, `continued` those whose next non-blank line is
+    neither a field nor a bullet (a wrapped line, a numbered list), and `dups`
+    the keys whose field line appears more than once. No field reads any of
+    those lines, so what they hold would drop out in silence."""
 
     def __init__(self):
         dict.__init__(self)
         self.bulleted = set()
+        self.continued = set()
+        self.dups = set()
 
 
 def parse_block(lines, inside, start, end):
@@ -180,29 +187,44 @@ def parse_block(lines, inside, start, end):
             continue
         key, value = m.group(1), (m.group(2) or "")
         if key in fields:
+            fields.dups.add(key)
             continue
         if key in FENCED_FIELDS and value == "":
             v = fenced_value(lines, i + 1)
             fields[key] = v
         else:
             fields[key] = value.strip()
-        if i + 1 < end and not inside[i + 1] and BULLET_RE.match(lines[i + 1]):
-            fields.bulleted.add(key)
+        j = i + 1
+        while j < end and not inside[j] and not lines[j].strip():
+            j += 1
+        if j < end and not inside[j] and not FIELD_RE.match(lines[j]):
+            if BULLET_RE.match(lines[j]):
+                fields.bulleted.add(key)
+            else:
+                fields.continued.add(key)
     return fields
 
 
 def list_shape_faults(fields, key):
     """Why a list field is not written on its own line, or [].
 
-    A list value sits on the field line. An empty value, or a bullet list
-    under the field line, would read as an empty list and drop the entries
-    from every predicate in silence.
+    A list value sits on the field line. An empty value, an empty entry (a
+    trailing comma is what a wrapped list leaves behind), or a bullet list,
+    numbered list or wrapped line under the field line would read as a
+    shorter list and drop the entries from every predicate in silence. File
+    lists report their empty entries in split_paths.
     """
     faults = []
-    if fields.get(key) == "":
+    value = fields.get(key)
+    if value == "":
         faults.append("값이 비어 있음")
+    elif (value is not None and key not in FILE_LIST_FIELDS
+          and any(not x.strip() for x in value.split(","))):
+        faults.append("빈 항목")
     if key in getattr(fields, "bulleted", ()):
         faults.append("값 아래 불릿 목록")
+    if key in getattr(fields, "continued", ()):
+        faults.append("값 아래 이어지는 줄")
     return faults
 
 
@@ -256,14 +278,24 @@ def split_paths(value):
     entries = []
     for x in items:
         if not x.strip():
+            # What a wrapped list leaves behind: the rest of it is on lines
+            # no field reads.
+            faults.append("빈 항목")
             continue
         e = strip_code(x)
         if not e.strip() or "`" in e or e != e.strip():
             faults.append("항목 %s" % x.strip())
             continue
-        if e == x.strip() and any(ch.isspace() for ch in e):
+        bare = e == x.strip()
+        if bare and (";" in e or any(ch.isspace() for ch in e)):
             # A bare entry with a space is a path plus a note (`src/x.py
-            # (신규)`); a path that holds a space goes in a code span.
+            # (신규)`), one with `;` is two paths; a path that holds a space
+            # goes in a code span.
+            faults.append("항목 %s" % x.strip())
+            continue
+        if not bare and (", " in e or "; " in e or SPAN_NOTE_RE.search(e)):
+            # One span around a whole list or a path plus its note: read as
+            # one literal path it would overlap nothing.
             faults.append("항목 %s" % x.strip())
             continue
         p = norm_path(e)
@@ -457,6 +489,12 @@ class Graph(object):
     def add(self, pred, detail):
         self.v.append((pred, detail))
 
+    def add_dups(self, where, fields):
+        # The first value wins, so a second field line of the same key is
+        # read by nothing.
+        for key in sorted(getattr(fields, "dups", ())):
+            self.add("P1", "%s 필드 중복 %s" % (where, key))
+
     def build(self):
         doc = self.doc
         seen = set()
@@ -468,6 +506,7 @@ class Graph(object):
             for key in TICKET_FIELDS:
                 if f.get(key) is None:
                     self.add("P1", "%s 필드 없음 %s" % (tid, key))
+            self.add_dups(tid, f)
             self.ids.append(tid)
             for key in ("선행", "제공 계약", "소비 계약"):
                 faults = list_shape_faults(f, key)
@@ -522,6 +561,7 @@ class Graph(object):
             for key in CONTRACT_FIELDS:
                 if f.get(key) is None:
                     self.add("P1", "%s 필드 없음 %s" % (cid, key))
+            self.add_dups(cid, f)
             for key in ("제공 티켓", "소비 티켓"):
                 faults = list_shape_faults(f, key)
                 if faults:
@@ -534,6 +574,8 @@ class Graph(object):
             for key in ("발행 제목", "발행 본문"):
                 if doc.base.get(key) is None:
                     self.add("P1", "베이스 티켓 필드 없음 %s" % key)
+            self.add_dups("베이스 티켓", doc.base)
+        self.add_dups("티켓 분할", doc.header)
 
         # every reference resolves
         for tid in self.ids:
