@@ -12712,10 +12712,16 @@ gate_physical_path() {
   # between the BSD and GNU builds, so the walk is written out. Bounded at eight
   # hops: a symlink cycle is a filesystem a caller can build, and an unbounded
   # follow would hang the gate rather than refuse anything.
+  #
+  # `cd -P`, NOT `cd`. The default `cd` folds `<component>/..` as text before it
+  # changes directory, while the kernel follows a symlinked component first and
+  # then takes `..` from where the link pointed. `<link>/../<…>/base-split.py`
+  # then resolved here to the gate's own copy while the kernel ran a planted file
+  # of that name — and the helper trust check compares exactly this value.
   local p="$1" d b link n=0
   d=$(dirname "$p"); b=$(basename "$p")
   [ -d "$d" ] || { printf '%s' "$p"; return 0; }
-  p="$(cd "$d" && pwd -P)/$b"
+  p="$(cd -P -- "$d" && pwd -P)/$b"
   while [ -L "$p" ] && [ "$n" -lt 8 ]; do
     link=$(readlink "$p" 2>/dev/null) || break
     [ -n "$link" ] || break
@@ -12725,7 +12731,7 @@ gate_physical_path() {
     esac
     d=$(dirname "$p"); b=$(basename "$p")
     [ -d "$d" ] || break
-    p="$(cd "$d" && pwd -P)/$b"
+    p="$(cd -P -- "$d" && pwd -P)/$b"
     n=$((n + 1))
   done
   printf '%s' "$p"

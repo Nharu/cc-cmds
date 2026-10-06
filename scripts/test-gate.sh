@@ -1265,6 +1265,25 @@ graded_as() {
   esac
 }
 
+dotdot_spelling() {
+  # dotdot_spelling <tag> <helper name> — an argv0 that reads, folded as text,
+  # as the orchestrator's own <helper name>, but that the kernel resolves to a
+  # copy of /bin/sh planted under $WORK. A symlink `L` points k levels deep, and
+  # k `..` after it climb back to the link's own directory as text, to root —
+  # but only to `plant/` through the link. Physical paths throughout, so a
+  # symlinked TMPDIR does not shift the count.
+  local w o k t up i
+  w="$WORK/dotdot-$1"; mkdir -p "$w"; w=$(cd -P -- "$w" && pwd)
+  o=$(cd -P -- "$CC_ORCH" && pwd)
+  k=$(printf '%s/L' "$w" | tr -cd / | wc -c | tr -d ' ')
+  t="$w/plant"; up=""
+  for i in $(seq 1 "$k"); do t="$t/x$i"; up="$up../"; done
+  mkdir -p "$t" "$w/plant$o"
+  cp /bin/sh "$w/plant$o/$2"; chmod +x "$w/plant$o/$2"
+  [ -L "$w/L" ] || ln -s "$t" "$w/L"
+  printf '%s' "$w/L/$up${o#/}/$2"
+}
+
 # `gate` runs the CLI and leaves the code in `rc` and the last non-log line in
 # `msg`. The driver's own log lines go to stderr and are filtered out so an
 # assertion on the refusal text does not match the banner above it.
@@ -25691,6 +25710,7 @@ mkdir -p "$BSX_PLANT"
 for n in clickup-create.py clickup-relate.py base-split.py; do
   cp /bin/sh "$BSX_PLANT/$n"; chmod +x "$BSX_PLANT/$n"
 done
+BSX_DOTDOT=$(dotdot_spelling 78 clickup-create.py)
 rm -f "$BSX_PLANLOG" "$BSX_PLANLOG.err"
 cat > "$WORK/bin/bsx-probe-body.sh" <<BSXPROBEEOF
 p() {
@@ -25707,6 +25727,7 @@ p curelate 외부상태변경 협업 "$BSX_CU/clickup-relate.py" --task a --depe
 p cuinterp 외부상태변경 협업 python3 "$BSX_CU/clickup-create.py" --list 1 --name x
 p cuplant 외부상태변경 협업 "$BSX_PLANT/clickup-create.py" --list 1 --name x
 p curplant 외부상태변경 협업 "$BSX_PLANT/clickup-relate.py" --task a --depends-on b
+p cudotdot 외부상태변경 협업 "$BSX_DOTDOT" --list 1 --name x
 p bsplan 트리밖쓰기 런로컬 "$BSX_CU/base-split.py" plan --out "\$RD/split/\$CC_PIPELINE_STAGE_ID/"
 p touchsplit 워크트리쓰기 런로컬 touch "\$RD/split/S1/T1.md"
 p touchsplits 워크트리쓰기 런로컬 touch "\$RD/splits/T1.md"
@@ -25735,6 +25756,10 @@ check "78:인터프리터를 앞세운 clickup-create.py 는 통과하지 않는
 # answers with an approval (5) where the real helper passes.
 check "78:이름만 같은 clickup-create.py 는 통과하지 않는다" "$(bsx_plan_rc cuplant)" "5"
 check "78:이름만 같은 clickup-relate.py 는 통과하지 않는다" "$(bsx_plan_rc curplant)" "5"
+# Refused (3) or sent to an approval (5) — either is not a pass; which one
+# depends on the reach guard reading the `..` spelling, not on the trust check.
+case "$(bsx_plan_rc cudotdot)" in 3|5) _dd=막힘 ;; *) _dd="통과($(bsx_plan_rc cudotdot))" ;; esac
+check "78:심볼릭 링크 뒤 .. 로 접은 clickup-create.py 는 통과하지 않는다" "$_dd" "막힘"
 check "78:base-split.py plan 의 출력 디렉터리 쓰기가 통과한다" "$(bsx_plan_rc bsplan)" "0"
 check "78:split/ 아래 쓰기가 통과한다" "$(bsx_plan_rc touchsplit)" "0"
 check "78:split 이웃 이름 디렉터리 쓰기는 거부된다" "$(bsx_plan_rc touchsplits)" "3"
@@ -25758,6 +25783,9 @@ graded_as '외부상태변경' '79:clickup-relate.py 는 외부 상태 변경이
 graded_as '외부상태변경' '79:clickup-create.py 는 외부 상태 변경이다'      -- "$CC_ORCH/clickup-create.py" --list 1
 graded_as '등급 미상'    '79:이름만 같은 다른 경로의 base-split.py 는 등급 미상이다' -- /x/scripts/base-split.py check d.md
 graded_as '등급 미상'    '79:PATH 가 찾지 못하는 맨 이름의 base-split.py 는 등급 미상이다' -- base-split.py check d.md
+# Through a symlink and back with `..`: as text the path is the gate's own copy,
+# but the kernel follows the link first and runs the planted file.
+graded_as '등급 미상'    '79:심볼릭 링크 뒤 .. 로 접은 base-split.py 는 등급 미상이다' -- "$(dotdot_spelling 79 base-split.py)" check d.md
 
 # ---------------------------------------------------------------------------
 # 80. The design scope and the rows only a base run may carry
