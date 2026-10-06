@@ -25466,6 +25466,34 @@ check "76: 플래그 없는 rm 은 동사가 트리거라 rm 형태가 연다" "
 check "76: git reset 만 적은 형태는 --hard 를 열지 않는다" "$(pd76 'git reset' git reset --hard)" "0"
 check "76: 경로 지정 checkout 은 -- 를 트리거로 쓴다" "$(pd76 'git checkout --' git checkout -- .)" "1"
 
+# 복사형 동사의 트리거는 덮어쓰기를 켠 낱말이다. 맨 동사를 트리거로 내던 동안
+# 비덮어쓰기 형태만 적은 사전 인가가 같은 머리의 강제 형태를 열었다. 사례마다 강제
+# 형태는 그 사전 인가로 열리지 않고(park), 비덮어쓰기 형태는 트리거가 없어 사전 인가
+# 없이 지나감을 쌍으로 단언한다. 대상이 있어야 덮어쓰기로 읽히므로 둘 다 만든다.
+P76="$WORK/pd76"; mkdir -p "$P76"
+printf 'keep\n' > "$P76/dst"; printf 'new\n' > "$P76/src"
+lt76() {
+  # lt76 <argv...> — 지역 파괴 판독기가 내는 트리거를 그대로 낸다(없으면 빈 문자열).
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_reach_local_destructive "$@"' _ "$GATE" "$@"
+}
+check "76: 형태=ln -s 는 ln -s -f 를 열지 않는다" "$(pd76 'ln -s' ln -s -f "$P76/src" "$P76/dst")" "0"
+check "76: 대조 — 비덮어쓰기 ln -s 는 트리거가 없다" "$(lt76 ln -s "$P76/src" "$P76/dst")" ""
+check "76: 형태=ln 은 ln -sf 를 열지 않는다" "$(pd76 'ln' ln -sf "$P76/src" "$P76/dst")" "0"
+check "76: 대조 — 비덮어쓰기 ln 은 트리거가 없다" "$(lt76 ln "$P76/src" "$P76/dst")" ""
+check "76: 형태=mv -n 은 mv -n -f 를 열지 않는다" "$(pd76 'mv -n' mv -n -f "$P76/src" "$P76/dst")" "0"
+check "76: 대조 — 비덮어쓰기 mv -n 은 트리거가 없다" "$(lt76 mv -n "$P76/src" "$P76/dst")" ""
+check "76: 형태=cp -n 은 cp -n -f 를 열지 않는다" "$(pd76 'cp -n' cp -n -f "$P76/src" "$P76/dst")" "0"
+check "76: 대조 — 비덮어쓰기 cp -n 은 트리거가 없다" "$(lt76 cp -n "$P76/src" "$P76/dst")" ""
+# 양성 쌍둥이 — 덮어쓰기를 켠 낱말을 담은 형태는 연다. 동사만으로 덮어쓰는 행위는
+# 여전히 동사가 트리거라 동사만 적은 형태가 연다.
+check "76: 형태=ln -sf 는 ln -sf 를 연다" "$(pd76 'ln -sf' ln -sf "$P76/src" "$P76/dst")" "1"
+check "76: 형태=mv -n -f 는 mv -n -f 를 연다" "$(pd76 'mv -n -f' mv -n -f "$P76/src" "$P76/dst")" "1"
+check "76: 형태=cp -n -f 는 cp -n -f 를 연다" "$(pd76 'cp -n -f' cp -n -f "$P76/src" "$P76/dst")" "1"
+check "76: 덮어쓰기를 켠 낱말이 트리거다 — ln -s -f" "$(lt76 ln -s -f "$P76/src" "$P76/dst")" "-f"
+check "76: 동사만으로 덮어쓰는 mv 는 동사가 트리거다" "$(lt76 mv "$P76/src" "$P76/dst")" "mv"
+check "76: 동사만 적은 형태는 동사만으로 덮어쓰는 mv 를 연다" "$(pd76 'mv' mv "$P76/src" "$P76/dst")" "1"
+rm -rf "$P76"
+
 # park — 같은 모양이 대상의 공통 git 디렉터리 밖에 닿는다.
 nb76=$(b76)
 x76 워크트리쓰기 git -C "$U76" add -A

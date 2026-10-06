@@ -1215,6 +1215,9 @@ gate_reach_local_destructive() {
   # manifest shape that carries it (`rm -rf`, `git reset --hard`) is what opens
   # the act — a shape naming only the verb does not, except where the verb is
   # the only word the act has (`rm <file>`, a `mv` over an existing file).
+  # For `mv`, `cp` and `ln` the word is the option that turned replacing on
+  # (`-f` in `ln -s -f`), so a shape naming only the non-replacing form does
+  # not open the forced one.
   #
   # FOR THE VERBS IT READS, THE VERDICT IS CLOSED: only a form recognized as
   # leaving work in place answers nothing, and any option or spelling this
@@ -1558,8 +1561,15 @@ gate_reach_copy_form() {
   # nothing. The destination is `-t <dir>` when given, otherwise the last
   # operand, and `ln` with one operand links into the current directory; when
   # the destination is a directory each source lands under its own basename.
+  #
+  # The trigger is the word that turned replacing on — the last `-f`, `-i`,
+  # `-F` or long form after any `-n` — and the verb only when the act replaces
+  # by default with no such word. Printing the verb for every replacing act let
+  # a manifest shape naming only the non-replacing form (`ln -s`, `mv -n`)
+  # open the forced one (`ln -s -f`, `mv -n -f`), since the verb is a word of
+  # both shapes.
   local tool="$1"; shift
-  local ok val clob=1 dmode=0 eat=0 t='' n=0 a w rc p dest='' ch
+  local ok val clob=1 cw='' dmode=0 eat=0 t='' n=0 a w rc p dest='' ch
   case "$tool" in
     mv)      ok='fhinv';           val='t' ;;
     cp)      ok='RrHLPfinapvXx';    val='t' ;;
@@ -1578,8 +1588,8 @@ gate_reach_copy_form() {
               --target-directory --recursive --archive --symbolic --no-dereference \
               --dereference) || { printf '%s' "$a"; return 0; }
         case "$tool:$p" in
-          *:--force|*:--interactive) clob=1 ;;
-          mv:--no-clobber|cp:--no-clobber) clob=0 ;;
+          *:--force|*:--interactive) clob=1; cw="$a" ;;
+          mv:--no-clobber|cp:--no-clobber) clob=0; cw='' ;;
           *:--verbose) ;;
           *:--target-directory) case "$a" in *=*) t="${a#*=}" ;; *) eat=t ;; esac ;;
           cp:--recursive|cp:--archive|cp:--dereference|cp:--no-dereference) ;;
@@ -1592,8 +1602,8 @@ gate_reach_copy_form() {
         while [ -n "$w" ]; do
           ch="${w%"${w#?}"}"; w="${w#?}"
           case "$tool:$ch" in
-            mv:n|cp:n) clob=0 ;;
-            *:f|*:i|ln:F) clob=1 ;;
+            mv:n|cp:n) clob=0; cw='' ;;
+            mv:f|mv:i|cp:f|cp:i|ln:f|ln:i|ln:F) clob=1; cw="$a" ;;
             install:d) dmode=1 ;;
           esac
         done
@@ -1613,7 +1623,7 @@ gate_reach_copy_form() {
     if [ "$n" -ge 2 ]; then
       dest="${ops[$((n - 1))]}"
       if [ ! -d "$dest" ]; then
-        { [ -e "$dest" ] || [ -L "$dest" ]; } && printf '%s' "$tool"
+        { [ -e "$dest" ] || [ -L "$dest" ]; } && printf '%s' "${cw:-$tool}"
         return 0
       fi
       t="$dest"; srcs=$((n - 1))
@@ -1626,7 +1636,7 @@ gate_reach_copy_form() {
   local k=0
   while [ "$k" -lt "$srcs" ]; do
     a="${ops[$k]}"; k=$((k + 1))
-    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && { printf '%s' "$tool"; return 0; }
+    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && { printf '%s' "${cw:-$tool}"; return 0; }
   done
   return 0
 }
