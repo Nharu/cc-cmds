@@ -20598,6 +20598,10 @@ n=$(grep -c '스코프=act' "$FX_LEDGER" 2>/dev/null || true)
 # 텍스트 셋은 고정부를 실제로 재고 남는 바이트로 자른다.
 n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
 [ "${n:-0}" -le 1024 ] && ok "park blocked 행이 원장 행 상한 안이다 (최장 ${n}B)" || bad "park blocked 행 길이" "최장 ${n}B > 1024"
+# 켠 스위치는 절 끝에서 되돌린다. 남겨 두면 같은 샤드에서 뒤에 도는 절이 켜진
+# 모드로 돌아, 스위치가 꺼졌을 때만 받아들여지는 예보(`--reach` 없는 push 계획)가
+# 거절된다.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
 
 # ---------------------------------------------------------------------------
 # 55. 룰 루프 — 첫 승인 요구에서 멈추지 않는다
@@ -23414,7 +23418,13 @@ rm -f "$S70_GRANT" "$S70_LEDGER"
 # 두는 자리라, 앞 절이 남긴 베이스 픽스처(`FX_MANIFEST`·`RD`)를 빌리지 않아도 된다.
 # 빌렸다면 이 절은 그 두 이름이 어느 절에서 어떤 런을 가리키게 됐는지에 매여 있었을
 # 것이다.
+#
+# 자동 해소 스위치도 같은 이유로 이 절이 스스로 고정한다. 머지 예보는 `--reach`
+# 없이 걸리고 스위치가 꺼졌을 때만 받아들여지므로, 앞 절이 켠 채 남기면 이 절은
+# 다른 모드로 돈다.
 # ---------------------------------------------------------------------------
+CC_GATE_PREV_AR60="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 ck60_drain() {
   # 관측을 행으로 만드는 유일한 길 — 값싼 act 하나. 전사는 `snapshot` 이 아니라
   # act 경로에서 일어난다(원장을 쓰는 것은 이 동사뿐이다).
@@ -23798,6 +23808,7 @@ case "$msg" in
   *'park 예상: 도달 판정=CI실패'*) ok "60: 그 거절의 칸이 CI실패 다 (다른 park 가 11 을 낸 것이 아니다)" ;;
   *) bad "60 로컬 머지 거절 칸" "$msg" ;;
 esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR60"
 
 # ---------------------------------------------------------------------------
 # 69. 계측 필링 관문 — 케이던스·잠금·좌석·plan
@@ -25323,6 +25334,99 @@ P76_ALSO=신고등급한도 p76 'branch -df' git -C "$SIB76" show-ref --verify -
 x76 트리밖쓰기 git -C "$WT" worktree remove -ff "$WORK/wt76-rm";    p76 'worktree remove -ff' test -d "$WORK/wt76-rm"
 x76 트리밖쓰기 git -C "$WT" worktree remove --forc "$WORK/wt76-rm"; p76 'worktree remove --forc' test -d "$WORK/wt76-rm"
 check "76: 일상 삭제 철자의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b76) - nb76 ))" "23"
+
+# 열거 밖의 철자 — 술어는 비파괴로 알아본 형태만 통과시키고 나머지는 트리거로 본다.
+# 아래 철자는 파괴 철자를 하나씩 늘려 가던 동안 매번 빠져나간 것들이다: 글롭과 `:`
+# 마법 경로의 checkout, 마지막 플래그가 이기는 mv/cp, 접두로 줄인 --worktree 와 값을
+# 먹는 -s, 덮어쓰는 cp·ln·install, 강제하는 branch 와 tag -d. 각 park 옆에 같은
+# 동사의 비파괴 쌍둥이를 두어, 동사만 보고 닫은 것이 아님을 함께 세운다.
+printf 'keep\n' > "$D76/nfdst"; printf 'new\n' > "$D76/nfsrc"
+printf 'keep\n' > "$D76/ndst"; printf 'new\n' > "$D76/nsrc"
+printf 'keep\n' > "$D76/cpdst"; printf 'new\n' > "$D76/cpsrc"
+printf 'keep\n' > "$D76/lndst"; printf 'keep\n' > "$D76/insdst"
+git -C "$SIB76" tag td76 >/dev/null 2>&1
+c76=$(git -C "$SIB76" commit-tree "HEAD^{tree}" -p HEAD -m c76 2>/dev/null)
+bd76_rev=$(git -C "$SIB76" rev-parse bd76 2>/dev/null)
+nb76=$(b76)
+x76 트리밖쓰기 git -C "$SIB76" checkout "*${tf76#?}";        p76 "글롭 경로의 checkout" lm76
+x76 트리밖쓰기 git -C "$SIB76" checkout ":/$tf76";           p76 ':/ 경로의 checkout' lm76
+x76 트리밖쓰기 mv -n -f "$D76/nfsrc" "$D76/nfdst";           p76 '마지막 -f 가 이기는 mv -n -f' grep -q '^keep$' "$D76/nfdst"
+x76 트리밖쓰기 mv -nf "$D76/nfsrc" "$D76/nfdst";             p76 '묶은 mv -nf' grep -q '^keep$' "$D76/nfdst"
+x76 트리밖쓰기 git -C "$SIB76" restore --staged --wor "$tf76"; p76 'restore --staged --wor' lm76
+x76 트리밖쓰기 git -C "$SIB76" restore -sS "$tf76";          p76 'restore -sS (값을 먹는 -s)' lm76
+x76 트리밖쓰기 cp "$D76/cpsrc" "$D76/cpdst";                 p76 '덮어쓰는 cp' grep -q '^keep$' "$D76/cpdst"
+x76 트리밖쓰기 ln -sf "$D76/cpsrc" "$D76/lndst";             p76 '덮어쓰는 ln -sf' grep -q '^keep$' "$D76/lndst"
+x76 트리밖쓰기 git -C "$SIB76" branch -M bd76 bm76
+p76 'branch -M' git -C "$SIB76" show-ref --verify -q refs/heads/bd76
+x76 트리밖쓰기 git -C "$SIB76" branch -C bd76 bc76
+p76 'branch -C' test -z "$(git -C "$SIB76" for-each-ref refs/heads/bc76)"
+x76 트리밖쓰기 git -C "$SIB76" branch -f bd76 "$c76"
+p76 'branch -f' test "$(git -C "$SIB76" rev-parse bd76)" = "$bd76_rev"
+x76 트리밖쓰기 git -C "$SIB76" tag -d td76
+p76 'tag -d' git -C "$SIB76" show-ref --verify -q refs/tags/td76
+check "76: 열거 밖 철자의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b76) - nb76 ))" "12"
+[ "$c76" != "$bd76_rev" ] && [ -n "$c76" ] \
+  && ok "76: branch -f 의 잔존 단언이 공허하지 않다 (옮겨 갈 커밋이 다르다)" \
+  || bad "76: branch -f 의 잔존 단언이 공허하지 않다" "c76=$c76 bd76=$bd76_rev"
+x76 트리밖쓰기 install "$D76/cpsrc" "$D76/insdst"
+case "$rc:$msg" in
+  "11:"*"judgment '파괴형태미명시'"*|"11:"*"judgment '신고등급한도'"*) ok "76: 덮어쓰는 install 은 park 된다" ;;
+  *) bad "76: 덮어쓰는 install 은 park 된다" "$rc $msg" ;;
+esac
+grep -q '^keep$' "$D76/insdst" && ok "76: park 된 install 이 덮었을 파일이 남아 있다" \
+  || bad "76: park 된 install 이 덮었을 파일이 남아 있다" "$D76/insdst"
+
+# 비파괴 쌍둥이 — 같은 동사에서 알아본 형태는 통과하고, 실제로 아무것도 잃지 않는다.
+x76 트리밖쓰기 mv -n "$D76/nsrc" "$D76/ndst"
+check "76: 대조 — mv -n 은 대상트리로 통과한다" "$rc" "0"
+grep -q '^keep$' "$D76/ndst" && ok "76: 그 mv -n 이 대상을 덮지 않았다" || bad "76: 그 mv -n 이 대상을 덮지 않았다" "$D76/ndst"
+x76 트리밖쓰기 mv -f -n "$D76/nsrc" "$D76/ndst"
+check "76: 대조 — 마지막 -n 이 이기는 mv -f -n 은 통과한다" "$rc" "0"
+# BSD cp -n 은 대상이 있으면 아무것도 쓰지 않고 1 로 끝나므로, 게이트가 통과시켰는지는
+# rc 가 아니라 park 가 아니었다는 것과 blocked 행이 늘지 않았다는 것으로 잰다.
+nb76=$(b76)
+x76 트리밖쓰기 cp -n "$D76/cpsrc" "$D76/cpdst"
+check "76: 대조 — cp -n 은 대상트리로 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b76) - nb76 ))" "통과/0"
+grep -q '^keep$' "$D76/cpdst" && ok "76: 그 cp -n 이 대상을 덮지 않았다" || bad "76: 그 cp -n 이 대상을 덮지 않았다" "$D76/cpdst"
+x76 트리밖쓰기 ln -s "$D76/cpsrc" "$D76/lnnew"
+check "76: 대조 — 새 이름의 ln -s 는 대상트리로 통과한다" "$rc" "0"
+x76 트리밖쓰기 git -C "$SIB76" restore --staged --quiet "$tf76"
+check "76: 대조 — restore --staged --quiet 는 대상트리로 통과한다" "$rc" "0"
+x76 트리밖쓰기 git -C "$SIB76" branch bn76
+check "76: 대조 — 새 branch 생성은 대상트리로 통과한다" "$rc" "0"
+x76 트리밖쓰기 git -C "$SIB76" tag tn76
+check "76: 대조 — 새 tag 생성은 대상트리로 통과한다" "$rc" "0"
+lm76 && ok "76: 열거 밖 철자의 대조 쌍이 작업 트리의 변경을 건드리지 않았다" \
+  || bad "76: 열거 밖 철자의 대조 쌍이 작업 트리의 변경을 건드리지 않았다" "$SIB76/$tf76"
+git -C "$SIB76" tag -d td76 tn76 >/dev/null 2>&1
+git -C "$SIB76" branch -D bn76 >/dev/null 2>&1
+
+# 공유 stash 는 git 전역 옵션 뒤에 와도 기기전역 하한이 잡는다. 하한이 위치 인자로만
+# 읽던 동안 `-C <dir>`·`--no-pager` 가 앞에 오면 `-` 를 답해 이 칸을 통과했다. 지울
+# 항목을 하나 넣어 두고(작업 트리를 건드리지 않는 `stash create` + `store`), 각 park
+# 뒤에 그 항목과 작업 트리의 변경이 남아 있음을 함께 단언한다.
+s76=$(git -C "$SIB76" stash create 2>/dev/null)
+[ -n "$s76" ] && git -C "$SIB76" stash store -m s76keep "$s76" >/dev/null 2>&1
+sl76() { git -C "$SIB76" stash list 2>/dev/null | grep -q 's76keep'; }
+sl76 && ok "76: stash 잔존 단언이 공허하지 않다 (지울 항목이 있다)" || bad "76: stash 잔존 단언이 공허하지 않다" "$s76"
+st76() {
+  # st76 <이름> — 직전 x76 이 기기전역으로 park 되고 stash 항목과 변경이 남았음을 단언한다.
+  check "76: 전역 옵션 뒤의 stash 가 park 된다 — $1" "$rc" "11"
+  case "$msg" in
+    *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "76: 그 판정이 기기전역이다 — $1" ;;
+    *) bad "76: 그 판정이 기기전역이다 — $1" "$msg" ;;
+  esac
+  { sl76 && lm76; } && ok "76: park 된 stash 가 지웠을 것이 남아 있다 — $1" \
+    || bad "76: park 된 stash 가 지웠을 것이 남아 있다 — $1" "$SIB76"
+}
+x76 워크트리쓰기 git -C "$SIB76" stash;                st76 '-C stash'
+x76 워크트리쓰기 git -C "$SIB76" stash push -m p76;    st76 '-C stash push'
+x76 워크트리쓰기 git -C "$SIB76" stash drop;           st76 '-C stash drop'
+x76 워크트리쓰기 git -C "$SIB76" stash clear;          st76 '-C stash clear'
+x76 워크트리쓰기 git --no-pager -C "$SIB76" stash clear; st76 '--no-pager stash clear'
+x76 워크트리쓰기 git -C "$SIB76" stash list
+check "76: 대조 — 전역 옵션 뒤의 stash list 는 통과한다" "$rc" "0"
+git -C "$SIB76" stash clear >/dev/null 2>&1
 
 # 비파괴 음성 쌍 — 같은 동사의 비파괴 철자는 그대로 통과한다. 위 park 가 동사만
 # 보고 닫힌 것이 아님을 이것이 세운다.

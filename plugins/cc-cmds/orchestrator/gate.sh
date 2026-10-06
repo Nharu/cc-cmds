@@ -892,8 +892,22 @@ gate_reach_derived() {
   local cmd="${1##*/}" a
   case "$cmd" in
     git)
-      case "${2:-}" in
-        stash) case "${3:-}" in list|show) ;; *) printf '기기전역'; return 0 ;; esac ;;
+      # The subcommand is read past git's own global options, because `-C <dir>`,
+      # `-c k=v` and `--no-pager` in front of `stash` are the ordinary spellings
+      # and a positional read let every one of them past this floor. A global
+      # option this reader does not know leaves the subcommand undecidable, and
+      # then any `stash` word in argv raises the floor.
+      local _gsub='' _gnext=''
+      if gate_git_globals "${@:2}"; then
+        _gsub="${*:$((GATE_GIT_NGLOB + 2)):1}"; _gnext="${*:$((GATE_GIT_NGLOB + 3)):1}"
+      else
+        for a in "${@:2}"; do
+          if [ "$_gsub" = "stash" ]; then _gnext="$a"; break; fi
+          [ "$a" = "stash" ] && _gsub=stash
+        done
+      fi
+      case "$_gsub" in
+        stash) case "$_gnext" in list|show) ;; *) printf '기기전역'; return 0 ;; esac ;;
         config)
           case " $* " in
             *" --global "*|*" --system "*) printf '기기전역'; return 0 ;;
@@ -1202,11 +1216,18 @@ gate_reach_local_destructive() {
   # the act — a shape naming only the verb does not, except where the verb is
   # the only word the act has (`rm <file>`, a `mv` over an existing file).
   #
-  # SHORT OPTIONS ARE READ LETTER BY LETTER AND LONG ONES BY PREFIX, because
-  # that is how the tools read them: `checkout -fq` forces, and git accepts any
-  # unambiguous abbreviation, so `reset --har` is `reset --hard`. A prefix that
-  # git would call ambiguous is still read as the destructive option — the
-  # over-read parks an act git would have refused anyway.
+  # FOR THE VERBS IT READS, THE VERDICT IS CLOSED: only a form recognized as
+  # leaving work in place answers nothing, and any option or spelling this
+  # reader does not recognize is printed as the trigger. The list of
+  # destructive spellings was widened twice and each time a new one walked
+  # past it (`checkout '*.md'`, `mv -n -f`, `restore -sS`), because the
+  # spellings that destroy are open-ended and the ones that do not are few.
+  # Over-reading here parks an act in the target-tree cell only, where the
+  # stage can still declare `--destructive` or the manifest can name the form.
+  # Short options are read letter by letter up to the first one that takes a
+  # value (`-sS` is a source named `S`, not `--staged`), and long ones by any
+  # prefix that is unique among the options this reader knows for that verb.
+  # Verbs it does not list answer nothing, as before.
   local cmd="${1##*/}"; shift 2>/dev/null || true
   case "$cmd" in
     lockf)   gate_unwrap_lockf   gate_reach_local_destructive '' '' "$@"; return 0 ;;
@@ -1238,177 +1259,376 @@ gate_reach_local_destructive() {
         esac
       done
       printf 'rm'; return 0 ;;
-    mv)
-      gate_reach_mv_overwrites "$@" && printf 'mv'
+    mv|cp|ln|install)
+      gate_reach_copy_form "$cmd" "$@"
       return 0 ;;
     git) ;;
     *) return 0 ;;
   esac
-  local sub='' base=''
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      -C)
-        [ "$#" -ge 2 ] || return 0
-        case "$2" in /*) base="$2" ;; *) base="${base:+$base/}$2" ;; esac
-        shift 2 ;;
-      -c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
-        [ "$#" -ge 2 ] || return 0; shift 2 ;;
-      -*) shift ;;
-      *) sub="$1"; shift; break ;;
-    esac
-  done
+  if ! gate_git_globals "$@"; then
+    printf '%s' "${*:$((GATE_GIT_NGLOB + 1)):1}"; return 0
+  fi
+  local base="$GATE_GIT_BASE" sub='' w rc p
+  shift "$GATE_GIT_NGLOB"
+  sub="${1:-}"; shift 2>/dev/null || true
   case "$sub" in
     clean)
+      # Only a dry run is recognized as keeping files: without `-f` git still
+      # deletes when `clean.requireForce` is off, and `-i` reads its answers
+      # from a stdin that is not a terminal here.
+      local dry=0 fw='' eat=0
       for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
         case "$a" in
-          --) return 0 ;;
-          --*) gate_long_abbrev "$a" --force && { printf '%s' "$a"; return 0; } ;;
-          -*f*) printf '%s' "$a"; return 0 ;;
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --dry-run --force --quiet --exclude --interactive) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --dry-run) dry=1 ;;
+              --force) fw="${fw:-$a}" ;;
+              --quiet) ;;
+              --exclude) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" dfnqxX e) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1
+            case "$w" in *n*) dry=1 ;; esac
+            case "$w" in *f*) fw="${fw:-$a}" ;; esac ;;
         esac
-      done ;;
+      done
+      [ "$dry" = "1" ] && return 0
+      printf '%s' "${fw:-clean}" ;;
     reset)
+      # Moving HEAD and the index keeps the working tree; `--hard`, `--merge`,
+      # `--keep` and anything unrecognized are the trigger.
       for a in "$@"; do
         case "$a" in
-          --) return 0 ;;
-          --*) gate_long_abbrev "$a" --hard && { printf '%s' "$a"; return 0; } ;;
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --soft --mixed --hard --merge --keep --quiet --patch \
+                  --intent-to-add --refresh --no-refresh --recurse-submodules \
+                  --no-recurse-submodules --pathspec-from-file --pathspec-file-nul) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --soft|--mixed|--quiet|--patch|--intent-to-add|--refresh|--no-refresh) ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" qNp '') || rc=$?
+            [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; } ;;
         esac
       done ;;
     checkout)
-      # A path names what is overwritten; a branch alone switches and keeps
-      # local changes. One operand that resolves to an existing path (from the
-      # last `-C`) is a path, and a second operand always is; `--`, `.`, a
-      # force or a merge-side choice settle it outright. The values of `-b`,
-      # `-B` and `--orphan` are consumed first.
-      local eat=0 n=0 p
+      # Recognized as a branch switch, which keeps local changes: at most one
+      # operand, and that operand is neither an existing path (from the last
+      # `-C`) nor shaped like a pathspec — a glob or a `:` magic prefix, which
+      # no branch name can carry. `--`, `.`, `-B` (it resets a branch that
+      # exists), `-f`, `-m`, `-p` and anything unrecognized are the trigger.
+      local eat=0 n=0
       for a in "$@"; do
         if [ "$eat" = "1" ]; then eat=0; continue; fi
         case "$a" in
           --|.) printf '%s' "$a"; return 0 ;;
-          --pathspec-from-file=*) printf '%s' "${a%%=*}"; return 0 ;;
-          --orphan) eat=1 ;;
           --*)
-            for p in --force --ours --theirs --merge --conflict --pathspec-from-file; do
-              gate_long_abbrev "${a%%=*}" "$p" && { printf '%s' "$a"; return 0; }
-            done ;;
-          -*[fm]*) printf '%s' "$a"; return 0 ;;
-          -*[bB]) eat=1 ;;
-          -*) ;;
+            p=$(gate_long_pick "$a" --quiet --progress --no-progress --track --no-track \
+                  --guess --no-guess --detach --orphan --ignore-other-worktrees \
+                  --force --merge --ours --theirs --conflict --patch --pathspec-from-file \
+                  --pathspec-file-nul --overlay --no-overlay --recurse-submodules \
+                  --no-recurse-submodules --overwrite-ignore --no-overwrite-ignore) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --quiet|--progress|--no-progress|--track|--no-track|--guess|--no-guess|--detach|--ignore-other-worktrees) ;;
+              --orphan) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" qlt b) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1 ;;
+          -) n=$((n + 1)) ;;
           *) n=$((n + 1))
              [ "$n" -ge 2 ] && { printf '%s' "$a"; return 0; }
+             case "$a" in *'*'*|*'?'*|*'['*|*:*|*'\'*) printf '%s' "$a"; return 0 ;; esac
              case "$a" in /*) p="$a" ;; *) p="${base:+$base/}$a" ;; esac
-             [ -e "$p" ] || [ -L "$p" ] && { printf '%s' "$a"; return 0; } ;;
+             { [ -e "$p" ] || [ -L "$p" ]; } && { printf '%s' "$a"; return 0; } ;;
         esac
       done ;;
     switch)
-      # `switch` refuses to overwrite local changes unless forced.
+      # `switch` refuses to overwrite local changes unless forced; `-C` resets
+      # a branch that exists and `-m` merges into the working tree.
+      local eat=0
       for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
         case "$a" in
-          --) return 0 ;;
+          --) break ;;
           --*)
-            gate_long_abbrev "${a%%=*}" --force && { printf '%s' "$a"; return 0; }
-            gate_long_abbrev "${a%%=*}" --discard-changes && { printf '%s' "$a"; return 0; } ;;
-          -*f*) printf '%s' "$a"; return 0 ;;
+            p=$(gate_long_pick "$a" --create --detach --quiet --progress --no-progress \
+                  --track --no-track --guess --no-guess --orphan --ignore-other-worktrees \
+                  --force-create --force --discard-changes --merge --conflict \
+                  --recurse-submodules --no-recurse-submodules) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --detach|--quiet|--progress|--no-progress|--track|--no-track|--guess|--no-guess|--ignore-other-worktrees) ;;
+              --create|--orphan) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" qtd c) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1 ;;
         esac
       done ;;
     restore)
       # Every restore names paths, so the verb is the trigger. Only a restore
-      # that touches the index alone leaves the files as they are.
-      local staged=0 wt=0
+      # recognized as touching the index alone — `--staged` and nothing that
+      # reaches the working tree — leaves the files as they are.
+      local staged=0 eat=0
       for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
         case "$a" in
           --) break ;;
-          -S|--staged) staged=1 ;;
-          -W|--worktree) wt=1 ;;
-          -[!-]*) case "$a" in *S*) staged=1 ;; esac
-                  case "$a" in *W*) wt=1 ;; esac ;;
+          --*)
+            p=$(gate_long_pick "$a" --staged --source --quiet --progress --no-progress \
+                  --worktree --patch --ours --theirs --merge --conflict --ignore-unmerged \
+                  --overlay --no-overlay --recurse-submodules --no-recurse-submodules \
+                  --pathspec-from-file --pathspec-file-nul --ignore-skip-worktree-bits) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --staged) staged=1 ;;
+              --source) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              --quiet|--progress|--no-progress) ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" Sq s) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1
+            case "$w" in *S*) staged=1 ;; esac ;;
         esac
       done
-      [ "$staged" = "1" ] && [ "$wt" = "0" ] && return 0
+      [ "$staged" = "1" ] && return 0
       printf 'restore' ;;
     worktree)
+      # `remove` without an option refuses a worktree with local changes; any
+      # option on it is the trigger.
       [ "${1:-}" = "remove" ] || return 0
       shift
       for a in "$@"; do
         case "$a" in
-          --) return 0 ;;
-          --*) gate_long_abbrev "$a" --force && { printf '%s' "$a"; return 0; } ;;
-          -*f*) printf '%s' "$a"; return 0 ;;
+          --) break ;;
+          -?*) printf '%s' "$a"; return 0 ;;
         esac
       done ;;
     branch)
-      # Deleting an unmerged branch needs the delete and the force together,
-      # in one word (`-D`, `-df`) or in two (`-d -f`, `--delete --force`).
-      local del=0 force=0
+      # Listing, creating, `-d`, `-m` and `-c` refuse to lose a commit or
+      # overwrite a branch. `-D`, `-M`, `-C`, `-f` and anything unrecognized
+      # are the trigger.
       for a in "$@"; do
         case "$a" in
           --) break ;;
           --*)
-            gate_long_abbrev "${a%%=*}" --delete && del=1
-            gate_long_abbrev "${a%%=*}" --force && force=1 ;;
-          -*D*) printf '%s' "$a"; return 0 ;;
-          -*)
-            case "$a" in *d*) del=1 ;; esac
-            case "$a" in *f*) force=1 ;; esac ;;
+            p=$(gate_long_pick "$a" --all --remotes --list --verbose --quiet --delete \
+                  --move --copy --track --no-track --set-upstream-to --unset-upstream \
+                  --edit-description --contains --no-contains --merged --no-merged \
+                  --points-at --format --sort --color --no-color --column --no-column \
+                  --show-current --ignore-case --omit-empty --abbrev --no-abbrev \
+                  --create-reflog --force --set-upstream --recurse-submodules) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --force|--set-upstream|--recurse-submodules) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" arlvqdmct u) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; } ;;
         esac
-        [ "$del$force" = "11" ] && { printf '%s' "$a"; return 0; }
       done ;;
+    tag)
+      # Listing, creating and verifying keep every tag; `-d`, `-f` and
+      # anything unrecognized are the trigger.
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --annotate --sign --no-sign --local-user --list \
+                  --verify --message --file --edit --no-edit --cleanup --create-reflog \
+                  --contains --no-contains --merged --no-merged --points-at --column \
+                  --no-column --sort --format --color --ignore-case --omit-empty \
+                  --trailer --delete --force) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --delete|--force) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -n|-n[0-9]*) case "$a" in -n*[!0-9]*) printf '%s' "$a"; return 0 ;; esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" aslive muF) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; } ;;
+        esac
+      done ;;
+    stash)
+      # The derived floor parks every stash but these two as machine-global
+      # before this cell is reached; this answer is the second line.
+      case "${1:-}" in list|show) ;; *) printf 'stash' ;; esac ;;
   esac
   return 0
 }
 
-gate_long_abbrev() {
-  # gate_long_abbrev <word> <long option> — true when <word> is <long option> or
-  # an abbreviation of it git's option parser would accept (`--har`).
-  case "$1" in
-    --?*) case "$2" in "$1"*) return 0 ;; esac ;;
-  esac
-  return 1
-}
-
-gate_reach_mv_overwrites() {
-  # gate_reach_mv_overwrites <mv's args after argv0...> — true when the move
-  # would replace a file that already exists.
-  #
-  # A move onto an existing name removes what was there with no prompt when
-  # stdin is not a terminal. `-n` refuses that, so it answers false. The
-  # destination is `-t <dir>` when given, otherwise the last operand; when the
-  # destination is a directory each source lands under its own basename.
-  local a dest='' t='' eat=0 noclob=0 n=0 i
-  for a in "$@"; do
-    if [ "$eat" = "1" ]; then t="$a"; eat=0; continue; fi
-    case "$a" in
-      -t|--target-directory) eat=1 ;;
-      --target-directory=*) t="${a#*=}" ;;
-      --no-clobber) noclob=1 ;;
-      --) ;;
-      --*) ;;
-      -*n*) noclob=1 ;;
-      -*t) eat=1 ;;
-      -*) ;;
-      *) n=$((n + 1)); dest="$a" ;;
+gate_git_globals() {
+  # gate_git_globals <argv after `git`...> — skips git's own global options.
+  # Sets GATE_GIT_NGLOB to the number of words they take and GATE_GIT_BASE to
+  # the directory the `-C` options compose to. Returns 1 at a word that starts
+  # with `-` and is not a global option this reader knows; GATE_GIT_NGLOB then
+  # counts the words before it. git matches these options exactly, without
+  # abbreviation, so neither does this.
+  GATE_GIT_NGLOB=0; GATE_GIT_BASE=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C)
+        [ "$#" -ge 2 ] || return 1
+        case "$2" in /*) GATE_GIT_BASE="$2" ;; *) GATE_GIT_BASE="${GATE_GIT_BASE:+$GATE_GIT_BASE/}$2" ;; esac
+        shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
+      -c|--git-dir|--work-tree|--namespace|--config-env|--attr-source)
+        [ "$#" -ge 2 ] || return 1
+        shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--config-env=*|--attr-source=*|--exec-path=*|--super-prefix=*|--list-cmds=*|\
+      -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|\
+      --noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice)
+        shift; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 1)) ;;
+      -*) return 1 ;;
+      *) return 0 ;;
     esac
   done
-  [ "$noclob" = "1" ] && return 1
-  if [ -n "$t" ]; then
-    i=0
-  else
-    [ "$n" -ge 2 ] || return 1
-    if [ ! -d "$dest" ]; then
-      [ -e "$dest" ] || [ -L "$dest" ]
-      return
-    fi
-    t="$dest"; i=1
-  fi
-  # Each source, skipping the destination operand when it was the last one.
-  local k=0
-  for a in "$@"; do
-    case "$a" in -*) continue ;; esac
-    [ "$a" = "$t" ] && [ -n "$t" ] && [ "$i" = "0" ] && continue
-    k=$((k + 1))
-    [ "$i" = "1" ] && [ "$k" -eq "$n" ] && break
-    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && return 0
+  return 0
+}
+
+gate_long_pick() {
+  # gate_long_pick <word> <long option...> — prints the option <word> names:
+  # the one it equals, or the one it is an abbreviation of when that is unique
+  # in the list (`--har` is `--hard`). Fails on no match and on an ambiguous
+  # prefix. The list holds the options this reader knows for one verb, so a
+  # failure is "unrecognized", never "safe".
+  local w="${1%%=*}" c hit='' n=0; shift
+  case "$w" in --?*) ;; *) return 1 ;; esac
+  for c in "$@"; do
+    [ "$c" = "$w" ] && { printf '%s' "$c"; return 0; }
+    case "$c" in "$w"*) hit="$c"; n=$((n + 1)) ;; esac
   done
-  return 1
+  [ "$n" = "1" ] || return 1
+  printf '%s' "$hit"
+}
+
+gate_short_letters() {
+  # gate_short_letters <word> <flag letters> <value letters> — reads a bundled
+  # short-option word the way getopt does and prints its letters up to and
+  # including the first one that takes a value. Returns 0 when no value
+  # follows, 2 when the value is the next argv word, 3 when it is the rest of
+  # this word, and 1 at a letter in neither set.
+  local w="${1#-}" ok="$2" val="$3" ch out=''
+  while [ -n "$w" ]; do
+    ch="${w%"${w#?}"}"; w="${w#?}"
+    if [ -n "$val" ]; then
+      case "$val" in
+        *"$ch"*)
+          printf '%s%s' "$out" "$ch"
+          [ -n "$w" ] && return 3
+          return 2 ;;
+      esac
+    fi
+    case "$ok" in
+      *"$ch"*) out="$out$ch" ;;
+      *) printf '%s' "$out"; return 1 ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+gate_reach_copy_form() {
+  # gate_reach_copy_form <mv|cp|ln|install> <args after argv0...> — prints the
+  # trigger when the act would replace a file that already exists, or uses an
+  # option this reader does not recognize; nothing otherwise.
+  #
+  # A write onto an existing name removes what was there with no prompt when
+  # stdin is not a terminal. `mv`, `cp` and `install` replace by default and
+  # `ln` only when forced; `-n` refuses and `-f` or `-i` replaces, and among
+  # them the last one wins, as BSD and GNU both read them (`mv -n -f`
+  # replaces). `-i` counts as replacing because its answer comes from a stdin
+  # that is not a terminal. `install -d` makes directories and replaces
+  # nothing. The destination is `-t <dir>` when given, otherwise the last
+  # operand, and `ln` with one operand links into the current directory; when
+  # the destination is a directory each source lands under its own basename.
+  local tool="$1"; shift
+  local ok val clob=1 dmode=0 eat=0 t='' n=0 a w rc p dest='' ch
+  case "$tool" in
+    mv)      ok='fhinv';           val='t' ;;
+    cp)      ok='RrHLPfinapvXx';    val='t' ;;
+    ln)      ok='sfFhinvw';         val='t'; clob=0 ;;
+    install) ok='bCcdMpSsUv';       val='BfghmoTNDl' ;;
+  esac
+  local -a ops=()
+  for a in "$@"; do
+    if [ "$eat" = "1" ]; then eat=0; continue; fi
+    if [ "$eat" = "t" ]; then t="$a"; eat=0; continue; fi
+    if [ "$eat" = "ops" ]; then ops+=("$a"); continue; fi
+    case "$a" in
+      --) eat=ops ;;
+      --*)
+        p=$(gate_long_pick "$a" --force --interactive --no-clobber --verbose \
+              --target-directory --recursive --archive --symbolic --no-dereference \
+              --dereference) || { printf '%s' "$a"; return 0; }
+        case "$tool:$p" in
+          *:--force|*:--interactive) clob=1 ;;
+          mv:--no-clobber|cp:--no-clobber) clob=0 ;;
+          *:--verbose) ;;
+          *:--target-directory) case "$a" in *=*) t="${a#*=}" ;; *) eat=t ;; esac ;;
+          cp:--recursive|cp:--archive|cp:--dereference|cp:--no-dereference) ;;
+          ln:--symbolic|ln:--no-dereference) ;;
+          *) printf '%s' "$a"; return 0 ;;
+        esac ;;
+      -?*)
+        rc=0; w=$(gate_short_letters "$a" "$ok" "$val") || rc=$?
+        [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+        while [ -n "$w" ]; do
+          ch="${w%"${w#?}"}"; w="${w#?}"
+          case "$tool:$ch" in
+            mv:n|cp:n) clob=0 ;;
+            *:f|*:i|ln:F) clob=1 ;;
+            install:d) dmode=1 ;;
+          esac
+        done
+        case "$tool:$rc" in
+          mv:2|cp:2|ln:2) case "$a" in *t) eat=t ;; *) eat=1 ;; esac ;;
+          mv:3|cp:3|ln:3) t="${a#*t}" ;;
+          *:2) eat=1 ;;
+        esac ;;
+      *) ops+=("$a") ;;
+    esac
+  done
+  [ "$dmode" = "1" ] && return 0
+  [ "$clob" = "1" ] || return 0
+  n=${#ops[@]}
+  local srcs=$n
+  if [ -z "$t" ]; then
+    if [ "$n" -ge 2 ]; then
+      dest="${ops[$((n - 1))]}"
+      if [ ! -d "$dest" ]; then
+        { [ -e "$dest" ] || [ -L "$dest" ]; } && printf '%s' "$tool"
+        return 0
+      fi
+      t="$dest"; srcs=$((n - 1))
+    elif [ "$tool" = "ln" ] && [ "$n" = "1" ]; then
+      t='.'
+    else
+      return 0
+    fi
+  fi
+  local k=0
+  while [ "$k" -lt "$srcs" ]; do
+    a="${ops[$k]}"; k=$((k + 1))
+    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && { printf '%s' "$tool"; return 0; }
+  done
+  return 0
 }
 
 gate_reach_disposition() {
