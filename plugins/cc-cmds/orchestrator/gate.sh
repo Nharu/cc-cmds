@@ -6089,17 +6089,67 @@ gate_rows() {
 }
 
 gate_has_row() {
-  # gate_has_row <series> <fixed-string>
+  # gate_has_row <series> <키=값> [<키=값>…]
+  #
+  # True only when ONE row of the series carries, for every argument, a field
+  # that is byte-identical to it — the whole field between two ` | `
+  # separators (or between the last one and the end of the row), never a
+  # substring of the row. A substring read takes a key spelled inside another
+  # field's value, a key that ends another key (`사유=` inside `처분 사유=`) and
+  # an id that prefixes another id as the field asked for, and a needle that
+  # joins two fields with a space matches nothing at all, so the guard it
+  # protects never fires and no one can tell that from "correctly absent". A
+  # field split cannot read any of those as the field.
+  #
+  # Each argument is normalized first: one leading `|`, one trailing `|` and the
+  # whitespace around them are dropped, so the anchored `"| 키=값 |"` spelling
+  # the older call sites use names the same field as a bare `"키=값"`, and those
+  # sites read unchanged. An argument is ONE field; two fields are two
+  # arguments, and they are joined on the same row — two fields found on two
+  # different rows are not a hit. No argument, or one that normalizes to
+  # nothing, is "absent".
+  #
+  # WHAT THIS DOES NOT DEFEND. The answer is sound only while every writer keeps
+  # the row grammar, removing `|` and line breaks from keys and values alike. A
+  # ` | ` spliced into a row by a writer that skipped that step is, at the byte
+  # level, a real separator, and nothing on the reading side can tell it from
+  # one the writer meant; the defense for that is in the writers.
   #
   # NOT `gate_rows X | grep -qF Y`. Under `pipefail` an early-exiting reader on
   # the right of a pipe kills the writer with SIGPIPE and the pipeline reports
   # failure — so a row that IS present can come back as "absent", and every one
   # of these call sites uses absence to decide whether to append. The result
   # would be duplicate approvals and duplicate obligations, which the
-  # termination conditions then count.
-  local series="$1" needle="$2" out
+  # termination conditions then count. The match below is builtins only, so it
+  # adds no process to the one read `gate_rows` makes (none inside a warmed zone).
+  local series="$1" out w row nl=$'\n'
+  local -a want
+  shift
+  [ "$#" -gt 0 ] || return 1
+  want=()
+  for w in "$@"; do
+    w="${w#"${w%%[![:space:]]*}"}"; w="${w#|}"; w="${w#"${w%%[![:space:]]*}"}"
+    w="${w%"${w##*[![:space:]]}"}"; w="${w%|}"; w="${w%"${w##*[![:space:]]}"}"
+    [ -n "$w" ] || return 1
+    want+=("$w")
+  done
   out=$(gate_rows "$series")
-  case "$out" in *"$needle"*) return 0 ;; esac
+  [ -n "$out" ] || return 1
+  # Every field is preceded by ` | ` (the series token is the row's head and
+  # never a field), and is followed by ` | ` or by the end of its row.
+  for w in "${want[@]}"; do
+    case "$out$nl" in *" | $w | "*|*" | $w$nl"*) ;; *) return 1 ;; esac
+  done
+  [ "${#want[@]}" -gt 1 ] || return 0
+  while IFS= read -r row; do
+    row="$row | "
+    for w in "${want[@]}"; do
+      case "$row" in *" | $w | "*) ;; *) continue 2 ;; esac
+    done
+    return 0
+  done <<EOF
+$out
+EOF
   return 1
 }
 
@@ -6416,6 +6466,9 @@ gate_append() {
   # `상태=승인`. Both halves take the same two maps now. `%%=*` guarantees the key
   # holds no `=`, so reassembling cannot change how many fields the row has, and
   # for every field this file writes today the key transform is the identity.
+  # An argument with no `=` skipped that split altogether and went in exactly as
+  # passed, so it could carry the same pipe or newline; every argument is now
+  # mapped as a whole before the `case`, which makes that branch row-safe too.
   # Rotated through the positional parameters rather than collected into an
   # array: the interpreter floor is bash 3.2 and the argument list is the one
   # ordered container available without one.
@@ -6447,6 +6500,7 @@ gate_append() {
   local n_args=$# i=0
   while [ "$i" -lt "$n_args" ]; do
     f="$1"; shift; i=$((i + 1))
+    f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
            k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
@@ -7189,6 +7243,86 @@ gate_report_abs() {
     /*)  printf '%s' "$1" ;;
     *)   printf '%s/%s' "$(cd "$(dirname "$MANIFEST")/../.." 2>/dev/null && pwd)" "$1" ;;
   esac
+}
+
+gate_cycle_fingerprint() {
+  # gate_cycle_fingerprint <absolute report path> <P0> <P1> — the value of the
+  # `발견 지문` field the `cycle` arm writes: `-` when P0 and P1 are both zero,
+  # `(미상)` when the report is absent or yields no identifier, and otherwise
+  # the first 12 hex characters of the sha256 of the report's finding
+  # identifiers. Always returns 0: the VALUE refuses nothing.
+  #
+  # A SET, NOT A LIST. The identifiers are sorted and de-duplicated before they
+  # are hashed. As a list, a report that names the same file in two bullets
+  # hashes differently from one that names it once, and a repetition that really
+  # happened stops looking like one.
+  #
+  # THE HEADING MATCHER IS A BYTE PREFIX, NOT A REGEX: a section opens only on a
+  # line that begins `## 🔴 P0` or `## 🟠 P1`, and any other `## ` heading closes
+  # it. The emoji are octal escapes so the bytes of this source do not depend on
+  # the locale. A template change nobody foresaw makes the matcher find nothing,
+  # and the field then reads `(미상)` — it fails toward fewer labels, never
+  # toward a false one.
+  #
+  # IDENTIFIER GUARD AND SPELLING FOLD, BOTH INSIDE ONE REPORT. A token with
+  # neither `/` nor `.`, or `##`, is a table or quote fragment and is dropped.
+  # A bare identifier that another identifier of the same report ends in
+  # `/<identifier>` is the same file spelt short and is dropped. Spellings are
+  # never folded ACROSS reports.
+  #
+  # The value is fixed on the row when the row is written, so a later report
+  # overwritten at the same path does not change a past reading.
+  local rep=$1 p0=$2 p1=$3 ids
+  case "$p0" in
+    ''|*[!0]*) : ;;
+    *) case "$p1" in
+         ''|*[!0]*) : ;;
+         *) printf -- '-'; return 0 ;;
+       esac ;;
+  esac
+  if [ -z "$rep" ] || [ ! -f "$rep" ]; then
+    printf '(미상)'
+    return 0
+  fi
+  ids=$(LC_ALL=C awk '
+    function ident(b,   tok, rest, sym) {
+      if (!match(b, /`[^`]+`/)) return ""
+      tok = substr(b, RSTART + 1, RLENGTH - 2)
+      rest = substr(b, RSTART + RLENGTH)
+      sub(/[: ].*$/, "", tok)
+      if (tok == "" || tok == "##") return ""
+      if (index(tok, "/") == 0 && index(tok, ".") == 0) return ""
+      if (match(rest, /^ ?\(`[^`]+`\)/)) {
+        sym = substr(rest, RSTART, RLENGTH)
+        gsub(/[ (`)]/, "", sym)
+        tok = tok "#" sym
+      }
+      return tok
+    }
+    /^## / {
+      inl = (index($0, "## \360\237\224\264 P0") == 1 || index($0, "## \360\237\237\240 P1") == 1)
+      next
+    }
+    inl && /^- / {
+      t = ident($0)
+      if (t != "" && !(t in seen)) { seen[t] = 1; ord[++n] = t }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        a = ord[i]; drop = 0
+        for (j = 1; j <= n; j++) {
+          b = ord[j]
+          if (j == i || length(b) < length(a) + 1) continue
+          if (substr(b, length(b) - length(a)) == "/" a) { drop = 1; break }
+        }
+        if (!drop) print a
+      }
+    }' "$rep" 2>/dev/null || true)
+  if [ -z "$ids" ]; then
+    printf '(미상)'
+    return 0
+  fi
+  printf '%s\n' "$ids" | LC_ALL=C sort -u | shasum -a 256 | cut -c1-12
 }
 
 gate_problem_identities() {
@@ -15093,7 +15227,29 @@ EOF
       # caller's `id=` free to win, but a caller's `세그먼트=` never reaches this
       # line: the refusal at the top of the arm rejects it in every spelling the
       # row reader would read, so the gate's value in front is the only one.
-      gate_append 'cycle' "세그먼트=$seg" "$@"
+      #
+      # The gate now also writes one field of its own BEHIND the caller's:
+      # `발견 지문`, computed from the report check 8 already resolved into
+      # `$rep`. Behind, because the row reader takes the last value — in front,
+      # a caller's value would win. The refusal at the top still rejects a
+      # caller's `발견 지문`, so here the position is a second defence, not the
+      # only one.
+      #
+      # ONE STEP OF DEGRADATION AT THE CAP, NOT TWO. A row that would cross
+      # `GATE_ROW_MAX` with the field is written without it and warns once. The
+      # `segment` arm swaps its field for a marker first; this arm has no marker
+      # because an absent key already reads exactly like "no fingerprint", and a
+      # marker would be longer than the 12-byte value it replaces. Without this
+      # step a long cycle row that is legal today — a review already paid for —
+      # would turn into a refused write.
+      local fp
+      fp=$(gate_cycle_fingerprint "$rep" "$(gate_field_of 'P0' "$@")" "$(gate_field_of 'P1' "$@")")
+      if [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp")" -gt "$GATE_ROW_MAX" ]; then
+        warn "cycle 행이 상한을 넘어 「발견 지문」 을 빼고 기록합니다 — 세그먼트 $seg, 사이클 $(gate_field_of '사이클' "$@")"
+        gate_append 'cycle' "세그먼트=$seg" "$@"
+      else
+        gate_append 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp"
+      fi
       log "리뷰 사이클 기록 — $seg"
       ;;
     problem)
@@ -21333,8 +21489,12 @@ gate_record_stage_outcome() {
   if [ -n "${DOC:-}" ] && [ -f "$DOC" ]; then
     dcur=$( { shasum -a 256 "$DOC" 2>/dev/null || true; } | cut -d' ' -f1)
   fi
+  # The guard names the two fields the append below writes, as two arguments:
+  # one argument joining them with a space is a field no row ever carries, and
+  # the guard read as absent at every termination, so each one appended a row
+  # for a document it had already recorded.
   if [ -n "$dcur" ]; then
-    gate_has_row '문서 해시' "스테이지=$seg 이후 sha256=$dcur" \
+    gate_has_row '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
       || gate_append '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
            "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
   fi

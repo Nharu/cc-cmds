@@ -15,6 +15,7 @@ lint:
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
 	bash scripts/lint-ledger-row-length.sh
+	bash scripts/lint-ledger-provenance.sh
 	bash scripts/lint-judgment-grade.sh
 	bash scripts/lint-notify-env-name.sh
 	bash scripts/lint-notify-title-render.sh
@@ -38,6 +39,7 @@ lint:
 	bash scripts/lint-terminal-literals.sh
 	bash scripts/lint-interview-record-sections.sh
 	bash scripts/lint-interview-convention-refs.sh
+	bash scripts/lint-kickoff-defaults.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -251,6 +253,7 @@ LINT_TESTS := \
 	scripts/test-lint-cutpoint-vocabulary.sh \
 	scripts/test-lint-autoadopt-vocabulary.sh \
 	scripts/test-lint-ledger-row-length.sh \
+	scripts/test-lint-ledger-provenance.sh \
 	scripts/test-lint-judgment-grade.sh \
 	scripts/test-lint-notify-env-name.sh \
 	scripts/test-lint-notify-title-render.sh \
@@ -274,11 +277,14 @@ LINT_TESTS := \
 	scripts/test-lint-stage-policy-sources.sh \
 	scripts/test-lint-terminal-literals.sh \
 	scripts/test-lint-interview-record-sections.sh \
-	scripts/test-lint-interview-convention-refs.sh
+	scripts/test-lint-interview-convention-refs.sh \
+	scripts/test-lint-kickoff-defaults.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
 	scripts/test-gate.sh \
+	scripts/test-suite-isolation.sh \
+	scripts/test-kickoff-defaults.sh \
 	scripts/test-team-witness-init.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-gate-chain-equiv.sh \

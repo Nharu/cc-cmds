@@ -71,13 +71,30 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
-# THE THREE SEAT MARKERS ARE CLEARED FOR THE WHOLE PROCESS. The stagnation
-# boundaries are evaluated only on a ROUTER's judgment, and the gate reads that
-# off `CC_PIPELINE_SEGMENT` / `CC_PIPELINE_STAGE_ID`; this suite runs from
-# whatever process starts it — including a pipeline stage, which exports both —
-# so an inherited marker would turn every B1 fixture below into a stage call
-# that judges nothing, and the suite would report the boundary as silent.
-# Sections that need a seat set it explicitly on the call.
+# THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — all eleven
+# `CC_PIPELINE_*` names, here and nowhere later. This suite runs from whatever
+# process starts it, including a pipeline stage, which exports every one of them.
+#
+# The name that moves ledger writes today is `CC_PIPELINE_MANIFEST`: the pre-tool
+# hook the fixtures drive passes it to `gate.sh digest-path --manifest`, so an
+# inherited value opened the REAL manifest's ledger and appended fixture rows to
+# the run that was executing this suite. The other ten are cleared as well
+# because which of them a gate path starts reading tomorrow is not something this
+# file can know, and the cost is one line.
+#
+# The seat markers are the older reason. The stagnation boundaries are evaluated
+# only on a ROUTER's judgment, read off `CC_PIPELINE_SEGMENT` /
+# `CC_PIPELINE_STAGE_ID`, so an inherited marker turned every B1 fixture into a
+# stage call that judges nothing. The gate also keeps a stage session out of the
+# lineage, so an inherited stage or shift marker kept every `close` fixture from
+# finding its transcript.
+#
+# THE TOP OF THE FILE IS THE ONLY PLACE THAT COVERS EVERY SECTION. Clearing
+# inside a section relies on no earlier section calling the gate or the hook,
+# which is true only by accident, and a section inserted in front brings the
+# exposure back. The section selector's cut copies carry this preamble, so the
+# same line covers every `--sections` and `--run-one` cut. Sections that need a
+# seat or a pipeline value set it explicitly on the call.
 #
 # `GATE_ACT_CWD` GOES WITH THEM, and it is the one whose absence was MEASURED as
 # a defect rather than reasoned about. A target-undeclared `act` does not choose
@@ -88,7 +105,10 @@ export CC_CMDS_SESSION_NOTIFY
 # `git pull --ff-only` every apply in this tree uses. The value is captured
 # first so a failure can say what was inherited.
 GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
-unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID GATE_ACT_CWD
+unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
+      CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
 # The launch switches go too: the effort, model and window on every launch argv
 # the suite measures would otherwise be a property of the caller's shell. The
 # sections that exercise a switch set it on the call.
@@ -1245,15 +1265,6 @@ graded_as() {
 # fixture manifest — and the driver itself runs from the home worktree, which is
 # the shape this reproduces.
 rc=0; msg=""
-# THE SEAT IS DECLARED, NOT INHERITED, FROM THE FIRST SECTION ON. This suite
-# runs from whatever process starts it — including a pipeline stage, which
-# exports a stage id — and the gate enrols a session into the run's lineage
-# only when no stage or shift marker is present. Inherited, the marker kept
-# every `close` fixture below from ever finding its transcript: the section
-# that first cleared it sits after the first three `close` sections, so those
-# read "transcript not found" in exactly the environment the suite is most
-# likely to run in. Set explicitly where a seat is the thing under test.
-unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
 gate() {
   local out
   out=$(cd "$WT" && gate_inproc "$@" 2>&1); rc=$?
@@ -2103,20 +2114,6 @@ drain_act() {
     --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
 }
 
-# The suite's normal execution context is INSIDE a pipeline stage — which
-# exports this whole group. The gate branches on `CC_PIPELINE_STAGE_ID` at entry
-# (a stage session is kept out of the lineage so it cannot answer the approvals
-# gating itself) and the banner seat reads the same markers, so an inherited
-# value makes every call take that branch and the assertions that read the
-# lineage or the notifier fail for a reason unrelated to what they assert.
-# Cleared here rather than in section 33, which cleared it first, because 12b's
-# banner assertions stand on the same known state; a sub-case that needs a
-# stage sets what it needs and unsets it again.
-unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
-      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
-
 # `cone` — the container of section 31, moved here whole: the pipeline
 # environment cleared, the run id derived from the manifest and asserted to
 # differ, the collision guard on the three paths, the cone manifest, grant
@@ -2127,12 +2124,12 @@ unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
 pre_cone() {
   [ -n "${PRE_CONE_DONE:-}" ] && return 0
   PRE_CONE_DONE=1
-  # The pipeline environment group, cleared AGAIN. Section 33 (the self-parked
-  # stage) clears it for its own reasons and this family needs the same thing for
-  # the same reason — a stage session is deliberately kept out of the lineage, so
-  # an inherited `CC_PIPELINE_STAGE_ID` makes every call below take that branch.
-  # Leaning on an earlier section having done it is the shape this repair exists
-  # to remove, and a cut of one cone section has no earlier section at all.
+  # The pipeline environment group, cleared AGAIN. The top of this file clears
+  # what the suite inherited; this clears what an earlier section may have set
+  # since — a stage session is deliberately kept out of the lineage, so a
+  # leftover `CC_PIPELINE_STAGE_ID` makes every call below take that branch.
+  # Leaning on every earlier section having cleaned up after itself is the shape
+  # this repair exists to remove.
   unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
         CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
         CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
@@ -7684,7 +7681,8 @@ fi
 # when it does not fit. The settings are still rewritten in every case: what
 # degrades is the record, never the widening.
 #
-# The relaxation is this field's alone. The general cap in `gate_append` is
+# The relaxation belongs to two fields only, `segment.인가면` here and
+# `cycle.발견 지문` (section 70). The general cap in `gate_append` is
 # unchanged and asserted so: a row that crosses it with the caller's own
 # fields still dies, at exactly the byte the projection says it will.
 #
@@ -23151,6 +23149,257 @@ check "71: 빌더 본문에 종료·디렉터리 유도가 없다" \
 rm -f "$S71_GRANT" "$S71_LEDGER"
 
 # ---------------------------------------------------------------------------
+# 70. 발견 지문 — cycle 팔이 리포트의 P0/P1 불릿에서 식별자 집합을 해시해 행에 굳힌다
+# --- section: 70 | group: base | covers: act, snapshot | anchors: 70: 행이 호출자 필드 뒤 발견 지문으로 끝난다, 70: 지문이 다시 계산한 집합 해시와 같다, 70: 불릿 순서와 중복 지목은 지문을 바꾸지 않는다, 70: 발견 하나를 바꾸면 지문이 바뀐다, 70: 상한을 넘기는 행은 발견 지문 없이 기록된다, 70: 창 밖으로 밀린 세그먼트에도 OSCILLATION 이 선다, 70: 실제 기록자를 지난 세 행이 SPINNING 을 세운다 ---
+#
+# The cycle arm writes one field of its own behind the caller's: `발견 지문`,
+# the first 12 hex characters of the sha256 of the SET of identifiers in the
+# report's P0/P1 bullets. Sections open only on a byte prefix (`## 🔴 P0`,
+# `## 🟠 P1`); a token with neither `/` nor `.`, or `##`, is dropped; a bare
+# identifier another identifier of the same report ends in `/<identifier>` is
+# folded. `-` is P0+P1=0 and `(미상)` is a report that is absent or yields
+# nothing, and neither value refuses anything. A row that would cross the cap
+# with the field lands without it.
+#
+# The section builds its own run R70 the way 71 does, so `--sections 70` stands
+# on nothing an earlier section left behind. Every report is synthetic and no
+# real ledger is read.
+# ---------------------------------------------------------------------------
+S70ROOT=$(mktemp -d "$WORK/fp70.XXXXXX")
+S70_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$S70_PREV" ]; then
+  printf '70: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+S70_RID=R70
+S70_MAN="$S70ROOT/$S70_RID.plan.md"
+S70_GRANT="$WT/docs/pipeline-grant/$S70_RID.md"
+S70_LEDGER="$WT/docs/pipeline-run/$S70_RID.md"
+S70_STATE="$S70ROOT/state"
+sed -e "s/run-id=$S70_PREV;/run-id=$S70_RID;/" \
+    -e "s/^\*\*런 id\*\*: $S70_PREV\$/**런 id**: $S70_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$S70_MAN"
+sed "s/R1/$S70_RID/g" "$GBAK" > "$S70_GRANT"
+printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · 발견 지문 픽스처\n' "$S70_RID" "$S70_RID" > "$S70_LEDGER"
+mkdir -p "$S70_STATE"
+s70_gate() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$S70_STATE" gate_inproc "$@" 2>"$S70ROOT/err"); rc=$?
+  msg=$(grep -vE '\[run\] ' "$S70ROOT/err" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+s70_snap() {
+  ( cd "$WT" && XDG_STATE_HOME="$S70_STATE" gate_inproc snapshot --manifest "$S70_MAN" "$@" 2>/dev/null )
+}
+s70_h() { s70_snap | jq -r .H; }
+s70_segment() {
+  s70_gate act --manifest "$S70_MAN" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
+    --snapshot-digest "$(s70_h)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+}
+s70_n=0
+s70_cycle() {
+  # s70_cycle <segment> <cycle> <P0> <P1> <report> [field...] — one cycle-arm
+  # act on a review HEAD no earlier call of this section used.
+  local seg=$1 cyc=$2 p0=$3 p1=$4 rep=$5; shift 5
+  s70_n=$((s70_n + 1))
+  s70_gate act --manifest "$S70_MAN" --kind cycle --target infra --segment "$seg" --cutpoint 커밋 \
+    --snapshot-digest "$(s70_h)" --rationale x \
+    -- "사이클=$cyc" "P0=$p0" "P1=$p1" "리뷰 HEAD=$(printf 'c0ffee%02x' "$s70_n")" "리포트 경로=$rep" "$@"
+}
+s70_last() { grep '^- `cycle` ' "$S70_LEDGER" | grep -F "| 세그먼트=$1 |" | tail -1; }
+s70_field() {
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_row_field "$@"' _ "$GATE" "$@" )
+}
+s70_fp() { s70_field "$(s70_last "$1")" '발견 지문'; }
+s70_expect() { printf '%s\n' "$@" | LC_ALL=C sort -u | shasum -a 256 | cut -c1-12; }
+s70_lines() { wc -l < "$S70_LEDGER" | tr -d ' '; }
+s70_bytes() { printf '%s\n' "$1" | wc -c | tr -d ' '; }
+s70_pad() { printf '%*s' "$1" '' | tr ' ' a; }
+s70_stalls() {
+  # s70_stalls <segment> — the classes the snapshot carries for one segment.
+  s70_snap --fields stalls | jq -r --arg s "$1" '[.[] | select(.["세그먼트"] == $s) | .["부류"]] | join(" ")'
+}
+s70_report() {
+  # s70_report <path> — the head every synthetic report shares, then stdin.
+  { printf '# 코드 리뷰 리포트\n\n## 개요\n\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 1건 | P1 1건\n\n'; cat; } > "$1"
+}
+S70A="$S70ROOT/ra.md"; S70B="$S70ROOT/rb.md"; S70C="$S70ROOT/rc.md"
+s70_report "$S70A" <<'EOF'
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/a.sh:12` — 첫 발견
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견
+EOF
+s70_report "$S70B" <<'EOF'
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견을 먼저
+- `plugins/x/a.sh:40` — 같은 파일을 한 번 더
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/a.sh:12` — 첫 발견
+EOF
+s70_report "$S70C" <<'EOF'
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/c.sh:12` — 바뀐 발견
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견
+EOF
+S70_FPA=$(s70_expect plugins/x/a.sh 'plugins/x/b.sh#do_b')
+
+# (1) The recorded value -----------------------------------------------------------
+s70_segment SF
+check "70: (전제) 지문 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+s70_cycle SF 1 1 1 "$S70A" 비고=x
+check "70: 발견 둘을 지닌 리포트의 cycle 기록은 exit 0 이다" "$rc" "0"
+s70_row=$(s70_last SF)
+case "$s70_row" in
+  *"| 비고=x | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | prev="*)
+    ok "70: 행이 호출자 필드 뒤 발견 지문으로 끝난다" ;;
+  *) bad "70: 발견 지문의 자리" "$s70_row" ;;
+esac
+check "70: 지문이 다시 계산한 집합 해시와 같다" "$(s70_fp SF)" "$S70_FPA"
+if [ "$(s70_fp SF)" != aaaaaaaaaaaa ]; then
+  ok "70: 지문은 위조 값 aaaaaaaaaaaa 가 아니다"
+else
+  bad "70: 지문 값" "aaaaaaaaaaaa"
+fi
+
+# (2) Stable under order and repetition, sensitive to a finding --------------------
+s70_cycle SF 2 1 1 "$S70B"
+check "70: 불릿 순서와 중복 지목은 지문을 바꾸지 않는다" "$(s70_fp SF)" "$S70_FPA"
+s70_cycle SF 3 1 1 "$S70C"
+check "70: (전제) 바뀐 리포트의 기대 지문이 다르다" \
+  "$([ "$(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b')" != "$S70_FPA" ] && echo y)" "y"
+check "70: 발견 하나를 바꾸면 지문이 바뀐다" "$(s70_fp SF)" "$(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b')"
+s70_cycle SF 4 0 0 "$S70A"
+check "70: P0+P1=0 인 행은 exit 0 이다" "$rc" "0"
+check "70: P0+P1=0 인 행의 지문은 - 다" "$(s70_fp SF)" "-"
+S70N="$S70ROOT/rn.md"
+s70_report "$S70N" <<'EOF'
+## 🟡 P2 (개선 제안)
+
+- `plugins/x/a.sh:12` — P2 절의 발견
+EOF
+s70_cycle SF 5 1 1 "$S70N"
+check "70: P0/P1 절이 없는 리포트의 행은 exit 0 이다" "$rc" "0"
+check "70: P0/P1 절이 없는 리포트의 지문은 (미상) 이다" "$(s70_fp SF)" "(미상)"
+s70_cycle SF 6 1 1 "$S70ROOT/absent.md"
+check "70: 없는 리포트의 행은 exit 0 이다" "$rc" "0"
+check "70: 없는 리포트의 지문은 (미상) 이다" "$(s70_fp SF)" "(미상)"
+
+# (3) The heading matcher and the identifier guard --------------------------------
+S70H="$S70ROOT/rh.md"
+s70_report "$S70H" <<'EOF'
+## 🔴 P0 (즉시 수정 필수)
+
+- `plugins/x/a.sh:12` — 첫 발견
+## P1-2 메모
+
+- `plugins/x/z.sh` — 메모 절의 불릿
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/b.sh` (`do_b`) — 둘째 발견
+- `F1` 표 조각
+- `##` 머리 조각
+- `|` 파이프 조각
+EOF
+s70_cycle SF 7 1 1 "$S70H"
+check "70: P1-2 메모 절의 불릿과 식별자가 아닌 토큰은 지문에 들지 않는다" "$(s70_fp SF)" "$S70_FPA"
+
+# (4) The spelling fold is inside one report, and SPINNING stands on it ------------
+S70F1="$S70ROOT/rf1.md"; S70F2="$S70ROOT/rf2.md"
+s70_report "$S70F1" <<'EOF'
+## 🟠 P1 (머지 전 수정 권장)
+
+- `a.sh:3` — 짧은 철자
+- `plugins/x/a.sh:9` — 긴 철자
+EOF
+s70_report "$S70F2" <<'EOF'
+## 🟠 P1 (머지 전 수정 권장)
+
+- `plugins/x/a.sh:9` — 긴 철자만
+EOF
+s70_segment SS
+# P0 stays above zero so the same three rows cannot also stand a
+# DIMINISHING_RETURNS, which is a P0=0 tail.
+s70_cycle SS 1 1 1 "$S70F1"
+s70_fp1=$(s70_fp SS)
+s70_cycle SS 2 1 1 "$S70F2"
+check "70: 한 리포트 안의 짧은 철자는 긴 철자로 접힌다" "$s70_fp1/$(s70_fp SS)" \
+  "$(s70_expect plugins/x/a.sh)/$(s70_expect plugins/x/a.sh)"
+s70_cycle SS 3 1 1 "$S70F1"
+check "70: 접힌 철자의 세 행이 SPINNING 하나를 세운다" "$(s70_stalls SS)" "SPINNING"
+
+# (5) A forged fingerprint is still refused ----------------------------------------
+for s70_k in '발견 지문=aaaaaaaaaaaa' ' 발견 지문=aaaaaaaaaaaa'; do
+  s70_n0=$(s70_lines)
+  s70_cycle SF 8 1 1 "$S70A" "$s70_k"
+  check "70: 호출자의 발견 지문은 여전히 exit 2 다 ('$s70_k')" "$rc" "2"
+  check "70: 그 거절은 원장 줄 수를 바꾸지 않는다 ('$s70_k')" "$(s70_lines)" "$s70_n0"
+done
+
+# (6) At the cap the row lands without the field ---------------------------------
+# Calibrated, not spelled: the fixed part is measured from a row the gate wrote.
+# The three segments have names of one length and write the same cycle number,
+# HEAD length and report, so only `비고` moves the length.
+s70_max=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+check "70: (전제) GATE_ROW_MAX 를 읽었다" "$([ -n "$s70_max" ] && echo y)" "y"
+for s70_s in SCAL SOVR SFIT; do s70_segment "$s70_s"; done
+s70_cycle SCAL 1 1 1 "$S70A" "비고=$(s70_pad 100)"
+s70_cal=$(s70_last SCAL)
+s70_fb=$(printf ' | 발견 지문=%s' "$(s70_fp SCAL)" | wc -c | tr -d ' ')
+check "70: 발견 지문 필드는 행에서 정확히 29 바이트다" "$s70_fb" "29"
+s70_base=$(( $(s70_bytes "$s70_cal") - s70_fb - 100 ))
+s70_cycle SOVR 1 1 1 "$S70A" "비고=$(s70_pad $((s70_max - s70_base - s70_fb + 1)))"
+check "70: 지문을 붙이면 상한을 1 바이트 넘기는 행은 exit 0 이다" "$rc" "0"
+s70_ovr=$(s70_last SOVR)
+case "$s70_ovr" in
+  *"| 발견 지문="*) bad "70: 상한 생략" "필드가 붙었다: $(s70_bytes "$s70_ovr")B" ;;
+  "") bad "70: 상한 생략" "행이 없다" ;;
+  *) ok "70: 상한을 넘기는 행은 발견 지문 없이 기록된다" ;;
+esac
+check "70: 그 행의 길이는 상한보다 지문만큼 짧다" "$(s70_bytes "$s70_ovr")" "$((s70_max + 1 - s70_fb))"
+case "$msg" in
+  *"상한"*"발견 지문"*) ok "70: 필드를 뺀 기록은 경고를 남긴다" ;;
+  *) bad "70: 상한 경고" "$msg" ;;
+esac
+s70_cycle SFIT 1 1 1 "$S70A" "비고=$(s70_pad $((s70_max - s70_base - s70_fb)))"
+check "70: (대조) 상한에 딱 맞는 행은 exit 0 이다" "$rc" "0"
+check "70: (대조) 상한에 딱 맞는 행은 발견 지문을 지닌다" "$(s70_fp SFIT)" "$S70_FPA"
+check "70: (대조) 그 행의 길이가 상한과 같다" "$(s70_bytes "$(s70_last SFIT)")" "$s70_max"
+
+# (7) End to end: three reviews of one report content on three commits ----------
+s70_segment SE
+for s70_i in 1 2 3; do
+  cp "$S70A" "$S70ROOT/re$s70_i.md"
+  s70_cycle SE "$s70_i" 1 1 "$S70ROOT/re$s70_i.md"
+done
+check "70: 실제 기록자를 지난 세 행이 SPINNING 을 세운다" "$(s70_stalls SE)" "SPINNING"
+
+# (8) Out of the snapshot window: the classifier reads the whole ledger ---------
+# Last, because the 21 rows below are appended by hand and carry no chain.
+s70_segment SO
+for s70_i in 1 2 3 4; do
+  case "$s70_i" in 1|3) s70_r=$S70A ;; *) s70_r=$S70C ;; esac
+  s70_cycle SO "$s70_i" 1 1 "$s70_r"
+done
+check "70: (전제) 대상 세그먼트의 네 행이 지문을 번갈아 싣는다" \
+  "$(grep '^- `cycle` ' "$S70_LEDGER" | grep -F '| 세그먼트=SO |' | sed -n 's/.*| 발견 지문=\([^ |]*\) |.*/\1/p' | tr '\n' ' ')" \
+  "$S70_FPA $(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b') $S70_FPA $(s70_expect plugins/x/c.sh 'plugins/x/b.sh#do_b') "
+for s70_i in $(seq 1 21); do
+  printf -- '- `cycle` | 세그먼트=SZ | 사이클=%s | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' \
+    "$s70_i" "$(printf 'dead%04x' "$s70_i")" "$S70ROOT/rz$s70_i.md" >> "$S70_LEDGER"
+done
+check "70: 창 밖으로 밀린 세그먼트는 cycles 에 없다" \
+  "$(s70_snap --fields cycles | jq -r '[.[] | select(.["세그먼트"] == "SO")] | length')" "0"
+check "70: 창 밖으로 밀린 세그먼트에도 OSCILLATION 이 선다" "$(s70_stalls SO)" "OSCILLATION"
+rm -f "$S70_GRANT" "$S70_LEDGER"
+
+# ---------------------------------------------------------------------------
 # 60. CI 체크 계열 — 전사·행 예산·진전 벡터, 그리고 머지 거절의 아홉 갈래
 # --- section: 60 | group: sa | covers: act, plan, exec | anchors: 60: 관측 세 줄이 checks 행 세 개로 전사된다, 60: 어휘 밖 상태의 줄은 전사되지 않는다, 60: 드레인 앞에서 뜬 다이제스트가 드레인 뒤에도 받아들여진다, 60: 진전 해시가 checks 드레인에 불변이다, 60: 죽은 드레인이 남긴 파일을 오래된 것부터 회수한다, 60: 살아 있는 소유자의 잠금 아래서는 전사하지 않는다, 60: 실패+이름 목록은 거절한다, 60: 그 행의 도달 판정이 CI실패 다, 60: 기록 행위는 실패 행이 있어도 머지 절단점에서 기록된다, 60: 스테이지 기동 예보는 실패 행이 있어도 CI실패 로 park 되지 않는다, 60: 머지 라벨을 단 세그먼트 읽기는 실패 행이 있어도 수행된다, 60: 이력을 통합하는 로컬 머지는 여전히 CI실패 로 거절된다 ---
 #
@@ -24819,6 +25068,94 @@ case "$msg" in
   *'park 예상: 도달 판정=등급회귀판정불가 '*) ok "61c: 양성 대조를 못 내는 베이스는 등급회귀판정불가 로 park 된다" ;;
   *) bad "61c: 양성 대조를 못 내는 베이스는 등급회귀판정불가 로 park 된다" "$raw" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 72. 행 조회는 부분 문자열이 아니라 필드 전체를 본다
+# --- section: 72 | group: ledger_series | covers: gate_has_row | anchors: 72: 앵커·맨·앞 파이프·뒤 파이프·공백 붙은 철자가 같은 필드에 맞는다, 72: 접두·접미·다른 필드 값 안의 키 문자열은 맞지 않는다, 72: 두 인자는 같은 행에서만 결합된다, 72: 행 끝 필드도 필드로 맞는다, 72: 인자가 없거나 비면 없음이다 ---
+#
+# `gate_has_row` 의 인자는 필드 하나이고, 앞뒤의 `|` 하나와 공백은 정규화가 벗긴다 —
+# 그래서 앵커된 옛 철자와 맨 철자가 같은 필드를 가리킨다. 부분 문자열 판독이 맞히던
+# 셋(id 접두, 키 접미, 다른 필드 값 안의 키 문자열)은 필드 분할 아래서는 맞지 않는다.
+# 여러 인자는 같은 행에서만 결합되며, 두 행에 나뉘어 있는 두 필드는 맞은 것이 아니다.
+# 원장은 이 절이 스스로 쓰고, 조회는 게이트를 올린 서브셸에서 직접 부른다.
+# ---------------------------------------------------------------------------
+l72=$(lsr_ledger w72)
+cat >> "$l72" <<'LEDGER'
+- `자율 승인` | 교대=1 | kind=citation | 결정=x | 해소 승인=A1 | 근거=행위 다이제스트=abc 처분 사유=y | prev=p1
+- `자율 승인` | 교대=1 | kind=judgment | 결정=채택 | 해소 승인=A9 | 비고=tail
+LEDGER
+r72() { local rc=0; lsr_in Linux "$l72" - gate_has_row '자율 승인' "$@" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+check "72: 앵커·맨·앞 파이프·뒤 파이프·공백 붙은 철자가 같은 필드에 맞는다" \
+  "$(r72 '| 해소 승인=A1 |')/$(r72 '해소 승인=A1')/$(r72 '| 해소 승인=A1')/$(r72 '해소 승인=A1 |')/$(r72 '  해소 승인=A1  ')" \
+  "0/0/0/0/0"
+check "72: 접두·접미·다른 필드 값 안의 키 문자열은 맞지 않는다" \
+  "$(r72 '해소 승인=A')/$(r72 '승인=A1')/$(r72 '행위 다이제스트=abc')/$(r72 '사유=y')" \
+  "1/1/1/1"
+check "72: 두 인자는 같은 행에서만 결합된다" \
+  "$(r72 'kind=citation' '해소 승인=A1')/$(r72 '| kind=judgment |' '결정=채택')/$(r72 'kind=citation' '해소 승인=A9')" \
+  "0/0/1"
+check "72: 행 끝 필드도 필드로 맞는다" "$(r72 '비고=tail')/$(r72 '비고=tai')" "0/1"
+check "72: 인자가 없거나 비면 없음이다" "$(r72)/$(r72 '|')/$(r72 ' ')" "1/1/1"
+check "72: 대조 — 원장에 없는 필드는 맞지 않는다" "$(r72 'kind=nope')" "1"
+
+# ---------------------------------------------------------------------------
+# 73. 종료 기록의 문서 해시 중복 억제가 발화한다
+# --- section: 73 | group: ledger_series | covers: gate_has_row, gate_record_stage_outcome | anchors: 73: 첫 종료가 문서 해시 행 하나를 쓴다, 73: 같은 문서 바이트로 두 번 종료해도 문서 해시 행은 하나다, 73: 문서 바이트가 바뀐 종료는 행을 하나 더 쓴다 ---
+#
+# `gate_record_stage_outcome` 은 종료마다 설계 문서의 sha256 을 `문서 해시` 행으로
+# 남기되, 같은 `(스테이지, sha256)` 이 이미 있으면 쓰지 않는다. 그 가드가 두 필드를
+# 공백으로 이은 한 인자였을 때는 어느 행에도 맞지 않아 종료마다 행이 하나씩 늘었다.
+# `DOC` 가 실제 파일이어야 이 블록이 돈다 — 비어 있거나 없는 경로면 블록 전체를
+# 건너뛰어 아래 단언이 공허해지므로, 첫 단언이 행 하나가 쓰였음을 먼저 확인한다.
+# ---------------------------------------------------------------------------
+l73=$(lsr_ledger w73)
+d73="${l73%/*}/design.md"
+printf '설계 v1\n' > "$d73"
+o73() { DOC="$d73"; gate_record_stage_outcome cc-cmds S1 review 1 0 ''; }
+n73() { { grep -c '^- `문서 해시` ' "$l73" || true; }; }
+lsr_in Linux "$l73" - o73 >/dev/null 2>&1 || true
+check "73: 첫 종료가 문서 해시 행 하나를 쓴다" "$(n73)" "1"
+lsr_in Linux "$l73" - o73 >/dev/null 2>&1 || true
+check "73: 같은 문서 바이트로 두 번 종료해도 문서 해시 행은 하나다" "$(n73)" "1"
+printf '설계 v2\n' > "$d73"
+lsr_in Linux "$l73" - o73 >/dev/null 2>&1 || true
+check "73: 문서 바이트가 바뀐 종료는 행을 하나 더 쓴다" "$(n73)" "2"
+
+# ---------------------------------------------------------------------------
+# 74. 자유 텍스트에 실린 표지는 그 표지의 행이 아니다
+# --- section: 74 | group: reach | covers: exec, gate_has_row | anchors: 74: 근거에 표지를 실은 park 가 blocked 행 하나를 남긴다, 74: 강제 표면 분기의 조회가 그 인용을 자기 선행 기록으로 읽지 않는다, 74: 대조 — 진짜 강제 표면 이동 행은 맞는다 ---
+#
+# 강제 표면 분기는 `blocked` 계열에 `사유=강제 표면 이동` 필드가 있는지로 자기가 이미
+# 기록했는지를 판단한다. 스테이지가 `--rationale` 에 그 문자열을 인용하면 park 행의
+# `근거` 필드가 그것을 자유 텍스트로 싣는다. 부분 문자열 판독은 그 행을 표지의 행으로
+# 읽어 강제 표면 이동의 첫 기록을 건너뛴다. 이 절은 실제 park 가 쓴 행에 대고 조회한다.
+# 공유 원장에는 앞 절들이 쓴 진짜 표지 행이 있을 수 있으므로, 이 절이 붙인 행 하나만
+# 따로 떼어 조회한다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR74="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+b74() { { grep -c '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true; }; }
+n74=$(b74)
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale '앞 런의 행 인용 — 사유=강제 표면 이동 — 을 확인한다' -- env
+check "74: 근거에 표지를 실은 park 가 blocked 행 하나를 남긴다" "$rc/$(( $(b74) - n74 ))" "11/1"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR74"
+l74="$WORK/ledger74.md"
+{ grep '^- `blocked` ' "$FX_LEDGER" || true; } | sed -n '$p' > "$l74"
+case "$(cat "$l74")" in
+  *"근거=앞 런의 행 인용 — 사유=강제 표면 이동"*) ok "74: 떼어 낸 행이 근거 필드에 표지를 싣는다 (아래가 공허하지 않다)" ;;
+  *) bad "74: 떼어 낸 행이 근거 필드에 표지를 싣는다" "$(cat "$l74")" ;;
+esac
+q74() {
+  local rc=0
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; LEDGER="$2"; gate_has_row blocked "사유=강제 표면 이동"' \
+    _ "$GATE" "$1" >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+check "74: 강제 표면 분기의 조회가 그 인용을 자기 선행 기록으로 읽지 않는다" "$(q74 "$l74")" "1"
+printf -- '- `blocked` | 교대=1 | 대상=front | 스코프=run | 원인=무효화 | 사유=강제 표면 이동 | 관측=t | prev=x\n' > "$WORK/ledger74b.md"
+check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WORK/ledger74b.md")" "0"
 
 # --- epilogue-begin ---
 #

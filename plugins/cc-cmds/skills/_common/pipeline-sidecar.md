@@ -617,14 +617,20 @@ one appended line per Act 1 boundary:
 - <ISO8601> | 단계=<토큰>
 - <ISO8601> | 단계=인터뷰 동결 | 경로=<기록 경로> | sha256=<기록 해시>
 - <ISO8601> | 단계=대상 변경 | 새 base=<경로>
+- <ISO8601> | 단계=기본값 고지 | 제시=<n> | 무시=<m> | 파일=<a> | 환경=<b> | 경로=<파일 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->
+- <ISO8601> | 단계=기본값 확정 | 적용=<n> | 해제=<k>
 ````
 
-There is no H1. Only two stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`)
-and `대상 변경` (`새 base=`). Every other line ends at `단계=<토큰>`.
+There is no H1. Only four stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
+`대상 변경` (`새 base=`), `기본값 고지` (`제시=`, `무시=`, `파일=`, `환경=`,
+`경로=`, `sha256=`) and `기본값 확정` (`적용=`, `해제=`). Every other line ends at
+`단계=<토큰>`. The two kickoff-defaults lines carry counts, the defaults file's
+path and its hash, and never a value.
 
 **The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
-`요구사항 인터뷰` · `요구 확인` · `경계 질문` · `로스터` · `승인` · `인터뷰 동결` ·
-`매니페스트 기록` · `문답(텍스트)` · `기동 직전` · `연기` · `중단`.
+`요구사항 인터뷰` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·
+`로스터` · `승인` · `인터뷰 동결` · `매니페스트 기록` · `문답(텍스트)` ·
+`기동 직전` · `연기` · `중단`. `기본값 고지` and `기본값 확정` are not terminal.
 
 **When a trace is finished — one test for every reader.** A trace is finished when
 its last stage is `연기` or `중단`, when it is a `대상 변경` carrying `새 base=`, or
@@ -684,7 +690,7 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-**One field, and only one, is relaxed under the cap: `segment.인가면`.** It is 144 bytes on the row — separator, name, two sha256 hexes and the arrow — and the rows it lands on are the planning rows that already carry a long `선언 파일 집합`, so the worst row and the field meet. A `segment` row that would cross the cap with the field lands **without** it, carrying `인가면=생략(행 길이)` instead, and without even that when the marker does not fit; the settings are rewritten either way, and what degrades is the record, never the widening. A failure marker (`인가면=실패(<사유>)`) that would cross the cap is dropped outright rather than rewritten as `생략(행 길이)`; the `warn` the arm already emitted is the record then. This is not a general rule: every other series decides for itself what it may drop, which today is nothing.
+**Two fields, and only two, are relaxed under the cap: `segment.인가면` and `cycle.발견 지문`.** `인가면` is 144 bytes on the row — separator, name, two sha256 hexes and the arrow — and the rows it lands on are the planning rows that already carry a long `선언 파일 집합`, so the worst row and the field meet. A `segment` row that would cross the cap with the field lands **without** it, carrying `인가면=생략(행 길이)` instead, and without even that when the marker does not fit; the settings are rewritten either way, and what degrades is the record, never the widening. A failure marker (`인가면=실패(<사유>)`) that would cross the cap is dropped outright rather than rewritten as `생략(행 길이)`; the `warn` the arm already emitted is the record then. `발견 지문` degrades in one step, not two: a `cycle` row that would cross the cap with it lands without the field, with no marker, and the arm warns once on stderr. There is no marker because an absent key already reads as "no fingerprint", and a marker would be longer than the 12-byte value; what is lost is one SPINNING or OSCILLATION reading, never the review the row records. This is not a general rule: every series other than these two decides for itself what it may drop, which today is nothing.
 
 ### 3.2 The row series is closed at twenty-six
 
@@ -718,6 +724,8 @@ An approval and a deferred review obligation are **non-terminal states with thei
 
 **`종료 절` and `문서 해시` are listed with the fields the gate actually writes**, because a table that under-reports its writer's series is not a closed definition.
 
+**The gate's row lookup (`gate_has_row <계열> <키=값> [<키=값>…]`) matches whole fields, not substrings.** Each argument names one `키=값` field; one leading and one trailing `|` and the whitespace around them are ignored, so `"| 키=값 |"` and `"키=값"` are the same lookup. A row answers only when it carries, for every argument, a field byte-identical to it, and several arguments are joined on one row — two fields found on two different rows are not a hit. So a key spelled inside another field's value, a key that ends another key and an id that prefixes another id do not answer, and two fields joined into one argument answer nothing; `scripts/lint-sidecar-field-table.sh` refuses that last shape at the call site. **The answer is sound only while every writer keeps this grammar**, mapping `|` and line breaks out of keys and values alike: a ` | ` spliced in by a writer that skipped that step is a real separator at the byte level, and no reader can tell it from one the writer meant.
+
 **`의무 종결` and `의무 포기` are the exits of a `problem` obligation.** They are separate series rather than one with a state field because they differ in **tense**, and the tense decides when each is checked: `종결` cites a past act row and is never re-verified, `포기` cites a segment being terminal — a reversible, present-tense fact — and is re-verified every time the open set is computed.
 
 Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text identity) that the reader computes rather than the writer stores, so a `problem` row written before these series existed is closable with no migration. Neither carries the identity verbatim: §3.1a's 1024-byte cap makes unbounded free text unsafe on a row, so `표시 동일성` is a truncated label that **no predicate reads**. `세그먼트` is inherited from the row being closed and never accepted from argv, the same discipline `리뷰 의무` already applies to its carried fields.
@@ -730,7 +738,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드`(`-` on a settlement row) · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모`(`-` on a settlement row) · `압축 창`(effective compaction window and its source: `-` \| `(꺼짐)` \| `(미상)` \| `<정수>(argv\|런설정\|프로젝트\|레인)`) · `레인`(config home, tilde form) · `계정`(from the fourth line of `<stage>.window`: the inventory id \| `-` for a seat \| `(미상)` when the line breaks the identity rule; absent when there is no fourth line) · `기록자`(`게이트` \| `드라이버`) · `effort`(`<level>` the launch put on the argv \| `-` switched off \| `(미상)` settlement row) · `서빙 모델`(the stream's init-frame `model` with the context-window suffix removed \| `(미상)`) · `종단 부류` · `관측`(settlement row only) |
 | `stage-lease` | `파견 id` · `계보`(derived from `파견 id`) · `계정`(inventory id \| `-` for a seat) · `레인`(config home, tilde form \| `-`) · `예약`(`I.FFFF/I.FFFF`, five_hour first \| `-`) · `근거` · `관측`(`<source>@<epoch>` \| `none` \| `-`) |
 | `stage-wait` | `계보` · `그룹`(`org:<16 hex>` \| `acct:<id>` \| `-`) · `계정`(`resume-bound-*` only, `-` otherwise) · `까지`(`YYYY-MM-DDTHH:MM:SSZ` \| `-`) · `근거` |
-| `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` · `모드`(optional: `전체` \| `델타`; absent reads as `전체`) · `기준 사이클`(optional; required iff `모드=델타`, refused otherwise) |
+| `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` · `모드`(optional: `전체` \| `델타`; absent reads as `전체`) · `기준 사이클`(optional; required iff `모드=델타`, refused otherwise) · `발견 지문`(optional, gate-written: `<12자 소문자 16진>` \| `-` \| `(미상)`; `-` means P0+P1=0, `(미상)` means the report was absent or yielded no identifier; dropped when the row would cross the cap; an absent key, `-` and `(미상)` all read as absent and equal nothing; a caller-supplied value is refused) |
 | `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `생성 등급`(축 2) · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `행위자`(`리드` \| `교대` \| `스테이지`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |

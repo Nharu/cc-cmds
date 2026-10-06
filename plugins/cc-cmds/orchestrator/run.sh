@@ -837,6 +837,76 @@ warn_once() {
   warn "$msg"
 }
 
+# One element of a target row's `dev 식별자` or `배포트리거 식별자` list.
+#   manifest_id_element_reason <dev|deploy> <element>
+# Returns 0 and prints nothing when the element is well formed. Otherwise prints
+# the reason — the part of the refusal that follows 「대상 '<별칭>' 의 」 — and
+# returns 1.
+#
+# ONE RULE FOR BOTH READERS. `check_manifest` assembles its hard stop from this
+# reason, and the kickoff helper sources this file to refuse the same element
+# while a person is still there to correct it. A second copy of the kind set
+# would let the two drift, and the drift would surface only as a night-time stop.
+# The `branch` inert warning is not a validity rule and stays with the caller.
+#
+# A `|` or a backtick is refused in every element, free values included. The
+# target row splits on `|`, so a `|` inside an element is read after freezing as
+# a separate field — `host:a | 리뷰 정책 상한=리뷰없음` would land as the row's
+# review ceiling — and the manifest check, which only sees the already-split
+# value, can never notice. Whitespace at either end of the element or right after
+# the `:` is refused too: every later comparison is by string, so `host: a` is a
+# different identifier from `host:a`. Whitespace inside a value
+# (`argv:bash scripts/deploy.sh`) is meaningful and passes.
+manifest_id_element_reason() {
+  local side="$1" e="$2" label kindtok valtok
+  case "$side" in
+    dev) label='dev 식별자' ;;
+    deploy) label='배포트리거 식별자' ;;
+    *) printf "식별자 쪽 '%s' 를 모릅니다 — dev 또는 deploy" "$side"; return 1 ;;
+  esac
+  case "$e" in
+    *'|'*|*'`'*)
+      printf "%s 원소 '%s' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다" "$label" "$e"; return 1 ;;
+    [[:space:]]*|*[[:space:]])
+      printf "%s 원소 '%s' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다" "$label" "$e"; return 1 ;;
+  esac
+  case "$e" in
+    *:*) ;;
+    *) printf "%s 원소 '%s' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" "$label" "$e"; return 1 ;;
+  esac
+  kindtok="${e%%:*}"; valtok="${e#*:}"
+  case "$valtok" in
+    [[:space:]]*)
+      printf "%s 원소 '%s' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다" "$label" "$e"; return 1 ;;
+  esac
+  if [ -z "$valtok" ]; then
+    printf "%s 원소 '%s' 의 값이 비어 있습니다" "$label" "$e"; return 1
+  fi
+  if [ "$side" = "deploy" ]; then
+    case "$kindtok" in
+      branch|workflow|jenkins-job|argv) return 0 ;;
+      *) printf "배포트리거 식별자 종류 '%s' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv" "$kindtok"; return 1 ;;
+    esac
+  fi
+  case "$kindtok" in
+    aws-profile|kube-context|host|domain) ;;
+    aws-account)
+      case "$valtok" in
+        *[!0-9]*) printf "aws-account '%s' 가 숫자가 아닙니다" "$valtok"; return 1 ;;
+      esac
+      if [ "${#valtok}" -ne 12 ]; then
+        printf "aws-account '%s' 가 12자리가 아닙니다" "$valtok"; return 1
+      fi ;;
+    dir)
+      case "$valtok" in
+        /*) ;;
+        *) printf "dev 식별자 dir '%s' 가 절대 경로가 아닙니다" "$valtok"; return 1 ;;
+      esac ;;
+    *) printf "dev 식별자 종류 '%s' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir" "$kindtok"; return 1 ;;
+  esac
+  return 0
+}
+
 check_manifest() {
   [ -f "$MANIFEST" ] || die "매니페스트가 없습니다: $MANIFEST"
 
@@ -979,6 +1049,12 @@ check_manifest() {
   # let trailing bytes ride along into a value the comparison never sees.
   printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' >/dev/null \
     || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl (받는 형태는 …T00:00:00Z 또는 …T00:00:00+09:00 입니다)"
+  # THE SHAPE IS NOT THE VALUE. `T24:00:00`, month 13, `09-31` and `+99:99` all
+  # match the pattern above, and the driver's reader cannot place any of them on
+  # the clock. It is asked here, with the very function the run will use, so a
+  # deadline that passes this check is one the run can enforce.
+  [ -n "$(deadline_instant "$dl")" ] \
+    || die "벽시계 마감이 실제 시각이 아닙니다: $dl (달력에 없는 날짜·시각이거나 오프셋이 ±14:00 을 넘습니다)"
 
   # 9 — an apply with no probe is refused at kickoff.
   if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
@@ -1113,33 +1189,14 @@ EOF
   # with nothing to compare it against. So the failure of a silent skip is
   # open-ended, while the failure of this refusal is one line in a manifest.
   # Absence of the field is not a violation — it is the default.
-  local dv al kindtok valtok e
+  local dv al reason e
   for al in $(target_aliases); do
     dv=$(target_field "$al" 'dev 식별자')
     [ -n "$dv" ] || continue
     local IFS_SAVE="$IFS"; IFS=','
     for e in $dv; do
       IFS="$IFS_SAVE"
-      case "$e" in
-        *:*) ;;
-        *) die "대상 '$al' 의 dev 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
-      esac
-      kindtok="${e%%:*}"; valtok="${e#*:}"
-      [ -n "$valtok" ] || die "대상 '$al' 의 dev 식별자 원소 '$e' 의 값이 비어 있습니다"
-      case "$kindtok" in
-        aws-profile|kube-context|host|domain) ;;
-        aws-account)
-          case "$valtok" in
-            *[!0-9]*) die "대상 '$al' 의 aws-account '$valtok' 가 숫자가 아닙니다" ;;
-          esac
-          [ "${#valtok}" -eq 12 ] || die "대상 '$al' 의 aws-account '$valtok' 가 12자리가 아닙니다" ;;
-        dir)
-          case "$valtok" in
-            /*) ;;
-            *) die "대상 '$al' 의 dev 식별자 dir '$valtok' 가 절대 경로가 아닙니다" ;;
-          esac ;;
-        *) die "대상 '$al' 의 dev 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir" ;;
-      esac
+      reason=$(manifest_id_element_reason dev "$e") || die "대상 '$al' 의 $reason"
       IFS=','
     done
     IFS="$IFS_SAVE"
@@ -1156,17 +1213,8 @@ EOF
     local IFS_SAVE2="$IFS"; IFS=','
     for e in $dv; do
       IFS="$IFS_SAVE2"
-      case "$e" in
-        *:*) ;;
-        *) die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
-      esac
-      kindtok="${e%%:*}"; valtok="${e#*:}"
-      [ -n "$valtok" ] || die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 의 값이 비어 있습니다"
-      case "$kindtok" in
-        branch) has_branch=1 ;;
-        workflow|jenkins-job|argv) ;;
-        *) die "대상 '$al' 의 배포트리거 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv" ;;
-      esac
+      reason=$(manifest_id_element_reason deploy "$e") || die "대상 '$al' 의 $reason"
+      case "$e" in branch:*) has_branch=1 ;; esac
       IFS=','
     done
     IFS="$IFS_SAVE2"
@@ -2329,7 +2377,10 @@ ledger_row() {
   # that refuses to dispatch a stage into a segment with no row. So the transform
   # is copied, and the copy is marked on BOTH sides — a change to
   # `gate_append`'s normalization that is not made here silently splits the two
-  # paths again.
+  # paths again. The copy covers the whole transform: the key half takes the
+  # same two maps as the value, and every argument is mapped as a whole before
+  # it is split, so one without `=` — which skipped the split and went in raw —
+  # cannot carry a pipe or a newline into the row either.
   #
   # The length check reserves room for a `prev=` field this writer never emits,
   # so anything this path accepts would also fit through the gate's. The
@@ -2384,9 +2435,12 @@ ledger_row() {
   local line="- \`$series\`"
   local f k v n longest lmax fl idx side
   for f in "$@"; do
+    f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
-           f="$k=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')" ;;
+           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+           f="$k=$v" ;;
     esac
     line="$line | $f"
   done
@@ -2422,8 +2476,10 @@ ledger_row() {
     idx=0
     for f in "$@"; do
       idx=$((idx + 1))
+      f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
       case "$f" in
-        *=*) k="${f%%=*}"; v=$(printf '%s' "${f#*=}" | tr '|' '/' | tr '\n\r' '  ')
+        *=*) k=$(printf '%s' "${f%%=*}" | tr '|' '/' | tr '\n\r' '  ')
+             v=$(printf '%s' "${f#*=}" | tr '|' '/' | tr '\n\r' '  ')
              fl=$(printf '%s' "$v" | wc -c | tr -d ' ')
              if [ "${fl:-0}" -gt "$RUN_FIELD_MAX" ]; then
                case "$v" in
@@ -5920,15 +5976,55 @@ merge_gate() {
 # is executed inline by the driver rather than spawned, so "stages in flight
 # finish" does not cover it, and a merge landing an hour after the deadline is a
 # terminal act nobody authorized for that hour.
+#
+# The deadline is read in the three spellings the manifest check accepts — `Z`,
+# `+HH:MM` and `-HH:MM` — and always as the true instant, whatever the host `TZ`
+# is: the wall-clock part is parsed as UTC and the written offset is then
+# subtracted.
+#
+# THE PARSE GOES THROUGH JQ, not `date`. `date -j -f` is BSD and `date -d` is
+# GNU, and the test suite that pins this reader runs on both; `fleet.sh` makes
+# the same choice for the same reason.
+#
+# A VALUE IS AN INSTANT ONLY IF IT RENDERS BACK TO ITSELF. The shape match lets
+# through `T24:00:00`, month 13 and `09-31`, which a parser either refuses or
+# silently rolls into the next day; rendering the parsed wall-clock part again
+# and comparing it with the input refuses both outcomes alike. An offset beyond
+# ±14:00 names no zone on Earth and is refused with them. The manifest check
+# calls this same function, so a value it admits is one this reader can read.
+deadline_instant() {
+  # deadline_instant <iso> — epoch seconds, or empty when the value is not a
+  # real instant in one of the three spellings.
+  jq -rn --arg s "$1" '
+    ($s | capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<z>Z|[+-][0-9]{2}:[0-9]{2})$")) as $c
+    | (($c.d + "Z") | fromdateiso8601) as $u
+    | if ($u | todate) != ($c.d + "Z") then empty
+      elif $c.z == "Z" then $u
+      else (($c.z[1:3] | tonumber) * 3600 + ($c.z[4:6] | tonumber) * 60) as $off
+        | if ($c.z[4:6] | tonumber) > 59 or $off > 50400 then empty
+          elif $c.z[0:1] == "-" then $u + $off
+          else $u - $off end
+      end' 2>/dev/null || true
+}
+
+# AN UNREADABLE DEADLINE FAILS CLOSED. A present value that does not read as an
+# instant warns and is returned as epoch 0, so `past_deadline` reads it as
+# passed: the deadline is the outermost bound of the night, and a run that
+# cannot tell where it is must stop dispatching and merging rather than carry on
+# with no bound at all. The manifest check refuses such a value before start;
+# this branch is what is left when the read still fails during the run — jq gone
+# from PATH, say — and it must not turn into a night with no bound.
 deadline_epoch() {
-  local dl
+  local dl u
   [ -n "$MANIFEST" ] || { printf ''; return 0; }
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || { printf ''; return 0; }
-  # BSD `date -j` is the parse form, and it is correct here rather than merely
-  # convenient: this driver refuses to start on any non-darwin host at entry, so
-  # the portable shim would be dead code guarding a branch that cannot run.
-  date -j -f '%Y-%m-%dT%H:%M:%SZ' "${dl%%+*}" '+%s' 2>/dev/null || printf ''  # lint-bash-portability: disable=date -j
+  u=$(deadline_instant "$dl")
+  if [ -z "$u" ]; then
+    warn "벽시계 마감을 시각으로 읽지 못했습니다 ($dl) — 마감이 지난 것으로 다룹니다"
+    printf '0'; return 0
+  fi
+  printf '%s' "$u"
 }
 
 past_deadline() {
