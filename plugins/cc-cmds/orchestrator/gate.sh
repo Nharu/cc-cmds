@@ -1330,12 +1330,14 @@ gate_reach_local_destructive() {
       # Recognized as a branch switch, which keeps local changes: at most one
       # operand, and that operand is neither an existing path nor shaped like
       # a pathspec — a glob or a `:` magic prefix, which no branch name can
-      # carry. `--`, `.`, `-B` (it resets a branch that exists), `-f`, `-m`,
-      # `-p` and anything unrecognized are the trigger. A path is looked for
-      # under the directory the `-C` options lead to and, with `--work-tree`,
-      # under that root as well: git reads a pathspec from the work tree's
-      # root when that directory lies outside it, so a path only the other
-      # worktree has would otherwise read as a branch name.
+      # carry — nor a `{}`, which `find -exec` replaces with each path it
+      # matched and so names paths nobody can look for here. `--`, `.`, `-B`
+      # (it resets a branch that exists), `-f`, `-m`, `-p` and anything
+      # unrecognized are the trigger. A path is looked for under the
+      # directory the `-C` options lead to and, with `--work-tree`, under that
+      # root as well: git reads a pathspec from the work tree's root when that
+      # directory lies outside it, so a path only the other worktree has would
+      # otherwise read as a branch name.
       local eat=0 n=0 wt="$GATE_GIT_WTREE"
       case "$wt" in ''|/*) ;; *) wt="${base:+$base/}$wt" ;; esac
       for a in "$@"; do
@@ -1361,7 +1363,7 @@ gate_reach_local_destructive() {
           -) n=$((n + 1)) ;;
           *) n=$((n + 1))
              [ "$n" -ge 2 ] && { printf '%s' "$a"; return 0; }
-             case "$a" in *'*'*|*'?'*|*'['*|*:*|*'\'*) printf '%s' "$a"; return 0 ;; esac
+             case "$a" in *'*'*|*'?'*|*'['*|*:*|*'\'*|*'{}'*) printf '%s' "$a"; return 0 ;; esac
              case "$a" in /*) p="$a" ;; *) p="${base:+$base/}$a" ;; esac
              { [ -e "$p" ] || [ -L "$p" ]; } && { printf '%s' "$a"; return 0; }
              case "$a" in /*) ;; *)
@@ -1694,8 +1696,15 @@ gate_reach_copy_dest() {
   # gate_reach_copy_dest <tool> <target dir or ''> <trigger> <operands...> —
   # prints the trigger and returns 0 when one reading's operands would replace
   # a name that already exists; returns 1 otherwise.
+  #
+  # A `{}` in an operand or in the target directory is the placeholder
+  # `find -exec` replaces with each path it matched, so whether that name
+  # exists cannot be looked up here and the act counts as replacing.
   local tool="$1" t="$2" trig="$3"; shift 3
   local n=$# srcs=$# dest a
+  for a in "$t" "$@"; do
+    case "$a" in *'{}'*) printf '%s' "$trig"; return 0 ;; esac
+  done
   if [ -z "$t" ]; then
     if [ "$n" -ge 2 ]; then
       dest="${!n}"
@@ -1715,6 +1724,62 @@ gate_reach_copy_dest() {
     { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && { printf '%s' "$trig"; return 0; }
   done
   return 1
+}
+
+gate_reach_tree_destruction() {
+  # gate_reach_tree_destruction <X> <Pd> <argv...> — for an act that lands in
+  # the target's trees, prints `파괴형태미명시` when it is destructive and the
+  # manifest does not name its destructive form; nothing otherwise.
+  #
+  # The mark is the union of the declaration and the shared table (`X`) and
+  # the local forms `gate_reach_local_destructive` reads from argv, and a local
+  # form is matched against the manifest by its own trigger word — the shared
+  # table knows no local form, so without that word `Pd` could never be 1 for
+  # one. Cell 5b and the `런로컬` cell both answer through this, so the two
+  # spellings of one act take one verdict.
+  local X="$1" Pd="$2" _ltrig probe; shift 2
+  _ltrig=$(gate_reach_local_destructive "$@")
+  if [ -n "$_ltrig" ] && [ "$GATE_MARK" != "파괴" ]; then
+    X=1
+    probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='파괴' GATE_MARK_TRIGGER="$_ltrig" \
+            GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
+            /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
+    Pd=0
+    case "$probe" in *"Pd=1"*) Pd=1 ;; esac
+  fi
+  { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
+  printf '파괴형태미명시'
+}
+
+gate_reach_runlocal_lands() {
+  # gate_reach_runlocal_lands — 0 when every place the last
+  # `gate_reach_target_tree_act` call collected (`GATE_TT_LANDS`: the operating
+  # repository and each path-shaped operand) lies physically under the temp
+  # directory, the run's state root or the act's own worktree; 1 otherwise,
+  # and 1 when nothing was collected.
+  #
+  # Those three are where `런로컬` is honest for a write that also passes the
+  # target-tree predicate. The temp directory is read from `TMPDIR` as the act
+  # would read it, and compared by its physical spelling because `mktemp`
+  # hands back the logical one (`/var/…` for `/private/var/…` on macOS).
+  local l full tmp sr own
+  [ "${#GATE_TT_LANDS[@]}" -gt 0 ] || return 1
+  tmp="${TMPDIR:-/tmp}"; tmp="${tmp%/}"; [ -n "$tmp" ] || tmp=/
+  tmp=$(gate_real_prefix "$tmp")
+  sr=$(gate_real_prefix "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds")
+  own=$(gate_tree_root)
+  for l in "${GATE_TT_LANDS[@]}"; do
+    full=$(gate_real_prefix "$l")
+    case "$full" in
+      "$tmp"|"$tmp"/*|"$sr"|"$sr"/*) continue ;;
+    esac
+    [ -n "$own" ] || return 1
+    case "$full" in
+      "$own"|"$own"/*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
 }
 
 gate_reach_disposition() {
@@ -1846,18 +1911,7 @@ gate_reach_disposition() {
   if [ "$Reff" = "대상트리" ]; then
     if [ "$Geff" != "외부상태변경" ] && gate_reach_target_tree_act "$alias" "$@"; then
       case "$rules_rc" in
-        0|5)
-          local _ltrig; _ltrig=$(gate_reach_local_destructive "$@")
-          if [ -n "$_ltrig" ] && [ "$GATE_MARK" != "파괴" ]; then
-            X=1
-            probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='파괴' GATE_MARK_TRIGGER="$_ltrig" \
-                    GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
-                    /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
-            Pd=0
-            case "$probe" in *"Pd=1"*) Pd=1 ;; esac
-          fi
-          { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
-          printf '파괴형태미명시'; return 0 ;;
+        0|5) gate_reach_tree_destruction "$X" "$Pd" "$@"; return 0 ;;
       esac
     fi
     printf '대상트리불일치'; return 0
@@ -1874,9 +1928,26 @@ gate_reach_disposition() {
   case "$Reff" in
     런로컬)
       case "$Geff" in
-        워크트리쓰기|트리밖쓰기) return 0 ;;
+        워크트리쓰기|트리밖쓰기) ;;
         *) printf '도달모순'; return 0 ;;
-      esac ;;
+      esac
+      # A DESTRUCTIVE ACT GETS CELL 5b's ANSWER WHEN IT LANDS IN THE TARGET'S
+      # TREES, whatever it declared. This cell checked no path, so the argv
+      # cell 5b parked went through the moment it was declared `런로컬`, and
+      # the act-digest pin below never saw it: the pin is looked up only for
+      # an act that parks again. The run's state root, the temp directory and
+      # the act's own worktree are where `런로컬` is honest — an experiment
+      # worktree made under the temp directory shares the target's common git
+      # directory and still passes here, removal included — so an act whose
+      # landing places all lie there proceeds as before, and one that reaches
+      # the main checkout or another worktree is judged as `대상트리` would be.
+      local _rtrig; _rtrig=$(gate_reach_local_destructive "$@")
+      if { [ -n "$_rtrig" ] || [ "$X" = "1" ]; } \
+         && gate_reach_target_tree_act "$alias" "$@" \
+         && ! gate_reach_runlocal_lands; then
+        gate_reach_tree_destruction "$X" "$Pd" "$@"
+      fi
+      return 0 ;;
     협업)
       [ "$C" = "1" ] && return 0
       printf '도달모순'; return 0 ;;
@@ -2086,6 +2157,7 @@ gate_reach_target_tree_act() {
     absops[${#absops[@]}]=$(gate_lexical_abs "$a" "$base")
   done
   GATE_TT_REPO="$repo"
+  GATE_TT_LANDS=("${repo:-$(gate_grade_cwd)}" ${absops[@]+"${absops[@]}"})
   rc=0
   gate_reach_target_tree_ok "$alias" ${absops[@]+"${absops[@]}"} || rc=1
   GATE_TT_REPO=''
@@ -2435,7 +2507,9 @@ GATE_GRADE_CWD=''
 # runs under bash 3.2, which has no associative arrays. `GATE_TT_PHYS` keeps
 # each directory's physical spelling the same way, and `GATE_TT_SR` the state
 # root's. `GATE_TT_REPO` is the operating repository one act names; empty
-# means the grading directory.
+# means the grading directory. `GATE_TT_LANDS` keeps what the last act's
+# check collected — that repository and its path-shaped operands — for the
+# `런로컬` cell to measure against its own three roots.
 GATE_TT_ALIAS=''
 GATE_TT_WANT=''
 GATE_TT_WANT_P=''
@@ -2443,6 +2517,7 @@ GATE_TT_CACHE=''
 GATE_TT_PHYS=''
 GATE_TT_SR=''
 GATE_TT_REPO=''
+GATE_TT_LANDS=()
 
 # `GATE_UNDECLARED` is written in exactly one place — `gate_undeclared_target`
 # — and read in seven, every one of them as `${GATE_UNDECLARED:-0} != 1`. The
@@ -19028,12 +19103,14 @@ gate_verb_act() {
         "$GATE_PARK_CELL" "$kind" "$alias" "$graded" "${GATE_REACH:--}"
       return "$GATE_EXIT_PARK"
     fi
-    # RE-DECLARING DOES NOT RE-OPEN IT. The same act at the same digest takes the
-    # verdict already recorded, and no second row is written: a stage that
-    # answers a park by changing its `--reach` and trying again would otherwise
-    # walk the table until some cell let it through.
+    # A RE-DECLARATION THAT PARKS AGAIN TAKES THE FIRST VERDICT. The same act at
+    # the same digest takes the verdict already recorded, and no second row is
+    # written. The pin is looked up only here, for an act that parks again, so
+    # it does not stop a re-declaration under a token that passes; what stops
+    # the destructive one is that the `런로컬` cell asks cell 5b's question of
+    # an act landing in the target's trees.
     if gate_has_row 'blocked' "행위 다이제스트=$_ad"; then
-      warn "this act is already parked (act digest=$_ad) — re-declaring does not change the disposition"
+      warn "this act is already parked (act digest=$_ad) — re-declaring it under a reach that also parks returns the recorded judgment"
       exit "$GATE_EXIT_PARK"
     fi
     # THE THREE FREE-TEXT FIELDS ARE SIZED FROM WHAT IS LEFT, not from three
@@ -19063,8 +19140,10 @@ gate_verb_act() {
     if [ "$GATE_PARK_CELL" = "파괴형태미명시" ]; then
       if [ "${GATE_MARK:-}" = "파괴" ]; then
         _ptrig="${GATE_MARK_TRIGGER:-}"
-      elif [ "${GATE_REACH:-}" = "대상트리" ]; then
-        _ptrig=$(gate_reach_local_destructive "$@")
+      else
+        case "${GATE_REACH:-}" in
+          대상트리|런로컬) _ptrig=$(gate_reach_local_destructive "$@") ;;
+        esac
       fi
     fi
     local _fixed _free _rb _ob _cb
@@ -19087,7 +19166,7 @@ gate_verb_act() {
       "파괴 트리거=$(gate_row_safe "${_ptrig:--}" 60)" \
       "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
-    warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
+    warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed. Retrying it gets the same judgment, and so does re-declaring it under a reach that also parks; a reach the act does not land in is a false declaration, and a destructive act in the target's trees parks under \`런로컬\` too. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
     case "$GATE_PARK_CELL" in
       dev식별자부재|dev식별자불일치|dev대조불가)
         warn "repair: name the identifier of that tool in the argv, or kick off again with a manifest whose \`dev 식별자\` on the target row matches the real value" ;;
