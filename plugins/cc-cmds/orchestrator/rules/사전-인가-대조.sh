@@ -10,6 +10,9 @@
 probe="${GATE_PREAUTH_PROBE:-0}"
 
 if [ "$probe" != "1" ]; then
+  # 적용 행위 — 적용 명령은 매니페스트의 적용 지점이 정하고 게이트가 전제를
+  # 확인한 뒤에만 이 값을 싣는다. 같은 명령을 exec 으로 내면 여기를 지나지 않는다.
+  [ "${GATE_KIND:-}" = "apply" ] && [ "$GATE_ARGV" = "적용" ] && [ -n "${GATE_APPLY_COMMAND:-}" ] && exit 0
   case "$GATE_SURFACE" in
     읽기|워크트리쓰기)
       exit 0 ;;

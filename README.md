@@ -320,7 +320,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 구현 대상 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. |
-| `[scope-directive]` | _(optional)_ | 구현 범위를 좁히는 자유형 자연어 지시문. 드라이버가 세그먼트 범위나 사다리 R1의 수정 지시를 이 자리에 싣는다. |
+| `[scope-directive]` | _(optional)_ | 구현 범위를 좁히는 자유형 자연어 지시문. 드라이버가 세그먼트 범위를, 라우터의 수정 재파견이 리뷰 리포트의 수정 대상을 이 자리에 싣는다. |
 
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석. 이후 토큰은 scope directive로 전달._
 
