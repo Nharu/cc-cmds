@@ -1,7 +1,7 @@
 ---
 name: design-reconverge
 description: 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인)
-when_to_use: 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 또는 라우터 교대가 구현 전 잔여 항목 반증(implement-unattended Step 1.5d 중단)을 재수렴으로 파견할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것
+when_to_use: 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 또는 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것
 disable-model-invocation: true
 usage: "/cc-cmds:design-reconverge <design-doc-path> <scope>"
 options:
@@ -21,7 +21,7 @@ notes: "전면 재수렴이 아니다. 넘겨받은 스코프 하나만 고치�
 Re-converge a design document against **one** scoped defect, then stop — **without ever asking a human**.
 Internal agent communication is in English to optimize token usage. Saved documentation is in Korean.
 
-This is a **scoped repair, not a re-run of design.** It is entered from the escalation ladder's redesign rung, or from the routing shift when an implement stage's Step 1.5d refuted a residual item before implementing; it touches only what the scope names, and its terminal verdict routes the run back to segment planning — inside the same run.
+This is a **scoped repair, not a re-run of design.** It is entered from the escalation ladder's redesign rung, or from the routing shift when an implement stage refuted a residual item, before implementing (its Step 1.5d) or during it (its Step 3); it touches only what the scope names, and its terminal verdict routes the run back to segment planning — inside the same run.
 
 ## What this skill is, and what it is not
 
@@ -141,6 +141,7 @@ One pass. Read-only exploration subagents are allowed here and are not a round (
 Then, holding the lock:
 
 - **Take the document lock** for every write: `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" <command>` (absolute path; `-k` and `-t 0` both required). `EX_TEMPFAIL` (75) means another writer holds the document — a planning violation rather than a queue. Do **not** wait and do **not** retry: halt with `분류: precondition-failed`, naming both writers.
+- **Return the scoped item to its gate.** When the scope is an `R<n>` whose grade line in the document carries `반증됨(실패)` or `검증불가(드리프트)` — a refutation during implementation flips it before halting, one before implementing does not — rewrite that whole line to `**검증 등급**: 구현 시 검증` and leave its `구현 시 검증 기록` line in place as history. Left terminal, the item is skipped by the next implement stage's discovery as already settled, and the segment would go to its pull request without the measurement that refuted it ever running again. This write is inside the scope, and the verdict's digest filters grade lines, so it alone never makes the verdict `재설계 필요`.
 - **Edit only what the scope reaches** (CFI-6). Where a binding-tier decision changes, rewrite the decision sentence and record the superseded one in the same place, so a citation aimed at the old wording still lands. Do not restate history as if it were current.
 - **Every adopted decision gets a record**: the decision, the rejected alternative, the rationale, and — for S2 — the resolving command and its output. This skill writes those records into its own structured output; **the driver transcribes them into the run ledger.** This skill writes no pipeline sidecar.
 - **Record `사후 sha256`** after the last edit.
