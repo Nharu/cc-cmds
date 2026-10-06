@@ -25159,7 +25159,7 @@ check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WOR
 
 # ---------------------------------------------------------------------------
 # 75. 대상트리 — 대상의 다른 워크트리에 쓰는 행위는 그 칸에서 열린다
-# --- section: 75 | group: reach | covers: exec | anchors: 75: 형제 워크트리 생성이 대상트리로 통과한다, 75: 대상트리의 --destructive rm -f 는 park 된다, 75: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다, 75: 기기전역 접두는 대상트리 선언을 이긴다, 75: park 행이 등급 출처와 선언을 싣는다, 75: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다 ---
+# --- section: 75 | group: reach | covers: exec | anchors: 75: 형제 워크트리 생성이 대상트리로 통과한다, 75: 대상트리의 --destructive rm -f 는 park 된다, 75: 플래그 없는 대상트리 rm -f 도 park 된다, 75: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다, 75: 기기전역 접두는 대상트리 선언을 이긴다, 75: park 행이 등급 출처와 선언을 싣는다, 75: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다 ---
 #
 # 대상의 다른 워크트리를 만들거나 그 안에 쓰는 행위는 런로컬도 기기전역도 아니라서,
 # 정직하게 신고할 토큰이 없었고 기기전역 칸이 사전 인가를 보기도 전에 답했다. 이
@@ -25236,6 +25236,53 @@ esac
   || bad "75: park 된 clean 이 지웠을 미추적 파일이 남아 있다" "$SIB75/c75.txt"
 check "75: 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b75) - nb75 ))" "2"
 rm -f "$WT/d75keep"
+
+# 플래그 없는 지역 파괴 — 파괴 축은 표와 신고의 합집합이라, 단계가 --destructive 를
+# 달지 않아도 argv 의 rm -r/-f 가 표지를 세운다. 그 칸이 신고에만 기대면 플래그를
+# 뺀 같은 철자가 메인 체크아웃과 다른 런의 워크트리를 지운다. 두 행위는 위와 다른
+# 파일 이름을 쓴다 — 같은 argv 면 재신고 핀이 앞 행으로 답해 이 칸을 지나지 않는다.
+x75 트리밖쓰기 cp base.txt "$WT/d75nf"
+check "75: 대조 — 플래그 없는 쌍의 비파괴 쓰기는 대상트리로 통과한다" "$rc" "0"
+[ -e "$WT/d75nf" ] && ok "75: 그 쓰기가 실제로 일어났다 (플래그 없는 rm -f 의 잔존 단언이 공허하지 않다)" \
+  || bad "75: 그 쓰기가 실제로 일어났다 (플래그 없는 쌍)" "$msg"
+mkdir -p "$SIB75/d75dir" && printf 'k\n' > "$SIB75/d75dir/k"
+nb75=$(b75)
+x75 트리밖쓰기 rm -f "$WT/d75nf"
+check "75: 플래그 없는 대상트리 rm -f 도 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*) ok "75: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" ;;
+  *) bad "75: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" "$msg" ;;
+esac
+[ -e "$WT/d75nf" ] && ok "75: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" \
+  || bad "75: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" "$WT/d75nf"
+x75 트리밖쓰기 rm -rf "$SIB75/d75dir"
+check "75: 플래그 없는 다른 워크트리의 rm -rf 도 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*) ok "75: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" ;;
+  *) bad "75: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" "$msg" ;;
+esac
+[ -e "$SIB75/d75dir/k" ] && ok "75: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" \
+  || bad "75: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" "$SIB75/d75dir/k"
+check "75: 플래그 없는 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b75) - nb75 ))" "2"
+rm -rf "$WT/d75nf" "$SIB75/d75dir"
+
+# 지역 파괴 형태의 트리거 낱말이 사전 인가의 Pd 를 실제로 연다 — 낱말을 담은 형태는
+# 열고, 동사만 적은 형태는 열지 않는다. 표지 표에 지역 형태가 없던 동안 이 탈출구는
+# 어떤 매니페스트로도 열리지 않았다.
+pd75() {
+  # pd75 <형태> <argv...> — 그 형태 하나를 사전 인가로 둔 매니페스트에서 Pd 를 낸다.
+  local shape="$1"; shift
+  printf -- '- `사전 인가` | 형태=%s\n' "$shape" > "$WORK/m75pd.md"
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; m="$2"; shift 2
+    t=$(gate_reach_local_destructive "$@")
+    GATE_PREAUTH_PROBE=1 GATE_MARK=파괴 GATE_MARK_TRIGGER="$t" GATE_ARGV="$*" GATE_MANIFEST="$m" \
+      /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null' \
+    _ "$GATE" "$WORK/m75pd.md" "$@" | sed -n 's/.*Pd=\([01]\).*/\1/p'
+}
+check "75: 파괴 낱말을 담은 형태가 플래그 없는 rm -rf 를 연다" "$(pd75 'rm -rf' rm -rf "$SIB75/x")" "1"
+check "75: 동사만 적은 형태는 rm -rf 를 열지 않는다" "$(pd75 'rm' rm -rf "$SIB75/x")" "0"
+check "75: git reset 만 적은 형태는 --hard 를 열지 않는다" "$(pd75 'git reset' git reset --hard)" "0"
+check "75: 경로 지정 checkout 은 -- 를 트리거로 쓴다" "$(pd75 'git checkout --' git checkout -- .)" "1"
 
 # park — 같은 모양이 대상의 공통 git 디렉터리 밖에 닿는다.
 nb75=$(b75)

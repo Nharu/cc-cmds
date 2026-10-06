@@ -1185,6 +1185,124 @@ gate_destructive_source() {
   else printf -- '-'; fi
 }
 
+gate_reach_local_destructive() {
+  # gate_reach_local_destructive <argv...> — prints the argv word that makes
+  # this act a local destruction, or nothing.
+  #
+  # THE TABLE HALF OF THE DESTRUCTIVE UNION, FOR THE FORMS CELL 5b EXISTS FOR.
+  # `gate_act_mark` names cloud, database and remote acts and no local deletion,
+  # so in the target-tree cell the axis rested on the stage's `--destructive`
+  # alone, and `git checkout -- .` or `git restore .` is a spelling a stage
+  # need not think of as a deletion. Cell 5b reads this and no other cell does:
+  # widening the shared mark would park ordinary cleanup inside the stage's own
+  # worktree under every other token.
+  #
+  # The printed word is the trigger the preauthorization rule looks for, so a
+  # manifest shape that carries it (`rm -rf`, `git reset --hard`) is what opens
+  # the act — a shape naming only the verb does not.
+  local cmd="${1##*/}"; shift 2>/dev/null || true
+  case "$cmd" in
+    lockf)   gate_unwrap_lockf   gate_reach_local_destructive '' '' "$@"; return 0 ;;
+    command) gate_unwrap_command gate_reach_local_destructive '' '' "$@"; return 0 ;;
+    time)    gate_unwrap_time    gate_reach_local_destructive '' '' "$@"; return 0 ;;
+    env)     gate_unwrap_env     gate_reach_local_destructive '' '' "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "$cmd" gate_reach_local_destructive '' '' "$@"; return 0 ;;
+  esac
+  local a
+  case "$cmd" in
+    rm)
+      for a in "$@"; do
+        case "$a" in
+          --) return 0 ;;
+          --recursive|--force) printf '%s' "$a"; return 0 ;;
+          --*) ;;
+          -*[rRf]*) printf '%s' "$a"; return 0 ;;
+        esac
+      done
+      return 0 ;;
+    git) ;;
+    *) return 0 ;;
+  esac
+  local sub=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+        [ "$#" -ge 2 ] || return 0; shift 2 ;;
+      -*) shift ;;
+      *) sub="$1"; shift; break ;;
+    esac
+  done
+  case "$sub" in
+    clean)
+      for a in "$@"; do
+        case "$a" in
+          --) return 0 ;;
+          --force) printf '%s' "$a"; return 0 ;;
+          --*) ;;
+          -*f*) printf '%s' "$a"; return 0 ;;
+        esac
+      done ;;
+    reset)
+      for a in "$@"; do
+        case "$a" in
+          --) return 0 ;;
+          --hard) printf '%s' "$a"; return 0 ;;
+        esac
+      done ;;
+    checkout)
+      # A path names what is overwritten; a branch alone switches and keeps
+      # local changes. The operand count separates the two once the values of
+      # `-b`, `-B` and `--orphan` are consumed, and `--`, `.` or a force settle
+      # it outright.
+      local eat=0 n=0
+      for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
+        case "$a" in
+          --|.|-f|--force) printf '%s' "$a"; return 0 ;;
+          --pathspec-from-file=*) printf '%s' "${a%%=*}"; return 0 ;;
+          -b|-B|--orphan) eat=1 ;;
+          -*) ;;
+          *) n=$((n + 1))
+             [ "$n" -ge 2 ] && { printf '%s' "$a"; return 0; } ;;
+        esac
+      done ;;
+    restore)
+      # Every restore names paths, so the verb is the trigger. Only a restore
+      # that touches the index alone leaves the files as they are.
+      local staged=0 wt=0
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          -S|--staged) staged=1 ;;
+          -W|--worktree) wt=1 ;;
+          -[!-]*) case "$a" in *S*) staged=1 ;; esac
+                  case "$a" in *W*) wt=1 ;; esac ;;
+        esac
+      done
+      [ "$staged" = "1" ] && [ "$wt" = "0" ] && return 0
+      printf 'restore' ;;
+    worktree)
+      [ "${1:-}" = "remove" ] || return 0
+      shift
+      for a in "$@"; do
+        case "$a" in
+          --) return 0 ;;
+          -f|--force) printf '%s' "$a"; return 0 ;;
+        esac
+      done ;;
+    branch)
+      for a in "$@"; do
+        case "$a" in
+          --) return 0 ;;
+          --*) ;;
+          -*D*) printf '%s' "$a"; return 0 ;;
+        esac
+      done ;;
+  esac
+  return 0
+}
+
 gate_reach_disposition() {
   # gate_reach_disposition <alias> <rules_rc> <graded> <argv...>
   #
@@ -1306,11 +1424,24 @@ gate_reach_disposition() {
   # named its destructive form, exactly as `prod` and `배포트리거` do: the token
   # opens the width of the target's worktrees to writes, and every one of them
   # — the main checkout, another run's segment worktree — is somewhere a
-  # `git clean -fdx` or `rm -rf` destroys work nobody can restore.
+  # `git clean -fdx` or `rm -rf` destroys work nobody can restore. The mark
+  # here is the union of the declaration, the shared table and the local forms
+  # `gate_reach_local_destructive` reads from argv, and a local form is matched
+  # against the manifest by its own trigger word — the shared table knows no
+  # local form, so without that word `Pd` could never be 1 for one.
   if [ "$Reff" = "대상트리" ]; then
     if [ "$Geff" != "외부상태변경" ] && gate_reach_target_tree_act "$alias" "$@"; then
       case "$rules_rc" in
         0|5)
+          local _ltrig; _ltrig=$(gate_reach_local_destructive "$@")
+          if [ -n "$_ltrig" ] && [ "$GATE_MARK" != "파괴" ]; then
+            X=1
+            probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='파괴' GATE_MARK_TRIGGER="$_ltrig" \
+                    GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
+                    /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
+            Pd=0
+            case "$probe" in *"Pd=1"*) Pd=1 ;; esac
+          fi
           { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
           printf '파괴형태미명시'; return 0 ;;
       esac
@@ -18523,7 +18654,7 @@ gate_verb_act() {
       prod인가없음|배포트리거인가없음)
         warn "repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen" ;;
       파괴형태미명시)
-        warn "repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds')" ;;
+        warn "repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds'; 'rm -rf' or 'git reset --hard', not 'rm' or 'git reset'). The authorization of this run is frozen, so that means kicking off again" ;;
       신고등급한도)
         warn "repair: name that script shape in a \`사전 인가\` row or as an argv element of \`배포트리거 식별자\` — a shape that names only the runner does not open it" ;;
       비밀출력)
