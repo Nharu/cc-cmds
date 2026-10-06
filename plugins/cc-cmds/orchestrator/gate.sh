@@ -1326,11 +1326,16 @@ gate_reach_local_destructive() {
       done ;;
     checkout)
       # Recognized as a branch switch, which keeps local changes: at most one
-      # operand, and that operand is neither an existing path (from the last
-      # `-C`) nor shaped like a pathspec — a glob or a `:` magic prefix, which
-      # no branch name can carry. `--`, `.`, `-B` (it resets a branch that
-      # exists), `-f`, `-m`, `-p` and anything unrecognized are the trigger.
-      local eat=0 n=0
+      # operand, and that operand is neither an existing path nor shaped like
+      # a pathspec — a glob or a `:` magic prefix, which no branch name can
+      # carry. `--`, `.`, `-B` (it resets a branch that exists), `-f`, `-m`,
+      # `-p` and anything unrecognized are the trigger. A path is looked for
+      # under the directory the `-C` options lead to and, with `--work-tree`,
+      # under that root as well: git reads a pathspec from the work tree's
+      # root when that directory lies outside it, so a path only the other
+      # worktree has would otherwise read as a branch name.
+      local eat=0 n=0 wt="$GATE_GIT_WTREE"
+      case "$wt" in ''|/*) ;; *) wt="${base:+$base/}$wt" ;; esac
       for a in "$@"; do
         if [ "$eat" = "1" ]; then eat=0; continue; fi
         case "$a" in
@@ -1356,7 +1361,11 @@ gate_reach_local_destructive() {
              [ "$n" -ge 2 ] && { printf '%s' "$a"; return 0; }
              case "$a" in *'*'*|*'?'*|*'['*|*:*|*'\'*) printf '%s' "$a"; return 0 ;; esac
              case "$a" in /*) p="$a" ;; *) p="${base:+$base/}$a" ;; esac
-             { [ -e "$p" ] || [ -L "$p" ]; } && { printf '%s' "$a"; return 0; } ;;
+             { [ -e "$p" ] || [ -L "$p" ]; } && { printf '%s' "$a"; return 0; }
+             case "$a" in /*) ;; *)
+               [ -n "$wt" ] && { [ -e "$wt/$a" ] || [ -L "$wt/$a" ]; } \
+                 && { printf '%s' "$a"; return 0; } ;;
+             esac ;;
         esac
       done ;;
     switch)
@@ -1415,8 +1424,11 @@ gate_reach_local_destructive() {
       [ "$staged" = "1" ] && return 0
       printf 'restore' ;;
     worktree)
-      # `remove` without an option refuses a worktree with local changes; any
-      # option on it is the trigger.
+      # Every `remove` deletes: without an option git refuses only a worktree
+      # with tracked changes or untracked files, and an ignored file is
+      # neither, so a `docs/` or `CLAUDE.md` the repository ignores goes with
+      # the directory. An option on it is the trigger, and the subcommand is
+      # when there is none.
       [ "${1:-}" = "remove" ] || return 0
       shift
       for a in "$@"; do
@@ -1424,7 +1436,8 @@ gate_reach_local_destructive() {
           --) break ;;
           -?*) printf '%s' "$a"; return 0 ;;
         esac
-      done ;;
+      done
+      printf 'remove' ;;
     branch)
       # Listing, creating, `-d`, `-m` and `-c` refuse to lose a commit or
       # overwrite a branch. `-D`, `-M`, `-C`, `-f` and anything unrecognized
@@ -1480,22 +1493,31 @@ gate_reach_local_destructive() {
 
 gate_git_globals() {
   # gate_git_globals <argv after `git`...> — skips git's own global options.
-  # Sets GATE_GIT_NGLOB to the number of words they take and GATE_GIT_BASE to
-  # the directory the `-C` options compose to. Returns 1 at a word that starts
-  # with `-` and is not a global option this reader knows; GATE_GIT_NGLOB then
-  # counts the words before it. git matches these options exactly, without
-  # abbreviation, so neither does this.
-  GATE_GIT_NGLOB=0; GATE_GIT_BASE=''
+  # Sets GATE_GIT_NGLOB to the number of words they take, GATE_GIT_BASE to
+  # the directory the `-C` options compose to, and GATE_GIT_WTREE to the last
+  # `--work-tree` exactly as written (git resolves a relative one against the
+  # directory every `-C` leads to, so callers compose it with GATE_GIT_BASE).
+  # Returns 1 at a word that starts with `-` and is not a global option this
+  # reader knows; GATE_GIT_NGLOB then counts the words before it. git matches
+  # these options exactly, without abbreviation, so neither does this.
+  GATE_GIT_NGLOB=0; GATE_GIT_BASE=''; GATE_GIT_WTREE=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -C)
         [ "$#" -ge 2 ] || return 1
         case "$2" in /*) GATE_GIT_BASE="$2" ;; *) GATE_GIT_BASE="${GATE_GIT_BASE:+$GATE_GIT_BASE/}$2" ;; esac
         shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
-      -c|--git-dir|--work-tree|--namespace|--config-env|--attr-source)
+      --work-tree)
+        [ "$#" -ge 2 ] || return 1
+        GATE_GIT_WTREE="$2"
+        shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
+      --work-tree=*)
+        GATE_GIT_WTREE="${1#--work-tree=}"
+        shift; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 1)) ;;
+      -c|--git-dir|--namespace|--config-env|--attr-source)
         [ "$#" -ge 2 ] || return 1
         shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
-      --git-dir=*|--work-tree=*|--namespace=*|--config-env=*|--attr-source=*|--exec-path=*|--super-prefix=*|--list-cmds=*|\
+      --git-dir=*|--namespace=*|--config-env=*|--attr-source=*|--exec-path=*|--super-prefix=*|--list-cmds=*|\
       -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|\
       --noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice)
         shift; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 1)) ;;
@@ -1555,12 +1577,20 @@ gate_reach_copy_form() {
   # A write onto an existing name removes what was there with no prompt when
   # stdin is not a terminal. `mv`, `cp` and `install` replace by default and
   # `ln` only when forced; `-n` refuses and `-f` or `-i` replaces, and among
-  # them the last one wins, as BSD and GNU both read them (`mv -n -f`
+  # the ones before the first operand the last one wins (`mv -n -f`
   # replaces). `-i` counts as replacing because its answer comes from a stdin
   # that is not a terminal. `install -d` makes directories and replaces
   # nothing. The destination is `-t <dir>` when given, otherwise the last
   # operand, and `ln` with one operand links into the current directory; when
   # the destination is a directory each source lands under its own basename.
+  #
+  # The two dialects part at the first operand. BSD stops reading options
+  # there, so in `mv a -n dir` the `-n` is a missing source and `a` still
+  # replaces `dir/a`; GNU reads it as an option anywhere. A word after the
+  # first operand is therefore read both ways at once: it is an operand, it
+  # never turns replacing off, and it turns replacing on when GNU would read
+  # it so. One that would take a value there (`-t`) is the trigger, because
+  # the two dialects disagree on what the destination is.
   #
   # The trigger is the word that turned replacing on — the last `-f`, `-i`,
   # `-F` or long form after any `-n` — and the verb only when the act replaces
@@ -1569,7 +1599,7 @@ gate_reach_copy_form() {
   # open the forced one (`ln -s -f`, `mv -n -f`), since the verb is a word of
   # both shapes.
   local tool="$1"; shift
-  local ok val clob=1 cw='' dmode=0 eat=0 t='' n=0 a w rc p dest='' ch
+  local ok val clob=1 cw='' dmode=0 eat=0 t='' n=0 a w rc p dest='' ch post=0
   case "$tool" in
     mv)      ok='fhinv';           val='t' ;;
     cp)      ok='RrHLPfinapvXx';    val='t' ;;
@@ -1581,6 +1611,29 @@ gate_reach_copy_form() {
     if [ "$eat" = "1" ]; then eat=0; continue; fi
     if [ "$eat" = "t" ]; then t="$a"; eat=0; continue; fi
     if [ "$eat" = "ops" ]; then ops+=("$a"); continue; fi
+    if [ "$post" = "1" ]; then
+      case "$a" in
+        --) eat=ops; continue ;;
+        --*)
+          p=$(gate_long_pick "$a" --force --interactive --no-clobber --verbose \
+                --target-directory --recursive --archive --symbolic --no-dereference \
+                --dereference) || { printf '%s' "$a"; return 0; }
+          case "$p" in
+            --force|--interactive) clob=1; cw="$a" ;;
+            --target-directory) printf '%s' "$a"; return 0 ;;
+          esac ;;
+        -?*)
+          rc=0; w=$(gate_short_letters "$a" "$ok" "$val") || rc=$?
+          [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; }
+          while [ -n "$w" ]; do
+            ch="${w%"${w#?}"}"; w="${w#?}"
+            case "$tool:$ch" in
+              mv:f|mv:i|cp:f|cp:i|ln:f|ln:i|ln:F) clob=1; cw="$a" ;;
+            esac
+          done ;;
+      esac
+      ops+=("$a"); continue
+    fi
     case "$a" in
       --) eat=ops ;;
       --*)
@@ -1612,7 +1665,7 @@ gate_reach_copy_form() {
           mv:3|cp:3|ln:3) t="${a#*t}" ;;
           *:2) eat=1 ;;
         esac ;;
-      *) ops+=("$a") ;;
+      *) ops+=("$a"); post=1 ;;
     esac
   done
   [ "$dmode" = "1" ] && return 0

@@ -25406,6 +25406,58 @@ lm76 && ok "76: 열거 밖 철자의 대조 쌍이 작업 트리의 변경을 �
 git -C "$SIB76" tag -d td76 tn76 >/dev/null 2>&1
 git -C "$SIB76" branch -D bn76 >/dev/null 2>&1
 
+# 비파괴로 잘못 읽히던 세 철자 — 옵션 없는 worktree remove 는 무시된 파일을 함께
+# 지우고, 피연산자 뒤의 -n 은 BSD 가 옵션으로 읽지 않아 대상을 덮으며, --work-tree
+# 로 다른 워크트리를 가리킨 checkout 은 그 루트에만 있는 경로의 변경을 버린다. 각
+# park 옆에 같은 동사의 비파괴 쌍둥이를 두고, 잔존 단언이 공허하지 않음을 먼저 세운다.
+IG76="$WORK/wt76-ig"
+git -C "$WT" worktree add -q -b wi76 "$IG76" >/dev/null 2>&1
+ex76="$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+mkdir -p "${ex76%/*}" && printf 'ign76.md\n' >> "$ex76"
+printf 'only\n' > "$IG76/ign76.md"
+case "$(git -C "$IG76" status --porcelain --ignored 2>/dev/null)" in
+  *'!! ign76.md'*) ok "76: 무시된 파일이 실제로 무시된다 (worktree remove 잔존 단언이 공허하지 않다)" ;;
+  *) bad "76: 무시된 파일이 실제로 무시된다" "$(git -C "$IG76" status --porcelain --ignored 2>&1)" ;;
+esac
+mkdir -p "$D76/pn1" "$D76/pn2"
+printf 'keep\n' > "$D76/pn1/pa"; printf 'new\n' > "$D76/pa"
+printf 'keep\n' > "$D76/pn2/pb"; printf 'new\n' > "$D76/pb"
+printf 'w\n' > "$SIB76/wo76.txt"; git -C "$SIB76" add wo76.txt >/dev/null 2>&1
+printf 'local76w\n' >> "$SIB76/wo76.txt"
+lw76() { grep -q '^local76w$' "$SIB76/wo76.txt"; }
+gd76=$(cd "$SIB76" && git rev-parse --path-format=absolute --git-dir)
+{ [ ! -e "$PWD/wo76.txt" ] && lw76; } \
+  && ok "76: --work-tree 경로는 게이트의 cwd 에 없고 변경을 담는다 (아래 단언이 공허하지 않다)" \
+  || bad "76: --work-tree 경로는 게이트의 cwd 에 없고 변경을 담는다" "$PWD $SIB76/wo76.txt"
+nb76=$(b76)
+x76 트리밖쓰기 git -C "$WT" worktree remove "$IG76";  p76 '옵션 없는 worktree remove' test -e "$IG76/ign76.md"
+x76 트리밖쓰기 mv "$D76/pa" -n "$D76/pn1";            p76 '피연산자 뒤 -n 의 mv' grep -q '^keep$' "$D76/pn1/pa"
+x76 트리밖쓰기 cp "$D76/pb" -n "$D76/pn2";            p76 '피연산자 뒤 -n 의 cp' grep -q '^keep$' "$D76/pn2/pb"
+x76 트리밖쓰기 git --work-tree="$SIB76" --git-dir="$gd76" checkout wo76.txt
+p76 '--work-tree 루트에만 있는 경로의 checkout' lw76
+check "76: 세 철자의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b76) - nb76 ))" "4"
+nb76=$(b76)
+x76 트리밖쓰기 git -C "$WT" worktree lock "$IG76"
+check "76: 대조 — worktree lock 은 대상트리로 통과한다" "$rc" "0"
+x76 트리밖쓰기 mv -n "$D76/pa" "$D76/pn1"
+check "76: 대조 — 피연산자 앞 -n 의 mv 는 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)" "통과"
+grep -q '^keep$' "$D76/pn1/pa" && ok "76: 그 mv -n 이 디렉터리 안의 대상을 덮지 않았다" \
+  || bad "76: 그 mv -n 이 디렉터리 안의 대상을 덮지 않았다" "$D76/pn1/pa"
+x76 트리밖쓰기 cp -n "$D76/pb" "$D76/pn2"
+check "76: 대조 — 피연산자 앞 -n 의 cp 는 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)" "통과"
+grep -q '^keep$' "$D76/pn2/pb" && ok "76: 그 cp -n 이 디렉터리 안의 대상을 덮지 않았다" \
+  || bad "76: 그 cp -n 이 디렉터리 안의 대상을 덮지 않았다" "$D76/pn2/pb"
+x76 트리밖쓰기 git --work-tree="$SIB76" --git-dir="$gd76" checkout b76
+check "76: 대조 — --work-tree 로 가리킨 브랜치 하나의 checkout 은 통과한다" "$rc" "0"
+lw76 && ok "76: 그 checkout 이 --work-tree 의 변경을 건드리지 않았다" \
+  || bad "76: 그 checkout 이 --work-tree 의 변경을 건드리지 않았다" "$SIB76/wo76.txt"
+check "76: 비파괴 쌍둥이는 blocked 행을 남기지 않는다" "$(( $(b76) - nb76 ))" "0"
+git -C "$WT" worktree unlock "$IG76" >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$IG76" >/dev/null 2>&1
+git -C "$WT" branch -D wi76 >/dev/null 2>&1
+git -C "$SIB76" rm -q -f --cached wo76.txt >/dev/null 2>&1
+rm -f "$SIB76/wo76.txt"
+
 # 공유 stash 는 git 전역 옵션 뒤에 와도 기기전역 하한이 잡는다. 하한이 위치 인자로만
 # 읽던 동안 `-C <dir>`·`--no-pager` 가 앞에 오면 `-` 를 답해 이 칸을 통과했다. 지울
 # 항목을 하나 넣어 두고(작업 트리를 건드리지 않는 `stash create` + `store`), 각 park
@@ -25492,6 +25544,10 @@ check "76: 형태=cp -n -f 는 cp -n -f 를 연다" "$(pd76 'cp -n -f' cp -n -f 
 check "76: 덮어쓰기를 켠 낱말이 트리거다 — ln -s -f" "$(lt76 ln -s -f "$P76/src" "$P76/dst")" "-f"
 check "76: 동사만으로 덮어쓰는 mv 는 동사가 트리거다" "$(lt76 mv "$P76/src" "$P76/dst")" "mv"
 check "76: 동사만 적은 형태는 동사만으로 덮어쓰는 mv 를 연다" "$(pd76 'mv' mv "$P76/src" "$P76/dst")" "1"
+# 옵션 없는 worktree remove 는 하위 명령이 트리거라 그것을 적은 형태가 연다.
+check "76: 옵션 없는 worktree remove 는 하위 명령이 트리거다" "$(lt76 git worktree remove "$P76/w")" "remove"
+check "76: 형태=git worktree remove 는 옵션 없는 remove 를 연다" "$(pd76 'git worktree remove' git worktree remove "$P76/w")" "1"
+check "76: 형태=git worktree 는 옵션 없는 remove 를 열지 않는다" "$(pd76 'git worktree' git worktree remove "$P76/w")" "0"
 rm -rf "$P76"
 
 # park — 같은 모양이 대상의 공통 git 디렉터리 밖에 닿는다.
