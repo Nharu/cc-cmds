@@ -29,7 +29,7 @@
 #   10. The fixed trailer line is in autopilot exactly once, inside that block.
 #
 # A zone runs from the line that opens it to the next line matching
-# `^\*\*5[a-n]( |\(|—)` or `^#{1,4} ` outside a code fence.
+# `^\*\*5[a-z]( |\(|—)` or `^#{1,4} ` outside a code fence.
 #
 # Usage: bash scripts/lint-interview-convention-refs.sh
 #
@@ -70,7 +70,7 @@ zone() {
   awk -v p="$2" '
     started == 0 { if (index($0, p) == 1) { started = 1; print } ; next }
     /^```/ { fence = !fence; print; next }
-    fence == 0 && ($0 ~ /^\*\*5[a-n]( |\(|—)/ || $0 ~ /^(#|##|###|####) /) { exit }
+    fence == 0 && ($0 ~ /^\*\*5[a-z]( |\(|—)/ || $0 ~ /^(#|##|###|####) /) { exit }
     { print }
   ' "$1"
 }

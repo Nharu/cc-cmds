@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Records argv, space-joined, one line per call — the shape the driver's own
+# stub uses, so the assertion reads the value the way the other fixtures do.
+log="${NOTIFIER_LOG:-/dev/null}"
+{ printf '%s\n' "$*"; } >>"$log" 2>/dev/null || true
+exit 0

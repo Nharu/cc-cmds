@@ -15,6 +15,8 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
 | `/cc-cmds:design-audit` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (반복 루프 없음) | 설계 문서 작성이 끝나 더 이상 수정하지 않을 시점에, 문서를 동결한 뒤 레포 실측 기반 독립 감사로 잔여 결함을 드러내고 이름 붙은 하류 소유자에게 인계하고자 할 때 (design 종단 이후 · design-apply의 impl-design.md · implement 직전) |
 | `/cc-cmds:design-audit-unattended` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (무인 — 사람 확인 없이 park) | 자율 파이프라인 드라이버가 감사 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:design-audit`를 쓸 것 |
+| `/cc-cmds:design-base` | 여러 티켓으로 나눌 큰 작업의 베이스 설계 — 티켓 간 계약과 병렬화 최대의 티켓 분할을 설계하고, 감사 뒤 트래커 발행까지 | 요청이 각자 독자적 설계 판단이 필요한 조각들로 나뉘는 큰 작업이라, 단일 설계 문서 하나로 구현 슬라이스를 나누기보다 먼저 조각 간 계약과 티켓 분할을 정하고 조각마다 따로 설계하려 할 때 |
+| `/cc-cmds:design-base-unattended` | 베이스 설계의 무인 팔 — 좌석·드라이버가 파견하면 베이스 문서의 토론·저장(드라이버면 동결까지)을, `--split` 이면 감사 뒤 분할 점검과 트래커 발행을 돈다 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design-base` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 이 베이스 런의 설계 단계와 분할 단계로 파견한다(스테이지) |
 | `/cc-cmds:design-discuss-unattended` | 설계 세션의 무인 팔 — 좌석이 파견하면 Step 3 토론과 Step 4 종합·저장을 도는 다리, autopilot 드라이버가 파견하면 Step 7U 동결까지 도는 스테이지 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 드라이버가 `design_required` 인 런의 첫 스테이지로 파견한다(스테이지) |
 | `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
@@ -64,6 +66,8 @@ brew install jq   # PreToolUse hook 의존성
 ※ **진행률·중간 지점 표현 주의** — `"70% 정도 끝나면"`, `"중간쯤 되면"`처럼 백분율이나 중간 지점을 지정하면, 모델이 작업을 진행하며 **스스로 추정한** 시점에 알림을 1회 보냅니다. 진행률 측정기나 타이머가 따로 동작하는 것이 아니므로 실제 발송 시점은 모델의 주관적 판단에 따른 근사값입니다.
 
 **3단계 — 최초 macOS 권한 승인** (1단계 완료 후): 첫 알림 시 macOS 권한 다이얼로그가 표시됩니다. 미리 트리거하려면 `"알림 테스트 한 번 해줘"`로 발화하여 테스트 알림을 받고 **허용**을 클릭하세요. (Claude Code의 Bash 권한 다이얼로그는 플러그인의 PreToolUse hook이 자동 승인하므로 표시되지 않습니다 — macOS 알림 권한 다이얼로그만 1회 응답하면 됩니다.) 다이얼로그를 놓쳤다면 시스템 설정 → 알림 → terminal-notifier에서 수동 활성화. 권한 거부 후 복구는 셸에서 `terminal-notifier -message 'cc-cmds permission test' -title '[cc-cmds] test' -group cc-cmds-active-notify -execute ':'` 직접 실행으로 재트리거 (스킬 bypass와 동일 형식이라 banner 외관이 일치).
+
+**배너 클릭** — active-notify 배너, autopilot 런 배너, 일반 세션 훅 배너를 클릭하면 그 배너를 띄운 세션의 iTerm2 창·탭으로 이동하고 tmux window·pane까지 선택합니다. iTerm2 tmux 통합(`tmux -CC`)에서도, iTerm2 탭 안의 일반 tmux에서도 동작합니다. iTerm2가 아닌 터미널, tmux 밖의 세션, 이미 닫힌 pane에서는 클릭해도 아무 일도 일어나지 않습니다. 처음 클릭할 때 macOS가 iTerm2 제어(자동화)를 허용할지 한 번 묻고, 거부하면 클릭은 아무 일도 하지 않습니다. 이 선택은 시스템 설정 → 개인 정보 보호 및 보안 → 자동화에서 되돌릴 수 있습니다.
 
 terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활성화됩니다.
 
@@ -124,6 +128,8 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 - [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
 - [/cc-cmds:design-audit](#cc-cmdsdesign-audit)
 - [/cc-cmds:design-audit-unattended](#cc-cmdsdesign-audit-unattended)
+- [/cc-cmds:design-base](#cc-cmdsdesign-base)
+- [/cc-cmds:design-base-unattended](#cc-cmdsdesign-base-unattended)
 - [/cc-cmds:design-discuss-unattended](#cc-cmdsdesign-discuss-unattended)
 - [/cc-cmds:design-ingest](#cc-cmdsdesign-ingest)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
@@ -200,6 +206,35 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | `<design-doc-path>` | (required) | 감사 대상 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. 첫 리더 spawn 직전의 sha256으로 동결된다. |
 | `<note>` | _(optional)_ | 문서 경로 뒤 자유 텍스트. 전 리더에게 **축어로 동일하게** 주입되는 초점 메모. |
 | `--base` | off | base 설계 문서 모드 — 기존 내용의 정합·완결만 감사하고 신규 구현 세부 제안을 금지한다. |
+
+### /cc-cmds:design-base
+
+**Usage**: `/cc-cmds:design-base <task> | --split <문서>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<task>` | (required) | 베이스 설계를 진행할 작업 주제 (자유형 한국어/영문 텍스트). `--split` 모드에서는 쓰지 않는다. |
+| `--split <문서>` | off | 분할 모드 — 동결·감사를 마친 베이스 설계 문서를 다시 점검하고, 고른 트래커에 베이스 티켓과 각 티켓을 발행하거나 문서만으로 분할을 기록한다. |
+
+> _Parsing (`<task>`): `$ARGUMENTS` 에 `--split` 토큰이 없으면 전체가 작업 주제다._
+
+> _Parsing (`--split <문서>`): `--split` 다음의 첫 `.md` 토큰이 베이스 문서 경로다. 있으면 설계 흐름(Step 1–7)은 돌지 않는다._
+
+### /cc-cmds:design-base-unattended
+
+**Usage**: `/cc-cmds:design-base-unattended <brief-or-doc-path> [<task-sentence>] | --split <문서>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<brief-or-doc-path>` | (required) | 좌석 파견: `docs/design-brief/{slug}.md` — `design-base` 좌석이 쓴 인터뷰 브리프. 드라이버 파견: 베이스 설계 문서 경로(메인 워크트리 절대 경로 — 아직 없을 수 있다). |
+| `<task-sentence>` | _(optional)_ | 드라이버 파견에서만 — 매니페스트 `## 의도` 의 첫 줄. |
+| `--split <문서>` | off | 분할 단계 — 감사를 마친 베이스 문서를 다시 점검하고 매니페스트 `베이스 발행` 행대로 트래커에 발행하거나 문서만으로 기록한다. 드라이버 파견에서만 쓴다. |
+
+> _Parsing (`<brief-or-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰. 어느 파견인지는 `CC_PIPELINE_RUN_ID` 의 유무로 가른다._
+
+> _Parsing (`<task-sentence>`): 첫 `.md` 토큰 이후의 모든 내용. 좌석 파견과 `--split` 에서는 무시한다._
+
+> _Parsing (`--split <문서>`): `--split` 다음의 첫 `.md` 토큰이 베이스 문서 경로(메인 워크트리 절대 경로)다._
 
 ### /cc-cmds:design-discuss-unattended
 

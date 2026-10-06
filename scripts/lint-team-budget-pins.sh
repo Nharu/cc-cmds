@@ -281,6 +281,38 @@ if [[ -f "$LEG" ]]; then
   fi
 fi
 
+# ---------- base-design seat — borrows the dispatch, never restates it ----------
+
+# The base-design seat launches its leg by Reading the dispatch section above,
+# not by carrying a copy. A copy is exactly how the launch-line guards would
+# split into two places with one of them unpinned, so this block asserts both
+# halves of "borrow, don't restate": the seat names the dispatch heading
+# verbatim, and it carries none of the pinned launch-line literals itself.
+# Gated on the seat file's existence, the same posture as the leg block above.
+BASE_SEAT="$skills_root/design-base/SKILL.md"
+DISPATCH_TITLE="${DISPATCH_HEADING#\#\#\#\# }"
+if [[ -f "$BASE_SEAT" ]]; then
+  checked=$((checked + 1))
+  n_ref=$(count_in_file "$DISPATCH_TITLE" "$BASE_SEAT")
+  if [[ "${n_ref:-0}" = "0" ]]; then
+    echo "FAIL: design-base/SKILL.md — must point at design's dispatch section by its verbatim heading: $DISPATCH_TITLE" >&2
+    fail=1
+  fi
+  if grep -Fxq -- "$DISPATCH_HEADING" "$BASE_SEAT"; then
+    echo "FAIL: design-base/SKILL.md — carries its own dispatch heading; the dispatch is borrowed from design/SKILL.md" >&2
+    fail=1
+  fi
+  for lit in ': "${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR is unset - refusing to launch the leg}"' \
+             'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=14400000' \
+             '-p "$(cat "$RESUME_MSG")"'; do
+    n_own=$(count_in_file "$lit" "$BASE_SEAT")
+    if [[ "${n_own:-0}" != "0" ]]; then
+      echo "FAIL: design-base/SKILL.md — restates a launch-line literal pinned in design/SKILL.md: $lit" >&2
+      fail=1
+    fi
+  done
+fi
+
 # ---------- review-lite — section exemption + its paired positive assertion ---
 
 lite_body=""

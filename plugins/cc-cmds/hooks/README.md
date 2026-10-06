@@ -146,8 +146,13 @@ message has no text block makes the walk pick up the message before it.
 **The scripts source the emitter rather than calling the notifier.** The title,
 the group and the firing line all live in
 `../orchestrator/notify-run.sh`, and keeping the firing line shared is what keeps
-`-execute ':'` on every banner this tree raises — a firing point that assembles
-its own argv is how that argument was dropped once already.
+`-execute` on every banner this tree raises — a firing point that assembles its
+own argv is how that argument was dropped once already. Its value is what
+`notify-focus.sh exec-arg` built: `:`, or
+`/bin/bash '<handler>' focus '<socket>' '<pid>' '<pane>'`. When no value can be
+built it falls back to `:`, and there is no path that drops `-execute`. A hook
+inherits the session's `TMUX`/`TMUX_PANE`, so its banner's click goes to the
+pane the session runs in.
 
 **Both `hooks.json` entries pin `"timeout": 5`.** Both events block, and the
 default is long, so an emitter that stalls for any reason would stall the session

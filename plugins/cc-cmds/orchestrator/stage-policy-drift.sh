@@ -25,12 +25,17 @@
 #
 # Usage:
 #   bash stage-policy-drift.sh [--sources-map <file>] [--plugin-root <dir>]
-#                              [--ack-store <dir>] [--explain] [--ack]
+#                              [--config-dir <dir>]... [--ack-store <dir>]
+#                              [--explain] [--ack]
 #                              [--ack-added <anchor prefix> <disposition>]
 #
 #   The manifest is `stage-policy.sources.tsv` next to this script. The
 #   user-scope source is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md` — the
-#   same derivation the gate uses for the user-scope settings directory. The
+#   same derivation the gate uses for the user-scope settings directory —
+#   unless `--config-dir` names directories: then it is `<dir>/CLAUDE.md` for
+#   each, compared in turn under a `config-dir <dir>` line, and a named
+#   directory with no CLAUDE.md is a `missing` finding rather than a `SKIP`.
+#   The last line is the verdict over every directory. The
 #   workspace source is the path the host map's `workspace` line names; the
 #   map defaults to `~/.config/cc-cmds/stage-policy-sources` and holds
 #   `<source-id><TAB><absolute path>` lines. One map line therefore does two
@@ -291,6 +296,8 @@ ADDED_ITEMS=""
 # every candidate item of every compared source, `source<TAB>sha256<TAB>text`;
 # the text is last so that a TAB inside it cannot shift the hash
 ALL_ITEMS=""
+# the directories `--config-dir` named, in order; empty means the derivation
+CONFIG_DIRS=()
 
 # load_store — reads acks.tsv into ACKS; an absent store reads as empty.
 load_store() {
@@ -466,14 +473,29 @@ compare_all() {
   findings=0; compared=0; ACK_PENDING=""; RESOLVED=""; ADDED_ITEMS=""; ALL_ITEMS=""
 
   # user-scope — the same derivation the gate uses for the user settings directory
-  cfgdir="${CLAUDE_CONFIG_DIR:-}"
-  [ -n "$cfgdir" ] || cfgdir="${HOME:-}/.claude"
-  user_file="$cfgdir/CLAUDE.md"
   if awk -F'\t' 'NR > 1 && $1 == "user-scope" { f = 1 } END { exit !f }' "$manifest"; then
-    if [ -f "$user_file" ]; then
-      compare_source user-scope "$user_file" "$manifest"
+    if [ "${#CONFIG_DIRS[@]}" -eq 0 ]; then
+      cfgdir="${CLAUDE_CONFIG_DIR:-}"
+      [ -n "$cfgdir" ] || cfgdir="${HOME:-}/.claude"
+      user_file="$cfgdir/CLAUDE.md"
+      if [ -f "$user_file" ]; then
+        compare_source user-scope "$user_file" "$manifest"
+      else
+        printf 'SKIP user-scope source file not found: %s\n' "$user_file"
+      fi
     else
-      printf 'SKIP user-scope source file not found: %s\n' "$user_file"
+      # named directories: each is compared on its own, and one a caller named
+      # that holds no CLAUDE.md is a finding — the caller said a stage reads it
+      for cfgdir in "${CONFIG_DIRS[@]}"; do
+        user_file="${cfgdir%/}/CLAUDE.md"
+        printf 'config-dir %s\n' "$cfgdir"
+        if [ -f "$user_file" ]; then
+          compare_source user-scope "$user_file" "$manifest"
+        else
+          compared=$((compared + 1))
+          printf 'missing user-scope %s\n' "$user_file"; findings=$((findings + 1))
+        fi
+      done
     fi
   fi
 
@@ -585,6 +607,7 @@ main() {
     case "$1" in
       --sources-map) [ $# -ge 2 ] || die_format "--sources-map needs a file"; map="$2"; shift 2 ;;
       --plugin-root) [ $# -ge 2 ] || die_format "--plugin-root needs a directory"; plugin_root="$2"; shift 2 ;;
+      --config-dir) [ $# -ge 2 ] && [ -n "$2" ] || die_format "--config-dir needs a directory"; CONFIG_DIRS+=("$2"); shift 2 ;;
       --ack-store) [ $# -ge 2 ] || die_format "--ack-store needs a directory"; STORE="$2"; shift 2 ;;
       --explain) explain=1; shift ;;
       --ack) do_ack=1; shift ;;

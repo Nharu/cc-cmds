@@ -40,7 +40,8 @@
 #   T11 park record          check_park        tests/fixtures/design-brief/park/
 #   T13 re-dispatch floor    check_redispatch  tests/fixtures/design-brief/leg/
 #   T6  CFI-U0 pin (helper)  lint-unattended-surfaces.sh over a copied tree
-#   pin literal cross-pin    the two real SKILL.md files
+#   pin literal cross-pin    the two real SKILL.md files, and the base-design
+#                            pair when its files are present
 #
 # Usage:
 #   bash scripts/test-design-brief.sh
@@ -538,6 +539,71 @@ pin_in 'permission_posture' "$DESIGN" "design"
 pin_in 'permission_posture' "$LEG" "leg"
 pin_in 'posture_approved_at' "$DESIGN" "design"
 pin_in 'posture_approved_at' "$LEG" "leg"
+
+# ----------------------------------------------------------------------------
+# Base-design pair — the same brief, a different writer and reader
+#
+# The base-design seat writes the same brief format to a different leg, so the
+# header's writer/reader pair is the one place the two pairs differ, and the
+# leg must accept that pair while still guarding the version token. The split
+# mode's five halt sites, its repair-failure site and its terminal literal are
+# read by the driver and the router, which land separately; pinning them here
+# keeps a rename on this side from becoming a silent mismatch on that side.
+# A missing file is a failure, not a skip: both files exist, and a guard that
+# goes quiet when its subject disappears guards nothing.
+# ----------------------------------------------------------------------------
+
+BASE_SEAT="$skills_root/design-base/SKILL.md"
+BASE_ARM="$skills_root/design-base-unattended/SKILL.md"
+BASE_BRIEF_PAIR='writer=design-base; reader=design-base-unattended'
+BASE_SPLIT_SITES=('split-check-failed' 'audit-open-items' 'publish-not-authorized' 'duplicate-ticket' 'tracker-error')
+
+if [[ -f "$BASE_SEAT" ]]; then
+  pin_in "$BASE_BRIEF_PAIR" "$BASE_SEAT" "design-base"
+  pin_in "$BRIEF_TERMINATOR" "$BASE_SEAT" "design-base"
+else
+  fail "pin: $BASE_SEAT is missing"
+fi
+if [[ ! -f "$BASE_ARM" ]]; then
+  fail "pin: $BASE_ARM is missing"
+else
+  pin_in 'cc-design-brief v1' "$BASE_ARM" "design-base-unattended"
+  pin_in "$BASE_BRIEF_PAIR" "$BASE_ARM" "design-base-unattended"
+  for s in "${BASE_SPLIT_SITES[@]}"; do
+    pin_in "\`$s\`" "$BASE_ARM" "design-base-unattended (split halt site)"
+  done
+  pin_in '`split-unrepairable`' "$BASE_ARM" "design-base-unattended"
+  pin_in '베이스 분할을 마쳤습니다.' "$BASE_ARM" "design-base-unattended"
+  pin_in 'cc-pipeline-halt v1' "$BASE_ARM" "design-base-unattended"
+fi
+
+# Base linkage crosses the seat/leg boundary through three brief lines: the
+# leg writes `## 베이스 제약` only when the seat wrote them, so a rename on
+# either side drops the section without a word. The implement arm binds the
+# section by its heading, which is the other place that literal is load-bearing.
+for lit in '**베이스 문서**' '**티켓**' '**베이스 sha256**'; do
+  pin_in "$lit" "$DESIGN" "design (brief base lines)"
+  pin_in "$lit" "$LEG" "leg (brief base lines)"
+done
+pin_in '## 베이스 제약' "$DESIGN" "design"
+pin_in '## 베이스 제약' "$LEG" "leg"
+pin_in '## 베이스 제약' "$skills_root/implement-unattended/SKILL.md" "implement-unattended (Binding)"
+# The attended implement names its binding tier by section and does not list
+# `## 베이스 제약`; this sentence, written into `## 합의된 아키텍처`, is what
+# binds the section there. A missing file fails the pin as a missing line does.
+BASE_BIND_SENTENCE='이 문서의 `## 베이스 제약` 절에 옮긴 티켓 블록과 계약 블록은 이 절의 결정과 똑같이 구현을 구속한다.'
+pin_in "$BASE_BIND_SENTENCE" "$skills_root/_common/base-linkage.md" "base-linkage (attended binding)"
+pin_in "$BASE_BIND_SENTENCE" "$DESIGN" "design (attended binding)"
+pin_in "$BASE_BIND_SENTENCE" "$LEG" "leg (attended binding)"
+# The split's same-title rule and its resume read count the lookup's
+# `same_title`, taken over the whole fetched corpus. Reading `candidates`
+# instead brings back the lexical cut: a same-title item outside the top is
+# missed, and a resume that treats that cut as "could not read" stops forever.
+BASE_SAME_TITLE='The same-title rule reads the JSON'"'"'s `same_title`, never `candidates`'
+pin_in "$BASE_SAME_TITLE" "$BASE_SEAT" "design-base (same-title rule)"
+pin_in "$BASE_SAME_TITLE" "$BASE_ARM" "design-base-unattended (same-title rule)"
+pin_in '같은 제목 판정은 `candidates` 가 아니라 JSON 의 `same_title` 을 읽는다' \
+  "$skills_root/_common/base-design.md" "base-design (same-title rule)"
 
 # ----------------------------------------------------------------------------
 # Load-bearing sentences — section-scoped, count-exact

@@ -61,7 +61,7 @@ other than `single`/`repeat`) silent-normalize to `single`. `--count=N`
 out-of-bounds inputs (non-integer, ≤0, >16) silent-normalize to 1 — same
 categorical pattern as mode normalization.
 
-Banner title is always `[cc-cmds] ${workflow}` and body is `${summary}`.
+Banner title is always `cc-cmds ${workflow}` and body is `${summary}`.
 
 ### 1.1 Single vs repeat × armCount contract
 
@@ -427,9 +427,17 @@ Dispatcher behavior:
   `last_fire_at` via `sed -E` rewrite, preserve flag. `arm_count`
   ignored entirely. The dispatcher is class-agnostic — it does not see
   the event class label, only that one more instance fired.
-- **Banner**: `terminal-notifier -title "[cc-cmds] ${workflow}"
-  -message "${summary}" -execute ':'`. `-group "cc-cmds-active-notify"`
+- **Banner**: `terminal-notifier -title "cc-cmds ${workflow}"
+  -message "${summary}" -execute "$click"`. `-group "cc-cmds-active-notify"`
   added only when single + `arm_count == 1` (banner replace semantics).
+  `$click` is what `orchestrator/notify-focus.sh exec-arg` built from the
+  dispatcher's own `TMUX`/`TMUX_PANE`: a focus command, so clicking the
+  banner brings forward the iTerm2 tab and the tmux window and pane the
+  session runs in (iTerm2 tmux integration and plain tmux alike), or `:`
+  outside tmux, where the click does nothing. `-execute` is never dropped.
+  The first click makes macOS ask whether iTerm2 may be controlled;
+  refusing leaves the click doing nothing (revert under System Settings →
+  Privacy & Security → Automation).
 
 **CANCEL is mode-agnostic (model-driven).** `rm -f flag`. No mode check.
 Three triggers (the dispatcher treats them identically):

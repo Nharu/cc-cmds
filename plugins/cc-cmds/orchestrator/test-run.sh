@@ -1007,6 +1007,63 @@ else
   bad "조건 14·15" "필드가 없는 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
 fi
 
+# 원소 검사 함수를 직접 잰다. 위 절들은 거부 여부만 보고 문면은 보지 않으므로,
+# 함수로 옮긴 뒤에도 사유 꼬리가 옮기기 전 die 문면과 같은지는 여기서만 잡힌다.
+# 이 함수는 사람이 아직 있는 자리에서 같은 원소를 거르는 다른 독자도 부른다.
+id_reason_case() {   # id_reason_case <dev|deploy> <원소> <기대 rc> <기대 사유>
+  local out rc
+  out=$(manifest_id_element_reason "$1" "$2"); rc=$?
+  if [ "$rc" = "$3" ] && [ "$out" = "$4" ]; then
+    ok "manifest_id_element_reason $1 '$2' → rc $3"
+  else
+    bad "manifest_id_element_reason $1 '$2'" "rc=$rc 사유='$out' (기대 rc=$3 사유='$4')"
+  fi
+}
+id_reason_case dev 'aws-profile' 1 "dev 식별자 원소 'aws-profile' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다"
+id_reason_case dev 'host:' 1 "dev 식별자 원소 'host:' 의 값이 비어 있습니다"
+id_reason_case dev 'aws-account:12345678901' 1 "aws-account '12345678901' 가 12자리가 아닙니다"
+id_reason_case dev 'aws-account:12345678901x' 1 "aws-account '12345678901x' 가 숫자가 아닙니다"
+id_reason_case dev 'dir:relative/path' 1 "dev 식별자 dir 'relative/path' 가 절대 경로가 아닙니다"
+id_reason_case dev 'aws-acct:dev' 1 "dev 식별자 종류 'aws-acct' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir"
+id_reason_case deploy 'release' 1 "배포트리거 식별자 원소 'release' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다"
+id_reason_case deploy 'workflow:' 1 "배포트리거 식별자 원소 'workflow:' 의 값이 비어 있습니다"
+id_reason_case deploy 'deploy:release' 1 "배포트리거 식별자 종류 'deploy' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+id_reason_case dev 'aws-profile:x' 0 ""
+id_reason_case dev 'aws-account:123456789012' 0 ""
+id_reason_case dev 'dir:/abs' 0 ""
+id_reason_case dev 'kube-context:ctx' 0 ""
+id_reason_case deploy 'branch:main' 0 ""
+id_reason_case deploy 'workflow:w' 0 ""
+id_reason_case deploy 'argv:bash scripts/deploy.sh' 0 ""
+# 한쪽의 종류가 다른 쪽에서 통과하지 않는다 — 두 어휘가 한 집합으로 접히면 잡힌다.
+id_reason_case deploy 'aws-profile:x' 1 "배포트리거 식별자 종류 'aws-profile' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+id_reason_case dev 'branch:main' 1 "dev 식별자 종류 'branch' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir"
+# 대상 행은 | 로 갈리므로 원소 안의 | 는 동결 뒤 별개 필드가 된다 — 리뷰 정책 상한이나
+# 실행 워크트리를 원소에 실어 들이는 경로가 여기서 막힌다.
+id_reason_case dev 'host:a | 리뷰 정책 상한=리뷰없음' 1 "dev 식별자 원소 'host:a | 리뷰 정책 상한=리뷰없음' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case deploy 'argv:x | 실행 워크트리=/tmp/other' 1 "배포트리거 식별자 원소 'argv:x | 실행 워크트리=/tmp/other' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case dev 'host:`a`' 1 "dev 식별자 원소 'host:\`a\`' 에 | 나 백틱이 있습니다 — 대상 행의 필드 구분자라 다른 필드로 읽힙니다"
+id_reason_case dev 'host:a ' 1 "dev 식별자 원소 'host:a ' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+id_reason_case dev ' host:a' 1 "dev 식별자 원소 ' host:a' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+id_reason_case dev 'host: a' 1 "dev 식별자 원소 'host: a' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+
+# 조립된 거부 문면도 옮기기 전과 바이트가 같다.
+mf_with " | dev 식별자=aws-account:1234"
+check "dev 식별자 거부 문면이 대상 별칭과 사유 꼬리로 조립된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 aws-account '1234' 가 12자리가 아닙니다"
+mf_with " | 배포트리거 식별자=deploy:release"
+check "배포트리거 식별자 거부 문면이 대상 별칭과 사유 꼬리로 조립된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 배포트리거 식별자 종류 'deploy' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv"
+# 쉼표 앞 공백은 행 끝 공백과 달리 필드 읽기가 깎지 않으므로 원소 규칙이 잡아야 한다.
+mf_with " | dev 식별자=host:a ,host:b"
+check "쉼표 앞 공백 원소가 매니페스트 검사에서 거부된다" \
+  "$( ( check_manifest ) 2>&1 | grep -o "대상 'home' 의 .*" | tail -1 )" \
+  "대상 'home' 의 dev 식별자 원소 'host:a ' 앞뒤에 공백이 있습니다 — 공백 없이 <종류>:<값> 으로 씁니다"
+write_manifest "$MF" "" ""
+write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+
 # A goal edit must move it — otherwise the digest is over something that cannot
 # change and the check is vacuous.
 bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
@@ -1098,6 +1155,81 @@ if ( check_manifest ) >/dev/null 2>&1; then
 else
   ok "벽시계 마감의 「없음」이 거부된다"
 fi
+
+# 드라이버가 마감을 읽는 쪽. 검사 8 은 모양만 보므로 위 절들이 초록이어도 드라이버가
+# 그 값을 시각으로 읽는지는 말해 주지 않는다. 한 순간(2026-10-02T09:00:00Z)을 세
+# 표기로 적어 호스트 TZ 를 바꿔 가며 같은 참값이 나오는지 잰다. `Z` 를 호스트 로컬로
+# 읽으면 비 UTC 존에서, 오프셋을 떼기만 하면 모든 존에서 어긋난다.
+DL_TRUE=1790931600
+dl_set() {   # dl_set <벽시계 마감 값>
+  write_manifest "$MF"
+  sed "s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: $1/" "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+  MANIFEST="$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+}
+for dl_tz in UTC Asia/Seoul America/New_York; do
+  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00 2026-10-02T14:30:00+05:30 \
+              2026-10-02T09:00:00+00:00 2026-10-02T09:00:00-00:00 2026-10-02T23:00:00+14:00; do
+    dl_set "$dl_v"
+    check "deadline_epoch '$dl_v' (TZ=$dl_tz) 가 참값이다" \
+      "$( export TZ="$dl_tz"; deadline_epoch 2>/dev/null )" "$DL_TRUE"
+  done
+done
+
+# 시각으로 읽히지 않는 값. 앞의 둘은 검사 8 의 모양에서 걸리지만, 뒤의 다섯은 모양을
+# 통과한다 — 하루 끝 표기 `T24`, 13월, 달력에 없는 9월 31일, 범위 밖 오프셋 둘. 이
+# 값들이 「지나지 않음」으로 읽히면 마감 집행이 아무 말 없이 꺼진다. 드라이버는
+# 경고하고 epoch 0 을 내어 지난 것으로 다루며, 검사 8 은 같은 해석기로 물어 기동
+# 전에 거부한다.
+DL_BAD_SHAPE="2026-10-02T09:00:00 2026-10-02T18:00:00+0900"
+DL_BAD_VALUE="2026-10-02T24:00:00+09:00 2026-13-01T09:00:00Z 2026-09-31T10:00:00+09:00 2026-10-02T09:00:00+99:99 2026-10-02T09:00:00+14:01"
+for dl_v in $DL_BAD_SHAPE $DL_BAD_VALUE; do
+  dl_set "$dl_v"
+  check "읽히지 않는 마감 '$dl_v' 은 epoch 0 이다" "$(deadline_epoch 2>/dev/null)" "0"
+  dl_warn=$(deadline_epoch 2>&1 >/dev/null)
+  case "$dl_warn" in
+    *'벽시계 마감을 시각으로 읽지 못했습니다'*) ok "읽히지 않는 마감 '$dl_v' 은 경고를 남긴다" ;;
+    *) bad "벽시계 마감" "'$dl_v' 을 경고 없이 넘겼다" ;;
+  esac
+done
+for dl_v in $DL_BAD_VALUE; do
+  dl_set "$dl_v"
+  if dl_err=$( ( check_manifest ) 2>&1 ); then
+    bad "벽시계 마감" "모양만 맞는 '$dl_v' 을 검사 8 이 받아들였다 — 드라이버가 읽지 못하는 마감으로 기동한다"
+  else
+    case "$dl_err" in
+      *'벽시계 마감이 실제 시각이 아닙니다'*) ok "검사 8 이 모양만 맞는 '$dl_v' 을 실제 시각이 아니라며 거부한다" ;;
+      *) bad "벽시계 마감" "'$dl_v' 이 다른 이유로 거부됐다: $(printf '%s' "$dl_err" | tail -1)" ;;
+    esac
+  fi
+done
+dl_set 2026-10-02T23:00:00+14:00
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "검사 8 이 경계 오프셋 +14:00 을 받아들인다"
+else
+  bad "벽시계 마감" "+14:00 을 거부했다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+dl_set 없음
+check "「없음」 마감은 빈 값이다" "$(deadline_epoch)" ""
+
+# past_deadline 은 원래 정의 그대로 쓰고 시계만 고정한다. 마감 1초 전은 거짓,
+# 마감 시각과 그 뒤는 참이다. 고정은 서브셸 안에서만 하므로 뒤 절의 now_epoch 는
+# 드라이버의 것이다.
+dl_pd() {   # dl_pd <마감 값> <now epoch> <TZ> → 지남|남음
+  dl_set "$1"
+  ( export TZ="$3"; DL_NOW="$2"; now_epoch() { printf '%s' "$DL_NOW"; }
+    if past_deadline 2>/dev/null; then printf '지남'; else printf '남음'; fi )
+}
+for dl_tz in UTC Asia/Seoul; do
+  for dl_v in 2026-10-02T09:00:00Z 2026-10-02T18:00:00+09:00 2026-10-02T04:00:00-05:00; do
+    check "past_deadline '$dl_v' 1초 전 (TZ=$dl_tz)" "$(dl_pd "$dl_v" $((DL_TRUE - 1)) "$dl_tz")" "남음"
+    check "past_deadline '$dl_v' 그 시각 (TZ=$dl_tz)" "$(dl_pd "$dl_v" "$DL_TRUE" "$dl_tz")" "지남"
+    check "past_deadline '$dl_v' 한 시간 뒤 (TZ=$dl_tz)" "$(dl_pd "$dl_v" $((DL_TRUE + 3600)) "$dl_tz")" "지남"
+  done
+done
+check "형식이 틀린 마감에서 past_deadline 은 참이다 (닫힌 쪽으로 실패)" "$(dl_pd 2026-10-02T09:00:00 $((DL_TRUE - 3600)) UTC)" "지남"
+check "모양만 맞는 마감에서 past_deadline 은 참이다 (닫힌 쪽으로 실패)" "$(dl_pd 2026-10-02T24:00:00+09:00 $((DL_TRUE - 3600)) UTC)" "지남"
+check "「없음」 마감에서 past_deadline 은 거짓이다" "$(dl_pd 없음 $((DL_TRUE + 3600)) UTC)" "남음"
+write_manifest "$MF"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 
 # 2 — append 형식이 없으므로 둘째 인가 블록은 잔재가 아니라 변조다.
 write_manifest "$MF"; printf '\n## 인가\n**런 최대 절단점**: 배포\n' >> "$MF"
@@ -6102,7 +6234,7 @@ T8_ORIG=$(declare -f resolve_account)
 resolve_account() { printf 'call\n' >> "$T8_COUNT"; printf '%s' "$LD/env"; }
 stage_spawn "t8-implement-a" "$WORK" "prompt" >/dev/null 2>&1
 stage_spawn "t8-implement-b" "$WORK" "prompt" >/dev/null 2>&1
-check "T8a 리졸버가 디스패치마다 해소된다 (런당 1회로 굳지 않는다)" \
+check "T8a 리졸버가 디스패치마다 해소된다 (런당 1회로 굳지 않는다, 가드 0)" \
   "$(grep -c . "$T8_COUNT" || true)" "2"
 eval "$T8_ORIG"
 RUN_DIR="$T8_RUN_SAVE"; CLI_BIN="$T8_CLI_SAVE"
@@ -8777,6 +8909,127 @@ check "드라이버 stage-result 호출부 여섯이 effort 를 싣는다" \
   "$(grep -c '"effort=$(stage_effort_rec_of ' "$DRIVER" || true)" "6"
 check "그 여섯이 서빙 모델도 싣는다" \
   "$(grep -c '"서빙 모델=$(stage_served_model_of ' "$DRIVER" || true)" "6"
+
+# ---------------------------------------------------------------------------
+# 33. 라우팅 가드 — 기록 비교, 그리고 가드 1 사본의 기동이 임대를 받고 돌려준다
+# ---------------------------------------------------------------------------
+# 출하 가드는 0 이라 위의 기동 시험은 전부 가드 0 갈래다. 여기서는 오케스트레이터
+# 디렉터리를 복사해 그 사본의 가드 줄만 1 로 뒤집고, 사본을 소싱한 자식에서
+# 진짜 `stage_spawn` 을 태운다. HOME·인벤토리·임대 표를 모두 스크래치 아래로 옮긴다
+# — 인벤토리의 계정 디렉터리는 `$HOME/.claude-` 아래여야 하고, 시험이 실제 계정으로
+# 라우팅해서는 안 된다. 단언마다 라우팅된 기동만 쓰는 파일이나 행을 짚으므로, 조용히
+# 0 에 머문 사본은 가드 0 갈래로 통과하지 못하고 여기서 실패한다.
+rg_case() {  # rg_case <driver> <record or -> — routing_guard_check 의 「rc:문면」
+  local d="$WORK/rg-$2"
+  rm -rf "$d"; mkdir -p "$d"
+  [ "$2" = "-" ] || printf '%s\n' "$2" > "$d/routing-guard"
+  bash -c 'rg_drv="$1"; rg_dir="$2"; set --; . "$rg_drv"; set +e
+           RUN_DIR="$rg_dir"; o=$(routing_guard_check); printf "%s:%s" "$?" "$o"' _ "$1" "$d" 2>/dev/null
+}
+check "가드 0 사본과 기록 없음은 오늘 그대로 통과한다 (가드 0)" "$(rg_case "$DRIVER" -)" "0:"
+check "가드 0 사본은 가드 1 이 연 런을 거부한다" "$(rg_case "$DRIVER" 1)" \
+  "1:라우팅 가드 어긋남 — 이 사본의 가드 0, 런 기록 1"
+
+RA="$WORK/route-a"; rm -rf "$RA"
+mkdir -p "$RA/home/.config/cc-lane" "$RA/run/settings" "$RA/run/log" "$RA/pace"
+cp -R "$script_dir" "$RA/orch"
+sed 's/in 0) ;; \*) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac/in 1) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac/' \
+  "$DRIVER" > "$RA/orch/run.sh"
+check "사본의 가드만 1 로 뒤집혔다 (저장소 파일은 0 그대로)" \
+  "$(grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac' "$RA/orch/run.sh" || true)/$(grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac' "$DRIVER" || true)" \
+  "1/1"
+check "가드 1 사본은 기록 1 의 런을 통과시킨다" "$(rg_case "$RA/orch/run.sh" 1)" "0:"
+check "가드 1 사본은 기록이 다른 런을 거부한다" "$(rg_case "$RA/orch/run.sh" 0)" \
+  "1:라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0"
+
+# 래퍼 자리에는 자기가 받은 설정 디렉터리를 적고 잠깐 사는 스텁을 둔다.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${CLAUDE_CONFIG_DIR-unset}" > "$RA_CFG_OUT"' 'sleep 1' \
+  > "$RA/orch/stage-wrapper.sh"
+printf '{}\n' > "$RA/run/settings/implement.json"
+ra_inv() {  # ra_inv <enabled|disabled> <file>
+  jq -cn --arg d "$RA/home/.claude-ra" --arg u "$1" \
+    '{schema: "cc-lane-accounts v1", accounts: [{id: "ra1", config_dir: $d, label: "ra1",
+      interactive_reserved: false, unattended: $u, added_at: 0}]}' > "$2"
+}
+mkdir -p "$RA/home/.claude-ra"
+cat > "$RA/probe.sh" <<'RAEOF'
+ra_drv="$1"; RA_ROOT="$2"; ra_sid="$3"; set --
+. "$ra_drv"
+set +e
+RUN_DIR="$RA_ROOT/run"; ORCH_DIR="$RA_ROOT/orch"; CLI_BIN=/usr/bin/true
+RUN_ID=ra-run; DOC_KEY=ra; GRANT=""; MANIFEST=""; LEDGER="$RA_ROOT/ledger.md"
+home_alias() { printf 'ra'; }
+ra_live() { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$1" 2>/dev/null | jq -r '.account // empty' 2>/dev/null; }
+stage_spawn "$ra_sid" "$RA_ROOT" "prompt" 2>/dev/null; rc=$?
+printf 'rc=%s\n' "$rc"
+printf 'reason=%s\n' "${STAGE_SPAWN_PARK_REASON:-}"
+printf 'window=%s/%s\n' "$( { wc -l < "$RUN_DIR/$ra_sid.window" 2>/dev/null || printf 0; } | tr -d ' ')" \
+  "$(sed -n '4p' "$RUN_DIR/$ra_sid.window" 2>/dev/null)"
+printf 'cfgrec=%s\n' "$(stage_config_dir_of "$ra_sid")"
+printf 'record=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
+printf 'live=%s\n' "$(ra_live "$ra_sid")"
+if [ "$rc" = "0" ]; then
+  stage_collect "$ra_sid"
+  spawn_lease_release "$ra_sid"
+  printf 'after=%s\n' "$(ra_live "$ra_sid")"
+  printf 'record2=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
+fi
+RAEOF
+ra_spawn() {  # ra_spawn <stage-id> — probe 출력 전체
+  env -u CC_PIPELINE_SHIFT_ID -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$RA/home" \
+    RUN_PACE_ROOT="$RA/pace" RA_CFG_OUT="$RA/cfg-out" \
+    bash "$RA/probe.sh" "$RA/orch/run.sh" "$RA" "$1" 2>/dev/null
+}
+ra_get() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+printf '# 원장 픽스처\n\n## 실행 ra-run\n\n' > "$RA/ledger.md"
+printf '1\n' > "$RA/run/routing-guard"
+ra_inv enabled "$RA/run/inventory.json"
+
+# 계정 부여 — 창 넷째 줄, 시도의 설정 디렉터리 기록, 임대 기록, 살아 있는 임대,
+# 래퍼 환경, `stage-lease` 행, 종단 뒤 반납.
+ra_out=$(ra_spawn "S4:segA:1")
+check "가드 1 기동이 성공한다" "$(ra_get "$ra_out" rc)" "0"
+check "창 기록이 네 줄이고 넷째 줄이 부여 계정이다" "$(ra_get "$ra_out" window)" "4/ra1"
+check "시도의 설정 디렉터리가 기록되고 드라이버 판독기가 그것을 읽는다" "$(ra_get "$ra_out" cfgrec)" "$RA/home/.claude-ra"
+check "부여 난스가 반납용으로 기록된다" "$(ra_get "$ra_out" record)" "yes"
+check "기동 직후 계보의 임대가 살아 있다" "$(ra_get "$ra_out" live)" "ra1"
+check "래퍼가 부여된 디렉터리를 CLAUDE_CONFIG_DIR 로 받는다" "$(cat "$RA/cfg-out" 2>/dev/null)" "$RA/home/.claude-ra"
+check "종단 반납 뒤 임대가 사라진다" "$(ra_get "$ra_out" after)" ""
+check "반납이 끝나면 기록도 지워진다" "$(ra_get "$ra_out" record2)" "no"
+case "$( { grep '^- `stage-lease`' "$RA/ledger.md" || true; } | tail -1)" in
+  *"| 파견 id=S4:segA:1 | 계보=S4:segA:1 | 계정=ra1 | 레인=~/.claude-ra | "*"| 근거=first | "*)
+    ok "드라이버 기동이 게이트의 행 빌더로 stage-lease 행을 쓴다" ;;
+  *) bad "stage-lease 행" "$(tail -1 "$RA/ledger.md")" ;;
+esac
+rc=0; bash -c 'g="$1"; l="$2"; set --; CC_GATE_SOURCE_ONLY=1 . "$g" >/dev/null 2>&1; set +e
+               unset CC_GATE_SOURCE_ONLY; LEDGER="$l"; RUN_DIR="${l%/*}"; RUN_ID=ra-run; gate_chain_verify' \
+  _ "$RA/orch/gate.sh" "$RA/ledger.md" >/dev/null 2>&1 || rc=$?
+check "드라이버가 쓴 stage-lease 행이 원장 사슬을 끊지 않는다" "$rc" "0"
+
+# 부여 뒤 이른 반환(설정 파일 없음 78)은 이 기동이 만든 임대를 돌려준다.
+mv "$RA/run/settings/implement.json" "$RA/run/settings/implement.json.off"
+ra_out=$(ra_spawn "S4:segC:1")
+check "설정이 없으면 78 이다" "$(ra_get "$ra_out" rc)" "78"
+check "그 이른 반환은 발행한 임대를 반납한다" "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)" "/no"
+mv "$RA/run/settings/implement.json.off" "$RA/run/settings/implement.json"
+
+# PARK 와 가드 어긋남은 그 스테이지만 park 할 코드로 돌아오고 아무것도 띄우지 않는다.
+ra_inv disabled "$RA/run/inventory.json"
+ra_out=$(ra_spawn "S4:segP:1")
+check "라우터 PARK 는 park 코드 79 다" "$(ra_get "$ra_out" rc)" "79"
+case "$(ra_get "$ra_out" reason)" in
+  *"라우터 판정 PARK no-enabled-account"*) ok "PARK 사유가 라우터 판정을 싣는다" ;;
+  *) bad "PARK 사유" "$(ra_get "$ra_out" reason)" ;;
+esac
+check "PARK 는 창 기록도 pid 도 남기지 않는다" \
+  "$(ra_get "$ra_out" window)/$( [ -e "$RA/run/S4:segP:1.pid" ] && printf pid || printf -- -)" "0//-"
+ra_inv enabled "$RA/run/inventory.json"
+printf '0\n' > "$RA/run/routing-guard"
+ra_out=$(ra_spawn "S4:segQ:1")
+check "가드 기록이 다르면 park 코드 79 다" "$(ra_get "$ra_out" rc)" "79"
+check "그 사유가 어긋남을 말한다" "$(ra_get "$ra_out" reason)" "라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0"
+check "가드 어긋남은 임대를 묻지도 않는다" "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)" "/no"
+printf '1\n' > "$RA/run/routing-guard"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

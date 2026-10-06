@@ -18,6 +18,9 @@ fi
 # rather than a negative-framed bypass). Default = uname -s for normal use.
 host_os="${CC_CMDS_NOTIFY_HOST_OS:-$(uname -s)}"
 
+# This script's directory, canonical — the click handler is found from it.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || script_dir=""
+
 subcommand="${1:-}"; shift || true
 
 flag_dir="${TMPDIR:-/tmp}/cc-cmds-active-notify"
@@ -167,6 +170,15 @@ dispatch_fire() {
   # === Release lock BEFORE terminal-notifier (minimize hold time) ===
   rmdir "$lockdir" 2>/dev/null || :
 
+  # === Click value ===
+  # Every banner carries `-execute`: the handler's focus command for the tmux
+  # pane this process runs in, or `:` when there is none. Built after the flag
+  # is already changed, so a failure here must not end the script — the final
+  # fire has consumed the flag and would otherwise lose its banner and return
+  # non-zero to the caller.
+  click=$(/bin/bash "$script_dir/../../../orchestrator/notify-focus.sh" exec-arg 2>/dev/null) || click=':'
+  [[ "$click" == /* ]] || click=':'
+
   # === terminal-notifier dispatch ===
   if [[ "$flag_mode" == "single" ]]; then
     if [[ "$host_os" != "Darwin" ]]; then
@@ -190,7 +202,7 @@ dispatch_fire() {
     # renders as `Terminal`. The bare marker is kept because there is no way to
     # change the application name (`-sender` and `-appIcon` are discontinued), so
     # the title is the only place provenance can live.
-    notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute ':' )
+    notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute "$click" )
     # arm_count == 1 ↔ classic 1-shot ARM; -group "cc-cmds-active-notify" gives
     # banner replace semantics for visual parity with §7 bypass. armCount > 1
     # omits -group so each sub-event banner persists in Notification Center.
@@ -202,7 +214,7 @@ dispatch_fire() {
     dispatch_notifier \
       -title "cc-cmds ${workflow}" \
       -message "${summary}" \
-      -execute ':' || true
+      -execute "$click" || true
   fi
 }
 
