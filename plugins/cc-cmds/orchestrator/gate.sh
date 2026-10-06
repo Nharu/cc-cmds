@@ -1586,11 +1586,17 @@ gate_reach_copy_form() {
   #
   # The two dialects part at the first operand. BSD stops reading options
   # there, so in `mv a -n dir` the `-n` is a missing source and `a` still
-  # replaces `dir/a`; GNU reads it as an option anywhere. A word after the
-  # first operand is therefore read both ways at once: it is an operand, it
-  # never turns replacing off, and it turns replacing on when GNU would read
-  # it so. One that would take a value there (`-t`) is the trigger, because
-  # the two dialects disagree on what the destination is.
+  # replaces `dir/a`; GNU reads it as an option anywhere. An option word after
+  # the first operand never turns replacing off, and it turns replacing on
+  # when GNU would read it so. The destination is then worked out under each
+  # reading in turn: BSD's, where that word is an operand and can be the
+  # destination, and GNU's, where it is left out of the operands. `mv a b -v`
+  # has the destination `-v` under the first and replaces `b` under the
+  # second, so a reader that kept only the first let it through. A replace
+  # found only under GNU's reading has that word as its trigger, whatever
+  # option it is — `-v` replaces there as surely as `-f` does. One that would
+  # take a value there (`-t`) is the trigger outright, because the two
+  # dialects disagree on what the destination is.
   #
   # The trigger is the word that turned replacing on — the last `-f`, `-i`,
   # `-F` or long form after any `-n` — and the verb only when the act replaces
@@ -1599,18 +1605,20 @@ gate_reach_copy_form() {
   # open the forced one (`ln -s -f`, `mv -n -f`), since the verb is a word of
   # both shapes.
   local tool="$1"; shift
-  local ok val clob=1 cw='' dmode=0 eat=0 t='' n=0 a w rc p dest='' ch post=0
+  local ok val clob=1 cw='' dmode=0 eat=0 t='' a w rc p ch post=0 pw=''
   case "$tool" in
     mv)      ok='fhinv';           val='t' ;;
     cp)      ok='RrHLPfinapvXx';    val='t' ;;
     ln)      ok='sfFhinvw';         val='t'; clob=0 ;;
     install) ok='bCcdMpSsUv';       val='BfghmoTNDl' ;;
   esac
-  local -a ops=()
+  # ops is BSD's operand list and gops GNU's: they differ only by the option
+  # words after the first operand, the last of which is pw.
+  local -a ops=() gops=()
   for a in "$@"; do
     if [ "$eat" = "1" ]; then eat=0; continue; fi
     if [ "$eat" = "t" ]; then t="$a"; eat=0; continue; fi
-    if [ "$eat" = "ops" ]; then ops+=("$a"); continue; fi
+    if [ "$eat" = "ops" ]; then ops+=("$a"); gops+=("$a"); continue; fi
     if [ "$post" = "1" ]; then
       case "$a" in
         --) eat=ops; continue ;;
@@ -1621,7 +1629,8 @@ gate_reach_copy_form() {
           case "$p" in
             --force|--interactive) clob=1; cw="$a" ;;
             --target-directory) printf '%s' "$a"; return 0 ;;
-          esac ;;
+          esac
+          pw="$a" ;;
         -?*)
           rc=0; w=$(gate_short_letters "$a" "$ok" "$val") || rc=$?
           [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; }
@@ -1630,7 +1639,9 @@ gate_reach_copy_form() {
             case "$tool:$ch" in
               mv:f|mv:i|cp:f|cp:i|ln:f|ln:i|ln:F) clob=1; cw="$a" ;;
             esac
-          done ;;
+          done
+          pw="$a" ;;
+        *) gops+=("$a") ;;
       esac
       ops+=("$a"); continue
     fi
@@ -1665,33 +1676,43 @@ gate_reach_copy_form() {
           mv:3|cp:3|ln:3) t="${a#*t}" ;;
           *:2) eat=1 ;;
         esac ;;
-      *) ops+=("$a"); post=1 ;;
+      *) ops+=("$a"); gops+=("$a"); post=1 ;;
     esac
   done
   [ "$dmode" = "1" ] && return 0
   [ "$clob" = "1" ] || return 0
-  n=${#ops[@]}
-  local srcs=$n
+  [ "${#ops[@]}" -gt 0 ] || return 0
+  gate_reach_copy_dest "$tool" "$t" "${cw:-$tool}" "${ops[@]}" && return 0
+  [ -n "$pw" ] || return 0
+  gate_reach_copy_dest "$tool" "$t" "$pw" "${gops[@]}"
+  return 0
+}
+
+gate_reach_copy_dest() {
+  # gate_reach_copy_dest <tool> <target dir or ''> <trigger> <operands...> —
+  # prints the trigger and returns 0 when one reading's operands would replace
+  # a name that already exists; returns 1 otherwise.
+  local tool="$1" t="$2" trig="$3"; shift 3
+  local n=$# srcs=$# dest a
   if [ -z "$t" ]; then
     if [ "$n" -ge 2 ]; then
-      dest="${ops[$((n - 1))]}"
+      dest="${!n}"
       if [ ! -d "$dest" ]; then
-        { [ -e "$dest" ] || [ -L "$dest" ]; } && printf '%s' "${cw:-$tool}"
-        return 0
+        { [ -e "$dest" ] || [ -L "$dest" ]; } || return 1
+        printf '%s' "$trig"; return 0
       fi
       t="$dest"; srcs=$((n - 1))
     elif [ "$tool" = "ln" ] && [ "$n" = "1" ]; then
       t='.'
     else
-      return 0
+      return 1
     fi
   fi
-  local k=0
-  while [ "$k" -lt "$srcs" ]; do
-    a="${ops[$k]}"; k=$((k + 1))
-    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && { printf '%s' "${cw:-$tool}"; return 0; }
+  while [ "$srcs" -gt 0 ]; do
+    a="$1"; shift; srcs=$((srcs - 1))
+    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && { printf '%s' "$trig"; return 0; }
   done
-  return 0
+  return 1
 }
 
 gate_reach_disposition() {

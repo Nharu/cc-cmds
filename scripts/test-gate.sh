@@ -25458,6 +25458,23 @@ git -C "$WT" branch -D wi76 >/dev/null 2>&1
 git -C "$SIB76" rm -q -f --cached wo76.txt >/dev/null 2>&1
 rm -f "$SIB76/wo76.txt"
 
+# 목적지 뒤의 옵션 — GNU 는 피연산자 뒤 옵션을 재배열해 그 앞의 목적지를 덮고, BSD 는
+# 그 낱말을 목적지로 읽어 거부한다. 옵션 낱말을 목적지로만 읽던 동안 덮어쓰기를 켜지
+# 않는 -v 까지 이 철자들을 트리거 없이 통과시켰다. rc·판정 절반은 모든 플랫폼에서,
+# 잔존 절반은 GNU 가 실제로 덮는 Linux 샤드에서 회귀를 가린다. 목적지가 없는 쌍둥이는
+# 어느 읽기에서도 덮을 것이 없어 통과한다.
+for f in qa qb qc qd; do printf 'new\n' > "$D76/${f}src"; printf 'keep\n' > "$D76/${f}dst"; done
+printf 'new\n' > "$D76/qesrc"
+nb76=$(b76)
+x76 트리밖쓰기 mv "$D76/qasrc" "$D76/qadst" -f;     p76 '목적지 뒤 -f 의 mv' grep -q '^keep$' "$D76/qadst"
+x76 트리밖쓰기 mv "$D76/qbsrc" "$D76/qbdst" -v;     p76 '목적지 뒤 -v 의 mv' grep -q '^keep$' "$D76/qbdst"
+x76 트리밖쓰기 cp "$D76/qcsrc" "$D76/qcdst" -f;     p76 '목적지 뒤 -f 의 cp' grep -q '^keep$' "$D76/qcdst"
+x76 트리밖쓰기 ln -s "$D76/qdsrc" "$D76/qddst" -f;  p76 '목적지 뒤 -f 의 ln -s' grep -q '^keep$' "$D76/qddst"
+check "76: 목적지 뒤 옵션의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b76) - nb76 ))" "4"
+nb76=$(b76)
+x76 트리밖쓰기 mv "$D76/qesrc" "$D76/qenew" -v
+check "76: 대조 — 목적지가 없는 mv 의 뒤 -v 는 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b76) - nb76 ))" "통과/0"
+
 # 공유 stash 는 git 전역 옵션 뒤에 와도 기기전역 하한이 잡는다. 하한이 위치 인자로만
 # 읽던 동안 `-C <dir>`·`--no-pager` 가 앞에 오면 `-` 를 답해 이 칸을 통과했다. 지울
 # 항목을 하나 넣어 두고(작업 트리를 건드리지 않는 `stash create` + `store`), 각 park
@@ -25544,6 +25561,13 @@ check "76: 형태=cp -n -f 는 cp -n -f 를 연다" "$(pd76 'cp -n -f' cp -n -f 
 check "76: 덮어쓰기를 켠 낱말이 트리거다 — ln -s -f" "$(lt76 ln -s -f "$P76/src" "$P76/dst")" "-f"
 check "76: 동사만으로 덮어쓰는 mv 는 동사가 트리거다" "$(lt76 mv "$P76/src" "$P76/dst")" "mv"
 check "76: 동사만 적은 형태는 동사만으로 덮어쓰는 mv 를 연다" "$(pd76 'mv' mv "$P76/src" "$P76/dst")" "1"
+# 목적지 뒤의 옵션 낱말은 종류와 무관하게 그 낱말이 트리거다 — GNU 읽기에서만 덮는다.
+check "76: 목적지 뒤 옵션 낱말이 트리거다 — mv … -f" "$(lt76 mv "$P76/src" "$P76/dst" -f)" "-f"
+check "76: 목적지 뒤 옵션 낱말이 트리거다 — mv … -v" "$(lt76 mv "$P76/src" "$P76/dst" -v)" "-v"
+check "76: 목적지 뒤 옵션 낱말이 트리거다 — cp … --verbose" "$(lt76 cp "$P76/src" "$P76/dst" --verbose)" "--verbose"
+check "76: 목적지 뒤 옵션 낱말이 트리거다 — ln -s … -f" "$(lt76 ln -s "$P76/src" "$P76/dst" -f)" "-f"
+check "76: 대조 — 목적지가 없으면 뒤 옵션에도 트리거가 없다" "$(lt76 mv "$P76/src" "$P76/new" -v)" ""
+check "76: 대조 — 피연산자 뒤 -n 의 mv 는 여전히 동사가 트리거다" "$(mkdir -p "$P76/nd" && printf k > "$P76/nd/src" && lt76 mv "$P76/src" -n "$P76/nd")" "mv"
 # 옵션 없는 worktree remove 는 하위 명령이 트리거라 그것을 적은 형태가 연다.
 check "76: 옵션 없는 worktree remove 는 하위 명령이 트리거다" "$(lt76 git worktree remove "$P76/w")" "remove"
 check "76: 형태=git worktree remove 는 옵션 없는 remove 를 연다" "$(pd76 'git worktree remove' git worktree remove "$P76/w")" "1"
