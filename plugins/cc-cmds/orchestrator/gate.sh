@@ -22963,6 +22963,14 @@ gate_done_conditions() {
     if dstep=$(gate_run_scope_design_step); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
+      # The driver names its design stage `S1design` and writes no `종류`. A base
+      # run never has a segment, so this arm is where the driver's design row
+      # has to be read too — otherwise its finished design reads as no row at all
+      # and the document it froze as one nobody will dispatch again.
+      if [ -z "$drows" ] && [ "$(gate_snapshot_design_scope)" = "base" ]; then
+        drows=$( { gate_rows 'stage-result' || true; } \
+                 | { grep -F '세그먼트=- | 스테이지=S1design |' || true; })
+      fi
       dlastrow=$(printf '%s\n' "$drows" | tail -1)
       dlast=$(gate_row_field "$dlastrow" '종단 부류')
       # `공허한 성공` joins `크래시` in the redispatch window. The two names
@@ -23006,6 +23014,13 @@ gate_done_conditions() {
             dwhy="새 시도 깊이 소진(${dfresh}회)"
           fi
         fi
+      fi
+      # A BASE RUN'S FINISHED DESIGN IS NOT A DEAD ONE. In a single run a design
+      # that ended `정상 완료` with no segment after it can only mean the plan
+      # stopped there; in a base run that is the normal road to the audit and the
+      # split, which the base arm below judges.
+      if [ "$dlast" = '정상 완료' ] && [ "$(gate_snapshot_design_scope)" = "base" ]; then
+        dwhy=""
       fi
     fi
     if [ -n "$dwhy" ]; then
