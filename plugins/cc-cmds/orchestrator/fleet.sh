@@ -1077,13 +1077,15 @@ fleet_busy_write() {
 }
 
 fleet_label_homes_json() {
-  # fleet_label_homes_json <inventory-json> — [{id, home}] of every account
-  # that can hold a label (well-formed id, not interactive reserved, a config
-  # dir that renders), whatever its state this tick; home has one trailing `/`
-  # stripped for comparison.
-  printf '%s' "$1" | jq -c --arg re "$FLEET_ID_RE" '
-    [.accounts[] | select((.id | test($re)) and .id != "sensor" and .interactive_reserved == false
-                          and ((.config_dir | test("[|&\\\\<>]")) | not))
+  # fleet_label_homes_json <inventory-json> <dirs-json> — [{id, home}] of the
+  # label set exactly as fleet_label_ids draws it, whatever the router thinks
+  # of each account this tick; home has one trailing `/` stripped for
+  # comparison. A wider set would hold a head for an account whose own lane
+  # ends before the lock (not-enabled, no-config-dir) and so never takes it.
+  local ids
+  ids=$(fleet_label_ids "$1" "$2" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+  printf '%s' "$1" | jq -c --argjson ids "$ids" '
+    [.accounts[] | select(.id as $i | any($ids[]; . == $i))
      | {id, home: (.config_dir | if endswith("/") then .[0:-1] else . end)}]'
 }
 
@@ -1161,11 +1163,13 @@ fleet_dispatch() {
     #     environment, so starting this run here would split it across two
     #     accounts. Another labelled lane's home: refuse, and the head waits for
     #     its lane — eligibility moves tick by tick, parking is forever. A home
-    #     no label holds: park. The record is never rewritten here.
+    #     no label holds, including an account that has left the label set since
+    #     install (draining, disabled, config dir gone): park, because no lane
+    #     would ever take it. The record is never rewritten here.
     rec_dir=$(sed -n '1p' "$run_dir/config-dir" 2>/dev/null || true)
     rec_dir=${rec_dir%/}
     if [ -n "$rec_dir" ] && [ "$rec_dir" != "${home%/}" ]; then
-      other=$(fleet_label_homes_json "$inv" | jq -r --arg d "$rec_dir" '[.[] | select(.home == $d) | .id] | .[0] // empty')
+      other=$(fleet_label_homes_json "$inv" "$dirs" | jq -r --arg d "$rec_dir" '[.[] | select(.home == $d) | .id] | .[0] // empty')
       if [ -n "$other" ]; then clause=lane; detail=lane-mismatch
       else park=lane-record; fi
     fi

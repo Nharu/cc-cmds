@@ -590,6 +590,16 @@ d_fresh d-lm2 lm2
 mkdir -p "$RUNDIR"; printf '%s\n' "$H_CC" > "$RUNDIR/config-dir"
 fleet dispatch u1 >/dev/null 2>&1
 check "레이블 집합 밖 홈에 기록된 런은 park lane-record" "$(backlog_field lm2 '.status + " " + .park_reason')" "parked lane-record"
+d_fresh d-lm3 lm3; inv_write '.accounts[2].unattended = "draining"'
+mkdir -p "$RUNDIR"; printf '%s\n' "$H2" > "$RUNDIR/config-dir"
+fleet dispatch u1 >/dev/null 2>&1
+check "레이블 집합을 떠난(draining) 계정의 홈에 기록된 런은 park lane-record" "$(backlog_field lm3 '.status + " " + .park_reason')" "parked lane-record"
+check "그 런은 거부 행을 남기지 않는다" "$(count_lines "$PACE/refusals.tsv")" "0"
+d_fresh d-lm4 lm4; usage_write '.accounts[2].windows.five_hour.utilization = 0.95'
+mkdir -p "$RUNDIR"; printf '%s\n' "$H2" > "$RUNDIR/config-dir"
+fleet dispatch u1 >/dev/null 2>&1
+check "5시간 창을 넘은 레이블 계정의 홈이면 파킹하지 않고 lane/lane-mismatch" "$(cut -f3,6 "$PACE/refusals.tsv")" "$(printf 'lane\tlane-mismatch')"
+check "그 레코드는 pending 으로 남는다" "$(backlog_status lm4)" "pending"
 rm -rf "$RUNDIR"
 
 # --- absent state is 유지 and admits; the launch shape ----------------------------
