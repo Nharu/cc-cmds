@@ -9608,6 +9608,30 @@ gateC act --manifest "$CM" --kind clause --target infra --cutpoint 커밋 --surf
       --snapshot-digest "$(HC)" --rationale x -- id=K2 상태=불가능 근거="인가 목록 밖"
 check "불가능으로도 정산할 수 있다" "$rc" "0"
 
+# A clause settled `불가능` is settled, and it is also a goal this run will not
+# reach — so condition 10 names it on its own fixed line, and that line alone
+# makes the disposition `무효화`, never `충족`. The line is TAKEN FROM A REAL
+# REFUSAL rather than retyped, so a drift in its wording fails here.
+gateC plan --manifest "$CM" --kind propose-done --target infra --segment SW --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HC)" --rationale x -- 절=x 근거=y
+imp_line=$(cd "$WT" && XDG_STATE_HOME="$WORK/state-clause" gate_inproc plan --manifest "$CM" \
+      --kind propose-done --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- 절=x 근거=y 2>&1 \
+      | grep '^10 종료 절 ' | sed -n '1p') || true
+check "불가능으로 정산한 절은 조건 10 의 고정 줄로 남는다" "$imp_line" "10 종료 절 K2 불가능 정산"
+case "$msg" in
+  *"종료 절 K1"*) bad "충족 절" "충족으로 정산한 K1 이 미충족 목록에 남았다: $msg" ;;
+  *) ok "충족으로 정산한 절은 미충족 목록에서 빠진다" ;;
+esac
+imp_disp=$( ( gate_seam_init >/dev/null 2>&1 || exit 1
+              gate_seam_enter
+              gate_done_disposition "$imp_line" ) )
+check "불가능 정산 줄만 남으면 처분은 무효화다" "$imp_disp" "무효화"
+imp_disp=$( ( gate_seam_init >/dev/null 2>&1 || exit 1
+              gate_seam_enter
+              gate_done_disposition "10 종료 절 K2 불가능 정산 (꼬리)" ) )
+check "불가능 정산 줄 뒤에 글이 붙으면 무효화로 떨어지지 않는다" "$imp_disp" "미충족"
+
 # ---------------------------------------------------------------------------
 # 26. Grade-1 judgments have a writer
 # --- section: 26 | group: base | covers: - | needs: 25 | anchors: 되돌리는 법이 없는 판단 행은 거부된다 ---
@@ -15761,7 +15785,7 @@ check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
 # and it carries the paragraph explaining why it is beside that file rather than
 # inside it. The arm did not move; the helper's reach had to.
 check "F4 — 무효화 종료의 done 표시가 발사한다" \
-  "$(fires_at '종단 — 무효화 · 근거' 16)" "fires"
+  "$(fires_at '종단 — 무효화%s%s · 근거' 16)" "fires"
 # The anchor is the literal the line actually prints. It used to name a
 # condition count the line does not spell, so it matched nothing — and the
 # window is 20 because the reach was never measured against a live anchor: the
@@ -19721,6 +19745,65 @@ cap_gate "$capc_sid2" "$CAPC_RID#2" act --manifest "$CAP_NM" --kind handoff --ta
          -- 교대=2 대상=infra 사유=무기록 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
 check "34c A20: 교대가 argv 로 낸 사유=무기록 도 2 로 거절된다" "$rc" "2"
 check "34c A20: 두 거절 모두 무기록 행을 남기지 않는다" "$(capc_unrec)" "$capc_u0"
+
+# A21. THE SEAT'S `중단 답` ROW AND THE SNAPSHOT'S `answered_halts[]`. A person's
+# answer to a halt record reaches the shift only through this row, so what it
+# accepts is exactly a record of this run, complete, an option it lists byte for
+# byte, and a key some stage ran on — and it is listed until a later
+# `stage-result` of that key takes it.
+mkdir -p "$CAP_DIR/halt"
+CAPC_HALT="$CAP_DIR/halt/design-audit-unattended.md"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=design-audit-unattended; run=R7 -->' \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 함께 함의하는 요구가 있는가?' '**선택지**:' \
+  '- `adopt as a requirement` — adopt as a requirement' '- `reject` — reject' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CAPC_HALT"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=audit | 실행 버전=1 | 세션 id=s-audit-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+capc_ha() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
+capc_halts() { cap_snap "$CAPC_SEAT_SID" '' | jq -c '[.answered_halts[] | [.segment, .option]]'; }
+capc_ha0=$(capc_ha)
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 기록에 없는 선택지" \
+         -- "중단 기록=$CAPC_HALT" '선택지=adopt' 근거=x
+check "34c A21: 기록이 원문으로 싣지 않은 선택지는 2 로 거절된다" "$rc" "2"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 런 밖의 기록" \
+         -- "중단 기록=$WORK/elsewhere.md" '선택지=reject' 근거=x
+check "34c A21: 이 런의 halt 디렉터리 밖 기록은 2 로 거절된다" "$rc" "2"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment ZZ9 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 돈 적 없는 키" \
+         -- "중단 기록=$CAPC_HALT" '선택지=reject' 근거=x
+check "34c A21: stage-result 가 없는 키는 2 로 거절된다" "$rc" "2"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 게이트 몫의 키" \
+         -- "중단 기록=$CAPC_HALT" '선택지=reject' 근거=x 레인=forged
+check "34c A21: argv 에 게이트 몫 키를 실으면 2 로 거절된다" "$rc" "2"
+cap_gate "$capc_sid2" "$CAPC_RID#2" act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid2" "$CAPC_RID#2")" \
+         --rationale "픽스처 — 교대가 쓰려는 답" \
+         -- "중단 기록=$CAPC_HALT" '선택지=reject' 근거=x
+check "34c A21: 교대의 중단 답은 3 으로 거절된다" "$rc" "3"
+check "34c A21: 다섯 거절 모두 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
+check "34c A21: 답이 없으면 answered_halts 는 비어 있다" "$(capc_halts)" "[]"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 좌석의 답" \
+         -- "중단 기록=$CAPC_HALT" '선택지=adopt as a requirement' '근거=사람이 요구로 채택'
+check "34c A21: 기록의 선택지를 실은 좌석의 중단 답은 통과한다" "$rc" "0"
+check "34c A21: 중단 답 행이 하나 생긴다" "$(capc_ha)" "$((capc_ha0 + 1))"
+capc_harow=$(cap_rows '중단 답' | tail -1)
+check "34c A21: 그 행은 기록의 스킬을 게이트가 읽어 찍는다" \
+  "$(row_field "$capc_harow" '스킬')" "design-audit-unattended"
+check "34c A21: 그 행은 기록의 다이제스트를 찍는다" \
+  "$(row_field "$capc_harow" '기록 다이제스트')" "$(shasum -a 256 "$CAPC_HALT" | cut -d' ' -f1)"
+check "34c A21: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
+  "$(capc_halts)" '[["CC1","adopt as a requirement"]]'
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+check "34c A21: 뒤에 그 키의 stage-result 가 서면 답은 소비되어 빠진다" "$(capc_halts)" "[]"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
