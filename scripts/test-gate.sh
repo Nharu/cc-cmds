@@ -1292,6 +1292,19 @@ chmod +x "$WORK/bin/metrics-noop"
 export CC_METRICS_COLLECTOR="$WORK/bin/metrics-noop"
 export CC_METRICS_FILING_FILE="$WORK/no-such-metrics-filing"
 
+# THE HALT-REPORT ROUND IS INERT FOR THIS WHOLE PROCESS, for the same reasons
+# and one more. Its destination is a constant, so unlike the metrics filing there
+# is no missing setting to stop it: on a host whose keychain holds the gate's
+# write credential, a fixture run that settled would go to the real tracker. The
+# classifier seam prints no event, so no run of this suite has anything to file;
+# the backlog seam set and empty switches off the half that reads the fleet's
+# backlog, which the classifier seam does not cover. Section 96 names its own on
+# the call, which wins over this.
+printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/halt-stops-noop"
+chmod +x "$WORK/bin/halt-stops-noop"
+export CC_HALT_STOPS="$WORK/bin/halt-stops-noop"
+export CC_HALT_BACKLOG=
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -47201,6 +47214,336 @@ check "92: report-check 밖의 --report 는 rc 2 다" "$rc" "2"
 for w92 in "$W92S1" "$W92S2" "$W92S3" "$W92S4" "$W92S5"; do
   ( cd "$WT" && git worktree remove --force "$w92" ) >/dev/null 2>&1
 done
+
+# ---------------------------------------------------------------------------
+# 96. 중단 리포트 관문 — 런별 기록·케이던스·잠금·좌석·정리·백로그 기준선·어휘 핀
+# --- section: 96 | group: base | covers: snapshot, plan, digest-path | anchors: 96: 런 개시가 런별 기록을 연다, 96: 재진입은 종결 기록을 바이트 하나 바꾸지 않는다, 96: 첫 진입은 회차를 돈다, 96: 스탬프 안의 재진입은 회차를 돌지 않는다, 96: 잠금이 살아 있으면 회차를 돌지 않는다, 96: 스테이지 좌석은 회차를 돌지 않는다, 96: plan 은 회차를 돌지 않는다, 96: digest-path 는 회차를 돌지 않는다, 96: 기록이 없는 원장은 다루지 않는다, 96: 30일 지난 종결 기록은 지워진다, 96: fleet.seen 이 없으면 기준선만 쓴다, 96: 분류기의 런 막힘 사유는 모두 사이드카 blocked.사유 어휘에 있다 ---
+#
+# 게이트가 런을 열 때 런별 기록을 만들고, 프렐류드가 중단 리포트 회차를 언제 띄우고
+# 언제 띄우지 않는지를 잰다. 등록·코멘트·담기처럼 gh 를 부르는 갈래는
+# `scripts/test-run-issue-filing.sh` 가 잰다 — 여기서는 분류기를 인자만 적는 스텁으로
+# 바꾸고, 백로그 경로는 백로그 사례에서만 연다. 그래서 이 절의 어느 회차도 사건을 갖지
+# 않고 gh 에 닿지 않는다.
+#
+# 회차가 돌았는지는 원장이 없는 열린 기록(미끼) 하나로 본다 — 회차는 그런 기록을
+# `원장 없음` 으로 닫으므로, 미끼가 닫혔으면 회차가 돈 것이고 열려 있으면 돌지 않은
+# 것이다. 이 절은 픽스처를 자기가 만든다(절 69 와 같은 이유).
+# ---------------------------------------------------------------------------
+P96ROOT=$(mktemp -d "$WORK/h96.XXXXXX")
+P96_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P96_PREV" ]; then
+  printf '96: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+P96_RID=R96
+P96_MAN="$P96ROOT/$P96_RID.plan.md"
+P96_GRANT="$WT/docs/pipeline-grant/$P96_RID.md"
+P96_LEDGER="$WT/docs/pipeline-run/$P96_RID.md"
+P96_STATE="$P96ROOT/state"
+P96_SROOT="$P96_STATE/cc-cmds"
+P96_HROOT="$P96_SROOT/halt-report"
+P96_RUNS="$P96_HROOT/runs"
+P96_REC="$P96_RUNS/$P96_RID.json"
+P96_STAMP="$P96_SROOT/halt.stamp"
+P96_LOCK="$P96_SROOT/.halt.lock"
+P96_RUNDIR="$P96_SROOT/run/$P96_RID"
+P96_STOPS="$P96ROOT/stops-stub"
+P96_STOPS_LOG="$P96ROOT/stops.log"
+P96_SCHEMA=$(sed -n "s/^readonly GATE_HALT_SCHEMA='\(.*\)'\$/\1/p" "$GATE")
+sed -e "s/run-id=$P96_PREV;/run-id=$P96_RID;/" \
+    -e "s/^\*\*런 id\*\*: $P96_PREV\$/**런 id**: $P96_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P96_MAN"
+sed "s/R1/$P96_RID/g" "$GBAK" > "$P96_GRANT"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$P96_RID"
+  printf '런 id %s · 중단 리포트 관문 픽스처\n' "$P96_RID"
+} > "$P96_LEDGER"
+rm -rf "$P96_STATE"
+mkdir -p "$P96_STATE"
+cat > "$P96_STOPS" <<P96EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$P96_STOPS_LOG"
+exit 0
+P96EOF
+chmod +x "$P96_STOPS"
+
+p96_gate() {
+  # 인프로세스 호출. 회차는 게이트가 띄우는 분리 자식(새 bash 프로세스)에서 돌고, 그
+  # 자식은 수출된 값만 받는다 — 그래서 서브셸 안의 `export` 다(절 69 와 같다).
+  ( cd "$WT" && export XDG_STATE_HOME="$P96_STATE" CC_HALT_STOPS="$P96_STOPS" \
+      && gate_inproc "$@" >/dev/null 2>&1 )
+}
+p96_wait_round() {
+  local i=0
+  while [ -d "$P96_LOCK" ]; do
+    [ "$i" -lt 300 ] || { bad "96: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+p96_record() {
+  # p96_record <파일 이름> <상태> <원장> [정착 토큰] — 손으로 쓴 런별 기록 하나.
+  mkdir -p "$P96_RUNS"
+  jq -n --arg s "$P96_SCHEMA" --arg st "$2" --arg l "$3" --arg k "${4:-}" \
+    '{schema: $s, run: "fixture", "원장": $l, "매니페스트": "", RUN_DIR: "",
+      "상태": $st, "열림 시각": "2026-01-01T00:00:00Z", "정착 시각": null, "종결 시각": null,
+      "정착 토큰": (if $k == "" then null else $k end), "사건": {}, "최종 건너뜀": null,
+      "런 처분": "정착 대기"}' > "$P96_RUNS/$1"
+}
+p96_decoy() { p96_record decoy.json 열림 "$P96ROOT/no-such-ledger.md"; }
+p96_get() { jq -r --arg k "$2" '.[$k] // "null"' "$P96_RUNS/$1" 2>/dev/null || printf 없음; }
+p96_old_stamp() { printf '%s\n' "$(( $(date -u +%s) - 86400 ))" > "$P96_STAMP"; }
+p96_runrows() { { grep -c '^- `run` ' "$P96_LEDGER" || true; }; }
+p96_lock_state() { if [ -d "$P96_LOCK" ]; then printf 있음; else printf 없음; fi; }
+
+# A — 첫 진입. 런 개시 가지가 기록을 만들고, 프렐류드가 회차를 띄운다.
+p96_decoy
+p96_gate snapshot --manifest "$P96_MAN"
+p96_wait_round
+check "96: 런 개시가 런별 기록을 연다" "$(p96_get "$P96_RID.json" schema)/$(p96_get "$P96_RID.json" run)" "$P96_SCHEMA/$P96_RID"
+case "$(p96_get "$P96_RID.json" 원장)" in
+  */docs/pipeline-run/"$P96_RID".md) ok "96: 그 기록은 이 런의 원장을 가리킨다" ;;
+  *) bad "96: 그 기록은 이 런의 원장을 가리킨다" "$(p96_get "$P96_RID.json" 원장)" ;;
+esac
+check "96: 첫 진입은 회차를 돈다" "$(p96_get decoy.json 상태)" "종결"
+check "96: 원장이 사라진 기록은 리포트 없이 원장 없음으로 닫힌다" "$(p96_get decoy.json '런 처분')" "원장 없음"
+check "96: 첫 진입이 끝나면 잠금이 풀려 있다" "$(p96_lock_state)" "없음"
+check "96: 사건 없는 회차는 원장에 리포트 행을 쓰지 않는다" \
+  "$( { grep -c -F -e '`중단 리포트 건너뜀`' -e 'kind=halt-report' "$P96_LEDGER" || true; } )" "0"
+
+# R8 — 종결된 기록은 런 개시 가지가 다시 돌아도 바이트 하나 바뀌지 않는다. 가지가
+# 다시 돌았다는 것은 `run` 행이 하나 는 것으로 먼저 확인한다 — 돌지 않았다면 아래
+# 단언은 아무것도 배제하지 않는다.
+jq -c '.["상태"] = "종결" | .["종결 시각"] = "2026-01-02T00:00:00Z" | .["런 처분"] = "대상 없음"' \
+  "$P96_REC" > "$P96_REC.tmp" && mv "$P96_REC.tmp" "$P96_REC"
+p96_sha_before=$(shasum -a 256 "$P96_REC" | cut -d' ' -f1)
+p96_run_before=$(p96_runrows)
+rm -rf "$P96_RUNDIR/settings"
+p96_gate snapshot --manifest "$P96_MAN"
+p96_wait_round
+check "96: (선행) 설정 디렉터리가 사라진 재진입은 런 개시 가지를 다시 돈다" \
+  "$(( $(p96_runrows) - p96_run_before ))" "1"
+check "96: 재진입은 종결 기록을 바이트 하나 바꾸지 않는다" \
+  "$(shasum -a 256 "$P96_REC" | cut -d' ' -f1)" "$p96_sha_before"
+
+# B — 정착한 기록만 분류기에 닿고, 기록이 없는 원장은 회차의 모집단 밖이다.
+printf 'x\n' > "$P96ROOT/settled-ledger.md"
+printf 'x\n' > "$P96ROOT/orphan-ledger.md"
+p96_record settled.json 정착 "$P96ROOT/settled-ledger.md" 종단
+p96_old_stamp
+p96_gate snapshot --manifest "$P96_MAN"
+p96_wait_round
+check "96: 정착한 기록은 분류기를 부른다" \
+  "$( { grep -c -x -F "$P96ROOT/settled-ledger.md" "$P96_STOPS_LOG" 2>/dev/null || true; } )" "1"
+check "96: 기록이 없는 원장은 다루지 않는다" \
+  "$( { grep -c -F 'orphan-ledger.md' "$P96_STOPS_LOG" 2>/dev/null || true; } )" "0"
+check "96: 사건 없는 정착 기록은 대상 없음으로 닫힌다" \
+  "$(p96_get settled.json 상태)/$(p96_get settled.json '런 처분')" "종결/대상 없음"
+
+# C — 스탬프 안의 재진입.
+p96_decoy
+p96_gate snapshot --manifest "$P96_MAN"
+check "96: 스탬프 안의 재진입은 회차를 돌지 않는다" "$(p96_get decoy.json 상태)" "열림"
+
+# D — 스탬프는 만료됐지만 잠금이 살아 있다. 잠금은 이 사례가 만든 것이라 기다리지 않는다.
+p96_old_stamp
+mkdir -p "$P96_LOCK"
+p96_gate snapshot --manifest "$P96_MAN"
+check "96: 잠금이 살아 있으면 회차를 돌지 않는다" "$(p96_get decoy.json 상태)" "열림"
+
+# E — 잠금이 만료 시간(7200초)을 넘겼다.
+fx_age_file "$P96_LOCK" 10800
+p96_gate snapshot --manifest "$P96_MAN"
+p96_wait_round
+check "96: 만료된 잠금은 깨고 회차를 돈다" "$(p96_get decoy.json 상태)" "종결"
+check "96: 깨고 잡은 잠금도 끝에 풀린다" "$(p96_lock_state)" "없음"
+
+# F — 스테이지 좌석, plan, digest-path. 스탬프는 만료된 채로 두고, 세 호출 모두 회차도
+# 스탬프도 건드리지 않는다.
+p96_decoy
+p96_old_stamp
+p96_stamp_before=$(cat "$P96_STAMP")
+( CC_PIPELINE_STAGE_ID="$P96_RID#1" CC_PIPELINE_SEGMENT=S96 p96_gate snapshot --manifest "$P96_MAN" )
+check "96: 스테이지 좌석은 회차를 돌지 않는다" "$(p96_get decoy.json 상태)" "열림"
+check "96: 스테이지 좌석은 스탬프를 쓰지 않는다" "$(cat "$P96_STAMP")" "$p96_stamp_before"
+p96_gate plan --manifest "$P96_MAN" --kind x --target infra --cutpoint 커밋 -- ls
+check "96: plan 은 회차를 돌지 않는다" "$(p96_get decoy.json 상태)" "열림"
+check "96: plan 은 스탬프를 쓰지 않는다" "$(cat "$P96_STAMP")" "$p96_stamp_before"
+p96_gate digest-path --manifest "$P96_MAN"
+check "96: digest-path 는 회차를 돌지 않는다" "$(p96_get decoy.json 상태)" "열림"
+check "96: digest-path 는 스탬프를 쓰지 않는다" "$(cat "$P96_STAMP")" "$p96_stamp_before"
+
+# G — 내부 동사를 직접 부르면 잠금의 난스와 맞지 않는 한 아무것도 하지 않는다.
+mkdir -p "$P96_LOCK"
+printf '1 %s\n' "$(date -u +%s)" > "$P96_LOCK/owner"
+printf 'the-real-nonce\n' > "$P96_LOCK/nonce"
+p96_rc=0; p96_gate halt-report-round --manifest "$P96_MAN" --nonce not-the-nonce || p96_rc=$?
+check "96: 난스가 다른 halt-report-round 직접 호출은 exit 3" "$p96_rc" "3"
+p96_rc=0; p96_gate halt-report-round --manifest "$P96_MAN" || p96_rc=$?
+check "96: 난스 없는 halt-report-round 직접 호출은 exit 2" "$p96_rc" "2"
+check "96: 거부된 직접 호출은 회차를 돌지 않는다" "$(p96_get decoy.json 상태)" "열림"
+check "96: 거부된 직접 호출은 남의 잠금과 난스를 그대로 둔다" "$(cat "$P96_LOCK/nonce" 2>/dev/null)" "the-real-nonce"
+rm -rf "$P96_LOCK"
+
+# H — 정리. 리퍼와 같은 보존 기간(30일)을 넘긴 종결 기록만 지운다.
+p96_record closed-old.json 종결 "$P96ROOT/no-such-ledger.md"
+p96_record closed-new.json 종결 "$P96ROOT/no-such-ledger.md"
+fx_age_file "$P96_RUNS/closed-old.json" $((31 * 86400))
+fx_age_file "$P96_RUNS/closed-new.json" $((29 * 86400))
+p96_old_stamp
+p96_gate snapshot --manifest "$P96_MAN"
+p96_wait_round
+check "96: (선행) 정리 회차가 돌았다" "$(p96_get decoy.json 상태)" "종결"
+check "96: 30일 지난 종결 기록은 지워진다" "$([ -e "$P96_RUNS/closed-old.json" ] && printf 있음 || printf 없음)" "없음"
+check "96: 30일이 안 된 종결 기록은 남는다" "$([ -e "$P96_RUNS/closed-new.json" ] && printf 있음 || printf 없음)" "있음"
+
+# I — 플릿 백로그. `fleet.seen` 이 없는 첫 회차는 그때 park 된 id 를 기준선으로 쓰고
+# 아무것도 등록하지 않는다.
+P96_BACKLOG="$P96ROOT/backlog.jsonl"
+{
+  printf '{"schema":"cc-pace-backlog v1","id":"b1","status":"parked","park_reason":"doc-changed"}\n'
+  printf '{"schema":"cc-pace-backlog v1","id":"b2","status":"parked","park_reason":"base-moved"}\n'
+  printf '{"schema":"cc-pace-backlog v1","id":"b3","status":"queued"}\n'
+} > "$P96_BACKLOG"
+rm -f "$P96_HROOT/fleet.seen" "$P96_HROOT/fleet.pending"
+p96_old_stamp
+( export CC_HALT_BACKLOG="$P96_BACKLOG"; p96_gate snapshot --manifest "$P96_MAN" )
+p96_wait_round
+check "96: fleet.seen 이 없으면 기준선만 쓴다" \
+  "$(sort "$P96_HROOT/fleet.seen" 2>/dev/null | tr '\n' ' ')" "b1 b2 "
+check "96: 기준선 회차는 미결 사건을 남기지 않는다" \
+  "$([ -e "$P96_HROOT/fleet.pending" ] && printf 있음 || printf 없음)" "없음"
+
+# J — 게이트가 `fleet.sh` 를 소싱하지 않고 다시 선언한 것들의 핀. 경로는 두 덮어쓰기
+# 변수가 없을 때와 둘 다 같은 값일 때 같은 파일이어야 한다.
+P96_FLEET="$repo_root/plugins/cc-cmds/orchestrator/fleet.sh"
+p96_fleet_expr=$(sed -n 's/^PACE_ROOT="\(.*\)"$/\1/p' "$P96_FLEET")
+check "96: (선행) fleet.sh 의 PACE_ROOT 문면을 한 줄 읽었다" \
+  "$(printf '%s\n' "$p96_fleet_expr" | grep -c .)" "1"
+check "96: (선행) fleet.sh 는 백로그를 PACE_ROOT 아래 backlog.jsonl 로 둔다" \
+  "$( [ "$(grep -c -F '"$PACE_ROOT/backlog.jsonl"' "$P96_FLEET")" -ge 1 ] && printf 예 || printf 아니오)" "예"
+p96_fleet_bl() {
+  # p96_fleet_bl <XDG_STATE_HOME> [FLEET_PACE_ROOT] — fleet.sh 의 문면으로 계산한 백로그 경로.
+  ( unset FLEET_PACE_ROOT; XDG_STATE_HOME="$1"; [ -z "${2:-}" ] || FLEET_PACE_ROOT="$2"
+    eval "printf '%s' \"$p96_fleet_expr/backlog.jsonl\"" )
+}
+p96_gate_bl() {
+  # p96_gate_bl <XDG_STATE_HOME> [GATE_PACE_ROOT] — 게이트가 읽는 백로그 경로.
+  ( unset CC_HALT_BACKLOG GATE_PACE_ROOT; export XDG_STATE_HOME="$1"
+    [ -z "${2:-}" ] || export GATE_PACE_ROOT="$2"
+    bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_backlog' _ "$GATE" 2>/dev/null )
+}
+check "96: 덮어쓰기가 없으면 게이트와 플릿의 백로그 경로가 같다" \
+  "$(p96_gate_bl "$P96ROOT/xdg")" "$(p96_fleet_bl "$P96ROOT/xdg")"
+check "96: FLEET_PACE_ROOT 와 GATE_PACE_ROOT 를 같게 두면 백로그 경로가 같다" \
+  "$(p96_gate_bl "$P96ROOT/xdg" "$P96ROOT/pace")" "$(p96_fleet_bl "$P96ROOT/xdg" "$P96ROOT/pace")"
+check "96: 백로그 스키마 토큰이 fleet.sh 와 같다" \
+  "$(sed -n "s/^readonly GATE_HALT_BACKLOG_SCHEMA='\(.*\)'\$/\1/p" "$GATE")" \
+  "$(sed -n "s/^readonly FLEET_BACKLOG_SCHEMA='\(.*\)'\$/\1/p" "$P96_FLEET")"
+p96_gate_reasons=$(sed -n "s/^readonly GATE_HALT_BACKLOG_REASONS='\(.*\)'\$/\1/p" "$GATE" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort)
+p96_fleet_reasons=$(sed -n '/^fleet_dispatch_park_reason() {$/,/^}$/p' "$P96_FLEET" \
+  | grep -o "printf '[a-z-]*'" | sed "s/^printf '//; s/'\$//" | LC_ALL=C sort -u)
+check "96: (선행) fleet.sh 의 park 사유를 다섯 읽었다" "$(printf '%s\n' "$p96_fleet_reasons" | grep -c .)" "5"
+check "96: 게이트의 park 사유 다섯이 fleet.sh 의 문면과 같다" \
+  "$(printf '%s' "$p96_gate_reasons" | tr '\n' ' ')" "$(printf '%s' "$p96_fleet_reasons" | tr '\n' ' ')"
+
+# K — 분류기의 런 막힘 사유 표는 사이드카 계약의 `blocked.사유` 닫힌 어휘 안에 있다.
+p96_blk=$(grep -F -e '| `blocked.사유` |' "$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md")
+p96_vocab=$(bash "$repo_root/plugins/cc-cmds/orchestrator/run-stops.sh" --vocab run-blocked 2>/dev/null)
+check "96: (선행) 분류기 사유 표와 사이드카 어휘 줄을 읽었다" \
+  "$( [ -n "$p96_blk" ] && [ "$(printf '%s\n' "$p96_vocab" | grep -c .)" -ge 1 ] && printf 예 || printf 아니오)" "예"
+p96_miss=""
+while IFS= read -r p96_t; do
+  [ -n "$p96_t" ] || continue
+  case "$p96_blk" in *"\`$p96_t\`"*) ;; *) p96_miss="$p96_miss[$p96_t]" ;; esac
+done <<P96VOCAB
+$p96_vocab
+P96VOCAB
+check "96: 분류기의 런 막힘 사유는 모두 사이드카 blocked.사유 어휘에 있다" "$p96_miss" ""
+
+# ---------------------------------------------------------------------------
+# 97. 판단 승인 행의 연 자리
+# --- section: 97 | group: ledger_series | covers: act, gate_record_stage_outcome | anchors: 97: 라우터가 연 판단은 연 자리=라우터 다, 97: 디스패치 기록이 implement 인 스테이지 좌석은 연 자리=implement 다, 97: 디스패치 기록이 없는 스테이지 좌석은 연 자리=미상 이다, 97: 흡수 경로는 그 스테이지 종류를 싣는다, 97: 종류 없이 부른 흡수 경로는 연 자리=미상 이다, 97: 같은 판단은 연 자리가 달라도 승인 하나다, 97: 흡수 경로는 연 자리를 더해도 판단 부류를 그대로 넘긴다, 97: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다 ---
+#
+# 판단 승인 발행 행의 `연 자리` 는 그 판단을 연 자리다. act 경로에서는 스테이지가 게이트
+# 동사를 갖지 않으므로 사실상 라우터이고, 설계 스테이지의 판단이 실제로 지나는 곳은
+# 스테이지 결과를 기록하는 함수 안의 흡수 호출이다 — 거기서는 디스패치한 스테이지의
+# 종류가 이미 범위 안에 있다. 이 필드는 행에만 실리고 승인 id 와 구속 튜플에는 들어가지
+# 않는다. 그래서 같은 판단을 두 자리에서 열어도 승인은 하나다.
+# ---------------------------------------------------------------------------
+l97=$(lsr_ledger w97)
+d97="${l97%/*}"
+r97() { { grep -F -e '- `승인` |' "$l97" || true; } | grep -F -e "| 막는 세그먼트=$1 |" | tail -1; }
+f97() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | sed -n '1p'; }
+j97() {
+  # j97 <세그먼트> <기준> <근거> — act 경로의 발행처가 하는 그대로, 좌석을 판정해 넘긴다.
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+  gate_issue_judgment_approval cc-cmds "$1" "$2" "$3" "" "$(gate_judgment_seat)"
+}
+router97() { unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT; "$@"; }
+stage97() {
+  # stage97 <스테이지 id> <명령…> — 스테이지 런처가 수출하는 두 표지를 단 좌석.
+  CC_PIPELINE_STAGE_ID="$1"; CC_PIPELINE_SEGMENT="${1%#*}"
+  export CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  shift; "$@"
+}
+a97() {
+  # a97 <0|1 자동 해소> <세그먼트> <결과 줄> [스테이지 종류] — 스테이지 결과 기록이 부르는 흡수.
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$1"
+  unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  gate_absorb_emitted_judgment cc-cmds "$2" "$3" ${4:+"$4"}
+}
+res97() {
+  # res97 <부류> <등급> <기준> <근거> — 스테이지 종단 메시지 한 줄.
+  jq -cn --arg t "**판단 부류**: $1 **판단 등급**: $2 **판단 기준**: $3 **판단 근거**: $4" \
+    '{type: "result", subtype: "success", is_error: false, result: $t}'
+}
+
+lsr_in - "$l97" - router97 j97 S97A '연 자리 기준 A' '근거 A' >/dev/null 2>&1 || true
+check "97: 라우터가 연 판단은 연 자리=라우터 다" "$(f97 "$(r97 S97A)" '연 자리')" "라우터"
+printf 'implement\n' > "$d97/S97B.kind"
+lsr_in - "$l97" - stage97 'S97B#1' j97 S97B '연 자리 기준 B' '근거 B' >/dev/null 2>&1 || true
+check "97: 디스패치 기록이 implement 인 스테이지 좌석은 연 자리=implement 다" "$(f97 "$(r97 S97B)" '연 자리')" "implement"
+lsr_in - "$l97" - stage97 'S97C#1' j97 S97C '연 자리 기준 C' '근거 C' >/dev/null 2>&1 || true
+check "97: 디스패치 기록이 없는 스테이지 좌석은 연 자리=미상 이다" "$(f97 "$(r97 S97C)" '연 자리')" "미상"
+lsr_in - "$l97" - a97 0 S97D "$(res97 문서-신선도 2 '흡수 기준 D' '흡수 근거 D')" design >/dev/null 2>&1 || true
+check "97: 흡수 경로는 그 스테이지 종류를 싣는다" "$(f97 "$(r97 S97D)" '연 자리')" "design"
+lsr_in - "$l97" - a97 0 S97E "$(res97 문서-신선도 2 '흡수 기준 E' '흡수 근거 E')" >/dev/null 2>&1 || true
+check "97: 종류 없이 부른 흡수 경로는 연 자리=미상 이다" "$(f97 "$(r97 S97E)" '연 자리')" "미상"
+lsr_in - "$l97" - router97 gate_issue_judgment_approval cc-cmds S97F '연 자리 기준 F' '근거 F' '' bogus >/dev/null 2>&1 || true
+check "97: 어휘 밖 연 자리 값은 미상으로 접힌다" "$(f97 "$(r97 S97F)" '연 자리')" "미상"
+
+# 같은 판단을 라우터와 implement 좌석에서 차례로 연다. 승인 id 는 세그먼트와 질문
+# 문면에서만, 구속 튜플은 세그먼트·질문 다이제스트·선택지판·스냅숏에서만 유도된다.
+printf 'implement\n' > "$d97/S97G.kind"
+lsr_in - "$l97" - router97 j97 S97G '같은 기준 G' '같은 근거 G' >/dev/null 2>&1 || true
+lsr_in - "$l97" - stage97 'S97G#1' j97 S97G '같은 기준 G' '같은 근거 G' >/dev/null 2>&1 || true
+check "97: 같은 판단은 연 자리가 달라도 승인 하나다" \
+  "$( { grep -F -e '- `승인` |' "$l97" || true; } | grep -c -F -e '| 막는 세그먼트=S97G |')" "1"
+id97() { gate_judgment_approval_id S97G "$(gate_judgment_question '같은 기준 G' '같은 근거 G')"; }
+check "97: 승인 id 는 세그먼트와 질문 문면에서만 유도된다" \
+  "$(f97 "$(r97 S97G)" '승인 id')" "$(lsr_in - "$l97" - id97 2>/dev/null)"
+case "$(f97 "$(r97 S97G)" '구속 튜플')" in
+  "S97G/$(printf '%s' '같은 기준 G — 같은 근거 G' | shasum -a 256 | cut -d' ' -f1)/"*)
+    ok "97: 구속 튜플은 세그먼트와 질문 다이제스트로 시작하고 연 자리를 싣지 않는다" ;;
+  *) bad "97: 구속 튜플" "$(f97 "$(r97 S97G)" '구속 튜플')" ;;
+esac
+
+# 판단 부류는 연 자리 앞 자리 인자다. 자리가 밀리면 부류가 비어 자동 해소가 「판단 부류가
+# 없어 채택하지 않음」 으로 닫는다 — 그래서 채택 행이 그 부류를 싣는지로 잰다.
+lsr_in - "$l97" - a97 1 S97H "$(res97 문서-신선도 2 '흡수 기준 H' '흡수 근거 H')" design >/dev/null 2>&1 || true
+check "97: 흡수 경로는 연 자리를 더해도 판단 부류를 그대로 넘긴다" \
+  "$( { grep -F -e '- `자율 승인` |' "$l97" || true; } | grep -F -e '| 세그먼트=S97H |' | grep -c -F -e '| 판단 부류=문서-신선도 |')" "1"
+
+# R2 — 가장 긴 질문 문면(발췌 상한을 넘는 기준·근거)과 가장 긴 종류 값으로 연 행.
+std97=$(printf '아주 긴 기준 문면입니다 %.0s' $(seq 1 60))
+why97=$(printf '아주 긴 근거 문면입니다 %.0s' $(seq 1 60))
+lsr_in - "$l97" - a97 0 S97I "$(res97 문서-신선도 2 "$std97" "$why97")" reconverge >/dev/null 2>&1 || true
+row97=$(r97 S97I)
+check "97: (선행) 긴 문면의 발행 행이 연 자리=reconverge 로 쓰였다" "$(f97 "$row97" '연 자리')" "reconverge"
+n97=$(printf '%s' "$row97" | LC_ALL=C wc -c | tr -d ' ')
+check "97: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다" \
+  "$([ "${n97:-0}" -gt 0 ] && [ "${n97:-0}" -le 1024 ] && printf 예 || printf "아니오(${n97}바이트)")" "예"
 
 # --- epilogue-begin ---
 #
