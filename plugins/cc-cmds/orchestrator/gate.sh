@@ -15740,7 +15740,9 @@ EOF
         */../*|*/./*) warn "\`중단 기록\` cannot carry a relative segment: $hrec"; return "$GATE_EXIT_VOCAB" ;;
       esac
       [ -f "$hrec" ] || { warn "the halt record does not exist: $hrec"; return "$GATE_EXIT_VOCAB"; }
-      if ! head -1 "$hrec" | grep -q '^<!-- cc-pipeline-halt v1;' \
+      local hfirst=''
+      IFS= read -r hfirst < "$hrec" || true
+      if [ "${hfirst#<!-- cc-pipeline-halt v1;}" = "$hfirst" ] \
          || ! grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$hrec"; then
         warn "not a complete halt record (opening header and closing fence): $hrec"
         return "$GATE_EXIT_VOCAB"
