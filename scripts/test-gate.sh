@@ -5001,8 +5001,11 @@ fi
 # running copy found no boundary and failed every `--sections` pick that named
 # this section. The count is a property of the source text, so both run modes
 # read the same file and get the same answer.
+# 세는 줄은 공유 매니페스트(`$FX_MANIFEST`)를 받는 행위로 한정한다. 창 안에 놓였어도
+# 룰이 켜진 자기 매니페스트를 받는 행위는 오염과 무관하고, 위 문단이 권하는 바로 그
+# 수리의 결과이기 때문이다.
 sa_self="$repo_root/scripts/test-gate.sh"
-sa_pat='--cutpoint '"$(printf '(%s|%s|%s)' 머지 배포 머지후착수)"
+sa_pat='--manifest "\$FX_MANIFEST" .*--cutpoint '"$(printf '(%s|%s|%s)' 머지 배포 머지후착수)"
 sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | head -1 | cut -d: -f1)
 sa_we=$(grep -n '^FX_MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
 if [ -n "$sa_ws" ] && [ -n "$sa_we" ] && [ "$sa_we" -gt "$sa_ws" ]; then
