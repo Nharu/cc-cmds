@@ -1199,7 +1199,14 @@ gate_reach_local_destructive() {
   #
   # The printed word is the trigger the preauthorization rule looks for, so a
   # manifest shape that carries it (`rm -rf`, `git reset --hard`) is what opens
-  # the act — a shape naming only the verb does not.
+  # the act — a shape naming only the verb does not, except where the verb is
+  # the only word the act has (`rm <file>`, a `mv` over an existing file).
+  #
+  # SHORT OPTIONS ARE READ LETTER BY LETTER AND LONG ONES BY PREFIX, because
+  # that is how the tools read them: `checkout -fq` forces, and git accepts any
+  # unambiguous abbreviation, so `reset --har` is `reset --hard`. A prefix that
+  # git would call ambiguous is still read as the destructive option — the
+  # over-read parks an act git would have refused anyway.
   local cmd="${1##*/}"; shift 2>/dev/null || true
   case "$cmd" in
     lockf)   gate_unwrap_lockf   gate_reach_local_destructive '' '' "$@"; return 0 ;;
@@ -1208,26 +1215,43 @@ gate_reach_local_destructive() {
     env)     gate_unwrap_env     gate_reach_local_destructive '' '' "$@"; return 0 ;;
     timeout|nice|nohup|stdbuf)
       gate_unwrap_wrapper "$cmd" gate_reach_local_destructive '' '' "$@"; return 0 ;;
+    # `-delete` removes every match and `-exec rm …` hands each to the inner
+    # command, which this predicate reads in turn. `-fprint` and its kin answer
+    # the same word: they truncate a file named in argv.
+    find)
+      gate_unwrap_find gate_reach_local_destructive '' '-delete' '-execdir' gate_answer_first "$@"
+      return 0 ;;
   esac
   local a
   case "$cmd" in
     rm)
+      # Every `rm` deletes: with no terminal on stdin a plain `rm <file>` asks
+      # nothing and removes exactly what `rm -f <file>` removes. A recursive or
+      # forcing flag is the trigger when there is one, so a `rm -rf` shape keeps
+      # meaning what it says; otherwise the verb is.
       for a in "$@"; do
         case "$a" in
-          --) return 0 ;;
+          --) break ;;
           --recursive|--force) printf '%s' "$a"; return 0 ;;
           --*) ;;
           -*[rRf]*) printf '%s' "$a"; return 0 ;;
         esac
       done
+      printf 'rm'; return 0 ;;
+    mv)
+      gate_reach_mv_overwrites "$@" && printf 'mv'
       return 0 ;;
     git) ;;
     *) return 0 ;;
   esac
-  local sub=''
+  local sub='' base=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+      -C)
+        [ "$#" -ge 2 ] || return 0
+        case "$2" in /*) base="$2" ;; *) base="${base:+$base/}$2" ;; esac
+        shift 2 ;;
+      -c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
         [ "$#" -ge 2 ] || return 0; shift 2 ;;
       -*) shift ;;
       *) sub="$1"; shift; break ;;
@@ -1238,8 +1262,7 @@ gate_reach_local_destructive() {
       for a in "$@"; do
         case "$a" in
           --) return 0 ;;
-          --force) printf '%s' "$a"; return 0 ;;
-          --*) ;;
+          --*) gate_long_abbrev "$a" --force && { printf '%s' "$a"; return 0; } ;;
           -*f*) printf '%s' "$a"; return 0 ;;
         esac
       done ;;
@@ -1247,24 +1270,44 @@ gate_reach_local_destructive() {
       for a in "$@"; do
         case "$a" in
           --) return 0 ;;
-          --hard) printf '%s' "$a"; return 0 ;;
+          --*) gate_long_abbrev "$a" --hard && { printf '%s' "$a"; return 0; } ;;
         esac
       done ;;
     checkout)
       # A path names what is overwritten; a branch alone switches and keeps
-      # local changes. The operand count separates the two once the values of
-      # `-b`, `-B` and `--orphan` are consumed, and `--`, `.` or a force settle
-      # it outright.
-      local eat=0 n=0
+      # local changes. One operand that resolves to an existing path (from the
+      # last `-C`) is a path, and a second operand always is; `--`, `.`, a
+      # force or a merge-side choice settle it outright. The values of `-b`,
+      # `-B` and `--orphan` are consumed first.
+      local eat=0 n=0 p
       for a in "$@"; do
         if [ "$eat" = "1" ]; then eat=0; continue; fi
         case "$a" in
-          --|.|-f|--force) printf '%s' "$a"; return 0 ;;
+          --|.) printf '%s' "$a"; return 0 ;;
           --pathspec-from-file=*) printf '%s' "${a%%=*}"; return 0 ;;
-          -b|-B|--orphan) eat=1 ;;
+          --orphan) eat=1 ;;
+          --*)
+            for p in --force --ours --theirs --merge --conflict --pathspec-from-file; do
+              gate_long_abbrev "${a%%=*}" "$p" && { printf '%s' "$a"; return 0; }
+            done ;;
+          -*[fm]*) printf '%s' "$a"; return 0 ;;
+          -*[bB]) eat=1 ;;
           -*) ;;
           *) n=$((n + 1))
-             [ "$n" -ge 2 ] && { printf '%s' "$a"; return 0; } ;;
+             [ "$n" -ge 2 ] && { printf '%s' "$a"; return 0; }
+             case "$a" in /*) p="$a" ;; *) p="${base:+$base/}$a" ;; esac
+             [ -e "$p" ] || [ -L "$p" ] && { printf '%s' "$a"; return 0; } ;;
+        esac
+      done ;;
+    switch)
+      # `switch` refuses to overwrite local changes unless forced.
+      for a in "$@"; do
+        case "$a" in
+          --) return 0 ;;
+          --*)
+            gate_long_abbrev "${a%%=*}" --force && { printf '%s' "$a"; return 0; }
+            gate_long_abbrev "${a%%=*}" --discard-changes && { printf '%s' "$a"; return 0; } ;;
+          -*f*) printf '%s' "$a"; return 0 ;;
         esac
       done ;;
     restore)
@@ -1288,19 +1331,84 @@ gate_reach_local_destructive() {
       for a in "$@"; do
         case "$a" in
           --) return 0 ;;
-          -f|--force) printf '%s' "$a"; return 0 ;;
+          --*) gate_long_abbrev "$a" --force && { printf '%s' "$a"; return 0; } ;;
+          -*f*) printf '%s' "$a"; return 0 ;;
         esac
       done ;;
     branch)
+      # Deleting an unmerged branch needs the delete and the force together,
+      # in one word (`-D`, `-df`) or in two (`-d -f`, `--delete --force`).
+      local del=0 force=0
       for a in "$@"; do
         case "$a" in
-          --) return 0 ;;
-          --*) ;;
+          --) break ;;
+          --*)
+            gate_long_abbrev "${a%%=*}" --delete && del=1
+            gate_long_abbrev "${a%%=*}" --force && force=1 ;;
           -*D*) printf '%s' "$a"; return 0 ;;
+          -*)
+            case "$a" in *d*) del=1 ;; esac
+            case "$a" in *f*) force=1 ;; esac ;;
         esac
+        [ "$del$force" = "11" ] && { printf '%s' "$a"; return 0; }
       done ;;
   esac
   return 0
+}
+
+gate_long_abbrev() {
+  # gate_long_abbrev <word> <long option> — true when <word> is <long option> or
+  # an abbreviation of it git's option parser would accept (`--har`).
+  case "$1" in
+    --?*) case "$2" in "$1"*) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+gate_reach_mv_overwrites() {
+  # gate_reach_mv_overwrites <mv's args after argv0...> — true when the move
+  # would replace a file that already exists.
+  #
+  # A move onto an existing name removes what was there with no prompt when
+  # stdin is not a terminal. `-n` refuses that, so it answers false. The
+  # destination is `-t <dir>` when given, otherwise the last operand; when the
+  # destination is a directory each source lands under its own basename.
+  local a dest='' t='' eat=0 noclob=0 n=0 i
+  for a in "$@"; do
+    if [ "$eat" = "1" ]; then t="$a"; eat=0; continue; fi
+    case "$a" in
+      -t|--target-directory) eat=1 ;;
+      --target-directory=*) t="${a#*=}" ;;
+      --no-clobber) noclob=1 ;;
+      --) ;;
+      --*) ;;
+      -*n*) noclob=1 ;;
+      -*t) eat=1 ;;
+      -*) ;;
+      *) n=$((n + 1)); dest="$a" ;;
+    esac
+  done
+  [ "$noclob" = "1" ] && return 1
+  if [ -n "$t" ]; then
+    i=0
+  else
+    [ "$n" -ge 2 ] || return 1
+    if [ ! -d "$dest" ]; then
+      [ -e "$dest" ] || [ -L "$dest" ]
+      return
+    fi
+    t="$dest"; i=1
+  fi
+  # Each source, skipping the destination operand when it was the last one.
+  local k=0
+  for a in "$@"; do
+    case "$a" in -*) continue ;; esac
+    [ "$a" = "$t" ] && [ -n "$t" ] && [ "$i" = "0" ] && continue
+    k=$((k + 1))
+    [ "$i" = "1" ] && [ "$k" -eq "$n" ] && break
+    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && return 0
+  done
+  return 1
 }
 
 gate_reach_disposition() {

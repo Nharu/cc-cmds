@@ -25158,8 +25158,8 @@ printf -- '- `blocked` | 교대=1 | 대상=front | 스코프=run | 원인=무효
 check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WORK/ledger74b.md")" "0"
 
 # ---------------------------------------------------------------------------
-# 75. 대상트리 — 대상의 다른 워크트리에 쓰는 행위는 그 칸에서 열린다
-# --- section: 75 | group: reach | covers: exec | anchors: 75: 형제 워크트리 생성이 대상트리로 통과한다, 75: 대상트리의 --destructive rm -f 는 park 된다, 75: 플래그 없는 대상트리 rm -f 도 park 된다, 75: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다, 75: 기기전역 접두는 대상트리 선언을 이긴다, 75: park 행이 등급 출처와 선언을 싣는다, 75: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다 ---
+# 76. 대상트리 — 대상의 다른 워크트리에 쓰는 행위는 그 칸에서 열린다
+# --- section: 76 | group: reach | covers: exec | anchors: 76: 형제 워크트리 생성이 대상트리로 통과한다, 76: 대상트리의 --destructive rm -f 는 park 된다, 76: 플래그 없는 대상트리 rm -f 도 park 된다, 76: 일상 삭제 철자의 park 마다 blocked 행이 하나씩 남는다, 76: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다, 76: 기기전역 접두는 대상트리 선언을 이긴다, 76: park 행이 등급 출처와 선언을 싣는다, 76: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다 ---
 #
 # 대상의 다른 워크트리를 만들거나 그 안에 쓰는 행위는 런로컬도 기기전역도 아니라서,
 # 정직하게 신고할 토큰이 없었고 기기전역 칸이 사전 인가를 보기도 전에 답했다. 이
@@ -25169,39 +25169,39 @@ check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WOR
 # argv 의 앞선 blocked 행을 찾으므로, 다른 절과 argv 가 겹치면 이 절의 park 가 새 행
 # 없이 끝나 아래 행 단언이 앞 절의 행을 읽는다.
 # ---------------------------------------------------------------------------
-CC_GATE_PREV_AR75="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_GATE_PREV_AR76="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
-U75="$WORK/u75"
-( mkdir -p "$U75" && cd "$U75" && git init -q . \
+U76="$WORK/u76"
+( mkdir -p "$U76" && cd "$U76" && git init -q . \
   && git config user.email t@example.invalid && git config user.name T \
   && echo u > u.txt && git add -A && git commit -qm u ) >/dev/null 2>&1
-SIB75="$WORK/wt75-sibling"
-b75() { { grep -c '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true; }; }
-t75() { { grep -c '도달=대상트리' "$FX_LEDGER" 2>/dev/null || true; }; }
-x75() {
-  # x75 <surface> <argv...> — 대상트리 신고로 한 번 부르고 rc 와 msg 를 남긴다.
+SIB76="$WORK/wt76-sibling"
+b76() { { grep -c '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true; }; }
+t76() { { grep -c '도달=대상트리' "$FX_LEDGER" 2>/dev/null || true; }; }
+x76() {
+  # x76 <surface> <argv...> — 대상트리 신고로 한 번 부르고 rc 와 msg 를 남긴다.
   local s="$1"; shift
   gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
-    --surface "$s" --reach 대상트리 --snapshot-digest "$(HH)" --rationale 't75' -- "$@"
+    --surface "$s" --reach 대상트리 --snapshot-digest "$(HH)" --rationale 't76' -- "$@"
 }
 
 # 통과 — 형제 워크트리 생성, 그 안의 쓰기, 체크아웃 안의 이동과 임시 파일.
-nt75=$(t75)
-x75 트리밖쓰기 git worktree add -b b75 "$SIB75"
-check "75: 형제 워크트리 생성이 대상트리로 통과한다" "$rc" "0"
-[ -d "$SIB75" ] && ok "75: 그 워크트리가 실제로 만들어졌다 (아래 쓰기가 공허하지 않다)" \
-  || bad "75: 그 워크트리가 실제로 만들어졌다" "$msg"
-x75 트리밖쓰기 cp base.txt "$SIB75/c75.txt"
-check "75: 형제 워크트리 안의 쓰기가 대상트리로 통과한다" "$rc" "0"
-printf 'm\n' > "$WT/m75a"
-x75 워크트리쓰기 mv "$WT/m75a" "$WT/m75b"
-check "75: 체크아웃 안의 이동이 대상트리로 통과한다" "$rc" "0"
-x75 트리밖쓰기 mktemp "$WT/tmp75.XXXXXX"
-check "75: 체크아웃 안의 임시 파일이 대상트리로 통과한다" "$rc" "0"
-rm -f "$WT/m75b" "$WT"/tmp75.*
-n=$(( $(t75) - nt75 ))
-[ "$n" -ge 4 ] && ok "75: 통과한 행위의 행이 도달=대상트리를 싣는다 (${n}행)" \
-  || bad "75: 통과한 행위의 행이 도달=대상트리를 싣는다" "n=$n"
+nt76=$(t76)
+x76 트리밖쓰기 git worktree add -b b76 "$SIB76"
+check "76: 형제 워크트리 생성이 대상트리로 통과한다" "$rc" "0"
+[ -d "$SIB76" ] && ok "76: 그 워크트리가 실제로 만들어졌다 (아래 쓰기가 공허하지 않다)" \
+  || bad "76: 그 워크트리가 실제로 만들어졌다" "$msg"
+x76 트리밖쓰기 cp base.txt "$SIB76/c76.txt"
+check "76: 형제 워크트리 안의 쓰기가 대상트리로 통과한다" "$rc" "0"
+printf 'm\n' > "$WT/m76a"
+x76 워크트리쓰기 mv "$WT/m76a" "$WT/m76b"
+check "76: 체크아웃 안의 이동이 대상트리로 통과한다" "$rc" "0"
+x76 트리밖쓰기 mktemp "$WT/tmp76.XXXXXX"
+check "76: 체크아웃 안의 임시 파일이 대상트리로 통과한다" "$rc" "0"
+rm -f "$WT/m76b" "$WT"/tmp76.*
+n=$(( $(t76) - nt76 ))
+[ "$n" -ge 4 ] && ok "76: 통과한 행위의 행이 도달=대상트리를 싣는다 (${n}행)" \
+  || bad "76: 통과한 행위의 행이 도달=대상트리를 싣는다" "n=$n"
 
 # 파괴 — 술어를 통과한 자리라도 파괴 표지가 선 행위는 매니페스트가 그 파괴 형태를
 # 명시하지 않았으면 파괴형태미명시 로 park 된다. 대상트리는 메인 체크아웃과 다른
@@ -25209,175 +25209,248 @@ n=$(( $(t75) - nt75 ))
 # 누구의 미커밋 작업이든 지운다. 같은 자리의 비파괴 쓰기를 대조로 둔다 — 그것이
 # 통과해야 아래 park 가 술어 실패가 아니라 파괴 표지 때문임이 선다. 파일 잔존
 # 단언은 rc 만으로는 가려지지 않는 「park 했는데 실행됐다」를 잡는다.
-d75() {
+d76() {
   gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
-    --surface 트리밖쓰기 --reach 대상트리 --destructive --snapshot-digest "$(HH)" --rationale 't75' -- "$@"
+    --surface 트리밖쓰기 --reach 대상트리 --destructive --snapshot-digest "$(HH)" --rationale 't76' -- "$@"
 }
-x75 트리밖쓰기 cp base.txt "$WT/d75keep"
-check "75: 대조 — 체크아웃 안의 비파괴 쓰기는 대상트리로 통과한다" "$rc" "0"
-[ -e "$WT/d75keep" ] && ok "75: 그 쓰기가 실제로 일어났다 (아래 잔존 단언이 공허하지 않다)" \
-  || bad "75: 그 쓰기가 실제로 일어났다" "$msg"
-nb75=$(b75)
-d75 rm -f "$WT/d75keep"
-check "75: 대상트리의 --destructive rm -f 는 park 된다" "$rc" "11"
-case "$msg" in *파괴형태미명시*) ok "75: 그 park 의 판정이 파괴형태미명시다" ;; *) bad "75: 그 park 의 판정이 파괴형태미명시다" "$msg" ;; esac
-[ -e "$WT/d75keep" ] && ok "75: park 된 rm -f 의 대상 파일이 남아 있다" \
-  || bad "75: park 된 rm -f 의 대상 파일이 남아 있다" "$WT/d75keep"
+x76 트리밖쓰기 cp base.txt "$WT/d76keep"
+check "76: 대조 — 체크아웃 안의 비파괴 쓰기는 대상트리로 통과한다" "$rc" "0"
+[ -e "$WT/d76keep" ] && ok "76: 그 쓰기가 실제로 일어났다 (아래 잔존 단언이 공허하지 않다)" \
+  || bad "76: 그 쓰기가 실제로 일어났다" "$msg"
+nb76=$(b76)
+d76 rm -f "$WT/d76keep"
+check "76: 대상트리의 --destructive rm -f 는 park 된다" "$rc" "11"
+case "$msg" in *파괴형태미명시*) ok "76: 그 park 의 판정이 파괴형태미명시다" ;; *) bad "76: 그 park 의 판정이 파괴형태미명시다" "$msg" ;; esac
+[ -e "$WT/d76keep" ] && ok "76: park 된 rm -f 의 대상 파일이 남아 있다" \
+  || bad "76: park 된 rm -f 의 대상 파일이 남아 있다" "$WT/d76keep"
 # git clean 은 등급표가 읽지 못하는 꼴이라 오늘은 5b 앞의 신고등급한도 칸이 먼저
 # 답한다. 등급표가 그 꼴을 읽게 되면 5b 의 파괴 갈래가 답해야 하므로 둘 다 받고,
 # 받지 않는 것은 통과와 대상트리불일치(술어로 떨어진 것처럼 읽히는 판정)다.
-d75 git -C "$SIB75" clean -fdx
-check "75: 다른 워크트리의 --destructive git clean -fdx 는 park 된다" "$rc" "11"
+d76 git -C "$SIB76" clean -fdx
+check "76: 다른 워크트리의 --destructive git clean -fdx 는 park 된다" "$rc" "11"
 case "$msg" in
-  *"judgment '파괴형태미명시'"*|*"judgment '신고등급한도'"*) ok "75: 그 clean 의 판정이 파괴형태미명시나 신고등급한도다" ;;
-  *) bad "75: 그 clean 의 판정이 파괴형태미명시나 신고등급한도다" "$msg" ;;
+  *"judgment '파괴형태미명시'"*|*"judgment '신고등급한도'"*) ok "76: 그 clean 의 판정이 파괴형태미명시나 신고등급한도다" ;;
+  *) bad "76: 그 clean 의 판정이 파괴형태미명시나 신고등급한도다" "$msg" ;;
 esac
-[ -e "$SIB75/c75.txt" ] && ok "75: park 된 clean 이 지웠을 미추적 파일이 남아 있다" \
-  || bad "75: park 된 clean 이 지웠을 미추적 파일이 남아 있다" "$SIB75/c75.txt"
-check "75: 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b75) - nb75 ))" "2"
-rm -f "$WT/d75keep"
+[ -e "$SIB76/c76.txt" ] && ok "76: park 된 clean 이 지웠을 미추적 파일이 남아 있다" \
+  || bad "76: park 된 clean 이 지웠을 미추적 파일이 남아 있다" "$SIB76/c76.txt"
+check "76: 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b76) - nb76 ))" "2"
+rm -f "$WT/d76keep"
 
 # 플래그 없는 지역 파괴 — 파괴 축은 표와 신고의 합집합이라, 단계가 --destructive 를
 # 달지 않아도 argv 의 rm -r/-f 가 표지를 세운다. 그 칸이 신고에만 기대면 플래그를
 # 뺀 같은 철자가 메인 체크아웃과 다른 런의 워크트리를 지운다. 두 행위는 위와 다른
 # 파일 이름을 쓴다 — 같은 argv 면 재신고 핀이 앞 행으로 답해 이 칸을 지나지 않는다.
-x75 트리밖쓰기 cp base.txt "$WT/d75nf"
-check "75: 대조 — 플래그 없는 쌍의 비파괴 쓰기는 대상트리로 통과한다" "$rc" "0"
-[ -e "$WT/d75nf" ] && ok "75: 그 쓰기가 실제로 일어났다 (플래그 없는 rm -f 의 잔존 단언이 공허하지 않다)" \
-  || bad "75: 그 쓰기가 실제로 일어났다 (플래그 없는 쌍)" "$msg"
-mkdir -p "$SIB75/d75dir" && printf 'k\n' > "$SIB75/d75dir/k"
-nb75=$(b75)
-x75 트리밖쓰기 rm -f "$WT/d75nf"
-check "75: 플래그 없는 대상트리 rm -f 도 park 된다" "$rc" "11"
+x76 트리밖쓰기 cp base.txt "$WT/d76nf"
+check "76: 대조 — 플래그 없는 쌍의 비파괴 쓰기는 대상트리로 통과한다" "$rc" "0"
+[ -e "$WT/d76nf" ] && ok "76: 그 쓰기가 실제로 일어났다 (플래그 없는 rm -f 의 잔존 단언이 공허하지 않다)" \
+  || bad "76: 그 쓰기가 실제로 일어났다 (플래그 없는 쌍)" "$msg"
+mkdir -p "$SIB76/d76dir" && printf 'k\n' > "$SIB76/d76dir/k"
+nb76=$(b76)
+x76 트리밖쓰기 rm -f "$WT/d76nf"
+check "76: 플래그 없는 대상트리 rm -f 도 park 된다" "$rc" "11"
 case "$msg" in
-  *"judgment '파괴형태미명시'"*) ok "75: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" ;;
-  *) bad "75: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" "$msg" ;;
+  *"judgment '파괴형태미명시'"*) ok "76: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" ;;
+  *) bad "76: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" "$msg" ;;
 esac
-[ -e "$WT/d75nf" ] && ok "75: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" \
-  || bad "75: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" "$WT/d75nf"
-x75 트리밖쓰기 rm -rf "$SIB75/d75dir"
-check "75: 플래그 없는 다른 워크트리의 rm -rf 도 park 된다" "$rc" "11"
+[ -e "$WT/d76nf" ] && ok "76: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" \
+  || bad "76: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" "$WT/d76nf"
+x76 트리밖쓰기 rm -rf "$SIB76/d76dir"
+check "76: 플래그 없는 다른 워크트리의 rm -rf 도 park 된다" "$rc" "11"
 case "$msg" in
-  *"judgment '파괴형태미명시'"*) ok "75: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" ;;
-  *) bad "75: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" "$msg" ;;
+  *"judgment '파괴형태미명시'"*) ok "76: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" ;;
+  *) bad "76: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" "$msg" ;;
 esac
-[ -e "$SIB75/d75dir/k" ] && ok "75: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" \
-  || bad "75: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" "$SIB75/d75dir/k"
-check "75: 플래그 없는 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b75) - nb75 ))" "2"
-rm -rf "$WT/d75nf" "$SIB75/d75dir"
+[ -e "$SIB76/d76dir/k" ] && ok "76: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" \
+  || bad "76: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" "$SIB76/d76dir/k"
+check "76: 플래그 없는 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b76) - nb76 ))" "2"
+rm -rf "$WT/d76nf" "$SIB76/d76dir"
+
+# 일상 삭제 철자 — 단계가 삭제로 여기지 않을 철자도 같은 칸에서 park 된다. 각 쌍은
+# rc 11 과 정확한 판정, 그리고 그 행위가 지우거나 덮었을 것이 남아 있음을 함께
+# 단언한다. rc 만으로는 「park 했는데 실행됐다」가 가려지지 않는다. argv 마다 이름이
+# 달라야 한다 — 같은 argv 면 재신고 핀이 앞 행으로 답해 이 칸을 지나지 않는다.
+p76() {
+  # p76 <이름> <남아야 할 것을 확인하는 명령…> — 직전 x76 의 rc·판정과 잔존을 단언한다.
+  # P76_ALSO 는 등급표가 읽지 못해 5b 앞 칸이 먼저 답하는 철자에 그 판정을 함께 받는다.
+  local name="$1"; shift
+  check "76: 일상 삭제 철자가 park 된다 — $name" "$rc" "11"
+  case "$msg" in
+    *"judgment '파괴형태미명시'"*) ok "76: 그 판정이 파괴형태미명시다 — $name" ;;
+    *"judgment '${P76_ALSO:-파괴형태미명시}'"*) ok "76: 그 판정이 파괴형태미명시다 — $name (앞 칸 ${P76_ALSO:-})" ;;
+    *) bad "76: 그 판정이 파괴형태미명시다 — $name" "$msg" ;;
+  esac
+  "$@" && ok "76: park 된 행위가 지웠을 것이 남아 있다 — $name" \
+    || bad "76: park 된 행위가 지웠을 것이 남아 있다 — $name" "$*"
+}
+tf76=$(cd "$SIB76" && git ls-files | sed -n '1p')
+D76="$SIB76/e76"; mkdir -p "$D76/empty" "$D76/fd" "$D76/fx" "$D76/mvdir"
+for f in r rv ri; do printf 'k\n' > "$D76/$f"; done
+printf 'k\n' > "$D76/fd/k"; printf 'k\n' > "$D76/fx/k"
+printf 'keep\n' > "$D76/mvdst"; printf 'new\n' > "$D76/mvsrc"
+printf 'keep\n' > "$D76/mvdir/mvsrc2"; printf 'new\n' > "$D76/mvsrc2"
+printf 'local76\n' >> "$SIB76/$tf76"
+lm76() { grep -q '^local76$' "$SIB76/$tf76"; }
+git -C "$SIB76" branch bd76 >/dev/null 2>&1
+git -C "$WT" worktree add -q -b wr76 "$WORK/wt76-rm" >/dev/null 2>&1
+nb76=$(b76)
+x76 트리밖쓰기 rm "$D76/r";                        p76 'rm' test -e "$D76/r"
+x76 트리밖쓰기 rm -v "$D76/rv";                    p76 'rm -v' test -e "$D76/rv"
+x76 트리밖쓰기 rm --interactive=never "$D76/ri";   p76 'rm --interactive=never' test -e "$D76/ri"
+x76 트리밖쓰기 rm -d "$D76/empty";                 p76 'rm -d' test -d "$D76/empty"
+x76 트리밖쓰기 find "$D76/fd" -delete;             p76 'find -delete' test -e "$D76/fd/k"
+x76 트리밖쓰기 find "$D76/fx" -exec rm -rf {} ';';  p76 'find -exec rm -rf' test -e "$D76/fx/k"
+x76 트리밖쓰기 mv "$D76/mvsrc" "$D76/mvdst";       p76 '덮어쓰는 mv' grep -q '^keep$' "$D76/mvdst"
+x76 트리밖쓰기 mv "$D76/mvsrc2" "$D76/mvdir";      p76 '디렉터리 안을 덮어쓰는 mv' grep -q '^keep$' "$D76/mvdir/mvsrc2"
+x76 트리밖쓰기 git -C "$SIB76" checkout "$tf76";   p76 '경로 하나의 checkout' lm76
+_c76=$PWD; cd "$SIB76" || exit 1
+x76 트리밖쓰기 git checkout "$tf76";               cd "$_c76" || exit 1
+p76 '-C 없는 경로 하나의 checkout' lm76
+x76 트리밖쓰기 git -C "$SIB76" checkout --ours "$tf76";            p76 'checkout --ours' lm76
+x76 트리밖쓰기 git -C "$SIB76" checkout --theirs "$tf76";          p76 'checkout --theirs' lm76
+x76 트리밖쓰기 git -C "$SIB76" checkout -m "$tf76";                p76 'checkout -m' lm76
+x76 트리밖쓰기 git -C "$SIB76" checkout --conflict=merge "$tf76";  p76 'checkout --conflict=merge' lm76
+x76 트리밖쓰기 git -C "$SIB76" checkout -fq bd76;                  p76 'checkout -fq' lm76
+x76 트리밖쓰기 git -C "$SIB76" switch -f bd76;                     p76 'switch -f' lm76
+x76 트리밖쓰기 git -C "$SIB76" switch --discard-changes bd76;      p76 'switch --discard-changes' lm76
+x76 트리밖쓰기 git -C "$SIB76" reset --har;                        p76 'reset --har' lm76
+x76 트리밖쓰기 git -C "$SIB76" branch -d -f bd76
+p76 'branch -d -f' git -C "$SIB76" show-ref --verify -q refs/heads/bd76
+x76 트리밖쓰기 git -C "$SIB76" branch --delete --force bd76
+p76 'branch --delete --force' git -C "$SIB76" show-ref --verify -q refs/heads/bd76
+x76 트리밖쓰기 git -C "$SIB76" branch -df bd76
+P76_ALSO=신고등급한도 p76 'branch -df' git -C "$SIB76" show-ref --verify -q refs/heads/bd76
+x76 트리밖쓰기 git -C "$WT" worktree remove -ff "$WORK/wt76-rm";    p76 'worktree remove -ff' test -d "$WORK/wt76-rm"
+x76 트리밖쓰기 git -C "$WT" worktree remove --forc "$WORK/wt76-rm"; p76 'worktree remove --forc' test -d "$WORK/wt76-rm"
+check "76: 일상 삭제 철자의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b76) - nb76 ))" "23"
+
+# 비파괴 음성 쌍 — 같은 동사의 비파괴 철자는 그대로 통과한다. 위 park 가 동사만
+# 보고 닫힌 것이 아님을 이것이 세운다.
+x76 트리밖쓰기 git -C "$SIB76" checkout b76
+check "76: 대조 — 브랜치 하나의 checkout 은 대상트리로 통과한다" "$rc" "0"
+x76 트리밖쓰기 git -C "$SIB76" restore --staged "$tf76"
+check "76: 대조 — restore --staged 는 대상트리로 통과한다" "$rc" "0"
+lm76 && ok "76: 대조 쌍이 작업 트리의 변경을 건드리지 않았다" || bad "76: 대조 쌍이 작업 트리의 변경을 건드리지 않았다" "$SIB76/$tf76"
+x76 트리밖쓰기 mv "$D76/mvsrc" "$D76/mvnew"
+check "76: 대조 — 새 이름으로의 mv 는 대상트리로 통과한다" "$rc" "0"
+git -C "$WT" worktree remove --force "$WORK/wt76-rm" >/dev/null 2>&1
+git -C "$WT" branch -D wr76 >/dev/null 2>&1
+git -C "$SIB76" checkout -q -- "$tf76" >/dev/null 2>&1
+rm -rf "$D76"
 
 # 지역 파괴 형태의 트리거 낱말이 사전 인가의 Pd 를 실제로 연다 — 낱말을 담은 형태는
 # 열고, 동사만 적은 형태는 열지 않는다. 표지 표에 지역 형태가 없던 동안 이 탈출구는
 # 어떤 매니페스트로도 열리지 않았다.
-pd75() {
-  # pd75 <형태> <argv...> — 그 형태 하나를 사전 인가로 둔 매니페스트에서 Pd 를 낸다.
+pd76() {
+  # pd76 <형태> <argv...> — 그 형태 하나를 사전 인가로 둔 매니페스트에서 Pd 를 낸다.
   local shape="$1"; shift
-  printf -- '- `사전 인가` | 형태=%s\n' "$shape" > "$WORK/m75pd.md"
+  printf -- '- `사전 인가` | 형태=%s\n' "$shape" > "$WORK/m76pd.md"
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; m="$2"; shift 2
     t=$(gate_reach_local_destructive "$@")
     GATE_PREAUTH_PROBE=1 GATE_MARK=파괴 GATE_MARK_TRIGGER="$t" GATE_ARGV="$*" GATE_MANIFEST="$m" \
       /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null' \
-    _ "$GATE" "$WORK/m75pd.md" "$@" | sed -n 's/.*Pd=\([01]\).*/\1/p'
+    _ "$GATE" "$WORK/m76pd.md" "$@" | sed -n 's/.*Pd=\([01]\).*/\1/p'
 }
-check "75: 파괴 낱말을 담은 형태가 플래그 없는 rm -rf 를 연다" "$(pd75 'rm -rf' rm -rf "$SIB75/x")" "1"
-check "75: 동사만 적은 형태는 rm -rf 를 열지 않는다" "$(pd75 'rm' rm -rf "$SIB75/x")" "0"
-check "75: git reset 만 적은 형태는 --hard 를 열지 않는다" "$(pd75 'git reset' git reset --hard)" "0"
-check "75: 경로 지정 checkout 은 -- 를 트리거로 쓴다" "$(pd75 'git checkout --' git checkout -- .)" "1"
+check "76: 파괴 낱말을 담은 형태가 플래그 없는 rm -rf 를 연다" "$(pd76 'rm -rf' rm -rf "$SIB76/x")" "1"
+check "76: 동사만 적은 형태는 rm -rf 를 열지 않는다" "$(pd76 'rm' rm -rf "$SIB76/x")" "0"
+check "76: 플래그 없는 rm 은 동사가 트리거라 rm 형태가 연다" "$(pd76 'rm' rm "$SIB76/x")" "1"
+check "76: git reset 만 적은 형태는 --hard 를 열지 않는다" "$(pd76 'git reset' git reset --hard)" "0"
+check "76: 경로 지정 checkout 은 -- 를 트리거로 쓴다" "$(pd76 'git checkout --' git checkout -- .)" "1"
 
 # park — 같은 모양이 대상의 공통 git 디렉터리 밖에 닿는다.
-nb75=$(b75)
-x75 워크트리쓰기 git -C "$U75" add -A
-check "75: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다" "$rc" "11"
-case "$msg" in *대상트리불일치*) ok "75: 그 park 의 판정이 대상트리불일치다" ;; *) bad "75: 그 park 의 판정이 대상트리불일치다" "$msg" ;; esac
+nb76=$(b76)
+x76 워크트리쓰기 git -C "$U76" add -A
+check "76: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다" "$rc" "11"
+case "$msg" in *대상트리불일치*) ok "76: 그 park 의 판정이 대상트리불일치다" ;; *) bad "76: 그 park 의 판정이 대상트리불일치다" "$msg" ;; esac
 case "$msg" in
-  *"repair:"*"'대상트리'"*"'런로컬'"*) ok "75: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" ;;
-  *) bad "75: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" "$msg" ;;
+  *"repair:"*"'대상트리'"*"'런로컬'"*) ok "76: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" ;;
+  *) bad "76: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" "$msg" ;;
 esac
-x75 트리밖쓰기 cp base.txt "$U75/c75.txt"
-check "75: 다른 저장소를 가리키는 피연산자는 park 된다" "$rc" "11"
-[ -e "$U75/c75.txt" ] && bad "75: park 된 쓰기는 일어나지 않았다" "$U75/c75.txt" \
-  || ok "75: park 된 쓰기는 일어나지 않았다"
-x75 트리밖쓰기 cp base.txt "${TMPDIR:-/tmp}/c75-$$.txt"
-check "75: 임시 디렉터리는 대상트리가 아니다 (런로컬이다)" "$rc" "11"
-check "75: park 셋이 blocked 행 셋을 남긴다" "$(( $(b75) - nb75 ))" "3"
+x76 트리밖쓰기 cp base.txt "$U76/c76.txt"
+check "76: 다른 저장소를 가리키는 피연산자는 park 된다" "$rc" "11"
+[ -e "$U76/c76.txt" ] && bad "76: park 된 쓰기는 일어나지 않았다" "$U76/c76.txt" \
+  || ok "76: park 된 쓰기는 일어나지 않았다"
+x76 트리밖쓰기 cp base.txt "${TMPDIR:-/tmp}/c76-$$.txt"
+check "76: 임시 디렉터리는 대상트리가 아니다 (런로컬이다)" "$rc" "11"
+check "76: park 셋이 blocked 행 셋을 남긴다" "$(( $(b76) - nb76 ))" "3"
 
 # 상태 루트 — 대상 트리 안에 놓여도 그 자리의 정직한 토큰은 런로컬이다. 시험 상태
 # 루트는 대상 트리 밖에 있으므로 exec 로는 이 갈래가 공허하다(술어가 어차피 떨어진다).
 # 그래서 술어를 직접 부르되, 상태 루트를 대상 체크아웃 안에 두고 대조 경로를 곁에 둔다.
-q75() {
+q76() {
   local rc=0
-  ( cd "$WT" && XDG_STATE_HOME="$WT/.st75" bash -c \
-      'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg75="$2"; target_field() { printf "%s" "$cg75"; }; shift 2; gate_reach_target_tree_ok front "$@"' \
+  ( cd "$WT" && XDG_STATE_HOME="$WT/.st76" bash -c \
+      'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg76="$2"; target_field() { printf "%s" "$cg76"; }; shift 2; gate_reach_target_tree_ok front "$@"' \
       _ "$GATE" "$CG" "$@" ) >/dev/null 2>&1 || rc=$?
   printf '%s' "$rc"
 }
-check "75: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다" "$(q75 "$WT/.st75/cc-cmds/run/x")" "1"
-check "75: 대조 — 같은 깊이의 이웃 경로는 대상트리다" "$(q75 "$WT/.nst75/x")" "0"
-check "75: 대조 — 다른 저장소 경로는 술어가 떨어뜨린다" "$(q75 "$U75/x")" "1"
+check "76: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다" "$(q76 "$WT/.st76/cc-cmds/run/x")" "1"
+check "76: 대조 — 같은 깊이의 이웃 경로는 대상트리다" "$(q76 "$WT/.nst76/x")" "0"
+check "76: 대조 — 다른 저장소 경로는 술어가 떨어뜨린다" "$(q76 "$U76/x")" "1"
 
 # 기기전역 접두·공유 stash 는 대상트리 신고를 이긴다 — 유도된 하한이 5b 앞에서 답한다.
-x75 워크트리쓰기 git stash push -m s75
-check "75: 공유 stash 는 대상트리 신고로도 기기전역 park 다" "$rc" "11"
-case "$msg" in *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "75: 그 판정이 기기전역이다" ;; *) bad "75: 그 판정이 기기전역이다" "$msg" ;; esac
+x76 워크트리쓰기 git stash push -m s76
+check "76: 공유 stash 는 대상트리 신고로도 기기전역 park 다" "$rc" "11"
+case "$msg" in *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "76: 그 판정이 기기전역이다" ;; *) bad "76: 그 판정이 기기전역이다" "$msg" ;; esac
 case "$msg" in
-  *"repair:"*"'런로컬'"*"'대상트리'"*) ok "75: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" ;;
-  *) bad "75: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" "$msg" ;;
+  *"repair:"*"'런로컬'"*"'대상트리'"*) ok "76: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" ;;
+  *) bad "76: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" "$msg" ;;
 esac
-x75 워크트리쓰기 sed -i.bak s/a/b/ "$HOME/.claude-x75/f"
-check "75: 기기전역 접두는 대상트리 선언을 이긴다" "$rc" "11"
-x75 트리밖쓰기 git worktree add -b ssh75 "$HOME/.ssh/wt75"
-check "75: 기기전역 접두 아래의 워크트리 생성은 생성 경로 면제로 통과하지 않는다" "$rc" "11"
-[ -e "$HOME/.ssh/wt75" ] && bad "75: 그 워크트리는 만들어지지 않았다" "$HOME/.ssh/wt75" \
-  || ok "75: 그 워크트리는 만들어지지 않았다"
-x75 워크트리쓰기 cp /opt/homebrew/bin/gawk75 "$WT/g75"
-check "75: 기기전역 접두의 읽기 피연산자도 하한을 올린다" "$rc" "11"
+x76 워크트리쓰기 sed -i.bak s/a/b/ "$HOME/.claude-x76/f"
+check "76: 기기전역 접두는 대상트리 선언을 이긴다" "$rc" "11"
+x76 트리밖쓰기 git worktree add -b ssh76 "$HOME/.ssh/wt76"
+check "76: 기기전역 접두 아래의 워크트리 생성은 생성 경로 면제로 통과하지 않는다" "$rc" "11"
+[ -e "$HOME/.ssh/wt76" ] && bad "76: 그 워크트리는 만들어지지 않았다" "$HOME/.ssh/wt76" \
+  || ok "76: 그 워크트리는 만들어지지 않았다"
+x76 워크트리쓰기 cp /opt/homebrew/bin/gawk76 "$WT/g76"
+check "76: 기기전역 접두의 읽기 피연산자도 하한을 올린다" "$rc" "11"
 
 # 수리 줄이 없던 나머지 둘.
 gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
-  --surface 워크트리쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t75 -- touch u75-unknown
-check "75: 미상 신고는 park 된다" "$rc" "11"
-case "$msg" in *"repair:"*"'대상트리'"*) ok "75: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" ;; *) bad "75: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" "$msg" ;; esac
+  --surface 워크트리쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t76 -- touch u76-unknown
+check "76: 미상 신고는 park 된다" "$rc" "11"
+case "$msg" in *"repair:"*"'대상트리'"*) ok "76: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" ;; *) bad "76: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" "$msg" ;; esac
 
 # 재신고 핀이 새 칸에서도 선다 — 미상으로 park 된 argv 를 대상트리로 다시 부르면, 그
 # 칸도 그 argv 를 park 하므로 앞 행의 다이제스트가 답하고 새 행은 없다. 핀은 park
 # 칸 안에서만 조회되므로, 둘째 신고가 통과하는 칸에 닿는 재신고는 여기서 닫히지
 # 않는다 — 그것은 이 칸이 만든 구멍이 아니라 런로컬 재신고가 이미 지나던 길이다.
 gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
-  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t75 -- cp base.txt "$U75/redeclare75"
-check "75: 미상 신고는 park 된다 (재신고의 앞 행)" "$rc" "11"
-nb75=$(b75)
-x75 트리밖쓰기 cp base.txt "$U75/redeclare75"
-check "75: 같은 argv 를 대상트리로 재신고하면 앞 판정이 답하고 새 행이 없다" "$rc/$(( $(b75) - nb75 ))" "11/0"
-case "$msg" in *"already parked"*) ok "75: 그 답이 재신고 핀의 것이다" ;; *) bad "75: 그 답이 재신고 핀의 것이다" "$msg" ;; esac
-[ -e "$U75/redeclare75" ] && bad "75: 재신고한 행위는 일어나지 않았다" "$U75/redeclare75" \
-  || ok "75: 재신고한 행위는 일어나지 않았다"
+  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t76 -- cp base.txt "$U76/redeclare76"
+check "76: 미상 신고는 park 된다 (재신고의 앞 행)" "$rc" "11"
+nb76=$(b76)
+x76 트리밖쓰기 cp base.txt "$U76/redeclare76"
+check "76: 같은 argv 를 대상트리로 재신고하면 앞 판정이 답하고 새 행이 없다" "$rc/$(( $(b76) - nb76 ))" "11/0"
+case "$msg" in *"already parked"*) ok "76: 그 답이 재신고 핀의 것이다" ;; *) bad "76: 그 답이 재신고 핀의 것이다" "$msg" ;; esac
+[ -e "$U76/redeclare76" ] && bad "76: 재신고한 행위는 일어나지 않았다" "$U76/redeclare76" \
+  || ok "76: 재신고한 행위는 일어나지 않았다"
 
 # park 행의 진단 필드 — 래퍼가 숨긴 push 는 축2 가 러너의 등급이므로, 신고와 출처가
 # 곁에 없으면 그 행은 오등급처럼 읽힌다.
 gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint push \
-  --surface 외부상태변경 --reach 협업 --snapshot-digest "$(HH)" --rationale t75 \
-  -- bash -c 'git push origin HEAD:refs/heads/b75-push'
-check "75: 셸 문자열 안의 push 는 park 된다" "$rc" "11"
-l75=$({ grep '^- `blocked` ' "$FX_LEDGER" || true; } | sed -n '$p')
-case "$l75" in
-  *"축2=워크트리쓰기 | 등급 출처=불투명 | 선언=외부상태변경 |"*) ok "75: park 행이 등급 출처와 선언을 싣는다" ;;
-  *) bad "75: park 행이 등급 출처와 선언을 싣는다" "$l75" ;;
+  --surface 외부상태변경 --reach 협업 --snapshot-digest "$(HH)" --rationale t76 \
+  -- bash -c 'git push origin HEAD:refs/heads/b76-push'
+check "76: 셸 문자열 안의 push 는 park 된다" "$rc" "11"
+l76=$({ grep '^- `blocked` ' "$FX_LEDGER" || true; } | sed -n '$p')
+case "$l76" in
+  *"축2=워크트리쓰기 | 등급 출처=불투명 | 선언=외부상태변경 |"*) ok "76: park 행이 등급 출처와 선언을 싣는다" ;;
+  *) bad "76: park 행이 등급 출처와 선언을 싣는다" "$l76" ;;
 esac
 n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
-[ "${n:-0}" -le 1024 ] && ok "75: 필드가 늘어도 park 행이 원장 행 상한 안이다 (최장 ${n}B)" \
-  || bad "75: park 행 길이" "최장 ${n}B > 1024"
-CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR75"
+[ "${n:-0}" -le 1024 ] && ok "76: 필드가 늘어도 park 행이 원장 행 상한 안이다 (최장 ${n}B)" \
+  || bad "76: park 행 길이" "최장 ${n}B > 1024"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR76"
 
 # 스테이지 대면 사본 — 토큰이 어휘에만 있고 사본에 없으면 스테이지는 그 토큰을 모른다.
-for f75 in skills/implement-unattended/SKILL.md skills/review-unattended/SKILL.md \
+for f76 in skills/implement-unattended/SKILL.md skills/review-unattended/SKILL.md \
            skills/design-audit-unattended/SKILL.md skills/design-discuss-unattended/SKILL.md \
            skills/autopilot/SKILL.md skills/_common/agent-team-protocol.md \
            hooks/gate-pretool.sh; do
-  grep -q '대상트리' "$repo_root/plugins/cc-cmds/$f75" 2>/dev/null \
-    && ok "75: 사본 $f75 가 대상트리를 싣는다" || bad "75: 사본 $f75 가 대상트리를 싣는다" "$repo_root/plugins/cc-cmds/$f75"
+  grep -q '대상트리' "$repo_root/plugins/cc-cmds/$f76" 2>/dev/null \
+    && ok "76: 사본 $f76 가 대상트리를 싣는다" || bad "76: 사본 $f76 가 대상트리를 싣는다" "$repo_root/plugins/cc-cmds/$f76"
 done
 grep -qE '^(readonly )?REACHES=.*대상트리' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
-  && ok "75: 도달 어휘가 대상트리를 싣는다" || bad "75: 도달 어휘가 대상트리를 싣는다" "REACHES"
+  && ok "76: 도달 어휘가 대상트리를 싣는다" || bad "76: 도달 어휘가 대상트리를 싣는다" "REACHES"
 
 # --- epilogue-begin ---
 #
