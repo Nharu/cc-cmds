@@ -1316,9 +1316,10 @@ EOF
   bd_rows=$(manifest_base_design_rows)
   bd_n=$(printf '%s' "$bd_rows" | grep -c . || true)
   [ "${bd_n:-0}" -le 1 ] || die "「베이스 설계」 행이 ${bd_n}개입니다 — 많아야 하나입니다"
+  # A here-string, not a pipe: `grep -q` stops at its match, and under pipefail
+  # the writer's SIGPIPE would turn a well-formed row into a refusal.
   if [ "${bd_n:-0}" = "1" ]; then
-    printf '%s\n' "$bd_rows" \
-      | grep -qE '^- `베이스 설계` \| 문서=docs/[^ |]+\.md \| sha256=[0-9a-f]{64} \| 티켓=T[0-9]+$' \
+    grep -qE '^- `베이스 설계` \| 문서=docs/[^ |]+\.md \| sha256=[0-9a-f]{64} \| 티켓=T[0-9]+$' <<<"$bd_rows" \
       || die "「베이스 설계」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>\` 입니다"
   fi
 
