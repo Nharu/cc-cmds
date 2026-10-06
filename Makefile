@@ -287,6 +287,7 @@ ORCH_TESTS := \
 	scripts/test-kickoff-defaults.sh \
 	scripts/test-team-witness-init.sh \
 	scripts/test-similar-items.sh \
+	scripts/test-base-split.sh \
 	scripts/test-gate-chain-equiv.sh \
 	scripts/test-measure-gate-cost.sh \
 	scripts/test-snapshot.sh \
