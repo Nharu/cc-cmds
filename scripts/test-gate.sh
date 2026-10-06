@@ -25377,13 +25377,18 @@ grep -q '^keep$' "$D76/insdst" && ok "76: park 된 install 이 덮었을 파일�
   || bad "76: park 된 install 이 덮었을 파일이 남아 있다" "$D76/insdst"
 
 # 비파괴 쌍둥이 — 같은 동사에서 알아본 형태는 통과하고, 실제로 아무것도 잃지 않는다.
-x76 트리밖쓰기 mv -n "$D76/nsrc" "$D76/ndst"
-check "76: 대조 — mv -n 은 대상트리로 통과한다" "$rc" "0"
-grep -q '^keep$' "$D76/ndst" && ok "76: 그 mv -n 이 대상을 덮지 않았다" || bad "76: 그 mv -n 이 대상을 덮지 않았다" "$D76/ndst"
-x76 트리밖쓰기 mv -f -n "$D76/nsrc" "$D76/ndst"
-check "76: 대조 — 마지막 -n 이 이기는 mv -f -n 은 통과한다" "$rc" "0"
-# BSD cp -n 은 대상이 있으면 아무것도 쓰지 않고 1 로 끝나므로, 게이트가 통과시켰는지는
+# GNU mv -n 은 대상이 있어 건너뛰면 1 로 끝나므로(BSD 는 0), 게이트가 통과시켰는지는
 # rc 가 아니라 park 가 아니었다는 것과 blocked 행이 늘지 않았다는 것으로 잰다.
+nb76=$(b76)
+x76 트리밖쓰기 mv -n "$D76/nsrc" "$D76/ndst"
+check "76: 대조 — mv -n 은 대상트리로 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b76) - nb76 ))" "통과/0"
+grep -q '^keep$' "$D76/ndst" && ok "76: 그 mv -n 이 대상을 덮지 않았다" || bad "76: 그 mv -n 이 대상을 덮지 않았다" "$D76/ndst"
+nb76=$(b76)
+x76 트리밖쓰기 mv -f -n "$D76/nsrc" "$D76/ndst"
+check "76: 대조 — 마지막 -n 이 이기는 mv -f -n 은 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b76) - nb76 ))" "통과/0"
+{ grep -q '^keep$' "$D76/ndst" && [ -e "$D76/nsrc" ]; } && ok "76: 그 mv -f -n 이 대상을 덮지 않고 원본도 남겼다" \
+  || bad "76: 그 mv -f -n 이 대상을 덮지 않고 원본도 남겼다" "$D76/nsrc $D76/ndst"
+# BSD cp -n 도 대상이 있으면 아무것도 쓰지 않고 1 로 끝나므로 같은 방식으로 잰다.
 nb76=$(b76)
 x76 트리밖쓰기 cp -n "$D76/cpsrc" "$D76/cpdst"
 check "76: 대조 — cp -n 은 대상트리로 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b76) - nb76 ))" "통과/0"
@@ -25407,7 +25412,7 @@ git -C "$SIB76" branch -D bn76 >/dev/null 2>&1
 # 뒤에 그 항목과 작업 트리의 변경이 남아 있음을 함께 단언한다.
 s76=$(git -C "$SIB76" stash create 2>/dev/null)
 [ -n "$s76" ] && git -C "$SIB76" stash store -m s76keep "$s76" >/dev/null 2>&1
-sl76() { git -C "$SIB76" stash list 2>/dev/null | grep -q 's76keep'; }
+sl76() { case "$(git -C "$SIB76" stash list 2>/dev/null)" in *s76keep*) return 0 ;; *) return 1 ;; esac; }
 sl76 && ok "76: stash 잔존 단언이 공허하지 않다 (지울 항목이 있다)" || bad "76: stash 잔존 단언이 공허하지 않다" "$s76"
 st76() {
   # st76 <이름> — 직전 x76 이 기기전역으로 park 되고 stash 항목과 변경이 남았음을 단언한다.
