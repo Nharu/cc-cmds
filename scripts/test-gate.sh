@@ -14172,16 +14172,16 @@ mkdir -p "$LEADHOME/.config/cc-cmds"
 printf '%s\n' "$SEATDIR" > "$LEADHOME/.config/cc-cmds/config-dir"
 cap_fx_new LEAD1
 lead_gate() {  # lead_gate <argv…> — the gate as a lead started without the variable
-  out=$(cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" \
+  out=$(cd "$WT" && unset CLAUDE_CONFIG_DIR XDG_CONFIG_HOME && HOME="$LEADHOME" \
         XDG_STATE_HOME="$STATE_CONE" CLAUDE_CODE_SESSION_ID="$LEADSID" \
         CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
-        bash "$GATE" "$@" 2>&1); rc=$?
+        gate_inproc "$@" 2>&1); rc=$?
 }
 lead_H() {
-  ( cd "$WT" && env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$LEADHOME" \
+  ( cd "$WT" && unset CLAUDE_CONFIG_DIR XDG_CONFIG_HOME && HOME="$LEADHOME" \
     XDG_STATE_HOME="$STATE_CONE" CLAUDE_CODE_SESSION_ID="$LEADSID" \
     CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
-    bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null ) | jq -r .H
+    gate_inproc snapshot --manifest "$CAP_NM" 2>/dev/null ) | jq -r .H
 }
 lead_gate act --manifest "$CAP_NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
   --surface 읽기 --snapshot-digest "$(lead_H)" --rationale x \
