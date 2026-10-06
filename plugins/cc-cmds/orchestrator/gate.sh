@@ -1240,10 +1240,12 @@ gate_reach_local_destructive() {
     timeout|nice|nohup|stdbuf)
       gate_unwrap_wrapper "$cmd" gate_reach_local_destructive '' '' "$@"; return 0 ;;
     # `-delete` removes every match and `-exec rm …` hands each to the inner
-    # command, which this predicate reads in turn. `-fprint` and its kin answer
-    # the same word: they truncate a file named in argv.
+    # command, which this predicate reads in turn. `-fprint` and its kin
+    # truncate a file named in argv, and `-execdir`/`-okdir` run from a
+    # directory the gate cannot know. Each answers its own word, so the printed
+    # trigger is always one the argv carries.
     find)
-      gate_unwrap_find gate_reach_local_destructive '' '-delete' '-execdir' gate_answer_first "$@"
+      gate_unwrap_find gate_reach_local_destructive '' '=' '=' gate_answer_first "$@"
       return 0 ;;
   esac
   local a
@@ -5143,12 +5145,20 @@ gate_unwrap_find() {
   # A PLAIN `find` WITH NO PRIMARY KEEPS COMING BACK `읽기`. The manifest guard
   # states that cost in place: without it every read that walks the manifest's
   # directory becomes a refusal.
+  #
+  # A <writes> or <form-unknown> of `=` answers the primary word itself. The
+  # local destructive reader prints a trigger that a manifest shape has to carry
+  # as one of its own words, so a fixed `-delete` for `-fprint` or `-execdir`
+  # for `-okdir` named a word the argv does not have and no shape could open.
   local resolver="$1" walk_only="$2" writes="$3" form_unknown="$4" combiner="$5"; shift 5
-  local acc="" seen=0 ans="" n term a prev
+  local acc="" seen=0 ans="" n term a prev prim
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      -execdir|-okdir) printf '%s' "$form_unknown"; return 0 ;;
+      -execdir|-okdir)
+        if [ "$form_unknown" = "=" ]; then printf '%s' "$1"; else printf '%s' "$form_unknown"; fi
+        return 0 ;;
       -exec|-ok)
+        prim="$1"
         shift
         # The inner command is the words up to one starting with `;`, or up to
         # one starting with `+` that stands directly after `{}`. Taking every
@@ -5166,7 +5176,7 @@ gate_unwrap_find() {
           n=$((n + 1))
         done
         if [ "$n" -eq 0 ]; then
-          ans="$writes"
+          if [ "$writes" = "=" ]; then ans="$prim"; else ans="$writes"; fi
         else
           ans=$(gate_call_prefix "$n" "$resolver" "$@")
         fi
@@ -5175,7 +5185,9 @@ gate_unwrap_find() {
       # NOT A RETURN ANY MORE. A higher-graded primary can stand behind this
       # one, and the operands these take are consumed by the arm below as
       # ordinary words — reading one of them as a primary can only over-grade.
-      -delete|-fprintf|-fprint|-fprint0|-fls) ans="$writes"; shift ;;
+      -delete|-fprintf|-fprint|-fprint0|-fls)
+        if [ "$writes" = "=" ]; then ans="$1"; else ans="$writes"; fi
+        shift ;;
       *) shift; continue ;;
     esac
     if [ "$seen" = 0 ]; then acc="$ans"; seen=1; else acc=$("$combiner" "$acc" "$ans"); fi
@@ -19040,9 +19052,24 @@ gate_verb_act() {
     # undercount by up to 54 bytes and a long row would make `gate_append`
     # refuse it outright instead of trimming it.
     local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"
+    # THE WORD AN AUTHORIZATION SHAPE HAS TO CARRY, on the row and in the repair
+    # line. The comparator opens a destructive act only for a shape that is a
+    # head prefix of the argv holding the trigger as one of its words, and a
+    # trigger nobody can see left the morning guessing: the printed advice named
+    # `rm -rf`, which never opens an act whose trigger is the verb itself. The
+    # word is the one the cell compared — the table's, or in the target-tree
+    # cell the local reader's when the table gave none.
+    local _ptrig=''
+    if [ "$GATE_PARK_CELL" = "파괴형태미명시" ]; then
+      if [ "${GATE_MARK:-}" = "파괴" ]; then
+        _ptrig="${GATE_MARK_TRIGGER:-}"
+      elif [ "${GATE_REACH:-}" = "대상트리" ]; then
+        _ptrig=$(gate_reach_local_destructive "$@")
+      fi
+    fi
     local _fixed _free _rb _ob _cb
-    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 등급 출처=%s | 선언=%s | 도달=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
-              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_GRADE_SOURCE:--}" "${GATE_DECLARED:--}" "${GATE_REACH:--}" "$_ad" 0 \
+    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 등급 출처=%s | 선언=%s | 도달=%s | 파괴 트리거=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
+              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_GRADE_SOURCE:--}" "${GATE_DECLARED:--}" "${GATE_REACH:--}" "$(gate_row_safe "${_ptrig:--}" 60)" "$_ad" 0 \
             | wc -c | tr -d ' ')
     _free=$(( GATE_ROW_MAX - _fixed - 8 ))
     [ "$_free" -lt 0 ] && _free=0
@@ -19057,6 +19084,7 @@ gate_verb_act() {
       "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
       "스테이지=$_stg" "축2=$graded" "등급 출처=${GATE_GRADE_SOURCE:--}" \
       "선언=${GATE_DECLARED:--}" "도달=${GATE_REACH:--}" \
+      "파괴 트리거=$(gate_row_safe "${_ptrig:--}" 60)" \
       "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
@@ -19066,7 +19094,11 @@ gate_verb_act() {
       prod인가없음|배포트리거인가없음)
         warn "repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen" ;;
       파괴형태미명시)
-        warn "repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds'; 'rm -rf' or 'git reset --hard', not 'rm' or 'git reset'). The authorization of this run is frozen, so that means kicking off again" ;;
+        if [ -n "$_ptrig" ]; then
+          warn "repair: the destructive word of this act is '$_ptrig'. An authorization row opens it only when its \`형태\` is the first words of this argv and '$_ptrig' is one of them — 'rm' for a plain 'rm <file>', 'git worktree remove --force' for 'git worktree remove --force <dir>', 'aws rds delete-db-instance' rather than 'aws rds'. The authorization of this run is frozen, so that means kicking off again"
+        else
+          warn "repair: the destructive mark of this act came from --destructive alone and names no word, so no authorization row opens it — leave it to a person"
+        fi ;;
       신고등급한도)
         warn "repair: name that script shape in a \`사전 인가\` row or as an argv element of \`배포트리거 식별자\` — a shape that names only the runner does not open it" ;;
       비밀출력)

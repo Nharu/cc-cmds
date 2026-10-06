@@ -25572,6 +25572,13 @@ check "76: 대조 — 피연산자 뒤 -n 의 mv 는 여전히 동사가 트리�
 check "76: 옵션 없는 worktree remove 는 하위 명령이 트리거다" "$(lt76 git worktree remove "$P76/w")" "remove"
 check "76: 형태=git worktree remove 는 옵션 없는 remove 를 연다" "$(pd76 'git worktree remove' git worktree remove "$P76/w")" "1"
 check "76: 형태=git worktree 는 옵션 없는 remove 를 열지 않는다" "$(pd76 'git worktree' git worktree remove "$P76/w")" "0"
+# find 는 argv 에 실재하는 기본식 낱말을 트리거로 낸다. 쓰기 기본식이 모두 `-delete`
+# 를 내던 동안 `-fprint` 행위는 argv 에 없는 낱말을 요구해 어떤 형태로도 열리지 않았다.
+check "76: find -fprint 의 트리거는 -fprint 다" "$(lt76 find "$P76" -fprint "$P76/o")" "-fprint"
+check "76: find -okdir 의 트리거는 -okdir 다" "$(lt76 find "$P76" -okdir rm {} ';')" "-okdir"
+check "76: find -delete 의 트리거는 여전히 -delete 다" "$(lt76 find "$P76" -delete)" "-delete"
+check "76: -fprint 를 담은 형태가 find -fprint 를 연다" "$(pd76 "find $P76 -fprint" find "$P76" -fprint "$P76/o")" "1"
+check "76: 대조 — -delete 를 담은 형태는 find -fprint 를 열지 않는다" "$(pd76 "find $P76 -delete" find "$P76" -fprint "$P76/o")" "0"
 rm -rf "$P76"
 
 # park — 같은 모양이 대상의 공통 git 디렉터리 밖에 닿는다.
@@ -25590,6 +25597,80 @@ check "76: 다른 저장소를 가리키는 피연산자는 park 된다" "$rc" "
 x76 트리밖쓰기 cp base.txt "${TMPDIR:-/tmp}/c76-$$.txt"
 check "76: 임시 디렉터리는 대상트리가 아니다 (런로컬이다)" "$rc" "11"
 check "76: park 셋이 blocked 행 셋을 남긴다" "$(( $(b76) - nb76 ))" "3"
+
+# 수리 줄과 park 행은 비교기가 대조하는 그 트리거 낱말을 싣는다. 안내가 「rm 이 아니라
+# rm -rf」였던 동안 동사 자체가 트리거인 행위는 안내대로 등록한 형태로 결코 열리지
+# 않았고, 행에는 그 낱말이 없어 맞는 형태를 알아낼 길도 없었다. 인쇄된 낱말로 만든
+# 형태가 실제로 그 행위를 여는지까지 대조해 안내와 비교기를 한 사슬로 묶는다.
+lb76() { grep '^- `blocked` ' "$FX_LEDGER" 2>/dev/null | tail -1; }
+R76="$SIB76/r76t"; printf 'k\n' > "$R76"
+x76 트리밖쓰기 rm "$R76"
+check "76: 플래그 없는 rm 은 park 된다 (수리 줄 사례)" "$rc" "11"
+case "$msg" in
+  *"repair: the destructive word of this act is 'rm'."*) ok "76: 수리 줄이 실제 트리거 rm 을 인쇄한다" ;;
+  *) bad "76: 수리 줄이 실제 트리거 rm 을 인쇄한다" "$msg" ;;
+esac
+case "$msg" in
+  *"not 'rm'"*|*"'rm -rf' or"*) bad "76: 수리 줄이 동사 트리거 행위에 rm -rf 를 권하지 않는다" "$msg" ;;
+  *) ok "76: 수리 줄이 동사 트리거 행위에 rm -rf 를 권하지 않는다" ;;
+esac
+case "$(lb76)" in
+  *"| 파괴 트리거=rm |"*) ok "76: park 행이 파괴 트리거=rm 을 싣는다" ;;
+  *) bad "76: park 행이 파괴 트리거=rm 을 싣는다" "$(lb76)" ;;
+esac
+[ -e "$R76" ] && ok "76: park 된 rm 의 대상 파일이 남아 있다 (수리 줄 사례)" \
+  || bad "76: park 된 rm 의 대상 파일이 남아 있다 (수리 줄 사례)" "$R76"
+rt76=$(printf '%s\n' "$msg" | sed -n "s/.*destructive word of this act is '\([^']*\)'.*/\1/p" | sed -n '1p')
+check "76: 수리 줄이 인쇄한 낱말로 만든 형태가 그 행위를 연다" "$(pd76 "$rt76" rm "$R76")" "1"
+# 신고만으로 선 표지에는 낱말이 없고, 그때 수리 줄은 열 형태가 없다고 말한다.
+d76 cp base.txt "$SIB76/r76d"
+check "76: 신고만으로 파괴인 대상트리 쓰기는 park 된다" "$rc" "11"
+case "$msg" in
+  *"repair: the destructive mark of this act came from --destructive alone"*) ok "76: 신고만의 표지에 수리 줄이 열 형태가 없다고 말한다" ;;
+  *) bad "76: 신고만의 표지에 수리 줄이 열 형태가 없다고 말한다" "$msg" ;;
+esac
+case "$(lb76)" in
+  *"| 파괴 트리거=- |"*) ok "76: 신고만의 park 행은 파괴 트리거=- 를 싣는다" ;;
+  *) bad "76: 신고만의 park 행은 파괴 트리거=- 를 싣는다" "$(lb76)" ;;
+esac
+rm -f "$R76" "$SIB76/r76d"
+
+# 실험 워크트리 — verification 계약이 임시 디렉터리 아래 만들고 판정 전에 강제로
+# 지우라고 정한 워크트리는 런로컬로 신고하고, 그 신고로 생성과 제거가 모두 통과한다.
+# 대상과 공통 git 디렉터리를 공유해 대상트리 술어도 통과하지만, 그렇게 신고하면 의무인
+# 제거가 파괴형태미명시로 park 되어 판정이 나갈 수 없다 — 그 대조를 다른 경로로 둔다.
+# 같은 argv 면 재신고 핀이 앞 행으로 답하므로 두 워크트리는 경로가 달라야 한다.
+r76() {
+  # r76 <surface> <argv...> — 런로컬 신고로 한 번 부르고 rc 와 msg 를 남긴다.
+  local s="$1"; shift
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface "$s" --reach 런로컬 --snapshot-digest "$(HH)" --rationale 't76' -- "$@"
+}
+EA76=$(mktemp -d "$WORK/cc-design-exp-t76-a.XXXXXX")
+EB76=$(mktemp -d "$WORK/cc-design-exp-t76-b.XXXXXX")
+nb76=$(b76)
+r76 트리밖쓰기 git worktree add --detach "$EA76" HEAD
+check "76: 실험 워크트리 생성이 런로컬로 통과한다" "$rc" "0"
+[ -e "$EA76/.git" ] && ok "76: 그 실험 워크트리가 실제로 만들어졌다 (아래 제거가 공허하지 않다)" \
+  || bad "76: 그 실험 워크트리가 실제로 만들어졌다" "$msg"
+printf 'ign\n' > "$EA76/scratch76"
+r76 트리밖쓰기 git worktree remove --force "$EA76"
+check "76: 실험 워크트리의 강제 제거가 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$EA76" ] && ok "76: 그 제거가 실제로 워크트리를 지웠다" \
+  || bad "76: 그 제거가 실제로 워크트리를 지웠다" "$EA76"
+r76 트리밖쓰기 git worktree add --detach "$EB76" HEAD
+check "76: 대조용 실험 워크트리 생성이 런로컬로 통과한다" "$rc" "0"
+x76 트리밖쓰기 git worktree remove --force "$EB76"
+check "76: 대상트리로 신고한 실험 워크트리 제거는 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*"destructive word of this act is '--force'"*) ok "76: 그 park 가 파괴형태미명시이고 트리거 --force 를 인쇄한다" ;;
+  *) bad "76: 그 park 가 파괴형태미명시이고 트리거 --force 를 인쇄한다" "$msg" ;;
+esac
+[ -e "$EB76/.git" ] && ok "76: park 된 제거의 실험 워크트리가 남아 있다" \
+  || bad "76: park 된 제거의 실험 워크트리가 남아 있다" "$EB76"
+check "76: 실험 워크트리 쌍은 대상트리 제거 하나만 blocked 행을 남긴다" "$(( $(b76) - nb76 ))" "1"
+git -C "$WT" worktree remove --force "$EB76" >/dev/null 2>&1
+rm -rf "$EA76" "$EB76"
 
 # 상태 루트 — 대상 트리 안에 놓여도 그 자리의 정직한 토큰은 런로컬이다. 시험 상태
 # 루트는 대상 트리 밖에 있으므로 exec 로는 이 갈래가 공허하다(술어가 어차피 떨어진다).
