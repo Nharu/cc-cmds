@@ -3021,6 +3021,164 @@ pre_ledger_series() {
   lsr_sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 }
 
+# THE BASE RUN FAMILY. A base run is `design → design-audit → split` with no
+# segment at all, so every section of this family builds its own manifest with
+# that graph and a `베이스 발행` row, and keeps its own state home — the shared
+# fixtures all carry segment rows by the time these sections run, and a run
+# with a segment row is not the shape under test. Each run id is fresh, so a
+# section cut on its own stands on nothing another section left behind.
+pre_bsplit() {
+  [ -n "${PRE_BSPLIT_DONE:-}" ] && return 0
+  PRE_BSPLIT_DONE=1
+  BSX_STATE="$WORK/state-bsplit"
+  mkdir -p "$BSX_STATE" "$WORK/bin"
+  BSX_ROW="- \`target\` | 별칭=infra | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/infra | 절단점=커밋 | 말단 행위 상한=없음"
+  BSX_TD=$(printf '%s\n' "$BSX_ROW" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  BSX_PLAN='{ "design_required": true, "design_tier": "team-4", "design_scope": "base", "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S1", "skill": "split", "summary": "분할", "depends_on": ["D1", "A1"] } ] }'
+  BSX_PUB_NONE='- `베이스 발행` | 트래커=없음 | 대상=-'
+  # The literals are read from the driver's declarations, never typed here.
+  bsx_lit() { sed -n "s/^readonly $1='\\(.*\\)'\$/\\1/p" "$repo_root/plugins/cc-cmds/orchestrator/run.sh"; }
+  BSX_LIT_DESIGN=$(bsx_lit LIT_DESIGN_TERMINAL)
+  BSX_LIT_AUDIT=$(bsx_lit LIT_AUDIT_TERMINAL)
+  BSX_LIT_SPLIT=$(bsx_lit LIT_SPLIT_TERMINAL)
+
+  gateB() {
+    local out
+    out=$(cd "$WT" && XDG_STATE_HOME="$BSX_STATE" gate_inproc "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  bsx_snap() { ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" gate_inproc snapshot --manifest "$1" 2>/dev/null ); }
+  bsx_H() { bsx_snap "$1" | jq -r .H; }
+  # bsx_c1 <manifest> — condition 1's unmet line, or nothing when it holds.
+  bsx_c1() { bsx_snap "$1" | jq -r '.unmet_conditions[]? | select(startswith("1 "))'; }
+
+  bsx_write() {
+    # bsx_write <manifest> <run id> <plan json> <doc> [<rows under ## 인가>]
+    {
+      printf '# 파이프라인 런 매니페스트 — %s\n' "$2"
+      printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$2"
+      printf '     anchor-kind=repo; anchor-key=t/infra;\n'
+      printf '     owner-doc=%s; origin-worktree=%s;\n' "$4" "$WT"
+      printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+      printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$2"
+      printf '**앵커 종류**: repo\n**앵커 키**: t/infra\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+      printf '## 의도\n```text\n테스트\n```\n\n'
+      printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$BSX_TD" "$BSX_ROW"
+      printf '## 요소\n**설계 문서**: %s\n**적용 주체**: (해당 없음)\n\n' "$4"
+      printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$3"
+      printf '## 인가\n**런 최대 절단점**: 커밋\n**종료 지점**: 픽스처\n'
+      printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+      printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+      [ -z "${5:-}" ] || printf '%s\n' "$5"
+    } > "$1"
+  }
+  bsx_grant() {
+    # bsx_grant <run id> <owner-doc>
+    {
+      printf '# 파이프라인 인가 기록 — %s\n' "$1"
+      printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=%s; origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$2" "$WT"
+      printf '## 인가 %s\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n' "$1"
+      printf '**권한 절단점**: 커밋\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+      printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+      printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/%s.md\n' "$WT" "$1"
+    } > "$WT/docs/pipeline-grant/$1.md"
+  }
+  bsx_fresh() {
+    # bsx_fresh <run id> [<rows under ## 인가>] — a base run's manifest and grant
+    # at $WORK/bsx-<run id>.md, documenting docs/bsxd-<run id>.md. The two
+    # basenames differ on purpose: the gate's manifest guard reads an argv
+    # element with the manifest's basename as a write to the manifest, and the
+    # split's `record` names the document as an argv element.
+    bsx_write "$WORK/bsx-$1.md" "$1" "$BSX_PLAN" "docs/bsxd-$1.md" "${2-$BSX_PUB_NONE}"
+    bsx_grant "$1" "docs/bsxd-$1.md"
+  }
+  bsx_doc_frozen() {
+    # A frozen base document with one ticket — enough for the split helper to
+    # read a base ticket and a ticket id, which is all a document-only registry
+    # records.
+    mkdir -p "$WT/docs"
+    {
+      printf '# 픽스처 베이스 설계\n\n**문서 종류**: 베이스 설계\n**상태**: 동결됨\n\n'
+      printf '## 합의된 아키텍처\n\n본문\n\n## 티켓 분할\n\n'
+      printf '### 베이스 티켓\n**발행 제목**: 베이스\n**발행 본문**:\n````text\n본문\n````\n\n'
+      printf '### 티켓 T1 — 하나\n**종류**: 구현\n**레포**: t/infra\n**선행**: 없음\n'
+      printf '**제공 계약**: 없음\n**소비 계약**: 없음\n**소유 파일**: `a.txt`\n**공유 파일**: 없음\n'
+      printf '**범위**: 하나.\n**완료 기준**:\n- 된다.\n**발행 제목**: 하나 구현\n**발행 본문**:\n````text\n본문\n````\n'
+    } > "$WT/docs/bsxd-$1.md"
+  }
+  bsx_registry() {
+    # bsx_registry <run id> — a complete document-only registry for the doc's
+    # current bytes, in the shape the split predicate reads.
+    local doc="$WT/docs/bsxd-$1.md" sha
+    sha=$(shasum -a 256 "$doc" | cut -d' ' -f1)
+    mkdir -p "$WT/docs/design-base"
+    {
+      printf '<!-- cc-design-base-tickets v1; doc-sha256=%s; tracker=없음; -->\n' "$sha"
+      printf -- '- `베이스` | id=B | 상태=문서만 | 대상=-\n'
+      printf -- '- `티켓` | id=T1 | 상태=문서만 | 제목=하나\n'
+      printf -- '- `티켓` | id=T2 | 상태=문서만 | 제목=둘\n'
+      printf -- '- `관계` | T2 → T1 | 상태=문서만\n'
+      printf '<!-- cc-design-base-tickets: end -->\n'
+    } > "$WT/docs/design-base/bsxd-$1.tickets.md"
+  }
+
+  bsx_stub() {
+    # bsx_stub <path> <result text> [<shell run before the result>] — a stage
+    # that makes one gate call from its own seat, runs the extra shell, and ends
+    # `subtype: success` with that text. The session id carries the stage id, so
+    # each attempt is a fresh one.
+    cat > "$1" <<'BSXSTUBEOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 런 범위 스테이지의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+[ -f "$0.sh" ] && . "$0.sh"
+jq -cn --arg r "$(cat "$0.result")" --arg s "bsx-$CC_PIPELINE_STAGE_ID" \
+  '{type:"result",subtype:"success",is_error:false,total_cost_usd:0.1,session_id:$s,num_turns:1,result:$r}'
+exit 0
+BSXSTUBEOF
+    chmod +x "$1"
+    printf '%s' "$2" > "$1.result"
+    if [ -n "${3:-}" ]; then printf '%s\n' "$3" > "$1.sh"; else rm -f "$1.sh"; fi
+  }
+  BSX_HALT='mkdir -p "$CC_PIPELINE_RUN_DIR/halt"; printf "# 중단 기록\n\n픽스처\n\n<!-- /cc-pipeline-halt v1 -->\n" > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"'
+  bsx_stub "$WORK/bin/bsx-design" "$BSX_LIT_DESIGN"
+  bsx_stub "$WORK/bin/bsx-audit" "$BSX_LIT_AUDIT"
+  bsx_stub "$WORK/bin/bsx-split" "$BSX_LIT_SPLIT"
+  bsx_stub "$WORK/bin/bsx-halt" "멈춘다" "$BSX_HALT"
+
+  BSX_P_DESIGN='/cc-cmds:design-base-unattended /nonexistent/doc.md "테스트"'
+  BSX_P_AUDIT='/cc-cmds:design-audit-unattended /nonexistent/doc.md --base'
+  BSX_P_SPLIT='/cc-cmds:design-base-unattended --split /nonexistent/doc.md'
+  bsx_launch() {
+    # bsx_launch <run id> <stub> <kind> <prompt> <step id> — dispatch one
+    # run-scope stage and wait on it. The act's code is left in BSX_ACT_RC.
+    local m="$WORK/bsx-$1.md"
+    ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
+      bash "$GATE" act --manifest "$m" --kind skill --target infra --segment - --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(bsx_H "$m")" --rationale x \
+      -- "$3" -p "$4" ) >/dev/null 2>&1; BSX_ACT_RC=$?
+    ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
+      bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout 60 ) >/dev/null 2>&1; BSX_WAIT_RC=$?
+  }
+  # bsx_rows <run id> <needle> — that run's `stage-result` rows carrying it.
+  bsx_rows() {
+    { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F -- "$2" || true; }
+  }
+  bsx_class() {
+    bsx_rows "$1" "$2" | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//'
+  }
+  # bsx_prep <run id> — a base run whose design is frozen and whose audit
+  # finished, which is where the split becomes dispatchable.
+  bsx_prep() {
+    bsx_fresh "$1"
+    bsx_doc_frozen "$1"
+    bsx_launch "$1" "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
+    bsx_launch "$1" "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
+  }
+}
+
 # THE SHARED RUN FIXTURE IS SOURCED IN THE HEAD, not only in the section that
 # first used it. Section 33 is where `run-fixture.sh` came in, and later sections
 # — 12b, 34 — call its `fx_*` helpers, so a cut naming one of them without 33
@@ -25342,6 +25500,340 @@ q74() {
 check "74: 강제 표면 분기의 조회가 그 인용을 자기 선행 기록으로 읽지 않는다" "$(q74 "$l74")" "1"
 printf -- '- `blocked` | 교대=1 | 대상=front | 스코프=run | 원인=무효화 | 사유=강제 표면 이동 | 관측=t | prev=x\n' > "$WORK/ledger74b.md"
 check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WORK/ledger74b.md")" "0"
+
+# ---------------------------------------------------------------------------
+# 76. A base run's three steps are dispatched from the run-scope table
+# --- section: 76 | group: bsplit | covers: act, plan, snapshot, gate_main | anchors: 76:설계가 끝나기 전의 감사 파견은 거부된다, 76:감사 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id · 종류=audit 다, 76:감사가 끝나기 전의 분할 파견은 거부된다, 76:분할 단계의 행이 종류=split 이다, 76:리터럴만 있고 레지스트리가 없는 분할은 공허한 성공이다, 76:설계 문서가 (없음) 인 런에서는 감사 파견이 거부된다 ---
+#
+# The run-scope step table binds each of the three kinds to the one plan step
+# carrying its skill, and refuses a dispatch whose predecessor has not ended
+# `정상 완료`. A split stage's class is not its row count: the driver's split
+# predicate — the literal in the stream AND a complete registry for the
+# document's current bytes — decides it, the same way a design stage needs a
+# frozen document and not just a row.
+#
+# The `RB*` runs, their state home and the `bsx_*` helpers are `pre_bsplit` in
+# the head, called from here; a cut of any later section of the family gets the
+# same call from the selector.
+# ---------------------------------------------------------------------------
+pre_bsplit
+bsx_fresh RB1
+bsx_doc_frozen RB1
+gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- audit -p "$BSX_P_AUDIT"
+check "76:설계가 끝나기 전의 감사 파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"아직 정상 완료로 끝나지 않았습니다"*) ok "76:그 거절은 끝나지 않은 선행 단계를 든다" ;;
+  *) bad "76감사 선행 문면" "$msg" ;;
+esac
+bsx_launch RB1 "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
+check "76:설계 단계가 정상 완료로 끝난다 (아래가 공허하지 않다)" "$(bsx_class RB1 '| 스테이지=D1 | 종류=design ')" "정상 완료"
+gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- split -p "$BSX_P_SPLIT"
+check "76:감사가 끝나기 전의 분할 파견은 거부된다" "$rc" "3"
+bsx_launch RB1 "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
+check "76:감사 파견이 기동하고 wait 가 rc 0 을 돌려준다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "76:감사 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id · 종류=audit 다" \
+  "$(bsx_rows RB1 '| 세그먼트=- | 스테이지=A1 | 종류=audit ' | grep -c . || true)" "1"
+check "76:감사 단계가 정상 완료로 끝난다" "$(bsx_class RB1 '| 스테이지=A1 | 종류=audit ')" "정상 완료"
+check "76:감사의 pid 파일이 정산 뒤 남지 않는다" \
+  "$([ -e "$BSX_STATE/cc-cmds/run/RB1/A1.pid" ] && echo 남음 || echo 없음)" "없음"
+n_bs1=$(bsx_rows RB1 '| 스테이지=A1 ' | grep -c . || true)
+( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" bash "$GATE" wait --manifest "$WORK/bsx-RB1.md" \
+  --segment A1 --interval 1 --timeout 10 ) >/dev/null 2>&1
+check "76:두 번째 wait 는 행을 더 쓰지 않는다" "$(bsx_rows RB1 '| 스테이지=A1 ' | grep -c . || true)" "$n_bs1"
+bsx_launch RB1 "$WORK/bin/bsx-split" split "$BSX_P_SPLIT" S1
+check "76:분할 단계의 행이 종류=split 이다" \
+  "$(bsx_rows RB1 '| 세그먼트=- | 스테이지=S1 | 종류=split ' | grep -c . || true)" "1"
+check "76:리터럴만 있고 레지스트리가 없는 분할은 공허한 성공이다" \
+  "$(bsx_class RB1 '| 스테이지=S1 | 종류=split ')" "공허한 성공"
+# `(없음)` names no document the audit could read, so the table refuses it the
+# way it refuses the design dispatch.
+bsx_write "$WORK/bsx-RB1N.md" RB1N "$BSX_PLAN" '(없음)' "$BSX_PUB_NONE"
+bsx_grant RB1N '(없음)'
+gateB plan --manifest "$WORK/bsx-RB1N.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- audit -p "$BSX_P_AUDIT"
+check "76:설계 문서가 (없음) 인 런에서는 감사 파견이 거부된다" "$rc" "3"
+case "$msg" in
+  *"설계 문서 가 실제 경로여야 합니다"*) ok "76:그 거절은 설계 문서 값을 든다" ;;
+  *) bad "76(없음) 문면" "$msg" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 77. Condition 1 of a base run is the split and its registry
+# --- section: 77 | group: bsplit | covers: snapshot, done-conditions | anchors: 77:레지스트리가 완결된 분할 뒤 조건 1 이 선다, 77:문서가 레지스트리 뒤에 바뀌면 조건 1 이 서지 않는다, 77:멈춘 분할은 무효 종료 문면을 낸다, 77:멈춘 감사는 그 단계를 든다, 77:죽은 설계는 베이스 문면보다 앞선다, 77:드라이버 이름의 행으로도 조건 1 이 선다 ---
+#
+# Condition 1 of a base run is not "every segment closed" — there is none — but
+# "the split ended and its registry matches the document". A design that ended
+# `정상 완료` is the normal state of such a run, not a dead design, and the
+# driver's rows (`S1design`, `S2`, `S2split`) count the same as the router's.
+# ---------------------------------------------------------------------------
+bsx_prep RB2
+bsx_registry RB2
+bsx_launch RB2 "$WORK/bin/bsx-split" split "$BSX_P_SPLIT" S1
+check "77:레지스트리가 있는 분할은 정상 완료다 (아래가 공허하지 않다)" \
+  "$(bsx_class RB2 '| 스테이지=S1 | 종류=split ')" "정상 완료"
+check "77:레지스트리가 완결된 분할 뒤 조건 1 이 선다" "$(bsx_c1 "$WORK/bsx-RB2.md")" ""
+printf '덧붙인 줄\n' >> "$WT/docs/bsxd-RB2.md"
+case "$(bsx_c1 "$WORK/bsx-RB2.md")" in
+  "1 베이스 분할이"*) ok "77:문서가 레지스트리 뒤에 바뀌면 조건 1 이 서지 않는다" ;;
+  *) bad "77:문서가 레지스트리 뒤에 바뀌면 조건 1 이 서지 않는다" "$(bsx_c1 "$WORK/bsx-RB2.md")" ;;
+esac
+
+bsx_prep RB3
+bsx_launch RB3 "$WORK/bin/bsx-halt" split "$BSX_P_SPLIT" S1
+case "$(bsx_c1 "$WORK/bsx-RB3.md")" in
+  "1 베이스 분할이 더는 파견되지 않습니다 — S1"*"무효로 끝납니다") ok "77:멈춘 분할은 무효 종료 문면을 낸다" ;;
+  *) bad "77:멈춘 분할은 무효 종료 문면을 낸다" "$(bsx_c1 "$WORK/bsx-RB3.md")" ;;
+esac
+
+bsx_fresh RB4
+bsx_doc_frozen RB4
+bsx_launch RB4 "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
+bsx_launch RB4 "$WORK/bin/bsx-halt" audit "$BSX_P_AUDIT" A1
+case "$(bsx_c1 "$WORK/bsx-RB4.md")" in
+  "1 베이스 분할이 더는 파견되지 않습니다 — A1"*) ok "77:멈춘 감사는 그 단계를 든다" ;;
+  *) bad "77:멈춘 감사는 그 단계를 든다" "$(bsx_c1 "$WORK/bsx-RB4.md")" ;;
+esac
+
+bsx_fresh RB5
+bsx_doc_frozen RB5
+bsx_launch RB5 "$WORK/bin/bsx-halt" design "$BSX_P_DESIGN" D1
+case "$(bsx_c1 "$WORK/bsx-RB5.md")" in
+  ""|"1 베이스 분할이"*) bad "77:죽은 설계는 베이스 문면보다 앞선다" "$(bsx_c1 "$WORK/bsx-RB5.md")" ;;
+  *) ok "77:죽은 설계는 베이스 문면보다 앞선다" ;;
+esac
+
+# The driver's shape: the same three outcomes under the names the driver writes.
+# The rows are lifted from RB2's ledger and renamed, so they are the rows the gate
+# wrote and differ only in the stage names under test.
+bsx_fresh RB6
+bsx_doc_frozen RB6
+bsx_registry RB6
+sed -e 's/RB2/RB6/g' \
+    -e 's/| 스테이지=D1 | 종류=design /| 스테이지=S1design /' \
+    -e 's/| 스테이지=A1 | 종류=audit /| 스테이지=S2 /' \
+    -e 's/| 스테이지=S1 | 종류=split /| 스테이지=S2split | 종류=split /' \
+    "$WT/docs/pipeline-run/RB2.md" > "$WT/docs/pipeline-run/RB6.md"
+# The driver's split predicate reads the stream it captured under its own stage
+# name, so that stream is where the driver leaves it.
+mkdir -p "$BSX_STATE/cc-cmds/run/RB6/log"
+jq -cn --arg r "$BSX_LIT_SPLIT" '{type:"result",subtype:"success",result:$r}' \
+  > "$BSX_STATE/cc-cmds/run/RB6/log/S2split.json"
+check "77:드라이버 이름의 행만 있다 (아래가 공허하지 않다)" \
+  "$(bsx_rows RB6 '| 스테이지=S2split | 종류=split ' | grep -c . || true)/$(bsx_rows RB6 '| 종류=design ' | grep -c . || true)" "1/0"
+check "77:드라이버 이름의 행으로도 조건 1 이 선다" "$(bsx_c1 "$WORK/bsx-RB6.md")" ""
+
+# ---------------------------------------------------------------------------
+# 78. The split stage's own acts, asked from its seat
+# --- section: 78 | group: bsplit | covers: plan, reach, rundir | anchors: 78:분할 좌석의 gh issue 발행은 협업으로 통과한다, 78:경로로 부른 clickup-create.py 는 협업으로 통과한다, 78:경로로 부른 clickup-relate.py 는 협업으로 통과한다, 78:인터프리터를 앞세운 clickup-create.py 는 통과하지 않는다, 78:base-split.py plan 의 출력 디렉터리 쓰기가 통과한다, 78:split 이웃 이름 디렉터리 쓰기는 거부된다 ---
+#
+# What the split stage itself will ask of the gate, asked from its own seat:
+# `--segment -`, the stage's own key, and the run directory's `split/` tree.
+# Every call is `plan`, so nothing here reaches a tracker.
+# ---------------------------------------------------------------------------
+# The forms are the ones the kickoff freezes beside a tracker choice. The publish
+# row says `없음` so the run's own check passes with all of them present; the
+# pre-authorization is what decides these plans, not the tracker.
+bsx_fresh RB7 "$BSX_PUB_NONE
+- \`사전 인가\` | 형태=gh issue create | 사유=테스트
+- \`사전 인가\` | 형태=gh issue edit | 사유=테스트
+- \`사전 인가\` | 형태=clickup-create.py | 사유=테스트
+- \`사전 인가\` | 형태=clickup-relate.py | 사유=테스트"
+bsx_doc_frozen RB7
+bsx_launch RB7 "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
+bsx_launch RB7 "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
+BSX_CU="$repo_root/plugins/cc-cmds/orchestrator"
+BSX_PLANLOG="$WORK/bsx-RB7-plan.txt"
+rm -f "$BSX_PLANLOG" "$BSX_PLANLOG.err"
+cat > "$WORK/bin/bsx-probe-body.sh" <<BSXPROBEEOF
+p() {
+  local n="\$1" s="\$2" r="\$3"; shift 3
+  h=\$(bash "\$CC_PIPELINE_GATE" snapshot --manifest "\$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+  bash "\$CC_PIPELINE_GATE" plan --manifest "\$CC_PIPELINE_MANIFEST" --target "\$CC_PIPELINE_TARGET" \\
+    --segment "\$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface "\$s" \${r:+--reach "\$r"} -- "\$@" >"$BSX_PLANLOG.\$n" 2>&1
+  printf '%s %s\n' "\$n" "\$?" >> "$BSX_PLANLOG"
+}
+RD="\$CC_PIPELINE_RUN_DIR"
+p gh 외부상태변경 협업 gh issue create --repo t/infra --title x --body-file "\$RD/split/\$CC_PIPELINE_STAGE_ID/T1.md"
+p cucreate 외부상태변경 협업 "$BSX_CU/clickup-create.py" --list 1 --name x --description-file "\$RD/split/x/T1.md" --parent p
+p curelate 외부상태변경 협업 "$BSX_CU/clickup-relate.py" --task a --depends-on b
+p cuinterp 외부상태변경 협업 python3 "$BSX_CU/clickup-create.py" --list 1 --name x
+p bsplan 트리밖쓰기 런로컬 "$BSX_CU/base-split.py" plan --out "\$RD/split/\$CC_PIPELINE_STAGE_ID/"
+p touchsplit 워크트리쓰기 런로컬 touch "\$RD/split/S1/T1.md"
+p touchsplits 워크트리쓰기 런로컬 touch "\$RD/splits/T1.md"
+p bsrecord 워크트리쓰기 런로컬 "$BSX_CU/base-split.py" record "$WT/docs/bsxd-RB7.md" --row '$BSX_PUB_NONE' --doc-only
+# And the one write a document-only split makes, actually made through the gate
+# from this seat: the registry beside the document in the main worktree.
+h=\$(bash "\$CC_PIPELINE_GATE" snapshot --manifest "\$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "\$CC_PIPELINE_GATE" exec --manifest "\$CC_PIPELINE_MANIFEST" --target "\$CC_PIPELINE_TARGET" \\
+  --segment "\$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "\$h" \\
+  --rationale "픽스처 — 문서만 등록부를 쓴다" \\
+  -- "$BSX_CU/base-split.py" record "$WT/docs/bsxd-RB7.md" --row '$BSX_PUB_NONE' --doc-only >>"$BSX_PLANLOG.err" 2>&1
+printf 'execrecord %s\n' "\$?" >> "$BSX_PLANLOG"
+BSXPROBEEOF
+bsx_stub "$WORK/bin/bsx-probe" "$BSX_LIT_SPLIT" ". \"$WORK/bin/bsx-probe-body.sh\""
+bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1
+bsx_plan_rc() { sed -n "s/^$1 //p" "$BSX_PLANLOG" 2>/dev/null | tail -1; }
+[ "$(bsx_plan_rc gh)" = "0" ] || sed -n '1,12p' "$BSX_PLANLOG.gh" >&2
+check "78:분할 좌석의 gh issue 발행은 협업으로 통과한다" "$(bsx_plan_rc gh)" "0"
+check "78:경로로 부른 clickup-create.py 는 협업으로 통과한다" "$(bsx_plan_rc cucreate)" "0"
+check "78:경로로 부른 clickup-relate.py 는 협업으로 통과한다" "$(bsx_plan_rc curelate)" "0"
+# With an interpreter in front the grade comes from the interpreter, not from
+# the table, so the act is not the collaboration surface and is refused.
+check "78:인터프리터를 앞세운 clickup-create.py 는 통과하지 않는다" "$(bsx_plan_rc cuinterp)" "3"
+check "78:base-split.py plan 의 출력 디렉터리 쓰기가 통과한다" "$(bsx_plan_rc bsplan)" "0"
+check "78:split/ 아래 쓰기가 통과한다" "$(bsx_plan_rc touchsplit)" "0"
+check "78:split 이웃 이름 디렉터리 쓰기는 거부된다" "$(bsx_plan_rc touchsplits)" "3"
+[ "$(bsx_plan_rc bsrecord)" = "0" ] || tail -12 "$BSX_PLANLOG.bsrecord" >&2
+check "78:base-split.py record 의 워크트리 쓰기가 통과한다" "$(bsx_plan_rc bsrecord)" "0"
+[ "$(bsx_plan_rc execrecord)" = "0" ] || tail -12 "$BSX_PLANLOG.err" >&2
+check "78:분할 좌석의 base-split.py record 가 게이트를 지나 실행된다" "$(bsx_plan_rc execrecord)" "0"
+check "78:그 기록이 메인 작업트리의 등록부를 만들고 첫 줄이 등록부 머리다" \
+  "$(head -1 "$WT/docs/design-base/bsxd-RB7.tickets.md" 2>/dev/null | cut -c1-31)" "<!-- cc-design-base-tickets v1;"
+check "78:등록부를 쓰고 리터럴을 낸 분할은 정상 완료다" "$(bsx_class RB7 '| 스테이지=S1 | 종류=split ')" "정상 완료"
+check "78:그 런의 조건 1 이 선다" "$(bsx_c1 "$WORK/bsx-RB7.md")" ""
+
+# ---------------------------------------------------------------------------
+# 79. The base split helper and the ClickUp writers in the grading table
+# --- section: 79 | group: bsplit | covers: grade | anchors: 79:base-split.py plan 은 트리 밖 쓰기다, 79:clickup-relate.py 는 외부 상태 변경이다 ---
+graded_as '읽기'         '79:base-split.py check 는 읽기다'                -- base-split.py check docs/x.md
+graded_as '트리밖쓰기'   '79:base-split.py plan 은 트리 밖 쓰기다'         -- base-split.py plan --out /tmp/x/
+graded_as '워크트리쓰기' '79:base-split.py record 는 워크트리 쓰기다'      -- base-split.py record docs/x.md
+graded_as '워크트리쓰기' '79:모르는 하위 명령은 가장 높은 쪽을 받는다'    -- base-split.py frob
+graded_as '읽기'         '79:경로로 부른 base-split.py 도 같다'            -- /x/scripts/base-split.py check d.md
+graded_as '외부상태변경' '79:clickup-relate.py 는 외부 상태 변경이다'      -- clickup-relate.py --task a --depends-on b
+graded_as '외부상태변경' '79:clickup-create.py 는 외부 상태 변경이다'      -- clickup-create.py --list 1
+
+# ---------------------------------------------------------------------------
+# 80. The design scope and the rows only a base run may carry
+# --- section: 80 | group: bsplit | covers: snapshot, check_manifest | anchors: 80:design_scope 키가 없는 계획은 single 로 읽힌다, 80:base 가 아닌 런의 베이스 발행 행은 거부된다, 80:base 가 아닌 런의 split 단계는 거부된다, 80:베이스 발행 행이 없는 base 런은 거부된다, 80:선언되지 않은 github 대상은 거부된다, 80:베이스 발행 행을 바꾸면 구속 다이제스트가 깨진다 ---
+#
+# A plan frozen before the key existed has none, and is a single run. The rows
+# only a base run may carry are refused everywhere else, and the one
+# `베이스 발행` row is part of what the binding digest freezes.
+# ---------------------------------------------------------------------------
+BSX_PLAN_SINGLE='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["D1"] } ] }'
+bsx_write "$WORK/bsx-RB8.md" RB8 "$BSX_PLAN_SINGLE" docs/bsx-RB8.md ""
+bsx_grant RB8 docs/bsx-RB8.md
+check "80:design_scope 키가 없는 계획은 single 로 읽힌다" \
+  "$(bsx_snap "$WORK/bsx-RB8.md" | jq -r .design_scope)" "single"
+bsx_snapmsg() { gateB snapshot --manifest "$1"; }
+# A plan in the shape a run kicked off before the key existed actually froze:
+# review, then implement, then review, with `design_required` false and a tier
+# recorded anyway.
+bsx_write "$WORK/bsx-RBD.md" RBD '{ "anchor_kind": "doc", "anchor_key": "docs/bsx-RBD.md", "entry_skill": "review", "design_required": false, "design_tier": "team-4", "work_class": "feat", "targets": [ { "alias": "infra", "remote_slug": "t/infra", "home": true } ], "steps": [ { "id": "RA", "skill": "review", "summary": "리뷰", "depends_on": [] }, { "id": "IB", "skill": "implement", "summary": "구현", "depends_on": ["RA"] }, { "id": "RB", "skill": "review", "summary": "리뷰", "depends_on": ["IB"] } ], "unresolved": [], "notes": "" }' docs/bsx-RBD.md ""
+bsx_grant RBD docs/bsx-RBD.md
+bsx_snapmsg "$WORK/bsx-RBD.md"
+check "80:키 이전에 얼린 리뷰·구현·리뷰 계획도 검사를 통과한다" "$rc" "0"
+check "80:그 계획도 single 로 읽힌다" "$(bsx_snap "$WORK/bsx-RBD.md" | jq -r .design_scope)" "single"
+bsx_write "$WORK/bsx-RB8.md" RB8 "$BSX_PLAN_SINGLE" docs/bsx-RB8.md "$BSX_PUB_NONE"
+bsx_snapmsg "$WORK/bsx-RB8.md"
+case "$rc/$msg" in
+  0/*) bad "80:base 가 아닌 런의 베이스 발행 행은 거부된다" "$msg" ;;
+  *"base 가 아닌데 「베이스 발행」 행이 있습니다"*) ok "80:base 가 아닌 런의 베이스 발행 행은 거부된다" ;;
+  *) bad "80:base 가 아닌 런의 베이스 발행 행은 거부된다" "$msg" ;;
+esac
+bsx_write "$WORK/bsx-RB8.md" RB8 \
+  '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S1", "skill": "split", "summary": "분할", "depends_on": ["D1"] } ] }' \
+  docs/bsx-RB8.md ""
+bsx_snapmsg "$WORK/bsx-RB8.md"
+case "$rc/$msg" in
+  0/*) bad "80:base 가 아닌 런의 split 단계는 거부된다" "$msg" ;;
+  *"실행 계획에 split 단계가 있습니다"*) ok "80:base 가 아닌 런의 split 단계는 거부된다" ;;
+  *) bad "80:base 가 아닌 런의 split 단계는 거부된다" "$msg" ;;
+esac
+bsx_fresh RB9 ""
+bsx_snapmsg "$WORK/bsx-RB9.md"
+case "$rc/$msg" in
+  0/*) bad "80:베이스 발행 행이 없는 base 런은 거부된다" "$msg" ;;
+  *"「베이스 발행」 행이 0개입니다"*) ok "80:베이스 발행 행이 없는 base 런은 거부된다" ;;
+  *) bad "80:베이스 발행 행이 없는 base 런은 거부된다" "$msg" ;;
+esac
+bsx_fresh RB9 '- `베이스 발행` | 트래커=github | 대상=o/other'
+bsx_snapmsg "$WORK/bsx-RB9.md"
+case "$rc/$msg" in
+  0/*) bad "80:선언되지 않은 github 대상은 거부된다" "$msg" ;;
+  *"원격 슬러그가 아닙니다: o/other"*) ok "80:선언되지 않은 github 대상은 거부된다" ;;
+  *) bad "80:선언되지 않은 github 대상은 거부된다" "$msg" ;;
+esac
+# The binding digest, computed from the manifest by the driver's own function
+# and appended; then the one row is changed and nothing else.
+bsx_fresh RB9 '- `베이스 발행` | 트래커=github | 대상=t/infra'
+bd_bs5=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; binding_set_bytes | shasum -a 256 | cut -d" " -f1' \
+  _ "$GATE" "$WORK/bsx-RB9.md" 2>/dev/null)
+printf '**구속 다이제스트**: %s\n' "$bd_bs5" >> "$WORK/bsx-RB9.md"
+bsx_snapmsg "$WORK/bsx-RB9.md"
+check "80:얼린 구속 다이제스트와 같은 매니페스트는 통과한다 (아래가 공허하지 않다)" "$rc" "0"
+sed -i.bak 's/^- `베이스 발행` | 트래커=github | 대상=t\/infra$/- `베이스 발행` | 트래커=없음 | 대상=-/' "$WORK/bsx-RB9.md"
+bsx_snapmsg "$WORK/bsx-RB9.md"
+case "$rc/$msg" in
+  0/*) bad "80:베이스 발행 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*) ok "80:베이스 발행 행을 바꾸면 구속 다이제스트가 깨진다" ;;
+  *) bad "80:베이스 발행 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+esac
+# `베이스 설계` binds a child run — a single run — to its base. Its form is
+# checked; the file it names is not, because the base may be revised while the
+# child waits and the child's design stage is the one that re-measures it.
+BSX_BD='- `베이스 설계` | 문서=docs/bsx-base.md | sha256=0000000000000000000000000000000000000000000000000000000000000000 | 티켓=T1'
+bsx_write "$WORK/bsx-RBC.md" RBC "$BSX_PLAN_SINGLE" docs/bsx-RBC.md "$BSX_BD"
+bsx_grant RBC docs/bsx-RBC.md
+bsx_snapmsg "$WORK/bsx-RBC.md"
+check "80:베이스 설계 행의 sha256 이 파일과 달라도 검사는 통과한다" "$rc" "0"
+bsx_write "$WORK/bsx-RBC.md" RBC "$BSX_PLAN_SINGLE" docs/bsx-RBC.md "$BSX_BD
+${BSX_BD%T1}T2"
+bsx_snapmsg "$WORK/bsx-RBC.md"
+case "$rc/$msg" in
+  0/*) bad "80:베이스 설계 행 둘은 거부된다" "$msg" ;;
+  *"「베이스 설계」 행이 2개입니다"*) ok "80:베이스 설계 행 둘은 거부된다" ;;
+  *) bad "80:베이스 설계 행 둘은 거부된다" "$msg" ;;
+esac
+bsx_write "$WORK/bsx-RBC.md" RBC "$BSX_PLAN_SINGLE" docs/bsx-RBC.md "$BSX_BD"
+bd_bs5=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; binding_set_bytes | shasum -a 256 | cut -d" " -f1' \
+  _ "$GATE" "$WORK/bsx-RBC.md" 2>/dev/null)
+printf '**구속 다이제스트**: %s\n' "$bd_bs5" >> "$WORK/bsx-RBC.md"
+bsx_snapmsg "$WORK/bsx-RBC.md"
+check "80:베이스 설계 행을 실은 구속 다이제스트가 맞는다 (아래가 공허하지 않다)" "$rc" "0"
+sed -i.bak 's/| 티켓=T1$/| 티켓=T2/' "$WORK/bsx-RBC.md"
+bsx_snapmsg "$WORK/bsx-RBC.md"
+case "$rc/$msg" in
+  0/*) bad "80:베이스 설계 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*) ok "80:베이스 설계 행을 바꾸면 구속 다이제스트가 깨진다" ;;
+  *) bad "80:베이스 설계 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 81. The ClickUp writers read the run's publish row before anything else
+# --- section: 81 | group: bsplit | covers: clickup | anchors: 81:트래커가 없음인 런의 clickup-create 는 5 로 멈춘다, 81:목록이 다른 clickup-create 는 5 로 멈춘다, 81:트래커가 clickup 이 아닌 런의 clickup-relate 는 5 로 멈춘다, 81:목록이 맞는 clickup-create 는 본문 파일에서 멈춘다 ---
+#
+# The two ClickUp writers read the run's `베이스 발행` row before anything else,
+# so a run that did not choose ClickUp, or chose another list, cannot file there.
+# Every case below stops before a token is read or a request is built: HOME
+# points at an empty directory, and the one case that passes the row stops at a
+# description file that does not exist.
+# ---------------------------------------------------------------------------
+BSX_EH="$WORK/bsx-empty-home"
+mkdir -p "$BSX_EH"
+bsx_cu() {
+  # bsx_cu <manifest> <script> <args...> — the script's exit code, with no
+  # credential reachable.
+  local m="$1" s="$2"; shift 2
+  ( cd "$WT" && HOME="$BSX_EH" XDG_CONFIG_HOME="$BSX_EH" CC_PIPELINE_MANIFEST="$m" \
+    python3 -I "$BSX_CU/$s" "$@" ) >/dev/null 2>&1
+  printf '%s' "$?"
+}
+bsx_fresh RBB
+check "81:트래커가 없음인 런의 clickup-create 는 5 로 멈춘다" \
+  "$(bsx_cu "$WORK/bsx-RBB.md" clickup-create.py --list 900 --name x --description-file "$WORK/nope.md")" "5"
+bsx_fresh RBA '- `베이스 발행` | 트래커=clickup | 대상=900'
+check "81:목록이 다른 clickup-create 는 5 로 멈춘다" \
+  "$(bsx_cu "$WORK/bsx-RBA.md" clickup-create.py --list 901 --name x --description-file "$WORK/nope.md")" "5"
+check "81:목록이 맞는 clickup-create 는 본문 파일에서 멈춘다" \
+  "$(bsx_cu "$WORK/bsx-RBA.md" clickup-create.py --list 900 --name x --description-file "$WORK/nope.md")" "2"
+check "81:트래커가 clickup 이 아닌 런의 clickup-relate 는 5 로 멈춘다" \
+  "$(bsx_cu "$WORK/bsx-RBB.md" clickup-relate.py --task a --depends-on b)" "5"
+check "81:트래커가 clickup 인 런의 clickup-relate 는 토큰에서 멈춘다" \
+  "$(bsx_cu "$WORK/bsx-RBA.md" clickup-relate.py --task a --depends-on b)" "3"
 
 # --- epilogue-begin ---
 #
