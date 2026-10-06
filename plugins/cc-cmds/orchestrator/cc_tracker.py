@@ -5,7 +5,8 @@ only, Python 3.9 syntax.
 
 What lives here: reading the judgment key and the ClickUp token from the
 credential store, the ClickUp GET used to fetch a corpus, the lexical
-tokenizer / IDF / overlap that picks the shortlist, building and sending one
+tokenizer / IDF / overlap that picks the shortlist, the exact-title match over
+the whole corpus, building and sending one
 pair-judgment request, and replaying a recorded judgment log. No tracker write
 lives here: the one ClickUp POST is in `clickup-create.py` alone.
 
@@ -25,6 +26,7 @@ import socket
 import stat
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -231,6 +233,28 @@ def shortlist(query, corpus, limit=SHORTLIST):
     scored.sort(key=lambda t: -t[1])
     top = scored[:limit]
     return [t[0] for t in top], [t[1] for t in top], [t[2] for t in top]
+
+
+def norm_title(title):
+    """NFC, every whitespace run folded to one space, ends stripped."""
+    return " ".join(unicodedata.normalize("NFC", title or "").split())
+
+
+def same_title(query, corpus):
+    """Every corpus item whose normalized title equals the query's, in corpus
+    order, the query's own item excluded.
+
+    This reads the whole corpus and does not go through the lexical
+    shortlist: a same-title item that the shortlist cut off would be missed,
+    and the tokenizer is not normalized, so a decomposed (NFD) title scores
+    zero against its composed twin.
+    """
+    qid = query.get("id")
+    want = norm_title(query["title"])
+    if not want:
+        return []
+    return [item for item in corpus
+            if (qid is None or item["id"] != qid) and norm_title(item["title"]) == want]
 
 
 # ---------------------------------------------------------------------------

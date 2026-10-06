@@ -159,7 +159,12 @@ def fenced_value(lines, i):
 
 
 BULLET_RE = re.compile(r"^\s*[-*+]\s")
-SPAN_NOTE_RE = re.compile(r"\s\([^()]*\)$")
+# A note after a path: a trailing parenthesis (ASCII or full-width) with or
+# without a space in front, unless it directly follows `/` (a directory such
+# as `app/(auth)` is a path, not a note), or a dash with spaces round it.
+NOTE_RE = re.compile(r"(?<!/)[(（][^()（）]*[)）]$|\s[-–—]{1,2}\s")
+# Inside one span: a separator followed by any whitespace, or a `;` at all.
+SPAN_LIST_RE = re.compile(r"[,;]\s|;")
 
 
 class Fields(dict):
@@ -287,13 +292,13 @@ def split_paths(value):
             faults.append("항목 %s" % x.strip())
             continue
         bare = e == x.strip()
-        if bare and (";" in e or any(ch.isspace() for ch in e)):
-            # A bare entry with a space is a path plus a note (`src/x.py
-            # (신규)`), one with `;` is two paths; a path that holds a space
-            # goes in a code span.
+        if bare and (";" in e or any(ch.isspace() for ch in e) or NOTE_RE.search(e)):
+            # A bare entry with a space or a trailing note is a path plus a
+            # note (`src/x.py (신규)`, `src/x.py(신규)`), one with `;` is two
+            # paths; a path that holds a space goes in a code span.
             faults.append("항목 %s" % x.strip())
             continue
-        if not bare and (", " in e or "; " in e or SPAN_NOTE_RE.search(e)):
+        if not bare and (SPAN_LIST_RE.search(e) or NOTE_RE.search(e)):
             # One span around a whole list or a path plus its note: read as
             # one literal path it would overlap nothing.
             faults.append("항목 %s" % x.strip())

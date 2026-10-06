@@ -595,6 +595,15 @@ BASE_BIND_SENTENCE='이 문서의 `## 베이스 제약` 절에 옮긴 티켓 블
 pin_in "$BASE_BIND_SENTENCE" "$skills_root/_common/base-linkage.md" "base-linkage (attended binding)"
 pin_in "$BASE_BIND_SENTENCE" "$DESIGN" "design (attended binding)"
 pin_in "$BASE_BIND_SENTENCE" "$LEG" "leg (attended binding)"
+# The split's same-title rule and its resume read count the lookup's
+# `same_title`, taken over the whole fetched corpus. Reading `candidates`
+# instead brings back the lexical cut: a same-title item outside the top is
+# missed, and a resume that treats that cut as "could not read" stops forever.
+BASE_SAME_TITLE='The same-title rule reads the JSON'"'"'s `same_title`, never `candidates`'
+pin_in "$BASE_SAME_TITLE" "$BASE_SEAT" "design-base (same-title rule)"
+pin_in "$BASE_SAME_TITLE" "$BASE_ARM" "design-base-unattended (same-title rule)"
+pin_in '같은 제목 판정은 `candidates` 가 아니라 JSON 의 `same_title` 을 읽는다' \
+  "$skills_root/_common/base-design.md" "base-design (same-title rule)"
 
 # ----------------------------------------------------------------------------
 # Load-bearing sentences — section-scoped, count-exact

@@ -156,6 +156,9 @@ elif variant == "annotated":
     tickets[0]["owned_raw"] = "`src/t1/main.py` (신규)"
 elif variant == "spancomma":
     tickets[0]["owned_raw"] = "`src/a,b.py`, `lib/x.py`"
+elif variant == "routegroup":
+    # A route-group directory right after `/` is a path, not a note.
+    tickets[0]["owned_raw"] = "`app/(auth)/login.tsx`, app/(shop)"
 elif variant == "barebrace":
     # Without backticks the comma inside the braces must still not split.
     tickets[0]["owned_raw"] = "src/{a,b}.py, lib/x.py"
@@ -220,7 +223,8 @@ elif variant == "ownbulletval":
 elif variant == "ownnone":
     tickets[0]["owned_raw"] = "없음"
 elif variant in ("trailcomma", "emptyitem", "numbered", "blankbullet", "dupfield",
-                 "onespan", "spannote", "semicolon"):
+                 "onespan", "spannote", "semicolon", "gluednote", "spannotetight",
+                 "widenote", "dashnote", "spansemi", "spantab"):
     # T2 owns the shared file; T1 holds it only in a spelling the field line
     # does not carry as its own entry, so a silent drop would hide the overlap.
     tickets[1]["owned"] = ["src/shared/x.py"]
@@ -233,6 +237,12 @@ elif variant in ("trailcomma", "emptyitem", "numbered", "blankbullet", "dupfield
         "onespan": ["**소유 파일**: `src/shared/x.py, src/t1/main.py`"],
         "spannote": ["**소유 파일**: `src/shared/x.py (수정)`"],
         "semicolon": ["**소유 파일**: src/shared/x.py;src/t1/main.py"],
+        "gluednote": ["**소유 파일**: src/shared/x.py(수정)"],
+        "spannotetight": ["**소유 파일**: `src/shared/x.py(수정)`"],
+        "widenote": ["**소유 파일**: `src/shared/x.py（수정）`"],
+        "dashnote": ["**소유 파일**: `src/shared/x.py — 수정`"],
+        "spansemi": ["**소유 파일**: `src/shared/x.py;src/t1/main.py`"],
+        "spantab": ["**소유 파일**: `src/shared/x.py,\tsrc/t1/main.py`"],
     }[variant]
 elif variant == "depempty":
     tickets[2]["lines"]["선행"] = ["**선행**: T2, "]
@@ -410,6 +420,14 @@ expect_check depempty   "P1 T3 선행 목록 형식 오류 빈 항목"
 expect_check onespan    "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py, src/t1/main.py\`"
 expect_check spannote   "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py (수정)\`"
 expect_check semicolon  "P1 T1 소유 파일 목록 형식 오류 항목 src/shared/x.py;src/t1/main.py"
+# A note glued to the path, in full-width brackets or after a dash, and a
+# span split by `;` or by a tab, are the same path-plus-note or two paths.
+expect_check gluednote  "P1 T1 소유 파일 목록 형식 오류 항목 src/shared/x.py(수정)"
+expect_check spannotetight "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py(수정)\`"
+expect_check widenote   "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py（수정）\`"
+expect_check dashnote   "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py — 수정\`"
+expect_check spansemi   "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py;src/t1/main.py\`"
+expect_check spantab    "P1 T1 소유 파일 목록 형식 오류 항목 \`src/shared/x.py,"
 # The repository is compared without its code span and case-folded, so a
 # spelling difference does not split one repository in two.
 expect_check repospan   "P3 T1·T2 동시 티켓 소유 파일 중첩 o/r:src/shared/x.py"
@@ -425,7 +443,7 @@ run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
 
 for v in globneg braceneg dirneg repodiff sharedok shareddir depth3reason fenceok \
-         routeneg routeshared spancomma spacepath sharedt2 sharedboth sharedglob-py; do
+         routeneg routeshared spancomma routegroup spacepath sharedt2 sharedboth sharedglob-py; do
   gen "$v"
   run_bs check "$DOCS/$v.md"
   check "check $v: exits 0" "$rc" "0"

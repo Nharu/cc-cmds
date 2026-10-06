@@ -9,7 +9,10 @@
 
 Every open item is scored against the query by lexical overlap, the top 20
 are judged pair by pair by a type-decision classification model, and the top
-3 of the re-ranked list are printed with their probability. It only PRESENTS
+3 of the re-ranked list are printed with their probability. The JSON output
+also carries `same_title`: every fetched open item whose normalized title
+(NFC, whitespace folded, ends stripped) equals the query's, counted over the
+whole fetched corpus rather than the shortlist. It only PRESENTS
 candidates: nothing here writes to a tracker, and nothing blocks or delays the
 registration or the start of work that called it.
 
@@ -377,6 +380,12 @@ def lookup(args):
         query = {"id": None, "title": args.title, "body": read_text(args.body_file), "url": ""}
 
     ranked, _overlaps, shared = cc_tracker.shortlist(query, corpus)
+    same = []
+    for item in cc_tracker.same_title(query, corpus):
+        s = {"id": item["id"], "title": item["title"], "url": item["url"]}
+        if args.adapter == "clickup":
+            s["same_list"] = query_list is not None and item.get("list_id") == str(query_list)
+        same.append(s)
     k = len(ranked)
     m = min(cc_tracker.SHOWN, k)
     reasons, notices = [], []
@@ -449,12 +458,14 @@ def lookup(args):
         "status": status, "source": source, "corpus": len(corpus), "shortlist": k, "judged": judged,
         "model": cc_tracker.MODEL if status != "lexical" else "-",
         "reason": ",".join(reasons), "notice": " · ".join(notices), "candidates": candidates,
+        "same_title": same,
     }
 
 
 def unavailable(exc):
     return {"status": "unavailable", "source": exc.source, "corpus": 0, "shortlist": 0, "judged": 0,
-            "model": "-", "reason": exc.reason, "notice": NOTICE[exc.reason], "candidates": []}
+            "model": "-", "reason": exc.reason, "notice": NOTICE[exc.reason], "candidates": [],
+            "same_title": []}
 
 
 # ---------------------------------------------------------------------------
