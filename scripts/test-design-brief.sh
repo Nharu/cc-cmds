@@ -588,6 +588,13 @@ done
 pin_in '## 베이스 제약' "$DESIGN" "design"
 pin_in '## 베이스 제약' "$LEG" "leg"
 pin_in '## 베이스 제약' "$skills_root/implement-unattended/SKILL.md" "implement-unattended (Binding)"
+# The attended implement names its binding tier by section and does not list
+# `## 베이스 제약`; this sentence, written into `## 합의된 아키텍처`, is what
+# binds the section there. A missing file fails the pin as a missing line does.
+BASE_BIND_SENTENCE='이 문서의 `## 베이스 제약` 절에 옮긴 티켓 블록과 계약 블록은 이 절의 결정과 똑같이 구현을 구속한다.'
+pin_in "$BASE_BIND_SENTENCE" "$skills_root/_common/base-linkage.md" "base-linkage (attended binding)"
+pin_in "$BASE_BIND_SENTENCE" "$DESIGN" "design (attended binding)"
+pin_in "$BASE_BIND_SENTENCE" "$LEG" "leg (attended binding)"
 
 # ----------------------------------------------------------------------------
 # Load-bearing sentences — section-scoped, count-exact
