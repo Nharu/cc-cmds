@@ -54,13 +54,14 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
   (exit code, output tail). A banner that fires beats a precise banner
   that never fires.
 
-    Banner title is `[cc-cmds] ${workflow}` and body is `${summary}`.
+    Banner title is `cc-cmds ${workflow}` and body is `${summary}`.
 
   mode=single, armCount=1: terminal-notifier invoked with
     `-group "cc-cmds-active-notify"` (banner replaces previous; visual
-    parity with the §7 permission-test bypass path) and `-execute ':'`
-    (shell true-builtin no-op click target — see §4 invariant 2). Flag
-    is consumed atomically via `mv -n` on the (only) fire.
+    parity with the §7 permission-test bypass path) and `-execute
+    "$click"` (the click target `notify-focus.sh exec-arg` built — see
+    §4 invariant 2). Flag is consumed atomically via `mv -n` on the
+    (only) fire.
   mode=single, armCount=N (N>1): terminal-notifier invoked WITHOUT
     `-group` (each named sub-event banner persists independently in
     Notification Center; armCount>1 expresses N distinct events that
@@ -124,11 +125,20 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      is wrapped in `2>/dev/null || true`. The caller does not inspect
      exit code, does not await OS-level delivery, does not retry on
      failure. Missed notification is acceptable; a halted workflow is
-     not. Click-through is intentionally functionless: the
-     `terminal-notifier -execute ':'` shell true-builtin no-op is
-     supplied so that macOS Notification Center's auto-attached action
-     button (which cannot be suppressed via terminal-notifier 2.0.0 CLI
-     flags) clicks through to nothing observable. The fundamental "no
+     not. Every line that raises a banner carries `-execute`. Its value
+     is what `notify-focus.sh exec-arg` built: `:`, or
+     `/bin/bash '<handler>' focus '<socket>' '<pid>' '<pane>'`. When no
+     value can be built it falls back to `:`, and there is no path that
+     drops `-execute` — without it, macOS Notification Center's click
+     would hand focus to whatever the notifier activates by default.
+     A banner raised inside a tmux pane in iTerm2 therefore clicks
+     through to that iTerm2 window and tab and to that tmux window and
+     pane, under iTerm2's tmux integration (`tmux -CC`) and under plain
+     tmux in an iTerm2 tab alike. Outside tmux, in another terminal, or
+     once the pane is closed, the click does nothing. The first click
+     makes macOS ask whether iTerm2 may be controlled; refusing leaves
+     the click doing nothing, and the choice is reverted under System
+     Settings → Privacy & Security → Automation. The fundamental "no
      button" path is tracked as a roadmap item (custom UN-API binary).
   3. **Single dispatch surface — model-driven, no Stop hook.** This
      holds for `active-notify`, not for the plugin as a whole — the

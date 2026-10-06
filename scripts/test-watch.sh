@@ -97,6 +97,11 @@ PATH="$WORK/bin:$PATH"
 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1
 CC_TEST_NOTIFY_LOG="$NOTIFY_LOG"
 export PATH CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND CC_TEST_NOTIFY_LOG
+# The suite run from inside tmux would hand the watcher its own pane, and the
+# watcher — judged the router here — would then write `notify.seat` and give
+# every banner below a click value nobody asked for. A case that wants a pane
+# passes one.
+unset TMUX TMUX_PANE
 
 # The host check is SEAMED, so every leg can drive the Darwin branch. Skipping
 # these on the other leg counted an unreachable path as a pass, which is how a
@@ -1673,6 +1678,67 @@ check "감시자가 자기 파일에 배너 상태를 한 번만 남긴다" \
   "$(grep -c . "$RD/notify.state" 2>/dev/null || true)" "1"
 check "그 기록이 원장을 건드리지 않는다" \
   "$(grep -c '배너 좌석' "$LG" 2>/dev/null || true)" "0"
+
+# ---------------------------------------------------------------------------
+# WHERE A RUN BANNER'S CLICK LANDS is the seat record, not the environment of
+# whoever raised the banner. The gate and the watcher do not sit in the seat's
+# pane, so the value is read from `notify.seat` — and with no record it is `:`.
+#
+# The record itself is written once, by the first ROUTER caller that has a
+# pane, ahead of the kill switch, and never replaced. The router markers are
+# cleared on the real command: this suite may run inside a stage, where
+# `CC_PIPELINE_SEGMENT` is exported and every positive case below would then
+# pass for the wrong reason or fail for one.
+# ---------------------------------------------------------------------------
+FOCUS_HANDLER="$(cd "$repo_root/plugins/cc-cmds/orchestrator" && pwd -P)/notify-focus.sh"
+runr() {
+  # runr [NAME=value…] — one pass as the router, with the given environment.
+  env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin "$@" \
+    bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once 2>&1
+}
+seat_line() { printf '%s\t%s\t%s' "$1" "$2" "$3"; }
+
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+seat_line /tmp/tmux-w/default 4242 %7 > "$RD/notify.seat"
+printf '\n' >> "$RD/notify.seat"
+runr TMUX="/tmp/tmux-w/default,4242,3" TMUX_PANE=%99 >/dev/null
+notify_settle 1
+check "런 배너의 클릭 값은 notify.seat 의 pane 을 따른다" \
+  "$(grep -cF -- "-execute /bin/bash '$FOCUS_HANDLER' focus '/tmp/tmux-w/default' '4242' '%7'" "$NOTIFY_LOG" || true)" "1"
+check "발화 환경의 pane 은 런 배너에 실리지 않는다" \
+  "$(grep -cF -- "'%99'" "$NOTIFY_LOG" || true)" "0"
+
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+runr >/dev/null
+notify_settle 1
+check "notify.seat 이 없으면 런 배너는 -execute : 를 단다" \
+  "$(grep -cE -- '-execute :$' "$NOTIFY_LOG" || true)" "1"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+runr TMUX="/tmp/tmux-w/default,4242,3" TMUX_PANE=%48 >/dev/null
+check "라우터 감시자의 첫 패스가 notify.seat 을 쓴다" \
+  "$(cat "$RD/notify.seat" 2>/dev/null || true)" "$(seat_line /tmp/tmux-w/default 4242 %48)"
+runr TMUX="/tmp/tmux-w/default,4242,3" TMUX_PANE=%49 >/dev/null
+check "둘째 패스가 다른 pane 이어도 notify.seat 을 덮지 않는다" \
+  "$(cat "$RD/notify.seat" 2>/dev/null || true)" "$(seat_line /tmp/tmux-w/default 4242 %48)"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+runr CC_PIPELINE_SEGMENT=S1 TMUX="/tmp/tmux-w/default,4242,3" TMUX_PANE=%48 >/dev/null
+check "세그먼트 표지가 있으면 notify.seat 을 쓰지 않는다" \
+  "$( [ -e "$RD/notify.seat" ] && printf 'written' || printf 'absent')" "absent"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+runr CC_CMDS_AUTOPILOT_NOTIFY=0 TMUX="/tmp/tmux-w/default,4242,3" TMUX_PANE=%48 >/dev/null
+check "킬스위치를 꺼도 notify.seat 은 쓴다" \
+  "$(cat "$RD/notify.seat" 2>/dev/null || true)" "$(seat_line /tmp/tmux-w/default 4242 %48)"
 
 # ---------------------------------------------------------------------------
 # The marker handshake works ACROSS processes, which is a different property

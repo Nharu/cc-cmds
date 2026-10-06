@@ -292,6 +292,7 @@ ORCH_TESTS := \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
+	scripts/test-notify-focus.sh \
 	scripts/test-stage-policy-edit-hook.sh \
 	scripts/test-watch.sh \
 	scripts/test-fleet.sh \

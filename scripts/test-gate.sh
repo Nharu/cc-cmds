@@ -109,6 +109,12 @@ unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
       CC_PIPELINE_RUN_DIR CC_PIPELINE_GRANT CC_PIPELINE_GATE \
       CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
       CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
+# The tmux location goes as well. Every `plan`/`act`/`exec` by the router passes
+# the emitter's seat record, so a suite run from a tmux pane would otherwise
+# write that pane into each fixture run directory and give the banners there a
+# click value the assertions never chose. The section that measures the record
+# sets both on the call.
+unset TMUX TMUX_PANE
 # The launch switches go too: the effort, model and window on every launch argv
 # the suite measures would otherwise be a property of the caller's shell. The
 # sections that exercise a switch set it on the call.
@@ -1800,12 +1806,14 @@ pre_static() {
     printf '%s\n' "$GATE" \
       "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
       "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" \
+      "$repo_root/plugins/cc-cmds/orchestrator/notify-focus.sh" \
       "$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh" \
       "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
       "$repo_root/plugins/cc-cmds/orchestrator/test-run.sh" \
       "$repo_root/scripts/test-gate.sh" \
       "$repo_root/scripts/test-watch.sh" \
       "$repo_root/scripts/test-snapshot.sh" \
+      "$repo_root/scripts/test-notify-focus.sh" \
       "$repo_root/scripts/test-orchestrator-pretool-hook.sh"
     for f in "$repo_root"/scripts/lint-*.sh; do
       [ -f "$f" ] || continue
@@ -15468,6 +15476,38 @@ check "그 배너 제목이 할 일을 말한다" \
   "$(grep -cF -- '-title cc-cmds · 직접 손대세요 -message' "$NOTIFY_LOG" || true)" "1"
 check "그 배너의 그룹이 항목 키를 싣는다" \
   "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN2 ' "$NOTIFY_LOG" || true)" "1"
+
+# --- WHERE A RUN BANNER'S CLICK LANDS, recorded by the router seat ----------
+#
+# The seat's pane is written to the run directory by the first router call that
+# has one, and a launched stage never writes it even when it sits in a pane of
+# its own. The stage call goes first, so the router's record cannot be what
+# explains an absent file. The preamble clears TMUX and TMUX_PANE, so these two
+# calls are the only ones in this file that carry a pane.
+rm -f "$RD/notify.seat"
+( cd "$WT" && PATH="$WORK/bin:$PATH" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
+    TMUX="/tmp/tmux-g,x/default,4242,3" TMUX_PANE=%48 \
+    bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS1 \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --rationale "픽스처 — 스테이지는 좌석을 적지 않는다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
+    >/dev/null 2>&1 )
+check "스테이지 호출은 클릭 좌석을 적지 않는다" \
+  "$([ -e "$RD/notify.seat" ] && echo 있음 || echo 없음)" "없음"
+( cd "$WT" && PATH="$WORK/bin:$PATH" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    TMUX="/tmp/tmux-g,x/default,4242,3" TMUX_PANE=%48 \
+    bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS2 \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --rationale "픽스처 — 라우터가 좌석을 적는다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
+    >/dev/null 2>&1 )
+check "라우터 호출은 그 pane 을 클릭 좌석으로 적는다" \
+  "$(cat "$RD/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' '/tmp/tmux-g,x/default' 4242 %48)"
+rm -f "$RD/notify.seat"
 
 # --- THE SHARD'S SEAT, AT A SITE THAT IS NOT THE APPROVAL ONE ---------------
 #

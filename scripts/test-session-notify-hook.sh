@@ -119,8 +119,9 @@ notify_lines() { grep -c . "$NOTIFY_LOG" 2>/dev/null || true; }
 hook_run() {
   local hook="$1" payload="$2" path="$3"; shift 3
   : > "$NOTIFY_LOG"; : > "$ERR"; : > "$OUTF"
-  env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u RUN_ID -u RUN_DIR \
-      -u CC_CMDS_SESSION_NOTIFY -u CC_CMDS_AUTOPILOT_NOTIFY \
+  env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
+      -u RUN_ID -u RUN_DIR \
+      -u CC_CMDS_SESSION_NOTIFY -u CC_CMDS_AUTOPILOT_NOTIFY -u TMUX -u TMUX_PANE \
       PATH="$path" \
       CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
       CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
@@ -209,6 +210,25 @@ notify_settle 1
 check "0건 — 본문은 질문이 있다는 사실만 싣는다" \
   "$(grep -cF -- '-message 답을 기다리는 질문이 있습니다 ' "$NOTIFY_LOG" || true)" "1"
 assert_quiet "0건"
+
+# THE CLICK VALUE COMES FROM THE HOOK'S OWN ENVIRONMENT. `hook_run` clears TMUX
+# and TMUX_PANE, so a case has a pane only when it passes one — the suite run
+# from inside tmux would otherwise hand every case the pane it happens to run in.
+FOCUS_HANDLER="$(cd "$PLUGIN_ROOT/orchestrator" && pwd -P)/notify-focus.sh"
+for hk in "$ASK_HOOK" "$TURN_HOOK"; do
+  hn=$(basename "$hk")
+  P=$(payload_for "$hk" S-CLICK)
+  hook_run "$hk" "$P" "$PATH_FULL" TMUX="/tmp/tmux-hk/default,4242,7" TMUX_PANE="%48"
+  notify_settle 1
+  check "클릭 값 ($hn) — tmux pane 안의 훅은 그 pane 의 focus 값을 단다" \
+    "$(grep -cF -- "-execute /bin/bash '$FOCUS_HANDLER' focus '/tmp/tmux-hk/default' '4242' '%48'" "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "클릭 값 ($hn) tmux 안"
+  hook_run "$hk" "$P" "$PATH_FULL"
+  notify_settle 1
+  check "클릭 값 ($hn) — tmux 밖의 훅은 -execute : 를 단다" \
+    "$(grep -cE -- '-execute :$' "$NOTIFY_LOG" || true)" "1"
+  assert_quiet "클릭 값 ($hn) tmux 밖"
+done
 
 # ---------------------------------------------------------------------------
 # Seat 2 — Stop / marker

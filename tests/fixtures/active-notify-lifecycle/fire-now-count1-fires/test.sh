@@ -20,4 +20,7 @@ grep -q -- '-group cc-cmds-active-notify' "$NOTIFIER_LOG" || { echo "single armC
 # there to provide.
 grep -q -- '-title cc-cmds build' "$NOTIFIER_LOG" || { echo "title missing" >&2; exit 1; }
 grep -q -- '-message 성공' "$NOTIFIER_LOG" || { echo "summary missing" >&2; exit 1; }
+# The case of a banner raised outside tmux: the driver clears TMUX and
+# TMUX_PANE, so there is no pane to go to and the click value falls back to `:`.
+# `-execute` itself is never dropped.
 grep -q -- '-execute :' "$NOTIFIER_LOG" || { echo "-execute ':' no-op missing" >&2; exit 1; }

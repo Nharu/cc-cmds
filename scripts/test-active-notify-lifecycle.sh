@@ -85,6 +85,11 @@ for fixture_dir in "${fixtures[@]}"; do
   # the stub records calls into a location test.sh can inspect.
   if (
     set -e
+    # A driver run from inside tmux would otherwise hand its own pane to every
+    # fixture, and the `-execute :` assertions would read the click value of the
+    # pane the suite happens to run in. A fixture that wants a pane sets one in
+    # its env.sh, which is sourced below.
+    unset TMUX TMUX_PANE
     export TMPDIR="$tmpdir"
     export CLAUDE_SESSION_ID="$session_id"
     # notify.sh L21 prefers CLAUDE_CODE_SESSION_ID — set it to the same value
