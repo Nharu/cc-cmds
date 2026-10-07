@@ -3174,15 +3174,18 @@ BSXSTUBEOF
   BSX_P_AUDIT='/cc-cmds:design-audit-unattended /nonexistent/doc.md --base'
   BSX_P_SPLIT='/cc-cmds:design-base-unattended --split /nonexistent/doc.md'
   bsx_launch() {
-    # bsx_launch <run id> <stub> <kind> <prompt> <step id> — dispatch one
-    # run-scope stage and wait on it. The act's code is left in BSX_ACT_RC.
-    local m="$WORK/bsx-$1.md"
+    # bsx_launch <run id> <stub> <kind> <prompt> <step id> [wait seconds] — dispatch
+    # one run-scope stage and wait on it. The act's code is left in BSX_ACT_RC.
+    # The wait is an upper bound, not a pause: a stub stage ends in a second, so
+    # 60 is ample — except for a stage whose body itself makes many gate calls,
+    # which passes its own bound rather than being cut off before its last line.
+    local m="$WORK/bsx-$1.md" t="${6:-60}"
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" act --manifest "$m" --kind skill --target infra --segment - --cutpoint 커밋 \
       --surface 워크트리쓰기 --snapshot-digest "$(bsx_H "$m")" --rationale x \
       -- "$3" -p "$4" ) >/dev/null 2>&1; BSX_ACT_RC=$?
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
-      bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout 60 ) >/dev/null 2>&1; BSX_WAIT_RC=$?
+      bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout "$t" ) >/dev/null 2>&1; BSX_WAIT_RC=$?
   }
   # bsx_rows <run id> <needle> — that run's `stage-result` rows carrying it.
   bsx_rows() {
@@ -25742,7 +25745,11 @@ bash "\$CC_PIPELINE_GATE" exec --manifest "\$CC_PIPELINE_MANIFEST" --target "\$C
 printf 'execrecord %s\n' "\$?" >> "$BSX_PLANLOG"
 BSXPROBEEOF
 bsx_stub "$WORK/bin/bsx-probe" "$BSX_LIT_SPLIT" ". \"$WORK/bin/bsx-probe-body.sh\""
-bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1
+# Twelve probes, each a snapshot and a plan (the last an exec), so some two dozen
+# gate starts inside one stage: on a loaded machine that ran past the default
+# 60-second wait and cut the list off at its tail.
+bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1 600
+check "78:탐침 스테이지가 대기 상한 안에 끝났다" "$BSX_WAIT_RC" "0"
 bsx_plan_rc() { sed -n "s/^$1 //p" "$BSX_PLANLOG" 2>/dev/null | tail -1; }
 [ "$(bsx_plan_rc gh)" = "0" ] || sed -n '1,12p' "$BSX_PLANLOG.gh" >&2
 check "78:분할 좌석의 gh issue 발행은 협업으로 통과한다" "$(bsx_plan_rc gh)" "0"
