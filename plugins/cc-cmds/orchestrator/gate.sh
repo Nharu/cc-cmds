@@ -13557,6 +13557,16 @@ gate_rundir_write_guard() {
         halt/*/*) ;;
         halt/*) continue ;;
         cc-team-witness-*/*) continue ;;
+        # THE WITNESS DIRECTORY ITSELF, for its teardown. The shared team-cleanup
+        # procedure ends a finished workflow with `rm -rf` on the recorded
+        # `scratchDir`, which names the directory and nothing under it, so the
+        # arm above never saw it. Measured: a design stage's teardown came back 3
+        # here and left two dozen witness copies and the ledger's scratch fields
+        # behind. Only Bash can name a directory as an operand, so the Write/Edit
+        # hook needs no twin of this arm. It opens the name to `rm` alone: any
+        # other verb that names the directory creates it, and that creation stays
+        # refused here, as it always was.
+        cc-team-witness-*) [ "${1##*/}" = rm ] && continue ;;
         # THE SHARED GENERATION DIRECTORY, ONE LEVEL DOWN ONLY. Shifts publish
         # their products under `shared/<gen>/`; a file sitting directly under
         # `shared/` has no generation and falls through to the `*/*` refusal.
@@ -16611,6 +16621,15 @@ gate_run_ended_ok() {
   # ended, so the snapshot rendered it in flight forever and the watcher never
   # reaped itself.
   case "$kind" in propose-done) return 0 ;; esac
+  # A BOOKKEEPING ACT HAS NO ACT BEHIND IT EITHER, for the same reason. It only
+  # appends a row, and the router labels every call with the target's cutpoint,
+  # so on a target whose cutpoint is `머지` the merge arm below read the row as a
+  # merge and refused it. Measured: the shift whose `propose-done` had just been
+  # accepted wrote its `handoff 사유=종단` row next, as its protocol requires,
+  # got exit 3 here, and the gate filed it `무기록` — its abandoned alternatives
+  # lost from the ledger. A row recorded after the end is what this function's
+  # header already promises.
+  gate_kind_is_bookkeeping "$kind" && return 0
   merge_idx=$(cutpoint_index '머지') || return 0
   idx=$(cutpoint_index "$cut") || return 0
   if [ "$idx" -ge "$merge_idx" ]; then
