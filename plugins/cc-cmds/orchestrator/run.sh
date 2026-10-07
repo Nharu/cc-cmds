@@ -91,14 +91,12 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `readonly` constants only, because the gate sources this file on every entry
 # and inherits whatever the router puts at top level. This driver calls
 # `route_inventory_check` and `route__jq_lib`, from `rundir_init`, to check
-# the run's inventory baseline; neither reads a switch. `stage_spawn` resolves
-# every launch through `route_resolve`, and the switch below keeps that answer
-# the dormant envelope; `route_resolve` reads it with a `:-0` default so a
-# shell that sources `route.sh` alone can never turn routing on.
+# the run's inventory baseline. `stage_spawn` resolves every launch through
+# `route_resolve`, which routes only when `run_routed` (below) is defined and
+# true for this run, so a shell that sources `route.sh` alone can never turn
+# routing on.
 # shellcheck source=/dev/null
 . "$ORCH_DIR/route.sh"
-  # 라우팅을 켜는 변경이 이 줄의 두 자리의 0 을 1 로 뒤집으며, 줄을 지우지 않는다.
-  case "${ROUTE_ROUTING_BUILD_COMPLETE:-}" in 0) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac
 
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
@@ -294,8 +292,6 @@ now_epoch() { date -u +%s; }
 # environment-measurement step there and recording observations matching the
 # darwin ones — until then, the non-darwin arm of this seam stays a refusal.
 # ---------------------------------------------------------------------------
-platform_supported() { [ "$ORCH_HOST_OS" = "Darwin" ]; }
-
 platform_refuse() {
   cat >&2 <<EOF
 run.sh: 이 드라이버는 darwin 전용입니다 (관측된 호스트: ${ORCH_HOST_OS}).
@@ -313,10 +309,10 @@ EOF
 
 # Source selection is seam-driven, so it is exercised under injection on any
 # runner. Whether the selected binary EXISTS is a separate question, and it is
-# one only the darwin leg can answer.
+# one only the darwin leg can answer. The platform test and the boot and wake
+# sources live in `liveness.sh`, which the watcher and the status line source
+# without this file.
 lock_tool()  { platform_supported && printf '/usr/bin/lockf' || printf ''; }
-boot_source() { platform_supported && printf 'kern.boottime' || printf ''; }
-wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
 
 # ---------------------------------------------------------------------------
 # Path and slug derivation (sidecar.md §1.1), keyed on the DOCUMENT's own
@@ -2707,6 +2703,7 @@ rundir_init() {
   # one level above what the run directory guards allow it.
   mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
   LOG_FILE="$RUN_DIR/log/driver.log"
+  spawn_drop_dead_waiters
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
   # The lane this run opened in, and the orchestrator directory it actually
   # loaded. `config-dir` is tier 2 of `resolve_account`, and it is written HERE
@@ -2881,45 +2878,64 @@ rundir_init() {
       || die "런 디렉터리에 오케스트레이터 기록을 쓰지 못했습니다: $RUN_DIR/orchestrator-dir"
   fi
   rundir_inventory_snapshot
-  routing_guard_record
 }
 
 # ---------------------------------------------------------------------------
-# The run's routing guard. One run has one guard value, and the record below is
-# how the two launch sites — the driver's `stage_spawn` and the gate's
-# `gate_launch_stage` — find out whether they agree on it. Each side opens the
-# run with its own copy of this file: the driver runs the live checkout, the
-# gate runs the pinned copy under the run directory, and the driver's child
-# shells source the live gate. Three copies can disagree, and a run that routes
-# half its stages and seats the other half cannot be read in the morning.
+# The run's routing record. One run is routed or it is not, and the record below
+# is how every launch site — the driver's `stage_spawn`, the gate's
+# `gate_launch_stage`, the supervisor and the router — finds out which. Each
+# side opens the run with its own copy of this file: the driver runs the live
+# checkout, the gate runs the pinned copy under the run directory, and the
+# driver's child shells source the live gate. Three copies can differ, and a run
+# that routes half its stages and seats the other half cannot be read in the
+# morning.
 #
-# WRITTEN ONCE, BY WHOEVER OPENS THE RUN WITH THE GUARD ON. Exclusive create
-# under noclobber, so a second opener never rewrites it; nothing writes it at a
-# launch. A guard-0 opener writes nothing, which is exactly today's run
-# directory.
+# WRITTEN ONCE, AND ONLY BY THE ENTRY THAT ACTUALLY TOOK THE INVENTORY BASELINE,
+# WHEN THAT BASELINE IS A REGULAR FILE. A run opened before this code existed
+# already holds a regular `inventory.json` and no record; taking the record from
+# "the baseline is a regular file" would route half of such a run once a newer
+# copy entered it. Writing the record at every entry would do the same, and the
+# older gate pinned to that run would then refuse every launch. Exclusive create
+# under noclobber, so a second writer never rewrites it. A failed create leaves
+# the run unrouted, on the seat — the safe side.
 # ---------------------------------------------------------------------------
 routing_guard_record() {
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  # routing_guard_record <inventory path> — called from the take branch of
+  # `rundir_inventory_snapshot` only, after the judge accepted the new baseline.
   [ -n "${RUN_DIR:-}" ] || return 0
+  [ -f "$1" ] && [ ! -L "$1" ] || return 0
   ( set -C; printf '1\n' > "$RUN_DIR/routing-guard" ) 2>/dev/null || true
   return 0
 }
 
+run_routed() {
+  # run_routed — true when this run's record says `1`. Every reader that used to
+  # ask the build switch asks this instead; a run with no record is unrouted.
+  local rec=""
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/routing-guard" ] || return 1
+  rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$rec" = "1" ]
+}
+
 routing_guard_check() {
-  # routing_guard_check — 0 when this copy's guard agrees with the run's record,
-  # 1 with the reason on stdout when it does not. Agreement is 1 with a record
-  # of `1`, or 0 with no record at all; every other pair refuses the launch. The
-  # caller writes the reason to the ledger and parks the stage — a silent
-  # failure would be read as a crashed stage and retried into the same refusal.
-  local mine="${ROUTE_ROUTING_BUILD_COMPLETE:-0}" rec="없음"
+  # routing_guard_check — 0 when the run's record and its inventory baseline
+  # agree, 1 with the reason on stdout when they do not. No record passes (the
+  # run is unrouted); a record of `1` passes only with a regular-file baseline;
+  # every other pair refuses the launch. The caller writes the reason to the
+  # ledger and parks the stage — a silent failure would be read as a crashed
+  # stage and retried into the same refusal.
+  local rec="없음" snap="없음"
   if [ -e "${RUN_DIR:-}/routing-guard" ]; then
     rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
     rec=${rec:-빈 값}
   fi
-  case "$mine:$rec" in
-    1:1|0:없음) return 0 ;;
+  if [ -f "${RUN_DIR:-}/inventory.json" ] && [ ! -L "${RUN_DIR:-}/inventory.json" ]; then
+    snap="정규 파일"
+  fi
+  case "$rec:$snap" in
+    없음:*|"1:정규 파일") return 0 ;;
   esac
-  printf '라우팅 가드 어긋남 — 이 사본의 가드 %s, 런 기록 %s' "$mine" "$rec"
+  printf '라우팅 가드 어긋남 — 런 기록 %s, 스냅숏 %s' "$rec" "$snap"
   return 1
 }
 
@@ -3384,6 +3400,7 @@ rundir_inventory_snapshot() {
     fi
     rc=0; rundir_inventory_judge "$inv" || rc=$?
     if [ "$rc" = "0" ]; then
+      routing_guard_record "$inv"
       if [ -n "$tpub" ]; then
         rundir_inventory_record "$inv" "$tpub" "$troot"
       else
@@ -3721,9 +3738,149 @@ spawn_route_request() {
   # router request for one launch. The holder is this driver: `$$` inside a
   # command substitution is still the parent's pid, which is the point.
   jq -cn --arg run "$RUN_ID" --arg lin "$1" --arg ev "$2" --arg kind "$3" --arg bound "${4:-}" \
-    --argjson pid "$$" \
+    --argjson pid "$$" --argjson dl "$(wait_request_deadline "$3")" \
     '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
-      bound_account: (if $bound == "" then null else $bound end)}'
+      bound_account: (if $bound == "" then null else $bound end)}
+     + (if $dl == null then {} else {deadline: $dl} end)'
+}
+
+spawn_wait_key() {
+  # spawn_wait_key <dispatch id> — the key a driver wait's marker is named by:
+  # the segment for a segment dispatch, the step id for a run-scope one. The
+  # readers of `<key>.waiting` match on that, as they do for the gate's waits.
+  local seg
+  seg=$(spawn_did_segment "$1")
+  if [ "$seg" = "-" ]; then printf '%s' "${1%.retry}"; else printf '%s' "$seg"; fi
+}
+
+spawn_rerun_line() {
+  # The command a person runs to pick this run up again after a park.
+  if [ -n "${MANIFEST:-}" ]; then
+    printf 'run.sh --manifest %s --run-id %s' "$MANIFEST" "$RUN_ID"
+  else
+    printf 'run.sh 를 같은 인자와 --run-id %s 로 다시 시작' "$RUN_ID"
+  fi
+}
+
+spawn_park_recmd() {
+  # spawn_park_recmd <recovery> <ready-at iso> — the resume command a router
+  # park carries: what the router said to do, when, and how to start again.
+  printf '%s — ready_at=%s — %s' "${1:-(라우터 회복 없음)}" "${2:--}" "$(spawn_rerun_line)"
+}
+
+# The driver's three callbacks for `stage_wait_loop`, reading the wait they
+# belong to from SPAWN_WAIT_* globals `spawn_route_wait` sets.
+spawn_wait_heartbeat() {
+  run_gate_call gate_stage_wait_row "$SPAWN_WAIT_DID" "$1" "$SPAWN_WAIT_BIND"
+}
+
+spawn_wait_deadline() {
+  # <ready-at iso> <basis> <recovery> — the one deadline park row of this
+  # wait. The caller's router-park helper sees STAGE_SPAWN_ALREADY_PARKED and
+  # writes nothing more.
+  park "$SPAWN_WAIT_TARGET" cone 막힘 "마감 초과 — $SPAWN_WAIT_KEY" "$(now_iso) ready_at=$1" \
+    "$(spawn_park_recmd "$3" "$1")" "$SPAWN_WAIT_KEY" "$2"
+  STAGE_SPAWN_ALREADY_PARKED=1
+}
+
+spawn_wait_stop() {
+  # Any other stop is parked by the caller at its own scope; this only names it.
+  STAGE_SPAWN_PARK_REASON="$1"
+}
+
+spawn_route_wait() {
+  # spawn_route_wait <dispatch id> <kind> <event> <bound account> <WAIT envelope>
+  # — wait for a grant in this process. 0 with the grant in WAIT_LOOP_ENV; 1
+  # with the reason in STAGE_SPAWN_PARK_REASON otherwise (and, for a deadline
+  # park, the row already written and STAGE_SPAWN_ALREADY_PARKED set).
+  #
+  # THE FIRST `stage-wait` ROW IS WRITTEN BEFORE THE LOOP, synchronously. The
+  # loop's first row comes a chunk later, and until then the previous stage's
+  # `stage-result` would stay the ledger's last row — the shape the watcher's
+  # after-stage arm reads as a router that stopped acting.
+  #
+  # THE HOLDER IS THIS SHELL'S OWN PID. `$$` names the top-level driver even in
+  # a subshell, and a subshell that waits must be the one a reader checks.
+  local did="$1" kind="$2" ev="$3" bound="$4" env="$5" key m holder grp upto rec wnonce="-" rrc=0 lrc=0 wrc=0
+  STAGE_SPAWN_PARK_REASON=$(wait_router_why "$env")
+  if ! cc_effective_stall "$RUN_DIR" >/dev/null; then
+    STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (실효 정지 임계를 읽지 못해 기다리지 않는다)"
+    return 1
+  fi
+  run_gate_call gate_stage_wait_row "$did" "$env" "$bound" || lrc=$?
+  if [ "$lrc" != "0" ]; then
+    STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (stage-wait 행 기록 거부 rc=$lrc)"
+    return 1
+  fi
+  key=$(spawn_wait_key "$did")
+  m="$RUN_DIR/$key.waiting"
+  holder=$(exec sh -c 'echo $PPID')
+  grp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
+  upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
+  if [ "$grp" != "-" ]; then
+    rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
+            --lineage "$SPAWN_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
+            --holder "$holder" 2>/dev/null) || rrc=$?
+    if [ "$rrc" = "0" ]; then
+      wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
+    else
+      log "대기 항목을 FIFO 에 넣지 못했습니다 rc=$rrc — $did ($SPAWN_LINEAGE)"
+    fi
+  fi
+  if ! wait_marker_write "$m" "보유자=$holder" "지문=$(cc_proc_fingerprint "$holder")" "기록자=드라이버" \
+         "계보=$SPAWN_LINEAGE" "그룹=$grp" "까지=$upto" "갱신=$(now_epoch)" "종류=$kind" "논스=$wnonce"; then
+    [ "$wnonce" = "-" ] || route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$SPAWN_LINEAGE" "$wnonce" >/dev/null 2>&1 || true
+    STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (대기 표지를 쓰지 못했다)"
+    return 1
+  fi
+  log "$did: 계정 대기 — 그룹 $grp, 까지 $(wait_epoch_iso "$upto")"
+  SPAWN_WAIT_DID=$did; SPAWN_WAIT_BIND=$bound; SPAWN_WAIT_KEY=$key
+  SPAWN_WAIT_TARGET=${CC_SPAWN_PARK_TARGET:-$key}
+  stage_wait_loop "$key" "$kind" "$m" "$ev" "$bound" \
+    spawn_wait_heartbeat spawn_wait_deadline spawn_wait_stop || wrc=$?
+  [ "$wrc" = "0" ] || return 1
+  # The launch follows at once in this same process, so the marker goes now: a
+  # refusal between here and the spawn would otherwise leave a live holder
+  # marking a key nothing is waiting on.
+  wait_drop "$m"
+  return 0
+}
+
+spawn_drop_dead_waiters() {
+  # The driver's own markers whose holder is gone — a driver that died while
+  # waiting. Its attempt counter reads `stage-result` rows, so nothing else
+  # needs settling.
+  local f pid fp
+  for f in "$RUN_DIR"/*.waiting; do
+    [ -f "$f" ] || continue
+    [ "$(cc_waiting_field "$f" '기록자')" = "드라이버" ] || continue
+    pid=$(cc_waiting_field "$f" '보유자' | tr -d '[:space:]')
+    fp=$(cc_waiting_field "$f" '지문')
+    cc_holder_is_live "$pid" "$fp" && continue
+    wait_drop "$f"
+  done
+  return 0
+}
+
+park_router() {
+  # park_router <target> <anchor> <scope> [<reason>] — the one place the driver
+  # parks on a launch it was refused. A deadline verdict is a cone on the
+  # anchor, whatever the site's own scope; anything else keeps the site's scope.
+  # Either way the row carries the router's recovery and the observed ready_at.
+  # A wait loop that already wrote its deadline park leaves nothing to write.
+  # Each scope is spelled at its own `park` call, as at every other park site.
+  local target="$1" anchor="$2" scope="$3" reason="${4:-$STAGE_SPAWN_PARK_REASON}" recmd
+  [ "${STAGE_SPAWN_ALREADY_PARKED:-0}" = "1" ] && return 0
+  recmd=$(spawn_park_recmd "${STAGE_SPAWN_PARK_RECOVERY:-}" "${STAGE_SPAWN_PARK_UNTIL:-}")
+  case "$reason:$scope" in
+    "라우터 판정 PARK deadline"*)
+      park "$target" cone 막힘 "마감 초과 — $anchor" "$reason" "$recmd" "$anchor" \
+        "계보=${SPAWN_LINEAGE:--} 라우터 마감 판정 ready_at=${STAGE_SPAWN_PARK_UNTIL:--}" ;;
+    *:act)  park "$target" act 막힘 "게이트 park" "$reason" "$recmd" ;;
+    *:cone) park "$target" cone 막힘 "게이트 park" "$reason" "$recmd" ;;
+    *:run)  park "$target" run 막힘 "게이트 park" "$reason" "$recmd" ;;
+    *) die "라우터 파킹의 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;;
+  esac
 }
 
 spawn_did_segment() {
@@ -3801,10 +3958,18 @@ spawn_route_grant() {
   verdict=$(printf '%s' "$env" | jq -r '.verdict // ""' 2>/dev/null || true)
   case "$verdict" in
     GRANT) ;;
-    WAIT|PARK)
-      STAGE_SPAWN_PARK_REASON=$(printf '%s' "$env" | jq -r '"라우터 판정 \(.verdict) \(.reason // "-")"
-        + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null) \
-        || STAGE_SPAWN_PARK_REASON="라우터 판정 $verdict"
+    WAIT)
+      # A WAIT IS WAITED ON, in this process, on the rule the gate's supervisor
+      # follows; only a wait that cannot start, or one that stops, parks.
+      if ! spawn_route_wait "$did" "$kind" "$event" "$reqbind" "$env"; then
+        warn "$did: $STAGE_SPAWN_PARK_REASON — 띄우지 않습니다"
+        return "$STAGE_SPAWN_PARK_RC"
+      fi
+      env=$WAIT_LOOP_ENV ;;
+    PARK)
+      STAGE_SPAWN_PARK_REASON=$(wait_router_why "$env")
+      STAGE_SPAWN_PARK_UNTIL=$(wait_epoch_iso "$(printf '%s' "$env" | jq -r '.ready_at | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)")
+      STAGE_SPAWN_PARK_RECOVERY=$(printf '%s' "$env" | jq -r '.recovery // ""' 2>/dev/null || true)
       warn "$did: $STAGE_SPAWN_PARK_REASON — 띄우지 않습니다"
       return "$STAGE_SPAWN_PARK_RC" ;;
     *) die "라우터가 판정 없는 봉투를 냈습니다 — $did 를 띄우지 않습니다" ;;
@@ -3864,7 +4029,7 @@ spawn_lease_release() {
   # no-op. A stage still running keeps its lease — its pid is a holder and the
   # reservation is really in use; the run's end collects that record.
   local did="$1" f lin nonce rc=0
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   f="$RUN_DIR/$did.lease"
   if [ ! -f "$f" ]; then
     log "$did: 반납할 임대 기록이 없다 — 반납하지 않는다"
@@ -3890,7 +4055,7 @@ spawn_lineage_release() {
   # lease and a limit reclaim replaces it, so the family is released together
   # where the lineage ends, not after the first row.
   local base f n=0
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   base=$(route_lineage_of "$1")
   for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease; do
     [ -f "$f" ] || continue
@@ -3906,7 +4071,7 @@ spawn_lease_release_target() {
   # of a dispatch the target names, as the dispatch itself, its lineage, or its
   # segment. Quiet when there is none — most parks follow no launch.
   local target="$1" f did
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   for f in "$RUN_DIR"/*.lease; do
     [ -f "$f" ] || continue
     did=$(basename "$f" .lease)
@@ -3924,7 +4089,7 @@ spawn_lease_release_run() {
   # supervisor of this run is alive: a park that left its stage running kept
   # that lease on purpose.
   local f p rc=0
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   for f in "$RUN_DIR"/*.pid "$RUN_DIR"/*.sup; do
     [ -f "$f" ] || continue
     p=$(sed -n '1p' "$f" 2>/dev/null || true)
@@ -3946,7 +4111,7 @@ spawn_lease_release_run() {
 
 reclaim_has_other_account() {
   # reclaim_has_other_account <stage-id> — the last term of the limit-shape reap.
-  # With routing off, or with routing on and no inventory, it is
+  # In an unrouted run, or a routed one with no inventory, it is
   # `account_has_headroom` itself. With a broken inventory it is no: the router
   # would park the re-dispatch, so the reap would buy nothing. With a valid one
   # it asks the router, without its lock and without touching the table, the
@@ -3955,7 +4120,7 @@ reclaim_has_other_account() {
   # is a known-room grant on an account other than the one this stage runs on.
   # An account the router admits without knowing its usage is not room.
   local s="$1" inv irc=0 req env prev
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || { account_has_headroom; return $?; }
+  run_routed || { account_has_headroom; return $?; }
   inv="$RUN_DIR/inventory.json"
   [ -e "$inv" ] || { account_has_headroom; return $?; }
   route_inventory_check "$inv" 2>/dev/null || irc=$?
@@ -4063,11 +4228,20 @@ readonly PARK_SCOPES="act cone run"
 readonly PARK_CAUSES="막힘 무효화 불명"
 
 park() {
+  # park <target> <scope> <cause> <reason> <observed> [<resume command>]
+  #      [<anchor segment>] [<basis>]
+  # The seventh and eighth fields are written only when given, so a call with
+  # six arguments writes the same bytes it always did. The anchor is what a
+  # cone reader matches on; the basis carries a deadline park's lineage.
   local target="$1" scope="$2" cause="$3" reason="$4" observed="$5" recmd="${6:-(없음)}"
+  local anchor="${7:-}" basis="${8:-}"
+  local -a extra=()
   case " $PARK_SCOPES " in *" $scope "*) : ;; *) die "park 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;; esac
   case " $PARK_CAUSES " in *" $cause "*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
+  [ -z "$anchor" ] || extra+=("앵커 세그먼트=$anchor")
+  [ -z "$basis" ] || extra+=("근거=$basis")
   ledger_row 'blocked' "대상=$target" "스코프=$scope" "원인=$cause" \
-    "사유=$reason" "관측=$observed" "재개 명령=$recmd"
+    "사유=$reason" "관측=$observed" "재개 명령=$recmd" ${extra[@]+"${extra[@]}"}
   report_append "보류" "$target — [$scope/$cause] $reason — $observed"
   log "park: $target ($scope/$cause · $reason)"
   # The park row is the terminal row of whatever it names, so the leases of the
@@ -4502,7 +4676,7 @@ transcript_path() {
   # resolver here cannot know; the launch recorded that directory beside the
   # pid. No record is no transcript — resolving instead would watch the seat's
   # tree for a file that is written somewhere else.
-  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+  if run_routed; then
     cfg=$(stage_config_dir_of "$stage") || return 1
   else
     cfg=$(resolve_account) || return 1
@@ -4783,10 +4957,11 @@ stage_spawn() {
   # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
   local cfg out err pid pgid attempt env why
-  # THE GUARD RECORD IS COMPARED BEFORE THE ROUTER IS ASKED. A copy whose guard
-  # disagrees with the run's record would route a run the other side seats, or
-  # the reverse; the launch is declined and the caller parks this stage.
+  # THE GUARD RECORD IS CHECKED BEFORE THE ROUTER IS ASKED. A routed record with
+  # no regular baseline would ask a router that has nothing to route on; the
+  # launch is declined and the caller parks this stage.
   STAGE_SPAWN_PARK_REASON=""
+  STAGE_SPAWN_PARK_UNTIL=""; STAGE_SPAWN_PARK_RECOVERY=""; STAGE_SPAWN_ALREADY_PARKED=0
   if ! why=$(routing_guard_check); then
     warn "$stage: $why — 띄우지 않습니다"
     STAGE_SPAWN_PARK_REASON="$why"
@@ -4802,7 +4977,7 @@ stage_spawn() {
   # down, and assigning it from an unpinned path first would leave two spellings
   # of the same log in one dispatch.
   local routed=0 lineage="" nonce="" acct="-" minted=0 bind="" lrc
-  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+  if run_routed; then
     routed=1
     spawn_route_grant "$stage" || return $?
     env=$SPAWN_ENV; lineage=$SPAWN_LINEAGE; nonce=$SPAWN_NONCE; acct=$SPAWN_ACCOUNT
@@ -5150,31 +5325,6 @@ reap_orphan() {
 }
 
 # ---------------------------------------------------------------------------
-# Sleep discriminator. Closing the lid leaves a stage alive with a stalled
-# transcript, which the resume table would otherwise read as the limit-exhaustion
-# shape and act on — killing and re-running on false evidence. Wall-clock moves
-# across a sleep; the wake timestamp records that it happened.
-# ---------------------------------------------------------------------------
-sysctl_sec() {
-  # No key selected (non-darwin) means no reading, not a reading of zero. The
-  # pipeline is guarded so a missing key cannot abort a caller running under
-  # `set -e`.
-  [ -n "$1" ] || return 0
-  { sysctl -n "$1" 2>/dev/null || true; } \
-    | awk -F'[ ,]+' '{for(i=1;i<=NF;i++) if($i=="sec"){print $(i+2); exit}}'
-}
-boot_epoch() { sysctl_sec "$(boot_source)"; }
-wake_epoch() { sysctl_sec "$(wake_source)"; }
-
-machine_slept_since() {
-  local since="$1" w
-  w=$(wake_epoch)
-  [ -n "$w" ] || return 1
-  [ "$w" = "0" ] && return 1
-  [ "$w" -gt "$since" ]
-}
-
-# ---------------------------------------------------------------------------
 # Artifact predicates. Not all of equal strength, and saying so is part of the
 # contract: a predicate over state a stage CANNOT fabricate (a git ref, a
 # remote ref, a PR number) is immune to a hollow success; a predicate over an
@@ -5495,7 +5645,7 @@ transcript_of_session() {
   # `transcript_path`; without the stage there is nothing to read.
   local sid="$1" stage="${2:-}" cfg p
   case "$sid" in ''|미상) return 1 ;; esac
-  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+  if run_routed; then
     [ -n "$stage" ] || return 1
     cfg=$(stage_config_dir_of "$stage") || return 1
   else
@@ -6031,6 +6181,304 @@ past_deadline() {
   local d; d=$(deadline_epoch)
   [ -n "$d" ] || return 1
   [ "$(now_epoch)" -ge "$d" ]
+}
+
+# EXPECTED STAGE DURATION BY KIND, in seconds — what a stage that waits for an
+# account is assumed to need once it spawns, so it is parked rather than started
+# when it cannot finish inside the deadline. The run's own finished stages of the
+# same kind decide it when there is at least one (their median); these are the
+# values used before that.
+#
+# Measured 2026-10-06T19:33Z (in run 20261006-7c066611) as the median wall time
+# of gate-recorded stages (`기록자=게이트`) that ended `정상 완료`, from the run
+# ledgers dated 2026-09-21..2026-10-06 (the last run 20261006-ff315145): each
+# `stage-result` row joined by its session id to the last result line of its
+# stream log, whose `duration_ms` is the duration. Samples: design 58, audit 63,
+# implement 738, review 385, reconverge 18. Generic is the median of all of them
+# together (1272 stages over 213 runs), because the gate's own generic class had
+# 10 samples over 3 runs, too few to stand alone. Live runs were in the sample,
+# so a later count moves a little.
+#
+# THE MEDIAN, NOT A HIGHER PERCENTILE. A larger value parks more stages that
+# would have fitted; the price of the median is that about half of the stages
+# admitted just before the deadline run past it.
+readonly EXPECTED_DURATION_DESIGN_S=512
+readonly EXPECTED_DURATION_AUDIT_S=832
+readonly EXPECTED_DURATION_IMPLEMENT_S=435
+readonly EXPECTED_DURATION_REVIEW_S=283
+readonly EXPECTED_DURATION_RECONVERGE_S=308
+readonly EXPECTED_DURATION_GENERIC_S=364
+
+stage_duration_class() {
+  # stage_duration_class <kind> — one of the six classes above.
+  case "${1:-}" in
+    design|audit|implement|review|reconverge) printf '%s' "$1" ;;
+    *) printf 'generic' ;;
+  esac
+}
+
+stage_run_durations() {
+  # stage_run_durations <class> — one line per stage of this run in that class
+  # that ended `정상 완료`: its duration in whole seconds. A gate row names its
+  # kind in `종류`; a driver row names a kind code in `스테이지`, read through
+  # `stage_kind_of`. The stream is `log/<id>#<attempt>.json` with the id from
+  # `파견 id` when the row has one and from `스테이지` otherwise, and it counts
+  # only when its last result line carries the row's session id — a stream that
+  # cannot be joined to its row is not a sample.
+  local want="$1" row kind cls key att sid res rsid ms
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    kind=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    key=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *파견 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ -n "$key" ] || key=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *스테이지=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ -n "$kind" ] || kind=$(stage_kind_of "$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *스테이지=//p' | sed 's/[[:space:]]*$//' | tail -1)")
+    cls=$(stage_duration_class "$kind")
+    [ "$cls" = "$want" ] || continue
+    att=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    sid=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "$sid" in ''|미상|-) continue ;; esac
+    [ -n "$key" ] && [ -n "$att" ] || continue
+    res=$( { grep '"type":"result"' "$RUN_DIR/log/$key#$att.json" 2>/dev/null || true; } | tail -1)
+    [ -n "$res" ] || continue
+    rsid=$(printf '%s' "$res" | jq -r '.session_id // empty' 2>/dev/null || true)
+    [ "$rsid" = "$sid" ] || continue
+    ms=$(printf '%s' "$res" | jq -r '.duration_ms // empty | if type == "number" then floor else empty end' 2>/dev/null || true)
+    case "$ms" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\n' "$(( ms / 1000 ))"
+  done <<EOF
+$( { grep -E '^- `stage-result`' "$LEDGER" 2>/dev/null || true; } | { grep -F '종단 부류=정상 완료' || true; } )
+EOF
+}
+
+stage_expected_duration() {
+  # stage_expected_duration <kind> — E in seconds: the median of this run's own
+  # finished stages of the same class, the class constant when there are none.
+  # With an even count the median is the lower middle value.
+  local cls med
+  cls=$(stage_duration_class "${1:-}")
+  med=$(stage_run_durations "$cls" | sort -n | awk '{ v[NR] = $1 } END { if (NR > 0) print v[int((NR + 1) / 2)] }')
+  if [ -n "$med" ]; then printf '%s' "$med"; return 0; fi
+  case "$cls" in
+    design)     printf '%s' "$EXPECTED_DURATION_DESIGN_S" ;;
+    audit)      printf '%s' "$EXPECTED_DURATION_AUDIT_S" ;;
+    implement)  printf '%s' "$EXPECTED_DURATION_IMPLEMENT_S" ;;
+    review)     printf '%s' "$EXPECTED_DURATION_REVIEW_S" ;;
+    reconverge) printf '%s' "$EXPECTED_DURATION_RECONVERGE_S" ;;
+    *)          printf '%s' "$EXPECTED_DURATION_GENERIC_S" ;;
+  esac
+}
+
+wait_ready_at() {
+  # wait_ready_at <until> <now> — the release time a waiter plans on: the
+  # router's `until` when it is a number later than now, now otherwise.
+  local u="${1:-}" now="$2"
+  case "$u" in ''|*[!0-9]*) printf '%s' "$now"; return 0 ;; esac
+  if [ "$u" -gt "$now" ]; then printf '%s' "$u"; else printf '%s' "$now"; fi
+}
+
+wait_past_deadline() {
+  # wait_past_deadline <ready-at> <expected> — succeeds when a stage released
+  # at <ready-at> cannot finish inside the deadline. A run with no deadline never
+  # parks on this; an unreadable one reads as epoch 0 and always does.
+  local ready="$1" e="$2" d
+  d=$(deadline_epoch)
+  [ -n "$d" ] || return 1
+  [ $(( ready + e )) -gt "$d" ]
+}
+
+wait_request_deadline() {
+  # wait_request_deadline <kind> — the `deadline` object a routed request
+  # carries, `{deadline_epoch, expected_duration_s}`, or `null` when the run has
+  # no deadline. With it the router parks a wait whose release cannot finish in
+  # time on the first question, not only on the waiter's own turn.
+  local d e
+  d=$(deadline_epoch)
+  [ -n "$d" ] || { printf 'null'; return 0; }
+  e=$(stage_expected_duration "${1:-}")
+  printf '{"deadline_epoch":%s,"expected_duration_s":%s}' "$d" "$e"
+}
+
+# ---------------------------------------------------------------------------
+# WAITING FOR AN ACCOUNT BEFORE A SPAWN.
+#
+# When the router answers WAIT, the stage is not parked: the process that would
+# spawn it waits in chunks, writes one `stage-wait` row per chunk as a heartbeat
+# the liveness watcher can see, and asks the router again after each chunk. The
+# gate's detached supervisor and the driver both wait here, so one exhaustion
+# meets one rule whichever path dispatched the stage. What differs by path —
+# how a heartbeat row is written, how a deadline park is written, how any other
+# stop is recorded — is passed in as function names.
+#
+# The marker `<key>.waiting` is what makes the wait visible: it names the
+# waiting process, and readers in `liveness.sh` treat a key whose holder lives
+# as not to be dispatched again.
+# ---------------------------------------------------------------------------
+readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"
+
+wait_epoch_iso() {
+  # wait_epoch_iso <epoch> — the instant in `now_iso`'s byte shape, `-` for none.
+  case "${1:-}" in ''|*[!0-9]*) printf '%s' '-'; return 0 ;; esac
+  jq -rn --argjson e "$1" '$e | floor | todate' 2>/dev/null || printf '%s' '-'
+}
+
+wait_marker_write() {
+  # wait_marker_write <file> <key=value>... — the whole marker, atomically.
+  local f="$1" tmp
+  shift
+  tmp=$(mktemp "${f%/*}/.waiting.XXXXXX") || return 1
+  if ! printf '%s\n' "$@" > "$tmp" || ! mv -f "$tmp" "$f"; then rm -f "$tmp"; return 1; fi
+}
+
+wait_marker_set() {
+  # wait_marker_set <file> <key> <value> [<key> <value>]... — the marker with
+  # those keys replaced (or added), atomically. rc 1 when there is no marker: a
+  # marker that is gone has been taken by settlement or removed by its writer,
+  # and is not brought back.
+  local f="$1" tmp
+  shift
+  [ -f "$f" ] || return 1
+  tmp=$(mktemp "${f%/*}/.waiting.XXXXXX") || return 1
+  if ! cp "$f" "$tmp"; then rm -f "$tmp"; return 1; fi
+  while [ "$#" -ge 2 ]; do
+    if ! WK="$1" WV="$2" awk 'BEGIN { p = ENVIRON["WK"] "=" }
+           index($0, p) == 1 { if (!d) print p ENVIRON["WV"]; d = 1; next }
+           { print }
+           END { if (!d) print p ENVIRON["WV"] }' "$tmp" > "$tmp.n" \
+       || ! mv -f "$tmp.n" "$tmp"; then
+      rm -f "$tmp" "$tmp.n"; return 1
+    fi
+    shift 2
+  done
+  [ -f "$f" ] || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$f"
+}
+
+wait_drop() {
+  # wait_drop <marker> — remove this wait's FIFO entry and its marker. The
+  # entry is deleted only while it is still this wait's (`kind: wait` with the
+  # marker's nonce), so a grant already recorded over the same key is kept.
+  local m="$1" lin nonce
+  [ -f "$m" ] || return 0
+  lin=$(cc_waiting_field "$m" '계보')
+  nonce=$(cc_waiting_field "$m" '논스')
+  if [ -n "$lin" ] && [ -n "$nonce" ] && [ "$nonce" != "-" ]; then
+    route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || true
+  fi
+  rm -f "$m"
+}
+
+wait_router_why() {
+  # wait_router_why <envelope> — the one-line reading a park row carries.
+  printf '%s' "$1" | jq -r '"라우터 판정 \(.verdict // "-") \(.reason // "-")"
+        + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null \
+    || printf '라우터 판정 미상'
+}
+
+stage_wait_loop() {
+  # stage_wait_loop <key> <kind> <marker> <event> <bound> <heartbeat-fn>
+  #                 <deadline-fn> <stop-fn>
+  #
+  # Waits until the router grants, and returns:
+  #   0 — GRANT; the envelope is in WAIT_LOOP_ENV, the marker is still there
+  #       (the caller removes it once the stage is visibly live);
+  #   2 — parked on the deadline: <deadline-fn> wrote the one park row, and the
+  #       marker and FIFO entry are gone. A caller that parks on router verdicts
+  #       must write nothing more;
+  #   3 — stopped for any other reason: <stop-fn> was handed the reason, and the
+  #       marker and FIFO entry are gone.
+  #
+  # The callbacks: <heartbeat-fn> <envelope> writes one `stage-wait` row and
+  # fails when it is refused; <deadline-fn> <ready-at> <basis> <recovery> writes
+  # the deadline park; <stop-fn> <why> records any other stop. The lineage, the
+  # holder and the release time are read from the marker, which the caller has
+  # written before the first turn.
+  #
+  # THE DEADLINE IS JUDGED HERE ON EVERY TURN, not left to the router: the
+  # router's own rule never parks a WAIT whose release time is unknown, and a
+  # wait with no known release still has to end inside the night.
+  local key="$1" kind="$2" m="$3" ev="$4" bound="$5" hb="$6" dl="$7" stopfn="$8"
+  local lin holder stall chunk now upto ready e d slp t req env verdict why basis rdy
+  WAIT_LOOP_ENV=""
+  lin=$(cc_waiting_field "$m" '계보')
+  holder=$(cc_waiting_field "$m" '보유자' | tr -d '[:space:]')
+  while :; do
+    if [ ! -f "$m" ]; then
+      "$stopfn" "대기 표지가 사라졌다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    if ! stall=$(cc_effective_stall "$RUN_DIR"); then
+      "$stopfn" "실효 정지 임계를 읽지 못해 대기를 이어 갈 수 없다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    chunk=$(cc_wait_chunk "$stall")
+    now=$(now_epoch)
+    upto=$(cc_waiting_field "$m" '까지' | tr -d '[:space:]')
+    ready=$(wait_ready_at "$upto" "$now")
+    e=$(stage_expected_duration "$kind")
+    if wait_past_deadline "$ready" "$e"; then
+      d=$(deadline_epoch)
+      basis="계보=$lin ready_at=$(wait_epoch_iso "$ready") 예상 소요=${e}초 마감=$(wait_epoch_iso "$d")"
+      "$dl" "$(wait_epoch_iso "$ready")" "$basis" "$WAIT_LOOP_DEADLINE_RECOVERY"
+      wait_drop "$m"; return 2
+    fi
+    slp=$chunk
+    case "$upto" in
+      ''|*[!0-9]*) ;;
+      *) t=$(( upto - now )); if [ "$t" -gt 0 ] && [ "$t" -lt "$slp" ]; then slp=$t; fi ;;
+    esac
+    d=$(deadline_epoch)
+    if [ -n "$d" ]; then
+      t=$(( d - e - now )); if [ "$t" -gt 0 ] && [ "$t" -lt "$slp" ]; then slp=$t; fi
+    fi
+    [ "$slp" -ge 1 ] || slp=1
+    sleep "$slp"
+    # THE EVENT STAYS THE ORIGINAL ONE and `after_wait` is added beside it: the
+    # router refuses an event it does not know.
+    req=$(jq -cn --arg run "$RUN_ID" --arg lin "$lin" --arg ev "$ev" --arg kind "$kind" \
+            --arg bound "$bound" --argjson pid "${holder:-0}" \
+            --argjson dl "$(wait_request_deadline "$kind")" \
+            '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid], after_wait: true,
+              bound_account: (if $bound == "" then null else $bound end)}
+             + (if $dl == null then {} else {deadline: $dl} end)') || {
+      "$stopfn" "라우터 재질의 요청을 만들지 못했다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    }
+    if ! env=$(route_resolve "$req"); then
+      "$stopfn" "계정 해석기가 멈췄다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    verdict=$(printf '%s' "$env" | jq -r '.verdict // ""' 2>/dev/null || true)
+    why=$(wait_router_why "$env")
+    case "$verdict" in
+      GRANT)
+        WAIT_LOOP_ENV=$env
+        return 0 ;;
+      WAIT)
+        if ! "$hb" "$env"; then
+          "$stopfn" "$why (stage-wait 행 기록 거부)"
+          wait_drop "$m"; return 3
+        fi
+        upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
+        wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" \
+          '그룹' "$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')" || true
+        ;;
+      PARK)
+        if [ "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" = "deadline" ]; then
+          rdy=$(printf '%s' "$env" | jq -r '.ready_at | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)
+          d=$(deadline_epoch)
+          basis="계보=$lin ready_at=$(wait_epoch_iso "$rdy") 예상 소요=${e}초 마감=$(wait_epoch_iso "$d")"
+          "$dl" "$(wait_epoch_iso "$rdy")" "$basis" \
+            "$(printf '%s' "$env" | jq -r '.recovery // ""' 2>/dev/null || true)"
+          wait_drop "$m"; return 2
+        fi
+        "$stopfn" "$why"
+        wait_drop "$m"; return 3 ;;
+      *)
+        "$stopfn" "라우터가 판정 없이 답했다 — $key 는 기동하지 않는다"
+        wait_drop "$m"; return 3 ;;
+    esac
+  done
 }
 
 # 2 — RUN CYCLE BUDGET, the sum of the per-segment budgets. Both use LADDER_RUNGS
@@ -6885,7 +7333,7 @@ review_recover() {
   local src=0
   stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\"" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-    park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+    park_router "$seg" "$seg" cone; return 1
   fi
   [ "$src" = "0" ] || (exit "$src")
   stage_wait_all "$rsid"
@@ -7014,7 +7462,7 @@ segment_cycle() {
     STAGE_RESUME=""
     if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
       quiet_window_end
-      park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+      park_router "$seg" "$seg" cone
       return 1
     fi
     [ "$src" = "0" ] || (exit "$src")
@@ -7056,6 +7504,7 @@ segment_cycle() {
           fileset_escape "$seg" "$files" "$wt" || return 1
           stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
         else
+          [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
           [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
           park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi ;;
@@ -7076,7 +7525,7 @@ segment_cycle() {
         src=0
         CC_SPAWN_EVENT=crash-retry stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" || src=$?
         if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+          park_router "$seg" "$seg" cone; return 1
         fi
         [ "$src" = "0" ] || (exit "$src")
         stage_wait_all "$sid.retry"
@@ -7097,7 +7546,7 @@ segment_cycle() {
         src=0
         CC_SPAWN_EVENT=limit-reclaim stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" || src=$?
         if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+          park_router "$seg" "$seg" cone; return 1
         fi
         [ "$src" = "0" ] || (exit "$src")
         stage_wait_all "$sid.retry"
@@ -7155,7 +7604,7 @@ segment_cycle() {
     src=0
     stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\"" || src=$?
     if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-      park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+      park_router "$seg" "$seg" cone; return 1
     fi
     [ "$src" = "0" ] || (exit "$src")
     stage_wait_all "$sid"
@@ -7253,9 +7702,11 @@ segment_cycle() {
         2|3)
           sid="S1':$seg:$cycle:$(printf '%s' "$fpath" | tr '/' '-')"
           src=0
-          stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $(doc_arg) \"$fpath, $fcat\"" || src=$?
+          # A deadline park written from inside the wait names the defect, as
+          # every other park of this rung does.
+          CC_SPAWN_PARK_TARGET="$fid" stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $(doc_arg) \"$fpath, $fcat\"" || src=$?
           if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-            park "$fid" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; any_park=1; continue
+            park_router "$fid" "$seg" cone; any_park=1; continue
           fi
           [ "$src" = "0" ] || (exit "$src")
           stage_wait_all "$sid"
@@ -7425,6 +7876,9 @@ continue_or_park() {
   shift 8
   [ "${1:-}" = "--" ] && shift
   local sess turns n
+  # The class is cleared here too: a `라우터 판정` left by an earlier call would
+  # send this call's park through the router helper.
+  CONTINUE_CLASS=""
   CONTINUE_BLOCKED=""
   CONTINUE_PARK_REASON=""
   CONTINUE_PARK_RECALL=""
@@ -7626,7 +8080,7 @@ design_arm() {
     "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\"" || src1=$?
   if [ "$src1" = "$STAGE_SPAWN_PARK_RC" ]; then
     quiet_window_end
-    park "S1design" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+    park_router "S1design" "S1design" run
     return 1
   fi
   [ "$src1" = "0" ] || (exit "$src1")
@@ -7657,6 +8111,7 @@ design_arm() {
            "동결된 설계 문서도 정지 기록도 없다" "$(home_alias)" -- predicate_design; then
         report_append "설계" "문서 동결 — $DOC_KEY"
       else
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S1design" "S1design" run "$CONTINUE_PARK_REASON"; return 1; }
         [ -z "$CONTINUE_BLOCKED" ] || { park "S1design" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
         park "S1design" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
       fi ;;
@@ -7739,7 +8194,7 @@ main_loop() {
   # 1 — a crash. The router's answer is not a crash.
   if [ "$src2" = "$STAGE_SPAWN_PARK_RC" ]; then
     quiet_window_end
-    park "S2" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+    park_router "S2" "S2" run
     return 0
   fi
   [ "$src2" = "0" ] || (exit "$src2")
@@ -7766,6 +8221,7 @@ main_loop() {
            "감사 리더 리포트와 종단 문면도 정지 기록도 없다" "$(home_alias)" -- predicate_audit; then
         :
       else
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S2" "S2" run "$CONTINUE_PARK_REASON"; return 0; }
         [ -z "$CONTINUE_BLOCKED" ] || { park "S2" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 0; }
         park "S2" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 0
       fi ;;

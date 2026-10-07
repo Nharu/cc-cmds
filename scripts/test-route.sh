@@ -77,8 +77,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 870(root 가 아닐 때). root 는 권한 사례 여섯을 건너뛴다.
-ASSERTION_FLOOR=849
+# 실측 571(root 가 아닐 때). root 는 권한 사례 여섯을 건너뛴다.
+ASSERTION_FLOOR=550
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -235,10 +235,9 @@ export TRH_ORCH="$TR_ORCH"
 # ===========================================================================
 if [ -f "$TR_ROUTE" ]; then ok "route.sh 가 있다"; else bad "route.sh 가 있다" "$TR_ROUTE"; fi
 
-got=$( CC_ORCH_SOURCE_ONLY=1; . "$TR_RUN_SH"; set +e; declare -F route_resolve; printf '%s' "$ROUTE_ROUTING_BUILD_COMPLETE" )
-want=$(grep -o -E 'readonly ROUTE_ROUTING_BUILD_COMPLETE=[01]' "$TR_RUN_SH" | sed 's/.*=//')
-check "run.sh 소싱 뒤 route_resolve 가 정의되고 스위치는 파일 리터럴" "$got" "route_resolve
-$want"
+got=$( CC_ORCH_SOURCE_ONLY=1; . "$TR_RUN_SH"; set +e; declare -F route_resolve run_routed )
+check "run.sh 소싱 뒤 route_resolve 와 run_routed 가 정의된다" "$got" "route_resolve
+run_routed"
 
 rc=0; env PATH=/usr/bin:/bin bash -n "$TR_ROUTE" || rc=$?
 check "정화한 PATH 아래 bash -n route.sh" "$rc" 0
@@ -504,50 +503,37 @@ tr_g_once() {
 }
 
 tr_g_shipped() {
-  local lb="$1" b="$2" x y
-  export RUN_DIR="$b/run" RUN_PACE_ROOT="$b/pace"
-  mkdir -p "$RUN_DIR"
-  tr_write_inv corrupt "$RUN_DIR/inventory.json"
-  x=$(route_resolve "$(tr_req)" 2>/dev/null)
-  y=$(route__resolve_as "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" "$(tr_req)" 2>/dev/null)
-  check "$lb: 출하 스위치 값의 route_resolve 와 명시 가드가 같다" "$x" "$y"
-  seen "$x"
+  # 런마다의 판정: 기록 `1` 인 런에서만 route_resolve 가 활성 답을 낸다. route.sh 만
+  # 소싱한 셸은 기록이 있어도 휴면이다.
+  local lb="$1" b="$2" rec x y
+  export RUN_PACE_ROOT="$b/pace"
+  for rec in none 0 1; do
+    export RUN_DIR="$b/run-$rec"
+    mkdir -p "$RUN_DIR"
+    tr_write_inv corrupt "$RUN_DIR/inventory.json"
+    [ "$rec" = none ] || printf '%s\n' "$rec" > "$RUN_DIR/routing-guard"
+    x=$(route_resolve "$(tr_req)" 2>/dev/null)
+    y=$(route__resolve_as "$( [ "$rec" = 1 ] && printf 1 || printf 0 )" "$(tr_req)" 2>/dev/null)
+    check "$lb: 런 기록 $rec 의 route_resolve 와 명시 가드가 같다" "$x" "$y"
+    seen "$x"
+  done
+  x=$( unset -f run_routed; route_resolve "$(tr_req)" 2>/dev/null )
+  check "$lb: run_routed 없는 셸은 기록 1 의 런에서도 휴면 답" "$x" "$(route__resolve_as 0 "$(tr_req)" 2>/dev/null)"
 }
 
 tr_guard_sections() {
-  local rs="$1" lb="$2" lit b pre got
-  lit=$(grep -o -E 'readonly ROUTE_ROUTING_BUILD_COMPLETE=[01]' "$rs" | sed 's/.*=//')
+  local rs="$1" lb="$2" b
   b="$WORK/guard-$lb"
   mkdir -p "$b"
-  for pre in 1 0; do
-    got=$( export ROUTE_ROUTING_BUILD_COMPLETE="$pre"; CC_ORCH_SOURCE_ONLY=1; . "$rs"; printf '%s' "$ROUTE_ROUTING_BUILD_COMPLETE" )
-    check "$lb: 미리 심은 $pre 뒤 스위치는 파일 리터럴" "$got" "$lit"
-  done
   tr_in_run "$rs" tr_g_cells "$lb" "$b/cells"
-  tr_in_run "$rs" tr_g_matrix "${lb}·미리심기없음" "$b/m0"
-  ( export ROUTE_ROUTING_BUILD_COMPLETE=1; tr_in_run "$rs" tr_g_matrix "${lb}·미리심기1" "$b/m1" )
+  tr_in_run "$rs" tr_g_matrix "$lb" "$b/m0"
   tr_in_run "$rs" tr_g_once "$lb" "$b/once"
   tr_in_run "$rs" tr_g_shipped "$lb" "$b/shipped"
 }
 
-n0=$(count_results PASS); f0=$(count_results FAIL)
 tr_guard_sections "$TR_RUN_SH" "원본"
-n1=$(count_results PASS); f1=$(count_results FAIL)
-
-# 스위치를 뒤집은 스크래치 사본: 오케스트레이터 디렉터리를 통째로 복사하고 가드
-# 두 자리의 0 을 1 로 바꾼다.
-SCR="$WORK/scratch/orchestrator"
-mkdir -p "$WORK/scratch"
-cp -R "$TR_ORCH" "$SCR"
-TR_FLIP='/readonly ROUTE_ROUTING_BUILD_COMPLETE=0/s/ in 0) ;; \*) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;;/ in 1) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;;/'
-sed "$TR_FLIP" "$TR_RUN_SH" > "$SCR/run.sh"
-check "스크래치 사본은 스위치 한 줄만 다르다" "$(diff "$TR_RUN_SH" "$SCR/run.sh" | grep -c '^[<>]')" 2
-check "스크래치 사본의 스위치 리터럴은 1" "$(grep -o -E 'readonly ROUTE_ROUTING_BUILD_COMPLETE=[01]' "$SCR/run.sh")" "readonly ROUTE_ROUTING_BUILD_COMPLETE=1"
-n2=$(count_results PASS); f2=$(count_results FAIL)
-tr_guard_sections "$SCR/run.sh" "스위치1사본"
-n3=$(count_results PASS); f3=$(count_results FAIL)
-check "가드 절의 단언 수가 스위치 값과 무관하다" "$((n3 + f3 - n2 - f2))" "$((n1 + f1 - n0 - f0))"
-check "스위치를 뒤집은 사본에서도 가드 절이 모두 통과한다" "$((f3 - f2))" 0
+check "오케스트레이터에 빌드 스위치 이름이 남지 않는다" \
+  "$(grep -l -r 'ROUTE_ROUTING_BUILD_COMPLETE' "$TR_ORCH" || true)" ""
 
 # ===========================================================================
 # 입력 판독 — 인벤토리 분류기
@@ -1169,6 +1155,43 @@ check "맞는 nonce 의 lease-wait-drop 은 지운다" "$(count_files "$d")" 1
 live_lease "$d" r1 S3 a
 rc=0; wput r1 S3 >/dev/null 2>&1 || rc=$?
 check "부여가 있는 키의 lease-wait-put 은 거부" "$rc" 1
+
+# `--group` 은 그룹의 대표 계정(그 그룹에 드는 enabled 계정 중 가장 작은 id)을 고른다.
+GW="$WORK/gwait"
+mkdir -p "$GW/state/cc-lane"
+jq -cn --arg h "$HOME" '{schema: "cc-lane-accounts v1", accounts: [
+    {id: "c", config_dir: ($h + "/.claude-c"), label: "c", interactive_reserved: false, unattended: "enabled", added_at: 0},
+    {id: "b", config_dir: ($h + "/.claude-b"), label: "b", interactive_reserved: false, unattended: "enabled", added_at: 0},
+    {id: "a", config_dir: ($h + "/.claude-a"), label: "a", interactive_reserved: false, unattended: "disabled", added_at: 0}]}' > "$GW/inv.json"
+jq -cn --argjson now "$NOW" --arg h "$HOME" '{schema: "cc-lane-usage v1", written_at_epoch: $now, publish_interval_s: 300,
+    accounts: [("a", "b") as $i | {id: $i, config_dir: ($h + "/.claude-" + $i), org_hash: "h1", login: "ok", status: "allowed"}]}' \
+  > "$GW/state/cc-lane/usage.json"
+gput() {
+  # gput <키 lineage> <그룹> [추가 인자…]
+  local lin="$1" g="$2"
+  shift 2
+  XDG_STATE_HOME="$GW/state" bash "$TR_ROUTE" lease-wait-put --table "$GW/t" --now "$NOW" --run-id r1 --lineage "$lin" \
+    --group "$g" --inventory "$GW/inv.json" --holder "$TR_HOLDER" "$@"
+}
+out=$(gput G1 org:h1)
+expect "--group 조직 그룹의 대표는 enabled 중 가장 작은 id" "$out" '.kind == "wait" and .account == "b" and (.config_dir | endswith("/.claude-b"))'
+out=$(gput G2 acct:c)
+expect "--group 단독 계정 그룹의 대표는 그 계정" "$out" '.account == "c"'
+check "--group 대기 항목도 도착 순서의 seq" "$(printf '%s' "$out" | jq -r .seq)" 2
+rc=0; gput G3 acct:a >/dev/null 2>&1 || rc=$?
+check "--group 에 enabled 계정이 없으면 rc 3" "$rc" 3
+rc=0; gput G4 org:zz >/dev/null 2>&1 || rc=$?
+check "--group 에 드는 계정이 없으면 rc 3" "$rc" 3
+check "고를 계정이 없는 --group 은 쓰지 않는다" "$(count_files "$GW/t")" 2
+rc=0; gput G5 org:h1 --account b >/dev/null 2>&1 || rc=$?
+check "--group 과 --account 를 함께 주면 rc 2" "$rc" 2
+rc=0; XDG_STATE_HOME="$GW/state" bash "$TR_ROUTE" lease-wait-put --table "$GW/t" --now "$NOW" --run-id r1 --lineage G6 \
+  --group org:h1 --holder "$TR_HOLDER" >/dev/null 2>&1 || rc=$?
+check "--group 에 --inventory 가 없으면 rc 2" "$rc" 2
+printf '{"schema":' > "$GW/bad.json"
+rc=0; XDG_STATE_HOME="$GW/state" bash "$TR_ROUTE" lease-wait-put --table "$GW/t" --now "$NOW" --run-id r1 --lineage G7 \
+  --group org:h1 --inventory "$GW/bad.json" --holder "$TR_HOLDER" >/dev/null 2>&1 || rc=$?
+check "--group 의 인벤토리가 깨지면 rc 3" "$rc" 3
 d=$(tnew wait-null)
 live_lease "$d" r2 S1 a
 live_lease "$d" r3 S1 b

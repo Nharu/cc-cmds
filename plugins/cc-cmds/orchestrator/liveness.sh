@@ -302,6 +302,18 @@ cc_pid_exists() {
   kill -0 "$1" 2>/dev/null
 }
 
+cc_holder_is_live() {
+  # cc_holder_is_live <pid> <fingerprint> — succeeds when that pid is still the
+  # process whose start fingerprint was recorded beside it. The holder records
+  # of a dispatch lock and a waiting marker are judged here, so the gate keeps
+  # no liveness test of its own.
+  local pid="${1:-}" fp="${2:-}"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$fp" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$(cc_proc_fingerprint "$pid")" = "$fp" ]
+}
+
 cc_proc_fingerprint() {
   # cc_proc_fingerprint <pid> — the pid's start time, whitespace-normalised.
   # The pair (pid, start time) is the identity; the pid alone is not.
@@ -339,6 +351,224 @@ cc_proc_pgid() {
   # leads its own group — the recorded value IS the pid, so anything that holds
   # that pid next matches as long as it leads a group of its own.
   ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+# ---------------------------------------------------------------------------
+# The wake chain — when the machine last woke, and the host seam it rests on.
+#
+# IT MOVED HERE WHOLE, from the driver. A waiting stage's freshness is measured
+# from the later of its own refresh and the machine's wake, and the readers of
+# that freshness — the watcher, the status line, the snapshot — source this file
+# and not the driver. Moving one function would have cut the chain: the wake
+# reading needs its source, the source needs the platform test, the platform
+# test needs the host. The driver sources this file, so its callers are the same.
+#
+# THE HOST IS READ, NEVER ASSIGNED, HERE. The driver assigns `ORCH_HOST_OS` once
+# at its top level and other places read that variable directly, and the test
+# harness assigns it too. This file is sourced on every status-line render, so a
+# top-level assignment would start `uname` per render, and an assignment inside
+# the function is lost whenever the function runs in a substitution. A shell
+# that sourced only this file reads the injection seam, then `uname`.
+# ---------------------------------------------------------------------------
+platform_supported() { [ "${ORCH_HOST_OS:-${CC_CMDS_ORCH_HOST_OS:-$(uname -s)}}" = "Darwin" ]; }
+
+# Source selection is seam-driven, so it is exercised under injection on any
+# runner. Whether the selected binary EXISTS is a separate question, and it is
+# one only the darwin leg can answer.
+boot_source() { platform_supported && printf 'kern.boottime' || printf ''; }
+wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
+
+# Sleep discriminator. Closing the lid leaves a stage alive with a stalled
+# transcript, which the resume table would otherwise read as the limit-exhaustion
+# shape and act on — killing and re-running on false evidence. Wall-clock moves
+# across a sleep; the wake timestamp records that it happened.
+sysctl_sec() {
+  # No key selected (non-darwin) means no reading, not a reading of zero. The
+  # pipeline is guarded so a missing key cannot abort a caller running under
+  # `set -e`.
+  [ -n "$1" ] || return 0
+  { sysctl -n "$1" 2>/dev/null || true; } \
+    | awk -F'[ ,]+' '{for(i=1;i<=NF;i++) if($i=="sec"){print $(i+2); exit}}'
+}
+boot_epoch() { sysctl_sec "$(boot_source)"; }
+wake_epoch() { sysctl_sec "$(wake_source)"; }
+
+machine_slept_since() {
+  local since="$1" w
+  w=$(wake_epoch)
+  [ -n "$w" ] || return 1
+  [ "$w" = "0" ] && return 1
+  [ "$w" -gt "$since" ]
+}
+
+# ---------------------------------------------------------------------------
+# The effective stall threshold, for a stage that waits for an account.
+#
+# A WAITER PACES ITS HEARTBEAT ON THE WATCHER'S THRESHOLD, so it has to read the
+# value the watcher is actually using. The watcher rewrites `watch.stall` every
+# pass — line 1 the threshold in seconds, line 2 its own pid, line 3 that pid's
+# fingerprint — and the value counts only while that writer is still the same
+# live process: a dead watcher's test value must not pull every wait down to it.
+#
+# WITHOUT A LIVE WRITER, THE SHIPPED DEFAULT IS READ FROM THE WATCHER ITSELF —
+# its one default declaration, matched with the same expression the threshold-pin
+# lint uses, in the watcher beside this file (the run's pinned copy when the gate
+# sourced it). There is no second literal to drift. When that declaration is not
+# exactly one, nothing is printed and the status is 1: the caller does not wait.
+# ---------------------------------------------------------------------------
+cc_effective_stall() {
+  # cc_effective_stall <run-dir> — the threshold in seconds, or rc 1.
+  local f="${1:-}/watch.stall" v pid rec now decl n
+  if [ -n "${1:-}" ] && [ -f "$f" ]; then
+    v=$( { sed -n '1p' "$f" 2>/dev/null || true; } | tr -d '[:space:]')
+    pid=$( { sed -n '2p' "$f" 2>/dev/null || true; } | tr -d '[:space:]')
+    rec=$(sed -n '3p' "$f" 2>/dev/null || true)
+    case "$v:$pid" in
+      *[!0-9:]*|:*|*:) ;;
+      *)
+        if [ "$((10#$v))" -gt 0 ] && [ -n "$rec" ] && kill -0 "$pid" 2>/dev/null; then
+          now=$(cc_proc_fingerprint "$pid")
+          if [ "$rec" = "$now" ]; then printf '%s' "$((10#$v))"; return 0; fi
+        fi
+        ;;
+    esac
+  fi
+  decl=$(LC_ALL=C grep -oE '(^|[;[:space:]])STALL=[0-9]+' "$CC_LIVENESS_DIR/watch.sh" 2>/dev/null || true)
+  [ -n "$decl" ] || return 1
+  n=$(printf '%s\n' "$decl" | grep -c '' || true)
+  [ "$n" = "1" ] || return 1
+  v=${decl##*=}
+  [ "$((10#$v))" -gt 0 ] || return 1
+  printf '%s' "$((10#$v))"
+}
+
+cc_wait_chunk() {
+  # cc_wait_chunk <stall> — half the threshold, never below one second. A row
+  # every half threshold leaves the other half for the router call that comes
+  # between two rows; the floor keeps a test-sized threshold from a busy loop.
+  local s="$((10#${1:-0}))"
+  s=$((s / 2))
+  [ "$s" -ge 1 ] || s=1
+  printf '%s' "$s"
+}
+
+# ---------------------------------------------------------------------------
+# Stages that wait for an account before they spawn.
+#
+# A WAITING STAGE HAS NO PROCESS OF ITS OWN YET, so none of the predicates above
+# can see it: no `<key>.pid`, so it is neither live nor an orphan. What it has is
+# a marker, `<key>.waiting`, written by whoever waits — the gate's supervisor or
+# the driver — as `key=value` lines: 보유자 (the waiting process), 지문 (its
+# fingerprint), 기록자 (게이트 or 드라이버), 계보, 그룹, 까지 (epoch or `-`),
+# 갱신 (epoch of the last heartbeat), 종류, 논스, 시도, 재파견.
+#
+# MEMBERSHIP IS THE HOLDER'S LIFE, NOT A CLOCK. A key is waiting when the holder
+# is still the process that wrote the marker, the key has no live stage, and the
+# attempt has no terminal row — no `stage-result` and no `blocked` row naming its
+# lineage. A refresh time is a wall clock, and a machine that slept two hours
+# would otherwise drop a healthy waiter and let the key be dispatched again.
+#
+# FRESHNESS IS SEPARATE AND ONLY QUIETS ALARMS. A member is fresh while the later
+# of its refresh and the machine's wake is younger than the effective stall
+# threshold. A waiter whose refresh stopped while its holder lives is still a
+# member — it is not dispatched again — but it no longer quiets the watcher;
+# killing the holder is the recovery, and settlement then closes the attempt.
+#
+# None of these counts toward `cc_live_stages`: a waiting stage holds no
+# account yet, and that census means running stages.
+# ---------------------------------------------------------------------------
+cc_waiting_field() {
+  # cc_waiting_field <marker> <key> — the value of that key, or empty.
+  { sed -n "s/^$2=//p" "$1" 2>/dev/null || true; } | tail -1
+}
+
+cc_rows_naming_lineage() {
+  # cc_rows_naming_lineage <lineage> — the stdin rows that carry `계보=<lineage>`
+  # as a whole value. `B:S1#1` must not match inside `B:S1#10`, so the character
+  # after the value has to end it.
+  awk -v pat="계보=$1" '{
+    s = $0
+    while ((i = index(s, pat)) > 0) {
+      c = substr(s, i + length(pat), 1)
+      if (c !~ /[0-9A-Za-z_.#:-]/) { print; next }
+      s = substr(s, i + length(pat))
+    }
+  }'
+}
+
+cc_waiting_is_member() {
+  # cc_waiting_is_member <run-dir> <ledger> <key> — succeeds when that key is a
+  # waiting stage.
+  local run_dir="$1" ledger="$2" key="$3" f pid fp now att lin
+  [ -n "$run_dir" ] && [ -n "$key" ] || return 1
+  f="$run_dir/$key.waiting"
+  [ -f "$f" ] || return 1
+  pid=$(cc_waiting_field "$f" '보유자' | tr -d '[:space:]')
+  fp=$(cc_waiting_field "$f" '지문')
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$fp" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  now=$(cc_proc_fingerprint "$pid")
+  [ "$fp" = "$now" ] || return 1
+  if cc_stage_is_live "$run_dir" "$key"; then return 1; fi
+  [ -n "$ledger" ] && [ -f "$ledger" ] || return 0
+  att=$(cc_waiting_field "$f" '시도' | tr -d '[:space:]')
+  lin=$(cc_waiting_field "$f" '계보')
+  if [ -n "$att" ] \
+     && [ -n "$( { grep -E '^- `stage-result`' "$ledger" 2>/dev/null || true; } \
+                 | { grep -F -e "세그먼트=$key " -e "스테이지=$key " || true; } \
+                 | { grep -F "실행 버전=$att " || true; } )" ]; then
+    return 1
+  fi
+  if [ -n "$lin" ] \
+     && [ -n "$( { grep -E '^- `blocked`' "$ledger" 2>/dev/null || true; } | cc_rows_naming_lineage "$lin")" ]; then
+    return 1
+  fi
+  return 0
+}
+
+cc_waiting_age_base() {
+  # cc_waiting_age_base <refreshed> <wake> — the epoch freshness is measured
+  # from: the later of the two, the refresh alone when the wake is empty or 0.
+  local r="${1:-0}" w="${2:-}"
+  case "$r" in ''|*[!0-9]*) r=0 ;; esac
+  case "$w" in ''|*[!0-9]*) w=0 ;; esac
+  if [ "$w" -gt "$r" ]; then printf '%s' "$w"; else printf '%s' "$r"; fi
+}
+
+cc_waiting_records() {
+  # cc_waiting_records <run-dir> <ledger> [stall] — one line per waiting stage:
+  # `<key>\t<lineage>\t<group>\t<until>\t<refreshed>\t<holder>\t<writer>\t<fresh>`,
+  # `<fresh>` being `true` or `false`. The stall threshold defaults to the
+  # effective one; with none, no member is fresh.
+  local run_dir="$1" ledger="$2" stall="${3:-}" f key wake now base fresh upd
+  [ -n "$run_dir" ] || return 0
+  for f in "$run_dir"/*.waiting; do
+    [ -f "$f" ] || continue
+    key=${f##*/}; key=${key%.waiting}
+    cc_waiting_is_member "$run_dir" "$ledger" "$key" || continue
+    if [ -z "${now:-}" ]; then
+      now=$(date -u +%s)
+      wake=$(wake_epoch)
+      [ -n "$stall" ] || stall=$(cc_effective_stall "$run_dir" || true)
+    fi
+    upd=$(cc_waiting_field "$f" '갱신' | tr -d '[:space:]')
+    base=$(cc_waiting_age_base "$upd" "$wake")
+    fresh=false
+    if [ -n "$stall" ] && [ "$base" -gt 0 ] && [ $((now - base)) -lt "$stall" ]; then fresh=true; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$key" "$(cc_waiting_field "$f" '계보')" \
+      "$(cc_waiting_field "$f" '그룹')" "$(cc_waiting_field "$f" '까지')" "$upd" \
+      "$(cc_waiting_field "$f" '보유자' | tr -d '[:space:]')" "$(cc_waiting_field "$f" '기록자')" "$fresh"
+  done
+  return 0
+}
+
+cc_waiting_fresh_count() {
+  # cc_waiting_fresh_count <run-dir> <ledger> [stall] — how many waiting stages
+  # are fresh. The readers that count a live stage count these beside it.
+  local n
+  n=$(cc_waiting_records "$@" | awk -F'\t' '$8 == "true"' | grep -c . || true)
+  printf '%s' "${n:-0}"
 }
 
 cc_open_approvals() {
@@ -414,9 +644,11 @@ cc_segment_count() {
     | grep -c . || true
 }
 
-cc_unresolved_blocked() {
-  # cc_unresolved_blocked <ledger> — one line per unresolved run-scope block,
-  # as `<원인><TAB><사유>`.
+cc__blocked_fold() {
+  # cc__blocked_fold <ledger> — one line per unresolved block that holds the
+  # whole run, as `<사유><TAB><원인><TAB><스코프><TAB><앵커 세그먼트>`, sorted
+  # by 사유. `cc_unresolved_blocked` and `cc_unresolved_blocked_where` below are
+  # its only readers.
   #
   # THE RULE IS "LAST ROW PER 사유", NOT "ANY ROW". Counting raw rows made the
   # gate's termination condition a one-way latch: a ledger row is never deleted,
@@ -426,8 +658,8 @@ cc_unresolved_blocked() {
   # The caller counts (`| wc -l`) and the caller decides what each 원인 means;
   # this function only applies the fold. That is what lets the gate's condition
   # 5 and the status line read the same rule instead of two copies of it.
-  local ledger="$1" reason last cause
-  [ -n "$ledger" ] || return 0
+  local ledger="$1"
+  [ -n "$ledger" ] && [ -f "$ledger" ] || return 0
   # EVERY grep in this pipeline needs its own guard, not just the first. A middle
   # `grep` that matches nothing exits 1, `pipefail` promotes that to the whole
   # pipeline, and the caller runs this as a BARE statement under `set -e` — so a
@@ -449,17 +681,96 @@ cc_unresolved_blocked() {
   # the block the gate raises when a file its boundary rests on was edited — and
   # a resolved block surviving in its place makes the run eligible to propose an
   # ending with the strongest block still open, reporting nothing.
-  { grep -E '^- `blocked`' "$ledger" 2>/dev/null || true; } \
-    | { grep -F '스코프=run' || true; } | tr '|' '\n' \
-    | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u \
-    | while IFS= read -r reason; do
-        [ -n "$reason" ] || continue
-        last=$( { grep -E '^- `blocked`' "$ledger" 2>/dev/null | grep -F '스코프=run' \
-                  | grep -F "사유=$reason " || true; } | tail -1)
-        cause=$(printf '%s' "$last" | tr '|' '\n' | sed -n 's/^ *원인=//p' | sed 's/[[:space:]]*$//' | tail -1)
-        [ "$cause" = "해소" ] && continue
-        printf '%s\t%s\n' "$cause" "$reason"
-      done
+  #
+  # THE TARGET SET IS RUN-SCOPE ROWS AND STEP-ANCHORED CONE ROWS. A deadline
+  # park on a design step has no segment to anchor to, so its cone row names the
+  # step id in `앵커 세그먼트` — and a step stands in front of every segment, so
+  # that row holds the whole run exactly as a run-scope row would. The anchor is
+  # read from that field alone, never from `대상`: the driver's own cone rows
+  # carry no such field (the `원인=무효화` row and the `대상=<결함>` row among
+  # them), and reading "not a segment id" off `대상` would turn each of them into
+  # a run stop that condition 5 then reports as unresolvable. A segment anchor
+  # always has its `segment` row before its first dispatch, so "the field is set
+  # and names no segment" is decidable from the ledger alone.
+  #
+  # The fold — last row per `사유` — runs inside that set, so an act-scope row
+  # that reuses a run block's `사유` neither hides it nor stands in for it.
+  #
+  # A STEP CONE IS ALSO RELEASED BY A LATER ATTEMPT OF THE SAME KEY. Its `근거`
+  # carries `계보=B:<키>#<N>`; when the resume command re-dispatches that key,
+  # the new attempt's `stage-wait` or `stage-lease` row carries `계보=B:<키>#<M>`
+  # with M > N, and that row is the evidence the park was acted on. A row whose
+  # lineage is not of that shape — every driver lineage — is released by
+  # `원인=해소` alone.
+  LC_ALL=C awk '
+    function fld(line, name,   n, i, a, s, v) {
+      n = split(line, a, /\|/); v = ""
+      for (i = 2; i <= n; i++) {
+        s = a[i]; sub(/^[ \t]+/, "", s)
+        if (index(s, name "=") == 1) { v = substr(s, length(name) + 2); sub(/[ \t]+$/, "", v) }
+      }
+      return v
+    }
+    function lineages(line,   s, out, p) {
+      s = line; out = ""; p = length("계보=B:")
+      while (match(s, /계보=B:[^ |#]+#[0-9]+/)) {
+        out = out " " substr(s, RSTART + p, RLENGTH - p)
+        s = substr(s, RSTART + RLENGTH)
+      }
+      return out
+    }
+    { lin[NR] = lineages($0) }
+    /^- `segment`/ { id = fld($0, "id"); if (id != "") seg[id] = 1; next }
+    /^- `blocked`/ {
+      nb++; bnr[nb] = NR; bscope[nb] = fld($0, "스코프"); bwhy[nb] = fld($0, "사유")
+      banchor[nb] = fld($0, "앵커 세그먼트"); bcause[nb] = fld($0, "원인")
+    }
+    END {
+      # Segment ids are known only once the whole ledger is read, so the set is
+      # filtered here rather than row by row.
+      for (b = 1; b <= nb; b++) {
+        why = bwhy[b]
+        if (why == "") continue
+        if (bscope[b] == "run") step = 0
+        else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg)) step = 1
+        else continue
+        last[why] = bnr[b]; lastcause[why] = bcause[b]; laststep[why] = step
+        lastscope[why] = bscope[b]; lastanchor[why] = banchor[b]
+      }
+      for (why in last) {
+        if (lastcause[why] == "해소") continue
+        if (laststep[why] && split(lin[last[why]], own, " ") > 0) {
+          k = own[1]; sub(/#[0-9]+$/, "", k); nn = own[1]; sub(/^.*#/, "", nn)
+          released = 0
+          for (j = last[why] + 1; j <= NR && !released; j++) {
+            m = split(lin[j], later, " ")
+            for (x = 1; x <= m; x++) {
+              lk = later[x]; sub(/#[0-9]+$/, "", lk); ln = later[x]; sub(/^.*#/, "", ln)
+              if (lk == k && ln + 0 > nn + 0) { released = 1; break }
+            }
+          }
+          if (released) continue
+        }
+        printf "%s\t%s\t%s\t%s\n", why, lastcause[why], lastscope[why], lastanchor[why]
+      }
+    }
+  ' "$ledger" | LC_ALL=C sort
+}
+
+cc_unresolved_blocked() {
+  # cc_unresolved_blocked <ledger> — one line per unresolved block that holds
+  # the whole run — a run-scope row, or a cone row anchored on a design step —
+  # as `<원인><TAB><사유>`. The fold is `cc__blocked_fold`'s.
+  cc__blocked_fold "$1" | LC_ALL=C awk -F '\t' '{ printf "%s\t%s\n", $2, $1 }'
+}
+
+cc_unresolved_blocked_where() {
+  # cc_unresolved_blocked_where <ledger> — the same set as
+  # `cc_unresolved_blocked`, as `<사유><TAB><스코프><TAB><앵커 세그먼트>` of the
+  # row the fold kept. The snapshot projects these two fields; reading them off
+  # the row the fold chose — not off "the last row of that 사유" — is what keeps
+  # a later act-scope row with the same 사유 from relabelling a run block.
+  cc__blocked_fold "$1" | LC_ALL=C awk -F '\t' '{ printf "%s\t%s\t%s\n", $1, $3, $4 }'
 }
 
 cc_mtime() {
@@ -597,7 +908,14 @@ cc_run_state() {
   local run_dir="$1" ledger="$2" stall="${3:-180}" abandon="${4:-3600}"
   local live pend nonterm n_seg blocked_n grew now idle
 
+  # A FRESH WAITER IS FOLDED INTO THE LIVE COUNT, never given a token of its
+  # own: every token this function can return needs an arm in the status line,
+  # and a stage waiting for an account is, to a reader of the run, a run that
+  # is still going. Its freshness is judged on the watcher's effective
+  # threshold, not on `stall` above, because the waiter paces its refresh on
+  # that one.
   live=$(cc_live_stages "$run_dir")
+  live=$(( ${live:-0} + $(cc_waiting_fresh_count "$run_dir" "$ledger") ))
   [ "$live" -gt 0 ] 2>/dev/null && { printf '도는중'; return 0; }
 
   blocked_n=$(cc_unresolved_blocked "$ledger" | grep -c . || true)

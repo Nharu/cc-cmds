@@ -48,6 +48,10 @@ GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-stage-supervisor.XXXXXX")
 export XDG_STATE_HOME="$WORK/state"
+# A run opened where an account inventory exists is routed, so the config root
+# the inventory is read under is moved off the host's: every run below is
+# unrouted until (12) plants an inventory of its own.
+export XDG_CONFIG_HOME="$WORK/config"
 KILL_LIST=""
 cleanup() {
   local p f
@@ -91,7 +95,7 @@ PLAN='{ "steps": [] }'; PD0=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' 
 # the real one when the document exists, because the gate reads that field for
 # presence and the recorder copies it into the `문서 해시` row.
 mk_run() {
-  local run="$1" key="$2" docfile="" dsha='(해당 없음)'
+  local run="$1" key="$2" dl="${3:-2030-01-01T00:00:00Z}" docfile="" dsha='(해당 없음)'
   RUN="$run"
   MANIFEST="$WT/plan-$RUN.md"
   LEDGER="$WT/docs/pipeline-run/$RUN.md"
@@ -116,7 +120,7 @@ mk_run() {
     printf '**적용 주체**: (해당 없음)\n\n'
     printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$PD0" "$PLAN"
     printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
-    printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+    printf '**벽시계 마감**: %s\n**시각 정합 마커**: 없음\n' "$dl"
     printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
   } > "$MANIFEST"
   cat > "$WT/docs/pipeline-grant/$RUN.md" <<GRANTEOF
@@ -633,39 +637,39 @@ check "(11) 그 둘은 --autocompact 바로 뒤에 순서대로 한 번 실린�
   "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 --effort high --model opus ' || true; } | { grep -c . || true; })" "1"
 
 # ---------------------------------------------------------------------------
-# (12) ROUTING ON — the same dispatch, from a copy whose guard is flipped to 1.
+# (12) ROUTING ON — the same dispatch, in a run opened where an inventory exists.
 #
-# Everything above runs the shipped guard, 0. This section copies the plugin,
-# flips only the guard line of the copy's driver, and opens a run with the
-# copy, so the run's pin is the flipped copy and every call below lands in it.
+# Everything above runs unrouted: no inventory was there when those runs opened,
+# so they hold no routing record. This section plants an inventory before it
+# opens a run, so that run's record says `1` and every dispatch below is routed.
 # HOME, the inventory root and the lease table are all moved under the scratch
 # directory: an inventory's account directories must sit under `$HOME/.claude-`,
 # and a real one must not be routed to by a test. Each assertion names a file
-# or row only a routed launch writes, so a copy that silently stayed at 0 fails
-# here instead of passing on the guard-0 path.
+# or row only a routed launch writes, so a run that silently stayed unrouted
+# fails here instead of passing on the unrouted path.
 # ---------------------------------------------------------------------------
 
-# The guard-0 refusal first, on a run the shipped gate opened: a token carrying
-# routing lines was written by a dispatch half whose guard disagrees.
+# The unrouted refusal first: a token carrying routing lines was written by a
+# dispatch half that disagrees with this run's record.
 seg C3
 printf '1\n' > "$RD/C3.attempt"
 printf 'n0\n\n\nB:C3#1\n-\n-\n/x\n' > "$RD/C3.launch"
 g supervise-stage --manifest "$MANIFEST" --target repo --segment C3 --nonce n0 \
   -- review -p x >/dev/null; rc_c3r=$?
-check "(12) 가드 0 감독자는 라우팅 줄을 실은 토큰을 exit 3 으로 거부한다" "$rc_c3r" "3"
+check "(12) 라우팅되지 않은 런의 감독자는 라우팅 줄을 실은 토큰을 exit 3 으로 거부한다" "$rc_c3r" "3"
 check "(12) 그 거부는 행을 쓰지 않고 아무것도 띄우지 않는다" \
   "$(rows_of C3)/$( [ -e "$RD/C3.pid" ] && printf 'yes' || printf 'no')" "0/no"
+seg C4
+printf '1\n' > "$RD/C4.attempt"
+printf 'n4\n\n\nwait\nB:C4#1\nfirst\n-\n' > "$RD/C4.launch"
+g supervise-stage --manifest "$MANIFEST" --target repo --segment C4 --nonce n4 \
+  -- review -p x >/dev/null; rc_c4r=$?
+check "(12) 라우팅되지 않은 런의 감독자는 대기 토큰도 exit 3 으로 거부한다" "$rc_c4r" "3"
+check "(12) 그 거부도 행을 쓰지 않고 아무것도 띄우지 않는다" \
+  "$(rows_of C4)/$( [ -e "$RD/C4.pid" ] && printf 'yes' || printf 'no')" "0/no"
 
-R12="$WORK/g1"; mkdir -p "$R12"
-cp -R "$repo_root/plugins/cc-cmds" "$R12/cc-cmds"
-sed 's/in 0) ;; \*) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac/in 1) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac/' \
-  "$repo_root/plugins/cc-cmds/orchestrator/run.sh" > "$R12/cc-cmds/orchestrator/run.sh"
-check "(12) 사본의 가드만 1 로 뒤집혔다 (저장소 파일은 0 그대로)" \
-  "$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac' "$R12/cc-cmds/orchestrator/run.sh" || true; } )/$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || true; } )" \
-  "1/1"
-
-R12_GATE_SAVE="$GATE"; R12_HOME_SAVE="$HOME"
-GATE="$R12/cc-cmds/orchestrator/gate.sh"
+ORCH="$repo_root/plugins/cc-cmds/orchestrator"
+R12_HOME_SAVE="$HOME"
 export HOME="$WORK/home12"
 unset XDG_CONFIG_HOME CLAUDE_CONFIG_DIR
 export RUN_PACE_ROOT="$WORK/pace12"
@@ -694,12 +698,12 @@ STUBEOF
 chmod +x "$STUB_CFG"
 
 mk_run SUPR '(없음)'
-check "(12) 가드 1 사본이 연 런은 가드 기록 1 을 남긴다" "$(cat "$RD/routing-guard" 2>/dev/null)" "1"
+check "(12) 인벤토리가 있을 때 연 런은 라우팅 기록 1 을 남긴다" "$(cat "$RD/routing-guard" 2>/dev/null)" "1"
 check "(12) 런의 인벤토리 스냅숏이 픽스처 인벤토리다" \
   "$(jq -r '.accounts[0].id' "$RD/inventory.json" 2>/dev/null)" "r12a"
 
 r12_lease() {  # r12_lease <lineage> — the live lease's account, or nothing
-  ( . "$R12/cc-cmds/orchestrator/liveness.sh"; . "$R12/cc-cmds/orchestrator/route.sh"
+  ( . "$ORCH/liveness.sh"; . "$ORCH/route.sh"
     route_lease_of "$RUN_PACE_ROOT/leases" SUPR "$1" 2>/dev/null ) | { jq -r '.account // empty' 2>/dev/null || true; }
 }
 
@@ -739,19 +743,18 @@ case "$row_e" in
   *) bad "(12) 종단 행의 실행 버전" "$row_e" ;;
 esac
 
-# The guard record is compared before anything else: a record that is not the
-# copy's own 1 disagrees with it, and the dispatch stops with the new exit code
-# and an act-scope row, before the pin. A missing record is not the case to
-# plant here — every gate entry passes the run-directory set-up, which creates
-# it exclusively — so the record is replaced by another value instead, which
-# that exclusive create leaves alone.
+# The routing record is compared with the baseline before anything else: a
+# record that is neither absent nor `1` beside a regular baseline is a pair no
+# entry writes, and the dispatch stops with the routing exit code and an
+# act-scope row, before the pin. The record is replaced rather than removed —
+# with no record the run is simply unrouted, which is a launch, not a stop.
 rm -f "$RD/routing-guard"; printf '0\n' > "$RD/routing-guard"
 seg F
 dispatch F >/dev/null; rc_f=$?
-check "(12) 가드 기록이 사본의 가드와 다르면 exit 16 이다" "$rc_f" "16"
+check "(12) 라우팅 기록이 스냅숏과 어긋나면 exit 16 이다" "$rc_f" "16"
 row_f=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '세그먼트=F ' || true; } | tail -1)
 case "$row_f" in
-  *"스코프=act"*"사유=라우터 판정"*"라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0"*) ok "(12) 그 정지가 가드 어긋남을 실은 blocked 행을 남긴다" ;;
+  *"스코프=act"*"사유=라우터 판정"*"라우팅 가드 어긋남 — 런 기록 0, 스냅숏 정규 파일"*) ok "(12) 그 정지가 가드 어긋남을 실은 blocked 행을 남긴다" ;;
   *) bad "(12) 가드 어긋남 행" "$row_f" ;;
 esac
 check "(12) 가드 어긋남은 시도 핀도 토큰도 남기지 않는다" \
@@ -789,34 +792,190 @@ printf '1\n' > "$RD/H2.attempt"
 printf 'nh2\n\n\n' > "$RD/H2.launch"
 g supervise-stage --manifest "$MANIFEST" --target repo --segment H2 --nonce nh2 \
   -- review -p x >/dev/null; rc_h2=$?
-check "(12) 가드 1 감독자는 라우팅 줄이 없는 토큰을 exit 3 으로 거부한다" "$rc_h2" "3"
+check "(12) 라우팅된 런의 감독자는 라우팅 줄이 없는 토큰을 exit 3 으로 거부한다" "$rc_h2" "3"
 check "(12) 그 거부도 행을 쓰지 않는다" "$(rows_of H2)" "0"
 
-# No inventory on the host: the router seats the stage with no lease, the token
-# carries `-` for the nonce and the account, and the supervisor launches without
-# holding anything. A fresh run, because the inventory baseline is taken once
-# when a run opens.
+# No inventory on the host when the run opens: the run holds no routing record,
+# so it is unrouted — the token has its three lines, no router is asked and no
+# `stage-lease` row is written. A fresh run, because the inventory baseline and
+# the record are taken once when a run opens.
 rm -f "$HOME/.config/cc-lane/accounts.json"
 mk_run SUPN '(없음)'
 check "(12) 인벤토리 없이 연 런의 기준은 부재 표지다" "$( [ -L "$RD/inventory.json" ] && printf absent || printf other)" "absent"
+check "(12) 인벤토리 없이 연 런에는 라우팅 기록이 없다" "$( [ -e "$RD/routing-guard" ] && printf yes || printf no)" "no"
 seg I
 CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_SLEEP=1 dispatch I >/dev/null; rc_i=$?
-check "(12) 인벤토리 없는 가드 1 파견이 성공으로 반환한다" "$rc_i" "0"
+check "(12) 인벤토리 없이 연 런의 파견이 성공으로 반환한다" "$rc_i" "0"
 wait_file "$RD/I.pid" 50 || true
-check "(12) 그 토큰의 다섯째·여섯째 줄은 - 이고 일곱째 줄은 디렉터리다" \
-  "$(sed -n '5p' "$RD/I.launch.taken" 2>/dev/null)|$(sed -n '6p' "$RD/I.launch.taken" 2>/dev/null)|$( [ -n "$(sed -n '7p' "$RD/I.launch.taken" 2>/dev/null)" ] && printf dir || printf none)" \
-  "-|-|dir"
+check "(12) 그 토큰은 라우팅 줄 없는 세 줄이다" "$(wc -l < "$RD/I.launch.taken" 2>/dev/null | tr -d '[:space:]')" "3"
 g wait --manifest "$MANIFEST" --segment I --interval 1 --timeout 60 >/dev/null; rc_iw=$?
-check "(12) 보유 없이 뜬 스테이지가 끝까지 돈다" "$rc_iw" "0"
-check "(12) 좌석 파견은 임대 표에 아무것도 남기지 않는다" \
+check "(12) 라우팅 없이 뜬 스테이지가 끝까지 돈다" "$rc_iw" "0"
+check "(12) 라우팅되지 않은 파견은 임대 표에 아무것도 남기지 않는다" \
   "$(find "$RUN_PACE_ROOT/leases" -type f -path '*SUPN*' 2>/dev/null | wc -l | tr -d '[:space:]')" "0"
-lease_i=$( { grep -F '`stage-lease`' "$LEDGER" || true; } | tail -1)
-case "$lease_i" in
-  *"| 파견 id=B:I#1 | 계보=B:I#1 | 계정=- | "*"| 근거=single-seat | "*) ok "(12) 좌석 파견의 stage-lease 행은 근거=single-seat, 계정=- 이다" ;;
-  *) bad "(12) 좌석 stage-lease 행" "$lease_i" ;;
-esac
+check "(12) 라우팅되지 않은 파견은 stage-lease 행을 쓰지 않는다" \
+  "$( { grep -cF '`stage-lease`' "$LEDGER" || true; } )" "0"
 
-GATE="$R12_GATE_SAVE"; export HOME="$R12_HOME_SAVE"; unset RUN_PACE_ROOT
+# ---------------------------------------------------------------------------
+# (13) WAIT — the dispatch half returns at once and a supervisor waits.
+#
+# The router is the real one. Usage is absent, so the account's group is held to
+# one stage at a time, and a wait entry of another run whose holder this suite
+# keeps alive fills that place: the dispatch is answered WAIT with no release
+# time. The watcher's threshold record is planted with a live writer so a chunk
+# is one second. Ending the blocker's holder frees the place.
+# ---------------------------------------------------------------------------
+r12_inv enabled "$HOME/.config/cc-lane/accounts.json"
+w13_stall() {  # w13_stall — a live threshold record of 2 seconds in this run
+  local fp
+  fp=$( . "$ORCH/liveness.sh"; cc_proc_fingerprint "$W13_WRITER" )
+  printf '2\n%s\n%s\n' "$W13_WRITER" "$fp" > "$RD/watch.stall"
+}
+w13_block() {  # w13_block <holder pid> — another run's wait entry on the account
+  bash "$ORCH/route.sh" lease-wait-put --table "$RUN_PACE_ROOT/leases" --now "$(date +%s)" \
+    --run-id OTHER --lineage B:X#1 --account r12a --config-dir "$R12_CFG" --holder "$1" >/dev/null
+}
+waits_of() { { grep -F '`stage-wait`' "$LEDGER" || true; } | { grep -cF "계보=$1 " || true; }; }
+sleep 600 & W13_WRITER=$!; KILL_LIST="$KILL_LIST $W13_WRITER"
+sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+
+mk_run SUPW '(없음)'
+w13_stall
+w13_block "$W13_BLOCK"
+seg W
+CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_CFG_OUT="$WORK/r13-cfg-W" CC_STUB_SLEEP=1 dispatch W >/dev/null; rc_w=$?
+check "(13) WAIT 파견은 정지가 아니라 0 으로 반환한다" "$rc_w" "0"
+check "(13) 반환 시점에 첫 stage-wait 행이 이미 있다" "$(waits_of 'B:W#1')" "1"
+check "(13) 반환 시점에 대기 표지가 있고 기록자는 게이트다" "$(sed -n 's/^기록자=//p' "$RD/W.waiting" 2>/dev/null)" "게이트"
+check "(13) 표지의 보유자가 감독자다" \
+  "$(sed -n 's/^보유자=//p' "$RD/W.waiting" 2>/dev/null)" "$( { cat "$RD/W.sup" 2>/dev/null || true; } | tr -d '[:space:]')"
+check "(13) 대기 토큰의 넷째 줄은 wait 다" "$(sed -n '4p' "$RD/W.launch" "$RD/W.launch.taken" 2>/dev/null)" "wait"
+check "(13) 시도 핀이 파견 시점에 쓰였다" "$( { cat "$RD/W.attempt" 2>/dev/null || true; } | tr -d '[:space:]')" "1"
+n=0
+while [ "$(waits_of 'B:W#1')" -lt 2 ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 감독자가 다음 덩어리에서 심장박동 행을 하나 더 쓴다" "$(waits_of 'B:W#1')" "2"
+check "(13) 대기 중에는 스테이지가 뜨지 않았다" "$( [ -e "$RD/W.pid" ] && printf yes || printf no)" "no"
+kill -TERM "$W13_BLOCK" 2>/dev/null; wait "$W13_BLOCK" 2>/dev/null || true
+wait_file "$RD/W.pid" 100 || true
+check "(13) 막던 대기자가 사라지면 감독자가 부여를 받아 스폰한다" "$( [ -e "$RD/W.pid" ] && printf yes || printf no)" "yes"
+# The marker goes only after `.pid`, `.kind` and `.start` all exist.
+n=0
+while [ -e "$RD/W.waiting" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 부여 뒤 대기 표지가 지워진다" "$( [ -e "$RD/W.waiting" ] && printf yes || printf no)" "no"
+g wait --manifest "$MANIFEST" --segment W --interval 1 --timeout 60 >/dev/null; rc_ww=$?
+check "(13) 대기 뒤 뜬 스테이지가 끝까지 돈다" "$rc_ww" "0"
+check "(13) 심장박동 행은 둘뿐이다 (부여 뒤에는 쓰지 않는다)" "$(waits_of 'B:W#1')" "2"
+check "(13) 래퍼가 부여된 디렉터리 아래에서 CLI 를 띄웠다" "$(cat "$WORK/r13-cfg-W" 2>/dev/null)" "$R12_CFG"
+lease_w=$( { grep -F '`stage-lease`' "$LEDGER" || true; } | tail -1)
+case "$lease_w" in
+  *"| 계보=B:W#1 | 계정=r12a | "*) ok "(13) 부여 뒤 감독자가 stage-lease 행을 쓴다" ;;
+  *) bad "(13) 대기 뒤 stage-lease 행" "$lease_w" ;;
+esac
+check "(13) 대기 항목이 표에 남지 않는다" \
+  "$(find "$RUN_PACE_ROOT/leases" -type f -name 'SUPW*' 2>/dev/null | wc -l | tr -d '[:space:]')" "0"
+
+# WAIT, then the deadline: a run whose deadline leaves a few seconds beyond the
+# review class's expected duration. The first answer is WAIT with no release
+# time, which the router never parks; the supervisor's own turn parks it once a
+# release now could no longer finish in time.
+sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+W13_DL=$(( $(date +%s) + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 4 ))
+mk_run SUPD '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+w13_stall
+w13_block "$W13_BLOCK"
+seg D
+dispatch D >/dev/null; rc_d=$?
+check "(13) 마감 전의 WAIT 파견도 0 으로 반환한다" "$rc_d" "0"
+SUP_D=$( { cat "$RD/D.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(alive "$SUP_D")" = "alive" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 마감에 걸린 감독자는 스스로 끝난다" "$(alive "$SUP_D")" "dead"
+row_d=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — D ' || true; } )
+check "(13) 마감 파킹은 cone 행 하나다" "$(printf '%s' "$row_d" | { grep -c . || true; })" "1"
+case "$row_d" in
+  *"스코프=cone"*"앵커 세그먼트=D "*"근거=계보=B:D#1 "*"재개 명령="*"gate.sh act --kind skill --target repo --segment D "*) ok "(13) 그 행이 앵커·계보와 표지의 재파견 줄을 싣는다" ;;
+  *) bad "(13) 마감 cone 행" "$row_d" ;;
+esac
+check "(13) 마감 파킹은 스테이지를 띄우지 않는다" "$( [ -e "$RD/D.pid" ] && printf yes || printf no)" "no"
+check "(13) 마감 파킹 뒤 대기 표지가 없다" "$( [ -e "$RD/D.waiting" ] && printf yes || printf no)" "no"
+g wait --manifest "$MANIFEST" --segment D --interval 1 --timeout 5 >/dev/null; rc_dw=$?
+check "(13) 마감 파킹된 시도의 wait 은 16 이다" "$rc_dw" "16"
+kill -TERM "$W13_BLOCK" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# (14) One dispatch per key on a routed run.
+#
+# The same blocker makes the router answer WAIT. A key whose first dispatch is
+# waiting is refused with 17 before any row about the second act, and so is a
+# key whose dispatch lock a live act holds. A lock whose holder is dead is
+# cleared, and of two acts that meet the same dead lock only one passes it.
+# ---------------------------------------------------------------------------
+sleep 600 & W14_BLOCK=$!; KILL_LIST="$KILL_LIST $W14_BLOCK"
+mk_run SUPK '(없음)'
+w13_stall
+w13_block "$W14_BLOCK"
+auto_rows() {  # auto_rows <key> — the key's dispatch authorization rows
+  { grep -F '`자율 승인`' "$LEDGER" || true; } | { grep -F '| kind=skill | 결정=act |' || true; } \
+    | { grep -cF "세그먼트=$1 " || true; }
+}
+w14_fp() { ( . "$ORCH/liveness.sh"; cc_proc_fingerprint "$1" ); }
+sups_live() {  # sups_live <key> — 1 when the key's supervisor record names a live process
+  local p
+  p=$( { cat "$RD/$1.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$(alive "$p")" = "alive" ] && printf 1 || printf 0
+}
+seg K
+dispatch K >/dev/null; rc_k1=$?
+dispatch K >/dev/null; rc_k2=$?
+check "(14) 대기 중인 키의 둘째 파견은 17 이다" "$rc_k1/$rc_k2" "0/17"
+check "(14) 자율 승인 행은 첫째 파견의 하나뿐이다" "$(auto_rows K)" "1"
+# K's supervisor keeps writing heartbeat rows meanwhile, so those are left out.
+no_wait_rows() { { grep -vF '`stage-wait`' "$LEDGER" || true; } | shasum -a 256; }
+k_sha=$(no_wait_rows)
+g plan --manifest "$MANIFEST" --kind skill --target repo --segment K --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale "픽스처 예상" \
+  -- review -p "/cc-cmds:review-unattended x" >/dev/null; rc_kp=$?
+check "(14) plan 도 그 키의 파견을 17 로 예상한다" "$rc_kp" "17"
+check "(14) 그 plan 은 원장에 쓰지 않는다" "$(no_wait_rows)" "$k_sha"
+check "(14) 스냅숏의 waiting_stages 에 그 키 하나가 있다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields waiting_stages 2>/dev/null ) | jq -rs '[.[] | if type == "object" then .waiting_stages else . end | arrays | .[].segment] | join(",")')" "K"
+
+sleep 600 & W14_HOLD=$!; KILL_LIST="$KILL_LIST $W14_HOLD"
+seg L
+printf '%s\n%s\n' "$W14_HOLD" "$(w14_fp "$W14_HOLD")" > "$RD/L.dispatching"
+dispatch L >/dev/null; rc_l=$?
+check "(14) 살아 있는 행위가 쥔 잠금 아래의 파견은 17 이다" "$rc_l" "17"
+check "(14) 그 거부는 자율 승인 행을 쓰지 않는다" "$(auto_rows L)" "0"
+check "(14) 거부된 행위는 남의 잠금을 지우지 않는다" "$(sed -n '1p' "$RD/L.dispatching" 2>/dev/null)" "$W14_HOLD"
+kill -TERM "$W14_HOLD" 2>/dev/null; wait "$W14_HOLD" 2>/dev/null || true
+
+seg M
+printf '999999\nMon Jan 1 00:00:00 2001\n' > "$RD/M.dispatching"
+dispatch M >/dev/null; rc_m=$?
+check "(14) 보유자가 죽은 잠금은 치워지고 파견이 진행한다" "$rc_m" "0"
+check "(14) 행위가 끝나면 잠금이 남지 않는다" "$( [ -e "$RD/M.dispatching" ] && printf yes || printf no)" "no"
+
+seg N
+printf '999999\nMon Jan 1 00:00:00 2001\n' > "$RD/N.dispatching"
+dispatch N >/dev/null & w14_a=$!
+dispatch N >/dev/null & w14_b=$!
+wait "$w14_a"; rc_na=$?
+wait "$w14_b"; rc_nb=$?
+# The loser is refused either at the lock (17) or, when the winner's row landed
+# before its digest comparison, as stale (4); both leave the key one dispatch.
+case "$(printf '%s\n%s\n' "$rc_na" "$rc_nb" | sort -n | tr '\n' ' ')" in
+  "0 4 "|"0 17 ") ok "(14) 죽은 잠금을 함께 본 두 행위는 하나만 지난다" ;;
+  *) bad "(14) 동시 파견" "rc $rc_na / $rc_nb" ;;
+esac
+check "(14) 그 키의 자율 승인 행은 하나다" "$(auto_rows N)" "1"
+check "(14) 감독자는 하나다" "$(sups_live N)" "1"
+
+kill -TERM "$W14_BLOCK" 2>/dev/null; wait "$W14_BLOCK" 2>/dev/null || true
+for k in K M N; do
+  g wait --manifest "$MANIFEST" --segment "$k" --interval 1 --timeout 60 >/dev/null
+done
+kill -TERM "$W13_WRITER" 2>/dev/null || true
+
+export HOME="$R12_HOME_SAVE" XDG_CONFIG_HOME="$WORK/config"; unset RUN_PACE_ROOT
 
 printf '\ntest-stage-supervisor: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

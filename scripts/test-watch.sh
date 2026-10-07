@@ -37,7 +37,8 @@ WATCH="$repo_root/plugins/cc-cmds/orchestrator/watch.sh"
 . "$repo_root/scripts/run-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-watch-test.XXXXXX")
-trap 'fx_reap; rm -rf "$WORK"' EXIT
+WAITER_PIDS=""
+trap 'fx_reap; [ -z "$WAITER_PIDS" ] || kill $WAITER_PIDS 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
@@ -280,6 +281,17 @@ seed_idle() {
     "$(( $(date -u +%s) - secs ))" "$LG" > "$RD/watch.state"
 }
 
+seed_waiter() {
+  # seed_waiter <key> <seconds since its last refresh> — a waiting marker in
+  # this case's run directory, held by a live process this suite owns (its pid
+  # left in WAITER_PID). The holder is what makes the key a member; the refresh
+  # age is what decides whether it is fresh.
+  sleep 600 & WAITER_PID=$!; WAITER_PIDS="$WAITER_PIDS $WAITER_PID"
+  printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=B:%s#1\n그룹=org:h1\n까지=-\n갱신=%s\n종류=implement\n논스=-\n시도=1\n' \
+    "$WAITER_PID" "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_proc_fingerprint "$WAITER_PID" )" \
+    "$1" "$(( $(date -u +%s) - $2 ))" > "$RD/$1.waiting"
+}
+
 # ---------------------------------------------------------------------------
 # 1. Heartbeat
 # ---------------------------------------------------------------------------
@@ -293,6 +305,17 @@ esac
 case "$out" in
   *"비종단 세그먼트 1개"*) ok "하트비트가 관측값을 함께 싣는다" ;;
   *) bad "하트비트 내용" "'$out'" ;;
+esac
+# The threshold this pass used is left for a stage that waits for an account:
+# three lines, rewritten on every pass, the first being --stall.
+run --stall 777 >/dev/null
+check "매 패스 watch.stall 이 세 줄로 쓰인다" "$(grep -c '' "$RD/watch.stall" 2>/dev/null || true)" "3"
+check "그 첫 줄은 --stall 값이다" "$(sed -n '1p' "$RD/watch.stall" 2>/dev/null)" "777"
+run --stall 555 >/dev/null
+check "다음 패스는 그 값을 다시 쓴다" "$(sed -n '1p' "$RD/watch.stall" 2>/dev/null)" "555"
+case "$(sed -n '2p' "$RD/watch.stall" 2>/dev/null)/$(sed -n '3p' "$RD/watch.stall" 2>/dev/null)" in
+  [0-9]*/?*) ok "둘째·셋째 줄은 필자의 pid 와 지문이다" ;;
+  *) bad "watch.stall 필자" "$(tr '\n' ' ' < "$RD/watch.stall")" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -397,6 +420,100 @@ if grep -vE '^[[:space:]]*#' "$GATE_SH" | grep -c 'RUN_DIR/$seg.pid' >/dev/null 
 else
   bad "pid 기록" "게이트가 스테이지를 띄우면서 pid 파일을 쓰지 않는다"
 fi
+
+# ---------------------------------------------------------------------------
+# 4d. A stage waiting for an account is not silence — while its refresh goes on
+#
+# A waiting stage has no process yet, so the live-stage census does not see it.
+# Its holder rewrites the marker and a `stage-wait` row on half of the stall
+# threshold; a fresh waiter quiets the arms that ask whether anything runs. A
+# waiter whose refresh stopped while its holder lives no longer does, and the
+# announcement then names that holder, because ending it is the recovery.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+seed_idle 300 --stall 100
+seed_waiter S1 0
+out=$(run --stall 100 --after-stage 99999 --run-open 99999)
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*) bad "신선한 대기자" "기다리는 스테이지만 있는 런을 정체로 판정했다" ;;
+  *) ok "신선한 대기자는 정지 갈래를 잠재운다" ;;
+esac
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+seed_idle 300 --stall 100
+seed_waiter S1 200
+out=$(run --stall 100 --after-stage 99999 --run-open 99999)
+case "$out" in
+  *"갱신이 멈춘 대기자: S1(보유자 $WAITER_PID)"*"보유자 pid 를 끝내면"*) ok "갱신이 멈춘 대기자는 정지 갈래를 울리고 보유자 pid 를 지명한다" ;;
+  *) bad "멈춘 대기자" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+kill "$WAITER_PID" 2>/dev/null; wait "$WAITER_PID" 2>/dev/null || true
+
+# The chunk the waiter paces on is half of the threshold: a ledger idle for
+# that long is not silent, one idle past the threshold is.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+seed_idle 50 --stall 100
+out=$(run --stall 100 --after-stage 99999 --run-open 99999)
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*) bad "청크 간격" "임계의 절반만 조용한 원장을 정체로 판정했다" ;;
+  *) ok "임계 절반(한 덩어리)의 침묵은 정지 갈래를 울리지 않는다" ;;
+esac
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+seed_idle 101 --stall 100
+out=$(run --stall 100 --after-stage 99999 --run-open 99999)
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*) ok "임계를 넘은 침묵은 정지 갈래를 울린다" ;;
+  *) bad "청크 간격" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# A wait's first row follows the stage's terminal row, so the after-stage arm
+# — keyed on that terminal row being the last — does not read it as a router
+# that stopped acting.
+fresh
+{ printf -- '- `segment` | id=S1 | 상태=실행중\n'
+  printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종료 코드=0 | 종단 부류=정상 완료\n'
+  printf -- '- `stage-wait` | 세그먼트=S1 | 스테이지=S1 | 계보=B:S1#2 | 그룹= | 계정= | 까지= | 근거=wait\n'
+} > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+seed_idle 300 --stall 99999 --after-stage 0 --run-open 99999
+out=$(run --stall 99999 --after-stage 0 --run-open 99999)
+case "$out" in
+  *"스테이지가 끝났는데 라우터가"*) bad "스테이지 뒤 갈래" "대기 행이 붙은 원장을 라우터 정지로 읽었다" ;;
+  *) ok "stage-result 뒤 stage-wait 행이 붙으면 스테이지 뒤 갈래는 울리지 않는다" ;;
+esac
+
+# A run whose only work left is a waiting design step is neither unopened nor
+# over, and one that holds approvals beside a fresh waiter is not "waiting only
+# for a person".
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+seed_idle 300 --stall 99999 --after-stage 0 --run-open 0
+seed_waiter S1design 0
+out=$(run --stall 99999 --after-stage 0 --run-open 0)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) bad "런 열림 갈래" "대기하는 설계 스텝을 세그먼트 미개시로 지목했다" ;;
+  *) ok "0 세그먼트 런의 대기하는 설계 스텝은 세그먼트 미개시가 아니다" ;;
+esac
+check "그 관측도 남지 않는다" "$( { cat "$RD/stall" 2>/dev/null || true; } | { grep -c '세그먼트 미개시' || true; })" "0"
+case "$out" in
+  *"런이 종단했습니다"*) bad "종단 갈래" "대기하는 설계 스텝만 남은 런을 종단으로 읽었다" ;;
+  *) ok "대기하는 설계 스텝만 남은 런은 종단이 아니다" ;;
+esac
+kill "$WAITER_PID" 2>/dev/null; wait "$WAITER_PID" 2>/dev/null || true
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf -- '- `승인` | 승인 id=A1 | 상태=대기 | 막는 세그먼트=S1\n' >> "$LG"
+seed_waiter S2 0
+out=$(run)
+case "$out" in
+  *"모든 세그먼트가 승인 대기이거나 종단입니다"*) bad "승인 대기 갈래" "신선한 대기자가 있는 런을 사람만 기다린다고 했다" ;;
+  *) ok "신선한 대기자가 있으면 모든-승인-대기 갈래는 울리지 않는다" ;;
+esac
+kill "$WAITER_PID" 2>/dev/null; wait "$WAITER_PID" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 4c. A shift that is demonstrably alive holds the after-stage arm back

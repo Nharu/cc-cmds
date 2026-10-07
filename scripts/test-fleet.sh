@@ -78,6 +78,11 @@ cat > "$FX/watch.sh" <<'EOF'
 printf 'watch %s\n' "$*" >> "$TEST_LOG_DIR/watch.log"
 exit 0
 EOF
+cat > "$FX/checks.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'checks %s\n' "$*" >> "$TEST_LOG_DIR/checks.log"
+exit 0
+EOF
 cat > "$FX/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'run %s CLAUDE_CONFIG_DIR=%s\n' "$*" "${CLAUDE_CONFIG_DIR:-}" >> "$TEST_LOG_DIR/run.log"
@@ -431,6 +436,9 @@ WT="$WORK/wt"; mkdir -p "$WT/docs"
 ( cd "$WT" && git init -q && git config user.email t@t && git config user.name t \
   && printf 'design\n' > docs/x.md && git add . && git commit -qm init ) >/dev/null 2>&1
 BASE=$(cd "$WT" && git rev-parse HEAD)
+# The report stub lands in the main worktree, named by the absolute git common
+# dir — on this host that resolves the /var → /private/var symlink.
+WT_MAIN=$(dirname "$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)")
 DOC_SHA=$(shasum -a 256 "$WT/docs/x.md" | cut -d' ' -f1)
 MANIFEST="$WORK/R1.plan.md"
 printf '<!-- cc-run-manifest v1; run-id=R1; owner-doc=docs/x.md; origin-worktree=%s; -->\n\n**설계 문서 전체 sha256**: %s\n' "$WT" "$DOC_SHA" > "$MANIFEST"
@@ -610,11 +618,33 @@ check "기동은 좌석 홈으로 gate.sh snapshot 을 한 번 부른다" "$(cou
 check "snapshot 은 매니페스트를 받고 인벤토리 config_dir 을 CLAUDE_CONFIG_DIR 로 받는다" "$(sed -n '1p' "$TEST_LOG_DIR/gate.log")" "gate snapshot --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H1"
 sleep 0.3
 check "워처는 정확히 한 번 기동된다" "$(count_lines "$TEST_LOG_DIR/watch.log")" "1"
-check "워처 인자는 autopilot 의 기동 줄과 같은 네 임계를 싣는다" "$(sed -n '1p' "$TEST_LOG_DIR/watch.log")" "watch --run-dir $RUNDIR --ledger $WT/docs/pipeline-run/R1.md --stall 1200 --interval 60 --after-stage 120 --run-open 300"
+check "워처 인자는 autopilot 의 기동 줄과 같은 네 임계를 싣는다" "$(sed -n '1p' "$TEST_LOG_DIR/watch.log")" "watch --run-dir $RUNDIR --ledger $WT_MAIN/docs/pipeline-run/R1.md --stall 1200 --interval 60 --after-stage 120 --run-open 300"
 check "run.sh 는 앞단에서 그 계정의 홈으로 돈다" "$(sed -n '1p' "$TEST_LOG_DIR/run.log")" "run --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H1"
 check "집은 레인(인벤토리 id)이 레코드에 적힌다" "$(backlog_field a1 .dispatched_lane)" "u1"
-[ -s "$WT/docs/pipeline-run/R1.md" ] && ok "보고서 스텁이 없으면 만든다" || bad "보고서 스텁이 없으면 만든다" "absent"
+[ -s "$WT_MAIN/docs/pipeline-run/R1.md" ] && ok "보고서 스텁이 없으면 만든다" || bad "보고서 스텁이 없으면 만든다" "absent"
 check "기동이 끝나면 실행 표지가 남지 않는다" "$(ls "$PACE/busy" 2>/dev/null | count_lines /dev/stdin)" "0"
+
+# --- a linked worktree as the origin: the ledger is the main worktree's ---------
+# run.sh writes the run ledger under the parent of the git common dir, so a run
+# started from a linked worktree records into the main worktree's docs/. The
+# stub, the watcher and the poller must name that same file.
+LWT="$WORK/wt-linked"
+( cd "$WT" && git worktree add -q "$LWT" -b linked ) >/dev/null 2>&1
+LMAN="$WORK/R2.plan.md"
+printf '<!-- cc-run-manifest v1; run-id=R2; owner-doc=docs/x.md; origin-worktree=%s; -->\n\n**설계 문서 전체 sha256**: %s\n' "$LWT" "$DOC_SHA" > "$LMAN"
+d_fresh d-linked lk1
+set_backlog "$(backlog_record lk1 ".manifest_path = \"$LMAN\"")"
+rm -f "$TEST_LOG_DIR/checks.log"
+fleet dispatch u1 >/dev/null 2>&1
+sleep 0.3
+check "연결 워크트리 매니페스트도 기동한다" "$(backlog_status lk1)" "done"
+[ -s "$WT_MAIN/docs/pipeline-run/R2.md" ] && ok "연결 워크트리 런의 스텁은 메인 워크트리에 생긴다" || bad "연결 워크트리 런의 스텁은 메인 워크트리에 생긴다" "absent"
+[ ! -e "$LWT/docs/pipeline-run/R2.md" ] && ok "연결 워크트리 아래에는 스텁이 생기지 않는다" || bad "연결 워크트리 아래에는 스텁이 생기지 않는다" "present"
+check "감시자의 --ledger 는 메인 워크트리의 원장이다" \
+  "$(sed -n '1p' "$TEST_LOG_DIR/watch.log" | sed -n 's/.*--ledger \([^ ]*\) .*/\1/p')" "$WT_MAIN/docs/pipeline-run/R2.md"
+check "폴러의 --ledger 는 메인 워크트리의 원장이다" \
+  "$(sed -n '1p' "$TEST_LOG_DIR/checks.log" | sed -n 's/.*--ledger \([^ ]*\) .*/\1/p')" "$WT_MAIN/docs/pipeline-run/R2.md"
+rm -rf "$WORK/xdg/cc-cmds/run/R2"
 
 # --- two lanes, one head: the claim is locked and the flip is a CAS -----------
 d_fresh d-race r1
