@@ -7100,7 +7100,9 @@ gate_stage_row_segment() {
   # dispatch half, the supervisor and the settlement agree without handing the
   # answer across.
   local key="$1" skind="$2" rk
-  if rk=$(gate_run_scope_kind_of_key "$key") && [ "$rk" = "$skind" ]; then
+  # A re-convergence on the audit step's key is that step's stage too.
+  if rk=$(gate_run_scope_kind_of_key "$key") \
+     && { [ "$rk" = "$skind" ] || { [ "$rk" = "audit" ] && [ "$skind" = "reconverge" ]; }; }; then
     printf '%s' '-'
   else
     printf '%s' "$key"
@@ -7112,11 +7114,16 @@ gate_stage_result_rows_of() {
   # either shape: a segment's (`세그먼트=<key>`) or a run-scope step's
   # (`세그먼트=- | 스테이지=<key> | 종류=<k>`, `<k>` the table's row kind for that
   # key). The kind is part of the second pattern so a driver row of another
-  # run-scope stage, which carries no `종류`, is never read as this one.
-  local rk
+  # run-scope stage, which carries no `종류`, is never read as this one. The
+  # audit step's key also carries the re-convergence an adopted requirement
+  # sends there.
+  local rk rk2
   rk=$(gate_run_scope_kind_of_key "$1" 2>/dev/null) || rk=design
+  rk2=$rk
+  [ "$rk" = "audit" ] && rk2=reconverge
   { gate_rows 'stage-result' || true; } \
-    | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=$rk " || true; }
+    | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=$rk " \
+               -e "세그먼트=- | 스테이지=$1 | 종류=$rk2 " || true; }
 }
 
 gate_row_field() {
@@ -11484,7 +11491,7 @@ gate_answered_halts_json() {
     [ -n "$row" ] || continue
     ln=${row%%:*}
     row=${row#*:}
-    later=$( { grep -n -F -e "세그먼트=$key " -e "세그먼트=- | 스테이지=$key | 종류=design " "$LEDGER" 2>/dev/null || true; } \
+    later=$( { grep -n -F -e "세그먼트=$key " -e "세그먼트=- | 스테이지=$key | 종류=" "$LEDGER" 2>/dev/null || true; } \
             | { grep "^[0-9]*:- \`stage-result\` " || true; } \
             | awk -F: -v l="$ln" '$1 > l && !p { print; p = 1 }')
     [ -z "$later" ] || continue
@@ -17578,24 +17585,36 @@ gate_verb_act() {
   # naming exactly one step of the table's skill for it (see
   # `gate_run_scope_step`). Those two carry a precondition and a predecessor
   # check of their own below; the design row's behaviour is unchanged.
+  #
+  # `reconverge` RIDES ON THE AUDIT STEP. A person who adopts an audit's
+  # composed requirement sends the frozen document to re-convergence before a
+  # fresh audit, on the audit's own key. The audit step is not a segment, so
+  # that dispatch is `--segment -` too, keyed on the audit step, and only once
+  # the audit has run there — a re-convergence with no audit behind it answers
+  # nothing.
   local stage_key="$segment" stage_is_run_scope_design=0
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
-     && { [ "${1:-}" = "audit" ] || [ "${1:-}" = "split" ]; }; then
-    local rs_kind="${1}" rs_skill
-    rs_skill=$(gate_run_scope_skill_of "$rs_kind")
-    if ! stage_key=$(gate_run_scope_step "$rs_kind"); then
+     && { [ "${1:-}" = "audit" ] || [ "${1:-}" = "split" ] || [ "${1:-}" = "reconverge" ]; }; then
+    local rs_kind="${1}" rs_skill rs_table="${1}"
+    [ "$rs_kind" = "reconverge" ] && rs_table=audit
+    rs_skill=$(gate_run_scope_skill_of "$rs_table")
+    if ! stage_key=$(gate_run_scope_step "$rs_table"); then
       warn "${rs_kind} 스테이지를 --segment - 로 띄우려면 실행 계획이 skill 이 ${rs_skill} 인 단계를 정확히 하나 가져야 합니다"
       warn "세그먼트가 아닌 런 범위 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
       exit "$GATE_EXIT_RULE"
     fi
     stage_is_run_scope_design=1
     case "$rs_kind" in
-      audit)
+      audit | reconverge)
         case "$(manifest_field '요소' '설계 문서')" in
           '' | '없음' | '(없음)')
-            warn "감사 스테이지를 --segment - 로 띄우려면 매니페스트 ## 요소 의 설계 문서 가 실제 경로여야 합니다 — 지금은 비었거나 (없음) 입니다"
+            warn "${rs_kind} 스테이지를 --segment - 로 띄우려면 매니페스트 ## 요소 의 설계 문서 가 실제 경로여야 합니다 — 지금은 비었거나 (없음) 입니다"
             exit "$GATE_EXIT_RULE" ;;
-        esac ;;
+        esac
+        if [ "$rs_kind" = "reconverge" ] && [ -z "$(gate_run_scope_rows "$stage_key" audit)" ]; then
+          warn "재수렴은 감사 단계 ${stage_key} 가 한 번이라도 돈 뒤에만 그 키로 띄웁니다 — 이 런에는 그 감사의 stage-result 행이 없습니다"
+          exit "$GATE_EXIT_RULE"
+        fi ;;
       split)
         if [ "$(gate_snapshot_design_scope)" != "base" ]; then
           warn "분할 스테이지는 실행 계획의 design_scope 가 base 인 런에서만 띄웁니다"
@@ -17610,27 +17629,35 @@ gate_verb_act() {
     # bytes nobody froze or audited. The prompt must also BEGIN with the step's
     # own slash command: matched anywhere, a command quoted later in the prompt
     # would be the one whose argument is compared.
-    local rs_prompt="" rs_arg rs_prev="" rs_cmd rs_path
-    for rs_arg in "$@"; do
-      [ "$rs_prev" = "-p" ] && rs_prompt="$rs_arg"
-      rs_prev="$rs_arg"
-    done
-    case "$rs_kind" in
-      audit) rs_cmd='/cc-cmds:design-audit-unattended ' ;;
-      split) rs_cmd='/cc-cmds:design-base-unattended --split ' ;;
-    esac
-    case "$rs_prompt" in
-      "$rs_cmd"*) ;;
-      *)
-        warn "${rs_kind} 스테이지의 프롬프트는 ${rs_cmd}<design_doc> 으로 시작해야 합니다"
-        exit "$GATE_EXIT_RULE" ;;
-    esac
-    rs_path="${rs_prompt#"$rs_cmd"}"
-    rs_path="${rs_path%% *}"
-    if [ "$rs_path" != "${DOC:-}" ]; then
-      warn "${rs_kind} 스테이지의 문서 인자가 매니페스트에서 해석한 경로와 다릅니다 — 인자: ${rs_path} / 해석: ${DOC:-}"
-      warn "문서 경로는 스냅숏의 design_doc 값을 그대로 쓰세요"
-      exit "$GATE_EXIT_RULE"
+    #
+    # NOT ON A `--resume`. A re-attachment, a continuation and a halt answer
+    # carry a fixed sentence, never the slash command, and the session they
+    # resume is pinned further down to this step's own `stage-result` rows — the
+    # rows of a dispatch that passed this check when it first started.
+    if [ -z "${GATE_RESUME:-}" ]; then
+      local rs_prompt="" rs_arg rs_prev="" rs_cmd rs_path
+      for rs_arg in "$@"; do
+        [ "$rs_prev" = "-p" ] && rs_prompt="$rs_arg"
+        rs_prev="$rs_arg"
+      done
+      case "$rs_kind" in
+        audit)      rs_cmd='/cc-cmds:design-audit-unattended ' ;;
+        split)      rs_cmd='/cc-cmds:design-base-unattended --split ' ;;
+        reconverge) rs_cmd='/cc-cmds:design-reconverge ' ;;
+      esac
+      case "$rs_prompt" in
+        "$rs_cmd"*) ;;
+        *)
+          warn "${rs_kind} 스테이지의 프롬프트는 ${rs_cmd}<design_doc> 으로 시작해야 합니다"
+          exit "$GATE_EXIT_RULE" ;;
+      esac
+      rs_path="${rs_prompt#"$rs_cmd"}"
+      rs_path="${rs_path%% *}"
+      if [ "$rs_path" != "${DOC:-}" ]; then
+        warn "${rs_kind} 스테이지의 문서 인자가 매니페스트에서 해석한 경로와 다릅니다 — 인자: ${rs_path} / 해석: ${DOC:-}"
+        warn "문서 경로는 스냅숏의 design_doc 값을 그대로 쓰세요"
+        exit "$GATE_EXIT_RULE"
+      fi
     fi
     # PREDECESSORS ARE RUN-SCOPE STEPS, so `선행` of the segment rows cannot say
     # whether they landed. Each `depends_on` of this step must have ended its last
@@ -17646,10 +17673,15 @@ gate_verb_act() {
     # would have left. Condition 1 already reads that run this way; refusing its
     # audit here would leave it waiting on a design nobody dispatches. A row
     # that exists still decides, and an unfrozen document is still refused.
-    local rs_dep rs_dk rs_last
-    for rs_dep in $( { manifest_plan_json 2>/dev/null \
-                       | jq -r --arg id "$stage_key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
-                       || true; } ); do
+    #
+    # A RE-CONVERGENCE TAKES NO PREDECESSOR CHECK OF ITS OWN: the audit it rides
+    # on passed this one, and the document it edits is the input of that audit.
+    local rs_dep rs_dk rs_last rs_deps=""
+    [ "$rs_kind" = "reconverge" ] \
+      || rs_deps=$( { manifest_plan_json 2>/dev/null \
+                      | jq -r --arg id "$stage_key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
+                      || true; } )
+    for rs_dep in $rs_deps; do
       [ -n "$rs_dep" ] || continue
       if ! rs_dk=$(gate_run_scope_kind_of_key "$rs_dep"); then
         warn "${rs_kind} 단계 ${stage_key} 의 선행 ${rs_dep} 는 런 범위 단계표의 단계가 아닙니다 — 이 그래프는 게이트가 읽지 못합니다"

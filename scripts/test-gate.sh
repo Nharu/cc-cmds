@@ -3186,6 +3186,7 @@ BSXSTUBEOF
   bsx_launch() {
     # bsx_launch <run id> <stub> <kind> <prompt> <step id> [wait seconds] — dispatch
     # one run-scope stage and wait on it. The act's code is left in BSX_ACT_RC.
+    # With BSX_RESUME set, the dispatch re-attaches that session.
     # The wait is an upper bound, not a pause: a stub stage ends in a second, so
     # 60 is ample — except for a stage whose body itself makes many gate calls,
     # which passes its own bound rather than being cut off before its last line.
@@ -3194,6 +3195,7 @@ BSXSTUBEOF
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" act --manifest "$m" --kind skill --target infra --segment - --cutpoint 커밋 \
       --surface 워크트리쓰기 --snapshot-digest "$(bsx_H "$m")" --rationale x \
+      ${BSX_RESUME:+--resume} ${BSX_RESUME:+"$BSX_RESUME"} \
       -- "$3" -p "$p" ) >/dev/null 2>&1; BSX_ACT_RC=$?
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout "$t" ) >/dev/null 2>&1; BSX_WAIT_RC=$?
@@ -25633,9 +25635,50 @@ esac
 # its design, so it has no design row at all; its audit is dispatched anyway.
 bsx_fresh RB1F
 bsx_doc_frozen RB1F
+# A re-convergence on the audit's key needs the audit to have run there.
+gateB plan --manifest "$WORK/bsx-RB1F.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- reconverge -p "$(bsx_p RB1F '/cc-cmds:design-reconverge @DOC@ 감사 종합 요구 x')"
+check "76:감사가 돈 적 없는 런의 런 범위 재수렴은 거부된다" "$rc" "3"
+case "$msg" in
+  *"감사 단계 A1 가 한 번이라도 돈 뒤에만"*) ok "76:그 거절은 감사가 돈 적 없음을 든다" ;;
+  *) bad "76재수렴 선행 문면" "$msg" ;;
+esac
 bsx_launch RB1F "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
 check "76:동결 문서로 다시 킥오프한 런은 설계 행 없이 감사를 띄운다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
 check "76:그 감사가 정상 완료로 끝난다" "$(bsx_class RB1F '| 스테이지=A1 | 종류=audit ')" "정상 완료"
+# A `--resume` carries the router's fixed sentence, not the slash command, so the
+# prompt check does not apply to it — the session is pinned to the step's rows.
+bsx_sid=$(bsx_rows RB1F '| 스테이지=A1 | 종류=audit ' | tail -1 | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')
+BSX_RESUME="$bsx_sid" bsx_launch RB1F "$WORK/bin/bsx-audit" audit \
+  "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요." A1
+check "76:고정 문장으로 감사 세션을 재부착하는 --resume 파견은 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "76:그 재부착이 감사 행을 하나 더 남긴다" \
+  "$(bsx_rows RB1F '| 세그먼트=- | 스테이지=A1 | 종류=audit ' | grep -c . || true)" "2"
+# A person adopts the audit's composed requirement: the answer is keyed on the
+# audit step, the re-convergence rides on that key as `--segment -`, and its row
+# spends the answer.
+mkdir -p "$BSX_STATE/cc-cmds/run/RB1F/halt"
+BSX_HALTREC="$BSX_STATE/cc-cmds/run/RB1F/halt/A1#1.md"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=design-audit-unattended; run=RB1F -->' \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 함께 함의하는 요구가 있는가?' '**선택지**:' \
+  '- `adopt as a requirement` — adopt as a requirement' '- `reject` — reject' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$BSX_HALTREC"
+gateB act --manifest "$WORK/bsx-RB1F.md" --kind halt-answer --target infra --segment A1 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(bsx_H "$WORK/bsx-RB1F.md")" --rationale "픽스처 — 좌석의 답" \
+  -- "중단 기록=$BSX_HALTREC" '선택지=adopt as a requirement' '근거=사람이 요구로 채택'
+check "76:감사 단계 키의 중단 답을 좌석이 쓴다" "$rc" "0"
+check "76:스냅숏이 그 답을 감사 단계 키로 내놓는다" \
+  "$(bsx_snap "$WORK/bsx-RB1F.md" | jq -c '[.answered_halts[]? | .segment]')" '["A1"]'
+gateB plan --manifest "$WORK/bsx-RB1F.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- reconverge -p "/cc-cmds:design-reconverge /nonexistent/doc.md 감사 종합 요구 $BSX_HALTREC"
+check "76:design_doc 과 다른 문서 인자의 런 범위 재수렴은 거부된다" "$rc" "3"
+bsx_launch RB1F "$WORK/bin/bsx-audit" reconverge "/cc-cmds:design-reconverge @DOC@ 감사 종합 요구 $BSX_HALTREC" A1
+check "76:감사 단계 키의 재수렴이 --segment - 로 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "76:재수렴 행이 세그먼트=- · 스테이지=감사 단계 · 종류=reconverge 다" \
+  "$(bsx_rows RB1F '| 세그먼트=- | 스테이지=A1 | 종류=reconverge ' | grep -c . || true)" "1"
+check "76:재수렴 행이 그 중단 답을 소진한다" \
+  "$(bsx_snap "$WORK/bsx-RB1F.md" | jq -c '[.answered_halts[]? | .segment]')" '[]'
 
 # ---------------------------------------------------------------------------
 # 77. Condition 1 of a base run is the split and its registry
