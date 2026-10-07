@@ -162,6 +162,17 @@ grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$report_abs" || {
   exit 1
 }
 
+# 적용 행위 — 게이트가 착지 확인을 지난 뒤에만 적용 대상 HEAD 를 실어 준다.
+# 적용은 구현 워크트리가 지워진 뒤에도 일어나므로 아래 워크트리 HEAD 대신
+# 적용 대상 HEAD 가 리뷰된 HEAD 인지를 본다.
+if [ -n "${GATE_SUBJECT_HEAD:-}" ]; then
+  case "$reviewed" in
+    "$GATE_SUBJECT_HEAD"*) exit 0 ;;
+  esac
+  echo "rule refused: 리뷰-후-머지 — the subject head of this apply is not the reviewed head (reviewed ${reviewed}, subject ${GATE_SUBJECT_HEAD})" >&2
+  exit 1
+fi
+
 seg_row=$(grep -E '^- `segment`' "$GATE_LEDGER" | grep -F "id=$GATE_SEGMENT " | tail -1)
 wt=$(printf '%s' "$seg_row" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//' | tail -1)
 [ -d "$wt" ] || { echo "rule refused: 리뷰-후-머지 — the segment worktree does not exist: $wt" >&2; exit 1; }

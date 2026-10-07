@@ -2581,7 +2581,7 @@ unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
 set +e
 for mf in "$@"; do
   MANIFEST="$mf"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
-  step=$(gate_run_scope_design_step) || step="(없음)"
+  step=$(gate_run_scope_step design) || step="(없음)"
   printf '%s\t%s\t%s\n' "$(gate_snapshot_design_required_json)" "$(gate_snapshot_steps_json)" "$step"
 done
 SEREOF
