@@ -5,6 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.8] - 2026-10-08
+
+macOS CI 의 좁힌 스위트가 `make -jN` 아래에서 끝나지 않고 시한까지 매달리던 문제를 고쳤다. 게이트의 지표 라운드가 쓰는 `gate_metrics_timed` 가 호출자의 fd 를 쥔 `sleep` 과 시간 초과된 명령의 자손을 남겼고, Apple make 3.81 은 jobserver 파이프를 쥔 그 프로세스들을 자식이 없는데도 기다렸다. 같은 부류가 다시 생기면 이름을 대고 드러나도록 레시피마다 잔존 보유자를 세는 래퍼도 함께 넣었다.
+
+### Fixed
+
+- **`gate_metrics_timed` 가 아무것도 남기지 않는다**
+  - 백그라운드 감시 서브셸과 `sleep` 대신 perl 부모 하나가 시한을 잰다. 명령은 자기 프로세스 그룹의 리더로 stdin 을 `/dev/null` 에 두고 fd 3 이상을 닫은 채 실행된다.
+  - 시한이 지나면 그룹 전체에 TERM, 짧은 유예 뒤 KILL 을 보내고 rc 143 을 돌려준다. 부모가 받은 TERM·INT·HUP 도 그룹에 전달하고 128+신호 번호를 돌려준다.
+  - `test-gate.sh` 77절이 `make -j2` 아래 떼어 낸 자식에서 감시 `sleep`·시간 초과된 명령의 자손·호출자 fd 보유자가 0 이고 make 가 루프 시간 안에 돌아오는지 고정한다. macOS 레그의 게이트 절 목록에 77 을 더했다.
+
+### Added
+
+- **스위트 잔존 보유자 래퍼** (`scripts/suite-guard.sh`, `scripts/ci-step-guard.sh`)
+  - `run/%` 와 `run-gate-darwin-sections` 레시피가 상속 fd 표지를 열고 스위트를 돌린 뒤, 표지를 쥔 채 남은 프로세스를 pid·명령과 함께 적는다.
+  - `CC_SUITE_GUARD_STRICT=1`(macOS 워크플로에서만 켠다)이면 잔존을 실패로 판정하고, 판정 자체가 불가능하면 「잔존 없음」이 아니라 판정 실패로 적는다.
+  - `scripts/test-suite-guard.sh` 가 래퍼를 시험하고, `scripts/lint-macos-keepset-paths.sh` 가 래퍼 파일을 macOS 경로 필터 집합에서 함께 대조한다.
+
 ## [2.48.7] - 2026-10-07
 
 설계 단계 없이 시작한 무인 런(문서 앵커, `lead-solo` 설계)에서 감사가 종합 요구사항을 물어 멈추고 사람이 `adopt as a requirement` 를 골랐는데도 런이 이어지지 못하던 문제를 고쳤다. 라우터 교대는 감사 키로 재수렴을 파견하려 했지만, 게이트가 런 범위 단계로 받는 종류가 `design`·`audit` 뿐이어서 `-` 와 단계 id 어느 키로도 segment 행 검사에 막혔다.

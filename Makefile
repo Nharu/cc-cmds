@@ -307,15 +307,20 @@ ORCH_TESTS := \
 	scripts/test-run-issue-filing.sh
 
 DARWIN_TESTS := \
-	scripts/test-notify-title-oracle.sh
+	scripts/test-notify-title-oracle.sh \
+	scripts/test-suite-guard.sh
 
 ALL_TESTS := $(NOTIFY_TESTS) $(LINT_TESTS) $(ORCH_TESTS) $(DARWIN_TESTS)
 TEST_GOALS := $(ALL_TESTS:%=run/%)
 
 .PHONY: $(TEST_GOALS)
 
+# Every suite runs under scripts/suite-guard.sh, which reaps what the suite
+# leaves behind once it ends. Under `make -jN` a leftover descendant keeps
+# make's jobserver pipe open and make does not return while it lives; the
+# wrapper's header says how it decides what is the suite's.
 $(TEST_GOALS): run/%:
-	bash $*
+	bash scripts/suite-guard.sh $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
@@ -397,6 +402,10 @@ test-darwin: test-active-notify test-orchestrator \
 #                                 ubuntu runner has no ko_KR.UTF-8 locale, so
 #                                 there they pass without testing anything.
 #   test-notify-title-oracle.sh   the real terminal-notifier's swallowing set.
+#   test-suite-guard.sh           Apple make 3.81 waiting for a process that
+#                                 holds its jobserver pipe, the CI arming line
+#                                 under the real bash 3.2, and macOS `lsof`
+#                                 listing the holders of a marker file.
 #   test-gate.sh, section 18      the advisory-lock arm, which is darwin-only
 #                                 for real.
 #   test-gate.sh, section 31ai    the transition guard INSIDE that lock. The
@@ -406,6 +415,9 @@ test-darwin: test-active-notify test-orchestrator \
 #                                 the lock but passes no transition argument, so
 #                                 it skips that body too. 31ai runs a real
 #                                 `close`, which is how the guard gets reached.
+#   test-gate.sh, section 77      gate_metrics_timed in a detached child under
+#                                 Apple make 3.81, which waits for anything
+#                                 the call leaves holding its jobserver pipe.
 #
 # The two active-notify suites print the same assertions on both legs and are
 # kept anyway: taking them off does not move the PR's critical path, which the
@@ -415,12 +427,12 @@ test-darwin: test-active-notify test-orchestrator \
 # together with every file it sources, and nothing may stay in the filter that
 # this list does not run, source or refer to. scripts/lint-macos-keepset-paths.sh
 # checks both directions.
-DARWIN_GATE_SECTIONS := 18,31ai
+DARWIN_GATE_SECTIONS := 18,31ai,77
 
 .PHONY: run-gate-darwin-sections
 
 run-gate-darwin-sections:
-	bash scripts/test-gate.sh --sections $(DARWIN_GATE_SECTIONS)
+	bash scripts/suite-guard.sh scripts/test-gate.sh --sections $(DARWIN_GATE_SECTIONS)
 
 test-darwin-narrow: test-active-notify \
 	run/plugins/cc-cmds/orchestrator/test-run.sh \

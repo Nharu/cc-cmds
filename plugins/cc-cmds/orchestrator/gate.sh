@@ -22198,31 +22198,64 @@ gate_metrics_gh_timeout() {
 
 gate_metrics_timed() {
   # gate_metrics_timed <seconds> <command>... — the command's rc, or the rc of
-  # a TERM once it has run longer than <seconds>.
+  # a TERM (143) once it has run longer than <seconds>.
   #
-  # THE COMMAND MUST BE AN EXTERNAL PROGRAM, not a function: `&` on a simple
-  # external command makes the background pid the program itself, so the TERM
-  # reaches the process that holds the caller's stdout. A function would put a
-  # subshell there, the TERM would stop the subshell, and a caller reading
-  # through `$( )` would go on waiting for the orphaned program. The watcher's
-  # own output goes to /dev/null for the same reason, and it removes its `sleep`
-  # when it is itself stopped, so nothing outlives the call.
-  local secs="$1" pid wpid rc=0
+  # THE COMMAND MUST BE AN EXTERNAL PROGRAM, not a function: a perl parent
+  # forks it and execs it by name, which is what lets the deadline reach the
+  # process that holds the caller's stdout.
+  #
+  # ONE PARENT AND NO WATCHER. The command runs as the leader of a process
+  # group of its own — set on both sides of the fork, so the group exists before
+  # either side can act — with stdin on /dev/null and every fd above 2 closed,
+  # and the parent polls it without blocking. At the deadline the parent sends
+  # TERM to the whole group while the leader is still unreaped (a group id
+  # cannot be reused while its leader exists, even as a zombie), KILL to the
+  # same group after a short grace, and only then reaps the leader; the rc is
+  # 143 whatever the command's own exit was. A TERM, INT or HUP to the parent is
+  # passed to the group the same way and returns 128 + that signal.
+  #
+  # So once this returns, the command and every descendant still in its group
+  # are gone, and none of them held the caller's fds above 2. A descendant that
+  # left the group (a new session, its own job control) is not reached; none of
+  # this function's callers start one. There is no backgrounded `sleep` and no
+  # subshell whose pid a trap could see empty.
+  local secs="$1"
   shift
-  "$@" &
-  pid=$!
-  (
-    s=""
-    trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM
-    sleep "$secs" & s=$!
-    wait "$s"
-    kill -TERM "$pid" 2>/dev/null
-  ) >/dev/null 2>&1 &
-  wpid=$!
-  wait "$pid" || rc=$?
-  kill -TERM "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
-  return "$rc"
+  perl -MPOSIX -MTime::HiRes=sleep,time -e '
+    my $secs = shift @ARGV;
+    my $pid = fork();
+    exit 127 unless defined $pid;
+    if ($pid == 0) {
+      POSIX::setpgid(0, 0);
+      open(STDIN, "<", "/dev/null");
+      POSIX::close($_) for 3 .. 255;
+      exec { $ARGV[0] } @ARGV;
+      print STDERR "$ARGV[0]: $!\n";
+      POSIX::_exit(127);
+    }
+    POSIX::setpgid($pid, $pid);
+    my $got = "";
+    $SIG{$_} = sub { $got = $_[0] } for qw(TERM INT HUP);
+    my $deadline = time + $secs;
+    my $nap = 0.005;
+    while (1) {
+      my $r = waitpid($pid, POSIX::WNOHANG());
+      if ($r == $pid) {
+        my $st = $?;
+        exit(($st & 127) ? 128 + ($st & 127) : ($st >> 8));
+      }
+      exit 1 if $r < 0;
+      last if $got ne "" || time >= $deadline;
+      sleep $nap;
+      $nap *= 2 if $nap < 0.05;
+    }
+    kill "TERM", -$pid;
+    sleep 0.5;
+    kill "KILL", -$pid;
+    waitpid($pid, 0);
+    my %num = (TERM => 15, INT => 2, HUP => 1);
+    exit($got ne "" ? 128 + $num{$got} : 143);
+  ' "$secs" "$@"
 }
 
 gate_metrics_scrub_env() {
