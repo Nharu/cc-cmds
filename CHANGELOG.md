@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.2] - 2026-10-07
+
+이미 동결된 설계 문서에 앵커한 무인 런(문서 앵커, `lead-solo` 설계)이 이제 계획의 첫 단계인 감사를 라우터 교대에서 파견한다. 이전에는 게이트가 감사의 런 범위 파견에도 `design_required=true` 와 설계 단계를 요구해 exit 3 으로 거부했고, 런은 감사 앞에서 멈췄다.
+
+### Fixed
+
+- `gate.sh`: 감사 단계는 계획이 설계를 요구하거나 `design` 단계를 하나도 갖지 않을 때 런 범위 단계다. 설계 단계가 없는 계획에서는 문서의 `**상태**: 동결됨` 줄과 감사 단계에 살아 있는 시도가 없음만 전제로 본다. 설계를 요구하지 않는데 `design` 단계를 가진 계획과 감사 단계가 하나가 아닌 계획은 그대로 거부한다.
+- `autopilot-router-shift`·`autopilot`: 감사 파견 절에 설계 단계가 없는 계획은 감사로 시작한다는 문면과 게이트 전제를 맞췄다.
+
 ## [2.48.1] - 2026-10-07
 
 무인 런에서 구현 스테이지가 설계 문서의 구속 티어를 벗어나야 해서 멈추고(BT-STOP), 사람이 그 중단에 `재수렴` 을 고르면 이제 라우터 교대가 설계 재수렴을 파견하고 세그먼트를 처음부터 다시 계획한다. 이전에는 그 답이 멈춘 구현 세션 재부착으로 가서 이행될 길이 없었고 런이 그 자리에서 멈췄다.
