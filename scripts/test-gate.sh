@@ -8325,10 +8325,42 @@ check "15c: 스냅숏이 design_required 와 단계 그래프를 싣는다" \
   "$(printf '%s' "$snap15c" | jq -r '[.design_required, .steps[0].id, .steps[0].skill, .steps[1].depends_on[0]] | map(tostring) | join(",")')" \
   "true,D1,design,D1"
 
-design15c='/cc-cmds:design-discuss-unattended /nonexistent/doc.md "테스트"'
+# The document argument is the snapshot's `design_doc` — the path the prelude
+# resolved from the key — because the gate refuses a design dispatch naming any
+# other path.
+prompt15x() {
+  # prompt15x <manifest> — the design dispatch prompt for that manifest's run.
+  local d
+  d=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$1" 2>/dev/null | jq -r .design_doc )
+  printf '/cc-cmds:design-discuss-unattended %s "테스트"' "$d"
+}
+design15c=$(prompt15x "$M15C")
+check "15c: 스냅숏의 design_doc 은 문서 키를 해석한 절대 경로다" \
+  "$(printf '%s' "$snap15c" | jq -r '.design_doc | startswith("/") and endswith("/docs/fixture-design.md")')" "true"
 gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
      --surface 워크트리쓰기 -- design -p "$design15c"
 check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다" "$rc" "0"
+# A shift that joins the key onto the worktree itself names a path the stage
+# would write and nothing downstream reads, so that argv is refused.
+gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p '/cc-cmds:design-discuss-unattended /nonexistent/doc.md "테스트"'
+check "15c: 해석한 경로와 다른 문서 인자의 설계 파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"design_doc"*) ok "15c: 그 거절은 스냅숏의 design_doc 을 쓰라고 든다" ;;
+  *) bad "15c 문서 인자 문면" "$msg" ;;
+esac
+# A key outside every repository — an absolute path with its leading `/` removed
+# — resolves to that absolute path while the document does not exist yet, as long
+# as its directory does. The snapshot carries that path and not `<worktree>/<key>`.
+mkdir -p "$WORK/outdocs15c"
+key15dd="$(cd "$WORK/outdocs15c" && pwd -P | sed 's|^/||')/x.md"
+write15c "$WORK/plan-R15DD.md" "$plan15c" "$key15dd" R15DD
+grant15c R15DD "$key15dd"
+check "15c: 레포 밖 문서 키는 아직 없는 문서라도 절대 경로로 스냅숏에 실린다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15DD.md" 2>/dev/null | jq -r .design_doc )" "/$key15dd"
+gateL plan --manifest "$WORK/plan-R15DD.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$(prompt15x "$WORK/plan-R15DD.md")"
+check "15c: 레포 밖 문서의 설계 파견은 design_doc 을 인자로 받으면 통과한다" "$rc" "0"
 # Not vacuous in the other direction: `-` with any other stage kind is still the
 # segment it names, and that segment has no row.
 gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
@@ -8519,7 +8551,7 @@ launch15x() {
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
     --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x \
-    -- design -p "$design15c" ) >/dev/null 2>&1 || true
+    -- design -p "$(prompt15x "$1")" ) >/dev/null 2>&1 || true
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
 }
@@ -8830,7 +8862,7 @@ resume15x() {
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
     --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x --resume "$3" \
-    -- design -p "$design15c" 2>&1); rc=$?
+    -- design -p "$(prompt15x "$1")" 2>&1); rc=$?
   [ "$rc" = "0" ] || return 0
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
