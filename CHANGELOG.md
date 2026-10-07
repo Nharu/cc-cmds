@@ -5,6 +5,22 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.0] - 2026-10-07
+
+상태줄이 cc-lane 차용을 보인다. cc-lane 이 이 레인에 다른 계정을 빌려 준 동안 상태줄의 모든 줄(대체 줄, 런 없음 줄, 모든 런 줄) 끝에 ` · cc→u3 · 홈 14:20` 같은 구간이 붙고, 빌려 준 계정의 세션에서는 ` · 빌려 줌→cc` 가 붙는다. 보일 차용이 없으면 출력은 이전과 바이트가 같다. 상태줄은 여전히 아무것도 쓰지 않고 jq 를 부르지 않는다.
+
+### Added
+
+- **차용 구간** — 레인 세션에서는 `cc→<id>? (차용 확인 중)`·`cc→<id>[ · 홈 <리셋 시각>]`·`cc←<id> (반환 중)`, 빌려 준 계정의 세션에서는 `빌려 줌→cc? (차용 확인 중)`·`빌려 줌→cc`·`빌려 줌←cc (반환 중)` 을 보인다. 홈 리셋 시각은 차용을 일으킨 창(`five_hour`·`seven_day`)의 epoch 를 현지 시각으로 바꾼 것이고, 24시간 안이면 `HH:MM`, 그보다 멀면 `MM/DD HH:MM`, 지났으면 `리셋 지남` 이다. 시각은 모듈을 쓰지 않는 `perl` 로 만들고, `perl` 이 없거나 이상한 값을 내면 시각만 빠진다.
+- **세션 판정** — 비어 있지 않은 `CLAUDE_CONFIG_DIR` 를 기록의 `lane_config_dir`·`donor.config_dir` 와 정확한 문자열로 비교하고, 없으면 stdin 의 `transcript_path` 가 `<그 디렉터리>/projects/` 로 시작하는지 본다. `donor.group` 의 다른 구성원은 빌려 준 계정이 아니다.
+- **jq 없는 판독기** — `route.sh` 의 차용 판정을 그대로 따르되 jq 를 쓰지 않는다. 구간을 보일 때는 `route.sh borrow-read` 가 같은 상태와 같은 기증자를 낸다. cc-lane 이 쓰는 문법 밖의 꼴(64 KiB 초과, 날 탭·CRLF 배치, 판정 문자열의 백슬래시, 서로게이트 이스케이프, jq 만 받는 숫자, 깊이 32 초과)에서는 구간을 보이지 않는다. 터미널에 내는 id 는 영숫자와 `._-` 32자까지이고 그 밖은 `?` 로 바뀐다.
+- **폭 예산** — 72자를 넘으면 차용 세부, 도는중 종류, 경과 순으로 버리고 차용 표시는 버리지 않는다.
+- **`scripts/test-statusline.sh` 의 차용 구간 시험** — 기록 부재·`none`·손상·셸 층·경로 유도, 시각 갈래와 일광 절약 시간대, 보기 판정, jq·perl 이상, 런 줄의 접미 법칙, 폭 예산, 부분 체크아웃, 아무것도 쓰지 않음, 살아 있는 `route.sh borrow-read` 와의 픽스처별 동치, 터미널에 안전하지 않은 id, `route.sh` 와의 상태 어휘 동기화를 단언한다.
+
+포함 커밋:
+
+- `feat(orchestrator): 상태줄에 cc-lane 차용 구간을 붙인다`
+
 ## [2.47.0] - 2026-10-07
 
 무인 라우터가 설계 동결 뒤의 단계를 끝까지 잇는다. 감사 파견, 동결 문서의 슬라이싱 선언을 근거로 한 세그먼트 계획, 머지 뒤 적용, 리뷰 P0·P1 에 대한 수정 재파견이 그 단계다. 각 단계의 판정은 게이트가 맡는다. 라우터 스킬에는 파견 순서와 행위 형태만 적는다.
