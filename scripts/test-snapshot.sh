@@ -823,12 +823,14 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     fi
   done
   dsec=$(router_section "$file" '#### Dispatching the design stage')
-  if printf '%s\n' "$dsec" | grep -qF '.skill == "design-audit"'; then
+  nlit=$(printf '%s\n' "$dsec" | grep -cF '.skill == "design-audit"' || true)
+  if [ "${nlit:-0}" != "0" ]; then
     bad "$who 사본의 설계 파견 절" "감사 단계 선택 식이 설계 절 안에 있다"
   else
     ok "$who 사본의 감사 단계 선택 식은 설계 절 밖에 있다"
   fi
-  if printf '%s\n' "$dsec" | grep -qF 'An unfrozen document never goes on to the audit or to segment planning.'; then
+  nlit=$(printf '%s\n' "$dsec" | grep -cF 'An unfrozen document never goes on to the audit or to segment planning.' || true)
+  if [ "${nlit:-0}" != "0" ]; then
     ok "$who 사본의 설계 절이 동결 전 감사·계획 금지 문장을 그대로 싣는다"
   else
     bad "$who 사본의 설계 절" "동결 전 감사·계획 금지 문장이 없다"
@@ -878,7 +880,8 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   check "$who 사본의 수정 재파견 절에 지시 문구가 한 벌 실린다" \
     "$(printf '%s\n' "$prompt" | grep -c -- '수정 대상: <리포트 절대 경로> 의 P0·P1')" "1"
   if [ -z "$fix_prompt" ]; then fix_prompt="$prompt"; else fix_prompt_rs="$prompt"; fi
-  if printf '%s\n' "$fsec" | grep -qF 'max_by((.["사이클"]'; then
+  nlit=$(printf '%s\n' "$fsec" | grep -cF 'max_by((.["사이클"]' || true)
+  if [ "${nlit:-0}" != "0" ]; then
     bad "$who 사본의 수정 재파견 절" "델타 리뷰 기준 선택 식을 다시 적었다"
   else
     ok "$who 사본의 수정 재파견 절은 델타 기준 선택 식을 다시 적지 않는다"

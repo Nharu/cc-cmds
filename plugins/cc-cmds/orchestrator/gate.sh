@@ -7106,7 +7106,7 @@ gate_slicing_defects() {
     done
   done
   [ "$n" = "0" ] || return 0
-  msg=$( { slicing_fields_ok "$doc" 2>&1 >/dev/null || true; } | sed -E 's/^[^]]*\] *(\[warn\] *)?//' | head -1)
+  msg=$( { slicing_fields_ok "$doc" 2>&1 >/dev/null || true; } | sed -E 's/^[^]]*\] *(\[warn\] *)?//' | sed -n 1p)
   printf '%s\n' "${msg:-선언을 읽을 수 없습니다}"
 }
 
@@ -7382,7 +7382,7 @@ gate_from_declaration() {
   # `선행` names a declared slice. Later acts find the earlier rows and the
   # segment arm's own floors take over.
   if [ "$br" = "선언통치" ] && [ -z "$(gate_segment_ids)" ]; then
-    declared=$(slicing_body "$DOC" | sed -n 's/^\*\*슬라이스 수\*\*: //p' | sed 's/[[:space:]]*$//' | head -1)
+    declared=$(slicing_body "$DOC" | sed -n 's/^\*\*슬라이스 수\*\*: //p' | sed 's/[[:space:]]*$//' | sed -n 1p)
     derived=$(slicing_pr_count "$DOC")
     if [ -n "$declared" ] && [ "$declared" != "$derived" ]; then
       why="구현 슬라이싱 선언 불완전 — 슬라이스 수 체크섬 불일치: 선언 ${declared} vs 파생 ${derived}"

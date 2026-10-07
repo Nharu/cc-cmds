@@ -2184,7 +2184,7 @@ STUBEOF
   }
   au15_wait() {  # au15_wait <run id> <step id> — sets rc
     ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" \
-      bash "$GATE" wait --manifest "$WORK/plan-$1.md" --segment "$2" --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+      gate_inproc wait --manifest "$WORK/plan-$1.md" --segment "$2" --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
   }
   au15_rows() {  # au15_rows <run id> <fixed text> — that run's stage-result rows carrying it
     { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "$2" || true; }
@@ -9892,7 +9892,7 @@ out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB_AU_HOLLOW" \
 check "15h: 브리프를 문서 인자로 단 implement 파견이 기동한다" "$rc" "0"
 [ "$rc" = "0" ] || bad "15h 파견 출력" "$(printf '%s' "$out" | tail -5 | tr '\n' ' ')"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" \
-  bash "$GATE" wait --manifest "$WORK/plan-R15HA.md" --segment S2 --interval 1 --timeout 60 ) >/dev/null 2>&1
+  gate_inproc wait --manifest "$WORK/plan-R15HA.md" --segment S2 --interval 1 --timeout 60 ) >/dev/null 2>&1
 bash -s "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$WORK/plan-R15HA.md" "$WORK/brief15h-driver.md" 2>"$WORK/h15drv.err" <<'EOF'
   CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null
   set +eu
@@ -9904,7 +9904,7 @@ check "15h: 드라이버 대조군이 브리프를 쓴다 (아래가 공허하�
 if [ -s "$BRIEF15H" ] && cmp -s "$BRIEF15H" "$WORK/brief15h-driver.md"; then
   ok "15h: 첫 implement 파견이 드라이버와 같은 바이트의 브리프를 만든다"
 else
-  bad "15h 브리프 바이트" "$(diff "$BRIEF15H" "$WORK/brief15h-driver.md" 2>&1 | head -5 | tr '\n' ' ')"
+  bad "15h 브리프 바이트" "$(diff "$BRIEF15H" "$WORK/brief15h-driver.md" 2>&1 | sed -n '1,5p' | tr '\n' ' ')"
 fi
 
 h15_plan implement "$(impl15h "$WT/docs/other-design.md" 0)"
