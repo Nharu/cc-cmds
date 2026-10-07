@@ -318,7 +318,7 @@ A stage that reached a question only a person can answer wrote a halt record and
 4. **An adopted composed requirement goes to re-convergence, then to a fresh audit.** It changes what the run is trying to reach, so the halted audit is not resumed: the frozen document is re-converged against the requirement in this run, and then audited again.
    - **Once per key.** When the key already has a `stage-result` row reading `종류=reconverge`, write `blocked` for it with `사유=중단 답 라우팅 — 감사 종합 요구가 재수렴 뒤 다시 채택됐다` and dispatch nothing.
    - **Exclusion** as item 4 of 「Routing a pre-implementation refutation to re-convergence」.
-   - **The dispatch** keeps the audit's `--segment` and passes the document as its main-worktree absolute path, the value the design arm builds from `## 요소`:
+   - **The dispatch** keeps the audit's `--segment` — `-` for the run-scope audit, whose `stage-result` rows read `세그먼트=- | 스테이지=<step id>`; the gate keys that `- reconverge` on the audit step only while its last row is an audit that parked on purpose, and its row then reads `세그먼트=- | 스테이지=<step id> | 종류=reconverge` — and passes the document as its main-worktree absolute path, the value the design arm builds from `## 요소`:
 
      ```
      gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment <id> \
