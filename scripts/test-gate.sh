@@ -9819,7 +9819,7 @@ rm -f "$WT/$DOC15EN"
 
 # ---------------------------------------------------------------------------
 # 15e-2. An adopted composed requirement re-converges on the run-scope audit's key
-# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다 ---
+# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다 ---
 #
 # An audit with no segment asks a person whether to adopt the requirement its
 # findings compose, and parks on purpose. When the person adopts it, the router
@@ -9915,6 +9915,20 @@ case "$msg" in
 esac
 plan15er reconverge "$reconv15er"
 check "15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다" "$rc" "3"
+case "$msg" in
+  *"지금 마지막 행은 종류=reconverge"*) ok "15e-2: 그 거부는 감사 단계의 마지막 행을 든다" ;;
+  *) bad "15e-2 두 번째 재수렴 문면" "$msg" ;;
+esac
+# A `--resume` of that re-convergence carries the router's fixed sentence and
+# the last row's session; it is admitted, and an older session on the key is not.
+er15_resume() {  # er15_resume <session> — a resume dispatch of the re-convergence, as plan
+  gateL plan --manifest "$M15ER" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 --resume "$1" -- reconverge -p "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요."
+}
+er15_resume sau-reconv
+check "15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다" "$rc" "0"
+er15_resume sau-park
+check "15e-2: 감사 세션을 잇는 --resume 재수렴은 거부된다" "$rc" "3"
 plan15er audit "$audit15er"
 check "15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다" "$rc" "0"
 ( cd "$WT" && git worktree remove --force "$WT-run-R15ER-A1" ) >/dev/null 2>&1 || true

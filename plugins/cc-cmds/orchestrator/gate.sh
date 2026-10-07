@@ -18477,7 +18477,14 @@ gate_verb_act() {
   # audit step has no `segment` row and its last `stage-result` row is an audit
   # that parked on purpose — the one state a composed requirement is asked in —
   # so any other `- reconverge` still meets the refusal below.
-  local stage_key="$segment" stage_is_run_scope_step=0 rs_kind="${1:-}" rs_table="${1:-}" rs_skill rs_astep rs_alast
+  #
+  # A `--resume` OF THAT RE-CONVERGENCE IS THE OTHER STATE. Once it has run, the
+  # last row on the key is its own `종류=reconverge` row, so a re-attachment
+  # after a crash or a limit, a continuation, or a halt answer handed on would
+  # never see the parked audit again. Under `--resume` the re-convergence is
+  # admitted when the key's last row is a re-convergence whose session is the
+  # one being resumed — the last attempt, and no older session on the key.
+  local stage_key="$segment" stage_is_run_scope_step=0 rs_kind="${1:-}" rs_table="${1:-}" rs_skill rs_astep="" rs_alast=""
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "$rs_kind" = "reconverge" ]; then
     rs_table=""
     if rs_astep=$(gate_run_scope_step audit) \
@@ -18486,7 +18493,14 @@ gate_verb_act() {
       if [ "$(gate_row_field "$rs_alast" '종류')" = "audit" ] \
          && [ "$(gate_row_field "$rs_alast" '종단 부류')" = "의도된 park" ]; then
         rs_table=audit
+      elif [ -n "${GATE_RESUME:-}" ] \
+           && [ "$(gate_row_field "$rs_alast" '종류')" = "reconverge" ] \
+           && [ "$(gate_row_field "$rs_alast" '세션 id')" = "$GATE_RESUME" ]; then
+        rs_table=audit
       fi
+    fi
+    if [ -z "$rs_table" ]; then
+      warn "- reconverge 는 감사 단계(${rs_astep:-없음})의 마지막 행이 의도된 park 로 끝난 감사이거나, --resume 이 그 마지막 재수렴 행의 세션일 때만 받습니다 — 지금 마지막 행은 종류=$(gate_row_field "$rs_alast" '종류') · 종단 부류=$(gate_row_field "$rs_alast" '종단 부류') 입니다"
     fi
   fi
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
