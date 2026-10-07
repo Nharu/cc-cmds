@@ -7030,11 +7030,17 @@ gate_stage_row_segment() {
   # re-reads (the kind, the absence of a `segment` row, the plan), so the
   # dispatch half, the supervisor and the settlement agree without handing the
   # answer across.
-  local key="$1" skind="$2" rstep
+  #
+  # A `reconverge` keyed on the run-scope audit step is that step's own
+  # continuation — an adopted composed requirement re-converges the document the
+  # audit read — so its rows carry `-` as well.
+  local key="$1" skind="$2" rstep rkind
   case "$skind" in
-    design|audit)
+    design|audit|reconverge)
+      rkind="$skind"
+      [ "$skind" = "reconverge" ] && rkind=audit
       if [ -z "$(gate_segment_field "$key" '상태')" ] \
-         && rstep=$(gate_run_scope_step "$skind") && [ "$rstep" = "$key" ]; then
+         && rstep=$(gate_run_scope_step "$rkind") && [ "$rstep" = "$key" ]; then
         printf '%s' '-'
         return 0
       fi
@@ -7046,12 +7052,23 @@ gate_stage_row_segment() {
 gate_stage_result_rows_of() {
   # gate_stage_result_rows_of <stage-key> — this stage's `stage-result` rows in
   # either shape: a segment's (`세그먼트=<key>`) or a run-scope step's
-  # (`세그먼트=- | 스테이지=<key> | 종류=design` or `… | 종류=audit`). The `종류`
-  # is part of the run-scope patterns so a driver row of another run-scope
-  # stage, which carries no `종류`, is never read as this one.
+  # (`세그먼트=- | 스테이지=<key> | 종류=design`, `… | 종류=audit` or the audit
+  # step's `… | 종류=reconverge`). The `종류` is part of the run-scope patterns
+  # so a driver row of another run-scope stage, which carries no `종류`, is never
+  # read as this one.
   { gate_rows 'stage-result' || true; } \
     | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=design " \
-                -e "세그먼트=- | 스테이지=$1 | 종류=audit " || true; }
+                -e "세그먼트=- | 스테이지=$1 | 종류=audit " \
+                -e "세그먼트=- | 스테이지=$1 | 종류=reconverge " || true; }
+}
+
+gate_audit_result_rows_of() {
+  # gate_audit_result_rows_of <audit step id> — the run-scope audit step's own
+  # `종류=audit` rows, without the re-convergence that may share its key. What
+  # the audit concluded is read from these alone: a re-convergence that ended
+  # `정상 완료` has edited the document, not audited it, so it must not stand in
+  # for the fresh audit that follows it.
+  { gate_stage_result_rows_of "$1" || true; } | { grep -F "| 종류=audit " || true; }
 }
 
 gate_stage_live_attempt() {
@@ -7070,7 +7087,7 @@ gate_design_next_undispatched_step() {
   # here has no segment yet. An audit that ended any other way names nothing.
   local astep arows alast istep
   if astep=$(gate_run_scope_step audit); then
-    arows=$(gate_stage_result_rows_of "$astep")
+    arows=$(gate_audit_result_rows_of "$astep")
     if [ -z "$arows" ]; then
       printf '%s' "$astep"
       return 0
@@ -7328,7 +7345,7 @@ gate_from_declaration() {
   # THE AUDIT HAS ENDED. Planning reads the document the audit is still free to
   # edit, and both hold the same lock, so the order is the gate's to keep.
   if astep=$(gate_run_scope_step audit); then
-    alast=$(gate_row_field "$(gate_stage_result_rows_of "$astep" | tail -1)" '종단 부류')
+    alast=$(gate_row_field "$(gate_audit_result_rows_of "$astep" | tail -1)" '종단 부류')
     if [ "$alast" != "정상 완료" ]; then
       warn "세그먼트 계획은 감사 단계($astep)의 마지막 결과가 정상 완료일 때만 씁니다 — 지금은 ${alast:-결과 행 없음} 입니다"
       return "$GATE_EXIT_RULE"
@@ -11827,7 +11844,9 @@ gate_answered_halts_json() {
     [ -n "$row" ] || continue
     ln=${row%%:*}
     row=${row#*:}
-    later=$( { grep -n -F -e "세그먼트=$key " -e "세그먼트=- | 스테이지=$key | 종류=design " "$LEDGER" 2>/dev/null || true; } \
+    later=$( { grep -n -F -e "세그먼트=$key " -e "세그먼트=- | 스테이지=$key | 종류=design " \
+                          -e "세그먼트=- | 스테이지=$key | 종류=audit " \
+                          -e "세그먼트=- | 스테이지=$key | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
             | { grep "^[0-9]*:- \`stage-result\` " || true; } \
             | awk -F: -v l="$ln" '$1 > l && !p { print; p = 1 }')
     [ -z "$later" ] || continue
@@ -18294,10 +18313,29 @@ gate_verb_act() {
   # old site below the approval block, the exemption would also have arrived too
   # late to be one: the row check above would already have refused the dispatch
   # it exists to let through.
-  local stage_key="$segment" stage_is_run_scope_step=0
+  #
+  # A `reconverge` WITH `-` IS THE RUN-SCOPE AUDIT'S CONTINUATION, and only that.
+  # When a person adopts the requirement an audit composed, the router
+  # re-converges the document on the audit's own key and audits it again; for an
+  # audit that has no segment that key is `-`, and without this the dispatch met
+  # the segment-row refusal below on every spelling, leaving the person's answer
+  # nowhere to go. It is keyed on the audit step having no `segment` row and its
+  # last `stage-result` row being an audit that parked on purpose — the one
+  # state a composed requirement is asked in — so any other `- reconverge` still
+  # meets the refusal below.
+  local stage_key="$segment" stage_is_run_scope_step=0 rs_kind="${1:-}" rs_astep rs_alast
+  if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "$rs_kind" = "reconverge" ] \
+     && rs_astep=$(gate_run_scope_step audit) \
+     && [ -z "$(gate_segment_field "$rs_astep" '상태')" ]; then
+    rs_alast=$(gate_stage_result_rows_of "$rs_astep" | tail -1)
+    if [ "$(gate_row_field "$rs_alast" '종류')" = "audit" ] \
+       && [ "$(gate_row_field "$rs_alast" '종단 부류')" = "의도된 park" ]; then
+      rs_kind=audit
+    fi
+  fi
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
-     && { [ "${1:-}" = "design" ] || [ "${1:-}" = "audit" ]; }; then
-    if ! stage_key=$(gate_run_scope_step "$1"); then
+     && { [ "$rs_kind" = "design" ] || [ "$rs_kind" = "audit" ]; }; then
+    if ! stage_key=$(gate_run_scope_step "$rs_kind"); then
       if [ "$1" = "audit" ]; then
         warn "감사 스테이지를 --segment - 로 띄우려면 실행 계획이 skill 이 design-audit 인 단계를 정확히 하나 가지고, design_required=true 이거나 skill 이 design 인 단계가 없어야 합니다"
         warn "세그먼트가 아닌 감사 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
@@ -18342,6 +18380,13 @@ gate_verb_act() {
     # live attempt are the whole precondition there. A plan that names design
     # steps but not exactly one is still refused — which step to wait on is not
     # the gate's to pick.
+    #
+    # The audit's continuation shares its key and its document lock, so it does
+    # not start while an attempt on that key is still running.
+    if [ "$1" = "reconverge" ] && gate_stage_live_attempt "$stage_key"; then
+      warn "감사 단계($stage_key)의 재수렴은 그 단계에 살아 있는 시도가 없을 때만 뜹니다 — 그 시도가 끝난 뒤 다시 파견하세요"
+      exit "$GATE_EXIT_RULE"
+    fi
     if [ "$1" = "audit" ]; then
       local au_dstep="" au_last
       if au_dstep=$(gate_run_scope_step design); then
@@ -18408,7 +18453,10 @@ gate_verb_act() {
   # The budget is the driver's `LADDER_RUNGS*F+1`, counted in `cycle` rows only,
   # so a crash retry or a resume spends nothing. Reaching it refuses the next
   # implement dispatch; the router then parks the segment with a cone block.
-  if [ "$kind" = "skill" ] && [ "$stage_is_run_scope_step" = "0" ]; then
+  # The run-scope audit's re-convergence carries the same document argument as
+  # a segment's, so the comparison reaches it too.
+  if [ "$kind" = "skill" ] \
+     && { [ "$stage_is_run_scope_step" = "0" ] || [ "${1:-}" = "reconverge" ]; }; then
     case "${1:-}" in
       implement|review|reconverge)
         local da_got da_want
