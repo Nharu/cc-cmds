@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.2] - 2026-10-07
+
+설계 문서를 대상 저장소 안이 아니라 저장소들 옆 디렉터리에 두는 배치에서, 무인 감사 스테이지가 리더 보고서 사본과 문서 반영 쓰기를 `기기전역` 으로 신고해 게이트에 보류되고 반영 0건으로 런이 멈추던 문제를 고쳤다.
+
+### Fixed
+
+- **런 자신의 설계 문서와 그 옆 보고서 경로를 열린 쓰기로 적는다.** 무인 스테이지 다섯(공용 연구 문단과 `design-audit-unattended`·`design-discuss-unattended`·`implement-unattended`·`review-unattended` 사본)이 함께 싣는 문단의 열린 쓰기 목록에 이 런의 설계 문서와, 단계가 이름 붙인 그 옆 보고서 경로를 더했다. 둘이 어느 대상 저장소에도 들지 않아도 게이트 행위는 `--surface 트리밖쓰기 --reach 런로컬` 로 신고한다. (#1131)
+- **`design-audit-unattended` 리더 보고서 사본 단계** — `<base>` 가 저장소 밖으로 폴백한 경우에도 `런로컬` 신고이고, 조정 패스의 문서 편집이 런 밖 쓰기가 아니라고 명시했다.
+
 ## [2.46.1] - 2026-10-07
 
 라우터 교대가 설계 문서 경로를 직접 만들지 않고, 게이트가 해석한 경로를 그대로 쓴다. 레포 밖 설계 문서의 키를 홈 워크트리에 붙인 경로로 설계 스테이지가 파견되면, 문서가 엉뚱한 곳에 써지고 뒤따르는 동결 확인·감사·구현이 그 문서를 찾지 못했다.
