@@ -6977,11 +6977,31 @@ gate_segment_field() {
 # open until somebody wrote `완료` by hand. Its key is the plan's single
 # `design-audit` step id, derived the same way and refused the same way when the
 # plan names zero or several.
+#
+# AN AUDIT DOES NOT NEED A DESIGN STEP IN FRONT OF IT. A run anchored on a
+# document frozen before the run began — a document anchor, or a `lead-solo`
+# design the kickoff wrote itself — has no design step and its plan opens on the
+# audit. Requiring `design_required=true` for the audit as well left that run
+# with no way to dispatch its first step: the gate refused it with exit 3 and
+# the shift ended on a stop handoff. So the audit is a run-scope step either
+# when the plan requires a design, or when the plan names no design step at all.
+# A plan that does not require a design yet still carries a design step is one
+# this exemption does not know how to read, and it stays refused.
 # ---------------------------------------------------------------------------
+gate_plan_skill_step_count() {
+  # gate_plan_skill_step_count <skill> — how many object steps of the frozen
+  # plan carry that skill, whether or not they have an id.
+  { manifest_plan_json 2>/dev/null \
+      | jq -r --arg s "$1" '[.steps[]? | select(type == "object" and .skill == $s)] | length' 2>/dev/null \
+      || true; } | head -1 | { read -r n || true; printf '%s' "${n:-0}"; }
+}
+
 gate_run_scope_step() {
   # gate_run_scope_step <종류> — `design` or `audit`. Prints the plan's single
-  # step id of that kind and returns 0, or returns 1. Both kinds exist only in a
-  # plan that requires a design: an audit reads the document the design froze.
+  # step id of that kind and returns 0, or returns 1. A design step exists only
+  # in a plan that requires a design. An audit step is run-scope in that plan,
+  # and in a plan with no design step at all, whose audit reads a document that
+  # was frozen before the run.
   local skill req ids
   case "${1:-}" in
     design) skill='design' ;;
@@ -6989,7 +7009,10 @@ gate_run_scope_step() {
     *)      return 1 ;;
   esac
   req=$(manifest_plan_json 2>/dev/null | jq -r '.design_required' 2>/dev/null || true)
-  [ "$req" = "true" ] || return 1
+  if [ "$req" != "true" ]; then
+    [ "$skill" = "design-audit" ] || return 1
+    [ "$(gate_plan_skill_step_count design)" = "0" ] || return 1
+  fi
   ids=$( { manifest_plan_json 2>/dev/null \
            | jq -r --arg s "$skill" '.steps[]? | select(type == "object" and .skill == $s) | .id // empty' 2>/dev/null \
            || true; } | grep -v '^$' || true)
@@ -18254,8 +18277,9 @@ gate_verb_act() {
   # -` with stage kind `design` or `audit` names no segment, so there is no row
   # to require and no `선행` to land; the stage is keyed on the plan's step id of
   # that kind instead (see `gate_run_scope_step`). The exemption is keyed on all
-  # three facts — the kind, the `-`, and a plan that requires a design and names
-  # exactly one step of that kind — so `-` with any other stage kind, or with a
+  # three facts — the kind, the `-`, and a plan that names exactly one step of
+  # that kind and either requires a design or, for the audit, names no design
+  # step at all — so `-` with any other stage kind, or with a
   # plan that does not say this, still meets the refusal below. Writing a
   # `segment` row for the step was the other way out and was dropped: that row
   # is what termination condition 1 counts, and neither step is a segment.
@@ -18273,7 +18297,7 @@ gate_verb_act() {
      && { [ "${1:-}" = "design" ] || [ "${1:-}" = "audit" ]; }; then
     if ! stage_key=$(gate_run_scope_step "$1"); then
       if [ "$1" = "audit" ]; then
-        warn "감사 스테이지를 --segment - 로 띄우려면 실행 계획이 design_required=true 이고 skill 이 design-audit 인 단계를 정확히 하나 가져야 합니다"
+        warn "감사 스테이지를 --segment - 로 띄우려면 실행 계획이 skill 이 design-audit 인 단계를 정확히 하나 가지고, design_required=true 이거나 skill 이 design 인 단계가 없어야 합니다"
         warn "세그먼트가 아닌 감사 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
       else
         warn "설계 스테이지를 --segment - 로 띄우려면 실행 계획이 design_required=true 이고 skill 이 design 인 단계를 정확히 하나 가져야 합니다"
@@ -18310,22 +18334,29 @@ gate_verb_act() {
     # edits a document the design is still writing, and both hold the same lock.
     # The status line is read rather than a digest, because the audit itself
     # edits the document and leaves that line alone.
+    #
+    # A plan with no design step at all has no design result to read: its
+    # document was frozen before the run, so the status line and the audit's own
+    # live attempt are the whole precondition there. A plan that names design
+    # steps but not exactly one is still refused — which step to wait on is not
+    # the gate's to pick.
     if [ "$1" = "audit" ]; then
-      local au_dstep au_last
-      if ! au_dstep=$(gate_run_scope_step design); then
+      local au_dstep="" au_last
+      if au_dstep=$(gate_run_scope_step design); then
+        au_last=$(gate_row_field "$(gate_stage_result_rows_of "$au_dstep" | tail -1)" '종단 부류')
+        if [ "$au_last" != "정상 완료" ]; then
+          warn "감사 스테이지는 설계 단계($au_dstep)의 마지막 결과가 정상 완료일 때만 뜹니다 — 지금은 ${au_last:-결과 행 없음} 입니다"
+          exit "$GATE_EXIT_RULE"
+        fi
+      elif [ "$(gate_plan_skill_step_count design)" != "0" ]; then
         warn "감사 스테이지는 설계 단계 뒤에만 뜹니다 — 실행 계획이 skill 이 design 인 단계를 정확히 하나 가져야 합니다"
-        exit "$GATE_EXIT_RULE"
-      fi
-      au_last=$(gate_row_field "$(gate_stage_result_rows_of "$au_dstep" | tail -1)" '종단 부류')
-      if [ "$au_last" != "정상 완료" ]; then
-        warn "감사 스테이지는 설계 단계($au_dstep)의 마지막 결과가 정상 완료일 때만 뜹니다 — 지금은 ${au_last:-결과 행 없음} 입니다"
         exit "$GATE_EXIT_RULE"
       fi
       if [ -z "${DOC:-}" ] || ! grep -qxF '**상태**: 동결됨' "$DOC" 2>/dev/null; then
         warn "감사 스테이지는 동결된 설계 문서에만 뜹니다 — ${DOC:-$design_doc} 에 「**상태**: 동결됨」 한 줄이 없습니다"
         exit "$GATE_EXIT_RULE"
       fi
-      if gate_stage_live_attempt "$au_dstep" || gate_stage_live_attempt "$stage_key"; then
+      if { [ -n "$au_dstep" ] && gate_stage_live_attempt "$au_dstep"; } || gate_stage_live_attempt "$stage_key"; then
         warn "감사 스테이지는 설계 단계와 감사 단계 어느 쪽에도 살아 있는 시도가 없을 때만 뜹니다 — 그 시도가 끝난 뒤 다시 파견하세요"
         exit "$GATE_EXIT_RULE"
       fi

@@ -9390,7 +9390,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
-# --- section: 15e | group: base | covers: act, plan, wait, supervise | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다 ---
+# --- section: 15e | group: base | covers: act, plan, wait, supervise | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다 ---
 #
 # The audit is the second run-scope step. It reads the frozen document rather
 # than building a segment, so the router dispatches it with `--segment -` as it
@@ -9424,8 +9424,9 @@ au15_dispatch R15EA "$STUB_AU_AUDIT" audit "$audit15e"
 check "15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다" \
   "$rc/$(appr15e)/$(au15_rows R15EA '스테이지=A1 ' | grep -c . || true)" "3/0/0"
 
-# The plan has to name exactly one audit step, and only a design-requiring
-# plan names one — the same selection the design step is keyed by.
+# The plan has to name exactly one audit step — the same selection the design
+# step is keyed by — and a plan that does not require a design yet carries a
+# design step is not one the exemption reads.
 M15E_NOAU="$WORK/plan15e-noaudit.md"
 write15c "$M15E_NOAU" "$plan15c" "$DOC15E" R15EA
 plan15e_audit "$M15E_NOAU"
@@ -9560,6 +9561,55 @@ check "15e: 그 거부 뒤에 감사 시도가 늘지 않는다" \
 rmdir "$AW15E" 2>/dev/null || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC15E"
+
+# A plan with no design step opens on the audit: a document anchor, or a
+# `lead-solo` design the kickoff wrote itself, was frozen before the run, so
+# there is no design result to wait on and the freeze line is the precondition.
+DOC15EN='docs/fixture-design-15e-anchored.md'
+M15EN="$WORK/plan-R15EN.md"
+plan15en='{ "design_required": false, "steps": [ { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["A1"] } ] }'
+write15c "$M15EN" "$plan15en" "$DOC15EN" R15EN
+grant15c R15EN "$DOC15EN"
+printf -- '- `종료 절` | id=K1 | 문면=설계 문서가 감사된다 (K1)\n' >> "$M15EN"
+sed '/^\*\*구속 다이제스트\*\*/d' "$M15EN" > "$M15EN.tmp" && mv "$M15EN.tmp" "$M15EN"
+audit15en="/cc-cmds:design-audit-unattended $WT/$DOC15EN"
+plan15en_audit() {  # plan15en_audit <manifest> — the run-scope audit dispatch, as plan
+  gateL plan --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 -- audit -p "$audit15en"
+}
+rm -f "$WT/$DOC15EN"
+plan15en_audit "$M15EN"
+check "15e: 설계 단계가 없는 계획에서도 동결 줄 없는 문서에는 감사가 뜨지 않는다" "$rc" "3"
+case "$msg" in
+  *"동결된 설계 문서에만 뜹니다"*) ok "15e: 설계 단계 없는 계획의 그 거부는 동결 줄을 든다" ;;
+  *) bad "15e 설계 단계 없는 계획의 미동결 문면" "$msg" ;;
+esac
+au15_freeze "$DOC15EN"
+plan15en_audit "$M15EN"
+check "15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다" "$rc" "0"
+au15_dispatch R15EN "$STUB_AU_AUDIT" audit "$audit15en"
+check "15e: 설계 단계가 없는 계획의 감사 파견이 기동한다" "$rc" "0"
+au15_wait R15EN A1
+check "15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다" \
+  "$(au15_rows R15EN '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | grep -c . || true)/$(au15_class R15EN A1 audit)" "1/정상 완료"
+check "15e: 설계 단계가 없는 계획의 감사 파견 뒤에도 segment 행이 생기지 않는다" \
+  "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15EN.md" 2>/dev/null || true; } | grep -c . || true)" "0"
+( cd "$WT" && git worktree remove --force "$WT-run-R15EN-A1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+
+# The same holds for a plan that requires a design the kickoff already wrote
+# (`lead-solo`): the plan carries no design step.
+M15EL="$WORK/plan15e-leadsolo.md"
+write15c "$M15EL" '{ "design_required": true, "steps": [ { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": [] } ] }' "$DOC15EN" R15EN
+plan15en_audit "$M15EL"
+check "15e: 설계를 요구하되 설계 단계가 없는 계획도 동결된 문서에서 감사를 띄운다" "$rc" "0"
+
+# Still exactly one audit step.
+M15EN2="$WORK/plan15e-anchored-twoaudit.md"
+write15c "$M15EN2" '{ "design_required": false, "steps": [ { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": [] }, { "id": "A2", "skill": "design-audit", "summary": "감사 2", "depends_on": [] } ] }' "$DOC15EN" R15EN
+plan15en_audit "$M15EN2"
+check "15e: 설계 단계가 없는 계획도 감사 단계가 둘이면 감사 면제가 서지 않는다" "$rc" "3"
+rm -f "$WT/$DOC15EN"
 
 # ---------------------------------------------------------------------------
 # 15f. A frozen design with a step not yet started keeps the run open
