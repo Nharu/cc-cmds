@@ -387,13 +387,22 @@ cc_nonterminal_segments() {
   # `TERMINAL_SEGMENT_STATES` above is the enumeration; everything else is in
   # flight. The membership test is the gate's, verbatim, because a second
   # spelling of it is how the two readers diverged in the first place.
-  local ledger="$1" sid st n=0
+  #
+  # A `머지됨` CARRYING `적용=대기` IS IN FLIGHT. The gate's segment arm writes
+  # that marker on the merge of a segment that still owes its apply — a fact
+  # derived from the manifest, which this reader does not open — so the marker
+  # is how the gate's condition 1 and this count agree on such a segment.
+  local ledger="$1" sid row st ap n=0
   [ -n "$ledger" ] || { printf '0'; return 0; }
   for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
                 | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$sid" ] || continue
-    st=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1 \
-          | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    row=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1)
+    st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    ap=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *적용=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if [ "$st" = "머지됨" ] && [ "$ap" = "대기" ]; then
+      n=$((n + 1)); continue
+    fi
     case " $TERMINAL_SEGMENT_STATES " in
       *" $st "*) ;;
       *) n=$((n + 1)) ;;

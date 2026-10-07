@@ -13,7 +13,7 @@ options:
     - name: "[scope-directive]"
       kind: positional
       required: false
-      summary: '구현 범위를 좁히는 자유형 자연어 지시문. 드라이버가 세그먼트 범위나 사다리 R1의 수정 지시를 이 자리에 싣는다.'
+      summary: '구현 범위를 좁히는 자유형 자연어 지시문. 드라이버가 세그먼트 범위를, 라우터의 수정 재파견이 리뷰 리포트의 수정 대상을 이 자리에 싣는다.'
       parse_note: "첫 `.md` 토큰 이후의 모든 내용. 단일 바깥쪽 쌍따옴표로 감싸져 있으면 그 쌍만 제거하고 안쪽 따옴표·구두점은 보존."
 notes: |
     사람에게 묻는 표면이 하나도 없다. 확인이 필요한 모든 지점은 중단 기록(halt record)을
@@ -81,6 +81,8 @@ marks and matches dispositions, and does not check that a `등급 1` mark was de
 **CFI-U2 — The plan gate survives as a two-process bracket.** Plan approval cannot come from a human here, so it is replaced by an emission gate that is *strictly stronger* on binding force and strictly weaker on human consent. Process A emits a plan and its digest; process B is admitted only against that digest (Step 2, Step 3).
 
 **CFI-U3 — BT-STOP: a binding-tier deviation is never taken.** The moment implementation would require diverging from the design's binding tier, stop **before the edit**, write **nothing** to the drift sidecar (no deviation occurred, so its schema has nothing to record), and halt. This arm never redesigns — it surfaces, and the orchestrator routes; a binding-tier block requires `사용자 승인`, which no one here can give.
+
+**The BT-STOP halt record's fields are fixed where the router reads them.** `**분류**: gate-unanswerable`; `**스텝**` contains the literal `CFI-U3 BT-STOP` before its first ` — ` (a step prefix such as `Step 3 ` may precede it); `**질문 문면**` quotes the binding-tier text verbatim and names what collides with it. When moving the binding tier is a way out, `**선택지**` offers it under the exact label `재수렴`, and its text says what actually happens: the same run's routing shift dispatches `/cc-cmds:design-reconverge <document> 구속 티어 이탈 <this record's absolute path>`, and the segment then plans again from process A inside this run — never a new run id, manifest or authorization record. Any other label for that way out is one the routing shift does not recognise, and the person's answer re-attaches this session, which cannot write the design document.
 
 **CFI-U4 — `승인: 사용자 승인` is never written by this arm.** Interactive `implement` writes it legitimately, so the ban is on this file, not on the mechanism.
 
@@ -163,7 +165,7 @@ Runs BEFORE Step 2, fail-fast, so implementation never builds on a refuted desig
 - **1.5b — Consent is unobtainable, so category decides.** There is no consent surface here, and the design session's consent does not carry into this process.
     - **(a)/(b)/(d) read-only-local recipes run** as they do interactively.
     - **A (c) external probe runs only when it carries no `실행 주의` and every act of its recipe is a `WebFetch` / `WebSearch` call or a `gate.sh exec` form the grading table proves `읽기`, declared `--surface 읽기` with a `--reach` token (`미상` when no named reach fits — the gate requires one on every remote-capable tool, reads included).** Any other (c) probe, an (e) worktree recipe, or an `실행 주의`-flagged item is never auto-run, whatever its acts are. Its disposition depends on when it was due:
-        - **`구현 전`** — design validity is global, so an unsettleable pre-implementation gate item is a blocker: **halt** with `분류: gate-unanswerable`, naming the R-item and why consent was required. **Its `**선택지**` never offers `재수렴`.** The routing shift sends only a `Step 1.5d` or `Step 3 구현 중 반증` halt to re-convergence; a person's answer to this halt comes back as a re-attachment of this same session, which cannot dispatch a re-convergence or write the design document. An option promising either is one the run cannot carry out, and the person picks it at the seat for nothing.
+        - **`구현 전`** — design validity is global, so an unsettleable pre-implementation gate item is a blocker: **halt** with `분류: gate-unanswerable`, naming the R-item and why consent was required. **Its `**선택지**` never offers `재수렴`.** The routing shift sends only a `Step 1.5d` or `Step 3 구현 중 반증` halt, or a CFI-U3 BT-STOP halt a person answered `재수렴`, to re-convergence; a person's answer to this halt comes back as a re-attachment of this same session, which cannot dispatch a re-convergence or write the design document. An option promising either is one the run cannot carry out, and the person picks it at the seat for nothing.
         - **`구현 중` / `구현 후`** — not run, token left at `구현 시 검증` for a later invocation, and disclosed in the emitted plan's `disposition`. These are residuals, not blockers, and halting on them would park segments for work that was never due.
     - An unflagged recipe is killed at 10 minutes, or 3× its declared `예상 소요`, whichever is larger.
 - **1.5c — Execute, zero document writes.** Hold verdicts in memory. Capture both baselines (`git status --porcelain` + `git worktree list --porcelain`) on entry and gate after each worktree recipe and on exit — the comparison is "no new change vs. entry", not "clean". **Declare the pipeline's reserved worktree infix `-run-` as the boundary gate's exception pattern** (`_common/verification.md` §6, assertion 2a) so a sibling segment's worktree does not fail this stage. This stage declares no measurement surface, so assertion 1 stays whole-tree equality against the entry baseline, which is what catches this stage's own recipes dirtying the tree.

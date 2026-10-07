@@ -10,6 +10,9 @@
 probe="${GATE_PREAUTH_PROBE:-0}"
 
 if [ "$probe" != "1" ]; then
+  # 적용 행위 — 적용 명령은 매니페스트의 적용 지점이 정하고 게이트가 전제를
+  # 확인한 뒤에만 이 값을 싣는다. 같은 명령을 exec 으로 내면 여기를 지나지 않는다.
+  [ "${GATE_KIND:-}" = "apply" ] && [ "$GATE_ARGV" = "적용" ] && [ -n "${GATE_APPLY_COMMAND:-}" ] && exit 0
   case "$GATE_SURFACE" in
     읽기|워크트리쓰기)
       exit 0 ;;
@@ -44,7 +47,11 @@ runners=" bash sh zsh python3 node make npm npx yarn pnpm pytest go cargo docker
 # apply` 처럼 전역 플래그가 하위 명령 앞에 오는 철자를 위한 것이고, 값이 떨어져
 # 있는 형태(`git -C <path> commit`)는 여기서 알아볼 수 없어 손대지 않는다 —
 # 바로 다음 단어를 값이 아니라 하위 명령으로 읽으면 더 나쁜 답이 된다.
-norm=$(printf '%s' "$GATE_ARGV" | awk '
+#
+# 줄바꿈은 먼저 공백으로 편다. awk 는 입력 줄마다 본문을 돌므로, `gh pr create
+# --body` 의 본문처럼 인자 하나에 줄바꿈이 들면 `norm` 이 여러 줄이 되고 한 줄짜리
+# 형태와의 비교가 참이 될 수 없어 인가된 행위가 목록 밖으로 판정됐다.
+norm=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
   {
     for (i = 1; i <= NF; i++) {
       w = $i

@@ -115,7 +115,7 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
 
 **An act carrying `--segment` runs in that segment row's worktree** — the value the row's `워크트리` names, when it is an absolute existing directory sharing the target's common git directory; otherwise the target row's execution worktree, then its main worktree. The stage's settings list that worktree too, from the call after the segment row is written. An act that must run in the main worktree (updating the base branch, for instance) does not carry `--segment`. A `--kind skill` dispatch whose segment row names a worktree that fails that predicate is refused with exit `10` before the stage starts.
 
-**An audit segment runs in a linked worktree of its own, detached at the base branch's tip — never in the main worktree.** The main worktree is the one every run and session on the repository fast-forwards after a merge, so an audit window of twenty-odd minutes there sees its own `HEAD` tree move, and the audit's freeze check reads that as a mismatch and halts with no automatic retry, however unrelated the merged paths are. Before the audit's first `segment` row, create it with one call — `gate.sh exec --manifest <매니페스트> --target <alias> --segment - --cutpoint <token> --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest <H> --rationale '<id> 감사용 고정 워크트리' -- git worktree add --detach <main worktree>-run-<run id>-<id> <base branch>` — and name that path in the row's `워크트리`. The document argument stays the main-worktree absolute path: `docs/` is gitignored, so the linked worktree does not carry it, and the audit takes its code root from its own working directory. A re-audit of the same key reuses that worktree.
+**The audit stage is the one caller whose `--segment -` acts do not take that fallback.** They run in a linked worktree of its own that the gate makes at the audit's dispatch and resolves for every act the audit stage issues — 「Dispatching the audit stage」 says how; the router creates no worktree for it and writes no row naming one.
 
 **Issue that call in the foreground. It returns within seconds.** The gate starts the stage under a supervisor whose process lineage is cut from yours before the call returns, and that supervisor — not your session — waits on the stage and writes its `stage-result` row. So the dispatch's exit status says whether the LAUNCH succeeded, never how the stage ended, and nothing you do afterwards can kill the stage: ending your turn, reaching the cap, taking exit 5 or crashing all leave it running and recording.
 
@@ -209,7 +209,7 @@ When the snapshot's `design_required` is `true` and a step in `steps[]` has `ski
 
 #### Dispatching the audit stage
 
-When `steps[]` carries exactly one step whose `skill` is `design-audit`, its predecessors have passed the freeze check above, and it is not in `live_stages[]`, dispatch it as a run-scope stage — `--segment -`, stage kind `audit`:
+When the design stage's last `stage-result` row is `정상 완료` and item 5 above found both freeze facts, the next step of the graph is the audit, if the plan names one. **A plan with no `design` step at all opens on the audit.** A run anchored on a document that was frozen before it began — a `doc` anchor entering at `design-audit`, or a `lead-solo` design the kickoff wrote itself — has no design stage to wait on, so when `steps[]` names no `design` step and its one `design-audit` step has no `stage-result` row yet, the audit is the run's first dispatch. The one fact to check before it is the freeze line in the document (`grep -qxF '**상태**: 동결됨' <스냅숏 design_doc>`, through the gate); a document without it → plan no segment, and stop as 「Dispatching the design stage」 item 1 stops, naming the missing freeze line. The step id is read from the snapshot with `.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty`; as with the design step, an empty result, a blank line or two lines all mean `no single audit step`, and the gate refuses the dispatch with exit 3 on the same reading. **An audit step is not a segment either**: it is dispatched with `--segment -`, every ledger row about it carries `세그먼트=- | 스테이지=<audit step id> | 종류=audit`, and `gate.sh wait --manifest <매니페스트> --segment <audit step id>` waits on it.
 
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment - \
@@ -217,7 +217,13 @@ gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --se
   -- audit -p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>[ --base]"
 ```
 
-Append ` --base` only when the snapshot's `design_scope` is `base`. The gate refuses with exit 3 an audit or split dispatch whose prompt does not begin with that step's slash command as written here, or whose document argument differs from `design_doc`; a `--resume` dispatch — a re-attachment, a continuation or a halt answer handed on — is exempt, because its prompt is the fixed sentence those sections give and the session it resumes is pinned to this step's own rows. A design step with no row at all counts as finished for these two dispatches when the document is already there and frozen — the run kicked off again over a frozen document, whose design was skipped. Wait on it with `gate.sh wait --manifest <매니페스트> --segment <step id>`. The audit is complete when the last `| 세그먼트=- | 스테이지=<step id> | 종류=audit |` row reads `종단 부류=정상 완료`, its stream carries `이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다.`, and `<메인>/docs/design-audit/<slug>.reader-*.md` exists — each read through the gate. Anything else stops every step that depends on it exactly as 「Dispatching the design stage」 stops the design, and re-attaching and continuing go the way they go there. **Do not answer a gate refusal (exit 3) by writing a `segment` row for the audit step**: an audit step is not a segment either.
+Append ` --base` only when the snapshot's `design_scope` is `base`. The document argument is the snapshot's `design_doc` as it stands. The gate refuses with exit 3 an audit, split or re-convergence dispatch whose prompt does not begin with that step's slash command as written in this file, or whose document argument differs from `design_doc`; a `--resume` dispatch — a re-attachment, a continuation or a halt answer handed on — is exempt, because its prompt is the fixed sentence those sections give and the session it resumes is pinned to this step's own rows. Wait on it with `gate.sh wait --manifest <매니페스트> --segment <step id>`.
+
+The gate exempts this form from the `segment` row and predecessor checks only when the plan names exactly one `design-audit` step and either requires a design or names no `design` step at all, and it checks its preconditions before it writes anything: when the plan has a design step, that step's last `stage-result` row is `정상 완료` — or the step has no row at all and the document is already frozen, the run having been kicked off again over it with its design skipped; the manifest's document carries the line `**상태**: 동결됨` exactly once; and neither the design step, if there is one, nor the audit step has a live attempt. A refusal is exit 3; do not write a `segment` row to get past it. Resume, re-attachment and continuation read the audit step's rows the same way 「Dispatching the design stage」 items 1 and 2 read the design step's, keyed on `종류=audit`; when the continuation cap is spent, the gate says to continue the audit no further, and no segment is planned on that run.
+
+**The audit runs in a linked worktree of its own, detached at the base branch's tip — never in the main worktree — and the gate makes it.** The main worktree is the one every run and session on the repository fast-forwards after a merge, so an audit window of twenty-odd minutes there sees its own `HEAD` tree move, and the audit's freeze check reads that as a mismatch and halts with no automatic retry, however unrelated the merged paths are. The dispatch above creates `<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach` at the target's base branch when that path is absent, reuses it when a re-audit of the same key finds it there, adds it to the stage settings, and fails with exit 3 and launches nothing when the path is held by anything that is not a worktree of the target. Every act the audit stage then issues with `--segment -` runs in that tree. Do not create it with an `exec`, and do not write a `segment` row to name it — no row names it, and the gate resolves it from the audit step id. The document argument stays the main-worktree absolute path: `docs/` is gitignored, so the linked worktree does not carry it, and the audit takes its code root from the tree its acts run in.
+
+**The audit edits the document**, so whatever was true of the document before it ran is read again after. Once its last `| 세그먼트=- | 스테이지=<step id> | 종류=audit |` row is `정상 완료`, check that its stream carries `이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다.`, that at least one `<메인>/docs/design-audit/<slug>.reader-*.md` exists and that the document still carries `**상태**: 동결됨` exactly (`grep -qxF '**상태**: 동결됨' <문서>`), both through the gate. Any of them missing → plan no segment and dispatch no split, and stop as 「Dispatching the design stage」 item 1 stops, naming which fact is absent.
 
 #### Dispatching the split stage
 
@@ -232,6 +238,57 @@ gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --se
 Wait on it with `gate.sh wait --manifest <매니페스트> --segment <step id>`. The dispatch's surface is `워크트리쓰기`, the same as the design and audit dispatches — the gate grades a `skill` act from its table, so declaring `외부상태변경` here buys nothing; the tracker writes are authorized one by one, inside the stage, by their own `--reach 협업`. The stage is complete when its artifact predicate holds: the literal `베이스 분할을 마쳤습니다.` in its stream, and a registry at `<메인>/docs/design-base/<slug>.tickets.md` whose head line starts `<!-- cc-design-base-tickets v1; ` with a `doc-sha256=` equal to the document's current sha256, every `티켓` and `베이스` row `발행됨` (`문서만` when the tracker is `없음`) and every `관계` row `걸림` or `문서만`. Then propose done. When a halt record exists instead, stop, write C2 — and C3 when the manifest carries it — as `불가능` citing that record's path, and propose done. The split step is not a segment and its rows carry `세그먼트=-`.
 
 **A split that ended without its predicate is judged by its own rows, as the audit is.** Read the step's rows (`grep -nF '| 세그먼트=- | 스테이지=<step id> | 종류=split |' "$CC_PIPELINE_LEDGER"` through the gate); the last decides. Take 「Re-attaching a cut stage」 first and 「Continuing a stage that ended its turn in prose」 right after it — a row either carries on goes nowhere else here. Past those two sections, `외부 종료`, `크래시` — `한도 종료` read exactly as `크래시` — and a `공허한 성공` with no entry in `pending_approvals[]` whose `blocks` is the step id may be dispatched afresh, with the command above, on the next attempt number. **A fresh split is safe where a fresh design is not**: the split resumes from its registry, and a row already `발행됨` is never published again, so a second process over a partial registry finishes it rather than duplicating it. **A `크래시` whose stream holds no 429 envelope and a `공허한 성공` buy one fresh dispatch and no more** — count fresh attempts on the rows already read the way 「Dispatching the design stage」 item 1 does, and read the envelope the way 「Re-attaching a cut stage」 item 2 does; when the last row is one of these two and two or more fresh attempts already stand, dispatch nothing, write C2 — and C3 when the manifest carries it — as `불가능` citing the last `stage-result` row, and propose done, which the gate records as `무효화`. `외부 종료` and a `크래시` carrying the envelope keep the window open. A `공허한 성공` that opened an approval on the step holds C2 (and C3) `보류` on that approval instead. Every other class stops the split as a halt record does above.
+
+#### Planning the segments
+
+Segment planning starts only after the audit has ended as above, or straight after item 5's freeze check when the plan names no audit step. The snapshot's `슬라이싱` field is the read: its branch (`미통치`, `선언통치`, `선언불완전`), the slice ids in declaration order, and each id's branch name and worktree path. **For each slice, in declaration order, three calls:**
+
+1. `gate.sh exec … --surface 읽기 -- git fetch` against the slice's target.
+2. `gate.sh exec … --surface 워크트리쓰기 -- git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>`.
+3. The plan row, which the gate fills from the frozen document rather than from this loop:
+
+   ```
+   gate.sh act --manifest <매니페스트> --kind segment --target <alias> --segment <slice id> \
+     --cutpoint <token> --surface 읽기 --snapshot-digest <H> --from-declaration \
+     -- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>
+   ```
+
+   Pass no `레포`, `선언 파일 집합`, `선행`, `절단점` or `리뷰 정책`: under `--from-declaration` the gate refuses them, takes them from the document's `## 구현 슬라이싱`, and requires `워크트리` to be the derived path. On `미통치` there is one segment whose id is the plan's implementation step id.
+
+**A slice with a `선행` is planned only once its predecessor's last `segment` row is `머지됨` or `완료`**, so its branch is cut from a base that already carries that landing. When a slice is planned, dispatch its implementation with the stage form above. **Two refusals are structural**: `선언불완전` (the refusal names the slice and the missing fields) and a resolved review policy other than `리뷰없음` on a plan that has no review step. The gate leaves the run-scope block for either inside the refusing act — this loop cannot create a run-scope block — so write nothing more and end the shift with a `사유=중단` handoff.
+
+#### Merging and applying a segment
+
+**The merge.** For a segment whose resolved review policy is `선리뷰후머지`, merge once its review has passed, pinned to what the review read: `gh pr merge <n> --merge --match-head-commit <the 리뷰 HEAD of the segment's last cycle row>`. Under any other policy there may be no `cycle` row, so pin to the implementation worktree's HEAD instead (`--match-head-commit <구현 워크트리 HEAD>`), and issue no apply act afterwards. Either way read `gh pr view <n> --json mergeCommit` and record it:
+
+```
+gate.sh act --manifest <매니페스트> --kind segment --target <alias> --segment <id> \
+  --cutpoint <token> --surface 읽기 --snapshot-digest <H> \
+  -- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>
+```
+
+Every `segment` row this loop writes for the segment, this one and a `park` alike, carries the plan row's `선행` again. The gate does not trust `머지 커밋`; it checks it when the apply act runs.
+
+**The apply.** First issue the pre-authorized `gate.sh exec … -- git fetch` once more: the merge happened on the remote, and until a fetch the local clone holds neither M nor an `origin/<베이스>` that contains it. Then:
+
+```
+gate.sh act --manifest <매니페스트> --kind apply --target <alias> --segment <id> \
+  --cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용
+```
+
+The argv is the fixed token `적용`; the gate runs the frozen apply command itself after checking five preconditions it does not let any rule switch off, and it writes `적용 준비` and `완료` itself. Do not write either state for a segment that still has an apply pending: the gate refuses both from `act --kind segment`. **When the apply act is refused on a precondition**: a missing or stale remote ref (precondition 4) → fetch and issue it once more, and only once. Any other precondition refusal → write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` block whose `사유` names the refused precondition number and the gate's wording, then end the shift with a `사유=중단` handoff. The `park` makes the segment terminal, so the next shift does not walk into the same refusal.
+
+#### Re-dispatching the implementation after review findings
+
+When a segment's last `cycle` row carries P0+P1 above zero, that review's `stage-result` row is `정상 완료`, and the segment has no live stage, dispatch the implementation again with the review report as its fix target. The values are already in the snapshot's `cycles[]` and `문서 인자`:
+
+```
+gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <seg> \
+  --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> --emit-digest \
+  -- implement -p "/cc-cmds:implement-unattended <문서 인자> \"세그먼트 <seg> (사이클 <n>) · 선언 파일: <files> · 수정 대상: <리포트 절대 경로> 의 P0·P1\""
+```
+
+`<n>` is that cycle row's `사이클` and the report path is made absolute as 「Dispatching a review cycle in delta mode」 item 2 says. The gate refuses a prompt whose document argument differs from the snapshot's `문서 인자`. Once the fix ends, the next review is that subsection's to dispatch. **The gate caps the cycles**: it counts the segment's `cycle` rows at every implementation dispatch and refuses with exit 3 once they reach four times the declared file count plus one. On that refusal write a segment `park` row and a `스코프=cone` block with `'사유=사이클 예산 소진'`, and dispatch nothing more for the segment.
 
 #### Routing a pre-implementation refutation to re-convergence
 
@@ -253,7 +310,7 @@ When an implement stage refutes a residual verification item before implementing
    ```
 
    **The stage runs in the segment's linked worktree, and `docs/` is not there** — it is gitignored, so no linked worktree carries the document or its carrier. That is why the document argument is always the main-worktree absolute path and never a relative one or one resolved against the segment worktree: the skill uses the path as given and derives the carrier from the document's own directory, and the stage's settings already list the main worktree. Write no `segment` row for the re-convergence — a new row owes a terminal state nothing here would drive it to. `/cc-cmds:design-reconverge` has no `-unattended` pair because it is itself the unattended skill; it is the one name this rule admits beside the `-unattended` ones, and the driver dispatches the same name.
-6. **After it ends, the segment goes back to planning — or to a person.** Read the re-convergence's `stage-result` row, then two authored facts: its terminal literal in its own stream (`grep -cF '재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다.' "$CC_PIPELINE_RUN_DIR/log/<id>#<실행 버전>.json"`), and item 3's block for that `R<n>` now reading `**상태**: 처리됨` with a `**처리 기록**:` line carrying `판정: 재설계 필요` or `판정: 불필요`.
+6. **After it ends, the segment goes back to planning — or to a person.** A re-convergence dispatched by item 5 of 「Handing on a person's answer to a halt」 is that item's to follow up, not this one's — it has no carrier block, so this item would read its absence as a failed re-convergence. Read the re-convergence's `stage-result` row, then two authored facts: its terminal literal in its own stream (`grep -cF '재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다.' "$CC_PIPELINE_RUN_DIR/log/<id>#<실행 버전>.json"`), and item 3's block for that `R<n>` now reading `**상태**: 처리됨` with a `**처리 기록**:` line carrying `판정: 재설계 필요` or `판정: 불필요`.
    - **Both present** → dispatch the segment's `implement` stage again with the prompt it had. The stage starts from its first process on the edited document: after a Step 1.5d halt the segment holds no `plan_sha256` row, and after a Step 3 halt the row it holds predates the `종류=reconverge` row, which the stage's phase resolution reads as void. A further `대기` block for the same document comes first, through item 3 again. **This holds under both verdicts, `재설계 필요` included.** The re-converged segment's own `plan_sha256` rows are what the `종류=reconverge` row voids, so they are never a reason to park it — the next bullet parks other segments and never this one.
    - **`판정: 재설계 필요`** additionally parks every **other** unmerged segment whose `implement` rows carry a `plan_sha256`: its plan was derived from the binding surface that just moved, and only the segment the re-convergence ran on has the `종류=reconverge` row that makes its own plan void. `blocked` with `사유=재수렴 라우팅 — 구속면 이동(재설계 필요)으로 계획이 낡았다`, one row per segment.
 
@@ -262,10 +319,10 @@ When an implement stage refutes a residual verification item before implementing
 
 #### Handing on a person's answer to a halt
 
-A stage that reached a question only a person can answer wrote a halt record and stopped; the seat asked the person and wrote the answer as a `중단 답` row. The snapshot's `answered_halts[]` lists each answer no stage has taken up yet — `segment` (the segment id, or the design step's id), `record` (the halt record's path), `skill`, `option` (verbatim) and `line` (the row's ledger line). **An element there is this loop's to route, not a park and not a reason to end the shift.** Take it before 「Continuing a stage that ended its turn in prose」 and before any fresh dispatch on the same key. Every read here is a gate call on the terms 「Recovering a review stage that crashed」 states. The element leaves the list by itself once a `stage-result` row of its key lands on a later line, so dispatch on it once.
+A stage that reached a question only a person can answer wrote a halt record and stopped; the seat asked the person and wrote the answer as a `중단 답` row. The snapshot's `answered_halts[]` lists each answer no stage has taken up yet — `segment` (the segment id, or the step id of a run-scope step — the design, the audit or the split), `record` (the halt record's path), `skill`, `option` (verbatim) and `line` (the row's ledger line). **An element there is this loop's to route, not a park and not a reason to end the shift.** Take it before 「Continuing a stage that ended its turn in prose」 and before any fresh dispatch on the same key. Every read here is a gate call on the terms 「Recovering a review stage that crashed」 states. The element leaves the list by itself once a `stage-result` row of its key lands on a later line, so dispatch on it once.
 
 1. **Nothing is running on it.** The key is in neither `live_stages[]` nor `orphan_stages[]`.
-2. **Which path.** Read the record's step line: `grep -n '^\*\*스텝\*\*: ' <record>`. When `skill` is `design-audit-unattended`, the step names the synthesis question (`CFI-3b`) and `option` is `adopt as a requirement`, go to item 4. Every other answer goes to item 3.
+2. **Which path.** Read the record's step line: `grep -n '^\*\*스텝\*\*: ' <record>`. When `skill` is `design-audit-unattended`, the step names the synthesis question (`CFI-3b`) and `option` is `adopt as a requirement`, go to item 4. When `skill` is `implement-unattended`, the step's text before its first ` — ` contains `CFI-U3 BT-STOP` and `option` is `재수렴`, go to item 5. Every other answer goes to item 3.
 3. **Re-attach the halted session with the answer.** Take the key's last `stage-result` row and its `세션 id` as 「Re-attaching a cut stage」 items 2 and 3 read them; the id must not be `미상` and the attempt's stream must show the session started. Keep the halted attempt's stage kind, target and `--segment` (`-` for the design step):
 
    ```
@@ -290,6 +347,20 @@ A stage that reached a question only a person can answer wrote a halt record and
 
    - **After it ends**, a key whose last `stage-result` row reads `종류=reconverge` and whose earlier rows read `종류=audit` is this item's second half. Read the terminal literal in its stream with the read item 6 of 「Routing a pre-implementation refutation to re-convergence」 makes. Present → dispatch the audit afresh on the same key with stage kind `audit` and `-p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>[ --base]"` — ` --base` exactly when the snapshot's `design_scope` is `base`, as the first audit had it — and route it like the first audit; a verdict of `재설계 필요` in that stream additionally parks every unmerged segment holding a `plan_sha256`, exactly as item 6 of 「Routing a pre-implementation refutation to re-convergence」 says. Absent — a halt, a crash, no literal — → `blocked` for the key with `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓`, and no second re-convergence.
    - The fresh audit's own halt comes back through this subsection; an adopted requirement a second time meets the once-per-key bullet and goes to a person.
+5. **A binding-tier stop answered `재수렴` goes to re-convergence, then back to planning.** An implement stage that would have had to leave the design's binding tier stopped before the edit (its CFI-U3), and the person chose to move the binding tier rather than the code. The halted session cannot do that — it never writes the design document outside its two token forms — so re-attaching it with this answer ends the stage in prose and leaves the run with nothing to route. The re-convergence takes the record itself as its scope; there is no carrier block, because a binding-tier stop writes none.
+   - **Once per key.** When the key already has a `stage-result` row reading `종류=reconverge` on a line after its first `종류=implement` row, write `blocked` for it with `사유=중단 답 라우팅 — 구속 티어 이탈이 재수렴 뒤 다시 멈췄다` and dispatch nothing.
+   - **Exclusion** as item 4 of 「Routing a pre-implementation refutation to re-convergence」.
+   - **The dispatch** keeps the halted segment's `--segment` and passes the document as its main-worktree absolute path, the value the design arm builds from `## 요소`. Write no `segment` row for it, for the reason item 5 of 「Routing a pre-implementation refutation to re-convergence」 gives:
+
+     ```
+     gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment <id> \
+       --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> \
+       --rationale '중단 답 줄 <line>; 구속 티어 이탈 재수렴' \
+       -- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 구속 티어 이탈 <record>"
+     ```
+
+   - **After it ends**, a key whose last `stage-result` row reads `종류=reconverge`, whose earlier rows read `종류=implement`, and whose last `중단 답` row names a record matched by item 2 for this item, is this item's second half — not item 6 of 「Routing a pre-implementation refutation to re-convergence」, which needs a carrier block this path never has. Read the terminal literal in its stream with the read that item 6 makes. Present → dispatch the segment's `implement` stage again with the prompt it had; it starts from its first process, because its plan rows predate the `종류=reconverge` row and its phase resolution reads them as void. A verdict of `재설계 필요` in that stream additionally parks every **other** unmerged segment holding a `plan_sha256`, exactly as item 6 of that subsection says. Absent — a halt, a crash, no literal — → `blocked` for the key with `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓`, and no second re-convergence.
+   - The re-planned stage's own halt comes back through this subsection; a binding-tier stop answered `재수렴` a second time meets the once-per-key bullet and goes to a person.
 
 #### Dispatching a review cycle in delta mode
 

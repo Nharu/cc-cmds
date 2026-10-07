@@ -6348,6 +6348,21 @@ apply_probe() {
   ( cd "$wt" && sh -c "$cmd" ) >/dev/null 2>&1
 }
 
+# apply_disposition <사전 프로브 rc> [<명령 rc> <사후 프로브 rc>] — the verdict
+# of one apply: `건너뜀`, `수렴`, `사전 실패` or `적용 불명`. Pure, and shared by
+# this driver's S9 and the gate's apply act, so the two cannot disagree about
+# which exit codes mean what. Given the pre-probe alone it can already say
+# `건너뜀` and `사전 실패`, the two verdicts that end an apply before the command
+# runs; for a pre-probe of 2 the answer is only final once both later codes are
+# in, and anything short of 0 and 0 is `적용 불명`.
+apply_disposition() {
+  case "$1" in
+    0) printf '건너뜀' ;;
+    2) if [ "${2:-}" = "0" ] && [ "${3:-}" = "0" ]; then printf '수렴'; else printf '적용 불명'; fi ;;
+    *) printf '사전 실패' ;;
+  esac
+}
+
 apply_stage() {
   local seg="$1" cmd actor radius wt root pre post rc acct
   cmd=$(apply_unquote "$(apply_field "$seg" '적용 명령')")
@@ -6395,14 +6410,15 @@ apply_stage() {
 
   apply_probe "$wt" "$probe"; pre=$?
   acct=$(stage_account_of "S9-$seg")
-  case "$pre" in
-    0) ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+  case "$(apply_disposition "$pre")" in
+    건너뜀)
+       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
          "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
          "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 프로브 0 — 적용할 변경 없음"
        apply_teardown "$seg" "$wt"
        return 0 ;;
-    2) : ;;
-    *) # Anything that is not "no changes" or "changes pending" is the probe
+    '사전 실패')
+       # Anything that is not "no changes" or "changes pending" is the probe
        # itself failing. Refuse BEFORE touching anything: an apply whose need
        # could not be established is an apply with no evidence behind it.
        park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre) — 아무것도 건드리기 전에 거부한다" "$cmd"
@@ -6414,7 +6430,7 @@ apply_stage() {
 
   apply_probe "$wt" "$probe"; post=$?
   acct=$(stage_account_of "S9-$seg")
-  if [ "$rc" = "0" ] && [ "$post" = "0" ]; then
+  if [ "$(apply_disposition "$pre" "$rc" "$post")" = "수렴" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
       "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 2 → 사후 0, 수렴"
