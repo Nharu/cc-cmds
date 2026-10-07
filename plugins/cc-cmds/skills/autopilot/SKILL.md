@@ -837,6 +837,73 @@ When the snapshot's `design_required` is `true` and a step in `steps[]` has `ski
    **The name belongs to the kickoff, and this loop never supplies one.** `## 요소`'s `설계 문서` is chosen in Act 1 (Step 5k) and frozen with the manifest; on a `design_required` run `(없음)` is a refused value there, rejected by the kickoff's own pre-freeze self-check and again by the gate's exemption. So when `design_doc` is `null`, do **not** compose a path for the argv. A path invented here names a document no other guard, no audit and no segment plan is looking for, and the run would go on around it. Let the gate refuse with exit 3 and stop the design as item 1 says.
 5. **`정상 완료` on the row is not the freeze.** On this path the gate classifies a stage by its exit, its halt record and whether it wrote a gate row, and none of those says the document was frozen. So check both authored facts before anything reads the document: the freeze literal `설계 문서를 동결했습니다.` in the stage's stream (`gate.sh exec … --surface 읽기 -- grep -rlF --include='<step id>#*.json' '설계 문서를 동결했습니다.' <절대 run-dir>/log`) **and** a line reading exactly `**상태**: 동결됨` in the document (`grep -qxF '**상태**: 동결됨' <문서>`). Both → the next step of the graph; the stage names no next step, by contract. Either missing → stop the design as item 1 says, naming which of the two is absent in the evidence. **An unfrozen document never goes on to the audit or to segment planning.**
 
+#### Dispatching the audit stage
+
+When the design stage's last `stage-result` row is `정상 완료` and item 5 above found both freeze facts, the next step of the graph is the audit, if the plan names one. The step id is read from the snapshot with `.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty`; as with the design step, an empty result, a blank line or two lines all mean `no single audit step`, and the gate refuses the dispatch with exit 3 on the same reading. **An audit step is not a segment either**: it is dispatched with `--segment -`, every ledger row about it carries `세그먼트=- | 스테이지=<audit step id> | 종류=audit`, and `gate.sh wait --manifest <매니페스트> --segment <audit step id>` waits on it.
+
+```
+gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment - \
+  --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> --emit-digest \
+  -- audit -p "/cc-cmds:design-audit-unattended <설계 문서 메인 워크트리 절대 경로>"
+```
+
+The gate exempts this form from the `segment` row and predecessor checks only when the plan requires a design and names exactly one `design-audit` step, and it checks three preconditions before it writes anything: the design step's last `stage-result` row is `정상 완료`, the manifest's document carries the line `**상태**: 동결됨` exactly once, and neither the design step nor the audit step has a live attempt. A refusal is exit 3; do not write a `segment` row to get past it. Resume, re-attachment and continuation read the audit step's rows the same way 「Dispatching the design stage」 items 1 and 2 read the design step's, keyed on `종류=audit`; when the continuation cap is spent, the gate says to continue the audit no further, and no segment is planned on that run.
+
+**The audit runs in a linked worktree of its own, detached at the base branch's tip — never in the main worktree — and the gate makes it.** The main worktree is the one every run and session on the repository fast-forwards after a merge, so an audit window of twenty-odd minutes there sees its own `HEAD` tree move, and the audit's freeze check reads that as a mismatch and halts with no automatic retry, however unrelated the merged paths are. The dispatch above creates `<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach` at the target's base branch when that path is absent, reuses it when a re-audit of the same key finds it there, adds it to the stage settings, and fails with exit 3 and launches nothing when the path is held by anything that is not a worktree of the target. Every act the audit stage then issues with `--segment -` runs in that tree. Do not create it with an `exec`, and do not write a `segment` row to name it — no row names it, and the gate resolves it from the audit step id. The document argument stays the main-worktree absolute path: `docs/` is gitignored, so the linked worktree does not carry it, and the audit takes its code root from the tree its acts run in.
+
+**The audit edits the document**, so whatever was true of the document before it ran is read again after. Once its `stage-result` row is `정상 완료`, check that at least one `docs/design-audit/<slug>.reader-*.md` exists and that the document still carries `**상태**: 동결됨` exactly (`grep -qxF '**상태**: 동결됨' <문서>`), both through the gate. Either missing → plan no segment, and stop as 「Dispatching the design stage」 item 1 stops, naming which fact is absent.
+
+#### Planning the segments
+
+Segment planning starts only after the audit has ended as above, or straight after item 5's freeze check when the plan names no audit step. The snapshot's `슬라이싱` field is the read: its branch (`미통치`, `선언통치`, `선언불완전`), the slice ids in declaration order, and each id's branch name and worktree path. **For each slice, in declaration order, three calls:**
+
+1. `gate.sh exec … --surface 읽기 -- git fetch` against the slice's target.
+2. `gate.sh exec … --surface 워크트리쓰기 -- git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>`.
+3. The plan row, which the gate fills from the frozen document rather than from this loop:
+
+   ```
+   gate.sh act --manifest <매니페스트> --kind segment --target <alias> --segment <slice id> \
+     --cutpoint <token> --surface 읽기 --snapshot-digest <H> --from-declaration \
+     -- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>
+   ```
+
+   Pass no `레포`, `선언 파일 집합`, `선행`, `절단점` or `리뷰 정책`: under `--from-declaration` the gate refuses them, takes them from the document's `## 구현 슬라이싱`, and requires `워크트리` to be the derived path. On `미통치` there is one segment whose id is the plan's implementation step id.
+
+**A slice with a `선행` is planned only once its predecessor's last `segment` row is `머지됨` or `완료`**, so its branch is cut from a base that already carries that landing. When a slice is planned, dispatch its implementation with the stage form above. **Two refusals are structural**: `선언불완전` (the refusal names the slice and the missing fields) and a resolved review policy other than `리뷰없음` on a plan that has no review step. The gate leaves the run-scope block for either inside the refusing act — this loop cannot create a run-scope block — so write nothing more and end the shift with a `사유=중단` handoff.
+
+#### Merging and applying a segment
+
+**The merge.** For a segment whose resolved review policy is `선리뷰후머지`, merge once its review has passed, pinned to what the review read: `gh pr merge <n> --merge --match-head-commit <the 리뷰 HEAD of the segment's last cycle row>`. Under any other policy there may be no `cycle` row, so pin to the implementation worktree's HEAD instead (`--match-head-commit <구현 워크트리 HEAD>`), and issue no apply act afterwards. Either way read `gh pr view <n> --json mergeCommit` and record it:
+
+```
+gate.sh act --manifest <매니페스트> --kind segment --target <alias> --segment <id> \
+  --cutpoint <token> --surface 읽기 --snapshot-digest <H> \
+  -- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>
+```
+
+Every `segment` row this loop writes for the segment, this one and a `park` alike, carries the plan row's `선행` again. The gate does not trust `머지 커밋`; it checks it when the apply act runs.
+
+**The apply.** First issue the pre-authorized `gate.sh exec … -- git fetch` once more: the merge happened on the remote, and until a fetch the local clone holds neither M nor an `origin/<베이스>` that contains it. Then:
+
+```
+gate.sh act --manifest <매니페스트> --kind apply --target <alias> --segment <id> \
+  --cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용
+```
+
+The argv is the fixed token `적용`; the gate runs the frozen apply command itself after checking five preconditions it does not let any rule switch off, and it writes `적용 준비` and `완료` itself. Do not write either state for a segment that still has an apply pending: the gate refuses both from `act --kind segment`. **When the apply act is refused on a precondition**: a missing or stale remote ref (precondition 4) → fetch and issue it once more, and only once. Any other precondition refusal → write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` block whose `사유` names the refused precondition number and the gate's wording, then end the shift with a `사유=중단` handoff. The `park` makes the segment terminal, so the next shift does not walk into the same refusal.
+
+#### Re-dispatching the implementation after review findings
+
+When a segment's last `cycle` row carries P0+P1 above zero, that review's `stage-result` row is `정상 완료`, and the segment has no live stage, dispatch the implementation again with the review report as its fix target. The values are already in the snapshot's `cycles[]` and `문서 인자`:
+
+```
+gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <seg> \
+  --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> --emit-digest \
+  -- implement -p "/cc-cmds:implement-unattended <문서 인자> \"세그먼트 <seg> (사이클 <n>) · 선언 파일: <files> · 수정 대상: <리포트 절대 경로> 의 P0·P1\""
+```
+
+`<n>` is that cycle row's `사이클` and the report path is made absolute as 「Dispatching a review cycle in delta mode」 item 2 says. The gate refuses a prompt whose document argument differs from the snapshot's `문서 인자`. Once the fix ends, the next review is that subsection's to dispatch. **The gate caps the cycles**: it counts the segment's `cycle` rows at every implementation dispatch and refuses with exit 3 once they reach four times the declared file count plus one. On that refusal write a segment `park` row and a `스코프=cone` block with `'사유=사이클 예산 소진'`, and dispatch nothing more for the segment.
+
 #### Dispatching a review cycle in delta mode
 
 A segment's second and later review cycles re-read almost everything the first one read. A **delta** cycle reads only the files changed since the segment's last full cycle for new findings and re-adjudicates every P0/P1 that cycle raised; the review skill and the gate decide whether it holds, and this loop only offers it. **If the segment's last `stage-result` row reads `종류=review` with `종단 부류=크래시`, `한도 종료` or `외부 종료`, go to 「Re-attaching a cut stage」 and then, for a `크래시` or `한도 종료` it declines, 「Recovering a review stage that crashed」 before dispatching anything from here** — a fresh dispatch early-stubs the report path that subsection reads its roster from. Five things, in order:

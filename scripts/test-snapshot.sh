@@ -785,6 +785,113 @@ do
 done
 
 # ---------------------------------------------------------------------------
+# 6e-2. The audit dispatch and segment planning are carried by BOTH router copies
+#
+# Once the design froze, no router text named the next act: the audit was never
+# dispatched, no segment was planned, and the run sat on a frozen document until
+# its budget ran out. The literals below are the two acts' forms and the facts
+# that order them — the audit step's selector, which lives here and not in the
+# design subsection, the re-check of the freeze line after the audit edits the
+# document, the per-slice order that makes the worktree exist before its row, and
+# the predecessor rule. The design subsection keeps its own closing sentence.
+# ---------------------------------------------------------------------------
+router_section() {
+  awk -v h="$2" '$0 == h { f = 1; next } f && /^#+ / { exit } f' "$1"
+}
+for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for spec in \
+    '#### Dispatching the audit stage|.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty' \
+    '#### Dispatching the audit stage|-- audit -p "/cc-cmds:design-audit-unattended <설계 문서 메인 워크트리 절대 경로>"' \
+    '#### Dispatching the audit stage|`세그먼트=- | 스테이지=<audit step id> | 종류=audit`' \
+    '#### Dispatching the audit stage|docs/design-audit/<slug>.reader-*.md' \
+    "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \
+    '#### Dispatching the audit stage|`<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach`' \
+    '#### Dispatching the audit stage|do not write a `segment` row to name it' \
+    '#### Planning the segments|`슬라이싱`' \
+    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>' \
+    '#### Planning the segments|--from-declaration' \
+    '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
+    '#### Planning the segments|its predecessor'"'"'s last `segment` row is `머지됨` or `완료`' \
+    '#### Planning the segments|end the shift with a `사유=중단` handoff'
+  do
+    head=${spec%%|*}; lit=${spec#*|}
+    sec=$(router_section "$file" "$head")
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 「${head#'#### '}」 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 「${head#'#### '}」 절" "「${lit}」이 없다"
+    fi
+  done
+  dsec=$(router_section "$file" '#### Dispatching the design stage')
+  nlit=$(printf '%s\n' "$dsec" | grep -cF '.skill == "design-audit"' || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    bad "$who 사본의 설계 파견 절" "감사 단계 선택 식이 설계 절 안에 있다"
+  else
+    ok "$who 사본의 감사 단계 선택 식은 설계 절 밖에 있다"
+  fi
+  nlit=$(printf '%s\n' "$dsec" | grep -cF 'An unfrozen document never goes on to the audit or to segment planning.' || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    ok "$who 사본의 설계 절이 동결 전 감사·계획 금지 문장을 그대로 싣는다"
+  else
+    bad "$who 사본의 설계 절" "동결 전 감사·계획 금지 문장이 없다"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 6e-3. Merge, apply and the fix re-dispatch are carried by BOTH router copies
+#
+# After a review passed, no router text merged with a pinned head, recorded the
+# merge commit, or issued the apply; after a review raised P0·P1, none sent the
+# implementation back with the report as its fix target. The literals below are
+# the two merge pins, the fetch before the apply, the apply act's fixed token,
+# the park-and-cone disposition of a precondition refusal, and the cycle cap's
+# reason. The fix prompt must be one string in both copies, and the fix section
+# does not restate the delta basis expression, which belongs to the delta
+# subsection.
+# ---------------------------------------------------------------------------
+fix_prompt=""
+fix_prompt_rs=""
+for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for spec in \
+    '#### Merging and applying a segment|--merge --match-head-commit <the 리뷰 HEAD of the segment'"'"'s last cycle row>' \
+    '#### Merging and applying a segment|--match-head-commit <구현 워크트리 HEAD>' \
+    '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
+    "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
+    '#### Merging and applying a segment|First issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
+    '#### Merging and applying a segment|--kind apply --target <alias> --segment <id>' \
+    '#### Merging and applying a segment|--cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용' \
+    '#### Merging and applying a segment|fetch and issue it once more, and only once' \
+    '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
+    '#### Re-dispatching the implementation after review findings|P0+P1 above zero' \
+    "#### Re-dispatching the implementation after review findings|'사유=사이클 예산 소진'"
+  do
+    head=${spec%%|*}; lit=${spec#*|}
+    sec=$(router_section "$file" "$head")
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 「${head#'#### '}」 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 「${head#'#### '}」 절" "「${lit}」이 없다"
+    fi
+  done
+  fsec=$(router_section "$file" '#### Re-dispatching the implementation after review findings')
+  prompt=$(printf '%s\n' "$fsec" | grep -oE -- '-- implement -p "/cc-cmds:implement-unattended .*"$' | sort -u)
+  check "$who 사본의 수정 재파견 절에 지시 문구가 한 벌 실린다" \
+    "$(printf '%s\n' "$prompt" | grep -c -- '수정 대상: <리포트 절대 경로> 의 P0·P1')" "1"
+  if [ -z "$fix_prompt" ]; then fix_prompt="$prompt"; else fix_prompt_rs="$prompt"; fi
+  nlit=$(printf '%s\n' "$fsec" | grep -cF 'max_by((.["사이클"]' || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    bad "$who 사본의 수정 재파견 절" "델타 리뷰 기준 선택 식을 다시 적었다"
+  else
+    ok "$who 사본의 수정 재파견 절은 델타 기준 선택 식을 다시 적지 않는다"
+  fi
+done
+check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "$fix_prompt_rs" "$fix_prompt"
+
+# ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key
 #
 # Every ledger here is synthetic and written to its own file under $WORK; the
