@@ -14,8 +14,10 @@ anchor rather than a good intention.
 The two banner seats are not the only hooks in this directory.
 `active-notify-pretool.sh` belongs to the `active-notify` skill, and
 `stage-policy-edit-drift.sh` is the edit-time seat of the stage-policy drift
-check, whose contract is the last section of this file. Neither raises a
-session banner, and the rules below are written for the two seats alone.
+check, whose contract is a later section of this file. `autopilot-status.tsx`
+is not a command hook at all but a plugin module, listed under `"modules"`; its
+section is the last one. None of the three raises a session banner, and the
+rules below are written for the two seats alone.
 
 ## The two seats, and there are only two
 
@@ -247,3 +249,46 @@ to make it, and the checker refuses `--ack` and `--ack-added` there as well.
 1 and that is the case the hook exists for. The checker's stderr goes to
 `/dev/null`, and a missing `jq` exits 0 after the same Homebrew PATH prepend the
 banner seats use.
+
+## The run-status pane module
+
+`autopilot-status.tsx` is a plugin module (`"modules"` in `hooks.json`), not a
+command hook. In an interactive session it shows, in a pane titled `autopilot`,
+the state of the one run the status line picked for this session: the status
+line's own head line, the segments that have not finished, open approvals,
+run-scope and cone-scope blocks, and orphaned stages.
+
+**The module decides when, the shell decides what.** Every line, its order, its
+tone, the run's class (`live`, `ended`, `none`) and the refresh period come from
+`../orchestrator/run-pane.sh <session id>`. The helper calls the unchanged
+`statusline.sh` for the head line, so the pane and the status line always name
+the same run, and it always exits 0 and writes nothing. Its first row is
+`cc-pane<TAB>1<TAB><class><TAB><run id|-><TAB><session index path|-><TAB><refresh ms>`,
+and every row after it is `<tone><TAB><text>`, at most 15. The module checks
+`cc-pane` and the schema `1` exactly; on a mismatch, a non-zero exit or a failed
+run it keeps the last good lines, adds one warning line, and opens nothing. Tones
+map to theme keys (`ok` success, `warn` warning, `error` error and bold, `accent`
+suggestion, `dim` dim); any other tone is drawn plain.
+
+**When the helper runs.** A ten-second clock checks the session id, the module's
+panes and the session index file's mtime without starting a process, and runs
+the helper only when the session id changed, the index changed or appeared, the
+pane is placed and the helper's refresh period passed, or the pane is not placed
+and sixty seconds passed. One run at a time, eight seconds at most.
+
+**Opening and closing.** The pane opens by itself once per live run: only when
+the run is `live`, the module has not opened it for that run before, nobody
+closed it for that run, and the pane is not already open (placed or waiting for
+width). It never closes by itself; a finished run leaves its last lines up.
+`/autopilot-status` toggles it: a placed pane is closed and the run is recorded
+as dismissed, otherwise the pane is opened and the helper runs once. A pane the
+person closes records its run as dismissed; a pane dropped by an unload records
+nothing. These records live in the session's `$.state`, declared in
+`../types/index.d.ts`, so a module reload does not forget them.
+
+**Nothing happens outside an interactive session.** The first statement of the
+`session.start` hook returns when the session is not interactive, and the next
+returns when any of `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_STAGE_ID` or
+`CC_PIPELINE_SHIFT_ID` is non-empty. Only after both does the module register the
+command or start its clock, so a stage, a shift or a `-p` run gets no command,
+no process and no pane.

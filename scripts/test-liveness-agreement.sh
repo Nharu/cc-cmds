@@ -38,6 +38,7 @@ LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 WATCH="$repo_root/plugins/cc-cmds/orchestrator/watch.sh"
 SL="$repo_root/plugins/cc-cmds/orchestrator/statusline.sh"
+PANE="$repo_root/plugins/cc-cmds/orchestrator/run-pane.sh"
 . "$repo_root/scripts/run-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-liveness-agree.XXXXXX")
@@ -111,6 +112,18 @@ read_statusline() {
   esac
 }
 
+read_pane() {
+  # The status pane's helper takes its run from the status line's second token,
+  # so the two can only disagree if that borrowing breaks. Its head row carries
+  # the run id in the fourth field.
+  bash "$PANE" "$1" | head -1 | cut -f4
+}
+
+read_statusline_rid() {
+  # The status line's second token, read the way the pane's contract names it.
+  fx_statusline_stdin "$1" | bash "$SL" | cut -d' ' -f2
+}
+
 # ---------------------------------------------------------------------------
 # Fixture A — one live stage among a dead one and a reused pid.
 #
@@ -162,6 +175,70 @@ check "B 공용 술어 — 죽은 pid 와 재사용 pid 는 0 이다" "$n" "0"
 check "B 종료 조건 7 이 같은 수를 본다" "$(read_condition7 "$RD_B")" "$n"
 check "B 워처가 같은 수를 본다" "$(read_watcher "$RD_B" "$LG_B")" "$n"
 check "B 상태줄이 같은 수를 본다" "$(read_statusline sess-b)" "0"
+
+# ---------------------------------------------------------------------------
+# The status pane names the same run as the status line, on every fixture here
+# that a session index points at. Each is pinned to its run id as well, so a
+# pair that both fell back to "no run" cannot agree its way to green.
+# ---------------------------------------------------------------------------
+for _pr in sess-a:agree-a sess-b:agree-b; do
+  _ps=${_pr%%:*}; _pw=${_pr#*:}
+  check "패널이 상태 표시줄과 같은 런을 고른다 ($_ps)" "$(read_pane "$_ps")" "$(read_statusline_rid "$_ps")"
+  check "그 런이 픽스처의 런이다 ($_ps)" "$(read_pane "$_ps")" "$_pw"
+done
+
+# ---------------------------------------------------------------------------
+# The pane's row functions number what the run verdict counts.
+#
+# Each fixture holds the case where a reader that took a shortcut would come
+# apart from the count, and the shortcut's answer is asserted to differ — so the
+# equality cannot hold merely because the fixture was too plain to separate
+# anything.
+# ---------------------------------------------------------------------------
+fx_mkrun agree-rows
+fx_segment S1 실행중
+# A merge that still owes its apply: terminal by its 상태 field, in flight by
+# the count. Read off the second field, this is the case a reader gets wrong.
+fx_row 'segment' "id=S2" "상태=머지됨" "적용=대기" "워크트리=$FX_RUN_DIR"
+fx_segment S3 완료
+fx_segment S4 park
+# `A1` resolved and `A10` still waiting: a substring match on the id makes the
+# resolution of one the last row of the other.
+fx_approval A1 대기
+fx_approval A10 대기
+fx_approval A1 승인
+fx_approval A2 대기
+LG_R="$FX_LEDGER"
+. "$LIVENESS"
+n_open=$( { cc_segment_states "$LG_R" || true; } | awk -F'\t' '$3 == "open"' | grep -c . || true)
+check "cc_segment_states 의 open 줄 수가 cc_nonterminal_segments 와 같다" "$n_open" "$(cc_nonterminal_segments "$LG_R")"
+check "그 수가 머지됨+적용=대기 를 센다 (둘)" "$n_open" "2"
+# A function rather than an inline loop: bash 3.2 cannot parse a `case` arm's
+# `)` inside a command substitution.
+count_by_state_field() {
+  local _i _s _v
+  while IFS="$(printf '\t')" read -r _i _s _v; do
+    case " $TERMINAL_SEGMENT_STATES " in
+      *" $_s "*) ;;
+      *) printf '%s\n' "$_i" ;;
+    esac
+  done
+}
+n_by_state=$( { cc_segment_states "$LG_R" || true; } | count_by_state_field | grep -c . || true)
+if [ "$n_by_state" != "$n_open" ]; then
+  ok "대조 — 상태 칸으로 세면 이 픽스처에서 수가 갈라진다 (${n_by_state} ≠ ${n_open})"
+else
+  bad "대조 픽스처" "상태 칸으로 센 수가 같다 — 픽스처가 셋째 칸의 판정을 시험하지 못한다"
+fi
+n_rows=$( { cc_open_approval_rows "$LG_R" || true; } | grep -c . || true)
+check "cc_open_approval_rows 의 줄 수가 cc_open_approvals 와 같다" "$n_rows" "$(cc_open_approvals "$LG_R")"
+check "그 줄이 A10 과 A2 다" "$( { cc_open_approval_rows "$LG_R" || true; } | cut -f1 | LC_ALL=C sort | paste -sd, -)" "A10,A2"
+n_naive=$(grep -E '^- `승인`' "$LG_R" | grep -c '상태=대기' || true)
+if [ "$n_naive" != "$n_rows" ]; then
+  ok "대조 — 대기 행을 그대로 세면 수가 갈라진다 (${n_naive} ≠ ${n_rows})"
+else
+  bad "대조 픽스처" "대기 행 수가 같다 — 픽스처가 id 별 마지막 행 규칙을 시험하지 못한다"
+fi
 
 # ---------------------------------------------------------------------------
 # The render's reading, which cannot be driven without a manifest.
