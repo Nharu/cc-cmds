@@ -175,6 +175,7 @@ idx="$CC_SL_STATE/session/$sid"
 # the gate, which does it on a sparse cycle beside the reclamation that removed
 # those directories in the first place.
 best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_rank=9
+now=$(date -u +%s)
 while IFS= read -r rid; do
   [ -n "$rid" ] || continue
   rd="$CC_SL_STATE/run/$rid"
@@ -188,6 +189,27 @@ while IFS= read -r rid; do
   [ -n "$st" ] || continue
   rank=$(cc_run_grade "$st" 2>/dev/null || true)
   [ -n "$rank" ] || rank=9
+  # A WAITING APPROVAL HOLDS ITS RANK ONLY WHILE A WATCHER CAN STILL DELIVER IT.
+  # `cc_run_state` returns 승인대기 for any open approval however long the ledger
+  # has been quiet, and that is right for the token: the watcher's terminal
+  # banner keys on it and must not change. But as a RANK it let a run whose
+  # watcher died with one approval open hold every later run's session forever —
+  # measured, a run past its deadline and taken over by a successor held the
+  # line 102 hours after its last row, over the run that replaced it. So with no
+  # fresh heartbeat the approval stops counting and the run is ranked on the
+  # same idle ladder as a run without one. The token, and so the glyph when it
+  # is still the only run, stays 승인대기; only the order changes.
+  if [ "$st" = "승인대기" ]; then
+    hb_t=$(cc_mtime "$rd/watch.heartbeat")
+    if [ -z "$hb_t" ] || [ "$((now - hb_t))" -gt "$CC_SL_HEARTBEAT_STALE" ]; then
+      g=$(cc_ledger_growth_at "$rd" "$ledger")
+      if [ -z "$g" ] || [ "$((now - g))" -ge "$CC_SL_ABANDON" ]; then
+        rank=$(cc_run_grade 버려짐)
+      elif [ "$((now - g))" -ge "$CC_SL_STALL" ]; then
+        rank=$(cc_run_grade 정지경고)
+      fi
+    fi
+  fi
   if [ "$st" = "종단" ]; then
     # WHERE A TERMINAL TIME COMES FROM, once, for both paths. `done` carries an
     # ISO stamp but only a handful of runs ever reach the verb that writes it,
@@ -212,7 +234,8 @@ done < "$idx"
 # Render.
 # ---------------------------------------------------------------------------
 
-now=$(date -u +%s)
+# `now` was read once before the selection loop, so the rank and the slots
+# below are judged against one clock.
 
 # The ledger's age comes from the watcher's heartbeat when there is one, and
 # from the ledger's own mtime when there is not. Measured 2026-09-07: 61 of 62
