@@ -12975,6 +12975,27 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/team-witness/r1.md"
 check "아무도 만들지 않는 team-witness/ 철자도 예외가 아니다" "$rc" "3"
+# 팀 정리 절차는 끝난 워크플로의 위트니스 디렉터리를 기록된 scratchDir 그대로
+# `rm -rf` 한다. 그 인자는 디렉터리 자체라 안쪽 파일만 여는 예외에 닿지 않았고,
+# 설계 스테이지의 정리가 rc 3 으로 막혀 사본과 원장의 임시 필드가 남았다. 생성
+# 스크립트가 실제로 만든 경로로 잰다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- rm -rf "$WPUB"
+check "팀 정리가 위트니스 디렉터리 자체를 지우는 것은 통과한다" "$rc" "0"
+check "그 디렉터리가 실제로 지워졌다" "$( [ -e "$WPUB" ] && printf 'yes' || printf 'no' )" "no"
+# 대조군 — 디렉터리 자체 예외는 그 접두에만 열린다. 기준선 디렉터리를 지우는 같은
+# 형태는 여전히 거부된다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- rm -rf "$RD3/log"
+check "대조군: 런 디렉터리의 다른 디렉터리를 지우는 것은 여전히 거부" "$rc" "3"
+# 대조군 — 디렉터리 자체 예외는 `rm` 에만 열린다. 같은 이름을 다른 동사로 지명하면
+# 그 디렉터리를 만드는 것이고, 생성은 이전처럼 거부된다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir "$RD3/cc-team-witness-made.AbCdEf"
+check "대조군: 위트니스 디렉터리를 rm 이 아닌 동사로 만드는 것은 여전히 거부" "$rc" "3"
 # 공유 세대 디렉터리는 둘째 예외이고, 한 단계 아래만이다. 교대가 산출물을 발행하는
 # 자리는 `shared/<gen>/` 이며 `shared/` 바로 아래의 파일은 세대가 없으므로 `*/*`
 # 거절로 떨어진다 — 예외를 `shared/*` 로 넓게 적으면 그 한 층이 조용히 열린다.
@@ -20012,6 +20033,16 @@ case "$msg" in
 esac
 sa_seg_row SB5B2 선머지후리뷰
 check "5b: 종단해도 세그먼트 행은 기록된다 (종단은 디스패치와 머지만 막는다)" "$rc" "0"
+# 라우터는 모든 호출에 대상의 절단점을 싣는다. 절단점이 머지인 대상에서 종단 직후
+# 교대가 쓰는 `handoff 사유=종단` 은 행 하나를 남길 뿐인데, 머지 팔이 그 절단점을
+# 머지로 읽어 거절했고 게이트는 그 교대를 무기록으로 적었다. 위 단언은 커밋 절단점
+# 이라 그 팔에 닿지 않았다.
+sag act --manifest "$SA_MANIFEST" --kind handoff --target main --cutpoint 머지 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "종단 교대의 인수인계" \
+    -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "5b: 종단한 런에서도 머지 절단점의 handoff 부기 행위는 통과한다" "$rc" "0"
+check "5b: 그 인수인계 행이 원장에 남는다" \
+  "$( { grep -c '^- `handoff` .*사유=종단' "$SA_LEDGER" || true; } )" "1"
 
 # 표시가 없을 때 원장을 읽어 종단을 되살리는 폴백은, 종료 표지를 「인용한」 행까지
 # 종료 선언으로 읽어서는 안 된다. 원장 행의 자유 텍스트 필드(`argv`·`근거`)에는
