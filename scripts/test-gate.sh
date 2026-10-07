@@ -25908,7 +25908,7 @@ bsx_cu() {
   # credential reachable.
   local m="$1" s="$2"; shift 2
   ( cd "$WT" && HOME="$BSX_EH" XDG_CONFIG_HOME="$BSX_EH" CC_PIPELINE_MANIFEST="$m" \
-    python3 -I "$BSX_CU/$s" "$@" ) >/dev/null 2>&1
+    python3 -I "$CC_ORCH/$s" "$@" ) >/dev/null 2>&1
   printf '%s' "$?"
 }
 bsx_fresh RBB
