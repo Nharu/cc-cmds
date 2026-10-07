@@ -675,6 +675,9 @@ case "$best_state" in
     # stop. In the GRADE the direction is the opposite: 정지경고 outranks 종단,
     # because a run between two stages is still a run.
     line="✓ ${best_rid} 종료"
+    # The watcher exits when the run ends, so a stale heartbeat here is the
+    # normal shape of a finish, not a missing watcher.
+    watch_slot=""
     ;;
   승인대기)
     pend=$(cc_open_approvals "$best_ledger")
