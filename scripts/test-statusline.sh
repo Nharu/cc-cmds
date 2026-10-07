@@ -613,6 +613,42 @@ has   "A11 스테이지 사이에서 멎은 정지경고 런이 더 최근의 �
 hasnt "A11 더 최근이어도 종단을 표시하지 않는다" "$out" "run-a11-term"
 has   "A11 그 런은 정지 경고 글리프로 렌더된다" "$out" "⚠"
 
+# A12. Issue 723's shape. A run whose watcher died with an approval open held
+# rank 2 however long its ledger had been quiet, so it hid every later run in
+# the session. With no fresh heartbeat the approval stops counting toward the
+# rank and the run goes on the idle ladder like any other quiet run.
+fx_mkrun run-a12-dead; fx_ledger_path; fx_segment S1 실행중; fx_approval A1 대기
+fx_heartbeat 4000 7200; fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a12-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a12 run-a12-dead run-a12-term
+out=$(sl sess-a12)
+has   "A12 워처 없이 멎은 승인대기 런은 종단 런에게 진다" "$out" "run-a12-term"
+hasnt "A12 그 승인대기 런을 표시하지 않는다" "$out" "run-a12-dead"
+
+# Inside the stall band it ranks as 정지경고, so a run still moving beats it
+# well before the abandon mark — the 19-minute shape the issue measured.
+fx_mkrun run-a12-band; fx_ledger_path; fx_segment S1 실행중; fx_approval A1 대기
+fx_heartbeat 4000 1140; fx_age_file "$FX_LEDGER" 1140
+fx_mkrun run-a12-live; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5
+fx_session_index sess-a12b run-a12-band run-a12-live
+out=$(sl sess-a12b)
+has   "A12 워처 없는 승인대기 런이 원장이 움직이는 런에게 진다" "$out" "run-a12-live"
+hasnt "A12 그 승인대기 런을 표시하지 않는다(정지 구간)" "$out" "run-a12-band"
+
+# The other direction: a watcher still beating keeps an approval at rank 2 over
+# a quiet ledger, because a person may answer it in the morning.
+fx_mkrun run-a12-wait; fx_ledger_path; fx_segment S1 실행중; fx_approval A1 대기
+fx_heartbeat 0 7200; fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a12-term2; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a12c run-a12-wait run-a12-term2
+out=$(sl sess-a12c)
+has   "A12 워처가 살아 있는 승인대기 런은 원장이 오래 멎어도 종단 런을 이긴다" "$out" "run-a12-wait"
+has   "A12 그 런은 승인 대기로 렌더된다" "$out" "⏸"
+
+# And alone in its session the demoted run still renders as what it is.
+fx_session_index sess-a12d run-a12-dead
+has   "A12 홀로 남은 워처 없는 승인대기 런은 여전히 승인 대기로 렌더된다" "$(sl sess-a12d)" "⏸"
+
 # ---------------------------------------------------------------------------
 # The branch the isolation cannot reach
 # ---------------------------------------------------------------------------
