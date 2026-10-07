@@ -5424,6 +5424,16 @@ for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sor
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
 
+# THE SEED NAMES A BINDING VALUE NOBODY HAS ANSWERED. B1's id is salted with the
+# progress digest, and the issuer keeps an id quiet once it carries an answer
+# while `boundary-B1.asked` still names that digest. Section 6 drives enough
+# acts on an unmoving vector to fire B1 itself, and the drain above answers that
+# approval — so on a shard that puts 6 directly in front of this section, the
+# firing below computed the answered id and issued nothing, the grep for B1
+# matched 6's row, and 13 and 14 then tried to close an approval already
+# resolved. One structural row with this section's own id moves the digest the
+# way 31aa does, so the seed names a value no earlier section answered.
+printf -- '- `종료 절` | id=C12 | 상태=충족 | 근거=12 픽스처 — B1 결속값을 새로 연다 | prev=x\n' >> "$FX_LEDGER"
 # `RD` is set in `pre_base`, in the head.
 printf '%s\n' "$(PD)" > "$RD/progress-digest"
 printf '%s\n' "9" > "$RD/progress-repeat"
@@ -5439,10 +5449,11 @@ printf '%s\n' "9" > "$RD/progress-repeat"
 # section is about: a router spinning on judgments with nothing read between.
 # Same seed as 31aa's.
 printf '%s\n' "$( { grep -c '^- `' "$FX_LEDGER" || true; } | tr -d ' ')" > "$RD/progress-origin"
+b12_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "S9" -- touch "$WORK/t2"
-if grep -q '구속 튜플=B1' "$FX_LEDGER"; then
+if [ "$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)" -gt "$b12_before" ]; then
   ok "B1 이 발동하면 park 이 아니라 승인 대기를 발행한다"
 else
   bad "B1" "무진전이 연속으로 쌓였는데 경계 승인이 없다"
