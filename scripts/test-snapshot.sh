@@ -840,6 +840,35 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
 done
 
 # ---------------------------------------------------------------------------
+# 6e-2b. The kickoff writes the freeze line into a lead-solo document
+#
+# The gate dispatches the audit and plans segments only from a document carrying
+# `**상태**: 동결됨`, while the kickoff's lead-solo contract froze by hash alone.
+# Every lead-solo run then stopped at its first dispatch with nobody at the seat.
+# The literals below are the contract's instruction to write the line, the 5m
+# paragraph's order (line first, hash second), and the Step 6 refusal that
+# catches a document frozen without it.
+# ---------------------------------------------------------------------------
+for lit in \
+  '(c) **Freeze line and `sha256`**' \
+  'a line reading exactly `**상태**: 동결됨`, once, below the H1' \
+  'Write the freeze line of (c) into it, then take its path and whole-file `sha256`' \
+  "the tier is \`lead-solo\` and the document \`설계 문서\` names does not carry the line \`**상태**: 동결됨\` exactly once"
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "1" ]; then
+    ok "킥오프의 lead-solo 동결 계약이 「${lit}」을 한 번 싣는다"
+  else
+    bad "킥오프의 lead-solo 동결 계약" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+done
+if grep -qF '(c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment' "$AP_SKILL"; then
+  bad "킥오프의 lead-solo 동결 계약" "해시만으로 동결하는 옛 문면이 남아 있다"
+else
+  ok "킥오프의 lead-solo 동결 계약에 해시만으로 동결하는 옛 문면이 없다"
+fi
+
+# ---------------------------------------------------------------------------
 # 6e-3. Merge, apply and the fix re-dispatch are carried by BOTH router copies
 #
 # After a review passed, no router text merged with a pinned head, recorded the
