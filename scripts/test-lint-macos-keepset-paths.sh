@@ -32,7 +32,7 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-lint-keepset-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
-ASSERTION_FLOOR=20
+ASSERTION_FLOOR=30
 
 passed=0
 failures=0
@@ -55,11 +55,15 @@ Makefile"
 RUN_LINE='make -j"$(sysctl -n hw.ncpu)" narrow'
 
 mk_repo() {
-  # mk_repo <dir> <globs> <push: alias|none> <run-line> <extra-recipe> <extra-suite>
+  # mk_repo <dir> <globs> <push: alias|none> <run-line> <extra-recipe> <extra-suite> [wrap]
   #
   # <run-line> empty writes no `make` step. <extra-recipe> is appended to the
-  # section-selecting recipe. <extra-suite> joins the suite list.
-  local dir="$1" globs="$2" push="$3" runline="$4" extra_recipe="$5" extra_suite="$6" g
+  # section-selecting recipe. <extra-suite> joins the suite list. `wrap` runs
+  # every recipe under `scripts/suite-guard.sh`, and arms the make step with a
+  # sourced line the way the real workflow does: `scripts/step-arm.sh` is also
+  # named as a path by the suite, `scripts/wf-only.sh` by the workflow alone.
+  local dir="$1" globs="$2" push="$3" runline="$4" extra_recipe="$5" extra_suite="$6" wrap="${7:-}" g
+  local runner="bash"
   mkdir -p "$dir/scripts" "$dir/pkg/sub" "$dir/tests/fixtures/a" "$dir/tests/fixtures/b" \
     "$dir/.github/workflows" "$dir/docs-x"
 
@@ -67,6 +71,13 @@ mk_repo() {
     'repo_root=$(cd "$(dirname "$0")/.." && pwd)' \
     '. "$repo_root/scripts/lib.sh"' \
     'cat "$repo_root/tests/fixtures/a/one.txt"' > "$dir/scripts/test-a.sh"
+  if [[ "$wrap" == "wrap" ]]; then
+    runner="bash scripts/suite-guard.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'bash "$@"' > "$dir/scripts/suite-guard.sh"
+    printf '%s\n' 'step_arm_noop() { :; }' > "$dir/scripts/step-arm.sh"
+    printf '%s\n' 'wf_only_noop() { :; }' > "$dir/scripts/wf-only.sh"
+    printf '%s\n' 'grep -q step_arm_noop "$repo_root/scripts/step-arm.sh"' >> "$dir/scripts/test-a.sh"
+  fi
   printf '%s\n' 'lib_noop() { :; }' > "$dir/scripts/lib.sh"
   printf '%s\n' '#!/usr/bin/env bash' \
     'repo_root=$(cd "$(dirname "$0")/../.." && pwd)' \
@@ -79,9 +90,9 @@ mk_repo() {
     printf 'SUITES := scripts/test-a.sh pkg/sub/test-b.sh%s\n' "$extra_suite"
     printf 'GOALS := $(SUITES:%%=run/%%)\n'
     printf '.PHONY: narrow run-sel $(GOALS)\n'
-    printf '$(GOALS): run/%%:\n\tbash $*\n'
+    printf '$(GOALS): run/%%:\n\t%s $*\n' "$runner"
     printf 'narrow: $(GOALS) run-sel\n'
-    printf 'run-sel:\n\tbash scripts/test-a.sh --sections 1\n'
+    printf 'run-sel:\n\t%s scripts/test-a.sh --sections 1\n' "$runner"
     if [[ -n "$extra_recipe" ]]; then printf '\t%s\n' "$extra_recipe"; fi
   } > "$dir/Makefile"
 
@@ -98,7 +109,11 @@ EOF
     printf '\njobs:\n  j:\n    runs-on: macos-latest\n    steps:\n'
     printf '      - uses: actions/checkout@v4\n'
     printf '      - run: brew install yq\n'
-    if [[ -n "$runline" ]]; then printf '      - run: %s\n' "$runline"; fi
+    if [[ -n "$runline" && "$wrap" == "wrap" ]]; then
+      printf '      - run: |\n          . scripts/step-arm.sh\n          . scripts/wf-only.sh\n          %s\n' "$runline"
+    elif [[ -n "$runline" ]]; then
+      printf '      - run: %s\n' "$runline"
+    fi
   } > "$dir/.github/workflows/w.yml"
 
   (cd "$dir" && git init -q && git add -A) || {
@@ -205,6 +220,43 @@ run_case "ERR-event-without-paths" 2 "$WORK/nopaths" ""
 # ERR — the last word of the `make` line is a flag, not a target.
 mk_repo "$WORK/notarget" "$BASE_GLOBS" alias 'make -k' "" ""
 run_case "ERR-make-line-without-target" 2 "$WORK/notarget" ""
+
+# --- the per-suite wrapper form ---------------------------------------------
+# `bash scripts/suite-guard.sh <path> [args…]` runs both files: the suite under
+# the wrapper is still the suite, and the wrapper itself has to be covered.
+
+WRAP_GLOBS="$BASE_GLOBS
+scripts/suite-guard.sh
+scripts/step-arm.sh"
+
+# OK — the suite under the wrapper is read as the suite, the wrapper counts as
+# run, and the sourced arming file is kept because the suite names its path.
+mk_repo "$WORK/wrap-ok" "$WRAP_GLOBS" alias "$RUN_LINE" "" "" wrap
+run_case "OK-wrapper-reads-suite-and-wrapper" 0 "$WORK/wrap-ok" ""
+
+# FAIL — the wrapper runs on every recipe, so a filter without it is short.
+mk_repo "$WORK/wrap-deficit" "$(printf '%s\n' "$WRAP_GLOBS" | grep -vFx 'scripts/suite-guard.sh')" \
+  alias "$RUN_LINE" "" "" wrap
+run_case "FAIL-wrapper-deficit-wrapper" 1 "$WORK/wrap-deficit" "부족|scripts/suite-guard.sh"
+
+# FAIL — the path after the wrapper is the suite, and it is still required.
+mk_repo "$WORK/wrap-suite" "$(printf '%s\n' "$WRAP_GLOBS" | grep -vFx 'pkg/**')" \
+  alias "$RUN_LINE" "" "" wrap
+run_case "FAIL-wrapper-deficit-suite" 1 "$WORK/wrap-suite" "부족|pkg/sub/test-b.sh"
+
+# FAIL — a file only the workflow's `run:` block names justifies nothing: the
+# surplus rule is unchanged under the wrapper.
+mk_repo "$WORK/wrap-wfonly" "$WRAP_GLOBS
+scripts/wf-only.sh" alias "$RUN_LINE" "" "" wrap
+run_case "FAIL-wrapper-workflow-only-surplus" 1 "$WORK/wrap-wfonly" "잉여|scripts/wf-only.sh"
+
+# ERR — the wrapper with no suite after it says nothing about what runs.
+mk_repo "$WORK/wrap-bare" "$WRAP_GLOBS" alias "$RUN_LINE" "bash scripts/suite-guard.sh" "" wrap
+run_case "ERR-wrapper-without-suite" 2 "$WORK/wrap-bare" ""
+
+# ERR — a recipe that is neither the wrapped form nor `bash <path>`.
+mk_repo "$WORK/wrap-shape" "$WRAP_GLOBS" alias "$RUN_LINE" "sh scripts/test-a.sh" "" wrap
+run_case "ERR-wrapper-other-shape" 2 "$WORK/wrap-shape" ""
 
 # --- sweep-wide checks ------------------------------------------------------
 
