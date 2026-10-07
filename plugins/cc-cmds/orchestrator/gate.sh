@@ -17661,15 +17661,21 @@ gate_verb_act() {
     # `<worktree>/Users/…/docs/x.md`, the stage wrote the document there, and the
     # freeze check, the audit and the implementation all looked at `DOC` and found
     # nothing — measured. The snapshot carries `DOC` as `design_doc` so no shift
-    # composes it; this refuses the dispatch that composed one anyway.
-    local dd_prompt="" dd_arg dd_prev=""
+    # composes it; this refuses the dispatch that composed one anyway. A base
+    # run's design stage is the same dispatch under another slash command, so
+    # it is held to the same path.
+    local dd_prompt="" dd_arg dd_prev="" dd_cmd=""
     for dd_arg in "$@"; do
       [ "$dd_prev" = "-p" ] && dd_prompt="$dd_arg"
       dd_prev="$dd_arg"
     done
     case "$dd_prompt" in
-      *'/cc-cmds:design-discuss-unattended '*)
-        local dd_path="${dd_prompt#*/cc-cmds:design-discuss-unattended }"
+      *'/cc-cmds:design-discuss-unattended '*) dd_cmd='/cc-cmds:design-discuss-unattended ' ;;
+      *'/cc-cmds:design-base-unattended '*)    dd_cmd='/cc-cmds:design-base-unattended ' ;;
+    esac
+    case "$dd_cmd" in
+      ?*)
+        local dd_path="${dd_prompt#*"$dd_cmd"}"
         dd_path="${dd_path%% *}"
         if [ "$dd_path" != "$DOC" ]; then
           warn "설계 스테이지의 문서 인자가 매니페스트에서 해석한 경로와 다릅니다 — 인자: ${dd_path} / 해석: ${DOC}"

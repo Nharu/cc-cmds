@@ -3170,7 +3170,9 @@ BSXSTUBEOF
   bsx_stub "$WORK/bin/bsx-split" "$BSX_LIT_SPLIT"
   bsx_stub "$WORK/bin/bsx-halt" "멈춘다" "$BSX_HALT"
 
-  BSX_P_DESIGN='/cc-cmds:design-base-unattended /nonexistent/doc.md "테스트"'
+  # `@DOC@` is the snapshot's `design_doc`, filled in per run by bsx_launch:
+  # the gate refuses a design dispatch whose document argument is any other path.
+  BSX_P_DESIGN='/cc-cmds:design-base-unattended @DOC@ "테스트"'
   BSX_P_AUDIT='/cc-cmds:design-audit-unattended /nonexistent/doc.md --base'
   BSX_P_SPLIT='/cc-cmds:design-base-unattended --split /nonexistent/doc.md'
   bsx_launch() {
@@ -3179,11 +3181,12 @@ BSXSTUBEOF
     # The wait is an upper bound, not a pause: a stub stage ends in a second, so
     # 60 is ample — except for a stage whose body itself makes many gate calls,
     # which passes its own bound rather than being cut off before its last line.
-    local m="$WORK/bsx-$1.md" t="${6:-60}"
+    local m="$WORK/bsx-$1.md" t="${6:-60}" p="$4"
+    case "$p" in *@DOC@*) p="${p//@DOC@/$(bsx_snap "$m" | jq -r .design_doc)}" ;; esac
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" act --manifest "$m" --kind skill --target infra --segment - --cutpoint 커밋 \
       --surface 워크트리쓰기 --snapshot-digest "$(bsx_H "$m")" --rationale x \
-      -- "$3" -p "$4" ) >/dev/null 2>&1; BSX_ACT_RC=$?
+      -- "$3" -p "$p" ) >/dev/null 2>&1; BSX_ACT_RC=$?
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout "$t" ) >/dev/null 2>&1; BSX_WAIT_RC=$?
   }
@@ -25559,6 +25562,15 @@ check "76:설계가 끝나기 전의 감사 파견은 거부된다" "$rc" "3"
 case "$msg" in
   *"아직 정상 완료로 끝나지 않았습니다"*) ok "76:그 거절은 끝나지 않은 선행 단계를 든다" ;;
   *) bad "76감사 선행 문면" "$msg" ;;
+esac
+# The base design is held to the snapshot's `design_doc` exactly as the single
+# design is: a path composed anywhere else is refused before anything launches.
+gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- design -p '/cc-cmds:design-base-unattended /nonexistent/doc.md "테스트"'
+check "76:design_doc 과 다른 문서 인자의 베이스 설계 파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"design_doc"*) ok "76:그 거절은 스냅숏의 design_doc 을 쓰라고 든다" ;;
+  *) bad "76베이스 설계 문서 인자 문면" "$msg" ;;
 esac
 bsx_launch RB1 "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
 check "76:설계 단계가 정상 완료로 끝난다 (아래가 공허하지 않다)" "$(bsx_class RB1 '| 스테이지=D1 | 종류=design ')" "정상 완료"
