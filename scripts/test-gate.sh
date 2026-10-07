@@ -3170,19 +3170,27 @@ BSXSTUBEOF
   bsx_stub "$WORK/bin/bsx-split" "$BSX_LIT_SPLIT"
   bsx_stub "$WORK/bin/bsx-halt" "멈춘다" "$BSX_HALT"
 
-  # `@DOC@` is the snapshot's `design_doc`, filled in per run by bsx_launch:
-  # the gate refuses a design dispatch whose document argument is any other path.
+  # `@DOC@` is the snapshot's `design_doc`, filled in per run by bsx_p: the gate
+  # refuses a design, audit or split dispatch whose document argument is any
+  # other path.
   BSX_P_DESIGN='/cc-cmds:design-base-unattended @DOC@ "테스트"'
-  BSX_P_AUDIT='/cc-cmds:design-audit-unattended /nonexistent/doc.md --base'
-  BSX_P_SPLIT='/cc-cmds:design-base-unattended --split /nonexistent/doc.md'
+  BSX_P_AUDIT='/cc-cmds:design-audit-unattended @DOC@ --base'
+  BSX_P_SPLIT='/cc-cmds:design-base-unattended --split @DOC@'
+  # bsx_p <run id> <prompt> — the prompt with `@DOC@` replaced by that run's
+  # snapshot `design_doc`.
+  bsx_p() {
+    local p="$2"
+    case "$p" in *@DOC@*) p="${p//@DOC@/$(bsx_snap "$WORK/bsx-$1.md" | jq -r .design_doc)}" ;; esac
+    printf '%s' "$p"
+  }
   bsx_launch() {
     # bsx_launch <run id> <stub> <kind> <prompt> <step id> [wait seconds] — dispatch
     # one run-scope stage and wait on it. The act's code is left in BSX_ACT_RC.
     # The wait is an upper bound, not a pause: a stub stage ends in a second, so
     # 60 is ample — except for a stage whose body itself makes many gate calls,
     # which passes its own bound rather than being cut off before its last line.
-    local m="$WORK/bsx-$1.md" t="${6:-60}" p="$4"
-    case "$p" in *@DOC@*) p="${p//@DOC@/$(bsx_snap "$m" | jq -r .design_doc)}" ;; esac
+    local m="$WORK/bsx-$1.md" t="${6:-60}" p
+    p=$(bsx_p "$1" "$4")
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" act --manifest "$m" --kind skill --target infra --segment - --cutpoint 커밋 \
       --surface 워크트리쓰기 --snapshot-digest "$(bsx_H "$m")" --rationale x \
@@ -25555,14 +25563,31 @@ check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WOR
 # ---------------------------------------------------------------------------
 pre_bsplit
 bsx_fresh RB1
-bsx_doc_frozen RB1
+# Before the document exists: a design step with no row is not done unless the
+# document is there and frozen.
 gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
-  --surface 워크트리쓰기 -- audit -p "$BSX_P_AUDIT"
+  --surface 워크트리쓰기 -- audit -p "$(bsx_p RB1 "$BSX_P_AUDIT")"
 check "76:설계가 끝나기 전의 감사 파견은 거부된다" "$rc" "3"
 case "$msg" in
   *"아직 정상 완료로 끝나지 않았습니다"*) ok "76:그 거절은 끝나지 않은 선행 단계를 든다" ;;
   *) bad "76감사 선행 문면" "$msg" ;;
 esac
+bsx_doc_frozen RB1
+# The audit and the split are held to the snapshot's `design_doc` as the design
+# is, and their prompt must begin with the step's own slash command.
+gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- audit -p '/cc-cmds:design-audit-unattended /nonexistent/doc.md --base'
+check "76:design_doc 과 다른 문서 인자의 감사 파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"design_doc"*) ok "76:그 감사 거절은 스냅숏의 design_doc 을 쓰라고 든다" ;;
+  *) bad "76감사 문서 인자 문면" "$msg" ;;
+esac
+gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- split -p '/cc-cmds:design-base-unattended --split /nonexistent/doc.md'
+check "76:design_doc 과 다른 문서 인자의 분할 파견은 거부된다" "$rc" "3"
+gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- split -p "x $(bsx_p RB1 "$BSX_P_SPLIT")"
+check "76:분할 명령으로 시작하지 않는 분할 파견은 거부된다" "$rc" "3"
 # The base design is held to the snapshot's `design_doc` exactly as the single
 # design is: a path composed anywhere else is refused before anything launches.
 gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
@@ -25575,7 +25600,7 @@ esac
 bsx_launch RB1 "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
 check "76:설계 단계가 정상 완료로 끝난다 (아래가 공허하지 않다)" "$(bsx_class RB1 '| 스테이지=D1 | 종류=design ')" "정상 완료"
 gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
-  --surface 워크트리쓰기 -- split -p "$BSX_P_SPLIT"
+  --surface 워크트리쓰기 -- split -p "$(bsx_p RB1 "$BSX_P_SPLIT")"
 check "76:감사가 끝나기 전의 분할 파견은 거부된다" "$rc" "3"
 bsx_launch RB1 "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
 check "76:감사 파견이 기동하고 wait 가 rc 0 을 돌려준다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
@@ -25604,6 +25629,13 @@ case "$msg" in
   *"설계 문서 가 실제 경로여야 합니다"*) ok "76:그 거절은 설계 문서 값을 든다" ;;
   *) bad "76(없음) 문면" "$msg" ;;
 esac
+# A run kicked off again over a document that is already there and frozen skips
+# its design, so it has no design row at all; its audit is dispatched anyway.
+bsx_fresh RB1F
+bsx_doc_frozen RB1F
+bsx_launch RB1F "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
+check "76:동결 문서로 다시 킥오프한 런은 설계 행 없이 감사를 띄운다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "76:그 감사가 정상 완료로 끝난다" "$(bsx_class RB1F '| 스테이지=A1 | 종류=audit ')" "정상 완료"
 
 # ---------------------------------------------------------------------------
 # 77. Condition 1 of a base run is the split and its registry

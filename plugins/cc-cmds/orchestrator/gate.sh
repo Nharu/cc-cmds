@@ -17602,11 +17602,50 @@ gate_verb_act() {
           exit "$GATE_EXIT_RULE"
         fi ;;
     esac
+    # THE ARGV MUST NAME THE DOCUMENT THE PRELUDE RESOLVED, as the design
+    # dispatch's must. Every check standing around this act — the predecessor's
+    # `정상 완료`, the freeze, the split's registry predicate — reads `DOC`, so an
+    # audit over another path would still leave the `정상 완료` row that clears
+    # the split, and a split over another path publishes tracker tickets from
+    # bytes nobody froze or audited. The prompt must also BEGIN with the step's
+    # own slash command: matched anywhere, a command quoted later in the prompt
+    # would be the one whose argument is compared.
+    local rs_prompt="" rs_arg rs_prev="" rs_cmd rs_path
+    for rs_arg in "$@"; do
+      [ "$rs_prev" = "-p" ] && rs_prompt="$rs_arg"
+      rs_prev="$rs_arg"
+    done
+    case "$rs_kind" in
+      audit) rs_cmd='/cc-cmds:design-audit-unattended ' ;;
+      split) rs_cmd='/cc-cmds:design-base-unattended --split ' ;;
+    esac
+    case "$rs_prompt" in
+      "$rs_cmd"*) ;;
+      *)
+        warn "${rs_kind} 스테이지의 프롬프트는 ${rs_cmd}<design_doc> 으로 시작해야 합니다"
+        exit "$GATE_EXIT_RULE" ;;
+    esac
+    rs_path="${rs_prompt#"$rs_cmd"}"
+    rs_path="${rs_path%% *}"
+    if [ "$rs_path" != "${DOC:-}" ]; then
+      warn "${rs_kind} 스테이지의 문서 인자가 매니페스트에서 해석한 경로와 다릅니다 — 인자: ${rs_path} / 해석: ${DOC:-}"
+      warn "문서 경로는 스냅숏의 design_doc 값을 그대로 쓰세요"
+      exit "$GATE_EXIT_RULE"
+    fi
     # PREDECESSORS ARE RUN-SCOPE STEPS, so `선행` of the segment rows cannot say
     # whether they landed. Each `depends_on` of this step must have ended its last
     # run-scope row `정상 완료`, and a design predecessor must also have left the
     # document frozen — an audit or a split over an unfinished design reads
     # bytes nobody settled, and the split's tracker writes cannot be undone.
+    #
+    # A DESIGN STEP WITH NO ROW AT ALL OVER A FROZEN DOCUMENT COUNTS AS DONE. A
+    # run kicked off again over a document that is already there and frozen —
+    # the recovery after a split stopped and a person fixed the document — has
+    # its design skipped by both routers and the driver, so no design row is
+    # ever written, and the frozen document is the same input a `정상 완료`
+    # would have left. Condition 1 already reads that run this way; refusing its
+    # audit here would leave it waiting on a design nobody dispatches. A row
+    # that exists still decides, and an unfrozen document is still refused.
     local rs_dep rs_dk rs_last
     for rs_dep in $( { manifest_plan_json 2>/dev/null \
                        | jq -r --arg id "$stage_key" '.steps[]? | select(type == "object" and .id == $id) | .depends_on[]? // empty' 2>/dev/null \
@@ -17615,6 +17654,10 @@ gate_verb_act() {
       if ! rs_dk=$(gate_run_scope_kind_of_key "$rs_dep"); then
         warn "${rs_kind} 단계 ${stage_key} 의 선행 ${rs_dep} 는 런 범위 단계표의 단계가 아닙니다 — 이 그래프는 게이트가 읽지 못합니다"
         exit "$GATE_EXIT_RULE"
+      fi
+      if [ "$rs_dk" = "design" ] && [ -z "$(gate_run_scope_rows "$rs_dep" design)" ] \
+         && doc_is_frozen "${DOC:-}"; then
+        continue
       fi
       rs_last=$(gate_run_scope_last_row "$rs_dep" "$rs_dk")
       if [ "$(gate_row_field "$rs_last" '종단 부류')" != '정상 완료' ]; then
