@@ -24892,6 +24892,29 @@ check "75: 살아 있는 보유자의 파견 잠금은 잡히지 않는다" \
 printf '999999\nMon Jan 1 00:00:00 2001\n' > "${lsr75_k%/*}/SK2.dispatching"
 check "75: 죽은 보유자의 잠금은 치우고 잡는다" \
   "$(lsr75_in "$lsr75_k" '' '' eval 'gate_dispatch_lock_take SK2 && printf took || printf held' 2>/dev/null)/$(sed -n '1p' "${lsr75_k%/*}/SK2.dispatching" 2>/dev/null | grep -c '^999999$' || true)" "took/0"
+# 죽은 잠금을 함께 본 두 행위 — 이 행위가 보유자를 죽었다고 판정한 직후 다른 행위가
+# 회수를 끝내 자기 잠금을 세운다. 생존 판정 스텁이 그 순간에 그 잠금을 심는다(보유자
+# 424242 는 스텁이 살아 있다고 답한다). 판정한 뒤에 다시 읽으면 남의 살아 있는 잠금을
+# 지우고 잡는다.
+printf '999999\nMon Jan 1 00:00:00 2001\n' > "${lsr75_k%/*}/SK4.dispatching"
+check "75: 회수 도중 다른 행위가 세운 잠금은 지우지 않고 거부한다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval '
+    cc_holder_is_live() {
+      [ "$1" = 999999 ] || return 0
+      printf "424242\nlive\n" > "$RUN_DIR/SK4.other"
+      mv -f "$RUN_DIR/SK4.other" "$RUN_DIR/SK4.dispatching"
+      return 1
+    }
+    gate_dispatch_lock_take SK4 && printf took || printf held' 2>/dev/null)/$(sed -n '1p' "${lsr75_k%/*}/SK4.dispatching" 2>/dev/null)/$(ls "${lsr75_k%/*}" | grep -c '^SK4\.dispatching\.' || true)" "held/424242/0"
+# 빈 잠금은 배타 생성과 본문 쓰기 사이의 잠금이다 — 갓 생긴 것은 쥔 것으로 보고, 유예를
+# 넘긴 것만 치운다.
+: > "${lsr75_k%/*}/SK5.dispatching"
+check "75: 갓 생긴 빈 잠금은 잡히지 않는다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_dispatch_lock_take SK5 && printf took || printf held' 2>/dev/null)" "held"
+: > "${lsr75_k%/*}/SK6.dispatching"
+touch -t 200001010000 "${lsr75_k%/*}/SK6.dispatching"
+check "75: 유예를 넘긴 빈 잠금은 치우고 잡는다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_dispatch_lock_take SK6 && printf took || printf held' 2>/dev/null)/$( [ -e "${lsr75_k%/*}/SK6.dispatching" ] && [ ! -s "${lsr75_k%/*}/SK6.dispatching" ] && printf empty || printf replaced)" "took/replaced"
 printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=B:SK3#1\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n논스=-\n시도=1\n' \
   "$lsr75_kp" "$lsr75_kfp" "$(date +%s)" > "${lsr75_k%/*}/SK3.waiting"
 check "75: 살아 있는 보유자의 대기 표지가 있는 키는 진행 중이다" \

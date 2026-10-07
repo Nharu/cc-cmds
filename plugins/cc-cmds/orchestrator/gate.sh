@@ -8249,6 +8249,7 @@ gate_on_exit() {
 # $PPID')` at the call site: `$$` in a subshell is the parent's under bash 3.2,
 # and the `exec` keeps the substitution from adding a process of its own.
 GATE_DISPATCH_LOCK=""
+readonly GATE_DISPATCH_LOCK_EMPTY_GRACE=60
 
 gate_dispatch_lock_holder_live() {
   # gate_dispatch_lock_holder_live <lock file> — 0 when the recorded holder is
@@ -8263,24 +8264,46 @@ gate_dispatch_lock_take() {
   # gate_dispatch_lock_take <key> — 0 with the lock held by this process, 1 when
   # a live act holds it.
   #
-  # A STALE LOCK IS TAKEN OVER BY MOVING IT, AND THE MOVED FILE IS CHECKED. Two
-  # acts can see the same dead holder; if both simply removed and re-created,
-  # the second removal would delete the first act's new lock. The moved file is
-  # compared with the holder judged dead: anything else is a lock another act
-  # took in between, and it is put back and this act refused.
-  local key="$1" f me body seen mine
+  # A STALE LOCK IS JUDGED ON ONE READING, AND ONLY THAT READING IS REMOVED. The
+  # body is read once; the holder is judged from that copy, and the file moved
+  # aside is compared with that same copy. Judging the file and reading it in
+  # two steps let a second act judge the dead holder, read the lock a first act
+  # had just re-created in its place, find the moved file equal to what it read
+  # and delete a live lock: two acts held one key and both dispatched it. A
+  # moved file that differs is someone else's lock, so it is put back and never
+  # deleted — if a third act has created a lock in the moment it was away, the
+  # moved file is left beside the lock rather than destroyed.
+  #
+  # AN EMPTY LOCK IS A LOCK BEING WRITTEN. The exclusive create and the body's
+  # write are two steps, and a reader between them sees no holder; reading that
+  # as dead took the lock from a live owner. An empty body counts as held until
+  # it is older than `GATE_DISPATCH_LOCK_EMPTY_GRACE`, so one whose writer died
+  # in that gap is still taken over.
+  local key="$1" f me body seen pid fp mine ts
   f="$RUN_DIR/$key.dispatching"
   me=$(exec sh -c 'echo $PPID')
   body=$(printf '%s\n%s' "$me" "$(cc_proc_fingerprint "$me")")
   if ( set -C; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
     GATE_DISPATCH_LOCK=$f; return 0
   fi
-  gate_dispatch_lock_holder_live "$f" && return 1
   seen=$(cat "$f" 2>/dev/null || true)
+  if [ -z "$seen" ]; then
+    if [ ! -e "$f" ]; then
+      # Released between the failed create and the read: one more create.
+      ( set -C; printf '%s\n' "$body" > "$f" ) 2>/dev/null || return 1
+      GATE_DISPATCH_LOCK=$f; return 0
+    fi
+    ts=$(gate_mtime "$f")
+    [ -n "$ts" ] && [ $(( $(date -u +%s) - ts )) -ge "$GATE_DISPATCH_LOCK_EMPTY_GRACE" ] || return 1
+  else
+    pid=$(printf '%s\n' "$seen" | sed -n '1p' | tr -d '[:space:]')
+    fp=$(printf '%s\n' "$seen" | sed -n '2p')
+    cc_holder_is_live "$pid" "$fp" && return 1
+  fi
   mine="$f.stale.$me"
   mv "$f" "$mine" 2>/dev/null || return 1
   if [ "$(cat "$mine" 2>/dev/null || true)" != "$seen" ]; then
-    mv -n "$mine" "$f" 2>/dev/null || rm -f "$mine"
+    mv -n "$mine" "$f" 2>/dev/null || true
     return 1
   fi
   rm -f "$mine"
