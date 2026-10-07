@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.1] - 2026-10-07
+
+라우터 교대가 설계 문서 경로를 직접 만들지 않고, 게이트가 해석한 경로를 그대로 쓴다. 레포 밖 설계 문서의 키를 홈 워크트리에 붙인 경로로 설계 스테이지가 파견되면, 문서가 엉뚱한 곳에 써지고 뒤따르는 동결 확인·감사·구현이 그 문서를 찾지 못했다.
+
+### Fixed
+
+- **레포 밖 설계 문서가 `<워크트리>/Users/…` 아래에 써지던 문제** (#1048)
+  - 스냅숏이 `design_doc` 을 싣는다. 매니페스트의 `설계 문서` 키를 게이트가 해석한 절대 경로이며, 런이 문서를 정하지 않았으면 `null` 이다.
+  - `--segment -` 설계 파견에서 `-p` 의 문서 인자가 `design_doc` 과 다르면 게이트가 exit 3 으로 거부한다.
+  - router-shift·autopilot 의 설계·재수렴·감사 파견과 문서 부재 검사가 `design_doc` 을 쓴다.
+
 ## [2.46.0] - 2026-10-07
 
 fleet 이 좌석 목록과 5시간 창 판정을 하드코딩된 두 홈(`~/.claude-cc`·`~/.claude-cci`)과 사용량 트래커 plist 대신 cc-lane 인벤토리(`accounts.json`)와 사용량 파일(`usage.json`)에서 읽는다. 레인 프로브와 지표 수집기도 같은 원천을 읽는다. 다른 계정에 기록된 런의 처분이 영영 풀리지 않던 문제와, 게이트가 완전한 중단 기록을 헤더가 없다고 거절할 수 있던 문제도 고쳤다.
