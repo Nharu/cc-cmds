@@ -272,6 +272,24 @@ fx_blocked "라이브니스 침묵" 해소
 fx_heartbeat 0 900
 has "8e 사람이 해소한 뒤에는 게이트와 같이 종료로 판정한다" "$(sl sess-8e)" "✓"
 
+# The watcher exits when the run ends, so a finished run's heartbeat goes stale
+# by design. Reporting that as a missing watcher reads a clean finish as a fault.
+fx_mkrun run-8f; fx_ledger_path; fx_session_index sess-8f run-8f
+fx_segment S1 머지됨
+fx_done
+fx_heartbeat 300 900
+fx_watch_pid dead
+out=$(sl sess-8f)
+has "8f 종료한 런 — 하트비트가 노후해도 종료로 보인다" "$out" "✓"
+hasnt "8f 종료한 런에는 워처 접미사가 붙지 않는다" "$out" "워처"
+
+fx_mkrun run-8g; fx_ledger_path; fx_session_index sess-8g run-8g
+fx_segment S1 머지됨
+fx_done
+out=$(sl sess-8g)
+has "8g 하트비트도 pid 도 없는 종료 런 — 종료로 보인다" "$out" "✓"
+hasnt "8g 종료한 런에는 미기동 접미사도 붙지 않는다" "$out" "워처"
+
 # ---------------------------------------------------------------------------
 # 9. Watcher freshness — twice the pinned `--interval`
 # ---------------------------------------------------------------------------
@@ -1412,17 +1430,23 @@ out=$(PATH="$WORK/perlesc:$PATH" slb "$LANE" sess-none); rc=$?
 check "SB13b perl 이 이스케이프를 낸다 — 시각만 빠지고 새지 않는다" "$rc|$out" "0|$BFALL · cc→u3"
 
 # SB14. On a run line the segment is a pure suffix, after the watcher slot too.
+# A finished run carries no watcher slot, so the slot case is an approval line.
+# That line also carries the ledger age, which can tick between two renders, so
+# it is checked by what follows the slot rather than against an earlier render.
 bclear
-fx_mkrun run-sb14; fx_ledger_path; fx_segment S1 머지됨
+fx_mkrun run-sb14; fx_ledger_path; fx_segment S1 실행중; fx_approval A1 대기
 fx_session_index sess-sb14 run-sb14
 base14=$(slb "$LANE" sess-sb14)
 fx_mkrun run-sb14-nc
 fx_session_index sess-sb14-nc run-sb14-nc
 base14nc=$(slb "$LANE" sess-sb14-nc)
-has "SB14 전제 — 종단 줄에 워처 슬롯이 있다" "$base14" "✓ run-sb14 종료 · 워처 미기동"
+has "SB14 전제 — 승인 대기 줄" "$base14" "⏸ run-sb14 승인 대기 1건"
+check "SB14 전제 — 그 줄이 워처 슬롯으로 끝난다" "${base14##*" · 워처 미기동"}" ""
 has "SB14 전제 — 시계 없는 버려짐 줄" "$base14nc" "⊘ run-sb14-nc 방치"
 bput borrowed '"five_hour"' "$E"
-check "SB14 종단 줄 — 워처 슬롯 뒤에 구간" "$(slb "$LANE" sess-sb14)" "$base14$SEG_LANE"
+out14=$(slb "$LANE" sess-sb14)
+has "SB14 승인 대기 줄 — 구간을 붙여도 줄은 그대로" "$out14" "⏸ run-sb14 승인 대기 1건"
+check "SB14 승인 대기 줄 — 워처 슬롯 바로 뒤에 구간" "${out14##*" · 워처 미기동"}" "$SEG_LANE"
 check "SB14 시계 없는 버려짐 줄 — 줄 끝에 구간" "$(slb "$LANE" sess-sb14-nc)" "$base14nc$SEG_LANE"
 
 # SB15. The width budget. This suite pins no locale, so `${#…}` counts

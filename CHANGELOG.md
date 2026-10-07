@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.48.2] - 2026-10-07
+## [2.48.3] - 2026-10-07
 
 이미 동결된 설계 문서에 앵커한 무인 런(문서 앵커, `lead-solo` 설계)이 이제 계획의 첫 단계인 감사를 라우터 교대에서 파견한다. 이전에는 게이트가 감사의 런 범위 파견에도 `design_required=true` 와 설계 단계를 요구해 exit 3 으로 거부했고, 런은 감사 앞에서 멈췄다.
 
@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `gate.sh`: 감사 단계는 계획이 설계를 요구하거나 `design` 단계를 하나도 갖지 않을 때 런 범위 단계다. 설계 단계가 없는 계획에서는 문서의 `**상태**: 동결됨` 줄과 감사 단계에 살아 있는 시도가 없음만 전제로 본다. 설계를 요구하지 않는데 `design` 단계를 가진 계획과 감사 단계가 하나가 아닌 계획은 그대로 거부한다.
 - `autopilot-router-shift`·`autopilot`: 감사 파견 절에 설계 단계가 없는 계획은 감사로 시작한다는 문면과 게이트 전제를 맞췄다.
+
+## [2.48.2] - 2026-10-07
+
+상태 줄이 깨끗이 끝난 런을 `✓ <run> 종료 · 워처 없음` 으로 보여 정상 종료를 이상처럼 읽게 하던 문제를 고쳤다.
+
+### Fixed
+
+- **종료한 런에는 워처 접미사를 붙이지 않는다.** 종단 갈래도 방치 갈래처럼 워처 칸을 비운다. 하트비트가 노후했거나 pid 파일이 없어도 종료한 런은 `✓ <run> 종료` 로만 보인다. 진행 중인 런의 `· 워처 없음`·`· 워처 미기동` 표시는 그대로다. cc-lane 차용 구간은 종료 줄에서도 줄 끝에 그대로 붙는다.
+
+### Why
+
+워처는 런이 끝나면 내려가므로 종료한 런의 하트비트가 노후하는 것은 정상이다. 그 사실을 워처 부재로 표시하면 끝난 런마다 결함 신호가 남는다.
 
 ## [2.48.1] - 2026-10-07
 
