@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.5] - 2026-10-07
+
+`lead-solo` 티어로 킥오프한 무인 런이 첫 교대에서 감사를 띄우지 못하고 멈추던 문제를 고쳤다. 게이트의 감사 파견과 세그먼트 계획은 설계 문서에 `**상태**: 동결됨` 줄이 있어야 통과하는데, 킥오프의 lead-solo 문서 계약은 해시 기록만 동결로 보아서 그 줄을 쓰지 않았다.
+
+### Fixed
+
+- **lead-solo 킥오프가 설계 문서에 동결 줄을 쓰고 나서 해시를 잡는다** (#1148)
+  - 문서 계약 (c) 와 5m 직후 단락이 `**상태**: 동결됨` 줄을 H1 아래 한 번 쓰고, 그 뒤에 전체 `sha256` 을 기록하게 한다.
+  - Step 6 의 쓰기 전 자기 검사에 그 줄이 정확히 한 번 있는지 보는 거부 항목을 더했다.
+  - 스냅숏 시험이 세 문면이 있고 해시만으로 동결하던 옛 문면이 없는지 고정한다.
+
+### Post-install notes
+
+- 이미 킥오프된 lead-solo 런은 고정된 플러그인 사본을 쓰므로 이 판본으로 바뀌지 않는다. 그런 런이 감사 앞에서 멈췄으면 사람이 문서에 `**상태**: 동결됨` 한 줄을 넣고 다음 교대를 띄우면 이어진다. 그때 생기는 문서 해시 차이는 게이트가 `문서 해시` 행으로 기록만 한다.
+
 ## [2.48.4] - 2026-10-07
 
 이미 동결된 설계 문서에 앵커한 무인 런(문서 앵커, `lead-solo` 설계)이 이제 계획의 첫 단계인 감사를 라우터 교대에서 파견한다. 이전에는 게이트가 감사의 런 범위 파견에도 `design_required=true` 와 설계 단계를 요구해 exit 3 으로 거부했고, 런은 감사 앞에서 멈췄다.
