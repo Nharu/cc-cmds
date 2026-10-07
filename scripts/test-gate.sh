@@ -22202,6 +22202,9 @@ n=$(grep -c '스코프=act' "$FX_LEDGER" 2>/dev/null || true)
 # 텍스트 셋은 고정부를 실제로 재고 남는 바이트로 자른다.
 n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
 [ "${n:-0}" -le 1024 ] && ok "park blocked 행이 원장 행 상한 안이다 (최장 ${n}B)" || bad "park blocked 행 길이" "최장 ${n}B > 1024"
+# 켠 스위치는 절 안에서 되돌린다 — 되돌리지 않으면 같은 샤드에서 이 절 뒤에 도는
+# 절이 자동 해소 모드로 돌아, 표 등급 행위마다 --reach 를 요구받고 rc 2 로 끝난다.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
 
 # ---------------------------------------------------------------------------
 # 55. 룰 루프 — 첫 승인 요구에서 멈추지 않는다
@@ -27267,7 +27270,10 @@ dsa_run() {
     : > "$DSA_DIR/out"
     split_arm; printf "ret %s\n" "$?" >> "$DSA_DIR/out"
   ' ) >/dev/null 2>&1
-  printf '%s/%s' "$(grep -c . "$DSA_DIR/dispatched")" "$(grep '^park ' "$DSA_DIR/out" | sed 's/^park //' | cut -c1-40)"
+  # The park reason whole, first line only: the assertions match it by prefix,
+  # and `cut -c` counts bytes under GNU coreutils, so a cut would split a Korean
+  # character on Linux and match nothing.
+  printf '%s/%s' "$(grep -c . "$DSA_DIR/dispatched")" "$(grep '^park ' "$DSA_DIR/out" | sed -n '1s/^park //p')"
 }
 DSA_AUDIT_OK='- `stage-result` | 세그먼트=- | 스테이지=S2 | 파견 id=S2 | 종단 부류=정상 완료'
 DSA_AUDIT_BAD='- `stage-result` | 세그먼트=- | 스테이지=S2 | 파견 id=S2 | 종단 부류=크래시'
