@@ -415,7 +415,7 @@ test-darwin: test-active-notify test-orchestrator \
 #                                 the lock but passes no transition argument, so
 #                                 it skips that body too. 31ai runs a real
 #                                 `close`, which is how the guard gets reached.
-#   test-gate.sh, section 77      gate_metrics_timed in a detached child under
+#   test-gate.sh, section 84      gate_metrics_timed in a detached child under
 #                                 Apple make 3.81, which waits for anything
 #                                 the call leaves holding its jobserver pipe.
 #
@@ -427,7 +427,7 @@ test-darwin: test-active-notify test-orchestrator \
 # together with every file it sources, and nothing may stay in the filter that
 # this list does not run, source or refer to. scripts/lint-macos-keepset-paths.sh
 # checks both directions.
-DARWIN_GATE_SECTIONS := 18,31ai,77
+DARWIN_GATE_SECTIONS := 18,31ai,84
 
 .PHONY: run-gate-darwin-sections
 
