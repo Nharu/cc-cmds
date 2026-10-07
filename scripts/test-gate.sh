@@ -25828,6 +25828,153 @@ case "$msg" in
   *) bad "76: 그 park 는 대상트리불일치가 아니라 파괴형태미명시다" "$msg" ;;
 esac
 check "76: park 된 대상트리 mv 의 덮일 파일이 그대로다" "$(cat "$SIB76/rlm76/dst3" 2>/dev/null)" "k"
+
+# --reach 생략 — 등급표는 다른 워크트리를 겨눈 worktree remove 와 git -C <dir> reset
+# --hard 를 워크트리쓰기로 매기고, 그 등급에는 도달 신고가 필수가 아니다. 두 토큰이
+# 모두 park 하게 된 뒤로 토큰을 빼는 것이 그 파괴를 실행하는 유일한 철자였다. 생략은
+# 이제 런로컬 칸과 같은 착지점 판정을 받는다. 대조로 같은 자리의 비파괴 reset 과 돌린
+# 임시 디렉터리 아래 실험 워크트리의 reset --hard 가 지나감을 둔다.
+om76() {
+  # om76 <surface> <argv...> — --reach 없이, 돌린 임시 디렉터리로 한 번 부른다.
+  local s="$1"; shift
+  TMPDIR="$T76" gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface "$s" --snapshot-digest "$(HH)" --rationale 't76' -- "$@"
+}
+SO76="$WORK/wt76-om"
+git -C "$WT" worktree add -q --detach "$SO76" >/dev/null 2>&1
+printf 'om76\n' >> "$SIB76/base.txt"
+om76k() { grep -q '^om76$' "$SIB76/base.txt"; }
+om76k && [ -e "$SO76/.git" ] && ok "76: 생략 쌍의 형제 워크트리와 미커밋 수정이 있다 (잔존 단언이 공허하지 않다)" \
+  || bad "76: 생략 쌍의 형제 워크트리와 미커밋 수정이 있다" "$SO76"
+nb76=$(b76)
+om76 워크트리쓰기 git worktree remove --force "$SO76"
+check "76: --reach 를 생략한 형제 워크트리 강제 제거는 park 된다" "$rc" "11"
+case "$(lb76)" in
+  *"| 도달 판정=파괴형태미명시 |"*"| 도달=- | 파괴 트리거=--force |"*) ok "76: 그 park 행이 도달=- 와 파괴 트리거=--force 를 싣는다" ;;
+  *) bad "76: 그 park 행이 도달=- 와 파괴 트리거=--force 를 싣는다" "$(lb76)" ;;
+esac
+[ -e "$SO76/.git" ] && ok "76: 생략으로 park 된 제거의 형제 워크트리가 남아 있다" \
+  || bad "76: 생략으로 park 된 제거의 형제 워크트리가 남아 있다" "$SO76"
+om76 워크트리쓰기 git -C "$SIB76" reset -q --hard
+check "76: --reach 를 생략한 형제 워크트리의 git -C reset --hard 는 park 된다" "$rc" "11"
+om76k && ok "76: 생략으로 park 된 reset --hard 의 미커밋 수정이 남아 있다" \
+  || bad "76: 생략으로 park 된 reset --hard 의 미커밋 수정이 남아 있다" "$SIB76/base.txt"
+check "76: 생략 park 둘이 blocked 행 둘을 남긴다" "$(( $(b76) - nb76 ))" "2"
+OX76="$T76/om76-exp"
+git -C "$WT" worktree add -q --detach "$OX76" >/dev/null 2>&1
+printf 'x\n' >> "$OX76/base.txt"
+nb76=$(b76)
+om76 워크트리쓰기 git -C "$SIB76" reset -q
+check "76: 대조 — --reach 를 생략한 형제 워크트리의 비파괴 reset 은 통과한다" "$rc" "0"
+om76k && ok "76: 그 비파괴 reset 이 미커밋 수정을 남겼다" \
+  || bad "76: 그 비파괴 reset 이 미커밋 수정을 남겼다" "$SIB76/base.txt"
+om76 워크트리쓰기 git -C "$OX76" reset -q --hard
+check "76: 대조 — 임시 디렉터리 아래 실험 워크트리의 reset --hard 는 생략으로 통과한다" "$rc" "0"
+check "76: 그 reset --hard 가 실제로 되돌렸다" "$(git -C "$OX76" status --porcelain 2>/dev/null)" ""
+check "76: 대조 — 생략 통과 둘은 blocked 행을 남기지 않는다" "$(( $(b76) - nb76 ))" "0"
+git -C "$WT" worktree remove --force "$OX76" >/dev/null 2>&1
+
+# 래퍼의 모르는 옵션 — 래퍼 갈래가 모르는 옵션에 빈 답을 내던 동안 env -C <형제> rm
+# -rf 와 env -S '…' 는 판독기가 「파괴 아님」으로 읽어 런로컬로 실행됐다. 감춘 명령은
+# 읽을 수 없으므로 래퍼 이름이 트리거다. 착지점 판정은 env -C 를 작업 디렉터리로 읽어,
+# 형제 워크트리는 park 하고 돌린 임시 디렉터리는 지나가게 한다. 오늘 exec 는 이 두
+# 철자를 등급 칸에서 먼저 거부하므로(형태 미상), 판정 함수는 직접 부르고 exec 는 거부와
+# 잔존을 단언한다 — 등급표가 이 철자를 읽게 되면 판정이 이 칸에 넘어온다.
+check "76: env -C 는 래퍼 이름이 트리거다" "$(lt76 env -C "$SIB76" rm -rf x)" "env"
+check "76: env -S 는 래퍼 이름이 트리거다" "$(lt76 env -S 'rm -rf x')" "env"
+check "76: nice 의 모르는 옵션도 래퍼 이름이 트리거다" "$(lt76 nice -5 rm -rf x)" "nice"
+check "76: 대조 — 아는 옵션 env -i 는 감싼 명령의 트리거를 낸다" "$(lt76 env -i rm -rf x)" "-rf"
+check "76: 대조 — 감싼 명령이 파괴가 아니면 env -i 는 트리거가 없다" "$(lt76 env -i git status)" ""
+mkdir -p "$SIB76/ew76" "$T76/ew76"
+printf 'k\n' > "$SIB76/ew76/k"; printf 'k\n' > "$T76/ew76/k"
+rd76() {
+  # rd76 <argv...> — 돌린 임시 디렉터리에서 런로컬 칸의 파괴 질문(X=0, Pd=0)의 답을 낸다.
+  ( cd "$WT" && TMPDIR="$T76" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg76="$2"
+      target_field() { printf "%s" "$cg76"; }; GATE_MARK=""; shift 2
+      gate_reach_runlocal_destruction front 0 0 "$@"' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+check "76: env -C 로 형제 워크트리에서 도는 rm -rf 는 런로컬 판정에서 park 된다" "$(rd76 env -C "$SIB76" rm -rf ew76)" "파괴형태미명시"
+check "76: env -S 로 감춘 형제 워크트리의 rm -rf 는 런로컬 판정에서 park 된다" "$(rd76 env -S "rm -rf $SIB76/ew76")" "파괴형태미명시"
+check "76: 대조 — env -C 로 돌린 임시 디렉터리에서 도는 rm -rf 는 런로컬 판정을 지난다" "$(rd76 env -C "$T76" rm -rf ew76)" ""
+check "76: 대조 — 아는 옵션 env -i 로 형제 워크트리를 겨눈 rm -rf 도 park 된다" "$(rd76 env -i rm -rf "$SIB76/ew76")" "파괴형태미명시"
+nb76=$(b76)
+rl76 env -C "$SIB76" rm -rf ew76
+case "$rc" in 0) bad "76: exec 는 env -C 의 형제 rm -rf 를 실행하지 않는다" "rc=$rc" ;; *) ok "76: exec 는 env -C 의 형제 rm -rf 를 실행하지 않는다 (rc=$rc)" ;; esac
+[ -e "$SIB76/ew76/k" ] && ok "76: 거부된 env -C rm -rf 의 파일이 남아 있다" \
+  || bad "76: 거부된 env -C rm -rf 의 파일이 남아 있다" "$SIB76/ew76/k"
+
+# 착지점 수집 — 행위가 실제로 쓰는 자리를 수집기가 놓치면 형제 워크트리 파괴가
+# 런로컬로 지나갔다. 이름만 쓴 worktree remove(git 은 끝 경로 성분으로 찾는다), -C 앞의
+# 절대 --work-tree(git 은 뒤의 -C 너머로 유지한다), 붙여 쓴 -t<dir>, 파일 심볼릭 링크와
+# 디렉터리 링크 뒤의 .. 가 그것이다. 수집 결과를 직접 재는 단언과, 실제 행위가 park 되고
+# 형제 워크트리가 남는 단언을 함께 둔다.
+ll76() {
+  # ll76 <argv...> — 수집기가 모은 착지점을 한 줄에 하나씩 낸다.
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg76="$2"
+      target_field() { printf "%s" "$cg76"; }; shift 2
+      gate_reach_target_tree_act front "$@" || :
+      printf "%s\n" ${GATE_TT_LANDS[@]+"${GATE_TT_LANDS[@]}"}' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+has76() { printf '%s\n' "$1" | grep -Fxq -- "$2"; }
+# 수집기는 경로를 사전적으로 정규화하므로, 끝에 / 가 붙은 TMPDIR 이 남긴 // 를 접어 비교한다.
+f76() { local dd='//' d='/'; printf '%s' "${1//$dd/$d}"; }
+SN76="$WORK/wt76-name76"
+git -C "$WT" worktree add -q --detach "$SN76" >/dev/null 2>&1
+SN76P=$(cd "$SN76" && pwd -P)
+ln76=$(ll76 git worktree remove --force wt76-name76)
+{ has76 "$ln76" "$SN76P" || has76 "$ln76" "$(f76 "$SN76")"; } \
+  && ok "76: 이름만 쓴 worktree remove 의 착지점에 그 형제 워크트리가 있다" \
+  || bad "76: 이름만 쓴 worktree remove 의 착지점에 그 형제 워크트리가 있다" "$ln76"
+has76 "$(ll76 git --work-tree="$SIB76" -C "$T76" checkout -f -- .)" "$(f76 "$SIB76")" \
+  && ok "76: -C 앞의 절대 --work-tree 가 착지점에 남는다" \
+  || bad "76: -C 앞의 절대 --work-tree 가 착지점에 남는다" "$(ll76 git --work-tree="$SIB76" -C "$T76" checkout -f -- .)"
+has76 "$(ll76 mv -t"$SIB76/rlm76" "$T76/x")" "$(f76 "$SIB76/rlm76")" \
+  && ok "76: 붙여 쓴 -t<dir> 의 값이 착지점에 있다" \
+  || bad "76: 붙여 쓴 -t<dir> 의 값이 착지점에 있다" "$(ll76 mv -t"$SIB76/rlm76" "$T76/x")"
+mkdir -p "$T76/lk76" "$SIB76/lk76sub"
+printf 'k\n' > "$SIB76/lk76f"
+ln -s "$SIB76/lk76f" "$T76/lk76/flink"
+ln -s "$SIB76/lk76sub" "$T76/lk76/dlink"
+SIB76P=$(cd "$SIB76" && pwd -P)
+has76 "$(ll76 cp "$T76/x" "$T76/lk76/flink")" "$SIB76P/lk76f" \
+  && ok "76: 파일 심볼릭 링크의 대상이 착지점에 있다" \
+  || bad "76: 파일 심볼릭 링크의 대상이 착지점에 있다" "$(ll76 cp "$T76/x" "$T76/lk76/flink")"
+has76 "$(ll76 rm -f "$T76/lk76/dlink/../lk76f")" "$SIB76P/lk76f" \
+  && ok "76: 디렉터리 링크 뒤의 .. 를 물리적으로 읽은 자리가 착지점에 있다" \
+  || bad "76: 디렉터리 링크 뒤의 .. 를 물리적으로 읽은 자리가 착지점에 있다" "$(ll76 rm -f "$T76/lk76/dlink/../lk76f")"
+check "76: 대조 — 링크 없는 임시 경로는 제 자리 하나만 더한다" "$(ll76 rm -f "$T76/lk76/plain" | sed -n '2,$p')" "$(f76 "$T76/lk76/plain")"
+printf 'nm76\n' >> "$SN76/base.txt"; printf 'u\n' > "$SN76/untracked76n"
+printf 'wt76\n' >> "$SIB76/base.txt"
+nb76=$(b76)
+rl76 git worktree remove --force wt76-name76
+check "76: 이름만 쓴 형제 워크트리 강제 제거는 런로컬로도 park 된다" "$rc" "11"
+[ -e "$SN76/untracked76n" ] && ok "76: park 된 이름 제거의 형제 워크트리와 미추적 파일이 남아 있다" \
+  || bad "76: park 된 이름 제거의 형제 워크트리와 미추적 파일이 남아 있다" "$SN76"
+EW76="$T76/ew76x"
+git -C "$WT" worktree add -q --detach "$EW76" >/dev/null 2>&1
+rl76 git --work-tree="$SIB76" -C "$EW76" checkout -f -- .
+check "76: -C 앞의 절대 --work-tree 로 형제 워크트리를 덮는 checkout -f 는 런로컬로도 park 된다" "$rc" "11"
+grep -q '^wt76$' "$SIB76/base.txt" && ok "76: park 된 --work-tree checkout 의 미커밋 수정이 남아 있다" \
+  || bad "76: park 된 --work-tree checkout 의 미커밋 수정이 남아 있다" "$SIB76/base.txt"
+rl76 truncate -s0 "$T76/lk76/flink"
+check "76: 임시 디렉터리의 파일 링크를 거쳐 형제 워크트리 파일을 비우는 truncate 는 런로컬로도 park 된다" "$rc" "11"
+check "76: park 된 truncate 의 형제 워크트리 파일이 그대로다" "$(cat "$SIB76/lk76f" 2>/dev/null)" "k"
+rl76 rm -f "$T76/lk76/dlink/../lk76f"
+check "76: 디렉터리 링크 뒤의 .. 로 형제 워크트리 파일을 지우는 rm -f 는 런로컬로도 park 된다" "$rc" "11"
+[ -e "$SIB76/lk76f" ] && ok "76: park 된 .. rm -f 의 형제 워크트리 파일이 남아 있다" \
+  || bad "76: park 된 .. rm -f 의 형제 워크트리 파일이 남아 있다" "$SIB76/lk76f"
+check "76: 착지점 수집 park 넷이 blocked 행 넷을 남긴다" "$(( $(b76) - nb76 ))" "4"
+# 대조 — 링크가 아닌 임시 디렉터리 파일의 truncate 는 지나간다.
+printf 'z\n' > "$T76/lk76/plainf"
+nb76=$(b76)
+rl76 truncate -s0 "$T76/lk76/plainf"
+check "76: 대조 — 임시 디렉터리 파일의 truncate 는 런로컬로 통과한다" "$rc" "0"
+check "76: 그 truncate 가 실제로 비웠다" "$(wc -c < "$T76/lk76/plainf" | tr -d ' ')" "0"
+check "76: 대조 — truncate 통과는 blocked 행을 남기지 않는다" "$(( $(b76) - nb76 ))" "0"
+git -C "$WT" worktree remove --force "$SN76" >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$SO76" >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$EW76" >/dev/null 2>&1
+rm -rf "$SN76" "$SO76" "$SIB76/ew76" "$SIB76/lk76f" "$SIB76/lk76sub"
 git -C "$SIB76" checkout -q -- base.txt >/dev/null 2>&1
 git -C "$WT" worktree remove --force "$SR76" >/dev/null 2>&1
 rm -rf "$SIB76/rl76" "$SIB76/rl76b" "$SIB76/rlm76" "$T76" "$SR76"
