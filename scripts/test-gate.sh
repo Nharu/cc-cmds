@@ -13130,7 +13130,7 @@ else
 fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 열 값 안의 판단 부류는 통과한다"
+  ok "린트 — 열한 값 안의 판단 부류는 통과한다"
 else
   bad "린트" "어휘 안의 값을 위반으로 잡았다"
 fi
@@ -13138,7 +13138,7 @@ printf -- '- `자동 채택` | 판단 부류=없는-부류 | 사유=x\n' > "$LR/
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
-  ok "린트 — 열 값 밖의 판단 부류는 실패한다"
+  ok "린트 — 열한 값 밖의 판단 부류는 실패한다"
 fi
 # THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
 # The gate parses five markers out of a stage's terminal message and absorbs the
@@ -13161,7 +13161,7 @@ rm -f "$LR/plugins/sentinel.md"
 # 모양으로 건너뛰므로 그 안의 수를 보지 못한다. 그런데 그 수는 라우터에게 향한
 # 진술이라, 어휘가 여덟이라고 읽은 라우터는 아홉 번째를 방출하지 않는다. 손으로
 # 고쳐야 했고 고치지 않아도 아무것도 실패하지 않았던 자리다.
-printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열한 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   ok "린트 — 어휘 크기와 맞는 자리표시자 수사는 통과한다"
 else
@@ -20757,6 +20757,57 @@ check "34c A21: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
   "$(capc_halts)" '[["CC1","adopt as a requirement"]]'
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 check "34c A21: 뒤에 그 키의 stage-result 가 서면 답은 소비되어 빠진다" "$(capc_halts)" "[]"
+
+# A22. THE ONE SHIFT CASE OF `중단 답`. An implement stage's binding-tier stop
+# answered `재수렴` is written by the shift itself when `## 인가` pre-adopts the
+# `구속-이탈` class — and by nothing else: without the row, with another option,
+# for another record, or once the key has been re-converged, the shift is
+# refused with 3 exactly as A21 refuses it.
+CAPC_BT="$CAP_DIR/halt/CC2#1.md"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=CC2#1; run=R7 -->' \
+  '**스킬**: implement-unattended' '**스텝**: Step 1 CFI-U3 BT-STOP — 계획 수립 중, 편집 전 정지' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 구속 티어와 충돌한다. 어떻게 할까?' '**선택지**:' \
+  '- `재수렴` — 재수렴' '- `보류` — 보류' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CAPC_BT"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC2 | 스테이지=CC2 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-1 | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
+capc_bt_answer() {
+  cap_gate "$capc_sid2" "$CAPC_RID#2" act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$1" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid2" "$CAPC_RID#2")" \
+           --rationale "픽스처 — 교대의 구속 이탈 자동 채택" \
+           -- "중단 기록=$2" "선택지=$3" '근거=매니페스트가 미리 정한 답'
+}
+capc_ha0=$(capc_ha)
+capc_bt_answer CC2 "$CAPC_BT" 재수렴
+check "34c A22: 자동 채택 행이 없으면 교대의 구속 이탈 답도 3 으로 거절된다" "$rc" "3"
+capc_nm_ins="$CAP_NM.ins"
+: > "$capc_nm_ins"
+capc_l='' capc_done=''
+while IFS= read -r capc_l || [ -n "$capc_l" ]; do
+  printf '%s\n' "$capc_l" >> "$capc_nm_ins"
+  if [ -z "$capc_done" ] && [ "$capc_l" = "## 인가" ]; then
+    printf '%s\n' '- `자동 채택` | 판단 부류=구속-이탈 | 상한=없음 | 심각도 상한=minor | 사유=범위 한정 수선' >> "$capc_nm_ins"
+    capc_done=1
+  fi
+done < "$CAP_NM"
+check "34c A22: 픽스처 매니페스트에 「## 인가」 절이 있다" "${capc_done:-}" "1"
+mv "$capc_nm_ins" "$CAP_NM"
+capc_bt_answer CC2 "$CAPC_BT" 보류
+check "34c A22: 재수렴 밖의 선택지는 행이 있어도 3 으로 거절된다" "$rc" "3"
+capc_bt_answer CC1 "$CAPC_HALT" reject
+check "34c A22: 구속 이탈 기록이 아니면 행이 있어도 3 으로 거절된다" "$rc" "3"
+check "34c A22: 세 거절 모두 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
+capc_bt_answer CC2 "$CAPC_BT" 재수렴
+check "34c A22: 행이 있으면 교대의 구속 이탈 재수렴 답은 통과한다" "$rc" "0"
+capc_harow=$(cap_rows '중단 답' | tail -1)
+check "34c A22: 그 행의 근거는 자동 채택 표지로 시작한다" \
+  "$(row_field "$capc_harow" '근거' | cut -c1-30)" "$(printf '%s' '자동 채택(구속-이탈) — 매니페스트가 미리 정한 답' | cut -c1-30)"
+check "34c A22: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
+  "$(capc_halts)" '[["CC2","재수렴"]]'
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC2 | 스테이지=CC2 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-2 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+capc_ha0=$(capc_ha)
+capc_bt_answer CC2 "$CAPC_BT" 재수렴
+check "34c A22: 재수렴을 한 번 거친 키는 교대가 다시 답하지 못한다" "$rc" "3"
+check "34c A22: 그 거절도 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조

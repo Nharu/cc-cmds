@@ -743,7 +743,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — ten values, closed, three of them named and
+# The judgment-class vocabulary — eleven values, closed, three of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -767,7 +767,15 @@ manifest_autoadopt_rows() {
 # inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
 # sources this file for its definitions, so one declaration reaches both — the
 # same arrangement `CUTPOINTS` already has, and for the same reason.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격"
+#
+# `구속-이탈` is the one class whose reader is not the judgment floor but the
+# `halt-answer` act: an implement stage that stopped on a binding-tier conflict
+# (CFI-U3 BT-STOP) offers `재수렴`, and a `자동 채택` row of this class lets the
+# routing shift carry that answer itself instead of ending on a person. It is
+# permitted because re-convergence is a scoped repair inside the same run that
+# leaves its own `중단 답` row and stage rows, and it is once per key — a second
+# stop on the same key still goes to a person.
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈"
 readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
