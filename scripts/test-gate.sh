@@ -20806,8 +20806,17 @@ check "34c A22: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC2 | 스테이지=CC2 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-2 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 capc_ha0=$(capc_ha)
 capc_bt_answer CC2 "$CAPC_BT" 재수렴
-check "34c A22: 재수렴을 한 번 거친 키는 교대가 다시 답하지 못한다" "$rc" "3"
+check "34c A22: 구속 이탈 재수렴을 한 번 거친 키는 교대가 다시 답하지 못한다" "$rc" "3"
 check "34c A22: 그 거절도 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
+# 반증 재수렴은 중단 답 없이 교대가 넘기는 다른 수선이다. 그 행이 있다고 해서
+# 같은 키의 첫 구속 이탈 답이 「두 번째」가 되지는 않는다.
+CAPC_BT3="$CAP_DIR/halt/CC3#2.md"
+sed 's/stage=CC2#1;/stage=CC3#2;/' "$CAPC_BT" > "$CAPC_BT3"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-3 | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-3 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=3 | 세션 id=s-impl-3b | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
+capc_bt_answer CC3 "$CAPC_BT3" 재수렴
+check "34c A22: 반증 재수렴만 거친 키의 첫 구속 이탈 답은 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조

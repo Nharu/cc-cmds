@@ -16311,8 +16311,11 @@ EOF
         # ` — `, the same cut 「Handing on a person's answer to a halt」 item 2
         # makes, so the record this admits is exactly the one that item routes
         # to re-convergence. Once per key, as that item's own bullet says: a
-        # binding-tier stop that comes back after a re-convergence goes to a
-        # person, so the second answer is never automatic.
+        # binding-tier stop that comes back after a binding-tier re-convergence
+        # goes to a person, so the second answer is never automatic. What is
+        # counted is an earlier `중단 답` of this kind on the key, not any
+        # `종류=reconverge` row — a refutation's re-convergence moved another
+        # part of the document and is not the same repair run twice.
         hstep=$(sed -n 's/^\*\*스텝\*\*: //p' "$hrec" | sed -n '1p')
         hstep="${hstep%% — *}"
         while IFS= read -r hrow; do
@@ -16327,8 +16330,11 @@ EOF
           warn "a \`중단 답\` row is written by the seat only — a shift may write one only for an implement-unattended binding-tier stop (CFI-U3 BT-STOP) answered \`재수렴\`, under a \`자동 채택\` row of class 구속-이탈 in \`## 인가\`"
           return "$GATE_EXIT_RULE"
         fi
-        if gate_stage_result_rows_of "$seg" | grep -qF '| 종류=reconverge |'; then
-          warn "$seg has already been re-converged once — a binding-tier stop after a re-convergence goes to a person, so the shift cannot answer it"
+        hrow=$({ gate_rows '중단 답' || true; } | { grep -F "세그먼트=$seg " || true; } \
+               | { grep -F '| 스킬=implement-unattended |' || true; } \
+               | { grep -F '| 선택지=재수렴 |' || true; })
+        if [ -n "$hrow" ]; then
+          warn "$seg already had a binding-tier stop answered \`재수렴\` — a second one goes to a person, so the shift cannot answer it"
           return "$GATE_EXIT_RULE"
         fi
         hpre="자동 채택(구속-이탈) — "
