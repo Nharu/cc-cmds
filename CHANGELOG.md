@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.6] - 2026-10-07
+
+무인 런에서 구현 스테이지가 구속 티어 이탈로 멈추고 사람이 `재수렴` 을 골랐는데도 런이 막히던 문제를 고쳤다. 라우터 교대의 「키당 한 번」 규칙이 같은 세그먼트에서 앞서 구현 중 반증으로 돌았던 재수렴까지 세어, 그 키의 첫 구속 티어 이탈 답을 「재수렴 뒤 다시 멈췄다」로 막았다.
+
+### Fixed
+
+- **구속 티어 이탈 재수렴의 키당 1회 규칙이 그 갈래가 파견한 재수렴만 센다** (#1151)
+  - 그 키의 앞선 `중단 답` 행 중 `선택지=재수렴` 이고 기록 스텝이 CFI-U3 BT-STOP 인 것이 있고, 그 뒤에 재수렴 행이 착지했을 때만 막는다.
+  - 운반 문서로 라우팅된 구현 전·구현 중 반증 재수렴은 세지 않는다.
+
 ## [2.48.5] - 2026-10-07
 
 `lead-solo` 티어로 킥오프한 무인 런이 첫 교대에서 감사를 띄우지 못하고 멈추던 문제를 고쳤다. 게이트의 감사 파견과 세그먼트 계획은 설계 문서에 `**상태**: 동결됨` 줄이 있어야 통과하는데, 킥오프의 lead-solo 문서 계약은 해시 기록만 동결로 보아서 그 줄을 쓰지 않았다.
