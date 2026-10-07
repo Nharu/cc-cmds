@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.1] - 2026-10-07
+
+무인 런에서 구현 스테이지가 설계 문서의 구속 티어를 벗어나야 해서 멈추고(BT-STOP), 사람이 그 중단에 `재수렴` 을 고르면 이제 라우터 교대가 설계 재수렴을 파견하고 세그먼트를 처음부터 다시 계획한다. 이전에는 그 답이 멈춘 구현 세션 재부착으로 가서 이행될 길이 없었고 런이 그 자리에서 멈췄다.
+
+### Fixed
+
+- `autopilot-router-shift`: 중단 답 처리에 BT-STOP + `재수렴` 갈래를 더했다. `design-reconverge` 를 `구속 티어 이탈 <중단 기록>` 스코프로 파견하고 종단 술어가 서면 세그먼트의 구현을 다시 파견한다. 키당 한 번만 허용한다.
+- `implement-unattended`: BT-STOP 중단 기록의 분류·스텝·`재수렴` 선택지 문면을 라우터가 읽는 형태로 고정했다.
+- `design-reconverge`: `구속 티어 이탈 <중단 기록 절대 경로>` 를 네 번째 진입 형태로 받는다.
+
 ## [2.48.0] - 2026-10-07
 
 상태줄이 cc-lane 차용을 보인다. cc-lane 이 이 레인에 다른 계정을 빌려 준 동안 상태줄의 모든 줄(대체 줄, 런 없음 줄, 모든 런 줄) 끝에 ` · cc→u3 · 홈 14:20` 같은 구간이 붙고, 빌려 준 계정의 세션에서는 ` · 빌려 줌→cc` 가 붙는다. 보일 차용이 없으면 출력은 이전과 바이트가 같다. 상태줄은 여전히 아무것도 쓰지 않고 jq 를 부르지 않는다.
