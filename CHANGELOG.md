@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.4] - 2026-10-07
+
+재수렴이 `재설계 필요` 로 끝난 뒤 라우터 교대가 재수렴 대상 세그먼트 자신을 park 하지 않는다. 그 세그먼트를 park 하면 런이 영구히 멈췄다. cone 행을 닫을 동사가 없어 후임 교대가 매번 「해소 행 없음」을 이유로 같은 자리에서 종료했기 때문이다.
+
+### Fixed
+
+- **재수렴 대상 세그먼트 자신의 오적용 park** (#1134)
+  - 재수렴이 돈 세그먼트는 판정이 `재설계 필요` 여도 implement 를 원래 프롬프트로 다시 파견한다. 그 세그먼트의 `plan_sha256` 행은 `종류=reconverge` 행이 무효로 만든다.
+  - 재수렴 대상 자신에게 이미 쓰인 같은 사유의 cone `blocked` 행은 오적용이며 아무것도 막지 않는다. 후임 교대는 그 행의 원장 줄을 `--rationale` 에 적고 implement 를 재파견한다.
+
 ## [2.46.3] - 2026-10-07
 
 설계 단계가 사람에게 묻는 질문으로 멈추면, 이제 라우터는 런을 `무효화` 로 닫지 않고 좌석에 그 질문을 넘긴다. 함께 드러난 게이트 결함 둘도 고쳤다. 런을 끝낸 교대가 쓰는 인계 행이 머지 절단점 대상에서 거절되던 것, 그리고 팀 정리가 위트니스 디렉터리를 지우지 못하던 것이다.
