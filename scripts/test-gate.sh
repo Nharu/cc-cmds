@@ -26555,6 +26555,31 @@ check "74: 강제 표면 분기의 조회가 그 인용을 자기 선행 기록�
 printf -- '- `blocked` | 교대=1 | 대상=front | 스코프=run | 원인=무효화 | 사유=강제 표면 이동 | 관측=t | prev=x\n' > "$WORK/ledger74b.md"
 check "74: 대조 — 진짜 강제 표면 이동 행은 맞는다" "$(q74 "$WORK/ledger74b.md")" "0"
 
+# ---------------------------------------------------------------------------
+# 76. 사전 인가 대조는 줄바꿈이 든 argv 도 한 행위로 읽는다
+# --- section: 76 | group: reach | covers: - | anchors: 76: 여러 줄 --body 의 gh pr create 가 gh pr 형태에 맞는다, 76: 대조 — 한 줄 --body 도 맞는다, 76: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다 ---
+#
+# 사전 인가 대조는 argv 를 awk 로 정규화하는데, awk 는 입력 줄마다 본문을 돈다.
+# PR 본문처럼 인자 하나에 줄바꿈이 들면 정규화 결과가 여러 줄이 되어 한 줄짜리
+# 형태와의 비교가 참이 될 수 없었고, 인가된 `gh pr create` 가 목록 밖으로 판정됐다.
+# 탐침 모드로 대조 스크립트 하나만 부른다.
+# ---------------------------------------------------------------------------
+m76="$WORK/manifest76.md"
+printf -- '- `사전 인가` | 형태=gh pr | 사유=테스트\n' > "$m76"
+p76() {
+  GATE_PREAUTH_PROBE=1 GATE_ARGV="$1" GATE_MANIFEST="$m76" \
+    /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh" 2>/dev/null
+}
+check "76: 여러 줄 --body 의 gh pr create 가 gh pr 형태에 맞는다" \
+  "$(p76 "gh pr create --base main --title x --body ## 요약
+본문 둘째 줄
+셋째 줄")" "P=1 형태=완전 Pd=0"
+check "76: 대조 — 한 줄 --body 도 맞는다" \
+  "$(p76 'gh pr create --base main --title x --body 한 줄')" "P=1 형태=완전 Pd=0"
+check "76: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다" \
+  "$(p76 "gh project item-list 1 --body x
+gh pr")" "P=0 형태=없음 Pd=0"
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
