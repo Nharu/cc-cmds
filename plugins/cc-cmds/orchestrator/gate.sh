@@ -6991,9 +6991,11 @@ gate_segment_field() {
 gate_plan_skill_step_count() {
   # gate_plan_skill_step_count <skill> — how many object steps of the frozen
   # plan carry that skill, whether or not they have an id.
-  { manifest_plan_json 2>/dev/null \
-      | jq -r --arg s "$1" '[.steps[]? | select(type == "object" and .skill == $s)] | length' 2>/dev/null \
-      || true; } | head -1 | { read -r n || true; printf '%s' "${n:-0}"; }
+  local n
+  n=$(manifest_plan_json 2>/dev/null \
+        | jq -r --arg s "$1" '[.steps[]? | select(type == "object" and .skill == $s)] | length' 2>/dev/null \
+        || true)
+  printf '%s' "${n:-0}"
 }
 
 gate_run_scope_step() {
