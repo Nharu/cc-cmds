@@ -9695,7 +9695,7 @@ rm -f "$RD15E/D1.pid" "$RD15E/D1.start"
 plan15e_audit "$WORK/plan-R15EA.md" reconverge
 check "15e: - reconverge 는 거부된다" "$rc" "3"
 case "$msg" in
-  *"한 번이라도 돈 뒤에만"*) ok "15e: - reconverge 의 거부는 아직 돌지 않은 감사를 든다" ;;
+  *"의 segment 행이 없습니다"*) ok "15e: - reconverge 의 거부는 빠진 segment 행을 든다" ;;
   *) bad "15e - reconverge 문면" "$msg" ;;
 esac
 plan15e_audit "$WORK/plan-R15EA.md" implement
@@ -9816,6 +9816,110 @@ write15c "$M15EN2" '{ "design_required": false, "steps": [ { "id": "A1", "skill"
 plan15en_audit "$M15EN2"
 check "15e: 설계 단계가 없는 계획도 감사 단계가 둘이면 감사 면제가 서지 않는다" "$rc" "3"
 rm -f "$WT/$DOC15EN"
+
+# ---------------------------------------------------------------------------
+# 15e-2. An adopted composed requirement re-converges on the run-scope audit's key
+# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다 ---
+#
+# An audit with no segment asks a person whether to adopt the requirement its
+# findings compose, and parks on purpose. When the person adopts it, the router
+# re-converges the document on the audit's own key and then audits it again.
+# That key is `-`, so the re-convergence has to be admitted there; it is keyed
+# on the audit step having parked on purpose, so a `- reconverge` in any other
+# state still meets the segment-row refusal.
+# ---------------------------------------------------------------------------
+DOC15ER='docs/fixture-design-15e-reconverge.md'
+M15ER="$WORK/plan-R15ER.md"
+write15c "$M15ER" '{ "design_required": false, "steps": [ { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["A1"] } ] }' "$DOC15ER" R15ER
+grant15c R15ER "$DOC15ER"
+printf -- '- `종료 절` | id=K1 | 문면=설계 문서가 감사된다 (K1)\n' >> "$M15ER"
+sed '/^\*\*구속 다이제스트\*\*/d' "$M15ER" > "$M15ER.tmp" && mv "$M15ER.tmp" "$M15ER"
+au15_freeze "$DOC15ER"
+RD15ER="$STATE_LATE/cc-cmds/run/R15ER"
+audit15er="/cc-cmds:design-audit-unattended $WT/$DOC15ER"
+reconv15er="/cc-cmds:design-reconverge $WT/$DOC15ER 감사 종합 요구 $RD15ER/halt/A1#1.md"
+plan15er() {  # plan15er <stage kind> <prompt> — the run-scope dispatch, as plan
+  gateL plan --manifest "$M15ER" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 -- "$1" -p "$2"
+}
+STUB_AU_PARK="$WORK/bin/claude-stub-au-park"
+cat > "$STUB_AU_PARK" <<'STUBAUPEOF'
+#!/usr/bin/env bash
+mkdir -p "$CC_PIPELINE_RUN_DIR/halt"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=R15ER -->" \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — 종합 질문' \
+  '**분류**: precondition-failed' '**질문 문면**: 함께 함의하는 요구를 어떻게 처리할까요?' '**선택지**:' \
+  '- `adopt as a requirement` — 요구로 채택한다' '- `reject` — 기각한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-park","num_turns":1,"result":"종합 질문에서 멈춥니다."}\n'
+exit 0
+STUBAUPEOF
+STUB_AU_RECONV="$WORK/bin/claude-stub-au-reconv"
+cat > "$STUB_AU_RECONV" <<'STUBAUREOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 재수렴 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-reconv","num_turns":1,"result":"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."}\n'
+exit 0
+STUBAUREOF
+chmod +x "$STUB_AU_PARK" "$STUB_AU_RECONV"
+
+plan15er reconverge "$reconv15er"
+check "15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다" "$rc" "3"
+case "$msg" in
+  *"의 segment 행이 없습니다"*) ok "15e-2: 그 거부는 빠진 segment 행을 든다" ;;
+  *) bad "15e-2 감사 전 - reconverge 문면" "$msg" ;;
+esac
+
+au15_dispatch R15ER "$STUB_AU_PARK" audit "$audit15er"
+au15_wait R15ER A1
+check "15e-2 픽스처의 감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15ER A1 audit)" "의도된 park"
+gateL act --manifest "$M15ER" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(au15_H R15ER)" --rationale x \
+      -- "중단 기록=$RD15ER/halt/A1#1.md" '선택지=adopt as a requirement' '근거=사람이 요구로 채택'
+check "15e-2 픽스처의 중단 답이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+er15_halts() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -c '[.answered_halts[] | .segment]'; }
+check "15e-2: 답이 스냅숏의 answered_halts 에 오른다" "$(er15_halts)" '["A1"]'
+
+plan15er reconverge "/cc-cmds:design-reconverge $WT/docs/elsewhere.md 감사 종합 요구 $RD15ER/halt/A1#1.md"
+check "15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다" "$rc" "3"
+case "$msg" in
+  *"문서 인자가 이 런의 문서 인자와 다릅니다"*) ok "15e-2: 그 거부는 문서 인자를 든다" ;;
+  *) bad "15e-2 문서 인자 문면" "$msg" ;;
+esac
+plan15er reconverge "$reconv15er"
+check "15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다" "$rc" "0"
+au15_dispatch R15ER "$STUB_AU_RECONV" reconverge "$reconv15er"
+check "15e-2: 그 재수렴이 기동한다" "$rc" "0"
+au15_wait R15ER A1
+check "15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다" \
+  "$(au15_rows R15ER '| 세그먼트=- | 스테이지=A1 | 종류=reconverge |' | grep -c . || true)" "1"
+check "15e-2 픽스처의 재수렴이 정상 완료다 (아래 계획 거부가 공허하지 않다)" \
+  "$(au15_class R15ER A1 reconverge)" "정상 완료"
+check "15e-2: 단계 id 를 세그먼트로 쓴 재수렴 행은 없다" \
+  "$(au15_rows R15ER '세그먼트=A1 ' | grep -c . || true)" "0"
+check "15e-2: 재수렴이 감사 단계의 둘째 시도 번호를 쓴다" \
+  "$( [ -s "$RD15ER/log/A1#2.json" ] && printf A1#2 )" "A1#2"
+check "15e-2: 재수렴 행이 중단 답을 소비한다" "$(er15_halts)" '[]'
+check "15e-2: 재수렴 뒤에도 원장에 segment 행이 생기지 않는다" \
+  "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15ER.md" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+gateL plan --manifest "$M15ER" --kind segment --target infra --segment S2 --cutpoint 커밋 --surface 읽기 \
+      --from-declaration -- 상태=계획됨 "워크트리=$(dirname "$WT")/$(basename "$WT")-run-R15ER-S2"
+check "15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다" "$rc" "3"
+case "$msg" in
+  *"감사 단계(A1)의 마지막 결과가 정상 완료일 때만"*) ok "15e-2: 그 거부는 감사 단계의 마지막 감사 결과를 든다" ;;
+  *) bad "15e-2 재수렴 뒤 계획 문면" "$msg" ;;
+esac
+plan15er reconverge "$reconv15er"
+check "15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다" "$rc" "3"
+plan15er audit "$audit15er"
+check "15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다" "$rc" "0"
+( cd "$WT" && git worktree remove --force "$WT-run-R15ER-A1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC15ER"
 
 # ---------------------------------------------------------------------------
 # 15f. A frozen design with a step not yet started keeps the run open
@@ -26851,12 +26955,12 @@ esac
 # its design, so it has no design row at all; its audit is dispatched anyway.
 bsx_fresh RB1F
 bsx_doc_frozen RB1F
-# A re-convergence on the audit's key needs the audit to have run there.
+# A re-convergence on the audit's key needs an audit there that parked on purpose.
 gateB plan --manifest "$WORK/bsx-RB1F.md" --kind skill --target infra --segment - --cutpoint 커밋 \
   --surface 워크트리쓰기 -- reconverge -p "$(bsx_p RB1F '/cc-cmds:design-reconverge @DOC@ 감사 종합 요구 x')"
 check "76:감사가 돈 적 없는 런의 런 범위 재수렴은 거부된다" "$rc" "3"
 case "$msg" in
-  *"감사 단계 A1 가 한 번이라도 돈 뒤에만"*) ok "76:그 거절은 감사가 돈 적 없음을 든다" ;;
+  *"의 segment 행이 없습니다"*) ok "76:그 거절은 빠진 segment 행을 든다" ;;
   *) bad "76재수렴 선행 문면" "$msg" ;;
 esac
 bsx_launch RB1F "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
@@ -26886,15 +26990,16 @@ gateB act --manifest "$WORK/bsx-RB1F.md" --kind halt-answer --target infra --seg
 check "76:감사 단계 키의 중단 답을 좌석이 쓴다" "$rc" "0"
 check "76:스냅숏이 그 답을 감사 단계 키로 내놓는다" \
   "$(bsx_snap "$WORK/bsx-RB1F.md" | jq -c '[.answered_halts[]? | .segment]')" '["A1"]'
+# The answer alone does not open a re-convergence: this audit ended `정상 완료`,
+# which is not the state a composed requirement is asked in, so the dispatch
+# still meets the segment-row refusal.
 gateB plan --manifest "$WORK/bsx-RB1F.md" --kind skill --target infra --segment - --cutpoint 커밋 \
-  --surface 워크트리쓰기 -- reconverge -p "/cc-cmds:design-reconverge /nonexistent/doc.md 감사 종합 요구 $BSX_HALTREC"
-check "76:design_doc 과 다른 문서 인자의 런 범위 재수렴은 거부된다" "$rc" "3"
-bsx_launch RB1F "$WORK/bin/bsx-audit" reconverge "/cc-cmds:design-reconverge @DOC@ 감사 종합 요구 $BSX_HALTREC" A1
-check "76:감사 단계 키의 재수렴이 --segment - 로 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
-check "76:재수렴 행이 세그먼트=- · 스테이지=감사 단계 · 종류=reconverge 다" \
-  "$(bsx_rows RB1F '| 세그먼트=- | 스테이지=A1 | 종류=reconverge ' | grep -c . || true)" "1"
-check "76:재수렴 행이 그 중단 답을 소진한다" \
-  "$(bsx_snap "$WORK/bsx-RB1F.md" | jq -c '[.answered_halts[]? | .segment]')" '[]'
+  --surface 워크트리쓰기 -- reconverge -p "$(bsx_p RB1F "/cc-cmds:design-reconverge @DOC@ 감사 종합 요구 $BSX_HALTREC")"
+check "76:정상 완료로 끝난 감사 뒤의 런 범위 재수렴은 거부된다" "$rc" "3"
+case "$msg" in
+  *"의 segment 행이 없습니다"*) ok "76:그 거절도 빠진 segment 행을 든다" ;;
+  *) bad "76정상 완료 뒤 재수렴 문면" "$msg" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 77. Condition 1 of a base run is the split and its registry
