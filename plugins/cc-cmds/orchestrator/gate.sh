@@ -889,7 +889,27 @@ gate_reach_derived() {
   # `배포트리거`. Everything finer than that is a claim about an environment,
   # and argv cannot prove one.
   local alias="$1"; shift
-  local cmd="${1##*/}" a
+  local -a _orig
+  _orig=(${1+"$@"})
+  # The tool is read past the launchers the grading table unwraps, so `env
+  # FOO=1 git stash clear` and `nice git stash drop` take the floor their bare
+  # spelling takes. A launcher option the unwrap does not know leaves the
+  # wrapped command undecidable, and then any `stash` word in argv raises the
+  # floor, as an unknown git global option does below.
+  local _left _urc a
+  while [ "$#" -gt 0 ]; do
+    case "${1##*/}" in env|lockf|command|time|timeout|nice|nohup|stdbuf) ;; *) break ;; esac
+    _urc=0; _left=$(gate_unwrap_one "$@") || _urc=$?
+    case "$_urc" in
+      0) shift $(( $# - _left )) ;;
+      *)
+        for a in "$@"; do
+          [ "$a" = "stash" ] && { printf '기기전역'; return 0; }
+        done
+        break ;;
+    esac
+  done
+  local cmd="${1##*/}"
   case "$cmd" in
     git)
       # The subcommand is read past git's own global options, because `-C <dir>`,
@@ -924,6 +944,8 @@ gate_reach_derived() {
         install|upgrade|uninstall|tap|link) printf '기기전역'; return 0 ;;
       esac ;;
   esac
+  # The launcher words go back in: `time -o <file>` names a path of its own.
+  set -- ${_orig[@]+"${_orig[@]}"}
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   for a in "$@"; do
     case "$a" in
@@ -1587,6 +1609,39 @@ gate_reach_local_destructive() {
   return 0
 }
 
+gate_reach_local_destructive_here() {
+  # gate_reach_local_destructive_here <argv...> — the local reader asked from
+  # the directory the act runs in.
+  #
+  # The reader looks names up on disk — whether a `mv` destination exists,
+  # whether a `checkout` operand is a path — and a relative name means what
+  # it means from the act's directory, which is not the gate process's own:
+  # a stage gates from the main checkout an act that runs in its segment
+  # worktree. Asked from the gate's directory, `cp a.txt link/README.md`
+  # read as a write onto a name that did not exist while the landing
+  # collector, which resolves from the act's directory, saw the overwrite's
+  # target in another worktree, and the two halves of one verdict disagreed.
+  # A directory that cannot be entered answers the command's name, the
+  # closed reading.
+  local d; d=$(gate_grade_cwd)
+  ( cd "$d" 2>/dev/null || { printf '%s' "${1##*/}"; exit 0; }
+    gate_reach_local_destructive "$@" )
+}
+
+gate_git_config_moves_tree() {
+  # gate_git_config_moves_tree <k=v or k=envvar> — 0 when the configuration a
+  # `-c` or `--config-env` sets can move the work tree git writes to:
+  # `core.worktree` itself, `core.bare`, or an include that reads another file
+  # which could set it. git matches the section and key without regard to
+  # case, so this does too.
+  local k
+  k=$(printf '%s' "${1%%=*}" | tr 'A-Z' 'a-z')
+  case "$k" in
+    core.worktree|core.bare|include.*|includeif.*) return 0 ;;
+  esac
+  return 1
+}
+
 gate_git_globals() {
   # gate_git_globals <argv after `git`...> — skips git's own global options.
   # Sets GATE_GIT_NGLOB to the number of words they take, GATE_GIT_BASE to
@@ -1830,7 +1885,7 @@ gate_reach_tree_destruction() {
   # one. Cell 5b and the `런로컬` cell both answer through this, so the two
   # spellings of one act take one verdict.
   local X="$1" Pd="$2" _ltrig probe; shift 2
-  _ltrig=$(gate_reach_local_destructive "$@")
+  _ltrig=$(gate_reach_local_destructive_here "$@")
   if [ -n "$_ltrig" ] && [ "$GATE_MARK" != "파괴" ]; then
     X=1
     probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='파괴' GATE_MARK_TRIGGER="$_ltrig" \
@@ -1903,7 +1958,7 @@ gate_reach_runlocal_destruction() {
   # went ahead with `--destructive` on it.
   local alias="$1" X="$2" Pd="$3"; shift 3
   if [ "$X" != "1" ]; then
-    [ -n "$(gate_reach_local_destructive "$@")" ] || return 0
+    [ -n "$(gate_reach_local_destructive_here "$@")" ] || return 0
   fi
   gate_reach_target_tree_act "$alias" "$@" || :
   gate_reach_runlocal_escapes "$alias" || return 0
@@ -2253,7 +2308,15 @@ gate_reach_worktree_spec() {
   done <<EOF
 $out
 EOF
-  GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]=$(gate_lexical_abs "$spec" "$dir")
+  p=$(gate_lexical_abs "$spec" "$dir")
+  GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]="$p"
+  # And the place the kernel reaches by that path, which the lexical reading
+  # misses when a `..` follows a directory link: `lnk/../<sibling>` cancels
+  # to a name under <dir> on paper and is the sibling on disk.
+  case "$spec" in /*) line="$spec" ;; *) line="$dir/$spec" ;; esac
+  line=$(gate_physical_walk "$line")
+  GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]="$line"
+  [ -L "$p" ] && GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]=$(gate_physical_path "$p")
   return 0
 }
 
@@ -2290,15 +2353,21 @@ gate_reach_target_tree_act() {
   # The operating repository is the grading directory, or the directory
   # `env -C` moves to, or for `git` the directory its `-C` options compose
   # to. An operand is a word that does not start with `-` and either contains
-  # `/` or starts with `.` or `~`, plus the value of a `--opt=<value>` whose
-  # value is absolute and the value glued to a short option (`-t<dir>`, or
-  # any `-X<value>` holding a `/`). That over-collects — a read operand or a
-  # `sed` script containing `/` is checked too — and it over-collects on
-  # purpose: an extra operand can only fail the predicate, never pass it.
+  # `/` or starts with `.` or `~`, or is a bare name that is a symlink, plus
+  # the value of a `--opt=<value>` shaped the same way and the value glued to
+  # a short option (`-t<dir>`, or any `-X<value>` holding a `/`). That
+  # over-collects — a read operand or a `sed` script containing `/` is
+  # checked too — and it over-collects on purpose: an extra operand can only
+  # fail the predicate, never pass it.
   #
-  # EVERY PLACE THE ACT CAN WRITE IS A LANDING PLACE, and a place this reader
-  # cannot resolve makes it give up, which the callers read as closed. Four
-  # places were missed while the set was narrower than the writes:
+  # EVERY PLACE THE ACT'S ARGV CAN SEND A WRITE IS A LANDING PLACE, and a
+  # selector this reader cannot resolve makes it give up, which the callers
+  # read as closed: a launcher or git global option it does not know, a
+  # `GIT_*` assignment that can name a repository, a `-c` that can move the
+  # work tree. The launchers in front of the command are read through first.
+  # What the act inherits rather than spells — an exported `GIT_DIR`, the
+  # repository's own `core.worktree` — is not argv and is not read here.
+  # These places were missed while the set was narrower than the writes:
   # - every `--work-tree` and `--git-dir`, not only the last of them and the
   #   `-C` options. git keeps an absolute `--work-tree` past a later `-C`, so
   #   `git --work-tree=<sibling> -C <tmp> checkout -f -- .` overwrote the
@@ -2310,47 +2379,78 @@ gate_reach_target_tree_act() {
   #   components, so `git worktree remove --force <name>` removed a sibling
   #   whose name carried no `/` for this reader to collect. Every listed
   #   worktree those components could mean is collected, with the name
-  #   resolved as a path besides; a list that cannot be read gives up.
-  # - a value glued to its option, `mv -t<dir>` in GNU's spelling.
+  #   resolved as a path besides, lexically and physically; a list that
+  #   cannot be read gives up.
+  # - a value glued to its option, `mv -t<dir>` in GNU's spelling, and a
+  #   relative `--opt=<value>`.
   # - what a symlink leads to. A final component that is a symlink adds the
-  #   file it points at, and an operand with a `..` adds its physical reading
-  #   too, because the kernel follows a directory link before it applies the
-  #   `..` that the lexical reading cancels against it.
+  #   file it points at — a bare name included — and an operand with a `..`
+  #   adds its physical reading too, because the kernel follows a directory
+  #   link before it applies the `..` that the lexical reading cancels
+  #   against it.
+  # - the act behind `timeout`, `nice`, `command`, `nohup`, `stdbuf`, `time`
+  #   and `lockf`, and the work tree `GIT_WORK_TREE=` or `-c core.worktree=`
+  #   names, which this reader gives up on rather than resolve.
   #
   # `git worktree add`'s first operand is left out, because it names a
   # directory that does not exist yet; the repository check is what binds it,
   # and a creation path under a machine-global prefix has already been taken by
   # the derived floor before this cell is reached.
   local alias="$1"; shift
-  local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w
+  local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w _left _urc
   local -a ops gx
   ops=(); gx=()
   # Emptied first, so an argv this reader gives up on leaves no landing places
   # of an earlier act behind for `gate_reach_runlocal_escapes` to read.
   GATE_TT_LANDS=()
   base=$(gate_grade_cwd)
-  # `env` runs what follows from the directory `-C` names. An option of its
-  # this reader does not know — `-S`, which splits one word into a command
-  # line, among them — leaves the command out of view, so it gives up.
-  if [ "${1##*/}" = "env" ]; then
-    shift
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        -i|-0|-v) shift ;;
-        --) shift; break ;;
-        -u) [ "$#" -ge 2 ] || return 1; shift 2 ;;
-        -u?*) shift ;;
-        -C|--chdir)
-            [ "$#" -ge 2 ] || return 1
-            repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
-        --chdir=*) repo=$(gate_lexical_abs "${1#*=}" "${repo:-$base}"); shift ;;
-        -*) return 1 ;;
-        *=*) shift ;;
-        *) break ;;
-      esac
-    done
-    [ "$#" -gt 0 ] || return 1
-  fi
+  # The launchers in front are peeled one layer at a time, so `timeout 60 git
+  # worktree remove --force <name>` is read as the `git` act it runs; an
+  # option of theirs the shared unwrap does not know gives up. `env` keeps its
+  # own loop because two of its words move the act: `-C` moves it to another
+  # directory, and an assignment of a variable git reads to find its
+  # repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG_PARAMETERS`, … — any
+  # `GIT_*` outside the few that only name a person, an editor or a trace)
+  # points it at another worktree with no word this reader could resolve, so
+  # it gives up there. An option of `env` this reader does not know — `-S`,
+  # which splits one word into a command line, among them — leaves the
+  # command out of view, so it gives up too.
+  while [ "$#" -gt 0 ]; do
+    case "${1##*/}" in
+      env)
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -i|-0|-v) shift ;;
+            --) shift; break ;;
+            -u) [ "$#" -ge 2 ] || return 1; shift 2 ;;
+            -u?*) shift ;;
+            -C|--chdir)
+                [ "$#" -ge 2 ] || return 1
+                repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
+            --chdir=*) repo=$(gate_lexical_abs "${1#*=}" "${repo:-$base}"); shift ;;
+            -*) return 1 ;;
+            GIT_PAGER=*|GIT_EDITOR=*|GIT_SEQUENCE_EDITOR=*|GIT_TERMINAL_PROMPT=*|\
+            GIT_AUTHOR_*=*|GIT_COMMITTER_*=*|GIT_TRACE*=*|GIT_OPTIONAL_LOCKS=*|GIT_ADVICE=*) shift ;;
+            GIT_*=*) return 1 ;;
+            *=*) shift ;;
+            *) break ;;
+          esac
+        done
+        [ "$#" -gt 0 ] || return 1 ;;
+      lockf|command|time|timeout|nice|nohup|stdbuf)
+        _urc=0; _left=$(gate_unwrap_one "$@") || _urc=$?
+        [ "$_urc" = "0" ] || return 1
+        shift $(( $# - _left )) ;;
+      *) break ;;
+    esac
+  done
+  # git's own global options are the ones `gate_git_globals` reads, and one
+  # it does not know gives up rather than being skipped: skipping read the
+  # value of `--attr-source <tree>` as the subcommand, and the worktree a
+  # `remove` named was never collected. A `-c` or `--config-env` that sets
+  # `core.worktree`, or that includes another configuration file which could,
+  # moves the work tree where no operand says so, and gives up as well.
   if [ "${1##*/}" = "git" ]; then
     shift
     while [ "$#" -gt 0 ]; do
@@ -2362,9 +2462,20 @@ gate_reach_target_tree_act() {
         --git-dir|--work-tree)
             [ "$#" -ge 2 ] || return 1
             gx[${#gx[@]}]="$2"; shift 2 ;;
-        -c|--namespace|--exec-path|--config-env)
+        -c|--config-env)
+            [ "$#" -ge 2 ] || return 1
+            gate_git_config_moves_tree "$2" && return 1
+            shift 2 ;;
+        --config-env=*)
+            gate_git_config_moves_tree "${1#*=}" && return 1
+            shift ;;
+        --namespace|--attr-source)
             [ "$#" -ge 2 ] || return 1; shift 2 ;;
-        -*) shift ;;
+        --namespace=*|--attr-source=*|--exec-path=*|--super-prefix=*|--list-cmds=*|\
+        -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|\
+        --noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice)
+            shift ;;
+        -*) return 1 ;;
         *) sub="$1"; shift; break ;;
       esac
     done
@@ -2378,13 +2489,24 @@ gate_reach_target_tree_act() {
   else
     shift
   fi
+  # Relative operands of a `git -C` act are relative to that repository.
+  [ -n "$repo" ] && base="$repo"
+  local -a absops wts
+  absops=(); wts=()
+  for v in ${gx[@]+"${gx[@]}"}; do
+    w=$(gate_lexical_abs "$v" "$base")
+    absops[${#absops[@]}]="$w"; wts[${#wts[@]}]="$w"
+  done
   local eat=0
   for a in "$@"; do
     # The value of `worktree add`'s branch and reason options is not its
     # creation path, so it is consumed before the exemption can take it.
     if [ "$eat" = "1" ]; then eat=0; continue; fi
     case "$a" in
-      --*=/*) ops[${#ops[@]}]="${a#*=}" ;;
+      # A path-shaped value of a long option, relative ones included:
+      # `--target-directory=../<sibling>` writes there as surely as an
+      # absolute value does.
+      --*=/*|--*=*/*|--*=.*|--*='~'*) ops[${#ops[@]}]="${a#*=}" ;;
       -b|-B|--reason)
         case "$skipped_wt" in 1|3) eat=1 ;; esac ;;
       --*) ;;
@@ -2405,17 +2527,16 @@ gate_reach_target_tree_act() {
             # The creation path need not contain a slash: a bare name is still
             # the first operand of `worktree add`, and it is the one being
             # exempted.
-            [ "$skipped_wt" = "1" ] && skipped_wt=2 ;;
+            if [ "$skipped_wt" = "1" ]; then skipped_wt=2; continue; fi
+            # A bare name lands where it is only when it is no symlink: `cp
+            # a.txt flink` writes the file `flink` leads to, which can sit in
+            # another worktree. Only a link is collected, so a bare word that
+            # names nothing costs no resolution.
+            for v in "$base" ${wts[@]+"${wts[@]}"}; do
+              [ -L "$v/$a" ] && { ops[${#ops[@]}]="$a"; break; }
+            done ;;
         esac ;;
     esac
-  done
-  # Relative operands of a `git -C` act are relative to that repository.
-  [ -n "$repo" ] && base="$repo"
-  local -a absops wts
-  absops=(); wts=()
-  for v in ${gx[@]+"${gx[@]}"}; do
-    w=$(gate_lexical_abs "$v" "$base")
-    absops[${#absops[@]}]="$w"; wts[${#wts[@]}]="$w"
   done
   if [ -n "$spec" ]; then
     gate_reach_worktree_spec "$base" "$spec" || return 1
@@ -7039,6 +7160,35 @@ gate_unwrap_time() {
     읽기|워크트리쓰기) printf '트리밖쓰기' ;;
     *) printf '%s' "$inner" ;;
   esac
+}
+
+gate_unwrap_left() { printf '%s' "$#"; }
+
+gate_unwrap_one() {
+  # gate_unwrap_one <argv...> — when argv0 is one of the launchers the shared
+  # unwraps read (`env`, `lockf`, `command`, `time`, `timeout`, `nice`,
+  # `nohup`, `stdbuf`), prints how many words are left once that one layer is
+  # peeled, so the caller can `shift` to the wrapped command. Status 2 when
+  # argv0 is no launcher, 1 when the launcher carries an option the unwrap
+  # does not know or wraps nothing.
+  #
+  # THE SAME UNWRAPS THE GRADING TABLE USES, so a reader that has to see the
+  # wrapped command cannot disagree with the table about which word it is.
+  # The derived floor read `git` as argv0 only, and `env FOO=1 git stash
+  # clear` emptied the shared stash under `런로컬` while the table graded the
+  # same argv through `env`.
+  local cmd="${1##*/}" out; shift
+  case "$cmd" in
+    env)     out=$(gate_unwrap_env     gate_unwrap_left '' '' "$@") ;;
+    lockf)   out=$(gate_unwrap_lockf   gate_unwrap_left '' '' "$@") ;;
+    command) out=$(gate_unwrap_command gate_unwrap_left '' '' "$@") ;;
+    time)    out=$(gate_unwrap_time    gate_unwrap_left '' '' "$@") ;;
+    timeout|nice|nohup|stdbuf)
+             out=$(gate_unwrap_wrapper "$cmd" gate_unwrap_left '' '' "$@") ;;
+    *) return 2 ;;
+  esac
+  case "$out" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$out"
 }
 
 surface_of_env()     { gate_unwrap_env     surface_of_argv0 '읽기' "$GATE_FORM_UNKNOWN" "$@"; }
@@ -19422,7 +19572,7 @@ gate_verb_act() {
         _ptrig="${GATE_MARK_TRIGGER:-}"
       else
         case "${GATE_REACH:--}" in
-          대상트리|런로컬|-) _ptrig=$(gate_reach_local_destructive "$@") ;;
+          대상트리|런로컬|-) _ptrig=$(gate_reach_local_destructive_here "$@") ;;
         esac
       fi
     fi
