@@ -5,6 +5,37 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.0] - 2026-10-07
+
+fleet 이 좌석 목록과 5시간 창 판정을 하드코딩된 두 홈(`~/.claude-cc`·`~/.claude-cci`)과 사용량 트래커 plist 대신 cc-lane 인벤토리(`accounts.json`)와 사용량 파일(`usage.json`)에서 읽는다. 레인 프로브와 지표 수집기도 같은 원천을 읽는다. 다른 계정에 기록된 런의 처분이 영영 풀리지 않던 문제와, 게이트가 완전한 중단 기록을 헤더가 없다고 거절할 수 있던 문제도 고쳤다.
+
+### Changed
+
+- **fleet 좌석은 인벤토리의 모든 계정이다.**
+  - 계정마다 적격성과 그 첫 사유를 라우터의 순수 함수로 판정한다.
+  - 5시간 창은 파견 시점에 `usage.json` 에서 직접 판정한다. 파일이 없거나 낡았거나 읽을 수 없으면 파견을 막는다.
+  - 용량은 적격 그룹마다 허용치 하나를 더한다. 소모 스캔은 홈마다 하고, 캐시 판본을 v2 로 올렸다.
+- **동시 실행 상한 2는 모든 레인을 덮어 센다.** 클레임 잠금 아래에서 프로세스마다 실행 표지(`busy/<id>.<pid>`)를 쓴다. 다른 계정에 기록된 런은 `lane-mismatch` 로 거절하거나 `lane-record` 로 파킹하며, 거절 기록에 6번째 열(세부 사유)이 더해졌다.
+- **`fleet.sh agent` 의 레이블 집합을 인벤토리에서 만든다.**
+  - `install` 은 형식 위반, 빈 집합, 고아 plist 가 있으면 거부한다.
+  - `uninstall` 은 디스크에 있는 모든 파견 plist 까지 지운다.
+  - `status` 는 레인별 적격성과 살아 있는 실행 표지 수를 보인다.
+- **`lane-probe.sh` 는 (런, config dir) 쌍마다 한 줄을 낸다.** 세그먼트가 다른 계정으로 라우팅된 런을 나눠 보이기 위해서다. 세그먼트의 디렉터리는 `.window` 4번째 줄의 계정 id 를 런의 인벤토리 스냅숏으로 해소하며, 해소되지 않으면 `(미상)` 으로 낸다.
+- **`collect-run-metrics.sh` 의 기본 홈** — `--config-home` 이 없으면 `$HOME/.claude` 와 인벤토리의 모든 `config_dir` 을 쓴다. `.claude-cci` 축자는 뺐다. 인벤토리가 없거나 깨졌으면 진단 한 줄을 남기고 `.claude`·`.claude-cc` 로 내려간다.
+
+### Added
+
+- **`lint-pace-threshold-pins.sh` 거울 검사** — fleet 의 5시간 창 상한과 드라이버의 여유 상한이 같은 값인지 검사한다.
+
+### Fixed
+
+- **다른 레인에 기록된 런이 백로그 머리를 영영 막던 문제.** 그 런의 홈을 찾는 집합이 무인 허용 여부와 config dir 존재를 보지 않았다. 그래서 draining·disabled 이거나 config dir 이 없는 계정에 기록된 런이 머리에 오면, 모든 레인이 `lane-mismatch` 로 거절했고 그 계정의 레인은 잠금 전에 끝났다. 이제 그 집합을 설치 시 레이블 집합과 같게 맞춘다. 레이블 집합을 떠난 계정의 홈은 `lane-record` 로 파킹한다. 레이블 집합 안에서 이번 틱에만 부적격한 계정(5시간 창 초과 등)은 지금처럼 거절하고, 머리는 그 레인을 기다린다.
+- **게이트가 완전한 중단 기록을 헤더가 없다고 거절할 수 있던 문제.** `head -1 | grep -q` 는 pipefail 아래에서 grep 이 먼저 끝나면 head 가 SIGPIPE 로 실패할 수 있었다. 이제 파이프 없이 첫 줄을 읽어 검사한다.
+
+### Post-install notes
+
+- 업데이트 뒤 `bash plugins/cc-cmds/orchestrator/fleet.sh agent install` 을 다시 실행해야 인벤토리의 계정마다 파견 에이전트가 등록된다. 이전 판본이 남긴 plist 때문에 `install` 이 고아 plist 로 거부하면, `fleet.sh agent uninstall` 뒤 다시 `install` 한다.
+
 ## [2.45.0] - 2026-10-07
 
 무인 런에서 단계가 사람에게 물은 질문에 답이 오면, 런을 새로 시작하지 않고 그 런 안에서 이어 간다. 좌석이 답을 `중단 답` 행으로 적고, 교대는 멈춘 세션을 그 답과 함께 다시 붙인다. 감사가 종합 질문으로 물은 요구를 사람이 채택하면, 교대는 설계 문서를 그 요구에 맞춰 재수렴하고 감사를 다시 돌린다. 종료 절을 `불가능` 으로 정산한 런은 이제 `충족` 이 아니라 `무효화` 로 기록된다. 무인 단계가 일상적인 임시 작업 때문에 park 되던 신고 안내도 고쳤다.
