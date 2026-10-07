@@ -7354,6 +7354,13 @@ gate_prompt_doc_arg() {
   # token for implement and reconverge, the path after `설계는 ` for review. The
   # report path behind `--report-path` is never a document argument. Empty when
   # the prompt names none.
+  #
+  # NOR IS A HALT RECORD OF THIS RUN. The router hands a halt answer on with a
+  # fixed sentence that names the record — a `.md` path under the run's `halt/`
+  # — and, on a resume, names no document at all, so read by the first-`.md`
+  # rule that record was the argument and every halt answer to a re-convergence
+  # was refused as naming another document. The record is skipped by the same
+  # prefix the halt-answer row is held to; any other `.md` is still compared.
   local sk="$1" prompt="$2"
   case "$sk" in
     review)
@@ -7364,7 +7371,8 @@ gate_prompt_doc_arg() {
       # Split on whitespace by `tr`, not by an unquoted expansion, so a glob
       # character in the prompt is never expanded against the working directory.
       printf '%s' "$prompt" | tr -s ' \t' '\n\n' | tr -d "\"'" \
-        | awk 'prev != "--report-path" && /\.md$/ { print; exit } { prev = $0 }'
+        | awk -v halt="${RUN_DIR:-/nonexistent}/halt/" \
+            'prev != "--report-path" && /\.md$/ && index($0, halt) != 1 { print; exit } { prev = $0 }'
       ;;
   esac
 }

@@ -9932,12 +9932,21 @@ case "$msg" in
 esac
 # A `--resume` of that re-convergence carries the router's fixed sentence and
 # the last row's session; it is admitted, and an older session on the key is not.
-er15_resume() {  # er15_resume <session> — a resume dispatch of the re-convergence, as plan
+# The sentence names a real halt record of this run, the `.md` path a halt
+# answer always carries: that record is not a document argument, while any other
+# `.md` in the same sentence still is.
+er15_resume() {  # er15_resume <session> [extra] — a resume dispatch of the re-convergence, as plan
   gateL plan --manifest "$M15ER" --kind skill --target infra --segment - --cutpoint 커밋 \
-       --surface 워크트리쓰기 --resume "$1" -- reconverge -p "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요."
+       --surface 워크트리쓰기 --resume "$1" -- reconverge -p "중단 기록 $RD15ER/halt/A1#1.md 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요.${2:+ $2}"
 }
 er15_resume sau-reconv
 check "15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다" "$rc" "0"
+er15_resume sau-reconv "$WT/docs/elsewhere.md"
+check "15e-2: 중단 기록 밖의 다른 문서를 단 --resume 재수렴은 거부된다" "$rc" "3"
+case "$msg" in
+  *"문서 인자가 이 런의 문서 인자와 다릅니다"*) ok "15e-2: 그 거부는 문서 인자를 든다 (중단 기록이 아니라)" ;;
+  *) bad "15e-2 재개 문서 인자 문면" "$msg" ;;
+esac
 er15_resume sau-park
 check "15e-2: 감사 세션을 잇는 --resume 재수렴은 거부된다" "$rc" "3"
 plan15er audit "$audit15er"
