@@ -26580,6 +26580,79 @@ check "76: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞�
   "$(p76 "gh project item-list 1 --body x
 gh pr")" "P=0 형태=없음 Pd=0"
 
+# ---------------------------------------------------------------------------
+# 77. gate_metrics_timed leaves nothing behind in a detached child under make
+# --- section: 77 | group: darwin | covers: gate_metrics_timed | anchors: 77: 무동작 명령은 rc 0 으로 돌아온다, 77: 시간 초과는 rc 143 이다, 77: 감시 시간의 sleep 이 남지 않는다, 77: 시간 초과된 명령의 자손이 남지 않는다, 77: 호출자의 fd 3 이상 보유자가 남지 않는다, 77: make 가 루프 시간 안에 돌아온다 ---
+#
+# The metrics round is a detached child of whatever ran the gate, so under
+# `make -jN` it carries make's jobserver pipe. The old function backgrounded a
+# watcher that started a `sleep` of the deadline's length, and a TERM landing
+# between that `sleep &` and the `$!` read left the `sleep` orphaned with the
+# caller's fds — make then waited for it with no child of its own. A timed-out
+# command's descendants outlived the call the same way, because only the
+# command's own pid was signalled.
+#
+# This reproduces the shape: a recipe under its own `make -j2` (a top-level
+# make, so it makes its own pipe) detaches a child that sources the gate, opens
+# a marker on fd 7 and calls the function many times with a no-op command and
+# a watch time no other process uses, then once with a command that leaves a
+# descendant and runs past its deadline. The counts are taken inside the child
+# right after the calls, before anything could expire, and the marker's
+# holders are listed with the listing's own fd 7 closed. Every measuring line
+# carries `|| true`: the sourced gate turns errexit and pipefail on, and
+# `grep -c` with nothing to count exits 1.
+# ---------------------------------------------------------------------------
+W77="$WORK/s77"; mkdir -p "$W77"; : > "$W77/marker"
+cat > "$W77/child.sh" <<'EOF'
+gate="$1"; o="$2"
+CC_GATE_SOURCE_ONLY=1 . "$gate" </dev/null
+exec 7<"$o/marker"
+t0=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
+i=0; nbad=0
+while [ "$i" -lt 40 ]; do
+  gate_metrics_timed 6.17 true || nbad=$((nbad + 1))
+  i=$((i + 1))
+done
+rc=0
+gate_metrics_timed 1 bash -c 'sleep 7.17 & sleep 7.18' || rc=$?
+t1=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
+echo "$nbad" > "$o/nbad"; echo "$rc" > "$o/to.rc"; echo "$t0 $t1" > "$o/loop"
+ps -A -o command= | grep -cx 'sleep 6.17' > "$o/n.watch" || true
+ps -A -o command= | grep -cxE 'sleep 7\.1[78]' > "$o/n.desc" || true
+lsof -t -- "$o/marker" > "$o/holders" 2>/dev/null 7<&- || true
+grep -vx "$$" "$o/holders" 7<&- | grep -c . > "$o/n.fd" 7<&- || true
+exec 7<&-
+echo done > "$o/done"
+EOF
+cat > "$W77/recipe.sh" <<EOF
+. "$repo_root/plugins/cc-cmds/orchestrator/detach.sh"
+p=\$(cc_detach_exec "$W77/child.log" "$W77/child.log" bash "$W77/child.sh" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" "$W77")
+i=0
+while [ ! -e "$W77/done" ] && kill -0 "\$p" 2>/dev/null && [ "\$i" -lt 600 ]; do
+  sleep 0.1; i=\$((i + 1))
+done
+EOF
+printf 'all: a b\na:\n\tbash "%s"\nb:\n\t@:\n' "$W77/recipe.sh" > "$W77/mk"
+t77a=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
+MAKEFLAGS= MFLAGS= MAKELEVEL= make -j2 -f "$W77/mk" >"$W77/make.out" 2>&1 3>&- 4>&- 5>&-
+t77b=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
+if [ -e "$W77/done" ]; then
+  check "77: 무동작 명령은 rc 0 으로 돌아온다" "$(cat "$W77/nbad")" "0"
+  check "77: 시간 초과는 rc 143 이다" "$(cat "$W77/to.rc")" "143"
+  check "77: 감시 시간의 sleep 이 남지 않는다" "$(cat "$W77/n.watch")" "0"
+  check "77: 시간 초과된 명령의 자손이 남지 않는다" "$(cat "$W77/n.desc")" "0"
+  check "77: 호출자의 fd 3 이상 보유자가 남지 않는다" "$(cat "$W77/n.fd")" "0"
+  read -r l77a l77b < "$W77/loop"
+  if awk -v m="$(awk -v a="$t77a" -v b="$t77b" 'BEGIN { print b - a }')" \
+         -v l="$(awk -v a="$l77a" -v b="$l77b" 'BEGIN { print b - a }')" 'BEGIN { exit !(m < l + 3) }'; then
+    ok "77: make 가 루프 시간 안에 돌아온다"
+  else
+    bad "77: make 가 루프 시간 안에 돌아온다" "make ${t77a} - ${t77b}, 루프 ${l77a} - ${l77b}"
+  fi
+else
+  bad "77: 떼어 낸 자식이 끝까지 돌지 못했다" "$(cat "$W77/child.log" "$W77/make.out" 2>/dev/null)"
+fi
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
