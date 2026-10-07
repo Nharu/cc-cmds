@@ -7970,7 +7970,17 @@ gate_snapshot() {
   # design, and the graph with each step's id, skill and dependencies. `summary`
   # stays out — it is free prose a routing decision does not branch on, and the
   # object is bounded on purpose.
+  #
+  # `design_doc` is the document path the prelude resolved from the manifest key,
+  # and a shift passes it to every design-side dispatch as it stands. The key
+  # alone cannot be joined onto a worktree: outside a repository it is an
+  # absolute path with its leading `/` removed. `null` when the run names none.
   printf '  "design_required": %s,\n' "$(gate_snapshot_design_required_json)"
+  if [ -n "${DOC:-}" ]; then
+    printf '  "design_doc": "%s",\n' "$(gate_json_escape "$DOC")"
+  else
+    printf '  "design_doc": null,\n'
+  fi
   printf '  "steps": %s,\n' "$(gate_snapshot_steps_json)"
   printf '  "segments": [\n'
   gate_snapshot_segments_json
@@ -17398,6 +17408,31 @@ gate_verb_act() {
         warn "설계 스테이지를 --segment - 로 띄우려면 매니페스트 ## 요소 의 설계 문서 가 실제 경로여야 합니다 — 지금은 비었거나 (없음) 입니다"
         warn "이 값은 킥오프가 사람 앞에서 정해 동결하는 것이며, 게이트는 경로를 지어내지 않습니다"
         exit "$GATE_EXIT_RULE"
+        ;;
+    esac
+
+    # AND THE ARGV MUST NAME THE DOCUMENT THE PRELUDE RESOLVED. The key is not a
+    # path: outside a repository it is the absolute path with its leading `/`
+    # removed, and only `derive_paths_from_manifest` knows which reading applies.
+    # A shift that joined the key onto the home worktree itself passed
+    # `<worktree>/Users/…/docs/x.md`, the stage wrote the document there, and the
+    # freeze check, the audit and the implementation all looked at `DOC` and found
+    # nothing — measured. The snapshot carries `DOC` as `design_doc` so no shift
+    # composes it; this refuses the dispatch that composed one anyway.
+    local dd_prompt="" dd_arg dd_prev=""
+    for dd_arg in "$@"; do
+      [ "$dd_prev" = "-p" ] && dd_prompt="$dd_arg"
+      dd_prev="$dd_arg"
+    done
+    case "$dd_prompt" in
+      *'/cc-cmds:design-discuss-unattended '*)
+        local dd_path="${dd_prompt#*/cc-cmds:design-discuss-unattended }"
+        dd_path="${dd_path%% *}"
+        if [ "$dd_path" != "$DOC" ]; then
+          warn "설계 스테이지의 문서 인자가 매니페스트에서 해석한 경로와 다릅니다 — 인자: ${dd_path} / 해석: ${DOC}"
+          warn "문서 경로는 스냅숏의 design_doc 값을 그대로 쓰세요. 설계 문서 키를 워크트리 경로에 직접 붙이지 마세요"
+          exit "$GATE_EXIT_RULE"
+        fi
         ;;
     esac
   elif [ "$kind" = "skill" ] && [ -z "$(gate_segment_field "$segment" '상태')" ]; then
