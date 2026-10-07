@@ -806,6 +806,8 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '#### Dispatching the audit stage|`세그먼트=- | 스테이지=<audit step id> | 종류=audit`' \
     '#### Dispatching the audit stage|docs/design-audit/<slug>.reader-*.md' \
     "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \
+    '#### Dispatching the audit stage|`<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach`' \
+    '#### Dispatching the audit stage|do not write a `segment` row to name it' \
     '#### Planning the segments|`슬라이싱`' \
     '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>' \
     '#### Planning the segments|--from-declaration' \

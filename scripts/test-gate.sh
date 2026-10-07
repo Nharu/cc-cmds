@@ -2228,7 +2228,7 @@ STUBAUDEOF
 h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
 bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
   --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
-  --rationale "픽스처 — 감사 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+  --rationale "픽스처 — 감사 스테이지 자신의 게이트 호출" -- pwd >> "$CC_PIPELINE_RUN_DIR/stub-au-pwd.txt" 2>/dev/null
 printf '%s|%s\n' "$CC_PIPELINE_SEGMENT" "$CC_PIPELINE_STAGE_ID" >> "$CC_PIPELINE_RUN_DIR/stub-au-env.txt"
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-audit","num_turns":1,"result":"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."}\n'
 exit 0
@@ -8544,10 +8544,42 @@ check "15c: 스냅숏이 design_required 와 단계 그래프를 싣는다" \
   "$(printf '%s' "$snap15c" | jq -r '[.design_required, .steps[0].id, .steps[0].skill, .steps[1].depends_on[0]] | map(tostring) | join(",")')" \
   "true,D1,design,D1"
 
-design15c='/cc-cmds:design-discuss-unattended /nonexistent/doc.md "테스트"'
+# The document argument is the snapshot's `design_doc` — the path the prelude
+# resolved from the key — because the gate refuses a design dispatch naming any
+# other path.
+prompt15x() {
+  # prompt15x <manifest> — the design dispatch prompt for that manifest's run.
+  local d
+  d=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$1" 2>/dev/null | jq -r .design_doc )
+  printf '/cc-cmds:design-discuss-unattended %s "테스트"' "$d"
+}
+design15c=$(prompt15x "$M15C")
+check "15c: 스냅숏의 design_doc 은 문서 키를 해석한 절대 경로다" \
+  "$(printf '%s' "$snap15c" | jq -r '.design_doc | startswith("/") and endswith("/docs/fixture-design.md")')" "true"
 gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
      --surface 워크트리쓰기 -- design -p "$design15c"
 check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다" "$rc" "0"
+# A shift that joins the key onto the worktree itself names a path the stage
+# would write and nothing downstream reads, so that argv is refused.
+gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p '/cc-cmds:design-discuss-unattended /nonexistent/doc.md "테스트"'
+check "15c: 해석한 경로와 다른 문서 인자의 설계 파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"design_doc"*) ok "15c: 그 거절은 스냅숏의 design_doc 을 쓰라고 든다" ;;
+  *) bad "15c 문서 인자 문면" "$msg" ;;
+esac
+# A key outside every repository — an absolute path with its leading `/` removed
+# — resolves to that absolute path while the document does not exist yet, as long
+# as its directory does. The snapshot carries that path and not `<worktree>/<key>`.
+mkdir -p "$WORK/outdocs15c"
+key15dd="$(cd "$WORK/outdocs15c" && pwd -P | sed 's|^/||')/x.md"
+write15c "$WORK/plan-R15DD.md" "$plan15c" "$key15dd" R15DD
+grant15c R15DD "$key15dd"
+check "15c: 레포 밖 문서 키는 아직 없는 문서라도 절대 경로로 스냅숏에 실린다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15DD.md" 2>/dev/null | jq -r .design_doc )" "/$key15dd"
+gateL plan --manifest "$WORK/plan-R15DD.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$(prompt15x "$WORK/plan-R15DD.md")"
+check "15c: 레포 밖 문서의 설계 파견은 design_doc 을 인자로 받으면 통과한다" "$rc" "0"
 # Not vacuous in the other direction: `-` with any other stage kind is still the
 # segment it names, and that segment has no row.
 gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
@@ -8738,7 +8770,7 @@ launch15x() {
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
     --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x \
-    -- design -p "$design15c" ) >/dev/null 2>&1 || true
+    -- design -p "$(prompt15x "$1")" ) >/dev/null 2>&1 || true
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
 }
@@ -9049,7 +9081,7 @@ resume15x() {
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
     --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x --resume "$3" \
-    -- design -p "$design15c" 2>&1); rc=$?
+    -- design -p "$(prompt15x "$1")" 2>&1); rc=$?
   [ "$rc" = "0" ] || return 0
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
     bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
@@ -9358,7 +9390,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
-# --- section: 15e | group: base | covers: act, plan, wait, supervise | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다 ---
+# --- section: 15e | group: base | covers: act, plan, wait, supervise | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다 ---
 #
 # The audit is the second run-scope step. It reads the frozen document rather
 # than building a segment, so the router dispatches it with `--segment -` as it
@@ -9482,6 +9514,23 @@ check "15e: 감사 스테이지는 세그먼트 - 와 감사 단계 id 기반 �
   "$(cat "$RD15E/stub-au-env.txt" 2>/dev/null)" "-|A1#1"
 check "15e: 감사와 설계의 스트림이 각자의 단계 id 로 따로 남는다" \
   "$( [ -s "$RD15E/log/A1#1.json" ] && printf A1 )/$( [ -s "$RD15E/log/D1#1.json" ] && printf D1 )" "A1/D1"
+
+# The audit runs in a tree of its own, detached at the base: the main worktree
+# is the one other runs fast-forward after a merge, and the audit's freeze check
+# reads a moved `HEAD` there as a mismatch. No row names the tree; the gate
+# makes it at the dispatch and resolves the audit stage's `--segment -` acts to it.
+AW15E="$WT-run-R15EA-A1"
+check "15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다" \
+  "$( [ -d "$AW15E" ] && cd "$AW15E" && { git symbolic-ref -q HEAD >/dev/null && printf 브랜치 || printf 분리; } )/$( cd "$AW15E" 2>/dev/null && git rev-parse HEAD 2>/dev/null )" \
+  "분리/$( cd "$WT" && git rev-parse main )"
+check "15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다" \
+  "$(head -1 "$RD15E/stub-au-pwd.txt" 2>/dev/null)" "$AW15E"
+check "15e: 감사 워크트리가 스테이지 설정의 디렉터리 목록에 오른다" \
+  "$(grep -cF "\"$AW15E\"" "$RD15E/settings/audit.json" 2>/dev/null || true)" "1"
+gateL exec --manifest "$WORK/plan-R15EA.md" --target infra --segment - --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(au15_H R15EA)" --rationale x -- pwd
+check "15e: 감사 스테이지가 아닌 호출자의 --segment - 행위는 메인 워크트리에서 돈다" \
+  "$rc/$(printf ' %s \n' "$msg" | grep -cF -- " $WT " || true)/$(printf ' %s \n' "$msg" | grep -cF -- " $AW15E " || true)" "0/1/0"
 au15_wait R15EA A1
 check "15e: 같은 감사 단계를 다시 기다려도 rc 0 이고 외부 종료 행이 생기지 않는다" \
   "$rc/$(au15_rows R15EA '스테이지=A1 ' | grep -c . || true)/$(au15_rows R15EA '종단 부류=외부 종료' | grep -c . || true)" "0/1/0"
@@ -9494,6 +9543,22 @@ check "15e: 감사 단계의 재개가 받힌다" "$rc" "0"
 au15_wait R15EA A1
 check "15e: 재개한 감사 시도가 둘째 시도 번호로 자기 행을 쓴다" \
   "$(au15_rows R15EA '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | grep -c . || true)/$( [ -s "$RD15E/log/A1#2.json" ] && printf A1#2 )" "2/A1#2"
+check "15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다" \
+  "$( cd "$WT" && git worktree list --porcelain | grep -c -- '-run-R15EA-A1$' || true)/$(sed -n '2p' "$RD15E/stub-au-pwd.txt" 2>/dev/null)" "1/$AW15E"
+
+# A path held by something that is not a worktree of the target is not taken
+# over: the dispatch fails and nothing is launched.
+( cd "$WT" && git worktree remove --force "$AW15E" ) >/dev/null 2>&1 || true
+mkdir -p "$AW15E"
+au15_dispatch R15EA "$STUB_AU_AUDIT" audit "$audit15e"
+case "$rc|$out" in
+  3\|*"감사 워크트리 자리"*"워크트리가 아닙니다"*) ok "15e: 감사 워크트리 자리를 다른 것이 차지하면 감사를 띄우지 않는다" ;;
+  *) bad "15e: 감사 워크트리 자리를 다른 것이 차지하면 감사를 띄우지 않는다" "rc=$rc $out" ;;
+esac
+check "15e: 그 거부 뒤에 감사 시도가 늘지 않는다" \
+  "$(au15_rows R15EA '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | grep -c . || true)" "2"
+rmdir "$AW15E" 2>/dev/null || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC15E"
 
 # ---------------------------------------------------------------------------
@@ -13760,6 +13825,27 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/team-witness/r1.md"
 check "아무도 만들지 않는 team-witness/ 철자도 예외가 아니다" "$rc" "3"
+# 팀 정리 절차는 끝난 워크플로의 위트니스 디렉터리를 기록된 scratchDir 그대로
+# `rm -rf` 한다. 그 인자는 디렉터리 자체라 안쪽 파일만 여는 예외에 닿지 않았고,
+# 설계 스테이지의 정리가 rc 3 으로 막혀 사본과 원장의 임시 필드가 남았다. 생성
+# 스크립트가 실제로 만든 경로로 잰다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- rm -rf "$WPUB"
+check "팀 정리가 위트니스 디렉터리 자체를 지우는 것은 통과한다" "$rc" "0"
+check "그 디렉터리가 실제로 지워졌다" "$( [ -e "$WPUB" ] && printf 'yes' || printf 'no' )" "no"
+# 대조군 — 디렉터리 자체 예외는 그 접두에만 열린다. 기준선 디렉터리를 지우는 같은
+# 형태는 여전히 거부된다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- rm -rf "$RD3/log"
+check "대조군: 런 디렉터리의 다른 디렉터리를 지우는 것은 여전히 거부" "$rc" "3"
+# 대조군 — 디렉터리 자체 예외는 `rm` 에만 열린다. 같은 이름을 다른 동사로 지명하면
+# 그 디렉터리를 만드는 것이고, 생성은 이전처럼 거부된다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir "$RD3/cc-team-witness-made.AbCdEf"
+check "대조군: 위트니스 디렉터리를 rm 이 아닌 동사로 만드는 것은 여전히 거부" "$rc" "3"
 # 공유 세대 디렉터리는 둘째 예외이고, 한 단계 아래만이다. 교대가 산출물을 발행하는
 # 자리는 `shared/<gen>/` 이며 `shared/` 바로 아래의 파일은 세대가 없으므로 `*/*`
 # 거절로 떨어진다 — 예외를 `shared/*` 로 넓게 적으면 그 한 층이 조용히 열린다.
@@ -20797,6 +20883,16 @@ case "$msg" in
 esac
 sa_seg_row SB5B2 선머지후리뷰
 check "5b: 종단해도 세그먼트 행은 기록된다 (종단은 디스패치와 머지만 막는다)" "$rc" "0"
+# 라우터는 모든 호출에 대상의 절단점을 싣는다. 절단점이 머지인 대상에서 종단 직후
+# 교대가 쓰는 `handoff 사유=종단` 은 행 하나를 남길 뿐인데, 머지 팔이 그 절단점을
+# 머지로 읽어 거절했고 게이트는 그 교대를 무기록으로 적었다. 위 단언은 커밋 절단점
+# 이라 그 팔에 닿지 않았다.
+sag act --manifest "$SA_MANIFEST" --kind handoff --target main --cutpoint 머지 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "종단 교대의 인수인계" \
+    -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "5b: 종단한 런에서도 머지 절단점의 handoff 부기 행위는 통과한다" "$rc" "0"
+check "5b: 그 인수인계 행이 원장에 남는다" \
+  "$( { grep -c '^- `handoff` .*사유=종단' "$SA_LEDGER" || true; } )" "1"
 
 # 표시가 없을 때 원장을 읽어 종단을 되살리는 폴백은, 종료 표지를 「인용한」 행까지
 # 종료 선언으로 읽어서는 안 된다. 원장 행의 자유 텍스트 필드(`argv`·`근거`)에는

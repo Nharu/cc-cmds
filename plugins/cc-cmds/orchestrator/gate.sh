@@ -8383,7 +8383,17 @@ gate_snapshot() {
   # design, and the graph with each step's id, skill and dependencies. `summary`
   # stays out — it is free prose a routing decision does not branch on, and the
   # object is bounded on purpose.
+  #
+  # `design_doc` is the document path the prelude resolved from the manifest key,
+  # and a shift passes it to every design-side dispatch as it stands. The key
+  # alone cannot be joined onto a worktree: outside a repository it is an
+  # absolute path with its leading `/` removed. `null` when the run names none.
   printf '  "design_required": %s,\n' "$(gate_snapshot_design_required_json)"
+  if [ -n "${DOC:-}" ]; then
+    printf '  "design_doc": "%s",\n' "$(gate_json_escape "$DOC")"
+  else
+    printf '  "design_doc": null,\n'
+  fi
   printf '  "steps": %s,\n' "$(gate_snapshot_steps_json)"
   # THE DECLARED SEGMENT PLAN, beside the graph for the same reason: the shift
   # that plans segments has no other input, and the values it would otherwise
@@ -12135,6 +12145,14 @@ gate_segment_worktrees_for_settings() {
   if [ -n "$pseg" ] && gate_path_of_some_target "$pwt"; then
     gate_emit_worktree_spellings "$pwt"
   fi
+  # THE RUN-SCOPE AUDIT'S TREE, which no `segment` row names. Listed once it
+  # exists as a worktree of its target, so the re-derivation its dispatch runs
+  # keeps it and every later one does too.
+  for a in $(target_aliases); do
+    if wt=$(gate_audit_worktree_path "$a") && gate_path_of_target "$wt" "$a"; then
+      gate_emit_worktree_spellings "$wt"
+    fi
+  done
   return 0
 }
 
@@ -14000,6 +14018,16 @@ gate_rundir_write_guard() {
         halt/*/*) ;;
         halt/*) continue ;;
         cc-team-witness-*/*) continue ;;
+        # THE WITNESS DIRECTORY ITSELF, for its teardown. The shared team-cleanup
+        # procedure ends a finished workflow with `rm -rf` on the recorded
+        # `scratchDir`, which names the directory and nothing under it, so the
+        # arm above never saw it. Measured: a design stage's teardown came back 3
+        # here and left two dozen witness copies and the ledger's scratch fields
+        # behind. Only Bash can name a directory as an operand, so the Write/Edit
+        # hook needs no twin of this arm. It opens the name to `rm` alone: any
+        # other verb that names the directory creates it, and that creation stays
+        # refused here, as it always was.
+        cc-team-witness-*) [ "${1##*/}" = rm ] && continue ;;
         # THE SHARED GENERATION DIRECTORY, ONE LEVEL DOWN ONLY. Shifts publish
         # their products under `shared/<gen>/`; a file sitting directly under
         # `shared/` has no generation and falls through to the `*/*` refusal.
@@ -17086,6 +17114,15 @@ gate_run_ended_ok() {
   # ended, so the snapshot rendered it in flight forever and the watcher never
   # reaped itself.
   case "$kind" in propose-done) return 0 ;; esac
+  # A BOOKKEEPING ACT HAS NO ACT BEHIND IT EITHER, for the same reason. It only
+  # appends a row, and the router labels every call with the target's cutpoint,
+  # so on a target whose cutpoint is `머지` the merge arm below read the row as a
+  # merge and refused it. Measured: the shift whose `propose-done` had just been
+  # accepted wrote its `handoff 사유=종단` row next, as its protocol requires,
+  # got exit 3 here, and the gate filed it `무기록` — its abandoned alternatives
+  # lost from the ledger. A row recorded after the end is what this function's
+  # header already promises.
+  gate_kind_is_bookkeeping "$kind" && return 0
   merge_idx=$(cutpoint_index '머지') || return 0
   idx=$(cutpoint_index "$cut") || return 0
   if [ "$idx" -ge "$merge_idx" ]; then
@@ -17431,10 +17468,24 @@ gate_act_worktree() {
   # approval and names both the offending value and the condition it failed. The
   # two must stay in step: a caller that resolves through here without that
   # pre-check in front of it gets the silent fallback back.
+  #
+  # THE AUDIT STAGE'S OWN ACTS RUN IN THE AUDIT'S WORKTREE. The audit is a
+  # run-scope step, so its acts carry `--segment -` and no row names a tree for
+  # them; left to the fallback below they ran in the main worktree, the one every
+  # run and session on the repository fast-forwards after a merge, and the
+  # audit's freeze check read that moving `HEAD` as a mismatch. The arm keys on
+  # the caller being that stage (`gate_caller_is_audit_stage`) and on the tree
+  # already existing as a worktree of this target, which the dispatch made — so
+  # the design step, the router and every segment keep their resolution.
   local wt
   [ "${GATE_UNDECLARED:-0}" = "1" ] && { printf '%s' "$GATE_UNDECLARED_WT"; return 0; }
   case "${2:-}" in
-    ''|-) : ;;
+    ''|-) if gate_caller_is_audit_stage \
+             && wt=$(gate_audit_worktree_path "$1") \
+             && gate_path_of_target "$wt" "$1"; then
+            printf '%s' "$wt"
+            return 0
+          fi ;;
     *) if wt=$(gate_segment_worktree_of_target "$2" "$1"); then
          printf '%s' "$wt"
          return 0
@@ -17445,6 +17496,78 @@ gate_act_worktree() {
     ''|'(없음)') wt=$(target_field "$1" '메인 워크트리') ;;
   esac
   printf '%s' "$wt"
+}
+
+gate_audit_worktree_path() {
+  # gate_audit_worktree_path <별칭> — `<메인 워크트리>-run-<런 id>-<감사 단계 id>`,
+  # the tree the run-scope audit step runs in. Returns 1 with nothing printed
+  # when the plan does not name exactly one audit step or the target has no
+  # main worktree. One name per (run, step), so a re-audit of the same key finds
+  # the tree the first audit used.
+  local step main
+  step=$(gate_run_scope_step audit) || return 1
+  main=$(target_field "$1" '메인 워크트리' 2>/dev/null || true)
+  case "$main" in ''|'(없음)') return 1 ;; esac
+  printf '%s%s%s-%s' "$main" "$WORKTREE_INFIX" "$RUN_ID" "$step"
+}
+
+gate_caller_is_audit_stage() {
+  # 0 when this gate call comes from the run-scope audit stage or a member it
+  # spawned: the launcher hands the stage `CC_PIPELINE_STAGE_ID=<step>#<attempt>`
+  # and the step is the plan's single audit step with no `segment` row of its
+  # own — the same facts `gate_stage_row_segment` reads. The router and the
+  # driver carry no stage id, so they never match.
+  local sid="${CC_PIPELINE_STAGE_ID:-}" step
+  [ -n "$sid" ] || return 1
+  step=$(gate_run_scope_step audit) || return 1
+  [ "${sid%#*}" = "$step" ] || return 1
+  [ -z "$(gate_segment_field "$step" '상태')" ]
+}
+
+gate_audit_worktree_ensure() {
+  # gate_audit_worktree_ensure <별칭> — the audit dispatch's tree: created
+  # detached at the tip of the target's base branch when absent, reused when it
+  # is already a worktree of this target, and refused when the path is taken by
+  # anything else. Then admitted to the stage settings the way a `segment` row
+  # admits its worktree, because no row will name this one.
+  #
+  # PERFORMED, NOT CHECKED. It runs from the dispatch switch, after the row and
+  # every rule, so a refused dispatch leaves no tree behind; and before the
+  # launch, so the stage's first act already resolves here.
+  local alias="$1" wt root base lk
+  if ! wt=$(gate_audit_worktree_path "$alias"); then
+    warn "감사 워크트리 경로를 정하지 못했습니다 — 실행 계획의 감사 단계 하나와 대상 ${alias} 의 메인 워크트리가 있어야 합니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -e "$wt" ]; then
+    if ! gate_path_of_target "$wt" "$alias"; then
+      warn "감사 워크트리 자리 ${wt} 가 이미 있지만 대상 ${alias} 의 워크트리가 아닙니다 — 건드리지 않고 감사를 띄우지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    log "감사 워크트리 재사용 — $wt"
+  else
+    root=$(target_field "$alias" '메인 워크트리')
+    base=$(target_field "$alias" '베이스 브랜치' 2>/dev/null || true)
+    if [ -z "$base" ]; then
+      warn "대상 ${alias} 에 베이스 브랜치 가 없어 감사 워크트리를 만들 수 없습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    if ! ( cd "$root" && git worktree add --detach "$wt" "$base" >/dev/null 2>&1 ); then
+      warn "감사 워크트리를 베이스 ${base} 끝에 분리해 만들지 못했습니다: $wt"
+      return "$GATE_EXIT_RULE"
+    fi
+    log "감사 워크트리 — $wt (베이스 ${base} 끝에 분리)"
+  fi
+  [ -n "${RUN_DIR:-}" ] || return 0
+  lk="$RUN_DIR/settings.lock"
+  if gate_settings_lock "$lk"; then
+    GATE_SETTINGS_LOCK_HELD="$lk"
+    gate_resettle_settings_for_segment "$(gate_run_scope_step audit)" "$wt" >/dev/null
+    gate_settings_lock_release
+  else
+    warn "인가 디렉터리를 재유도하지 못했습니다 — settings.lock 을 기다리다 시간이 넘었습니다 ($lk); 감사 워크트리 $wt 는 다음 재유도까지 인가 목록에 오르지 않습니다"
+  fi
+  return 0
 }
 
 gate_plan_unchecked_axes() {
@@ -18207,6 +18330,31 @@ gate_verb_act() {
         exit "$GATE_EXIT_RULE"
       fi
     fi
+
+    # AND THE ARGV MUST NAME THE DOCUMENT THE PRELUDE RESOLVED. The key is not a
+    # path: outside a repository it is the absolute path with its leading `/`
+    # removed, and only `derive_paths_from_manifest` knows which reading applies.
+    # A shift that joined the key onto the home worktree itself passed
+    # `<worktree>/Users/…/docs/x.md`, the stage wrote the document there, and the
+    # freeze check, the audit and the implementation all looked at `DOC` and found
+    # nothing — measured. The snapshot carries `DOC` as `design_doc` so no shift
+    # composes it; this refuses the dispatch that composed one anyway.
+    local dd_prompt="" dd_arg dd_prev=""
+    for dd_arg in "$@"; do
+      [ "$dd_prev" = "-p" ] && dd_prompt="$dd_arg"
+      dd_prev="$dd_arg"
+    done
+    case "$dd_prompt" in
+      *'/cc-cmds:design-discuss-unattended '*)
+        local dd_path="${dd_prompt#*/cc-cmds:design-discuss-unattended }"
+        dd_path="${dd_path%% *}"
+        if [ "$dd_path" != "$DOC" ]; then
+          warn "설계 스테이지의 문서 인자가 매니페스트에서 해석한 경로와 다릅니다 — 인자: ${dd_path} / 해석: ${DOC}"
+          warn "문서 경로는 스냅숏의 design_doc 값을 그대로 쓰세요. 설계 문서 키를 워크트리 경로에 직접 붙이지 마세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        ;;
+    esac
   elif [ "$kind" = "skill" ] && [ -z "$(gate_segment_field "$segment" '상태')" ]; then
     warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
     warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
@@ -19471,8 +19619,13 @@ gate_verb_act() {
         # token consumed — and not the stage's rc, which `wait` reports.
         # `stage_key` is the segment id, or the plan's design step id when the
         # dispatch named `-` (the exemption above set it).
+        # The run-scope audit gets its own tree first; a refusal there is the
+        # act's failure and nothing is launched.
         skill) gate_dispatch_doc_arg "${1:-}"
-               gate_launch_stage "$alias" "$stage_key" "$@" || rc=$? ;;
+               if [ "$stage_is_run_scope_step" = "1" ] && [ "${1:-}" = "audit" ]; then
+                 gate_audit_worktree_ensure "$alias" || rc=$?
+               fi
+               [ "$rc" != "0" ] || gate_launch_stage "$alias" "$stage_key" "$@" || rc=$? ;;
         # The first token after `--` is the HANDOFF REASON here, the way it is
         # the stage kind for `skill`. Same shape, different layer: this one
         # decides whether the suppressor below applies, and the settings variant
