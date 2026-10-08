@@ -802,7 +802,7 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Dispatching the audit stage|.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty' \
-    '#### Dispatching the audit stage|-- audit -p "/cc-cmds:design-audit-unattended <설계 문서 메인 워크트리 절대 경로>"' \
+    '#### Dispatching the audit stage|-- audit -p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>[ --base]"' \
     '#### Dispatching the audit stage|`세그먼트=- | 스테이지=<audit step id> | 종류=audit`' \
     '#### Dispatching the audit stage|docs/design-audit/<slug>.reader-*.md' \
     "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \

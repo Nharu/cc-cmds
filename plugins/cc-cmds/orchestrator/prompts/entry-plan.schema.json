@@ -9,6 +9,8 @@
     "design_rationale": { "type": "string" },
     "design_tier": { "type": "string", "enum": ["lead-solo", "team-2", "team-4"] },
     "design_tier_rationale": { "type": "string" },
+    "design_scope": { "type": "string", "enum": ["single", "base"] },
+    "design_scope_rationale": { "type": "string" },
     "work_class": { "type": "string", "enum": ["fix", "feat", "docs", "other", "unknown"] },
     "work_class_rationale": { "type": "string" },
     "targets": {
@@ -31,7 +33,7 @@
         "type": "object",
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "skill": { "type": "string", "enum": ["design", "design-audit", "implement", "review", "apply"] },
+          "skill": { "type": "string", "enum": ["design", "design-audit", "implement", "review", "apply", "split"] },
           "summary": { "type": "string" },
           "depends_on": { "type": "array", "items": { "type": "string" } }
         },
@@ -42,6 +44,6 @@
     "unresolved": { "type": "array", "items": { "type": "string" } },
     "notes": { "type": "string" }
   },
-  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "notes"],
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_rationale", "design_scope", "design_scope_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "notes"],
   "additionalProperties": false
 }

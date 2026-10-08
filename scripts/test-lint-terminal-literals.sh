@@ -14,7 +14,8 @@
 # literal twice and the audit literal once and does not quote the
 # re-convergence literal, the router shift carries two design copies on one
 # line and the re-convergence literal on another, and the autopilot skill
-# carries two design copies on one line. `FAIL-consumer-second-copy-same-line`
+# carries two design copies on one line. The sidecar and both routers also
+# carry the base split literal once. `FAIL-consumer-second-copy-same-line`
 # is the case that earns the per-occurrence count its keep: a per-line count
 # stays green when only the second copy on a line changes.
 
@@ -37,8 +38,9 @@ real_value() {
 D=$(real_value LIT_DESIGN_TERMINAL)
 A=$(real_value LIT_AUDIT_TERMINAL)
 R=$(real_value LIT_RECONVERGE_TERMINAL)
-if [[ -z "$D" || -z "$A" || -z "$R" ]]; then
-  echo "FAIL: $REAL_RUN_SH 에서 종단 리터럴 세 값을 읽지 못했다" >&2
+S=$(real_value LIT_SPLIT_TERMINAL)
+if [[ -z "$D" || -z "$A" || -z "$R" || -z "$S" ]]; then
+  echo "FAIL: $REAL_RUN_SH 에서 종단 리터럴 네 값을 읽지 못했다" >&2
   exit 2
 fi
 
@@ -53,7 +55,7 @@ passed=0
 failures=0
 
 write_source() {
-  # write_source <root> <design> <audit> <reconverge>
+  # write_source <root> <design> <audit> <reconverge> [<split>]
   local root="$1"
   mkdir -p "$root/orch"
   {
@@ -61,6 +63,7 @@ write_source() {
     printf "readonly LIT_AUDIT_TERMINAL='%s'\n" "$3"
     printf "readonly LIT_RECONVERGE_TERMINAL='%s'\n" "$4"
     printf "readonly LIT_DESIGN_TERMINAL='%s'\n" "$2"
+    printf "readonly LIT_SPLIT_TERMINAL='%s'\n" "${5:-$S}"
   } > "$root/orch/run.sh"
 }
 
@@ -77,32 +80,37 @@ write_emitters() {
   write_emitter "$1" design-discuss-unattended "$2"
   write_emitter "$1" design-reconverge "$4"
   write_emitter "$1" design-audit-unattended "$3"
+  write_emitter "$1" design-base-unattended "${5:-$S}"
 }
 
 write_sidecar() {
-  # write_sidecar <root> <design-1> <audit> <design-2>
+  # write_sidecar <root> <design-1> <audit> <design-2> [<split>]
   mkdir -p "$1/skills/_common"
   {
     printf '| `design` | the freeze literal *"%s"* |\n' "$2"
     printf '| `design-audit` | the terminal literal *"%s"* |\n' "$3"
+    printf '| `design-base-unattended --split` | the terminal literal *"%s"* |\n' "${5:-$S}"
     printf '| `design-discuss-unattended` | the fixed literal *"%s"* |\n' "$4"
   } > "$1/skills/_common/pipeline-sidecar.md"
 }
 
 write_router_shift() {
-  # write_router_shift <root> <design-1> <design-2> <reconverge>
+  # write_router_shift <root> <design-1> <design-2> <reconverge> [<split>]
   mkdir -p "$1/skills/autopilot-router-shift"
   {
     printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3"
     printf "6. its terminal literal (\`grep -cF '%s' log\`)\n" "$4"
+    printf "7. the split literal \`%s\` in its stream\n" "${5:-$S}"
   } > "$1/skills/autopilot-router-shift/SKILL.md"
 }
 
 write_autopilot() {
-  # write_autopilot <root> <design-1> <design-2>
+  # write_autopilot <root> <design-1> <design-2> [<split>]
   mkdir -p "$1/skills/autopilot"
-  printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3" \
-    > "$1/skills/autopilot/SKILL.md"
+  {
+    printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3"
+    printf "7. the split literal \`%s\` in its stream\n" "${4:-$S}"
+  } > "$1/skills/autopilot/SKILL.md"
 }
 
 write_consumers() {
@@ -159,6 +167,19 @@ mk_root "$WORK/emit-lost"
 printf '# design-reconverge\n\nstop.\n' > "$WORK/emit-lost/skills/design-reconverge/SKILL.md"
 run_case "FAIL-emitter-literal-missing" 1 "$WORK/emit-lost" \
   "design-reconverge/SKILL.md" "LIT_RECONVERGE_TERMINAL"
+
+# FAIL — the base split emitter lost its literal. Without it every split stage
+# ends as a vacuous success.
+mk_root "$WORK/emit-split-lost"
+printf '# design-base-unattended\n\nstop.\n' > "$WORK/emit-split-lost/skills/design-base-unattended/SKILL.md"
+run_case "FAIL-split-emitter-literal-missing" 1 "$WORK/emit-split-lost" \
+  "design-base-unattended/SKILL.md" "LIT_SPLIT_TERMINAL"
+
+# FAIL — the split copy in a router changed by one character.
+mk_root "$WORK/cons-split-char"
+write_router_shift "$WORK/cons-split-char" "$D" "$D" "$R" "$(one_char "$S")"
+run_case "FAIL-split-consumer-one-char" 1 "$WORK/cons-split-char" \
+  "autopilot-router-shift/SKILL.md" "LIT_SPLIT_TERMINAL"
 
 # FAIL — an emitter file is gone. Closed failure, not a skip.
 mk_root "$WORK/emit-absent"

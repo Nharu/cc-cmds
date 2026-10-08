@@ -661,6 +661,31 @@ run_stub plan "$DOCS/cu.md" --row "$CU_ROW" --out "$OUT"
 check "plan clickup: the dependency is its own relate call" "$(argv_of rel:선행:T3:T2)" \
   "$STUB_DIR/clickup-relate.py --task t3 --depends-on t2"
 
+# A ClickUp ticket left in flight and adopted by a resolve was created with
+# `--parent`, so the adoption ties the child relation; no later plan entry
+# would ever do it, and the split would never complete.
+cp "$DOCS/cu.md" "$DOCS/cur.md"
+CUSHA=$(shasum -a 256 "$DOCS/cur.md" | cut -d' ' -f1)
+CUREG="$DOCS/design-base/cur.tickets.md"
+cat > "$CUREG" <<EOF
+<!-- cc-design-base-tickets v1; doc=docs/cur.md; doc-sha256=$CUSHA; tracker=clickup; target=901234 -->
+- \`베이스\` | 상태=발행됨 | 참조=https://app.clickup.com/t/abc | 노드 id=abc
+- \`티켓\` | id=T1 | 상태=발행됨 | 참조=https://app.clickup.com/t/t1 | 노드 id=t1 | 유사 후보=없음
+- \`티켓\` | id=T2 | 상태=발행중 | 참조=- | 노드 id=- | 유사 후보=없음
+- \`티켓\` | id=T3 | 상태=발행됨 | 참조=https://app.clickup.com/t/t3 | 노드 id=t3 | 유사 후보=없음
+- \`관계\` | 종류=하위 | 원=T1 | 대상=베이스 | 상태=걸림
+- \`관계\` | 종류=하위 | 원=T2 | 대상=베이스 | 상태=대기
+- \`관계\` | 종류=하위 | 원=T3 | 대상=베이스 | 상태=걸림
+- \`관계\` | 종류=선행 | 원=T3 | 대상=T2 | 상태=대기
+<!-- cc-design-base-tickets: end -->
+EOF
+run_stub plan "$DOCS/cur.md" --row "$CU_ROW" --out "$OUT"
+has "plan clickup resume: the in-flight ticket is resolved" "$(entries)" "T2:resolve"
+run_stub record "$DOCS/cur.md" --row "$CU_ROW" --entry T2 --plan "$OUT/plan.jsonl" --state 발행됨 --ref https://app.clickup.com/t/t2 --node-id t2
+check "record clickup: a resolve to 발행됨 exits 0" "$rc" "0"
+has "record clickup: a resolve to 발행됨 ties the child relation" "$(cat "$CUREG")" \
+  '- `관계` | 종류=하위 | 원=T2 | 대상=베이스 | 상태=걸림'
+
 # Every argv the ClickUp plans emitted parses against its tool.
 python3 - "$WORK/cu-all.jsonl" <<'PYEOF' && ok "plan clickup: every emitted argv parses against its tool" || bad "plan clickup: every emitted argv parses against its tool"
 import json, subprocess, sys
