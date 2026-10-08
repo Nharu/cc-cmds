@@ -276,10 +276,19 @@ nf_lock_take() {
 # nf_lock <dir> <minutes> — take an mkdir lock. One held by a pid that is gone,
 # or older than the given minutes, is stale and is taken over.
 #
-# A STALE LOCK IS MOVED ASIDE, NOT REMOVED. Two callers can both judge the same
-# lock stale; removing and re-creating it lets both through. A rename of one
-# directory succeeds once, so only the caller whose rename moved the very lock
-# it judged — same pid inside — goes on to take it.
+# TAKING OVER IS ITSELF UNDER A LOCK, `<dir>.break`. Two callers can both judge
+# the same lock stale; the first then takes the freed name, and the second,
+# acting on its earlier judgment, would move that fresh lock aside while its
+# owner is still filling it — the owner's work directory goes with it and
+# nobody builds. Whoever does not get `<dir>.break` gives up, and whoever gets
+# it judges the lock again from a fresh reading. It holds `<dir>.break` until
+# it has taken the lock, so the next breaker meets a live lock. A `<dir>.break`
+# left by a caller that died in those few steps is removed after a minute.
+#
+# A STALE LOCK IS MOVED ASIDE, NOT REMOVED, and only the move that caught the
+# very lock it judged — same pid inside — goes on to take it. An owner can
+# still release its lock and another take the name between the reading and the
+# move, since taking needs no `<dir>.break`.
 #
 # A RENAME THAT CAUGHT A LOCK SOMEONE HAD JUST TAKEN IS NOT RENAMED BACK. The
 # name may have been taken again meanwhile, and renaming a directory onto an
@@ -287,23 +296,34 @@ nf_lock_take() {
 # with mkdir instead, which fails on an existing name, carrying its owner's
 # pid so that owner can still release it.
 nf_lock() {
-  local seen aside
+  local seen aside rc=1
   nf_lock_take "$1" && return 0
+  nf_lock_live "$1" "$2" && return 1
+  if ! nf_lock_take "$1.break"; then
+    [ -n "$(find "$1.break" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rm -rf "$1.break" 2>/dev/null
+    return 1
+  fi
   # The pid is read once: that one reading is both what is judged dead and what
   # the moved lock is compared with.
   seen=$(cat "$1/pid" 2>/dev/null)
-  nf_lock_live "$1" "$2" "$seen" && return 1
-  aside="$1.stale.$$"
-  mv "$1" "$aside" 2>/dev/null || return 1
-  if [ "$(cat "$aside/pid" 2>/dev/null)" != "$seen" ]; then
-    if ( umask 077 && mkdir "$1" ) 2>/dev/null; then
-      cp "$aside/pid" "$1/pid" 2>/dev/null || true
+  if [ ! -d "$1" ]; then
+    nf_lock_take "$1" && rc=0
+  elif ! nf_lock_live "$1" "$2" "$seen"; then
+    aside="$1.stale.$$"
+    if mv "$1" "$aside" 2>/dev/null; then
+      if [ "$(cat "$aside/pid" 2>/dev/null)" = "$seen" ]; then
+        rm -rf "$aside" 2>/dev/null
+        nf_lock_take "$1" && rc=0
+      else
+        if ( umask 077 && mkdir "$1" ) 2>/dev/null; then
+          cp "$aside/pid" "$1/pid" 2>/dev/null || true
+        fi
+        rm -rf "$aside" 2>/dev/null
+      fi
     fi
-    rm -rf "$aside" 2>/dev/null
-    return 1
   fi
-  rm -rf "$aside" 2>/dev/null
-  nf_lock_take "$1"
+  nf_unlock "$1.break"
+  return "$rc"
 }
 
 # nf_lock_live <dir> <minutes> [<pid as already read>]

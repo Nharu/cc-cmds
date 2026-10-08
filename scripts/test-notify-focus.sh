@@ -774,7 +774,7 @@ prime_run "L11 실패 스탬프 늙음" "${T1ENV[@]}" "${BUILD_ENV[@]}"
 check "L11 하루 지난 실패 스탬프면 다시 빌드" "$(logn swiftc)" "3"
 helpers() { find "$CACHE/helper" -name notify-focus-ax -type f 2>/dev/null | wc -l | tr -d ' '; }
 failures() { find "$CACHE/helper" -maxdepth 1 -name '*.failed' 2>/dev/null | wc -l | tr -d ' '; }
-leftovers() { find "$CACHE/helper" -maxdepth 1 \( -name '*.lock' -o -name '*.stale.*' \) 2>/dev/null | wc -l | tr -d ' '; }
+leftovers() { find "$CACHE/helper" -maxdepth 1 \( -name '*.lock' -o -name '*.stale.*' -o -name '*.break' \) 2>/dev/null | wc -l | tr -d ' '; }
 
 # A built binary that does not answer `trusted` with 0 or 3 is not put in place.
 rm -rf "$CACHE"; : > "$LOG"
@@ -801,6 +801,23 @@ check "L11 낡은 잠금: 컴파일 한 번" "$(logn swiftc)" "1"
 check "L11 낡은 잠금: 도우미가 놓였다" "$(helpers)" "1"
 check "L11 낡은 잠금: 실패 스탬프 없음" "$(failures)" "0"
 check "L11 낡은 잠금: 남은 잠금·옆으로 옮긴 것 없음" "$(leftovers)" "0"
+
+# A takeover lock left by a breaker that died: while it is young the stale lock
+# is not broken; past a minute it is cleared, and the next prime builds.
+rm -rf "$CACHE"; : > "$LOG"
+mkdir -p "$CACHE/helper/$KEY.lock" "$CACHE/helper/$KEY.lock.break"
+dead_pid > "$CACHE/helper/$KEY.lock/pid"
+dead_pid > "$CACHE/helper/$KEY.lock.break/pid"
+prime_run "L11 탈취 잠금 젊음" "${T1ENV[@]}" "${BUILD_ENV[@]}"
+check "L11 탈취 잠금 젊음: 컴파일 없음" "$(logn swiftc)" "0"
+check "L11 탈취 잠금 젊음: 탈취 잠금이 남는다" "$([ -d "$CACHE/helper/$KEY.lock.break" ] && echo 있음 || echo 없음)" "있음"
+touch -t 202001010000 "$CACHE/helper/$KEY.lock.break"
+prime_run "L11 탈취 잠금 늙음" "${T1ENV[@]}" "${BUILD_ENV[@]}"
+check "L11 탈취 잠금 늙음: 치우고 이번에는 물러난다" "$(logn swiftc)" "0"
+prime_run "L11 탈취 잠금 뒤" "${T1ENV[@]}" "${BUILD_ENV[@]}"
+check "L11 탈취 잠금 뒤: 컴파일 한 번" "$(logn swiftc)" "1"
+check "L11 탈취 잠금 뒤: 도우미가 놓였다" "$(helpers)" "1"
+check "L11 탈취 잠금 뒤: 남은 잠금 없음" "$(leftovers)" "0"
 
 # A lock past its age whose holder is still compiling is taken over. The first
 # builder, finding the lock no longer its own, installs and stamps nothing.
