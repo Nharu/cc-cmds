@@ -17,6 +17,10 @@ on:
       # else. A file this filter does not name is a file this job never sees,
       # which would leave the test existing and never once run.
       - 'scripts/test-notify-title-oracle.sh'
+      # The banner click handler's accessibility helper is compiled from Swift
+      # on first use, and only a darwin host has the compiler and the
+      # frameworks it links; its source sits under the orchestrator glob above.
+      - 'scripts/test-notify-focus-ax.sh'
       # The chain-equivalence harness runs the frozen reference against the
       # candidate under a UTF-8 locale, which is the configuration the driver
       # deliberately runs in, so its verdict is only meaningful on a leg that
@@ -64,9 +68,13 @@ jobs:
     # less a margin for its dump — and every suite under it has a deadline
     # inside that one, so a stall ends as a named failure with the holders
     # dumped before the runner would cancel the job. The longest successful
-    # run so far took about seven minutes. CC_JOB_BUDGET_S below must equal
-    # this ceiling times 60: `timeout-minutes` cannot read `env`, so the two
-    # are tied by a check in scripts/test-suite-guard.sh rather than by a
+    # run so far took about seven minutes. The click helper's suite adds a
+    # cold Swift compile — 8 to 26 seconds on an idle developer machine, but
+    # 184 seconds was measured under load, so it is budgeted at four minutes —
+    # and seven plus four still fits inside sixteen, so the ceiling stays.
+    # When the list grows, recompute the same way. CC_JOB_BUDGET_S below must
+    # equal this ceiling times 60: `timeout-minutes` cannot read `env`, so the
+    # two are tied by a check in scripts/test-suite-guard.sh rather than by a
     # reference. Change both together.
     timeout-minutes: 16
     env:

@@ -131,15 +131,40 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      value can be built it falls back to `:`, and there is no path that
      drops `-execute` — without it, macOS Notification Center's click
      would hand focus to whatever the notifier activates by default.
-     A banner raised inside a tmux pane in iTerm2 therefore clicks
-     through to that iTerm2 window and tab and to that tmux window and
-     pane, under iTerm2's tmux integration (`tmux -CC`) and under plain
-     tmux in an iTerm2 tab alike. Outside tmux, in another terminal, or
+     A click on a banner raised inside a tmux pane in iTerm2 therefore
+     selects that tmux window and pane and that iTerm2 tab and session,
+     under iTerm2's tmux integration (`tmux -CC`) and under plain tmux
+     in an iTerm2 tab alike. It brings that window forward, Space and
+     all, only when the helper below raised it; without the grant,
+     without the helper, or when the window does not answer the
+     Accessibility API in time, it only selects, and a window on
+     another Space stays where it is. Outside tmux, in another terminal, or
      once the pane is closed, the click does nothing. The first click
      makes macOS ask whether iTerm2 may be controlled; refusing leaves
      the click doing nothing, and the choice is reverted under System
-     Settings → Privacy & Security → Automation. The fundamental "no
-     button" path is tracked as a roadmap item (custom UN-API binary).
+     Settings → Privacy & Security → Automation.
+     When the window is on another Space (a full-screen window, say),
+     the click raises that window through the Accessibility API and
+     then activates iTerm2, so macOS switches to that Space. That needs
+     the notifier itself in System Settings → Privacy & Security →
+     Accessibility — the click runs as the notifier's child, so the
+     grant is the notifier's, and it lets that app control the
+     computer. The grant is to the app, not to a banner: it applies to
+     the click command of every banner that notifier raises, whoever
+     raised it. Without it the click still selects the tab and session,
+     and one guide banner (`cc-cmds · 배너 클릭 설정이 필요합니다`) names
+     the app to add; it comes back only after a day or once the
+     notifier's path changes (`brew upgrade` re-signs it and drops the
+     grant). The raising helper is compiled from Swift on first use,
+     so it needs the Command Line Tools or Xcode; with neither, one
+     guide banner says `xcode-select --install` and the click selects
+     only. A build that fails raises no guide: the click selects only,
+     and the same build is not tried again for a day. Its build, a
+     per-pane window lookup the banner starts in the background, and a
+     one-line failure log live under
+     `$(getconf DARWIN_USER_CACHE_DIR)cc-cmds/notify-focus`; deleting
+     that directory is always safe. The fundamental "no button" path is
+     tracked as a roadmap item (custom UN-API binary).
   3. **Single dispatch surface — model-driven, no Stop hook.** This
      holds for `active-notify`, not for the plugin as a whole — the
      ordinary session's banner seats are hooks, and a separate system.

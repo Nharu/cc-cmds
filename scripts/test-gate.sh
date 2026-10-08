@@ -1836,6 +1836,7 @@ pre_static() {
       "$repo_root/scripts/test-watch.sh" \
       "$repo_root/scripts/test-snapshot.sh" \
       "$repo_root/scripts/test-notify-focus.sh" \
+      "$repo_root/scripts/test-notify-focus-ax.sh" \
       "$repo_root/scripts/test-orchestrator-pretool-hook.sh"
     for f in "$repo_root"/scripts/lint-*.sh; do
       [ -f "$f" ] || continue
@@ -17697,7 +17698,7 @@ else
     check "토큰 표 — $tok 가 발사와 지우기 양쪽 폐쇄 집합에 있다" \
       "$(printf '%s' "$roundtrip" | grep -c '알 수 없는 부류 토큰' || true)" "0"
   done < "$TOKEN_TABLE"
-  check "토큰 표가 아홉 행이다" "$n_tok" "9"
+  check "토큰 표가 열 행이다" "$n_tok" "10"
 fi
 
 # The set is CLOSED, and an unrecognized token raises nothing and says so.

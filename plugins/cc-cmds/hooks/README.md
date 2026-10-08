@@ -151,8 +151,25 @@ own argv is how that argument was dropped once already. Its value is what
 `notify-focus.sh exec-arg` built: `:`, or
 `/bin/bash '<handler>' focus '<socket>' '<pid>' '<pane>'`. When no value can be
 built it falls back to `:`, and there is no path that drops `-execute`. A hook
-inherits the session's `TMUX`/`TMUX_PANE`, so its banner's click goes to the
-pane the session runs in.
+inherits the session's `TMUX`/`TMUX_PANE`, so its banner's click selects the
+pane the session runs in and its iTerm2 tab and session. Bringing that window
+forward, and reaching it on another Space, happens only when the click's helper
+raised it; that needs the notifier app in System Settings → Privacy & Security
+→ Accessibility, a Swift compiler (Command Line Tools or Xcode), and a window
+that answers the Accessibility API in time. The grant is the app's, so it
+applies to the click command of every banner the notifier raises, not only to
+the ones these hooks raise.
+
+**Building the value also starts a background resolution for that pane.**
+`exec-arg` detaches a `prime` that finds the iTerm2 window holding the pane and
+caches it, so a click a minute later goes straight there instead of walking
+every window. The prime is detached the same way the click is, it writes only
+under the per-user cache directory
+(`$(getconf DARWIN_USER_CACHE_DIR)cc-cmds/notify-focus`), and it never raises a
+banner — the hook's five-second budget is not spent on it. It asks iTerm2
+nothing unless Apple events to iTerm2 are already allowed, so it cannot bring
+up a permission prompt. A hook whose session switch is off starts none, because
+the emitter checks the switch before it builds the value.
 
 **Both `hooks.json` entries pin `"timeout": 5`.** Both events block, and the
 default is long, so an emitter that stalls for any reason would stall the session
