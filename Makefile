@@ -308,7 +308,8 @@ ORCH_TESTS := \
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \
-	scripts/test-suite-guard.sh
+	scripts/test-suite-guard.sh \
+	scripts/test-notify-focus-ax.sh
 
 ALL_TESTS := $(NOTIFY_TESTS) $(LINT_TESTS) $(ORCH_TESTS) $(DARWIN_TESTS)
 TEST_GOALS := $(ALL_TESTS:%=run/%)
@@ -406,6 +407,11 @@ test-darwin: test-active-notify test-orchestrator \
 #                                 holds its jobserver pipe, the CI arming line
 #                                 under the real bash 3.2, and macOS `lsof`
 #                                 listing the holders of a marker file.
+#   test-notify-focus-ax.sh       the click handler's helper, compiled by the
+#                                 handler's own build recipe and held to its
+#                                 exit-code contract: a real Swift compile and
+#                                 a real binding of the AX and CGS symbols,
+#                                 neither of which ubuntu has.
 #   test-gate.sh, section 18      the advisory-lock arm, which is darwin-only
 #                                 for real.
 #   test-gate.sh, section 31ai    the transition guard INSIDE that lock. The
