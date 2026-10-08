@@ -61,6 +61,17 @@ lint:
 	       test -f "$$p" || { echo "lint: hooks.json 이 가리키는 파일이 없다: $$p" >&2; exit 1; }; \
 	       test -x "$$p" || { echo "lint: hooks.json 이 가리키는 파일이 실행 가능하지 않다: $$p" >&2; exit 1; }; \
 	     done
+# Every module path in hooks.json, and the plugin's type contract when it names
+# one, must exist. A module the engine cannot find is skipped as silently as a
+# missing command hook, and nothing else in this tree reads either path. The
+# execute bit is not asked for: the engine reads these files, it does not run
+# them.
+	@jq -r '.modules[]?' plugins/cc-cmds/hooks/hooks.json \
+	   | while IFS= read -r p; do \
+	       test -f "plugins/cc-cmds/hooks/$$p" || { echo "lint: hooks.json 의 modules 가 가리키는 파일이 없다: $$p" >&2; exit 1; }; \
+	     done
+	@t=$$(jq -r '.types // empty' plugins/cc-cmds/.claude-plugin/plugin.json); \
+	 test -z "$$t" || test -f "plugins/cc-cmds/$$t" || { echo "lint: plugin.json 의 types 가 가리키는 파일이 없다: $$t" >&2; exit 1; }
 	@grep -qE "terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]" plugins/cc-cmds/skills/active-notify/SKILL.md || (echo "lint: SKILL.md §7 bypass single-line contract violated (terminal-notifier + -group [quoted]cc-cmds-active-notify[quoted] must be on the same line for bypass_re to match)" >&2; exit 1)
 	@jq -e 'has("version")' plugins/cc-cmds/.claude-plugin/plugin.json >/dev/null || (echo "lint: plugin.json must have a .version field (it is the single version SOT)" >&2; exit 1)
 	@jq -e '[.plugins[] | has("version")] | any | not' .claude-plugin/marketplace.json >/dev/null || (echo "lint: marketplace.json plugin entries must NOT declare .version (plugin.json is the version SOT)" >&2; exit 1)
@@ -299,6 +310,7 @@ ORCH_TESTS := \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
+	scripts/test-run-pane.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \

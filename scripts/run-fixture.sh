@@ -69,6 +69,30 @@ fx_blocked() {
   fx_row 'blocked' "대상=-" "스코프=run" "원인=$2" "사유=$1"
 }
 
+fx_cone_blocked() {
+  # fx_cone_blocked <앵커|드라이버> <주체> <원인> <사유> [관측] — a cone-scope
+  # block in one of the two shapes real ledgers carry.
+  #
+  # `앵커` is the gate's shape: `대상` names the target repository and the
+  # subject sits in `앵커 세그먼트`. `드라이버` has no anchor and puts the subject
+  # in `대상` — what the driver's `park()` writes, with the concrete reason in
+  # `관측` under a generic `사유`, and also what a `판정 불가` row looks like,
+  # with an alias as its subject. Whether the subject has a `segment` row — a
+  # review finding id or an alias has none — is the caller's fixture, not this
+  # row's.
+  #
+  # No row resolves a cone block. A later `segment` row for the subject that is
+  # not `park` is what hides it, so a test writes that with `fx_segment`.
+  local shape="$1" subj="$2" cause="$3" reason="$4" obs="${5:-}"
+  if [ "$shape" = "앵커" ]; then
+    fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=$cause" "사유=$reason" \
+      "근거=픽스처" "앵커 세그먼트=$subj" "의존 세그먼트 수=1" "의존 세그먼트=$subj"
+  else
+    fx_row 'blocked' "대상=$subj" "스코프=cone" "원인=$cause" "사유=$reason" \
+      "관측=${obs:--}"
+  fi
+}
+
 # --------------------------------------------------------------------------
 # Stage pid files — the three states the liveness predicate separates
 # --------------------------------------------------------------------------

@@ -471,6 +471,136 @@ cc_unresolved_blocked() {
       done
 }
 
+cc_open_approval_rows() {
+  # cc_open_approval_rows <ledger> — one line per approval still waiting, as
+  # `<id><TAB><절단점>`, with `-` when the row carries no 절단점.
+  #
+  # THE ROWS BEHIND `cc_open_approvals`, NOT A SECOND FOLD. The id collection,
+  # the whole-field match and the last-row-per-id rule are that function's,
+  # spelled the same way, so the line count here and its number are one answer.
+  # `scripts/test-liveness-agreement.sh` holds the two together. The count stays
+  # where it is rather than becoming `| wc -l` over this, because the run state
+  # and the status line read it and are not to move.
+  local ledger="$1" id row st cp
+  [ -n "$ledger" ] || return 0
+  for id in $( { grep -E '^- `승인`' "$ledger" 2>/dev/null || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { grep -E '^- `승인`' "$ledger" 2>/dev/null | grep -F "| 승인 id=$id |" || true; } | tail -1)
+    st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$st" = "대기" ] || continue
+    cp=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *절단점=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    printf '%s\t%s\n' "$id" "${cp:--}"
+  done
+  return 0
+}
+
+cc_segment_states() {
+  # cc_segment_states <ledger> — one line per segment, as
+  # `<id><TAB><last 상태><TAB><open|done>`.
+  #
+  # THE THIRD FIELD IS THE VERDICT AND READERS TAKE IT FROM HERE. It is the
+  # membership test of `cc_nonterminal_segments`, `머지됨` carrying `적용=대기`
+  # included, and that case cannot be told from the 상태 field alone — so a
+  # reader that re-applied `TERMINAL_SEGMENT_STATES` to the second field would
+  # be the second copy that function's comment says split two readers before.
+  # The `open` lines number exactly what that function counts.
+  local ledger="$1" sid row st ap verdict
+  [ -n "$ledger" ] || return 0
+  for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
+                | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$sid" ] || continue
+    row=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1)
+    st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    ap=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *적용=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    verdict=open
+    if [ "$st" != "머지됨" ] || [ "$ap" != "대기" ]; then
+      case " $TERMINAL_SEGMENT_STATES " in
+        *" $st "*) verdict=done ;;
+      esac
+    fi
+    printf '%s\t%s\t%s\n' "$sid" "${st:--}" "$verdict"
+  done
+  return 0
+}
+
+cc_cone_blocked() {
+  # cc_cone_blocked <ledger> — one line per cone-scope block still standing, as
+  # `<held|unresolved><TAB><subject><TAB><원인><TAB><사유><TAB><관측|->`.
+  #
+  # ITS ONLY CONSUMER IS `run-pane.sh`. `cc_run_state`, `cc_run_grade`, the
+  # gate's termination conditions and `statusline.sh` do not call it, and a
+  # cone block is deliberately not part of any run verdict: no ledger field
+  # records whether a cone block is still in force and no verb resolves one, so
+  # what this returns is a display rule, not a judgement a run may end on.
+  #
+  # THE SUBJECT is `앵커 세그먼트`, or `대상` when the row has no anchor. The
+  # driver's `park()` writes no anchor and puts the concrete reason in `관측`
+  # under a generic `사유`, so that field is carried out too.
+  #
+  # THE FOLD keeps the last row per (subject, 사유). It runs in awk under
+  # `LC_ALL=C`, so two keys are one only when their bytes are — the same reason
+  # `cc_unresolved_blocked` pins its sort: 사유 is Korean free text and a
+  # collating comparison merges distinct reasons.
+  #
+  # A ROW IS HIDDEN when a `segment` row for its subject that is not `park`
+  # appears anywhere after it — any one, not the last one. A cone row, then
+  # park, then 실행중, then a park with no new cone row stays hidden: the later
+  # park did not come from that reason. A re-dispatch that parks again makes
+  # the driver write a fresh cone row, which shows on its own.
+  #
+  # A SUBJECT WITH NO `segment` ROW AT ALL is `unresolved` — an alias such as a
+  # `판정 불가` subject or a review finding id the driver parked. Whether it
+  # still stands cannot be read off the ledger, so the caller counts these
+  # rather than listing them.
+  #
+  # Output is in ledger order of each kept row; 원인 is passed through as
+  # written.
+  local ledger="$1"
+  [ -n "$ledger" ] && [ -f "$ledger" ] || return 0
+  LC_ALL=C awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function field(name,   i, f, n) {
+      n = length(name)
+      for (i = 2; i <= NF; i++) {
+        f = trim($i)
+        if (substr(f, 1, n) == name) return substr(f, n + 1)
+      }
+      return ""
+    }
+    /^- `segment`/ {
+      id = field("id=")
+      if (id == "") next
+      seen[id] = 1
+      if (field("상태=") != "park") moved[id] = NR
+      next
+    }
+    /^- `blocked`/ {
+      if (field("스코프=") != "cone") next
+      subj = field("앵커 세그먼트=")
+      if (subj == "") subj = field("대상=")
+      if (subj == "") next
+      reason = field("사유=")
+      key = subj SUBSEP reason
+      if (!(key in last)) order[++nk] = key
+      last[key] = NR
+      kSubj[key] = subj; kReason[key] = reason
+      kCause[key] = field("원인="); kObs[key] = field("관측=")
+    }
+    END {
+      for (i = 1; i <= nk; i++) {
+        key = order[i]; s = kSubj[key]
+        if (!(s in seen)) kind = "unresolved"
+        else if ((s in moved) && moved[s] > last[key]) continue
+        else kind = "held"
+        obs = kObs[key]; if (obs == "") obs = "-"
+        printf "%d\t%s\t%s\t%s\t%s\t%s\n", last[key], kind, s, kCause[key], kReason[key], obs
+      }
+    }
+  ' "$ledger" 2>/dev/null | LC_ALL=C sort -n -k1,1 | cut -f2- || true
+  return 0
+}
+
 cc_mtime() {
   # cc_mtime <path> — epoch seconds, or empty.
   # `stat` diverges between BSD and GNU on the very flag this needs, so neither

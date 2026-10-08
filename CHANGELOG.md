@@ -5,6 +5,27 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.50.0] - 2026-10-08
+
+대화형 세션에 autopilot 런 상태 패널을 더했다. 상태 표시줄이 고른 런 하나를 펼쳐, 끝나지 않은 세그먼트, 사람을 기다리는 승인, run·cone 범위 막힘, 고아 스테이지를 한눈에 보인다. 살아 있는 런마다 한 번 저절로 열리고, `/autopilot-status` 로 열고 닫는다.
+
+### Added
+
+- **런 상태 패널 mod** (`hooks/autopilot-status.tsx`)
+  - `hooks.json` 의 `modules` 로 싣는 플러그인 모듈이다. 비대화형 세션과 스테이지·교대(파이프라인 변수가 있는 세션)에서는 명령도 시계도 프로세스도 만들지 않는다.
+  - 10초 시계에서 세션 id·패널·세션 목록 mtime 만 보고, 바뀌었거나 주기가 됐을 때만 헬퍼를 한 번에 하나씩 돌린다.
+  - 사람이 닫은 런으로는 다시 저절로 열지 않으며, 그 기록은 `$.state`(계약 `types/index.d.ts`)에 두어 모듈을 다시 적재해도 남는다.
+  - 헬퍼가 실패하면 마지막으로 읽은 줄을 그대로 두고 경고 줄 하나만 더한다.
+- **`/autopilot-status` 명령** — 놓인 패널은 닫고, 아니면 열고 헬퍼를 한 번 돌린다.
+- **`orchestrator/run-pane.sh`** — 세션 id 를 받아 바뀌지 않은 `statusline.sh` 로 런을 정하고 패널 규약 행과 본문을 내는 헬퍼. 언제나 exit 0 이고 아무것도 쓰지 않는다.
+- **`liveness.sh` 행 함수 셋** — 열린 승인 행, 세그먼트별 끝남 판정, cone 범위 막힘 행. 기존 함수와 런 판정은 바뀌지 않는다.
+- 시험: `scripts/test-run-pane.sh`, 상태 표시줄 일치 스위트의 패널 런 id·개수 동치 단언, `claude plugin test` 로 도는 `hooks/autopilot-status.test.ts`. `make lint` 가 `modules`·`types` 경로의 파일 존재를 확인한다.
+
+### Post-install notes
+
+- 플러그인 mod 를 지원하는 최신 Claude Code 를 전제한다(2.1.290–2.1.292 에서 관측).
+- 패널은 이 판본을 실은 뒤 새로 띄운 대화형 세션에서 나타난다. 터미널이 144칸보다 좁으면 저절로 연 패널은 자리가 날 때까지 기다리며, `/autopilot-status` 로 열면 폭과 무관하게 놓인다.
+
 ## [2.49.1] - 2026-10-08
 
 배너 클릭이 다른 Space 에 있는 iTerm2 창으로도 넘어간다. 지금까지 클릭은 tmux pane 과 iTerm2 탭·세션을 고르기만 해서, 그 창이 다른 Space(전체 화면 창 등)에 있으면 화면이 바뀌지 않았다. 이제 클릭 처리기가 손쉬운 사용 API 로 그 창을 올리고 iTerm2 를 활성화해 macOS 가 그 Space 로 넘어간다. 권한이나 컴파일러가 없으면 이전처럼 고르기만 한다.
