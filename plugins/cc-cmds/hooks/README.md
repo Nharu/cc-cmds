@@ -15,8 +15,9 @@ The two banner seats are not the only hooks in this directory.
 `active-notify-pretool.sh` belongs to the `active-notify` skill, and
 `stage-policy-edit-drift.sh` is the edit-time seat of the stage-policy drift
 check, whose contract is a later section of this file. `autopilot-status.tsx`
-is not a command hook at all but a plugin module, listed under `"modules"`; its
-section is the last one. None of the three raises a session banner, and the
+is not a command hook at all but a plugin module, and it is currently not
+listed under `"modules"`, so it does not load; its section is the last one.
+None of the three raises a session banner, and the
 rules below are written for the two seats alone.
 
 ## The two seats, and there are only two
@@ -268,6 +269,13 @@ to make it, and the checker refuses `--ack` and `--ack-added` there as well.
 banner seats use.
 
 ## The run-status pane module
+
+**The module is withdrawn for now.** `hooks.json` does not list it under
+`"modules"`, so no session loads it and `/autopilot-status` is not registered.
+What it shows is too thin to be worth a pane, and it is held back until the
+pane is rebuilt with more of the run in it. The module, its tests and the
+helper stay in the tree, and the rest of this section describes them as they
+will run once the module is listed again.
 
 `autopilot-status.tsx` is a plugin module (`"modules"` in `hooks.json`), not a
 command hook. In an interactive session it shows, in a pane titled `autopilot`,
