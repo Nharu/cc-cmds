@@ -432,12 +432,23 @@ Dispatcher behavior:
   added only when single + `arm_count == 1` (banner replace semantics).
   `$click` is what `orchestrator/notify-focus.sh exec-arg` built from the
   dispatcher's own `TMUX`/`TMUX_PANE`: a focus command, so clicking the
-  banner brings forward the iTerm2 tab and the tmux window and pane the
-  session runs in (iTerm2 tmux integration and plain tmux alike), or `:`
-  outside tmux, where the click does nothing. `-execute` is never dropped.
+  banner selects the iTerm2 tab and session and the tmux window and pane
+  the session runs in (iTerm2 tmux integration and plain tmux alike), or
+  `:` outside tmux, where the click does nothing. `-execute` is never
+  dropped.
   The first click makes macOS ask whether iTerm2 may be controlled;
   refusing leaves the click doing nothing (revert under System Settings →
-  Privacy & Security → Automation).
+  Privacy & Security → Automation). The window itself comes forward, and
+  a window on another Space is reached, only when the helper raised it —
+  which takes the notifier app in System Settings → Privacy & Security →
+  Accessibility (a grant that lets it control the computer, and applies to
+  the click command of every banner that notifier raises), a Swift
+  compiler (Command Line Tools or Xcode), and a window that answers the
+  Accessibility API in time; otherwise the click only selects the tab and
+  session, and for a missing grant or a missing compiler one guide banner
+  names what to add. A compiler that is present but
+  fails to build the helper raises no guide; the click selects only.
+  `_common/notify.md` §4 invariant 2 has the detail.
 
 **CANCEL is mode-agnostic (model-driven).** `rm -f flag`. No mode check.
 Three triggers (the dispatcher treats them identically):
