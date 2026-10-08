@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.50.1] - 2026-10-08
+
+2.50.0 에서 더한 autopilot 런 상태 패널을 당분간 내린다. 패널이 보이는 내용이 너무 빈약해 자리를 차지할 값어치가 없고, 런을 더 넓게 펼치는 판본으로 다시 만들 때까지 싣지 않는다.
+
+### Changed
+
+- `hooks.json` 의 `modules` 에서 `autopilot-status.tsx` 를 뺐다. 패널은 저절로 열리지 않고 `/autopilot-status` 명령도 등록되지 않는다.
+- 모듈·헬퍼(`orchestrator/run-pane.sh`)·시험은 다시 실을 때를 위해 트리에 그대로 둔다.
+
+### Post-install notes
+
+- 이미 떠 있는 세션은 모듈을 실은 채로 남는다. 새로 띄운 세션부터 패널이 사라진다.
+
 ## [2.50.0] - 2026-10-08
 
 대화형 세션에 autopilot 런 상태 패널을 더했다. 상태 표시줄이 고른 런 하나를 펼쳐, 끝나지 않은 세그먼트, 사람을 기다리는 승인, run·cone 범위 막힘, 고아 스테이지를 한눈에 보인다. 살아 있는 런마다 한 번 저절로 열리고, `/autopilot-status` 로 열고 닫는다.
