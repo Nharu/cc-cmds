@@ -323,6 +323,16 @@ When an implement stage refutes a residual verification item before implementing
 
 A stage that reached a question only a person can answer wrote a halt record and stopped; the seat asked the person and wrote the answer as a `중단 답` row. The snapshot's `answered_halts[]` lists each answer no stage has taken up yet — `segment` (the segment id, or the step id of a run-scope step — the design, the audit or the split), `record` (the halt record's path), `skill`, `option` (verbatim), `attachment` (a file under the run's `halt/` holding what the person supplied beyond the option, or the empty string) and `line` (the row's ledger line, whose `근거` holds the person's words). **An element there is this loop's to route, not a park and not a reason to end the shift.** Take it before 「Continuing a stage that ended its turn in prose」 and before any fresh dispatch on the same key. Every read here is a gate call on the terms 「Recovering a review stage that crashed」 states. The element leaves the list by itself once a `stage-result` row of its key lands on a later line, so dispatch on it once.
 
+**A binding-tier stop the manifest pre-adopted is answered here, not at the seat.** When a segment's last `stage-result` row reads `종류=implement` with `종단 부류=의도된 park`, its halt record (`"$CC_PIPELINE_RUN_DIR/halt/<id>#<실행 버전>.md"`, read through the gate) has `**스킬**: implement-unattended`, its step text before the first ` — ` contains `CFI-U3 BT-STOP`, it lists the option `` `재수렴` ``, no `중단 답` row names it yet, and the manifest's `## 인가` carries a `자동 채택` row with `판단 부류=구속-이탈`, write the answer yourself instead of ending with `사유=중단`:
+
+```
+gate.sh act --manifest <매니페스트> --kind halt-answer --target <alias> --segment <id> \
+  --cutpoint <token> --surface 읽기 --snapshot-digest <H> \
+  -- '중단 기록=<그 기록의 절대 경로>' '선택지=재수렴' '근거=구속-이탈 자동 채택 — 매니페스트가 킥오프에서 미리 정한 답'
+```
+
+The gate admits a shift on exactly these conditions and once per key — a key that already had a binding-tier stop answered `재수렴` is refused with exit 3, and then the stop goes to a person as before (end with `사유=중단`, naming the record in `막힌 지점`). Exit 3 for any other reason means the same. On exit 0 read the snapshot again: the answer is now in `answered_halts[]` and item 5 below routes it. Without the `자동 채택` row this paragraph does not apply and the stop goes to a person.
+
 1. **Nothing is running on it.** The key is in neither `live_stages[]` nor `orphan_stages[]`.
 2. **Which path.** Read the record's step line: `grep -n '^\*\*스텝\*\*: ' <record>`. When `skill` is `design-audit-unattended`, the step names the synthesis question (`CFI-3b`) and `option` is `adopt as a requirement`, go to item 4. When `skill` is `implement-unattended`, the step's text before its first ` — ` contains `CFI-U3 BT-STOP` and `option` is `재수렴`, go to item 5. Every other answer goes to item 3.
 3. **Re-attach the halted session with the answer.** Take the key's last `stage-result` row and its `세션 id` as 「Re-attaching a cut stage」 items 2 and 3 read them; the id must not be `미상` and the attempt's stream must show the session started. Keep the halted attempt's stage kind, target and `--segment` (`-` for the design step):

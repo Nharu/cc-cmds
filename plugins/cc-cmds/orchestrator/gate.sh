@@ -162,7 +162,9 @@
 #   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
 #               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약> \\
 #                  ['첨부=<RUN_DIR/halt/…answer.md>']
-# `halt-answer` is the seat's alone on the same terms. `<key>` is the segment
+# `halt-answer` is the seat's alone on the same terms, save one shift case: an
+# implement-unattended CFI-U3 BT-STOP record answered `재수렴` under a
+# `자동 채택` row of class 구속-이탈, once per key. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
 # checks the record is this run's, complete, and lists the option verbatim.
 # `첨부` is a file the seat wrote under the same `halt/` with what the person
@@ -16762,12 +16764,23 @@ EOF
       # SEAT ONLY, judged as `limit-cleared` judges it. A shift or a stage
       # writing this row would be the run answering its own question for a
       # person.
-      if [ -n "$(gate_shift_self_ordinal)" ] || cc_caller_is_stage \
-         || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+      #
+      # ONE EXCEPTION, AND ONLY FOR A SHIFT: a binding-tier stop answered
+      # `재수렴` when the manifest's `## 인가` pre-adopts the `구속-이탈` class.
+      # The person made that answer at kickoff, by freezing the row, so the
+      # shift is not answering for them — it is carrying a frozen answer. Every
+      # other condition is checked below, after the record has been read, and
+      # a shift that misses one is refused exactly as before. A stage never
+      # writes this row.
+      local hshift=''
+      if cc_caller_is_stage; then
         warn "a \`중단 답\` row is written by the seat only — a shift or a stage cannot answer a halt record for a person"
         return "$GATE_EXIT_RULE"
       fi
-      local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat hatt hattdig
+      if [ -n "$(gate_shift_self_ordinal)" ] || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+        hshift=1
+      fi
+      local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat hatt hattdig hstep hpre='' hcls hrow hadopt=''
       for hf in "$@"; do
         hk="${hf%%=*}"
         case "$hk" in 중단\ 기록|선택지|근거|첨부) continue ;; esac
@@ -16845,11 +16858,45 @@ EOF
         hattdig=$(shasum -a 256 "$hatt" | cut -d' ' -f1)
       fi
       hskill=$(sed -n 's/^\*\*스킬\*\*: //p' "$hrec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+      if [ -n "$hshift" ]; then
+        # The shift's exception, in full. The step is read up to its first
+        # ` — `, the same cut 「Handing on a person's answer to a halt」 item 2
+        # makes, so the record this admits is exactly the one that item routes
+        # to re-convergence. Once per key, as that item's own bullet says: a
+        # binding-tier stop that comes back after a binding-tier re-convergence
+        # goes to a person, so the second answer is never automatic. What is
+        # counted is an earlier `중단 답` of this kind on the key, not any
+        # `종류=reconverge` row — a refutation's re-convergence moved another
+        # part of the document and is not the same repair run twice.
+        hstep=$(sed -n 's/^\*\*스텝\*\*: //p' "$hrec" | sed -n '1p')
+        hstep="${hstep%% — *}"
+        while IFS= read -r hrow; do
+          [ -n "$hrow" ] || continue
+          hcls=$(printf '%s' "$hrow" | tr '|' '\n' | sed -n 's/^ *판단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+          [ "$hcls" = "구속-이탈" ] && { hadopt=1; break; }
+        done <<EOF
+$(manifest_autoadopt_rows)
+EOF
+        if [ -z "$hadopt" ] || [ "$hskill" != "implement-unattended" ] \
+           || [ "${hstep#*CFI-U3 BT-STOP}" = "$hstep" ] || [ "$hopt" != "재수렴" ]; then
+          warn "a \`중단 답\` row is written by the seat only — a shift may write one only for an implement-unattended binding-tier stop (CFI-U3 BT-STOP) answered \`재수렴\`, under a \`자동 채택\` row of class 구속-이탈 in \`## 인가\`"
+          return "$GATE_EXIT_RULE"
+        fi
+        hrow=$({ gate_rows '중단 답' || true; } | { grep -F "세그먼트=$seg " || true; } \
+               | { grep -F '| 스킬=implement-unattended |' || true; } \
+               | { grep -F '| 선택지=재수렴 |' || true; })
+        if [ -n "$hrow" ]; then
+          warn "$seg already had a binding-tier stop answered \`재수렴\` — a second one goes to a person, so the shift cannot answer it"
+          return "$GATE_EXIT_RULE"
+        fi
+        hpre="자동 채택(구속-이탈) — "
+        log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
+      fi
       hdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1)
       hlane=$(gate_lane_label)
       hat=$(now_iso)
       while [ "$hw" -ge 40 ]; do
-        hwhy=$(gate_row_safe "$(gate_field_of '근거' "$@")" "$hw")
+        hwhy=$(gate_row_safe "$hpre$(gate_field_of '근거' "$@")" "$hw")
         hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$hrec" \
           "스킬=${hskill:-미상}" "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" \
           ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
