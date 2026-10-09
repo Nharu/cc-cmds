@@ -14,7 +14,8 @@
 # row of that group, a banner without a group appends a row whose first column
 # is empty, `-remove` deletes exact matches only, and every call is logged. It
 # takes a lock, because the seat clear runs detached and races the
-# `-list ALL`/`-remove` pass of `notify.sh dismiss`.
+# `-list ALL`/`-remove` pass of `notify.sh dismiss`. The log line is written
+# after the table change, so waiting for it waits for the change to land.
 #
 # THE BANNERS ARE SEEDED THROUGH THE REAL ENTRY POINTS — `notify.sh arm` /
 # `fire-now` for single, `--count=3` and repeat, and the seat-1 hook for the
@@ -84,12 +85,14 @@ OUTF="$WORK/hook.out"
 
 cat > "$BIN/terminal-notifier" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$NC_LOG"
+argv="$*"
 lock="$NC_STATE.lock"; i=0
 while ! mkdir "$lock" 2>/dev/null; do
   sleep 0.01; i=$((i + 1)); [ "$i" -gt 500 ] && break
 done
-trap 'rmdir "$lock" 2>/dev/null' EXIT
+# The call is logged only after the table change is complete, still inside the
+# lock, so a waiter that sees the log line reads the finished table.
+trap 'printf "%s\n" "$argv" >> "$NC_LOG"; rmdir "$lock" 2>/dev/null' EXIT
 group=''; has_group=0; title=''; msg=''; remove=''; list=''
 while [ $# -gt 0 ]; do
   case "$1" in
