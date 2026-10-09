@@ -10072,7 +10072,7 @@ rm -f "$WT/$DOC15FB"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -10375,7 +10375,7 @@ gateL act --manifest "$WORK/plan-R15GP2.md" --kind segment --target infra --segm
   상태=실행중 "워크트리=$(g15_wt R15GP2 SB)" 선행=SA 출처=R15GP1
 check "15g: 호출자가 넘긴 출처 는 거부된다" "$rc" "2"
 case "$msg" in
-  *"「출처」는 게이트가 이전 런의 선행을 들여올 때만 쓰는 필드입니다"*) ok "15g: 그 거부는 출처 가 게이트의 필드임을 든다" ;;
+  *"「출처」는 게이트가 선행을 들여올 때만 쓰는 필드입니다"*) ok "15g: 그 거부는 출처 가 게이트의 필드임을 든다" ;;
   *) bad "15g 호출자 출처 문면" "$msg" ;;
 esac
 
@@ -10407,12 +10407,158 @@ case "$msg" in
   *) bad "15g 증거 없는 선행 문면" "$msg" ;;
 esac
 
+# --- 원장 밖에서 착지한 선행: 매니페스트의 선행 착지 행 --------------------
+# No run ledger records SA — the run that delivered it used another id, or SA
+# lives in a repository this run does not target. A person confirmed the merge
+# at kickoff and the manifest carries a `선행 착지` row; the planning act checks
+# the row's slug against the slice's `레포` and its commit against that
+# repository's base branch before bringing SA in.
+g15_land() {  # g15_land <run id> <슬라이스> <원격 슬러그> <머지 커밋> — append one `선행 착지` row
+  printf -- '- `선행 착지` | 슬라이스=%s | 원격 슬러그=%s | 머지 커밋=%s\n' "$2" "$3" "$4" >> "$WORK/plan-$1.md"
+}
+g15_segs() {  # g15_segs <run id> — how many segment rows that run's ledger holds
+  { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | grep -c . || true
+}
+DOC15GS='docs/fixture-design-15gs.md'
+two_slice_doc "$WT/$DOC15GS" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+m15gs=$(cd "$WT" && git rev-parse refs/heads/main)
+g15_run R15GS "$DOC15GS" "$plan15c" 리뷰없음
+g15_land R15GS SA t/infra "$m15gs"
+g15_mkwt R15GS SB
+g15_plan plan R15GS SB 상태=계획됨 "워크트리=$(g15_wt R15GS SB)"
+check "15g: 선행 착지 행을 들여올 plan 은 통과하고 행을 쓰지 않는다" "$rc/$(g15_segs R15GS)" "0/0"
+case "$msg" in
+  *"선행 SA 를 매니페스트의 선행 착지 행(상태=머지됨 · 머지 커밋=$m15gs)"*) ok "15g: 그 plan 은 들여올 선행과 매니페스트 행을 든다" ;;
+  *) bad "15g 선행 착지 plan 문면" "$msg" ;;
+esac
+g15_plan act R15GS SB 상태=계획됨 "워크트리=$(g15_wt R15GS SB)"
+check "15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다" "$rc" "0"
+r15gs=$(g15_row R15GS SA)
+check "15g: 매니페스트에서 들여온 행은 머지됨과 머지 커밋과 출처=매니페스트 를 싣는다" \
+  "$(seg_field "$r15gs" '상태')/$(seg_field "$r15gs" '머지 커밋')/$(seg_field "$r15gs" '워크트리')/$(seg_field "$r15gs" '선행')/$(seg_field "$r15gs" '출처')" \
+  "머지됨/$m15gs/-/없음/매니페스트"
+check "15g: 매니페스트에서 들여온 행이 계획 행보다 먼저 놓인다" \
+  "$( [ -n "$(g15_line R15GS SA)" ] && [ "$(g15_line R15GS SA)" -lt "$(g15_line R15GS SB)" ] && printf 앞 || printf 아님)" "앞"
+
+# The row names a slug other than the slice's declared `레포`.
+DOC15GT='docs/fixture-design-15gt.md'
+two_slice_doc "$WT/$DOC15GT" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15GT "$DOC15GT" "$plan15c" 리뷰없음
+g15_land R15GT SA t/elsewhere "$m15gs"
+g15_mkwt R15GT SB
+g15_plan act R15GT SB 상태=계획됨 "워크트리=$(g15_wt R15GT SB)"
+check "15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다" "$rc/$(g15_segs R15GT)" "3/0"
+case "$msg" in
+  *"슬라이스 SA 는 원격 슬러그 t/elsewhere 를 들지만 동결 문서가 선언한 레포는 t/infra 입니다"*) ok "15g: 그 거부는 행의 슬러그와 선언된 레포를 든다" ;;
+  *) bad "15g 선행 착지 슬러그 문면" "$msg" ;;
+esac
+
+# The row's commit is not on the target's base branch.
+DOC15GV='docs/fixture-design-15gv.md'
+two_slice_doc "$WT/$DOC15GV" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+m15gv=$(cd "$WT" && git commit-tree "$(git mktree </dev/null)" -p HEAD -m side15gv)
+g15_run R15GV "$DOC15GV" "$plan15c" 리뷰없음
+g15_land R15GV SA t/infra "$m15gv"
+g15_mkwt R15GV SB
+g15_plan act R15GV SB 상태=계획됨 "워크트리=$(g15_wt R15GV SB)"
+check "15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다" "$rc/$(g15_segs R15GV)" "3/0"
+case "$msg" in
+  *"매니페스트의 선행 착지 행이 든 머지 커밋 $m15gv 은 대상 infra 의 베이스 브랜치에 미착지"*) ok "15g: 그 거부는 행의 커밋과 대상 베이스를 든다" ;;
+  *) bad "15g 선행 착지 미착지 문면" "$msg" ;;
+esac
+
+# SA lives in a repository the run does not target: the remote answers. The
+# stub stands in for `gh api`, and it reaches the gate as an exported function
+# rather than a PATH entry: the driver puts /usr/bin ahead of the inherited PATH,
+# and a host whose `gh` lives there (the Linux CI runner) would otherwise answer
+# with the real remote. A function outranks every PATH lookup, and since PATH is
+# left alone the call stays in-process.
+mkdir -p "$WORK/gh15gu"
+cat > "$WORK/gh15gu/gh" <<'GHSTUB'
+#!/bin/sh
+case "$1 $2" in
+  "api repos/t/far") printf 'main\n' ;;
+  "api repos/t/far/compare/"*) [ "${GH15_STATUS:-}" = "fail" ] && exit 1; printf '%s\n' "$GH15_STATUS" ;;
+  *) exit 1 ;;
+esac
+GHSTUB
+chmod +x "$WORK/gh15gu/gh"
+far_slice_doc() {  # far_slice_doc <문서 경로> — SA in t/far (no target), SB in t/infra depending on it
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+    printf '\n### 슬라이스 SA — 픽스처\n\n**스킬**: implement\n**레포**: t/far\n**선언 파일**: `SA.txt`\n'
+    printf '**선행**: 없음\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
+    printf '\n### 슬라이스 SB — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `SB.txt`\n'
+    printf '**선행**: SA\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
+  } > "$1"
+}
+g15_remote() {  # g15_remote <run id> <compare status | fail> — plan SB with the gh stub answering the remote
+  local out
+  out=$(cd "$WT" && gh() { "$GH15_STUB" "$@"; } && export -f gh \
+    && export GH15_STUB="$WORK/gh15gu/gh" GH15_STATUS="$2" \
+    && XDG_STATE_HOME="$STATE_LATE" gate_inproc act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x --from-declaration -- \
+    상태=계획됨 "워크트리=$(g15_wt "$1" SB)" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+m15gu=0123456789abcdef0123456789abcdef01234567
+DOC15GU='docs/fixture-design-15gu.md'
+far_slice_doc "$WT/$DOC15GU"
+g15_run R15GU "$DOC15GU" "$plan15c" 리뷰없음
+g15_land R15GU SA t/far "$m15gu"
+g15_mkwt R15GU SB
+g15_remote R15GU ahead
+check "15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다" "$rc" "0"
+r15gu=$(g15_row R15GU SA)
+check "15g: 대상 아닌 레포에서 들여온 행은 머지됨과 그 커밋과 출처=매니페스트 를 싣는다" \
+  "$(seg_field "$r15gu" '상태')/$(seg_field "$r15gu" '머지 커밋')/$(seg_field "$r15gu" '출처')" \
+  "머지됨/$m15gu/매니페스트"
+DOC15GW='docs/fixture-design-15gw.md'
+far_slice_doc "$WT/$DOC15GW"
+g15_run R15GW "$DOC15GW" "$plan15c" 리뷰없음
+g15_land R15GW SA t/far "$m15gu"
+g15_mkwt R15GW SB
+g15_remote R15GW diverged
+r15gw="$rc/$(g15_segs R15GW)"
+case "$msg" in
+  *"원격 t/far 의 기본 브랜치에 미착지"*) ok "15g: 그 거부는 원격과 미착지를 든다" ;;
+  *) bad "15g 원격 미착지 문면" "$msg" ;;
+esac
+g15_remote R15GW fail
+check "15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다" "$r15gw|$rc/$(g15_segs R15GW)" "3/0|3/0"
+case "$msg" in
+  *"원격 t/far 의 기본 브랜치에 판정 불가"*) ok "15g: 답하지 못한 비교는 판정 불가로 거부된다" ;;
+  *) bad "15g 원격 판정 불가 문면" "$msg" ;;
+esac
+
+# The manifest check refuses a malformed row and a second row for one slice.
+g15_run R15GX "$DOC15GS" "$plan15c" 리뷰없음
+g15_land R15GX SA t/infra abc123
+gateL snapshot --manifest "$WORK/plan-R15GX.md"
+r15gx="$rc"
+case "$msg" in
+  *"「선행 착지」 행의 형식이 어긋났습니다"*) ok "15g: 형식이 어긋난 선행 착지 행은 그 형식을 들며 거부된다" ;;
+  *) bad "15g 선행 착지 형식 문면" "$msg" ;;
+esac
+g15_run R15GY "$DOC15GS" "$plan15c" 리뷰없음
+g15_land R15GY SA t/infra "$m15gs"
+g15_land R15GY SA t/infra "$m15gs"
+gateL snapshot --manifest "$WORK/plan-R15GY.md"
+check "15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다" \
+  "$( [ "$r15gx" != "0" ] && printf 거부 || printf 통과)/$( [ "$rc" != "0" ] && printf 거부 || printf 통과)" "거부/거부"
+case "$msg" in
+  *"「선행 착지」 행이 슬라이스 SA 에 둘 이상입니다"*) ok "15g: 중복 거부는 슬라이스를 든다" ;;
+  *) bad "15g 선행 착지 중복 문면" "$msg" ;;
+esac
+
 for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
-            R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB; do
+            R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB \
+            R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB; do
   ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
       && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
 done
-rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR"
+rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR" \
+  "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget

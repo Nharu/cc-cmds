@@ -7550,6 +7550,53 @@ gate_prior_run_landed() {
   [ -n "$GATE_PRIOR_ROW" ]
 }
 
+gate_manifest_landing_row() {
+  # gate_manifest_landing_row <slice> — the `선행 착지` row the kickoff froze for
+  # that slice; status 1 when the manifest carries none. `check_manifest` has
+  # already refused a second row for one slice, so the first is the only one.
+  local row
+  row=$( { manifest_predecessor_landing_rows | grep -F "| 슬라이스=$1 |" || true; } | sed -n 1p)
+  [ -n "$row" ] || return 1
+  printf '%s' "$row"
+}
+
+gate_remote_landing() {
+  # gate_remote_landing <원격 슬러그> <머지 커밋> — the three-way verdict of
+  # `gate_obligation_landing`, for a repository that is NOT a declared target
+  # and so has no anchor root on this host to ask. The remote's default branch
+  # is the base, and the remote's own comparison of the commit against it is
+  # the evidence: `ahead` or `identical` means the branch contains the commit.
+  #
+  # ANY FAILURE IS 판정 불가, never 미착지. A missing `gh`, an unreadable
+  # repository, a commit the remote does not know and a status outside the four
+  # all leave the question unanswered, and the caller refuses on both.
+  local slug="$1" m="$2" br="" st=""
+  GATE_LANDING_VERDICT=""
+  GATE_LANDING_WHY=""
+  if ! command -v gh >/dev/null 2>&1; then
+    GATE_LANDING_WHY="gh 를 찾지 못해 원격 $slug 에 물을 수 없습니다"
+    GATE_LANDING_VERDICT='판정 불가'; return 0
+  fi
+  br=$(gh api "repos/$slug" --jq .default_branch 2>/dev/null) || br=""
+  if [ -z "$br" ]; then
+    GATE_LANDING_WHY="원격 $slug 의 기본 브랜치를 읽지 못했습니다"
+    GATE_LANDING_VERDICT='판정 불가'; return 0
+  fi
+  st=$(gh api "repos/$slug/compare/$m...$br" --jq .status 2>/dev/null) || st=""
+  case "$st" in
+    ahead|identical)
+      GATE_LANDING_WHY="원격 $slug 의 $br 가 머지 커밋을 담고 있습니다 (비교: $st)"
+      GATE_LANDING_VERDICT='착지' ;;
+    behind|diverged)
+      GATE_LANDING_WHY="원격 $slug 의 $br 가 머지 커밋을 담고 있지 않습니다 (비교: $st)"
+      GATE_LANDING_VERDICT='미착지' ;;
+    *)
+      GATE_LANDING_WHY="원격 $slug 에서 머지 커밋과 $br 의 비교가 답하지 못했습니다"
+      GATE_LANDING_VERDICT='판정 불가' ;;
+  esac
+  return 0
+}
+
 GATE_DECL_FIELDS=()
 gate_from_declaration() {
   # gate_from_declaration <verb> <alias> <segment> <키=값>... — the fields of a
@@ -7557,11 +7604,12 @@ gate_from_declaration() {
   # Returns the exit code of a refusal, or 0. Everything it refuses, it refuses
   # before anything is written about the act; the rows it may write are the
   # run-scope block of a structural refusal and, on `act`, the terminal row of
-  # a predecessor an earlier run of the same document landed.
+  # a predecessor an earlier run of the same document landed or the manifest's
+  # `선행 착지` row names.
   local verb="$1" alias="$2" seg="$3"
   shift 3
   local f="" k="" st="" wt="" want="" br="" why="" al="" astep="" alast="" step="" d="" ids="" declared="" derived=""
-  local known="" dal="" pst="" pm="" ppr="" pwt="" pdp="" adrow=""
+  local known="" dal="" pst="" pm="" ppr="" pwt="" pdp="" adrow="" prow="" pslug="" dslug="" pwhere=""
   GATE_DECL_FIELDS=()
 
   # THE CALLER NAMES THE SEGMENT, THE STATE AND THE WORKTREE, AND NOTHING THE
@@ -7732,12 +7780,56 @@ gate_from_declaration() {
   # did the work; only this writer sets it, since the segment arm refuses a
   # caller's. Written once: a later act finds the id in `gate_segment_ids` and
   # does nothing. A dry run writes nothing and says what the act would bring in.
+  #
+  # A PREDECESSOR NO RUN LEDGER RECORDS IS BROUGHT IN FROM THE MANIFEST, when the
+  # kickoff froze a `선행 착지` row for it. Two shapes leave a landed slice with
+  # no ledger to find: the run that delivered it used a different segment id or
+  # recorded no `머지 커밋`, or the slice lives in a repository this run does
+  # not target, whose segments no ledger of this run's targets ever holds. The
+  # row is a person's claim and is checked the way a prior ledger's is — the
+  # slug must be the slice's declared `레포`, and the commit must be on that
+  # repository's base branch: through the target's anchor when the repository
+  # is a target, through the remote's own comparison when it is not. The row
+  # written is `머지됨` with `출처=매니페스트` and no worktree.
   if [ "$br" = "선언통치" ]; then
     known=" $(gate_segment_ids | tr '\n' ' ') "
     for d in $(gate_dep_tokens "$(slice_field "$DOC" "$seg" '선행')"); do
       case "$known" in *" $d "*) continue ;; esac
-      dal=$(gate_slice_alias "$d" 2>/dev/null) || continue
-      gate_prior_run_landed "$d" || continue
+      dal=$(gate_slice_alias "$d" 2>/dev/null) || dal=""
+      if [ -z "$dal" ] || ! gate_prior_run_landed "$d"; then
+        prow=$(gate_manifest_landing_row "$d") || continue
+        pslug=$(gate_row_field "$prow" '원격 슬러그')
+        pm=$(gate_row_field "$prow" '머지 커밋')
+        dslug=$(slice_field "$DOC" "$d" '레포' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        if [ "$pslug" != "$dslug" ]; then
+          warn "세그먼트 계획 거부: 선행 착지 행의 슬라이스 ${d} 는 원격 슬러그 ${pslug} 를 들지만 동결 문서가 선언한 레포는 ${dslug:-(없음)} 입니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        if [ -n "$dal" ]; then
+          if gate_segment_owes_apply "$dal" "$d"; then
+            warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 선언상 적용이 남는 슬라이스입니다 — 선행 착지 행은 머지만 말하므로 적용이 남은 슬라이스는 들여오지 않습니다"
+            return "$GATE_EXIT_RULE"
+          fi
+          gate_obligation_landing "$dal" "$pm"
+          pwhere="대상 ${dal} 의 베이스 브랜치"
+        else
+          gate_remote_landing "$pslug" "$pm"
+          pwhere="원격 ${pslug} 의 기본 브랜치"
+        fi
+        if [ "$GATE_LANDING_VERDICT" != "착지" ]; then
+          warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 매니페스트의 선행 착지 행이 든 머지 커밋 ${pm} 은 ${pwhere}에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
+          return "$GATE_EXIT_RULE"
+        fi
+        pdp=$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)
+        if [ "$verb" != "act" ]; then
+          warn "act 로 내면 선행 ${d} 를 매니페스트의 선행 착지 행(상태=머지됨 · 머지 커밋=${pm})으로 이 원장에 먼저 들여옵니다"
+          continue
+        fi
+        gate_append 'segment' "id=$d" "상태=머지됨" "머지 커밋=$pm" "워크트리=-" \
+          "선행=${pdp:-없음}" "출처=매니페스트"
+        log "선행 들여오기 — ${d} (머지됨, 출처 매니페스트, 머지 커밋 ${pm})"
+        continue
+      fi
       pst=$(gate_row_field "$GATE_PRIOR_ROW" '상태')
       pm=$(gate_row_field "$GATE_PRIOR_ROW" '머지 커밋')
       ppr=$(gate_row_field "$GATE_PRIOR_ROW" 'PR')
@@ -15622,11 +15714,12 @@ gate_record_row() {
       [ -n "$wt" ] || { warn "a segment row needs \`워크트리\`"; return "$GATE_EXIT_VOCAB"; }
 
       # `출처` IS THE GATE'S. It marks a row copied from an earlier run's
-      # ledger, and only the declaration-filled planning act writes it, after
-      # checking that run's merge commit against the base branch. A caller's
-      # `출처=` would claim that provenance for a row nothing checked.
+      # ledger or from the manifest's `선행 착지` row, and only the
+      # declaration-filled planning act writes it, after checking the merge
+      # commit against the base branch. A caller's `출처=` would claim that
+      # provenance for a row nothing checked.
       if [ -n "$(gate_field_of '출처' "$@")" ]; then
-        warn "segment 행의 「출처」는 게이트가 이전 런의 선행을 들여올 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
+        warn "segment 행의 「출처」는 게이트가 선행을 들여올 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB"
       fi
 
@@ -15707,9 +15800,9 @@ gate_record_row() {
       #
       # A PREDECESSOR AN EARLIER RUN LANDED IS NOT REFUSED HERE, because it is
       # no longer unknown by the time this runs: `--from-declaration` brings its
-      # terminal row in from that run's ledger first. What still arrives here is
-      # a token neither this ledger nor any earlier run of the document has
-      # landed, and the message says both halves so the reader does not go
+      # terminal row in from that run's ledger first, or from the manifest's
+      # `선행 착지` row. What still arrives here is a token none of the three
+      # shows landed, and the message names all three so the reader does not go
       # looking in only one of them.
       local known
       known=" $(gate_segment_ids | tr '\n' ' ') $seg "
@@ -15718,6 +15811,7 @@ gate_record_row() {
           *" $d "*) ;;
           *) warn "the segment \`선행\` names is not in the ledger, and no earlier run ledger of the same document shows it landed: '$d' — such a segment cannot land, and \`선행\` is monotone, so writing this row cannot be undone"
              warn "write the segment row of the preceding segment first, or plan through --from-declaration once an earlier run has merged it, or if there is no dependency write \`선행=없음\`"
+             warn "a predecessor that landed outside every run ledger is brought in only from a \`선행 착지\` row the kickoff froze into the manifest — a new run with that row"
              return "$GATE_EXIT_VOCAB" ;;
         esac
       done

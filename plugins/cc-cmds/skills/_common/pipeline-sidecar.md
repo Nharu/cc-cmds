@@ -162,6 +162,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
 - `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트를 이어받을 때만, 세그먼트당 많아야 한 행
+- `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -186,8 +187,9 @@ What IS frozen, and what `구속 다이제스트` covers: the goal, the terminat
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
 irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
-`베이스 발행` and `베이스 설계` rows**, **the `세그먼트 입양` rows**, the cost
-ceiling and the stagnation bound when declared, and the deadline. The gate compares that digest at entry.
+`베이스 발행` and `베이스 설계` rows**, **the `세그먼트 입양` rows**, **the `선행
+착지` rows**, the cost ceiling and the stagnation bound when declared, and the
+deadline. The gate compares that digest at entry.
 
 **The `베이스 발행` row is a base run's publication decision**, taken at kickoff
 and the only input the split stage publishes from: exactly one row when the
@@ -211,6 +213,15 @@ on it. The manifest check reads the row's form only, for the reason it reads the
 torn down once the segment lands. The snapshot's `슬라이싱` names the adopted
 branch and worktree for that segment and adds `입양` and `PR`, and the router
 then cuts no branch, opens no pull request, and dispatches a review first.
+
+**A `선행 착지` row states that a predecessor slice landed outside every run
+ledger**, one row per slice, and only the kickoff writes it, after a person
+confirms the slice, the repository and the merge commit. Two shapes need it: the
+run that delivered the slice recorded it under another segment id or without a
+`머지 커밋`, or the slice lives in a repository this run does not target. The
+manifest check reads its form and refuses a second row for one slice; the
+planning act checks the rest, at the moment it brings the predecessor in (see
+`segment.선행` below).
 
 The `자동 채택` rows are in that list because they decide whether a judgment is
 taken without a person. Serialization is over the whole file rather than over
@@ -338,7 +349,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계` and `세그먼트 입양` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양` and `선행 착지` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -448,6 +459,11 @@ never compared.
     run id other than this run's, and no segment has two rows. Each violation is
     a **hard stop**. The worktree, the branch and the earlier run are not read
     here; the segment's planning act reads them.
+18. **`선행 착지` rows.** Each row matches
+    `- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>`,
+    and no slice carries two. Whether the slice is declared, whether the slug is
+    its `레포` and whether the commit landed are not checked here. Each
+    violation is a **hard stop**.
 
 **Both warnings fire at most once per run.** This whole conjunction re-runs on
 every gate entry, so a per-entry warning buries the morning report under its own
@@ -966,7 +982,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 Two floors sit on `선행`, enforced at write time because `선행` is an *input* to the derivation the cone's superset check compares against. **It is monotone per segment id** — a later row may add and may not remove. And **absence is not `없음`** — in a repository carrying two or more segments a `segment` row with no `선행` is refused, while `없음` is accepted as a positive statement of independence.
 
-**A predecessor an earlier run of the same document landed is brought in, not refused.** A frozen document is often implemented a slice per run, and every run keeps a ledger of its own, so the run planning a slice has never seen the predecessor the previous run merged. On `act --kind segment --from-declaration`, after the whole-declaration checks pass and before the planned row is written, the gate takes each `선행` token of the slice that this ledger does not know and looks for it in the other run ledgers of the same directory — files named `<run-id>.md` whose `run` row's `설계 문서` is this run's document key; `.plan`, `.kickoff` and other companions are not read. It reads each such ledger's **last** `segment` row for the id, keeps one only when its `상태` is `머지됨` or `완료` and it carries a hex `머지 커밋`, and of several prefers the run whose `run` row's `시작` is latest (file mtime is not used: it moves on every append). That merge commit is then checked against the base branch of the predecessor's own target with the three-way landing verdict a deferred review obligation closes on. **Only `착지` brings it in**: the gate appends one terminal `segment` row carrying `id`, the earlier `상태`, `PR` when present, `머지 커밋`, the earlier `워크트리`, the earlier `선행` (or `없음`) and **`출처=<that run's id>`**. `미착지` and `판정 불가` refuse the plan with exit 3 and write nothing, and so does a `머지됨` whose apply this run's declaration still owes, because condition 1 would read that row as an ending and the apply would be skipped. A `plan` writes nothing and warns what the `act` would bring in. The row is written once — a later act finds the id on the ledger. It is terminal, so the cone, condition 1, the CI poller and the dispatch-time landing check all treat it as finished work, and no review obligation is issued from it. A token neither this ledger nor an earlier run of the document landed still meets the floor above, whose refusal now names both places it looked. **`출처` is the gate's**: a caller's `출처=` on any `segment` row is refused with exit 2, and a router does not hand-write a predecessor row in place of this import.
+**A predecessor an earlier run of the same document landed is brought in, not refused.** A frozen document is often implemented a slice per run, and every run keeps a ledger of its own, so the run planning a slice has never seen the predecessor the previous run merged. On `act --kind segment --from-declaration`, after the whole-declaration checks pass and before the planned row is written, the gate takes each `선행` token of the slice that this ledger does not know and looks for it in the other run ledgers of the same directory — files named `<run-id>.md` whose `run` row's `설계 문서` is this run's document key; `.plan`, `.kickoff` and other companions are not read. It reads each such ledger's **last** `segment` row for the id, keeps one only when its `상태` is `머지됨` or `완료` and it carries a hex `머지 커밋`, and of several prefers the run whose `run` row's `시작` is latest (file mtime is not used: it moves on every append). That merge commit is then checked against the base branch of the predecessor's own target with the three-way landing verdict a deferred review obligation closes on. **Only `착지` brings it in**: the gate appends one terminal `segment` row carrying `id`, the earlier `상태`, `PR` when present, `머지 커밋`, the earlier `워크트리`, the earlier `선행` (or `없음`) and **`출처=<that run's id>`**. `미착지` and `판정 불가` refuse the plan with exit 3 and write nothing, and so does a `머지됨` whose apply this run's declaration still owes, because condition 1 would read that row as an ending and the apply would be skipped. A `plan` writes nothing and warns what the `act` would bring in. The row is written once — a later act finds the id on the ledger. It is terminal, so the cone, condition 1, the CI poller and the dispatch-time landing check all treat it as finished work, and no review obligation is issued from it. **A predecessor no run ledger records is brought in from the manifest's `선행 착지` row**, on the same act and at the same point, when no earlier run of the document landed it or its slice's `레포` is not a declared target. The row's `원격 슬러그` must equal the slice's declared `레포`, or the plan is refused with exit 3. A `레포` that is a declared target is checked with the same three-way landing verdict against that target's base branch, and a slice whose apply this run's declaration owes is refused, because the row states a merge and nothing about an apply. A `레포` that is not a target has no anchor on this host, so the verdict comes from the remote: its default branch and its own comparison of the commit against that branch (`ahead` or `identical` is `착지`, `behind` or `diverged` is `미착지`, and anything unanswered is `판정 불가`). Only `착지` brings it in, as one terminal `segment` row carrying `id`, `상태=머지됨`, the row's `머지 커밋`, `워크트리=-`, the slice's declared `선행` (or `없음`) and **`출처=매니페스트`**. A token that none of the three — this ledger, an earlier run of the document, a `선행 착지` row — shows landed still meets the floor above, whose refusal names all three. **`출처` is the gate's**: a caller's `출처=` on any `segment` row is refused with exit 2, and a router does not hand-write a predecessor row in place of this import.
 
 **`blocked.스코프=cone` is the one scope the router may CREATE, and the polarity is the opposite of run scope's.** A run-scope block is raised by the gate and only resolved by the router; a cone holds what stands on a refuted premise and lets the siblings keep going. The gate does not take the router's `의존 세그먼트` on trust — it derives the cone itself and refuses a declaration that is a proper subset. Widening passes; narrowing does not.
 
