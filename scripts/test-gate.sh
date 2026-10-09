@@ -21181,6 +21181,22 @@ cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --targe
          --rationale "픽스처 — 기록에 없는 선택지" \
          -- "중단 기록=$CAPC_HALT" '선택지=adopt' 근거=x
 check "34c A21: 기록이 원문으로 싣지 않은 선택지는 2 로 거절된다" "$rc" "2"
+check "34c A21: 목록 줄이 있는 기록의 오타 거절은 인라인 진단을 내지 않는다" \
+  "$( { grep -qF 'no option line of the form' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "absent"
+CAPC_HALT_INL="$CAP_DIR/halt/design-audit-unattended-inline.md"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=orchestrator; stage=design-audit-unattended; run=R7 -->' \
+  '**스킬**: design-audit-unattended' '**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문' \
+  '**분류**: precondition-failed' '**질문 문면**: 함께 함의하는 요구가 있는가?' \
+  '**선택지**: `adopt as a requirement` — 채택한다 / `reject` — 기각한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CAPC_HALT_INL"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 선택지를 한 줄에 이어 적은 기록" \
+         -- "중단 기록=$CAPC_HALT_INL" '선택지=adopt as a requirement' 근거=x
+check "34c A21: 선택지를 한 줄에 이어 적은 기록은 원문 선택지로도 2 로 거절된다" "$rc" "2"
+check "34c A21: 그 거절은 기록에 목록 줄이 없다고 짚는다" \
+  "$( { grep -qF 'no option line of the form' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+rm -f "$CAPC_HALT_INL"
 cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
          --rationale "픽스처 — 런 밖의 기록" \
