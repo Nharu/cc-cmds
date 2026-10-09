@@ -296,6 +296,12 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
   > "$RUN_DIR/log/Sw.json"
 check "흔적이 없으면 여전히 공허한 성공" "$(classify_termination Sw 0 1)" "공허한 성공"
 if decision_point_reached Snone; then bad "결정 지점 탐지기" "ndjson 이 없는데 참을 냈다"; else ok "결정 지점 탐지기는 ndjson 이 없으면 거짓"; fi
+# 질문지만 담은 흔적도 결정 지점이다. AskUserQuestion 이라는 이름이 한 번도 나오지
+# 않으므로, 탐지기가 그 이름만 찾으면 이 스테이지는 공허한 성공으로 떨어진다.
+printf '%s\n' '{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__cc-cmds__question_form"}}' \
+  > "$RUN_DIR/log/Sqf.json"
+if decision_point_reached Sqf; then ok "결정 지점 탐지기는 질문지만 담은 흔적에서도 참"; else bad "결정 지점 탐지기" "질문지 흔적을 결정 지점으로 보지 않았다"; fi
+check "종단: 질문지에 닿은 정지도 산출물 없는 정지" "$(classify_termination Sqf 0 1)" "산출물 없는 정지"
 
 # 한도 종료 판정. 스테이지가 사용량 한도로 스스로 끝났는지는 그 시도 자신의
 # 스트림에서 타입이 있는 필드로만 읽는다. 최소 한도 스트림은 init · allowed

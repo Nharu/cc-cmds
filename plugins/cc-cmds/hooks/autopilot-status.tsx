@@ -5,6 +5,7 @@ import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
 import type { PaneControl, PaneLine, PaneSnapshot } from '../types'
+import { register as registerQuestionForm } from './question-form/index'
 
 type Dollar = Parameters<Hook<'session.start'>>[0]
 
@@ -167,13 +168,17 @@ async function tick($: Dollar) {
   if (isDue) await runHelper($, sid, mtime, c.indexPath)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  // 이 파일이 플러그인의 진입 모듈이다. 질문지 서브 mod 는 자기 훅을 스스로 단다.
+  registerQuestionForm(on, options)
+
   on('session.start', async ($, e, next) => {
     if (!e.isInteractive) return next(e)
+    const segment = await $.env.get('CC_PIPELINE_SEGMENT')
     const runId = await $.env.get('CC_PIPELINE_RUN_ID')
     const stageId = await $.env.get('CC_PIPELINE_STAGE_ID')
     const shiftId = await $.env.get('CC_PIPELINE_SHIFT_ID')
-    if (runId || stageId || shiftId) return next(e)
+    if (segment || runId || stageId || shiftId) return next(e)
 
     await $.command.register({
       name: 'autopilot-status',
