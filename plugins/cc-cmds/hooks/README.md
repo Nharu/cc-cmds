@@ -12,12 +12,13 @@ lint can scan it, which is what makes the kill-switch sentence at the bottom an
 anchor rather than a good intention.
 
 The two banner seats are not the only hooks in this directory.
-`active-notify-pretool.sh` belongs to the `active-notify` skill, and
-`stage-policy-edit-drift.sh` is the edit-time seat of the stage-policy drift
-check, whose contract is a later section of this file. `autopilot-status.tsx`
-is not a command hook at all but a plugin module, and it is currently not
-listed under `"modules"`, so it does not load; its section is the last one.
-None of the three raises a session banner, and the
+`active-notify-pretool.sh` belongs to the `active-notify` skill,
+`session-return-dismiss.sh` closes a session's banners when the person comes
+back to it, and `stage-policy-edit-drift.sh` is the edit-time seat of the
+stage-policy drift check; the last two have their contracts in later sections
+of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
+module, and it is currently not listed under `"modules"`, so it does not load;
+its section is the last one. None of the four raises a session banner, and the
 rules below are written for the two seats alone.
 
 ## The two seats, and there are only two
@@ -176,20 +177,32 @@ nothing unless Apple events to iTerm2 are already allowed, so it cannot bring
 up a permission prompt. A hook whose session switch is off starts none, because
 the emitter checks the switch before it builds the value.
 
-**Both `hooks.json` entries pin `"timeout": 5`.** Both events block, and the
-default is long, so an emitter that stalls for any reason would stall the session
-with it. Nothing in the design depends on the number: the measured worst case for
-a hook body is 84 ms synchronous and 23 ms detached, and a stubbed notifier
-measured 62.6 ms — five seconds is two orders of magnitude of headroom either
-way.
+**Five `hooks.json` entries pin `"timeout": 5`: the two seats' entries and the
+return hook's three** (`UserPromptSubmit`, `PostToolUse` with the matcher
+`AskUserQuestion`, and `Stop`). The `Bash` entry under `PreToolUse` has no
+timeout and the `Edit|Write|MultiEdit` entry has 10, so "every entry" would be
+wrong. All of these events block, and the default is long, so an emitter that
+stalls for any reason would stall the session with it. Nothing in the design
+depends on the number: the measured worst case for a hook body is 84 ms
+synchronous and 23 ms detached, and a stubbed notifier measured 62.6 ms — five
+seconds is two orders of magnitude of headroom either way.
 
-**Seat 1 is a sibling entry under `PreToolUse`, seat 2 opens a new top-level
-`Stop` key.** The existing `Bash` entry is left alone and the matchers are not
-merged into `"Bash|AskUserQuestion"`: merging would make the sibling hook's
-`non-Bash matcher slip → noop` line a permanently active path instead of the
-defence it is. Putting the `Stop` entry into the `PreToolUse` array instead of
-its own key is a silent failure — the harness passes it over on a matcher miss
+**Seat 1 is a sibling entry under `PreToolUse`, seat 2 is an entry under the
+top-level `Stop` key.** The existing `Bash` entry is left alone and the matchers
+are not merged into `"Bash|AskUserQuestion"`: merging would make the sibling
+hook's `non-Bash matcher slip → noop` line a permanently active path instead of
+the defence it is. Putting the `Stop` entry into the `PreToolUse` array instead
+of its own key is a silent failure — the harness passes it over on a matcher miss
 and seat 2 simply never runs.
+
+**The return hook adds three entries.** A new top-level `UserPromptSubmit` key; a
+sibling entry under `PostToolUse` with the matcher `AskUserQuestion`, not merged
+into the `Edit|Write|MultiEdit` entry; and a sibling entry under `Stop`, leaving
+seat 2's entry byte for byte as it was. The `PostToolUse` entry has to keep its
+matcher: without it every tool call of the session would reach the hook. The
+script checks `.tool_name` itself as well, so a lost matcher or an entry placed
+in the wrong array still closes nothing on an ordinary tool call — that would
+turn "the person came back" into "the session did anything".
 
 ## Switching the banners off
 
@@ -200,6 +213,12 @@ the same for both — `0`, `off`, `false` and `no` switch them off, case
 insensitively, and an unrecognized value reads as ON.
 
 - 「이 머신의 일반 세션 배너를 끄시려면 세션을 띄우기 전에 `CC_CMDS_SESSION_NOTIFY=0` 을 걸어 주세요 — `off`·`false`·`no` 도 대소문자 구분 없이 같게 읽습니다.」
+
+Closing the banners on return has a third switch of its own, with the same
+grammar. Switching it off stops both the record the `Stop` entry keeps and the
+closing; the banners themselves still appear.
+
+- 「이 머신에서 귀환 때 배너 닫기를 끄시려면 세션을 띄우기 전에 `CC_CMDS_SESSION_DISMISS=0` 을 걸어 주세요 — `off`·`false`·`no` 도 대소문자 구분 없이 같게 읽습니다.」
 
 **A typo in that value is silent, on purpose.** The unattended switch warns on an
 unrecognized value; the session switch cannot, because the warning goes to stderr
@@ -222,6 +241,84 @@ those shell function definitions still carry `--plugin-dir`?
 Where the reach does not extend, the seats do not exist, and their absence shows
 up on no screen at all. This design does not guarantee that a banner appears. It
 guarantees that a banner never blocks anything.
+
+## The return hook
+
+`session-return-dismiss.sh` closes the banners a session raised once the person
+is back in that session: its slot under `cc-cmds-session-<sid>` and every
+`active-notify` banner it raised. It raises nothing, and it calls no notifier
+itself — a detached job clears the session slot through `cc_notify_clear
+session-ask` first and then runs `notify.sh dismiss <sid>`, which reads
+`terminal-notifier -list ALL` once and removes the rows whose group is
+`cc-cmds-active-notify-<sid>` or starts with `cc-cmds-active-notify-<sid>@`.
+The session id is the payload's `.session_id`, the same value the firing side
+puts in the group. The session slot is cleared first so that a question raised
+right after an answer has the shortest possible window to be erased by a late
+clear.
+
+**What counts as a return.** Two events close: answering an `AskUserQuestion`
+(`PostToolUse`, always a return) and submitting a message (`UserPromptSubmit`,
+after the classifier below). `Stop` closes nothing; it only keeps the record the
+classifier reads. A permission prompt answer is not a return — no hook event can
+tell it apart from an ordinary tool call.
+
+**The classifier, in this order.** A `UserPromptSubmit` also fires when no person
+is there, and its payload carries no field that tells the two apart.
+
+1. **A recorded scheduled task is not a return.** If the prompt is byte for byte
+   one of the texts the last `Stop` recorded, or a recorded text ends in the
+   truncation mark (`… [+N chars]` or `... [+N chars]`) and the prompt starts
+   with its head, a `/loop` repeat or a `ScheduleWakeup` wake-up is arriving.
+2. **A prompt that opens with an XML-shaped element is not a return.** Leading
+   whitespace is allowed; the pattern is tested with `[[ =~ ]]` on the whole
+   prompt, so `^` binds to the very start and a tag on the second line does not
+   count. A background agent's `<task-notification>` arrives in this form.
+   `<pasted_content …>` is the exception and is a return, because it is the
+   wrapper around text the person pasted.
+3. **Everything else is a return**, including a message typed while the model is
+   still working. No time window is used.
+
+The scheduled-task check comes before the envelope check, so a scheduled text
+that itself starts with `<` is still recognised as a scheduled task.
+
+**The state file and its life.** `${TMPDIR:-/tmp}/cc-cmds-session-return/<sid>.crons`,
+the sid sanitised by the same expression as `notify.sh` uses, in a sibling of
+the `active-notify` flag directory rather than inside it. It holds one compact
+JSON array, `[.session_crons[]?.prompt | strings]`, because a scheduled text may
+contain newlines. Every `Stop` that carries `session_crons` rewrites it whole
+(`umask 077`, a `mktemp` sibling, `mv -f`), and an empty array removes it. A
+`Stop` without the key leaves it alone: the key is documented as present when
+the task registry is reachable, so its absence means "could not read", not
+"nothing pending". The reader never writes it. A session that ends with a task
+still pending leaves one small file behind, read only by that sid.
+
+**Why there is no `agent_id` gate.** A successful `PostToolUse(AskUserQuestion)`
+means a person answered, whoever asked; a subagent's tool events carry the
+parent's `session_id`, and `UserPromptSubmit` has no subagent form. The seats'
+gate exists because only the main thread may raise a banner; closing on a
+person's answer has no such reason. The other gates are kept, in this order:
+`jq`, sourcing the emitter, the switch below, `cc_caller_is_router`, and a
+non-empty session id. A stage session therefore neither records nor closes.
+
+**The misses it accepts.** Each fails in the direction where a banner stays up:
+
+- A question closed with Esc raises no hook event, so its banner stays until the
+  person's next message or answer.
+- A return that only runs a local slash command such as `/context` raises no
+  `UserPromptSubmit` and closes nothing. A slash command that invokes a skill
+  does, and closes like any message.
+- Typing a message byte for byte equal to a pending scheduled task's text closes
+  nothing; the two payloads are identical.
+- Typed text that opens with markup (`<div>…`, `<br/>`) reads as an envelope and
+  closes nothing. Missing a machine envelope would close banners nobody saw, so
+  the broad rule was chosen.
+
+It touches nothing else: no `active-notify` flag or lock, no `cc-cmds-autopilot-*`
+banner, no banner without a group, and not the permission-test bypass banner
+under the global `cc-cmds-active-notify`. Banners raised before the upgrade —
+under that global group, or without a group — are not reached either and stay
+until removed by hand. Of the eight rules above, every one but the seventh
+applies to it unchanged, and rule 5 covers its own switch the same way.
 
 ## The edit-time drift hook
 
