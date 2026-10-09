@@ -521,19 +521,6 @@ newest_stage_pid() {
   printf '%s %s' "$best" "$(cat "$run_dir/$best.pid" 2>/dev/null || true)"
 }
 
-stage_kind() {
-  # stage_kind <ledger> <segment> — the kind recorded for that segment, or empty.
-  #
-  # The kind lives only in `stage-result`, which is written when a stage ENDS, so
-  # a segment on its first attempt has none and the slot is simply dropped. The
-  # run directory carries no kind handle to read instead — the driver leaves a
-  # pid, a start-time fingerprint and a process group there, and nothing else.
-  local ledger="$1" seg="$2"
-  [ -n "$ledger" ] || return 0
-  { grep -F 'stage-result' "$ledger" 2>/dev/null | grep -F "세그먼트=$seg " || true; } \
-    | tail -1 | tr '|' '\n' | sed -n 's/^ *종류=//p' | sed 's/[[:space:]]*$//' | tail -1
-}
-
 # ---------------------------------------------------------------------------
 # Resolve this session's run.
 # ---------------------------------------------------------------------------
@@ -657,13 +644,16 @@ fi
 # `watch.pid` is what keeps "has not come up yet" from collapsing into "died".
 # Without it both render as silence, and silence from a watcher that was never
 # started means something different to the person reading this at 3am.
-watch_slot=""
+#
+# `watch_v` is the same verdict as a word for the pane's field row, set beside
+# each slot so the two cannot be judged twice.
+watch_slot=""; watch_v=ok
 hb=$(cc_mtime "$best_rd/watch.heartbeat")
 if [ -z "$hb" ]; then
-  if [ -f "$best_rd/watch.pid" ]; then watch_slot=" · 워처 없음"
-  else                                 watch_slot=" · 워처 미기동"; fi
+  if [ -f "$best_rd/watch.pid" ]; then watch_slot=" · 워처 없음"; watch_v=stale
+  else                                 watch_slot=" · 워처 미기동"; watch_v=unstarted; fi
 elif [ "$((now - hb))" -gt "$CC_SL_HEARTBEAT_STALE" ]; then
-  watch_slot=" · 워처 없음"
+  watch_slot=" · 워처 없음"; watch_v=stale
 fi
 
 case "$best_state" in
@@ -677,11 +667,13 @@ case "$best_state" in
     line="✓ ${best_rid} 종료"
     # The watcher exits when the run ends, so a stale heartbeat here is the
     # normal shape of a finish, not a missing watcher.
-    watch_slot=""
+    watch_slot=""; watch_v=none
+    arm=종료
     ;;
   승인대기)
     pend=$(cc_open_approvals "$best_ledger")
     line="⏸ ${best_rid} 승인 대기 ${pend}건${age_slot}"
+    arm=승인대기
     ;;
   정지경고)
     # The glyph and the wording stay. `CC_SL_ABANDON` is what separates this arm
@@ -689,6 +681,7 @@ case "$best_state" in
     # above 종단 and the one below ranks beneath it, so which side of the mark a
     # quiet run falls on decides whether it holds the line at all.
     line="⚠ ${best_rid} 스테이지 0${age_slot}"
+    arm=정지경고
     ;;
   버려짐)
     # THREE THINGS MADE THE OLD LINE READ AS ACTIVE, and all three are fixed
@@ -727,14 +720,17 @@ case "$best_state" in
     blocked_n=$(cc_unresolved_blocked "$best_ledger" 2>/dev/null | grep -c . || true)
     if [ "${blocked_n:-0}" -gt 0 ] 2>/dev/null; then w=차단; else w=방치; fi
     line="⊘ ${best_rid} ${w}${age_slot}"
-    watch_slot=""
+    watch_slot=""; watch_v=none
+    arm=$w
     ;;
   도는중)
     slot=$(newest_stage_pid "$best_rd")
     seg=${slot%% *}; pid=${slot#* }
     if [ -n "$slot" ] && [ -n "$seg" ]; then
       line="⟳ ${best_rid} ${seg}"
-      kind=$(stage_kind "$best_ledger" "$seg")
+      # The kind comes from `liveness.sh`, the source the pane reads too. A
+      # segment on its first driver attempt has none and the slot is dropped.
+      kind=$(cc_stage_kind "$best_rd" "$best_ledger" "$seg")
       elapsed=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
       # THE PID IS ALREADY IDENTITY-CHECKED by the time it reaches here, and
       # that is what makes this number meaningful: measured on an unfiltered
@@ -762,6 +758,7 @@ case "$best_state" in
     else
       line="⟳ ${best_rid}${age_slot}"
     fi
+    arm=도는중
     ;;
   진행중)
     # NOT A STATE OF ITS OWN, and not the running row either. This is the
@@ -777,6 +774,7 @@ case "$best_state" in
     # is the glyph, which is exactly the difference — the same facts, one of
     # them past the mark.
     line="⟳ ${best_rid} 스테이지 0${age_slot}"
+    arm=진행중
     ;;
   *)
     sl_exit_fallback
@@ -789,4 +787,17 @@ if [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ]; then
   SL_BORROW_SEG="$SL_BORROW_SHORT"
 fi
 printf '%s%s%s' "$line" "$watch_slot" "$SL_BORROW_SEG"
+
+# THE PANE'S FIELD ROW, and only when it asks. `run-pane.sh` sets
+# `CC_SL_PANE_FIELDS=1` and splits at the first newline; the engine's call does
+# not set it, so the line above stays the whole output, byte for byte. The row
+# carries the values this one evaluation judged with — the token, the arm's
+# word, the clock, the ledger growth the `원장` slot used, the heartbeat mtime
+# the watcher verdict read and that verdict — so the pane shows no word the
+# status line did not judge and copies no threshold. Only a run line gets one;
+# the no-run paths above exit before reaching here.
+if [ "${CC_SL_PANE_FIELDS:-}" = "1" ]; then
+  printf '\ncc-sl\t1\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$best_rid" "$best_state" "$arm" \
+    "$now" "${grew:--}" "${hb:--}" "$watch_v"
+fi
 exit 0
