@@ -5,6 +5,22 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.59.1] - 2026-10-10
+
+앞 런이 마감으로 끝나 사람이 좌석에서 준 중단 답이 열린 채 남으면, 같은 세그먼트를 입양한 새 런이 그 답을 읽지 못해 사람이 같은 질문에 다시 답해야 했다. 세션 없이 수행할 수 있는 답은 새 런이 이어받고, 그렇지 않은 답은 이어지지 않는 이유를 드러낸다.
+
+### Fixed
+
+- **입양 세그먼트의 중단 답 이월** (`autopilot`, 게이트 `--from-declaration`)
+  - 입양 세그먼트의 계획 act 가 출처 런 원장에서 그 세그먼트의 마지막 `중단 답` 을 읽는다. 아직 어떤 `stage-result` 도 받아 가지 않은 사람의 답이고, implement-unattended CFI-U3 BT-STOP 기록에 대한 `재수렴` 이면 기록과 첨부를 이 런의 `halt/` 로 복사하고 다이제스트를 대조한 뒤 `출처 런`·`출처 기록` 을 단 `중단 답` 행을 쓴다.
+  - 멈춘 세션을 다시 붙여야 하는 다른 답은 그 세션이 출처 런의 것이라 이어받지 않는다. 대신 경고로 이유를 밝히고, `plan` 미리보기도 같은 판정을 보여 준다.
+  - 스냅숏 `answered_halts[]` 원소가 `origin_run` 을 싣는다.
+- **입양 판정의 키** (`autopilot`) — 출처 런의 착지 여부와 스테이지 생존 여부를 이 런의 슬라이스 id 가 아니라 출처 런이 워크트리 이름에 붙인 키로 읽는다. 두 키가 다르면 두 판정이 늘 거짓이 되던 결함을 없앤다.
+
+### Post-install notes
+
+- 이미 돌고 있는 런은 고정된 판본을 쓰므로 바뀌지 않는다. 새로 띄운 런부터 적용된다.
+
 ## [2.59.0] - 2026-10-10
 
 질문지(`mcp__cc-cmds__question_form`)를 키보드로 빠르게 답할 수 있게 다시 짰다. 지금 질문 하나만 펼치고 나머지는 한 줄로 접으며, 제출하면 패널이 바로 닫힌다. 「기타」·「메모」 칸에서 Enter 를 누르면 쓴 글이 사라지던 결함도 고쳤다.
