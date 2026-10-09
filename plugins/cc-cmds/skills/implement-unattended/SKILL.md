@@ -136,7 +136,7 @@ Load via `ToolSearch("select:TaskCreate,TaskList,TaskUpdate,TaskGet")`.
 
 **Fail-loud, durably.** If a `ToolSearch` for a Step-0-enumerated tool returns no result, or a later call to one fails because its schema was never loaded, **halt**: write the record with `분류: tool-unavailable`, carrying the harness error string verbatim.
 
-**Phase resolution (which process am I?).** Read the run ledger `<base>/docs/pipeline-run/{slug}.md` after the `sidecar.md` §1.2 read guard passes, and look for a `stage-result` row for this segment's implement stage carrying a `plan_sha256`:
+**Phase resolution (which process am I?).** Read the run ledger at the path in `$CC_PIPELINE_LEDGER` — every dispatch of this stage sets it — after the `sidecar.md` §1.2 read guard passes. **Never derive the path from the design document's name**: a run kicked off from a manifest names its ledger by its run id (`<base>/docs/pipeline-run/<run-id>.md`), so a ledger looked up by the document's slug is absent, and an absent ledger reads as "no plan row" and sends process B back through process A. Measured: a freshly dispatched implementation phase found no ledger at the slug path, redid the pre-implementation checks and halted. When the variable is unset or names no readable file, halt with `분류: precondition-failed` rather than guess. Look for a `stage-result` row for this segment's implement stage carrying a `plan_sha256`:
 
 - **No such row → this is process A.** Steps 0 → 2, ending in a plan emission. Do not edit anything.
 - **Such a row exists → this is process B.** Its `plan_sha256` is the admission token for Step 3.

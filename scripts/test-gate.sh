@@ -4458,6 +4458,31 @@ gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cu
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 
+# A person's `리뷰 기각` of the last cycle lets the same merge through, and only
+# while that cycle stays the last one. The row is appended directly: the verb
+# that writes it is asserted in 34c A22, and what this asserts is that the gate
+# folds it for the rule and the rule compares it with the row it reads.
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=1 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
+gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
+check "기각 없는 P0 사이클의 머지는 거부된다" "$rc" "3"
+case "$msg" in
+  *"unresolved findings remain"*) ok "기각 없는 P0 사이클의 머지는 거부된다 — 리뷰 룰의 미해결 발견 거절이다" ;;
+  *) bad "기각 없는 P0 사이클의 머지는 거부된다 문면" "$msg" ;;
+esac
+printf -- '- `리뷰 기각` | 세그먼트=S9 | 사이클=1 | 리뷰 HEAD=%s | 기각 P0=1 | 기각 P1=0 | 근거=x\n' "$head0" >> "$FX_LEDGER"
+gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
+if passes_review; then ok "사람이 기각한 마지막 사이클은 머지 룰을 통과한다"; else bad "리뷰 기각 반영" "$msg"; fi
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=2 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
+gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
+check "뒤에 선 새 사이클은 앞 사이클의 기각으로 통과하지 않는다" "$rc" "3"
+case "$msg" in
+  *"unresolved findings remain"*) ok "뒤에 선 새 사이클은 앞 사이클의 기각으로 통과하지 않는다 — 리뷰 룰의 미해결 발견 거절이다" ;;
+  *) bad "뒤에 선 새 사이클은 앞 사이클의 기각으로 통과하지 않는다 문면" "$msg" ;;
+esac
+
 printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 # Judged by `passes_review`, defined in `pre_base` in the head — section 9 calls
@@ -21199,6 +21224,77 @@ check "34c A21: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
   "$(capc_halts)" '[["CC1","adopt as a requirement"]]'
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 check "34c A21: 뒤에 그 키의 stage-result 가 서면 답은 소비되어 빠진다" "$(capc_halts)" "[]"
+# The option alone cannot carry measured values, so the seat attaches a file
+# under the same `halt/`. It must be this run's, non-empty, and not look like a
+# halt record, and the snapshot hands its path on with the answer.
+CAPC_ATT="$CAP_DIR/halt/design-audit-unattended.answer.md"
+capc_ha_att() {
+  cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+           --rationale "픽스처 — 첨부를 단 답" \
+           -- "중단 기록=$CAPC_HALT" '선택지=reject' '근거=사람이 값을 건넴' "첨부=$1"
+}
+capc_ha1=$(capc_ha)
+printf '%s\n' '측정값: 응답 200, 지연 41ms' > "$WORK/capc-att-outside.md"
+capc_ha_att "$WORK/capc-att-outside.md"
+check "34c A21: halt 디렉터리 밖 첨부는 2 로 거절된다" "$rc" "2"
+: > "$CAPC_ATT"
+capc_ha_att "$CAPC_ATT"
+check "34c A21: 빈 첨부는 2 로 거절된다" "$rc" "2"
+cp "$CAPC_HALT" "$CAPC_ATT"
+capc_ha_att "$CAPC_ATT"
+check "34c A21: 중단 기록 머리를 단 첨부는 2 로 거절된다" "$rc" "2"
+check "34c A21: 세 첨부 거절 모두 행을 남기지 않는다" "$(capc_ha)" "$capc_ha1"
+printf '%s\n' '측정값: 응답 200, 지연 41ms' > "$CAPC_ATT"
+capc_ha_att "$CAPC_ATT"
+check "34c A21: 런의 halt 아래 첨부를 단 좌석의 답은 통과한다" "$rc" "0"
+capc_harow=$(cap_rows '중단 답' | tail -1)
+check "34c A21: 그 행은 첨부 경로를 싣는다" "$(row_field "$capc_harow" '첨부')" "$CAPC_ATT"
+check "34c A21: 그 행은 첨부 다이제스트를 찍는다" \
+  "$(row_field "$capc_harow" '첨부 다이제스트')" "$(shasum -a 256 "$CAPC_ATT" | cut -d' ' -f1)"
+check "34c A21: 스냅숏이 첨부 경로를 answered_halts 로 내놓는다" \
+  "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '.answered_halts[] | select(.segment == "CC1") | .attachment')" "$CAPC_ATT"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=audit | 실행 버전=3 | 세션 id=s-audit-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+
+# A22. THE SEAT'S `리뷰 기각` ROW. A person's dismissal of a review cycle's
+# findings reaches the merge checks only through this row, so it is the seat's
+# alone, names the segment's last cycle by number and head, and needs findings
+# to dismiss. The snapshot marks that cycle, and stops marking it once a newer
+# cycle lands.
+capc_head=0123456789abcdef0123456789abcdef01234567
+printf -- '- `cycle` | 세그먼트=CD1 | 사이클=1 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/cd1.md | prev=x\n' "$capc_head" >> "$CAP_LEDGER"
+capc_rd() { { cap_rows '리뷰 기각' | grep -c . || true; } | tr -d ' '; }
+capc_dis() { cap_snap "$CAPC_SEAT_SID" '' | jq -c '[.cycles[] | select(.["세그먼트"] == "CD1") | [.["사이클"], .["기각"]]]'; }
+capc_rd_act() {  # capc_rd_act <sid> <rid> <사이클> <리뷰 HEAD> [extra]
+  cap_gate "$1" "$2" act --manifest "$CAP_NM" --kind review-dismiss --target infra --segment CD1 \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$1" "$2")" \
+           --rationale "픽스처 — 리뷰 기각" \
+           -- "사이클=$3" "리뷰 HEAD=$4" '근거=사람이 설계대로 유지' ${5:+"$5"}
+}
+capc_rd0=$(capc_rd)
+check "34c A22: 기각 전에는 그 사이클이 기각으로 표시되지 않는다" "$(capc_dis)" '[["1",""]]'
+capc_rd_act "$capc_sid2" "$CAPC_RID#2" 1 "$capc_head"
+check "34c A22: 교대의 리뷰 기각은 3 으로 거절된다" "$rc" "3"
+capc_rd_act "$CAPC_SEAT_SID" '' 2 "$capc_head"
+check "34c A22: 마지막 사이클이 아닌 번호는 2 로 거절된다" "$rc" "2"
+capc_rd_act "$CAPC_SEAT_SID" '' 1 fedcba9876543210fedcba9876543210fedcba98
+check "34c A22: 마지막 사이클의 리뷰 HEAD 가 아니면 2 로 거절된다" "$rc" "2"
+capc_rd_act "$CAPC_SEAT_SID" '' 1 "$capc_head" 'P0=0'
+check "34c A22: argv 에 게이트 몫 키를 실으면 2 로 거절된다" "$rc" "2"
+check "34c A22: 네 거절 모두 행을 남기지 않는다" "$(capc_rd)" "$capc_rd0"
+capc_rd_act "$CAPC_SEAT_SID" '' 1 "$capc_head"
+check "34c A22: 마지막 사이클을 지목한 좌석의 리뷰 기각은 통과한다" "$rc" "0"
+capc_rdrow=$(cap_rows '리뷰 기각' | tail -1)
+check "34c A22: 그 행은 사이클의 P0 를 게이트가 옮겨 찍는다" "$(row_field "$capc_rdrow" '기각 P0')" "1"
+check "34c A22: 스냅숏이 그 사이클을 기각으로 표시한다" "$(capc_dis)" '[["1","1"]]'
+printf -- '- `cycle` | 세그먼트=CD1 | 사이클=2 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/cd1.md | prev=x\n' "$capc_head" >> "$CAP_LEDGER"
+check "34c A22: 새 사이클은 앞 사이클의 기각을 물려받지 않는다" "$(capc_dis)" '[["1","1"],["2",""]]'
+printf -- '- `cycle` | 세그먼트=CD2 | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/cd2.md | prev=x\n' "$capc_head" >> "$CAP_LEDGER"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind review-dismiss --target infra --segment CD2 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 기각할 것이 없는 사이클" \
+         -- 사이클=1 "리뷰 HEAD=$capc_head" 근거=x
+check "34c A22: 발견이 없는 사이클의 기각은 2 로 거절된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
