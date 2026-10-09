@@ -10047,7 +10047,7 @@ rm -f "$WT/$DOC15FB"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -10302,11 +10302,92 @@ esac
 ( cd "$O15G" && git worktree remove --force "$g15o_wt" && git branch -D seg/R15GO-SA ) >/dev/null 2>&1 || true
 rm -f "$WT/$DOC15GO"
 
-for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA; do
+# --- 같은 문서의 이전 런이 머지한 선행 ----------------------------------------
+# One frozen document implemented a slice per run: the earlier run merged SA,
+# and the run planning SB has never seen it on its own ledger. The planning act
+# brings SA in from the earlier ledger when its merge commit is on the base
+# branch, refuses when it is not, and leaves the floor's refusal in place when
+# no earlier run of the document landed it at all.
+g15_prior() {  # g15_prior <run id> <머지 커밋> — an earlier run that planned SA and recorded it merged
+  g15_run "$1" "$2" "$plan15c" 리뷰없음
+  g15_mkwt "$1" SA
+  g15_plan act "$1" SA 상태=계획됨 "워크트리=$(g15_wt "$1" SA)"
+  [ "$rc" = "0" ] || { bad "15g 이전 런 $1 의 SA 계획" "rc=$rc $msg"; return 0; }
+  gateL act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment SA --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x -- \
+    상태=머지됨 PR=7 "머지 커밋=$3" "워크트리=$(g15_wt "$1" SA)" 선행=없음
+  [ "$rc" = "0" ] || bad "15g 이전 런 $1 의 SA 머지 행" "rc=$rc $msg"
+}
+g15_line() {  # g15_line <run id> <segment id> — the ledger line of that id's first segment row
+  { grep -nF '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | sed -n 1p | cut -d: -f1
+}
+DOC15GP='docs/fixture-design-15gp.md'
+two_slice_doc "$WT/$DOC15GP" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+m15gp=$(cd "$WT" && git rev-parse refs/heads/main)
+g15_prior R15GP1 "$DOC15GP" "$m15gp"
+g15_run R15GP2 "$DOC15GP" "$plan15c" 리뷰없음
+g15_mkwt R15GP2 SB
+g15_plan plan R15GP2 SB 상태=계획됨 "워크트리=$(g15_wt R15GP2 SB)"
+check "15g: 이전 런의 선행을 들여올 plan 은 통과하고 행을 쓰지 않는다" \
+  "$rc/$(g15_row R15GP2 SA | grep -c . || true)" "0/0"
+case "$msg" in
+  *"선행 SA 를 이전 런 R15GP1 의 종단 행(상태=머지됨"*) ok "15g: 그 plan 은 들여올 선행과 이전 런을 든다" ;;
+  *) bad "15g 들여오기 plan 문면" "$msg" ;;
+esac
+g15_plan act R15GP2 SB 상태=계획됨 "워크트리=$(g15_wt R15GP2 SB)"
+check "15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다" "$rc" "0"
+r15gp=$(g15_row R15GP2 SA)
+check "15g: 들여온 선행 행은 이전 런의 종단 상태와 머지 커밋과 출처를 싣는다" \
+  "$(seg_field "$r15gp" '상태')/$(seg_field "$r15gp" 'PR')/$(seg_field "$r15gp" '머지 커밋')/$(seg_field "$r15gp" '선행')/$(seg_field "$r15gp" '출처')" \
+  "머지됨/7/$m15gp/없음/R15GP1"
+check "15g: 들여온 선행 행이 계획 행보다 먼저 놓인다" \
+  "$( [ -n "$(g15_line R15GP2 SA)" ] && [ "$(g15_line R15GP2 SA)" -lt "$(g15_line R15GP2 SB)" ] && printf 앞 || printf 아님)" "앞"
+g15_plan act R15GP2 SB 상태=계획됨 "워크트리=$(g15_wt R15GP2 SB)"
+check "15g: 같은 계획을 다시 내도 선행 행은 하나다" \
+  "$({ grep -F '`segment`' "$WT/docs/pipeline-run/R15GP2.md" || true; } | grep -cF '| id=SA ' || true)" "1"
+gateL act --manifest "$WORK/plan-R15GP2.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(au15_H R15GP2)" --rationale x -- \
+  상태=실행중 "워크트리=$(g15_wt R15GP2 SB)" 선행=SA 출처=R15GP1
+check "15g: 호출자가 넘긴 출처 는 거부된다" "$rc" "2"
+case "$msg" in
+  *"「출처」는 게이트가 이전 런의 선행을 들여올 때만 쓰는 필드입니다"*) ok "15g: 그 거부는 출처 가 게이트의 필드임을 든다" ;;
+  *) bad "15g 호출자 출처 문면" "$msg" ;;
+esac
+
+# The earlier run's merge commit is not on the base branch: refused, nothing written.
+DOC15GQ='docs/fixture-design-15gq.md'
+two_slice_doc "$WT/$DOC15GQ" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+m15gq=$(cd "$WT" && git commit-tree "$(git mktree </dev/null)" -p HEAD -m side15gq)
+g15_prior R15GQ1 "$DOC15GQ" "$m15gq"
+g15_run R15GQ2 "$DOC15GQ" "$plan15c" 리뷰없음
+g15_mkwt R15GQ2 SB
+g15_plan act R15GQ2 SB 상태=계획됨 "워크트리=$(g15_wt R15GQ2 SB)"
+check "15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다" \
+  "$rc/$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15GQ2.md" 2>/dev/null || true; } | grep -c . || true)" "3/0"
+case "$msg" in
+  *"선행 SA 는 이 런의 원장에 없고, 같은 문서의 이전 런 R15GQ1 이 남긴 머지 커밋 $m15gq"*) ok "15g: 그 거부는 선행과 이전 런과 머지 커밋을 든다" ;;
+  *) bad "15g 미착지 선행 문면" "$msg" ;;
+esac
+
+# No earlier run of the document landed SA: the floor refuses as before.
+DOC15GR='docs/fixture-design-15gr.md'
+two_slice_doc "$WT/$DOC15GR" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15GR "$DOC15GR" "$plan15c" 리뷰없음
+g15_mkwt R15GR SB
+g15_plan act R15GR SB 상태=계획됨 "워크트리=$(g15_wt R15GR SB)"
+check "15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다" \
+  "$rc/$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15GR.md" 2>/dev/null || true; } | grep -c . || true)" "2/0"
+case "$msg" in
+  *"no earlier run ledger of the same document shows it landed: 'SA'"*) ok "15g: 그 거부는 이 원장과 이전 런 둘 다에 없음을 든다" ;;
+  *) bad "15g 증거 없는 선행 문면" "$msg" ;;
+esac
+
+for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
+            R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB; do
   ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
       && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
 done
-rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE"
+rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget

@@ -48,6 +48,7 @@ You are an unattended pipeline stage, or an agent spawned inside one. No human r
 - AWS CLI: pass `--profile <name>`, never `AWS_PROFILE=`.
 - terraform `init`, `plan`, `validate`, `fmt -check` and other commands that do not change infrastructure or remote state are reads; `apply`, `destroy`, `state rm`, `state mv`, `import`, `taint`, `untaint` are writes.
 - Browser automation follows the `browser-policy` skill and stays headless. HTML documents follow the `local-html` skill.
+- Maestro: own device; `pgrep -fl maestro.cli` first; never signal another run. Shut down your emulators/simulators unless handed off.
 
 ## Conduct
 

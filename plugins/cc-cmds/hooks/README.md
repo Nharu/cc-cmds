@@ -160,9 +160,11 @@ pane the session runs in and its iTerm2 tab and session. Bringing that window
 forward, and reaching it on another Space, happens only when the click's helper
 raised it; that needs the notifier app in System Settings → Privacy & Security
 → Accessibility, a Swift compiler (Command Line Tools or Xcode), and a window
-that answers the Accessibility API in time. The grant is the app's, so it
-applies to the click command of every banner the notifier raises, not only to
-the ones these hooks raise.
+that answers the Accessibility API in time. With that grant, when iTerm2 hands
+the key window back to the window the person left within a few seconds of the
+switch, the click sets the target window as the key window again. The grant is
+the app's, so it applies to the click command of every banner the notifier
+raises, not only to the ones these hooks raise.
 
 **Building the value also starts a background resolution for that pane.**
 `exec-arg` detaches a `prime` that finds the iTerm2 window holding the pane and
