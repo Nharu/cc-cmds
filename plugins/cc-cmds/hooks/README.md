@@ -15,12 +15,14 @@ The two banner seats are not the only hooks in this directory.
 `active-notify-pretool.sh` belongs to the `active-notify` skill, and
 `stage-policy-edit-drift.sh` is the edit-time seat of the stage-policy drift
 check, whose contract is a later section of this file. `autopilot-status.tsx`
-is not a command hook at all but a plugin module, listed under `"modules"`; its
-section is the last one. None of the three raises a session banner, and the
+is not a command hook at all but a plugin module, and it is currently not
+listed under `"modules"`, so it does not load; its section is the last one.
+None of the three raises a session banner, and the
 rules below are written for the two seats alone. The question form under
-`question-form/` is a second sub-mod registered from that same module entry;
-it raises no banner of its own and reaches seat 1 instead, as the next section
-says.
+`question-form/` is a sub-mod too, and it does load: `register.tsx` is the one
+entry listed under `"modules"`, and it only hands `register(on, options)` on to
+the form. The form raises no banner of its own and reaches seat 1 instead, as
+the next section says.
 
 ## The two seats, and there are only two
 
@@ -177,9 +179,11 @@ pane the session runs in and its iTerm2 tab and session. Bringing that window
 forward, and reaching it on another Space, happens only when the click's helper
 raised it; that needs the notifier app in System Settings → Privacy & Security
 → Accessibility, a Swift compiler (Command Line Tools or Xcode), and a window
-that answers the Accessibility API in time. The grant is the app's, so it
-applies to the click command of every banner the notifier raises, not only to
-the ones these hooks raise.
+that answers the Accessibility API in time. With that grant, when iTerm2 hands
+the key window back to the window the person left within a few seconds of the
+switch, the click sets the target window as the key window again. The grant is
+the app's, so it applies to the click command of every banner the notifier
+raises, not only to the ones these hooks raise.
 
 **Building the value also starts a background resolution for that pane.**
 `exec-arg` detaches a `prime` that finds the iTerm2 window holding the pane and
@@ -287,6 +291,15 @@ to make it, and the checker refuses `--ack` and `--ack-added` there as well.
 banner seats use.
 
 ## The run-status pane module
+
+**The module is withdrawn for now.** `hooks.json` does not list it under
+`"modules"`, so no session loads it and `/autopilot-status` is not registered.
+What it shows is too thin to be worth a pane, and it is held back until the
+pane is rebuilt with more of the run in it. The module, its tests and the
+helper stay in the tree, and the rest of this section describes them as they
+will run once the module is loaded again. `hooks.json` keeps one module entry,
+`register.tsx`, so loading it again means calling its `register` from there
+rather than adding a second path under `"modules"`.
 
 `autopilot-status.tsx` is a plugin module (`"modules"` in `hooks.json`), not a
 command hook. In an interactive session it shows, in a pane titled `autopilot`,

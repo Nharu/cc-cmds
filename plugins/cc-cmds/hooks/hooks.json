@@ -1,5 +1,5 @@
 {
-  "modules": ["./autopilot-status.tsx"],
+  "modules": ["./register.tsx"],
   "hooks": {
     "PreToolUse": [
       {

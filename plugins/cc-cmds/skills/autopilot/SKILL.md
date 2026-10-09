@@ -1063,7 +1063,16 @@ gate.sh act --manifest <매니페스트> --kind limit-cleared --target <alias> \
 
 It writes a `한도 해제` row — (c) of the same rule — which outlives the shift that would have acted on it. `근거` is the only field it takes; the gate stamps `레인` and `기록 시각`, refuses any other key with exit 2, and refuses a shift or a stage with exit 3. A plain "continue" writes no row: the new shift's launch is the evidence, and a row would record something the person did not say. This is a write in the person's turn, never on a channel wake, so the seat still does not route — re-attaching is the shift's.
 
-**When a shift ends naming a halt record that waits on a person, ask the record's question and write the answer down before launching.** The handoff's `막힌 지점` or a cone `blocked` row's `근거` names the record's path; read it, and ask with `AskUserQuestion` using its `질문 문면` as the question and its `선택지` labels as the options, both verbatim (the recommendation suffix is the one decoration allowed). Then:
+**A halt that offers `좌석 실행` is run here, not asked.** When the record a shift's handoff names has a `**스텝**` beginning with the literal `Step 3 잔여 검증 좌석 실행` and lists `좌석 실행` under `**선택지**`, an implement stage handed this seat residual verification recipes it could not run unattended (`implement-unattended` CFI-U7). The seat runs them itself, whether or not a person is here — on the shift's return, never on a channel wake (CFI-7):
+
+1. Read the record's `**좌석 실행 항목**` list, then each listed `### R<n>` of the snapshot's `design_doc`: its `주장`, `검증 레시피`, `기대 결과`, `실패 시 영향` and `실행 주의`.
+2. Check the bound before running anything: every act of every recipe stays on this host or on dev without destroying anything, and none pushes, reaches prod, or puts a credential's value into a command or the conversation. When one item fails the bound, run none of them and ask the whole record as the next paragraph does.
+3. Run each recipe verbatim, under the drift ladder of `_common/verification.md` §7. Keep the host's standing rules for the shared resources a recipe touches: wait while another session's run holds them (for Maestro, `pgrep -fl maestro.cli` first), never stop or overwrite a device, emulator, process or lock this seat did not start, and shut down every emulator or simulator the seat started once the recipes are done.
+4. Write each result into the design document in the stage's W1/W2 forms, under its lock (`/usr/bin/lockf -k -t 0 <run dir>/designdoc.lock`) and its snapshot diff gate (`implement-unattended` Step 3). These lines are the only bytes the seat writes into a design document.
+5. Write the answer with `halt-answer` as below, with `선택지=좌석 실행` and `근거=좌석 실행 — R<n> <검증 등급>, …`: the grades it recorded, not a person's words. Then start the shift with `사유=중단`; the shift re-attaches the stage with the answer, and the stage takes a refutation to re-convergence itself.
+6. Tell the person, in one message, which items ran and the grade each got.
+
+**When a shift ends naming any other halt record that waits on a person, ask the record's question and write the answer down before launching.** The handoff's `막힌 지점` or a cone `blocked` row's `근거` names the record's path; read it, and ask with `AskUserQuestion` using its `질문 문면` as the question and its `선택지` labels as the options, both verbatim (the recommendation suffix is the one decoration allowed). Then:
 
 ```
 gate.sh act --manifest <매니페스트> --kind halt-answer --target <alias> --segment <key> \
@@ -1126,7 +1135,7 @@ With a manifest and no line beginning ``- `run` |`` in the ledger, judge by the 
 ## Constraints
 
 - **Never write the run ledger.** The driver is its sole writer. This skill writes the manifest, the grant, the interview record, the kickoff trace and the report stub, and nothing else under `docs/pipeline-run/` after that stub.
-- **Never edit a design document from this skill.** The one document this skill writes is a new `lead-solo` one, after Step 5m, with a human in front of it; editing an existing one from here is a different act. There is no handoff that asks a person to run a design skill in this skill's place — a team tier's design is the run's first stage.
+- **Never edit a design document from this skill.** The one document this skill writes is a new `lead-solo` one, after Step 5m, with a human in front of it; editing an existing one from here is a different act. The one exception is the W1/W2 lines of a `좌석 실행` halt the seat runs (「Shifting the loop」), which are a stage's write surface carried out in its place. There is no handoff that asks a person to run a design skill in this skill's place — a team tier's design is the run's first stage.
 - **Never `arm` or `cancel` the notification helper from this skill** (CFI-4). The run's banners come from the two seats named there, and that helper stays an independent skill for use in conversation — what was removed is autopilot's dependency on it, not the helper. No user utterance makes arming correct; there is no path here that arms it.
 - **Never run a `재호출 명령`** recorded by a halted stage. It is recorded precisely because re-running it would retry a condition whose cause is still present.
 - **The router's input is the snapshot** (CFI-3). Never act on a remembered decision, a remembered obligation, or a previous turn's plan.

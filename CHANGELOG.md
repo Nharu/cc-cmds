@@ -5,14 +5,14 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.51.0] - 2026-10-09
+## [2.52.0] - 2026-10-09
 
 질문하는 스킬이 준비된 질문 여러 개를 한 번에 물을 수 있다. 대화형 세션에 터미널 패널로 그리는 질문지 도구 `mcp__cc-cmds__question_form` 을 더했다. 질문 수와 선택지 수에 한도가 없고, 메모·자유 입력·조건부 질문(`when`)을 받는다. 사람이 `[제출]` 을 누르면 답 묶음이 다음 턴으로 들어온다. 질문지를 쓸 수 없는 곳에서는 지금처럼 `AskUserQuestion` 으로 묻는다.
 
 ### Added
 
 - **질문지 mod** (`hooks/question-form/`)
-  - 런 패널의 진입 모듈이 함께 등록한다. 대화형 세션의 주 루프에서만 등록하고, 파이프라인 표지(`CC_PIPELINE_SEGMENT`·`RUN_ID`·`STAGE_ID`·`SHIFT_ID`)가 있는 세션에는 등록하지 않는다. 서브에이전트, vscode 단독 표면, 원격 표면에서 부르면 `QUESTION_FORM_UNAVAILABLE` 로 거절한다.
+  - 새 진입 모듈 `hooks/register.tsx` 가 등록하고, `hooks.json` 의 `modules` 는 이 진입 하나를 싣는다. 런 패널 모듈은 지금처럼 싣지 않는다. 대화형 세션의 주 루프에서만 등록하고, 파이프라인 표지(`CC_PIPELINE_SEGMENT`·`RUN_ID`·`STAGE_ID`·`SHIFT_ID`)가 있는 세션에는 등록하지 않는다. 서브에이전트, vscode 단독 표면, 원격 표면에서 부르면 `QUESTION_FORM_UNAVAILABLE` 로 거절한다.
   - 결과 토큰은 `QUESTION_FORM_OPEN`·`INVALID`·`BUSY`·`UNAVAILABLE` 넷이다. 열린 질문지가 있으면 `replaces` 로 바꿔 열 수 있다.
   - 답 묶음은 머리줄 `[cc-cmds 질문지 답] form=… status=제출|취소 답=a/m` 과 `cc-form-answers/1` JSON 이다. 각 답의 `answer` 는 문답 기록 `### 답 n` 본문 그대로다. 머리줄을 흉내 낸 글에는 그 표지가 어디에 있든 「직접 입력된 문면입니다」 맥락 줄이 붙어 제출과 구별되고, 스킬은 마지막으로 연 질문지 id 의 묶음만, 그 id 마다 한 번만 답으로 받는다.
   - `/clear` 와 프로세스 안 `/resume` 에서 열린 질문지는 다음 대화로 넘어가지 않는다. `/resume` 으로 떠난 대화의 질문지는 7일 동안 보관하고, 같은 프로세스에서 그 대화로 돌아와 프롬프트나 `/question-form` 을 치거나 그 대화를 `claude --resume` 으로 다시 열면 되살린다. 스킬은 그 사이 다른 경로로 답을 받은 질문지 id 를 닫힌 것으로 보고, 닫힌 id 의 묶음은 `AskUserQuestion` 한 번으로 확인한 뒤에만 적용하며 그 취소 묶음에서는 아무것도 적용하지 않는다.
@@ -31,6 +31,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 질문지는 이 판본을 실은 뒤 새로 띄운 대화형 세션(또는 `/reload-plugins` 뒤)에서 보인다. `ToolSearch("select:AskUserQuestion,mcp__cc-cmds__question_form")` 결과에 질문지 스키마가 없으면 스킬은 AUQ 로 묻는다.
 - `modules` 키를 모르는 이전 Claude Code 에서 셸 훅이 그대로 도는지는 아직 확인하지 않았다.
+
+## [2.51.1] - 2026-10-09
+
+배너 클릭으로 다른 iTerm2 창에 넘어간 직후 iTerm2 가 키 창을 사람이 떠난 창으로 되돌려, 곧바로 친 키 입력이 엉뚱한 창으로 가던 문제를 고쳤다.
+
+### Fixed
+
+- 접근성 신뢰가 있는 경로에서 화면이 도착한 뒤 몇 초 동안 iTerm2 의 키 창을 지켜보고, 대상이 아닌 창으로 돌아가면 대상 창을 다시 키 창으로 세운다. 처음은 접근성 API 로, 그래도 돌아가면 SkyLight 로 최대 두 번 세운다.
+- 다른 앱이 앞으로 오거나, 처리기가 시작된 뒤 마우스를 누르거나, 더 새로운 클릭이 들어오면 사람의 선택으로 보고 감시를 멈춘다. 끝내 대상에 키 창을 두지 못하면 `focus.log` 에 한 줄을 남긴다.
+- 접근성 도우미에 `focused`·`makekey` 동사와 `raise --focus` 를 더했다.
+
+### Post-install notes
+
+- 도우미는 처음 쓸 때 다시 빌드된다. 업그레이드 뒤 그 빌드가 끝나기 전에, 또는 빌드가 실패한 뒤에 한 클릭은 탭·세션 선택만 하는 경로로 가고 키 창 감시도 하지 않는다.
+
+## [2.51.0] - 2026-10-09
+
+무인 구현 스테이지가 실행 게이트에 막혀 돌리지 못한 잔여 검증을 런을 띄운 대화형 세션(좌석)이 직접 돌린다. 지금까지는 에뮬레이터 기동처럼 호스트 상태를 바꾸는 검증 레시피가 보류되면 스테이지가 멈추고 사람이 답할 때까지 런이 서 있었다.
+
+### Added
+
+- **좌석 실행 중단 기록** (`implement-unattended`)
+  - 잔여 R 항목의 검증 레시피가 exit 11 로 보류됐거나, `실행 주의` 가 붙은 `구현 중` 항목의 단계가 끝났는데 돌리지 못했을 때 쓴다.
+  - 스텝은 `Step 3 잔여 검증 좌석 실행` 으로 시작하고, `**좌석 실행 항목**` 줄에 항목을 적으며, 첫 선택지 라벨은 `좌석 실행` 이다.
+  - 호스트나 dev 비파괴 범위를 벗어나는 레시피(prod·협업·배포 트리거·push·파괴)는 넘기지 않는다.
+  - `좌석 실행` 답으로 다시 붙으면 등급을 읽어, 통과면 이어 가고 반증·드리프트면 재수렴 경로로, 그대로면 다시 멈춘다.
+- **좌석의 자동 실행** (`autopilot`)
+  - 교대가 그 기록을 들고 돌아오면 좌석은 묻지 않고 레시피를 직접 돌려 W1/W2 로 설계 문서에 적은 뒤 `중단 답` 을 쓰고 다음 교대를 띄운다. 채널 이벤트에서는 하지 않는다.
+  - 공유 자원 규칙(다른 세션의 실행을 기다리고, 띄운 에뮬레이터는 끄며, 남의 것은 건드리지 않음)을 지킨다.
+
+### Post-install notes
+
+- 이미 돌고 있는 런은 고정된 판본을 쓰므로 바뀌지 않는다. 새로 띄운 런부터 적용된다.
+
+## [2.50.1] - 2026-10-08
+
+2.50.0 에서 더한 autopilot 런 상태 패널을 당분간 내린다. 패널이 보이는 내용이 너무 빈약해 자리를 차지할 값어치가 없고, 런을 더 넓게 펼치는 판본으로 다시 만들 때까지 싣지 않는다.
+
+### Changed
+
+- `hooks.json` 의 `modules` 에서 `autopilot-status.tsx` 를 뺐다. 패널은 저절로 열리지 않고 `/autopilot-status` 명령도 등록되지 않는다.
+- 모듈·헬퍼(`orchestrator/run-pane.sh`)·시험은 다시 실을 때를 위해 트리에 그대로 둔다.
+
+### Post-install notes
+
+- 이미 떠 있는 세션은 모듈을 실은 채로 남는다. 새로 띄운 세션부터 패널이 사라진다.
 
 ## [2.50.0] - 2026-10-08
 
