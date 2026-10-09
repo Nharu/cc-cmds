@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **질문지 mod** (`hooks/question-form/`)
   - 런 패널의 진입 모듈이 함께 등록한다. 대화형 세션의 주 루프에서만 등록하고, 파이프라인 표지(`CC_PIPELINE_SEGMENT`·`RUN_ID`·`STAGE_ID`·`SHIFT_ID`)가 있는 세션에는 등록하지 않는다. 서브에이전트, vscode 단독 표면, 원격 표면에서 부르면 `QUESTION_FORM_UNAVAILABLE` 로 거절한다.
   - 결과 토큰은 `QUESTION_FORM_OPEN`·`INVALID`·`BUSY`·`UNAVAILABLE` 넷이다. 열린 질문지가 있으면 `replaces` 로 바꿔 열 수 있다.
-  - 답 묶음은 머리줄 `[cc-cmds 질문지 답] form=… status=제출|취소 답=a/m` 과 `cc-form-answers/1` JSON 이다. 각 답의 `answer` 는 문답 기록 `### 답 n` 본문 그대로다. 사람이 직접 친 사본에는 「직접 입력된 문면입니다」 맥락 줄이 붙어 제출과 구별된다.
+  - 답 묶음은 머리줄 `[cc-cmds 질문지 답] form=… status=제출|취소 답=a/m` 과 `cc-form-answers/1` JSON 이다. 각 답의 `answer` 는 문답 기록 `### 답 n` 본문 그대로다. 머리줄을 흉내 낸 글에는 그 표지가 어디에 있든 「직접 입력된 문면입니다」 맥락 줄이 붙어 제출과 구별되고, 스킬은 마지막으로 연 질문지 id 의 묶음만, 그 id 마다 한 번만 답으로 받는다.
+  - `/clear` 와 프로세스 안 `/resume` 에서 열린 질문지는 다음 대화로 넘어가지 않는다. `/resume` 으로 떠난 대화의 질문지는 보관해 두었다가 그 대화를 `claude --resume` 으로 다시 열면 되살린다.
   - 질문지를 열면 기존 세션 배너 훅을 그대로 거쳐 일반 세션 배너를 한 번 올린다.
   - 시험: `claude plugin test` 로 도는 키트 시험 다섯 파일(검증·묶음·전이·등록·그리기).
 - **공용 질문 규칙** — `_common/askuserquestion.md` 가 질문지와 AUQ 가운데 어느 쪽에서 물을지, 질문지의 입력·결과 토큰·답 수락 조건을 정한다. 문답과 워크스루를 하는 유인 스킬(design·design-analyze·design-base·review·implement·autopilot 킥오프 등)이 이 기준을 따르고, 킥오프 흔적에 `단계=문답(질문지)` 가 더해졌다.

@@ -12,6 +12,12 @@ export const EMPTY_DRAFT: Draft = { selected: [], other: '', note: '' }
 
 export const HEADER_RE = /^\[cc-cmds 질문지 답\] form=(f-[0-9a-f]{8}) status=(제출|취소) /
 
+const HEADER_MARK = '[cc-cmds 질문지 답]'
+
+// 도장을 달 문면인가: 머리줄 표지가 어디에든 있으면 흉내다. 앞에 붙은 줄바꿈·공백이나
+// 분해형(NFD) 한글로 머리줄 정규식을 비껴가도 도장이 빠지지 않게 정규화한 뒤 찾는다.
+export const mimicsHeader = (text: string): boolean => text.normalize('NFC').includes(HEADER_MARK)
+
 export function mintFormId(random: () => number = Math.random): string {
   let hex = ''
   for (let i = 0; i < 8; i++) hex += Math.floor(random() * 16).toString(16)

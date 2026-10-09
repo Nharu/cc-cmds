@@ -18,6 +18,8 @@ export type WorldOptions = {
 
 export function world(on: On, options: WorldOptions = {}) {
   const w = {
+    // 프로세스 안 /resume 이나 /clear 뒤의 새 세션은 이 값을 바꿔 흉내 낸다.
+    sessionId: 'sid-test',
     surfaces: ['terminal'] as string[],
     isPlaced: true,
     openFails: false,
@@ -45,7 +47,7 @@ export function world(on: On, options: WorldOptions = {}) {
   })
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   // 세계 연산.
-  on('session.id', () => ({ value: 'sid-test' }))
+  on('session.id', () => ({ value: w.sessionId }))
   on('session.surfaces', () => ({ value: [...w.surfaces] }))
   on('tool.register', (_$, e) => {
     w.tools.push(e.name)

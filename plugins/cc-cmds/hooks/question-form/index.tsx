@@ -7,7 +7,7 @@ import type { Hook, Register } from 'claude-code'
 
 import { anyMarked } from '../pipeline-marks'
 import { bannerCall } from './banner'
-import { HEADER_RE, bundleText, counts, draftOf, mintFormId } from './bundle'
+import { bundleText, counts, draftOf, mimicsHeader, mintFormId } from './bundle'
 import type { Drafts, FormStatus } from './bundle'
 import { drawForm, drawReceipt } from './render'
 import type { FormHandlers } from './render'
@@ -53,6 +53,10 @@ const focusedAtom = atom({ plugin: 'cc-cmds', key: 'questionForm.focusedElement'
 
 const STORE_PREFIX = 'questionForm.open.'
 
+// 머리줄을 흉내 낸 프롬프트 가운데 이 플러그인의 제출이 아닌 것에 도장을 단다.
+const needsStamp = (e: { text: string; origin: { kind: string; name?: unknown } }) =>
+  mimicsHeader(e.text) && !(e.origin.kind === 'plugin' && e.origin.name === 'cc-cmds')
+
 // 도구 호출이 상태를 쓰기 전의 기록. .catch 가 이 호출이 만든 것을 되돌릴 때 읽는다.
 const before = new Map<string, FormRecord | null>()
 
@@ -66,11 +70,12 @@ async function pipelineMarked($: Dollar): Promise<boolean> {
   ])
 }
 
-// 프로세스를 넘는 보관: 열린 기록만 세션 id 아래에 두고, 아니면 지운다. 보관 실패는
+// 프로세스를 넘는 보관: 열린 기록만 세션 id 아래에 두고, 아니면 지운다. 키는 기록을 연
+// 세션의 것이고, 기록이 없으면 sessionId 를, 그것도 없으면 지금 세션을 쓴다. 보관 실패는
 // 질문지 자체를 막지 않는다.
-async function mirror($: Dollar, rec: FormRecord | null) {
+async function mirror($: Dollar, rec: FormRecord | null, sessionId?: string) {
   try {
-    const key = STORE_PREFIX + (await $.session.id())
+    const key = STORE_PREFIX + (rec?.sessionId ?? sessionId ?? (await $.session.id()))
     if (isOpen(rec ?? undefined)) await $.store.set(key, rec)
     else await $.store.delete(key)
   } catch {
@@ -112,16 +117,19 @@ async function reshow($: Dollar, rec: FormRecord) {
   await $.ui.status(next.hidden ? statusOf(next) : undefined)
 }
 
+// 이 세션이 연 기록만 되살린다. 다른 세션의 기록은 상태에서 내리고, 그 보관 키는 그
+// 세션으로 돌아올 때를 위해 남긴다.
 async function restore($: Dollar) {
   const sid = await $.session.id()
   const now = await $.clock.now()
-  const held = await read($, recordAtom)
+  const held = restorable((await read($, recordAtom)) ?? undefined, sid)
+  if (!held) await update($, recordAtom, r => (isOpen(r ?? undefined) ? null : r))
   for (const key of await $.store.keys()) {
     if (!key.startsWith(STORE_PREFIX)) continue
     const stored = (await $.store.get(key)) as FormRecord | undefined
     if (key === STORE_PREFIX + sid) {
       const alive = restorable(stored, sid)
-      if (alive && !isOpen(held ?? undefined)) {
+      if (alive && !held) {
         await reshow($, alive)
         return
       }
@@ -129,7 +137,7 @@ async function restore($: Dollar) {
       await $.store.delete(key)
     }
   }
-  if (isOpen(held ?? undefined)) await reshow($, held)
+  if (held) await reshow($, held)
 }
 
 // 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다.
@@ -142,7 +150,7 @@ async function finish($: Dollar, status: FormStatus) {
   })
   if (!taken) return
   const done = taken
-  await mirror($, null)
+  await mirror($, null, done.sessionId)
   await $.prompt.submit({ text: bundleText(done.id, status, done.form, done.drafts) })
   await $.ui.status(undefined)
   if (status === '제출') {
@@ -268,7 +276,7 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     const context = [...(e.context ?? [])]
     const origin = e.origin
-    if (HEADER_RE.test(e.text) && !(origin.kind === 'plugin' && origin.name === 'cc-cmds')) context.push(STAMP)
+    if (needsStamp(e)) context.push(STAMP)
     if (origin.kind === 'composer' || origin.kind === 'bridge') {
       await update($, lastOriginAtom, () => origin.kind)
       await update($, turnBusyAtom, () => true)
@@ -277,7 +285,12 @@ export const register: Register = on => {
     }
 
     return next(context.length === (e.context ?? []).length ? e : { ...e, context })
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => {
+    // 출처 기록이나 맥락 줄이 실패해도 도장은 빠지지 않는다.
+    if (!needsStamp(e)) return next(e)
+
+    return next({ ...e, context: [...(e.context ?? []), STAMP] })
+  })
 
   // 사람의 닫기 표시만 다룬다: 숨기고 상태 줄을 띄운다. 이 mod 자신의 닫기는 지나지 않는다.
   on('ui.close', { id: 'cc-cmds-question-form' }, async ($, e, next) => {
@@ -347,12 +360,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // /clear 는 열린 질문지와 그 보관을 버린다.
+  // 프로세스가 다른 세션으로 이어지는 두 끝(/clear, 프로세스 안 /resume)에서는 끝나는
+  // 대화의 질문지를 다음 대화에 남기지 않는다. 그 대화를 버리는 /clear 는 보관도 지우고,
+  // /resume 은 보관을 남겨 그 대화를 다시 열 때 되살린다.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
+    if (e.reason === 'clear' || e.reason === 'resume') {
       await update($, recordAtom, () => null)
+      await update($, turnBusyAtom, () => false)
       try {
-        await $.store.delete(STORE_PREFIX + e.sessionId)
+        if (e.reason === 'clear') await $.store.delete(STORE_PREFIX + e.sessionId)
         await $.ui.close({ id: PANE_ID })
       } catch {
         // 보관은 덤이다.
