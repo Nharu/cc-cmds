@@ -10468,7 +10468,11 @@ case "$msg" in
 esac
 
 # SA lives in a repository the run does not target: the remote answers. The
-# stub stands in for `gh api`, so the gate is forked with it on its PATH.
+# stub stands in for `gh api`, and it reaches the gate as an exported function
+# rather than a PATH entry: the driver puts /usr/bin ahead of the inherited PATH,
+# and a host whose `gh` lives there (the Linux CI runner) would otherwise answer
+# with the real remote. A function outranks every PATH lookup, and since PATH is
+# left alone the call stays in-process.
 mkdir -p "$WORK/gh15gu"
 cat > "$WORK/gh15gu/gh" <<'GHSTUB'
 #!/bin/sh
@@ -10488,10 +10492,11 @@ far_slice_doc() {  # far_slice_doc <문서 경로> — SA in t/far (no target), 
     printf '**선행**: SA\n**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
   } > "$1"
 }
-g15_fork() {  # g15_fork <run id> <compare status | fail> — plan SB through a forked gate with the gh stub
+g15_remote() {  # g15_remote <run id> <compare status | fail> — plan SB with the gh stub answering the remote
   local out
-  out=$(cd "$WT" && PATH="$WORK/gh15gu:$PATH" GH15_STATUS="$2" XDG_STATE_HOME="$STATE_LATE" \
-    bash "$GATE" act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
+  out=$(cd "$WT" && gh() { "$GH15_STUB" "$@"; } && export -f gh \
+    && export GH15_STUB="$WORK/gh15gu/gh" GH15_STATUS="$2" \
+    && XDG_STATE_HOME="$STATE_LATE" gate_inproc act --manifest "$WORK/plan-$1.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
     --surface 읽기 --snapshot-digest "$(au15_H "$1")" --rationale x --from-declaration -- \
     상태=계획됨 "워크트리=$(g15_wt "$1" SB)" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
@@ -10502,7 +10507,7 @@ far_slice_doc "$WT/$DOC15GU"
 g15_run R15GU "$DOC15GU" "$plan15c" 리뷰없음
 g15_land R15GU SA t/far "$m15gu"
 g15_mkwt R15GU SB
-g15_fork R15GU ahead
+g15_remote R15GU ahead
 check "15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다" "$rc" "0"
 r15gu=$(g15_row R15GU SA)
 check "15g: 대상 아닌 레포에서 들여온 행은 머지됨과 그 커밋과 출처=매니페스트 를 싣는다" \
@@ -10513,13 +10518,13 @@ far_slice_doc "$WT/$DOC15GW"
 g15_run R15GW "$DOC15GW" "$plan15c" 리뷰없음
 g15_land R15GW SA t/far "$m15gu"
 g15_mkwt R15GW SB
-g15_fork R15GW diverged
+g15_remote R15GW diverged
 r15gw="$rc/$(g15_segs R15GW)"
 case "$msg" in
   *"원격 t/far 의 기본 브랜치에 미착지"*) ok "15g: 그 거부는 원격과 미착지를 든다" ;;
   *) bad "15g 원격 미착지 문면" "$msg" ;;
 esac
-g15_fork R15GW fail
+g15_remote R15GW fail
 check "15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다" "$r15gw|$rc/$(g15_segs R15GW)" "3/0|3/0"
 case "$msg" in
   *"원격 t/far 의 기본 브랜치에 판정 불가"*) ok "15g: 답하지 못한 비교는 판정 불가로 거부된다" ;;
