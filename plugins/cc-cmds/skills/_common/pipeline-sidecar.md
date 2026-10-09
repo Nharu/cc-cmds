@@ -161,6 +161,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 형태=clickup-create.py | 사유=<…>   ← 트래커=clickup 일 때
 - `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
+- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트를 이어받을 때만, 세그먼트당 많아야 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -185,8 +186,8 @@ What IS frozen, and what `구속 다이제스트` covers: the goal, the terminat
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
 irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
-`베이스 발행` and `베이스 설계` rows**, the cost ceiling and the stagnation bound
-when declared, and the deadline. The gate compares that digest at entry.
+`베이스 발행` and `베이스 설계` rows**, **the `세그먼트 입양` rows**, the cost
+ceiling and the stagnation bound when declared, and the deadline. The gate compares that digest at entry.
 
 **The `베이스 발행` row is a base run's publication decision**, taken at kickoff
 and the only input the split stage publishes from: exactly one row when the
@@ -197,6 +198,19 @@ the base ticket it designs**, at most one row. The manifest check reads its form
 and count and never the file's bytes — it runs on every gate entry and dies on a
 failure, so comparing there would kill every gate call of a child run the moment
 the base is revised; the design stage re-hashes the file before it spawns anyone.
+
+**The `세그먼트 입양` row hands this run a segment an earlier run cut and did not
+land** — its branch, its worktree, the run it came from and its pull request. A
+run names its segment branches and worktrees after its own id, so without the
+row a later run could only redo that segment from the base. The row is the
+person's claim, taken at kickoff; the disk is the evidence, read when the segment
+is planned: the worktree must be the slice target's, carry the declared branch,
+and the earlier run must neither have landed the segment nor still run a stage
+on it. The manifest check reads the row's form only, for the reason it reads the
+`베이스 설계` row's form only — it runs on every gate entry, and the worktree is
+torn down once the segment lands. The snapshot's `슬라이싱` names the adopted
+branch and worktree for that segment and adds `입양` and `PR`, and the router
+then cuts no branch, opens no pull request, and dispatches a review first.
 
 The `자동 채택` rows are in that list because they decide whether a judgment is
 taken without a person. Serialization is over the whole file rather than over
@@ -324,7 +338,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행` and `베이스 설계` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계` and `세그먼트 입양` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -374,7 +388,7 @@ never compared.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
    target rows, rule settings, pre-authorization rows, auto-adoption rows, design
-   roster rows, base publication and base design rows, the cost ceiling and
+   roster rows, base publication and base design rows, segment adoption rows, the cost ceiling and
    stagnation bound when declared, deadline. The PLAN is not
    in it: the router decides the step graph one act at a time, so a frozen plan
    would be recorded and never compared.
@@ -428,6 +442,12 @@ never compared.
     any `베이스 발행` row. A `베이스 설계` row may appear at most once and must
     match its form; its `sha256` is not compared against the file here. Each
     violation is a **hard stop**.
+17. **`세그먼트 입양` rows, form only.** Each row matches its form, its
+    `워크트리` is absolute, carries the reserved infix `-run-` the teardown guard
+    requires and no double quote, backslash or control byte, its `출처 런` is a
+    run id other than this run's, and no segment has two rows. Each violation is
+    a **hard stop**. The worktree, the branch and the earlier run are not read
+    here; the segment's planning act reads them.
 
 **Both warnings fire at most once per run.** This whole conjunction re-runs on
 every gate entry, so a per-entry warning buries the morning report under its own
