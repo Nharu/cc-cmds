@@ -28127,7 +28127,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 85. A segment an earlier run cut is adopted through the manifest
-# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest | needs: 15g | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다 ---
+# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest | needs: 15g | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다 ---
 #
 # Segment names derive from the run id, so a run could not continue a segment
 # an earlier run left unmerged: its branch, worktree and pull request were out
@@ -28237,6 +28237,130 @@ case "$rc/$msg" in
   *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*) ok "85: 입양 행을 바꾸면 구속 다이제스트가 깨진다" ;;
   *) bad "85: 입양 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
 esac
+
+# THE EARLIER RUN'S OPEN ANSWER TO A HALT. A person answered a binding-tier stop
+# at the seat of the earlier run and that run ended before a stage took the
+# answer up; the run adopting the segment read only its own ledger, so the
+# answer was lost and the person was asked again. The earlier run keyed the
+# segment `S9` and this run declares it `SA`, as a run with no slicing and a
+# later run that declares the slice do. The planning act carries a seat answer
+# `재수렴` to a CFI-U3 BT-STOP record, copied and checked against its digests,
+# once; every other open answer is named in a warning and left where it is.
+WT85K="$(dirname "$WT")/$(basename "$WT")-run-$SRC85-S9"
+( cd "$WT" && git worktree add -q -b "seg/$SRC85-S9" "$WT85K" HEAD ) >/dev/null 2>&1
+ROW85K="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-S9 | 워크트리=$WT85K | 출처 런=$SRC85 | PR=79"
+SRCDIR85="$STATE_LATE/cc-cmds/run/$SRC85"
+REC85="$SRCDIR85/halt/S9#4.md"
+mkdir -p "$SRCDIR85/halt"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=S9#4; run=$SRC85 -->" \
+  '**스킬**: implement-unattended' '**스텝**: Step 3 CFI-U3 BT-STOP — 리뷰 수정이 구속 티어와 충돌' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 구속 티어를 옮길 것인가?' '**선택지**:' \
+  '- `구속 티어 이탈 승인` — 이탈한다' '- `재수렴` — 같은 런의 라우팅 교대가 재수렴한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$REC85"
+DIG85=$(shasum -a 256 "$REC85" | cut -d' ' -f1)
+SMAN85="$WT/docs/pipeline-run/$SRC85.plan.md"
+printf '# 픽스처 출처 런 매니페스트\n\n## 요소\n**설계 문서**: %s\n' "$DOC85" > "$SMAN85"
+src85k_ledger() {  # src85k_ledger <선택지> <근거> [기록 다이제스트] — the origin run's S9 rows and one answer
+  { printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT85K"
+    printf -- '- `stage-result` | 교대=0 | 세그먼트=S9 | 스테이지=S9 | 종류=implement | 실행 버전=4 | 세션 id=s-impl-4 | 종단 부류=의도된 park | prev=x\n'
+    printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=%s | 근거=%s | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-01-01T01:00:00Z\n' \
+      "$REC85" "$1" "$2" "${3:-$DIG85}"; } > "$LEDGER85"
+}
+carried85() {  # carried85 <run id> — that run's `중단 답` rows
+  { grep -F '`중단 답`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | grep -c . || true
+}
+halts85() {  # halts85 <run id> — that run's answered_halts, as [segment, option, origin_run]
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-$1.md" 2>/dev/null ) \
+    | jq -c '[.answered_halts[] | [.segment, .option, .origin_run]]' 2>/dev/null
+}
+
+src85k_ledger '구속 티어 이탈 승인' '사람이 이탈을 승인'
+run85 R85F "$ROW85K"
+g15_plan act R85F SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 출처 런 키가 슬라이스 id 와 달라도 입양 계획이 통과한다" "$rc" "0"
+check "85: 세션을 다시 붙여야 하는 답은 이 런으로 들여오지 않는다" "$(carried85 R85F)" "0"
+case "$msg" in
+  *"출처 런 $SRC85 의 열린 중단 답"*"이어지지 않습니다"*"구속 티어 이탈 승인"*) ok "85: 그 답은 이어지지 않는다고 경고로 이름 댄다" ;;
+  *) bad "85 이월 안 됨 경고" "$msg" ;;
+esac
+
+src85k_ledger '재수렴' '사람이 재수렴을 골랐다' 0000
+run85 R85G "$ROW85K"
+g15_plan act R85G SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 기록 다이제스트가 다른 답은 들여오지 않는다" "$rc/$(carried85 R85G)" "0/0"
+case "$msg" in
+  *"기록 다이제스트와 다릅니다"*) ok "85: 그 경고는 다이제스트 불일치를 든다" ;;
+  *) bad "85 다이제스트 경고" "$msg" ;;
+esac
+
+src85k_ledger '재수렴' '자동 채택(구속-이탈) — 매니페스트가 킥오프에서 미리 정한 답'
+run85 R85H "$ROW85K"
+g15_plan act R85H SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 교대가 자동 채택으로 쓴 답은 들여오지 않는다" "$rc/$(carried85 R85H)" "0/0"
+
+src85k_ledger '재수렴' '사람이 재수렴을 골랐다'
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S9 | 스테이지=S9 | 종류=reconverge | 실행 버전=1 | 세션 id=s-rc-1 | 종단 부류=정상 완료 | prev=x\n' >> "$LEDGER85"
+run85 R85I "$ROW85K"
+g15_plan act R85I SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 출처 런에서 이미 쓰인 답은 들여오지 않는다" "$rc/$(carried85 R85I)" "0/0"
+case "$msg" in
+  *"열린 중단 답"*) bad "85: 쓰인 답은 경고도 내지 않는다" "$msg" ;;
+  *) ok "85: 쓰인 답은 경고도 내지 않는다" ;;
+esac
+
+src85k_ledger '재수렴' '사람이 재수렴을 골랐다'
+printf '# 픽스처 출처 런 매니페스트\n\n## 요소\n**설계 문서**: docs/other-85.md\n' > "$SMAN85"
+run85 R85J "$ROW85K"
+g15_plan act R85J SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 출처 런의 설계 문서가 다르면 답을 들여오지 않는다" "$rc/$(carried85 R85J)" "0/0"
+printf '# 픽스처 출처 런 매니페스트\n\n## 요소\n**설계 문서**: %s\n' "$DOC85" > "$SMAN85"
+
+run85 R85K "$ROW85K"
+fx_rd85="$FX_RUN_DIR"; FX_RUN_DIR="$SRCDIR85"
+fx_stage_live S9
+FX_RUN_DIR="$fx_rd85"
+g15_plan act R85K SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다" "$rc/$(carried85 R85K)" "3/0"
+kill "$FX_LAST_PID" 2>/dev/null || true
+wait "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$SRCDIR85/S9.pid" "$SRCDIR85/S9.start"
+g15_plan plan R85K SA 상태=계획됨 "워크트리=$WT85K"
+case "$rc/$msg" in
+  0/*"act 는 출처 런 $SRC85 원장 5 번째 줄의 중단 답(선택지 재수렴)을 이 런으로 들여옵니다"*) ok "85: 계획 미리보기는 들여올 답을 이름 댄다" ;;
+  *) bad "85: 계획 미리보기는 들여올 답을 이름 댄다" "$rc/$msg" ;;
+esac
+check "85: 미리보기는 답을 쓰지 않는다" "$(carried85 R85K)" "0"
+g15_plan act R85K SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다" "$rc/$(carried85 R85K)" "0/1"
+row85k=$(grep -F '`중단 답`' "$WT/docs/pipeline-run/R85K.md" | tail -1)
+rf85() {  # rf85 <행> <키> — the last value of that key on a ledger row
+  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+cp85k="$STATE_LATE/cc-cmds/run/R85K/halt/SA#adopted-$SRC85.md"
+check "85: 들여온 행은 이 런의 세그먼트와 기록 사본을 싣는다" \
+  "$(rf85 "$row85k" '세그먼트')|$(rf85 "$row85k" '중단 기록')|$(rf85 "$row85k" '선택지')" "SA|$cp85k|재수렴"
+check "85: 들여온 행은 출처 런과 출처 기록을 싣는다" \
+  "$(rf85 "$row85k" '출처 런')|$(rf85 "$row85k" '출처 기록')" "$SRC85|$REC85"
+check "85: 기록 사본은 출처 행의 다이제스트와 같다" \
+  "$(shasum -a 256 "$cp85k" 2>/dev/null | cut -d' ' -f1)|$(rf85 "$row85k" '기록 다이제스트')" "$DIG85|$DIG85"
+check "85: 들여온 행은 사람의 답의 레인과 시각을 그대로 싣는다" \
+  "$(rf85 "$row85k" '레인')|$(rf85 "$row85k" '기록 시각')" "좌석|2026-01-01T01:00:00Z"
+case "$(rf85 "$row85k" '근거')" in
+  "입양 이월(출처 런 $SRC85 원장 5 번째 줄) — 사람이 재수렴을 골랐다") ok "85: 들여온 행의 근거는 출처와 사람의 말을 싣는다" ;;
+  *) bad "85: 들여온 행의 근거는 출처와 사람의 말을 싣는다" "$row85k" ;;
+esac
+check "85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다" "$(halts85 R85K)" "[[\"SA\",\"재수렴\",\"$SRC85\"]]"
+g15_plan act R85K SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 같은 런의 계획 act 를 되풀이해도 답은 한 번만 들여온다" "$rc/$(carried85 R85K)" "0/1"
+printf -- '- `stage-result` | 교대=1 | 세그먼트=SA | 스테이지=SA | 종류=reconverge | 실행 버전=1 | 세션 id=s-rc-2 | 종단 부류=정상 완료 | prev=x\n' \
+  >> "$WT/docs/pipeline-run/R85K.md"
+check "85: 들여온 답은 이 런의 다음 stage-result 가 쓴다" "$(halts85 R85K)" "[]"
+run85 R85L "$ROW85K"
+g15_plan act R85L SA 상태=계획됨 "워크트리=$WT85K"
+check "85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다" "$rc/$(carried85 R85L)" "0/0"
+( cd "$WT" && git worktree remove --force "$WT85K" && git branch -D "seg/$SRC85-S9" ) >/dev/null 2>&1
+rm -rf "$SRCDIR85/halt"
+rm -f "$SMAN85"
 ( cd "$WT" && git worktree remove --force "$WT85" && git branch -D "seg/$SRC85-SA" ) >/dev/null 2>&1
 rm -f "$LEDGER85" "$WT/$DOC85"
 

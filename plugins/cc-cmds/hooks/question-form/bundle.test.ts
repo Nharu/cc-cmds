@@ -36,13 +36,13 @@ describe('묶음', () => {
     expect(bundleText('f-00000000', '제출', form, shown).split('\n')[0]).toEndWith('답=2/4')
   })
 
-  test('answer 본문: single 은 접미 포함 라벨, 선택지 대신 쓴 자유 입력은 축자', () => {
-    expect(answerBody(single, d(['가']))).toBe('가 ← 추천')
+  test('answer 본문: single 은 추천 접미 없는 라벨, 선택지 대신 쓴 자유 입력은 축자', () => {
+    expect(answerBody(single, d(['가']))).toBe('가')
     expect(answerBody(single, d([], '셋째 길'))).toBe('셋째 길')
   })
 
   test('answer 본문: multi 는 한 줄에 하나, 라벨 옆 자유 입력은 「자유 입력:」 줄', () => {
-    expect(answerBody(multi, d(['가', '나']))).toBe('가\n나 ← 에이전트 추천')
+    expect(answerBody(multi, d(['가', '나']))).toBe('가\n나')
     expect(answerBody(multi, d(['가'], '라'))).toBe('가\n자유 입력: 라')
     expect(answerBody(multi, d([], '라'))).toBe('라')
   })
@@ -53,13 +53,16 @@ describe('묶음', () => {
     expect(answerBody(single, d([], '', '메모만'))).toBe('미답\n메모: 메모만')
   })
 
-  test('JSON: 스키마·상태·제시 라벨, when 거짓은 해당 없음', () => {
+  test('JSON: 스키마·상태·받은 라벨 그대로·추천은 recommended, when 거짓은 해당 없음', () => {
     const j = bundleJson('f-00000000', '취소', form, { s: d(['가']), m: d([], '', '생각 중') })
     expect(j.schema).toBe('cc-form-answers/1')
     expect(j.status).toBe('취소')
     expect(j.answers.map(a => a.state)).toEqual(['답', '미답', '미답', '해당 없음'])
-    expect(j.answers[0].options).toEqual(['가 ← 추천', '나'])
-    expect(j.answers[0].selected).toEqual(['가 ← 추천'])
+    expect(j.answers[0].options).toEqual(['가', '나'])
+    expect(j.answers[0].selected).toEqual(['가'])
+    expect(j.answers[0].recommended).toEqual([{ label: '가', by: '추천' }])
+    expect(j.answers[1].recommended).toEqual([{ label: '나', by: '에이전트 추천' }])
+    expect(j.answers[2].recommended).toBeUndefined()
     expect(j.answers[1].answer).toBe('미답\n메모: 생각 중')
     expect(j.answers[3].answer).toBe('')
   })

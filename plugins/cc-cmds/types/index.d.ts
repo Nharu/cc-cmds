@@ -70,7 +70,13 @@ export type Drafts = Record<string, Draft>
 
 export type FormPhase = 'open' | 'submitted' | 'cancelled'
 
-/** 질문지 기록 하나: 열린 질문지이거나 제출 뒤의 영수증. */
+/**
+ * 열려 있는 입력칸 하나: 어느 질문의 어느 칸인지, 열 때마다 하나씩 오르는 세대(입력칸 key 에
+ * 들어간다), 연 순간의 글(그려지는 value 로 고정된다).
+ */
+export type FormEditor = { id: string; field: 'other' | 'note'; gen: number; seed: string }
+
+/** 질문지 기록 하나. 제출·취소된 기록은 묶음을 낸 자리에서 버려지므로 열린 것만 남는다. */
 export type FormRecord = {
   id: string
   toolUseId: string
@@ -79,10 +85,12 @@ export type FormRecord = {
   phase: FormPhase
   /** 사람이 닫기 표시를 눌렀거나 열 때 배치되지 않아 패널 대신 상태 줄을 보이는 중. */
   hidden: boolean
-  /** 「기타」 입력칸을 연 질문 id. */
-  otherOpen: string[]
-  /** 영수증이 닫히기까지 남은 주 루프 turn.complete 수. */
-  receiptTurns: number
+  /** 펼쳐 보이는 질문의 id. 나머지 질문은 한 줄로 접힌다. */
+  cursor: string
+  /** 열려 있는 「기타」·「메모」 입력칸. 없으면 null. */
+  editor: FormEditor | null
+  /** 이 기록에서 입력칸을 연 횟수. 입력칸 key 의 세대이며, 칸을 닫아도 되돌지 않는다. */
+  editorGen: number
   sessionId: string
   savedAt: number
 }
@@ -95,10 +103,8 @@ declare module 'claude-code' {
     'cc-cmds': {
       paneLines: PaneLines
       paneControl: PaneControl
-      /** 지금 질문지 기록(열림·영수증). 없으면 null. */
+      /** 지금 열린 질문지 기록. 없으면 null. */
       'questionForm.record': FormRecord | null
-      /** 주 루프의 턴이 도는 중인가. 영수증을 닫을 turn.complete 를 가리는 데 쓴다. */
-      'questionForm.turnBusy': boolean
       /** 마지막 사람 프롬프트의 출처. bridge 이면 질문지를 쓸 수 없다. */
       'questionForm.lastPersonOrigin': PromptOriginKind
       /** 질문지 패널에서 포커스를 받은 요소의 key. 엔진 자신의 정지점이면 null. */
