@@ -9,6 +9,8 @@ bash "$NOTIFY_SH" arm "iter" "iter" "repeat" --count=3
 grep -q '"schema":3' "$FLAG_FILE" || { echo "schema not 3" >&2; exit 1; }
 grep -q '"mode":"repeat"' "$FLAG_FILE" || { echo "mode not repeat" >&2; exit 1; }
 grep -q '"arm_count":3' "$FLAG_FILE" || { echo "arm_count:3 not stored verbatim" >&2; cat "$FLAG_FILE" >&2; exit 1; }
+safe_sid="${CLAUDE_CODE_SESSION_ID//[^A-Za-z0-9_.-]/_}"
+armed_at=$(grep -oE '"armed_at":[0-9]+' "$FLAG_FILE" | sed 's/.*://')
 
 # Fire 4 times — exceeds arm_count=3 but repeat ignores the cap.
 for i in 1 2 3 4; do
@@ -24,9 +26,11 @@ grep -q '"fire_count":4' "$FLAG_FILE" || { echo "fire_count not 4 (cap should be
 lines=$(wc -l < "$NOTIFIER_LOG" | tr -d ' ')
 [[ "$lines" == "4" ]] || { echo "expected 4 notifier lines, got $lines" >&2; exit 1; }
 
-# Repeat never uses -group (intentional pile-up).
-if grep -q -- '-group' "$NOTIFIER_LOG"; then
-  echo "repeat mode must NEVER use -group" >&2
-  cat "$NOTIFIER_LOG" >&2
-  exit 1
-fi
+# Repeat gives every fire its own group (intentional pile-up), numbered by the
+# repeat fire_count — past the stored arm_count as well.
+for n in 1 2 3 4; do
+  want="-group cc-cmds-active-notify-${safe_sid}@${armed_at}.${n}"
+  got=$(sed -n "${n}p" "$NOTIFIER_LOG")
+  [[ "$got" == *"$want" || "$got" == *"$want "* ]] || {
+    echo "fire $n: expected '$want'" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }
+done

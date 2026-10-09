@@ -18,5 +18,9 @@ grep -qF -- "$want" "$NOTIFIER_LOG" || {
   cat "$NOTIFIER_LOG" >&2
   exit 1
 }
-# The argument order of the dispatcher is unchanged: `-group` still follows.
-grep -q -- '-group cc-cmds-active-notify' "$NOTIFIER_LOG" || { echo "single armCount=1 must use -group" >&2; exit 1; }
+# The argument order of the dispatcher is unchanged: `-group` still follows,
+# and it is exactly this session's slot.
+safe_sid="${CLAUDE_CODE_SESSION_ID//[^A-Za-z0-9_.-]/_}"
+want_group="-group cc-cmds-active-notify-${safe_sid}"
+got=$(head -1 "$NOTIFIER_LOG")
+[[ "$got" == *"$want_group" ]] || { echo "single armCount=1 must use exactly '$want_group'" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }

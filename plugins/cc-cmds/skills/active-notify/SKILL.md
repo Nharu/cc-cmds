@@ -67,18 +67,33 @@ Banner title is always `cc-cmds ${workflow}` and body is `${summary}`.
 
 | Mode + count | Fire-now behavior | Banner -group | Banner pile-up |
 | --- | --- | --- | --- |
-| `single --count=1` (default) | 1 fire-now → flag consumed | `-group "cc-cmds-active-notify"` | banner replaces previous |
-| `single --count=N (N>1)` | N fire-now (intermediate N-1 + final 1); final consumes | none | each sub-event banner persists |
-| `repeat (--count ignored)` | unbounded fire-now per observed event-class instance, until self-cancel or CANCEL | none | intentional pile-up |
+| `single --count=1` (default) | 1 fire-now → flag consumed | `-group "cc-cmds-active-notify-<sid>"` | banner replaces this session's previous one |
+| `single --count=N (N>1)` | N fire-now (intermediate N-1 + final 1); final consumes | `-group "cc-cmds-active-notify-<sid>@<armed_at>.<n>"` | each sub-event banner persists |
+| `repeat (--count ignored)` | unbounded fire-now per observed event-class instance, until self-cancel or CANCEL | `-group "cc-cmds-active-notify-<sid>@<armed_at>.<n>"` | intentional pile-up |
 
 `-group` decision is dispatcher-internal — the model never specifies it.
-For `single --count=N>1`, `-group` is intentionally omitted so each
-sub-event banner persists in Notification Center; this preserves the
-user's explicit "N distinct events" intent. Event-scoped repeat mode
-never uses `-group` — each observed event instance gets its own
-persistent banner (per-commit, per-test-pass, etc.); pile-up is bounded
-by the model's own self-cancel when the event series ends, and user
-CANCEL remains a standing backstop.
+`<sid>` is the session id with every character outside `A-Za-z0-9_.-`
+replaced by `_`, `<armed_at>` is the ARM's epoch second, and `<n>` is the
+fire count. A single one-shot banner takes this session's own slot, so it
+replaces only the previous one-shot banner of the same session and never
+another session's. For `single --count=N>1` and repeat, every fire gets a
+group of its own, so each sub-event banner persists in Notification
+Center; this preserves the user's explicit "N distinct events" intent,
+and in repeat mode each observed event instance gets its own persistent
+banner (per-commit, per-test-pass, etc.). Pile-up is bounded by the
+model's own self-cancel when the event series ends, and user CANCEL
+remains a standing backstop. The `@` keeps one session's groups from ever
+being a prefix of another session's slot.
+
+**When the person comes back, the banners close.** A message the person
+submits, or an `AskUserQuestion` they answer, closes every banner this
+session raised — the one-shot slot and every pile-up banner — together
+with the session's own "답하세요"/turn banner. Other sessions' banners
+stay. A `/loop` repeat or a `ScheduleWakeup` wake-up is not a return and
+closes nothing. The ARM flag is not touched: a pending ARM keeps firing.
+To switch the closing off on this machine, start the session with
+`CC_CMDS_SESSION_DISMISS=0` (`off`, `false` and `no` read the same, case
+insensitively).
 
 ## 2. Trigger lexicon (canonical)
 
@@ -428,8 +443,10 @@ Dispatcher behavior:
   ignored entirely. The dispatcher is class-agnostic — it does not see
   the event class label, only that one more instance fired.
 - **Banner**: `terminal-notifier -title "cc-cmds ${workflow}"
-  -message "${summary}" -execute "$click"`. `-group "cc-cmds-active-notify"`
-  added only when single + `arm_count == 1` (banner replace semantics).
+  -message "${summary}" -execute "$click" -group …`. Single + `arm_count == 1`
+  uses the session slot `cc-cmds-active-notify-<sid>` (banner replace
+  semantics within the session); every other fire uses
+  `cc-cmds-active-notify-<sid>@<armed_at>.<fire_count>` (pile-up).
   `$click` is what `orchestrator/notify-focus.sh exec-arg` built from the
   dispatcher's own `TMUX`/`TMUX_PANE`: a focus command, so clicking the
   banner selects the iTerm2 tab and session and the tmux window and pane
@@ -604,8 +621,8 @@ on judgment; it may not start on judgment.
 
 User: `"npm run build, ping me when done"` → ARM single (default
 count=1) → Bash(build) → 5 minutes → exit 0 → model observes
-completion → `fire-now "npm" "성공"` → banner with `-group` → flag
-consumed → yield.
+completion → `fire-now "npm" "성공"` → banner in the session slot
+`-group "cc-cmds-active-notify-<sid>"` → flag consumed → yield.
 
 ### (s2) Issue #12 reproducer — single armCount=2 end-to-end
 
@@ -625,12 +642,12 @@ Lifecycle:
    Flag: `{"schema":3,...,"mode":"single","arm_count":2,"fire_count":0,...}`.
 2. Test execution begins. Model observes start.
 3. Model: `notify.sh fire-now "test" "시작"`. Dispatcher: intermediate
-   fire — `fire_count` 0→1, flag preserved, banner emitted (no `-group`
-   since armCount>1).
+   fire — `fire_count` 0→1, flag preserved, banner emitted under its own
+   group `cc-cmds-active-notify-<sid>@<armed_at>.1` since armCount>1.
 4. Test execution completes. Model observes end.
 5. Model: `notify.sh fire-now "test" "완료"`. Dispatcher: final fire
    — `fire_count` 1+1=2 ≥ `arm_count`=2 → `mv -n` consume, banner
-   emitted (no `-group`).
+   emitted under `cc-cmds-active-notify-<sid>@<armed_at>.2`.
 6. Two banners persist in Notification Center.
 
 ### (s3) Event-scoped repeat — `각 커밋마다` end-to-end with self-cancel
@@ -647,8 +664,9 @@ Lifecycle:
 2. Model edits files, runs tests, then `git commit -m "..."` (exit 0,
    sha `abc123`). The Bash exit is an observed `commit` instance.
 3. Model's NEXT tool call (§4.4 fire-first): `notify.sh fire-now
-   "commit" "abc123 완료"`. Banner emitted (no `-group` — pile-up
-   intentional), `fire_count` 0→1, flag preserved.
+   "commit" "abc123 완료"`. Banner emitted under its own group
+   `cc-cmds-active-notify-<sid>@<armed_at>.1` — pile-up intentional,
+   `fire_count` 0→1, flag preserved.
 4. Model continues — more edits, `git commit -m "..."` (sha `def456`).
    Same pattern: `notify.sh fire-now "commit" "def456 완료"`,
    `fire_count` 1→2.
@@ -923,11 +941,13 @@ Design notes:
   neutralizes the exit code, `2>/dev/null` swallows stderr leak, and
   the `echo` runs unconditionally so the user always receives the
   guidance line.
-- **`-group "cc-cmds-active-notify"`** — same group identifier as the
-  single armCount=1 fire. Repeated bypass invocations replace each
-  other so banner noise stays bounded. A repeat-mode or single
-  armCount>1 ARM cycle is unaffected (those use no `-group`, so the
-  visual identities coexist).
+- **`-group "cc-cmds-active-notify"`** — the one global group left. It
+  is no longer the group of the single armCount=1 fire, which now uses
+  the per-session slot `cc-cmds-active-notify-<sid>`. Repeated bypass
+  invocations replace each other so banner noise stays bounded, and no
+  ARM cycle's banner shares the group. Closing a session's banners on
+  return does not reach it either: it is neither the slot nor starts
+  with the slot followed by `@`.
 - **Bypass is NOT subject to §3's silent-skip contract.** The bypass
   path's contract is the inverse: precondition fail → user-visible
   Korean guidance via the combined-Bash stdout (first-run UX

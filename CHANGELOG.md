@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.52.0] - 2026-10-09
+## [2.53.0] - 2026-10-09
 
 내려 두었던 런 상태 패널(`autopilot`)을 런 전체를 펼치는 판본으로 다시 싣는다. 머리 줄 한 줄과 끝나지 않은 세그먼트만 보이던 패널이, 세그먼트마다의 세부와 막힘 사유 전문, 최근 이벤트까지 보인다. 패널은 전체 화면 세션에서 도킹될 때만 보인다.
 
@@ -32,6 +32,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - tmux 통합 모드(`tmux -CC`) 안에서는 `CLAUDE_CODE_NO_FLICKER=1` 이 있어야 전체 화면이 된다. 설정 `tui: "fullscreen"` 이나 `/tui fullscreen` 은 그 감지를 덮어쓰지 못한다(엔진 2.1.295 관측). `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` 이나 `CLAUDE_CODE_NO_FLICKER=0` 이면 패널이 도킹되지 않는다.
 - 설정과 모듈은 새 세션부터 적용된다.
+
+## [2.52.0] - 2026-10-09
+
+사람이 세션에 돌아오면(메시지를 보내거나 `AskUserQuestion` 에 답하면) 그 세션이 띄운 배너를 알림 센터에서 닫는다. 지금까지는 이미 세션으로 돌아와 일을 이어 가는데도 지난 배너가 알림 센터에 그대로 쌓여 있었다.
+
+### Added
+
+- **귀환 때 배너 닫기** (`hooks/session-return-dismiss.sh`)
+  - `UserPromptSubmit`·`PostToolUse`(`AskUserQuestion`)·`Stop` 에 거는 새 훅이다. 그 세션의 active-notify 배너와 세션 배너(답하세요·차례 넘김)만 닫고, 다른 세션의 배너·autopilot 런 배너·그룹 없는 배너·권한 시험 배너는 건드리지 않으며 ARM 상태도 그대로 둔다.
+  - `/loop` 반복, `ScheduleWakeup` 깨우기, 백그라운드 작업 보고처럼 사람이 보내지 않은 턴은 귀환으로 치지 않는다.
+  - 세션을 `CC_CMDS_SESSION_DISMISS=0` 으로 띄우면 귀환 닫기를 끈다(`off`·`false`·`no` 도 같다).
+- `notify.sh dismiss <sid>` — 훅 전용 하위 명령. 그 세션의 그룹만 골라 지운다.
+
+### Changed
+
+- **단일 1회 배너의 그룹이 세션별 자리로 바뀌었다** (`cc-cmds-active-notify-<sid>`). 한 세션의 배너가 다른 세션의 단일 배너를 더는 대체하지 않는다.
+- `--count` 가 2 이상인 배너와 repeat 배너는 발화마다 `<자리>@<armed_at>.<n>` 그룹으로 띄워, 지금처럼 쌓이면서도 귀환 때 찾아 지울 수 있다.
+
+### Post-install notes
+
+- 업그레이드 전에 옛 전역 그룹(`cc-cmds-active-notify`)으로 떠 있던 배너는 귀환 때 닫히지 않는다. 손으로 지우거나 그대로 두면 된다.
 
 ## [2.51.4] - 2026-10-09
 

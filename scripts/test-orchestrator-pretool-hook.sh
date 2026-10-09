@@ -269,10 +269,34 @@ check "T16 PreToolUse 에 AskUserQuestion 매처 항목이 정확히 하나 있�
   "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")] | length' "$HOOKS_JSON")" "1"
 check "T16 최상위에 Stop 키가 있다" \
   "$(jq -r 'if (.hooks | has("Stop")) then "yes" else "no" end' "$HOOKS_JSON")" "yes"
-check "T16 Stop 배열에 항목이 정확히 하나 있다" \
-  "$(jq -r '.hooks.Stop | length' "$HOOKS_JSON")" "1"
+# The Stop array is counted by COMMAND, not by length: the return hook adds a
+# sibling element there, and a bare length would either go red on it or, once
+# bumped to two, stay green while either element went missing.
+check "T16 Stop 배열에 좌석 2 항목이 정확히 하나 있다" \
+  "$(jq -r '[.hooks.Stop[]? | select(any(.hooks[]; .command | contains("session-turn-notify.sh")))] | length' "$HOOKS_JSON")" "1"
+check "T16 Stop 배열에 귀환 닫기 항목이 정확히 하나 있다" \
+  "$(jq -r '[.hooks.Stop[]? | select(any(.hooks[]; .command | contains("session-return-dismiss.sh")))] | length' "$HOOKS_JSON")" "1"
 check "T16 두 세션 항목 모두 timeout 5 를 가진다" \
-  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")), (.hooks.Stop[]?)] | [.[].hooks[].timeout] | map(select(. == 5)) | length' "$HOOKS_JSON")" "2"
+  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")), (.hooks.Stop[]? | select(any(.hooks[]; .command | contains("session-turn-notify.sh"))))] | [.[].hooks[].timeout] | map(select(. == 5)) | length' "$HOOKS_JSON")" "2"
+check "T16 Stop 의 귀환 닫기 항목이 timeout 5 를 가진다" \
+  "$(jq -r '[.hooks.Stop[]?.hooks[] | select(.command | contains("session-return-dismiss.sh")) | select(.timeout == 5)] | length' "$HOOKS_JSON")" "1"
+
+# The return hook's other two entries. `UserPromptSubmit` is a new
+# top-level key; the `PostToolUse` entry is a SIBLING with its own
+# `AskUserQuestion` matcher, never merged into `Edit|Write|MultiEdit`. A
+# matcher-less element in `PostToolUse` would run the hook on every tool call —
+# the "any activity" trigger that was explicitly rejected — so it is refused
+# structurally as well as by the script's own `tool_name` check.
+check "T16 UserPromptSubmit 에 귀환 닫기 항목이 정확히 하나, timeout 5" \
+  "$(jq -r '[.hooks.UserPromptSubmit[]?.hooks[] | select(.command | contains("session-return-dismiss.sh")) | select(.timeout == 5)] | length' "$HOOKS_JSON")" "1"
+check "T16 PostToolUse 에 AskUserQuestion 매처의 귀환 닫기 항목이 정확히 하나, timeout 5" \
+  "$(jq -r '[.hooks.PostToolUse[]? | select(.matcher == "AskUserQuestion") | .hooks[] | select(.command | contains("session-return-dismiss.sh")) | select(.timeout == 5)] | length' "$HOOKS_JSON")" "1"
+check "T16 Edit|Write|MultiEdit 항목이 그대로다" \
+  "$(jq -r '[.hooks.PostToolUse[]? | select(.matcher == "Edit|Write|MultiEdit") | .hooks[] | select(.command | contains("stage-policy-edit-drift.sh")) | select(.timeout == 10)] | length' "$HOOKS_JSON")" "1"
+check "T16 AskUserQuestion 을 다른 도구와 합친 매처가 없다" \
+  "$(jq -r '[.hooks[][]? | select((.matcher? // "") | test("AskUserQuestion\\||\\|AskUserQuestion"))] | length' "$HOOKS_JSON")" "0"
+check "T16 매처 없는 원소가 PostToolUse 배열에 들어가 있지 않다" \
+  "$(jq -r '[.hooks.PostToolUse[]? | select(has("matcher") | not)] | length' "$HOOKS_JSON")" "0"
 # The negative form of the same claim: a matcher-less element inside PreToolUse
 # is what a misplaced Stop entry looks like, and it is well-formed JSON.
 check "T16 매처 없는 원소가 PreToolUse 배열에 들어가 있지 않다" \

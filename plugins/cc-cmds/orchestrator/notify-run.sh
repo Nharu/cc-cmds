@@ -72,6 +72,12 @@ CC_NOTIFY_ENV_NAME=CC_CMDS_AUTOPILOT_NOTIFY
 # of these off would quietly not work on the other.
 CC_NOTIFY_SESSION_ENV_NAME=CC_CMDS_SESSION_NOTIFY
 
+# The return hook's switch, read by `cc_notify_dismiss_enabled` below. A third
+# switch rather than the seats' one: someone who silenced the session banners
+# would otherwise lose the dismissal of the active-notify banners as well, and
+# the dismissal alone could not be switched off. Same value grammar again.
+CC_NOTIFY_DISMISS_ENV_NAME=CC_CMDS_SESSION_DISMISS
+
 # The stacking cap. Above it, individual notices collapse into one slot carrying
 # a count — see `cc_notify_stack_admit`.
 CC_NOTIFY_STACK_CAP=8
@@ -156,6 +162,20 @@ cc_notify_session_enabled() {
   # because then a typo silently removes the banners instead, which is the worse
   # of the two silences and also splits the grammar the line above keeps whole.
   local v="${CC_CMDS_SESSION_NOTIFY:-}"
+  case "$v" in
+    '') return 0 ;;
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+    1|[Oo][Nn]|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]) return 0 ;;
+  esac
+  return 0
+}
+
+cc_notify_dismiss_enabled() {
+  # The return hook's switch — see `CC_NOTIFY_DISMISS_ENV_NAME`. Same grammar as
+  # `cc_notify_session_enabled`, and silent on an unrecognized value for the same
+  # reason: the hook may not write a byte to stderr, and there is no `RUN_DIR`
+  # for a once-guard. Off stops both the recording and the dismissal.
+  local v="${CC_CMDS_SESSION_DISMISS:-}"
   case "$v" in
     '') return 0 ;;
     0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
