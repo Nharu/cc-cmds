@@ -10072,7 +10072,7 @@ rm -f "$WT/$DOC15FB"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다, 15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다, 15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -10551,14 +10551,143 @@ case "$msg" in
   *) bad "15g 선행 착지 중복 문면" "$msg" ;;
 esac
 
+# --- 이전 런이 착지시킨 슬라이스 자신 -----------------------------------------
+# A successor run of the same document plans every declared slice again, the
+# one an earlier run already landed included. That slice is brought in as its
+# terminal row and gets no planned row: a `계획됨` written after the imported
+# row would become the slice's last row, and the next run in the chain would
+# read it as not landed. The ledger rows are asserted, not the exit status.
+# R15GP2 brought SA in from R15GP1, so it is the newest run of the document
+# with SA landed, and the row it carries already names R15GP1 as the source.
+g15_segrows() {  # g15_segrows <run id> <segment id> [상태] — that id's segment rows, of that state when given
+  { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } \
+    | { if [ -n "${3:-}" ]; then grep -F "| 상태=$3 " || true; else cat; fi; } | grep -c . || true
+}
+g15_run R15GZ "$DOC15GP" "$plan15c" 리뷰없음
+g15_mkwt R15GZ SA
+g15_plan plan R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
+check "15g: 이전 런이 착지시킨 슬라이스 자신의 plan 은 들여오기를 알리고 행을 쓰지 않는다" \
+  "$rc/$(g15_segs R15GZ)" "0/0"
+case "$msg" in
+  *"슬라이스 SA 를 이전 런 R15GP2 의 종단 행(상태=머지됨"*"처분=착지 들여오기"*) ok "15g: 그 plan 은 들일 슬라이스와 가장 최근의 이전 런을 든다" ;;
+  *) bad "15g 자신 들여오기 plan 문면" "$msg" ;;
+esac
+g15_plan act R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
+r15gz=$(g15_row R15GZ SA)
+check "15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다" \
+  "$rc/$(seg_field "$r15gz" '상태')/$(seg_field "$r15gz" '머지 커밋')/$(g15_segrows R15GZ SA 계획됨)" \
+  "0/머지됨/$m15gp/0"
+check "15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다" "$(seg_field "$r15gz" '출처')" "R15GP1"
+g15_plan act R15GZ SA 상태=계획됨 "워크트리=$(g15_wt R15GZ SA)"
+check "15g: 들인 슬라이스를 다시 계획해도 행은 하나이고 계획 행은 없다" \
+  "$rc/$(g15_segrows R15GZ SA)/$(g15_segrows R15GZ SA 계획됨)" "0/1/0"
+
+# The driver's call: `run_gate_call` rebinds the manifest, the run and the
+# ledger in a child shell that sourced the gate, and nothing else, so the
+# document has to be derived there or the walk finds no earlier run.
+g15_run R15GN "$DOC15GP" "$plan15c" 리뷰없음
+au15_H R15GN >/dev/null
+r15gn=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$1" >/dev/null 2>&1 || exit 9
+  set +e
+  unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+  MANIFEST=$2; RUN_ID=$3; RUN_DIR=$4; LEDGER=$5; GRANT=""
+  gate_import_prior_landed act SA self
+' _ "$GATE" "$WORK/plan-R15GN.md" R15GN "$STATE_LATE/cc-cmds/run/R15GN" "$WT/docs/pipeline-run/R15GN.md" >/dev/null 2>&1; printf '%s' "$?")
+r15gnrow=$(g15_row R15GN SA)
+check "15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다" \
+  "$r15gn/$(seg_field "$r15gnrow" '상태')/$(seg_field "$r15gnrow" '출처')" "0/머지됨/R15GP1"
+
+# --- PR 절단점으로 착지한 슬라이스 ------------------------------------------
+# A slice declared `절단점: PR` ends as `완료` with a `PR` and the head `커밋`
+# the run left it at. It is brought in only while the live pull request is open
+# or merged at that head; the stub answers `gh pr view` for the target slug.
+# The earlier rows are written by hand: the gate reads another run's ledger as
+# text, and a hand-written row is how a `출처` from further back is staged.
+mkdir -p "$WORK/gh15gk"
+cat > "$WORK/gh15gk/gh" <<'GHSTUB'
+#!/bin/sh
+case "$1 $2 $3 $4" in
+  "-R t/infra pr view") [ "${GH15_PR:-fail}" = "fail" ] && exit 1; printf '%s\n' "$GH15_PR" ;;
+  *) exit 1 ;;
+esac
+GHSTUB
+chmod +x "$WORK/gh15gk/gh"
+g15_pr() {  # g15_pr <pr view 답 | fail> <g15_plan 인자...> — g15_plan with the stub answering the PR
+  # The stub path rides an exported variable: the in-process gate starts from
+  # a scrubbed shell, and a variable this script did not export is gone there.
+  local a="$1"
+  shift
+  gh() { "$GH15_STUB" "$@"; }
+  export -f gh
+  export GH15_STUB="$WORK/gh15gk/gh" GH15_PR="$a"
+  g15_plan "$@"
+  unset -f gh
+  unset GH15_STUB GH15_PR
+}
+g15_raw() {  # g15_raw <run id> <필드들> — append one hand-written segment row to that run's ledger
+  printf -- '- `segment` | %s\n' "$2" >> "$WT/docs/pipeline-run/$1.md"
+}
+c15gk=$m15gp
+c15gx=1111111111111111111111111111111111111111
+DOC15GK='docs/fixture-design-15gk.md'
+two_slice_doc "$WT/$DOC15GK" t/infra PR '**리뷰 정책**: 리뷰없음'
+g15_run R15GK1 "$DOC15GK" "$plan15c" 리뷰없음
+g15_mkwt R15GK1 SA
+g15_plan act R15GK1 SA 상태=계획됨 "워크트리=$(g15_wt R15GK1 SA)"
+[ "$rc" = "0" ] || bad "15g 이전 런 R15GK1 의 SA 계획" "rc=$rc $msg"
+g15_raw R15GK1 "id=SA | 상태=완료 | PR=8 | 커밋=$c15gk | 워크트리=$(g15_wt R15GK1 SA) | 선행=없음 | 출처=R15GK0"
+g15_run R15GK2 "$DOC15GK" "$plan15c" 리뷰없음
+g15_mkwt R15GK2 SA
+g15_pr "OPEN $c15gk" plan R15GK2 SA 상태=계획됨 "워크트리=$(g15_wt R15GK2 SA)"
+case "$rc/$(g15_segs R15GK2)/$msg" in
+  "0/0/"*"슬라이스 SA 를 이전 런 R15GK1 의 종단 행(상태=완료 · 커밋=$c15gk)"*) ok "15g: PR 절단점 슬라이스의 plan 은 PR 행을 들일 것을 알리고 행을 쓰지 않는다" ;;
+  *) bad "15g PR 들여오기 plan" "rc=$rc $msg" ;;
+esac
+g15_pr "OPEN $c15gk" act R15GK2 SA 상태=계획됨 "워크트리=$(g15_wt R15GK2 SA)"
+r15gk=$(g15_row R15GK2 SA)
+check "15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다" \
+  "$rc/$(seg_field "$r15gk" '상태')/$(seg_field "$r15gk" 'PR')/$(seg_field "$r15gk" '커밋')/$(seg_field "$r15gk" '출처')/$(g15_segrows R15GK2 SA 계획됨)" \
+  "0/완료/8/$c15gk/R15GK0/0"
+g15_run R15GK3 "$DOC15GK" "$plan15c" 리뷰없음
+g15_mkwt R15GK3 SA
+g15_pr "OPEN $c15gx" act R15GK3 SA 상태=계획됨 "워크트리=$(g15_wt R15GK3 SA)"
+r15gk3="$rc/$(seg_field "$(g15_row R15GK3 SA)" '상태')"
+g15_run R15GK4 "$DOC15GK" "$plan15c" 리뷰없음
+g15_mkwt R15GK4 SA
+g15_pr "CLOSED $c15gk" act R15GK4 SA 상태=계획됨 "워크트리=$(g15_wt R15GK4 SA)"
+check "15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다" \
+  "$r15gk3|$rc/$(seg_field "$(g15_row R15GK4 SA)" '상태')" "0/계획됨|0/계획됨"
+g15_run R15GK5 "$DOC15GK" "$plan15c" 리뷰없음
+g15_mkwt R15GK5 SB
+g15_pr "MERGED $c15gk" act R15GK5 SB 상태=계획됨 "워크트리=$(g15_wt R15GK5 SB)"
+check "15g: PR 절단점으로 착지한 선행을 들여와 다음 슬라이스가 계획된다" \
+  "$rc/$(seg_field "$(g15_row R15GK5 SA)" '상태')/$(seg_field "$(g15_row R15GK5 SB)" '상태')" "0/완료/계획됨"
+
+# A slice the document declares with `절단점: 머지` has not delivered at an open
+# pull request, whatever the earlier run's row says.
+DOC15GM='docs/fixture-design-15gm.md'
+two_slice_doc "$WT/$DOC15GM" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15GM1 "$DOC15GM" "$plan15c" 리뷰없음
+g15_mkwt R15GM1 SA
+g15_plan act R15GM1 SA 상태=계획됨 "워크트리=$(g15_wt R15GM1 SA)"
+[ "$rc" = "0" ] || bad "15g 이전 런 R15GM1 의 SA 계획" "rc=$rc $msg"
+g15_raw R15GM1 "id=SA | 상태=완료 | PR=9 | 커밋=$c15gk | 워크트리=$(g15_wt R15GM1 SA) | 선행=없음"
+g15_run R15GM2 "$DOC15GM" "$plan15c" 리뷰없음
+g15_mkwt R15GM2 SA
+g15_pr "OPEN $c15gk" act R15GM2 SA 상태=계획됨 "워크트리=$(g15_wt R15GM2 SA)"
+check "15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다" \
+  "$rc/$(g15_segrows R15GM2 SA)/$(seg_field "$(g15_row R15GM2 SA)" '상태')" "0/1/계획됨"
+
 for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
             R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB \
-            R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB; do
+            R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB \
+            R15GZ:SA R15GK1:SA R15GK2:SA R15GK3:SA R15GK4:SA R15GK5:SB R15GM1:SA R15GM2:SA; do
   ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
       && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
 done
 rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR" \
-  "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW"
+  "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW" "$WT/$DOC15GK" "$WT/$DOC15GM"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget

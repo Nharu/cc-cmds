@@ -9314,5 +9314,169 @@ check "그 사유가 어긋남을 말한다" "$(ra_get "$ra_out" reason)" "라�
 check "가드 어긋남은 임대를 묻지도 않는다" "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)" "/no"
 printf '1\n' > "$RA/run/routing-guard"
 
+# ---------------------------------------------------------------------------
+# 34. 남은 일 이어받기 — 이전 런이 착지시킨 슬라이스는 다시 하지 않는다
+#
+# 같은 문서를 다시 킥오프한 런은 선언된 슬라이스를 전부 다시 계획한다. 이전 런이
+# 착지시킨 슬라이스는 계획 때 게이트의 들여오기로 종단 행을 받아 `done.txt` 에
+# 들어가고, 주 루프는 그것을 디스패치하지 않는다. 들인 행 뒤에 `계획됨` 행이 붙으면
+# 그다음 런이 마지막 행을 미착지로 읽으므로, 세 고리 연쇄를 실제 게이트로 잰다 —
+# 드라이버가 `run_gate_call` 의 자식 셸로 부르는 그 경로 그대로다.
+# ---------------------------------------------------------------------------
+#
+# 30절은 끝에서 스파이로 덮었던 드라이버 함수를 `unset -f` 로 지운다 — 복원이
+# 아니라 제거다. 이 절은 그 가운데 셋을 진짜로 불러야 하므로 드라이버 원문에서
+# 정의를 다시 읽는다. 다시 소싱하면 첫 `readonly` 에서 죽는다.
+eval "$(grep -E '^log\(\) ' "$DRIVER")"
+for r34fn in ledger_row park; do
+  eval "$(awk -v h="${r34fn}() {" 'index($0, h) == 1 { on = 1 } on { print } on && /^}/ { exit }' "$DRIVER")"
+done
+R34="$WORK/r34"; mkdir -p "$R34/ledgers" "$R34/doc"
+r34_doc() {  # r34_doc <경로> <SA 의 절단점> — SA 와 SA 에 기대는 SB, 둘 다 홈 대상의 레포
+  local id dep cut
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+    for id in SA SB; do
+      dep='없음'; cut="$2"
+      [ "$id" = SB ] && { dep='SA'; cut='머지'; }
+      printf '\n### 슬라이스 %s — 픽스처\n\n**스킬**: implement\n**레포**: Nharu/cc-cmds\n' "$id"
+      printf '**선언 파일**: `%s.txt`\n**선행**: %s\n**절단점**: %s\n**리뷰 정책**: 선리뷰후머지\n' "$id" "$dep" "$cut"
+    done
+  } > "$1"
+}
+r34_last() {  # r34_last <원장> <id> — that id's last segment row
+  { grep -E '^- `segment` ' "$1" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | tail -1
+}
+r34_field() { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+r34_count() {  # r34_count <원장> <id> <상태> — that id's segment rows in that state
+  { grep -E '^- `segment` ' "$1" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } \
+    | { grep -F "| 상태=$3 " || true; } | grep -c . || true
+}
+R34DOC="$R34/doc/r34.md"; r34_doc "$R34DOC" 머지
+R34KEY="${R34DOC#/}"
+MF34="$R34/manifest.md"; write_manifest "$MF34" "" "" main "$R34KEY"
+M34=$(cd "$MF_REPO" && git rev-parse refs/heads/main)
+
+r34_ring() {  # r34_ring <런 id> [머지|실패] — one run of the document: its run row and its plan
+  # `머지` then records SA merged the way `merge_gate` does; `실패` makes the
+  # gate call fail outright, which must plan the slice rather than skip it.
+  local rid="$1"
+  mkdir -p "$R34/$rid"
+  (
+    MANIFEST="$MF34"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    RUN_ID="$rid"; RUN_DIR="$R34/$rid"; LEDGER="$R34/ledgers/$rid.md"; LEDGER_SCOPE=파일
+    GRANT="$R34/grant.md"; DOC="$R34DOC"; DOC_KEY="$R34KEY"
+    : > "$LEDGER"
+    ledger_row 'run' "run-id=$rid" "시작=$(now_iso)" "설계 문서=$DOC_KEY"
+    park() { printf '%s\n' "$*" >> "$RUN_DIR/parked"; }
+    binding_digest() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+    wt_path() { printf 'WT-%s' "$1"; }
+    if [ "${2:-}" = "실패" ]; then run_gate_call() { return 9; }; fi
+    plan_from_declaration "$DOC"
+    printf '%s\n' "$?" > "$RUN_DIR/plan.rc"
+    if [ "${2:-}" = "머지" ]; then
+      ledger_row 'segment' "id=SA" "상태=머지됨" "브랜치=seg/$rid-SA" "PR=3" "레포=Nharu/cc-cmds" \
+        "머지 커밋=$M34" "베이스 sha=$M34"
+    fi
+  ) >/dev/null 2>"$R34/$rid.err"
+}
+r34_done() { tr '\n' ' ' < "$R34/$1/done.txt" 2>/dev/null | sed 's/ $//'; }
+
+r34_ring ring1 머지
+check "34: 첫 고리는 들일 것이 없어 두 슬라이스를 계획하고 SA 를 머지한다" \
+  "$(cat "$R34/ring1/plan.rc")/$(r34_done ring1)/$(r34_count "$R34/ledgers/ring1.md" SA 계획됨)/$(r34_field "$(r34_last "$R34/ledgers/ring1.md" SA)" '상태')" \
+  "0//1/머지됨"
+r34_ring ring2
+r34_ring ring3
+for r34 in ring2 ring3; do
+  r34l="$R34/ledgers/$r34.md"
+  r34a=$(r34_last "$r34l" SA)
+  check "34: $r34 의 plan_from_declaration 은 착지한 SA 를 done.txt 에 다시 채운다" \
+    "$(cat "$R34/$r34/plan.rc")/$(r34_done "$r34")" "0/SA"
+  check "34: $r34 에서 SA 의 마지막 행은 들인 종단 행이고 계획 행이 없다" \
+    "$(r34_field "$r34a" '상태')/$(r34_field "$r34a" '머지 커밋')/$(r34_count "$r34l" SA 계획됨)" "머지됨/$M34/0"
+  check "34: $r34 이 들인 행의 출처 는 일을 한 첫 고리다" "$(r34_field "$r34a" '출처')" "ring1"
+  check "34: $r34 의 SB 는 계획된다" "$(r34_count "$r34l" SB 계획됨)" "1"
+done
+
+r34_ring ringx 실패
+case "$(r34_done ringx)/$(r34_count "$R34/ledgers/ringx.md" SA 계획됨)/$(cat "$R34/ringx.err")" in
+  "/1/"*"착지 들여오기 호출 실패(rc=9)"*) ok "34: 들여오기 호출이 실패하면 경고하고 SA 를 다시 계획한다" ;;
+  *) bad "34: 들여오기 실패" "done=$(r34_done ringx) err=$(tr '\n' ' ' < "$R34/ringx.err")" ;;
+esac
+
+# 주 루프 — 들인 슬라이스는 디스패치하지 않고 그 수를 보고하며, 그것에 기대는
+# 슬라이스는 그대로 진행한다. 같은 런에서 R7 의 레시피를 함께 잰다: 이전 런이
+# 감사를 마쳐 이 문서 슬러그의 리더 리포트가 있으면 감사를 띄우지 않는다.
+R34M="$R34/main"; mkdir -p "$R34M/run/log" "$R34M/docs/design-audit"
+MF34M="$R34M/manifest.md"; write_manifest "$MF34M" "" "" main "$R34KEY"
+: > "$R34M/docs/design-audit/r34slug.reader-1.md"
+printf -- '- `run` | run-id=r34prior | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n' \
+  "$R34KEY" > "$R34M/r34prior.md"
+(
+  RUN_DIR="$R34M/run"; LEDGER="$R34M/r34main.md"; LEDGER_SCOPE=파일; RUN_ID=r34main; GRANT="$R34/grant.md"
+  MANIFEST="$MF34M"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  DOC="$R34DOC"; DOC_KEY="$R34KEY"; DOC_SLUG=r34slug; DOC_BASE="$R34M"
+  ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=r34main; BASE="$R34M"
+  : > "$LEDGER"
+  design_arm() { return 0; }
+  dispatch_stage() { printf '%s\n' "$1" >> "$R34M/dispatched"; printf '0' > "$RUN_DIR/$1.rc"; }
+  slicing_branch() { printf '선언통치'; }
+  plan_from_declaration() {
+    printf 'SA\t-\t-\t-\nSB\t-\t-\tSA\n' > "$RUN_DIR/plan.tsv"
+    printf 'SA\n' > "$RUN_DIR/done.txt"
+  }
+  segment_cycle() { printf '%s\n' "$1" >> "$R34M/cycled"; return 0; }
+  past_deadline() { return 1; }
+  in_halted_radius() { return 1; }
+  cross_repo_deps() { :; }
+  report_append() { printf '%s | %s\n' "$1" "$2" >> "$R34M/report"; }
+  report_path() { printf '%s' "$R34M/report"; }
+  grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+  run_cycle_budget() { printf 10; }
+  spawn_lease_release_run() { :; }; report_run_residual() { :; }
+  quiet_window_begin() { :; }; quiet_window_end() { :; }
+  main_loop; printf 'rc=%s\n' "$?"
+) > "$R34M/out" 2>/dev/null
+check "34: 주 루프는 done.txt 의 SA 를 디스패치하지 않고 그것에 기대는 SB 만 돌린다" \
+  "$(sed -n 's/^rc=//p' "$R34M/out")/$(tr '\n' ' ' < "$R34M/cycled" 2>/dev/null | sed 's/ $//')" "0/SB"
+check "34: 종료 보고가 들인 슬라이스 수를 싣는다" \
+  "$(grep -c '^착지 들여오기 | 1건' "$R34M/report" 2>/dev/null || true)" "1"
+check "34: R7 — 이전 런의 감사 리포트가 있으면 후속 런은 감사를 띄우지 않는다" \
+  "$( { cat "$R34M/dispatched" 2>/dev/null || true; } | grep -c '^S2$' || true)/$( { grep -F '`자율 승인`' "$R34M/r34main.md" 2>/dev/null || true; } | grep -cF '기준=이 문서 슬러그의 리더 리포트가 이미 존재한다' || true)" \
+  "0/1"
+
+# 반환 4 의 PR 절단점 종단 행 — 선언된 절단점이 PR 이고 살아 있는 PR 을 관측했을
+# 때만 쓴다. 스텁은 서브셸 안에서만 살린다(27절의 규율).
+R34PR="$R34/doc/pr.md"; r34_doc "$R34PR" PR
+H34=0123456789abcdef0123456789abcdef01234567
+r34_prrow() {  # r34_prrow <seg> <gh 답 | fail> [문서] — the rows pr_cutpoint_terminal_row writes
+  local out="$R34/prrow"
+  : > "$out"
+  (
+    DOC="${3-$R34PR}"; RUN_DIR="$R34"; R34GH="$2"
+    ledger_row() { printf '%s\n' "$*" >> "$out"; }
+    seg_slug() { printf 'o/r'; }
+    wt_path() { printf 'WT-%s' "$1"; }
+    gh() {
+      [ "$R34GH" != "fail" ] || return 1
+      case "$*" in *"pr view seg/x-"*) printf '%s\n' "$R34GH" ;; *) return 1 ;; esac
+    }
+    pr_cutpoint_terminal_row "$1" "seg/x-$1"
+  ) >/dev/null 2>&1
+  tr '\n' ';' < "$out"
+}
+check "34: 선언 PR 슬라이스의 열린 PR 은 완료 · PR · 커밋 종단 행을 남긴다" \
+  "$(r34_prrow SA "12 OPEN $H34")" "segment id=SA 상태=완료 PR=12 커밋=$H34 브랜치=seg/x-SA 레포=o/r 워크트리=WT-SA;"
+check "34: 머지된 PR 도 같은 행을 남긴다" "$(r34_prrow SA "12 MERGED $H34" | grep -c '상태=완료 PR=12' || true)" "1"
+check "34: 닫힌 PR · 관측 실패 · 선언 머지 슬라이스 · 문서 없는 런은 행을 남기지 않는다" \
+  "$(r34_prrow SA "12 CLOSED $H34")|$(r34_prrow SA fail)|$(r34_prrow SB "12 OPEN $H34")|$(r34_prrow SA "12 OPEN $H34" '')" "|||"
+# 부르는 자리는 마감 경과와 머지 게이트의 2 둘이고, 적용 거부의 4 는 부르지 않는다
+# — 그때의 마지막 행은 이미 `머지됨` 이다.
+r34_sc=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
+check "34: segment_cycle 은 마감 경과와 머지 게이트 2 의 반환 4 앞에서만 종단 행을 쓴다" \
+  "$(printf '%s\n' "$r34_sc" | grep -c 'pr_cutpoint_terminal_row "\$seg" "\$branch"' || true)/$(printf '%s\n' "$r34_sc" | grep -A1 'pr_cutpoint_terminal_row "\$seg"' | grep -c 'return 4' || true)/$(printf '%s\n' "$r34_sc" | grep -B4 'pr_cutpoint_terminal_row "\$seg"' | grep -cE 'if past_deadline; then|if \[ "\$mrc" = "2" \]; then' || true)/$(printf '%s\n' "$r34_sc" | grep -c '\[ "\$arc" = "2" \] && return 4' || true)" \
+  "2/2/2/1"
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
