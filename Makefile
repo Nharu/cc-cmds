@@ -248,7 +248,8 @@ policy-drift:
 # a real one. Nothing here writes into the checkout.
 NOTIFY_TESTS := \
 	scripts/test-active-notify-lifecycle.sh \
-	scripts/test-active-notify-pretool-hook.sh
+	scripts/test-active-notify-pretool-hook.sh \
+	scripts/test-active-notify-dismiss.sh
 
 LINT_TESTS := \
 	scripts/test-lint-skill-options.sh \
@@ -437,9 +438,11 @@ test-darwin: test-active-notify test-orchestrator \
 #                                 Apple make 3.81, which waits for anything
 #                                 the call leaves holding its jobserver pipe.
 #
-# The two active-notify suites print the same assertions on both legs and are
+# The three active-notify suites print the same assertions on both legs and are
 # kept anyway: taking them off does not move the PR's critical path, which the
-# ubuntu leg sets.
+# ubuntu leg sets. The return-hook suite runs its notifier as a stub, so it
+# checks nothing more here than there, and it is the cheapest of the three to
+# keep.
 #
 # Anything added here must also be matched by that workflow's `paths` filter,
 # together with every file it sources, and nothing may stay in the filter that
