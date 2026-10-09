@@ -9,9 +9,10 @@
 #
 # WHAT IS ASSERTED IS THE EXIT-CODE CONTRACT, AND NOTHING THAT MOVES A WINDOW.
 # The handler branches on the helper's status alone, so the statuses are what
-# a regression would break. No verb here is pointed at iTerm2: `raise` and `map`
-# are given this suite's own pid, which answers 3 without accessibility trust
-# and 5 with it (not iTerm2) — either way before any window is touched.
+# a regression would break. No verb here is pointed at iTerm2: `raise`, `map`
+# and `focused` are given this suite's own pid, which answers 3 without
+# accessibility trust and 5 with it (not iTerm2) — either way before any window
+# is touched. `makekey` asks no trust and answers 5 for that pid.
 #
 # WHERE THIS RUNS. darwin only. Elsewhere it prints one `SKIP:` line. On darwin
 # without a Swift compiler it fails under CI and otherwise skips, because the
@@ -97,6 +98,18 @@ rc "trusted 는 0 또는 3" 0 3 -- "$HX" trusted
 rc "iTerm2 가 아닌 pid 의 raise" 3 5 -- "$HX" raise $$ 1 --ceiling 10
 rc "iTerm2 가 아닌 pid 의 map" 3 5 -- "$HX" map $$ --ceiling 10
 rc "aecheck 는 0 또는 1" 0 1 -- "$HX" aecheck
+rc "focused 에 인자 없음" 2 -- "$HX" focused
+rc "focused 의 pid 가 숫자 아님" 2 -- "$HX" focused x
+rc "makekey 에 인자 하나" 2 -- "$HX" makekey 1
+rc "makekey 의 wid 가 숫자 아님" 2 -- "$HX" makekey 1 x
+rc "iTerm2 가 아닌 pid 의 focused" 3 5 -- "$HX" focused $$
+# makekey asks no trust, so a pid that is not iTerm2 is 5 on every host — and
+# not 8, which says the three symbols resolve on this runner.
+rc "iTerm2 가 아닌 pid 의 makekey" 5 -- "$HX" makekey $$ 1
+# --focus takes no value: it is not a usage error on raise, and stays an
+# unknown option on map.
+rc "값 없는 --focus 를 붙인 raise" 3 5 -- "$HX" raise $$ 1 --focus --ceiling 10
+rc "map 의 --focus 는 사용법 오류" 2 -- "$HX" map $$ --focus --ceiling 10
 
 # The missing-symbol seam: the check runs before trust, so the status is 8
 # whatever this host has granted.
@@ -104,6 +117,10 @@ rc "raise 의 심볼이 없으면 8" 8 -- env CC_CMDS_NOTIFY_FOCUS_AX_MISSING=_A
 rc "map 의 심볼이 없으면 8" 8 -- env CC_CMDS_NOTIFY_FOCUS_AX_MISSING=_AXUIElementCreateWithRemoteToken "$HX" map $$ --ceiling 10
 rc "onspace 의 심볼이 없으면 8" 8 -- env CC_CMDS_NOTIFY_FOCUS_AX_MISSING=CGSCopySpacesForWindows "$HX" onspace 1
 rc "연결 심볼이 없으면 8" 8 -- env CC_CMDS_NOTIFY_FOCUS_AX_MISSING=CGSMainConnectionID "$HX" onspace 1
+rc "focused 의 심볼이 없으면 8" 8 -- env CC_CMDS_NOTIFY_FOCUS_AX_MISSING=_AXUIElementGetWindow "$HX" focused $$
+for sym in _SLPSSetFrontProcessWithOptions SLPSPostEventRecordTo GetProcessForPID; do
+  rc "makekey 의 $sym 이 없으면 8" 8 -- env CC_CMDS_NOTIFY_FOCUS_AX_MISSING=$sym "$HX" makekey $$ 1
+done
 
 # The trace goes to stderr only when asked for, and never to stdout.
 CC_CMDS_NOTIFY_FOCUS_TRACE=1 "$HX" onspace 4294967295 >"$WORK/out" 2>"$WORK/err"

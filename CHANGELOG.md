@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.51.1] - 2026-10-09
+
+배너 클릭으로 다른 iTerm2 창에 넘어간 직후 iTerm2 가 키 창을 사람이 떠난 창으로 되돌려, 곧바로 친 키 입력이 엉뚱한 창으로 가던 문제를 고쳤다.
+
+### Fixed
+
+- 접근성 신뢰가 있는 경로에서 화면이 도착한 뒤 몇 초 동안 iTerm2 의 키 창을 지켜보고, 대상이 아닌 창으로 돌아가면 대상 창을 다시 키 창으로 세운다. 처음은 접근성 API 로, 그래도 돌아가면 SkyLight 로 최대 두 번 세운다.
+- 다른 앱이 앞으로 오거나, 처리기가 시작된 뒤 마우스를 누르거나, 더 새로운 클릭이 들어오면 사람의 선택으로 보고 감시를 멈춘다. 끝내 대상에 키 창을 두지 못하면 `focus.log` 에 한 줄을 남긴다.
+- 접근성 도우미에 `focused`·`makekey` 동사와 `raise --focus` 를 더했다.
+
+### Post-install notes
+
+- 도우미는 처음 쓸 때 다시 빌드된다. 업그레이드 뒤 그 빌드가 끝나기 전에, 또는 빌드가 실패한 뒤에 한 클릭은 탭·세션 선택만 하는 경로로 가고 키 창 감시도 하지 않는다.
+
 ## [2.51.0] - 2026-10-09
 
 무인 구현 스테이지가 실행 게이트에 막혀 돌리지 못한 잔여 검증을 런을 띄운 대화형 세션(좌석)이 직접 돌린다. 지금까지는 에뮬레이터 기동처럼 호스트 상태를 바꾸는 검증 레시피가 보류되면 스테이지가 멈추고 사람이 답할 때까지 런이 서 있었다.
