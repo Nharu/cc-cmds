@@ -465,8 +465,10 @@ pass() {
   # `live_w` counts the fresh ones beside the live stages, and the arms that ask
   # "is anything running" read it. A waiter whose refresh has stopped is no
   # longer fresh, so it stops quieting them — that is how a hung waiter is
-  # still heard. The after-stage arm keeps `live`: it keys on the last ledger
-  # row, and a wait's own first row already moves that.
+  # still heard. The after-stage arm reads it too: a wait's own first row
+  # moves the last ledger row only when nothing else ends after it, and a
+  # different stage's terminal rows can land below that wait while the router
+  # sits in `gate.sh wait` for the waiter.
   live_w=$(( ${live:-0} + $(cc_waiting_fresh_count "$RUN_DIR" "$LEDGER" "$STALL") ))
   pend=$(open_approvals)
   nonterm=$(nonterminal_segments)
@@ -539,7 +541,7 @@ pass() {
   # arm's condition exactly. The marker distinguishes a changeover from a
   # stranding, and it is read as an EXPIRY rather than as a flag; see
   # `shift_active`.
-  if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ "$nonterm" -ge 1 ] && ! shift_active \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \

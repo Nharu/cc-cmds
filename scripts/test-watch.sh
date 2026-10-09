@@ -485,6 +485,29 @@ case "$out" in
   *) ok "stage-result 뒤 stage-wait 행이 붙으면 스테이지 뒤 갈래는 울리지 않는다" ;;
 esac
 
+# Concurrently, the order inverts: S1 starts waiting while S2 still runs, and
+# S2's terminal rows then land below S1's wait. The last row is a terminal row
+# again, the router sits in `gate.sh wait` for S1, and the fresh waiter is what
+# says the run has not stopped.
+fresh
+{ printf -- '- `segment` | id=S1 | 상태=실행중\n'
+  printf -- '- `segment` | id=S2 | 상태=실행중\n'
+  printf -- '- `stage-wait` | 세그먼트=S1 | 스테이지=S1 | 계보=B:S1#2 | 그룹= | 계정= | 까지= | 근거=wait\n'
+  printf -- '- `stage-result` | 세그먼트=S2 | 스테이지=S2 | 종료 코드=0 | 종단 부류=정상 완료\n'
+  printf -- '- `cost` | 세그먼트=S2 | 스테이지=S2\n'
+} > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+seed_idle 300 --stall 99999 --after-stage 0 --run-open 99999
+seed_waiter S1 0
+out=$(run --stall 99999 --after-stage 0 --run-open 99999)
+case "$out" in
+  *"스테이지가 끝났는데 라우터가"*) bad "스테이지 뒤 갈래" "신선한 대기자가 있는데 다른 키의 종단 행을 라우터 정지로 읽었다" ;;
+  *) ok "다른 키의 stage-result·cost 가 마지막이어도 신선한 대기자가 있으면 스테이지 뒤 갈래는 울리지 않는다" ;;
+esac
+check "그 갈래의 표지도 남지 않는다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 'fired' || printf 'quiet' )" "quiet"
+kill "$WAITER_PID" 2>/dev/null; wait "$WAITER_PID" 2>/dev/null || true
+
 # A run whose only work left is a waiting design step is neither unopened nor
 # over, and one that holds approvals beside a fresh waiter is not "waiting only
 # for a person".
