@@ -38,7 +38,7 @@ This skill is the lightweight sibling of `review`. It trades depth for predictab
 ### Step 0: Tool Loading
 
 Load deferred tools via ToolSearch before any other step (`Agent` is built-in — do not load it):
-- `ToolSearch("select:AskUserQuestion")` — MUST load before Step 1
+- `ToolSearch("select:AskUserQuestion,mcp__cc-cmds__question_form")` — MUST load before Step 1 (the form's schema missing from the result means the form is unavailable)
 - `ToolSearch("select:SendMessage")`
 - `ToolSearch("select:TaskStop")`
 

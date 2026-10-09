@@ -802,7 +802,7 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Dispatching the audit stage|.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty' \
-    '#### Dispatching the audit stage|-- audit -p "/cc-cmds:design-audit-unattended <설계 문서 메인 워크트리 절대 경로>"' \
+    '#### Dispatching the audit stage|-- audit -p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>[ --base]"' \
     '#### Dispatching the audit stage|`세그먼트=- | 스테이지=<audit step id> | 종류=audit`' \
     '#### Dispatching the audit stage|docs/design-audit/<slug>.reader-*.md' \
     "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \
@@ -813,7 +813,11 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '#### Planning the segments|--from-declaration' \
     '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
     '#### Planning the segments|its predecessor'"'"'s last `segment` row is `머지됨` or `완료`' \
-    '#### Planning the segments|end the shift with a `사유=중단` handoff'
+    '#### Planning the segments|end the shift with a `사유=중단` handoff' \
+    '#### Planning the segments|`슬라이싱` entry carries `입양`' \
+    '#### Planning the segments|skip calls 1 and 2 and issue call 3 alone' \
+    '#### Planning the segments|An adopted segment'"'"'s first stage is a full review, not the implementation' \
+    '#### Planning the segments|Open no pull request for it'
   do
     head=${spec%%|*}; lit=${spec#*|}
     sec=$(router_section "$file" "$head")

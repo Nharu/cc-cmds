@@ -215,6 +215,6 @@ This skill is a single-pass verdict emitter (the `review` family), and its loop 
 - `web-design-guidelines` is OPTIONAL. The skill must not hard-invoke it; absence triggers fallback to the local 5-axis criteria. Declared in README "Prerequisites" alongside `terminal-notifier` (the precedent for optional skills in cc-cmds).
 - The verdict computation is structural (count of `critical`/`major` findings ≥ 1 → REFINE), not the Agent's own ACCEPT/REFINE opinion. The Agent reports findings; the skill computes the verdict.
 - DS workspace files are read-only here; `design-ingest` never modifies `docs/design-system/`.
-- **Deferred tool loading**: Before using `AskUserQuestion`, you MUST load it via `ToolSearch("select:AskUserQuestion")`. The skill assumes no other deferred tool beyond that. Before calling `AskUserQuestion`, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
+- **Deferred tool loading**: Before using `AskUserQuestion`, you MUST load it, together with the question form, via `ToolSearch("select:AskUserQuestion,mcp__cc-cmds__question_form")`. The skill assumes no other deferred tool beyond those two. Before calling `AskUserQuestion`, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 
 Handoff directory: $ARGUMENTS

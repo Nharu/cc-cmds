@@ -27,6 +27,10 @@
 #      enum is exactly `fix` / `feat` / `docs` / `other` / `unknown`. The
 #      recorded value is the key a later reader groups history by, so a value
 #      cannot appear or vanish without this lint noticing.
+#   4. `entry-plan.schema.json` carries the design-scope pair: `design_scope`
+#      and `design_scope_rationale` are in both sets, and the `design_scope`
+#      enum is exactly `single` / `base`. The gate, the driver and both
+#      routers branch on the value, so a third value would reach none of them.
 #
 # Usage:
 #   bash scripts/lint-prompt-schemas.sh
@@ -157,6 +161,35 @@ if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
   fi
   if [[ "$class_ok" == "1" ]]; then
     echo "OK:   $rel — work_class pair present on both sides, enum pinned"
+  else
+    fail=1
+  fi
+fi
+
+# ---------- Rule 4: the design-scope pair in entry-plan -----------------------
+
+if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
+  rel=${ENTRY#"$repo_root/"}
+  scope_ok=1
+  for key in design_scope design_scope_rationale; do
+    in_props=$(jq -r --arg k "$key" '(.properties // {}) | has($k)' "$ENTRY")
+    in_req=$(jq -r --arg k "$key" '(.required // []) | index($k) != null' "$ENTRY")
+    if [[ "$in_props" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .properties" >&2
+      scope_ok=0
+    fi
+    if [[ "$in_req" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .required" >&2
+      scope_ok=0
+    fi
+  done
+  scope_enum=$(jq -c '.properties.design_scope.enum // []' "$ENTRY")
+  if [[ "$scope_enum" != '["single","base"]' ]]; then
+    echo "FAIL: $rel — design_scope enum must be exactly [\"single\",\"base\"], found $scope_enum" >&2
+    scope_ok=0
+  fi
+  if [[ "$scope_ok" == "1" ]]; then
+    echo "OK:   $rel — design_scope pair present on both sides, enum pinned"
   else
     fail=1
   fi

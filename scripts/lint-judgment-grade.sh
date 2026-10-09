@@ -73,15 +73,22 @@ VALID_RE='등급 [012]'
 
 # The narrow ask-call form: a mention of the tool on a line that also carries an
 # option list. A recommendation arrow, an abort option, or an explicit options
-# clause are the three renderings this tree uses.
-ASK_RE='AskUserQuestion'
+# clause are the three renderings this tree uses. The question form
+# (`mcp__cc-cmds__question_form`) asks as AskUserQuestion does, so a line naming
+# it is held to the same rule.
+ASK_RE='AskUserQuestion|question_form'
 OPTS_RE='←|/ 중단|옵션 `|with three options|header chip'
 
 # Lines that match the narrow form and are NOT ask points: prose defining the
 # convention itself. Matched by a distinctive substring rather than by line
 # number, which moves. Same idiom as the portability lint's self-skip sentinel
 # and the driver's self-check exemption list.
-EXEMPT_RE='One issue per surface|Recommendation contract|Default ordering|Cap-handling|recommendation convention|Before calling AskUserQuestion|ToolSearch\("select:'
+#
+# `One issue per surface` stays beside its successor `One issue per question`:
+# the old-heading block under the new invariant and the OK-2 fixture still carry
+# it. `1 finding per question` exempts nothing today — design-analyze is not in
+# PAIRS — and is kept for the day that skill becomes a scanned pair.
+EXEMPT_RE='One issue per surface|One issue per question|1 finding per question|Recommendation contract|Default ordering|Cap-handling|recommendation convention|Before calling AskUserQuestion|ToolSearch\("select:'
 
 fail=0
 checked=0
