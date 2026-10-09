@@ -7404,16 +7404,80 @@ gate_decl_block() {
     "재개 명령=설계 문서의 ## 구현 슬라이싱 을 고쳐 새 런으로 다시 킥오프 — 이 런의 동결 문서는 바뀌지 않습니다"
 }
 
+GATE_PRIOR_RUN=""
+GATE_PRIOR_ROW=""
+gate_prior_run_landed() {
+  # gate_prior_run_landed <segment> — 0 when an EARLIER RUN OF THIS DOCUMENT
+  # ended <segment> landed, with that run's id in GATE_PRIOR_RUN and its last
+  # `segment` row for the id in GATE_PRIOR_ROW; 1 when none did.
+  #
+  # A SLICE CAN BE DELIVERED BY ONE RUN AND DEPENDED ON BY THE NEXT. One frozen
+  # document is often implemented a slice per run, and every run has a ledger of
+  # its own, so the run planning S2 has never seen the S1 the previous run
+  # merged. The segment arm's floor then refused `선행=S1` as a segment nobody
+  # knows, and the only way past it was a person hand-writing the S1 row — a row
+  # that carries the gate's frame and none of its checks.
+  #
+  # THE EVIDENCE IS ANOTHER LEDGER IN THE SAME DIRECTORY, and the document is
+  # matched by the `설계 문서` of its `run` row rather than by a header. Ledgers
+  # the gate opens begin with the report title and carry no header comment, so
+  # the `run` row is the one place every ledger states which document it ran.
+  # A file whose name holds a second dot is a companion of a run — `.plan`,
+  # `.kickoff`, a segment's trace — and is not read.
+  #
+  # ONLY A LANDED ENDING QUALIFIES, read off that ledger's LAST row for the id:
+  # `머지됨` or `완료`, carrying a `머지 커밋` shaped as a hex object name. The
+  # merge commit is the claim the caller then checks against the base branch;
+  # a row without one says the run ended the segment and not where it went.
+  #
+  # THE MOST RECENTLY OPENED RUN WINS, by the `시작` of its `run` row. File mtime
+  # moves on every append, so a late row in an older run would make it look
+  # newer than the run that merged the segment again after it; `시작` is fixed
+  # when the run opens and is `now_iso`'s UTC shape, which sorts as text.
+  local seg="$1" dir f rrow row st m rid cand="" best tab
+  tab=$(printf '\t')
+  GATE_PRIOR_RUN=""; GATE_PRIOR_ROW=""
+  [ -n "${LEDGER:-}" ] && [ -n "${DOC_KEY:-}" ] || return 1
+  dir=$(dirname "$LEDGER")
+  for f in "$dir"/*.md; do
+    [ -f "$f" ] || continue
+    [ "$f" != "$LEDGER" ] || continue
+    case "$(basename "$f" .md)" in *.*) continue ;; esac
+    rrow=$( { grep -E '^- `run` ' "$f" 2>/dev/null || true; } | sed -n 1p)
+    [ -n "$rrow" ] || continue
+    [ "$(gate_row_field "$rrow" '설계 문서')" = "$DOC_KEY" ] || continue
+    row=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } | tail -1)
+    [ -n "$row" ] || continue
+    st=$(gate_row_field "$row" '상태')
+    case "$st" in 머지됨|완료) : ;; *) continue ;; esac
+    m=$(gate_row_field "$row" '머지 커밋')
+    case "$m" in ''|*[!0-9a-f]*) continue ;; esac
+    rid=$(gate_row_field "$rrow" 'run-id')
+    [ -n "$rid" ] || rid=$(basename "$f" .md)
+    cand="$cand$(gate_row_field "$rrow" '시작')$tab$rid$tab$f
+"
+  done
+  [ -n "$cand" ] || return 1
+  best=$(printf '%s' "$cand" | LC_ALL=C sort | tail -1)
+  f=${best##*"$tab"}
+  best=${best%"$tab"*}
+  GATE_PRIOR_RUN=${best##*"$tab"}
+  GATE_PRIOR_ROW=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } | tail -1)
+  [ -n "$GATE_PRIOR_ROW" ]
+}
+
 GATE_DECL_FIELDS=()
 gate_from_declaration() {
   # gate_from_declaration <verb> <alias> <segment> <키=값>... — the fields of a
   # planned segment row, filled from the frozen document into GATE_DECL_FIELDS.
   # Returns the exit code of a refusal, or 0. Everything it refuses, it refuses
-  # before anything is written about the act; the one row it may write is the
-  # run-scope block of a structural refusal.
+  # before anything is written about the act; the rows it may write are the
+  # run-scope block of a structural refusal and, on `act`, the terminal row of
+  # a predecessor an earlier run of the same document landed.
   local verb="$1" alias="$2" seg="$3"
   shift 3
   local f="" k="" st="" wt="" want="" br="" why="" al="" astep="" alast="" step="" d="" ids="" declared="" derived=""
+  local known="" dal="" pst="" pm="" ppr="" pwt="" pdp=""
   GATE_DECL_FIELDS=()
 
   # THE CALLER NAMES THE SEGMENT, THE STATE AND THE WORKTREE, AND NOTHING THE
@@ -7550,6 +7614,61 @@ gate_from_declaration() {
              return "$GATE_EXIT_RULE" ;;
         esac
       done
+    done
+  fi
+
+  # A PREDECESSOR AN EARLIER RUN OF THIS DOCUMENT LANDED IS BROUGHT IN FIRST,
+  # after the whole-declaration checks and before the planned row exists. The
+  # segment arm refuses a `선행` token this ledger does not know, which is right
+  # for a typo and wrong for a slice the previous run merged: that predecessor
+  # can never get a row here, so the dependent slice could never be planned.
+  #
+  # THE PRIOR LEDGER IS A CLAIM AND THE BASE BRANCH IS THE EVIDENCE. The row is
+  # copied only when the merge commit it names has landed on the predecessor's
+  # own target's base branch, through the same three-way verdict the deferred
+  # review obligation closes on; `미착지` and `판정 불가` refuse the plan and
+  # write nothing, because a row saying "landed" over a commit that did not is
+  # exactly the base this slice would then be dispatched onto.
+  #
+  # A MERGE THAT STILL OWES ITS APPLY IS NOT BROUGHT IN. Termination condition 1
+  # reads `머지됨` without `적용=대기` as an ending, and the apply this run's
+  # declaration owes for that slice would then be skipped without a word; the
+  # earlier run has to finish it, or a person decides.
+  #
+  # THE ROW IS TERMINAL, AND THAT IS WHAT KEEPS IT OUT OF THIS RUN'S WORK. Every
+  # reader that decides what is still to do — the cone, condition 1, the CI
+  # poller, the dispatch-time landing check — skips or accepts a terminal row,
+  # and no review obligation is issued from a row. `출처` names the run that
+  # did the work; only this writer sets it, since the segment arm refuses a
+  # caller's. Written once: a later act finds the id in `gate_segment_ids` and
+  # does nothing. A dry run writes nothing and says what the act would bring in.
+  if [ "$br" = "선언통치" ]; then
+    known=" $(gate_segment_ids | tr '\n' ' ') "
+    for d in $(gate_dep_tokens "$(slice_field "$DOC" "$seg" '선행')"); do
+      case "$known" in *" $d "*) continue ;; esac
+      dal=$(gate_slice_alias "$d" 2>/dev/null) || continue
+      gate_prior_run_landed "$d" || continue
+      pst=$(gate_row_field "$GATE_PRIOR_ROW" '상태')
+      pm=$(gate_row_field "$GATE_PRIOR_ROW" '머지 커밋')
+      ppr=$(gate_row_field "$GATE_PRIOR_ROW" 'PR')
+      pwt=$(gate_row_field "$GATE_PRIOR_ROW" '워크트리')
+      pdp=$(gate_row_field "$GATE_PRIOR_ROW" '선행')
+      if [ "$pst" = "머지됨" ] && gate_segment_owes_apply "$dal" "$d"; then
+        warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 머지했지만 적용이 남았습니다 — 적용이 남은 머지는 들여오지 않습니다"
+        return "$GATE_EXIT_RULE"
+      fi
+      gate_obligation_landing "$dal" "$pm"
+      if [ "$GATE_LANDING_VERDICT" != "착지" ]; then
+        warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 남긴 머지 커밋 ${pm} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
+        return "$GATE_EXIT_RULE"
+      fi
+      if [ "$verb" != "act" ]; then
+        warn "act 로 내면 선행 ${d} 를 이전 런 ${GATE_PRIOR_RUN} 의 종단 행(상태=${pst} · 머지 커밋=${pm})으로 이 원장에 먼저 들여옵니다"
+        continue
+      fi
+      gate_append 'segment' "id=$d" "상태=$pst" ${ppr:+"PR=$ppr"} "머지 커밋=$pm" \
+        "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$GATE_PRIOR_RUN"
+      log "선행 들여오기 — ${d} (${pst}, 출처 ${GATE_PRIOR_RUN}, 머지 커밋 ${pm})"
     done
   fi
 
@@ -15386,6 +15505,15 @@ gate_record_row() {
       # missing worktree instead of the review — the wrong repair at 3am.
       [ -n "$wt" ] || { warn "a segment row needs \`워크트리\`"; return "$GATE_EXIT_VOCAB"; }
 
+      # `출처` IS THE GATE'S. It marks a row copied from an earlier run's
+      # ledger, and only the declaration-filled planning act writes it, after
+      # checking that run's merge commit against the base branch. A caller's
+      # `출처=` would claim that provenance for a row nothing checked.
+      if [ -n "$(gate_field_of '출처' "$@")" ]; then
+        warn "segment 행의 「출처」는 게이트가 이전 런의 선행을 들여올 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
+        return "$GATE_EXIT_VOCAB"
+      fi
+
       # THE APPLY STATES BELONG TO THE APPLY ARM. This arm carries a caller's
       # fields with no allow-list and lets a terminal row skip the worktree
       # check, so without this a router could write `완료` over a segment whose
@@ -15460,13 +15588,20 @@ gate_record_row() {
       # not landed (상태=없음)", which sends the reader to look for a segment
       # rather than at the spelling. Refusing here lets the message say the true
       # thing — there is no such segment — at the moment it is cheap.
+      #
+      # A PREDECESSOR AN EARLIER RUN LANDED IS NOT REFUSED HERE, because it is
+      # no longer unknown by the time this runs: `--from-declaration` brings its
+      # terminal row in from that run's ledger first. What still arrives here is
+      # a token neither this ledger nor any earlier run of the document has
+      # landed, and the message says both halves so the reader does not go
+      # looking in only one of them.
       local known
       known=" $(gate_segment_ids | tr '\n' ' ') $seg "
       for d in $cur_deps; do
         case "$known" in
           *" $d "*) ;;
-          *) warn "the segment \`선행\` names is not in the ledger: '$d' — such a segment cannot land, and \`선행\` is monotone, so writing this row cannot be undone"
-             warn "write the segment row of the preceding segment first, or if there is no dependency write \`선행=없음\`"
+          *) warn "the segment \`선행\` names is not in the ledger, and no earlier run ledger of the same document shows it landed: '$d' — such a segment cannot land, and \`선행\` is monotone, so writing this row cannot be undone"
+             warn "write the segment row of the preceding segment first, or plan through --from-declaration once an earlier run has merged it, or if there is no dependency write \`선행=없음\`"
              return "$GATE_EXIT_VOCAB" ;;
         esac
       done
@@ -16465,6 +16600,11 @@ EOF
       # be handed something its own record never offered.
       if ! grep -qF -- "- \`$hopt\`" "$hrec"; then
         warn "\`선택지\` is not one of the options this halt record lists verbatim: $hopt"
+        # A record with no option line at all is the writer's fault, not the
+        # answer's: options run inline after `**선택지**:` are read by no one, so
+        # every answer to it is refused here with the same line as a typo.
+        grep -q '^- `' "$hrec" \
+          || warn "this halt record has no option line of the form \`- \`<label>\` — <description>\` — its options were written inline, so no answer to it can be recorded until each option sits on its own line: $hrec"
         return "$GATE_EXIT_VOCAB"
       fi
       hskill=$(sed -n 's/^\*\*스킬\*\*: //p' "$hrec" | sed -n '1p' | sed 's/[[:space:]]*$//')
