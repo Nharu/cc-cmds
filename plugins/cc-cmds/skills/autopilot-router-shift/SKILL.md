@@ -261,7 +261,7 @@ Segment planning starts only after the audit has ended as above, or straight aft
 
 #### Merging and applying a segment
 
-**The merge.** For a segment whose resolved review policy is `선리뷰후머지`, merge once its review has passed, pinned to what the review read: `gh pr merge <n> --merge --match-head-commit <the 리뷰 HEAD of the segment's last cycle row>`. Under any other policy there may be no `cycle` row, so pin to the implementation worktree's HEAD instead (`--match-head-commit <구현 워크트리 HEAD>`), and issue no apply act afterwards. Either way read `gh pr view <n> --json mergeCommit` and record it:
+**The merge.** For a segment whose resolved review policy is `선리뷰후머지`, merge once its review has passed — a last cycle row with P0 and P1 at zero, or one whose snapshot `cycles[]` entry reads `기각` `"1"` because a person dismissed its findings at the seat (a `리뷰 기각` row the gate honours only while that cycle stays the segment's last) — pinned to what the review read: `gh pr merge <n> --merge --match-head-commit <the 리뷰 HEAD of the segment's last cycle row>`. Under any other policy there may be no `cycle` row, so pin to the implementation worktree's HEAD instead (`--match-head-commit <구현 워크트리 HEAD>`), and issue no apply act afterwards. Either way read `gh pr view <n> --json mergeCommit` and record it:
 
 ```
 gate.sh act --manifest <매니페스트> --kind segment --target <alias> --segment <id> \
@@ -282,7 +282,7 @@ The argv is the fixed token `적용`; the gate runs the frozen apply command its
 
 #### Re-dispatching the implementation after review findings
 
-When a segment's last `cycle` row carries P0+P1 above zero, that review's `stage-result` row is `정상 완료`, and the segment has no live stage, dispatch the implementation again with the review report as its fix target. The values are already in the snapshot's `cycles[]` and `문서 인자`:
+When a segment's last `cycle` row carries P0+P1 above zero, its `cycles[]` entry does not read `기각` `"1"`, that review's `stage-result` row is `정상 완료`, and the segment has no live stage, dispatch the implementation again with the review report as its fix target. The values are already in the snapshot's `cycles[]` and `문서 인자`:
 
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <seg> \
@@ -321,7 +321,7 @@ When an implement stage refutes a residual verification item before implementing
 
 #### Handing on a person's answer to a halt
 
-A stage that reached a question only a person can answer wrote a halt record and stopped; the seat asked the person and wrote the answer as a `중단 답` row. The snapshot's `answered_halts[]` lists each answer no stage has taken up yet — `segment` (the segment id, or the step id of a run-scope step — the design, the audit or the split), `record` (the halt record's path), `skill`, `option` (verbatim) and `line` (the row's ledger line). **An element there is this loop's to route, not a park and not a reason to end the shift.** Take it before 「Continuing a stage that ended its turn in prose」 and before any fresh dispatch on the same key. Every read here is a gate call on the terms 「Recovering a review stage that crashed」 states. The element leaves the list by itself once a `stage-result` row of its key lands on a later line, so dispatch on it once.
+A stage that reached a question only a person can answer wrote a halt record and stopped; the seat asked the person and wrote the answer as a `중단 답` row. The snapshot's `answered_halts[]` lists each answer no stage has taken up yet — `segment` (the segment id, or the step id of a run-scope step — the design, the audit or the split), `record` (the halt record's path), `skill`, `option` (verbatim), `attachment` (a file under the run's `halt/` holding what the person supplied beyond the option, or the empty string) and `line` (the row's ledger line, whose `근거` holds the person's words). **An element there is this loop's to route, not a park and not a reason to end the shift.** Take it before 「Continuing a stage that ended its turn in prose」 and before any fresh dispatch on the same key. Every read here is a gate call on the terms 「Recovering a review stage that crashed」 states. The element leaves the list by itself once a `stage-result` row of its key lands on a later line, so dispatch on it once.
 
 1. **Nothing is running on it.** The key is in neither `live_stages[]` nor `orphan_stages[]`.
 2. **Which path.** Read the record's step line: `grep -n '^\*\*스텝\*\*: ' <record>`. When `skill` is `design-audit-unattended`, the step names the synthesis question (`CFI-3b`) and `option` is `adopt as a requirement`, go to item 4. When `skill` is `implement-unattended`, the step's text before its first ` — ` contains `CFI-U3 BT-STOP` and `option` is `재수렴`, go to item 5. Every other answer goes to item 3.
@@ -331,10 +331,10 @@ A stage that reached a question only a person can answer wrote a halt record and
    gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <id | -> \
      --cutpoint <token> --surface <token> --snapshot-digest <H> --resume <세션 id> \
      --rationale '중단 답 줄 <line>' \
-     -- <스테이지 종류> -p "중단 기록 <record> 의 질문에 사람이 \`<option>\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요 — 처음부터 다시 하지 말고, 중단 전에 끝낸 스텝은 다시 하지 마세요."
+     -- <스테이지 종류> -p "중단 기록 <record> 의 질문에 사람이 \`<option>\` 을 골랐습니다. 사람이 덧붙인 말은 런 원장(환경 변수 CC_PIPELINE_LEDGER 가 가리키는 파일) <line> 번째 줄 \`중단 답\` 행의 \`근거\` 에 있습니다.[ 사람이 건넨 내용은 <attachment> 에 있으니 읽고 답의 일부로 쓰세요.] 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요 — 처음부터 다시 하지 말고, 중단 전에 끝낸 스텝은 다시 하지 마세요."
    ```
 
-   The prompt is that sentence with `<record>` and `<option>` filled in, and nothing else. The gate accepts any session id on this stage's own `stage-result` rows, whatever their class, so a `정상 완료` or `의도된 park` row is no bar. With no session to continue, write the crash arm's `blocked` form for a segment with `사유=중단 답 라우팅 — 재부착할 세션이 없다`; for the design step end the shift with `사유=중단` and say so in `막힌 지점`. When the resumed stage ends without writing a new halt record, a cone `blocked` row an earlier shift anchored on this halt is resolved with `원인=해소`, its `근거` naming the new `stage-result` line.
+   The prompt is that sentence with `<record>`, `<option>`, `<line>` and — only when the element's `attachment` is not empty, as the bracketed sentence without its brackets — `<attachment>` filled in, and nothing else. Name the ledger by that phrase, never by its path: the stage has the variable already, and a `.md` path outside `halt/` in an implement or re-convergence prompt is read as its document argument and refused. An option such as "the person reports the measured values" is answered by what the person said, not by its label; a stage handed the label alone halts again asking for what the seat already holds. The gate accepts any session id on this stage's own `stage-result` rows, whatever their class, so a `정상 완료` or `의도된 park` row is no bar. With no session to continue, write the crash arm's `blocked` form for a segment with `사유=중단 답 라우팅 — 재부착할 세션이 없다`; for the design step end the shift with `사유=중단` and say so in `막힌 지점`. When the resumed stage ends without writing a new halt record, a cone `blocked` row an earlier shift anchored on this halt is resolved with `원인=해소`, its `근거` naming the new `stage-result` line.
 4. **An adopted composed requirement goes to re-convergence, then to a fresh audit.** It changes what the run is trying to reach, so the halted audit is not resumed: the frozen document is re-converged against the requirement in this run, and then audited again.
    - **Once per key.** When the key already has a `stage-result` row reading `종류=reconverge`, write `blocked` for it with `사유=중단 답 라우팅 — 감사 종합 요구가 재수렴 뒤 다시 채택됐다` and dispatch nothing.
    - **Exclusion** as item 4 of 「Routing a pre-implementation refutation to re-convergence」.

@@ -160,10 +160,18 @@
 # `limit-cleared` is the seat's alone — a shift or a stage is refused with 3 —
 # and takes `근거` and nothing else; the gate stamps `레인` and `기록 시각`.
 #   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
-#               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약>
+#               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약> \\
+#                  ['첨부=<RUN_DIR/halt/…answer.md>']
 # `halt-answer` is the seat's alone on the same terms. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
 # checks the record is this run's, complete, and lists the option verbatim.
+# `첨부` is a file the seat wrote under the same `halt/` with what the person
+# supplied beyond the option — measured values, a longer instruction.
+#   gate.sh act --kind review-dismiss --target <alias> --segment <id> ... \\
+#               -- 사이클=<n> '리뷰 HEAD=<sha>' 근거=<사람이 한 말의 요약>
+# `review-dismiss` is the seat's alone on the same terms: a person dismisses
+# the findings of the segment's last review cycle, named by its number and its
+# reviewed HEAD, and the merge checks then read that cycle as passed.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -12175,14 +12183,40 @@ gate_answered_halts_json() {
     [ -z "$later" ] || continue
     [ "$first" = "1" ] || printf ',\n'
     first=0
-    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "line": %s}' \
+    # `attachment` is the empty string when the seat attached nothing. The
+    # person's `근거` is not copied here: the shift points the stage at the row's
+    # ledger line, which holds it whole as recorded.
+    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "attachment": "%s", "line": %s}' \
       "$(gate_json_escape "$key")" \
       "$(gate_json_escape "$(gate_row_field "$row" '중단 기록')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '스킬')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '선택지')")" \
+      "$(gate_json_escape "$(gate_row_field "$row" '첨부')")" \
       "$ln"
   done
   [ "$first" = "1" ] || printf '\n'
+}
+
+gate_cycle_dismissed() {
+  # gate_cycle_dismissed <segment> <사이클> <리뷰 HEAD> — true when a person's
+  # `리뷰 기각` row names exactly that cycle of that segment. Written once and
+  # asked by every reader — the merge rule's input, the apply precondition and
+  # the snapshot — so the three cannot disagree on what binds. Each caller
+  # passes the segment's LAST cycle row, which is what keeps a dismissal from
+  # outliving a newer review.
+  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 1
+  gate_has_row '리뷰 기각' "세그먼트=$1" "사이클=$2" "리뷰 HEAD=$3"
+}
+
+gate_segment_review_dismissed() {
+  # gate_segment_review_dismissed <segment> — `<사이클>@<리뷰 HEAD>` of the
+  # segment's last cycle when a person dismissed it, and nothing otherwise.
+  local row c h
+  row=$( { gate_rows 'cycle' | grep -F "세그먼트=$1 " || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  c=$(gate_row_field "$row" '사이클'); h=$(gate_row_field "$row" '리뷰 HEAD')
+  gate_cycle_dismissed "$1" "$c" "$h" && printf '%s@%s' "$c" "$h"
+  return 0
 }
 
 gate_answer_servable() {
@@ -16639,11 +16673,11 @@ EOF
         warn "a \`중단 답\` row is written by the seat only — a shift or a stage cannot answer a halt record for a person"
         return "$GATE_EXIT_RULE"
       fi
-      local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat
+      local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat hatt hattdig
       for hf in "$@"; do
         hk="${hf%%=*}"
-        case "$hk" in 중단\ 기록|선택지|근거) continue ;; esac
-        warn "a \`중단 답\` row takes \`중단 기록\`, \`선택지\` and \`근거\` from argv and nothing else: ${hk} — the rest is the gate's"
+        case "$hk" in 중단\ 기록|선택지|근거|첨부) continue ;; esac
+        warn "a \`중단 답\` row takes \`중단 기록\`, \`선택지\`, \`근거\` and an optional \`첨부\` from argv and nothing else: ${hk} — the rest is the gate's"
         return "$GATE_EXIT_VOCAB"
       done
       hrec=$(gate_field_of '중단 기록' "$@")
@@ -16689,6 +16723,33 @@ EOF
           || warn "this halt record has no option line of the form \`- \`<label>\` — <description>\` — its options were written inline, so no answer to it can be recorded until each option sits on its own line: $hrec"
         return "$GATE_EXIT_VOCAB"
       fi
+      # WHAT THE OPTION CANNOT CARRY GOES IN AN ATTACHMENT. `근거` is clipped to
+      # fit the row, and an option such as "the person measures it and reports
+      # back" is answered by values, not by the label — measured: the stage was
+      # re-attached with the label alone and halted again asking for the values
+      # the person had already given at the seat. The attachment sits under the
+      # same `halt/` so the resumed prompt's path is never read as a document
+      # argument, and it must not itself look like a halt record, which every
+      # halt-directory scan identifies by its header.
+      hatt=$(gate_field_of '첨부' "$@")
+      hattdig=''
+      if [ -n "$hatt" ]; then
+        case "$hatt" in
+          "$RUN_DIR"/halt/*.md) ;;
+          *) warn "\`첨부\` has to be a .md file under this run's halt directory ($RUN_DIR/halt/): $hatt"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+        case "$hatt" in
+          */../*|*/./*) warn "\`첨부\` cannot carry a relative segment: $hatt"; return "$GATE_EXIT_VOCAB" ;;
+        esac
+        [ "$hatt" != "$hrec" ] || { warn "\`첨부\` cannot be the halt record itself: $hatt"; return "$GATE_EXIT_VOCAB"; }
+        [ -s "$hatt" ] || { warn "the attachment does not exist or is empty: $hatt"; return "$GATE_EXIT_VOCAB"; }
+        if grep -q '^<!-- cc-pipeline-halt v1' "$hatt"; then
+          warn "the attachment carries a halt record header, so a halt-directory scan would read it as a record: $hatt"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        hattdig=$(shasum -a 256 "$hatt" | cut -d' ' -f1)
+      fi
       hskill=$(sed -n 's/^\*\*스킬\*\*: //p' "$hrec" | sed -n '1p' | sed 's/[[:space:]]*$//')
       hdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1)
       hlane=$(gate_lane_label)
@@ -16697,6 +16758,7 @@ EOF
         hwhy=$(gate_row_safe "$(gate_field_of '근거' "$@")" "$hw")
         hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$hrec" \
           "스킬=${hskill:-미상}" "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" \
+          ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
           "레인=$hlane" "기록 시각=$hat")
         [ "$hlen" -le "$GATE_ROW_MAX" ] && break
         hw=$((hw - 40))
@@ -16708,8 +16770,77 @@ EOF
       # routes from. It enters no termination condition and no progress vector,
       # and nothing is notified from it.
       gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
-        "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" "레인=$hlane" "기록 시각=$hat"
+        "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" \
+        ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+        "레인=$hlane" "기록 시각=$hat"
       log "중단 답 기록 — $seg ← $hopt"
+      ;;
+    review-dismiss)
+      # THE SEAT'S WAY TO CARRY A PERSON'S DISMISSAL OF REVIEW FINDINGS TO THE
+      # MERGE. The merge rule and the apply precondition read the segment's last
+      # `cycle` row and refuse while P0 or P1 is above zero, and nothing else
+      # could change that but another review cycle — which re-raises a finding
+      # the reviewer still holds. Measured: two cycles raised the same P0 about
+      # an operational precondition outside the declared files, a person
+      # answered two halt records keeping the design as it was, and the run
+      # dead-ended because no row could carry that answer to the merge check.
+      #
+      # SEAT ONLY, judged as `limit-cleared` judges it. A shift or a stage
+      # writing this row would be the run waving its own review through.
+      if [ -n "$(gate_shift_self_ordinal)" ] || cc_caller_is_stage \
+         || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+        warn "a \`리뷰 기각\` row is written by the seat only — a shift or a stage cannot dismiss review findings for a person"
+        return "$GATE_EXIT_RULE"
+      fi
+      local df dk dcyc dhead dwhy dw=300 dlen drow dlane dat dp0 dp1 drep
+      for df in "$@"; do
+        dk="${df%%=*}"
+        case "$dk" in 사이클|리뷰\ HEAD|근거) continue ;; esac
+        warn "a \`리뷰 기각\` row takes \`사이클\`, \`리뷰 HEAD\` and \`근거\` from argv and nothing else: ${dk} — the rest is the gate's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      dcyc=$(gate_field_of '사이클' "$@")
+      dhead=$(gate_field_of '리뷰 HEAD' "$@")
+      dwhy=$(gate_field_of '근거' "$@")
+      [ -n "$dcyc" ] && [ -n "$dhead" ] && [ -n "$dwhy" ] || {
+        warn "a \`리뷰 기각\` row needs \`사이클\` and \`리뷰 HEAD\` (of the cycle the person looked at) and \`근거\` (a summary of what the person said)"
+        return "$GATE_EXIT_VOCAB"; }
+      # BOUND TO THE LAST CYCLE, BY NUMBER AND BY HEAD. A person dismisses what
+      # they looked at; a cycle recorded after that is a review they have not
+      # seen, and a dismissal naming an older one would wave the newer through.
+      drow=$( { gate_rows 'cycle' | grep -F "세그먼트=$seg " || true; } | tail -1)
+      [ -n "$drow" ] || { warn "no \`cycle\` row names $seg — there is no review to dismiss"; return "$GATE_EXIT_VOCAB"; }
+      if [ "$(gate_row_field "$drow" '사이클')" != "$dcyc" ] \
+         || [ "$(gate_row_field "$drow" '리뷰 HEAD')" != "$dhead" ]; then
+        warn "the last \`cycle\` row of $seg is 사이클=$(gate_row_field "$drow" '사이클') 리뷰 HEAD=$(gate_row_field "$drow" '리뷰 HEAD') — a dismissal names that cycle exactly"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      dp0=$(gate_row_field "$drow" 'P0'); dp1=$(gate_row_field "$drow" 'P1')
+      if [ "${dp0:-0}" = "0" ] && [ "${dp1:-0}" = "0" ]; then
+        warn "the last \`cycle\` row of $seg has no findings to dismiss (P0=0 P1=0)"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      drep=$(gate_row_field "$drow" '리포트 경로')
+      dlane=$(gate_lane_label)
+      dat=$(now_iso)
+      while [ "$dw" -ge 40 ]; do
+        dwhy=$(gate_row_safe "$(gate_field_of '근거' "$@")" "$dw")
+        dlen=$(gate_row_projected_bytes '리뷰 기각' "세그먼트=$seg" "사이클=$dcyc" \
+          "리뷰 HEAD=$dhead" "기각 P0=${dp0:-0}" "기각 P1=${dp1:-0}" "리포트 경로=${drep:--}" \
+          "근거=$dwhy" "레인=$dlane" "기록 시각=$dat")
+        [ "$dlen" -le "$GATE_ROW_MAX" ] && break
+        dw=$((dw - 40))
+      done
+      [ "$dlen" -le "$GATE_ROW_MAX" ] || {
+        warn "the \`리뷰 기각\` row does not fit the row cap even with \`근거\` clipped"
+        return "$GATE_EXIT_VOCAB"; }
+      # ITS READERS ARE THE MERGE RULE (through GATE_SEGMENT_REVIEW_DISMISSED),
+      # THE APPLY PRECONDITION AND THE SNAPSHOT'S `cycles[].기각`. Each honours
+      # it only while the segment's last `cycle` row is still the one it names.
+      gate_append '리뷰 기각' "세그먼트=$seg" "사이클=$dcyc" "리뷰 HEAD=$dhead" \
+        "기각 P0=${dp0:-0}" "기각 P1=${dp1:-0}" "리포트 경로=${drep:--}" \
+        "근거=$dwhy" "레인=$dlane" "기록 시각=$dat"
+      log "리뷰 기각 기록 — $seg 사이클 $dcyc (P0=${dp0:-0} P1=${dp1:-0})"
       ;;
     obligation)
       # THE ONLY EXIT FROM TERMINATION CONDITION 9. `리뷰 의무` rows are written
@@ -18012,7 +18143,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -18138,7 +18269,8 @@ gate_apply_preconditions() {
   crow=$( { gate_rows 'cycle' | grep -F "세그먼트=$seg " || true; } | tail -1)
   [ -n "$crow" ] || { gate_apply_refuse 3 "세그먼트 ${seg} 의 cycle 행이 없습니다"; return $?; }
   p0=$(gate_row_field "$crow" 'P0'); p1=$(gate_row_field "$crow" 'P1')
-  if [ "${p0:-}" != "0" ] || [ "${p1:-}" != "0" ]; then
+  if { [ "${p0:-}" != "0" ] || [ "${p1:-}" != "0" ]; } \
+     && ! gate_cycle_dismissed "$seg" "$(gate_row_field "$crow" '사이클')" "$(gate_row_field "$crow" '리뷰 HEAD')"; then
     gate_apply_refuse 3 "세그먼트 ${seg} 의 마지막 cycle 행이 P0=${p0:-?} P1=${p1:-?} 입니다"; return $?
   fi
   rep=$(gate_row_field "$crow" '리포트 경로')
@@ -18295,9 +18427,10 @@ gate_kind_is_bookkeeping() {
   # cleared" does not wait for the seat to have room — and it enters no tree.
   # `halt-answer` is here on the same ground: a person's answer to a halt record
   # arrives whenever it arrives, and recording it enters no tree.
+  # `review-dismiss` likewise: the merge it unblocks is graded on its own.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
-    obligation-done|obligation-drop|limit-cleared|halt-answer) return 0 ;;
+    obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss) return 0 ;;
   esac
   return 1
 }
@@ -19485,6 +19618,10 @@ gate_verb_act() {
   GATE_SEGMENT_OPEN_OBLIGATIONS=$(gate_unfulfilled_review_obligations "$segment" \
     | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   export GATE_SEGMENT_OPEN_OBLIGATIONS
+  # A person's dismissal of the last cycle's findings, folded here for the same
+  # reason: the checker compares it with the cycle row it reads itself.
+  GATE_SEGMENT_REVIEW_DISMISSED=$(gate_segment_review_dismissed "$segment")
+  export GATE_SEGMENT_REVIEW_DISMISSED
 
   local rules_rc=0
   # THE CHECKERS ARE NOT TOUCHED BY THIS AXIS AT ALL, and that is the point of
@@ -25275,14 +25412,20 @@ gate_snapshot_cycles_json() {
            # `모드`, `리뷰 HEAD` and `리포트 경로` are what the router needs to
            # pick a delta basis without opening the ledger; an absent `모드`
            # is emitted as the empty string and the reader takes it as 전체.
-           printf '    {"세그먼트": "%s", "사이클": "%s", "P0": "%s", "P1": "%s", "모드": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s"},\n' \
-             "$(gate_json_escape "$(gate_row_field "$row" '세그먼트')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" '사이클')")" \
+           # `기각` is "1" when a person dismissed that cycle's findings.
+           cdis=''
+           cs=$(gate_row_field "$row" '세그먼트'); cc=$(gate_row_field "$row" '사이클')
+           ch=$(gate_row_field "$row" '리뷰 HEAD')
+           gate_cycle_dismissed "$cs" "$cc" "$ch" && cdis=1
+           printf '    {"세그먼트": "%s", "사이클": "%s", "P0": "%s", "P1": "%s", "모드": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s", "기각": "%s"},\n' \
+             "$(gate_json_escape "$cs")" \
+             "$(gate_json_escape "$cc")" \
              "$(gate_json_escape "$(gate_row_field "$row" 'P0')")" \
              "$(gate_json_escape "$(gate_row_field "$row" 'P1')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '모드')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" '리뷰 HEAD')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" '리포트 경로')")"
+             "$(gate_json_escape "$ch")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '리포트 경로')")" \
+             "$cdis"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
