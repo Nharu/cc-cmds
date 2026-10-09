@@ -252,6 +252,8 @@ readonly LIT_RECONVERGE_TERMINAL='재수렴을 종료합니다. 판정은 여기
 # The first sentence of the attended `design` skill's freeze notice, byte for
 # byte — so the same literal marks a freeze whether a seat or a stage did it.
 readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
+# The last line of the base split stage (`design-base-unattended --split`).
+readonly LIT_SPLIT_TERMINAL='베이스 분할을 마쳤습니다.'
 
 # ---------------------------------------------------------------------------
 # Logging. Redirection is not about survival — a driver without it survives a
@@ -418,6 +420,9 @@ manifest_snapshot_take() {
   #   AA <row>     `- \`자동 채택\`` rows inside the first `## 인가` only
   #   DR <row>     every `- \`설계 로스터\`` row anywhere, in order
   #   C <row>      every `- \`종료 절\`` row, in order
+  #   BP <row>     every `- \`베이스 발행\`` row anywhere, in order
+  #   BD <row>     every `- \`베이스 설계\`` row anywhere, in order
+  #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -446,6 +451,10 @@ $(LC_ALL=C awk '
     index($0, "- `자동 채택`") == 1 { print "AW\t" $0; if (ina) print "AA\t" $0 }
     index($0, "- `설계 로스터`") == 1 { print "DR\t" $0 }
     index($0, "- `종료 절`") == 1 { print "C\t" $0 }
+    index($0, "- `베이스 발행`") == 1 { print "BP\t" $0 }
+    index($0, "- `베이스 설계`") == 1 { print "BD\t" $0 }
+    index($0, "- `세그먼트 입양`") == 1 { print "AD\t" $0 }
+    index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -621,6 +630,26 @@ manifest_clause_rows_raw() {
   grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_base_publish_rows() {
+  if manifest_memo_on; then manifest_memo_all "BP	"; return 0; fi
+  grep -E '^- `베이스 발행`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_base_design_rows() {
+  if manifest_memo_on; then manifest_memo_all "BD	"; return 0; fi
+  grep -E '^- `베이스 설계`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_adoption_rows() {
+  if manifest_memo_on; then manifest_memo_all "AD	"; return 0; fi
+  grep -E '^- `세그먼트 입양`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_predecessor_landing_rows() {
+  if manifest_memo_on; then manifest_memo_all "PL	"; return 0; fi
+  grep -E '^- `선행 착지`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -696,6 +725,26 @@ binding_set_bytes() {
     # bytes, so no in-flight run's digest moves, and the stage then uses the
     # default roster frozen in its own skill file.
     manifest_design_roster_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/roster\t/'
+    # THE BASE ROWS ARE IN THE FROZEN SET, on the same terms. `베이스 발행` is the
+    # only carrier of "publish, and where" — the split stage reads nothing else —
+    # so a row any act could rewrite mid-run would turn a document-only run into
+    # one that writes to a tracker. `베이스 설계` binds a child run to the base it
+    # was kicked off against. Both are whole-file scans and contribute zero bytes
+    # when absent, so no in-flight manifest's digest moves.
+    manifest_base_publish_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basepub\t/'
+    manifest_base_design_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basedesign\t/'
+    # THE ADOPTION ROWS ARE IN THE FROZEN SET, on the same terms. A `세그먼트
+    # 입양` row lets this run plan a segment in a worktree and branch it did not
+    # cut, so a row any act could append mid-run would hand the run a tree a
+    # person never named. Whole-file scan, zero bytes when absent.
+    manifest_adoption_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/adopt\t/'
+    # THE `선행 착지` ROWS ARE IN THE FROZEN SET, on the same terms. Each one is a
+    # person's statement, taken at kickoff, that a predecessor slice landed
+    # outside every run ledger, and the planning act turns it into a terminal
+    # row this run builds on. A row any act could append mid-run would let a
+    # dependent slice be dispatched over a predecessor nobody confirmed. A
+    # whole-file scan, zero bytes when absent.
+    manifest_predecessor_landing_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/predland\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -739,7 +788,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — ten values, closed, three of them named and
+# The judgment-class vocabulary — eleven values, closed, three of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -763,7 +812,15 @@ manifest_autoadopt_rows() {
 # inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
 # sources this file for its definitions, so one declaration reaches both — the
 # same arrangement `CUTPOINTS` already has, and for the same reason.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격"
+#
+# `구속-이탈` is the one class whose reader is not the judgment floor but the
+# `halt-answer` act: an implement stage that stopped on a binding-tier conflict
+# (CFI-U3 BT-STOP) offers `재수렴`, and a `자동 채택` row of this class lets the
+# routing shift carry that answer itself instead of ending on a person. It is
+# permitted because re-convergence is a scoped repair inside the same run that
+# leaves its own `중단 답` row and stage rows, and it is once per key — a second
+# stop on the same key still goes to a person.
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈"
 readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
@@ -1027,7 +1084,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1226,7 +1283,132 @@ EOF
     fi
   done
 
+  # 16 — the design scope and the rows only a base run may carry.
+  #
+  # A BASE RUN'S GRAPH IS FIXED, so it is checked as a shape rather than read as
+  # a plan: design, then the audit depending on it, then the split depending on
+  # both, and nothing after. The split publishes to a tracker and cannot be
+  # undone, so a graph that let anything else run first — or after — is refused
+  # here, while a person can still fix it. The one `베이스 발행` row is the only
+  # carrier of "publish, and where"; its target is checked against the tracker
+  # it names. A `single` run carries neither a split step nor that row, so
+  # neither can come into force by accident. A plan frozen before the field
+  # existed has no key and is `single`.
+  local scope bp_rows bp_n bp_trk bp_tgt bp_ok
+  scope=$(manifest_design_scope)
+  bp_rows=$(manifest_base_publish_rows)
+  bp_n=$(printf '%s' "$bp_rows" | grep -c . || true)
+  if [ "$scope" = "base" ]; then
+    [ "$(manifest_plan_field '.design_required')" = "true" ] \
+      || die "design_scope 가 base 인데 design_required 가 true 가 아닙니다"
+    [ "$(manifest_plan_field '.design_tier')" = "team-4" ] \
+      || die "design_scope 가 base 인데 design_tier 가 team-4 가 아닙니다"
+    manifest_plan_json | jq -e '
+      [.steps[]? | if type == "object" then . else {skill: .} end] as $s
+      | ($s | length) == 3
+      and $s[0].skill == "design" and (($s[0].depends_on // []) | length) == 0
+      and $s[1].skill == "design-audit" and (($s[1].depends_on // []) == [$s[0].id])
+      and $s[2].skill == "split"
+      and (($s[2].depends_on // []) | sort) == ([$s[0].id, $s[1].id] | sort)
+      and ([$s[].id] | unique | length) == 3
+    ' >/dev/null 2>&1 \
+      || die "design_scope 가 base 인 런의 단계 그래프는 design → design-audit(설계에 의존) → split(설계·감사에 의존) 세 단계뿐이어야 합니다"
+    [ "$bp_n" = "1" ] || die "design_scope 가 base 인데 「베이스 발행」 행이 ${bp_n}개입니다 — 정확히 하나여야 합니다"
+    bp_trk=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\1/p')
+    bp_tgt=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\2/p')
+    case "$bp_trk" in
+      github)
+        bp_ok=0
+        for al in $(target_aliases); do
+          [ "$(target_field "$al" '원격 슬러그')" = "$bp_tgt" ] && bp_ok=1
+        done
+        [ "$bp_ok" = "1" ] || die "「베이스 발행」 행의 github 대상이 선언된 대상의 원격 슬러그가 아닙니다: $bp_tgt" ;;
+      clickup)
+        [ -n "$bp_tgt" ] && [ "$bp_tgt" != "-" ] || die "「베이스 발행」 행의 clickup 대상(목록 id)이 비었습니다" ;;
+      없음)
+        [ "$bp_tgt" = "-" ] || die "「베이스 발행」 행의 트래커가 없음인데 대상이 - 가 아닙니다: $bp_tgt" ;;
+      *)
+        die "「베이스 발행」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>\` 입니다" ;;
+    esac
+  else
+    if manifest_plan_json | jq -e '[.steps[]? | if type == "object" then .skill else . end] | index("split") != null' >/dev/null 2>&1; then
+      die "design_scope 가 base 가 아닌데 실행 계획에 split 단계가 있습니다"
+    fi
+    [ "$bp_n" = "0" ] || die "design_scope 가 base 가 아닌데 「베이스 발행」 행이 있습니다"
+  fi
+  # `베이스 설계` binds a child run to its base. Its form is checked here; the
+  # file it names is the child's design stage's to read.
+  # Comparing the file's bytes here would kill every gate entry of a child run
+  # the moment its base is revised, and the design stage's own re-measurement
+  # could then never be reached.
+  local bd_rows bd_n
+  bd_rows=$(manifest_base_design_rows)
+  bd_n=$(printf '%s' "$bd_rows" | grep -c . || true)
+  [ "${bd_n:-0}" -le 1 ] || die "「베이스 설계」 행이 ${bd_n}개입니다 — 많아야 하나입니다"
+  # A here-string, not a pipe: `grep -q` stops at its match, and under pipefail
+  # the writer's SIGPIPE would turn a well-formed row into a refusal.
+  if [ "${bd_n:-0}" = "1" ]; then
+    grep -qE '^- `베이스 설계` \| 문서=docs/[^ |]+\.md \| sha256=[0-9a-f]{64} \| 티켓=T[0-9]+$' <<<"$bd_rows" \
+      || die "「베이스 설계」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>\` 입니다"
+  fi
+  # 17 — `세그먼트 입양` rows, FORM ONLY. A row hands this run a segment an
+  # earlier run cut: its branch, its worktree and its pull request. Whether that
+  # worktree exists, carries the branch, and is free of the earlier run is
+  # checked when the segment is planned, not here — this conjunction runs on
+  # every gate entry, and once the merged segment's worktree is torn down every
+  # entry would die on it.
+  local ad_row ad_seg ad_wt ad_src ad_segs=" "
+  while IFS= read -r ad_row; do
+    [ -n "$ad_row" ] || continue
+    # A here-string, not a pipe, for the reason the `베이스 설계` check gives.
+    grep -qE '^- `세그먼트 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 워크트리=/[^|]*[^ |] \| 출처 런=[0-9]{8}-[0-9a-f]{8} \| PR=[0-9]+$' <<<"$ad_row" \
+      || die "「세그먼트 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>\` 입니다: $ad_row"
+    ad_seg=$(manifest_row_fields "$ad_row" '세그먼트')
+    ad_wt=$(manifest_row_fields "$ad_row" '워크트리')
+    ad_src=$(manifest_row_fields "$ad_row" '출처 런')
+    case "$ad_wt" in
+      *'"'*|*'\'*|*[[:cntrl:]]*) die "「세그먼트 입양」 행의 워크트리에 큰따옴표·역슬래시·제어 문자가 있습니다: $ad_wt" ;;
+      *"$WORKTREE_INFIX"*) : ;;
+      *) die "「세그먼트 입양」 행의 워크트리에 예약 인픽스 ${WORKTREE_INFIX} 가 없습니다 — 철거 가드가 그 인픽스를 요구합니다: $ad_wt" ;;
+    esac
+    [ "$ad_src" != "$RUN_ID" ] || die "「세그먼트 입양」 행의 출처 런이 이 런 자신입니다: $ad_src"
+    case "$ad_segs" in
+      *" $ad_seg "*) die "「세그먼트 입양」 행이 세그먼트 ${ad_seg} 에 둘 이상입니다" ;;
+    esac
+    ad_segs="$ad_segs$ad_seg "
+  done <<EOF
+$(manifest_adoption_rows)
+EOF
+  # 18 — `선행 착지` rows: a predecessor slice that landed outside every run
+  # ledger, as a person confirmed it at kickoff. Its form and the uniqueness of
+  # its slice are checked here; whether the slice is declared, whether the slug is the slice's
+  # `레포` and whether the commit is on that repository's base branch are the
+  # planning act's to check, against the frozen document and the remote.
+  local pl_rows pl_row pl_ids="" pl_id
+  pl_rows=$(manifest_predecessor_landing_rows)
+  while IFS= read -r pl_row; do
+    [ -n "$pl_row" ] || continue
+    grep -qE '^- `선행 착지` \| 슬라이스=[A-Za-z0-9_.-]+ \| 원격 슬러그=[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ \| 머지 커밋=[0-9a-f]{40}$' <<<"$pl_row" \
+      || die "「선행 착지」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>\` 입니다: $pl_row"
+    pl_id=$(printf '%s' "$pl_row" | sed -n 's/.*| 슬라이스=\([^ |]*\) |.*/\1/p')
+    case " $pl_ids " in
+      *" $pl_id "*) die "「선행 착지」 행이 슬라이스 ${pl_id} 에 둘 이상입니다 — 슬라이스마다 많아야 하나입니다" ;;
+    esac
+    pl_ids="$pl_ids $pl_id"
+  done <<EOF
+$pl_rows
+EOF
+
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
+}
+
+manifest_design_scope() {
+  # `base` or `single`. An absent key, an unparsable plan block and a value
+  # outside the two all read `single` — the shape every run had before the field.
+  case "$(manifest_plan_field '.design_scope')" in
+    base) printf 'base' ;;
+    *) printf 'single' ;;
+  esac
 }
 
 # The value of a declaration's `끌 수 있는가`, wherever the declaration put it:
@@ -4848,11 +5030,13 @@ stage_kind_of() {
   case "$head" in
     S1design) printf 'design'; return 0 ;;
     S2)       printf 'audit'; return 0 ;;
+    S2split)  printf 'split'; return 0 ;;
     S4)       printf 'implement'; return 0 ;;
     S5|S5R)   printf 'review'; return 0 ;;
     "S1'")    printf 'reconverge'; return 0 ;;
   esac
   case "$stage" in
+    *split*)                printf 'split' ;;
     *design-audit*|*audit*) printf 'audit' ;;
     *reconverge*)           printf 'reconverge' ;;
     *design*)               printf 'design' ;;
@@ -5369,6 +5553,54 @@ doc_is_early_stub() {
 # before saying so fails too.
 predicate_design()      { grep -qF "$LIT_DESIGN_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && doc_is_frozen "$DOC"; }
 
+# THE BASE SPLIT'S ARTIFACT IS THE REGISTRY, and it is crossed with the stage's
+# own terminal literal for the reason the design predicate crosses two facts.
+# The registry sits beside the document as `design-base/<stem>.tickets.md` and
+# is written only by `base-split.py record`. It is complete when its header is
+# version 1 and names the document's CURRENT whole-file digest — a registry of
+# an earlier revision is not the split of this one — and every row reached its
+# end state for the frozen tracker: `발행됨` for the base and every ticket and
+# `걸림` for every relation when a tracker was chosen, `문서만` everywhere when
+# none was. A `발행중` or `대기` row is a split still under way.
+split_registry_path() {
+  # split_registry_path <document path>
+  printf '%s/design-base/%s.tickets.md' "$(dirname "$1")" "$(basename "$1" .md)"
+}
+
+split_registry_complete() {
+  # split_registry_complete <document path> — 0 when the registry is complete.
+  local doc="$1" reg sha
+  [ -n "$doc" ] && [ -f "$doc" ] || return 1
+  reg=$(split_registry_path "$doc")
+  [ -f "$reg" ] || return 1
+  sha=$(shasum -a 256 "$doc" | cut -d' ' -f1)
+  awk -v sha="$sha" '
+    NR == 1 {
+      if (index($0, "<!-- cc-design-base-tickets v1; ") != 1) exit 1
+      if (index($0, "; doc-sha256=" sha ";") == 0) exit 1
+      if (index($0, "; tracker=없음;") > 0) none = 1
+      else if (index($0, "; tracker=github;") > 0 || index($0, "; tracker=clickup;") > 0) none = 0
+      else exit 1
+      head = 1; next
+    }
+    $0 == "<!-- cc-design-base-tickets: end -->" { ended = 1; next }
+    index($0, "- `베이스` |") == 1 || index($0, "- `티켓` |") == 1 {
+      if (index($0, "- `베이스` |") == 1) base = 1
+      want = none ? "| 상태=문서만 |" : "| 상태=발행됨 |"
+      if (index($0, want) == 0) bad = 1
+      next
+    }
+    index($0, "- `관계` |") == 1 {
+      want = none ? "| 상태=문서만" : "| 상태=걸림"
+      if (substr($0, length($0) - length(want) + 1) != want) bad = 1
+      next
+    }
+    END { exit !(head && ended && base && !bad) }
+  ' "$reg"
+}
+
+predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && split_registry_complete "$DOC"; }
+
 predicate_implement() {
   # The git-state ladder, evaluated in the MAIN tree, in cutpoint order. A run
   # that answered in prose and moved on makes no commit, so the ladder is false
@@ -5751,7 +5983,9 @@ decision_point_reached() {
   local out
   out=$(stage_log_path "$stage")
   [ -f "$out" ] || return 1
-  grep -q 'AskUserQuestion' "$out" 2>/dev/null
+  # The question form asks a person exactly as AskUserQuestion does, so a stage
+  # that reached for it reached the same kind of point.
+  grep -q -e 'AskUserQuestion' -e 'mcp__cc-cmds__question_form' "$out" 2>/dev/null
 }
 
 stage_limit_exit() {
@@ -6644,6 +6878,21 @@ apply_probe() {
   ( cd "$wt" && sh -c "$cmd" ) >/dev/null 2>&1
 }
 
+# apply_disposition <사전 프로브 rc> [<명령 rc> <사후 프로브 rc>] — the verdict
+# of one apply: `건너뜀`, `수렴`, `사전 실패` or `적용 불명`. Pure, and shared by
+# this driver's S9 and the gate's apply act, so the two cannot disagree about
+# which exit codes mean what. Given the pre-probe alone it can already say
+# `건너뜀` and `사전 실패`, the two verdicts that end an apply before the command
+# runs; for a pre-probe of 2 the answer is only final once both later codes are
+# in, and anything short of 0 and 0 is `적용 불명`.
+apply_disposition() {
+  case "$1" in
+    0) printf '건너뜀' ;;
+    2) if [ "${2:-}" = "0" ] && [ "${3:-}" = "0" ]; then printf '수렴'; else printf '적용 불명'; fi ;;
+    *) printf '사전 실패' ;;
+  esac
+}
+
 apply_stage() {
   local seg="$1" cmd actor radius wt root pre post rc acct
   cmd=$(apply_unquote "$(apply_field "$seg" '적용 명령')")
@@ -6691,14 +6940,15 @@ apply_stage() {
 
   apply_probe "$wt" "$probe"; pre=$?
   acct=$(stage_account_of "S9-$seg")
-  case "$pre" in
-    0) ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+  case "$(apply_disposition "$pre")" in
+    건너뜀)
+       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
          "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
          "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 프로브 0 — 적용할 변경 없음"
        apply_teardown "$seg" "$wt"
        return 0 ;;
-    2) : ;;
-    *) # Anything that is not "no changes" or "changes pending" is the probe
+    '사전 실패')
+       # Anything that is not "no changes" or "changes pending" is the probe
        # itself failing. Refuse BEFORE touching anything: an apply whose need
        # could not be established is an apply with no evidence behind it.
        park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre) — 아무것도 건드리기 전에 거부한다" "$cmd"
@@ -6710,7 +6960,7 @@ apply_stage() {
 
   apply_probe "$wt" "$probe"; post=$?
   acct=$(stage_account_of "S9-$seg")
-  if [ "$rc" = "0" ] && [ "$post" = "0" ]; then
+  if [ "$(apply_disposition "$pre" "$rc" "$post")" = "수렴" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
       "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 2 → 사후 0, 수렴"
@@ -8062,9 +8312,13 @@ design_arm() {
   # stage that ran, billed, produced nothing and was classified a hollow
   # success. A missing file is a park, not a dispatch; that is the whole cost
   # of the check, and it does not depend on the observation.
-  local plugin_dir1 skill_file1
+  # A BASE RUN DESIGNS WITH THE BASE SKILL. The scope is a frozen plan field, so
+  # the choice is read, not made; an absent key is `single`, the skill every run
+  # used before the field existed.
+  local plugin_dir1 skill_file1 skill1=design-discuss-unattended
+  [ "$(manifest_design_scope)" = "base" ] && skill1=design-base-unattended
   plugin_dir1=$(cd "$ORCH_DIR/.." && pwd)
-  skill_file1="$plugin_dir1/skills/design-discuss-unattended/SKILL.md"
+  skill_file1="$plugin_dir1/skills/$skill1/SKILL.md"
   if [ ! -f "$skill_file1" ]; then
     park "S1design" run 막힘 "스킬 파일 부재" "$skill_file1 가 없다 — 존재하지 않는 스킬로 디스패치하지 않는다"
     return 1
@@ -8077,7 +8331,7 @@ design_arm() {
   quiet_window_begin
   local src1=0
   dispatch_stage S1design "$(alias_root "$(home_alias)")" \
-    "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\"" || src1=$?
+    "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" || src1=$?
   if [ "$src1" = "$STAGE_SPAWN_PARK_RC" ]; then
     quiet_window_end
     park_router "S1design" "S1design" run
@@ -8107,7 +8361,7 @@ design_arm() {
     '의도된 park') park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
     '공허한 성공')
       if continue_or_park S1design S1design - S1design "$(alias_root "$(home_alias)")" \
-           "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\"" \
+           "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" \
            "동결된 설계 문서도 정지 기록도 없다" "$(home_alias)" -- predicate_design; then
         report_append "설계" "문서 동결 — $DOC_KEY"
       else
@@ -8119,6 +8373,123 @@ design_arm() {
   esac
   spawn_lineage_release S1design
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# S2split — the base run's split stage. It re-checks the audited document and
+# publishes its tickets as the frozen `베이스 발행` row says, or records them as
+# document-only, and leaves the registry beside the document. The row's
+# `종류=split` is what tells it apart from the audit's driver row, which carries
+# no kind.
+#
+# IT TAKES THE ROUTER'S PRECONDITIONS. The gate refuses a router's split until
+# the audit step's last row is `정상 완료` and the document is frozen, but this
+# arm dispatches through `stage_spawn` and never reaches that check, so it asks
+# the same two questions itself. The tracker writes a split makes cannot be
+# undone, so a document no audit of this run has read is not published.
+#
+# A RESUMED RUN IS JUDGED BY ITS OWN LEDGER, as the design arm is: a split that
+# finished and whose registry still matches the document is not dispatched
+# again, and one that stopped on purpose — a halt record, or a question it would
+# not answer for a person — is parked again without a dispatch, because a second
+# attempt asks the same question and bills for it.
+#
+# A SPLIT THAT CARRIED NOTHING OFF GETS ONE FRESH ATTEMPT. A crash, a usage-limit
+# end and a hollow success leave the registry partway at worst, and
+# `base-split.py` resumes from the registry, so a fresh dispatch neither repeats
+# a write nor skips one. One retry, then a park, as the design arm does.
+# ---------------------------------------------------------------------------
+split_retryable() {
+  case "$(terminal_route_class "${1:-}")" in
+    '크래시'|'한도-형상 회수'|'공허한 성공') return 0 ;;
+  esac
+  return 1
+}
+
+split_arm() {
+  local plugin_dir skill_file cmd src rc pred class acct prior prior_class audit_last try=1
+  plugin_dir=$(cd "$ORCH_DIR/.." && pwd)
+  skill_file="$plugin_dir/skills/design-base-unattended/SKILL.md"
+  if [ ! -f "$skill_file" ]; then
+    park "S2split" run 막힘 "스킬 파일 부재" "$skill_file 가 없다 — 존재하지 않는 스킬로 디스패치하지 않는다"
+    return 1
+  fi
+
+  prior=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2split |' || true; } | tail -1)
+  if [ -n "$prior" ]; then
+    prior_class=$(printf '%s' "$prior" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if [ "$prior_class" = "정상 완료" ] && split_registry_complete "$DOC"; then
+      log "S2split 건너뜀 — 이 런의 분할이 이미 완주했고 등록부가 지금 문서와 맞는다 ($DOC_KEY)"
+      return 0
+    fi
+    if ! split_retryable "$prior_class"; then
+      park "S2split" run 무효화 "게이트 park" \
+        "이 런의 분할이 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 파견하지 않는다" \
+        "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2split")" 2>/dev/null)"
+      return 1
+    fi
+    log "S2split 재파견 — 앞선 시도가 $prior_class 로 끝났다 ($DOC_KEY)"
+  fi
+
+  audit_last=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  if [ "$audit_last" != "정상 완료" ]; then
+    park "S2split" run 무효화 "게이트 park" \
+      "이 런의 감사가 정상 완료로 끝나지 않았다 (${audit_last:-행 없음}) — 감사가 읽지 않은 문서로 분할하지 않는다"
+    return 1
+  fi
+  if ! doc_is_frozen "$DOC"; then
+    park "S2split" run 무효화 "게이트 park" "설계 문서가 동결돼 있지 않다 — 동결되지 않은 문서로 분할하지 않는다"
+    return 1
+  fi
+
+  cmd="/cc-cmds:design-base-unattended --split $DOC"
+  while :; do
+    src=0
+    rm -f "$RUN_DIR/S2split.rc"
+    quiet_window_begin
+    dispatch_stage S2split "$(alias_root "$(home_alias)")" "$cmd" || src=$?
+    if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+      quiet_window_end
+      park "S2split" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+      return 1
+    fi
+    [ "$src" = "0" ] || (exit "$src")
+    quiet_window_end
+    rc=$(cat "$RUN_DIR/S2split.rc" 2>/dev/null || printf '1')
+    if predicate_split S2split; then pred=0; else pred=1; fi
+    class=$(classify_termination S2split "$rc" "$pred")
+    acct=$(stage_account_of S2split)
+    ledger_row 'stage-result' "세그먼트=-" "스테이지=S2split" "파견 id=S2split" "종류=split" "종료 코드=$rc" \
+      "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2split)" \
+      "세션 id=$(stage_session_id "S2split")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} "기록자=드라이버" \
+      "effort=$(stage_effort_rec_of S2split)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2split)")" \
+      "종단 부류=$class"
+    absorb_stage_judgment S2split S2split "$(home_alias)"
+    if [ "$pred" = "0" ] && [ "$class" = "정상 완료" ]; then
+      report_append "분할" "베이스 분할 완료 — $(split_registry_path "$DOC")"
+      spawn_lineage_release S2split
+      return 0
+    fi
+    if [ "$try" = "1" ] && split_retryable "$class" && ! stage_open_judgment S2split; then
+      log "S2split: $class — 등록부에서 이어 가는 새 시도 1회"
+      try=2
+      continue
+    fi
+    break
+  done
+  case "$class" in
+    '의도된 park')
+      park "S2split" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2split")" 2>/dev/null)" ;;
+    *)
+      if [ "$try" = "2" ]; then
+        park "S2split" run 무효화 "게이트 park" "재시도 소진 — 새 시도도 분할 술어 불성립, 종단 부류 $class"
+      else
+        park "S2split" run 무효화 "게이트 park" "분할 술어 불성립 — 종단 부류 $class"
+      fi ;;
+  esac
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -8180,16 +8551,30 @@ main_loop() {
       "기준=이 런의 매니페스트가 설계 문서를 선언하지 않는다" \
       "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
       "근거=앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
-  elif [ -n "$DOC_SLUG" ] && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
+  elif [ "$(manifest_design_scope)" = "base" ] \
+       && [ "$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+              | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)" = "정상 완료" ]; then
+    # A BASE RUN SKIPS ONLY AN AUDIT IT RAN ITSELF. A reader report on disk
+    # names the slug, not the bytes it read, and a base run publishes tickets
+    # after this — so a report left by an earlier run over an earlier revision
+    # would send a document nobody audited to the tracker. The run's own
+    # finished audit row is the evidence instead, and the split checks it again.
+    log "S2 감사 건너뜀 — 이 런의 감사가 이미 완주했다 ($DOC_KEY)"
+  elif [ "$(manifest_design_scope)" != "base" ] && [ -n "$DOC_SLUG" ] \
+       && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
     log "S2 감사 건너뜀 — 이 문서의 감사 리포트가 이미 있다 ($DOC_SLUG)"
     ledger_row '자율 승인' "kind=audit-composition" "결정=감사 스테이지를 띄우지 않는다" \
       "기각된 대안=다시 감사한다" "등급=1" "기준=이 문서 슬러그의 리더 리포트가 이미 존재한다" \
       "되돌리는 법=그 리포트를 옮기고 런을 다시 킥오프한다" \
       "근거=$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-*.md"
   else
+  # A base document is audited as one: `--base` tells the audit to read the
+  # base grammar, and only a base run carries it.
+  local audit_cmd2="/cc-cmds:design-audit-unattended $DOC"
+  [ "$(manifest_design_scope)" = "base" ] && audit_cmd2="$audit_cmd2 --base"
   quiet_window_begin
   local src2=0
-  dispatch_stage S2 "$(alias_root "$(home_alias)")" "/cc-cmds:design-audit-unattended $DOC" || src2=$?
+  dispatch_stage S2 "$(alias_root "$(home_alias)")" "$audit_cmd2" || src2=$?
   # `S2.rc` is absent after a declined launch, and the line below reads that as
   # 1 — a crash. The router's answer is not a crash.
   if [ "$src2" = "$STAGE_SPAWN_PARK_RC" ]; then
@@ -8217,7 +8602,7 @@ main_loop() {
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
     '공허한 성공')
       if continue_or_park S2 S2 - S2 "$(alias_root "$(home_alias)")" \
-           "/cc-cmds:design-audit-unattended $DOC" \
+           "$audit_cmd2" \
            "감사 리더 리포트와 종단 문면도 정지 기록도 없다" "$(home_alias)" -- predicate_audit; then
         :
       else
@@ -8228,6 +8613,15 @@ main_loop() {
     *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
   spawn_lineage_release S2
+  fi
+
+  # A BASE RUN ENDS AT THE SPLIT. Its graph has no segment: each ticket is
+  # designed and implemented by a later run, so after the audit — run here or
+  # skipped because a reader report already exists — the split runs and the
+  # driver returns before the segment plan on every path.
+  if [ "$(manifest_design_scope)" = "base" ]; then
+    split_arm || true
+    return 0
   fi
 
   # S3 SEGMENT-PLAN — routed by the three-branch predicate.

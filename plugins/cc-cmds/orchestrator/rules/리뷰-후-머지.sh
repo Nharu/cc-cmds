@@ -107,9 +107,17 @@ p0=$(field 'P0'); p1=$(field 'P1'); reviewed=$(field '리뷰 HEAD')
 [ -n "$p0" ] || p0=0
 [ -n "$p1" ] || p1=0
 
+# 사람이 이 사이클의 발견을 기각했으면 남은 발견을 미해결로 세지 않는다. 기각은
+# 게이트가 좌석만 쓸 수 있는 `리뷰 기각` 행에서 접어 「사이클@리뷰 HEAD」로
+# 넘기고, 여기서는 그 값이 지금 읽은 마지막 cycle 행과 같은지만 본다 — 그 뒤에
+# 새 리뷰가 기록됐으면 값이 어긋나 기각은 효력을 잃는다. 아래 신선도 사다리와
+# 리포트 검사는 기각과 무관하게 그대로 선다.
 if [ "$p0" != "0" ] || [ "$p1" != "0" ]; then
-  echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1)" >&2
-  exit 1
+  if [ -z "${GATE_SEGMENT_REVIEW_DISMISSED:-}" ] \
+     || [ "$GATE_SEGMENT_REVIEW_DISMISSED" != "$(field '사이클')@$reviewed" ]; then
+    echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1)" >&2
+    exit 1
+  fi
 fi
 
 [ -n "$reviewed" ] || {
@@ -161,6 +169,17 @@ grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$report_abs" || {
   echo "rule refused: 리뷰-후-머지 — the report has no 「발견 요약」 (it looks unfinished): $report" >&2
   exit 1
 }
+
+# 적용 행위 — 게이트가 착지 확인을 지난 뒤에만 적용 대상 HEAD 를 실어 준다.
+# 적용은 구현 워크트리가 지워진 뒤에도 일어나므로 아래 워크트리 HEAD 대신
+# 적용 대상 HEAD 가 리뷰된 HEAD 인지를 본다.
+if [ -n "${GATE_SUBJECT_HEAD:-}" ]; then
+  case "$reviewed" in
+    "$GATE_SUBJECT_HEAD"*) exit 0 ;;
+  esac
+  echo "rule refused: 리뷰-후-머지 — the subject head of this apply is not the reviewed head (reviewed ${reviewed}, subject ${GATE_SUBJECT_HEAD})" >&2
+  exit 1
+fi
 
 seg_row=$(grep -E '^- `segment`' "$GATE_LEDGER" | grep -F "id=$GATE_SEGMENT " | tail -1)
 wt=$(printf '%s' "$seg_row" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//' | tail -1)

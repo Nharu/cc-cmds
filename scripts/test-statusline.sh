@@ -11,8 +11,10 @@
 #
 # WHAT THE ISOLATION HIDES. Every case here sets `XDG_STATE_HOME`, so the real
 # environment's branch — the variable unset, falling back to `$HOME/.local/state`
-# — is never executed. That shape is pinned by a separate textual assertion
-# rather than left to the fixture, which by construction cannot reach it.
+# — is never executed for the run index. That shape is pinned by a separate
+# textual assertion rather than left to the fixture, which by construction cannot
+# reach it. The borrow record's path is the exception: SB05 renders with the
+# variable unset and `HOME` pointed at a fixture, so its fallback branch runs.
 #
 # Usage: bash scripts/test-statusline.sh
 
@@ -43,6 +45,10 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
 XDG_STATE_HOME="$WORK/state"
 export XDG_STATE_HOME
 mkdir -p "$XDG_STATE_HOME"
+# The session's config directory decides whose view of a borrow the line shows,
+# and a stage running this suite carries its own. Unset, every case below that
+# does not name one sees what a session with none would.
+unset CLAUDE_CONFIG_DIR
 trap 'fx_reap; chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # THE APPLY CASES INSTALL FROM A COPY, NOT FROM THIS CHECKOUT. `--plugin-dir`
@@ -72,6 +78,11 @@ hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" 
 # substitutions turns one fact into two strings — measured as a red suite in
 # roughly one run of seven, at three different cases. Stripping the slots from
 # BOTH sides costs those assertions nothing, because neither slot names a script.
+#
+# NO COMPARISON THROUGH THIS FUNCTION RUNS WITH A BORROW RECORD PRESENT. The
+# borrow segment can end the line in a `홈 HH:MM` clock, which is exactly the
+# trailing digit run the first expression removes, so the SB cases compare
+# literals and never call it.
 strip_clock() { sed -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 N/'; }
 
 # AND THE STRIPPING IS PINNED HERE, BECAUSE NOWHERE ELSE CAN PIN IT. Turned into
@@ -108,8 +119,9 @@ check "시계 슬롯을 벗기면 앞 시점이 알려진 한 줄이 된다" \
 check "시계 슬롯을 벗기면 뒤 시점이 같은 그 한 줄이 된다" \
   "$(printf '%s\n' "$_sc_b" | strip_clock)" "$_sc_want"
 
-# The "no run" line. Byte-identical to every degraded path's output, which is
-# the property cases 10-13 exist to hold in place.
+# The "no run" line. Byte-identical to every degraded path's output when no
+# borrow record is present, which is the property cases 10-13 exist to hold in
+# place.
 #
 # THE REFERENCE IS IN THE REPOSITORY, and it is executed on every run. Taken
 # only from the install target it is absent on the CI runner, where the
@@ -259,6 +271,24 @@ fx_blocked "라이브니스 침묵" 불명
 fx_blocked "라이브니스 침묵" 해소
 fx_heartbeat 0 900
 has "8e 사람이 해소한 뒤에는 게이트와 같이 종료로 판정한다" "$(sl sess-8e)" "✓"
+
+# The watcher exits when the run ends, so a finished run's heartbeat goes stale
+# by design. Reporting that as a missing watcher reads a clean finish as a fault.
+fx_mkrun run-8f; fx_ledger_path; fx_session_index sess-8f run-8f
+fx_segment S1 머지됨
+fx_done
+fx_heartbeat 300 900
+fx_watch_pid dead
+out=$(sl sess-8f)
+has "8f 종료한 런 — 하트비트가 노후해도 종료로 보인다" "$out" "✓"
+hasnt "8f 종료한 런에는 워처 접미사가 붙지 않는다" "$out" "워처"
+
+fx_mkrun run-8g; fx_ledger_path; fx_session_index sess-8g run-8g
+fx_segment S1 머지됨
+fx_done
+out=$(sl sess-8g)
+has "8g 하트비트도 pid 도 없는 종료 런 — 종료로 보인다" "$out" "✓"
+hasnt "8g 종료한 런에는 미기동 접미사도 붙지 않는다" "$out" "워처"
 
 # ---------------------------------------------------------------------------
 # 9. Watcher freshness — twice the pinned `--interval`
@@ -638,6 +668,107 @@ fx_session_index sess-a12d run-a12-dead
 has   "A12 홀로 남은 워처 없는 승인대기 런은 여전히 승인 대기로 렌더된다" "$(sl sess-a12d)" "⏸"
 
 # ---------------------------------------------------------------------------
+# P1-P4. The pane's field row
+# ---------------------------------------------------------------------------
+#
+# THE ROW IS FOR THE PANE AND NOTHING ELSE. With the variable unset the status
+# line still prints the one line it always did, so every case above keeps its
+# meaning; with it set, the first line has to be the same bytes and the field
+# row comes second. Both renders go through `strip_clock`, because the running
+# arm's elapsed can tick between them.
+slp() { fx_statusline_stdin "$1" | CC_SL_PANE_FIELDS=1 bash "$SL"; }
+first_of() { printf '%s\n' "$1" | sed -n 1p; }
+row_of()   { printf '%s\n' "$1" | sed -n 2p; }
+fld()      { printf '%s\n' "$2" | cut -f"$1"; }
+nlines()   { printf '%s\n' "$1" | grep -c ''; }
+
+# P1. Every arm, and the watcher's four verdicts, on sessions built above.
+for p in "sess-live:도는중:도는중:ok" "sess-7b:진행중:진행중:ok" \
+         "sess-7a:정지경고:정지경고:ok" "sess-appr:승인대기:승인대기:ok" \
+         "sess-8a:종단:종료:none" "sess-a7-solo:버려짐:방치:none" \
+         "sess-a7-blocked:버려짐:차단:none" "sess-9:진행중:진행중:stale" \
+         "sess-9c:진행중:진행중:unstarted"; do
+  s=${p%%:*}; rest=${p#*:}; tok=${rest%%:*}; rest=${rest#*:}
+  word=${rest%%:*}; verdict=${rest#*:}
+  plain=$(sl "$s"); with=$(slp "$s")
+  check "P1 $s — 변수가 없으면 한 줄" "$(nlines "$plain")" "1"
+  check "P1 $s — 변수가 있으면 두 줄" "$(nlines "$with")" "2"
+  check "P1 $s — 변수 유무와 상관없이 첫 줄이 같다" \
+    "$(first_of "$with" | strip_clock)" "$(printf '%s\n' "$plain" | strip_clock)"
+  r=$(row_of "$with")
+  check "P1 $s — 필드 행은 아홉 칸" "$(printf '%s\n' "$r" | awk -F'\t' '{print NF}')" "9"
+  check "P1 $s — 머리 두 칸" "$(fld 1 "$r") $(fld 2 "$r")" "cc-sl 1"
+  check "P1 $s — 상태 토큰" "$(fld 4 "$r")" "$tok"
+  check "P1 $s — 갈래 단어" "$(fld 5 "$r")" "$word"
+  check "P1 $s — 워처 판정" "$(fld 9 "$r")" "$verdict"
+  case "$(fld 6 "$r")" in
+    ''|*[!0-9]*) bad "P1 $s — <now> 는 에포크 초" "'$(fld 6 "$r")'" ;;
+    *) ok "P1 $s — <now> 는 에포크 초" ;;
+  esac
+  case "$(fld 3 "$r")" in
+    run-*) ok "P1 $s — 런 id 칸" ;;
+    *) bad "P1 $s — 런 id 칸" "'$(fld 3 "$r")'" ;;
+  esac
+done
+
+# P2. No run: the field row is not invented, and the line stays the fallback.
+out=$(slp sess-none)
+check "P2 런 없음 — 변수가 있어도 한 줄" "$(nlines "$out")" "1"
+check "P2 런 없음 — 폴백과 바이트 동일" "$out" "$FALLBACK"
+
+# P3. `<hb>` is the heartbeat mtime the watcher verdict read, and `-` when there
+# is no heartbeat at all. The expected value comes from the same function the
+# script calls, so this pins the slot, not a second reading of the clock.
+fx_mkrun run-p3; fx_ledger_path; fx_session_index sess-p3 run-p3
+fx_segment S1 실행중
+fx_heartbeat 30 5
+want_hb=$( . "$LIVENESS"; cc_mtime "$FX_RUN_DIR/watch.heartbeat" )
+r=$(row_of "$(slp sess-p3)")
+check "P3 <hb> 는 watch.heartbeat 의 mtime" "$(fld 8 "$r")" "$want_hb"
+check "P3 <grew> 는 하트비트의 마지막성장" "$(fld 7 "$r")" \
+  "$(sed -n 's/.*마지막성장=\([0-9]*\).*/\1/p' "$FX_RUN_DIR/watch.heartbeat")"
+r=$(row_of "$(slp sess-a7-noclock)")
+check "P3 하트비트가 없으면 <hb> 는 -" "$(fld 8 "$r")" "-"
+
+# ---------------------------------------------------------------------------
+# K1-K3. The kind on the running arm comes from `cc_stage_kind`
+# ---------------------------------------------------------------------------
+#
+# The gate leaves `<seg>.kind` beside a stage it launched, so the running row
+# names what is running rather than what last finished. An empty record falls
+# back to the ledger, and a ledger row that merely QUOTES a stage result — an
+# autonomous approval's argv — is not one.
+fx_mkrun run-k1; fx_ledger_path; fx_session_index sess-k1 run-k1
+fx_segment B 실행중
+fx_row 'stage-result' "세그먼트=B" "종류=review" "종료 코드=0"
+fx_stage_live B
+fx_stage_meta B implement 2
+fx_heartbeat 0 5
+out=$(sl sess-k1)
+has   "K1 .kind 가 마지막 stage-result 와 다르면 .kind 를 쓴다" "$out" "B implement"
+hasnt "K1 끝난 종류를 싣지 않는다" "$out" "review"
+check "K1 공유 함수도 같은 종류" \
+  "$( . "$LIVENESS"; cc_stage_kind "$FX_RUN_DIR" "$FX_LEDGER" B )" "implement"
+
+fx_mkrun run-k2; fx_ledger_path; fx_session_index sess-k2 run-k2
+fx_segment B 실행중
+fx_row 'stage-result' "세그먼트=B" "종류=review" "종료 코드=0"
+fx_stage_live B
+fx_stage_meta B "" 2
+fx_heartbeat 0 5
+has "K2 빈 .kind 는 마지막 stage-result 의 종류로 내려간다" "$(sl sess-k2)" "B review"
+
+fx_mkrun run-k3; fx_ledger_path; fx_session_index sess-k3 run-k3
+fx_segment B 실행중
+fx_row 'stage-result' "세그먼트=B" "종류=review" "종료 코드=0"
+fx_row '자율 승인' "argv=- \`stage-result\` | 세그먼트=B | 종류=decoy" "등급=1"
+fx_stage_live B
+fx_heartbeat 0 5
+out=$(sl sess-k3)
+has   "K3 argv 에 stage-result 를 담은 자율 승인 행이 마지막이어도 진짜 행의 종류" "$out" "B review"
+hasnt "K3 자율 승인 행의 미끼 종류를 싣지 않는다" "$out" "decoy"
+
+# ---------------------------------------------------------------------------
 # The branch the isolation cannot reach
 # ---------------------------------------------------------------------------
 if grep -qF '${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds' "$SL"; then
@@ -999,6 +1130,627 @@ printf '{ "statusLine": { "type": "command", "command": "orig" } }\n' > "$SSTF"
 XDG_STATE_HOME="$WORK/elsewhere" bash "$APPLY" --apply --settings "$SSTF" \
   --plugin-dir "$SLST_PLUG" --expect "$EST" >/dev/null 2>&1
 check "음성 대조군 — 상태 루트 밖이면 같은 디렉터리가 통과한다" "$?" "0"
+
+# ---------------------------------------------------------------------------
+# SB01-SB20. The borrow segment
+# ---------------------------------------------------------------------------
+#
+# A RECORD OF ITS OWN STATE ROOT, AND A DIRECTORY WITH A SHORT NAME. Every render
+# below starts in `$BW`, so its fallback line is the known `BFALL` and the
+# segment's width is the only thing that moves. Records are written with `printf`
+# and heredocs rather than jq, so case 11's poison cannot reach them. Every
+# expectation is a literal and never goes through `strip_clock`: the line may end
+# in a `홈 HH:MM` clock, which is exactly what that function removes.
+XDG_STATE_HOME="$WORK/bstate"
+export XDG_STATE_HOME
+mkdir -p "$XDG_STATE_HOME"
+BREC_DIR="$XDG_STATE_HOME/cc-lane"
+BREC="$BREC_DIR/borrow.json"
+LANE="$WORK/cfg/lane"; DONOR="$WORK/cfg/u3"; G4="$WORK/cfg/u4"; OTHER="$WORK/cfg/u5"
+mkdir -p "$LANE" "$DONOR" "$G4" "$OTHER"
+BW="$WORK/bw"; mkdir -p "$BW"
+BFALL=$(cd "$BW" && bash "$REF_CMD_FIXTURE" </dev/null)
+ROUTE="$repo_root/plugins/cc-cmds/orchestrator/route.sh"
+# A backslash built by the shell, so that no editor or document tool can decode
+# the unicode escapes written with it.
+BS=$'\\'
+NOW=$(date -u +%s)
+
+bcanon() {
+  # bcanon <state> <trigger> <five_hour epoch> [seven_day epoch] [stage] — the
+  # record in cc-lane's pretty form, with `donor.group` naming u3 and u4. The
+  # trigger and the epochs are JSON exactly as written into the record.
+  cat <<EOF
+{
+  "schema": "cc-lane-borrow v1",
+  "state": "$1",
+  "lane_config_dir": "$LANE",
+  "donor": {
+    "id": "u3",
+    "config_dir": "$DONOR",
+    "group": [
+      {
+        "id": "u3",
+        "config_dir": "$DONOR"
+      },
+      {
+        "id": "u4",
+        "config_dir": "$G4"
+      }
+    ]
+  },
+  "trigger_window": $2,
+  "home_windows": {
+    "five_hour": {
+      "utilization_bp": 9100,
+      "resets_at_epoch": $3
+    },
+    "seven_day": {
+      "utilization_bp": null,
+      "resets_at_epoch": ${4:-null}
+    }
+  },
+  "since_epoch": 1790990000,
+  "nonce": "ab12",
+  "written_at_epoch": 1790990001,
+  "home": "cc",
+  "stage": "${5:-$1/steady}",
+  "not_before_epoch": null,
+  "attempt": 0
+}
+EOF
+}
+bclear() { chmod -R u+rwX "$BREC_DIR" 2>/dev/null; rm -rf "$BREC_DIR"; }
+# The heredoc ends in a newline and cc-lane's emitter does not; the command
+# substitution is what drops it.
+bput()  { bclear; mkdir -p "$BREC_DIR"; printf '%s' "$(bcanon "$@")" > "$BREC"; }
+bputf() { bclear; mkdir -p "$BREC_DIR"; printf '%s' "$1" > "$BREC"; }
+bflat() {
+  # bflat <state> <donor id> <five_hour epoch> — the compact form, lane and donor
+  # directories the fixed ones.
+  printf '{"schema":"cc-lane-borrow v1","state":"%s","lane_config_dir":"%s","donor":{"id":"%s","config_dir":"%s"},"trigger_window":"five_hour","home_windows":{"five_hour":{"resets_at_epoch":%s}}}' \
+    "$1" "$LANE" "$2" "$DONOR" "$3"
+}
+
+slb() {
+  # slb <config dir|-> <session id|stdin JSON> — one render from `$SLB_DIR`
+  # (default `$BW`) of `$SLB_SL` (default this checkout's script), with `TZ` at
+  # `$SLB_TZ` (default UTC0) and `CLAUDE_CONFIG_DIR` set to the first argument or,
+  # for `-`, unset — for this one command only.
+  local in="$2" dir="${SLB_DIR:-$BW}"
+  case "$in" in
+    '{'*) ;;
+    *) in=$(fx_statusline_stdin "$2" "$dir") ;;
+  esac
+  if [ "$1" = - ]; then
+    (cd "$dir" && printf '%s' "$in" | env -u CLAUDE_CONFIG_DIR TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
+  else
+    (cd "$dir" && printf '%s' "$in" | env CLAUDE_CONFIG_DIR="$1" TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
+  fi
+}
+sb_in() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s"}' "$1" "$2" "$BW"; }
+# The clock oracle is jq's, in UTC — independent of the formatter under test.
+sb_hm()   { jq -rn --argjson e "$1" '$e | strftime("%H:%M")'; }
+sb_mdhm() { jq -rn --argjson e "$1" '$e | strftime("%m/%d %H:%M")'; }
+sb_pad()  { local s="$1"; while [ "${#s}" -lt "$2" ]; do s="${s}x"; done; printf '%s' "$s"; }
+
+E=$((NOW + 7200))
+E_HM=$(sb_hm "$E")
+SEG_LANE=" · cc→u3 · 홈 $E_HM"
+
+# SB01. No record.
+check "SB01 cc-lane 디렉터리 없음 — 대체 줄 그대로" "$(slb "$LANE" sess-none)" "$BFALL"
+mkdir -p "$BREC_DIR"
+check "SB01 cc-lane 디렉터리만 있고 기록 없음 — 대체 줄 그대로" "$(slb "$LANE" sess-none)" "$BFALL"
+
+# SB02. `none`.
+bputf '{"schema":"cc-lane-borrow v1","state":"none"}'
+check "SB02 최소형 none — 대체 줄 그대로" "$(slb "$LANE" sess-none)" "$BFALL"
+bputf "{\"schema\":\"cc-lane-borrow v1\",\"state\":\"none\",\"lane_config_dir\":\"$LANE\",\"donor\":{\"id\":\"u3\",\"config_dir\":\"$DONOR\"}}"
+check "SB02 기증자 필드가 남은 none — 대체 줄 그대로" "$(slb "$LANE" sess-none)" "$BFALL"
+bputf "{\"schema\":\"cc-lane-borrow v1\",\"state\":\"borrowed\",\"lane_config_dir\":\"$LANE\",\"donor\":{\"id\":\"u3\",\"config_dir\":\"$DONOR\"},\"state\":\"none\"}"
+check "SB02 마지막이 none 인 중복 state — 대체 줄 그대로" "$(slb "$LANE" sess-none)" "$BFALL"
+
+# The content fixtures SB03 and SB18 share. Each is the record's bytes, installed
+# with `cp` so that a trailing newline survives.
+BFX="$WORK/bfx"; mkdir -p "$BFX"
+sbf() { printf '%s' "$2" > "$BFX/$1"; }
+OKB='"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}'
+sbf corrupt_garbage 'not json'
+sbf corrupt_truncated '{"schema":"cc-lane-borrow v1","state":"borr'
+: > "$BFX/corrupt_empty"
+sbf corrupt_trailing_comma '{"schema":"cc-lane-borrow v1","state":"none",}'
+sbf corrupt_trailing_garbage '{"schema":"cc-lane-borrow v1","state":"none"} x'
+sbf corrupt_two_docs '{"schema":"cc-lane-borrow v1","state":"none"}{"schema":"cc-lane-borrow v1","state":"none"}'
+sbf corrupt_toplevel_array '[{"schema":"cc-lane-borrow v1","state":"none"}]'
+sbf corrupt_schema_v2 '{"schema":"cc-lane-borrow v2","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf none_wrong_schema '{"schema":"cc-lane-borrow v2","state":"none"}'
+sbf corrupt_schema_missing '{"state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_state_missing '{"schema":"cc-lane-borrow v1","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_state_unknown '{"schema":"cc-lane-borrow v1","state":"pending","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_state_number '{"schema":"cc-lane-borrow v1","state":3,"lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_state_case '{"schema":"cc-lane-borrow v1","state":"Borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_lane_missing '{"schema":"cc-lane-borrow v1","state":"borrowed","donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_lane_empty '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"","donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_lane_number '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":7,"donor":{"id":"u3","config_dir":"/b"}}'
+sbf corrupt_donor_null '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":null}'
+sbf corrupt_donor_string '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":"u3"}'
+sbf corrupt_donor_id_missing '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"config_dir":"/b"}}'
+sbf corrupt_donor_id_empty '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"","config_dir":"/b"}}'
+sbf corrupt_donor_id_number '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":3,"config_dir":"/b"}}'
+sbf corrupt_donor_dir_missing '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3"}}'
+sbf corrupt_donor_dir_empty '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":""}}'
+sbf corrupt_decoy_group_id '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"config_dir":"/b","group":[{"id":"u3","config_dir":"/b"}]}}'
+sbf corrupt_dup_donor_stale '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"},"donor":{"config_dir":"/c"}}'
+sbf corrupt_bad_literal '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"},"x":tru}'
+sbf corrupt_bom $'\xef\xbb\xbf{"schema":"cc-lane-borrow v1","state":"none"}'
+sbf corrupt_nan '{"schema":"cc-lane-borrow v1","state":"none","x":NaN}'
+sbf x_tab_unrelated "{$OKB,\"x\":\"a"$'\t'"b\"}"
+sbf x_lone_surrogate "{$OKB,\"x\":\"${BS}ud800\"}"
+SB_CORRUPT="corrupt_garbage corrupt_truncated corrupt_empty corrupt_trailing_comma
+corrupt_trailing_garbage corrupt_two_docs corrupt_toplevel_array corrupt_schema_v2
+none_wrong_schema corrupt_schema_missing corrupt_state_missing corrupt_state_unknown
+corrupt_state_number corrupt_state_case corrupt_lane_missing corrupt_lane_empty
+corrupt_lane_number corrupt_donor_null corrupt_donor_string corrupt_donor_id_missing
+corrupt_donor_id_empty corrupt_donor_id_number corrupt_donor_dir_missing
+corrupt_donor_dir_empty corrupt_decoy_group_id corrupt_dup_donor_stale
+corrupt_bad_literal corrupt_bom corrupt_nan x_tab_unrelated x_lone_surrogate"
+
+# Records the reader shows: the writer's grammar and its neighbours.
+printf '%s' "$(bcanon intent '"five_hour"' 1791000000 '' intent/admit)" > "$BFX/canon_intent"
+printf '%s' "$(bcanon borrowed '"five_hour"' 1791000000)" > "$BFX/canon_borrowed"
+printf '%s' "$(bcanon returning '"seven_day"' null '' returning/settle)" > "$BFX/canon_returning"
+printf '%s' "$(bcanon borrowed '"rejected"' null)" > "$BFX/canon_rejected"
+printf '%s' "$(bcanon borrowed null 1791000000)" > "$BFX/canon_trigger_null"
+printf '%s' "$(bcanon borrowed '"five_hour"' 1791000000 '' returning/settle)" > "$BFX/canon_stage_mismatch"
+sbf borrowed_compact '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/Users/ian/.claude-cc","donor":{"id":"u3","config_dir":"/Users/ian/.claude-u3"},"trigger_window":"five_hour","home_windows":{"five_hour":{"utilization_bp":9100,"resets_at_epoch":1791000000},"seven_day":{"utilization_bp":null,"resets_at_epoch":null}}}'
+sbf borrowed_reordered '{"donor":{"config_dir":"/Users/ian/.claude-u3","id":"u3"},"state":"borrowed","lane_config_dir":"/Users/ian/.claude-cc","schema":"cc-lane-borrow v1"}'
+sbf borrowed_minimal_no_windows '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+# The compact form route's own suite writes with `jq -c`, newline included.
+sbf rb1_compact $'{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/lane","donor":{"id":"u3","config_dir":"/h/.claude-u3"},"since_epoch":1}\n'
+sbf none_min '{"schema":"cc-lane-borrow v1","state":"none"}'
+sbf none_junk_donor '{"schema":"cc-lane-borrow v1","state":"none","donor":"x","lane_config_dir":5}'
+sbf dup_state_last_none '{"schema":"cc-lane-borrow v1","state":"borrowed","state":"none"}'
+sbf dup_state_last_borrowed '{"schema":"cc-lane-borrow v1","state":"none","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf x_raw_tab_in_id $'{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u\t3","config_dir":"/b"}}'
+sbf x_raw_cr_in_id $'{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u\r3","config_dir":"/b"}}'
+sbf x_raw_esc_in_id $'{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u\033[31m","config_dir":"/b"}}'
+sbf x_raw_del_in_id $'{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u\177","config_dir":"/b"}}'
+sbf x_bad_escape '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"},"x":"\x"}'
+sbf x_nul_escape "{$OKB,\"x\":\"${BS}u0000\"}"
+sbf x_minus_only "{$OKB,\"n\":-}"
+sbf x_ndjson $'{"schema":"cc-lane-borrow v1","state":"none"}\n{"schema":"cc-lane-borrow v1","state":"none"}\n'
+sbf x_depth_20 "{$OKB,\"d\":$(printf '[%.0s' $(seq 1 20))1$(printf ']%.0s' $(seq 1 20))}"
+sbf x_missing_comma '{"schema":"cc-lane-borrow v1" "state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf x_missing_colon '{"schema" "cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"}}'
+sbf x_colon_in_array "{$OKB,\"x\":[1:2]}"
+sbf x_key_not_string "{$OKB,1:2}"
+sbf x_mismatched_close '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"],"x":1}'
+sbf x_extra_close "{$OKB}}"
+sbf x_donor_nested_decoy '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","x":{"donor":{"id":"u9","config_dir":"/z"}},"donor":{"id":"u3","config_dir":"/b"}}'
+sbf x_id_in_nested_array_first '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"group":[{"id":"u9","config_dir":"/z"}],"id":"u3","config_dir":"/b"}}'
+sbf x_dup_lane_second_empty '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","lane_config_dir":"","donor":{"id":"u3","config_dir":"/b"}}'
+sbf x_dup_donor_object_then_null "{$OKB,\"donor\":null}"
+sbf x_dup_state_object_second "{$OKB,\"state\":{}}"
+sbf x_u2028_hangul $'{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/\xed\x99\x88","donor":{"id":"u3","config_dir":"/b\xe2\x80\xa8"}}'
+sbf x_huge_exponent "{$OKB,\"n\":1e999}"
+sbf x_slash_escape_unrelated "{$OKB,\"y\":\"${BS}/\"}"
+sbf x_value_missing '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":}}'
+sbf x_only_open_brace '{'
+sbf x_empty_object '{}'
+sbf x_true_top 'true'
+sbf x_string_top '"x"'
+SB_SHOWN="canon_intent canon_borrowed canon_returning canon_rejected canon_trigger_null
+canon_stage_mismatch borrowed_compact borrowed_reordered borrowed_minimal_no_windows
+rb1_compact none_min none_junk_donor dup_state_last_none dup_state_last_borrowed
+x_raw_tab_in_id x_raw_cr_in_id x_raw_esc_in_id x_raw_del_in_id x_bad_escape
+x_nul_escape x_minus_only x_ndjson x_depth_20 x_missing_comma x_missing_colon
+x_colon_in_array x_key_not_string x_mismatched_close x_extra_close
+x_donor_nested_decoy x_id_in_nested_array_first x_dup_lane_second_empty
+x_dup_donor_object_then_null x_dup_state_object_second x_u2028_hangul
+x_huge_exponent x_slash_escape_unrelated x_value_missing x_only_open_brace
+x_empty_object x_true_top x_string_top"
+
+# The declared one-way rows: route says borrowing and the reader shows nothing.
+{ printf '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"},"pad":"'
+  head -c 70000 /dev/zero | tr '\0' 'a'; printf '"}'; } > "$BFX/oversize"
+sbf borrowed_ws_noise $'  \n{ "schema" : "cc-lane-borrow v1" ,\t"state"\n:\n"borrowed" , "lane_config_dir":"/a","donor":{"id":"u3","config_dir":"/b"} }\n\n'
+sbf borrowed_id_escape "{\"schema\":\"cc-lane-borrow v1\",\"state\":\"borrowed\",\"lane_config_dir\":\"/a\",\"donor\":{\"id\":\"u${BS}u0033\",\"config_dir\":\"/b\"}}"
+sbf borrowed_escaped_slash '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"\/Users\/ian\/.claude-cc","donor":{"id":"u3","config_dir":"\/Users\/ian\/.claude-u3"}}'
+sbf x_quote_in_id '{"schema":"cc-lane-borrow v1","state":"borrowed","lane_config_dir":"/a","donor":{"id":"u\"3","config_dir":"/b"}}'
+sbf x_id_u001b "{\"schema\":\"cc-lane-borrow v1\",\"state\":\"borrowed\",\"lane_config_dir\":\"/a\",\"donor\":{\"id\":\"u${BS}u001b[31m\",\"config_dir\":\"/b\"}}"
+sbf x_crlf_layout $'{\r\n  "schema": "cc-lane-borrow v1",\r\n  "state": "borrowed",\r\n  "lane_config_dir": "/a",\r\n  "donor": {"id": "u3", "config_dir": "/b"}\r\n}'
+sbf x_tab_indent $'{\n\t"schema": "cc-lane-borrow v1",\n\t"state": "borrowed",\n\t"lane_config_dir": "/a",\n\t"donor": {"id": "u3", "config_dir": "/b"}\n}'
+sbf x_leading_zero "{$OKB,\"n\":01}"
+sbf x_number_dot "{$OKB,\"n\":1.}"
+sbf x_depth_40 "{$OKB,\"d\":$(printf '[%.0s' $(seq 1 40))1$(printf ']%.0s' $(seq 1 40))}"
+sbf x_paired_surrogate "{$OKB,\"x\":\"${BS}ud83d${BS}ude00\"}"
+sbf x_schema_u_escape "{\"schema\":\"cc-lane-borrow v${BS}u0031\",\"state\":\"borrowed\",\"lane_config_dir\":\"/a\",\"donor\":{\"id\":\"u3\",\"config_dir\":\"/b\"}}"
+sbf x_state_u_escape "{\"schema\":\"cc-lane-borrow v1\",\"state\":\"borrow${BS}u0065d\",\"lane_config_dir\":\"/a\",\"donor\":{\"id\":\"u3\",\"config_dir\":\"/b\"}}"
+SB_DECLINE="oversize borrowed_ws_noise borrowed_id_escape borrowed_escaped_slash
+x_quote_in_id x_id_u001b x_crlf_layout x_tab_indent x_leading_zero x_number_dot
+x_depth_40 x_paired_surrogate x_schema_u_escape x_state_u_escape"
+
+sb_install() { bclear; mkdir -p "$BREC_DIR"; cp "$BFX/$1" "$BREC"; }
+sb_cfg_of() {
+  # sb_cfg_of <record> — the record's own lane directory as jq reads it, so the
+  # view matches whenever the reader accepts it; `$LANE` when jq refuses.
+  local v
+  v=$(jq -r 'if (.lane_config_dir | type) == "string" and .lane_config_dir != "" then .lane_config_dir else empty end' \
+        "$1" 2>/dev/null | head -1)
+  printf '%s' "${v:-$LANE}"
+}
+
+# SB03. Document-level corruption, in the lane view the record itself names.
+for n in $SB_CORRUPT; do
+  sb_install "$n"
+  check "SB03 문서 수준 손상 ($n) — 대체 줄 그대로" "$(slb "$(sb_cfg_of "$BREC")" sess-none)" "$BFALL"
+done
+
+# SB04. The shell layer: nothing here is opened as a record.
+bclear; mkdir -p "$BREC"
+out=$(slb "$LANE" sess-none); rc=$?
+check "SB04 경로가 디렉터리 — 대체 줄, rc 0" "$rc|$out" "0|$BFALL"
+bclear; mkdir -p "$BREC_DIR"; ln -s "$BFX/canon_borrowed" "$BREC"
+out=$(slb "$LANE" sess-none); rc=$?
+check "SB04 유효 기록으로의 심볼릭 링크 — 대체 줄, rc 0" "$rc|$out" "0|$BFALL"
+bclear; mkdir -p "$BREC_DIR"; ln -s "$BFX/missing" "$BREC"
+out=$(slb "$LANE" sess-none); rc=$?
+check "SB04 끊어진 심볼릭 링크 — 대체 줄, rc 0" "$rc|$out" "0|$BFALL"
+# A FIFO blocks whoever opens it. The watchdog bounds the render, which has to
+# come back before it.
+bclear; mkdir -p "$BREC_DIR"; mkfifo "$BREC"
+slb "$LANE" sess-none > "$WORK/sb04-fifo.out" 2>/dev/null &
+p=$!
+( sleep 5; kill "$p" 2>/dev/null ) &
+w=$!
+rc=0; wait "$p" || rc=$?
+kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+check "SB04 FIFO 는 열지 않고 감시견보다 먼저 대체 줄" "$rc|$(cat "$WORK/sb04-fifo.out")" "0|$BFALL"
+if [ "$(id -u)" = "0" ]; then
+  skip "SB04 권한 000 기록" "root 로는 권한 비트가 강제되지 않는다"
+  skip "SB04 탐색할 수 없는 상위" "root 로는 권한 비트가 강제되지 않는다"
+else
+  sb_install canon_borrowed; chmod 000 "$BREC"
+  out=$(slb "$LANE" sess-none); rc=$?
+  check "SB04 권한 000 기록 — 대체 줄, rc 0" "$rc|$out" "0|$BFALL"
+  sb_install canon_borrowed; chmod 000 "$BREC_DIR"
+  out=$(slb "$LANE" sess-none); rc=$?
+  chmod u+rwx "$BREC_DIR"
+  check "SB04 탐색할 수 없는 상위 — 대체 줄, rc 0" "$rc|$out" "0|$BFALL"
+fi
+
+# SB05. The path rule. A relative state root, and an empty one beside an empty
+# `HOME`, both derive no path; with the variable unset the record under
+# `$HOME/.local/state` is found.
+bclear
+mkdir -p "$BW/rel/cc-lane"; cp "$BFX/canon_borrowed" "$BW/rel/cc-lane/borrow.json"
+out=$(cd "$BW" && fx_statusline_stdin sess-none "$BW" \
+      | env CLAUDE_CONFIG_DIR="$LANE" XDG_STATE_HOME=rel TZ=UTC0 bash "$SL")
+check "SB05 상대 XDG_STATE_HOME — 대체 줄 그대로" "$out" "$BFALL"
+out=$(cd "$BW" && fx_statusline_stdin sess-none "$BW" \
+      | env CLAUDE_CONFIG_DIR="$LANE" XDG_STATE_HOME= HOME= TZ=UTC0 bash "$SL")
+check "SB05 빈 XDG_STATE_HOME 과 빈 HOME — 대체 줄 그대로" "$out" "$BFALL"
+SBH="$WORK/sbhome"
+mkdir -p "$SBH/.local/state/cc-lane"
+printf '%s' "$(bcanon borrowed '"five_hour"' "$E")" > "$SBH/.local/state/cc-lane/borrow.json"
+out=$(cd "$BW" && fx_statusline_stdin sess-none "$BW" \
+      | env -u XDG_STATE_HOME CLAUDE_CONFIG_DIR="$LANE" HOME="$SBH" TZ=UTC0 bash "$SL")
+check "SB05 XDG 없이 HOME 아래 차용 기록 — 구간이 붙는다" "$out" "$BFALL$SEG_LANE"
+if grep -qF 'if [ -z "${XDG_STATE_HOME:-}" ]; then base="$base/.local/state"; fi' "$SL" \
+   && grep -qF 'SL_BFILE="$base/cc-lane/borrow.json"' "$SL"; then
+  ok "SB05 차용 기록 경로 규칙의 문면이 고정돼 있다"
+else
+  bad "SB05 차용 기록 경로 규칙" "route__borrow_path 에서 옮겨 온 문면이 없다"
+fi
+
+# SB06. The lane view of `borrowed`, a five-hour reset two hours out.
+bput borrowed '"five_hour"' "$E"
+check "SB06 레인 보기 borrowed — 홈 리셋 시각" "$(slb "$LANE" sess-none)" "$BFALL$SEG_LANE"
+
+# SB07. The clock's branches.
+e=$((NOW + 3 * 86400)); bput borrowed '"five_hour"' "$e"
+check "SB07a 사흘 뒤 — 날짜 꼴" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 $(sb_mdhm "$e")"
+bput borrowed '"five_hour"' "$((NOW - 60))"
+check "SB07b 지난 리셋 — 리셋 지남" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 리셋 지남"
+# The script reads its own `now` a moment after this one, so each side of the
+# 24-hour mark keeps two minutes of room.
+e=$((NOW + 86400 - 120)); bput borrowed '"five_hour"' "$e"
+check "SB07c 24시간 안쪽 — 시각 꼴" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 $(sb_hm "$e")"
+e=$((NOW + 86400 + 120)); bput borrowed '"five_hour"' "$e"
+check "SB07c 24시간 바깥 — 날짜 꼴" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 $(sb_mdhm "$e")"
+bput borrowed '"five_hour"' null
+check "SB07d 리셋 null — 시각 없는 구간" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3"
+e=$((NOW + 5 * 86400)); bput borrowed '"seven_day"' "$((NOW + 3600))" "$e"
+check "SB07e seven_day 트리거는 seven_day 의 epoch 을 고른다" \
+  "$(slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 $(sb_mdhm "$e")"
+for t in '"manual"' '"rejected"' null; do
+  bput borrowed "$t" "$E"
+  check "SB07f 트리거 $t — 시각 없음" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3"
+done
+for v in "\"$E\"" "$E.5" -60 1791000000000; do
+  bput borrowed '"five_hour"' "$v"
+  check "SB07g epoch $v — 시각 없는 구간" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3"
+done
+
+# SB08. A daylight-saving oracle as a POSIX rule string, so CI needs no tzdata.
+# Both epochs are past 24 hours; in either season one of them fails arithmetic on
+# the current offset.
+bput borrowed '"five_hour"' 4103691600
+check "SB08 일광 절약 규칙 아래 1월 — 표준시" \
+  "$(SLB_TZ='EST5EDT,M3.2.0,M11.1.0' slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 01/15 05:20"
+bput borrowed '"five_hour"' 4119330000
+check "SB08 일광 절약 규칙 아래 7월 — 일광 절약 시간" \
+  "$(SLB_TZ='EST5EDT,M3.2.0,M11.1.0' slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 07/15 06:20"
+
+# SB09. `intent` and `returning` carry no clock even with a valid epoch.
+bput intent '"five_hour"' "$E" '' intent/admit
+check "SB09 레인 보기 intent" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3? (차용 확인 중)"
+bput returning '"five_hour"' "$E" '' returning/settle
+check "SB09 레인 보기 returning — 반환 중" "$(slb "$LANE" sess-none)" "$BFALL · cc←u3 (반환 중)"
+
+# SB10. The donor view, from the donor account's own directory.
+bput intent '"five_hour"' "$E" '' intent/admit
+check "SB10 기증자 보기 intent" "$(slb "$DONOR" sess-none)" "$BFALL · 빌려 줌→cc? (차용 확인 중)"
+bput borrowed '"five_hour"' "$E"
+check "SB10 기증자 보기 borrowed — 시각 없음" "$(slb "$DONOR" sess-none)" "$BFALL · 빌려 줌→cc"
+bput returning '"five_hour"' "$E" '' returning/settle
+check "SB10 기증자 보기 returning" "$(slb "$DONOR" sess-none)" "$BFALL · 빌려 줌←cc (반환 중)"
+
+# SB11. Whose session this is. Compares are exact strings; the environment beats
+# the transcript; a group member lent nothing.
+bput borrowed '"five_hour"' "$E"
+check "SB11a 무관한 계정 디렉터리 — 대체 줄 그대로" "$(slb "$OTHER" sess-none)" "$BFALL"
+check "SB11b donor.group 구성원 — 대체 줄 그대로" "$(slb "$G4" sess-none)" "$BFALL"
+check "SB11c 끝 슬래시가 붙은 레인 디렉터리 — 대체 줄 그대로" "$(slb "$LANE/" sess-none)" "$BFALL"
+check "SB11d 환경 없음 + 레인 transcript_path — 레인 보기" \
+  "$(slb - "$(sb_in sess-none "$LANE/projects/x/s.jsonl")")" "$BFALL$SEG_LANE"
+check "SB11e 환경 없음 + 기증자 transcript_path — 기증자 보기" \
+  "$(slb - "$(sb_in sess-none "$DONOR/projects/x/s.jsonl")")" "$BFALL · 빌려 줌→cc"
+check "SB11f 무관한 환경 + 레인 transcript_path — 환경이 이긴다" \
+  "$(slb "$OTHER" "$(sb_in sess-none "$LANE/projects/x/s.jsonl")")" "$BFALL"
+check "SB11g 환경 없음 + transcript_path /dev/null — 대체 줄 그대로" "$(slb - sess-none)" "$BFALL"
+check "SB11h 환경 없음 + 접두 함정 transcript_path — 대체 줄 그대로" \
+  "$(slb - "$(sb_in sess-none "${LANE}2/projects/x/s.jsonl")")" "$BFALL"
+
+# SB12. Case 11's poisoned jq on PATH. The oracle was computed before it.
+out=$(PATH="$WORK/poison:$PATH" slb "$LANE" sess-none)
+check "SB12 jq 독 아래에서도 구간이 그대로" "$out" "$BFALL$SEG_LANE"
+hasnt "SB12 차용 구간은 jq 를 부르지 않는다" "$out" "JQ-WAS-CALLED"
+
+# SB13. A broken `perl`, on the PATH of the one render under test only. The
+# fallback itself carries escapes, so "no ESC in the output" would always fail;
+# the literal compare is what shows the stub's bytes did not leak.
+mkdir -p "$WORK/perl127" "$WORK/perlesc"
+printf '#!/bin/sh\nexit 127\n' > "$WORK/perl127/perl"
+printf '#!/bin/sh\nprintf '"'"'\\033[31mX'"'"'\n' > "$WORK/perlesc/perl"
+chmod +x "$WORK/perl127/perl" "$WORK/perlesc/perl"
+out=$(PATH="$WORK/perl127:$PATH" slb "$LANE" sess-none); rc=$?
+check "SB13a perl 이 127 — 시각만 빠지고 rc 0" "$rc|$out" "0|$BFALL · cc→u3"
+out=$(PATH="$WORK/perlesc:$PATH" slb "$LANE" sess-none); rc=$?
+check "SB13b perl 이 이스케이프를 낸다 — 시각만 빠지고 새지 않는다" "$rc|$out" "0|$BFALL · cc→u3"
+
+# SB14. On a run line the segment is a pure suffix, after the watcher slot too.
+# A finished run carries no watcher slot, so the slot case is an approval line.
+# That line also carries the ledger age, which can tick between two renders, so
+# it is checked by what follows the slot rather than against an earlier render.
+bclear
+fx_mkrun run-sb14; fx_ledger_path; fx_segment S1 실행중; fx_approval A1 대기
+fx_session_index sess-sb14 run-sb14
+base14=$(slb "$LANE" sess-sb14)
+fx_mkrun run-sb14-nc
+fx_session_index sess-sb14-nc run-sb14-nc
+base14nc=$(slb "$LANE" sess-sb14-nc)
+has "SB14 전제 — 승인 대기 줄" "$base14" "⏸ run-sb14 승인 대기 1건"
+check "SB14 전제 — 그 줄이 워처 슬롯으로 끝난다" "${base14##*" · 워처 미기동"}" ""
+has "SB14 전제 — 시계 없는 버려짐 줄" "$base14nc" "⊘ run-sb14-nc 방치"
+bput borrowed '"five_hour"' "$E"
+out14=$(slb "$LANE" sess-sb14)
+has "SB14 승인 대기 줄 — 구간을 붙여도 줄은 그대로" "$out14" "⏸ run-sb14 승인 대기 1건"
+check "SB14 승인 대기 줄 — 워처 슬롯 바로 뒤에 구간" "${out14##*" · 워처 미기동"}" "$SEG_LANE"
+check "SB14 시계 없는 버려짐 줄 — 줄 끝에 구간" "$(slb "$LANE" sess-sb14-nc)" "$base14nc$SEG_LANE"
+
+# SB15. The width budget. This suite pins no locale, so `${#…}` counts
+# characters or bytes depending on the shell that started it, and every length
+# below is chosen so that each has/hasnt holds under both counts. The segment
+# with its clock is 18 characters / 24 bytes; without it 8 / 11. The 도는중 line
+# `⟳ <id> S1 implement MM:SS` is id+21 characters / id+23 bytes, and without its
+# kind id+11 / id+13.
+sb_run15() {
+  # sb_run15 <run id> — a run whose live stage S1 has a recorded kind.
+  #
+  # The fingerprint is a local start time and `slb` renders under UTC0, so it is
+  # recorded under UTC0 too; captured in this shell's zone it would not match,
+  # and the stage would quietly not count as live.
+  fx_mkrun "$1"; fx_ledger_path; fx_segment S1 실행중
+  fx_row 'stage-result' "세그먼트=S1" "종류=implement"
+  TZ=UTC0 fx_stage_live S1; fx_heartbeat 0 5
+  fx_session_index "sess-$1" "$1"
+}
+bput borrowed '"five_hour"' "$E"
+# (a) id 35: with the detail 74 / 82, over; without it 64 / 69, inside — so the
+# detail goes and the kind stays.
+rid=$(sb_pad run-sb15a- 35); sb_run15 "$rid"
+out=$(slb "$LANE" "sess-$rid")
+has   "SB15a 전제 — 스테이지 슬롯이 있는 도는중 줄" "$out" "⟳ $rid S1"
+has   "SB15a 세부만 버리면 맞는 도는중 — MARK 가 남는다" "$out" "cc→u3"
+hasnt "SB15a 세부가 먼저 버려진다" "$out" "홈 "
+has   "SB15a 종류는 남는다" "$out" "implement"
+# (b) id 46: the short segment with the kind 75 / 80, over; without the kind
+# 65 / 70, inside.
+rid=$(sb_pad run-sb15b- 46); sb_run15 "$rid"
+out=$(slb "$LANE" "sess-$rid")
+has   "SB15b 전제 — 스테이지 슬롯이 있는 도는중 줄" "$out" "⟳ $rid S1"
+has   "SB15b 종류까지 버려야 하는 도는중 — MARK 가 남는다" "$out" "cc→u3"
+hasnt "SB15b 종류가 버려진다" "$out" "implement"
+# (c) id 80: nothing fits, and the mark still stays.
+rid=$(sb_pad run-sb15c- 80); sb_run15 "$rid"
+has "SB15c 예산을 넘는 극단적인 id 에서도 MARK 가 남는다" "$(slb "$LANE" "sess-$rid")" "cc→u3"
+# (d) a fallback line from a directory named with 55 characters: `[cc🎨] <name>`
+# is 61 characters / 64 bytes, with the segment 79 / 88.
+SBLONG="$WORK/$(sb_pad d 55)"; mkdir -p "$SBLONG"
+out=$(SLB_DIR="$SBLONG" slb "$LANE" sess-none)
+hasnt "SB15d 긴 이름 디렉터리의 대체 줄 — 세부가 버려진다" "$out" "홈 "
+has   "SB15d 긴 이름 디렉터리의 대체 줄 — MARK 가 남는다" "$out" "cc→u3"
+# (e) the same fallback with `intent`, whose gloss is 19 characters / 32 bytes
+# with its mark: 80 / 96.
+bput intent '"five_hour"' "$E" '' intent/admit
+out=$(SLB_DIR="$SBLONG" slb "$LANE" sess-none)
+hasnt "SB15e intent 의 풀이도 같은 방식으로 버려진다" "$out" "확인 중"
+has   "SB15e intent 의 MARK 는 남는다" "$out" "cc→u3?"
+# (f) a 도는중 line with no stage slot — the only live pid is the watcher's,
+# which the count takes and the slot does not — so the line is
+# `⟳ <id> · 원장 N초 전`: id 50 is 62 characters / 73 bytes, with the segment
+# 80 / 97. Only the judgement after the arms can drop the detail here.
+bput borrowed '"five_hour"' "$E"
+rid=$(sb_pad run-sb15f- 50)
+fx_mkrun "$rid"; fx_ledger_path; fx_segment S1 실행중
+TZ=UTC0 fx_stage_live watch; fx_heartbeat 0 5
+fx_session_index "sess-$rid" "$rid"
+out=$(slb "$LANE" "sess-$rid")
+has   "SB15f 전제 — 슬롯 없는 도는중 줄" "$out" "⟳ $rid · 원장"
+has   "SB15f 슬롯 없는 도는중 — MARK 가 남는다" "$out" "cc→u3"
+hasnt "SB15f 슬롯 없는 도는중 — 세부가 버려진다" "$out" "홈 "
+
+# SB16. A partial checkout: case 13's copy, with no `liveness.sh` beside it.
+bput borrowed '"five_hour"' "$E"
+check "SB16 liveness.sh 없는 사본에서도 구간이 붙는다" \
+  "$(SLB_SL="$WORK/partial/statusline.sh" slb "$LANE" sess-none)" "$BFALL$SEG_LANE"
+
+# SB19. Ids the terminal must not see. Written raw, each is a valid record route
+# calls borrowing; the line shows the mark with `?` in the id's place.
+for id in 'u 3' 'u$3' '가' "$(sb_pad u 40)"; do
+  bputf "$(bflat borrowed "$id" "$E")"
+  check "SB19 표시할 수 없는 id ($id) — ? 로 바뀐다" "$(slb "$LANE" sess-none)" "$BFALL · cc→? · 홈 $E_HM"
+  if command -v jq >/dev/null 2>&1; then
+    check "SB19 그 기록을 route 는 여전히 차용 중으로 본다 ($id)" \
+      "$(bash "$ROUTE" borrow-read "$BREC" | jq -r '.state')" "borrowed"
+  else
+    skip "SB19 route 판정 ($id)" "jq 가 없다"
+  fi
+done
+
+# SB20. The vocabulary is route's. Read as file text, not run as jq.
+n=$(grep -c '^def rt_borrowing:' "$ROUTE")
+if [ "$n" = "1" ]; then
+  ok "SB20 route.sh 의 rt_borrowing 정의는 정확히 하나다"
+  lits=$(grep '^def rt_borrowing:' "$ROUTE" | grep -o '"[a-z]*"')
+  check "SB20 rt_borrowing 의 상태 리터럴은 셋이다" "$(printf '%s\n' "$lits" | grep -c .)" "3"
+  for lit in $lits; do
+    st=${lit//\"/}
+    bput "$st" '"five_hour"' "$E" '' "$st/steady"
+    has "SB20 route 의 차용 상태 $st 에 구간이 있다" "$(slb "$LANE" sess-none)" "$BFALL · cc"
+  done
+else
+  bad "SB20 route.sh 의 rt_borrowing 정의" "^def rt_borrowing: 줄이 ${n}개다"
+fi
+
+# SB18. LIVE equivalence with `route.sh borrow-read`, one check per fixture.
+# Soundness always: no segment unless route says borrowing. Everywhere outside
+# the declared one-way rows the two agree on showing; on those rows route says
+# borrowing and the line shows nothing. A displayable id is route's donor.
+sb18_verdict() {
+  # sb18_verdict <decline|agree> <route output> <render> <render rc>
+  local cls="$1" r="$2" out="$3" rc="$4" st rd rb=0 shown=0 id="" disp=1
+  st=$(printf '%s' "$r" | jq -r '.state' 2>/dev/null)
+  rd=$(printf '%s' "$r" | jq -r '.donor // ""' 2>/dev/null)
+  case "$st" in intent|borrowed|returning) rb=1 ;; esac
+  [ "$out" = "$BFALL" ] || shown=1
+  case "$out" in
+    "$BFALL · cc→"*) id=${out#"$BFALL · cc→"} ;;
+    "$BFALL · cc←"*) id=${out#"$BFALL · cc←"} ;;
+  esac
+  id=${id%%[? ]*}
+  case "$rd" in
+    ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) disp=0 ;;
+  esac
+  [ "${#rd}" -le 32 ] || disp=0
+  if [ "$rc" != "0" ]; then printf 'rc=%s' "$rc"
+  elif [ "$out" != "${out%$'\n'*}" ]; then printf '여러 줄'
+  elif [ "$rb" = 0 ] && [ "$shown" = 1 ]; then printf '건전성 위반: route=%s 인데 구간' "$st"
+  elif [ "$cls" = decline ] && { [ "$rb" = 0 ] || [ "$shown" = 1 ]; }; then
+    printf '선언된 거절이 아님: route=%s 구간=%s' "$st" "$shown"
+  elif [ "$cls" = agree ] && [ "$rb" != "$shown" ]; then printf '불일치: route=%s 구간=%s' "$st" "$shown"
+  elif [ "$shown" = 1 ] && [ "$disp" = 1 ] && [ "$id" != "$rd" ]; then
+    printf 'id 불일치: 보임=%s route=%s' "$id" "$rd"
+  else printf ok
+  fi
+}
+if command -v jq >/dev/null 2>&1; then
+  for n in $SB_CORRUPT $SB_SHOWN $SB_DECLINE; do
+    cls=agree
+    case " $(printf '%s' "$SB_DECLINE" | tr '\n' ' ') " in *" $n "*) cls=decline ;; esac
+    sb_install "$n"
+    out=$(slb "$(sb_cfg_of "$BREC")" sess-none); rc=$?
+    check "SB18 route 동치 ($n)" \
+      "$(sb18_verdict "$cls" "$(bash "$ROUTE" borrow-read "$BREC")" "$out" "$rc")" ok
+  done
+
+  # The shell layer, in the file-argument form.
+  bclear; mkdir -p "$BREC"
+  out=$(slb "$LANE" sess-none); rc=$?
+  check "SB18 route 동치 (디렉터리)" "$(sb18_verdict agree "$(bash "$ROUTE" borrow-read "$BREC")" "$out" "$rc")" ok
+  bclear; mkdir -p "$BREC_DIR"; ln -s "$BFX/canon_borrowed" "$BREC"
+  out=$(slb "$LANE" sess-none); rc=$?
+  check "SB18 route 동치 (심볼릭 링크)" "$(sb18_verdict agree "$(bash "$ROUTE" borrow-read "$BREC")" "$out" "$rc")" ok
+  bclear; mkdir -p "$BREC_DIR"; ln -s "$BFX/missing" "$BREC"
+  out=$(slb "$LANE" sess-none); rc=$?
+  check "SB18 route 동치 (끊어진 심볼릭 링크)" "$(sb18_verdict agree "$(bash "$ROUTE" borrow-read "$BREC")" "$out" "$rc")" ok
+  bclear; mkdir -p "$BREC_DIR"; mkfifo "$BREC"
+  check "SB18 route 동치 (FIFO)" \
+    "$(sb18_verdict agree "$(bash "$ROUTE" borrow-read "$BREC")" "$(cat "$WORK/sb04-fifo.out")" 0)" ok
+  if [ "$(id -u)" != "0" ]; then
+    sb_install canon_borrowed; chmod 000 "$BREC"
+    out=$(slb "$LANE" sess-none); rc=$?
+    check "SB18 route 동치 (권한 000)" "$(sb18_verdict agree "$(bash "$ROUTE" borrow-read "$BREC")" "$out" "$rc")" ok
+    sb_install canon_borrowed; chmod 000 "$BREC_DIR"
+    out=$(slb "$LANE" sess-none); rc=$?
+    r=$(bash "$ROUTE" borrow-read "$BREC"); chmod u+rwx "$BREC_DIR"
+    check "SB18 route 동치 (탐색할 수 없는 상위)" "$(sb18_verdict agree "$r" "$out" "$rc")" ok
+  fi
+
+  # Path derivation, in the argument-less form under the render's own
+  # environment: the file-argument form never derives a path.
+  bclear
+  out=$(slb "$LANE" sess-none); rc=$?
+  check "SB18 route 동치 (기록 디렉터리 없음)" "$(sb18_verdict agree "$(bash "$ROUTE" borrow-read)" "$out" "$rc")" ok
+  mkdir -p "$BREC_DIR"
+  out=$(slb "$LANE" sess-none); rc=$?
+  check "SB18 route 동치 (기록 없음)" "$(sb18_verdict agree "$(bash "$ROUTE" borrow-read)" "$out" "$rc")" ok
+  out=$(cd "$BW" && fx_statusline_stdin sess-none "$BW" \
+        | env CLAUDE_CONFIG_DIR="$LANE" XDG_STATE_HOME=rel TZ=UTC0 bash "$SL"); rc=$?
+  r=$(cd "$BW" && env XDG_STATE_HOME=rel bash "$ROUTE" borrow-read)
+  check "SB18 route 동치 (상대 XDG_STATE_HOME)" "$(sb18_verdict agree "$r" "$out" "$rc")" ok
+  out=$(cd "$BW" && fx_statusline_stdin sess-none "$BW" \
+        | env CLAUDE_CONFIG_DIR="$LANE" XDG_STATE_HOME= HOME= TZ=UTC0 bash "$SL"); rc=$?
+  r=$(env XDG_STATE_HOME= HOME= bash "$ROUTE" borrow-read)
+  check "SB18 route 동치 (빈 XDG_STATE_HOME 과 빈 HOME)" "$(sb18_verdict agree "$r" "$out" "$rc")" ok
+  out=$(cd "$BW" && fx_statusline_stdin sess-none "$BW" \
+        | env -u XDG_STATE_HOME CLAUDE_CONFIG_DIR="$LANE" HOME="$SBH" TZ=UTC0 bash "$SL"); rc=$?
+  r=$(env -u XDG_STATE_HOME HOME="$SBH" bash "$ROUTE" borrow-read)
+  check "SB18 route 동치 (XDG 없이 HOME)" "$(sb18_verdict agree "$r" "$out" "$rc")" ok
+else
+  skip "SB18 route 동치" "jq 가 없다"
+fi
+rm -rf "$BW/rel"
+
+# SB17. The segment writes nothing: the renders SB06, SB09, SB10, SB14 and SB16
+# make leave every file under the state root and the config directories as they
+# were, and every one of them exits 0.
+sb_sums() { find "$WORK/bstate" "$WORK/cfg" -type f -exec cksum {} + 2>/dev/null | LC_ALL=C sort; }
+sb17_ok=1
+for st in intent borrowed returning; do
+  bput "$st" '"five_hour"' "$E" '' "$st/steady"
+  before=$(sb_sums)
+  for args in "$LANE sess-none" "$DONOR sess-none" "$LANE sess-sb14"; do
+    set -- $args
+    slb "$1" "$2" >/dev/null || sb17_ok=0
+  done
+  SLB_SL="$WORK/partial/statusline.sh" slb "$LANE" sess-none >/dev/null || sb17_ok=0
+  [ "$(sb_sums)" = "$before" ] || sb17_ok=0
+done
+check "SB17 렌더는 상태 루트와 설정 디렉터리에 아무것도 쓰지 않고 모두 rc 0" "$sb17_ok" "1"
+bclear
 
 printf '\n통과 %s · 실패 %s · 건너뜀 %s\n' "$passed" "$failed" "$skipped"
 [ "$failed" -eq 0 ]

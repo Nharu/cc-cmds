@@ -6,7 +6,7 @@ Renders `docs/analysis/<slug>.feedback.md`: a concise, author-facing list of the
 
 - Only `confirmed` / `amended` findings.
 - `excluded` findings are omitted.
-- `미검토` (abort) findings are listed under a "미검토 (사용자 조기 종료)" group with their flag.
+- `미검토` findings are listed under a "미검토" group with their flag — `사용자 조기 종료` (abort) or `사용자 미답` (two 미답 in a row).
 - Each item: 이슈 → 근거 → 제안, kept to 1–3 lines. A-NN ties each item back to the report.
 - In doc-only mode, omit code citations and add the doc-only scope note in the header.
 
@@ -42,7 +42,7 @@ Renders `docs/analysis/<slug>.feedback.md`: a concise, author-facing list of the
 
 ---
 
-## 미검토 (사용자 조기 종료) ← 워크스루 중단 시에만
+## 미검토 ← 워크스루 중단이나 두 번 연속 미답이 있을 때만
 
-- **[A-NN]** <title> — 미검토 상태로 남음 (§anchor)
+- **[A-NN]** <title> — 미검토 상태로 남음 (사용자 조기 종료 | 사용자 미답) (§anchor)
 ```
