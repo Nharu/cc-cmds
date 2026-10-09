@@ -416,6 +416,107 @@ for hook in "$ASK_HOOK" "$TURN_HOOK"; do
 done
 
 # ---------------------------------------------------------------------------
+# The question form drives seat 1
+#
+# The form's mod raises its banner by running this same seat as a child process,
+# with a PreToolUse-shaped stdin whose `tool_name` is the form's tool. The seat
+# never reads `tool_name`, so the payload below is the mod's own shape rather
+# than AskUserQuestion's with one field renamed — what is asserted is that the
+# shape the mod sends fires, and that the gate still refuses it where it must.
+# ---------------------------------------------------------------------------
+QF_PAYLOAD='{"hook_event_name":"PreToolUse","session_id":"S-QF","tool_name":"mcp__cc-cmds__question_form","tool_input":{"questions":[{"header":"범위","question":"어디까지?"},{"header":"순서","question":"무엇부터?"}]}}'
+P=$(pay "$QF_PAYLOAD")
+hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
+notify_settle 1
+check "질문지 — 대역이 한 번 불린다 (양성 대조군)" "$(notify_lines)" "1"
+check "질문지 — 본문이 건수와 header 들이다" \
+  "$(grep -cF -- '-message 질문 2건 — 범위 · 순서 ' "$NOTIFY_LOG" || true)" "1"
+check "질문지 — 그룹이 세션 슬롯이다" \
+  "$(grep -cF -- '-group cc-cmds-session-S-QF ' "$NOTIFY_LOG" || true)" "1"
+check "질문지 — 종료 코드" "$HOOK_RC" "0"
+assert_quiet "질문지"
+
+P=$(pay "$QF_PAYLOAD")
+hook_run "$ASK_HOOK" "$P" "$PATH_FULL" CC_PIPELINE_SEGMENT=S1
+notify_quiet_window
+check "질문지 — 파이프라인 표지가 있으면 무발사" "$(notify_lines)" "0"
+assert_quiet "질문지/표지"
+
+P=$(pay "$QF_PAYLOAD")
+hook_run "$ASK_HOOK" "$P" "$PATH_FULL" CC_CMDS_SESSION_NOTIFY=0
+notify_quiet_window
+check "질문지 — 세션 배너가 꺼져 있으면 무발사" "$(notify_lines)" "0"
+assert_quiet "질문지/꺼짐"
+
+# ---------------------------------------------------------------------------
+# The TypeScript seat predicates read at least the shell router's markers
+#
+# A mod decides "am I inside a pipeline" from its own list of `CC_PIPELINE_`
+# names, and the shell decides "may a banner reach the user" from
+# `cc_caller_is_router`. The TS list is a strict superset on purpose (it adds
+# the run id), which is the safe direction; the failure this pins is someone
+# "aligning" the two by dropping a name from the TS side, after which a stage
+# that sets only that marker opens a form. Both sets are pulled from source so
+# a marker added to the router is demanded of every TS reader without an edit
+# here. Test files are left out: they SET markers to drive a case and do not
+# read them, so the subset they happen to set says nothing about a predicate.
+# ---------------------------------------------------------------------------
+EMITTER_SRC="$PLUGIN_ROOT/orchestrator/notify-run.sh"
+ROUTER_NAMES=$(awk '/^cc_caller_is_router\(\) \{/ {f=1; next} f && /^\}/ {exit} f' "$EMITTER_SRC" \
+  | sed 's/#.*//' | grep -oE 'CC_PIPELINE_[A-Z_]+' | LC_ALL=C sort -u || true)
+n_router=$(printf '%s\n' "$ROUTER_NAMES" | grep -c . || true)
+if [ "${n_router:-0}" -gt 0 ]; then
+  ok "라우터 표지 집합을 소스에서 뽑았다 (${n_router}개)"
+else
+  bad "라우터 표지 집합" "cc_caller_is_router 에서 CC_PIPELINE_ 이름을 하나도 뽑지 못했다"
+fi
+
+# Prints the router names the file does not carry, one per line; empty = covered.
+ts_missing_markers() {
+  local file="$1" have nm
+  have=$(grep -oE 'CC_PIPELINE_[A-Z_]+' "$file" 2>/dev/null | LC_ALL=C sort -u || true)
+  while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
+    printf '%s\n' "$have" | grep -qxF -- "$nm" || printf '%s\n' "$nm"
+  done <<EOF
+$ROUTER_NAMES
+EOF
+}
+
+ts_readers=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  ts_readers=$((ts_readers + 1))
+  missing=$(ts_missing_markers "$f")
+  rel="${f#"$PLUGIN_ROOT"/}"
+  if [ -z "$missing" ]; then
+    ok "표지 집합 ⊇ 라우터 집합 — $rel"
+  else
+    bad "표지 집합 ⊇ 라우터 집합 — $rel" "빠진 이름: $(printf '%s' "$missing" | tr '\n' ' ')"
+  fi
+done <<EOF
+$(find "$PLUGIN_ROOT/hooks" -type f \( -name '*.ts' -o -name '*.tsx' \) ! -name '*.test.ts' ! -name '*.test.tsx' 2>/dev/null \
+    | while IFS= read -r g; do grep -lE 'CC_PIPELINE_' "$g" 2>/dev/null || true; done | LC_ALL=C sort)
+EOF
+if [ "$ts_readers" -gt 0 ]; then
+  ok "표지를 읽는 TS 파일 ${ts_readers}개를 대조했다"
+else
+  bad "표지를 읽는 TS 파일" "hooks 아래에서 CC_PIPELINE_ 를 읽는 TS 파일을 하나도 찾지 못했다"
+fi
+
+# The negative control: a copy of the form's entry with one router marker
+# removed must be reported, or the comparison above could pass on anything.
+QF_ENTRY="$PLUGIN_ROOT/hooks/question-form/index.tsx"
+drop_name=$(printf '%s\n' "$ROUTER_NAMES" | sed -n '1p')
+if [ -f "$QF_ENTRY" ] && [ -n "$drop_name" ]; then
+  sed "s/${drop_name}/CC_PIPELINE_DROPPED_FOR_TEST/g" "$QF_ENTRY" > "$WORK/index-minus-one.tsx"
+  check "표지 하나를 뺀 사본은 빠진 이름으로 잡힌다" \
+    "$(ts_missing_markers "$WORK/index-minus-one.tsx")" "$drop_name"
+else
+  bad "표지 하나를 뺀 사본" "질문지 진입 파일이 없거나 라우터 집합이 비었다"
+fi
+
+# ---------------------------------------------------------------------------
 # T15 — the running tally
 # ---------------------------------------------------------------------------
 if [ "$quiet_violations" = "0" ]; then

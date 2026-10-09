@@ -5825,7 +5825,9 @@ decision_point_reached() {
   local out
   out=$(stage_log_path "$stage")
   [ -f "$out" ] || return 1
-  grep -q 'AskUserQuestion' "$out" 2>/dev/null
+  # The question form asks a person exactly as AskUserQuestion does, so a stage
+  # that reached for it reached the same kind of point.
+  grep -q -e 'AskUserQuestion' -e 'mcp__cc-cmds__question_form' "$out" 2>/dev/null
 }
 
 stage_limit_exit() {

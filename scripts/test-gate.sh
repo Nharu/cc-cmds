@@ -14174,6 +14174,41 @@ out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$RSID" gate_inproc close --manifest "$NM" --approval "$rid" 2>&1); rc=$?
 check "텍스트 블록 줄은 답 프레임이 아니라 닫지 않는다 (원시 줄 폴백 없음)" "$rc" "5"
 check "그 줄은 원장에 아무것도 쓰지 않는다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$rid " || true)" "$rbefore"
+# 질문지(`mcp__cc-cmds__question_form`)는 승인을 닫는 틀이 아니다. 둘을 따로 잰다.
+# (1) 답 맵을 가진 틀이라도 조인한 도구가 질문지면 부적격이다 — 이것은 분류기가
+# `answers` 를 낸 뒤의 갈래다.
+jq -nc --arg q "승인 $rid — $rq" \
+  '{type: "assistant", uuid: "u", message: {role: "assistant", content: [{type: "tool_use", id: "toolu_QF00001", name: "mcp__cc-cmds__question_form", input: {questions: [{id: "q1", header: "승인", question: $q, kind: "single", options: [{label: "승인"}, {label: "거부"}]}]}}]}}' >> "$NTX/$RSID.jsonl"
+jq -nc --arg q "승인 $rid — $rq" \
+  '{type: "user", uuid: "v", message: {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_QF00001", content: "QUESTION_FORM_OPEN"}]}, toolUseResult: {answers: {($q): "승인"}}}' >> "$NTX/$RSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$RSID" gate_inproc close --manifest "$NM" --approval "$rid" 2>&1); rc=$?
+check "질문지 도구에 조인한 답 맵 틀은 승인을 닫지 않는다" "$rc" "5"
+check "그 틀은 원장에 아무것도 쓰지 않는다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$rid " || true)" "$rbefore"
+case "$out" in
+  *"tool other than AskUserQuestion"*) ok "거절이 질문지 틀을 AskUserQuestion 이 아닌 도구의 결과로 지목한다" ;;
+  *) bad "질문지 틀 부적격" "'$out'" ;;
+esac
+# (2) 실제 트래픽의 모양 — 질문지가 제출한 묶음은 사용자 메시지 한 통이고, 그 안의
+# `answers` 는 배열이며 `AskUserQuestion` 이라는 tool_use 는 어디에도 없다. 분류기는
+# 이것을 `other` 로 보고 rung 4 에서 기록 없이 대기로 둔다. (1) 만 두면 이 앞 단계
+# 분류가 바뀌어도 보이지 않는다.
+rbundle=$(jq -nc --arg f "f-0a1b2c3d" --arg q "승인 $rid — $rq" \
+  '{schema: "cc-form-answers/1", form: $f, status: "제출", answers: [{id: "q1", header: "승인", question: $q, kind: "single", options: ["승인", "거부"], state: "답", selected: ["승인"], other: "", note: "", answer: "승인"}]}')
+jq -nc --arg t "[cc-cmds 질문지 답] form=f-0a1b2c3d status=제출 답=1/1
+\`\`\`json
+$rbundle
+\`\`\`" \
+  '{type: "user", uuid: "w", message: {role: "user", content: [{type: "text", text: $t}]}}' > "$NTX/$RSID.jsonl"
+# rung 4 의 경고는 분류기가 `other` 를 냈을 때만 나오므로, 그 문면이 곧 분류의 증거다.
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$RSID" gate_inproc close --manifest "$NM" --approval "$rid" 2>&1); rc=$?
+check "질문지 묶음 사용자 메시지는 승인을 닫지 않는다" "$rc" "5"
+check "그 메시지는 원장에 아무것도 쓰지 않는다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$rid " || true)" "$rbefore"
+case "$out" in
+  *"it is not an answer frame"*) ok "질문지 묶음은 rung 4 에서 답 프레임이 아니라고 이름 붙는다" ;;
+  *) bad "질문지 묶음 분류" "'$out'" ;;
+esac
 # The real frame, in the harness's shape, closes — and the row carries the
 # chosen label and the anchor, never the frame's scaffolding.
 RANS="승인"

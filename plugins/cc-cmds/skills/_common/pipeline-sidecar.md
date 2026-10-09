@@ -623,7 +623,22 @@ its description.
 `  설명:` and an optional `  미리보기:`; a value longer than one line continues
 on indented lines. A multi-select question writes `**선택지** (복수 선택):`. A
 question that had to be asked in prose after the question tool collapsed
-repeatedly writes `**선택지**: 없음(자유 입력)`.
+repeatedly writes `**선택지**: 없음(자유 입력)`, and so does a `kind: text`
+question of the question form (`mcp__cc-cmds__question_form`); the kickoff trace
+tells the two apart, the form's question following a `단계=문답(질문지)` line.
+
+**A question-form answer is written as the bundle carries it.** The `### 답 n`
+body equals the bundle's `answer` for that question: a single-select answer is
+the chosen label exactly as offered, suffix included; a multi-select answer is
+the chosen labels, one per line; free text given instead of an option is that
+text verbatim; free text beside multi-select labels is a last line
+`자유 입력: <verbatim>`; a note is a last line `메모: <verbatim>`; no answer is
+`미답`, with the `메모:` line as well when a note was left. A question whose
+`when` was false was not asked and is not written. A question asked again after
+`미답` or `status=취소` takes a new `### 문 n` / `### 답 n` pair. The first line
+of an answer is the one compared with the labels; the form refuses the labels
+that would make that reading ambiguous (`미답`, `해당 없음`, and labels beginning
+`메모:` or `자유 입력:`).
 
 **A derived section carries the substance of the answer.** The values of
 `## 배포 형상` are what the answer meant: a suffix such as `← 추천` stays in
@@ -683,18 +698,20 @@ one appended line per Act 1 boundary:
 - <ISO8601> | 단계=대상 변경 | 새 base=<경로>
 - <ISO8601> | 단계=기본값 고지 | 제시=<n> | 무시=<m> | 파일=<a> | 환경=<b> | 경로=<파일 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->
 - <ISO8601> | 단계=기본값 확정 | 적용=<n> | 해제=<k>
+- <ISO8601> | 단계=문답(질문지) | 질문=<n>
 ````
 
-There is no H1. Only four stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
+There is no H1. Only five stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
 `대상 변경` (`새 base=`), `기본값 고지` (`제시=`, `무시=`, `파일=`, `환경=`,
-`경로=`, `sha256=`) and `기본값 확정` (`적용=`, `해제=`). Every other line ends at
+`경로=`, `sha256=`), `기본값 확정` (`적용=`, `해제=`) and `문답(질문지)`
+(`질문=`, the number of questions on the form). Every other line ends at
 `단계=<토큰>`. The two kickoff-defaults lines carry counts, the defaults file's
 path and its hash, and never a value.
 
 **The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
 `요구사항 인터뷰` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·
 `로스터` · `승인` · `인터뷰 동결` · `매니페스트 기록` · `문답(텍스트)` ·
-`기동 직전` · `연기` · `중단`. `기본값 고지` and `기본값 확정` are not terminal.
+`문답(질문지)` · `기동 직전` · `연기` · `중단`. `기본값 고지` and `기본값 확정` are not terminal.
 
 **When a trace is finished — one test for every reader.** A trace is finished when
 its last stage is `연기` or `중단`, when it is a `대상 변경` carrying `새 base=`, or
@@ -1002,7 +1019,7 @@ Its definition is the four-part conjunction: **exit code 0, artifact predicate f
 
 **The other branch is invisible.** A stage that improvises and produces output lands as `정상 완료`, since the audit and review predicates are forgeable, so the morning report's heading is `기록된 자율 결정` rather than "every autonomous decision".
 
-**One control partially recovers it.** In Mode A the router owns the stage's ndjson, so a `ToolSearch` naming `AskUserQuestion` with no halt record is a high-precision signal that the stage improvised.
+**One control partially recovers it.** In Mode A the router owns the stage's ndjson, so a `ToolSearch` naming `AskUserQuestion` with no halt record is a high-precision signal that the stage improvised. An appearance naming `mcp__cc-cmds__question_form` counts as the same signal: the detector matches either name.
 
 **Every park names a scope and a cause, and one that cannot is a bug rather than
 a decision.** `act` means a terminal act is blocked and NOTHING else stops — the

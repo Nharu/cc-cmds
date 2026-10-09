@@ -4,7 +4,8 @@
 # parity invariant.
 #
 #   Rule 1 (no human-question surface) — an unattended arm must not load or
-#     call AskUserQuestion / EnterPlanMode / ExitPlanMode. Every point that
+#     call AskUserQuestion / the question form (mcp__cc-cmds__question_form) /
+#     EnterPlanMode / ExitPlanMode. Every point that
 #     would have asked resolves to a halt record instead.
 #   Rule 2 (no notification surface) — an unattended arm must not reach
 #     PushNotification / notify.sh / terminal-notifier. Reaching a sleeping
@@ -161,8 +162,10 @@ PARITY_PAIRS=(
   "design-audit-unattended|design-audit"
 )
 
-# Rule 1 — human-question call forms.
-QUESTION_RE='ToolSearch\("select:[^"]*AskUserQuestion|AskUserQuestion\(|EnterPlanMode\(|ExitPlanMode\('
+# Rule 1 — human-question call forms. The question form
+# (`mcp__cc-cmds__question_form`) asks a person as AskUserQuestion does, so its
+# load and call forms are the same surface.
+QUESTION_RE='ToolSearch\("select:[^"]*AskUserQuestion|AskUserQuestion\(|ToolSearch\("select:[^"]*question_form|question_form\(|EnterPlanMode\(|ExitPlanMode\('
 
 # Rule 2 — notification call forms. Byte-identical to the predicate the
 # design's residual verification item fixed, and for its stated reasons:
@@ -197,7 +200,7 @@ SIBLING_PAIRS_LINT="$script_dir/lint-judgment-grade.sh"
 
 # Rule 4 — the question-surface pattern used INSIDE a reference tree. Bare name,
 # no call form required; see the asymmetry note in the header.
-REF_QUESTION_RE='AskUserQuestion|EnterPlanMode|ExitPlanMode'
+REF_QUESTION_RE='AskUserQuestion|question_form|EnterPlanMode|ExitPlanMode'
 
 # The clause an arm owes for each shared reference file that holds a question
 # point. Fixed prefix plus the file's own name in backticks, so the check is a
