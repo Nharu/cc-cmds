@@ -16345,11 +16345,6 @@ gate_record_row() {
       # here on the ordinary path, and by `gate_on_exit` when `gate_append`
       # exits the process instead of returning.
       gate_settings_lock_release
-      # An adopted segment's planning act brings in the earlier run's open
-      # answer to a halt, after the row it belongs to has landed.
-      if [ "${GATE_FROM_DECLARATION:-}" = "1" ] && [ "$st" = "계획됨" ] && [ -n "${RUN_DIR:-}" ]; then
-        gate_adoption_halt_carry "$seg"
-      fi
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
       elif [ -n "${RUN_DIR:-}" ]; then
@@ -16361,6 +16356,11 @@ gate_record_row() {
         rm -f "$RUN_DIR/notify/park-$seg" 2>/dev/null || true
       fi
       log "세그먼트 기록 — $seg ($st)"
+      # An adopted segment's planning act brings in the earlier run's open
+      # answer to a halt, after the row it belongs to has landed.
+      if [ "${GATE_FROM_DECLARATION:-}" = "1" ] && [ "$st" = "계획됨" ] && [ -n "${RUN_DIR:-}" ]; then
+        gate_adoption_halt_carry "$seg"
+      fi
       ;;
     cycle)
       # The five the merge rule actually reads. A cycle row missing any of them
