@@ -111,22 +111,27 @@ export const unavailableResult = (reason: UnavailableReason) => `${TOKEN_PREFIX}
 
 // 사람에게 보이는 문면.
 export const formTitle = (title: string, answered: number, total: number) => `질문지 — ${title} (답 ${answered}/${total})`
-export const receiptTitle = (answered: number, total: number) => `질문지 — 답 보냄 ${answered}/${total}`
+export const sentToast = (answered: number, total: number) => `질문지 답을 보냈습니다 · 답 ${answered}/${total}`
 export const statusLine = (answered: number, total: number) => `질문지 대기 중 · 답 ${answered}/${total} · /question-form 으로 열기`
 export const contextLine = (id: string) => `질문지 ${id} 가 열려 있습니다(답 대기). 이 입력은 질문지의 답이 아닙니다. 답은 질문지 제출로만 옵니다.`
 export const STAMP = '직접 입력된 문면입니다. 질문지 제출이 아닙니다.'
 export const NO_FORM_TOAST = '열린 질문지가 없습니다.'
-export const HELP_LINE = 'Tab 다음 · Shift+Tab 이전 · Enter 고르기 · Esc 입력칸 나가기 · 닫기 표시는 숨기기(답 유지, /question-form 으로 다시 열기)'
-export const RECEIPT_NOTE = '질문에 대한 답을 보냈습니다. 다음 질문지가 오면 이 자리에서 바뀝니다.'
+export const HELP_LINE = '1-9 고르기 · 0 기타 · m 메모 · n 다음 · p 이전 · Tab 이동 · Enter 확정 · Esc 프롬프트로'
 export const TEXT_PLACEHOLDER = '답을 입력하세요'
 export const OTHER_LABEL = '기타'
 export const OTHER_PLACEHOLDER = '직접 입력'
+export const NOTE_LABEL = '메모'
+export const NOTE_ADD_LABEL = '메모 추가'
 export const NOTE_PLACEHOLDER = '메모 (선택)'
+export const EDITOR_SUBMIT_LABEL = '확정'
+export const ANSWER_LABEL = '답'
 export const UNANSWERED = '미답'
 export const NOT_APPLICABLE = '해당 없음'
-export const SUBMIT_LABEL = '[제출]'
-export const CANCEL_LABEL = '[답 없이 닫기]'
-export const footerLine = (answered: number, total: number) => `답 ${answered}/${total} · 미답 ${total - answered}건`
-
-// 제시한 라벨: 추천이면 접미를 붙인다. 묶음과 문답 기록은 이 문면을 그대로 쓴다.
-export const presentedLabel = (o: FormOption) => (o.recommended ? `${o.label}${RECOMMEND_ARROW}${o.recommended}` : o.label)
+export const SUBMIT_LABEL = '제출'
+export const CANCEL_LABEL = '답 없이 닫기'
+export const PREV_LABEL = '이전 질문'
+export const NEXT_LABEL = '다음 질문'
+export const TO_SUBMIT_LABEL = '제출로'
+export const counterLine = (answered: number, total: number) => `답 ${answered}/${total} · 미답 ${total - answered}건`
+// 접힌 질문 줄의 답 요약은 이 글자 수에서 자른다.
+export const SUMMARY_MAX = 48

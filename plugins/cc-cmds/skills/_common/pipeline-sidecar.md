@@ -643,7 +643,8 @@ tells the two apart, the form's question following a `단계=문답(질문지)` 
 
 **A question-form answer is written as the bundle carries it.** The `### 답 n`
 body equals the bundle's `answer` for that question: a single-select answer is
-the chosen label exactly as offered, suffix included; a multi-select answer is
+the chosen label exactly as authored, with no `← 추천` suffix (the bundle carries
+recommendations apart, in each answer's `recommended`); a multi-select answer is
 the chosen labels, one per line; free text given instead of an option is that
 text verbatim; free text beside multi-select labels is a last line
 `자유 입력: <verbatim>`; a note is a last line `메모: <verbatim>`; no answer is
