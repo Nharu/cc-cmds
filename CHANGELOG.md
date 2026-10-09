@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.51.1] - 2026-10-09
+
+무인 스테이지에 넣는 정책 요약의 Maestro 줄을 바뀐 사용자 지침에 맞춘다. 호스트 Maestro 가 2.11.0 으로 올라 서로 다른 기기의 실행이 한 기계에서 함께 돌 수 있게 되었는데, 요약은 여전히 「한 기계에 한 실행」이라고 적고 있었다.
+
+### Changed
+
+- `stage-policy.md` 의 Maestro 줄: 자기 기기만 쓰고, 먼저 `pgrep -fl maestro.cli` 로 확인하며, 남의 실행에 신호를 보내지 않는다. 띄운 에뮬레이터·시뮬레이터는 넘기지 않았으면 끈다. 정책 상한 8000 바이트 안에 맞췄다.
+- `stage-policy.sources.tsv` 에 Maestro·에뮬레이터 종료 두 원천 행을 더했다.
+
 ## [2.51.0] - 2026-10-09
 
 무인 구현 스테이지가 실행 게이트에 막혀 돌리지 못한 잔여 검증을 런을 띄운 대화형 세션(좌석)이 직접 돌린다. 지금까지는 에뮬레이터 기동처럼 호스트 상태를 바꾸는 검증 레시피가 보류되면 스테이지가 멈추고 사람이 답할 때까지 런이 서 있었다.
