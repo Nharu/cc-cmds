@@ -1766,7 +1766,7 @@ if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q 'return 4'; then
 else
   bad "완성-미착지" "막힌 말단 행위가 park 과 구별되지 않는다"
 fi
-if sed -n '/^main_loop()/,/^}/p' "$DRIVER" | grep_all_q '완성-미착지'; then
+if sed -n '/^main_loop_body()/,/^}/p' "$DRIVER" | grep_all_q '완성-미착지'; then
   ok "아침 보고서가 완성-미착지를 따로 센다"
 else
   bad "보고서" "완성-미착지가 보류에 섞인다"
@@ -2176,7 +2176,7 @@ for gone in STAGE_IDS CRASH_RETRIES HOLLOW_SUCCESS_RETRIES WAVE_DEMOTED wave_mod
 done
 if grep -q '^predicate_design()' "$DRIVER" \
    && sed -n '/^design_arm()/,/^}/p' "$DRIVER" | grep_all_q 'predicate_design ' \
-   && sed -n '/^main_loop()/,/^}/p' "$DRIVER" | grep_all_q 'design_arm '; then
+   && sed -n '/^main_loop_body()/,/^}/p' "$DRIVER" | grep_all_q 'design_arm '; then
   ok "배선됨: predicate_design (정의가 있고 main_loop 이 부르는 설계 팔이 그것을 부른다)"
 else
   bad "미배선 탐지기" "predicate_design 이 정의만 있고 불리지 않거나 그 반대다 — 장식으로 되돌아갔다"
@@ -3201,7 +3201,7 @@ fi
 # 그 두 경로 중 하나가 EXIT 경로다. 순회 꼬리 하나만 있던 동안은 die·신호·예산으로
 # 끝난 런이 `done` 파일을 쓰고도 아침 리포트에는 한 글자도 넘기지 못했다 — 무언가
 # 잘못된 밤에만 잔여가 사라졌다.
-if grep -qF "trap 'report_run_residual || true' EXIT" "$DRIVER"; then
+if grep -qF "trap 'run_end_record || true; report_run_residual || true' EXIT" "$DRIVER"; then
   ok "드라이버가 종료 잔여 보고를 EXIT 경로에 건다"
 else
   bad "종료 잔여" "EXIT 경로에 보고가 걸려 있지 않다 — 순회 꼬리에 닿지 못한 런의 잔여는 아침에 도달하지 않는다"
@@ -3247,6 +3247,239 @@ if grep -qF '보류 ${parked}건' "$DRIVER"; then
 else
   ok "park 계수기가 종료 절의 보류와 다른 단어를 쓴다"
 fi
+
+# ---------------------------------------------------------------------------
+# 24b. 고정 그래프 런의 종료 행 — 어느 길로 끝나든 한 자리에서 한 번
+#
+# 고정 그래프는 종료 행을 하나도 쓰지 않았다. 그래서 단계가 멈춘 런도 토큰도
+# `done` 도 표지도 남기지 않았고, 마감 뒤 `end-overdue` 에 닿아 자동 갈래인 `마감`
+# 으로 닫혔다 — 사람에게 가야 할 정지가 자동 재킥으로 샜다. 여기서는 종료 자리를
+# 진짜 게이트와 함께 태워 토큰을 잰다. 게이트 함수는 `run_gate_call` 이 자식 셸에서
+# 소싱하므로 원장과 런 디렉터리만 픽스처로 둔다.
+# ---------------------------------------------------------------------------
+RE24="$WORK/run-end"; mkdir -p "$RE24"
+MFRE="$RE24/manifest.md"
+write_manifest "$MFRE" "" "" main "docs/x.md"
+
+re_end_rows() {   # re_end_rows <픽스처 디렉터리> — 종료 행 수
+  { grep -F '| 결정=종료 |' "$1/ledger.md" 2>/dev/null || true; } | grep -c . || true
+}
+re_end_field() {  # re_end_field <픽스처 디렉터리> <키> — 첫 종료 행의 그 필드 값
+  { grep -F '| 결정=종료 |' "$1/ledger.md" 2>/dev/null || true; } | sed -n 1p \
+    | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'
+}
+re_fresh() {      # re_fresh <라벨> — 새 런 디렉터리와 빈 원장, 플러그인 핀
+  local d="$RE24/$1"
+  rm -rf "$d"; mkdir -p "$d/run/halt" "$d/run/log" "$d/docs"; : > "$d/ledger.md"
+  printf 'digest\tpin0123\n' > "$d/run/plugin-pin"
+}
+re_case() {
+  # re_case <라벨> <셸 본문> — 새 픽스처 위에서 본문을 한 서브셸로 돈다. 본문은
+  # 종료 자리가 읽는 RUN_END_* 를 정하고 드라이버 함수를 부른다.
+  local d="$RE24/$1"
+  re_fresh "$1"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=rerun
+    MANIFEST="$MFRE"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; GRANT=""
+    RUN_END_ARMED=1; RUN_END_HALT_STAGE=""; RUN_END_ALL_LANDED=""; RUN_END_LOOP_DONE=""; RUN_DEADLINE_ENDED=""
+    eval "$2"
+  ) > "$d/out" 2>&1
+}
+
+# 첫 마감 park 가 런을 끝낸다. 같은 런의 둘째 마감 park 와 주 루프의 끝 자리는 이미
+# 종료 토큰이 있으므로 행을 늘리지 않는다.
+re_case deadline 'run_deadline_end "첫 마감 park"; run_deadline_end "둘째 마감 park"; run_end_record'
+check "고정 그래프 첫 마감 park 가 재킥 원인=마감 종료 행을 한 번만 쓴다" \
+  "$(re_end_rows "$RE24/deadline")/$(re_end_field "$RE24/deadline" '재킥 원인')" "1/마감"
+check "그 종료 행이 done 과 표지를 함께 남긴다" \
+  "$([ -s "$RE24/deadline/run/done" ] && printf done)/$(sed -n 's/^토큰=//p' "$RE24/deadline/run/rekick-candidate" 2>/dev/null)" \
+  "done/마감"
+re_dl_pair=$(awk '
+  /^ *park .*"벽시계 마감 경과/ { open = NR }
+  /^ *run_deadline_end "/ { if (open && NR - open <= 2) n++; open = 0 }
+  END { print n + 0 }' "$DRIVER")
+check "드라이버의 마감 park 세 자리 모두 바로 뒤에서 종료를 부른다" \
+  "$( { grep -cE '^ *park .*"벽시계 마감 경과' "$DRIVER" || true; } )/$re_dl_pair" "3/3"
+
+# 단계 정지 기록의 `분류` 가 토큰을 정한다. 대응되지 않은 분류와 읽지 못한 기록은
+# 자동 갈래로 가지 않고 `해당없음` 이다.
+re_halt() {  # re_halt <라벨> <분류 | -없음 | -기록없음>
+  local body='RUN_END_HALT_STAGE=S2'
+  case "$2" in
+    -기록없음) : ;;
+    -없음) body="$body; printf '# 정지 기록\n' > \"\$RUN_DIR/halt/S2.md\"" ;;
+    *) body="$body; printf '**분류**: %s\n' '$2' > \"\$RUN_DIR/halt/S2.md\"" ;;
+  esac
+  re_case "$1" "$body; run_end_record"
+}
+re_halt h-tool tool-unavailable
+re_halt h-pre precondition-failed
+re_halt h-gate gate-unanswerable
+re_halt h-freeze freeze-mismatch
+re_halt h-nofield -없음
+re_halt h-norecord -기록없음
+check "tool-unavailable 정지는 결함 과 재킥 지문(종류/스테이지/핀)을 쓴다" \
+  "$(re_end_rows "$RE24/h-tool")/$(re_end_field "$RE24/h-tool" '재킥 원인')/$(re_end_field "$RE24/h-tool" '재킥 지문')" \
+  "1/결함/audit/S2/pin0123"
+check "precondition-failed 정지도 결함 과 재킥 지문을 쓴다" \
+  "$(re_end_field "$RE24/h-pre" '재킥 원인')/$(re_end_field "$RE24/h-pre" '재킥 지문')" "결함/audit/S2/pin0123"
+check "gate-unanswerable 정지는 판단정지 이고 지문이 없다" \
+  "$(re_end_rows "$RE24/h-gate")/$(re_end_field "$RE24/h-gate" '재킥 원인')/$(re_end_field "$RE24/h-gate" '재킥 지문')" \
+  "1/판단정지/"
+check "freeze-mismatch · 분류 없는 기록 · 기록 없음은 모두 해당없음 이다" \
+  "$(re_end_field "$RE24/h-freeze" '재킥 원인')/$(re_end_field "$RE24/h-nofield" '재킥 원인')/$(re_end_field "$RE24/h-norecord" '재킥 원인')" \
+  "해당없음/해당없음/해당없음"
+
+# 종료 토큰이 이미 있으면(표면 이동의 런 범위 `blocked` 행) 정지 분류가 무엇이든 새로
+# 쓰지 않는다 — 가장 먼저 쓰인 행이 토큰이다.
+re_case surface 'printf -- "- \`blocked\` | 대상=- | 스코프=run | 원인=무효화 | 사유=강제 표면 이동 | 재킥 원인=표면이동\n" >> "$LEDGER"
+  RUN_END_HALT_STAGE=S2; printf "**분류**: tool-unavailable\n" > "$RUN_DIR/halt/S2.md"; run_end_record'
+check "종료 토큰이 이미 있는 런에는 종료 행을 덧쓰지 않는다" "$(re_end_rows "$RE24/surface")" "0"
+
+# 디스패치할 슬라이스 없이 끝난 주 루프. 슬라이스 park 의 토큰, 모두 착지한 정상 완료,
+# 그 밖의 끝을 가른다.
+re_case p-target 'printf -- "- \`blocked\` | 대상=other | 스코프=act | 원인=막힘 | 사유=대상 미선언 | 재킥 원인=대상미선언\n" >> "$LEDGER"
+  RUN_END_LOOP_DONE=1; run_end_record'
+re_case p-slice 'printf -- "- \`blocked\` | 대상=home | 세그먼트=B | 스코프=act | 원인=막힘 | 사유=선언 불완전 | 재킥 원인=슬라이싱\n" >> "$LEDGER"
+  RUN_END_LOOP_DONE=1; run_end_record'
+re_case landed 'RUN_END_LOOP_DONE=1; RUN_END_ALL_LANDED=1; run_end_record'
+re_case loop-plain 'RUN_END_LOOP_DONE=1; run_end_record'
+check "슬라이스 park 만 남긴 주 루프는 그 park 의 토큰으로 끝난다 (대상미선언 · 슬라이싱)" \
+  "$(re_end_field "$RE24/p-target" '재킥 원인')/$(re_end_field "$RE24/p-slice" '재킥 원인')" "대상미선언/슬라이싱"
+check "모두 착지한 주 루프는 해당없음 과 종료 부류=완료 를 쓴다" \
+  "$(re_end_rows "$RE24/landed")/$(re_end_field "$RE24/landed" '재킥 원인')/$(re_end_field "$RE24/landed" '종료 부류')" \
+  "1/해당없음/완료"
+check "그 밖의 주 루프 끝은 종료 부류 없는 해당없음 이다" \
+  "$(re_end_field "$RE24/loop-plain" '재킥 원인')/$(re_end_field "$RE24/loop-plain" '종료 부류')" "해당없음/"
+re_case unarmed 'RUN_END_ARMED=""; run_end_record'
+check "주 루프가 시작하기 전(원장이 없는 거부)에는 아무것도 쓰지 않는다" "$(re_end_rows "$RE24/unarmed")" "0"
+
+# 주 루프를 태운다. 슬라이스 루프에 닿기 전에 반환하는 감사 정지와 계획 실패도 반환
+# 직전의 한 자리를 지난다.
+re_loop() {
+  # re_loop <라벨> <감사 종단 부류> <정지 기록 분류 | -> — 계획 단계는 늘 실패한다.
+  local d="$RE24/$1"
+  re_fresh "$1"
+  [ "$3" = "-" ] || printf '**분류**: %s\n' "$3" > "$d/run/halt/S2.md"
+  RE_AUDIT="$2"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=reloop
+    MANIFEST="$MFRE"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; GRANT=""
+    DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; DOC_SLUG=x; DOC_BASE="$d"
+    ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=x; BASE="$d"
+    printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC"
+    CLI_BIN=true
+    design_arm() { return 0; }
+    dispatch_stage() { printf '0' > "$RUN_DIR/$1.rc"; }
+    classify_termination() { printf '%s' "$RE_AUDIT"; }
+    predicate_audit() { return 0; }
+    stage_session_id() { printf 'sid'; }
+    stage_parent_id() { printf 'parent'; }
+    report_append() { :; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    absorb_stage_judgment() { :; }
+    spawn_lineage_release() { :; }
+    quiet_window_begin() { :; }
+    quiet_window_end() { :; }
+    whole_digest() { printf 'x'; }
+    grant_field() { printf 'x'; }
+    report_path() { printf '%s' "$d/report"; }
+    slicing_branch() { printf '미통치'; }
+    plan_via_planner() { return 1; }
+    main_loop; printf 'rc=%s\n' "$?"
+  ) > "$d/out" 2>&1
+}
+re_loop l-gate '의도된 park' gate-unanswerable
+re_loop l-tool '의도된 park' tool-unavailable
+re_loop l-plan '정상 완료' -
+check "감사가 질문으로 멈춘 런은 주 루프 끝에서 판단정지 종료 행을 하나 쓴다" \
+  "$(re_end_rows "$RE24/l-gate")/$(re_end_field "$RE24/l-gate" '재킥 원인')/$(grep -c 'S2 run' "$RE24/l-gate/parked" 2>/dev/null || printf 0)" \
+  "1/판단정지/1"
+check "감사가 도구 부재로 멈춘 런은 결함 과 감사 스테이지의 지문을 쓴다" \
+  "$(re_end_rows "$RE24/l-tool")/$(re_end_field "$RE24/l-tool" '재킥 원인')/$(re_end_field "$RE24/l-tool" '재킥 지문')" \
+  "1/결함/audit/S2/pin0123"
+check "계획 단계 실패는 정지 기록이 없으므로 해당없음 종료 행 하나다" \
+  "$(re_end_rows "$RE24/l-plan")/$(re_end_field "$RE24/l-plan" '재킥 원인')/$(sed -n 's/^rc=//p' "$RE24/l-plan/out")" \
+  "1/해당없음/0"
+# 21c-b 의 베이스 런은 분할에서 반환한다. 그 픽스처들도 같은 자리를 지났다.
+check "베이스 런은 분할 뒤 반환하며 해당없음 종료 행을 하나 쓴다" \
+  "$(re_end_rows "$ARMB/full")/$(re_end_field "$ARMB/full" '재킥 원인')/$(re_end_field "$ARMB/full" '종료 부류')" \
+  "1/해당없음/"
+check "베이스 런의 감사 정지도 종료 행을 하나 쓴다" "$(re_end_rows "$ARMB/audit-halt")" "1"
+
+# 반환하지 않고 끝나는 길 — `die`, `set -e` 로 끝나는 보호되지 않은 실패, 신호 — 은
+# EXIT 트랩이 같은 종료 자리를 부른다. 드라이버를 소싱한 새 bash 에 드라이버 파일의
+# 트랩 줄을 그대로 걸고 드라이버와 같은 `set -euo pipefail` 아래에서 주 루프를 돈다.
+# 정상 반환한 런은 주 루프 끝과 트랩이 겹치므로 행이 하나인지가 그 겹침을 잰다.
+re_trap() {
+  # re_trap <라벨> <스텁 정의> — 스텁은 주 루프가 어디서 끝날지를 정한다.
+  local d="$RE24/$1"
+  re_fresh "$1"
+  bash -c '
+    drv=$1; dir=$2; mf=$3; stubs=$4
+    set --
+    CC_ORCH_SOURCE_ONLY=1
+    . "$drv" >/dev/null 2>&1
+    set -euo pipefail
+    eval "$(grep -E "^trap .* EXIT\$" "$drv" | tail -1)"
+    RUN_DIR="$dir/run"; LEDGER="$dir/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=retrap
+    MANIFEST="$mf"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; GRANT=""
+    DOC=""; DOC_KEY=""; DOC_SLUG=""; DOC_BASE="$dir"
+    ANCHOR_KIND=intent; ANCHOR_KEY=x; SLUG=x; BASE="$dir"
+    whole_digest() { printf x; }
+    grant_field() { printf x; }
+    report_path() { printf "%s" "$dir/report"; }
+    eval "$stubs"
+    main_loop
+  ' _ "$DRIVER" "$d" "$MFRE" "$2" > "$d/out" 2>&1
+}
+re_trap t-die 'design_arm() { die "시험 die"; }'
+re_trap t-errexit 'report_append() { return 1; }'
+re_trap t-signal 'design_arm() { kill -TERM $$; sleep 1; }'
+re_trap t-return 'design_arm() { return 1; }'
+check "die 로 끝난 런도 EXIT 트랩에서 해당없음 종료 행을 하나 쓴다" \
+  "$(re_end_rows "$RE24/t-die")/$(re_end_field "$RE24/t-die" '재킥 원인')" "1/해당없음"
+check "set -e 로 끝난 보호되지 않은 실패도 종료 행을 하나 쓴다" \
+  "$(re_end_rows "$RE24/t-errexit")/$(re_end_field "$RE24/t-errexit" '재킥 원인')" "1/해당없음"
+check "신호로 끝난 런도 종료 행을 하나 쓴다" \
+  "$(re_end_rows "$RE24/t-signal")/$(re_end_field "$RE24/t-signal" '재킥 원인')" "1/해당없음"
+check "정상 반환한 런은 주 루프 끝과 트랩이 겹쳐도 종료 행이 하나다" "$(re_end_rows "$RE24/t-return")" "1"
+
+# 구동기 자신의 run 범위 park 를 담은 함수는 모두 주 루프 아래에서만 불린다. run 범위
+# park 를 직접 담은 함수에서 시작해 그것을 부르는 함수로 닫은 집합 가운데, 파일
+# 최상위가 부르는 것은 `main_loop` 하나여야 한다. 그래야 그 park 들이 전부 반환 직전의
+# 한 자리를 지난다.
+re_park_census() {
+  awk '
+    /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{ *$/ { fn = $0; sub(/\(\).*/, "", fn); names[++nn] = fn; next }
+    /^\}/ && fn != "" { fn = ""; next }
+    /^[[:space:]]*#/ { next }
+    fn != "" { body[fn] = body[fn] "\n" $0; if ($0 ~ /park [^ ]+ run /) { inset[fn] = 1; direct++ } ; next }
+    { top = top "\n" $0 }
+    END {
+      do {
+        changed = 0
+        for (i = 1; i <= nn; i++) {
+          f = names[i]
+          if (f in inset) continue
+          for (g in inset) {
+            if (body[f] ~ ("(^|[^A-Za-z0-9_])" g "([^A-Za-z0-9_]|$)")) { inset[f] = 1; changed = 1; break }
+          }
+        }
+      } while (changed)
+      n = 0; for (g in inset) n++
+      printf "direct=%d\n", direct
+      for (g in inset) if (top ~ ("(^|[^A-Za-z0-9_])" g "([^A-Za-z0-9_]|$)")) print "top=" g
+    }' "$DRIVER"
+}
+RE_CENSUS=$(re_park_census)
+if [ "$(printf '%s\n' "$RE_CENSUS" | sed -n 's/^direct=//p')" -ge 20 ] 2>/dev/null; then
+  ok "run 범위 park 센서스가 공허하지 않다 (직접 자리 20 개 이상)"
+else
+  bad "run 범위 park 센서스" "$RE_CENSUS"
+fi
+check "run 범위 park 에 닿는 함수 가운데 파일 최상위가 부르는 것은 main_loop 하나다" \
+  "$(printf '%s\n' "$RE_CENSUS" | sed -n 's/^top=//p' | tr '\n' ' ' | sed 's/ $//')" "main_loop"
 
 # ---------------------------------------------------------------------------
 # 25. 설계 문서 없는 런, 그리고 전사가 실행 버전을 갖는다
@@ -3391,7 +3624,7 @@ check "재수렴 스테이지가 접근자를 쓴다" \
 # 쓸 자리가 없다는 뜻이라 같은 부류의 분기다. 설계 지점은 main_loop 이 부르는 팔
 # 함수 안에 있다.
 check "main_loop 이 감사·계획 두 지점에서 문서 부재를 분기한다" \
-  "$( sed -n '/^main_loop()/,/^}/p' "$DRIVER" | { grep -cF 'if [ -z "$DOC" ]; then' || true; } )" "2"
+  "$( sed -n '/^main_loop_body()/,/^}/p' "$DRIVER" | { grep -cF 'if [ -z "$DOC" ]; then' || true; } )" "2"
 check "설계 팔이 셋째 지점에서 문서 부재를 분기한다" \
   "$( sed -n '/^design_arm()/,/^}/p' "$DRIVER" | { grep -cF 'if [ -z "$DOC" ]; then' || true; } )" "1"
 

@@ -7154,6 +7154,7 @@ segment_cycle() {
     # nothing in flight is touched, the next dispatch simply does not happen.
     if past_deadline; then
       park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 다음 사이클을 디스패치하지 않는다"
+      run_deadline_end "벽시계 마감 경과 — $seg 의 다음 사이클을 디스패치하지 않는다"
       return 1
     fi
     if [ "$(run_cycles_spend 1)" -gt "$RUN_CYCLE_BUDGET" ]; then
@@ -7510,6 +7511,7 @@ EOF
   if past_deadline; then
     park "$seg" act 막힘 "예산·벽시계" "벽시계 마감 경과 — 머지하지 않는다. 세그먼트는 완성-미착지" \
       "gh -R $(seg_slug "$seg") pr merge $branch"
+    run_deadline_end "벽시계 마감 경과 — $seg 를 머지하지 않는다"
     return 4
   fi
   local mrc=0; merge_gate "$seg" "$branch" || mrc=$?
@@ -7861,7 +7863,7 @@ design_arm() {
   # both read the freeze as a precondition.
   case "$class1" in
     '정상 완료') report_append "설계" "문서 동결 — $DOC_KEY" ;;
-    '의도된 park') park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
+    '의도된 park') RUN_END_HALT_STAGE=S1design; park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
     '공허한 성공')
       if continue_or_park S1design S1design - S1design "$(alias_root "$(home_alias)")" \
            "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" \
@@ -7983,6 +7985,7 @@ split_arm() {
   done
   case "$class" in
     '의도된 park')
+      RUN_END_HALT_STAGE=S2split
       park "S2split" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2split")" 2>/dev/null)" ;;
     *)
       if [ "$try" = "2" ]; then
@@ -7997,7 +8000,18 @@ split_arm() {
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
+# The walk and its single end. The body keeps every `return` it had — the
+# design, audit, split and plan stops all leave from inside it — and this is the
+# one place they all pass on the way out. Called plainly rather than under `||`,
+# so `set -e` still ends the body on an unguarded failure; that exit goes
+# through the EXIT trap, which calls the same end.
 main_loop() {
+  RUN_END_ARMED=1
+  main_loop_body
+  run_end_record || true
+}
+
+main_loop_body() {
   log "런 시작 run-id=$RUN_ID doc=$DOC slug=$SLUG base=$BASE"
   # The two the morning reads. They describe the TARGET BASE — its HEAD at
   # kickoff and whether that worktree was clean — not the code that judged the
@@ -8101,7 +8115,7 @@ main_loop() {
   # Keyed on the stage for the reason the design stage's absorber is.
   case "$class2" in
     '정상 완료') : ;;
-    '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
+    '의도된 park') RUN_END_HALT_STAGE=S2; park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
     '공허한 성공')
       if continue_or_park S2 S2 - S2 "$(alias_root "$(home_alias)")" \
            "$audit_cmd2" \
@@ -8174,6 +8188,7 @@ main_loop() {
     # The other of the two loop heads that read the deadline.
     if past_deadline; then
       park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 디스패치하지 않는다"
+      run_deadline_end "벽시계 마감 경과 — $seg 부터 디스패치하지 않는다"
       parked=$((parked + 1)); continue
     fi
     if in_halted_radius "$seg"; then
@@ -8249,6 +8264,9 @@ main_loop() {
   if [ "${limit_n:-0}" -gt 0 ]; then
     report_append "한도 종료" "${limit_n}건 — 크래시와 같게 처분, 계정 이동 없음"
   fi
+  RUN_END_LOOP_DONE=1
+  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ "$merged" -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
+  run_end_record || true
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
   # driver parked, while `보류` is the disposition of a termination clause waiting
@@ -8291,6 +8309,86 @@ report_run_residual() {
   fi
   : > "$RUN_DIR/residual-reported"
   report_append "종료 잔여" "$(cat "$RUN_DIR/done")"
+}
+
+# THE RUN'S END ROW, WRITTEN AT ONE PLACE WHATEVER PATH THE RUN LEFT BY.
+#
+# The fixed graph wrote no end row at all, so a run that stopped here left no
+# token, no `done` and no `rekick-candidate` marker, and the sweep met it only
+# after its deadline — where it was closed as `마감`, the automatic branch, and
+# re-kicked up to the chain bound. The stops that should have gone to a person
+# (a design stage asking a question, an audit missing its tool) went there too.
+# So the token is chosen here, from what the run actually ended on, and the
+# default is `해당없음`: an ending nobody mapped goes to a person, never to the
+# automatic branch.
+#
+# Called from the walk's tail, from `main_loop` after the body returns and from
+# the EXIT trap. The first of them that runs writes the row; the others find the
+# end token already in the ledger and write nothing.
+RUN_END_ARMED=""
+RUN_END_HALT_STAGE=""
+RUN_END_ALL_LANDED=""
+RUN_END_LOOP_DONE=""
+RUN_DEADLINE_ENDED=""
+
+run_plugin_pin_id() {
+  # The pinned copy's content digest — the "which code" half of a defect's
+  # fingerprint. A run with no pin says so rather than leaving the field empty.
+  local v=""
+  [ -n "${RUN_DIR:-}" ] && v=$(awk -F'\t' '$1 == "digest" { print $2; exit }' "$RUN_DIR/plugin-pin" 2>/dev/null)
+  printf '%s' "${v:-(미상)}"
+}
+
+run_end_park_cause() {
+  # The `재킥 원인` of the first slice park in this run that carries one —
+  # `대상미선언` or `슬라이싱` — or nothing.
+  { run_section_rows 'blocked' || true; } \
+    | tr '|' '\n' | sed -n 's/^ *재킥 원인=//p' | sed 's/[[:space:]]*$//' \
+    | { grep -x -e '대상미선언' -e '슬라이싱' || true; } | sed -n 1p
+}
+
+run_end_record() {
+  [ "$RUN_END_ARMED" = "1" ] || return 0
+  [ -n "${RUN_DIR:-}" ] && [ -n "${LEDGER:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  # Already ended — by the gate's own boundaries, the deadline park below, a
+  # surface move, or an earlier call of this function. The first row decides.
+  run_gate_call gate_end_token >/dev/null 2>&1 && return 0
+  local cause=해당없음 ekind="" fp="" why cls p
+  if [ -n "$RUN_END_HALT_STAGE" ]; then
+    # The stage wrote its own classification. `freeze-mismatch`, an unreadable
+    # record and a missing field all stay `해당없음`.
+    p=$(halt_record_path "$RUN_END_HALT_STAGE")
+    cls=$(sed -n 's/^\*\*분류\*\*:[[:space:]]*//p' "$p" 2>/dev/null | sed -n '1s/[[:space:]]*$//p')
+    case "$cls" in
+      tool-unavailable|precondition-failed)
+        cause=결함
+        fp="$(stage_kind_of "$RUN_END_HALT_STAGE")/$RUN_END_HALT_STAGE/$(run_plugin_pin_id)" ;;
+      gate-unanswerable) cause=판단정지 ;;
+    esac
+    why="단계 정지 $RUN_END_HALT_STAGE — 분류 ${cls:-(읽지 못함)}"
+  elif [ "$RUN_END_ALL_LANDED" = "1" ]; then
+    ekind=완료
+    why="계획된 슬라이스가 모두 착지했다"
+  elif [ "$RUN_END_LOOP_DONE" = "1" ] && p=$(run_end_park_cause) && [ -n "$p" ]; then
+    cause="$p"
+    why="디스패치할 슬라이스 없이 끝났다 — 슬라이스 park 의 원인 $p"
+  else
+    why="주 루프가 분류된 종료 없이 반환했다"
+  fi
+  run_gate_call gate_end_run "주 루프 종료" "$why" "$cause" "$ekind" "$fp" >/dev/null 2>&1 \
+    || warn "종료 행을 쓰지 못했다 — 재킥 원인 $cause"
+  return 0
+}
+
+run_deadline_end() {
+  # run_deadline_end <사유> — the first deadline park of the run also ends it.
+  # The park rows and their recall commands stay as they were; what is new is
+  # the end row, so the run carries `마감` instead of no token at all.
+  [ -z "$RUN_DEADLINE_ENDED" ] || return 0
+  RUN_DEADLINE_ENDED=1
+  run_gate_call gate_end_run 마감 "$1" 마감 >/dev/null 2>&1 \
+    || warn "마감 종료 행을 쓰지 못했다"
+  return 0
 }
 
 # Record the radius an unknown apply outcome stops, and hold it so the walk can
@@ -8613,7 +8711,11 @@ rundir_init
 # clauses each of them holds — vanished from the morning report exactly on the
 # nights something went wrong. Installed after the run directory exists, because
 # there is nothing to forward before that.
-trap 'report_run_residual || true' EXIT
+#
+# THE END ROW GOES FIRST, so the `done` it writes is there for the residual line
+# to forward. It is armed only once the walk starts: a run refused before its
+# ledger exists has nothing to end.
+trap 'run_end_record || true; report_run_residual || true' EXIT
 
 check_grant
 # BEFORE `ledger_init`, because that call is what makes this run's heading exist
