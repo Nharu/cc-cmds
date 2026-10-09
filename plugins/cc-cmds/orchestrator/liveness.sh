@@ -691,6 +691,56 @@ cc_ledger_growth_at() {
   cc_mtime "$ledger"
 }
 
+cc_run_ends_on_done() {
+  # cc_run_ends_on_done <run-dir> — succeeds when the run carries the
+  # `ends-on-done` marker: the gate writes it once, when the seat's
+  # `router-shift` actually launches a shift. Such a run settles its exit
+  # clauses after the last segment and ends on `done`, so the ledger-derived
+  # terminal conjunction does not end it. A run without the marker — an old
+  # run, a driver run, a seat run that never launched a shift — keeps the
+  # derived rule.
+  [ -e "$1/ends-on-done" ]
+}
+
+cc_run_end_settled() {
+  # cc_run_end_settled <run-dir> — succeeds when `done` exists and the
+  # settlement is over: the run has no marker, or no shift is alive.
+  #
+  # SAME ANSWER FROM EVERY PROCESS. `cc_shift_is_live` reads only `shift.live`
+  # and the process table, so the status line, the reaper, the watcher and the
+  # gate's shift-return site all see the same moment. A reader that cannot see
+  # the shift's process reads "no shift" and shows 종단 at `done`, which is
+  # early by the done-tail only.
+  [ -f "$1/done" ] || return 1
+  cc_run_ends_on_done "$1" || return 0
+  ! cc_shift_is_live "$1"
+}
+
+cc_run_settle_stuck() {
+  # cc_run_settle_stuck <run-dir> <ledger> — succeeds when a marker-bearing run
+  # sits in the settlement window with nobody settling it: no `done`, no live
+  # stage, no pending approval, every segment terminal and at least one of
+  # them, no unresolved run-scope block, and no live shift.
+  #
+  # Only the reaper reads this. Such a run never reads as 종단, so without it
+  # the reaper would keep it forever; with it the run is reaped after the same
+  # retention a 종단 run gets.
+  local run_dir="$1" ledger="$2" n
+  cc_run_ends_on_done "$run_dir" || return 1
+  [ -f "$run_dir/done" ] && return 1
+  n=$(cc_live_stages "$run_dir")
+  [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
+  n=$(cc_open_approvals "$ledger")
+  [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
+  n=$(cc_nonterminal_segments "$ledger")
+  [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
+  n=$(cc_segment_count "$ledger")
+  [ "${n:-0}" -ge 1 ] 2>/dev/null || return 1
+  n=$(cc_unresolved_blocked "$ledger" | grep -c . || true)
+  [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
+  ! cc_shift_is_live "$run_dir"
+}
+
 cc_run_grade() {
   # cc_run_grade <token> — the selection rank of a state token, 1 (best) to 9.
   #
@@ -706,7 +756,9 @@ cc_run_grade() {
   # instead: a live stage beats a waiting approval, which beats a ledger that
   # moved inside `stall`, which beats a ledger that passed `stall` but not
   # `abandon`, which beats a finished run, which beats one that has gone quiet
-  # past `abandon`.
+  # past `abandon`. Six ranks carry seven tokens: 정산중 shares rank 3 with
+  # 진행중, because a run settling its exit clauses deserves the same attention
+  # as a run in progress.
   #
   # 정지경고 OUTRANKS 종단, and that is the rank this table exists to get right.
   # A run between two stages is still a run, and the gap between one stage ending
@@ -735,6 +787,7 @@ cc_run_grade() {
     도는중)   printf '1' ;;
     승인대기) printf '2' ;;
     진행중)   printf '3' ;;
+    정산중)   printf '3' ;;
     정지경고) printf '4' ;;
     종단)     printf '5' ;;
     버려짐)   printf '6' ;;
@@ -745,7 +798,7 @@ cc_run_grade() {
 cc_run_state() {
   # cc_run_state <run-dir> <ledger> [stall-seconds] [abandon-seconds] — one token.
   #
-  # Tokens: 도는중 · 승인대기 · 종단 · 정지경고 · 진행중 · 버려짐
+  # Tokens: 도는중 · 승인대기 · 종단 · 정지경고 · 진행중 · 정산중 · 버려짐
   #
   # TERMINAL IS JUDGED BEFORE THE STALL WARNING. A run that has finished has no
   # live stage and a ledger that stopped growing, which is also exactly the
@@ -759,24 +812,29 @@ cc_run_state() {
   # prevent.
   #
   # AND 버려짐 IS JUDGED AFTER BOTH, for a sharper reason than tidiness. The
-  # watcher decides whether to announce a finished run by comparing this token
-  # against `종단` — the one place in that file that puts a desktop banner in
-  # front of a person. An idle arm placed before the terminal block would turn
-  # finished runs into 버려짐 and silence that announcement. So the two arms that
-  # can return 버려짐 both sit BELOW the terminal block and the 승인대기 test,
-  # and the token is only ever carved out of 진행중 and 정지경고. That is what
+  # watcher's pass-side terminal arm compares this token against `종단` to
+  # announce a run without the `ends-on-done` marker that ended by derivation;
+  # a marker-bearing run is announced by the gate when its shift returns, or by
+  # the watcher's loop exit on `done`, neither of which reads this token. An
+  # idle arm placed before the terminal block would turn finished runs into
+  # 버려짐 and silence the pass-side announcement. So the two arms that can
+  # return 버려짐 both sit BELOW the terminal block and the 승인대기 test, and the
+  # token is only ever carved out of 진행중, 정산중 and 정지경고. That is what
   # keeps the `종단` set byte-identical without opening `watch.sh` to check.
   #
   # `abandon` is declared here, once, and every consumer passes it explicitly or
   # inherits this default. Two consumers reading one run with two thresholds
   # would grade it differently and nobody would see the disagreement.
   #
-  # `done` is a shortcut, not the definition. Measured 2026-09-07: 99 of 202 run
-  # directories had the file, because many runs never reach the propose-done
-  # path — so a predicate that only read `done` would answer "진행 중" forever
-  # for runs that had plainly ended.
+  # For a run without the `ends-on-done` marker, `done` is a shortcut, not the
+  # definition. Measured 2026-09-07: 99 of 202 run directories had the file,
+  # because many runs never reach the propose-done path — so a predicate that
+  # only read `done` would answer "진행 중" forever for runs that had plainly
+  # ended. A run WITH the marker is the opposite case: its seat writes `done`
+  # when the exit clauses are settled, so there `done` (with no live shift) is
+  # the definition, and the ledger-derived conjunction reads as 정산중.
   local run_dir="$1" ledger="$2" stall="${3:-180}" abandon="${4:-3600}"
-  local live pend nonterm n_seg blocked_n grew now idle
+  local live pend nonterm n_seg blocked_n grew now idle settle=0
 
   live=$(cc_live_stages "$run_dir")
   [ "$live" -gt 0 ] 2>/dev/null && { printf '도는중'; return 0; }
@@ -786,14 +844,24 @@ cc_run_state() {
   nonterm=$(cc_nonterminal_segments "$ledger")
   n_seg=$(cc_segment_count "$ledger")
 
-  # terminal ⟺ no unresolved run-scope block ∧ ( done exists ∨ ( live = 0 ∧
-  # pend = 0 ∧ nonterm = 0 ∧ n_seg ≥ 1 ) )
+  # terminal ⟺ no unresolved run-scope block ∧ ( settled done ∨ ( no
+  # `ends-on-done` marker ∧ live = 0 ∧ pend = 0 ∧ nonterm = 0 ∧ n_seg ≥ 1 ) )
+  #
+  # A RUN CARRYING THE MARKER ENDS ON `done` AND ON NOTHING ELSE. Its seat
+  # settles the exit clauses after the last segment, so the ledger-derived
+  # conjunction only opens the settlement window (`settle=1`), which walks the
+  # same age ladder as a run in progress and prints 정산중 where that run would
+  # print 진행중. A `done` whose shift is still alive is the done-tail: 정산중
+  # with no age ladder, because the shift has not handed the seat its turn yet.
   if [ "${blocked_n:-0}" -eq 0 ] 2>/dev/null; then
-    if [ -f "$run_dir/done" ]; then printf '종단'; return 0; fi
+    if [ -f "$run_dir/done" ]; then
+      if cc_run_end_settled "$run_dir"; then printf '종단'; else printf '정산중'; fi
+      return 0
+    fi
     if [ "${pend:-0}" -eq 0 ] 2>/dev/null \
        && [ "${nonterm:-0}" -eq 0 ] 2>/dev/null \
        && [ "${n_seg:-0}" -ge 1 ] 2>/dev/null; then
-      printf '종단'; return 0
+      if cc_run_ends_on_done "$run_dir"; then settle=1; else printf '종단'; return 0; fi
     fi
   fi
 
@@ -813,5 +881,6 @@ cc_run_state() {
   [ "$idle" -ge "$abandon" ] 2>/dev/null && { printf '버려짐'; return 0; }
   [ "$idle" -ge "$stall" ] 2>/dev/null && { printf '정지경고'; return 0; }
 
+  [ "$settle" = 1 ] && { printf '정산중'; return 0; }
   printf '진행중'
 }

@@ -776,6 +776,15 @@ case "$best_state" in
     line="⟳ ${best_rid} 스테이지 0${age_slot}"
     arm=진행중
     ;;
+  정산중)
+    # EVERY SEGMENT HAS ENDED BUT THE RUN HAS NOT. A run carrying the
+    # `ends-on-done` marker settles its exit clauses after the last segment and
+    # ends on `done`; until then it is in flight, so it keeps the running glyph
+    # and the watcher slot as 진행중 does. A quiet settlement leaves this arm
+    # through the same 정지경고 and 버려짐 ladder, so no second threshold lives here.
+    line="⟳ ${best_rid} 정산 중${age_slot}"
+    arm=정산중
+    ;;
   *)
     sl_exit_fallback
     ;;

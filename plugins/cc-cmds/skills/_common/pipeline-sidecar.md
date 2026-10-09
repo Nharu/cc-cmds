@@ -1304,6 +1304,8 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
 | `cost-resolved-pct` | gate (`gate.sh`) | the cost share a B4 approval was closed at; B4 stays quiet until spending climbs ten points past it |
 | `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |
+| `ends-on-done` | gate (`gate.sh`) | written once, when the seat's `router-shift` actually launches a shift; never removed. A run carrying it settles its exit clauses after the last segment and **ends on `done`, not on the ledger-derived terminal conjunction** — until `done` it reads `정산중`, and with `done` it reads `종단` once no shift is alive. A run without it keeps the derived rule |
+| `notify.ended` · `notify.ended/fired` | gate (`gate.sh`) or watcher (`watch.sh`), whichever claims first | the run's one `ended` banner: `mkdir` of the directory is the claim, so the gate's sites and the watcher raise it once between them; `fired` is written after the fire returns, and the watcher's loop exit waits on it, bounded by its interval, before a `rekick` that would otherwise replace `ended` in the shared slot |
 | `notify/park-<segment>` | gate (`gate.sh`) | per-segment park markers |
 | `notify.state` | notifier (`notify-run.sh`), drained by the gate | pending notification events |
 | `notify.seat` | notifier (`notify-run.sh`) | the kickoff seat's tmux socket, server pid and pane on one tab-separated line — where a run banner's click lands; written once by the first router caller with a pane, never replaced |
@@ -1311,7 +1313,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `notify.reported` · `notify.announced-void` | gate (`gate.sh`) | which events already reached the report |
 | `watch.pid` | watcher (`watch.sh`) | the watcher's own pid — **not a stage**, and a census that counts it answers a different question than its name |
 | `watch.state` · `watch.heartbeat` | watcher (`watch.sh`) | last observed ledger size and time; the published heartbeat |
-| `watch.announced-*` | watcher (`watch.sh`), one written by the gate | once-only announcement markers |
+| `watch.announced-*` | watcher (`watch.sh`), one written by the gate | once-only announcement markers; the run's `ended` is not one of them — its guard is `notify.ended`. `watch.announced-settle-stall-<바이트 수>` carries the ledger size a stopped settlement was observed at, so each episode is announced once |
 | `stall` | watcher (`watch.sh`) | appended stall observations |
 | `watch.log` | the kickoff's detach redirection | the watcher's stdout and stderr; **no script writes this path** — it is the shell redirection on the line that orphans the watcher |
 | `checks.observed` | CI poller (`checks.sh`), emptied by the gate | one tab-separated line per CI state TRANSITION — `<관측 ISO8601>` · `<세그먼트>` · `<PR>` · `<head sha>` · `<상태>` · `<필수 집합>` · `<실패 체크>`. The column order is deliberately not the `checks` row's field order: `read -r` piles every remaining tab into the last variable, so the two free-text columns go last and the longer of them goes last of all. **The poller strips tabs** — `gate_row_safe` handles only `\|` and newlines, so a tab in a check name would shift every column after it |

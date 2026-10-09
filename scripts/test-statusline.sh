@@ -291,6 +291,77 @@ has "8g 하트비트도 pid 도 없는 종료 런 — 종료로 보인다" "$out
 hasnt "8g 종료한 런에는 미기동 접미사도 붙지 않는다" "$out" "워처"
 
 # ---------------------------------------------------------------------------
+# 8h-8m. Settlement — a run carrying `ends-on-done` ends on `done` only
+# ---------------------------------------------------------------------------
+# The marker is what the gate writes when the seat launches a shift. Such a run
+# settles its exit clauses after the last segment, so "every segment merged"
+# opens a settlement window instead of ending it, and `done` with a shift still
+# alive is the done-tail. Both read as `⟳ <rid> 정산 중`.
+#
+# A LIVE SHIFT IS ITS OWN HANDLE, not a stage pid: `shift.live` carries the pid
+# and its start fingerprint, and the name is outside the `*.pid` glob.
+sl_shift_live() {
+  local pid
+  sleep 120 &
+  pid=$!
+  { printf '%s\n' "$pid"
+    LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+  } > "$FX_RUN_DIR/shift.live"
+  FX_PIDS="${FX_PIDS:-}$pid "
+  export FX_PIDS
+}
+
+fx_mkrun run-8h; fx_ledger_path; fx_session_index sess-8h run-8h
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_segment S1 머지됨
+fx_heartbeat 0 5
+out=$(sl sess-8h)
+has "8h 표지·머지된 세그먼트·done 없음·갓 쓴 원장 — 정산 중" "$out" "⟳ run-8h 정산 중"
+hasnt "8h 정산 창은 종료가 아니다" "$out" "✓"
+
+fx_mkrun run-8i; fx_ledger_path; fx_session_index sess-8i run-8i
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_segment S1 머지됨
+fx_done
+sl_shift_live
+fx_heartbeat 0 900
+out=$(sl sess-8i)
+has "8i 표지·done·살아 있는 교대 — 정산 중(나이 사다리 없음)" "$out" "⟳ run-8i 정산 중"
+hasnt "8i done 꼬리에는 워처 접미사가 없다(갓 쓴 하트비트)" "$out" "워처"
+
+# THE WATCHER SLOT FOLLOWS THE HEARTBEAT ON THIS ARM, as it does on 진행중: a
+# live watcher keeps beating through the done-tail, and a dead one shows.
+fx_mkrun run-8j; fx_ledger_path; fx_session_index sess-8j run-8j
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_segment S1 머지됨
+fx_done
+sl_shift_live
+fx_heartbeat 300 900
+fx_watch_pid dead
+out=$(sl sess-8j)
+has "8j done 꼬리·낡은 하트비트 — 정산 중" "$out" "⟳ run-8j 정산 중"
+has "8j done 꼬리·낡은 하트비트 — 워처 없음" "$out" "· 워처 없음"
+
+fx_mkrun run-8k; fx_ledger_path; fx_session_index sess-8k run-8k
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_segment S1 머지됨
+fx_done
+fx_heartbeat 0 900
+has "8k 표지·done·교대 없음 — 종료" "$(sl sess-8k)" "✓ run-8k 종료"
+
+fx_mkrun run-8l; fx_ledger_path; fx_session_index sess-8l run-8l
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_segment S1 머지됨
+fx_heartbeat 0 200
+has "8l 표지·정산 창·원장 200초 — 정지 경고" "$(sl sess-8l)" "⚠ run-8l"
+
+fx_mkrun run-8m; fx_ledger_path; fx_session_index sess-8m run-8m
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_segment S1 머지됨
+fx_heartbeat 0 4000
+has "8m 표지·정산 창·원장 4000초 — 방치" "$(sl sess-8m)" "⊘ run-8m 방치"
+
+# ---------------------------------------------------------------------------
 # 9. Watcher freshness — twice the pinned `--interval`
 # ---------------------------------------------------------------------------
 fx_mkrun run-9; fx_ledger_path; fx_session_index sess-9 run-9
