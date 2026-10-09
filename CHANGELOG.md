@@ -5,6 +5,31 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.51.0] - 2026-10-09
+
+질문하는 스킬이 준비된 질문 여러 개를 한 번에 물을 수 있다. 대화형 세션에 터미널 패널로 그리는 질문지 도구 `mcp__cc-cmds__question_form` 을 더했다. 질문 수와 선택지 수에 한도가 없고, 메모·자유 입력·조건부 질문(`when`)을 받는다. 사람이 `[제출]` 을 누르면 답 묶음이 다음 턴으로 들어온다. 질문지를 쓸 수 없는 곳에서는 지금처럼 `AskUserQuestion` 으로 묻는다.
+
+### Added
+
+- **질문지 mod** (`hooks/question-form/`)
+  - 런 패널의 진입 모듈이 함께 등록한다. 대화형 세션의 주 루프에서만 등록하고, 파이프라인 표지(`CC_PIPELINE_SEGMENT`·`RUN_ID`·`STAGE_ID`·`SHIFT_ID`)가 있는 세션에는 등록하지 않는다. 서브에이전트, vscode 단독 표면, 원격 표면에서 부르면 `QUESTION_FORM_UNAVAILABLE` 로 거절한다.
+  - 결과 토큰은 `QUESTION_FORM_OPEN`·`INVALID`·`BUSY`·`UNAVAILABLE` 넷이다. 열린 질문지가 있으면 `replaces` 로 바꿔 열 수 있다.
+  - 답 묶음은 머리줄 `[cc-cmds 질문지 답] form=… status=제출|취소 답=a/m` 과 `cc-form-answers/1` JSON 이다. 각 답의 `answer` 는 문답 기록 `### 답 n` 본문 그대로다. 사람이 직접 친 사본에는 「직접 입력된 문면입니다」 맥락 줄이 붙어 제출과 구별된다.
+  - 질문지를 열면 기존 세션 배너 훅을 그대로 거쳐 일반 세션 배너를 한 번 올린다.
+  - 시험: `claude plugin test` 로 도는 키트 시험 다섯 파일(검증·묶음·전이·등록·그리기).
+- **공용 질문 규칙** — `_common/askuserquestion.md` 가 질문지와 AUQ 가운데 어느 쪽에서 물을지, 질문지의 입력·결과 토큰·답 수락 조건을 정한다. 문답과 워크스루를 하는 유인 스킬(design·design-analyze·design-base·review·implement·autopilot 킥오프 등)이 이 기준을 따르고, 킥오프 흔적에 `단계=문답(질문지)` 가 더해졌다.
+
+### Changed
+
+- 무인 표면 린트가 무인 스킬 본문의 질문지 적재·호출도 막는다. 판단 등급 린트는 질문지 ask 지점도 세고, 발사 지점 린트는 hooks 아래 TS 파일이 배너 발사기 이름을 적는 것을 막는다.
+- 드라이버가 스테이지 출력에서 질문지 도구 이름을 보면 `AskUserQuestion` 과 같은 결정 지점 신호로 읽는다.
+- 런 패널도 `CC_PIPELINE_SEGMENT` 를 파이프라인 표지로 읽는다.
+
+### Post-install notes
+
+- 질문지는 이 판본을 실은 뒤 새로 띄운 대화형 세션(또는 `/reload-plugins` 뒤)에서 보인다. `ToolSearch("select:AskUserQuestion,mcp__cc-cmds__question_form")` 결과에 질문지 스키마가 없으면 스킬은 AUQ 로 묻는다.
+- `modules` 키를 모르는 이전 Claude Code 에서 셸 훅이 그대로 도는지는 아직 확인하지 않았다.
+
 ## [2.50.0] - 2026-10-08
 
 대화형 세션에 autopilot 런 상태 패널을 더했다. 상태 표시줄이 고른 런 하나를 펼쳐, 끝나지 않은 세그먼트, 사람을 기다리는 승인, run·cone 범위 막힘, 고아 스테이지를 한눈에 보인다. 살아 있는 런마다 한 번 저절로 열리고, `/autopilot-status` 로 열고 닫는다.
