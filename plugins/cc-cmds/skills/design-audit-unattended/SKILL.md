@@ -34,7 +34,7 @@ This is the unattended arm of `/cc-cmds:design-audit`. It is a **separate file**
 
 `references/` is **shared with the base skill, not copied** — every reference path below points into `../design-audit/references/`. One file in that tree does route to a question, so what makes sharing safe is a disposition, not an absence. The disposition is stated here, in the form `scripts/lint-unattended-surfaces.sh` reads:
 
-**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. CFI-U0 resolves that terminus to `park` — the synthesis question of CFI-3b is asked and answered **in writing** inside the pass, and a composed requirement halts, unconditionally — composing findings into a new requirement changes what the run is trying to do, which is `등급 2`.
+**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. CFI-U0 resolves that terminus to `park` — the synthesis question of CFI-3b is asked and answered **in writing** inside the pass, and a composed requirement halts, unconditionally — composing findings into a new requirement changes what the run is trying to do, which is `등급 2`. The reference names that question's three options inline, as `adopt as a requirement / record in the unresolved-issues section / reject`; the halt record does not copy that form but writes them as three option lines, `- \`adopt as a requirement\` — …`, `- \`record in the unresolved-issues section\` — …` and `- \`reject\` — …`.
 
 ## Input
 
@@ -44,7 +44,7 @@ This is the unattended arm of `/cc-cmds:design-audit`. It is a **separate file**
 
 ## Halt record — the disposition for every point that would have asked
 
-Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema. Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. **Take `<run-id>` from the driver-exported `CC_PIPELINE_RUN_ID`** and `RUN_DIR` from `CC_PIPELINE_RUN_DIR`; only when they are unset, re-derive `<run-id>` from `<base>/docs/pipeline-grant/{slug}.md`. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`, defaulting to this skill's name. Write it atomically (`sidecar.md` §1.3), record the question and every option **verbatim**, then take no further step and end the turn. **Never write a sidecar** — the driver is the sole writer of the run ledger.
+Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema. Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. **Take `<run-id>` from the driver-exported `CC_PIPELINE_RUN_ID`** and `RUN_DIR` from `CC_PIPELINE_RUN_DIR`; only when they are unset, re-derive `<run-id>` from `<base>/docs/pipeline-grant/{slug}.md`. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`, defaulting to this skill's name. Write it atomically (`sidecar.md` §1.3), record the question and every option **verbatim**, each option on its own `- \`<label>\` — <description>` line under `**선택지**:`, then take no further step and end the turn. **Never write a sidecar** — the driver is the sole writer of the run ledger.
 
 ### Per-grade disposition
 
