@@ -105,6 +105,8 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 각 커맨드의 옵션·입력 형태 세부는 아래 [Options](#options) 섹션 참조.
 
+대화형 세션에서는 상태 표시줄이 고른 autopilot 런의 상태를 `autopilot` 패널로 보여 주며(살아 있는 런마다 한 번 저절로 열림), `/autopilot-status` 로 그 패널을 열고 닫는다. 패널은 전체 화면 세션에서 110칸 이상이라 도킹될 때만 보이고, 그 밖의 화면에서는 명령이 안내 한 줄만 띄운다 — 동작 규약과 전체 화면을 켜는 법은 [`plugins/cc-cmds/hooks/README.md`](plugins/cc-cmds/hooks/README.md) 참조.
+
 ## Update
 
 ```

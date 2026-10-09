@@ -668,6 +668,107 @@ fx_session_index sess-a12d run-a12-dead
 has   "A12 홀로 남은 워처 없는 승인대기 런은 여전히 승인 대기로 렌더된다" "$(sl sess-a12d)" "⏸"
 
 # ---------------------------------------------------------------------------
+# P1-P4. The pane's field row
+# ---------------------------------------------------------------------------
+#
+# THE ROW IS FOR THE PANE AND NOTHING ELSE. With the variable unset the status
+# line still prints the one line it always did, so every case above keeps its
+# meaning; with it set, the first line has to be the same bytes and the field
+# row comes second. Both renders go through `strip_clock`, because the running
+# arm's elapsed can tick between them.
+slp() { fx_statusline_stdin "$1" | CC_SL_PANE_FIELDS=1 bash "$SL"; }
+first_of() { printf '%s\n' "$1" | sed -n 1p; }
+row_of()   { printf '%s\n' "$1" | sed -n 2p; }
+fld()      { printf '%s\n' "$2" | cut -f"$1"; }
+nlines()   { printf '%s\n' "$1" | grep -c ''; }
+
+# P1. Every arm, and the watcher's four verdicts, on sessions built above.
+for p in "sess-live:도는중:도는중:ok" "sess-7b:진행중:진행중:ok" \
+         "sess-7a:정지경고:정지경고:ok" "sess-appr:승인대기:승인대기:ok" \
+         "sess-8a:종단:종료:none" "sess-a7-solo:버려짐:방치:none" \
+         "sess-a7-blocked:버려짐:차단:none" "sess-9:진행중:진행중:stale" \
+         "sess-9c:진행중:진행중:unstarted"; do
+  s=${p%%:*}; rest=${p#*:}; tok=${rest%%:*}; rest=${rest#*:}
+  word=${rest%%:*}; verdict=${rest#*:}
+  plain=$(sl "$s"); with=$(slp "$s")
+  check "P1 $s — 변수가 없으면 한 줄" "$(nlines "$plain")" "1"
+  check "P1 $s — 변수가 있으면 두 줄" "$(nlines "$with")" "2"
+  check "P1 $s — 변수 유무와 상관없이 첫 줄이 같다" \
+    "$(first_of "$with" | strip_clock)" "$(printf '%s\n' "$plain" | strip_clock)"
+  r=$(row_of "$with")
+  check "P1 $s — 필드 행은 아홉 칸" "$(printf '%s\n' "$r" | awk -F'\t' '{print NF}')" "9"
+  check "P1 $s — 머리 두 칸" "$(fld 1 "$r") $(fld 2 "$r")" "cc-sl 1"
+  check "P1 $s — 상태 토큰" "$(fld 4 "$r")" "$tok"
+  check "P1 $s — 갈래 단어" "$(fld 5 "$r")" "$word"
+  check "P1 $s — 워처 판정" "$(fld 9 "$r")" "$verdict"
+  case "$(fld 6 "$r")" in
+    ''|*[!0-9]*) bad "P1 $s — <now> 는 에포크 초" "'$(fld 6 "$r")'" ;;
+    *) ok "P1 $s — <now> 는 에포크 초" ;;
+  esac
+  case "$(fld 3 "$r")" in
+    run-*) ok "P1 $s — 런 id 칸" ;;
+    *) bad "P1 $s — 런 id 칸" "'$(fld 3 "$r")'" ;;
+  esac
+done
+
+# P2. No run: the field row is not invented, and the line stays the fallback.
+out=$(slp sess-none)
+check "P2 런 없음 — 변수가 있어도 한 줄" "$(nlines "$out")" "1"
+check "P2 런 없음 — 폴백과 바이트 동일" "$out" "$FALLBACK"
+
+# P3. `<hb>` is the heartbeat mtime the watcher verdict read, and `-` when there
+# is no heartbeat at all. The expected value comes from the same function the
+# script calls, so this pins the slot, not a second reading of the clock.
+fx_mkrun run-p3; fx_ledger_path; fx_session_index sess-p3 run-p3
+fx_segment S1 실행중
+fx_heartbeat 30 5
+want_hb=$( . "$LIVENESS"; cc_mtime "$FX_RUN_DIR/watch.heartbeat" )
+r=$(row_of "$(slp sess-p3)")
+check "P3 <hb> 는 watch.heartbeat 의 mtime" "$(fld 8 "$r")" "$want_hb"
+check "P3 <grew> 는 하트비트의 마지막성장" "$(fld 7 "$r")" \
+  "$(sed -n 's/.*마지막성장=\([0-9]*\).*/\1/p' "$FX_RUN_DIR/watch.heartbeat")"
+r=$(row_of "$(slp sess-a7-noclock)")
+check "P3 하트비트가 없으면 <hb> 는 -" "$(fld 8 "$r")" "-"
+
+# ---------------------------------------------------------------------------
+# K1-K3. The kind on the running arm comes from `cc_stage_kind`
+# ---------------------------------------------------------------------------
+#
+# The gate leaves `<seg>.kind` beside a stage it launched, so the running row
+# names what is running rather than what last finished. An empty record falls
+# back to the ledger, and a ledger row that merely QUOTES a stage result — an
+# autonomous approval's argv — is not one.
+fx_mkrun run-k1; fx_ledger_path; fx_session_index sess-k1 run-k1
+fx_segment B 실행중
+fx_row 'stage-result' "세그먼트=B" "종류=review" "종료 코드=0"
+fx_stage_live B
+fx_stage_meta B implement 2
+fx_heartbeat 0 5
+out=$(sl sess-k1)
+has   "K1 .kind 가 마지막 stage-result 와 다르면 .kind 를 쓴다" "$out" "B implement"
+hasnt "K1 끝난 종류를 싣지 않는다" "$out" "review"
+check "K1 공유 함수도 같은 종류" \
+  "$( . "$LIVENESS"; cc_stage_kind "$FX_RUN_DIR" "$FX_LEDGER" B )" "implement"
+
+fx_mkrun run-k2; fx_ledger_path; fx_session_index sess-k2 run-k2
+fx_segment B 실행중
+fx_row 'stage-result' "세그먼트=B" "종류=review" "종료 코드=0"
+fx_stage_live B
+fx_stage_meta B "" 2
+fx_heartbeat 0 5
+has "K2 빈 .kind 는 마지막 stage-result 의 종류로 내려간다" "$(sl sess-k2)" "B review"
+
+fx_mkrun run-k3; fx_ledger_path; fx_session_index sess-k3 run-k3
+fx_segment B 실행중
+fx_row 'stage-result' "세그먼트=B" "종류=review" "종료 코드=0"
+fx_row '자율 승인' "argv=- \`stage-result\` | 세그먼트=B | 종류=decoy" "등급=1"
+fx_stage_live B
+fx_heartbeat 0 5
+out=$(sl sess-k3)
+has   "K3 argv 에 stage-result 를 담은 자율 승인 행이 마지막이어도 진짜 행의 종류" "$out" "B review"
+hasnt "K3 자율 승인 행의 미끼 종류를 싣지 않는다" "$out" "decoy"
+
+# ---------------------------------------------------------------------------
 # The branch the isolation cannot reach
 # ---------------------------------------------------------------------------
 if grep -qF '${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds' "$SL"; then

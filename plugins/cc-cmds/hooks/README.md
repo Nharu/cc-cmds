@@ -17,8 +17,8 @@ The two banner seats are not the only hooks in this directory.
 back to it, and `stage-policy-edit-drift.sh` is the edit-time seat of the
 stage-policy drift check; the last two have their contracts in later sections
 of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
-module, and it is currently not listed under `"modules"`, so it does not load;
-its section is the last one. None of the four raises a session banner, and the
+module, listed under `"modules"`; its section is the last one. None of the four
+raises a session banner, and the
 rules below are written for the two seats alone.
 
 ## The two seats, and there are only two
@@ -369,46 +369,113 @@ banner seats use.
 
 ## The run-status pane module
 
-**The module is withdrawn for now.** `hooks.json` does not list it under
-`"modules"`, so no session loads it and `/autopilot-status` is not registered.
-What it shows is too thin to be worth a pane, and it is held back until the
-pane is rebuilt with more of the run in it. The module, its tests and the
-helper stay in the tree, and the rest of this section describes them as they
-will run once the module is listed again.
-
 `autopilot-status.tsx` is a plugin module (`"modules"` in `hooks.json`), not a
-command hook. In an interactive session it shows, in a pane titled `autopilot`,
-the state of the one run the status line picked for this session: the status
-line's own head line, the segments that have not finished, open approvals,
-run-scope and cone-scope blocks, and orphaned stages.
+command hook. In an interactive fullscreen session it docks, in a pane titled
+`autopilot`, the state of the one run the status line picked for this session:
+a title, the run's head line and its details, every segment with a detail line,
+the gate group (approvals, run-scope and cone-scope blocks with their full
+reason, cone blocks with no owner, orphaned stages), and the most recent events.
 
 **The module decides when, the shell decides what.** Every line, its order, its
-tone, the run's class (`live`, `ended`, `none`) and the refresh period come from
-`../orchestrator/run-pane.sh <session id>`. The helper calls the unchanged
-`statusline.sh` for the head line, so the pane and the status line always name
-the same run, and it always exits 0 and writes nothing. Its first row is
-`cc-pane<TAB>1<TAB><class><TAB><run id|-><TAB><session index path|-><TAB><refresh ms>`,
-and every row after it is `<tone><TAB><text>`, at most 15. The module checks
-`cc-pane` and the schema `1` exactly; on a mismatch, a non-zero exit or a failed
-run it keeps the last good lines, adds one warning line, and opens nothing. Tones
-map to theme keys (`ok` success, `warn` warning, `error` error and bold, `accent`
-suggestion, `dim` dim); any other tone is drawn plain.
+tone, the run's class (`live`, `ended`, `none`), the line budget and the refresh
+period come from `../orchestrator/run-pane.sh <session id> [--cols N] [--rows N]`.
+The helper calls `statusline.sh` with `CC_SL_PANE_FIELDS=1`, which adds one
+field row after the human line, so the pane and the status line name the same
+run, state word and watcher verdict from one evaluation. The helper reads the
+ledger, the run directory and the run manifest only, never calls `jq`, always
+exits 0, and writes nothing.
+
+**The rows.** The first row is
+`cc-pane<TAB>2<TAB><class><TAB><run id|-><TAB><session index path|-><TAB><refresh ms>`.
+Every row after it is
+`<bundle><TAB><cut|wrap><TAB><tone><TAB><text>[<TAB><tone><TAB><text>]…`:
+
+- The bundle is one of a closed set — `none`, `title`, `head`, `head-detail`,
+  `gap`, `seg-heading`, `seg`, `seg-detail`, `seg-folded`, `gate-none`,
+  `approval`, `block-heading`, `block-reason`, `cone-unresolved`, `orphan`,
+  `event-heading`, `event`. The module drops a row whose bundle it does not know.
+- `cut` draws the line truncated at its end; `wrap` lets the engine wrap it and
+  is used only by `block-reason`, so a block's reason is shown in full.
+- A line is one or more tone/text parts drawn in one outer `Text`, so the parts
+  wrap or truncate together. A tone is `normal`, `dim`, `ok`, `warn`, `error`
+  or `accent`, optionally with `.b` for bold; they map to theme keys (`ok`
+  success, `warn` warning, `error` error, `accent` suggestion, `dim` dim), and
+  any other tone is drawn plain.
+
+The module checks `cc-pane` and the schema `2` exactly (`1` and `3` are both
+refused); on a mismatch, a non-zero exit or a failed run it keeps the last good
+lines, adds one warning line, and opens nothing. The lines live in the session
+state key `paneLines`.
+
+**The line budget.** The budget is `min(24, dock rows)`, computed and kept by
+the helper. The title, the head line and its details, every approval, every
+block heading and reason line, the cone-without-owner line, the orphan lines
+and the line of a segment holding a cone block are protected and stay even over
+the budget. Over it, the helper removes, in order, until its estimate fits:
+the oldest events (then the event heading and its gap), the details of finished
+segments, the finished segments themselves (folded into one
+`끝난 세그먼트 N개` line), the remaining segment details (the running
+segment's last), the gaps, and finally the open segments without a block
+(folded into one `끝나지 않은 세그먼트 N개` line). A `cut` line counts as one
+line; a `wrap` line is estimated from its bytes against the dock width. The
+dock scrolls whatever does not fit, so the budget decides what is seen first,
+not what is lost.
+
+**No value changes every second.** A running stage shows its start time
+`<HH:MM>Z 시작` (now minus the process's `etime`), and ledger and watcher ages
+are minutes (`1분 안`, `N분 전`, `N시간 전`), all made by the shell. Events
+show their UTC `HH:MM`. The status line keeps its `mm:ss` elapsed, and the two
+cannot disagree because the start time is defined from it.
 
 **When the helper runs.** A ten-second clock checks the session id, the module's
-panes and the session index file's mtime without starting a process, and runs
-the helper only when the session id changed, the index changed or appeared, the
-pane is placed and the helper's refresh period passed, or the pane is not placed
-and sixty seconds passed. One run at a time, eight seconds at most.
+panes and the session index file's mtime without starting a process. A tick
+records the time it read first as the helper's start, and runs the helper when
+the session id changed, the index changed or appeared, the pane has just become
+placed, or the period passed with half a tick of slack
+(`now - lastRunAt >= period - 5 s`). The period is the helper's: ten seconds
+for a placed pane on a live run, sixty for an ended run or a pane that is not
+placed. So a placed live pane refreshes every tick even when the helper takes
+seconds. One run at a time, eight seconds at most. Once a dock has been drawn,
+the next run passes its body width and rows as `--cols` and `--rows`; before
+that the helper's defaults (44, 24) apply. If the command or a pane close finds
+that no tick has run for more than three ticks, it cancels and re-arms the
+clock — only in a session whose `session.start` armed it.
+
+**Layout.** A hook on the band above the prompt draws nothing and records the
+viewport's `isFullscreen`; the command records the same from its own
+presentation. The pane never opens by itself until a band render has shown the
+session is fullscreen. A pane that was docked and is now drawn inline, because
+the terminal narrowed, shows one dim line instead of its body:
+`autopilot 패널은 전체 화면(110칸 이상)에서만 보입니다`.
 
 **Opening and closing.** The pane opens by itself once per live run: only when
-the run is `live`, the module has not opened it for that run before, nobody
-closed it for that run, and the pane is not already open (placed or waiting for
-width). It never closes by itself; a finished run leaves its last lines up.
-`/autopilot-status` toggles it: a placed pane is closed and the run is recorded
-as dismissed, otherwise the pane is opened and the helper runs once. A pane the
+the session is known to be fullscreen, the run is `live`, the module has not
+opened it for that run before, nobody closed it for that run, and the pane is
+not already open (placed or waiting for width). It asks for 44 columns. It never
+closes by itself; a finished run leaves its last lines up. `/autopilot-status`
+works in this order: a placed pane is closed and its run recorded as dismissed,
+whatever the layout; otherwise, if the session is not fullscreen or narrower
+than 110 columns, it shows a toast
+`autopilot 패널은 전체 화면(110칸 이상)에서만 보입니다 — plugins/cc-cmds/hooks/README.md`
+and opens nothing (the toast touches neither the transcript nor the model's
+context); otherwise it opens the pane and runs the helper once. A pane the
 person closes records its run as dismissed; a pane dropped by an unload records
 nothing. These records live in the session's `$.state`, declared in
-`../types/index.d.ts`, so a module reload does not forget them.
+`../types/index.d.ts`, so a module reload does not forget them; the layout, the
+dock size and the clock bookkeeping are module variables and start over.
+
+**Getting a fullscreen session.** The pane is only seen docked, and docking
+needs fullscreen:
+
+- Inside tmux control mode (`tmux -CC`) the session is
+  fullscreen only with `CLAUDE_CODE_NO_FLICKER=1` in the environment. The
+  setting `tui: "fullscreen"` and `/tui fullscreen` do not override the `-CC`
+  detection — observed on engine 2.1.295.
+- `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`, or `CLAUDE_CODE_NO_FLICKER=0`, pins
+  the session to the main screen, and the pane does not dock.
+- The pane docks from 110 columns. Opened without being asked, it is placed
+  from 144 columns; once opened by hand it is placed from 110.
+- A changed setting or variable applies from a new session.
 
 **Nothing happens outside an interactive session.** The first statement of the
 `session.start` hook returns when the session is not interactive, and the next
