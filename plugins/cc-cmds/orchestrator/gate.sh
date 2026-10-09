@@ -7281,12 +7281,78 @@ gate_decl_worktree() {
   printf '%s/%s%s%s-%s' "$(dirname "$root")" "$(basename "$root")" "$WORKTREE_INFIX" "$RUN_ID" "$2"
 }
 
+gate_adoption_row() {
+  # gate_adoption_row <segment id> — the manifest's `세그먼트 입양` row for that
+  # segment, or nothing. `check_manifest` has already refused a second row for
+  # one segment, so the first match is the only one.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    if [ "$(manifest_row_fields "$row" '세그먼트')" = "$1" ]; then
+      printf '%s' "$row"
+      return 0
+    fi
+  done <<EOF
+$(manifest_adoption_rows)
+EOF
+  return 1
+}
+
+gate_adoption_check() {
+  # gate_adoption_check <segment id> <alias> <adoption row> — 0 when the
+  # adopted segment may be planned in this run; otherwise a warning and 1.
+  #
+  # THE MANIFEST ROW IS A PERSON'S CLAIM AND THE DISK IS THE EVIDENCE, read
+  # here rather than in `check_manifest` because that check runs on every gate
+  # entry and the worktree is torn down once the segment lands. Three things:
+  # the worktree is a tree of this segment's target and has the declared branch
+  # checked out; the earlier run did not land the segment; and nothing of the
+  # earlier run is still running on it, so two runs never write one worktree.
+  local seg="$1" al="$2" row="$3" wt br src cg want_cg cur src_ledger src_row src_st src_dir
+  wt=$(manifest_row_fields "$row" '워크트리')
+  br=$(manifest_row_fields "$row" '브랜치')
+  src=$(manifest_row_fields "$row" '출처 런')
+  if [ ! -d "$wt" ]; then
+    warn "입양 세그먼트 ${seg} 의 워크트리가 없습니다: $wt"
+    return 1
+  fi
+  want_cg=$(target_field "$al" '공통 git 디렉터리')
+  cg=$( { cd "$wt" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+  if [ -z "$cg" ] || [ "$cg" != "$want_cg" ]; then
+    warn "입양 세그먼트 ${seg} 의 워크트리가 대상 ${al} 의 레포가 아닙니다: $wt"
+    return 1
+  fi
+  cur=$( { cd "$wt" && git symbolic-ref --quiet --short HEAD 2>/dev/null; } || true)
+  if [ "$cur" != "$br" ]; then
+    warn "입양 세그먼트 ${seg} 의 워크트리에 체크아웃된 브랜치가 ${cur:-(분리된 HEAD)} 입니다 — 입양 행은 ${br} 를 선언합니다"
+    return 1
+  fi
+  src_ledger="$(dirname "$LEDGER")/$src.md"
+  if [ ! -f "$src_ledger" ]; then
+    warn "입양 세그먼트 ${seg} 의 출처 런 원장이 없습니다: $src_ledger — 출처 런이 그 세그먼트를 착지시키지 않았는지 판정할 수 없습니다"
+    return 1
+  fi
+  src_row=$( { grep -E '^- `segment` ' "$src_ledger" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } | tail -1)
+  src_st=$(gate_row_field "$src_row" '상태')
+  case "$src_st" in
+    머지됨|완료)
+      warn "입양 세그먼트 ${seg} 는 출처 런 ${src} 가 이미 ${src_st} 로 끝냈습니다 — 착지한 세그먼트는 입양하지 않습니다"
+      return 1 ;;
+  esac
+  src_dir="$(dirname "$RUN_DIR")/$src"
+  if cc_stage_is_live "$src_dir" "$seg"; then
+    warn "입양 세그먼트 ${seg} 에 출처 런 ${src} 의 스테이지가 아직 살아 있습니다 — 두 런이 한 워크트리에 쓰지 않도록 그 스테이지가 끝난 뒤 계획하세요"
+    return 1
+  fi
+  return 0
+}
+
 gate_snapshot_slicing_json() {
   # The segment plan the frozen document declares, for the shift that has to
   # write it: the branch, and per segment its id, branch name and worktree path
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
-  local br="" ids="" id="" al="" wt="" first=1 defects=""
+  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects=""
   br=$(gate_slicing_branch)
   case "$br" in
     미통치) ids=$(gate_plan_implement_step) ;;
@@ -7295,13 +7361,23 @@ gate_snapshot_slicing_json() {
   printf '{"분기": "%s", "세그먼트": [' "$(gate_json_escape "$br")"
   for id in $ids; do
     if [ "$br" = "미통치" ]; then al=$(home_alias 2>/dev/null || true); else al=$(gate_slice_alias "$id") || al=""; fi
-    wt=""
+    wt=""; bn="seg/$RUN_ID-$id"; adx=""
     [ -z "$al" ] || wt=$(gate_decl_worktree "$al" "$id") || wt=""
+    # AN ADOPTED SEGMENT NAMES THE EARLIER RUN'S BRANCH AND WORKTREE, and says
+    # so: `입양` carries the run it came from and `PR` the pull request the
+    # segment already has, so the router neither cuts a branch nor opens a PR.
+    if ad=$(gate_adoption_row "$id"); then
+      bn=$(manifest_row_fields "$ad" '브랜치')
+      wt=$(manifest_row_fields "$ad" '워크트리')
+      adx=$(printf ', "입양": "%s", "PR": "%s"' \
+        "$(gate_json_escape "$(manifest_row_fields "$ad" '출처 런')")" \
+        "$(gate_json_escape "$(manifest_row_fields "$ad" 'PR')")")
+    fi
     [ "$first" = "1" ] || printf ', '
     first=0
-    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s"}' \
+    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s"%s}' \
       "$(gate_json_escape "$id")" "$(gate_json_escape "$al")" \
-      "$(gate_json_escape "seg/$RUN_ID-$id")" "$(gate_json_escape "$wt")"
+      "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" "$adx"
   done
   printf ']'
   if [ "$br" = "선언불완전" ]; then
@@ -7477,7 +7553,7 @@ gate_from_declaration() {
   local verb="$1" alias="$2" seg="$3"
   shift 3
   local f="" k="" st="" wt="" want="" br="" why="" al="" astep="" alast="" step="" d="" ids="" declared="" derived=""
-  local known="" dal="" pst="" pm="" ppr="" pwt="" pdp=""
+  local known="" dal="" pst="" pm="" ppr="" pwt="" pdp="" adrow=""
   GATE_DECL_FIELDS=()
 
   # THE CALLER NAMES THE SEGMENT, THE STATE AND THE WORKTREE, AND NOTHING THE
@@ -7585,6 +7661,12 @@ gate_from_declaration() {
   fi
 
   want=$(gate_decl_worktree "$al" "$seg") || want=""
+  # AN ADOPTED SEGMENT IS PLANNED IN THE TREE THE MANIFEST NAMES, and only once
+  # the disk agrees with that row (see `gate_adoption_check`).
+  if adrow=$(gate_adoption_row "$seg"); then
+    want=$(manifest_row_fields "$adrow" '워크트리')
+    gate_adoption_check "$seg" "$al" "$adrow" || return "$GATE_EXIT_RULE"
+  fi
   wt=$(gate_field_of '워크트리' "$@")
   if [ -z "$want" ] || [ "$wt" != "$want" ]; then
     warn "세그먼트 ${seg} 의 「워크트리」는 ${want:-(유도 실패)} 여야 합니다 — 받은 값: ${wt:-(없음)}"

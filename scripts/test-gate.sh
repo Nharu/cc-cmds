@@ -27648,6 +27648,121 @@ else
   bad "84: 떼어 낸 자식이 끝까지 돌지 못했다" "$(cat "$W84/child.log" "$W84/make.out" 2>/dev/null)"
 fi
 
+# ---------------------------------------------------------------------------
+# 85. A segment an earlier run cut is adopted through the manifest
+# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest | needs: 15g | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다 ---
+#
+# Segment names derive from the run id, so a run could not continue a segment
+# an earlier run left unmerged: its branch, worktree and pull request were out
+# of reach, and the work was redone from the base. A `세그먼트 입양` row names
+# that segment's branch, worktree, origin run and PR. The manifest check holds
+# the row to its form only; the plan act holds the disk to the row — the tree is
+# the target's, carries the branch, the origin run did not land the segment, and
+# nothing of the origin run is still running on it.
+# ---------------------------------------------------------------------------
+DOC85='docs/fixture-design-85.md'
+two_slice_doc "$WT/$DOC85" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+SRC85='20260101-aaaaaaaa'
+WT85="$(dirname "$WT")/$(basename "$WT")-run-$SRC85-SA"
+( cd "$WT" && git worktree add -q -b "seg/$SRC85-SA" "$WT85" HEAD ) >/dev/null 2>&1
+ROW85="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=$SRC85 | PR=77"
+LEDGER85="$WT/docs/pipeline-run/$SRC85.md"
+src85_ledger() {  # src85_ledger <상태> — the origin run's ledger with one SA row
+  printf '# 픽스처 출처 런\n\n- `segment` | id=SA | 상태=%s | 워크트리=%s | 선행=없음\n' "$1" "$WT85" > "$LEDGER85"
+}
+run85() {  # run85 <run id> [입양 행] — manifest, grant, and the adoption row
+  g15_run "$1" "$DOC85" "$plan15c" 리뷰없음
+  printf '%s\n' "${2-$ROW85}" >> "$WORK/plan-$1.md"
+}
+snap85() {  # snap85 <run id> — sets rc and msg from a snapshot of that run
+  msg=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-$1.md" 2>&1 >/dev/null ); rc=$?
+}
+
+run85 R85A
+snap85o=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R85A.md" 2>/dev/null )
+check "85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다" \
+  "$(printf '%s' "$snap85o" | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["브랜치"], .["워크트리"], .["입양"], .["PR"]] | join("|")' 2>/dev/null)" \
+  "seg/$SRC85-SA|$WT85|$SRC85|77"
+check "85: 입양하지 않은 세그먼트의 슬라이싱 은 그대로다" \
+  "$(printf '%s' "$snap85o" | jq -r '.["슬라이싱"]["세그먼트"][1] | [.["브랜치"], .["워크트리"], (has("입양") | tostring)] | join("|")' 2>/dev/null)" \
+  "seg/R85A-SB|$(g15_wt R85A SB)|false"
+
+g15_plan act R85A SA 상태=계획됨 "워크트리=$WT85"
+check "85: 출처 런 원장이 없으면 입양 계획이 거부된다" "$rc" "3"
+case "$msg" in
+  *"출처 런 원장이 없습니다"*) ok "85: 그 거부는 출처 런 원장을 든다" ;;
+  *) bad "85 원장 없음 문면" "$msg" ;;
+esac
+src85_ledger 머지됨
+g15_plan act R85A SA 상태=계획됨 "워크트리=$WT85"
+check "85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다" "$rc" "3"
+src85_ledger 리뷰중
+fx_rd85="$FX_RUN_DIR"; FX_RUN_DIR="$STATE_LATE/cc-cmds/run/$SRC85"; mkdir -p "$FX_RUN_DIR"
+fx_stage_live SA
+FX_RUN_DIR="$fx_rd85"
+g15_plan act R85A SA 상태=계획됨 "워크트리=$WT85"
+check "85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다" "$rc" "3"
+case "$msg" in
+  *"출처 런 $SRC85 의 스테이지가 아직 살아 있습니다"*) ok "85: 그 거부는 출처 런의 살아 있는 스테이지를 든다" ;;
+  *) bad "85 살아 있음 문면" "$msg" ;;
+esac
+kill "$FX_LAST_PID" 2>/dev/null || true
+wait "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$STATE_LATE/cc-cmds/run/$SRC85/SA.pid" "$STATE_LATE/cc-cmds/run/$SRC85/SA.start"
+g15_plan act R85A SA 상태=계획됨 "워크트리=$(g15_wt R85A SA)"
+check "85: 입양 세그먼트는 유도 경로로 계획되지 않는다" "$rc" "2"
+g15_plan act R85A SA 상태=계획됨 "워크트리=$WT85"
+check "85: 입양 세그먼트는 입양 워크트리로 계획된다" "$rc" "0"
+check "85: 그 계획 행은 입양 워크트리를 싣는다" \
+  "$(g15_row R85A SA | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//')" "$WT85"
+
+run85 R85B "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/other | 워크트리=$WT85 | 출처 런=$SRC85 | PR=77"
+g15_plan act R85B SA 상태=계획됨 "워크트리=$WT85"
+check "85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다" "$rc" "3"
+case "$msg" in
+  *"체크아웃된 브랜치가 seg/$SRC85-SA 입니다"*) ok "85: 그 거부는 체크아웃된 브랜치를 든다" ;;
+  *) bad "85 브랜치 문면" "$msg" ;;
+esac
+
+n85=0
+for bad85 in \
+  "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=$SRC85" \
+  "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT | 출처 런=$SRC85 | PR=77" \
+  "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=R85C | PR=77"; do
+  n85=$((n85 + 1))
+  run85 R85C "$bad85"
+  snap85 R85C
+  case "$rc/$msg" in
+    0/*) bad "85: 입양 행의 형식 위반은 매니페스트 검사에서 멈춘다 ($n85)" "$msg" ;;
+    *"세그먼트 입양」 행"*) ok "85: 입양 행의 형식 위반은 매니페스트 검사에서 멈춘다 ($n85)" ;;
+    *) bad "85: 입양 행의 형식 위반은 매니페스트 검사에서 멈춘다 ($n85)" "$msg" ;;
+  esac
+done
+run85 R85D "$ROW85
+$ROW85"
+snap85 R85D
+case "$rc/$msg" in
+  0/*) bad "85: 한 세그먼트의 입양 행 둘은 거부된다" "$msg" ;;
+  *"세그먼트 SA 에 둘 이상입니다"*) ok "85: 한 세그먼트의 입양 행 둘은 거부된다" ;;
+  *) bad "85: 한 세그먼트의 입양 행 둘은 거부된다" "$msg" ;;
+esac
+
+run85 R85E
+bd85=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; binding_set_bytes | shasum -a 256 | cut -d" " -f1' \
+  _ "$GATE" "$WORK/plan-R85E.md" 2>/dev/null)
+printf '**구속 다이제스트**: %s\n' "$bd85" >> "$WORK/plan-R85E.md"
+snap85 R85E
+check "85: 입양 행을 실은 구속 다이제스트가 맞는다 (아래가 공허하지 않다)" "$rc" "0"
+sed -i.bak 's/| PR=77$/| PR=78/' "$WORK/plan-R85E.md"
+snap85 R85E
+case "$rc/$msg" in
+  0/*) bad "85: 입양 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*) ok "85: 입양 행을 바꾸면 구속 다이제스트가 깨진다" ;;
+  *) bad "85: 입양 행을 바꾸면 구속 다이제스트가 깨진다" "$msg" ;;
+esac
+( cd "$WT" && git worktree remove --force "$WT85" && git branch -D "seg/$SRC85-SA" ) >/dev/null 2>&1
+rm -f "$LEDGER85" "$WT/$DOC85"
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its

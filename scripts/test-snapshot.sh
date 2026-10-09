@@ -813,7 +813,11 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '#### Planning the segments|--from-declaration' \
     '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
     '#### Planning the segments|its predecessor'"'"'s last `segment` row is `머지됨` or `완료`' \
-    '#### Planning the segments|end the shift with a `사유=중단` handoff'
+    '#### Planning the segments|end the shift with a `사유=중단` handoff' \
+    '#### Planning the segments|`슬라이싱` entry carries `입양`' \
+    '#### Planning the segments|skip calls 1 and 2 and issue call 3 alone' \
+    '#### Planning the segments|An adopted segment'"'"'s first stage is a full review, not the implementation' \
+    '#### Planning the segments|Open no pull request for it'
   do
     head=${spec%%|*}; lit=${spec#*|}
     sec=$(router_section "$file" "$head")
