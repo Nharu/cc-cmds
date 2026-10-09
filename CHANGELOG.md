@@ -5,6 +5,31 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.55.0] - 2026-10-09
+
+무인 런이 사람의 답을 받아도 그 답을 쓸 곳이 없어 같은 자리에서 반복해 멈추던 세 경로를 고친다. 중단 기록에 답하며 건넨 값이 스테이지에 닿고, 사람이 기각한 리뷰 발견이 머지를 막지 않으며, 구현 단계가 런 원장을 제자리에서 읽는다.
+
+### Added
+
+- **중단 답의 첨부** (`autopilot`, 게이트 `halt-answer`)
+  - 선택지 라벨로 실을 수 없는 내용(측정값, 긴 지시)을 좌석이 런의 `halt/` 아래 `<기록 이름>.answer.md` 로 써서 `첨부` 로 넘긴다. 게이트가 경로와 다이제스트를 `중단 답` 행에 남기고, 스냅숏 `answered_halts[]` 가 `attachment` 로 내놓는다.
+  - 런 밖 경로, 빈 파일, 중단 기록 머리를 단 파일은 거절한다(exit 2).
+- **리뷰 기각** (`autopilot`, 게이트 `review-dismiss`)
+  - 좌석 전용 동사. 세그먼트의 마지막 cycle 을 사이클 번호와 리뷰 HEAD 로 지목해 `리뷰 기각` 행을 쓴다. 교대·스테이지는 거절한다(exit 3).
+  - `리뷰-후-머지` 룰, 적용 전제 3, 스냅숏 `cycles[].기각` 이 그 행을 마지막 cycle 이 그대로일 때만 통과로 읽는다. 새 cycle 이 서면 효력을 잃고, 신선도 사다리와 리포트 검사는 그대로다.
+
+### Changed
+
+- **재부착 문장** (`autopilot-router-shift`) — 중단 답으로 스테이지를 다시 붙일 때 `중단 답` 행의 원장 줄과 첨부를 함께 가리킨다. 사람이 기각한 cycle 은 수정 재파견 대신 머지로 보낸다.
+
+### Fixed
+
+- **구현 단계의 과정 판정** (`implement-unattended`) — 런 원장을 설계 문서 slug 경로가 아니라 `CC_PIPELINE_LEDGER` 에서 읽는다. 매니페스트 런에서 원장을 찾지 못해 구현 단계(과정 B)를 계획 단계(과정 A)로 오판하던 결함을 없앤다.
+
+### Post-install notes
+
+- 이미 돌고 있는 런은 고정된 판본을 쓰므로 바뀌지 않는다. 새로 띄운 런부터 적용된다.
+
 ## [2.54.0] - 2026-10-09
 
 머지 전에 멈춘 런의 세그먼트를 새 런이 이어받는다. 새 런의 매니페스트에 `세그먼트 입양` 행을 적으면, 그 세그먼트의 브랜치·워크트리·PR 을 그대로 쓰고 기존 PR 의 리뷰부터 이어 간다.
