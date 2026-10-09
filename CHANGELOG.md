@@ -5,6 +5,27 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.52.0] - 2026-10-09
+
+사람이 세션에 돌아오면(메시지를 보내거나 `AskUserQuestion` 에 답하면) 그 세션이 띄운 배너를 알림 센터에서 닫는다. 지금까지는 이미 세션으로 돌아와 일을 이어 가는데도 지난 배너가 알림 센터에 그대로 쌓여 있었다.
+
+### Added
+
+- **귀환 때 배너 닫기** (`hooks/session-return-dismiss.sh`)
+  - `UserPromptSubmit`·`PostToolUse`(`AskUserQuestion`)·`Stop` 에 거는 새 훅이다. 그 세션의 active-notify 배너와 세션 배너(답하세요·차례 넘김)만 닫고, 다른 세션의 배너·autopilot 런 배너·그룹 없는 배너·권한 시험 배너는 건드리지 않으며 ARM 상태도 그대로 둔다.
+  - `/loop` 반복, `ScheduleWakeup` 깨우기, 백그라운드 작업 보고처럼 사람이 보내지 않은 턴은 귀환으로 치지 않는다.
+  - 세션을 `CC_CMDS_SESSION_DISMISS=0` 으로 띄우면 귀환 닫기를 끈다(`off`·`false`·`no` 도 같다).
+- `notify.sh dismiss <sid>` — 훅 전용 하위 명령. 그 세션의 그룹만 골라 지운다.
+
+### Changed
+
+- **단일 1회 배너의 그룹이 세션별 자리로 바뀌었다** (`cc-cmds-active-notify-<sid>`). 한 세션의 배너가 다른 세션의 단일 배너를 더는 대체하지 않는다.
+- `--count` 가 2 이상인 배너와 repeat 배너는 발화마다 `<자리>@<armed_at>.<n>` 그룹으로 띄워, 지금처럼 쌓이면서도 귀환 때 찾아 지울 수 있다.
+
+### Post-install notes
+
+- 업그레이드 전에 옛 전역 그룹(`cc-cmds-active-notify`)으로 떠 있던 배너는 귀환 때 닫히지 않는다. 손으로 지우거나 그대로 두면 된다.
+
 ## [2.51.0] - 2026-10-09
 
 무인 구현 스테이지가 실행 게이트에 막혀 돌리지 못한 잔여 검증을 런을 띄운 대화형 세션(좌석)이 직접 돌린다. 지금까지는 에뮬레이터 기동처럼 호스트 상태를 바꾸는 검증 레시피가 보류되면 스테이지가 멈추고 사람이 답할 때까지 런이 서 있었다.
