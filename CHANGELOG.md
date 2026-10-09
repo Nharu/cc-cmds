@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 질문지를 열면 기존 세션 배너 훅을 그대로 거쳐 일반 세션 배너를 한 번 올린다.
   - 시험: `claude plugin test` 로 도는 키트 시험 다섯 파일(검증·묶음·전이·등록·그리기).
 - **공용 질문 규칙** — `_common/askuserquestion.md` 가 질문지와 AUQ 가운데 어느 쪽에서 물을지, 질문지의 입력·결과 토큰·답 수락 조건을 정한다. 문답과 워크스루를 하는 유인 스킬(design·design-analyze·design-base·review·implement·autopilot 킥오프 등)이 이 기준을 따르고, 킥오프 흔적에 `단계=문답(질문지)` 가 더해졌다.
+  - autopilot 경계 질문지에서 5c(적용)는 한 대상의 5b 에 `when` 으로 걸려도 그 결과로 판정한다. 어느 대상이든 컷포인트가 `배포` 인데 5c 가 답해지지 않았으면 다음 질문지에서 다시 묻고, 그 전에는 동결하지 않는다.
 
 ### Changed
 
