@@ -190,6 +190,12 @@ nf_now_ms() {
   printf '%s000\n' "$(date +%s)"
 }
 
+# True when nf_now_ms answers in milliseconds rather than whole seconds.
+nf_fine_clock() {
+  [ -x /usr/bin/perl ] || return 1
+  nf_is_num "$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000' 2>/dev/null)"
+}
+
 nf_scale() {
   case "${CC_CMDS_NOTIFY_FOCUS_WAIT_SCALE:-}" in
     ''|*[!0-9.]*|.|*.*.*) printf '1' ;;
@@ -1344,6 +1350,91 @@ nf_take_eid() {
   nf_table_set "$WID_X" "$1"
 }
 
+# The key-window watch, on the trusted path once the screen has arrived. iTerm2
+# can hand the key window back to the window the person left a moment after the
+# switch, so for 3 s from arrival this asks every 0.1 s which window is focused.
+# It sets the target again only while iTerm2 is frontmost, the focused window
+# is not the target, and no mouse button went down since the handler started:
+# a click or another application is the person's choice, and a key press is
+# not, because typing straight after the click is what the watch protects. The
+# first setting is the accessibility raise with --focus; a later one is the
+# SkyLight `makekey`, at most twice, 0.3 s apart. A click that ends without the
+# key window on the target leaves one line in the log. Without a millisecond
+# clock the mouse comparison cannot be made, and there is no watch.
+nf_keep() {
+  local t0 lim now out rc wid ms ax=0 mk=0 back=0 i=0
+  nf_fine_clock || return 0
+  t0=$(nf_now_ms)
+  lim=$(nf_scaled_ms 3000)
+  # The iteration cap only backs up the clock.
+  while [ "$i" -lt 60 ]; do
+    i=$((i + 1))
+    nf_mine || return 0
+    # Taken before the helper reads the mouse, so a press is only ever counted
+    # as after the start, never the banner's own press.
+    now=$(nf_now_ms)
+    [ $((now - t0)) -lt "$lim" ] || break
+    [ $((now - NF_START)) -lt "$NF_DL" ] || break
+    out=$(nf_ax focused "$NF_IPID")
+    rc=$?
+    wid=""; ms=""
+    case "$out" in
+      *"$TAB"*) wid=${out%%"$TAB"*}; ms=${out#*"$TAB"} ;;
+    esac
+    nf_trace "focused $rc $wid"
+    case "$rc" in
+      0) ;;
+      4)
+        # No focused window, as during a Space change: read again.
+        nf_sleep 0.1
+        continue
+        ;;
+      *) return 0 ;;
+    esac
+    nf_is_num "$wid" && nf_is_num "$ms" || return 0
+    [ "$ms" -lt $((now - NF_START)) ] && return 0
+    if [ "$wid" = "$WID_X" ]; then
+      back=0
+      nf_sleep 0.1
+      continue
+    fi
+    nf_trace "keep 되돌림"
+    back=1
+    if [ "$ax" = 0 ]; then
+      ax=1
+      nf_mine || return 0
+      out=$(nf_ax raise "$NF_IPID" "$WID_X" ${NF_EID:+--eid "$NF_EID"} \
+        --budget-ms 1000 --ceiling "$(nf_ceiling)" --focus)
+      rc=$?
+      nf_trace "raise-focus $rc"
+      nf_mine || return 0
+      if [ "$rc" = 0 ]; then
+        nf_open
+        nf_take_eid "$out"
+      fi
+      nf_sleep 0.2
+      continue
+    fi
+    if [ "$mk" -ge 2 ]; then
+      nf_log "keep 실패 wid=$WID_X 상한"
+      return 0
+    fi
+    nf_mine || return 0
+    nf_ax makekey "$NF_IPID" "$WID_X" >/dev/null
+    rc=$?
+    nf_trace "makekey $rc"
+    nf_mine || return 0
+    if [ "$rc" != 0 ]; then
+      nf_log "keep 실패 wid=$WID_X makekey $rc"
+      return 0
+    fi
+    mk=$((mk + 1))
+    nf_sleep 0.3
+  done
+  [ "$back" = 1 ] && nf_log "keep 실패 wid=$WID_X 상한"
+  return 0
+}
+
 # The switch, after tmux has been selected. Returns 10 when the target has to
 # be resolved again.
 #
@@ -1351,7 +1442,9 @@ nf_take_eid() {
 # selection and the resolver can each take a while, and a click that came in
 # meanwhile has already moved the screen; so before each `open -b`, selection
 # and guide that follows one of them, this click checks it is still the latest
-# and stops when it is not.
+# and stops when it is not. The key-window watch that follows the arrival on
+# the trusted path checks the same at every round and right before and after
+# each time it sets the key window again.
 nf_switch() {
   local out rc
   if ! NF_HX=$(nf_helper); then
@@ -1385,6 +1478,7 @@ nf_switch() {
       nf_show_rc "$WID_X" "$SID_X" || return $?
       nf_take_eid "$out"
       nf_follow
+      nf_keep
       return 0
       ;;
     3)
