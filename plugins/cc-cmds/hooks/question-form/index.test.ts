@@ -49,6 +49,13 @@ describe('등록 술어', () => {
     expect(w.tools).toEqual(['question_form'])
   })
 
+  test('하나뿐인 modules 진입이 런 패널과 질문지를 함께 싣는다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    expect(w.commands).toContain('autopilot-status')
+    expect(w.commands).toContain('question-form')
+  })
+
   test('런 패널도 SEGMENT 표지만으로 깨어나지 않는다', async ($, on) => {
     const { w } = world(on, { env: { CC_PIPELINE_SEGMENT: 'A' } })
     await start($)
