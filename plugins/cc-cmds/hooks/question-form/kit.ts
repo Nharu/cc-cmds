@@ -27,7 +27,7 @@ export function world(on: On, options: WorldOptions = {}) {
     focusDeny: '',
     tools: [] as string[],
     commands: [] as string[],
-    opens: [] as { id: string; title?: string; focus?: boolean }[],
+    opens: [] as { id: string; title?: string; focus?: boolean; rows?: number; columns?: number }[],
     closes: [] as string[],
     statuses: [] as (string | undefined)[],
     toasts: [] as string[],
@@ -62,7 +62,7 @@ export function world(on: On, options: WorldOptions = {}) {
   on('ui.panes', () => ({ value: [] }))
   on('ui.open', (_$, e) => {
     if (w.openFails) throw new Error('ui.open 거절')
-    w.opens.push({ id: e.id, title: e.title, focus: e.focus })
+    w.opens.push({ id: e.id, title: e.title, focus: e.focus, rows: e.rows, columns: e.columns })
 
     return { value: w.isPlaced ? { isPlaced: true } : { isPlaced: false, reason: '144칸 아래' } }
   })

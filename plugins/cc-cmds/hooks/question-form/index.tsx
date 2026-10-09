@@ -1,15 +1,16 @@
 // 질문지 서브 mod. 모델이 mcp__cc-cmds__question_form 으로 여러 질문을 한 장의 패널로
-// 묻고, 사람이 제출하면 답 묶음을 플러그인 출처의 새 프롬프트로 보낸다. 훅 안에서
-// 사람을 기다리지 않는다 — 도구는 열기만 하고 턴을 끝내게 하며, 답은 누름 처리기가 낸다.
-// `$` 는 import 너머로 넘어가지 않으므로 `$` 를 쓰는 함수는 모두 이 파일에 둔다.
+// 묻고, 사람이 제출하면 답 묶음을 플러그인 출처의 새 프롬프트로 보내고 패널을 닫는다.
+// 훅 안에서 사람을 기다리지 않는다 — 도구는 열기만 하고 턴을 끝내게 하며, 답은 누름
+// 처리기가 낸다. `$` 는 import 너머로 넘어가지 않으므로 `$` 를 쓰는 함수는 모두 이 파일에 둔다.
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
 import { anyMarked } from '../pipeline-marks'
 import { bannerCall } from './banner'
-import { bundleText, counts, draftOf, mimicsHeader, mintFormId } from './bundle'
-import type { Drafts, FormStatus } from './bundle'
-import { drawForm, drawReceipt } from './render'
+import { bundleText, counts, mimicsHeader, mintFormId } from './bundle'
+import type { FormStatus } from './bundle'
+import { SUBMIT_KEY, landingKey, layoutRows, paneSize } from './layout'
+import { drawForm } from './render'
 import type { FormHandlers } from './render'
 import {
   INPUT_SCHEMA,
@@ -22,36 +23,45 @@ import {
   contextLine,
   formTitle,
   openResult,
-  receiptTitle,
+  sentToast,
   statusLine,
   unavailableResult,
 } from './spec'
 import type { FormInput } from './spec'
 import {
+  advance,
   cancel,
   carryDrafts,
+  choose,
+  commitText,
   decideCall,
   expired,
   isOpen,
+  jump,
+  openEditor,
   openRecord,
   personClose,
   placed,
   reopen,
   restorable,
+  retreat,
   submit,
-  turnComplete,
+  typeText,
 } from './transitions'
-import type { FormRecord } from './transitions'
+import type { FormEditor, FormRecord, Move } from './transitions'
 import { normalizeForm, validateForm } from './validate'
 
 type Dollar = Parameters<Hook<'session.start'>>[0]
 
 const recordAtom = atom({ plugin: 'cc-cmds', key: 'questionForm.record' } as const, null as FormRecord | null)
-const turnBusyAtom = atom({ plugin: 'cc-cmds', key: 'questionForm.turnBusy' } as const, false)
 const lastOriginAtom = atom({ plugin: 'cc-cmds', key: 'questionForm.lastPersonOrigin' } as const, null as string | null)
 const focusedAtom = atom({ plugin: 'cc-cmds', key: 'questionForm.focusedElement' } as const, null as string | null)
 
 const STORE_PREFIX = 'questionForm.open.'
+
+// 마지막으로 그린 패널 본문의 칸 수. 크기를 잴 때 줄이 감기는 폭으로 쓴다. 그리는 중에는
+// 상태를 쓸 수 없으므로 모듈 변수에 둔다 — 틀려도 크기 요청이 조금 어긋날 뿐이다.
+let lastBodyColumns = 80
 
 // 머리줄을 흉내 낸 프롬프트 가운데 이 플러그인의 제출이 아닌 것에 도장을 단다.
 const needsStamp = (e: { text: string; origin: { kind: string; name?: unknown } }) =>
@@ -88,10 +98,18 @@ async function writeRecord($: Dollar, rec: FormRecord | null) {
   await mirror($, rec)
 }
 
-const titleOf = (rec: FormRecord) => {
+// 패널을 열 때 함께 주는 제목과 크기. 크기는 지금 보이는 줄에서 잰다.
+type Frame = { title: string; rows: number; columns: number }
+
+function frameOf(rec: FormRecord): Frame {
   const { answered, total } = counts(rec.form, rec.drafts)
-  return formTitle(rec.form.title, answered, total)
+  return { title: formTitle(rec.form.title, answered, total), ...paneSize(rec, lastBodyColumns) }
 }
+
+const sameFrame = (a: Frame, b: Frame) => a.title === b.title && a.rows === b.rows && a.columns === b.columns
+
+const openPane = ($: Dollar, rec: FormRecord, focus?: true) =>
+  $.ui.open({ id: PANE_ID, ...frameOf(rec), ...(focus ? { focus } : {}) })
 
 const statusOf = (rec: FormRecord) => {
   const { answered, total } = counts(rec.form, rec.drafts)
@@ -111,7 +129,7 @@ async function banner($: Dollar, form: FormInput) {
 // 다시 불러온 뒤나 프로세스를 넘어 되살린 질문지를 요청 없이 다시 연다. 배치 문턱에
 // 못 미치면 그려지지 않으므로 상태 줄을 띄운다.
 async function reshow($: Dollar, rec: FormRecord) {
-  const opened = await $.ui.open({ id: PANE_ID, title: titleOf(rec) })
+  const opened = await openPane($, rec)
   const next = placed(rec, opened.isPlaced)
   await writeRecord($, next)
   await $.ui.status(next.hidden ? statusOf(next) : undefined)
@@ -153,65 +171,77 @@ async function rejoin($: Dollar) {
   else await $.store.delete(key)
 }
 
-// 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다.
+// 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다. 묶음을 낸 자리에서 패널을
+// 닫고 기록을 버린다 — 답은 묶음이 들고 가고, 다음 질문지는 새로 열린다.
 async function finish($: Dollar, status: FormStatus) {
-  const busy = await read($, turnBusyAtom)
   let taken: FormRecord | undefined
   await update($, recordAtom, r => {
-    taken = status === '제출' ? submit(r ?? undefined, busy) : cancel(r ?? undefined)
-    return status === '제출' ? (taken ?? r) : taken ? null : r
+    taken = status === '제출' ? submit(r ?? undefined) : cancel(r ?? undefined)
+    return taken ? null : r
   })
   if (!taken) return
   const done = taken
   await mirror($, null, done.sessionId)
   await $.prompt.submit({ text: bundleText(done.id, status, done.form, done.drafts) })
   await $.ui.status(undefined)
+  await $.ui.close({ id: PANE_ID })
   if (status === '제출') {
     const { answered, total } = counts(done.form, done.drafts)
-    await $.ui.open({ id: PANE_ID, title: receiptTitle(answered, total) })
-  } else {
-    await $.ui.close({ id: PANE_ID })
+    await $.ui.toast(sentToast(answered, total))
   }
 }
 
-// 쓰던 답을 고친다. 답 수가 바뀌면 패널 제목도 바꾼다.
-async function editDrafts($: Dollar, fn: (drafts: Drafts, rec: FormRecord) => Partial<FormRecord>) {
-  let after: FormRecord | undefined
-  let was = ''
+// 열린 기록을 순수 전이로 바꾼다. 제목이나 바라는 크기가 바뀌었으면 패널을 다시 열고,
+// 전이가 포커스 자리를 정했으면 그리로 옮긴다(옮기지 못해도 답은 그대로다).
+async function change($: Dollar, fn: (rec: FormRecord) => { record: FormRecord; focus?: string }) {
+  let after: { record: FormRecord; focus?: string } | undefined
+  let was: Frame | undefined
   await update($, recordAtom, r => {
     if (!isOpen(r ?? undefined)) return r
     const rec = r as FormRecord
-    was = titleOf(rec)
-    after = { ...rec, ...fn(rec.drafts, rec) }
-    return after
+    was = frameOf(rec)
+    after = fn(rec)
+    return after.record
   })
-  if (!after) return
-  await mirror($, after)
-  if (titleOf(after) !== was) await $.ui.open({ id: PANE_ID, title: titleOf(after) })
+  if (!after || !was) return
+  await mirror($, after.record)
+  if (!sameFrame(frameOf(after.record), was)) await openPane($, after.record)
+  if (after.focus) {
+    try {
+      await $.ui.focus({ requestId: PANE_ID, key: after.focus })
+    } catch {
+      // 포커스는 덤이다.
+    }
+  }
 }
 
+// 전이가 말한 이동을 포커스 자리로: 다음 질문의 첫 조작부, 질문이 끝나면 [제출].
+const focusOf = (rec: FormRecord, move: Move) => (move === 'next' ? landingKey(rec) : move === 'end' ? SUBMIT_KEY : undefined)
+
 function handlers($: Dollar): FormHandlers {
-  const setDraft = (qid: string, patch: (d: ReturnType<typeof draftOf>, rec: FormRecord) => object) =>
-    editDrafts($, (drafts, rec) => ({ drafts: { ...drafts, [qid]: { ...draftOf(drafts, qid), ...patch(draftOf(drafts, qid), rec) } } }))
-  const kindOf = (rec: FormRecord, qid: string) => rec.form.questions.find(q => q.id === qid)?.kind
+  const run = (fn: (rec: FormRecord) => { record: FormRecord; focus?: string }) => void change($, fn).catch(() => undefined)
+  const moved = (r: { record: FormRecord; move: Move }) => ({ record: r.record, focus: focusOf(r.record, r.move) })
+  const step = (go: (rec: FormRecord) => FormRecord | undefined) => (rec: FormRecord) => {
+    const next = go(rec)
+    return next ? { record: next, focus: landingKey(next) } : { record: rec, focus: SUBMIT_KEY }
+  }
   return {
-    toggle: (qid, label) =>
-      void setDraft(qid, (d, rec) => {
-        if (kindOf(rec, qid) === 'multi') {
-          return { selected: d.selected.includes(label) ? d.selected.filter(s => s !== label) : [...d.selected, label] }
-        }
-        // single: 고른 것을 다시 누르면 풀리고, 고르면 기타 입력을 비운다.
-        return d.selected.includes(label) ? { selected: [] } : { selected: [label], other: '' }
-      }).catch(() => undefined),
-    openOther: qid =>
-      void editDrafts($, (_d, rec) => ({ otherOpen: rec.otherOpen.includes(qid) ? rec.otherOpen : [...rec.otherOpen, qid] })).catch(
-        () => undefined,
-      ),
-    setOther: (qid, value) =>
-      void setDraft(qid, (_d, rec) =>
-        kindOf(rec, qid) === 'single' && value.trim() !== '' ? { other: value, selected: [] } : { other: value },
-      ).catch(() => undefined),
-    setNote: (qid, value) => void setDraft(qid, () => ({ note: value })).catch(() => undefined),
+    choose: (qid, label) => run(rec => moved(choose(rec, qid, label))),
+    jump: qid => run(rec => {
+      const next = jump(rec, qid)
+      return { record: next, focus: landingKey(next) }
+    }),
+    openEditor: (qid: string, field: FormEditor['field']) => run(rec => {
+      const next = openEditor(rec, qid, field)
+      return { record: next, focus: landingKey(next) }
+    }),
+    typeText: (qid, field, value) => run(rec => ({ record: typeText(rec, qid, field, value) })),
+    commitText: (qid, field, value) => run(rec => moved(commitText(rec, qid, field, value))),
+    next: () => run(step(advance)),
+    prev: () => run(rec => {
+      const back = retreat(rec)
+      return back ? { record: back, focus: landingKey(back) } : { record: rec }
+    }),
     submit: () => void finish($, '제출').catch(() => undefined),
     cancel: () => void finish($, '취소').catch(() => undefined),
   }
@@ -256,8 +286,7 @@ export const register: Register = on => {
     let rec = openRecord({ id, toolUseId: e.tool_use_id, form, drafts, sessionId: await $.session.id(), now: await $.clock.now() })
     before.set(e.tool_use_id, current ?? null)
     await writeRecord($, rec)
-    await update($, turnBusyAtom, () => true)
-    const opened = await $.ui.open({ id: PANE_ID, title: titleOf(rec), focus: true })
+    const opened = await openPane($, rec, true)
     if (!opened.isPlaced) {
       rec = placed(rec, false)
       await writeRecord($, rec)
@@ -292,7 +321,6 @@ export const register: Register = on => {
     if (needsStamp(e)) context.push(STAMP)
     if (origin.kind === 'composer' || origin.kind === 'bridge') {
       await update($, lastOriginAtom, () => origin.kind)
-      await update($, turnBusyAtom, () => true)
       try {
         await rejoin($)
       } catch {
@@ -323,10 +351,17 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: 'cc-cmds-question-form' }, async ($, e) => {
     const el = $.ui.resolve(e)
+    lastBodyColumns = e.props.bodyColumns
     const rec = await read($, recordAtom)
     const focused = await read($, focusedAtom)
-    if (rec && rec.phase === 'submitted') return drawReceipt(el, rec)
-    if (rec && isOpen(rec)) return drawForm(el, rec, focused, handlers($))
+    if (rec && isOpen(rec)) {
+      return drawForm(
+        el,
+        layoutRows(rec, focused),
+        rec.form.questions.map(q => q.id),
+        handlers($),
+      )
+    }
     const { Text } = el
 
     return <Text dimColor>{NO_FORM_TOAST}</Text>
@@ -360,27 +395,10 @@ export const register: Register = on => {
       return {}
     }
     await writeRecord($, rec)
-    await $.ui.open({ id: PANE_ID, title: titleOf(rec), focus: true })
+    await openPane($, rec, true)
     await $.ui.status(undefined)
 
     return {}
-  })
-
-  // 주 루프의 턴 끝: 영수증을 묶음 턴에서 닫는다.
-  on('turn.complete', async ($, e, next) => {
-    if (e.agentId) return next(e)
-    await update($, turnBusyAtom, () => false)
-    const now = (await read($, recordAtom)) ?? undefined
-    const { record, closeReceipt } = turnComplete(now)
-    if (closeReceipt) {
-      await writeRecord($, null)
-      await $.ui.close({ id: PANE_ID })
-      await $.ui.status(undefined)
-    } else if (record !== now) {
-      await writeRecord($, record ?? null)
-    }
-
-    return next(e)
   })
 
   // 프로세스가 다른 세션으로 이어지는 두 끝(/clear, 프로세스 안 /resume)에서는 끝나는
@@ -391,7 +409,6 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
       await update($, recordAtom, () => null)
-      await update($, turnBusyAtom, () => false)
       try {
         if (e.reason === 'clear') await $.store.delete(STORE_PREFIX + e.sessionId)
         await $.ui.close({ id: PANE_ID })
