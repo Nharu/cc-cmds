@@ -81,9 +81,11 @@ export function turnComplete(r: FormRecord | undefined): { record: FormRecord | 
   return { record: { ...r, receiptTurns: left }, closeReceipt: false }
 }
 
-// 프로세스를 넘는 보관에서 되살릴지: 같은 세션의 열린 기록만 되살린다.
-export function restorable(stored: FormRecord | undefined, sessionId: string): FormRecord | undefined {
-  return isOpen(stored) && stored.sessionId === sessionId ? stored : undefined
-}
-
 export const expired = (stored: FormRecord, now: number) => now - stored.savedAt > STORE_TTL_MS
+
+// 보관에서 되살릴지: 같은 세션의 열린 기록만 되살린다. now 를 주면 7일이 지난 기록은
+// 같은 세션의 것이어도 되살리지 않는다.
+export function restorable(stored: FormRecord | undefined, sessionId: string, now?: number): FormRecord | undefined {
+  if (!isOpen(stored) || stored.sessionId !== sessionId) return undefined
+  return now !== undefined && expired(stored, now) ? undefined : stored
+}

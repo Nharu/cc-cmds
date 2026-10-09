@@ -118,26 +118,39 @@ async function reshow($: Dollar, rec: FormRecord) {
 }
 
 // 이 세션이 연 기록만 되살린다. 다른 세션의 기록은 상태에서 내리고, 그 보관 키는 그
-// 세션으로 돌아올 때를 위해 남긴다.
+// 세션으로 돌아올 때를 위해 남긴다. 7일이 지난 보관은 이 세션의 것이어도 지운다.
 async function restore($: Dollar) {
   const sid = await $.session.id()
   const now = await $.clock.now()
   const held = restorable((await read($, recordAtom)) ?? undefined, sid)
   if (!held) await update($, recordAtom, r => (isOpen(r ?? undefined) ? null : r))
+  let show = held
   for (const key of await $.store.keys()) {
     if (!key.startsWith(STORE_PREFIX)) continue
     const stored = (await $.store.get(key)) as FormRecord | undefined
     if (key === STORE_PREFIX + sid) {
-      const alive = restorable(stored, sid)
-      if (alive && !held) {
-        await reshow($, alive)
-        return
-      }
+      if (held) continue
+      show = restorable(stored, sid, now)
+      if (!show) await $.store.delete(key)
     } else if (!stored || expired(stored, now)) {
       await $.store.delete(key)
     }
   }
-  if (held) await reshow($, held)
+  if (show) await reshow($, show)
+}
+
+// 프로세스 안 /resume 으로 앞 대화에 돌아오면 session.start 가 오지 않아 restore 가 돌지
+// 않는다. 그래서 사람이 그 대화에서 프롬프트나 /question-form 을 칠 때, 메모리에 기록이
+// 없으면 지금 세션의 보관을 되살린다. 7일이 지난 보관은 되살리지 않고 지운다.
+async function rejoin($: Dollar) {
+  if ((await read($, recordAtom)) !== null) return
+  const sid = await $.session.id()
+  const key = STORE_PREFIX + sid
+  const stored = (await $.store.get(key)) as FormRecord | undefined
+  if (!stored) return
+  const alive = restorable(stored, sid, await $.clock.now())
+  if (alive) await reshow($, alive)
+  else await $.store.delete(key)
 }
 
 // 묶음을 내는 공통 경로: CAS 로 기록을 소비한 쪽만 제출한다.
@@ -271,8 +284,8 @@ export const register: Register = on => {
     return { deny: unavailableResult('error') }
   })
 
-  // 사람의 프롬프트: 머리줄을 흉내 낸 사본에 도장, 열린 질문지가 있으면 맥락 줄,
-  // 출처 기록. 이 mod 자신의 제출은 이 훅을 지나지 않는다.
+  // 사람의 프롬프트: 머리줄을 흉내 낸 사본에 도장, 출처 기록, 돌아온 대화의 보관
+  // 되살리기, 열린 질문지가 있으면 맥락 줄. 이 mod 자신의 제출은 이 훅을 지나지 않는다.
   on('prompt.submit', async ($, e, next) => {
     const context = [...(e.context ?? [])]
     const origin = e.origin
@@ -280,6 +293,11 @@ export const register: Register = on => {
     if (origin.kind === 'composer' || origin.kind === 'bridge') {
       await update($, lastOriginAtom, () => origin.kind)
       await update($, turnBusyAtom, () => true)
+      try {
+        await rejoin($)
+      } catch {
+        // 되살리지 못해도 맥락 줄과 출처 기록은 그대로 간다.
+      }
       const rec = await read($, recordAtom)
       if (isOpen(rec ?? undefined)) context.push(contextLine((rec as FormRecord).id))
     }
@@ -330,6 +348,11 @@ export const register: Register = on => {
 
   // 사람이 친 명령이므로 폭과 무관하게 패널이 놓인다.
   on('command.run', { command: 'question-form' }, async $ => {
+    try {
+      await rejoin($)
+    } catch {
+      // 되살리지 못하면 메모리의 기록만 본다.
+    }
     const rec = reopen((await read($, recordAtom)) ?? undefined)
     if (!rec) {
       await $.ui.toast(NO_FORM_TOAST)
@@ -362,7 +385,9 @@ export const register: Register = on => {
 
   // 프로세스가 다른 세션으로 이어지는 두 끝(/clear, 프로세스 안 /resume)에서는 끝나는
   // 대화의 질문지를 다음 대화에 남기지 않는다. 그 대화를 버리는 /clear 는 보관도 지우고,
-  // /resume 은 보관을 남겨 그 대화를 다시 열 때 되살린다.
+  // /resume 은 보관을 남긴다. 같은 프로세스에서 그 대화로 돌아오면 첫 프롬프트나
+  // /question-form 에서 rejoin 이, 새 프로세스로 다시 열면 session.start 의 restore 가
+  // 되살린다.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
       await update($, recordAtom, () => null)

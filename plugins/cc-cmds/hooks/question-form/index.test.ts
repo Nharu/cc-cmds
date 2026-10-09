@@ -2,8 +2,23 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { MARKS, call, formIdOf, mount, prompt, reopenCommand, start, twoQuestions, world } from './kit'
+import { contextLine } from './spec'
+import type { FormInput } from './spec'
+import { STORE_TTL_MS, openRecord } from './transitions'
+import { normalizeForm } from './validate'
 
 const STAMP = '직접 입력된 문면입니다. 질문지 제출이 아닙니다.'
+
+// 시각 0 에 sid-test 가 연 질문지의 보관 기록.
+const storedForm = (id: string) =>
+  openRecord({
+    id,
+    toolUseId: `tu-${id}`,
+    form: normalizeForm(twoQuestions() as unknown as FormInput),
+    drafts: {},
+    sessionId: 'sid-test',
+    now: 0,
+  })
 
 describe('등록 술어', () => {
   test('대화형이고 표지가 없으면 도구와 /question-form 을 등록한다', async ($, on) => {
@@ -164,10 +179,54 @@ describe('세션이 바뀔 때', () => {
     expect(opened.text).toContain('QUESTION_FORM_OPEN')
     expect(formIdOf(opened.text)).not.toBe(idA)
 
-    // 앞 대화로 다시 들어오면 그 대화의 보관에서 되살아난다.
+    // 같은 프로세스에서 앞 대화로 돌아오면 엔진은 session.start 를 보내지 않는다.
+    // 그 대화의 첫 프롬프트가 보관에서 되살리고 맥락 줄을 단다.
+    await $.session.end({ reason: 'resume', sessionId: 'sid-b', resume: {} as never })
     w.sessionId = 'sid-test'
-    await start($)
+    const opens = w.opens.length
+    await prompt($, '돌아와서 친 말')
+    expect(w.opens).toHaveLength(opens + 1)
+    expect(w.opens.at(-1)!.title).toBe('질문지 — 경계 질문 (답 0/2)')
+    expect(w.submits.at(-1)!.context).toContain(contextLine(idA))
     expect((await call($, twoQuestions())).text).toContain(`QUESTION_FORM_BUSY ${idA}`)
+  })
+
+  test('프로세스 안 /resume 으로 돌아와 /question-form 을 치면 그 대화의 질문지가 열린다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    const idA = formIdOf((await call($, twoQuestions())).text) as string
+    await $.session.end({ reason: 'resume', sessionId: 'sid-test', resume: {} as never })
+    w.sessionId = 'sid-b'
+    await $.session.end({ reason: 'resume', sessionId: 'sid-b', resume: {} as never })
+    w.sessionId = 'sid-test'
+    await reopenCommand($)
+    expect(w.toasts).toEqual([])
+    expect(w.opens.at(-1)).toMatchObject({ id: 'cc-cmds-question-form', focus: true })
+    expect(w.statuses.at(-1)).toBeUndefined()
+    expect((await call($, twoQuestions())).text).toContain(`QUESTION_FORM_BUSY ${idA}`)
+  })
+
+  test('7일이 지난 자기 세션의 보관은 첫 프롬프트에서 되살리지 않는다', async ($, on) => {
+    const { w } = world(on, { store: { 'questionForm.open.sid-test': storedForm('f-0000000a') }, now: STORE_TTL_MS + 1 })
+    await prompt($, '오래 뒤에 친 말')
+    expect(w.opens).toHaveLength(0)
+    expect(w.submits.at(-1)!.context).toEqual([])
+    expect((await call($, twoQuestions())).text).toContain('QUESTION_FORM_OPEN')
+  })
+
+  test('7일이 지난 자기 세션의 보관은 시작에서도 되살리지 않는다', async ($, on) => {
+    const { w } = world(on, { store: { 'questionForm.open.sid-test': storedForm('f-0000000a') }, now: STORE_TTL_MS + 1 })
+    await start($)
+    expect(w.opens).toHaveLength(0)
+    expect((await call($, twoQuestions())).text).toContain('QUESTION_FORM_OPEN')
+  })
+
+  test('7일 안의 자기 세션 보관은 첫 프롬프트에서 되살린다', async ($, on) => {
+    const { w } = world(on, { store: { 'questionForm.open.sid-test': storedForm('f-0000000b') }, now: STORE_TTL_MS })
+    await prompt($, '돌아와서 친 말')
+    expect(w.opens).toHaveLength(1)
+    expect(w.submits.at(-1)!.context).toContain(contextLine('f-0000000b'))
+    expect((await call($, twoQuestions())).text).toContain('QUESTION_FORM_BUSY f-0000000b')
   })
 
   test('/clear 는 보관까지 버려 같은 세션으로 다시 시작해도 되살리지 않는다', async ($, on) => {

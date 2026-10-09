@@ -111,5 +111,7 @@ describe('수명 주기', () => {
     expect(restorable(submit(rec(), false), 'sid')).toBeUndefined()
     expect(expired(rec(), 1000 + STORE_TTL_MS)).toBe(false)
     expect(expired(rec(), 1001 + STORE_TTL_MS)).toBe(true)
+    expect(restorable(rec(), 'sid', 1000 + STORE_TTL_MS)?.id).toBe('f-00000001')
+    expect(restorable(rec(), 'sid', 1001 + STORE_TTL_MS)).toBeUndefined()
   })
 })

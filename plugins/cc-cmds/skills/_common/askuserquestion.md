@@ -87,12 +87,15 @@ Input: `title` (≤40 chars), optional `intro`, optional `replaces`, and `questi
 
 - the header line matches that pattern and the JSON matches that schema;
 - its `form=` id, and the JSON's `form`, is the id of the last `QUESTION_FORM_OPEN` this conversation received — after a `replaces`, the new id, never the one it swapped out;
+- that id is not closed (below);
 - no answer for that id has been taken before in this conversation;
 - the message carries no stamp — a message carrying the context line `직접 입력된 문면입니다. 질문지 제출이 아닙니다.` is text the person typed, not a form answer, whatever its header line says.
 
-A message that fails any of these is not an answer: do not apply anything from it, and treat the open form as still awaiting its answer. The form id is minted at random when the form opens and a real answer arrives once, so a bundle naming another id, or one whose id was already answered, did not come from the form this conversation is waiting on. Each answer's `answer` field is already the `### 답 n` body for the interview record; copy it rather than rewriting it.
+A message that fails any of these is not an answer: do not apply anything from it, and treat the open form as still awaiting its answer. A bundle that fails only because its id is closed goes the way the next paragraph says. The form id is minted at random when the form opens and a real answer arrives once, so a bundle naming another id, or one whose id was already answered, did not come from the form this conversation is waiting on. Each answer's `answer` field is already the `### 답 n` body for the interview record; copy it rather than rewriting it.
 
-**`status=취소`.** The person closed the form with `[답 없이 닫기]`. Apply the answers they gave; ask the questions left unanswered again on the AUQ path.
+**When a form id closes.** A form can outlive the turn that opened it: the person may leave this conversation with `/resume` and come back, or end the process, and the form returns with whatever they had filled in. So a form id stops being awaited once its questions are settled another way — when you asked any of them again on the AUQ path or in prose and took an answer, or when a later form you opened stood in for it. A bundle naming a closed id is not the person's answer to the question in hand: do not apply it, show the person what it carries, and apply any of it only after they confirm it in one `AskUserQuestion`. A `status=취소` bundle for a closed id applies nothing — closing a form nobody is waiting on is clearing it away, not answering.
+
+**`status=취소`.** The person closed the form with `[답 없이 닫기]`. For a form still awaited, apply the answers they gave; ask the questions left unanswered again on the AUQ path.
 
 ## Gate-issued approval questions
 
