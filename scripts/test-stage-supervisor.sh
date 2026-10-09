@@ -901,6 +901,70 @@ g wait --manifest "$MANIFEST" --segment D --interval 1 --timeout 5 >/dev/null; r
 check "(13) 마감 파킹된 시도의 wait 은 16 이다" "$rc_dw" "16"
 kill -TERM "$W13_BLOCK" 2>/dev/null || true
 
+# THE SAME DEADLINE ON A RUN-SCOPE DESIGN STEP. Its key is the plan's step id,
+# but `act` takes the step only as `--segment -` with `design` as the first
+# stage argument; the step id in `--segment` is refused there as a segment with
+# no `segment` row. So the resume command the park records must carry `-`, and
+# the line is run back through `plan` beside a control that puts the step id in
+# its place — the control is what shows the assertion tells the two apart.
+sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+W13_PLAN_SAVE=$PLAN; W13_PD0_SAVE=$PD0
+PLAN='{ "design_required": true, "steps": [ { "id": "DS1", "skill": "design", "summary": "설계", "depends_on": [] } ] }'
+PD0=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' -f1)
+W13_DL=$(( $(date +%s) + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_DESIGN_S") + 4 ))
+mk_run SUPDS 'docs/design-ds.md' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+PLAN=$W13_PLAN_SAVE; PD0=$W13_PD0_SAVE
+w13_stall
+w13_block "$W13_BLOCK"
+ds_prompt="/cc-cmds:design-discuss-unattended $( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) | jq -r .design_doc ) \"테스트\""
+g act --manifest "$MANIFEST" --kind skill --target repo --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale "픽스처 설계 파견" \
+  -- design -p "$ds_prompt" >/dev/null; rc_ds=$?
+check "(13) 설계 스텝의 WAIT 파견도 0 으로 반환한다" "$rc_ds" "0"
+SUP_DS=$( { cat "$RD/DS1.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(alive "$SUP_DS")" = "alive" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 마감에 걸린 설계 스텝의 감독자는 스스로 끝난다" "$(alive "$SUP_DS")" "dead"
+row_ds=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — DS1 ' || true; } )
+if [ "$(printf '%s' "$row_ds" | { grep -c . || true; })" = "1" ]; then
+  ok "(13) 설계 스텝의 마감 파킹은 cone 행 하나다"
+else
+  bad "(13) 설계 스텝의 마감 파킹은 cone 행 하나다" \
+    "blocked 행: $( { grep -F '`blocked`' "$LEDGER" || true; } | tail -3) / 감독자 로그: $(tail -5 "$RD"/log/DS1#*.sup.log 2>/dev/null)"
+fi
+case "$row_ds" in
+  *"스코프=cone"*"앵커 세그먼트=DS1 "*"근거=계보=B:DS1#1 "*) ok "(13) 그 행의 앵커와 계보는 스텝 id 다" ;;
+  *) bad "(13) 설계 스텝 마감 cone 행" "$row_ds" ;;
+esac
+case "$row_ds" in
+  *"| 세그먼트=- |"*) ok "(13) 그 행의 세그먼트는 - 다" ;;
+  *) bad "(13) 설계 스텝 마감 행의 세그먼트" "$row_ds" ;;
+esac
+ds_redo=$(printf '%s' "$row_ds" | sed -n 's/.*gate\.sh act \(--kind skill [^|]*\) -- <같은 스테이지 인자>.*/\1/p')
+case "$ds_redo" in
+  *"--segment - "*) ok "(13) 설계 스텝의 재개 명령은 --segment - 로 다시 파견한다" ;;
+  *) bad "(13) 설계 스텝의 재개 명령" "${ds_redo:-$row_ds}" ;;
+esac
+# The recorded line itself, its placeholders filled the way a router fills them.
+ds_redo=${ds_redo//<절단점>/커밋}
+ds_redo=${ds_redo//<새 H>/$(HH)}
+ds_argv=()
+read -r -a ds_argv <<< "$ds_redo"
+ds_msg=$(g plan --manifest "$MANIFEST" ${ds_argv[@]+"${ds_argv[@]}"} --surface 워크트리쓰기 -- design -p "$ds_prompt"); rc_dp=$?
+if [ -n "$ds_redo" ] && [ "$rc_dp" != "3" ]; then
+  ok "(13) 기록된 재개 명령은 게이트에서 exit 3 으로 거부되지 않는다 (rc=$rc_dp)"
+else
+  bad "(13) 기록된 재개 명령은 게이트에서 exit 3 으로 거부되지 않는다" "rc=$rc_dp — $ds_msg"
+fi
+ds_ctl=$(g plan --manifest "$MANIFEST" --kind skill --target repo --segment DS1 --cutpoint 커밋 \
+  --snapshot-digest "$(HH)" --surface 워크트리쓰기 -- design -p "$ds_prompt"); rc_dc=$?
+check "(13) 대조: 스텝 id 를 --segment 에 넣은 같은 명령은 exit 3 이다" "$rc_dc" "3"
+case "$ds_ctl" in
+  *"segment 행이 없습니다"*) ok "(13) 대조의 거부는 segment 행 없음 갈래다" ;;
+  *) bad "(13) 대조의 거부 문면" "$ds_ctl" ;;
+esac
+kill -TERM "$W13_BLOCK" 2>/dev/null || true
+
 # ---------------------------------------------------------------------------
 # (14) One dispatch per key on a routed run.
 #

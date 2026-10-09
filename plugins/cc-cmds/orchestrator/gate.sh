@@ -13077,7 +13077,7 @@ gate_cone_members() {
   # anchored on it is the step and every segment that has not ended. Such an
   # anchor has no segment row, which is how it is told apart.
   if [ -z "$(gate_segment_field "$anchor" '상태')" ] \
-     && dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$anchor" ]; then
+     && dstep=$(gate_run_scope_step design 2>/dev/null) && [ "$dstep" = "$anchor" ]; then
     for sid in $(gate_segment_ids); do
       [ -n "$sid" ] || continue
       gate_segment_terminal "$sid" && continue
@@ -13162,7 +13162,7 @@ gate_record_cone() {
   # The run-scope design step is the one anchor that has no segment row: a
   # stage of it that cannot finish inside the deadline holds every segment.
   if [ -z "$(gate_segment_field "$anchor" '상태')" ] \
-     && ! { dstep=$(gate_run_scope_design_step 2>/dev/null) && [ "$dstep" = "$anchor" ]; }; then
+     && ! { dstep=$(gate_run_scope_step design 2>/dev/null) && [ "$dstep" = "$anchor" ]; }; then
     warn "there is no segment row for the anchor segment: $anchor — a cone is not stood up on an anchor the ledger does not resolve"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -22248,10 +22248,15 @@ gate_launch_route_park() {
 }
 
 gate_redispatch_line() {
-  # gate_redispatch_line <alias> <key> — the command a deadline park's resume
-  # field names: the same dispatch again, with a fresh digest. The stage's own
-  # argv is not repeated — a prompt does not fit on a row, and the router that
-  # dispatched it holds it.
+  # gate_redispatch_line <alias> <row segment> — the command a deadline park's
+  # resume field names: the same dispatch again, with a fresh digest. The stage's
+  # own argv is not repeated — a prompt does not fit on a row, and the router
+  # that dispatched it holds it.
+  #
+  # THE ROW SEGMENT AND NOT THE KEY. A segment dispatch's row segment is its key,
+  # but a run-scope step's is `-`, and `act` takes such a step only as
+  # `--segment -` with the step's kind as the first stage argument — the step id
+  # in `--segment` is refused there as a segment with no `segment` row (exit 3).
   printf 'gate.sh act --kind skill --target %s --segment %s --cutpoint <절단점> --snapshot-digest <새 H> -- <같은 스테이지 인자>' "$1" "$2"
 }
 
@@ -22354,7 +22359,7 @@ gate_launch_route() {
           "$(wait_epoch_iso "$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.ready_at | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)")" \
           "계보=$GATE_ROUTE_LINEAGE 라우터 마감 판정" \
           "$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.recovery // ""' 2>/dev/null || true)" \
-          "$(gate_redispatch_line "$alias" "$seg")"
+          "$(gate_redispatch_line "$alias" "$rowseg")"
       else
         gate_launch_route_park "$alias" "$rowseg" "$seg" "$why"
       fi
@@ -22457,7 +22462,7 @@ gate_launch_wait() {
   m="$RUN_DIR/$seg.waiting"
   if ! wait_marker_write "$m" "보유자=$sup" "지문=$(cc_proc_fingerprint "$sup")" "기록자=게이트" \
          "계보=$GATE_ROUTE_LINEAGE" "그룹=$grp" "까지=$upto" "갱신=$(now_epoch)" "종류=$kind" \
-         "논스=$wnonce" "시도=$attempt" "재파견=$(gate_redispatch_line "$alias" "$seg")"; then
+         "논스=$wnonce" "시도=$attempt" "재파견=$(gate_redispatch_line "$alias" "$rowseg")"; then
     warn "could not write the waiting marker ($seg) — the waiting supervisor ends on its own"
     [ "$wnonce" = "-" ] || route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" "$wnonce" >/dev/null 2>&1 || true
     return 1
