@@ -22776,7 +22776,7 @@ gate_launch_wait() {
   return 0
 }
 
-# The waiting supervisor's three callbacks for `stage_wait_loop`. They read the
+# The waiting supervisor's four callbacks for `stage_wait_loop`. They read the
 # dispatch they belong to from GATE_SUP_* globals the supervisor sets.
 gate_sup_wait_heartbeat() {
   gate_stage_wait_row "$GATE_SUP_LINEAGE" "$1" "$GATE_SUP_BIND"
@@ -22790,6 +22790,12 @@ gate_sup_wait_deadline() {
 
 gate_sup_wait_stop() {
   gate_launch_route_park "$GATE_SUP_ALIAS" "$GATE_SUP_ROWSEG" "$GATE_SUP_KEY" "$1" "$GATE_SUP_LINEAGE"
+}
+
+gate_sup_wait_ended() {
+  # The same run-end refusal the act prelude applies to a dispatch, read again
+  # because this supervisor passed that prelude once, before its wait began.
+  gate_run_ended_ok skill -
 }
 
 gate_sup_await_dispatch() {
@@ -23174,7 +23180,7 @@ gate_verb_supervise_stage() {
     GATE_SUP_ALIAS=$alias GATE_SUP_KEY=$seg GATE_SUP_LINEAGE=$r_lineage GATE_SUP_BIND=$r_bound GATE_SUP_MARKER=$wm
     GATE_SUP_ROWSEG=$(gate_stage_row_segment "$seg" "$kind")
     stage_wait_loop "$seg" "$kind" "$wm" "$r_event" "$r_bound" \
-      gate_sup_wait_heartbeat gate_sup_wait_deadline gate_sup_wait_stop || wrc=$?
+      gate_sup_wait_heartbeat gate_sup_wait_deadline gate_sup_wait_stop gate_sup_wait_ended || wrc=$?
     if [ "$wrc" != "0" ]; then
       rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
       return 0
@@ -23183,10 +23189,15 @@ gate_verb_supervise_stage() {
     r_nonce=$(printf '%s' "$wenv" | jq -r '.nonce // empty' 2>/dev/null || true)
     r_acct=$(printf '%s' "$wenv" | jq -r '.account // "-"' 2>/dev/null || printf '%s' '-')
     r_cfg=$(printf '%s' "$wenv" | jq -r '.config_dir // empty' 2>/dev/null || true)
+    # THE END IS READ ONCE MORE AFTER THE LEASE ROW, the last row before the
+    # spawn: the loop read it on the grant, and synthesizing the instructions
+    # under the granted account takes long enough for a boundary to land.
+    local prep_why="부여 뒤 기동 준비 거부 — 지시문 합성 또는 stage-lease 행이 거절됐다"
     if [ -z "$r_cfg" ] \
        || ! instr=$(CLAUDE_CONFIG_DIR="$r_cfg" gate_stage_instructions_for_launch "$alias" "$resume") \
-       || ! gate_stage_lease_row "$r_lineage" "$wenv" "$r_bound"; then
-      gate_sup_wait_stop "부여 뒤 기동 준비 거부 — 지시문 합성 또는 stage-lease 행이 거절됐다"
+       || ! gate_stage_lease_row "$r_lineage" "$wenv" "$r_bound" \
+       || { ! gate_sup_wait_ended && prep_why="런이 이미 종료됐다 — $seg 는 부여를 받았지만 기동하지 않는다"; }; then
+      gate_sup_wait_stop "$prep_why"
       [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
       wait_drop "$wm"
       rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"

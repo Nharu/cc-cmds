@@ -3950,7 +3950,7 @@ spawn_park_recmd() {
   printf '%s — ready_at=%s — %s' "${1:-(라우터 회복 없음)}" "${2:--}" "$(spawn_rerun_line)"
 }
 
-# The driver's three callbacks for `stage_wait_loop`, reading the wait they
+# The driver's four callbacks for `stage_wait_loop`, reading the wait they
 # belong to from SPAWN_WAIT_* globals `spawn_route_wait` sets.
 spawn_wait_heartbeat() {
   run_gate_call gate_stage_wait_row "$SPAWN_WAIT_DID" "$1" "$SPAWN_WAIT_BIND"
@@ -3968,6 +3968,15 @@ spawn_wait_deadline() {
 spawn_wait_stop() {
   # Any other stop is parked by the caller at its own scope; this only names it.
   STAGE_SPAWN_PARK_REASON="$1"
+}
+
+spawn_wait_ended() {
+  # Fails once a boundary has ended the run, read by the gate's own run-end
+  # refusal. Only that refusal's code counts as an end: a gate that could not
+  # be sourced is not evidence that the run is over.
+  local rc=0
+  run_gate_call gate_run_ended_ok skill - 2>/dev/null || rc=$?
+  [ "$rc" != "3" ]
 }
 
 spawn_route_wait() {
@@ -4019,7 +4028,7 @@ spawn_route_wait() {
   SPAWN_WAIT_DID=$did; SPAWN_WAIT_BIND=$bound; SPAWN_WAIT_KEY=$key
   SPAWN_WAIT_TARGET=${CC_SPAWN_PARK_TARGET:-$key}
   stage_wait_loop "$key" "$kind" "$m" "$ev" "$bound" \
-    spawn_wait_heartbeat spawn_wait_deadline spawn_wait_stop || wrc=$?
+    spawn_wait_heartbeat spawn_wait_deadline spawn_wait_stop spawn_wait_ended || wrc=$?
   [ "$wrc" = "0" ] || return 1
   # The launch follows at once in this same process, so the marker goes now: a
   # refusal between here and the spawn would otherwise leave a live holder
@@ -6611,7 +6620,7 @@ wait_router_why() {
 
 stage_wait_loop() {
   # stage_wait_loop <key> <kind> <marker> <event> <bound> <heartbeat-fn>
-  #                 <deadline-fn> <stop-fn>
+  #                 <deadline-fn> <stop-fn> [<ended-fn>]
   #
   # Waits until the router grants, and returns:
   #   0 — GRANT; the envelope is in WAIT_LOOP_ENV, the marker is still there
@@ -6624,15 +6633,28 @@ stage_wait_loop() {
   #
   # The callbacks: <heartbeat-fn> <envelope> writes one `stage-wait` row and
   # fails when it is refused; <deadline-fn> <ready-at> <basis> <recovery> writes
-  # the deadline park; <stop-fn> <why> records any other stop. The lineage, the
-  # holder and the release time are read from the marker, which the caller has
-  # written before the first turn.
+  # the deadline park; <stop-fn> <why> records any other stop; <ended-fn>
+  # succeeds while the run may still launch a stage and fails once a boundary
+  # has ended it. The lineage, the holder and the release time are read from
+  # the marker, which the caller has written before the first turn.
   #
   # THE DEADLINE IS JUDGED HERE ON EVERY TURN, not left to the router: the
   # router's own rule never parks a WAIT whose release time is unknown, and a
   # wait with no known release still has to end inside the night.
-  local key="$1" kind="$2" m="$3" ev="$4" bound="$5" hb="$6" dl="$7" stopfn="$8"
-  local lin holder stall chunk now upto ready e d slp t req env verdict why basis rdy
+  #
+  # SO IS THE END OF THE RUN. The dispatch that started this wait passed the
+  # run-end refusal before the wait began, and nothing after it reads that mark
+  # again: the router grants on account state alone and ending the run touches
+  # no marker, FIFO entry or lease. A wait that outlived its run therefore took
+  # the next grant and launched a whole stage on a run its cost ceiling or its
+  # stagnation bound had already ended, where the same WAIT before this loop
+  # existed launched nothing. It is read on every turn after the deadline (a
+  # wall-clock end of a run with no progress bound is also the deadline this
+  # loop parks on, and that park is the cone the router expects), after every
+  # sleep (so no `stage-wait` row lands after the end), and once more on a
+  # grant, whose fresh lease is then given back.
+  local key="$1" kind="$2" m="$3" ev="$4" bound="$5" hb="$6" dl="$7" stopfn="$8" endedfn="${9:-}"
+  local lin holder stall chunk now upto ready e d slp t req env verdict why basis rdy gnonce
   WAIT_LOOP_ENV=""
   lin=$(cc_waiting_field "$m" '계보')
   holder=$(cc_waiting_field "$m" '보유자' | tr -d '[:space:]')
@@ -6656,6 +6678,10 @@ stage_wait_loop() {
       "$dl" "$(wait_epoch_iso "$ready")" "$basis" "$WAIT_LOOP_DEADLINE_RECOVERY"
       wait_drop "$m"; return 2
     fi
+    if [ -n "$endedfn" ] && ! "$endedfn"; then
+      "$stopfn" "런이 이미 종료됐다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
     slp=$chunk
     case "$upto" in
       ''|*[!0-9]*) ;;
@@ -6667,6 +6693,10 @@ stage_wait_loop() {
     fi
     [ "$slp" -ge 1 ] || slp=1
     sleep "$slp"
+    if [ -n "$endedfn" ] && ! "$endedfn"; then
+      "$stopfn" "런이 이미 종료됐다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
     # THE EVENT STAYS THE ORIGINAL ONE and `after_wait` is added beside it: the
     # router refuses an event it does not know.
     req=$(jq -cn --arg run "$RUN_ID" --arg lin "$lin" --arg ev "$ev" --arg kind "$kind" \
@@ -6686,6 +6716,14 @@ stage_wait_loop() {
     why=$(wait_router_why "$env")
     case "$verdict" in
       GRANT)
+        # The router may have granted across an end that landed while it was
+        # resolving; the lease it just made is released, not left to expire.
+        if [ -n "$endedfn" ] && ! "$endedfn"; then
+          gnonce=$(printf '%s' "$env" | jq -r '.nonce // empty' 2>/dev/null || true)
+          [ -z "$gnonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$gnonce" >/dev/null 2>&1 || true
+          "$stopfn" "런이 이미 종료됐다 — $key 는 부여를 받았지만 기동하지 않는다"
+          wait_drop "$m"; return 3
+        fi
         WAIT_LOOP_ENV=$env
         return 0 ;;
       WAIT)

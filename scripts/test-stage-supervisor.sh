@@ -965,6 +965,42 @@ case "$ds_ctl" in
 esac
 kill -TERM "$W13_BLOCK" 2>/dev/null || true
 
+# A RUN THAT ENDS WHILE A STAGE WAITS. The dispatch passed the run-end refusal
+# before its wait began, so the waiter is the only one left to read the end. The
+# end lands first and the blocker goes right after it: a waiter that does not
+# read the end takes the very next grant and spawns, which is what `Q.pid` and a
+# `stage-lease` row of the lineage would show. The positive half is the
+# W case above — the same release with the run still open spawns.
+sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+mk_run SUPE '(없음)'
+w13_stall
+w13_block "$W13_BLOCK"
+seg Q
+CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_SLEEP=1 dispatch Q >/dev/null; rc_q=$?
+check "(13) 런이 끝나기 전의 WAIT 파견은 0 으로 반환한다" "$rc_q" "0"
+SUP_Q=$( { cat "$RD/Q.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+check "(13) 런 종료 전에는 감독자가 대기 중이다" "$(alive "$SUP_Q")" "alive"
+printf '%s 종단 — 경계 B4 · 근거 픽스처\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RD/done"
+kill -TERM "$W13_BLOCK" 2>/dev/null; wait "$W13_BLOCK" 2>/dev/null || true
+n=0
+while [ "$(alive "$SUP_Q")" = "alive" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 대기 중에 런이 끝나면 감독자가 스스로 끝난다" "$(alive "$SUP_Q")" "dead"
+check "(13) 끝난 런 위에서는 차단자가 풀려도 스테이지가 뜨지 않는다" \
+  "$( [ -e "$RD/Q.pid" ] && printf yes || printf no)" "no"
+check "(13) 끝난 런 위의 대기자는 stage-lease 행을 쓰지 않는다" \
+  "$( { grep -F '`stage-lease`' "$LEDGER" || true; } | { grep -cF '계보=B:Q#1 ' || true; } )" "0"
+row_q=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '세그먼트=Q ' || true; } )
+check "(13) 그 정지는 blocked 행 하나다" "$(printf '%s' "$row_q" | { grep -c . || true; })" "1"
+case "$row_q" in
+  *"스코프=act"*"런이 이미 종료됐다 — Q "*) ok "(13) 그 행이 런 종료를 정지 사유로 싣는다" ;;
+  *) bad "(13) 런 종료 정지 행" "${row_q:-행 없음} / 감독자 로그: $(tail -5 "$RD"/log/Q#*.sup.log 2>/dev/null)" ;;
+esac
+check "(13) 런 종료 정지 뒤 대기 표지가 없다" "$( [ -e "$RD/Q.waiting" ] && printf yes || printf no)" "no"
+check "(13) 런 종료 정지 뒤 대기 항목이 표에 남지 않는다" \
+  "$(find "$RUN_PACE_ROOT/leases" -type f -name 'SUPE*' 2>/dev/null | wc -l | tr -d '[:space:]')" "0"
+g wait --manifest "$MANIFEST" --segment Q --interval 1 --timeout 5 >/dev/null; rc_qw=$?
+check "(13) 런 종료로 정지한 시도의 wait 은 16 이다" "$rc_qw" "16"
+
 # ---------------------------------------------------------------------------
 # (14) One dispatch per key on a routed run.
 #
