@@ -1,8 +1,8 @@
 // 답 묶음: 머리줄, 머리줄 정규식, `cc-form-answers/1` JSON, 문답 기록의
 // `### 답 n` 본문과 같은 `answer` 문면. `$` 를 쓰지 않는다.
 
-import { NOT_APPLICABLE, UNANSWERED, presentedLabel } from './spec'
-import type { Draft, Drafts, FormInput, FormQuestion } from '../../types'
+import { NOT_APPLICABLE, UNANSWERED } from './spec'
+import type { Draft, Drafts, FormInput, FormOption, FormQuestion } from '../../types'
 
 export type { Draft, Drafts }
 
@@ -45,12 +45,8 @@ export function counts(form: FormInput, drafts: Drafts): { answered: number; tot
   return { answered: visible.filter(q => isAnswered(q, draftOf(drafts, q.id))).length, total: visible.length }
 }
 
-function presentedOf(q: FormQuestion, label: string): string {
-  const o = (q.options ?? []).find(x => x.label === label)
-  return o ? presentedLabel(o) : label
-}
-
-// 문답 기록 `### 답 n` 본문. single 은 고른 라벨을 제시한 그대로(접미 포함),
+// 문답 기록 `### 답 n` 본문. 라벨은 받은 그대로 쓰고 추천 접미를 붙이지 않는다 — 추천은
+// 묶음의 `recommended` 가 따로 싣는다. single 은 고른 라벨,
 // multi 는 한 줄에 하나, 선택지 대신 쓴 자유 입력은 축자, multi 라벨 옆의
 // 자유 입력은 마지막 줄 `자유 입력:`, 메모는 맨 끝 `메모:`, 답이 없으면 `미답`.
 export function answerBody(q: FormQuestion, d: Draft): string {
@@ -61,9 +57,9 @@ export function answerBody(q: FormQuestion, d: Draft): string {
   } else if (q.kind === 'text') {
     lines.push(other)
   } else if (q.kind === 'single') {
-    lines.push(d.selected.length > 0 ? presentedOf(q, d.selected[0]) : other)
+    lines.push(d.selected.length > 0 ? d.selected[0] : other)
   } else {
-    for (const s of d.selected) lines.push(presentedOf(q, s))
+    for (const s of d.selected) lines.push(s)
     if (other !== '') lines.push(d.selected.length > 0 ? `자유 입력: ${other}` : other)
   }
   if (d.note.trim() !== '') lines.push(`메모: ${d.note}`)
@@ -77,6 +73,7 @@ export type BundleAnswer = {
   question: string
   kind: FormQuestion['kind']
   options: string[]
+  recommended?: { label: string; by: NonNullable<FormOption['recommended']> }[]
   state: '답' | '미답' | '해당 없음'
   selected: string[]
   other: string
@@ -89,15 +86,24 @@ export type BundleJson = { schema: 'cc-form-answers/1'; form: string; status: Fo
 export function bundleJson(formId: string, status: FormStatus, form: FormInput, drafts: Drafts): BundleJson {
   const answers = form.questions.map((q): BundleAnswer => {
     const d = draftOf(drafts, q.id)
-    const options = (q.options ?? []).map(presentedLabel)
-    const base = { id: q.id, header: q.header, ...(q.group ? { group: q.group } : {}), question: q.question, kind: q.kind, options }
+    const options = (q.options ?? []).map(o => o.label)
+    const recommended = (q.options ?? []).flatMap(o => (o.recommended ? [{ label: o.label, by: o.recommended }] : []))
+    const base = {
+      id: q.id,
+      header: q.header,
+      ...(q.group ? { group: q.group } : {}),
+      question: q.question,
+      kind: q.kind,
+      options,
+      ...(recommended.length > 0 ? { recommended } : {}),
+    }
     if (!isVisible(form, drafts, q)) {
       return { ...base, state: NOT_APPLICABLE, selected: [], other: '', note: '', answer: '' }
     }
     return {
       ...base,
       state: isAnswered(q, d) ? '답' : UNANSWERED,
-      selected: d.selected.map(s => presentedOf(q, s)),
+      selected: [...d.selected],
       other: d.other,
       note: d.note,
       answer: answerBody(q, d),
