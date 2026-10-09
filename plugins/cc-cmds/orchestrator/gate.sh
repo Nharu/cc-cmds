@@ -16600,6 +16600,11 @@ EOF
       # be handed something its own record never offered.
       if ! grep -qF -- "- \`$hopt\`" "$hrec"; then
         warn "\`선택지\` is not one of the options this halt record lists verbatim: $hopt"
+        # A record with no option line at all is the writer's fault, not the
+        # answer's: options run inline after `**선택지**:` are read by no one, so
+        # every answer to it is refused here with the same line as a typo.
+        grep -q '^- `' "$hrec" \
+          || warn "this halt record has no option line of the form \`- \`<label>\` — <description>\` — its options were written inline, so no answer to it can be recorded until each option sits on its own line: $hrec"
         return "$GATE_EXIT_VOCAB"
       fi
       hskill=$(sed -n 's/^\*\*스킬\*\*: //p' "$hrec" | sed -n '1p' | sed 's/[[:space:]]*$//')

@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.51.4] - 2026-10-09
+
+무인 스테이지가 중단 기록의 선택지를 한 줄에 이어 적으면, 사람이 어떤 선택지로 답해도 좌석이 그 답을 기록하지 못하고 중단이 런 안에서 풀리지 않던 문제를 막는다. 감사의 종합 질문에서 실제로 일어났다.
+
+### Fixed
+
+- 중단 기록 스키마에, 선택지는 한 줄에 하나씩 `- `<label>` — <description>` 형태로 적는다는 규칙을 명시했다. `design-audit-unattended`·`design-reconverge`·`review-unattended` 의 중단 기록 문단도 같은 형태를 적는다. 감사의 종합 질문은 레퍼런스의 빗금 표기를 옮겨 적지 않고 세 목록 줄로 쓴다.
+- 게이트의 `halt-answer` 가 선택지를 거절할 때, 기록에 목록 줄이 하나도 없으면 오타가 아니라 기록 형식이 원인이라는 경고를 한 줄 더 낸다.
+
 ## [2.51.3] - 2026-10-09
 
 한 설계 문서를 슬라이스마다 다른 런으로 구현할 때, 앞 런이 이미 머지한 선행 슬라이스에 기대는 슬라이스를 다음 런이 계획하지 못하던 결함을 고친다. 지금까지는 그 런의 원장에 선행 세그먼트 행이 없다는 이유로 계획 행위가 거부되어 교대가 중단으로 멈췄고, 사람이 선행 행을 손으로 적어 넣어야 다시 움직였다.
