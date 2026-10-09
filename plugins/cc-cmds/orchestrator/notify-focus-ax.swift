@@ -2,13 +2,26 @@
 // bring an iTerm2 window forward across Spaces.
 //
 //   trusted                                       0 trusted / 3 not
-//   raise <pid> <wid> [--eid <n>] [--budget-ms <n>] --ceiling <n>
+//   raise <pid> <wid> [--eid <n>] [--budget-ms <n>] --ceiling <n> [--focus]
 //                                                 0 raised (prints the element id
 //                                                 when it is known) / 1 other AX
 //                                                 error or budget spent / 2 usage /
 //                                                 3 not trusted / 4 not found /
 //                                                 5 not iTerm2 / 7 AX cannot
-//                                                 complete / 8 symbol missing
+//                                                 complete / 8 symbol missing;
+//                                                 --focus also makes that window
+//                                                 the application's focused window
+//   focused <pid>                                 prints `wid<TAB>ms`: the focused
+//                                                 window and the milliseconds since
+//                                                 the last mouse button press
+//                                                 0 printed, iTerm2 frontmost /
+//                                                 6 printed, not frontmost /
+//                                                 4 no focused window / 2 / 3 / 5 /
+//                                                 7 / 8
+//   makekey <pid> <wid>                           makes that window the key window
+//                                                 through SkyLight
+//                                                 0 / 1 a call returned non-zero /
+//                                                 2 / 5 / 8
 //   onspace <wid>                                 0 on a current Space / 6 not /
 //                                                 4 unknown / 8 symbol missing
 //   map <pid> [--budget-ms <n>] --ceiling <n>     prints `wid<TAB>eid` per window
@@ -18,7 +31,9 @@
 //                                                 are allowed, never asking
 //
 // The handler compiles this file itself (notify-focus.sh); nothing here is run
-// through a shim, and no verb ever activates an application.
+// through a shim. Only `makekey` brings an application forward, and the
+// handler calls it only on the trusted path, when iTerm2's key window has gone
+// back to a window other than the target.
 //
 // PRIVATE SYMBOLS ARE LOOKED UP AT RUN TIME. A missing symbol linked by name
 // fails the link and takes every verb with it; looked up with dlsym, it fails
@@ -58,6 +73,9 @@ typealias GetWindowFn = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWind
 typealias MainConnectionFn = @convention(c) () -> Int32
 typealias CopySpacesForWindowsFn = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
 typealias CopyManagedDisplaySpacesFn = @convention(c) (Int32) -> Unmanaged<CFArray>?
+typealias GetProcessForPIDFn = @convention(c) (pid_t, UnsafeMutablePointer<ProcessSerialNumber>) -> OSStatus
+typealias SetFrontProcessWithOptionsFn = @convention(c) (UnsafeMutablePointer<ProcessSerialNumber>, CGWindowID, UInt32) -> CGError
+typealias PostEventRecordToFn = @convention(c) (UnsafeMutablePointer<ProcessSerialNumber>, UnsafeMutablePointer<UInt8>) -> CGError
 
 // RTLD_DEFAULT is a macro Swift does not import.
 let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
@@ -90,6 +108,15 @@ func cgsSymbols() -> (MainConnectionFn, CopySpacesForWindowsFn, CopyManagedDispl
           unsafeBitCast(c, to: CopyManagedDisplaySpacesFn.self))
 }
 
+func slpsSymbols() -> (GetProcessForPIDFn, SetFrontProcessWithOptionsFn, PostEventRecordToFn)? {
+  guard let a = lookup("GetProcessForPID"),
+        let b = lookup("_SLPSSetFrontProcessWithOptions"),
+        let c = lookup("SLPSPostEventRecordTo") else { return nil }
+  return (unsafeBitCast(a, to: GetProcessForPIDFn.self),
+          unsafeBitCast(b, to: SetFrontProcessWithOptionsFn.self),
+          unsafeBitCast(c, to: PostEventRecordToFn.self))
+}
+
 // MARK: arguments
 
 func usage(_ why: String) -> Never {
@@ -106,13 +133,20 @@ struct Options {
   var eid: UInt64? = nil
   var budgetMs: UInt64? = nil
   var ceiling: UInt64? = nil
+  var focus = false
 }
 
-func parseOptions(_ args: ArraySlice<String>, allowEid: Bool) -> Options {
+// Every flag takes a number except --focus, which takes none.
+func parseOptions(_ args: ArraySlice<String>, allowEid: Bool, allowFocus: Bool = false) -> Options {
   var o = Options()
   var i = args.startIndex
   while i < args.endIndex {
     let flag = args[i]
+    if flag == "--focus" && allowFocus {
+      o.focus = true
+      i += 1
+      continue
+    }
     guard i + 1 < args.endIndex, let v = number(args[i + 1]) else { usage("\(flag) needs a number") }
     switch flag {
     case "--eid" where allowEid: o.eid = v
@@ -204,9 +238,9 @@ func verbTrusted() -> Never {
 func verbRaise(_ args: ArraySlice<String>) -> Never {
   guard args.count >= 2, let p = number(args[args.startIndex]), p > 0, p <= UInt64(Int32.max),
         let w = number(args[args.startIndex + 1]), w <= UInt64(UInt32.max) else {
-    usage("raise <pid> <wid> [--eid <n>] [--budget-ms <n>] --ceiling <n>")
+    usage("raise <pid> <wid> [--eid <n>] [--budget-ms <n>] --ceiling <n> [--focus]")
   }
-  let o = parseOptions(args.dropFirst(2), allowEid: true)
+  let o = parseOptions(args.dropFirst(2), allowEid: true, allowFocus: true)
   guard let ceiling = o.ceiling else { usage("raise needs --ceiling") }
   guard let (createWithToken, getWindow) = axSymbols() else { exit(8) }
   requireTrusted()
@@ -271,6 +305,14 @@ func verbRaise(_ args: ArraySlice<String>) -> Never {
     let m = AXUIElementSetAttributeValue(hit!, kAXMainAttribute as CFString, kCFBooleanTrue)
     try check(m, "main")
     if m != .success { trace("main failed: \(m.rawValue)") }
+    // A failed focus write other than cannot-complete leaves the exit code as
+    // it is: the window is raised and main, and the caller reads the focused
+    // window again before trying anything else.
+    if o.focus {
+      let f = AXUIElementSetAttributeValue(app, kAXFocusedWindowAttribute as CFString, hit!)
+      try check(f, "focused window")
+      if f != .success { trace("focused window failed: \(f.rawValue)") }
+    }
   } catch {
     exit(7)
   }
@@ -345,6 +387,97 @@ func verbOnspace(_ args: ArraySlice<String>) -> Never {
   exit(6)
 }
 
+// The milliseconds are the least time since any mouse button went down, read
+// from the public event source state; key presses are not counted.
+func verbFocused(_ args: ArraySlice<String>) -> Never {
+  guard args.count == 1, let p = number(args[args.startIndex]), p > 0, p <= UInt64(Int32.max) else {
+    usage("focused <pid>")
+  }
+  guard let getWindowPtr = lookup("_AXUIElementGetWindow") else { exit(8) }
+  let getWindow = unsafeBitCast(getWindowPtr, to: GetWindowFn.self)
+  requireTrusted()
+  let pid = pid_t(p)
+  requireIterm(pid)
+
+  let app = AXUIElementCreateApplication(pid)
+  AXUIElementSetMessagingTimeout(app, 0.25)
+
+  var wid: CGWindowID = 0
+  var frontmost = false
+  do {
+    var ref: CFTypeRef?
+    let e = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &ref)
+    try check(e, "focused window")
+    guard e == .success, let r = ref, CFGetTypeID(r) == AXUIElementGetTypeID() else {
+      trace("no focused window: \(e.rawValue)")
+      exit(4)
+    }
+    guard let id = try windowId(r as! AXUIElement, getWindow), id != 0 else {
+      trace("focused window has no window id")
+      exit(4)
+    }
+    wid = id
+    var fref: CFTypeRef?
+    let f = AXUIElementCopyAttributeValue(app, kAXFrontmostAttribute as CFString, &fref)
+    try check(f, "frontmost")
+    if f == .success, let b = fref as? Bool {
+      frontmost = b
+    } else {
+      trace("frontmost unreadable: \(f.rawValue)")
+    }
+  } catch {
+    exit(7)
+  }
+
+  let s = CGEventSourceStateID.combinedSessionState
+  let secs = min(CGEventSource.secondsSinceLastEventType(s, eventType: .leftMouseDown),
+                 CGEventSource.secondsSinceLastEventType(s, eventType: .rightMouseDown),
+                 CGEventSource.secondsSinceLastEventType(s, eventType: .otherMouseDown))
+  let ms = secs.isFinite && secs > 0 ? UInt64(min(secs * 1000, Double(UInt32.max))) : 0
+  out("\(wid)\t\(ms)")
+  exit(frontmost ? 0 : 6)
+}
+
+// SkyLight makes the window key: the process is brought forward with that
+// window, then two event records (0x01 and 0x02 at byte 0x08) tell it which
+// window. Accessibility is not used, so trust is not asked.
+func verbMakekey(_ args: ArraySlice<String>) -> Never {
+  guard args.count == 2, let p = number(args[args.startIndex]), p > 0, p <= UInt64(Int32.max),
+        let w = number(args[args.startIndex + 1]), w <= UInt64(UInt32.max) else {
+    usage("makekey <pid> <wid>")
+  }
+  guard let (getProcess, setFront, postRecord) = slpsSymbols() else { exit(8) }
+  let pid = pid_t(p)
+  var wid = CGWindowID(w)
+  requireIterm(pid)
+
+  var psn = ProcessSerialNumber()
+  let g = getProcess(pid, &psn)
+  if g != noErr {
+    trace("GetProcessForPID: \(g)")
+    exit(1)
+  }
+  let f = setFront(&psn, wid, 0x200)
+  if f != .success {
+    trace("_SLPSSetFrontProcessWithOptions: \(f.rawValue)")
+    exit(1)
+  }
+  var bytes = [UInt8](repeating: 0, count: 0xf8)
+  bytes[0x04] = 0xf8
+  bytes[0x3a] = 0x10
+  for i in 0..<0x10 { bytes[0x20 + i] = 0xff }
+  withUnsafeBytes(of: &wid) { for i in 0..<4 { bytes[0x3c + i] = $0[i] } }
+  for kind: UInt8 in [0x01, 0x02] {
+    bytes[0x08] = kind
+    let r = bytes.withUnsafeMutableBufferPointer { postRecord(&psn, $0.baseAddress!) }
+    if r != .success {
+      trace("SLPSPostEventRecordTo \(kind): \(r.rawValue)")
+      exit(1)
+    }
+  }
+  exit(0)
+}
+
 func verbAecheck() -> Never {
   let target = NSAppleEventDescriptor(bundleIdentifier: itermBundle)
   guard let desc = target.aeDesc else { exit(1) }
@@ -365,6 +498,8 @@ case "trusted": if !rest.isEmpty { usage("trusted takes no argument") }; verbTru
 case "raise": verbRaise(rest)
 case "onspace": verbOnspace(rest)
 case "map": verbMap(rest)
+case "focused": verbFocused(rest)
+case "makekey": verbMakekey(rest)
 case "aecheck": if !rest.isEmpty { usage("aecheck takes no argument") }; verbAecheck()
 default: usage("unknown verb \(argv[1])")
 }

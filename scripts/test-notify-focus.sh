@@ -166,8 +166,12 @@ exit 0
 STUB
 
 # AX helper stub: every verb is logged with its arguments. `raise` prints
-# STUB_RAISE_OUT on success, `map` prints STUB_MAP_OUT. The compiler stub
-# copies it into the cache, so it finds the sequence helper beside the log.
+# STUB_RAISE_OUT on success, `map` prints STUB_MAP_OUT. `focused` answers from
+# STUB_FOCUSED="<rc>:<wid>:<ms> …", one entry per call and the last one again
+# past its end; without it, 6 and no output, so the key-window watch ends at its
+# first read. STUB_FOCUSED_CLOBBER=<n> makes the n-th `focused` call a newer
+# click by overwriting the click token. The compiler stub copies it into the
+# cache, so it finds the sequence helper beside the log.
 cat > "$WORK/bin/ax" <<'STUB'
 #!/bin/bash
 . "$(dirname "$STUB_LOG")/bin/seq.sh"
@@ -181,6 +185,23 @@ case "$v" in
     ;;
   map)
     [ -n "${STUB_MAP_OUT:-}" ] && printf '%b\n' "$STUB_MAP_OUT"
+    ;;
+  focused)
+    [ -n "${STUB_FOCUSED:-}" ] || exit 6
+    f="$STUB_LOG.seq.focused-n"
+    n=$(cat "$f" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    printf '%s\n' "$n" > "$f"
+    if [ -n "${STUB_FOCUSED_CLOBBER:-}" ] && [ "$n" = "$STUB_FOCUSED_CLOBBER" ]; then
+      printf 'newer\n' > "$CC_CMDS_NOTIFY_FOCUS_CACHE/click.current"
+    fi
+    set -- $STUB_FOCUSED
+    [ "$n" -le $# ] || n=$#
+    eval "e=\${$n}"
+    IFS=: read -r rc fw fm <<EOF
+$e
+EOF
+    printf '%s\t%s\n' "$fw" "$fm"
     ;;
 esac
 exit "$rc"
@@ -348,7 +369,8 @@ select-pane -t %48
 raise 1 9 --budget-ms 1000 --ceiling 4000
 open -b com.googlecode.iterm2
 show 9 CL-1
-onspace 9"
+onspace 9
+focused 1"
 
 # --- T2. normal mode alone ----------------------------------------------------
 DUMP=$(rows "$(row 5 1 NM-1 /dev/ttys045 '' '' '')")
@@ -362,7 +384,8 @@ select-pane -t %48
 raise 1 5 --budget-ms 1000 --ceiling 4000
 open -b com.googlecode.iterm2
 show 5 NM-1
-onspace 5"
+onspace 5
+focused 1"
 
 # --- T3. both modes: the more recent activity is asked first ------------------
 DUMP=$(rows "$(row 9 1 CL-1 /dev/ttys050 client 48 cc-cmds-notify)" \
@@ -523,7 +546,8 @@ select-pane -t %48
 raise 1 9 --eid 77 --budget-ms 1000 --ceiling 5000
 open -b com.googlecode.iterm2
 show 9 CL-1
-onspace 9"
+onspace 9
+focused 1"
 KEEP=0
 
 # L2. A miss writes the entry; a raise that found the window by scanning writes
@@ -638,6 +662,7 @@ check "L6 select w 를 포함한 선택" "$(showline)" "show 9 CL-1 w"
 check "L6 다른 Space 면 open 없음" "$(logn open)" "0"
 check "L6 순서" "$(grep -E '^(raise|show|onspace|open)' "$LOG" | tr '\n' '|')" \
   "raise 1 9 --budget-ms 1000 --ceiling 4000|show 9 CL-1 w|onspace 9|"
+check "L6 키 창 감시 없음" "$(logn focused)$(logn makekey)" "00"
 wait_for "$NLOG" '^--$' || true
 KEEP=1
 rm -f "$GTR"
@@ -677,6 +702,7 @@ click "L6b 신뢰 없음, 세션 옮김" "$WORK/bin/tmux" "$V" "${T1ENV[@]}" "${
 check "L6b 다시 해석하러 갔다" "$(logn find)" "1"
 check "L6b onspace 없음" "$(logn onspace)" "0"
 check "L6b open 없음" "$(logn open)" "0"
+check "L6b 키 창 감시 없음" "$(logn focused)$(logn makekey)" "00"
 check "L6b 안내로 갔다" "$(traced 'guide ax')" "1"
 if wait_for "$NLOG" '^--$'; then ok "L6b 안내가 떴다"; else bad "L6b 안내가 떴다" "알림기 줄이 없다"; fi
 KEEP=0
@@ -716,6 +742,7 @@ click "L9 도우미 없음" "$WORK/bin/tmux" "$V" "${T1ENV[@]}" "${GUIDE_ENV[@]}
 check "L9 탭·세션 선택" "$(showline)" "show 9 CL-1"
 check "L9 raise 없음" "$(logn raise)" "0"
 check "L9 open 없음" "$(logn open)" "0"
+check "L9 키 창 감시 없음" "$(logn focused)$(logn makekey)" "00"
 check "L9 빌드를 띄웠다" "$(traced 'build 띄움')" "1"
 check "L9 안내로 가지 않았다" "$(traced 'guide (ax|clt)')" "0"
 # The build runs on behind the click; the next leg empties the cache, so this
@@ -1125,6 +1152,65 @@ check "L28 (나) 꺼진 세션: prime 없음" "$(primes)" "0"
 rm -f "$TR"
 fire28 CC_CMDS_SESSION_NOTIFY=
 check "L28 (나) 켜진 세션: prime 정확히 하나" "$(primes)" "1"
+
+# --- K1–K10. the key-window watch after arrival on the trusted path -----------
+# Window 9 is the target and 25 the window the person left. A mouse-press
+# figure of 999999 ms is a press long before the click; 0 is one just now.
+K_ENV=("${T1ENV[@]}" CC_CMDS_NOTIFY_FOCUS_WAIT_SCALE=0.3)
+FL="$CACHE/focus.log"
+focusn() { grep -c -- '--focus$' "$LOG" 2>/dev/null || true; }
+keeplog() { sed 's/^[^ ]* //' "$FL" 2>/dev/null || true; }
+
+click "K1 되돌림" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="0:9:999999 0:25:999999 0:25:999999 0:9:999999"
+check "K1 --focus 를 붙인 raise 한 번" "$(grep -c -- '^raise 1 9 --budget-ms 1000 --ceiling 4000 --focus$' "$LOG")" "1"
+check "K1 그다음 makekey 한 번" "$(grep -c '^makekey 1 9$' "$LOG")" "1"
+check "K1 AX 다음에 SkyLight" "$(grep -E -- '^(makekey|raise .*--focus)' "$LOG" | sed 's/ .*//' | tr '\n' '|')" "raise|makekey|"
+check "K1 첫 raise 에는 --focus 가 없다" "$(grep '^raise' "$LOG" | awk 'NR == 1')" "raise 1 9 --budget-ms 1000 --ceiling 4000"
+check "K1 focus.log 없음" "$(keeplog)" ""
+
+click "K2 AX 로 고쳐짐" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="0:25:999999 0:9:999999"
+check "K2 --focus 한 번" "$(focusn)" "1"
+check "K2 makekey 없음" "$(logn makekey)" "0"
+check "K2 다시 세운 뒤 open" "$(grep -A 1 -- '--focus$' "$LOG" | tail -n 1)" "open -b com.googlecode.iterm2"
+
+click "K3 다른 창" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="0:31:999999 0:9:999999"
+check "K3 출발 창 밖의 창이어도 다시 세운다" "$(focusn)" "1"
+
+click "K4 처리기 시작 뒤 마우스 누름" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="0:25:0"
+check "K4 다시 세우지 않는다" "$(focusn)$(logn makekey)" "00"
+check "K4 읽기 한 번에 끝난다" "$(logn focused)" "1"
+check "K4 focus.log 없음" "$(keeplog)" ""
+
+click "K5 처리기 시작 전 마우스 누름" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="0:25:60000 0:9:60000"
+check "K5 다시 세운다" "$(focusn)" "1"
+
+click "K6 앞 앱이 iTerm2 아님" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="6:25:999999"
+check "K6 다시 세우지 않는다" "$(focusn)$(logn makekey)" "00"
+check "K6 읽기 한 번에 끝난다" "$(logn focused)" "1"
+
+click "K7 내내 대상" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" STUB_FOCUSED="0:9:999999"
+check "K7 다시 세우지 않는다" "$(focusn)$(logn makekey)" "00"
+check "K7 감시 동안 여러 번 읽었다" "$([ "$(logn focused)" -ge 2 ] && echo 예 || echo "아니오 $(logn focused)")" "예"
+
+click "K8 감시 중 새 클릭" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="0:9:999999 0:25:999999" STUB_FOCUSED_CLOBBER=2
+check "K8 새 클릭 뒤에는 다시 세우지 않는다" "$(focusn)$(logn makekey)" "00"
+check "K8 새 클릭에서 읽기가 멈췄다" "$(logn focused)" "2"
+
+click "K9 makekey 8" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" \
+  STUB_FOCUSED="0:25:999999" STUB_RC_MAKEKEY=8
+check "K9 makekey 한 번에 멈춘다" "$(focusn)$(logn makekey)" "11"
+check "K9 focus.log 한 줄" "$(keeplog)" "keep 실패 wid=9 makekey 8"
+
+click "K10 상한" "$WORK/bin/tmux" "$V" "${K_ENV[@]}" STUB_FOCUSED="0:25:999999"
+check "K10 AX 한 번, SkyLight 두 번" "$(focusn)$(logn makekey)" "12"
+check "K10 focus.log 한 줄" "$(keeplog)" "keep 실패 wid=9 상한"
 
 # --- Q. the connection-label resolver, read by read ----------------------------
 # The prime runs the real resolver with each AppleScript read replaced by the
