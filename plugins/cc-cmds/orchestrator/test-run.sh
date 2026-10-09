@@ -4514,7 +4514,7 @@ fi
 # the night. The three cases below are the whole of that distinction.
 WATCH_SH="$(dirname "$DRIVER")/watch.sh"
 if sed -n '/watch.announced-after-stage/,/^  fi$/p' "$WATCH_SH" | grep_all_q -F 'shift_active' \
-   || sed -n '/^  if \[ "\$live" = "0" \] \&\& \[ "\$pend" = "0" \] \&\& \[ "\$age" -ge "\$AFTER_STAGE" \]/,/^  fi$/p' "$WATCH_SH" | grep_all_q -F 'shift_active'; then
+   || sed -n '/^  if \[ "\$live\(_w\)\{0,1\}" = "0" \] \&\& \[ "\$pend" = "0" \] \&\& \[ "\$age" -ge "\$AFTER_STAGE" \]/,/^  fi$/p' "$WATCH_SH" | grep_all_q -F 'shift_active'; then
   ok "after-stage 아암이 교대 가드를 거친다"
 else
   bad "교대 가드" "after-stage 아암이 shift_active 를 보지 않는다 — 교대가 라우터 무응답으로 기록된다"
