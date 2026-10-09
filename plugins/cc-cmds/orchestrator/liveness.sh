@@ -267,6 +267,48 @@ cc_live_stage_records() {
   return 0
 }
 
+cc_stage_kind() {
+  # cc_stage_kind <run-dir> <ledger> <segment> — the kind of that segment's
+  # stage, or empty.
+  #
+  # THE RUNNING KIND FIRST. The gate writes `<seg>.kind` when it launches a stage
+  # and removes it when it settles one, so while the file is there it names the
+  # stage that is up NOW — which the ledger cannot, because `stage-result` is
+  # written when a stage ends and so names the kind that ran LAST. The driver
+  # leaves no `.kind`, so its stages fall through to the ledger. An empty
+  # `.kind` is reachable — the gate writes `$kind` as given, and its own lost
+  # dispatch settlement guards with `종류=${kind:-미상}` — and falls through too.
+  #
+  # THE ROW IS MATCHED BY ITS HEAD MARK, never by the words in it. A `자율 승인`
+  # row whose `argv=` quotes `stage-result` and `세그먼트=<seg> ` is not a stage
+  # result, and read as a substring it became the last one and emptied the slot.
+  # The segment is a whole field for the same reason.
+  #
+  # The one source for the status line's kind slot and the pane's running
+  # detail, so the two cannot name two kinds for one stage.
+  local run_dir="$1" ledger="$2" seg="$3" k=""
+  [ -n "$seg" ] || return 0
+  if [ -n "$run_dir" ] && [ -f "$run_dir/$seg.kind" ]; then
+    k=$( { cat "$run_dir/$seg.kind" 2>/dev/null || true; } | tr -d '[:space:]')
+  fi
+  if [ -n "$k" ]; then printf '%s' "$k"; return 0; fi
+  [ -n "$ledger" ] && [ -f "$ledger" ] || return 0
+  LC_ALL=C awk -F'|' -v seg="$seg" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^- `stage-result`/ {
+      hit = 0; k = ""
+      for (i = 2; i <= NF; i++) {
+        f = trim($i)
+        if (f == "세그먼트=" seg) hit = 1
+        else if (substr(f, 1, 7) == "종류=") k = substr(f, 8)
+      }
+      if (hit) last = k
+    }
+    END { printf "%s", last }
+  ' "$ledger" 2>/dev/null || true
+  return 0
+}
+
 cc_shift_is_live() {
   # cc_shift_is_live <run-dir> — succeeds when `shift.live` names a shift child
   # that is still the process the launcher started.

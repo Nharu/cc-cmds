@@ -2418,6 +2418,28 @@ MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 grep -v '^- `설계 로스터`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
 check "로스터 행이 없으면 그 행을 얼리기 전과 같은 바이트다 (진행 중인 런이 부적합이 되지 않는다)" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
+
+# 구속 집합의 선행 착지 행. 계획 행위가 이 행으로 원장 밖에서 착지한 선행을 들여오므로
+# 런 도중 행을 덧붙일 수 있으면 사람이 확인하지 않은 선행 위에 슬라이스가 파견된다 —
+# 그래서 다이제스트가 움직여야 하고, 행이 없으면 0바이트여야 한다.
+printf -- '- `선행 착지` | 슬라이스=SA | 원격 슬러그=o/r | 머지 커밋=%s\n' 0123456789abcdef0123456789abcdef01234567 >> "$MFROS"
+check "픽스처가 실제로 선행 착지 행을 얻었다 (아래가 공허하지 않다)" \
+  "$(manifest_predecessor_landing_rows | grep -c .)" "1"
+bd_pl=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_pl" = "$bd_noros" ]; then
+  bad "구속 집합 감도" "선행 착지 행을 더했는데 다이제스트가 그대로다 — 런 도중 선행을 들일 수 있다"
+else
+  ok "선행 착지 행이 생기면 구속 다이제스트가 움직인다"
+fi
+manifest_snapshot_take
+check "메모 판독기가 파일 판독기와 같은 선행 착지 행을 낸다" \
+  "$(manifest_predecessor_landing_rows)" "$(grep -E '^- `선행 착지`' "$MFROS")"
+check "메모가 켜진 상태의 선행 착지 다이제스트가 파일 판독과 같다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_pl"
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+grep -v '^- `선행 착지`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
+check "선행 착지 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
 MANIFEST="$MANIFEST_SAVE21r"
 
 # --- 21c 설계 팔의 발화 조건과 재개 판별 — 팔을 태운다 ------------------------

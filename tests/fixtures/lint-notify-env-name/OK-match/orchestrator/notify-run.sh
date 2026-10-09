@@ -6,9 +6,9 @@
 # `CC_CMDS_NOTIFY_` family and leave exactly the registered set, and a fixture
 # with no seams in it would pass a lint that had no exclusion rule at all.
 #
-# It carries BOTH switches on purpose too: with one switch a fixture cannot tell
-# "the registered set" apart from "exactly one", so it would go on passing a rule
-# that had silently collapsed back into a count.
+# It carries ALL THREE switches on purpose too: with one switch a fixture cannot
+# tell "the registered set" apart from "exactly one", so it would go on passing a
+# rule that had silently collapsed back into a count.
 
 cc_notify_enabled() {
   local v="${CC_CMDS_AUTOPILOT_NOTIFY:-}"
@@ -20,6 +20,14 @@ cc_notify_enabled() {
 
 cc_notify_session_enabled() {
   local v="${CC_CMDS_SESSION_NOTIFY:-}"
+  case "$v" in
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+  esac
+  return 0
+}
+
+cc_notify_dismiss_enabled() {
+  local v="${CC_CMDS_SESSION_DISMISS:-}"
   case "$v" in
     0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
   esac

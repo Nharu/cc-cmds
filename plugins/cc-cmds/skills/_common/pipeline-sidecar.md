@@ -10,7 +10,7 @@ The sidecar kinds below and one non-sidecar record are defined:
 | Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-grant/{slug}.md` |
 | Interview record | `cc-run-interview v2` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.interview.md` |
 | Kickoff trace | `cc-run-kickoff v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.kickoff.md` |
-| Run ledger | `cc-pipeline-run v1` | the driver **only** | `<base>/docs/pipeline-run/{slug}.md` |
+| Run ledger | `cc-pipeline-run v1` | the driver **only** | `<base>/docs/pipeline-run/<run-id>.md` for a manifest run, `<base>/docs/pipeline-run/{slug}.md` for a run without one — a stage reads the path from `$CC_PIPELINE_LEDGER` and never derives it |
 | Approval sidecar | `cc-pipeline-approval v1` | the gate **only** | `<base>/docs/pipeline-approval/<run-id>.md` |
 | Halt record | `cc-pipeline-halt v1` | the halting stage | volatile run directory (§4) — **not a sidecar** |
 
@@ -161,6 +161,8 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 형태=clickup-create.py | 사유=<…>   ← 트래커=clickup 일 때
 - `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
+- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트를 이어받을 때만, 세그먼트당 많아야 한 행
+- `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -185,8 +187,9 @@ What IS frozen, and what `구속 다이제스트` covers: the goal, the terminat
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
 irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
-`베이스 발행` and `베이스 설계` rows**, the cost ceiling and the stagnation bound
-when declared, and the deadline. The gate compares that digest at entry.
+`베이스 발행` and `베이스 설계` rows**, **the `세그먼트 입양` rows**, **the `선행
+착지` rows**, the cost ceiling and the stagnation bound when declared, and the
+deadline. The gate compares that digest at entry.
 
 **The `베이스 발행` row is a base run's publication decision**, taken at kickoff
 and the only input the split stage publishes from: exactly one row when the
@@ -197,6 +200,28 @@ the base ticket it designs**, at most one row. The manifest check reads its form
 and count and never the file's bytes — it runs on every gate entry and dies on a
 failure, so comparing there would kill every gate call of a child run the moment
 the base is revised; the design stage re-hashes the file before it spawns anyone.
+
+**The `세그먼트 입양` row hands this run a segment an earlier run cut and did not
+land** — its branch, its worktree, the run it came from and its pull request. A
+run names its segment branches and worktrees after its own id, so without the
+row a later run could only redo that segment from the base. The row is the
+person's claim, taken at kickoff; the disk is the evidence, read when the segment
+is planned: the worktree must be the slice target's, carry the declared branch,
+and the earlier run must neither have landed the segment nor still run a stage
+on it. The manifest check reads the row's form only, for the reason it reads the
+`베이스 설계` row's form only — it runs on every gate entry, and the worktree is
+torn down once the segment lands. The snapshot's `슬라이싱` names the adopted
+branch and worktree for that segment and adds `입양` and `PR`, and the router
+then cuts no branch, opens no pull request, and dispatches a review first.
+
+**A `선행 착지` row states that a predecessor slice landed outside every run
+ledger**, one row per slice, and only the kickoff writes it, after a person
+confirms the slice, the repository and the merge commit. Two shapes need it: the
+run that delivered the slice recorded it under another segment id or without a
+`머지 커밋`, or the slice lives in a repository this run does not target. The
+manifest check reads its form and refuses a second row for one slice; the
+planning act checks the rest, at the moment it brings the predecessor in (see
+`segment.선행` below).
 
 The `자동 채택` rows are in that list because they decide whether a judgment is
 taken without a person. Serialization is over the whole file rather than over
@@ -324,7 +349,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행` and `베이스 설계` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양` and `선행 착지` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -374,7 +399,7 @@ never compared.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
    target rows, rule settings, pre-authorization rows, auto-adoption rows, design
-   roster rows, base publication and base design rows, the cost ceiling and
+   roster rows, base publication and base design rows, segment adoption rows, the cost ceiling and
    stagnation bound when declared, deadline. The PLAN is not
    in it: the router decides the step graph one act at a time, so a frozen plan
    would be recorded and never compared.
@@ -427,6 +452,17 @@ never compared.
     `clickup` target, a `-` target for `없음`. `single` forbids a `split` step and
     any `베이스 발행` row. A `베이스 설계` row may appear at most once and must
     match its form; its `sha256` is not compared against the file here. Each
+    violation is a **hard stop**.
+17. **`세그먼트 입양` rows, form only.** Each row matches its form, its
+    `워크트리` is absolute, carries the reserved infix `-run-` the teardown guard
+    requires and no double quote, backslash or control byte, its `출처 런` is a
+    run id other than this run's, and no segment has two rows. Each violation is
+    a **hard stop**. The worktree, the branch and the earlier run are not read
+    here; the segment's planning act reads them.
+18. **`선행 착지` rows.** Each row matches
+    `- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>`,
+    and no slice carries two. Whether the slice is declared, whether the slug is
+    its `레포` and whether the commit landed are not checked here. Each
     violation is a **hard stop**.
 
 **Both warnings fire at most once per run.** This whole conjunction re-runs on
@@ -737,9 +773,9 @@ Two consequences the schema carries rather than leaving to callers. Long values 
 
 **Two fields, and only two, are relaxed under the cap: `segment.인가면` and `cycle.발견 지문`.** `인가면` is 144 bytes on the row — separator, name, two sha256 hexes and the arrow — and the rows it lands on are the planning rows that already carry a long `선언 파일 집합`, so the worst row and the field meet. A `segment` row that would cross the cap with the field lands **without** it, carrying `인가면=생략(행 길이)` instead, and without even that when the marker does not fit; the settings are rewritten either way, and what degrades is the record, never the widening. A failure marker (`인가면=실패(<사유>)`) that would cross the cap is dropped outright rather than rewritten as `생략(행 길이)`; the `warn` the arm already emitted is the record then. `발견 지문` degrades in one step, not two: a `cycle` row that would cross the cap with it lands without the field, with no marker, and the arm warns once on stderr. There is no marker because an absent key already reads as "no fingerprint", and a marker would be longer than the 12-byte value; what is lost is one SPINNING or OSCILLATION reading, never the review the row records. This is not a general rule: every series other than these two decides for itself what it may drop, which today is nothing.
 
-### 3.2 The row series is closed at twenty-seven
+### 3.2 The row series is closed at twenty-eight
 
-> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen`, then `### 3.2 The row series is closed at fifteen`, then `### 3.2 The row series is closed at sixteen`, then `### 3.2 The row series is closed at seventeen`, then `### 3.2 The row series is closed at eighteen`, then `### 3.2 The row series is closed at nineteen` and `### 3.2 The row series is closed at twenty`, then `### 3.2 The row series is closed at twenty-one`, then `### 3.2 The row series is closed at twenty-two` and `### 3.2 The row series is closed at twenty-three`, then `### 3.2 The row series is closed at twenty-four`, then `### 3.2 The row series is closed at twenty-five`, then `### 3.2 The row series is closed at twenty-six` — `handoff` arrived as the fifteenth kind, `의무 종결`·`의무 포기` as the sixteenth and seventeenth, `교대 기동` as the eighteenth, `경계 억제` as the nineteenth, `pace` as the twentieth, `checks` as the twenty-first, `stage-lease`·`stage-wait` as the twenty-second and twenty-third, `인벤토리 기준선` as the twenty-fourth, `계측 필링 건너뜀` as the twenty-fifth, `한도 해제` as the twenty-sixth, and `중단 답` as the twenty-seventh. `twenty-two` was also the count on a line of work where `계측 필링 건너뜀` arrived before `stage-lease`·`stage-wait`; the two lines were joined afterwards. A heading that states a count states a falsehood the moment the count moves, and it has moved twelve times; every one of those spellings is kept here rather than replaced so a citation written against any of them still lands.
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen`, then `### 3.2 The row series is closed at fifteen`, then `### 3.2 The row series is closed at sixteen`, then `### 3.2 The row series is closed at seventeen`, then `### 3.2 The row series is closed at eighteen`, then `### 3.2 The row series is closed at nineteen` and `### 3.2 The row series is closed at twenty`, then `### 3.2 The row series is closed at twenty-one`, then `### 3.2 The row series is closed at twenty-two` and `### 3.2 The row series is closed at twenty-three`, then `### 3.2 The row series is closed at twenty-four`, then `### 3.2 The row series is closed at twenty-five`, then `### 3.2 The row series is closed at twenty-six`, then `### 3.2 The row series is closed at twenty-seven` — `handoff` arrived as the fifteenth kind, `의무 종결`·`의무 포기` as the sixteenth and seventeenth, `교대 기동` as the eighteenth, `경계 억제` as the nineteenth, `pace` as the twentieth, `checks` as the twenty-first, `stage-lease`·`stage-wait` as the twenty-second and twenty-third, `인벤토리 기준선` as the twenty-fourth, `계측 필링 건너뜀` as the twenty-fifth, `한도 해제` as the twenty-sixth, `중단 답` as the twenty-seventh, and `리뷰 기각` as the twenty-eighth. `twenty-two` was also the count on a line of work where `계측 필링 건너뜀` arrived before `stage-lease`·`stage-wait`; the two lines were joined afterwards. A heading that states a count states a falsehood the moment the count moves, and it has moved thirteen times; every one of those spellings is kept here rather than replaced so a citation written against any of them still lands.
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.**
 
@@ -759,7 +795,9 @@ An approval and a deferred review obligation are **non-terminal states with thei
 
 **The twenty-sixth exists because a person's "the limit has cleared" has to reach a shift the seat does not route.** `한도 해제` is written by `act --kind limit-cleared`, and **by the seat only**: a caller with its own shift ordinal, a stage, or a caller carrying `CC_PIPELINE_SHIFT_ID` is refused with exit 3 and no row, judged in the order the seat arm of the context cap uses. Argv carries `근거` — a summary of what the person said, clipped to the row cap — and nothing else; any other key, `레인` and `기록 시각` included, is exit 2 with no row, because the lane and the time this row testifies to are the gate's. **It decides nothing**: no termination condition reads it, it is outside the progress vector, and nothing is notified from it — it moves the chain tip and no more, which is why `blocked`, wired to condition 5, could not carry it. Its one reader is a shift's re-attach rule, which compares its ledger line with a cut stage's `stage-result` line; a re-attached attempt that is cut again lands a later `stage-result` row, so **each row is spent per cut** and never releases the same cut twice.
 
-**The twenty-seventh exists because a person's answer to a halt record has to reach a shift the seat does not route.** `중단 답` is written by `act --kind halt-answer`, by the seat only, on the same terms as `한도 해제`. Argv carries `중단 기록` (the record's absolute path, which has to sit under this run's `halt/` directory, open with the record header and close with its fence), `선택지` (one of that record's options, byte for byte — a free answer is not one) and `근거` (clipped); `--segment` names the stage that halted — the segment id, or the step id for the design step — and has to have a `stage-result` row. The gate stamps `세그먼트`, `스킬` (the record's own line), `기록 다이제스트` (the record's `sha256`), `레인` and `기록 시각`; any other argv key is exit 2 with no row. **It decides nothing**: no termination condition reads it and it is outside the progress vector. Its one reader is the snapshot's `answered_halts[]`, which lists the last row per key until a `stage-result` row of that key lands on a later line — the stage the shift dispatched with the answer has then taken it — so **each row is spent once**.
+**The twenty-seventh exists because a person's answer to a halt record has to reach a shift the seat does not route.** `중단 답` is written by `act --kind halt-answer`, by the seat only, on the same terms as `한도 해제`. Argv carries `중단 기록` (the record's absolute path, which has to sit under this run's `halt/` directory, open with the record header and close with its fence), `선택지` (one of that record's options, byte for byte — a free answer is not one), `근거` (clipped) and, optionally, `첨부` — a non-empty `.md` file the seat wrote under the same `halt/` with what the person supplied for that option, which must not open with the halt record header; `--segment` names the stage that halted — the segment id, or the step id for the design step — and has to have a `stage-result` row. The gate stamps `세그먼트`, `스킬` (the record's own line), `기록 다이제스트` (the record's `sha256`), `첨부 다이제스트` when there is an attachment, `레인` and `기록 시각`; any other argv key is exit 2 with no row. **It decides nothing**: no termination condition reads it and it is outside the progress vector. Its one reader is the snapshot's `answered_halts[]`, which lists the last row per key until a `stage-result` row of that key lands on a later line — the stage the shift dispatched with the answer has then taken it — so **each row is spent once**.
+
+**The twenty-eighth exists because a person's dismissal of review findings has to reach the merge checks, which read only the segment's last `cycle` row.** `리뷰 기각` is written by `act --kind review-dismiss`, by the seat only, on the same terms as `한도 해제`. Argv carries `사이클` and `리뷰 HEAD`, which must equal the segment's last `cycle` row — a person dismisses the review they looked at — and `근거` (clipped); a cycle with P0 and P1 both zero has nothing to dismiss, and any other argv key is exit 2 with no row. The gate stamps `세그먼트`, `기각 P0`·`기각 P1` and `리포트 경로` from that cycle row, `레인` and `기록 시각`. It dismisses the whole cycle, because the `cycle` row counts findings rather than naming them. **It binds by value, not by position**: a reader honours it only while the segment's last `cycle` row carries the same `사이클` and `리뷰 HEAD`, so a newer review voids it without anything being rewritten. Its readers are the `리뷰-후-머지` rule (through the gate's `GATE_SEGMENT_REVIEW_DISMISSED`), the apply act's precondition 3 and the snapshot's `cycles[].기각`; the freshness ladder and the report check stand unchanged. No termination condition reads it and it is outside the progress vector.
 
 **`stage-lease` records which account a lineage was handed, and it is written before the spawn it covers.** One row per grant, immediately before the stage process starts — never while the routing guard is off, and once it is on, for every grant: a seat grant and a dormant grant get their row before the spawn like any other. Both launch paths write it, the driver's spawn and the gate's stage dispatch; the gate's dispatch passes its lineage itself as `파견 id`, a fixed head that no driver dispatch id begins with, followed by the segment and the attempt number. `계보` is derived from `파견 id` by stripping every trailing `.retry`, never taken from the caller. **Both writers write it in the gate's frame**: the `교대=` seat in front, the chain tip read inside the ledger lock, and `prev=` behind, so a driver row and a gate row for the same arguments are the same bytes and the chain runs through both. An empty value is `-` — a seat grant carries `계정=-`, `예약=-` and `관측=-`, and `근거` (`single-seat` or `shift-seat-fallback`) is what says it was a seat; `계정=-` with any other `근거`, or an account with one of those two, is refused. `예약` is `<five_hour>/<seven_day>`, each component `I.FFFF` — the reservation in basis points over 10000, exactly four decimals, no rounding — and `관측` is `<source>@<epoch>`, `none` or `-`. **Identity values, `그룹`, `레인` and `관측` are refused, never normalised**: an identity is `^[A-Za-z0-9._:#+-]{1,64}$` with at least one alphanumeric and is never `-` or `(미상)`; `계정` and the id of `그룹=acct:<id>` additionally may not have a uuid's shape or be sixteen or more hex characters; `레인` is `~`, or starts with `~/` or `/`, does not end in `/`, and carries no `|`, CR, LF or `@`. So an organisation uuid, an email address or a credential value never reaches a row. **A refusal is rc 2 from the writer and no row at all**; the caller of a refused lease gives back the grant it just received and does not spawn.
 
@@ -806,7 +844,8 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `checks` | `PR`(`<owner>/<name>#<n>`) · `head sha`(40 hex \| `미상`) · `상태`(`대기` \| `통과` \| `실패` \| `미등록` \| `판정 불가`) · `필수 집합`(`없음` \| `판정 불가` \| check names joined by `, `; clipped at `GATE_CHECKS_REQ_MAX`, 200 bytes) · `실패 체크`(`-` \| failing check names joined by `, `; clipped at `GATE_CHECKS_FAIL_MAX`, 300 bytes) · `관측` · `세그먼트`(segment id \| `-`) |
 | `인벤토리 기준선` | `형태`(`사본` \| `부재`) · `지문`(`<sha256>` \| `-`) · `판정 루트` · `이전 지문`(`<sha256>` \| `-`) |
 | `한도 해제` | `근거`(clipped) · `레인`(gate-stamped, tilde form) · `기록 시각`(gate-stamped) |
-| `중단 답` | `세그먼트` · `중단 기록`(halt record absolute path) · `스킬`(gate-read from the record) · `선택지`(verbatim option) · `근거`(clipped) · `기록 다이제스트`(gate-stamped record sha256) · `레인`(gate-stamped, tilde form) · `기록 시각`(gate-stamped) |
+| `중단 답` | `세그먼트` · `중단 기록`(halt record absolute path) · `스킬`(gate-read from the record) · `선택지`(verbatim option) · `근거`(clipped) · `기록 다이제스트`(gate-stamped record sha256) · `첨부`(optional: attachment absolute path under `halt/`) · `첨부 다이제스트`(gate-stamped, with `첨부` only) · `레인`(gate-stamped, tilde form) · `기록 시각`(gate-stamped) |
+| `리뷰 기각` | `세그먼트` · `사이클` · `리뷰 HEAD` · `기각 P0`(gate-copied from the cycle row) · `기각 P1`(같음) · `리포트 경로`(같음, `-` when absent) · `근거`(clipped) · `레인`(gate-stamped, tilde form) · `기록 시각`(gate-stamped) |
 
 **The `run` row's three version fields say what code JUDGED the run, and the two beside them say what code was being judged.** `판본` is the pinned commit (`<40hex>` \| `(미상)` \| `(고정 안 함)`), `판본 트리` the pinned plugin subtree's git tree (`<40hex>` \| `(미커밋)` \| `(미상)` \| `(고정 안 함)`), and `판본 다이제스트` the content digest of the copy itself (`<sha256>` \| `(고정 안 함)`). `(고정 안 함)` is not a failure: a run opened before pinning existed, or one opened under the test seam, is deliberately left unpinned, and a reader has to be able to tell that apart from a pin whose value could not be determined. `(미커밋)` means the plugin subtree was dirty when the copy was taken, so no tree object names those bytes.
 
@@ -960,7 +999,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 Two floors sit on `선행`, enforced at write time because `선행` is an *input* to the derivation the cone's superset check compares against. **It is monotone per segment id** — a later row may add and may not remove. And **absence is not `없음`** — in a repository carrying two or more segments a `segment` row with no `선행` is refused, while `없음` is accepted as a positive statement of independence.
 
-**A predecessor an earlier run of the same document landed is brought in, not refused.** A frozen document is often implemented a slice per run, and every run keeps a ledger of its own, so the run planning a slice has never seen the predecessor the previous run merged. On `act --kind segment --from-declaration`, after the whole-declaration checks pass and before the planned row is written, the gate takes each `선행` token of the slice that this ledger does not know and looks for it in the other run ledgers of the same directory — files named `<run-id>.md` whose `run` row's `설계 문서` is this run's document key; `.plan`, `.kickoff` and other companions are not read. It reads each such ledger's **last** `segment` row for the id, keeps one only when its `상태` is `머지됨` or `완료` and it carries a hex `머지 커밋`, and of several prefers the run whose `run` row's `시작` is latest (file mtime is not used: it moves on every append). That merge commit is then checked against the base branch of the predecessor's own target with the three-way landing verdict a deferred review obligation closes on. **Only `착지` brings it in**: the gate appends one terminal `segment` row carrying `id`, the earlier `상태`, `PR` when present, `머지 커밋`, the earlier `워크트리`, the earlier `선행` (or `없음`) and **`출처=<that run's id>`**. `미착지` and `판정 불가` refuse the plan with exit 3 and write nothing, and so does a `머지됨` whose apply this run's declaration still owes, because condition 1 would read that row as an ending and the apply would be skipped. A `plan` writes nothing and warns what the `act` would bring in. The row is written once — a later act finds the id on the ledger. It is terminal, so the cone, condition 1, the CI poller and the dispatch-time landing check all treat it as finished work, and no review obligation is issued from it. A token neither this ledger nor an earlier run of the document landed still meets the floor above, whose refusal now names both places it looked. **`출처` is the gate's**: a caller's `출처=` on any `segment` row is refused with exit 2, and a router does not hand-write a predecessor row in place of this import.
+**A predecessor an earlier run of the same document landed is brought in, not refused.** A frozen document is often implemented a slice per run, and every run keeps a ledger of its own, so the run planning a slice has never seen the predecessor the previous run merged. On `act --kind segment --from-declaration`, after the whole-declaration checks pass and before the planned row is written, the gate takes each `선행` token of the slice that this ledger does not know and looks for it in the other run ledgers of the same directory — files named `<run-id>.md` whose `run` row's `설계 문서` is this run's document key; `.plan`, `.kickoff` and other companions are not read. It reads each such ledger's **last** `segment` row for the id, keeps one only when its `상태` is `머지됨` or `완료` and it carries a hex `머지 커밋`, and of several prefers the run whose `run` row's `시작` is latest (file mtime is not used: it moves on every append). That merge commit is then checked against the base branch of the predecessor's own target with the three-way landing verdict a deferred review obligation closes on. **Only `착지` brings it in**: the gate appends one terminal `segment` row carrying `id`, the earlier `상태`, `PR` when present, `머지 커밋`, the earlier `워크트리`, the earlier `선행` (or `없음`) and **`출처=<that run's id>`**. `미착지` and `판정 불가` refuse the plan with exit 3 and write nothing, and so does a `머지됨` whose apply this run's declaration still owes, because condition 1 would read that row as an ending and the apply would be skipped. A `plan` writes nothing and warns what the `act` would bring in. The row is written once — a later act finds the id on the ledger. It is terminal, so the cone, condition 1, the CI poller and the dispatch-time landing check all treat it as finished work, and no review obligation is issued from it. **A predecessor no run ledger records is brought in from the manifest's `선행 착지` row**, on the same act and at the same point, when no earlier run of the document landed it or its slice's `레포` is not a declared target. The row's `원격 슬러그` must equal the slice's declared `레포`, or the plan is refused with exit 3. A `레포` that is a declared target is checked with the same three-way landing verdict against that target's base branch, and a slice whose apply this run's declaration owes is refused, because the row states a merge and nothing about an apply. A `레포` that is not a target has no anchor on this host, so the verdict comes from the remote: its default branch and its own comparison of the commit against that branch (`ahead` or `identical` is `착지`, `behind` or `diverged` is `미착지`, and anything unanswered is `판정 불가`). Only `착지` brings it in, as one terminal `segment` row carrying `id`, `상태=머지됨`, the row's `머지 커밋`, `워크트리=-`, the slice's declared `선행` (or `없음`) and **`출처=매니페스트`**. A token that none of the three — this ledger, an earlier run of the document, a `선행 착지` row — shows landed still meets the floor above, whose refusal names all three. **`출처` is the gate's**: a caller's `출처=` on any `segment` row is refused with exit 2, and a router does not hand-write a predecessor row in place of this import.
 
 **`blocked.스코프=cone` is the one scope the router may CREATE, and the polarity is the opposite of run scope's.** A run-scope block is raised by the gate and only resolved by the router; a cone holds what stands on a refuted premise and lets the siblings keep going. The gate does not take the router's `의존 세그먼트` on trust — it derives the cone itself and refuses a declaration that is a proper subset. Widening passes; narrowing does not.
 

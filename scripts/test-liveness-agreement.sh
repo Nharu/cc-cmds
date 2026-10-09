@@ -113,7 +113,7 @@ read_statusline() {
 }
 
 read_pane() {
-  # The status pane's helper takes its run from the status line's second token,
+  # The status pane's helper takes its run from the status line's fields row,
   # so the two can only disagree if that borrowing breaks. Its head row carries
   # the run id in the fourth field.
   bash "$PANE" "$1" | head -1 | cut -f4
@@ -185,6 +185,34 @@ for _pr in sess-a:agree-a sess-b:agree-b; do
   _ps=${_pr%%:*}; _pw=${_pr#*:}
   check "패널이 상태 표시줄과 같은 런을 고른다 ($_ps)" "$(read_pane "$_ps")" "$(read_statusline_rid "$_ps")"
   check "그 런이 픽스처의 런이다 ($_ps)" "$(read_pane "$_ps")" "$_pw"
+done
+
+# And the same KIND for the running stage: the status line's kind slot and the
+# pane's running detail both read `cc_stage_kind`. One fixture has a `.kind`
+# that differs from the last stage-result, the other has none, so each source
+# of the kind is the answer once. Each is pinned to its expected kind as well.
+read_sl_kind() {
+  # The token after the segment on the `⟳ <rid> <seg> <kind> <elapsed>` line.
+  fx_statusline_stdin "$1" | bash "$SL" | cut -d' ' -f4
+}
+read_pane_kind() {
+  # The first word of the running segment's detail row.
+  bash "$PANE" "$1" | awk -F'\t' '$1 == "seg-detail" { s = $4; sub(/^ +/, "", s); split(s, w, " "); print w[1]; exit }'
+}
+fx_mkrun agree-kind1; fx_ledger_path; fx_session_index sess-k1 agree-kind1
+fx_segment S1 실행중
+fx_row 'stage-result' "세그먼트=S1" "스테이지=S1" "종류=review" "종료 코드=0" "실행 버전=1"
+fx_stage_live S1; fx_stage_meta S1 implement 2
+fx_heartbeat 0 5
+fx_mkrun agree-kind2; fx_ledger_path; fx_session_index sess-k2 agree-kind2
+fx_segment S1 실행중
+fx_row 'stage-result' "세그먼트=S1" "스테이지=S1" "종류=review" "종료 코드=0" "실행 버전=1"
+fx_stage_live S1
+fx_heartbeat 0 5
+for _pk in sess-k1:implement sess-k2:review; do
+  _ps=${_pk%%:*}; _pw=${_pk#*:}
+  check "패널의 종류가 상태 표시줄의 종류와 같다 ($_ps)" "$(read_pane_kind "$_ps")" "$(read_sl_kind "$_ps")"
+  check "그 종류가 기대한 출처의 것이다 ($_ps)" "$(read_pane_kind "$_ps")" "$_pw"
 done
 
 # ---------------------------------------------------------------------------

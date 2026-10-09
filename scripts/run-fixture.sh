@@ -325,6 +325,35 @@ fx_done() {
   printf '%s\n' "종단 — 픽스처" > "$FX_RUN_DIR/done"
 }
 
+fx_stage_meta() {
+  # fx_stage_meta <segment> <kind> <attempt> — the kind and attempt records the
+  # gate leaves beside a stage it launched, under the names it writes them:
+  # `<seg>.kind` and `<seg>.attempt`. The driver writes neither, so a fixture of
+  # a driver stage leaves this out. An empty <kind> writes an empty `.kind`,
+  # which is a shape the gate can leave too.
+  printf '%s\n' "$2" > "$FX_RUN_DIR/$1.kind"
+  printf '%s\n' "$3" > "$FX_RUN_DIR/$1.attempt"
+}
+
+fx_manifest_target() {
+  # fx_manifest_target [<alias> <절단점>]... — the run manifest beside the
+  # ledger, `<rid>.plan.md`, carrying one `target` row per pair in the shape
+  # the kickoff writes and the gate reads with `target_field`, plus the run's
+  # highest cutpoint, which is the last pair's. With no pair it still writes the
+  # file, with no `target` row in it.
+  local f last=""
+  f="$(dirname "$FX_LEDGER")/$FX_RUN_ID.plan.md"
+  {
+    printf '# 파이프라인 런 매니페스트 — %s\n\n## 대상\n' "$FX_RUN_ID"
+    while [ "$#" -ge 2 ]; do
+      printf -- '- `target` | 별칭=%s | 베이스 브랜치=master | 홈=예 | 절단점=%s | 말단 행위 상한=없음\n' "$1" "$2"
+      last="$2"; shift 2
+    done
+    printf '\n## 인가\n'
+    [ -z "$last" ] || printf '**런 최대 절단점**: %s\n' "$last"
+  } > "$f"
+}
+
 # --------------------------------------------------------------------------
 # Isolation guards — enforcement, not convention
 # --------------------------------------------------------------------------

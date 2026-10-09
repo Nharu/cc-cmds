@@ -4,9 +4,10 @@
 # tests/fixtures/lint-notify-env-name/.
 #
 # Each fixture is a self-contained set of THREE roots — `orchestrator/notify-run.sh`
-# (the code that reads the switches), `skills/autopilot/SKILL.md` (the prose that
-# tells a user what to type for the unattended banners) and `hooks/README.md`
-# (the same for the session banners) — so the lint can be driven against a whole
+# (the code that reads the three switches), `skills/autopilot/SKILL.md` (the prose
+# that tells a user what to type for the unattended banners) and `hooks/README.md`
+# (the same for the session banners and for the return hook's dismissal, one
+# marker sentence each) — so the lint can be driven against a whole
 # name pairing without touching the real tree. The third root is not decoration:
 # without it a fixture run resolves the seat contract against the REAL repo, and
 # every fixture is then measured partly against the tree it is isolated from.
@@ -24,7 +25,10 @@
 # notice. Its seat contract is deliberately correct, so the failure can only have
 # come from the document that actually drifted.
 #
-# `FAIL-unregistered-switch` — the emitter reads a third `CC_CMDS_` name that no
+# Every fixture carries all three registered switches and their markers, so each
+# FAIL fixture fails on the one rule it targets and on no other.
+#
+# `FAIL-unregistered-switch` — the emitter reads a fourth `CC_CMDS_` name that no
 # document announces. Both prose documents are consistent, so rules 2 and 3 pass
 # and only the set rule can catch it. This shape was UNEXPRESSIBLE while rule 1
 # counted to one, which is the whole reason it counts against a registered set

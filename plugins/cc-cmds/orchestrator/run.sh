@@ -426,6 +426,7 @@ manifest_snapshot_take() {
   #   C <row>      every `- \`종료 절\`` row, in order
   #   BP <row>     every `- \`베이스 발행\`` row anywhere, in order
   #   BD <row>     every `- \`베이스 설계\`` row anywhere, in order
+  #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -456,6 +457,8 @@ $(LC_ALL=C awk '
     index($0, "- `종료 절`") == 1 { print "C\t" $0 }
     index($0, "- `베이스 발행`") == 1 { print "BP\t" $0 }
     index($0, "- `베이스 설계`") == 1 { print "BD\t" $0 }
+    index($0, "- `세그먼트 입양`") == 1 { print "AD\t" $0 }
+    index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -641,6 +644,16 @@ manifest_base_design_rows() {
   grep -E '^- `베이스 설계`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_adoption_rows() {
+  if manifest_memo_on; then manifest_memo_all "AD	"; return 0; fi
+  grep -E '^- `세그먼트 입양`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_predecessor_landing_rows() {
+  if manifest_memo_on; then manifest_memo_all "PL	"; return 0; fi
+  grep -E '^- `선행 착지`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -724,6 +737,18 @@ binding_set_bytes() {
     # when absent, so no in-flight manifest's digest moves.
     manifest_base_publish_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basepub\t/'
     manifest_base_design_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basedesign\t/'
+    # THE ADOPTION ROWS ARE IN THE FROZEN SET, on the same terms. A `세그먼트
+    # 입양` row lets this run plan a segment in a worktree and branch it did not
+    # cut, so a row any act could append mid-run would hand the run a tree a
+    # person never named. Whole-file scan, zero bytes when absent.
+    manifest_adoption_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/adopt\t/'
+    # THE `선행 착지` ROWS ARE IN THE FROZEN SET, on the same terms. Each one is a
+    # person's statement, taken at kickoff, that a predecessor slice landed
+    # outside every run ledger, and the planning act turns it into a terminal
+    # row this run builds on. A row any act could append mid-run would let a
+    # dependent slice be dispatched over a predecessor nobody confirmed. A
+    # whole-file scan, zero bytes when absent.
+    manifest_predecessor_landing_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/predland\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1055,7 +1080,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1322,6 +1347,53 @@ EOF
     grep -qE '^- `베이스 설계` \| 문서=docs/[^ |]+\.md \| sha256=[0-9a-f]{64} \| 티켓=T[0-9]+$' <<<"$bd_rows" \
       || die "「베이스 설계」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>\` 입니다"
   fi
+  # 17 — `세그먼트 입양` rows, FORM ONLY. A row hands this run a segment an
+  # earlier run cut: its branch, its worktree and its pull request. Whether that
+  # worktree exists, carries the branch, and is free of the earlier run is
+  # checked when the segment is planned, not here — this conjunction runs on
+  # every gate entry, and once the merged segment's worktree is torn down every
+  # entry would die on it.
+  local ad_row ad_seg ad_wt ad_src ad_segs=" "
+  while IFS= read -r ad_row; do
+    [ -n "$ad_row" ] || continue
+    # A here-string, not a pipe, for the reason the `베이스 설계` check gives.
+    grep -qE '^- `세그먼트 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 워크트리=/[^|]*[^ |] \| 출처 런=[0-9]{8}-[0-9a-f]{8} \| PR=[0-9]+$' <<<"$ad_row" \
+      || die "「세그먼트 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>\` 입니다: $ad_row"
+    ad_seg=$(manifest_row_fields "$ad_row" '세그먼트')
+    ad_wt=$(manifest_row_fields "$ad_row" '워크트리')
+    ad_src=$(manifest_row_fields "$ad_row" '출처 런')
+    case "$ad_wt" in
+      *'"'*|*'\'*|*[[:cntrl:]]*) die "「세그먼트 입양」 행의 워크트리에 큰따옴표·역슬래시·제어 문자가 있습니다: $ad_wt" ;;
+      *"$WORKTREE_INFIX"*) : ;;
+      *) die "「세그먼트 입양」 행의 워크트리에 예약 인픽스 ${WORKTREE_INFIX} 가 없습니다 — 철거 가드가 그 인픽스를 요구합니다: $ad_wt" ;;
+    esac
+    [ "$ad_src" != "$RUN_ID" ] || die "「세그먼트 입양」 행의 출처 런이 이 런 자신입니다: $ad_src"
+    case "$ad_segs" in
+      *" $ad_seg "*) die "「세그먼트 입양」 행이 세그먼트 ${ad_seg} 에 둘 이상입니다" ;;
+    esac
+    ad_segs="$ad_segs$ad_seg "
+  done <<EOF
+$(manifest_adoption_rows)
+EOF
+  # 18 — `선행 착지` rows: a predecessor slice that landed outside every run
+  # ledger, as a person confirmed it at kickoff. Its form and the uniqueness of
+  # its slice are checked here; whether the slice is declared, whether the slug is the slice's
+  # `레포` and whether the commit is on that repository's base branch are the
+  # planning act's to check, against the frozen document and the remote.
+  local pl_rows pl_row pl_ids="" pl_id
+  pl_rows=$(manifest_predecessor_landing_rows)
+  while IFS= read -r pl_row; do
+    [ -n "$pl_row" ] || continue
+    grep -qE '^- `선행 착지` \| 슬라이스=[A-Za-z0-9_.-]+ \| 원격 슬러그=[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ \| 머지 커밋=[0-9a-f]{40}$' <<<"$pl_row" \
+      || die "「선행 착지」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>\` 입니다: $pl_row"
+    pl_id=$(printf '%s' "$pl_row" | sed -n 's/.*| 슬라이스=\([^ |]*\) |.*/\1/p')
+    case " $pl_ids " in
+      *" $pl_id "*) die "「선행 착지」 행이 슬라이스 ${pl_id} 에 둘 이상입니다 — 슬라이스마다 많아야 하나입니다" ;;
+    esac
+    pl_ids="$pl_ids $pl_id"
+  done <<EOF
+$pl_rows
+EOF
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }
