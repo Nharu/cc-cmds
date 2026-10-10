@@ -390,12 +390,7 @@ export const register: Register = on => {
     const rec = await read($, recordAtom)
     const focused = await read($, focusedAtom)
     if (rec && isOpen(rec)) {
-      return drawForm(
-        el,
-        layoutRows(rec, focused, e.props.bodyColumns),
-        rec.form.questions.map(q => q.id),
-        handlers($),
-      )
+      return drawForm(el, layoutRows(rec, focused), rec.form.questions.map(q => q.id), handlers($))
     }
     const { Text } = el
 

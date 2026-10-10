@@ -696,6 +696,179 @@ for v in '$5' '5.'; do
 done
 
 # ---------------------------------------------------------------------------
+# --carry — 이전 매니페스트를 답으로, 기본값 파일을 비교 대상으로만 읽는다
+# ---------------------------------------------------------------------------
+sha_of() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | awk '{ print $1; exit }'; }
+# cw_write <file> — 이전 런 매니페스트 픽스처. CW_* 변수가 칸을 정한다.
+CW_KO='2026-10-09T03:00:00Z'; CW_DL='2026-10-09T12:00:00Z'; CW_CC=''; CW_SB='6'; CW_LAD='4'
+CW_AUTH=1; CW_AP='(없음)'; CW_AA='(해당 없음)'
+CW_TF=' | 리뷰 정책 상한=선리뷰후머지 | dev 식별자=aws-profile:dev | 배포트리거 식별자=branch:release'
+CW_ROWS='- `사전 인가` | 형태=gh pr | 사유=리뷰
+- `사전 인가` | 형태=git push | 사유=세그먼트 브랜치
+- `사전 인가` | 인터뷰 기록=docs/pipeline-run/20261001-feedbeef.interview.md | sha256=0000000000000000000000000000000000000000000000000000000000000000
+- `자동 채택` | 판단 부류=스테이지-재시도 | 상한=없음 | 심각도 상한=minor | 사유=크래시
+- `설계 로스터` | 역할=architecture | 범위=구조 | 모델=opus'
+cw_write() {
+  {
+    printf '# 파이프라인 런 매니페스트 — 20261001-feedbeef\n'
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=20261001-feedbeef;\n'
+    printf '     anchor-kind=repo; anchor-key=Nharu/cc-cmds;\n'
+    printf '     owner-doc=(없음); origin-worktree=%s;\n' "$HERE"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n**킥오프 일시**: %s\n**런 id**: 20261001-feedbeef\n\n' "$CW_KO"
+    printf '## 대상\n**대상 맵 다이제스트**: -\n'
+    printf -- '- `target` | 별칭=home | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음%s\n\n' "$MF_REPO" "$MF_CG" "$CW_TF"
+    printf '## 요소\n**설계 문서**: (없음)\n**적용 프로브**: %s\n**적용 주체**: %s\n\n' "$CW_AP" "$CW_AA"
+    if [ "$CW_AUTH" = "1" ]; then
+      printf '## 인가\n**런 최대 절단점**: 머지\n**종료 지점**: 전부 머지\n'
+      printf '**벽시계 마감**: %s\n' "$CW_DL"
+      [ -n "$CW_CC" ] && printf '**비용 천장**: %s\n' "$CW_CC"
+      [ -n "$CW_SB" ] && printf '**무진전 상한**: %s\n' "$CW_SB"
+      printf '**사다리 가용 단 수**: %s\n**미선언 상황 처분**: park\n' "$CW_LAD"
+      [ -n "$CW_ROWS" ] && printf '%s\n' "$CW_ROWS"
+    fi
+  } > "$1"
+}
+CW="$WORK/carry.md"
+KAT='2026-10-10T00:00:00Z'   # 1791590400
+KAT_E=1791590400
+# kc <file content> [extra args…] — --carry against $CW with its own hash.
+kc() {
+  local content="$1"; shift
+  printf '%s\n' "$content" > "$F"
+  CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$F" kd --now "$NOW" --carry "$CW" --kickoff-at "$KAT" --expect-sha256 "$(sha_of "$CW")" "$@"
+}
+kinds() { printf '%s\n' "$1" | awk -F'\t' -v t="$2" '$1 == t { print $3 }' | sort | paste -sd' ' -; }
+cnt() { printf '%s\n' "$1" | awk -F'\t' -v t="$2" -v k="$3" '$1 == t && (k == "" || $3 == k)' | grep -c . || true; }
+
+cw_write "$CW"
+out=$(kc 'ladder-rungs = 2
+deadline = +3h
+cost-ceiling = 40
+auto-adopt = 판단 부류=인용-갱신 | 상한=없음 | 심각도 상한=minor | 사유=a
+[Nharu/cc-cmds]
+cutpoint = PR'); rc=$?
+check "--carry 는 0 으로 끝난다" "$rc" "0"
+check "--carry 첫 줄이 머리 줄이다" "$(printf '%s\n' "$out" | sed -n 1p)" "cc-kickoff-defaults v1"
+for t in 적용 차이 빈칸 권한 마감; do
+  [ "$(cnt "$out" "$t" '')" -gt 0 ] && ok "--carry 가 $t 행을 낸다" || bad "--carry 행 종류" "$t 행이 없다"
+done
+check "차이 행은 파일 값이 다른 키만 (deadline 은 빠진다)" "$(kinds "$out" 차이)" "auto-adopt cutpoint ladder-rungs"
+check "빈칸 행은 원천에 없는 키만" "$(kinds "$out" 빈칸)" "cost-ceiling"
+check "적용 행은 이전 값을 싣는다 — 사다리" "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="ladder-rungs" { print $4 }')" "4"
+check "적용 행은 이전 값을 싣는다 — 절단점" "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="cutpoint" { print $2"|"$4 }')" "Nharu/cc-cmds|머지"
+check "차이 행은 이전 값과 파일 값을 함께 싣는다" "$(printf '%s\n' "$out" | awk -F'\t' '$1=="차이" && $3=="ladder-rungs" { print $4"|"$5 }')" "4|2"
+miss=''
+for k in $(grep -E "^KD_(RUN|REPO)_KEYS='" "$HELPER" | sed -E "s/^KD_(RUN|REPO)_KEYS='([^']*)'.*/\2/"); do
+  n=$(printf '%s\n' "$out" | awk -F'\t' -v k="$k" '($1 == "적용" || $1 == "빈칸" || $1 == "이어받지 않음") && $3 == k' | grep -c . || true)
+  [ "$n" = "1" ] || miss="$miss $k($n)"
+done
+check "키 표의 모든 키가 적용·빈칸·이어받지 않음 중 정확히 한 행을 낸다" "${miss:-없음}" "없음"
+check "이어받지 않음 행은 이름 붙은 사유 토큰을 갖는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && ($4 == "" || NF != 5)' | grep -c . || true)" "0"
+check "자동 채택 행마다 권한 행이 하나" "$(cnt "$out" 권한 auto-adopt)" "1"
+check "사전 인가 형태 행마다 권한 행이 하나 (인터뷰 행은 빠진다)" "$(cnt "$out" 권한 act-allow)" "2"
+check "대상별 권한 필드와 적용 주체가 권한 행을 낸다" \
+  "$(cnt "$out" 권한 cutpoint)$(cnt "$out" 권한 review-ceiling)$(cnt "$out" 권한 terminal-cap)$(cnt "$out" 권한 apply-actor)" "1111"
+check "권한 행은 이어받는 행을 축자로 싣는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="권한" && $3=="act-allow" { print $4; exit }')" '- `사전 인가` | 형태=gh pr | 사유=리뷰'
+widen() { printf '%s\n' "$out" | awk -F'\t' -v k="$1" '$1=="권한" && $3==k { print $5; exit }'; }
+check "권한 넓힘 표식 — 절단점 머지 1 · 리뷰 상한 선리뷰후머지 0 · 말단 상한 없음 1 · 사전 인가 1 · 자동 채택 1 · 적용 주체 없음 0" \
+  "$(widen cutpoint)$(widen review-ceiling)$(widen terminal-cap)$(widen act-allow)$(widen auto-adopt)$(widen apply-actor)" "101110"
+check "권한 행 수가 원천 자동 채택+사전 인가 형태 행 수와 대상별 권한 필드 수의 합" "$(cnt "$out" 권한 '')" "7"
+
+# 행 0개 원천 + 파일의 auto-adopt — 「없음으로 답함」 은 적용이지 빈칸이 아니다.
+CW_ROWS_SAVE="$CW_ROWS"; CW_ROWS=''
+cw_write "$CW"
+out=$(kc 'auto-adopt = 판단 부류=인용-갱신 | 상한=없음 | 심각도 상한=minor | 사유=a
+[Nharu/cc-cmds]
+act-allow = 형태=gh pr | 사유=a')
+check "자동 채택·사전 인가 행 0개 원천 + 파일 값 → 빈칸 0" "$(cnt "$out" 빈칸 '')" "0"
+check "행 0개 원천의 자동 채택은 적용 없음" "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="auto-adopt" { print $4 }')" "없음"
+check "행 0개 원천의 권한 행은 대상별 필드뿐" "$(cnt "$out" 권한 auto-adopt)$(cnt "$out" 권한 act-allow)" "00"
+CW_ROWS="$CW_ROWS_SAVE"
+
+# 금지 부류로 표류한 원천 행은 권한으로 싣지 않고 이름 붙여 묻는다.
+CW_ROWS_SAVE="$CW_ROWS"
+CW_ROWS='- `자동 채택` | 판단 부류=팀-구성 | 상한=없음 | 심각도 상한=minor | 사유=x'
+cw_write "$CW"
+out=$(kc '')
+check "금지 부류 원천 행은 권한 행이 없다" "$(cnt "$out" 권한 auto-adopt)" "0"
+check "금지 부류 원천 행은 이어받지 않음 금지 부류" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="auto-adopt" { print $4 }')" "금지 부류"
+CW_ROWS="$CW_ROWS_SAVE"
+
+# 거절 — 세 변수 각각.
+cw_write "$CW"
+for v in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID; do
+  out=$(env "$v=x" "$BASH" "$HELPER" --carry "$CW" --kickoff-at "$KAT" --expect-sha256 "$(sha_of "$CW")" 2>/dev/null); rc=$?
+  check "--carry 는 $v 가 있으면 비영으로 거절한다" "$([ "$rc" != "0" ] && echo 비영 || echo 0)" "비영"
+  check "--carry 거절 때 $v 에서 stdout 은 비어 있다" "$out" ""
+done
+check "--carry 는 --target 과 함께 쓰지 않는다" "$(kd --carry "$CW" --kickoff-at "$KAT" --expect-sha256 "$(sha_of "$CW")" $T >/dev/null 2>&1; echo $?)" "2"
+check "--kickoff-at 만 따로 쓰면 용법 오류" "$(kd $T --kickoff-at "$KAT" >/dev/null 2>&1; echo $?)" "2"
+
+# 마감 — 세 표기가 고쳐 쓴 뒤 같은 간격, 그리고 run.sh 의 판독기와 같은 순간.
+dl_inst() {
+  CC_ORCH_SOURCE_ONLY=1 bash -c 'd="$1"; x="$2"; set --; . "$d" >/dev/null 2>&1; set +e; deadline_instant "$x"' _ "$DRIVER" "$1" 2>/dev/null
+}
+dl_row() { cw_write "$CW"; kc '' | awk -F'\t' '$1=="마감" { print $2"|"$3"|"$4 }'; }
+ivs=''
+for d in '2026-10-09T12:00:00Z' '2026-10-09T21:00:00+09:00' '2026-10-09T21:00:00+0900'; do
+  CW_DL="$d"; r=$(dl_row)
+  case "$r" in ok\|*) ;; *) bad "마감 '$d'" "ok 가 아니다: $r" ;; esac
+  ivs="$ivs ${r##*|}"
+  abs=$(printf '%s' "$r" | cut -d'|' -f2)
+  check "마감 '$d' 의 새 절대값을 deadline_instant 가 킥오프+간격으로 읽는다" "$(dl_inst "$abs")" "$((KAT_E + 32400))"
+done
+check "Z·±HH:MM·±HHMM 세 표기가 같은 간격을 낸다" "$ivs" " 32400 32400 32400"
+CW_KO='2026-10-09T12:00:00+0900'; CW_DL='2026-10-09T21:00:00+09:00'; r=$(dl_row)
+check "±HHMM 킥오프 일시도 넓게 읽는다" "${r##*|}" "32400"
+CW_KO='2026-10-09T03:00:00Z'
+for d in '2026-10-09T21:00:00+99:99' '2026-10-09T21:00:00+1500' '2026-13-09T21:00:00+09:00'; do
+  CW_DL="$d"
+  check "범위 밖 마감 '$d' 는 사유 토큰" "$(dl_row | cut -d'|' -f1)" "범위 밖"
+done
+CW_DL='2026-10-09T21:00:00'
+check "영역 없는 마감은 사유 토큰" "$(dl_row | cut -d'|' -f1)" "영역 없음"
+CW_DL='2026-10-09T02:00:00Z'
+check "0 이하의 간격은 사유 토큰" "$(dl_row | cut -d'|' -f1)" "간격 없음"
+CW_DL='2026-10-09T12:00:00Z'
+cw_write "$CW"
+r=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE=off kd --now "$NOW" --carry "$CW" --kickoff-at '2026-09-01T00:00:00Z' --expect-sha256 "$(sha_of "$CW")" \
+    | awk -F'\t' '$1=="마감" { print $2 }')
+check "다시 잡은 마감이 지났으면 사유 토큰" "$r" "과거 시각"
+CW_DL='없음'
+check "이전 마감 없음은 사유 토큰" "$(dl_row | cut -d'|' -f1)" "마감 없음"
+CW_DL='2026-10-09T12:00:00Z'
+
+# 해시 — 틀린 해시는 아무것도 내지 않고, 사본을 뜬 뒤 원천이 바뀌어도 사본의 값을 낸다.
+cw_write "$CW"
+out=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE=off kd --now "$NOW" --carry "$CW" --kickoff-at "$KAT" \
+      --expect-sha256 "$(printf '%064d' 0)" 2>"$WORK/carry.err"); rc=$?
+check "틀린 --expect-sha256 은 비영" "$([ "$rc" != "0" ] && echo 비영 || echo 0)" "비영"
+check "틀린 --expect-sha256 에서 stdout 은 비어 있다" "$out" ""
+check "틀린 --expect-sha256 에서 stderr 는 한 줄" "$(grep -c . "$WORK/carry.err")" "1"
+# 원천을 FIFO 로 두면 처음 연 쪽은 원래 바이트를, 다시 연 쪽은 바뀐 바이트를 읽는다.
+# 도우미가 사본만 읽으면 둘째 쓰기는 끝내 읽히지 않는다.
+FIFO="$WORK/carry.fifo"; rm -f "$FIFO"
+if mkfifo "$FIFO" 2>/dev/null; then
+  ORIG=$(cat "$CW"); want=$(sha_of "$CW")
+  CHANGED=$(printf '%s\n' "$ORIG" | sed 's/^\*\*사다리 가용 단 수\*\*: 4$/**사다리 가용 단 수**: 2/')
+  ( printf '%s\n' "$ORIG" > "$FIFO"; sleep 1; printf '%s\n' "$CHANGED" > "$FIFO" ) &
+  wpid=$!
+  out=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE=off kd --now "$NOW" --carry "$FIFO" --kickoff-at "$KAT" --expect-sha256 "$want" 2>/dev/null)
+  kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+  check "사본을 뜬 뒤 원천이 바뀌어도 적용 행은 사본의 값이다" \
+    "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="ladder-rungs" { print $4 }')" "4"
+  rm -f "$FIFO"
+else
+  bad "사본 갈고리" "mkfifo 를 쓸 수 없다"
+fi
+# 사본은 도우미가 끝나면 남지 않는다.
+check "개인 사본은 끝나면 지워진다" "$(ls "${TMPDIR:-/tmp}" 2>/dev/null | grep -c '^cc-kickoff-carry\.' || true)" "0"
+
+# ---------------------------------------------------------------------------
 # SKILL.md 문면 — 호출 철자와 5n 고지
 # ---------------------------------------------------------------------------
 if grep -F 'bash <plugin root>/orchestrator/kickoff-defaults.sh' "$SKILL" >/dev/null; then
