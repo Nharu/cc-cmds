@@ -357,7 +357,7 @@ export const register: Register = on => {
     if (rec && isOpen(rec)) {
       return drawForm(
         el,
-        layoutRows(rec, focused),
+        layoutRows(rec, focused, e.props.bodyColumns),
         rec.form.questions.map(q => q.id),
         handlers($),
       )

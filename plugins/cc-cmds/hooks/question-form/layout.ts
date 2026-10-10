@@ -2,7 +2,7 @@
 // 줄로 패널이 바랄 크기를 잰다(paneSize). render.tsx 는 줄을 요소로 옮길 뿐이다.
 // `$` 를 쓰지 않는다.
 
-import { counts, draftOf, isAnswered, isVisible } from './bundle'
+import { counts, draftOf, inputValue, isAnswered, isVisible } from './bundle'
 import {
   ANSWER_LABEL,
   CANCEL_LABEL,
@@ -53,7 +53,8 @@ export type Row =
   | { kind: 'preview'; text: string }
   | { kind: 'other'; key: string; hotkey: string; glyph: string; text: string; description: string }
   | { kind: 'answer'; key: string; text: string; autoFocus: boolean }
-  | { kind: 'editor'; key: string; qid: string; field: FormEditor['field']; label: string; value: string; placeholder: string; autoFocus: boolean }
+  | { kind: 'editor'; key: string; qid: string; field: FormEditor['field']; value: string; placeholder: string; autoFocus: boolean }
+  | { kind: 'spacer'; lines: number }
   | { kind: 'note'; key: string; hotkey: string; text: string }
   | { kind: 'nav'; prev: boolean; next: 'question' | 'submit' | 'none' }
   | { kind: 'actions'; submit: string; cancel: string }
@@ -77,7 +78,7 @@ function pushBlank(rows: Row[]) {
 
 // 접힌 질문 줄의 답 요약 한 줄. 라벨은 추천 접미 없이 보이고, 메모가 있으면 끝에 표시한다.
 export function answerSummary(q: FormQuestion, d: Draft): string {
-  const other = d.other.trim()
+  const other = inputValue(d.other).trim()
   const parts: string[] = []
   if (!isAnswered(q, d)) parts.push(UNANSWERED)
   else if (q.kind === 'text') parts.push(other)
@@ -86,7 +87,7 @@ export function answerSummary(q: FormQuestion, d: Draft): string {
     if (other !== '') parts.push(`${OTHER_LABEL}: ${other}`)
   }
   const line = cut(parts.join(' · '), SUMMARY_MAX)
-  return d.note.trim() === '' ? line : `${line} · +${NOTE_LABEL}`
+  return inputValue(d.note).trim() === '' ? line : `${line} · +${NOTE_LABEL}`
 }
 
 // 포커스가 이 질문의 선택지 버튼에 있으면 그 선택지의 미리보기, 아니면 undefined.
@@ -106,24 +107,43 @@ export function landingKey(rec: FormRecord): string {
   return (q.options ?? []).length > 0 ? optionKey(qi, 1) : otherKey(qi)
 }
 
-function editorRow(rec: FormRecord, qi: number, q: FormQuestion, field: FormEditor['field'], autoFocus: boolean): Row | undefined {
-  const ed = rec.editor
-  if (!ed || ed.id !== q.id || ed.field !== field) return undefined
-  const label = field === 'note' ? NOTE_LABEL : q.kind === 'text' ? ANSWER_LABEL : OTHER_LABEL
-  const placeholder = field === 'note' ? NOTE_PLACEHOLDER : q.kind === 'text' ? q.placeholder ?? TEXT_PLACEHOLDER : OTHER_PLACEHOLDER
-  return { kind: 'editor', key: editorKey(qi, field, ed.gen), qid: q.id, field, label, value: ed.seed, placeholder, autoFocus }
+// 편집기 줄의 들여쓰기와, 같은 Input 줄 안에 그려지는 「 ⏎ 확정」 몫.
+export const EDITOR_INDENT = 4
+export const EDITOR_SUBMIT_WIDTH = displayWidth(` ⏎ ${EDITOR_SUBMIT_LABEL}`)
+
+// 칸보다 긴 글을 치면 엔진은 칸 안을 말줄임으로 그리고 커서·조합 글자를 칸 아래 줄에
+// 놓는다. 그 자리가 메모 줄을 덮지 않도록 편집기 줄 뒤에 넘칠 줄 수만큼 빈 줄을 둔다.
+// 엔진이 감는 폭은 모르므로 들여쓰기와 확정 몫을 모두 뺀 좁은 폭으로 나누고, 조합 중인
+// 한글 한 글자 몫 2칸을 더해 남는 쪽으로 어림한다.
+export function spacerLines(text: string, bodyColumns: number): number {
+  const width = Math.max(20, bodyColumns - EDITOR_INDENT - EDITOR_SUBMIT_WIDTH)
+  return Math.max(0, Math.ceil((EDITOR_INDENT + displayWidth(text) + 2) / width) - 1)
 }
 
-function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: string | null): Row[] {
+// 편집기 줄과, 넘칠 글이면 그 뒤의 빈 줄. 앞말 라벨은 두지 않는다 — 바로 위 줄(기타·메모
+// 줄이나 펼친 질문의 머리말)이 이미 그 칸이 무엇인지 말한다.
+function editorRows(rec: FormRecord, qi: number, q: FormQuestion, field: FormEditor['field'], autoFocus: boolean, bodyColumns: number): Row[] {
+  const ed = rec.editor
+  if (!ed || ed.id !== q.id || ed.field !== field) return []
+  const placeholder = field === 'note' ? NOTE_PLACEHOLDER : q.kind === 'text' ? q.placeholder ?? TEXT_PLACEHOLDER : OTHER_PLACEHOLDER
+  const rows: Row[] = [{ kind: 'editor', key: editorKey(qi, field, ed.gen), qid: q.id, field, value: inputValue(ed.seed), placeholder, autoFocus }]
+  const d = draftOf(rec.drafts, q.id)
+  const lines = spacerLines(inputValue(field === 'note' ? d.note : d.other), bodyColumns)
+  if (lines > 0) rows.push({ kind: 'spacer', lines })
+  return rows
+}
+
+function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: string | null, bodyColumns: number): Row[] {
   const d = draftOf(rec.drafts, q.id)
   const landing = landingKey(rec)
   const rows: Row[] = [{ kind: 'current', n: qi, header: q.header, question: q.question }]
   if (q.detail) rows.push({ kind: 'detail', text: q.detail })
   pushBlank(rows)
   if (q.kind === 'text') {
-    const editor = editorRow(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0))
-    if (editor) rows.push(editor)
-    else rows.push({ kind: 'answer', key: answerKey(qi), text: d.other.trim() === '' ? UNANSWERED : d.other, autoFocus: landing === answerKey(qi) })
+    const editor = editorRows(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0), bodyColumns)
+    const answer = inputValue(d.other)
+    if (editor.length > 0) rows.push(...editor)
+    else rows.push({ kind: 'answer', key: answerKey(qi), text: answer.trim() === '' ? UNANSWERED : answer, autoFocus: landing === answerKey(qi) })
   } else {
     ;(q.options ?? []).forEach((o: FormOption, index) => {
       const key = optionKey(qi, index + 1)
@@ -141,7 +161,7 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
     const preview = previewFor(qi, q, focused)
     if (preview !== undefined) rows.push({ kind: 'preview', text: preview })
     if (q.allowOther !== false) {
-      const other = d.other.trim()
+      const other = inputValue(d.other).trim()
       rows.push({
         kind: 'other',
         key: otherKey(qi),
@@ -150,15 +170,13 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
         text: other === '' ? OTHER_LABEL : `${OTHER_LABEL}: ${other}`,
         description: other === '' ? OTHER_PLACEHOLDER : '',
       })
-      const editor = editorRow(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0))
-      if (editor) rows.push(editor)
+      rows.push(...editorRows(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0), bodyColumns))
     }
   }
   if (q.allowNote !== false) {
-    const note = d.note.trim()
+    const note = inputValue(d.note).trim()
     rows.push({ kind: 'note', key: noteKey(qi), hotkey: 'm', text: note === '' ? NOTE_ADD_LABEL : `${NOTE_LABEL}: ${note}` })
-    const editor = editorRow(rec, qi, q, 'note', landing === editorKey(qi, 'note', rec.editor?.gen ?? 0))
-    if (editor) rows.push(editor)
+    rows.push(...editorRows(rec, qi, q, 'note', landing === editorKey(qi, 'note', rec.editor?.gen ?? 0), bodyColumns))
   }
   const ids = rec.form.questions.filter(x => isVisible(rec.form, rec.drafts, x)).map(x => x.id)
   const at = ids.indexOf(q.id)
@@ -167,7 +185,8 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
   return rows
 }
 
-export function layoutRows(rec: FormRecord, focused: string | null): Row[] {
+// bodyColumns 는 편집기 뒤 빈 줄 수를 어림할 본문 폭이다. 없으면 80 으로 어림한다.
+export function layoutRows(rec: FormRecord, focused: string | null, bodyColumns = 80): Row[] {
   const { form, drafts } = rec
   const { answered, total } = counts(form, drafts)
   const rows: Row[] = [{ kind: 'title', text: form.title, counter: counterLine(answered, total) }]
@@ -185,7 +204,7 @@ export function layoutRows(rec: FormRecord, focused: string | null): Row[] {
     // 펼친 질문은 위아래 빈 줄로 접힌 줄들과 떼어 놓는다.
     if (q.id === rec.cursor) {
       if (rows.at(-1)?.kind !== 'group') pushBlank(rows)
-      rows.push(...currentRows(rec, qi, q, focused))
+      rows.push(...currentRows(rec, qi, q, focused, bodyColumns))
       pushBlank(rows)
       return
     }
@@ -224,7 +243,9 @@ export function rowText(row: Row): string {
     case 'answer':
       return `  ${ANSWER_LABEL}: ${row.text}`
     case 'editor':
-      return `    ${row.label}: ${row.value === '' ? row.placeholder : row.value} ⏎ ${EDITOR_SUBMIT_LABEL}`
+      return `${' '.repeat(EDITOR_INDENT)}${row.value === '' ? row.placeholder : row.value} ⏎ ${EDITOR_SUBMIT_LABEL}`
+    case 'spacer':
+      return '\n'.repeat(row.lines - 1)
     case 'note':
       return `  ${row.hotkey}: ${row.text}`
     case 'nav':
@@ -269,16 +290,17 @@ const PROSE: Row['kind'][] = ['intro', 'detail', 'preview', 'help']
 // 패널이 바랄 크기. 세로는 지금 보이는 줄이 bodyColumns 에서 감기는 줄 수에, 커서 질문의
 // 가장 긴 미리보기 자리를 더한 것(포커스가 옮겨 미리보기가 나타나도 크기가 흔들리지
 // 않게). 가로는 산문이 아닌 가장 긴 줄에 맞추되 60~100칸 안이다. 둘 다 요청일 뿐 결정은
-// 엔진이 한다.
+// 엔진이 한다. 엔진은 Input 을 한 줄로 그리므로 편집기 줄은 글 길이와 상관없이 한 줄로
+// 세고, 넘친 몫은 그 뒤의 빈 줄(spacer)만 센다.
 export function paneSize(rec: FormRecord, bodyColumns: number): { rows: number; columns: number } {
-  const rows = layoutRows(rec, null)
+  const rows = layoutRows(rec, null, bodyColumns)
   const widest = rows
     .filter(r => !PROSE.includes(r.kind))
     .reduce((w, r) => Math.max(w, ...rowText(r).split('\n').map(displayWidth)), 0)
   const columns = Math.min(COLUMNS_MAX, Math.max(COLUMNS_MIN, widest + 4))
   const width = Math.max(20, bodyColumns)
   const lines = (s: string) => s.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(displayWidth(line) / width)), 0)
-  let height = rows.reduce((n, r) => n + lines(rowText(r)), 0)
+  let height = rows.reduce((n, r) => n + (r.kind === 'editor' ? 1 : lines(rowText(r))), 0)
   const q = questionOf(rec, rec.cursor)
   const previews = (q?.options ?? []).map(o => (o.preview === undefined ? 0 : lines(o.preview)))
   height += Math.max(0, ...previews)

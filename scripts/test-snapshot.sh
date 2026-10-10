@@ -610,7 +610,10 @@ w_fresh() {  # w_fresh <wake epoch or empty> — the one element's `fresh`
     wake_epoch() { printf '%s' "$W_WAKE"; }
     printf '[%s]' "$(gate_snapshot_waiting_stages_json)" ) | jq -c '[length, .[0].fresh]'
 }
-check "갱신이 STALL 보다 오래돼도 깨어남이 그 뒤면 구성원이고 신선하다" "$(w_fresh "$((w_now - w_stall + 5))")" "[1,true]"
+# The wake is read off the clock at the call, not off `w_now`: the snapshots
+# above run between the two, and a wake pinned a few seconds inside the window
+# at `w_now` falls out of it on a slow runner.
+check "갱신이 STALL 보다 오래돼도 깨어남이 그 뒤면 구성원이고 신선하다" "$(w_fresh "$(date -u +%s)")" "[1,true]"
 check "깨어남이 그보다 이르면 구성원이고 신선하지 않다" "$(w_fresh "$((w_now - w_stall - 100))")" "[1,false]"
 check "깨어남 기록이 없으면 구성원이고 신선하지 않다" "$(w_fresh "")" "[1,false]"
 kill -TERM "$W_HOLD" 2>/dev/null; wait "$W_HOLD" 2>/dev/null
