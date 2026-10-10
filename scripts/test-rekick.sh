@@ -768,9 +768,50 @@ mod "$WORK/v-provx.md" "s/| 이어받은 런=$SRC |/| 이어받은 런=RKX |/"
 vs "이어받은 런= 이 --prev 와 다른 초안은 실패한다" 실패 "$WORK/v-provx.md" "$E" 출처
 mod "$WORK/v-dl.md" "s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2031-01-01T00:00:00+09:00/"
 vs "마감 간격이 바뀐 초안은 실패한다" 실패 "$WORK/v-dl.md" "$E" 마감
-printf '5e\t2031-01-01T00:00:00+09:00\n' > "$WORK/asked-5e"
-mod "$WORK/v-dl5e.md" "s|^\*\*사용자 확인 문면\*\*: .*|**사용자 확인 문면**: /cc-cmds:autopilot / 2031-01-01T00:00:00+09:00|;s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2031-01-01T00:00:00+09:00/"
-vs "5e 를 물었으면 마감은 그 답이면 된다" 통과 "$WORK/v-dl5e.md" "$WORK/asked-5e"
+# 5e answered in a relative form: the draft carries the instant it resolved to.
+printf '5e\t다음 날 아침 9시\n5e 값\t2031-01-01T00:00:00+09:00\n' > "$WORK/asked-5e"
+mod "$WORK/v-dl5e.md" "s|^\*\*사용자 확인 문면\*\*: .*|**사용자 확인 문면**: /cc-cmds:autopilot / 다음 날 아침 9시 / 2031-01-01T00:00:00+09:00|;s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2031-01-01T00:00:00+09:00/"
+vs "5e 를 상대 표기로 답했으면 마감은 그 답을 해석한 시각이면 된다" 통과 "$WORK/v-dl5e.md" "$WORK/asked-5e"
+mod "$WORK/v-dl5ez.md" "s|^\*\*사용자 확인 문면\*\*: .*|**사용자 확인 문면**: /cc-cmds:autopilot / 다음 날 아침 9시 / 2031-01-01T00:00:00+09:00|;s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2030-12-31T15:00:00Z/"
+vs "같은 시각을 다른 표기로 쓴 마감도 통과한다" 통과 "$WORK/v-dl5ez.md" "$WORK/asked-5e"
+mod "$WORK/v-dl5ex.md" "s|^\*\*사용자 확인 문면\*\*: .*|**사용자 확인 문면**: /cc-cmds:autopilot / 다음 날 아침 9시 / 2031-01-01T00:00:00+09:00|;s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2031-01-01T01:00:00+09:00/"
+vs "해석한 시각과 다른 마감은 실패한다" 실패 "$WORK/v-dl5ex.md" "$WORK/asked-5e" 마감
+printf '5e\t다음 날 아침 9시\n' > "$WORK/asked-5e-only"
+mod "$WORK/v-dl5eo.md" "s|^\*\*사용자 확인 문면\*\*: .*|**사용자 확인 문면**: /cc-cmds:autopilot / 다음 날 아침 9시|;s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2031-01-01T00:00:00+09:00/"
+vs "5e 답만 있고 해석한 시각(5e 값)이 없으면 실패한다" 실패 "$WORK/v-dl5eo.md" "$WORK/asked-5e-only" 마감
+printf '5e\t다음 날 아침 9시\n5e 값\t2031-01-02T00:00:00+09:00\n5e\t+8h\n5e 값\t2031-01-01T00:00:00+09:00\n' > "$WORK/asked-5e2"
+mod "$WORK/v-dl5e2.md" "s|^\*\*사용자 확인 문면\*\*: .*|**사용자 확인 문면**: /cc-cmds:autopilot / 다음 날 아침 9시 / 2031-01-02T00:00:00+09:00 / +8h / 2031-01-01T00:00:00+09:00|;s/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2031-01-01T00:00:00+09:00/"
+vs "마감 재확인으로 5e 를 다시 물으면 마지막 답의 시각이 마감이다" 통과 "$WORK/v-dl5e2.md" "$WORK/asked-5e2"
+
+# 5o confirmed blanks: the values reach the draft and are compared, not exempted.
+printf '5o cost-ceiling\t이대로\n5o deploy-triggers\t이대로\n' > "$WORK/asked-5o"
+rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5o" \
+   --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' > "$WORK/v-5o.md"; rc=$?
+check "7: --set 을 준 render-manifest 는 0 으로 끝난다" "$rc" "0"
+check "7: --set 이 원천에 없던 비용 천장 줄을 확정값으로 쓴다" "$(grep -c '^\*\*비용 천장\*\*: 12$' "$WORK/v-5o.md")" "1"
+check "7: --set 이 원천 대상 행에 없던 배포트리거 식별자를 확정값으로 쓴다" \
+  "$(grep -E '^- `target`' "$WORK/v-5o.md" | grep -c '| 배포트리거 식별자=branch:release$')" "1"
+has "7: 사용자 확인 문면이 확정값을 적는다" "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$WORK/v-5o.md")" " / 런:cost-ceiling=12 / rk:deploy-triggers=branch:release"
+mf_check "$WORK/v-5o.md"; rc=$?
+check "7: 확정값을 실은 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "5o 확정값을 실은 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-5o.md" "$WORK/asked-5o" "" \
+  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
+vs "--set 없이는 5o 답만으로 빈칸 차이가 면제되지 않는다" 실패 "$WORK/v-5o.md" "$WORK/asked-5o" 고정값
+sed 's/^\*\*비용 천장\*\*: 12$/**비용 천장**: 99/' "$WORK/v-5o.md" > "$WORK/v-5ox.md"
+vs "확정값과 다른 값을 실은 초안은 실패한다" 실패 "$WORK/v-5ox.md" "$WORK/asked-5o" 확정값 \
+  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
+vs "5o 에서 묻지 않은 --set 은 실패한다" 실패 "$WORK/v-5o.md" "$E" 확정값 \
+  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
+out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --set '런:ladder-rungs=2' 2>/dev/null); rc=$?
+check "7: 원천에 값이 있는 키의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --set 'zz:dev-ids=host:a' 2>/dev/null); rc=$?
+check "7: 원천에 없는 대상의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --set 'cost-ceiling=12' 2>/dev/null); rc=$?
+check "7: 범위 없는 --set 은 사용법 오류다" "$rc/$out" "2/"
 grant_block "$NEW1" 배포 '픽스처가 끝나면' "$D_CONFIRM" "$DOCSHA" > "$WORK/g-up.block"
 vs "권한 절단점을 한 단 올린 인가 블록은 실패한다" 실패 "$NM1" "$E" 인가블록 --grant "$WORK/g-up.block"
 grant_block "$NEW1" 머지 '다른 종료 지점' "$D_CONFIRM" "$DOCSHA" > "$WORK/g-goal.block"

@@ -41,10 +41,20 @@
 #                             --deadline <ISO8601> --expect-sha256 <hex> --expect-grant-sha256 <hex>
 #                             [--arg <인자>] [--asked <TSV>] [--visual-marker <값>]
 #                             [--targets <파일>] [--rows <파일>] [--rule <키>=<켬|끔>]…
-#                             [--bind-base <hex>]
+#                             [--bind-base <hex>] [--set <범위>:<키>=<값>]…
 #   rekick.sh render-interview --prev <id> --base <base> [--expect-sha256 <hex>]
 #   rekick.sh verify-subset <초안> <이전 매니페스트> --expect-sha256 <hex>
 #                           --expect-grant-sha256 <hex> --asked <TSV> [--grant <블록 파일>]
+#                           [--set <범위>:<키>=<값>]…
+#
+# `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
+# is that row's scope (`런`, or a target alias) and `<키>` its key, one of
+# ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor
+# (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
+# deploy-triggers (a target alias). The previous manifest must hold no value
+# there; anything else is refused. `render-manifest` writes the value into the
+# draft and `verify-subset` takes the same `--set` list, so the draft's value is
+# compared with the confirmed one rather than exempted.
 #
 # `detect` takes no `<base>`: the kickoff resolves its own `<base>` only after
 # the targets are settled, and this step runs before that. Each candidate's
@@ -76,9 +86,13 @@
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
-# `대상추가 <별칭>`, `5p`, `5q`, `5e`, `5l`, `5o <키>`, `7.7 절단점 <별칭>`,
-# `7.7 룰 <키>`, `7.7 자동채택`, `7.8`. Any other key covers nothing, and every
-# answer, whatever its key, must stand verbatim in the draft's `사용자 확인 문면`.
+# `대상추가 <별칭>`, `5p`, `5q`, `5e`, `5e 값`, `5l`, `5o <키>`,
+# `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`. Any other key covers
+# nothing, and every answer, whatever its key, must stand verbatim in the
+# draft's `사용자 확인 문면`. `5e` is the person's answer as given — a relative
+# form such as `+8h` included — and `5e 값` the absolute instant the kickoff
+# resolved it to once; the deadline check compares the draft with the latter as
+# an instant. A key asked twice counts by its last line.
 #
 # Exit codes: 0 read (a `verify` or `verify-subset` that passed) · 1 a check
 # failed (`verify`, `verify-subset`, `render-interview`, a hash that does not
@@ -113,7 +127,7 @@ RK_MODE="${1:-}"
 RK_ARG=""; RK_ARG_GIVEN=0; RK_PREV=""; RK_BASE=""; RK_XSHA=""; RK_XGSHA=""
 RK_ACCEPTED=""; RK_NEWID=""; RK_KAT=""; RK_DEADLINE=""; RK_ASKED=""
 RK_VISUAL=""; RK_TARGETS=""; RK_ROWS=""; RK_RULES=""; RK_BIND=""; RK_GRANT_BLOCK=""
-RK_POS1=""; RK_POS2=""
+RK_POS1=""; RK_POS2=""; RK_SETS=""
 
 rk_need() { [ $# -ge 2 ] || rk_usage "$1 에 값이 없습니다"; }
 while [ $# -gt 0 ]; do
@@ -140,7 +154,16 @@ while [ $# -gt 0 ]; do
 "; shift 2 ;;
     --bind-base)           rk_need "$@"; RK_BIND="$2"; shift 2 ;;
     --grant)               rk_need "$@"; RK_GRANT_BLOCK="$2"; shift 2 ;;
-    --*)                   rk_usage "알 수 없는 인자입니다: $1" ;;
+    --set)                 rk_need "$@"
+                           case "$2" in
+                             *"$(printf '\t')"*|*'
+'*) rk_usage "--set 값에 탭이나 줄바꿈이 있습니다" ;;
+                             ?*:?*=?*) ;;
+                             *) rk_usage "--set 은 <범위>:<키>=<값> 입니다: '$2'" ;;
+                           esac
+                           RK_SETS="${RK_SETS}${2}
+"; shift 2 ;;
+    --*)                  rk_usage "알 수 없는 인자입니다: $1" ;;
     *)
       if [ -z "$RK_POS1" ]; then RK_POS1="$1"
       elif [ -z "$RK_POS2" ]; then RK_POS2="$1"
@@ -882,7 +905,8 @@ rk_render() {
     grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$RK_ROWS" > "$RK_TMP/shape.rows" 2>/dev/null || : > "$RK_TMP/shape.rows"
   fi
   printf '%s' "$RK_RULES" > "$RK_TMP/rules.kv"
-  R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
+  [ -f "$RK_TMP/sets.tsv" ] || : > "$RK_TMP/sets.tsv"
+  R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
   R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
@@ -891,7 +915,12 @@ rk_render() {
     function field(line,   p) { p = index(line, "**: "); return substr(line, 3, p - 3) }
     # What a section must still carry is written when it closes, before the
     # blank lines that separate it from the next one.
-    function close_sec() {
+    function close_sec(   key, a) {
+      # A confirmed blank whose line the previous manifest did not carry at all.
+      for (key in rset) {
+        split(key, a, SUBSEP)
+        if (("## " a[1]) == sec && !(key in rdone)) { print "**" a[2] "**: " rset[key]; rdone[key] = 1 }
+      }
       if (sec == "## 인가") {
         if (!rows_done && rfile != "") { while ((getline l < rfile) > 0) print l; close(rfile); rows_done = 1 }
         if (!prov_done) { print ENVIRON["R_PROV"]; prov_done = 1 }
@@ -901,11 +930,31 @@ rk_render() {
       }
     }
     function flush_blank() { for (i = 1; i <= nblank; i++) print ""; nblank = 0 }
+    # A target row with the confirmed blanks of its alias written in: an empty
+    # field takes the value, an absent one is appended.
+    function tapply(line,   al, key, a, pat, p) {
+      if (!match(line, /별칭=[^ |]*/)) return line
+      al = substr(line, RSTART + length("별칭="), RLENGTH - length("별칭="))
+      for (key in tset) {
+        split(key, a, SUBSEP)
+        if (a[1] != al) continue
+        pat = "| " a[2] "="
+        if ((p = index(line, pat " |")) > 0) { line = substr(line, 1, p + length(pat) - 1) tset[key] substr(line, p + length(pat)) }
+        else if (substr(line, length(line) - length(pat) + 1) == pat) { line = line tset[key] }
+        else line = line " | " a[2] "=" tset[key]
+      }
+      return line
+    }
     BEGIN {
       newid = ENVIRON["R_NEWID"]; tfile = ENVIRON["R_TFILE"]; rfile = ENVIRON["R_RFILE"]
       planf = ENVIRON["R_PLANF"]; hdr = 1
       while ((getline l < ENVIRON["R_RULES"]) > 0) { p = index(l, "="); if (p) rule[substr(l, 1, p - 1)] = substr(l, p + 1) }
       close(ENVIRON["R_RULES"])
+      while ((getline l < ENVIRON["R_SETS"]) > 0) {
+        n = split(l, s, "\t"); if (n < 4) continue
+        if (s[2] == "대상") tset[s[1], s[3]] = s[4]; else rset[s[2], s[3]] = s[4]
+      }
+      close(ENVIRON["R_SETS"])
     }
     NR == 1 { print "# 파이프라인 런 매니페스트 — " newid; next }
     hdr {
@@ -947,8 +996,8 @@ rk_render() {
       print line; next
     }
     /^- `target`/ {
-      if (tfile == "") { print; next }
-      if (!targets_done) { while ((getline l < tfile) > 0) print l; close(tfile); targets_done = 1 }
+      if (tfile == "") { print tapply($0); next }
+      if (!targets_done) { while ((getline l < tfile) > 0) print tapply(l); close(tfile); targets_done = 1 }
       next
     }
     /^\*\*[^*]+\*\*: / {
@@ -964,6 +1013,7 @@ rk_render() {
       if (sec == "## 인가" && f == "벽시계 마감") { print "**벽시계 마감**: " ENVIRON["R_DL"]; next }
       if (sec == "## 인가" && f == "시각 정합 마커" && ENVIRON["R_VISUAL"] != "") { print "**시각 정합 마커**: " ENVIRON["R_VISUAL"]; next }
       if ((f in rule) && $0 ~ /\*\*: (켬|끔)$/) { print "**" f "**: " rule[f]; next }
+      if ((substr(sec, 4), f) in rset) { print "**" f "**: " rset[substr(sec, 4), f]; rdone[substr(sec, 4), f] = 1; next }
       print; next
     }
     { print }
@@ -980,9 +1030,10 @@ rk_render() {
 
 # rk_confirm_text — the new `사용자 확인 문면`: this call's argument verbatim
 # (`/cc-cmds:autopilot` when it was empty), then each answer this re-kickoff
-# asked, joined with ` / `.
+# asked, then each `--set` entry as given, joined with ` / `. The 5o answer
+# itself is 「이대로」, so the confirmed values are written beside it.
 rk_confirm_text() {
-  local s k a
+  local s k a e
   s=$(rk_trim "$RK_ARG"); [ -n "$s" ] || s='/cc-cmds:autopilot'
   if [ -n "$RK_ASKED" ]; then
     while IFS="$TAB" read -r k a; do
@@ -990,6 +1041,12 @@ rk_confirm_text() {
       s="$s / $a"
     done < "$RK_ASKED"
   fi
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    s="$s / $e"
+  done <<EOF
+$RK_SETS
+EOF
   printf '%s' "$s"
 }
 
@@ -997,6 +1054,56 @@ rk_asked_answer() {
   # rk_asked_answer <key> — the answer recorded for that key, the last one.
   [ -n "$RK_ASKED" ] || return 0
   awk -F '\t' -v k="$1" '$1 == k { a = substr($0, length($1) + 2) } END { if (a != "") print a }' "$RK_ASKED"
+}
+
+# rk_set_field <key> — where a `--set` key lands: `<section><TAB><field>`.
+rk_set_field() {
+  case "$1" in
+    ladder-rungs)     printf '인가\t사다리 가용 단 수' ;;
+    stagnation-bound) printf '인가\t무진전 상한' ;;
+    cost-ceiling)     printf '인가\t비용 천장' ;;
+    apply-probe)      printf '요소\t적용 프로브' ;;
+    apply-actor)      printf '요소\t적용 주체' ;;
+    cutpoint)         printf '대상\t절단점' ;;
+    review-ceiling)   printf '대상\t리뷰 정책 상한' ;;
+    terminal-cap)     printf '대상\t말단 행위 상한' ;;
+    dev-ids)          printf '대상\tdev 식별자' ;;
+    deploy-triggers)  printf '대상\t배포트리거 식별자' ;;
+    *) return 1 ;;
+  esac
+}
+
+# rk_sets_resolve <out> — reads RK_SETS against the current MANIFEST (the
+# previous run's copy) and writes `<범위><TAB><섹션><TAB><필드><TAB><값><TAB><키>`
+# per entry. Prints the first refusal and returns 1 when an entry names an
+# unknown key, a scope that does not fit it, a target the previous manifest
+# does not hold, a value the previous manifest already has, a value a target
+# row cannot carry, or the same place twice.
+rk_sets_resolve() {
+  local out="$1" e sc rest k v loc sec f pv
+  : > "$out"
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    sc=${e%%:*}; rest=${e#*:}; k=${rest%%=*}; v=${rest#*=}
+    loc=$(rk_set_field "$k") || { printf '%s' "--set 의 키를 모릅니다: $k"; return 1; }
+    sec=${loc%%"$TAB"*}; f=${loc#*"$TAB"}
+    if [ "$sec" = "대상" ]; then
+      [ "$sc" != "런" ] || { printf '%s' "--set $k 의 범위는 대상 별칭입니다"; return 1; }
+      target_aliases | grep -qxF -- "$sc" || { printf '%s' "--set 의 대상 $sc 가 원천 매니페스트에 없습니다"; return 1; }
+      case "$v" in *'|'*) printf '%s' "--set $sc:$k 값에 | 가 있습니다"; return 1 ;; esac
+      pv=$(target_field "$sc" "$f")
+    else
+      [ "$sc" = "런" ] || { printf '%s' "--set $k 의 범위는 런입니다"; return 1; }
+      pv=$(manifest_field "$sec" "$f")
+    fi
+    [ -z "$pv" ] || { printf '%s' "--set $sc:$k — 원천 매니페스트에 이미 값이 있어 빈칸이 아닙니다"; return 1; }
+    awk -F '\t' -v s="$sc" -v f="$f" '$1 == s && $3 == f { d = 1 } END { exit !d }' "$out" \
+      && { printf '%s' "--set $sc:$k 가 두 번 주어졌습니다"; return 1; }
+    printf '%s\t%s\t%s\t%s\t%s\n' "$sc" "$sec" "$f" "$v" "$k" >> "$out"
+  done <<EOF
+$RK_SETS
+EOF
+  return 0
 }
 
 rk_render_manifest() {
@@ -1009,6 +1116,8 @@ rk_render_manifest() {
   [ "$(rk_sha "$gcopy")" = "$RK_XGSHA" ] \
     || rk_fail "원천 인가 기록이 검증한 해시와 다릅니다 — 검증 뒤에 바뀐 파일은 이어받지 않습니다"
   [ -n "$(rk_wide_instant "$RK_DEADLINE")" ] || rk_fail "--deadline 을 시각으로 읽지 못했습니다: '$RK_DEADLINE'"
+  local setwhy
+  setwhy=$(rk_sets_resolve "$RK_TMP/sets.tsv") || rk_fail "$setwhy"
   rk_graph_compute
   [ -n "$G_PLAN" ] || rk_fail "원천 매니페스트의 실행 계획을 읽지 못했습니다"
   local confirm approval
@@ -1055,6 +1164,14 @@ vs_check() {
 # vs_in <needle> <haystack lines> — the needle is one whole line of the list.
 vs_in() { printf '%s\n' "$2" | grep -qxF -- "$1"; }
 
+# vs_set_is <scope> <field> <draft value> — a `--set` entry confirmed this
+# place, and the draft carries exactly its value.
+VS_SETS=""
+vs_set_is() {
+  [ -n "$VS_SETS" ] && [ -s "$VS_SETS" ] || return 1
+  awk -F '\t' -v s="$1" -v f="$2" -v d="$3" '$1 == s && $3 == f { ok = ($4 == d); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
+}
+
 rk_verify_subset() {
   local draft prev pbase pid pgrant why
   draft=$(rk_copy "$RK_POS1" draft.md) || rk_fail "초안을 읽을 수 없습니다: $RK_POS1"
@@ -1068,6 +1185,9 @@ rk_verify_subset() {
   pbase=$(cd "$(dirname "$RK_POS2")/../.." 2>/dev/null && pwd)
   pgrant="$pbase/docs/pipeline-grant/$pid.md"
   RK_BASE="$pbase"; RK_PREV="$pid"
+  local setwhy
+  VS_SETS="$RK_TMP/vsets.tsv"
+  setwhy=$(MANIFEST="$prev" rk_sets_resolve "$VS_SETS") || : > "$VS_SETS"
 
   # Values read from both files.
   local D_ID D_KAT D_DL D_CONFIRM P_KAT P_DL
@@ -1101,6 +1221,7 @@ EOF
       pv=$(manifest_row_fields "$prow" "$f" | head -n 1); dv=$(manifest_row_fields "$drow" "$f" | head -n 1)
       [ "$pv" = "$dv" ] && continue
       if [ "$f" = "절단점" ] && [ -n "$cutans" ] && [ "$dv" = "$cutans" ]; then continue; fi
+      if [ -z "$pv" ] && vs_set_is "$al" "$f" "$dv"; then continue; fi
       why="${why:+$why; }대상 $al 의 $f 가 원천과 다릅니다"
     done
     if [ -z "$(rk_asked_answer "대상확인 $al")" ]; then
@@ -1115,27 +1236,22 @@ EOF
   vs_check 대상 "$why"
 
   # 2 — values that are byte-identical to the previous run.
-  local k fv5 pval dval key5
+  local k pval dval ks
   why=""
   [ "$(MANIFEST="$prev" rk_intent)" = "$(MANIFEST="$draft" rk_intent)" ] || why="${why:+$why; }## 의도 가 다릅니다"
   [ "$(MANIFEST="$prev" manifest_field '인가' '종료 지점')" = "$(MANIFEST="$draft" manifest_field '인가' '종료 지점')" ] \
     || why="${why:+$why; }종료 지점이 다릅니다"
   [ "$(MANIFEST="$prev" manifest_clause_rows_raw)" = "$(MANIFEST="$draft" manifest_clause_rows_raw)" ] \
     || why="${why:+$why; }종료 절 행이 다릅니다"
-  for k in '비용 천장' '무진전 상한' '사다리 가용 단 수' '미선언 상황 처분'; do
-    pval=$(MANIFEST="$prev" manifest_field '인가' "$k"); dval=$(MANIFEST="$draft" manifest_field '인가' "$k")
+  # A field the previous run left empty may differ only by the value 5o
+  # confirmed for it (`--set`); the draft is compared with that value.
+  for ks in '인가:비용 천장' '인가:무진전 상한' '인가:사다리 가용 단 수' '인가:미선언 상황 처분' \
+            '요소:적용 지점' '요소:적용 프로브' '요소:적용 주체'; do
+    k=${ks#*:}
+    pval=$(MANIFEST="$prev" manifest_field "${ks%%:*}" "$k"); dval=$(MANIFEST="$draft" manifest_field "${ks%%:*}" "$k")
     [ "$pval" = "$dval" ] && continue
-    case "$k" in
-      '비용 천장') key5=cost-ceiling ;; '무진전 상한') key5=stagnation-bound ;;
-      '사다리 가용 단 수') key5=ladder-rungs ;; *) key5="" ;;
-    esac
-    fv5=""; [ -n "$key5" ] && fv5=$(rk_asked_answer "5o $key5")
-    if [ -z "$pval" ] && [ -n "$fv5" ]; then continue; fi
+    if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"
-  done
-  for k in '적용 지점' '적용 프로브' '적용 주체'; do
-    [ "$(MANIFEST="$prev" manifest_field '요소' "$k")" = "$(MANIFEST="$draft" manifest_field '요소' "$k")" ] \
-      || why="${why:+$why; }$k 가 원천과 다릅니다"
   done
   local prules drules rl rk rv
   prules=$(MANIFEST="$prev" manifest_rule_lines | sort); drules=$(MANIFEST="$draft" manifest_rule_lines | sort)
@@ -1160,6 +1276,22 @@ $prules
 EOF
   fi
   vs_check 고정값 "$why"
+
+  # 2b — each value 5o confirmed: asked at 5o, written beside the answers, and
+  # carried by the draft where the previous run had none.
+  local ssc ssec sf sv sk sdv
+  why="$setwhy"
+  if [ -z "$why" ]; then
+    while IFS="$TAB" read -r ssc ssec sf sv sk; do
+      [ -n "$ssc" ] || continue
+      [ -n "$(rk_asked_answer "5o $sk")" ] || why="${why:+$why; }$ssc:$sk 는 5o 에서 묻지 않은 값입니다"
+      case "$D_CONFIRM" in *" / $ssc:$sk=$sv"*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
+      if [ "$ssec" = "대상" ]; then sdv=$(MANIFEST="$draft" target_field "$ssc" "$sf")
+      else sdv=$(MANIFEST="$draft" manifest_field "$ssec" "$sf"); fi
+      [ "$sdv" = "$sv" ] || why="${why:+$why; }초안의 $ssc:$sk 가 확정값이 아닙니다"
+    done < "$VS_SETS"
+  fi
+  vs_check 확정값 "$why"
 
   # 3 — exactly one provenance row, naming the previous run and its hashes.
   local crow ncr
@@ -1258,12 +1390,19 @@ EOF
   fi
   vs_check 대상추가 "$why"
 
-  # 10 — the deadline keeps the interval, unless 5e was asked.
-  local a5e pe pk de dk
-  a5e=$(rk_asked_answer '5e')
+  # 10 — the deadline keeps the interval, unless 5e was asked. Then the draft's
+  # deadline is the instant the answer was resolved to (`5e 값`), compared as an
+  # instant: the answer itself may be a relative form no draft can equal.
+  local a5e v5e pe pk de dk ve
+  a5e=$(rk_asked_answer '5e'); v5e=$(rk_asked_answer '5e 값')
   why=""
-  if [ -n "$a5e" ]; then
-    [ "$D_DL" = "$a5e" ] || why="5e 를 물었는데 마감이 그 답이 아닙니다"
+  if [ -n "$a5e" ] || [ -n "$v5e" ]; then
+    de=$(rk_wide_instant "$D_DL"); ve=$(rk_wide_instant "$v5e")
+    if [ -z "$a5e" ]; then why="5e 값은 있는데 5e 답이 없습니다"
+    elif [ -z "$v5e" ]; then why="5e 를 물었는데 해석한 마감(5e 값)이 없습니다"
+    elif [ -z "$de" ] || [ -z "$ve" ]; then why="마감이나 5e 값을 시각으로 읽지 못했습니다"
+    elif [ "$de" != "$ve" ]; then why="5e 를 물었는데 마감이 그 답을 해석한 시각이 아닙니다"
+    fi
   else
     pe=$(rk_wide_instant "$P_DL"); pk=$(rk_wide_instant "$P_KAT")
     de=$(rk_wide_instant "$D_DL"); dk=$(rk_wide_instant "$D_KAT")
