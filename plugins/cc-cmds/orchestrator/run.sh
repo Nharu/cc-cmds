@@ -8251,9 +8251,17 @@ main_loop() {
     # A SLICE AN EARLIER RUN LANDED IS ALREADY DONE. `plan_from_declaration`
     # brought its terminal row in and put the id in `done.txt`; dispatching it
     # would build and review the same work a second time. Counted apart from
-    # `merged`, which is what this run itself landed.
+    # `merged`, which is what this run itself landed. A slice in `skipped.txt`
+    # stands at a pull request an earlier run left open: not sent out again,
+    # and reported the way this run reports its own, since it still waits on a
+    # person to finish it.
     if grep -qxF "$seg" "$RUN_DIR/done.txt" 2>/dev/null; then
       imported=$((imported + 1)); continue
+    fi
+    if grep -qxF "$seg" "$RUN_DIR/skipped.txt" 2>/dev/null; then
+      imported=$((imported + 1))
+      report_append "완성-미착지" "$seg — 이전 런이 연 PR 이 아직 머지되지 않았다. 이번 런은 다시 하지 않았고, 이 슬라이스에 기대는 슬라이스는 디스패치하지 않았다"
+      continue
     fi
     # The other of the two loop heads that read the deadline.
     if past_deadline; then
@@ -8547,7 +8555,7 @@ plan_from_declaration() {
   fi
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(slice_ids "$doc" | tr '\n' ',' | sed 's/,$//')" "segmentation=선언"
-  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
   for id in $(slice_ids "$doc"); do
     # `-` for an absent value, never an empty column. Tab is an IFS WHITESPACE
     # character, so `IFS=tab read a b c d` collapses a run of tabs and every
@@ -8568,13 +8576,28 @@ plan_from_declaration() {
     # ledger, so a `계획됨` row behind the terminal one would hide the landing
     # from the run after this one. An import that fails to run plans the slice,
     # which redoes work rather than skipping work that did not land.
-    local _irc=0
-    run_gate_call gate_import_prior_landed act "$id" self || _irc=$?
-    case "$_irc" in
-      0) printf '%s\n' "$id" >> "$RUN_DIR/done.txt"
+    #
+    # A slice brought in at a pull request still open goes to `skipped.txt`
+    # instead. The main loop skips it all the same, but `deps_satisfied` reads
+    # `done.txt` alone, so a slice that depends on it parks exactly as it does
+    # in the run that left the request open: every segment branches from the
+    # base, and the request's work is not there.
+    local _irc=0 _ikind=""
+    _ikind=$(run_gate_call gate_import_self_landed act "$id") || _irc=$?
+    case "$_irc/$_ikind" in
+      0/착지)
+         printf '%s\n' "$id" >> "$RUN_DIR/done.txt"
          log "착지 들여오기 — ${id} 는 이전 런이 착지시켜 이번 런에서 디스패치하지 않습니다"
          continue ;;
-      1) : ;;
+      0/건너뜀)
+         printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"
+         log "착지 들여오기 — ${id} 는 이전 런의 PR 이 아직 열려 있어 디스패치하지 않고, 이 슬라이스에 기대는 슬라이스도 그 PR 이 머지될 때까지 디스패치하지 않습니다"
+         continue ;;
+      0/*)
+         warn "착지 들여오기가 처분을 알리지 않았습니다(「${_ikind}」) — ${id} 는 행이 들어왔으므로 디스패치하지 않고, 기대는 슬라이스도 디스패치하지 않습니다"
+         printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"
+         continue ;;
+      1/*) : ;;
       *) warn "착지 들여오기 호출 실패(rc=${_irc}) — ${id} 는 계획대로 다시 합니다" ;;
     esac
     # SLICE → SEGMENT. The slice declaration is where a person writes the review
@@ -8626,7 +8649,7 @@ plan_via_planner() {
   seg_mode=$(printf '%s' "$plan" | jq -r '.segmentation // "low-confidence"')
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(printf '%s' "$plan" | jq -c '.segments | map(.id)')" "segmentation=$seg_mode"
-  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
     printf '%s\t%s\t%s\t%s\n' "$seg" "-" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \

@@ -10072,7 +10072,7 @@ rm -f "$WT/$DOC15FB"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다, 15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다, 15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다, 15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다, 15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다, 15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -10660,9 +10660,53 @@ check "15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이
   "$r15gk3|$rc/$(seg_field "$(g15_row R15GK4 SA)" '상태')" "0/계획됨|0/계획됨"
 g15_run R15GK5 "$DOC15GK" "$plan15c" 리뷰없음
 g15_mkwt R15GK5 SB
-g15_pr "MERGED $c15gk" act R15GK5 SB 상태=계획됨 "워크트리=$(g15_wt R15GK5 SB)"
+g15_pr "MERGED $c15gk $c15gk" act R15GK5 SB 상태=계획됨 "워크트리=$(g15_wt R15GK5 SB)"
 check "15g: PR 절단점으로 착지한 선행을 들여와 다음 슬라이스가 계획된다" \
-  "$rc/$(seg_field "$(g15_row R15GK5 SA)" '상태')/$(seg_field "$(g15_row R15GK5 SB)" '상태')" "0/완료/계획됨"
+  "$rc/$(seg_field "$(g15_row R15GK5 SA)" '상태')/$(seg_field "$(g15_row R15GK5 SA)" '머지 커밋')/$(seg_field "$(g15_row R15GK5 SB)" '상태')" \
+  "0/완료/$c15gk/계획됨"
+gateL plan --manifest "$WORK/plan-R15GK5.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- review
+case "$msg" in
+  *"is not merged"*|*"has not landed yet"*) bad "15g 머지된 PR 로 들인 선행 위 디스패치" "rc=$rc $msg" ;;
+  *) ok "15g: 머지된 PR 로 들인 선행은 디스패치 바닥을 넘는다" ;;
+esac
+
+# Not doing a slice again is not building on it. A predecessor whose request is
+# still open is not brought in, so the dependent is not planned on top of work
+# no base carries; a merged request is brought in only while its merge commit
+# is on the base branch. A document of its own: R15GK5 above brought SA in with
+# a merge commit, and as the newest run of DOC15GK it would answer through the
+# merge arm instead.
+DOC15GO='docs/fixture-design-15go.md'
+two_slice_doc "$WT/$DOC15GO" t/infra PR '**리뷰 정책**: 리뷰없음'
+g15_run R15GO1 "$DOC15GO" "$plan15c" 리뷰없음
+g15_mkwt R15GO1 SA
+g15_plan act R15GO1 SA 상태=계획됨 "워크트리=$(g15_wt R15GO1 SA)"
+[ "$rc" = "0" ] || bad "15g 이전 런 R15GO1 의 SA 계획" "rc=$rc $msg"
+g15_raw R15GO1 "id=SA | 상태=완료 | PR=8 | 커밋=$c15gk | 워크트리=$(g15_wt R15GO1 SA) | 선행=없음"
+g15_run R15GO2 "$DOC15GO" "$plan15c" 리뷰없음
+g15_mkwt R15GO2 SB
+g15_pr "OPEN $c15gk" act R15GO2 SB 상태=계획됨 "워크트리=$(g15_wt R15GO2 SB)"
+r15go2="$rc/$(g15_segrows R15GO2 SA)"
+case "$msg" in
+  *"아직 열려 있습니다"*) r15go2="$r15go2/열림 문면" ;;
+esac
+g15_run R15GO3 "$DOC15GO" "$plan15c" 리뷰없음
+g15_mkwt R15GO3 SB
+g15_pr "MERGED $c15gk $c15gx" act R15GO3 SB 상태=계획됨 "워크트리=$(g15_wt R15GO3 SB)"
+check "15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다" \
+  "$r15go2|$(g15_segrows R15GO3 SA)" "2/0/열림 문면|0"
+# The slice's own open request still comes in — R15GK2 above — and that row,
+# which carries no merge commit, is not a landing a dependent is dispatched onto.
+g15_mkwt R15GK2 SB
+g15_plan act R15GK2 SB 상태=계획됨 "워크트리=$(g15_wt R15GK2 SB)"
+[ "$rc" = "0" ] || bad "15g R15GK2 의 SB 계획" "rc=$rc $msg"
+gateL plan --manifest "$WORK/plan-R15GK2.md" --kind skill --target infra --segment SB --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- review
+case "$rc/$msg" in
+  "3/"*"is not merged"*) ok "15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다" ;;
+  *) bad "15g 열린 PR 로 들인 선행 위 디스패치" "rc=$rc $msg" ;;
+esac
 
 # A slice the document declares with `절단점: 머지` has not delivered at an open
 # pull request, whatever the earlier run's row says.
@@ -10682,12 +10726,13 @@ check "15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지
 for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
             R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB \
             R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB \
-            R15GZ:SA R15GK1:SA R15GK2:SA R15GK3:SA R15GK4:SA R15GK5:SB R15GM1:SA R15GM2:SA; do
+            R15GZ:SA R15GK1:SA R15GK2:SA R15GK2:SB R15GK3:SA R15GK4:SA R15GK5:SB R15GO1:SA R15GO2:SB R15GO3:SB \
+            R15GM1:SA R15GM2:SA; do
   ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
       && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
 done
 rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR" \
-  "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW" "$WT/$DOC15GK" "$WT/$DOC15GM"
+  "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW" "$WT/$DOC15GK" "$WT/$DOC15GO" "$WT/$DOC15GM"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget

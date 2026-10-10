@@ -7579,6 +7579,7 @@ gate_prior_run_landed() {
 }
 
 GATE_DECL_SELF_IMPORTED=""
+GATE_IMPORT_PR_STATE=""
 gate_import_prior_landed() {
   # gate_import_prior_landed <verb> <segment> [self] — bring in the terminal row
   # an earlier run of this document left for <segment>: 0 when it was brought
@@ -7609,9 +7610,21 @@ gate_import_prior_landed() {
   # slice is done again. `출처` carries the run that did the work: the earlier
   # row's own `출처` when it had one, so a chain's third run still names the
   # first, and otherwise the earlier run.
+  #
+  # NOT DOING A SLICE AGAIN IS NOT THE SAME AS BUILDING ON IT. Every segment
+  # branches from the tip of its base, so the work of a request that is still
+  # open is in no tree a dependent would be cut from. An open request therefore
+  # brings in only the slice's own row — the work is not sent out a second time
+  # — and never a predecessor's: a predecessor is brought in through a request
+  # only once it is merged and its merge commit is on the base branch, and the
+  # row then carries that `머지 커밋`. An open request's row carries none, which
+  # is what keeps the dispatch floor from reading it as a landing; the state the
+  # request was in is left in GATE_IMPORT_PR_STATE (`OPEN`, `MERGED`, or empty
+  # for the merge arm) for a caller that has to tell the two apart.
   local verb="$1" seg="$2" mode="${3:-}" kl="${LEDGER:-}" kg="${GRANT:-}" kb="${BASE:-}"
-  local dal="" pst="" pm="" ppr="" pc="" pwt="" pdp="" org="" slug="" obs="" ost="" ohd="" what="" why="" noun=""
+  local dal="" pst="" pm="" ppr="" pc="" pwt="" pdp="" org="" slug="" obs="" ost="" ohd="" omc="" what="" why="" noun=""
   GATE_DECL_SELF_IMPORTED=""
+  GATE_IMPORT_PR_STATE=""
   if [ -z "${DOC_KEY:-}" ] && [ -n "${MANIFEST:-}" ]; then
     derive_paths_from_manifest >/dev/null 2>&1 || true
     [ -z "$kl" ] || LEDGER=$kl
@@ -7627,6 +7640,9 @@ gate_import_prior_landed() {
       *" $seg "*)
         case "$(gate_segment_field "$seg" '상태')" in 머지됨|완료) : ;; *) return 1 ;; esac
         [ -n "$(gate_segment_field "$seg" '출처')" ] || return 1
+        case "$(gate_segment_field "$seg" '머지 커밋')" in
+          ''|*[!0-9a-f]*) GATE_IMPORT_PR_STATE="OPEN" ;;
+        esac
         GATE_DECL_SELF_IMPORTED=1
         return 0 ;;
     esac
@@ -7664,32 +7680,64 @@ gate_import_prior_landed() {
     slug=$(alias_slug "$dal" 2>/dev/null) || slug=""
     if [ -z "$slug" ]; then
       why="대상 ${dal} 의 원격 슬러그를 알 수 없습니다"
-    elif ! obs=$(gh_q "$slug" pr view "$ppr" --json state,headRefOid --jq '.state + " " + .headRefOid' 2>/dev/null); then
+    elif ! obs=$(gh_q "$slug" pr view "$ppr" --json state,headRefOid,mergeCommit --jq '.state + " " + .headRefOid + " " + (.mergeCommit.oid // "")' 2>/dev/null); then
       why="PR #${ppr} 을 원격 ${slug} 에서 읽지 못했습니다"
     else
-      ost=${obs%% *}; ohd=${obs#* }
+      read -r ost ohd omc <<EOF
+$obs
+EOF
       case "$ost" in
         OPEN|MERGED)
           [ "$ohd" = "$pc" ] || why="PR #${ppr} 의 head ${ohd:-(없음)} 가 행의 커밋 ${pc} 와 다릅니다" ;;
         *) why="PR #${ppr} 의 상태가 ${ost:-(없음)} 입니다 — 열려 있거나 머지된 PR 만 들여옵니다" ;;
       esac
+      if [ -z "$why" ] && [ "$ost" = "OPEN" ] && [ "$mode" != "self" ]; then
+        why="PR #${ppr} 이 아직 열려 있습니다 — 머지되지 않은 PR 의 작업은 이 슬라이스가 가지를 칠 베이스에 없으므로 선행으로 들이지 않습니다"
+      fi
+      if [ -z "$why" ] && [ "$ost" = "MERGED" ]; then
+        case "$omc" in
+          ''|*[!0-9a-f]*) why="머지된 PR #${ppr} 의 머지 커밋을 읽지 못했습니다" ;;
+          *)
+            gate_obligation_landing "$dal" "$omc"
+            [ "$GATE_LANDING_VERDICT" = "착지" ] \
+              || why="머지된 PR #${ppr} 의 머지 커밋 ${omc} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다: ${GATE_LANDING_WHY}" ;;
+        esac
+      fi
     fi
     if [ -n "$why" ]; then
       warn "슬라이스 ${seg} 의 이전 런 ${GATE_PRIOR_RUN} PR 절단점 종단 행은 들여오지 않습니다 — ${why}"
       return 1
     fi
+    GATE_IMPORT_PR_STATE=$ost
     what="커밋=${pc}"
+    [ "$ost" = "MERGED" ] || omc=""
   fi
   noun="선행"
   [ "$mode" != "self" ] || { noun="슬라이스"; GATE_DECL_SELF_IMPORTED=1; }
   if [ "$verb" != "act" ]; then
-    warn "act 로 내면 ${noun} ${seg} 를 이전 런 ${GATE_PRIOR_RUN} 의 종단 행(상태=${pst} · ${what})으로 이 원장에 먼저 들여옵니다"
+    warn "act 로 내면 ${noun} ${seg} 를 이전 런 ${GATE_PRIOR_RUN} 의 종단 행(상태=${pst} · ${what}${omc:+ · 머지 커밋=$omc})으로 이 원장에 먼저 들여옵니다"
     return 0
   fi
-  gate_append 'segment' "id=$seg" "상태=$pst" ${ppr:+"PR=$ppr"} "$what" \
+  gate_append 'segment' "id=$seg" "상태=$pst" ${ppr:+"PR=$ppr"} "$what" ${omc:+"머지 커밋=$omc"} \
     "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$org"
-  log "${noun} 들여오기 — ${seg} (${pst}, 출처 ${org}, ${what})"
+  log "${noun} 들여오기 — ${seg} (${pst}, 출처 ${org}, ${what}${omc:+, 머지 커밋 $omc})"
   return 0
+}
+
+gate_import_self_landed() {
+  # gate_import_self_landed <verb> <segment> — the fixed-graph driver's form of
+  # the slice's own import: the exit code of `gate_import_prior_landed … self`,
+  # and on 0 one word on stdout saying what came in. `착지` is a landing the
+  # slices after it may build on; `건너뜀` is a slice whose work stands at a
+  # pull request still open — not done again, and not a predecessor either.
+  # The word is the only way the answer leaves `run_gate_call`'s child shell.
+  local rc=0
+  gate_import_prior_landed "$1" "$2" self || rc=$?
+  [ "$rc" = "0" ] || return "$rc"
+  case "$GATE_IMPORT_PR_STATE" in
+    OPEN) printf '건너뜀\n' ;;
+    *) printf '착지\n' ;;
+  esac
 }
 
 gate_manifest_landing_row() {
@@ -20101,10 +20149,23 @@ gate_verb_act() {
     # `머지됨` and `완료` only. `park` is terminal and did NOT land, so a
     # dependent dispatched over a parked predecessor is precisely the ordering
     # failure the declaration exists to prevent.
+    #
+    # A `완료` an earlier run left at a pull request still open is brought in
+    # with its `출처` and without a `머지 커밋`, so that this run does not do the
+    # slice again — and its work is on no base this segment could branch from.
+    # That row is not a landing here.
     local dep dst
     for dep in $(gate_deps_of "$segment"); do
       [ -n "$dep" ] || continue
       dst=$(gate_segment_field "$dep" '상태')
+      if [ "$dst" = "완료" ] && [ -n "$(gate_segment_field "$dep" '출처')" ]; then
+        case "$(gate_segment_field "$dep" '머지 커밋')" in
+          ''|*[!0-9a-f]*)
+            warn "the preceding segment ${dep} was brought in from an earlier run at a pull request that is not merged — its work is not on the base this segment branches from"
+            warn "dispatch again once that pull request is merged and a run brings the merge in, or if there is no dependency rewrite the \`선행\` of the segment row"
+            exit "$GATE_EXIT_RULE" ;;
+        esac
+      fi
       case "$dst" in
         머지됨|완료) : ;;
         *) warn "the preceding segment ${dep} has not landed yet (\`상태\`=${dst:-(none)}) — this segment has to branch on top of it"

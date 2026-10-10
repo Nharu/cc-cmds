@@ -9471,6 +9471,68 @@ check "34: 선언 PR 슬라이스의 열린 PR 은 완료 · PR · 커밋 종단
 check "34: 머지된 PR 도 같은 행을 남긴다" "$(r34_prrow SA "12 MERGED $H34" | grep -c '상태=완료 PR=12' || true)" "1"
 check "34: 닫힌 PR · 관측 실패 · 선언 머지 슬라이스 · 문서 없는 런은 행을 남기지 않는다" \
   "$(r34_prrow SA "12 CLOSED $H34")|$(r34_prrow SA fail)|$(r34_prrow SB "12 OPEN $H34")|$(r34_prrow SA "12 OPEN $H34" '')" "|||"
+# 이전 런이 PR 에서 멈춘 슬라이스 — 실제 plan_from_declaration 과 실제 게이트 들여오기로
+# 주 루프까지 돈다. PR 이 아직 열려 있으면 SA 는 다시 하지 않되 `done.txt` 에 들지
+# 않으므로, SA 에 기대는 SB 는 그 PR 을 연 런에서처럼 park 된다. 머지됐고 그 머지
+# 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다. gh 는 PATH 스텁이다 — 게이트는
+# `run_gate_call` 의 자식 셸에서 돌아 함수 스텁이 닿지 않는다.
+R34PRKEY="${R34PR#/}"
+mkdir -p "$R34/ghbin"
+cat > "$R34/ghbin/gh" <<'GHSTUB'
+#!/bin/sh
+case "$*" in *"pr view 12"*) [ -n "${R34GH:-}" ] && printf '%s\n' "$R34GH" && exit 0 ;; esac
+exit 1
+GHSTUB
+chmod +x "$R34/ghbin/gh"
+r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12; this run plans and walks
+  local d="$R34/$1"
+  mkdir -p "$d/run/log" "$d/ledgers" "$d/docs/design-audit"
+  write_manifest "$d/manifest.md" "" "" main "$R34PRKEY"
+  : > "$d/docs/design-audit/$1.reader-1.md"
+  printf -- '- `run` | run-id=%s-prior | 시작=2026-01-01T00:00:00Z | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n- `segment` | id=SA | 상태=완료 | PR=12 | 커밋=%s | 워크트리=- | 선행=없음\n' \
+    "$1" "$R34PRKEY" "$H34" > "$d/ledgers/$1-prior.md"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledgers/$1.md"; LEDGER_SCOPE=파일; RUN_ID="$1"; GRANT="$R34/grant.md"
+    MANIFEST="$d/manifest.md"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    DOC="$R34PR"; DOC_KEY="$R34PRKEY"; DOC_SLUG="$1"; DOC_BASE="$d"
+    ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG="$1"; BASE="$d"
+    PATH="$R34/ghbin:$PATH"; R34GH="$2"; export PATH R34GH
+    : > "$LEDGER"
+    ledger_row 'run' "run-id=$1" "시작=$(now_iso)" "설계 문서=$DOC_KEY"
+    design_arm() { return 0; }
+    dispatch_stage() { printf '0' > "$RUN_DIR/$1.rc"; }
+    slicing_branch() { printf '선언통치'; }
+    binding_digest() { printf x; }; wt_path() { printf 'WT-%s' "$1"; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    segment_cycle() { printf '%s\n' "$1" >> "$d/cycled"; return 0; }
+    past_deadline() { return 1; }
+    in_halted_radius() { return 1; }
+    cross_repo_deps() { :; }
+    report_append() { printf '%s | %s\n' "$1" "$2" >> "$d/report"; }
+    report_path() { printf '%s' "$d/report"; }
+    grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+    run_cycle_budget() { printf 10; }
+    spawn_lease_release_run() { :; }; report_run_residual() { :; }
+    quiet_window_begin() { :; }; quiet_window_end() { :; }
+    main_loop; printf 'rc=%s\n' "$?"
+  ) > "$d/out" 2>"$d/err"
+}
+r34_prmain r34open "OPEN $H34"
+r34o="$R34/r34open"
+check "34: 이전 런의 열린 PR 로 들인 SA 는 done.txt 가 아니라 건너뛰기 목록에 들고 계획 행이 없다" \
+  "$(tr '\n' ' ' < "$r34o/run/done.txt" 2>/dev/null | sed 's/ $//')/$(tr '\n' ' ' < "$r34o/run/skipped.txt" 2>/dev/null | sed 's/ $//')/$(r34_field "$(r34_last "$r34o/ledgers/r34open.md" SA)" '상태')/$(r34_count "$r34o/ledgers/r34open.md" SA 계획됨)" \
+  "/SA/완료/0"
+check "34: 열린 PR 의 SA 는 디스패치되지 않고 그것에 기대는 SB 는 같은 런에서처럼 park 된다" \
+  "$(sed -n 's/^rc=//p' "$r34o/out")/$( { cat "$r34o/cycled" 2>/dev/null || true; } | grep -c . || true)/$( { grep -F 'SB cone' "$r34o/parked" 2>/dev/null || true; } | grep -cF '선행 슬라이스가 완료되지 않음' || true)" \
+  "0/0/1"
+check "34: 열린 PR 의 SA 는 사람을 기다리는 완성-미착지로 보고된다" \
+  "$( { grep -F '완성-미착지 | SA' "$r34o/report" 2>/dev/null || true; } | grep -c . || true)" "1"
+r34_prmain r34merged "MERGED $H34 $M34"
+r34m="$R34/r34merged"
+check "34: 이전 런의 PR 이 머지돼 머지 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다" \
+  "$(tr '\n' ' ' < "$r34m/run/done.txt" 2>/dev/null | sed 's/ $//')/$(r34_field "$(r34_last "$r34m/ledgers/r34merged.md" SA)" '머지 커밋')/$(tr '\n' ' ' < "$r34m/cycled" 2>/dev/null | sed 's/ $//')" \
+  "SA SB/$M34/SB"
+
 # 부르는 자리는 마감 경과와 머지 게이트의 2 둘이고, 적용 거부의 4 는 부르지 않는다
 # — 그때의 마지막 행은 이미 `머지됨` 이다.
 r34_sc=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
