@@ -1357,12 +1357,17 @@ EOF
   # checked when the segment is planned, not here — this conjunction runs on
   # every gate entry, and once the merged segment's worktree is torn down every
   # entry would die on it.
+  #
+  # `출처 런=-` is a segment no run cut: a person made the branch and opened the
+  # pull request in an interactive session. There is no earlier ledger to read,
+  # so the planning act checks only the tree and the branch. The worktree still
+  # carries the reserved infix — the kickoff moves a person's tree under it.
   local ad_row ad_seg ad_wt ad_src ad_segs=" "
   while IFS= read -r ad_row; do
     [ -n "$ad_row" ] || continue
     # A here-string, not a pipe, for the reason the `베이스 설계` check gives.
-    grep -qE '^- `세그먼트 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 워크트리=/[^|]*[^ |] \| 출처 런=[0-9]{8}-[0-9a-f]{8} \| PR=[0-9]+$' <<<"$ad_row" \
-      || die "「세그먼트 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>\` 입니다: $ad_row"
+    grep -qE '^- `세그먼트 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 워크트리=/[^|]*[^ |] \| 출처 런=([0-9]{8}-[0-9a-f]{8}|-) \| PR=[0-9]+$' <<<"$ad_row" \
+      || die "「세그먼트 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>\` 입니다: $ad_row"
     ad_seg=$(manifest_row_fields "$ad_row" '세그먼트')
     ad_wt=$(manifest_row_fields "$ad_row" '워크트리')
     ad_src=$(manifest_row_fields "$ad_row" '출처 런')

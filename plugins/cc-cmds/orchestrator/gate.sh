@@ -7366,6 +7366,12 @@ gate_adoption_check() {
   # earlier run is still running on it, so two runs never write one worktree.
   # The last two are read under the earlier run's own key
   # (`gate_adoption_source_key`).
+  #
+  # A ROW WITH `출처 런=-` NAMES A SEGMENT NO RUN CUT — a person made the branch
+  # and the pull request outside any run. Only the first check applies to it:
+  # there is no earlier ledger to say it landed and no earlier stage that could
+  # still be running. Whether its pull request is still open is the kickoff's to
+  # verify and read back to the person; the gate reads only the disk.
   local seg="$1" al="$2" row="$3" wt br src skey cg want_cg cur src_ledger src_row src_st src_dir
   wt=$(manifest_row_fields "$row" '워크트리')
   br=$(manifest_row_fields "$row" '브랜치')
@@ -7386,6 +7392,7 @@ gate_adoption_check() {
     warn "입양 세그먼트 ${seg} 의 워크트리에 체크아웃된 브랜치가 ${cur:-(분리된 HEAD)} 입니다 — 입양 행은 ${br} 를 선언합니다"
     return 1
   fi
+  [ "$src" != "-" ] || return 0
   src_ledger="$(dirname "$LEDGER")/$src.md"
   if [ ! -f "$src_ledger" ]; then
     warn "입양 세그먼트 ${seg} 의 출처 런 원장이 없습니다: $src_ledger — 출처 런이 그 세그먼트를 착지시키지 않았는지 판정할 수 없습니다"
@@ -7446,6 +7453,8 @@ gate_adoption_halt_source() {
   GATE_CARRY_ROW=''; GATE_CARRY_LINE=''; GATE_CARRY_SRC=''; GATE_CARRY_REC=''; GATE_CARRY_ATT=''; GATE_CARRY_WHY=''
   adrow=$(gate_adoption_row "$seg") || return 1
   src=$(manifest_row_fields "$adrow" '출처 런')
+  # A segment no run cut (`출처 런=-`) has no earlier run to carry from.
+  [ "$src" != "-" ] || return 1
   skey=$(gate_adoption_source_key "$adrow")
   sledger="$(dirname "$LEDGER")/$src.md"
   sdir="$(dirname "$RUN_DIR")/$src"
