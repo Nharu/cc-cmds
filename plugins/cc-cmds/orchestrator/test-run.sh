@@ -631,6 +631,15 @@ sed 's/^- 검증 등급: 구현 시 검증$/**검증 등급**: 반증됨(실패)
 d_after_legacy=$(binding_digest)
 check "구속면 다이제스트는 legacy 불릿 렌더링의 flip에도 불변" "$d_after_legacy" "$d_before"
 
+# W1R — the seat re-runs R2 on a later commit and re-grades the terminal token,
+# appending a second note line after the first. The segment's freshness rests on
+# this being as invisible as the flip.
+sed 's/^\*\*검증 등급\*\*: 반증됨(실패)$/**검증 등급**: 검증됨(통과)\
+**구현 시 검증 기록**: 2026-08-23 — 커밋 aaaaaaa 반증\
+**구현 시 검증 기록**: 2026-08-24 — 커밋 bbbbbbb 재실행 통과/' "$DOC" > "$DOC.tmp" && mv "$DOC.tmp" "$DOC"
+d_after_regrade=$(binding_digest)
+check "구속면 다이제스트는 W1R 재등급과 겹친 기록 줄에도 불변" "$d_after_regrade" "$d_before"
+
 # A real binding-tier edit MUST move it, or the predicate is vacuous.
 printf '\n결정을 뒤집는다.\n' >> "$DOC"
 d_moved=$(binding_digest)
