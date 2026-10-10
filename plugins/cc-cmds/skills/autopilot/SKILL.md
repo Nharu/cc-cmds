@@ -1084,6 +1084,17 @@ It writes a `한도 해제` row — (c) of the same rule — which outlives the 
 5. Write the answer with `halt-answer` as below, with `선택지=좌석 실행` and `근거=좌석 실행 — R<n> <검증 등급>, …`: the grades it recorded, not a person's words. Then start the shift with `사유=중단`; the shift re-attaches the stage with the answer, and the stage takes a refutation to re-convergence itself.
 6. Tell the person, in one message, which items ran and the grade each got.
 
+**The same holds for a halt whose `**스텝**` begins with the literal `Step 3 게이트 도달 좌석 실행` and lists `좌석 실행` under `**선택지**`**: an implement stage handed this seat essential acts the gate parked (`implement-unattended` CFI-U7) — installing a tool the design document names, fetching the assets it names. The seat runs them itself on the same terms, on the shift's return and never on a channel wake:
+
+1. Read the record's `**좌석 실행 명령**` lines: each is a working directory and a command, in the order they must run.
+2. Check the bound before running anything, as in step 2 above: every command stays on this host or on dev without destroying anything, pushes nothing, reaches no prod and no collaboration or deploy-triggering surface, writes nothing under the Claude configuration home `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, and puts no credential's value into a command or the conversation. Installing a tool on this host is inside the bound — the host's standing rule is to install a missing package rather than work around it. When one command fails the bound, or is a wrapper whose body cannot be read, run none of them and ask the whole record as the next paragraph does.
+3. Run each command verbatim in its working directory, in order, under the shared-resource rules of step 3 above. Stop at the first one that fails; the rest do not run.
+4. Write `<run dir>/halt/<record file name without .md>.answer.md` with each command, its exit status and the tail of its output, and say for the ones that did not run that they did not.
+5. Write the answer with `halt-answer`, with `선택지=좌석 실행`, `근거=좌석 실행 — 명령 <n>건 중 <m>건 성공` and `첨부=` that file. Then start the shift with `사유=중단`; the shift re-attaches the stage with the answer, and the stage checks the results itself.
+6. Tell the person, in one message, which commands ran and how each ended.
+
+**A record written before these forms existed can still be run here.** When a record has neither literal but its FIRST option says that a person runs commands spelled out verbatim in the record on this host and the session is then re-attached, treat it as a command halt: take the commands from that option, check them against the bound of step 2, and when they pass run them as above, writing `선택지=` that option's label verbatim. When the commands are not spelled out in full, or any of them fails the bound, ask as the next paragraph does.
+
 **When a shift ends naming any other halt record that waits on a person, ask the record's question and write the answer down before launching.** The handoff's `막힌 지점` or a cone `blocked` row's `근거` names the record's path; read it, and ask with `AskUserQuestion` using its `질문 문면` as the question and its `선택지` labels as the options, both verbatim (the recommendation suffix is the one decoration allowed). Then:
 
 ```
