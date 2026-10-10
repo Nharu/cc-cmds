@@ -18521,9 +18521,10 @@ gate_fleet_busy_state() {
   # The test is `fleet_busy_live`'s first half, byte for byte: the pid is alive
   # and still the process that wrote the marker, its fingerprint taken in UTC the
   # way the writer took it. fleet.sh cannot be sourced to call the function
-  # itself — it runs `main "$@"` at its last line — so the predicate is restated
-  # here. The probe half is the run's own live stages, which is what the probe
-  # reports as `도는중` for this run id.
+  # itself — it runs `main "$@"` at its last line — so the same test is asked of
+  # the shared holder predicate, with the fingerprint taken under UTC, and the
+  # gate keeps no liveness test of its own. The probe half is the run's own live
+  # stages, which is what the probe reports as `도는중` for this run id.
   local d f pid fp run seen=0
   d="$(run_pace_root)/busy"
   [ -d "$d" ] || { printf 'none'; return 0; }
@@ -18534,8 +18535,7 @@ gate_fleet_busy_state() {
     seen=1
     pid=$(sed -n '1p' "$f" 2>/dev/null | tr -d '[:space:]')
     fp=$(sed -n '2p' "$f" 2>/dev/null || true)
-    if [ -n "$pid" ] && [ -n "$fp" ] && kill -0 "$pid" 2>/dev/null \
-       && [ "$(TZ=UTC0 cc_proc_fingerprint "$pid")" = "$fp" ]; then
+    if TZ=UTC0 cc_holder_is_live "$pid" "$fp"; then
       printf 'live'; return 0
     fi
   done
