@@ -436,14 +436,43 @@ beat() {
   # what this assigned. Called from the loop they are plain globals nothing else
   # reads.
   #
+  local stall_tmp
   # The watcher's own pid, so a person (and the status line) can tell a live
   # watcher from a finished run's. The directory is NOT created here: the
   # watcher legitimately runs in the window before the router's first gate call
   # makes it, and `run_is_over()` already owns that window. `cc_live_stages`
   # does not count this file — it has no `.start`/`.pgid` sibling.
   [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$RUN_DIR/watch.pid"
+  # THE THRESHOLD THIS PROCESS IS USING, for a stage that waits for an account:
+  # it paces its heartbeat rows on half of it. Three lines — the threshold in
+  # seconds, this pid, this pid's fingerprint — rewritten every pass, so a
+  # restarted watcher's value replaces the old one, and written to a temporary
+  # name first so a reader never sees half a record. The name does not end in
+  # `.pid`, so no census reads it as a stage.
+  if [ -d "$RUN_DIR" ]; then
+    stall_tmp=$(mktemp "$RUN_DIR/.watch.stall.XXXXXX" 2>/dev/null || true)
+    if [ -n "$stall_tmp" ]; then
+      if printf '%s\n%s\n%s\n' "$STALL" "$$" "$(cc_proc_fingerprint "$$")" > "$stall_tmp" 2>/dev/null \
+         && mv -f "$stall_tmp" "$RUN_DIR/watch.stall" 2>/dev/null; then
+        :
+      else
+        rm -f "$stall_tmp"
+      fi
+    fi
+  fi
   age=$(ledger_idle_seconds)
   live=$(live_stages)
+  # A STAGE WAITING FOR AN ACCOUNT HAS NO PROCESS YET, so `live` does not see
+  # it, and a run whose only work is that wait is not silent: its supervisor or
+  # driver rewrites its marker and a `stage-wait` row on half of `STALL`.
+  # `live_w` counts the fresh ones beside the live stages, and the arms that ask
+  # "is anything running" read it. A waiter whose refresh has stopped is no
+  # longer fresh, so it stops quieting them — that is how a hung waiter is
+  # still heard. The after-stage arm reads it too: a wait's own first row
+  # moves the last ledger row only when nothing else ends after it, and a
+  # different stage's terminal rows can land below that wait while the router
+  # sits in `gate.sh wait` for the waiter.
+  live_w=$(( ${live:-0} + $(cc_waiting_fresh_count "$RUN_DIR" "$LEDGER" "$STALL") ))
   pend=$(open_approvals)
   nonterm=$(nonterminal_segments)
 
@@ -532,7 +561,7 @@ pass() {
   # watcher looks. The heartbeat is now written by `beat`, ahead of every arm,
   # so no arm can skip it; each arm still carries its own once-marker, so two
   # firing in one pass is harmless.
-  local age live pend nonterm run_age gate_idle size grew silent id newly
+  local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
   local cause reason slug mk
   beat
   # The emitter's own state, once per run, into this process's file. The gate
@@ -618,7 +647,7 @@ pass() {
   # arm's condition exactly. The marker distinguishes a changeover from a
   # stranding, and it is read as an EXPIRY rather than as a flag; see
   # `shift_active`.
-  if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ "$nonterm" -ge 1 ] && ! shift_active \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
@@ -757,7 +786,7 @@ pass() {
   # come back to life and this arm would re-fire every pass.
   run_age=$(run_open_seconds)
   gate_idle=$(gate_idle_seconds)
-  if [ "$live" = "0" ] && [ "$pend" = "0" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
      && [ "$age" -ge "$AFTER_STAGE" ] \
@@ -806,13 +835,24 @@ pass() {
   # this pass would otherwise be followed by a `라이브니스 침묵` block row on a
   # run that has ended.
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
-  if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
      && { [ "$nonterm" -ge 1 ] || [ "$(cc_segment_count "$LEDGER")" = "0" ]; } \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && ! grep -q '라이브니스 침묵' "$RUN_DIR/stall" 2>/dev/null \
      && [ "${silent:-0}" = "0" ]; then
-    announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
-             "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
+    # A waiter whose refresh stopped while its holder lives is never dispatched
+    # again — the key is still a member — so the only recovery is to end that
+    # holder, after which settlement closes the attempt. Say so by pid, or the
+    # person resumes a router that will refuse to dispatch the key.
+    stale=$(cc_waiting_records "$RUN_DIR" "$LEDGER" "$STALL" \
+            | awk -F'\t' '$8 == "false" { printf "%s%s(보유자 %s)", (n++ ? ", " : ""), $1, $6 }')
+    if [ -n "$stale" ]; then
+      announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 갱신이 멈춘 대기자: ${stale})" \
+               "갱신이 멈춘 대기자의 보유자 pid 를 끝내면 정산이 그 시도를 닫고 다시 파견할 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
+    else
+      announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
+               "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
+    fi
     cc_notify_fire resume "라우터가 ${age}초 동안 멈춰 있습니다 — 세션을 resume 하고 재개를 지시하세요" || true
     record_blocked "라이브니스 침묵" "메인 세션에서 이어서 진행하도록 지시"
   fi
@@ -854,7 +894,7 @@ pass() {
              "세션으로 돌아가 답하면 그 자리에서 이어집니다"
   fi
 
-  if [ "$live" = "0" ] && [ "$nonterm" = "0" ] && [ "$pend" -gt 0 ] \
+  if [ "$live_w" = "0" ] && [ "$nonterm" = "0" ] && [ "$pend" -gt 0 ] \
      && [ ! -f "$RUN_DIR/watch.announced-waiting" ]; then
     : > "$RUN_DIR/watch.announced-waiting"
     announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \

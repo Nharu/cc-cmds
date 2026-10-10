@@ -49,6 +49,9 @@ GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-snapshot-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 export XDG_STATE_HOME="$WORK/state"
+# The config root the account inventory is read under is moved off the host's,
+# so the fixture run opens unrouted whatever this machine has.
+export XDG_CONFIG_HOME="$WORK/config"
 
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -178,6 +181,12 @@ esac
 # 2. Invariance — the same state hashes the same, twice and after noise
 # ---------------------------------------------------------------------------
 check "같은 상태를 두 번 재면 같다" "$(digest)" "$d0"
+
+# A run with no stage waiting for an account carries the key with an empty list,
+# and the key adds nothing to `H` beyond the ledger it already hashes.
+w0=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null)
+check "대기자가 없는 런의 스냅숏은 빈 waiting_stages 를 싣는다" "$(printf '%s' "$w0" | jq -c .waiting_stages)" "[]"
+check "빈 waiting_stages 가 있어도 H 는 직접 잰 스냅숏 다이제스트다" "$(printf '%s' "$w0" | jq -r .H)" "$(snapdigest)"
 
 # Rows that carry no progress: a cost row and a repeated problem row. Both
 # accumulate monotonically in any run, so if either moved the digest the
@@ -385,9 +394,10 @@ check "pace 블록이 shift 바로 뒤에 온다" \
 check "H 는 스냅숏의 마지막 키다" "$(jq -r 'keys_unsorted | last' "$WORK/s1.json")" "H"
 check "센서가 없는 상태 루트에서 pace 는 null 이다" "$(jq -c .pace "$WORK/s1.json")" "null"
 check "그 부재의 사유가 곁에 실린다" "$(jq -r .pace_absent_reason "$WORK/s1.json")" "센서 미등록"
-check "--fields 의 기본 목록은 라우터가 읽는 일곱 필드를 그 순서로 낸다" \
+check "--fields 의 기본 목록은 라우터가 읽는 여덟 필드를 그 순서로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
-  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
+check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이다" "$(jq -c .waiting_stages "$WORK/s1.json")" "[]"
 check "--fields H 는 스냅숏의 H 를 날값 한 줄로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null)" \
   "$(jq -r .H "$WORK/s1.json")"
@@ -411,6 +421,18 @@ else
   bad "스냅숏 다이제스트" "행을 붙였는데 값이 그대로다 — 낡은 다이제스트가 통과한다"
 fi
 check "같은 행이 진전 다이제스트는 움직이지 않는다" "$(digest)" "$pd_before"
+
+# A WAIT STARTS WITH A ROW. The first `stage-wait` row is written before the
+# dispatch returns, so it changes the ledger's end and a router holding the
+# earlier `H` is told its view is stale — and a heartbeat is not progress.
+sd_before=$(snapdigest); pd_before=$(digest)
+printf -- '- `stage-wait` | 계보=B:S1#2 | 그룹=org:h1 | 계정=- | 까지=- | 근거=concurrency-cap\n' >> "$FIX_LEDGER"
+if [ "$(snapdigest)" != "$sd_before" ]; then
+  ok "첫 stage-wait 행이 원장 끝을 바꿔 H 를 움직인다"
+else
+  bad "stage-wait 행" "대기가 시작됐는데 스냅숏 다이제스트가 그대로다"
+fi
+check "stage-wait 행은 진전 다이제스트를 움직이지 않는다" "$(digest)" "$pd_before"
 
 # AN ABOVE-READ EXEC IS NOT PROGRESS EITHER. It used to be (`acts=`), and under
 # the judgment definition that made the judgment count a component of the very
@@ -560,6 +582,41 @@ if grep -q '^미충족 조건: 조건 ' "$RENDER_U"; then
 else
   bad "미충족 조건 줄" "got '$(grep '미충족 조건' "$RENDER_U" || printf '(줄 없음)')'"
 fi
+check "대기자가 없으면 렌더에 대기 줄이 없다" "$(grep -c '^대기 중인 스테이지:' "$RENDER_U")" "0"
+
+# A STAGE WAITING FOR AN ACCOUNT, in the JSON and in the render. The marker's
+# holder is a live process of this suite, so the key is a member; freshness is
+# then read from the later of the refresh and the machine's wake, and the wake
+# reading is replaced in a subshell so all three cases are this suite's.
+RD_R1="$XDG_STATE_HOME/cc-cmds/run/R1"
+sleep 600 & W_HOLD=$!
+w_now=$(date -u +%s)
+w_stall=$(cc_effective_stall "$RD_R1")
+# A driver-written marker: the gate's settlement leaves those alone, so killing
+# the holder below adds no row to this shared fixture ledger.
+printf '%s\n' "보유자=$W_HOLD" "지문=$(cc_proc_fingerprint "$W_HOLD")" "기록자=드라이버" "계보=S9" \
+  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
+SNAP_W="$WORK/waiting.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_W"
+check "살아 있는 보유자의 표지는 waiting_stages 원소 하나다" "$(jq -r '.waiting_stages | length' "$SNAP_W")" "1"
+check "그 원소가 키·계보·그룹·보유자·기록자를 싣는다" \
+  "$(jq -c '.waiting_stages[0] | [.segment, .lineage, .group, .until, .holder, .writer]' "$SNAP_W")" \
+  "[\"S9\",\"S9\",\"org:h1\",null,$W_HOLD,\"드라이버\"]"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null ) > "$WORK/render-w.txt"
+check "렌더가 대기 원소를 키와 보유자로 보인다" \
+  "$(grep -c "^대기 중인 스테이지: S9(그룹 org:h1, 까지 -, 보유자 $W_HOLD" "$WORK/render-w.txt")" "1"
+w_fresh() {  # w_fresh <wake epoch or empty> — the one element's `fresh`
+  ( RUN_DIR="$RD_R1"; LEDGER="$FIX_LEDGER"; W_WAKE="$1"
+    wake_epoch() { printf '%s' "$W_WAKE"; }
+    printf '[%s]' "$(gate_snapshot_waiting_stages_json)" ) | jq -c '[length, .[0].fresh]'
+}
+check "갱신이 STALL 보다 오래돼도 깨어남이 그 뒤면 구성원이고 신선하다" "$(w_fresh "$((w_now - w_stall + 5))")" "[1,true]"
+check "깨어남이 그보다 이르면 구성원이고 신선하지 않다" "$(w_fresh "$((w_now - w_stall - 100))")" "[1,false]"
+check "깨어남 기록이 없으면 구성원이고 신선하지 않다" "$(w_fresh "")" "[1,false]"
+kill -TERM "$W_HOLD" 2>/dev/null; wait "$W_HOLD" 2>/dev/null
+check "보유자가 죽으면 표지가 남아도 원소가 빠진다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r '.waiting_stages | length')" "0"
+rm -f "$RD_R1/S9.waiting"
 
 # ---------------------------------------------------------------------------
 # 6c. `cycles[]` carries what a delta basis is chosen from

@@ -1157,6 +1157,10 @@ trap 'rm -rf "$WORK"' EXIT
 FXREPORT="$WORK/fixture-review.md"
 printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
+# A run opened where an account inventory exists is routed, so the config root
+# the inventory is read under is moved off the host's: every fixture run opens
+# unrouted, as on CI, unless a section plants a routing record of its own.
+export XDG_CONFIG_HOME="$WORK/config"
 # THE AMBIENT SESSION ID IS DROPPED, so a run from inside a Claude session reads
 # the same as CI, which has none. The gate reads the caller's context from that
 # session's transcript, and a caller that is neither a stage nor a shift is
@@ -21248,7 +21252,7 @@ check "34b A4: H 는 여전히 마지막 키다" \
   "$(cap_snap "$CAPB_SID" '' | jq -r 'keys_unsorted | last')" "H"
 check "34b A4: --fields 의 기본 투영이 그대로다" \
   "$(cap_snap "$CAPB_SID" '' --fields | jq -r 'keys_unsorted | join(",")')" \
-  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
 
 # A5. THE LAUNCH ROW CARRIES THE OUTGOING SHIFT'S CONTEXT.
 cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind segment --target infra --segment CB1 \
@@ -24967,7 +24971,7 @@ check "59: 그 값은 스냅숏의 H 와 같다" "$p59_hf" "$(p59_h)"
 check "59: 필드 하나는 JSON 이 아니라 날값이다" "$(printf '%s' "$p59_hf" | grep -c '"' || true)" "0"
 check "59: 맨 --fields 는 기본 목록을 그 순서대로 낸다" \
   "$(p59_snap --fields | jq -r 'keys_unsorted | join(",")')" \
-  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
 check "59: 필드 둘 이상은 요청한 순서의 JSON 객체다" \
   "$(p59_snap --fields pace,H | jq -r 'keys_unsorted | join(",")')" "pace,H"
 check "59: 그 객체의 pace 는 스냅숏과 같은 값이다 (부재면 null)" \
@@ -26467,7 +26471,9 @@ for lsr61_f in "$repo_root"/plugins/cc-cmds/orchestrator/*.sh; do
   lsr61_lcalls=$(( lsr61_lcalls + $(sed 's/#.*//' "$lsr61_f" | { grep -cE "$lsr61_lre" || true; }) ))
   lsr61_wcalls=$(( lsr61_wcalls + $(sed 's/#.*//' "$lsr61_f" | { grep -cE "$lsr61_wre" || true; }) ))
 done
-check "61: 래퍼를 부르는 자리는 lease 둘·wait 하나다" "$lsr61_lcalls/$lsr61_wcalls" "2/1"
+# lease: 파견 시점의 부여, 대기 뒤 감독자의 부여, 드라이버의 부여. wait: 게이트
+# 파견 반쪽의 첫 행, 감독자의 심장박동, 드라이버 대기의 첫 행과 심장박동.
+check "61: 래퍼를 부르는 자리는 lease 셋·wait 넷이다" "$lsr61_lcalls/$lsr61_wcalls" "3/4"
 check "61: 두 래퍼의 정의는 있다 (0 이 이름이 바뀐 탓이 아니다)" \
   "$( { grep -cE '^gate_stage_(lease|wait)_row\(\) \{' "$GATE" || true; } )" "2"
 check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
@@ -27035,28 +27041,23 @@ case "$lsr67_out" in
 esac
 
 # ---------------------------------------------------------------------------
-# 75. 가드 1 의 파견 반쪽 — 라우터 답마다의 정지, 선점, 발행분 반납
-# --- section: 75 | group: ledger_series | covers: act, gate_append | anchors: 75: WAIT 정지가 계보 B:SW1#1 의 stage-wait 행을 남긴다 ---
+# 75. 라우팅된 런의 파견 반쪽 — 라우터 답마다의 처분, 선점, 발행분 반납
+# --- section: 75 | group: ledger_series | covers: act, gate_append | anchors: 75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다 ---
 #
-# 출하 가드는 0 이라 이 스위트의 다른 파견은 전부 가드 0 갈래다. 플러그인을 복사해
-# 그 사본의 가드 줄만 1 로 뒤집고, 사본의 게이트를 소싱한 자식에서 파견 반쪽을
-# 직접 부른다. 라우터 답은 스텁으로 고정하고 임대 표의 두 자리(앞선 임대 판독과
-# 반납)는 호출을 적는 스텁으로 바꾼다 — 재는 것은 게이트가 답을 받아 무엇을 남기고
-# 무엇을 돌려주는가이지 라우터가 아니다. 진짜 라우터를 거친 부여·반납·PARK 는
-# 감독자 스위트가 잰다.
+# 라우팅 여부는 런 기록이 정한다. 이 스위트의 다른 파견은 기록이 없는 런이라 좌석
+# 갈래다. 여기서는 런 디렉터리에 기록 1 과 정규 파일 스냅숏을 심고, 플러그인 사본의
+# 게이트를 소싱한 자식에서 파견 반쪽을 직접 부른다. 라우터 답은 스텁으로 고정하고
+# 임대 표의 두 자리(앞선 임대 판독과 반납)는 호출을 적는 스텁으로 바꾼다 — 재는 것은
+# 게이트가 답을 받아 무엇을 남기고 무엇을 돌려주는가이지 라우터가 아니다. 진짜
+# 라우터를 거친 부여·대기·반납·PARK 와 같은 키의 이중 파견은 감독자 스위트가 잰다.
 # ---------------------------------------------------------------------------
 pre_ledger_series
 lsr75="$lsr_root/g75"; rm -rf "$lsr75"; mkdir -p "$lsr75"
 cp -R "$repo_root/plugins/cc-cmds" "$lsr75/cc-cmds"
-sed 's/in 0) ;; \*) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac/in 1) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac/' \
-  "$repo_root/plugins/cc-cmds/orchestrator/run.sh" > "$lsr75/cc-cmds/orchestrator/run.sh"
-check "75: 사본의 가드만 1 로 뒤집혔다 (저장소 파일은 0 그대로)" \
-  "$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=1 ;; esac' "$lsr75/cc-cmds/orchestrator/run.sh" || true; } )/$( { grep -c 'readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || true; } )" \
-  "1/1"
 
 lsr75_in() {
-  # lsr75_in <원장> <봉투> <앞선 난스|""> <명령…> — 뒤집힌 사본을 소싱한 자식에서
-  # 한 명령. 반납 스텁은 「계보 난스」 한 줄씩을 원장 옆 `released` 에 적는다.
+  # lsr75_in <원장> <봉투> <앞선 난스|""> <명령…> — 사본을 소싱한 자식에서 한
+  # 명령. 반납 스텁은 「계보 난스」 한 줄씩을 원장 옆 `released` 에 적는다.
   local l="$1" env="$2" prior="$3"
   shift 3
   LSR75_ENV="$env" LSR75_PRIOR="$prior" LSR75_REL="${l%/*}/released" LSR75_MF="$FX_MANIFEST" \
@@ -27073,10 +27074,11 @@ lsr75_in() {
     "${lsr75_argv[@]}"
   ' _ "${LSR75_GATE:-$lsr75/cc-cmds/orchestrator/gate.sh}" "$l" "$@"
 }
-lsr75_new() {  # lsr75_new <이름> — 가드 기록 1 을 든 새 런 디렉터리의 원장
+lsr75_new() {  # lsr75_new <이름> — 기록 1 과 정규 파일 스냅숏을 든 새 런 디렉터리의 원장
   local l
   l=$(lsr_ledger "$1")
   printf '1\n' > "${l%/*}/routing-guard"
+  printf '{}\n' > "${l%/*}/inventory.json"
   printf '%s' "$l"
 }
 lsr75_rc() {  # lsr75_rc <원장> <봉투> <앞선 난스> <세그먼트> — 파견 반쪽의 rc
@@ -27084,21 +27086,38 @@ lsr75_rc() {  # lsr75_rc <원장> <봉투> <앞선 난스> <세그먼트> — �
   lsr75_in "$1" "$2" "$3" gate_launch_stage infra "$4" implement -p x >/dev/null 2>&1 || r=$?
   printf '%s' "$r"
 }
+lsr75_route() {  # lsr75_route <원장> <봉투> <세그먼트> — 라우터 반쪽의 「rc 계보」
+  lsr75_in "$1" "$2" '' eval "r=0; gate_launch_route infra $3 implement >/dev/null 2>&1 || r=\$?; printf '%s %s' \"\$r\" \"\$GATE_ROUTE_LINEAGE\"" 2>/dev/null
+}
 
-# WAIT — 새 종료 코드, 계보로 쓴 `stage-wait` 행, 핀 없음. 선점 파일은 남는다: 그
-# 시도 번호는 이 파견이 쓴 것이다.
+# WAIT — 라우터 반쪽은 정지가 아니라 0 으로 돌아오고, 그 전에 계보로 쓴 첫
+# `stage-wait` 행을 남긴다. 핀·토큰·감독자는 그 뒤의 대기 반쪽이 만든다(감독자
+# 스위트). 선점 파일은 남는다: 그 시도 번호는 이 파견이 쓴 것이다.
 lsr75_w=$(lsr75_new w75)
-check "75: WAIT 는 exit 16 이다" \
-  "$(lsr75_rc "$lsr75_w" '{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}' '' SW1)" "16"
+check "75: WAIT 의 라우터 반쪽은 0 이다" \
+  "$(lsr75_route "$lsr75_w" '{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}' SW1)" "0 B:SW1#1"
 case "$(lsr_body "$lsr75_w")" in
   '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 근거=no-room')
-    ok "75: WAIT 정지가 계보 B:SW1#1 의 stage-wait 행을 남긴다" ;;
+    ok "75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다" ;;
   *) bad "75 WAIT 행" "$(lsr_body "$lsr75_w")" ;;
 esac
-check "75: WAIT 는 시도 핀도 토큰도 남기지 않고 선점만 남긴다" \
+check "75: 라우터 반쪽은 시도 핀도 토큰도 남기지 않고 선점만 남긴다" \
   "$( [ -e "${lsr75_w%/*}/SW1.attempt" ] && printf pin || printf -- -)$( [ -e "${lsr75_w%/*}/SW1.launch" ] && printf tok || printf -- -)$( [ -e "${lsr75_w%/*}/SW1.attempt.1" ] && printf claim || printf -- -)" \
   "--claim"
 check "75: WAIT 는 아무것도 반납하지 않는다 (발행이 없다)" "$( [ -e "${lsr75_w%/*}/released" ] && printf yes || printf no)" "no"
+
+# 라우터의 마감 PARK. 이 픽스처 원장에는 세그먼트 행이 없어 cone 행이 거절되므로,
+# 그 자리에 act 스코프 행 하나가 계보와 관측된 ready_at 을 싣고 선다. cone 행
+# 자체는 감독자 스위트의 마감 사례가 잰다.
+lsr75_dl=$(lsr75_new dl75)
+check "75: 마감 PARK 는 exit 16 이다" \
+  "$(lsr75_rc "$lsr75_dl" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":"마감을 늘린다"}' '' SD2)" "16"
+check "75: 마감 PARK 의 blocked 행은 하나다" "$( { grep -c '^- `blocked`' "$lsr75_dl" || true; } )" "1"
+case "$( { grep '^- `blocked`' "$lsr75_dl" || true; } | tail -1)" in
+  *"스코프=act"*"세그먼트=SD2"*"근거=계보=B:SD2#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') (마감을 늘린다) |"*)
+    ok "75: cone 행이 거절되면 계보와 ready_at 을 실은 act 행이 대신 선다" ;;
+  *) bad "75 마감 PARK 행" "$(tail -1 "$lsr75_dl")" ;;
+esac
 
 # PARK — 같은 종료 코드, 라우터의 사유와 복구를 실은 act 스코프 blocked 행.
 lsr75_p=$(lsr75_new p69)
@@ -27111,14 +27130,69 @@ case "$( { grep '^- `blocked`' "$lsr75_p" || true; } | tail -1)" in
 esac
 check "75: PARK 도 시도 핀을 남기지 않는다" "$( [ -e "${lsr75_p%/*}/SP1.attempt" ] && printf pin || printf -- -)" "-"
 
-# 동시 파견 선점 — 같은 세그먼트의 같은 시도 번호를 이미 다른 파견이 잡았으면
-# 라우터에 묻기 전에 거부되고, 아무 행도 쓰지 않는다.
+# 남은 선점 — 로그 없이 끝난 시도(죽은 대기자, 마감 파킹)의 선점 번호는 건너뛴다.
+# 설계 스텝은 인가 행이 `세그먼트=-` 라 계수가 늘 1 이므로, 건너뛰지 않으면 같은
+# 번호를 다시 유도해 매번 선점에서 거부됐다.
 lsr75_c=$(lsr75_new c75)
 : > "${lsr75_c%/*}/SC1.attempt.1"
-lsr75_csha=$(lsr_sha "$lsr75_c")
-check "75: 이미 선점된 시도 번호의 파견은 exit 3 이다" \
-  "$(lsr75_rc "$lsr75_c" '{"verdict":"WAIT","reason":"no-room"}' '' SC1)" "3"
-check "75: 선점 거부는 원장에 한 바이트도 쓰지 않는다" "$(lsr_sha "$lsr75_c")" "$lsr75_csha"
+check "75: 선점만 남은 시도 번호는 건너뛰고 다음 번호를 청구한다" \
+  "$(lsr75_route "$lsr75_c" '{"verdict":"WAIT","reason":"no-room"}' SC1)" "0 B:SC1#2"
+lsr75_s=$(lsr75_new s75)
+: > "${lsr75_s%/*}/S1design.attempt.1"
+check "75: 설계 스텝도 시도 2 를 청구한다" \
+  "$(lsr75_route "$lsr75_s" '{"verdict":"WAIT","reason":"no-room"}' S1design)" "0 B:S1design#2"
+check "75: 그 번호가 핀으로 고정된다" \
+  "$(lsr75_in "$lsr75_s" '' '' gate_pin_attempt S1design 2 2>/dev/null)/$(cat "${lsr75_s%/*}/S1design.attempt" 2>/dev/null | tr -d '[:space:]')" "2/2"
+# 같은 번호를 두 파견이 함께 유도한 경우 — 늦은 쪽은 라우터에 묻기 전에 거부되고
+# 아무 행도 쓰지 않는다. 유도를 고정해 그 경합을 재현한다.
+lsr75_x=$(lsr75_new x75)
+: > "${lsr75_x%/*}/SX1.attempt.1"
+lsr75_xsha=$(lsr_sha "$lsr75_x")
+lsr75_xrc=$(lsr75_in "$lsr75_x" '{"verdict":"WAIT","reason":"no-room"}' '' eval \
+  'gate_derive_attempt() { printf 1; }; r=0; gate_launch_route infra SX1 implement >/dev/null 2>&1 || r=$?; printf "%s" "$r"' 2>/dev/null)
+check "75: 이미 선점된 시도 번호의 파견은 exit 3 이다" "$lsr75_xrc" "3"
+check "75: 선점 거부는 원장에 한 바이트도 쓰지 않는다" "$(lsr_sha "$lsr75_x")" "$lsr75_xsha"
+
+# 같은 키의 파견 잠금과 대기 구성원 — 행위가 17 로 거부하는 두 판정.
+lsr75_k=$(lsr75_new k75)
+sleep 600 & lsr75_kp=$!
+lsr75_kfp=$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_proc_fingerprint "$lsr75_kp" )
+printf '%s\n%s\n' "$lsr75_kp" "$lsr75_kfp" > "${lsr75_k%/*}/SK1.dispatching"
+check "75: 살아 있는 보유자의 파견 잠금은 잡히지 않는다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_dispatch_lock_take SK1 && printf took || printf held' 2>/dev/null)" "held"
+printf '999999\nMon Jan 1 00:00:00 2001\n' > "${lsr75_k%/*}/SK2.dispatching"
+check "75: 죽은 보유자의 잠금은 치우고 잡는다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_dispatch_lock_take SK2 && printf took || printf held' 2>/dev/null)/$(sed -n '1p' "${lsr75_k%/*}/SK2.dispatching" 2>/dev/null | grep -c '^999999$' || true)" "took/0"
+# 죽은 잠금을 함께 본 두 행위 — 이 행위가 보유자를 죽었다고 판정한 직후 다른 행위가
+# 회수를 끝내 자기 잠금을 세운다. 생존 판정 스텁이 그 순간에 그 잠금을 심는다(보유자
+# 424242 는 스텁이 살아 있다고 답한다). 판정한 뒤에 다시 읽으면 남의 살아 있는 잠금을
+# 지우고 잡는다.
+printf '999999\nMon Jan 1 00:00:00 2001\n' > "${lsr75_k%/*}/SK4.dispatching"
+check "75: 회수 도중 다른 행위가 세운 잠금은 지우지 않고 거부한다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval '
+    cc_holder_is_live() {
+      [ "$1" = 999999 ] || return 0
+      printf "424242\nlive\n" > "$RUN_DIR/SK4.other"
+      mv -f "$RUN_DIR/SK4.other" "$RUN_DIR/SK4.dispatching"
+      return 1
+    }
+    gate_dispatch_lock_take SK4 && printf took || printf held' 2>/dev/null)/$(sed -n '1p' "${lsr75_k%/*}/SK4.dispatching" 2>/dev/null)/$(ls "${lsr75_k%/*}" | grep -c '^SK4\.dispatching\.' || true)" "held/424242/0"
+# 빈 잠금은 배타 생성과 본문 쓰기 사이의 잠금이다 — 갓 생긴 것은 쥔 것으로 보고, 유예를
+# 넘긴 것만 치운다.
+: > "${lsr75_k%/*}/SK5.dispatching"
+check "75: 갓 생긴 빈 잠금은 잡히지 않는다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_dispatch_lock_take SK5 && printf took || printf held' 2>/dev/null)" "held"
+: > "${lsr75_k%/*}/SK6.dispatching"
+touch -t 200001010000 "${lsr75_k%/*}/SK6.dispatching"
+check "75: 유예를 넘긴 빈 잠금은 치우고 잡는다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_dispatch_lock_take SK6 && printf took || printf held' 2>/dev/null)/$( [ -e "${lsr75_k%/*}/SK6.dispatching" ] && [ ! -s "${lsr75_k%/*}/SK6.dispatching" ] && printf empty || printf replaced)" "took/replaced"
+printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=B:SK3#1\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n논스=-\n시도=1\n' \
+  "$lsr75_kp" "$lsr75_kfp" "$(date +%s)" > "${lsr75_k%/*}/SK3.waiting"
+check "75: 살아 있는 보유자의 대기 표지가 있는 키는 진행 중이다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_key_in_flight SK3 && printf yes || printf no' 2>/dev/null)" "yes"
+kill "$lsr75_kp" 2>/dev/null; wait "$lsr75_kp" 2>/dev/null || true
+check "75: 보유자가 죽으면 진행 중이 아니다" \
+  "$(lsr75_in "$lsr75_k" '' '' eval 'gate_key_in_flight SK3 && printf yes || printf no' 2>/dev/null)" "no"
 
 # 부여 뒤의 거부는 이 파견이 발행한 임대만 돌려준다. 행 빌더가 거부할 계정 id 를
 # 실은 GRANT 를 준다 — 거부가 지시문 합성에서 나든 임대 행에서 나든 감독자가
@@ -27135,26 +27209,92 @@ lsr75_mr=$(lsr75_rc "$lsr75_m" "$lsr75_bad" n1 SM1)
 check "75: 계보에 이미 있던 임대에 앉은 파견은 거부돼도 반납하지 않는다" \
   "$( [ "$lsr75_mr" = 0 ] && printf launched || printf refused)|$( [ -e "${lsr75_m%/*}/released" ] && printf yes || printf no)" "refused|no"
 
-# 가드 기록이 사본과 다르면 라우터에 묻지도 선점하지도 않는다.
+# 런 기록과 스냅숏이 어긋나면 라우터에 묻지도 선점하지도 않는다.
 lsr75_g=$(lsr75_new gd75)
 printf '0\n' > "${lsr75_g%/*}/routing-guard"
-check "75: 가드 기록이 다르면 exit 16 이다" \
+check "75: 기록이 1 이 아니면 exit 16 이다" \
   "$(lsr75_rc "$lsr75_g" '{"verdict":"WAIT","reason":"no-room"}' '' SG1)" "16"
 case "$( { grep '^- `blocked`' "$lsr75_g" || true; } | tail -1)" in
-  *"근거=라우팅 가드 어긋남 — 이 사본의 가드 1, 런 기록 0 |"*) ok "75: 가드 어긋남의 blocked 행이 두 값을 적는다" ;;
+  *"근거=라우팅 가드 어긋남 — 런 기록 0, 스냅숏 정규 파일 |"*) ok "75: 가드 어긋남의 blocked 행이 두 값을 적는다" ;;
   *) bad "75 가드 어긋남 행" "$(tail -1 "$lsr75_g")" ;;
 esac
 check "75: 가드 어긋남은 시도 번호를 선점하지 않는다" "$( [ -e "${lsr75_g%/*}/SG1.attempt.1" ] && printf claim || printf -- -)" "-"
-# 반대쪽 — 가드 0 인 출하 게이트가 가드 1 로 열린 런에 파견해도 거부된다. 기록이
-# 없으면 가드 0 은 비교에서 아무것도 하지 않는다(이 스위트의 다른 파견 전부).
+# 기록 1 인데 스냅숏이 없는 런도 거부된다. 기록이 없는 런은 비교에서 아무것도
+# 하지 않는다(이 스위트의 다른 파견 전부).
 lsr75_z=$(lsr75_new z75)
-check "75: 가드 0 게이트는 기록 1 인 런에서 exit 16 이다" \
-  "$(LSR75_GATE="$GATE" lsr75_rc "$lsr75_z" '' '' SZ1)" "16"
+rm -f "${lsr75_z%/*}/inventory.json"
+check "75: 기록 1 에 스냅숏이 없으면 exit 16 이다" \
+  "$(lsr75_rc "$lsr75_z" '' '' SZ1)" "16"
 case "$( { grep '^- `blocked`' "$lsr75_z" || true; } | tail -1)" in
-  *"| 스코프=act | "*"근거=라우팅 가드 어긋남 — 이 사본의 가드 0, 런 기록 1 |"*)
-    ok "75: 가드 0 쪽 거부도 두 값을 적은 blocked 행을 남긴다" ;;
-  *) bad "75 가드 0 어긋남 행" "$(tail -1 "$lsr75_z")" ;;
+  *"| 스코프=act | "*"근거=라우팅 가드 어긋남 — 런 기록 1, 스냅숏 없음 |"*)
+    ok "75: 스냅숏 없는 기록 1 의 거부도 두 값을 적은 blocked 행을 남긴다" ;;
+  *) bad "75 스냅숏 없음 행" "$(tail -1 "$lsr75_z")" ;;
 esac
+
+# 스폰 전에 죽은 대기자의 정산. 게이트가 쓴 표지의 보유자가 죽었고 `.pid` 가
+# 없으면 그 시도의 종단 행을 쓸 것이 더는 없으므로 정산이 `외부 종료` 를 쓴다.
+# 세그먼트의 `.window` 가 앞선 시도의 계정을 적고 있어도 행에는 계정이 없다.
+lsr75_wt() {  # lsr75_wt <원장> <키> <보유자> <기록자> — 시도 1 의 대기 표지·핀·선점
+  printf '보유자=%s\n지문=-\n기록자=%s\n계보=B:%s#1\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n논스=-\n시도=1\n' \
+    "$3" "$4" "$2" "$(date +%s)" > "${1%/*}/$2.waiting"
+  printf '1\n' > "${1%/*}/$2.attempt"
+  : > "${1%/*}/$2.attempt.1"
+  : > "${1%/*}/$2.sup"
+}
+lsr75_e=$(lsr75_new e75)
+lsr75_wt "$lsr75_e" SE1 999999 게이트
+printf 'other-account\n' > "${lsr75_e%/*}/SE1.window"
+lsr75_in "$lsr75_e" '' '' gate_settle_dead_waiters >/dev/null 2>&1
+lsr75_erow=$( { grep '^- `stage-result`' "$lsr75_e" || true; } )
+case "$lsr75_erow" in
+  *"| 스테이지=SE1 | 종류=implement | 종료 코드=- | 실행 버전=1 | "*"| 종단 부류=외부 종료 | "*) ok "75: 죽은 대기자의 시도가 외부 종료 행으로 정산된다" ;;
+  *) bad "75 정산 행" "$lsr75_erow" ;;
+esac
+check "75: 정산 행은 계정을 적지 않는다" "$(printf '%s' "$lsr75_erow" | { grep -c -e '계정=' -e 'other-account' || true; })" "0"
+check "75: 정산이 표지와 감독자 기록을 치운다" \
+  "$( [ -e "${lsr75_e%/*}/SE1.waiting" ] && printf w || printf -- -)$( [ -e "${lsr75_e%/*}/SE1.sup" ] && printf s || printf -- -)" "--"
+check "75: 정산된 시도 뒤의 파견은 시도 2 를 청구한다" \
+  "$(lsr75_route "$lsr75_e" '{"verdict":"WAIT","reason":"no-room"}' SE1)" "0 B:SE1#2"
+# 같은 계보의 blocked 행이 이미 그 시도를 닫았으면 행을 더 쓰지 않고 치우기만 한다.
+lsr75_b=$(lsr75_new b75)
+lsr75_in "$lsr75_b" '' '' gate_append blocked '대상=infra' '스코프=act' '원인=막힘' '사유=라우터 판정' \
+  '세그먼트=SE2' '스테이지=SE2' '근거=계보=B:SE2#1 마감 초과' >/dev/null 2>&1
+lsr75_wt "$lsr75_b" SE2 999999 게이트
+lsr75_in "$lsr75_b" '' '' gate_settle_dead_waiters >/dev/null 2>&1
+check "75: 계보의 blocked 행이 있으면 정산 행은 없고 표지만 치운다" \
+  "$( { grep -c '^- `stage-result`' "$lsr75_b" || true; } )/$( [ -e "${lsr75_b%/*}/SE2.waiting" ] && printf w || printf -- -)" "0/-"
+# 드라이버가 쓴 표지는 드라이버의 것이고, 살아 있는 잠금 아래의 키는 건너뛴다.
+lsr75_v=$(lsr75_new v75)
+lsr75_wt "$lsr75_v" SE3 999999 드라이버
+lsr75_wt "$lsr75_v" SE4 999999 게이트
+sleep 600 & lsr75_vp=$!
+printf '%s\n%s\n' "$lsr75_vp" "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_proc_fingerprint "$lsr75_vp" )" > "${lsr75_v%/*}/SE4.dispatching"
+lsr75_in "$lsr75_v" '' '' gate_settle_dead_waiters >/dev/null 2>&1
+check "75: 드라이버 표지와 잠긴 키는 정산하지 않는다" \
+  "$( { grep -c '^- `stage-result`' "$lsr75_v" || true; } )/$( [ -e "${lsr75_v%/*}/SE3.waiting" ] && printf d || printf -- -)$( [ -e "${lsr75_v%/*}/SE4.waiting" ] && printf g || printf -- -)" "0/dg"
+kill "$lsr75_vp" 2>/dev/null; wait "$lsr75_vp" 2>/dev/null || true
+
+# 예상 소요와 라우팅된 요청의 마감 객체. 같은 부류의 정상 완료 스테이지가 없으면
+# 부류 상수이고, 세션 id 로 스트림에 이어지는 정상 완료 행이 있으면 그 소요다.
+lsr75_x2=$(lsr75_new ed75)
+lsr75_ed() { lsr75_in "$lsr75_x2" '' '' eval "$1" 2>/dev/null; }
+check "75: 마감 없는 런의 요청 마감은 null 이다" "$(lsr75_ed 'deadline_epoch() { :; }; wait_request_deadline implement')" "null"
+check "75: 표본이 없으면 예상 소요는 부류 상수다" \
+  "$(lsr75_ed 'deadline_epoch() { printf 1900000000; }; wait_request_deadline implement')" \
+  "{\"deadline_epoch\":1900000000,\"expected_duration_s\":$(lsr75_ed 'printf %s "$EXPECTED_DURATION_IMPLEMENT_S"')}"
+mkdir -p "${lsr75_x2%/*}/log"
+printf '%s\n' '{"type":"result","session_id":"sid-a","duration_ms":120400}' > "${lsr75_x2%/*}/log/SI1#1.json"
+printf '%s\n' '{"type":"result","session_id":"sid-b","duration_ms":9000}' > "${lsr75_x2%/*}/log/SI2#1.json"
+printf '%s\n' '{"type":"result","session_id":"sid-c","duration_ms":7000}' > "${lsr75_x2%/*}/log/SI3#1.json"
+printf '%s\n' '{"type":"result","session_id":"sid-d","duration_ms":60000}' > "${lsr75_x2%/*}/log/S5:SI4#1.json"
+lsr75_in "$lsr75_x2" '' '' eval '
+  gate_append stage-result "세그먼트=SI1" "스테이지=SI1" "종류=implement" "종료 코드=0" "실행 버전=1" "세션 id=sid-a" "부모=-" "기록자=게이트" "종단 부류=정상 완료"
+  gate_append stage-result "세그먼트=SI2" "스테이지=SI2" "종류=implement" "종료 코드=1" "실행 버전=1" "세션 id=sid-b" "부모=-" "기록자=게이트" "종단 부류=외부 종료"
+  gate_append stage-result "세그먼트=SI3" "스테이지=SI3" "종류=implement" "종료 코드=0" "실행 버전=1" "세션 id=sid-x" "부모=-" "기록자=게이트" "종단 부류=정상 완료"
+  gate_append stage-result "세그먼트=SI4" "스테이지=S5:SI4" "종료 코드=0" "실행 버전=1" "세션 id=sid-d" "부모=-" "기록자=드라이버" "종단 부류=정상 완료"' >/dev/null 2>&1
+check "75: 이어지는 정상 완료 행 하나의 소요가 예상 소요다 (외부 종료와 세션이 어긋난 행은 빠진다)" \
+  "$(lsr75_ed 'stage_expected_duration implement')" "120"
+check "75: 드라이버 행의 부류는 스테이지 부호로 정한다" "$(lsr75_ed 'stage_expected_duration review')" "60"
 
 # 경로 B 계보의 머리는 드라이버 계보의 여섯 머리 어느 것과도 겹치지 않고, 계보
 # 판독은 그것을 벗기지 않는다.
