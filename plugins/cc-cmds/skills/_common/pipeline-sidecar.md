@@ -6,10 +6,10 @@ The sidecar kinds below and one non-sidecar record are defined:
 
 | Artifact | Kind token | Writer | Location |
 | --- | --- | --- | --- |
-| Run manifest | `cc-run-manifest v1` | `autopilot` (kickoff) **only** | `<run 디렉터리>/plan.md` |
-| Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-grant/{slug}.md` |
+| Run manifest | `cc-run-manifest v1` | `autopilot` (kickoff) **only**; for a derived successor, the successor deriver `orchestrator/rekick.sh` **only** | `<run 디렉터리>/plan.md` |
+| Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only**; for a derived successor, the successor deriver `orchestrator/rekick.sh` **only** | `<base>/docs/pipeline-grant/{slug}.md` |
 | Interview record | `cc-run-interview v2` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.interview.md` |
-| Kickoff trace | `cc-run-kickoff v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-run/<run-id>.kickoff.md` |
+| Kickoff trace | `cc-run-kickoff v1` | `autopilot` (kickoff) **only**; for a derived successor, the successor deriver `orchestrator/rekick.sh` **only** | `<base>/docs/pipeline-run/<run-id>.kickoff.md` |
 | Run ledger | `cc-pipeline-run v1` | the driver **only** | `<base>/docs/pipeline-run/<run-id>.md` for a manifest run, `<base>/docs/pipeline-run/{slug}.md` for a run without one — a stage reads the path from `$CC_PIPELINE_LEDGER` and never derives it |
 | Approval sidecar | `cc-pipeline-approval v1` | the gate **only** | `<base>/docs/pipeline-approval/<run-id>.md` |
 | Halt record | `cc-pipeline-halt v1` | the halting stage | volatile run directory (§4) — **not a sidecar** |
@@ -20,7 +20,7 @@ The sidecar kinds below and one non-sidecar record are defined:
 
 ## 1. Writer partition — and why it is total
 
-**The driver is read-only against the grant.** The only writer of `cc-pipeline-grant` is the kickoff skill `autopilot`; the driver reaches it by no path at all, so it cannot append a **well-formed new block that grants more**. The interview record (§2b.5) has the same single writer: it holds the person's own words, so it is written once, whole, while that person is present. **No gate refuses a write to it** the way one refuses a write to the manifest or the grant — what makes a later change visible is its hash row inside the frozen set, not a guard. The kickoff trace (§2b.6) has the same single writer too: the kickoff appends its progress lines while Act 1 runs, and nothing else writes it.
+**The driver is read-only against the grant.** The writer of `cc-pipeline-grant` is the kickoff skill `autopilot` for a run a person kicks off, and the successor deriver `orchestrator/rekick.sh` for a derived successor — started only by the lane dispatcher, outside every run, and writing only a new successor's file, never a block into its predecessor's. The driver reaches it by no path at all, so it cannot append a **well-formed new block that grants more**; and the deriver cannot either, because the successor's gate admits its output only when the frozen set equals the predecessor's apart from the deadline, the `연쇄` row and exactly a delta a person approved. The interview record (§2b.5) has the single writer `autopilot`: it holds the person's own words, so it is written once, whole, while that person is present — a successor copies the root's interview row byte for byte and writes no interview record. **The gate refuses a Bash write to any run's `*.interview.md` or `*.kickoff.md`**, the way it refuses one to the manifest or the grant, so a stage cannot reach another run's frozen record through the gate. A write through the edit tools (Write, Edit, NotebookEdit, MultiEdit) is not refused until the hook's guard is widened to match; until then what makes a later change visible is the record's hash row inside the frozen set. The kickoff trace (§2b.6) is written by the kickoff, which appends its progress lines while Act 1 runs, and for a derived successor by the deriver, which writes the successor's trace once; nothing else writes it.
 
 **The driver is the sole writer of the ledger, from the main worktree.** Stage processes emit structured output on stdout and **never write a sidecar** — not the ledger, not the grant — because `sidecar.md` §1.3's compare-and-swap only narrows the window N segment processes would contend in.
 
@@ -34,6 +34,8 @@ This partition is what lets the ledger's `stage-result` rows exist at all: the d
 # 파이프라인 인가 기록 — {slug}
 <!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=<document key>[; origin-worktree=<absolute worktree root>]; NOT a design doc; mechanism-local, never staged by a skill -->
 ```
+
+A derived successor's record differs from its predecessor's in the header alone: `writer=rekick; derived-from=<선행 런>; root=<뿌리 런>` stands where `writer=autopilot;` stood. The successor deriver's admission check is the first reader of `writer=`, and it refuses a successor whose record differs from the predecessor's anywhere outside those three fields.
 
 ### 2.1 Blocks
 
@@ -163,6 +165,8 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
 - `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트를 이어받을 때만, 세그먼트당 많아야 한 행
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
+- `재킥오프` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>     ← 킥오프가 묻지 않고 토글 없이 쓰는 한 행
+- `연쇄` | 뿌리 런=<id> | 선행 런=<id> | 순번=<k> | 선행 구속 다이제스트=<hex> | 재킥오프 시각=<ISO Z> | 원인=<토큰> [| 재인가 승인=<run>#<승인 id> | 답변 다이제스트=<hex>]     ← 파생된 후속 런에만, 파생기가 쓰는 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -236,6 +240,22 @@ run that delivered the slice recorded it under another segment id or without a
 manifest check reads its form and refuses a second row for one slice; the
 planning act checks the rest, at the moment it brings the predecessor in (see
 `segment.선행` below).
+
+**The `재킥오프` row is the person's consent that an ending run may be followed
+by a successor**, written by the kickoff on every run, unasked and with no
+toggle; the closing read-back shows it together with the chain's wall-clock
+maximum, `(연쇄 상한 + 1) × 길이`, and says that the chain's successors carry no
+spending cap. `길이` is the kickoff's resolved deadline minus the moment it was
+resolved, and a successor's deadline is exactly its `재킥오프 시각` plus that
+length. **The `연쇄` row is written only by the successor deriver
+`orchestrator/rekick.sh`**, into a successor, and names the chain's root, the
+predecessor, the successor's position, the predecessor's binding digest, the
+moment of derivation and the predecessor's end token; a successor re-authorized
+by an approval carries that approval and its answer digest besides. From the
+second successor on, the deriver replaces the predecessor's `연쇄` row rather
+than adding a second. A manifest without a `재킥오프` row is never derived from.
+Both rows are in the frozen set, so editing a root's `연쇄 상한` or `길이` after
+the kickoff moves the digest the person confirmed.
 
 The `자동 채택` rows are in that list because they decide whether a judgment is
 taken without a person. Serialization is over the whole file rather than over
@@ -363,7 +383,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양` and `선행 착지` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양`, `선행 착지`, `재킥오프` and `연쇄` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -478,6 +498,17 @@ never compared.
     and no slice carries two. Whether the slice is declared, whether the slug is
     its `레포` and whether the commit landed are not checked here. Each
     violation is a **hard stop**.
+19. **`재킥오프` and `연쇄` rows.** Each matches its form in §2b.1, the
+    `길이` reads as an ISO 8601 duration of more than nothing, the `연쇄`
+    row's `원인` is one of the twelve `재킥 원인` tokens, and each kind is at
+    most one row. Each violation is a **hard stop**.
+20. **A successor's lineage.** A manifest with a `연쇄` row is admitted only
+    when the files bear it out: the predecessor's recomputed binding digest,
+    identity with the predecessor outside the allowed changes, the position in
+    the chain, the deadline and the id are checked on every entry; the
+    predecessor's ledger, the chain's ledgers and the dispatcher's claim are
+    checked once per manifest digest and memoised in the run directory. A
+    failure is a **hard stop** reading `lineage-invalid — <사유>`.
 
 **Both warnings fire at most once per run.** This whole conjunction re-runs on
 every gate entry, so a per-entry warning buries the morning report under its own

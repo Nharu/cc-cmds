@@ -49,6 +49,7 @@
 #   kickoff-defaults.sh --target <owner/name> [--target …]
 #                       [--apply-actor 파이프라인|사람|없음] [--now <epoch>]
 #   kickoff-defaults.sh --check-deadline <ISO8601> [--now <epoch>]
+#   kickoff-defaults.sh --resolve-deadline <5e answer> [--now <epoch>]
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
 #
@@ -57,6 +58,9 @@
 #   무시  <범위>  <키|변수>  <날값>  <출처>  <사유 토큰>  <사유 문면>
 #
 # `--check-deadline` prints one line, `지남` or `남음`, and no header.
+# `--resolve-deadline` prints one line and no header: `ok<TAB><absolute><TAB>
+# <상대|절대><TAB><length>`, the length being the resolved deadline minus now as
+# an ISO 8601 duration, or `<사유 토큰><TAB><사유 문면>`; it exits 0 either way.
 #
 # Exit codes: 0 read (zero rows included) · 2 usage, or a `--check-deadline`
 # value that is not the absolute form · 3 refused (inside a run) or the
@@ -98,6 +102,7 @@ KD_NT=0
 KD_AA_GIVEN=0; KD_AA=''
 KD_NOW=''
 KD_CHECK_GIVEN=0; KD_CHECK=''
+KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
@@ -124,13 +129,22 @@ while [ $# -gt 0 ]; do
     --check-deadline)
       [ $# -ge 2 ] || kd_usage "--check-deadline 에 값이 없습니다"
       KD_CHECK_GIVEN=1; KD_CHECK="$2"; shift 2 ;;
+    --resolve-deadline)
+      [ $# -ge 2 ] || kd_usage "--resolve-deadline 에 값이 없습니다"
+      KD_RESOLVE_GIVEN=1; KD_RESOLVE="$2"; shift 2 ;;
     *) kd_usage "모르는 인자: '$1'" ;;
   esac
 done
 
+if [ "$KD_CHECK_GIVEN" = "1" ] && [ "$KD_RESOLVE_GIVEN" = "1" ]; then
+  kd_usage "--check-deadline 과 --resolve-deadline 은 함께 쓰지 않습니다"
+fi
 if [ "$KD_CHECK_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] \
     || kd_usage "--check-deadline 은 --target·--apply-actor 와 함께 쓰지 않습니다"
+elif [ "$KD_RESOLVE_GIVEN" = "1" ]; then
+  [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] \
+    || kd_usage "--resolve-deadline 은 --target·--apply-actor 와 함께 쓰지 않습니다"
 else
   [ "$KD_NT" -gt 0 ] || kd_usage "--target 이 하나 이상 필요합니다"
 fi
@@ -144,82 +158,26 @@ if [ -z "$KD_NOW" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Time — jq only. The UTC offset of an instant is measured, never formatted:
-# `(e|localtime|mktime) - e`, rounded to the minute. `%z` reports the offset of
-# a different instant in a daylight-saving zone, and `date` differs between BSD
-# and GNU.
+# Time — the resolver is sourced, never copied, so a successor run's deadline
+# is computed with the arithmetic the kickoff used.
 # ---------------------------------------------------------------------------
-KD_JQ_TIME='
-def pad2: if . < 10 then "0" + tostring else tostring end;
-def off($e): ((((($e | localtime | mktime) - ($e | floor)) + 30) / 60) | floor) * 60;
-def fmtoff($o): (if $o < 0 then "-" else "+" end) as $sg
-  | (if $o < 0 then -$o else $o end) as $a
-  | $sg + (($a / 3600 | floor) | pad2) + ":" + ((($a % 3600) / 60 | floor) | pad2);
-def wall($e): ($e + off($e)) | strftime("%Y-%m-%dT%H:%M:%S");
-def render($e): wall($e) + fmtoff(off($e));
-def wallepoch($w): $w | strptime("%Y-%m-%dT%H:%M:%S") | mktime;
-def resolve($w): wallepoch($w) as $L | ($L - off($now)) as $g | ($L - off($g)) as $e
-  | if wall($e) == $w then {e: $e} else {err: "시각 없음", msg: ("벽시계 " + $w + " 는 일광절약 전환으로 이 시간대에 존재하지 않습니다")} end;
-def localdate($d): (($now + off($now)) + ($d * 86400)) | strftime("%Y-%m-%d");
-def hm_ok($h; $m): ($h >= 0 and $h <= 23 and $m >= 0 and $m <= 59);
-def abs_epoch($s): ($s[0:19] | strptime("%Y-%m-%dT%H:%M:%S") | mktime) as $L
-  | ((($s[20:22] | tonumber) * 3600) + (($s[23:25] | tonumber) * 60)) as $o
-  | if $s[19:20] == "-" then $L + $o else $L - $o end;
-def future($r): if $r.err then $r
-  elif $r.e <= $now then {err: "과거 시각", msg: ("풀린 시각 " + render($r.e) + " 이 지금 이후가 아닙니다")}
-  else $r end;
-def at($d; $h; $m): resolve(localdate($d) + "T" + ($h | pad2) + ":" + ($m | pad2) + ":00");
-def kind_rel: {kind: "상대"};
-def solve($s):
-  if ($s | test("Z$")) then {err: "형식 오류", msg: "Z 표기는 받지 않습니다 — ±HH:MM 오프셋을 붙여 쓰십시오"}
-  elif ($s | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$")) then
-    ((try abs_epoch($s) catch null) as $e
-     | if $e == null then {err: "형식 오류", msg: "절대 시각으로 읽히지 않습니다"}
-       elif $e <= $now then {err: "과거 시각", msg: ("절대 시각 " + $s + " 이 지금 이후가 아닙니다")}
-       else {e: $e, abs: $s, kind: "절대"} end)
-  elif ($s | test("^\\+[0-9]+h([0-9]+m)?$")) then
-    ($s | capture("^\\+(?<h>[0-9]+)h((?<m>[0-9]+)m)?$")) as $c
-    | ($c.h | tonumber) as $h | (($c.m // "0") | tonumber) as $m
-    | if $h < 1 or $h > 168 or $m > 59 then {err: "범위 초과", msg: "+Nh[Mm] 의 N 은 1..168, M 은 0..59 입니다"}
-      else future({e: ($now + $h * 3600 + $m * 60)}) + kind_rel end
-  elif ($s | test("^\\+[0-9]+m$")) then
-    ($s | capture("^\\+(?<m>[0-9]+)m$") | .m | tonumber) as $m
-    | if $m < 1 or $m > 10080 then {err: "범위 초과", msg: "+Mm 의 M 은 1..10080 입니다"}
-      else future({e: ($now + $m * 60)}) + kind_rel end
-  elif ($s | test("^[0-9]{2}:[0-9]{2}$")) then
-    ($s[0:2] | tonumber) as $h | ($s[3:5] | tonumber) as $m
-    | if (hm_ok($h; $m) | not) then {err: "형식 오류", msg: "HH:MM 의 시는 00..23, 분은 00..59 입니다"}
-      else
-        ((wallepoch(localdate(0) + "T" + $s + ":00") - off($now)) <= $now) as $passed
-        | future(at(if $passed then 1 else 0 end; $h; $m)) + kind_rel
-      end
-  elif ($s | test("^(\\+[0-9]+d|다음 ?날) [0-9]{2}:[0-9]{2}$")) then
-    ($s | capture("^(\\+(?<d>[0-9]+)d|다음 ?날) (?<hh>[0-9]{2}):(?<mm>[0-9]{2})$")) as $c
-    | (($c.d // "1") | tonumber) as $d | ($c.hh | tonumber) as $h | ($c.mm | tonumber) as $m
-    | if (hm_ok($h; $m) | not) then {err: "형식 오류", msg: "HH:MM 의 시는 00..23, 분은 00..59 입니다"}
-      elif $d > 7 then {err: "범위 초과", msg: "+Dd 의 D 는 0..7 입니다"}
-      else future(at($d; $h; $m)) + kind_rel end
-  else {err: "형식 오류", msg: "받는 형태: +Nh[Mm] · +Mm · HH:MM · +Dd HH:MM · 다음 날 HH:MM · YYYY-MM-DDTHH:MM:SS±HH:MM"}
-  end;
-'
+[ -r "$KD_DIR/deadline-resolve.sh" ] || kd_refuse "deadline-resolve.sh 를 읽을 수 없습니다: $KD_DIR/deadline-resolve.sh"
+# shellcheck disable=SC1091
+. "$KD_DIR/deadline-resolve.sh"
 
-# kd_deadline <value> — prints `ok<TAB><absolute><TAB><상대|절대>` or
-# `<사유 토큰><TAB><사유 문면>`. jq inherits TZ exactly as it is: an unset TZ
-# means the system zone, while an empty one means UTC to libc, so the variable
-# is never re-exported here.
-kd_deadline() {
-  local out
-  out=$(jq -nr --arg s "$1" --argjson now "$KD_NOW" "$KD_JQ_TIME"'
-    solve($s) | if .err then "\(.err)\t\(.msg)"
-                else "ok\t\(.abs // render(.e))\t\(.kind)" end' 2>/dev/null) || out=''
-  [ -n "$out" ] || out="형식 오류	마감을 해석하지 못했습니다"
-  printf '%s' "$out"
-}
+# kd_deadline <value> — prints `ok<TAB><absolute><TAB><상대|절대><TAB><length>`
+# or `<사유 토큰><TAB><사유 문면>`; <length> is the resolved deadline minus now.
+kd_deadline() { dr_resolve "$1" "$KD_NOW"; }
+
+if [ "$KD_RESOLVE_GIVEN" = "1" ]; then
+  printf '%s\n' "$(kd_deadline "$KD_RESOLVE")"
+  exit 0
+fi
 
 if [ "$KD_CHECK_GIVEN" = "1" ]; then
   printf '%s\n' "$KD_CHECK" | grep -E "$KD_ABS_RE" >/dev/null \
     || kd_usage "절대 마감 형태(YYYY-MM-DDTHH:MM:SS±HH:MM)가 아닙니다: '$KD_CHECK'"
-  KD_E=$(jq -nr --arg s "$KD_CHECK" "$KD_JQ_TIME"' abs_epoch($s) | floor' 2>/dev/null) || KD_E=''
+  KD_E=$(dr_abs_epoch "$KD_CHECK") || KD_E=''
   case "$KD_E" in
     ''|*[!0-9-]*) kd_usage "절대 마감을 시각으로 읽지 못했습니다: '$KD_CHECK'" ;;
   esac
@@ -345,7 +303,7 @@ kd_validate() {
       r=$(kd_deadline "$v")
       tok="${r%%	*}"; rest="${r#*	}"
       if [ "$tok" = "ok" ]; then
-        E_NORM[$i]="${rest%%	*}"; E_X[$i]="${rest#*	}"
+        E_NORM[$i]="${rest%%	*}"; rest="${rest#*	}"; E_X[$i]="${rest%%	*}"
       else
         kd_ign "$i" "$tok" "$rest"
       fi ;;

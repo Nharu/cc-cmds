@@ -505,6 +505,54 @@ check "--check-deadline 은 머리 줄 없이 한 줄" "$(kd --check-deadline 20
 check "--check-deadline 형식이 틀리면 2" "$(kd --check-deadline 2026-09-21T23:30:00Z >/dev/null 2>&1; echo $?)" "2"
 check "--check-deadline 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --check-deadline 2026-09-21T23:30:00+09:00 >/dev/null 2>&1; echo $?)" "3"
 
+# ---------------------------------------------------------------------------
+# 상대 마감 해석기 — deadline-resolve.sh 로 뽑아낸 뒤에도 같은 절대값을 내고, 길이는
+# 「풀린 마감 − 푼 순간」이다. 파생기가 같은 산식으로 후속 런의 마감을 쓴다.
+# ---------------------------------------------------------------------------
+RESOLVER="$ORCH/deadline-resolve.sh"
+rd() { TZ="${2:-Asia/Seoul}" kd --resolve-deadline "$1" --now "${3:-$NOW}"; }
+check "--resolve-deadline +8h 는 절대값·종류·길이 네 칸" "$(rd '+8h')" "ok	2026-09-22T07:13:20+09:00	상대	PT8H0M0S"
+check "--resolve-deadline 절대값의 길이는 그 시각 − 지금" "$(rd '2026-09-23T09:00:00+09:00')" "ok	2026-09-23T09:00:00+09:00	절대	PT33H46M40S"
+check "--resolve-deadline +1d 09:00 의 길이" "$(rd '+1d 09:00' | cut -f4)" "PT9H46M40S"
+check "--resolve-deadline 오류는 사유 토큰" "$(rd 'tomorrow' | cut -f1)" "형식 오류"
+check "--resolve-deadline 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --resolve-deadline '+8h' >/dev/null 2>&1; echo $?)" "3"
+check "--resolve-deadline 은 --target 과 함께 쓰지 않는다" "$(kd --resolve-deadline '+8h' $T >/dev/null 2>&1; echo $?)" "2"
+# 뽑아내기 전과 같은 값 — 기본값 화면의 적용 값과 해석기의 둘째 칸이 형태마다 같다.
+same_dl=''
+for v in '+8h' '+2h30m' '+90m' '07:00' '+1d 09:00' '다음 날 09:00' '2026-09-23T09:00:00+09:00'; do
+  a=$(dl Asia/Seoul "$NOW" "$v"); b=$(rd "$v" | cut -f2)
+  [ "$a" = "$b" ] || same_dl="$same_dl [$v: ${a}≠$b]"
+done
+check "해석기가 기본값 화면과 같은 절대값을 낸다" "$same_dl" ""
+a=$(dl America/New_York "$NY_NOW" '+3d 09:00'); b=$(rd '+3d 09:00' America/New_York "$NY_NOW" | cut -f2)
+check "해석기: 뉴욕 일광절약 경계도 같다" "$b" "$a"
+check "해석기: 공백 시각은 시각 없음" "$(rd '02:30' America/New_York "$GAP_NOW" | cut -f1)" "시각 없음"
+# 길이 = 풀린 마감 − 푼 순간 — 해석기 자신의 두 함수로 되짚는다.
+len_ok=''
+for v in '+8h' '07:00' '+1d 09:00' '2026-09-23T09:00:00+09:00'; do
+  line=$(rd "$v")
+  e=$(bash -c '. "$1"; dr_abs_epoch "$2"' _ "$RESOLVER" "$(printf '%s' "$line" | cut -f2)")
+  n=$(bash -c '. "$1"; dr_duration_seconds "$2"' _ "$RESOLVER" "$(printf '%s' "$line" | cut -f4)")
+  [ -n "$e" ] && [ -n "$n" ] && [ "$((e - NOW))" = "$n" ] || len_ok="$len_ok [$v]"
+done
+check "길이가 풀린 마감 − 푼 순간이다" "$len_ok" ""
+dr() { bash -c '. "$1"; shift; "$@"' _ "$RESOLVER" "$@"; }
+check "dr_abs_epoch 는 Z 를 받는다" "$(dr dr_abs_epoch 2026-09-21T14:13:20Z)" "$NOW"
+check "dr_abs_epoch 는 오프셋을 받는다" "$(dr dr_abs_epoch 2026-09-21T23:13:20+09:00)" "$NOW"
+check "dr_abs_epoch 는 음의 오프셋을 받는다" "$(dr dr_abs_epoch 2026-09-21T10:13:20-04:00)" "$NOW"
+check "dr_abs_epoch 는 형태가 틀리면 1" "$(dr dr_abs_epoch 2026-09-21 >/dev/null 2>&1; echo $?)" "1"
+check "dr_duration_seconds PT8H0M0S" "$(dr dr_duration_seconds PT8H0M0S)" "28800"
+check "dr_duration_seconds P1DT2H" "$(dr dr_duration_seconds P1DT2H)" "93600"
+check "dr_duration_seconds 는 빈 기간을 받지 않는다" "$(dr dr_duration_seconds PT >/dev/null 2>&1; echo $?)" "1"
+check "dr_duration_seconds 는 8h 를 받지 않는다" "$(dr dr_duration_seconds 8h >/dev/null 2>&1; echo $?)" "1"
+check "dr_add_duration 은 그 오프셋 표기로 되돌린다" "$(dr dr_add_duration 2026-09-21T14:13:20Z PT8H0M0S +09:00)" "2026-09-22T07:13:20+09:00"
+check "dr_add_duration 은 TZ 와 무관하다" "$(TZ=America/New_York dr dr_add_duration 2026-09-21T14:13:20Z PT8H0M0S +09:00)" "2026-09-22T07:13:20+09:00"
+check "dr_add_duration 음의 오프셋" "$(dr dr_add_duration 2026-10-30T16:00:00Z PT1H0M0S -04:00)" "2026-10-30T13:00:00-04:00"
+check "dr_add_duration 은 오프셋 형태가 틀리면 1" "$(dr dr_add_duration 2026-09-21T14:13:20Z PT8H0M0S Z >/dev/null 2>&1; echo $?)" "1"
+# 해석기는 기본값을 열지 않는다 — 파생기가 이 파일을 소싱해도 린트 규칙 1 에 걸리지 않는다.
+check "해석기가 기본값 이름을 담지 않는다" "$(grep -cE 'autopilot-defaults|kickoff-defaults\.sh|CC_CMDS_AUTOPILOT_DEFAULT' "$RESOLVER" || true)" "0"
+check "해석기를 소싱해도 아무것도 출력하지 않는다" "$(bash -c '. "$1"' _ "$RESOLVER" 2>&1)" ""
+
 # TZ 배관 — 설정되지 않은 TZ 는 설정되지 않은 채 jq 에 닿아야 한다. libc 는 빈 TZ 를
 # UTC 로 읽으므로, 빈 값으로 바꿔 넘기면 시스템 zone 이 UTC 가 아닌 호스트에서
 # 벽시계 마감이 그만큼 어긋난다. 시스템 zone 이 UTC 인 CI 에서는 두 경우의 시각이

@@ -11411,6 +11411,17 @@ gate_chain_verify() {
   # the hex the row carried. There is no `sed` here now: the file is opened raw
   # and matched as bytes unconditionally, which is what the pin was buying. The
   # other three ledger readers still pin, because they still shell out.
+  #
+  # ANOTHER RUN'S LEDGER IS NAMED BY ARGUMENT, both halves or neither:
+  # `gate_chain_verify [<ledger> <run-id>]`. The chain's seed is that run's
+  # heading, so a ledger path without its own run id would be walked from this
+  # run's seed and reported broken at row one. The walk only reads, so naming a
+  # predecessor's ledger here writes nothing to it.
+  if [ "$#" -ne 0 ] && [ "$#" -ne 2 ]; then
+    warn "gate_chain_verify 는 인자를 받지 않거나 <원장> <런 id> 둘을 받습니다 — 미검증"
+    return 1
+  fi
+  local LEDGER="${1:-$LEDGER}" RUN_ID="${2:-$RUN_ID}"
   local walk rc broke cause
   # AN ABSENT LEDGER USED TO VERIFY. The redirection below fails, the loop body
   # never runs, `broke` stays 0, and the function returns "intact" for a file it
@@ -12328,6 +12339,7 @@ gate_main() {
   fi
 
   rundir_init
+  rekick_memo_settle
 
   # THE DETACHED METRICS ROUND LEAVES HERE, before anything below writes. What
   # follows is the per-entry bookkeeping of a caller — the ledger handle, the
@@ -12696,7 +12708,21 @@ GATE_DRIFT_DIRS
     grade)
       [ $# -ge 1 ] || { printf 'gate: grade needs an argv after --\n' >&2; exit 2; }
       local g
+      # The deriver's refusal answers here as well, so that asking what to
+      # declare for it does not come back with a grade a declaration could meet.
+      if gate_rekick_argv_refuse "$@"; then
+        printf '축2=거부\n'
+        warn "axis 2 refusal — the rekick deriver runs only outside every run, never from a stage: $1"
+        exit "$GATE_EXIT_RULE"
+      fi
       g=$(surface_of_argv0 "$@")
+      # The pacing guard answers here for the same reason: a write into the
+      # dispatcher's directory has no grade a declaration could meet. A read
+      # grade passes it, so naming the directory while reading still grades.
+      if ! gate_pace_write_guard "$g" "$@"; then
+        printf '축2=거부\n'
+        exit "$GATE_EXIT_RULE"
+      fi
       printf '축2=%s\n' "$g"
       # `[ … ] && exit` as the arm's last command hands the FALSE test's status
       # to the caller — a successful grade then exits 1 and reads as a refusal.
@@ -15946,6 +15972,232 @@ gate_manifest_write_guard() {
     gate_manifest_write_refuse
     return "$GATE_EXIT_RULE"
   done
+  gate_sibling_record_write_guard "$mdir" "$mdirp" "$@" || return $?
+  return 0
+}
+
+gate_sibling_record_refuse() {
+  warn "this is a write to another run's kickoff-frozen record — only kickoff and the rekick deriver write it: $1"
+  warn "a rekick copies the predecessor's manifest and grant record byte for byte, so a run that edits a sibling's record writes the authorization of the run that comes after it"
+}
+
+gate_sibling_record_write_guard() {
+  # gate_sibling_record_write_guard <매니페스트 디렉터리> <그 물리 철자> <argv...>
+  #
+  # THE OWN-PATH ARMS ABOVE ARE NOT ENOUGH ONCE A RUN CAN BE DERIVED FROM
+  # ANOTHER. The deriver builds a successor by copying the predecessor's
+  # manifest and grant record byte for byte, so a stage that edits a SIBLING
+  # run's `*.plan.md`, `*.interview.md`, `*.kickoff.md` or grant record has
+  # written the authorization of a run it is not part of, and nothing above
+  # looks: every arm there is keyed on this run's own manifest.
+  #
+  # Reached only past the read early return of the caller, so an act that
+  # merely names a sibling path while reading it passes — the same boundary the
+  # own-manifest arms keep.
+  #
+  # Two arms, mirroring the caller's. The interpreter arm reads the whole
+  # command line, because `bash -c` hides which bytes become a filename; it
+  # tests the grant directory in its spellings (the manifest directory is
+  # already a needle of the caller's arm 2). The element arm resolves each
+  # element carrying one of the three suffixes, or any element under the grant
+  # directory, physically against the act's own directory and compares the
+  # parent directory — so a bare `X.plan.md` written from inside the manifest
+  # directory is caught, which no string test on the absolute spelling sees.
+  local mdir="$1" mdirp="$2"; shift 2
+  local gdir='' gdirp='' a ap ad adp argv0 joinedn gdirn gdirpn cwd
+  if [ -n "${GRANT:-}" ]; then
+    gdir=$(dirname "$GRANT")
+    gdirp=$(cd "$gdir" 2>/dev/null && pwd -P) || gdirp="$gdir"
+    [ -n "$gdirp" ] || gdirp="$gdir"
+  fi
+  cwd="${GATE_ACT_CWD:-$PWD}"
+
+  argv0=${1##*/}
+  case "$argv0" in
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+      joinedn=$(gate_path_spelling "$(printf '%s ' "$@")")
+      case "$joinedn" in
+        *pipeline-grant/*)
+          gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE" ;;
+      esac
+      if [ -n "$gdir" ]; then
+        gdirn=$(gate_path_spelling "$gdir")
+        gdirpn=$(gate_path_spelling "$gdirp")
+        case "$gdirn" in
+          ''|'/'|'.') ;;
+          *) case "$joinedn" in *"$gdirn"*)
+               gate_sibling_record_refuse "$gdir"; return "$GATE_EXIT_RULE" ;;
+             esac ;;
+        esac
+        case "$gdirpn" in
+          ''|'/'|'.') ;;
+          *) case "$joinedn" in *"$gdirpn"*)
+               gate_sibling_record_refuse "$gdirp"; return "$GATE_EXIT_RULE" ;;
+             esac ;;
+        esac
+      fi
+      # THE SUFFIX NEEDLE, ONLY FROM INSIDE THE MANIFEST DIRECTORY. There the
+      # caller's arm 2 has no directory to find, because a relative name spells
+      # none; everywhere else that needle already fires on the directory.
+      case "$(cd "$cwd" 2>/dev/null && pwd -P)" in
+        "$mdirp")
+          case "$joinedn" in
+            *.plan.*|*.interview.*|*.kickoff.*)
+              gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE" ;;
+          esac ;;
+      esac ;;
+  esac
+
+  for a in "$@"; do
+    case "$a" in
+      *.plan.md|*.interview.md|*.kickoff.md) ;;
+      */pipeline-grant/*.md|pipeline-grant/*.md)
+        gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE" ;;
+      */*.md) [ -n "$gdir" ] || continue ;;
+      *) continue ;;
+    esac
+    case "$a" in
+      /*) ap="$a" ;;
+      *) ap="$cwd/$a" ;;
+    esac
+    ad=$(dirname "$ap")
+    [ -d "$ad" ] || continue
+    adp=$(cd -P -- "$ad" 2>/dev/null && pwd -P) || continue
+    case "$a" in
+      *.plan.md|*.interview.md|*.kickoff.md)
+        if [ "$adp" = "$mdirp" ]; then
+          gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
+        fi ;;
+    esac
+    if [ -n "$gdirp" ] && [ "$adp" = "$gdirp" ]; then
+      gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
+    fi
+  done
+  return 0
+}
+
+gate_rekick_argv_refuse() {
+  # gate_rekick_argv_refuse <argv...> — 0 when the act runs the rekick deriver.
+  #
+  # THE DERIVER IS NOT A STAGE'S TOOL. It writes the successor's manifest and
+  # grant record, which are exactly the files the guards above keep a stage
+  # away from, so letting a stage call it would hand back through a script what
+  # those guards took away from a direct write. It refuses itself when it finds
+  # `CC_PIPELINE_RUN_ID`; this is the second wall, on the gate, for a caller who
+  # clears the variable first.
+  #
+  # Matched by basename at argv0, past the transparent wrappers by element, and
+  # inside a shell's `-c` body by containment. The containment arm refuses a
+  # `bash -c` that merely mentions the name; a read of the file goes through
+  # `cat` or `grep`, which this does not touch.
+  local a w shell=0
+  w=${1##*/}
+  [ "$w" = rekick.sh ] && return 0
+  case "$w" in
+    bash|sh|zsh|dash|ksh) shell=1 ;;
+    env|command|nice|nohup|timeout|stdbuf|time|lockf|xargs|sudo|caffeinate)
+      for a in "$@"; do
+        [ "${a##*/}" = rekick.sh ] && return 0
+        case "${a##*/}" in bash|sh|zsh|dash|ksh) shell=1 ;; esac
+      done ;;
+    *) return 1 ;;
+  esac
+  [ "$shell" = 1 ] || return 1
+  # A NAME BOUNDARY ON BOTH SIDES, because `test-rekick.sh` is this tree's own
+  # suite for the deriver and runs under `bash` on every check.
+  for a in "$@"; do
+    case "$a" in
+      rekick.sh|rekick.sh[!A-Za-z0-9_.-]*) return 0 ;;
+      *[/\ \	\"\'\;\&\|\(\`]rekick.sh) return 0 ;;
+      *[/\ \	\"\'\;\&\|\(\`]rekick.sh[!A-Za-z0-9_.-]*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+gate_pace_write_refuse() {
+  warn "rule refused: the pacing directory belongs to the lane dispatcher, the sweep and the rekick deriver — a stage writing there forges the launch of an unattended run (backlog.jsonl) or the claim a successor's admission reads as evidence (rekick/), so no declaration and no auto-resolve admits it (pace root: $2): $1"
+}
+
+gate_pace_write_guard() {
+  # gate_pace_write_guard <graded-surface> <argv...>
+  #
+  # THE HOOK CLOSES THE PACING DIRECTORY TO THE EDIT TOOLS ONLY. Its own comment
+  # leaves a write through Bash to the gate, and the gate had no arm looking at
+  # that directory: measured, `cp x <pace>/backlog.jsonl` declared `트리밖쓰기 /
+  # 런로컬` returned 0 and changed the file, with auto-resolve on or off and with
+  # `--reach` left out, and `cp x <pace>/rekick/<런>/successor` created the
+  # claim's file the same way. A backlog record is what the dispatcher launches
+  # an unattended run from, and a claim is what a successor's admission reads as
+  # proof the sweep derived it — both are writes no stage has a reason to make.
+  #
+  # THE ROOT IS THE ONE THE GATE PACES BY, IN EVERY SPELLING IT CAN TAKE. The
+  # gate reads its verdict from `gate_pace_root` and holds leases under
+  # `run_pace_root`; the two read different override variables, so both are
+  # needles, each logically and through `gate_real_prefix` — a not-yet-created
+  # root or a symlinked state directory (`/var` on this platform) is otherwise a
+  # string no argument spells.
+  #
+  # A READ GRADE RETURNS AT ONCE, so an act that only names the directory while
+  # reading it passes — the boundary the sibling record guard keeps. Not keyed on
+  # the declared reach or on auto-resolve: neither appears here.
+  #
+  # Two arms. An interpreter or wrapper's whole command line is the operand, as
+  # in the manifest guard's second arm, and is tested by containment of a root
+  # spelling. Every other element (and an option's `=` value) is resolved
+  # against the act's directory — logically, then through its deepest existing
+  # ancestor, because `rekick/<런>/successor` does not exist before the claim —
+  # and refused when it is the root or lies under it. RESIDUAL: a symlinked
+  # final component pointing into the root, and a `cd` inside a wrapper, are not
+  # seen here; the dispatcher and the deriver run outside every gate, so nothing
+  # legitimate is refused by widening later.
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  case "$graded" in
+    읽기) return 0 ;;
+  esac
+  local r1 r2 r1p r2p n a v an ap joinedn base first
+  r1=$(gate_path_spelling "$(gate_lexical_abs "$(gate_pace_root)")")
+  r2=''
+  if declare -F run_pace_root >/dev/null 2>&1; then
+    r2=$(gate_path_spelling "$(gate_lexical_abs "$(run_pace_root)")")
+  fi
+  r1p=$(gate_path_spelling "$(gate_real_prefix "$r1")")
+  r2p=''
+  [ -n "$r2" ] && r2p=$(gate_path_spelling "$(gate_real_prefix "$r2")")
+  base="${GATE_ACT_CWD:-}"
+
+  if gate_argv0_wraps "$1"; then
+    joinedn=$(gate_path_spelling "$(printf '%s ' "$@")")
+    for n in "$r1" "$r1p" "$r2" "$r2p"; do
+      case "$n" in ''|'/'|'.') continue ;; esac
+      case "$joinedn" in *"$n"*)
+        gate_pace_write_refuse "$joinedn" "$n"; return "$GATE_EXIT_RULE" ;;
+      esac
+    done
+  fi
+
+  first=1
+  for a in "$@"; do
+    # argv0 names what runs, not what is written — the run directory guard's
+    # reasoning at the same place.
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    for v in "$a" "$(gate_arg_option_value "$a" 2>/dev/null || true)"; do
+      [ -n "$v" ] || continue
+      case "$v" in -*) continue ;; esac
+      an=$(gate_path_spelling "$(gate_lexical_abs "$v" "$base")")
+      ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+      for n in "$r1" "$r1p" "$r2" "$r2p"; do
+        case "$n" in ''|'/'|'.') continue ;; esac
+        case "$an" in "$n"|"$n"/*)
+          gate_pace_write_refuse "$a" "$n"; return "$GATE_EXIT_RULE" ;;
+        esac
+        case "$ap" in "$n"|"$n"/*)
+          gate_pace_write_refuse "$a" "$n"; return "$GATE_EXIT_RULE" ;;
+        esac
+      done
+    done
+  done
   return 0
 }
 
@@ -18361,15 +18613,40 @@ gate_end_token() {
   # Matched on whole fields between ` | ` separators, the same exactness
   # `gate_run_ended_ok` uses: `gate_append` maps `|` out of every value, so a
   # separator on both sides only ever stands at a real field boundary.
+  local row
+  row=$(gate_end_token_row) || return 1
+  printf '%s' "$row" | awk '
+    { n = split($0, f, / \| /)
+      for (i = 2; i <= n; i++) {
+        if (index(f[i], "재킥 원인=") == 1) {
+          v = f[i]; sub(/^재킥 원인=/, "", v); print v; exit
+        }
+      }
+    }'
+}
+
+gate_end_token_row() {
+  # gate_end_token_row — print the whole row `gate_end_token` reads its token
+  # from, or print nothing and return 1. One selector for both, because the
+  # successor verdict also reads `종료 부류` and `재킥 지문` off that same row,
+  # and a second copy of the selection would be free to pick a different one.
+  #
+  # A run-scope `blocked` row whose cause is `대상미선언` or `슬라이싱` is NOT an
+  # ending: those two park a slice and the run goes on, so they settle no end
+  # token even when the row is run-scope (the slicing invalidation is). An
+  # ending row that carries one of them is still read — that is the run's own
+  # end site naming the park it stopped behind.
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
   awk '
     (index($0, "- `자율 승인` | ") == 1 && index($0, " | 결정=종료 | ") > 0) ||
     (index($0, "- `blocked` | ") == 1 && index($0, " | 스코프=run | ") > 0) {
+      blk = (index($0, "- `blocked` | ") == 1)
       n = split($0, f, / \| /)
       for (i = 2; i <= n; i++) {
         if (index(f[i], "재킥 원인=") == 1) {
           v = f[i]; sub(/^재킥 원인=/, "", v)
-          print v; found = 1; exit
+          if (blk && (v == "대상미선언" || v == "슬라이싱")) break
+          print; found = 1; exit
         }
       }
     }
@@ -20341,6 +20618,14 @@ gate_verb_act() {
     warn "axis 2 \`형태 미상\` — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
     exit "$GATE_EXIT_VOCAB"
   fi
+  # THE REKICK DERIVER IS REFUSED AS A ROW OF THE TABLE, NOT AS A GRADE. Left to
+  # the table it is `등급 미상`, and in auto-resolve mode a declared unknown
+  # command still runs capped at read — which is the deriver writing a
+  # successor's manifest from inside a stage. No declaration rescues it.
+  if [ "$argv_graded" = "1" ] && gate_rekick_argv_refuse "$@"; then
+    warn "axis 2 refusal — the rekick deriver runs only outside every run, never from a stage: $1"
+    exit "$GATE_EXIT_RULE"
+  fi
   # --- 부류·표지·하한 -----------------------------------------------------
   # Three values the grade cannot carry, computed once here so the comparator,
   # the disposition evaluator and the ledger row all read the same answer.
@@ -20579,6 +20864,7 @@ gate_verb_act() {
     *) gate_manifest_write_guard "$graded" "$@" || exit $?
        gate_rundir_write_guard "$graded" "$@" || exit $?
        gate_plugin_root_write_guard "$graded" "$@" || exit $?
+       gate_pace_write_guard "$graded" "$@" || exit $?
        gate_shard_exec_guard "$@" || exit $? ;;
   esac
 

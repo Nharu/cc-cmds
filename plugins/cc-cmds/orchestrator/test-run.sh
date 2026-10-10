@@ -2989,12 +2989,14 @@ check "값 안의 개행이 행을 끊지 못한다" "$(grep -c . "$LEDGER")" "1
 # 정규화가 값에만 걸리던 동안 두 갈래가 그대로 지나갔다 — 첫 `=` 앞에 든 파이프는
 # 키 절반이라 원문으로 다시 붙었고, `=` 가 아예 없는 인자는 `case` 를 통째로 건너뛰었다.
 # 첫째는 필드 경계를, 둘째의 개행은 체인된 행 하나를 통째로 위조한다. 필드는 행 텍스트를
-# ` | ` 로 갈라 센다 — 판독기가 보는 단위가 그것이다.
+# ` | ` 로 갈라 센다 — 판독기가 보는 단위가 그것이다. 마지막 필드는 사슬의 `prev=` 이고,
+# 그 값은 원장의 앞 행에 따라 달라지므로 꼴만 잰다.
 : > "$LEDGER"
 ledger_row 'problem' 'z | 해소 승인=A9'
-LR_KEY=$(LC_ALL=C awk -F ' [|] ' '{ print NF; for (i = 2; i <= NF; i++) print $i }' "$LEDGER")
+LR_KEY=$(LC_ALL=C awk -F ' [|] ' '{ print NF; for (i = 2; i <= NF; i++) print $i }' "$LEDGER" \
+  | sed -E 's/^prev=[0-9a-f]{64}$/prev=<sha>/')
 check "키 절반의 파이프도 슬래시로 바뀌어 필드를 새로 만들지 못한다" \
-  "$LR_KEY" "$(printf '2\nz / 해소 승인=A9')"
+  "$LR_KEY" "$(printf '3\nz / 해소 승인=A9\nprev=<sha>')"
 : > "$LEDGER"
 # 위조하는 둘째 줄에도 `=` 를 두지 않는다 — 하나라도 있으면 인자 전체가 키 절반의
 # 경로를 타서, 이 단언이 키 절반을 두 번 재고 `=` 없는 갈래는 재지 않는다.
@@ -3029,6 +3031,49 @@ GA22_KEY=$(LC_ALL=C awk -F ' [|] ' '{ for (i = 2; i <= NF; i++) print $i }' "$GA
 check "게이트의 작성자도 키 절반의 파이프를 같은 필드로 접는다" "$GA22_KEY" "1"
 check "게이트의 작성자도 = 없는 인자의 개행으로 행을 끊지 않는다" \
   "$(wc -l < "$GA22/ledger-bare.md" 2>/dev/null | tr -d ' ')" "1"
+# 두 작성자가 한 원장에 번갈아 써도 사슬이 끊기지 않는다. 드라이버의 행에 `prev=` 가
+# 없던 동안에는 드라이버가 한 번 쓰면 그 뒤 게이트의 다음 행부터 사슬이 끊겼다. 판정은
+# 게이트의 사슬 검사가 내린다 — 이 하네스가 사슬을 다시 구현하면 같은 착오를 두 번 한다.
+GAX="$WORK/gate-alternate"; mkdir -p "$GAX"
+GAX_LEDGER="$GAX/ledger.md"
+printf '## 실행 %s\n' "$RUN_ID" > "$GAX_LEDGER"
+cat > "$GAX/gate.sh" <<'GAXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+GATE="$1"; RD="$2"; LED="$3"; RID="$4"; VERB="$5"
+HP="$PATH"
+CC_GATE_SOURCE_ONLY=1
+export CC_GATE_SOURCE_ONLY
+# shellcheck disable=SC1090
+. "$GATE" || exit 9
+PATH="$HP"
+unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+set +e
+RUN_DIR="$RD"; LEDGER="$LED"; RUN_ID="$RID"
+case "$VERB" in
+  append) gate_append 'problem' "id=GX$6" "사유=게이트 행" >/dev/null 2>&1 ;;
+  verify) gate_chain_verify "$LED" "$RID" >/dev/null 2>&1 ;;
+esac
+GAXEOF
+GAX_SAVE="$LEDGER"; LEDGER="$GAX_LEDGER"
+ledger_row 'segment' "id=DX1" "상태=계획됨"
+bash "$GAX/gate.sh" "$script_dir/gate.sh" "$GAX" "$GAX_LEDGER" "$RUN_ID" append 1 </dev/null >/dev/null 2>&1
+ledger_row 'segment' "id=DX2" "상태=계획됨"
+bash "$GAX/gate.sh" "$script_dir/gate.sh" "$GAX" "$GAX_LEDGER" "$RUN_ID" append 2 </dev/null >/dev/null 2>&1
+LEDGER="$GAX_SAVE"
+check "두 작성자가 번갈아 쓴 행이 넷이다" "$(grep -c '^- `' "$GAX_LEDGER")" "4"
+bash "$GAX/gate.sh" "$script_dir/gate.sh" "$GAX" "$GAX_LEDGER" "$RUN_ID" verify </dev/null >/dev/null 2>&1
+check "게이트와 드라이버가 번갈아 쓴 원장의 사슬이 끊기지 않는다" "$?" "0"
+# 위 판정이 무엇이든 0 을 돌려주는 것이 아님을 같은 원장에서 잰다 — 드라이버 행 하나의
+# `prev=` 꼬리를 떼면 예전 형상이 되고, 검사는 그것을 끊김으로 읽어야 한다.
+sed -E '/id=DX1 /s/ [|] prev=[0-9a-f]{64}$//' "$GAX_LEDGER" > "$GAX/ledger-cut.md"
+bash "$GAX/gate.sh" "$script_dir/gate.sh" "$GAX" "$GAX/ledger-cut.md" "$RUN_ID" verify </dev/null >/dev/null 2>&1
+GAX_CUT=$?
+if [ "$GAX_CUT" != "0" ]; then
+  ok "드라이버 행의 prev 를 떼면 사슬 검사가 끊김을 보고한다"
+else
+  bad "사슬 검사 대조" "prev 를 뗀 원장도 온전하다고 판정함"
+fi
 # 상한을 넘는 값 하나는 이제 거절이 아니라 사이드카로 빠지고, 행은 기록된다. 이
 # 절이 재는 것은 그 처분이 아니라 이 절의 전제다 — 값이 아무리 길어도 행 문법은
 # 한 줄로 남는다. 처분 자체는 22b 가 잰다.
@@ -3191,12 +3236,14 @@ case "$RAW_ROW" in
   *) bad "흘림 지목" "$RAW_ROW" ;;
 esac
 # 상한 아래의 행은 바이트가 달라지지 않는다 — 이것이 흘림이 기존 단언을 조용히
-# 바꾸지 않았다는 상한이다.
+# 바꾸지 않았다는 상한이다. 붙는 것은 사슬의 `prev=` 꼬리 하나뿐이고, 그 해시는 빈
+# 원장의 첫 행이므로 이 런의 `## 실행` 표제에서 정해진다.
 : > "$LEDGER"
 ledger_row 'segment' "id=SS" "상태=계획됨" "레포=cc-cmds"
+SS_PREV=$(printf '%s' "## 실행 $RUN_ID" | shasum -a 256 | cut -d' ' -f1)
 check "상한 아래 행은 바이트가 그대로다" \
   "$( { grep -F 'id=SS ' "$LEDGER" || true; } )" \
-  '- `segment` | id=SS | 상태=계획됨 | 레포=cc-cmds'
+  "- \`segment\` | id=SS | 상태=계획됨 | 레포=cc-cmds | prev=$SS_PREV"
 LEDGER="$LEDGER_SAVE"; RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
 
 # ---------------------------------------------------------------------------

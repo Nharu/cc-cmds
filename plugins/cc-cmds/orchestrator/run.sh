@@ -98,6 +98,20 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/route.sh"
 
+# The deadline arithmetic the kickoff resolved the first deadline with. A
+# successor run's deadline is the recorded length added to the moment it was
+# claimed, and the admission check recomputes that sum; one arithmetic on both
+# sides is the only way the two can agree to the second. Functions and plain
+# assignments only, so sourcing it twice is harmless.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/deadline-resolve.sh"
+
+# The successor verdict and its stop predicates, for definitions only: the
+# admission check of a successor manifest asks the same questions the verdict
+# that opened it asked, and two implementations would answer them differently.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/rekick.sh"
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -423,6 +437,8 @@ manifest_snapshot_take() {
   #   BP <row>     every `- \`베이스 발행\`` row anywhere, in order
   #   BD <row>     every `- \`베이스 설계\`` row anywhere, in order
   #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
+  #   RK <row>     every `- \`재킥오프\`` row anywhere, in order
+  #   CH <row>     every `- \`연쇄\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -455,6 +471,8 @@ $(LC_ALL=C awk '
     index($0, "- `베이스 설계`") == 1 { print "BD\t" $0 }
     index($0, "- `세그먼트 입양`") == 1 { print "AD\t" $0 }
     index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
+    index($0, "- `재킥오프`") == 1 { print "RK\t" $0 }
+    index($0, "- `연쇄`") == 1 { print "CH\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -650,6 +668,16 @@ manifest_predecessor_landing_rows() {
   grep -E '^- `선행 착지`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_rekick_rows() {
+  if manifest_memo_on; then manifest_memo_all "RK	"; return 0; fi
+  grep -E '^- `재킥오프`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_chain_rows() {
+  if manifest_memo_on; then manifest_memo_all "CH	"; return 0; fi
+  grep -E '^- `연쇄`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -745,6 +773,15 @@ binding_set_bytes() {
     # dependent slice be dispatched over a predecessor nobody confirmed. A
     # whole-file scan, zero bytes when absent.
     manifest_predecessor_landing_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/predland\t/'
+    # THE `재킥오프` AND `연쇄` ROWS ARE IN THE FROZEN SET, on the same terms. The
+    # first is the person's consent to automatic successors, with the chain cap
+    # and the frozen length; the second is the deriver's statement of which run
+    # this one continues. Without them here, editing the root's `연쇄 상한` or
+    # `길이` after kickoff moved no digest, and the digest the person confirmed
+    # no longer covered what they agreed to. Whole-file scans, zero bytes when
+    # absent, so a manifest written before these rows existed keeps its digest.
+    manifest_rekick_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/rekick\t/'
+    manifest_chain_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/chain\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -1084,7 +1121,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·연쇄·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1398,6 +1435,72 @@ EOF
   done <<EOF
 $pl_rows
 EOF
+
+  # 19 — `재킥오프` and `연쇄` rows. The first is the person's consent, at
+  # kickoff, that a run which ends may be followed by a successor; the second is
+  # what the deriver wrote into a successor about the run it follows. Both are in
+  # the binding set, so a row that changed after freezing already fails the
+  # digest above; what is checked here is the FORM, because a malformed row
+  # would otherwise be frozen as it is and read by every later consumer with its
+  # own guess at what it meant. Each kind is at most one row: two consent rows
+  # with different ceilings, or two chain rows naming different predecessors,
+  # leave no single answer to read.
+  local rk_rows rk_row ch_rows ch_row ch_cause rk_n=0 ch_n=0
+  rk_rows=$(manifest_rekick_rows)
+  while IFS= read -r rk_row; do
+    [ -n "$rk_row" ] || continue
+    rk_n=$((rk_n + 1))
+    grep -qE '^- `재킥오프` \| 연쇄 상한=[1-9][0-9]* \| 길이=P([0-9]+D)?(T([0-9]+H)?([0-9]+M)?([0-9]+S)?)? \| 사유=[^|]*[^ |]$' <<<"$rk_row" \
+      || die "「재킥오프」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`재킥오프\` | 연쇄 상한=<양의 정수> | 길이=<ISO 8601 기간> | 사유=<한 줄>\` 입니다: $rk_row"
+    # The pattern admits `P` and `PT`, which are no length at all; the
+    # resolver's own reader is the one that refuses them.
+    dr_duration_seconds "$(manifest_row_fields "$rk_row" '길이')" >/dev/null \
+      || die "「재킥오프」 행의 길이가 ISO 8601 기간으로 읽히지 않습니다: $rk_row"
+  done <<EOF
+$rk_rows
+EOF
+  [ "$rk_n" -le 1 ] || die "「재킥오프」 행이 ${rk_n}개입니다 — 많아야 하나입니다"
+
+  ch_rows=$(manifest_chain_rows)
+  while IFS= read -r ch_row; do
+    [ -n "$ch_row" ] || continue
+    ch_n=$((ch_n + 1))
+    grep -qE '^- `연쇄` \| 뿌리 런=[0-9]{8}-[0-9a-f]{8} \| 선행 런=[0-9]{8}-[0-9a-f]{8} \| 순번=[1-9][0-9]* \| 선행 구속 다이제스트=[0-9a-f]{64} \| 재킥오프 시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \| 원인=[^ |]+( \| 재인가 승인=[0-9]{8}-[0-9a-f]{8}#[^ |]+ \| 답변 다이제스트=[0-9a-f]{64})?$' <<<"$ch_row" \
+      || die "「연쇄」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`연쇄\` | 뿌리 런=<id> | 선행 런=<id> | 순번=<k> | 선행 구속 다이제스트=<64자리 hex> | 재킥오프 시각=<ISO Z> | 원인=<토큰> [| 재인가 승인=<런>#<승인 id> | 답변 다이제스트=<64자리 hex>]\` 입니다: $ch_row"
+    # The cause vocabulary is the gate's; this file is sourced by the gate, but
+    # the driver runs it alone, so the gate is asked in a child when its
+    # function is not already here.
+    ch_cause=$(manifest_row_fields "$ch_row" '원인')
+    if declare -F gate_rekick_cause_ok >/dev/null 2>&1; then
+      gate_rekick_cause_ok "$ch_cause"
+    else
+      run_gate_call gate_rekick_cause_ok "$ch_cause"
+    fi || die "「연쇄」 행의 원인이 닫힌 토큰 열두 개 중 하나가 아닙니다: $ch_cause"
+  done <<EOF
+$ch_rows
+EOF
+  [ "$ch_n" -le 1 ] || die "「연쇄」 행이 ${ch_n}개입니다 — 많아야 하나입니다"
+
+  # 20 — the lineage of a successor. A `연쇄` row says this run was derived
+  # from another, and that is only true if the files say so: the predecessor's
+  # recomputed digest, identity with it but for the allowed changes, the
+  # position and the deadline, and the id are checked on every entry; what the
+  # predecessor's ledger, the chain's ledgers and the dispatcher's claim say is
+  # checked once per manifest digest. This shell may not write the run
+  # directory yet, so the memo is only read here; `REKICK_MEMO_PENDING` asks
+  # the caller that prepared the directory to write it.
+  REKICK_MEMO_PENDING=""
+  if [ "$ch_n" -ge 1 ]; then
+    local lin_why lin_key
+    lin_why=$(run_lineage_call rekick_admission_static "$MANIFEST") \
+      || die "lineage-invalid — ${lin_why:-연쇄 입장 검사를 돌리지 못했습니다}"
+    lin_key=$(shasum -a 256 < "$MANIFEST" | cut -d' ' -f1)
+    if ! rekick_memo_hit "$RUN_ID" "$lin_key"; then
+      lin_why=$(run_lineage_call rekick_admission_history "$MANIFEST") \
+        || die "lineage-invalid — ${lin_why:-연쇄 입장 검사를 돌리지 못했습니다}"
+      REKICK_MEMO_PENDING="$lin_key"
+    fi
+  fi
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }
@@ -2328,7 +2431,10 @@ run_chained_append() {
   # absence falls through to the same sequence without the lock.
   local body="$1" tool prev rc=0
   tool=$(lock_tool)
-  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+  # A run directory that is named but absent takes the unlocked path too: the
+  # lock file cannot be created there, and a row that cannot be locked is still
+  # a row the caller must not lose.
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -d "${RUN_DIR:-}" ]; then
     "$tool" -k "$RUN_DIR/ledger.lock" \
       /bin/sh -c '
         last=$(grep "$3" "$2" 2>/dev/null | tail -1)
@@ -2560,10 +2666,9 @@ ledger_row() {
   # it is split, so one without `=` — which skipped the split and went in raw —
   # cannot carry a pipe or a newline into the row either.
   #
-  # The length check reserves room for a `prev=` field this writer never emits,
-  # so anything this path accepts would also fit through the gate's. The
-  # asymmetry is in the safe direction: the two writers cannot disagree about
-  # what fits.
+  # The length check measures the row with its `prev=` field, which every row
+  # this writer appends carries, so anything this path accepts would also fit
+  # through the gate's: the two writers cannot disagree about what fits.
   local series="$1"; shift
   # `리뷰 정책` IS INHERITED AND NOT DEFAULTED, so this writer carries it forward
   # the way the gate's segment arm does. Without the carry, one ordinary state
@@ -2594,13 +2699,16 @@ ledger_row() {
       [ -n "$_pv" ] && set -- "$@" "리뷰 정책=$_pv"
     fi
   fi
-  # `stage-lease` AND `stage-wait` ARE WRITTEN IN THE GATE'S FRAME, and only
-  # they. The gate writes the same two series, and a row both writers can put on
-  # one ledger has to be the same bytes on the same chain — which this path's
-  # own grammar (no `교대`, no `prev`, no lock) cannot give. Every other series
-  # stays on the path below, byte for byte. A refusal is 2 and no row; a failed
-  # append is a lost row, which this writer answers the way it answers every
-  # other lost row.
+  # EVERY ROW THIS WRITER APPENDS IS ON THE CHAIN: `run_chained_append` takes
+  # the ledger lock and puts the sha256 of the row before it in `prev=`, the
+  # same frame the gate's writer uses, so a fixed-graph ledger passes
+  # `gate_chain_verify` and a reader of another run's ledger can trust the rows
+  # it walks. `stage-lease` and `stage-wait` are handled apart only because the
+  # gate writes the same two series: they take `run_ledger_series_check` and the
+  # gate's row body (`run_row_body`), so a row both writers can put on one
+  # ledger is the same bytes. Every other series keeps the normalization below.
+  # A refusal is 2 and no row; a failed append is a lost row, which this writer
+  # answers the way it answers every other lost row.
   case "$series" in
     stage-lease|stage-wait)
       local _body _rc=0
@@ -2691,7 +2799,9 @@ ledger_row() {
     done
     die "원장 행이 상한을 넘습니다 (${n} > ${RUN_ROW_MAX} 바이트, 계열 ${series}) — 가장 긴 필드는 「${longest:-미상}」(${lmax} 바이트)입니다. 이 자리에서는 줄일 수 없으므로 이 행을 만드는 호출부가 전체 값을 런 디렉터리 아래 사이드카로 빼고 행에는 경계 있는 형태만 실어야 합니다"
   fi
-  printf '%s\n' "$line" >> "$LEDGER"
+  local _rc=0
+  run_chained_append "$line" || _rc=$?
+  [ "$_rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=${_rc}, 계열 ${series}) — 기록 없는 행위는 수행하지 않습니다"
 }
 
 run_row_sidecar() {
@@ -2717,9 +2827,12 @@ run_row_sidecar() {
 
 ledger_last() {
   # ledger_last <계열> <key> — last value for a key in the newest matching row.
+  #
+  # The trailing blanks are the ` | ` separator's, not the value's: every row
+  # ends in a `prev=` field, so no key read here is the last field of its row.
   local series="$1" key="$2"
   grep -E "^- \`$series\`" "$LEDGER" 2>/dev/null | tail -1 \
-    | tr '|' '\n' | sed -n "s/^ *$key=//p" | tail -1
+    | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/ *$//' | tail -1
 }
 
 # ---------------------------------------------------------------------------
@@ -4082,6 +4195,26 @@ spawn_did_segment() {
     *:*) printf '%s' "$1" | cut -d: -f2 ;;
     *) printf '%s' '-' ;;
   esac
+}
+
+run_lineage_call() {
+  # run_lineage_call <function> [args...] — a lineage check that reads the
+  # gate's ledger readers. Called in place when the gate is the shell sourcing
+  # this file, otherwise through `run_gate_call`.
+  if declare -F gate_chain_verify >/dev/null 2>&1; then
+    "$@"
+  else
+    run_gate_call "$@"
+  fi
+}
+
+rekick_memo_settle() {
+  # After the run directory exists: write the lineage memo `check_manifest`
+  # asked for. A failed write is a recomputation on the next entry, no more.
+  [ -n "${REKICK_MEMO_PENDING:-}" ] || return 0
+  rekick_memo_write "$RUN_ID" "$REKICK_MEMO_PENDING" \
+    || warn "연쇄 입장 검사의 기억 파일을 쓰지 못했습니다 — 다음 진입에서 다시 계산합니다"
+  REKICK_MEMO_PENDING=""
 }
 
 run_gate_call() {
@@ -9241,6 +9374,7 @@ else
 fi
 
 rundir_init
+rekick_memo_settle
 
 # THE RESIDUAL REPORT SITS ON THE EXIT PATH, not only on the walk's tail. A run
 # that stopped at a `die`, a signal or the cycle budget wrote its `done` file and
