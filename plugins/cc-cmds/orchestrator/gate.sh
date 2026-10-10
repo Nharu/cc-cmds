@@ -7769,6 +7769,7 @@ gate_decl_block() {
 
 GATE_PRIOR_RUN=""
 GATE_PRIOR_ROW=""
+GATE_PRIOR_KIND=""
 gate_prior_run_landed() {
   # gate_prior_run_landed <segment> — 0 when an EARLIER RUN OF THIS DOCUMENT
   # ended <segment> landed, with that run's id in GATE_PRIOR_RUN and its last
@@ -7793,14 +7794,28 @@ gate_prior_run_landed() {
   # merge commit is the claim the caller then checks against the base branch;
   # a row without one says the run ended the segment and not where it went.
   #
+  # A SLICE WHOSE DECLARED CUTPOINT IS PR LANDS AS A PULL REQUEST, and its
+  # terminal row is `완료` with a numeric `PR` and a hex `커밋` — the head the
+  # run left the request at — and no merge commit at all. That row qualifies
+  # only for a slice the frozen document declares with `절단점: PR`: the value
+  # on the row is the run's account, the declaration is what the slice was
+  # supposed to deliver, and a merge-cutpoint slice that stopped at an open PR
+  # has not delivered. Which arm qualified is left in GATE_PRIOR_KIND (`머지` or
+  # `PR`); the PR arm is still only a claim, which the caller checks against the
+  # live pull request.
+  #
   # THE MOST RECENTLY OPENED RUN WINS, by the `시작` of its `run` row. File mtime
   # moves on every append, so a late row in an older run would make it look
   # newer than the run that merged the segment again after it; `시작` is fixed
   # when the run opens and is `now_iso`'s UTC shape, which sorts as text.
-  local seg="$1" dir f rrow row st m rid cand="" best tab
+  local seg="$1" dir f rrow row st m p c rid cand="" best tab prcut=""
   tab=$(printf '\t')
-  GATE_PRIOR_RUN=""; GATE_PRIOR_ROW=""
+  GATE_PRIOR_RUN=""; GATE_PRIOR_ROW=""; GATE_PRIOR_KIND=""
   [ -n "${LEDGER:-}" ] && [ -n "${DOC_KEY:-}" ] || return 1
+  if [ -n "${DOC:-}" ]; then
+    c=$(slice_field "$DOC" "$seg" '절단점' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] && prcut=1
+  fi
   dir=$(dirname "$LEDGER")
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
@@ -7814,7 +7829,15 @@ gate_prior_run_landed() {
     st=$(gate_row_field "$row" '상태')
     case "$st" in 머지됨|완료) : ;; *) continue ;; esac
     m=$(gate_row_field "$row" '머지 커밋')
-    case "$m" in ''|*[!0-9a-f]*) continue ;; esac
+    case "$m" in
+      ''|*[!0-9a-f]*)
+        [ -n "$prcut" ] && [ "$st" = "완료" ] || continue
+        p=$(gate_row_field "$row" 'PR')
+        c=$(gate_row_field "$row" '커밋')
+        case "$p" in ''|*[!0-9]*) continue ;; esac
+        case "$c" in ''|*[!0-9a-f]*) continue ;; esac
+        ;;
+    esac
     rid=$(gate_row_field "$rrow" 'run-id')
     [ -n "$rid" ] || rid=$(basename "$f" .md)
     cand="$cand$(gate_row_field "$rrow" '시작')$tab$rid$tab$f
@@ -7826,7 +7849,174 @@ gate_prior_run_landed() {
   best=${best%"$tab"*}
   GATE_PRIOR_RUN=${best##*"$tab"}
   GATE_PRIOR_ROW=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } | tail -1)
-  [ -n "$GATE_PRIOR_ROW" ]
+  [ -n "$GATE_PRIOR_ROW" ] || return 1
+  case "$(gate_row_field "$GATE_PRIOR_ROW" '머지 커밋')" in
+    ''|*[!0-9a-f]*) GATE_PRIOR_KIND="PR" ;;
+    *) GATE_PRIOR_KIND="머지" ;;
+  esac
+  return 0
+}
+
+GATE_DECL_SELF_IMPORTED=""
+GATE_IMPORT_PR_STATE=""
+gate_import_prior_landed() {
+  # gate_import_prior_landed <verb> <segment> [self] — bring in the terminal row
+  # an earlier run of this document left for <segment>: 0 when it was brought
+  # in (on `plan`, when it would be), 1 when there is nothing to bring in, and
+  # GATE_EXIT_RULE when a predecessor's landing is claimed and not borne out.
+  #
+  # TWO CALLERS, ONE WRITER. The planning act calls it for each predecessor this
+  # ledger does not know and, with `self`, for the slice being planned; the
+  # fixed-graph driver calls it through `run_gate_call` for every declared slice
+  # before it writes the planned rows. Keeping the row in one function is what
+  # keeps `출처=` to one writer — the segment arm refuses a caller's.
+  #
+  # THE DRIVER'S CHILD SHELL CARRIES NO DOCUMENT. `run_gate_call` rebinds the
+  # manifest, the run and the ledger and nothing else, so `DOC_KEY` is empty
+  # there and the ledger walk below would find nothing and report success. The
+  # document is derived from the manifest here, and the ledger and grant the
+  # caller handed in are kept over whatever the derivation computes.
+  #
+  # A PREDECESSOR'S CLAIM THAT DOES NOT HOLD REFUSES THE PLAN; THE SLICE'S OWN
+  # DOES NOT. A dependent slice dispatched onto a predecessor that did not land
+  # builds on nothing, so that is refused as before. A slice whose own earlier
+  # landing does not hold is simply done again — skipping work that never
+  # landed is the harm here, and redoing it is the remedy.
+  #
+  # A PULL REQUEST IS ACCEPTED ONLY AS IT STANDS NOW. The PR arm brings the row
+  # in when the request is open or merged and its head is still the `커밋` the
+  # row names; a request closed, moved or unreadable brings nothing in, and the
+  # slice is done again. `출처` carries the run that did the work: the earlier
+  # row's own `출처` when it had one, so a chain's third run still names the
+  # first, and otherwise the earlier run.
+  #
+  # NOT DOING A SLICE AGAIN IS NOT THE SAME AS BUILDING ON IT. Every segment
+  # branches from the tip of its base, so the work of a request that is still
+  # open is in no tree a dependent would be cut from. An open request therefore
+  # brings in only the slice's own row — the work is not sent out a second time
+  # — and never a predecessor's: a predecessor is brought in through a request
+  # only once it is merged and its merge commit is on the base branch, and the
+  # row then carries that `머지 커밋`. An open request's row carries none, which
+  # is what keeps the dispatch floor from reading it as a landing; the state the
+  # request was in is left in GATE_IMPORT_PR_STATE (`OPEN`, `MERGED`, or empty
+  # for the merge arm) for a caller that has to tell the two apart.
+  local verb="$1" seg="$2" mode="${3:-}" kl="${LEDGER:-}" kg="${GRANT:-}" kb="${BASE:-}"
+  local dal="" pst="" pm="" ppr="" pc="" pwt="" pdp="" org="" slug="" obs="" ost="" ohd="" omc="" what="" why="" noun=""
+  GATE_DECL_SELF_IMPORTED=""
+  GATE_IMPORT_PR_STATE=""
+  if [ -z "${DOC_KEY:-}" ] && [ -n "${MANIFEST:-}" ]; then
+    derive_paths_from_manifest >/dev/null 2>&1 || true
+    [ -z "$kl" ] || LEDGER=$kl
+    [ -z "$kg" ] || GRANT=$kg
+    [ -z "$kb" ] || BASE=$kb
+  fi
+  [ -n "${DOC:-}" ] || return 1
+  # A SLICE THIS LEDGER ALREADY BROUGHT IN STAYS BROUGHT IN. A second planning
+  # act for it — the router asking again — finds its imported terminal row as
+  # the last one and writes nothing; any other known slice plans as before.
+  if [ "$mode" = "self" ]; then
+    case " $(gate_segment_ids | tr '\n' ' ') " in
+      *" $seg "*)
+        case "$(gate_segment_field "$seg" '상태')" in 머지됨|완료) : ;; *) return 1 ;; esac
+        [ -n "$(gate_segment_field "$seg" '출처')" ] || return 1
+        case "$(gate_segment_field "$seg" '머지 커밋')" in
+          ''|*[!0-9a-f]*) GATE_IMPORT_PR_STATE="OPEN" ;;
+        esac
+        GATE_DECL_SELF_IMPORTED=1
+        return 0 ;;
+    esac
+  fi
+  dal=$(gate_slice_alias "$seg" 2>/dev/null) || return 1
+  gate_prior_run_landed "$seg" || return 1
+  pst=$(gate_row_field "$GATE_PRIOR_ROW" '상태')
+  pm=$(gate_row_field "$GATE_PRIOR_ROW" '머지 커밋')
+  ppr=$(gate_row_field "$GATE_PRIOR_ROW" 'PR')
+  pc=$(gate_row_field "$GATE_PRIOR_ROW" '커밋')
+  pwt=$(gate_row_field "$GATE_PRIOR_ROW" '워크트리')
+  pdp=$(gate_row_field "$GATE_PRIOR_ROW" '선행')
+  org=$(gate_row_field "$GATE_PRIOR_ROW" '출처')
+  [ -n "$org" ] || org=$GATE_PRIOR_RUN
+  if [ "$GATE_PRIOR_KIND" = "머지" ]; then
+    if [ "$pst" = "머지됨" ] && gate_segment_owes_apply "$dal" "$seg"; then
+      if [ "$mode" = "self" ]; then
+        warn "슬라이스 ${seg} 는 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 머지했지만 적용이 남았습니다 — 들여오지 않고 다시 합니다"
+        return 1
+      fi
+      warn "세그먼트 계획 거부: 선행 ${seg} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 머지했지만 적용이 남았습니다 — 적용이 남은 머지는 들여오지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    gate_obligation_landing "$dal" "$pm"
+    if [ "$GATE_LANDING_VERDICT" != "착지" ]; then
+      if [ "$mode" = "self" ]; then
+        warn "슬라이스 ${seg} 의 이전 런 ${GATE_PRIOR_RUN} 머지 커밋 ${pm} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — 들여오지 않고 다시 합니다: ${GATE_LANDING_WHY}"
+        return 1
+      fi
+      warn "세그먼트 계획 거부: 선행 ${seg} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 남긴 머지 커밋 ${pm} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
+      return "$GATE_EXIT_RULE"
+    fi
+    what="머지 커밋=${pm}"
+  else
+    slug=$(alias_slug "$dal" 2>/dev/null) || slug=""
+    if [ -z "$slug" ]; then
+      why="대상 ${dal} 의 원격 슬러그를 알 수 없습니다"
+    elif ! obs=$(gh_q "$slug" pr view "$ppr" --json state,headRefOid,mergeCommit --jq '.state + " " + .headRefOid + " " + (.mergeCommit.oid // "")' 2>/dev/null); then
+      why="PR #${ppr} 을 원격 ${slug} 에서 읽지 못했습니다"
+    else
+      read -r ost ohd omc <<EOF
+$obs
+EOF
+      case "$ost" in
+        OPEN|MERGED)
+          [ "$ohd" = "$pc" ] || why="PR #${ppr} 의 head ${ohd:-(없음)} 가 행의 커밋 ${pc} 와 다릅니다" ;;
+        *) why="PR #${ppr} 의 상태가 ${ost:-(없음)} 입니다 — 열려 있거나 머지된 PR 만 들여옵니다" ;;
+      esac
+      if [ -z "$why" ] && [ "$ost" = "OPEN" ] && [ "$mode" != "self" ]; then
+        why="PR #${ppr} 이 아직 열려 있습니다 — 머지되지 않은 PR 의 작업은 이 슬라이스가 가지를 칠 베이스에 없으므로 선행으로 들이지 않습니다"
+      fi
+      if [ -z "$why" ] && [ "$ost" = "MERGED" ]; then
+        case "$omc" in
+          ''|*[!0-9a-f]*) why="머지된 PR #${ppr} 의 머지 커밋을 읽지 못했습니다" ;;
+          *)
+            gate_obligation_landing "$dal" "$omc"
+            [ "$GATE_LANDING_VERDICT" = "착지" ] \
+              || why="머지된 PR #${ppr} 의 머지 커밋 ${omc} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다: ${GATE_LANDING_WHY}" ;;
+        esac
+      fi
+    fi
+    if [ -n "$why" ]; then
+      warn "슬라이스 ${seg} 의 이전 런 ${GATE_PRIOR_RUN} PR 절단점 종단 행은 들여오지 않습니다 — ${why}"
+      return 1
+    fi
+    GATE_IMPORT_PR_STATE=$ost
+    what="커밋=${pc}"
+    [ "$ost" = "MERGED" ] || omc=""
+  fi
+  noun="선행"
+  [ "$mode" != "self" ] || { noun="슬라이스"; GATE_DECL_SELF_IMPORTED=1; }
+  if [ "$verb" != "act" ]; then
+    warn "act 로 내면 ${noun} ${seg} 를 이전 런 ${GATE_PRIOR_RUN} 의 종단 행(상태=${pst} · ${what}${omc:+ · 머지 커밋=$omc})으로 이 원장에 먼저 들여옵니다"
+    return 0
+  fi
+  gate_append 'segment' "id=$seg" "상태=$pst" ${ppr:+"PR=$ppr"} "$what" ${omc:+"머지 커밋=$omc"} \
+    "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$org"
+  log "${noun} 들여오기 — ${seg} (${pst}, 출처 ${org}, ${what}${omc:+, 머지 커밋 $omc})"
+  return 0
+}
+
+gate_import_self_landed() {
+  # gate_import_self_landed <verb> <segment> — the fixed-graph driver's form of
+  # the slice's own import: the exit code of `gate_import_prior_landed … self`,
+  # and on 0 one word on stdout saying what came in. `착지` is a landing the
+  # slices after it may build on; `건너뜀` is a slice whose work stands at a
+  # pull request still open — not done again, and not a predecessor either.
+  # The word is the only way the answer leaves `run_gate_call`'s child shell.
+  local rc=0
+  gate_import_prior_landed "$1" "$2" self || rc=$?
+  [ "$rc" = "0" ] || return "$rc"
+  case "$GATE_IMPORT_PR_STATE" in
+    OPEN) printf '건너뜀\n' ;;
+    *) printf '착지\n' ;;
+  esac
 }
 
 gate_manifest_landing_row() {
@@ -7884,12 +8074,14 @@ gate_from_declaration() {
   # before anything is written about the act; the rows it may write are the
   # run-scope block of a structural refusal and, on `act`, the terminal row of
   # a predecessor an earlier run of the same document landed or the manifest's
-  # `선행 착지` row names.
+  # `선행 착지` row names, and the slice's own terminal row when an earlier run
+  # landed it — then GATE_DECL_SELF_IMPORTED is set and no planned row follows.
   local verb="$1" alias="$2" seg="$3"
   shift 3
   local f="" k="" st="" wt="" want="" br="" why="" al="" astep="" alast="" step="" d="" ids="" declared="" derived=""
-  local known="" dal="" pst="" pm="" ppr="" pwt="" pdp="" adrow="" prow="" pslug="" dslug="" pwhere=""
+  local known="" dal="" pm="" pdp="" adrow="" prow="" pslug="" dslug="" pwhere="" irc=0
   GATE_DECL_FIELDS=()
+  GATE_DECL_SELF_IMPORTED=""
 
   # THE CALLER NAMES THE SEGMENT, THE STATE AND THE WORKTREE, AND NOTHING THE
   # DOCUMENT DECLARES. A caller value beside the gate's would be a second
@@ -8086,62 +8278,52 @@ gate_from_declaration() {
     for d in $(gate_dep_tokens "$(slice_field "$DOC" "$seg" '선행')"); do
       case "$known" in *" $d "*) continue ;; esac
       dal=$(gate_slice_alias "$d" 2>/dev/null) || dal=""
-      if [ -z "$dal" ] || ! gate_prior_run_landed "$d"; then
-        prow=$(gate_manifest_landing_row "$d") || continue
-        pslug=$(gate_row_field "$prow" '원격 슬러그')
-        pm=$(gate_row_field "$prow" '머지 커밋')
-        dslug=$(slice_field "$DOC" "$d" '레포' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-        if [ "$pslug" != "$dslug" ]; then
-          warn "세그먼트 계획 거부: 선행 착지 행의 슬라이스 ${d} 는 원격 슬러그 ${pslug} 를 들지만 동결 문서가 선언한 레포는 ${dslug:-(없음)} 입니다"
-          return "$GATE_EXIT_RULE"
-        fi
-        if [ -n "$dal" ]; then
-          if gate_segment_owes_apply "$dal" "$d"; then
-            warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 선언상 적용이 남는 슬라이스입니다 — 선행 착지 행은 머지만 말하므로 적용이 남은 슬라이스는 들여오지 않습니다"
-            return "$GATE_EXIT_RULE"
-          fi
-          gate_obligation_landing "$dal" "$pm"
-          pwhere="대상 ${dal} 의 베이스 브랜치"
-        else
-          gate_remote_landing "$pslug" "$pm"
-          pwhere="원격 ${pslug} 의 기본 브랜치"
-        fi
-        if [ "$GATE_LANDING_VERDICT" != "착지" ]; then
-          warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 매니페스트의 선행 착지 행이 든 머지 커밋 ${pm} 은 ${pwhere}에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
-          return "$GATE_EXIT_RULE"
-        fi
-        pdp=$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)
-        if [ "$verb" != "act" ]; then
-          warn "act 로 내면 선행 ${d} 를 매니페스트의 선행 착지 행(상태=머지됨 · 머지 커밋=${pm})으로 이 원장에 먼저 들여옵니다"
-          continue
-        fi
-        gate_append 'segment' "id=$d" "상태=머지됨" "머지 커밋=$pm" "워크트리=-" \
-          "선행=${pdp:-없음}" "출처=매니페스트"
-        log "선행 들여오기 — ${d} (머지됨, 출처 매니페스트, 머지 커밋 ${pm})"
-        continue
+      if [ -n "$dal" ]; then
+        irc=0
+        gate_import_prior_landed "$verb" "$d" || irc=$?
+        case "$irc" in 0) continue ;; 1) : ;; *) return "$irc" ;; esac
       fi
-      pst=$(gate_row_field "$GATE_PRIOR_ROW" '상태')
-      pm=$(gate_row_field "$GATE_PRIOR_ROW" '머지 커밋')
-      ppr=$(gate_row_field "$GATE_PRIOR_ROW" 'PR')
-      pwt=$(gate_row_field "$GATE_PRIOR_ROW" '워크트리')
-      pdp=$(gate_row_field "$GATE_PRIOR_ROW" '선행')
-      if [ "$pst" = "머지됨" ] && gate_segment_owes_apply "$dal" "$d"; then
-        warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 머지했지만 적용이 남았습니다 — 적용이 남은 머지는 들여오지 않습니다"
+      prow=$(gate_manifest_landing_row "$d") || continue
+      pslug=$(gate_row_field "$prow" '원격 슬러그')
+      pm=$(gate_row_field "$prow" '머지 커밋')
+      dslug=$(slice_field "$DOC" "$d" '레포' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      if [ "$pslug" != "$dslug" ]; then
+        warn "세그먼트 계획 거부: 선행 착지 행의 슬라이스 ${d} 는 원격 슬러그 ${pslug} 를 들지만 동결 문서가 선언한 레포는 ${dslug:-(없음)} 입니다"
         return "$GATE_EXIT_RULE"
       fi
-      gate_obligation_landing "$dal" "$pm"
+      if [ -n "$dal" ]; then
+        if gate_segment_owes_apply "$dal" "$d"; then
+          warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 선언상 적용이 남는 슬라이스입니다 — 선행 착지 행은 머지만 말하므로 적용이 남은 슬라이스는 들여오지 않습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        gate_obligation_landing "$dal" "$pm"
+        pwhere="대상 ${dal} 의 베이스 브랜치"
+      else
+        gate_remote_landing "$pslug" "$pm"
+        pwhere="원격 ${pslug} 의 기본 브랜치"
+      fi
       if [ "$GATE_LANDING_VERDICT" != "착지" ]; then
-        warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 같은 문서의 이전 런 ${GATE_PRIOR_RUN} 이 남긴 머지 커밋 ${pm} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
+        warn "세그먼트 계획 거부: 선행 ${d} 는 이 런의 원장에 없고, 매니페스트의 선행 착지 행이 든 머지 커밋 ${pm} 은 ${pwhere}에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다 — ${GATE_LANDING_WHY}"
         return "$GATE_EXIT_RULE"
       fi
+      pdp=$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)
       if [ "$verb" != "act" ]; then
-        warn "act 로 내면 선행 ${d} 를 이전 런 ${GATE_PRIOR_RUN} 의 종단 행(상태=${pst} · 머지 커밋=${pm})으로 이 원장에 먼저 들여옵니다"
+        warn "act 로 내면 선행 ${d} 를 매니페스트의 선행 착지 행(상태=머지됨 · 머지 커밋=${pm})으로 이 원장에 먼저 들여옵니다"
         continue
       fi
-      gate_append 'segment' "id=$d" "상태=$pst" ${ppr:+"PR=$ppr"} "머지 커밋=$pm" \
-        "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$GATE_PRIOR_RUN"
-      log "선행 들여오기 — ${d} (${pst}, 출처 ${GATE_PRIOR_RUN}, 머지 커밋 ${pm})"
+      gate_append 'segment' "id=$d" "상태=머지됨" "머지 커밋=$pm" "워크트리=-" \
+        "선행=${pdp:-없음}" "출처=매니페스트"
+      log "선행 들여오기 — ${d} (머지됨, 출처 매니페스트, 머지 커밋 ${pm})"
     done
+
+    # THE SLICE BEING PLANNED MAY ITSELF HAVE LANDED IN AN EARLIER RUN — a run
+    # re-kicked by hand or by the chain after this slice merged or stopped at its
+    # PR. Its planned row would send the same work out again, so the terminal
+    # row is brought in instead and no planned row is written; the caller sees
+    # GATE_DECL_SELF_IMPORTED and stops there. Nothing to bring in plans as before.
+    irc=0
+    gate_import_prior_landed "$verb" "$seg" self || irc=$?
+    case "$irc" in 0) return 0 ;; 1) : ;; *) return "$irc" ;; esac
   fi
 
   GATE_DECL_FIELDS+=( "워크트리=$wt" )
@@ -19344,6 +19526,13 @@ gate_verb_act() {
   # arm all see the fields the document declares and never a transcription.
   if [ "${GATE_FROM_DECLARATION:-}" = "1" ]; then
     gate_from_declaration "$verb" "$alias" "$segment" "$@" || exit $?
+    # A SLICE AN EARLIER RUN LANDED IS NOT PLANNED AGAIN. Its terminal row is
+    # already this ledger's (or, on `plan`, would be), and a planned row after it
+    # would put the landed work back on the dispatch list.
+    if [ -n "${GATE_DECL_SELF_IMPORTED:-}" ]; then
+      [ "$verb" = "plan" ] && printf '통과 예상: kind=%s target=%s 처분=착지 들여오기(계획 행 없음) segment=%s\n' "$kind" "$alias" "$segment"
+      exit 0
+    fi
     set -- "${GATE_DECL_FIELDS[@]}"
     argv="$*"
   fi
@@ -20528,10 +20717,23 @@ gate_verb_act() {
     # `머지됨` and `완료` only. `park` is terminal and did NOT land, so a
     # dependent dispatched over a parked predecessor is precisely the ordering
     # failure the declaration exists to prevent.
+    #
+    # A `완료` an earlier run left at a pull request still open is brought in
+    # with its `출처` and without a `머지 커밋`, so that this run does not do the
+    # slice again — and its work is on no base this segment could branch from.
+    # That row is not a landing here.
     local dep dst
     for dep in $(gate_deps_of "$segment"); do
       [ -n "$dep" ] || continue
       dst=$(gate_segment_field "$dep" '상태')
+      if [ "$dst" = "완료" ] && [ -n "$(gate_segment_field "$dep" '출처')" ]; then
+        case "$(gate_segment_field "$dep" '머지 커밋')" in
+          ''|*[!0-9a-f]*)
+            warn "the preceding segment ${dep} was brought in from an earlier run at a pull request that is not merged — its work is not on the base this segment branches from"
+            warn "dispatch again once that pull request is merged and a run brings the merge in, or if there is no dependency rewrite the \`선행\` of the segment row"
+            exit "$GATE_EXIT_RULE" ;;
+        esac
+      fi
       case "$dst" in
         머지됨|완료) : ;;
         *) warn "the preceding segment ${dep} has not landed yet (\`상태\`=${dst:-(none)}) — this segment has to branch on top of it"
