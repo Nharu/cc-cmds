@@ -111,6 +111,21 @@ describe('수명 주기', () => {
     expect(restorable(rec(), 'sid', 1001 + STORE_TTL_MS)).toBeUndefined()
   })
 
+  test('보관: 모델 입력에 엔진이 거부하는 제어 문자가 든 기록은 되살리지 않는다', () => {
+    const r = rec()
+    const withEsc = (patch: (f: FormInput) => void) => {
+      const f: FormInput = JSON.parse(JSON.stringify(r.form))
+      patch(f)
+      return { ...r, form: f }
+    }
+    expect(restorable(withEsc(f => (f.questions[0]!.header = '가\u001b')), 'sid')).toBeUndefined()
+    expect(restorable(withEsc(f => (f.title = '제\u0000목')), 'sid')).toBeUndefined()
+    expect(restorable(withEsc(f => (f.questions[0]!.options![0]!.description = '설\u009b명')), 'sid')).toBeUndefined()
+    // 한 줄 칸의 줄바꿈·탭은 엔진이 그리므로 되살린다.
+    expect(restorable(withEsc(f => (f.questions[0]!.header = '가\t나')), 'sid')?.id).toBe('f-00000001')
+    expect(restorable(withEsc(f => (f.intro = '첫\n둘')), 'sid')?.id).toBe('f-00000001')
+  })
+
   test('앞 판이 보관한 기록(커서·입력칸 없음)은 첫 질문에서 되살린다', () => {
     const { cursor: _c, editor: _e, editorGen: _g, ...old } = rec()
     const stored = { ...old, otherOpen: [], receiptTurns: 0 } as unknown as FormRecord
@@ -219,6 +234,27 @@ describe('입력칸', () => {
     expect(done.move).toBe('end')
     expect(done.record.drafts.c?.other).toBe('이유')
     expect(done.record.editor).toBeNull()
+  })
+
+  test('친 글은 제어 문자를 거른 값으로 초안에 적힌다', () => {
+    const typed = typeText(openEditor(rec(), 'a', 'other'), 'a', 'other', '앱으로\n가는데\u001b')
+    expect(typed.drafts.a?.other).toBe('앱으로 가는데')
+    const note = typeText(openEditor(rec(), 'a', 'note'), 'a', 'note', '참\t고\u0000')
+    expect(note.drafts.a?.note).toBe('참 고')
+  })
+
+  test('제어 문자만 친 기타·답을 확정하면 다음 질문으로 넘어가지 않는다', () => {
+    const r = rec()
+    const single = commitText(openEditor(r, 'a', 'other'), 'a', 'other', '\u001b\u0000')
+    expect(single.move).toBe('stay')
+    expect(single.record.cursor).toBe('a')
+    const text = commitText(jump(r, 'c'), 'c', 'other', '\u007f')
+    expect(text.move).toBe('stay')
+  })
+
+  test('제어 문자만 든 text 초안에 커서가 닿으면 답 칸을 연다', () => {
+    const r = { ...rec(), drafts: { c: { selected: [], other: '\u001b\u0000', note: '' } } }
+    expect(jump(r, 'c').editor).toMatchObject({ id: 'c', field: 'other' })
   })
 
   test('그 질문의 single 선택지를 고르면 열린 기타 칸이 닫힌다', () => {

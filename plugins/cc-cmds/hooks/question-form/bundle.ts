@@ -24,11 +24,20 @@ export function mintFormId(random: () => number = Math.random): string {
   return `f-${hex}`
 }
 
+// 입력칸 값은 한 줄 글이다. 엔진은 제어 문자를 품은 Button 라벨·text 자식을 그리지 않고
+// 패널 전체를 자기 대체 화면으로 바꾸므로, 값을 받는 자리와 그리는 자리(Button 라벨·답
+// 요약), 보내는 자리(답 묶음)에서 걸러 낸다. 줄바꿈·탭은 공백 하나로 바꾸고 나머지 제어
+// 문자(C0·DEL·C1)는 뺀다.
+export const inputValue = (v: string): string =>
+  v.replace(/\r\n|[\r\n\t]/g, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+
 export const draftOf = (drafts: Drafts, id: string): Draft => drafts[id] ?? EMPTY_DRAFT
 
+// 고치기 전에 보관된 초안에는 제어 문자가 남아 있을 수 있으므로 거른 글로 판정한다.
 export function isAnswered(q: FormQuestion, d: Draft): boolean {
-  if (q.kind === 'text') return d.other.trim() !== ''
-  return d.selected.length > 0 || d.other.trim() !== ''
+  const other = inputValue(d.other).trim()
+  if (q.kind === 'text') return other !== ''
+  return d.selected.length > 0 || other !== ''
 }
 
 // `when` 이 가리키는 앞 질문이 보이고 그 질문에서 라벨 하나라도 골랐을 때만 보인다.
@@ -85,7 +94,8 @@ export type BundleJson = { schema: 'cc-form-answers/1'; form: string; status: Fo
 
 export function bundleJson(formId: string, status: FormStatus, form: FormInput, drafts: Drafts): BundleJson {
   const answers = form.questions.map((q): BundleAnswer => {
-    const d = draftOf(drafts, q.id)
+    const raw = draftOf(drafts, q.id)
+    const d: Draft = { ...raw, other: inputValue(raw.other), note: inputValue(raw.note) }
     const options = (q.options ?? []).map(o => o.label)
     const recommended = (q.options ?? []).flatMap(o => (o.recommended ? [{ label: o.label, by: o.recommended }] : []))
     const base = {

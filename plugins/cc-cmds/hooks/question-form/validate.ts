@@ -5,6 +5,8 @@ import {
   HANDMADE_OTHER_LABELS,
   HEADER_MAX,
   ID_RE,
+  LINE_CONTROL_REASON,
+  PROSE_CONTROL_REASON,
   RECOMMEND_ARROW,
   RESERVED_LABELS,
   RESERVED_PREFIXES,
@@ -26,6 +28,29 @@ export function totalChars(v: unknown): number {
   return 0
 }
 
+// 한 줄로 그려지는 칸(제목·머리말·묶음·안내글·라벨)은 C0·DEL·C1 전부를, 여러 줄로
+// 감기는 칸(안내 문단·질문 문장·설명·선택지 설명·미리보기)은 엔진이 받는 줄바꿈·탭·CR 을
+// 뺀 나머지를 금한다. 뒤쪽 집합이 곧 엔진이 패널 전체를 거부하는 문자다.
+const LINE_CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/
+const PROSE_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/
+
+// 엔진이 거부하는 문자를 품은 칸이 하나라도 있는가. 보관에서 되살릴 기록은 이 검사가
+// 생기기 전에 열렸을 수 있으므로 되살리기 전에 다시 건다. 한 줄 칸의 줄바꿈·탭은 엔진이
+// 그리므로 여기서는 걸지 않는다.
+export function holdsRefusedControl(form: FormInput): boolean {
+  const refused = (s: string | undefined) => s !== undefined && PROSE_CONTROL_RE.test(s)
+  if (refused(form.title) || refused(form.intro)) return true
+  return form.questions.some(
+    q =>
+      refused(q.header) ||
+      refused(q.question) ||
+      refused(q.group) ||
+      refused(q.detail) ||
+      refused(q.placeholder) ||
+      (q.options ?? []).some(o => refused(o.label) || refused(o.description) || refused(o.preview)),
+  )
+}
+
 function labelProblem(label: string): string | undefined {
   if (label.includes(RECOMMEND_ARROW.trim())) return '라벨에 「←」를 넣지 않습니다. 추천은 recommended 로 표시합니다'
   if (HANDMADE_OTHER_LABELS.includes(label.trim())) return `「${label.trim()}」 라벨은 만들지 않습니다. allowOther 가 기타 입력을 그립니다`
@@ -40,7 +65,9 @@ export function validateForm(input: unknown, openId: string | undefined): string
   if (!isObj(input)) return bad('input', '객체가 아닙니다')
   if (!isStr(input.title) || input.title.trim() === '') return bad('title', '필수입니다')
   if (codePoints(input.title) > TITLE_MAX) return bad('title', `${TITLE_MAX}자를 넘습니다`)
+  if (LINE_CONTROL_RE.test(input.title)) return bad('title', LINE_CONTROL_REASON)
   if (input.intro !== undefined && !isStr(input.intro)) return bad('intro', '문자열이 아닙니다')
+  if (input.intro !== undefined && PROSE_CONTROL_RE.test(input.intro)) return bad('intro', PROSE_CONTROL_REASON)
   if (input.replaces !== undefined) {
     if (!isStr(input.replaces)) return bad('replaces', '문자열이 아닙니다')
     if (input.replaces !== openId) return bad('replaces', openId ? `열린 질문지 id 는 ${openId} 입니다` : '열린 질문지가 없습니다')
@@ -56,9 +83,15 @@ export function validateForm(input: unknown, openId: string | undefined): string
     if (seen.has(q.id)) return bad(`${at}.id`, `「${q.id}」가 겹칩니다`)
     if (!isStr(q.header) || q.header.trim() === '') return bad(`${at}.header`, '필수입니다')
     if (codePoints(q.header.normalize('NFC')) > HEADER_MAX) return bad(`${at}.header`, `NFC 기준 ${HEADER_MAX} 코드포인트를 넘습니다`)
+    if (LINE_CONTROL_RE.test(q.header)) return bad(`${at}.header`, LINE_CONTROL_REASON)
     if (!isStr(q.question) || q.question.trim() === '') return bad(`${at}.question`, '필수입니다')
+    if (PROSE_CONTROL_RE.test(q.question)) return bad(`${at}.question`, PROSE_CONTROL_REASON)
     for (const k of ['group', 'detail', 'placeholder'] as const) {
-      if (q[k] !== undefined && !isStr(q[k])) return bad(`${at}.${k}`, '문자열이 아닙니다')
+      const v = q[k]
+      if (v === undefined) continue
+      if (!isStr(v)) return bad(`${at}.${k}`, '문자열이 아닙니다')
+      const prose = k === 'detail'
+      if ((prose ? PROSE_CONTROL_RE : LINE_CONTROL_RE).test(v)) return bad(`${at}.${k}`, prose ? PROSE_CONTROL_REASON : LINE_CONTROL_REASON)
     }
     for (const k of ['allowOther', 'allowNote'] as const) {
       if (q[k] !== undefined && typeof q[k] !== 'boolean') return bad(`${at}.${k}`, '참·거짓 값이 아닙니다')
@@ -76,8 +109,11 @@ export function validateForm(input: unknown, openId: string | undefined): string
         const oat = `${at}.options[${j}]`
         if (!isObj(o)) return bad(oat, '객체가 아닙니다')
         if (!isStr(o.label) || o.label.trim() === '') return bad(`${oat}.label`, '필수입니다')
+        if (LINE_CONTROL_RE.test(o.label)) return bad(`${oat}.label`, LINE_CONTROL_REASON)
         if (!isStr(o.description)) return bad(`${oat}.description`, '필수입니다')
+        if (PROSE_CONTROL_RE.test(o.description)) return bad(`${oat}.description`, PROSE_CONTROL_REASON)
         if (o.preview !== undefined && !isStr(o.preview)) return bad(`${oat}.preview`, '문자열이 아닙니다')
+        if (isStr(o.preview) && PROSE_CONTROL_RE.test(o.preview)) return bad(`${oat}.preview`, PROSE_CONTROL_REASON)
         const problem = labelProblem(o.label)
         if (problem) return bad(`${oat}.label`, problem)
         if (labels.includes(o.label)) return bad(`${oat}.label`, `「${o.label}」가 겹칩니다`)
