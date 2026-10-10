@@ -16012,8 +16012,18 @@ gate_sibling_record_write_guard() {
   # directory, physically against the act's own directory and compares the
   # parent directory — so a bare `X.plan.md` written from inside the manifest
   # directory is caught, which no string test on the absolute spelling sees.
+  #
+  # THE ELEMENT ARM TAKES THE WORDS OF A COMPOUND ELEMENT, NOT THE ELEMENT. A
+  # destination carried inside one larger element — `sed -n 'w <dir>/R8.plan.md'`,
+  # `dd of=<dir>/R8.plan.md`, awk's `> "<path>"` — ends in the suffix the arm
+  # matches, but resolving the whole element names a directory `w <dir>` that
+  # does not exist, and the arm skipped it. A compound element is split by
+  # `gate_arg_words`, the run directory guard's word split, and each word goes
+  # through the arm as an element of its own. A word the split cannot resolve is
+  # refused rather than guessed.
   local mdir="$1" mdirp="$2"; shift 2
-  local gdir='' gdirp='' a ap ad adp argv0 joinedn gdirn gdirpn cwd
+  local gdir='' gdirp='' a ap ad adp argv0 joinedn gdirn gdirpn cwd i
+  local -a cand
   if [ -n "${GRANT:-}" ]; then
     gdir=$(dirname "$GRANT")
     gdirp=$(cd "$gdir" 2>/dev/null && pwd -P) || gdirp="$gdir"
@@ -16057,7 +16067,20 @@ gate_sibling_record_write_guard() {
       esac ;;
   esac
 
+  cand=()
   for a in "$@"; do
+    if gate_arg_is_compound "$a"; then
+      gate_arg_words "$a" \
+        || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+      i=0
+      while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
+        cand[${#cand[@]}]=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+      done
+    else
+      cand[${#cand[@]}]=$a
+    fi
+  done
+  for a in ${cand[@]+"${cand[@]}"}; do
     case "$a" in
       *.plan.md|*.interview.md|*.kickoff.md) ;;
       */pipeline-grant/*.md|pipeline-grant/*.md)
@@ -16160,12 +16183,22 @@ gate_pace_write_guard() {
   # final component pointing into the root, and a `cd` inside a wrapper, are not
   # seen here; the dispatcher and the deriver run outside every gate, so nothing
   # legitimate is refused by widening later.
+  #
+  # A PATH CARRIED INSIDE A LARGER ELEMENT IS A DESTINATION TOO, and the two arms
+  # above did not see it. `sed -n 'w <pace>/backlog.jsonl' /dev/null` grades as
+  # a worktree write, `dd of=<pace>/rekick/<런>/at` and awk's `> "<path>"` carry
+  # the path inside one element that is neither a whole path nor a `-x=` option,
+  # and none of those argv0 are wrappers — so all three wrote the file past both
+  # arms. A compound element is therefore split into words the way the run
+  # directory guard's word arm splits it (`gate_arg_words`), and each word is
+  # resolved like a whole element. A word the split cannot resolve (`~-`) is
+  # refused rather than guessed, the same as that arm.
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   case "$graded" in
     읽기) return 0 ;;
   esac
-  local r1 r2 r1p r2p n a v an ap joinedn base first
+  local r1 r2 r1p r2p n a v an ap joinedn base first mode i
   r1=$(gate_path_spelling "$(gate_lexical_abs "$(gate_pace_root)")")
   r2=''
   if declare -F run_pace_root >/dev/null 2>&1; then
@@ -16176,7 +16209,9 @@ gate_pace_write_guard() {
   [ -n "$r2" ] && r2p=$(gate_path_spelling "$(gate_real_prefix "$r2")")
   base="${GATE_ACT_CWD:-}"
 
+  mode=""
   if gate_argv0_wraps "$1"; then
+    mode=bare
     joinedn=$(gate_path_spelling "$(printf '%s ' "$@")")
     for n in "$r1" "$r1p" "$r2" "$r2p"; do
       case "$n" in ''|'/'|'.') continue ;; esac
@@ -16194,20 +16229,41 @@ gate_pace_write_guard() {
     for v in "$a" "$(gate_arg_option_value "$a" 2>/dev/null || true)"; do
       [ -n "$v" ] || continue
       case "$v" in -*) continue ;; esac
-      an=$(gate_path_spelling "$(gate_lexical_abs "$v" "$base")")
-      ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
-      for n in "$r1" "$r1p" "$r2" "$r2p"; do
-        case "$n" in ''|'/'|'.') continue ;; esac
-        case "$an" in "$n"|"$n"/*)
-          gate_pace_write_refuse "$a" "$n"; return "$GATE_EXIT_RULE" ;;
-        esac
-        case "$ap" in "$n"|"$n"/*)
-          gate_pace_write_refuse "$a" "$n"; return "$GATE_EXIT_RULE" ;;
-        esac
-      done
+      if gate_pace_path_hit "$v" "$base" "$r1" "$r1p" "$r2" "$r2p"; then
+        gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+      fi
+    done
+    gate_arg_is_compound "$a" || continue
+    gate_arg_words "$a" "$mode" \
+      || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+    i=0
+    while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
+      v=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+      if gate_pace_path_hit "$v" "$base" "$r1" "$r1p" "$r2" "$r2p"; then
+        gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+      fi
     done
   done
   return 0
+}
+
+gate_pace_path_hit() {
+  # gate_pace_path_hit <path> <base> <root spelling>... — rc 0 when the path,
+  # resolved against <base> logically and through its deepest existing
+  # ancestor, is one of the root spellings or lies under one; the spelling it
+  # met is left in `GATE_PACE_HIT`. An empty, `/` or `.` spelling is skipped,
+  # because a root that failed to resolve must not turn into a match on
+  # everything.
+  local v="$1" base="$2" an ap n; shift 2
+  GATE_PACE_HIT=""
+  an=$(gate_path_spelling "$(gate_lexical_abs "$v" "$base")")
+  ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+  for n in "$@"; do
+    case "$n" in ''|'/'|'.') continue ;; esac
+    case "$an" in "$n"|"$n"/*) GATE_PACE_HIT="$n"; return 0 ;; esac
+    case "$ap" in "$n"|"$n"/*) GATE_PACE_HIT="$n"; return 0 ;; esac
+  done
+  return 1
 }
 
 gate_autoadopt_ok() {

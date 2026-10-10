@@ -11016,6 +11016,14 @@ case "$msg" in
     ok "등급 동사의 페이싱 거부가 축2=거부 와 그 이유를 낸다" ;;
   *) bad "등급 동사 페이싱 거부 문면" "$msg" ;;
 esac
+# The destination inside one element of a command that is not a wrapper.
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 \
+      -- sed -n "w $STATE_LATE/cc-cmds/pace/backlog.jsonl" /dev/null
+check "sed 의 w 명령으로 페이싱 백로그에 쓰는 것은 등급 동사에서 거부된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"축2=거부"*) ok "sed 의 w 명령 페이싱 거부가 축2=거부 를 낸다" ;;
+  *) bad "등급 동사 sed w 페이싱 거부 문면" "$msg" ;;
+esac
 gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
       -- cat "$STATE_LATE/cc-cmds/pace/backlog.jsonl"
 check "페이싱 백로그를 읽는 행위는 등급 동사에서 거부되지 않는다" "$rc" "0"
@@ -14847,6 +14855,41 @@ case "$pace_iw" in
     ok "페이싱 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" ;;
   *) bad "페이싱 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" "$pace_iw" ;;
 esac
+# A PATH CARRIED INSIDE ONE ELEMENT OF A COMMAND THAT IS NOT A WRAPPER. `sed`'s
+# `w` command, `dd`'s `of=` operand and awk's redirection each name the
+# destination inside a larger element, so neither the whole-element arm nor the
+# interpreter arm saw it. `sed` grades as a worktree write and goes through the
+# gate; `dd` and awk do not grade as anything a declaration meets, so the guard
+# is called alone for them, and `--out=` beside them pins the option arm.
+pace_try "sed 의 w 명령" "$PACE_N/backlog.jsonl" \
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- sed -n "w $PACE_N/backlog.jsonl" /dev/null
+check "sed 의 w 명령 거절은 룰 거부 코드다" "$rc" "$GATE_EXIT_RULE"
+pace_alone() {
+  # pace_alone <argv…> — the pacing guard called alone under a write grade.
+  (cd "$WT" && GATE_PACE_ROOT="$PACE_N" bash -c \
+    'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset MANIFEST; shift
+     r=0; gate_pace_write_guard 트리밖쓰기 "$@" || r=$?
+     [ "$r" = "$GATE_EXIT_RULE" ] && printf "rc=룰거부" || printf "rc=%s" "$r"' \
+    _ "$GATE" "$@" 2>&1)
+}
+for spell in "dd of=$PACE_N/rekick/R1/at" "dd if=/dev/null of=$PACE_N/backlog.jsonl" \
+             "awk {print>\"$PACE_N/backlog.jsonl\"} /dev/null" \
+             "jq --out=$PACE_N/backlog.jsonl ."; do
+  # shellcheck disable=SC2086
+  pace_iw=$(pace_alone $spell)
+  case "$pace_iw" in
+    *"the pacing directory belongs to the lane dispatcher"*"rc=룰거부")
+      ok "페이싱 가드가 원소 속에 실린 경로를 거절한다: $spell" ;;
+    *) bad "페이싱 가드가 원소 속에 실린 경로를 거절한다: $spell" "$pace_iw" ;;
+  esac
+done
+pace_iw=$(pace_alone dd of="$PACE_N-old/at")
+case "$pace_iw" in
+  "rc=0") ok "페이싱 루트 옆 이름을 실은 원소는 페이싱 가드에 걸리지 않는다" ;;
+  *) bad "페이싱 가드 오탐: 루트 옆 이름을 실은 원소" "$pace_iw" ;;
+esac
 # A sibling's plan beside the manifest, in the same recipe: the sibling record
 # guard answers it, so only the code and the bytes are this guard's business.
 r8before=$(fsha "$WORK/R8.plan.md")
@@ -14855,6 +14898,42 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       -- cp "$WORK/r3x" "$WORK/R8.plan.md"
 [ "$rc" != 0 ] && ok "형제 R8.plan.md 쓰기가 거절된다" || bad "형제 R8.plan.md 쓰기가 거절된다" "rc=$rc"
 check "거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+# The same sibling plan named inside one element. Through the gate `sed`'s `w`
+# command is refused by the sibling record guard; `dd of=` and awk's
+# redirection are put to that guard alone, with the manifest directory and its
+# physical spelling as the caller hands them over.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n "w $WORK/R8.plan.md" /dev/null
+check "sed 의 w 명령으로 형제 R8.plan.md 에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"another run's kickoff-frozen record"*) ok "그 거절은 형제 런 가드의 것이다: sed 의 w 명령" ;;
+  *) bad "형제 런 가드 문면: sed 의 w 명령" "$msg" ;;
+esac
+check "sed 로 거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+sib_alone() {
+  # sib_alone <argv…> — the sibling record guard called alone.
+  (cd "$WT" && bash -c \
+    'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; d="$2"; shift 2
+     r=0; gate_sibling_record_write_guard "$d" "$(cd "$d" && pwd -P)" "$@" || r=$?
+     [ "$r" = "$GATE_EXIT_RULE" ] && printf "rc=룰거부" || printf "rc=%s" "$r"' \
+    _ "$GATE" "$WORK" "$@" 2>&1)
+}
+for spell in "dd of=$WORK/R8.plan.md" "awk {print>\"$WORK/R8.interview.md\"} /dev/null" \
+             "jq --out=$WORK/R8.kickoff.md ."; do
+  # shellcheck disable=SC2086
+  sib_iw=$(sib_alone $spell)
+  case "$sib_iw" in
+    *"another run's kickoff-frozen record"*"rc=룰거부")
+      ok "형제 런 가드가 원소 속에 실린 경로를 거절한다: $spell" ;;
+    *) bad "형제 런 가드가 원소 속에 실린 경로를 거절한다: $spell" "$sib_iw" ;;
+  esac
+done
+sib_iw=$(sib_alone dd of="$WORK/R9.notes.md")
+case "$sib_iw" in
+  "rc=0") ok "세 접미가 아닌 파일을 실은 원소는 형제 런 가드에 걸리지 않는다" ;;
+  *) bad "형제 런 가드 오탐: 세 접미가 아닌 파일을 실은 원소" "$sib_iw" ;;
+esac
 # Naming the directory while reading it passes: the read grade returns first.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
