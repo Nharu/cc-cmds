@@ -53,8 +53,7 @@ export type Row =
   | { kind: 'preview'; text: string }
   | { kind: 'other'; key: string; hotkey: string; glyph: string; text: string; description: string }
   | { kind: 'answer'; key: string; text: string; autoFocus: boolean }
-  | { kind: 'editor'; key: string; qid: string; field: FormEditor['field']; value: string; placeholder: string; autoFocus: boolean }
-  | { kind: 'spacer'; lines: number }
+  | { kind: 'editor'; key: string; qid: string; field: FormEditor['field']; value: string; text: string; placeholder: string; autoFocus: boolean }
   | { kind: 'note'; key: string; hotkey: string; text: string }
   | { kind: 'nav'; prev: boolean; next: 'question' | 'submit' | 'none' }
   | { kind: 'actions'; submit: string; cancel: string }
@@ -107,40 +106,67 @@ export function landingKey(rec: FormRecord): string {
   return (q.options ?? []).length > 0 ? optionKey(qi, 1) : otherKey(qi)
 }
 
-// 편집기 줄의 들여쓰기와, 같은 Input 줄 안에 그려지는 「 ⏎ 확정」 몫.
-export const EDITOR_INDENT = 4
+// 편집기 줄의 들여쓰기와, 같은 Input 줄 안에 그려지는 「 ⏎ 확정」 몫. 엔진은 들여쓰기와
+// 상관없이 본문 폭 − 확정 몫 − 1 칸에서 글을 감고, 상자가 그보다 좁으면 감긴 첫 줄이
+// 들어가지 않아 글 전체를 한 줄로 잘라 그린다. 상자 폭(본문 폭 − 들여쓰기 − 확정 몫)이
+// 감는 폭과 같아지는 최대 들여쓰기가 1칸이다.
+export const EDITOR_INDENT = 1
 export const EDITOR_SUBMIT_WIDTH = displayWidth(` ⏎ ${EDITOR_SUBMIT_LABEL}`)
 
-// 칸보다 긴 글을 치면 엔진은 칸 안을 말줄임으로 그리고 커서·조합 글자를 칸 아래 줄에
-// 놓는다. 그 자리가 메모 줄을 덮지 않도록 편집기 줄 뒤에 넘칠 줄 수만큼 빈 줄을 둔다.
-// 엔진이 감는 폭은 모르므로 들여쓰기와 확정 몫을 모두 뺀 좁은 폭으로 나누고, 조합 중인
-// 한글 한 글자 몫 2칸을 더해 남는 쪽으로 어림한다.
-export function spacerLines(text: string, bodyColumns: number): number {
-  const width = Math.max(20, bodyColumns - EDITOR_INDENT - EDITOR_SUBMIT_WIDTH)
-  return Math.max(0, Math.ceil((EDITOR_INDENT + displayWidth(text) + 2) / width) - 1)
+// 엔진이 입력칸의 글을 감는 대로 나눈 줄들. 칸 폭은 최소 12칸이고 감는 폭은 그보다 1칸
+// 좁다. 공백 단위로 앞에서부터 채우고, 감는 폭보다 긴 한 단어는 글자 단위로 끊는다.
+// 높이를 바라는 데만 쓴다 — 글과 커서를 놓는 것은 엔진이다.
+export const editorWrapWidth = (bodyColumns: number) => Math.max(11, bodyColumns - EDITOR_SUBMIT_WIDTH - 1)
+
+export function wrapEditorText(text: string, bodyColumns: number): string[] {
+  if (text === '') return []
+  const width = editorWrapWidth(bodyColumns)
+  const lines: string[] = []
+  let line: string | null = null
+  for (const word of text.split(' ')) {
+    if (line !== null && displayWidth(`${line} ${word}`) <= width) {
+      line = `${line} ${word}`
+      continue
+    }
+    if (line !== null) lines.push(line)
+    line = ''
+    for (const ch of word) {
+      if (line !== '' && displayWidth(line + ch) > width) {
+        lines.push(line)
+        line = ''
+      }
+      line += ch
+    }
+  }
+  if (line !== null) lines.push(line)
+  return lines
 }
 
-// 편집기 줄과, 넘칠 글이면 그 뒤의 빈 줄. 앞말 라벨은 두지 않는다 — 바로 위 줄(기타·메모
-// 줄이나 펼친 질문의 머리말)이 이미 그 칸이 무엇인지 말한다.
-function editorRows(rec: FormRecord, qi: number, q: FormQuestion, field: FormEditor['field'], autoFocus: boolean, bodyColumns: number): Row[] {
+// 편집기 줄. 앞말 라벨은 두지 않는다 — 바로 위 줄(기타·메모 줄이나 펼친 질문의 머리말)이
+// 이미 그 칸이 무엇인지 말한다. value 는 입력칸에 넘기는 씨앗이고, text 는 높이를 셀 지금 글이다.
+function editorRows(rec: FormRecord, qi: number, q: FormQuestion, field: FormEditor['field'], autoFocus: boolean): Row[] {
   const ed = rec.editor
   if (!ed || ed.id !== q.id || ed.field !== field) return []
   const placeholder = field === 'note' ? NOTE_PLACEHOLDER : q.kind === 'text' ? q.placeholder ?? TEXT_PLACEHOLDER : OTHER_PLACEHOLDER
-  const rows: Row[] = [{ kind: 'editor', key: editorKey(qi, field, ed.gen), qid: q.id, field, value: inputValue(ed.seed), placeholder, autoFocus }]
   const d = draftOf(rec.drafts, q.id)
-  const lines = spacerLines(inputValue(field === 'note' ? d.note : d.other), bodyColumns)
-  if (lines > 0) rows.push({ kind: 'spacer', lines })
-  return rows
+  const text = inputValue(field === 'note' ? d.note : d.other)
+  return [{ kind: 'editor', key: editorKey(qi, field, ed.gen), qid: q.id, field, value: inputValue(ed.seed), text, placeholder, autoFocus }]
 }
 
-function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: string | null, bodyColumns: number): Row[] {
+// 이 질문의 그 편집기가 열려 있고 포커스가 그 입력칸에 있는가. 그동안 위 줄은 라벨만 보인다.
+function editing(rec: FormRecord, qi: number, q: FormQuestion, field: FormEditor['field'], focused: string | null): boolean {
+  const ed = rec.editor
+  return !!ed && ed.id === q.id && ed.field === field && focused === editorKey(qi, field, ed.gen)
+}
+
+function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: string | null): Row[] {
   const d = draftOf(rec.drafts, q.id)
   const landing = landingKey(rec)
   const rows: Row[] = [{ kind: 'current', n: qi, header: q.header, question: q.question }]
   if (q.detail) rows.push({ kind: 'detail', text: q.detail })
   pushBlank(rows)
   if (q.kind === 'text') {
-    const editor = editorRows(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0), bodyColumns)
+    const editor = editorRows(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0))
     const answer = inputValue(d.other)
     if (editor.length > 0) rows.push(...editor)
     else rows.push({ kind: 'answer', key: answerKey(qi), text: answer.trim() === '' ? UNANSWERED : answer, autoFocus: landing === answerKey(qi) })
@@ -162,21 +188,23 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
     if (preview !== undefined) rows.push({ kind: 'preview', text: preview })
     if (q.allowOther !== false) {
       const other = inputValue(d.other).trim()
+      const labelOnly = editing(rec, qi, q, 'other', focused)
       rows.push({
         kind: 'other',
         key: otherKey(qi),
         hotkey: '0',
         glyph: glyphOf(q, other !== ''),
-        text: other === '' ? OTHER_LABEL : `${OTHER_LABEL}: ${other}`,
-        description: other === '' ? OTHER_PLACEHOLDER : '',
+        text: other === '' || labelOnly ? OTHER_LABEL : `${OTHER_LABEL}: ${other}`,
+        description: other === '' && !labelOnly ? OTHER_PLACEHOLDER : '',
       })
-      rows.push(...editorRows(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0), bodyColumns))
+      rows.push(...editorRows(rec, qi, q, 'other', landing === editorKey(qi, 'other', rec.editor?.gen ?? 0)))
     }
   }
   if (q.allowNote !== false) {
     const note = inputValue(d.note).trim()
-    rows.push({ kind: 'note', key: noteKey(qi), hotkey: 'm', text: note === '' ? NOTE_ADD_LABEL : `${NOTE_LABEL}: ${note}` })
-    rows.push(...editorRows(rec, qi, q, 'note', landing === editorKey(qi, 'note', rec.editor?.gen ?? 0), bodyColumns))
+    const text = editing(rec, qi, q, 'note', focused) ? NOTE_LABEL : note === '' ? NOTE_ADD_LABEL : `${NOTE_LABEL}: ${note}`
+    rows.push({ kind: 'note', key: noteKey(qi), hotkey: 'm', text })
+    rows.push(...editorRows(rec, qi, q, 'note', landing === editorKey(qi, 'note', rec.editor?.gen ?? 0)))
   }
   const ids = rec.form.questions.filter(x => isVisible(rec.form, rec.drafts, x)).map(x => x.id)
   const at = ids.indexOf(q.id)
@@ -185,8 +213,8 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
   return rows
 }
 
-// bodyColumns 는 편집기 뒤 빈 줄 수를 어림할 본문 폭이다. 없으면 80 으로 어림한다.
-export function layoutRows(rec: FormRecord, focused: string | null, bodyColumns = 80): Row[] {
+// focused 는 포커스 값(요소의 key)이다. 선택지 미리보기와, 입력칸 위 줄을 라벨만 둘지를 정한다.
+export function layoutRows(rec: FormRecord, focused: string | null): Row[] {
   const { form, drafts } = rec
   const { answered, total } = counts(form, drafts)
   const rows: Row[] = [{ kind: 'title', text: form.title, counter: counterLine(answered, total) }]
@@ -204,7 +232,7 @@ export function layoutRows(rec: FormRecord, focused: string | null, bodyColumns 
     // 펼친 질문은 위아래 빈 줄로 접힌 줄들과 떼어 놓는다.
     if (q.id === rec.cursor) {
       if (rows.at(-1)?.kind !== 'group') pushBlank(rows)
-      rows.push(...currentRows(rec, qi, q, focused, bodyColumns))
+      rows.push(...currentRows(rec, qi, q, focused))
       pushBlank(rows)
       return
     }
@@ -217,8 +245,18 @@ export function layoutRows(rec: FormRecord, focused: string | null, bodyColumns 
   return rows
 }
 
-// 한 줄이 보이는 대로의 글. 크기를 재는 데만 쓴다.
-export function rowText(row: Row): string {
+// 감긴 편집기 글의 마지막 줄에 커서와 조합 글자 몫 2칸이 남지 않으면 엔진은 한 줄을 더 쓴다.
+function editorText(row: Extract<Row, { kind: 'editor' }>, bodyColumns: number): string {
+  const indent = ' '.repeat(EDITOR_INDENT)
+  const lines = wrapEditorText(row.text, bodyColumns)
+  if (lines.length === 0) return `${indent}${row.placeholder} ⏎ ${EDITOR_SUBMIT_LABEL}`
+  if (displayWidth(lines.at(-1)!) + 2 > editorWrapWidth(bodyColumns)) lines.push('')
+  return lines.map((line, i) => `${indent}${line}${i === 0 ? ` ⏎ ${EDITOR_SUBMIT_LABEL}` : ''}`).join('\n')
+}
+
+// 한 줄이 보이는 대로의 글. 크기를 재는 데만 쓴다. bodyColumns 는 편집기 글을 감을 본문
+// 폭이고, 없으면 80 으로 어림한다.
+export function rowText(row: Row, bodyColumns = 80): string {
   switch (row.kind) {
     case 'blank':
       return ''
@@ -243,9 +281,7 @@ export function rowText(row: Row): string {
     case 'answer':
       return `  ${ANSWER_LABEL}: ${row.text}`
     case 'editor':
-      return `${' '.repeat(EDITOR_INDENT)}${row.value === '' ? row.placeholder : row.value} ⏎ ${EDITOR_SUBMIT_LABEL}`
-    case 'spacer':
-      return '\n'.repeat(row.lines - 1)
+      return editorText(row, bodyColumns)
     case 'note':
       return `  ${row.hotkey}: ${row.text}`
     case 'nav':
@@ -290,17 +326,18 @@ const PROSE: Row['kind'][] = ['intro', 'detail', 'preview', 'help']
 // 패널이 바랄 크기. 세로는 지금 보이는 줄이 bodyColumns 에서 감기는 줄 수에, 커서 질문의
 // 가장 긴 미리보기 자리를 더한 것(포커스가 옮겨 미리보기가 나타나도 크기가 흔들리지
 // 않게). 가로는 산문이 아닌 가장 긴 줄에 맞추되 60~100칸 안이다. 둘 다 요청일 뿐 결정은
-// 엔진이 한다. 엔진은 Input 을 한 줄로 그리므로 편집기 줄은 글 길이와 상관없이 한 줄로
-// 세고, 넘친 몫은 그 뒤의 빈 줄(spacer)만 센다.
+// 엔진이 한다. 포커스가 있는 입력칸은 엔진이 감긴 대로 여러 줄로 그리므로 편집기 줄도
+// 감긴 줄 수로 센다. 포커스 없이 줄을 만들어 위 줄의 전체 글까지 함께 세므로, 입력칸에
+// 포커스가 있어 위 줄이 라벨만인 동안에는 남는 쪽이다.
 export function paneSize(rec: FormRecord, bodyColumns: number): { rows: number; columns: number } {
-  const rows = layoutRows(rec, null, bodyColumns)
+  const rows = layoutRows(rec, null)
   const widest = rows
     .filter(r => !PROSE.includes(r.kind))
-    .reduce((w, r) => Math.max(w, ...rowText(r).split('\n').map(displayWidth)), 0)
+    .reduce((w, r) => Math.max(w, ...rowText(r, bodyColumns).split('\n').map(displayWidth)), 0)
   const columns = Math.min(COLUMNS_MAX, Math.max(COLUMNS_MIN, widest + 4))
   const width = Math.max(20, bodyColumns)
   const lines = (s: string) => s.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(displayWidth(line) / width)), 0)
-  let height = rows.reduce((n, r) => n + (r.kind === 'editor' ? 1 : lines(rowText(r))), 0)
+  let height = rows.reduce((n, r) => n + lines(rowText(r, bodyColumns)), 0)
   const q = questionOf(rec, rec.cursor)
   const previews = (q?.options ?? []).map(o => (o.preview === undefined ? 0 : lines(o.preview)))
   height += Math.max(0, ...previews)

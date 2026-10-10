@@ -127,14 +127,6 @@ export function drawForm(el: FormElements, rows: Row[], ids: string[], on: FormH
             />
           </Box>
         )
-      case 'spacer':
-        return (
-          <Box flexDirection="column">
-            {Array.from({ length: row.lines }, () => (
-              <Text> </Text>
-            ))}
-          </Box>
-        )
       case 'note':
         return (
           <Box paddingLeft={2}>
