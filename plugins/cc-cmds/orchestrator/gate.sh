@@ -14849,6 +14849,66 @@ gate_dest_tails() {
   return 0
 }
 
+gate_opt_attached_values() {
+  # gate_opt_attached_values <word> — every value a single-dash option cluster
+  # can carry glued to it, in the global array `GATE_OPT_VALUES`: the text after
+  # each leading option letter (`-t<dir>` → `<dir>`, `-Rt<dir>` → `t<dir>` and
+  # `<dir>`). Empty for a word that is not a single-dash cluster.
+  #
+  # AN OPTION'S GLUED VALUE IS A DESTINATION TOO. The ancestor arms skipped every
+  # word starting with `-`, and `gate_arg_option_value` reads only the `-x=<v>`
+  # form, so GNU `gcp -R <tree> -t<state>/cc-cmds` merged a replacement tree over
+  # the pacing root with nothing looking at its target. Attaching an option's
+  # value is the standard utility syntax, and getopt lets letters cluster in
+  # front of it, so every split after a leading letter is a candidate; a reading
+  # that names nothing resolves to a path no guard protects.
+  local w="$1"
+  GATE_OPT_VALUES=()
+  case "$w" in
+    --*|-|[!-]*|'') return 0 ;;
+  esac
+  w=${w#-}
+  while [ -n "$w" ]; do
+    case "$w" in
+      [A-Za-z]*) ;;
+      *) break ;;
+    esac
+    w=${w#?}
+    [ -n "$w" ] && GATE_OPT_VALUES[${#GATE_OPT_VALUES[@]}]=$w
+  done
+  return 0
+}
+
+gate_pace_tail_may_hit() {
+  # gate_pace_tail_may_hit <path> <base> <root name>... — rc 0 when the path
+  # can lie at or under the pacing root and has to be resolved, rc 1 when it
+  # cannot. Forks nothing.
+  #
+  # RESOLVING EVERY TAIL WAS THE COST. `gate_dest_tails` hands over one
+  # candidate per `/` in a word, and each went through four command
+  # substitutions before any comparison — measured, the pacing guard went from
+  # 0.07 to 0.19 seconds a call on every write-graded act of every stage. A path
+  # whose spelling holds none of the root's final names (compared case-blind)
+  # can still land under the root only through a link somewhere on its way, so
+  # a path that carries neither is answered here without a fork. The caller
+  # skips this when its base itself lies under the root, because there a bare
+  # name is a path under the root that spells nothing.
+  local v="$1" base="$2" p n; shift 2
+  for n in "$@"; do
+    [ -n "$n" ] || continue
+    if gate_nocase_contains "$v" "$n"; then return 0; fi
+  done
+  case "$v" in
+    /*) p=$v ;;
+    *) p="$base/$v" ;;
+  esac
+  while [ -n "$p" ] && [ "$p" != "/" ]; do
+    if [ -L "$p" ]; then return 0; fi
+    p=${p%/*}
+  done
+  return 1
+}
+
 gate_argv0_wraps() {
   # gate_argv0_wraps <argv0> — rc 0 when argv0 is an interpreter or a wrapper
   # whose later arguments are program text: the list the CLAUDE.md slot guard
@@ -16135,7 +16195,7 @@ gate_sibling_record_write_guard() {
   # destination (`cp -R ./pipeline-run <docs>/`) is not refused here; `docs/`
   # is a directory ordinary writes name.
   local mdir="$1" mdirp="$2"; shift 2
-  local gdir='' gdirp='' a b ap ad adp argv0 joinedn gdirn gdirpn cwd i x
+  local gdir='' gdirp='' a b ap ad argv0 joinedn gdirn gdirpn cwd i x
   local rec to_mdir=0 to_gdir=0 has_rec=0 has_md=0
   local -a cand base_c raw
   if [ -n "${GRANT:-}" ]; then
@@ -16233,13 +16293,17 @@ gate_sibling_record_write_guard() {
       gate_nocase_glob "$a" '*/*.md' || continue
       [ -n "$gdir" ] || continue
     fi
-    ad=$(dirname "$ap")
+    # THE PARENT IS COMPARED BY IDENTITY WITHOUT RESOLVING IT. `-ef` follows
+    # every link and folds case the way the kernel does, so it answers what a
+    # `cd -P` and a string compare answered, and neither it nor the parameter
+    # expansion forks — every `.md` tail of every word reaches this line.
+    ad=${ap%/*}
+    [ -n "$ad" ] || continue
     [ -d "$ad" ] || continue
-    adp=$(cd -P -- "$ad" 2>/dev/null && pwd -P) || continue
-    if [ "$rec" = 1 ] && { [ "$adp" = "$mdirp" ] || [ "$adp" -ef "$mdirp" ]; }; then
+    if [ "$rec" = 1 ] && [ "$ad" -ef "$mdirp" ]; then
       gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
-    if [ -n "$gdirp" ] && { [ "$adp" = "$gdirp" ] || [ "$adp" -ef "$gdirp" ]; }; then
+    if [ -n "$gdirp" ] && [ "$ad" -ef "$gdirp" ]; then
       gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
   done
@@ -16348,13 +16412,15 @@ gate_pace_write_guard() {
   # <state>/cc-cmds/`), which merges a whole replacement tree over the root
   # and is now refused by the run directory guard's ancestor predicate, on the
   # same terms: a whole element or an option value, and an interpreter's words.
+  # The value glued to a single-dash option is one of them (`gcp -R ./pace
+  # -t<state>/cc-cmds`), read apart by `gate_opt_attached_values`.
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   case "$graded" in
     읽기) return 0 ;;
   esac
-  local r1 r2 r1p r2p n a v an ap joinedn base first mode i ov anc
-  local -a prim
+  local r1 r2 r1p r2p n a v an ap joinedn base first mode i ov gcwd eb inroot rc
+  local -a prim names
   r1=$(gate_path_spelling "$(gate_lexical_abs "$(gate_pace_root)")")
   r2=''
   if declare -F run_pace_root >/dev/null 2>&1; then
@@ -16364,6 +16430,18 @@ gate_pace_write_guard() {
   r2p=''
   [ -n "$r2" ] && r2p=$(gate_path_spelling "$(gate_real_prefix "$r2")")
   base="${GATE_ACT_CWD:-}"
+  # Once per call, for the fork-free filter of the at-or-under arm: the
+  # directory a relative path resolves from, whether that directory itself lies
+  # under the root, and the root's final name in each spelling.
+  gcwd=$(gate_grade_cwd)
+  eb="${base:-$gcwd}"
+  inroot=0
+  if gate_pace_path_hit "$eb" "$base" "$r1" "$r1p" "$r2" "$r2p"; then inroot=1; fi
+  names=()
+  for n in "$r1" "$r1p" "$r2" "$r2p"; do
+    case "$n" in ''|'/'|'.') continue ;; esac
+    names[${#names[@]}]=${n##*/}
+  done
 
   mode=""
   if gate_argv0_wraps "$1"; then
@@ -16382,22 +16460,19 @@ gate_pace_write_guard() {
     # argv0 names what runs, not what is written — the run directory guard's
     # reasoning at the same place.
     if [ "$first" = 1 ]; then first=0; continue; fi
-    ov=$(gate_arg_option_value "$a" 2>/dev/null) || ov=""
+    ov=""
+    case "$a" in
+      -*=*) ov=$(gate_arg_option_value "$a" 2>/dev/null) || ov="" ;;
+    esac
     # The ancestor arm: a whole element and an option value, as the run
-    # directory guard takes them. A word that is an option is not a path.
+    # directory guard takes them, and an option's glued value.
     prim=()
     if ! gate_arg_is_compound "$a"; then prim[${#prim[@]}]=$a; fi
     if [ -n "$ov" ]; then prim[${#prim[@]}]=$ov; fi
     for v in ${prim[@]+"${prim[@]}"}; do
-      case "$v" in -*) continue ;; esac
-      anc=0
-      gate_word_is_at_or_above "$v" "$r1" "$r1p" "$r2" "$r2p" || anc=$?
-      if [ "$anc" = "$GATE_LEAF_UNRESOLVED" ]; then
-        gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
-      fi
-      if [ "$anc" = 0 ]; then
-        gate_pace_write_refuse "$a" "$r1"; return "$GATE_EXIT_RULE"
-      fi
+      rc=0
+      gate_pace_ancestor_guard "$a" "$v" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+      [ "$rc" = 0 ] || return "$rc"
     done
     if gate_arg_is_compound "$a"; then
       gate_arg_words "$a" "$mode" \
@@ -16409,14 +16484,9 @@ gate_pace_write_guard() {
         # An interpreter's words are destinations, so an ancestor among them
         # is refused as well — the run directory guard's word arm.
         [ "$mode" = bare ] || continue
-        anc=0
-        gate_word_is_at_or_above "$v" "$r1" "$r1p" "$r2" "$r2p" || anc=$?
-        if [ "$anc" = "$GATE_LEAF_UNRESOLVED" ]; then
-          gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
-        fi
-        if [ "$anc" = 0 ]; then
-          gate_pace_write_refuse "$a" "$r1"; return "$GATE_EXIT_RULE"
-        fi
+        rc=0
+        gate_pace_ancestor_guard "$a" "$v" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+        [ "$rc" = 0 ] || return "$rc"
       done
     fi
     # The at-or-under arm: every destination each primary spelling can carry.
@@ -16426,11 +16496,69 @@ gate_pace_write_guard() {
       while [ "$i" -lt "${#GATE_DEST_TAILS[@]}" ]; do
         n=${GATE_DEST_TAILS[$i]}; i=$((i + 1))
         [ -n "$n" ] || continue
+        if [ "$inroot" = 0 ] \
+           && ! gate_pace_tail_may_hit "$n" "$eb" ${names[@]+"${names[@]}"}; then
+          continue
+        fi
         if gate_pace_path_hit "$n" "$base" "$r1" "$r1p" "$r2" "$r2p"; then
           gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
         fi
       done
     done
+  done
+  return 0
+}
+
+gate_pace_ancestor_guard() {
+  # gate_pace_ancestor_guard <element> <word> <grading dir> <root spelling>... —
+  # `GATE_EXIT_RULE`, with the refusal said, when the word or a value glued to
+  # it as an option is the pacing root or one of its ancestors; 0 otherwise.
+  #
+  # The ancestor arm of `gate_pace_write_guard`, for a whole element, an
+  # option's `=` value and an interpreter's words alike. A single-dash cluster
+  # is read through `gate_opt_attached_values`, so `-t<state>/cc-cmds` is
+  # judged by its directory; a long option is judged by its `=` value and is
+  # not a path otherwise.
+  #
+  # A NAME THAT CANNOT BE AN ANCESTOR IS NOT RESOLVED. Resolving forks four
+  # times, so a word without a `/` goes through only when it is `.`, `..`, a
+  # name that exists in the grading directory, or one component of a root
+  # spelling — the last because the root and its parents need not exist yet,
+  # and `cp -R x cc-cmds` from the state directory creates the tree the root
+  # will be read from.
+  local a="$1" v="$2" g="$3" w r hit anc; shift 3
+  local -a cs
+  case "$v" in
+    ''|-|--) return 0 ;;
+    --*=*) cs=("${v#*=}") ;;
+    --*) return 0 ;;
+    -?*)
+      gate_opt_attached_values "$v"
+      cs=(${GATE_OPT_VALUES[@]+"${GATE_OPT_VALUES[@]}"}) ;;
+    *) cs=("$v") ;;
+  esac
+  for w in ${cs[@]+"${cs[@]}"}; do
+    case "$w" in
+      */*|.|..) ;;
+      '') continue ;;
+      *)
+        if ! gate_arg_bare_name "$w" "$g"; then
+          hit=0
+          for r in "$@"; do
+            [ -n "$r" ] || continue
+            if gate_nocase_contains "$r/" "/$w/"; then hit=1; break; fi
+          done
+          [ "$hit" = 1 ] || continue
+        fi ;;
+    esac
+    anc=0
+    gate_word_is_at_or_above "$w" "$@" || anc=$?
+    if [ "$anc" = "$GATE_LEAF_UNRESOLVED" ]; then
+      gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+    fi
+    if [ "$anc" = 0 ]; then
+      gate_pace_write_refuse "$a" "$1"; return "$GATE_EXIT_RULE"
+    fi
   done
   return 0
 }

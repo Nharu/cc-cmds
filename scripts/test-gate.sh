@@ -14915,6 +14915,19 @@ pace_rows "대소문자 변형 상태 디렉터리" cp "$WORK/r3x" "$STATE_CONE/
 pace_rows "루트의 상위 디렉터리 목적지" cp -R "$WORK/r3x" "$STATE_CONE/cc-cmds/"
 pace_rows "루트의 상위 디렉터리, 옵션 값" rsync -a "$WORK/r3x" "--dest=$STATE_CONE/cc-cmds"
 pace_rows "인터프리터 속 상위 디렉터리" bash -c "cp -R x $STATE_CONE/cc-cmds"
+# An ancestor glued to a single-dash option, as GNU `cp`/`mv` take `-t`: the
+# ancestor arm skipped every word starting with `-`, so these merged a tree
+# over the root.
+pace_rows "붙여 쓴 -t 의 상위 디렉터리" cp -R "$WORK/r3x" "-t$STATE_CONE/cc-cmds"
+pace_rows "옵션 묶음에 붙은 -t 의 상위 디렉터리" cp "-Rt$STATE_CONE/cc-cmds" "$WORK/r3x"
+pace_rows "mv 의 붙여 쓴 -t" mv "-t$STATE_CONE/cc-cmds" "$WORK/r3x"
+pace_rows "인터프리터 속 붙여 쓴 -t" bash -c "cp -R x -t$STATE_CONE/cc-cmds"
+# A path that spells none of the root's names reaches it through a link, which
+# is what the fork-free filter in front of the resolution has to let through.
+# The physical spelling of the link's directory, so no link above it does that.
+ln -s "$PACE_N" "$WORK/plk"
+pace_rows "이름 없이 링크로 닿는 루트" cp "$WORK/r3x" "$(cd "$WORK" && pwd -P)/plk/new.jsonl"
+rm -f "$WORK/plk"
 # A word the split cannot resolve is refused, not guessed: the arm the word
 # split brought with it, pinned so that deleting it fails here.
 pace_iw=$(pace_alone dd "of=~-/backlog.jsonl")
@@ -14926,7 +14939,8 @@ esac
 # The neighbours of the refused rows pass: the same glued spellings beside the
 # root, and the root's sibling directory under the same parent.
 for spell_row in "sed -n w$PACE_N-old/at /dev/null" "sort -o$PACE_N-old/at /dev/null" \
-                 "cp $WORK/r3x $STATE_CONE/cc-cmds/run-old"; do
+                 "cp $WORK/r3x $STATE_CONE/cc-cmds/run-old" \
+                 "cp -R $WORK/r3x -t$STATE_CONE/cc-cmds/run-old"; do
   read -r -a spell_argv <<< "$spell_row"
   pace_iw=$(pace_alone "${spell_argv[@]}")
   case "$pace_iw" in
