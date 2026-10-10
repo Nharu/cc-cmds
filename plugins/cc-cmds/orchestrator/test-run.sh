@@ -4124,6 +4124,26 @@ if GATE_ACT=머지 GATE_SEGMENT=segL GATE_LEDGER="$LEDGER" /bin/sh "$script_dir/
 else
   ok "빈 계보는 통과가 아니라 거절이다 (필드가 비면 머지가 매번 막힌다)"
 fi
+# 라우터 경로의 행은 `스테이지=` 에 세그먼트 id 를 싣는다. 세그먼트 이름이 고정 그래프의
+# 리뷰 번호와 같은 `S5` 여도 구현 행 하나가 리뷰 행으로 집히면 안 된다 — 집히면 같은
+# 세션을 두 번 읽어 리뷰가 없는데도 그 세그먼트의 머지 등급 행위가 전부 거절된다.
+: > "$LEDGER"
+ledger_row 'stage-result' "세그먼트=S5" "스테이지=S5" "종류=implement" "종료 코드=0" \
+  "아티팩트 술어 결과=0" "세션 id=SID-IMPL" "부모=SID-SHIFT" "종단 부류=정상 완료"
+if GATE_ACT=머지 GATE_SEGMENT=S5 GATE_LEDGER="$LEDGER" /bin/sh "$script_dir/rules/구현-리뷰-분리.sh" 2>/dev/null; then
+  ok "세그먼트 이름이 S5 여도 라우터 경로의 구현 행은 리뷰 행으로 집히지 않는다"
+else
+  bad "세션 계보" "S5 이름의 구현 행 하나를 리뷰로도 읽어 자기 리뷰로 거절한다: $( GATE_ACT=머지 GATE_SEGMENT=S5 GATE_LEDGER="$LEDGER" /bin/sh "$script_dir/rules/구현-리뷰-분리.sh" 2>&1 | tail -1 )"
+fi
+# 같은 세그먼트에 리뷰 행이 실리면 계보 대조는 그대로 돈다 — 위 통과가 폴백을 꺼서 규칙을
+# 공허하게 만든 결과가 아님을 가른다.
+ledger_row 'stage-result' "세그먼트=S5" "스테이지=S5" "종류=review" "종료 코드=0" \
+  "아티팩트 술어 결과=0" "세션 id=SID-REV" "부모=SID-IMPL" "종단 부류=정상 완료"
+if GATE_ACT=머지 GATE_SEGMENT=S5 GATE_LEDGER="$LEDGER" /bin/sh "$script_dir/rules/구현-리뷰-분리.sh" 2>/dev/null; then
+  bad "세션 계보" "구현 세션을 부모로 둔 리뷰를 통과시킨다"
+else
+  ok "라우터 경로에서도 구현 세션을 부모로 둔 리뷰는 거절된다"
+fi
 
 # --- 25h 게이트의 스테이지 런처도 같은 규칙으로 연다 ------------------------
 # 스테이지 스트림의 작성자가 둘인데 위 스트림 단언 둘은 `run.sh` 만 본다. 라우터 경로에서

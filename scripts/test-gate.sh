@@ -28578,7 +28578,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 85. A segment an earlier run cut is adopted through the manifest
-# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest | needs: 15g | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다 ---
+# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest | needs: 15g | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다 ---
 #
 # Segment names derive from the run id, so a run could not continue a segment
 # an earlier run left unmerged: its branch, worktree and pull request were out
@@ -28652,11 +28652,34 @@ case "$msg" in
   *) bad "85 브랜치 문면" "$msg" ;;
 esac
 
+# A BRANCH A PERSON MADE OUTSIDE ANY RUN. `출처 런=-` names no earlier run, so
+# the planning act reads the tree and the branch and no ledger: without the
+# marker the same tree is refused for the missing origin ledger above.
+WT85X="$(dirname "$WT")/$(basename "$WT")-run-R85X-SA"
+( cd "$WT" && git worktree add -q -b "feat/outside-85" "$WT85X" HEAD ) >/dev/null 2>&1
+run85 R85X "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=feat/outside-85 | 워크트리=$WT85X | 출처 런=- | PR=81"
+check "85: 런 밖 브랜치의 슬라이싱 은 입양 - 와 그 PR 을 낸다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R85X.md" 2>/dev/null \
+     | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["브랜치"], .["워크트리"], .["입양"], .["PR"]] | join("|")' 2>/dev/null)" \
+  "feat/outside-85|$WT85X|-|81"
+g15_plan act R85X SA 상태=계획됨 "워크트리=$WT85X"
+check "85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다" "$rc" "0"
+case "$msg" in
+  *"출처 런"*) bad "85: 런 밖 입양은 출처 런을 읽지 않는다" "$msg" ;;
+  *) ok "85: 런 밖 입양은 출처 런을 읽지 않는다" ;;
+esac
+check "85: 런 밖 입양 계획은 중단 답을 들여오지 않는다" \
+  "$( { grep -F '`중단 답`' "$WT/docs/pipeline-run/R85X.md" 2>/dev/null || true; } | grep -c . || true)" "0"
+run85 R85Y "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=feat/other-85 | 워크트리=$WT85X | 출처 런=- | PR=81"
+g15_plan act R85Y SA 상태=계획됨 "워크트리=$WT85X"
+check "85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다" "$rc" "3"
+
 n85=0
 for bad85 in \
   "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=$SRC85" \
   "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT | 출처 런=$SRC85 | PR=77" \
-  "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=R85C | PR=77"; do
+  "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=R85C | PR=77" \
+  "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=외부 | PR=77"; do
   n85=$((n85 + 1))
   run85 R85C "$bad85"
   snap85 R85C
