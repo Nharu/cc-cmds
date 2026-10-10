@@ -123,7 +123,7 @@ export const statusLine = (answered: number, total: number) => `질문지 대기
 export const contextLine = (id: string) => `질문지 ${id} 가 열려 있습니다(답 대기). 이 입력은 질문지의 답이 아닙니다. 답은 질문지 제출로만 옵니다.`
 export const STAMP = '직접 입력된 문면입니다. 질문지 제출이 아닙니다.'
 export const NO_FORM_TOAST = '열린 질문지가 없습니다.'
-export const HELP_LINE = '1-9 고르기 · 0 기타 · m 메모 · n 다음 · p 이전 · Tab 이동 · Enter 확정 · Esc 프롬프트로'
+export const HELP_LINE = '1-9 고르기 · 0 기타 · m 메모 · n 다음 · p 이전 · ↑↓ Tab 이동 · Enter 확정 · Esc 프롬프트로'
 export const TEXT_PLACEHOLDER = '답을 입력하세요'
 export const OTHER_LABEL = '기타'
 export const OTHER_PLACEHOLDER = '직접 입력'

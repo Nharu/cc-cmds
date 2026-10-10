@@ -8,14 +8,18 @@ import {
   EDITOR_SUBMIT_WIDTH,
   ROWS_MAX,
   answerSummary,
+  arrowTarget,
   displayWidth,
+  focusStops,
   landingKey,
   layoutRows,
   paneSize,
+  revealKeys,
   rowText,
 } from './layout'
 import type { Row } from './layout'
 import type { Draft } from './bundle'
+import { HELP_LINE } from './spec'
 import type { FormInput, FormQuestion } from './spec'
 import { jump, openEditor, openRecord, typeText } from './transitions'
 
@@ -88,6 +92,95 @@ describe('줄 모형', () => {
     expect(layoutRows(r, 'q1-o1').some(x => x.kind === 'preview' && x.text === '가 미리보기')).toBe(true)
     expect(layoutRows(r, 'q1-o2').some(x => x.kind === 'preview')).toBe(false)
     expect(layoutRows(r, null).some(x => x.kind === 'preview')).toBe(false)
+  })
+})
+
+describe('정지점', () => {
+  // 질문 둘(하나 펼침), 메모·기타 허용.
+  const pair: FormInput = { title: '둘', questions: [single, text] }
+  const r2 = () => openRecord({ id: 'f-00000007', toolUseId: 'tu', form: pair, drafts: {}, sessionId: 'sid', now: 0 })
+
+  test('focusStops: 접힌 줄·선택지·기타·메모·이전/다음·제출·취소 key 가 화면 순서로, 정지점이 아닌 줄은 없다', () => {
+    expect(focusStops(layoutRows(r2(), null))).toEqual(['q1-o1', 'q1-o2', 'q1-other', 'q1-note', 'next', 'q2', 'submit', 'cancel'])
+    expect(focusStops(layoutRows(jump(r2(), 't'), null))).toEqual(['q1', 'q2-other-input-1', 'q2-note', 'prev', 'next', 'submit', 'cancel'])
+    // 미리보기 줄이 생겨도 정지점은 그대로다.
+    expect(focusStops(layoutRows(r2(), 'q1-o1'))).toEqual(focusStops(layoutRows(r2(), null)))
+  })
+
+  test('focusStops: 입력칸이 열린 기록에서는 그 입력칸 key 가 제자리에 든다', () => {
+    expect(focusStops(layoutRows(openEditor(r2(), 's', 'other'), null))).toEqual([
+      'q1-o1',
+      'q1-o2',
+      'q1-other',
+      'q1-other-input-1',
+      'q1-note',
+      'next',
+      'q2',
+      'submit',
+      'cancel',
+    ])
+    expect(focusStops(layoutRows(openEditor(r2(), 's', 'note'), null))).toContain('q1-note-input-1')
+  })
+
+  describe('arrowTarget', () => {
+    // 사람의 키보드 화살표 한 줄: pointer 없음, 본문 10줄, 전체 50줄.
+    const arrow = (by: number, extra: Record<string, unknown> = {}) => ({ by, bodyRows: 10, contentRows: 50, origin: { kind: 'person' }, ...extra })
+    const rows = () => layoutRows(r2(), null)
+
+    test('by: 1 은 다음 정지점, by: -1 은 이전 정지점', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(1))).toBe('q1-o2')
+      expect(arrowTarget(rows(), 'q1-note', arrow(1))).toBe('next')
+      expect(arrowTarget(rows(), 'q1-o2', arrow(-1))).toBe('q1-o1')
+      expect(arrowTarget(rows(), 'submit', arrow(-1))).toBe('q2')
+    })
+
+    test('첫 정지점에서 by: -1, 마지막 정지점(취소)에서 by: 1 은 넘김', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(-1))).toBeNull()
+      expect(arrowTarget(rows(), 'cancel', arrow(1))).toBeNull()
+    })
+
+    test('by: 2 는 두 칸 옮기고 끝에서 멈춘다', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(2))).toBe('q1-other')
+      expect(arrowTarget(rows(), 'submit', arrow(2))).toBe('cancel')
+      expect(arrowTarget(rows(), 'q1-o2', arrow(-2))).toBe('q1-o1')
+    })
+
+    test('포커스가 목록에 없으면 by: 1 은 첫 정지점, by: -1 은 마지막 정지점', () => {
+      expect(arrowTarget(rows(), null, arrow(1))).toBe('q1-o1')
+      expect(arrowTarget(rows(), null, arrow(-1))).toBe('cancel')
+      expect(arrowTarget(rows(), 'q9-o1', arrow(1))).toBe('q1-o1')
+      expect(arrowTarget(rows(), 'q9-o1', arrow(-1))).toBe('cancel')
+    })
+
+    test('휠·페이지 키·Home/End·by: 0·플러그인 출처·정지점 없는 줄 모형은 넘김', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(1, { pointer: { column: 3, row: 4 } }))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(10))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o2', arrow(-10))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(50))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(0))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(1, { origin: { kind: 'plugin' } }))).toBeNull()
+      const bare: Row[] = [{ kind: 'title', text: '빈', counter: '' }, { kind: 'help', text: HELP_LINE }]
+      expect(arrowTarget(bare, null, arrow(1))).toBeNull()
+    })
+  })
+
+  test('revealKeys: 선택지는 -block 상자, 펼친 질문의 첫 정지점은 머리말 다음 대상, 그 밖은 key 자체', () => {
+    const rows = layoutRows(r2(), null)
+    expect(revealKeys(rows, 'q1-o1')).toEqual(['q1-head', 'q1-o1-block'])
+    expect(revealKeys(rows, 'q1-o2')).toEqual(['q1-o2-block'])
+    expect(revealKeys(rows, 'q1-note')).toEqual(['q1-note'])
+    expect(revealKeys(rows, 'submit')).toEqual(['submit'])
+    const onText = layoutRows(jump(r2(), 't'), null)
+    expect(revealKeys(onText, 'q2-other-input-1')).toEqual(['q2-head', 'q2-other-input-1'])
+    expect(revealKeys(onText, 'q1')).toEqual(['q1'])
+    const answered = layoutRows(jump(typeText(r2(), 't', 'other', '답'), 't'), null)
+    expect(revealKeys(answered, 'q2-answer')).toEqual(['q2-head', 'q2-answer'])
+  })
+
+  test('도움말 줄은 「↑↓ Tab 이동」을 담고 「· Tab 이동 ·」는 더 없다', () => {
+    expect(HELP_LINE).toContain('↑↓ Tab 이동')
+    expect(HELP_LINE).not.toContain('· Tab 이동 ·')
+    expect(layoutRows(r2(), null).at(-1)).toEqual({ kind: 'help', text: HELP_LINE })
   })
 })
 

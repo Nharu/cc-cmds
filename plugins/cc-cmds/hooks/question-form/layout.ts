@@ -217,6 +217,76 @@ export function layoutRows(rec: FormRecord, focused: string | null, bodyColumns 
   return rows
 }
 
+// 한 줄이 그리는 Button·Input 의 key. render.tsx 의 drawForm 이 다는 key 와 같아야 한다.
+function stopsOf(row: Row): string[] {
+  switch (row.kind) {
+    case 'folded':
+    case 'option':
+    case 'other':
+    case 'answer':
+    case 'editor':
+    case 'note':
+      return [row.key]
+    case 'nav':
+      return [...(row.prev ? [PREV_KEY] : []), ...(row.next !== 'none' ? [NEXT_KEY] : [])]
+    case 'actions':
+      return [SUBMIT_KEY, CANCEL_KEY]
+    default:
+      return []
+  }
+}
+
+// ↑/↓ 가 거치는 정지점: 패널에 그려지는 Button·Input 의 key 를 화면 순서로. Tab 과 같다.
+export const focusStops = (rows: Row[]): string[] => rows.flatMap(stopsOf)
+
+// 보이게 하기의 대상 상자 key. 그리기와 보이게 하기가 같은 함수를 쓴다.
+export const blockKey = (key: string) => `${key}-block`
+export const headKey = (n: number) => `q${n}-head`
+
+// 펼친 질문의 첫 정지점과 그 질문 번호. 펼친 질문이 없으면 undefined.
+export function firstStopOfCurrent(rows: Row[]): { key: string; n: number } | undefined {
+  const at = rows.findIndex(r => r.kind === 'current')
+  const head = rows[at]
+  if (!head || head.kind !== 'current') return undefined
+  const key = focusStops(rows.slice(at + 1))[0]
+  return key === undefined ? undefined : { key, n: head.n }
+}
+
+// key 로 포커스가 옮겨 갔을 때 차례대로 보이게 할 대상. 선택지는 설명까지 담은 바깥 상자를,
+// 펼친 질문의 첫 정지점이면 머리말을 먼저, 항목을 나중에 — 창이 둘을 함께 담지 못하면
+// 나중에 부른 항목이 이긴다.
+export function revealKeys(rows: Row[], key: string): string[] {
+  const row = rows.find(r => 'key' in r && r.key === key)
+  const target = row?.kind === 'option' ? blockKey(key) : key
+  const first = firstStopOfCurrent(rows)
+  return first?.key === key ? [headKey(first.n), target] : [target]
+}
+
+// 지금 포커스에서 by 칸 옮긴 정지점. 양 끝에서 멈추고 돌지 않는다. 포커스가 목록에 없으면
+// 아래로는 첫 정지점, 위로는 마지막 정지점이다. stops 는 비어 있지 않아야 한다.
+export function stepStop(stops: string[], focused: string | null, by: number): string {
+  const at = focused === null ? -1 : stops.indexOf(focused)
+  if (at < 0) return (by > 0 ? stops[0] : stops[stops.length - 1]) as string
+  return stops[Math.min(stops.length - 1, Math.max(0, at + by))] as string
+}
+
+// ui.scroll 입력 가운데 가로채기 판단에 쓰는 필드.
+export type ArrowInput = { by: number; bodyRows: number; origin?: { kind: string }; pointer?: unknown }
+
+// ↑/↓ 가로채기가 포커스를 옮길 정지점. null 이면 엔진의 스크롤로 넘긴다. 사람의 키보드 한
+// 줄 이동만 가로챈다 — 휠에는 pointer 가 붙고, 페이지 키는 bodyRows, Home/End 는
+// contentRows 만큼이다. 이미 끝에 있어 옮길 곳이 지금 자리와 같으면 넘겨, 포커스는 멈춘
+// 채 남은 줄을 볼 수 있게 한다.
+export function arrowTarget(rows: Row[], focused: string | null, input: ArrowInput): string | null {
+  if (input.origin?.kind !== 'person' || input.pointer !== undefined) return null
+  const step = Math.abs(input.by)
+  if (!(step > 0 && step < input.bodyRows)) return null
+  const stops = focusStops(rows)
+  if (stops.length === 0) return null
+  const target = stepStop(stops, focused, input.by)
+  return target === focused ? null : target
+}
+
 // 한 줄이 보이는 대로의 글. 크기를 재는 데만 쓴다.
 export function rowText(row: Row): string {
   switch (row.kind) {

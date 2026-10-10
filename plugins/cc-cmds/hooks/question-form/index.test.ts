@@ -1,7 +1,7 @@
 // 질문지 서브 mod 의 등록 술어·가용성 순서·BUSY·갈아 끼우기·/clear·되돌리기·배너·미배치.
 import { describe, expect, test } from 'claude-code/testing'
 
-import { MARKS, call, formIdOf, mount, prompt, reopenCommand, start, twoQuestions, world } from './kit'
+import { MARKS, call, focusEvent, formIdOf, mount, prompt, reopenCommand, scroll, start, twoQuestions, world } from './kit'
 import { contextLine } from './spec'
 import type { FormInput } from './spec'
 import type { Drafts } from './bundle'
@@ -19,6 +19,17 @@ const storedForm = (id: string, drafts: Drafts = {}, patch: (f: FormInput) => vo
 }
 const draft = (other = '', note = '', selected: string[] = []) => ({ selected, other, note })
 const json = (text: string) => JSON.parse(text.split('\n').slice(2, -1).join('\n'))
+// mod 의 포커스 값. 시험의 $ 에는 상태가 없으므로, 첫 $ 호출 전에 그 값의 쓰기를 훅으로
+// 지켜보며 마지막으로 적힌 값을 든다(쓰기 전에는 null).
+const watchFocus = (on: any) => {
+  const seen = { value: null as string | null }
+  on('state.set', { plugin: 'cc-cmds', key: 'questionForm.focusedElement' }, (_$: any, e: any, next: any) => {
+    seen.value = e.value
+
+    return next(e)
+  })
+  return seen
+}
 
 describe('등록 술어', () => {
   test('대화형이고 표지가 없으면 도구와 /question-form 을 등록한다', async ($, on) => {
@@ -353,6 +364,96 @@ describe('도장', () => {
     expect(w.submits.at(-1)!.context).toContain(STAMP)
     await prompt($, '머리줄 없는 말', { kind: 'channel' })
     expect(w.submits.at(-1)!.context).not.toContain(STAMP)
+  })
+})
+
+// 키트는 이 mod 자신이 부른 $.ui.focus 를 시험의 스텁에 보내지 않고 거절하므로, 가로채기는
+// 키트에서 늘 실패 경로를 지난다. 무엇을 가로채 어디로 옮길지는 layout 의 arrowTarget
+// 시험이 맡고, 여기서는 엔진 스크롤로 넘어간 입력과 포커스 값만 본다.
+describe('↑/↓ 가로채기(ui.scroll) — 키트에서의 실패 경로', () => {
+  // 열면 포커스 값은 착지 q1-o1 이고, 그 미리보기가 그려진다.
+  const opened = async ($: any, on: any) => {
+    const focus = watchFocus(on)
+    const kit = world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    return { ...kit, ui, focus }
+  }
+
+  test('열린 질문지에 사람의 화살표 by 1 을 흘리면 엔진 스크롤로 넘어가고 포커스 값은 그대로, 던지지 않는다', async ($, on) => {
+    const { w, ui, focus } = await opened($, on)
+    expect(focus.value).toBe('q1-o1')
+    const r = await scroll($, 1)
+    expect(r.deny).toBeUndefined()
+    expect(w.engineScrolls).toEqual([{ by: 1, origin: { kind: 'person' }, pointer: undefined }])
+    expect(focus.value).toBe('q1-o1')
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeUndefined()
+  })
+
+  test('열린 기록이 없을 때의 같은 입력도 엔진 스크롤로 넘어간다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    await scroll($, 1)
+    expect(w.engineScrolls.map(x => x.by)).toEqual([1])
+  })
+
+  test('휠(pointer)·페이지 키·Home/End(by ≥ bodyRows)·플러그인 출처는 엔진 스크롤로 넘어간다', async ($, on) => {
+    const { w, focus } = await opened($, on)
+    await scroll($, 1, { pointer: { column: 3, row: 2 } })
+    await scroll($, 10)
+    await scroll($, -50)
+    await scroll($, 1, { origin: { kind: 'plugin', name: 'other' } })
+    expect(w.engineScrolls.map(x => x.by)).toEqual([1, 10, -50, 1])
+    expect(focus.value).toBe('q1-o1')
+  })
+})
+
+describe('포커스 값 맞추기·비우기', () => {
+  test('앞 질문지의 cancel 이 남은 채 새로 열면 새 기록의 착지 key 가 된다', async ($, on) => {
+    const focus = watchFocus(on)
+    world(on)
+    await start($)
+    const id = formIdOf((await call($, twoQuestions())).text) as string
+    await focusEvent($, 'cancel')
+    expect(focus.value).toBe('cancel')
+    await call($, { ...twoQuestions(), title: '고친 질문', replaces: id })
+    expect(focus.value).toBe('q1-o1')
+  })
+
+  test('닫으면 비워진다', async ($, on) => {
+    const focus = watchFocus(on)
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await focusEvent($, 'cancel')
+    expect(focus.value).toBe('cancel')
+    await ui.press({ key: 'cancel' })
+    expect(focus.value).toBeNull()
+  })
+
+  test('도구 호출 실패의 되돌리기는 앞 기록의 착지 key 로, 앞 기록이 없으면 비운다', async ($, on) => {
+    const focus = watchFocus(on)
+    const { w } = world(on)
+    await start($)
+    const id = formIdOf((await call($, twoQuestions())).text) as string
+    const ui = await mount($)
+    // 앞 기록의 커서를 2번으로 옮겨 착지 key 를 새 기록(q1-o1)과 다르게 한다.
+    await ui.press({ key: 'next' })
+    await focusEvent($, 'cancel')
+    w.openFails = true
+    expect((await call($, { ...twoQuestions(), replaces: id })).isRefused).toBe(true)
+    w.openFails = false
+    expect(focus.value).toBe('q2-other-input-1')
+
+    // 앞 기록이 없을 때: 기록이 비고 포커스 값도 빈다.
+    await ui.press({ key: 'cancel' })
+    w.openFails = true
+    expect((await call($, twoQuestions())).isRefused).toBe(true)
+    w.openFails = false
+    expect(focus.value).toBeNull()
   })
 })
 
