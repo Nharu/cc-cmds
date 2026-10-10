@@ -19,7 +19,11 @@ stage-policy drift check; the last two have their contracts in later sections
 of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
 module, listed under `"modules"`; its section is the last one. None of the four
 raises a session banner, and the
-rules below are written for the two seats alone.
+rules below are written for the two seats alone. The question form under
+`question-form/` is a sub-mod: `autopilot-status.tsx` is the one entry listed
+under `"modules"`, and its `register` hands `register(on, options)` on to the
+form as well. The form raises no banner of its own and reaches seat 1 instead,
+as the next section says.
 
 ## The two seats, and there are only two
 
@@ -28,16 +32,29 @@ rules below are written for the two seats alone.
 | 1 | `PreToolUse` | literal `AskUserQuestion` | all of `.tool_input.questions[]` | `session-ask` |
 | 2 | `Stop` | (none) | the marker line in `.last_assistant_message` | `session-turn` |
 
-Seat 1 is structurally irreplaceable: it fires at the moment the dialog opens and
-it is the only event that carries the question text. Two alternatives were
-measured and rejected — a permission notice arrives 6.03 s late with a fixed
-message and no body, and an idle notice does not fire at all while a dialog is on
-the screen.
+Seat 1 has a second caller that is not a hook entry. The question form's mod
+(`question-form/`) runs the same `session-ask-notify.sh` through `$.process.run`
+when it opens a new form, with a stdin it builds in the `PreToolUse` shape —
+`session_id`, `tool_name` set to `mcp__cc-cmds__question_form`, and
+`tool_input.questions[]` holding each question's `header` and `question`. The
+script never reads `tool_name`, so the body, the group and the gate are the ones
+written below. The mod sends no `agent_id`, because it registers its tool only in
+the main session, and it does not register at all where a pipeline marker is set.
 
-The two seats cannot erase each other. `Stop` does not fire while a question is
+Seat 1 is structurally irreplaceable for `AskUserQuestion`: the hook fires at the
+moment the dialog opens and it is the only event that carries the question text.
+Two alternatives were measured and rejected — a permission notice arrives 6.03 s
+late with a fixed message and no body, and an idle notice does not fire at all
+while a dialog is on the screen. The question form needs no event for this: the
+mod holds the questions itself at the moment it opens the pane.
+
+The two seats cannot erase each other. `Stop` does not fire while a dialog is
 open; it arrives after the person has answered and the turn has genuinely ended,
-and the last message at that point carries no marker. So at most one banner is
-waiting at any time.
+and the last message at that point carries no marker. The question form is
+different: the turn that opens it ends at once while the form stays up, so a
+seat-1 banner from the form and a seat-2 banner from that turn's marker can both
+be waiting. Both land in the same session group, so the later one replaces the
+earlier rather than stacking.
 
 **Seat 1's body is split by question count.** One observed payload carried three
 questions, every `header` was ten characters or fewer, and the first `question`
@@ -74,7 +91,9 @@ puts into their own global `CLAUDE.md`, which is what actually causes a model to
 write the marker at all — nothing in this repo writes that file, so if the
 canonical copy is ever edited the user has to be told again. One character of
 drift in any copy makes seat 2 permanently silent, and that silence is
-indistinguishable from nobody having marked a turn.
+indistinguishable from nobody having marked a turn. The question form's banner
+does not depend on this string: it is raised through seat 1 when the form opens,
+so drift here silences seat 2 alone.
 
 ## The firing gate
 
@@ -104,8 +123,9 @@ marker.
 ## Where the banner text comes from
 
 **The body comes only from what the harness handed over.** Seat 1 reads
-`.tool_input.questions[]` out of the `PreToolUse` payload; seat 2 reads
-`.last_assistant_message` out of the `Stop` payload. Neither re-reads the
+`.tool_input.questions[]` out of the `PreToolUse` payload — for the question
+form, the payload the mod built from the tool input the harness handed it;
+seat 2 reads `.last_assistant_message` out of the `Stop` payload. Neither re-reads the
 conversation to reconstruct it — there is no path in either seat that opens a
 transcript file. **The only change that can break this property is adding a
 transcript fallback**, and it is named here so that a later finding about how
@@ -370,7 +390,8 @@ banner seats use.
 ## The run-status pane module
 
 `autopilot-status.tsx` is a plugin module (`"modules"` in `hooks.json`), not a
-command hook. In an interactive fullscreen session it docks, in a pane titled
+command hook. It is the plugin's only module entry, and its `register` also
+hands `register(on, options)` on to the question form under `question-form/`. In an interactive fullscreen session it docks, in a pane titled
 `autopilot`, the state of the one run the status line picked for this session:
 a title, the run's head line and its details, every segment with a detail line,
 the gate group (approvals, run-scope and cone-scope blocks with their full
@@ -479,7 +500,7 @@ needs fullscreen:
 
 **Nothing happens outside an interactive session.** The first statement of the
 `session.start` hook returns when the session is not interactive, and the next
-returns when any of `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_STAGE_ID` or
-`CC_PIPELINE_SHIFT_ID` is non-empty. Only after both does the module register the
+returns when any of `CC_PIPELINE_SEGMENT`, `CC_PIPELINE_RUN_ID`,
+`CC_PIPELINE_STAGE_ID` or `CC_PIPELINE_SHIFT_ID` is non-empty. Only after both does the module register the
 command or start its clock, so a stage, a shift or a `-p` run gets no command,
 no process and no pane.

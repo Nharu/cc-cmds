@@ -599,6 +599,24 @@ mk_ledger "$R8" "$(sr_row S1 S1 review 1 sid-old '정상 완료' __none__ '~/.cl
 collect
 check "6: 레인은 있고 창 키만 빠진 런은 여전히 판정 대상이다" "$(jline '.new_runs | length')" "1"
 check "6: 그 런에서 T3 이 발화한다(드리프트가 가려지지 않는다)" "$(fire_ids)" "T3/review"
+# done 으로 끝나는 런(표지 ends-on-done)은 세그먼트가 모두 끝나도 done 전까지 정산 중이라
+# 열린 런이다. 같은 원장 모양이 표지 없이는 유도 종단으로 닫힌다.
+reset_all
+R8S=20260906-aaaaaae8; R8T=20260906-aaaaaaf8
+for r in "$R8S" "$R8T"; do
+  mk_rundir "$r" nodone; mk_stream "$STATE/run/$r/log/S1#1.json" 1
+  mk_ledger "$r" "$(sr_row S1 S1 review 1 "sid-$r" '정상 완료' '300000(argv)' '~/.claude')" \
+    '- `segment` | id=S1 | 상태=머지됨 | prev=abc'
+done
+printf '1\n' > "$STATE/run/$R8S/ends-on-done"
+collect
+check "6: 정산 중인 런은 미종단이고 표지 없는 유도 종단은 수집된다" \
+  "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "1,0,0,1"
+check "6: 정산 중인 런은 델타에 들지 않는다" "$(jline '.new_runs | join(",")')" "$R8T"
+: > "$STATE/run/$R8S/done"
+collect
+check "6: done 이 생기고 교대가 없으면 그 런도 닫혀 수집된다" \
+  "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "2,0,0,0"
 
 # --- 7. 결함 형태 트리거의 자동 닫기 ------------------------------------------------------
 # T6 만 닫히면 결함 형태 이슈 하나가 전역 열림 상한을 영구히 차지한다.

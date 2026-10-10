@@ -146,6 +146,13 @@ fx_mkrun pr-done; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
 fx_session_index s-done pr-done
 branch_case "종단" s-done "✓" ended 종료
 
+# The same merged segment on a run that ends on `done`: the settlement window,
+# which keeps the run on the live glyph instead of the finished one.
+fx_mkrun pr-settle; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_session_index s-settle pr-settle
+branch_case "정산중" s-settle "⟳" live 정산중
+
 fx_mkrun pr-aband; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 4000
 fx_session_index s-aband pr-aband
 branch_case "버려짐 (방치)" s-aband "⊘" ended 방치
