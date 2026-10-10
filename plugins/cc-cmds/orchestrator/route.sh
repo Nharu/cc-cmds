@@ -1364,7 +1364,13 @@ route__wait_put_main() {
   # 락 아래에서 `kind: wait` 항목을 쓴다. `seq` 는 표 안 최댓값 + 1 이고, 같은 키의
   # 대기 항목이 이미 있으면 그 자리를 지킨다. 예약은 싣지 않는다. 같은 키에 부여가
   # 있으면 거부한다(rc 1).
-  local t="" now="" run="" lin="" acct="" dir="" key holders nonce leases rec rc=0
+  #
+  # `--group <g> --inventory <file>` 은 `--account`·`--config-dir` 대신 그룹의 대표
+  # 계정을 고른다 — 그 인벤토리에서 새 부여를 받을 수 있는(`enabled`) 계정 중 그
+  # 그룹에 드는 가장 작은 id. WAIT 봉투는 조직 그룹이면 계정을 싣지 않으므로, 항목이
+  # 그룹으로 세어지려면 그 그룹에 속한 계정 하나가 있어야 한다. 고를 계정이 없으면
+  # rc 3 이고 아무것도 쓰지 않는다.
+  local t="" now="" run="" lin="" acct="" dir="" grp="" invf="" key holders nonce leases rec rc=0 usage pick
   local hs=()
   while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || return 2
@@ -1375,6 +1381,8 @@ route__wait_put_main() {
       --lineage) lin="$2" ;;
       --account) acct="$2" ;;
       --config-dir) dir="$2" ;;
+      --group) grp="$2" ;;
+      --inventory) invf="$2" ;;
       --holder) hs+=("$2") ;;
       *) return 2 ;;
     esac
@@ -1383,6 +1391,18 @@ route__wait_put_main() {
   case "$now" in
     ''|*[!0-9]*) return 2 ;;
   esac
+  if [ -n "$grp" ]; then
+    [ -z "$acct" ] && [ -z "$dir" ] && [ -n "$invf" ] || return 2
+    route_inventory_check "$invf" >/dev/null 2>&1 || return 3
+    usage=$(route_usage_read "${XDG_STATE_HOME:-$HOME/.local/state}/cc-lane/usage.json" "$now") || return 2
+    pick=$(jq -r --argjson usage "$usage" --arg g "$grp" "$(route__jq_lib)"'
+             rt_orgs({usage: $usage}) as $o
+             | [(.accounts // [])[] | select(.unattended == "enabled") | select(rt_group_of($o; .id) == $g)]
+             | sort_by(.id) | .[0] // empty | "\(.id)\t\(.config_dir)"' "$invf" 2>/dev/null) || return 2
+    [ -n "$pick" ] || return 3
+    acct=${pick%%"$(printf '\t')"*}
+    dir=${pick#*"$(printf '\t')"}
+  fi
   if [ -z "$t" ] || [ -z "$acct" ] || [ -z "$dir" ]; then return 2; fi
   key=$(route__key "$run" "$lin") || return 2
   holders=$(route__holders_json ${hs[@]+"${hs[@]}"}) || return 2
@@ -1518,9 +1538,15 @@ route_resolve() {
   # 먼저 읽어야 한다 — `jq -j .config_dir` 한 줄만 배선하면 WAIT·PARK 에서 `null`
   # 네 글자를 설정 디렉터리로 받는다.
   #
-  # 휴면 스위치는 `run.sh` 에 산다. 값이 없으면 휴면이다 — route.sh 만 소싱한 셸은
-  # 결코 라우팅을 켤 수 없다.
-  route__resolve_as "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" "$@"
+  # 런마다의 라우팅 판정은 `run.sh` 의 `run_routed` 에 산다. 그 함수가 정의돼 있고
+  # 참일 때만 활성이다 — route.sh 만 소싱한 셸은 결코 라우팅을 켤 수 없고, 정규
+  # 인벤토리는 있으나 라우팅 기록이 없는 런(기록 이전에 열린 런, 기록 생성이 실패한
+  # 런)도 휴면 답을 받는다.
+  if declare -F run_routed >/dev/null 2>&1 && run_routed; then
+    route__resolve_as 1 "$@"
+  else
+    route__resolve_as 0 "$@"
+  fi
 }
 
 route__usage() {

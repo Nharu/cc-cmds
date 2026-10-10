@@ -21,7 +21,7 @@ Finding {
 
   # ── DOWNSTREAM (lead-set ONLY; analysts never set these) ──
   foundational:       bool            # Step 5 synthesis — on critical only; 보류 vs 재설계
-  walkthrough_status: confirmed | excluded | amended | 미검토   # Step 6 (미검토 = abort)
+  walkthrough_status: confirmed | excluded | amended | 미검토   # Step 6 (미검토 = abort, or two 미답 in a row)
   amendment_note?:    string          # Step 6 — only when status == amended
 }
 ```
@@ -69,7 +69,7 @@ Flag-based, not count-threshold: for a third-party design, count thresholds are 
 
 ## Render rule
 
-Render only `confirmed` / `amended` findings into the finding sections. `excluded` appears ONLY in "철회된 항목" (transparent). `amended` shows its `amendment_note` with a `사용자 수정` flag. `미검토` (abort) is included with its flag. Empty severity sections are skipped.
+Render only `confirmed` / `amended` findings into the finding sections. `excluded` appears ONLY in "철회된 항목" (transparent). `amended` shows its `amendment_note` with a `사용자 수정` flag. `미검토` (abort, or two 미답 in a row) is included with its flag — `미검토(사용자 조기 종료)` or `미검토(사용자 미답)`. Empty severity sections are skipped.
 
 ## Document structure
 
@@ -137,7 +137,7 @@ File: `docs/analysis/<slug>.md` (create `docs/analysis/` with `mkdir -p` if abse
 
 ## 미분석 영역
 
-[의도적으로 분석하지 않은 섹션/관점 — blind spot 투명 고지. 워크스루 중단 시 `미검토` 발견도 여기 또는 해당 severity 섹션에 플래그와 함께.]
+[의도적으로 분석하지 않은 섹션/관점 — blind spot 투명 고지. 워크스루 중단이나 두 번 연속 미답으로 남은 `미검토` 발견도 여기 또는 해당 severity 섹션에 플래그와 함께.]
 
 ## 분석가 간 이견
 
