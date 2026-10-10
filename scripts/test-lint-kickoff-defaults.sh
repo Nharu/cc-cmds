@@ -58,6 +58,7 @@ case_run() {
 R1='킥오프 보조 밖에서 킥오프 기본값을 가리키는 파일이 있다'
 R2='키 집합이 보조 스크립트와 SKILL.md 5o 사이에서 갈렸다'
 R3='드라이버 어휘 상수를 대입한다'
+R4='재킥오프 보조 밖에서 rekick.sh 를 가리키는 파일이 있다'
 
 # 1. the real tree passes
 d=$(fresh clean)
@@ -99,6 +100,31 @@ case_run "보조가 CUTPOINTS= 를 대입한다" "$d" 1 "$R3"
 d=$(fresh helper-comment-vocab)
 printf "# CUTPOINTS= comes from the driver\n" >> "$d/orchestrator/kickoff-defaults.sh"
 case_run "보조 주석의 CUTPOINTS= 는 대입이 아니다" "$d" 0
+
+# 9. the driver calls the re-kickoff helper
+d=$(fresh driver-calls-rekick)
+printf 'bash "$ORCH_DIR/rekick.sh" detect --base "$BASE"\n' >> "$d/orchestrator/run.sh"
+case_run "run.sh 가 rekick.sh 를 부른다" "$d" 1 "$R4"
+
+# 10. a hook names it in a comment only
+d=$(fresh hook-comment-rekick)
+printf '# see orchestrator/rekick.sh\n' > "$d/hooks/x.sh"
+case_run "hooks 파일 주석에만 rekick.sh 가 있다" "$d" 1 "$R4"
+
+# 11. the re-kickoff helper naming itself is not a caller
+d=$(fresh rekick-names-self)
+printf '# usage: rekick.sh detect\n' >> "$d/orchestrator/rekick.sh"
+case_run "rekick.sh 자신이 rekick.sh 를 적는다" "$d" 0
+
+# 12. a skill document names both helpers — the kickoff is where they are called
+d=$(fresh skill-names-both)
+printf '\nrekick.sh 와 kickoff-defaults.sh 를 킥오프가 부른다.\n' >> "$d/skills/autopilot/SKILL.md"
+case_run "skills/ 문서가 두 보조를 함께 적는다" "$d" 0
+
+# 13. the re-kickoff helper reading the defaults falls under rule 1
+d=$(fresh rekick-reads-defaults)
+printf 'bash "$RK_DIR/kickoff-defaults.sh" --carry "$m"\n' >> "$d/orchestrator/rekick.sh"
+case_run "rekick.sh 가 kickoff-defaults.sh 를 부른다" "$d" 1 "$R1"
 
 echo "test-lint-kickoff-defaults: $passed passed, $failures failed"
 
