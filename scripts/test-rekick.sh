@@ -56,11 +56,12 @@ for v in $(compgen -e | grep -E '^(CC_PIPELINE_|CC_CMDS_AUTOPILOT_DEFAULT)' || t
 done
 unset CLAUDE_CODE_SESSION_ID
 CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
 HOME="$WORK/home"; mkdir -p "$HOME"
 XDG_STATE_HOME="$WORK/state"; mkdir -p "$XDG_STATE_HOME"
 XDG_CONFIG_HOME="$WORK/config"; mkdir -p "$XDG_CONFIG_HOME"
 CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$WORK/no-such-defaults"
-export CC_CMDS_AUTOPILOT_NOTIFY HOME XDG_STATE_HOME XDG_CONFIG_HOME CC_CMDS_AUTOPILOT_DEFAULTS_FILE
+export HOME XDG_STATE_HOME XDG_CONFIG_HOME CC_CMDS_AUTOPILOT_DEFAULTS_FILE
 
 # The gate calls in the dispatch case launch a stage: the stage CLI, the host's
 # stage-policy map and the metrics round are all inert for this process, as in
@@ -665,9 +666,18 @@ check "7: 사용자 확인 문면은 이번 호출의 말이다" "$(awk -F': ' '
 SCOPE_A1=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c 'g=$1; m=$2; set --; . "$g" >/dev/null 2>&1 || exit 9; set +e; MANIFEST=$m; gate_run_scope_step audit' _ "$GATE_SH" "$NM1" 2>/dev/null)
 check "7: 지운 매니페스트에서 gate_run_scope_step audit 이 A1 을 낸다" "$SCOPE_A1" "A1"
 
-# The interval, measured on the frozen values.
-iv() { jq -rn --arg d "$1" --arg k "$2" 'def e(s): s | sub("Z$"; "+00:00") | sub("(?<g>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2})$"; "\(.g)\(.h)\(.m)") | strptime("%Y-%m-%dT%H:%M:%S%z") | mktime; e($d) - e($k)' 2>/dev/null; }
+# The interval, measured on the frozen values. The offset is taken off by hand:
+# `%z` with `mktime` drops it on glibc and keeps it on macOS.
+iv() { jq -rn --arg d "$1" --arg k "$2" '
+  def e(s): s | capture("^(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<z>Z|[+-][0-9]{2}:?[0-9]{2})$")
+    | ((.t + "Z") | fromdateiso8601)
+      - (if .z == "Z" then 0 else (.z | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+          | ((.h | tonumber) * 3600 + (.m | tonumber) * 60) * (if .s == "-" then -1 else 1 end)) end);
+  e($d) - e($k)'; }
 IV0=$(iv "$DL0" "$KAT0")
+# 2026-10-01T00:00:00Z to 2030-01-01T00:00:00Z is 1188 days; an empty IV0 would
+# make both comparisons below pass on nothing.
+check "8: 이전 간격을 시각으로 읽었다" "$IV0" "102643200"
 check "8: 새 마감 − 새 킥오프 일시 = 이전 간격이다" \
   "$(iv "$(awk -F': ' '$1 == "**벽시계 마감**" { print $2 }' "$NM1")" "$(awk -F': ' '$1 == "**킥오프 일시**" { print $2 }' "$NM1")")" "$IV0"
 
@@ -784,7 +794,22 @@ mod "$WORK/v-dl5e2.md" "s|^\*\*사용자 확인 문면\*\*: .*|**사용자 확�
 vs "마감 재확인으로 5e 를 다시 물으면 마지막 답의 시각이 마감이다" 통과 "$WORK/v-dl5e2.md" "$WORK/asked-5e2"
 
 # 5o confirmed blanks: the values reach the draft and are compared, not exempted.
-printf '5o cost-ceiling\t이대로\n5o deploy-triggers\t이대로\n' > "$WORK/asked-5o"
+printf '5o 런:cost-ceiling\t이대로\n5o rk:deploy-triggers\t이대로\n' > "$WORK/asked-5o"
+# blanks <out> <scope<TAB>key<TAB>value>… — a saved 5o output holding `빈칸` rows.
+blanks() {
+  local out="$1"; shift
+  { printf 'cc-kickoff-defaults v1\n'
+    for r in "$@"; do printf '빈칸\t%s\t기본값 파일\t0\t효과\n' "$r"; done; } > "$out"
+}
+# The target is labelled by its remote slug, as the 5o output labels it.
+blanks "$WORK/blanks-5o" "런${TAB}cost-ceiling${TAB}12" "t/rk${TAB}deploy-triggers${TAB}branch:release"
+B5=(--blank-rows "$WORK/blanks-5o")
+# vsr <draft> <asked> <args…> — the reason the 확정값 check gives, or 통과.
+vsr() {
+  local d="$1" a="$2"; shift 2
+  rk verify-subset "$d" "$VS_PREV" --expect-sha256 "$VS_PMSHA" --expect-grant-sha256 "$VS_PGSHA" --asked "$a" "$@" \
+    | awk -F '\t' '$1 == "검사" && $2 == "확정값" { print ($3 == "통과") ? "통과" : $4 }'
+}
 rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
    --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5o" \
    --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' > "$WORK/v-5o.md"; rc=$?
@@ -795,14 +820,77 @@ check "7: --set 이 원천 대상 행에 없던 배포트리거 식별자를 확
 has "7: 사용자 확인 문면이 확정값을 적는다" "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$WORK/v-5o.md")" " / 런:cost-ceiling=12 / rk:deploy-triggers=branch:release"
 mf_check "$WORK/v-5o.md"; rc=$?
 check "7: 확정값을 실은 초안이 check_manifest 를 통과한다" "$rc" "0"
-vs "5o 확정값을 실은 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-5o.md" "$WORK/asked-5o" "" \
-  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
+vs "5o 확정값을 실은 초안은 같은 --set 으로 통과한다 (원격 슬러그 빈칸 행·별칭 --set)" 통과 "$WORK/v-5o.md" "$WORK/asked-5o" "" \
+  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' "${B5[@]}"
 vs "--set 없이는 5o 답만으로 빈칸 차이가 면제되지 않는다" 실패 "$WORK/v-5o.md" "$WORK/asked-5o" 고정값
 sed 's/^\*\*비용 천장\*\*: 12$/**비용 천장**: 99/' "$WORK/v-5o.md" > "$WORK/v-5ox.md"
 vs "확정값과 다른 값을 실은 초안은 실패한다" 실패 "$WORK/v-5ox.md" "$WORK/asked-5o" 확정값 \
-  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
+  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' "${B5[@]}"
 vs "5o 에서 묻지 않은 --set 은 실패한다" 실패 "$WORK/v-5o.md" "$E" 확정값 \
-  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
+  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' "${B5[@]}"
+printf '5o cost-ceiling\t이대로\n5o deploy-triggers\t이대로\n' > "$WORK/asked-5o-bare"
+vs "범위 없이 키만 적은 5o 줄은 --set 을 덮지 않는다" 실패 "$WORK/v-5o.md" "$WORK/asked-5o-bare" 확정값 \
+  --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' "${B5[@]}"
+# (i) The confirmation line lost one confirmed value.
+sed 's|^\(\*\*사용자 확인 문면\*\*: .*\) / 런:cost-ceiling=12|\1|' "$WORK/v-5o.md" > "$WORK/v-5onc.md"
+check "7: 확인 문면에서 런:cost-ceiling=12 를 지운 초안을 만들었다" "$(grep -c ' / 런:cost-ceiling=12' "$WORK/v-5onc.md")" "0"
+has "7: 확인 문면에서 확정값 하나가 빠진 초안은 확정값 검사에 실패한다" \
+  "$(vsr "$WORK/v-5onc.md" "$WORK/asked-5o" --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' "${B5[@]}")" \
+  "런:cost-ceiling 의 확정값이 사용자 확인 문면에 없습니다"
+# (ii) A confirmed 10 is not a confirmed 100, in the row and in the line.
+blanks "$WORK/blanks-10" "런${TAB}cost-ceiling${TAB}10"
+rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5o" \
+   --set '런:cost-ceiling=100' > "$WORK/v-100.md"
+has "7: 빈칸 값 10 에 --set 과 초안 값 100 은 확정값 검사에 실패한다" \
+  "$(vsr "$WORK/v-100.md" "$WORK/asked-5o" --set '런:cost-ceiling=100' --blank-rows "$WORK/blanks-10")" \
+  "런:cost-ceiling 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
+rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5o" \
+   --set '런:cost-ceiling=10' > "$WORK/v-10.md"
+check "7: 빈칸 값 10 을 그대로 실은 초안은 확정값 검사를 통과한다" \
+  "$(vsr "$WORK/v-10.md" "$WORK/asked-5o" --set '런:cost-ceiling=10' --blank-rows "$WORK/blanks-10")" "통과"
+sed 's|^\(\*\*사용자 확인 문면\*\*: .*\) / 런:cost-ceiling=10$|\1 / 런:cost-ceiling=100|' "$WORK/v-10.md" > "$WORK/v-10c.md"
+check "7: 확인 문면에 =100 만 있는 초안을 만들었다" "$(grep -c ' / 런:cost-ceiling=100$' "$WORK/v-10c.md")/$(grep -c ' / 런:cost-ceiling=10$' "$WORK/v-10c.md")" "1/0"
+has "7: 확인 문면의 =100 은 확정값 =10 을 덮지 않는다" \
+  "$(vsr "$WORK/v-10c.md" "$WORK/asked-5o" --set '런:cost-ceiling=10' --blank-rows "$WORK/blanks-10")" \
+  "런:cost-ceiling 의 확정값이 사용자 확인 문면에 없습니다"
+# (iii) A --set that differs from the row, with the draft built from it.
+rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5o" \
+   --set '런:cost-ceiling=13' --set 'rk:deploy-triggers=branch:release' > "$WORK/v-13.md"
+has "7: 빈칸 행과 다른 값의 --set 은 확정값 검사에 실패한다" \
+  "$(vsr "$WORK/v-13.md" "$WORK/asked-5o" --set '런:cost-ceiling=13' --set 'rk:deploy-triggers=branch:release' "${B5[@]}")" \
+  "런:cost-ceiling 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
+# (v) No saved rows, or a file that is not a 5o output.
+has "7: --set 이 있는데 --blank-rows 가 없으면 확정값 검사에 실패한다" \
+  "$(vsr "$WORK/v-5o.md" "$WORK/asked-5o" --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release')" \
+  "--blank-rows"
+{ printf 'cc-rekick v1\n'; tail -n +2 "$WORK/blanks-5o"; } > "$WORK/blanks-badhdr"
+has "7: 머리가 다른 빈칸 행 파일은 확정값 검사에 실패한다" \
+  "$(vsr "$WORK/v-5o.md" "$WORK/asked-5o" --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' --blank-rows "$WORK/blanks-badhdr")" \
+  "머리가"
+has "7: 읽을 수 없는 빈칸 행 파일은 확정값 검사에 실패한다" \
+  "$(vsr "$WORK/v-5o.md" "$WORK/asked-5o" --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release' --blank-rows "$WORK/no-such-blanks")" \
+  "읽을 수 없습니다"
+# (iv) Two targets: the row and its 5o line are for rk, the value is moved to rk2.
+awk '{ print } /^- `target` [|] 별칭=rk [|]/ { r = $0; sub(/별칭=rk [|]/, "별칭=rk2 |", r); sub(/원격 슬러그=t\/rk [|]/, "원격 슬러그=t/rk2 |", r); print r }' \
+  "$PM" > "$WORK/pm-two.md"
+RK2ROW=$(grep -E '^- `target` \| 별칭=rk2 \|' "$WORK/pm-two.md")
+check "7: 대상 둘인 원천을 만들었다" "$(grep -cE '^- `target` \| 별칭=rk2? \|' "$WORK/pm-two.md")" "2"
+awk -v r2="$RK2ROW | 배포트리거 식별자=branch:release" '
+  /^\*\*사용자 확인 문면\*\*: / { sub(/ \/ rk:deploy-triggers=/, " / rk2:deploy-triggers=") }
+  /^- `target` [|] 별칭=rk [|]/ { sub(/ [|] 배포트리거 식별자=branch:release$/, ""); print; print r2; next }
+  { print }' "$WORK/v-5o.md" > "$WORK/v-two.md"
+printf '5o 런:cost-ceiling\t이대로\n5o rk2:deploy-triggers\t이대로\n' > "$WORK/asked-two"
+VS_PREV="$WORK/pm-two.md"; VS_PMSHA=$(sha "$WORK/pm-two.md")
+has "7: 한 대상의 빈칸 행을 다른 대상 범위로 옮긴 --set 은 확정값 검사에 실패한다" \
+  "$(vsr "$WORK/v-two.md" "$WORK/asked-two" --set '런:cost-ceiling=12' --set 'rk2:deploy-triggers=branch:release' "${B5[@]}")" \
+  "rk2:deploy-triggers 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
+blanks "$WORK/blanks-two" "런${TAB}cost-ceiling${TAB}12" "t/rk2${TAB}deploy-triggers${TAB}branch:release"
+check "7: 같은 초안이 그 대상의 빈칸 행으로는 확정값 검사를 통과한다" \
+  "$(vsr "$WORK/v-two.md" "$WORK/asked-two" --set '런:cost-ceiling=12' --set 'rk2:deploy-triggers=branch:release' --blank-rows "$WORK/blanks-two")" "통과"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"
 # The blanks as `--carry` prints them: a target is labelled by its remote slug,
 # and the row goes to --set verbatim.
 printf 'cost-ceiling = 12\n[t/rk]\ndeploy-triggers = branch:release\n' > "$WORK/defaults-5o"
@@ -815,15 +903,17 @@ S5=()
 while IFS= read -r e; do [ -z "$e" ] || S5+=(--set "$e"); done <<EOF
 $SETS5
 EOF
+printf '%s\n' "$cout5" > "$WORK/blanks-5c"
+printf '5o 런:cost-ceiling\t이대로\n5o t/rk:deploy-triggers\t이대로\n' > "$WORK/asked-5c"
 rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
-   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5o" "${S5[@]}" > "$WORK/v-5c.md"; rc=$?
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5c" "${S5[@]}" > "$WORK/v-5c.md"; rc=$?
 check "7: --carry 빈칸 행을 그대로 옮긴 --set 으로 render-manifest 가 0 으로 끝난다" "$rc" "0"
 check "7: 원격 슬러그로 적힌 --set 이 그 슬러그를 선언한 대상 행에 확정값을 쓴다" \
   "$(grep -E '^- `target`' "$WORK/v-5c.md" | grep -c '| 배포트리거 식별자=branch:release$')" "1"
 mf_check "$WORK/v-5c.md"; rc=$?
 check "7: 원격 슬러그 --set 으로 만든 초안이 check_manifest 를 통과한다" "$rc" "0"
-vs "--carry 빈칸 행을 그대로 옮긴 --set 으로 만든 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-5c.md" "$WORK/asked-5o" "" \
-  "${S5[@]}"
+vs "--carry 빈칸 행을 그대로 옮긴 --set 으로 만든 초안은 같은 --set 과 저장한 출력으로 통과한다" 통과 "$WORK/v-5c.md" "$WORK/asked-5c" "" \
+  "${S5[@]}" --blank-rows "$WORK/blanks-5c"
 out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
         --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" \
         --set 'rk:deploy-triggers=branch:release' --set 't/rk:deploy-triggers=branch:release' 2>/dev/null); rc=$?

@@ -45,7 +45,7 @@
 #   rekick.sh render-interview --prev <id> --base <base> [--expect-sha256 <hex>]
 #   rekick.sh verify-subset <초안> <이전 매니페스트> --expect-sha256 <hex>
 #                           --expect-grant-sha256 <hex> --asked <TSV> [--grant <블록 파일>]
-#                           [--set <범위>:<키>=<값>]…
+#                           [--set <범위>:<키>=<값>]… [--blank-rows <파일>]
 #
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
 # is that row's scope (`런`, or a target named by its alias or by the remote
@@ -56,6 +56,12 @@
 # there; anything else is refused. `render-manifest` writes the value into the
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
+#
+# `--blank-rows` is the `--carry` output 5o showed, saved byte for byte. It is
+# required with `--set` in `verify-subset`: each entry must equal one of its
+# `빈칸` rows in scope, key and value, so a value moved to another target or
+# typed differently from the row the person confirmed does not pass. A row's
+# scope is resolved against the previous manifest by the rule `--set` uses.
 #
 # `detect` takes no `<base>`: the kickoff resolves its own `<base>` only after
 # the targets are settled, and this step runs before that. Each candidate's
@@ -87,7 +93,7 @@
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
-# `대상추가 <별칭>`, `5p`, `5q`, `5e`, `5e 값`, `5l`, `5o <키>`,
+# `대상추가 <별칭>`, `5p`, `5q`, `5e`, `5e 값`, `5l`, `5o <범위>:<키>`,
 # `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`. Any other key covers
 # nothing, and every answer, whatever its key, must stand verbatim in the
 # draft's `사용자 확인 문면`. `5e` is the person's answer as given — a relative
@@ -128,7 +134,7 @@ RK_MODE="${1:-}"
 RK_ARG=""; RK_ARG_GIVEN=0; RK_PREV=""; RK_BASE=""; RK_XSHA=""; RK_XGSHA=""
 RK_ACCEPTED=""; RK_NEWID=""; RK_KAT=""; RK_DEADLINE=""; RK_ASKED=""
 RK_VISUAL=""; RK_TARGETS=""; RK_ROWS=""; RK_RULES=""; RK_BIND=""; RK_GRANT_BLOCK=""
-RK_POS1=""; RK_POS2=""; RK_SETS=""
+RK_POS1=""; RK_POS2=""; RK_SETS=""; RK_BLANKS=""
 
 rk_need() { [ $# -ge 2 ] || rk_usage "$1 에 값이 없습니다"; }
 while [ $# -gt 0 ]; do
@@ -155,6 +161,7 @@ while [ $# -gt 0 ]; do
 "; shift 2 ;;
     --bind-base)           rk_need "$@"; RK_BIND="$2"; shift 2 ;;
     --grant)               rk_need "$@"; RK_GRANT_BLOCK="$2"; shift 2 ;;
+    --blank-rows)          rk_need "$@"; RK_BLANKS="$2"; shift 2 ;;
     --set)                 rk_need "$@"
                            case "$2" in
                              *"$(printf '\t')"*|*'
@@ -1032,7 +1039,10 @@ rk_render() {
 # rk_confirm_text — the new `사용자 확인 문면`: this call's argument verbatim
 # (`/cc-cmds:autopilot` when it was empty), then each answer this re-kickoff
 # asked, then each `--set` entry as given, joined with ` / `. The 5o answer
-# itself is 「이대로」, so the confirmed values are written beside it.
+# itself is 「이대로」, so the confirmed values are written beside it. Built from
+# this call's own `--set` list, the text proves nothing about that list; it is
+# what `verify-subset` compares a second, independent `--set` list with, and
+# the `빈칸` rows are what that list is bound to.
 rk_confirm_text() {
   local s k a e
   s=$(rk_trim "$RK_ARG"); [ -n "$s" ] || s='/cc-cmds:autopilot'
@@ -1074,6 +1084,23 @@ rk_set_field() {
   esac
 }
 
+# rk_target_of <label> — the alias of the target a scope label names in the
+# current MANIFEST. `--carry` labels a target by its remote slug when it has
+# one, so a 5o row carried verbatim names the slug; it stands for the one
+# target that declares it, and a slug no target or several targets declare is
+# refused rather than guessed. Returns 1 for none and 2 for several.
+rk_target_of() {
+  local al hit=""
+  if target_aliases | grep -qxF -- "$1"; then printf '%s' "$1"; return 0; fi
+  for al in $(target_aliases); do
+    [ "$(target_field "$al" '원격 슬러그')" = "$1" ] || continue
+    [ -z "$hit" ] || return 2
+    hit=$al
+  done
+  [ -n "$hit" ] || return 1
+  printf '%s' "$hit"
+}
+
 # rk_sets_resolve <out> — reads RK_SETS against the current MANIFEST (the
 # previous run's copy) and writes
 # `<범위><TAB><섹션><TAB><필드><TAB><값><TAB><키><TAB><적힌 범위>` per entry —
@@ -1084,7 +1111,7 @@ rk_set_field() {
 # does not hold, a value the previous manifest already has, a value a target
 # row cannot carry, or the same place twice.
 rk_sets_resolve() {
-  local out="$1" e sc rest k v loc sec f pv al hit rsc
+  local out="$1" e sc rest k v loc sec f pv hit rsc
   : > "$out"
   while IFS= read -r e; do
     [ -n "$e" ] || continue
@@ -1093,20 +1120,11 @@ rk_sets_resolve() {
     sec=${loc%%"$TAB"*}; f=${loc#*"$TAB"}
     if [ "$sec" = "대상" ]; then
       [ "$sc" != "런" ] || { printf '%s' "--set $k 의 범위는 대상 별칭입니다"; return 1; }
-      if ! target_aliases | grep -qxF -- "$sc"; then
-        # `--carry` labels a target by its remote slug when it has one, so a
-        # 5o row carried verbatim names the slug; it stands for the one target
-        # that declares it, and a slug no target or several targets declare is
-        # refused rather than guessed.
-        hit=""
-        for al in $(target_aliases); do
-          [ "$(target_field "$al" '원격 슬러그')" = "$sc" ] || continue
-          [ -z "$hit" ] || { printf '%s' "--set 의 대상 $sc 를 원격 슬러그로 선언한 대상이 여럿입니다"; return 1; }
-          hit=$al
-        done
-        [ -n "$hit" ] || { printf '%s' "--set 의 대상 $sc 가 원천 매니페스트에 없습니다"; return 1; }
-        sc=$hit
-      fi
+      hit=$(rk_target_of "$sc"); case $? in
+        0) sc=$hit ;;
+        2) printf '%s' "--set 의 대상 $sc 를 원격 슬러그로 선언한 대상이 여럿입니다"; return 1 ;;
+        *) printf '%s' "--set 의 대상 $sc 가 원천 매니페스트에 없습니다"; return 1 ;;
+      esac
       case "$v" in *'|'*) printf '%s' "--set $sc:$k 값에 | 가 있습니다"; return 1 ;; esac
       pv=$(target_field "$sc" "$f")
     else
@@ -1181,12 +1199,30 @@ vs_check() {
 # vs_in <needle> <haystack lines> — the needle is one whole line of the list.
 vs_in() { printf '%s\n' "$2" | grep -qxF -- "$1"; }
 
-# vs_set_is <scope> <field> <draft value> — a `--set` entry confirmed this
-# place, and the draft carries exactly its value.
+# vs_set_is <scope> <field> <draft value> — a `--set` entry names this place,
+# and the draft carries exactly its value. That the entry is one 5o confirmed
+# is check 2b's to show, not this exemption's.
 VS_SETS=""
 vs_set_is() {
   [ -n "$VS_SETS" ] && [ -s "$VS_SETS" ] || return 1
   awk -F '\t' -v s="$1" -v f="$2" -v d="$3" '$1 == s && $3 == f { ok = ($4 == d); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
+}
+
+# vs_blank_has <alias|런> <key> <value> — a `빈칸` row of the saved 5o output
+# has this key and value, and its scope cell resolves in the current MANIFEST
+# to this scope. Key and value compare as bytes.
+VS_BLANKS=""
+vs_blank_has() {
+  local lsc al
+  while IFS= read -r lsc; do
+    [ -n "$lsc" ] || continue
+    al=$lsc
+    if [ "$lsc" != "런" ]; then al=$(rk_target_of "$lsc") || continue; fi
+    [ "$al" = "$1" ] && return 0
+  done <<EOF
+$(VB_K="$2" VB_V="$3" awk -F '\t' '$1 == "빈칸" && $3 == ENVIRON["VB_K"] && $4 == ENVIRON["VB_V"] { print $2 }' "$VS_BLANKS")
+EOF
+  return 1
 }
 
 rk_verify_subset() {
@@ -1294,15 +1330,24 @@ EOF
   fi
   vs_check 고정값 "$why"
 
-  # 2b — each value 5o confirmed: asked at 5o, written beside the answers, and
-  # carried by the draft where the previous run had none.
+  # 2b — each value 5o confirmed: the same scope, key and value as one `빈칸`
+  # row 5o showed, asked at 5o for that scope, written whole beside the answers,
+  # and carried by the draft where the previous run had none.
   local ssc ssec sf sv sk sdv srsc
   why="$setwhy"
+  if [ -z "$why" ] && [ -s "$VS_SETS" ]; then
+    if [ -z "$RK_BLANKS" ]; then why="--set 에는 5o 에서 확인한 빈칸 행(--blank-rows)이 필요합니다"
+    elif ! VS_BLANKS=$(rk_copy "$RK_BLANKS" blanks.tsv); then why="빈칸 행 파일을 읽을 수 없습니다: $RK_BLANKS"
+    elif [ "$(head -n 1 "$VS_BLANKS")" != "cc-kickoff-defaults v1" ]; then why="빈칸 행 파일의 머리가 cc-kickoff-defaults v1 이 아닙니다"
+    fi
+  fi
   if [ -z "$why" ]; then
     while IFS="$TAB" read -r ssc ssec sf sv sk srsc; do
       [ -n "$ssc" ] || continue
-      [ -n "$(rk_asked_answer "5o $sk")" ] || why="${why:+$why; }$ssc:$sk 는 5o 에서 묻지 않은 값입니다"
-      case "$D_CONFIRM" in *" / $srsc:$sk=$sv"*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
+      MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
+        || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
+      [ -n "$(rk_asked_answer "5o $srsc:$sk")" ] || why="${why:+$why; }$srsc:$sk 는 5o 에서 묻지 않은 값입니다"
+      case " / $D_CONFIRM / " in *" / $srsc:$sk=$sv / "*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
       if [ "$ssec" = "대상" ]; then sdv=$(MANIFEST="$draft" target_field "$ssc" "$sf")
       else sdv=$(MANIFEST="$draft" manifest_field "$ssec" "$sf"); fi
       [ "$sdv" = "$sv" ] || why="${why:+$why; }초안의 $ssc:$sk 가 확정값이 아닙니다"
