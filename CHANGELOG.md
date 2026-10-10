@@ -5,6 +5,8 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.0] - 2026-10-11
+
 같은 세션에서 연 런이 멈춘 뒤 킥오프를 다시 부르면, 이전 런에서 이미 답한 것을 처음부터 다시 물었다. 이제 인자 없이(또는 재개 낱말이나 그 런의 의도 문면 그대로) 다시 부르면 이전 런의 얼린 답을 새 런으로 이어받아 바로 기동하고, 디스크·원장·어휘에서 기계적으로 정해지는 여덟 가지 변화만 묻는다.
 
 ### Added
@@ -19,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pipeline-sidecar.md`** — 형태 없는 출처 행, 바이트 복사한 인터뷰 기록의 run-id 뜻과 생성 조항, 킥오프 기록의 비종단 토큰 `이어받기 고지` 를 정했다.
 - **`kickoff-defaults.sh`** — 런 안 거절 가드를 세 변수로 넓혔다.
 - **`lint-kickoff-defaults.sh`** — 오케스트레이터와 훅 아래에서 `rekick.sh` 자신 말고는 그 이름을 적지 않는다(규칙 4). 이전 런의 답은 킥오프만 읽는다.
+
+### Fixed
+
+- **확정값을 빈칸 행에 묶는다** (`rekick.sh verify-subset`) — `--set` 확정값마다 5o 에서 보인 `--carry` 출력(`--blank-rows`)의 `빈칸` 행과 범위·키·값이 같아야 통과한다. 5o 답은 `5o <범위>:<키>` 로 범위까지 적고, 사용자 확인 문면은 항목 통째로 맞춰 `=10` 이 `=100` 에 걸리지 않는다.
+- **`--set` 이 원격 슬러그 범위를 받는다** — `--carry` 가 대상을 원격 슬러그로 적으므로, 빈칸 행을 그대로 옮긴 `--set` 은 그 슬러그를 선언한 한 대상으로 풀린다. 선언한 대상이 없거나 여럿이면 거절한다.
 
 ### Why
 
