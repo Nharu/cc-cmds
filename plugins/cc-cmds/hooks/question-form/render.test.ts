@@ -118,7 +118,9 @@ describe('이동', () => {
     // 답 없는 text 질문이라 답 칸이 열려 포커스를 받는다.
     const input = await ui.find({ type: 'Input' })
     expect(input?.key).toBe('q2-other-input-1')
-    expect(input?.props).toMatchObject({ label: '답', value: '', autoFocus: true })
+    expect(input?.props).toMatchObject({ value: '', autoFocus: true })
+    // 앞말 라벨은 없다: 바로 위 머리말이 그 칸이 무엇인지 말한다.
+    expect(input?.props?.label).toBeUndefined()
     await expectFolded(ui, 'q1', '1 범위', '좁게')
     // 접힌 줄을 누르면 돌아오고, 고른 것을 다시 누르면 풀린 채 그 자리.
     await ui.press({ key: 'q1' })
@@ -169,7 +171,8 @@ describe('입력칸', () => {
     await ui.press({ key: 'q1-other' })
     const opened = await ui.find({ type: 'Input' })
     expect(opened?.key).toBe('q1-other-input-1')
-    expect(opened?.props).toMatchObject({ label: '기타', placeholder: '직접 입력', value: '', autoFocus: true })
+    expect(opened?.props).toMatchObject({ placeholder: '직접 입력', value: '', autoFocus: true })
+    expect(opened?.props?.label).toBeUndefined()
     // 치는 동안 답은 바로 적히지만 그려지는 value 는 씨앗 그대로다.
     await ui.input({ key: 'q1-other-input-1', text: '중', kind: 'change' })
     await ui.input({ key: 'q1-other-input-1', text: '중간', kind: 'change' })
@@ -216,7 +219,9 @@ describe('입력칸', () => {
     await call($, twoQuestions())
     const ui = await mount($)
     await ui.press({ key: 'q1-note' })
-    expect((await ui.find({ type: 'Input' }))?.props).toMatchObject({ key: 'q1-note-input-1', label: '메모', placeholder: '메모 (선택)', value: '' })
+    const noteInput = await ui.find({ type: 'Input' })
+    expect(noteInput?.props).toMatchObject({ key: 'q1-note-input-1', placeholder: '메모 (선택)', value: '' })
+    expect(noteInput?.props?.label).toBeUndefined()
     await ui.input({ key: 'q1-note-input-1', text: '천천히' })
     expect(await ui.find({ type: 'Input' })).toBeUndefined()
     expect((await ui.find({ key: 'q1-note' }))?.text).toBe('메모: 천천히')
@@ -225,6 +230,38 @@ describe('입력칸', () => {
     await expectFolded(ui, 'q1', '1 범위', '넓게 · +메모')
     await ui.press({ key: 'submit' })
     expect(json(w.submits[0]!.text).answers[0].answer).toBe('넓게\n메모: 천천히')
+  })
+
+  test('기타에 제어 문자 섞인 글을 쳐도 패널이 거부되지 않고 기타 줄은 거른 글이다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'q1-other' })
+    await ui.input({ key: 'q1-other-input-1', text: '앱으로\n가는데\u001b', kind: 'change' })
+    expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타: 앱으로 가는데')
+  })
+
+  // 입력칸 value 는 칸을 열 때의 씨앗으로 고정이므로, 거른 글은 기타·메모 줄과 답 묶음에서 본다.
+  test('메모·text 답에 제어 문자를 섞어 제출하면 답 묶음에 제어 문자가 없다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'q1-other' })
+    await ui.input({ key: 'q1-other-input-1', text: '앱으로\n가는데\u007f\u001b', kind: 'change' })
+    await ui.press({ key: 'q1-note' })
+    await ui.input({ key: 'q1-note-input-2', text: '메모\t한 줄\u0000', kind: 'change' })
+    expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타: 앱으로 가는데')
+    expect((await ui.find({ key: 'q1-note' }))?.text).toBe('메모: 메모 한 줄')
+    await ui.press({ key: 'next' })
+    await ui.input({ key: 'q2-other-input-3', text: '이유\r\n글\u0085', kind: 'change' })
+    await ui.press({ key: 'submit' })
+    const sent = w.submits[0]!
+    const body = json(sent.text)
+    expect(body.answers[0]).toMatchObject({ other: '앱으로 가는데', note: '메모 한 줄', answer: '앱으로 가는데\n메모: 메모 한 줄' })
+    expect(body.answers[1]).toMatchObject({ other: '이유 글', answer: '이유 글' })
+    expect(sent.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
   })
 
   test('기타를 치다 선택지를 고르면 기타가 비고 입력칸이 닫힌다', async ($, on) => {

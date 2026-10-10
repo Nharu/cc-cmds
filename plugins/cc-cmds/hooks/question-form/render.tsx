@@ -2,7 +2,7 @@
 // 받는 순수 함수다. 처리기 안의 `$` 호출은 index.tsx 가 정의한다.
 
 import { EDITOR_SUBMIT_LABEL, NEXT_LABEL, PREV_LABEL, TO_SUBMIT_LABEL, UNANSWERED } from './spec'
-import { CANCEL_KEY, NEXT_KEY, PREV_KEY, SUBMIT_KEY, descriptionIndent } from './layout'
+import { CANCEL_KEY, EDITOR_INDENT, NEXT_KEY, PREV_KEY, SUBMIT_KEY, descriptionIndent } from './layout'
 import type { Row } from './layout'
 import type { FormEditor } from './transitions'
 
@@ -115,17 +115,24 @@ export function drawForm(el: FormElements, rows: Row[], ids: string[], on: FormH
         )
       case 'editor':
         return (
-          <Box paddingLeft={4}>
+          <Box paddingLeft={EDITOR_INDENT}>
             <Input
               key={row.key}
               {...auto(row.autoFocus)}
-              label={row.label}
               placeholder={row.placeholder}
               value={row.value}
               submitLabel={EDITOR_SUBMIT_LABEL}
               onInput={(v: string) => on.typeText(row.qid, row.field, v)}
               onSubmit={(v: string) => on.commitText(row.qid, row.field, v)}
             />
+          </Box>
+        )
+      case 'spacer':
+        return (
+          <Box flexDirection="column">
+            {Array.from({ length: row.lines }, () => (
+              <Text> </Text>
+            ))}
           </Box>
         )
       case 'note':
