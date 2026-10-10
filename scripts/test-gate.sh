@@ -14928,6 +14928,68 @@ pace_rows "인터프리터 속 붙여 쓴 -t" bash -c "cp -R x -t$STATE_CONE/cc-
 ln -s "$PACE_N" "$WORK/plk"
 pace_rows "이름 없이 링크로 닿는 루트" cp "$WORK/r3x" "$(cd "$WORK" && pwd -P)/plk/new.jsonl"
 rm -f "$WORK/plk"
+# A LINK PREPARED BEFORE THE WRITE, followed the way the kernel follows it. A
+# final component that is a link to the backlog, a `..` after a link to a
+# directory under the root, and a two-step chain all spell nothing under the
+# root, and each wrote the backlog past the guard. Asserted on the guard alone
+# and on the backlog's bytes, because the write lands exactly there.
+pace_lw=$(cd "$WORK" && pwd -P)
+mkdir -p "$pace_lw/pl"
+ln -s "$PACE_N/backlog.jsonl" "$pace_lw/pl/b"
+ln -s ../state-cone/cc-cmds/pace/backlog.jsonl "$pace_lw/pl/rb"
+ln -s "$PACE_N/rekick" "$pace_lw/pl/rk"
+ln -s b "$pace_lw/pl/b2"
+pace_lb=$(fsha "$PACE_N/backlog.jsonl")
+pace_rows "마지막 성분이 백로그로 가는 링크(tee)" tee -a "$pace_lw/pl/b"
+pace_rows "마지막 성분이 백로그로 가는 링크(cp)" cp "$WORK/r3x" "$pace_lw/pl/b"
+pace_rows "상대 문면의 마지막 성분 링크" cp "$WORK/r3x" "$pace_lw/pl/rb"
+pace_rows "두 단계 링크" cp "$WORK/r3x" "$pace_lw/pl/b2"
+pace_rows "디렉터리 링크 뒤의 .." cp /dev/null "$pace_lw/pl/rk/../backlog.jsonl"
+pace_rows "인터프리터 속 디렉터리 링크 뒤의 .." bash -c "cp /dev/null $pace_lw/pl/rk/../backlog.jsonl"
+pace_rows "디렉터리 링크 뒤 .. 로 상위 디렉터리" cp -R "$WORK/r3x" "$pace_lw/pl/rk/../.."
+# The link itself: target text read from the link's own directory. Two levels
+# down, so the same text read from the worktree names nothing under the root
+# and only the link arm can refuse it.
+mkdir -p "$pace_lw/pl/d"
+pace_rows "링크 위치 기준 상대 대상의 ln -s" ln -s ../../state-cone/cc-cmds/pace/backlog.jsonl "$pace_lw/pl/d/nb"
+# Through the gate end to end, where the write would otherwise run: the code
+# and the backlog's bytes, since another guard may answer first.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp "$WORK/r3x" "$pace_lw/pl/b"
+check "마지막 성분 링크로 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp /dev/null "$pace_lw/pl/rk/../backlog.jsonl"
+check "디렉터리 링크 뒤 .. 로 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+check "링크 철자로 거절된 백로그는 바이트도 존재도 그대로다" "$(fsha "$PACE_N/backlog.jsonl")" "$pace_lb"
+# A chain longer than the walk follows is refused rather than spelled away.
+pace_ci=0
+ln -s b "$pace_lw/pl/c0"
+while [ "$pace_ci" -lt 9 ]; do
+  ln -s "c$pace_ci" "$pace_lw/pl/c$((pace_ci + 1))"; pace_ci=$((pace_ci + 1))
+done
+pace_iw=$(pace_alone cp "$WORK/r3x" "$pace_lw/pl/c9")
+case "$pace_iw" in
+  *"symbolic link this gate could not resolve"*"rc=룰거부")
+    ok "페이싱 가드가 따라가지 못한 링크 사슬을 거절한다" ;;
+  *) bad "페이싱 가드가 따라가지 못한 링크 사슬을 거절한다" "$pace_iw" ;;
+esac
+# The neighbours pass: a link out of the root, a `..` after a link that leaves
+# the root, and `ln -s` whose target stays beside the root.
+mkdir -p "$pace_lw/pl/out"
+ln -s "$pace_lw/pl/out/f" "$pace_lw/pl/ob"
+ln -s "$pace_lw/pl/out" "$pace_lw/pl/od"
+for spell_row in "cp $WORK/r3x $pace_lw/pl/ob" "cp $WORK/r3x $pace_lw/pl/od/../x" \
+                 "ln -s ../../state-cone/cc-cmds/pace-old/x $pace_lw/pl/d/nb2"; do
+  read -r -a spell_argv <<< "$spell_row"
+  pace_iw=$(pace_alone "${spell_argv[@]}")
+  case "$pace_iw" in
+    "rc=0") ok "페이싱 루트 밖으로 가는 링크 철자는 걸리지 않는다: $spell_row" ;;
+    *) bad "페이싱 가드 오탐: $spell_row" "$pace_iw" ;;
+  esac
+done
+rm -rf "$pace_lw/pl"
 # A word the split cannot resolve is refused, not guessed: the arm the word
 # split brought with it, pinned so that deleting it fails here.
 pace_iw=$(pace_alone dd "of=~-/backlog.jsonl")

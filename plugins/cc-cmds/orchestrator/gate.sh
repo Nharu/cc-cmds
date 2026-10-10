@@ -16387,10 +16387,14 @@ gate_pace_write_guard() {
   # spelling. Every other element (and an option's `=` value) is resolved
   # against the act's directory — logically, then through its deepest existing
   # ancestor, because `rekick/<런>/successor` does not exist before the claim —
-  # and refused when it is the root or lies under it. RESIDUAL: a symlinked
-  # final component pointing into the root, and a `cd` inside a wrapper, are not
-  # seen here; the dispatcher and the deriver run outside every gate, so nothing
-  # legitimate is refused by widening later.
+  # and refused when it is the root or lies under it. A symlinked final
+  # component and a `..` after a symlinked directory are followed the way the
+  # kernel follows them (`gate_pace_path_hit`), and `ln` is refused when its
+  # target, read from the link's own directory, lands in the root
+  # (`gate_pace_link_guard`). RESIDUAL: a `cd` inside a wrapper, and a link
+  # swapped between this check and the act running, are not seen here; the
+  # dispatcher and the deriver run outside every gate, so nothing legitimate is
+  # refused by widening later.
   #
   # A PATH CARRIED INSIDE A LARGER ELEMENT IS A DESTINATION TOO, and the two arms
   # above did not see it. `sed -n 'w <pace>/backlog.jsonl' /dev/null` grades as
@@ -16500,10 +16504,81 @@ gate_pace_write_guard() {
            && ! gate_pace_tail_may_hit "$n" "$eb" ${names[@]+"${names[@]}"}; then
           continue
         fi
-        if gate_pace_path_hit "$n" "$base" "$r1" "$r1p" "$r2" "$r2p"; then
+        rc=0
+        gate_pace_path_hit "$n" "$base" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+        if [ "$rc" = 0 ]; then
           gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
         fi
+        if [ "$rc" = "$GATE_LEAF_UNRESOLVED" ]; then
+          gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+        fi
       done
+    done
+  done
+  gate_pace_link_guard "$base" "$r1" "$r1p" "$r2" "$r2p" -- "$@"
+}
+
+gate_pace_link_guard() {
+  # gate_pace_link_guard <base> <root spelling>... -- <argv...> — for `ln`,
+  # `GATE_EXIT_RULE` with the refusal said when a link target resolves, from
+  # the directory the link is made in, to the pacing root or under it; 0
+  # otherwise and for every other argv0.
+  #
+  # A LINK'S TARGET TEXT IS READ FROM THE LINK'S DIRECTORY, not from the act's.
+  # `ln -s ../../../home/…/pace/backlog.jsonl a/b` names, against the worktree,
+  # a path that is nowhere near the root, so the at-or-under arm answered no
+  # and the next act wrote the backlog through `a/b`. The write itself is now
+  # refused by following the link, and this refuses the link in the first
+  # place: a stage has no reason to point anything into the dispatcher's
+  # directory. Every operand is tried against the directory of the last
+  # operand, against the last operand itself (a directory receives the link
+  # inside it) and against a `-t`/`--target-directory` value.
+  local base="$1" a last t rc i
+  local -a roots bases ops
+  shift
+  roots=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    roots[${#roots[@]}]=$1; shift
+  done
+  [ "$#" -gt 0 ] && shift
+  [ "$#" -ge 1 ] || return 0
+  case "${1##*/}" in
+    ln|gln) ;;
+    *) return 0 ;;
+  esac
+  shift
+  bases=(); ops=(); t=""
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
+    if [ -n "$t" ]; then bases[${#bases[@]}]=$a; t=""; continue; fi
+    case "$a" in
+      --target-directory=*) bases[${#bases[@]}]=${a#*=} ;;
+      --target-directory|-t) t=1 ;;
+      --) ;;
+      -t?*) bases[${#bases[@]}]=${a#-t} ;;
+      -*) ;;
+      *) ops[${#ops[@]}]=$a ;;
+    esac
+  done
+  [ "${#ops[@]}" -ge 1 ] || return 0
+  last=${ops[$((${#ops[@]} - 1))]}
+  bases[${#bases[@]}]=$last
+  bases[${#bases[@]}]=$(dirname "$last")
+  i=0
+  while [ "$i" -lt "${#bases[@]}" ]; do
+    bases[$i]=$(gate_lexical_abs "${bases[$i]}" "$base")
+    i=$((i + 1))
+  done
+  for a in "${ops[@]}"; do
+    for t in "${bases[@]}"; do
+      rc=0
+      gate_pace_path_hit "$a" "$t" "${roots[@]}" || rc=$?
+      if [ "$rc" = 0 ]; then
+        gate_pace_write_refuse "ln $a (from $t)" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+      fi
+      if [ "$rc" = "$GATE_LEAF_UNRESOLVED" ]; then
+        gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
     done
   done
   return 0
@@ -16553,6 +16628,22 @@ gate_pace_ancestor_guard() {
     esac
     anc=0
     gate_word_is_at_or_above "$w" "$@" || anc=$?
+    # `<link>/..` names the parent of the link's target, which the lexical
+    # fold inside the predicate above cannot see.
+    if [ "$anc" = 1 ]; then
+      case "/$w/" in
+        */../*)
+          anc=$(gate_path_spelling "$(gate_physical_dotdot "$w")")
+          anc=$(gate_path_spelling "$(gate_real_prefix "$anc")")
+          for r in "$@"; do
+            [ -n "$r" ] || continue
+            if gate_path_is_at_or_above "$anc" "$r"; then
+              gate_pace_write_refuse "$a" "$1"; return "$GATE_EXIT_RULE"
+            fi
+          done
+          anc=1 ;;
+      esac
+    fi
     if [ "$anc" = "$GATE_LEAF_UNRESOLVED" ]; then
       gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
@@ -16575,18 +16666,78 @@ gate_pace_path_hit() {
   # deepest existing ancestor (`gate_path_is_at_or_under`) — the two layers the
   # run directory guard keeps, because a byte test let `…/PACE/backlog.jsonl`
   # overwrite the real file on a case-insensitive volume.
-  local v="$1" base="$2" an ap n; shift 2
+  #
+  # A LINK IS FOLLOWED THE WAY THE KERNEL FOLLOWS IT, and the two spellings
+  # above did not. `gate_real_prefix` folds only the deepest existing
+  # directory, so a final component that is a link to `<pace>/backlog.jsonl`
+  # stayed the link's own name; and `gate_lexical_abs` folds `..` as text, so
+  # `<link to pace/rekick>/../backlog.jsonl` lost the link before anything
+  # looked at it. Measured: `tee -a <link>` and `cp /dev/null
+  # <dirlink>/../backlog.jsonl` both wrote the backlog the lane dispatcher
+  # launches unattended runs from, with this predicate answering no. The final
+  # link is now followed by `gate_leaf_spelling`, as the run directory guard
+  # does, and a path carrying `..` is also resolved with each `..` taken from
+  # the physical parent (`gate_physical_dotdot`) and its own final link
+  # followed. A link chain the walk cannot finish returns
+  # `GATE_LEAF_UNRESOLVED`, which the caller refuses.
+  local v="$1" base="$2" an ap al ad adl n s; shift 2
   GATE_PACE_HIT=""
   an=$(gate_path_spelling "$(gate_lexical_abs "$v" "$base")")
   ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+  al=$(gate_leaf_spelling "$ap") || return "$GATE_LEAF_UNRESOLVED"
+  ad=""; adl=""
+  case "/$v/" in
+    */../*)
+      ad=$(gate_path_spelling "$(gate_physical_dotdot "$v" "$base")")
+      ad=$(gate_path_spelling "$(gate_real_prefix "$ad")")
+      adl=$(gate_leaf_spelling "$ad") || return "$GATE_LEAF_UNRESOLVED" ;;
+  esac
   for n in "$@"; do
     case "$n" in ''|'/'|'.') continue ;; esac
     if gate_nocase_at_or_under "$an" "$n" || gate_nocase_at_or_under "$ap" "$n" \
        || gate_path_is_at_or_under "$ap" "$n"; then
       GATE_PACE_HIT="$n"; return 0
     fi
+    for s in "$al" "$ad" "$adl"; do
+      [ -n "$s" ] || continue
+      if gate_nocase_at_or_under "$s" "$n" || gate_path_is_at_or_under "$s" "$n"; then
+        GATE_PACE_HIT="$n"; return 0
+      fi
+    done
   done
   return 1
+}
+
+gate_physical_dotdot() {
+  # gate_physical_dotdot <path> [<base>] — the path absolutized against <base>
+  # (the grading directory by default) with every `..` taken from the PHYSICAL
+  # parent of what precedes it, the way the kernel takes it. Other components
+  # stay as spelled; the caller resolves the result's prefix and final link.
+  #
+  # `gate_lexical_abs` rewinds `..` as text, which is the right answer for a
+  # name about to be created and the wrong one after a symlinked directory:
+  # `<link>/..` is the parent of the link's TARGET. Each `..` resolves the
+  # prefix so far through `gate_real_prefix` (which follows a link to a
+  # directory) and drops its last component, so one `cd` per `..` and none for
+  # a path without one.
+  local p="$1" base="${2:-}" out='' seg d
+  [ -n "$base" ] || base=$(gate_grade_cwd)
+  case "$p" in
+    /*) ;;
+    *)  p="$base/$p" ;;
+  esac
+  while [ -n "$p" ]; do
+    seg="${p%%/*}"
+    if [ "$seg" = "$p" ]; then p=''; else p="${p#*/}"; fi
+    case "$seg" in
+      ''|.) ;;
+      ..)
+        d=$(gate_real_prefix "${out:-/}")
+        out="${d%/*}" ;;
+      *)  out="$out/$seg" ;;
+    esac
+  done
+  printf '%s' "${out:-/}"
 }
 
 gate_autoadopt_ok() {
