@@ -3,13 +3,13 @@ name: autopilot
 description: 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고
 when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널로 중계되고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때
 disable-model-invocation: true
-usage: "/cc-cmds:autopilot <의도 또는 대상> [--report]"
+usage: "/cc-cmds:autopilot [의도 또는 대상] [--report]"
 options:
     - name: "<의도 또는 대상>"
       kind: positional
-      required: true
-      summary: "이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다."
-      parse_note: "`$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다."
+      required: false
+      summary: "이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. 같은 세션이 연 런이 멈춘 뒤 비우거나 `다시`·`이어서`·`재개` 같은 재개 낱말, 또는 그 런의 의도 문면 그대로 부르면 그 런의 답을 이어받아 새 런을 바로 시작한다(재킥오프)."
+      parse_note: "`$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다. 재킥오프인지는 1막 맨 앞의 판별이 닫힌 낱말 목록으로 정하고, 그 밖의 인자는 새 런이다."
     - name: "--report"
       kind: flag
       default: "off (킥오프 모드 — 1막 인터뷰 후 드라이버 기동)"
@@ -73,6 +73,8 @@ A lead that routes on a channel event is a second router, and two routers disagr
 
 **CFI-10 — Kickoff defaults are answers a person wrote ahead of time, and only the kickoff reads them.** The defaults file and the environment variables 5o names are read by this skill in Act 1 and by nothing else: the gate, the driver, the fleet and the watcher never open the file or read the variables, so editing the file never changes a run that is already going. The one path from a default into a run is the person confirming it at 5o and Step 6 freezing it into the manifest, in the field and the spelling the question it answers would have produced. `scripts/lint-kickoff-defaults.sh` checks the tree for the first half.
 
+**CFI-11 — 재킥오프는 다른 런의 매니페스트·인가 기록·원장을 이 두 도우미로만 읽는다. 새 런의 값은 원천과 바이트가 같거나, 이번에 물었거나, 이번에 다시 유도한 것이다. 이어받은 값은 한 화면에 보이고 같은 차례에 기동한다.** The two helpers are `<plugin root>/orchestrator/rekick.sh` and `<plugin root>/orchestrator/kickoff-defaults.sh --carry`, and this file is the only one that names both (Step 1.0). Never read a previous run's files by hand to fill a value, never copy a value out of its kickoff trace, and never carry a ledger row as a permission: a ledger row only triggers a question. Like CFI-10's file, `rekick.sh` is called by this skill and by nothing in a run — it refuses inside one, and `scripts/lint-kickoff-defaults.sh` checks that nothing under the orchestrator or the hooks names it.
+
 **CFI numbers are never moved or reused** — citations to them live outside this file.
 
 ---
@@ -95,6 +97,45 @@ Load deferred tools via ToolSearch before any other step:
 
 ## Act 1 — with a person here
 
+### Step 1.0: Re-kickoff — carry a stopped run's answers into a new run
+
+**When `$ARGUMENTS` carries `--report`, this step does not run** — go to Step 1, whose first item jumps to Act 3, so a report call never shows a re-kickoff notice. Otherwise this step runs first on every kickoff, before any question and before `<base>` exists: Step 2 resolves `<base>` only once the targets are settled, so the previous run's `<base>` comes from the helper below, never from the worktree this session stands in.
+
+**Two helpers, and only these two** (CFI-11): `bash <plugin root>/orchestrator/rekick.sh <mode> …`, which finds the previous run, checks it, removes the steps its ledger proves finished and renders the new manifest, and `bash <plugin root>/orchestrator/kickoff-defaults.sh --carry …`, which reads the previous manifest's values against the kickoff defaults and recomputes the deadline. Both write nothing and print TSV; neither is handed to anything in the run. Show the Korean lines they print verbatim — the `고지` and `굵게` lines especially — and never rewrite them in prose. Before the writes below, read the manifest contract the way Step 1 item 2 says, because the re-kickoff path writes the same files without passing Step 1.
+
+1. **Detect.** `rekick.sh detect --arg '<$ARGUMENTS, verbatim, possibly empty>'`. The helper reads this session's id from its own environment; never pass it, never print it. The first `판정` line decides:
+   - `새 런 <id>` — show the `고지` line (「이 세션이 연 런(<id>)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요」), then go to Step 1 as a first kickoff.
+   - `없음` — show the `고지` line (「이 세션이 연 런을 찾지 못했습니다 — 처음 킥오프처럼 묻습니다」), then go to Step 1. With an empty argument, show the frontmatter's `usage` line instead and stop: there is no intent to judge.
+   - `열림 <id>` — show the `고지` lines and stop. No run id is minted and no trace is created: that run is still going or still waiting for an answer, and answering it is how it continues (「Resuming after a break」).
+   - `완료 <id>` — show its two `고지` lines and stop, the same way.
+   - `재킥오프 <id> <원천 base>` — go on. The `<원천 base>` is what every mode below takes as `--base`.
+2. **Integrity.** `rekick.sh verify --prev <id> --base <원천 base>`. On `판정 실패`, say in one line which check failed (the `검사 … 실패` lines name it) and go to Step 1 as a first kickoff — there is no partial carry. On `통과`, keep the three `해시` values; every later call is bound to them.
+3. **Targets.** The target list is the source manifest's `## 대상` rows (the `대상` lines of `verify`), not an entry judgment — this path does not run Step 1. Run Step 2's disk verification for each row (main worktree and common git directory, base branch, remote slug, `실행 워크트리`) and compare with the row's identity fields byte for byte. A target that matches is confirmed without a question. Only a target that does not match takes Step 2's confirmation; when its `원격 슬러그` or `공통 git 디렉터리` moved, end that question's text with its permission fields verbatim — 「이 대상에 이어지는 권한: 절단점=…, 리뷰 상한=…, 종단 상한=…」 — a worktree that only moved does not take the tail. The home target is the row carrying `홈=예`; there is no home question. Then do what Step 2 does next: resolve `<base>` by Step 6's rule, mint the run id, create the kickoff trace. That fixes the new run id and the new `킥오프 일시` (the trace's first line). If this `<base>` differs from `<원천 base>`, treat the home target as one that failed verification and ask its confirmation. A re-kickoff whose source and disk are unchanged asks nothing here.
+4. **Graph.** `rekick.sh graph --prev <id> --base <원천 base> --expect-sha256 <매니페스트 해시> [--accepted <별칭,…>]`. Its `건너뜀` lines are the steps removed with their grounds; `그래프 바뀜` means 5l is asked, offering the drawn plan as the proposal.
+5. **Defaults and the deadline.** `kickoff-defaults.sh --carry <원천 base>/docs/pipeline-run/<id>.plan.md --kickoff-at <3 의 킥오프 일시> --expect-sha256 <매니페스트 해시>`. A non-zero exit means the source moved after it was verified: say so in one line and stop — no new run is started. `마감 ok` is the new deadline; any other `마감` row means 5e is asked once, with no silent fallback to the defaults file's `deadline`.
+6. **Questions — these eight and no others** (anything else is carried, not asked; a person who wants a different value calls again with an intent, which is a first kickoff):
+   1. a target that failed verification in 3 — Step 2's confirmation; the answer rewrites only that target's identity fields;
+   2. each `대상추가` line of `graph` — Step 2's confirmation and that target's 5b–5d; accepting one re-asks 5p and 5q with the carried rows as the first option, no recommendation tail, and 「이 런의 모든 대상에 적용」 on each; a refused one does not become a target;
+   3. each `빈칸` row of `--carry` — one 5o confirmation for all of them; every confirmed scalar row is carried into the draft as `--set <범위>:<키>=<파일 값>` (the row's own scope, key and file value, verbatim), and a confirmed `auto-adopt` or `act-allow` row goes into the `--rows` file;
+   4. `그래프 바뀜` — 5l;
+   5. a Step 3 check that now fires (stage-policy drift, the visual-fidelity marker, a residual item of the frozen document) — run Step 3 and ask what it asks;
+   6. a deadline `--carry` could not compute — 5e, once; record the answer as given under `5e` and the absolute instant it was resolved to, once, under `5e 값`;
+   7. a carried value today's vocabulary refuses — a `질문` line of `verify` (an auto-adoption class), a cutpoint outside today's `CUTPOINTS`, a rule key that can no longer be turned off — its original question, never a silent fix or drop;
+   8. a `질문 베이스설계` line of `verify` — whether to bind to the changed base contract.
+
+   Record each question asked and its answer verbatim as one `<키><TAB><답 축자>` line in a scratch file under `${TMPDIR:-/tmp}` — the `--asked` file — with the keys `rekick.sh` reads: `대상확인 <별칭>`, `대상추가 <별칭>`, `5p`, `5q`, `5e`, `5e 값`, `5l`, `5o <키>`, `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`. A key asked again is recorded again; the last line of a key is the one that counts.
+7. **Writes, in this order — any failure stops before the next write and nothing is started.** **Before 7.1, run Step 6's deadline re-check on the new deadline** — `마감 ok`'s value, or 5e's resolved value. On `지남`, ask 5e again, append its `5e` and `5e 값` lines to the `--asked` file, and render with the new value: the re-check comes before the draft so that the value written is the value `verify-subset` checked, and the draft is never edited after it.
+   1. `rekick.sh render-manifest --prev <id> --base <원천 base> --run-id <new> --kickoff-at <ts> --deadline <새 마감> --expect-sha256 <매니페스트 해시> --expect-grant-sha256 <인가 기록 해시> --arg '<$ARGUMENTS>' --asked <파일>`, adding `--targets <파일>` with the target rows when 6.1, 6.2 or 6.7 changed one, `--rows <파일>` with the `사전 인가` and `자동 채택` rows 6.2, 6.3 or 6.7 took, `--set <범위>:<키>=<값>` per 6.3 scalar row, `--rule <키>=<켬|끔>` per 6.7 rule answer, `--bind-base <verify 의 지금 해시>` on a 「묶는다」 answer to 6.8, and `--visual-marker <값>` from 6.5. It prints the draft. `사용자 확인 문면` in it is this call's argument verbatim (`/cc-cmds:autopilot` when empty) followed, after ` / `, by the answers asked and then each `--set` entry as given — never the old text.
+   2. `rekick.sh verify-subset <초안> <원천 매니페스트> --expect-sha256 … --expect-grant-sha256 … --asked <파일>`, with the same `--set` entries as 7.1 — `판정 통과` or stop, naming the failed checks.
+   3. The manifest, written whole and creation-only from the draft, as Step 6 writes one — byte for byte the draft 7.2 passed.
+   4. Step 6's nine-field block `## 인가 <new-id>`, built from the manifest just written: `권한 절단점` is its `런 최대 절단점`, never the source grant's. Before appending it, `verify-subset … --grant <블록 파일>` — `통과` or stop.
+   5. The block, appended as Step 6 appends one.
+   6. When the design step stays: `rekick.sh render-interview --prev <id> --base <원천 base> --expect-sha256 <매니페스트 해시>` written creation-only to `<base>/docs/pipeline-run/<new-id>.interview.md`, then its `sha256` compared with the source interview row's — a mismatch stops before anything is started.
+   7. The trace line `단계=이어받기 고지 | 이전 런=<id> | 매니페스트 sha256=<hex> | 인가 기록 sha256=<hex> | 인터뷰 sha256=<hex|-> | 이어받음=<n> | 물음=<k>`, then `매니페스트 기록`.
+8. **One screen, then start.** In the message that opens Act 2, show once, in Korean and without emoji: the head 「이전 런 <id>(<갈래>, 킥오프 <시각>)의 답을 그대로 이어받아 새 런 <new-id>를 바로 시작합니다」; `[의도]` its first line; `[대상]` one line per target with cutpoint, review ceiling, terminal cap, dev ids and deploy triggers; `[종료 지점]` the text and the clause count; `[마감]` the new absolute value and 「이전 런 간격 <d일 h시간 m분>을 지금부터 다시 잡았습니다(이전 마감 <절대값>)」; `[런 경계]` ceiling, stagnation bound, ladder, undeclared disposition, visual marker; **`[이전 런에서 이어받은 권한]`** in bold, headed 「이 호출로 아래 권한이 새 런 <new-id> 에 다시 생깁니다」, built from every `권한` row of `--carry` verbatim with its widening mark — not prose; `[단계 그래프]` the remaining steps one phrase each and 「건너뜀: <id> <skill> — <근거>」 per removed one; `[설계 팀]` only when the design step stays; `[기동]` 즉시; then the one-line notices — values that differ from the defaults file (「킥오프 기본값 파일과 다른 값 <n>건(<질문 이름들>) — 이전 런 값을 씁니다」), the `굵게` lines of `detect` (a limit that ended the source, a gate-ended source with parks left, a source invalidated by a forced surface move, termination clauses that ended `불가능` or `보류`), the banner switch, stage-policy drift, refused added targets (「이전 런이 만난 대상 <별칭들>은 이번에 더하지 않았습니다」), unlanded segments (「이전 런의 머지되지 않은 작업(<PR 목록>)은 이어받지 않습니다 — 새 런이 그 세그먼트를 다시 합니다」), and the way out 「이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요」. Nothing is asked after it: go straight to Step 7's immediate path. A re-kickoff is never deferred and never asks 5n.
+
+**A stop after the trace exists appends `단계=중단` to it first** (CFI-9) — a failed `--carry`, a failed `verify-subset`, an interview copy whose hash does not match.
+
 ### Step 1: Read the contracts, then judge the entry
 
 1. Parse `$ARGUMENTS`. `--report` selects the reporting mode — **if present, jump to Act 3.** Everything else is the intent, read whole.
@@ -106,7 +147,7 @@ Load deferred tools via ToolSearch before any other step:
 
 ### Step 2: Declare and verify the targets
 
-The judgment **proposed** repositories; it did not decide them. Present the list and take a confirmation with `AskUserQuestion`. For each confirmed target, resolve and verify on disk:
+The judgment **proposed** repositories; it did not decide them. Present the list and take a confirmation with `AskUserQuestion`. **On the re-kickoff path there is no list to confirm:** the targets are the `## 대상` rows of the source Step 1.0 chose, a target whose disk verification matches its row's identity fields is not asked about, and only one that does not match takes this confirmation (Step 1.0 item 3). For each confirmed target, resolve and verify on disk:
 
 - the main worktree root, and its common git directory (`git rev-parse --path-format=absolute --git-common-dir`),
 - the base branch,
@@ -119,7 +160,7 @@ The judgment **proposed** repositories; it did not decide them. Present the list
 
 **A target that does not verify is a hard stop, not a warning.** The driver preflights the same values and refuses to start; discovering that here, with the user present, costs a sentence, and discovering it at 3am costs the night.
 
-Exactly one target is `홈=예`. If the judgment could not tell which, ask with `AskUserQuestion`.
+Exactly one target is `홈=예`. If the judgment could not tell which, ask with `AskUserQuestion`. On the re-kickoff path the home target is the source row carrying `홈=예`, and there is no home question.
 
 **Once the confirmation, the per-target verification and the home target are all settled, resolve `<base>`, mint the run id and create the kickoff trace — here, once.** Resolve the home target's `<base>` by Step 6's rule (the parent of the common git directory). Then assign `<run-id>`: a short, collision-free identifier, and this run's id from here on — 5m, Step 6 and Step 7 use it rather than minting their own. Then create the kickoff trace `<base>/docs/pipeline-run/<run-id>.kickoff.md` (`pipeline-sidecar.md` `### 2b.6`) in the creation form, which refuses to overwrite a file that already exists, with its header comment and first line:
 
@@ -133,9 +174,9 @@ Every later line is appended in the append form, which fails and creates nothing
 [ -f "<trace>" ] && printf '%s\n' "- <ISO8601> | 단계=<토큰>" >> "<trace>"
 ```
 
-Tell the person the run id and the trace path, once. Then, among this base's `*.kickoff.md` traces that are not terminal by `### 2b.6`'s rule, leave out the one just created and take the most recent; if there is one, say so in one line — 「멈췄거나 다른 세션에서 진행 중인 킥오프가 있습니다(<id>, <단계>, <경과>) — 이 킥오프는 그것을 이어받지 않습니다」. Only that one is named, and nothing is taken over from it.
+Tell the person the run id and the trace path, once. Then, among this base's `*.kickoff.md` traces that are not terminal by `### 2b.6`'s rule, leave out the one just created and take the most recent; if there is one, say so in one line — 「멈췄거나 다른 세션에서 진행 중인 킥오프가 있습니다(<id>, <단계>, <경과>) — 이 킥오프는 그것을 이어받지 않습니다」. Only that one is named, and nothing is taken over from it. That notice is about unfinished kickoff traces only: a re-kickoff carries from the run Step 1.0 chose and from nothing else, and takes nothing from any trace.
 
-**At every Act 1 boundary the order is: append the trace line, then the text, then the call** (CFI-9). The token is the boundary's own: `계획 제시` as Step 4 presents the plan, `요구사항 인터뷰` as 5j begins, `요구 확인` as 5j's closing read-back is shown, `기본값 고지` as 5o shows what it read, `기본값 확정` once 5o's confirmation is answered, `경계 질문` as 5a begins, `로스터` at 5k, `승인` at 5l, `인터뷰 동결` once 5m has its hash, `매니페스트 기록` once Step 6 has written, then `기동 직전` or `연기` in Step 7 — and `문답(텍스트)` or `중단` where CFI-9 says, and `문답(질문지)` before a form call. A trace line carries progress tokens, counts, paths and hashes only; the person's words go into the interview record and nowhere else. The two 5o lines carry counts and no value: `단계=기본값 고지 | 제시=<적용 행 수> | 무시=<무시 행 수> | 파일=<파일에서 온 적용 행 수> | 환경=<환경변수에서 온 적용 행 수> | 경로=<원천 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->` and `단계=기본값 확정 | 적용=<확정한 값 수> | 해제=<해제한 값 수>`.
+**At every Act 1 boundary the order is: append the trace line, then the text, then the call** (CFI-9). The token is the boundary's own: `계획 제시` as Step 4 presents the plan, `요구사항 인터뷰` as 5j begins, `요구 확인` as 5j's closing read-back is shown, `기본값 고지` as 5o shows what it read, `기본값 확정` once 5o's confirmation is answered, `경계 질문` as 5a begins, `로스터` at 5k, `승인` at 5l, `인터뷰 동결` once 5m has its hash, `이어받기 고지` once a re-kickoff's writes are done (Step 1.0 item 7), `매니페스트 기록` once Step 6 has written, then `기동 직전` or `연기` in Step 7 — and `문답(텍스트)` or `중단` where CFI-9 says, and `문답(질문지)` before a form call. A trace line carries progress tokens, counts, paths and hashes only; the person's words go into the interview record and nowhere else. The two 5o lines carry counts and no value: `단계=기본값 고지 | 제시=<적용 행 수> | 무시=<무시 행 수> | 파일=<파일에서 온 적용 행 수> | 환경=<환경변수에서 온 적용 행 수> | 경로=<원천 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->` and `단계=기본값 확정 | 적용=<확정한 값 수> | 해제=<해제한 값 수>`.
 
 **If the home target changes after the trace exists** — an answer to the Step 4 plan can move it — this step's confirmation and verification run again. When the new `<base>` differs, append `- <ISO8601> | 단계=대상 변경 | 새 base=<경로>` to the old trace, then create the trace in the new base under the same run id, in the creation form, starting with `대상 확인`. That is the only second creation there is.
 
@@ -410,6 +451,8 @@ Before writing it, check it yourself against these, and fix what fails:
 
 Then take its whole-file `sha256` (`shasum -a 256`) and append `단계=인터뷰 동결 | 경로=<기록 경로> | sha256=<기록 해시>` to the kickoff trace; Step 6 writes the path and that value into the manifest. The record does not carry the roster — it refers to the manifest's `설계 로스터` rows. **Do not edit it after the hash is taken.** Nothing re-hashes the file at runtime, so an edit after that point is seen by no gate, and the manifest goes on vouching for bytes that are gone.
 
+**A re-kickoff whose design step stays writes this record once too, but 5j does not run for it**: the record is the source run's record copied byte for byte by Step 1.0 item 7, creation-only under the new run id, and its hash is the source row's. Its title and header lines keep naming the run that held the interview.
+
 **A `lead-solo` document is written after 5m**, in this conversation, out of the interview it has just held, under the contract in Step 4 (「What a `lead-solo` document owes」). Write the freeze line of (c) into it, then take its path and whole-file `sha256`; that record is its freeze.
 
 **5n — Immediate or deferred kickoff. This step is the criterion, and there is no other.** Ask with `AskUserQuestion` (header chip `기동 시점`) whether the run starts in this session or is frozen into the pace backlog for a lane's `fleet.sh dispatch` job to start later. Offer `즉시` (recommended) and `연기`, and say in one clause what `연기` costs: nothing is relayed into this terminal, and the authorization sitting in the backlog is spent by a job that runs while nobody is here. **When the answer is `연기`, say the frozen absolute deadline once more**, and in one line that a launch after it parks the run with `deadline-passed` — a relative deadline was resolved once, against this kickoff's time, and is not resolved again at launch.
@@ -458,7 +501,7 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 - when Step 2 settled an adoption, one `- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>` row per adopted segment, with the values Step 2 verified. The manifest check holds the row to its form only; the gate checks the worktree, the branch and the earlier run when the segment is planned;
 - when 5s took rows, one `- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>` row per confirmed predecessor, exactly as read back. The manifest check refuses a malformed row and a second row for one slice; the planning act checks the slug against the slice's `레포` and the commit against that repository's base branch.
 
-**A value confirmed at 5o lands where the answer to its question would have landed, in the same spelling** — the manifest and the authorization record have no field that says a value came from a default; the trace lines `기본값 고지` and `기본값 확정` are where that is recorded. **Re-check a deadline confirmed at 5o just before writing**: run `bash <plugin root>/orchestrator/kickoff-defaults.sh --check-deadline <절대값>`. On `지남`, do not write that value — ask 5e as before and freeze the new answer; it is never resolved again. A call refused by the user's permission settings or ending non-zero counts as `지남`: a deadline nobody could check is not frozen.
+**A value confirmed at 5o lands where the answer to its question would have landed, in the same spelling** — the manifest and the authorization record have no field that says a value came from a default; the trace lines `기본값 고지` and `기본값 확정` are where that is recorded. **Re-check a deadline confirmed at 5o — or computed by a re-kickoff's `--carry`, where the re-check runs before the draft is rendered (Step 1.0 item 7) — just before writing**: run `bash <plugin root>/orchestrator/kickoff-defaults.sh --check-deadline <절대값>`. On `지남`, do not write that value — ask 5e as before and freeze the new answer; it is never resolved again. A call refused by the user's permission settings or ending non-zero counts as `지남`: a deadline nobody could check is not frozen.
 
 **Write `리뷰 정책 상한` on every target row whose cutpoint is `머지` or above, even when the value is the strictest one.** Its absence reads as the strictest value, but on a row without the field a differently spelled ceiling that found its way into the row becomes the only ceiling there is; with the field written, the duplicate stops the manifest check instead.
 
@@ -1151,6 +1194,7 @@ Cover, in this order:
   - (ii) per segment, each labelled row's `부류`, `사이클` and `원장 줄`, then its `소비 줄` or 「소비 안 됨」. A consuming line proves only that a new plan FOLLOWED the label, not that the plan acted on it — never write 「반영됨」.
   - (iii) mark a current label `현재`. When the segment's last non-empty `상태` is `머지됨` or `완료`, add 「끝난 세그먼트의 라벨」; `park` and `리뷰중` do not take it, because a person can resume such a segment and the label is still the latest review's fact for them.
   - (iv) a replay that prints nothing renders 「없음」; a failure of this item's own awk renders 「정체 라벨: 계산 실패」, never 「없음」.
+- **이어받은 인가** — only when the manifest carries a `사전 인가` row whose first field is `이어받은 런=`: the source run id, and its `매니페스트 sha256=` and `인가 기록 sha256=` values as written. Find the row by that first field, never by its lack of `형태=`, which the interview-record row shares. With no such row, leave the section out.
 - **판본** — the `run` row's `판본`, `판본 트리` and `판본 다이제스트`: the commit, the plugin subtree's git tree and the content digest of the copy that actually enforced this run. `(고정 안 함)` means the run was never pinned — it opened before pinning existed, or under the test seam — and is a statement about the run, not a missing value. `(미커밋)` means the subtree was dirty when the copy was taken. To reproduce a pinned version, `git archive <판본 트리> | tar -x` in the plugin repository and check that the result's content digest equals `판본 다이제스트`; a `(미커밋)` version cannot be reproduced once the reaper has collected the run directory.
 - **비용** — the accumulated `cost` rows, and the cycle count against the run's cycle budget. Put **`정산됨(비용 불명) N건`** — the count of `외부 종료` rows — beside the total: a settled stage has no envelope and therefore no `cost` row, so a total shown alone reads lower than what was spent. Where this run has no `cost` row at all, report `비용 불명`, never `0`.
 - **계측 필링 건너뜀** — every `계측 필링 건너뜀` row with its `사유` (`자격 없음` · `상한 도달` · `번호 없음` · `조회 실패`) and `트리거`; and every `자율 승인` row with `절단점=필링` (the issues the collector filed, commented on or closed). Where there is no such row, say so — silence here is not "nothing to file".

@@ -12,8 +12,9 @@
 #
 # ONLY THE KICKOFF CALLS THIS. The gate, the driver, the fleet and the watcher
 # never read the file or the variables, so a running run is not changed by
-# editing the file. Inside a pipeline run (`CC_PIPELINE_RUN_ID` set) this
-# program refuses with exit 3 before it reads anything.
+# editing the file. Inside a pipeline run (`CC_PIPELINE_RUN_ID`,
+# `CC_PIPELINE_STAGE_ID` or `CC_PIPELINE_SHIFT_ID` set) this program refuses
+# with exit 3 before it reads anything.
 #
 # The file
 #
@@ -49,6 +50,8 @@
 #   kickoff-defaults.sh --target <owner/name> [--target …]
 #                       [--apply-actor 파이프라인|사람|없음] [--now <epoch>]
 #   kickoff-defaults.sh --check-deadline <ISO8601> [--now <epoch>]
+#   kickoff-defaults.sh --carry <previous manifest> --kickoff-at <ISO8601>
+#                       --expect-sha256 <hex> [--now <epoch>]
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
 #
@@ -58,10 +61,26 @@
 #
 # `--check-deadline` prints one line, `지남` or `남음`, and no header.
 #
+# `--carry` reads a previous run's frozen manifest as the answers and the file
+# only as the thing it is compared with. The same header and `원천` row, then:
+#
+#   적용          <범위>  <키>  <이전 값>  이전 매니페스트  <확대 0|1>  <효과 한 줄>
+#   차이          <범위>  <키>  <이전 값>  <파일 값>  <출처>
+#   빈칸          <범위>  <키>  <파일 값>  <출처>  <확대 0|1>  <효과 한 줄>
+#   권한          <범위>  <키>  <이어받는 값 축자>  <확대 0|1>  <효과 한 줄>
+#   마감          ok  <새 절대 마감>  <간격 초>
+#   마감          <사유 토큰>  <사유 문면>
+#   이어받지 않음  <범위>  <키>  <사유 토큰>  <사유 문면>
+#
+# Every key of the key table yields, per scope it lives in, an `적용` row, a
+# `빈칸` row or an `이어받지 않음` row. The previous manifest is copied once to a
+# private file whose whole sha256 must equal `--expect-sha256` — the hash the
+# kickoff verified — and every read after that is of the copy.
+#
 # Exit codes: 0 read (zero rows included) · 2 usage, or a `--check-deadline`
-# value that is not the absolute form · 3 refused (inside a run) or the
-# vocabulary could not be read. On 2 and 3 stdout is empty and stderr carries
-# one line.
+# value that is not the absolute form · 3 refused (inside a run), the
+# vocabulary could not be read, or the `--carry` copy does not hash to
+# `--expect-sha256`. On 2 and 3 stdout is empty and stderr carries one line.
 #
 # Compatibility: bash 3.2 — no associative arrays, no `declare -A`. Time is
 # computed with jq only; `date` is not used, `%z` is not used.
@@ -74,14 +93,41 @@ KD_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 kd_refuse() { printf '%s: %s\n' "$KD_PROG" "$1" >&2; exit 3; }
 kd_usage()  { printf '%s: %s\n' "$KD_PROG" "$1" >&2; exit 2; }
 
-if [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then
-  kd_refuse "파이프라인 런 안에서는 읽지 않습니다 — 킥오프 기본값은 킥오프만 읽습니다 (CC_PIPELINE_RUN_ID 가 설정돼 있습니다)"
-fi
+for kd_v in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID; do
+  eval "kd_val=\${$kd_v:-}"
+  if [ -n "$kd_val" ]; then
+    kd_refuse "파이프라인 런 안에서는 읽지 않습니다 — 킥오프 기본값은 킥오프만 읽습니다 ($kd_v 가 설정돼 있습니다)"
+  fi
+done
 
 # The key table — a closed set. These two lines are the code side of the key
 # table SKILL.md 5o carries, and a lint compares the two sets.
 KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline roster-model roster-model.<역할> auto-adopt'
 KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-actor'
+# Where `--carry` finds each key in a frozen manifest. Not compared by the lint
+# that compares the two lines above with 5o, so the test asserts that every key
+# there yields a row. `<인가>` and `<요소>` are `**<필드>**: ` lines of that
+# section, `<대상>` a `<필드>=` field of each `target` row, `<행>` the rows of
+# that kind anywhere in the file.
+kd_carry_field() {
+  case "$1" in
+    ladder-rungs)       printf '인가\t사다리 가용 단 수' ;;
+    stagnation-bound)   printf '인가\t무진전 상한' ;;
+    cost-ceiling)       printf '인가\t비용 천장' ;;
+    deadline)           printf '인가\t벽시계 마감' ;;
+    roster-model|roster-model.*) printf '행\t설계 로스터' ;;
+    auto-adopt)         printf '행\t자동 채택' ;;
+    cutpoint)           printf '대상\t절단점' ;;
+    review-ceiling)     printf '대상\t리뷰 정책 상한' ;;
+    terminal-cap)       printf '대상\t말단 행위 상한' ;;
+    dev-ids)            printf '대상\tdev 식별자' ;;
+    deploy-triggers)    printf '대상\t배포트리거 식별자' ;;
+    act-allow)          printf '행\t사전 인가' ;;
+    apply-probe)        printf '요소\t적용 프로브' ;;
+    apply-actor)        printf '요소\t적용 주체' ;;
+    *) return 1 ;;
+  esac
+}
 # Keys refused by name, so that whoever tried one reads why rather than a typo.
 KD_NAMED_REFUSED='termination launch defer notify apply-command apply-radius'
 
@@ -98,6 +144,7 @@ KD_NT=0
 KD_AA_GIVEN=0; KD_AA=''
 KD_NOW=''
 KD_CHECK_GIVEN=0; KD_CHECK=''
+KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
@@ -124,11 +171,29 @@ while [ $# -gt 0 ]; do
     --check-deadline)
       [ $# -ge 2 ] || kd_usage "--check-deadline 에 값이 없습니다"
       KD_CHECK_GIVEN=1; KD_CHECK="$2"; shift 2 ;;
+    --carry)
+      [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--carry 에 값이 없습니다"
+      KD_CARRY_GIVEN=1; KD_CARRY="$2"; shift 2 ;;
+    --kickoff-at)
+      [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--kickoff-at 에 값이 없습니다"
+      KD_KAT="$2"; shift 2 ;;
+    --expect-sha256)
+      [ $# -ge 2 ] || kd_usage "--expect-sha256 에 값이 없습니다"
+      printf '%s\n' "$2" | grep -E '^[0-9a-f]{64}$' >/dev/null \
+        || kd_usage "--expect-sha256 은 소문자 16진 64자여야 합니다"
+      KD_XSHA="$2"; shift 2 ;;
     *) kd_usage "모르는 인자: '$1'" ;;
   esac
 done
 
-if [ "$KD_CHECK_GIVEN" = "1" ]; then
+if [ "$KD_CARRY_GIVEN" = "1" ]; then
+  [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
+    || kd_usage "--carry 는 --target·--apply-actor·--check-deadline 과 함께 쓰지 않습니다 — 대상과 적용 주체는 이전 매니페스트에서 읽습니다"
+  [ -n "$KD_KAT" ] || kd_usage "--carry 에는 --kickoff-at 이 필요합니다"
+  [ -n "$KD_XSHA" ] || kd_usage "--carry 에는 --expect-sha256 이 필요합니다"
+elif [ -n "$KD_KAT$KD_XSHA" ]; then
+  kd_usage "--kickoff-at·--expect-sha256 은 --carry 와 함께만 씁니다"
+elif [ "$KD_CHECK_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] \
     || kd_usage "--check-deadline 은 --target·--apply-actor 와 함께 쓰지 않습니다"
 else
@@ -247,6 +312,66 @@ done
 # The runner names come from the one line the pre-authorization matcher reads.
 KD_RUNNERS=$(awk -F'"' '/^runners="/ { print $2; exit }' "$KD_DIR/rules/사전-인가-대조.sh" 2>/dev/null)
 [ -n "$(printf '%s' "$KD_RUNNERS" | tr -d ' ')" ] || kd_refuse "사전 인가 대조기에서 러너 목록을 읽지 못했습니다"
+
+# ---------------------------------------------------------------------------
+# `--carry` — the previous manifest, copied once and read only as the copy.
+#
+# The driver's accessors take a path and read the file again on every call, so
+# hashing the original and then reading it would measure one set of bytes and
+# use another. The copy is made first, hashed, and becomes `MANIFEST`; nothing
+# after this block opens the original path.
+# ---------------------------------------------------------------------------
+# kd_wide_instant <value> — epoch seconds, or nothing. A trailing `Z` and a
+# trailing `±HHMM` are first rewritten to the `±HH:MM` the driver's reader
+# takes, and the driver's own reader then decides: it renders the value back to
+# itself and refuses an offset beyond ±14:00, so this reads no instant the gate
+# would not.
+kd_wide_instant() {
+  local s
+  s=$(jq -rn --arg s "$1" '$s | sub("Z$"; "+00:00") | sub("(?<g>[+-])(?<h>[0-9]{2})(?<m>[0-9]{2})$"; "\(.g)\(.h):\(.m)")' 2>/dev/null) || s=''
+  [ -n "$s" ] || return 0
+  deadline_instant "$s"
+}
+if [ "$KD_CARRY_GIVEN" = "1" ]; then
+  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere; do
+    command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
+  done
+  KD_KAT_E=$(kd_wide_instant "$KD_KAT")
+  case "$KD_KAT_E" in
+    ''|*[!0-9]*) kd_usage "--kickoff-at 을 시각으로 읽지 못했습니다: '$KD_KAT'" ;;
+  esac
+  [ -r "$KD_CARRY" ] && [ ! -d "$KD_CARRY" ] || kd_refuse "이전 매니페스트를 읽을 수 없습니다: $KD_CARRY"
+  KD_COPY=$(mktemp "${TMPDIR:-/tmp}/cc-kickoff-carry.XXXXXX" 2>/dev/null) || kd_refuse "개인 사본을 만들지 못했습니다"
+  trap 'rm -f "$KD_COPY"' EXIT
+  chmod 600 "$KD_COPY" 2>/dev/null || kd_refuse "개인 사본의 권한을 600 으로 두지 못했습니다"
+  cat -- "$KD_CARRY" > "$KD_COPY" 2>/dev/null || kd_refuse "이전 매니페스트를 개인 사본으로 옮기지 못했습니다"
+  if command -v shasum >/dev/null 2>&1; then
+    kd_csha=$(shasum -a 256 "$KD_COPY" | awk '{ print $1 }')
+  else
+    kd_csha=$(sha256sum "$KD_COPY" | awk '{ print $1 }')
+  fi
+  [ "$kd_csha" = "$KD_XSHA" ] \
+    || kd_refuse "이전 매니페스트가 킥오프가 검증한 해시와 다릅니다 — 검증 뒤에 바뀐 파일은 이어받지 않습니다"
+  MANIFEST="$KD_COPY"
+  # The targets are the copy's `target` rows; the file's sections are matched
+  # to them by remote slug.
+  KD_NT=0
+  while IFS= read -r kd_al; do
+    [ -n "$kd_al" ] || continue
+    kd_sl=$(target_field "$kd_al" '원격 슬러그')
+    KD_TALIAS[KD_NT]="$kd_al"
+    KD_TARGET[KD_NT]="${kd_sl:-$kd_al}"
+    KD_NT=$((KD_NT + 1))
+  done <<EOF
+$(target_aliases)
+EOF
+  # The interview's apply-actor answer is the one the previous run froze.
+  case "$(manifest_field '요소' '적용 주체')" in
+    파이프라인) KD_AA_GIVEN=1; KD_AA='파이프라인' ;;
+    사람) KD_AA_GIVEN=1; KD_AA='사람' ;;
+    *) KD_AA_GIVEN=1; KD_AA='없음' ;;
+  esac
+fi
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -516,6 +641,12 @@ kd_t=0
 while [ "$kd_t" -lt "$KD_NT" ]; do
   T_NORM[kd_t]=$(kd_norm_slug "${KD_TARGET[kd_t]}")
   T_CUT[kd_t]=''
+  # Carried, the cutpoint is the previous run's, and every cross check below
+  # that leans on it leans on that value rather than on the file's.
+  if [ "$KD_CARRY_GIVEN" = "1" ]; then
+    kd_c=$(target_field "${KD_TALIAS[kd_t]}" '절단점')
+    kd_in "$kd_c" "$CUTPOINTS" && T_CUT[kd_t]="$kd_c"
+  fi
   kd_t=$((kd_t + 1))
 done
 kd_target_of() {   # kd_target_of <normalized slug> → target index, or nothing
@@ -751,7 +882,7 @@ done
 # ---------------------------------------------------------------------------
 kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
-  if [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "cutpoint" ]; then
+  if [ "$KD_CARRY_GIVEN" = "0" ] && [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "cutpoint" ]; then
     case "${E_SCOPE[kd_i]}" in run|other|bad) ;; *) T_CUT[${E_SCOPE[kd_i]}]="${E_RAW[kd_i]}" ;; esac
   fi
   kd_i=$((kd_i + 1))
@@ -930,6 +1061,256 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
       [ "$v" = "파이프라인" ] && KD_EFF="$KD_EFF. 드라이버가 적용을 재시도 없이 스스로 실행합니다" ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# `--carry` output. The previous run's values are added as entries past the
+# file's, so their `[권한 확대]` mark comes from the same `kd_effect` table the
+# file's values meet.
+# ---------------------------------------------------------------------------
+if [ "$KD_CARRY_GIVEN" = "1" ]; then
+  KD_FILE_N=$KD_N
+  kd_label() { case "$1" in run) printf '런' ;; *) printf '%s' "${KD_TARGET[$1]}" ;; esac; }
+  # kd_file_ok <scope> <key> — the file's applied entry for the key, or nothing.
+  # `any` matches every scope.
+  kd_file_ok() {
+    local j=0
+    while [ "$j" -lt "$KD_FILE_N" ]; do
+      if [ "${E_ST[j]}" = "ok" ] && [ "${E_KEY[j]}" = "$2" ] \
+         && { [ "$1" = "any" ] || [ "${E_SCOPE[j]}" = "$1" ]; }; then
+        printf '%s' "$j"; return 0
+      fi
+      j=$((j + 1))
+    done
+    return 1
+  }
+  # kd_file_ign <scope> <key> — the file's ignored entry for the key, or nothing.
+  kd_file_ign() {
+    local j=0
+    while [ "$j" -lt "$KD_FILE_N" ]; do
+      if [ "${E_ST[j]}" = "ign" ] && [ "${E_KEY[j]}" = "$2" ] && [ "${E_SCOPE[j]}" = "$1" ]; then
+        printf '%s' "$j"; return 0
+      fi
+      j=$((j + 1))
+    done
+    return 1
+  }
+  kd_carry_effect() {   # kd_carry_effect <index> — kd_effect, with the two apply keys read as answers
+    case "${E_KEY[$1]}" in
+      apply-actor)
+        KD_WIDE=0
+        case "${E_NORM[$1]}" in
+          파이프라인) KD_WIDE=1; KD_EFF='드라이버가 적용을 재시도 없이 스스로 실행합니다' ;;
+          사람) KD_EFF='적용은 사람이 합니다' ;;
+          *) KD_EFF='적용이 없습니다' ;;
+        esac ;;
+      apply-probe) KD_WIDE=0; KD_EFF='이전 런의 적용 프로브를 그대로 씁니다' ;;
+      *) kd_effect "$1" ;;
+    esac
+  }
+  kd_out_apply() {   # kd_out_apply <index>
+    kd_carry_effect "$1"
+    printf '적용\t%s\t%s\t%s\t이전 매니페스트\t%s\t%s\n' "$(kd_cell "$(kd_label "${E_SCOPE[$1]}")")" \
+      "${E_KEY[$1]}" "$(kd_cell "${E_NORM[$1]}")" "$KD_WIDE" "$(kd_cell "$KD_EFF")"
+  }
+  kd_out_auth() {    # kd_out_auth <index> <verbatim value>
+    kd_carry_effect "$1"
+    printf '권한\t%s\t%s\t%s\t%s\t%s\n' "$(kd_cell "$(kd_label "${E_SCOPE[$1]}")")" \
+      "${E_KEY[$1]}" "$(kd_cell "$2")" "$KD_WIDE" "$(kd_cell "$KD_EFF")"
+  }
+  kd_out_blank() {   # kd_out_blank <file index>
+    kd_effect "$1"
+    printf '빈칸\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(kd_cell "$(kd_label "${E_SCOPE[$1]}")")" \
+      "${E_KEY[$1]}" "$(kd_cell "${E_NORM[$1]}")" "${E_SRC[$1]}" "$KD_WIDE" "$(kd_cell "$KD_EFF")"
+  }
+  kd_out_diff() {    # kd_out_diff <scope> <key> <previous> <file value> <file source>
+    printf '차이\t%s\t%s\t%s\t%s\t%s\n' "$(kd_cell "$(kd_label "$1")")" "$2" \
+      "$(kd_cell "$3")" "$(kd_cell "$4")" "$5"
+  }
+  kd_out_not() {     # kd_out_not <scope> <key> <token> <text>
+    printf '이어받지 않음\t%s\t%s\t%s\t%s\n' "$(kd_cell "$(kd_label "$1")")" "$2" "$3" "$(kd_cell "$4")"
+  }
+  # kd_carry_absent <scope> <key> — the previous manifest holds no value: the
+  # file fills it (`빈칸`), or the key is named as not carried.
+  kd_carry_absent() {
+    local xi
+    if xi=$(kd_file_ok "$1" "$2"); then
+      kd_out_blank "$xi"
+    elif xi=$(kd_file_ign "$1" "$2"); then
+      kd_out_not "$1" "$2" "${E_RT[xi]}" "이전 매니페스트에 값이 없고 기본값 파일의 값은 쓰지 않습니다 — ${E_RM[xi]}"
+    else
+      kd_out_not "$1" "$2" '원천 없음' '이전 매니페스트에 값이 없고 기본값 파일도 채우지 않습니다'
+    fi
+  }
+  # kd_carry_scalar <scope> <key> <previous value> [auth] — one scalar value.
+  kd_carry_scalar() {
+    local sc="$1" k="$2" pv="$3" auth="${4:-}" ci xi xs="$1"
+    if [ -z "$pv" ]; then kd_carry_absent "$sc" "$k"; return; fi
+    kd_add "$sc" "$k" "$pv" '이전 매니페스트'
+    ci=$KD_I
+    case "$k" in apply-probe|apply-actor) ;; *) kd_validate "$ci" ;; esac
+    if [ "${E_ST[ci]}" = "ign" ]; then
+      kd_out_not "$sc" "$k" "${E_RT[ci]}" "이전 값 '$pv' 를 지금 어휘로 읽지 못해 이어받지 않습니다 — ${E_RM[ci]}"
+      return
+    fi
+    kd_out_apply "$ci"
+    [ -n "$auth" ] && kd_out_auth "$ci" "$pv"
+    # The two apply keys sit in each repository's section of the file and in
+    # one run-wide field of the manifest, so any section's value compares.
+    case "$k" in apply-probe|apply-actor) xs=any ;; esac
+    if xi=$(kd_file_ok "$xs" "$k"); then
+      [ "${E_NORM[xi]}" = "${E_NORM[ci]}" ] || kd_out_diff "$sc" "$k" "${E_NORM[ci]}" "${E_NORM[xi]}" "${E_SRC[xi]}"
+    fi
+  }
+  # kd_file_ids <key> — the file's applied list identities, sorted, `,`-joined.
+  kd_file_ids() {
+    local j=0
+    while [ "$j" -lt "$KD_FILE_N" ]; do
+      [ "${E_ST[j]}" = "ok" ] && [ "${E_KEY[j]}" = "$1" ] && printf '%s\n' "${E_ID[j]}"
+      j=$((j + 1))
+    done | sort -u | paste -sd, -
+  }
+
+  printf 'cc-kickoff-defaults v1\n'
+  printf '원천\t%s\t%s\t%s\n' "$(kd_cell "$KD_SRC")" "$KD_SHA" "$KD_ENVN"
+
+  for kd_k in ladder-rungs stagnation-bound cost-ceiling; do
+    kd_f=$(kd_carry_field "$kd_k")
+    kd_carry_scalar run "$kd_k" "$(manifest_field '인가' "${kd_f#*	}")"
+  done
+  kd_out_not run deadline '간격으로 이어받음' '벽시계 마감은 값이 아니라 이전 런의 간격으로 다시 잡습니다 — 마감 행이 새 값입니다'
+  for kd_k in roster-model 'roster-model.<역할>'; do
+    kd_out_not run "$kd_k" '로스터 행' '설계 로스터 행은 행 그대로 이어받습니다 — 모델 칸 기본값은 쓰지 않습니다'
+  done
+
+  # The list keys. A `## 인가` section holding zero rows of the kind is the
+  # answer "none", not an empty value: that is how a run whose person answered
+  # 「없음」 reads, because the row grammar has no "none" row.
+  kd_has_auth=0
+  grep -qx '## 인가' "$MANIFEST" 2>/dev/null && kd_has_auth=1
+  for kd_k in auto-adopt act-allow; do
+    if [ "$kd_k" = "auto-adopt" ]; then
+      kd_rows=$(manifest_autoadopt_rows_anywhere)
+    else
+      kd_rows=$(manifest_preauth_rows | while IFS= read -r kd_r; do
+        [ -n "$(manifest_row_fields "$kd_r" '형태')" ] && printf '%s\n' "$kd_r"
+      done)
+    fi
+    kd_n=$(printf '%s' "$kd_rows" | grep -c . || true)
+    if [ "$kd_has_auth" = "0" ] && [ "${kd_n:-0}" -eq 0 ]; then
+      kd_j=0; kd_any=0
+      while [ "$kd_j" -lt "$KD_FILE_N" ]; do
+        if [ "${E_ST[kd_j]}" = "ok" ] && [ "${E_KEY[kd_j]}" = "$kd_k" ]; then kd_out_blank "$kd_j"; kd_any=1; fi
+        kd_j=$((kd_j + 1))
+      done
+      [ "$kd_any" = "1" ] || kd_out_not run "$kd_k" '원천 없음' '이전 매니페스트에 인가 절이 없고 기본값 파일도 채우지 않습니다'
+      continue
+    fi
+    kd_prev_ids=''
+    kd_auth_lines=''
+    while IFS= read -r kd_r; do
+      [ -n "$kd_r" ] || continue
+      kd_add run "$kd_k" "$kd_r" '이전 매니페스트'
+      kd_ci=$KD_I
+      if [ "$kd_k" = "auto-adopt" ]; then
+        kd_cls=$(manifest_row_fields "$kd_r" '판단 부류')
+        E_ID[kd_ci]="$kd_cls"
+        E_X[kd_ci]="상한=$(manifest_row_fields "$kd_r" '상한') · 심각도 상한=$(manifest_row_fields "$kd_r" '심각도 상한')"
+        if ! kd_in "$kd_cls" "$JUDGMENT_CLASSES" || kd_in "$kd_cls" "$JUDGMENT_CLASSES_FORBIDDEN"; then
+          kd_out_not run "$kd_k" '금지 부류' "이전 행 '$kd_r' 의 부류는 지금 게이트가 스스로 채택하지 않는 부류입니다 — 이어받지 않고 묻습니다"
+          continue
+        fi
+      else
+        E_ID[kd_ci]=$(manifest_row_fields "$kd_r" '형태')
+        E_X[kd_ci]=$(manifest_row_fields "$kd_r" '사유')
+      fi
+      E_DIFF[kd_ci]=0
+      kd_prev_ids="$kd_prev_ids${E_ID[kd_ci]}
+"
+      kd_auth_lines="$kd_auth_lines$kd_ci
+"
+    done <<EOF
+$kd_rows
+EOF
+    kd_prev_sum=$(printf '%s' "$kd_prev_ids" | grep . | sort -u | paste -sd, -)
+    [ -n "$kd_prev_sum" ] || kd_prev_sum='없음'
+    kd_fsum=$(kd_file_ids "$kd_k")
+    if [ "$kd_prev_sum" = "없음" ]; then
+      kd_eff='이전 런은 이 권한을 없음으로 답했습니다'
+      kd_w=0
+    else
+      kd_eff='이전 런의 행을 그대로 이어받습니다 — 행마다 권한 행이 있습니다'
+      kd_w=1
+    fi
+    printf '적용\t런\t%s\t%s\t이전 매니페스트\t%s\t%s\n' "$kd_k" "$(kd_cell "$kd_prev_sum")" "$kd_w" "$kd_eff"
+    while IFS= read -r kd_ci; do
+      [ -n "$kd_ci" ] || continue
+      kd_out_auth "$kd_ci" "${E_RAW[kd_ci]}"
+    done <<EOF
+$kd_auth_lines
+EOF
+    if [ -n "$kd_fsum" ] && [ "$kd_fsum" != "$kd_prev_sum" ]; then
+      kd_fi=$(kd_file_ok any "$kd_k")
+      kd_out_diff run "$kd_k" "$kd_prev_sum" "$kd_fsum" "${E_SRC[kd_fi]}"
+    fi
+  done
+
+  kd_t=0
+  while [ "$kd_t" -lt "$KD_NT" ]; do
+    kd_al="${KD_TALIAS[kd_t]}"
+    kd_carry_scalar "$kd_t" cutpoint "$(target_field "$kd_al" '절단점')" auth
+    kd_carry_scalar "$kd_t" review-ceiling "$(target_field "$kd_al" '리뷰 정책 상한')" auth
+    kd_carry_scalar "$kd_t" terminal-cap "$(target_field "$kd_al" '말단 행위 상한')" auth
+    kd_carry_scalar "$kd_t" dev-ids "$(target_field "$kd_al" 'dev 식별자')"
+    kd_carry_scalar "$kd_t" deploy-triggers "$(target_field "$kd_al" '배포트리거 식별자')"
+    kd_t=$((kd_t + 1))
+  done
+  kd_carry_scalar run apply-probe "$(manifest_field '요소' '적용 프로브')"
+  kd_carry_scalar run apply-actor "$(manifest_field '요소' '적용 주체')" auth
+
+  # The deadline: the previous interval, started again from this kickoff.
+  kd_pd=$(manifest_field '인가' '벽시계 마감')
+  kd_pk=$(manifest_field '런 정체' '킥오프 일시')
+  kd_dl=''
+  if [ -z "$kd_pd" ]; then
+    kd_dl="빈 값	이전 매니페스트에 벽시계 마감이 없습니다"
+  elif [ "$kd_pd" = "없음" ]; then
+    kd_dl="마감 없음	이전 런에 벽시계 마감이 없었습니다"
+  else
+    kd_pde=$(kd_wide_instant "$kd_pd")
+    if [ -z "$kd_pde" ]; then
+      if printf '%s\n' "$kd_pd" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$' >/dev/null; then
+        kd_dl="영역 없음	이전 마감 $kd_pd 에 시간대가 없어 순간으로 읽지 못합니다"
+      elif printf '%s\n' "$kd_pd" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:?[0-9]{2})$' >/dev/null; then
+        kd_dl="범위 밖	이전 마감 $kd_pd 의 날짜·시각이나 오프셋이 범위 밖입니다 — 오프셋은 ±14:00 까지입니다"
+      else
+        kd_dl="형식 오류	이전 마감 $kd_pd 를 시각으로 읽지 못했습니다"
+      fi
+    fi
+  fi
+  if [ -z "$kd_dl" ]; then
+    kd_pke=$(kd_wide_instant "$kd_pk")
+    if [ -z "$kd_pke" ]; then
+      kd_dl="킥오프 일시 불명	이전 킥오프 일시 '$kd_pk' 를 시각으로 읽지 못해 간격을 잴 수 없습니다"
+    else
+      kd_iv=$((kd_pde - kd_pke))
+      kd_ne=$((KD_KAT_E + kd_iv))
+      if [ "$kd_iv" -le 0 ]; then
+        kd_dl="간격 없음	이전 마감이 이전 킥오프 일시보다 뒤가 아닙니다 (간격 ${kd_iv}초)"
+      elif [ "$kd_ne" -le "$KD_NOW" ]; then
+        kd_dl="과거 시각	다시 잡은 마감이 지금 이후가 아닙니다"
+      else
+        kd_abs=$(jq -nr --argjson e "$kd_ne" --argjson now "$KD_NOW" "$KD_JQ_TIME"' render($e)' 2>/dev/null) || kd_abs=''
+        if [ -n "$kd_abs" ] && [ "$(deadline_instant "$kd_abs")" = "$kd_ne" ]; then
+          kd_dl="ok	${kd_abs}	${kd_iv}"
+        else
+          kd_dl="형식 오류	다시 잡은 마감을 이 호스트의 ±HH:MM 표기로 쓰지 못했습니다"
+        fi
+      fi
+    fi
+  fi
+  printf '마감\t%s\n' "$(printf '%s' "$kd_dl" | LC_ALL=C tr '\001-\010\012-\037\177' ' ')"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Output

@@ -335,7 +335,23 @@ collected with the other `사전 인가` rows and the record's whole-file hash i
 therefore inside `구속 다이제스트`. **What it does not buy is a comparison
 against the file.** No gate re-hashes the record at runtime; the claim is that
 the hash the person's kickoff took is frozen where editing it moves the digest,
-and that anyone can compare the file against it with one `shasum`.
+and that anyone can compare the file against it with one `shasum`. **A
+re-kickoff's row** names the new run's record path,
+`docs/pipeline-run/<새 run id>.interview.md`, and carries the source row's
+`sha256=` byte for byte, because that record is a byte copy of the source's
+(§2b.5); the path is the only byte that differs from the source row.
+
+**The provenance row of a re-kickoff is a `사전 인가` row with no `형태=`
+either, and it is told apart by its first field.**
+`` - `사전 인가` | 이어받은 런=<원천 run id> | 매니페스트 sha256=<원천 매니페스트 전체 해시> | 인가 기록 sha256=<원천 인가 기록 전체 해시> ``
+appears exactly once in a manifest the kickoff wrote by carrying a stopped run's
+answers into a new run, and never otherwise. Like the interview-record row it
+authorizes nothing — the pre-authorization rule skips it for want of `형태=` —
+and what it buys is that the source and the two hashes the kickoff checked are
+inside `구속 다이제스트`, where an edit stops the manifest check. A reader finds it
+by the first field `이어받은 런=`, never by the absence of `형태=`, which the
+interview-record row shares. A run carried from a run that was itself carried
+has one such row, naming its direct source. No session id is written into it.
 
 **The `종료 절` rows are `종료 지점` split into clauses the gate can check**, one
 clause per row and at least one row. The gate collects the rows that match
@@ -620,9 +636,21 @@ conforming with no migration.
 매니페스트 `## 인가` 의 `설계 로스터` 행을 따른다 | 없음(기본 로스터)
 ````
 
+**`<run-id>` in the title line and the header line is the run that held the
+interview.** A record a re-kickoff carried is a byte copy of the source run's
+record, so both lines name the source run: the source row's hash, equal to the
+new row's, is the proof that these are the person's original words, and the file
+name and the manifest row bind the copy to the new run. The design stage reads
+the version token and the whole-file hash, not `run-id=`.
+
 Written by the kickoff when the run's plan requires a design and the interview was
 held — once, whole, **creation-only, with no append form**, the posture of the
-manifest. Its whole-file `sha256` is taken immediately and enters the manifest as
+manifest. **A re-kickoff whose design step stays writes the record the same way,
+from the source's bytes instead of an interview**: it takes the source record,
+checks it against the source row's hash, writes it creation-only under the new
+run id and checks the written file's hash against that row again; the new
+manifest's row carries the same hash. A re-kickoff that removed the design step
+writes no record and no row. Its whole-file `sha256` is taken immediately and enters the manifest as
 the interview-record row of §2b.1. The question-and-answer pairs repeat once for
 every question asked from the Step 4 plan through the closing read-back, numbered
 in order. **`없음` is a value**: a section with no answer carries it, and an
@@ -714,19 +742,24 @@ one appended line per Act 1 boundary:
 - <ISO8601> | 단계=기본값 고지 | 제시=<n> | 무시=<m> | 파일=<a> | 환경=<b> | 경로=<파일 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->
 - <ISO8601> | 단계=기본값 확정 | 적용=<n> | 해제=<k>
 - <ISO8601> | 단계=문답(질문지) | 질문=<n>
+- <ISO8601> | 단계=이어받기 고지 | 이전 런=<id> | 매니페스트 sha256=<hex> | 인가 기록 sha256=<hex> | 인터뷰 sha256=<hex|-> | 이어받음=<n> | 물음=<k>
 ````
 
-There is no H1. Only five stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
+There is no H1. Only six stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
 `대상 변경` (`새 base=`), `기본값 고지` (`제시=`, `무시=`, `파일=`, `환경=`,
-`경로=`, `sha256=`), `기본값 확정` (`적용=`, `해제=`) and `문답(질문지)`
-(`질문=`, the number of questions on the form). Every other line ends at
+`경로=`, `sha256=`), `기본값 확정` (`적용=`, `해제=`), `문답(질문지)`
+(`질문=`, the number of questions on the form) and `이어받기 고지` (`이전 런=`,
+the three source hashes, `이어받음=` the number of values carried and `물음=` the
+number of questions this re-kickoff asked). Every other line ends at
 `단계=<토큰>`. The two kickoff-defaults lines carry counts, the defaults file's
-path and its hash, and never a value.
+path and its hash, and never a value; `이어받기 고지` carries an id, hashes and
+counts only.
 
 **The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
 `요구사항 인터뷰` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·
 `로스터` · `승인` · `인터뷰 동결` · `매니페스트 기록` · `문답(텍스트)` ·
-`문답(질문지)` · `기동 직전` · `연기` · `중단`. `기본값 고지` and `기본값 확정` are not terminal.
+`문답(질문지)` · `이어받기 고지` · `기동 직전` · `연기` · `중단`. `기본값 고지`, `기본값 확정` and
+`이어받기 고지` are not terminal.
 
 **When a trace is finished — one test for every reader.** A trace is finished when
 its last stage is `연기` or `중단`, when it is a `대상 변경` carrying `새 base=`, or
