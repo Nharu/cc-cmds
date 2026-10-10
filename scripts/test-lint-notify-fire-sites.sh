@@ -40,7 +40,9 @@ for fixture in "$fixtures"/*/; do
       ;;
   esac
 
-  ORCH_ROOT="$fixture/orchestrator" \
+  # A fixture with no `hooks/` points HOOKS_ROOT at a missing directory, which
+  # the lint reads as an empty scope — never as a cue to scan the real tree.
+  ORCH_ROOT="$fixture/orchestrator" HOOKS_ROOT="$fixture/hooks" \
     bash "$script_dir/lint-notify-fire-sites.sh" >/dev/null 2>&1
   ec=$?
 

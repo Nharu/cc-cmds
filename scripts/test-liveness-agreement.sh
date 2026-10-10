@@ -39,6 +39,8 @@ GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 WATCH="$repo_root/plugins/cc-cmds/orchestrator/watch.sh"
 SL="$repo_root/plugins/cc-cmds/orchestrator/statusline.sh"
 PANE="$repo_root/plugins/cc-cmds/orchestrator/run-pane.sh"
+COLLECT="$repo_root/plugins/cc-cmds/orchestrator/collect-run-metrics.sh"
+CHECKS="$repo_root/plugins/cc-cmds/orchestrator/checks.sh"
 . "$repo_root/scripts/run-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-liveness-agree.XXXXXX")
@@ -99,6 +101,12 @@ read_statusline() {
   # process had died still started with the glyph, so it folded to `1+` and
   # passed. Reading the name is what makes this consumer's reading say the same
   # thing as the other three instead of merely not contradicting them.
+  #
+  # THE SETTLING LINE SHARES THE GLYPH. `⟳ <rid> 정산 중` puts a word where the
+  # segment name sits, so reading the token after the run id would report a
+  # segment called 「정산」. That line is read back as the state token it stands
+  # for, and so is the finished line, so the settlement fixtures below can be
+  # compared against the readers that answer with a token.
   local sid="$1" out rest
   out=$(fx_statusline_stdin "$sid" | bash "$SL")
   case "$out" in
@@ -106,8 +114,12 @@ read_statusline() {
     "⟳"*)
       rest=${out#⟳ }        # the glyph
       rest=${rest#* }       # the run id
-      printf '%s' "${rest%% *}"
+      case "$rest" in
+        "정산 중"*) printf '정산중' ;;
+        *)          printf '%s' "${rest%% *}" ;;
+      esac
       ;;
+    "✓ "*" 종료"*) printf '종단' ;;
     *)             printf 'other:%s' "$out" ;;
   esac
 }
@@ -522,6 +534,175 @@ printf '%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/shift.live"
 check "지문이 어긋난 shift.live 는 살아 있는 교대가 아니다" \
   "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
 rm -f "$FX_RUN_DIR/shift.live"
+
+# ---------------------------------------------------------------------------
+# The run's STATE, read by every consumer that acts on it.
+#
+# The readings above compare a count of live stages. A run that ends on `done`
+# adds a state between "segments all terminal" and "ended" — 정산중 — and four
+# more consumers act on the state token rather than on a count: the reaper,
+# the metrics collector's population, the CI poller's exit test and the status
+# line. Each answers in its own form, so each is read in that form and the
+# expected values are written per reader rather than forced into one token:
+# the collector says open or closed, the poller says ended or not.
+#
+# THE POLLER IS ALLOWED TO DISAGREE ON THE DONE-TAIL, and that is asserted
+# rather than tolerated. It tests `done` before it reads any state, so a run
+# whose shift is still alive after writing `done` has ended for the poller
+# while every other reader still says 정산중. Pinning that answer keeps a later
+# edit from quietly changing the poller's order in either direction.
+# ---------------------------------------------------------------------------
+read_reaper() {
+  # The reaper's call shape, thresholds and all.
+  CC_RD="$1" CC_LG="$2" bash -c '. "$0"; cc_run_state "$CC_RD" "$CC_LG" 180 3600' "$LIVENESS"
+}
+
+read_metrics() {
+  # The collector's population function, run as its own source text against a
+  # ledger directory holding only this run. The script runs its main on load,
+  # so the function is extracted rather than sourced — the same treatment
+  # `read_condition7` gives the gate.
+  local rd="$1" lg="$2" rid fn ldir state
+  rid=$(basename "$rd")
+  fn=$(sed -n '/^cm_population() {/,/^}/p' "$COLLECT")
+  [ -n "$fn" ] || { printf 'EXTRACT-FAILED'; return 0; }
+  ldir="$WORK/metrics-ledgers/$rid"
+  mkdir -p "$ldir"
+  cp -p "$lg" "$ldir/$rid.md"
+  state=$(CM_LEDGER_DIR="$ldir" CM_STATE_ROOT="$(dirname "$(dirname "$rd")")" \
+          CC_LIV="$LIVENESS" CC_FN="$fn" \
+          bash -c '. "$CC_LIV"; eval "$CC_FN"; cm_population' | cut -f2)
+  # The collector's closed set, asserted against its source below so this copy
+  # cannot drift from it unseen.
+  case "$state" in
+    '')          printf 'NOT-IN-POPULATION' ;;
+    종단|버려짐) printf '닫힌 런' ;;
+    *)           printf '열린 런' ;;
+  esac
+}
+
+read_poller() {
+  # The CI poller's exit test, run as its own source text: `done` first, then
+  # the shared state.
+  local fn
+  fn=$(sed -n '/^run_is_over() {/,/^}/p' "$CHECKS")
+  [ -n "$fn" ] || { printf 'EXTRACT-FAILED'; return 0; }
+  RUN_DIR="$1" LEDGER="$2" CC_LIV="$LIVENESS" CC_FN="$fn" \
+    bash -c '. "$CC_LIV"; eval "$CC_FN"; if run_is_over; then printf "끝남"; else printf "끝나지 않음"; fi'
+}
+
+if grep -qE '^[[:space:]]*종단\|버려짐\) ;;$' "$COLLECT"; then
+  ok "지표 수집기의 닫힌 집합이 독자의 사본과 같다 (종단|버려짐)"
+else
+  bad "지표 독자" "수집기의 모집단 필터가 바뀌었다 — read_metrics 의 닫힌 집합을 다시 맞출 것"
+fi
+
+ag_shift_live() {
+  # ag_shift_live <run-dir> [pid] — a live shift record. The pid is spawned
+  # unless one is passed, so a table of fixtures can share one process. The
+  # fingerprint is captured here rather than through the product's function,
+  # for the reason `run-fixture.sh` keeps its own capture.
+  local rd="$1" pid="${2:-}"
+  if [ -z "$pid" ]; then
+    sleep 300 & pid=$!
+    FX_PIDS="${FX_PIDS:-}$pid "; export FX_PIDS
+  fi
+  { printf '%s\n' "$pid"
+    LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+  } > "$rd/shift.live"
+  AG_SHIFT_PID="$pid"
+}
+
+# Fixture C — the settlement window: marker, one merged segment, no `done`, a
+# ledger that grew a moment ago.
+fx_mkrun 20261010-0000000c; fx_ledger_path; fx_session_index sess-c 20261010-0000000c
+fx_segment S1 머지됨
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_heartbeat 0 5
+RD_C="$FX_RUN_DIR"; LG_C="$FX_LEDGER"
+check "C 상태 독자 — 정산 창은 정산중이다" "$(read_statusline sess-c)" "정산중"
+check "C 리퍼 독자 — 정산중이다" "$(read_reaper "$RD_C" "$LG_C")" "정산중"
+check "C 지표 독자 — 열린 런이다" "$(read_metrics "$RD_C" "$LG_C")" "열린 런"
+check "C 폴러 독자 — 끝나지 않았다" "$(read_poller "$RD_C" "$LG_C")" "끝나지 않음"
+
+# Fixture D — the done-tail: marker, `done`, and the shift that wrote it still
+# alive.
+fx_mkrun 20261010-0000000d; fx_ledger_path; fx_session_index sess-d 20261010-0000000d
+fx_segment S1 머지됨
+printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+fx_done
+ag_shift_live "$FX_RUN_DIR"
+fx_heartbeat 0 5
+RD_D="$FX_RUN_DIR"; LG_D="$FX_LEDGER"
+check "D 상태 독자 — done 꼬리는 정산중이다" "$(read_statusline sess-d)" "정산중"
+check "D 리퍼 독자 — 정산중이다" "$(read_reaper "$RD_D" "$LG_D")" "정산중"
+check "D 지표 독자 — 열린 런이다" "$(read_metrics "$RD_D" "$LG_D")" "열린 런"
+check "D 폴러 독자 — done 을 먼저 보므로 끝났다" "$(read_poller "$RD_D" "$LG_D")" "끝남"
+
+# And every reader flips together when the shift goes, so the agreement above
+# is not one fixture's coincidence.
+kill "$AG_SHIFT_PID" 2>/dev/null; wait "$AG_SHIFT_PID" 2>/dev/null
+check "D′ 상태 독자 — 교대가 끝나면 종단이다" "$(read_statusline sess-d)" "종단"
+check "D′ 리퍼 독자 — 종단이다" "$(read_reaper "$RD_D" "$LG_D")" "종단"
+check "D′ 지표 독자 — 닫힌 런이다" "$(read_metrics "$RD_D" "$LG_D")" "닫힌 런"
+check "D′ 폴러 독자 — 끝났다" "$(read_poller "$RD_D" "$LG_D")" "끝남"
+
+# ---------------------------------------------------------------------------
+# The state table: marker × done × shift × nonterminal segment × ledger age ×
+# run-scope block, read in the reaper's shape (180 3600) and the watcher's
+# (`--stall 1200`, default abandon).
+#
+# THE EXPECTED VALUE IS WRITTEN FROM THE RULE, not from the function. Without
+# the marker every shape reads as it did before the marker existed: the derived
+# conjunction or `done` ends the run, and otherwise the age ladder. With the
+# marker, `done` ends it only once no shift is alive, the derived conjunction
+# opens 정산중 on the same age ladder, and anything still open walks the ladder
+# as before. A run-scope block puts every shape on the ladder.
+# ---------------------------------------------------------------------------
+st_expect() {
+  # st_expect <marker y|n> <done y|n> <shift y|n> <nonterm 0|1> <age> <blocked y|n> <stall>
+  local ladder fresh=진행중
+  if [ "$5" -ge 3600 ]; then ladder=버려짐
+  elif [ "$5" -ge "$7" ]; then ladder=정지경고
+  else ladder=fresh; fi
+  if [ "$6" = n ]; then
+    if [ "$1" = n ]; then
+      if [ "$2" = y ] || [ "$4" = 0 ]; then printf '종단'; return 0; fi
+    else
+      if [ "$2" = y ]; then
+        if [ "$3" = y ]; then printf '정산중'; else printf '종단'; fi
+        return 0
+      fi
+      [ "$4" = 0 ] && fresh=정산중
+    fi
+  fi
+  if [ "$ladder" = fresh ]; then printf '%s' "$fresh"; else printf '%s' "$ladder"; fi
+}
+
+sleep 300 & ST_PID=$!
+FX_PIDS="${FX_PIDS:-}$ST_PID "; export FX_PIDS
+st_i=0; st_bad=0
+for st_m in n y; do for st_d in n y; do for st_s in n y; do for st_n in 0 1; do
+for st_a in 0 200 4000; do for st_b in n y; do
+  st_i=$((st_i + 1))
+  fx_mkrun "st-$st_i"
+  fx_segment S1 머지됨
+  [ "$st_n" = 1 ] && fx_segment S2 실행중
+  [ "$st_b" = y ] && fx_blocked '자동 채택 미달' 불명
+  [ "$st_m" = y ] && printf '1\n' > "$FX_RUN_DIR/ends-on-done"
+  [ "$st_d" = y ] && fx_done
+  [ "$st_s" = y ] && ag_shift_live "$FX_RUN_DIR" "$ST_PID"
+  fx_heartbeat 0 "$st_a"
+  st_case="표지=$st_m done=$st_d 교대=$st_s 비종단=$st_n 나이=$st_a 막힘=$st_b"
+  st_got=$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 180 3600)
+  st_want=$(st_expect "$st_m" "$st_d" "$st_s" "$st_n" "$st_a" "$st_b" 180)
+  [ "$st_got" = "$st_want" ] || { st_bad=$((st_bad + 1)); bad "상태표 (180 3600) $st_case" "got '$st_got', want '$st_want'"; }
+  st_got=$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 1200)
+  st_want=$(st_expect "$st_m" "$st_d" "$st_s" "$st_n" "$st_a" "$st_b" 1200)
+  [ "$st_got" = "$st_want" ] || { st_bad=$((st_bad + 1)); bad "상태표 (1200) $st_case" "got '$st_got', want '$st_want'"; }
+done; done; done; done; done; done
+check "상태표 96 사례가 두 호출 꼴 모두에서 규칙과 같다" "$st_bad" "0"
+check "상태표가 실제로 96 사례를 돌았다" "$st_i" "96"
 
 # ---------------------------------------------------------------------------
 # The notifier channel stays off for every suite that does not assert on it.

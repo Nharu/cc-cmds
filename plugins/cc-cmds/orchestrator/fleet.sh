@@ -1267,7 +1267,18 @@ fleet_dispatch() {
   # exits quietly — and THEN the CI poller, which reads the directory the same
   # way and so carries the same ordering debt. Then `run.sh` in the foreground,
   # and this job waits.
-  ledger="$wt/docs/pipeline-run/$run_id.md"
+  # THE LEDGER IS WHERE `run.sh` WRITES IT: under the parent of the git common
+  # dir measured from the origin worktree, not under the worktree itself. From
+  # the main worktree the two are the same file; from a linked one they are
+  # not, and the stub, the watcher and the poller then watched a file the run
+  # never wrote — the watcher's silence arm fired on a healthy run. A path that
+  # is not a git worktree keeps the worktree-relative ledger.
+  local lbase=""
+  if [ -n "$wt" ]; then
+    lbase=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+    [ -z "$lbase" ] || lbase=$(dirname "$lbase")
+  fi
+  ledger="${lbase:-$wt}/docs/pipeline-run/$run_id.md"
   if [ -n "$wt" ] && [ ! -e "$ledger" ]; then
     mkdir -p "$(dirname "$ledger")"
     printf '# 파이프라인 런 %s\n\n런 id: %s · 파견 레인: %s · 파견 시각: %s\n' "$run_id" "$run_id" "$lane" "$iso" > "$ledger"
