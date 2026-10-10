@@ -25,6 +25,13 @@ export const RESERVED_PREFIXES = ['메모:', '자유 입력:']
 export const HANDMADE_OTHER_LABELS = ['기타', '직접 입력', '직접 지정', 'Other']
 export const RECOMMEND_ARROW = ' ← '
 
+// 제어 문자 거절 사유. 한 줄로 그려지는 칸은 줄바꿈·탭까지 모든 제어 문자를, 여러 줄로
+// 감기는 칸은 엔진이 받는 줄바꿈·탭·CR 말고 나머지를 거절한다.
+export const LINE_CONTROL_REASON = '제어 문자를 넣지 않습니다(줄바꿈·탭 포함). 한 줄로 그려지는 칸입니다'
+export const PROSE_CONTROL_REASON = '줄바꿈·탭 말고는 제어 문자를 넣지 않습니다'
+const LINE_RULE = '제어 문자를 넣지 않는다(줄바꿈·탭 포함)'
+const PROSE_RULE = '줄바꿈·탭 말고는 제어 문자를 넣지 않는다'
+
 export const UNAVAILABLE_REASONS = ['subagent', 'pipeline', 'surface', 'remote', 'error'] as const
 export type UnavailableReason = (typeof UNAVAILABLE_REASONS)[number]
 
@@ -38,9 +45,9 @@ export const TOOL_DESCRIPTION = [
 const OPTION_SCHEMA = {
   type: 'object',
   properties: {
-    label: { type: 'string', description: '선택지 라벨. 「 ← 」를 넣지 않는다. 추천은 recommended 로만 표시한다' },
-    description: { type: 'string', description: '선택지 설명' },
-    preview: { type: 'string', description: '포커스가 이 선택지에 있을 때 질문 아래에 보일 미리보기' },
+    label: { type: 'string', description: `선택지 라벨. 「 ← 」를 넣지 않는다. 추천은 recommended 로만 표시한다. ${LINE_RULE}` },
+    description: { type: 'string', description: `선택지 설명. ${PROSE_RULE}` },
+    preview: { type: 'string', description: `포커스가 이 선택지에 있을 때 질문 아래에 보일 미리보기. ${PROSE_RULE}` },
     recommended: { type: 'string', enum: ['추천', '에이전트 추천'], description: 'single 질문에는 하나까지' },
   },
   required: ['label', 'description'],
@@ -50,8 +57,8 @@ const OPTION_SCHEMA = {
 export const INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    title: { type: 'string', description: `패널 제목. ${TITLE_MAX}자 이하` },
-    intro: { type: 'string', description: '첫 질문 위 안내 문단' },
+    title: { type: 'string', description: `패널 제목. ${TITLE_MAX}자 이하. ${LINE_RULE}` },
+    intro: { type: 'string', description: `첫 질문 위 안내 문단. ${PROSE_RULE}` },
     replaces: { type: 'string', description: '지금 열린 질문지 id. 그 질문지를 이 질문지로 갈아 끼운다' },
     questions: {
       type: 'array',
@@ -60,10 +67,10 @@ export const INPUT_SCHEMA = {
         type: 'object',
         properties: {
           id: { type: 'string', description: '^[a-z0-9][a-z0-9_-]{0,31}$, 질문지 안에서 유일' },
-          header: { type: 'string', description: `짧은 머리말. NFC 기준 ${HEADER_MAX} 코드포인트 이하` },
-          group: { type: 'string', description: '같은 값끼리 묶어 보인다' },
-          question: { type: 'string', description: '질문 문장' },
-          detail: { type: 'string', description: '질문 아래 설명' },
+          header: { type: 'string', description: `짧은 머리말. NFC 기준 ${HEADER_MAX} 코드포인트 이하. ${LINE_RULE}` },
+          group: { type: 'string', description: `같은 값끼리 묶어 보인다. ${LINE_RULE}` },
+          question: { type: 'string', description: `질문 문장. ${PROSE_RULE}` },
+          detail: { type: 'string', description: `질문 아래 설명. ${PROSE_RULE}` },
           kind: { type: 'string', enum: ['single', 'multi', 'text'] },
           options: {
             type: 'array',
@@ -72,7 +79,7 @@ export const INPUT_SCHEMA = {
           },
           allowOther: { type: 'boolean', description: '기본 true. 「기타」 자유 입력을 보인다' },
           allowNote: { type: 'boolean', description: '기본 true. 「메모 (선택)」 입력칸을 보인다' },
-          placeholder: { type: 'string', description: 'text 입력칸 안내' },
+          placeholder: { type: 'string', description: `text 입력칸 안내. ${LINE_RULE}` },
           when: {
             type: 'object',
             properties: {

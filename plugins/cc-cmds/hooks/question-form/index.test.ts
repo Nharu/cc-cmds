@@ -4,21 +4,21 @@ import { describe, expect, test } from 'claude-code/testing'
 import { MARKS, call, formIdOf, mount, prompt, reopenCommand, start, twoQuestions, world } from './kit'
 import { contextLine } from './spec'
 import type { FormInput } from './spec'
+import type { Drafts } from './bundle'
 import { STORE_TTL_MS, openRecord } from './transitions'
 import { normalizeForm } from './validate'
 
 const STAMP = '직접 입력된 문면입니다. 질문지 제출이 아닙니다.'
 
-// 시각 0 에 sid-test 가 연 질문지의 보관 기록.
-const storedForm = (id: string) =>
-  openRecord({
-    id,
-    toolUseId: `tu-${id}`,
-    form: normalizeForm(twoQuestions() as unknown as FormInput),
-    drafts: {},
-    sessionId: 'sid-test',
-    now: 0,
-  })
+// 시각 0 에 sid-test 가 연 질문지의 보관 기록. 고치기 전 판이 보관한 기록을 흉내 내려고
+// 초안과 모델 입력을 바꿔 심을 수 있다.
+const storedForm = (id: string, drafts: Drafts = {}, patch: (f: FormInput) => void = () => {}) => {
+  const form = normalizeForm(twoQuestions() as unknown as FormInput)
+  patch(form)
+  return openRecord({ id, toolUseId: `tu-${id}`, form, drafts, sessionId: 'sid-test', now: 0 })
+}
+const draft = (other = '', note = '', selected: string[] = []) => ({ selected, other, note })
+const json = (text: string) => JSON.parse(text.split('\n').slice(2, -1).join('\n'))
 
 describe('등록 술어', () => {
   test('대화형이고 표지가 없으면 도구와 /question-form 을 등록한다', async ($, on) => {
@@ -108,6 +108,33 @@ describe('가용성 순서', () => {
     expect(isRefused).toBe(true)
     expect(text).toContain('QUESTION_FORM_INVALID title:')
   })
+})
+
+describe('여러 줄 칸의 줄바꿈·탭·CR', () => {
+  // 엔진이 받는다고 잰 것은 text 자식의 LF 뿐이라, 나머지는 실제로 그려지는지까지 본다.
+  const fields: [string, (f: any, v: string) => void][] = [
+    ['intro', (f, v) => (f.intro = `가${v}나`)],
+    ['question', (f, v) => (f.questions[0].question = `가${v}나`)],
+    ['detail', (f, v) => (f.questions[0].detail = `가${v}나`)],
+    ['description', (f, v) => (f.questions[0].options[0].description = `가${v}나`)],
+    ['preview', (f, v) => (f.questions[0].options[0].preview = `가${v}나`)],
+  ]
+  for (const [name, set] of fields) {
+    for (const [cn, c] of [['LF', '\n'], ['TAB', '\t'], ['CR', '\r']] as const) {
+      test(`${name} ${cn} 는 OPEN 이고 패널이 거부 없이 그려진다`, async ($, on) => {
+        world(on)
+        await start($)
+        const f = twoQuestions() as any
+        set(f, c)
+        expect((await call($, f)).text).toMatch(/^QUESTION_FORM_OPEN /)
+        const ui = await mount($)
+        expect(await ui.find({ key: 'q1-o1' })).toBeDefined()
+        // 미리보기는 포커스가 그 선택지에 있을 때만 그려진다.
+        await $.ui.focus({ component: 'Pane', requestId: 'cc-cmds-question-form', plugin: 'cc-cmds', element: 'q1-o1' })
+        expect(await ui.find({ type: 'Text', text: /^│ / })).toBeDefined()
+      })
+    }
+  }
 })
 
 describe('열기와 BUSY', () => {
@@ -234,6 +261,47 @@ describe('세션이 바뀔 때', () => {
     expect(w.opens).toHaveLength(1)
     expect(w.submits.at(-1)!.context).toContain(contextLine('f-0000000b'))
     expect((await call($, twoQuestions())).text).toContain('QUESTION_FORM_BUSY f-0000000b')
+  })
+
+  test('제어 문자가 든 초안을 되살려도 패널이 그려지고 답 묶음은 거른 글이다', async ($, on) => {
+    const drafts = { scope: draft('셋\u001b째', '메\u0000모'), why: draft('이유\u0085\n글') }
+    const { w } = world(on, { store: { 'questionForm.open.sid-test': storedForm('f-0000000c', drafts) } })
+    await start($)
+    expect(w.opens).toHaveLength(1)
+    const ui = await mount($)
+    expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타: 셋째')
+    expect((await ui.find({ key: 'q1-note' }))?.text).toBe('메모: 메모')
+    expect(await ui.find({ type: 'Text', text: '이유 글' })).toBeDefined()
+    await ui.press({ key: 'submit' })
+    const sent = w.submits.at(-1)!
+    const body = json(sent.text)
+    expect(body.answers[0]).toMatchObject({ other: '셋째', note: '메모', answer: '셋째\n메모: 메모' })
+    expect(body.answers[1]).toMatchObject({ other: '이유 글', answer: '이유 글' })
+    expect(sent.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+  })
+
+  test('기타가 제어 문자뿐인 text 초안을 되살리면 미답으로 접히고 답=n/m 과 state 가 같다', async ($, on) => {
+    const drafts = { scope: draft('', '', ['좁게']), why: draft('\u001b\u0000') }
+    const { w } = world(on, { store: { 'questionForm.open.sid-test': storedForm('f-0000000d', drafts) } })
+    await start($)
+    const ui = await mount($)
+    expect((await ui.find({ key: 'q2' }))?.text).toBe('2 이유')
+    expect(await ui.find({ type: 'Text', text: '미답' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '경계 질문  답 1/2 · 미답 1건' })).toBeDefined()
+    await ui.press({ key: 'submit' })
+    const sent = w.submits.at(-1)!
+    expect(sent.text.split('\n')[0]).toEndWith('답=1/2')
+    const states = json(sent.text).answers.map((a: { state: string }) => a.state)
+    expect(states).toEqual(['답', '미답'])
+    expect(states.filter((s: string) => s === '답')).toHaveLength(1)
+  })
+
+  test('모델 입력의 머리말에 ESC 가 든 보관 기록은 되살리지 않는다', async ($, on) => {
+    const stored = storedForm('f-0000000e', {}, f => (f.questions[0]!.header = '범\u001b위'))
+    const { w } = world(on, { store: { 'questionForm.open.sid-test': stored } })
+    await start($)
+    expect(w.opens).toHaveLength(0)
+    expect((await call($, twoQuestions())).text).toContain('QUESTION_FORM_OPEN')
   })
 
   test('/clear 는 보관까지 버려 같은 세션으로 다시 시작해도 되살리지 않는다', async ($, on) => {

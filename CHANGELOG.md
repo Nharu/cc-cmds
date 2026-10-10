@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.62.1] - 2026-10-10
+
+질문지 입력칸에 줄바꿈이나 ESC 같은 제어 문자가 들어가면 엔진이 패널 전체를 대체 화면으로 바꿔 질문지가 보이지 않았다. 모델이 넘긴 질문지 문자열에 제어 문자가 섞여도 같았다. 긴 기타 글을 치면 커서와 조합 글자가 메모 줄을 덮었다. 이제 입력은 걸러서 받고 그리고 보내며, 모델 입력의 제어 문자는 칸을 짚어 거절한다.
+
+### Fixed
+
+- **입력칸 거르기** (`question-form`) — 줄바꿈·탭은 공백 하나로 바꾸고 나머지 제어 문자는 뺀다. 초안, 기타·메모 줄과 답 요약, 답 묶음의 `other`·`note` 모두 거른 글이다. 제어 문자만 친 답은 미답으로 세고, 확정해도 다음 질문으로 넘어가지 않는다
+- **모델 입력 검사** (`question-form`) — 한 줄 칸(`title`·`header`·`group`·`placeholder`·선택지 `label`)은 줄바꿈·탭을 포함한 제어 문자를, 여러 줄 칸(`intro`·`question`·`detail`·`description`·`preview`)은 줄바꿈·탭·CR 밖의 제어 문자를 그 칸 경로의 `QUESTION_FORM_INVALID` 로 거절한다. 엔진이 거부하는 문자가 든 보관 기록은 되살리지 않는다
+- **긴 입력의 커서 자리** (`question-form`) — 편집기 줄의 앞말 라벨을 없애 칸 안에 보이는 글을 늘리고, 글이 칸 폭을 넘으면 편집기 줄 뒤에 빈 줄을 두어 커서가 메모 줄을 덮지 않게 한다
+
+### Post-install notes
+
+- 전에는 통과하던 질문지 입력이 이제 `QUESTION_FORM_INVALID` 로 거절될 수 있다. 한 줄 칸에 줄바꿈을 넣던 호출은 그 줄바꿈을 빼거나 여러 줄 칸으로 옮긴다.
+
 ## [2.62.0] - 2026-10-10
 
 무인 런이 어떻게 끝났는지를 원장의 종료 행 하나로 남긴다. 런이 정상으로 끝나든, 마감·천장·막힘으로 멈추든, 스테이지 중단이나 셸 종료로 끊기든 런 범위 종료 행이 `재킥 원인` 열두 토큰 중 하나를 싣고, 같은 런에 두 번 쓰이지 않는다. 다음 런을 자동으로 다시 띄울지 판단하는 쪽이 이 행 하나만 읽으면 된다.
