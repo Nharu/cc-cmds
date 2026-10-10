@@ -14890,6 +14890,59 @@ case "$pace_iw" in
   "rc=0") ok "페이싱 루트 옆 이름을 실은 원소는 페이싱 가드에 걸리지 않는다" ;;
   *) bad "페이싱 가드 오탐: 루트 옆 이름을 실은 원소" "$pace_iw" ;;
 esac
+# THE SPELLINGS THE WORD SPLIT STILL MISSED. A destination glued to a command
+# letter or an option has no separator to split at; a case variant is the same
+# file on the default case-insensitive volume; an ancestor of the root as a
+# directory destination merges a replacement tree over it. Each row is one argv
+# held in an array, so a path is never re-split.
+pace_rows() {
+  # pace_rows <라벨> <argv…> — one refused spelling, put to the guard alone.
+  local label="$1"; shift
+  pace_iw=$(pace_alone "$@")
+  case "$pace_iw" in
+    *"the pacing directory belongs to the lane dispatcher"*"rc=룰거부")
+      ok "페이싱 가드가 거절한다: $label" ;;
+    *) bad "페이싱 가드가 거절한다: $label" "$pace_iw" ;;
+  esac
+}
+pace_rows "sed 의 붙여 쓴 w" sed -n "w$PACE_N/backlog.jsonl" /dev/null
+pace_rows "sed 의 주소 붙은 w" sed "1w$PACE_N/backlog.jsonl" /dev/null
+pace_rows "sed 의 s///w" sed "s/a/b/w$PACE_N/backlog.jsonl" /dev/null
+pace_rows "sed -e 의 붙여 쓴 w" sed -n -e "w$PACE_N/backlog.jsonl" /dev/null
+pace_rows "sort 의 붙인 -o 값" sort "-o$PACE_N/backlog.jsonl" /dev/null
+pace_rows "대소문자 변형 루트" cp "$WORK/r3x" "${PACE_N%/pace}/PACE/backlog.jsonl"
+pace_rows "대소문자 변형 상태 디렉터리" cp "$WORK/r3x" "$STATE_CONE/CC-CMDS/pace/rekick/R1/successor"
+pace_rows "루트의 상위 디렉터리 목적지" cp -R "$WORK/r3x" "$STATE_CONE/cc-cmds/"
+pace_rows "루트의 상위 디렉터리, 옵션 값" rsync -a "$WORK/r3x" "--dest=$STATE_CONE/cc-cmds"
+pace_rows "인터프리터 속 상위 디렉터리" bash -c "cp -R x $STATE_CONE/cc-cmds"
+# A word the split cannot resolve is refused, not guessed: the arm the word
+# split brought with it, pinned so that deleting it fails here.
+pace_iw=$(pace_alone dd "of=~-/backlog.jsonl")
+case "$pace_iw" in
+  *"home-directory spelling this gate cannot resolve"*"rc=룰거부")
+    ok "페이싱 가드가 해석할 수 없는 홈 철자를 거절한다" ;;
+  *) bad "페이싱 가드가 해석할 수 없는 홈 철자를 거절한다" "$pace_iw" ;;
+esac
+# The neighbours of the refused rows pass: the same glued spellings beside the
+# root, and the root's sibling directory under the same parent.
+for spell_row in "sed -n w$PACE_N-old/at /dev/null" "sort -o$PACE_N-old/at /dev/null" \
+                 "cp $WORK/r3x $STATE_CONE/cc-cmds/run-old"; do
+  read -r -a spell_argv <<< "$spell_row"
+  pace_iw=$(pace_alone "${spell_argv[@]}")
+  case "$pace_iw" in
+    "rc=0") ok "페이싱 루트 밖 목적지는 걸리지 않는다: $spell_row" ;;
+    *) bad "페이싱 가드 오탐: $spell_row" "$pace_iw" ;;
+  esac
+done
+# Through the gate end to end: the glued `-o` value of `sort`, which grades as
+# a write outside the tree. Another guard may answer first, so the code and the
+# bytes are what this row pins.
+pace_ob=$(fsha "$PACE_N/backlog.jsonl")
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- sort "-o$PACE_N/backlog.jsonl" "$WORK/r3x"
+check "sort 의 붙인 -o 값으로 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+check "sort 로 거절된 백로그는 바이트도 존재도 그대로다" "$(fsha "$PACE_N/backlog.jsonl")" "$pace_ob"
 # A sibling's plan beside the manifest, in the same recipe: the sibling record
 # guard answers it, so only the code and the bytes are this guard's business.
 r8before=$(fsha "$WORK/R8.plan.md")
@@ -14934,6 +14987,51 @@ case "$sib_iw" in
   "rc=0") ok "세 접미가 아닌 파일을 실은 원소는 형제 런 가드에 걸리지 않는다" ;;
   *) bad "형제 런 가드 오탐: 세 접미가 아닌 파일을 실은 원소" "$sib_iw" ;;
 esac
+# The spellings the word split still missed, against the sibling guard: glued
+# to a command letter or option, case variants of the suffix and of the
+# directory, and the manifest directory itself as the destination of a source
+# that carries a record suffix — in either argument order.
+sib_rows() {
+  # sib_rows <라벨> <argv…> — one refused spelling, put to the guard alone.
+  local label="$1"; shift
+  sib_iw=$(sib_alone "$@")
+  case "$sib_iw" in
+    *"another run's kickoff-frozen record"*"rc=룰거부")
+      ok "형제 런 가드가 거절한다: $label" ;;
+    *) bad "형제 런 가드가 거절한다: $label" "$sib_iw" ;;
+  esac
+}
+printf 'r8\n' > "$WT/R8.plan.md"
+sib_rows "sed 의 붙여 쓴 w" sed -n "w$WORK/R8.plan.md" /dev/null
+sib_rows "sed 의 s///w" sed "s/a/b/w$WORK/R8.interview.md" /dev/null
+sib_rows "sort 의 붙인 -o 값" sort "-o$WORK/R8.kickoff.md" /dev/null
+sib_rows "대소문자 변형 접미" cp "$WORK/r3x" "$WORK/R8.PLAN.md"
+# A case variant of the directory names the same directory only on a
+# case-insensitive volume; elsewhere it is another directory and not refused.
+sib_upper="$(dirname "$WORK")/$(basename "$WORK" | tr '[:lower:]' '[:upper:]')"
+if [ "$sib_upper" != "$WORK" ] && [ "$sib_upper" -ef "$WORK" ]; then
+  sib_rows "대소문자 변형 디렉터리" cp "$WORK/r3x" "$sib_upper/R8.plan.md"
+fi
+sib_rows "디렉터리 목적지" cp R8.plan.md "$WORK/"
+sib_rows "디렉터리 목적지, -t" cp -t "$WORK" R8.plan.md
+rm -f "$WT/R8.plan.md"
+sib_iw=$(sib_alone dd "of=~-/R8.plan.md")
+case "$sib_iw" in
+  *"home-directory spelling this gate cannot resolve"*"rc=룰거부")
+    ok "형제 런 가드가 해석할 수 없는 홈 철자를 거절한다" ;;
+  *) bad "형제 런 가드가 해석할 수 없는 홈 철자를 거절한다" "$sib_iw" ;;
+esac
+# Neighbours that pass: a record-suffixed file written into another directory,
+# and a non-record file copied into the manifest directory.
+for spell_row in "sed -n w$WT/R8.plan.md /dev/null" "cp $WORK/r3x $WORK/R9.notes.md" \
+                 "cp $WORK/r3x $WORK/"; do
+  read -r -a spell_argv <<< "$spell_row"
+  sib_iw=$(sib_alone "${spell_argv[@]}")
+  case "$sib_iw" in
+    "rc=0") ok "형제 기록이 아닌 목적지는 걸리지 않는다: $spell_row" ;;
+    *) bad "형제 런 가드 오탐: $spell_row" "$sib_iw" ;;
+  esac
+done
 # Naming the directory while reading it passes: the read grade returns first.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \

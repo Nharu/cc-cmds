@@ -14750,6 +14750,105 @@ gate_arg_option_value() {
   printf '%s' "$v"
 }
 
+gate_nocase_glob() {
+  # gate_nocase_glob <string> <glob> — rc 0 when the string matches the glob
+  # (given unquoted, so its `*` is a wildcard) without regard to case.
+  #
+  # CASE IS NOT IDENTITY ON THIS PLATFORM, and the identity walk
+  # (`gate_path_is_at_or_under`) answers it only for a path whose ancestor
+  # exists. A pacing root before its first lease, a claim directory before the
+  # sweep and a record name before its file is written have no inode, and on
+  # the default case-insensitive volume `…/PACE/backlog.jsonl` and
+  # `R8.PLAN.md` create or overwrite the real files. Text compared case-blind
+  # closes that without touching the filesystem; on a case-sensitive volume it
+  # also refuses a neighbour that differs only in case, which is the safe
+  # direction. `nocasematch` is restored to what the caller had.
+  local rc=1 had=0
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  # shellcheck disable=SC2254
+  case "$1" in $2) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  return "$rc"
+}
+
+gate_nocase_at_or_under() {
+  # gate_nocase_at_or_under <path> <root> — rc 0 when the path is the root or
+  # lies under it, compared as text without regard to case. The root is taken
+  # literally; see `gate_nocase_glob` for why case is folded.
+  local rc=1 had=0
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  case "$1" in "$2"|"$2"/*) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  return "$rc"
+}
+
+gate_nocase_contains() {
+  # gate_nocase_contains <haystack> <needle> — rc 0 when the needle, taken
+  # literally, occurs in the haystack without regard to case.
+  local rc=1 had=0
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  case "$1" in *"$2"*) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  return "$rc"
+}
+
+gate_record_suffix() {
+  # gate_record_suffix <name> — rc 0 when the name ends in one of the three
+  # kickoff-frozen record suffixes, without regard to case. Three calls rather
+  # than one `a|b|c` glob: `|` from an expansion is a character, not syntax.
+  gate_nocase_glob "$1" '*.plan.md' || gate_nocase_glob "$1" '*.interview.md' \
+    || gate_nocase_glob "$1" '*.kickoff.md'
+}
+
+gate_dest_tails() {
+  # gate_dest_tails <word> — every spelling of a destination the word can
+  # carry, the word itself first, in the global array `GATE_DEST_TAILS`.
+  #
+  # A DESTINATION IS OFTEN GLUED TO A COMMAND LETTER OR AN OPTION, not separated
+  # from it. `sed -n 'w<path>'`, `sed '1w<path>'`, `sed 's/a/b/w<path>'` and
+  # `sort -o<path>` are standard spellings, and none of them has a character
+  # `GATE_ARG_SEP` splits at — so the whole word was resolved against the act's
+  # directory as `<cwd>/w<path>` and missed the protected file it writes.
+  # Three readings are added beside the word:
+  #   - a single-dash option's attached value (`-o<path>` → `<path>`);
+  #   - the text after a leading sed address or flag run and a `w`
+  #     (`1,5w<path>`, `gw<path>` → `<path>`);
+  #   - every tail that starts at a `/`, so an absolute path anywhere inside
+  #     the word (`s/a/b/w/<abs>`) is a candidate, each tail also read for a
+  #     leading `w` (`/wR8.plan.md` → `R8.plan.md`).
+  # A reading that names nothing is harmless: it resolves to a path the guard
+  # does not protect. These are candidates for the at-or-under test only; the
+  # ancestor test is not given tails, because every word with a `/` has `/`
+  # itself among them.
+  local w="$1" t s re='^[0-9,$gpIiMme]*[wW](.+)$'
+  GATE_DEST_TAILS=("$w")
+  case "$w" in
+    --*) ;;
+    -?*)
+      if [ -n "${w#-?}" ]; then
+        GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=${w#-?}
+      fi ;;
+  esac
+  if [[ $w =~ $re ]]; then
+    GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=${BASH_REMATCH[1]}
+  fi
+  t=${w#?}
+  while :; do
+    case "$t" in */*) ;; *) break ;; esac
+    t="/${t#*/}"
+    GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=$t
+    s=${t#/}
+    if [[ $s =~ $re ]]; then
+      GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=${BASH_REMATCH[1]}
+    fi
+    t=$s
+  done
+  return 0
+}
+
 gate_argv0_wraps() {
   # gate_argv0_wraps <argv0> — rc 0 when argv0 is an interpreter or a wrapper
   # whose later arguments are program text: the list the CLAUDE.md slot guard
@@ -16021,9 +16120,24 @@ gate_sibling_record_write_guard() {
   # `gate_arg_words`, the run directory guard's word split, and each word goes
   # through the arm as an element of its own. A word the split cannot resolve is
   # refused rather than guessed.
+  #
+  # AND EACH WORD BY EVERY DESTINATION IT CAN CARRY, COMPARED BY IDENTITY. The
+  # split alone left three standard spellings open: a destination glued to a
+  # command letter or option (`sed -n 'w<dir>/R8.plan.md'`, `sort -o<path>`),
+  # which `gate_dest_tails` reads apart; a case variant (`R8.PLAN.md`,
+  # `<DIR>/R8.plan.md`) on the default case-insensitive volume, which the
+  # suffix test now folds and the directory test compares with `-ef`; and a
+  # DIRECTORY destination (`cp R8.plan.md <dir>/`, `cp -t <dir> R8.plan.md`),
+  # where the element naming the directory carries no suffix and the element
+  # carrying the suffix is the source. An act that names the manifest directory
+  # itself beside any record-suffixed name — or the grant directory beside any
+  # `.md` — is refused. RESIDUAL: an ancestor of either directory as the
+  # destination (`cp -R ./pipeline-run <docs>/`) is not refused here; `docs/`
+  # is a directory ordinary writes name.
   local mdir="$1" mdirp="$2"; shift 2
-  local gdir='' gdirp='' a ap ad adp argv0 joinedn gdirn gdirpn cwd i
-  local -a cand
+  local gdir='' gdirp='' a b ap ad adp argv0 joinedn gdirn gdirpn cwd i x
+  local rec to_mdir=0 to_gdir=0 has_rec=0 has_md=0
+  local -a cand base_c raw
   if [ -n "${GRANT:-}" ]; then
     gdir=$(dirname "$GRANT")
     gdirp=$(cd "$gdir" 2>/dev/null && pwd -P) || gdirp="$gdir"
@@ -16035,76 +16149,106 @@ gate_sibling_record_write_guard() {
   case "$argv0" in
     bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
       joinedn=$(gate_path_spelling "$(printf '%s ' "$@")")
-      case "$joinedn" in
-        *pipeline-grant/*)
-          gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE" ;;
-      esac
+      if gate_nocase_contains "$joinedn" 'pipeline-grant/'; then
+        gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE"
+      fi
       if [ -n "$gdir" ]; then
         gdirn=$(gate_path_spelling "$gdir")
         gdirpn=$(gate_path_spelling "$gdirp")
         case "$gdirn" in
           ''|'/'|'.') ;;
-          *) case "$joinedn" in *"$gdirn"*)
-               gate_sibling_record_refuse "$gdir"; return "$GATE_EXIT_RULE" ;;
-             esac ;;
+          *) if gate_nocase_contains "$joinedn" "$gdirn"; then
+               gate_sibling_record_refuse "$gdir"; return "$GATE_EXIT_RULE"
+             fi ;;
         esac
         case "$gdirpn" in
           ''|'/'|'.') ;;
-          *) case "$joinedn" in *"$gdirpn"*)
-               gate_sibling_record_refuse "$gdirp"; return "$GATE_EXIT_RULE" ;;
-             esac ;;
+          *) if gate_nocase_contains "$joinedn" "$gdirpn"; then
+               gate_sibling_record_refuse "$gdirp"; return "$GATE_EXIT_RULE"
+             fi ;;
         esac
       fi
       # THE SUFFIX NEEDLE, ONLY FROM INSIDE THE MANIFEST DIRECTORY. There the
       # caller's arm 2 has no directory to find, because a relative name spells
       # none; everywhere else that needle already fires on the directory.
-      case "$(cd "$cwd" 2>/dev/null && pwd -P)" in
-        "$mdirp")
-          case "$joinedn" in
-            *.plan.*|*.interview.*|*.kickoff.*)
-              gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE" ;;
-          esac ;;
-      esac ;;
+      x=$(cd "$cwd" 2>/dev/null && pwd -P) || x=""
+      if [ -n "$x" ] && { [ "$x" = "$mdirp" ] || [ "$x" -ef "$mdirp" ]; }; then
+        if gate_nocase_glob "$joinedn" '*.plan.*' || gate_nocase_glob "$joinedn" '*.interview.*' \
+           || gate_nocase_glob "$joinedn" '*.kickoff.*'; then
+          gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE"
+        fi
+      fi ;;
   esac
 
   cand=()
   for a in "$@"; do
+    base_c=()
     if gate_arg_is_compound "$a"; then
       gate_arg_words "$a" \
         || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
       i=0
       while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
-        cand[${#cand[@]}]=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+        base_c[${#base_c[@]}]=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+      done
+      # A `/`-less record name inside a compound element (`dd of=R8.plan.md`)
+      # is dropped by the word split, and from inside the manifest directory it
+      # is exactly the sibling's record.
+      # shellcheck disable=SC2295
+      x=${a//$GATE_ARG_SEP/ }
+      read -r -a raw <<< "$x"
+      for b in ${raw[@]+"${raw[@]}"}; do
+        case "$b" in */*) continue ;; esac
+        if gate_record_suffix "$b"; then base_c[${#base_c[@]}]=$b; fi
       done
     else
-      cand[${#cand[@]}]=$a
+      base_c[0]=$a
     fi
+    for b in ${base_c[@]+"${base_c[@]}"}; do
+      gate_dest_tails "$b"
+      i=0
+      while [ "$i" -lt "${#GATE_DEST_TAILS[@]}" ]; do
+        cand[${#cand[@]}]=${GATE_DEST_TAILS[$i]}; i=$((i + 1))
+      done
+    done
   done
   for a in ${cand[@]+"${cand[@]}"}; do
-    case "$a" in
-      *.plan.md|*.interview.md|*.kickoff.md) ;;
-      */pipeline-grant/*.md|pipeline-grant/*.md)
-        gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE" ;;
-      */*.md) [ -n "$gdir" ] || continue ;;
-      *) continue ;;
-    esac
+    [ -n "$a" ] || continue
     case "$a" in
       /*) ap="$a" ;;
       *) ap="$cwd/$a" ;;
     esac
+    # THE DIRECTORY ITSELF AS A DESTINATION, remembered and judged after every
+    # candidate is seen — the record-suffixed source may come before or after.
+    if [ -d "$ap" ]; then
+      if [ "$ap" -ef "$mdirp" ]; then to_mdir=1; fi
+      if [ -n "$gdirp" ] && [ "$ap" -ef "$gdirp" ]; then to_gdir=1; fi
+    fi
+    rec=0
+    if gate_record_suffix "$a"; then rec=1; has_rec=1; fi
+    if gate_nocase_glob "$a" '*.md'; then has_md=1; fi
+    if [ "$rec" = 0 ]; then
+      if gate_nocase_glob "/$a" '*/pipeline-grant/*.md'; then
+        gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+      gate_nocase_glob "$a" '*/*.md' || continue
+      [ -n "$gdir" ] || continue
+    fi
     ad=$(dirname "$ap")
     [ -d "$ad" ] || continue
     adp=$(cd -P -- "$ad" 2>/dev/null && pwd -P) || continue
-    case "$a" in
-      *.plan.md|*.interview.md|*.kickoff.md)
-        if [ "$adp" = "$mdirp" ]; then
-          gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
-        fi ;;
-    esac
-    if [ -n "$gdirp" ] && [ "$adp" = "$gdirp" ]; then
+    if [ "$rec" = 1 ] && { [ "$adp" = "$mdirp" ] || [ "$adp" -ef "$mdirp" ]; }; then
+      gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
+    fi
+    if [ -n "$gdirp" ] && { [ "$adp" = "$gdirp" ] || [ "$adp" -ef "$gdirp" ]; }; then
       gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
   done
+  if [ "$to_mdir" = 1 ] && [ "$has_rec" = 1 ]; then
+    gate_sibling_record_refuse "$mdir"; return "$GATE_EXIT_RULE"
+  fi
+  if [ "$to_gdir" = 1 ] && [ "$has_md" = 1 ]; then
+    gate_sibling_record_refuse "$gdir"; return "$GATE_EXIT_RULE"
+  fi
   return 0
 }
 
@@ -16193,12 +16337,24 @@ gate_pace_write_guard() {
   # directory guard's word arm splits it (`gate_arg_words`), and each word is
   # resolved like a whole element. A word the split cannot resolve (`~-`) is
   # refused rather than guessed, the same as that arm.
+  #
+  # THE SPLIT WAS NOT THE LAST SPELLING. Measured on the split alone, four
+  # more standard ones wrote `backlog.jsonl`: a destination glued to a command
+  # letter or option (`sed -n 'w<pace>/backlog.jsonl'`, `sort -o<pace>/…`),
+  # which has no separator to split at and is now read apart by
+  # `gate_dest_tails`; a case variant (`…/PACE/backlog.jsonl`) on the default
+  # case-insensitive volume, now compared case-blind and by identity; and an
+  # ANCESTOR of the root named as a directory destination (`cp -R ./pace
+  # <state>/cc-cmds/`), which merges a whole replacement tree over the root
+  # and is now refused by the run directory guard's ancestor predicate, on the
+  # same terms: a whole element or an option value, and an interpreter's words.
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   case "$graded" in
     읽기) return 0 ;;
   esac
-  local r1 r2 r1p r2p n a v an ap joinedn base first mode i
+  local r1 r2 r1p r2p n a v an ap joinedn base first mode i ov anc
+  local -a prim
   r1=$(gate_path_spelling "$(gate_lexical_abs "$(gate_pace_root)")")
   r2=''
   if declare -F run_pace_root >/dev/null 2>&1; then
@@ -16215,9 +16371,9 @@ gate_pace_write_guard() {
     joinedn=$(gate_path_spelling "$(printf '%s ' "$@")")
     for n in "$r1" "$r1p" "$r2" "$r2p"; do
       case "$n" in ''|'/'|'.') continue ;; esac
-      case "$joinedn" in *"$n"*)
-        gate_pace_write_refuse "$joinedn" "$n"; return "$GATE_EXIT_RULE" ;;
-      esac
+      if gate_nocase_contains "$joinedn" "$n"; then
+        gate_pace_write_refuse "$joinedn" "$n"; return "$GATE_EXIT_RULE"
+      fi
     done
   fi
 
@@ -16226,22 +16382,54 @@ gate_pace_write_guard() {
     # argv0 names what runs, not what is written — the run directory guard's
     # reasoning at the same place.
     if [ "$first" = 1 ]; then first=0; continue; fi
-    for v in "$a" "$(gate_arg_option_value "$a" 2>/dev/null || true)"; do
-      [ -n "$v" ] || continue
+    ov=$(gate_arg_option_value "$a" 2>/dev/null) || ov=""
+    # The ancestor arm: a whole element and an option value, as the run
+    # directory guard takes them. A word that is an option is not a path.
+    prim=()
+    if ! gate_arg_is_compound "$a"; then prim[${#prim[@]}]=$a; fi
+    if [ -n "$ov" ]; then prim[${#prim[@]}]=$ov; fi
+    for v in ${prim[@]+"${prim[@]}"}; do
       case "$v" in -*) continue ;; esac
-      if gate_pace_path_hit "$v" "$base" "$r1" "$r1p" "$r2" "$r2p"; then
-        gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+      anc=0
+      gate_word_is_at_or_above "$v" "$r1" "$r1p" "$r2" "$r2p" || anc=$?
+      if [ "$anc" = "$GATE_LEAF_UNRESOLVED" ]; then
+        gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+      if [ "$anc" = 0 ]; then
+        gate_pace_write_refuse "$a" "$r1"; return "$GATE_EXIT_RULE"
       fi
     done
-    gate_arg_is_compound "$a" || continue
-    gate_arg_words "$a" "$mode" \
-      || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
-    i=0
-    while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
-      v=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
-      if gate_pace_path_hit "$v" "$base" "$r1" "$r1p" "$r2" "$r2p"; then
-        gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
-      fi
+    if gate_arg_is_compound "$a"; then
+      gate_arg_words "$a" "$mode" \
+        || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+      i=0
+      while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
+        v=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+        prim[${#prim[@]}]=$v
+        # An interpreter's words are destinations, so an ancestor among them
+        # is refused as well — the run directory guard's word arm.
+        [ "$mode" = bare ] || continue
+        anc=0
+        gate_word_is_at_or_above "$v" "$r1" "$r1p" "$r2" "$r2p" || anc=$?
+        if [ "$anc" = "$GATE_LEAF_UNRESOLVED" ]; then
+          gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+        fi
+        if [ "$anc" = 0 ]; then
+          gate_pace_write_refuse "$a" "$r1"; return "$GATE_EXIT_RULE"
+        fi
+      done
+    fi
+    # The at-or-under arm: every destination each primary spelling can carry.
+    for v in ${prim[@]+"${prim[@]}"}; do
+      gate_dest_tails "$v"
+      i=0
+      while [ "$i" -lt "${#GATE_DEST_TAILS[@]}" ]; do
+        n=${GATE_DEST_TAILS[$i]}; i=$((i + 1))
+        [ -n "$n" ] || continue
+        if gate_pace_path_hit "$n" "$base" "$r1" "$r1p" "$r2" "$r2p"; then
+          gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+        fi
+      done
     done
   done
   return 0
@@ -16254,14 +16442,21 @@ gate_pace_path_hit() {
   # met is left in `GATE_PACE_HIT`. An empty, `/` or `.` spelling is skipped,
   # because a root that failed to resolve must not turn into a match on
   # everything.
+  #
+  # Compared as text without regard to case, and by device+inode through the
+  # deepest existing ancestor (`gate_path_is_at_or_under`) — the two layers the
+  # run directory guard keeps, because a byte test let `…/PACE/backlog.jsonl`
+  # overwrite the real file on a case-insensitive volume.
   local v="$1" base="$2" an ap n; shift 2
   GATE_PACE_HIT=""
   an=$(gate_path_spelling "$(gate_lexical_abs "$v" "$base")")
   ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
   for n in "$@"; do
     case "$n" in ''|'/'|'.') continue ;; esac
-    case "$an" in "$n"|"$n"/*) GATE_PACE_HIT="$n"; return 0 ;; esac
-    case "$ap" in "$n"|"$n"/*) GATE_PACE_HIT="$n"; return 0 ;; esac
+    if gate_nocase_at_or_under "$an" "$n" || gate_nocase_at_or_under "$ap" "$n" \
+       || gate_path_is_at_or_under "$ap" "$n"; then
+      GATE_PACE_HIT="$n"; return 0
+    fi
   done
   return 1
 }
