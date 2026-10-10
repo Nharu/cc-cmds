@@ -161,7 +161,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 형태=clickup-create.py | 사유=<…>   ← 트래커=clickup 일 때
 - `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
-- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트를 이어받을 때만, 세그먼트당 많아야 한 행
+- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
@@ -227,6 +227,12 @@ ledgers of the directory; the row it writes is described with `중단 답` below
 and the router re-converges and implements the segment before its review. Any
 other open answer is named in a warning and stays where it is, because handing
 it on re-attaches the halted session, and that session is the earlier run's.
+**`출처 런=-` adopts a segment no run cut** — a branch and pull request a person
+made outside any run. The planning act then reads only the worktree and the
+branch: there is no earlier ledger to say the segment landed, no earlier stage
+that could still run on it, and no answer to carry. The worktree still carries
+the reserved infix, so the kickoff moves a person's tree under it before it
+freezes the row, and `입양` in the snapshot's `슬라이싱` is `-`.
 
 **A `선행 착지` row states that a predecessor slice landed outside every run
 ledger**, one row per slice, and only the kickoff writes it, after a person
@@ -470,7 +476,8 @@ never compared.
 17. **`세그먼트 입양` rows, form only.** Each row matches its form, its
     `워크트리` is absolute, carries the reserved infix `-run-` the teardown guard
     requires and no double quote, backslash or control byte, its `출처 런` is a
-    run id other than this run's, and no segment has two rows. Each violation is
+    run id other than this run's or `-` (a segment no run cut), and no segment
+    has two rows. Each violation is
     a **hard stop**. The worktree, the branch and the earlier run are not read
     here; the segment's planning act reads them.
 18. **`선행 착지` rows.** Each row matches
