@@ -803,6 +803,34 @@ vs "확정값과 다른 값을 실은 초안은 실패한다" 실패 "$WORK/v-5o
   --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
 vs "5o 에서 묻지 않은 --set 은 실패한다" 실패 "$WORK/v-5o.md" "$E" 확정값 \
   --set '런:cost-ceiling=12' --set 'rk:deploy-triggers=branch:release'
+# The blanks as `--carry` prints them: a target is labelled by its remote slug,
+# and the row goes to --set verbatim.
+printf 'cost-ceiling = 12\n[t/rk]\ndeploy-triggers = branch:release\n' > "$WORK/defaults-5o"
+cout5=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$WORK/defaults-5o" "$BASH" "$KD" --carry "$PM" --kickoff-at "$KAT1" \
+          --expect-sha256 "$PMSHA" 2>>"$WORK/kd.err")
+SETS5=$(printf '%s\n' "$cout5" | awk -F'\t' '$1 == "빈칸" { print $2 ":" $3 "=" $4 }' | sort)
+check "7: --carry 가 원천의 빈칸을 기본값 파일 값으로 낸다" "$SETS5" \
+  "$(printf '%s\n' 't/rk:deploy-triggers=branch:release' '런:cost-ceiling=12' | sort)"
+S5=()
+while IFS= read -r e; do [ -z "$e" ] || S5+=(--set "$e"); done <<EOF
+$SETS5
+EOF
+rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$WORK/asked-5o" "${S5[@]}" > "$WORK/v-5c.md"; rc=$?
+check "7: --carry 빈칸 행을 그대로 옮긴 --set 으로 render-manifest 가 0 으로 끝난다" "$rc" "0"
+check "7: 원격 슬러그로 적힌 --set 이 그 슬러그를 선언한 대상 행에 확정값을 쓴다" \
+  "$(grep -E '^- `target`' "$WORK/v-5c.md" | grep -c '| 배포트리거 식별자=branch:release$')" "1"
+mf_check "$WORK/v-5c.md"; rc=$?
+check "7: 원격 슬러그 --set 으로 만든 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "--carry 빈칸 행을 그대로 옮긴 --set 으로 만든 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-5c.md" "$WORK/asked-5o" "" \
+  "${S5[@]}"
+out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" \
+        --set 'rk:deploy-triggers=branch:release' --set 't/rk:deploy-triggers=branch:release' 2>/dev/null); rc=$?
+check "7: 같은 대상을 별칭과 원격 슬러그로 두 번 준 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --set 't/zz:dev-ids=host:a' 2>/dev/null); rc=$?
+check "7: 어느 대상도 선언하지 않은 원격 슬러그의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
 out=$(rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
         --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --set '런:ladder-rungs=2' 2>/dev/null); rc=$?
 check "7: 원천에 값이 있는 키의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"

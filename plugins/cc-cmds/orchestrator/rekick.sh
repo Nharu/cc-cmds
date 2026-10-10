@@ -48,10 +48,11 @@
 #                           [--set <범위>:<키>=<값>]…
 #
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
-# is that row's scope (`런`, or a target alias) and `<키>` its key, one of
+# is that row's scope (`런`, or a target named by its alias or by the remote
+# slug `--carry` labels it with) and `<키>` its key, one of
 # ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor
 # (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
-# deploy-triggers (a target alias). The previous manifest must hold no value
+# deploy-triggers (a target). The previous manifest must hold no value
 # there; anything else is refused. `render-manifest` writes the value into the
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
@@ -1074,22 +1075,38 @@ rk_set_field() {
 }
 
 # rk_sets_resolve <out> — reads RK_SETS against the current MANIFEST (the
-# previous run's copy) and writes `<범위><TAB><섹션><TAB><필드><TAB><값><TAB><키>`
-# per entry. Prints the first refusal and returns 1 when an entry names an
-# unknown key, a scope that does not fit it, a target the previous manifest
+# previous run's copy) and writes
+# `<범위><TAB><섹션><TAB><필드><TAB><값><TAB><키><TAB><적힌 범위>` per entry —
+# `<범위>` is the target's alias even when the entry named its remote slug, and
+# `<적힌 범위>` is the scope as the entry wrote it, which is what the user
+# confirmation line repeats. Prints the first refusal and returns 1 when an
+# entry names an unknown key, a scope that does not fit it, a target the previous manifest
 # does not hold, a value the previous manifest already has, a value a target
 # row cannot carry, or the same place twice.
 rk_sets_resolve() {
-  local out="$1" e sc rest k v loc sec f pv
+  local out="$1" e sc rest k v loc sec f pv al hit rsc
   : > "$out"
   while IFS= read -r e; do
     [ -n "$e" ] || continue
-    sc=${e%%:*}; rest=${e#*:}; k=${rest%%=*}; v=${rest#*=}
+    sc=${e%%:*}; rest=${e#*:}; k=${rest%%=*}; v=${rest#*=}; rsc=$sc
     loc=$(rk_set_field "$k") || { printf '%s' "--set 의 키를 모릅니다: $k"; return 1; }
     sec=${loc%%"$TAB"*}; f=${loc#*"$TAB"}
     if [ "$sec" = "대상" ]; then
       [ "$sc" != "런" ] || { printf '%s' "--set $k 의 범위는 대상 별칭입니다"; return 1; }
-      target_aliases | grep -qxF -- "$sc" || { printf '%s' "--set 의 대상 $sc 가 원천 매니페스트에 없습니다"; return 1; }
+      if ! target_aliases | grep -qxF -- "$sc"; then
+        # `--carry` labels a target by its remote slug when it has one, so a
+        # 5o row carried verbatim names the slug; it stands for the one target
+        # that declares it, and a slug no target or several targets declare is
+        # refused rather than guessed.
+        hit=""
+        for al in $(target_aliases); do
+          [ "$(target_field "$al" '원격 슬러그')" = "$sc" ] || continue
+          [ -z "$hit" ] || { printf '%s' "--set 의 대상 $sc 를 원격 슬러그로 선언한 대상이 여럿입니다"; return 1; }
+          hit=$al
+        done
+        [ -n "$hit" ] || { printf '%s' "--set 의 대상 $sc 가 원천 매니페스트에 없습니다"; return 1; }
+        sc=$hit
+      fi
       case "$v" in *'|'*) printf '%s' "--set $sc:$k 값에 | 가 있습니다"; return 1 ;; esac
       pv=$(target_field "$sc" "$f")
     else
@@ -1099,7 +1116,7 @@ rk_sets_resolve() {
     [ -z "$pv" ] || { printf '%s' "--set $sc:$k — 원천 매니페스트에 이미 값이 있어 빈칸이 아닙니다"; return 1; }
     awk -F '\t' -v s="$sc" -v f="$f" '$1 == s && $3 == f { d = 1 } END { exit !d }' "$out" \
       && { printf '%s' "--set $sc:$k 가 두 번 주어졌습니다"; return 1; }
-    printf '%s\t%s\t%s\t%s\t%s\n' "$sc" "$sec" "$f" "$v" "$k" >> "$out"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$sc" "$sec" "$f" "$v" "$k" "$rsc" >> "$out"
   done <<EOF
 $RK_SETS
 EOF
@@ -1279,13 +1296,13 @@ EOF
 
   # 2b — each value 5o confirmed: asked at 5o, written beside the answers, and
   # carried by the draft where the previous run had none.
-  local ssc ssec sf sv sk sdv
+  local ssc ssec sf sv sk sdv srsc
   why="$setwhy"
   if [ -z "$why" ]; then
-    while IFS="$TAB" read -r ssc ssec sf sv sk; do
+    while IFS="$TAB" read -r ssc ssec sf sv sk srsc; do
       [ -n "$ssc" ] || continue
       [ -n "$(rk_asked_answer "5o $sk")" ] || why="${why:+$why; }$ssc:$sk 는 5o 에서 묻지 않은 값입니다"
-      case "$D_CONFIRM" in *" / $ssc:$sk=$sv"*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
+      case "$D_CONFIRM" in *" / $srsc:$sk=$sv"*) ;; *) why="${why:+$why; }$ssc:$sk 의 확정값이 사용자 확인 문면에 없습니다" ;; esac
       if [ "$ssec" = "대상" ]; then sdv=$(MANIFEST="$draft" target_field "$ssc" "$sf")
       else sdv=$(MANIFEST="$draft" manifest_field "$ssec" "$sf"); fi
       [ "$sdv" = "$sv" ] || why="${why:+$why; }초안의 $ssc:$sk 가 확정값이 아닙니다"
