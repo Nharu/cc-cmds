@@ -103,6 +103,10 @@
 #                                                           (internal; see above)
 #   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
 #   gate.sh prompt   --manifest <path> --approval <id>
+#   gate.sh end-overdue --manifest <path>
+#                    writes one end row for a run past its deadline with no end
+#                    token: `마감` while its driver is alive, `해당없음` once it
+#                    stopped or cannot be observed; nothing otherwise
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -7761,10 +7765,71 @@ gate_decl_block() {
   # refusal leaves. The router may resolve a run-scope block and may not create
   # one, so the act that judged the declaration unplannable is the one that
   # records it. A dry run records nothing, and the same reason is written once.
+  #
+  # This block is reached only for a defect no single slice owns (a checksum,
+  # an unreadable declaration, a plan with no review step); a defect that one
+  # slice owns parks that slice instead (`gate_decl_slice_park`). It carries
+  # `재킥 원인=슬라이싱` either way, and it is a run-scope `blocked` row that
+  # does not end the run, so it settles no end token and writes no marker.
   [ "$1" = "act" ] || return 0
   gate_has_row 'blocked' '스코프=run' '원인=무효화' "사유=$2" && return 0
   gate_append 'blocked' "대상=-" "스코프=run" "원인=무효화" "사유=$2" "관측=$(now_iso)" \
-    "재개 명령=설계 문서의 ## 구현 슬라이싱 을 고쳐 새 런으로 다시 킥오프 — 이 런의 동결 문서는 바뀌지 않습니다"
+    "재개 명령=설계 문서의 ## 구현 슬라이싱 을 고쳐 새 런으로 다시 킥오프 — 이 런의 동결 문서는 바뀌지 않습니다" \
+    "재킥 원인=슬라이싱"
+}
+
+gate_decl_defect_slices() {
+  # gate_decl_defect_slices — the slice ids an incomplete declaration's defects
+  # belong to, space-separated, or nothing when any defect belongs to no single
+  # slice. Read off `gate_slicing_defects`, whose per-slice lines name their
+  # slice and come alone: when it prints them it prints nothing else.
+  local line ids="" id
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      "슬라이스 "*": 필수 필드 「"*"」 없음")
+        id=${line#슬라이스 }; id=${id%%:*}
+        case " $ids " in *" $id "*) : ;; *) ids="$ids $id" ;; esac ;;
+      *) return 0 ;;
+    esac
+  done <<EOF
+$(gate_slicing_defects)
+EOF
+  printf '%s' "${ids# }"
+}
+
+gate_slice_reaches_any() {
+  # gate_slice_reaches_any <slice id> <id>... — true when the slice is one of
+  # the ids or depends on one through `선행`, transitively. A dependent of a
+  # parked slice cannot land on it, so it parks with it.
+  local todo="$1" ids d want seen=""
+  shift
+  ids=" $* "
+  while [ -n "$todo" ]; do
+    d=${todo%% *}
+    case "$todo" in *" "*) todo=${todo#* } ;; *) todo="" ;; esac
+    case " $seen " in *" $d "*) continue ;; esac
+    seen="$seen $d"
+    case "$ids" in *" $d "*) return 0 ;; esac
+    for want in $(gate_dep_tokens "$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)"); do
+      todo="${todo:+$todo }$want"
+    done
+  done
+  return 1
+}
+
+gate_decl_slice_park() {
+  # gate_decl_slice_park <verb> <alias> <segment> <사유> — a declaration defect
+  # that ONE slice owns parks that slice and what depends on it, and nothing
+  # else: the row names the slice, it is act-scope rather than run-scope, and
+  # an independent slice is still planned and dispatched. A dry run records
+  # nothing, and the same reason for the same slice is written once.
+  [ "$1" = "act" ] || return 0
+  gate_has_row 'blocked' "세그먼트=$3" '재킥 원인=슬라이싱' "사유=$4" && return 0
+  gate_append 'blocked' "대상=$2" "세그먼트=$3" "스코프=act" "원인=막힘" "사유=$4" \
+    "관측=$(now_iso)" \
+    "재개 명령=설계 문서의 ## 구현 슬라이싱 에서 이 슬라이스를 고쳐 새 런으로 다시 킥오프 — 독립 슬라이스는 이 런에서 계속 갑니다" \
+    "재킥 원인=슬라이싱"
 }
 
 GATE_PRIOR_RUN=""
@@ -7935,6 +8000,24 @@ gate_from_declaration() {
   fi
 
   br=$(gate_slicing_branch)
+  # A DEFECT ONE SLICE OWNS PARKS THAT SLICE, NOT THE RUN. When every defect is
+  # a missing field of a named slice, the slice being planned is refused only
+  # if it is one of those slices or depends on one, with an act-scope park row
+  # naming it; any other slice is planned as under a complete declaration. A
+  # defect that names no single slice keeps the run-scope block below.
+  local dslices=""
+  if [ "$br" = "선언불완전" ]; then
+    dslices=$(gate_decl_defect_slices)
+    if [ -n "$dslices" ]; then
+      if gate_slice_reaches_any "$seg" $dslices; then
+        why="구현 슬라이싱 선언 불완전 — $(gate_slicing_defects | grep -F "슬라이스 " | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+        warn "세그먼트 계획 거부: 슬라이스 ${seg} — $why"
+        gate_decl_slice_park "$verb" "$alias" "$seg" "$why"
+        return "$GATE_EXIT_RULE"
+      fi
+      br=선언통치
+    fi
+  fi
   case "$br" in
     선언불완전)
       why="구현 슬라이싱 선언 불완전 — $(gate_slicing_defects | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
@@ -7949,9 +8032,10 @@ gate_from_declaration() {
            return "$GATE_EXIT_VOCAB" ;;
       esac
       if ! al=$(gate_slice_alias "$seg"); then
+        # This slice owns the defect, so it parks alone (see above).
         why="구현 슬라이싱 선언 불완전 — 슬라이스 $seg: 레포 「$(slice_field "$DOC" "$seg" '레포')」 가 매니페스트의 어느 대상도 아닙니다"
         warn "세그먼트 계획 거부: $why"
-        gate_decl_block "$verb" "$why"
+        gate_decl_slice_park "$verb" "$alias" "$seg" "$why"
         return "$GATE_EXIT_RULE"
       fi
       GATE_DECL_FIELDS=( "상태=계획됨" \
@@ -8026,6 +8110,19 @@ gate_from_declaration() {
   if [ "$br" = "선언통치" ] && [ -z "$(gate_segment_ids)" ]; then
     declared=$(slicing_body "$DOC" | sed -n 's/^\*\*슬라이스 수\*\*: //p' | sed 's/[[:space:]]*$//' | sed -n 1p)
     derived=$(slicing_pr_count "$DOC")
+    # A parked slice with no `절단점` cannot be counted either way, so the
+    # checksum holds when the declared count lies between the slices that are
+    # counted and those plus every such slice. Without this the defect one
+    # slice owns comes back as a run-scope checksum block and stops the
+    # independent slices after all.
+    local unknown=0
+    for f in $dslices; do
+      [ -n "$(slice_field "$DOC" "$f" '절단점' 2>/dev/null || true)" ] || unknown=$((unknown + 1))
+    done
+    if [ -n "$declared" ] && [ "$unknown" -gt 0 ] \
+       && [ "$declared" -ge "$derived" ] 2>/dev/null && [ "$declared" -le $((derived + unknown)) ] 2>/dev/null; then
+      declared=$derived
+    fi
     if [ -n "$declared" ] && [ "$declared" != "$derived" ]; then
       why="구현 슬라이싱 선언 불완전 — 슬라이스 수 체크섬 불일치: 선언 ${declared} vs 파생 ${derived}"
       warn "세그먼트 계획 거부: $why"
@@ -11113,7 +11210,10 @@ JSON
   # that describes a temporary path, and every act afterwards would read as a
   # moved surface.
   if [ -z "${CC_GATE_SETTINGS_OVERRIDE:-}" ]; then
-    printf '%s\n' "$(gate_surface_digest)" > "$RUN_DIR/surface-digest"
+    local _lines
+    _lines=$(gate_surface_lines_capture)
+    printf '%s\n' "$(shasum -a 256 < "$_lines" | cut -d' ' -f1)" > "$RUN_DIR/surface-digest"
+    gate_surface_files_from "$_lines"
     log "런 설정 생성: $dir (강제 표면 기준선 기록)"
   fi
 }
@@ -11259,8 +11359,13 @@ gate_resettle_settings_for_segment() {
     printf '인가면=실패(렌더)'
     return 0
   fi
-  after=$(gate_surface_digest_raw)
+  # The baseline and its per-file list come from one read of the surface; see
+  # `gate_surface_lines_capture`. The lock is ours already, so that read is raw.
+  local _lines
+  _lines=$(gate_surface_lines_capture)
+  after=$(shasum -a 256 < "$_lines" | cut -d' ' -f1)
   printf '%s\n' "$after" > "$RUN_DIR/surface-digest"
+  gate_surface_files_from "$_lines"
   # After BOTH the rewrite and the re-baseline, never between them.
   gate_settings_key_record
   GATE_SEGMENT_WT_PENDING=""
@@ -11686,7 +11791,12 @@ gate_surface_check() {
   if ! gate_has_row 'blocked' '사유=강제 표면 이동'; then
     gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=run" "원인=무효화" \
       "사유=강제 표면 이동" "관측=$(now_iso)" \
-      "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다"
+      "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다" \
+      "재킥 원인=표면이동"
+    # This row ends the run without `done`, so it is the row that settles the
+    # end token, and the candidate marker is written here or nowhere: the router
+    # stops after exit 7 and reaches no other ending site.
+    gate_mark_rekick_candidate
     # THE RUN ANCHORED AND CANNOT BE UNANCHORED. This is one of the two places
     # the run's own end is decided rather than observed, and the notice belongs
     # here because the other channel cannot carry it: the watcher's terminal arm
@@ -11806,6 +11916,14 @@ gate_surface_digest_raw() {
   # those two surfaces from two layers to one rather than to zero — the same
   # trade this file already states in as many words for the transcript
   # directory, and stated here for the same reason: so the count is honest.
+  gate_surface_lines_raw | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_surface_lines_raw() {
+  # The digest's input, one `<sha256>  <path>` line per file that exists: the
+  # run's rendered settings first, then each target's project settings. The
+  # digest is the hash of exactly these bytes, so the per-file list written
+  # beside a baseline is taken from the same lines and cannot disagree with it.
   local a wt
   {
     find "$(gate_settings_dir)" -type f 2>/dev/null | sort
@@ -11817,7 +11935,51 @@ gate_surface_digest_raw() {
   } | while IFS= read -r f; do
         [ -f "$f" ] || continue
         printf '%s  %s\n' "$(shasum -a 256 "$f" | cut -d' ' -f1)" "$f"
-      done | shasum -a 256 | cut -d' ' -f1
+      done
+}
+
+gate_surface_lines_capture() {
+  # gate_surface_lines_capture — read the surface ONCE into a file under the
+  # run directory and print its path. A site that writes a baseline takes the
+  # digest and the per-file list from this one file (`gate_surface_files_from`),
+  # so the two cannot describe different moments.
+  #
+  # AN AGGREGATE HASH CANNOT SAY WHAT MOVED. When the surface moves, whether
+  # the run's own rendered settings moved or a target's `.claude/settings.json`
+  # did decides who may answer for it, and one hash over both answers neither.
+  # So every site that writes a baseline writes the list beside it; a baseline
+  # written without its list is a run whose surface move nobody can classify.
+  #
+  # Under the settings lock unless the caller already holds it; a lock that
+  # cannot be taken falls back to the unlocked read, as `gate_surface_digest`
+  # does.
+  local lk="$RUN_DIR/settings.lock" lines="$RUN_DIR/surface-digest.lines.$$" held=0
+  if [ -z "${GATE_SETTINGS_LOCK_HELD:-}" ] && gate_settings_lock "$lk"; then
+    held=1
+  fi
+  gate_surface_lines_raw > "$lines" 2>/dev/null || true
+  [ "$held" = 1 ] && gate_settings_unlock "$lk"
+  printf '%s' "$lines"
+}
+
+gate_surface_files_from() {
+  # gate_surface_files_from <lines-file> — classify the captured lines into
+  # `$RUN_DIR/surface-digest.files`, published by rename, and drop the capture.
+  #
+  # Each line is `<구분>\t<sha256>  <path>`: `런설정` for a file under the run's
+  # settings directory, `대상설정` for a target's project settings. The column
+  # after the tab is byte for byte a line of the digest's input.
+  local sd tmp="$RUN_DIR/surface-digest.files.$$"
+  sd="$(gate_settings_dir)/"
+  if awk -v sd="$sd" '{
+        path = substr($0, 67)
+        printf "%s\t%s\n", (index(path, sd) == 1 ? "런설정" : "대상설정"), $0
+      }' "$1" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$RUN_DIR/surface-digest.files" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  rm -f "$1" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -12592,6 +12754,12 @@ GATE_DRIFT_DIRS
       # what the person said in answer to the judgment it raised. With an id it
       # prints that answer, without one it lists the ids that have one.
       gate_answers "$approval"
+      ;;
+    end-overdue)
+      # Writing, and the writer is fleet's sweep rather than a stage or the
+      # router: a run no verb reaches cannot meet the acting path's deadline
+      # branch, so this is the one place its end row can come from.
+      gate_verb_end_overdue
       ;;
     *)
       printf 'gate: unknown verb: %s\n' "$verb" >&2; exit 2 ;;
@@ -18163,8 +18331,127 @@ gate_done_note() {
   fi
 }
 
+readonly GATE_REKICK_CAUSES="마감 천장 무진전 사이클예산 표면이동 연기마감 결함 판단정지 대상미선언 슬라이싱 말단상한 해당없음"
+
+gate_rekick_cause_ok() {
+  # gate_rekick_cause_ok <토큰> — true when the token is one of the twelve.
+  #
+  # A CLOSED SET, AND A VALUE OUTSIDE IT IS A CODE DEFECT. Every caller passes
+  # a literal or a value chosen from a fixed map, so a stray spelling here is a
+  # bug in this file — and folding it into `해당없음` would hide that bug behind
+  # the token whose whole meaning is "a person looks at this".
+  local t
+  [ -n "${1:-}" ] || return 1
+  for t in $GATE_REKICK_CAUSES; do
+    [ "$t" = "$1" ] && return 0
+  done
+  return 1
+}
+
+gate_end_token() {
+  # gate_end_token — print this run's END TOKEN, or print nothing and return 1.
+  #
+  # The end token is the `재킥 원인` of the EARLIEST run-scope row that carries
+  # one: an ending row (`자율 승인` with `결정=종료`) or a run-scope `blocked`
+  # row, which is how the surface-move site ends a run. A later row never
+  # changes it. Latest-wins would let a run stopped by a surface move pick up a
+  # `마감` ending afterwards and read as a quiet run — a cause that needed a
+  # person turned into one that needs nobody.
+  #
+  # Matched on whole fields between ` | ` separators, the same exactness
+  # `gate_run_ended_ok` uses: `gate_append` maps `|` out of every value, so a
+  # separator on both sides only ever stands at a real field boundary.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
+  awk '
+    (index($0, "- `자율 승인` | ") == 1 && index($0, " | 결정=종료 | ") > 0) ||
+    (index($0, "- `blocked` | ") == 1 && index($0, " | 스코프=run | ") > 0) {
+      n = split($0, f, / \| /)
+      for (i = 2; i <= n; i++) {
+        if (index(f[i], "재킥 원인=") == 1) {
+          v = f[i]; sub(/^재킥 원인=/, "", v)
+          print v; found = 1; exit
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }' "$LEDGER" 2>/dev/null
+}
+
+gate_mark_rekick_candidate() {
+  # gate_mark_rekick_candidate — publish `$RUN_DIR/rekick-candidate` once.
+  #
+  # THE MARKER IS A CACHE AND THE LEDGER ROW IS THE AUTHORITY, exactly as for
+  # `done`: whoever looks for runs that ended reads this file to find the
+  # manifest and the ledger, then judges from the rows. It is written by every
+  # site whose row FIRST settles the end token — the surface-move `blocked` row
+  # included, because that run never writes `done` and would otherwise reach no
+  # one. It does not depend on any consent row in the manifest; filtering on
+  # that is the reader's job.
+  #
+  # FIRST WRITE WINS, by hard link, for the reason `gate_end_run` gives. The
+  # token written is the end token as the ledger reads it now, so a second site
+  # that lost the race to the first row could only have written the same value.
+  local tok tmp
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  [ -e "$RUN_DIR/rekick-candidate" ] && return 0
+  tok=$(gate_end_token) || return 0
+  tmp="$RUN_DIR/rekick-candidate.$$"
+  {
+    printf '매니페스트=%s\n' "${MANIFEST:-}"
+    printf '원장=%s\n' "${LEDGER:-}"
+    printf '런 id=%s\n' "${RUN_ID:-}"
+    printf '토큰=%s\n' "$tok"
+    printf '기록 시각=%s\n' "$(now_iso)"
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
+  ln "$tmp" "$RUN_DIR/rekick-candidate" 2>/dev/null || true
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+gate_end_row() {
+  # gate_end_row <기준> <근거> <재킥 원인> [<종료 부류>] [<재킥 지문>]
+  #
+  # The run-scope ending row, `자율 승인` with `결정=종료`, carrying the closed
+  # `재킥 원인` token. `종료 부류=완료` marks a normal completion, whose token is
+  # still `해당없음`; `재킥 지문` goes with `결함` only. The row is appended
+  # whether or not the run already has an end token — a later row is a true
+  # account of what else happened, and the earliest-row rule keeps it from
+  # changing the token — and the candidate marker follows.
+  #
+  # EVERY SITE THAT WRITES `done` WRITES AN ENDING ROW. The three `done` arms of
+  # a termination proposal reach `done` without `gate_end_run`, so they call
+  # this directly; without it the run has a mark and no end token, and anything
+  # that reads the token reads the run as still going.
+  local std="$1" why="$2" cause="$3" ekind="${4:-}" fp="${5:-}" _why_free
+  if ! gate_rekick_cause_ok "$cause"; then
+    warn "rekick cause '$cause' is not one of the twelve closed tokens — this is a defect in the gate"
+    return 1
+  fi
+  [ "$cause" = "결함" ] || fp=""
+  _why_free=$(gate_free_budget "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
+    "절단점=경계" "축2=읽기" "등급=1" "기준=$std" "되돌리는 법=새 런으로 다시 킥오프" \
+    "재킥 원인=$cause" ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"})
+  gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
+    "절단점=경계" "축2=읽기" "등급=1" "기준=$std" \
+    "되돌리는 법=새 런으로 다시 킥오프" "재킥 원인=$cause" \
+    ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"} \
+    "근거=$(gate_row_safe "$why" "$_why_free")"
+  gate_mark_rekick_candidate
+}
+
+gate_end_cause_of() {
+  # gate_end_cause_of <경계 이름> — the token a boundary ends a run with when
+  # its caller names none.
+  case "$1" in
+    B4)   printf '천장' ;;
+    B5)   printf '무진전' ;;
+    마감) printf '마감' ;;
+    *)    printf '해당없음' ;;
+  esac
+}
+
 gate_end_run() {
-  # gate_end_run <경계 이름> <사유> — a boundary ENDS the run.
+  # gate_end_run <경계 이름> <사유> [<재킥 원인> [<종료 부류> [<재킥 지문>]]]
+  # — a boundary ENDS the run.
   #
   # THE DIFFERENCE BETWEEN THIS AND `gate_issue_boundary_approval` IS THE WHOLE
   # POINT. An approval asks a person; ending needs no one, and the state this
@@ -18190,6 +18477,16 @@ gate_end_run() {
   # `결정=종료` rows for a run that ended once, and the morning could not tell
   # which one the mark belongs to. The row now records the decision that actually
   # took effect, and a loser writes nothing anywhere.
+  #
+  # THE ROW CARRIES ITS CAUSE. A caller that names none gets the boundary's own
+  # token (`gate_end_cause_of`); an unknown token is refused before anything is
+  # published, so a defect cannot leave a `done` with no row behind it.
+  local cause="${3:-}" ekind="${4:-}" fp="${5:-}"
+  [ -n "$cause" ] || cause=$(gate_end_cause_of "$name")
+  if ! gate_rekick_cause_ok "$cause"; then
+    warn "rekick cause '$cause' is not one of the twelve closed tokens — this is a defect in the gate"
+    return 1
+  fi
   printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
   if ! ln "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null; then
     # Lost the race, or the filesystem cannot hard-link. Either way something
@@ -18199,12 +18496,7 @@ gate_end_run() {
   fi
   rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
   # The rationale is clipped to what the row has left; see `gate_free_budget`.
-  local _why_free
-  _why_free=$(gate_free_budget "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
-    "절단점=경계" "축2=읽기" "등급=1" "기준=$name" "되돌리는 법=새 런으로 다시 킥오프")
-  gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
-    "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
-    "되돌리는 법=새 런으로 다시 킥오프" "근거=$(gate_row_safe "$why" "$_why_free")"
+  gate_end_row "$name" "$why" "$cause" "$ekind" "$fp"
   warn "boundary $name ends the run — $why"
   if cc_caller_is_router && cc_run_end_settled "$RUN_DIR" && cc_notify_claim_ended; then
     # `ended` is the event kind the run's other terminal points already use. A
@@ -18216,8 +18508,91 @@ gate_end_run() {
   return 0
 }
 
+gate_fleet_busy_state() {
+  # gate_fleet_busy_state — `live`, `dead` or `none` for the fleet run markers
+  # that carry this run's id.
+  #
+  # A MARKER IS THE ONLY EVIDENCE THAT A FIXED-GRAPH RUN IS ALIVE. The backlog
+  # record is not: fleet rewrites it to `done` only after `run.sh` returns, so a
+  # dispatch job that died — a reboot, launchd tearing the job down, a kill —
+  # leaves it `dispatched` forever, and reading that as alive would hand a dead
+  # run the automatic branch.
+  #
+  # The test is `fleet_busy_live`'s first half, byte for byte: the pid is alive
+  # and still the process that wrote the marker, its fingerprint taken in UTC the
+  # way the writer took it. fleet.sh cannot be sourced to call the function
+  # itself — it runs `main "$@"` at its last line — so the same test is asked of
+  # the shared holder predicate, with the fingerprint taken under UTC, and the
+  # gate keeps no liveness test of its own. The probe half is the run's own live
+  # stages, which is what the probe reports as `도는중` for this run id.
+  local d f pid fp run seen=0
+  d="$(run_pace_root)/busy"
+  [ -d "$d" ] || { printf 'none'; return 0; }
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    run=$(sed -n '3p' "$f" 2>/dev/null | tr -d '[:space:]')
+    [ "$run" = "$RUN_ID" ] || continue
+    seen=1
+    pid=$(sed -n '1p' "$f" 2>/dev/null | tr -d '[:space:]')
+    fp=$(sed -n '2p' "$f" 2>/dev/null || true)
+    if TZ=UTC0 cc_holder_is_live "$pid" "$fp"; then
+      printf 'live'; return 0
+    fi
+  done
+  if [ "$seen" = "1" ]; then
+    if [ "$(cc_live_stages "$RUN_DIR" 2>/dev/null || printf 0)" -gt 0 ] 2>/dev/null; then
+      printf 'live'
+    else
+      printf 'dead'
+    fi
+    return 0
+  fi
+  printf 'none'
+}
+
+gate_verb_end_overdue() {
+  # gate_verb_end_overdue — close a run that passed its deadline with no end
+  # token, once.
+  #
+  # A QUIET RUN IS ONE NO VERB REACHES, so the deadline branch inside the
+  # acting path never fires for it; fleet's sweep calls this instead. The token
+  # is chosen by whether the driver is still alive, not by the deadline alone:
+  # an alive run past its deadline is the quiet run this verb exists for and
+  # takes `마감`, while a run that already stopped without a classified end row
+  # takes `해당없음` and goes to a person. Writing `마감` for both would send
+  # every unclassified stop down the automatic branch.
+  #
+  # UNOBSERVABLE COUNTS AS STOPPED. Every doubt lands on the human branch.
+  #
+  # Liveness, in order. A fleet marker for this run means the fixed graph:
+  # alive → `마감`, dead → `해당없음`. Otherwise the router path: a live shift or
+  # a live stage (the lease's holders) is alive, and takes `마감` only when both
+  # progress axes are unbounded — a run with an axis declared is ended by that
+  # axis, the same narrowing the acting path's deadline branch applies.
+  #
+  # IDEMPOTENT. An existing end token returns before anything is read, and
+  # `gate_end_run` writes nothing when the done mark is already published.
+  gate_end_token >/dev/null 2>&1 && return 0
+  gate_past_deadline || return 0
+  local fleet why
+  fleet=$(gate_fleet_busy_state)
+  why="벽시계 마감이 지났고 종료 토큰이 없다"
+  case "$fleet" in
+    live) gate_end_run 마감 "$why — 고정 그래프 실행 표지가 살아 있다" 마감 ;;
+    dead) gate_end_run 마감 "$why — 고정 그래프 실행 표지의 프로세스가 없다(분류 없이 멈춘 런)" 해당없음 ;;
+    *)
+      if cc_shift_is_live "$RUN_DIR" \
+         || [ "$(cc_live_stages "$RUN_DIR" 2>/dev/null || printf 0)" -gt 0 ] 2>/dev/null; then
+        gate_progress_axes_unbounded || return 0
+        gate_end_run 마감 "$why — 살아 있는 shift 나 스테이지가 있다" 마감
+      else
+        gate_end_run 마감 "$why — 살아 있는 구동기를 관측하지 못했다(분류 없이 멈춘 런)" 해당없음
+      fi ;;
+  esac
+}
+
 gate_run_ended_ok() {
-  # gate_run_ended_ok <kind> <cutpoint>
+  # gate_run_ended_ok <kind> <cutpoint> [<verb>]
   #
   # THE WALL CLOCK IS NO LONGER THE YARDSTICK AND THE GATE IT HELD IS NOT GONE.
   # What used to sit here was a dispatch-and-merge gate keyed on `벽시계 마감`;
@@ -18250,7 +18625,7 @@ gate_run_ended_ok() {
   # repaired: a run past its cost ceiling resuming dispatch. The ledger lives
   # OUTSIDE `$RUN_DIR` and is covered by the hash chain, so the row survives
   # everything the mark does not.
-  local kind="$1" cut="$2" mark idx merge_idx row
+  local kind="$1" cut="$2" verb="${3:-}" mark idx merge_idx row
   if [ -s "$RUN_DIR/done" ]; then
     mark=$(cat "$RUN_DIR/done" 2>/dev/null || true)
   elif gate_has_row '자율 승인' '| 결정=종료 |'; then
@@ -18286,6 +18661,15 @@ gate_run_ended_ok() {
     # same one every other reader of "is this run bounded" uses, so the run that
     # gets this gate is exactly the run that has nothing else.
     mark="벽시계 마감 경과 ($(manifest_field '인가' '벽시계 마감')) — 「비용 천장」과 「무진전 상한」이 둘 다 유효하게 선언되지 않아 마감이 유일한 경계입니다"
+    # THE ARM NOW ENDS THE RUN, AND ONLY UNDER AN ACTING VERB. It used to refuse
+    # and write nothing, so a run past its deadline never recorded that it had
+    # ended and no later reader could tell why it stopped. `plan` reaches this
+    # function too, and a dry run writes nothing — so the ending row is written
+    # under `act` and `exec` alone. After it, `done` exists and the first arm
+    # above answers every later call with the same refusal this arm gives.
+    case "$verb" in
+      act|exec) gate_end_run 마감 "$mark" 마감 || true ;;
+    esac
   else
     return 0
   fi
@@ -20091,7 +20475,7 @@ gate_verb_act() {
   # record, close and propose. Checking only at entry would be half — a deadline
   # that was in the future when the run started is the normal case.
   if [ "$verb" != "grade" ]; then
-    gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" || exit $?
+    gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" "$verb" || exit $?
   fi
 
   # THE PUSH RUNG IS RE-DERIVED HERE, and here is the earliest it can be: the
@@ -20615,6 +20999,8 @@ gate_verb_act() {
       _void_held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
       gate_done_note "$(printf '%s 종단 — 무효화%s%s · 근거 %s' "$(now_iso)" \
         "${_void_imp:+ · 불가능 절 $_void_imp}" "${_void_held:+ · 보류 절 $_void_held}" "$rationale")"
+      # Every `done` writer writes an ending row; gate_end_row says why.
+      gate_end_row "무효화 종료" "$rationale" 해당없음 || true
       # The itemised dispositions land beside `done`, never inside it — the file
       # is a one-line contract with four consumers. An invalidated run gets the
       # enumeration too: what it disposed of on the way to being invalidated is
@@ -20685,12 +21071,16 @@ gate_verb_act() {
     # design put in this file rather than in an eleventh condition, so it has to
     # carry what is actually outstanding.
     held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    # Each arm writes its ending row beside `done`, as the invalidated arm does:
+    # only the satisfied one is a normal completion, `종료 부류=완료`.
     if [ -n "$qids" ]; then
       gate_done_note "$(printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s' \
         "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$rationale")"
+      gate_end_row "질의 잔여 종단" "$rationale" 해당없음 || true
     else
       gate_done_note "$(printf '%s 종단 — 종료 조건 성립%s · 근거 %s' \
         "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale")"
+      gate_end_row "종료 조건 성립" "$rationale" 해당없음 완료 || true
     fi
     gate_write_disposition_report
     # The notification seat is carried over from the other parent; its own
@@ -21074,8 +21464,14 @@ gate_undeclared_target() {
     # Layer 2. The honest default, and its cost is one command in the morning.
     # `인가 한도` would be the wrong cause — that one means an act exceeded a
     # cutpoint the target HAS, and the whole point here is that it has none.
+    #
+    # The row carries `재킥 원인=대상미선언` and stays act-scope: it parks the
+    # slice that needs this target, not the run, and it is not an end token —
+    # whatever later ends the run reads this row as the change a re-authorization
+    # would have to carry.
     gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=대상 미선언" \
-      "관측=$(now_iso)" "재개 명령=/cc-cmds:autopilot <목표> — 이 레포를 대상에 포함해 재킥오프"
+      "관측=$(now_iso)" "재개 명령=/cc-cmds:autopilot <목표> — 이 레포를 대상에 포함해 재킥오프" \
+      "재킥 원인=대상미선언"
     warn "target '$alias' is not declared in the manifest — grade '$cut' needs a re-authorization, and the gate does not grant it"
     return "$GATE_EXIT_RULE"
   fi

@@ -2181,6 +2181,11 @@ check "천장에 닿으면 런이 끝난다 (종료 행 하나)" "$(end_rows)" "
 check "그때 종단 표시가 남는다" "$([ -s "$RUN_DIR/done" ] && printf yes || printf no)" "yes"
 check "종료 행이 어느 경계였는지 이름으로 말한다" \
   "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B4' || true; })" "1"
+check "천장이 끝낸 런의 종료 행은 재킥 원인=천장 을 싣는다" \
+  "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -cF '| 재킥 원인=천장 |' || true; })" "1"
+check "종료 토큰이 천장 이다" "$(gate_end_token 2>/dev/null)" "천장"
+check "종료 행이 재킥 후보 표지를 그 토큰으로 남긴다" \
+  "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null)" "천장"
 # IDEMPOTENT BY THE MARK. A second evaluation past the ceiling must not write a
 # second ending row: the first reason is the morning's account of why the night
 # stopped, and a run does not end twice.
@@ -2193,6 +2198,30 @@ end_mark_first=$(cat "$RUN_DIR/done")
 gate_end_run B9 "다른 경계가 뒤늦게 발화했다" >/dev/null 2>&1
 check "이미 끝난 런에 다른 경계가 발화해도 종료 행은 하나다" "$(end_rows)" "1"
 check "표시의 첫 사유가 그대로다 (첫 사유가 참인 사유다)" "$(head -1 "$RUN_DIR/done")" "$end_mark_first"
+# 종료 토큰도 첫 행의 것이다. 뒤에 같은 런에 종료 행이 더 붙어도(종료 제안 갈래는
+# 표시와 무관하게 자기 행을 쓴다) 가장 이른 행이 토큰을 정하고, 표지는 처음 쓴
+# 것이 남는다.
+gate_end_row "종료 조건 성립" "뒤늦은 제안" 해당없음 완료 >/dev/null 2>&1
+check "뒤의 종료 행이 종료 토큰을 바꾸지 않는다 (가장 이른 행)" "$(gate_end_token 2>/dev/null)" "천장"
+check "재킥 후보 표지는 처음 쓴 것이 남는다" \
+  "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null)" "천장"
+check "정상 완료 행은 재킥 원인=해당없음 과 종료 부류=완료 를 함께 싣는다" \
+  "$({ grep -F '기준=종료 조건 성립' "$ELEDGER" || true; } | { grep -F '| 재킥 원인=해당없음 |' || true; } \
+     | { grep -cF '| 종료 부류=완료 |' || true; })" "1"
+# 지문은 결함과만 간다. 다른 토큰에 지문을 넘기면 버려지고, 닫힌 집합 밖의 토큰은
+# 행을 쓰지 않고 실패한다 — 그것은 게이트의 결함이지 사람이 볼 런이 아니다.
+gate_end_row "시험 결함" "x" 결함 "" "implement/S2/abc" >/dev/null 2>&1
+check "결함 행은 재킥 지문을 싣는다" \
+  "$({ grep -F '기준=시험 결함' "$ELEDGER" || true; } | { grep -cF '| 재킥 지문=implement/S2/abc |' || true; })" "1"
+gate_end_row "시험 지문 버림" "x" 판단정지 "" "implement/S2/abc" >/dev/null 2>&1
+check "결함이 아닌 행은 지문을 버린다" \
+  "$({ grep -F '기준=시험 지문 버림' "$ELEDGER" || true; } | { grep -cF '재킥 지문=' || true; })" "0"
+eb_rc=0; gate_end_row "시험 오타" "x" 마감됨 >/dev/null 2>&1 || eb_rc=$?
+check "닫힌 집합 밖의 토큰은 실패하고 행을 쓰지 않는다" \
+  "$eb_rc/$({ grep -cF '기준=시험 오타' "$ELEDGER" || true; })" "1/0"
+# 이 블록이 더한 행들을 걷어 낸다 — 아래 단언들은 종료 행이 하나뿐인 원장을 센다.
+grep -vF -e '기준=종료 조건 성립' -e '기준=시험 결함' -e '기준=시험 지문 버림' "$ELEDGER" > "$ELEDGER.k" \
+  && mv "$ELEDGER.k" "$ELEDGER"
 # 그리고 뒤에 오는 종료 제안이 그 사유를 지우지 않는다. 종단 게이트는 종료 제안을
 # 면제하므로 두 기록자가 같은 파일에 닿는다 — 앞 판본의 절단 `>` 는 「종료 조건
 # 성립」으로 덮어써, 사실은 비용 천장이 멈춘 밤을 아침이 그렇게 읽었다.
@@ -2300,6 +2329,8 @@ done
 gate_b5_stagnation_bound >/dev/null 2>&1
 check "종료 행이 B5 를 이름으로 싣는다" \
   "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B5' || true; })" "1"
+check "무진전 상한이 끝낸 런의 종료 행은 재킥 원인=무진전 을 싣는다" \
+  "$({ grep -F '기준=B5' "$ELEDGER" || true; } | { grep -cF '| 재킥 원인=무진전 |' || true; })" "1"
 # 진전이 있으면 카운터가 0 으로 돌아간다. 이것이 없으면 이 경계는 「판정 N회면
 # 끝낸다」가 되어 건강한 런을 끝낸다.
 rm -f "$RUN_DIR/done"; : > "$ELEDGER"
