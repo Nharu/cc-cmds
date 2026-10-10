@@ -741,6 +741,74 @@ cc_notify_fire() {
   return 0
 }
 
+cc_notify_claim_ended() {
+  # cc_notify_claim_ended — 0 for the one process that takes the run's `ended`
+  # banner, 1 for every other.
+  #
+  # ONE RUN, ONE `ended`, WHOEVER GETS THERE FIRST. The gate raises it at four
+  # sites and the watcher at two, and in a run that ends on `done` the shift's
+  # return, the seat's own `propose-done` and the watcher's loop exit can all
+  # see the same finished run. `mkdir` is the claim because it is atomic on
+  # every filesystem this runs on and answers "already there" without a race,
+  # and a directory leaves room for the `fired` mark beside the claim.
+  #
+  # A PREDICATE, NOT AN ACT, so it may return 1 — every caller puts it in an
+  # `if` condition, where the status cannot trip an exit-on-error shell.
+  [ -n "${RUN_DIR:-}" ] && [ -d "${RUN_DIR:-}" ] || return 1
+  mkdir "$RUN_DIR/notify.ended" 2>/dev/null
+}
+
+cc_notify_mark_ended_fired() {
+  # cc_notify_mark_ended_fired — written after the fire returns, so a reader
+  # that saw the claim can tell "raised" from "claimed and still raising". The
+  # watcher's loop exit waits on it before its `rekick`, so `ended` is not
+  # replaced in the shared slot before it was raised.
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/notify.ended" ] || return 0
+  : > "$RUN_DIR/notify.ended/fired" 2>/dev/null || true
+  return 0
+}
+
+cc_notify_ended_once() {
+  # cc_notify_ended_once <message> — claim, fire, mark. The watcher's form; the
+  # gate's sites keep their fire line in place and claim in their own `if`,
+  # because a source-level table counts the fire lines at fixed distances from
+  # their anchors.
+  if cc_notify_claim_ended; then
+    cc_notify_fire ended "${1:-}" || true
+    cc_notify_mark_ended_fired
+  fi
+  return 0
+}
+
+cc_notify_ended_text() {
+  # cc_notify_ended_text <run-dir> — the `ended` body for the way the run ended,
+  # chosen from the first line of `done` among the three the gate already raises.
+  #
+  # NO NEW WORDING. A run that ends on `done` hands every way of ending — a
+  # boundary crossed inside the shift, an invalidation inside it, a clean
+  # finish — to one site, the shift's return. A fixed sentence there would
+  # announce a boundary or an invalidation as a clean finish, so the sentence is
+  # read back from what the gate wrote. A first line this does not recognise —
+  # a residual-query ending, the exit clauses holding, or anything unreadable —
+  # gets the clean-finish sentence, which is what those sites raise today.
+  local line name
+  line=$(head -n 1 "${1:-}/done" 2>/dev/null || true)
+  case "$line" in
+    *"종단 — 경계 "*" · "*)
+      name=${line#*종단 — 경계 }
+      name=${name%% · *}
+      printf '경계 %s 이 런을 끝냈습니다 — 아침 보고서를 확인하세요' "$name"
+      ;;
+    *"종단 — 무효화"*)
+      printf '런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요'
+      ;;
+    *)
+      printf '런이 종단했습니다 — 아침 보고서를 확인하세요'
+      ;;
+  esac
+  return 0
+}
+
 cc_notify_clear() {
   # cc_notify_clear <token> [item-key]
   #

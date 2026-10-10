@@ -142,6 +142,9 @@ has_title()   { grep -cF -- "-title $1 -message" "$NOTIFY_LOG" 2>/dev/null || tr
 has_group()   { grep -cF -- "-group $1 " "$NOTIFY_LOG" 2>/dev/null || true; }
 n_sound()     { grep -cF -- '-sound default' "$NOTIFY_LOG" 2>/dev/null || true; }
 groups_uniq() { sed -n 's/.*-group \([^ ]*\).*/\1/p' "$NOTIFY_LOG" | sort -u | grep -c . || true; }
+# The titles in the order the notifier was handed them, `|`-terminated, so an
+# assertion can say which banner came first.
+banner_titles() { sed -n 's/^-title \(.*\) -message .*/\1/p' "$NOTIFY_LOG" | tr '\n' '|'; }
 
 case_n=0
 fresh() {
@@ -228,7 +231,10 @@ seed_idle() {
   # that stops holding quietly: an arm carrying no threshold, or one whose
   # threshold this list stops naming, would leave its marker here and nothing
   # else in the suite would say so.
-  if [ -e "$RD/stall" ] || [ -n "$(ls "$RD"/watch.announced-* 2>/dev/null || true)" ]; then
+  # The terminal arm's guard is the run's `ended` claim, a directory beside the
+  # markers rather than one of them, so it is named here on its own.
+  if [ -e "$RD/stall" ] || [ -e "$RD/notify.ended" ] \
+     || [ -n "$(ls "$RD"/watch.announced-* 2>/dev/null || true)" ]; then
     bad "시딩 헬퍼" "시딩 pass 가 arm 을 발화시켰다 — 뒤따르는 측정 pass 가 once 가드에 막혀 침묵을 결함으로 보고한다"
   fi
   # AND "OUT OF REACH" IS MEASURED, NOT DECLARED. Two of the three overrides
@@ -1343,6 +1349,8 @@ case "$out" in
   *"런이 종단했습니다"*) ok "--once 한 번으로 유도 종단을 판정한다 (done 파일 없이)" ;;
   *) bad "--once 종단 검사" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
+check "그 판정이 런의 종단 점유를 잡는다" \
+  "$( [ -d "$RD/notify.ended" ] && printf 'claimed' || printf 'none' )" "claimed"
 out=$(run)
 case "$out" in
   *"런이 종단했습니다"*) bad "종단 재안내" "같은 종단을 매 패스마다 반복한다" ;;
@@ -1749,7 +1757,7 @@ if [ -f "$RD/watch.announced-stall-적용-판정-불가" ]; then
 else
   bad "정박 마커" "$(ls "$RD" | tr '\n' ' ')"
 fi
-if [ -f "$RD/watch.announced-terminal" ] || [ -f "$RD/watch.announced-loop-exit" ]; then
+if [ -d "$RD/notify.ended" ] || [ -f "$RD/watch.announced-loop-exit" ]; then
   bad "이웃 마커" "정박 arm 이 이웃 arm 의 마커를 건드렸다"
 else
   ok "이웃 arm 의 마커는 건드려지지 않았다"
@@ -1788,8 +1796,17 @@ if [ -f "$RD/watch.announced-loop-exit" ]; then
 else
   bad "루프 종료 배너" "무효화로 끝난 런에서 발화하지 않았다"
 fi
+# THE TWO MARKERS STAY TWO, AND NEITHER SILENCES THE OTHER. The run's `ended`
+# claim and the loop-exit marker are different names, and on this run both were
+# taken: the loop's backstop raised `ended` and the loop-exit arm raised
+# `rekick` after it. A shared marker would have left one of the two banners out.
+notify_settle 2
+check "종단 점유와 루프 종료 마커가 둘 다 남는다 (서로 침묵시키지 않는다)" \
+  "$( [ -d "$RD/notify.ended" ] && [ -f "$RD/watch.announced-loop-exit" ] && printf 'both' || printf 'one')" "both"
 check "두 마커의 이름이 실제로 다르다" \
-  "$( { [ -f "$RD/watch.announced-terminal" ] && printf 'shared'; } || printf 'distinct')" "distinct"
+  "$( [ "$RD/notify.ended" != "$RD/watch.announced-loop-exit" ] && printf 'distinct' || printf 'shared')" "distinct"
+check "ended 가 rekick 보다 먼저 울린다" \
+  "$(banner_titles)" "cc-cmds · 결과를 확인하세요|cc-cmds · 새 런을 여세요|"
 
 # The ninth firing point under the kill switch. It sits here rather than in the
 # table above because it needs the real loop: the marker is written on the way
@@ -2176,6 +2193,362 @@ check "감시자 hop — 그때도 감시자는 계속 돈다" \
 hop_foreign_hit=no
 case "$hop_foreign" in *'이 런의 사본이 아닌 곳'*) hop_foreign_hit=yes ;; esac
 check "감시자 hop — 경고가 핀이 남의 자리를 가리킨다고 적는다" "$hop_foreign_hit" "yes"
+
+# ---------------------------------------------------------------------------
+# 좌석 정산 꼬리 — `ends-on-done` 표지가 있는 런은 `done` 에서 끝나고, 그 뒤에도
+# 교대가 정산을 마저 하는 동안 감시자는 말하지 않는다.
+#
+# 이 절이 재는 것은 넷이다. 표지 있는 런은 원장에서 유도한 종단만으로 `ended` 를
+# 울리지 않는다. 마지막 세그먼트 뒤 정산이 멈추면 정산 멈춤 갈래가 에피소드마다
+# `resume` 을 한 번 울린다. `done` 꼬리의 루프는 교대가 끝날 때(또는 `done` 이
+# `STALL` 만큼 묵었을 때)까지 배너도 `stall` 도 남기지 않는다. 그리고 멈춤 갈래의
+# 발사 직전 재시험이 `done` 뒤에 멈춤 배너를 올리지 않는다.
+# ---------------------------------------------------------------------------
+ENDED_TITLE="cc-cmds · 결과를 확인하세요"
+REKICK_TITLE="cc-cmds · 새 런을 여세요"
+n_ended()  { has_title "$ENDED_TITLE"; }
+# 정산 멈춤 갈래의 문면만 센다 — 같은 `resume` 제목을 쓰는 다른 갈래가 섞여 들면
+# 이 갈래가 운 것으로 셀 수 없다.
+n_settle() { grep -cF -- '세션에서 정산을 이어가세요' "$NOTIFY_LOG" 2>/dev/null || true; }
+eod_mark() { printf '1\n' > "$RD/ends-on-done"; }
+eod_shift() {
+  # eod_shift — 살아 있는 교대. 지문까지 맞춰 적어야 `cc_shift_is_live` 가 산 것으로 읽는다.
+  sleep 120 & EOD_SHIFT_PID=$!
+  FX_PIDS="${FX_PIDS:-}$EOD_SHIFT_PID "
+  printf '%s\n%s\n' "$EOD_SHIFT_PID" "$(cc_proc_fingerprint "$EOD_SHIFT_PID")" > "$RD/shift.live"
+}
+eod_kill_shift() {
+  # 죽인 뒤 거둔다 — 거두지 않은 좀비는 프로세스 표에 남아 산 교대로 읽힐 수 있다.
+  kill "$EOD_SHIFT_PID" 2>/dev/null || true
+  wait "$EOD_SHIFT_PID" 2>/dev/null || true
+}
+eod_loop() {
+  # eod_loop <stall> — 진짜 루프를 백그라운드로 띄운다. pid 는 EOD_LOOP_PID.
+  CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" \
+    --interval 1 --stall "$1" --after-stage 99999 --run-open 99999 >/dev/null 2>&1 &
+  EOD_LOOP_PID=$!
+  FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
+}
+eod_loop_exited() {
+  # eod_loop_exited — 루프가 10초 안에 스스로 끝나면 `exited`. 아니면 죽이고 `running`.
+  local i=0
+  while [ "$i" -lt 100 ]; do
+    if ! kill -0 "$EOD_LOOP_PID" 2>/dev/null; then
+      wait "$EOD_LOOP_PID" 2>/dev/null || true
+      printf 'exited'; return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill "$EOD_LOOP_PID" 2>/dev/null || true
+  wait "$EOD_LOOP_PID" 2>/dev/null || true
+  printf 'running'
+}
+eod_stop_loop() {
+  kill "$EOD_LOOP_PID" 2>/dev/null || true
+  wait "$EOD_LOOP_PID" 2>/dev/null || true
+}
+eod_quiet_markers() {
+  # 멈춤 관측도 1회성 마커도 없으면 `quiet`.
+  if [ -e "$RD/stall" ] || [ -n "$(ls "$RD"/watch.announced-* 2>/dev/null || true)" ]; then
+    printf 'spoke'
+  else
+    printf 'quiet'
+  fi
+}
+eod_age_ledger() {
+  # eod_age_ledger <초> — 감시자 상태에 「이 크기를 <초> 전부터 봤다」를 직접 적는다.
+  # 꼬리 사례는 `seed_idle` 을 쓰지 않는다 — 그 시딩 pass 는 `done` 이 없을 때의
+  # pass 라, 런 범위 막힘 같은 고정 사례에서 꼬리와 무관한 갈래를 먼저 울린다.
+  printf '%s\n%s\n%s\n' "$(cc_ledger_size "$LG")" "$(( $(date -u +%s) - $1 ))" "$LG" > "$RD/watch.state"
+}
+FX_RUN_DIR_SAVE="${FX_RUN_DIR:-}"
+
+# 표지 있는 런의 유도 종단은 종단이 아니다 — 정산이 남았다.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+runb --stall 99999 >/dev/null
+sleep 0.3
+check "표지 있는 런은 done 없이 유도 종단만으로 ended 를 울리지 않는다" "$(n_ended)" "0"
+check "그 패스는 런의 종단 점유를 잡지 않는다" \
+  "$( [ -d "$RD/notify.ended" ] && printf claimed || printf free )" "free"
+# 대조군 — 같은 원장에 표지만 없으면 그 패스가 운다. 없으면 위 침묵이 「이 원장은
+# 원래 종단이 아니다」와 구별되지 않는다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+runb --stall 99999 >/dev/null
+notify_settle 1
+check "대조군 — 표지 없는 같은 원장은 ended 를 한 번 울린다" "$(n_ended)" "1"
+
+# 정산 멈춤 갈래 — 에피소드마다 한 번, done 뒤에는 없다.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+seed_idle 300 --stall 100 --after-stage 99999 --run-open 99999
+runb --stall 100 --after-stage 99999 --run-open 99999 >/dev/null
+notify_settle 1
+eod_r4_1=$(n_settle)
+runb --stall 100 --after-stage 99999 --run-open 99999 >/dev/null
+sleep 0.3
+eod_r4_2=$(n_settle)
+# 원장이 자란 뒤 다시 묵힌다. 한 패스로 새 크기를 기록시키고 그 관측 시각을 되돌린다
+# — `seed_idle` 은 앞 에피소드의 마커를 시딩 발화로 읽으므로 여기서는 쓰지 않는다.
+printf -- '- `segment` | id=S2 | 상태=머지됨\n' >> "$LG"
+run --stall 99999 --after-stage 99999 --run-open 99999 >/dev/null
+printf '%s\n%s\n%s\n' "$(sed -n '1p' "$RD/watch.state")" \
+  "$(( $(date -u +%s) - 300 ))" "$LG" > "$RD/watch.state"
+runb --stall 100 --after-stage 99999 --run-open 99999 >/dev/null
+notify_settle 2
+eod_r4_3=$(n_settle)
+printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
+# 같은 크기의 마커를 지워 「done 이 막았다」만 남긴다 — 그대로 두면 1회성 가드가
+# 막은 것과 구별되지 않는다.
+rm -f "$RD"/watch.announced-settle-stall-*
+runb --stall 100 --after-stage 99999 --run-open 99999 >/dev/null
+sleep 0.3
+eod_r4_4=$(n_settle)
+check "정산 멈춤 resume 줄 수가 차례로 1, 1, 2, 2 다" \
+  "$eod_r4_1,$eod_r4_2,$eod_r4_3,$eod_r4_4" "1,1,2,2"
+check "정산 멈춤 갈래는 stall 에 행을 남기지 않는다 (종료 조건의 입력이다)" \
+  "$( [ -e "$RD/stall" ] && printf yes || printf no )" "no"
+check "done 뒤의 패스는 새 정산 멈춤 마커를 쓰지 않는다" \
+  "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null | grep -c . || true)" "0"
+
+# 기존 멈춤 갈래는 done 이 있으면 말하지 않는다 — 꼬리에서 `--once` 가 돌아도.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+eod_shift
+seed_idle 300 --stall 100 --after-stage 99999 --run-open 99999
+printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
+runb --stall 100 --after-stage 99999 --run-open 99999 >/dev/null
+sleep 0.3
+check "done 이 있으면 기존 멈춤 갈래가 resume 을 울리지 않는다" \
+  "$(has_title 'cc-cmds · 세션으로 돌아가세요')" "0"
+check "그 패스는 stall 을 쓰지 않는다" \
+  "$( [ -e "$RD/stall" ] && printf yes || printf no )" "no"
+eod_kill_shift
+
+# (가) 막힘이 남은 꼬리 — 교대가 사는 동안 침묵, 끝나면 ended 다음 rekick.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 무효화 "강제 표면 이동"
+eod_shift
+eod_age_ledger 300
+printf '2026-10-10T00:00:00Z 종단 — 무효화\n' > "$RD/done"
+eod_loop 100
+sleep 2.5
+check "(가) 교대가 사는 동안 루프는 배너를 울리지 않는다" "$(notify_lines)" "0"
+check "(가) 그동안 stall 도 1회성 마커도 남기지 않는다" "$(eod_quiet_markers)" "quiet"
+eod_kill_shift
+check "(가) 교대가 끝나면 루프가 스스로 끝난다" "$(eod_loop_exited)" "exited"
+notify_settle 2
+check "(가) ended 다음 rekick, 정확히 그 순서" "$(banner_titles)" "$ENDED_TITLE|$REKICK_TITLE|"
+check "(가) ended 가 무효화 문면을 싣는다" \
+  "$(grep -cF -- '런이 무효화된 채로 종료됐습니다' "$NOTIFY_LOG" || true)" "1"
+
+# (나) 세그먼트 0개 — 묵은 원장이어도 꼬리에서는 멈춤 갈래가 돌지 않는다.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+eod_shift
+eod_age_ledger 300
+printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
+eod_loop 100
+sleep 1.2
+eod_hb1=$(cat "$RD/watch.heartbeat" 2>/dev/null || true)
+sleep 1.5
+eod_hb2=$(cat "$RD/watch.heartbeat" 2>/dev/null || true)
+eod_stop_loop
+check "(나) 세그먼트 0개의 꼬리에서 배너가 없다" "$(notify_lines)" "0"
+check "(나) stall 도 1회성 마커도 없다" "$(eod_quiet_markers)" "quiet"
+# 꼬리의 침묵은 하트비트까지 멈춘다는 뜻이 아니다 — 죽은 감시자와 구별돼야 한다.
+check "(나) 꼬리에서도 하트비트가 새로 찍힌다" \
+  "$( [ -n "$eod_hb1" ] && [ "$eod_hb1" != "$eod_hb2" ] && printf beat || printf still )" "beat"
+eod_kill_shift
+
+# (다) 경계 done 이 STAGE_AGE 보다 오래 산 스테이지를 남겼다.
+fresh
+: > "$NOTIFY_LOG"
+FX_RUN_DIR="$RD"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+eod_shift
+fx_stage_live S1
+fx_age_file "$RD/S1.start" 7300
+eod_age_ledger 300
+printf '2026-10-10T00:00:00Z 종단 — 경계 B4 · 비용이 선언 천장에 닿았습니다\n' > "$RD/done"
+CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" \
+  --interval 1 --stall 100 --after-stage 99999 --run-open 99999 --stage-age 7200 >/dev/null 2>&1 &
+EOD_LOOP_PID=$!; FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
+sleep 2.5
+eod_stop_loop
+check "(다) 묵은 스테이지가 남은 경계 꼬리에서 배너가 없다" "$(notify_lines)" "0"
+check "(다) stall 도 1회성 마커도 없다" "$(eod_quiet_markers)" "quiet"
+eod_kill_shift
+
+# (라) 열린 승인이 남은 경계 꼬리.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+approval_row A1
+eod_shift
+eod_age_ledger 300
+printf '2026-10-10T00:00:00Z 종단 — 경계 B4 · 비용이 선언 천장에 닿았습니다\n' > "$RD/done"
+eod_loop 100
+sleep 2.5
+eod_stop_loop
+check "(라) 열린 승인이 남은 경계 꼬리에서 배너가 없다" "$(notify_lines)" "0"
+check "(라) stall 도 1회성 마커도 없다" "$(eod_quiet_markers)" "quiet"
+eod_kill_shift
+
+# (마) 교대가 done 의 나이 STALL 을 넘겨 산다 — 보강 ended 한 번 뒤 루프가 끝난다.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+eod_shift
+printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
+fx_age_file "$RD/done" 200
+eod_loop 100
+check "(마) 묵은 done 앞에서는 교대가 살아도 루프가 끝난다" "$(eod_loop_exited)" "exited"
+notify_settle 1
+check "(마) 보강 ended 가 한 번 운다" "$(n_ended)" "1"
+check "(마) 그 밖의 배너는 없다" "$(notify_lines)" "1"
+eod_kill_shift
+
+# (바) 막힘 없이 끝난 꼬리 — 교대가 끝나면 ended 만, rekick 은 없다.
+fresh
+: > "$NOTIFY_LOG"
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+eod_shift
+printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
+eod_loop 100
+sleep 1.5
+check "(바) 교대가 사는 동안 배너가 없다" "$(notify_lines)" "0"
+eod_kill_shift
+check "(바) 교대가 끝나면 루프가 끝난다" "$(eod_loop_exited)" "exited"
+notify_settle 1
+sleep 0.3
+check "(바) ended 만 있고 rekick 은 없다" "$(banner_titles)" "$ENDED_TITLE|"
+check "(바) ended 가 기본 문면을 싣는다" \
+  "$(grep -cF -- '런이 종단했습니다 — 아침 보고서를 확인하세요' "$NOTIFY_LOG" || true)" "1"
+
+# 스테이지가 넘은 경계 — 표지 없는 런은 `done` 에서 곧 정산이 끝나고, 게이트 자리가
+# 닿지 않았으므로 루프 끝이 경계 문면으로 한 번 운다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf '2026-10-10T00:00:00Z 종단 — 경계 B4 · 비용이 선언 천장에 닿았습니다 (100/100)\n' > "$RD/done"
+eod_loop 100
+check "경계 done 뒤 표지 없는 루프가 끝난다" "$(eod_loop_exited)" "exited"
+notify_settle 1
+check "그 루프 끝이 ended 를 한 번 울린다" "$(n_ended)" "1"
+check "그 ended 가 경계 문면을 싣는다" \
+  "$(grep -cF -- '경계 B4 이 런을 끝냈습니다' "$NOTIFY_LOG" || true)" "1"
+
+# 감시자 `pass` 가 게이트보다 먼저 점유한다 — 경계 문면을 싣고, 뒤에 온 루프 끝은
+# 점유에 막혀 다시 울지 않는다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf '2026-10-10T00:00:00Z 종단 — 경계 B4 · 비용이 선언 천장에 닿았습니다 (100/100)\n' > "$RD/done"
+runb --stall 99999 >/dev/null
+notify_settle 1
+eod_loop 100
+eod_loop_exited >/dev/null
+sleep 0.3
+check "pass 가 먼저 점유하면 ended 가 한 번뿐이다" "$(n_ended)" "1"
+check "그 ended 가 경계 문면을 싣는다 (pass 쪽)" \
+  "$(grep -cF -- '경계 B4 이 런을 끝냈습니다' "$NOTIFY_LOG" || true)" "1"
+check "pass 의 발사가 발사 표시를 남긴다" \
+  "$( [ -f "$RD/notify.ended/fired" ] && printf fired || printf none )" "fired"
+
+# 같은 런 디렉터리에 동시에 점유를 시도하는 넷 — 점유는 `mkdir` 하나라 한 번만 운다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+eod_racers=""
+for eod_r in 1 2 3 4; do
+  runb --stall 99999 >/dev/null &
+  eod_racers="$eod_racers $!"
+done
+for eod_r in $eod_racers; do wait "$eod_r" 2>/dev/null || true; done
+notify_settle 1
+sleep 0.3
+check "동시에 점유를 시도한 넷 가운데 ended 는 한 번 운다" "$(n_ended)" "1"
+FX_RUN_DIR="$FX_RUN_DIR_SAVE"
+
+# ---------------------------------------------------------------------------
+# 정산 멈춤 갈래의 재시험과 발사 사이 창. 갈래 함수를 감시자 원문에서 떼어 내고,
+# 그 앞뒤의 `announce` 와 `cc_notify_fire` 를 대역으로 바꿔 지연을 넣는다. 다른
+# 프로세스가 그 지연 안에서 `done` 을 쓰고 `ended` 를 울린다.
+# ---------------------------------------------------------------------------
+settle_fn=$(sed -n '/^settle_stall_arm() {/,/^}/p' "$WATCH")
+if [ -n "$settle_fn" ]; then
+  ok "watch.sh 에서 settle_stall_arm 을 떼어냈다"
+else
+  bad "settle_stall_arm 추출" "함수를 찾지 못했다 — 아래 창 단언은 잴 것이 없다"
+fi
+R7_LOG="$WORK/r7.log"
+r7_drive() {
+  # r7_drive <before|after> — 갈래 하나를 돌린다. `before` 는 announce 안(재시험
+  # 앞)에서, `after` 는 발사 기록 뒤에서 1초 지연한다. 경합 상대는 마커 또는 resume
+  # 기록이 보이면 done 을 쓰고 점유를 잡은 뒤 ended 를 기록한다.
+  local where="$1" racer i
+  : > "$R7_LOG"
+  (
+    i=0
+    while [ "$i" -lt 50 ]; do
+      if [ "$where" = before ] && [ -n "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ]; then break; fi
+      if [ "$where" = after ] && grep -q '^resume$' "$R7_LOG" 2>/dev/null; then break; fi
+      sleep 0.05
+      i=$((i + 1))
+    done
+    printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
+    mkdir "$RD/notify.ended" 2>/dev/null && printf 'ended\n' >> "$R7_LOG"
+  ) &
+  racer=$!
+  CC_SETTLE_FN="$settle_fn" R7_WHERE="$where" R7_LOG="$R7_LOG" \
+  RUN_DIR="$RD" LEDGER="$LG" LIVENESS_SH="$LIVENESS" \
+    bash -c '
+      . "$LIVENESS_SH"
+      eval "$CC_SETTLE_FN"
+      announce() { [ "$R7_WHERE" = before ] && sleep 1; return 0; }
+      cc_notify_fire() { printf "%s\n" "$1" >> "$R7_LOG"; [ "$R7_WHERE" = after ] && sleep 1; return 0; }
+      STALL=100 age=300 live=0 pend=0 nonterm=0 size=1
+      settle_stall_arm
+    '
+  wait "$racer" 2>/dev/null || true
+}
+r7_order() { tr '\n' '|' < "$R7_LOG"; }
+
+fresh
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+r7_drive before
+check "재시험 앞에서 done 이 생기면 멈춤 배너를 건너뛴다" "$(r7_order)" "ended|"
+# 갈래가 조건을 넘어 마커까지 왔다는 증거 — 없으면 위 단언은 갈래가 일찍 돌아와도
+# 경합 상대의 시한 만료만으로 같은 기록을 낸다.
+check "그 갈래는 조건을 넘어 마커를 남겼다 (건너뛴 것은 발사뿐이다)" \
+  "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null | grep -c . || true)" "1"
+
+fresh
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+r7_drive after
+# 재시험을 지난 뒤 생긴 done 은 막지 못한다. 그때 순서는 resume 다음 ended 이므로,
+# 화면에 남는 것은 ended 다 — 멈춤 배너가 ended 를 덮는 순서는 나오지 않는다.
+check "재시험 뒤에 생긴 done 은 resume 다음 ended 순서로 남는다" "$(r7_order)" "resume|ended|"
 
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

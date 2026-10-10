@@ -5505,6 +5505,75 @@ gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
 after=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
 check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "$after" "$before"
 
+# A BOUNDARY THAT ENDS THE RUN RAISES ITS `ended` ONCE, AND ONLY WHEN THE
+# SETTLEMENT IS OVER. `gate_end_run` is driven directly on run directories of
+# its own, through the sourced gate, with the notifier stubbed on `PATH` — the
+# fixture's real run directory is left alone, so nothing after this section
+# reads a `done` it did not expect. Each case gets a copy of the fixture ledger,
+# because the winner appends its `결정=종료` row there.
+#
+# Three cases: a seat run with nothing else in the way fires the boundary's
+# sentence and leaves the `fired` mark; a run whose claim is already taken
+# writes `done` and stays quiet; and a run carrying `ends-on-done` with a shift
+# still alive is not settled yet, so it neither fires nor claims — the shift's
+# return does that later.
+E12_BIN="$WORK/bin-e12"; mkdir -p "$E12_BIN"
+E12_LOG="$WORK/e12-notify.log"
+cat > "$E12_BIN/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$E12_BIN/terminal-notifier"
+e12_end() {  # e12_end <case> [live] — one B4 ending on a fresh run dir; leaves `E12_RD`
+  E12_RD="$WORK/e12-$1"; mkdir -p "$E12_RD"
+  cp "$FX_LEDGER" "$WORK/e12-$1.md"
+  case "${2:-}" in
+    claimed) mkdir "$E12_RD/notify.ended" ;;
+    live)    printf '1\n' > "$E12_RD/ends-on-done" ;;
+  esac
+  : > "$E12_LOG"
+  ( cd "$WT" && PATH="$E12_BIN:$PATH" CC_GATE_SOURCE_ONLY=1 \
+      CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_TEST_NOTIFY_LOG="$E12_LOG" E12_LIVE="${2:-}" bash -c '
+      . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      MANIFEST="'"$FX_MANIFEST"'"; LEDGER="'"$WORK/e12-$1.md"'"; RUN_ID=E12; RUN_DIR="'"$E12_RD"'"
+      BASE="'"$WT"'"; GRANT="'"$FX_GRANT"'"
+      set +e
+      sp=""
+      if [ "$E12_LIVE" = live ]; then
+        sleep 30 & sp=$!
+        printf "%s\n%s\n" "$sp" "$(cc_proc_fingerprint "$sp")" > "$RUN_DIR/shift.live"
+      fi
+      gate_end_run B4 "비용이 선언 천장에 닿았습니다 (100/100)"
+      [ -n "$sp" ] && kill "$sp" 2>/dev/null
+      exit 0' ) >/dev/null 2>&1
+}
+e12_ended() {  # the `ended` lines the stub logged, after a bounded wait for the first
+  local i=0
+  while [ "$i" -lt "${1:-30}" ]; do
+    grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$E12_LOG" 2>/dev/null && break
+    sleep 0.1; i=$((i + 1))
+  done
+  { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$E12_LOG" 2>/dev/null || true; } | tr -d ' '
+}
+e12_end seat
+check "경계 종료 (가) — done 이 경계 첫 줄로 쓰인다" \
+  "$( { grep -cF '종단 — 경계 B4 · ' "$E12_RD/done" 2>/dev/null || true; } | tr -d ' ')" "1"
+check "경계 종료 (가) — 좌석의 경계 종료가 ended 를 한 번 울린다" "$(e12_ended)" "1"
+check "경계 종료 (가) — 그 배너는 경계 문면이다" \
+  "$( { grep -cF '경계 B4 이 런을 끝냈습니다 — 아침 보고서를 확인하세요' "$E12_LOG" || true; } | tr -d ' ')" "1"
+check "경계 종료 (가) — notify.ended/fired 가 남는다" \
+  "$( [ -f "$E12_RD/notify.ended/fired" ] && printf 'fired' || printf 'none')" "fired"
+e12_end claimed claimed
+check "경계 종료 (나) — 점유가 잡힌 런에서도 done 은 쓰인다" \
+  "$( [ -f "$E12_RD/done" ] && printf 'written' || printf 'none')" "written"
+check "경계 종료 (나) — 점유가 잡힌 런에서는 울지 않는다" "$(e12_ended 5)" "0"
+e12_end live live
+check "경계 종료 (다) — 살아 있는 교대가 있는 표지 런에서도 done 은 쓰인다" \
+  "$( [ -f "$E12_RD/done" ] && printf 'written' || printf 'none')" "written"
+check "경계 종료 (다) — 정산이 끝나지 않은 런에서는 울지도 점유하지도 않는다" \
+  "$(e12_ended 5):$( [ -d "$E12_RD/notify.ended" ] && printf 'claimed' || printf 'none')" "0:none"
+
 # ---------------------------------------------------------------------------
 # 13. close never accepts an answer the router typed
 # --- section: 13 | group: base | covers: close | needs: 12 | anchors: 트랜스크립트가 없으면 승인은 닫히지 않는다 ---
@@ -12446,6 +12515,55 @@ esac
 n=$(grep -c '^- `회수' "$FX_LEDGER" 2>/dev/null || true)
 check "B2 회수 기록이 원장 행 계열을 만들지 않는다" "$n" "0"
 
+# --- B2s — done 으로 끝나는 런의 정산 창 ----------------------------------------
+# 표지(ends-on-done)가 있는 런은 세그먼트가 모두 끝나도 done 전까지 종단으로 읽히지
+# 않는다. 아무도 정산하지 않는 채 멈춘 런은 보존 기간 뒤 치워져야 하고, 교대가 살아
+# 있거나 done 꼬리에 있거나 아직 보존 기간 안인 런은 남아야 한다. 표지 없는 같은 모양은
+# 유도 종단이므로 오늘처럼 치워진다. B3 의 상한 계산에 섞이지 않도록 남은 희생자는
+# 단언 뒤에 걷어 낸다.
+b_settle_victim() {
+  # b_settle_victim <run-id> <age-seconds> <표지 y|n> <done y|n> <교대 y|n> — 세그먼트
+  # 하나가 머지된 런. 경로는 B_VICTIM 에 남긴다.
+  local rid="$1" age="$2" d pid
+  d="$BRUNS/$rid"
+  fx_assert_scratch_path "$d"
+  mkdir -p "$d"
+  { printf '# 원장과 아침 보고서\n## 실행 %s\n' "$rid"
+    printf -- '- `segment` | id=S1 | 상태=머지됨 | prev=x\n'
+  } > "$d/fixture-ledger.md"
+  printf '%s\n' "$d/fixture-ledger.md" > "$d/ledger-path"
+  [ "$3" = y ] && printf '1\n' > "$d/ends-on-done"
+  [ "$4" = y ] && printf '종단 — 픽스처\n' > "$d/done"
+  if [ "$5" = y ]; then
+    sleep 600 & pid=$!
+    FX_PIDS="${FX_PIDS:-}$pid "; export FX_PIDS
+    { printf '%s\n' "$pid"
+      LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+    } > "$d/shift.live"
+  fi
+  printf '%s\n' "$(( $(date -u +%s) - age ))" > "$d/started-at"
+  fx_age_file "$d/fixture-ledger.md" "$age"
+  fx_age_file "$d" "$age"
+  B_VICTIM="$d"
+}
+b_settle_victim RV-B2S-GA "$BAGE_OLD"   y n n; B2SGA="$B_VICTIM"
+b_settle_victim RV-B2S-NA "$BAGE_OLD"   y n y; B2SNA="$B_VICTIM"
+b_settle_victim RV-B2S-DA "$BAGE_YOUNG" y n n; B2SDA="$B_VICTIM"
+b_settle_victim RV-B2S-RA "$BAGE_OLD"   y y y; B2SRA="$B_VICTIM"
+b_settle_victim RV-B2S-MA "$BAGE_OLD"   n n n; B2SMA="$B_VICTIM"
+check "B2s 전제 — 교대가 살아 있는 두 희생자가 실제로 살아 있는 교대를 갖는다" \
+  "$( { cc_shift_is_live "$B2SNA" && cc_shift_is_live "$B2SRA"; } && printf yes || printf no)" "yes"
+b_trigger RB2S
+check "B2s (가) 정산 창에서 멈춘 31일 넘은 표지 런은 사라진다" "$(b_exists "$B2SGA")" "no"
+check "B2s (나) 같은 런이라도 교대가 살아 있으면 남는다" "$(b_isdir "$B2SNA")" "yes"
+check "B2s (다) 보존 기간 미만인 정산 창 런은 남는다" "$(b_isdir "$B2SDA")" "yes"
+check "B2s (라) done 꼬리(교대 살아 있음)는 남는다" "$(b_isdir "$B2SRA")" "yes"
+check "B2s (마) 표지 없는 유도 종단은 오늘처럼 사라진다" "$(b_exists "$B2SMA")" "no"
+for d in "$B2SNA" "$B2SDA" "$B2SRA"; do
+  fx_assert_scratch_path "$d"
+  rm -rf "$d"
+done
+
 # --- B3 — 상한이 실제로 상한이다 --------------------------------------------
 b3=1
 while [ "$b3" -le $((BREAP_MAX + 3)) ]; do
@@ -15383,14 +15501,38 @@ check "Q3: 그 인수인계 행이 실제로 원장에 남는다" \
 # rule is that every proposal drains for itself; this is the third proposal that
 # needs it.
 drain4 "종료 제안 전의"
-gate4 act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 절 셋이 전부 정산되었다"
+# FORKED, WITH THE NOTIFIER STUBBED ON `PATH`, for this one proposal: it is the
+# seat's own `propose-done` that ends the run, and the run's one `ended` is
+# raised here. `gate_inproc` refuses a call that changes `PATH`, so the stub can
+# only reach a forked gate.
+DONE_NBIN="$WORK/bin-done4"; mkdir -p "$DONE_NBIN"
+DONE_NLOG="$WORK/done4-notify.log"; : > "$DONE_NLOG"
+cat > "$DONE_NBIN/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$DONE_NBIN/terminal-notifier"
+done4_h=$(H4)
+out=$(cd "$WT" && PATH="$DONE_NBIN:$PATH" XDG_STATE_HOME="$STATE_CONE" \
+      CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_TEST_NOTIFY_LOG="$DONE_NLOG" \
+      bash "$GATE" act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$done4_h" --rationale "종료 절 셋이 전부 정산되었다" 2>&1); rc=$?
+msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 check "조건이 전부 성립하면 종료 제안이 통과한다" "$rc" "0"
 if [ -f "$DONE_DIR/done" ]; then
   ok "종료 제안이 done 파일을 남긴다"
 else
   bad "done 파일" "$DONE_DIR/done 이 없다 — 뒤따르는 단언이 전부 공허하다"
 fi
+done4_i=0
+while [ "$done4_i" -lt 30 ] && ! grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$DONE_NLOG" 2>/dev/null; do
+  sleep 0.1; done4_i=$((done4_i + 1))
+done
+check "좌석의 종료 제안이 ended 를 한 번 울린다" \
+  "$( { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$DONE_NLOG" || true; } | tr -d ' ')" "1"
+check "그 발사가 런의 종단 점유와 발사 표시를 남긴다" \
+  "$( [ -f "$DONE_DIR/notify.ended/fired" ] && printf 'fired' || printf 'none')" "fired"
 done_line=$(cat "$DONE_DIR/done" 2>/dev/null || true)
 case "$done_line" in
   *"질의 잔여 4건"*) ok "종단 줄이 열린 물음의 수를 싣는다" ;;
@@ -17382,6 +17524,14 @@ check "F4 — 무효화 종료의 done 표시가 발사한다" \
 # arm sits fifteen lines past the `done` write that names it.
 check "F4 — 충족 종료의 done 표시가 발사한다" \
   "$(fires_at '종단 — 종료 조건 성립' 20)" "fires"
+# The shift's return has no literal of its own to anchor on — it reads its
+# sentence out of `done` — so it carries one comment line that occurs nowhere
+# else in the file, directly above its `if`. Without this row it is the one
+# `ended` site the source axis cannot see.
+check "F4 — 교대 복귀 자리가 발사한다" \
+  "$(fires_at 'SHIFT-RETURN FIRING SITE' 3)" "fires"
+check "F4 — 교대 복귀 자리의 앵커가 파일에서 유일하다" \
+  "$(grep -cF 'SHIFT-RETURN FIRING SITE' "$GATE")" "1"
 # The window is 10 rather than 6. The `segment` arm releases `settings.lock`
 # between its append and its notify call — one call and the three lines that
 # say why it sits there — so the firing arm moved four lines past the old
@@ -20926,6 +21076,133 @@ check "(g) 스냅숏의 무기록 항목은 마지막 하나뿐이고 마지막 
   "$(printf '%s' "$lc_snap" | jq -r '[([.handoff[] | select(.["사유"] == "무기록")] | length), (.handoff | last | .["교대"])] | map(tostring) | join(":")')" \
   "1:$lc_tail_last"
 CAP_STUB="$LC_CAP_STUB_SAVE"
+
+# (h) A SEAT THAT HANDS ITS TURN TO A SHIFT ENDS ON `done`, AND THE SHIFT'S
+# RETURN IS WHERE THAT ENDING REACHES A PERSON.
+#
+# Two properties on one isolated run. The `ends-on-done` marker is written by
+# the seat's launch and by nothing else — a stage or a shift reaches the same
+# arm, and a seat call that returns before launching starts nothing — because a
+# marker on a run that never handed off would keep a finished run from ever
+# reading 종단. And when the successor wrote `done` and returned, the seat raises
+# `ended` once, in the sentence `done`'s first line calls for; the outgoing
+# shift, which is not the seat, raises nothing.
+#
+# The successor is a stub that writes the `done` line it is handed and exits 0;
+# the notifier is a stub on `PATH` that logs its argv, as in 12b, kept here so
+# `--run-one 34` stands without 12b's body.
+cap_fx_new R34H
+EB_SEAT="34343434-1111-2222-3333-444444444444"
+cap_usage_line 10000 5000 1000 > "$NTX/$EB_SEAT.jsonl"
+EB_BIN="$WORK/bin-eb"; mkdir -p "$EB_BIN"
+EB_LOG="$WORK/eb-notify.log"; : > "$EB_LOG"
+cat > "$EB_BIN/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$EB_BIN/terminal-notifier"
+EB_STUB="$WORK/bin/claude-ebstub"
+cat > "$EB_STUB" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${CC_TEST_EB_DONE:-}" ]; then
+  printf '%s\n' "$CC_TEST_EB_DONE" > "$CC_PIPELINE_RUN_DIR/done"
+fi
+exit 0
+STUB
+chmod +x "$EB_STUB"
+eb_gate() {
+  # eb_gate <교대 id> <세그먼트> <스테이지 id> <done 첫 줄> <argv…> — one gate call
+  # with the notifier stub armed, under the seat the three markers name. The
+  # snapshot and the act are taken under the same environment, for the reason
+  # `cap_snap` gives.
+  local shid="$1" seg="$2" stid="$3" dline="$4"; shift 4
+  ( cd "$WT" && PATH="$EB_BIN:$PATH" XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+    CLAUDE_CODE_SESSION_ID="$EB_SEAT" CC_CLAUDE_BIN="$EB_STUB" \
+    CC_PIPELINE_SHIFT_ID="$shid" CC_PIPELINE_SEGMENT="$seg" CC_PIPELINE_STAGE_ID="$stid" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_TEST_NOTIFY_LOG="$EB_LOG" CC_TEST_EB_DONE="$dline" \
+    bash "$GATE" "$@" )
+}
+eb_launch() {  # eb_launch <교대 id> <세그먼트> <스테이지 id> <done 첫 줄> [사유]
+  local h
+  h=$(eb_gate "$1" "$2" "$3" "$4" snapshot --manifest "$CAP_NM" 2>/dev/null | jq -r .H)
+  eb_gate "$1" "$2" "$3" "$4" act --manifest "$CAP_NM" --kind router-shift --target infra \
+    --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$h" \
+    --rationale "픽스처 — 종단 배너를 재는 교대" \
+    -- "${5:-상한}" -p "/cc-cmds:autopilot-router-shift $CAP_NM" > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
+}
+eb_ended() {  # the `ended` banners the notifier stub was handed, after a bounded wait
+  local i=0
+  while [ "$i" -lt 30 ]; do
+    grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null && break
+    sleep 0.1; i=$((i + 1))
+  done
+  { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null || true; } | tr -d ' '
+}
+eb_has() { { grep -F -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null || true; } | { grep -cF -- "$1" || true; } | tr -d ' '; }
+eb_reset() { rm -f "$CAP_DIR/done"; rm -rf "$CAP_DIR/notify.ended"; : > "$EB_LOG"; }
+eb_marker() { [ -e "$CAP_DIR/ends-on-done" ] && printf 'written' || printf 'none'; }
+EB_DEFAULT='런이 종단했습니다 — 아침 보고서를 확인하세요'
+
+eb_gate '' '' '' '' act --manifest "$CAP_NM" --kind segment --target infra --segment EB1 \
+  --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(eb_gate '' '' '' '' snapshot --manifest "$CAP_NM" 2>/dev/null | jq -r .H)" \
+  --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음 > /dev/null 2>&1
+check "(h) 종단 배너 픽스처의 세그먼트 행이 기록된다" "$?" "0"
+
+# The marker: a stage's launch, a shift's launch and a seat call that launches
+# nothing leave none; the seat's launch writes it.
+eb_launch '' EB9 'EB9#1' ''
+check "(h) 스테이지 좌석의 교대 기동이 0 이다" "$rc" "0"
+check "(h) 스테이지 좌석의 router-shift 는 표지를 쓰지 않는다" "$(eb_marker)" "none"
+eb_launch 'R34H#1' '' '' ''
+check "(h) 교대 좌석의 교대 기동이 0 이다" "$rc" "0"
+check "(h) 교대 좌석의 router-shift 는 표지를 쓰지 않는다" "$(eb_marker)" "none"
+eb_launch '' '' '' '' 엉뚱
+check "(h) 어휘 밖 사유의 좌석 호출은 기동하지 않고 돌아선다" "$( [ "$rc" != 0 ] && printf 'returned' || printf 'launched')" "returned"
+check "(h) 기동하지 않고 돌아선 좌석의 router-shift 는 표지를 쓰지 않는다" "$(eb_marker)" "none"
+eb_launch '' '' '' ''
+check "(h) 좌석의 교대 기동이 0 이다" "$rc" "0"
+check "(h) 좌석의 router-shift 가 표지를 쓴다" "$(eb_marker)" "written"
+check "(h) done 없이 돌아온 교대 뒤에는 점유도 배너도 없다" \
+  "$( [ -d "$CAP_DIR/notify.ended" ] && printf 'claimed' || printf 'none'):$(eb_ended)" "none:0"
+
+# One `ended`, the clean-finish sentence, and the `fired` mark beside the claim.
+eb_reset
+eb_launch '' '' '' '2026-01-01T00:00:00Z 종단 — 종료 조건 성립 · 근거 x'
+check "(h) done 을 쓴 교대가 돌아오면 좌석이 ended 를 한 번 울린다" "$(eb_ended)" "1"
+check "(h) 종료 조건 성립의 done 뒤에는 기본 문면이다" "$(eb_has "$EB_DEFAULT")" "1"
+check "(h) 울린 뒤 notify.ended/fired 가 남는다" \
+  "$( [ -f "$CAP_DIR/notify.ended/fired" ] && printf 'marked' || printf 'none')" "marked"
+# The claim is held: a second return over a new `done` raises nothing more.
+rm -f "$CAP_DIR/done"
+eb_launch '' '' '' '2026-01-01T00:00:00Z 종단 — 종료 조건 성립 · 근거 y'
+check "(h) 점유가 잡힌 런에서 두 번째 교대 복귀는 울지 않는다" "$(sleep 0.5; eb_ended)" "1"
+
+# The outgoing shift is not the seat: its return raises nothing and claims nothing.
+eb_reset
+eb_launch 'R34H#1' '' '' '2026-01-01T00:00:00Z 종단 — 종료 조건 성립 · 근거 x'
+check "(h) 교대 좌석에서는 done 뒤의 교대 복귀가 울지 않는다" \
+  "$( [ -d "$CAP_DIR/notify.ended" ] && printf 'claimed' || printf 'none'):$(sleep 0.5; eb_ended)" "none:0"
+
+# The sentence follows `done`'s first line.
+eb_reset
+eb_launch '' '' '' '2026-01-01T00:00:00Z 종단 — 경계 B4 · 근거 비용이 선언 천장에 닿았습니다 (100/100)'
+check "(h) 교대 안의 경계 done 뒤에는 경계 문면으로 한 번 운다" \
+  "$(eb_ended):$(eb_has '경계 B4 이 런을 끝냈습니다 — 아침 보고서를 확인하세요')" "1:1"
+eb_reset
+eb_launch '' '' '' '2026-01-01T00:00:00Z 종단 — 무효화 · 근거 x'
+check "(h) 교대 안의 무효화 done 뒤에는 무효화 문면으로 한 번 운다" \
+  "$(eb_ended):$(eb_has '런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요')" "1:1"
+eb_reset
+eb_launch '' '' '' '2026-01-01T00:00:00Z 종단 — 질의 잔여 · 근거 x'
+check "(h) 질의 잔여의 done 뒤에는 기본 문면으로 한 번 운다" \
+  "$(eb_ended):$(eb_has "$EB_DEFAULT")" "1:1"
+eb_reset
+eb_launch '' '' '' '알아볼 수 없는 첫 줄'
+check "(h) 알아볼 수 없는 첫 줄의 done 뒤에도 기본 문면으로 한 번 운다" \
+  "$(eb_ended):$(eb_has "$EB_DEFAULT")" "1:1"
+eb_reset
 
 # --- 34b. 계측 — 마지막 턴 컨텍스트가 읽기+생성+입력이다 ---------------------
 # --- section: 34b | group: cone | covers: snapshot | needs: 31al | anchors: 34b: 마지막 턴 컨텍스트가 읽기+생성+입력으로 계산된다 ---

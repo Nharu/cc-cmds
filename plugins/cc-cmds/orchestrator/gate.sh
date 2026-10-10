@@ -261,9 +261,10 @@ export CC_ORCH_SOURCE_ONLY
 # directly. A shard was therefore refused a banner and still permitted to remove
 # one — and removing is what decides what is on a person's screen right now.
 #
-# THE NAME SURVIVES THOUGH THE TEST MOVED. Seven firing sites call it, and
-# leaving the alias in place means the fix touched none of them; an eighth site
-# added later still reaches the one predicate its siblings already use.
+# THE NAME SURVIVES THOUGH THE TEST MOVED. Eight firing sites call it, and
+# leaving the alias in place meant the fix touched none of them; the eighth, the
+# shift's return in `gate_launch_shift`, was added later and still reaches the
+# one predicate its siblings already use.
 # ---------------------------------------------------------------------------
 gate_may_raise_banner() {
   cc_caller_is_router
@@ -9992,9 +9993,15 @@ gate_reap_eligible() {
   # The thresholds are passed explicitly rather than inherited, per the rule that
   # two consumers must not grade one run with two values; this clause's answer
   # happens to be independent of both.
+  #
+  # A RUN CARRYING `ends-on-done` THAT STOPPED IN ITS SETTLEMENT WINDOW never
+  # reads 종단 — it ends on `done` and nobody wrote one — so it is a candidate
+  # when `cc_run_settle_stuck` holds. That keeps its fate what it was before the
+  # marker existed, when the same run read 종단 by derivation and was reclaimed
+  # after the same retention.
   ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
   state=$(cc_run_state "$rd" "$ledger" 180 3600 2>/dev/null || true)
-  [ "$state" = "종단" ] || return 1
+  [ "$state" = "종단" ] || cc_run_settle_stuck "$rd" "$ledger" || return 1
   # 5 — an id that parses as a date must not be NEWER than the retention clock it
   # is paired with. An id that does not parse passes: the clause is a conditional
   # and its antecedent is "parses as a date".
@@ -18199,11 +18206,12 @@ gate_end_run() {
     "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
     "되돌리는 법=새 런으로 다시 킥오프" "근거=$(gate_row_safe "$why" "$_why_free")"
   warn "boundary $name ends the run — $why"
-  if cc_caller_is_router; then
+  if cc_caller_is_router && cc_run_end_settled "$RUN_DIR" && cc_notify_claim_ended; then
     # `ended` is the event kind the run's other terminal points already use. A
     # kind outside the notifier's closed set raises nothing at all, so a banner
     # spelled for this one caller would be a banner that never arrives.
     cc_notify_fire ended "경계 $name 이 런을 끝냈습니다 — 아침 보고서를 확인하세요" || true
+    cc_notify_mark_ended_fired
   fi
   return 0
 }
@@ -20616,8 +20624,9 @@ gate_verb_act() {
       # left for a person is to read the result rather than to re-open anything.
       # The instruction to kick off again belongs to the site that anchors the
       # run, which has already spoken by the time this one does.
-      if gate_may_raise_banner; then
+      if gate_may_raise_banner && cc_run_end_settled "$RUN_DIR" && cc_notify_claim_ended; then
         cc_notify_fire ended "런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요" || true
+        cc_notify_mark_ended_fired
       fi
       return 0
     fi
@@ -20694,8 +20703,9 @@ gate_verb_act() {
     # does next here is look at the result and decide what follows — the per-run
     # replace slot is exactly right for a fact that supersedes any earlier state
     # of the same run, and re-raising it costs nothing.
-    if gate_may_raise_banner; then
+    if gate_may_raise_banner && cc_run_end_settled "$RUN_DIR" && cc_notify_claim_ended; then
       cc_notify_fire ended "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
+      cc_notify_mark_ended_fired
     fi
   # BOOKKEEPING IS EXEMPT, AND THE EXEMPTION IS THIS ARM'S OWN PURPOSE READ
   # CORRECTLY. What it refuses is a router that walks past a satisfied ending and
@@ -26756,6 +26766,14 @@ gate_launch_shift() {
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
     "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
     "컨텍스트=${prev_ctx:--}" "effort=${effort:--}"
+  # THE RUN NOW ENDS ON `done`, AND ONLY THE SEAT SAYS SO. A seat that hands its
+  # turn to a shift settles the exit clauses after the last segment, so from here
+  # the ledger-derived terminal conjunction opens a settlement window instead of
+  # ending the run. Written below every early return, so a `router-shift` that
+  # launched nothing leaves no marker; and only for the seat, because a stage or a
+  # shift reaches this arm too, and a marker on a driver run would keep a run that
+  # finished from ever reading 종단.
+  gate_may_raise_banner && { [ -e "$RUN_DIR/ends-on-done" ] || printf '1\n' > "$RUN_DIR/ends-on-done"; }
   log "교대 $n 시작 — 사유 $reason"
   # THE SUCCESSOR'S SEAT IS THIS LAUNCHER'S PROPERTY, NOT ITS CALLER'S AMBIENT
   # ENVIRONMENT. A prefix assignment adds and overwrites; it never unsets. So a
@@ -26809,6 +26827,16 @@ gate_launch_shift() {
   # `gate_rows` reads the file and not a memo, so it sees what the shift wrote.
   ( gate_shift_trace_unrecorded "$alias" "$n" "$rc" ) \
     || warn "교대 $n 의 무기록 인계 행을 남기지 못했습니다 — 교대의 종료 코드 ${rc} 는 그대로 돌려줍니다"
+  # THE SHIFT'S RETURN IS WHERE A SEAT RUN'S ENDING REACHES A PERSON. A `done`
+  # the shift wrote raised nothing — the shift is not the seat — and its process
+  # is gone now, so the settlement is over and the seat has its turn back. The
+  # sentence is read from `done`'s first line, so a boundary or an invalidation
+  # inside the shift is announced as what it was. Without `done` nothing is said.
+  # SHIFT-RETURN FIRING SITE — the ended banner of a settled seat run.
+  if gate_may_raise_banner && cc_run_end_settled "$RUN_DIR" && cc_notify_claim_ended; then
+    cc_notify_fire ended "$(cc_notify_ended_text "$RUN_DIR")" || true
+    cc_notify_mark_ended_fired
+  fi
   return "$rc"
 }
 
