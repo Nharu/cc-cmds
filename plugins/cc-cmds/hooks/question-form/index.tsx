@@ -114,7 +114,7 @@ async function follow($: Dollar, key: string) {
   await update($, focusedAtom, () => key)
   const rec = await read($, recordAtom)
   if (!rec || !isOpen(rec)) return
-  for (const target of revealKeys(layoutRows(rec, key, lastBodyColumns), key)) {
+  for (const target of revealKeys(layoutRows(rec, key), key)) {
     try {
       await $.ui.scroll({ to: { key: target }, in: PANE_ID, block: 'nearest' })
     } catch {
@@ -424,7 +424,7 @@ export const register: Register = on => {
     const rec = await read($, recordAtom)
     if (!rec || !isOpen(rec)) return next(e)
     const focused = await read($, focusedAtom)
-    const target = arrowTarget(layoutRows(rec, focused, lastBodyColumns), focused, e)
+    const target = arrowTarget(layoutRows(rec, focused), focused, e)
     if (target === null) return next(e)
     try {
       const r = await $.ui.focus({ requestId: PANE_ID, key: target })
