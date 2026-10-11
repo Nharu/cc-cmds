@@ -466,9 +466,17 @@ rs_doc "$RSD/one.md" 1
 check "잔여: 구현 슬라이스 하나는 전부가 몫, 제외 뒤 남는 표제" \
   "$(residual_share_missing "$RSD/one.md" A | tr '\n' '|')" "### R1. 첫 항목|### R6. 외부 항목|### R7. 좌석 항목|"
 printf '**좌석 실행 항목**: R7\n' > "$RSD/halt/A#2.md"
+# (c) 의 제외는 스킬이 계획에 쓰라고 지시한 고정 줄 하나만 읽는다. 산문으로 (c) 와
+# R<n> 을 함께 적은 줄은 아무것도 빼지 않는다.
 printf -- '- R6 은 (c) 외부 프로브로 이 스테이지에서 돌리지 않는다\n' > "$RSD/A.plan.md"
-check "잔여: 좌석 실행 항목과 미실행 (c) 항목은 빠진다" \
+check "잔여: 산문으로 밝힌 (c) 는 빠지지 않는다 (고정 줄만 읽는다)" \
+  "$(residual_share_missing "$RSD/one.md" A "$RSD/halt" "$RSD/A.plan.md" | tr '\n' '|')" "### R1. 첫 항목|### R6. 외부 항목|"
+printf 'Scope: x\n\n미실행 잔여: R6\n' > "$RSD/A.plan.md"
+check "잔여: 좌석 실행 항목과 미실행 잔여 줄의 (c) 항목은 빠진다" \
   "$(residual_share_missing "$RSD/one.md" A "$RSD/halt" "$RSD/A.plan.md" | tr '\n' '|')" "### R1. 첫 항목|"
+printf '미실행 잔여: R1, R60\n' > "$RSD/A.plan.md"
+check "잔여: 미실행 잔여 줄은 (c) 가 아닌 항목을 빼지 않고 표지를 통째로 비교한다" \
+  "$(residual_share_missing "$RSD/one.md" A "$RSD/halt" "$RSD/A.plan.md" | tr '\n' '|')" "### R1. 첫 항목|### R6. 외부 항목|"
 rs_doc "$RSD/two.md" 2 '**잔여 항목**: 「### R1. 첫 항목」, 「### R2. 기록된 항목」'
 check "잔여 항목 필드는 축자 표제 줄로 읽힌다" \
   "$(slice_residual_headings "$RSD/two.md" A | tr '\n' '|')" "### R1. 첫 항목|### R2. 기록된 항목|"
@@ -476,6 +484,42 @@ check "잔여: 구현 슬라이스가 둘이면 필드에 적힌 몫만" \
   "$(residual_share_missing "$RSD/two.md" A | tr '\n' '|')" "### R1. 첫 항목|"
 check "잔여: 필드 없는 슬라이스는 몫이 없다" "$(residual_share_missing "$RSD/two.md" B)" ""
 check "잔여: 없는 문서는 빈 몫" "$(residual_share_missing "$RSD/none.md" A)" ""
+rs_doc "$RSD/none-share.md" 2 '**잔여 항목**: 없음'
+check "잔여: 없음 은 몫이 없다는 표기다" \
+  "$(slice_residual_headings "$RSD/none-share.md" A)/$(residual_share_missing "$RSD/none-share.md" A)" "/"
+rs_doc "$RSD/wide.md" 2 '**잔여 항목**: 「### R1. 첫 항목」,「### R6. 외부 항목」 ， 「### R7. 좌석 항목」'
+check "잔여 항목: 쉼표 앞뒤 공백과 전각 쉼표도 구분자다" \
+  "$(slice_residual_headings "$RSD/wide.md" A | tr '\n' '|')" "### R1. 첫 항목|### R6. 외부 항목|### R7. 좌석 항목|"
+# 선언이 없는 문서 — 라우터는 세그먼트 하나를 계획하고 그 세그먼트가 전부를 갖는다.
+# 이 런의 원장에 세그먼트가 둘 이상이면 몫을 정한 곳이 없으니 아무도 갖지 않는다.
+{ printf '# 문서\n\n## 구현 시 검증 항목\n\n### R1. 첫 항목\n\n**분류**: 결정론적\n**검증 등급**: 구현 시 검증\n'; } > "$RSD/nodecl.md"
+check "잔여: 선언 없는 문서에서 세그먼트가 하나면 전부가 몫" \
+  "$( ( LEDGER="$RSD/l1.md"; LEDGER_SCOPE=파일; printf -- '- `segment` | id=A | 워크트리=/x\n' > "$LEDGER"
+        residual_share_missing "$RSD/nodecl.md" A ) )" "### R1. 첫 항목"
+check "잔여: 선언 없는 문서에서 세그먼트가 둘이면 몫이 없다" \
+  "$( ( LEDGER="$RSD/l2.md"; LEDGER_SCOPE=파일; printf -- '- `segment` | id=A | 워크트리=/x\n- `segment` | id=B | 워크트리=/y\n' > "$LEDGER"
+        residual_share_missing "$RSD/nodecl.md" A ) )" ""
+# 검증기 — 설계 스킬이 쓰라고 한 표기는 통과하고, 그 밖의 값은 이유를 대며 거절된다.
+rs_full() {  # rs_full <file> <잔여 항목 값>
+  {
+    printf '# 문서\n\n## 구현 시 검증 항목\n\n### R1. 첫 항목\n\n**검증 등급**: 구현 시 검증\n\n'
+    printf '## 구현 슬라이싱\n\n'
+    for rs_id in A B; do
+      printf '### 슬라이스 %s\n**스킬**: implement\n**레포**: `o/r`\n**선언 파일**: `a.txt`\n**선행**: 없음\n**절단점**: 커밋\n' "$rs_id"
+      [ "$rs_id" != A ] || printf '**잔여 항목**: %s\n' "$2"
+      printf '\n'
+    done
+  } > "$1"
+}
+rs_sfo() { local e rc=0; e=$(slicing_fields_ok "$1" 2>&1 >/dev/null) || rc=$?; printf '%s:%s' "$rc" "$e"; }
+rs_full "$RSD/v-list.md" '「### R1. 첫 항목」'
+check "검증기: 잔여 절에 있는 표제 목록은 통과한다" "$(rs_sfo "$RSD/v-list.md")" "0:"
+rs_full "$RSD/v-none.md" '없음'
+check "검증기: 없음 은 통과한다" "$(rs_sfo "$RSD/v-none.md")" "0:"
+rs_full "$RSD/v-tail.md" '「### R1. 첫 항목」 그리고 나머지'
+case "$(rs_sfo "$RSD/v-tail.md")" in 1:*'잔여 항목이'*) ok "검증기: 마지막 」 뒤 덧붙임 글은 거절된다" ;; *) bad "덧붙임 글 거절" "$(rs_sfo "$RSD/v-tail.md")" ;; esac
+rs_full "$RSD/v-gone.md" '「### R9. 없는 항목」'
+case "$(rs_sfo "$RSD/v-gone.md")" in 1:*'구현 시 검증 항목'*'없음'*) ok "검증기: 잔여 절에 없는 표제는 거절된다" ;; *) bad "없는 표제 거절" "$(rs_sfo "$RSD/v-gone.md")" ;; esac
 check "잔여 이어가기 문면은 빠진 표제를 축자로 싣는다" \
   "$(residual_unmet_message "$(printf '### R1. 첫 항목\n### R6. 외부 항목')")" \
   "자기 몫 잔여 검증 항목의 결과 줄(W1 뒤집기·W2 메모)이 없다 — 「### R1. 첫 항목」, 「### R6. 외부 항목」"
@@ -1897,17 +1941,17 @@ case "$(tail -1 "$LEDGER")" in
   *) bad "설계 스텝 마감 파킹" "$(tail -1 "$LEDGER")" ;;
 esac
 check "마감 파킹은 이미 파킹함을 남긴다" "$(cat "$TI_DIR/already" 2>/dev/null)" "1"
-# 라우터 파킹은 모두 도우미를 지난다 — 열세 자리, 그리고 그 중 실패 id 자리는
+# 라우터 파킹은 모두 도우미를 지난다 — 열네 자리, 그리고 그 중 실패 id 자리는
 # 대상이 실패 id 이고 앵커가 세그먼트다.
-check "드라이버의 라우터 파킹 자리는 열세 곳이다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "13"
+check "드라이버의 라우터 파킹 자리는 열네 곳이다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "14"
 check "실패 id 자리는 대상과 앵커를 나눠 싣는다" \
   "$(grep -c 'park_router "\$fid" "\$seg" cone' "$DRIVER" || true)" "1"
-# 계속 경로의 다섯 자리(공허한 성공 셋, 거절 재부착 둘)는 라우터 판정으로 막힌
-# 계속만 도우미로 보낸다 — 판단 승인 대기나 앞 호출에서 남은 부류로는 도우미를
-# 쓰지 않는다.
-check "계속 경로의 라우터 파킹은 다섯이고 모두 부류를 묻는다" \
-  "$(grep -c '\[ "\$CONTINUE_CLASS" != "라우터 판정" \] || { park_router ' "$DRIVER" || true)" "5"
+# 계속 경로의 여섯 자리(공허한 성공 셋, 거절 재부착 셋 — 구현·리뷰·설계)는
+# 라우터 판정으로 막힌 계속만 도우미로 보낸다 — 판단 승인 대기나 앞 호출에서
+# 남은 부류로는 도우미를 쓰지 않는다.
+check "계속 경로의 라우터 파킹은 여섯이고 모두 부류를 묻는다" \
+  "$(grep -c '\[ "\$CONTINUE_CLASS" != "라우터 판정" \] || { park_router ' "$DRIVER" || true)" "6"
 
 # 기소된 여덟 — 말단 행위가 막히면 세그먼트를 버리지 않는다. merge_gate 의
 # ACT 팔은 1(=CONE) 이 아니라 2 를 돌려주고, segment_cycle 이 그것을
@@ -5675,8 +5719,14 @@ cont_case() {
       turns=7; [ "$mode" = "zero" ] && turns=0
       # 실물 스폰이 남기는 것 — `.window` 셋째 줄의 effort 와 init 프레임의 모델.
       printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
-      printf '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"%s"}\n{"type":"result","num_turns":%s}\n' \
-        "$CONT_SID" "$turns" > "$(stage_log_path "$s")"
+      if [ "$mode" = "plan" ]; then
+        # 프로세스 A 의 실물 형상 — 계획 다이제스트를 산문 종단 문면에 싣는다.
+        printf '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"%s"}\n{"type":"result","num_turns":%s,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
+          "$CONT_SID" "$turns" "$CONT_PSHA" > "$(stage_log_path "$s")"
+      else
+        printf '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"%s"}\n{"type":"result","num_turns":%s}\n' \
+          "$CONT_SID" "$turns" > "$(stage_log_path "$s")"
+      fi
       [ "$mode" = "done1" ] && [ -n "${STAGE_RESUME:-}" ] && : > "$d/artifact"
       printf '0' > "$RUN_DIR/$s.rc"
       return 0
@@ -5703,6 +5753,7 @@ cont_case() {
     else
       printf 'rc=1\nblocked=%s\nreason=%s\n' "$CONTINUE_BLOCKED" "$CONTINUE_PARK_REASON"
     fi
+    if segment_process_b "$rseg"; then printf 'procb=1\n'; else printf 'procb=0\n'; fi
   ) > "$d/out" 2>/dev/null
 }
 cont_field() { sed -n "s/^$2=//p" "$CONT/$1/out" | tail -1; }
@@ -5742,6 +5793,23 @@ check "계속 시도의 stage-result 행이 effort 와 서빙 모델을 싣는�
 check "계속 계수기가 디스크에 남는다 (드라이버 재시작을 넘긴다)" \
   "$(cat "$CONT/hollow/run/continue/S4:sg:1" 2>/dev/null)" "2"
 
+# 프로세스 B 는 구동기 자신의 S4 행으로 열린다. 계속 시도가 쓰는 실제 행이 스테이지가
+# 방출한 계획 다이제스트를 싣고, 그 행이 선 뒤의 다음 시도는 프로세스 B 로 판정된다.
+# 다이제스트를 싣지 않는 다른 스테이지 종류의 행으로는 열리지 않는다.
+CONT_PSHA=$(printf '%064d' 7)
+cont_case planA plan
+check "구동기 계속 시도의 S4 행이 방출된 plan_sha256 을 싣는다" \
+  "$(grep -F '`stage-result`' "$CONT/planA/ledger.md" | grep -F '실행 버전=2 ' | grep -cF "| plan_sha256=$CONT_PSHA |" || true)" "1"
+check "그 행이 선 뒤의 다음 시도는 프로세스 B 다" "$(cont_field planA procb)" "1"
+check "다이제스트 없는 계속 행만으로는 프로세스 B 가 아니다" "$(cont_field hollow procb)" "0"
+CONT_RKIND=S5 cont_case planS5 plan
+check "S4 가 아닌 행은 다이제스트를 싣지 않는다" \
+  "$(grep -cF 'plan_sha256=' "$CONT/planS5/ledger.md" || true)/$(cont_field planS5 procb)" "0/0"
+check "스트림에 줄이 없으면 계획 파일의 해시로 물러선다" \
+  "$( ( RUN_DIR="$CONT/planA/run"; printf 'x\n' > "$RUN_DIR/sgf.plan.md"
+        stage_plan_sha256 "$CONT/none.json" sgf ) )" "$(printf 'x\n' | shasum -a 256 | cut -d' ' -f1)"
+check "줄도 파일도 없으면 빈 값이다" "$(stage_plan_sha256 "$CONT/none.json" nosuchseg)" ""
+
 cont_case restarted hollow 2
 check "계수기가 이미 상한이면 재시작한 드라이버도 더 계속하지 않는다" \
   "$(cont_field restarted rc)/$(cont_spawns restarted)" "1/0"
@@ -5765,8 +5833,8 @@ check "0턴이면 새 프로세스 재시도 1회" \
 cont_case judg judg
 check "대기 중인 판단 승인이 있으면 계속하지 않는다" \
   "$(cont_field judg rc)/$(cont_spawns judg)/$(cont_field judg blocked)" "1/0/1"
-check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (계속 셋과 거절 재부착 둘, 다섯 호출부 모두)" \
-  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "5"
+check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (계속 셋과 거절 재부착 셋, 여섯 호출부 모두)" \
+  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "6"
 # park 사유는 실제로 일어날 일만 적는다 — 승인 id 를 대고, 이 런 안에서 다시
 # 디스패치하지 않는다고 말하며, 어떤 경로도 수행하지 않는 재부착을 약속하지
 # 않는다. 옛 문구 하나가 아니라 `재부착` 이라는 말 자체가 없음을 본다 — 문구만
@@ -5858,8 +5926,8 @@ check "재부착이 산출 없이 끝나면 기존 계속 경로로 넘어가 �
 ref_case rspent twice 1
 check "이미 거절 종료 행이 둘이면 다시 붙이지 않는다" \
   "$(cont_field rspent rc)/$(cont_spawns rspent)/$(cont_field rspent refused)" "1/0/1"
-check "거절 소진 park 호출부는 구현 둘, 설계 하나다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'CONTINUE_REFUSED" \] || { park "[^"]*" [a-z]* "거절 소진" ' || true)" "3"
+check "거절 소진 park 호출부는 구현 둘, 리뷰 하나, 설계 하나다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'CONTINUE_REFUSED" \] || { park "[^"]*" [a-z]* "거절 소진" ' || true)" "4"
 check "구현 스테이지 막힘 사유는 멈춘 스테이지에 답을 되돌리는 경로가 없다고 적는다" \
   "$(cont_field judg reason | grep -c '멈춘 스테이지에 답을 되돌리는 경로가 없' || true)" "1"
 
@@ -9311,6 +9379,23 @@ rec_reset
 review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "정상 완료"; REC_RC=$?
 check "비크래시 종단 부류는 반환 1" "$REC_RC" "1"
 check "비크래시 종단 부류는 파견 0회" "$REC_SPAWN" ""
+
+# 1b. 거절 종료 — 호출부가 refusal_or_park 로 보내므로 여기 닿지 않지만, 닿으면
+# 해소되지 않는 무효화가 아니라 거절의 원인으로 park 한다.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "거절 종료"; REC_RC=$?
+check "거절 종료 리뷰는 반환 1, 파견 0회" "$REC_RC/$REC_SPAWN" "1/"
+case "$REC_PARK" in
+  *"cone 거절 소진 "*) ok "거절 종료 리뷰의 park 원인은 거절 소진이다 (무효화 아님)" ;;
+  *) bad "거절 종료 리뷰 park 원인" "$REC_PARK" ;;
+esac
+# 호출부: S5 갈래가 거절 종료를 크래시 복구보다 먼저 refusal_or_park 로 보낸다.
+if sed -n '/# --- S5 REVIEW/,/# --- S6 TRIAGE/p' "$DRIVER" \
+     | grep -q 'refusal_or_park "\$sid" "\$seg" "\$seg" S5 '; then
+  ok "S5 리뷰 갈래는 거절 종료를 refusal_or_park 로 보낸다"
+else
+  bad "S5 리뷰 거절 갈래" "refusal_or_park 호출이 S5 갈래에 없다"
+fi
 
 # 2. 술어 줄이 이미 있는 크래시 — 원 스테이지가 리포트를 남기고 죽은 경우.
 rec_reset; REC_PRED=0

@@ -1777,13 +1777,15 @@ slice_field() {
 }
 
 # The optional `**잔여 항목**` field, one verbatim `### R<n>` heading per line.
-# The field writes each heading in 「」 and joins them with `, `, so `」, 「` is
-# the separator; a heading that itself contains it is not expressible. An absent
-# field prints nothing.
+# The field writes each heading in 「」 and joins them with a comma, so `」,「`
+# with any spacing around an ASCII or fullwidth comma is the separator; a
+# heading that itself contains one is not expressible. An absent field and the
+# value `없음` — the spelling `**선행**` uses for an empty list — both print
+# nothing: the slice owns no item.
 slice_residual_headings() {
   # slice_residual_headings <doc> <id>
-  slice_field "$1" "$2" '잔여 항목' | awk '{
-    n = split($0, part, /」, 「/)
+  slice_field "$1" "$2" '잔여 항목' | awk '$0 == "없음" { next } {
+    n = split($0, part, /」[ \t]*(,|，)[ \t]*「/)
     for (i = 1; i <= n; i++) {
       s = part[i]; sub(/^[ \t]*「/, "", s); sub(/」[ \t]*$/, "", s)
       if (s != "") print s
@@ -1810,10 +1812,14 @@ implement_slice_count() {
 # means nothing is missing. Shared with the gate, which reads it at the end of
 # an implement stage's process B; the driver mirrors it.
 #
-# THE SHARE. One implement slice (or no declaration) owns every item. Two or more
-# share them by each slice's `**잔여 항목**`; a slice without the field owns
+# THE SHARE. One implement slice owns every item. Two or more share them by
+# each slice's `**잔여 항목**`; a slice without the field, or with `없음`, owns
 # nothing, so an older document sliced before the field existed is never held
-# on items nobody assigned.
+# on items nobody assigned. A document with no declaration is one segment's
+# work on the router, which plans a single segment for it, and that segment
+# owns every item; when this run's ledger has two or more `segment` rows the
+# segments came from a planner the document did not instruct, nothing says
+# which items are whose, and no segment owns any.
 #
 # WHAT IS LEFT OUT is what an unattended implement stage does not run itself, so
 # counting it would only ever end at the continuation cap:
@@ -1824,18 +1830,22 @@ implement_slice_count() {
 #     (`**좌석 실행 항목**`);
 #   - an (c) `외부 환경` item the stage's own plan left unrun. Whether every act
 #     of a (c) recipe is a read cannot be decided from the document's bytes, so
-#     this is an approximation: the item is left out when a line of the
-#     segment's plan file names its `R<n>` together with `(c)`, which is where
-#     the stage's plan discloses a probe it did not run. A (c) item the plan does
-#     not name that way is counted.
+#     the stage says it: the implement skill has its plan carry one line
+#     `미실행 잔여: R<n>, …` naming the (c) probes it left unrun, and only that
+#     line excuses a (c) item. Each label is compared whole, so `R1` does not
+#     excuse `R12`; a label on the line that is not a (c) item excuses nothing,
+#     so the plan cannot widen the exclusions the document's bytes decide.
 # ---------------------------------------------------------------------------
 residual_share_missing() {
   local doc="$1" seg="$2" hdir="${3:-}" plan="${4:-}" mode=all share="" seats="" cunrun="" f
   [ -n "$doc" ] && [ -f "$doc" ] || return 0
-  if [ "$(implement_slice_count "$doc")" -ge 2 ]; then
+  local nslice; nslice=$(implement_slice_count "$doc")
+  if [ "$nslice" -ge 2 ]; then
     mode=list
     share=$(slice_residual_headings "$doc" "$seg")
     [ -n "$share" ] || return 0
+  elif [ "$nslice" = "0" ] && [ "$(run_segment_ids 2>/dev/null | grep -c .)" -ge 2 ]; then
+    return 0
   fi
   if [ -n "$hdir" ] && [ -d "$hdir" ]; then
     for f in "$hdir/$seg.md" "$hdir/$seg#"*.md; do
@@ -1844,7 +1854,7 @@ residual_share_missing() {
     done
   fi
   if [ -n "$plan" ] && [ -f "$plan" ]; then
-    cunrun=$( { grep -F '(c)' "$plan" || true; } | { grep -oE 'R[0-9]+' || true; } | tr '\n' ' ')
+    cunrun=$(sed -n 's/^미실행 잔여: *//p' "$plan" | tr ',' ' ')
   fi
   defenced "$doc" | RSM_MODE="$mode" RSM_SHARE="$share" RSM_SEATS=" $seats " RSM_CUNRUN=" $cunrun " awk '
     function trim(s) { sub(/[ \t\r]+$/, "", s); return s }
@@ -1937,9 +1947,11 @@ slicing_fields_ok() {
     # how far a slice may go and cannot say when review happens, which is a
     # different axis entirely — a slice may be authorized to merge and still owe
     # its review afterwards.
-    # THIS WHOLE FUNCTION IS AN EARLY DIAGNOSTIC AND NOT AN ACCEPTANCE CRITERION —
-    # nothing in production calls it, so a green answer here proves the
-    # declaration is readable and proves nothing about the gate.
+    # THIS WHOLE FUNCTION IS A DECLARATION CHECK, NOT THE GATE'S ACCEPTANCE —
+    # the router's slicing branch and the driver's planner both call it, and a
+    # failure here refuses the whole segment plan, so a value a design skill
+    # tells its author to write must pass it. A green answer proves the
+    # declaration is readable and proves nothing about what the gate admits.
     #
     # The vocabulary goes through `review_policy_index` rather than through a
     # second literal list. A copy here would be the drift surface the single
@@ -1971,16 +1983,30 @@ slicing_fields_ok() {
         return 1
       fi
     fi
-    # `잔여 항목` is OPTIONAL. When present, every element it names has to be a
-    # verbatim residual heading in 「」: an element of another shape is a share
-    # no item of the residual section can match, so the check that reads it would
-    # silently see nothing.
+    # `잔여 항목` is OPTIONAL, and `없음` says the slice owns no item. Otherwise
+    # every element it names has to be a verbatim heading of the residual
+    # section in 「」: an element of another shape, or one naming a heading the
+    # section does not carry, is a share no item can match, so the check that
+    # reads it would silently see nothing.
     v=$(slice_field "$doc" "$id" '잔여 항목')
-    if [ -n "$v" ]; then
-      case "$v" in 「*」) : ;; *) warn "슬라이스 $id: 잔여 항목이 「」 로 감싼 표제 목록이 아님"; return 1 ;; esac
-      if [ -n "$(slice_residual_headings "$doc" "$id" | { grep -vE '^### R[0-9]+\. ' || true; })" ]; then
-        warn "슬라이스 $id: 잔여 항목에 \`### R<n>. \` 표제가 아닌 원소가 있음"; return 1
-      fi
+    if [ -n "$v" ] && [ "$v" != "없음" ]; then
+      case "$v" in 「*」) : ;; *) warn "슬라이스 $id: 잔여 항목이 「」 로 감싼 표제 목록이나 '없음' 이 아님"; return 1 ;; esac
+      local rh rhs
+      rhs=$(defenced "$doc" | awk '/^## /{inr = ($0 == "## 구현 시 검증 항목"); next} inr && /^### /{sub(/[ \t\r]+$/, ""); print}')
+      while IFS= read -r rh; do
+        [ -n "$rh" ] || continue
+        case "$rh" in '### R'[0-9]*'. '*) : ;; *) warn "슬라이스 $id: 잔여 항목에 \`### R<n>. \` 표제가 아닌 원소가 있음: $rh"; return 1 ;; esac
+        case "
+$rhs
+" in
+          *"
+$rh
+"*) : ;;
+          *) warn "슬라이스 $id: 잔여 항목의 표제가 '## 구현 시 검증 항목' 에 없음: $rh"; return 1 ;;
+        esac
+      done <<EOF
+$(slice_residual_headings "$doc" "$id")
+EOF
     fi
     v=$(slice_field "$doc" "$id" '적용 명령')
     if [ -n "$v" ]; then
@@ -5796,11 +5822,14 @@ split_registry_complete() {
 predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && split_registry_complete "$DOC"; }
 
 predicate_implement_share() {
-  # predicate_implement_share <branch> <pre_head> <segment> <process B 0|1> [<dispatch id>]
+  # predicate_implement_share <branch> <pre_head> <segment> [<dispatch id>]
   # The implement predicate, and on process B also an empty residual share
-  # (`residual_share_missing`). What a continued attempt is judged by.
+  # (`residual_share_missing`). What a continued attempt is judged by. Process
+  # B is judged here, per attempt (`segment_process_b`), and not handed in: the
+  # attempt that emits the plan is process A and the continuation after it is
+  # process B, inside one cycle.
   predicate_implement "$1" "$2" "$3" || return 1
-  [ "$4" = "1" ] || return 0
+  segment_process_b "$3" || return 0
   [ -z "$(residual_share_missing "$DOC" "$3" "$RUN_DIR/halt" "$RUN_DIR/$3.plan.md")" ]
 }
 
@@ -6272,6 +6301,40 @@ stage_refusal_exit() {
       (null; $r)
     | if . != null and .stop_reason == "refusal" then "=" else "-" end' "$stream" 2>/dev/null) || return 1
   [ "$verdict" = "=" ]
+}
+
+stage_plan_sha256() {
+  # stage_plan_sha256 <stream> <segment> — the plan digest an implement stage
+  # emitted, for the driver's own S4 rows. The stage writes it as prose,
+  # `**plan_sha256**: <64 hex>` in its terminal text, and the plan itself to
+  # `<RUN_DIR>/<segment>.plan.md`; the line wins and the file is the fallback,
+  # the same order the gate reads them in. Empty when neither is there.
+  #
+  # WITHOUT THIS FIELD ON A DRIVER ROW, NO DRIVER DISPATCH IS EVER PROCESS B: the
+  # implement skill admits process B only against a row carrying the digest,
+  # and `implement_process_b` reads the same field. Only the gate wrote it, so
+  # on this driver every continuation re-ran process A and the residual check
+  # never fired.
+  local stream="${1:-}" seg="${2:-}" psha=""
+  if [ -n "$stream" ] && [ -s "$stream" ] && command -v jq >/dev/null 2>&1; then
+    psha=$( { jq -R -r 'fromjson? | select(type == "object" and .type == "result") | .result // empty' "$stream" 2>/dev/null \
+           | sed -n 's/.*plan_sha256[^0-9a-f]*\([0-9a-f]\{64\}\).*/\1/p' | tail -1; } || true)
+  fi
+  if [ -z "$psha" ] && [ -n "$seg" ] && [ -f "$RUN_DIR/$seg.plan.md" ]; then
+    psha=$(shasum -a 256 "$RUN_DIR/$seg.plan.md" | cut -d' ' -f1)
+  fi
+  printf '%s' "$psha"
+}
+
+segment_process_b() {
+  # segment_process_b <segment> — 0 when the next implement attempt of that
+  # segment is process B, judged from the `stage-result` rows standing now.
+  # Read at the moment an attempt is classified and before its own row is
+  # written, so the rows it sees are the ones that stood when it was launched:
+  # a continuation of the attempt that emitted the plan is process B, which a
+  # value read once before the first dispatch of the cycle could not say.
+  { run_section_rows 'stage-result' || true; } | { grep -F "| 세그먼트=$1 |" || true; } \
+    | implement_process_b
 }
 
 refusal_message() {
@@ -7801,8 +7864,11 @@ review_recover() {
   # it was reaped BECAUSE `S5` is boundary idempotent, so the recovery dispatch
   # is its disposition too. It arrives under its own class rather than as a
   # crash, which is what keeps the two countable apart on the ledger.
+  # A refused review never arrives here — its caller sends it to
+  # `refusal_or_park` — and is parked under the refusal's own cause if it does.
   case "$(terminal_route_class "$class")" in
     '크래시'|'한도-형상 회수') : ;;
+    '거절 종료') park "$seg" cone "거절 소진" "게이트 park" "리뷰 종단 부류 $class"; return 1 ;;
     *) park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1 ;;
   esac
   if predicate_review "$rp"; then
@@ -7983,8 +8049,7 @@ segment_cycle() {
     # PROCESS B IS READ BEFORE THE DISPATCH, from the rows already standing: the
     # rows this attempt leaves are not evidence about which process it was.
     local procb=0
-    { run_section_rows 'stage-result' || true; } | { grep -F "| 세그먼트=$seg |" || true; } \
-      | implement_process_b && procb=1
+    segment_process_b "$seg" && procb=1
     # THE ROUTER'S EVENT IS NAMED HERE, at the call: a re-attached answer is a
     # resume, everything else on this line is a first dispatch.
     local spawn_event=first src=0
@@ -8015,6 +8080,7 @@ segment_cycle() {
       fi
     fi
     acct=$(stage_account_of "$sid")
+    local psha; psha=$(stage_plan_sha256 "$(stage_log_path "$sid")" "$seg")
     # `파견 id=` carries the FULL dispatch id beside the kind. `스테이지=` stays the
     # kind because the gate's readers group on it; the attempt counter needs the
     # id it actually dispatched, and nothing else in the row carries it.
@@ -8023,7 +8089,7 @@ segment_cycle() {
       "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
-      "종단 부류=$class"
+      ${psha:+"plan_sha256=$psha"} "종단 부류=$class"
     absorb_stage_judgment "$sid" "$jkey" "$(seg_alias "$seg")"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
@@ -8047,7 +8113,7 @@ segment_cycle() {
         # person can write the lines, which is not an invalidation.
         if continue_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
              "$unmet" "$(seg_alias "$seg")" \
-             -- predicate_implement_share "$branch" "$pre_head" "$seg" "$procb"; then
+             -- predicate_implement_share "$branch" "$pre_head" "$seg"; then
           fileset_escape "$seg" "$files" "$wt" || return 1
           stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
         else
@@ -8064,7 +8130,7 @@ segment_cycle() {
         # stage committed is reset.
         if refusal_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
              "$unmet" "$(seg_alias "$seg")" \
-             -- predicate_implement_share "$branch" "$pre_head" "$seg" "$procb"; then
+             -- predicate_implement_share "$branch" "$pre_head" "$seg"; then
           fileset_escape "$seg" "$files" "$wt" || return 1
           stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
         else
@@ -8167,7 +8233,8 @@ segment_cycle() {
     [ -z "$seg_base" ] || rscope=" --base-sha $seg_base"
     [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
     src=0
-    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\"" || src=$?
+    local review_line="/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\""
+    stage_spawn "$sid" "$seg_repo" "$review_line" || src=$?
     if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
       park_router "$seg" "$seg" cone; return 1
     fi
@@ -8189,7 +8256,21 @@ segment_cycle() {
       "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
-    if [ "$class" != "정상 완료" ]; then
+    if [ "$class" = "거절 종료" ]; then
+      # A REFUSED REVIEW TAKES THE REFUSAL'S OWN DISPOSITION, the same one the
+      # implement arm above takes: one re-attachment of the same session, then
+      # a park of the cone under `거절 소진`. It is not a crash, so it does not
+      # go to the crash recovery below, whose `*` arm would park it under
+      # `무효화`, a cause the run's termination cannot resolve.
+      if ! refusal_or_park "$sid" "$seg" "$seg" S5 "$seg_repo" "$review_line" \
+             "리뷰 리포트 $rp 에 종료 술어 줄이 없다" "$(seg_alias "$seg")" \
+             -- predicate_review "$rp"; then
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
+        [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+        [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+        park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+      fi
+    elif [ "$class" != "정상 완료" ]; then
       review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
     fi
     spawn_lineage_release "$sid"
@@ -8523,6 +8604,10 @@ continue_attempt() {
   if "$@" "$did"; then pred=0; else pred=1; fi
   CONTINUE_CLASS=$(classify_termination "$did" "$rc" "$pred")
   acct=$(stage_account_of "$did")
+  # An implement attempt's row carries the plan digest it emitted, so the
+  # attempt after it is admitted as process B (`stage_plan_sha256`).
+  local psha=""
+  [ "$rkind" != "S4" ] || psha=$(stage_plan_sha256 "$(stage_log_path "$did")" "$rseg")
   # One row per attempt. `실행 버전` is the attempt this dispatch pinned — the
   # value the gate writes for its own rows — so "one row per (segment,
   # attempt)" holds on driver rows too. A continued attempt is a resumed launch,
@@ -8533,7 +8618,7 @@ continue_attempt() {
     "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$did")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$did")")" \
-    "종단 부류=$CONTINUE_CLASS"
+    ${psha:+"plan_sha256=$psha"} "종단 부류=$CONTINUE_CLASS"
   absorb_stage_judgment "$did" "$jkey" "$alias"
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
     CONTINUE_PARK_REASON="중단 기록"
@@ -8553,8 +8638,8 @@ refusal_count() {
 }
 
 # ---------------------------------------------------------------------------
-# refusal_or_park — what the driver does with a `거절 종료`, for the implement
-# and design stages.
+# refusal_or_park — what the driver does with a `거절 종료`, for the implement,
+# review and design stages.
 #
 #   refusal_or_park <stage id> <judgment key> <row segment> <row kind> <cwd>
 #                   <retry prompt> <unmet predicate> <alias> -- <predicate cmd...>
