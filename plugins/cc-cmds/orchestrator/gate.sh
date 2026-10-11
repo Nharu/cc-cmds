@@ -107,6 +107,13 @@
 #                    writes one end row for a run past its deadline with no end
 #                    token: `마감` while its driver is alive, `해당없음` once it
 #                    stopped or cannot be observed; nothing otherwise
+#   gate.sh end-abandoned --manifest <path> --cause <이어받음|포기>
+#                    [--successor <run id>]
+#                    closes a run another run took over or a person gave up:
+#                    `done` and one end row (`재킥 원인=해당없음`, `종료 부류`
+#                    the cause). The seat in the person's turn and a kickoff
+#                    taking over an earlier run call it; a stage or a shift is
+#                    refused, and so is a run with a live shift or stage
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -12074,6 +12081,7 @@ gate_main() {
   local reach="" destructive=0
   local wait_interval="" wait_timeout="" nonce=""
   local fields="" fields_seen=0
+  local end_cause="" end_successor=""
   GATE_RESUME=""; export GATE_RESUME
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
@@ -12125,6 +12133,8 @@ gate_main() {
       --interval)        wait_interval="$2"; shift 2 ;;
       --timeout)         wait_timeout="$2"; shift 2 ;;
       --nonce)           nonce="$2"; shift 2 ;;
+      --cause)           end_cause="$2"; shift 2 ;;
+      --successor)       end_successor="$2"; shift 2 ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
       # token is another flag or the `--` separator) selects the default list;
       # the value is never read as a filename, so `--fields --` cannot swallow
@@ -12180,6 +12190,15 @@ gate_main() {
     case "$verb" in
       supervise-stage|metrics-round) ;;
       *) printf 'gate: --nonce is used only with supervise-stage and metrics-round (verb received: %s)\n' "$verb" >&2
+         exit 2 ;;
+    esac
+  fi
+  # The same rule for the two closing flags: they decide something on one verb
+  # only. Their vocabulary is checked in that verb, after the run is known.
+  if [ -n "$end_cause" ] || [ -n "$end_successor" ]; then
+    case "$verb" in
+      end-abandoned) ;;
+      *) printf 'gate: --cause and --successor are used only with end-abandoned (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -12769,6 +12788,12 @@ GATE_DRIFT_DIRS
       # router: a run no verb reaches cannot meet the acting path's deadline
       # branch, so this is the one place its end row can come from.
       gate_verb_end_overdue
+      ;;
+    end-abandoned)
+      # Writing, and the writer is the seat in the person's turn or a kickoff
+      # taking over this run: the run did not end at any boundary, so no
+      # acting path reaches an end row for it.
+      gate_verb_end_abandoned "$end_cause" "$end_successor"
       ;;
     *)
       printf 'gate: unknown verb: %s\n' "$verb" >&2; exit 2 ;;
@@ -18598,6 +18623,66 @@ gate_verb_end_overdue() {
         gate_end_run 마감 "$why — 살아 있는 구동기를 관측하지 못했다(분류 없이 멈춘 런)" 해당없음
       fi ;;
   esac
+}
+
+gate_verb_end_abandoned() {
+  # gate_verb_end_abandoned <이어받음|포기> [<후계 런 id>] — close a run that
+  # another run took over, or that a person gave up.
+  #
+  # NO BOUNDARY ENDS SUCH A RUN, so before this verb nothing could record that
+  # it was over: its watchers stayed up, and the morning could not tell it from
+  # a run still in progress. This writes the same two things every other ending
+  # writes — `done` and one end row — through `gate_end_run`, so its first-write
+  # rule and its idempotence are the ones every boundary already has.
+  #
+  # THE CAUSE TOKEN IS `해당없음` AND THE KIND CARRIES WHAT HAPPENED. `재킥
+  # 원인` is a closed set read by the re-kick path; neither a take-over nor a
+  # person's decision is a reason to kick the run again automatically, and
+  # `해당없음` is the token that sends a reader to a person. `종료 부류` is free
+  # beside it and says which of the two this was.
+  #
+  # ONLY THE SEAT IN THE PERSON'S TURN, OR A KICKOFF TAKING OVER, MAY CALL IT.
+  # Both are outside every stage and every shift, so a call carrying a stage's
+  # or a shift's marker is refused: neither of those knows that a person gave
+  # up or that another run took over, and an end they wrote would be a guess.
+  #
+  # A LIVE SHIFT OR STAGE IS REFUSED, and nothing is written. Something is
+  # still working in that run, so it has not been abandoned — whoever is
+  # closing it has to stop that first, or wait for it.
+  local cause="$1" succ="${2:-}" why live
+  if cc_caller_is_stage || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+    warn "end-abandoned is called by the seat in the person's turn or by a kickoff taking over this run — not by a stage or a shift"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$cause" in
+    이어받음|포기) ;;
+    *) warn "--cause has to be 이어받음 or 포기 (received: ${cause:-(none)})"
+       return "$GATE_EXIT_VOCAB" ;;
+  esac
+  if [ -n "$succ" ]; then
+    [ "$cause" = "이어받음" ] || {
+      warn "--successor names the run that took over, so it goes with --cause 이어받음 only"
+      return "$GATE_EXIT_VOCAB"; }
+    case "$succ" in
+      .*|*[!A-Za-z0-9._-]*)
+        warn "--successor has to be a run id (letters, digits, '.', '_' and '-'): $succ"
+        return "$GATE_EXIT_VOCAB" ;;
+    esac
+    [ "$succ" != "${RUN_ID:-}" ] || {
+      warn "--successor names this run itself: $succ"
+      return "$GATE_EXIT_VOCAB"; }
+  fi
+  live=$(cc_live_stages "$RUN_DIR" 2>/dev/null || printf 0)
+  live=$(( ${live:-0} + $(cc_waiting_fresh_count "$RUN_DIR" "${LEDGER:-}" 2>/dev/null || printf 0) ))
+  if cc_shift_is_live "$RUN_DIR" || [ "$live" -gt 0 ] 2>/dev/null; then
+    warn "this run still has a live shift or stage — it has not been abandoned, so nothing is written"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$cause" in
+    이어받음) why="다른 런이 이 런을 이어받았다${succ:+ — 후계 런 $succ}" ;;
+    포기)     why="사람이 이 런을 포기했다" ;;
+  esac
+  gate_end_run "$cause" "$why" 해당없음 "$cause"
 }
 
 gate_run_ended_ok() {

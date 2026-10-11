@@ -2550,5 +2550,43 @@ r7_drive after
 # 화면에 남는 것은 ended 다 — 멈춤 배너가 ended 를 덮는 순서는 나오지 않는다.
 check "재시험 뒤에 생긴 done 은 resume 다음 ended 순서로 남는다" "$(r7_order)" "resume|ended|"
 
+# ---------------------------------------------------------------------------
+# 유휴 자기 종료 — 아무도 기다리지 않는 런에서 루프가 `done` 없이 스스로 끝나고,
+# 사람의 답을 기다리는 런에서는 끝나지 않는다.
+#
+# 원장이 25시간 전에 마지막으로 자랐고 세그먼트 하나가 열려 있다 — 두 사례 모두
+# 상태표로는 버려짐 이다. 가르는 것은 답 없는 중단 기록 하나뿐이므로, 둘째 사례가
+# 계속 도는 것이 그 기록 때문이라는 것은 첫째 사례가 끝나는 것으로 서 있다.
+# 하트비트가 없으니 성장 시각은 원장의 mtime 에서 온다.
+# ---------------------------------------------------------------------------
+idle_fixture() {
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+  fx_age_file "$LG" 90000
+}
+idle_loop() {
+  # idle_loop — 진짜 루프를 띄우고 출력을 남긴다. pid 는 EOD_LOOP_PID.
+  CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" \
+    --interval 1 --stall 99999 --after-stage 99999 --run-open 99999 > "$WORK/idle$case_n.out" 2>&1 &
+  EOD_LOOP_PID=$!
+  FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
+}
+
+idle_fixture
+idle_loop
+check "유휴 런에서 루프가 스스로 끝난다" "$(eod_loop_exited)" "exited"
+check "그 종료는 done 을 쓰지 않는다 (런은 열린 채 남는다)" \
+  "$( [ -e "$RD/done" ] && printf 있음 || printf 없음 )" "없음"
+case "$(cat "$WORK/idle$case_n.out" 2>/dev/null)" in
+  *"[watch] 유휴 86400초"*end-abandoned*) ok "멈추는 까닭과 런을 닫는 동사를 한 줄로 남긴다" ;;
+  *) bad "유휴 종료 문면" "$(tr '\n' ' ' < "$WORK/idle$case_n.out" 2>/dev/null)" ;;
+esac
+
+idle_fixture
+mkdir -p "$RD/halt"
+printf '# 중단 기록\n' > "$RD/halt/S1.md"
+idle_loop
+check "답 없는 중단 기록이 있으면 25시간 조용해도 루프가 끝나지 않는다" "$(eod_loop_exited)" "running"
+
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

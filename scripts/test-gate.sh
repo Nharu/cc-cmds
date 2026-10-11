@@ -3006,6 +3006,14 @@ pre_sb() {
     rm -rf "$SA_RUN"
   }
 
+  sc_ends() {
+    # sc_ends [토큰] — 종료 행의 수, 토큰을 주면 그 토큰의 것만. 38-5c 와 38-5d 가
+    # 함께 쓰므로 어느 한 절의 본문이 아니라 여기에 둔다.
+    { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } \
+      | { if [ -n "${1:-}" ]; then grep -F "| 재킥 원인=$1 |" || true; else cat; fi; } \
+      | grep -c . || true
+  }
+
   sb_target_field() {
     # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
     # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
@@ -22136,11 +22144,6 @@ sc_new() {
   SC_PACE="$SA_ROOT/pace"
   mkdir -p "$SC_PACE/busy"
 }
-sc_ends() {  # sc_ends [토큰] — 종료 행의 수, 토큰을 주면 그 토큰의 것만
-  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } \
-    | { if [ -n "${1:-}" ]; then grep -F "| 재킥 원인=$1 |" || true; else cat; fi; } \
-    | grep -c . || true
-}
 sc_overdue() { RUN_PACE_ROOT="$SC_PACE" sag end-overdue --manifest "$SA_MANIFEST"; }
 
 sc_new '5c 관측 불가'
@@ -22201,6 +22204,71 @@ rm -rf "$SA_RUN"
 SC_PACE="$SA_ROOT/pace"; mkdir -p "$SC_PACE/busy"
 sc_overdue
 check "5c: 표면 이동 행만 있는 런에는 아무것도 쓰지 않는다" "$rc/$(sc_ends)" "0/0"
+
+# --- 38-5d. 이어받혔거나 포기된 런 — end-abandoned -----------------------------
+# --- section: 38-5d | group: sb | covers: act | anchors: 5d: 포기는 해당없음 종료 행 하나와 done 을 쓴다, 5d: 다시 불러도 종료 행은 하나다, 5d: 이어받음 행은 종료 부류와 후계 런을 싣는다, 5d: 살아 있는 shift 가 있으면 거절하고 아무것도 쓰지 않는다, 5d: 살아 있는 스테이지가 있으면 거절하고 아무것도 쓰지 않는다, 5d: 스테이지가 부르면 거절한다, 5d: shift 가 부르면 거절한다, 5d: 닫힌 집합 밖의 원인은 거절한다 ---
+#
+# 다른 런이 이어받았거나 사람이 포기한 런은 어떤 경계도 끝내지 않는다. 이 동사가
+# 그 런에 done 과 종료 행 하나를 쓰고, 재킥 원인은 해당없음, 무슨 일이었는지는
+# 종료 부류가 싣는다. 부르는 것은 좌석이나 킥오프뿐이고, 무언가 아직 도는 런은
+# 버려진 런이 아니므로 아무것도 쓰지 않고 거절한다.
+sd_new() {  # sd_new <라벨> — 마감이 미래인 sb 픽스처를 만들고 런을 연다.
+  sb_new "$1" 선머지후리뷰
+  SAH >/dev/null
+  mkdir -p "$SA_RUN"
+}
+sd_end() { sag end-abandoned --manifest "$SA_MANIFEST" "$@"; }
+sd_row() {  # sd_row — 마지막 종료 행
+  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } | tail -1
+}
+sd_done() { if [ -s "$SA_RUN/done" ]; then printf 있음; else printf 없음; fi; }
+
+sd_new '5d 포기'
+sd_end --cause 포기
+check "5d: 포기는 해당없음 종료 행 하나와 done 을 쓴다" \
+  "$rc/$(sc_ends)/$(sc_ends 해당없음)/$(sd_done)" "0/1/1/있음"
+case "$(sd_row)" in
+  *'| 종료 부류=포기 |'*) ok "5d: 그 행의 종료 부류는 포기 다" ;;
+  *) bad "5d 종료 부류" "포기 행에 종료 부류=포기 가 없다: $(sd_row)" ;;
+esac
+sd_end --cause 포기
+check "5d: 다시 불러도 종료 행은 하나다" "$rc/$(sc_ends)" "0/1"
+
+sd_new '5d 이어받음'
+sd_end --cause 이어받음 --successor 20261012-abcdef01
+check "5d: 이어받음 도 해당없음 종료 행 하나를 쓴다" "$rc/$(sc_ends 해당없음)/$(sd_done)" "0/1/있음"
+case "$(sd_row)" in
+  *'| 종료 부류=이어받음 |'*'후계 런 20261012-abcdef01'*) ok "5d: 이어받음 행은 종료 부류와 후계 런을 싣는다" ;;
+  *) bad "5d 이어받음 행" "종료 부류나 후계 런이 빠졌다: $(sd_row)" ;;
+esac
+
+sd_new '5d 산 shift'
+printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/shift.live"
+sd_end --cause 포기
+check "5d: 살아 있는 shift 가 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_new '5d 산 스테이지'
+printf '%s\n' "$$" > "$SA_RUN/SD.pid"
+cc_proc_fingerprint "$$" > "$SA_RUN/SD.start"
+check "5d: 픽스처의 스테이지가 살아 있다 (아래 단언이 공허하지 않다)" \
+  "$(cc_live_stages "$SA_RUN" 2>/dev/null || printf 0)" "1"
+sd_end --cause 포기
+check "5d: 살아 있는 스테이지가 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_new '5d 스테이지 호출'
+CC_PIPELINE_SEGMENT=SD CC_PIPELINE_STAGE_ID='SD#1' sd_end --cause 포기
+check "5d: 스테이지가 부르면 거절한다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+CC_PIPELINE_SHIFT_ID="$SA_ID#1" sd_end --cause 포기
+check "5d: shift 가 부르면 거절한다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_end --cause 완료
+check "5d: 닫힌 집합 밖의 원인은 거절한다" "$rc/$(sc_ends)/$(sd_done)" "2/0/없음"
+sd_end --cause 포기 --successor 20261012-abcdef01
+check "5d: 후계 런은 이어받음 에만 붙는다" "$rc/$(sc_ends)" "2/0"
+sd_end --cause 이어받음 --successor "$SA_ID"
+check "5d: 후계 런이 이 런 자신이면 거절한다" "$rc/$(sc_ends)" "2/0"
+sag end-overdue --manifest "$SA_MANIFEST" --cause 포기
+check "5d: --cause 는 다른 동사에 붙지 않는다" "$rc/$(sc_ends)" "2/0"
 
 # --- 38-6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
 # --- section: 38-6 | group: sb | covers: act | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다 ---

@@ -52,10 +52,12 @@
 # hardcoded to the watcher, so a new script is structurally invisible to it, and
 # this file does not pretend otherwise.
 #
-# AND THE POLLER'S BUDGET IS NOT A NUMBER OF SECONDS. It is the run's three
-# exits — `done`, the directory going away, and the shared terminal predicate. A
-# seconds budget would be a twelfth threshold on a tree that already carries six
-# the pinning lint cannot see.
+# AND THE POLLER'S BUDGET IS NOT A NUMBER OF SECONDS OF ITS OWN. It is the run's
+# four exits — `done`, the directory going away, the shared terminal predicate,
+# and the shared idle predicate. The idle predicate does read a number of
+# seconds, but that number is `CC_RUN_IDLE_EXIT_SECONDS` in `liveness.sh`, the
+# one the watcher reads too and the pinning lint holds; a value declared here
+# would be a threshold that lint cannot see.
 #
 # THE REQUIRED-SET RULE IS DUPLICATED FROM THE DRIVER, AND THE REAL REASON IS NOT
 # "IT CANNOT BE SOURCED". `run.sh` has a source-only seam and other scripts in
@@ -74,7 +76,7 @@
 #             [--interval <sec>] [--once]
 #
 # Exit codes:
-#   0 — ran to one of the run's three exits
+#   0 — ran to one of the run's four exits
 #   2 — bad arguments
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`.
@@ -485,10 +487,10 @@ release_pid() {
 }
 
 run_is_over() {
-  # THE THREE EXITS, and this script is born with all of them. `feed.sh` has two
-  # and gets away with it because `Monitor` owns its lifetime and `feed.lock.d`
-  # reclaims duplicates; this process has neither, so it inherits the watcher's
-  # exposure and the third exit is not optional.
+  # THE FOUR EXITS. `feed.sh` has two and gets away with it because `Monitor`
+  # owns its lifetime and `feed.lock.d` reclaims duplicates; this process has
+  # neither, so it inherits the watcher's exposure and the exits past the first
+  # two are not optional.
   [ -f "$RUN_DIR/done" ] && return 0
   # "NOT YET CREATED" IS NOT "WENT AWAY". The kickoff starts this before the
   # router's first gate call, and that call is what creates the run directory —
@@ -512,6 +514,14 @@ run_is_over() {
   # not read that argument at all, and declaring one here would be the twelfth
   # unpinned threshold in this tree.
   [ "$(cc_run_state "$RUN_DIR" "$LEDGER")" = "종단" ] && return 0
+  # A RUN THAT WAITS FOR NOBODY, judged by the predicate and the threshold the
+  # watcher uses, so the two processes of one run leave at the same moment.
+  # The run stays open; no `done` is written here.
+  if cc_run_idle_exit "$RUN_DIR" "" "$LEDGER"; then
+    printf 'checks: 유휴 %s초 — 살아 있는 교대·스테이지도, 열린 승인도, 답 없는 정지 기록도 없어 멈춥니다. 런은 열린 채 남습니다\n' \
+      "$CC_RUN_IDLE_EXIT_SECONDS" >&2
+    return 0
+  fi
   return 1
 }
 
