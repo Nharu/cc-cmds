@@ -16191,9 +16191,25 @@ gate_sibling_record_write_guard() {
   # where the element naming the directory carries no suffix and the element
   # carrying the suffix is the source. An act that names the manifest directory
   # itself beside any record-suffixed name — or the grant directory beside any
-  # `.md` — is refused. RESIDUAL: an ancestor of either directory as the
-  # destination (`cp -R ./pipeline-run <docs>/`) is not refused here; `docs/`
-  # is a directory ordinary writes name.
+  # `.md` — is refused.
+  #
+  # A LINK MADE BEFORE THE WRITE IS FOLLOWED, AND `ln` IS READ FROM THE LINK'S
+  # DIRECTORY. Measured on the spellings above alone: `cp /dev/null sub/L` and
+  # `tee -a sub/L` through a link `sub/L` → `../R8.plan.md` returned 0, so did
+  # a `cp` through a link to the grant directory's record, and so did the `ln`
+  # that made the link — the parent test looks at the directory the link sits
+  # in, and a name with neither suffix was dropped before it. A final component
+  # that is a link is now judged by the file it leads to
+  # (`gate_sibling_target_hit`), a chain the walk cannot finish is refused, and
+  # an `ln` whose target text lands on a record is refused the way the pacing
+  # guard refuses one into its root (`gate_ln_operands`).
+  #
+  # RESIDUAL: an ancestor of either directory as the destination (`cp -R
+  # ./pipeline-run <docs>/`) is not refused here, because `docs/` is a
+  # directory ordinary writes name; neither is a path assembled by a `cd`
+  # inside a wrapper, or a link swapped between this check and the act. The
+  # edit tools are the hook's to refuse, and its guard keys on this run's own
+  # files only.
   local mdir="$1" mdirp="$2"; shift 2
   local gdir='' gdirp='' a b ap ad argv0 joinedn gdirn gdirpn cwd i x
   local rec to_mdir=0 to_gdir=0 has_rec=0 has_md=0
@@ -16258,7 +16274,9 @@ gate_sibling_record_write_guard() {
       read -r -a raw <<< "$x"
       for b in ${raw[@]+"${raw[@]}"}; do
         case "$b" in */*) continue ;; esac
-        if gate_record_suffix "$b"; then base_c[${#base_c[@]}]=$b; fi
+        if gate_record_suffix "$b" || [ -L "$cwd/$b" ]; then
+          base_c[${#base_c[@]}]=$b
+        fi
       done
     else
       base_c[0]=$a
@@ -16277,6 +16295,18 @@ gate_sibling_record_write_guard() {
       /*) ap="$a" ;;
       *) ap="$cwd/$a" ;;
     esac
+    # A FINAL COMPONENT THAT IS A LINK names the record it leads to, not
+    # itself: `sub/L` made earlier as `../R8.plan.md` carries neither suffix
+    # nor directory, so every test below passed it while `cp` and `tee -a`
+    # wrote the sibling's plan. `-L` is a builtin, so only a link costs forks.
+    if [ -L "$ap" ]; then
+      i=0
+      gate_sibling_target_hit "$ap" "$mdirp" "$gdirp" || i=$?
+      if [ "$i" = 0 ]; then gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"; fi
+      if [ "$i" = "$GATE_LEAF_UNRESOLVED" ]; then
+        gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+    fi
     # THE DIRECTORY ITSELF AS A DESTINATION, remembered and judged after every
     # candidate is seen — the record-suffixed source may come before or after.
     if [ -d "$ap" ]; then
@@ -16312,6 +16342,30 @@ gate_sibling_record_write_guard() {
   fi
   if [ "$to_gdir" = 1 ] && [ "$has_md" = 1 ]; then
     gate_sibling_record_refuse "$gdir"; return "$GATE_EXIT_RULE"
+  fi
+  # THE LINK ITSELF, its target text read from the link's own directory, the
+  # way the pacing guard's link arm reads it: `ln -s ../R8.plan.md <dir>/sub/L`
+  # names, against the act's directory, no record at all.
+  if gate_ln_operands "$@"; then
+    for a in "${GATE_LN_OPS[@]}"; do
+      for b in "${GATE_LN_BASES[@]}"; do
+        case "$a" in
+          /*) ap="$a" ;;
+          *) case "$b" in
+               /*) ap="$b/$a" ;;
+               *) ap="$cwd/$b/$a" ;;
+             esac ;;
+        esac
+        i=0
+        gate_sibling_target_hit "$ap" "$mdirp" "$gdirp" || i=$?
+        if [ "$i" = 0 ]; then
+          gate_sibling_record_refuse "ln $a (from $b)"; return "$GATE_EXIT_RULE"
+        fi
+        if [ "$i" = "$GATE_LEAF_UNRESOLVED" ]; then
+          gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+        fi
+      done
+    done
   fi
   return 0
 }
@@ -16530,10 +16584,9 @@ gate_pace_link_guard() {
   # and the next act wrote the backlog through `a/b`. The write itself is now
   # refused by following the link, and this refuses the link in the first
   # place: a stage has no reason to point anything into the dispatcher's
-  # directory. Every operand is tried against the directory of the last
-  # operand, against the last operand itself (a directory receives the link
-  # inside it) and against a `-t`/`--target-directory` value.
-  local base="$1" a last t rc i
+  # directory. The operands and the directories they are read from come from
+  # `gate_ln_operands`, which the sibling record guard reads them from too.
+  local base="$1" a t rc i
   local -a roots bases ops
   shift
   roots=()
@@ -16541,29 +16594,8 @@ gate_pace_link_guard() {
     roots[${#roots[@]}]=$1; shift
   done
   [ "$#" -gt 0 ] && shift
-  [ "$#" -ge 1 ] || return 0
-  case "${1##*/}" in
-    ln|gln) ;;
-    *) return 0 ;;
-  esac
-  shift
-  bases=(); ops=(); t=""
-  while [ "$#" -gt 0 ]; do
-    a="$1"; shift
-    if [ -n "$t" ]; then bases[${#bases[@]}]=$a; t=""; continue; fi
-    case "$a" in
-      --target-directory=*) bases[${#bases[@]}]=${a#*=} ;;
-      --target-directory|-t) t=1 ;;
-      --) ;;
-      -t?*) bases[${#bases[@]}]=${a#-t} ;;
-      -*) ;;
-      *) ops[${#ops[@]}]=$a ;;
-    esac
-  done
-  [ "${#ops[@]}" -ge 1 ] || return 0
-  last=${ops[$((${#ops[@]} - 1))]}
-  bases[${#bases[@]}]=$last
-  bases[${#bases[@]}]=$(dirname "$last")
+  gate_ln_operands "$@" || return 0
+  ops=("${GATE_LN_OPS[@]}"); bases=("${GATE_LN_BASES[@]}")
   i=0
   while [ "$i" -lt "${#bases[@]}" ]; do
     bases[$i]=$(gate_lexical_abs "${bases[$i]}" "$base")
@@ -16582,6 +16614,74 @@ gate_pace_link_guard() {
     done
   done
   return 0
+}
+
+gate_ln_operands() {
+  # gate_ln_operands <argv...> — rc 0 when argv0 is `ln` or `gln` with at least
+  # one operand; the operands are left in `GATE_LN_OPS` and the directories a
+  # link's target text is read from in `GATE_LN_BASES`, both as spelled.
+  #
+  # Every operand is tried against the directory of the last operand, against
+  # the last operand itself (a directory receives the link inside it) and
+  # against a `-t`/`--target-directory` value — the operand that is the source
+  # is not told apart from the one that is the link, so both are tried.
+  local a last t=""
+  GATE_LN_OPS=(); GATE_LN_BASES=()
+  [ "$#" -ge 1 ] || return 1
+  case "${1##*/}" in
+    ln|gln) ;;
+    *) return 1 ;;
+  esac
+  shift
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
+    if [ -n "$t" ]; then GATE_LN_BASES[${#GATE_LN_BASES[@]}]=$a; t=""; continue; fi
+    case "$a" in
+      --target-directory=*) GATE_LN_BASES[${#GATE_LN_BASES[@]}]=${a#*=} ;;
+      --target-directory|-t) t=1 ;;
+      --) ;;
+      -t?*) GATE_LN_BASES[${#GATE_LN_BASES[@]}]=${a#-t} ;;
+      -*) ;;
+      *) GATE_LN_OPS[${#GATE_LN_OPS[@]}]=$a ;;
+    esac
+  done
+  [ "${#GATE_LN_OPS[@]}" -ge 1 ] || return 1
+  last=${GATE_LN_OPS[$((${#GATE_LN_OPS[@]} - 1))]}
+  GATE_LN_BASES[${#GATE_LN_BASES[@]}]=$last
+  GATE_LN_BASES[${#GATE_LN_BASES[@]}]=$(dirname "$last")
+  return 0
+}
+
+gate_sibling_target_hit() {
+  # gate_sibling_target_hit <absolute path> <manifest dir, physical> <grant dir,
+  # physical or empty> — rc 0 when the path, or the file its final link leads
+  # to, is a sibling run's frozen record: a record-suffixed name directly in the
+  # manifest directory, a `.md` directly in the grant directory, or any `.md`
+  # under a `pipeline-grant/` directory. `GATE_LEAF_UNRESOLVED` when the final
+  # link is a chain the walk cannot finish; 1 otherwise.
+  #
+  # The parent is compared with `-d` and `-ef`, which the kernel answers, so a
+  # symlinked directory and a `..` after one inside the path resolve the way
+  # the write would. Only the final component needs following by hand, and
+  # `gate_leaf_spelling` is the walk the pacing guard follows it with — a link
+  # to a record that does not exist yet still names it, because the walk stops
+  # at the first name that is not a link.
+  local p="$1" mp="$2" gp="$3" s d
+  for s in "$p" "@leaf"; do
+    if [ "$s" = "@leaf" ]; then
+      [ -L "$p" ] || return 1
+      s=$(gate_leaf_spelling "$p") || return "$GATE_LEAF_UNRESOLVED"
+      [ -n "$s" ] || return 1
+    fi
+    if gate_nocase_glob "/$s" '*/pipeline-grant/*.md'; then return 0; fi
+    d=${s%/*}
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    if gate_record_suffix "$s" && [ "$d" -ef "$mp" ]; then return 0; fi
+    if [ -n "$gp" ] && [ "$d" -ef "$gp" ] && gate_nocase_glob "$s" '*.md'; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 gate_pace_ancestor_guard() {

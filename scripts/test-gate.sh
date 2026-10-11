@@ -15097,6 +15097,67 @@ case "$sib_iw" in
     ok "형제 런 가드가 해석할 수 없는 홈 철자를 거절한다" ;;
   *) bad "형제 런 가드가 해석할 수 없는 홈 철자를 거절한다" "$sib_iw" ;;
 esac
+# A LINK PREPARED BEFORE THE WRITE, and the `ln` that prepares it. The parent
+# test looked at the directory the link sits in and a name with neither suffix
+# was dropped before it, so each of these wrote a sibling's record past the
+# guard. The link directory lives inside the manifest directory, as a stage
+# would make it, and `sib-dl` reaches it from the worktree.
+sib_lw=$(cd "$WORK" && pwd -P)
+mkdir -p "$sib_lw/sl/d" "$sib_lw/sl/pipeline-grant"
+printf 'rb\n' > "$sib_lw/sl/pipeline-grant/RB.md"
+ln -s ../R8.plan.md "$sib_lw/sl/L"
+ln -s "$sib_lw/R8.interview.md" "$sib_lw/sl/A"
+ln -s pipeline-grant/RB.md "$sib_lw/sl/G"
+ln -s L "$sib_lw/sl/L2"
+ln -s "$sib_lw/sl" "$WT/sib-dl"
+sib_rows "마지막 성분이 형제 계획으로 가는 링크(cp)" cp /dev/null "$sib_lw/sl/L"
+sib_rows "마지막 성분이 형제 계획으로 가는 링크(tee)" tee -a "$sib_lw/sl/L"
+sib_rows "아직 없는 형제 기록으로 가는 절대 링크" cp "$WORK/r3x" "$sib_lw/sl/A"
+sib_rows "인가 기록으로 가는 링크" cp /dev/null "$sib_lw/sl/G"
+sib_rows "두 단계 링크" cp "$WORK/r3x" "$sib_lw/sl/L2"
+sib_rows "작업 트리의 디렉터리 링크 뒤의 .." cp "$WORK/r3x" "$WT/sib-dl/../R8.plan.md"
+sib_rows "인터프리터 속 마지막 성분 링크" bash -c "cp /dev/null $sib_lw/sl/L"
+# The link itself: target text read from the link's own directory, two levels
+# down so the same text read from the worktree names no record.
+sib_rows "링크 위치 기준 상대 대상의 ln -s" ln -s ../../R8.plan.md "$sib_lw/sl/d/nL"
+sib_rows "-t 디렉터리 기준 상대 대상의 ln -s" ln -s -t "$sib_lw/sl/d" ../../R8.kickoff.md
+# A chain longer than the walk follows is refused rather than spelled away.
+sib_ci=0
+ln -s L "$sib_lw/sl/c0"
+while [ "$sib_ci" -lt 9 ]; do
+  ln -s "c$sib_ci" "$sib_lw/sl/c$((sib_ci + 1))"; sib_ci=$((sib_ci + 1))
+done
+sib_iw=$(sib_alone cp "$WORK/r3x" "$sib_lw/sl/c9")
+case "$sib_iw" in
+  *"symbolic link this gate could not resolve"*"rc=룰거부")
+    ok "형제 런 가드가 따라가지 못한 링크 사슬을 거절한다" ;;
+  *) bad "형제 런 가드가 따라가지 못한 링크 사슬을 거절한다" "$sib_iw" ;;
+esac
+# The neighbours pass: a link to a non-record file beside the records, a link
+# to a record-suffixed name in another directory, and `ln -s` whose target is
+# not a record.
+ln -s ../R9.notes.md "$sib_lw/sl/N"
+ln -s "$WT/R8.plan.md" "$sib_lw/sl/O"
+for spell_row in "cp $WORK/r3x $sib_lw/sl/N" "cp $WORK/r3x $sib_lw/sl/O" \
+                 "ln -s ../../R9.notes.md $sib_lw/sl/d/nN" "ln -s R8.plan.md $WT/sib-x"; do
+  read -r -a spell_argv <<< "$spell_row"
+  sib_iw=$(sib_alone "${spell_argv[@]}")
+  case "$sib_iw" in
+    "rc=0") ok "형제 기록으로 가지 않는 링크 철자는 걸리지 않는다: $spell_row" ;;
+    *) bad "형제 런 가드 오탐: $spell_row" "$sib_iw" ;;
+  esac
+done
+# Through the gate end to end: the code, the guard's wording and the bytes.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp "$WORK/r3x" "$sib_lw/sl/L"
+check "마지막 성분 링크로 형제 R8.plan.md 에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"another run's kickoff-frozen record"*) ok "그 거절은 형제 런 가드의 것이다: 마지막 성분 링크" ;;
+  *) bad "형제 런 가드 문면: 마지막 성분 링크" "$msg" ;;
+esac
+check "링크로 거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+rm -rf "$sib_lw/sl" "$WT/sib-dl"
 # Neighbours that pass: a record-suffixed file written into another directory,
 # and a non-record file copied into the manifest directory.
 for spell_row in "sed -n w$WT/R8.plan.md /dev/null" "cp $WORK/r3x $WORK/R9.notes.md" \
