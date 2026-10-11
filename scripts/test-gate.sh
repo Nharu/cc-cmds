@@ -15539,12 +15539,12 @@ case "$msg" in
   *"with no --rationale"*) ok "빠진 입력을 밝히되 축을 건너뛰지는 않는다" ;;
   *) bad "근거 부재 고지" "$msg" ;;
 esac
-gate4 act --manifest "$NM4" --kind x --target infra --segment SN1 --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(H4)" --rationale "이제 슬슬 정리하자" -- ls
-check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것이 없으므로" "$rc" "3"
+# Q2, the `act` half, runs on its own run at the end of this section: that act
+# now ENDS the run it is refused on, and this run still has a proposal, a
+# re-proposal and the excused corner ahead of it.
 
-# Q3 — AND A BOOKKEEPING ACT IS NOT REFUSED BY THAT AXIS. Q2 has just shown that
-# no rationale passes here; if the axis also covered bookkeeping, then all eleven
+# Q3 — AND A BOOKKEEPING ACT IS NOT REFUSED BY THAT AXIS. Q2 shows that no
+# rationale passes here; if the axis also covered bookkeeping, then all eleven
 # bookkeeping kinds would be refused in exactly the state where the protocol
 # requires the terminal shift to write its `handoff` row, and the morning would
 # lose the last shift's rejected alternatives whole. This suite reached the
@@ -15552,9 +15552,29 @@ check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것�
 # is why 1880 assertions passed over the refusal.
 gate4 act --manifest "$NM4" --kind handoff --target infra --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(H4)" --rationale "종단 교대의 인수인계" \
-      -- 교대=0 사유=종단 '버린 선택지=SN2 를 되살리는 길' '막힌 지점=없음' '다음 후보=없음'
+      -- 교대=0 사유=중단 '버린 선택지=SN2 를 되살리는 길' '막힌 지점=없음' '다음 후보=없음'
 check "Q3: 조건이 전부 성립해도 handoff 부기 행위는 통과한다" "$rc" "0"
 check "Q3: 그 인수인계 행이 실제로 원장에 남는다" \
+  "$( { grep -c '^- `handoff` ' "$LEDGER4" || true; } )" "1"
+
+# Q3b — `종단` BEFORE THE RUN HAS ENDED IS REFUSED, AND LEAVES NO ROW. Every
+# condition holds here, but no proposal has been accepted: there is no `done`
+# and no ending row, so a `종단` handoff would leave the watcher waiting on a
+# run nothing closes. Measured on a real night before the refusal existed.
+if [ -s "$DONE_DIR/done" ] || grep -qF '| 결정=종료 |' "$LEDGER4" 2>/dev/null; then
+  bad "Q3b 사전 조건" "done 이나 종료 행이 이미 있다 — 본 단언이 공허해진다"
+else
+  ok "Q3b 사전 조건: done 도 종료 행도 아직 없다"
+fi
+gate4 act --manifest "$NM4" --kind handoff --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 제안 전의 종단 인계" \
+      -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "Q3b: 종료 제안 전의 종단 인계는 3 으로 거부된다" "$rc" "3"
+case "$msg" in
+  *"종료 제안 없이 종단 인계를 쓸 수 없습니다"*) ok "Q3b: 거부가 종료 제안이 없다는 것을 말한다" ;;
+  *) bad "Q3b 거부 문면" "$msg" ;;
+esac
+check "Q3b: 거부된 종단 인계는 행을 남기지 않는다" \
   "$( { grep -c '^- `handoff` ' "$LEDGER4" || true; } )" "1"
 
 # AND Q3 IS EXACTLY THE SHIFT THE NOTE ABOVE PREDICTED. The drain before P is
@@ -15631,6 +15651,15 @@ if [ -n "$held_k3" ]; then
 else
   bad "다중 승인 보고" "종단 줄에 K3(…) 항목이 없다: $done_line"
 fi
+# Q3c — AND ONCE THE PROPOSAL IS ACCEPTED, `종단` IS THE TRUE REASON AND PASSES.
+# The refusal in Q3b reads the run's end marks, not the shift's word, so the
+# same handoff on the same run is taken here and leaves exactly one row.
+gate4 act --manifest "$NM4" --kind handoff --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 제안이 받아들여진 뒤의 종단 인계" \
+      -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "Q3c: 종료 제안 뒤의 종단 인계는 통과한다" "$rc" "0"
+check "Q3c: 그 종단 인계 행이 원장에 하나 남는다" \
+  "$( { grep -c '^- `handoff` .*| 사유=종단 |' "$LEDGER4" || true; } )" "1"
 # `보류` KEEPS COUNTING ONCE THE ANSWER ARRIVES, and the `done` file is where the
 # arrival becomes visible. The opposite reading was here first: the clause went
 # back to unsettled the moment its question closed, so a run a PERSON answered
@@ -15748,6 +15777,84 @@ fi
 if [ -n "$base_ter" ]; then printf '%s\n' "$base_ter" > "$DONE_DIR/surface-digest"
 else rm -f "$DONE_DIR/surface-digest"; fi
 rm -f "$DONE_DIR/done"
+
+# Q2 — THE `act` HALF, ON A RUN OF ITS OWN, AND THE REFUSAL NOW ENDS THE RUN.
+# With every condition met and nothing nameable, the act is refused with 3 as
+# Q1's `plan` is. That refusal used to say "the run terminates as satisfied" and
+# write neither `done` nor an ending row, so the watcher kept the run alive and
+# nothing could close it. Now the same refusal writes both, and the run's one
+# `ended` is raised. A separate run because ending R4 here would void every
+# proposal assertion above.
+DONE5_RUN_ID=R4Q2
+if [ "$DONE5_RUN_ID" = "$CONE_RUN_ID" ] || [ "$DONE5_RUN_ID" = "$prev_run_id" ] \
+   || [ "$DONE5_RUN_ID" = "$DONE_RUN_ID" ]; then
+  printf '31al: Q2 픽스처의 런 id 가 앞선 런과 겹친다 (%s)\n' "$DONE5_RUN_ID" >&2
+  exit 1
+fi
+NM5="$WORK/done5-plan.md"
+sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE5_RUN_ID;/" \
+    -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE5_RUN_ID/" "$NM" > "$NM5"
+sed "s/$CONE_RUN_ID/$DONE5_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE5_RUN_ID.md"
+LEDGER5="$WT/docs/pipeline-run/$DONE5_RUN_ID.md"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE5_RUN_ID"
+  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$DONE5_RUN_ID"
+} > "$LEDGER5"
+DONE5_DIR="$STATE_CONE/cc-cmds/run/$DONE5_RUN_ID"
+gate5() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+H5() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
+gate5 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H5)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "Q2 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+for q2k in K1 K2 K3; do
+  gate5 act --manifest "$NM5" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(H5)" --rationale x -- id=$q2k 상태=충족 근거="Q2 픽스처"
+  check "Q2 픽스처의 종료 절 $q2k 가 충족으로 정산된다" "$rc" "0"
+done
+gate5 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H5)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=완료 선행=없음
+check "Q2 픽스처의 세그먼트가 완료로 옮겨간다" "$rc" "0"
+# Drained for the reason drain4 gives: a boundary approval counts against
+# condition 2 and would refuse the act before it reaches the arm under test.
+D5SID="25252525-3434-5656-7878-909090909090"
+for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null \
+             | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+  aq=$(row_field "$( { grep -F '`승인`' "$LEDGER5" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+  auq_frame "$NTX/$D5SID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$D5SID" gate_inproc close --manifest "$NM5" --approval "$aid" 2>&1); rc=$?
+  check "Q2 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
+done
+if [ -e "$DONE5_DIR/done" ] || grep -qF '| 결정=종료 |' "$LEDGER5" 2>/dev/null; then
+  bad "Q2 사전 조건" "done 이나 종료 행이 이미 있다 — 본 단언이 공허해진다"
+else
+  ok "Q2 사전 조건: done 도 종료 행도 아직 없다"
+fi
+# Forked with the notifier stubbed on `PATH`, as the seat's proposal above is.
+DONE5_NLOG="$WORK/done5-notify.log"; : > "$DONE5_NLOG"
+out=$(cd "$WT" && PATH="$DONE_NBIN:$PATH" XDG_STATE_HOME="$STATE_CONE" \
+      CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_TEST_NOTIFY_LOG="$DONE5_NLOG" \
+      bash "$GATE" act --manifest "$NM5" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H5)" --rationale "이제 슬슬 정리하자" -- ls 2>&1); rc=$?
+check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것이 없으므로" "$rc" "3"
+check "Q2: 그 거절이 런을 끝내 done 을 남긴다" \
+  "$( [ -s "$DONE5_DIR/done" ] && printf 'done' || printf 'absent')" "done"
+check "Q2: 종료 조건 성립 종료 행이 하나 남는다" \
+  "$( { grep -F '| 결정=종료 |' "$LEDGER5" 2>/dev/null || true; } | { grep -F '| 기준=종료 조건 성립 |' || true; } \
+      | { grep -F '| 종료 부류=완료 |' || true; } | grep -c . || true)" "1"
+done5_i=0
+while [ "$done5_i" -lt 30 ] && ! grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" 2>/dev/null; do
+  sleep 0.1; done5_i=$((done5_i + 1))
+done
+check "Q2: 그 종단이 ended 를 한 번 울린다" \
+  "$( { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" || true; } | tr -d ' ')" "1"
 
 # --- 31am. An ineligible frame is NAMED and held, and writes nothing --------
 # --- section: 31am | group: cone | covers: act, close | anchors: 다이얼로그 취소 프레임은 닫지 않는다 (exit 5) ---
@@ -20980,10 +21087,12 @@ lc_launch() {  # lc_launch <mode> <out-dir name> — the seat launches one shift
 lc_unrec() { { cap_rows 'handoff' | grep -cF '| 사유=무기록 |' || true; }; }
 lc_unrec_row() { cap_rows 'handoff' | grep -F '| 사유=무기록 |' | tail -1; }
 lc_seat_handoff() {  # lc_seat_handoff <digest> — one bookkeeping act from the seat
+  # `중단`, not `종단`: this run has not ended and must not, because 34b and 34c
+  # go on writing to it, and the gate takes `종단` only from an ended run.
   cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra \
     --cutpoint 커밋 --surface 읽기 --snapshot-digest "$1" \
     --rationale "픽스처 — 좌석의 장부 행위" \
-    -- 교대=0 대상=infra 사유=종단 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
+    -- 교대=0 대상=infra 사유=중단 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
 }
 
 cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment LC1 \
@@ -21138,7 +21247,7 @@ for lc_i in 1 2 3; do lc_launch plain "tail$lc_i"; done
 lc_tail_last=$(row_field "$(lc_unrec_row)" '교대')
 lc_snap=$(cap_snap "$LC_SEAT" '')
 check "(g) 무기록 교대 세 번 뒤에도 마지막 실제 인계가 스냅숏에 남는다" \
-  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | last | .["사유"]')" "종단"
+  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | last | .["사유"]')" "중단"
 check "(g) 스냅숏의 실제 인계는 상한 세 개를 채운다" \
   "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | length')" "3"
 check "(g) 스냅숏의 무기록 항목은 마지막 하나뿐이고 마지막 교대의 것이다" \
@@ -22026,6 +22135,17 @@ sag end-overdue --manifest "$SA_MANIFEST"
 check "5: end-overdue 를 두 번 불러도 종료 행은 하나다" "$(sb5_end)" "1"
 check "5: 종료 행이 재킥 후보 표지를 남긴다" \
   "$( sed -n 's/^토큰=//p' "$SA_RUN/rekick-candidate" 2>/dev/null )" "마감"
+# 마감 갈래가 끝낸 런은 정말 끝난 런이다 — 종료 행과 함께 done 이 남고, 그래서
+# 그 뒤 교대의 `사유=종단` 인계는 종료 제안 없이도 받아들여진다. 종단 인계는
+# 끝난 런에서만 받으므로, 마감이 done 을 남기지 않으면 이 인계가 3 으로 선다.
+check "5: 마감 갈래가 런을 끝내 done 을 남긴다" \
+  "$( [ -s "$SA_RUN/done" ] && printf 'done' || printf 'absent')" "done"
+sag act --manifest "$SA_MANIFEST" --kind handoff --target main --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "마감으로 끝난 런의 인수인계" \
+    -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "5: 마감으로 끝난 런의 종단 인계는 통과한다" "$rc" "0"
+check "5: 그 종단 인계 행이 원장에 하나 남는다" \
+  "$( { grep -c '^- `handoff` .*| 사유=종단 |' "$SA_LEDGER" || true; } )" "1"
 
 # --- 38-5b. 천장이 선언되면 시계가 발언권을 잃고, 종단이 그 자리를 받는다 --------
 # --- section: 38-5b | group: sb | covers: act | anchors: 5b: 비용 천장이 선언되면 지난 마감이 머지를 막지 않는다 ---

@@ -17349,6 +17349,19 @@ EOF
         *) warn "the \`사유\` of a handoff row is out of vocabulary: ${hwhy:-(none)} — \`상한\` \`승인\` \`종단\` \`중단\`"
            return "$GATE_EXIT_VOCAB" ;;
       esac
+      # `종단` SAYS THE RUN HAS ENDED, SO IT IS TAKEN ONLY FROM A RUN THAT HAS.
+      # The vocabulary check alone let a shift write `사유=종단` with no accepted
+      # termination proposal behind it: the run then carried no `done`, the
+      # watcher read it as still going, and nothing would ever end it. The two
+      # marks read here are the ones the gate already treats as "the run has
+      # ended" — the `done` file and the end token of the ledger — so no third
+      # reader is introduced. Refused without a row: a shift that has not ended
+      # the run hands off with `중단`.
+      if [ "$hwhy" = "종단" ] && ! [ -s "$RUN_DIR/done" ] \
+         && [ -z "$(gate_end_token)" ]; then
+        warn "종료 제안 없이 종단 인계를 쓸 수 없습니다 — the run has neither \`done\` nor an ending row; propose termination first, or hand off with \`사유=중단\`"
+        return "$GATE_EXIT_RULE"
+      fi
       case "$hn" in
         ''|*[!0-9]*)
            warn "a handoff row needs \`교대=<정수>\` — the \`적용 이후 교대 수\` of the morning report stands on this scale"
@@ -21132,6 +21145,15 @@ gate_verb_act() {
     fi
     if ! gate_names_next_obligation "$rationale"; then
       warn "every termination condition holds, but the next obligation could not be named — the run terminates as satisfied"
+      # THE RUN IS ENDED HERE, NOT ONLY DECLARED ENDED. This arm has always said
+      # the run terminates as satisfied and then written neither `done` nor an
+      # ending row, so the watcher kept the run alive and a `사유=종단` handoff
+      # had nothing to stand on. `plan` predicts and never ends a run; an ended
+      # run is left as it is, because `gate_end_run` does nothing once `done`
+      # exists. The exit code stays 3: the act itself is still refused.
+      if [ "$verb" = "act" ] || [ "$verb" = "exec" ]; then
+        gate_end_run "종료 조건 성립" "${rationale:-다음 의무 지목 불가}" 해당없음 완료 || true
+      fi
       exit "$GATE_EXIT_RULE"
     fi
   fi
