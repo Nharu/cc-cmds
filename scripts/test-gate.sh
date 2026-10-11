@@ -15855,6 +15855,103 @@ while [ "$done5_i" -lt 30 ] && ! grep -qF -- '-title cc-cmds · 결과를 확인
 done
 check "Q2: 그 종단이 ended 를 한 번 울린다" \
   "$( { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" || true; } | tr -d ' ')" "1"
+case "$(head -n 1 "$DONE5_DIR/done" 2>/dev/null || true)" in
+  *"종단 — 종료 조건 성립 · 근거 이제 슬슬 정리하자") ok "Q2: done 첫 줄이 종료 제안의 충족 줄과 같은 꼴이다" ;;
+  *) bad "Q2 done 첫 줄" "$(head -n 1 "$DONE5_DIR/done" 2>/dev/null || true)" ;;
+esac
+
+# Q2j — THE SAME REFUSAL WITH A JUDGMENT QUESTION STILL OPEN. Condition 2 counts
+# act approvals only and condition 10 counts a held clause settled, so this state
+# is all-met too, and the next-obligation axis sees neither. The run must end the
+# way an accepted proposal ends it here: the first line of `done` names the open
+# question and the held clause, the ending row is not a normal completion, and
+# the disposition report is written. Ending it as satisfied left a first line no
+# later proposal can replace.
+DONE6_RUN_ID=R4Q2J
+if [ "$DONE6_RUN_ID" = "$CONE_RUN_ID" ] || [ "$DONE6_RUN_ID" = "$prev_run_id" ] \
+   || [ "$DONE6_RUN_ID" = "$DONE_RUN_ID" ] || [ "$DONE6_RUN_ID" = "$DONE5_RUN_ID" ]; then
+  printf '31al: Q2j 픽스처의 런 id 가 앞선 런과 겹친다 (%s)\n' "$DONE6_RUN_ID" >&2
+  exit 1
+fi
+NM6="$WORK/done6-plan.md"
+sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE6_RUN_ID;/" \
+    -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE6_RUN_ID/" "$NM" > "$NM6"
+sed "s/$CONE_RUN_ID/$DONE6_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE6_RUN_ID.md"
+LEDGER6="$WT/docs/pipeline-run/$DONE6_RUN_ID.md"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE6_RUN_ID"
+  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$DONE6_RUN_ID"
+} > "$LEDGER6"
+DONE6_DIR="$STATE_CONE/cc-cmds/run/$DONE6_RUN_ID"
+gate6() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+H6() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM6" 2>/dev/null | jq -r .H; }
+gate6 act --manifest "$NM6" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "Q2j 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+gate6 act --manifest "$NM6" --kind judgment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale x \
+      -- 등급=2 기준="첫째 절을 이번 런에서 정산할지" 근거="사람이 정해야 한다"
+q2j=$(row_field "$( { grep -F '`승인`' "$LEDGER6" || true; } | grep -F '절단점=판단' \
+        | grep -F '상태=대기' | tail -1)" '승인 id')
+case "$q2j" in
+  J-*) ok "Q2j 픽스처가 판단 승인 하나를 연다" ;;
+  *) bad "Q2j 판단 승인" "승인 id 가 비었다: $q2j" ;;
+esac
+gate6 act --manifest "$NM6" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(H6)" --rationale x -- id=K1 상태=보류 "근거=열린 판단 승인 $q2j"
+check "Q2j 픽스처의 종료 절 K1 이 그 물음에 대해 보류로 정산된다" "$rc" "0"
+for q2k in K2 K3; do
+  gate6 act --manifest "$NM6" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(H6)" --rationale x -- id=$q2k 상태=충족 근거="Q2j 픽스처"
+  check "Q2j 픽스처의 종료 절 $q2k 가 충족으로 정산된다" "$rc" "0"
+done
+gate6 act --manifest "$NM6" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=완료 선행=없음
+check "Q2j 픽스처의 세그먼트가 완료로 옮겨간다" "$rc" "0"
+D6SID="26262626-3434-5656-7878-909090909090"
+for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM6" 2>/dev/null \
+             | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+  aq=$(row_field "$( { grep -F '`승인`' "$LEDGER6" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+  auq_frame "$NTX/$D6SID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$D6SID" gate_inproc close --manifest "$NM6" --approval "$aid" 2>&1); rc=$?
+  check "Q2j 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
+done
+if [ -s "$DONE6_DIR/done" ] || [ -e "$DONE6_DIR/done-obligations" ] \
+   || grep -qF '| 결정=종료 |' "$LEDGER6" 2>/dev/null; then
+  bad "Q2j 사전 조건" "done 이나 처분 보고서나 종료 행이 이미 있다 — 본 단언이 공허해진다"
+else
+  ok "Q2j 사전 조건: done 도 처분 보고서도 종료 행도 아직 없다"
+fi
+gate6 act --manifest "$NM6" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale "물음은 남았지만 정리하자" -- ls
+check "Q2j: 판단 물음이 열린 all-met 에서도 근거를 준 act 가 3 이다" "$rc" "3"
+q2j_line=$(head -n 1 "$DONE6_DIR/done" 2>/dev/null || true)
+case "$q2j_line" in
+  *"종단 — 질의 잔여 1건 · 승인 $q2j · 보류 절 K1($q2j:대기) · 근거 물음은 남았지만 정리하자")
+    ok "Q2j: done 첫 줄이 열린 물음과 보류 절을 싣는다" ;;
+  *) bad "Q2j done 첫 줄" "$q2j_line" ;;
+esac
+check "Q2j: 종료 행이 하나이고 정상 완료가 아니다" \
+  "$( { grep -F '| 결정=종료 |' "$LEDGER6" 2>/dev/null || true; } | { grep -F '| 기준=종료 조건 성립 |' || true; } \
+      | { grep -F '| 재킥 원인=해당없음 |' || true; } | { grep -vF '종료 부류=' || true; } | grep -c . || true)" "1"
+check "Q2j: 종료 부류=완료 인 종료 행은 없다" \
+  "$( { grep -F '| 결정=종료 |' "$LEDGER6" 2>/dev/null || true; } | { grep -cF '종료 부류=완료' || true; } )" "0"
+check "Q2j: 처분 보고서가 쓰인다" \
+  "$( [ -s "$DONE6_DIR/done-obligations" ] && printf 'written' || printf 'absent')" "written"
+# Refused again on the ended run, the act changes neither the mark nor the row.
+gate6 act --manifest "$NM6" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale "한 번 더" -- ls
+check "Q2j: 끝난 런에서 같은 act 는 여전히 3 이다" "$rc" "3"
+check "Q2j: 그 반복이 done 첫 줄을 바꾸지 않는다" "$(head -n 1 "$DONE6_DIR/done" 2>/dev/null || true)" "$q2j_line"
+check "Q2j: 그 반복이 종료 행을 늘리지 않는다" \
+  "$( { grep -cF '| 결정=종료 |' "$LEDGER6" 2>/dev/null || true; } )" "1"
 
 # --- 31am. An ineligible frame is NAMED and held, and writes nothing --------
 # --- section: 31am | group: cone | covers: act, close | anchors: 다이얼로그 취소 프레임은 닫지 않는다 (exit 5) ---
