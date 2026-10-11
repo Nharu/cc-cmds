@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.4] - 2026-10-12
+
+정규화는 `-x=y` 철자의 옵션을 버린다. 그래서 `node --require=/tmp/e.js scripts/x.js` 나 `npm --script-shell=/tmp/s.sh run deploy` 처럼 버려진 단어가 실행 내용을 바꾸는 행위가 `node scripts/x.js`·`npm run deploy` 행과 그대로 일치했고, 불투명 상한이 풀렸다. docker 의 수리 행은 옵션 값에서 끝나 `docker build -t T` 가 컨텍스트나 뒤의 옵션이 다른 빌드까지 열었다. 이제 버려진 단어가 행의 마지막 단어 앞에 있으면 그 행은 어느 칸에서도 일치하지 않고, docker 행은 `run`·`create` 에서는 이미지까지, 그 밖의 동사에서는 행위 전체를 적어야 연다.
+
+### Fixed
+
+- **버려진 `=` 단어와 행 일치** (오케스트레이터) — 행이 담는 구간 안에서 버려진 단어가 있으면 완전 행이든 러너 행이든 일치하지 않는다. 원인은 탐침의 `Sx=dropped` 가 말하고, `Gc=dropped` 갈래는 없어진다
+- **docker 수리 행의 범위** (오케스트레이터) — `run`·`create` 의 피연산자는 이미지이고, 그 밖의 docker 동사는 피연산자 뒤에서도 옵션을 읽으므로 행위 끝까지가 피연산자다. no-row 수리 문구도 이 범위를 말한다
+
+### Changed
+
+- **스킬 문면** (`autopilot`, 무인 스킬, 사이드카 규약) — 기기전역 docker 행의 예를 `docker run --rm <image>`, `docker build -t <tag> <context>` 로 고치고, 버려진 `=` 단어가 행과의 일치를 막는다고 적는다
+
+### Post-install notes
+
+- 사전 인가 대조 규칙 파일 쪽 변경은 같은 PR 에 좌석 커밋으로 들어간다. 그 커밋 전에는 위 동작이 서지 않는다.
+
 ## [2.64.3] - 2026-10-11
 
 무인 런에서 로컬 docker 빌드·실행이나 brew 설치처럼 이 기기 전체에 닿는 행위는 기기전역으로 판정됐다. 그런데 그 칸을 여는 사전 인가 행이 없어서, 그 행위 하나에 막힌 런은 고칠 길이 없었다. 불투명 스크립트 상한을 들어 올리는 행도 park 문구가 행의 형태를 알려 주지 않았다. 그래서 스테이지가 붙여 넣은 행으로 다시 킥오프해도 같은 칸에서 멈췄다. 이제 기기전역 행위는 연산자까지 적은 사전 인가 행으로 열리고, park 마다 그 칸을 여는 행 줄이나 행으로 못 여는 이유를 찍는다.
