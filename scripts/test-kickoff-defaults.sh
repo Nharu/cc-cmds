@@ -571,6 +571,48 @@ act-allow = 형태=$1 | 사유=a" $T)" act-allow 7)" in *'러너 형태'*) echo 
 check "형태=npm run 은 러너 형태" "$(runner 'npm run')" "예"
 check "형태=go run 은 러너 형태" "$(runner 'go run')" "예"
 check "형태=gh pr 은 러너 형태가 아니다" "$(runner 'gh pr')" "아니오"
+# 인터프리터 형태는 스크립트 낱말이 실재하고 그 앞이 모두 닫힌 플래그일 때만 완전하다.
+# 코드 문자열·모듈·표준 입력, 값을 받는 옵션 뒤의 코드 플래그는 길이와 상관없이 러너다.
+for p in 'bash scripts/x.sh|아니오' 'bash -x scripts/x.sh|아니오' 'bash -c x y|예' \
+         'python3 -m pip install|예' 'bash /dev/stdin|예' 'sh -s|예' 'node -e|예' \
+         'bash -o pipefail -c echo|예' 'python3 -W ignore -c x|예' 'node -r x -e y|예' \
+         'bash --norc scripts/x.sh a|예' 'bash scripts/x.sh -c|아니오'; do
+  check "형태=${p%|*} 의 러너 판정" "$(runner "${p%|*}")" "${p#*|}"
+done
+# 러너 판정은 대조기의 판정과 같아야 한다 — 같은 형태를 행으로 두고 그 형태 자체를
+# 행위로 탐침했을 때, 러너라고 말한 형태만 `형태=완전` 이 아니다.
+probe_form() {   # probe_form <shape> → the probe's 형태= field
+  printf -- '- `사전 인가` | 형태=%s | 사유=a\n' "$1" > "$WORK/preauth.md"
+  GATE_PREAUTH_PROBE=1 GATE_MANIFEST="$WORK/preauth.md" GATE_ARGV="$1" sh "$MATCHER" 2>/dev/null \
+    | sed -n 's/^.*형태=\([^ ]*\).*$/\1/p'
+}
+for s in 'npm run' 'go run' 'gh pr' 'bash scripts/x.sh' 'bash -x scripts/x.sh' 'bash -c x y' \
+         'python3 -m pip install' 'bash /dev/stdin' 'sh -s' 'node -e' 'bash -o pipefail -c echo' \
+         'python3 -W ignore -c x' 'node -r x -e y' 'bash --norc scripts/x.sh a' 'bash scripts/x.sh -c'; do
+  f=$(probe_form "$s")
+  case "$(runner "$s"):$f" in
+    예:완전|아니오:러너|아니오:없음|*:) bad "형태=$s 의 러너 판정이 대조기의 형태 판정과 같다" "러너=$(runner "$s") 형태=$f" ;;
+    *) ok "형태=$s 의 러너 판정이 대조기의 형태 판정과 같다" ;;
+  esac
+done
+# 판정의 사본은 규칙 함수와 본문 바이트가 같다(함수 이름 줄 다음부터 닫는 중괄호까지).
+fn_body() { awk -v n="$2" '$0 ~ "^"n"\\(\\) \\{" { on = 1; next } on && /^}/ { exit } on' "$1"; }
+kd_body=$(fn_body "$HELPER" kd_closed_flags_only)
+rule_body=$(fn_body "$MATCHER" closed_flags_only)
+if [ -n "$kd_body" ] && [ "$kd_body" = "$rule_body" ]; then
+  ok "kd_closed_flags_only 의 본문이 규칙의 closed_flags_only 와 바이트로 같다"
+else
+  bad "kd_closed_flags_only 의 본문이 규칙의 closed_flags_only 와 바이트로 같다" "사본 ${#kd_body}바이트, 규칙 ${#rule_body}바이트"
+fi
+# 두 낱말을 넘는 러너 형태는 대조기의 러너 갈래가 앞 한두 낱말만 맞추므로 어떤 행위와도
+# 맞지 않는다 — 효과 줄이 그렇게 말한다.
+for s in 'bash -c x y' 'python3 -m pip install'; do
+  case "$(col "$(kf "[Nharu/cc-cmds]
+act-allow = 형태=$s | 사유=a" $T)" act-allow 7)" in
+    *'러너 형태 — 이 행은 어떤 행위와도 일치하지 않는다'*) ok "형태=$s 의 효과 줄은 어떤 행위와도 맞지 않는다고 말한다" ;;
+    *) bad "형태=$s 의 효과 줄은 어떤 행위와도 맞지 않는다고 말한다" "" ;;
+  esac
+done
 eff=$(col "$(kf 'cost-ceiling = 120' $T)" cost-ceiling 7)
 check "비용 천장 효과 줄" "$eff" "96 USD 에서 승인을 열고 기다리며, 120 USD 에서 묻지 않고 런을 끝냅니다"
 # 게이트는 자동 채택 행을 부류로만 맞추고 두 상한 칸을 읽지 않는다 — 효과 줄이

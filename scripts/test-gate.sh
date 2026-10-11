@@ -1248,10 +1248,14 @@ grep_all_q() {
   [ "${n:-0}" != "0" ]
 }
 
-passed=0; failed=0
+passed=0; failed=0; skipped=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
+# 건너뜀은 통과도 실패도 아니므로 따로 센다. 합계 줄은 바이트 모양이 고정이라
+# (`scripts/gate-census.sh`·`scripts/gate-shard.sh` 가 고정 정규식으로 읽는다) 그 앞에
+# 제 줄로 찍는다.
+skip() { skipped=$((skipped + 1)); printf 'SKIP: %s\n' "$1"; }
 
 # DEFINED HERE, not beside its later uses. Three call sites sit ~130 lines
 # above where this function used to be declared, so the shell reached them
@@ -1267,6 +1271,82 @@ graded_as() {
     *"축2=$want"*) ok "$label" ;;
     *) bad "$label" "want 축2=$want, got '$msg'" ;;
   esac
+}
+
+# `opaque_is`·`axis_is` 도 머리말에 둔다. 처음 쓰인 30b·30b-1 본문에 정의돼 있던
+# 동안에는 그 절을 고르지 않은 좁힌 실행에서 다른 절의 호출이 `command not found`
+# 로 죽었다 — 실패한 단언이 아니라 아무것도 재지 않은 실행이다.
+opaque_is() {
+  # opaque_is <불투명>/<하한>/<표지> <label> -- <argv...>
+  #
+  # 등급과 달리 이 셋은 자기 동사가 없다 — `gate_argv_opaque` 는 술어이고 하한·표지는
+  # 그 술어가 1 일 때만 도는 블록 안에 있다. 그래서 30c 의 `hist_is` 와 같은 소싱
+  # 시임으로 잰다.
+  local want="$1" label="$2"; shift 3
+  local got
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    o=$(gate_argv_opaque "$@")
+    f=$(gate_opaque_floor "$@")
+    r=${f#*	}
+    printf "%s/%s/%s" "$o" "${f%%	*}" "${r%%	*}"
+  ' _ "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+
+axis_is() {
+  # axis_is <함수> <기대> <label> -- <argv...> — 자기 동사가 없는 축을 같은 소싱
+  # 시임으로 잰다. 답의 탭은 `/` 로 바꿔 비교한다.
+  local fn="$1" want="$2" label="$3"; shift 4
+  local got
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    fn="$1"; shift
+    "$fn" "$@" | tr "\t" "/"
+  ' _ "$fn" "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+
+# 사전 인가 대조 탐침을 대조 스크립트 하나만으로 부른다.
+#   pa_probe <형태들, 줄바꿈으로 가름> <평탄화된 argv> [이름=값...]
+# 행마다 `사전 인가` 행 하나를 쓴 매니페스트를 만들고, 게이트가 넘기는 입력은 닫힌
+# 기본값(빈 표지, 파괴 신고 없음, 도달·트리거 없음)에서 시작해 인자로만 바꾼다 —
+# 이 셸이 우연히 들고 있는 값이 판정에 섞이지 않게 하기 위해서다.
+pa_probe() {
+  local rows="$1" argv="$2" m r; shift 2
+  m="$WORK/pa-manifest.md"; : > "$m"
+  while IFS= read -r r; do
+    [ -z "$r" ] || printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$r" >> "$m"
+  done <<PAEOF
+$rows
+PAEOF
+  env GATE_MARK= GATE_MARK_TRIGGER= GATE_DESTRUCTIVE=0 GATE_REACH_EFF= GATE_REACH_TRIGGERS= \
+    "$@" GATE_PREAUTH_PROBE=1 GATE_ARGV="$argv" GATE_MANIFEST="$m" \
+    /bin/sh "$CC_ORCH/rules/사전-인가-대조.sh" 2>/dev/null
+}
+# 탐침 출력의 한 필드. `제안` 은 맨 끝에서 줄 끝까지의 자유 문면이라 먼저 잘라 내고,
+# 나머지 필드는 공백으로 가른 낱말 전체로만 읽는다 — 자유 문면 안의 `P=1` 같은
+# 부분 문자열이 필드로 읽히지 않게 하는 것이 게이트가 읽는 방식과 같다. 출력에 없는
+# 필드는 `(없음)` 이다.
+pa_field() {
+  local f="$1" l="$2" w
+  if [ "$f" = "제안" ]; then
+    case "$l" in *" 제안="*) printf '%s' "${l#* 제안=}" ;; *) printf '(없음)' ;; esac
+    return 0
+  fi
+  l=${l%% 제안=*}
+  set -f
+  for w in $l; do
+    case "$w" in "$f="*) set +f; printf '%s' "${w#*=}"; return 0 ;; esac
+  done
+  set +f
+  printf '(없음)'
+}
+# pa_fields <탐침 출력> <필드 이름...> — "P=1 형태=완전 Pd=0" 꼴로 고른 필드만.
+pa_fields() {
+  local l="$1" out='' f; shift
+  for f in "$@"; do out="$out${out:+ }$f=$(pa_field "$f" "$l")"; done
+  printf '%s' "$out"
 }
 
 dotdot_spelling() {
@@ -1727,12 +1807,15 @@ refresh_bd() {
   # Recompute and rewrite the field. A test that edits the frozen set is
   # standing in for a kickoff, and a kickoff writes the digest — leaving a stale
   # one would make every later assertion fail for the same uninformative reason.
-  local bd bd_err line inserted
-  grep -v '^\*\*구속 다이제스트\*\*:' "$FX_MANIFEST" > "$FX_MANIFEST.tmp" && mv "$FX_MANIFEST.tmp" "$FX_MANIFEST"
+  #
+  # The manifest is an optional argument, `$FX_MANIFEST` by default: a section
+  # that builds its own manifest recomputes that one's digest with the same code.
+  local m="${1:-$FX_MANIFEST}" bd bd_err line inserted
+  grep -v '^\*\*구속 다이제스트\*\*:' "$m" > "$m.tmp" && mv "$m.tmp" "$m"
   bd_err="$WORK/bd.err"
   bd=$(cd "$WT" && bash -c '
     CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
-    MANIFEST="'"$FX_MANIFEST"'"
+    MANIFEST="'"$m"'"
     binding_set_bytes | shasum -a 256 | cut -d" " -f1' 2>"$bd_err")
   # A broken fixture is not a test failure, so it exits rather than counting.
   # An empty digest still produces a well-formed line — `**구속 다이제스트**: `
@@ -1753,20 +1836,20 @@ refresh_bd() {
   # is Korean, and both an `awk` string equality and a BSD/GNU `a\` append have
   # to be trusted across two platforms to place one line. A `[ "$line" = … ]`
   # test is shell string equality, which is byte comparison everywhere.
-  : > "$FX_MANIFEST.bd"
+  : > "$m.bd"
   inserted=
   while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line" >> "$FX_MANIFEST.bd"
+    printf '%s\n' "$line" >> "$m.bd"
     if [ -z "$inserted" ] && [ "$line" = "## 인가" ]; then
-      printf '**구속 다이제스트**: %s\n' "$bd" >> "$FX_MANIFEST.bd"
+      printf '**구속 다이제스트**: %s\n' "$bd" >> "$m.bd"
       inserted=1
     fi
-  done < "$FX_MANIFEST"
+  done < "$m"
   if [ -z "$inserted" ]; then
     printf 'refresh_bd: 매니페스트에 「## 인가」 절이 없어 다이제스트를 넣을 자리가 없다\n' >&2
     exit 1
   fi
-  mv "$FX_MANIFEST.bd" "$FX_MANIFEST"
+  mv "$m.bd" "$m"
 }
 refresh_bd
 
@@ -2290,7 +2373,9 @@ pre_base
 # shellcheck source=/dev/null
 . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 FX_RUN_DIR="$RD"; FX_PIDS=""
-trap 'fx_reap; rm -rf "$WORK"' EXIT
+# 실제 docker 절이 이름을 세운 경우에만 그 시험 태그를 지운다. 베이스 이미지와 빌드
+# 캐시는 남긴다 — 다음 실행이 다시 받지 않게 하기 위해서다.
+trap 'fx_reap; [ -z "${DK_TAG:-}" ] || docker image rm -f "$DK_TAG" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
 
 # Every `act` carries a snapshot digest, and the snapshot moves whenever a row
 # lands — so it is re-read immediately before each one rather than reused.
@@ -2770,8 +2855,15 @@ SAGEOF
       # 유지된다 — 슬라이스 B 집합만 `gh pr` 를 실어야 하고, 그 집합의 argv 는
       # `gh pr merge` 라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
       # 멈춘다. 그 5 는 이 집합이 재려는 어떤 거절과도 구별되지 않는다.
-      [ -z "${SA_PREAUTH_EXTRA:-}" ] || \
-        printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$SA_PREAUTH_EXTRA"
+      # 줄바꿈으로 가른 여러 형태는 한 행씩 된다. 빈 값과 한 형태는 넓히기 전과
+      # 같은 바이트를 낸다 — 기존 두 호출자의 구속 다이제스트가 움직이지 않는다.
+      if [ -n "${SA_PREAUTH_EXTRA:-}" ]; then
+        while IFS= read -r extra; do
+          [ -z "$extra" ] || printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$extra"
+        done <<SAPEOF
+$SA_PREAUTH_EXTRA
+SAPEOF
+      fi
       if [ $# -gt 0 ]; then
         printf '\n## 룰 설정\n'
         for extra in "$@"; do printf '%s\n' "$extra"; done
@@ -3483,6 +3575,91 @@ BSXSTUBEOF
     bsx_doc_frozen "$1"
     bsx_launch "$1" "$WORK/bin/bsx-design" design "$BSX_P_DESIGN" D1
     bsx_launch "$1" "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
+  }
+}
+
+# reach 그룹의 공유 도우미 — 수리 문구 표 절과 실제 docker 절이 함께 쓴다. 두 절이
+# 각자 자기 매니페스트를 만들므로, 그 매니페스트 작성기와 docker 탐지·정리가 여기
+# 있다. 좁힌 실행에서는 선택기가, 전량 직렬 실행에서는 50절 앞의 호출 줄이 부른다.
+pre_reach() {
+  [ -n "${PRE_REACH_DONE:-}" ] && return 0
+  PRE_REACH_DONE=1
+  DK_TAG=''
+
+  # rx_manifest <런 id> <사전 인가 형태들, 줄바꿈으로 가름> [<devt3 의 dev 식별자>]
+  # 세 대상을 가진 매니페스트와 그 인가 기록을 처음부터 다시 쓰고 구속 다이제스트를
+  # 다시 계산한다. 행을 더하는 것은 킥오프를 다시 하는 것과 같으므로 부분 편집이 아니다.
+  # 슬러그는 URL 로 쓰는 푸시가 맞출 값이고, `dep3` 는 배포트리거 식별자를, `devt3` 는
+  # dev 식별자를 갖는다. 결과 경로는 `RX_M` 이다.
+  rx_manifest() {
+    local rid="$1" rows="$2" devid="${3:-aws-profile:dev-acct}" r td rf rd rv
+    RX_M="$WORK/rx-$rid.md"
+    rf="- \`target\` | 별칭=front3 | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/front3 | 절단점=배포 | 말단 행위 상한=없음"
+    rd="- \`target\` | 별칭=dep3 | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/dep3 | 절단점=배포 | 말단 행위 상한=없음 | 배포트리거 식별자=branch:release,argv:deploy-image"
+    rv="- \`target\` | 별칭=devt3 | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/devt3 | 절단점=배포 | 말단 행위 상한=없음 | dev 식별자=$devid"
+    td=$(printf '%s\n%s\n%s\n' "$rf" "$rd" "$rv" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+    {
+      printf '# 파이프라인 런 매니페스트 — %s\n' "$rid"
+      printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$rid"
+      printf '     anchor-kind=repo; anchor-key=t/front3;\n'
+      printf '     owner-doc=(없음); origin-worktree=%s;\n' "$WT"
+      printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+      printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$rid"
+      printf '**앵커 종류**: repo\n**앵커 키**: t/front3\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+      printf '## 의도\n```text\n테스트\n```\n\n'
+      printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n%s\n%s\n\n' "$td" "$rf" "$rd" "$rv"
+      printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+      printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n{ "steps": [] }\n```\n\n'
+      printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
+      printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+      printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+      while IFS= read -r r; do
+        [ -z "$r" ] || printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$r"
+      done <<RXEOF
+$rows
+RXEOF
+    } > "$RX_M"
+    {
+      printf '# 파이프라인 인가 기록 — %s\n' "$rid"
+      printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$WT"
+      printf '## 인가 %s\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n' "$rid"
+      printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+      printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+      printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/%s.md\n' "$WT" "$rid"
+    } > "$WT/docs/pipeline-grant/$rid.md"
+    refresh_bd "$RX_M"
+  }
+  # rx_H <매니페스트> — 그 매니페스트에 대한 새 스냅숏 다이제스트.
+  rx_H() { cd "$WT" && gate_inproc snapshot --manifest "$1" 2>/dev/null | jq -r .H; }
+  # park 예상 줄의 칸과, 수리 줄이 붙여 넣으라고 찍은 형태. 둘 다 마지막 `gate` 호출의
+  # 전체 출력에서 읽는다.
+  rx_cell() { sed -n 's/^park 예상: 도달 판정=\([^ ]*\) .*$/\1/p' "$WORK/last-output.txt" | head -1; }
+  rx_row()  { sed -n 's/^.*repair row: - `사전 인가` | 형태=\(.*\) | 사유=park 수리(.*)$/\1/p' "$WORK/last-output.txt" | head -1; }
+
+  # docker 탐지. 데몬이 응답하지 않으면 시험 묶음이 거기서 멈추지 않도록 시간 제한을
+  # 건다 — `alarm` 은 exec 뒤에도 남아 docker 자신을 끝낸다.
+  dk_timed() { local s="$1"; shift; perl -e 'alarm shift; exec @ARGV or exit 127' "$s" "$@"; }
+  dk_ready() { command -v docker >/dev/null 2>&1 && dk_timed 30 docker info >/dev/null 2>&1; }
+  # dk_absent <id> <사유> — 엄격 모드(CI)에서는 실패, 그 밖에서는 건너뜀.
+  dk_absent() {
+    if [ "${CC_GATE_REQUIRE_DOCKER:-0}" = "1" ]; then
+      bad "$1: 도커가 필요한 실행에서 도커를 쓸 수 없다" "$2"
+    else
+      skip "$1: $2"
+    fi
+  }
+  # 앞선 실행이 남긴 시험 이미지 중 한 시간보다 오래된 것만 지운다. 같은 기계에서
+  # 동시에 도는 다른 실행의 이미지는 아직 젊으므로 건드리지 않는다. prune 동사는 쓰지
+  # 않는다 — 시험 이미지가 아닌 것까지 지운다.
+  dk_sweep() {
+    local id v e cut
+    cut=$(( $(date +%s) - 3600 ))
+    for id in $(docker image ls -q --filter label=cc-cmds.gate-selftest 2>/dev/null | sort -u); do
+      v=$(docker image inspect --format '{{index .Config.Labels "cc-cmds.gate-selftest"}}' "$id" 2>/dev/null) || continue
+      e=${v%%-*}
+      case "$e" in ''|*[!0-9]*) continue ;; esac
+      if [ "$e" -lt "$cut" ]; then docker image rm -f "$id" >/dev/null 2>&1 || true; fi
+    done
   }
 }
 
@@ -11783,24 +11960,7 @@ graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으�
 # 그 표지는 사전 인가가 읽는 값이다. 무인 스킬이 문서 쓰기마다 `lockf` 를 MUST 로
 # 요구하므로 이 접두는 예외적 형태가 아니라 파이프라인이 능동적으로 만드는 형태다.
 # 맨 철자와 답이 **같다**는 것이 단언의 형태이고, 그래서 각 양성에 맨 판이 짝으로 든다.
-opaque_is() {
-  # opaque_is <불투명>/<하한>/<표지> <label> -- <argv...>
-  #
-  # 등급과 달리 이 셋은 자기 동사가 없다 — `gate_argv_opaque` 는 술어이고 하한·표지는
-  # 그 술어가 1 일 때만 도는 블록 안에 있다. 그래서 30c 의 `hist_is` 와 같은 소싱
-  # 시임으로 잰다.
-  local want="$1" label="$2"; shift 3
-  local got
-  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
-    . "'"$GATE"'" >/dev/null 2>&1
-    o=$(gate_argv_opaque "$@")
-    f=$(gate_opaque_floor "$@")
-    r=${f#*	}
-    printf "%s/%s/%s" "$o" "${f%%	*}" "${r%%	*}"
-  ' _ "$@" 2>/dev/null)
-  check "$label" "$got" "$want"
-}
-
+# `opaque_is` 는 머리말에 있다.
 opaque_is '1/외부상태변경/' '맨 sh -c 의 네트워크 행위는 하한을 얻는다' -- sh -c 'curl -X POST https://x'
 opaque_is '1/외부상태변경/' 'lockf 접두가 그 하한을 벗겨 내지 않는다'   -- lockf -k -t 0 /tmp/l.lock sh -c 'curl -X POST https://x'
 opaque_is '1/읽기/비밀출력' '맨 sh -c 의 비밀 출력은 표지를 얻는다'     -- sh -c 'aws ssm get-parameter --with-decryption'
@@ -11892,18 +12052,7 @@ graded_as '외부상태변경' "';;' 뒤의 -exec curl 도 등급된다"        
 graded_as '외부상태변경' "음성 대조군 — {} 뒤가 아닌 '+x' 는 계속 인자다" -- find . -exec curl '+x' -X POST https://x \;
 
 # 등급 말고도 `find` 를 벗기는 축 둘. 둘 다 자기 동사가 없어 `opaque_is` 와 같은 소싱
-# 시임으로 잰다. 답의 탭은 `/` 로 바꿔 비교한다.
-axis_is() {
-  # axis_is <함수> <기대> <label> -- <argv...>
-  local fn="$1" want="$2" label="$3"; shift 4
-  local got
-  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
-    . "'"$GATE"'" >/dev/null 2>&1
-    fn="$1"; shift
-    "$fn" "$@" | tr "\t" "/"
-  ' _ "$fn" "$@" 2>/dev/null)
-  check "$label" "$got" "$want"
-}
+# 시임으로 잰다. 답의 탭은 `/` 로 바꿔 비교한다. `axis_is` 는 머리말에 있다.
 # 사다리는 첫 답이 이기는 결합자로 접혀서, primary 를 **쓴 순서**가 칸을 정했다 —
 # 무해한 커밋을 앞에 두면 `배포` 가 `커밋` 으로 다섯 칸 내려가고, 낮은 선언을 거부하는
 # 파생 칸도 함께 내려갔다. 두 순서가 같은 칸을 내는 것이 단언의 형태다.
@@ -11922,7 +12071,6 @@ axis_is gate_act_mark '비밀출력//x/.aws/credentials' 'find 안쪽의 자격 
 axis_is gate_act_mark '비밀출력/token'             'find 의 표지는 파괴보다 비밀출력이 이긴다' -- find . -exec curl -X DELETE https://x ';' -exec gh auth token ';'
 axis_is gate_act_mark '비밀출력/env'               '명령 없는 맨 env 는 그대로 비밀출력이다'   -- env
 axis_is gate_act_mark '/'                          '음성 대조군 — lockf 가 감싼 평범한 읽기는 표지가 없다' -- lockf -k /tmp/l cat README.md
-unset -f axis_is
 
 # 위 행들은 등급·하한을 함수로 잰다. 수리가 닿아야 하는 곳은 `exec` 의 판정이므로
 # 같은 argv 를 실제 게이트에 넣는다. 검색 루트는 없는 경로라 통과해도 아무것도 하지
@@ -23088,6 +23236,10 @@ else
   bad "seam 4: 다른 거부의 출력은 같다고 판정되지 않는다 (대조군)" "$seam_io2"
 fi
 
+# The `rx_*`/`dk_*` helpers are `pre_reach` in the head, called here so a full
+# serial run defines them before the first reach section.
+pre_reach
+
 # ---------------------------------------------------------------------------
 # 50. 하위 명령 등급 — 읽기인 형태가 더는 승인을 발행하지 않는다
 # --- section: 50 | group: reach | covers: grade | anchors: gh pr view 는 읽기다 ---
@@ -23125,6 +23277,40 @@ graded_as 읽기       'jq 는 읽기다'                        -- jq -r .a
 graded_as 워크트리쓰기 'env 뒤의 git merge 가 보인다'         -- env X=1 git merge seg
 graded_as 워크트리쓰기 'timeout 뒤의 git merge 가 보인다'     -- timeout 5 git merge seg
 graded_as 트리밖쓰기  'time -o 는 쓰기를 더한다'             -- time -o /tmp/t git merge seg
+# brew 는 맨 이름의 `등급 미상` 이었다. 이 기계의 설치를 바꾸는 동사는 트리 밖 쓰기이고,
+# 조회 동사는 읽기다. 목록 밖 동사는 계속 `등급 미상` 이라 신고로 판정된다.
+graded_as 트리밖쓰기  'brew install 은 트리 밖 쓰기다'        -- brew install jq
+graded_as 트리밖쓰기  'brew reinstall 도 같다'                -- brew reinstall jq
+graded_as 트리밖쓰기  'brew uninstall 도 같다'                -- brew uninstall jq
+graded_as 읽기       'brew list 는 읽기다'                   -- brew list
+# 레지스트리로 내보내는 빌드는 이 기계 밖의 상태를 바꾼다. 데몬 저장소에만 남는
+# 빌드와 같은 `트리밖쓰기` 로 매겨지면 기기전역 칸이 행 하나로 원격 푸시를 열었다.
+graded_as 외부상태변경 'docker build --push 는 외부 상태 변경이다' -- docker build -t x --push .
+graded_as 외부상태변경 'buildx 의 --output=type=registry 도 같다'  -- docker buildx build --output=type=registry .
+graded_as 외부상태변경 'buildx 의 -o type=image,push=true 도 같다' -- docker buildx build -o type=image,push=true .
+
+# docker 유도 갈래. 데몬의 이미지·컨테이너 저장소는 이 기계의 모든 런이 함께 쓰므로,
+# 등급표가 트리 밖 쓰기로 매기는 docker 형태는 명령 갈래에서 기기전역으로 오르고 트리거
+# 줄이 없다. 푸시와 다른 데몬을 지명한 철자는 오르지 않는다.
+axis_is gate_reach_derived_full '기기전역/cmd' 'docker build 는 기기전역으로 오른다'      -- front docker build -t x .
+axis_is gate_reach_derived_full '기기전역/cmd' 'docker run 도 같다'                       -- front docker run --rm x
+axis_is gate_reach_derived_full '기기전역/cmd' 'docker pull 도 같다'                      -- front docker pull a
+axis_is gate_reach_derived_full '기기전역/cmd' 'docker save -o 도 같다'                   -- front docker save -o f a
+axis_is gate_reach_derived_full '-/-'          'docker push 는 오르지 않는다'             -- front docker push x
+axis_is gate_reach_derived_full '-/-'          '-H 로 다른 데몬을 지명하면 오르지 않는다' -- front docker -H tcp://h build -t x .
+axis_is gate_reach_derived_full '-/-'          '--context 로 지명해도 같다'               -- front docker --context c run --rm x
+# 감싸개는 첫 줄의 첫 필드다 — 원장의 `유도 도달` 과 처분이 같은 값을 읽는다.
+axis_is gate_reach_derived '기기전역' '감싸개도 docker build 를 기기전역으로 낸다' -- front docker build -t x .
+axis_is gate_reach_derived '-'        '감싸개도 docker push 는 올리지 않는다'      -- front docker push x
+# 파괴 표지는 docker 쌍둥이 철자 일곱에 더해졌다. 첫 단어 `rm`·`rmi`·`prune` 만 보던
+# 동안에는 같은 삭제를 하위 명령으로 쓰면 표지가 없었다.
+axis_is gate_act_mark '파괴/rm'    'docker image rm 은 파괴다'      -- docker image rm T
+axis_is gate_act_mark '파괴/rm'    'docker container rm 도 같다'    -- docker container rm c
+axis_is gate_act_mark '파괴/prune' 'docker image prune 도 같다'     -- docker image prune -f
+axis_is gate_act_mark '파괴/prune' 'docker container prune 도 같다' -- docker container prune -f
+axis_is gate_act_mark '파괴/prune' 'docker system prune 도 같다'    -- docker system prune -f
+axis_is gate_act_mark '파괴/prune' 'docker builder prune 도 같다'   -- docker builder prune -f
+axis_is gate_act_mark '파괴/prune' 'docker buildx prune 도 같다'    -- docker buildx prune -f
 
 # ---------------------------------------------------------------------------
 # 51. 형태 미상 — 표에 있는 도구의 읽을 수 없는 형태는 선언으로 넘길 수 없다
@@ -28493,15 +28679,707 @@ p83() {
   GATE_PREAUTH_PROBE=1 GATE_ARGV="$1" GATE_MANIFEST="$m83" \
     /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh" 2>/dev/null
 }
+# 출력 전체가 아니라 세 필드를 비교한다. 탐침이 필드를 더 내도 이 절이 재는 것은
+# 그대로다.
 check "83: 여러 줄 --body 의 gh pr create 가 gh pr 형태에 맞는다" \
-  "$(p83 "gh pr create --base main --title x --body ## 요약
+  "$(pa_fields "$(p83 "gh pr create --base main --title x --body ## 요약
 본문 둘째 줄
-셋째 줄")" "P=1 형태=완전 Pd=0"
+셋째 줄")" P 형태 Pd)" "P=1 형태=완전 Pd=0"
 check "83: 대조 — 한 줄 --body 도 맞는다" \
-  "$(p83 'gh pr create --base main --title x --body 한 줄')" "P=1 형태=완전 Pd=0"
+  "$(pa_fields "$(p83 'gh pr create --base main --title x --body 한 줄')" P 형태 Pd)" "P=1 형태=완전 Pd=0"
 check "83: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다" \
-  "$(p83 "gh project item-list 1 --body x
-gh pr")" "P=0 형태=없음 Pd=0"
+  "$(pa_fields "$(p83 "gh project item-list 1 --body x
+gh pr")" P 형태 Pd)" "P=0 형태=없음 Pd=0"
+
+# ---------------------------------------------------------------------------
+# 83b. 사전 인가 탐침 — 모든 행을 훑고, 기기전역 칸이 읽는 필드를 낸다
+# --- section: 83b | group: reach | covers: - | anchors: 83b: bash scripts/x.sh 는 완전 형태다, 83b: 앞의 러너 행이 뒤의 완전 행을 가리지 않는다, 83b: 떨어진 = 단어 앞에서 끝나는 행은 기기전역을 열지 않는다, 83b: 값을 받는 옵션 뒤의 코드 플래그는 제안이 없다 ---
+#
+# 83 과 같은 탐침 하나만 부른다. 처분은 이 필드들로만 기기전역 칸을 열므로, 칸이
+# 바뀐 이유를 여기서 필드 단위로 가른다. 인터프리터 형태(#1094)는 길이가 아니라
+# 스크립트 자리의 단어와 그 앞 플래그로 가르고, 행은 첫 일치에서 멈추지 않는다.
+# 기기전역 칸의 소비 조건(`Lreq`)은 하위 명령, 그 피연산자, 유도가 낸 트리거 단어의
+# 자리 중 가장 먼 것이다.
+# ---------------------------------------------------------------------------
+pb_is() {
+  # pb_is <label> <기대> <필드들, 공백으로 가름> <행들> <argv> [이름=값...]
+  local label="$1" want="$2" fields="$3" rows="$4" argv="$5"; shift 5
+  # shellcheck disable=SC2086
+  check "$label" "$(pa_fields "$(pa_probe "$rows" "$argv" "$@")" $fields)" "$want"
+}
+# 「완전이 아니다」만 주장하는 행. 러너로 분류된 3단어 이상 형태는 오늘의 러너 접두
+# 대조(`argv0 하위명령` 이 형태로 시작하는가)로는 어떤 행위와도 일치하지 않으므로,
+# 탐침이 내는 `형태` 는 `러너` 가 아니라 `없음` 일 수 있다. 판정이 기대는 것은 그
+# 형태가 완전으로 lift 를 세우지 않는다는 것 하나다.
+pb_not_complete() {
+  # pb_not_complete <label> <행들> <argv> [이름=값...]
+  local label="$1" rows="$2" argv="$3" got; shift 3
+  got=$(pa_field 형태 "$(pa_probe "$rows" "$argv" "$@")")
+  case "$got" in 러너|없음) ok "$label" ;; *) bad "$label" "형태=$got" ;; esac
+}
+
+# #1094 결과표. 행위는 형태에 스크립트 인자 한 단어를 더한 것이다.
+pb_is "83b: bash scripts/x.sh 는 완전 형태다"                  'P=1 형태=완전' 'P 형태' 'bash scripts/x.sh'      'bash scripts/x.sh a'
+pb_is "83b: node scripts/x.js 도 같다"                         'P=1 형태=완전' 'P 형태' 'node scripts/x.js'      'node scripts/x.js a'
+pb_is "83b: python3 scripts/x.py 도 같다"                      'P=1 형태=완전' 'P 형태' 'python3 scripts/x.py'   'python3 scripts/x.py a'
+pb_is "83b: 닫힌 셸 플래그 -x 뒤의 스크립트도 완전이다"        'P=1 형태=완전' 'P 형태' 'bash -x scripts/x.sh'   'bash -x scripts/x.sh a'
+pb_is "83b: 닫힌 python3 플래그 -u 뒤의 스크립트도 완전이다"   'P=1 형태=완전' 'P 형태' 'python3 -u tools/a.py'  'python3 -u tools/a.py a'
+pb_is "83b: 목록 밖 옵션 --norc 앞의 형태는 맞지 않는다"       'P=0 형태=없음' 'P 형태' 'bash --norc scripts/x.sh' 'bash --norc scripts/x.sh a'
+pb_is "83b: node 의 옵션은 모두 목록 밖이다"                   'P=0 형태=없음' 'P 형태' 'node --inspect app.js'  'node --inspect app.js a'
+pb_not_complete "83b: 목록 밖 옵션은 단어를 더 적어도 완전이 되지 않는다" 'bash --norc scripts/x.sh a' 'bash --norc scripts/x.sh a'
+pb_not_complete "83b: 값을 받는 -o 뒤의 스크립트도 같다"       'bash -o pipefail scripts/x.sh' 'bash -o pipefail scripts/x.sh'
+pb_is "83b: /dev/fd 스크립트는 러너다"                         'P=1 형태=러너' 'P 형태' 'bash /dev/fd/63' 'bash /dev/fd/63'
+pb_is "83b: sh -s 는 러너다"                                   'P=1 형태=러너' 'P 형태' 'sh -s'   'sh -s'
+pb_is "83b: bash - 는 러너다"                                  'P=1 형태=러너' 'P 형태' 'bash -'  'bash -'
+pb_is "83b: bash -c 는 러너다"                                 'P=1 형태=러너' 'P 형태' 'bash -c' 'bash -c'
+pb_is "83b: node -e 는 러너다"                                 'P=1 형태=러너' 'P 형태' 'node -e' 'node -e'
+pb_not_complete "83b: 코드 문자열 형태는 완전이 아니다"        'bash -c brew install'  'bash -c brew install'
+pb_not_complete "83b: 모듈 형태는 완전이 아니다"               'python3 -m pip install' 'python3 -m pip install'
+pb_not_complete "83b: node -e 형태는 완전이 아니다"            'node -e x y' 'node -e x y'
+pb_not_complete "83b: 값을 받는 -o 뒤의 -c 는 완전이 아니다"   'bash -o pipefail -c echo' 'bash -o pipefail -c echo hi'
+pb_not_complete "83b: 값을 받는 -W 뒤의 -c 도 같다"            'python3 -W ignore -c x'   'python3 -W ignore -c x y'
+pb_not_complete "83b: 값을 받는 -r 뒤의 -e 도 같다"            'node -r x -e y'           'node -r x -e y z'
+pb_is "83b: 스크립트 자리 뒤의 -c 는 스크립트 인자다"          'P=1 형태=완전' 'P 형태' 'bash scripts/x.sh -c'      'bash scripts/x.sh -c'
+pb_is "83b: 셸 -e 는 코드 플래그가 아니다"                     'P=1 형태=완전' 'P 형태' 'bash -e scripts/x.sh a'    'bash -e scripts/x.sh a'
+pb_is "83b: python3 -s 도 코드 플래그가 아니다"                'P=1 형태=완전' 'P 형태' 'python3 -s tools/a.py x'   'python3 -s tools/a.py x'
+pb_is "83b: make test 는 러너 그대로다"                        'P=1 형태=러너' 'P 형태' 'make test' 'make test'
+pb_is "83b: npm run 도 러너 그대로다"                          'P=1 형태=러너' 'P 형태' 'npm run'   'npm run build'
+pb_is "83b: pytest x 도 러너 그대로다"                         'P=1 형태=러너' 'P 형태' 'pytest x'  'pytest x'
+pb_is "83b: bash scripts/x.sh 행이 x.sh.evil 을 열지 않는다"   'P=0 형태=없음' 'P 형태' 'bash scripts/x.sh' 'bash scripts/x.sh.evil'
+
+# 행 가림. 대조가 첫 일치에서 멈추던 동안에는 앞 행이 뒤 행을 가렸다.
+pb_is "83b: 앞의 러너 행이 뒤의 완전 행을 가리지 않는다" 'P=1 형태=완전' 'P 형태' \
+  "docker
+docker run --rm img:t" 'docker run --rm img:t true'
+pb_is "83b: 짧은 완전 행이 뒤의 파괴 단어 행을 가리지 않는다" 'P=1 형태=완전 Pd=1' 'P 형태 Pd' \
+  "git push
+git push --force" 'git push --force origin main' GATE_MARK=파괴 GATE_MARK_TRIGGER=--force
+
+# `=` 철자 옵션은 정규화가 버린다. 그 단어가 행이 담는 구간 안에서 떨어지면 행이
+# 무엇을 열었는지 말할 수 없으므로 기기전역 칸은 열리지 않는다.
+pb_is "83b: 떨어진 = 단어 앞에서 끝나는 행은 기기전역을 열지 않는다" 'Pg=0 Gc=dropped' 'Pg Gc' \
+  'docker run --rm img:t' 'docker run --rm --privileged=true img:t sh' GATE_REACH_EFF=기기전역
+
+# `Lreq` 예시값. 여는 형태는 Pg=1, 한 단어 짧은 형태는 완전으로 남으면 Gc=short,
+# 러너가 되면 Gc=- 다.
+pb_is "83b: docker build -t T 가 빌드를 연다"       'Pg=1'          'Pg'    'docker build -t T'  'docker build -t T .'        GATE_REACH_EFF=기기전역
+pb_is "83b: docker build -t 는 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker build -t'    'docker build -t T .'        GATE_REACH_EFF=기기전역
+pb_is "83b: docker run --rm T 가 실행을 연다"       'Pg=1'          'Pg'    'docker run --rm T'  'docker run --rm T true'     GATE_REACH_EFF=기기전역
+pb_is "83b: docker run --rm 은 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker run --rm'    'docker run --rm T true'     GATE_REACH_EFF=기기전역
+pb_is "83b: docker image rm T 가 삭제를 연다"       'Pg=1'          'Pg'    'docker image rm T'  'docker image rm T'          GATE_REACH_EFF=기기전역
+pb_is "83b: docker image rm 은 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker image rm'    'docker image rm T'          GATE_REACH_EFF=기기전역
+pb_is "83b: docker system prune 이 정리를 연다"     'Pg=1'          'Pg'    'docker system prune' 'docker system prune -f'    GATE_REACH_EFF=기기전역
+pb_is "83b: 러너가 되는 짧은 형태는 Gc 가 없다"     'Pg=0 형태=러너 Gc=-' 'Pg 형태 Gc' 'docker system' 'docker system prune -f' GATE_REACH_EFF=기기전역
+pb_is "83b: npm install -g c 가 전역 설치를 연다"   'Pg=1'          'Pg'    'npm install -g c'   'npm install -g c'           GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
+pb_is "83b: npm install -g 는 짧다"                 'Pg=0 Gc=short' 'Pg Gc' 'npm install -g'     'npm install -g c'           GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
+pb_is "83b: git config --global user.name 이 그 키를 연다" 'Pg=1'   'Pg'    'git config --global user.name' 'git config --global user.name x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=--global
+pb_is "83b: git config --global 은 짧다"            'Pg=0 Gc=short' 'Pg Gc' 'git config --global' 'git config --global user.name x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=--global
+pb_is "83b: brew install jq 가 설치를 연다"         'Pg=1'          'Pg'    'brew install jq'    'brew install jq'            GATE_REACH_EFF=기기전역
+pb_is "83b: brew install 은 짧다"                   'Pg=0 Gc=short' 'Pg Gc' 'brew install'       'brew install jq'            GATE_REACH_EFF=기기전역
+pb_is "83b: 경로 트리거는 행위 전체를 요구한다"     'Pg=1'          'Pg'    "cp a.txt $HOME/.config/ccx" "cp a.txt $HOME/.config/ccx" GATE_REACH_EFF=기기전역 "GATE_REACH_TRIGGERS=$HOME/.config/ccx"
+pb_is "83b: 경로 트리거 앞에서 끝나는 행은 짧다"    'Pg=0 Gc=short' 'Pg Gc' 'cp a.txt'           "cp a.txt $HOME/.config/ccx" GATE_REACH_EFF=기기전역 "GATE_REACH_TRIGGERS=$HOME/.config/ccx"
+pb_is "83b: 인터프리터는 스크립트 자리까지다"       'Pg=1'          'Pg'    'bash scripts/x.sh'  'bash scripts/x.sh a'        GATE_REACH_EFF=기기전역
+# 트리거 단어만 담은 형태는 다른 설정 키까지 연다 — 키를 담아야 한다. 키를 담은 행은
+# 다른 키를 쓰는 행위와 맞지 않는다(피연산자 고정의 음성 행).
+pb_is "83b: git config --global 행은 다른 키를 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
+  'git config --global' 'git config --global core.hooksPath /x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=--global
+pb_is "83b: 키를 담은 행은 다른 키를 쓰는 행위와 맞지 않는다" 'P=0 형태=없음 Gc=-' 'P 형태 Gc' \
+  'git config --global user.name' 'git config --global core.hooksPath /x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=--global
+# argv0 자리의 경로 트리거는 정규화가 basename 으로 줄이므로 충족할 수 없다.
+pb_is "83b: argv0 경로 트리거는 충족할 수 없다" 'P=1 형태=완전 Pg=0 Gc=argv0 Sx=argv0' 'P 형태 Pg Gc Sx' \
+  'cctool --x' '/usr/local/bin/cctool --x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=/usr/local/bin/cctool
+
+# 표지 없이 신고만 있는 파괴는 행위 전체를 축자로 담고 떨어진 단어가 없는 행만 연다.
+pb_is "83b: 신고만 있는 파괴는 행위 전체 행이 연다" 'Pd=1' 'Pd' \
+  'curl -X POST https://x/y' 'curl -X POST https://x/y' GATE_DESTRUCTIVE=1
+pb_is "83b: 신고만 있는 파괴는 짧은 행이 열지 않는다" 'Pd=0' 'Pd' \
+  'curl -X POST' 'curl -X POST https://x/y' GATE_DESTRUCTIVE=1
+pb_is "83b: = 단어가 떨어진 행위는 전체 행으로도 열리지 않는다" 'P=1 형태=완전 Pd=0' 'P 형태 Pd' \
+  'gh api /repos/o/r' 'gh api /repos/o/r --method=DELETE' GATE_DESTRUCTIVE=1
+
+# 원인마다 제안. 행으로 고칠 수 없는 원인은 제안이 `-` 다.
+pb_is "83b: 기기전역 행위의 제안은 Lreq 를 채운다" 'Sx=ok 제안=docker build -t T' 'Sx 제안' \
+  '' 'docker build -t T .' GATE_REACH_EFF=기기전역
+pb_is "83b: 떨어진 단어는 원 철자로 이름이 붙는다" 'Sx=dropped Sw=--privileged=true' 'Sx Sw' \
+  '' 'docker run --rm --privileged=true T true' GATE_REACH_EFF=기기전역
+pb_is "83b: 하위 명령 뒤가 빈 러너는 행을 만들 수 없다" 'Sx=none 제안=-' 'Sx 제안' \
+  '' 'make deploy' GATE_REACH_EFF=prod
+pb_is "83b: | 를 담은 단어는 행에 담을 수 없다" 'Sx=none 제안=-' 'Sx 제안' \
+  '' "cp a|b.txt $HOME/.config/ccx" GATE_REACH_EFF=기기전역 "GATE_REACH_TRIGGERS=$HOME/.config/ccx"
+pb_is "83b: 코드 문자열은 제안이 없다" 'Sx=code 제안=-' 'Sx 제안' \
+  '' 'bash -c x' GATE_REACH_EFF=prod
+pb_is "83b: 값을 받는 옵션 뒤의 코드 플래그는 제안이 없다" 'Sx=code 제안=-' 'Sx 제안' \
+  '' 'bash -o pipefail -c echo hi' GATE_REACH_EFF=prod
+pb_is "83b: python3 -W 뒤의 -c 도 같다" 'Sx=code 제안=-' 'Sx 제안' \
+  '' 'python3 -W ignore -c x' GATE_REACH_EFF=prod
+pb_is "83b: node -r 뒤의 -e 도 같다" 'Sx=code 제안=-' 'Sx 제안' \
+  '' 'node -r x -e y' GATE_REACH_EFF=prod
+pb_is "83b: argv0 경로 트리거는 제안이 없다" 'Sx=argv0 제안=-' 'Sx 제안' \
+  '' '/usr/local/bin/cctool --x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=/usr/local/bin/cctool
+pb_is "83b: prod 스크립트의 제안은 스크립트 자리까지다" 'Sx=ok 제안=bash scripts/x.sh' 'Sx 제안' \
+  '' 'bash scripts/x.sh --flag' GATE_REACH_EFF=prod
+pb_is "83b: 표지가 있으면 제안이 트리거까지 간다" 'Sx=ok 제안=terraform destroy' 'Sx 제안' \
+  'terraform' 'terraform destroy' GATE_REACH_EFF=prod GATE_MARK=파괴 GATE_MARK_TRIGGER=destroy
+
+# ---------------------------------------------------------------------------
+# 83c. 수리 문구 — park 한 칸마다 문구대로 고치면 같은 행위가 통과한다
+# --- section: 83c | group: reach | covers: plan, reach | anchors: 수리 문구 칸마다 문구대로 고치면 같은 행위가 통과한다 ---
+#
+# park 은 행위를 하지 않고 고치는 법을 말해야 한다. 그 말이 틀리면 스테이지는 찍힌
+# 행을 붙여 넣고 다시 킥오프해 같은 칸에서 다시 멈춘다. 그래서 이 절은 칸·원인마다
+# 「문구가 말한 대로 고친 뒤」를 실제로 다시 묻는다. 행위를 하지 않는 `plan` 만으로
+# 묻고, 행을 더하는 것은 이 절 자신의 매니페스트를 다시 쓰고 구속 다이제스트를 다시
+# 계산하는 것이다(킥오프와 같은 일).
+#
+# 행 줄을 찍는 칸은 그 줄을 축자로 매니페스트에 덧붙이면 같은 argv·같은 신고로
+# 통과해야 한다. 행으로 고칠 수 없는 원인은 행 줄을 찍지 않아야 하고, 행위 전체를 담은
+# 행을 더해도 같은 칸·같은 문구로 멈춰야 한다 — 그렇지 않으면 그 문구가 거짓이다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR83C="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+
+# 자기 점검. 처분이 낼 수 있는 칸(D)과 수리 함수의 갈래(A)를 gate.sh 에서 읽고, 아래
+# 표가 다루는 칸·원인(T)과 대조한다. 바꿈 이름(`dropped`·`none`·`code`·`argv0`·
+# `never`·`external`)도 A 에 넣는다 — 넣지 않으면 문구가 빠진 바꿈을 잡지 못한다.
+# EXEMPT 는 고침이 행이 아닌 칸이다: 「모른다」인 `도달미상`, 결코 열지 않는 `dev파괴`,
+# 처분 밖에서 정해지는 병합 칸 셋(60·61c 절이 묶는다).
+t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 "
+t3_T=" 기기전역/no-row 기기전역/short 기기전역/dropped 기기전역/argv0-path 기기전역/external 기기전역/never 파괴형태미명시/marked 파괴형태미명시/declared 신고등급한도/opaque 신고등급한도/code 신고등급한도/wrapper 신고등급한도/unlisted prod인가없음/- 배포트리거인가없음/- dev식별자부재/- dev식별자불일치/- dev대조불가/- 비밀출력/- push원격불일치/- 도달모순/- dropped none code argv0 never external "
+t3_D=$( { awk '/^gate_reach_disposition\(\) \{/ { on = 1 } on && /^}$/ { on = 0 } on' "$GATE" \
+            | grep -o "printf '[^\\\\']*\\\\t" | sed "s/^printf '//; s/\\\\t\$//"
+          grep -o 'GATE_PARK_CELL="[^"$]*"' "$GATE" | sed 's/^GATE_PARK_CELL="//; s/"$//'; } | sort -u | tr '\n' ' ')
+t3_A=$( { awk '/^gate_park_repair_line\(\) \{/ { on = 1 } on && /^}$/ { on = 0 } on' "$GATE" \
+            | grep -E '^    [^ ()]+/[^ ()]*\)' | sed -E 's/^ +//; s/\).*$//' | tr '|' '\n'
+          awk '/^gate_park_repair_line\(\) \{/ { on = 1 } on && /^}$/ { on = 0 } on' "$GATE" \
+            | grep -E '^ +[a-z0-9]+\) +msg="' | sed -E 's/^ +//; s/\).*$//'; } | sort -u | tr '\n' ' ')
+t3_miss=''
+for a in $t3_A; do
+  c=${a%%/*}
+  case "$t3_exempt" in *" $c "*) continue ;; esac
+  case "$a" in
+    */\*) case "$t3_T" in *" $c/"*) continue ;; esac ;;
+    *) case "$t3_T" in *" $a "*) continue ;; esac ;;
+  esac
+  t3_miss="$t3_miss $a"
+done
+check "83c: 수리 함수의 갈래가 모두 표나 면제에 있다" "${t3_miss# }" ""
+t3_miss=''
+for d in $t3_D; do
+  case "$t3_exempt" in *" $d "*) continue ;; esac
+  case " $t3_A " in *" $d/"*) continue ;; esac
+  t3_miss="$t3_miss $d"
+done
+check "83c: 처분이 내는 칸이 모두 수리 갈래나 면제에 있다" "${t3_miss# }" ""
+t3_miss=''
+for t in $t3_T; do
+  case "$t" in */*) ;; *) continue ;; esac
+  case " $t3_D " in *" ${t%%/*} "*) continue ;; esac
+  t3_miss="$t3_miss $t"
+done
+check "83c: 표의 칸이 모두 처분이 내는 칸이다" "${t3_miss# }" ""
+# 점검이 빈 집합을 비교하며 초록이 되지 않도록 — 소스를 읽는 awk 가 함수 이름을 놓치면
+# 위 셋은 모두 빈 문자열로 통과한다.
+case " $t3_D " in *" 기기전역 "*) ok "83c: 칸 집합을 소스에서 읽었다" ;; *) bad "83c: 칸 집합을 소스에서 읽었다" "$t3_D" ;; esac
+case " $t3_A " in *" 기기전역/no-row "*) ok "83c: 갈래 집합을 소스에서 읽었다" ;; *) bad "83c: 갈래 집합을 소스에서 읽었다" "$t3_A" ;; esac
+
+t3_seen=' '
+t3p() {
+  # t3p <대상> <표면> <도달> [--destructive] -- <argv...> — 이 절의 매니페스트로 plan.
+  local tg="$1" sf="$2" rr="$3" d=''; shift 3
+  [ "$1" = --destructive ] && { d=--destructive; shift; }
+  shift
+  T3_CALL="$tg|$sf|$rr|$d|$*"
+  if [ -n "$d" ]; then
+    gate plan --manifest "$RX_M" --target "$tg" --segment S3 --cutpoint push \
+      --surface "$sf" --reach "$rr" --destructive --rationale t -- "$@"
+  else
+    gate plan --manifest "$RX_M" --target "$tg" --segment S3 --cutpoint push \
+      --surface "$sf" --reach "$rr" --rationale t -- "$@"
+  fi
+}
+t3_park() {
+  # t3_park <id> <칸> <원인|-> <열쇠 구절> <행 줄 1|0> [바꿈 이름]
+  local cell; cell=$(rx_cell)
+  t3_seen="$t3_seen$2/$3 ${6:+$6 }"
+  if [ "$rc" = 11 ] && [ "$cell" = "$2" ]; then ok "83c: $1 — 칸 $2 에서 park 한다"
+  else bad "83c: $1 — 칸 $2 에서 park 한다" "rc=$rc 칸=$cell: $msg"; fi
+  case "$msg" in *"$4"*) ok "83c: $1 — 문구가 고치는 법을 말한다" ;; *) bad "83c: $1 — 문구가 고치는 법을 말한다" "$msg" ;; esac
+  if [ "$5" = 1 ]; then
+    if [ -n "$(rx_row)" ]; then ok "83c: $1 — 붙여 넣을 행 줄이 있다"; else bad "83c: $1 — 붙여 넣을 행 줄이 있다" "$msg"; fi
+  else
+    if [ -z "$(rx_row)" ]; then ok "83c: $1 — 행 줄이 없다"; else bad "83c: $1 — 행 줄이 없다" "$(rx_row)"; fi
+  fi
+}
+t3_pass() {
+  # t3_pass <id> [<고치기 전 T3_CALL>] — 고친 뒤 통과. 둘째 인자가 있으면 argv 와 신고가
+  # 바이트로 같은지도 단언한다(매니페스트만 고친 행).
+  check "83c: $1 — 수리 문구 칸마다 문구대로 고치면 같은 행위가 통과한다" "$rc" "0"
+  [ -z "${2:-}" ] || check "83c: $1 — 고치기 전후의 argv 와 신고가 같다" "$T3_CALL" "$2"
+}
+
+# 1 — 행이 없는 기기전역 빌드.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3"
+t3_park 1 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 1 — 찍힌 행은 빌드의 피연산자까지다" "$t3_r" "docker build -t img3:t"
+rx_manifest R83C "$t3_r"
+t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3"
+t3_pass 1 "$t3_c"
+
+# 2 — 같은 argv 를 런로컬로 신고해도 docker 갈래가 기기전역으로 올린다.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 런로컬 -- docker build -t img3:t "$WORK/ctx3"
+t3_park 2 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
+t3_c=$T3_CALL; rx_manifest R83C "$(rx_row)"
+t3p front3 트리밖쓰기 런로컬 -- docker build -t img3:t "$WORK/ctx3"
+t3_pass 2 "$t3_c"
+
+# 3 — 전역 git 설정.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- git config --global user.name x
+t3_park 3 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 3 — 찍힌 행은 설정 키까지다" "$t3_r" "git config --global user.name"
+rx_manifest R83C "$t3_r"
+t3p front3 트리밖쓰기 기기전역 -- git config --global user.name x
+t3_pass 3 "$t3_c"
+
+# 4 — brew 설치(등급표의 brew 갈래).
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- brew install jq
+t3_park 4 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
+t3_c=$T3_CALL; rx_manifest R83C "$(rx_row)"
+t3p front3 트리밖쓰기 기기전역 -- brew install jq
+t3_pass 4 "$t3_c"
+
+# 5 — 맞은 행이 하위 명령의 피연산자 앞에서 끝난다. 앞의 러너 행이 가리지 않는다.
+t3_base="docker
+docker run --rm"
+rx_manifest R83C "$t3_base"
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm img3:t true
+t3_park 5 기기전역 short 'stops before the words that make this act machine-global' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 5 — 찍힌 행은 실행할 이미지까지다" "$t3_r" "docker run --rm img3:t"
+rx_manifest R83C "$t3_base
+$t3_r"
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm img3:t true
+t3_pass 5 "$t3_c"
+
+# 6 — 경로 트리거 앞에서 끝나는 행.
+rx_manifest R83C 'cp'
+t3p front3 트리밖쓰기 기기전역 -- cp a.txt "$HOME/.config/ccx"
+t3_park 6 기기전역 short 'stops before the words that make this act machine-global' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 6 — 찍힌 행은 행위 전체다" "$t3_r" "cp a.txt $HOME/.config/ccx"
+rx_manifest R83C "cp
+$t3_r"
+t3p front3 트리밖쓰기 기기전역 -- cp a.txt "$HOME/.config/ccx"
+t3_pass 6 "$t3_c"
+
+# 7 — 떨어진 = 단어. 행으로는 못 고치고, 공백 철자로 고쳐 쓴 행위를 행이 연다.
+rx_manifest R83C 'docker run --rm img3:t'
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged=true img3:t true
+t3_park 7 기기전역 dropped "the matcher drops '--privileged=true'" 0 dropped
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged img3:t true
+t3_park 7-고쳐쓴행위 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
+rx_manifest R83C "docker run --rm img3:t
+$(rx_row)"
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged img3:t true
+t3_pass 7
+
+# 8 — 경로로 지명된 프로그램. 행 없이는 상한에서, 행이 있어도 기기전역에서 멈추고 둘 다
+# 행 줄이 없다.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- /usr/local/bin/cctool --x
+t3_park 8 신고등급한도 opaque 'does not appear as one word' 0 argv0
+rx_manifest R83C 'cctool --x'
+t3p front3 트리밖쓰기 기기전역 -- /usr/local/bin/cctool --x
+t3_park 8-행추가 기기전역 argv0-path 'does not appear as one word' 0
+
+# 9 — 기기전역 경로를 담은 외부 상태 변경.
+rx_manifest R83C ''
+t3p front3 외부상태변경 기기전역 -- aws s3 cp "$HOME/.aws/ccx" s3://b/k
+t3_park 9 기기전역 external 'changes state outside this machine' 0 external
+rx_manifest R83C "aws s3 cp $HOME/.aws/ccx s3://b/k"
+t3p front3 외부상태변경 기기전역 -- aws s3 cp "$HOME/.aws/ccx" s3://b/k
+t3_park 9-행추가 기기전역 external 'changes state outside this machine' 0
+
+# 9b — 불투명 스크립트를 외부 상태 변경으로 정직하게 신고. 상한의 행 문구가 외부 문구로
+# 바뀌고, 행을 더해 lift 해도 외부 칸에서 멈춘다.
+rx_manifest R83C ''
+t3p front3 외부상태변경 기기전역 -- bash scripts/publish.sh "$HOME/.config/x"
+t3_park 9b 신고등급한도 opaque 'changes state outside this machine' 0 external
+rx_manifest R83C "bash scripts/publish.sh $HOME/.config/x"
+t3p front3 외부상태변경 기기전역 -- bash scripts/publish.sh "$HOME/.config/x"
+t3_park 9b-행추가 기기전역 external 'changes state outside this machine' 0
+
+# 10 — Claude 설정 홈.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- cp a.txt "$HOME/.claude/ccx"
+t3_park 10 기기전역 never 'is under the Claude configuration home' 0 never
+rx_manifest R83C "cp a.txt $HOME/.claude/ccx"
+t3p front3 트리밖쓰기 기기전역 -- cp a.txt "$HOME/.claude/ccx"
+t3_park 10-행추가 기기전역 never 'is under the Claude configuration home' 0
+
+# 10b — 불투명 형태의 설정 홈. 상한의 행 문구가 설정 홈 문구로 바뀐다.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- npm install -g --prefix "$HOME/.claude/x" pkg
+t3_park 10b 신고등급한도 opaque 'is under the Claude configuration home' 0 never
+rx_manifest R83C "npm install -g --prefix $HOME/.claude/x pkg"
+t3p front3 트리밖쓰기 기기전역 -- npm install -g --prefix "$HOME/.claude/x" pkg
+t3_park 10b-행추가 기기전역 never 'is under the Claude configuration home' 0
+
+# 10c — 원소 안쪽의 설정 홈(바인드 마운트 원천).
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm --mount "type=bind,src=$HOME/.claude,dst=/c" img3:t true
+t3_park 10c 신고등급한도 opaque 'is under the Claude configuration home' 0 never
+rx_manifest R83C "docker run --rm --mount type=bind,src=$HOME/.claude,dst=/c img3:t true"
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm --mount "type=bind,src=$HOME/.claude,dst=/c" img3:t true
+t3_park 10c-행추가 기기전역 never 'is under the Claude configuration home' 0
+
+# 11 — 신고만 기기전역인 외부 상태 변경 푸시. 신고를 고친다.
+rx_manifest R83C ''
+t3p front3 외부상태변경 기기전역 -- git push https://example.invalid/t/front3.git HEAD
+t3_park 11 도달모순 - 'the reach you declared and where this act actually lands differ' 0
+t3p front3 외부상태변경 협업 -- git push https://example.invalid/t/front3.git HEAD
+t3_pass 11
+
+# 12 — 표 부류의 외부 상태 변경을 런로컬로 신고.
+t3p front3 외부상태변경 런로컬 -- gh issue comment 1 --body x
+t3_park 12 도달모순 - 'the reach you declared and where this act actually lands differ' 0
+t3p front3 외부상태변경 협업 -- gh issue comment 1 --body x
+t3_pass 12
+
+# 13 — 표지가 있는 파괴, 행이 트리거 앞에서 끝난다.
+rx_manifest R83C 'docker compose down'
+t3p front3 트리밖쓰기 기기전역 --destructive -- docker compose down -v
+t3_park 13 파괴형태미명시 marked 'has to carry the destructive word itself' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 13 — 찍힌 행은 파괴 단어까지다" "$t3_r" "docker compose down -v"
+rx_manifest R83C "docker compose down
+$t3_r"
+t3p front3 트리밖쓰기 기기전역 --destructive -- docker compose down -v
+t3_pass 13 "$t3_c"
+
+# 14 — prod 의 표지 있는 파괴. terraform destroy 는 배포 등급이라 push 절단점에서 묻지
+# 못하므로, 문구가 예로 드는 외부 상태 변경의 파괴로 묻는다.
+rx_manifest R83C 'aws rds'
+t3p front3 외부상태변경 prod --destructive -- aws rds delete-db-instance --db-instance-identifier x
+t3_park 14 파괴형태미명시 marked 'has to carry the destructive word itself' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 14 — 찍힌 행은 파괴 단어까지다" "$t3_r" "aws rds delete-db-instance"
+rx_manifest R83C "aws rds
+$t3_r"
+t3p front3 외부상태변경 prod --destructive -- aws rds delete-db-instance --db-instance-identifier x
+t3_pass 14 "$t3_c"
+
+# 15 — 표지 없이 신고만 있는 파괴는 행위 전체 행만 연다.
+rx_manifest R83C 'curl -X POST'
+t3p front3 외부상태변경 prod --destructive -- curl -X POST https://example.com/x
+t3_park 15 파괴형태미명시 declared 'the gate saw no destructive word' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 15 — 찍힌 행은 행위 전체다" "$t3_r" "curl -X POST https://example.com/x"
+rx_manifest R83C "curl -X POST
+$t3_r"
+t3p front3 외부상태변경 prod --destructive -- curl -X POST https://example.com/x
+t3_pass 15 "$t3_c"
+
+# 16 — prod 인가 없음.
+rx_manifest R83C ''
+t3p front3 외부상태변경 prod -- curl -X POST https://example.com/y
+t3_park 16 prod인가없음 - 'carries this shape as a' 1
+t3_c=$T3_CALL; rx_manifest R83C "$(rx_row)"
+t3p front3 외부상태변경 prod -- curl -X POST https://example.com/y
+t3_pass 16 "$t3_c"
+
+# 17 — 배포트리거 인가 없음.
+rx_manifest R83C ''
+t3p dep3 외부상태변경 배포트리거 -- git push https://example.invalid/t/dep3.git release
+t3_park 17 배포트리거인가없음 - 'carries this shape as a' 1
+t3_c=$T3_CALL; rx_manifest R83C "$(rx_row)"
+t3p dep3 외부상태변경 배포트리거 -- git push https://example.invalid/t/dep3.git release
+t3_pass 17 "$t3_c"
+
+# 18 — dev 식별자 셋. 도구의 식별자를 argv 에 적거나 대상 행의 값을 실제 값으로 둔다.
+# 부재는 이 셸의 프로필 환경을 비워야 재현된다 — 게이트는 argv 다음에 자기 환경을 읽는다.
+rx_manifest R83C ''
+AWS_PROFILE='' AWS_DEFAULT_PROFILE='' t3p devt3 외부상태변경 dev -- aws s3 cp ./a s3://b/k
+t3_park 18-부재 dev식별자부재 - 'name the identifier of that tool in the argv' 0
+AWS_PROFILE='' AWS_DEFAULT_PROFILE='' t3p devt3 외부상태변경 dev -- aws --profile dev-acct s3 cp ./a s3://b/k
+t3_pass 18-부재
+t3p devt3 외부상태변경 dev -- aws --profile other-acct s3 cp ./a s3://b/k
+t3_park 18-불일치 dev식별자불일치 - 'name the identifier of that tool in the argv' 0
+t3_c=$T3_CALL
+rx_manifest R83C '' aws-profile:other-acct
+t3p devt3 외부상태변경 dev -- aws --profile other-acct s3 cp ./a s3://b/k
+t3_pass 18-불일치 "$t3_c"
+rx_manifest R83C ''
+t3p devt3 외부상태변경 dev -- gh api -X POST /repos/o/r/dispatches
+t3_park 18-대조불가 dev대조불가 - 'name the identifier of that tool in the argv' 0
+t3_c=$T3_CALL
+rx_manifest R83C 'gh api -X POST /repos/o/r/dispatches'
+t3p devt3 외부상태변경 dev -- gh api -X POST /repos/o/r/dispatches
+t3_pass 18-대조불가 "$t3_c"
+
+# 19 — 불투명 스크립트(#1094 의 완료 기준): 찍힌 행이 상한을 들어 올린다.
+rx_manifest R83C ''
+t3p front3 외부상태변경 prod -- bash scripts/x.sh --flag
+t3_park 19 신고등급한도 opaque 'the runner with its script operand' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 19 — 찍힌 행은 스크립트까지다" "$t3_r" "bash scripts/x.sh"
+rx_manifest R83C "$t3_r"
+t3p front3 외부상태변경 prod -- bash scripts/x.sh --flag
+t3_pass 19 "$t3_c"
+
+# 19b — 닫힌 플래그 뒤의 스크립트. 제안이 스크립트 자리보다 짧지 않다.
+rx_manifest R83C ''
+t3p front3 외부상태변경 prod -- bash -x scripts/x.sh --flag
+t3_park 19b 신고등급한도 opaque 'the runner with its script operand' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 19b — 찍힌 행이 플래그와 스크립트를 담는다" "$t3_r" "bash -x scripts/x.sh"
+rx_manifest R83C "$t3_r"
+t3p front3 외부상태변경 prod -- bash -x scripts/x.sh --flag
+t3_pass 19b "$t3_c"
+
+# 20 — 행 없는 기기전역 docker 실행(#1195 의 막다른 길): 상한의 행이 기기전역도 채운다.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm img3:t true
+t3_park 20 신고등급한도 opaque 'the runner with its script operand' 1
+t3_c=$T3_CALL; t3_r=$(rx_row)
+check "83c: 20 — 찍힌 행이 기기전역의 Lreq 를 채운다" "$t3_r" "docker run --rm img3:t"
+rx_manifest R83C "$t3_r"
+t3p front3 트리밖쓰기 기기전역 -- docker run --rm img3:t true
+t3_pass 20 "$t3_c"
+
+# 21 — 전역 npm 설치.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 기기전역 -- npm install -g c
+t3_park 21 신고등급한도 opaque 'the runner with its script operand' 1
+t3_c=$T3_CALL; rx_manifest R83C "$(rx_row)"
+t3p front3 트리밖쓰기 기기전역 -- npm install -g c
+t3_pass 21 "$t3_c"
+
+# 22 — 코드 문자열. 행으로는 못 고치고, 스크립트 파일로 옮긴 행위를 그 행이 연다.
+rx_manifest R83C ''
+t3p front3 외부상태변경 prod -- bash -c 'echo hi'
+t3_park 22 신고등급한도 code 'no row opens an interpreter run' 0 code
+rx_manifest R83C 'bash scripts/x.sh'
+t3p front3 외부상태변경 prod -- bash scripts/x.sh
+t3_pass 22
+rx_manifest R83C 'bash -c echo hi'
+t3p front3 외부상태변경 prod -- bash -c 'echo hi'
+t3_park 22-행추가 신고등급한도 code 'no row opens an interpreter run' 0
+
+# 22b — 값을 받는 옵션 뒤의 코드 플래그.
+rx_manifest R83C ''
+t3p front3 외부상태변경 prod -- bash -o pipefail -c 'echo hi'
+t3_park 22b 신고등급한도 code 'no row opens an interpreter run' 0
+rx_manifest R83C 'bash -o pipefail -c echo hi'
+t3p front3 외부상태변경 prod -- bash -o pipefail -c 'echo hi'
+t3_park 22b-행추가 신고등급한도 code 'no row opens an interpreter run' 0
+
+# 22c — 하위 명령 뒤가 빈 러너.
+rx_manifest R83C ''
+t3p front3 외부상태변경 prod -- make deploy
+t3_park 22c 신고등급한도 opaque 'no complete shape can be formed' 0 none
+rx_manifest R83C 'make deploy'
+t3p front3 외부상태변경 prod -- make deploy
+t3_park 22c-행추가 신고등급한도 opaque 'no complete shape can be formed' 0
+
+# 22d — 다른 데몬을 지명한 docker 파괴는 기기전역으로 오르지 않고 dev 파괴로 남는다.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 dev --destructive -- docker -H tcp://h image rm img3:t
+check "83c: 22d — 원격 데몬의 파괴는 dev파괴다" "$rc/$(rx_cell)" "11/dev파괴"
+rx_manifest R83C 'docker -H tcp://h image rm img3:t'
+t3p front3 트리밖쓰기 dev --destructive -- docker -H tcp://h image rm img3:t
+check "83c: 22d — 행을 더해도 dev파괴다" "$rc/$(rx_cell)" "11/dev파괴"
+
+# 23 — 래퍼.
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 런로컬 -- sudo cp a b
+t3_park 23 신고등급한도 wrapper 'assembled by xargs or sudo' 0
+t3p front3 트리밖쓰기 런로컬 -- cp a b
+t3_pass 23
+rx_manifest R83C 'sudo cp a b'
+t3p front3 트리밖쓰기 런로컬 -- sudo cp a b
+t3_park 23-행추가 신고등급한도 wrapper 'assembled by xargs or sudo' 0
+
+# 24 — 등급표가 모르는 프로그램.
+rx_manifest R83C ''
+t3p front3 외부상태변경 prod -- perl x.pl
+t3_park 24 신고등급한도 unlisted "no row lifts 'perl'" 0
+rx_manifest R83C 'perl x.pl'
+t3p front3 외부상태변경 prod -- perl x.pl
+t3_park 24-행추가 신고등급한도 unlisted "no row lifts 'perl'" 0
+
+# 25 — 비밀 출력.
+rx_manifest R83C ''
+t3p front3 읽기 런로컬 -- printenv
+t3_park 25 비밀출력 - 'does not print the secret' 0
+t3p front3 읽기 런로컬 -- printenv PATH
+t3_pass 25
+
+# 26 — 대상의 원격이 아닌 곳으로의 푸시.
+t3p front3 외부상태변경 협업 -- git push https://example.invalid/t/other3.git HEAD
+t3_park 26 push원격불일치 - 'push to the same remote as the' 0
+t3p front3 외부상태변경 협업 -- git push https://example.invalid/t/front3.git HEAD
+t3_pass 26
+
+# 27 — 레지스트리로 내보내는 빌드는 기기전역이 아니다.
+t3p front3 외부상태변경 기기전역 -- docker build -t img3:t --push "$WORK/ctx3"
+t3_park 27 도달모순 - 'the reach you declared and where this act actually lands differ' 0
+
+# 28 — 유도된 배포트리거가 신고된 기기전역을 이긴다.
+t3p dep3 외부상태변경 기기전역 -- git push https://example.invalid/t/dep3.git release
+t3_park 28 배포트리거인가없음 - 'carries this shape as a' 1
+# docker 갈래에서도 배포트리거 대조가 데몬 저장소보다 먼저다. docker 실행은 불투명
+# 상한에 먼저 걸려 칸으로는 유도를 볼 수 없으므로 유도 함수에 직접 묻는다. 여러 낱말의
+# argv 를 쓰는 것이 요점이다 — 쉼표 IFS 아래에서 argv 를 이어 붙이던 대조는 이 행위를
+# 놓쳤다.
+t3_got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$0" >/dev/null 2>&1
+  MANIFEST="$1"; shift
+  gate_reach_derived_full "$@" | tr "\t" "/"' "$GATE" "$RX_M" dep3 docker run --rm deploy-image 2>/dev/null)
+check "83c: 28 — argv: 식별자에 맞는 docker 행위는 배포트리거로 유도된다" "$t3_got" "배포트리거/deploy"
+t3_got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$0" >/dev/null 2>&1
+  MANIFEST="$1"; shift
+  gate_reach_derived_full "$@" | tr "\t" "/"' "$GATE" "$RX_M" dep3 docker run --rm other-image 2>/dev/null)
+check "83c: 28 — 식별자에 맞지 않는 docker 실행은 기기전역으로 남는다" "$t3_got" "기기전역/cmd"
+
+# 표의 모든 칸·원인을 실제로 지났다 — 위 자기 점검의 T 가 행과 어긋나지 않게.
+t3_miss=''
+for t in $t3_T; do
+  case "$t3_seen" in *" $t "*) continue ;; esac
+  t3_miss="$t3_miss $t"
+done
+check "83c: 표의 칸·원인을 모두 행으로 지났다" "${t3_miss# }" ""
+
+# X — exec 도 같은 문구를 찍는다. 행위가 실제로 돌지 않도록 전역 git 설정 파일을 이
+# 절의 임시 파일로 돌려 둔다(park 하므로 돌지 않아야 하지만, 돌았다면 이 기계의 설정이
+# 아니라 그 파일이 바뀐다).
+t3_gc_prev="${GIT_CONFIG_GLOBAL-}"; t3_gc_set="${GIT_CONFIG_GLOBAL+1}"
+export GIT_CONFIG_GLOBAL="$WORK/gitconfig-83c"
+rx_manifest R83X ''
+t3p front3 트리밖쓰기 기기전역 -- git config --global user.name x
+t3_plan_rep=$(grep -F 'repair' "$WORK/last-output.txt" | sed 's/^.*\[warn\] //')
+t3_led="$WT/docs/pipeline-run/R83X.md"
+t3_n0=$( { grep -c '^- `blocked`' "$t3_led" 2>/dev/null || true; } )
+gate exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
+  --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+  --rationale t -- git config --global user.name x
+check "83c: X — exec 도 같은 칸에서 park 한다" "$rc" "11"
+t3_n1=$( { grep -c '^- `blocked`' "$t3_led" 2>/dev/null || true; } )
+check "83c: X — blocked 행이 하나 남는다" "$(( ${t3_n1:-0} - ${t3_n0:-0} ))" "1"
+check "83c: X — exec 의 수리 줄이 plan 과 바이트로 같다" \
+  "$(grep -F 'repair' "$WORK/last-output.txt" | sed 's/^.*\[warn\] //')" "$t3_plan_rep"
+if [ -s "$WORK/gitconfig-83c" ]; then bad "83c: X — park 한 행위는 돌지 않았다" "$(cat "$WORK/gitconfig-83c")"
+else ok "83c: X — park 한 행위는 돌지 않았다"; fi
+if [ -n "$t3_gc_set" ]; then export GIT_CONFIG_GLOBAL="$t3_gc_prev"; else unset GIT_CONFIG_GLOBAL; fi
+
+# Y — 자동 해소가 꺼진 모드의 경고는 칸 이름과 원인을 따로 말하고 탭을 담지 않는다.
+rx_manifest R83C ''
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3"
+t3_w=$(grep -F 'reach judgment' "$WORK/last-output.txt" | head -1)
+case "$t3_w" in
+  *"reach judgment '기기전역' (cause no-row)"*) ok "83c: Y — 꺼진 모드의 경고가 칸과 원인을 가른다" ;;
+  *) bad "83c: Y — 꺼진 모드의 경고가 칸과 원인을 가른다" "$t3_w" ;;
+esac
+case "$t3_w" in *"	"*) bad "83c: Y — 그 경고에 탭이 없다" "$t3_w" ;; *) ok "83c: Y — 그 경고에 탭이 없다" ;; esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83C"
+
+# ---------------------------------------------------------------------------
+# 83d. 실제 docker — 찍힌 세 행이 빌드·실행·삭제를 실제로 연다
+# --- section: 83d | group: reach | covers: exec, reach | anchors: 83d: 행 없는 빌드는 park 하고 아무것도 짓지 않는다, 83d: 찍힌 행으로 빌드가 돈다, 83d: 찍힌 행으로 실행이 표지 문자열을 찍는다, 83d: 찍힌 행으로 태그가 지워진다 ---
+#
+# 수리 표(83c)는 plan 만으로 묻는다. 여기서는 같은 행이 실제 데몬에 대해 exec 를 연다는
+# 것을 잰다 — 행 없는 런에서는 아무것도 짓지 않고 park 하고, 그 park 이 찍은 세 행을
+# 실은 새 런에서는 빌드·실행·삭제가 돈다. 데몬이 없으면 건너뛰고, CI 처럼
+# `CC_GATE_REQUIRE_DOCKER=1` 이면 그 건너뜀이 실패다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR83D="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+dk_base="${CC_GATE_DOCKER_BASE:-alpine:3}"
+dk_go=1
+if ! dk_ready; then
+  dk_absent 83d '도커 데몬이 없어 실제 실행 절을 건너뛴다'; dk_go=0
+elif ! docker image inspect "$dk_base" >/dev/null 2>&1 \
+     && ! dk_timed 300 docker pull -q "$dk_base" >/dev/null 2>&1; then
+  dk_absent 83d "베이스 이미지 $dk_base 를 받지 못해 실제 실행 절을 건너뛴다"; dk_go=0
+fi
+if [ "$dk_go" = 1 ]; then
+  dk_sweep
+  dk_nonce="$$-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  DK_TAG="cc-cmds-gate-selftest:$dk_nonce"
+  dk_ctx="$WORK/docker-ctx"; mkdir -p "$dk_ctx"
+  # 라벨은 `--label` 이 아니라 Dockerfile 에 둔다. 공백 철자 `--label k=v` 는 빌드의
+  # 피연산자 자리 앞 단어가 되어 행이 라벨까지 담아야 하게 만든다.
+  printf 'FROM %s\nLABEL cc-cmds.gate-selftest=%s-%s\nCMD ["echo","cc-gate-selftest-ok"]\n' \
+    "$dk_base" "$(date +%s)" "$dk_nonce" > "$dk_ctx/Dockerfile"
+
+  # 픽스처 A — docker 행이 없는 런.
+  rx_manifest RX4A ''
+  dk_led="$WT/docs/pipeline-run/RX4A.md"
+  gate exec --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+    --rationale t -- docker build -t "$DK_TAG" "$dk_ctx"
+  if [ "$rc" = 11 ] && ! docker image inspect "$DK_TAG" >/dev/null 2>&1; then
+    ok "83d: 행 없는 빌드는 park 하고 아무것도 짓지 않는다"
+  else
+    bad "83d: 행 없는 빌드는 park 하고 아무것도 짓지 않는다" "rc=$rc $msg"
+  fi
+  dk_r1=$(rx_row)
+  check "83d: 빌드의 수리 행은 태그까지다" "$dk_r1" "docker build -t $DK_TAG"
+  check "83d: 그 blocked 행의 칸이 기기전역이다" \
+    "$( { grep '^- `blocked`' "$dk_led" 2>/dev/null || true; } | grep -c '도달 판정=기기전역' || true)" "1"
+  gate plan --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 런로컬 --rationale t -- docker build -t "$DK_TAG" "$dk_ctx"
+  check "83d: 런로컬로 신고해도 docker 갈래가 park 한다" "$rc/$(rx_cell)" "11/기기전역"
+  gate plan --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 기기전역 --rationale t -- docker run --rm "$DK_TAG"
+  dk_r2=$(rx_row)
+  gate plan --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 기기전역 --destructive --rationale t -- docker image rm "$DK_TAG"
+  dk_r3=$(rx_row)
+  if [ -n "$dk_r2" ] && [ -n "$dk_r3" ]; then ok "83d: 실행과 삭제도 각자의 행을 찍는다"
+  else bad "83d: 실행과 삭제도 각자의 행을 찍는다" "run=[$dk_r2] rm=[$dk_r3]"; fi
+
+  # 픽스처 B — 세 행을 축자로 실은 새 런.
+  rx_manifest RX4B "$dk_r1
+$dk_r2
+$dk_r3"
+  dk_led="$WT/docs/pipeline-run/RX4B.md"
+  gate exec --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+    --rationale t -- docker build -t "$DK_TAG" "$dk_ctx"
+  if [ "$rc" = 0 ] && docker image inspect "$DK_TAG" >/dev/null 2>&1; then ok "83d: 찍힌 행으로 빌드가 돈다"
+  else bad "83d: 찍힌 행으로 빌드가 돈다" "rc=$rc $msg"; fi
+  gate exec --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+    --rationale t -- docker run --rm "$DK_TAG"
+  case "$rc:$(cat "$WORK/last-output.txt")" in
+    0:*cc-gate-selftest-ok*) ok "83d: 찍힌 행으로 실행이 표지 문자열을 찍는다" ;;
+    *) bad "83d: 찍힌 행으로 실행이 표지 문자열을 찍는다" "rc=$rc $msg" ;;
+  esac
+  gate exec --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 기기전역 --destructive --snapshot-digest "$(rx_H "$RX_M")" \
+    --rationale t -- docker image rm "$DK_TAG"
+  if [ "$rc" = 0 ] && ! docker image inspect "$DK_TAG" >/dev/null 2>&1; then ok "83d: 찍힌 행으로 태그가 지워진다"
+  else bad "83d: 찍힌 행으로 태그가 지워진다" "rc=$rc $msg"; fi
+  n=$( { grep -c '^- `자율 승인`' "$dk_led" 2>/dev/null || true; } )
+  if [ "${n:-0}" -ge 1 ]; then ok "83d: 통과 갈래가 자율 승인 행을 남긴다"
+  else bad "83d: 통과 갈래가 자율 승인 행을 남긴다" "n=$n"; fi
+  # 두 원장의 어느 행에도 자격 정보 모양이 없다.
+  if cat "$WT/docs/pipeline-run/RX4A.md" "$dk_led" 2>/dev/null \
+       | grep -E -q 'AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|BEGIN [A-Z ]*PRIVATE KEY'; then
+    bad "83d: 원장에 자격 정보 모양이 없다" "자격 정보 모양의 문자열이 원장에 있다"
+  else
+    ok "83d: 원장에 자격 정보 모양이 없다"
+  fi
+fi
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83D"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make
@@ -28865,5 +29743,6 @@ if [ -n "${CONE_OF_FAILURES:-}" ]; then
     bad "원뿔 유도" "${n} 건의 원뿔 행 쓰기가 거절됐다 — 그 뒤의 판정은 stale 한 원뿔을 읽었다: $(tr '\n' ' ' < "$CONE_OF_FAILURES")"
   fi
 fi
+[ "${skipped:-0}" = "0" ] || printf '\ntest-gate: skipped %d\n' "$skipped"
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

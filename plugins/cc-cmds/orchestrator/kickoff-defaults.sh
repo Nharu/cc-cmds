@@ -282,18 +282,44 @@ kd_cost_ok() {
   return 2
 }
 
-# A `형태` is a runner form when the pre-authorization matcher would match it by
-# prefix: its first word is a runner and it has no more words than the first
-# non-option operand position, measured on the form itself (2 when none). The
-# matcher measures that position on the act's argv, so this leans toward
-# marking: a form with an option in it is marked rather than missed.
+# A copy of the pre-authorization rule's `closed_flags_only`: its body, from the
+# line after the name to the closing brace, is byte-identical to the rule's, and
+# a test cuts both and compares them. It assigns `i` and `w` without `local`,
+# because the rule file is plain sh; its caller here declares them local.
+kd_closed_flags_only() {   # $1 interpreter, $2 shape, $3 script position: every word before it is a flag that changes no program source
+  i=0; set -f
+  for w in $2; do
+    i=$((i + 1))
+    { [ "$i" -ge 2 ] && [ "$i" -lt "$3" ]; } || continue
+    case "$1:$w" in
+      bash:-?*|sh:-?*|zsh:-?*) case "${w#-}" in *[!euvx]*) set +f; return 1 ;; esac ;;
+      python3:-?*) case "${w#-}" in *[!uBEIsSO]*) set +f; return 1 ;; esac ;;
+      *) set +f; return 1 ;;
+    esac
+  done
+  set +f; return 0
+}
+
+# A `형태` is a runner form when the pre-authorization matcher would treat it as
+# one. The script position is the first non-option word, measured on the form
+# itself (2 when none). An interpreter form is complete only when that word is a
+# real script word — present, not a dash word, not stdin — and every word before
+# it is a closed flag; code strings, modules and stdin stay runners whatever
+# their length. Any other runner is complete once it has more words than that
+# position.
 kd_is_runner_form() {
-  local first nwords pos
+  local first nwords pos w2 i w
   first=$(printf '%s' "$1" | awk '{ print $1; exit }')
   case "$KD_RUNNERS" in *" $first "*) ;; *) return 1 ;; esac
   nwords=$(kd_words "$1")
   pos=$(printf '%s' "$1" | awk '{ for (i = 2; i <= NF; i++) { if ($i ~ /^-/) continue; print i; exit } }')
   [ -n "$pos" ] || pos=2
+  case " bash sh zsh python3 node " in *" $first "*)
+    w2=$(printf '%s' "$1" | awk -v p="$pos" '{ print $p }')
+    case "$w2" in ''|-*|/dev/stdin|/dev/fd/*|/proc/*/fd/*|'<('*) return 0 ;; esac
+    kd_closed_flags_only "$first" "$1" "$pos" && return 1
+    return 0 ;;
+  esac
   [ "$nwords" -gt "$pos" ] && return 1
   return 0
 }
@@ -920,7 +946,15 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
     act-allow)
       KD_WIDE=1
       KD_EFF='이 접두의 행위를 승인 없이 수행합니다(이 런의 모든 대상에 적용)'
-      kd_is_runner_form "${E_ID[$i]}" && KD_EFF="$KD_EFF. 러너 형태 — 이 접두로 시작하는 비파괴 행위 전부(접두 일치)"
+      # The matcher's runner arm globs only the first one or two words, so a
+      # runner form longer than that matches nothing at all.
+      if kd_is_runner_form "${E_ID[$i]}"; then
+        if [ "$(kd_words "${E_ID[$i]}")" -gt 2 ]; then
+          KD_EFF="$KD_EFF. 러너 형태 — 이 행은 어떤 행위와도 일치하지 않는다"
+        else
+          KD_EFF="$KD_EFF. 러너 형태 — 이 접두로 시작하는 비파괴 행위 전부(접두 일치)"
+        fi
+      fi
       [ "${E_DIFF[$i]:-0}" = "1" ] && KD_EFF="$KD_EFF. 사유가 대상마다 다릅니다 — 첫 대상(${KD_TARGET[0]})의 사유를 씁니다" ;;
     apply-probe)
       KD_EFF='5c 에 적용 프로브로 미리 채우는 제안입니다 — 적용 명령과 파급 범위는 새로 묻습니다' ;;

@@ -270,10 +270,29 @@ An act carrying `--segment` runs in **that segment row's `워크트리` first**,
 **The `사전 인가` rows are the list an irreversible act is checked against**, and
 they are rows rather than a field because the set is open and each entry carries
 its own reason. `형태` is an argv **prefix** — `gh pr`, `git push`, `terraform
-apply` — matched against the first two words of the act, so a row grants a
-family of acts rather than one spelling. An external-state act with no matching
-row is **not refused**: it issues an approval and waits, because nobody being
-awake to ask is not the same fact as the answer being no.
+apply` — matched word by word against the act's normalized argv (command path
+reduced to its basename, `-x=y` words dropped), and every row is scanned, not
+only the first that matches. A row is one of two kinds. A **complete** form
+matches an act whose normalized argv begins with all of its words, so a row
+grants a family of acts rather than one spelling. A **runner** form — its first
+word is a runner (`npm`, `make`, an interpreter, …) and it does not reach past
+the script or target operand — matches only the act's first one or two words
+and opens no destructive act; an interpreter form is complete only when the word
+at the script position is a real script (not a dash word, not stdin) and every
+word before it is a closed flag, so a code string, a module or stdin keeps the
+form a runner at any length. A runner form longer than two words matches
+nothing. A `기기전역` act takes a complete row only, and only one that carries
+at least `Lreq = max(2, s, t, every trigger position)` words of the act: `s` is
+the subcommand (for a docker management group or `yarn global`, the next
+non-option word), `t` the first non-option word after it — the tag, image,
+package or config key, omitted for an interpreter — and the triggers are the
+flag and path words that made the act machine-global. `docker run --rm T true`
+is opened by `docker run --rm T`, `git config --global user.name x` by `git
+config --global user.name`. A `기기전역` act that changes external state, or that
+names a path under the Claude configuration home, is opened by no row. An
+external-state act with no matching row is **not refused**: it issues an
+approval and waits, because nobody being awake to ask is not the same fact as
+the answer being no.
 
 An act at or below `워크트리쓰기` needs no row at all — the list exists for the
 acts whose effects outlive the run directory.

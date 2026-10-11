@@ -916,39 +916,72 @@ gate_reach_derived() {
   # gate_reach_derived <alias> <argv...> — the floor argv itself proves, which RAISES a
   # declaration and never lowers one. Three values only: `-`, `기기전역` and
   # `배포트리거`. Everything finer than that is a claim about an environment,
-  # and argv cannot prove one.
+  # and argv cannot prove one. The first field of `gate_reach_derived_full`, so
+  # the ledger's `유도 도달` and the disposition read one derivation.
+  local _f; _f=$(gate_reach_derived_full "$@")
+  _f=${_f%%
+*}
+  printf '%s' "${_f%%	*}"
+}
+
+gate_reach_derived_full() {
+  # gate_reach_derived_full <alias> <argv...> — the same floor, with where it came
+  # from. The first line is `<도달>\t<유래>`, the origin being `cmd` (a command
+  # arm), `path` (a configuration path in argv), `deploy` (a deploy-trigger
+  # identifier) or `-`; every further line is one trigger word. Only flag and
+  # path triggers are emitted: the subcommand and its operand are positions the
+  # pre-authorization probe measures itself, and a word listed here is one a
+  # `사전 인가` row has to carry before the machine-global cell opens.
   local alias="$1"; shift
-  local cmd="${1##*/}" a
+  local cmd="${1##*/}" a w remote paths=''
   case "$cmd" in
     git)
       case "${2:-}" in
-        stash) case "${3:-}" in list|show) ;; *) printf '기기전역'; return 0 ;; esac ;;
+        stash) case "${3:-}" in list|show) ;; *) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
         config)
-          case " $* " in
-            *" --global "*|*" --system "*) printf '기기전역'; return 0 ;;
-          esac ;;
+          for w in "$@"; do
+            case "$w" in --global|--system) printf '기기전역\tcmd\n%s\n' "$w"; return 0 ;; esac
+          done ;;
       esac ;;
     npm|pnpm|yarn)
-      case " $* " in
-        *" -g "*|*" --global "*|*" global "*) printf '기기전역'; return 0 ;;
-      esac ;;
+      for w in "$@"; do
+        case "$w" in -g|--global|global) printf '기기전역\tcmd\n%s\n' "$w"; return 0 ;; esac
+      done ;;
     cargo|go)
-      case "${2:-}" in install) printf '기기전역'; return 0 ;; esac ;;
+      case "${2:-}" in install) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
+    # THE GRADING TABLE DECIDES, not a verb list of its own. The five verbs this
+    # arm used to name left `reinstall`, `tap`'s siblings and `services` to
+    # whatever the declaration said, while the table already knew they write
+    # outside the tree.
     brew)
-      case "${2:-}" in
-        install|upgrade|uninstall|tap|link) printf '기기전역'; return 0 ;;
-      esac ;;
+      case "$(shift; surface_of_brew "$@")" in 트리밖쓰기) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
+    docker)
+      # A deploy-trigger identifier still wins over the daemon store, and a
+      # spelling that names another daemon is not this machine's store.
+      if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거\tdeploy\n'; return 0; fi
+      remote=0
+      for w in "$@"; do
+        case "$w" in -H|-H?*|--host|--host=*|--context|--context=*) remote=1 ;; esac
+      done
+      # The daemon's image and container store is shared by every run on this
+      # machine. A push is graded 외부상태변경 and keeps its declared reach.
+      if [ "$remote" = 0 ]; then
+        case "$(shift; surface_of_docker "$@")" in 트리밖쓰기) printf '기기전역\tcmd\n'; return 0 ;; esac
+      fi ;;
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
+  # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
   for a in "$@"; do
     case "$a" in
       "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*|/usr/local/*|/opt/homebrew/*)
-        printf '기기전역'; return 0 ;;
+        paths="$paths$a
+" ;;
     esac
   done
+  [ -n "$paths" ] && { printf '기기전역\tpath\n%s' "$paths"; return 0; }
   # A deploy trigger the manifest named for this target.
-  if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거'; return 0; fi
-  printf -- '-'
+  if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거\tdeploy\n'; return 0; fi
+  printf -- '-\t-\n'
 }
 
 gate_deploy_trigger_match() {
@@ -959,6 +992,10 @@ gate_deploy_trigger_match() {
   # here RAISES the reach rather than being the only thing that can.
   local ids; ids=$(target_field "$alias" '배포트리거 식별자' 2>/dev/null) || return 1
   [ -n "$ids" ] || return 1
+  # The argv is joined with spaces BEFORE the field separator changes: `$*`
+  # joins with the first character of IFS, so under `,` the `workflow` and
+  # `argv` kinds compared against a comma-joined line and never matched.
+  local joined=" $* "
   local IFS=','; local id rest kind val a
   for id in $ids; do
     kind="${id%%:*}"; val="${id#*:}"
@@ -971,7 +1008,7 @@ gate_deploy_trigger_match() {
           esac
         done ;;
       workflow)
-        case " $* " in
+        case "$joined" in
           *" workflow run $val "*|*"/actions/workflows/$val/dispatches"*) return 0 ;;
         esac ;;
       jenkins-job)
@@ -979,7 +1016,7 @@ gate_deploy_trigger_match() {
           case "$a" in "$val"|*"/job/$val/"*) return 0 ;; esac
         done ;;
       argv)
-        case " $* " in *" $val "*|*" $val") return 0 ;; esac ;;
+        case "$joined" in *" $val "*) return 0 ;; esac ;;
     esac
   done
   return 1
@@ -1220,19 +1257,34 @@ gate_destructive_source() {
 gate_reach_disposition() {
   # gate_reach_disposition <alias> <rules_rc> <graded> <argv...>
   #
-  # Prints the `도달 판정` cell that parks this act, or nothing when it proceeds.
-  # FIRST MATCH WINS, in the order written — the table is read top to bottom and
-  # no cell is reachable past the one that answered.
+  # Prints `<칸>\t<원인>` for the `도달 판정` cell that parks this act — the cause
+  # is `-` where the cell has only one — or nothing when it proceeds. FIRST MATCH
+  # WINS, in the order written — the table is read top to bottom and no cell is
+  # reachable past the one that answered.
+  #
+  # WHAT THE REPAIR LINE NEEDS IS LEFT IN `GATE_RF_*`, as globals rather than
+  # locals. The one caller runs this in a command substitution and prints them in
+  # the same subshell right after it returns; the ledger's vocabulary does not
+  # carry them, so they never reach a row.
   local alias="$1" rules_rc="$2" graded="$3"; shift 3
   local R="${GATE_REACH:--}" cls="$GATE_GRADE_SOURCE" S=0 X=0
   [ -n "$R" ] || R='-'
   [ "$GATE_MARK" = "비밀출력" ] && S=1
   { [ "$GATE_MARK" = "파괴" ] || [ "${GATE_DESTRUCTIVE:-0}" = "1" ]; } && X=1
+  GATE_RF_SX='-' GATE_RF_SW='-' GATE_RF_PROPOSAL='-' GATE_RF_REFF='-' GATE_RF_GEFF='-'
+  GATE_RF_NEVER='-' GATE_RF_TRIG='-'
 
   # 1 — a credential on stdout is not undone by anything the morning can do.
-  [ "$S" = "1" ] && { printf '비밀출력'; return 0; }
+  [ "$S" = "1" ] && { printf '비밀출력\t-'; return 0; }
 
-  local _rd; _rd=$(gate_reach_derived "$alias" "$@")
+  local _rfull _rd _ro _rt=''
+  _rfull=$(gate_reach_derived_full "$alias" "$@")
+  _rd=${_rfull%%
+*}
+  case "$_rfull" in *"
+"*) _rt=${_rfull#*
+} ;; esac
+  _ro=${_rd#*	}; _rd=${_rd%%	*}
 
   # 2 — a CLAUDE.md slot write that the review rule already passed. The rule runs
   # in the catalog, so this cell can only be read after it: `rules_rc` of 0 or 5
@@ -1243,8 +1295,9 @@ gate_reach_disposition() {
         case "$rules_rc" in 0|5) return 0 ;; esac ;;
     esac
     # Declared as something else, the slot's own contribution to the derived
-    # floor is removed and the act takes the cells its declaration asks for.
-    [ "$_rd" = "기기전역" ] && _rd='-'
+    # floor is removed and the act takes the cells its declaration asks for —
+    # its origin and trigger words with it, or the probe would still demand them.
+    [ "$_rd" = "기기전역" ] && { _rd='-'; _ro='-'; _rt=''; }
   fi
 
   # 3 — a read the table proved. Reach is recorded and nothing is refused, which
@@ -1254,28 +1307,57 @@ gate_reach_disposition() {
 
   # 3b — the two wrappers that assemble a command line out of their own operands.
   # Neither is unwrapped by the tables, so no declaration about them is checkable.
-  case "${1##*/}" in xargs|sudo) printf '신고등급한도'; return 0 ;; esac
+  case "${1##*/}" in xargs|sudo) printf '신고등급한도\twrapper'; return 0 ;; esac
 
+  # A DERIVED DEPLOY TRIGGER BEATS A DECLARED MACHINE-GLOBAL REACH. Both raise,
+  # but only the first is true of the act: without this a deploy-trigger push
+  # declared `기기전역` would land in the ledger as a machine-local act and the
+  # morning report would not show the deploy.
   local Reff
   case "$R" in
-    미상|기기전역) Reff="$R" ;;
+    미상) Reff="$R" ;;
+    기기전역) if [ "$_rd" = "배포트리거" ]; then Reff=배포트리거; else Reff=기기전역; fi ;;
     *) if [ "$_rd" != "-" ]; then Reff="$_rd"; else Reff="$R"; fi ;;
   esac
+  GATE_RF_REFF="$Reff"
+  [ -n "$_rt" ] && GATE_RF_TRIG=$(printf '%s' "$_rt" | tr '\n' ' ' | sed 's/ *$//')
 
-  local C=0 lift=0 P=0 Pd=0 pkind='없음' probe=''
+  # EVERY PROBE FIELD IS READ AS A WHOLE SPACE-DELIMITED WORD. `제안` is free
+  # text and comes last, so it is cut off before the others are read — a bare
+  # `*"Pd=1"*` would match inside a proposed shape. A field the probe does not
+  # print reads as its closed default (`Pg=0`, `Gc` and `Sx` `-`), which keeps
+  # the machine-global cell shut under a matcher that predates them.
+  local C=0 lift=0 P=0 Pd=0 Pg=0 Gc='-' Sx='-' Sw='-' pkind='없음' probe='' _pf _ps _t
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="$GATE_MARK" GATE_MARK_TRIGGER="$GATE_MARK_TRIGGER" \
+          GATE_DESTRUCTIVE="${GATE_DESTRUCTIVE:-0}" GATE_REACH_EFF="$Reff" GATE_REACH_TRIGGERS="$_rt" \
           GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
-  case "$probe" in
-    *"P=1"*) P=1 ;;
+  _pf=${probe%% 제안=*}; case "$probe" in *" 제안="*) _ps=${probe#* 제안=} ;; *) _ps='-' ;; esac
+  [ -n "$_ps" ] || _ps='-'
+  case " $_pf " in *" P=1 "*) P=1 ;; esac
+  case " $_pf " in
+    *" 형태=완전 "*) pkind=완전 ;;
+    *" 형태=러너 "*) pkind=러너 ;;
   esac
-  case "$probe" in
-    *"형태=완전"*) pkind=완전 ;;
-    *"형태=러너"*) pkind=러너 ;;
+  case " $_pf " in *" Pd=1 "*) Pd=1 ;; esac
+  case " $_pf " in *" Pg=1 "*) Pg=1 ;; esac
+  case " $_pf " in
+    *" Gc=short "*) Gc=short ;;
+    *" Gc=dropped "*) Gc=dropped ;;
+    *" Gc=destructive "*) Gc=destructive ;;
+    *" Gc=argv0 "*) Gc=argv0 ;;
   esac
-  case "$probe" in
-    *"Pd=1"*) Pd=1 ;;
+  case " $_pf " in
+    *" Sx=ok "*) Sx=ok ;;
+    *" Sx=dropped "*) Sx=dropped ;;
+    *" Sx=none "*) Sx=none ;;
+    *" Sx=code "*) Sx=code ;;
+    *" Sx=argv0 "*) Sx=argv0 ;;
   esac
+  _t=" $_pf "
+  case "$_t" in *" Sw="*) Sw=${_t#* Sw=}; Sw=${Sw%% *} ;; esac
+  [ -n "$Sw" ] || Sw='-'
+  GATE_RF_SX="$Sx" GATE_RF_SW="$Sw" GATE_RF_PROPOSAL="$_ps"
   if [ "$pkind" = "완전" ]; then
     case "$cls" in
       불투명) lift=1 ;;
@@ -1290,16 +1372,55 @@ gate_reach_disposition() {
     esac
   fi
 
+  # THE EFFECTIVE GRADE, read before the opaque cap below as well as after it:
+  # the machine-global cells ask whether the act changes state outside this
+  # machine, and for the opaque and unknown classes that answer is the
+  # declaration — the table never saw the payload.
+  local Geff
+  if [ "$cls" = "표" ]; then
+    Geff=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")
+  else
+    Geff=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기')
+  fi
+  GATE_RF_GEFF="$Geff"
+
+  # THE CLAUDE CONFIGURATION HOME IS NEVER OPENED BY A ROW. Every argv element is
+  # scanned for it anywhere inside, whatever arm derived the reach: a command arm
+  # returns before the path loop, and a bind-mount source sits inside a word, so
+  # neither the derived path triggers nor a prefix glob would see it. Measured
+  # here, before the cap, because a parked opaque act's repair line has to say so
+  # too — otherwise the row it prints lifts the cap and parks again below.
+  local _a _nw=''
+  if [ "$Reff" = "기기전역" ]; then
+    for _a in "$@"; do
+      case "$_a" in *"$HOME"/.claude*) _nw="$_a"; break ;; esac
+      if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+        case "$_a" in *"${CLAUDE_CONFIG_DIR}"/*) _nw="$_a"; break ;; esac
+      fi
+    done
+    [ -n "$_nw" ] && GATE_RF_NEVER="$_nw"
+  fi
+
   # 4 — the opaque and unknown classes. The cap is the user's decision: a payload
   # the gate cannot see is read-and-run-local unless the manifest named the exact
   # form, script operand included.
   case "$cls" in
     불투명|미상)
-      [ "${GATE_DECLARED:-}" = "읽기" ] && return 0
+      # A read is trusted only when nothing but a path raised the reach. A
+      # command arm or a deploy trigger is argv saying what the act does, and a
+      # `docker run` declared `읽기` would otherwise pass with no row at all.
+      [ "${GATE_DECLARED:-}" = "읽기" ] && [ "$_ro" != "cmd" ] && [ "$_rd" != "배포트리거" ] && return 0
       case "${GATE_DECLARED:-}" in
         워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
       esac
-      [ "$lift" = "1" ] || { printf '신고등급한도'; return 0; }
+      if [ "$lift" != "1" ]; then
+        if [ "$Sx" = "code" ]; then printf '신고등급한도\tcode'
+        elif [ "$cls" = "미상" ] && case "$1" in */*) false ;; *) true ;; esac; then
+          printf '신고등급한도\tunlisted'
+        else printf '신고등급한도\topaque'
+        fi
+        return 0
+      fi
       # Lifted: the manifest named this exact form, so the act is judged by the
       # cells below — but never as the collaboration surface, which is a claim
       # about a tool the table can read.
@@ -1309,62 +1430,175 @@ gate_reach_disposition() {
       gate_collaboration_surface "$_rd" "$@" && C=1 ;;
   esac
 
-  local Geff
-  if [ "$cls" = "표" ]; then
-    Geff=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")
-  else
-    Geff=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기')
-  fi
+  # 5 — nothing below can be judged without knowing where the act lands.
+  [ "$Reff" = "미상" ] && { printf '도달미상\t-'; return 0; }
 
-  # 5·6 — nothing below can be judged without knowing where the act lands.
-  [ "$Reff" = "미상" ] && { printf '도달미상'; return 0; }
-  [ "$Reff" = "기기전역" ] && { printf '기기전역'; return 0; }
+  # 6 — MACHINE-GLOBAL OPENS ONLY ON A ROW THAT REACHES THE ACT'S OPERAND. The
+  # probe's `Pg` holds when a complete row carries every word up to the
+  # subcommand's operand and every derived trigger, drops no `=` word inside
+  # that span and, for a destructive act, names the destructive word. Three
+  # things no row opens come first: the Claude configuration home, and an act
+  # that changes state outside this machine — the user opened acts that change
+  # this machine's configuration, not a remote write that happens to name a home
+  # path.
+  if [ "$Reff" = "기기전역" ]; then
+    [ -n "$_nw" ] && { printf '기기전역\tnever'; return 0; }
+    if [ "$Geff" = "외부상태변경" ]; then
+      if [ "$_rd" = "기기전역" ]; then printf '기기전역\texternal'; else printf '도달모순\t-'; fi
+      return 0
+    fi
+    [ "$pkind" = "완전" ] || { printf '기기전역\tno-row'; return 0; }
+    [ "$Pg" = "1" ] && return 0
+    case "$Gc" in
+      destructive)
+        if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked'; else printf '파괴형태미명시\tdeclared'; fi ;;
+      argv0)   printf '기기전역\targv0-path' ;;
+      dropped) printf '기기전역\tdropped' ;;
+      *)       printf '기기전역\tshort' ;;
+    esac
+    return 0
+  fi
 
   # 7 — a push whose remote is not the target's.
   case "${1##*/}:${2:-}" in
     git:push)
-      gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치'; return 0; } ;;
+      gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치\t-'; return 0; } ;;
   esac
 
   case "$Reff" in
     런로컬)
       case "$Geff" in
         워크트리쓰기|트리밖쓰기) return 0 ;;
-        *) printf '도달모순'; return 0 ;;
+        *) printf '도달모순\t-'; return 0 ;;
       esac ;;
     협업)
       [ "$C" = "1" ] && return 0
-      printf '도달모순'; return 0 ;;
+      printf '도달모순\t-'; return 0 ;;
     dev)
-      [ "$X" = "1" ] && { printf 'dev파괴'; return 0; }
+      [ "$X" = "1" ] && { printf 'dev파괴\t-'; return 0; }
       local I; I=$(gate_dev_identifier_check "$alias" "$@")
       case "$I" in
-        불일치) printf 'dev식별자불일치'; return 0 ;;
-        부재)   printf 'dev식별자부재'; return 0 ;;
+        불일치) printf 'dev식별자불일치\t-'; return 0 ;;
+        부재)   printf 'dev식별자부재\t-'; return 0 ;;
         대조불가)
           # A lifted script named in the manifest IS the authorization, so the
           # absence of a comparable identifier does not park it — otherwise
           # declaring `dev` would park what declaring `prod` performs.
-          [ "$P" = "1" ] || { printf 'dev대조불가'; return 0; } ;;
+          [ "$P" = "1" ] || { printf 'dev대조불가\t-'; return 0; } ;;
       esac
       return 0 ;;
     prod)
-      [ "$P" = "1" ] || { printf 'prod인가없음'; return 0; }
+      [ "$P" = "1" ] || { printf 'prod인가없음\t-'; return 0; }
       { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
-      printf '파괴형태미명시'; return 0 ;;
+      if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked'; else printf '파괴형태미명시\tdeclared'; fi
+      return 0 ;;
     배포트리거)
-      [ "$P" = "1" ] || { printf '배포트리거인가없음'; return 0; }
+      [ "$P" = "1" ] || { printf '배포트리거인가없음\t-'; return 0; }
       { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
-      printf '파괴형태미명시'; return 0 ;;
+      if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked'; else printf '파괴형태미명시\tdeclared'; fi
+      return 0 ;;
     *)
       # `-` with nothing derived: the axis was optional for this act, which the
       # required-check upstream already decided. It is a local read or a
       # non-opaque worktree write, so it lands as run-local.
       case "$Geff" in
         읽기|워크트리쓰기|트리밖쓰기) return 0 ;;
-        *) printf '도달미상'; return 0 ;;
+        *) printf '도달미상\t-'; return 0 ;;
       esac ;;
   esac
+}
+
+gate_park_repair_line() {
+  # gate_park_repair_line <칸> <원인> — the repair a parked act's stage reads, on
+  # stderr. ONE FUNCTION FOR BOTH VERBS: `plan` used to return before the repair
+  # `case`, so a forecast never said how to fix what it predicted, and a test
+  # could not check a repair without performing the act.
+  #
+  # A cell a row can fix prints the row itself on a line of its own, built from
+  # the probe's `제안` — never shorter than what opens the cell. A cause no row
+  # fixes says so instead: printing a row there is a false repair, because the
+  # stage pastes it, kicks off again and parks at the same cell. The facts come
+  # from `GATE_PARK_*`, which the one disposition call site sets.
+  local cell="$1" cause="${2:--}"
+  local sx="${GATE_PARK_SX:--}" sw="${GATE_PARK_SW:--}" prop="${GATE_PARK_PROPOSAL:--}"
+  local reff="${GATE_PARK_REFF:--}" geff="${GATE_PARK_GEFF:--}" nw="${GATE_PARK_NEVER:--}"
+  local trig="${GATE_PARK_TRIG:--}" a0="${GATE_PARK_ARGV0:-}"
+  local B="this row opens this act and every act that begins with these words, on every target of the run; this run's authorization is frozen, so the row takes effect from the next kickoff"
+  local msg='' row=0
+  case "$cell/$cause" in
+    기기전역/no-row)
+      msg="repair: no \`사전 인가\` row opens this machine-global act — kick off again with the row below. A shape that names only the runner, or stops before the subcommand's operand, does not open it"; row=1 ;;
+    기기전역/short)
+      msg="repair: the \`사전 인가\` row that matched stops before the words that make this act machine-global (the subcommand, its operand and '$trig') — kick off again with the row below"; row=1 ;;
+    기기전역/dropped) sx=dropped ;;
+    기기전역/argv0-path) sx=argv0 ;;
+    기기전역/external) msg=external ;;
+    기기전역/never) msg=never ;;
+    파괴형태미명시/marked)
+      msg="repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds') — kick off again with the row below"; row=1 ;;
+    파괴형태미명시/*)
+      msg="repair: the gate saw no destructive word in this act, so a row opens it only by naming the whole act verbatim — kick off again with the row below"; row=1 ;;
+    신고등급한도/opaque)
+      msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand, as the act spells them. A shape that names only the runner does not open it"; row=1 ;;
+    신고등급한도/code) sx=code ;;
+    신고등급한도/wrapper)
+      msg="repair: no row opens a command assembled by xargs or sudo — call the wrapped command directly" ;;
+    신고등급한도/unlisted)
+      msg="repair: no row lifts '$a0' — the grading table does not know it; leave it to a person" ;;
+    prod인가없음/*|배포트리거인가없음/*)
+      msg="repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen"; row=1 ;;
+    dev식별자부재/*|dev식별자불일치/*|dev대조불가/*)
+      msg="repair: name the identifier of that tool in the argv, or kick off again with a manifest whose \`dev 식별자\` on the target row matches the real value" ;;
+    비밀출력/*)
+      msg="repair: rewrite it in a form that does not print the secret (printenv with a name, and so on). If the value is needed, leave it to a person" ;;
+    push원격불일치/*)
+      msg="repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
+    도달모순/*)
+      msg="repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+    CI실패/*)
+      msg="repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
+    등급회귀/*)
+      msg="repair: the gate in the tree this merge would land grades the argv named above as empty or '등급 미상' where the base's gate knew it — fix the grading table and push a new head" ;;
+    등급회귀판정불가/*)
+      msg="repair: the grade-regression probe could not decide for this merge — a person checks the landing tree's gate and merges it" ;;
+    *) return 0 ;;
+  esac
+  # A ROW-SHAPED REPAIR GIVES WAY TO A CAUSE NO ROW FIXES. The cap is read
+  # before the machine-global cells, so an opaque act that lands on one of them
+  # parks here first, and the row printed for the cap would lift it only to park
+  # again below.
+  if [ "$row" = "1" ]; then
+    if [ "$reff" = "기기전역" ] && [ "$nw" != "-" ]; then msg=never; row=0
+    elif [ "$reff" = "기기전역" ] && [ "$geff" = "외부상태변경" ]; then msg=external; row=0
+    else
+      case "$sx" in dropped|none|code|argv0) msg=''; row=0 ;; esac
+    fi
+  fi
+  if [ -z "$msg" ]; then
+    case "$sx" in
+      dropped) msg="repair: no row can name this spelling — the matcher drops '$sw' (an option written with '='); respell it with a space or as the bare flag, and name the respelled act in a row at the next kickoff" ;;
+      none)    msg="repair: no \`사전 인가\` row opens this — no complete shape can be formed from this act (a runner with nothing after its subcommand, or a word containing '|'); leave it to a person" ;;
+      code)    msg="repair: no row opens an interpreter run whose words before the script are not plain flags the gate knows — program text, a module or stdin ('-c', '-e', '-m', '-'), or an option that may take a value ('-o', '-W', '--norc', …) — put the commands in a script file in the worktree, run it as '<interpreter> <path>' (shell flags -e -u -v -x and python3 flags -u -B -E -I -s -S -O may precede the path), and name that shape in a row at the next kickoff" ;;
+      argv0)   msg="repair: no \`사전 인가\` row opens this — a word that makes this act machine-global does not appear as one word in the shape a row is matched against (the program is named by a path, which a row names by its base name, or the path contains whitespace); leave it to a person" ;;
+    esac
+  fi
+  case "$msg" in
+    never)    msg="repair: no \`사전 인가\` row opens this — '$nw' is under the Claude configuration home; leave it to a person" ;;
+    external) msg="repair: no \`사전 인가\` row opens this — it changes state outside this machine while carrying a machine-global path; leave it to a person" ;;
+  esac
+  [ -n "$msg" ] || return 0
+  # BEFORE THE MATCHER CAN PROPOSE A SHAPE there is no row to print, and a
+  # message pointing at "the row below" with nothing below it is the false
+  # repair this function exists to stop.
+  if [ "$row" = "1" ] && [ "$prop" != "-" ]; then
+    warn "$msg — $B"
+    warn "repair row: - \`사전 인가\` | 형태=$prop | 사유=park 수리($cell)"
+  elif [ "$row" = "1" ]; then
+    local _norow="a row that names the shape of this act"
+    warn "${msg//the row below/$_norow}"
+  else
+    warn "$msg"
+  fi
 }
 
 gate_surface_max() {
@@ -4213,6 +4447,7 @@ surface_of_argv0() {
     aws)     surface_of_aws "$@" ;;
     kubectl) surface_of_kubectl "$@" ;;
     docker)  surface_of_docker "$@" ;;
+    brew)    surface_of_brew "$@" ;;
     # Not split here, and each for its own reason. `ssh`/`scp`/`rsync` carry the
     # effect in an operand rather than a verb, `wget` has no read-only form worth
     # carving out, and `gcloud`'s verb surface is wide enough that a partial
@@ -5338,8 +5573,16 @@ surface_of_docker() {
       case "${2:-}" in
         ls|list|inspect) printf '읽기' ;;
         push) printf '외부상태변경' ;;
-        *) case " $* " in *" --push "*) printf '외부상태변경' ;; *) printf '트리밖쓰기' ;; esac ;;
+        *)
+          case " $* " in *" --push "*) printf '외부상태변경'; return 0 ;; esac
+          if gate_docker_output_pushes "$@"; then printf '외부상태변경'; else printf '트리밖쓰기'; fi ;;
       esac ;;
+    # THREE SPELLINGS OF A REGISTRY PUSH, and the top-level `build` fell to the
+    # catch-all below with all three: `--push`, and an exporter whose value says
+    # `type=registry` or `push=true`. Graded a local write, each passed as one.
+    build)
+      case " $* " in *" --push "*) printf '외부상태변경'; return 0 ;; esac
+      if gate_docker_output_pushes "$@"; then printf '외부상태변경'; else printf '트리밖쓰기'; fi ;;
     compose)
       case "${2:-}" in
         ps|logs|config|ls|images|top|version|port) printf '읽기' ;;
@@ -5352,6 +5595,45 @@ surface_of_docker() {
     push) printf '외부상태변경' ;;
     '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
     *) printf '트리밖쓰기' ;;
+  esac
+}
+
+gate_docker_output_pushes() {
+  # gate_docker_output_pushes <argv after `docker`...> — true when an exporter
+  # value (`--output=v`, `-o=v`, or `--output`/`-o` followed by v) sends the
+  # build to a registry. It only ever raises a grade: a value that names a file
+  # or a local exporter is left to the row it was already in.
+  local a v next=0
+  for a in "$@"; do
+    if [ "$next" = 1 ]; then v="$a"; next=0
+    else
+      case "$a" in
+        --) break ;;
+        --output|-o) next=1; continue ;;
+        --output=*) v="${a#--output=}" ;;
+        -o=*) v="${a#-o=}" ;;
+        *) continue ;;
+      esac
+    fi
+    case "$v" in *type=registry*|*push=true*) return 0 ;; esac
+  done
+  return 1
+}
+
+surface_of_brew() {
+  # surface_of_brew <argv after `brew`...>. A verb that changes what is installed
+  # on this machine writes outside the tree; a verb that only reports is a read.
+  # EVERY OTHER VERB STAYS `등급 미상`, not the form-unknown token: that token is
+  # refused before the declaration is even read, which would turn `brew update`
+  # and `brew shellenv` from passing on their declaration into refusals — and
+  # the merge-time grade probe skips an argv whose base grade is `등급 미상`, so
+  # it could not see that narrowing either.
+  case "${1:-}" in
+    install|upgrade|uninstall|remove|rm|reinstall|tap|untap|link|unlink|pin|unpin|cleanup|autoremove|services)
+      printf '트리밖쓰기' ;;
+    list|ls|info|search|deps|uses|outdated|leaves|desc|home|config|doctor|--prefix|--version|--cellar|--repository)
+      printf '읽기' ;;
+    *) printf '등급 미상' ;;
   esac
 }
 
@@ -5619,6 +5901,10 @@ gate_act_mark() {
       case "${1:-}" in
         rm|rmi|prune) printf '파괴\t%s' "$1"; return 0 ;;
         volume) case "${2:-}" in rm|prune) printf '파괴\t%s' "$2"; return 0 ;; esac ;;
+        # The management-group spellings of the same removals carry the same
+        # mark, so the grouped form is not the unmarked way to delete an image.
+        image|container) case "${2:-}" in rm|prune) printf '파괴\t%s' "$2"; return 0 ;; esac ;;
+        system|builder|buildx) case "${2:-}" in prune) printf '파괴\tprune'; return 0 ;; esac ;;
         compose) case "${2:-}" in down) case "$all" in *" -v "*|*" --volumes "*) printf '파괴\t-v'; return 0 ;; esac ;; esac ;;
       esac ;;
     rsync)
@@ -20706,7 +20992,9 @@ gate_verb_act() {
   # check, the segment-row check and the merge anchor have had their say. Those
   # three refuse acts this one would have parked, and a park row written ahead of
   # them would record a disposition the act never actually reached.
-  GATE_PARK_CELL=""
+  GATE_PARK_CELL="" GATE_PARK_CAUSE='-' GATE_PARK_SX='-' GATE_PARK_SW='-' GATE_PARK_REFF='-'
+  GATE_PARK_GEFF='-' GATE_PARK_NEVER='-' GATE_PARK_TRIG='-' GATE_PARK_PROPOSAL='-'
+  GATE_PARK_ARGV0="${1##*/}"
   # OFF MODE WITH NOTHING DECLARED IS TODAY, EXACTLY. The reach axis is optional
   # there — the required-check above runs only while the switch is on — so an act
   # that declared no reach has made no claim for the evaluator to judge, and
@@ -20715,9 +21003,25 @@ gate_verb_act() {
   # because this evaluator answered in its place.
   if [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
      && { gate_auto_resolve_enabled || [ -n "${GATE_REACH:-}" ]; }; then
-    local _cell; _cell=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@")
+    # The verdict is `<칸>\t<원인>` on the first line; the facts the repair line
+    # reads follow on the second, printed from the same subshell. The cause and
+    # the facts stay here — the ledger's `도달 판정=` takes the cell alone.
+    local _out _cell _pcause _facts
+    _out=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
+           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s' "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
+             "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_PROPOSAL")
+    _cell=${_out%%
+*}
+    _facts=${_out#*
+}
+    _pcause='-'
+    case "$_cell" in *"	"*) _pcause=${_cell#*	}; _cell=${_cell%%	*} ;; esac
+    IFS='	' read -r GATE_PARK_SX GATE_PARK_SW GATE_PARK_REFF GATE_PARK_GEFF GATE_PARK_NEVER \
+      GATE_PARK_TRIG GATE_PARK_PROPOSAL <<EOF || true
+$_facts
+EOF
     if gate_auto_resolve_enabled; then
-      GATE_PARK_CELL="$_cell"
+      GATE_PARK_CELL="$_cell" GATE_PARK_CAUSE="$_pcause"
       # THE EVALUATOR REPLACES THE PRE-AUTHORIZATION RULE'S QUESTION, and only in
       # this mode. That rule answers `승인 대기` for an external-state act with no
       # matching row — the one approval class that is never auto-resolved,
@@ -20737,7 +21041,11 @@ gate_verb_act() {
       # acts stop, as questions rather than as rows. The opaque and unknown
       # classes keep today's behaviour entirely, which is what "off mode is
       # unchanged" has to mean for them.
-      warn "reach judgment '$_cell' — auto-resolution is off, so it is issued as an approval"
+      if [ "$_pcause" = "-" ]; then
+        warn "reach judgment '$_cell' — auto-resolution is off, so it is issued as an approval"
+      else
+        warn "reach judgment '$_cell' (cause $_pcause) — auto-resolution is off, so it is issued as an approval"
+      fi
       rules_rc="$GATE_EXIT_APPROVAL"
     fi
   fi
@@ -21168,6 +21476,7 @@ gate_verb_act() {
       # of what it refused depend on who asked.
       printf 'park 예상: 도달 판정=%s kind=%s target=%s 축2=%s 도달=%s\n' \
         "$GATE_PARK_CELL" "$kind" "$alias" "$graded" "${GATE_REACH:--}"
+      gate_park_repair_line "$GATE_PARK_CELL" "${GATE_PARK_CAUSE:--}"
       return "$GATE_EXIT_PARK"
     fi
     # RE-DECLARING DOES NOT RE-OPEN IT. The same act at the same digest takes the
@@ -21204,28 +21513,7 @@ gate_verb_act() {
       "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
-    case "$GATE_PARK_CELL" in
-      dev식별자부재|dev식별자불일치|dev대조불가)
-        warn "repair: name the identifier of that tool in the argv, or kick off again with a manifest whose \`dev 식별자\` on the target row matches the real value" ;;
-      prod인가없음|배포트리거인가없음)
-        warn "repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen" ;;
-      파괴형태미명시)
-        warn "repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds')" ;;
-      신고등급한도)
-        warn "repair: name that script shape in a \`사전 인가\` row or as an argv element of \`배포트리거 식별자\` — a shape that names only the runner does not open it" ;;
-      비밀출력)
-        warn "repair: rewrite it in a form that does not print the secret (printenv with a name, and so on). If the value is needed, leave it to a person" ;;
-      push원격불일치)
-        warn "repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
-      도달모순)
-        warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
-      CI실패)
-        warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
-      등급회귀)
-        warn "repair: the gate in the tree this merge would land grades the argv named above as empty or '등급 미상' where the base's gate knew it — fix the grading table and push a new head" ;;
-      등급회귀판정불가)
-        warn "repair: the grade-regression probe could not decide for this merge — a person checks the landing tree's gate and merges it" ;;
-    esac
+    gate_park_repair_line "$GATE_PARK_CELL" "${GATE_PARK_CAUSE:--}"
     exit "$GATE_EXIT_PARK"
   fi
 
