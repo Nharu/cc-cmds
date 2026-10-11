@@ -13161,6 +13161,66 @@ EOF
   fi
 }
 
+gate_halt_auto_answer_current() {
+  # gate_halt_auto_answer_current <key> <record> — an answer no person gave goes
+  # only to the key's latest halt, and only once that halt is settled. A
+  # person's answer takes none of this: the person reads the record and the run
+  # before answering.
+  #
+  # NOT WHILE AN ATTEMPT OF THE KEY IS STILL OPEN. A stage writes its record and
+  # ends its turn, and the supervisor writes the attempt's `stage-result` row
+  # only after the CLI exits; the dispatch record `<key>.pid` stays until then,
+  # through the window in which the CLI is gone and the row is being written.
+  # An automatic answer written in that window is taken up by that very row —
+  # the first `stage-result` after it — so it reads as handed on although no
+  # stage ever received it. A waiting member of the key is an attempt still to
+  # come back, which would take the answer up the same way.
+  #
+  # ONLY THE ATTEMPT THE KEY LAST SETTLED. The last `stage-result` row of the
+  # key has to read `의도된 park`, and the record has to be that attempt's —
+  # `halt/<스테이지>#<실행 버전>.md`, or a record whose header names that stage
+  # id. The shift re-attaches the key's last session with the answer, so an
+  # answer to an older record would resume that session with a question it
+  # never asked, and a binding-tier stop the key already moved past would send
+  # the document to re-convergence over a decision that no longer stands. An
+  # attempt that ended `크래시`, `한도 종료` or `외부 종료` halted nowhere and is
+  # passed over, which is what keeps the second answer
+  # `gate_halt_auto_answer_admit` allows after such an attempt reachable.
+  local key="$1" rec="$2" f row last='' cls ver stg want hst
+  for f in "$RUN_DIR/$key.pid" "$RUN_DIR/$key.pid.settling."*; do
+    [ -e "$f" ] || continue
+    warn "an attempt of $key is still open (its dispatch record $f is still there), so its \`stage-result\` row would take an automatic answer up without any stage receiving it — answer once the attempt has settled: $rec"
+    return "$GATE_EXIT_RULE"
+  done
+  if [ -f "$RUN_DIR/$key.waiting" ] && cc_waiting_is_member "$RUN_DIR" "$LEDGER" "$key"; then
+    warn "$key is waiting to come back, and its next attempt would take an automatic answer up — answer once it has settled: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    case "$row" in *'| 관측=스폰 전 대기 중'*) continue ;; esac
+    case "$(gate_row_field "$row" '종단 부류')" in
+      크래시|'한도 종료'|'외부 종료') continue ;;
+    esac
+    last=$row
+  done <<EOF
+$( { gate_stage_result_rows_of "$key" || true; } )
+EOF
+  cls=$(gate_row_field "$last" '종단 부류')
+  ver=$(gate_row_field "$last" '실행 버전')
+  stg=$(gate_row_field "$last" '스테이지')
+  if [ "$cls" != "의도된 park" ] || [ -z "$ver" ] || [ -z "$stg" ]; then
+    warn "$key's last settled attempt did not halt (\`종단 부류=${cls:-미상}\`), so this record is not the question the key is stopped on — an automatic answer goes only to the key's latest halt: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  want="$stg#$ver"
+  [ "$rec" = "$RUN_DIR/halt/$want.md" ] && return 0
+  hst=$(sed -n '1s/^<!-- cc-pipeline-halt v1;.* stage=\([^;]*\);.*/\1/p' "$rec")
+  [ "$hst" = "$want" ] && return 0
+  warn "this record is not the halt of $key's last settled attempt ($want, \`halt/$want.md\`) — an automatic answer goes only to the key's latest halt, and an older one goes to a person: $rec"
+  return "$GATE_EXIT_RULE"
+}
+
 gate_cycle_dismissed() {
   # gate_cycle_dismissed <segment> <사이클> <리뷰 HEAD> — true when a person's
   # `리뷰 기각` row names exactly that cycle of that segment. Written once and
@@ -17827,7 +17887,8 @@ EOF
         # same record re-converged once goes to a person — both are
         # `gate_halt_auto_answer_admit`'s, below, which the seat's answers pass
         # too. A person's earlier `재수렴` on another record of the key does not
-        # use up the bound.
+        # use up the bound. And the record has to be the key's latest settled
+        # halt, `gate_halt_auto_answer_current`'s, for both writers alike.
         hstep=$(sed -n 's/^\*\*스텝\*\*: //p' "$hrec" | sed -n '1p')
         hstep="${hstep%% — *}"
         while IFS= read -r hrow; do
@@ -17846,6 +17907,7 @@ EOF
       fi
       if [ "$hby" != "사람" ]; then
         gate_halt_auto_answer_admit "$seg" "$hrec" "$hopt" || return "$?"
+        gate_halt_auto_answer_current "$seg" "$hrec" || return "$?"
         if [ "$hby" = "교대" ]; then
           log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
         else

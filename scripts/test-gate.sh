@@ -21893,8 +21893,8 @@ check "34c A23: 교대의 행은 게이트가 답한 주체=교대 로 찍는다
   "$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "교대"
 # 반증 재수렴은 중단 답 없이 교대가 넘기는 다른 수선이다. 그 행이 있다고 해서
 # 같은 키의 첫 구속 이탈 답이 「두 번째」가 되지는 않는다.
-CAPC_BT3="$CAP_DIR/halt/CC3#2.md"
-sed 's/stage=CC2#1;/stage=CC3#2;/' "$CAPC_BT" > "$CAPC_BT3"
+CAPC_BT3="$CAP_DIR/halt/CC3#3.md"
+sed 's/stage=CC2#1;/stage=CC3#3;/' "$CAPC_BT" > "$CAPC_BT3"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-3 | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-3 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=3 | 세션 id=s-impl-3b | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
@@ -21972,7 +21972,7 @@ sdh_rec "$SDH_853" design-reconverge 'A1#2' 'Step 3 — 자율 채택 기준 S1�
   '- `escalate to team round` — 이 요구를 사다리의 팀 라운드 단으로 올립니다.' \
   '- `record in the unresolved-issues section` — 이 요구를 미해결 이슈로 적고, 감사는 7단계(잔여 공개)로 마칩니다.' \
   '- `reject` — 채택을 거두고 요구로 묶지 않습니다.'
-sdh_sr A1 reconverge 1 '의도된 park'
+sdh_sr A1 reconverge 2 '의도된 park'
 sdh_ha0=$(sdh_ha)
 sdh_seat A1 "$SDH_853"
 check "34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다" "$rc" "0"
@@ -22020,7 +22020,7 @@ sdh_rec "$SDH_BEC" design-reconverge 'C1#2' 'Step 3 조정 패스 — 자율 채
   '- `자동 묶음` — (가) 래퍼가 레포 밖 고정 경로의 prod tfvars 를 읽는다. (나) 재시도에서만 계획 모양 판정을 완화한다. (다) R5 의 prod 변이 요청도 무인 단계가 실행한다.' \
   '- `사람이 직접 정함` — 사람이 세 결정을 설계 문서에 직접 적는다.' \
   '- `채택 철회` — 합성 요구의 채택을 거둔다.'
-sdh_sr C1 reconverge 1 '의도된 park'
+sdh_sr C1 reconverge 2 '의도된 park'
 sdh_seat C1 "$SDH_BEC"
 sdh_ok "34d: bec8dd06 형상의 좌석 답이 통과한다"
 check "34d: bec8dd06 행의 선택지는 기록의 추천이다" "$(row_field "$(sdh_last)" '선택지')" "자동 묶음"
@@ -22033,7 +22033,7 @@ sdh_rec "$SDH_C81" implement-unattended 'S9#10' "$SDH_BT_STEP" \
   '**추천**: `재수렴` — 구속 티어를 옮기는 길이 같은 런 안에 있다' \
   '**추천 근거**: 상시 지침:implement-unattended CFI-U3 「offers it under the exact label `재수렴`」' \
   "$SDH_BT_OPT1" '- `보류` — 이 세그먼트를 지금 상태로 멈춰 두고 사람이 처분을 정한다.'
-sdh_sr S9 implement 1 '의도된 park'
+sdh_sr S9 implement 10 '의도된 park'
 sdh_seat S9 "$SDH_C81"
 check "34d: c81e719c 형상의 좌석 답이 통과한다" "$rc" "0"
 check "34d: c81e719c 행의 선택지는 재수렴이다" "$(row_field "$(sdh_last)" '선택지')" "재수렴"
@@ -22046,21 +22046,21 @@ sdh_rec "$SDH_A73" implement-unattended 'D1#23' 'Step 3 CFI-U3 BT-STOP — 리�
   '**추천**: `재수렴` — 파일 이름을 옮기는 것은 구속 티어의 일이고 그 길이 같은 런 안에 있다' \
   '**추천 근거**: 기기 사실:master 의 rekick.sh 「rk_refuse() { printf」 (:118) / 상시 지침:implement-unattended CFI-U3' \
   "$SDH_BT_OPT1" '- `런 밖에서 해소` — 사람이 런 밖에서 두 파일의 충돌을 직접 푼다.'
-sdh_sr D1 implement 1 '의도된 park'
+sdh_sr D1 implement 23 '의도된 park'
 sdh_seat D1 "$SDH_A73"
 check "34d: a73e95ce 형상의 좌석 답이 통과한다" "$rc" "0"
 check "34d: a73e95ce 행의 근거 종류는 기기 사실과 상시 지침이다" "$(row_field "$(sdh_last)" '근거 종류')" "기기 사실/상시 지침"
 check "34d: 다섯 양성이 행 다섯을 남긴다" "$(sdh_ha)" "$((sdh_ha0 + 5))"
-sdh_sr D1 reconverge 2 '정상 완료'
-sdh_sr D1 implement 3 '의도된 park'
+sdh_sr D1 reconverge 24 '정상 완료'
+sdh_sr D1 implement 25 '의도된 park'
 sdh_ha1=$(sdh_ha)
 sdh_seat D1 "$SDH_A73"
 check "34d: 재수렴을 한 번 거친 같은 기록의 두 번째 자동 재수렴은 거부된다" "$rc" "3"
 check "34d: 그 거절은 사람의 답이 필요하다고 말한다" \
   "$( { grep -qF '같은 정지 기록을 두 번 재수렴하려면 사람의 답이 필요합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
 check "34d: 그 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_ha1"
-SDH_A73B="$CAP_DIR/halt/D1#24.md"
-sed 's/stage=D1#23;/stage=D1#24;/' "$SDH_A73" > "$SDH_A73B"
+SDH_A73B="$CAP_DIR/halt/D1#25.md"
+sed 's/stage=D1#23;/stage=D1#25;/' "$SDH_A73" > "$SDH_A73B"
 sdh_seat D1 "$SDH_A73B"
 check "34d: 구속-이탈 행이 없으면 같은 키 다른 기록의 두 번째 자동 재수렴은 받는다" "$rc" "0"
 
@@ -22089,7 +22089,7 @@ sdh_neg() {  # sdh_neg <이름> <추천 줄|-> <근거 줄|-> [선택지 줄…]
   local n="$1" r="$2" b="$3"; shift 3
   sdh_f="$CAP_DIR/halt/N1-$n.md"
   [ "$#" -gt 0 ] || set -- "$SDH_NOPT1" "$SDH_NOPT2"
-  sdh_rec "$sdh_f" design-audit-unattended "N1-$n" "$SDH_NSTEP" "$r" "$b" "$@"
+  sdh_rec "$sdh_f" design-audit-unattended 'N1#1' "$SDH_NSTEP" "$r" "$b" "$@"
 }
 sdh_refused() {  # sdh_refused <이름> <기대 코드> — the call's code, and no row
   check "34d: $1 은 $2 로 거절된다" "$rc" "$2"
@@ -22171,6 +22171,36 @@ sdh_sr H1 audit 2 '의도된 park'
 sdh_seat H1 "$SDH_HP2"
 check "34d: 사람 답이 소비된 뒤 같은 키 새 기록의 좌석 답은 통과한다" "$rc" "0"
 
+# ONLY THE KEY'S LATEST SETTLED HALT. A record written by an attempt whose
+# `stage-result` row has not landed would be taken up by that row without any
+# stage receiving the answer, and a record the key has moved past would resume
+# the key's last session with a question it never asked. Both go to a person.
+sdh_err() {  # sdh_err <이름> <문면> — the last refusal carries that text
+  check "34d: $1" "$( { grep -qF -- "$2" "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+}
+sdh_sr K1 implement 1 '의도된 park'
+SDH_K1A="$CAP_DIR/halt/K1#1.md"
+SDH_K1B="$CAP_DIR/halt/K1#2.md"
+sdh_rec "$SDH_K1A" design-audit-unattended 'K1#1' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_rec "$SDH_K1B" design-audit-unattended 'K1#2' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_hn=$(sdh_ha)
+sdh_seat K1 "$SDH_K1B"
+sdh_refused "stage-result 가 아직 서지 않은 시도의 기록에 쓴 좌석 답" 3
+sdh_err "그 거절은 키의 마지막 정지가 아니라고 말한다" "is not the halt of K1's last settled attempt (K1#1"
+: > "$CAP_DIR/K1.pid"
+sdh_seat K1 "$SDH_K1A"
+rm -f "$CAP_DIR/K1.pid"
+sdh_refused "디스패치 기록이 남은 키의 기록에 쓴 좌석 답" 3
+sdh_err "그 거절은 키의 시도가 아직 열려 있다고 말한다" "an attempt of K1 is still open"
+sdh_sr K1 implement 2 '의도된 park'
+sdh_seat K1 "$SDH_K1A"
+sdh_refused "키가 이미 지나간 낡은 기록에 쓴 좌석 답" 3
+sdh_err "그 거절은 낡은 기록이 키의 마지막 정지가 아니라고 말한다" "is not the halt of K1's last settled attempt (K1#2"
+check "34d: 거절된 답은 스냅숏에 오르지 않는다" \
+  "$(cap_snap "$SDH_SEAT" '' | jq -r '[.answered_halts[] | select(.segment == "K1")] | length')" "0"
+sdh_seat K1 "$SDH_K1B"
+check "34d: 시도가 정착한 뒤 그 시도의 기록에 쓴 좌석 답은 통과한다" "$rc" "0"
+
 # THE SHIFT BRANCH AND THE COUNT, in a run of its own with a `구속-이탈` row.
 # `상한=없음` first: an earlier shift `재수렴` to another record of the key does
 # not stop the next one. Then `상한=1`: a person's `재수렴` uses up nothing, and
@@ -22214,12 +22244,12 @@ sdh_bt() {  # sdh_bt <키> <stage> — a binding-tier stop recommending `재수�
     '**추천 근거**: 매니페스트 인가:자동 채택 판단 부류=구속-이탈' \
     "$SDH_BT_OPT1" '- `보류` — 사람이 처분을 정한다.'
 }
-sdh_sr S9 implement 1 '의도된 park'
-sdh_bt S9 'S9#9'
+sdh_sr S9 implement 8 '의도된 park'
+sdh_bt S9 'S9#8'
 sdh_shift S9 "$sdh_f"
 check "34d: 앞선 교대 재수렴 행이 선다" "$rc" "0"
-sdh_sr S9 reconverge 2 '정상 완료'
-sdh_sr S9 implement 3 '의도된 park'
+sdh_sr S9 reconverge 9 '정상 완료'
+sdh_sr S9 implement 10 '의도된 park'
 SDH_C81S="$CAP_DIR/halt/S9#10.md"
 sed "s/run=RSDH1 /run=$SDH_RID /" "$SDH_C81" > "$SDH_C81S"
 sdh_hn=$(sdh_ha)
@@ -22241,12 +22271,12 @@ cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target inf
 check "34d: 사람의 재수렴 답이 선다" "$rc/$(row_field "$(sdh_last)" '답한 주체')" "0/사람"
 sdh_sr T1 reconverge 2 '정상 완료'
 sdh_sr T1 implement 3 '의도된 park'
-sdh_bt T1 'T1#2'
+sdh_bt T1 'T1#3'
 sdh_shift T1 "$sdh_f"
 check "34d: 사람 행은 상한을 쓰지 않는다 — 상한=1 에서 첫 자동 재수렴이 통과한다" "$rc" "0"
 sdh_sr T1 reconverge 4 '정상 완료'
 sdh_sr T1 implement 5 '의도된 park'
-sdh_bt T1 'T1#3'
+sdh_bt T1 'T1#5'
 sdh_hn=$(sdh_ha)
 sdh_shift T1 "$sdh_f"
 check "34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다" "$rc" "3"
