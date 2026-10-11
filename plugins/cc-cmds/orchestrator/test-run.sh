@@ -9753,6 +9753,18 @@ for r34 in ring2 ring3; do
   check "34: $r34 의 SB 는 계획된다" "$(r34_count "$r34l" SB 계획됨)" "1"
 done
 
+# 같은 경로의 문서가 개정돼 SA 의 선언 파일이 늘었다 — 그 넓어진 범위는 어느 고리도
+# 만들지 않았으므로 SA 는 들이지 않고 다시 계획한다. ring3 은 ring2 를, ring2 는
+# ring1 을 출처로 들였으니 대조되는 계획 행은 출처를 따라간 ring1 의 것이다.
+sed 's/^\*\*선언 파일\*\*: `SA.txt`$/**선언 파일**: `SA.txt`, `SA2.txt`/' "$R34DOC" > "$R34DOC.tmp" && mv "$R34DOC.tmp" "$R34DOC"
+r34_ring ring4
+case "$(cat "$R34/ring4/plan.rc")/$(r34_done ring4)/$(r34_count "$R34/ledgers/ring4.md" SA 계획됨)/$(cat "$R34/ring4.err")" in
+  "0//1/"*"슬라이스 SA 착지는 들여오지 않습니다 — 슬라이스 선언 불일치(선언 파일 집합)"*)
+    ok "34: 선언 파일을 고친 문서로 다시 킥오프한 고리는 SA 를 들이지 않고 다시 계획한다" ;;
+  *) bad "34: 개정 선언 재킥오프" "rc=$(cat "$R34/ring4/plan.rc") done=$(r34_done ring4) err=$(tr '\n' ' ' < "$R34/ring4.err")" ;;
+esac
+r34_doc "$R34DOC" 머지
+
 r34_ring ringx 실패
 case "$(r34_done ringx)/$(r34_count "$R34/ledgers/ringx.md" SA 계획됨)/$(cat "$R34/ringx.err")" in
   "/1/"*"착지 들여오기 호출 실패(rc=9)"*) ok "34: 들여오기 호출이 실패하면 경고하고 SA 를 다시 계획한다" ;;
@@ -9850,7 +9862,8 @@ r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12;
   mkdir -p "$d/run/log" "$d/ledgers" "$d/docs/design-audit"
   write_manifest "$d/manifest.md" "" "" main "$R34PRKEY"
   : > "$d/docs/design-audit/$1.reader-1.md"
-  printf -- '- `run` | run-id=%s-prior | 시작=2026-01-01T00:00:00Z | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n- `segment` | id=SA | 상태=완료 | PR=12 | 커밋=%s | 워크트리=- | 선행=없음\n' \
+  # 이전 런의 계획 행은 지금 문서의 SA 선언과 같다 — 들여오기는 그 대조를 요구한다.
+  printf -- '- `run` | run-id=%s-prior | 시작=2026-01-01T00:00:00Z | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n- `segment` | id=SA | 상태=계획됨 | 선언 파일 집합=`SA.txt` | 레포=Nharu/cc-cmds | 선행=없음 | 절단점=PR | 리뷰 정책=선리뷰후머지 | 워크트리=-\n- `segment` | id=SA | 상태=완료 | PR=12 | 커밋=%s | 워크트리=- | 선행=없음\n' \
     "$1" "$R34PRKEY" "$H34" > "$d/ledgers/$1-prior.md"
   (
     RUN_DIR="$d/run"; LEDGER="$d/ledgers/$1.md"; LEDGER_SCOPE=파일; RUN_ID="$1"; GRANT="$R34/grant.md"

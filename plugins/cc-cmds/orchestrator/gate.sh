@@ -7841,6 +7841,57 @@ gate_decl_slice_park() {
     "재킥 원인=슬라이싱"
 }
 
+gate_decl_norm() {
+  # gate_decl_norm <value> — one declaration value in the form compared across
+  # runs: row-safe as every writer leaves it, with backticks and the outer
+  # whitespace gone, so a value read off a row and the same value read off the
+  # document compare equal.
+  printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ' | tr -d '`' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+gate_prior_decl_diff() {
+  # gate_prior_decl_diff <segment> <ledger> <terminal-row> — empty when that
+  # earlier ledger planned <segment> under the declaration the frozen document
+  # carries now; otherwise one phrase naming what differs, or that there is no
+  # plan row to compare. See `gate_prior_run_landed` for why.
+  local seg="$1" f="$2" row="$3" pr="" org of rr k dk pv cv
+  pr=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } \
+        | { grep -F '| 상태=계획됨 |' || true; } | tail -1)
+  if [ -z "$pr" ]; then
+    org=$(gate_row_field "$row" '출처')
+    of="$(dirname "$f")/$org.md"
+    case "$org" in ''|*/*|*.*) of="" ;; esac
+    if [ -n "$of" ] && [ -f "$of" ] && [ "$of" != "${LEDGER:-}" ] && [ "$of" != "$f" ]; then
+      rr=$( { grep -E '^- `run` ' "$of" 2>/dev/null || true; } | sed -n 1p)
+      if [ "$(gate_row_field "$rr" '설계 문서')" = "$DOC_KEY" ]; then
+        pr=$( { grep -E '^- `segment` ' "$of" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } \
+              | { grep -F '| 상태=계획됨 |' || true; } | tail -1)
+      fi
+    fi
+  fi
+  if [ -z "$pr" ]; then
+    printf '%s' "슬라이스 선언 증거 없음 — 그 런과 출처 런 어디에도 ${seg} 의 계획됨 행이 없습니다"
+    return 0
+  fi
+  for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
+    dk=$k
+    [ "$k" = '선언 파일 집합' ] && dk='선언 파일'
+    pv=$(gate_row_field "$pr" "$k")
+    cv=$(slice_field "$DOC" "$seg" "$dk" 2>/dev/null || true)
+    # A declaration too long for one row was clipped and its whole kept beside
+    # that run; the clip is what the row holds, so the clip is what is compared.
+    case "$pv" in
+      *" (전체: "*")") pv=${pv% (전체: *}; cv=$(run_row_safe "$cv" "$RUN_FIELD_MAX") ;;
+    esac
+    if [ "$(gate_decl_norm "$pv")" != "$(gate_decl_norm "$cv")" ]; then
+      printf '%s' "슬라이스 선언 불일치(${k}) — 그 런의 계획 「$(gate_row_safe "$(gate_decl_norm "$pv")" 120)」, 지금 문서 「$(gate_row_safe "$(gate_decl_norm "$cv")" 120)」"
+      return 0
+    fi
+  done
+  return 0
+}
+
 GATE_PRIOR_RUN=""
 GATE_PRIOR_ROW=""
 GATE_PRIOR_KIND=""
@@ -7882,14 +7933,29 @@ gate_prior_run_landed() {
   # moves on every append, so a late row in an older run would make it look
   # newer than the run that merged the segment again after it; `시작` is fixed
   # when the run opens and is `now_iso`'s UTC shape, which sorts as text.
-  local seg="$1" dir f rrow row st m p c rid cand="" best tab prcut=""
+  #
+  # THE SAME PATH IS NOT THE SAME SLICE. A run that ends with its binding
+  # surface moved parks the rest for the next run, and that next run is a
+  # kickoff of the REVISED document at the same path — so matching the path
+  # alone brought in a landing made under a narrower `선언 파일` or a weaker
+  # `리뷰 정책`, the slice was not dispatched, and the scope the revision added
+  # was never built. A candidate therefore also has to show the slice was
+  # planned under the declaration the frozen document carries now: the last
+  # `계획됨` row for the id in that ledger, compared field by field on
+  # `선언 파일 집합`, `레포`, `선행`, `절단점` and `리뷰 정책`. A ledger that
+  # brought the slice in rather than planning it holds no such row, so its
+  # terminal row's `출처` is followed to that run's ledger once — the run that
+  # did the work is the one whose plan counts — and a chain that leaves no plan
+  # row anywhere is no evidence. Either way the ledger drops out of the
+  # candidates with one warning naming the field that differs. The whole-
+  # document digest is deliberately not compared: any edit anywhere would make
+  # every slice be done again.
+  local seg="$1" dir f rrow row st m p c rid cand="" best tab prcut="" dd
   tab=$(printf '\t')
   GATE_PRIOR_RUN=""; GATE_PRIOR_ROW=""; GATE_PRIOR_KIND=""
-  [ -n "${LEDGER:-}" ] && [ -n "${DOC_KEY:-}" ] || return 1
-  if [ -n "${DOC:-}" ]; then
-    c=$(slice_field "$DOC" "$seg" '절단점' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] && prcut=1
-  fi
+  [ -n "${LEDGER:-}" ] && [ -n "${DOC_KEY:-}" ] && [ -n "${DOC:-}" ] || return 1
+  c=$(slice_field "$DOC" "$seg" '절단점' 2>/dev/null | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] && prcut=1
   dir=$(dirname "$LEDGER")
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
@@ -7914,6 +7980,11 @@ gate_prior_run_landed() {
     esac
     rid=$(gate_row_field "$rrow" 'run-id')
     [ -n "$rid" ] || rid=$(basename "$f" .md)
+    dd=$(gate_prior_decl_diff "$seg" "$f" "$row")
+    if [ -n "$dd" ]; then
+      warn "이전 런 ${rid} 의 슬라이스 ${seg} 착지는 들여오지 않습니다 — ${dd}"
+      continue
+    fi
     cand="$cand$(gate_row_field "$rrow" '시작')$tab$rid$tab$f
 "
   done
