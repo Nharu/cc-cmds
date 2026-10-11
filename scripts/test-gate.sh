@@ -10178,7 +10178,7 @@ rm -f "$WT/$DOC15FB"
 
 # ---------------------------------------------------------------------------
 # 15g. A segment plan is filled from the frozen document, and refused where it cannot be
-# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다, 15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다, 15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다, 15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다, 15g: 머지된 PR 의 head 브랜치나 base 브랜치가 다르면 자기 슬라이스를 들이지 않는다, 15g: head 브랜치가 다른 머지된 PR 의 선행은 들이지 않고 계획이 거부된다, 15g: 머지된 PR 은 head 가 행의 커밋과 달라도 머지 커밋 착지와 브랜치 이름이 맞으면 자기 슬라이스를 들인다, 15g: head 가 움직인 머지된 PR 의 선행을 들여와 다음 슬라이스가 계획된다, 15g: 브랜치가 없거나 세그먼트 브랜치 꼴이 아닌 행은 머지된 PR 로 들이지 않는다, 15g: 선언이 바뀐 슬라이스 자신은 이전 런의 착지를 들이지 않고 다시 계획되며 경고가 선언 불일치를 든다, 15g: 선언이 바뀐 선행은 이전 런에서 들여오지 않는다, 15g: 계획 행이 없는 이전 런 원장의 착지는 들이지 않는다 ---
+# --- section: 15g | group: base | covers: snapshot, plan, act | anchors: 15g: 스냅숏 슬라이싱 이 선언통치 분기와 선언 순서의 id 를 낸다, 15g: 게이트가 채운 필드가 드라이버의 plan_from_declaration 과 같다, 15g: 호출자가 넘긴 선언 필드는 거부된다, 15g: 유도 경로와 다른 워크트리는 거부된다, 15g: 선언 뒤 행은 선행 을 다시 실어야 받힌다, 15g: 슬라이싱 없는 런은 구현 단계 id 하나를 선행=없음 으로 계획한다, 15g: 리뷰 단계 없는 계획의 엄격 정책 계획은 거부되고 런 범위 막힘을 남긴다, 15g: 선언불완전 은 슬라이스와 필드를 이름 대며 거부되고 막힘을 남긴다, 15g: 깨진 슬라이스 하나는 그 슬라이스만 슬라이싱 으로 park 한다, 15g: 독립 슬라이스는 같은 런에서 계획된다, 15g: 동결 줄이 없는 문서에서는 계획이 거부된다, 15g: 감사가 끝나지 않았거나 살아 있으면 계획이 거부된다, 15g: 이전 런이 착지시킨 선행을 들여와 다음 슬라이스가 계획된다, 15g: 이전 런의 머지 커밋이 베이스에 없으면 계획이 거부되고 아무 행도 쓰지 않는다, 15g: 이전 런의 증거가 없는 선행은 바닥에서 거부된다, 15g: 선행 착지 행이 원장 밖에서 착지한 대상 레포의 선행을 들여온다, 15g: 선행 착지 행의 슬러그가 슬라이스 레포와 다르면 계획이 거부된다, 15g: 선행 착지 행의 커밋이 베이스에 없으면 계획이 거부된다, 15g: 선행 착지 행이 대상 아닌 레포의 선행을 원격 비교로 들여온다, 15g: 원격 비교가 미착지이거나 답하지 못하면 계획이 거부된다, 15g: 선행 착지 행의 형식 오류와 중복은 매니페스트 검사가 거부한다, 15g: 이전 런이 착지시킨 슬라이스 자신은 계획 행 없이 종단 행으로 들여온다, 15g: 들인 행의 출처 는 연쇄에서 처음 일을 한 런을 잇는다, 15g: run_gate_call 의 자식 셸에서 부른 들여오기도 문서를 유도해 행을 들인다, 15g: PR 절단점 슬라이스는 살아 있는 PR head 가 행의 커밋과 같으면 들여온다, 15g: PR head 가 다르거나 닫힌 PR 이면 들이지 않고 슬라이스를 다시 계획한다, 15g: 열린 PR 이나 머지 커밋이 베이스에 없는 PR 의 선행은 들이지 않는다, 15g: 열린 PR 로 들인 슬라이스 위로는 후속이 디스패치되지 않는다, 15g: 선언된 절단점이 머지인 슬라이스의 PR 행은 들이지 않는다, 15g: 머지된 PR 의 head 브랜치나 base 브랜치가 다르면 자기 슬라이스를 들이지 않는다, 15g: head 브랜치가 다른 머지된 PR 의 선행은 들이지 않고 계획이 거부된다, 15g: 머지된 PR 은 head 가 행의 커밋과 달라도 머지 커밋 착지와 브랜치 이름이 맞으면 자기 슬라이스를 들인다, 15g: head 가 움직인 머지된 PR 의 선행을 들여와 다음 슬라이스가 계획된다, 15g: 브랜치가 없거나 세그먼트 브랜치 꼴이 아닌 행은 머지된 PR 로 들이지 않는다, 15g: 선언이 바뀐 슬라이스 자신은 이전 런의 착지를 들이지 않고 다시 계획되며 경고가 선언 불일치를 든다, 15g: 선언이 바뀐 선행은 이전 런에서 들여오지 않는다, 15g: 계획 행이 없는 이전 런 원장의 착지는 들이지 않는다, 15g: 계획 행이 선언 전체의 다이제스트를 싣는다, 15g: 잘린 범위 뒤에 파일을 더한 긴 선언은 이전 런의 착지를 들이지 않고 다시 계획된다, 15g: 바뀌지 않은 긴 선언은 이전 런의 착지를 들인다, 15g: 다이제스트 없는 잘린 계획 행은 전체 파일로 대조하고 읽지 못하면 들이지 않는다, 15g: 다이제스트 없는 잘린 계획 행의 전체가 지금 선언과 같으면 착지를 들인다 ---
 #
 # The router used to copy a slice's fields into `act --kind segment` and dropped
 # some of them. Under `--from-declaration` the gate reads them from the frozen
@@ -10239,9 +10239,9 @@ run_segment_ids() { :; }; run_segment_field() { :; }
 plan_from_declaration "$1"
 EOF
 }
-g15_fields() {  # g15_fields <row> — the five declared fields, one `키=값` per line, sorted
+g15_fields() {  # g15_fields <row> — the five declared fields and their digest, one `키=값` per line, sorted
   printf '%s' "$1" | tr '|' '\n' | sed 's/^ *//; s/ *$//' \
-    | grep -E '^(레포|선언 파일 집합|선행|절단점|리뷰 정책)=' | sort
+    | grep -E '^(레포|선언 파일 집합|선행|절단점|리뷰 정책|선언 다이제스트)=' | sort
 }
 plan15g_rv='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["D1"] }, { "id": "V3", "skill": "review", "summary": "리뷰", "depends_on": ["S2"] } ] }'
 
@@ -10290,6 +10290,15 @@ check "15g: 채운 필드에 리뷰 정책 과 선행 이 실린다" \
   "$(g15_fields "$(g15_row R15GA SB)" | grep -cE '^(리뷰 정책=리뷰없음|선행=SA)$' || true)" "2"
 check "15g: 게이트는 plan-binding-digest 를 채우지 않는다" \
   "$(g15_row R15GA SA | grep -c 'plan-binding-digest' || true)" "0"
+check "15g: 계획 행이 선언 전체의 다이제스트를 싣는다" \
+  "$(seg_field "$(g15_row R15GA SA)" '선언 다이제스트' | grep -cE '^[0-9a-f]{64}$' || true)" "1"
+gateL act --manifest "$WORK/plan-R15GA.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(au15_H R15GA)" --rationale x -- 상태=실행중 "워크트리=$(g15_wt R15GA SB)" 선행=SA \
+  "선언 다이제스트=$(seg_field "$(g15_row R15GA SB)" '선언 다이제스트')"
+case "$rc/$msg" in
+  2/*"「선언 다이제스트」는 게이트가 동결 문서에서 계획 행을 채울 때만"*) ok "15g: 호출자가 넘긴 선언 다이제스트는 거부된다" ;;
+  *) bad "15g: 호출자가 넘긴 선언 다이제스트는 거부된다" "rc=$rc $msg" ;;
+esac
 
 # Two segments in one repository: every later row carries `선행` again.
 gateL act --manifest "$WORK/plan-R15GA.md" --kind segment --target infra --segment SB --cutpoint 커밋 \
@@ -10980,6 +10989,85 @@ case "$msg" in
 esac
 check "15g: 선언이 바뀐 선행은 이전 런에서 들여오지 않는다" "$r15gl3" "2/0/0/불일치 문면"
 
+# A declaration too long for one row is clipped on the planned row, and the
+# usual way a slice widens is one more file at the END of that list — past the
+# clip, where the two clips are the same bytes. The digest the planned row
+# carries is of the whole, so the widened slice is planned again; an unchanged
+# long declaration still comes in, so the refusal is not the whole import
+# failing. A row from before the digest is held to the whole its clip names, and
+# a whole that cannot be read is no evidence.
+long15gg=$(for i in 01 02 03 04 05 06 07 08 09 10 11 12; do printf '`plugins/cc-cmds/orchestrator/fixture-long-%s.txt`, ' "$i"; done)
+long15gg=${long15gg%, }
+grown15gg="$long15gg, \`plugins/cc-cmds/orchestrator/fixture-long-13.txt\`"
+g15_longdoc() {  # g15_longdoc <문서> <SA 의 선언 파일> — two_slice_doc with SA declaring that list
+  two_slice_doc "$WT/$1" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+  sed "s|^\*\*선언 파일\*\*: \`SA.txt\`\$|**선언 파일**: $2|" "$WT/$1" > "$WT/$1.tmp" && mv "$WT/$1.tmp" "$WT/$1"
+}
+DOC15GG='docs/fixture-design-15gg.md'
+g15_longdoc "$DOC15GG" "$long15gg"
+g15_prior R15GG1 "$DOC15GG" "$m15gp"
+r15gg1=$(g15_segrows R15GG1 SA 계획됨)/$(seg_field "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15GG1.md" || true; } | grep -F '| 상태=계획됨 |' | tail -1)" '선언 파일 집합' | grep -c '…(잘림) (전체: ' || true)
+check "15g: 긴 선언의 이전 런 계획 행은 잘린 선언을 싣는다 (아래가 공허하지 않다)" "$r15gg1" "1/1"
+g15_longdoc "$DOC15GG" "$grown15gg"
+g15_run R15GG2 "$DOC15GG" "$plan15c" 리뷰없음
+g15_mkwt R15GG2 SA
+g15_plan act R15GG2 SA 상태=계획됨 "워크트리=$(g15_wt R15GG2 SA)"
+r15gg2="$rc/$(g15_segrows R15GG2 SA)/$(seg_field "$(g15_row R15GG2 SA)" '상태')"
+case "$msg" in
+  *"이전 런 R15GG1 의 슬라이스 SA 착지는 들여오지 않습니다 — 슬라이스 선언 불일치("*) r15gg2="$r15gg2/불일치 문면" ;;
+  *) bad "15g 긴 선언 불일치 문면" "$msg" ;;
+esac
+check "15g: 잘린 범위 뒤에 파일을 더한 긴 선언은 이전 런의 착지를 들이지 않고 다시 계획된다" \
+  "$r15gg2" "0/1/계획됨/불일치 문면"
+DOC15GS2='docs/fixture-design-15gs2.md'
+g15_longdoc "$DOC15GS2" "$long15gg"
+g15_prior R15GS1 "$DOC15GS2" "$m15gp"
+g15_run R15GS2 "$DOC15GS2" "$plan15c" 리뷰없음
+g15_mkwt R15GS2 SA
+g15_plan act R15GS2 SA 상태=계획됨 "워크트리=$(g15_wt R15GS2 SA)"
+r15gs2=$(g15_row R15GS2 SA)
+check "15g: 바뀌지 않은 긴 선언은 이전 런의 착지를 들인다" \
+  "$rc/$(seg_field "$r15gs2" '상태')/$(seg_field "$r15gs2" '출처')/$(g15_segrows R15GS2 SA 계획됨)" "0/머지됨/R15GS1/0"
+
+# The rows from before the digest, written by hand: a clipped `선언 파일 집합`
+# naming the file its whole was kept in, and the run's merged row after it.
+mkdir -p "$WORK/g15gx"
+g15_legacy() {  # g15_legacy <run id> <문서> <전체 파일> — an earlier run's planned row with no digest, then merged
+  g15_run "$1" "$2" "$plan15c" 리뷰없음
+  au15_H "$1" >/dev/null
+  g15_raw "$1" "id=SA | 상태=계획됨 | 선언 파일 집합=\`plugins/cc-cmds/orchestrator/fixture-long-01.txt\`…(잘림) (전체: $3) | 레포=t/infra | 선행=없음 | 절단점=머지 | 리뷰 정책=리뷰없음 | 워크트리=$(g15_wt "$1" SA)"
+  g15_raw "$1" "id=SA | 상태=머지됨 | PR=7 | 머지 커밋=$m15gp | 워크트리=$(g15_wt "$1" SA) | 선행=없음"
+}
+DOC15GX='docs/fixture-design-15gx.md'
+g15_longdoc "$DOC15GX" "$grown15gg"
+printf '%s\n' "$long15gg" > "$WORK/g15gx/declared.SA"
+g15_legacy R15GX1 "$DOC15GX" "$WORK/g15gx/declared.SA"
+g15_run R15GX2 "$DOC15GX" "$plan15c" 리뷰없음
+g15_mkwt R15GX2 SA
+g15_plan act R15GX2 SA 상태=계획됨 "워크트리=$(g15_wt R15GX2 SA)"
+r15gx2="$rc/$(g15_segrows R15GX2 SA)/$(seg_field "$(g15_row R15GX2 SA)" '상태')"
+case "$msg" in *"이전 런 R15GX1 의 슬라이스 SA 착지는 들여오지 않습니다 — 슬라이스 선언 불일치(선언 파일 집합)"*) r15gx2="$r15gx2/불일치 문면" ;; esac
+DOC15GX3='docs/fixture-design-15gx3.md'
+g15_longdoc "$DOC15GX3" "$grown15gg"
+g15_legacy R15GX3 "$DOC15GX3" "$WORK/g15gx/gone/declared.SA"
+g15_run R15GX4 "$DOC15GX3" "$plan15c" 리뷰없음
+g15_mkwt R15GX4 SA
+g15_plan act R15GX4 SA 상태=계획됨 "워크트리=$(g15_wt R15GX4 SA)"
+r15gx4="$rc/$(g15_segrows R15GX4 SA)/$(seg_field "$(g15_row R15GX4 SA)" '상태')"
+case "$msg" in *"이전 런 R15GX3 의 슬라이스 SA 착지는 들여오지 않습니다 — 슬라이스 선언 증거 없음 — 그 런의 계획 행이 선언 파일 집합 를 잘라 적었고"*) r15gx4="$r15gx4/증거 없음 문면" ;; esac
+check "15g: 다이제스트 없는 잘린 계획 행은 전체 파일로 대조하고 읽지 못하면 들이지 않는다" \
+  "$r15gx2|$r15gx4" "0/1/계획됨/불일치 문면|0/1/계획됨/증거 없음 문면"
+DOC15GX5='docs/fixture-design-15gx5.md'
+g15_longdoc "$DOC15GX5" "$grown15gg"
+printf '%s\n' "$grown15gg" > "$WORK/g15gx/declared5.SA"
+g15_legacy R15GX5 "$DOC15GX5" "$WORK/g15gx/declared5.SA"
+g15_run R15GX6 "$DOC15GX5" "$plan15c" 리뷰없음
+g15_mkwt R15GX6 SA
+g15_plan act R15GX6 SA 상태=계획됨 "워크트리=$(g15_wt R15GX6 SA)"
+r15gx6=$(g15_row R15GX6 SA)
+check "15g: 다이제스트 없는 잘린 계획 행의 전체가 지금 선언과 같으면 착지를 들인다" \
+  "$rc/$(seg_field "$r15gx6" '상태')/$(seg_field "$r15gx6" '출처')/$(g15_segrows R15GX6 SA 계획됨)" "0/머지됨/R15GX5/0"
+
 # A ledger that holds the terminal row and no plan row for the slice, with no
 # `출처` to follow, says nothing about the declaration the slice was built to.
 DOC15GI='docs/fixture-design-15gi.md'
@@ -11002,13 +11090,15 @@ for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
             R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB \
             R15GZ:SA R15GJ1:SA R15GJ2:SA R15GJ2:SB R15GJ3:SA R15GJ4:SA R15GJ5:SB R15GO1:SA R15GO2:SB R15GO3:SB \
             R15GM1:SA R15GM2:SA R15GL1:SA R15GL2:SA R15GL3:SB R15GI2:SA \
-            R15GF1:SA R15GF2:SA R15GF3:SA R15GF4:SB R15GF5:SA R15GF6:SB R15GY1:SA R15GY2:SA R15GH1:SA R15GH2:SA; do
+            R15GF1:SA R15GF2:SA R15GF3:SA R15GF4:SB R15GF5:SA R15GF6:SB R15GY1:SA R15GY2:SA R15GH1:SA R15GH2:SA \
+            R15GG1:SA R15GG2:SA R15GS1:SA R15GS2:SA R15GX2:SA R15GX4:SA R15GX6:SA; do
   ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
       && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
 done
 rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" "$WT/$DOC15GQ" "$WT/$DOC15GR" \
   "$WT/$DOC15GK" "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW" "$WT/$DOC15GJ" \
-  "$WT/$DOC15GO" "$WT/$DOC15GM" "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GF" "$WT/$DOC15GY" "$WT/$DOC15GH"
+  "$WT/$DOC15GO" "$WT/$DOC15GM" "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GF" "$WT/$DOC15GY" "$WT/$DOC15GH" \
+  "$WT/$DOC15GG" "$WT/$DOC15GS2" "$WT/$DOC15GX" "$WT/$DOC15GX3" "$WT/$DOC15GX5"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget

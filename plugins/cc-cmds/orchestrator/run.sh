@@ -2221,6 +2221,34 @@ declared_field_for_row() {
   fi
 }
 
+decl_norm() {
+  # decl_norm <value> — one declaration value in the form compared across runs:
+  # row-safe as every writer leaves it, with backticks and the outer whitespace
+  # gone, so a value read off a row and the same value read off the document
+  # compare equal.
+  printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ' | tr -d '`' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+slice_decl_digest() {
+  # slice_decl_digest <doc> <slice id> — sha256 of the slice's WHOLE declaration:
+  # `선언 파일`, `레포`, `선행`, `절단점` and `리뷰 정책`, each through
+  # `decl_norm`, one `키=값` line apiece in that order, an undeclared field as
+  # an empty value.
+  #
+  # THE PLANNED ROW CARRIES THIS BESIDE THE FIELDS because the fields are
+  # bounded and the declaration is not: `declared_field_for_row` keeps only the
+  # first ~289 bytes of a long `선언 파일`, so a later run comparing that clip
+  # with the document saw a list grown at its END as unchanged. The digest is
+  # whole whatever the length and needs no sidecar to have survived.
+  local doc="$1" id="$2" k dk
+  for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
+    dk=$k
+    [ "$k" = '선언 파일 집합' ] && dk='선언 파일'
+    printf '%s=%s\n' "$k" "$(decl_norm "$(slice_field "$doc" "$id" "$dk" 2>/dev/null || true)")"
+  done | shasum -a 256 | cut -d' ' -f1
+}
+
 # --- the chained row frame, shared by both writers ---------------------------
 #
 # The gate's writer stamps every row with `교대=<n>` and ends it with
@@ -9222,6 +9250,7 @@ plan_from_declaration() {
     local _rp
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
+    _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
     _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
     ledger_row 'segment' "${_segargs[@]}"
   done

@@ -149,7 +149,7 @@
 #               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind segment --target <alias> --segment <id> --from-declaration ... \\
 #               -- 상태=계획됨 워크트리=<path>
-#     (레포·선언 파일 집합·선행·절단점·리뷰 정책 은 동결 문서의 ## 구현 슬라이싱 에서
+#     (레포·선언 파일 집합·선행·절단점·리뷰 정책·선언 다이제스트 는 동결 문서의 ## 구현 슬라이싱 에서
 #      게이트가 채운다 — 호출자가 넘기면 거부된다)
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
 #               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
@@ -7842,12 +7842,26 @@ gate_decl_slice_park() {
 }
 
 gate_decl_norm() {
-  # gate_decl_norm <value> — one declaration value in the form compared across
-  # runs: row-safe as every writer leaves it, with backticks and the outer
-  # whitespace gone, so a value read off a row and the same value read off the
-  # document compare equal.
-  printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ' | tr -d '`' \
-    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+  # gate_decl_norm <value> — `decl_norm`, the one normalization `slice_decl_digest`
+  # hashes, so a field compared here and the digest agree on what is equal.
+  decl_norm "$1"
+}
+
+gate_prior_decl_whole() {
+  # gate_prior_decl_whole <path> — the whole value a planned row clipped and kept
+  # beside its run, printed; 1 when there is no such file to read.
+  #
+  # THE PATH COMES FROM ANOTHER RUN'S ROW, so it is held to the shape the two
+  # writers give it — absolute, no `..`, a regular file of bounded size — before
+  # anything is read. Reading it decides nothing on its own: a value that is not
+  # the declaration simply fails to compare equal.
+  local p="$1" n
+  case "$p" in /*) : ;; *) return 1 ;; esac
+  case "/$p/" in */../*) return 1 ;; esac
+  [ -f "$p" ] && [ -r "$p" ] || return 1
+  n=$(wc -c < "$p" 2>/dev/null | tr -d ' ')
+  [ -n "$n" ] && [ "$n" -le 65536 ] || return 1
+  cat "$p" 2>/dev/null || return 1
 }
 
 gate_prior_decl_diff() {
@@ -7855,7 +7869,7 @@ gate_prior_decl_diff() {
   # earlier ledger planned <segment> under the declaration the frozen document
   # carries now; otherwise one phrase naming what differs, or that there is no
   # plan row to compare. See `gate_prior_run_landed` for why.
-  local seg="$1" f="$2" row="$3" pr="" org of rr k dk pv cv
+  local seg="$1" f="$2" row="$3" pr="" org of rr k dk pv cv pd side
   pr=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } \
         | { grep -F '| 상태=계획됨 |' || true; } | tail -1)
   if [ -z "$pr" ]; then
@@ -7874,21 +7888,42 @@ gate_prior_decl_diff() {
     printf '%s' "슬라이스 선언 증거 없음 — 그 런과 출처 런 어디에도 ${seg} 의 계획됨 행이 없습니다"
     return 0
   fi
+  # THE DIGEST DECIDES WHEN THE ROW CARRIES ONE. It covers the whole of every
+  # field, so a long `선언 파일` grown at its end — past the clip the row keeps —
+  # still differs. Equal digests end it here; unequal ones fall through to the
+  # field loop only to name the field.
+  pd=$(gate_row_field "$pr" '선언 다이제스트')
+  case "$pd" in *[!0-9a-f]*) pd="" ;; esac
+  [ "${#pd}" -eq 64 ] || pd=""
+  if [ -n "$pd" ] && [ "$pd" = "$(slice_decl_digest "$DOC" "$seg")" ]; then
+    return 0
+  fi
   for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
     dk=$k
     [ "$k" = '선언 파일 집합' ] && dk='선언 파일'
     pv=$(gate_row_field "$pr" "$k")
     cv=$(slice_field "$DOC" "$seg" "$dk" 2>/dev/null || true)
-    # A declaration too long for one row was clipped and its whole kept beside
-    # that run; the clip is what the row holds, so the clip is what is compared.
+    # A VALUE TOO LONG FOR ONE ROW holds a clip and names the file its whole was
+    # kept in (`<clip> (전체: <path>)`, or `(전체: <path>)` alone when the whole
+    # row spilled). The clip is not the declaration — two lists that differ only
+    # past it clip to the same bytes — so the whole is read back and compared,
+    # and a row whose whole cannot be read is no evidence at all.
     case "$pv" in
-      *" (전체: "*")") pv=${pv% (전체: *}; cv=$(run_row_safe "$cv" "$RUN_FIELD_MAX") ;;
+      *"(전체: "*")")
+        side=${pv##*"(전체: "}; side=${side%)}
+        if ! pv=$(gate_prior_decl_whole "$side"); then
+          printf '%s' "슬라이스 선언 증거 없음 — 그 런의 계획 행이 ${k} 를 잘라 적었고 전체를 둔 파일 ${side} 를 읽을 수 없습니다"
+          return 0
+        fi ;;
     esac
     if [ "$(gate_decl_norm "$pv")" != "$(gate_decl_norm "$cv")" ]; then
       printf '%s' "슬라이스 선언 불일치(${k}) — 그 런의 계획 「$(gate_row_safe "$(gate_decl_norm "$pv")" 120)」, 지금 문서 「$(gate_row_safe "$(gate_decl_norm "$cv")" 120)」"
       return 0
     fi
   done
+  if [ -n "$pd" ]; then
+    printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런의 계획과 지금 문서의 선언 전체가 다릅니다"
+  fi
   return 0
 }
 
@@ -7941,8 +7976,10 @@ gate_prior_run_landed() {
   # `리뷰 정책`, the slice was not dispatched, and the scope the revision added
   # was never built. A candidate therefore also has to show the slice was
   # planned under the declaration the frozen document carries now: the last
-  # `계획됨` row for the id in that ledger, compared field by field on
-  # `선언 파일 집합`, `레포`, `선행`, `절단점` and `리뷰 정책`. A ledger that
+  # `계획됨` row for the id in that ledger, compared on `선언 파일 집합`,
+  # `레포`, `선행`, `절단점` and `리뷰 정책` — by the row's `선언 다이제스트`
+  # of the whole declaration when it carries one, and otherwise field by field,
+  # a clipped field by the whole its row names and never by the clip. A ledger that
   # brought the slice in rather than planning it holds no such row, so its
   # terminal row's `출처` is followed to that run's ledger once — the run that
   # did the work is the one whose plan counts — and a chain that leaves no plan
@@ -8269,7 +8306,7 @@ gate_from_declaration() {
   for f in "$@"; do
     k=${f%%=*}
     case "$k" in
-      레포|'선언 파일 집합'|선행|절단점|'리뷰 정책'|plan-binding-digest)
+      레포|'선언 파일 집합'|선행|절단점|'리뷰 정책'|'선언 다이제스트'|plan-binding-digest)
         warn "--from-declaration 은 「${k}」 를 동결 문서에서 채웁니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB" ;;
     esac
@@ -8352,6 +8389,7 @@ gate_from_declaration() {
         "절단점=$(slice_field "$DOC" "$seg" '절단점')" )
       k=$(slice_field "$DOC" "$seg" '리뷰 정책')
       [ -z "$k" ] || GATE_DECL_FIELDS+=( "리뷰 정책=$k" )
+      GATE_DECL_FIELDS+=( "선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")" )
       ;;
     *)
       step=$(gate_plan_implement_step)
@@ -16666,6 +16704,13 @@ gate_record_row() {
       # provenance for a row nothing checked.
       if [ -n "$(gate_field_of '출처' "$@")" ]; then
         warn "segment 행의 「출처」는 게이트가 선행을 들여올 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      # `선언 다이제스트` is the gate's too: a later run takes a landing as built
+      # to the declaration this digest names, so a caller's value would vouch
+      # for a declaration nothing read. Only the declaration-filled act writes it.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ -n "$(gate_field_of '선언 다이제스트' "$@")" ]; then
+        warn "segment 행의 「선언 다이제스트」는 게이트가 동결 문서에서 계획 행을 채울 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB"
       fi
 
