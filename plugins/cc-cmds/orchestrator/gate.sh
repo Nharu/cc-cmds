@@ -13083,19 +13083,38 @@ gate_halt_auto_answer_admit() {
   # automatic answer still waiting for its stage is a duplicate; one a stage
   # took up and acted on settles the record for the run.
   #
+  # NEVER OVER AN ANSWER STILL WAITING — ANYONE'S, ON THE RECORD OR THE KEY.
+  # The seat answers only records nobody has answered yet. A person's answer
+  # no stage has taken up is the one the shift must hand on, and the snapshot
+  # lists one answer per key — the last row — so an automatic row written
+  # after it, to the same record or to another record of the same key, would
+  # hand on the recommendation instead and drop the person's choice without a
+  # trace. A person may still answer again over anything.
+  #
   # THE MANIFEST'S `상한` COUNTS AUTOMATIC `재수렴` ANSWERS PER KEY. `없음` is
   # unbounded and an integer N admits N; a person's `재수렴` never uses up the
   # bound, because the bound is a property of the pre-adoption, not of the
   # key. With no `구속-이탈` row the count has nothing to be compared against
   # and only the two rules above hold.
-  local key="$1" rec="$2" opt="$3" r ln row c cls n=0 cap
+  local key="$1" rec="$2" opt="$3" r ln row c cls n=0 cap rkey rrec
   local rows
   rows=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } )
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     ln=${r%%:*}; row=${r#*:}
-    [ "$(gate_row_field "$row" '중단 기록')" = "$rec" ] || continue
-    c=$(gate_halt_answer_consumer "$LEDGER" "$(gate_row_field "$row" '세그먼트')" "$ln")
+    rkey=$(gate_row_field "$row" '세그먼트')
+    rrec=$(gate_row_field "$row" '중단 기록')
+    [ "$rrec" = "$rec" ] || [ "$rkey" = "$key" ] || continue
+    c=$(gate_halt_answer_consumer "$LEDGER" "$rkey" "$ln")
+    if [ -z "$c" ] && ! gate_halt_answer_is_auto "$row"; then
+      warn "a person's answer (ledger line $ln, $rrec) is still waiting for its stage — an automatic answer over it would hand on the recommendation instead of the person's choice: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ -z "$c" ] && [ "$rrec" != "$rec" ]; then
+      warn "$rkey already has an automatic answer to another record (ledger line $ln, $rrec) that no stage has taken up yet — a second one would hide it: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    [ "$rrec" = "$rec" ] || continue
     if [ "$opt" = "재수렴" ] && [ "$(gate_row_field "$row" '선택지')" = "재수렴" ] && [ -n "$c" ]; then
       cls=$(gate_row_field "${c#*:}" '종단 부류')
       if [ "$(gate_row_field "${c#*:}" '종류')" = "reconverge" ]; then

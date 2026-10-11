@@ -22146,6 +22146,31 @@ sdh_hn=$(sdh_ha)
 sdh_seat N1 "$SDH_NOK"
 sdh_refused "앞선 자동 답이 아직 소비되지 않은 기록의 두 번째 자동 답" 3
 
+# A PERSON'S ANSWER STILL WAITING IS NEVER WRITTEN OVER. The snapshot hands on
+# the last row per key, so a seat answer after it — to the same record or to
+# another record of the key — would replace the person's choice. Once a stage
+# took the person's answer up, a new record of the key is the seat's again.
+sdh_sr H1 audit 1 '의도된 park'
+SDH_HP="$CAP_DIR/halt/H1#1.md"
+sdh_rec "$SDH_HP" design-audit-unattended 'H1#1' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment H1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 사람의 답" \
+         -- "중단 기록=$SDH_HP" '선택지=기각' '근거=사람이 기각을 고름'
+check "34d: 사람의 기각 답이 선다" "$rc/$(row_field "$(sdh_last)" '답한 주체')" "0/사람"
+sdh_hn=$(sdh_ha)
+sdh_seat H1 "$SDH_HP"
+sdh_refused "아직 소비되지 않은 사람 답 위의 같은 기록 좌석 답" 3
+SDH_HP2="$CAP_DIR/halt/H1#2.md"
+sdh_rec "$SDH_HP2" design-audit-unattended 'H1#2' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_seat H1 "$SDH_HP2"
+sdh_refused "아직 소비되지 않은 사람 답이 있는 키의 다른 기록 좌석 답" 3
+check "34d: 스냅숏은 그 키의 사람 선택지를 그대로 넘긴다" \
+  "$(cap_snap "$SDH_SEAT" '' | jq -r '[.answered_halts[] | select(.segment == "H1") | "\(.option)/\(.answered_by)"] | last // ""')" "기각/사람"
+sdh_sr H1 audit 2 '의도된 park'
+sdh_seat H1 "$SDH_HP2"
+check "34d: 사람 답이 소비된 뒤 같은 키 새 기록의 좌석 답은 통과한다" "$rc" "0"
+
 # THE SHIFT BRANCH AND THE COUNT, in a run of its own with a `구속-이탈` row.
 # `상한=없음` first: an earlier shift `재수렴` to another record of the key does
 # not stop the next one. Then `상한=1`: a person's `재수렴` uses up nothing, and
