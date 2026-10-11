@@ -6,7 +6,7 @@
 #
 # 탐침 모드: `GATE_PREAUTH_PROBE=1` 이면 거부하지 않고 판정만 stdout 한 줄로
 # 내보내고 exit 0 한다 —
-#   `P=<0|1> 형태=<완전|러너|없음> Pd=<0|1> Pg=<0|1> Gc=<-|short|dropped|destructive|argv0>
+#   `P=<0|1> 형태=<완전|러너|없음> Pd=<0|1> Pg=<0|1> Gc=<-|short|destructive|argv0>
 #    Sx=<-|ok|dropped|none|code|argv0> Sw=<단어|-> 제안=<형태|->`
 # (실제로는 한 줄). `제안` 은 자유 문면이라 맨 끝에서 줄 끝까지다. 처분 평가기가
 # 이 한 사본을 부르므로 매칭 규칙이 두 군데로 갈리지 않는다.
@@ -119,13 +119,30 @@ drop=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
 # 단어가 하위 명령이다. 인터프리터는 스크립트 자리까지만 요구한다. 트리거 단어가
 # 2번 이후 자리에 단어로 없으면(argv0 자리의 경로, 공백이 든 경로) 어떤 행도 이를
 # 채울 수 없어 0 을 낸다.
+#
+# docker 는 피연산자 대신 둘로 갈린다. `run`·`create` 는 이미지에서 옵션 읽기를
+# 멈추므로 이미지까지 요구한다 — 이미지 자리는 값을 받지 않는다고 확실한 플래그만
+# 건너뛰고, 그 밖의 대시 단어는 값을 받는다고 보아 다음 비대시 단어까지 건너뛴다.
+# 목록이 모자라면 더 많이 요구하는 쪽으로만 틀린다. 그 밖의 docker 동사는 피연산자
+# 뒤에서도 옵션을 읽으므로(`docker build -t T . --output …`) 행위 전체를 요구한다.
 lreq=$(printf '%s\n' "$norm" | awk '
   function nextop(k,   j) { for (j = k + 1; j <= NF; j++) if ($j !~ /^-/) return j; return 0 }
   {
     s = nextop(1); if (!s) s = 2
     if (($1 == "docker" && $s ~ /^(image|container|volume|network|node|service|secret|config|context|builder|buildx|manifest|plugin|system|compose|trust|swarm)$/) \
         || ($1 == "yarn" && $s == "global")) { j = nextop(s); if (j) s = j }
-    t = nextop(s); if ($1 ~ /^(bash|sh|zsh|python3|node)$/) t = 0
+    if ($1 ~ /^(bash|sh|zsh|python3|node)$/) t = 0
+    else if ($1 == "docker") {
+      t = NF
+      if (($s == "run" || $s == "create") && (s == 2 || (s == 3 && $2 == "container"))) {
+        for (k = s + 1; k <= NF; k++) {
+          if ($k ~ /^(--rm|-d|--detach|-i|--interactive|-t|--tty|-it|-ti|--init|--privileged|--read-only|-P|--publish-all)$/) continue
+          if ($k ~ /^-/) { if (k < NF && $(k + 1) !~ /^-/) k++; continue }
+          t = k; break
+        }
+      }
+    }
+    else t = nextop(s)
     L = 2; if (s > L) L = s; if (t > L) L = t
     n = split(ENVIRON["GATE_REACH_TRIGGERS"], tw, "\n")
     for (m = 1; m <= n; m++) {
@@ -160,7 +177,7 @@ esac
 
 # 모든 행을 훑는다 — 이른 break 가 없다. 첫 일치에서 멈추면 앞의 러너 행이나 짧은
 # 완전 행이 뒤의 더 긴 행을 가려, 기기전역 칸과 파괴 명시가 그 행을 보지 못한다.
-matched=0; any_full=0; any_runner=0; pd=0; pg=0; full_long=0; full_long_kept=0
+matched=0; any_full=0; any_runner=0; pd=0; pg=0; full_long=0
 mf="$GATE_MANIFEST"; [ -f "$mf" ] || mf=/dev/null
 while IFS= read -r line; do
   [ "$own_ok" = "1" ] || break
@@ -173,6 +190,18 @@ while IFS= read -r line; do
 
   nwords=$(printf '%s' "$shape" | awk '{print NF}')
   first=$(printf '%s' "$shape" | awk '{print $1; exit}')
+  # 행이 담는 구간 안에서 정규화가 단어를 떨어뜨렸으면 그 행은 이 행위와 일치하지
+  # 않는다 — 완전 행이든 러너 행이든, 탐침이든 비탐침 통과든 같다. 행은 `-x=y`
+  # 단어를 담을 수 없으므로 `node --require=/tmp/e.js scripts/x.js` 가 행
+  # `node scripts/x.js` 로, `npm --script-shell=… run deploy` 가 행 `npm run` 으로
+  # 열리면 행이 말하지 않은 옵션을 연 것이다. 행의 마지막 단어 뒤에서 떨어진 단어는
+  # 행이 덮지 않는 꼬리라 일치를 막지 않는다.
+  last=$(word_at "$map" "$nwords")
+  dz_row=0
+  for d in $drop; do
+    if [ -z "$last" ] || [ "$d" -lt "$last" ]; then dz_row=1; break; fi
+  done
+  [ "$dz_row" = "0" ] || continue
   # 형태의 완전 여부. 인터프리터가 아닌 러너는 첫 비옵션 operand 자리 너머까지 담아야
   # 완전이다. 인터프리터는 그 자리의 단어가 실제 스크립트 단어이고 — 비어 있지 않고,
   # 대시로 시작하지 않고, stdin 계열이 아니고 — 그 앞이 모두 닫힌 플래그일 때만
@@ -213,19 +242,10 @@ while IFS= read -r line; do
       [ "$nwords" = "$nf" ] && [ -z "$drop" ] && pd_row=1
     fi
     [ "$pd_row" = "1" ] && pd=1
-    # 기기전역 칸 — 행이 `Lreq` 까지 닿고, 담는 구간 안에서 떨어진 단어가 없고,
-    # 파괴 행위라면 그 파괴를 명시해야 연다.
-    dz_row=0
-    last=$(word_at "$map" "$nwords")
-    for d in $drop; do
-      [ "$d" -lt "$last" ] && { dz_row=1; break; }
-    done
+    # 기기전역 칸 — 행이 `Lreq` 까지 닿고, 파괴 행위라면 그 파괴를 명시해야 연다.
     if [ "$lreq" -gt 0 ] && [ "$nwords" -ge "$lreq" ]; then
       full_long=1
-      if [ "$dz_row" = "0" ]; then
-        full_long_kept=1
-        { [ "$X" = "0" ] || [ "$pd_row" = "1" ]; } && pg=1
-      fi
+      { [ "$X" = "0" ] || [ "$pd_row" = "1" ]; } && pg=1
     fi
     continue
   fi
@@ -250,8 +270,7 @@ if [ "$probe" = "1" ]; then
   gc='-'
   if [ "$pg" = "0" ] && [ "$any_full" = "1" ]; then
     if [ "$lreq" = "0" ]; then gc=argv0
-    elif [ "$full_long_kept" = "1" ]; then gc=destructive
-    elif [ "$full_long" = "1" ]; then gc=dropped
+    elif [ "$full_long" = "1" ]; then gc=destructive
     else gc=short; fi
   fi
 
