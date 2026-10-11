@@ -21,8 +21,12 @@
 # stage that could run this program could open a run nobody authorized. The
 # check is a second layer only — one word in front of the command unsets the
 # variable — and the boundaries that hold are the admission check's demand for
-# the dispatcher's claim, the refused writes to the pace directory and to every
-# run's authorization artifacts, and the grade this program's name gets.
+# the dispatcher's claim, the refusals of a write to the pace directory and to
+# every run's authorization artifacts that the argv spells or that a program
+# would read from a file (`sed -f`, `awk -f`, `xargs -a`), and the grade this
+# program's name gets. A destination written inside a script or an
+# interpreter's program text, and a write through the edit tools, are not
+# among them.
 #
 # SOURCED, THIS FILE ONLY DEFINES FUNCTIONS. run.sh sources it so the admission
 # check calls the same predicates the verdict does; the program mode below

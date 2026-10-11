@@ -16147,6 +16147,98 @@ gate_manifest_write_guard() {
   return 0
 }
 
+gate_progfile_word() {
+  # gate_progfile_word <sed|awk|xargs|vi> <element> — prints `hit` when the
+  # element hands that program a file to read its program or its argument list
+  # from, `arg` when it is an option whose value is the next element, `opt` for
+  # any other option and `operand` for a non-option.
+  #
+  # Short options are read as a cluster, letter by letter, the way getopt reads
+  # them: `-nf prog` and `-fprog` are `-f` as much as `-f prog` is, and a letter
+  # that takes a value ends the cluster, so `-v x=-f` is not a hit.
+  local k="$1" a="$2" c rest refl argl optl
+  case "$k:$a" in
+    sed:--file|sed:--file=*|awk:--file|awk:--file=*|awk:--exec|awk:--exec=*|awk:--include|awk:--include=*|awk:--load|awk:--load=*|xargs:--arg-file|xargs:--arg-file=*|vi:-s|vi:-S|vi:-S?*)
+      printf 'hit'; return 0 ;;
+    sed:--expression|sed:--line-length|awk:--field-separator|awk:--assign|xargs:--delimiter|xargs:--max-args|xargs:--max-procs|xargs:--max-chars|xargs:--max-lines|xargs:--process-slot-var|vi:-c|vi:--cmd|vi:-T|vi:-u|vi:-U|vi:-i|vi:-w|vi:-W|vi:-t|vi:-q)
+      printf 'arg'; return 0 ;;
+    *:--*|vi:-*|vi:+*) printf 'opt'; return 0 ;;
+    *:-?*) ;;
+    *) printf 'operand'; return 0 ;;
+  esac
+  case "$k" in
+    sed) refl=f argl=el optl=i ;;
+    awk) refl=fEil argl=FveWZ optl=dDLop ;;
+    *) refl=a argl=EIJLnPRSsd optl=eil ;;
+  esac
+  rest=${a#-}
+  while [ -n "$rest" ]; do
+    c=${rest:0:1}; rest=${rest:1}
+    case "$refl" in *"$c"*) printf 'hit'; return 0 ;; esac
+    case "$argl" in
+      *"$c"*) if [ -z "$rest" ]; then printf 'arg'; else printf 'opt'; fi; return 0 ;;
+    esac
+    case "$optl" in *"$c"*) printf 'opt'; return 0 ;; esac
+  done
+  printf 'opt'
+}
+
+gate_progfile_opt() {
+  # gate_progfile_opt <argv...> — rc 0, with the program and the option in
+  # GATE_PROGFILE_HIT, when the act hands sed, awk, xargs or vi a FILE to read
+  # its program or its argument list from.
+  #
+  # THE PATH ARMS OF THE PACING AND SIBLING RECORD GUARDS READ ONLY WHAT THE ACT
+  # SPELLS. `sed -n -f prog /dev/null` with `prog` holding `$!w <pace>/backlog.jsonl`,
+  # `awk -f prog` printing into a sibling's `R8.plan.md`, and `xargs -a list cp …`
+  # name the destination nowhere in the argv: it is a byte of a file the guards
+  # never open, so both arms let all three write. Opening the file would not
+  # settle it either — what it holds at the check is not what it holds when the
+  # program reads it. A write grade carrying such an option is therefore refused
+  # whatever the file says, and a read grade is not: these programs still read.
+  #
+  # A program counts where it is the act's argv0, or anywhere in the argv of an
+  # act an interpreter or a wrapper leads (`env sed -f`, `find … -exec awk -f`,
+  # `xargs sed -f`), because the argv0 alone says nothing there. Options are read
+  # until `--` or a `find -exec` terminator; for xargs, until its command, whose
+  # own options are not xargs's. vi takes `-s` and `-S`: in Ex mode `-s` reads
+  # its commands from standard input, which no guard sees either.
+  local n=$# i=0 j k a r lead=0
+  local -a av
+  av=("$@")
+  GATE_PROGFILE_HIT=''
+  if gate_argv0_wraps "${av[0]}"; then lead=1; fi
+  case "${av[0]##*/}" in sudo|doas) lead=1 ;; esac
+  while [ "$i" -lt "$n" ]; do
+    if [ "$i" -gt 0 ] && [ "$lead" = "0" ]; then break; fi
+    case "${av[i]##*/}" in
+      sed|gsed) k=sed ;;
+      awk|gawk|nawk|mawk) k=awk ;;
+      xargs|gxargs) k=xargs ;;
+      vi|vim|nvim|ex|view|rvim|gvim) k=vi ;;
+      *) i=$((i + 1)); continue ;;
+    esac
+    j=$((i + 1))
+    while [ "$j" -lt "$n" ]; do
+      a=${av[j]}
+      case "$a" in --|';'|'\;'|'+') break ;; esac
+      r=$(gate_progfile_word "$k" "$a")
+      case "$r" in
+        hit) GATE_PROGFILE_HIT="${av[i]} $a"; return 0 ;;
+        arg) j=$((j + 2)); continue ;;
+        operand) [ "$k" = xargs ] && break ;;
+      esac
+      j=$((j + 1))
+    done
+    i=$((i + 1))
+  done
+  return 1
+}
+
+gate_progfile_refuse() {
+  warn "rule refused: \`$GATE_PROGFILE_HIT\` reads its program or its argument list from a file, so where it writes is written in that file — a guard that does not open the file cannot judge the destination, and a write grade is not left to it ($1)"
+}
+
 gate_sibling_record_refuse() {
   warn "this is a write to another run's kickoff-frozen record — only kickoff and the rekick deriver write it: $1"
   warn "a rekick copies the predecessor's manifest and grant record byte for byte, so a run that edits a sibling's record writes the authorization of the run that comes after it"
@@ -16210,13 +16302,20 @@ gate_sibling_record_write_guard() {
   # RESIDUAL: an ancestor of either directory as the destination (`cp -R
   # ./pipeline-run <docs>/`) is not refused here, because `docs/` is a
   # directory ordinary writes name; neither is a path assembled by a `cd`
-  # inside a wrapper, or a link swapped between this check and the act. The
-  # edit tools are the hook's to refuse, and its guard keys on this run's own
-  # files only.
+  # inside a wrapper, or a link swapped between this check and the act. A
+  # destination written inside a script or an interpreter's program text is
+  # not read either. A program or an argument list taken from a file
+  # (`sed -f`, `awk -f`, `xargs -a`, `vim -s`) is refused outright, since no
+  # arm here could read where it writes (`gate_progfile_opt`). The edit tools
+  # are the hook's to refuse, and its guard keys on this run's own files only.
   local mdir="$1" mdirp="$2"; shift 2
   local gdir='' gdirp='' a b ap ad argv0 joinedn gdirn gdirpn cwd i x
   local rec to_mdir=0 to_gdir=0 has_rec=0 has_md=0
   local -a cand base_c raw
+  # A destination read from a file is not one the arms below can see.
+  if gate_progfile_opt "$@"; then
+    gate_progfile_refuse "another run's kickoff-frozen record"; return "$GATE_EXIT_RULE"
+  fi
   if [ -n "${GRANT:-}" ]; then
     gdir=$(dirname "$GRANT")
     gdirp=$(cd "$gdir" 2>/dev/null && pwd -P) || gdirp="$gdir"
@@ -16450,8 +16549,12 @@ gate_pace_write_guard() {
   # component and a `..` after a symlinked directory are followed the way the
   # kernel follows them (`gate_pace_path_hit`), and `ln` is refused when its
   # target, read from the link's own directory, lands in the root
-  # (`gate_pace_link_guard`). RESIDUAL: a `cd` inside a wrapper, and a link
-  # swapped between this check and the act running, are not seen here; the
+  # (`gate_pace_link_guard`). A program or an argument list taken from a file
+  # (`sed -f`, `awk -f`, `xargs -a`, `vim -s`) is refused before either arm,
+  # because its destination is in the file (`gate_progfile_opt`). RESIDUAL: a
+  # `cd` inside a wrapper, a destination written inside a script or an
+  # interpreter's program text, and a link swapped between this check and the
+  # act running, are not seen here; the
   # dispatcher and the deriver run outside every gate, so nothing legitimate is
   # refused by widening later.
   #
@@ -16482,6 +16585,11 @@ gate_pace_write_guard() {
   case "$graded" in
     읽기) return 0 ;;
   esac
+  # A destination read from a file is not one the arms below can see. This is
+  # the arm both verbs reach: `grade` calls this guard and not the sibling one.
+  if gate_progfile_opt "$@"; then
+    gate_progfile_refuse "pacing directory and every run's kickoff-frozen record"; return "$GATE_EXIT_RULE"
+  fi
   local r1 r2 r1p r2p n a v an ap joinedn base first mode i ov gcwd eb inroot rc
   local -a prim names
   r1=$(gate_path_spelling "$(gate_lexical_abs "$(gate_pace_root)")")

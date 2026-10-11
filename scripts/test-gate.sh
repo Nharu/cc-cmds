@@ -11034,6 +11034,23 @@ case "$msg" in
   *"축2=거부"*) bad "페이싱 읽기 오탐" "$msg" ;;
   *) ok "페이싱 백로그 읽기의 등급은 거부가 아니다" ;;
 esac
+# A destination read from a file: the program or argument list is in a file
+# the guard never opens, so the grade verb refuses the option itself.
+printf '$!w %s\n' "$STATE_LATE/cc-cmds/pace/backlog.jsonl" > "$WORK/progfile17"
+for spell in "sed -n -f $WORK/progfile17 /dev/null" "sed -nf $WORK/progfile17 /dev/null" \
+             "awk -f $WORK/progfile17 /dev/null" "xargs -a $WORK/progfile17 cp x"; do
+  # shellcheck disable=SC2086
+  gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- $spell
+  check "목적지를 파일에서 읽는 명령은 등급 동사에서 거부된다: $spell" "$rc" "$GATE_EXIT_RULE"
+  case "$msg" in
+    *"축2=거부"*"reads its program or its argument list from a file"*|*"reads its program or its argument list from a file"*"축2=거부"*)
+      ok "등급 동사의 프로그램 파일 거부가 축2=거부 와 그 이유를 낸다: $spell" ;;
+    *) bad "등급 동사 프로그램 파일 거부 문면: $spell" "$msg" ;;
+  esac
+done
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- sed -n p /dev/null
+check "프로그램 파일이 없는 sed 는 등급 동사에서 거부되지 않는다" "$rc" "0"
+rm -f "$WORK/progfile17"
 
 # ---------------------------------------------------------------------------
 # 18. Concurrent appends do not chain to the same parent
@@ -15205,6 +15222,83 @@ for spell_row in "sed -n w$WT/R8.plan.md /dev/null" "cp $WORK/r3x $WORK/R9.notes
     *) bad "형제 런 가드 오탐: $spell_row" "$sib_iw" ;;
   esac
 done
+# A DESTINATION READ FROM A FILE. `sed -f`, `awk -f` and `xargs -a` take their
+# program or their argument list from a file neither guard opens, so the
+# destination is nowhere in the argv and both path arms let it write. A write
+# grade carrying such an option is refused whatever the file holds. Through the
+# gate `sed` grades as a worktree write, so it is driven end to end and the
+# target's bytes are pinned; awk, xargs and vim do not grade as anything a
+# declaration meets, so they are put to each guard alone.
+printf '$!w %s\n' "$PACE_N/backlog.jsonl" > "$WORK/progfile"
+printf '$!w %s\n' "$WORK/R8.plan.md" > "$WORK/progfile8"
+printf 'BEGIN { print "x" > "%s" }\n' "$WORK/R8.plan.md" > "$WORK/awkprog"
+printf '%s\n' "$PACE_N/backlog.jsonl" > "$WORK/argfile"
+pf_msg="reads its program or its argument list from a file"
+pace_pb=$(fsha "$PACE_N/backlog.jsonl")
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n -f "$WORK/progfile" /dev/null
+check "sed -f 로 페이싱 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"$pf_msg"*) ok "그 거절은 프로그램 파일 갈래의 것이다: sed -f 백로그" ;;
+  *) bad "프로그램 파일 거부 문면: sed -f 백로그" "$msg" ;;
+esac
+check "sed -f 로 거절된 백로그는 바이트도 존재도 그대로다" "$(fsha "$PACE_N/backlog.jsonl")" "$pace_pb"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n -f "$WORK/progfile8" /dev/null
+check "sed -f 로 형제 R8.plan.md 에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"$pf_msg"*) ok "그 거절은 프로그램 파일 갈래의 것이다: sed -f 형제 계획" ;;
+  *) bad "프로그램 파일 거부 문면: sed -f 형제 계획" "$msg" ;;
+esac
+check "sed -f 로 거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+pf_rows() {
+  # pf_rows <pace|sib> <라벨> <argv…> — one refused spelling, put to one guard alone.
+  local which="$1" label="$2" out; shift 2
+  if [ "$which" = pace ]; then out=$(pace_alone "$@"); else out=$(sib_alone "$@"); fi
+  case "$out" in
+    *"$pf_msg"*"rc=룰거부") ok "프로그램 파일 갈래가 거절한다($which): $label" ;;
+    *) bad "프로그램 파일 갈래가 거절한다($which): $label" "$out" ;;
+  esac
+}
+pf_rows pace "sed -f" sed -n -f "$WORK/progfile" /dev/null
+pf_rows pace "sed 의 묶은 -nf" sed -nf "$WORK/progfile" /dev/null
+pf_rows pace "sed 의 붙인 -f" sed -n "-f$WORK/progfile" /dev/null
+pf_rows pace "sed --file=" sed -n "--file=$WORK/progfile" /dev/null
+pf_rows pace "sed --file 다음 원소" sed -n --file "$WORK/progfile" /dev/null
+pf_rows pace "피연산자 뒤의 sed -f" sed -n /dev/null -f "$WORK/progfile"
+pf_rows pace "awk -f" awk -f "$WORK/awkprog" /dev/null
+pf_rows pace "gawk --file" gawk --file "$WORK/awkprog" /dev/null
+pf_rows pace "xargs -a" xargs -a "$WORK/argfile" cp "$WORK/r3x"
+pf_rows pace "xargs --arg-file=" xargs "--arg-file=$WORK/argfile" cp "$WORK/r3x"
+pf_rows pace "값을 받는 옵션 뒤의 xargs -a" xargs -n 1 -a "$WORK/argfile" cp "$WORK/r3x"
+pf_rows pace "env 뒤의 sed -f" env A=1 sed -f "$WORK/progfile" /dev/null
+pf_rows pace "find -exec 속 awk -f" find /dev/null -exec awk -f "$WORK/awkprog" {} +
+pf_rows pace "vim -s" vim -s "$WORK/progfile" x
+pf_rows sib "awk -f" awk -f "$WORK/awkprog" /dev/null
+pf_rows sib "sed -f" sed -n -f "$WORK/progfile8" /dev/null
+pf_rows sib "xargs -a" xargs -a "$WORK/argfile" cp "$WORK/r3x"
+# The neighbours pass: an option of xargs's command is not xargs's, a value an
+# option takes is not an option, a sed with its program in the argv is read by
+# the path arms as before, and a word in an act no wrapper leads is not a
+# program name.
+for spell_row in "xargs cp -a $WORK/r3x $WT/pf-x" "awk -v x=-f {print} /dev/null" \
+                 "sed -n -e p /dev/null" "git commit -m sed -f"; do
+  read -r -a spell_argv <<< "$spell_row"
+  pace_iw=$(pace_alone "${spell_argv[@]}")
+  case "$pace_iw" in
+    "rc=0") ok "프로그램 파일을 받지 않는 철자는 걸리지 않는다: $spell_row" ;;
+    *) bad "프로그램 파일 갈래 오탐: $spell_row" "$pace_iw" ;;
+  esac
+done
+# A read grade is not refused: these programs still read.
+pace_iw=$(cd "$WT" && GATE_PACE_ROOT="$PACE_N" bash -c \
+  'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset MANIFEST; shift
+   r=0; gate_pace_write_guard 읽기 "$@" || r=$?; printf "rc=%s" "$r"' \
+  _ "$GATE" sed -n -f "$WORK/progfile" /dev/null 2>&1)
+check "읽기 등급의 sed -f 는 프로그램 파일 갈래에 걸리지 않는다" "$pace_iw" "rc=0"
+rm -f "$WORK/progfile" "$WORK/progfile8" "$WORK/awkprog" "$WORK/argfile"
 # Naming the directory while reading it passes: the read grade returns first.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
