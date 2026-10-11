@@ -11,6 +11,7 @@ need most of a minute per refresh.
 THE PREDICATES ARE THEREFORE PORTED, ONE TO ONE. `cc_stage_is_live`,
 `cc_live_stages`, `cc_run_state`, `cc_run_grade`, `cc_nonterminal_segments`,
 `cc_segment_count`, `cc_open_approvals`, `cc_unresolved_blocked`,
+`cc_shift_is_live`, `cc_run_ends_on_done`, `cc_run_end_settled`,
 `cc_ledger_growth_at` and `cc_mtime` each have a function below that reads the
 same bytes the same way, down to the greedy `sed` captures and the word
 splitting of a `for` loop. That is deliberate: two implementations of one
@@ -265,6 +266,10 @@ def nonterminal_segments(lines):
             if needle in ln:
                 last = ln
         st = _field_last(last, "상태") if last is not None else ""
+        ap = _field_last(last, "적용") if last is not None else ""
+        if st == "머지됨" and ap == "대기":
+            out.append(sid)
+            continue
         if (" %s " % st) not in (" %s " % TERMINAL_SEGMENT_STATES):
             out.append(sid)
     return out
@@ -346,7 +351,38 @@ def ledger_growth_at(run_dir, ledger_path, hb_value=None):
     return mtime_s(ledger_path)
 
 
-GRADES = {"도는중": 1, "승인대기": 2, "진행중": 3, "정지경고": 4, "종단": 5, "버려짐": 6}
+def shift_is_live(run_dir, procs):
+    """cc_shift_is_live — pid on line 1, its fingerprint on line 2, both required."""
+    f = os.path.join(run_dir, "shift.live")
+    if not os.path.isfile(f):
+        return False
+    t = read_text(f)
+    rows = (t or "").split("\n")
+    pid_text = "".join(rows[0].split()) if rows else ""
+    rec = rows[1] if len(rows) > 1 else ""
+    if not pid_text or not rec:
+        return False
+    pid = _pid_of(pid_text)
+    if pid is None or not procs.exists(pid):
+        return False
+    return rec == procs.fingerprint(pid)
+
+
+def run_ends_on_done(run_dir):
+    """cc_run_ends_on_done."""
+    return os.path.exists(os.path.join(run_dir, "ends-on-done"))
+
+
+def run_end_settled(run_dir, procs):
+    """cc_run_end_settled — `done` exists and no shift is still settling it."""
+    if not os.path.isfile(os.path.join(run_dir, "done")):
+        return False
+    if not run_ends_on_done(run_dir):
+        return True
+    return not shift_is_live(run_dir, procs)
+
+
+GRADES = {"도는중": 1, "승인대기": 2, "진행중": 3, "정산중": 3, "정지경고": 4, "종단": 5, "버려짐": 6}
 
 
 def run_grade(token):
@@ -365,11 +401,15 @@ def run_state(run_dir, lines, ledger_path, procs, stall=STALL_S, abandon=ABANDON
     pend = open_approvals(lines)
     nonterm = len(nonterminal_segments(lines))
     n_seg = segment_count(lines)
+    settle = False
     if blocked_n == 0:
         if os.path.isfile(os.path.join(run_dir, "done")):
-            return "종단"
+            return "종단" if run_end_settled(run_dir, procs) else "정산중"
         if pend == 0 and nonterm == 0 and n_seg >= 1:
-            return "종단"
+            if run_ends_on_done(run_dir):
+                settle = True
+            else:
+                return "종단"
     if pend > 0:
         return "승인대기"
     grew = growth if growth is not None else ledger_growth_at(run_dir, ledger_path)
@@ -384,6 +424,8 @@ def run_state(run_dir, lines, ledger_path, procs, stall=STALL_S, abandon=ABANDON
         return "버려짐"
     if idle >= stall:
         return "정지경고"
+    if settle:
+        return "정산중"
     return "진행중"
 
 
@@ -677,6 +719,11 @@ def stamp_key(src):
         os.path.isfile(os.path.join(rd, "done")) if rd else None,
         mt(os.path.join(rd, "watch.heartbeat")) if rd else None,
         mt(os.path.join(rd, "log")) if rd else None,
+        # A marker-bearing run reads 종단 only once its shift is gone, and the
+        # shift ending changes no file — so 정산중 is never frozen, and these
+        # two make a frozen 종단 re-evaluate when a marker or a shift appears.
+        os.path.exists(os.path.join(rd, "ends-on-done")) if rd else None,
+        mt(os.path.join(rd, "shift.live")) if rd else None,
     )
 
 
@@ -810,7 +857,10 @@ class Model:
         else:
             state = run_state(src.run_dir, lines, src.ledger_path, procs, self.stall, self.abandon,
                               now=now, growth=growth, live=live)
-            if growth is None and state not in ("도는중", "종단", "승인대기"):
+            # The shell answers a `done` run before it reads any growth clock,
+            # so the done-tail's 정산중 is not the age ladder's and stays.
+            if (growth is None and state not in ("도는중", "종단", "승인대기")
+                    and not os.path.isfile(os.path.join(src.run_dir, "done"))):
                 state = "버려짐"
         seg_state = {}
         for ln in src.ledger.series("segment") if src.ledger else []:
@@ -893,7 +943,7 @@ class Model:
         out["hidden"] = state == "버려짐"
         if out["run_dir"] is None:
             band = "older"
-        elif state in ("도는중", "진행중", "정지경고"):
+        elif state in ("도는중", "진행중", "정산중", "정지경고"):
             band = "live"
         elif state == "승인대기":
             g = out.get("last_growth")
@@ -950,8 +1000,11 @@ class Model:
     def live_count(self, now=None):
         """The idle check's census: live as the top band defines it.
 
-        Only directories without `done` whose growth clock is inside the window
-        are evaluated, since nothing outside that set can be in the top band.
+        A directory whose `done` is settled reads 종단 and is skipped; one whose
+        `done` is not settled yet is the done-tail's 정산중 and is evaluated
+        whatever its growth clock says. Otherwise only directories whose growth
+        clock is inside the window are evaluated, since nothing outside that set
+        can be in the top band.
         """
         if now is None:
             now = int(time.time())
@@ -959,12 +1012,18 @@ class Model:
         procs = None
         n = 0
         for src in self.sources.values():
-            if src.run_dir is None or os.path.isfile(os.path.join(src.run_dir, "done")):
+            if src.run_dir is None:
                 continue
+            done = os.path.isfile(os.path.join(src.run_dir, "done"))
+            if done:
+                if procs is None:
+                    procs = ProcTable()
+                if run_end_settled(src.run_dir, procs):
+                    continue
             if src.ledger:
                 src.ledger.refresh()
             g = self._growth(src)
-            if g is None or now - g >= self.window:
+            if not done and (g is None or now - g >= self.window):
                 continue
             if procs is None:
                 procs = ProcTable()
@@ -1220,10 +1279,25 @@ def _main(argv):
         abandon = int(argv[4]) if len(argv) > 4 else ABANDON_S
         print(run_state(argv[1], read_ledger_lines(argv[2]), argv[2], ProcTable(), stall, abandon))
         return 0
+    if len(argv) >= 2 and argv[0] == "model-state":
+        # The server's path — discovery, `Ledger` and `Model.evaluate` — over
+        # one run directory, so the agreement suite reaches it as well.
+        rd = os.path.abspath(argv[1])
+        stall = int(argv[2]) if len(argv) > 2 else STALL_S
+        abandon = int(argv[3]) if len(argv) > 3 else ABANDON_S
+        m = Model(root=os.path.dirname(rd), stall=stall, abandon=abandon)
+        m.discover()
+        src = m.find(os.path.basename(rd))
+        if src is None:
+            print("없음")
+            return 1
+        print(m.evaluate(src, ProcTable(), int(time.time()))["state"])
+        return 0
     if len(argv) >= 2 and argv[0] == "grade":
         print(run_grade(argv[1]))
         return 0
-    print("usage: dashboard_read.py live-stages|live-names <run-dir> | state <run-dir> <ledger> [stall abandon] | grade <token>")
+    print("usage: dashboard_read.py live-stages|live-names <run-dir> | state <run-dir> <ledger> [stall abandon]"
+          " | model-state <run-dir> [stall abandon] | grade <token>")
     return 2
 
 

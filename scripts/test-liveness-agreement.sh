@@ -580,11 +580,21 @@ else
   # the branch it names went untested.
   st_case() {
     # st_case <설명> <기대 토큰> — compare the current fixture through both.
-    local want="$2" sh py
+    #
+    # THE PORT IS READ TWICE. `port state` is the command line's path, a ledger
+    # read whole and the clock re-derived; the server never takes it. It takes
+    # discovery, `Ledger` and `Model.evaluate`, which keep their own growth
+    # clock and override a clockless run on their own, so `port model-state`
+    # is that path over the same directory. Discovery needs `ledger-path`, which
+    # every real run directory carries.
+    local want="$2" sh py pm
+    [ -f "$FX_RUN_DIR/ledger-path" ] || fx_ledger_path
     sh=$(shell_state "$FX_RUN_DIR" "$FX_LEDGER")
     py=$(port state "$FX_RUN_DIR" "$FX_LEDGER")
+    pm=$(port model-state "$FX_RUN_DIR")
     check "상태 갈래 $1 — 셸이 의도한 토큰을 낸다" "$sh" "$want"
     check "상태 갈래 $1 — 포트가 셸과 같은 토큰을 낸다" "$py" "$sh"
+    check "상태 갈래 $1 — 서버 경로(Model.evaluate)가 셸과 같은 토큰을 낸다" "$pm" "$sh"
   }
 
   fx_mkrun st-live; fx_segment S1 실행중; fx_stage_live S1; fx_heartbeat 0 5
@@ -615,8 +625,29 @@ else
   st_case "하트비트 없이 원장 mtime" "정지경고"
   fx_mkrun st-noclock; rm -f "$FX_LEDGER"
   st_case "시계가 하나도 없다" "버려짐"
+  # A merge that still owes its apply is in flight, so the run is not over;
+  # the same row with the apply done is the control.
+  fx_mkrun st-apply-wait
+  fx_row 'segment' "id=S1" "상태=머지됨" "적용=대기" "워크트리=$FX_RUN_DIR"
+  fx_heartbeat 0 5
+  st_case "머지됨이지만 적용=대기" "진행중"
+  fx_mkrun st-apply-done
+  fx_row 'segment' "id=S1" "상태=머지됨" "적용=완료" "워크트리=$FX_RUN_DIR"
+  fx_heartbeat 0 5
+  st_case "머지됨이고 적용=완료" "종단"
 
-  for tok in 도는중 승인대기 진행중 정지경고 종단 버려짐 미지의토큰; do
+  # THE GRADE TOKENS ARE READ OFF `cc_run_grade`, not listed here. A list
+  # written by hand is complete on the day it is written: it missed 정산중,
+  # where the shell answers 3 and a port without the arm answers 9, and
+  # nothing failed. The unknown token is added because no arm names it.
+  gr_toks=$(sed -n '/^cc_run_grade() {/,/^}/p' "$LIVENESS" \
+              | sed -n -E 's/^ *([^ ()*#]+)\).*/\1/p' | tr '\n' ' ')
+  case " $gr_toks " in
+    *"("*) bad "등급 토큰 유도" "함수 머리줄이 토큰으로 섞였다: '$gr_toks'" ;;
+    *" 정산중 "*) ok "등급 토큰 목록을 cc_run_grade 에서 유도했다 ($gr_toks)" ;;
+    *) bad "등급 토큰 유도" "cc_run_grade 에서 뽑은 목록이 비었거나 정산중을 담지 않는다: '$gr_toks'" ;;
+  esac
+  for tok in $gr_toks 미지의토큰; do
     check "등급 갈래 $tok — 포트가 셸과 같은 등급을 낸다" "$(port grade "$tok")" "$(shell_grade "$tok")"
   done
 fi
@@ -710,6 +741,12 @@ check "C 상태 독자 — 정산 창은 정산중이다" "$(read_statusline ses
 check "C 리퍼 독자 — 정산중이다" "$(read_reaper "$RD_C" "$LG_C")" "정산중"
 check "C 지표 독자 — 열린 런이다" "$(read_metrics "$RD_C" "$LG_C")" "열린 런"
 check "C 폴러 독자 — 끝나지 않았다" "$(read_poller "$RD_C" "$LG_C")" "끝나지 않음"
+# The dashboard reads the same window through its port, on the command line's
+# path and on the server's. Its absence was not visible to any reader above.
+if command -v python3 >/dev/null 2>&1; then
+  check "C 포트 독자 — 정산중이다" "$(port state "$RD_C" "$LG_C")" "정산중"
+  check "C 모델 독자 — 정산중이다" "$(port model-state "$RD_C")" "정산중"
+fi
 
 # Fixture D — the done-tail: marker, `done`, and the shift that wrote it still
 # alive.
@@ -724,6 +761,10 @@ check "D 상태 독자 — done 꼬리는 정산중이다" "$(read_statusline se
 check "D 리퍼 독자 — 정산중이다" "$(read_reaper "$RD_D" "$LG_D")" "정산중"
 check "D 지표 독자 — 열린 런이다" "$(read_metrics "$RD_D" "$LG_D")" "열린 런"
 check "D 폴러 독자 — done 을 먼저 보므로 끝났다" "$(read_poller "$RD_D" "$LG_D")" "끝남"
+if command -v python3 >/dev/null 2>&1; then
+  check "D 포트 독자 — 정산중이다" "$(port state "$RD_D" "$LG_D")" "정산중"
+  check "D 모델 독자 — 정산중이다" "$(port model-state "$RD_D")" "정산중"
+fi
 
 # And every reader flips together when the shift goes, so the agreement above
 # is not one fixture's coincidence.
@@ -732,6 +773,10 @@ check "D′ 상태 독자 — 교대가 끝나면 종단이다" "$(read_statusli
 check "D′ 리퍼 독자 — 종단이다" "$(read_reaper "$RD_D" "$LG_D")" "종단"
 check "D′ 지표 독자 — 닫힌 런이다" "$(read_metrics "$RD_D" "$LG_D")" "닫힌 런"
 check "D′ 폴러 독자 — 끝났다" "$(read_poller "$RD_D" "$LG_D")" "끝남"
+if command -v python3 >/dev/null 2>&1; then
+  check "D′ 포트 독자 — 종단이다" "$(port state "$RD_D" "$LG_D")" "종단"
+  check "D′ 모델 독자 — 종단이다" "$(port model-state "$RD_D")" "종단"
+fi
 
 # ---------------------------------------------------------------------------
 # The state table: marker × done × shift × nonterminal segment × ledger age ×
@@ -767,7 +812,12 @@ st_expect() {
 
 sleep 300 & ST_PID=$!
 FX_PIDS="${FX_PIDS:-}$ST_PID "; export FX_PIDS
-st_i=0; st_bad=0
+# The dashboard's port reads every case in both call shapes as well. The table
+# holds the marker, `done` and a live shift in every combination, which is the
+# set of branches the port once lacked while every fixture above agreed.
+st_port=no
+command -v python3 >/dev/null 2>&1 && st_port=yes
+st_i=0; st_bad=0; st_pbad=0; st_pn=0
 for st_m in n y; do for st_d in n y; do for st_s in n y; do for st_n in 0 1; do
 for st_a in 0 200 4000; do for st_b in n y; do
   st_i=$((st_i + 1))
@@ -783,12 +833,26 @@ for st_a in 0 200 4000; do for st_b in n y; do
   st_got=$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 180 3600)
   st_want=$(st_expect "$st_m" "$st_d" "$st_s" "$st_n" "$st_a" "$st_b" 180)
   [ "$st_got" = "$st_want" ] || { st_bad=$((st_bad + 1)); bad "상태표 (180 3600) $st_case" "got '$st_got', want '$st_want'"; }
+  if [ "$st_port" = yes ]; then
+    st_pn=$((st_pn + 1))
+    st_py=$(port state "$FX_RUN_DIR" "$FX_LEDGER" 180 3600)
+    [ "$st_py" = "$st_got" ] || { st_pbad=$((st_pbad + 1)); bad "상태표 포트 (180 3600) $st_case" "port '$st_py', shell '$st_got'"; }
+  fi
   st_got=$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 1200)
   st_want=$(st_expect "$st_m" "$st_d" "$st_s" "$st_n" "$st_a" "$st_b" 1200)
   [ "$st_got" = "$st_want" ] || { st_bad=$((st_bad + 1)); bad "상태표 (1200) $st_case" "got '$st_got', want '$st_want'"; }
+  if [ "$st_port" = yes ]; then
+    st_pn=$((st_pn + 1))
+    st_py=$(port state "$FX_RUN_DIR" "$FX_LEDGER" 1200 3600)
+    [ "$st_py" = "$st_got" ] || { st_pbad=$((st_pbad + 1)); bad "상태표 포트 (1200) $st_case" "port '$st_py', shell '$st_got'"; }
+  fi
 done; done; done; done; done; done
 check "상태표 96 사례가 두 호출 꼴 모두에서 규칙과 같다" "$st_bad" "0"
 check "상태표가 실제로 96 사례를 돌았다" "$st_i" "96"
+if [ "$st_port" = yes ]; then
+  check "상태표 192 판독에서 포트가 셸과 어긋난 수" "$st_pbad" "0"
+  check "포트가 상태표의 판독 192 개를 실제로 돌았다" "$st_pn" "192"
+fi
 
 # ---------------------------------------------------------------------------
 # The notifier channel stays off for every suite that does not assert on it.

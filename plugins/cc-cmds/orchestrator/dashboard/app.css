@@ -24,6 +24,7 @@ th { font-weight: 500; color: var(--muted); font-size: 12px; }
 .s-도는중 { background: var(--live); }
 .s-승인대기 { background: var(--pend); }
 .s-진행중 { background: var(--going); }
+.s-정산중 { background: var(--going); }
 .s-정지경고 { background: var(--stall); }
 .s-종단 { background: var(--done); }
 .s-버려짐 { background: var(--dead); }

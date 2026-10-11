@@ -1091,9 +1091,9 @@ cc_run_grade() {
   #
   # THIS GRADE HAS TWO CONSUMERS, `statusline.sh` and the dashboard's port in
   # `dashboard_read.py`, and `scripts/test-liveness-agreement.sh` binds them: it
-  # compares the port's grade against this function on each of the six tokens
-  # and on an unknown one. A token added here goes into that suite's list in the
-  # same edit, or the two screens can rank it differently with nothing failing.
+  # compares the port's grade against this function on each token this function
+  # ranks, the list derived from the arms below, and on an unknown one. A token
+  # added here needs its arm in the port in the same edit, or that suite fails.
   case "$1" in
     도는중)   printf '1' ;;
     승인대기) printf '2' ;;
