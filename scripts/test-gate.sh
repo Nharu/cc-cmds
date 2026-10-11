@@ -7886,27 +7886,33 @@ check "위조를 되돌리면 같은 행위가 다시 통과한다 (이 절은 �
 # worked in the shared main worktree, and the router switched that tree onto the
 # segment's branch to make anything land.
 #
-# `LINKED` is the fixture repository's linked worktree made by 14c, whose HEAD
-# is one commit apart from `WT`; `STATE_SEG`, `gateM`, `HM` and `seg_wt_row` are
-# set in `pre_base`, in the head.
+# `LINKED_M` is a linked worktree of the fixture repository made here, whose
+# HEAD is one commit apart from `WT`; `STATE_SEG`, `gateM`, `HM` and
+# `seg_wt_row` are set in `pre_base`, in the head. NOT 14c's `LINKED`: 14l
+# leaves segment SL's last row naming that tree, so every settings derivation
+# after it already lists it, and the "absent before the row" premise below was
+# false before this section wrote anything.
 # ---------------------------------------------------------------------------
-if [ -d "$LINKED" ]; then
+LINKED_M="$WORK/linked-m"
+( cd "$WT" && git worktree add -q -b linkedm "$LINKED_M" \
+  && cd "$LINKED_M" && echo linked-m > only-here-m.txt && git add -A && git commit -qm linked-m ) >/dev/null 2>&1
+if [ -d "$LINKED_M" ]; then
   # Run open for this home first, so the widening below is a re-derivation.
   HM >/dev/null
-  if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
+  if jq -e --arg d "$LINKED_M" '.permissions.additionalDirectories | index($d)' \
        "$SETTINGS_SEG/generic.json" >/dev/null 2>&1; then
     bad "세그먼트 워크트리 전제" "행을 쓰기 전부터 목록에 들어 있다 — 아래 단언이 공허하다"
   else
     ok "세그먼트 행을 쓰기 전에는 그 워크트리가 목록에 없다"
   fi
   n_rows_before=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
-  seg_wt_row SM "$LINKED"
+  seg_wt_row SM "$LINKED_M"
   check "세그먼트 행이 기록된다" "$rc" "0"
   # THE ROW IS THE TRIGGER, so the list already carries the worktree by the
   # time the next call reads it — the anchor's "next call" is where it is
   # observed, not where it is derived.
   HM >/dev/null
-  if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
+  if jq -e --arg d "$LINKED_M" '.permissions.additionalDirectories | index($d)' \
        "$SETTINGS_SEG/generic.json" >/dev/null 2>&1; then
     ok "세그먼트 행의 워크트리가 다음 게이트 호출에서 인가 목록에 들어간다"
   else
@@ -7924,7 +7930,7 @@ if [ -d "$LINKED" ]; then
   # The key reads the segment worktree SET, not the ledger: a row that names no
   # new worktree must not re-derive, and says so by carrying no field.
   d_seg=$(cat "$STATE_SEG/cc-cmds/run/R1/surface-digest")
-  seg_wt_row SM "$LINKED" 실행중
+  seg_wt_row SM "$LINKED_M" 실행중
   check "같은 워크트리를 다시 실은 세그먼트 행이 기록된다" "$rc" "0"
   HM >/dev/null
   case "$( { grep -E '^- `segment` ' "$FX_LEDGER" || true; } | grep -F '| id=SM ' | tail -1)" in
@@ -8009,9 +8015,9 @@ if [ -d "$LINKED" ]; then
     esac
   done
 
-  # THE ACT RUNS THERE. `LINKED` holds a file `WT` does not, so the listing
+  # THE ACT RUNS THERE. `LINKED_M` holds a file `WT` does not, so the listing
   # tells the two trees apart.
-  want_ls=$(cd "$LINKED" && ls)
+  want_ls=$(cd "$LINKED_M" && ls)
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_SEG" gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
         --segment SM --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HM)" --rationale x -- ls 2>/dev/null)
   check "세그먼트를 단 행위는 그 세그먼트의 워크트리에서 돈다" "$out" "$want_ls"
@@ -8020,7 +8026,7 @@ if [ -d "$LINKED" ]; then
   # share one resolution; if only the act moved, an answer would stay "fresh"
   # through commits landing in the tree the act runs in.
   main_head=$(cd "$WT" && git rev-parse HEAD)
-  seg_head=$(cd "$LINKED" && git rev-parse HEAD)
+  seg_head=$(cd "$LINKED_M" && git rev-parse HEAD)
   if [ "$main_head" != "$seg_head" ]; then
     ok "두 트리의 HEAD 가 다르다 (아래 동결 단언이 공허하지 않다)"
   else
@@ -8052,7 +8058,7 @@ if [ -d "$LINKED" ]; then
   check "메인 워크트리만 움직인 것은 세그먼트 행위의 승인을 낡게 하지 않는다" "$rc" "0"
   ( cd "$WT" && git reset -q --soft "$main_head" )
   check "픽스처가 옮긴 메인 HEAD 를 되돌린다 (14m)" "$(cd "$WT" && git rev-parse HEAD)" "$main_head"
-  ( cd "$LINKED" && git commit --allow-empty -q -m "세그먼트 워크트리만 움직이는 빈 커밋" )
+  ( cd "$LINKED_M" && git commit --allow-empty -q -m "세그먼트 워크트리만 움직이는 빈 커밋" )
   gateM plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SM --cutpoint push \
         --surface 외부상태변경 -- scp -V
   check "세그먼트 워크트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
@@ -8060,8 +8066,8 @@ if [ -d "$LINKED" ]; then
     *"the tree moved after approval"*) ok "거절이 세그먼트 워크트리의 불일치를 원인으로 지목한다" ;;
     *) bad "세그먼트 워크트리 대조" "$msg" ;;
   esac
-  ( cd "$LINKED" && git reset -q --soft "$seg_head" )
-  check "픽스처가 옮긴 세그먼트 HEAD 를 되돌린다" "$(cd "$LINKED" && git rev-parse HEAD)" "$seg_head"
+  ( cd "$LINKED_M" && git reset -q --soft "$seg_head" )
+  check "픽스처가 옮긴 세그먼트 HEAD 를 되돌린다" "$(cd "$LINKED_M" && git rev-parse HEAD)" "$seg_head"
 
   # THE LEDGER IS APPEND-ONLY, so the section leaves its segments terminal and
   # back on the main worktree — the segment worktree set is what it was before,
@@ -21472,7 +21478,9 @@ sa_new '디스패치 뒤 완화'
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31L \
     --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
     -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음
-printf -- '- `자율 승인` | 교대=1 | kind=skill | 결정=act | 대상=main | 세그먼트=S31L | 절단점=커밋 | 축2=워크트리쓰기 | 근거=x\n' >> "$SA_LEDGER"
+# Written in the gate's own row shape — `절단점` with `유도 절단점` beside it —
+# because 38-8 asserts that shape of every row on every `sa-*` ledger.
+printf -- '- `자율 승인` | 교대=1 | kind=skill | 결정=act | 대상=main | 세그먼트=S31L | 절단점=커밋 | 유도 절단점=- | 축2=워크트리쓰기 | 근거=x\n' >> "$SA_LEDGER"
 nb=$(sa_rows)
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31L \
     --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
@@ -21620,6 +21628,19 @@ sp_refused "32p: GIT_ 환경 할당을 앞에 둔 push 는 거절된다" 2 "$B32
 sp_unknown "32p: GIT_ 환경 할당"
 ( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$B32" ) >/dev/null 2>&1
 
+# 탐침은 행위의 환경을 싣지 않는다 — HOME=·XDG_CONFIG_HOME= 할당과 env 옵션도 형태
+# 미상이다. 할당이 가리키는 설정은 실제 push 만 읽는다.
+for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" -i "-u HOME"; do
+  # shellcheck disable=SC2086
+  sp_act S32A 머지 env $sp_e git push origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: env $sp_e 를 앞에 둔 push 는 거절된다" 2 "$B32"
+  sp_unknown "32p: env $sp_e"
+done
+# 대조군 — 로캘 할당은 설정을 바꾸지 않으므로 탐침이 잰다.
+sp_act S32A 머지 env LANG=C git push origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: env LANG=C 의 다른 소스 베이스 push 는 거절된다" 2 "$B32"
+sp_measured "32p: env LANG=C" "$U32"
+
 # 셸 문자열과 sudo 안의 push — 탐침에 닿지 않으므로 거절된다. 리뷰된 HEAD 라도 같다.
 for sp_sh in bash sh; do
   sp_act S32A 배포 "$sp_sh" -c "git push origin u-$SA_ID:$SA_BASE"
@@ -21673,6 +21694,71 @@ for sp_r in "-R o/r" "--repo o/r" "--repo=o/r" "-Ro/r"; do
   check "32p: 워크트리 HEAD 에 결속된 gh pr $sp_r merge 는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
   if sa_names_rule; then ok "32p: gh pr $sp_r merge — 그 거절이 리뷰-후-머지 를 지명한다"; else bad "32p gh pr $sp_r 룰 이름" "$msg"; fi
 done
+
+# gh api 의 머지 철자 — 사다리·결속·협업면이 한 판독을 쓴다. `?query`·`#`·후행 `/` 가
+# 붙은 REST 경로와 GraphQL 머지도 머지로 읽혀 결속을 받는다.
+sp_ld() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
+sp_cs() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
+           if gate_collaboration_surface "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
+}
+X32="0123456789abcdef0123456789abcdef01234567"
+q32m='mutation{mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}'
+check "32p: 쿼리스트링이 붙은 REST 머지는 결속 없는 머지다" \
+  "$(sp_mb gh api -X PUT 'repos/o/r/pulls/1/merge?merge_method=squash')" "없음"
+check "32p: 후행 / 가 붙은 REST 머지는 결속 없는 머지다" "$(sp_mb gh api -X PUT 'repos/o/r/pulls/1/merge/')" "없음"
+check "32p: --field= 꼴의 sha 는 본문이고 결속이다" \
+  "$(sp_mb gh api 'repos/o/r/pulls/1/merge?merge_method=squash' "--field=sha=$X32")" "$X32"
+check "32p: GET 은 머지가 아니다" "$(sp_mb gh api -X GET repos/o/r/pulls/1/merge)" "해당없음"
+check "32p: …/merges 는 결속 인자가 없는 머지다" "$(sp_mb gh api -X POST repos/o/r/merges -f base=main -f head=x)" "없음"
+check "32p: 머지를 이름 짓지 않는 GraphQL 은 머지가 아니다" "$(sp_mb gh api graphql -f 'query=query{viewer{login}}')" "해당없음"
+check "32p: expectedHeadOid 없는 mergePullRequest 는 결속 없는 머지다" "$(sp_mb gh api graphql -f "query=$q32m")" "없음"
+# The bodies are built with printf rather than spelled inside "$( … )": a `\"`
+# there can end the outer quoting, and the `{…,…}` left bare brace-expands the
+# one argument into two.
+q32i=$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x", expectedHeadOid: "%s"}){clientMutationId}}' "$X32")
+q32two=$(printf 'query=mutation{a:mergePullRequest(input:{pullRequestId:"p",expectedHeadOid:"%s"}){clientMutationId} b:mergePullRequest(input:{pullRequestId:"q"}){clientMutationId}}' "$X32")
+q32hash=$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"p" # expectedHeadOid:"%s"\n}){clientMutationId}}' "$X32")
+check "32p: 인라인 expectedHeadOid 는 결속이다" "$(sp_mb gh api graphql -f "$q32i")" "$X32"
+check "32p: \$변수 expectedHeadOid 는 그 필드 값이 결속이다" \
+  "$(sp_mb gh api graphql -f 'query=mutation($expectedHeadOid:GitObjectID!){mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:$expectedHeadOid}){clientMutationId}}' -F "expectedHeadOid=$X32")" "$X32"
+check "32p: 두 머지에 결속 하나는 결속 없는 머지다" "$(sp_mb gh api graphql -f "$q32two")" "없음"
+check "32p: # 주석이 있는 GraphQL 머지는 결속 없는 머지다" "$(sp_mb gh api graphql -f "$q32hash")" "없음"
+check "32p: 시험 본문이 한 인자로 남는다 (중괄호 확장으로 갈리지 않았다)" \
+  "$(bash -c 'echo $#' _ "$q32i" "$q32two" "$q32hash")" "3"
+check "32p: input 객체를 변수로 통째 넘기면 결속 없는 머지다" \
+  "$(sp_mb gh api graphql -f 'query=mutation($i:MergePullRequestInput!){mergePullRequest(input:$i){clientMutationId}}' -f "i[expectedHeadOid]=$X32")" "없음"
+check "32p: 파일 본문 GraphQL 은 결속 없는 머지로 읽는다" "$(sp_mb gh api graphql -F 'query=@q.graphql')" "없음"
+check "32p: mergeBranch 는 결속 인자가 없는 머지다" \
+  "$(sp_mb gh api graphql -f 'query=mutation{mergeBranch(input:{repositoryId:"r",base:"main",head:"x"}){clientMutationId}}')" "없음"
+check "32p: 사다리가 GraphQL 머지를 머지로 읽는다" "$(sp_ld gh api graphql -f "query=$q32m")" "머지"
+check "32p: 사다리가 쿼리스트링 REST 머지를 머지로 읽는다" "$(sp_ld gh api -X PUT 'repos/o/r/pulls/1/merge?merge_method=squash')" "머지"
+check "32p: 사다리는 머지 아닌 GraphQL 에 아무것도 말하지 않는다" "$(sp_ld gh api graphql -f 'query=query{viewer{login}}')" ""
+check "32p: 협업면이 쿼리스트링 REST 머지를 같은 판독으로 받는다" \
+  "$(sp_cs 협업 gh api -X PUT 'repos/o/r/pulls/1/merge?merge_method=squash')" "예"
+check "32p: 배포트리거 의 REST 머지는 협업면이 아니다" \
+  "$(sp_cs 배포트리거 gh api -X PUT 'repos/o/r/pulls/1/merge/')" "아니오"
+check "32p: …/merges 는 협업면이 아니다" "$(sp_cs 협업 gh api -X POST repos/o/r/merges)" "아니오"
+# 끝에서 끝으로 — 결속 없는 철자는 룰 앞에서 2, 워크트리 HEAD 에 결속된 철자는 룰로 간다.
+for sp_p in 'repos/o/r/pulls/7/merge?merge_method=squash' 'repos/o/r/pulls/7/merge/'; do
+  sp_plan S32G 머지 gh api -X PUT "$sp_p"
+  check "32p: 결속 없는 REST 머지 $sp_p 는 거절된다" "$rc" "2"
+  case "$msg" in
+    *"결속되지 않았습니다"*) ok "32p: REST $sp_p — 문면이 결속을 지목한다" ;;
+    *) bad "32p REST $sp_p 문면" "$msg" ;;
+  esac
+  sp_plan S32G 머지 gh api -X PUT "$sp_p" -f "sha=$H32G"
+  check "32p: 워크트리 HEAD 에 결속된 REST 머지 $sp_p 는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
+done
+sp_plan S32G 머지 gh api graphql -f "query=$q32m"
+check "32p: 결속 없는 GraphQL 머지는 거절된다" "$rc" "2"
+case "$msg" in
+  *"expectedHeadOid"*) ok "32p: GraphQL 머지 — 문면이 expectedHeadOid 를 고치는 법으로 댄다" ;;
+  *) bad "32p GraphQL 문면" "$msg" ;;
+esac
+sp_plan S32G 머지 gh api graphql -f "$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$H32G")"
+check "32p: 워크트리 HEAD 에 결속된 GraphQL 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
+if sa_names_rule; then ok "32p: GraphQL 머지 — 그 거절이 리뷰-후-머지 를 지명한다"; else bad "32p GraphQL 룰 이름" "$msg"; fi
 
 # ---------------------------------------------------------------------------
 # 36. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다

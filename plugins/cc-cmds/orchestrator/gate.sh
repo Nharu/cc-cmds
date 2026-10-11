@@ -1006,9 +1006,18 @@ gate_collaboration_surface() {
             *) return 0 ;;
           esac ;;
         api)
+          # A pull request merge is read by the parse the ladder and the merge
+          # binding read, so a spelling one of them takes (`?merge_method=`, a
+          # trailing `/`) is a spelling all three take. `…/merges` and the
+          # GraphQL auto-merge stay off this surface as before.
+          gate_gh_api_parse "${@:2}"
+          if [ "$(gate_gh_api_merge_kind)" = rest ]; then
+            case "$GATE_GHAPI_PATH" in
+              */pulls/*/merge) [ "$rd" != "배포트리거" ] && return 0; return 1 ;;
+            esac
+          fi
           case " $* " in
             *"/issues"*|*"/comments"*|*"/reviews"*|*"/requested_reviewers"*|*"/labels"*) return 0 ;;
-            *"/pulls/"*"/merge"*) [ "$rd" != "배포트리거" ] && return 0 ;;
           esac
           case " $* " in
             *" graphql "*)
@@ -1482,9 +1491,10 @@ gate_push_base_updates() {
   # is passed, so the dry-run reads the configuration the push will read; the
   # grade already refuses the keys that run a command, and one that reaches
   # here anyway makes the push `형태미상` instead of being run. `--config-env`
-  # and `--exec-path` do the same, and so does a `GIT_*=` assignment in front
-  # of git — the dry-run would read another repository or configuration than
-  # the push. Of the other globals, `-C`, `--git-dir`, `--work-tree` and
+  # and `--exec-path` do the same, and so does an environment assignment in
+  # front of git other than the locale's (`GIT_*`, `HOME`, `XDG_CONFIG_HOME`)
+  # or an `env` option — the dry-run would read another repository or
+  # configuration than the push. Of the other globals, `-C`, `--git-dir`, `--work-tree` and
   # `--namespace` are kept and the rest dropped. A push inside a shell string
   # or under `sudo` is `형태미상` too (see `gate_push_unwrap_of_argv0`).
   #
@@ -1512,11 +1522,27 @@ gate_push_base_updates() {
   GATE_PUSH_GIT="$u"
   GATE_PUSH_KIND='판정불가'
   [ -n "$base" ] || return 0
-  local a k
+  # AN ENVIRONMENT IN FRONT OF GIT IS NOT CARRIED INTO THE DRY-RUN, so any
+  # change to it is refused, not only `GIT_*`: `HOME=` and `XDG_CONFIG_HOME=`
+  # point the push at another global configuration (`pushInsteadOf`,
+  # `remote.<n>.push`) than the one the dry-run reads, and `env -i`, `-u`,
+  # `-C` and the other `env` options change what git starts from. Only the
+  # locale and the time zone, which no push reads, pass.
+  local a k in_env=0
   for a in "$@"; do
-    case "${a##*/}" in git) break ;; esac
+    case "${a##*/}" in git) break ;; env) in_env=1; continue ;; esac
     case "$a" in
-      GIT_*=*) GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${a%%=*}"; return 0 ;;
+      LANG=*|LC_*=*|TZ=*) continue ;;
+      -*)
+        if [ "$in_env" = 1 ]; then
+          GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="env ${a%%=*}"; return 0
+        fi ;;
+      [A-Za-z_]*=*)
+        case "${a%%=*}" in
+          *[!A-Za-z0-9_]*) in_env=0 ;;
+          *) GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${a%%=*}"; return 0 ;;
+        esac ;;
+      *) in_env=0 ;;
     esac
   done
   local -a gv=() glob=() pargs=()
@@ -6569,46 +6595,160 @@ ladder_of_gh() {
   return 0
 }
 
-ladder_of_gh_api() {
-  # `gh pr merge` is not the only spelling of a merge — `gh api -X PUT
-  # repos/o/r/pulls/1/merge` is the same act through the other door, and it is
-  # the door a run takes when it wants the merge method spelled out. So the same
-  # method resolution `surface_of_gh_api` does is done here, and the PATH decides
-  # on top of it: a non-GET against `…/pulls/<n>/merge` is a merge, and every
-  # other endpoint asserts nothing.
-  shift
-  local m="" body=0 path=""
+gate_gh_api_parse() {
+  # gate_gh_api_parse <gh api's args after `api`...> — the one reading of a
+  # `gh api` argv the merge ladder, the merge binding and the collaboration
+  # surface share. Sets:
+  #
+  #   GATE_GHAPI_METHOD  the method gh will send (`-X`, else POST with a body,
+  #                      else GET)
+  #   GATE_GHAPI_PATH    the endpoint with any `?query`, `#fragment`, leading
+  #                      and trailing `/` removed
+  #   GATE_GHAPI_FIELDS  every `-f`/`-F`/`--field`/`--raw-field` value, `k=v`
+  #   GATE_GHAPI_OPAQUE  1 when part of the body is in a file this gate does not
+  #                      read (`--input`, or a `-F`/`--field` value `@<file>`)
+  #
+  # ONE READING, BECAUSE THREE DRIFTED. The ladder matched `*/pulls/*/merge`
+  # exactly, so `…/merge?merge_method=squash` and `…/merge/` were no merge and
+  # the binding never asked for a head; the collaboration surface matched a
+  # substring and took them; and `--field=sha=…` set no body in the ladder, so
+  # the merge read as a GET.
+  GATE_GHAPI_METHOD="" GATE_GHAPI_PATH="" GATE_GHAPI_OPAQUE=0
+  GATE_GHAPI_FIELDS=()
+  local body=0 fv typed
   while [ $# -gt 0 ]; do
+    fv=""; typed=0
     case "$1" in
       -X|--method)
         [ $# -ge 2 ] || break
-        m="$2"; shift 2 ;;
-      --method=*) m="${1#--method=}"; shift ;;
-      -X*)        m="${1#-X}"; shift ;;
-      -f|-F|--field|--raw-field|--input)
+        GATE_GHAPI_METHOD="$2"; shift 2; continue ;;
+      --method=*) GATE_GHAPI_METHOD="${1#--method=}"; shift; continue ;;
+      -X*)        GATE_GHAPI_METHOD="${1#-X}"; shift; continue ;;
+      --input)
+        body=1; GATE_GHAPI_OPAQUE=1
+        [ $# -ge 2 ] || break
+        shift 2; continue ;;
+      --input=*) body=1; GATE_GHAPI_OPAQUE=1; shift; continue ;;
+      -f|--raw-field|-F|--field)
+        case "$1" in -F|--field) typed=1 ;; esac
         body=1
         [ $# -ge 2 ] || break
-        shift 2 ;;
-      -f*|-F*)    body=1; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
+        fv="$2"; shift 2 ;;
+      --raw-field=*) fv="${1#--raw-field=}"; shift ;;
+      --field=*)     typed=1; fv="${1#--field=}"; shift ;;
+      -f?*)          fv="${1#-f}"; shift ;;
+      -F?*)          typed=1; fv="${1#-F}"; shift ;;
+      -H|--header|-q|--jq|-t|--template|--hostname|--cache|-p|--preview)
         [ $# -ge 2 ] || break
-        shift 2 ;;
+        shift 2; continue ;;
       # The first bare word is the endpoint. Anything later is a positional this
       # table has no use for, so the first one wins and the scan continues —
       # stopping here would leave a trailing `-X` unread.
-      -*) shift ;;
-      *)  [ -n "$path" ] || path="$1"; shift ;;
+      -*) shift; continue ;;
+      *)  [ -n "$GATE_GHAPI_PATH" ] || GATE_GHAPI_PATH="$1"; shift; continue ;;
+    esac
+    body=1
+    GATE_GHAPI_FIELDS+=("$fv")
+    if [ "$typed" = 1 ]; then
+      case "${fv#*=}" in @*) GATE_GHAPI_OPAQUE=1 ;; esac
+    fi
+  done
+  if [ -z "$GATE_GHAPI_METHOD" ]; then
+    if [ "$body" = 1 ]; then GATE_GHAPI_METHOD=POST; else GATE_GHAPI_METHOD=GET; fi
+  fi
+  local p="$GATE_GHAPI_PATH"
+  p="${p%%[#]*}"; p="${p%%[?]*}"
+  while [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+  while [ "${p#/}" != "$p" ]; do p="${p#/}"; done
+  GATE_GHAPI_PATH="$p"
+}
+
+gate_gh_api_merge_kind() {
+  # After `gate_gh_api_parse`: prints `rest` for a REST merge, `graphql` for a
+  # GraphQL mutation that merges, nothing otherwise.
+  #
+  # A REST merge is a non-GET against `…/pulls/<n>/merge` or `…/merges` (which
+  # merges a branch or a commit into another with no pull request at all). A
+  # GraphQL merge is any body that names `mergePullRequest`, `mergeBranch`,
+  # `enqueuePullRequest` or `enablePullRequestAutoMerge` — the field name is
+  # literal in the document whatever its alias, so a body naming none of them
+  # merges nothing.
+  case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) return 0 ;; esac
+  case "$GATE_GHAPI_PATH" in
+    */pulls/*/merge|*/merges) printf 'rest'; return 0 ;;
+    graphql|*/graphql) : ;;
+    *) return 0 ;;
+  esac
+  local f
+  for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+    case "$f" in
+      *mergePullRequest*|*mergeBranch*|*enqueuePullRequest*|*enablePullRequestAutoMerge*)
+        printf 'graphql'; return 0 ;;
     esac
   done
-  if [ -z "$m" ]; then
-    if [ "$body" = "1" ]; then m=POST; else m=GET; fi
-  fi
-  case "$m" in GET|get|HEAD|head) return 0 ;; esac
-  case "$path" in
-    */pulls/*/merge) printf '머지' ;;
-    *) : ;;
-  esac
   return 0
+}
+
+ladder_of_gh_api() {
+  # `gh pr merge` is not the only spelling of a merge — `gh api -X PUT
+  # repos/o/r/pulls/1/merge` is the same act through the other door, and it is
+  # the door a run takes when it wants the merge method spelled out; a GraphQL
+  # `mergePullRequest` is a third. See `gate_gh_api_merge_kind` for what counts,
+  # and every other endpoint asserts nothing.
+  shift
+  gate_gh_api_parse "$@"
+  [ -z "$(gate_gh_api_merge_kind)" ] || printf '머지'
+  return 0
+}
+
+gate_gh_graphql_binding() {
+  # After `gate_gh_api_parse` on a GraphQL merge: the bound head, or `없음`.
+  #
+  # Every merge-class field must be matched by an `expectedHeadOid`, and every
+  # `expectedHeadOid` must name the same head — inline as a string, or as a
+  # `$variable` whose value is a top-level `-f`/`-F` field. An input object
+  # passed whole as a variable (`input: $input`) is not read, and neither is a
+  # body with a `#`, which in GraphQL starts a comment and could hold an
+  # `expectedHeadOid` the server never sees. Both are refused with the inline
+  # spelling as the repair, rather than read and possibly misread.
+  local f nm=0 nb=0 v="" one rest pre name g cnt
+  local re_str='^[[:space:]]*:[[:space:]]*"([^"]*)"'
+  local re_var='^[[:space:]]*:[[:space:]]*[$]([A-Za-z_][A-Za-z0-9_]*)'
+  for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+    case "$f" in
+      *mergePullRequest*|*mergeBranch*|*enqueuePullRequest*|*enablePullRequestAutoMerge*) : ;;
+      *) continue ;;
+    esac
+    case "$f" in *'#'*) printf '%s' '없음'; return 0 ;; esac
+    for name in mergePullRequest mergeBranch enqueuePullRequest enablePullRequestAutoMerge; do
+      rest="$f"; cnt=0
+      while [ "${rest#*"$name"}" != "$rest" ]; do rest="${rest#*"$name"}"; cnt=$((cnt + 1)); done
+      nm=$((nm + cnt))
+    done
+    rest="$f"
+    while [ "${rest#*expectedHeadOid}" != "$rest" ]; do
+      pre="${rest%%expectedHeadOid*}"
+      rest="${rest#*expectedHeadOid}"
+      # `$expectedHeadOid` is a variable's name, not the argument.
+      case "$pre" in *'$') continue ;; esac
+      one=""
+      if [[ "$rest" =~ $re_str ]]; then
+        one="${BASH_REMATCH[1]}"
+      elif [[ "$rest" =~ $re_var ]]; then
+        name="${BASH_REMATCH[1]}"
+        for g in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+          case "$g" in "$name="*) one="${g#*=}" ;; esac
+        done
+        case "$one" in @*) one="" ;; esac
+      fi
+      nb=$((nb + 1))
+      if [ "$nb" = 1 ]; then v="$one"
+      elif [ "$v" != "$one" ]; then printf '%s' '없음'; return 0
+      fi
+    done
+  done
+  if [ "$nb" -eq 0 ] || [ "$nb" -lt "$nm" ]; then printf '%s' '없음'; return 0; fi
+  gate_merge_binding_value "$v"
 }
 
 # ---------------------------------------------------------------------------
@@ -6618,10 +6758,13 @@ ladder_of_gh_api() {
 # a remote merge merges whatever the pull request's head is on the server at
 # that moment. Nothing tied the two together: a push after the check, or a
 # worktree that never pushed its last commit, merged a head the rule had not
-# looked at, and the ledger recorded a pass. Both remote spellings carry an
+# looked at, and the ledger recorded a pass. The remote spellings carry an
 # argument that makes the server refuse any other head — `gh pr merge
-# --match-head-commit <sha>` and the REST merge's `sha` field — so the gate
-# requires that argument and requires it to name the worktree HEAD.
+# --match-head-commit <sha>`, the REST merge's `sha` field and the GraphQL
+# `expectedHeadOid` — so the gate requires that argument and requires it to
+# name the worktree HEAD. A merge spelling with no such argument (`…/merges`,
+# `mergeBranch`) and a GraphQL body in a file the gate does not read are
+# merges with no binding, and are refused the same way.
 # ---------------------------------------------------------------------------
 gate_merge_binding_of_argv0() {
   # gate_merge_binding_of_argv0 <argv...> — prints `해당없음` when the argv is
@@ -6689,27 +6832,34 @@ gate_merge_binding_of_gh() {
         esac
       done ;;
     api)
-      [ "$(ladder_of_gh_api "$@")" = '머지' ] || { printf '%s' '해당없음'; return 0; }
       shift
+      gate_gh_api_parse "$@"
+      local mk fv
+      mk=$(gate_gh_api_merge_kind)
+      case "$mk" in
+        graphql)
+          if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then printf '%s' '없음'; return 0; fi
+          gate_gh_graphql_binding; return 0 ;;
+        rest) : ;;
+        *)
+          # A GraphQL body this gate cannot read may be a merge it cannot
+          # bind; where a binding is asked for, that is no binding.
+          case "$GATE_GHAPI_PATH" in
+            graphql|*/graphql)
+              if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then
+                case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) : ;; *) printf '%s' '없음'; return 0 ;; esac
+              fi ;;
+          esac
+          printf '%s' '해당없음'; return 0 ;;
+      esac
       # `-F sha=@<file>` and `--input` put the value in a file this gate does
       # not read, so they bind nothing it can compare.
-      local fv input=0
-      while [ "$#" -gt 0 ]; do
-        fv=""
-        case "$1" in
-          --input|--input=*) input=1; shift ;;
-          -f|-F|--field|--raw-field)
-            fv="${2:-}"
-            if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
-          --field=*|--raw-field=*) fv="${1#*=}"; shift ;;
-          -f?*|-F?*) fv="${1#-?}"; shift ;;
-          *) shift ;;
-        esac
+      if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then printf '%s' '없음'; return 0; fi
+      for fv in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
         case "$fv" in
           sha=*) have=1; v="${fv#sha=}" ;;
         esac
       done
-      if [ "$input" = 1 ]; then printf '%s' '없음'; return 0; fi
       case "$v" in @*) v="" ;; esac ;;
     *) printf '%s' '해당없음'; return 0 ;;
   esac
@@ -17542,7 +17692,7 @@ gate_record_row() {
             local lc_late lc_why=""
             lc_late=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" \
                         | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' \
-                        | grep -v -x -F '계획됨' | head -1 || true)
+                        | { grep -v -x -F '계획됨' || true; } | sed -n 1p)
             if [ -n "$lc_late" ]; then
               lc_why="앞 행에 상태=${lc_late} 가 있습니다"
             elif [ -n "$(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg")" ]; then
@@ -21683,7 +21833,7 @@ gate_verb_act() {
     gate_push_base_updates "$alias" "$@"
     if [ "$GATE_PUSH_KIND" = '형태미상' ]; then
       warn "형태 미상 — 이 git push 는 게이트가 dry-run 으로 무엇이 베이스에 올라가는지 잴 수 없는 형태입니다: ${GATE_PUSH_FORM_WORD}"
-      warn "셸 -c·sudo 래퍼, GIT_ 환경 할당, 실행 설정 키, 허용 목록 밖 push 옵션(축약 포함) 없이 git push <원격> <refspec> 으로 다시 부릅니다 — 게이트가 아는 래퍼(command·env·lockf·timeout 등)와 -f·-u·--force-with-lease·--tags 같은 옵션은 그대로 둡니다"
+      warn "셸 -c·sudo 래퍼, 환경 할당(LANG·LC_*·TZ 밖의 모두 — HOME=·XDG_CONFIG_HOME=·GIT_* 포함)과 env 옵션, 실행 설정 키, 허용 목록 밖 push 옵션(축약 포함) 없이 git push <원격> <refspec> 으로 다시 부릅니다 — 게이트가 아는 래퍼(command·할당 없는 env·lockf·timeout 등)와 -f·-u·--force-with-lease·--tags 같은 옵션은 그대로 둡니다"
       exit "$GATE_EXIT_VOCAB"
     fi
     if [ "$GATE_PUSH_KIND" != '해당없음' ]; then
@@ -21916,7 +22066,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다"
+        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 적고(# 주석·파일 본문·input 변수 통째 넘김은 읽지 않습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)는 gh pr merge 로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else
