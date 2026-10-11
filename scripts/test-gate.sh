@@ -11773,7 +11773,10 @@ graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'         
 # first word after `lockf` was eaten. That only changes the answer when the
 # number of leading options is even — every fixture above passes `-k -t 0`, an
 # odd three, so the whole class sat under a green block.
-graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'      -- lockf /tmp/l.lock git status
+# Without `-k` the lock removes its lockfile, so a wrapped read is raised to
+# `워크트리쓰기`; the double shift would still read `status` alone and answer
+# `등급 미상`, so this row keeps telling the two apart.
+graded_as '워크트리쓰기' '-k 없는 lockf 는 감싼 읽기를 잠금 파일 삭제로 올린다' -- lockf /tmp/l.lock git status
 graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl -X POST https://x
 graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
 
@@ -29604,7 +29607,15 @@ ll86() {
       gate_reach_target_tree_act front "$@" || :
       printf "%s\n" ${GATE_TT_LANDS[@]+"${GATE_TT_LANDS[@]}"}' _ "$GATE" "$CG" "$@" ) 2>/dev/null
 }
-has86() { printf '%s\n' "$1" | grep -Fxq -- "$2"; }
+# 파이프 뒤 grep -q 는 0a 의 pipefail 함정이라, 줄 단위 일치를 case 로 잰다.
+has86() {
+  case "
+$1
+" in *"
+$2
+"*) return 0 ;; esac
+  return 1
+}
 # 수집기는 경로를 사전적으로 정규화하므로, 끝에 / 가 붙은 TMPDIR 이 남긴 // 를 접어 비교한다.
 f86() { local dd='//' d='/'; printf '%s' "${1//$dd/$d}"; }
 SN86="$WORK/wt86-name86"
@@ -29741,6 +29752,58 @@ rl86 timeout 60 git -C "$EW86" reset -q --hard
 check "86: 대조 — 래퍼 뒤 임시 디렉터리 실험 워크트리의 reset --hard 는 런로컬로 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
 check "86: 그 reset --hard 가 실제로 되돌렸다 (래퍼 대조)" "$(git -C "$EW86" status --porcelain 2>/dev/null)" ""
 
+# env 의 -- 와 래퍼 자신의 파일 — 수집기의 env 루프가 -- 에서 멈추던 동안 그 뒤의
+# GIT_WORK_TREE=/GIT_DIR= 대입은 명령으로 읽혀 버려졌고, lockf·time 을 벗기면서는
+# lockf 의 잠금 파일(-k 없이 지운다)과 time -o 의 출력 파일(덮어쓴다)이 착지점에서
+# 빠졌다. 그 동안 아래 철자는 형제 워크트리를 덮거나 지우면서 런로컬·생략으로 지나갔고
+# 정직한 대상트리만 park 됐다. -k 없는 lockf 가 감싼 읽기는 읽기로 매겨져 도달을 보기
+# 전에 통과했다. 판정 함수 단언과 실행 수준의 park·잔존 단언을 함께 두고, 임시
+# 디렉터리를 겨누거나 파일을 남기는 같은 철자가 지나가는 쌍둥이를 둔다. 통과 쌍둥이는
+# 판정 함수로만 잰다 — 실행하면 lockf 와 /usr/bin/time 이 없는 러너에서 실패한다.
+check "86: env -- 뒤 GIT_WORK_TREE 대입으로 형제를 덮는 checkout -f 는 런로컬 판정에서 park 된다" "$(rd86 env -- GIT_WORK_TREE="$SIB86" git checkout -f -- .)" "파괴형태미명시"
+check "86: env -i -- 뒤 GIT_DIR 로 다른 저장소를 겨눈 reset --hard 는 런로컬 판정에서 park 된다" "$(rd86 env -i -- GIT_DIR="$U86/.git" GIT_WORK_TREE="$U86" git reset --hard)" "파괴형태미명시"
+check "86: nice env -- 뒤 GIT_WORK_TREE 대입으로 형제를 비우는 clean -fdx 는 런로컬 판정에서 park 된다" "$(rd86 nice env -- GIT_WORK_TREE="$SIB86" git clean -fdx)" "파괴형태미명시"
+check "86: 대조 — env -- 뒤 사람·편집기 GIT_* 대입의 임시 디렉터리 reset --hard 는 지난다" "$(rd86 env -- GIT_PAGER=cat git -C "$EW86" reset -q --hard)" ""
+printf 'k\n' > "$SIB86/lk86lock"; printf 'k\n' > "$SIB86/tm86out"
+SIB86L=$(f86 "$SIB86")
+has86 "$(ll86 lockf "$SIB86/lk86lock" rm -rf junk86)" "$SIB86L/lk86lock" \
+  && ok "86: lockf 의 잠금 파일이 착지점에 있다" \
+  || bad "86: lockf 의 잠금 파일이 착지점에 있다" "$(ll86 lockf "$SIB86/lk86lock" rm -rf junk86)"
+has86 "$(ll86 time -o "$SIB86/tm86out" true)" "$SIB86L/tm86out" \
+  && ok "86: time -o 의 출력 파일이 착지점에 있다" \
+  || bad "86: time -o 의 출력 파일이 착지점에 있다" "$(ll86 time -o "$SIB86/tm86out" true)"
+has86 "$(ll86 time --output="$SIB86/tm86out" true)" "$SIB86L/tm86out" \
+  && ok "86: time --output= 의 출력 파일이 착지점에 있다" \
+  || bad "86: time --output= 의 출력 파일이 착지점에 있다" "$(ll86 time --output="$SIB86/tm86out" true)"
+check "86: -k 없는 lockf 는 감싼 명령이 파괴가 아니어도 lockf 가 트리거다" "$(lt86 lockf "$SIB86/lk86lock" true)" "lockf"
+check "86: 대조 — 감싼 명령이 파괴면 그 트리거가 앞선다" "$(lt86 lockf "$SIB86/lk86lock" rm -rf x)" "-rf"
+check "86: 대조 — -k 를 단 lockf 는 감싼 명령이 파괴가 아니면 트리거가 없다" "$(lt86 lockf -k "$SIB86/lk86lock" true)" ""
+check "86: 기존 파일을 덮는 time -o 는 -o 가 트리거다" "$(lt86 time -o "$SIB86/tm86out" true)" "-o"
+check "86: 기존 파일을 덮는 time --output= 은 그 낱말이 트리거다" "$(lt86 time --output="$SIB86/tm86out" true)" "--output=$SIB86/tm86out"
+check "86: 대조 — -a 를 단 time -o 는 트리거가 없다" "$(lt86 time -a -o "$SIB86/tm86out" true)" ""
+check "86: 대조 — 새 이름의 time -o 는 트리거가 없다" "$(lt86 time -o "$T86/tm86new" true)" ""
+check "86: 형제 파일을 잠금 파일로 쓰는 lockf 는 런로컬 판정에서 park 된다" "$(rd86 lockf "$SIB86/lk86lock" true)" "파괴형태미명시"
+check "86: 형제 파일을 덮는 time -o 는 런로컬 판정에서 park 된다" "$(rd86 time -o "$SIB86/tm86out" true)" "파괴형태미명시"
+check "86: 대조 — 임시 디렉터리의 -k 잠금 파일 뒤 임시 경로 rm -rf 는 지난다" "$(rd86 lockf -k "$T86/lk86k" rm -rf "$T86/lk86junk")" ""
+check "86: 대조 — 임시 디렉터리 새 이름의 time -o 는 지난다" "$(rd86 time -o "$T86/tm86new" true)" ""
+nb86=$(b86)
+rl86 env -- GIT_WORK_TREE="$SIB86" git checkout -f -- .
+check "86: env -- 뒤 GIT_WORK_TREE 대입으로 형제를 덮는 checkout -f 는 런로컬로도 park 된다" "$rc" "11"
+om86 워크트리쓰기 env -i -- GIT_WORK_TREE="$SIB86" git checkout -f -- .
+check "86: --reach 를 생략한 env -i -- 뒤 GIT_WORK_TREE checkout -f 는 park 된다" "$rc" "11"
+grep -q '^wt86$' "$SIB86/base.txt" && ok "86: park 된 env -- checkout 들의 미커밋 수정이 남아 있다" \
+  || bad "86: park 된 env -- checkout 들의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
+rl86 lockf "$SIB86/lk86lock" rm -rf "$T86/lk86junk"
+check "86: 형제 파일을 잠금 파일로 쓰는 lockf rm -rf 는 런로컬로도 park 된다" "$rc" "11"
+om86 워크트리쓰기 lockf "$SIB86/lk86lock" true
+check "86: --reach 를 생략한 -k 없는 lockf 의 형제 잠금 파일은 park 된다 (읽기 칸에서 지나가지 않는다)" "$rc" "11"
+check "86: park 된 lockf 들의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+rl86 time -o "$SIB86/tm86out" true
+check "86: 형제 파일을 덮는 time -o 는 런로컬로도 park 된다" "$rc" "11"
+check "86: park 된 time -o 의 형제 파일이 그대로다" "$(cat "$SIB86/tm86out" 2>/dev/null)" "k"
+check "86: env -- ·lockf·time -o park 다섯이 blocked 행 다섯을 남긴다" "$(( $(b86) - nb86 ))" "5"
+rm -f "$SIB86/lk86lock" "$SIB86/tm86out"
+
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
 # 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git
 # 디렉터리의 stash 가 지워졌다. 하한 판정을 직접 재고, 실행 수준에서 park 와 stash 항목의
@@ -29757,6 +29820,8 @@ check "86: 겹친 래퍼 뒤 -C 의 stash 하한이 기기전역이다" "$(rdv86
 check "86: 래퍼의 모르는 옵션이 있으면 stash 낱말만으로 하한이 오른다" "$(rdv86 env -S x git stash clear)" "기기전역"
 check "86: 대조 — 래퍼 뒤 stash list 는 하한을 올리지 않는다" "$(rdv86 env FOO=1 git stash list)" "-"
 check "86: 대조 — 래퍼 뒤 stash 아닌 git 은 하한을 올리지 않는다" "$(rdv86 nice git status)" "-"
+check "86: 형제 파일을 잠금 파일로 쓰는 lockf 의 하한은 기기전역 접두에서만 오른다 (대조)" "$(rdv86 lockf "$SIB86/lk86lock" true)" "-"
+check "86: 기기전역 접두의 lockf 잠금 파일은 하한을 기기전역으로 올린다" "$(rdv86 lockf "$HOME/.ssh/k86" true)" "기기전역"
 s86w=$(git -C "$SIB86" stash create 2>/dev/null)
 [ -n "$s86w" ] && git -C "$SIB86" stash store -m s86wkeep "$s86w" >/dev/null 2>&1
 sw86() { case "$(git -C "$SIB86" stash list 2>/dev/null)" in *s86wkeep*) return 0 ;; *) return 1 ;; esac; }

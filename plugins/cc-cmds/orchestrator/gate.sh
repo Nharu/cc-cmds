@@ -1301,11 +1301,29 @@ gate_reach_local_destructive() {
   # view, so whether it destroys is unknown. Answering nothing there let
   # `env -C <sibling> rm -rf .` and `env -S 'rm -rf <sibling>/x'` through both
   # `런로컬` and `대상트리`, while `env -i rm -rf <sibling>/x` parked.
-  local cmd="${1##*/}"; shift 2>/dev/null || true
+  #
+  # `lockf` and `time` destroy a file of their own besides what they wrap:
+  # `lockf` without `-k` removes its lockfile, and `time -o` without `-a`
+  # overwrites a file that exists. When the wrapped command answers nothing,
+  # that file's word answers — `lockf`, or the `-o`/`--output` word.
+  local cmd="${1##*/}" _in; shift 2>/dev/null || true
   case "$cmd" in
-    lockf)   gate_unwrap_lockf   gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
+    lockf)
+      _in=$(gate_unwrap_lockf gate_reach_local_destructive '' "$cmd" "$@")
+      gate_unwrap_lockf : '' '' "$@"
+      if [ -z "$_in" ] && [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
+        _in='lockf'
+      fi
+      printf '%s' "$_in"; return 0 ;;
     command) gate_unwrap_command gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
-    time)    gate_unwrap_time    gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
+    time)
+      _in=$(gate_unwrap_time gate_reach_local_destructive '' "$cmd" "$@")
+      gate_unwrap_time : '' '' "$@"
+      if [ -z "$_in" ] && [ "$GATE_UW_KEEP" = "0" ] && [ -n "$GATE_UW_OPTW" ] \
+         && [ -e "${GATE_UW_PATHS[0]}" ]; then
+        _in="$GATE_UW_OPTW"
+      fi
+      printf '%s' "$_in"; return 0 ;;
     env)     gate_unwrap_env     gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
     timeout|nice|nohup|stdbuf)
       gate_unwrap_wrapper "$cmd" gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
@@ -2432,22 +2450,29 @@ gate_reach_target_tree_act() {
   #   against it.
   # - the act behind `timeout`, `nice`, `command`, `nohup`, `stdbuf`, `time`
   #   and `lockf`, and the work tree `GIT_WORK_TREE=` or `-c core.worktree=`
-  #   names, which this reader gives up on rather than resolve.
+  #   names, which this reader gives up on rather than resolve — after `env
+  #   --` as well, because `--` ends env's options and not its assignments.
+  # - the file a launcher writes itself: the lockfile of `lockf`, which it
+  #   removes without `-k`, and the `-o`/`--output` file of `time`. Peeling
+  #   the launcher to read the act behind it dropped both, and `lockf
+  #   <sibling>/README.md rm -rf junk` went through `런로컬` and the omitted
+  #   reach while the honest `대상트리` parked.
   #
   # `git worktree add`'s first operand is left out, because it names a
   # directory that does not exist yet; the repository check is what binds it,
   # and a creation path under a machine-global prefix has already been taken by
   # the derived floor before this cell is reached.
   local alias="$1"; shift
-  local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w _left _urc
-  local -a ops gx
-  ops=(); gx=()
+  local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w _left _urc _ddash
+  local -a ops gx wrp
+  ops=(); gx=(); wrp=()
   # Emptied first, so an argv this reader gives up on leaves no landing places
   # of an earlier act behind for `gate_reach_runlocal_escapes` to read.
   GATE_TT_LANDS=()
   base=$(gate_grade_cwd)
   # The launchers in front are peeled one layer at a time, so `timeout 60 git
-  # worktree remove --force <name>` is read as the `git` act it runs; an
+  # worktree remove --force <name>` is read as the `git` act it runs, and the
+  # file `lockf` or `time` names for itself is kept as a landing place; an
   # option of theirs the shared unwrap does not know gives up. `env` keeps its
   # own loop because two of its words move the act: `-C` moves it to another
   # directory, and an assignment of a variable git reads to find its
@@ -2461,10 +2486,20 @@ gate_reach_target_tree_act() {
     case "${1##*/}" in
       env)
         shift
+        _ddash=0
         while [ "$#" -gt 0 ]; do
+          # `--` ends env's options and not its assignments: `env --
+          # GIT_WORK_TREE=<sibling> git checkout -f -- .` applies the
+          # assignment as `gate_unwrap_env` reads it, and stopping here read
+          # the assignment as the command and let the overwrite through.
+          # A word after it that starts with `-` is no option any more, so
+          # it gives up rather than guess what env makes of it.
+          if [ "$_ddash" = "1" ]; then
+            case "$1" in -*) return 1 ;; esac
+          fi
           case "$1" in
             -i|-0|-v) shift ;;
-            --) shift; break ;;
+            --) _ddash=1; shift ;;
             -u) [ "$#" -ge 2 ] || return 1; shift 2 ;;
             -u?*) shift ;;
             -C|--chdir)
@@ -2483,6 +2518,24 @@ gate_reach_target_tree_act() {
       lockf|command|time|timeout|nice|nohup|stdbuf)
         _urc=0; _left=$(gate_unwrap_one "$@") || _urc=$?
         [ "$_urc" = "0" ] || return 1
+        # The lockfile and the `time -o` file are landing places of this
+        # layer, taken from the directory the act runs in at this point and
+        # kept unnormalized, so the operand loop below reads their links and
+        # `..` as it reads any other. The peel above runs in a subshell, so
+        # the same unwrap is asked again here, where its globals survive.
+        GATE_UW_PATHS=()
+        case "${1##*/}" in
+          lockf) gate_unwrap_lockf : '' '' "${@:2}" ;;
+          time)  gate_unwrap_time  : '' '' "${@:2}" ;;
+        esac
+        for v in ${GATE_UW_PATHS[@]+"${GATE_UW_PATHS[@]}"}; do
+          case "$v" in
+            /*) wrp[${#wrp[@]}]="$v" ;;
+            '~') wrp[${#wrp[@]}]="$HOME" ;;
+            '~/'*) wrp[${#wrp[@]}]="$HOME/${v#'~/'}" ;;
+            *) wrp[${#wrp[@]}]="${repo:-$base}/$v" ;;
+          esac
+        done
         shift $(( $# - _left )) ;;
       *) break ;;
     esac
@@ -2584,6 +2637,7 @@ gate_reach_target_tree_act() {
     gate_reach_worktree_spec "$base" "$spec" || return 1
     absops+=(${GATE_WT_SPEC[@]+"${GATE_WT_SPEC[@]}"})
   fi
+  ops+=(${wrp[@]+"${wrp[@]}"})
   for a in ${ops[@]+"${ops[@]}"}; do
     for v in "$base" ${wts[@]+"${wts[@]}"}; do
       case "$a" in /*) [ "$v" = "$base" ] || continue ;; esac
@@ -2961,6 +3015,12 @@ GATE_TT_PHYS=''
 GATE_TT_SR=''
 GATE_TT_REPO=''
 GATE_TT_LANDS=()
+# What the last `gate_unwrap_lockf` or `gate_unwrap_time` read of the
+# wrapper's own words: its path operand, whether `-k`/`-a` kept the file, and
+# the `time` option word that named it. Each call empties them first.
+GATE_UW_PATHS=()
+GATE_UW_KEEP=0
+GATE_UW_OPTW=''
 
 # `GATE_UNDECLARED` is written in exactly one place — `gate_undeclared_target`
 # — and read in seven, every one of them as `${GATE_UNDECLARED:-0} != 1`. The
@@ -5563,8 +5623,16 @@ gate_unwrap_lockf() {
   # stood first: `lockf <file> git status` then read `git` as the lockfile and
   # graded `status` alone, and `lockf -t 5 <file> git commit` read `5` as the
   # lockfile. Both are the shapes the fixtures below now pin.
+  #
+  # THE LOCKFILE IS LEFT IN `GATE_UW_PATHS`, and `GATE_UW_KEEP` says whether
+  # `-k` kept it. Without `-k` the BSD `lockf` removes the file when the
+  # command ends, contents and all, so the file is a place the act writes to
+  # and destroys. The readers that need it call this unwrap in their own shell
+  # (resolver `:`) and read the two globals; one parser is what keeps the
+  # lockfile they read the same word the grader skipped.
   local resolver="$1" lock_only="$2" unknown_opt="$3"; shift 3
   local seen_file=0
+  GATE_UW_PATHS=(); GATE_UW_KEEP=0; GATE_UW_OPTW=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       # `-t` with no value after it emits NOTHING, which is what this did before
@@ -5572,10 +5640,13 @@ gate_unwrap_lockf() {
       # the one these fixtures measure.
       -t) shift 2 || return 0 ;;
       -t*) shift ;;
-      -k|-s|-n) shift ;;
+      -k) GATE_UW_KEEP=1; shift ;;
+      -s|-n) shift ;;
       -*) printf '%s' "$unknown_opt"; return 0 ;;
       *)
-        if [ "$seen_file" = 0 ]; then seen_file=1; shift; continue; fi
+        if [ "$seen_file" = 0 ]; then
+          seen_file=1; GATE_UW_PATHS=("$1"); shift; continue
+        fi
         "$resolver" "$@"
         return 0 ;;
     esac
@@ -5588,7 +5659,18 @@ gate_unwrap_lockf() {
 
 surface_of_lockf() {
   # surface_of_lockf <lockf-args-after-argv0...>
-  gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@"
+  #
+  # Without `-k` the act removes its lockfile, so a wrapped read is not the
+  # whole answer: `lockf <file> true` graded `읽기` returned at the read cell
+  # before reach or the derived floor were looked at, and nothing parked the
+  # removal of a key under `$HOME/.ssh` or a file in another worktree. A read
+  # is raised to `워크트리쓰기`, the least grade that reaches those cells; a
+  # higher grade or `등급 미상` already reaches them and is kept.
+  local g
+  g=$(gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@")
+  gate_unwrap_lockf : '' '' "$@"
+  if [ "$g" = "읽기" ] && [ "$GATE_UW_KEEP" = "0" ]; then g='워크트리쓰기'; fi
+  printf '%s' "$g"
 }
 
 gate_unwrap_command() {
@@ -7205,14 +7287,23 @@ gate_unwrap_wrapper() {
 gate_unwrap_time() {
   # `time` differs from the three above by one option: `-o <file>` WRITES, so the
   # wrapped command's grade is not the whole answer there.
+  #
+  # The file `-o` names is left in `GATE_UW_PATHS` and the option word that
+  # named it in `GATE_UW_OPTW`, and `GATE_UW_KEEP` says whether `-a` made the
+  # write an append. Without `-a` the file is overwritten, so it is a place the
+  # act destroys as well as writes; the same globals and the same reading
+  # discipline as `gate_unwrap_lockf`.
   local resolver="$1" no_cmd="$2" unk="$3"; shift 3
   local wrote=0
+  GATE_UW_PATHS=(); GATE_UW_KEEP=0; GATE_UW_OPTW=''
   while [ $# -gt 0 ]; do
     case "$1" in
       -p|-l|-h|--portability|--verbose) shift ;;
-      -o|--output) [ $# -ge 2 ] || { printf '%s' "$unk"; return 0; }; wrote=1; shift 2 ;;
-      --output=*) wrote=1; shift ;;
-      -a|--append) wrote=1; shift ;;
+      -o|--output)
+          [ $# -ge 2 ] || { printf '%s' "$unk"; return 0; }
+          wrote=1; GATE_UW_OPTW="$1"; GATE_UW_PATHS=("$2"); shift 2 ;;
+      --output=*) wrote=1; GATE_UW_OPTW="$1"; GATE_UW_PATHS=("${1#--output=}"); shift ;;
+      -a|--append) wrote=1; GATE_UW_KEEP=1; shift ;;
       -*) printf '%s' "$unk"; return 0 ;;
       *) break ;;
     esac
