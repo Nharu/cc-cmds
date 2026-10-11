@@ -28693,13 +28693,14 @@ gh pr")" P 형태 Pd)" "P=0 형태=없음 Pd=0"
 
 # ---------------------------------------------------------------------------
 # 83b. 사전 인가 탐침 — 모든 행을 훑고, 기기전역 칸이 읽는 필드를 낸다
-# --- section: 83b | group: reach | covers: - | anchors: 83b: bash scripts/x.sh 는 완전 형태다, 83b: 앞의 러너 행이 뒤의 완전 행을 가리지 않는다, 83b: 떨어진 = 단어 앞에서 끝나는 행은 기기전역을 열지 않는다, 83b: 값을 받는 옵션 뒤의 코드 플래그는 제안이 없다 ---
+# --- section: 83b | group: reach | covers: - | anchors: 83b: bash scripts/x.sh 는 완전 형태다, 83b: 앞의 러너 행이 뒤의 완전 행을 가리지 않는다, 83b: 떨어진 = 단어 앞에서 끝나는 행은 어느 칸에서도 일치하지 않는다, 83b: 값을 받는 옵션 뒤의 코드 플래그는 제안이 없다 ---
 #
 # 83 과 같은 탐침 하나만 부른다. 처분은 이 필드들로만 기기전역 칸을 열므로, 칸이
 # 바뀐 이유를 여기서 필드 단위로 가른다. 인터프리터 형태(#1094)는 길이가 아니라
 # 스크립트 자리의 단어와 그 앞 플래그로 가르고, 행은 첫 일치에서 멈추지 않는다.
 # 기기전역 칸의 소비 조건(`Lreq`)은 하위 명령, 그 피연산자, 유도가 낸 트리거 단어의
-# 자리 중 가장 먼 것이다.
+# 자리 중 가장 먼 것이다. docker 의 피연산자는 `run`·`create` 에서 이미지이고, 그 밖의
+# docker 동사는 피연산자 뒤에서도 옵션을 읽으므로 행위 끝이다.
 # ---------------------------------------------------------------------------
 pb_is() {
   # pb_is <label> <기대> <필드들, 공백으로 가름> <행들> <argv> [이름=값...]
@@ -28755,20 +28756,58 @@ pb_is "83b: 짧은 완전 행이 뒤의 파괴 단어 행을 가리지 않는다
   "git push
 git push --force" 'git push --force origin main' GATE_MARK=파괴 GATE_MARK_TRIGGER=--force
 
-# `=` 철자 옵션은 정규화가 버린다. 그 단어가 행이 담는 구간 안에서 떨어지면 행이
-# 무엇을 열었는지 말할 수 없으므로 기기전역 칸은 열리지 않는다.
-pb_is "83b: 떨어진 = 단어 앞에서 끝나는 행은 기기전역을 열지 않는다" 'Pg=0 Gc=dropped' 'Pg Gc' \
+# `=` 철자 옵션은 정규화가 버린다. 그 단어가 행이 담는 구간 안(행의 마지막 단어의 원
+# 번호 앞)에서 떨어지면 행이 무엇을 열었는지 말할 수 없으므로, 그 행은 완전 행이든
+# 러너 행이든 어느 칸에서도 일치하지 않는다. 그래서 `Pg`·`Gc` 만이 아니라 `P`·`형태` 와
+# 상한 해제도 서지 않고, 원인은 `Sx=dropped` 가 말한다.
+pb_is "83b: 떨어진 = 단어 앞에서 끝나는 행은 어느 칸에서도 일치하지 않는다" 'P=0 형태=없음 Pg=0 Gc=- Sx=dropped' 'P 형태 Pg Gc Sx' \
   'docker run --rm img:t' 'docker run --rm --privileged=true img:t sh' GATE_REACH_EFF=기기전역
+# 인터프리터는 스크립트 자리 앞에서 떨어진 단어가 구간 안이다. 닫힌 플래그 검사는
+# 정규화된 단어열 위에서 돌아 `--require=`·`--eval=` 를 보지 못하므로, 이 조건이 없으면
+# 행 `node scripts/x.js` 가 그 행위의 상한을 푼다. 러너 행도 같다.
+pb_is "83b: --require= 가 떨어진 node 행위는 스크립트 행과 맞지 않는다" 'P=0' 'P' \
+  'node scripts/x.js' 'node --require=/tmp/e.js scripts/x.js' GATE_REACH_EFF=prod
+pb_is "83b: --eval= 가 떨어진 node 행위도 같다" 'P=0' 'P' \
+  'node scripts/x.js' 'node --eval=x scripts/x.js' GATE_REACH_EFF=prod
+pb_is "83b: --script-shell= 이 떨어진 npm 행위는 완전 행과 맞지 않는다" 'P=0' 'P' \
+  'npm run deploy' 'npm --script-shell=/tmp/evil.sh run deploy' GATE_REACH_EFF=prod
+pb_is "83b: 러너 행 npm run 도 같은 행위와 맞지 않는다" 'P=0' 'P' \
+  'npm run' 'npm --script-shell=/tmp/evil.sh run deploy' GATE_REACH_EFF=prod
+pb_is "83b: 행 범위 밖에서 떨어진 단어는 일치를 막지 않는다" 'P=1 형태=완전' 'P 형태' \
+  'node scripts/x.js' 'node scripts/x.js --mode=fast' GATE_REACH_EFF=prod
+# 비탐침 모드의 통과(exit 0)도 같은 「일치」를 쓴다. 등급이 통과시키지 않는 면으로
+# 불러 대조까지 닿게 한다.
+pb_rc() {
+  # pb_rc <label> <기대 rc> <행들> <argv>
+  local label="$1" want="$2" rows="$3" argv="$4" m r rc
+  m="$WORK/pb-rc-manifest.md"; : > "$m"
+  while IFS= read -r r; do
+    [ -z "$r" ] || printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$r" >> "$m"
+  done <<PBEOF
+$rows
+PBEOF
+  rc=0
+  env GATE_MARK= GATE_MARK_TRIGGER= GATE_DESTRUCTIVE=0 GATE_REACH_EFF= GATE_REACH_TRIGGERS= \
+    GATE_PREAUTH_PROBE=0 GATE_KIND=exec GATE_SURFACE=외부상태변경 GATE_ARGV="$argv" GATE_MANIFEST="$m" \
+    /bin/sh "$CC_ORCH/rules/사전-인가-대조.sh" >/dev/null 2>&1 || rc=$?
+  check "$label" "$rc" "$want"
+}
+pb_rc "83b: 비탐침 모드에서도 --require= 행위는 승인 대기다" 5 'node scripts/x.js' 'node --require=/tmp/e.js scripts/x.js'
+pb_rc "83b: 비탐침 모드에서도 --eval= 행위는 승인 대기다"    5 'node scripts/x.js' 'node --eval=x scripts/x.js'
+pb_rc "83b: 비탐침 모드에서도 --script-shell= 행위는 승인 대기다" 5 'npm run deploy' 'npm --script-shell=/tmp/evil.sh run deploy'
+pb_rc "83b: 비탐침 모드 대조 — 범위 밖 = 단어는 통과다"      0 'node scripts/x.js' 'node scripts/x.js --mode=fast'
 
 # `Lreq` 예시값. 여는 형태는 Pg=1, 한 단어 짧은 형태는 완전으로 남으면 Gc=short,
 # 러너가 되면 Gc=- 다.
-pb_is "83b: docker build -t T 가 빌드를 연다"       'Pg=1'          'Pg'    'docker build -t T'  'docker build -t T .'        GATE_REACH_EFF=기기전역
+pb_is "83b: docker build -t T . 가 빌드를 연다"     'Pg=1'          'Pg'    'docker build -t T .' 'docker build -t T .'       GATE_REACH_EFF=기기전역
+pb_is "83b: docker build -t T 는 짧다"              'Pg=0 Gc=short' 'Pg Gc' 'docker build -t T'  'docker build -t T .'        GATE_REACH_EFF=기기전역
 pb_is "83b: docker build -t 는 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker build -t'    'docker build -t T .'        GATE_REACH_EFF=기기전역
 pb_is "83b: docker run --rm T 가 실행을 연다"       'Pg=1'          'Pg'    'docker run --rm T'  'docker run --rm T true'     GATE_REACH_EFF=기기전역
 pb_is "83b: docker run --rm 은 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker run --rm'    'docker run --rm T true'     GATE_REACH_EFF=기기전역
 pb_is "83b: docker image rm T 가 삭제를 연다"       'Pg=1'          'Pg'    'docker image rm T'  'docker image rm T'          GATE_REACH_EFF=기기전역
 pb_is "83b: docker image rm 은 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker image rm'    'docker image rm T'          GATE_REACH_EFF=기기전역
-pb_is "83b: docker system prune 이 정리를 연다"     'Pg=1'          'Pg'    'docker system prune' 'docker system prune -f'    GATE_REACH_EFF=기기전역
+pb_is "83b: docker system prune -f 가 정리를 연다"  'Pg=1'          'Pg'    'docker system prune -f' 'docker system prune -f' GATE_REACH_EFF=기기전역
+pb_is "83b: docker system prune 은 짧다"            'Pg=0 Gc=short' 'Pg Gc' 'docker system prune' 'docker system prune -f'    GATE_REACH_EFF=기기전역
 pb_is "83b: 러너가 되는 짧은 형태는 Gc 가 없다"     'Pg=0 형태=러너 Gc=-' 'Pg 형태 Gc' 'docker system' 'docker system prune -f' GATE_REACH_EFF=기기전역
 pb_is "83b: npm install -g c 가 전역 설치를 연다"   'Pg=1'          'Pg'    'npm install -g c'   'npm install -g c'           GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
 pb_is "83b: npm install -g 는 짧다"                 'Pg=0 Gc=short' 'Pg Gc' 'npm install -g'     'npm install -g c'           GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
@@ -28779,6 +28818,25 @@ pb_is "83b: brew install 은 짧다"                   'Pg=0 Gc=short' 'Pg Gc' '
 pb_is "83b: 경로 트리거는 행위 전체를 요구한다"     'Pg=1'          'Pg'    "cp a.txt $HOME/.config/ccx" "cp a.txt $HOME/.config/ccx" GATE_REACH_EFF=기기전역 "GATE_REACH_TRIGGERS=$HOME/.config/ccx"
 pb_is "83b: 경로 트리거 앞에서 끝나는 행은 짧다"    'Pg=0 Gc=short' 'Pg Gc' 'cp a.txt'           "cp a.txt $HOME/.config/ccx" GATE_REACH_EFF=기기전역 "GATE_REACH_TRIGGERS=$HOME/.config/ccx"
 pb_is "83b: 인터프리터는 스크립트 자리까지다"       'Pg=1'          'Pg'    'bash scripts/x.sh'  'bash scripts/x.sh a'        GATE_REACH_EFF=기기전역
+# docker `run` 의 이미지 자리는 값을 받는 옵션의 값을 건너뛴 뒤의 단어다. 옵션 값에서
+# 끝나는 행은 뒤에 붙는 다른 옵션까지 연다. 그 밖의 docker 동사는 피연산자 뒤에서도
+# 옵션을 읽으므로 행위 전체를 요구한다.
+pb_is "83b: docker run -p 의 제안은 이미지까지다" 'Sx=ok 제안=docker run --rm -p 8080:80 nginx' 'Sx 제안' \
+  '' 'docker run --rm -p 8080:80 nginx' GATE_REACH_EFF=기기전역
+pb_is "83b: docker run -e 의 제안도 이미지까지다" 'Sx=ok 제안=docker run --rm -e CI=1 myimg' 'Sx 제안' \
+  '' 'docker run --rm -e CI=1 myimg npm test' GATE_REACH_EFF=기기전역
+pb_is "83b: docker run -v --privileged 의 제안도 이미지까지다" 'Sx=ok 제안=docker run --rm -v /:/host --privileged alpine' 'Sx 제안' \
+  '' 'docker run --rm -v /:/host --privileged alpine sh' GATE_REACH_EFF=기기전역
+pb_is "83b: docker run --rm T 의 제안은 이미지까지다" 'Sx=ok 제안=docker run --rm T' 'Sx 제안' \
+  '' 'docker run --rm T true' GATE_REACH_EFF=기기전역
+pb_is "83b: docker image rm 의 제안은 행위 전체다" 'Sx=ok 제안=docker image rm T' 'Sx 제안' \
+  '' 'docker image rm T' GATE_REACH_EFF=기기전역
+pb_is "83b: docker system prune 의 제안은 행위 전체다" 'Sx=ok 제안=docker system prune -f' 'Sx 제안' \
+  '' 'docker system prune -f' GATE_REACH_EFF=기기전역
+pb_is "83b: 옵션 값에서 끝나는 행은 뒤의 --privileged 를 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
+  'docker run --rm -p 8080:80' 'docker run --rm -p 8080:80 -v /:/host --privileged alpine sh' GATE_REACH_EFF=기기전역
+pb_is "83b: 빌드 행은 뒤에 붙은 --output 을 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
+  'docker build -t T .' 'docker build -t T . --output type=local,dest=/x' GATE_REACH_EFF=기기전역
 # 트리거 단어만 담은 형태는 다른 설정 키까지 연다 — 키를 담아야 한다. 키를 담은 행은
 # 다른 키를 쓰는 행위와 맞지 않는다(피연산자 고정의 음성 행).
 pb_is "83b: git config --global 행은 다른 키를 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
@@ -28794,11 +28852,14 @@ pb_is "83b: 신고만 있는 파괴는 행위 전체 행이 연다" 'Pd=1' 'Pd' 
   'curl -X POST https://x/y' 'curl -X POST https://x/y' GATE_DESTRUCTIVE=1
 pb_is "83b: 신고만 있는 파괴는 짧은 행이 열지 않는다" 'Pd=0' 'Pd' \
   'curl -X POST' 'curl -X POST https://x/y' GATE_DESTRUCTIVE=1
+# 이 행에서 떨어진 `--method=DELETE` 는 행의 마지막 단어 뒤, 곧 행 범위 밖이라 일치는
+# 남는다. 신고만 있는 파괴는 떨어진 단어가 어디에 있든 행위 전체를 축자로 담지 못한
+# 것이므로 `Pd` 만 서지 않는다.
 pb_is "83b: = 단어가 떨어진 행위는 전체 행으로도 열리지 않는다" 'P=1 형태=완전 Pd=0' 'P 형태 Pd' \
   'gh api /repos/o/r' 'gh api /repos/o/r --method=DELETE' GATE_DESTRUCTIVE=1
 
 # 원인마다 제안. 행으로 고칠 수 없는 원인은 제안이 `-` 다.
-pb_is "83b: 기기전역 행위의 제안은 Lreq 를 채운다" 'Sx=ok 제안=docker build -t T' 'Sx 제안' \
+pb_is "83b: 기기전역 행위의 제안은 Lreq 를 채운다" 'Sx=ok 제안=docker build -t T .' 'Sx 제안' \
   '' 'docker build -t T .' GATE_REACH_EFF=기기전역
 pb_is "83b: 떨어진 단어는 원 철자로 이름이 붙는다" 'Sx=dropped Sw=--privileged=true' 'Sx Sw' \
   '' 'docker run --rm --privileged=true T true' GATE_REACH_EFF=기기전역
@@ -28844,7 +28905,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 # EXEMPT 는 고침이 행이 아닌 칸이다: 「모른다」인 `도달미상`, 결코 열지 않는 `dev파괴`,
 # 처분 밖에서 정해지는 병합 칸 셋(60·61c 절이 묶는다).
 t3_exempt=" 도달미상 dev파괴 CI실패 등급회귀 등급회귀판정불가 "
-t3_T=" 기기전역/no-row 기기전역/short 기기전역/dropped 기기전역/argv0-path 기기전역/external 기기전역/never 파괴형태미명시/marked 파괴형태미명시/declared 신고등급한도/opaque 신고등급한도/code 신고등급한도/wrapper 신고등급한도/unlisted prod인가없음/- 배포트리거인가없음/- dev식별자부재/- dev식별자불일치/- dev대조불가/- 비밀출력/- push원격불일치/- 도달모순/- dropped none code argv0 never external "
+t3_T=" 기기전역/no-row 기기전역/short 기기전역/argv0-path 기기전역/external 기기전역/never 파괴형태미명시/marked 파괴형태미명시/declared 신고등급한도/opaque 신고등급한도/code 신고등급한도/wrapper 신고등급한도/unlisted prod인가없음/- 배포트리거인가없음/- dev식별자부재/- dev식별자불일치/- dev대조불가/- 비밀출력/- push원격불일치/- 도달모순/- dropped none code argv0 never external "
 t3_D=$( { awk '/^gate_reach_disposition\(\) \{/ { on = 1 } on && /^}$/ { on = 0 } on' "$GATE" \
             | grep -o "printf '[^\\\\']*\\\\t" | sed "s/^printf '//; s/\\\\t\$//"
           grep -o 'GATE_PARK_CELL="[^"$]*"' "$GATE" | sed 's/^GATE_PARK_CELL="//; s/"$//'; } | sort -u | tr '\n' ' ')
@@ -28922,7 +28983,7 @@ rx_manifest R83C ''
 t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3"
 t3_park 1 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
 t3_c=$T3_CALL; t3_r=$(rx_row)
-check "83c: 1 — 찍힌 행은 빌드의 피연산자까지다" "$t3_r" "docker build -t img3:t"
+check "83c: 1 — 찍힌 행은 행위 전체다" "$t3_r" "docker build -t img3:t $WORK/ctx3"
 rx_manifest R83C "$t3_r"
 t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3"
 t3_pass 1 "$t3_c"
@@ -28977,10 +29038,12 @@ $t3_r"
 t3p front3 트리밖쓰기 기기전역 -- cp a.txt "$HOME/.config/ccx"
 t3_pass 6 "$t3_c"
 
-# 7 — 떨어진 = 단어. 행으로는 못 고치고, 공백 철자로 고쳐 쓴 행위를 행이 연다.
+# 7 — 떨어진 = 단어. 행으로는 못 고치고, 공백 철자로 고쳐 쓴 행위를 행이 연다. 떨어진
+# 단어가 행의 범위 안이라 그 행은 일치하지 않고, 불투명 행위에 lift 가 서지 않아 기기전역
+# 칸에 닿기 전에 신고등급한도에서 park 한다. 문구는 `Sx=dropped` 바꿈이 정한다.
 rx_manifest R83C 'docker run --rm img3:t'
 t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged=true img3:t true
-t3_park 7 기기전역 dropped "the matcher drops '--privileged=true'" 0 dropped
+t3_park 7 신고등급한도 opaque "the matcher drops '--privileged=true'" 0 dropped
 # 고쳐 쓴 행위는 불투명 부류이고 맞는 완전 행이 없어 lift 가 서지 않으므로, 기기전역 칸에
 # 닿기 전에 신고등급한도에서 park 한다. 그 문구가 찍는 행이 이 행위를 연다.
 t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged img3:t true
@@ -29318,8 +29381,8 @@ if [ "$dk_go" = 1 ]; then
   dk_nonce="$$-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   DK_TAG="cc-cmds-gate-selftest:$dk_nonce"
   dk_ctx="$WORK/docker-ctx"; mkdir -p "$dk_ctx"
-  # 라벨은 `--label` 이 아니라 Dockerfile 에 둔다. 공백 철자 `--label k=v` 는 빌드의
-  # 피연산자 자리 앞 단어가 되어 행이 라벨까지 담아야 하게 만든다.
+  # 라벨은 `--label` 이 아니라 Dockerfile 에 둔다. 기기전역 칸은 빌드 행에 행위 전체를
+  # 요구하므로, argv 의 라벨은 실행마다 바뀌는 epoch 를 행에 담게 강제한다.
   printf 'FROM %s\nLABEL cc-cmds.gate-selftest=%s-%s\nCMD ["echo","cc-gate-selftest-ok"]\n' \
     "$dk_base" "$(date +%s)" "$dk_nonce" > "$dk_ctx/Dockerfile"
 
@@ -29335,7 +29398,7 @@ if [ "$dk_go" = 1 ]; then
     bad "83d: 행 없는 빌드는 park 하고 아무것도 짓지 않는다" "rc=$rc $msg"
   fi
   dk_r1=$(rx_row)
-  check "83d: 빌드의 수리 행은 태그까지다" "$dk_r1" "docker build -t $DK_TAG"
+  check "83d: 빌드의 수리 행은 행위 전체다" "$dk_r1" "docker build -t $DK_TAG $dk_ctx"
   check "83d: 그 blocked 행의 칸이 기기전역이다" \
     "$( { grep '^- `blocked`' "$dk_led" 2>/dev/null || true; } | grep -c '도달 판정=기기전역' || true)" "1"
   gate plan --manifest "$RX_M" --target front3 --segment S4 --cutpoint 커밋 \

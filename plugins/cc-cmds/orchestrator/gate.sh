@@ -1343,7 +1343,6 @@ gate_reach_disposition() {
   case " $_pf " in *" Pg=1 "*) Pg=1 ;; esac
   case " $_pf " in
     *" Gc=short "*) Gc=short ;;
-    *" Gc=dropped "*) Gc=dropped ;;
     *" Gc=destructive "*) Gc=destructive ;;
     *" Gc=argv0 "*) Gc=argv0 ;;
   esac
@@ -1435,8 +1434,12 @@ gate_reach_disposition() {
 
   # 6 — MACHINE-GLOBAL OPENS ONLY ON A ROW THAT REACHES THE ACT'S OPERAND. The
   # probe's `Pg` holds when a complete row carries every word up to the
-  # subcommand's operand and every derived trigger, drops no `=` word inside
-  # that span and, for a destructive act, names the destructive word. Three
+  # subcommand's operand and every derived trigger and, for a destructive act,
+  # names the destructive word. For docker the operand is the image of `run` and
+  # `create`, and the end of the act for every other docker verb, which reads
+  # options after its operand too. A row inside whose span the matcher dropped
+  # an `=` word does not match at all, so that act arrives here without a
+  # complete row and the `Sx=dropped` repair speaks for it. Three
   # things no row opens come first: the Claude configuration home, and an act
   # that changes state outside this machine — the user opened acts that change
   # this machine's configuration, not a remote write that happens to name a home
@@ -1453,7 +1456,6 @@ gate_reach_disposition() {
       destructive)
         if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked'; else printf '파괴형태미명시\tdeclared'; fi ;;
       argv0)   printf '기기전역\targv0-path' ;;
-      dropped) printf '기기전역\tdropped' ;;
       *)       printf '기기전역\tshort' ;;
     esac
     return 0
@@ -1527,10 +1529,9 @@ gate_park_repair_line() {
   local msg='' row=0
   case "$cell/$cause" in
     기기전역/no-row)
-      msg="repair: no \`사전 인가\` row opens this machine-global act — kick off again with the row below. A shape that names only the runner, or stops before the subcommand's operand, does not open it"; row=1 ;;
+      msg="repair: no \`사전 인가\` row opens this machine-global act — kick off again with the row below. A shape that names only the runner, or stops before the subcommand's operand (for docker, before the image of run/create, or before the end of any other docker act), does not open it"; row=1 ;;
     기기전역/short)
       msg="repair: the \`사전 인가\` row that matched stops before the words that make this act machine-global (the subcommand, its operand and '$trig') — kick off again with the row below"; row=1 ;;
-    기기전역/dropped) sx=dropped ;;
     기기전역/argv0-path) sx=argv0 ;;
     기기전역/external) msg=external ;;
     기기전역/never) msg=never ;;

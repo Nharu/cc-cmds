@@ -280,15 +280,24 @@ the script or target operand — matches only the act's first one or two words
 and opens no destructive act; an interpreter form is complete only when the word
 at the script position is a real script (not a dash word, not stdin) and every
 word before it is a closed flag, so a code string, a module or stdin keeps the
-form a runner at any length. A runner form longer than two words matches
-nothing. A `기기전역` act takes a complete row only, and only one that carries
-at least `Lreq = max(2, s, t, every trigger position)` words of the act: `s` is
-the subcommand (for a docker management group or `yarn global`, the next
-non-option word), `t` the first non-option word after it — the tag, image,
-package or config key, omitted for an interpreter — and the triggers are the
-flag and path words that made the act machine-global. `docker run --rm T true`
-is opened by `docker run --rm T`, `git config --global user.name x` by `git
-config --global user.name`. A `기기전역` act that changes external state, or that
+form a runner at any length. A `-x=y` word the normalization dropped is still
+counted where the act spelled it: when one sits before the row's last word, the
+row — complete or runner — does not match the act at all, at any reach, so
+`node --require=/tmp/e.js scripts/x.js` is not opened by `node scripts/x.js` and
+`npm --script-shell=/tmp/s.sh run deploy` is not opened by `npm run deploy`. A
+runner form longer than two words matches nothing. A `기기전역` act takes a
+complete row only, and only one that carries at least `Lreq = max(2, s, t,
+every trigger position)` words of the act: `s` is the subcommand (for a docker
+management group or `yarn global`, the next non-option word), and `t` is its
+operand — for docker `run` and `create` the image, found by skipping the flags
+known to take no value and the value of every other option; for any other
+docker act the end of the act, because those verbs read options after their
+operand too; otherwise the first non-option word after the subcommand, the
+package or config key, omitted for an interpreter. The triggers are the flag and
+path words that made the act machine-global. `docker run --rm T true` is opened
+by `docker run --rm T`, `docker build -t T .` only by the whole act `docker
+build -t T .`, `git config --global user.name x` by `git config --global
+user.name`. A `기기전역` act that changes external state, or that
 names a path under the Claude configuration home, is opened by no row. An
 external-state act with no matching row is **not refused**: it issues an
 approval and waits, because nobody being awake to ask is not the same fact as
