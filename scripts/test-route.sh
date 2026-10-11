@@ -77,8 +77,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 571(root 가 아닐 때). root 는 권한 사례 여섯을 건너뛴다.
-ASSERTION_FLOOR=550
+# 실측 651(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=630
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -790,6 +790,77 @@ tr_frames_read_case() {
 tr_in_run "$TR_RUN_SH" tr_frames_read_case
 
 # ===========================================================================
+# 비용 표본 저장소 — 작성기
+# ===========================================================================
+CS="$WORK/costs"
+mkdir -p "$CS"
+init_line() { jq -cn --argjson e "$1" '{type: "system", subtype: "init", claude_code_version: "2.1.300", timestamp: ($e | todate)}'; }
+res_line() { jq -cn --argjson d "$1" '{type: "result", subtype: "success", duration_ms: $d, total_cost_usd: 1.5}'; }
+{ init_line $((NOW - 600)); ts_line $((NOW - 500)); rl_line 0.1 0.2; ts_line $((NOW - 400)); rl_line 0.2 0.2
+  ts_line $((NOW - 300)); rl_line 0.3 0.25; ts_line $((NOW - 100)); res_line 500000; } > "$CS/impl#1.json"
+{ ts_line $((NOW - 400)); rl_line 0.1 null; ts_line $((NOW - 100)); res_line 50000; } > "$CS/impl#2.json"
+{ ts_line $((NOW - 400)); rl_line 0.1 0.1; ts_line $((NOW - 100)); } > "$CS/noresult.json"
+{ rl_line 0.1 0.1; res_line 5000; } > "$CS/nots.json"
+cput() { bash "$TR_ROUTE" cost-sample-put "$1" --run-id r1 --lineage "${3:-S4.A}" --kind "${4:-implement}" --account "${5:-u1}" --log "$2"; }
+csn() { if [ -f "$1/samples.jsonl" ]; then wc -l < "$1/samples.jsonl" | tr -d ' '; else printf 없음; fi; }
+d="$CS/s1"
+rc=0; cput "$d" "$CS/impl#1.json" || rc=$?
+check "표본 쓰기는 rc 0 이고 없는 디렉터리를 만든다" "$rc:$(csn "$d")" "0:1"
+out=$(cat "$d/samples.jsonl")
+expect "표본 줄은 창별 첫·끝 판독과 프레임 수를 담는다" "$out" \
+  '.windows.five_hour.u0 == 0.1 and .windows.five_hour.u1 == 0.3 and .windows.five_hour.n == 3
+   and .windows.seven_day.u0 == 0.2 and .windows.seven_day.u1 == 0.25 and .windows.seven_day.n == 3
+   and .windows.five_hour.r0 == .windows.five_hour.r1 and (.windows.five_hour.r0 | type) == "number"'
+expect "프레임 관측 시각은 직전 타임스탬프의 것이다" "$out" \
+  ".windows.five_hour.t0 == $((NOW - 500)) and .windows.five_hour.t1 == $((NOW - 300))"
+expect "구간 시작은 첫 타임스탬프에서 잘리고 끝은 마지막 타임스탬프다" "$out" \
+  ".t_start == $((NOW - 600)) and .t_end == $((NOW - 100))"
+expect "결과 줄·init 줄의 진단 필드와 키 필드를 담는다" "$out" \
+  '.schema == "cc-cmds-cost-sample v1" and .run_id == "r1" and .lineage == "S4.A" and .log == "impl#1.json"
+   and .kind == "implement" and .account == "u1" and .duration_ms == 500000 and .usd == 1.5 and .cli == "2.1.300"'
+cput "$d" "$CS/impl#1.json"
+check "같은 키를 두 번 쓰면 한 줄" "$(csn "$d")" 1
+cput "$d" "$CS/impl#2.json"
+check "다른 로그는 줄을 더한다" "$(csn "$d")" 2
+expect "구간 시작은 끝에서 duration_ms 를 뺀 값이고 프레임 없는 창은 싣지 않는다" "$(sed -n 2p "$d/samples.jsonl")" \
+  ".t_start == $((NOW - 150)) and (.windows | keys) == [\"five_hour\"]"
+cp "$CS/impl#2.json" "$CS/impl#3.json"
+rc=0; cput "$d" "$CS/impl#3.json" 'B:impl#3' || rc=$?
+check "게이트 모양 계보와 로그 이름으로도 한 줄이 된다" "$rc:$(csn "$d"):$(jq -sr '[.[] | select(.log == "impl#3.json")][0].lineage' "$d/samples.jsonl")" '0:3:B:impl#3'
+d="$CS/s2"
+rc=0; cput "$d" "$CS/noresult.json" || rc=$?
+check "결과 줄이 없는 로그는 쓰지 않고 rc 0" "$rc:$(csn "$d")" "0:없음"
+rc=0; cput "$d" "$CS/nots.json" || rc=$?
+check "타임스탬프가 없는 로그는 쓰지 않고 rc 0" "$rc:$(csn "$d")" "0:없음"
+rc=0; cput "$d" "$CS/impl#1.json" S4.A generic || rc=$?
+check "닫힌 여섯 부류 밖은 쓰지 않고 rc 0 이며 디렉터리도 만들지 않는다" "$rc:$([ -e "$d" ] && printf 있음 || printf 없음)" "0:없음"
+rc=0; cput "$d" "$CS/impl#1.json" S4.A implement - || rc=$?
+check "계정 - 는 rc 2" "$rc:$(csn "$d")" "2:없음"
+rc=0; cput "$d" "$CS/impl#1.json" S4.A implement '(미상)' || rc=$?
+check "계정 (미상) 은 rc 2" "$rc:$(csn "$d")" "2:없음"
+rc=0; cput "$d" "$CS/missing.json" || rc=$?
+check "없는 로그는 rc 2" "$rc" 2
+d="$CS/s3"
+mkdir -p "$d"
+{ printf 'not json\n'
+  jq -cn --argjson e "$NOW" '{schema: "cc-cmds-cost-sample v0", run_id: "r0", log: "x.json", t_end: $e}'
+  jq -cn --argjson e $((NOW - 15 * 86400)) '{schema: "cc-cmds-cost-sample v1", run_id: "r0", log: "old.json", t_end: $e}'
+  jq -cn --argjson e "$NOW" '{schema: "cc-cmds-cost-sample v1", run_id: "r0", log: "keep.json", t_end: $e}'; } > "$d/samples.jsonl"
+cput "$d" "$CS/impl#1.json"
+check "깨진 줄·다른 스키마·14일 넘은 줄은 쓰기에서 지워진다" "$(jq -sr '[.[].log] | sort | join(",")' "$d/samples.jsonl")" "impl#1.json,keep.json"
+d="$CS/s4"
+mkdir -p "$d"
+jq -cn --argjson now "$NOW" 'range(4005) | {schema: "cc-cmds-cost-sample v1", run_id: "r0", log: "s\(.).json", t_end: ($now - 100000 + .)}' > "$d/samples.jsonl"
+cput "$d" "$CS/impl#1.json"
+check "t_end 기준 최신 4000줄만 남는다" "$(csn "$d"):$(head -n 1 "$d/samples.jsonl" | jq -r .log):$(tail -n 1 "$d/samples.jsonl" | jq -r .log)" "4000:s6.json:impl#1.json"
+d="$CS/s5"
+mkdir -p "$d/.lock"
+printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
+printf '%s\n' '{"keep":1}' > "$d/samples.jsonl"
+rc=0; cput "$d" "$CS/impl#1.json" 2>/dev/null || rc=$?
+check "잡힌 락 아래의 쓰기는 표본을 버리고 파일을 건드리지 않는다" "$rc:$(cat "$d/samples.jsonl")" '3:{"keep":1}'
+
+# ===========================================================================
 # 입력 판독 — 병합
 # ===========================================================================
 out=$(classify 'ONLY(["a"]) | USE([UA("a"; 0.5; 0.1) | .windows.five_hour.observed_at_epoch = ($now - 100)])
@@ -916,6 +987,28 @@ expect "맨 앞 대기자는 입장한다" "$out" '.verdict == "GRANT" and .acco
 out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; false; 1)])")
 expect "죽은 대기자는 막지 않는다" "$out" '.verdict == "GRANT"'
 
+# 봉투의 비용. 입장 판정이 정한 봉투는 그 판정의 창별 비용을 싣고, 판정 없이 정한
+# 봉투는 null 이다. PARK·좌석·휴면 봉투에는 키가 없다.
+TCOST="{\"five_hour\":{\"bp\":$TC5_BP,\"source\":\"default\"},\"seven_day\":{\"bp\":$TC7_BP,\"source\":\"default\"}}"
+expect "새 GRANT 는 두 창 비용을 싣는다" "$(decide '.')" ".verdict == \"GRANT\" and .cost == $TCOST"
+out=$(decide "$ONE | $FULL_A | REQ({event: \"resume\", bound_account: \"a\"})")
+expect "묶인 계정의 자리 없음 대기는 그 판정의 비용" "$out" ".reason == \"resume-bound-no-room\" and .cost == $TCOST"
+out=$(decide "$ONE | .usage.accounts[0].windows.seven_day.utilization = 1.1 | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"resume\"})")
+expect "살아 있는 묶인 임대의 소진 대기도 그 판정의 비용" "$out" ".reason == \"resume-bound-exhausted\" and .cost == $TCOST"
+out=$(decide "$NOROOM")
+expect "빈자리 없음 대기는 고른 후보의 비용" "$out" ".reason == \"no-room\" and .cost == $TCOST"
+out=$(decide "$LIM | ONLY([\"a\"]) | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"limit-reclaim\"})")
+expect "until 이 없는 빈자리 없음 대기는 null" "$out" '.reason == "no-room" and .until_epoch == null and has("cost") and .cost == null'
+out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; true; 1)])")
+expect "FIFO 양보 대기는 null" "$out" '.reason == "fifo-yield" and has("cost") and .cost == null'
+out=$(decide "$UCC")
+expect "미지 동시성 대기는 null" "$out" '.reason == "unknown-concurrency" and has("cost") and .cost == null'
+out=$(decide "$ONE | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"crash-retry\"})")
+expect "기존 임대의 재GRANT 는 null" "$out" '.basis == "sticky" and .txn.op == "hold" and has("cost") and .cost == null'
+out=$(decide "$ONE | REQ({event: \"resume\"})")
+expect "PARK 봉투에는 비용 키가 없다" "$out" '.verdict == "PARK" and (has("cost") | not)'
+expect "좌석 봉투에는 비용 키가 없다" "$(decide '.inventory = {state: "absent", accounts: []}')" '.basis == "single-seat" and (has("cost") | not)'
+
 # 차용 기록. 문맥의 borrow 를 직접 지정한다.
 for ev in first crash-retry resume shift classify; do
   run=decide
@@ -1010,8 +1103,137 @@ check "cap_bp 가 없으면 rc 2" "$rc" 2
 
 expect "c 는 default 로 떨어진다" "$(admit1 'ONLY(["a"])')" ".reservation_bp.seven_day == $((TK7 * TC7_BP))"
 expect "c 는 by_kind 가 default 를 이긴다" "$(admit1 'ONLY(["a"]) | .config.c.seven_day.by_kind.implement = 0.05')" ".reservation_bp.seven_day == $((TK7 * 500))"
-expect "c 는 by_group 이 by_kind 를 이긴다" "$(admit1 'ONLY(["a"]) | .config.c.seven_day.by_kind.implement = 0.05 | .config.c.seven_day.by_group["acct:a"] = 0.1')" \
-  ".reservation_bp.seven_day == $((TK7 * 1000))"
+expect "c 는 by_group 이 by_kind 를 이긴다" "$(admit1 'ONLY(["a"]) | .config.c.seven_day.by_kind.implement = 0.05 | .config.c.seven_day.by_group["acct:a"].implement = 0.1')" \
+  ".reservation_bp.seven_day == $((TK7 * 1000)) and .cost.seven_day == {bp: 1000, source: \"group-kind\"}"
+expect "그룹 칸은 부류를 가린다" "$(admit1 'ONLY(["a"]) | .config.c.seven_day.by_kind.implement = 0.05 | .config.c.seven_day.by_group["acct:a"].review = 0.1')" \
+  ".reservation_bp.seven_day == $((TK7 * 500)) and .cost.seven_day == {bp: 500, source: \"kind\"}"
+expect "입장 결과는 창마다 비용과 출처를 싣는다" "$(admit1 'ONLY(["a"])')" \
+  ".cost == {five_hour: {bp: $TC5_BP, source: \"default\"}, seven_day: {bp: $TC7_BP, source: \"default\"}}"
+
+# ===========================================================================
+# 비용 표 — 표본에서 칸 값으로
+# ===========================================================================
+# 티켓 문맥: 계정 u4 하나(5시간 0.25, 주간 0.82), 같은 계정 위 다른 런의 살아 있는
+# 부여(5시간 4600, 주간 <다른7>). 배수는 출하 상수에 기대지 않고 5시간 1·주간 2 를
+# 넣는다. 표본은 서로 겹치지 않게 1000초 간격으로 둔다(분모 1).
+CT_JQ='
+def CCFG: {max_age_s: 604800, max_n: 40, min_n: 3, floor: {five_hour: 0.01, seven_day: 0.005}, hygiene: {min_frames: 3, min_cover: 0.5}};
+def WIN($u0; $d; $te; $len): {u0: $u0, u1: ($u0 + $d), r0: ($now + 3600), r1: ($now + 3600), n: 5, t0: ($te - $len), t1: $te};
+def SMP($acct; $kind; $i; $d5; $d7):
+  ($now - 1000 * ($i + 1)) as $te
+  | {schema: "cc-cmds-cost-sample v1", run_id: "rs", lineage: ("l" + ($i | tostring)), log: ("\($acct)-\($kind)-\($i).json"),
+     kind: $kind, account: $acct, t_start: ($te - 100), t_end: $te, duration_ms: 100000, usd: 1, cli: "x",
+     windows: ({} + (if $d5 == null then {} else {five_hour: WIN(0.1; $d5; $te; 100)} end)
+                  + (if $d7 == null then {} else {seven_day: WIN(0.5; $d7; $te; 100)} end))};
+def S3($acct; $kind; $d5; $d7): [range(0; 3) | SMP($acct; $kind; .; $d5; $d7)];
+def COSTS($xs): .config.cost = CCFG | .cost_samples = ([$xs[] | tojson] | join("\n"));
+def TICKET($o7): ONLY(["u4"]) | USE([UA("u4"; 0.25; 0.82)])
+  | ITEMS([LR("r0"; "B:x#1"; "u4"; "grant"; {five_hour: 4600, seven_day: $o7}; true; 1)])
+  | REQ({run_id: "r1", lineage: "B:impl#3", event: "first", kind: "implement"})
+  | .config.k.default = {five_hour: 1, seven_day: 2} | .config.cap_bp = 8000
+  | .config.c.five_hour.default = 0.15 | .config.c.seven_day.default = 0.02;
+'
+cadmit() { admit1 "$CT_JQ $1" u4; }
+ctable() { ctx "$CT_JQ $1" | bash "$TR_ROUTE" cost-table; }
+
+# 1. 입장 짝.
+out=$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0.01))')
+expect "실측 칸(주간 0.01)이면 티켓 사례가 입장한다" "$out" \
+  '.admitted == true and .cost.seven_day == {bp: 100, source: "group-kind"} and .reservation_bp.seven_day == 200'
+out=$(cadmit 'TICKET(1600)')
+expect "표본이 없고 기본값이면 주간만 거부한다" "$out" \
+  '.admitted == false and .failed == ["seven_day"] and .cost.five_hour.source == "default" and .cost.seven_day.source == "default"'
+# 2. `>` 고정.
+expect "실측 칸에서도 다른 주간 1601 이면 거부" "$(cadmit 'TICKET(1601) | COSTS(S3("u4"; "implement"; 0.01; 0.01))')" \
+  '.admitted == false and .failed == ["seven_day"]'
+# 3. 반올림 고정.
+expect "중앙값 0.01004 는 입장" "$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0.01004))')" \
+  '.admitted == true and .reservation_bp.seven_day == 200'
+expect "중앙값 0.01005 는 거부" "$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0.01005))')" \
+  '.admitted == false and .reservation_bp.seven_day == 202'
+check "0.82 - 0.81 은 0.01 아래의 부동소수 잡음이다" "$(jq -n '(0.82 - 0.81) < 0.01')" true
+out=$(cadmit 'TICKET(1600) | COSTS([range(0; 3) | SMP("u4"; "implement"; .; 0.01; 0.01) | .windows.seven_day.u0 = 0.81 | .windows.seven_day.u1 = 0.82])')
+expect "빼기의 잡음 표본도 200 으로 입장" "$out" '.admitted == true and .reservation_bp.seven_day == 200'
+# 4. 바닥값.
+out=$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0))')
+expect "모두 0 인 주간 표본은 바닥값 0.005 로 입장하고 출처는 칸 그대로" "$out" \
+  '.admitted == true and .reservation_bp.seven_day == 100 and .cost.seven_day == {bp: 50, source: "group-kind"}'
+expect "주간 바닥값 0.0101 이면 거부" "$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0)) | .config.cost.floor.seven_day = 0.0101')" \
+  '.admitted == false and .failed == ["seven_day"]'
+# 5. 5시간.
+expect "5시간 표본(0.01)이면 입장" "$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0.01)) | .config.c.five_hour.default = 0.46')" \
+  '.admitted == true and .cost.five_hour == {bp: 100, source: "group-kind"}'
+expect "5시간 표본 없이 0.46 이면 5시간 거부" "$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; null; 0.01)) | .config.c.five_hour.default = 0.46')" \
+  '.admitted == false and .failed == ["five_hour"] and .cost.five_hour.source == "default"'
+# 6. 내려감.
+expect "주간 0.04 칸은 800 bp 예약" "$(cadmit 'TICKET(0) | COSTS(S3("u4"; "implement"; 0.01; 0.04))')" '.reservation_bp.seven_day == 800'
+out=$(cadmit 'TICKET(0) | COSTS([range(0; 3) | SMP("u4"; "implement"; .; 0.01; 0.04) | .t_end -= 8 * 86400 | .t_start -= 8 * 86400]
+                                + S3("u4"; "implement"; 0.01; 0.02))')
+expect "7일을 넘긴 0.04 가 빠지고 0.02 가 들어오면 400 bp" "$out" '.reservation_bp.seven_day == 400'
+out=$(cadmit 'TICKET(0) | COSTS([range(0; 3) | SMP("u4"; "implement"; .; 0.01; 0.04) | .t_end -= 8 * 86400 | .t_start -= 8 * 86400])')
+expect "7일을 넘긴 높은 표본만 남은 칸은 기본값으로 내려간다" "$out" '.cost.seven_day.source == "default"'
+OLD20='[range(20; 40) | SMP("u4"; "implement"; .; 0.01; 0.04)] + [range(0; 20) | SMP("u4"; "implement"; .; 0.01; 0.02)]'
+expect "0.04 스물·0.02 스물이면 중앙값 0.03" "$(cadmit "TICKET(0) | COSTS($OLD20)")" '.cost.seven_day.bp == 300'
+expect "41번째 표본이 가장 오래된 것을 밀어낸다" \
+  "$(cadmit "TICKET(0) | COSTS($OLD20 + [SMP(\"u4\"; \"implement\"; -1; 0.01; 0.02)])")" '.cost.seven_day.bp == 200'
+# 7. 출처 순서.
+out=$(cadmit 'TICKET(0) | COSTS([range(0; 2) | SMP("u4"; "implement"; .; 0.01; 0.03)] + [range(2; 4) | SMP("zz"; "implement"; .; 0.01; 0.03)])')
+expect "그룹 칸이 3개 미만이면 부류 칸" "$out" '.cost.seven_day == {bp: 300, source: "kind"}'
+out=$(cadmit 'TICKET(0) | COSTS([range(0; 2) | SMP("u4"; "implement"; .; 0.01; 0.03)])')
+expect "부류 칸도 3개 미만이면 기본값" "$out" '.cost.seven_day == {bp: 200, source: "default"}'
+out=$(cadmit 'TICKET(0) | COSTS(S3("u4"; "review"; 0.01; 0.03))')
+expect "다른 부류 표본의 값은 새지 않는다" "$out" '.cost.seven_day == {bp: 200, source: "default"}'
+# 8. 귀속.
+OVL='def OV($i; $d7): SMP("u4"; "implement"; $i; 0.01; $d7) | .t_end = ($now - 500) | .t_start = ($now - 600)
+       | .windows.seven_day.t0 = .t_start | .windows.seven_day.t1 = .t_end;'
+out=$(ctable "$OVL TICKET(0) | COSTS([OV(0; 0.02), OV(1; 0.02), SMP(\"u4\"; \"implement\"; 5; 0.01; 0.01)])")
+expect "구간이 완전히 겹친 두 표본은 각각 증가분의 절반" "$out" \
+  ".seven_day.by_group[\"acct:u4\"].implement | (.value * 10000 | round) == 100 and .n == 3 and .oldest == $((NOW - 6000))"
+out=$(ctable "$OVL TICKET(0) | COSTS([OV(0; 0.02), OV(1; 0.02), SMP(\"u4\"; \"implement\"; 5; 0.01; 0.01), (OV(2; 0.02) | .account = \"zz\")])")
+expect "다른 그룹 표본은 나누지 않는다" "$out" \
+  '(.seven_day.by_group["acct:u4"].implement.value * 10000 | round) == 100 and .seven_day.by_group["acct:zz"] == null'
+out=$(ctable "$OVL TICKET(0) | COSTS([OV(0; 0.03), OV(1; 0.03), (OV(2; 0.03) | .windows.seven_day.n = 2), SMP(\"u4\"; \"implement\"; 5; 0.01; 0.01)])")
+expect "위생에서 걸러진 표본도 분모에 든다" "$out" '.seven_day.by_group["acct:u4"].implement | (.value * 10000 | round) == 100 and .n == 3'
+# 9. 위생.
+HYG='def H($i; f): SMP("u4"; "implement"; $i; 0.01; 0.02) | f;'
+out=$(ctable "$HYG TICKET(0) | COSTS(S3(\"u4\"; \"implement\"; 0.01; 0.01)
+  + [H(10; .windows.seven_day.n = 2), H(11; .windows.seven_day.t0 = (.t_end - 40)),
+     H(12; .windows.seven_day.r1 += 1), H(13; .windows.seven_day.u1 = 0.49)])")
+expect "프레임 2개·덮는 비율 0.4·리셋 변경·감소 표본은 빠진다" "$out" '.seven_day.by_group["acct:u4"].implement | .n == 3 and (.value * 10000 | round) == 100'
+out=$(ctable "$HYG TICKET(0) | COSTS([H(10; .windows.seven_day.n = 3), H(11; .windows.seven_day.t0 = (.t_end - 50)),
+  H(12; .windows.seven_day.u1 = .windows.seven_day.u0)])")
+expect "프레임 3개·덮는 비율 0.5·증가 0 표본은 든다" "$out" '.seven_day.by_group["acct:u4"].implement | .n == 3 and (.value * 10000 | round) == 200'
+out=$(cadmit "$HYG TICKET(0) | COSTS(S3(\"u4\"; \"implement\"; 0.01; 0.01) + [H(10; .t_start = .t_end | .windows.seven_day.t0 = .t_end)])")
+expect "구간 길이 0 표본은 오류 없이 빠진다" "$out" '.cost.seven_day == {bp: 100, source: "group-kind"}'
+# 10. 판독 검증.
+out=$(ctable 'TICKET(0) | COSTS(S3("u4"; "implement"; 0.01; 0.01)) | .cost_samples += "\nnot json\n" + ({schema: "cc-cmds-cost-sample v0"} | tojson)')
+expect "깨진 줄·다른 스키마는 판독에서 빠진다" "$out" '.seven_day.by_kind.implement.n == 3'
+out=$(ctable 'TICKET(0) | COSTS(S3("u4"; "implement"; 0.01; 0.01) + [SMP("-"; "implement"; 7; 0.01; 0.09), SMP("(미상)"; "implement"; 8; 0.01; 0.09),
+  SMP("u4"; "generic"; 9; 0.01; 0.09), (SMP("u4"; "implement"; 10; 0.01; 0.09) | .t_end = ($now + 400)),
+  (SMP("u4"; "implement"; 11; 0.01; 0.09) | .windows.seven_day.u1 = 1.5), (SMP("u4"; "implement"; 12; 0.01; 0.09) | .windows.seven_day.n = 2.5)])')
+expect "계정·부류·시각·창 값이 어긋난 줄은 판독에서 빠진다" "$out" '.seven_day.by_kind.implement | .n == 3 and (.value * 10000 | round) == 100'
+out=$(ctable 'TICKET(0) | COSTS(S3("u4"; "implement"; 0.01; 0.05) + [SMP("u4"; "implement"; 0; 0.01; 0.01), SMP("u4"; "implement"; 1; 0.01; 0.01)])')
+expect "같은 키가 둘이면 뒤의 것을 쓴다" "$out" '.seven_day.by_kind.implement | .n == 3 and (.value * 10000 | round) == 100'
+# 12. 설정이 없거나 숫자가 아니면 빈 표.
+for f in 'del(.config.cost)' '.config.cost.max_n = "40"' '.config.cost.floor.seven_day = null'; do
+  out=$(cadmit "TICKET(1600) | COSTS(S3(\"u4\"; \"implement\"; 0.01; 0.01)) | $f")
+  expect "설정 결함($f)은 오류 없이 모든 출처 default" "$out" '.cost.five_hour.source == "default" and .cost.seven_day.source == "default"'
+done
+# 13. cost-table.
+out=$(ctable 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0.01))')
+expect "cost-table 은 그룹·부류 칸과 부류 칸의 값·표본 수·가장 오래된 t_end 를 낸다" "$out" \
+  "[.seven_day.by_group[\"acct:u4\"].implement, .five_hour.by_kind.implement]
+   | all(.[]; (.value * 10000 | round) == 100 and .n == 3 and .oldest == $((NOW - 3000)))"
+CT_ADM=$(cadmit 'TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0.01))')
+check "cost-table 의 칸 값은 admit 의 비용과 같다" \
+  "$(printf '%s' "$out" | jq -c '[.five_hour, .seven_day] | map(.by_group["acct:u4"].implement.value * 10000 | round)')" \
+  "$(printf '%s' "$CT_ADM" | jq -c '[.cost.five_hour.bp, .cost.seven_day.bp]')"
+TR_EMPTY_PACE="$WORK/ct-pace"
+mkdir -p "$TR_EMPTY_PACE"
+ctx "$CT_JQ"' TICKET(1600) | COSTS(S3("u4"; "implement"; 0.01; 0.01))' | RUN_PACE_ROOT="$TR_EMPTY_PACE" bash "$TR_ROUTE" cost-table >/dev/null
+check "cost-table 은 costs/ 를 만들지 않는다" "$( [ -e "$TR_EMPTY_PACE/costs" ] && printf yes || printf no)" "no"
+expect "표본이 없으면 빈 표" "$(ctable 'TICKET(1600)')" \
+  '. == {five_hour: {by_kind: {}, by_group: {}}, seven_day: {by_kind: {}, by_group: {}}}'
 
 UNK='ONLY(["a"]) | USE([])'
 expect "미지 그룹의 첫 입장은 unknown 이고 예약을 싣는다" "$(admit1 "$UNK")" \
@@ -1034,10 +1256,19 @@ tr_consts_case() {
   cfg=$(route__config_json "$((RUN_PACE_SESSION_WINDOW_PCT_MAX * 100))")
   for pair in K_FIVE_HOUR:.k.default.five_hour K_SEVEN_DAY:.k.default.seven_day K_SHIFT:.k.shift.seven_day \
               C_FIVE_HOUR:.c.five_hour.default C_SEVEN_DAY:.c.seven_day.default \
-              TTL_STAGE_LOG_S:'.ttl_s["stage-log"]' TTL_TRACKER_S:.ttl_s.tracker FILE_STALE_FACTOR:.file_stale_factor; do
+              TTL_STAGE_LOG_S:'.ttl_s["stage-log"]' TTL_TRACKER_S:.ttl_s.tracker FILE_STALE_FACTOR:.file_stale_factor \
+              COST_MAX_AGE_S:.cost.max_age_s COST_MAX_N:.cost.max_n COST_MIN_N:.cost.min_n \
+              COST_FLOOR_FIVE_HOUR:.cost.floor.five_hour COST_FLOOR_SEVEN_DAY:.cost.floor.seven_day \
+              COST_HYG_MIN_FRAMES:.cost.hygiene.min_frames COST_HYG_MIN_COVER:.cost.hygiene.min_cover; do
     want=$(sed -n "s/^  \*) readonly ROUTE_${pair%%:*}=\(.*\) ;;\$/\1/p" "$TR_ROUTE")
     check "config 가 상수 ROUTE_${pair%%:*} 를 그대로 옮긴다" "$(printf '%s' "$cfg" | jq -r "${pair#*:}")" "$want"
   done
+  # 문맥에 실리지 않는 셋은 짝지을 경로가 없어 소싱한 셸의 값을 직접 본다.
+  check "판독 상한 ROUTE_COST_READ_MAX_BYTES" "$ROUTE_COST_READ_MAX_BYTES" 8388608
+  check "보존 나이 ROUTE_COST_KEEP_S" "$ROUTE_COST_KEEP_S" 1209600
+  check "보존 줄 수 ROUTE_COST_KEEP_LINES" "$ROUTE_COST_KEEP_LINES" 4000
+  check "config 는 판독 상한과 보존 상수를 싣지 않는다" \
+    "$(printf '%s' "$cfg" | jq -c '.cost | keys')" '["floor","hygiene","max_age_s","max_n","min_n"]'
   want=$(sed -n 's/^readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=\([0-9]*\).*$/\1/p' "$TR_RUN_SH")
   export RUN_DIR="$WORK/consts/run" RUN_PACE_ROOT="$WORK/consts/pace"
   mkdir -p "$RUN_DIR"
@@ -1045,9 +1276,49 @@ tr_consts_case() {
   cfg=$(route_gather_context '{"run_id":"r1","lineage":"S1","event":"first","kind":"implement"}' "$HOME/.claude")
   check "gather 의 cap_bp 는 run.sh 상한 × 100" "$(printf '%s' "$cfg" | jq -r '.config.cap_bp')" "$((want * 100))"
   check "gather 는 좌석을 인자로 받는다" "$(printf '%s' "$cfg" | jq -r '.seat.config_dir')" "$HOME/.claude"
-  check "gather 는 표를 만들지 않는다" "$([ -e "$RUN_PACE_ROOT" ] && printf 있음 || printf 없음)" "없음"
+  check "gather 는 표를 만들지 않는다(costs/ 포함)" "$([ -e "$RUN_PACE_ROOT" ] && printf 있음 || printf 없음)" "없음"
+  check "저장소가 없으면 표본 원문은 빈 문자열" "$(printf '%s' "$cfg" | jq -r '.cost_samples == ""')" "true"
 }
 tr_in_run "$TR_RUN_SH" tr_consts_case
+
+# 저장소 판독. 표본은 인자가 아니라 파일로 jq 에 넘어가므로 `ARG_MAX` 를 넘는
+# 저장소도 문맥에 그대로 실린다. 읽을 수 없거나 상한을 넘는 저장소는 경고하고
+# 표본 없이 판정한다 — 수집은 rc 0 이다.
+tr_cost_gather_case() {
+  local cfg rc f req='{"run_id":"r1","lineage":"S1","event":"first","kind":"implement"}'
+  export RUN_DIR="$WORK/cg/run" RUN_PACE_ROOT="$WORK/cg/pace"
+  mkdir -p "$RUN_DIR" "$RUN_PACE_ROOT/costs"
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  f="$RUN_PACE_ROOT/costs/samples.jsonl"
+  jq -nc --argjson now "$NOW" '
+    (range(0; 3) as $i | ($now - 1000 * ($i + 1)) as $te
+     | {schema: "cc-cmds-cost-sample v1", run_id: "rg", lineage: "l\($i)", log: "g\($i).json", kind: "implement",
+        account: "a", t_start: ($te - 100), t_end: $te, duration_ms: 100000, usd: 1, cli: "x",
+        windows: {seven_day: {u0: 0.5, u1: 0.53, r0: ($now + 9999), r1: ($now + 9999), n: 5, t0: ($te - 100), t1: $te}}}),
+    (range(0; 30000) | {schema: "padding", pad: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})' > "$f"
+  rc=0
+  cfg=$(route_gather_context "$req" /seat) || rc=$?
+  check "ARG_MAX 를 넘는 저장소로도 수집은 rc 0" "$rc/$( [ "$(wc -c < "$f")" -gt "$(getconf ARG_MAX)" ] && printf big || printf small)" "0/big"
+  check "그 표본 원문의 길이가 파일 크기와 같다" \
+    "$(printf '%s' "$cfg" | jq -r '.cost_samples | length')" "$(wc -c < "$f" | tr -d '[:space:]')"
+  check "그 표본이 판정의 비용 표에 쓰인다" \
+    "$(printf '%s' "$cfg" | bash "$TR_ROUTE" cost-table | jq -r '.seven_day.by_kind.implement.value * 10000 | round')" "300"
+  head -c 9000000 /dev/zero > "$f"
+  rc=0
+  cfg=$(route_gather_context "$req" /seat 2>"$WORK/cg/err") || rc=$?
+  check "상한을 넘는 저장소는 경고하고 표본 없이 수집한다" \
+    "$rc/$(printf '%s' "$cfg" | jq -r '.cost_samples == ""')/$(grep -c '바이트를 넘어' "$WORK/cg/err")" "0/true/1"
+  # root 는 권한 비트를 무시하므로 읽을 수 없는 저장소를 만들 수 없다.
+  [ "$(id -u)" = "0" ] && return 0
+  printf '{}\n' > "$f"
+  chmod 000 "$f"
+  rc=0
+  cfg=$(route_gather_context "$req" /seat 2>"$WORK/cg/err") || rc=$?
+  check "읽을 수 없는 저장소는 경고하고 표본 없이 수집한다" \
+    "$rc/$(printf '%s' "$cfg" | jq -r '.cost_samples == ""')/$(grep -c '읽을 수 없어' "$WORK/cg/err")" "0/true/1"
+  chmod 600 "$f"
+}
+tr_in_run "$TR_RUN_SH" tr_cost_gather_case
 
 # ===========================================================================
 # 임대 표

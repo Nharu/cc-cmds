@@ -697,6 +697,40 @@ exit 0
 STUBEOF
 chmod +x "$STUB_CFG"
 
+# A stub whose stream carries what a cost sample is made of: timestamps around
+# the run and a result line with `duration_ms`. The stubs above write neither,
+# so their attempts leave no sample.
+STUB_COST="$WORK/claude-stub-cost"
+cat > "$STUB_COST" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '{"type":"system","subtype":"init","claude_code_version":"9.9.9","timestamp":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sleep "${CC_STUB_SLEEP:-1}"
+printf '{"type":"assistant","timestamp":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-session"}'
+exit 0
+STUBEOF
+chmod +x "$STUB_COST"
+costs_n() {  # lines in the shared cost-sample store, 0 when there is none
+  if [ -f "$RUN_PACE_ROOT/costs/samples.jsonl" ]; then
+    wc -l < "$RUN_PACE_ROOT/costs/samples.jsonl" | tr -d '[:space:]'
+  else
+    printf '0'
+  fi
+}
+costs_of() {  # costs_of <lineage> — that lineage's sample lines
+  [ -f "$RUN_PACE_ROOT/costs/samples.jsonl" ] || { printf '0'; return 0; }
+  jq -s --arg l "$1" '[.[] | select(.lineage == $l)] | length' "$RUN_PACE_ROOT/costs/samples.jsonl"
+}
+sup_done() {  # sup_done <segment> — until the supervisor's last line is in its log
+  # `wait` returns once the segment records are gone, and the sample and the
+  # recorder's warning are written after that.
+  local n=0
+  until grep -qF "스테이지 종단 — $1#1 " "$RD/log/$1#1.sup.log" 2>/dev/null || [ "$n" -ge 100 ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
+}
+
 mk_run SUPR '(없음)'
 check "(12) 인벤토리가 있을 때 연 런은 라우팅 기록 1 을 남긴다" "$(cat "$RD/routing-guard" 2>/dev/null)" "1"
 check "(12) 런의 인벤토리 스냅숏이 픽스처 인벤토리다" \
@@ -742,6 +776,66 @@ case "$row_e" in
   *"| 실행 버전=1 |"*) ok "(12) 계보·파견 id 의 시도 번호와 종단 행의 실행 버전이 같다" ;;
   *) bad "(12) 종단 행의 실행 버전" "$row_e" ;;
 esac
+sup_done E
+check "(12) 타임스탬프 없는 스트림의 시도는 비용 표본을 남기지 않는다" "$(costs_n)" "0"
+
+# THE COST SAMPLE. A routed attempt on an account leaves one line in the shared
+# store once its records are gone, keyed by the lineage the token carried.
+seg K
+CC_CLAUDE_BIN="$STUB_COST" dispatch K >/dev/null
+g wait --manifest "$MANIFEST" --segment K --interval 1 --timeout 60 >/dev/null
+sup_done K
+check "(12) 라우팅된 시도는 비용 표본 한 줄을 남긴다" "$(costs_n)/$(costs_of 'B:K#1')" "1/1"
+check "(12) 그 표본의 부류·계정·런은 그 시도의 것이다" \
+  "$(jq -sr '[.[] | select(.lineage == "B:K#1")][0] | "\(.kind) \(.account) \(.run_id)"' "$RUN_PACE_ROOT/costs/samples.jsonl" 2>/dev/null)" \
+  "review r12a SUPR"
+
+# The sample does not wait on the recorder: a recorder that returns non-zero
+# keeps the lease to the run's end, and the attempt still used the account. A
+# gate whose recorder returns 1 after doing its work stands in for it; the
+# supervisor's warning line is what shows that recorder ran. The run is pinned,
+# and every gate call of a pinned run hops into the run's own copy, so the
+# stand-in replaces that copy's `gate.sh` for this one dispatch — a gate outside
+# the run directory would be hopped past. Swapped and restored by `mv`, so a
+# process still reading the file keeps the bytes it opened.
+PINNED_GATE="$RD/plugin/cc-cmds/orchestrator/gate.sh"
+check "(12) 런이 고정 사본을 들고 있다" "$( [ -f "$PINNED_GATE" ] && printf yes || printf no)" "yes"
+cp -p "$PINNED_GATE" "$WORK/pinned-gate.sh"
+awk '/^gate_record_stage_outcome\(\) \{/ { inrec = 1 } inrec && /^}$/ { print "  return 1"; inrec = 0 } { print }' \
+  "$WORK/pinned-gate.sh" > "$WORK/recfail-gate.sh"
+check "(12) 사본의 기록기는 1 을 돌려준다" \
+  "$(awk '/^gate_record_stage_outcome\(\) \{/ { f = 1 } f && /^}$/ { print prev; exit } { prev = $0 }' "$WORK/recfail-gate.sh")" "  return 1"
+seg L
+mv "$WORK/recfail-gate.sh" "$PINNED_GATE"
+CC_CLAUDE_BIN="$STUB_COST" dispatch L >/dev/null
+g wait --manifest "$MANIFEST" --segment L --interval 1 --timeout 60 >/dev/null
+sup_done L
+cp -p "$WORK/pinned-gate.sh" "$WORK/pinned-gate.back"
+mv "$WORK/pinned-gate.back" "$PINNED_GATE"
+check "(12) 고정 사본이 원래 바이트로 돌아왔다" \
+  "$(cmp -s "$PINNED_GATE" "$WORK/pinned-gate.sh" && printf yes || printf no)" "yes"
+if grep -qF 'the stage result recorder ended non-zero (L#1 rc=1)' "$RD/log/L#1.sup.log" 2>/dev/null; then
+  ok "(12) 그 시도의 감독자가 기록기 실패를 적는다"
+else
+  bad "(12) 그 시도의 감독자가 기록기 실패를 적는다" "감독자 로그: $(tail -5 "$RD/log/L#1.sup.log" 2>/dev/null | tr '\n' ' ')"
+fi
+check "(12) 기록기가 실패해도 비용 표본 한 줄을 남긴다" "$(costs_n)/$(costs_of 'B:L#1')" "2/1"
+
+# An account the ledger would not take as one leaves no sample: a seat grant's
+# `-` and an unknown account's `(미상)`.
+cost_seat() {  # cost_seat <segment> <account> — a hand-written routed token, run to its end
+  seg "$1"
+  printf '1\n' > "$RD/$1.attempt"
+  printf 'n%s\n\n\nB:%s#1\n-\n%s\n%s\n' "$1" "$1" "$2" "$R12_CFG" > "$RD/$1.launch"
+  CC_CLAUDE_BIN="$STUB_COST" g supervise-stage --manifest "$MANIFEST" --target repo --segment "$1" --nonce "n$1" \
+    -- review -p x >/dev/null
+}
+cost_seat M -
+check "(12) 계정 - 인 시도도 종단 행을 쓴다" "$(rows_of M)" "1"
+check "(12) 계정 - 인 시도는 비용 표본을 남기지 않는다" "$(costs_n)" "2"
+cost_seat N '(미상)'
+check "(12) 계정 (미상) 인 시도도 종단 행을 쓴다" "$(rows_of N)" "1"
+check "(12) 계정 (미상) 인 시도는 비용 표본을 남기지 않는다" "$(costs_n)" "2"
 
 # The routing record is compared with the baseline before anything else: a
 # record that is neither absent nor `1` beside a regular baseline is a pair no
@@ -804,7 +898,7 @@ mk_run SUPN '(없음)'
 check "(12) 인벤토리 없이 연 런의 기준은 부재 표지다" "$( [ -L "$RD/inventory.json" ] && printf absent || printf other)" "absent"
 check "(12) 인벤토리 없이 연 런에는 라우팅 기록이 없다" "$( [ -e "$RD/routing-guard" ] && printf yes || printf no)" "no"
 seg I
-CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_SLEEP=1 dispatch I >/dev/null; rc_i=$?
+CC_CLAUDE_BIN="$STUB_COST" CC_STUB_SLEEP=1 dispatch I >/dev/null; rc_i=$?
 check "(12) 인벤토리 없이 연 런의 파견이 성공으로 반환한다" "$rc_i" "0"
 wait_file "$RD/I.pid" 50 || true
 check "(12) 그 토큰은 라우팅 줄 없는 세 줄이다" "$(wc -l < "$RD/I.launch.taken" 2>/dev/null | tr -d '[:space:]')" "3"
@@ -814,6 +908,8 @@ check "(12) 라우팅되지 않은 파견은 임대 표에 아무것도 남기�
   "$(find "$RUN_PACE_ROOT/leases" -type f -path '*SUPN*' 2>/dev/null | wc -l | tr -d '[:space:]')" "0"
 check "(12) 라우팅되지 않은 파견은 stage-lease 행을 쓰지 않는다" \
   "$( { grep -cF '`stage-lease`' "$LEDGER" || true; } )" "0"
+sup_done I
+check "(12) 라우팅되지 않은 시도는 비용 표본을 남기지 않는다" "$(costs_n)" "2"
 
 # ---------------------------------------------------------------------------
 # (13) WAIT — the dispatch half returns at once and a supervisor waits.
