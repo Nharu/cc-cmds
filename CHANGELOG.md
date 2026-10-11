@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.5] - 2026-10-12
+
+2.64.4 가 예고한 사전 인가 대조 규칙 쪽 변경이 들어왔다. 이제 범위 안에서 버려진 `=` 단어가 있으면 행이 일치하지 않고, docker 기기전역 행은 이미지나 행위 끝까지 적어야 연다. 그 결과 킥오프가 `-x=y` 형태를 거절하며 권하던 철자가 모든 행위를 열지는 않게 되어, 그 안내도 바로잡는다.
+
+### Fixed
+
+- **사전 인가 대조 규칙** (오케스트레이터) — 행의 마지막 낱말 앞에서 버려진 `-x=y` 단어가 있으면 완전 행이든 러너 행이든 어느 칸에서도 일치하지 않는다. 기기전역 칸의 docker 피연산자는 `run`·`create` 에서 이미지, 그 밖의 동사에서 행위 끝이다
+- **킥오프 형태 거절 문구** (`autopilot`) — 대조기 철자가 여는 범위를 바로 말한다. 뗀 경로와 그 철자의 마지막 낱말 뒤의 `-x=y` 낱말은 모든 값을 열지만, 그 앞에 `-x=y` 낱말이 끼어든 행위(`terraform -chdir=infra apply`)는 `terraform apply` 로 열리지 않는다
+
 ## [2.64.4] - 2026-10-12
 
 정규화는 `-x=y` 철자의 옵션을 버린다. 그래서 `node --require=/tmp/e.js scripts/x.js` 나 `npm --script-shell=/tmp/s.sh run deploy` 처럼 버려진 단어가 실행 내용을 바꾸는 행위가 `node scripts/x.js`·`npm run deploy` 행과 그대로 일치했고, 불투명 상한이 풀렸다. docker 의 수리 행은 옵션 값에서 끝나 `docker build -t T` 가 컨텍스트나 뒤의 옵션이 다른 빌드까지 열었다. 이제 버려진 단어가 행의 마지막 단어 앞에 있으면 그 행은 어느 칸에서도 일치하지 않고, docker 행은 `run`·`create` 에서는 이미지까지, 그 밖의 동사에서는 행위 전체를 적어야 연다.
