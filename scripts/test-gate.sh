@@ -28981,10 +28981,14 @@ t3_pass 6 "$t3_c"
 rx_manifest R83C 'docker run --rm img3:t'
 t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged=true img3:t true
 t3_park 7 기기전역 dropped "the matcher drops '--privileged=true'" 0 dropped
+# 고쳐 쓴 행위는 불투명 부류이고 맞는 완전 행이 없어 lift 가 서지 않으므로, 기기전역 칸에
+# 닿기 전에 신고등급한도에서 park 한다. 그 문구가 찍는 행이 이 행위를 연다.
 t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged img3:t true
-t3_park 7-고쳐쓴행위 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
+t3_park 7-고쳐쓴행위 신고등급한도 opaque 'the runner with its script operand, or the subcommand with its operand' 1
+t3_r=$(rx_row)
+check "83c: 7 — 찍힌 행은 고쳐 쓴 철자와 이미지까지다" "$t3_r" "docker run --rm --privileged img3:t"
 rx_manifest R83C "docker run --rm img3:t
-$(rx_row)"
+$t3_r"
 t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged img3:t true
 t3_pass 7
 

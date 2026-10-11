@@ -20994,7 +20994,9 @@ gate_verb_act() {
   # them would record a disposition the act never actually reached.
   GATE_PARK_CELL="" GATE_PARK_CAUSE='-' GATE_PARK_SX='-' GATE_PARK_SW='-' GATE_PARK_REFF='-'
   GATE_PARK_GEFF='-' GATE_PARK_NEVER='-' GATE_PARK_TRIG='-' GATE_PARK_PROPOSAL='-'
-  GATE_PARK_ARGV0="${1##*/}"
+  # A plan that carries no act (`--kind propose-done`) has no argv at all.
+  GATE_PARK_ARGV0="${1:-}"
+  GATE_PARK_ARGV0="${GATE_PARK_ARGV0##*/}"
   # OFF MODE WITH NOTHING DECLARED IS TODAY, EXACTLY. The reach axis is optional
   # there — the required-check above runs only while the switch is on — so an act
   # that declared no reach has made no claim for the evaluator to judge, and
