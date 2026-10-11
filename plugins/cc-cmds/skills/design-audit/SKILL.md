@@ -95,7 +95,7 @@ None of the following may appear anywhere under this skill: `consecutive_no_majo
 
 Load deferred tools via ToolSearch before any other step:
 
-- `ToolSearch("select:AskUserQuestion")` — MUST load before Step 1
+- `ToolSearch("select:AskUserQuestion,mcp__cc-cmds__question_form")` — MUST load before Step 1 (the form's schema missing from the result means the form is unavailable)
 - `ToolSearch("select:TaskStop")`
 
 `Agent` is built-in. **`SendMessage` is deliberately NOT loaded** — no member is ever resumed (CFI-2), and its absence is a structural guard rather than an omission.

@@ -22,6 +22,9 @@
 #   1  fleet.sh declares each `FLEET_*` numeric threshold exactly once   [exit 2]
 #   2  gate.sh's GATE_PACE_STALE_SECONDS and run.sh's RUN_PACE_STALE_SECONDS
 #      each exist exactly once and equal FLEET_STATE_STALE_SECONDS        [fail]
+#   2b run.sh's RUN_PACE_SESSION_WINDOW_PCT_MAX exists exactly once and
+#      equals FLEET_SESSION_WINDOW_PCT_MAX                                 [fail]
+#      (fleet.sh not declaring FLEET_SESSION_WINDOW_PCT_MAX is exit 2)
 #   3  every consumer mention `<NAME>=<n>` or `<NAME> (<n>s)` agrees      [fail]
 #   4  every consumer file exists                                          [fail]
 #
@@ -130,6 +133,36 @@ check_mirror() {
 check_mirror "$GATE" "gate.sh" GATE_PACE_STALE_SECONDS
 check_mirror "$RUN" "run.sh" RUN_PACE_STALE_SECONDS
 
+# --- Rule 2b: the two readers of the 5h session ceiling ----------------------
+# The fleet's window cap and the driver's headroom read the same `usage.json`
+# figure, so their two 80s are one threshold. `check_mirror` above is bound to
+# the staleness value, which is why this pair has its own function rather than
+# a parameter on that one.
+pct_want=$(value_of FLEET_SESSION_WINDOW_PCT_MAX)
+if [[ -z "$pct_want" ]]; then
+  echo "FAIL: fleet.sh — FLEET_SESSION_WINDOW_PCT_MAX 선언이 없다; fleet 상한과 드라이버 여유가 같은 5시간 창 상한을 읽을 수 없다" >&2
+  exit 2
+fi
+check_session_mirror() {
+  # check_session_mirror <file> <label> <var>
+  local f="$1" label="$2" var="$3" decls n got
+  decls=$(LC_ALL=C sed -n "s/^readonly $var=\([0-9][0-9]*\)\([[:space:]].*\)\{0,1\}$/\1/p" "$f" || true)
+  n=0
+  if [[ -n "$decls" ]]; then n=$(printf '%s\n' "$decls" | grep -c '' || true); fi
+  if [[ "$n" != "1" ]]; then
+    echo "FAIL: $label — readonly $var=<n> 선언이 정확히 1개여야 하는데 ${n}개다" >&2
+    fail=1
+    return 0
+  fi
+  got=$(printf '%s' "$decls")
+  if [[ "$got" != "$pct_want" ]]; then
+    echo "FAIL: $label — $var=$got 인데 fleet.sh 의 FLEET_SESSION_WINDOW_PCT_MAX 는 $pct_want 이다" >&2
+    echo "       두 상한이 갈라지면 fleet 은 막고 드라이버는 여유로 읽거나, 그 반대가 된다" >&2
+    fail=1
+  fi
+}
+check_session_mirror "$RUN" "run.sh" RUN_PACE_SESSION_WINDOW_PCT_MAX
+
 # --- Rule 3: every mention in every consumer agrees --------------------------
 # Two spellings are bound to a name: `NAME=<n>` and `NAME` followed on the same
 # line by `(<n>s)` / `(<n>)`. A bare number in prose (`3 x (55 + 5) = 180s`) is
@@ -175,5 +208,5 @@ if [[ "$fail" != "0" ]]; then
   exit 1
 fi
 
-echo "OK:   pace threshold pins — 선언 ${ndecl}개, 거울 2개, 소비 문서 기재 ${mentions_total}건이 fleet.sh 선언과 축자로 일치"
+echo "OK:   pace threshold pins — 선언 ${ndecl}개, 거울 3개, 소비 문서 기재 ${mentions_total}건이 fleet.sh 선언과 축자로 일치"
 exit 0

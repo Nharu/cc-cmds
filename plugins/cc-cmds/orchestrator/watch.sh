@@ -421,42 +421,176 @@ record_blocked() {
   printf '%s\t%s\t%s\n' "$(now_iso)" "$1" "$2" >> "$RUN_DIR/stall"
 }
 
-pass() {
-  # NO ARM RETURNS BEFORE THE HEARTBEAT. Every arm below used to `return 0` on
-  # firing, so a run in a condition that keeps re-arming stopped rewriting
-  # `watch.heartbeat` entirely — and a stale heartbeat is exactly how a dead
-  # watcher looks. Each arm carries its own once-marker, so two firing in one
-  # pass is harmless and reaching the bottom every time is the point.
-  local age live pend nonterm run_age gate_idle size grew silent id newly
-  local cause reason slug mk
+beat() {
+  # beat — the watcher's own liveness, apart from every arm: the reads the arms
+  # judge on and the heartbeat that publishes them.
+  #
+  # SPLIT OUT OF `pass` FOR THE `done` TAIL. While `done` is on disk and a shift
+  # is still settling, the loop runs no arm at all, but the watcher is alive and
+  # has to look it — the status line reads a heartbeat older than two minutes as
+  # "no watcher", and the gate's report and the ledger-growth clock read their
+  # age fields from this file. So the tail calls this alone, and `pass` calls it
+  # first and then judges.
+  #
+  # The variables are the caller's: `pass` declares them local and the arms read
+  # what this assigned. Called from the loop they are plain globals nothing else
+  # reads.
+  #
+  local stall_tmp
   # The watcher's own pid, so a person (and the status line) can tell a live
   # watcher from a finished run's. The directory is NOT created here: the
   # watcher legitimately runs in the window before the router's first gate call
   # makes it, and `run_is_over()` already owns that window. `cc_live_stages`
   # does not count this file — it has no `.start`/`.pgid` sibling.
   [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$RUN_DIR/watch.pid"
+  # THE THRESHOLD THIS PROCESS IS USING, for a stage that waits for an account:
+  # it paces its heartbeat rows on half of it. Three lines — the threshold in
+  # seconds, this pid, this pid's fingerprint — rewritten every pass, so a
+  # restarted watcher's value replaces the old one, and written to a temporary
+  # name first so a reader never sees half a record. The name does not end in
+  # `.pid`, so no census reads it as a stage.
+  if [ -d "$RUN_DIR" ]; then
+    stall_tmp=$(mktemp "$RUN_DIR/.watch.stall.XXXXXX" 2>/dev/null || true)
+    if [ -n "$stall_tmp" ]; then
+      if printf '%s\n%s\n%s\n' "$STALL" "$$" "$(cc_proc_fingerprint "$$")" > "$stall_tmp" 2>/dev/null \
+         && mv -f "$stall_tmp" "$RUN_DIR/watch.stall" 2>/dev/null; then
+        :
+      else
+        rm -f "$stall_tmp"
+      fi
+    fi
+  fi
+  age=$(ledger_idle_seconds)
+  live=$(live_stages)
+  # A STAGE WAITING FOR AN ACCOUNT HAS NO PROCESS YET, so `live` does not see
+  # it, and a run whose only work is that wait is not silent: its supervisor or
+  # driver rewrites its marker and a `stage-wait` row on half of `STALL`.
+  # `live_w` counts the fresh ones beside the live stages, and the arms that ask
+  # "is anything running" read it. A waiter whose refresh has stopped is no
+  # longer fresh, so it stops quieting them — that is how a hung waiter is
+  # still heard. The after-stage arm reads it too: a wait's own first row
+  # moves the last ledger row only when nothing else ends after it, and a
+  # different stage's terminal rows can land below that wait while the router
+  # sits in `gate.sh wait` for the waiter.
+  live_w=$(( ${live:-0} + $(cc_waiting_fresh_count "$RUN_DIR" "$LEDGER" "$STALL") ))
+  pend=$(open_approvals)
+  nonterm=$(nonterminal_segments)
+
+  # Positive heartbeat. Says the watcher is alive, which is what makes its
+  # silence mean something.
+  #
+  # Written to a FILE as well as to stdout, and the file is what carries the
+  # claim. This process is launched into the background with its STDIN closed and
+  # its STDOUT REDIRECTED to a log file in the run directory — not closed, which
+  # is what this comment used to say and what the design inherited from it. The
+  # older wording described the launch form that preceded the redirection. The
+  # consequence is the same either way and it is the reason the file exists:
+  # nobody opens that log overnight, so a heartbeat printed there reaches no one
+  # and the property "a live watcher's silence differs from a dead one's" was
+  # stated and then not obtainable. The file's own mtime is what makes the
+  # watcher's liveness measurable, and it is rewritten every pass even when
+  # nothing changed, which is exactly the case `watch.state` cannot cover: that
+  # file only moves when the ledger's size moves.
+  #
+  # THE LAST TWO FIELDS ARE FOR A READER THAT IS NOT THIS PROCESS. The status
+  # line has to judge whether the ledger is stale, and it may not write — so it
+  # cannot own an elapsed-since-last-growth clock of its own. This file is where
+  # that value is published, and it comes from the clock that already exists:
+  # `ledger_idle_seconds` records "when I first saw this size" on line 2 of
+  # `watch.state`, and for an append-only ledger that IS the last growth. A
+  # second clock would be a second answer to one question.
+  #
+  # The four existing fields keep their positions and their wording verbatim —
+  # they are read from this file by name.
+  size=$(ledger_size "$LEDGER")
+  grew=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
+  printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개 · 원장크기=%s · 마지막성장=%s\n' \
+    "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
+  printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
+    "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
+}
+
+settle_stall_arm() {
+  # A SETTLEMENT THAT STOPPED. A run carrying `ends-on-done` does not end when
+  # its last segment does: the seat still settles the exit clauses and writes
+  # `done`. The stall arm in `pass` cannot see this window — its condition is a
+  # non-terminal segment or no segment at all, and here every segment is
+  # terminal — so a seat that stopped after the last merge would be silent all
+  # night.
+  #
+  # It reads `age`, `live`, `pend`, `nonterm` and `size` as `beat` left them in
+  # the calling `pass`. A function of its own, rather than inline, so the window
+  # between its condition and its fire can be driven on its own.
+  #
+  # ONCE PER LEDGER SIZE. The marker carries the size the stop was observed at,
+  # so the same stop says nothing twice and a settlement that grew the ledger
+  # and stopped again is a new episode.
+  #
+  # NO BLOCK ROW. An unresolved run-scope block is an input to the termination
+  # condition, so writing one here could refuse the very `propose-done` the
+  # banner asks the seat to make. A live shift is not excluded: one that has
+  # written nothing for `STALL` may be hung, and that is a person's to look at.
+  #
+  # THE TWO FILES ARE TESTED AGAIN JUST BEFORE THE FIRE. `resume` shares the
+  # run's slot with `ended`, and the later banner replaces the earlier — so a
+  # gate that wrote `done` and raised `ended` during this pass must not be
+  # covered by a stall banner raised after it. What remains is the window
+  # between this test and the notifier's own start.
+  local mk
+  cc_run_ends_on_done "$RUN_DIR" || return 0
+  [ ! -f "$RUN_DIR/done" ] || return 0
+  [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$nonterm" = "0" ] || return 0
+  [ "$(cc_segment_count "$LEDGER")" -ge 1 ] 2>/dev/null || return 0
+  [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" = "0" ] || return 0
+  [ "$age" -ge "$STALL" ] || return 0
+  mk="$RUN_DIR/watch.announced-settle-stall-$size"
+  [ ! -f "$mk" ] || return 0
+  : > "$mk"
+  announce "세그먼트는 모두 끝났는데 런이 ${age}초째 끝맺지 못했습니다" \
+           "좌석이 정산(종료 조항·done)을 마치지 못하고 멈췄을 수 있습니다 — 세션에서 정산을 이어가세요"
+  if [ ! -f "$RUN_DIR/done" ] && [ ! -d "$RUN_DIR/notify.ended" ]; then
+    cc_notify_fire resume "세그먼트는 끝났는데 런이 ${age}초째 끝맺지 못하고 멈췄습니다 — 세션에서 정산을 이어가세요" || true
+  fi
+  return 0
+}
+
+pass() {
+  # NO ARM RETURNS BEFORE THE HEARTBEAT. Every arm below used to `return 0` on
+  # firing, so a run in a condition that keeps re-arming stopped rewriting
+  # `watch.heartbeat` entirely — and a stale heartbeat is exactly how a dead
+  # watcher looks. The heartbeat is now written by `beat`, ahead of every arm,
+  # so no arm can skip it; each arm still carries its own once-marker, so two
+  # firing in one pass is harmless.
+  local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
+  local cause reason slug mk
+  beat
   # The emitter's own state, once per run, into this process's file. The gate
   # transcribes it into the report on its next call; this seat never appends
   # there itself, because it holds no lock and the ledger rows beside the prose
   # are what an interleaved write corrupts.
   cc_notify_seat_state || true
-  age=$(ledger_idle_seconds)
-  live=$(live_stages)
-  pend=$(open_approvals)
-  nonterm=$(nonterminal_segments)
 
-  # THE RUN ENDED. The `done` file is a SHORTCUT for that and not its
-  # definition: measured 2026-09-07, 99 of 202 run directories had one, so
-  # waiting for it would stay silent about the half of all runs that never reach
-  # the propose-done path. The shared state predicate derives the same conclusion
+  # THE RUN ENDED, AS THE LEDGER DERIVES IT. The `done` file is a SHORTCUT for
+  # that and not its definition on a run without the `ends-on-done` marker:
+  # measured 2026-09-07, 99 of 202 run directories had one, so waiting for it
+  # would stay silent about the half of all runs that never reach the
+  # propose-done path. The shared state predicate derives the same conclusion
   # from the ledger, and using it here is what keeps this line and the status
-  # line from disagreeing about whether a run is over.
-  if [ "$(cc_run_state "$RUN_DIR" "$LEDGER" "$STALL")" = "종단" ] \
-     && [ ! -f "$RUN_DIR/watch.announced-terminal" ]; then
-    : > "$RUN_DIR/watch.announced-terminal"
+  # line from disagreeing about whether a run is over. A run WITH the marker
+  # never reads 종단 without `done`, and while `done` is on disk the loop runs
+  # no pass — so in practice this arm speaks for a markerless run's derived end,
+  # and for a `--once` call on a run that already has `done`.
+  #
+  # THE RUN'S ONE `ended` IS CLAIMED, NOT MARKED. The gate raises it too, and
+  # it publishes `done` before it reaches its own fire line — so a pass landing
+  # in between reads 종단 and wins the claim. The sentence is read from `done`
+  # for that reason: a fixed clean-finish sentence here would take a boundary's
+  # or an invalidation's only `ended` and say something else.
+  if [ "$(cc_run_state "$RUN_DIR" "$LEDGER" "$STALL")" = "종단" ] && cc_notify_claim_ended; then
     announce "런이 종단했습니다 — 더 진행할 것이 없습니다" \
              "아침 보고서를 확인하세요 — 이 스크립트는 아무것도 재개하지 않습니다"
-    cc_notify_fire ended "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
+    cc_notify_fire ended "$(cc_notify_ended_text "$RUN_DIR")" || true
+    cc_notify_mark_ended_fired
   fi
 
   # A STAGE ENDED AND THE ROUTER DID NOT ACT. This is a far sharper condition
@@ -513,7 +647,7 @@ pass() {
   # arm's condition exactly. The marker distinguishes a changeover from a
   # stranding, and it is read as an EXPIRY rather than as a flag; see
   # `shift_active`.
-  if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ "$nonterm" -ge 1 ] && ! shift_active \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
@@ -652,7 +786,7 @@ pass() {
   # come back to life and this arm would re-fire every pass.
   run_age=$(run_open_seconds)
   gate_idle=$(gate_idle_seconds)
-  if [ "$live" = "0" ] && [ "$pend" = "0" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
      && [ "$age" -ge "$AFTER_STAGE" ] \
@@ -695,16 +829,35 @@ pass() {
   # minutes. The run-age arm above is what makes the same window audible
   # earlier; it does not replace this one, and the two record different reasons
   # on purpose.
+  #
+  # AND NOT AFTER `done`, as the run-open and feed-silence arms already hold.
+  # The loop runs no pass while `done` is on disk, but a `done` written during
+  # this pass would otherwise be followed by a `라이브니스 침묵` block row on a
+  # run that has ended.
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
-  if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
      && { [ "$nonterm" -ge 1 ] || [ "$(cc_segment_count "$LEDGER")" = "0" ]; } \
+     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && ! grep -q '라이브니스 침묵' "$RUN_DIR/stall" 2>/dev/null \
      && [ "${silent:-0}" = "0" ]; then
-    announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
-             "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
+    # A waiter whose refresh stopped while its holder lives is never dispatched
+    # again — the key is still a member — so the only recovery is to end that
+    # holder, after which settlement closes the attempt. Say so by pid, or the
+    # person resumes a router that will refuse to dispatch the key.
+    stale=$(cc_waiting_records "$RUN_DIR" "$LEDGER" "$STALL" \
+            | awk -F'\t' '$8 == "false" { printf "%s%s(보유자 %s)", (n++ ? ", " : ""), $1, $6 }')
+    if [ -n "$stale" ]; then
+      announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 갱신이 멈춘 대기자: ${stale})" \
+               "갱신이 멈춘 대기자의 보유자 pid 를 끝내면 정산이 그 시도를 닫고 다시 파견할 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
+    else
+      announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
+               "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
+    fi
     cc_notify_fire resume "라우터가 ${age}초 동안 멈춰 있습니다 — 세션을 resume 하고 재개를 지시하세요" || true
     record_blocked "라이브니스 침묵" "메인 세션에서 이어서 진행하도록 지시"
   fi
+
+  settle_stall_arm
 
   # AN APPROVAL REACHES THE USER THE MOMENT IT IS ISSUED, whatever else is
   # running. The condition below wants every segment settled first, which is
@@ -741,7 +894,7 @@ pass() {
              "세션으로 돌아가 답하면 그 자리에서 이어집니다"
   fi
 
-  if [ "$live" = "0" ] && [ "$nonterm" = "0" ] && [ "$pend" -gt 0 ] \
+  if [ "$live_w" = "0" ] && [ "$nonterm" = "0" ] && [ "$pend" -gt 0 ] \
      && [ ! -f "$RUN_DIR/watch.announced-waiting" ]; then
     : > "$RUN_DIR/watch.announced-waiting"
     announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \
@@ -834,38 +987,6 @@ pass() {
       "진행 채널이 ${feed_age}초째 조용합니다 — 밤의 해설만 끊긴 것이고 런은 계속 돕니다" "feed" || true
   fi
 
-  # Positive heartbeat. Says the watcher is alive, which is what makes its
-  # silence mean something.
-  #
-  # Written to a FILE as well as to stdout, and the file is what carries the
-  # claim. This process is launched into the background with its STDIN closed and
-  # its STDOUT REDIRECTED to a log file in the run directory — not closed, which
-  # is what this comment used to say and what the design inherited from it. The
-  # older wording described the launch form that preceded the redirection. The
-  # consequence is the same either way and it is the reason the file exists:
-  # nobody opens that log overnight, so a heartbeat printed there reaches no one
-  # and the property "a live watcher's silence differs from a dead one's" was
-  # stated and then not obtainable. The file's own mtime is what makes the
-  # watcher's liveness measurable, and it is rewritten every pass even when
-  # nothing changed, which is exactly the case `watch.state` cannot cover: that
-  # file only moves when the ledger's size moves.
-  #
-  # THE LAST TWO FIELDS ARE FOR A READER THAT IS NOT THIS PROCESS. The status
-  # line has to judge whether the ledger is stale, and it may not write — so it
-  # cannot own an elapsed-since-last-growth clock of its own. This file is where
-  # that value is published, and it comes from the clock that already exists:
-  # `ledger_idle_seconds` records "when I first saw this size" on line 2 of
-  # `watch.state`, and for an append-only ledger that IS the last growth. A
-  # second clock would be a second answer to one question.
-  #
-  # The four existing fields keep their positions and their wording verbatim —
-  # they are read from this file by name.
-  size=$(ledger_size "$LEDGER")
-  grew=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
-  printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개 · 원장크기=%s · 마지막성장=%s\n' \
-    "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
-  printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
-    "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
   # A SEPARATE LINE, NOT A FIFTH HEARTBEAT FIELD. The four above are read out of
   # this file by name and their positions are part of that contract; this alarm
   # is also not a periodic measurement but a condition that is either there or
@@ -937,10 +1058,50 @@ if [ "$ONCE" = "1" ]; then
   exit 0
 fi
 
+wait_ended_fired() {
+  # wait_ended_fired — when some process holds the run's `ended` claim, wait up
+  # to `INTERVAL` seconds for its `fired` mark. `rekick` shares the run's slot
+  # with `ended` and the later banner replaces the earlier, so a `rekick` raised
+  # while the claimant is still raising would be covered by the `ended` it was
+  # meant to follow. Bounded, because a claimant that died before firing must
+  # not hold this watcher open.
+  local i=0
+  [ -d "$RUN_DIR/notify.ended" ] || return 0
+  while [ ! -f "$RUN_DIR/notify.ended/fired" ] && [ "$i" -lt "${INTERVAL%.*}" ]; do
+    sleep 1
+    i=$((i + 1))
+  done
+  return 0
+}
+
 while :; do
-  if run_is_over; then
-    if [ -f "$RUN_DIR/done" ]; then
+  # `done` IS JUDGED FIRST, AND WHILE IT IS ON DISK NO PASS RUNS. On a run that
+  # ends on `done`, a shift can still be settling after `done` is written, and
+  # several arms of `pass` carry no `done` condition — a boundary's `done` can
+  # leave a live stage, an open approval or a non-terminal segment behind, and
+  # those arms would speak over a run that has ended. The tail's silence is a
+  # property of this branch rather than of a guard on every arm.
+  #
+  # THE TAIL ENDS WHEN THE SETTLEMENT IS OVER, OR WHEN `done` IS `STALL` OLD.
+  # The first is the gate's own moment, and its shift-return site raises `ended`
+  # there; this branch then raises nothing, because the claim is taken. The
+  # second is for a shift that never returns: a person who never gets the
+  # banner is worse off than one who gets it while a hung shift is still alive.
+  # On a run without the marker the settlement is over the moment `done`
+  # exists, so this exits when it always did.
+  if [ -f "$RUN_DIR/done" ]; then
+    # The directory has been seen, so a later disappearance ends the loop at
+    # once rather than waiting out the startup bound.
+    RUN_DIR_SEEN=1
+    done_mt=$(file_mtime "$RUN_DIR/done")
+    if cc_run_end_settled "$RUN_DIR" \
+       || { [ -n "$done_mt" ] && [ $(( $(now_epoch) - done_mt )) -ge "$STALL" ]; }; then
       announce "런이 종단했습니다 — 감시를 멈춥니다" "$(cat "$RUN_DIR/done" 2>/dev/null || printf '종단 표시 있음')"
+      # A BACKSTOP, NOT THE OWNER. The gate's sites take the claim first in the
+      # ordinary case and this raises nothing then; it speaks when no gate site
+      # reached the run — a stage's boundary, or a shift still alive at `STALL`.
+      # The sentence comes from `done` as the gate's does.
+      cc_notify_ended_once "$(cc_notify_ended_text "$RUN_DIR")" || true
       # NARROWED TO THE CASE THE PASS-SIDE ARM CANNOT REACH, which is what earns
       # this arm its place rather than duplicating one that already exists.
       #
@@ -949,18 +1110,27 @@ while :; do
       # invalidated by a forced surface move never returns `종단` and that arm is
       # silent for it forever. This path reads only the marker file the gate
       # writes, so for such a run it is the only channel there is. A run that
-      # ended cleanly is announced by the pass-side arm and stays quiet here.
+      # ended with no unresolved block has had its `ended` already, from the gate
+      # or from the line above, and gets nothing more here.
       #
-      # ITS OWN MARKER, never the pass-side one. Sharing would let whichever arm
+      # ITS OWN MARKER, never the terminal claim. Sharing would let whichever
       # fired first silence the other, and a silenced arm cannot be told apart in
       # the log from one that fired exactly once.
       if [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" != "0" ] \
          && [ ! -f "$RUN_DIR/watch.announced-loop-exit" ]; then
         : > "$RUN_DIR/watch.announced-loop-exit"
+        wait_ended_fired
         cc_notify_fire rekick \
           "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
       fi
+      exit 0
     fi
+    beat
+    sleep "$INTERVAL"
+    continue
+  fi
+  # The directory went away, or never appeared.
+  if run_is_over; then
     exit 0
   fi
   pass

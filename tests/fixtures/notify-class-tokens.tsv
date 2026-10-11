@@ -11,7 +11,7 @@
 # 버킷 열은 그 자리가 실제로 하중을 지는지를 재는 데 쓴다 — stack 이면 항목 키가
 # 바뀔 때 그룹이 갈려야 하고, replace 면 갈리지 않아야 한다.
 #
-# 소리는 축이 아니라 상수라 열을 두지 않는다. 시험은 아홉 행 전부에 대해
+# 소리는 축이 아니라 상수라 열을 두지 않는다. 시험은 열 행 전부에 대해
 # 소리가 default 임을 단언하며, 하나라도 비면 실패다.
 answer	cc-cmds · 답할 것이 생겼습니다	cc-cmds-autopilot-<RUN>-<KEY>	stack
 answer-run	cc-cmds · 답할 것이 생겼습니다	cc-cmds-autopilot-<RUN>-답	replace
@@ -22,3 +22,4 @@ rekick	cc-cmds · 새 런을 여세요	cc-cmds-autopilot-<RUN>	replace
 ended	cc-cmds · 결과를 확인하세요	cc-cmds-autopilot-<RUN>	replace
 session-ask	cc-cmds · 답하세요	cc-cmds-session-<SESSION>	replace
 session-turn	cc-cmds · 차례가 넘어왔습니다	cc-cmds-session-<SESSION>	replace
+focus-guide	cc-cmds · 배너 클릭 설정이 필요합니다	cc-cmds-notify-focus-guide	replace

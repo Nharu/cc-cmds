@@ -4,7 +4,8 @@
 # parity invariant.
 #
 #   Rule 1 (no human-question surface) — an unattended arm must not load or
-#     call AskUserQuestion / EnterPlanMode / ExitPlanMode. Every point that
+#     call AskUserQuestion / the question form (mcp__cc-cmds__question_form) /
+#     EnterPlanMode / ExitPlanMode. Every point that
 #     would have asked resolves to a halt record instead.
 #   Rule 2 (no notification surface) — an unattended arm must not reach
 #     PushNotification / notify.sh / terminal-notifier. Reaching a sleeping
@@ -141,13 +142,17 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # headless shard. That last one carries no `-unattended` suffix and has no
 # attended counterpart, which is exactly the shape a suffix rule or the sibling
 # lint's pair table would miss — it was absent from this list when the census
-# was first taken.
+# was first taken. `design-base-unattended` is listed before any dispatcher
+# names it: the base-design seat launches it as its leg, and the driver and
+# router wiring that makes it a stage lands separately, so the arm is checked
+# from the moment its file exists rather than from the moment it is dispatched.
 UNATTENDED_SKILLS=(
   "implement-unattended"
   "design-audit-unattended"
   "review-unattended"
   "design-reconverge"
   "design-discuss-unattended"
+  "design-base-unattended"
   "autopilot-router-shift"
 )
 
@@ -157,8 +162,10 @@ PARITY_PAIRS=(
   "design-audit-unattended|design-audit"
 )
 
-# Rule 1 — human-question call forms.
-QUESTION_RE='ToolSearch\("select:[^"]*AskUserQuestion|AskUserQuestion\(|EnterPlanMode\(|ExitPlanMode\('
+# Rule 1 — human-question call forms. The question form
+# (`mcp__cc-cmds__question_form`) asks a person as AskUserQuestion does, so its
+# load and call forms are the same surface.
+QUESTION_RE='ToolSearch\("select:[^"]*AskUserQuestion|AskUserQuestion\(|ToolSearch\("select:[^"]*question_form|question_form\(|EnterPlanMode\(|ExitPlanMode\('
 
 # Rule 2 — notification call forms. Byte-identical to the predicate the
 # design's residual verification item fixed, and for its stated reasons:
@@ -179,6 +186,10 @@ REFERENCE_TREES=(
   # references/ tree; `design/references/` does not exist today, so this entry
   # is a SKIP until one appears, and Rule 5 below is what covers the leg.
   "design-discuss-unattended|design"
+  # The base-design arm Reads `design-discuss-unattended/SKILL.md`, which in
+  # turn Reads `design/SKILL.md`; neither carries a references/ tree, so this
+  # entry is a SKIP for the same reason as the line above and Rule 5 covers it.
+  "design-base-unattended|design"
   # The router shard shares nobody's tree and has none of its own.
   "autopilot-router-shift|autopilot-router-shift"
 )
@@ -189,7 +200,7 @@ SIBLING_PAIRS_LINT="$script_dir/lint-judgment-grade.sh"
 
 # Rule 4 — the question-surface pattern used INSIDE a reference tree. Bare name,
 # no call form required; see the asymmetry note in the header.
-REF_QUESTION_RE='AskUserQuestion|EnterPlanMode|ExitPlanMode'
+REF_QUESTION_RE='AskUserQuestion|question_form|EnterPlanMode|ExitPlanMode'
 
 # The clause an arm owes for each shared reference file that holds a question
 # point. Fixed prefix plus the file's own name in backticks, so the check is a
@@ -202,6 +213,7 @@ DISPOSITION_PREFIX='**Inherited question point** — '
 U0_PIN='this arm resolves that terminus to `park`'
 U0_PINNED_SKILLS=(
   "design-discuss-unattended"
+  "design-base-unattended"
 )
 
 fail=0

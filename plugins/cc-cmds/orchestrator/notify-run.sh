@@ -3,8 +3,9 @@
 # notify-run.sh — the one place the title, group and sound are chosen for the
 # banners of an unattended run and of an ordinary session's hook seats. Every
 # process raising one of those sources this file: the run's liveness watcher and
-# adjudication gate, and the session hooks. (`active-notify` has its own
-# dispatcher and does not come through here.)
+# adjudication gate, the session hooks, and the banner click handler
+# (`notify-focus.sh`), which raises the `focus-guide` banner from a click.
+# (`active-notify` has its own dispatcher and does not come through here.)
 #
 # WHY A SHARED FILE AND NOT A CONVENTION. Two processes raise banners for this
 # pipeline, and they have to agree on the group string, because a group is a
@@ -54,7 +55,9 @@
 # gate exports INTO a stage, so a name there would claim a scope this variable
 # does not have; `CC_CMDS_NOTIFY_*` is the notification helper's family of test
 # seams, and this is not one of those. A public variable a user is told to type
-# has to say what it governs.
+# has to say what it governs. (One name in that family is not a seam:
+# `CC_CMDS_NOTIFY_FOCUS_PRIME`, which this file passes to the click handler as
+# part of their contract — see `cc_notify_seat_state`.)
 CC_NOTIFY_ENV_NAME=CC_CMDS_AUTOPILOT_NOTIFY
 
 # The session seats' switch, named here for the same reason and read by
@@ -69,9 +72,23 @@ CC_NOTIFY_ENV_NAME=CC_CMDS_AUTOPILOT_NOTIFY
 # of these off would quietly not work on the other.
 CC_NOTIFY_SESSION_ENV_NAME=CC_CMDS_SESSION_NOTIFY
 
+# The return hook's switch, read by `cc_notify_dismiss_enabled` below. A third
+# switch rather than the seats' one: someone who silenced the session banners
+# would otherwise lose the dismissal of the active-notify banners as well, and
+# the dismissal alone could not be switched off. Same value grammar again.
+CC_NOTIFY_DISMISS_ENV_NAME=CC_CMDS_SESSION_DISMISS
+
 # The stacking cap. Above it, individual notices collapse into one slot carrying
 # a count — see `cc_notify_stack_admit`.
 CC_NOTIFY_STACK_CAP=8
+
+# The click handler, a sibling of this file. It is run as its own process and
+# never sourced, so the set of files the watcher sources does not grow. The
+# other direction exists: the handler sources this file to raise its guide.
+case "${BASH_SOURCE[0]:-}" in
+  */*) CC_NOTIFY_FOCUS="${BASH_SOURCE[0]%/*}/notify-focus.sh" ;;
+  *)   CC_NOTIFY_FOCUS=notify-focus.sh ;;
+esac
 
 cc_notify_host_os() {
   # Seamed so the non-Darwin leg can still drive the Darwin branch. Without the
@@ -153,6 +170,20 @@ cc_notify_session_enabled() {
   return 0
 }
 
+cc_notify_dismiss_enabled() {
+  # The return hook's switch — see `CC_NOTIFY_DISMISS_ENV_NAME`. Same grammar as
+  # `cc_notify_session_enabled`, and silent on an unrecognized value for the same
+  # reason: the hook may not write a byte to stderr, and there is no `RUN_DIR`
+  # for a once-guard. Off stops both the recording and the dismissal.
+  local v="${CC_CMDS_SESSION_DISMISS:-}"
+  case "$v" in
+    '') return 0 ;;
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+    1|[Oo][Nn]|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]) return 0 ;;
+  esac
+  return 0
+}
+
 cc_notify_scope_enabled() {
   # cc_notify_scope_enabled <token> — send a token to its own scope's switch.
   #
@@ -173,8 +204,13 @@ cc_notify_scope_enabled() {
   # of, so a typo in the AUTOPILOT switch would otherwise put bytes on the
   # session hook's stderr on every single firing — and the seat contract forbids
   # the hooks any stderr at all.
+  #
+  # `focus-guide` READS NEITHER SWITCH. Only the click handler raises it, from a
+  # click on a banner that was raised because its own switch was on, and the
+  # click process inherits no switch value worth trusting.
   case "$1" in
     session-ask|session-turn) cc_notify_session_enabled ;;
+    focus-guide)              return 0 ;;
     *)                        cc_notify_enabled ;;
   esac
 }
@@ -242,7 +278,7 @@ cc_notify_title() {
   # THE TITLE CARRIES THE ACTION. The previous vocabulary had five tokens sharing
   # three strings, so the pairs that demand different actions — answer a question,
   # versus go and do something by hand, versus open a fresh run — arrived wearing
-  # the same words once the prefix was removed. Nine tokens is not the cost it
+  # the same words once the prefix was removed. Ten tokens is not the cost it
   # looks like: a call site's typo surface is "picked the wrong token" whatever
   # the count, and the real protection is the closed set below plus the refusal of
   # an unknown token. Collapsing them is what would hurt — three different
@@ -278,6 +314,7 @@ cc_notify_title() {
     ended)      printf 'cc-cmds · 결과를 확인하세요' ;;
     session-ask)  printf 'cc-cmds · 답하세요' ;;
     session-turn) printf 'cc-cmds · 차례가 넘어왔습니다' ;;
+    focus-guide)  printf 'cc-cmds · 배너 클릭 설정이 필요합니다' ;;
   esac
 }
 
@@ -334,6 +371,7 @@ cc_notify_group() {
     answer-run)   printf 'cc-cmds-autopilot-%s-답' "$rid" ;;
     overflow)     printf 'cc-cmds-autopilot-%s-대기' "$rid" ;;
     session-ask|session-turn) printf 'cc-cmds-session-%s' "$sid" ;;
+    focus-guide)  printf 'cc-cmds-notify-focus-guide' ;;
     *)            printf 'cc-cmds-autopilot-%s' "$rid" ;;
   esac
 }
@@ -545,12 +583,39 @@ cc_notify_seat_state() {
   if [ -z "${RUN_DIR:-}" ] || [ ! -d "${RUN_DIR:-}" ]; then
     return 0
   fi
+  # WHERE A RUN BANNER'S CLICK LANDS is recorded here, once, by the first
+  # router caller that has a tmux pane — at kickoff that is the watcher's first
+  # pass or the seat's own first `plan`/`act`/`exec`, both carrying the seat's
+  # environment. A stage or a shift is not the router and never writes it. The
+  # three conditions are judged in the shell first, so a run that already has
+  # the record spawns nothing on every later pass. It sits ahead of the kill
+  # switch's use: the record is a location, not a banner, and is written whatever
+  # the switch says.
+  #
   # THE KILL SWITCH IS READ BEFORE THE ONCE-GUARD BELOW, and the order is the
   # whole point. The near-miss warning carries its own marker, so making it wait
   # behind this file's existence silences it on every run that had already raised
   # one banner — and a value typed to switch the banners off, on a run where one
   # has already gone out, is precisely the case that warning exists for.
+  #
+  # IT IS READ ONCE, ABOVE `record`, because `record` also starts the seat
+  # pane's background resolution for the click, and a run whose banners are off
+  # will have no click: `CC_CMDS_NOTIFY_FOCUS_PRIME=off` tells the handler so.
+  # The handler never reads the switch itself — this file is its only parser —
+  # and one read keeps the state line and that hand-off from disagreeing.
   if cc_notify_enabled; then state='켬'; else state='끔'; fi
+  case "${TMUX_PANE:-}" in
+    %|%*[!0-9]*) : ;;
+    %*)
+      if cc_caller_is_router && [ ! -e "$RUN_DIR/notify.seat" ]; then
+        if [ "$state" = '끔' ]; then
+          CC_CMDS_NOTIFY_FOCUS_PRIME=off /bin/bash "$CC_NOTIFY_FOCUS" record "$RUN_DIR" >/dev/null 2>&1 || true
+        else
+          /bin/bash "$CC_NOTIFY_FOCUS" record "$RUN_DIR" >/dev/null 2>&1 || true
+        fi
+      fi
+      ;;
+  esac
   f="$RUN_DIR/notify.state"
   if [ -f "$f" ]; then
     return 0
@@ -559,17 +624,42 @@ cc_notify_seat_state() {
   return 0
 }
 
+cc_notify_click() {
+  # cc_notify_click <token> — the `-execute` value for one banner.
+  #
+  # A session banner is raised by the process sitting in the pane it belongs
+  # to, so its own TMUX/TMUX_PANE say where the click goes. A run banner is
+  # raised by the gate or the watcher, which do not know the seat's pane, so it
+  # reads the record the seat left in the run directory. The demoted `overflow`
+  # is a run banner like the rest. The guide has nowhere to go: a click on it
+  # does nothing.
+  local v
+  case "${1:-}" in
+    focus-guide)
+      printf ':'
+      return 0 ;;
+    session-ask|session-turn)
+      v=$(/bin/bash "$CC_NOTIFY_FOCUS" exec-arg 2>/dev/null) || v=':' ;;
+    *)
+      v=$(/bin/bash "$CC_NOTIFY_FOCUS" exec-arg --seat-file "${RUN_DIR:-}/notify.seat" 2>/dev/null) || v=':' ;;
+  esac
+  case "$v" in
+    /*) printf '%s' "$v" ;;
+    *)  printf ':' ;;
+  esac
+}
+
 cc_notify_fire() {
   # cc_notify_fire <token> <message> [item-key]
   #
-  # The token is one of nine and the set is closed: an unrecognized one raises
+  # The token is one of ten and the set is closed: an unrecognized one raises
   # nothing and says so. Falling back to the quietest token would be the
   # characteristic failure of a table like this — an unclassified condition
   # would reach the user as a status report, or not at all.
-  local token="${1:-}" body="${2:-}" key="${3:-}" title group sound n
+  local token="${1:-}" body="${2:-}" key="${3:-}" title group sound click n
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
-    session-ask|session-turn) : ;;
+    session-ask|session-turn|focus-guide) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 올리지 않습니다\n' "$token" >&2
       return 0 ;;
@@ -588,6 +678,10 @@ cc_notify_fire() {
 
   # THE SWITCH IS CHOSEN BY THE TOKEN, and this call sits ABOVE the overflow
   # demotion below, so `$token` here is still the one the caller passed.
+  #
+  # IT ALSO SITS ABOVE `cc_notify_click`, and that order is a contract with the
+  # click handler: computing a session banner's click value starts that pane's
+  # background resolution, so a switched-off seat must return before it.
   if ! cc_notify_scope_enabled "$token"; then return 0; fi
   if [ "$(cc_notify_host_os)" != "Darwin" ]; then return 0; fi
 
@@ -617,6 +711,7 @@ cc_notify_fire() {
   title=$(cc_notify_title "$token")
   group=$(cc_notify_group "$token" "$key")
   sound=$(cc_notify_sound "$token")
+  click=$(cc_notify_click "$token")
   body=$(cc_notify_body "$body")
 
   # Responsibility 4. The prepend is what makes this path untestable otherwise:
@@ -629,10 +724,12 @@ cc_notify_fire() {
     return 0
   fi
 
-  # THE CLICK IS NEUTRALIZED AT EVERY CALL SITE. Without it, clicking the notice
-  # pulls focus to whatever the notifier decides to activate — behaviour this
-  # tree has already fixed once, and a new firing point that omits the argument
-  # brings it straight back.
+  # EVERY LINE THAT RAISES A BANNER CARRIES `-execute`. Its value is what
+  # `notify-focus.sh exec-arg` built: `:`, or
+  # `/bin/bash '<handler>' focus '<socket>' '<pid>' '<pane>'`. When no value can
+  # be built it falls back to `:`, and there is no path that drops `-execute` —
+  # without it, clicking the notice pulls focus to whatever the notifier decides
+  # to activate, behaviour this tree has already fixed once.
   #
   # Responsibility 3: launched detached, status never asked.
   #
@@ -640,7 +737,75 @@ cc_notify_fire() {
   # the sound is a constant now, so the silent arm was unreachable code that read
   # like a live branch.
   { terminal-notifier -title "$title" -message "$body" -group "$group" \
-      -sound "$sound" -execute ':' >/dev/null 2>&1 & } 2>/dev/null || true
+      -sound "$sound" -execute "$click" >/dev/null 2>&1 & } 2>/dev/null || true
+  return 0
+}
+
+cc_notify_claim_ended() {
+  # cc_notify_claim_ended — 0 for the one process that takes the run's `ended`
+  # banner, 1 for every other.
+  #
+  # ONE RUN, ONE `ended`, WHOEVER GETS THERE FIRST. The gate raises it at four
+  # sites and the watcher at two, and in a run that ends on `done` the shift's
+  # return, the seat's own `propose-done` and the watcher's loop exit can all
+  # see the same finished run. `mkdir` is the claim because it is atomic on
+  # every filesystem this runs on and answers "already there" without a race,
+  # and a directory leaves room for the `fired` mark beside the claim.
+  #
+  # A PREDICATE, NOT AN ACT, so it may return 1 — every caller puts it in an
+  # `if` condition, where the status cannot trip an exit-on-error shell.
+  [ -n "${RUN_DIR:-}" ] && [ -d "${RUN_DIR:-}" ] || return 1
+  mkdir "$RUN_DIR/notify.ended" 2>/dev/null
+}
+
+cc_notify_mark_ended_fired() {
+  # cc_notify_mark_ended_fired — written after the fire returns, so a reader
+  # that saw the claim can tell "raised" from "claimed and still raising". The
+  # watcher's loop exit waits on it before its `rekick`, so `ended` is not
+  # replaced in the shared slot before it was raised.
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/notify.ended" ] || return 0
+  : > "$RUN_DIR/notify.ended/fired" 2>/dev/null || true
+  return 0
+}
+
+cc_notify_ended_once() {
+  # cc_notify_ended_once <message> — claim, fire, mark. The watcher's form; the
+  # gate's sites keep their fire line in place and claim in their own `if`,
+  # because a source-level table counts the fire lines at fixed distances from
+  # their anchors.
+  if cc_notify_claim_ended; then
+    cc_notify_fire ended "${1:-}" || true
+    cc_notify_mark_ended_fired
+  fi
+  return 0
+}
+
+cc_notify_ended_text() {
+  # cc_notify_ended_text <run-dir> — the `ended` body for the way the run ended,
+  # chosen from the first line of `done` among the three the gate already raises.
+  #
+  # NO NEW WORDING. A run that ends on `done` hands every way of ending — a
+  # boundary crossed inside the shift, an invalidation inside it, a clean
+  # finish — to one site, the shift's return. A fixed sentence there would
+  # announce a boundary or an invalidation as a clean finish, so the sentence is
+  # read back from what the gate wrote. A first line this does not recognise —
+  # a residual-query ending, the exit clauses holding, or anything unreadable —
+  # gets the clean-finish sentence, which is what those sites raise today.
+  local line name
+  line=$(head -n 1 "${1:-}/done" 2>/dev/null || true)
+  case "$line" in
+    *"종단 — 경계 "*" · "*)
+      name=${line#*종단 — 경계 }
+      name=${name%% · *}
+      printf '경계 %s 이 런을 끝냈습니다 — 아침 보고서를 확인하세요' "$name"
+      ;;
+    *"종단 — 무효화"*)
+      printf '런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요'
+      ;;
+    *)
+      printf '런이 종단했습니다 — 아침 보고서를 확인하세요'
+      ;;
+  esac
   return 0
 }
 
@@ -675,7 +840,7 @@ cc_notify_clear() {
   local token="${1:-}" key="${2:-}" group
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
-    session-ask|session-turn) : ;;
+    session-ask|session-turn|focus-guide) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 지우지 않습니다\n' "$token" >&2
       return 0 ;;

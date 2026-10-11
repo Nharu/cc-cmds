@@ -9,6 +9,8 @@ user-scope	cli 명령어 사용중	a3c0ad96f392abee5ec76f8523edc161d09f86b04203b
 user-scope	AWS CLI 사용 시	818facde9e05b21e17fdb676afb50bd300b1b3bb4187a59602a2fd1433ba2707	policy:Code and tools	orderbook infra stages
 user-scope	playwright(-cli) 는 `-s=	6c0c0d75c139113fdf6ff2fab09cc77ba3823971da61d2dbc1e5de9185751931	skill:browser-policy	
 user-scope	playwright(-cli) `open`	0cfcf9046df1abf5fb93d651ff78c6925d9124e1d99acebffc78a0032e631356	policy:Code and tools	only the stay-headless clause is in the policy; the rest is the skill:browser-policy pointer
+user-scope	Maestro(Android) 는 세션마다	73b521dcf5cb88658246f52809a155c959f8fdf3678b70a8b422720b63cfdd2c	policy:Code and tools	compressed to own device, pgrep check first, never signal another run (shared netsimd); the 8000-byte policy ceiling leaves no room for the 2.6.0/2.11.0 port detail or README pointer
+user-scope	Android 에뮬레이터·iOS 시뮬레이터는	2a0e984d1b1f9a80b24331e46ae1bec469593ae432dc4a1d372f18df2f9063e8	policy:Code and tools	compressed to shut down when done unless handed off; shares one policy line with the Maestro row
 user-scope	terraform 의	c2e55dff5ca01f63357c052df54f3883b4721435887bff004610f54aac54b703	policy:Code and tools	
 user-scope	sed를 사용한 파일 수정은	f51068eff7b4dbc7dc5f6f7bb30831552144906444bfe0681cb33018e8b99b6b	policy:Code and tools	
 user-scope	독립적인 읽기·편집은	03039215bf36940ff5db8a54852fcbff049c612b04a2c7b509dbf14f70ad2459	excluded:interactive-only	batching shape for the interactive permission flow

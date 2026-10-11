@@ -39,7 +39,7 @@ These rules govern the read-only safety contract and the walkthrough→artifact 
 No `Edit`/`Write` may ever target `<design-doc-path>` or any path inside its source repo directory — **no exceptions**. Every output is a NEW file under cwd `docs/analysis/` (the inline annotated artifact is a *copy*; callouts are written only onto the copy). If a desired action would touch the source, it is forbidden — fail closed, do not "helpfully" edit the original.
 
 ### CFI-2 — Walkthrough → artifact ordering (no look-ahead render)
-Findings resolve ONLY into artifact content (confirmed/excluded/amended/미검토), never back into the source. Step 7 selection and rendering MUST NOT begin before the Step 6 walkthrough completes or the user aborts. On abort, unprocessed findings are tagged `미검토(사용자 조기 종료)` and rendered into the artifacts with that flag (transparent, retained) — never silently dropped and never written to the source. No look-ahead rendering before the walkthrough resolves.
+Findings resolve ONLY into artifact content (confirmed/excluded/amended/미검토), never back into the source. Step 7 selection and rendering MUST NOT begin before the Step 6 walkthrough completes or the user aborts. On abort, unprocessed findings are tagged `미검토(사용자 조기 종료)` and rendered into the artifacts with that flag (transparent, retained); a finding left unanswered on two forms in a row ends as `미검토(사용자 미답)` and is rendered the same way — never silently dropped and never written to the source. No look-ahead rendering before the walkthrough resolves.
 
 ### CFI-3 — Observed-result precondition (anti-fabrication)
 Only findings, severities, and grounding claims that an analysis agent **actually returned** may be recorded into artifacts. If a result is uncertain or unobserved, fail closed and re-verify — never fabricate a finding, a `path:line` citation, or a verdict.
@@ -55,7 +55,7 @@ There is no shutdown to run — analysts that returned have already self-termina
 ### Step 0: Tool Loading
 
 Load deferred tools via ToolSearch before any other step:
-- `ToolSearch("select:AskUserQuestion")` — MUST load before Step 1
+- `ToolSearch("select:AskUserQuestion,mcp__cc-cmds__question_form")` — MUST load before Step 1 (the form's schema missing from the result means the form is unavailable)
 - `ToolSearch("select:SendMessage")`
 - `ToolSearch("select:TaskStop")`
 
@@ -210,7 +210,7 @@ Anti-fabrication (CFI-3): only record findings the analysts actually returned.
 
 ### Step 6: Findings Walkthrough (read-only)
 
-Surface findings one at a time to the user and drive each to a disposition that lands in the **확정 발견 집합** (confirmed finding set). The source document and source repo are NEVER modified (CFI-1). The menu has NO team-discussion option — the engine already ran a multi-perspective team; deep re-analysis is Step 8.
+Surface findings to the user — on the form path every `pending` finding on one form, one question each; on the `AskUserQuestion` fallback path one at a time — and drive each to a disposition that lands in the **확정 발견 집합** (confirmed finding set). The source document and source repo are NEVER modified (CFI-1). The menu has NO team-discussion option — the engine already ran a multi-perspective team; deep re-analysis is Step 8.
 
 #### Walkthrough state (in-memory + scratch persist)
 
@@ -222,13 +222,17 @@ The work.json also carries the durable Role↔agentId **`"ledger"`** key (create
 ```
 pending → presented → { confirmed | excluded | amended }
             (abort)  → 미검토            # pending|presented → 미검토 on abort
+presented → 미검토                         # second 미답 in a row on the form path
 추가조사: presented → presented            # loop-back, no terminal of its own
+미답:     presented → presented            # first 미답, loop-back to the next form, no terminal of its own
 ```
 The terminal set {confirmed, excluded, amended, 미검토} equals the §finding-schema `walkthrough_status` enum.
 
-#### 1 finding per AUQ (invariant)
+#### 1 finding per question (invariant)
 
-Each `AskUserQuestion` call carries **exactly one finding** (one question). The tool's up-to-4-questions capacity is NEVER used to bundle findings — the only 4-slot budget is the per-finding **option** menu. Each surface includes:
+> **Old heading** (for re-deriving citations): "1 finding per AUQ (invariant)" - the finding walkthrough now asks through the question form as well as AskUserQuestion
+
+Each question carries **exactly one finding** — one question of a `mcp__cc-cmds__question_form` form, or one `AskUserQuestion` call on the fallback path. On the form path one form carries every `pending` finding, each with the full menu below; `추가조사` and 미답 carry the finding to the next form, a second 미답 ends it as `미검토(사용자 미답)`, and `수정후포함` takes its `amendment_note` from the note. On the fallback path the up-to-4-questions capacity is NEVER used to bundle findings — the only 4-slot budget there is the per-finding option menu. Each question includes:
 - a Category/severity chip (e.g. `심각·문서모순`, ≤12 codepoints)
 - Why-it-matters (1–2 lines)
 - 근거 (doc `§anchor` + when grounded `path:line`)
@@ -247,7 +251,7 @@ When grounded with strong doc-code-gap evidence, apply `← 추천` to `유효(�
 
 #### Abort (CFI-2)
 
-The source cannot be batch-marked (it is untouched). On abort, remaining findings are tagged `미검토(사용자 조기 종료)` and kept in the 확정집합 (transparent, non-verified flag) — no silent deletion. Record the abort point in the work-file for audit.
+The source cannot be batch-marked (it is untouched). On abort, remaining findings are tagged `미검토(사용자 조기 종료)` and kept in the 확정집합 (transparent, non-verified flag) — no silent deletion. `미검토` carries one of two flags: `미검토(사용자 조기 종료)` for an abort, `미검토(사용자 미답)` for a finding left unanswered on two forms in a row; both are kept and rendered alike. Record the abort point in the work-file for audit.
 
 ---
 
@@ -269,7 +273,7 @@ No manual Other (auto-provided). No `preview` (multiSelect).
 - **(if inline) Read `${CLAUDE_SKILL_DIR}/references/03-inline-callout-spec.md`** → `docs/analysis/<slug>.annotated.md` (byte-copy of source + banner + blockquote callouts; source untouched — CFI-1).
 - **(if feedback) Read `${CLAUDE_SKILL_DIR}/references/04-feedback-template.md`** → `docs/analysis/<slug>.feedback.md`.
 
-**Render rule (all artifacts)**: render only `confirmed`/`amended` findings; `excluded` appears ONLY in the report's "철회된 항목" (transparent); `amended` shows its `amendment_note`; `미검토` (abort) is included with its flag. After successful render, delete `.<slug>.work.json` (path-guarded).
+**Render rule (all artifacts)**: render only `confirmed`/`amended` findings; `excluded` appears ONLY in the report's "철회된 항목" (transparent); `amended` shows its `amendment_note`; `미검토` (abort, or two 미답 in a row) is included with its flag — `미검토(사용자 조기 종료)` or `미검토(사용자 미답)`. After successful render, delete `.<slug>.work.json` (path-guarded).
 
 ---
 

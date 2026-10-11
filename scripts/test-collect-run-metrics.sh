@@ -599,6 +599,24 @@ mk_ledger "$R8" "$(sr_row S1 S1 review 1 sid-old '정상 완료' __none__ '~/.cl
 collect
 check "6: 레인은 있고 창 키만 빠진 런은 여전히 판정 대상이다" "$(jline '.new_runs | length')" "1"
 check "6: 그 런에서 T3 이 발화한다(드리프트가 가려지지 않는다)" "$(fire_ids)" "T3/review"
+# done 으로 끝나는 런(표지 ends-on-done)은 세그먼트가 모두 끝나도 done 전까지 정산 중이라
+# 열린 런이다. 같은 원장 모양이 표지 없이는 유도 종단으로 닫힌다.
+reset_all
+R8S=20260906-aaaaaae8; R8T=20260906-aaaaaaf8
+for r in "$R8S" "$R8T"; do
+  mk_rundir "$r" nodone; mk_stream "$STATE/run/$r/log/S1#1.json" 1
+  mk_ledger "$r" "$(sr_row S1 S1 review 1 "sid-$r" '정상 완료' '300000(argv)' '~/.claude')" \
+    '- `segment` | id=S1 | 상태=머지됨 | prev=abc'
+done
+printf '1\n' > "$STATE/run/$R8S/ends-on-done"
+collect
+check "6: 정산 중인 런은 미종단이고 표지 없는 유도 종단은 수집된다" \
+  "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "1,0,0,1"
+check "6: 정산 중인 런은 델타에 들지 않는다" "$(jline '.new_runs | join(",")')" "$R8T"
+: > "$STATE/run/$R8S/done"
+collect
+check "6: done 이 생기고 교대가 없으면 그 런도 닫혀 수집된다" \
+  "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "2,0,0,0"
 
 # --- 7. 결함 형태 트리거의 자동 닫기 ------------------------------------------------------
 # T6 만 닫히면 결함 형태 이슈 하나가 전역 열림 상한을 영구히 차지한다.
@@ -886,6 +904,54 @@ OUT=$(bash "$SLOW/collect-run-metrics.sh" --ledger-dir "$LEDGER_DIR" --state-roo
       --journal "$JOURNAL" --now "$NOW" --budget 3 2>"$WORK/err"); rc=$?
 check "12: 판독이 예산보다 오래 걸려도 수집은 예산 안에서 모두 끝난다" "$(counts4)" "2,0,0,0"
 check "12: 그 회차는 차단되지 않는다" "$(jline '.probe')" "ok"
+
+# --- 13. `--config-home` 없는 기본 홈 — 인벤토리에서 ------------------------------------------
+# 게이트는 수집기를 `--config-home` 없이 부르므로 운영에서 쓰이는 것은 이 기본 목록이다. 시험의
+# 이음매는 HOME 과 XDG_CONFIG_HOME 둘이고, 기기의 인벤토리는 읽지 않는다.
+H13="$WORK/h13"
+h13_run() {
+  # h13_run <run-id> <전사를 둘 홈> — n_run 과 같은 런 하나, 전사만 그 홈 아래에.
+  local rid="$1" sid="sid-$1"
+  mk_rundir "$rid"; mk_stream "$STATE/run/$rid/log/S1#1.json" 1
+  mk_ledger "$rid" "$(sr_row S1 S1 review 1 "$sid" '정상 완료' '300000(argv)' '~/.claude')" "$(cycle_row S1 1 4)"
+  { tl_assist 10 n1 1000 1000 1000; tl_assist 21 n2 1000 0 0; tl_assist 30 n3 1 1 1; } | mk_transcript "$2" -repo "$sid"
+}
+collect_default() {
+  OUT=$(HOME="$H13" XDG_CONFIG_HOME="$H13/.config" bash "$COLLECT" --ledger-dir "$LEDGER_DIR" --state-root "$STATE" \
+        --journal "$JOURNAL" --now "$NOW" 2>"$WORK/err"); rc=$?
+}
+inv13() {
+  # inv13 <config_dir…> — u1, u2, … 로 이름 붙인 인벤토리.
+  mkdir -p "$H13/.config/cc-lane"
+  printf '%s\n' "$@" | jq -R -s -c 'split("\n") | map(select(. != "")) | to_entries
+    | {schema: "cc-lane-accounts v1", accounts: map({id: "u\(.key + 1)", config_dir: .value, unattended: "enabled", interactive_reserved: false})}' \
+    > "$H13/.config/cc-lane/accounts.json"
+}
+diag13() { grep -c '인벤토리' "$WORK/err" || true; }
+
+reset_all; rm -rf "$H13"
+inv13 "$H13/.claude-u1" "$H13/.claude-u2"
+h13_run 20260913-aaaaaa01 "$H13/.claude-u2"
+collect_default
+check "13: --config-home 없이 인벤토리의 둘째 홈 아래 전사를 찾는다" "$(jrec 20260913-aaaaaa01 '.stages[0].requests')" "3"
+check "13: 인벤토리가 맞으면 진단을 남기지 않는다" "$(diag13)" "0"
+
+reset_all; rm -rf "$H13"
+h13_run 20260913-aaaaaa02 "$H13/.claude-cci"
+h13_run 20260913-aaaaaa03 "$H13/.claude-cc"
+collect_default
+check "13: 인벤토리가 없으면 .claude-cci 아래 전사는 찾지 못한다" "$(jrec 20260913-aaaaaa02 '.stages[0].requests')" "0"
+check "13: 인벤토리가 없어도 .claude-cc 아래 전사는 찾는다" "$(jrec 20260913-aaaaaa03 '.stages[0].requests')" "3"
+check "13: 인벤토리가 없으면 stderr 에 진단 한 줄" "$(diag13)" "1"
+
+reset_all; rm -rf "$H13"
+inv13 "$H13/.claude-u1/" "$H13/.claude-u2"
+h13_run 20260913-aaaaaa04 "$H13/.claude-cci"
+h13_run 20260913-aaaaaa05 "$H13/.claude-cc"
+collect_default
+check "13: 인벤토리가 깨졌으면 .claude-cci 아래 전사는 찾지 못한다" "$(jrec 20260913-aaaaaa04 '.stages[0].requests')" "0"
+check "13: 인벤토리가 깨졌어도 .claude-cc 아래 전사는 찾는다" "$(jrec 20260913-aaaaaa05 '.stages[0].requests')" "3"
+check "13: 인벤토리가 깨졌으면 stderr 에 진단 한 줄" "$(diag13)" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

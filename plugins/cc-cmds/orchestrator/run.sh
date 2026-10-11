@@ -91,14 +91,12 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `readonly` constants only, because the gate sources this file on every entry
 # and inherits whatever the router puts at top level. This driver calls
 # `route_inventory_check` and `route__jq_lib`, from `rundir_init`, to check
-# the run's inventory baseline; neither reads a switch. `stage_spawn` resolves
-# every launch through `route_resolve`, and the switch below keeps that answer
-# the dormant envelope; `route_resolve` reads it with a `:-0` default so a
-# shell that sources `route.sh` alone can never turn routing on.
+# the run's inventory baseline. `stage_spawn` resolves every launch through
+# `route_resolve`, which routes only when `run_routed` (below) is defined and
+# true for this run, so a shell that sources `route.sh` alone can never turn
+# routing on.
 # shellcheck source=/dev/null
 . "$ORCH_DIR/route.sh"
-  # 라우팅을 켜는 변경이 이 줄의 두 자리의 0 을 1 로 뒤집으며, 줄을 지우지 않는다.
-  case "${ROUTE_ROUTING_BUILD_COMPLETE:-}" in 0) ;; *) readonly ROUTE_ROUTING_BUILD_COMPLETE=0 ;; esac
 
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
@@ -254,6 +252,8 @@ readonly LIT_RECONVERGE_TERMINAL='재수렴을 종료합니다. 판정은 여기
 # The first sentence of the attended `design` skill's freeze notice, byte for
 # byte — so the same literal marks a freeze whether a seat or a stage did it.
 readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
+# The last line of the base split stage (`design-base-unattended --split`).
+readonly LIT_SPLIT_TERMINAL='베이스 분할을 마쳤습니다.'
 
 # ---------------------------------------------------------------------------
 # Logging. Redirection is not about survival — a driver without it survives a
@@ -294,8 +294,6 @@ now_epoch() { date -u +%s; }
 # environment-measurement step there and recording observations matching the
 # darwin ones — until then, the non-darwin arm of this seam stays a refusal.
 # ---------------------------------------------------------------------------
-platform_supported() { [ "$ORCH_HOST_OS" = "Darwin" ]; }
-
 platform_refuse() {
   cat >&2 <<EOF
 run.sh: 이 드라이버는 darwin 전용입니다 (관측된 호스트: ${ORCH_HOST_OS}).
@@ -313,10 +311,10 @@ EOF
 
 # Source selection is seam-driven, so it is exercised under injection on any
 # runner. Whether the selected binary EXISTS is a separate question, and it is
-# one only the darwin leg can answer.
+# one only the darwin leg can answer. The platform test and the boot and wake
+# sources live in `liveness.sh`, which the watcher and the status line source
+# without this file.
 lock_tool()  { platform_supported && printf '/usr/bin/lockf' || printf ''; }
-boot_source() { platform_supported && printf 'kern.boottime' || printf ''; }
-wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
 
 # ---------------------------------------------------------------------------
 # Path and slug derivation (sidecar.md §1.1), keyed on the DOCUMENT's own
@@ -422,6 +420,9 @@ manifest_snapshot_take() {
   #   AA <row>     `- \`자동 채택\`` rows inside the first `## 인가` only
   #   DR <row>     every `- \`설계 로스터\`` row anywhere, in order
   #   C <row>      every `- \`종료 절\`` row, in order
+  #   BP <row>     every `- \`베이스 발행\`` row anywhere, in order
+  #   BD <row>     every `- \`베이스 설계\`` row anywhere, in order
+  #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -450,6 +451,10 @@ $(LC_ALL=C awk '
     index($0, "- `자동 채택`") == 1 { print "AW\t" $0; if (ina) print "AA\t" $0 }
     index($0, "- `설계 로스터`") == 1 { print "DR\t" $0 }
     index($0, "- `종료 절`") == 1 { print "C\t" $0 }
+    index($0, "- `베이스 발행`") == 1 { print "BP\t" $0 }
+    index($0, "- `베이스 설계`") == 1 { print "BD\t" $0 }
+    index($0, "- `세그먼트 입양`") == 1 { print "AD\t" $0 }
+    index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -625,6 +630,26 @@ manifest_clause_rows_raw() {
   grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_base_publish_rows() {
+  if manifest_memo_on; then manifest_memo_all "BP	"; return 0; fi
+  grep -E '^- `베이스 발행`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_base_design_rows() {
+  if manifest_memo_on; then manifest_memo_all "BD	"; return 0; fi
+  grep -E '^- `베이스 설계`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_adoption_rows() {
+  if manifest_memo_on; then manifest_memo_all "AD	"; return 0; fi
+  grep -E '^- `세그먼트 입양`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_predecessor_landing_rows() {
+  if manifest_memo_on; then manifest_memo_all "PL	"; return 0; fi
+  grep -E '^- `선행 착지`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -700,6 +725,26 @@ binding_set_bytes() {
     # bytes, so no in-flight run's digest moves, and the stage then uses the
     # default roster frozen in its own skill file.
     manifest_design_roster_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/roster\t/'
+    # THE BASE ROWS ARE IN THE FROZEN SET, on the same terms. `베이스 발행` is the
+    # only carrier of "publish, and where" — the split stage reads nothing else —
+    # so a row any act could rewrite mid-run would turn a document-only run into
+    # one that writes to a tracker. `베이스 설계` binds a child run to the base it
+    # was kicked off against. Both are whole-file scans and contribute zero bytes
+    # when absent, so no in-flight manifest's digest moves.
+    manifest_base_publish_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basepub\t/'
+    manifest_base_design_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/basedesign\t/'
+    # THE ADOPTION ROWS ARE IN THE FROZEN SET, on the same terms. A `세그먼트
+    # 입양` row lets this run plan a segment in a worktree and branch it did not
+    # cut, so a row any act could append mid-run would hand the run a tree a
+    # person never named. Whole-file scan, zero bytes when absent.
+    manifest_adoption_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/adopt\t/'
+    # THE `선행 착지` ROWS ARE IN THE FROZEN SET, on the same terms. Each one is a
+    # person's statement, taken at kickoff, that a predecessor slice landed
+    # outside every run ledger, and the planning act turns it into a terminal
+    # row this run builds on. A row any act could append mid-run would let a
+    # dependent slice be dispatched over a predecessor nobody confirmed. A
+    # whole-file scan, zero bytes when absent.
+    manifest_predecessor_landing_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/predland\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -743,7 +788,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — ten values, closed, three of them named and
+# The judgment-class vocabulary — eleven values, closed, three of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -767,7 +812,15 @@ manifest_autoadopt_rows() {
 # inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
 # sources this file for its definitions, so one declaration reaches both — the
 # same arrangement `CUTPOINTS` already has, and for the same reason.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격"
+#
+# `구속-이탈` is the one class whose reader is not the judgment floor but the
+# `halt-answer` act: an implement stage that stopped on a binding-tier conflict
+# (CFI-U3 BT-STOP) offers `재수렴`, and a `자동 채택` row of this class lets the
+# routing shift carry that answer itself instead of ending on a person. It is
+# permitted because re-convergence is a scoped repair inside the same run that
+# leaves its own `중단 답` row and stage rows, and it is once per key — a second
+# stop on the same key still goes to a person.
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈"
 readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
@@ -1031,7 +1084,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1230,7 +1283,137 @@ EOF
     fi
   done
 
+  # 16 — the design scope and the rows only a base run may carry.
+  #
+  # A BASE RUN'S GRAPH IS FIXED, so it is checked as a shape rather than read as
+  # a plan: design, then the audit depending on it, then the split depending on
+  # both, and nothing after. The split publishes to a tracker and cannot be
+  # undone, so a graph that let anything else run first — or after — is refused
+  # here, while a person can still fix it. The one `베이스 발행` row is the only
+  # carrier of "publish, and where"; its target is checked against the tracker
+  # it names. A `single` run carries neither a split step nor that row, so
+  # neither can come into force by accident. A plan frozen before the field
+  # existed has no key and is `single`.
+  local scope bp_rows bp_n bp_trk bp_tgt bp_ok
+  scope=$(manifest_design_scope)
+  bp_rows=$(manifest_base_publish_rows)
+  bp_n=$(printf '%s' "$bp_rows" | grep -c . || true)
+  if [ "$scope" = "base" ]; then
+    [ "$(manifest_plan_field '.design_required')" = "true" ] \
+      || die "design_scope 가 base 인데 design_required 가 true 가 아닙니다"
+    [ "$(manifest_plan_field '.design_tier')" = "team-4" ] \
+      || die "design_scope 가 base 인데 design_tier 가 team-4 가 아닙니다"
+    manifest_plan_json | jq -e '
+      [.steps[]? | if type == "object" then . else {skill: .} end] as $s
+      | ($s | length) == 3
+      and $s[0].skill == "design" and (($s[0].depends_on // []) | length) == 0
+      and $s[1].skill == "design-audit" and (($s[1].depends_on // []) == [$s[0].id])
+      and $s[2].skill == "split"
+      and (($s[2].depends_on // []) | sort) == ([$s[0].id, $s[1].id] | sort)
+      and ([$s[].id] | unique | length) == 3
+    ' >/dev/null 2>&1 \
+      || die "design_scope 가 base 인 런의 단계 그래프는 design → design-audit(설계에 의존) → split(설계·감사에 의존) 세 단계뿐이어야 합니다"
+    [ "$bp_n" = "1" ] || die "design_scope 가 base 인데 「베이스 발행」 행이 ${bp_n}개입니다 — 정확히 하나여야 합니다"
+    bp_trk=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\1/p')
+    bp_tgt=$(printf '%s' "$bp_rows" | sed -n 's/^- `베이스 발행` | 트래커=\([^ |]*\) | 대상=\([^ ]*\)$/\2/p')
+    case "$bp_trk" in
+      github)
+        bp_ok=0
+        for al in $(target_aliases); do
+          [ "$(target_field "$al" '원격 슬러그')" = "$bp_tgt" ] && bp_ok=1
+        done
+        [ "$bp_ok" = "1" ] || die "「베이스 발행」 행의 github 대상이 선언된 대상의 원격 슬러그가 아닙니다: $bp_tgt" ;;
+      clickup)
+        [ -n "$bp_tgt" ] && [ "$bp_tgt" != "-" ] || die "「베이스 발행」 행의 clickup 대상(목록 id)이 비었습니다" ;;
+      없음)
+        [ "$bp_tgt" = "-" ] || die "「베이스 발행」 행의 트래커가 없음인데 대상이 - 가 아닙니다: $bp_tgt" ;;
+      *)
+        die "「베이스 발행」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>\` 입니다" ;;
+    esac
+  else
+    if manifest_plan_json | jq -e '[.steps[]? | if type == "object" then .skill else . end] | index("split") != null' >/dev/null 2>&1; then
+      die "design_scope 가 base 가 아닌데 실행 계획에 split 단계가 있습니다"
+    fi
+    [ "$bp_n" = "0" ] || die "design_scope 가 base 가 아닌데 「베이스 발행」 행이 있습니다"
+  fi
+  # `베이스 설계` binds a child run to its base. Its form is checked here; the
+  # file it names is the child's design stage's to read.
+  # Comparing the file's bytes here would kill every gate entry of a child run
+  # the moment its base is revised, and the design stage's own re-measurement
+  # could then never be reached.
+  local bd_rows bd_n
+  bd_rows=$(manifest_base_design_rows)
+  bd_n=$(printf '%s' "$bd_rows" | grep -c . || true)
+  [ "${bd_n:-0}" -le 1 ] || die "「베이스 설계」 행이 ${bd_n}개입니다 — 많아야 하나입니다"
+  # A here-string, not a pipe: `grep -q` stops at its match, and under pipefail
+  # the writer's SIGPIPE would turn a well-formed row into a refusal.
+  if [ "${bd_n:-0}" = "1" ]; then
+    grep -qE '^- `베이스 설계` \| 문서=docs/[^ |]+\.md \| sha256=[0-9a-f]{64} \| 티켓=T[0-9]+$' <<<"$bd_rows" \
+      || die "「베이스 설계」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>\` 입니다"
+  fi
+  # 17 — `세그먼트 입양` rows, FORM ONLY. A row hands this run a segment an
+  # earlier run cut: its branch, its worktree and its pull request. Whether that
+  # worktree exists, carries the branch, and is free of the earlier run is
+  # checked when the segment is planned, not here — this conjunction runs on
+  # every gate entry, and once the merged segment's worktree is torn down every
+  # entry would die on it.
+  #
+  # `출처 런=-` is a segment no run cut: a person made the branch and opened the
+  # pull request in an interactive session. There is no earlier ledger to read,
+  # so the planning act checks only the tree and the branch. The worktree still
+  # carries the reserved infix — the kickoff moves a person's tree under it.
+  local ad_row ad_seg ad_wt ad_src ad_segs=" "
+  while IFS= read -r ad_row; do
+    [ -n "$ad_row" ] || continue
+    # A here-string, not a pipe, for the reason the `베이스 설계` check gives.
+    grep -qE '^- `세그먼트 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 워크트리=/[^|]*[^ |] \| 출처 런=([0-9]{8}-[0-9a-f]{8}|-) \| PR=[0-9]+$' <<<"$ad_row" \
+      || die "「세그먼트 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>\` 입니다: $ad_row"
+    ad_seg=$(manifest_row_fields "$ad_row" '세그먼트')
+    ad_wt=$(manifest_row_fields "$ad_row" '워크트리')
+    ad_src=$(manifest_row_fields "$ad_row" '출처 런')
+    case "$ad_wt" in
+      *'"'*|*'\'*|*[[:cntrl:]]*) die "「세그먼트 입양」 행의 워크트리에 큰따옴표·역슬래시·제어 문자가 있습니다: $ad_wt" ;;
+      *"$WORKTREE_INFIX"*) : ;;
+      *) die "「세그먼트 입양」 행의 워크트리에 예약 인픽스 ${WORKTREE_INFIX} 가 없습니다 — 철거 가드가 그 인픽스를 요구합니다: $ad_wt" ;;
+    esac
+    [ "$ad_src" != "$RUN_ID" ] || die "「세그먼트 입양」 행의 출처 런이 이 런 자신입니다: $ad_src"
+    case "$ad_segs" in
+      *" $ad_seg "*) die "「세그먼트 입양」 행이 세그먼트 ${ad_seg} 에 둘 이상입니다" ;;
+    esac
+    ad_segs="$ad_segs$ad_seg "
+  done <<EOF
+$(manifest_adoption_rows)
+EOF
+  # 18 — `선행 착지` rows: a predecessor slice that landed outside every run
+  # ledger, as a person confirmed it at kickoff. Its form and the uniqueness of
+  # its slice are checked here; whether the slice is declared, whether the slug is the slice's
+  # `레포` and whether the commit is on that repository's base branch are the
+  # planning act's to check, against the frozen document and the remote.
+  local pl_rows pl_row pl_ids="" pl_id
+  pl_rows=$(manifest_predecessor_landing_rows)
+  while IFS= read -r pl_row; do
+    [ -n "$pl_row" ] || continue
+    grep -qE '^- `선행 착지` \| 슬라이스=[A-Za-z0-9_.-]+ \| 원격 슬러그=[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ \| 머지 커밋=[0-9a-f]{40}$' <<<"$pl_row" \
+      || die "「선행 착지」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>\` 입니다: $pl_row"
+    pl_id=$(printf '%s' "$pl_row" | sed -n 's/.*| 슬라이스=\([^ |]*\) |.*/\1/p')
+    case " $pl_ids " in
+      *" $pl_id "*) die "「선행 착지」 행이 슬라이스 ${pl_id} 에 둘 이상입니다 — 슬라이스마다 많아야 하나입니다" ;;
+    esac
+    pl_ids="$pl_ids $pl_id"
+  done <<EOF
+$pl_rows
+EOF
+
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
+}
+
+manifest_design_scope() {
+  # `base` or `single`. An absent key, an unparsable plan block and a value
+  # outside the two all read `single` — the shape every run had before the field.
+  case "$(manifest_plan_field '.design_scope')" in
+    base) printf 'base' ;;
+    *) printf 'single' ;;
+  esac
 }
 
 # The value of a declaration's `끌 수 있는가`, wherever the declaration put it:
@@ -2707,6 +2890,7 @@ rundir_init() {
   # one level above what the run directory guards allow it.
   mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
   LOG_FILE="$RUN_DIR/log/driver.log"
+  spawn_drop_dead_waiters
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
   # The lane this run opened in, and the orchestrator directory it actually
   # loaded. `config-dir` is tier 2 of `resolve_account`, and it is written HERE
@@ -2881,45 +3065,64 @@ rundir_init() {
       || die "런 디렉터리에 오케스트레이터 기록을 쓰지 못했습니다: $RUN_DIR/orchestrator-dir"
   fi
   rundir_inventory_snapshot
-  routing_guard_record
 }
 
 # ---------------------------------------------------------------------------
-# The run's routing guard. One run has one guard value, and the record below is
-# how the two launch sites — the driver's `stage_spawn` and the gate's
-# `gate_launch_stage` — find out whether they agree on it. Each side opens the
-# run with its own copy of this file: the driver runs the live checkout, the
-# gate runs the pinned copy under the run directory, and the driver's child
-# shells source the live gate. Three copies can disagree, and a run that routes
-# half its stages and seats the other half cannot be read in the morning.
+# The run's routing record. One run is routed or it is not, and the record below
+# is how every launch site — the driver's `stage_spawn`, the gate's
+# `gate_launch_stage`, the supervisor and the router — finds out which. Each
+# side opens the run with its own copy of this file: the driver runs the live
+# checkout, the gate runs the pinned copy under the run directory, and the
+# driver's child shells source the live gate. Three copies can differ, and a run
+# that routes half its stages and seats the other half cannot be read in the
+# morning.
 #
-# WRITTEN ONCE, BY WHOEVER OPENS THE RUN WITH THE GUARD ON. Exclusive create
-# under noclobber, so a second opener never rewrites it; nothing writes it at a
-# launch. A guard-0 opener writes nothing, which is exactly today's run
-# directory.
+# WRITTEN ONCE, AND ONLY BY THE ENTRY THAT ACTUALLY TOOK THE INVENTORY BASELINE,
+# WHEN THAT BASELINE IS A REGULAR FILE. A run opened before this code existed
+# already holds a regular `inventory.json` and no record; taking the record from
+# "the baseline is a regular file" would route half of such a run once a newer
+# copy entered it. Writing the record at every entry would do the same, and the
+# older gate pinned to that run would then refuse every launch. Exclusive create
+# under noclobber, so a second writer never rewrites it. A failed create leaves
+# the run unrouted, on the seat — the safe side.
 # ---------------------------------------------------------------------------
 routing_guard_record() {
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  # routing_guard_record <inventory path> — called from the take branch of
+  # `rundir_inventory_snapshot` only, after the judge accepted the new baseline.
   [ -n "${RUN_DIR:-}" ] || return 0
+  [ -f "$1" ] && [ ! -L "$1" ] || return 0
   ( set -C; printf '1\n' > "$RUN_DIR/routing-guard" ) 2>/dev/null || true
   return 0
 }
 
+run_routed() {
+  # run_routed — true when this run's record says `1`. Every reader that used to
+  # ask the build switch asks this instead; a run with no record is unrouted.
+  local rec=""
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/routing-guard" ] || return 1
+  rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$rec" = "1" ]
+}
+
 routing_guard_check() {
-  # routing_guard_check — 0 when this copy's guard agrees with the run's record,
-  # 1 with the reason on stdout when it does not. Agreement is 1 with a record
-  # of `1`, or 0 with no record at all; every other pair refuses the launch. The
-  # caller writes the reason to the ledger and parks the stage — a silent
-  # failure would be read as a crashed stage and retried into the same refusal.
-  local mine="${ROUTE_ROUTING_BUILD_COMPLETE:-0}" rec="없음"
+  # routing_guard_check — 0 when the run's record and its inventory baseline
+  # agree, 1 with the reason on stdout when they do not. No record passes (the
+  # run is unrouted); a record of `1` passes only with a regular-file baseline;
+  # every other pair refuses the launch. The caller writes the reason to the
+  # ledger and parks the stage — a silent failure would be read as a crashed
+  # stage and retried into the same refusal.
+  local rec="없음" snap="없음"
   if [ -e "${RUN_DIR:-}/routing-guard" ]; then
     rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
     rec=${rec:-빈 값}
   fi
-  case "$mine:$rec" in
-    1:1|0:없음) return 0 ;;
+  if [ -f "${RUN_DIR:-}/inventory.json" ] && [ ! -L "${RUN_DIR:-}/inventory.json" ]; then
+    snap="정규 파일"
+  fi
+  case "$rec:$snap" in
+    없음:*|"1:정규 파일") return 0 ;;
   esac
-  printf '라우팅 가드 어긋남 — 이 사본의 가드 %s, 런 기록 %s' "$mine" "$rec"
+  printf '라우팅 가드 어긋남 — 런 기록 %s, 스냅숏 %s' "$rec" "$snap"
   return 1
 }
 
@@ -3384,6 +3587,7 @@ rundir_inventory_snapshot() {
     fi
     rc=0; rundir_inventory_judge "$inv" || rc=$?
     if [ "$rc" = "0" ]; then
+      routing_guard_record "$inv"
       if [ -n "$tpub" ]; then
         rundir_inventory_record "$inv" "$tpub" "$troot"
       else
@@ -3721,9 +3925,158 @@ spawn_route_request() {
   # router request for one launch. The holder is this driver: `$$` inside a
   # command substitution is still the parent's pid, which is the point.
   jq -cn --arg run "$RUN_ID" --arg lin "$1" --arg ev "$2" --arg kind "$3" --arg bound "${4:-}" \
-    --argjson pid "$$" \
+    --argjson pid "$$" --argjson dl "$(wait_request_deadline "$3")" \
     '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
-      bound_account: (if $bound == "" then null else $bound end)}'
+      bound_account: (if $bound == "" then null else $bound end)}
+     + (if $dl == null then {} else {deadline: $dl} end)'
+}
+
+spawn_wait_key() {
+  # spawn_wait_key <dispatch id> — the key a driver wait's marker is named by:
+  # the segment for a segment dispatch, the step id for a run-scope one. The
+  # readers of `<key>.waiting` match on that, as they do for the gate's waits.
+  local seg
+  seg=$(spawn_did_segment "$1")
+  if [ "$seg" = "-" ]; then printf '%s' "${1%.retry}"; else printf '%s' "$seg"; fi
+}
+
+spawn_rerun_line() {
+  # The command a person runs to pick this run up again after a park.
+  if [ -n "${MANIFEST:-}" ]; then
+    printf 'run.sh --manifest %s --run-id %s' "$MANIFEST" "$RUN_ID"
+  else
+    printf 'run.sh 를 같은 인자와 --run-id %s 로 다시 시작' "$RUN_ID"
+  fi
+}
+
+spawn_park_recmd() {
+  # spawn_park_recmd <recovery> <ready-at iso> — the resume command a router
+  # park carries: what the router said to do, when, and how to start again.
+  printf '%s — ready_at=%s — %s' "${1:-(라우터 회복 없음)}" "${2:--}" "$(spawn_rerun_line)"
+}
+
+# The driver's four callbacks for `stage_wait_loop`, reading the wait they
+# belong to from SPAWN_WAIT_* globals `spawn_route_wait` sets.
+spawn_wait_heartbeat() {
+  run_gate_call gate_stage_wait_row "$SPAWN_WAIT_DID" "$1" "$SPAWN_WAIT_BIND"
+}
+
+spawn_wait_deadline() {
+  # <ready-at iso> <basis> <recovery> — the one deadline park row of this
+  # wait. The caller's router-park helper sees STAGE_SPAWN_ALREADY_PARKED and
+  # writes nothing more.
+  park "$SPAWN_WAIT_TARGET" cone 막힘 "마감 초과 — $SPAWN_WAIT_KEY" "$(now_iso) ready_at=$1" \
+    "$(spawn_park_recmd "$3" "$1")" "$SPAWN_WAIT_KEY" "$2"
+  STAGE_SPAWN_ALREADY_PARKED=1
+}
+
+spawn_wait_stop() {
+  # Any other stop is parked by the caller at its own scope; this only names it.
+  STAGE_SPAWN_PARK_REASON="$1"
+}
+
+spawn_wait_ended() {
+  # Fails once a boundary has ended the run, read by the gate's own run-end
+  # refusal. Only that refusal's code counts as an end: a gate that could not
+  # be sourced is not evidence that the run is over.
+  local rc=0
+  run_gate_call gate_run_ended_ok skill - 2>/dev/null || rc=$?
+  [ "$rc" != "3" ]
+}
+
+spawn_route_wait() {
+  # spawn_route_wait <dispatch id> <kind> <event> <bound account> <WAIT envelope>
+  # — wait for a grant in this process. 0 with the grant in WAIT_LOOP_ENV; 1
+  # with the reason in STAGE_SPAWN_PARK_REASON otherwise (and, for a deadline
+  # park, the row already written and STAGE_SPAWN_ALREADY_PARKED set).
+  #
+  # THE FIRST `stage-wait` ROW IS WRITTEN BEFORE THE LOOP, synchronously. The
+  # loop's first row comes a chunk later, and until then the previous stage's
+  # `stage-result` would stay the ledger's last row — the shape the watcher's
+  # after-stage arm reads as a router that stopped acting.
+  #
+  # THE HOLDER IS THIS SHELL'S OWN PID. `$$` names the top-level driver even in
+  # a subshell, and a subshell that waits must be the one a reader checks.
+  local did="$1" kind="$2" ev="$3" bound="$4" env="$5" key m holder grp upto rec wnonce="-" rrc=0 lrc=0 wrc=0
+  STAGE_SPAWN_PARK_REASON=$(wait_router_why "$env")
+  if ! cc_effective_stall "$RUN_DIR" >/dev/null; then
+    STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (실효 정지 임계를 읽지 못해 기다리지 않는다)"
+    return 1
+  fi
+  run_gate_call gate_stage_wait_row "$did" "$env" "$bound" || lrc=$?
+  if [ "$lrc" != "0" ]; then
+    STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (stage-wait 행 기록 거부 rc=$lrc)"
+    return 1
+  fi
+  key=$(spawn_wait_key "$did")
+  m="$RUN_DIR/$key.waiting"
+  holder=$(exec sh -c 'echo $PPID')
+  grp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
+  upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
+  if [ "$grp" != "-" ]; then
+    rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
+            --lineage "$SPAWN_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
+            --holder "$holder" 2>/dev/null) || rrc=$?
+    if [ "$rrc" = "0" ]; then
+      wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
+    else
+      log "대기 항목을 FIFO 에 넣지 못했습니다 rc=$rrc — $did ($SPAWN_LINEAGE)"
+    fi
+  fi
+  if ! wait_marker_write "$m" "보유자=$holder" "지문=$(cc_proc_fingerprint "$holder")" "기록자=드라이버" \
+         "계보=$SPAWN_LINEAGE" "그룹=$grp" "까지=$upto" "갱신=$(now_epoch)" "종류=$kind" "논스=$wnonce"; then
+    [ "$wnonce" = "-" ] || route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$SPAWN_LINEAGE" "$wnonce" >/dev/null 2>&1 || true
+    STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (대기 표지를 쓰지 못했다)"
+    return 1
+  fi
+  log "$did: 계정 대기 — 그룹 $grp, 까지 $(wait_epoch_iso "$upto")"
+  SPAWN_WAIT_DID=$did; SPAWN_WAIT_BIND=$bound; SPAWN_WAIT_KEY=$key
+  SPAWN_WAIT_TARGET=${CC_SPAWN_PARK_TARGET:-$key}
+  stage_wait_loop "$key" "$kind" "$m" "$ev" "$bound" \
+    spawn_wait_heartbeat spawn_wait_deadline spawn_wait_stop spawn_wait_ended || wrc=$?
+  [ "$wrc" = "0" ] || return 1
+  # The launch follows at once in this same process, so the marker goes now: a
+  # refusal between here and the spawn would otherwise leave a live holder
+  # marking a key nothing is waiting on.
+  wait_drop "$m"
+  return 0
+}
+
+spawn_drop_dead_waiters() {
+  # The driver's own markers whose holder is gone — a driver that died while
+  # waiting. Its attempt counter reads `stage-result` rows, so nothing else
+  # needs settling.
+  local f pid fp
+  for f in "$RUN_DIR"/*.waiting; do
+    [ -f "$f" ] || continue
+    [ "$(cc_waiting_field "$f" '기록자')" = "드라이버" ] || continue
+    pid=$(cc_waiting_field "$f" '보유자' | tr -d '[:space:]')
+    fp=$(cc_waiting_field "$f" '지문')
+    cc_holder_is_live "$pid" "$fp" && continue
+    wait_drop "$f"
+  done
+  return 0
+}
+
+park_router() {
+  # park_router <target> <anchor> <scope> [<reason>] — the one place the driver
+  # parks on a launch it was refused. A deadline verdict is a cone on the
+  # anchor, whatever the site's own scope; anything else keeps the site's scope.
+  # Either way the row carries the router's recovery and the observed ready_at.
+  # A wait loop that already wrote its deadline park leaves nothing to write.
+  # Each scope is spelled at its own `park` call, as at every other park site.
+  local target="$1" anchor="$2" scope="$3" reason="${4:-$STAGE_SPAWN_PARK_REASON}" recmd
+  [ "${STAGE_SPAWN_ALREADY_PARKED:-0}" = "1" ] && return 0
+  recmd=$(spawn_park_recmd "${STAGE_SPAWN_PARK_RECOVERY:-}" "${STAGE_SPAWN_PARK_UNTIL:-}")
+  case "$reason:$scope" in
+    "라우터 판정 PARK deadline"*)
+      park "$target" cone 막힘 "마감 초과 — $anchor" "$reason" "$recmd" "$anchor" \
+        "계보=${SPAWN_LINEAGE:--} 라우터 마감 판정 ready_at=${STAGE_SPAWN_PARK_UNTIL:--}" ;;
+    *:act)  park "$target" act 막힘 "게이트 park" "$reason" "$recmd" ;;
+    *:cone) park "$target" cone 막힘 "게이트 park" "$reason" "$recmd" ;;
+    *:run)  park "$target" run 막힘 "게이트 park" "$reason" "$recmd" ;;
+    *) die "라우터 파킹의 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;;
+  esac
 }
 
 spawn_did_segment() {
@@ -3801,10 +4154,18 @@ spawn_route_grant() {
   verdict=$(printf '%s' "$env" | jq -r '.verdict // ""' 2>/dev/null || true)
   case "$verdict" in
     GRANT) ;;
-    WAIT|PARK)
-      STAGE_SPAWN_PARK_REASON=$(printf '%s' "$env" | jq -r '"라우터 판정 \(.verdict) \(.reason // "-")"
-        + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null) \
-        || STAGE_SPAWN_PARK_REASON="라우터 판정 $verdict"
+    WAIT)
+      # A WAIT IS WAITED ON, in this process, on the rule the gate's supervisor
+      # follows; only a wait that cannot start, or one that stops, parks.
+      if ! spawn_route_wait "$did" "$kind" "$event" "$reqbind" "$env"; then
+        warn "$did: $STAGE_SPAWN_PARK_REASON — 띄우지 않습니다"
+        return "$STAGE_SPAWN_PARK_RC"
+      fi
+      env=$WAIT_LOOP_ENV ;;
+    PARK)
+      STAGE_SPAWN_PARK_REASON=$(wait_router_why "$env")
+      STAGE_SPAWN_PARK_UNTIL=$(wait_epoch_iso "$(printf '%s' "$env" | jq -r '.ready_at | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)")
+      STAGE_SPAWN_PARK_RECOVERY=$(printf '%s' "$env" | jq -r '.recovery // ""' 2>/dev/null || true)
       warn "$did: $STAGE_SPAWN_PARK_REASON — 띄우지 않습니다"
       return "$STAGE_SPAWN_PARK_RC" ;;
     *) die "라우터가 판정 없는 봉투를 냈습니다 — $did 를 띄우지 않습니다" ;;
@@ -3864,7 +4225,7 @@ spawn_lease_release() {
   # no-op. A stage still running keeps its lease — its pid is a holder and the
   # reservation is really in use; the run's end collects that record.
   local did="$1" f lin nonce rc=0
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   f="$RUN_DIR/$did.lease"
   if [ ! -f "$f" ]; then
     log "$did: 반납할 임대 기록이 없다 — 반납하지 않는다"
@@ -3890,7 +4251,7 @@ spawn_lineage_release() {
   # lease and a limit reclaim replaces it, so the family is released together
   # where the lineage ends, not after the first row.
   local base f n=0
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   base=$(route_lineage_of "$1")
   for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease; do
     [ -f "$f" ] || continue
@@ -3906,7 +4267,7 @@ spawn_lease_release_target() {
   # of a dispatch the target names, as the dispatch itself, its lineage, or its
   # segment. Quiet when there is none — most parks follow no launch.
   local target="$1" f did
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   for f in "$RUN_DIR"/*.lease; do
     [ -f "$f" ] || continue
     did=$(basename "$f" .lease)
@@ -3924,7 +4285,7 @@ spawn_lease_release_run() {
   # supervisor of this run is alive: a park that left its stage running kept
   # that lease on purpose.
   local f p rc=0
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || return 0
+  run_routed || return 0
   for f in "$RUN_DIR"/*.pid "$RUN_DIR"/*.sup; do
     [ -f "$f" ] || continue
     p=$(sed -n '1p' "$f" 2>/dev/null || true)
@@ -3946,7 +4307,7 @@ spawn_lease_release_run() {
 
 reclaim_has_other_account() {
   # reclaim_has_other_account <stage-id> — the last term of the limit-shape reap.
-  # With routing off, or with routing on and no inventory, it is
+  # In an unrouted run, or a routed one with no inventory, it is
   # `account_has_headroom` itself. With a broken inventory it is no: the router
   # would park the re-dispatch, so the reap would buy nothing. With a valid one
   # it asks the router, without its lock and without touching the table, the
@@ -3955,7 +4316,7 @@ reclaim_has_other_account() {
   # is a known-room grant on an account other than the one this stage runs on.
   # An account the router admits without knowing its usage is not room.
   local s="$1" inv irc=0 req env prev
-  [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ] || { account_has_headroom; return $?; }
+  run_routed || { account_has_headroom; return $?; }
   inv="$RUN_DIR/inventory.json"
   [ -e "$inv" ] || { account_has_headroom; return $?; }
   route_inventory_check "$inv" 2>/dev/null || irc=$?
@@ -4063,11 +4424,20 @@ readonly PARK_SCOPES="act cone run"
 readonly PARK_CAUSES="막힘 무효화 불명"
 
 park() {
+  # park <target> <scope> <cause> <reason> <observed> [<resume command>]
+  #      [<anchor segment>] [<basis>]
+  # The seventh and eighth fields are written only when given, so a call with
+  # six arguments writes the same bytes it always did. The anchor is what a
+  # cone reader matches on; the basis carries a deadline park's lineage.
   local target="$1" scope="$2" cause="$3" reason="$4" observed="$5" recmd="${6:-(없음)}"
+  local anchor="${7:-}" basis="${8:-}"
+  local -a extra=()
   case " $PARK_SCOPES " in *" $scope "*) : ;; *) die "park 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;; esac
   case " $PARK_CAUSES " in *" $cause "*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
+  [ -z "$anchor" ] || extra+=("앵커 세그먼트=$anchor")
+  [ -z "$basis" ] || extra+=("근거=$basis")
   ledger_row 'blocked' "대상=$target" "스코프=$scope" "원인=$cause" \
-    "사유=$reason" "관측=$observed" "재개 명령=$recmd"
+    "사유=$reason" "관측=$observed" "재개 명령=$recmd" ${extra[@]+"${extra[@]}"}
   report_append "보류" "$target — [$scope/$cause] $reason — $observed"
   log "park: $target ($scope/$cause · $reason)"
   # The park row is the terminal row of whatever it names, so the leases of the
@@ -4502,7 +4872,7 @@ transcript_path() {
   # resolver here cannot know; the launch recorded that directory beside the
   # pid. No record is no transcript — resolving instead would watch the seat's
   # tree for a file that is written somewhere else.
-  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+  if run_routed; then
     cfg=$(stage_config_dir_of "$stage") || return 1
   else
     cfg=$(resolve_account) || return 1
@@ -4674,11 +5044,13 @@ stage_kind_of() {
   case "$head" in
     S1design) printf 'design'; return 0 ;;
     S2)       printf 'audit'; return 0 ;;
+    S2split)  printf 'split'; return 0 ;;
     S4)       printf 'implement'; return 0 ;;
     S5|S5R)   printf 'review'; return 0 ;;
     "S1'")    printf 'reconverge'; return 0 ;;
   esac
   case "$stage" in
+    *split*)                printf 'split' ;;
     *design-audit*|*audit*) printf 'audit' ;;
     *reconverge*)           printf 'reconverge' ;;
     *design*)               printf 'design' ;;
@@ -4783,10 +5155,11 @@ stage_spawn() {
   # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
   local cfg out err pid pgid attempt env why
-  # THE GUARD RECORD IS COMPARED BEFORE THE ROUTER IS ASKED. A copy whose guard
-  # disagrees with the run's record would route a run the other side seats, or
-  # the reverse; the launch is declined and the caller parks this stage.
+  # THE GUARD RECORD IS CHECKED BEFORE THE ROUTER IS ASKED. A routed record with
+  # no regular baseline would ask a router that has nothing to route on; the
+  # launch is declined and the caller parks this stage.
   STAGE_SPAWN_PARK_REASON=""
+  STAGE_SPAWN_PARK_UNTIL=""; STAGE_SPAWN_PARK_RECOVERY=""; STAGE_SPAWN_ALREADY_PARKED=0
   if ! why=$(routing_guard_check); then
     warn "$stage: $why — 띄우지 않습니다"
     STAGE_SPAWN_PARK_REASON="$why"
@@ -4802,7 +5175,7 @@ stage_spawn() {
   # down, and assigning it from an unpinned path first would leave two spellings
   # of the same log in one dispatch.
   local routed=0 lineage="" nonce="" acct="-" minted=0 bind="" lrc
-  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+  if run_routed; then
     routed=1
     spawn_route_grant "$stage" || return $?
     env=$SPAWN_ENV; lineage=$SPAWN_LINEAGE; nonce=$SPAWN_NONCE; acct=$SPAWN_ACCOUNT
@@ -5150,31 +5523,6 @@ reap_orphan() {
 }
 
 # ---------------------------------------------------------------------------
-# Sleep discriminator. Closing the lid leaves a stage alive with a stalled
-# transcript, which the resume table would otherwise read as the limit-exhaustion
-# shape and act on — killing and re-running on false evidence. Wall-clock moves
-# across a sleep; the wake timestamp records that it happened.
-# ---------------------------------------------------------------------------
-sysctl_sec() {
-  # No key selected (non-darwin) means no reading, not a reading of zero. The
-  # pipeline is guarded so a missing key cannot abort a caller running under
-  # `set -e`.
-  [ -n "$1" ] || return 0
-  { sysctl -n "$1" 2>/dev/null || true; } \
-    | awk -F'[ ,]+' '{for(i=1;i<=NF;i++) if($i=="sec"){print $(i+2); exit}}'
-}
-boot_epoch() { sysctl_sec "$(boot_source)"; }
-wake_epoch() { sysctl_sec "$(wake_source)"; }
-
-machine_slept_since() {
-  local since="$1" w
-  w=$(wake_epoch)
-  [ -n "$w" ] || return 1
-  [ "$w" = "0" ] && return 1
-  [ "$w" -gt "$since" ]
-}
-
-# ---------------------------------------------------------------------------
 # Artifact predicates. Not all of equal strength, and saying so is part of the
 # contract: a predicate over state a stage CANNOT fabricate (a git ref, a
 # remote ref, a PR number) is immune to a hollow success; a predicate over an
@@ -5218,6 +5566,54 @@ doc_is_early_stub() {
 # that SAID it froze without writing it fails, and one that wrote it and died
 # before saying so fails too.
 predicate_design()      { grep -qF "$LIT_DESIGN_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && doc_is_frozen "$DOC"; }
+
+# THE BASE SPLIT'S ARTIFACT IS THE REGISTRY, and it is crossed with the stage's
+# own terminal literal for the reason the design predicate crosses two facts.
+# The registry sits beside the document as `design-base/<stem>.tickets.md` and
+# is written only by `base-split.py record`. It is complete when its header is
+# version 1 and names the document's CURRENT whole-file digest — a registry of
+# an earlier revision is not the split of this one — and every row reached its
+# end state for the frozen tracker: `발행됨` for the base and every ticket and
+# `걸림` for every relation when a tracker was chosen, `문서만` everywhere when
+# none was. A `발행중` or `대기` row is a split still under way.
+split_registry_path() {
+  # split_registry_path <document path>
+  printf '%s/design-base/%s.tickets.md' "$(dirname "$1")" "$(basename "$1" .md)"
+}
+
+split_registry_complete() {
+  # split_registry_complete <document path> — 0 when the registry is complete.
+  local doc="$1" reg sha
+  [ -n "$doc" ] && [ -f "$doc" ] || return 1
+  reg=$(split_registry_path "$doc")
+  [ -f "$reg" ] || return 1
+  sha=$(shasum -a 256 "$doc" | cut -d' ' -f1)
+  awk -v sha="$sha" '
+    NR == 1 {
+      if (index($0, "<!-- cc-design-base-tickets v1; ") != 1) exit 1
+      if (index($0, "; doc-sha256=" sha ";") == 0) exit 1
+      if (index($0, "; tracker=없음;") > 0) none = 1
+      else if (index($0, "; tracker=github;") > 0 || index($0, "; tracker=clickup;") > 0) none = 0
+      else exit 1
+      head = 1; next
+    }
+    $0 == "<!-- cc-design-base-tickets: end -->" { ended = 1; next }
+    index($0, "- `베이스` |") == 1 || index($0, "- `티켓` |") == 1 {
+      if (index($0, "- `베이스` |") == 1) base = 1
+      want = none ? "| 상태=문서만 |" : "| 상태=발행됨 |"
+      if (index($0, want) == 0) bad = 1
+      next
+    }
+    index($0, "- `관계` |") == 1 {
+      want = none ? "| 상태=문서만" : "| 상태=걸림"
+      if (substr($0, length($0) - length(want) + 1) != want) bad = 1
+      next
+    }
+    END { exit !(head && ended && base && !bad) }
+  ' "$reg"
+}
+
+predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && split_registry_complete "$DOC"; }
 
 predicate_implement() {
   # The git-state ladder, evaluated in the MAIN tree, in cutpoint order. A run
@@ -5495,7 +5891,7 @@ transcript_of_session() {
   # `transcript_path`; without the stage there is nothing to read.
   local sid="$1" stage="${2:-}" cfg p
   case "$sid" in ''|미상) return 1 ;; esac
-  if [ "${ROUTE_ROUTING_BUILD_COMPLETE:-0}" = "1" ]; then
+  if run_routed; then
     [ -n "$stage" ] || return 1
     cfg=$(stage_config_dir_of "$stage") || return 1
   else
@@ -5601,7 +5997,9 @@ decision_point_reached() {
   local out
   out=$(stage_log_path "$stage")
   [ -f "$out" ] || return 1
-  grep -q 'AskUserQuestion' "$out" 2>/dev/null
+  # The question form asks a person exactly as AskUserQuestion does, so a stage
+  # that reached for it reached the same kind of point.
+  grep -q -e 'AskUserQuestion' -e 'mcp__cc-cmds__question_form' "$out" 2>/dev/null
 }
 
 stage_limit_exit() {
@@ -6033,6 +6431,333 @@ past_deadline() {
   [ "$(now_epoch)" -ge "$d" ]
 }
 
+# EXPECTED STAGE DURATION BY KIND, in seconds — what a stage that waits for an
+# account is assumed to need once it spawns, so it is parked rather than started
+# when it cannot finish inside the deadline. The run's own finished stages of the
+# same kind decide it when there is at least one (their median); these are the
+# values used before that.
+#
+# Measured 2026-10-06T19:33Z (in run 20261006-7c066611) as the median wall time
+# of gate-recorded stages (`기록자=게이트`) that ended `정상 완료`, from the run
+# ledgers dated 2026-09-21..2026-10-06 (the last run 20261006-ff315145): each
+# `stage-result` row joined by its session id to the last result line of its
+# stream log, whose `duration_ms` is the duration. Samples: design 58, audit 63,
+# implement 738, review 385, reconverge 18. Generic is the median of all of them
+# together (1272 stages over 213 runs), because the gate's own generic class had
+# 10 samples over 3 runs, too few to stand alone. Live runs were in the sample,
+# so a later count moves a little.
+#
+# THE MEDIAN, NOT A HIGHER PERCENTILE. A larger value parks more stages that
+# would have fitted; the price of the median is that about half of the stages
+# admitted just before the deadline run past it.
+readonly EXPECTED_DURATION_DESIGN_S=512
+readonly EXPECTED_DURATION_AUDIT_S=832
+readonly EXPECTED_DURATION_IMPLEMENT_S=435
+readonly EXPECTED_DURATION_REVIEW_S=283
+readonly EXPECTED_DURATION_RECONVERGE_S=308
+readonly EXPECTED_DURATION_GENERIC_S=364
+
+stage_duration_class() {
+  # stage_duration_class <kind> — one of the six classes above.
+  case "${1:-}" in
+    design|audit|implement|review|reconverge) printf '%s' "$1" ;;
+    *) printf 'generic' ;;
+  esac
+}
+
+stage_run_durations() {
+  # stage_run_durations <class> — one line per stage of this run in that class
+  # that ended `정상 완료`: its duration in whole seconds. A gate row names its
+  # kind in `종류`; a driver row names a kind code in `스테이지`, read through
+  # `stage_kind_of`. The stream is `log/<id>#<attempt>.json` with the id from
+  # `파견 id` when the row has one and from `스테이지` otherwise, and it counts
+  # only when its last result line carries the row's session id — a stream that
+  # cannot be joined to its row is not a sample.
+  local want="$1" row kind cls key att sid res rsid ms
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    kind=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    key=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *파견 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ -n "$key" ] || key=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *스테이지=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ -n "$kind" ] || kind=$(stage_kind_of "$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *스테이지=//p' | sed 's/[[:space:]]*$//' | tail -1)")
+    cls=$(stage_duration_class "$kind")
+    [ "$cls" = "$want" ] || continue
+    att=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    sid=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "$sid" in ''|미상|-) continue ;; esac
+    [ -n "$key" ] && [ -n "$att" ] || continue
+    res=$( { grep '"type":"result"' "$RUN_DIR/log/$key#$att.json" 2>/dev/null || true; } | tail -1)
+    [ -n "$res" ] || continue
+    rsid=$(printf '%s' "$res" | jq -r '.session_id // empty' 2>/dev/null || true)
+    [ "$rsid" = "$sid" ] || continue
+    ms=$(printf '%s' "$res" | jq -r '.duration_ms // empty | if type == "number" then floor else empty end' 2>/dev/null || true)
+    case "$ms" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\n' "$(( ms / 1000 ))"
+  done <<EOF
+$( { grep -E '^- `stage-result`' "$LEDGER" 2>/dev/null || true; } | { grep -F '종단 부류=정상 완료' || true; } )
+EOF
+}
+
+stage_expected_duration() {
+  # stage_expected_duration <kind> — E in seconds: the median of this run's own
+  # finished stages of the same class, the class constant when there are none.
+  # With an even count the median is the lower middle value.
+  local cls med
+  cls=$(stage_duration_class "${1:-}")
+  med=$(stage_run_durations "$cls" | sort -n | awk '{ v[NR] = $1 } END { if (NR > 0) print v[int((NR + 1) / 2)] }')
+  if [ -n "$med" ]; then printf '%s' "$med"; return 0; fi
+  case "$cls" in
+    design)     printf '%s' "$EXPECTED_DURATION_DESIGN_S" ;;
+    audit)      printf '%s' "$EXPECTED_DURATION_AUDIT_S" ;;
+    implement)  printf '%s' "$EXPECTED_DURATION_IMPLEMENT_S" ;;
+    review)     printf '%s' "$EXPECTED_DURATION_REVIEW_S" ;;
+    reconverge) printf '%s' "$EXPECTED_DURATION_RECONVERGE_S" ;;
+    *)          printf '%s' "$EXPECTED_DURATION_GENERIC_S" ;;
+  esac
+}
+
+wait_ready_at() {
+  # wait_ready_at <until> <now> — the release time a waiter plans on: the
+  # router's `until` when it is a number later than now, now otherwise.
+  local u="${1:-}" now="$2"
+  case "$u" in ''|*[!0-9]*) printf '%s' "$now"; return 0 ;; esac
+  if [ "$u" -gt "$now" ]; then printf '%s' "$u"; else printf '%s' "$now"; fi
+}
+
+wait_past_deadline() {
+  # wait_past_deadline <ready-at> <expected> — succeeds when a stage released
+  # at <ready-at> cannot finish inside the deadline. A run with no deadline never
+  # parks on this; an unreadable one reads as epoch 0 and always does.
+  local ready="$1" e="$2" d
+  d=$(deadline_epoch)
+  [ -n "$d" ] || return 1
+  [ $(( ready + e )) -gt "$d" ]
+}
+
+wait_request_deadline() {
+  # wait_request_deadline <kind> — the `deadline` object a routed request
+  # carries, `{deadline_epoch, expected_duration_s}`, or `null` when the run has
+  # no deadline. With it the router parks a wait whose release cannot finish in
+  # time on the first question, not only on the waiter's own turn.
+  local d e
+  d=$(deadline_epoch)
+  [ -n "$d" ] || { printf 'null'; return 0; }
+  e=$(stage_expected_duration "${1:-}")
+  printf '{"deadline_epoch":%s,"expected_duration_s":%s}' "$d" "$e"
+}
+
+# ---------------------------------------------------------------------------
+# WAITING FOR AN ACCOUNT BEFORE A SPAWN.
+#
+# When the router answers WAIT, the stage is not parked: the process that would
+# spawn it waits in chunks, writes one `stage-wait` row per chunk as a heartbeat
+# the liveness watcher can see, and asks the router again after each chunk. The
+# gate's detached supervisor and the driver both wait here, so one exhaustion
+# meets one rule whichever path dispatched the stage. What differs by path —
+# how a heartbeat row is written, how a deadline park is written, how any other
+# stop is recorded — is passed in as function names.
+#
+# The marker `<key>.waiting` is what makes the wait visible: it names the
+# waiting process, and readers in `liveness.sh` treat a key whose holder lives
+# as not to be dispatched again.
+# ---------------------------------------------------------------------------
+readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"
+
+wait_epoch_iso() {
+  # wait_epoch_iso <epoch> — the instant in `now_iso`'s byte shape, `-` for none.
+  case "${1:-}" in ''|*[!0-9]*) printf '%s' '-'; return 0 ;; esac
+  jq -rn --argjson e "$1" '$e | floor | todate' 2>/dev/null || printf '%s' '-'
+}
+
+wait_marker_write() {
+  # wait_marker_write <file> <key=value>... — the whole marker, atomically.
+  local f="$1" tmp
+  shift
+  tmp=$(mktemp "${f%/*}/.waiting.XXXXXX") || return 1
+  if ! printf '%s\n' "$@" > "$tmp" || ! mv -f "$tmp" "$f"; then rm -f "$tmp"; return 1; fi
+}
+
+wait_marker_set() {
+  # wait_marker_set <file> <key> <value> [<key> <value>]... — the marker with
+  # those keys replaced (or added), atomically. rc 1 when there is no marker: a
+  # marker that is gone has been taken by settlement or removed by its writer,
+  # and is not brought back.
+  local f="$1" tmp
+  shift
+  [ -f "$f" ] || return 1
+  tmp=$(mktemp "${f%/*}/.waiting.XXXXXX") || return 1
+  if ! cp "$f" "$tmp"; then rm -f "$tmp"; return 1; fi
+  while [ "$#" -ge 2 ]; do
+    if ! WK="$1" WV="$2" awk 'BEGIN { p = ENVIRON["WK"] "=" }
+           index($0, p) == 1 { if (!d) print p ENVIRON["WV"]; d = 1; next }
+           { print }
+           END { if (!d) print p ENVIRON["WV"] }' "$tmp" > "$tmp.n" \
+       || ! mv -f "$tmp.n" "$tmp"; then
+      rm -f "$tmp" "$tmp.n"; return 1
+    fi
+    shift 2
+  done
+  [ -f "$f" ] || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$f"
+}
+
+wait_drop() {
+  # wait_drop <marker> — remove this wait's FIFO entry and its marker. The
+  # entry is deleted only while it is still this wait's (`kind: wait` with the
+  # marker's nonce), so a grant already recorded over the same key is kept.
+  local m="$1" lin nonce
+  [ -f "$m" ] || return 0
+  lin=$(cc_waiting_field "$m" '계보')
+  nonce=$(cc_waiting_field "$m" '논스')
+  if [ -n "$lin" ] && [ -n "$nonce" ] && [ "$nonce" != "-" ]; then
+    route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || true
+  fi
+  rm -f "$m"
+}
+
+wait_router_why() {
+  # wait_router_why <envelope> — the one-line reading a park row carries.
+  printf '%s' "$1" | jq -r '"라우터 판정 \(.verdict // "-") \(.reason // "-")"
+        + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null \
+    || printf '라우터 판정 미상'
+}
+
+stage_wait_loop() {
+  # stage_wait_loop <key> <kind> <marker> <event> <bound> <heartbeat-fn>
+  #                 <deadline-fn> <stop-fn> [<ended-fn>]
+  #
+  # Waits until the router grants, and returns:
+  #   0 — GRANT; the envelope is in WAIT_LOOP_ENV, the marker is still there
+  #       (the caller removes it once the stage is visibly live);
+  #   2 — parked on the deadline: <deadline-fn> wrote the one park row, and the
+  #       marker and FIFO entry are gone. A caller that parks on router verdicts
+  #       must write nothing more;
+  #   3 — stopped for any other reason: <stop-fn> was handed the reason, and the
+  #       marker and FIFO entry are gone.
+  #
+  # The callbacks: <heartbeat-fn> <envelope> writes one `stage-wait` row and
+  # fails when it is refused; <deadline-fn> <ready-at> <basis> <recovery> writes
+  # the deadline park; <stop-fn> <why> records any other stop; <ended-fn>
+  # succeeds while the run may still launch a stage and fails once a boundary
+  # has ended it. The lineage, the holder and the release time are read from
+  # the marker, which the caller has written before the first turn.
+  #
+  # THE DEADLINE IS JUDGED HERE ON EVERY TURN, not left to the router: the
+  # router's own rule never parks a WAIT whose release time is unknown, and a
+  # wait with no known release still has to end inside the night.
+  #
+  # SO IS THE END OF THE RUN. The dispatch that started this wait passed the
+  # run-end refusal before the wait began, and nothing after it reads that mark
+  # again: the router grants on account state alone and ending the run touches
+  # no marker, FIFO entry or lease. A wait that outlived its run therefore took
+  # the next grant and launched a whole stage on a run its cost ceiling or its
+  # stagnation bound had already ended, where the same WAIT before this loop
+  # existed launched nothing. It is read on every turn after the deadline (a
+  # wall-clock end of a run with no progress bound is also the deadline this
+  # loop parks on, and that park is the cone the router expects), after every
+  # sleep (so no `stage-wait` row lands after the end), and once more on a
+  # grant, whose fresh lease is then given back.
+  local key="$1" kind="$2" m="$3" ev="$4" bound="$5" hb="$6" dl="$7" stopfn="$8" endedfn="${9:-}"
+  local lin holder stall chunk now upto ready e d slp t req env verdict why basis rdy gnonce
+  WAIT_LOOP_ENV=""
+  lin=$(cc_waiting_field "$m" '계보')
+  holder=$(cc_waiting_field "$m" '보유자' | tr -d '[:space:]')
+  while :; do
+    if [ ! -f "$m" ]; then
+      "$stopfn" "대기 표지가 사라졌다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    if ! stall=$(cc_effective_stall "$RUN_DIR"); then
+      "$stopfn" "실효 정지 임계를 읽지 못해 대기를 이어 갈 수 없다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    chunk=$(cc_wait_chunk "$stall")
+    now=$(now_epoch)
+    upto=$(cc_waiting_field "$m" '까지' | tr -d '[:space:]')
+    ready=$(wait_ready_at "$upto" "$now")
+    e=$(stage_expected_duration "$kind")
+    if wait_past_deadline "$ready" "$e"; then
+      d=$(deadline_epoch)
+      basis="계보=$lin ready_at=$(wait_epoch_iso "$ready") 예상 소요=${e}초 마감=$(wait_epoch_iso "$d")"
+      "$dl" "$(wait_epoch_iso "$ready")" "$basis" "$WAIT_LOOP_DEADLINE_RECOVERY"
+      wait_drop "$m"; return 2
+    fi
+    if [ -n "$endedfn" ] && ! "$endedfn"; then
+      "$stopfn" "런이 이미 종료됐다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    slp=$chunk
+    case "$upto" in
+      ''|*[!0-9]*) ;;
+      *) t=$(( upto - now )); if [ "$t" -gt 0 ] && [ "$t" -lt "$slp" ]; then slp=$t; fi ;;
+    esac
+    d=$(deadline_epoch)
+    if [ -n "$d" ]; then
+      t=$(( d - e - now )); if [ "$t" -gt 0 ] && [ "$t" -lt "$slp" ]; then slp=$t; fi
+    fi
+    [ "$slp" -ge 1 ] || slp=1
+    sleep "$slp"
+    if [ -n "$endedfn" ] && ! "$endedfn"; then
+      "$stopfn" "런이 이미 종료됐다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    # THE EVENT STAYS THE ORIGINAL ONE and `after_wait` is added beside it: the
+    # router refuses an event it does not know.
+    req=$(jq -cn --arg run "$RUN_ID" --arg lin "$lin" --arg ev "$ev" --arg kind "$kind" \
+            --arg bound "$bound" --argjson pid "${holder:-0}" \
+            --argjson dl "$(wait_request_deadline "$kind")" \
+            '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid], after_wait: true,
+              bound_account: (if $bound == "" then null else $bound end)}
+             + (if $dl == null then {} else {deadline: $dl} end)') || {
+      "$stopfn" "라우터 재질의 요청을 만들지 못했다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    }
+    if ! env=$(route_resolve "$req"); then
+      "$stopfn" "계정 해석기가 멈췄다 — $key 는 기동하지 않는다"
+      wait_drop "$m"; return 3
+    fi
+    verdict=$(printf '%s' "$env" | jq -r '.verdict // ""' 2>/dev/null || true)
+    why=$(wait_router_why "$env")
+    case "$verdict" in
+      GRANT)
+        # The router may have granted across an end that landed while it was
+        # resolving; the lease it just made is released, not left to expire.
+        if [ -n "$endedfn" ] && ! "$endedfn"; then
+          gnonce=$(printf '%s' "$env" | jq -r '.nonce // empty' 2>/dev/null || true)
+          [ -z "$gnonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$gnonce" >/dev/null 2>&1 || true
+          "$stopfn" "런이 이미 종료됐다 — $key 는 부여를 받았지만 기동하지 않는다"
+          wait_drop "$m"; return 3
+        fi
+        WAIT_LOOP_ENV=$env
+        return 0 ;;
+      WAIT)
+        if ! "$hb" "$env"; then
+          "$stopfn" "$why (stage-wait 행 기록 거부)"
+          wait_drop "$m"; return 3
+        fi
+        upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
+        wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" \
+          '그룹' "$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')" || true
+        ;;
+      PARK)
+        if [ "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" = "deadline" ]; then
+          rdy=$(printf '%s' "$env" | jq -r '.ready_at | if type == "number" then floor | tostring else "" end' 2>/dev/null || true)
+          d=$(deadline_epoch)
+          basis="계보=$lin ready_at=$(wait_epoch_iso "$rdy") 예상 소요=${e}초 마감=$(wait_epoch_iso "$d")"
+          "$dl" "$(wait_epoch_iso "$rdy")" "$basis" \
+            "$(printf '%s' "$env" | jq -r '.recovery // ""' 2>/dev/null || true)"
+          wait_drop "$m"; return 2
+        fi
+        "$stopfn" "$why"
+        wait_drop "$m"; return 3 ;;
+      *)
+        "$stopfn" "라우터가 판정 없이 답했다 — $key 는 기동하지 않는다"
+        wait_drop "$m"; return 3 ;;
+    esac
+  done
+}
+
 # 2 — RUN CYCLE BUDGET, the sum of the per-segment budgets. Both use LADDER_RUNGS
 # so the two cannot drift apart; they used to be unrelated literals in two
 # functions, which is how "the same K" became a comment rather than a fact.
@@ -6196,6 +6921,21 @@ apply_probe() {
   ( cd "$wt" && sh -c "$cmd" ) >/dev/null 2>&1
 }
 
+# apply_disposition <사전 프로브 rc> [<명령 rc> <사후 프로브 rc>] — the verdict
+# of one apply: `건너뜀`, `수렴`, `사전 실패` or `적용 불명`. Pure, and shared by
+# this driver's S9 and the gate's apply act, so the two cannot disagree about
+# which exit codes mean what. Given the pre-probe alone it can already say
+# `건너뜀` and `사전 실패`, the two verdicts that end an apply before the command
+# runs; for a pre-probe of 2 the answer is only final once both later codes are
+# in, and anything short of 0 and 0 is `적용 불명`.
+apply_disposition() {
+  case "$1" in
+    0) printf '건너뜀' ;;
+    2) if [ "${2:-}" = "0" ] && [ "${3:-}" = "0" ]; then printf '수렴'; else printf '적용 불명'; fi ;;
+    *) printf '사전 실패' ;;
+  esac
+}
+
 apply_stage() {
   local seg="$1" cmd actor radius wt root pre post rc acct
   cmd=$(apply_unquote "$(apply_field "$seg" '적용 명령')")
@@ -6243,14 +6983,15 @@ apply_stage() {
 
   apply_probe "$wt" "$probe"; pre=$?
   acct=$(stage_account_of "S9-$seg")
-  case "$pre" in
-    0) ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+  case "$(apply_disposition "$pre")" in
+    건너뜀)
+       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
          "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
          "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 프로브 0 — 적용할 변경 없음"
        apply_teardown "$seg" "$wt"
        return 0 ;;
-    2) : ;;
-    *) # Anything that is not "no changes" or "changes pending" is the probe
+    '사전 실패')
+       # Anything that is not "no changes" or "changes pending" is the probe
        # itself failing. Refuse BEFORE touching anything: an apply whose need
        # could not be established is an apply with no evidence behind it.
        park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre) — 아무것도 건드리기 전에 거부한다" "$cmd"
@@ -6262,7 +7003,7 @@ apply_stage() {
 
   apply_probe "$wt" "$probe"; post=$?
   acct=$(stage_account_of "S9-$seg")
-  if [ "$rc" = "0" ] && [ "$post" = "0" ]; then
+  if [ "$(apply_disposition "$pre" "$rc" "$post")" = "수렴" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
       "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 2 → 사후 0, 수렴"
@@ -6885,7 +7626,7 @@ review_recover() {
   local src=0
   stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\"" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-    park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+    park_router "$seg" "$seg" cone; return 1
   fi
   [ "$src" = "0" ] || (exit "$src")
   stage_wait_all "$rsid"
@@ -6947,6 +7688,7 @@ segment_cycle() {
     # nothing in flight is touched, the next dispatch simply does not happen.
     if past_deadline; then
       park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 다음 사이클을 디스패치하지 않는다"
+      run_deadline_end "벽시계 마감 경과 — $seg 의 다음 사이클을 디스패치하지 않는다"
       return 1
     fi
     if [ "$(run_cycles_spend 1)" -gt "$RUN_CYCLE_BUDGET" ]; then
@@ -7014,7 +7756,7 @@ segment_cycle() {
     STAGE_RESUME=""
     if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
       quiet_window_end
-      park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+      park_router "$seg" "$seg" cone
       return 1
     fi
     [ "$src" = "0" ] || (exit "$src")
@@ -7056,6 +7798,7 @@ segment_cycle() {
           fileset_escape "$seg" "$files" "$wt" || return 1
           stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
         else
+          [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
           [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
           park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi ;;
@@ -7076,7 +7819,7 @@ segment_cycle() {
         src=0
         CC_SPAWN_EVENT=crash-retry stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" || src=$?
         if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+          park_router "$seg" "$seg" cone; return 1
         fi
         [ "$src" = "0" ] || (exit "$src")
         stage_wait_all "$sid.retry"
@@ -7097,7 +7840,7 @@ segment_cycle() {
         src=0
         CC_SPAWN_EVENT=limit-reclaim stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" || src=$?
         if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+          park_router "$seg" "$seg" cone; return 1
         fi
         [ "$src" = "0" ] || (exit "$src")
         stage_wait_all "$sid.retry"
@@ -7155,7 +7898,7 @@ segment_cycle() {
     src=0
     stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\"" || src=$?
     if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-      park "$seg" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; return 1
+      park_router "$seg" "$seg" cone; return 1
     fi
     [ "$src" = "0" ] || (exit "$src")
     stage_wait_all "$sid"
@@ -7253,9 +7996,11 @@ segment_cycle() {
         2|3)
           sid="S1':$seg:$cycle:$(printf '%s' "$fpath" | tr '/' '-')"
           src=0
-          stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $(doc_arg) \"$fpath, $fcat\"" || src=$?
+          # A deadline park written from inside the wait names the defect, as
+          # every other park of this rung does.
+          CC_SPAWN_PARK_TARGET="$fid" stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $(doc_arg) \"$fpath, $fcat\"" || src=$?
           if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-            park "$fid" cone 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"; any_park=1; continue
+            park_router "$fid" "$seg" cone; any_park=1; continue
           fi
           [ "$src" = "0" ] || (exit "$src")
           stage_wait_all "$sid"
@@ -7303,6 +8048,7 @@ EOF
   if past_deadline; then
     park "$seg" act 막힘 "예산·벽시계" "벽시계 마감 경과 — 머지하지 않는다. 세그먼트는 완성-미착지" \
       "gh -R $(seg_slug "$seg") pr merge $branch"
+    run_deadline_end "벽시계 마감 경과 — $seg 를 머지하지 않는다"
     return 4
   fi
   local mrc=0; merge_gate "$seg" "$branch" || mrc=$?
@@ -7425,6 +8171,9 @@ continue_or_park() {
   shift 8
   [ "${1:-}" = "--" ] && shift
   local sess turns n
+  # The class is cleared here too: a `라우터 판정` left by an earlier call would
+  # send this call's park through the router helper.
+  CONTINUE_CLASS=""
   CONTINUE_BLOCKED=""
   CONTINUE_PARK_REASON=""
   CONTINUE_PARK_RECALL=""
@@ -7608,9 +8357,13 @@ design_arm() {
   # stage that ran, billed, produced nothing and was classified a hollow
   # success. A missing file is a park, not a dispatch; that is the whole cost
   # of the check, and it does not depend on the observation.
-  local plugin_dir1 skill_file1
+  # A BASE RUN DESIGNS WITH THE BASE SKILL. The scope is a frozen plan field, so
+  # the choice is read, not made; an absent key is `single`, the skill every run
+  # used before the field existed.
+  local plugin_dir1 skill_file1 skill1=design-discuss-unattended
+  [ "$(manifest_design_scope)" = "base" ] && skill1=design-base-unattended
   plugin_dir1=$(cd "$ORCH_DIR/.." && pwd)
-  skill_file1="$plugin_dir1/skills/design-discuss-unattended/SKILL.md"
+  skill_file1="$plugin_dir1/skills/$skill1/SKILL.md"
   if [ ! -f "$skill_file1" ]; then
     park "S1design" run 막힘 "스킬 파일 부재" "$skill_file1 가 없다 — 존재하지 않는 스킬로 디스패치하지 않는다"
     return 1
@@ -7623,10 +8376,10 @@ design_arm() {
   quiet_window_begin
   local src1=0
   dispatch_stage S1design "$(alias_root "$(home_alias)")" \
-    "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\"" || src1=$?
+    "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" || src1=$?
   if [ "$src1" = "$STAGE_SPAWN_PARK_RC" ]; then
     quiet_window_end
-    park "S1design" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+    park_router "S1design" "S1design" run
     return 1
   fi
   [ "$src1" = "0" ] || (exit "$src1")
@@ -7650,13 +8403,14 @@ design_arm() {
   # both read the freeze as a precondition.
   case "$class1" in
     '정상 완료') report_append "설계" "문서 동결 — $DOC_KEY" ;;
-    '의도된 park') park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
+    '의도된 park') RUN_END_HALT_STAGE=S1design; park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
     '공허한 성공')
       if continue_or_park S1design S1design - S1design "$(alias_root "$(home_alias)")" \
-           "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\"" \
+           "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" \
            "동결된 설계 문서도 정지 기록도 없다" "$(home_alias)" -- predicate_design; then
         report_append "설계" "문서 동결 — $DOC_KEY"
       else
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S1design" "S1design" run "$CONTINUE_PARK_REASON"; return 1; }
         [ -z "$CONTINUE_BLOCKED" ] || { park "S1design" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
         park "S1design" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
       fi ;;
@@ -7667,9 +8421,138 @@ design_arm() {
 }
 
 # ---------------------------------------------------------------------------
+# S2split — the base run's split stage. It re-checks the audited document and
+# publishes its tickets as the frozen `베이스 발행` row says, or records them as
+# document-only, and leaves the registry beside the document. The row's
+# `종류=split` is what tells it apart from the audit's driver row, which carries
+# no kind.
+#
+# IT TAKES THE ROUTER'S PRECONDITIONS. The gate refuses a router's split until
+# the audit step's last row is `정상 완료` and the document is frozen, but this
+# arm dispatches through `stage_spawn` and never reaches that check, so it asks
+# the same two questions itself. The tracker writes a split makes cannot be
+# undone, so a document no audit of this run has read is not published.
+#
+# A RESUMED RUN IS JUDGED BY ITS OWN LEDGER, as the design arm is: a split that
+# finished and whose registry still matches the document is not dispatched
+# again, and one that stopped on purpose — a halt record, or a question it would
+# not answer for a person — is parked again without a dispatch, because a second
+# attempt asks the same question and bills for it.
+#
+# A SPLIT THAT CARRIED NOTHING OFF GETS ONE FRESH ATTEMPT. A crash, a usage-limit
+# end and a hollow success leave the registry partway at worst, and
+# `base-split.py` resumes from the registry, so a fresh dispatch neither repeats
+# a write nor skips one. One retry, then a park, as the design arm does.
+# ---------------------------------------------------------------------------
+split_retryable() {
+  case "$(terminal_route_class "${1:-}")" in
+    '크래시'|'한도-형상 회수'|'공허한 성공') return 0 ;;
+  esac
+  return 1
+}
+
+split_arm() {
+  local plugin_dir skill_file cmd src rc pred class acct prior prior_class audit_last try=1
+  plugin_dir=$(cd "$ORCH_DIR/.." && pwd)
+  skill_file="$plugin_dir/skills/design-base-unattended/SKILL.md"
+  if [ ! -f "$skill_file" ]; then
+    park "S2split" run 막힘 "스킬 파일 부재" "$skill_file 가 없다 — 존재하지 않는 스킬로 디스패치하지 않는다"
+    return 1
+  fi
+
+  prior=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2split |' || true; } | tail -1)
+  if [ -n "$prior" ]; then
+    prior_class=$(printf '%s' "$prior" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if [ "$prior_class" = "정상 완료" ] && split_registry_complete "$DOC"; then
+      log "S2split 건너뜀 — 이 런의 분할이 이미 완주했고 등록부가 지금 문서와 맞는다 ($DOC_KEY)"
+      return 0
+    fi
+    if ! split_retryable "$prior_class"; then
+      park "S2split" run 무효화 "게이트 park" \
+        "이 런의 분할이 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 파견하지 않는다" \
+        "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2split")" 2>/dev/null)"
+      return 1
+    fi
+    log "S2split 재파견 — 앞선 시도가 $prior_class 로 끝났다 ($DOC_KEY)"
+  fi
+
+  audit_last=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  if [ "$audit_last" != "정상 완료" ]; then
+    park "S2split" run 무효화 "게이트 park" \
+      "이 런의 감사가 정상 완료로 끝나지 않았다 (${audit_last:-행 없음}) — 감사가 읽지 않은 문서로 분할하지 않는다"
+    return 1
+  fi
+  if ! doc_is_frozen "$DOC"; then
+    park "S2split" run 무효화 "게이트 park" "설계 문서가 동결돼 있지 않다 — 동결되지 않은 문서로 분할하지 않는다"
+    return 1
+  fi
+
+  cmd="/cc-cmds:design-base-unattended --split $DOC"
+  while :; do
+    src=0
+    rm -f "$RUN_DIR/S2split.rc"
+    quiet_window_begin
+    dispatch_stage S2split "$(alias_root "$(home_alias)")" "$cmd" || src=$?
+    if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+      quiet_window_end
+      park "S2split" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+      return 1
+    fi
+    [ "$src" = "0" ] || (exit "$src")
+    quiet_window_end
+    rc=$(cat "$RUN_DIR/S2split.rc" 2>/dev/null || printf '1')
+    if predicate_split S2split; then pred=0; else pred=1; fi
+    class=$(classify_termination S2split "$rc" "$pred")
+    acct=$(stage_account_of S2split)
+    ledger_row 'stage-result' "세그먼트=-" "스테이지=S2split" "파견 id=S2split" "종류=split" "종료 코드=$rc" \
+      "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2split)" \
+      "세션 id=$(stage_session_id "S2split")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} "기록자=드라이버" \
+      "effort=$(stage_effort_rec_of S2split)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2split)")" \
+      "종단 부류=$class"
+    absorb_stage_judgment S2split S2split "$(home_alias)"
+    if [ "$pred" = "0" ] && [ "$class" = "정상 완료" ]; then
+      report_append "분할" "베이스 분할 완료 — $(split_registry_path "$DOC")"
+      spawn_lineage_release S2split
+      return 0
+    fi
+    if [ "$try" = "1" ] && split_retryable "$class" && ! stage_open_judgment S2split; then
+      log "S2split: $class — 등록부에서 이어 가는 새 시도 1회"
+      try=2
+      continue
+    fi
+    break
+  done
+  case "$class" in
+    '의도된 park')
+      RUN_END_HALT_STAGE=S2split
+      park "S2split" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2split")" 2>/dev/null)" ;;
+    *)
+      if [ "$try" = "2" ]; then
+        park "S2split" run 무효화 "게이트 park" "재시도 소진 — 새 시도도 분할 술어 불성립, 종단 부류 $class"
+      else
+        park "S2split" run 무효화 "게이트 park" "분할 술어 불성립 — 종단 부류 $class"
+      fi ;;
+  esac
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
+# The walk and its single end. The body keeps every `return` it had — the
+# design, audit, split and plan stops all leave from inside it — and this is the
+# one place they all pass on the way out. Called plainly rather than under `||`,
+# so `set -e` still ends the body on an unguarded failure; that exit goes
+# through the EXIT trap, which calls the same end.
 main_loop() {
+  RUN_END_ARMED=1
+  main_loop_body
+  run_end_record || true
+}
+
+main_loop_body() {
   log "런 시작 run-id=$RUN_ID doc=$DOC slug=$SLUG base=$BASE"
   # The two the morning reads. They describe the TARGET BASE — its HEAD at
   # kickoff and whether that worktree was clean — not the code that judged the
@@ -7725,21 +8608,35 @@ main_loop() {
       "기준=이 런의 매니페스트가 설계 문서를 선언하지 않는다" \
       "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
       "근거=앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
-  elif [ -n "$DOC_SLUG" ] && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
+  elif [ "$(manifest_design_scope)" = "base" ] \
+       && [ "$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2 |' || true; } | tail -1 \
+              | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)" = "정상 완료" ]; then
+    # A BASE RUN SKIPS ONLY AN AUDIT IT RAN ITSELF. A reader report on disk
+    # names the slug, not the bytes it read, and a base run publishes tickets
+    # after this — so a report left by an earlier run over an earlier revision
+    # would send a document nobody audited to the tracker. The run's own
+    # finished audit row is the evidence instead, and the split checks it again.
+    log "S2 감사 건너뜀 — 이 런의 감사가 이미 완주했다 ($DOC_KEY)"
+  elif [ "$(manifest_design_scope)" != "base" ] && [ -n "$DOC_SLUG" ] \
+       && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
     log "S2 감사 건너뜀 — 이 문서의 감사 리포트가 이미 있다 ($DOC_SLUG)"
     ledger_row '자율 승인' "kind=audit-composition" "결정=감사 스테이지를 띄우지 않는다" \
       "기각된 대안=다시 감사한다" "등급=1" "기준=이 문서 슬러그의 리더 리포트가 이미 존재한다" \
       "되돌리는 법=그 리포트를 옮기고 런을 다시 킥오프한다" \
       "근거=$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-*.md"
   else
+  # A base document is audited as one: `--base` tells the audit to read the
+  # base grammar, and only a base run carries it.
+  local audit_cmd2="/cc-cmds:design-audit-unattended $DOC"
+  [ "$(manifest_design_scope)" = "base" ] && audit_cmd2="$audit_cmd2 --base"
   quiet_window_begin
   local src2=0
-  dispatch_stage S2 "$(alias_root "$(home_alias)")" "/cc-cmds:design-audit-unattended $DOC" || src2=$?
+  dispatch_stage S2 "$(alias_root "$(home_alias)")" "$audit_cmd2" || src2=$?
   # `S2.rc` is absent after a declined launch, and the line below reads that as
   # 1 — a crash. The router's answer is not a crash.
   if [ "$src2" = "$STAGE_SPAWN_PARK_RC" ]; then
     quiet_window_end
-    park "S2" run 막힘 "게이트 park" "$STAGE_SPAWN_PARK_REASON"
+    park_router "S2" "S2" run
     return 0
   fi
   [ "$src2" = "0" ] || (exit "$src2")
@@ -7759,19 +8656,29 @@ main_loop() {
   # Keyed on the stage for the reason the design stage's absorber is.
   case "$class2" in
     '정상 완료') : ;;
-    '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
+    '의도된 park') RUN_END_HALT_STAGE=S2; park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
     '공허한 성공')
       if continue_or_park S2 S2 - S2 "$(alias_root "$(home_alias)")" \
-           "/cc-cmds:design-audit-unattended $DOC" \
+           "$audit_cmd2" \
            "감사 리더 리포트와 종단 문면도 정지 기록도 없다" "$(home_alias)" -- predicate_audit; then
         :
       else
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S2" "S2" run "$CONTINUE_PARK_REASON"; return 0; }
         [ -z "$CONTINUE_BLOCKED" ] || { park "S2" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 0; }
         park "S2" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 0
       fi ;;
     *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
   spawn_lineage_release S2
+  fi
+
+  # A BASE RUN ENDS AT THE SPLIT. Its graph has no segment: each ticket is
+  # designed and implemented by a later run, so after the audit — run here or
+  # skipped because a reader report already exists — the split runs and the
+  # driver returns before the segment plan on every path.
+  if [ "$(manifest_design_scope)" = "base" ]; then
+    split_arm || true
+    return 0
   fi
 
   # S3 SEGMENT-PLAN — routed by the three-branch predicate.
@@ -7823,6 +8730,7 @@ main_loop() {
     # The other of the two loop heads that read the deadline.
     if past_deadline; then
       park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 디스패치하지 않는다"
+      run_deadline_end "벽시계 마감 경과 — $seg 부터 디스패치하지 않는다"
       parked=$((parked + 1)); continue
     fi
     if in_halted_radius "$seg"; then
@@ -7898,6 +8806,9 @@ main_loop() {
   if [ "${limit_n:-0}" -gt 0 ]; then
     report_append "한도 종료" "${limit_n}건 — 크래시와 같게 처분, 계정 이동 없음"
   fi
+  RUN_END_LOOP_DONE=1
+  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ "$merged" -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
+  run_end_record || true
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
   # driver parked, while `보류` is the disposition of a termination clause waiting
@@ -7940,6 +8851,86 @@ report_run_residual() {
   fi
   : > "$RUN_DIR/residual-reported"
   report_append "종료 잔여" "$(cat "$RUN_DIR/done")"
+}
+
+# THE RUN'S END ROW, WRITTEN AT ONE PLACE WHATEVER PATH THE RUN LEFT BY.
+#
+# The fixed graph wrote no end row at all, so a run that stopped here left no
+# token, no `done` and no `rekick-candidate` marker, and the sweep met it only
+# after its deadline — where it was closed as `마감`, the automatic branch, and
+# re-kicked up to the chain bound. The stops that should have gone to a person
+# (a design stage asking a question, an audit missing its tool) went there too.
+# So the token is chosen here, from what the run actually ended on, and the
+# default is `해당없음`: an ending nobody mapped goes to a person, never to the
+# automatic branch.
+#
+# Called from the walk's tail, from `main_loop` after the body returns and from
+# the EXIT trap. The first of them that runs writes the row; the others find the
+# end token already in the ledger and write nothing.
+RUN_END_ARMED=""
+RUN_END_HALT_STAGE=""
+RUN_END_ALL_LANDED=""
+RUN_END_LOOP_DONE=""
+RUN_DEADLINE_ENDED=""
+
+run_plugin_pin_id() {
+  # The pinned copy's content digest — the "which code" half of a defect's
+  # fingerprint. A run with no pin says so rather than leaving the field empty.
+  local v=""
+  [ -n "${RUN_DIR:-}" ] && v=$(awk -F'\t' '$1 == "digest" { print $2; exit }' "$RUN_DIR/plugin-pin" 2>/dev/null)
+  printf '%s' "${v:-(미상)}"
+}
+
+run_end_park_cause() {
+  # The `재킥 원인` of the first slice park in this run that carries one —
+  # `대상미선언` or `슬라이싱` — or nothing.
+  { run_section_rows 'blocked' || true; } \
+    | tr '|' '\n' | sed -n 's/^ *재킥 원인=//p' | sed 's/[[:space:]]*$//' \
+    | { grep -x -e '대상미선언' -e '슬라이싱' || true; } | sed -n 1p
+}
+
+run_end_record() {
+  [ "$RUN_END_ARMED" = "1" ] || return 0
+  [ -n "${RUN_DIR:-}" ] && [ -n "${LEDGER:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  # Already ended — by the gate's own boundaries, the deadline park below, a
+  # surface move, or an earlier call of this function. The first row decides.
+  run_gate_call gate_end_token >/dev/null 2>&1 && return 0
+  local cause=해당없음 ekind="" fp="" why cls p
+  if [ -n "$RUN_END_HALT_STAGE" ]; then
+    # The stage wrote its own classification. `freeze-mismatch`, an unreadable
+    # record and a missing field all stay `해당없음`.
+    p=$(halt_record_path "$RUN_END_HALT_STAGE")
+    cls=$(sed -n 's/^\*\*분류\*\*:[[:space:]]*//p' "$p" 2>/dev/null | sed -n '1s/[[:space:]]*$//p')
+    case "$cls" in
+      tool-unavailable|precondition-failed)
+        cause=결함
+        fp="$(stage_kind_of "$RUN_END_HALT_STAGE")/$RUN_END_HALT_STAGE/$(run_plugin_pin_id)" ;;
+      gate-unanswerable) cause=판단정지 ;;
+    esac
+    why="단계 정지 $RUN_END_HALT_STAGE — 분류 ${cls:-(읽지 못함)}"
+  elif [ "$RUN_END_ALL_LANDED" = "1" ]; then
+    ekind=완료
+    why="계획된 슬라이스가 모두 착지했다"
+  elif [ "$RUN_END_LOOP_DONE" = "1" ] && p=$(run_end_park_cause) && [ -n "$p" ]; then
+    cause="$p"
+    why="디스패치할 슬라이스 없이 끝났다 — 슬라이스 park 의 원인 $p"
+  else
+    why="주 루프가 분류된 종료 없이 반환했다"
+  fi
+  run_gate_call gate_end_run "주 루프 종료" "$why" "$cause" "$ekind" "$fp" >/dev/null 2>&1 \
+    || warn "종료 행을 쓰지 못했다 — 재킥 원인 $cause"
+  return 0
+}
+
+run_deadline_end() {
+  # run_deadline_end <사유> — the first deadline park of the run also ends it.
+  # The park rows and their recall commands stay as they were; what is new is
+  # the end row, so the run carries `마감` instead of no token at all.
+  [ -z "$RUN_DEADLINE_ENDED" ] || return 0
+  RUN_DEADLINE_ENDED=1
+  run_gate_call gate_end_run 마감 "$1" 마감 >/dev/null 2>&1 \
+    || warn "마감 종료 행을 쓰지 못했다"
+  return 0
 }
 
 # Record the radius an unknown apply outcome stops, and hold it so the walk can
@@ -8262,7 +9253,11 @@ rundir_init
 # clauses each of them holds — vanished from the morning report exactly on the
 # nights something went wrong. Installed after the run directory exists, because
 # there is nothing to forward before that.
-trap 'report_run_residual || true' EXIT
+#
+# THE END ROW GOES FIRST, so the `done` it writes is there for the residual line
+# to forward. It is armed only once the walk starts: a run refused before its
+# ledger exists has nothing to end.
+trap 'run_end_record || true; report_run_residual || true' EXIT
 
 check_grant
 # BEFORE `ledger_init`, because that call is what makes this run's heading exist

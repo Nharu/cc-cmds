@@ -509,6 +509,34 @@ rc=$?
 check "질의도 못 얻으면 — 종료 코드 0" "$rc" "0"
 check "질의도 못 얻으면 — unavailable" "$(jf 'd["status"]')" "unavailable"
 check "질의도 못 얻으면 — reason" "$(jf 'd["reason"]')" "query"
+check "질의도 못 얻으면 — 같은 제목은 빈 목록" "$(jf 'd["same_title"]')" "[]"
+
+# ---------------------------------------------------------------------------
+# Exact titles over the whole corpus
+# ---------------------------------------------------------------------------
+# Twenty-one newer items carry every title word in their bodies, so they tie
+# the same-title items at the top score and fill the lexical shortlist ahead
+# of them. The same title is still found: once with extra and trailing
+# whitespace, once decomposed (NFD), which the tokenizer scores zero.
+python3 - "$WORK/sametitle.json" <<'PYEOF'
+import json, sys, unicodedata
+t = "베이스 분할 발행 점검"
+items = [{"number": 100 - i, "title": "기타 작업 %d" % i, "body": t + " 관련 기록",
+          "url": "https://github.com/o/r/issues/%d" % (100 - i)} for i in range(21)]
+items.append({"number": 5, "title": " 베이스  분할\t발행 점검 ", "body": "", "url": "https://github.com/o/r/issues/5"})
+items.append({"number": 4, "title": unicodedata.normalize("NFD", t), "body": "", "url": "https://github.com/o/r/issues/4"})
+items.append({"number": 3, "title": t + " 후속", "body": "", "url": "https://github.com/o/r/issues/3"})
+json.dump(items, open(sys.argv[1], "w"), ensure_ascii=False)
+PYEOF
+run_si file --corpus "$WORK/sametitle.json" --title '베이스 분할 발행 점검' --body-file /dev/null --lexical-only --format json
+check "같은 제목 — 어휘 후보는 20건에서 잘린다" "$(jf 'd["shortlist"]')" "20"
+check "같은 제목 — 절단 밖의 같은 제목 둘을 코퍼스 순서로 센다" "$(jf '[s["id"] for s in d["same_title"]]')" "[5, 4]"
+check "같은 제목 — 둘 다 어휘 후보에는 없다" "$(jf 'sorted({5, 4} & {c["id"] for c in d["candidates"]})')" "[]"
+check "같은 제목 — 참조를 함께 낸다" "$(jf 'd["same_title"][0]["url"]')" "https://github.com/o/r/issues/5"
+run_si file --corpus "$WORK/sametitle.json" --issue 5 --lexical-only --format json
+check "같은 제목 — 질의 자신은 빼고 센다" "$(jf '[s["id"] for s in d["same_title"]]')" "[4]"
+run_si file --corpus "$WORK/sametitle.json" --title '없는 제목' --body-file /dev/null --lexical-only --format json
+check "같은 제목 — 없으면 빈 목록" "$(jf 'd["same_title"]')" "[]"
 
 # ---------------------------------------------------------------------------
 # ClickUp fixtures

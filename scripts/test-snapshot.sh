@@ -49,6 +49,9 @@ GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-snapshot-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 export XDG_STATE_HOME="$WORK/state"
+# The config root the account inventory is read under is moved off the host's,
+# so the fixture run opens unrouted whatever this machine has.
+export XDG_CONFIG_HOME="$WORK/config"
 
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -178,6 +181,12 @@ esac
 # 2. Invariance — the same state hashes the same, twice and after noise
 # ---------------------------------------------------------------------------
 check "같은 상태를 두 번 재면 같다" "$(digest)" "$d0"
+
+# A run with no stage waiting for an account carries the key with an empty list,
+# and the key adds nothing to `H` beyond the ledger it already hashes.
+w0=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null)
+check "대기자가 없는 런의 스냅숏은 빈 waiting_stages 를 싣는다" "$(printf '%s' "$w0" | jq -c .waiting_stages)" "[]"
+check "빈 waiting_stages 가 있어도 H 는 직접 잰 스냅숏 다이제스트다" "$(printf '%s' "$w0" | jq -r .H)" "$(snapdigest)"
 
 # Rows that carry no progress: a cost row and a repeated problem row. Both
 # accumulate monotonically in any run, so if either moved the digest the
@@ -385,9 +394,10 @@ check "pace 블록이 shift 바로 뒤에 온다" \
 check "H 는 스냅숏의 마지막 키다" "$(jq -r 'keys_unsorted | last' "$WORK/s1.json")" "H"
 check "센서가 없는 상태 루트에서 pace 는 null 이다" "$(jq -c .pace "$WORK/s1.json")" "null"
 check "그 부재의 사유가 곁에 실린다" "$(jq -r .pace_absent_reason "$WORK/s1.json")" "센서 미등록"
-check "--fields 의 기본 목록은 라우터가 읽는 일곱 필드를 그 순서로 낸다" \
+check "--fields 의 기본 목록은 라우터가 읽는 여덟 필드를 그 순서로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
-  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
+check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이다" "$(jq -c .waiting_stages "$WORK/s1.json")" "[]"
 check "--fields H 는 스냅숏의 H 를 날값 한 줄로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null)" \
   "$(jq -r .H "$WORK/s1.json")"
@@ -411,6 +421,18 @@ else
   bad "스냅숏 다이제스트" "행을 붙였는데 값이 그대로다 — 낡은 다이제스트가 통과한다"
 fi
 check "같은 행이 진전 다이제스트는 움직이지 않는다" "$(digest)" "$pd_before"
+
+# A WAIT STARTS WITH A ROW. The first `stage-wait` row is written before the
+# dispatch returns, so it changes the ledger's end and a router holding the
+# earlier `H` is told its view is stale — and a heartbeat is not progress.
+sd_before=$(snapdigest); pd_before=$(digest)
+printf -- '- `stage-wait` | 계보=B:S1#2 | 그룹=org:h1 | 계정=- | 까지=- | 근거=concurrency-cap\n' >> "$FIX_LEDGER"
+if [ "$(snapdigest)" != "$sd_before" ]; then
+  ok "첫 stage-wait 행이 원장 끝을 바꿔 H 를 움직인다"
+else
+  bad "stage-wait 행" "대기가 시작됐는데 스냅숏 다이제스트가 그대로다"
+fi
+check "stage-wait 행은 진전 다이제스트를 움직이지 않는다" "$(digest)" "$pd_before"
 
 # AN ABOVE-READ EXEC IS NOT PROGRESS EITHER. It used to be (`acts=`), and under
 # the judgment definition that made the judgment count a component of the very
@@ -560,6 +582,44 @@ if grep -q '^미충족 조건: 조건 ' "$RENDER_U"; then
 else
   bad "미충족 조건 줄" "got '$(grep '미충족 조건' "$RENDER_U" || printf '(줄 없음)')'"
 fi
+check "대기자가 없으면 렌더에 대기 줄이 없다" "$(grep -c '^대기 중인 스테이지:' "$RENDER_U")" "0"
+
+# A STAGE WAITING FOR AN ACCOUNT, in the JSON and in the render. The marker's
+# holder is a live process of this suite, so the key is a member; freshness is
+# then read from the later of the refresh and the machine's wake, and the wake
+# reading is replaced in a subshell so all three cases are this suite's.
+RD_R1="$XDG_STATE_HOME/cc-cmds/run/R1"
+sleep 600 & W_HOLD=$!
+w_now=$(date -u +%s)
+w_stall=$(cc_effective_stall "$RD_R1")
+# A driver-written marker: the gate's settlement leaves those alone, so killing
+# the holder below adds no row to this shared fixture ledger.
+printf '%s\n' "보유자=$W_HOLD" "지문=$(cc_proc_fingerprint "$W_HOLD")" "기록자=드라이버" "계보=S9" \
+  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
+SNAP_W="$WORK/waiting.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_W"
+check "살아 있는 보유자의 표지는 waiting_stages 원소 하나다" "$(jq -r '.waiting_stages | length' "$SNAP_W")" "1"
+check "그 원소가 키·계보·그룹·보유자·기록자를 싣는다" \
+  "$(jq -c '.waiting_stages[0] | [.segment, .lineage, .group, .until, .holder, .writer]' "$SNAP_W")" \
+  "[\"S9\",\"S9\",\"org:h1\",null,$W_HOLD,\"드라이버\"]"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null ) > "$WORK/render-w.txt"
+check "렌더가 대기 원소를 키와 보유자로 보인다" \
+  "$(grep -c "^대기 중인 스테이지: S9(그룹 org:h1, 까지 -, 보유자 $W_HOLD" "$WORK/render-w.txt")" "1"
+w_fresh() {  # w_fresh <wake epoch or empty> — the one element's `fresh`
+  ( RUN_DIR="$RD_R1"; LEDGER="$FIX_LEDGER"; W_WAKE="$1"
+    wake_epoch() { printf '%s' "$W_WAKE"; }
+    printf '[%s]' "$(gate_snapshot_waiting_stages_json)" ) | jq -c '[length, .[0].fresh]'
+}
+# The wake is read off the clock at the call, not off `w_now`: the snapshots
+# above run between the two, and a wake pinned a few seconds inside the window
+# at `w_now` falls out of it on a slow runner.
+check "갱신이 STALL 보다 오래돼도 깨어남이 그 뒤면 구성원이고 신선하다" "$(w_fresh "$(date -u +%s)")" "[1,true]"
+check "깨어남이 그보다 이르면 구성원이고 신선하지 않다" "$(w_fresh "$((w_now - w_stall - 100))")" "[1,false]"
+check "깨어남 기록이 없으면 구성원이고 신선하지 않다" "$(w_fresh "")" "[1,false]"
+kill -TERM "$W_HOLD" 2>/dev/null; wait "$W_HOLD" 2>/dev/null
+check "보유자가 죽으면 표지가 남아도 원소가 빠진다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r '.waiting_stages | length')" "0"
+rm -f "$RD_R1/S9.waiting"
 
 # ---------------------------------------------------------------------------
 # 6c. `cycles[]` carries what a delta basis is chosen from
@@ -783,6 +843,146 @@ do
     bad "$who 사본의 개정 문구" "「${lit}」이 없다"
   fi
 done
+
+# ---------------------------------------------------------------------------
+# 6e-2. The audit dispatch and segment planning are carried by BOTH router copies
+#
+# Once the design froze, no router text named the next act: the audit was never
+# dispatched, no segment was planned, and the run sat on a frozen document until
+# its budget ran out. The literals below are the two acts' forms and the facts
+# that order them — the audit step's selector, which lives here and not in the
+# design subsection, the re-check of the freeze line after the audit edits the
+# document, the per-slice order that makes the worktree exist before its row, and
+# the predecessor rule. The design subsection keeps its own closing sentence.
+# ---------------------------------------------------------------------------
+router_section() {
+  awk -v h="$2" '$0 == h { f = 1; next } f && /^#+ / { exit } f' "$1"
+}
+for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for spec in \
+    '#### Dispatching the audit stage|.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty' \
+    '#### Dispatching the audit stage|-- audit -p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>[ --base]"' \
+    '#### Dispatching the audit stage|`세그먼트=- | 스테이지=<audit step id> | 종류=audit`' \
+    '#### Dispatching the audit stage|docs/design-audit/<slug>.reader-*.md' \
+    "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \
+    '#### Dispatching the audit stage|`<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach`' \
+    '#### Dispatching the audit stage|do not write a `segment` row to name it' \
+    '#### Planning the segments|`슬라이싱`' \
+    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>' \
+    '#### Planning the segments|--from-declaration' \
+    '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
+    '#### Planning the segments|its predecessor'"'"'s last `segment` row is `머지됨` or `완료`' \
+    '#### Planning the segments|end the shift with a `사유=중단` handoff' \
+    '#### Planning the segments|`슬라이싱` entry carries `입양`' \
+    '#### Planning the segments|skip calls 1 and 2 and issue call 3 alone' \
+    '#### Planning the segments|An adopted segment'"'"'s first stage is a full review, not the implementation' \
+    '#### Planning the segments|Open no pull request for it'
+  do
+    head=${spec%%|*}; lit=${spec#*|}
+    sec=$(router_section "$file" "$head")
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 「${head#'#### '}」 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 「${head#'#### '}」 절" "「${lit}」이 없다"
+    fi
+  done
+  dsec=$(router_section "$file" '#### Dispatching the design stage')
+  nlit=$(printf '%s\n' "$dsec" | grep -cF '.skill == "design-audit"' || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    bad "$who 사본의 설계 파견 절" "감사 단계 선택 식이 설계 절 안에 있다"
+  else
+    ok "$who 사본의 감사 단계 선택 식은 설계 절 밖에 있다"
+  fi
+  nlit=$(printf '%s\n' "$dsec" | grep -cF 'An unfrozen document never goes on to the audit or to segment planning.' || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    ok "$who 사본의 설계 절이 동결 전 감사·계획 금지 문장을 그대로 싣는다"
+  else
+    bad "$who 사본의 설계 절" "동결 전 감사·계획 금지 문장이 없다"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 6e-2b. The kickoff writes the freeze line into a lead-solo document
+#
+# The gate dispatches the audit and plans segments only from a document carrying
+# `**상태**: 동결됨`, while the kickoff's lead-solo contract froze by hash alone.
+# Every lead-solo run then stopped at its first dispatch with nobody at the seat.
+# The literals below are the contract's instruction to write the line, the 5m
+# paragraph's order (line first, hash second), and the Step 6 refusal that
+# catches a document frozen without it.
+# ---------------------------------------------------------------------------
+for lit in \
+  '(c) **Freeze line and `sha256`**' \
+  'a line reading exactly `**상태**: 동결됨`, once, below the H1' \
+  'Write the freeze line of (c) into it, then take its path and whole-file `sha256`' \
+  "the tier is \`lead-solo\` and the document \`설계 문서\` names does not carry the line \`**상태**: 동결됨\` exactly once"
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "1" ]; then
+    ok "킥오프의 lead-solo 동결 계약이 「${lit}」을 한 번 싣는다"
+  else
+    bad "킥오프의 lead-solo 동결 계약" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+done
+if grep -qF '(c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment' "$AP_SKILL"; then
+  bad "킥오프의 lead-solo 동결 계약" "해시만으로 동결하는 옛 문면이 남아 있다"
+else
+  ok "킥오프의 lead-solo 동결 계약에 해시만으로 동결하는 옛 문면이 없다"
+fi
+
+# ---------------------------------------------------------------------------
+# 6e-3. Merge, apply and the fix re-dispatch are carried by BOTH router copies
+#
+# After a review passed, no router text merged with a pinned head, recorded the
+# merge commit, or issued the apply; after a review raised P0·P1, none sent the
+# implementation back with the report as its fix target. The literals below are
+# the two merge pins, the fetch before the apply, the apply act's fixed token,
+# the park-and-cone disposition of a precondition refusal, and the cycle cap's
+# reason. The fix prompt must be one string in both copies, and the fix section
+# does not restate the delta basis expression, which belongs to the delta
+# subsection.
+# ---------------------------------------------------------------------------
+fix_prompt=""
+fix_prompt_rs=""
+for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for spec in \
+    '#### Merging and applying a segment|--merge --match-head-commit <the 리뷰 HEAD of the segment'"'"'s last cycle row>' \
+    '#### Merging and applying a segment|--match-head-commit <구현 워크트리 HEAD>' \
+    '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
+    "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
+    '#### Merging and applying a segment|First issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
+    '#### Merging and applying a segment|--kind apply --target <alias> --segment <id>' \
+    '#### Merging and applying a segment|--cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용' \
+    '#### Merging and applying a segment|fetch and issue it once more, and only once' \
+    '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
+    '#### Re-dispatching the implementation after review findings|P0+P1 above zero' \
+    "#### Re-dispatching the implementation after review findings|'사유=사이클 예산 소진'"
+  do
+    head=${spec%%|*}; lit=${spec#*|}
+    sec=$(router_section "$file" "$head")
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 「${head#'#### '}」 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 「${head#'#### '}」 절" "「${lit}」이 없다"
+    fi
+  done
+  fsec=$(router_section "$file" '#### Re-dispatching the implementation after review findings')
+  prompt=$(printf '%s\n' "$fsec" | grep -oE -- '-- implement -p "/cc-cmds:implement-unattended .*"$' | sort -u)
+  check "$who 사본의 수정 재파견 절에 지시 문구가 한 벌 실린다" \
+    "$(printf '%s\n' "$prompt" | grep -c -- '수정 대상: <리포트 절대 경로> 의 P0·P1')" "1"
+  if [ -z "$fix_prompt" ]; then fix_prompt="$prompt"; else fix_prompt_rs="$prompt"; fi
+  nlit=$(printf '%s\n' "$fsec" | grep -cF 'max_by((.["사이클"]' || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    bad "$who 사본의 수정 재파견 절" "델타 리뷰 기준 선택 식을 다시 적었다"
+  else
+    ok "$who 사본의 수정 재파견 절은 델타 기준 선택 식을 다시 적지 않는다"
+  fi
+done
+check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "$fix_prompt_rs" "$fix_prompt"
 
 # ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key
@@ -1984,6 +2184,11 @@ check "천장에 닿으면 런이 끝난다 (종료 행 하나)" "$(end_rows)" "
 check "그때 종단 표시가 남는다" "$([ -s "$RUN_DIR/done" ] && printf yes || printf no)" "yes"
 check "종료 행이 어느 경계였는지 이름으로 말한다" \
   "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B4' || true; })" "1"
+check "천장이 끝낸 런의 종료 행은 재킥 원인=천장 을 싣는다" \
+  "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -cF '| 재킥 원인=천장 |' || true; })" "1"
+check "종료 토큰이 천장 이다" "$(gate_end_token 2>/dev/null)" "천장"
+check "종료 행이 재킥 후보 표지를 그 토큰으로 남긴다" \
+  "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null)" "천장"
 # IDEMPOTENT BY THE MARK. A second evaluation past the ceiling must not write a
 # second ending row: the first reason is the morning's account of why the night
 # stopped, and a run does not end twice.
@@ -1996,6 +2201,30 @@ end_mark_first=$(cat "$RUN_DIR/done")
 gate_end_run B9 "다른 경계가 뒤늦게 발화했다" >/dev/null 2>&1
 check "이미 끝난 런에 다른 경계가 발화해도 종료 행은 하나다" "$(end_rows)" "1"
 check "표시의 첫 사유가 그대로다 (첫 사유가 참인 사유다)" "$(head -1 "$RUN_DIR/done")" "$end_mark_first"
+# 종료 토큰도 첫 행의 것이다. 뒤에 같은 런에 종료 행이 더 붙어도(종료 제안 갈래는
+# 표시와 무관하게 자기 행을 쓴다) 가장 이른 행이 토큰을 정하고, 표지는 처음 쓴
+# 것이 남는다.
+gate_end_row "종료 조건 성립" "뒤늦은 제안" 해당없음 완료 >/dev/null 2>&1
+check "뒤의 종료 행이 종료 토큰을 바꾸지 않는다 (가장 이른 행)" "$(gate_end_token 2>/dev/null)" "천장"
+check "재킥 후보 표지는 처음 쓴 것이 남는다" \
+  "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null)" "천장"
+check "정상 완료 행은 재킥 원인=해당없음 과 종료 부류=완료 를 함께 싣는다" \
+  "$({ grep -F '기준=종료 조건 성립' "$ELEDGER" || true; } | { grep -F '| 재킥 원인=해당없음 |' || true; } \
+     | { grep -cF '| 종료 부류=완료 |' || true; })" "1"
+# 지문은 결함과만 간다. 다른 토큰에 지문을 넘기면 버려지고, 닫힌 집합 밖의 토큰은
+# 행을 쓰지 않고 실패한다 — 그것은 게이트의 결함이지 사람이 볼 런이 아니다.
+gate_end_row "시험 결함" "x" 결함 "" "implement/S2/abc" >/dev/null 2>&1
+check "결함 행은 재킥 지문을 싣는다" \
+  "$({ grep -F '기준=시험 결함' "$ELEDGER" || true; } | { grep -cF '| 재킥 지문=implement/S2/abc |' || true; })" "1"
+gate_end_row "시험 지문 버림" "x" 판단정지 "" "implement/S2/abc" >/dev/null 2>&1
+check "결함이 아닌 행은 지문을 버린다" \
+  "$({ grep -F '기준=시험 지문 버림' "$ELEDGER" || true; } | { grep -cF '재킥 지문=' || true; })" "0"
+eb_rc=0; gate_end_row "시험 오타" "x" 마감됨 >/dev/null 2>&1 || eb_rc=$?
+check "닫힌 집합 밖의 토큰은 실패하고 행을 쓰지 않는다" \
+  "$eb_rc/$({ grep -cF '기준=시험 오타' "$ELEDGER" || true; })" "1/0"
+# 이 블록이 더한 행들을 걷어 낸다 — 아래 단언들은 종료 행이 하나뿐인 원장을 센다.
+grep -vF -e '기준=종료 조건 성립' -e '기준=시험 결함' -e '기준=시험 지문 버림' "$ELEDGER" > "$ELEDGER.k" \
+  && mv "$ELEDGER.k" "$ELEDGER"
 # 그리고 뒤에 오는 종료 제안이 그 사유를 지우지 않는다. 종단 게이트는 종료 제안을
 # 면제하므로 두 기록자가 같은 파일에 닿는다 — 앞 판본의 절단 `>` 는 「종료 조건
 # 성립」으로 덮어써, 사실은 비용 천장이 멈춘 밤을 아침이 그렇게 읽었다.
@@ -2103,6 +2332,8 @@ done
 gate_b5_stagnation_bound >/dev/null 2>&1
 check "종료 행이 B5 를 이름으로 싣는다" \
   "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B5' || true; })" "1"
+check "무진전 상한이 끝낸 런의 종료 행은 재킥 원인=무진전 을 싣는다" \
+  "$({ grep -F '기준=B5' "$ELEDGER" || true; } | { grep -cF '| 재킥 원인=무진전 |' || true; })" "1"
 # 진전이 있으면 카운터가 0 으로 돌아간다. 이것이 없으면 이 경계는 「판정 N회면
 # 끝낸다」가 되어 건강한 런을 끝낸다.
 rm -f "$RUN_DIR/done"; : > "$ELEDGER"

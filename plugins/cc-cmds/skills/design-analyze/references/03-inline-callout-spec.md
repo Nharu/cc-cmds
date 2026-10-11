@@ -33,6 +33,6 @@ Renders `docs/analysis/<slug>.annotated.md`: a **byte-for-byte copy** of the sou
 
 - Only `confirmed` / `amended` findings get callouts.
 - `excluded` findings are NOT annotated here (they appear only in the report's "철회된 항목").
-- `미검토` (abort) findings: include the callout with a `미검토` marker, e.g. `> ⏸️ **[A-07 · 미검토 · …]** …(사용자 조기 종료로 미검토) → 보고서 …`.
+- `미검토` (abort, or two 미답 in a row) findings: include the callout with a `미검토` marker, e.g. `> ⏸️ **[A-07 · 미검토 · …]** …(사용자 조기 종료로 미검토) → 보고서 …`, or `…(사용자 미답으로 미검토)` for a finding left unanswered on two forms.
 - In doc-only mode, callouts carry no `path:line`; doc-code-gap callouts are absent (suppressed).
 - Multiple findings on the same block stack as consecutive blockquote lines in A-NN order.

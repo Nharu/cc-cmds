@@ -14,9 +14,12 @@
 #                             는 제외.
 #   --state-root <dir>        런 디렉터리 `run/<run-id>` 가 있는 상태 루트
 #                             (기본 `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds`).
-#   --config-home <dir>...    전사를 찾을 CLI 설정 홈. 하나도 주지 않으면 축자 셋
-#                             `$HOME/.claude`·`$HOME/.claude-cc`·`$HOME/.claude-cci`.
-#                             접두 글롭은 쓰지 않으므로 백업 디렉터리는 들어오지 않는다.
+#   --config-home <dir>...    전사를 찾을 CLI 설정 홈. 하나도 주지 않으면 `$HOME/.claude`
+#                             와 cc-lane 인벤토리의 모든 `config_dir`(상태를 가리지
+#                             않는다). 인벤토리가 없거나 깨졌으면 `$HOME/.claude` 와
+#                             `$HOME/.claude-cc` 로 내려가고 stderr 에 진단 한 줄을
+#                             남긴다. 접두 글롭은 쓰지 않으므로 백업 디렉터리는 들어오지
+#                             않는다.
 #   --journal <path>          추가 전용 회차 저널
 #                             (기본 `<상태 루트>/metrics/<repo-key>/rounds.jsonl`).
 #   --now <epoch>             저널 시각(시험용 주입).
@@ -77,12 +80,60 @@ set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 . "$script_dir/liveness.sh"
+# 인벤토리 검사는 라우터의 것을 그대로 쓴다. 소싱이 실패하면 기본 홈 목록이 대체
+# 목록으로 내려간다 — 수집기 전체를 멈출 이유는 아니다.
+CM_ROUTE_OK=0
+# shellcheck disable=SC1091
+if [ -r "$script_dir/route.sh" ] && . "$script_dir/route.sh" 2>/dev/null \
+   && command -v route_inventory_check >/dev/null 2>&1; then
+  CM_ROUTE_OK=1
+fi
 
 cm_usage() {
   printf 'usage: collect-run-metrics.sh --ledger-dir <dir> [--state-root <dir>] [--config-home <dir>]... [--journal <path>] [--now <epoch>] [--switch-window <초>] [--recollect] [--max-new <n>] [--budget <초>]\n' >&2
 }
 
 cm_diag() { printf 'collect-run-metrics: %s\n' "$*" >&2; }
+
+cm_inventory_path() {
+  # cm_inventory_path — cc-lane 인벤토리의 경로. 드라이버와 같은 규칙이다: 비어 있지
+  # 않은 `XDG_CONFIG_HOME`, 아니면 `$HOME/.config` 아래 `cc-lane/accounts.json`. 뿌리가
+  # 절대 경로가 아니면 rc 1 — 빈 HOME 에 `/.config` 를 붙여 통과시키지 않도록 붙이기
+  # 전의 값으로 판정한다. 드라이버를 소싱하지 않으므로 그 규칙을 여기 옮겨 적는다.
+  local val
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then val="$XDG_CONFIG_HOME"; else val="${HOME:-}"; fi
+  case "$val" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "${XDG_CONFIG_HOME:-}" ] || val="$val/.config"
+  printf '%s/cc-lane/accounts.json\n' "$val"
+}
+
+cm_default_homes() {
+  # cm_default_homes — `--config-home` 이 없을 때의 검색 경로, 한 줄에 하나. 홈은 세션
+  # id 로 전사를 찾는 자리일 뿐이라 남는 홈은 아무것도 찾지 못하고 빠진 홈은 데이터를
+  # 잃는다 — 그래서 인벤토리의 계정을 상태와 대화형 예약을 가리지 않고 모두 싣는다.
+  local inv rc=0 dirs
+  if [ "$CM_ROUTE_OK" = "1" ] && inv=$(cm_inventory_path); then
+    route_inventory_check "$inv" 2>/dev/null || rc=$?
+    if [ "$rc" = "0" ]; then
+      dirs=$(jq -r '.accounts[].config_dir' "$inv" 2>/dev/null) || rc=1
+      if [ "$rc" = "0" ]; then
+        printf '%s\n' "$HOME/.claude"
+        [ -z "$dirs" ] || printf '%s\n' "$dirs"
+        return 0
+      fi
+    fi
+    case "$rc" in
+      2) cm_diag "cc-lane 인벤토리가 없다($inv) — 기본 홈을 \$HOME/.claude 와 \$HOME/.claude-cc 로 둔다" ;;
+      *) cm_diag "cc-lane 인벤토리가 깨졌다($inv) — 기본 홈을 \$HOME/.claude 와 \$HOME/.claude-cc 로 둔다" ;;
+    esac
+  else
+    cm_diag "cc-lane 인벤토리를 읽을 수 없다(라우터 소싱 실패 또는 설정 루트가 절대 경로가 아님) — 기본 홈을 \$HOME/.claude 와 \$HOME/.claude-cc 로 둔다"
+  fi
+  printf '%s\n%s\n' "$HOME/.claude" "$HOME/.claude-cc"
+}
 
 # --- 인자 ------------------------------------------------------------------
 
@@ -133,11 +184,7 @@ $2"; shift 2 ;;
   [ -d "$CM_LEDGER_DIR" ] || { cm_diag "원장 디렉터리가 없다: $CM_LEDGER_DIR"; exit 3; }
   CM_LEDGER_DIR=$(cd "$CM_LEDGER_DIR" && pwd)
   [ -n "$CM_STATE_ROOT" ] || CM_STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
-  if [ -z "$CM_HOMES" ]; then
-    CM_HOMES="$HOME/.claude
-$HOME/.claude-cc
-$HOME/.claude-cci"
-  fi
+  [ -n "$CM_HOMES" ] || CM_HOMES=$(cm_default_homes)
   # repo-key 는 원장 디렉터리의 부모(레포 베이스) 절대 경로의 `/` 를 `-` 로 바꾼 것 —
   # 전사 슬러그와 같은 규칙.
   CM_REPO=$(cd "$CM_LEDGER_DIR/.." && pwd)

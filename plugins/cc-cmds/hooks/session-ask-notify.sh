@@ -62,8 +62,11 @@ input=$(cat)
 
 # THE EMITTER IS SOURCED RATHER THAN REIMPLEMENTED. It owns the title, the group
 # and the firing line, and keeping the firing line shared is what keeps
-# `-execute ':'` on every banner this tree raises — a new firing point that
-# assembles its own argv is how that argument was dropped once already.
+# `-execute` on every banner this tree raises — a new firing point that
+# assembles its own argv is how that argument was dropped once already. Its
+# value is what `notify-focus.sh exec-arg` built: `:`, or
+# `/bin/bash '<handler>' focus '<socket>' '<pid>' '<pane>'`. When no value can
+# be built it falls back to `:`, and there is no path that drops `-execute`.
 #
 # The path follows the existing hooks' convention, `${CLAUDE_PLUGIN_ROOT}`, with
 # this file's own parent as the fallback: the variable is not set when the script

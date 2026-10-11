@@ -28,9 +28,11 @@
 #   execution side  — every `run: make …` line of the workflow names its target
 #                     as its last word, and `make -n` on those targets prints
 #                     the recipe lines without running any of them. Each line
-#                     must read `bash <path> [args…]`; any other shape is exit
-#                     2, because a line this lint cannot read is a suite it
-#                     cannot account for.
+#                     must read `bash <path> [args…]`, or the wrapped form
+#                     `bash scripts/suite-guard.sh <path> [args…]`, which
+#                     runs both the wrapper and `<path>`; any other shape is
+#                     exit 2, because a line this lint cannot read is a suite
+#                     it cannot account for.
 #
 # The dependency closure follows `.`/`source` lines whose argument is a path
 # literal, optionally behind one leading `$var/`. A source line whose path is
@@ -234,12 +236,20 @@ targets_flat=$(printf '%s\n' "$targets" | tr '\n' ' ' | sed -E 's/[[:space:]]+$/
 dry=$(cd "$root" && MAKEFLAGS= MFLAGS= MAKELEVEL= make --no-print-directory -n $targets 2>&1) \
   || die2 "make -n $targets_flat 이 실패했다: $(printf '%s\n' "$dry" | tail -3 | tr '\n' ' ')"
 
+# A recipe that runs its suite under the per-suite wrapper reads
+# `bash scripts/suite-guard.sh <path> [args…]`: both the wrapper and `<path>`
+# run, so both join the execution set. A wrapper line with no path after it
+# is as unreadable as any other shape.
 bash_line_re='^bash[[:space:]]+([^[:space:]]+)([[:space:]].*)?$'
+guard_rel="scripts/suite-guard.sh"
+guard_line_re='^bash[[:space:]]+scripts/suite-guard\.sh[[:space:]]+([^-[:space:]][^[:space:]]*)([[:space:]].*)?$'
 exec_raw=""
 unreadable=""
 while IFS= read -r line; do
   [ -n "$line" ] || continue
-  if [[ $line =~ $bash_line_re ]]; then
+  if [[ $line =~ $guard_line_re ]]; then
+    exec_raw=$(printf '%s\n%s\n%s\n' "$exec_raw" "$guard_rel" "${BASH_REMATCH[1]}")
+  elif [[ $line =~ $bash_line_re ]] && [ "${BASH_REMATCH[1]}" != "$guard_rel" ]; then
     exec_raw=$(printf '%s\n%s\n' "$exec_raw" "${BASH_REMATCH[1]}")
   else
     unreadable=$(printf '%s\n  %s' "$unreadable" "$line")
