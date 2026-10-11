@@ -24,6 +24,12 @@
 #      (`CUTPOINTS=`, `REVIEW_POLICIES=`, `JUDGMENT_CLASSES=`,
 #      `JUDGMENT_CLASSES_FORBIDDEN=`); it sources them, and a copy is what
 #      would let the two vocabularies drift apart.                       [fail]
+#   4  nothing under the orchestrator or the hooks except the re-kickoff
+#      helper itself names `rekick.sh`. It reads a previous run's frozen
+#      answers for a new kickoff to carry; a running run that called it would
+#      be reading answers nobody confirmed for that run. Comments count, as in
+#      rule 1. The pattern is the file name, so the notification kind `rekick`
+#      the orchestrator already has is not caught.                       [fail]
 #
 # THE EXTRACTION RULE for rule 2:
 #
@@ -57,6 +63,7 @@ orch_root="${ORCH_ROOT:-$repo_root/plugins/cc-cmds/orchestrator}"
 hooks_root="${HOOKS_ROOT:-$repo_root/plugins/cc-cmds/hooks}"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 HELPER="$orch_root/kickoff-defaults.sh"
+REKICK="$orch_root/rekick.sh"
 KICKOFF="$skills_root/autopilot/SKILL.md"
 
 if [[ ! -f "$HELPER" ]]; then
@@ -121,10 +128,30 @@ if [[ -n "$copies" ]]; then
   fail=1
 fi
 
+# --- Rule 4: only the kickoff calls the re-kickoff helper -------------------
+callers=""
+for dir in "$orch_root" "$hooks_root"; do
+  [[ -d "$dir" ]] || continue
+  hits=$(grep -rlE 'rekick\.sh' "$dir" 2>/dev/null || true)
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ "$f" == "$REKICK" ]] && continue
+    callers="${callers}${f}
+"
+  done <<EOF
+$hits
+EOF
+done
+if [[ -n "$callers" ]]; then
+  echo "FAIL: 재킥오프 보조 밖에서 rekick.sh 를 가리키는 파일이 있다 — 이전 런의 답은 킥오프만 읽는다" >&2
+  printf '%s' "$callers" | sed 's/^/       /' >&2
+  fail=1
+fi
+
 if [[ "$fail" != "0" ]]; then
   echo "lint-kickoff-defaults: violations found" >&2
   exit 1
 fi
 
-echo "OK:   kickoff defaults — 킥오프만 읽고, 키 집합 $(printf '%s\n' "$code_keys" | grep -c .)개가 보조와 5o 에서 일치하며, 어휘 사본이 없다"
+echo "OK:   kickoff defaults — 킥오프만 읽고, 키 집합 $(printf '%s\n' "$code_keys" | grep -c .)개가 보조와 5o 에서 일치하며, 어휘 사본이 없고, 재킥오프 보조를 부르는 런 코드가 없다"
 exit 0

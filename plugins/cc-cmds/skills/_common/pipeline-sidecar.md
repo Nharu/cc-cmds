@@ -161,7 +161,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `사전 인가` | 형태=clickup-create.py | 사유=<…>   ← 트래커=clickup 일 때
 - `사전 인가` | 형태=clickup-relate.py | 사유=<…>   ← 트래커=clickup 일 때
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
-- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트를 이어받을 때만, 세그먼트당 많아야 한 행
+- `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
@@ -227,6 +227,12 @@ ledgers of the directory; the row it writes is described with `중단 답` below
 and the router re-converges and implements the segment before its review. Any
 other open answer is named in a warning and stays where it is, because handing
 it on re-attaches the halted session, and that session is the earlier run's.
+**`출처 런=-` adopts a segment no run cut** — a branch and pull request a person
+made outside any run. The planning act then reads only the worktree and the
+branch: there is no earlier ledger to say the segment landed, no earlier stage
+that could still run on it, and no answer to carry. The worktree still carries
+the reserved infix, so the kickoff moves a person's tree under it before it
+freezes the row, and `입양` in the snapshot's `슬라이싱` is `-`.
 
 **A `선행 착지` row states that a predecessor slice landed outside every run
 ledger**, one row per slice, and only the kickoff writes it, after a person
@@ -335,7 +341,23 @@ collected with the other `사전 인가` rows and the record's whole-file hash i
 therefore inside `구속 다이제스트`. **What it does not buy is a comparison
 against the file.** No gate re-hashes the record at runtime; the claim is that
 the hash the person's kickoff took is frozen where editing it moves the digest,
-and that anyone can compare the file against it with one `shasum`.
+and that anyone can compare the file against it with one `shasum`. **A
+re-kickoff's row** names the new run's record path,
+`docs/pipeline-run/<새 run id>.interview.md`, and carries the source row's
+`sha256=` byte for byte, because that record is a byte copy of the source's
+(§2b.5); the path is the only byte that differs from the source row.
+
+**The provenance row of a re-kickoff is a `사전 인가` row with no `형태=`
+either, and it is told apart by its first field.**
+`` - `사전 인가` | 이어받은 런=<원천 run id> | 매니페스트 sha256=<원천 매니페스트 전체 해시> | 인가 기록 sha256=<원천 인가 기록 전체 해시> ``
+appears exactly once in a manifest the kickoff wrote by carrying a stopped run's
+answers into a new run, and never otherwise. Like the interview-record row it
+authorizes nothing — the pre-authorization rule skips it for want of `형태=` —
+and what it buys is that the source and the two hashes the kickoff checked are
+inside `구속 다이제스트`, where an edit stops the manifest check. A reader finds it
+by the first field `이어받은 런=`, never by the absence of `형태=`, which the
+interview-record row shares. A run carried from a run that was itself carried
+has one such row, naming its direct source. No session id is written into it.
 
 **The `종료 절` rows are `종료 지점` split into clauses the gate can check**, one
 clause per row and at least one row. The gate collects the rows that match
@@ -470,7 +492,8 @@ never compared.
 17. **`세그먼트 입양` rows, form only.** Each row matches its form, its
     `워크트리` is absolute, carries the reserved infix `-run-` the teardown guard
     requires and no double quote, backslash or control byte, its `출처 런` is a
-    run id other than this run's, and no segment has two rows. Each violation is
+    run id other than this run's or `-` (a segment no run cut), and no segment
+    has two rows. Each violation is
     a **hard stop**. The worktree, the branch and the earlier run are not read
     here; the segment's planning act reads them.
 18. **`선행 착지` rows.** Each row matches
@@ -620,9 +643,21 @@ conforming with no migration.
 매니페스트 `## 인가` 의 `설계 로스터` 행을 따른다 | 없음(기본 로스터)
 ````
 
+**`<run-id>` in the title line and the header line is the run that held the
+interview.** A record a re-kickoff carried is a byte copy of the source run's
+record, so both lines name the source run: the source row's hash, equal to the
+new row's, is the proof that these are the person's original words, and the file
+name and the manifest row bind the copy to the new run. The design stage reads
+the version token and the whole-file hash, not `run-id=`.
+
 Written by the kickoff when the run's plan requires a design and the interview was
 held — once, whole, **creation-only, with no append form**, the posture of the
-manifest. Its whole-file `sha256` is taken immediately and enters the manifest as
+manifest. **A re-kickoff whose design step stays writes the record the same way,
+from the source's bytes instead of an interview**: it takes the source record,
+checks it against the source row's hash, writes it creation-only under the new
+run id and checks the written file's hash against that row again; the new
+manifest's row carries the same hash. A re-kickoff that removed the design step
+writes no record and no row. Its whole-file `sha256` is taken immediately and enters the manifest as
 the interview-record row of §2b.1. The question-and-answer pairs repeat once for
 every question asked from the Step 4 plan through the closing read-back, numbered
 in order. **`없음` is a value**: a section with no answer carries it, and an
@@ -714,19 +749,24 @@ one appended line per Act 1 boundary:
 - <ISO8601> | 단계=기본값 고지 | 제시=<n> | 무시=<m> | 파일=<a> | 환경=<b> | 경로=<파일 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->
 - <ISO8601> | 단계=기본값 확정 | 적용=<n> | 해제=<k>
 - <ISO8601> | 단계=문답(질문지) | 질문=<n>
+- <ISO8601> | 단계=이어받기 고지 | 이전 런=<id> | 매니페스트 sha256=<hex> | 인가 기록 sha256=<hex> | 인터뷰 sha256=<hex|-> | 이어받음=<n> | 물음=<k>
 ````
 
-There is no H1. Only five stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
+There is no H1. Only six stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
 `대상 변경` (`새 base=`), `기본값 고지` (`제시=`, `무시=`, `파일=`, `환경=`,
-`경로=`, `sha256=`), `기본값 확정` (`적용=`, `해제=`) and `문답(질문지)`
-(`질문=`, the number of questions on the form). Every other line ends at
+`경로=`, `sha256=`), `기본값 확정` (`적용=`, `해제=`), `문답(질문지)`
+(`질문=`, the number of questions on the form) and `이어받기 고지` (`이전 런=`,
+the three source hashes, `이어받음=` the number of values carried and `물음=` the
+number of questions this re-kickoff asked). Every other line ends at
 `단계=<토큰>`. The two kickoff-defaults lines carry counts, the defaults file's
-path and its hash, and never a value.
+path and its hash, and never a value; `이어받기 고지` carries an id, hashes and
+counts only.
 
 **The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
 `요구사항 인터뷰` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·
 `로스터` · `승인` · `인터뷰 동결` · `매니페스트 기록` · `문답(텍스트)` ·
-`문답(질문지)` · `기동 직전` · `연기` · `중단`. `기본값 고지` and `기본값 확정` are not terminal.
+`문답(질문지)` · `이어받기 고지` · `기동 직전` · `연기` · `중단`. `기본값 고지`, `기본값 확정` and
+`이어받기 고지` are not terminal.
 
 **When a trace is finished — one test for every reader.** A trace is finished when
 its last stage is `연기` or `중단`, when it is a `대상 변경` carrying `새 base=`, or
@@ -846,9 +886,9 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `stage-wait` | `계보` · `그룹`(`org:<16 hex>` \| `acct:<id>` \| `-`) · `계정`(`resume-bound-*` only, `-` otherwise) · `까지`(`YYYY-MM-DDTHH:MM:SSZ` \| `-`) · `근거` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` · `모드`(optional: `전체` \| `델타`; absent reads as `전체`) · `기준 사이클`(optional; required iff `모드=델타`, refused otherwise) · `발견 지문`(optional, gate-written: `<12자 소문자 16진>` \| `-` \| `(미상)`; `-` means P0+P1=0, `(미상)` means the report was absent or yielded no identifier; dropped when the row would cross the cap; an absent key, `-` and `(미상)` all read as absent and equal nothing; a caller-supplied value is refused) |
 | `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `생성 등급`(축 2) · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `행위자`(`리드` \| `교대` \| `스테이지`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
+| `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `행위자`(`리드` \| `교대` \| `스테이지`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · `재킥 원인`(end rows, `결정=종료`, only; one of the twelve tokens below) · `종료 부류`(end rows only: `완료`, on a run whose termination conditions all held) · `재킥 지문`(end rows with `재킥 원인=결함` only: `<스테이지 종류>/<자리 id>/<플러그인 핀>`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
-| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` · `도달 판정`(도달 park 행 전용) · `세그먼트`(같음) · `스테이지`(같음) · `축2`(같음) · `도달`(같음) · `행위 다이제스트`(같음) |
+| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` · `재킥 원인`(`표면이동` on the run-scope row of a forced surface move \| `대상미선언` \| `슬라이싱` on the park rows of those two causes) · `도달 판정`(도달 park 행 전용) · `세그먼트`(도달 park 행, and the slice park of `재킥 원인=슬라이싱`) · `스테이지`(같음) · `축2`(같음) · `도달`(같음) · `행위 다이제스트`(같음) |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `사이드카 앵커` · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only — written by the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer, which auto-resolution then leaves open; `자동 해소` on a closing row the gate wrote itself) · `관측 시각`(the free-input row) |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
 | `적용 인계` | `세그먼트` · `대상` · `적용 주체`(`사람`) · `머지 커밋` · `적용 명령`(clipped) · `관측` — gate-written by the apply act when the actor is a person; nothing runs |
@@ -879,6 +919,12 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 **The copy's files are NOT part of the enforcement-surface digest.** The exclusion of plugin files from `gate_surface_digest_raw` stays exactly as it was: that digest's mismatch is exit 7, which is unrecoverable, so a false positive there is the incident that exclusion was introduced to prevent. Two write layers already cover the copy — the run hook's allow-list and the gate's own Bash path guard, both of which refuse every name under a run directory that is not a halt record, a segment plan or a witness product.
 
 **This table is held equal to the gate's call sites by `scripts/lint-sidecar-field-table.sh`.** Per series, the union of literal `<키>=` names across every `gate_append '<계열>' …` call must be listed here; where no call site forwards `"$@"`, the listed set must also be written by some call site. A conditional argument `${v:+"<키>=$v"}` counts as that literal key like any other. `교대` and `prev` are outside the comparison — `gate_append` adds both to every row itself. `stage-result`'s predicate result is folded into `종단 부류`. `인벤토리 기준선` is outside what this lint sees, because its call site is in `run.sh` and not in `gate.sh` — of the series written that way it is the only one reached on the live gate path, the other, `generation`, being written on the driver path alone — so only the driver's tests hold its fields to this row. **No cell carries the `writer pending` marker today, and the mechanism stays written down anyway**: a cell marked `writer pending` is the one shape the lint's reverse direction passes over, and it reports that field by name rather than skipping it silently.
+
+**`재킥 원인` is a closed set of twelve tokens**: `마감` · `천장` · `무진전` · `사이클예산` · `표면이동` · `연기마감` · `결함` · `판단정지` · `대상미선언` · `슬라이싱` · `말단상한` · `해당없음`. A token outside the set is refused by the writer, not recorded. `해당없음` is the default for every ending nobody mapped, so an unclassified stop goes to a person rather than down the automatic branch; `종료 부류=완료` beside it marks the one `해당없음` that is a normal completion.
+
+**A run's end token is the `재킥 원인` of the earliest run-scope row that carries one** — a `자율 승인` row with `결정=종료`, or a `blocked` row with `스코프=run`. Later rows never change it: a run stopped by a surface move keeps `표면이동` even if a later deadline or invalidation writes an end row of its own. "The run has ended" means it has an end token. Every site that writes `done` writes an end row beside it — the boundaries B4 (`천장`, on the router path only: the fixed-graph driver writes no running `cost` row, so B4 has nothing to compare there and `천장` never ends a fixed-graph run) and B5 (`무진전`), the router's deadline branch on `act` and `exec` (`마감`; `plan` writes nothing), and the three arms of a termination proposal (`해당없음`, with `종료 부류=완료` on the arm whose conditions all held). The fixed-graph driver writes its end row at one place every return of its main loop passes, and from its EXIT trap: a stage that halted the run gives `결함` (classification `tool-unavailable` or `precondition-failed`, with `재킥 지문`) or `판단정지` (`gate-unanswerable`); a walk that landed every slice gives `해당없음` with `종료 부류=완료`; a walk that ended on slice parks gives the first of their `대상미선언`/`슬라이싱` tokens; anything else gives `해당없음`. Its first deadline park writes `마감`.
+
+**`gate.sh end-overdue --manifest <path>`** closes a run that passed `벽시계 마감` with no end token, once; a second call writes nothing. The token follows whether the driver is alive: a fixed-graph run whose fleet marker `busy/<id>.<pid>` names a live process takes `마감`, a router run with a live shift or stage takes `마감` only when neither progress axis is declared (a declared axis ends that run itself, so nothing is written), and a run that stopped or cannot be observed takes `해당없음`. The backlog record's state is never evidence that a run is alive.
 
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** A series that nothing writes turns the check reading it into a constant. `stage-lease` and `stage-wait` have a writer on both sides — the gate's `gate_append`, reached through its two envelope wrappers, and the driver's `ledger_row` — and, in a routed run, call sites: both launch paths write a `stage-lease` row before each spawn, and both write a `stage-wait` row when the router answers `WAIT` and then one per chunk while they wait. In a run that is not routed no code writes either.
 
@@ -1311,11 +1357,13 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `ledger-path` | gate (`gate.sh`) | where this run's ledger is, for readers that have only the run directory |
 | `session-lineage` | gate (`gate.sh`) | session id → run id, the ancestry index |
 | `surface-digest` | gate (`gate.sh`) | the enforcement-surface baseline compared at each act |
+| `surface-digest.files` | gate (`gate.sh`) | the per-file list behind that baseline, written by every site that writes `surface-digest`: one `<구분>\t<sha256>  <path>` line per file, `<구분>` being `런설정` (a file under the run's own `settings/`) or `대상설정` (a target's settings file). The digest is the hash of the list's sha-and-path half, so a moved baseline can be traced to the file that moved it |
+| `rekick-candidate` | gate (`gate.sh`) | written once, by whichever site first settles the run's end token (an end row, or the run-scope `blocked` row of a forced surface move), and never overwritten — published by a single `link(2)`. `키=값` lines: `매니페스트` · `원장` · `런 id` · `토큰` · `기록 시각`. **A cache of the ledger, not the authority**: the end token is the ledger's, and a run whose directory was collected loses this file without losing its token |
 | `progress-digest` · `progress-repeat` | gate (`gate.sh`) | the stagnation boundary's previous value and its repeat count |
 | `obligation-window` · `obligation-window-done` · `obligation-repeat` | gate (`gate.sh`) | the obligation boundary's state — the obligations its count is waiting on, and which of them have been seen disposed since that count started — and its repeat count |
 | `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
 | `cost-resolved-pct` | gate (`gate.sh`) | the cost share a B4 approval was closed at; B4 stays quiet until spending climbs ten points past it |
-| `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |
+| `done` | gate (`gate.sh`) | written when the run proposes termination or a boundary ends it, beside the end row the same site writes; **its absence is not evidence of activity** |
 | `ends-on-done` | gate (`gate.sh`) | written once, when the seat's `router-shift` actually launches a shift; never removed. A run carrying it settles its exit clauses after the last segment and **ends on `done`, not on the ledger-derived terminal conjunction** — until `done` it reads `정산중`, and with `done` it reads `종단` once no shift is alive. A run without it keeps the derived rule |
 | `notify.ended` · `notify.ended/fired` | gate (`gate.sh`) or watcher (`watch.sh`), whichever claims first | the run's one `ended` banner: `mkdir` of the directory is the claim, so the gate's sites and the watcher raise it once between them; `fired` is written after the fire returns, and the watcher's loop exit waits on it, bounded by its interval, before a `rekick` that would otherwise replace `ended` in the shared slot |
 | `notify/park-<segment>` | gate (`gate.sh`) | per-segment park markers |

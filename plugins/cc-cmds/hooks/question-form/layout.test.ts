@@ -1,11 +1,28 @@
 // 줄 모형: 답 요약, 포커스가 설 자리, 패널 크기 어림.
 import { describe, expect, test } from 'claude-code/testing'
 
-import { COLUMNS_MAX, COLUMNS_MIN, ROWS_MAX, answerSummary, displayWidth, landingKey, layoutRows, paneSize, rowText } from './layout'
+import {
+  COLUMNS_MAX,
+  COLUMNS_MIN,
+  EDITOR_INDENT,
+  EDITOR_SUBMIT_WIDTH,
+  ROWS_MAX,
+  answerSummary,
+  arrowTarget,
+  displayWidth,
+  focusStops,
+  landingKey,
+  layoutRows,
+  paneSize,
+  revealKeys,
+  rowText,
+  wrapEditorText,
+} from './layout'
 import type { Row } from './layout'
 import type { Draft } from './bundle'
+import { HELP_LINE } from './spec'
 import type { FormInput, FormQuestion } from './spec'
-import { jump, openEditor, openRecord, typeText } from './transitions'
+import { closeEditor, jump, openEditor, openRecord, typeText } from './transitions'
 
 const opt = (label: string, extra: Record<string, unknown> = {}) => ({ label, description: `${label} 설명`, ...extra })
 const single: FormQuestion = { id: 's', header: '하나', question: '고르기', kind: 'single', options: [opt('가', { recommended: '추천' }), opt('나')] }
@@ -79,6 +96,206 @@ describe('줄 모형', () => {
   })
 })
 
+describe('정지점', () => {
+  // 질문 둘(하나 펼침), 메모·기타 허용.
+  const pair: FormInput = { title: '둘', questions: [single, text] }
+  const r2 = () => openRecord({ id: 'f-00000007', toolUseId: 'tu', form: pair, drafts: {}, sessionId: 'sid', now: 0 })
+
+  test('focusStops: 접힌 줄·선택지·기타·메모·이전/다음·제출·취소 key 가 화면 순서로, 정지점이 아닌 줄은 없다', () => {
+    expect(focusStops(layoutRows(r2(), null))).toEqual(['q1-o1', 'q1-o2', 'q1-other', 'q1-note', 'next', 'q2', 'submit', 'cancel'])
+    expect(focusStops(layoutRows(jump(r2(), 't'), null))).toEqual(['q1', 'q2-other-input-1', 'q2-note', 'prev', 'next', 'submit', 'cancel'])
+    // 미리보기 줄이 생겨도 정지점은 그대로다.
+    expect(focusStops(layoutRows(r2(), 'q1-o1'))).toEqual(focusStops(layoutRows(r2(), null)))
+  })
+
+  test('focusStops: 입력칸이 열린 기록에서는 그 입력칸 key 가 제자리에 든다', () => {
+    expect(focusStops(layoutRows(openEditor(r2(), 's', 'other'), null))).toEqual([
+      'q1-o1',
+      'q1-o2',
+      'q1-other',
+      'q1-other-input-1',
+      'q1-note',
+      'next',
+      'q2',
+      'submit',
+      'cancel',
+    ])
+    expect(focusStops(layoutRows(openEditor(r2(), 's', 'note'), null))).toContain('q1-note-input-1')
+  })
+
+  describe('arrowTarget', () => {
+    // 사람의 키보드 화살표 한 줄: pointer 없음, 본문 10줄, 전체 50줄.
+    const arrow = (by: number, extra: Record<string, unknown> = {}) => ({ by, bodyRows: 10, contentRows: 50, origin: { kind: 'person' }, ...extra })
+    const rows = () => layoutRows(r2(), null)
+
+    test('by: 1 은 다음 정지점, by: -1 은 이전 정지점', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(1))).toBe('q1-o2')
+      expect(arrowTarget(rows(), 'q1-note', arrow(1))).toBe('next')
+      expect(arrowTarget(rows(), 'q1-o2', arrow(-1))).toBe('q1-o1')
+      expect(arrowTarget(rows(), 'submit', arrow(-1))).toBe('q2')
+    })
+
+    test('첫 정지점에서 by: -1, 마지막 정지점(취소)에서 by: 1 은 넘김', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(-1))).toBeNull()
+      expect(arrowTarget(rows(), 'cancel', arrow(1))).toBeNull()
+    })
+
+    test('by: 2 는 두 칸 옮기고 끝에서 멈춘다', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(2))).toBe('q1-other')
+      expect(arrowTarget(rows(), 'submit', arrow(2))).toBe('cancel')
+      expect(arrowTarget(rows(), 'q1-o2', arrow(-2))).toBe('q1-o1')
+    })
+
+    test('포커스가 목록에 없으면 by: 1 은 첫 정지점, by: -1 은 마지막 정지점', () => {
+      expect(arrowTarget(rows(), null, arrow(1))).toBe('q1-o1')
+      expect(arrowTarget(rows(), null, arrow(-1))).toBe('cancel')
+      expect(arrowTarget(rows(), 'q9-o1', arrow(1))).toBe('q1-o1')
+      expect(arrowTarget(rows(), 'q9-o1', arrow(-1))).toBe('cancel')
+    })
+
+    test('휠·페이지 키·Home/End·by: 0·플러그인 출처·정지점 없는 줄 모형은 넘김', () => {
+      expect(arrowTarget(rows(), 'q1-o1', arrow(1, { pointer: { column: 3, row: 4 } }))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(10))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o2', arrow(-10))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(50))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(0))).toBeNull()
+      expect(arrowTarget(rows(), 'q1-o1', arrow(1, { origin: { kind: 'plugin' } }))).toBeNull()
+      const bare: Row[] = [{ kind: 'title', text: '빈', counter: '' }, { kind: 'help', text: HELP_LINE }]
+      expect(arrowTarget(bare, null, arrow(1))).toBeNull()
+    })
+  })
+
+  test('revealKeys: 선택지는 -block 상자, 펼친 질문의 첫 정지점은 머리말 다음 대상, 그 밖은 key 자체', () => {
+    const rows = layoutRows(r2(), null)
+    expect(revealKeys(rows, 'q1-o1')).toEqual(['q1-head', 'q1-o1-block'])
+    expect(revealKeys(rows, 'q1-o2')).toEqual(['q1-o2-block'])
+    expect(revealKeys(rows, 'q1-note')).toEqual(['q1-note'])
+    expect(revealKeys(rows, 'submit')).toEqual(['submit'])
+    const onText = layoutRows(jump(r2(), 't'), null)
+    expect(revealKeys(onText, 'q2-other-input-1')).toEqual(['q2-head', 'q2-other-input-1'])
+    expect(revealKeys(onText, 'q1')).toEqual(['q1'])
+    const answered = layoutRows(jump(typeText(r2(), 't', 'other', '답'), 't'), null)
+    expect(revealKeys(answered, 'q2-answer')).toEqual(['q2-head', 'q2-answer'])
+  })
+
+  test('도움말 줄은 「↑↓ Tab 이동」을 담고 「· Tab 이동 ·」는 더 없다', () => {
+    expect(HELP_LINE).toContain('↑↓ Tab 이동')
+    expect(HELP_LINE).not.toContain('· Tab 이동 ·')
+    expect(layoutRows(r2(), null).at(-1)).toEqual({ kind: 'help', text: HELP_LINE })
+  })
+})
+
+describe('입력칸', () => {
+  const typedText = (text: string, field: 'other' | 'note' = 'other') => typeText(openEditor(rec(), 's', field), 's', field, text)
+  const typed = (n: number) => typedText('가'.repeat(n))
+  const editorOf = (rows: Row[]) => rows.find(x => x.kind === 'editor')!
+  // 엔진 실측 표본: 본문 폭 96 에서 엔진이 감은 줄의 끝 낱말.
+  const EN =
+    'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen'
+  const KO =
+    '기존 저장소들은 모두 1.0일걸? 서버 접속해서 2.0을 모두 받아온 후 신규 저장소 생성 필요. 그리고 개발서버 구축을 위해 널리 쓰이는 방식으로 정리하고 배포 스크립트를 함께 손봐야 한다고 생각합니다 가나다라마바사아자차카타파하'
+  const lastWords = (lines: string[]) => lines.map(l => l.split(' ').at(-1))
+
+  test('편집기 줄에는 앞말 label 이 없고, 들여쓰기 뒤에 안내글과 확정 표시만 있다', () => {
+    const editor = layoutRows(openEditor(rec(), 's', 'other'), null).find(x => x.kind === 'editor')!
+    expect('label' in editor).toBe(false)
+    expect(rowText(editor)).toBe(`${' '.repeat(EDITOR_INDENT)}직접 입력 ⏎ 확정`)
+    expect(EDITOR_SUBMIT_WIDTH).toBe(displayWidth(' ⏎ 확정'))
+    // 상자 폭(본문 폭 − 들여쓰기 − 확정 몫)이 엔진이 감는 폭(본문 폭 − 확정 몫 − 1)과 같다.
+    expect(EDITOR_INDENT).toBe(1)
+  })
+
+  test('줄 모형에 빈 줄 어림(spacer)이 어떤 길이에서도 없다', () => {
+    for (const n of [0, 30, 40, 100, 150, 400]) {
+      const kinds = layoutRows(typed(n), null).map(x => x.kind as string)
+      expect(kinds.includes('spacer'), `${n}`).toBe(false)
+      expect(kinds.filter(k => k === 'editor'), `${n}`).toHaveLength(1)
+    }
+    expect(layoutRows(typedText('가'.repeat(100), 'note'), null).some(x => (x.kind as string) === 'spacer')).toBe(false)
+  })
+
+  test('감는 함수는 엔진 실측 두 표본을 엔진과 같은 줄로 나눈다', () => {
+    expect(lastWords(wrapEditorText(EN, 96))).toEqual(['november', 'two', 'sixteen', 'seventeen'])
+    expect(lastWords(wrapEditorText(KO, 96))).toEqual(['필요.', '손봐야', '가나다라마바사아자차카타파하'])
+    expect(wrapEditorText(EN, 96).map(displayWidth)).toEqual([86, 84, 88, 9])
+    expect(wrapEditorText(KO, 96).map(displayWidth)).toEqual([87, 85, 46])
+    expect(wrapEditorText('', 96)).toEqual([])
+  })
+
+  test('감는 폭보다 긴 한 단어는 글자 단위로 끊긴다', () => {
+    // 본문 폭 30 이면 감는 폭은 30 − 7 − 1 = 22칸.
+    expect(wrapEditorText('a'.repeat(30), 30)).toEqual(['a'.repeat(22), 'a'.repeat(8)])
+    expect(wrapEditorText(`짧은 ${'가'.repeat(15)}`, 30)).toEqual(['짧은', '가'.repeat(11), '가'.repeat(4)])
+    // 아주 좁아도 감는 폭은 11칸 아래로 내려가지 않는다.
+    expect(wrapEditorText('a'.repeat(12), 5)).toEqual(['a'.repeat(11), 'a'])
+  })
+
+  test('편집기 줄은 감긴 줄 수만큼이고, 마지막 줄에 2칸 여유가 없으면 한 줄 더', () => {
+    const lines = (r: ReturnType<typeof rec>, bodyColumns: number) => rowText(editorOf(layoutRows(r, null)), bodyColumns).split('\n')
+    const en = lines(typedText(EN), 96)
+    expect(en).toHaveLength(4)
+    expect(en[0]!.endsWith('november ⏎ 확정')).toBe(true)
+    expect(en.every(l => l.startsWith(' '.repeat(EDITOR_INDENT)))).toBe(true)
+    // 감는 폭 88: 86칸이면 커서·조합 몫 2칸이 들어가고, 87칸이면 한 줄이 더 생긴다.
+    expect(lines(typedText('a'.repeat(86)), 96)).toHaveLength(1)
+    expect(lines(typedText('a'.repeat(87)), 96)).toHaveLength(2)
+    expect(lines(typedText('a'.repeat(88)), 96)).toHaveLength(2)
+    // 지금 글로 세고, 입력칸에 넘기는 value 는 씨앗 그대로다.
+    const editor = editorOf(layoutRows(typedText(EN), null)) as Extract<Row, { kind: 'editor' }>
+    expect(editor.value).toBe('')
+    expect(editor.text).toBe(EN)
+  })
+
+  test('본문 폭이 없으면 80 으로 감는다', () => {
+    const editor = editorOf(layoutRows(typed(100), null))
+    expect(rowText(editor)).toBe(rowText(editor, 80))
+    expect(rowText(editor, 80)).not.toBe(rowText(editor, 120))
+  })
+
+  test('입력칸이 열려 있으면 위 줄은 라벨만 보인다', () => {
+    const drafts = { s: d([], '셋째', '메모글') }
+    const onOther = openEditor({ ...rec(), drafts }, 's', 'other')
+    const onNote = openEditor(onOther, 's', 'note')
+    const of = <K extends Row['kind']>(rows: Row[], kind: K) => rows.find(x => x.kind === kind) as Extract<Row, { kind: K }>
+    // 기타 입력칸이 열림: 기타 줄은 라벨만, 설명도 없다. 표지는 글이 있으므로 켜진 쪽이다.
+    const a = layoutRows(onOther, landingKey(onOther))
+    expect(landingKey(onOther)).toBe('q1-other-input-1')
+    expect(of(a, 'other')).toMatchObject({ text: '기타', description: '', glyph: '●' })
+    expect(of(a, 'note').text).toBe('메모: 메모글')
+    // 메모 입력칸이 열림: 메모 줄은 라벨만.
+    const b = layoutRows(onNote, landingKey(onNote))
+    expect(landingKey(onNote)).toBe('q1-note-input-2')
+    expect(of(b, 'note').text).toBe('메모')
+    expect(of(b, 'other').text).toBe('기타: 셋째')
+    // 포커스 값과 상관없이 열린 칸의 위 줄만 라벨이다(사람이 칸을 떠나면 칸이 닫힌다).
+    expect(of(layoutRows(onNote, 'q1-o1'), 'note').text).toBe('메모')
+    expect(of(layoutRows(onNote, 'q1-o1'), 'other').text).toBe('기타: 셋째')
+    // 칸이 닫히면 두 줄 모두 전체 글이다.
+    const closed = closeEditor(onNote)
+    expect(of(layoutRows(closed, 'q1-o1'), 'other').text).toBe('기타: 셋째')
+    expect(of(layoutRows(closed, 'q1-o1'), 'note').text).toBe('메모: 메모글')
+    // 빈 기타 칸이 열려 있으면 안내글을 위 줄에 두지 않고, 닫혀 있으면 둔다.
+    const empty = openEditor(rec(), 's', 'other')
+    expect(of(layoutRows(empty, landingKey(empty)), 'other')).toMatchObject({ text: '기타', description: '' })
+    expect(of(layoutRows(closeEditor(empty), null), 'other')).toMatchObject({ text: '기타', description: '직접 입력' })
+  })
+
+  test('그리는 자리는 제어 문자를 거른 글을 쓴다', () => {
+    const drafts = { s: d([], '셋\u001b째', '메\u0000모'), t: d([], '글\u009b\n줄') }
+    const r = openEditor({ ...rec(), drafts }, 's', 'other')
+    const rows = layoutRows(r, null)
+    const of = <K extends Row['kind']>(kind: K, from = rows) => from.find(x => x.kind === kind) as Extract<Row, { kind: K }>
+    const closed = layoutRows(closeEditor(r), null)
+    expect(of('other', closed).text).toBe('기타: 셋째')
+    expect(of('note').text).toBe('메모: 메모')
+    expect(of('editor').value).toBe('셋째')
+    expect(rows.filter(x => x.kind === 'folded').map(x => (x as Extract<Row, { kind: 'folded' }>).summary)).toContain('글 줄')
+    const onT = layoutRows(jump(r, 't'), null)
+    expect((onT.find(x => x.kind === 'answer') as Extract<Row, { kind: 'answer' }>).text).toBe('글 줄')
+    expect(answerSummary(text, d([], '\u001b\u0000'))).toBe('미답')
+  })
+})
+
 describe('크기', () => {
   test('한글은 두 칸, 영문은 한 칸', () => {
     expect(displayWidth('abc')).toBe(3)
@@ -102,6 +319,21 @@ describe('크기', () => {
     const narrow = paneSize(r, 30).rows
     expect(wide).toBe(lineCount(layoutRows(r, null)) + 2 + 1)
     expect(narrow).toBeGreaterThan(wide)
+  })
+
+  test('편집기 줄은 감긴 줄 수로 세고, 칸이 열린 동안 위 줄은 라벨 한 줄로 센다', () => {
+    // 가 100자는 200칸이라 감는 폭 72 에서 36·36·28자 세 줄이다.
+    const r = typeText(openEditor(rec(), 's', 'other'), 's', 'other', '가'.repeat(100))
+    const rows = layoutRows(r, null)
+    const editor = rows.find(x => x.kind === 'editor')!
+    expect(rowText(editor, 80).split('\n')).toHaveLength(3)
+    expect((rows.find(x => x.kind === 'other') as Extract<Row, { kind: 'other' }>).text).toBe('기타')
+    const wrap = (s: string) => s.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / 80)), 0)
+    const expected = rows.reduce((n, x) => n + wrap(rowText(x, 80)), 0) + 1
+    expect(paneSize(r, 80).rows).toBe(expected)
+    // 짧은 글보다 정확히 감긴 줄 수의 차만큼 크다.
+    const short = typeText(openEditor(rec(), 's', 'other'), 's', 'other', '가')
+    expect(paneSize(r, 80).rows - paneSize(short, 80).rows).toBe(2)
   })
 
   test('아주 긴 질문지도 세로 상한을 넘지 않는다', () => {

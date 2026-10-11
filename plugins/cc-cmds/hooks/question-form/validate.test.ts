@@ -108,6 +108,47 @@ describe('validateForm', () => {
     expect(field(validateForm(b, undefined))).toBe('questions[1].id')
   })
 
+  test('한 줄 칸 다섯은 줄바꿈과 ESC 를 그 칸 경로로 거절한다', () => {
+    const cases: [string, (f: any, v: string) => void][] = [
+      ['title', (f, v) => (f.title = `가${v}나`)],
+      ['questions[0].header', (f, v) => (f.questions[0].header = `가${v}나`)],
+      ['questions[0].group', (f, v) => (f.questions[0].group = `가${v}나`)],
+      ['questions[2].placeholder', (f, v) => (f.questions[2].placeholder = `가${v}나`)],
+      ['questions[0].options[1].label', (f, v) => (f.questions[0].options[1].label = `가${v}나`)],
+    ]
+    for (const [path, set] of cases) {
+      for (const c of ['\n', '\u001b']) {
+        const f = good()
+        set(f, c)
+        const r = validateForm(f, undefined)
+        expect(field(r), `${path} ${JSON.stringify(c)}`).toBe(path)
+        expect(r).toContain('제어 문자를 넣지 않습니다(줄바꿈·탭 포함). 한 줄로 그려지는 칸입니다')
+      }
+    }
+  })
+
+  test('여러 줄 칸 다섯은 줄바꿈·탭·CR 을 받고 ESC 는 그 칸 경로로 거절한다', () => {
+    const cases: [string, (f: any, v: string) => void][] = [
+      ['intro', (f, v) => (f.intro = `가${v}나`)],
+      ['questions[0].question', (f, v) => (f.questions[0].question = `가${v}나`)],
+      ['questions[0].detail', (f, v) => (f.questions[0].detail = `가${v}나`)],
+      ['questions[0].options[0].description', (f, v) => (f.questions[0].options[0].description = `가${v}나`)],
+      ['questions[0].options[0].preview', (f, v) => (f.questions[0].options[0].preview = `가${v}나`)],
+    ]
+    for (const [path, set] of cases) {
+      for (const c of ['\n', '\t', '\r']) {
+        const f = good()
+        set(f, c)
+        expect(validateForm(f, undefined), `${path} ${JSON.stringify(c)}`).toBeUndefined()
+      }
+      const f = good()
+      set(f, '\u001b')
+      const r = validateForm(f, undefined)
+      expect(field(r), path).toBe(path)
+      expect(r).toContain('줄바꿈·탭 말고는 제어 문자를 넣지 않습니다')
+    }
+  })
+
   test('경계값: 총량 90,000/90,001자', () => {
     // 셋째 질문의 detail 을 채워 모든 문자열의 글자 수 합을 n 으로 맞춘다.
     const fill = (n: number) => {

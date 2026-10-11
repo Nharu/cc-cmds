@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { HEADER_RE, answerBody, bundleJson, bundleText, headerLine, mintFormId, parseHeader } from './bundle'
+import { HEADER_RE, answerBody, bundleJson, bundleText, headerLine, inputValue, isAnswered, mintFormId, parseHeader } from './bundle'
 import type { Draft } from './bundle'
 import type { FormInput, FormQuestion } from './spec'
 
@@ -67,11 +67,45 @@ describe('묶음', () => {
     expect(j.answers[3].answer).toBe('')
   })
 
+  test('제어 문자 든 초안: answer·other·note 를 거른 글로 싣는다', () => {
+    const j = bundleJson('f-00000000', '제출', form, { s: d([], '셋\u001b째\n길'), t: d([], '자유\u0000 글', '참\t고\u009b') })
+    expect(j.answers[0].other).toBe('셋째 길')
+    expect(j.answers[0].answer).toBe('셋째 길')
+    expect(j.answers[2].other).toBe('자유 글')
+    expect(j.answers[2].note).toBe('참 고')
+    expect(j.answers[2].answer).toBe('자유 글\n메모: 참 고')
+    expect(JSON.stringify(j)).not.toMatch(/\\u00[01][0-9a-f]|[\u007f-\u009f]/)
+  })
+
+  test('기타가 제어 문자뿐이면 미답으로 세고 state 도 미답', () => {
+    const drafts = { t: d([], '\u001b\u0000') }
+    expect(isAnswered(text, drafts.t)).toBe(false)
+    expect(bundleJson('f-00000000', '제출', form, drafts).answers[2].state).toBe('미답')
+    expect(bundleText('f-00000000', '제출', form, drafts).split('\n')[0]).toEndWith('답=0/3')
+  })
+
   test('묶음 본문은 머리줄 다음에 json 펜스', () => {
     const t = bundleText('f-00000000', '제출', form, {})
     const lines = t.split('\n')
     expect(lines[1]).toBe('```json')
     expect(lines[lines.length - 1]).toBe('```')
     expect(JSON.parse(lines.slice(2, -1).join('\n')).form).toBe('f-00000000')
+  })
+})
+
+describe('inputValue', () => {
+  test('CRLF·CR·LF·탭은 공백 하나로 바꾼다', () => {
+    expect(inputValue('가\r\n나')).toBe('가 나')
+    expect(inputValue('가\r나')).toBe('가 나')
+    expect(inputValue('가\n나')).toBe('가 나')
+    expect(inputValue('가\t나')).toBe('가 나')
+  })
+
+  test('NUL·ESC·DEL·NEL 은 뺀다', () => {
+    expect(inputValue('가\u0000나')).toBe('가나')
+    expect(inputValue('가\u001b[31m나')).toBe('가[31m나')
+    expect(inputValue('가\u007f나')).toBe('가나')
+    expect(inputValue('가\u0085나')).toBe('가나')
+    expect(inputValue('보통 글')).toBe('보통 글')
   })
 })

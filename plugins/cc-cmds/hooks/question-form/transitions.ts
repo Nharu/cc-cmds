@@ -2,7 +2,8 @@
 // `$.state` 에 쓰고, 패널·상태 줄·제출·포커스 같은 바깥 일은 스스로 한다.
 // 시험 키트는 사람의 닫기를 일으킬 수 없으므로 전이는 여기서 따로 시험한다.
 
-import { draftOf, isVisible } from './bundle'
+import { draftOf, inputValue, isVisible } from './bundle'
+import { holdsRefusedControl } from './validate'
 import type { Draft, Drafts, FormEditor, FormInput, FormPhase, FormRecord } from '../../types'
 
 export type { FormEditor, FormPhase, FormRecord }
@@ -72,7 +73,7 @@ export function land(r: FormRecord): FormRecord {
   const q = questionOf(r, r.cursor)
   if (!q || q.kind !== 'text') return r
   if (r.editor && r.editor.id === r.cursor) return r
-  return draftOf(r.drafts, r.cursor).other.trim() === '' ? openEditor(r, r.cursor, 'other') : r
+  return inputValue(draftOf(r.drafts, r.cursor).other).trim() === '' ? openEditor(r, r.cursor, 'other') : r
 }
 
 // 커서 이동. 보이지 않는 질문으로는 가지 않는다.
@@ -135,8 +136,9 @@ export function choose(r: FormRecord, id: string, label: string): { record: Form
 }
 
 // 입력칸의 글이 바뀔 때마다: 답을 바로 적는다(확정 없이 나가도 답으로 남는다).
-// single 의 기타에 글이 있으면 고른 선택지는 풀린다.
+// single 의 기타에 글이 있으면 고른 선택지는 풀린다. 초안에는 거른 글만 적는다.
 export function typeText(r: FormRecord, id: string, field: FormEditor['field'], value: string): FormRecord {
+  value = inputValue(value)
   if (field === 'note') return withDraft(r, id, { note: value })
   const q = questionOf(r, id)
   const patch: Partial<Draft> = q?.kind === 'single' && value.trim() !== '' ? { other: value, selected: [] } : { other: value }
@@ -149,7 +151,7 @@ export function commitText(r: FormRecord, id: string, field: FormEditor['field']
   const typed = typeText(r, id, field, value)
   const record = typed.editor?.id === id && typed.editor.field === field ? closeEditor(typed) : typed
   const q = questionOf(record, id)
-  const moves = field === 'other' && value.trim() !== '' && (q?.kind === 'single' || q?.kind === 'text')
+  const moves = field === 'other' && inputValue(value).trim() !== '' && (q?.kind === 'single' || q?.kind === 'text')
   return moves ? forward(record) : { record, move: 'stay' }
 }
 
@@ -180,9 +182,11 @@ export const expired = (stored: FormRecord, now: number) => now - stored.savedAt
 
 // 보관에서 되살릴지: 같은 세션의 열린 기록만 되살린다. now 를 주면 7일이 지난 기록은
 // 같은 세션의 것이어도 되살리지 않는다. 앞 판이 보관한 기록에는 커서와 입력칸이
-// 없으므로 첫 질문에서 시작하게 채운다.
+// 없으므로 첫 질문에서 시작하게 채운다. 모델 입력에 엔진이 거부하는 제어 문자가 든
+// 기록(검사가 생기기 전에 열린 것)은 그려도 패널이 깨지므로 되살리지 않는다.
 export function restorable(stored: FormRecord | undefined, sessionId: string, now?: number): FormRecord | undefined {
   if (!isOpen(stored) || stored.sessionId !== sessionId) return undefined
   if (now !== undefined && expired(stored, now)) return undefined
+  if (holdsRefusedControl(stored.form)) return undefined
   return land(settleCursor({ ...stored, cursor: stored.cursor ?? '', editor: stored.editor ?? null, editorGen: stored.editorGen ?? 0 }))
 }
