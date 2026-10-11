@@ -124,6 +124,10 @@ esac
 
 OBSERVED="$RUN_DIR/checks.observed"
 PIDF="$RUN_DIR/checks.pid"
+# When this poller started watching. The idle exit counts from no earlier than
+# this, so a poller started on a run that has been quiet for a day does not
+# leave on its first pass.
+CHECKS_STARTED=$(date -u +%s)
 
 # The clip ceilings, spelled here because the poller is the one that cuts. The
 # drain re-applies `gate_row_safe` at the same widths, and that is a second line
@@ -517,7 +521,7 @@ run_is_over() {
   # A RUN THAT WAITS FOR NOBODY, judged by the predicate and the threshold the
   # watcher uses, so the two processes of one run leave at the same moment.
   # The run stays open; no `done` is written here.
-  if cc_run_idle_exit "$RUN_DIR" "" "$LEDGER"; then
+  if cc_run_idle_exit "$RUN_DIR" "" "$LEDGER" "${CHECKS_STARTED:-}"; then
     printf 'checks: 유휴 %s초 — 살아 있는 교대·스테이지도, 열린 승인도, 답 없는 정지 기록도 없어 멈춥니다. 런은 열린 채 남습니다\n' \
       "$CC_RUN_IDLE_EXIT_SECONDS" >&2
     return 0

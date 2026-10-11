@@ -24297,7 +24297,7 @@ check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b
 
 # ---------------------------------------------------------------------------
 # 57. 판본 고정 — 새 런은 사본으로 hop 한다
-# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다 ---
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다, 57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다 ---
 #
 # 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
 # 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
@@ -24788,6 +24788,30 @@ case "$rc:$msg" in
   3:*|*"rule refused"*) bad "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" "rc=$rc $msg" ;;
   *) ok "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" ;;
 esac
+
+# (15) end-abandoned 를 모르는 사본에 고정된 런 ------------------------------------
+# 재킥오프는 원천 런을 이 동사로 닫는데, 호출은 동사를 가르기 전에 원천의 고정 사본으로
+# hop 한다. 그 동사보다 오래된 사본은 인자 루프에 `--cause` 갈래가 없어 동사 줄에 닿기
+# 전에 그 인자에서 멈춘다. 스킬이 「옛 사본」으로 읽는 문면이 그 사본이 실제로 내는
+# 문면과 같아야, 재킥오프가 그 원천에서 멈추지 않고 지나간다.
+p57_fixture R57V
+p57_gate snapshot --manifest "$P57_MAN"
+check "57V: 고정이 섰다" "$rc" "0"
+P57V_COPY="$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+sed -e '/^      --cause)  /d' -e '/^      --successor)  /d' "$P57V_COPY" > "$P57V_COPY.old" \
+  && mv "$P57V_COPY.old" "$P57V_COPY" && chmod +x "$P57V_COPY"
+check "57V: 사본의 인자 루프에서 두 갈래가 빠졌다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cE '^      --(cause|successor)\)' "$P57V_COPY" || true)" "0"
+p57_gate end-abandoned --manifest "$P57_MAN" --cause 이어받음 --successor 20261012-abcdef01
+check "57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다" "$rc" "2"
+case "$msg" in
+  *'gate: unknown argument: --cause'*) ok "57V: 그 사본은 --cause 를 모르는 인자로 거절한다" ;;
+  *) bad "57V: 그 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
+esac
+check "57V: 스킬의 재킥오프가 그 문면을 옛 사본 신호로 적는다" \
+  "$(grep -cF '`gate: unknown argument: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+check "57V: 원천 런에는 done 이 쓰이지 않았다" \
+  "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다

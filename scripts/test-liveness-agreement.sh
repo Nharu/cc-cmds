@@ -715,7 +715,11 @@ check "상태표가 실제로 96 사례를 돌았다" "$st_i" "96"
 # fixture and take the progress channel away from a person's open question.
 # ---------------------------------------------------------------------------
 idle_of() {
-  # idle_of <run-dir> <ledger> [T] — the predicate's answer as a word.
+  # idle_of <run-dir> <ledger> [T] — the predicate's answer as a word, with the
+  # ledger's mtime moved back to the fixture's growth age first. The predicate
+  # takes the later of the heartbeat field and the mtime, and a fixture row
+  # appended a moment ago would otherwise be the growth every case reads.
+  fx_age_file "$2" "$ID_AGE"
   if cc_run_idle_exit "$1" "${3:-}" "$2"; then printf '유휴'; else printf '유휴 아님'; fi
 }
 id_mkrun() {
@@ -723,6 +727,7 @@ id_mkrun() {
   fx_mkrun "$1"
   fx_segment S1 실행중
   fx_heartbeat 0 "$2"
+  ID_AGE="$2"
 }
 
 id_mkrun 20261012-0000000a 90000
@@ -769,6 +774,23 @@ check "유휴 E — 기본 임계(24시간) 안에서는 유휴가 아니다" "$
 check "유휴 E — 임계를 인자로 줄이면 같은 런이 유휴다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER" 3600)" "유휴"
 check "유휴 E — 숫자 아닌 임계는 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER" 1h)" "유휴 아님"
 check "기본 임계는 24시간이다" "$CC_RUN_IDLE_EXIT_SECONDS" "86400"
+
+# A watcher started again on a run its predecessor left as idle. The heartbeat's
+# `마지막성장` stays a day old once that watcher is gone, so the clock has to come
+# from somewhere it does not reach. F′ is F with the ledger aged back, so the
+# appended row is what F's answer rests on; F″ is F′ with a caller that started
+# watching just now, so the start epoch is what F″'s answer rests on.
+id_mkrun 20261012-0000000f 90000
+fx_row 'handoff' "사유=중단"
+check "유휴 F — 묵은 하트비트가 있어도 원장에 방금 행이 붙었으면 유휴가 아니다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" && printf '유휴' || printf '유휴 아님')" "유휴 아님"
+fx_age_file "$FX_LEDGER" 90000
+check "유휴 F′ — 원장도 하루 넘게 조용하면 유휴다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" && printf '유휴' || printf '유휴 아님')" "유휴"
+check "유휴 F″ — 같은 런이라도 방금 지켜보기 시작한 호출자에게는 유휴가 아니다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" "$(date -u +%s)" && printf '유휴' || printf '유휴 아님')" "유휴 아님"
+check "유휴 F‴ — 임계보다 오래 지켜본 호출자에게는 유휴다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" "$(( $(date -u +%s) - 90000 ))" && printf '유휴' || printf '유휴 아님')" "유휴"
 
 # ---------------------------------------------------------------------------
 # The notifier channel stays off for every suite that does not assert on it.

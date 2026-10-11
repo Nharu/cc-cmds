@@ -1260,11 +1260,12 @@ cc_unanswered_halts() {
 }
 
 cc_run_idle_exit() {
-  # cc_run_idle_exit <run-dir> [T] [ledger] — succeeds when the run's watchers
-  # have nothing left to watch: no live shift, no live stage and no fresh
-  # waiter; no open approval; no unanswered halt record; and a ledger that has
-  # not grown for T seconds. T defaults to `CC_RUN_IDLE_EXIT_SECONDS`, the
-  # ledger to the caller's `LEDGER`.
+  # cc_run_idle_exit <run-dir> [T] [ledger] [since] — succeeds when the run's
+  # watchers have nothing left to watch: no live shift, no live stage and no
+  # fresh waiter; no open approval; no unanswered halt record; and a ledger that
+  # has not grown for T seconds, nor been watched by this caller for less than
+  # T. T defaults to `CC_RUN_IDLE_EXIT_SECONDS`, the ledger to the caller's
+  # `LEDGER`; `since` is the epoch the caller started watching.
   #
   # THIS IS NOT `버려짐`, and the difference is the whole reason it exists.
   # `cc_run_state` reads a run that waits on a halt record as abandoned after
@@ -1282,7 +1283,17 @@ cc_run_idle_exit() {
   # UNREADABLE GROWTH IS NOT IDLENESS. When neither the heartbeat field nor the
   # ledger's mtime can be read, the answer is "not idle", so a reader that
   # cannot see the clock keeps watching rather than leaving.
-  local run_dir="$1" t="${2:-}" ledger="${3:-${LEDGER:-}}" n grew now idle
+  #
+  # THE CLOCK IS THE LATEST OF THREE, NOT THE HEARTBEAT ALONE. A watcher that
+  # left on this predicate stops writing `watch.heartbeat`, so its `마지막성장`
+  # stays a day old for good; read first, as `cc_ledger_growth_at` does, it made
+  # a watcher the seat had just started again leave on its first iteration — a
+  # row appended since then could not move it, and the seat starts the watcher
+  # before the shift that would make anything live. So the ledger's own mtime
+  # counts beside the field, and the optional fourth argument — the epoch the
+  # caller started watching — counts too: a watcher leaves only after watching
+  # this run for T seconds itself, never on a clock a previous watcher left.
+  local run_dir="$1" t="${2:-}" ledger="${3:-${LEDGER:-}}" since="${4:-}" n grew v now idle
   [ -n "$t" ] || t="$CC_RUN_IDLE_EXIT_SECONDS"
   case "$t" in ''|*[!0-9]*) return 1 ;; esac
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 1
@@ -1297,6 +1308,10 @@ cc_run_idle_exit() {
   grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
   [ -n "$grew" ] || return 1
   case "$grew" in *[!0-9]*) return 1 ;; esac
+  for v in "$(cc_mtime "$ledger")" "$since"; do
+    case "$v" in ''|*[!0-9]*) continue ;; esac
+    [ "$v" -gt "$grew" ] && grew=$v
+  done
   now=$(date -u +%s)
   idle=$((now - grew))
   [ "$idle" -lt 0 ] && idle=0
