@@ -10,7 +10,10 @@ need most of a minute per refresh.
 
 THE PREDICATES ARE THEREFORE PORTED, ONE TO ONE. `cc_stage_is_live`,
 `cc_live_stages`, `cc_run_state`, `cc_run_grade`, `cc_nonterminal_segments`,
-`cc_segment_count`, `cc_open_approvals`, `cc_unresolved_blocked`,
+`cc_segment_count`, `cc_open_approvals`, `cc_unresolved_blocked` with its
+`cc__blocked_fold`, `cc_waiting_fresh_count` with the waiting-marker chain it
+calls (`cc_waiting_is_member`, `cc_waiting_field`, `cc_rows_naming_lineage`,
+`cc_waiting_age_base`, `cc_effective_stall`, `wake_epoch`, `platform_supported`),
 `cc_shift_is_live`, `cc_run_ends_on_done`, `cc_run_end_settled`,
 `cc_ledger_growth_at` and `cc_mtime` each have a function below that reads the
 same bytes the same way, down to the greedy `sed` captures and the word
@@ -105,6 +108,7 @@ class ProcTable:
 
     def __init__(self):
         self.rows = None
+        self._wake = None
         env = dict(os.environ)
         env["LC_ALL"] = "C"
         for argv in (["ps", "-axo", "pid=,pgid=,lstart="], ["ps", "-A", "-o", "pid=,pgid=,lstart="]):
@@ -144,6 +148,12 @@ class ProcTable:
             return ""
         row = self.rows.get(pid)
         return row[0] if row else ""
+
+    def wake(self):
+        """`wake_epoch`, read once per scan as the shell reads it once per walk."""
+        if self._wake is None:
+            self._wake = wake_epoch()
+        return self._wake
 
 
 def _pid_of(text):
@@ -293,26 +303,86 @@ def open_approvals(lines):
     return n
 
 
-def unresolved_blocked(lines):
-    """cc_unresolved_blocked — (원인, 사유) per unresolved run-scope block."""
-    rows = [ln for ln in _rows(lines, "blocked") if "스코프=run" in ln]
-    reasons = set()
-    for ln in rows:
-        reasons.update(_field_values(ln, "사유"))
-    out = []
-    for reason in sorted(reasons, key=lambda s: s.encode("utf-8")):
-        if not reason:
+def _awk_fld(line, name):
+    """The fold's awk `fld`: the last `|` piece, from the second on, that starts
+    with `name=` once its leading blanks are gone, trailing blanks dropped."""
+    v = ""
+    head = name + "="
+    for s in line.split("|")[1:]:
+        s = s.lstrip(" \t")
+        if s.startswith(head):
+            v = s[len(head):].rstrip(" \t")
+    return v
+
+
+_LINEAGE_B = re.compile(r"계보=B:([^ |#]+#[0-9]+)")
+
+
+def _lineage_key(lin):
+    """`B:<키>#<N>` as (키, N): the awk's two `sub`s and its `+ 0`."""
+    k = re.sub(r"#[0-9]+$", "", lin)
+    n = re.sub(r"^.*#", "", lin)
+    m = re.match(r"[0-9]+", n)
+    return k, int(m.group(0)) if m else 0
+
+
+def _blocked_fold(lines):
+    """cc__blocked_fold — (사유, 원인, 스코프, 앵커 세그먼트) per unresolved block
+    that holds the whole run, in the byte order `LC_ALL=C sort` gives.
+
+    `lines` must be every ledger line that carries a `계보=B:` lineage, in file
+    order, beside the `segment` and `blocked` rows: a step cone is released by a
+    later attempt's lineage on any row family.
+    """
+    seg = set()
+    blocks = []
+    lins = []
+    for i, ln in enumerate(lines):
+        lins.append(_LINEAGE_B.findall(ln))
+        if ln.startswith("- `segment`"):
+            sid = _awk_fld(ln, "id")
+            if sid != "":
+                seg.add(sid)
             continue
-        last = ""
-        needle = "사유=%s " % reason
-        for ln in rows:
-            if needle in ln:
-                last = ln
-        cause = _field_last(last, "원인")
+        if ln.startswith("- `blocked`"):
+            blocks.append((i, _awk_fld(ln, "스코프"), _awk_fld(ln, "사유"),
+                           _awk_fld(ln, "앵커 세그먼트"), _awk_fld(ln, "원인")))
+    last = {}
+    for i, scope, why, anchor, cause in blocks:
+        if why == "":
+            continue
+        if scope == "run":
+            step = False
+        elif scope == "cone" and anchor != "" and anchor not in seg:
+            step = True
+        else:
+            continue
+        last[why] = (i, cause, step, scope, anchor)
+    out = []
+    for why, (i, cause, step, scope, anchor) in last.items():
         if cause == "해소":
             continue
-        out.append((cause, reason))
+        if step and lins[i]:
+            k, nn = _lineage_key(lins[i][0])
+            released = False
+            for later in lins[i + 1:]:
+                for lin in later:
+                    lk, ln_ = _lineage_key(lin)
+                    if lk == k and ln_ > nn:
+                        released = True
+                        break
+                if released:
+                    break
+            if released:
+                continue
+        out.append((why, cause, scope, anchor))
+    out.sort(key=lambda t: "\t".join(t).encode("utf-8"))
     return out
+
+
+def unresolved_blocked(lines):
+    """cc_unresolved_blocked — (원인, 사유) per unresolved block holding the run."""
+    return [(cause, why) for why, cause, _scope, _anchor in _blocked_fold(lines)]
 
 
 def mtime_s(path):
@@ -390,12 +460,189 @@ def run_grade(token):
     return GRADES.get(token, 9)
 
 
+# ---------------------------------------------------------------------------
+# Stages waiting for an account (liveness.sh, the waiting-marker block)
+# ---------------------------------------------------------------------------
+
+_BLANKS = " \t\n\v\f\r"
+_STALL_DECL = re.compile(r"(?:^|[;" + _BLANKS + r"])STALL=[0-9]+", re.M)
+
+
+def _strip_blanks(s):
+    """`tr -d '[:space:]'`."""
+    return "".join(ch for ch in s if ch not in _BLANKS)
+
+
+def _sed_line(path, n):
+    """`sed -n '<n>p' path`, as `$(…)` reads it."""
+    t = read_text(path)
+    if t is None:
+        return ""
+    rows = t.split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+    return rows[n - 1] if len(rows) >= n else ""
+
+
+def platform_supported():
+    """`platform_supported` — the host seam, then `uname -s`."""
+    host = os.environ.get("ORCH_HOST_OS") or os.environ.get("CC_CMDS_ORCH_HOST_OS")
+    if not host:
+        try:
+            host = os.uname().sysname
+        except AttributeError:
+            host = ""
+    return host == "Darwin"
+
+
+def wake_epoch():
+    """`wake_epoch` — the field two after `sec` in `sysctl -n kern.waketime`, or ""."""
+    if not platform_supported():
+        return ""
+    try:
+        r = subprocess.run(["sysctl", "-n", "kern.waketime"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for ln in r.stdout.decode("utf-8", "replace").split("\n"):
+        f = re.split(r"[ ,]+", ln)
+        for i, w in enumerate(f):
+            if w == "sec":
+                return f[i + 2] if i + 2 < len(f) else ""
+    return ""
+
+
+def effective_stall(run_dir, procs):
+    """cc_effective_stall — the live watcher's threshold, else the watcher's one
+    default declaration beside this module, else None."""
+    f = os.path.join(run_dir, "watch.stall") if run_dir else ""
+    if run_dir and os.path.isfile(f):
+        v = _strip_blanks(_sed_line(f, 1))
+        pid_text = _strip_blanks(_sed_line(f, 2))
+        rec = _sed_line(f, 3)
+        if _DIGITS.fullmatch(v) and _DIGITS.fullmatch(pid_text):
+            pid = int(pid_text)
+            if int(v) > 0 and rec and procs.exists(pid) and rec == procs.fingerprint(pid):
+                return int(v)
+    t = read_text(os.path.join(os.path.dirname(os.path.abspath(__file__)), "watch.sh"))
+    decl = _STALL_DECL.findall(t or "")
+    if len(decl) != 1:
+        return None
+    v = int(decl[0].rsplit("=", 1)[1])
+    return v if v > 0 else None
+
+
+def waiting_field(path, key):
+    """cc_waiting_field — the last `key=` line's value."""
+    t = read_text(path)
+    if t is None:
+        return ""
+    head = key + "="
+    v = ""
+    for ln in t.split("\n"):
+        if ln.startswith(head):
+            v = ln[len(head):]
+    return v
+
+
+def rows_naming_lineage(rows, lin):
+    """cc_rows_naming_lineage — the rows carrying `계보=<lin>` as a whole value."""
+    pat = "계보=" + lin
+    out = []
+    for row in rows:
+        s = row
+        while True:
+            i = s.find(pat)
+            if i < 0:
+                break
+            c = s[i + len(pat):i + len(pat) + 1]
+            if not re.match(r"[0-9A-Za-z_.#:-]", c):
+                out.append(row)
+                break
+            s = s[i + len(pat):]
+    return out
+
+
+def waiting_is_member(run_dir, lines, ledger_path, key, procs):
+    """cc_waiting_is_member — the holder still lives, no live stage holds the
+    key, and the attempt has neither a `stage-result` nor a `blocked` row."""
+    if not run_dir or not key:
+        return False
+    f = os.path.join(run_dir, key + ".waiting")
+    if not os.path.isfile(f):
+        return False
+    pid_text = _strip_blanks(waiting_field(f, "보유자"))
+    fp = waiting_field(f, "지문")
+    if not _DIGITS.fullmatch(pid_text) or not fp:
+        return False
+    pid = int(pid_text)
+    if not procs.exists(pid) or fp != procs.fingerprint(pid):
+        return False
+    if stage_is_live(run_dir, key, procs):
+        return False
+    if not ledger_path or not os.path.isfile(ledger_path):
+        return True
+    att = _strip_blanks(waiting_field(f, "시도"))
+    lin = waiting_field(f, "계보")
+    if att:
+        seg_k, stage_k, att_k = "세그먼트=%s " % key, "스테이지=%s " % key, "실행 버전=%s " % att
+        for ln in _rows(lines, "stage-result"):
+            if (seg_k in ln or stage_k in ln) and att_k in ln:
+                return False
+    if lin and rows_naming_lineage(_rows(lines, "blocked"), lin):
+        return False
+    return True
+
+
+def waiting_age_base(refreshed, wake):
+    """cc_waiting_age_base — the later of refresh and wake, 0 for a non-number."""
+    r = int(refreshed) if _DIGITS.fullmatch(refreshed or "") else 0
+    w = int(wake) if _DIGITS.fullmatch(wake or "") else 0
+    return w if w > r else r
+
+
+def waiting_fresh_count(run_dir, lines, ledger_path, procs, now=None, stall=None):
+    """cc_waiting_fresh_count — members whose later of refresh and wake is
+    younger than the effective stall threshold."""
+    if not run_dir:
+        return 0
+    try:
+        names = sorted(os.listdir(run_dir))
+    except OSError:
+        return 0
+    n = 0
+    first = True
+    wake = ""
+    for name in names:
+        if not name.endswith(".waiting") or name.startswith("."):
+            continue
+        f = os.path.join(run_dir, name)
+        if not os.path.isfile(f):
+            continue
+        key = name[:-len(".waiting")]
+        if not waiting_is_member(run_dir, lines, ledger_path, key, procs):
+            continue
+        if first:
+            first = False
+            if now is None:
+                now = int(time.time())
+            wake = procs.wake()
+            if stall is None:
+                stall = effective_stall(run_dir, procs)
+        base = waiting_age_base(_strip_blanks(waiting_field(f, "갱신")), wake)
+        if stall is not None and base > 0 and now - base < stall:
+            n += 1
+    return n
+
+
 def run_state(run_dir, lines, ledger_path, procs, stall=STALL_S, abandon=ABANDON_S,
               now=None, growth=None, live=None):
     """cc_run_state over a ledger already read into `lines`."""
     if live is None:
         live = live_stages(run_dir, procs)
-    if len(live) > 0:
+    # A fresh waiter is folded into the live count, as the shell folds it; the
+    # names list stays the running stages, which is what the detail shows.
+    if len(live) > 0 or waiting_fresh_count(run_dir, lines, ledger_path, procs, now=now) > 0:
         return "도는중"
     blocked_n = len(unresolved_blocked(lines))
     pend = open_approvals(lines)
@@ -479,8 +726,8 @@ class Ledger:
     Remembered by (dev, inode, offset). Bytes after the last newline are left
     for the next read, so a row being written is never parsed in half. A
     shorter file or a different inode starts over. Only the row families the
-    dashboard reads are kept; `자율 승인`, which is most of every ledger, is
-    passed over.
+    dashboard reads are kept, and beside them every line carrying a `계보=B:`
+    lineage; `자율 승인`, which is most of every ledger, is otherwise passed over.
     """
 
     def __init__(self, path):
@@ -535,14 +782,16 @@ class Ledger:
         if self.first_line is None:
             self.first_line = line
         m = _ROW_HEAD.match(line)
-        if not m:
-            return
-        if self.first_time is None:
+        if m and self.first_time is None:
             t = iso_epoch(line)
             if t is not None:
                 self.first_time = t
-        if m.group(1) in KEEP_SERIES:
+        if m and m.group(1) in KEEP_SERIES:
             self.rows.append((m.group(1), line))
+        elif "계보=B:" in line:
+            # The blocked fold releases a step cone on a later attempt's lineage,
+            # which any line may carry, so those lines are kept in file order.
+            self.rows.append((m.group(1) if m else None, line))
 
     def lines(self):
         return [ln for _s, ln in self.rows]
@@ -724,7 +973,23 @@ def stamp_key(src):
         # two make a frozen 종단 re-evaluate when a marker or a shift appears.
         os.path.exists(os.path.join(rd, "ends-on-done")) if rd else None,
         mt(os.path.join(rd, "shift.live")) if rd else None,
+        # A waiter appearing or refreshing can turn a frozen 종단 back into 도는중.
+        waiting_stamp(rd) if rd else None,
     )
+
+
+def waiting_stamp(run_dir):
+    try:
+        names = sorted(n for n in os.listdir(run_dir) if n.endswith(".waiting") and not n.startswith("."))
+    except OSError:
+        return ()
+    out = []
+    for n in names:
+        try:
+            out.append((n, os.stat(os.path.join(run_dir, n)).st_mtime_ns))
+        except OSError:
+            pass
+    return tuple(out)
 
 
 class Model:

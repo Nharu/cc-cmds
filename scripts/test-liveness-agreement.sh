@@ -636,6 +636,74 @@ else
   fx_heartbeat 0 5
   st_case "머지됨이고 적용=완료" "종단"
 
+  # A STAGE WAITING FOR AN ACCOUNT HAS NO PID FILE, only `<key>.waiting`, and
+  # `cc_run_state` folds a fresh one into its live count. Each case below sits
+  # on a ledger whose growth clock is past the stall threshold, so a port that
+  # skips the waiter answers 정지경고 where the shell answers 도는중. The wake
+  # reading is taken off the host seam: on a machine that woke a minute ago the
+  # stale marker would be fresh by its wake time, and the case would stop
+  # testing what its name says.
+  ag_waiter() {
+    # ag_waiter <key> <갱신 age> <시도> <계보> — a marker held by a live process.
+    local pid fp
+    sleep 120 &
+    pid=$!
+    FX_PIDS="${FX_PIDS:-}$pid "
+    fp=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
+    printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=%s\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n시도=%s\n' \
+      "$pid" "$fp" "$4" "$(( $(date -u +%s) - $2 ))" "$3" > "$FX_RUN_DIR/$1.waiting"
+  }
+  ag_host_saved=${ORCH_HOST_OS-}
+  ORCH_HOST_OS=Linux; export ORCH_HOST_OS
+  fx_mkrun st-wait-fresh; fx_segment W1 실행중; fx_heartbeat 0 600
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "신선한 대기자" "도는중"
+  fx_mkrun st-wait-stale; fx_segment W1 실행중; fx_heartbeat 0 600
+  ag_waiter W1 100000 1 'B:W1#1'
+  st_case "갱신이 멈춘 대기자는 신선하지 않다" "정지경고"
+  fx_mkrun st-wait-result; fx_segment W1 실행중; fx_heartbeat 0 600
+  fx_row 'stage-result' "세그먼트=W1" "스테이지=W1" "종류=implement" "종료 코드=0" "실행 버전=1"
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "그 시도의 stage-result 가 있으면 대기자가 아니다" "정지경고"
+  fx_mkrun st-wait-blocked; fx_segment W1 실행중; fx_heartbeat 0 600
+  fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=픽스처" "계보=B:W1#1"
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "같은 계보의 blocked 행이 있으면 대기자가 아니다" "정지경고"
+  fx_mkrun st-wait-lin-prefix; fx_segment W1 실행중; fx_heartbeat 0 600
+  fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=픽스처" "계보=B:W1#10"
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "B:W1#10 은 B:W1#1 을 이름 대지 않는다" "도는중"
+  if [ -n "$ag_host_saved" ]; then ORCH_HOST_OS=$ag_host_saved; else unset ORCH_HOST_OS; fi
+
+  # THE BLOCKED FOLD'S INPUT SHAPES. A design step has no segment row, so a cone
+  # row anchored on one holds the whole run; a later attempt of the same key is
+  # what releases it, and an equal attempt is not. A `스코프=run` quoted inside
+  # another field is not the scope, and `사유=막힘` is not `사유=막힘 추가`.
+  fx_mkrun st-cone-step; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=불명" "사유=마감 정지" \
+    "근거=계보=B:STEP1#1 마감" "앵커 세그먼트=STEP1"
+  fx_heartbeat 0 5
+  st_case "스텝 앵커 cone 막힘이 종단을 막는다" "진행중"
+  fx_mkrun st-cone-released; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=불명" "사유=마감 정지" \
+    "근거=계보=B:STEP1#1 마감" "앵커 세그먼트=STEP1"
+  fx_row 'stage-wait' "교대=1" "계보=B:STEP1#2" "그룹=-" "근거=fifo-yield"
+  fx_heartbeat 0 5
+  st_case "같은 키의 더 큰 시도가 스텝 cone 을 푼다" "종단"
+  fx_mkrun st-cone-same; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=불명" "사유=마감 정지" \
+    "근거=계보=B:STEP1#1 마감" "앵커 세그먼트=STEP1"
+  fx_row 'stage-wait' "교대=1" "계보=B:STEP1#1" "그룹=-" "근거=fifo-yield"
+  fx_heartbeat 0 5
+  st_case "같은 시도는 스텝 cone 을 풀지 않는다" "진행중"
+  fx_mkrun st-scope-quoted; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=인용" "근거='스코프=run'"
+  st_case "다른 필드 안의 스코프=run 은 범위가 아니다" "종단"
+  fx_mkrun st-reason-prefix; fx_segment S1 머지됨
+  fx_blocked '막힘' 불명; fx_blocked '막힘 추가' 해소
+  fx_heartbeat 0 5
+  st_case "사유 막힘 추가의 해소가 막힘을 풀지 않는다" "진행중"
+
   # THE GRADE TOKENS ARE READ OFF `cc_run_grade`, not listed here. A list
   # written by hand is complete on the day it is written: it missed 정산중,
   # where the shell answers 3 and a port without the arm answers 9, and

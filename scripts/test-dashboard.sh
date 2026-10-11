@@ -72,9 +72,29 @@ free_port() {
   pyq -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
 }
 serve_count() {
-  # Server processes started from any copy of dashboard.py, this suite's or not.
-  # Each case stops its server before the next starts, so the count is local.
-  pgrep -f 'dashboard\.py serve --fd' 2>/dev/null | grep -c . || true
+  # serve_count <state-home> — servers recorded under that state home whose pid
+  # is alive and still the process whose start fingerprint the record holds.
+  #
+  # NOT A HOST-WIDE `pgrep`. Every non-stage run open on this host starts a real
+  # server that outlives the run, so a count of every `dashboard.py serve` on
+  # the host fails these cases on a machine that uses the feature — on correct
+  # code, every time. A replaced server is not in the record, so the case that
+  # swaps one asserts separately that the old pid is gone.
+  local f pid fp now n=0
+  for f in $(find "$1" -path '*/cc-cmds/dashboard/server' 2>/dev/null); do
+    pid=$(pyq -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$f" 2>/dev/null)
+    fp=$(pyq -c 'import json,sys; print(json.load(open(sys.argv[1]))["fingerprint"])' "$f" 2>/dev/null)
+    [ -n "$pid" ] && [ -n "$fp" ] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    now=$( { LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
+    if [ "$now" = "$fp" ]; then n=$((n + 1)); fi
+  done
+  printf '%s' "$n"
+}
+suite_serve_pids() {
+  # Server processes started from this tree's dashboard.py, one pid per line,
+  # sorted — the servers this suite and only this tree can have started.
+  { pgrep -f "$DASH serve --fd" 2>/dev/null || true; } | sort
 }
 cleanup() {
   local f pid
@@ -302,6 +322,7 @@ stop_in "$XDG_STATE_HOME"
 # T8 — two ensures at once leave one server and one record.
 # ---------------------------------------------------------------------------
 S8="$WORK/s8"; mkdir -p "$S8"; P8=$(free_port)
+B8=$(suite_serve_pids)
 t0=$(pyq -c 'import time; print(time.time())')
 dash "$S8" "$P8" ensure & e1=$!
 dash "$S8" "$P8" ensure & e2=$!
@@ -310,7 +331,12 @@ wait "$e2"; r2=$?
 t1=$(pyq -c 'import time; print(time.time())')
 check "T8 두 ensure 가 모두 0 으로 끝난다" "$r1:$r2" "0:0"
 check "T8 둘 다 3초 안에 끝난다" "$(pyq -c 'import sys; print(float(sys.argv[2])-float(sys.argv[1]) < 3.0)' "$t0" "$t1")" "True"
-check "T8 서버가 하나다" "$(serve_count)" "1"
+check "T8 서버가 하나다" "$(serve_count "$S8")" "1"
+# A losing ensure that spawned anyway would leave a server the record does not
+# name, which the count above cannot see; the processes this tree started
+# during the race are read instead, less the recorded one.
+check "T8 기록 밖에 남은 서버가 없다" \
+  "$(comm -13 <(printf '%s\n' "$B8") <(suite_serve_pids) | grep -vx "$(rec_get "$S8" pid)" | grep -c . || true)" "0"
 check "T8 기록 파일이 하나다" "$(find "$S8/cc-cmds/dashboard" -maxdepth 1 -type f \( -name server -o -name '.server.tmp*' \) | grep -c .)" "1"
 check "T8 잠금이 남지 않는다" "$( [ -d "$S8/cc-cmds/dashboard/spawn.lock.d" ] && printf held || printf free )" "free"
 stop_in "$S8"
@@ -350,7 +376,7 @@ get "$(rec_get "$S10" port)" /healthz >/dev/null
 check "T10 낮은 버전 서버가 떴다" "$(jq_body 'd["version"]')" "0.0.1"
 dash "$S10" "$P10" ensure
 wait_gone "$old_pid"
-check "T10 낮으면 갈아 끼운 뒤 서버가 하나다" "$(serve_count)" "1"
+check "T10 낮으면 갈아 끼운 뒤 서버가 하나다" "$(serve_count "$S10")" "1"
 get "$(rec_get "$S10" port)" /healthz >/dev/null
 check "T10 /healthz 가 새 버전으로 답한다" "$(jq_body 'd["version"]')" "$REAL_V"
 check "T10 옛 pid 는 끝나 있다" "$(kill -0 "$old_pid" 2>/dev/null && printf alive || printf gone)" "gone"
@@ -389,7 +415,7 @@ env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID XDG_STATE_HOME="$S12" CC_CMDS
   CC_CMDS_DASHBOARD_PORT="$P12" PYTHONDONTWRITEBYTECODE=1 python3 "$DASH" ensure; rc=$?
 check "T12 CI 면 ensure 가 0 이다" "$rc" "0"
 check "T12 CI 면 기록이 없다" "$( [ -e "$(rec_file "$S12")" ] && printf yes || printf no )" "no"
-check "T12 어느 쪽도 서버를 남기지 않는다" "$(serve_count)" "0"
+check "T12 어느 쪽도 서버를 남기지 않는다" "$(serve_count "$S12")" "0"
 
 # ---------------------------------------------------------------------------
 # T14 — Python 3.9 syntax, pinned by the parser rather than by the host.

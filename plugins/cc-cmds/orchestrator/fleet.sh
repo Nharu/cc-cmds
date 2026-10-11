@@ -70,7 +70,10 @@
 # helper's name and for any notifier and must find neither). A double fork
 # would end the process launchd is tracking
 # and break the single-instance guarantee that is the sole enforcement of the
-# single-writer rule above.
+# single-writer rule above. One process does outlive this job all the same: the
+# first `snapshot` of a new run passes the gate's run-open branch, which starts
+# the run dashboard's server in its own session, and that server keeps serving
+# after the dispatch job has exited. The start lives in the gate, not here.
 #
 # THE PACING SENSOR CAN NEVER STOP DISPATCH BY BEING ABSENT. `state.json` that
 # is missing, stale, or of an unknown schema is read as no verdict at all, which

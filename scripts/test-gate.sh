@@ -28849,7 +28849,7 @@ rm -f "$LEDGER85" "$WT/$DOC85"
 
 # ---------------------------------------------------------------------------
 # 86. 런 개시가 대시보드 서버를 하나 띄우고, 띄우지 말아야 할 자리에서는 띄우지 않는다
-# --- section: 86 | group: base | covers: snapshot | anchors: 86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다, 86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다, 86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다, 86: 두 번째 런 개시는 서버를 더 띄우지 않는다, 86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다 ---
+# --- section: 86 | group: base | covers: snapshot, exec | anchors: 86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다, 86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다, 86: python3 가 없으면 서버 기록을 남기지 않는다, 86: python3 부재는 원장의 행 계열 순서를 바꾸지 않는다, 86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다, 86: 두 번째 런 개시는 서버를 더 띄우지 않는다, 86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다, 86: 자동 해소가 켜져도 기기전역 open 은 플러그인 보호 룰에 거부되고 실행되지 않는다, 86: 자동 해소가 꺼져도 기기전역 open 은 승인 대기 없이 같은 룰에 거부된다, 86: 순수 읽기인 url 도 쓰기 등급으로 매겨져 같은 룰에 거부된다 ---
 #
 # 서버는 게이트의 런 개시 갈래에서만 뜨므로, 이 절의 모든 경우는 새 런 id 의 첫
 # 진입이다. 경우마다 상태 루트를 따로 둬 앞 경우의 서버 기록이 뒤 경우의 「없다」를
@@ -28889,6 +28889,15 @@ d86_gate() {
       esac
     done
     [ "$#" -gt 0 ] && shift
+    # D86_NOPY — a host without python3. Only the lookup the gate makes fails;
+    # every other `command` goes to the builtin. In-process only: a forked gate
+    # does not see a function defined here.
+    if [ -n "${D86_NOPY:-}" ]; then
+      command() {
+        if [ "${1:-}" = "-v" ] && [ "${2:-}" = "python3" ]; then return 1; fi
+        builtin command "$@"
+      }
+    fi
     if [ -n "${D86_FORK:-}" ]; then
       bash "$GATE" "$verb" --manifest "$D86_M" "$@"
     else
@@ -28901,7 +28910,26 @@ d86_rec() { printf '%s/cc-cmds/dashboard/server' "$1"; }
 d86_pid() { jq -r '.pid // empty' "$(d86_rec "$1")" 2>/dev/null || true; }
 d86_has() { if [ -f "$(d86_rec "$1")" ]; then printf yes; else printf no; fi; }
 d86_runrow() { { grep -c '^- `run` ' "$D86_L" 2>/dev/null || true; }; }
-d86_serving() { pgrep -f 'dashboard\.py serve --fd' 2>/dev/null | grep -c . || true; }
+d86_serving() {
+  # Servers recorded under this section's state homes whose pid is alive and
+  # still the process whose start fingerprint the record holds. Not a host-wide
+  # `pgrep`: any run opened on this host starts a real server, and a baseline
+  # taken once cannot tell one that started mid-section from one of ours.
+  local f pid fp now n=0
+  for f in "$WORK"/s86-*/cc-cmds/dashboard/server; do
+    [ -f "$f" ] || continue
+    pid=$(jq -r '.pid // empty' "$f" 2>/dev/null || true)
+    fp=$(jq -r '.fingerprint // empty' "$f" 2>/dev/null || true)
+    [ -n "$pid" ] && [ -n "$fp" ] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    now=$( { LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
+    if [ "$now" = "$fp" ]; then n=$((n + 1)); fi
+  done
+  printf '%s' "$n"
+}
+d86_seq() { { grep -o '^- `[^`]*`' "$D86_L" 2>/dev/null || true; } | tr '\n' ' '; }
+d86_h() { { grep -E '^[0-9a-f]{64}(-[0-9a-f]{64})?$' "$1" 2>/dev/null || true; } | tail -1; }
+D86_DASH="$(cd "$(dirname "$GATE")" && pwd)/dashboard.py"
 d86_alive() { if [ -n "$1" ] && kill -0 "$1" 2>/dev/null; then printf yes; else printf no; fi; }
 d86_stop() {
   local pid i=0
@@ -28912,7 +28940,6 @@ d86_stop() {
 }
 d86_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 D86_PORT=$(d86_port)
-D86_BASE=$(d86_serving)
 
 # T15 — 끄개 기본값은 새지 않는다. 같은 준비에서 끄개만 풀면 서버 기록이 생기므로,
 # 프리앰블의 내보내기를 지우면 첫 단언이 실패한다.
@@ -28920,11 +28947,22 @@ D86_S="$WORK/s86-off"; mkdir -p "$D86_S"; d86_new
 check "86: (선행) 끄개 기본값 경우의 snapshot 이 런을 연다" \
   "$(d86_gate "$D86_S" "$D86_PORT" snapshot)/$(d86_runrow)" "0/1"
 check "86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다" "$(d86_has "$D86_S")" "no"
+D86_SEQ0=$(d86_seq)
 D86_S="$WORK/s86-unset"; mkdir -p "$D86_S"; d86_new
 check "86: (선행) 끄개를 푼 경우의 snapshot 이 런을 연다" \
   "$(d86_gate "$D86_S" "$D86_PORT" snapshot -CC_CMDS_DASHBOARD)/$(d86_runrow)" "0/1"
 check "86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다" "$(d86_has "$D86_S")" "yes"
 d86_stop "$D86_S"
+
+# python3 가 없는 호스트 — 끄개를 풀고 `CI` 를 지워 서버를 띄울 자리인데, 게이트가 찾는
+# `command -v python3` 만 실패한다. 런 개시는 그대로 성공하고, 서버 기록도 원장의 흔적도
+# 남지 않아야 한다. 이 단언들이 공허하지 않다는 것은 바로 위 경우가 보인다: 함수 정의만
+# 없는 같은 준비가 서버 기록을 남긴다. 원장은 끄개 기본값 경우의 행 계열 순서와 대조한다.
+D86_S="$WORK/s86-nopy"; mkdir -p "$D86_S"; d86_new
+check "86: python3 가 없어도 런 개시는 rc 0 으로 런을 연다" \
+  "$(D86_NOPY=1 d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
+check "86: python3 가 없으면 서버 기록을 남기지 않는다" "$(d86_has "$D86_S")" "no"
+check "86: python3 부재는 원장의 행 계열 순서를 바꾸지 않는다" "$(d86_seq)" "$D86_SEQ0"
 
 # T17 — 한 상태 루트에서 두 런의 개시. 첫째가 띄우고 둘째는 그 서버를 그대로 둔다.
 D86_S="$WORK/s86-on"; mkdir -p "$D86_S"; d86_new
@@ -28932,14 +28970,14 @@ check "86: (선행) 첫 런의 snapshot 이 런을 연다" \
   "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
 D86_P1=$(d86_pid "$D86_S")
 check "86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다" \
-  "$(d86_alive "$D86_P1")/$(( $(d86_serving) - D86_BASE ))" "yes/1"
+  "$(d86_alive "$D86_P1")/$(d86_serving)" "yes/1"
 check "86: 같은 런의 두 번째 snapshot 은 서버를 더 띄우지 않는다" \
-  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_pid "$D86_S")/$(( $(d86_serving) - D86_BASE ))" "0/$D86_P1/1"
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_pid "$D86_S")/$(d86_serving)" "0/$D86_P1/1"
 d86_new
 check "86: (선행) 둘째 런의 snapshot 이 런을 연다" \
   "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
 check "86: 두 번째 런 개시는 서버를 더 띄우지 않는다" \
-  "$(d86_pid "$D86_S")/$(( $(d86_serving) - D86_BASE ))" "$D86_P1/1"
+  "$(d86_pid "$D86_S")/$(d86_serving)" "$D86_P1/1"
 d86_stop "$D86_S"
 
 # 경합 — 같은 새 런에 비스테이지 snapshot 둘이 동시에 들어온다. 런 개시 갈래 둘레에는
@@ -28957,7 +28995,7 @@ d86_jb=$!
 wait "$d86_ja" "$d86_jb" || true
 d86_recs=$(find "$D86_S/cc-cmds/dashboard" \( -name server -o -name '.server.tmp*' \) 2>/dev/null | grep -c . || true)
 check "86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다" \
-  "$(cat "$WORK/rc86a")/$(cat "$WORK/rc86b")/$d86_recs/$(( $(d86_serving) - D86_BASE ))" "0/0/1/1"
+  "$(cat "$WORK/rc86a")/$(cat "$WORK/rc86b")/$d86_recs/$(d86_serving)" "0/0/1/1"
 d86_stop "$D86_S"
 
 # 띄우지 않는 자리 — 스테이지 좌석, 첫 진입이 `plan`, 첫 진입이 `digest-path`, `CI`.
@@ -28974,7 +29012,64 @@ check "86: 첫 진입이 digest-path 인 런 개시는 서버를 띄우지 않�
 D86_S="$WORK/s86-ci"; mkdir -p "$D86_S"; d86_new
 check "86: CI 아래의 런 개시는 서버를 띄우지 않는다" \
   "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on CI=1)/$(d86_runrow)/$(d86_has "$D86_S")" "0/1/no"
-check "86: 이 절이 띄운 서버가 남지 않는다" "$(( $(d86_serving) - D86_BASE ))" "0"
+
+# 게이트 아래의 좌석이 `python3 <플러그인 루트>/orchestrator/dashboard.py` 를 부르면
+# 실행되지 않는다. 표지 없는 비스테이지 좌석에서, 끄개를 풀고 `CI` 를 지운 환경으로
+# 부른다 — 게이트가 행위를 실행했다면 `open` 이 서버를 띄워 기록을 남겼을 자리다(맨 끝의
+# 대조 경우가 보인다). 런은 끄개 기본값의 `snapshot` 으로 먼저 열어 둔다. 그래야 `exec` 가
+# 런 개시 갈래를 지나지 않고, 서버 기록이 생긴다면 그것은 `open` 이 남긴 것이다.
+#
+# 처분은 도달 판정이 아니라 설치 플러그인 보호 룰이다. 등급표가 `python3` 를 쓰기 등급으로
+# 매기고 피연산자가 게이트 자신의 `orchestrator/` 아래 파일이라, 그 룰이 도달 판정보다 먼저
+# 종료 코드 3 으로 거부한다. 그래서 자동 해소 스위치의 두 모드가 같은 결과를 내고, `승인`
+# 대기도 도달 park 행도 생기지 않는다. 순수 읽기인 `url` 도 같은 룰에 걸린다.
+d86_dash() {
+  # d86_dash <state-home> <auto-resolve> <reach> <verb> — open the run, then the
+  # declared `dashboard.py <verb>`. Leaves the exit statuses in d86_rc (run open)
+  # and d86_orc (the act), and the act's output in $WORK/86-dash.out.
+  local hf="$WORK/86-dash.h"
+  d86_rc=$(D86_OUT="$hf" d86_gate "$1" "$D86_PORT" snapshot -- --fields H)
+  d86_orc=$(D86_OUT="$WORK/86-dash.out" \
+    d86_gate "$1" "$D86_PORT" exec CC_CMDS_DASHBOARD=on CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$2" \
+    -CC_PIPELINE_STAGE_ID -CC_PIPELINE_SEGMENT \
+    -- --target front --cutpoint 커밋 --surface 워크트리쓰기 --reach "$3" \
+       --snapshot-digest "$(d86_h "$hf")" --rationale '대시보드를 연다' \
+       -- python3 "$D86_DASH" "$4")
+}
+d86_count() { { grep -c "^- \`$1\` " "$D86_L" 2>/dev/null || true; }; }
+d86_parked() { { grep '^- `blocked` ' "$D86_L" 2>/dev/null || true; } | grep -cF '사유=도달 park' || true; }
+d86_guard() {
+  if grep -qF 'orchestrator or hook script of the installed plugin' "$WORK/86-dash.out" 2>/dev/null; then
+    printf yes
+  else
+    printf no
+  fi
+}
+D86_S="$WORK/s86-open-on"; mkdir -p "$D86_S"; d86_new
+d86_dash "$D86_S" 1 기기전역 open
+check "86: (선행) 자동 해소가 켜진 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+check "86: 자동 해소가 켜져도 기기전역 open 은 플러그인 보호 룰에 거부되고 실행되지 않는다" \
+  "$d86_orc/$(d86_guard)/$(d86_parked)/$(d86_count 승인)/$(d86_has "$D86_S")" "3/yes/0/0/no"
+D86_S="$WORK/s86-open-off"; mkdir -p "$D86_S"; d86_new
+d86_dash "$D86_S" 0 기기전역 open
+check "86: (선행) 자동 해소가 꺼진 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+check "86: 자동 해소가 꺼져도 기기전역 open 은 승인 대기 없이 같은 룰에 거부된다" \
+  "$d86_orc/$(d86_guard)/$(d86_parked)/$(d86_count 승인)/$(d86_has "$D86_S")" "3/yes/0/0/no"
+D86_S="$WORK/s86-url"; mkdir -p "$D86_S"; d86_new
+d86_dash "$D86_S" 1 런로컬 url
+check "86: (선행) url 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+check "86: 순수 읽기인 url 도 쓰기 등급으로 매겨져 같은 룰에 거부된다" \
+  "$d86_orc/$(d86_guard)" "3/yes"
+D86_S="$WORK/s86-open-on"
+# 대조 — 같은 환경에서 게이트 밖으로 부른 `open` 은 서버 기록을 남긴다.
+( cd "$WT" || exit 99
+  unset CI CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  export XDG_STATE_HOME="$D86_S" CC_CMDS_DASHBOARD=on CC_CMDS_DASHBOARD_PORT="$D86_PORT" \
+         CC_CMDS_DASHBOARD_IDLE=600
+  python3 "$D86_DASH" open ) >/dev/null 2>&1 || true
+check "86: (대조) 같은 환경에서 게이트 밖으로 부른 open 은 서버 기록을 남긴다" "$(d86_has "$D86_S")" "yes"
+d86_stop "$D86_S"
+check "86: 이 절이 띄운 서버가 남지 않는다" "$(d86_serving)" "0"
 
 # --- epilogue-begin ---
 #
