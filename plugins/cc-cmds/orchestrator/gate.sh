@@ -5603,11 +5603,22 @@ surface_of_argv0() {
 }
 
 gate_unwrap_lockf() {
-  # gate_unwrap_lockf <resolver> <lock-only> <unknown-opt> [-k] [-s] [-t <sec>] <lockfile> <command> [args...]
+  # gate_unwrap_lockf <resolver> <lock-only> <unknown-opt> [-knsw] [-t <sec>] [--] <lockfile> <command> [args...]
   #
   # Skip lockf's own options and its lockfile operand, then hand what is left to
-  # <resolver>. `-t` takes a value; `-k`, `-s` and `-n` do not. The lockfile is
-  # the first non-option word and is never itself the command.
+  # <resolver>. `-t` takes a value, attached or separate; `-k`, `-n`, `-s` and
+  # `-w` do not, and may be clustered (`-ks`, `-st 0`). `--` ends the options.
+  # The lockfile is the first non-option word and is never itself the command.
+  #
+  # THE WHOLE BSD GETOPT GRAMMAR, through `_gp_getopt` — the parser the hook's
+  # `_gp_peel_lockf` already reads the same synonym with. The hand-written loop
+  # this replaced knew `-k`, `-s`, `-n` and `-t` one word at a time, so `-w`,
+  # a cluster such as `-sn` or `-ks`, and `--` all answered <unknown-opt> with
+  # `GATE_UW_PATHS` empty. Every reader below then lost the lockfile at once:
+  # the grade fell to its unknown answer, the opaque floor skipped its raise,
+  # and a `읽기` declaration removed a sibling worktree's file while the honest
+  # `--destructive` one parked. An option this grammar still does not have, and
+  # a `-t` with no value, are <unknown-opt>.
   #
   # ONE UNWRAP SHARED BY TWO TABLES. The grader and the history-integration
   # predicate both have to see through `lockf`, and while each carried its own
@@ -5618,7 +5629,7 @@ gate_unwrap_lockf() {
   # predicate passes `0`/`1`.
   #
   # ARGV0 IS ALREADY GONE. `surface_of_argv0` drops it before dispatching and the
-  # lockf arm of the predicate drops it explicitly, so this loop starts at the
+  # lockf arm of the predicate drops it explicitly, so this parse starts at the
   # first option. The old code shifted a SECOND time here, which ate whatever
   # stood first: `lockf <file> git status` then read `git` as the lockfile and
   # graded `status` alone, and `lockf -t 5 <file> git commit` read `5` as the
@@ -5639,30 +5650,25 @@ gate_unwrap_lockf() {
   # off the grade raise, the destruction trigger and the landing collector
   # together. Everything after the lockfile goes to the resolver as it stands,
   # so `-k` there is the wrapped argv0 and grades `등급 미상`.
+  #
+  # THE PARSER'S STATE IS LOCAL HERE. The readers that need the lockfile call
+  # this unwrap in their own shell, and some of them run inside a caller that
+  # is itself between `_gp_getopt` and reading its `_GP_*` answer; without the
+  # `local` line that caller would read this lockf's options as its own.
   local resolver="$1" lock_only="$2" unknown_opt="$3"; shift 3
-  local seen_file=0
+  local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL _GP_OPTVAL
   GATE_UW_PATHS=(); GATE_UW_KEEP=0; GATE_UW_OPTW=''
-  while [ "$#" -gt 0 ]; do
-    if [ "$seen_file" = 1 ]; then
-      "$resolver" "$@"
-      return 0
-    fi
-    case "$1" in
-      # `-t` with no value after it emits NOTHING, which is what this did before
-      # it was factored out. Repairing that here would mix a second change into
-      # the one these fixtures measure.
-      -t) shift 2 || return 0 ;;
-      -t*) shift ;;
-      -k) GATE_UW_KEEP=1; shift ;;
-      -s|-n) shift ;;
-      -*) printf '%s' "$unknown_opt"; return 0 ;;
-      *) seen_file=1; GATE_UW_PATHS=("$1"); shift ;;
-    esac
-  done
+  _gp_getopt knsw t '' '' "$@"
+  if [ "$_GP_PEEL" = form ] || [ "${#_GP_REST[@]}" -eq 0 ]; then
+    printf '%s' "$unknown_opt"; return 0
+  fi
+  if _gp_optlast k; then GATE_UW_KEEP=1; fi
+  GATE_UW_PATHS=("${_GP_REST[0]}")
   # A lock with nothing after it locks and exits — that is a worktree write (it
   # creates the lockfile) and there is no wrapped command to defer to.
-  [ "$seen_file" = 1 ] && { printf '%s' "$lock_only"; return 0; }
-  printf '%s' "$unknown_opt"
+  if [ "${#_GP_REST[@]}" -eq 1 ]; then printf '%s' "$lock_only"; return 0; fi
+  "$resolver" "${_GP_REST[@]:1}"
+  return 0
 }
 
 surface_of_lockf() {
@@ -5687,8 +5693,16 @@ surface_of_lockf() {
   # `lockf -k -t 0 "${RUN_DIR}/designdoc.lock" …` the unattended skills
   # prescribe for their design-document writes, a lock outside the worktree
   # that is not the destruction this rule is here to park.
+  #
+  # AN UNREADABLE OPTION IS `형태 미상`, as for every other wrapper. This arm
+  # alone answered `등급 미상`, and that asymmetry was the hole: an unknown
+  # grade sends the comparator to the opaque floor instead of the grade, and
+  # with the lockfile unread the floor stayed `읽기`, so `lockf -w <sibling
+  # file> true` declared `읽기` removed the file. `형태 미상` is refused before
+  # the comparator. It and `외부상태변경` are kept as they come, without the
+  # raise below.
   local g
-  g=$(gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@")
+  g=$(gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' "$GATE_FORM_UNKNOWN" "$@")
   gate_unwrap_lockf : '' '' "$@"
   if [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
     case "$g" in
@@ -7137,10 +7151,17 @@ gate_opaque_floor() {
   # The `-o` raise ignores `-a`, because the grading table does too — an append
   # is still a write, and a floor lower than the table would split the same act
   # between the two tables.
-  local wf
+  #
+  # AN OPTION THE UNWRAP CANNOT READ FLOORS `트리밖쓰기` in both arms. Where the
+  # option list is unread, so is where the lockfile or the `-o` file is, and
+  # answering "nothing readable" there left `lockf -p <sibling file> bash -c
+  # true` and `time -lo <sibling file> bash -c true` at `읽기`. Outside the
+  # target is the closed reading of a file whose place is unknown.
+  local wf unread
+  unread=$(printf '트리밖쓰기\t\t')
   case "$cmd" in
     lockf)
-      wf=$(gate_unwrap_lockf gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@")
+      wf=$(gate_unwrap_lockf gate_opaque_floor "$GATE_FLOOR_NONE" "$unread" "$@")
       gate_unwrap_lockf : '' '' "$@"
       if [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
         wf=$(gate_answer_floor_max "$wf" \
@@ -7151,7 +7172,7 @@ gate_opaque_floor() {
     rg)      gate_unwrap_rg      gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     env)     gate_unwrap_env     gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     time)
-      wf=$(gate_unwrap_time gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@")
+      wf=$(gate_unwrap_time gate_opaque_floor "$GATE_FLOOR_NONE" "$unread" "$@")
       gate_unwrap_time : '' '' "$@"
       if [ -n "$GATE_UW_OPTW" ]; then
         wf=$(gate_answer_floor_max "$wf" "$(printf '트리밖쓰기\t\t')")
@@ -7213,6 +7234,18 @@ $a"; next_is_c=0; continue; fi
     local g; g=$(surface_of_argv0 "$@")
     case "$g" in
       읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
+        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
+        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
+    esac
+    # A `lockf` or `time` line in the payload carries its own file, which the
+    # line's grade does not raise when the option list is unread: `bash -c
+    # "lockf -p <sibling file> true"` grades `형태 미상` here, and that is not a
+    # floor. So the line is floored the way the same argv is floored bare, and
+    # only the first field is folded — the mark is `gate_act_mark`'s, below.
+    case "${first##*/}" in
+      lockf|time)
+        g=$(gate_opaque_floor "$@")
+        g="${g%%	*}"
         fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
         if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
     esac

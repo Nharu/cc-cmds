@@ -29856,6 +29856,45 @@ om86 읽기 time -o "$SIB86/tm86out" bash -c true
 case "$rc" in 6|11) ok "86: 읽기로 선언한 형제 파일 time -o bash -c 는 거부되거나 park 된다 (rc=$rc)" ;;
   *) bad "86: 읽기로 선언한 형제 파일 time -o bash -c 는 거부되거나 park 된다" "rc=$rc $msg" ;; esac
 check "86: 그 time -o bash -c 의 형제 파일이 그대로다" "$(cat "$SIB86/tm86out" 2>/dev/null)" "k"
+
+# lockf·time 의 읽지 못하던 옵션 — 언랩이 lockf 옵션을 -k·-s·-n·-t 한 낱말씩만 알던
+# 동안 -w, 묶음 -sn·-ks·-st 0, -- 는 모르는 옵션이 되어 잠금 파일을 잃었다. 등급은
+# lockf 만 형태 미상이 아닌 등급 미상을 답해 비교기가 바닥과 비교했고, 바닥은 잠금
+# 파일을 세지 않아 읽기로 남았다. 그래서 읽기 선언이 도달·파괴 질문 없이 통과해 형제
+# 잠금 파일을 지웠다. 이제 언랩은 BSD getopt 문법을 읽고, 그래도 모르는 옵션은 등급에서
+# 형태 미상, 바닥에서 트리밖쓰기다. 바닥은 bash -c 페이로드 안의 lockf·time 줄도 센다.
+check "86: lockf -w 의 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -w "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: 묶은 lockf -sn 의 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -sn "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: 띄운 값을 묶은 lockf -st 0 의 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -st 0 "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: lockf -- 뒤 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -- "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: 대조 — 묶음 안의 -k 는 보존 옵션이라 lockf -ks 는 감싼 읽기 그대로다" "$(sg86 lockf -ks "$SIB86/lk86lock" true)" "읽기"
+check "86: 문법에 없는 lockf -p 는 형태 미상이다" "$(sg86 lockf -p "$SIB86/lk86lock" true)" "형태 미상"
+check "86: lockf -w 의 형제 잠금 파일은 lockf 가 트리거다" "$(lt86 lockf -w "$SIB86/lk86lock" true)" "lockf"
+check "86: 대조 — lockf -ks 는 감싼 명령이 파괴가 아니면 트리거가 없다" "$(lt86 lockf -ks "$SIB86/lk86lock" true)" ""
+has86 "$(ll86 lockf -w "$SIB86/lk86lock" true)" "$SIB86L/lk86lock" \
+  && ok "86: lockf -w 의 잠금 파일이 착지점에 있다" \
+  || bad "86: lockf -w 의 잠금 파일이 착지점에 있다" "$(ll86 lockf -w "$SIB86/lk86lock" true)"
+check "86: lockf -w 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 lockf -w "$SIB86/lk86lock" bash -c true)" "트리밖쓰기"
+check "86: 모르는 옵션 lockf -p 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 lockf -p "$SIB86/lk86lock" bash -c true)" "트리밖쓰기"
+check "86: 묶음 time -lo 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 time -lo "$SIB86/tm86out" bash -c true)" "트리밖쓰기"
+check "86: bash -c 페이로드 안 lockf -w 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "lockf -w $SIB86/lk86lock true")" "트리밖쓰기"
+check "86: bash -c 페이로드 안 lockf -p 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "lockf -p $SIB86/lk86lock true")" "트리밖쓰기"
+check "86: 대조 — bash -c 페이로드 안 lockf -k -t 0 의 바닥은 읽기다" "$(fl86 bash -c "lockf -k -t 0 $T86/lk86k true")" "읽기"
+for a86 in "lockf -w" "lockf -sn" "bash -c"; do
+  case "$a86" in
+    "bash -c") om86 읽기 bash -c "lockf -w $SIB86/lk86lock true" ;;
+    # shellcheck disable=SC2086
+    *) om86 읽기 $a86 "$SIB86/lk86lock" true ;;
+  esac
+  case "$rc" in 2|6|11) ok "86: 읽기로 선언한 형제 잠금 파일의 $a86 철자는 거부되거나 park 된다 (rc=$rc)" ;;
+    *) bad "86: 읽기로 선언한 형제 잠금 파일의 $a86 철자는 거부되거나 park 된다" "rc=$rc $msg" ;; esac
+  check "86: 그 $a86 철자의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+done
+om86 읽기 lockf -p "$SIB86/lk86lock" true
+check "86: 읽기로 선언한 lockf -p 는 형태 미상으로 거부된다" "$rc" "2"
+case "$msg" in *"형태 미상"*) ok "86: 그 거부 문면이 형태 미상을 말한다" ;;
+  *) bad "86: 그 거부 문면이 형태 미상을 말한다" "$msg" ;; esac
+check "86: 그 lockf -p 의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
 rm -rf "$H86"
 rm -f "$SIB86/lk86lock" "$SIB86/tm86out"
 
