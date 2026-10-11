@@ -2,7 +2,7 @@
 // 받는 순수 함수다. 처리기 안의 `$` 호출은 index.tsx 가 정의한다.
 
 import { EDITOR_SUBMIT_LABEL, NEXT_LABEL, PREV_LABEL, TO_SUBMIT_LABEL, UNANSWERED } from './spec'
-import { CANCEL_KEY, EDITOR_INDENT, NEXT_KEY, PREV_KEY, SUBMIT_KEY, descriptionIndent } from './layout'
+import { CANCEL_KEY, EDITOR_INDENT, NEXT_KEY, PREV_KEY, SUBMIT_KEY, blockKey, descriptionIndent, headKey } from './layout'
 import type { Row } from './layout'
 import type { FormEditor } from './transitions'
 
@@ -61,15 +61,19 @@ export function drawForm(el: FormElements, rows: Row[], ids: string[], on: FormH
           </Box>
         )
       case 'current':
+        // 펼친 질문의 첫 정지점으로 갈 때 이 줄도 함께 보이게 하려고 key 를 단 상자로 감싼다.
         return (
-          <Text>
-            <Text bold color="suggestion">{`▸ ${row.n} ${row.header}`}</Text>
-            <Text bold>{`  ${row.question}`}</Text>
-          </Text>
+          <Box key={headKey(row.n)}>
+            <Text>
+              <Text bold color="suggestion">{`▸ ${row.n} ${row.header}`}</Text>
+              <Text bold>{`  ${row.question}`}</Text>
+            </Text>
+          </Box>
         )
       case 'option':
+        // 바깥 상자의 key 는 버튼과 그 아래 설명을 함께 보이게 하는 대상이다.
         return (
-          <Box paddingLeft={2} flexDirection="column">
+          <Box key={blockKey(row.key)} paddingLeft={2} flexDirection="column">
             <Box flexDirection="row" gap={2}>
               <Button key={row.key} plain {...(row.hotkey ? { hotkey: row.hotkey } : {})} {...auto(row.autoFocus)} onPress={() => on.choose(qid(row.key), row.label)}>
                 {`${row.glyph} ${row.label}`}
@@ -125,14 +129,6 @@ export function drawForm(el: FormElements, rows: Row[], ids: string[], on: FormH
               onInput={(v: string) => on.typeText(row.qid, row.field, v)}
               onSubmit={(v: string) => on.commitText(row.qid, row.field, v)}
             />
-          </Box>
-        )
-      case 'spacer':
-        return (
-          <Box flexDirection="column">
-            {Array.from({ length: row.lines }, () => (
-              <Text> </Text>
-            ))}
           </Box>
         )
       case 'note':

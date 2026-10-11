@@ -33,6 +33,8 @@ export function world(on: On, options: WorldOptions = {}) {
     toasts: [] as string[],
     runs: [] as { argv: string[]; stdin?: string; env?: Record<string, string>; timeoutMs?: number }[],
     submits: [] as Submitted[],
+    // 훅들이 엔진 스크롤로 넘긴 입력. 순서대로 쌓는다.
+    engineScrolls: [] as { by: number; origin?: { kind: string }; pointer?: unknown }[],
   }
   mock.env(on, { CC_PIPELINE_SEGMENT: '', CC_PIPELINE_STAGE_ID: '', CC_PIPELINE_SHIFT_ID: '', CC_PIPELINE_RUN_ID: '', ...options.env })
   const clock = mock.clock(on, { now: options.now ?? 1_000_000 })
@@ -71,8 +73,15 @@ export function world(on: On, options: WorldOptions = {}) {
 
     return { value: undefined }
   })
-  // 포커스 고리: focusDeny 가 있으면 엔진이 이동을 거절한 것으로 답한다.
+  // 포커스 고리: focusDeny 가 있으면 엔진이 이동을 거절한 것으로 답한다. 이 mod 자신이 부른
+  // $.ui.focus·$.ui.scroll 은 키트에서 이 스텁들에 닿지 않으므로 기록하지 않는다.
   on('ui.focus', () => (w.focusDeny ? { deny: w.focusDeny } : {}))
+  // 창: 시험이 흘린 사람 입력 가운데 훅들이 엔진 스크롤로 넘긴 것.
+  on('ui.scroll', (_$, e: any) => {
+    w.engineScrolls.push({ by: e.by, origin: e.origin, pointer: e.pointer })
+
+    return {}
+  })
   on('ui.status', (_$, e) => {
     w.statuses.push(e.text)
 
@@ -133,6 +142,18 @@ export const mount = ($: any) =>
       view: {},
     },
   })
+
+// 사람의 스크롤 입력. 기본은 키보드 화살표 한 줄(pointer 없음)이고, 휠은 pointer 를 준다.
+export const scroll = ($: any, by: number, extra: Record<string, unknown> = {}) =>
+  $.ui.scroll({ component: 'Pane', requestId: PANE, offset: 0, by, bodyRows: 10, contentRows: 50, origin: { kind: 'person' }, ...extra })
+
+// 사람·엔진이 일으킨 포커스 이동(Tab, 클릭). element 가 없으면 엔진 자신의 정지점이다.
+export const focusEvent = ($: any, element?: string) =>
+  $.ui.focus({ component: 'Pane', requestId: PANE, plugin: 'cc-cmds', ...(element === undefined ? {} : { element }) })
+
+// 올린 패널의 Button·Input key 를 문서 순서로.
+export const drawnStops = async (ui: any): Promise<string[]> =>
+  (await ui.findAll({})).filter((x: any) => x.type === 'Button' || x.type === 'Input').map((x: any) => x.key)
 
 export const opt = (label: string, extra: Record<string, unknown> = {}) => ({ label, description: `${label} 설명`, ...extra })
 
