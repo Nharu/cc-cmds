@@ -24812,6 +24812,22 @@ check "57V: 스킬의 재킥오프가 그 문면을 옛 사본 신호로 적는�
   "$(grep -cF '`gate: unknown argument: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
 check "57V: 원천 런에는 done 이 쓰이지 않았다" \
   "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
+# 게이트의 거절 문면이 영어로 바뀌기 전에 고정된 사본은 같은 자리에서 한국어로 거절한다.
+# 스킬은 문면이 아니라 모양으로 가르므로, 그 문면도 옛 사본 신호로 적어야 한다.
+sed -e "s/'gate: unknown argument: %s\\\\n'/'gate: 알 수 없는 인자: %s\\\\n'/" "$P57V_COPY" > "$P57V_COPY.old" \
+  && mv "$P57V_COPY.old" "$P57V_COPY" && chmod +x "$P57V_COPY"
+check "57V: 한국어 사본의 인자 루프가 한국어 문면을 낸다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cF "'gate: 알 수 없는 인자: %s" "$P57V_COPY" || true)" "1"
+p57_gate end-abandoned --manifest "$P57_MAN" --cause 이어받음 --successor 20261012-abcdef01
+check "57V: 한국어 옛 사본에 고정된 런의 end-abandoned 도 exit 2 다" "$rc" "2"
+case "$msg" in
+  *'gate: 알 수 없는 인자: --cause'*) ok "57V: 한국어 사본은 --cause 를 모르는 인자로 거절한다" ;;
+  *) bad "57V: 한국어 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
+esac
+check "57V: 스킬의 재킥오프가 한국어 문면도 옛 사본 신호로 적는다" \
+  "$(grep -cF '`gate: 알 수 없는 인자: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 않았다" \
+  "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
