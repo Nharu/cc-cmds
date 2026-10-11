@@ -9828,12 +9828,19 @@ check "34: 닫힌 PR · 관측 실패 · 선언 머지 슬라이스 · 문서 �
 # 이전 런이 PR 에서 멈춘 슬라이스 — 실제 plan_from_declaration 과 실제 게이트 들여오기로
 # 주 루프까지 돈다. PR 이 아직 열려 있으면 SA 는 다시 하지 않되 `done.txt` 에 들지
 # 않으므로, SA 에 기대는 SB 는 그 PR 을 연 런에서처럼 park 된다. 머지됐고 그 머지
-# 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다. gh 는 PATH 스텁이다 — 게이트는
-# `run_gate_call` 의 자식 셸에서 돌아 함수 스텁이 닿지 않는다.
+# 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다.
+#
+# gh 는 export 한 함수 스텁이다(test-gate.sh 15g 의 g15_pr 와 같은 방식). 게이트는
+# `run_gate_call` 의 자식 bash 에서 돌고, 그 셸이 소싱하는 run.sh 는 PATH 앞에
+# /usr/bin 을 다시 붙인다. 그래서 PATH 스텁은 /usr/bin/gh 가 있는 호스트(리눅스 CI
+# 러너)에서 가려져 실제 gh 가 돈다. export 한 함수는 자식 bash 에 그대로 넘어가
+# PATH 순서와 무관하게 이긴다. 스텁은 받은 argv 를 로그에 남기고 시험은 그 로그에
+# `pr view 12` 가 있음을 단언하므로, 스텁이 우회되면 「PR 을 읽지 못함」과 구별된다.
 R34PRKEY="${R34PR#/}"
 mkdir -p "$R34/ghbin"
 cat > "$R34/ghbin/gh" <<'GHSTUB'
 #!/bin/sh
+printf '%s\n' "$*" >> "${R34LOG:-/dev/null}"
 case "$*" in *"pr view 12"*) [ -n "${R34GH:-}" ] && printf '%s\n' "$R34GH" && exit 0 ;; esac
 exit 1
 GHSTUB
@@ -9850,7 +9857,10 @@ r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12;
     MANIFEST="$d/manifest.md"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
     DOC="$R34PR"; DOC_KEY="$R34PRKEY"; DOC_SLUG="$1"; DOC_BASE="$d"
     ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG="$1"; BASE="$d"
-    PATH="$R34/ghbin:$PATH"; R34GH="$2"; export PATH R34GH
+    # 스텁 경로는 export 한 변수로 넘긴다 — 함수 몸이 펼치는 곳은 자식 셸이다.
+    gh() { "$R34STUB" "$@"; }
+    export -f gh
+    R34STUB="$R34/ghbin/gh"; R34GH="$2"; R34LOG="$d/gh.log"; export R34STUB R34GH R34LOG
     : > "$LEDGER"
     ledger_row 'run' "run-id=$1" "시작=$(now_iso)" "설계 문서=$DOC_KEY"
     design_arm() { return 0; }
@@ -9873,6 +9883,8 @@ r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12;
 }
 r34_prmain r34open "OPEN $H34"
 r34o="$R34/r34open"
+check "34: 게이트 들여오기의 gh 호출이 스텁에 닿는다(열린 PR)" \
+  "$( { grep -F 'pr view 12' "$r34o/gh.log" 2>/dev/null || true; } | grep -c . | sed 's/^[1-9][0-9]*$/있음/')" "있음"
 check "34: 이전 런의 열린 PR 로 들인 SA 는 done.txt 가 아니라 건너뛰기 목록에 들고 계획 행이 없다" \
   "$(tr '\n' ' ' < "$r34o/run/done.txt" 2>/dev/null | sed 's/ $//')/$(tr '\n' ' ' < "$r34o/run/skipped.txt" 2>/dev/null | sed 's/ $//')/$(r34_field "$(r34_last "$r34o/ledgers/r34open.md" SA)" '상태')/$(r34_count "$r34o/ledgers/r34open.md" SA 계획됨)" \
   "/SA/완료/0"
@@ -9883,6 +9895,8 @@ check "34: 열린 PR 의 SA 는 사람을 기다리는 완성-미착지로 보�
   "$( { grep -F '완성-미착지 | SA' "$r34o/report" 2>/dev/null || true; } | grep -c . || true)" "1"
 r34_prmain r34merged "MERGED $H34 $M34"
 r34m="$R34/r34merged"
+check "34: 게이트 들여오기의 gh 호출이 스텁에 닿는다(머지된 PR)" \
+  "$( { grep -F 'pr view 12' "$r34m/gh.log" 2>/dev/null || true; } | grep -c . | sed 's/^[1-9][0-9]*$/있음/')" "있음"
 check "34: 이전 런의 PR 이 머지돼 머지 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다" \
   "$(tr '\n' ' ' < "$r34m/run/done.txt" 2>/dev/null | sed 's/ $//')/$(r34_field "$(r34_last "$r34m/ledgers/r34merged.md" SA)" '머지 커밋')/$(tr '\n' ' ' < "$r34m/cycled" 2>/dev/null | sed 's/ $//')" \
   "SA SB/$M34/SB"
