@@ -14814,16 +14814,20 @@ gate_dest_tails() {
   # directory as `<cwd>/w<path>` and missed the protected file it writes.
   # Three readings are added beside the word:
   #   - a single-dash option's attached value (`-o<path>` → `<path>`);
-  #   - the text after a leading sed address or flag run and a `w`
-  #     (`1,5w<path>`, `gw<path>` → `<path>`);
+  #   - the text after every `w` or `W` in the word (`1,5w<path>`,
+  #     `!w<path>`, `1{w<path>`, `\%re%w<path>`, `0~1w<path>` → `<path>`);
   #   - every tail that starts at a `/`, so an absolute path anywhere inside
-  #     the word (`s/a/b/w/<abs>`) is a candidate, each tail also read for a
-  #     leading `w` (`/wR8.plan.md` → `R8.plan.md`).
+  #     the word (`s/a/b/w/<abs>`) is a candidate.
+  # THE SED ADDRESS IS NOT ENUMERATED. A closed list of the characters that may
+  # stand before the `w` let `$!w<relative path>` and `1{w<relative path>` past
+  # both guards with BSD sed writing the file, because an address can end in
+  # `!`, `{`, a regex delimiter or a GNU `~` step and the list named none of
+  # them. Taking the text after every `w` needs no grammar of what precedes it.
   # A reading that names nothing is harmless: it resolves to a path the guard
   # does not protect. These are candidates for the at-or-under test only; the
   # ancestor test is not given tails, because every word with a `/` has `/`
   # itself among them.
-  local w="$1" t s re='^[0-9,$gpIiMme]*[wW](.+)$'
+  local w="$1" t
   GATE_DEST_TAILS=("$w")
   case "$w" in
     --*) ;;
@@ -14832,19 +14836,18 @@ gate_dest_tails() {
         GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=${w#-?}
       fi ;;
   esac
-  if [[ $w =~ $re ]]; then
-    GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=${BASH_REMATCH[1]}
-  fi
+  t=$w
+  while :; do
+    case "$t" in *[wW]?*) ;; *) break ;; esac
+    t=${t#*[wW]}
+    GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=$t
+  done
   t=${w#?}
   while :; do
     case "$t" in */*) ;; *) break ;; esac
     t="/${t#*/}"
     GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=$t
-    s=${t#/}
-    if [[ $s =~ $re ]]; then
-      GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=${BASH_REMATCH[1]}
-    fi
-    t=$s
+    t=${t#/}
   done
   return 0
 }

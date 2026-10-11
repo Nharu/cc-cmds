@@ -14909,6 +14909,31 @@ pace_rows "sed 의 붙여 쓴 w" sed -n "w$PACE_N/backlog.jsonl" /dev/null
 pace_rows "sed 의 주소 붙은 w" sed "1w$PACE_N/backlog.jsonl" /dev/null
 pace_rows "sed 의 s///w" sed "s/a/b/w$PACE_N/backlog.jsonl" /dev/null
 pace_rows "sed -e 의 붙여 쓴 w" sed -n -e "w$PACE_N/backlog.jsonl" /dev/null
+# A SED ADDRESS ENDING IN `!`, `{`, A REGEX DELIMITER OR A GNU STEP, before a
+# relative destination. The reading of a glued `w` listed the address
+# characters it allowed and named none of these, and the `/` tails make only
+# absolute spellings, so each row wrote the backlog past the guard. The
+# relative spelling climbs only to the common ancestor of the worktree's
+# physical directory and the target: one that climbs to `/` would be caught by
+# an absolute `/../..` tail and pass with the old reading too.
+rel_from() {
+  # rel_from <from dir> <to path> — both physical; the relative spelling.
+  local f="$1/" t="$2" up=""
+  while [ "${t#"$f"}" = "$t" ]; do f="${f%/*/}/"; up="../$up"; done
+  printf '%s%s' "$up" "${t#"$f"}"
+}
+pace_rel=$(rel_from "$(cd "$WT" && pwd -P)" "$(cd "$PACE_N" && pwd -P)")
+pace_rows "sed 의 \$! 주소 뒤 상대 w" sed -n "\$!w$pace_rel/backlog.jsonl" /dev/null
+pace_rows "sed 의 /re/! 주소 뒤 상대 w" sed -n "/a/!w$pace_rel/backlog.jsonl" /dev/null
+pace_rows "sed 의 { 블록 속 상대 w" sed -n "1{w$pace_rel/backlog.jsonl
+}" /dev/null
+pace_rows "sed 의 \\%re% 주소 뒤 상대 w" sed -n "\\%a%w$pace_rel/backlog.jsonl" /dev/null
+pace_rows "sed 의 GNU ~ 주소 뒤 상대 w" sed -n "0~1w$pace_rel/backlog.jsonl" /dev/null
+pace_iw=$(pace_alone sed -n "\$!w$pace_rel-old/at" /dev/null)
+case "$pace_iw" in
+  "rc=0") ok "페이싱 루트 옆 이름을 가리키는 주소 뒤 상대 w 는 걸리지 않는다" ;;
+  *) bad "페이싱 가드 오탐: 루트 옆 이름을 가리키는 주소 뒤 상대 w" "$pace_iw" ;;
+esac
 pace_rows "sort 의 붙인 -o 값" sort "-o$PACE_N/backlog.jsonl" /dev/null
 pace_rows "대소문자 변형 루트" cp "$WORK/r3x" "${PACE_N%/pace}/PACE/backlog.jsonl"
 pace_rows "대소문자 변형 상태 디렉터리" cp "$WORK/r3x" "$STATE_CONE/CC-CMDS/pace/rekick/R1/successor"
@@ -15081,6 +15106,14 @@ printf 'r8\n' > "$WT/R8.plan.md"
 sib_rows "sed 의 붙여 쓴 w" sed -n "w$WORK/R8.plan.md" /dev/null
 sib_rows "sed 의 s///w" sed "s/a/b/w$WORK/R8.interview.md" /dev/null
 sib_rows "sort 의 붙인 -o 값" sort "-o$WORK/R8.kickoff.md" /dev/null
+# The sed addresses the glued-`w` reading did not list, before a relative
+# destination climbing from the worktree's physical directory.
+sib_rel=$(rel_from "$(cd "$WT" && pwd -P)" "$(cd "$WORK" && pwd -P)")
+sib_rows "sed 의 \$! 주소 뒤 상대 w" sed -n "\$!w$sib_rel/R8.plan.md" /dev/null
+sib_rows "sed 의 /re/! 주소 뒤 상대 w" sed -n "/a/!w$sib_rel/R8.plan.md" /dev/null
+sib_rows "sed 의 { 블록 속 상대 w" sed -n "1{w$sib_rel/R8.interview.md
+}" /dev/null
+sib_rows "sed 의 \\%re% 주소 뒤 상대 w" sed -n "\\%a%w$sib_rel/R8.kickoff.md" /dev/null
 sib_rows "대소문자 변형 접미" cp "$WORK/r3x" "$WORK/R8.PLAN.md"
 # A case variant of the directory names the same directory only on a
 # case-insensitive volume; elsewhere it is another directory and not refused.
