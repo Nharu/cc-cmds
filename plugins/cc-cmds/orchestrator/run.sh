@@ -8791,7 +8791,7 @@ main_loop_body() {
   # branch produced it; that is what lets the declaration bypass the planner
   # without forking the execution path.
   ladder_init
-  local merged=0 parked=0 landed=0 imported=0 total=0 seg files rc
+  local merged=0 parked=0 landed=0 imported=0 imported_landed=0 total=0 seg files rc
   total=$(grep -c . "$RUN_DIR/plan.tsv" 2>/dev/null || printf '0')
   RUN_CYCLE_BUDGET=$(run_cycle_budget)
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
@@ -8802,12 +8802,14 @@ main_loop_body() {
     # A SLICE AN EARLIER RUN LANDED IS ALREADY DONE. `plan_from_declaration`
     # brought its terminal row in and put the id in `done.txt`; dispatching it
     # would build and review the same work a second time. Counted apart from
-    # `merged`, which is what this run itself landed. A slice in `skipped.txt`
-    # stands at a pull request an earlier run left open: not sent out again,
-    # and reported the way this run reports its own, since it still waits on a
-    # person to finish it.
+    # `merged`, which is what this run itself landed, and kept apart again in
+    # `imported_landed` because the run's end counts it as landed. A slice in
+    # `skipped.txt` stands at a pull request an earlier run left open: not sent
+    # out again, and reported the way this run reports its own, since it still
+    # waits on a person to finish it — so it never counts toward the end's
+    # "every slice landed".
     if grep -qxF "$seg" "$RUN_DIR/done.txt" 2>/dev/null; then
-      imported=$((imported + 1)); continue
+      imported=$((imported + 1)); imported_landed=$((imported_landed + 1)); continue
     fi
     if grep -qxF "$seg" "$RUN_DIR/skipped.txt" 2>/dev/null; then
       imported=$((imported + 1))
@@ -8894,7 +8896,10 @@ main_loop_body() {
     report_append "한도 종료" "${limit_n}건 — 크래시와 같게 처분, 계정 이동 없음"
   fi
   RUN_END_LOOP_DONE=1
-  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ "$merged" -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
+  # EVERY PLANNED SLICE LANDED counts the ones an earlier run landed too: a
+  # re-kicked run that merges the rest has delivered the whole plan, and an end
+  # without `종료 부류=완료` sends that run to a person.
+  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ $((merged + imported_landed)) -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
   run_end_record || true
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the

@@ -9803,11 +9803,14 @@ printf -- '- `run` | run-id=r34prior | 설계 문서=%s\n- `stage-result` | 세�
   spawn_lease_release_run() { :; }; report_run_residual() { :; }
   quiet_window_begin() { :; }; quiet_window_end() { :; }
   main_loop; printf 'rc=%s\n' "$?"
+  printf 'all=%s\n' "${RUN_END_ALL_LANDED:-}"
 ) > "$R34M/out" 2>/dev/null
 check "34: 주 루프는 done.txt 의 SA 를 디스패치하지 않고 그것에 기대는 SB 만 돌린다" \
   "$(sed -n 's/^rc=//p' "$R34M/out")/$(tr '\n' ' ' < "$R34M/cycled" 2>/dev/null | sed 's/ $//')" "0/SB"
 check "34: 종료 보고가 들인 슬라이스 수를 싣는다" \
   "$(grep -c '^착지 들여오기 | 1건' "$R34M/report" 2>/dev/null || true)" "1"
+check "34: 들인 SA 와 이번 런이 머지한 SB 로 계획된 슬라이스가 모두 착지하면 모두 착지로 끝난다" \
+  "$(sed -n 's/^all=//p' "$R34M/out")" "1"
 check "34: R7 — 이전 런의 감사 리포트가 있으면 후속 런은 감사를 띄우지 않는다" \
   "$( { cat "$R34M/dispatched" 2>/dev/null || true; } | grep -c '^S2$' || true)/$( { grep -F '`자율 승인`' "$R34M/r34main.md" 2>/dev/null || true; } | grep -cF '기준=이 문서 슬러그의 리더 리포트가 이미 존재한다' || true)" \
   "0/1"
@@ -9892,6 +9895,7 @@ r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12;
     spawn_lease_release_run() { :; }; report_run_residual() { :; }
     quiet_window_begin() { :; }; quiet_window_end() { :; }
     main_loop; printf 'rc=%s\n' "$?"
+    printf 'all=%s\n' "${RUN_END_ALL_LANDED:-}"
   ) > "$d/out" 2>"$d/err"
 }
 # gh 의 답은 `state head mergeCommit headRefName baseRefName` 다섯 칸이다.
@@ -9907,6 +9911,8 @@ check "34: 열린 PR 의 SA 는 디스패치되지 않고 그것에 기대는 SB
   "0/0/1"
 check "34: 열린 PR 의 SA 는 사람을 기다리는 완성-미착지로 보고된다" \
   "$( { grep -F '완성-미착지 | SA' "$r34o/report" 2>/dev/null || true; } | grep -c . || true)" "1"
+check "34: 열린 PR 로 건너뛴 SA 는 착지로 세지 않아 모두 착지로 끝나지 않고 종료 부류=완료 도 없다" \
+  "$(sed -n 's/^all=//p' "$r34o/out")/$( { grep -F '종료 부류=완료' "$r34o/ledgers/r34open.md" 2>/dev/null || true; } | grep -c . || true)" "/0"
 # 머지 전 리뷰 수정 push 로 head 가 행의 커밋에서 움직였어도, 머지 커밋이 베이스에 있고
 # head·base 브랜치 이름이 맞으면 착지로 들인다.
 r34_prmain r34merged "MERGED 3333333333333333333333333333333333333333 $M34 seg/r34merged-prior-SA main"
@@ -9916,6 +9922,8 @@ check "34: 게이트 들여오기의 gh 호출이 스텁에 닿는다(머지된 
 check "34: 이전 런의 PR 이 머지돼 머지 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다" \
   "$(tr '\n' ' ' < "$r34m/run/done.txt" 2>/dev/null | sed 's/ $//')/$(r34_field "$(r34_last "$r34m/ledgers/r34merged.md" SA)" '머지 커밋')/$(tr '\n' ' ' < "$r34m/cycled" 2>/dev/null | sed 's/ $//')" \
   "SA SB/$M34/SB"
+check "34: 머지된 PR 로 들인 SA 와 이번 런의 SB 로 끝난 런은 종료 행에 종료 부류=완료 를 쓴다" \
+  "$(sed -n 's/^all=//p' "$r34m/out")/$( { grep -F '종료 부류=완료' "$r34m/ledgers/r34merged.md" 2>/dev/null || true; } | grep -c . || true)" "1/1"
 
 # 부르는 자리는 마감 경과와 머지 게이트의 2 둘이고, 적용 거부의 4 는 부르지 않는다
 # — 그때의 마지막 행은 이미 `머지됨` 이다.

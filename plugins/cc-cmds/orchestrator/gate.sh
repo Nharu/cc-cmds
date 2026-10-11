@@ -7872,6 +7872,22 @@ gate_prior_decl_diff() {
   local seg="$1" f="$2" row="$3" pr="" org of rr k dk pv cv pd side
   pr=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } \
         | { grep -F '| 상태=계획됨 |' || true; } | tail -1)
+  # A LANDING THE MANIFEST BROUGHT IN WAS NEVER PLANNED BY ANY RUN. Its row is a
+  # person's `선행 착지` claim that the gate checked against the base branch
+  # when it wrote the row, and the caller checks that merge commit against the
+  # base branch again, so `출처=매니페스트` names no ledger to follow and is its
+  # own evidence. The row keeps the declaration digest the slice had when it was
+  # brought in, and a revised declaration still differs; a row written before it
+  # kept one rests on the claim and the landing alone.
+  if [ -z "$pr" ] && [ "$(gate_row_field "$row" '출처')" = "매니페스트" ]; then
+    pd=$(gate_row_field "$row" '선언 다이제스트')
+    case "$pd" in *[!0-9a-f]*) pd="" ;; esac
+    [ "${#pd}" -eq 64 ] || pd=""
+    if [ -n "$pd" ] && [ "$pd" != "$(slice_decl_digest "$DOC" "$seg")" ]; then
+      printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런이 매니페스트의 선행 착지 행으로 들인 ${seg} 의 선언과 지금 문서의 선언 전체가 다릅니다"
+    fi
+    return 0
+  fi
   if [ -z "$pr" ]; then
     org=$(gate_row_field "$row" '출처')
     of="$(dirname "$f")/$org.md"
@@ -7983,7 +7999,10 @@ gate_prior_run_landed() {
   # brought the slice in rather than planning it holds no such row, so its
   # terminal row's `출처` is followed to that run's ledger once — the run that
   # did the work is the one whose plan counts — and a chain that leaves no plan
-  # row anywhere is no evidence. Either way the ledger drops out of the
+  # row anywhere is no evidence. A row whose `출처` is `매니페스트` is the one
+  # exception: no run planned that slice, so the row's own `선언 다이제스트`,
+  # when it carries one, is compared instead, and the merge commit is checked
+  # against the base branch as for any landing. Either way the ledger drops out of the
   # candidates with one warning naming the field that differs. The whole-
   # document digest is deliberately not compared: any edit anywhere would make
   # every slice be done again.
@@ -8091,7 +8110,7 @@ gate_import_prior_landed() {
   # request was in is left in GATE_IMPORT_PR_STATE (`OPEN`, `MERGED`, or empty
   # for the merge arm) for a caller that has to tell the two apart.
   local verb="$1" seg="$2" mode="${3:-}" kl="${LEDGER:-}" kg="${GRANT:-}" kb="${BASE:-}"
-  local dal="" pst="" pm="" ppr="" pc="" pwt="" pdp="" pbr="" org="" slug="" obs="" ost="" ohd="" omc="" ohr="" obr="" abr="" what="" why="" noun=""
+  local dal="" pst="" pm="" ppr="" pc="" pwt="" pdp="" pbr="" org="" pdg="" slug="" obs="" ost="" ohd="" omc="" ohr="" obr="" abr="" what="" why="" noun=""
   GATE_DECL_SELF_IMPORTED=""
   GATE_IMPORT_PR_STATE=""
   if [ -z "${DOC_KEY:-}" ] && [ -n "${MANIFEST:-}" ]; then
@@ -8127,6 +8146,14 @@ gate_import_prior_landed() {
   pbr=$(gate_row_field "$GATE_PRIOR_ROW" '브랜치')
   org=$(gate_row_field "$GATE_PRIOR_ROW" '출처')
   [ -n "$org" ] || org=$GATE_PRIOR_RUN
+  # A manifest landing has no plan row to follow, so its declaration digest
+  # travels on the row itself, and the next run in the chain compares that.
+  pdg=""
+  if [ "$org" = "매니페스트" ]; then
+    pdg=$(gate_row_field "$GATE_PRIOR_ROW" '선언 다이제스트')
+    case "$pdg" in *[!0-9a-f]*) pdg="" ;; esac
+    [ "${#pdg}" -eq 64 ] || pdg=""
+  fi
   if [ "$GATE_PRIOR_KIND" = "머지" ]; then
     if [ "$pst" = "머지됨" ] && gate_segment_owes_apply "$dal" "$seg"; then
       if [ "$mode" = "self" ]; then
@@ -8215,7 +8242,8 @@ EOF
   fi
   case "$pbr" in ''|*[!A-Za-z0-9._/-]*) pbr="" ;; esac
   gate_append 'segment' "id=$seg" "상태=$pst" ${ppr:+"PR=$ppr"} "$what" ${omc:+"머지 커밋=$omc"} \
-    ${pbr:+"브랜치=$pbr"} "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$org"
+    ${pbr:+"브랜치=$pbr"} "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$org" \
+    ${pdg:+"선언 다이제스트=$pdg"}
   log "${noun} 들여오기 — ${seg} (${pst}, 출처 ${org}, ${what}${omc:+, 머지 커밋 $omc})"
   return 0
 }
@@ -8562,7 +8590,7 @@ gate_from_declaration() {
         continue
       fi
       gate_append 'segment' "id=$d" "상태=머지됨" "머지 커밋=$pm" "워크트리=-" \
-        "선행=${pdp:-없음}" "출처=매니페스트"
+        "선행=${pdp:-없음}" "출처=매니페스트" "선언 다이제스트=$(slice_decl_digest "$DOC" "$d")"
       log "선행 들여오기 — ${d} (머지됨, 출처 매니페스트, 머지 커밋 ${pm})"
     done
 
