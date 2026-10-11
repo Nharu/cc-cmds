@@ -12649,6 +12649,9 @@ GATE_DRIFT_DIRS
     # must not fail to open because a directory somewhere else could not be
     # removed.
     gate_reap_cycle || true
+    # The dashboard's server, once per run and from no seat but a non-stage
+    # one — see `gate_dashboard_ensure`. Not re-checked during the run.
+    gate_dashboard_ensure "$verb" || true
   fi
 
   # LOST DISPATCHES ARE SETTLED HERE, ON EVERY VERB BUT `plan`. The prelude is
@@ -24083,6 +24086,35 @@ gate_metrics_unlock() {
   if mv "$lock" "$dead" 2>/dev/null; then
     rm -rf "$dead" 2>/dev/null || true
   fi
+  return 0
+}
+
+gate_dashboard_ensure() {
+  # gate_dashboard_ensure <verb> — start the run dashboard's server from the
+  # run-open branch. Always returns 0: a viewer is never a reason for a run to
+  # fail to open, and a host without `python3` opens its runs as before.
+  #
+  # THE VERB FILTER IS HERE, NOT AT THE CALL SITE, because the run-open branch
+  # has no verb condition: the first entry of a new run can be `plan` or
+  # `digest-path`. Both are kept out for the reasons the metrics round keeps
+  # them out — `plan` writes nothing by contract, and the PreToolUse hook calls
+  # `digest-path` before every tool call. A run whose first entry is one of them
+  # opens without a server and gets one from `/cc-cmds:dashboard` or the next
+  # run's opening.
+  #
+  # NO GRADE AND NO ROW: this is the gate's own housekeeping, as the metrics
+  # round is. The off switch (`CC_CMDS_DASHBOARD=off`, `CI`) is read by
+  # `dashboard.py ensure` alone, so it has one reader. `PATH` is normalised as
+  # the driver normalises it, so a session that lost `/usr/bin` still finds the
+  # system interpreter.
+  case "${1:-}" in
+    plan|digest-path) return 0 ;;
+  esac
+  cc_caller_is_stage && return 0
+  local py
+  py=$(PATH="/usr/bin:/bin:$PATH" command -v python3 2>/dev/null || true)
+  [ -n "$py" ] || return 0
+  "$py" "$GATE_DIR/dashboard.py" ensure </dev/null >/dev/null 2>&1 || true
   return 0
 }
 

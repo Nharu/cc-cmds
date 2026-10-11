@@ -36,6 +36,10 @@ set -uo pipefail
 # turning the channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one, and nothing in this suite stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 # Auto-resolution is off except in the section that tests it, so the approval
 # fixtures above it stay pending the way they are written.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0

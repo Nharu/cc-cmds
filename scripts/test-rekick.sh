@@ -57,6 +57,10 @@ done
 unset CLAUDE_CODE_SESSION_ID
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one, and nothing in this suite stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 HOME="$WORK/home"; mkdir -p "$HOME"
 XDG_STATE_HOME="$WORK/state"; mkdir -p "$XDG_STATE_HOME"
 XDG_CONFIG_HOME="$WORK/config"; mkdir -p "$XDG_CONFIG_HOME"

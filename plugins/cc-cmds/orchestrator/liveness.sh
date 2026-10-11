@@ -1089,11 +1089,11 @@ cc_run_grade() {
   # `scripts/lint-statusline-token-arms.sh` exists to catch on the render side,
   # and this function has to grow with the vocabulary in the same edit.
   #
-  # TODAY THIS GRADE HAS EXACTLY ONE CONSUMER, `statusline.sh`. That is why
-  # `scripts/test-liveness-agreement.sh` gained no case for it — an agreement
-  # suite with one participant tests a function against itself. When a second
-  # consumer appears, this function and this file are what it must be compared
-  # against.
+  # THIS GRADE HAS TWO CONSUMERS, `statusline.sh` and the dashboard's port in
+  # `dashboard_read.py`, and `scripts/test-liveness-agreement.sh` binds them: it
+  # compares the port's grade against this function on each of the six tokens
+  # and on an unknown one. A token added here goes into that suite's list in the
+  # same edit, or the two screens can rank it differently with nothing failing.
   case "$1" in
     도는중)   printf '1' ;;
     승인대기) printf '2' ;;

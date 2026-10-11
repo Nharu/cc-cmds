@@ -30,6 +30,10 @@ set -uo pipefail
 # turning the channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one, and nothing in this suite stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -534,6 +538,88 @@ printf '%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/shift.live"
 check "지문이 어긋난 shift.live 는 살아 있는 교대가 아니다" \
   "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
 rm -f "$FX_RUN_DIR/shift.live"
+RD_R="$FX_RUN_DIR"
+
+# ---------------------------------------------------------------------------
+# The sixth reader — the dashboard's port of these predicates.
+#
+# The dashboard cannot call this file: one run takes about a tenth of a second
+# through `cc_run_state`, and a host carries hundreds of run directories. So
+# `dashboard_read.py` carries a port, and a port is a second implementation —
+# exactly the shape this suite exists to hold to one answer. It joins the
+# census readings above as a sixth participant, on the same three fixtures.
+#
+# Called with `PYTHONDONTWRITEBYTECODE=1`, because only `dashboard.py` turns the
+# bytecode cache off for itself; importing the module any other way leaves a
+# `__pycache__` inside the plugin tree.
+# ---------------------------------------------------------------------------
+PORT_PY="$repo_root/plugins/cc-cmds/orchestrator/dashboard_read.py"
+port() { PYTHONDONTWRITEBYTECODE=1 python3 "$PORT_PY" "$@"; }
+shell_state() { bash -c '. "$1"; cc_run_state "$2" "$3"' _ "$LIVENESS" "$1" "$2"; }
+shell_grade() { bash -c '. "$1"; cc_run_grade "$2"' _ "$LIVENESS" "$1"; }
+
+if ! command -v python3 >/dev/null 2>&1; then
+  bad "포트 참가자" "python3 를 찾지 못했다 — 여섯째 읽기와 상태·등급 대조가 한 줄도 돌지 않는다"
+else
+  check "A 포트가 같은 수를 본다" "$(port live-stages "$RD_A")" "$(read_shared "$RD_A")"
+  check "A 포트가 이름 대는 스테이지가 살아 있는 그 하나다" "$(port live-names "$RD_A")" "S1"
+  check "B 포트가 같은 수를 본다" "$(port live-stages "$RD_B")" "$(read_shared "$RD_B")"
+  check "레코드 픽스처에서 포트의 이름이 레코드의 이름과 같다" \
+    "$(port live-names "$RD_R")" \
+    "$( { cc_live_stage_records "$RD_R" || true; } | cut -f1 | paste -sd, -)"
+  for lc in ko_KR.UTF-8 C; do
+    check "포트의 지문 비교가 로케일에 불변이다 (LC_ALL=$lc)" \
+      "$(LC_ALL="$lc" port live-stages "$RD_L")" "1"
+  done
+
+  # STATE AND GRADE HAVE NO EXISTING PARTICIPANT TO JOIN. Nothing above derives
+  # a state token, and the grade has one consumer, the status line. So these
+  # are two-participant comparisons — the port against the shell function — on
+  # a fixture built for each branch. Each case also asserts the token it was
+  # built for: a comparison that agrees on the wrong branch would be green while
+  # the branch it names went untested.
+  st_case() {
+    # st_case <설명> <기대 토큰> — compare the current fixture through both.
+    local want="$2" sh py
+    sh=$(shell_state "$FX_RUN_DIR" "$FX_LEDGER")
+    py=$(port state "$FX_RUN_DIR" "$FX_LEDGER")
+    check "상태 갈래 $1 — 셸이 의도한 토큰을 낸다" "$sh" "$want"
+    check "상태 갈래 $1 — 포트가 셸과 같은 토큰을 낸다" "$py" "$sh"
+  }
+
+  fx_mkrun st-live; fx_segment S1 실행중; fx_stage_live S1; fx_heartbeat 0 5
+  st_case "살아 있는 스테이지" "도는중"
+  fx_mkrun st-pend; fx_segment S1 실행중; fx_approval A1 대기; fx_heartbeat 0 5
+  st_case "열린 승인" "승인대기"
+  fx_mkrun st-pend-closed; fx_segment S1 실행중; fx_approval A1 대기; fx_approval A1 승인
+  fx_heartbeat 0 5
+  st_case "닫힌 승인은 대기로 세지 않는다" "진행중"
+  fx_mkrun st-done; fx_segment S1 실행중; fx_done
+  st_case "done 파일" "종단"
+  fx_mkrun st-segs; fx_segment S1 실행중; fx_segment S1 머지됨; fx_segment S2 완료
+  fx_segment S3 park
+  st_case "모든 세그먼트가 종단" "종단"
+  fx_mkrun st-blocked; fx_segment S1 머지됨; fx_done
+  fx_blocked '강제 표면 이동' 불명; fx_heartbeat 0 5
+  st_case "미해소 런 막힘이 done 을 이긴다" "진행중"
+  fx_mkrun st-unblocked; fx_segment S1 머지됨
+  fx_blocked '자동 채택 미달' 불명; fx_blocked '자동 채택 미달' 해소
+  st_case "해소된 막힘은 종단을 막지 않는다" "종단"
+  fx_mkrun st-going; fx_segment S1 실행중; fx_heartbeat 0 5
+  st_case "하트비트 성장 안" "진행중"
+  fx_mkrun st-stall; fx_segment S1 실행중; fx_heartbeat 0 600
+  st_case "정지 임계 너머" "정지경고"
+  fx_mkrun st-abandon; fx_segment S1 실행중; fx_heartbeat 0 7200
+  st_case "포기 임계 너머" "버려짐"
+  fx_mkrun st-mtime; fx_segment S1 실행중; fx_age_file "$FX_LEDGER" 600
+  st_case "하트비트 없이 원장 mtime" "정지경고"
+  fx_mkrun st-noclock; rm -f "$FX_LEDGER"
+  st_case "시계가 하나도 없다" "버려짐"
+
+  for tok in 도는중 승인대기 진행중 정지경고 종단 버려짐 미지의토큰; do
+    check "등급 갈래 $tok — 포트가 셸과 같은 등급을 낸다" "$(port grade "$tok")" "$(shell_grade "$tok")"
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # The run's STATE, read by every consumer that acts on it.
@@ -878,6 +964,14 @@ for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrato
     ok "$b 가 알림 채널을 프로세스 수준에서 끈다"
   else
     bad "알림 누출" "$b 가 게이트 계열을 부르면서 CC_CMDS_AUTOPILOT_NOTIFY 를 내보내지 않는다 — 이 스위트가 도는 동안 사용자 화면에 실제 배너가 도달한다"
+  fi
+  # The same set runs the gate's run-open branch, which starts the dashboard
+  # server. Left on, every fixture run that opens there leaves a real server
+  # listening on this host after the suite ends.
+  if grep -q '^export CC_CMDS_DASHBOARD$' "$f"; then
+    ok "$b 가 대시보드 자동 기동을 프로세스 수준에서 끈다"
+  else
+    bad "대시보드 누출" "$b 가 게이트 계열을 부르면서 CC_CMDS_DASHBOARD 를 내보내지 않는다 — 픽스처 런 개시마다 실제 서버가 남는다"
   fi
 done
 

@@ -71,6 +71,11 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one on every new run, and over a hundred calls here open runs. The
+# dashboard section turns it back on inside its own subshells only.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 # THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — all eleven
 # `CC_PIPELINE_*` names, here and nowhere later. This suite runs from whatever
 # process starts it, including a pipeline stage, which exports every one of them.
@@ -1769,6 +1774,10 @@ refresh_bd() {
   mv "$FX_MANIFEST.bd" "$FX_MANIFEST"
 }
 refresh_bd
+# A pristine copy of the manifest, for the same reason as `GBAK`: a section that
+# opens runs of its own derives them from these bytes, not from whatever
+# `FX_MANIFEST` names by the time it runs.
+MBAK="$WORK/manifest.bak"; cp "$FX_MANIFEST" "$MBAK"
 
 gate snapshot --manifest "$FX_MANIFEST"
 check "구속 다이제스트가 있는 매니페스트가 통과한다" "$rc" "0"
@@ -28837,6 +28846,135 @@ rm -rf "$SRCDIR85/halt"
 rm -f "$SMAN85"
 ( cd "$WT" && git worktree remove --force "$WT85" && git branch -D "seg/$SRC85-SA" ) >/dev/null 2>&1
 rm -f "$LEDGER85" "$WT/$DOC85"
+
+# ---------------------------------------------------------------------------
+# 86. 런 개시가 대시보드 서버를 하나 띄우고, 띄우지 말아야 할 자리에서는 띄우지 않는다
+# --- section: 86 | group: base | covers: snapshot | anchors: 86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다, 86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다, 86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다, 86: 두 번째 런 개시는 서버를 더 띄우지 않는다, 86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다 ---
+#
+# 서버는 게이트의 런 개시 갈래에서만 뜨므로, 이 절의 모든 경우는 새 런 id 의 첫
+# 진입이다. 경우마다 상태 루트를 따로 둬 앞 경우의 서버 기록이 뒤 경우의 「없다」를
+# 대신 답하지 못하게 하고, 각 경우는 `run` 행이 생겼는지를 먼저 단언한다 — 런
+# 개시를 지나지 않은 호출은 「서버가 없다」를 공짜로 통과하기 때문이다.
+#
+# 이 스위트는 프리앰블에서 `CC_CMDS_DASHBOARD=off` 를 내보낸다. 끄개를 푸는 것은
+# 아래 호출의 서브셸 안에서만이고, `CI` 도 거기서만 지운다. 포트는 비어 있는 것을
+# 골라 덮어쓰고, 띄운 서버는 절이 끝나기 전에 끝낸다.
+# ---------------------------------------------------------------------------
+d86_n=0
+d86_new() {
+  # d86_new — a fresh run id derived from the pristine fixture, so its first
+  # gate entry takes the run-open branch. Leaves the paths in D86_M / D86_L.
+  local rid
+  d86_n=$((d86_n + 1)); rid="R86-$d86_n"
+  sed -e "s/R1\([;.]\)/$rid\1/g" -e "s/R1\$/$rid/" "$GBAK" > "$WT/docs/pipeline-grant/$rid.md"
+  sed -e "s/R1\([;.]\)/$rid\1/g" -e "s/R1\$/$rid/" "$MBAK" > "$WT/plan-$rid.md"
+  D86_M="$WT/plan-$rid.md"
+  D86_L="$WT/docs/pipeline-run/$rid.md"
+}
+d86_gate() {
+  # d86_gate <state-home> <port> <verb> [NAME=value | -NAME]… [-- verb args…]
+  # One gate entry with the switch, CI and the seat set in its own subshell only.
+  # Prints the exit status.
+  local s="$1" port="$2" verb="$3" a r=0
+  shift 3
+  (
+    cd "$WT" || exit 99
+    unset CI
+    export XDG_STATE_HOME="$s" CC_CMDS_DASHBOARD_PORT="$port" CC_CMDS_DASHBOARD_IDLE=600
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+      a="$1"; shift
+      case "$a" in
+        -*) unset "${a#-}" ;;
+        *) export "${a?}" ;;
+      esac
+    done
+    [ "$#" -gt 0 ] && shift
+    if [ -n "${D86_FORK:-}" ]; then
+      bash "$GATE" "$verb" --manifest "$D86_M" "$@"
+    else
+      gate_inproc "$verb" --manifest "$D86_M" "$@"
+    fi
+  ) >"${D86_OUT:-/dev/null}" 2>&1 || r=$?
+  printf '%s' "$r"
+}
+d86_rec() { printf '%s/cc-cmds/dashboard/server' "$1"; }
+d86_pid() { jq -r '.pid // empty' "$(d86_rec "$1")" 2>/dev/null || true; }
+d86_has() { if [ -f "$(d86_rec "$1")" ]; then printf yes; else printf no; fi; }
+d86_runrow() { { grep -c '^- `run` ' "$D86_L" 2>/dev/null || true; }; }
+d86_serving() { pgrep -f 'dashboard\.py serve --fd' 2>/dev/null | grep -c . || true; }
+d86_alive() { if [ -n "$1" ] && kill -0 "$1" 2>/dev/null; then printf yes; else printf no; fi; }
+d86_stop() {
+  local pid i=0
+  pid=$(d86_pid "$1")
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i + 1)); done
+}
+d86_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+D86_PORT=$(d86_port)
+D86_BASE=$(d86_serving)
+
+# T15 — 끄개 기본값은 새지 않는다. 같은 준비에서 끄개만 풀면 서버 기록이 생기므로,
+# 프리앰블의 내보내기를 지우면 첫 단언이 실패한다.
+D86_S="$WORK/s86-off"; mkdir -p "$D86_S"; d86_new
+check "86: (선행) 끄개 기본값 경우의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot)/$(d86_runrow)" "0/1"
+check "86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다" "$(d86_has "$D86_S")" "no"
+D86_S="$WORK/s86-unset"; mkdir -p "$D86_S"; d86_new
+check "86: (선행) 끄개를 푼 경우의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot -CC_CMDS_DASHBOARD)/$(d86_runrow)" "0/1"
+check "86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다" "$(d86_has "$D86_S")" "yes"
+d86_stop "$D86_S"
+
+# T17 — 한 상태 루트에서 두 런의 개시. 첫째가 띄우고 둘째는 그 서버를 그대로 둔다.
+D86_S="$WORK/s86-on"; mkdir -p "$D86_S"; d86_new
+check "86: (선행) 첫 런의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
+D86_P1=$(d86_pid "$D86_S")
+check "86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다" \
+  "$(d86_alive "$D86_P1")/$(( $(d86_serving) - D86_BASE ))" "yes/1"
+check "86: 같은 런의 두 번째 snapshot 은 서버를 더 띄우지 않는다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_pid "$D86_S")/$(( $(d86_serving) - D86_BASE ))" "0/$D86_P1/1"
+d86_new
+check "86: (선행) 둘째 런의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
+check "86: 두 번째 런 개시는 서버를 더 띄우지 않는다" \
+  "$(d86_pid "$D86_S")/$(( $(d86_serving) - D86_BASE ))" "$D86_P1/1"
+d86_stop "$D86_S"
+
+# 경합 — 같은 새 런에 비스테이지 snapshot 둘이 동시에 들어온다. 런 개시 갈래 둘레에는
+# 잠금이 없어 둘 다 그 갈래에 들 수 있고, 그 경합을 흡수하는 것은 `ensure` 의 잠금이다.
+# 기록 파일은 임시 이름까지 센다 — 이름을 바꾸지 못한 쓰기도 둘째 기록이다.
+#
+# 이 경우만 게이트를 새 bash 프로세스로 띄운다. 프로세스 내 이음매로 띄운 두 백그라운드
+# 서브셸은 `$$` 가 같아, 런 디렉터리의 `<파일>.tmp.$$` 임시 이름이 서로 겹쳐 한쪽이
+# 레인 기록을 쓰지 못하고 끝난다 — 별개의 두 게이트 프로세스에는 없는 충돌이다.
+D86_S="$WORK/s86-race"; mkdir -p "$D86_S"; d86_new
+D86_FORK=1 d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on > "$WORK/rc86a" &
+d86_ja=$!
+D86_FORK=1 d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on > "$WORK/rc86b" &
+d86_jb=$!
+wait "$d86_ja" "$d86_jb" || true
+d86_recs=$(find "$D86_S/cc-cmds/dashboard" \( -name server -o -name '.server.tmp*' \) 2>/dev/null | grep -c . || true)
+check "86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다" \
+  "$(cat "$WORK/rc86a")/$(cat "$WORK/rc86b")/$d86_recs/$(( $(d86_serving) - D86_BASE ))" "0/0/1/1"
+d86_stop "$D86_S"
+
+# 띄우지 않는 자리 — 스테이지 좌석, 첫 진입이 `plan`, 첫 진입이 `digest-path`, `CI`.
+# 각 경우는 런을 실제로 열었는지(`run` 행)를 함께 단언한다.
+D86_S="$WORK/s86-stage"; mkdir -p "$D86_S"; d86_new
+d86_rc=$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on CC_PIPELINE_STAGE_ID=S1#1)
+check "86: 스테이지 좌석의 런 개시는 서버를 띄우지 않는다" "$(d86_runrow)/$(d86_has "$D86_S")" "1/no"
+D86_S="$WORK/s86-plan"; mkdir -p "$D86_S"; d86_new
+d86_rc=$(d86_gate "$D86_S" "$D86_PORT" plan CC_CMDS_DASHBOARD=on -- --kind x --target front --cutpoint 커밋 -- git commit -m x)
+check "86: 첫 진입이 plan 인 런 개시는 서버를 띄우지 않는다" "$(d86_runrow)/$(d86_has "$D86_S")" "1/no"
+D86_S="$WORK/s86-digest"; mkdir -p "$D86_S"; d86_new
+d86_rc=$(d86_gate "$D86_S" "$D86_PORT" digest-path CC_CMDS_DASHBOARD=on)
+check "86: 첫 진입이 digest-path 인 런 개시는 서버를 띄우지 않는다" "$(d86_runrow)/$(d86_has "$D86_S")" "1/no"
+D86_S="$WORK/s86-ci"; mkdir -p "$D86_S"; d86_new
+check "86: CI 아래의 런 개시는 서버를 띄우지 않는다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on CI=1)/$(d86_runrow)/$(d86_has "$D86_S")" "0/1/no"
+check "86: 이 절이 띄운 서버가 남지 않는다" "$(( $(d86_serving) - D86_BASE ))" "0"
 
 # --- epilogue-begin ---
 #
