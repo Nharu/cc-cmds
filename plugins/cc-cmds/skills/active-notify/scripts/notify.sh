@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# notify.sh {arm|fire-now|cancel} [args]
+# notify.sh {arm|fire-now|cancel|dismiss} [args]
 # arm       <request_text> <context_hint> [mode] [--count=N]   mode: "single"|"repeat" (default "single"); --count default 1, normalize to 1 if invalid or >16
 # fire-now  <workflow> <summary>                                model-driven dispatch — sub-event observation point
 # cancel                                                        deletes flag regardless of mode
+# dismiss   <session_id>                                        hook-only: removes that session's banners, raises none,
+#                                                               touches no flag (called by hooks/session-return-dismiss.sh)
 set -euo pipefail
 # Prepend brew install paths so terminal-notifier is discoverable in fire branch
 # regardless of caller PATH (Apple Silicon /opt/homebrew/bin, Intel /usr/local/bin).
@@ -27,8 +29,16 @@ flag_dir="${TMPDIR:-/tmp}/cc-cmds-active-notify"
 # Session ID — empirically PPID is stable across Bash tool calls (= claude process PID),
 # host-environment invariant — Bash tool subshells share claude process as parent across calls.
 session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-claude-pid-$PPID}}"
-# Filesystem-safe sanitizer — strip everything outside [A-Za-z0-9_.-].
-safe_sid="${session_id//[^A-Za-z0-9_.-]/_}"
+# Filesystem-safe sanitizer — strip everything outside [A-Za-z0-9_.-]. The
+# banner groups are built from the same value, and `@` lies outside this set,
+# so `cc-cmds-active-notify-<safe_sid>@…` can never extend another session's
+# slot. hooks/session-return-dismiss.sh keeps a copy of this expression for its
+# state-file path; change the two together.
+an_safe_sid() {
+  local sid="$1"
+  printf '%s' "${sid//[^A-Za-z0-9_.-]/_}"
+}
+safe_sid=$(an_safe_sid "$session_id")
 flag_file="${flag_dir}/pending-${safe_sid}.flag"
 
 # JSON string-value escape (BSD sed compatible) — handles \ and " in user phrases.
@@ -66,6 +76,19 @@ dispatch_notifier() {
     return "$rc"
   fi
   return 0
+}
+
+# The flag's `armed_at`, read the same way as the counters. It only names the
+# banner group of a piled-up fire, so an unreadable value is `0` rather than a
+# reason to clear the flag.
+read_armed_at() {
+  local raw
+  raw=$(grep -oE '"armed_at":[0-9]+' "$flag_file" | head -1 || true)
+  if [[ -n "$raw" ]]; then
+    printf '%s' "${raw##*:}"
+  else
+    printf '0'
+  fi
 }
 
 dispatch_fire() {
@@ -122,6 +145,7 @@ dispatch_fire() {
     fi
     fire_count=$(printf '%s' "$raw_count" | sed 's/.*:\([0-9][0-9]*\)/\1/')
     arm_count=$(printf '%s' "$raw_armcount" | sed 's/.*:\([0-9][0-9]*\)/\1/')
+    armed_at=$(read_armed_at)
     new_count=$(( fire_count + 1 ))
     ts=$(date -u +%s)
 
@@ -157,6 +181,7 @@ dispatch_fire() {
       rm -f "$flag_file"; exit 0
     fi
     fire_count=$(printf '%s' "$raw_count" | sed 's/.*:\([0-9][0-9]*\)/\1/')
+    armed_at=$(read_armed_at)
     fire_count=$(( fire_count + 1 ))
     ts=$(date -u +%s)
     tmp="${flag_file}.tmp-$$"
@@ -203,18 +228,27 @@ dispatch_fire() {
     # change the application name (`-sender` and `-appIcon` are discontinued), so
     # the title is the only place provenance can live.
     notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute "$click" )
-    # arm_count == 1 ↔ classic 1-shot ARM; -group "cc-cmds-active-notify" gives
-    # banner replace semantics for visual parity with §7 bypass. armCount > 1
-    # omits -group so each sub-event banner persists in Notification Center.
-    [[ "$arm_count" -eq 1 ]] && notifier_args+=( -group "cc-cmds-active-notify" )
+    # arm_count == 1 ↔ classic 1-shot ARM: the per-session slot
+    # "cc-cmds-active-notify-<safe_sid>", so a new banner replaces this session's
+    # previous one and never another session's. armCount > 1 gives every
+    # sub-event its own group "<slot>@<armed_at>.<n>", so the banners pile up in
+    # Notification Center and the return hook can still find and remove them.
+    if [[ "$arm_count" -eq 1 ]]; then
+      notifier_args+=( -group "cc-cmds-active-notify-${safe_sid}" )
+    else
+      notifier_args+=( -group "cc-cmds-active-notify-${safe_sid}@${armed_at}.${new_count}" )
+    fi
     dispatch_notifier "${notifier_args[@]}" || true
   else
-    # repeat — never -group (intentional pile-up; dynamic-trust anti-spam).
-    # Same swallowing rule as the single-mode dispatch above.
+    # repeat — a different group on every fire ("<slot>@<armed_at>.<fire_count>"),
+    # so the banners pile up (dynamic-trust anti-spam) while the return hook can
+    # still find and remove them. Same swallowing rule as the single-mode
+    # dispatch above.
     dispatch_notifier \
       -title "cc-cmds ${workflow}" \
       -message "${summary}" \
-      -execute "$click" || true
+      -execute "$click" \
+      -group "cc-cmds-active-notify-${safe_sid}@${armed_at}.${fire_count}" || true
   fi
 }
 
@@ -266,8 +300,30 @@ case "$subcommand" in
     exit 0
     ;;
 
+  dismiss)
+    # Called only by hooks/session-return-dismiss.sh when the person returns to
+    # a session. Removes that session's slot and every "<slot>@…" pile-up group;
+    # the global "cc-cmds-active-notify" of the permission-test bypass matches
+    # neither shape. Raises no banner, touches no flag or lock, prints nothing.
+    [[ "$host_os" == "Darwin" ]] || exit 0
+    command -v terminal-notifier >/dev/null 2>&1 || exit 0
+    target_sid="${1:-}"
+    [[ -n "$target_sid" ]] || exit 0
+    slot="cc-cmds-active-notify-$(an_safe_sid "$target_sid")"
+    listing=$(terminal-notifier -list ALL 2>/dev/null) || exit 0
+    first=1
+    while IFS= read -r line; do
+      if [[ $first -eq 1 ]]; then first=0; continue; fi
+      g="${line%%$'\t'*}"
+      if [[ "$g" == "$slot" || "$g" == "$slot@"* ]]; then
+        terminal-notifier -remove "$g" >/dev/null 2>&1 || :
+      fi
+    done <<< "$listing"
+    exit 0
+    ;;
+
   *)
-    printf 'notify.sh: unknown subcommand "%s" (arm|fire-now|cancel)\n' "$subcommand" >&2
+    printf 'notify.sh: unknown subcommand "%s" (arm|fire-now|cancel|dismiss)\n' "$subcommand" >&2
     exit 1
     ;;
 esac

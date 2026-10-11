@@ -1,0 +1,2 @@
+- `등급 2` **failure branch**: then `AskUserQuestion` `설계 재수렴 ← 추천` / `중단`
+- **walkthrough**: one `mcp__cc-cmds__question_form` question per issue `유지 ← 추천` / `중단`

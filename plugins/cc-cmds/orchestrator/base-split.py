@@ -1242,6 +1242,12 @@ def record_entry(args, doc, g, reg, tracker):
         if tracker == "github" and flag_values(argv, "--blocked-by") is not None:
             for p in g.t[tid]["deps"]:
                 reg.rels[("선행", tid, p)] = "걸림"
+    # A ClickUp ticket is only ever created with `--parent` (the plan waits until
+    # the base has a node), so the ticket a resolve adopts is already a subtask
+    # of the base. The plan has no ClickUp entry that sets a parent afterwards,
+    # so without this the relation stays `대기` and the split never completes.
+    if nxt[0] == "발행됨" and kind == "resolve" and tracker == "clickup":
+        reg.rels[("하위", tid, "베이스")] = "걸림"
 
 
 def transition(cur, args, tracker, kind):

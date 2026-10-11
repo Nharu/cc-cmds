@@ -15,9 +15,12 @@ wait
 lines=$(wc -l < "$NOTIFIER_LOG" | tr -d ' ')
 [[ "$lines" == "2" ]] || { echo "expected 2 notifier lines, got $lines" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }
 [[ ! -d "${FLAG_FILE}.lockdir" ]] || { echo "lockdir leak" >&2; exit 1; }
-# Neither fire uses -group (both are sub-events of armCount=2).
-if grep -q -- '-group' "$NOTIFIER_LOG"; then
-  echo "armCount=2 fires must NOT use -group" >&2
+# Both are sub-events of armCount=2, so each carries a pile-up group — and the
+# lock must hand them DIFFERENT numbers, or one banner would replace the other.
+groups=$(grep -oE -- '-group cc-cmds-active-notify-[^ ]+@[0-9]+\.[0-9]+' "$NOTIFIER_LOG" | sort -u)
+n_groups=$(printf '%s\n' "$groups" | grep -c . || true)
+[[ "$n_groups" == "2" ]] || {
+  echo "armCount=2 fires must use two different pile-up groups (got $n_groups)" >&2
   cat "$NOTIFIER_LOG" >&2
   exit 1
-fi
+}

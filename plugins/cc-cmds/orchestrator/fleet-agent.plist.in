@@ -2,14 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   fleet-agent.plist.in — the one LaunchAgent template `fleet.sh agent install`
-  renders three times: the sensor label and one dispatch label per lane.
+  renders once for the sensor label and once more for every account in the
+  label set read from the cc-lane inventory — one dispatch label per account.
 
   Placeholders, substituted by `fleet.sh` with sed and by nothing else:
-    @LABEL@              com.nharu.cc-cmds.fleet.sensor | .dispatch.<lane>
+    @LABEL@              com.nharu.cc-cmds.fleet.sensor | .dispatch.<id>
     @FLEET_SH@           absolute path of fleet.sh
     @SUBCOMMAND@         sensor | dispatch
-    @LANE@               the lane argument (line deleted for the sensor)
-    @CLAUDE_CONFIG_DIR@  the lane's seat home (line deleted for the sensor)
+    @LANE@               the inventory id (line deleted for the sensor)
+    @CLAUDE_CONFIG_DIR@  that account's inventory `config_dir`, verbatim, fixed
+                         at install time (line deleted for the sensor)
     @START_INTERVAL@     FLEET_START_INTERVAL for the sensor,
                          FLEET_DISPATCH_START_INTERVAL for a dispatch label —
                          the numbers live in fleet.sh, never here

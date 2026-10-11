@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """Create one ClickUp ticket in a list.
 
-    clickup-create.py --list ID --name T --description-file F
+    clickup-create.py --list ID --name T --description-file F [--parent TASK]
 
 Sends one `POST /list/{list_id}/task` carrying the name and the file's text as
-the Markdown description, and prints `<id>\t<url>` of the new ticket. No
-assignee, status, priority, due date or tag is sent: those are decided when
-work on the ticket starts, not when it is filed.
+the Markdown description, and prints `<id>\t<url>` of the new ticket. With
+`--parent` the ticket is made a subtask of that task, which must sit in the
+same list. No assignee, status, priority, due date or tag is sent: those are
+decided when work on the ticket starts, not when it is filed.
 
 The similar-ticket lookup does not run here. It is `similar-items.py`, which
 holds no tracker write, so a write never hides behind the lookup's name.
 
+Inside an unattended pipeline run (`CC_PIPELINE_MANIFEST` set) a ticket is
+filed only when the manifest's `## 인가` carries exactly one row
+`` - `베이스 발행` | 트래커=clickup | 대상=<list id> `` and `--list` is that
+list. The row is frozen at kickoff, while a person is present; any other run
+files nothing.
+
 Exit codes: 0 created, 2 usage error, 3 no usable token, 4 API error,
-5 refused inside an unattended pipeline run (an unattended run files no
-ticket), 1 internal error.
+5 refused inside an unattended pipeline run (no frozen ClickUp publish row for
+this list), 1 internal error.
 
 Run it by path, with no interpreter in front: the gate grades the basename,
 and an interpreter prefix is graded as an opaque worktree write.
@@ -50,7 +57,40 @@ def build_parser():
     parser.add_argument("--list", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--description-file", required=True)
+    parser.add_argument("--parent")
     return parser
+
+
+PUBLISH_ROW_PREFIX = "- `베이스 발행` | "
+
+
+def frozen_publish_row(manifest_path):
+    """The `(tracker, target)` of the one `베이스 발행` row inside the
+    manifest's `## 인가`, or None when there is none, several, or the file
+    cannot be read."""
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    rows, inside = [], False
+    for line in lines:
+        if line.startswith("## "):
+            inside = line == "## 인가"
+            continue
+        if inside and line.startswith(PUBLISH_ROW_PREFIX):
+            rows.append(line)
+    if len(rows) != 1:
+        return None
+    fields = {}
+    for part in rows[0][len(PUBLISH_ROW_PREFIX):].split(" | "):
+        key, sep, value = part.partition("=")
+        if sep:
+            fields[key.strip()] = value.strip()
+    tracker, target = fields.get("트래커"), fields.get("대상")
+    if not tracker or not target:
+        return None
+    return tracker, target
 
 
 def send(url, token, body):
@@ -98,9 +138,13 @@ def main(argv=None):
 
 
 def create(args):
-    if os.environ.get("CC_PIPELINE_MANIFEST"):
-        sys.stderr.write("clickup-create.py: refused inside an unattended pipeline run\n")
-        return 5
+    manifest = os.environ.get("CC_PIPELINE_MANIFEST")
+    if manifest:
+        row = frozen_publish_row(manifest)
+        if row is None or row[0] != "clickup" or row[1] != args.list:
+            sys.stderr.write("clickup-create.py: refused inside an unattended pipeline run "
+                             "(no frozen ClickUp publish row for this list)\n")
+            return 5
     try:
         base = cc_tracker.clickup_base()
     except cc_tracker.UsageError as e:
@@ -121,7 +165,10 @@ def create(args):
             sys.stderr.write("clickup-create.py: no ClickUp token in ~/.config/cc-cmds/clickup.env\n")
         return 3
     url = base + "/list/%s/task" % urllib.parse.quote(args.list, safe="")
-    body = json.dumps({"name": args.name, "markdown_description": description}).encode()
+    payload = {"name": args.name, "markdown_description": description}
+    if args.parent:
+        payload["parent"] = args.parent
+    body = json.dumps(payload).encode()
     try:
         data = send(url, token, body)
     except ApiError as e:

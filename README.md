@@ -21,7 +21,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-prompt` | Claude Design (claude.ai/design) 실행용 프롬프트+컨텍스트를 base 설계 문서에 authoring하고 붙여넣기 블록 emit (standalone + idempotent, HANDOFF CONTRACT 포함) | base 설계 작성 후, claude.ai/design 에 보낼 의도 중심 프롬프트와 DS 참조를 base 설계 문서에 추가하거나 리뷰 반영본으로 붙여넣기 블록을 재조립할 때 |
-| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 또는 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
+| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
 | `/cc-cmds:design-system` | Claude Design (claude.ai/design) DS 생성 프롬프트 emit + DS 번들 ingest로 docs/design-system/ 워크스페이스 구축 (2-phase) | FE 파이프라인 시작 전 프로젝트 전역 design system을 claude.ai/design으로 생성·도입할 때 (1회성 또는 재ingest) |
 | `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
@@ -105,6 +105,8 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 각 커맨드의 옵션·입력 형태 세부는 아래 [Options](#options) 섹션 참조.
 
+대화형 세션에서는 상태 표시줄이 고른 autopilot 런의 상태를 `autopilot` 패널로 보여 주며(살아 있는 런마다 한 번 저절로 열림), `/autopilot-status` 로 그 패널을 열고 닫는다. 패널은 전체 화면 세션에서 110칸 이상이라 도킹될 때만 보이고, 그 밖의 화면에서는 명령이 안내 한 줄만 띄운다 — 동작 규약과 전체 화면을 켜는 법은 [`plugins/cc-cmds/hooks/README.md`](plugins/cc-cmds/hooks/README.md) 참조.
+
 ## Update
 
 ```
@@ -146,14 +148,14 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 ### /cc-cmds:autopilot
 
-**Usage**: `/cc-cmds:autopilot <의도 또는 대상> [--report]`
+**Usage**: `/cc-cmds:autopilot [의도 또는 대상] [--report]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
-| `<의도 또는 대상>` | (required) | 이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. |
+| `<의도 또는 대상>` | _(optional)_ | 이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. 같은 세션이 연 런이 멈춘 뒤 비우거나 `다시`·`이어서`·`재개` 같은 재개 낱말, 또는 그 런의 의도 문면 그대로 부르면 그 런의 답을 이어받아 새 런을 바로 시작한다(재킥오프). |
 | `--report` | off (킥오프 모드 — 1막 인터뷰 후 드라이버 기동) | 아침 보고 모드. 그 런의 매니페스트·원장·보고서, 설계 문서, 그리고 매니페스트나 `run` 행이 없을 때 킥오프 흔적을 읽어 한국어로 렌더링만 하고, 새 런을 시작하지 않는다. |
 
-> _Parsing (`<의도 또는 대상>`): `$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다._
+> _Parsing (`<의도 또는 대상>`): `$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다. 재킥오프인지는 1막 맨 앞의 판별이 닫힌 낱말 목록으로 정하고, 그 밖의 인자는 새 런이다._
 
 ### /cc-cmds:autopilot-router-shift
 
@@ -280,7 +282,7 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 재수렴 대상 설계 문서 경로 (`.md`). 드라이버와 라우터 교대가 메인 워크트리 절대 경로로 넘긴다. |
-| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자이거나, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성. |
+| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구, 또는 `구속 티어 이탈 <중단 기록 절대 경로>` 형태의 사람이 재수렴을 고른 구속 티어 이탈. |
 
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석._
 
@@ -320,7 +322,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 구현 대상 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. |
-| `[scope-directive]` | _(optional)_ | 구현 범위를 좁히는 자유형 자연어 지시문. 드라이버가 세그먼트 범위나 사다리 R1의 수정 지시를 이 자리에 싣는다. |
+| `[scope-directive]` | _(optional)_ | 구현 범위를 좁히는 자유형 자연어 지시문. 드라이버가 세그먼트 범위를, 라우터의 수정 재파견이 리뷰 리포트의 수정 대상을 이 자리에 싣는다. |
 
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석. 이후 토큰은 scope directive로 전달._
 

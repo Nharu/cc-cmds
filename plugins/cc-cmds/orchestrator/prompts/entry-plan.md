@@ -40,6 +40,17 @@ The judgment is the review skill's small-work gate transposed, and **risk indica
 
 **Write `design_tier` and `design_tier_rationale` even when `design_required` is false.** Produce the judged value and say in `design_tier_rationale` that it is inactive — the same posture the schema takes by requiring `design_rationale` unconditionally.
 
+## `design_scope` says whether one document can decide the work
+
+`design_scope` is a sibling of `design_tier`, `single` | `base`, with its prose reason in `design_scope_rationale`. The test is one question: **do at least two pieces of the work each carry their own open design space — requirements still undecided, design surfaces still open — so that no single document can decide them all?** If yes, the scope is `base`: a base design fixes the skeleton, the contracts between tickets and their order, and each ticket is designed later on its own. If one document can decide everything, the scope is `single` **even when the work will land as several slices** — slicing is how one decided design is delivered, not a sign that it needs a base.
+
+`base` fixes the rest of this judgment, so do not weigh it as one more opinion:
+
+- `design_required` is `true` and `design_tier` is `team-4` — a base settles contracts shared across tickets, which is already the tier's risk indicator.
+- The step graph is exactly `D1 design` (no prerequisite) → `A1 design-audit` (depends on `D1`) → `S1 split` (depends on `D1`, `A1`), and **nothing comes after it**. A base run ends at the split; designing and implementing each ticket is a later run. `split` is a step skill only — it is never an `entry_skill`.
+
+Write both keys on every judgment; a manifest frozen before this field existed has no such key, and a reader takes it as `single`.
+
 ## `work_class` records what kind of change the run lands — it decides nothing here
 
 `work_class` is a closed enum — `fix` | `feat` | `docs` | `other` | `unknown` — and `work_class_rationale` is its prose reason, the pair of `design_tier_rationale`. `unknown` needs a reason too.

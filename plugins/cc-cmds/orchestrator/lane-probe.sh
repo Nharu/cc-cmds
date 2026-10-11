@@ -2,9 +2,20 @@
 #
 # lane-probe.sh — which lane is the pipeline spending, and is anything running?
 #
-# One line per run directory, TAB-separated:
+# One line per (run directory, config dir) pair, TAB-separated:
 #
 #   <run-id>\t<상태>\t<살아있는 스테이지 수>\t<config dir>
+#
+# A run whose live stages all run under one directory — and a run with none —
+# is one line, exactly as before. A run whose segments were routed to different
+# accounts is one line per directory, each counting only the stages under it,
+# so the counts of a run's lines add up to its live stages (plus one for a live
+# shift, which runs under the run's own directory). A run this probe cannot
+# judge is one `?` line for every directory it has on record. A segment's directory is
+# read from its launch record: the inventory id on line 4 resolved through the
+# run's own inventory snapshot, else the lane on line 2, else the run's
+# directory. An id that does not resolve is published as `(미상)`, never
+# guessed.
 #
 # THE SEPARATOR IS A TAB AND THAT IS PART OF THE CONTRACT. The last field is a
 # filesystem path and the status token contains a space, so neither is bounded
@@ -43,10 +54,11 @@
 # below makes. The control-character refusal closes the forgery completely
 # without that cost; the shape is a naming convention, not a security boundary.
 #
-# WHY THIS IS A SEPARATE PROGRAM. Its consumer is outside this repository — a
-# swap scheduler has to know whether an unattended run is live before it moves a
-# lane's credentials, and it cannot link a driver. What it can do is run a
-# read-only probe and read four fields. Nothing here writes.
+# WHY THIS IS A SEPARATE PROGRAM. Its consumers cannot link a driver: the fleet
+# dispatcher counts a lane as occupied from these lines before it starts a run
+# on that lane, and a scheduler outside this repository has to know whether an
+# unattended run is live before it moves a lane's credentials. What each can do
+# is run a read-only probe and read four fields. Nothing here writes.
 #
 # THE STATUS IS THREE-VALUED AND THE THIRD VALUE IS LOAD-BEARING.
 #
@@ -72,7 +84,7 @@
 #   2 — usage error
 #
 # Usage:
-#   bash lane-probe.sh              # one line per run
+#   bash lane-probe.sh              # one line per (run, config dir)
 #   bash lane-probe.sh --resolve    # the resolver's answer with no run in hand
 #   LANE_PROBE_HORIZON_SECONDS=<n> bash lane-probe.sh
 #                                   # only run directories modified within <n>s
@@ -108,8 +120,12 @@ PROBE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 CC_ORCH_SOURCE_ONLY=1 . "$PROBE_DIR/run.sh" || exit 3
 set +e
 # 소싱이 rc=0 으로 성공하고도 정의가 없는 경우(잘린 파일, 이름 변경)까지 덮는다.
-# 이 프로그램이 기대는 술어 둘을 이름으로 못박아 두는 것이 이 줄의 요점이다.
-command -v cc_live_stages >/dev/null && command -v resolve_account >/dev/null || exit 3
+# 이 프로그램이 기대는 술어들을 이름으로 못박아 두는 것이 이 줄의 요점이다.
+# 세그먼트의 레인을 인벤토리 스냅숏으로 해소하는 두 술어도 같은 이유로 여기 든다 —
+# 정의가 없으면 모든 id 가 `(미상)` 으로 접혀 열거 실패가 정상 출력으로 나간다.
+command -v cc_live_stage_records >/dev/null && command -v cc_shift_is_live >/dev/null \
+  && command -v resolve_account >/dev/null && command -v run_ledger_account_ok >/dev/null \
+  && command -v route_inventory_check >/dev/null || exit 3
 
 RUN_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
 
@@ -241,8 +257,105 @@ probe_config_dir() {
   printf '%s' "$v"
 }
 
+probe_inventory_dir() {
+  # probe_inventory_dir <run-dir> <id> — the config dir the run's inventory
+  # snapshot gives that id, or `(미상)`. The snapshot is the run's, not the live
+  # inventory: an account renamed or removed since the launch must not move a
+  # stage that is still running under the old directory. Every way the answer
+  # cannot be read — the absence marker, a broken snapshot, an id of the wrong
+  # shape, an id the snapshot does not hold, a value with a control character —
+  # publishes the same literal rather than falling back to another directory.
+  local d="$1" id="$2" inv="$1/inventory.json" v
+  if ! run_ledger_account_ok "$id"; then printf '(미상)'; return 0; fi
+  # The absence marker is a symlink into `/dev/null`, so the regular-file test
+  # already refuses it; the symlink test says so rather than relying on that.
+  if [ -L "$inv" ] || [ ! -f "$inv" ] || [ ! -r "$inv" ]; then printf '(미상)'; return 0; fi
+  if ! route_inventory_check "$inv" >/dev/null 2>&1; then printf '(미상)'; return 0; fi
+  v=$(jq -r --arg i "$id" 'first(.accounts[]? | select(.id == $i) | .config_dir | strings) // empty' "$inv" 2>/dev/null) \
+    || { printf '(미상)'; return 0; }
+  case "$v" in
+    ''|*[[:cntrl:]]*) printf '(미상)'; return 0 ;;
+  esac
+  printf '%s' "$v"
+}
+
+probe_segment_config_dir() {
+  # probe_segment_config_dir <run-dir> <segment> — the directory that segment's
+  # live attempt runs under, read from the launch record `<segment>.window`:
+  # line 4 is the routed inventory id (`-` or absent when the launch was not
+  # routed), line 2 the lane as `~`-relative label. `<segment>.config-dir` is
+  # NOT read: it is written by the routed launch only and outlives the attempt
+  # that wrote it, so after a later unrouted attempt it names the wrong lane.
+  local d="$1" seg="$2" w="$1/$2.window" id l2
+  if [ -f "$w" ] && [ -r "$w" ]; then
+    id=$(awk 'NR == 4 { printf "L%s", $0; exit }' "$w" 2>/dev/null || true)
+    id=${id#L}
+    if [ -n "$id" ] && [ "$id" != "-" ]; then
+      probe_inventory_dir "$d" "$id"
+      return 0
+    fi
+    l2=$(sed -n '2p' "$w" 2>/dev/null || true)
+    if [ -n "$l2" ]; then
+      case "$l2" in
+        *[[:cntrl:]]*) printf '(비정규 레인)'; return 0 ;;
+        '~') l2=$HOME ;;
+        '~/'*) l2="$HOME/${l2#\~/}" ;;
+      esac
+      printf '%s' "$l2"
+      return 0
+    fi
+  fi
+  probe_config_dir "$d"
+}
+
+probe_live_rows() {
+  # probe_live_rows <run-id> <run-dir> — the 도는중/아님 lines of one run whose
+  # records this probe recognizes. One directory per live stage, plus the run's
+  # own directory for a live shift; the directories are then counted in the
+  # order first seen, so a run that is all on one lane prints one line.
+  local rid="$1" d="$2" recs seg dirs="" own
+  own=$(probe_config_dir "$d")
+  recs=$(cc_live_stage_records "$d")
+  while IFS="$(printf '\t')" read -r seg _; do
+    [ -n "$seg" ] || continue
+    dirs="$dirs$(probe_segment_config_dir "$d" "$seg")
+"
+  done <<EOF
+$recs
+EOF
+  if cc_shift_is_live "$d"; then dirs="$dirs$own
+"; fi
+  if [ -z "$dirs" ]; then
+    printf '%s\t아님\t0\t%s\n' "$rid" "$own"
+    return 0
+  fi
+  printf '%s' "$dirs" | awk -v rid="$rid" '
+    $0 != "" { if (!($0 in n)) order[++k] = $0; n[$0]++ }
+    END { for (i = 1; i <= k; i++) printf "%s\t도는중\t%d\t%s\n", rid, n[order[i]], order[i] }'
+}
+
+probe_undecided_rows() {
+  # probe_undecided_rows <run-id> <run-dir> — the 판정 불가 lines of a run whose
+  # records this probe does not recognize: one `?` line for every directory the
+  # run has on record — its own and each stage record's launch directory — so a
+  # consumer counting one lane still sees the run it cannot judge. Nothing was
+  # measured, so the count is `?` on every line.
+  local rid="$1" d="$2" f seg dirs
+  dirs="$(probe_config_dir "$d")
+"
+  for f in "$d"/*.pid; do
+    [ -e "$f" ] || continue
+    seg=${f##*/}; seg=${seg%.pid}
+    case "$seg" in watch|checks) continue ;; esac
+    dirs="$dirs$(probe_segment_config_dir "$d" "$seg")
+"
+  done
+  printf '%s' "$dirs" | awk -v rid="$rid" '
+    $0 != "" && !($0 in seen) { seen[$0] = 1; printf "%s\t판정 불가\t?\t%s\n", rid, $0 }'
+}
+
 probe_runs() {
-  local d rid live
+  local d rid
   # A missing root is zero runs, not a failure — see the header. An existing but
   # unenterable root IS the failure, and it is the branch the exit code exists
   # for.
@@ -267,24 +380,11 @@ probe_runs() {
         continue ;;
     esac
     if probe_shape_ok "$d"; then
-      live=$(cc_live_stages "$d")
-      case "${live:-}" in
-        ''|*[!0-9]*)
-          # 센서스가 수치를 내지 않았다. 0 으로 메우면 그 값이 `아님` 으로
-          # 발행되고, 이 파일 헤더가 스왑을 인가하는 답이라고 부른 것이 바로 그
-          # 값이다. 측정이 없었으므로 개수는 `?` 다.
-          printf '%s\t판정 불가\t?\t%s\n' "$rid" "$(probe_config_dir "$d")" ;;
-        *)
-          if [ "$live" -gt 0 ]; then
-            printf '%s\t도는중\t%s\t%s\n' "$rid" "$live" "$(probe_config_dir "$d")"
-          else
-            printf '%s\t아님\t%s\t%s\n' "$rid" "$live" "$(probe_config_dir "$d")"
-          fi ;;
-      esac
+      probe_live_rows "$rid" "$d"
     else
       # The count is `?` and not `0`. A number here would be read as a
       # measurement, and there was no measurement.
-      printf '%s\t판정 불가\t?\t%s\n' "$rid" "$(probe_config_dir "$d")"
+      probe_undecided_rows "$rid" "$d"
     fi
   done
   return 0

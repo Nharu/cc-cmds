@@ -3,9 +3,10 @@
 # lint-terminal-literals.sh — the terminal literals the driver matches are still
 # carried, byte for byte, by the skills that emit and quote them.
 #
-# `run.sh` recognises the end of a design, audit or re-convergence stage by
-# finding a fixed literal in the stage's stream (`LIT_DESIGN_TERMINAL`,
-# `LIT_AUDIT_TERMINAL`, `LIT_RECONVERGE_TERMINAL`). The same literal is written
+# `run.sh` recognises the end of a design, audit, re-convergence or base split
+# stage by finding a fixed literal in the stage's stream (`LIT_DESIGN_TERMINAL`,
+# `LIT_AUDIT_TERMINAL`, `LIT_RECONVERGE_TERMINAL`, `LIT_SPLIT_TERMINAL`). The
+# same literal is written
 # in places the driver never reads: the skill that tells the model to print it,
 # and the skills that quote it to match it or to describe the match. Nothing
 # else checks that those copies still exist. Trimming a skill's prose can delete
@@ -17,7 +18,7 @@
 # violation this lint reports.
 #
 # Rules:
-#   1. [exit 2] `run.sh` declares each of the three on exactly one line of the
+#   1. [exit 2] `run.sh` declares each of the four on exactly one line of the
 #      shape `readonly LIT_<KIND>_TERMINAL='<text>'`, with a non-empty value.
 #      No `run.sh`, no declaration or two declarations all mean there is no
 #      single source, which is not a verdict about the skills.
@@ -53,21 +54,25 @@ orch_root="${ORCH_ROOT:-$repo_root/plugins/cc-cmds/orchestrator}"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 
 RUN_SH="$orch_root/run.sh"
-NAMES="LIT_DESIGN_TERMINAL LIT_AUDIT_TERMINAL LIT_RECONVERGE_TERMINAL"
+NAMES="LIT_DESIGN_TERMINAL LIT_AUDIT_TERMINAL LIT_RECONVERGE_TERMINAL LIT_SPLIT_TERMINAL"
 
 # <path under SKILLS_ROOT> <literal name>
 EMITTERS="design/SKILL.md LIT_DESIGN_TERMINAL
 design-audit/SKILL.md LIT_AUDIT_TERMINAL
 design-discuss-unattended/SKILL.md LIT_DESIGN_TERMINAL
 design-reconverge/SKILL.md LIT_RECONVERGE_TERMINAL
-design-audit-unattended/SKILL.md LIT_AUDIT_TERMINAL"
+design-audit-unattended/SKILL.md LIT_AUDIT_TERMINAL
+design-base-unattended/SKILL.md LIT_SPLIT_TERMINAL"
 
 # <path under SKILLS_ROOT> <literal name> <occurrences>
 CONSUMERS="_common/pipeline-sidecar.md LIT_DESIGN_TERMINAL 2
 _common/pipeline-sidecar.md LIT_AUDIT_TERMINAL 1
+_common/pipeline-sidecar.md LIT_SPLIT_TERMINAL 1
 autopilot-router-shift/SKILL.md LIT_DESIGN_TERMINAL 2
 autopilot-router-shift/SKILL.md LIT_RECONVERGE_TERMINAL 1
-autopilot/SKILL.md LIT_DESIGN_TERMINAL 2"
+autopilot-router-shift/SKILL.md LIT_SPLIT_TERMINAL 1
+autopilot/SKILL.md LIT_DESIGN_TERMINAL 2
+autopilot/SKILL.md LIT_SPLIT_TERMINAL 1"
 
 # --- Rule 1: extract the source ----------------------------------------------
 #
@@ -135,5 +140,5 @@ if [[ "$fail" != "0" ]]; then
   echo "lint-terminal-literals: violations found" >&2
   exit 1
 fi
-echo "OK:   terminal literals — run.sh 원천 3개, 발신 ${n_emit}개, 소비 ${n_cons}개 파일이 온전하다"
+echo "OK:   terminal literals — run.sh 원천 4개, 발신 ${n_emit}개, 소비 ${n_cons}개 파일이 온전하다"
 exit 0

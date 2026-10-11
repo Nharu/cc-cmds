@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fixture emitter — reads a THIRD `CC_CMDS_` name that no document announces and
+# Fixture emitter — reads a FOURTH `CC_CMDS_` name that no document announces and
 # that is not on the registered list.
 #
 # THIS IS THE FIXTURE THE SET RULE EARNS ITS KEEP ON. The old "exactly one" form
@@ -19,6 +19,14 @@ cc_notify_enabled() {
 
 cc_notify_session_enabled() {
   local v="${CC_CMDS_SESSION_NOTIFY:-}"
+  case "$v" in
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+  esac
+  return 0
+}
+
+cc_notify_dismiss_enabled() {
+  local v="${CC_CMDS_SESSION_DISMISS:-}"
   case "$v" in
     0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
   esac

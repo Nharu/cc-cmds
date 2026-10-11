@@ -56,29 +56,41 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
 
     Banner title is `cc-cmds ${workflow}` and body is `${summary}`.
 
+  `<sid>` below is the session id with every character outside
+  `A-Za-z0-9_.-` replaced by `_`; `<armed_at>` is the ARM's epoch second.
+
   mode=single, armCount=1: terminal-notifier invoked with
-    `-group "cc-cmds-active-notify"` (banner replaces previous; visual
-    parity with the §7 permission-test bypass path) and `-execute
-    "$click"` (the click target `notify-focus.sh exec-arg` built — see
-    §4 invariant 2). Flag is consumed atomically via `mv -n` on the
-    (only) fire.
-  mode=single, armCount=N (N>1): terminal-notifier invoked WITHOUT
-    `-group` (each named sub-event banner persists independently in
-    Notification Center; armCount>1 expresses N distinct events that
-    must not replace each other). Intermediate fires increment
-    `fire_count` and update `last_fire_at` via temp-write → mv rename;
-    final fire (fire_count + 1 == arm_count) atomically consumes via
-    `mv -n`.
-  mode=repeat: terminal-notifier invoked WITHOUT `-group` (intentional
-    pile-up; dynamic-trust anti-spam — user perceives spam → CANCEL).
+    `-group "cc-cmds-active-notify-<sid>"` (the session's own slot: the
+    banner replaces this session's previous one-shot banner and never
+    another session's) and `-execute "$click"` (the click target
+    `notify-focus.sh exec-arg` built — see §4 invariant 2). Flag is
+    consumed atomically via `mv -n` on the (only) fire.
+  mode=single, armCount=N (N>1): terminal-notifier invoked with
+    `-group "cc-cmds-active-notify-<sid>@<armed_at>.<n>"`, `<n>` the
+    fire's count — a group of its own per fire, so each named sub-event
+    banner persists independently in Notification Center (armCount>1
+    expresses N distinct events that must not replace each other).
+    Intermediate fires increment `fire_count` and update `last_fire_at`
+    via temp-write → mv rename; final fire (fire_count + 1 == arm_count)
+    atomically consumes via `mv -n`.
+  mode=repeat: terminal-notifier invoked with
+    `-group "cc-cmds-active-notify-<sid>@<armed_at>.<fire_count>"`, a
+    group of its own per fire (intentional pile-up; dynamic-trust
+    anti-spam — user perceives spam → CANCEL).
     `fire_count` is incremented and `last_fire_at` updated atomically
     via temp-write → mv rename; the flag is preserved until explicit
     CANCEL. `arm_count` field is stored verbatim at ARM time but
     ignored at runtime (mode-asymmetric semantics).
 
+  The `@` keeps one session's groups from being a prefix of another
+  session's slot, which is what lets `notify.sh dismiss <sid>` find a
+  session's banners from `terminal-notifier -list ALL` alone. Only the
+  §7 permission-test bypass keeps the global `cc-cmds-active-notify`.
+
 ## §3 Failure handling
-  All notify.sh surfaces (`arm`, `fire-now`, `cancel`) are model-side
-  Bash dispatches. Silent skip with respect to the user-visible response
+  The firing notify.sh surfaces (`arm`, `fire-now`, `cancel`) are
+  model-side Bash dispatches; `dismiss` is called only by the plugin's
+  return hook and raises no banner. Silent skip with respect to the user-visible response
   stream is the default contract — `AskUserQuestion` is never called,
   no user-addressed narration, no assistant response stream logging.
 
@@ -131,28 +143,59 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      value can be built it falls back to `:`, and there is no path that
      drops `-execute` — without it, macOS Notification Center's click
      would hand focus to whatever the notifier activates by default.
-     A banner raised inside a tmux pane in iTerm2 therefore clicks
-     through to that iTerm2 window and tab and to that tmux window and
-     pane, under iTerm2's tmux integration (`tmux -CC`) and under plain
-     tmux in an iTerm2 tab alike. Outside tmux, in another terminal, or
+     A click on a banner raised inside a tmux pane in iTerm2 therefore
+     selects that tmux window and pane and that iTerm2 tab and session,
+     under iTerm2's tmux integration (`tmux -CC`) and under plain tmux
+     in an iTerm2 tab alike. It brings that window forward, Space and
+     all, only when the helper below raised it; without the grant,
+     without the helper, or when the window does not answer the
+     Accessibility API in time, it only selects, and a window on
+     another Space stays where it is. Outside tmux, in another terminal, or
      once the pane is closed, the click does nothing. The first click
      makes macOS ask whether iTerm2 may be controlled; refusing leaves
      the click doing nothing, and the choice is reverted under System
-     Settings → Privacy & Security → Automation. The fundamental "no
-     button" path is tracked as a roadmap item (custom UN-API binary).
+     Settings → Privacy & Security → Automation.
+     When the window is on another Space (a full-screen window, say),
+     the click raises that window through the Accessibility API and
+     then activates iTerm2, so macOS switches to that Space. That needs
+     the notifier itself in System Settings → Privacy & Security →
+     Accessibility — the click runs as the notifier's child, so the
+     grant is the notifier's, and it lets that app control the
+     computer. The grant is to the app, not to a banner: it applies to
+     the click command of every banner that notifier raises, whoever
+     raised it. Without it the click still selects the tab and session,
+     and one guide banner (`cc-cmds · 배너 클릭 설정이 필요합니다`) names
+     the app to add; it comes back only after a day or once the
+     notifier's path changes (`brew upgrade` re-signs it and drops the
+     grant). The raising helper is compiled from Swift on first use,
+     so it needs the Command Line Tools or Xcode; with neither, one
+     guide banner says `xcode-select --install` and the click selects
+     only. A build that fails raises no guide: the click selects only,
+     and the same build is not tried again for a day. Its build, a
+     per-pane window lookup the banner starts in the background, and a
+     one-line failure log live under
+     `$(getconf DARWIN_USER_CACHE_DIR)cc-cmds/notify-focus`; deleting
+     that directory is always safe. The fundamental "no button" path is
+     tracked as a roadmap item (custom UN-API binary).
   3. **Single dispatch surface — model-driven, no Stop hook.** This
      holds for `active-notify`, not for the plugin as a whole — the
      ordinary session's banner seats are hooks, and a separate system.
-     All notify.sh invocations originate from the model: ARM, fire-now,
-     and CANCEL. `active-notify` has no hook-driven turn-end auto-fire.
+     The subcommands that fire (ARM, fire-now and CANCEL) are called
+     only by the model; `dismiss` is a clear-only subcommand called
+     only by the return hook, and it raises no banner. That does not
+     break the model-invocable helper convention, which forbids a
+     harness-driven turn-end path that fires, and `dismiss` fires
+     nothing. `active-notify` has no hook-driven turn-end auto-fire.
      fire-now is
      called at each sub-event observation point as the model evaluates
      §4 of SKILL.md (when-to-invoke criteria). Single mode is armCount-
      aware: intermediate fires (fire_count + 1 < arm_count) increment
      and preserve; final fire (fire_count + 1 == arm_count) atomically
-     consumes via `mv -n`. `-group "cc-cmds-active-notify"` is applied
-     only when single + arm_count == 1 (banner replace semantics for
-     visual parity with §7 bypass). Repeat is unbounded — preserves
+     consumes via `mv -n`. Single + arm_count == 1 uses the session
+     slot `-group "cc-cmds-active-notify-<sid>"` (banner replace
+     semantics within the session); every other fire uses its own
+     `<slot>@<armed_at>.<n>` group, and only the §7 bypass keeps the
+     global `cc-cmds-active-notify`. Repeat is unbounded — preserves
      flag and increments `fire_count` on every fire-now, terminates
      only on user-issued CANCEL (no anti-spam guard — dynamic-trust
      model). ARM and CANCEL are local-disk file ops only and naturally

@@ -69,6 +69,30 @@ fx_blocked() {
   fx_row 'blocked' "대상=-" "스코프=run" "원인=$2" "사유=$1"
 }
 
+fx_cone_blocked() {
+  # fx_cone_blocked <앵커|드라이버> <주체> <원인> <사유> [관측] — a cone-scope
+  # block in one of the two shapes real ledgers carry.
+  #
+  # `앵커` is the gate's shape: `대상` names the target repository and the
+  # subject sits in `앵커 세그먼트`. `드라이버` has no anchor and puts the subject
+  # in `대상` — what the driver's `park()` writes, with the concrete reason in
+  # `관측` under a generic `사유`, and also what a `판정 불가` row looks like,
+  # with an alias as its subject. Whether the subject has a `segment` row — a
+  # review finding id or an alias has none — is the caller's fixture, not this
+  # row's.
+  #
+  # No row resolves a cone block. A later `segment` row for the subject that is
+  # not `park` is what hides it, so a test writes that with `fx_segment`.
+  local shape="$1" subj="$2" cause="$3" reason="$4" obs="${5:-}"
+  if [ "$shape" = "앵커" ]; then
+    fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=$cause" "사유=$reason" \
+      "근거=픽스처" "앵커 세그먼트=$subj" "의존 세그먼트 수=1" "의존 세그먼트=$subj"
+  else
+    fx_row 'blocked' "대상=$subj" "스코프=cone" "원인=$cause" "사유=$reason" \
+      "관측=${obs:--}"
+  fi
+}
+
 # --------------------------------------------------------------------------
 # Stage pid files — the three states the liveness predicate separates
 # --------------------------------------------------------------------------
@@ -299,6 +323,35 @@ fx_done() {
   # It is a SHORTCUT for the terminal predicate, not its definition: measured
   # 2026-09-07, 99 of 202 observed run directories had one.
   printf '%s\n' "종단 — 픽스처" > "$FX_RUN_DIR/done"
+}
+
+fx_stage_meta() {
+  # fx_stage_meta <segment> <kind> <attempt> — the kind and attempt records the
+  # gate leaves beside a stage it launched, under the names it writes them:
+  # `<seg>.kind` and `<seg>.attempt`. The driver writes neither, so a fixture of
+  # a driver stage leaves this out. An empty <kind> writes an empty `.kind`,
+  # which is a shape the gate can leave too.
+  printf '%s\n' "$2" > "$FX_RUN_DIR/$1.kind"
+  printf '%s\n' "$3" > "$FX_RUN_DIR/$1.attempt"
+}
+
+fx_manifest_target() {
+  # fx_manifest_target [<alias> <절단점>]... — the run manifest beside the
+  # ledger, `<rid>.plan.md`, carrying one `target` row per pair in the shape
+  # the kickoff writes and the gate reads with `target_field`, plus the run's
+  # highest cutpoint, which is the last pair's. With no pair it still writes the
+  # file, with no `target` row in it.
+  local f last=""
+  f="$(dirname "$FX_LEDGER")/$FX_RUN_ID.plan.md"
+  {
+    printf '# 파이프라인 런 매니페스트 — %s\n\n## 대상\n' "$FX_RUN_ID"
+    while [ "$#" -ge 2 ]; do
+      printf -- '- `target` | 별칭=%s | 베이스 브랜치=master | 홈=예 | 절단점=%s | 말단 행위 상한=없음\n' "$1" "$2"
+      last="$2"; shift 2
+    done
+    printf '\n## 인가\n'
+    [ -z "$last" ] || printf '**런 최대 절단점**: %s\n' "$last"
+  } > "$f"
 }
 
 # --------------------------------------------------------------------------

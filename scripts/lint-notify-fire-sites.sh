@@ -19,17 +19,20 @@
 # notification helper skill is a separate dispatcher that stays as it is, so a
 # tree-wide count would be measuring two unrelated systems as one.
 #
-# A BANNER SEAT NOW LIVES OUTSIDE THAT SCOPE, and this lint does not see it. The
-# ordinary session's hook seats sit in the plugin's `hooks/` directory, a sibling
-# of the orchestrator. Today that costs nothing: they source the emitter and fire
-# through its fire function, so no new line anywhere launches the binary and the
-# two counted here are still the only two. The blind spot turns real the moment
-# a hook launches the notifier itself — widen the scope in that same change.
+# BANNER SEATS ALSO LIVE IN THE PLUGIN'S `hooks/` DIRECTORY, a sibling of the
+# orchestrator. The shell seats there source the emitter and fire through its
+# fire function, so they launch nothing themselves. The TypeScript mods there
+# (the question form raises a banner when it opens) must do the same: they run
+# a shell seat as a child process and never name the binary. Rule 4 holds them
+# to that, because a mod that launched the notifier directly would raise or
+# clear a banner with no seat guard, and Rules 1–3 would still count two.
 #
 # Rules:
 #   1  exactly two lines in the orchestrator EXECUTE the notifier         [fail]
 #   2  both of them are in the emitter file                               [fail]
 #   3  both of them come after the fire function opens                    [fail]
+#   4  no line of a `.ts`/`.tsx` file under hooks/ names the notifier,
+#      `//` comment lines excepted                                        [fail]
 #
 # WHY TWO AND NOT ONE OR THREE. The emitter raises a banner from one line and
 # removes one from another, and those are the only two acts that reach the
@@ -53,6 +56,9 @@
 #
 # Env overrides (fixture runner):
 #   ORCH_ROOT=<dir>   # directory holding the orchestrator's shell files
+#   HOOKS_ROOT=<dir>  # directory holding the plugin's hooks (Rule 4); a path
+#                     # that does not exist is an empty scope, not a skip of
+#                     # the whole lint
 #
 # Posture: if the emitter is absent the whole check is a silent skip, so the
 # script stays green during an incremental rollout.
@@ -68,6 +74,7 @@ set -uo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 orch_root="${ORCH_ROOT:-$repo_root/plugins/cc-cmds/orchestrator}"
+hooks_root="${HOOKS_ROOT:-$repo_root/plugins/cc-cmds/hooks}"
 EMITTER_NAME="notify-run.sh"
 FIRE_FN="cc_notify_fire() {"
 
@@ -128,10 +135,39 @@ done <<EOF
 $sites
 EOF
 
+# Rule 4. Only whole-line `//` comments are dropped: a trailing comment after
+# code is still on a line that may launch something, and a block comment is
+# rare enough in these files that counting it is the safe side.
+ts_sites=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  hits=$(grep -n 'terminal-notifier' "$f" 2>/dev/null \
+         | grep -vE '^[0-9]+:[[:space:]]*//' || true)
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    ts_sites="${ts_sites}${f#"$hooks_root"/}:${h%%:*}
+"
+  done <<EOF
+$hits
+EOF
+done <<EOF
+$(find "$hooks_root" -type f \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null | sort || true)
+EOF
+
+while IFS= read -r s; do
+  [ -n "$s" ] || continue
+  echo "FAIL: hooks 아래 TS 파일이 발사기 이름을 적는다: $s" >&2
+  echo "       mod 는 셸 좌석을 자식으로 돌려 배너를 올리고, 발사기를 직접 부르지 않는다" >&2
+  fail=1
+done <<EOF
+$ts_sites
+EOF
+
 if [ "$fail" != "0" ]; then
   echo "lint-notify-fire-sites: violations found" >&2
   exit 1
 fi
 
 echo "OK:   notify fire sites — 발사기를 부르는 줄은 정확히 둘(올리기·지우기)이고 둘 다 emitter 의 가드 안이다"
+echo "OK:   hooks TS fire sites — hooks 아래 TS 파일에 발사기 이름을 적은 줄이 없다"
 exit 0

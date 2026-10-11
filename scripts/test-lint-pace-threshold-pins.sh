@@ -18,6 +18,11 @@
 #   FAIL-4-consumer-drift   a consumer restates a threshold with another number
 #   FAIL-5-consumer-absent  a consumer file is missing — FAIL, not SKIP
 #   FAIL-6-mirror-drift     gate.sh's GATE_PACE_STALE_SECONDS moved on its own
+#   FAIL-7-session-mirror-drift   run.sh's RUN_PACE_SESSION_WINDOW_PCT_MAX moved to 95
+#   EXIT2-8-no-session-decl       fleet.sh does not declare FLEET_SESSION_WINDOW_PCT_MAX
+#   FAIL-9-run-session-absent     run.sh declares RUN_PACE_SESSION_WINDOW_PCT_MAX zero times
+#   FAIL-10-run-session-double    run.sh declares it twice
+#   OK-11-mirror-count            the success line names three mirrors
 #
 # Fleet-agent lint branches:
 #   OK-1-agree                    template and renderer agree
@@ -45,6 +50,7 @@ readonly FLEET_DISPATCH_START_INTERVAL=120      # dispatch period
 readonly FLEET_TICK_BUDGET_SECONDS=5
 readonly FLEET_STATE_STALE_SECONDS=180          # 3 x (55 + 5)
 readonly FLEET_IDLE_SECONDS=1200
+readonly FLEET_SESSION_WINDOW_PCT_MAX=80        # 5h session window ceiling
 readonly FLEET_BURN_PP_PER_MWT=0.104
 fleet_render_plist() {
   local label="$1" sub="$2" lane="$3" cfg="$4" interval="$5" dst="$6" tpl="$FLEET_DIR/fleet-agent.plist.in"
@@ -73,6 +79,7 @@ EOF
 cat > "$good/orchestrator/run.sh" <<'EOF'
 #!/usr/bin/env bash
 readonly RUN_PACE_STALE_SECONDS=180
+readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=80
 EOF
 cat > "$good/orchestrator/fleet-agent.plist.in" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -166,6 +173,32 @@ run_case lint-pace-threshold-pins.sh FAIL-5-consumer-absent
 clone FAIL-6-mirror-drift
 sed -e 's/^readonly GATE_PACE_STALE_SECONDS=180$/readonly GATE_PACE_STALE_SECONDS=240/' "$good/orchestrator/gate.sh" > "$work/FAIL-6-mirror-drift/orchestrator/gate.sh"
 run_case lint-pace-threshold-pins.sh FAIL-6-mirror-drift
+
+clone FAIL-7-session-mirror-drift
+sed -e 's/^readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=80$/readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=95/' "$good/orchestrator/run.sh" > "$work/FAIL-7-session-mirror-drift/orchestrator/run.sh"
+run_case lint-pace-threshold-pins.sh FAIL-7-session-mirror-drift
+
+clone EXIT2-8-no-session-decl
+sed -e '/^readonly FLEET_SESSION_WINDOW_PCT_MAX=/d' "$good/orchestrator/fleet.sh" > "$work/EXIT2-8-no-session-decl/orchestrator/fleet.sh"
+run_case lint-pace-threshold-pins.sh EXIT2-8-no-session-decl
+
+clone FAIL-9-run-session-absent
+sed -e '/^readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=/d' "$good/orchestrator/run.sh" > "$work/FAIL-9-run-session-absent/orchestrator/run.sh"
+run_case lint-pace-threshold-pins.sh FAIL-9-run-session-absent
+
+clone FAIL-10-run-session-double
+printf 'readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=80\n' >> "$work/FAIL-10-run-session-double/orchestrator/run.sh"
+run_case lint-pace-threshold-pins.sh FAIL-10-run-session-double
+
+# The success line names the mirror count — the three restatements rule 2 and
+# rule 2b hold, so a mirror added or dropped without moving the line shows here.
+clone OK-11-mirror-count
+ok_out=$(ORCH_ROOT="$work/OK-11-mirror-count/orchestrator" SKILLS_ROOT="$work/OK-11-mirror-count/skills" \
+  bash "$script_dir/lint-pace-threshold-pins.sh" 2>/dev/null || true)
+case "$ok_out" in
+  *'거울 3개'*) passed=$((passed + 1)); echo "PASS: lint-pace-threshold-pins.sh OK-11-mirror-count (거울 3개)" ;;
+  *) failures=$((failures + 1)); echo "FAIL: lint-pace-threshold-pins.sh OK-11-mirror-count — 성공 문구에 거울 3개가 없다: $ok_out" >&2 ;;
+esac
 
 # --- fleet agent pins --------------------------------------------------------
 clone OK-1-agree

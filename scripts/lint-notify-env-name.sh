@@ -33,9 +33,10 @@
 #                   and the survivors are the kill switches.
 #   prose side    — per switch, take the one `CC_CMDS_*` token carried by that
 #                   switch's own marker sentence: 「전부 끄시려면」 in the
-#                   kickoff, 「이 머신의 일반 세션 배너를 끄시려면」 in the seat
-#                   contract. The two markers do not overlap as substrings, so
-#                   neither can pollute the other's count.
+#                   kickoff, 「이 머신의 일반 세션 배너를 끄시려면」 and
+#                   「이 머신에서 귀환 때 배너 닫기를 끄시려면」 in the hooks
+#                   README. The markers do not overlap as substrings, so none can
+#                   pollute another's count.
 #
 # Without a rule on the emitter side the lint catches every seam name and fails
 # forever on the ones no document mentions; without one on the prose side it
@@ -77,7 +78,7 @@ SEATDOC="$hooks_root/README.md"
 
 # The registered set, sorted, one per line — the shape the extractions below
 # produce, so the comparisons are plain string equality.
-KNOWN_SWITCHES=$(printf '%s\n' CC_CMDS_AUTOPILOT_NOTIFY CC_CMDS_SESSION_NOTIFY | sort)
+KNOWN_SWITCHES=$(printf '%s\n' CC_CMDS_AUTOPILOT_NOTIFY CC_CMDS_SESSION_NOTIFY CC_CMDS_SESSION_DISMISS | sort)
 
 if [[ ! -f "$EMITTER" ]]; then
   echo "SKIP: notify-run.sh not found under $orch_root — banner emitter not present"
@@ -138,6 +139,7 @@ check_prose() {
 
 check_prose "autopilot/SKILL.md" "$KICKOFF" '전부 끄시려면'
 check_prose "hooks/README.md"    "$SEATDOC" '이 머신의 일반 세션 배너를 끄시려면'
+check_prose "hooks/README.md"    "$SEATDOC" '이 머신에서 귀환 때 배너 닫기를 끄시려면'
 
 # --- Rule 3: the two SETS agree --------------------------------------------
 # Set against set, not string against string. The moment rule 1 became a set the
