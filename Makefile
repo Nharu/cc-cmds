@@ -313,6 +313,7 @@ ORCH_TESTS := \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-run-pane.sh \
+	scripts/test-run-stops.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
