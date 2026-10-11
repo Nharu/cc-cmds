@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# rekick.sh — the successor verdict, its stop predicates, the successor id, and
-# the deriver that writes a successor run's three files.
+# successor.sh — the successor verdict, its stop predicates, the successor id,
+# and the deriver that writes a successor run's three files.
 #
 # Usage
-#   rekick.sh verdict <predecessor manifest> [--lane present|absent]
-#                     [--pin usable|unusable|none]
+#   successor.sh verdict <predecessor manifest> [--lane present|absent]
+#                        [--pin usable|unusable|none]
 #       → one line `<판정>\t<원인>\t<사유>` on stdout, exit 0.
 #         <판정> is one of 자동 · 승인 · 사람 · 상한 · 진행 · 없음; <원인> is the
 #         token a successor's `연쇄` row would carry, `-` when there is none.
-#   rekick.sh id <재킥오프 시각 ISO Z> <선행 런> <순번>
+#   successor.sh id <재킥오프 시각 ISO Z> <선행 런> <순번>
 #       → the successor run id.
-#   rekick.sh derive --predecessor <manifest> --claim <claim directory>
+#   successor.sh derive --predecessor <manifest> --claim <claim directory>
 #                    --verdict 자동|승인 [--approval <run>#<id> --answer-digest <hex>]
 #       → `열림\t<id>\t<manifest>\t<문서 sha256>` and exit 0, or
 #         `사람\t<사유>` and exit 4 (nothing written), or
@@ -38,7 +38,7 @@
 
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${CC_REKICK_SOURCE_ONLY:-0}" != "1" ] \
    && [ -n "${CC_PIPELINE_RUN_ID+x}" ]; then
-  printf 'rekick.sh: 파이프라인 스테이지 안에서는 돌지 않습니다 (CC_PIPELINE_RUN_ID 가 설정돼 있음)\n' >&2
+  printf 'successor.sh: 파이프라인 스테이지 안에서는 돌지 않습니다 (CC_PIPELINE_RUN_ID 가 설정돼 있음)\n' >&2
   exit 2
 fi
 
@@ -950,7 +950,7 @@ fi
 # manifest readers, `binding_set_bytes`, the end-token reader and the chain
 # verifier are reused, never re-implemented. The guard variable keeps the
 # driver's own source of this file from re-entering the program below. A shell
-# that sourced this file returned above, so this line runs only in rekick.sh's
+# that sourced this file returned above, so this line runs only in successor.sh's
 # own process.
 CC_REKICK_SOURCE_ONLY=1
 CC_GATE_SOURCE_ONLY=1
@@ -960,7 +960,7 @@ set +e
 
 case "${1:-}" in
   verdict) shift; cc_rekick_verdict "$@" ;;
-  id)      shift; nid=$(rekick_successor_id "$@") || { printf 'rekick.sh: id 인자가 맞지 않습니다\n' >&2; exit 2; }; printf '%s\n' "$nid" ;;
+  id)      shift; nid=$(rekick_successor_id "$@") || { printf 'successor.sh: id 인자가 맞지 않습니다\n' >&2; exit 2; }; printf '%s\n' "$nid" ;;
   derive)  shift; rekick_derive "$@"; exit $? ;;
-  *) printf 'rekick.sh: 하위 명령은 verdict · id · derive 입니다\n' >&2; exit 2 ;;
+  *) printf 'successor.sh: 하위 명령은 verdict · id · derive 입니다\n' >&2; exit 2 ;;
 esac

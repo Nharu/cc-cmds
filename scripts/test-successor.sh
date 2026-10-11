@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test the successor verdict and the deriver (orchestrator/rekick.sh).
+# Test the successor verdict and the deriver (orchestrator/successor.sh).
 #
 # WHAT THIS SUITE IS FOR. The deriver writes a run's authorization without a
 # person present, so what it may change is the whole of its safety: a byte it
@@ -20,14 +20,14 @@
 # and the program refuses outright there. Exactly one case calls it with the
 # variable set, to assert that refusal.
 #
-# Usage: bash scripts/test-rekick.sh
+# Usage: bash scripts/test-successor.sh
 
 set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
-REKICK="$ORCH/rekick.sh"
+REKICK="$ORCH/successor.sh"
 GATE_SH="$ORCH/gate.sh"
 
 # Physical, because the target row's common git directory is compared with what

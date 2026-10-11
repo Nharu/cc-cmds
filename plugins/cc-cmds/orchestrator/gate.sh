@@ -12721,7 +12721,7 @@ GATE_DRIFT_DIRS
       # declare for it does not come back with a grade a declaration could meet.
       if gate_rekick_argv_refuse "$@"; then
         printf '축2=거부\n'
-        warn "axis 2 refusal — the rekick deriver runs only outside every run, never from a stage: $1"
+        warn "axis 2 refusal — the successor deriver (successor.sh) runs only outside every run, never from a stage: $1"
         exit "$GATE_EXIT_RULE"
       fi
       g=$(surface_of_argv0 "$@")
@@ -16374,7 +16374,9 @@ gate_sibling_record_write_guard() {
 }
 
 gate_rekick_argv_refuse() {
-  # gate_rekick_argv_refuse <argv...> — 0 when the act runs the rekick deriver.
+  # gate_rekick_argv_refuse <argv...> — 0 when the act runs the successor
+  # deriver `successor.sh`. The kickoff's restart helper under the other name
+  # is a different program and is not refused here.
   #
   # THE DERIVER IS NOT A STAGE'S TOOL. It writes the successor's manifest and
   # grant record, which are exactly the files the guards above keep a stage
@@ -16389,24 +16391,24 @@ gate_rekick_argv_refuse() {
   # `cat` or `grep`, which this does not touch.
   local a w shell=0
   w=${1##*/}
-  [ "$w" = rekick.sh ] && return 0
+  [ "$w" = successor.sh ] && return 0
   case "$w" in
     bash|sh|zsh|dash|ksh) shell=1 ;;
     env|command|nice|nohup|timeout|stdbuf|time|lockf|xargs|sudo|caffeinate)
       for a in "$@"; do
-        [ "${a##*/}" = rekick.sh ] && return 0
+        [ "${a##*/}" = successor.sh ] && return 0
         case "${a##*/}" in bash|sh|zsh|dash|ksh) shell=1 ;; esac
       done ;;
     *) return 1 ;;
   esac
   [ "$shell" = 1 ] || return 1
-  # A NAME BOUNDARY ON BOTH SIDES, because `test-rekick.sh` is this tree's own
-  # suite for the deriver and runs under `bash` on every check.
+  # A NAME BOUNDARY ON BOTH SIDES, because `test-successor.sh` is this tree's
+  # own suite for the deriver and runs under `bash` on every check.
   for a in "$@"; do
     case "$a" in
-      rekick.sh|rekick.sh[!A-Za-z0-9_.-]*) return 0 ;;
-      *[/\ \	\"\'\;\&\|\(\`]rekick.sh) return 0 ;;
-      *[/\ \	\"\'\;\&\|\(\`]rekick.sh[!A-Za-z0-9_.-]*) return 0 ;;
+      successor.sh|successor.sh[!A-Za-z0-9_.-]*) return 0 ;;
+      *[/\ \	\"\'\;\&\|\(\`]successor.sh) return 0 ;;
+      *[/\ \	\"\'\;\&\|\(\`]successor.sh[!A-Za-z0-9_.-]*) return 0 ;;
     esac
   done
   return 1
@@ -21260,12 +21262,12 @@ gate_verb_act() {
     warn "axis 2 \`형태 미상\` — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
     exit "$GATE_EXIT_VOCAB"
   fi
-  # THE REKICK DERIVER IS REFUSED AS A ROW OF THE TABLE, NOT AS A GRADE. Left to
-  # the table it is `등급 미상`, and in auto-resolve mode a declared unknown
+  # THE SUCCESSOR DERIVER IS REFUSED AS A ROW OF THE TABLE, NOT AS A GRADE. Left
+  # to the table it is `등급 미상`, and in auto-resolve mode a declared unknown
   # command still runs capped at read — which is the deriver writing a
   # successor's manifest from inside a stage. No declaration rescues it.
   if [ "$argv_graded" = "1" ] && gate_rekick_argv_refuse "$@"; then
-    warn "axis 2 refusal — the rekick deriver runs only outside every run, never from a stage: $1"
+    warn "axis 2 refusal — the successor deriver (successor.sh) runs only outside every run, never from a stage: $1"
     exit "$GATE_EXIT_RULE"
   fi
   # --- 부류·표지·하한 -----------------------------------------------------

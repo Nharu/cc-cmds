@@ -110,7 +110,7 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # admission check of a successor manifest asks the same questions the verdict
 # that opened it asked, and two implementations would answer them differently.
 # shellcheck source=/dev/null
-. "$ORCH_DIR/rekick.sh"
+. "$ORCH_DIR/successor.sh"
 
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then

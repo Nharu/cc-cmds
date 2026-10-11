@@ -10986,24 +10986,27 @@ cp "$GBAK" "$FX_GRANT"
 gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
 check "온전한 인가 기록에서는 통과한다" "$rc" "0"
 
-# The rekick deriver writes a successor's manifest and grant record, so a stage
-# is refused it on every spelling that runs it — and not on the suite that tests
-# it, whose name carries the deriver's as a suffix.
-for spell in "rekick.sh derive" "/x/orchestrator/rekick.sh id" "bash /x/rekick.sh verdict" \
-             "env A=1 /x/rekick.sh derive" "lockf -k /tmp/l bash ./rekick.sh derive" \
-             "sh -c ./rekick.sh"; do
+# The successor deriver writes a successor's manifest and grant record, so a
+# stage is refused it on every spelling that runs it — and not on the suite that
+# tests it, whose name carries the deriver's as a suffix, nor on the kickoff's
+# restart helper, which is a different program under a different name.
+for spell in "successor.sh derive" "/x/orchestrator/successor.sh id" "bash /x/successor.sh verdict" \
+             "env A=1 /x/successor.sh derive" "lockf -k /tmp/l bash ./successor.sh derive" \
+             "sh -c ./successor.sh"; do
   # shellcheck disable=SC2086
   gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- $spell
-  check "재킥오프 파생기는 등급표에서 거부된다: $spell" "$rc" "$GATE_EXIT_RULE"
+  check "후속 런 파생기는 등급표에서 거부된다: $spell" "$rc" "$GATE_EXIT_RULE"
+  case "$msg" in
+    *"successor deriver (successor.sh) runs only outside every run"*) ok "거부가 파생기를 지목한다: $spell" ;;
+    *) bad "파생기 거부 문면: $spell" "$msg" ;;
+  esac
 done
-case "$msg" in
-  *"rekick deriver runs only outside every run"*) ok "거부가 파생기를 지목한다" ;;
-  *) bad "파생기 거부 문면" "$msg" ;;
-esac
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash scripts/test-rekick.sh
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash scripts/test-successor.sh
 check "파생기의 시험 스크립트는 거부되지 않는다" "$rc" "0"
-gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- grep -n derive rekick.sh
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- grep -n derive successor.sh
 check "파생기 파일을 읽는 것은 거부되지 않는다" "$rc" "0"
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash /x/orchestrator/rekick.sh detect
+check "재킥오프 도우미는 파생기 거부에 걸리지 않는다" "$rc" "0"
 
 # The pacing guard answers on the grade verb too, so asking what to declare for
 # a write into the dispatcher's directory does not come back with a grade a
