@@ -1,7 +1,11 @@
 // 질문지 패널을 올려 누르고 쓴다: 그리기·제출·취소·CAS·도장·맥락 줄·이동·입력칸·미리보기·크기.
 import { describe, expect, test } from 'claude-code/testing'
 
-import { call, formIdOf, mount, prompt, start, twoQuestions, world } from './kit'
+import { call, drawnStops, focusEvent, formIdOf, mount, prompt, start, twoQuestions, world } from './kit'
+import { focusStops, layoutRows } from './layout'
+import type { FormInput } from './spec'
+import { openEditor, openRecord } from './transitions'
+import { normalizeForm } from './validate'
 
 const header = (text: string) => text.split('\n')[0]
 const json = (text: string) => JSON.parse(text.split('\n').slice(2, -1).join('\n'))
@@ -331,6 +335,102 @@ describe('미리보기', () => {
     w.focusDeny = '다른 이동이 먼저'
     const moved = await $.ui.focus({ component: 'Pane', requestId: 'cc-cmds-question-form', plugin: 'cc-cmds', element: 'q1-o2' })
     expect(moved.deny).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeUndefined()
+  })
+})
+
+describe('정지점과 그리기', () => {
+  // 시험이 연 것과 같은 모델 입력의 기록. key 는 id 와 무관하다.
+  const sameRecord = () =>
+    openRecord({ id: 'f-00000001', toolUseId: 'tu', form: normalizeForm(twoQuestions() as unknown as FormInput), drafts: {}, sessionId: 'sid-test', now: 0 })
+
+  test('대조: 올린 패널의 Button·Input key 를 문서 순서로 모은 목록이 focusStops 와 같다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    expect(await drawnStops(ui)).toEqual(focusStops(layoutRows(sameRecord(), null)))
+    // 입력칸이 열린 기록에서도 같다.
+    await ui.press({ key: 'q1-other' })
+    expect(await drawnStops(ui)).toEqual(focusStops(layoutRows(openEditor(sameRecord(), 'scope', 'other'), null)))
+  })
+
+  test('선택지 바깥 상자에 <선택지 key>-block, 펼친 질문 머리말 상자에 q<n>-head 가 있다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    expect((await ui.find({ key: 'q1-o1-block' }))?.type).toBe('Box')
+    expect((await ui.find({ key: 'q1-o2-block' }))?.type).toBe('Box')
+    expect((await ui.find({ key: 'q1-head' }))?.type).toBe('Box')
+    expect(await ui.find({ key: 'q2-head' })).toBeUndefined()
+  })
+})
+
+// 키트는 이 mod 자신이 부른 $.ui.focus·$.ui.scroll 을 시험의 스텁에 보내지 않고 거절한다.
+// 그래서 여기서는 포커스 값(그 key 로 다시 그린 패널의 미리보기 줄)과 전이처럼 키트가 볼
+// 수 있는 것만 단언한다. 보이게 하기의 대상과 순서는 layout 의 revealKeys 시험이 맡는다.
+describe('포커스 추종 — 사람·엔진의 이동(ui.focus)', () => {
+  test('선택지 key 로 오면 포커스 값이 그 key 가 되고 던지지 않는다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    const moved = await focusEvent($, 'q1-o2')
+    expect(moved.deny).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeUndefined()
+  })
+
+  test('element 없는 ui.focus(엔진 자신의 정지점)는 포커스 값을 비우고 던지지 않는다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await focusEvent($, 'q1-o1')
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+    await focusEvent($)
+    expect(await ui.find({ type: 'Text', text: /범위 미리보기/ })).toBeUndefined()
+  })
+
+  test('focusDeny 로 거절되면 포커스 값은 바뀌지 않고 던지지 않는다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await focusEvent($, 'q1-o1')
+    w.focusDeny = '다른 이동이 먼저'
+    const moved = await focusEvent($, 'q1-o2')
+    expect(moved.deny).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeUndefined()
+  })
+})
+
+describe('포커스 추종 — 누름에서 시작하는 자기 이동의 실패 경로', () => {
+  // 열 때 포커스 값은 착지 key(q1-o1)다. 누름의 $.ui.focus 가 키트에서 실패하면 그 값이
+  // 그대로 남으므로, 1번으로 돌아왔을 때 q1-o1 의 미리보기가 다시 그려진다.
+  test('[다음]: 둘째 질문이 펼쳐지고 포커스 값은 바뀌지 않으며 누름은 던지지 않는다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'next' })
+    expect(await ui.find({ type: 'Text', text: '▸ 2 이유  왜?' })).toBeDefined()
+    await ui.press({ key: 'q1' })
+    expect(await ui.find({ type: 'Text', text: '▸ 1 범위  어디까지?' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+  })
+
+  test('선택지를 고른 뒤의 자동 이동도 같다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'q1-o2' })
+    expect(await ui.find({ type: 'Text', text: '▸ 2 이유  왜?' })).toBeDefined()
+    await ui.press({ key: 'q1' })
     expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeUndefined()
   })

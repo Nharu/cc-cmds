@@ -9,7 +9,7 @@ import { anyMarked } from '../pipeline-marks'
 import { bannerCall } from './banner'
 import { bundleText, counts, mimicsHeader, mintFormId } from './bundle'
 import type { FormStatus } from './bundle'
-import { SUBMIT_KEY, landingKey, layoutRows, paneSize } from './layout'
+import { SUBMIT_KEY, arrowTarget, landingKey, layoutRows, paneSize, revealKeys } from './layout'
 import { drawForm } from './render'
 import type { FormHandlers } from './render'
 import {
@@ -98,6 +98,31 @@ async function writeRecord($: Dollar, rec: FormRecord | null) {
   await mirror($, rec)
 }
 
+// 열린 기록이 바뀌는 자리에서 포커스 값을 그 기록의 착지 key 로 맞추고, 열린 기록이 없으면
+// 비운다. 앞 질문지의 key 가 남아 ↑/↓ 가 엉뚱한 자리부터 세지 않게 한다.
+async function landFocus($: Dollar, rec: FormRecord | null) {
+  try {
+    await update($, focusedAtom, () => (rec && isOpen(rec) ? landingKey(rec) : null))
+  } catch {
+    // 미리보기와 ↑/↓ 의 출발점만 어긋난다.
+  }
+}
+
+// 포커스가 key 로 옮겨진 뒤: key 를 적고, 그 key 로 다시 그린 줄 모형에서 그 항목을
+// 보이게 한다. 적은 뒤에 부르는 것은 미리보기 줄이 생기거나 사라진 트리에서 찾게 하려는 것이다.
+async function follow($: Dollar, key: string) {
+  await update($, focusedAtom, () => key)
+  const rec = await read($, recordAtom)
+  if (!rec || !isOpen(rec)) return
+  for (const target of revealKeys(layoutRows(rec, key), key)) {
+    try {
+      await $.ui.scroll({ to: { key: target }, in: PANE_ID, block: 'nearest' })
+    } catch {
+      // 보이게 하기는 덤이다.
+    }
+  }
+}
+
 // 패널을 열 때 함께 주는 제목과 크기. 크기는 지금 보이는 줄에서 잰다.
 type Frame = { title: string; rows: number; columns: number }
 
@@ -132,6 +157,7 @@ async function reshow($: Dollar, rec: FormRecord) {
   const opened = await openPane($, rec)
   const next = placed(rec, opened.isPlaced)
   await writeRecord($, next)
+  await landFocus($, next)
   await $.ui.status(next.hidden ? statusOf(next) : undefined)
 }
 
@@ -141,7 +167,10 @@ async function restore($: Dollar) {
   const sid = await $.session.id()
   const now = await $.clock.now()
   const held = restorable((await read($, recordAtom)) ?? undefined, sid)
-  if (!held) await update($, recordAtom, r => (isOpen(r ?? undefined) ? null : r))
+  if (!held) {
+    await update($, recordAtom, r => (isOpen(r ?? undefined) ? null : r))
+    await landFocus($, null)
+  }
   let show = held
   for (const key of await $.store.keys()) {
     if (!key.startsWith(STORE_PREFIX)) continue
@@ -181,6 +210,7 @@ async function finish($: Dollar, status: FormStatus) {
   })
   if (!taken) return
   const done = taken
+  await landFocus($, null)
   await mirror($, null, done.sessionId)
   await $.prompt.submit({ text: bundleText(done.id, status, done.form, done.drafts) })
   await $.ui.status(undefined)
@@ -192,7 +222,9 @@ async function finish($: Dollar, status: FormStatus) {
 }
 
 // 열린 기록을 순수 전이로 바꾼다. 제목이나 바라는 크기가 바뀌었으면 패널을 다시 열고,
-// 전이가 포커스 자리를 정했으면 그리로 옮긴다(옮기지 못해도 답은 그대로다).
+// 전이가 포커스 자리를 정했으면 그리로 옮긴다(옮기지 못해도 답은 그대로다). 옮겼으면 그
+// 자리를 적고 보이게 하는 일도 여기서 한다 — 자기 $.ui.focus 가 자기 ui.focus 훅을
+// 지나는지에 기대지 않는다.
 async function change($: Dollar, fn: (rec: FormRecord) => { record: FormRecord; focus?: string }) {
   let after: { record: FormRecord; focus?: string } | undefined
   let was: Frame | undefined
@@ -208,7 +240,8 @@ async function change($: Dollar, fn: (rec: FormRecord) => { record: FormRecord; 
   if (!sameFrame(frameOf(after.record), was)) await openPane($, after.record)
   if (after.focus) {
     try {
-      await $.ui.focus({ requestId: PANE_ID, key: after.focus })
+      const r = await $.ui.focus({ requestId: PANE_ID, key: after.focus })
+      if (!r.deny) await follow($, after.focus)
     } catch {
       // 포커스는 덤이다.
     }
@@ -286,6 +319,7 @@ export const register: Register = on => {
     let rec = openRecord({ id, toolUseId: e.tool_use_id, form, drafts, sessionId: await $.session.id(), now: await $.clock.now() })
     before.set(e.tool_use_id, current ?? null)
     await writeRecord($, rec)
+    await landFocus($, rec)
     const opened = await openPane($, rec, true)
     if (!opened.isPlaced) {
       rec = placed(rec, false)
@@ -303,6 +337,7 @@ export const register: Register = on => {
       before.delete(e.tool_use_id)
       try {
         await writeRecord($, prev)
+        await landFocus($, prev)
         if (!prev) await $.ui.close({ id: PANE_ID })
         await $.ui.status(undefined)
       } catch {
@@ -362,18 +397,48 @@ export const register: Register = on => {
     return <Text dimColor>{NO_FORM_TOAST}</Text>
   })
 
-  // 포커스 이동은 막지 않는다. 옮겨진 뒤에만 포커스를 받은 요소를 적는다.
+  // 포커스 이동은 막지 않는다. 옮겨진 뒤에만 포커스를 받은 요소를 적고 보이게 한다.
+  // 맡는 것은 사람·엔진이 일으킨 이동(Tab, 클릭, autoFocus 착지)이며 출처를 가리지 않는다.
+  // 요소가 없으면(엔진 자신의 정지점) 비우기만 한다.
   on('ui.focus', { component: 'Pane', requestId: 'cc-cmds-question-form' }, async ($, e, next) => {
     const r = await next(e)
     if (!r.deny) {
       try {
-        await update($, focusedAtom, () => e.element ?? null)
+        if (e.element) await follow($, e.element)
+        else await update($, focusedAtom, () => null)
       } catch {
         // 미리보기만 늦는다.
       }
     }
 
     return r
+  }).catch(($, e, next) => next(e))
+
+  // 긴 질문지에서 엔진은 ↑/↓ 를 한 줄 스크롤로 보낸다. 사람의 키보드 줄 이동이면 창을
+  // 움직이지 않고 포커스를 다음·이전 정지점으로 옮긴다. 무엇을 가로챌지와 어디로 옮길지는
+  // arrowTarget 이 정하고, 이 훅은 그 결과를 옮기기만 한다 — 시험 키트는 이 mod 자신의
+  // $.ui.focus 를 돌리지 못하므로 판단은 훅 밖에서 시험한다.
+  // 이 훅의 프레임 아래에서 일어난 스크롤(보이게 하기)에는 처리기가 대신 답하므로, 처리기는
+  // 넘기기만 한다 — {} 를 돌려주면 안쪽의 보이게 하기가 막힌다.
+  on('ui.scroll', { component: 'Pane', requestId: 'cc-cmds-question-form' }, async ($, e, next) => {
+    const rec = await read($, recordAtom)
+    if (!rec || !isOpen(rec)) return next(e)
+    const focused = await read($, focusedAtom)
+    const target = arrowTarget(layoutRows(rec, focused), focused, e)
+    if (target === null) return next(e)
+    try {
+      const r = await $.ui.focus({ requestId: PANE_ID, key: target })
+      if (r.deny) return next(e)
+    } catch {
+      return next(e)
+    }
+    try {
+      await follow($, target)
+    } catch {
+      // 포커스는 이미 옮겨졌다.
+    }
+
+    return {}
   }).catch(($, e, next) => next(e))
 
   // 사람이 친 명령이므로 폭과 무관하게 패널이 놓인다.
@@ -390,6 +455,7 @@ export const register: Register = on => {
       return {}
     }
     await writeRecord($, rec)
+    await landFocus($, rec)
     await openPane($, rec, true)
     await $.ui.status(undefined)
 
@@ -404,6 +470,7 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
       await update($, recordAtom, () => null)
+      await landFocus($, null)
       try {
         if (e.reason === 'clear') await $.store.delete(STORE_PREFIX + e.sessionId)
         await $.ui.close({ id: PANE_ID })
