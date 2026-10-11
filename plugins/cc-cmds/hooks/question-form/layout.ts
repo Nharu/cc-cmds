@@ -96,6 +96,13 @@ export function previewFor(qi: number, q: FormQuestion, focused: string | null):
   return (q.options ?? [])[Number(m[2]) - 1]?.preview
 }
 
+// 열린 입력칸의 key. 열린 칸이 없으면 undefined.
+export function openEditorKey(rec: FormRecord): string | undefined {
+  const ed = rec.editor
+  const qi = ed ? rec.form.questions.findIndex(q => q.id === ed.id) + 1 : 0
+  return ed && qi > 0 ? editorKey(qi, ed.field, ed.gen) : undefined
+}
+
 // 커서 질문이 열릴 때 포커스가 설 곳: 열린 입력칸, text 의 답 줄, 아니면 첫 선택지.
 export function landingKey(rec: FormRecord): string {
   const qi = rec.form.questions.findIndex(q => q.id === rec.cursor) + 1
@@ -153,10 +160,11 @@ function editorRows(rec: FormRecord, qi: number, q: FormQuestion, field: FormEdi
   return [{ kind: 'editor', key: editorKey(qi, field, ed.gen), qid: q.id, field, value: inputValue(ed.seed), text, placeholder, autoFocus }]
 }
 
-// 이 질문의 그 편집기가 열려 있고 포커스가 그 입력칸에 있는가. 그동안 위 줄은 라벨만 보인다.
-function editing(rec: FormRecord, qi: number, q: FormQuestion, field: FormEditor['field'], focused: string | null): boolean {
+// 이 질문의 그 편집기가 열려 있는가. 그동안 위 줄은 라벨만 보인다 — 사람이 포커스를 입력칸
+// 밖으로 옮기면 칸이 닫히므로, 열려 있는 동안이 곧 그 칸에서 치는 동안이다.
+function editing(rec: FormRecord, q: FormQuestion, field: FormEditor['field']): boolean {
   const ed = rec.editor
-  return !!ed && ed.id === q.id && ed.field === field && focused === editorKey(qi, field, ed.gen)
+  return !!ed && ed.id === q.id && ed.field === field
 }
 
 function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: string | null): Row[] {
@@ -188,7 +196,7 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
     if (preview !== undefined) rows.push({ kind: 'preview', text: preview })
     if (q.allowOther !== false) {
       const other = inputValue(d.other).trim()
-      const labelOnly = editing(rec, qi, q, 'other', focused)
+      const labelOnly = editing(rec, q, 'other')
       rows.push({
         kind: 'other',
         key: otherKey(qi),
@@ -202,7 +210,7 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
   }
   if (q.allowNote !== false) {
     const note = inputValue(d.note).trim()
-    const text = editing(rec, qi, q, 'note', focused) ? NOTE_LABEL : note === '' ? NOTE_ADD_LABEL : `${NOTE_LABEL}: ${note}`
+    const text = editing(rec, q, 'note') ? NOTE_LABEL : note === '' ? NOTE_ADD_LABEL : `${NOTE_LABEL}: ${note}`
     rows.push({ kind: 'note', key: noteKey(qi), hotkey: 'm', text })
     rows.push(...editorRows(rec, qi, q, 'note', landing === editorKey(qi, 'note', rec.editor?.gen ?? 0)))
   }
@@ -213,7 +221,7 @@ function currentRows(rec: FormRecord, qi: number, q: FormQuestion, focused: stri
   return rows
 }
 
-// focused 는 포커스 값(요소의 key)이다. 선택지 미리보기와, 입력칸 위 줄을 라벨만 둘지를 정한다.
+// focused 는 포커스 값(요소의 key)이다. 선택지 미리보기를 정한다.
 export function layoutRows(rec: FormRecord, focused: string | null): Row[] {
   const { form, drafts } = rec
   const { answered, total } = counts(form, drafts)

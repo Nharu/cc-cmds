@@ -22,7 +22,7 @@ import type { Row } from './layout'
 import type { Draft } from './bundle'
 import { HELP_LINE } from './spec'
 import type { FormInput, FormQuestion } from './spec'
-import { jump, openEditor, openRecord, typeText } from './transitions'
+import { closeEditor, jump, openEditor, openRecord, typeText } from './transitions'
 
 const opt = (label: string, extra: Record<string, unknown> = {}) => ({ label, description: `${label} 설명`, ...extra })
 const single: FormQuestion = { id: 's', header: '하나', question: '고르기', kind: 'single', options: [opt('가', { recommended: '추천' }), opt('나')] }
@@ -252,39 +252,41 @@ describe('입력칸', () => {
     expect(rowText(editor, 80)).not.toBe(rowText(editor, 120))
   })
 
-  test('입력칸에 포커스가 있으면 위 줄은 라벨만 보인다', () => {
+  test('입력칸이 열려 있으면 위 줄은 라벨만 보인다', () => {
     const drafts = { s: d([], '셋째', '메모글') }
     const onOther = openEditor({ ...rec(), drafts }, 's', 'other')
     const onNote = openEditor(onOther, 's', 'note')
     const of = <K extends Row['kind']>(rows: Row[], kind: K) => rows.find(x => x.kind === kind) as Extract<Row, { kind: K }>
-    // 기타 입력칸에 포커스: 기타 줄은 라벨만, 설명도 없다. 표지는 글이 있으므로 켜진 쪽이다.
+    // 기타 입력칸이 열림: 기타 줄은 라벨만, 설명도 없다. 표지는 글이 있으므로 켜진 쪽이다.
     const a = layoutRows(onOther, landingKey(onOther))
     expect(landingKey(onOther)).toBe('q1-other-input-1')
     expect(of(a, 'other')).toMatchObject({ text: '기타', description: '', glyph: '●' })
     expect(of(a, 'note').text).toBe('메모: 메모글')
-    // 메모 입력칸에 포커스: 메모 줄은 라벨만.
+    // 메모 입력칸이 열림: 메모 줄은 라벨만.
     const b = layoutRows(onNote, landingKey(onNote))
     expect(landingKey(onNote)).toBe('q1-note-input-2')
     expect(of(b, 'note').text).toBe('메모')
     expect(of(b, 'other').text).toBe('기타: 셋째')
-    // 포커스가 다른 key 에 있으면 두 줄 모두 전체 글이다.
-    for (const r of [onOther, onNote]) {
-      const c = layoutRows(r, 'q1-o1')
-      expect(of(c, 'other').text).toBe('기타: 셋째')
-      expect(of(c, 'note').text).toBe('메모: 메모글')
-    }
-    // 빈 기타에 포커스가 있어도 안내글을 위 줄에 두지 않는다.
+    // 포커스 값과 상관없이 열린 칸의 위 줄만 라벨이다(사람이 칸을 떠나면 칸이 닫힌다).
+    expect(of(layoutRows(onNote, 'q1-o1'), 'note').text).toBe('메모')
+    expect(of(layoutRows(onNote, 'q1-o1'), 'other').text).toBe('기타: 셋째')
+    // 칸이 닫히면 두 줄 모두 전체 글이다.
+    const closed = closeEditor(onNote)
+    expect(of(layoutRows(closed, 'q1-o1'), 'other').text).toBe('기타: 셋째')
+    expect(of(layoutRows(closed, 'q1-o1'), 'note').text).toBe('메모: 메모글')
+    // 빈 기타 칸이 열려 있으면 안내글을 위 줄에 두지 않고, 닫혀 있으면 둔다.
     const empty = openEditor(rec(), 's', 'other')
     expect(of(layoutRows(empty, landingKey(empty)), 'other')).toMatchObject({ text: '기타', description: '' })
-    expect(of(layoutRows(empty, null), 'other')).toMatchObject({ text: '기타', description: '직접 입력' })
+    expect(of(layoutRows(closeEditor(empty), null), 'other')).toMatchObject({ text: '기타', description: '직접 입력' })
   })
 
   test('그리는 자리는 제어 문자를 거른 글을 쓴다', () => {
     const drafts = { s: d([], '셋\u001b째', '메\u0000모'), t: d([], '글\u009b\n줄') }
     const r = openEditor({ ...rec(), drafts }, 's', 'other')
     const rows = layoutRows(r, null)
-    const of = <K extends Row['kind']>(kind: K) => rows.find(x => x.kind === kind) as Extract<Row, { kind: K }>
-    expect(of('other').text).toBe('기타: 셋째')
+    const of = <K extends Row['kind']>(kind: K, from = rows) => from.find(x => x.kind === kind) as Extract<Row, { kind: K }>
+    const closed = layoutRows(closeEditor(r), null)
+    expect(of('other', closed).text).toBe('기타: 셋째')
     expect(of('note').text).toBe('메모: 메모')
     expect(of('editor').value).toBe('셋째')
     expect(rows.filter(x => x.kind === 'folded').map(x => (x as Extract<Row, { kind: 'folded' }>).summary)).toContain('글 줄')
@@ -319,20 +321,19 @@ describe('크기', () => {
     expect(narrow).toBeGreaterThan(wide)
   })
 
-  test('편집기 줄은 감긴 줄 수로 세고, 위 줄은 포커스 없이 전체 글로 센다', () => {
+  test('편집기 줄은 감긴 줄 수로 세고, 칸이 열린 동안 위 줄은 라벨 한 줄로 센다', () => {
     // 가 100자는 200칸이라 감는 폭 72 에서 36·36·28자 세 줄이다.
     const r = typeText(openEditor(rec(), 's', 'other'), 's', 'other', '가'.repeat(100))
     const rows = layoutRows(r, null)
     const editor = rows.find(x => x.kind === 'editor')!
     expect(rowText(editor, 80).split('\n')).toHaveLength(3)
-    expect((rows.find(x => x.kind === 'other') as Extract<Row, { kind: 'other' }>).text).toBe(`기타: ${'가'.repeat(100)}`)
+    expect((rows.find(x => x.kind === 'other') as Extract<Row, { kind: 'other' }>).text).toBe('기타')
     const wrap = (s: string) => s.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / 80)), 0)
     const expected = rows.reduce((n, x) => n + wrap(rowText(x, 80)), 0) + 1
     expect(paneSize(r, 80).rows).toBe(expected)
     // 짧은 글보다 정확히 감긴 줄 수의 차만큼 크다.
     const short = typeText(openEditor(rec(), 's', 'other'), 's', 'other', '가')
-    const otherLines = Math.ceil(displayWidth(`  0: ● 기타: ${'가'.repeat(100)}  `) / 80)
-    expect(paneSize(r, 80).rows - paneSize(short, 80).rows).toBe(2 + otherLines - 1)
+    expect(paneSize(r, 80).rows - paneSize(short, 80).rows).toBe(2)
   })
 
   test('아주 긴 질문지도 세로 상한을 넘지 않는다', () => {

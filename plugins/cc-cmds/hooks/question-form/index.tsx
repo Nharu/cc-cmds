@@ -9,7 +9,7 @@ import { anyMarked } from '../pipeline-marks'
 import { bannerCall } from './banner'
 import { bundleText, counts, mimicsHeader, mintFormId } from './bundle'
 import type { FormStatus } from './bundle'
-import { SUBMIT_KEY, arrowTarget, landingKey, layoutRows, paneSize, revealKeys } from './layout'
+import { SUBMIT_KEY, arrowTarget, landingKey, layoutRows, openEditorKey, paneSize, revealKeys } from './layout'
 import { drawForm } from './render'
 import type { FormHandlers } from './render'
 import {
@@ -33,6 +33,7 @@ import {
   cancel,
   carryDrafts,
   choose,
+  closeEditor,
   commitText,
   decideCall,
   expired,
@@ -121,6 +122,17 @@ async function follow($: Dollar, key: string) {
       // 보이게 하기는 덤이다.
     }
   }
+}
+
+// 사람이 포커스를 열린 입력칸이 아닌 곳으로 옮겼으면 그 칸을 닫는다. 친 글은 이미 답에
+// 적혀 있으므로, 칸이 내려간 자리에서 위 줄이 전체 글을 한 번만 보인다(엔진은 포커스 없는
+// Input 을 한 줄로 잘라 그려 같은 글이 두 번 보였다). 다시 열면 그 글이 씨앗이다.
+// 직전 포커스 값과 견주지 않는다 — 그 값이 실제 고리와 어긋나도 칸은 닫혀야 한다.
+async function leaveEditor($: Dollar, element: string | undefined) {
+  const rec = await read($, recordAtom)
+  const open = rec && isOpen(rec) ? openEditorKey(rec) : undefined
+  if (open === undefined || open === element) return
+  await change($, r => ({ record: openEditorKey(r) === open ? closeEditor(r) : r }))
 }
 
 // 패널을 열 때 함께 주는 제목과 크기. 크기는 지금 보이는 줄에서 잰다.
@@ -399,15 +411,16 @@ export const register: Register = on => {
 
   // 포커스 이동은 막지 않는다. 옮겨진 뒤에만 포커스를 받은 요소를 적고 보이게 한다.
   // 맡는 것은 사람·엔진이 일으킨 이동(Tab, 클릭, autoFocus 착지)이며 출처를 가리지 않는다.
-  // 요소가 없으면(엔진 자신의 정지점) 비우기만 한다.
+  // 요소가 없으면(엔진 자신의 정지점) 비우기만 한다. 사람이 옮긴 것이면 열린 입력칸을 떠났는지 본다.
   on('ui.focus', { component: 'Pane', requestId: 'cc-cmds-question-form' }, async ($, e, next) => {
     const r = await next(e)
     if (!r.deny) {
       try {
+        if (e.origin?.kind === 'person') await leaveEditor($, e.element)
         if (e.element) await follow($, e.element)
         else await update($, focusedAtom, () => null)
       } catch {
-        // 미리보기만 늦는다.
+        // 미리보기가 늦거나 입력칸이 열린 채 남을 뿐 답은 그대로다.
       }
     }
 
@@ -433,6 +446,7 @@ export const register: Register = on => {
       return next(e)
     }
     try {
+      await leaveEditor($, target)
       await follow($, target)
     } catch {
       // 포커스는 이미 옮겨졌다.
