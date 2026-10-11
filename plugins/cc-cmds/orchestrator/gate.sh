@@ -8029,11 +8029,19 @@ gate_import_prior_landed() {
   # landed is the harm here, and redoing it is the remedy.
   #
   # A PULL REQUEST IS ACCEPTED ONLY AS IT STANDS NOW. The PR arm brings the row
-  # in when the request is open or merged and its head is still the `커밋` the
-  # row names; a request closed, moved or unreadable brings nothing in, and the
-  # slice is done again. `출처` carries the run that did the work: the earlier
-  # row's own `출처` when it had one, so a chain's third run still names the
-  # first, and otherwise the earlier run.
+  # in when the request is open with its head still the `커밋` the row names,
+  # or merged. A merged request is not held to that head: a person finishing
+  # it — a review fix pushed, the branch updated — moves the head before the
+  # merge, and the merge is a person's act already. What ties a merged request
+  # to this slice instead is one `gh pr view` answer carrying all three of: a
+  # merge commit on the target's base branch, a head branch named exactly as
+  # the row's `브랜치` and shaped as this slice's segment branch, and a base
+  # branch that is the target's own. A request closed, moved while open,
+  # unreadable, or merged without those three brings nothing in, and the slice
+  # is done again. `출처` carries the run that did the work: the earlier row's
+  # own `출처` when it had one, so a chain's third run still names the first,
+  # and otherwise the earlier run; `브랜치` rides along so that third run can
+  # hold the request to the branch again.
   #
   # NOT DOING A SLICE AGAIN IS NOT THE SAME AS BUILDING ON IT. Every segment
   # branches from the tip of its base, so the work of a request that is still
@@ -8046,7 +8054,7 @@ gate_import_prior_landed() {
   # request was in is left in GATE_IMPORT_PR_STATE (`OPEN`, `MERGED`, or empty
   # for the merge arm) for a caller that has to tell the two apart.
   local verb="$1" seg="$2" mode="${3:-}" kl="${LEDGER:-}" kg="${GRANT:-}" kb="${BASE:-}"
-  local dal="" pst="" pm="" ppr="" pc="" pwt="" pdp="" org="" slug="" obs="" ost="" ohd="" omc="" what="" why="" noun=""
+  local dal="" pst="" pm="" ppr="" pc="" pwt="" pdp="" pbr="" org="" slug="" obs="" ost="" ohd="" omc="" ohr="" obr="" abr="" what="" why="" noun=""
   GATE_DECL_SELF_IMPORTED=""
   GATE_IMPORT_PR_STATE=""
   if [ -z "${DOC_KEY:-}" ] && [ -n "${MANIFEST:-}" ]; then
@@ -8079,6 +8087,7 @@ gate_import_prior_landed() {
   pc=$(gate_row_field "$GATE_PRIOR_ROW" '커밋')
   pwt=$(gate_row_field "$GATE_PRIOR_ROW" '워크트리')
   pdp=$(gate_row_field "$GATE_PRIOR_ROW" '선행')
+  pbr=$(gate_row_field "$GATE_PRIOR_ROW" '브랜치')
   org=$(gate_row_field "$GATE_PRIOR_ROW" '출처')
   [ -n "$org" ] || org=$GATE_PRIOR_RUN
   if [ "$GATE_PRIOR_KIND" = "머지" ]; then
@@ -8104,15 +8113,21 @@ gate_import_prior_landed() {
     slug=$(alias_slug "$dal" 2>/dev/null) || slug=""
     if [ -z "$slug" ]; then
       why="대상 ${dal} 의 원격 슬러그를 알 수 없습니다"
-    elif ! obs=$(gh_q "$slug" pr view "$ppr" --json state,headRefOid,mergeCommit --jq '.state + " " + .headRefOid + " " + (.mergeCommit.oid // "")' 2>/dev/null); then
+    elif ! obs=$(gh_q "$slug" pr view "$ppr" --json state,headRefOid,mergeCommit,headRefName,baseRefName --jq '.state + " " + .headRefOid + " " + (.mergeCommit.oid // "-") + " " + (.headRefName // "-") + " " + (.baseRefName // "-")' 2>/dev/null); then
       why="PR #${ppr} 을 원격 ${slug} 에서 읽지 못했습니다"
     else
-      read -r ost ohd omc <<EOF
+      # Five words, `-` standing for an absent one: a field left empty would
+      # collapse under `read` and shift every name after it one place left.
+      read -r ost ohd omc ohr obr <<EOF
 $obs
 EOF
+      [ "$omc" != "-" ] || omc=""
+      [ "$ohr" != "-" ] || ohr=""
+      [ "$obr" != "-" ] || obr=""
       case "$ost" in
-        OPEN|MERGED)
+        OPEN)
           [ "$ohd" = "$pc" ] || why="PR #${ppr} 의 head ${ohd:-(없음)} 가 행의 커밋 ${pc} 와 다릅니다" ;;
+        MERGED) : ;;
         *) why="PR #${ppr} 의 상태가 ${ost:-(없음)} 입니다 — 열려 있거나 머지된 PR 만 들여옵니다" ;;
       esac
       if [ -z "$why" ] && [ "$ost" = "OPEN" ] && [ "$mode" != "self" ]; then
@@ -8121,11 +8136,30 @@ EOF
       if [ -z "$why" ] && [ "$ost" = "MERGED" ]; then
         case "$omc" in
           ''|*[!0-9a-f]*) why="머지된 PR #${ppr} 의 머지 커밋을 읽지 못했습니다" ;;
-          *)
-            gate_obligation_landing "$dal" "$omc"
-            [ "$GATE_LANDING_VERDICT" = "착지" ] \
-              || why="머지된 PR #${ppr} 의 머지 커밋 ${omc} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다: ${GATE_LANDING_WHY}" ;;
         esac
+        if [ -z "$why" ]; then
+          case "$pbr" in
+            ''|*[!A-Za-z0-9._/-]*) why="머지된 PR #${ppr} 를 슬라이스에 묶을 행의 브랜치 ${pbr:-(없음)} 가 없거나 브랜치 이름이 아닙니다" ;;
+            seg/*-"$seg") : ;;
+            *) why="머지된 PR #${ppr} 를 슬라이스에 묶을 행의 브랜치 ${pbr} 가 슬라이스 ${seg} 의 세그먼트 브랜치 꼴(seg/<슬러그>-${seg})이 아닙니다" ;;
+          esac
+        fi
+        if [ -z "$why" ] && [ "$ohr" != "$pbr" ]; then
+          why="머지된 PR #${ppr} 의 head 브랜치 ${ohr:-(없음)} 가 행의 브랜치 ${pbr} 와 다릅니다"
+        fi
+        if [ -z "$why" ]; then
+          abr=$(base_branch "$dal" 2>/dev/null) || abr=""
+          if [ -z "$abr" ]; then
+            why="머지된 PR #${ppr} 의 base 브랜치를 대조할 대상 ${dal} 의 베이스 브랜치를 해소하지 못했습니다"
+          elif [ "$obr" != "$abr" ]; then
+            why="머지된 PR #${ppr} 의 base 브랜치 ${obr:-(없음)} 가 대상 ${dal} 의 베이스 브랜치 ${abr} 와 다릅니다"
+          fi
+        fi
+        if [ -z "$why" ]; then
+          gate_obligation_landing "$dal" "$omc"
+          [ "$GATE_LANDING_VERDICT" = "착지" ] \
+            || why="머지된 PR #${ppr} 의 머지 커밋 ${omc} 은 대상 ${dal} 의 베이스 브랜치에 ${GATE_LANDING_VERDICT:-판정 불가} 입니다: ${GATE_LANDING_WHY}"
+        fi
       fi
     fi
     if [ -n "$why" ]; then
@@ -8142,8 +8176,9 @@ EOF
     warn "act 로 내면 ${noun} ${seg} 를 이전 런 ${GATE_PRIOR_RUN} 의 종단 행(상태=${pst} · ${what}${omc:+ · 머지 커밋=$omc})으로 이 원장에 먼저 들여옵니다"
     return 0
   fi
+  case "$pbr" in ''|*[!A-Za-z0-9._/-]*) pbr="" ;; esac
   gate_append 'segment' "id=$seg" "상태=$pst" ${ppr:+"PR=$ppr"} "$what" ${omc:+"머지 커밋=$omc"} \
-    "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$org"
+    ${pbr:+"브랜치=$pbr"} "워크트리=${pwt:--}" "선행=${pdp:-없음}" "출처=$org"
   log "${noun} 들여오기 — ${seg} (${pst}, 출처 ${org}, ${what}${omc:+, 머지 커밋 $omc})"
   return 0
 }

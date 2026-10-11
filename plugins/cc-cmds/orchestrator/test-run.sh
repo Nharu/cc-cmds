@@ -9863,8 +9863,8 @@ r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12;
   write_manifest "$d/manifest.md" "" "" main "$R34PRKEY"
   : > "$d/docs/design-audit/$1.reader-1.md"
   # 이전 런의 계획 행은 지금 문서의 SA 선언과 같다 — 들여오기는 그 대조를 요구한다.
-  printf -- '- `run` | run-id=%s-prior | 시작=2026-01-01T00:00:00Z | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n- `segment` | id=SA | 상태=계획됨 | 선언 파일 집합=`SA.txt` | 레포=Nharu/cc-cmds | 선행=없음 | 절단점=PR | 리뷰 정책=선리뷰후머지 | 워크트리=-\n- `segment` | id=SA | 상태=완료 | PR=12 | 커밋=%s | 워크트리=- | 선행=없음\n' \
-    "$1" "$R34PRKEY" "$H34" > "$d/ledgers/$1-prior.md"
+  printf -- '- `run` | run-id=%s-prior | 시작=2026-01-01T00:00:00Z | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n- `segment` | id=SA | 상태=계획됨 | 선언 파일 집합=`SA.txt` | 레포=Nharu/cc-cmds | 선행=없음 | 절단점=PR | 리뷰 정책=선리뷰후머지 | 워크트리=-\n- `segment` | id=SA | 상태=완료 | PR=12 | 커밋=%s | 브랜치=seg/%s-prior-SA | 워크트리=- | 선행=없음\n' \
+    "$1" "$R34PRKEY" "$H34" "$1" > "$d/ledgers/$1-prior.md"
   (
     RUN_DIR="$d/run"; LEDGER="$d/ledgers/$1.md"; LEDGER_SCOPE=파일; RUN_ID="$1"; GRANT="$R34/grant.md"
     MANIFEST="$d/manifest.md"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
@@ -9894,7 +9894,8 @@ r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12;
     main_loop; printf 'rc=%s\n' "$?"
   ) > "$d/out" 2>"$d/err"
 }
-r34_prmain r34open "OPEN $H34"
+# gh 의 답은 `state head mergeCommit headRefName baseRefName` 다섯 칸이다.
+r34_prmain r34open "OPEN $H34 - seg/r34open-prior-SA main"
 r34o="$R34/r34open"
 check "34: 게이트 들여오기의 gh 호출이 스텁에 닿는다(열린 PR)" \
   "$( { grep -F 'pr view 12' "$r34o/gh.log" 2>/dev/null || true; } | grep -c . | sed 's/^[1-9][0-9]*$/있음/')" "있음"
@@ -9906,7 +9907,9 @@ check "34: 열린 PR 의 SA 는 디스패치되지 않고 그것에 기대는 SB
   "0/0/1"
 check "34: 열린 PR 의 SA 는 사람을 기다리는 완성-미착지로 보고된다" \
   "$( { grep -F '완성-미착지 | SA' "$r34o/report" 2>/dev/null || true; } | grep -c . || true)" "1"
-r34_prmain r34merged "MERGED $H34 $M34"
+# 머지 전 리뷰 수정 push 로 head 가 행의 커밋에서 움직였어도, 머지 커밋이 베이스에 있고
+# head·base 브랜치 이름이 맞으면 착지로 들인다.
+r34_prmain r34merged "MERGED 3333333333333333333333333333333333333333 $M34 seg/r34merged-prior-SA main"
 r34m="$R34/r34merged"
 check "34: 게이트 들여오기의 gh 호출이 스텁에 닿는다(머지된 PR)" \
   "$( { grep -F 'pr view 12' "$r34m/gh.log" 2>/dev/null || true; } | grep -c . | sed 's/^[1-9][0-9]*$/있음/')" "있음"
