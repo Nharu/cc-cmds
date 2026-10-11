@@ -1260,7 +1260,7 @@ EOF
       elif [ "$kd_ne" -le "$KD_NOW" ]; then
         kd_dl="과거 시각	다시 잡은 마감이 지금 이후가 아닙니다"
       else
-        kd_abs=$(jq -nr --argjson e "$kd_ne" --argjson now "$KD_NOW" "$KD_JQ_TIME"' render($e)' 2>/dev/null) || kd_abs=''
+        kd_abs=$(jq -nr --argjson e "$kd_ne" --argjson now "$KD_NOW" "$DR_JQ_TIME"' render($e)' 2>/dev/null) || kd_abs=''
         if [ -n "$kd_abs" ] && [ "$(deadline_instant "$kd_abs")" = "$kd_ne" ]; then
           kd_dl="ok	${kd_abs}	${kd_iv}"
         else
