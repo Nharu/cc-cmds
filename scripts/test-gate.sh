@@ -11773,12 +11773,15 @@ graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'         
 # first word after `lockf` was eaten. That only changes the answer when the
 # number of leading options is even — every fixture above passes `-k -t 0`, an
 # odd three, so the whole class sat under a green block.
-# Without `-k` the lock removes its lockfile, so a wrapped read is raised to
-# `워크트리쓰기`; the double shift would still read `status` alone and answer
-# `등급 미상`, so this row keeps telling the two apart.
-graded_as '워크트리쓰기' '-k 없는 lockf 는 감싼 읽기를 잠금 파일 삭제로 올린다' -- lockf /tmp/l.lock git status
+# Without `-k` the lock removes its lockfile, so a wrapped read is raised by
+# where the lockfile is: `/tmp` is outside the target tree and grades
+# `트리밖쓰기`, a lockfile inside it `워크트리쓰기`. The double shift would still
+# read `status` alone and answer `등급 미상`, so these rows keep telling the two
+# apart.
+graded_as '트리밖쓰기'   '-k 없는 lockf 는 감싼 읽기를 대상 밖 잠금 파일 삭제로 올린다' -- lockf /tmp/l.lock git status
+graded_as '워크트리쓰기' '-k 없는 lockf 의 대상 안 잠금 파일은 워크트리쓰기로 올린다'  -- lockf l.lock git status
 graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl -X POST https://x
-graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
+graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 l.lock git commit -m x
 
 # 등급표가 래퍼를 벗겨도 **불투명 축**이 벗기지 않으면 그 수리는 절반이다. 불투명이 0
 # 이면 하한도 표지도 아예 계산되지 않으므로, `lockf` 접두 하나로 `외부상태변경` 하한이
@@ -29795,13 +29798,65 @@ grep -q '^wt86$' "$SIB86/base.txt" && ok "86: park 된 env -- checkout 들의 �
   || bad "86: park 된 env -- checkout 들의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
 rl86 lockf "$SIB86/lk86lock" rm -rf "$T86/lk86junk"
 check "86: 형제 파일을 잠금 파일로 쓰는 lockf rm -rf 는 런로컬로도 park 된다" "$rc" "11"
-om86 워크트리쓰기 lockf "$SIB86/lk86lock" true
-check "86: --reach 를 생략한 -k 없는 lockf 의 형제 잠금 파일은 park 된다 (읽기 칸에서 지나가지 않는다)" "$rc" "11"
+# 대상 밖 잠금 파일은 등급이 트리밖쓰기라, 도달을 생략하면 park 이전에 필수 도달 누락으로
+# 거부된다. 같은 철자의 정직한 런로컬 선언은 파괴 질문에서 park 된다.
+om86 트리밖쓰기 lockf "$SIB86/lk86lock" true
+check "86: --reach 를 생략한 -k 없는 lockf 의 형제 잠금 파일은 도달 누락으로 거부된다 (읽기 칸에서 지나가지 않는다)" "$rc" "2"
+case "$msg" in *"--reach is required"*"grade '트리밖쓰기'"*) ok "86: 그 거부가 트리밖쓰기 등급의 도달 누락이다" ;;
+  *) bad "86: 그 거부가 트리밖쓰기 등급의 도달 누락이다" "$msg" ;; esac
+rl86 lockf "$SIB86/lk86lock" true
+check "86: 형제 파일을 잠금 파일로 쓰는 -k 없는 lockf true 는 런로컬로도 park 된다" "$rc" "11"
 check "86: park 된 lockf 들의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
 rl86 time -o "$SIB86/tm86out" true
 check "86: 형제 파일을 덮는 time -o 는 런로컬로도 park 된다" "$rc" "11"
 check "86: park 된 time -o 의 형제 파일이 그대로다" "$(cat "$SIB86/tm86out" 2>/dev/null)" "k"
 check "86: env -- ·lockf·time -o park 다섯이 blocked 행 다섯을 남긴다" "$(( $(b86) - nb86 ))" "5"
+
+# lockf·time 의 잔여 철자 — BSD lockf 는 잠금 파일 앞에서만 옵션을 받는데 언랩이 잠금
+# 파일 뒤의 -k 도 보존 옵션으로 읽던 동안 `lockf <형제 파일> -k true` 는 읽기·트리거
+# 없음으로 지나갔고, 실제 lockf 는 -k 를 명령으로 돌린 뒤 파일을 지웠다. 불투명 바닥은
+# lockf 의 잠금 파일과 time -o 의 출력 파일을 세지 않아 `bash -c` 를 감싼 두 철자를
+# 읽기로 선언하면 통과했다. 등급은 잠금 파일 위치를 보지 않아 대상 밖 상대 경로의
+# 잠금 파일이 도달 선언 없이 워크트리쓰기로 지나갔다. 판정 함수 단언과 실행 수준의
+# park·잔존 단언을 함께 두고, 통과 쌍둥이는 판정 함수로만 잰다.
+check "86: 잠금 파일 뒤의 -k 는 보존 옵션이 아니라 lockf 가 트리거다" "$(lt86 lockf "$SIB86/lk86lock" -k true)" "lockf"
+check "86: 대조 — 잠금 파일 앞의 -k 는 보존 옵션이라 트리거가 없다" "$(lt86 lockf -k "$SIB86/lk86lock" true)" ""
+H86="$WORK/h86"; mkdir -p "$H86"
+sg86() {
+  # sg86 <argv...> — 대상 트리 안에서 HOME 을 픽스처로 돌려 argv 의 등급을 낸다.
+  ( cd "$WT" && HOME="$H86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      surface_of_argv0 "$@"' _ "$GATE" "$@" ) 2>/dev/null
+}
+check "86: 대상 밖 상대 경로 잠금 파일의 -k 없는 lockf 는 트리밖쓰기다" "$(sg86 lockf ../../.ssh/k86 true)" "트리밖쓰기"
+check "86: HOME 아래 잠금 파일의 -k 없는 lockf 는 트리밖쓰기다" "$(sg86 lockf "$H86/notes86" true)" "트리밖쓰기"
+check "86: 대조 — 대상 안 상대 경로 잠금 파일의 lockf 는 워크트리쓰기다" "$(sg86 lockf lk86in true)" "워크트리쓰기"
+check "86: 대조 — -k 를 단 대상 밖 잠금 파일의 lockf 는 감싼 읽기 그대로다" "$(sg86 lockf -k ../../.ssh/k86 true)" "읽기"
+fl86() {
+  # fl86 <argv...> — 대상 트리 안에서 불투명 바닥의 첫 필드를 낸다.
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      f=$(gate_opaque_floor "$@"); printf "%s" "${f%%	*}"' _ "$GATE" "$@" ) 2>/dev/null
+}
+check "86: 형제 잠금 파일의 lockf 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 lockf "$SIB86/lk86lock" bash -c true)" "트리밖쓰기"
+check "86: 형제 파일에 쓰는 time -o 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 time -o "$SIB86/tm86out" bash -c true)" "트리밖쓰기"
+check "86: 대조 — 무인 스킬이 처방하는 lockf -k -t 0 가 감싼 bash -c 의 바닥은 읽기다" "$(fl86 lockf -k -t 0 "$T86/lk86k" bash -c true)" "읽기"
+nb86=$(b86)
+rl86 lockf "$SIB86/lk86lock" -k true
+check "86: 잠금 파일 뒤에 -k 를 쓴 lockf 의 형제 잠금 파일은 런로컬로도 park 된다" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달 판정=파괴형태미명시 |"*"| 파괴 트리거=lockf |"*) ok "86: 그 park 행이 파괴형태미명시와 파괴 트리거=lockf 를 싣는다" ;;
+  *) bad "86: 그 park 행이 파괴형태미명시와 파괴 트리거=lockf 를 싣는다" "$(lb86)" ;;
+esac
+check "86: 그 park 된 lockf 의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+check "86: 잠금 파일 뒤 -k park 하나가 blocked 행 하나를 남긴다" "$(( $(b86) - nb86 ))" "1"
+om86 읽기 lockf "$SIB86/lk86lock" bash -c true
+case "$rc" in 6|11) ok "86: 읽기로 선언한 형제 잠금 파일 lockf bash -c 는 거부되거나 park 된다 (rc=$rc)" ;;
+  *) bad "86: 읽기로 선언한 형제 잠금 파일 lockf bash -c 는 거부되거나 park 된다" "rc=$rc $msg" ;; esac
+check "86: 그 lockf bash -c 의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+om86 읽기 time -o "$SIB86/tm86out" bash -c true
+case "$rc" in 6|11) ok "86: 읽기로 선언한 형제 파일 time -o bash -c 는 거부되거나 park 된다 (rc=$rc)" ;;
+  *) bad "86: 읽기로 선언한 형제 파일 time -o bash -c 는 거부되거나 park 된다" "rc=$rc $msg" ;; esac
+check "86: 그 time -o bash -c 의 형제 파일이 그대로다" "$(cat "$SIB86/tm86out" 2>/dev/null)" "k"
+rm -rf "$H86"
 rm -f "$SIB86/lk86lock" "$SIB86/tm86out"
 
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command

@@ -5630,10 +5630,23 @@ gate_unwrap_lockf() {
   # and destroys. The readers that need it call this unwrap in their own shell
   # (resolver `:`) and read the two globals; one parser is what keeps the
   # lockfile they read the same word the grader skipped.
+  #
+  # OPTIONS END AT THE LOCKFILE. The BSD synopsis is `lockf [-knsw] [-t
+  # seconds] file command`, and its getopt stops at the first operand, so a
+  # `-k` written after the lockfile is not an option: `lockf <file> -k true`
+  # runs `-k` as the command, fails, and removes the file. Reading on past the
+  # lockfile set `GATE_UW_KEEP=1` for that spelling, and that one value turned
+  # off the grade raise, the destruction trigger and the landing collector
+  # together. Everything after the lockfile goes to the resolver as it stands,
+  # so `-k` there is the wrapped argv0 and grades `등급 미상`.
   local resolver="$1" lock_only="$2" unknown_opt="$3"; shift 3
   local seen_file=0
   GATE_UW_PATHS=(); GATE_UW_KEEP=0; GATE_UW_OPTW=''
   while [ "$#" -gt 0 ]; do
+    if [ "$seen_file" = 1 ]; then
+      "$resolver" "$@"
+      return 0
+    fi
     case "$1" in
       # `-t` with no value after it emits NOTHING, which is what this did before
       # it was factored out. Repairing that here would mix a second change into
@@ -5643,12 +5656,7 @@ gate_unwrap_lockf() {
       -k) GATE_UW_KEEP=1; shift ;;
       -s|-n) shift ;;
       -*) printf '%s' "$unknown_opt"; return 0 ;;
-      *)
-        if [ "$seen_file" = 0 ]; then
-          seen_file=1; GATE_UW_PATHS=("$1"); shift; continue
-        fi
-        "$resolver" "$@"
-        return 0 ;;
+      *) seen_file=1; GATE_UW_PATHS=("$1"); shift ;;
     esac
   done
   # A lock with nothing after it locks and exits — that is a worktree write (it
@@ -5663,13 +5671,31 @@ surface_of_lockf() {
   # Without `-k` the act removes its lockfile, so a wrapped read is not the
   # whole answer: `lockf <file> true` graded `읽기` returned at the read cell
   # before reach or the derived floor were looked at, and nothing parked the
-  # removal of a key under `$HOME/.ssh` or a file in another worktree. A read
-  # is raised to `워크트리쓰기`, the least grade that reaches those cells; a
-  # higher grade or `등급 미상` already reaches them and is kept.
+  # removal of a key under `$HOME/.ssh` or a file in another worktree.
+  #
+  # THE LOCKFILE IS GRADED BY WHERE IT IS, the way every other write operand
+  # is. A fixed `워크트리쓰기` asked for no reach on `lockf ../../.ssh/key true`
+  # while `rm` and `time -o` on the same path graded `트리밖쓰기`, and the
+  # derived floor only matches the absolute `$HOME/.ssh` spelling. So a read or
+  # a worktree write takes the higher of itself and `surface_of_write_paths`
+  # on the lockfile; `외부상태변경` and `등급 미상` already reach every cell the
+  # removal needs and are kept. The opaque floor applies the same rule in
+  # `gate_opaque_floor`, without which a payload declared `읽기` still passes.
+  #
+  # NOT WITH `-k`. The rule is kept to the spelling that removes the file. With
+  # `-k` the file outlives the act, and raising it too would regrade the
+  # `lockf -k -t 0 "${RUN_DIR}/designdoc.lock" …` the unattended skills
+  # prescribe for their design-document writes, a lock outside the worktree
+  # that is not the destruction this rule is here to park.
   local g
   g=$(gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@")
   gate_unwrap_lockf : '' '' "$@"
-  if [ "$g" = "읽기" ] && [ "$GATE_UW_KEEP" = "0" ]; then g='워크트리쓰기'; fi
+  if [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
+    case "$g" in
+      읽기|워크트리쓰기)
+        g=$(gate_surface_max "$g" "$(surface_of_write_paths "${GATE_UW_PATHS[0]}")") ;;
+    esac
+  fi
   printf '%s' "$g"
 }
 
@@ -7100,12 +7126,37 @@ gate_opaque_floor() {
   # STRING read instead of the whole argument list. Both terminal answers are
   # "nothing readable", which is what the `*)` arm already answered for these
   # shapes.
+  #
+  # `lockf` AND `time` ALSO WRITE A FILE OF THEIR OWN, and the payload's floor
+  # does not see it. `lockf <file> bash -c true` floored `읽기`, so a `읽기`
+  # declaration passed the under-declaration comparator while the lockfile was
+  # removed, and only the honest declaration parked. Each arm reads its unwrap's
+  # globals in this shell after the payload's floor is taken and raises the
+  # first field: a lockfile without `-k` by where it is, as `surface_of_lockf`
+  # grades it, and a `-o` file to `트리밖쓰기`, as `gate_unwrap_time` grades it.
+  # The `-o` raise ignores `-a`, because the grading table does too — an append
+  # is still a write, and a floor lower than the table would split the same act
+  # between the two tables.
+  local wf
   case "$cmd" in
-    lockf)   gate_unwrap_lockf   gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    lockf)
+      wf=$(gate_unwrap_lockf gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@")
+      gate_unwrap_lockf : '' '' "$@"
+      if [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
+        wf=$(gate_answer_floor_max "$wf" \
+          "$(printf '%s\t\t' "$(surface_of_write_paths "${GATE_UW_PATHS[0]}")")")
+      fi
+      printf '%s' "$wf"; return 0 ;;
     command) gate_unwrap_command gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     rg)      gate_unwrap_rg      gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     env)     gate_unwrap_env     gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
-    time)    gate_unwrap_time    gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    time)
+      wf=$(gate_unwrap_time gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@")
+      gate_unwrap_time : '' '' "$@"
+      if [ -n "$GATE_UW_OPTW" ]; then
+        wf=$(gate_answer_floor_max "$wf" "$(printf '트리밖쓰기\t\t')")
+      fi
+      printf '%s' "$wf"; return 0 ;;
     timeout|nice|nohup|stdbuf)
       gate_unwrap_wrapper "$cmd" gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     # A write primary (`-delete`, `-fprint` …) is a worktree write whatever
@@ -7312,7 +7363,10 @@ gate_unwrap_time() {
   local inner; inner=$("$resolver" "$@")
   [ "$wrote" = "1" ] || { printf '%s' "$inner"; return 0; }
   # Only the GRADING table has a floor to raise; the other tables pass their own
-  # terminal answer through, which is what `''` means for them.
+  # terminal answer through, which is what `''` means for them. The opaque floor
+  # table is one of those others: its answer is the tab-joined `<하한>\t<표지>\t
+  # <트리거>`, which never equals `읽기` or `워크트리쓰기`, so the raise for that
+  # table is made in the `time` arm of `gate_opaque_floor`, not here.
   case "$inner" in
     읽기|워크트리쓰기) printf '트리밖쓰기' ;;
     *) printf '%s' "$inner" ;;
