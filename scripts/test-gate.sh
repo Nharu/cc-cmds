@@ -29118,10 +29118,12 @@ t3_park 12 도달모순 - 'the reach you declared and where this act actually la
 t3p front3 외부상태변경 협업 -- gh issue comment 1 --body x
 t3_pass 12
 
-# 13 — 표지가 있는 파괴, 행이 트리거 앞에서 끝난다.
+# 13 — 표지가 있는 파괴, 행이 트리거 앞에서 끝난다. docker 의 `run`·`create` 밖의 동사는
+# 행위 끝까지가 피연산자라, 3단어 행은 파괴 칸에 닿기 전에 기기전역 칸에서 짧다고 park
+# 한다. 찍히는 행은 같다. 표지 있는 파괴 칸은 14 가 덮는다.
 rx_manifest R83C 'docker compose down'
 t3p front3 트리밖쓰기 기기전역 --destructive -- docker compose down -v
-t3_park 13 파괴형태미명시 marked 'has to carry the destructive word itself' 1
+t3_park 13 기기전역 short 'stops before the words that make this act machine-global' 1
 t3_c=$T3_CALL; t3_r=$(rx_row)
 check "83c: 13 — 찍힌 행은 파괴 단어까지다" "$t3_r" "docker compose down -v"
 rx_manifest R83C "docker compose down
