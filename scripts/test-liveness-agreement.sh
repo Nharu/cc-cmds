@@ -705,6 +705,94 @@ check "상태표 96 사례가 두 호출 꼴 모두에서 규칙과 같다" "$st
 check "상태표가 실제로 96 사례를 돌았다" "$st_i" "96"
 
 # ---------------------------------------------------------------------------
+# The watchers' idle self-exit, `cc_run_idle_exit`, and the poller reading it.
+#
+# EVERY FIXTURE HERE IS 버려짐 TO THE STATE TABLE, and that is the point. The
+# ledger last grew 25 hours ago and a segment is still open, so `cc_run_state`
+# says 버려짐 for all of them; the idle predicate has to tell apart the run that
+# waits on a person — an unanswered halt record, an open approval — from the run
+# that waits on nobody. A predicate that reused 버려짐 would pass the first
+# fixture and take the progress channel away from a person's open question.
+# ---------------------------------------------------------------------------
+idle_of() {
+  # idle_of <run-dir> <ledger> [T] — the predicate's answer as a word, with the
+  # ledger's mtime moved back to the fixture's growth age first. The predicate
+  # takes the later of the heartbeat field and the mtime, and a fixture row
+  # appended a moment ago would otherwise be the growth every case reads.
+  fx_age_file "$2" "$ID_AGE"
+  if cc_run_idle_exit "$1" "${3:-}" "$2"; then printf '유휴'; else printf '유휴 아님'; fi
+}
+id_mkrun() {
+  # id_mkrun <run-id> <growth-age> — an open run whose ledger last grew that long ago.
+  fx_mkrun "$1"
+  fx_segment S1 실행중
+  fx_heartbeat 0 "$2"
+  ID_AGE="$2"
+}
+
+id_mkrun 20261012-0000000a 90000
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/S1.md"
+check "유휴 A — 상태표는 이 런을 버려짐 으로 읽는다 (아래 단언이 공허하지 않다)" \
+  "$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 1200)" "버려짐"
+check "유휴 A — 답 없는 중단 기록이 있으면 25시간 조용해도 유휴가 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+check "유휴 A 폴러 — 끝나지 않았다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝나지 않음"
+printf '답\n' > "$FX_RUN_DIR/halt/S1.answer.md"
+check "유휴 A — 답 첨부 파일은 원장의 답 행이 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/S1.md" "답=좌석 실행"
+check "유휴 A′ — 그 기록을 원장의 중단 답 행이 가리키면 유휴다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+check "유휴 A′ 폴러 — 끝났다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝남"
+
+id_mkrun 20261012-0000000b 90000
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/S1.md"
+fx_row '중단 답' "중단 기록=/elsewhere/20261012-0000000a/halt/S1.md" "답=좌석 실행"
+check "유휴 B — 다른 런의 같은 이름 기록을 가리키는 답은 이 기록의 답이 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+
+id_mkrun 20261012-0000000c 90000
+fx_approval A1 대기
+check "유휴 C — 대기 중인 승인이 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_approval A1 승인됨
+check "유휴 C′ — 그 승인이 풀리면 유휴다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+
+id_mkrun 20261012-0000000d 90000
+check "유휴 D — 아무도 기다리지 않는 런은 유휴다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+check "유휴 D 폴러 — done 없이도 끝났다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝남"
+check "유휴 D — 술어는 done 을 쓰지 않는다" "$( [ -e "$FX_RUN_DIR/done" ] && printf 있음 || printf 없음 )" "없음"
+ag_shift_live "$FX_RUN_DIR" "$ST_PID"
+check "유휴 D′ — 살아 있는 교대가 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+rm -f "$FX_RUN_DIR/shift.live"
+fx_stage_live S9
+check "유휴 D″ — 살아 있는 스테이지가 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+
+id_mkrun 20261012-0000000e 4000
+check "유휴 E — 기본 임계(24시간) 안에서는 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+check "유휴 E — 임계를 인자로 줄이면 같은 런이 유휴다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER" 3600)" "유휴"
+check "유휴 E — 숫자 아닌 임계는 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER" 1h)" "유휴 아님"
+check "기본 임계는 24시간이다" "$CC_RUN_IDLE_EXIT_SECONDS" "86400"
+
+# A watcher started again on a run its predecessor left as idle. The heartbeat's
+# `마지막성장` stays a day old once that watcher is gone, so the clock has to come
+# from somewhere it does not reach. F′ is F with the ledger aged back, so the
+# appended row is what F's answer rests on; F″ is F′ with a caller that started
+# watching just now, so the start epoch is what F″'s answer rests on.
+id_mkrun 20261012-0000000f 90000
+fx_row 'handoff' "사유=중단"
+check "유휴 F — 묵은 하트비트가 있어도 원장에 방금 행이 붙었으면 유휴가 아니다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" && printf '유휴' || printf '유휴 아님')" "유휴 아님"
+fx_age_file "$FX_LEDGER" 90000
+check "유휴 F′ — 원장도 하루 넘게 조용하면 유휴다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" && printf '유휴' || printf '유휴 아님')" "유휴"
+check "유휴 F″ — 같은 런이라도 방금 지켜보기 시작한 호출자에게는 유휴가 아니다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" "$(date -u +%s)" && printf '유휴' || printf '유휴 아님')" "유휴 아님"
+check "유휴 F‴ — 임계보다 오래 지켜본 호출자에게는 유휴다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" "$(( $(date -u +%s) - 90000 ))" && printf '유휴' || printf '유휴 아님')" "유휴"
+
+# ---------------------------------------------------------------------------
 # The notifier channel stays off for every suite that does not assert on it.
 #
 # This is a property OF THE SET, like the agreement above: any one suite can be

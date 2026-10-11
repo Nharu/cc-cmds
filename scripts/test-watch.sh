@@ -2550,5 +2550,77 @@ r7_drive after
 # 화면에 남는 것은 ended 다 — 멈춤 배너가 ended 를 덮는 순서는 나오지 않는다.
 check "재시험 뒤에 생긴 done 은 resume 다음 ended 순서로 남는다" "$(r7_order)" "resume|ended|"
 
+# ---------------------------------------------------------------------------
+# 유휴 자기 종료 — 아무도 기다리지 않는 런에서 루프가 `done` 없이 스스로 끝나고,
+# 사람의 답을 기다리는 런에서는 끝나지 않는다.
+#
+# 원장이 25시간 전에 마지막으로 자랐고 세그먼트 하나가 열려 있다 — 두 사례 모두
+# 상태표로는 버려짐 이다. 가르는 것은 답 없는 중단 기록 하나뿐이므로, 둘째 사례가
+# 계속 도는 것이 그 기록 때문이라는 것은 첫째 사례가 끝나는 것으로 서 있다.
+# 하트비트가 없으니 성장 시각은 원장의 mtime 에서 온다.
+#
+# 감시자는 제가 뜬 때부터도 임계만큼 지켜본 뒤에야 내려가므로, 막 띄운 루프는 이 런에서
+# 끝날 수 없다. 그래서 끝나는 쪽은 watch.sh 의 실제 `run_is_over` 를 뽑아 하루 전에 뜬
+# 감시자의 기동 시각으로 부르고, 진짜 루프는 끝나지 않아야 하는 쪽을 맡는다 — 앞 감시자가
+# 남긴 하루 묵은 하트비트 위에서 다시 띄운 감시자가 첫 반복에 내려가던 것이 그 쪽이다.
+# ---------------------------------------------------------------------------
+idle_fixture() {
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+  fx_age_file "$LG" 90000
+}
+idle_loop() {
+  # idle_loop — 진짜 루프를 띄우고 출력을 남긴다. pid 는 EOD_LOOP_PID.
+  CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" \
+    --interval 1 --stall 99999 --after-stage 99999 --run-open 99999 > "$WORK/idle$case_n.out" 2>&1 &
+  EOD_LOOP_PID=$!
+  FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
+}
+idle_over_fn=$(sed -n '/^run_is_over() {/,/^}/p' "$WATCH")
+idle_over() {
+  # idle_over <감시 시작 epoch> — 감시자의 실제 `run_is_over` 를 그 기동 시각으로 한 번
+  # 부르고, 그것이 찍은 줄 뒤에 판정을 붙여 낸다.
+  [ -n "$idle_over_fn" ] || { printf 'EXTRACT-FAILED'; return 0; }
+  RUN_DIR="$RD" LEDGER="$LG" WATCH_STARTED="$1" LIVENESS_SH="$LIVENESS" CC_FN="$idle_over_fn" \
+    bash -c '. "$LIVENESS_SH"; now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }; eval "$CC_FN"
+             if run_is_over; then printf "판정=끝남"; else printf "판정=끝나지 않음"; fi'
+}
+
+idle_fixture
+idle_out=$(idle_over "$(( $(date -u +%s) - 90000 ))")
+case "$idle_out" in
+  *판정=끝남) ok "하루 넘게 지켜본 감시자는 유휴 런에서 스스로 끝난다" ;;
+  *) bad "유휴 종료" "$idle_out" ;;
+esac
+check "그 종료는 done 을 쓰지 않는다 (런은 열린 채 남는다)" \
+  "$( [ -e "$RD/done" ] && printf 있음 || printf 없음 )" "없음"
+case "$idle_out" in
+  *"[watch] 유휴 86400초"*end-abandoned*) ok "멈추는 까닭과 런을 닫는 동사를 한 줄로 남긴다" ;;
+  *) bad "유휴 종료 문면" "$idle_out" ;;
+esac
+case "$(idle_over "$(date -u +%s)")" in
+  *"판정=끝나지 않음") ok "같은 런이라도 방금 뜬 감시자는 끝나지 않는다" ;;
+  *) bad "기동 시각 기준" "$(idle_over "$(date -u +%s)")" ;;
+esac
+
+# 다시 띄운 감시자 — 앞 감시자가 유휴로 내려가며 남긴 하트비트의 `마지막성장` 은 하루
+# 넘게 묵었고 원장도 그만큼 조용하다. 판정식의 다른 조건은 모두 유휴 쪽이므로, 루프가
+# 도는 것은 기동 시각 기준 하나 때문이다.
+idle_fixture
+printf '픽스처 원장 90000초 전 갱신 · 스테이지 0개 · 대기 승인 0건 · 비종단 세그먼트 1개 · 원장크기=1 · 마지막성장=%s\n' \
+  "$(( $(date -u +%s) - 90000 ))" > "$RD/watch.heartbeat"
+idle_loop
+check "묵은 하트비트 위에 다시 띄운 감시자는 첫 반복에 내려가지 않고 계속 돈다" "$(eod_loop_exited)" "running"
+
+# 하루 넘게 지켜본 감시자로 부른다 — 막 뜬 루프로 재면 기동 시각 기준만으로도 끝나지
+# 않아, 중단 기록이 그 까닭이라는 것을 이 단언이 가려내지 못한다.
+idle_fixture
+mkdir -p "$RD/halt"
+printf '# 중단 기록\n' > "$RD/halt/S1.md"
+case "$(idle_over "$(( $(date -u +%s) - 90000 ))")" in
+  *"판정=끝나지 않음") ok "답 없는 중단 기록이 있으면 25시간 조용해도 감시자가 끝나지 않는다" ;;
+  *) bad "중단 기록 대기" "$(idle_over "$(( $(date -u +%s) - 90000 ))")" ;;
+esac
+
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

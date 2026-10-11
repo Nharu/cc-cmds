@@ -3006,6 +3006,14 @@ pre_sb() {
     rm -rf "$SA_RUN"
   }
 
+  sc_ends() {
+    # sc_ends [토큰] — 종료 행의 수, 토큰을 주면 그 토큰의 것만. 38-5c 와 38-5d 가
+    # 함께 쓰므로 어느 한 절의 본문이 아니라 여기에 둔다.
+    { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } \
+      | { if [ -n "${1:-}" ]; then grep -F "| 재킥 원인=$1 |" || true; else cat; fi; } \
+      | grep -c . || true
+  }
+
   sb_target_field() {
     # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
     # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
@@ -22534,11 +22542,6 @@ sc_new() {
   SC_PACE="$SA_ROOT/pace"
   mkdir -p "$SC_PACE/busy"
 }
-sc_ends() {  # sc_ends [토큰] — 종료 행의 수, 토큰을 주면 그 토큰의 것만
-  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } \
-    | { if [ -n "${1:-}" ]; then grep -F "| 재킥 원인=$1 |" || true; else cat; fi; } \
-    | grep -c . || true
-}
 sc_overdue() { RUN_PACE_ROOT="$SC_PACE" sag end-overdue --manifest "$SA_MANIFEST"; }
 
 sc_new '5c 관측 불가'
@@ -22599,6 +22602,71 @@ rm -rf "$SA_RUN"
 SC_PACE="$SA_ROOT/pace"; mkdir -p "$SC_PACE/busy"
 sc_overdue
 check "5c: 표면 이동 행만 있는 런에는 아무것도 쓰지 않는다" "$rc/$(sc_ends)" "0/0"
+
+# --- 38-5d. 이어받혔거나 포기된 런 — end-abandoned -----------------------------
+# --- section: 38-5d | group: sb | covers: act | anchors: 5d: 포기는 해당없음 종료 행 하나와 done 을 쓴다, 5d: 다시 불러도 종료 행은 하나다, 5d: 이어받음 행은 종료 부류와 후계 런을 싣는다, 5d: 살아 있는 shift 가 있으면 거절하고 아무것도 쓰지 않는다, 5d: 살아 있는 스테이지가 있으면 거절하고 아무것도 쓰지 않는다, 5d: 스테이지가 부르면 거절한다, 5d: shift 가 부르면 거절한다, 5d: 닫힌 집합 밖의 원인은 거절한다 ---
+#
+# 다른 런이 이어받았거나 사람이 포기한 런은 어떤 경계도 끝내지 않는다. 이 동사가
+# 그 런에 done 과 종료 행 하나를 쓰고, 재킥 원인은 해당없음, 무슨 일이었는지는
+# 종료 부류가 싣는다. 부르는 것은 좌석이나 킥오프뿐이고, 무언가 아직 도는 런은
+# 버려진 런이 아니므로 아무것도 쓰지 않고 거절한다.
+sd_new() {  # sd_new <라벨> — 마감이 미래인 sb 픽스처를 만들고 런을 연다.
+  sb_new "$1" 선머지후리뷰
+  SAH >/dev/null
+  mkdir -p "$SA_RUN"
+}
+sd_end() { sag end-abandoned --manifest "$SA_MANIFEST" "$@"; }
+sd_row() {  # sd_row — 마지막 종료 행
+  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } | tail -1
+}
+sd_done() { if [ -s "$SA_RUN/done" ]; then printf 있음; else printf 없음; fi; }
+
+sd_new '5d 포기'
+sd_end --cause 포기
+check "5d: 포기는 해당없음 종료 행 하나와 done 을 쓴다" \
+  "$rc/$(sc_ends)/$(sc_ends 해당없음)/$(sd_done)" "0/1/1/있음"
+case "$(sd_row)" in
+  *'| 종료 부류=포기 |'*) ok "5d: 그 행의 종료 부류는 포기 다" ;;
+  *) bad "5d 종료 부류" "포기 행에 종료 부류=포기 가 없다: $(sd_row)" ;;
+esac
+sd_end --cause 포기
+check "5d: 다시 불러도 종료 행은 하나다" "$rc/$(sc_ends)" "0/1"
+
+sd_new '5d 이어받음'
+sd_end --cause 이어받음 --successor 20261012-abcdef01
+check "5d: 이어받음 도 해당없음 종료 행 하나를 쓴다" "$rc/$(sc_ends 해당없음)/$(sd_done)" "0/1/있음"
+case "$(sd_row)" in
+  *'| 종료 부류=이어받음 |'*'후계 런 20261012-abcdef01'*) ok "5d: 이어받음 행은 종료 부류와 후계 런을 싣는다" ;;
+  *) bad "5d 이어받음 행" "종료 부류나 후계 런이 빠졌다: $(sd_row)" ;;
+esac
+
+sd_new '5d 산 shift'
+printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/shift.live"
+sd_end --cause 포기
+check "5d: 살아 있는 shift 가 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_new '5d 산 스테이지'
+printf '%s\n' "$$" > "$SA_RUN/SD.pid"
+cc_proc_fingerprint "$$" > "$SA_RUN/SD.start"
+check "5d: 픽스처의 스테이지가 살아 있다 (아래 단언이 공허하지 않다)" \
+  "$(cc_live_stages "$SA_RUN" 2>/dev/null || printf 0)" "1"
+sd_end --cause 포기
+check "5d: 살아 있는 스테이지가 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_new '5d 스테이지 호출'
+CC_PIPELINE_SEGMENT=SD CC_PIPELINE_STAGE_ID='SD#1' sd_end --cause 포기
+check "5d: 스테이지가 부르면 거절한다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+CC_PIPELINE_SHIFT_ID="$SA_ID#1" sd_end --cause 포기
+check "5d: shift 가 부르면 거절한다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_end --cause 완료
+check "5d: 닫힌 집합 밖의 원인은 거절한다" "$rc/$(sc_ends)/$(sd_done)" "2/0/없음"
+sd_end --cause 포기 --successor 20261012-abcdef01
+check "5d: 후계 런은 이어받음 에만 붙는다" "$rc/$(sc_ends)" "2/0"
+sd_end --cause 이어받음 --successor "$SA_ID"
+check "5d: 후계 런이 이 런 자신이면 거절한다" "$rc/$(sc_ends)" "2/0"
+sag end-overdue --manifest "$SA_MANIFEST" --cause 포기
+check "5d: --cause 는 다른 동사에 붙지 않는다" "$rc/$(sc_ends)" "2/0"
 
 # --- 38-6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
 # --- section: 38-6 | group: sb | covers: act | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다 ---
@@ -24627,7 +24695,7 @@ check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b
 
 # ---------------------------------------------------------------------------
 # 57. 판본 고정 — 새 런은 사본으로 hop 한다
-# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다 ---
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다, 57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다 ---
 #
 # 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
 # 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
@@ -25118,6 +25186,46 @@ case "$rc:$msg" in
   3:*|*"rule refused"*) bad "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" "rc=$rc $msg" ;;
   *) ok "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" ;;
 esac
+
+# (15) end-abandoned 를 모르는 사본에 고정된 런 ------------------------------------
+# 재킥오프는 원천 런을 이 동사로 닫는데, 호출은 동사를 가르기 전에 원천의 고정 사본으로
+# hop 한다. 그 동사보다 오래된 사본은 인자 루프에 `--cause` 갈래가 없어 동사 줄에 닿기
+# 전에 그 인자에서 멈춘다. 스킬이 「옛 사본」으로 읽는 문면이 그 사본이 실제로 내는
+# 문면과 같아야, 재킥오프가 그 원천에서 멈추지 않고 지나간다.
+p57_fixture R57V
+p57_gate snapshot --manifest "$P57_MAN"
+check "57V: 고정이 섰다" "$rc" "0"
+P57V_COPY="$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+sed -e '/^      --cause)  /d' -e '/^      --successor)  /d' "$P57V_COPY" > "$P57V_COPY.old" \
+  && mv "$P57V_COPY.old" "$P57V_COPY" && chmod +x "$P57V_COPY"
+check "57V: 사본의 인자 루프에서 두 갈래가 빠졌다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cE '^      --(cause|successor)\)' "$P57V_COPY" || true)" "0"
+p57_gate end-abandoned --manifest "$P57_MAN" --cause 이어받음 --successor 20261012-abcdef01
+check "57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다" "$rc" "2"
+case "$msg" in
+  *'gate: unknown argument: --cause'*) ok "57V: 그 사본은 --cause 를 모르는 인자로 거절한다" ;;
+  *) bad "57V: 그 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
+esac
+check "57V: 스킬의 재킥오프가 그 문면을 옛 사본 신호로 적는다" \
+  "$(grep -cF '`gate: unknown argument: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+check "57V: 원천 런에는 done 이 쓰이지 않았다" \
+  "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
+# 게이트의 거절 문면이 영어로 바뀌기 전에 고정된 사본은 같은 자리에서 한국어로 거절한다.
+# 스킬은 문면이 아니라 모양으로 가르므로, 그 문면도 옛 사본 신호로 적어야 한다.
+sed -e "s/'gate: unknown argument: %s\\\\n'/'gate: 알 수 없는 인자: %s\\\\n'/" "$P57V_COPY" > "$P57V_COPY.old" \
+  && mv "$P57V_COPY.old" "$P57V_COPY" && chmod +x "$P57V_COPY"
+check "57V: 한국어 사본의 인자 루프가 한국어 문면을 낸다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cF "'gate: 알 수 없는 인자: %s" "$P57V_COPY" || true)" "1"
+p57_gate end-abandoned --manifest "$P57_MAN" --cause 이어받음 --successor 20261012-abcdef01
+check "57V: 한국어 옛 사본에 고정된 런의 end-abandoned 도 exit 2 다" "$rc" "2"
+case "$msg" in
+  *'gate: 알 수 없는 인자: --cause'*) ok "57V: 한국어 사본은 --cause 를 모르는 인자로 거절한다" ;;
+  *) bad "57V: 한국어 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
+esac
+check "57V: 스킬의 재킥오프가 한국어 문면도 옛 사본 신호로 적는다" \
+  "$(grep -cF '`gate: 알 수 없는 인자: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 않았다" \
+  "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
