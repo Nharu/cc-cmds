@@ -204,6 +204,16 @@ check "비용이 40배가 되어도 진전이 아니다" "$(digest)" "$d0"
 printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=크래시 | 시각=2026-01-01T00:00:00Z\n' >> "$LEDGER"
 check "크래시로 끝난 스테이지 결과 행은 진전이 아니다" "$(digest)" "$d0"
 
+# `answered_by` says who chose the option, and a row written before `답한 주체`
+# existed is read by its `근거`: the shift's pre-adopted prefix is `교대`, any
+# other row a person's. An answer is not progress, whoever gave it.
+printf -- '- `중단 답` | 세그먼트=S2 | 중단 기록=/x/halt/S2.md | 스킬=design-reconverge | 선택지=reject | 답한 주체=좌석 | 근거=기록의 추천 | 근거 종류=상시 지침\n' >> "$LEDGER"
+printf -- '- `중단 답` | 세그먼트=S3 | 중단 기록=/x/halt/S3.md | 스킬=implement-unattended | 선택지=재수렴 | 근거=자동 채택(구속-이탈) — 매니페스트가 미리 정한 답\n' >> "$LEDGER"
+printf -- '- `중단 답` | 세그먼트=S4 | 중단 기록=/x/halt/S4.md | 스킬=design-audit-unattended | 선택지=reject | 근거=사람이 기각\n' >> "$LEDGER"
+ah=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -c '[.answered_halts[] | [.segment, .answered_by]]')
+check "스냅숏의 answered_by 는 답한 주체를 읽고, 옛 행은 근거의 접두로 가른다" "$ah" '[["S2","좌석"],["S3","교대"],["S4","사람"]]'
+check "중단 답 행은 진전이 아니다" "$(digest)" "$d0"
+
 # ---------------------------------------------------------------------------
 # 3. THE REGRESSION — issuing an approval must not move the digest
 #

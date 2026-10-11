@@ -7442,8 +7442,9 @@ gate_adoption_halt_source() {
   # segment again from its first process.
   #
   # Every guarantee of the seat's own `halt-answer` holds for the copy. The
-  # answer must be a person's — a shift's pre-adopted `재수렴` is told apart by
-  # the prefix the gate stamps on its `근거` — the record must still be the
+  # answer must be the seat's — a person's, or the record's recommendation the
+  # seat copied, whose `답한 주체` the copy keeps — and a shift's pre-adopted
+  # `재수렴` is told apart by the prefix the gate stamps on its `근거`; the record must still be the
   # complete halt record that row hashed and list the option verbatim, the
   # attachment must still hash to its row, no stage of the earlier run may be
   # alive on the key, and a record the earlier run already re-converged once
@@ -7625,11 +7626,18 @@ gate_adoption_halt_carry() {
   fi
   lane=$(gate_row_field "$GATE_CARRY_ROW" '레인')
   at=$(gate_row_field "$GATE_CARRY_ROW" '기록 시각')
+  # WHO ANSWERED TRAVELS WITH THE ANSWER. A seat's automatic answer carried in
+  # under this run's key is still automatic, so the `구속-이탈` count and the
+  # one-automatic-answer-per-record check here see it for what it is.
+  local by kinds
+  by=$(gate_halt_answered_by "$GATE_CARRY_ROW")
+  kinds=$(gate_row_field "$GATE_CARRY_ROW" '근거 종류')
   while [ "$w" -ge 40 ]; do
     why=$(gate_row_safe "입양 이월(출처 런 $GATE_CARRY_SRC 원장 ${GATE_CARRY_LINE} 번째 줄) — $(gate_row_field "$GATE_CARRY_ROW" '근거')" "$w")
     len=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$dst" \
       "스킬=$(gate_row_field "$GATE_CARRY_ROW" '스킬')" "선택지=$(gate_row_field "$GATE_CARRY_ROW" '선택지')" \
-      "근거=$why" "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
+      "답한 주체=$by" "근거=$why" ${kinds:+"근거 종류=$kinds"} \
+      "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
       ${adst:+"첨부=$adst"} ${adst:+"첨부 다이제스트=$adig"} \
       "출처 런=$GATE_CARRY_SRC" "출처 기록=$GATE_CARRY_REC" "레인=${lane:-미상}" "기록 시각=${at:-미상}")
     [ "$len" -le "$GATE_ROW_MAX" ] && break
@@ -7641,7 +7649,8 @@ gate_adoption_halt_carry() {
   fi
   gate_append '중단 답' "세그먼트=$seg" "중단 기록=$dst" \
     "스킬=$(gate_row_field "$GATE_CARRY_ROW" '스킬')" "선택지=$(gate_row_field "$GATE_CARRY_ROW" '선택지')" \
-    "근거=$why" "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
+    "답한 주체=$by" "근거=$why" ${kinds:+"근거 종류=$kinds"} \
+    "기록 다이제스트=$(gate_row_field "$GATE_CARRY_ROW" '기록 다이제스트')" \
     ${adst:+"첨부=$adst"} ${adst:+"첨부 다이제스트=$adig"} \
     "출처 런=$GATE_CARRY_SRC" "출처 기록=$GATE_CARRY_REC" "레인=${lane:-미상}" "기록 시각=${at:-미상}"
   log "중단 답 이월 — $seg ← 출처 런 $GATE_CARRY_SRC ($(gate_row_field "$GATE_CARRY_ROW" '선택지'))"
@@ -12893,11 +12902,14 @@ gate_answered_halts_json() {
     # ledger line, which holds it whole as recorded. `origin_run` is the empty
     # string for an answer given in this run, and the earlier run's id for one
     # the adopted segment's planning act carried over (`gate_adoption_halt_carry`).
-    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "attachment": "%s", "origin_run": "%s", "line": %s}' \
+    # `answered_by` is `사람`, `좌석` or `교대` (`gate_halt_answered_by`), so the
+    # shift's re-attach message can say who chose the option.
+    printf '    {"segment": "%s", "record": "%s", "skill": "%s", "option": "%s", "answered_by": "%s", "attachment": "%s", "origin_run": "%s", "line": %s}' \
       "$(gate_json_escape "$key")" \
       "$(gate_json_escape "$(gate_row_field "$row" '중단 기록')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '스킬')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '선택지')")" \
+      "$(gate_json_escape "$(gate_halt_answered_by "$row")")" \
       "$(gate_json_escape "$(gate_row_field "$row" '첨부')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '출처 런')")" \
       "$ln"
@@ -12922,12 +12934,212 @@ gate_halt_answer_spent() {
   #
   # The reader consumes its whole input, for the SIGPIPE reason
   # `gate_answered_halts_json` gives.
-  local later
-  later=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
-          | { grep "^[0-9]*:- \`stage-result\` " || true; } \
-          | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
-          | awk -F: -v l="$3" '$1 > l && !p { print; p = 1 }')
-  [ -n "$later" ]
+  [ -n "$(gate_halt_answer_consumer "$1" "$2" "$3")" ]
+}
+
+gate_halt_answer_consumer() {
+  # gate_halt_answer_consumer <ledger> <key> <line> — the `stage-result` row that
+  # took up the `중단 답` row at <line>, as `<line>:<row>`, or nothing. It is the
+  # one `gate_halt_answer_spent` tests for, so "spent" and "spent by whom" can
+  # never name two different rows: the automatic-answer checks read its `종류`
+  # and `종단 부류` to tell a re-convergence that ran from an attempt that
+  # crashed before doing anything with the answer.
+  { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
+    | { grep "^[0-9]*:- \`stage-result\` " || true; } \
+    | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+    | awk -F: -v l="$3" '$1 > l && !p { print; p = 1 }'
+}
+
+gate_halt_answer_is_auto() {
+  # gate_halt_answer_is_auto <row> — true for a `중단 답` row no person wrote:
+  # `답한 주체` is `교대` or `좌석`, or — on a row written before that field
+  # existed — `근거` opens with the shift's pre-adopted prefix.
+  case "$(gate_row_field "$1" '답한 주체')" in
+    교대|좌석) return 0 ;;
+    '') ;;
+    *) return 1 ;;
+  esac
+  case "$(gate_row_field "$1" '근거')" in
+    '자동 채택(구속-이탈) — '*) return 0 ;;
+  esac
+  return 1
+}
+
+gate_halt_answered_by() {
+  # gate_halt_answered_by <row> — `사람`, `좌석` or `교대`. A row written before
+  # `답한 주체` existed reads `교대` when it carries the shift's prefix and
+  # `사람` otherwise, since those were the only two writers then.
+  local by
+  by=$(gate_row_field "$1" '답한 주체')
+  if [ -z "$by" ]; then
+    if gate_halt_answer_is_auto "$1"; then by=교대; else by=사람; fi
+  fi
+  printf '%s' "$by"
+}
+
+gate_halt_recommendation() {
+  # gate_halt_recommendation <record> — whether the seat may answer this halt
+  # record without a person, and with what. On success GATE_HALT_REC_LABEL holds
+  # the recommended option's label and GATE_HALT_REC_KINDS the `/`-joined
+  # 근거 kinds the record names (`미상` when it names none of the four); on
+  # failure the reason is warned and the exit is GATE_EXIT_RULE.
+  #
+  # THE SEAT NEVER PICKS AN OPTION. The stage that wrote the record already
+  # chose one where it stood, and the seat copies that choice, so what the run
+  # answered unattended is decided by bytes a fixture can hold — not by a model
+  # reading the record at night.
+  #
+  # `**추천**` IS FOUND AT THE START OF A LINE. The option check is a substring
+  # match, so it would also find a label quoted inside `**추천 근거**`; a
+  # recommendation is one line of its own or it is none.
+  #
+  # A RISK-ACCEPTANCE OPTION IS NOT THE SEAT'S TO TAKE. `judgment-grade.md`
+  # grade 2 names four shapes of a person accepting risk that is theirs, and
+  # risk acceptance is never delegated, so a recommendation whose description
+  # carries one of them goes to a person however the record's writer argued it.
+  local rec="$1" cls step n line lab ol desc='' found='' kinds
+  GATE_HALT_REC_LABEL=''; GATE_HALT_REC_KINDS=''
+  cls=$(sed -n 's/^\*\*분류\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  if [ "$cls" != "gate-unanswerable" ]; then
+    warn "the seat answers only a \`gate-unanswerable\` halt record without a person — this one is ${cls:-unclassified}: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  if ! grep -q '^- `' "$rec"; then
+    warn "the halt record has no option line, so there is nothing for the seat to answer: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')
+  case "$step" in
+    'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)
+      warn "a \`좌석 실행\` halt is run by the seat, not answered from a recommendation: $rec"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  n=$(grep -c '^\*\*추천\*\*: ' "$rec" || true)
+  if [ "$n" != "1" ]; then
+    warn "the seat answers only a halt record with exactly one \`**추천**\` line at the start of a line — this one has ${n:-0}: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  line=$(sed -n 's/^\*\*추천\*\*: //p' "$rec")
+  case "$line" in
+    '`'*'`'*) ;;
+    *) warn "the record recommends no option (\`**추천**: ${line%% — *}\`), so a person answers it: $rec"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  lab=${line#\`}
+  lab=${lab%%\`*}
+  while IFS= read -r ol; do
+    case "$ol" in
+      "- \`$lab\` — "*) desc=${ol#"- \`$lab\` — "}; found=1; break ;;
+      "- \`$lab\`") found=1; break ;;
+    esac
+  done < "$rec"
+  if [ -z "$lab" ] || [ -z "$found" ]; then
+    warn "\`**추천**\` names \`$lab\`, which is not one of this halt record's option labels byte for byte: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$desc" in
+    *'위험 수용'*|*'게이트 비활성'*|*'그대로 진행'*|*'범위 축소'*)
+      warn "the recommended option \`$lab\` is described as accepting risk (위험 수용 · 게이트 비활성 · 그대로 진행 · 범위 축소), which only a person accepts: $rec"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  kinds=$(sed -n 's/^\*\*추천 근거\*\*: //p' "$rec" | sed -n '1p' | LC_ALL=C awk 'BEGIN { FS = " / " }
+    { for (i = 1; i <= NF; i++) { k = $i; sub(/^ +/, "", k); sub(/:.*/, "", k)
+        if ((k == "인터뷰 기록" || k == "매니페스트 인가" || k == "기기 사실" || k == "상시 지침") && !s[k]++)
+          o = o (o == "" ? "" : "/") k } }
+    END { print o }')
+  GATE_HALT_REC_LABEL=$lab
+  GATE_HALT_REC_KINDS=${kinds:-미상}
+}
+
+gate_bind_escape_cap() {
+  # gate_bind_escape_cap — the `상한` of the manifest's `자동 채택` row of class
+  # `구속-이탈`, or nothing when `## 인가` carries no such row.
+  local row cls
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    cls=$(gate_row_field "$row" '판단 부류')
+    [ "$cls" = "구속-이탈" ] || continue
+    gate_row_field "$row" '상한'
+    printf '\n'
+    return 0
+  done <<EOF
+$(manifest_autoadopt_rows)
+EOF
+}
+
+gate_halt_auto_answer_admit() {
+  # gate_halt_auto_answer_admit <key> <record> <option> — the checks an answer no
+  # person gave has to pass, whoever wrote it (the shift's pre-adopted `재수렴`
+  # or the seat's copy of a recommendation). A person's answer takes none of
+  # them: they may answer the same record twice, and change their mind.
+  #
+  # SAME RECORD, RE-CONVERGED ONCE. A `재수렴` answer to a record whose earlier
+  # `재수렴` answer — anyone's — was taken up by a re-convergence that ran goes
+  # to a person: the same repair has been tried once and the stage stopped on
+  # the same record again. An attempt that ended `크래시`, `한도 종료` or
+  # `외부 종료` did nothing with the answer, so it does not count.
+  #
+  # ONE AUTOMATIC ANSWER PER RECORD, with the same exception. An earlier
+  # automatic answer still waiting for its stage is a duplicate; one a stage
+  # took up and acted on settles the record for the run.
+  #
+  # THE MANIFEST'S `상한` COUNTS AUTOMATIC `재수렴` ANSWERS PER KEY. `없음` is
+  # unbounded and an integer N admits N; a person's `재수렴` never uses up the
+  # bound, because the bound is a property of the pre-adoption, not of the
+  # key. With no `구속-이탈` row the count has nothing to be compared against
+  # and only the two rules above hold.
+  local key="$1" rec="$2" opt="$3" r ln row c cls n=0 cap
+  local rows
+  rows=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } )
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    ln=${r%%:*}; row=${r#*:}
+    [ "$(gate_row_field "$row" '중단 기록')" = "$rec" ] || continue
+    c=$(gate_halt_answer_consumer "$LEDGER" "$(gate_row_field "$row" '세그먼트')" "$ln")
+    if [ "$opt" = "재수렴" ] && [ "$(gate_row_field "$row" '선택지')" = "재수렴" ] && [ -n "$c" ]; then
+      cls=$(gate_row_field "${c#*:}" '종단 부류')
+      if [ "$(gate_row_field "${c#*:}" '종류')" = "reconverge" ]; then
+        case "$cls" in
+          크래시|'한도 종료'|'외부 종료') ;;
+          *) warn "같은 정지 기록을 두 번 재수렴하려면 사람의 답이 필요합니다 — 원장 ${ln} 번째 줄의 \`재수렴\` 답을 ${c%%:*} 번째 줄의 재수렴이 이미 받았습니다: $rec"
+             return "$GATE_EXIT_RULE" ;;
+        esac
+      fi
+    fi
+    gate_halt_answer_is_auto "$row" || continue
+    if [ -z "$c" ]; then
+      warn "this halt record already has an automatic answer no stage has taken up yet (ledger line $ln) — a second one would hand the stage two answers: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    cls=$(gate_row_field "${c#*:}" '종단 부류')
+    case "$cls" in
+      크래시|'한도 종료'|'외부 종료') ;;
+      *) warn "this halt record already had an automatic answer (ledger line $ln) that a stage took up and ended \`${cls:-미상}\` — a second automatic answer goes to a person: $rec"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+  done <<EOF
+$rows
+EOF
+  [ "$opt" = "재수렴" ] || return 0
+  cap=$(gate_bind_escape_cap)
+  [ -n "$cap" ] || return 0
+  case "$cap" in
+    없음) return 0 ;;
+    *[!0-9]*) warn "the \`구속-이탈\` row's \`상한\` is neither \`없음\` nor a count: $cap"
+              return "$GATE_EXIT_RULE" ;;
+  esac
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '세그먼트')" = "$key" ] || continue
+    [ "$(gate_row_field "$r" '선택지')" = "재수렴" ] || continue
+    gate_halt_answer_is_auto "$r" && n=$((n + 1))
+  done <<EOF
+$( { gate_rows '중단 답' || true; } )
+EOF
+  if [ "$n" -ge "$cap" ]; then
+    warn "$key already had $n automatic \`재수렴\` answers, and the manifest's \`구속-이탈\` row bounds them at \`상한=$cap\` — the next one goes to a person"
+    return "$GATE_EXIT_RULE"
+  fi
 }
 
 gate_cycle_dismissed() {
@@ -17442,6 +17654,20 @@ EOF
       # other condition is checked below, after the record has been read, and
       # a shift that misses one is refused exactly as before. A stage never
       # writes this row.
+      #
+      # AND THE SEAT MAY ANSWER WITHOUT A PERSON, from the record itself. A
+      # stage that halted on a question it could already answer from the
+      # interview record, the manifest's authorization, a fact of this machine
+      # or a standing instruction writes that answer as the record's
+      # `**추천**`, and the seat copies it with `답한 주체=좌석` — measured: five
+      # halts of one night each waited for a person until morning, and every
+      # one of them carried its answer in the run's own records. The gate does
+      # the deciding, by `gate_halt_recommendation` and
+      # `gate_halt_auto_answer_admit`; the seat only asks.
+      #
+      # `답한 주체` TELLS THE THREE WRITERS APART on the row: `사람` (the
+      # default, which every call written before the field still means),
+      # `좌석` and `교대`, which only the gate stamps.
       local hshift=''
       if cc_caller_is_stage; then
         warn "a \`중단 답\` row is written by the seat only — a shift or a stage cannot answer a halt record for a person"
@@ -17450,19 +17676,43 @@ EOF
       if [ -n "$(gate_shift_self_ordinal)" ] || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
         hshift=1
       fi
-      local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat hatt hattdig hstep hpre='' hcls hrow hadopt=''
+      local hf hk hrec hopt hwhy hw=300 hlen hskill hdig hlane hat hatt hattdig hstep hpre='' hcls hrow hadopt='' hby hkinds=''
       for hf in "$@"; do
         hk="${hf%%=*}"
-        case "$hk" in 중단\ 기록|선택지|근거|첨부) continue ;; esac
-        warn "a \`중단 답\` row takes \`중단 기록\`, \`선택지\`, \`근거\` and an optional \`첨부\` from argv and nothing else: ${hk} — the rest is the gate's"
+        case "$hk" in 중단\ 기록|선택지|근거|첨부|답한\ 주체) continue ;; esac
+        warn "a \`중단 답\` row takes \`중단 기록\`, \`선택지\`, \`근거\`, an optional \`답한 주체\` and an optional \`첨부\` from argv and nothing else: ${hk} — the rest is the gate's"
         return "$GATE_EXIT_VOCAB"
       done
       hrec=$(gate_field_of '중단 기록' "$@")
       hopt=$(gate_field_of '선택지' "$@")
       hwhy=$(gate_field_of '근거' "$@")
-      [ -n "$hrec" ] && [ -n "$hopt" ] && [ -n "$hwhy" ] || {
-        warn "a \`중단 답\` row needs \`중단 기록\` (the halt record's absolute path), \`선택지\` (one option of that record, verbatim) and \`근거\` (a summary of what the person said)"
+      hby=$(gate_field_of '답한 주체' "$@")
+      if [ -n "$hshift" ]; then
+        if [ -n "$hby" ]; then
+          warn "a shift does not name \`답한 주체\` — the gate stamps \`교대\` on the one \`중단 답\` row a shift may write"
+          return "$GATE_EXIT_RULE"
+        fi
+        hby=교대
+      else
+        case "${hby:=사람}" in
+          사람|좌석) ;;
+          교대) warn "\`답한 주체=교대\` is the gate's stamp on a shift's row — the seat writes \`사람\` or \`좌석\`"
+                return "$GATE_EXIT_RULE" ;;
+          *) warn "\`답한 주체\` is one of 사람 · 좌석 · 교대: $hby"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+      fi
+      [ -n "$hrec" ] && [ -n "$hwhy" ] && { [ -n "$hopt" ] || [ "$hby" = "좌석" ]; } || {
+        warn "a \`중단 답\` row needs \`중단 기록\` (the halt record's absolute path), \`선택지\` (one option of that record, verbatim — a seat answer may leave it out and take the record's \`**추천**\`) and \`근거\` (a summary of what the person said, or of what the seat read)"
         return "$GATE_EXIT_VOCAB"; }
+      # THE SWITCH THAT TURNS OFF EVERY ANSWER NO PERSON GAVE turns this one off
+      # too: a recommendation on a halt record is the same thing as a
+      # recommendation on an approval, which the switch already stops waiting
+      # for. Off, the seat asks the person.
+      if [ "$hby" = "좌석" ] && ! gate_auto_resolve_enabled; then
+        warn "CC_CMDS_AUTOPILOT_AUTO_RESOLVE is off, so the seat does not answer a halt record without a person"
+        return "$GATE_EXIT_RULE"
+      fi
       # THE KEY NAMES A STAGE THIS RUN DISPATCHED. The shift re-attaches or
       # re-dispatches that stage with the answer, so a key with no
       # `stage-result` row is an answer nobody can hand on.
@@ -17487,6 +17737,27 @@ EOF
          || ! grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$hrec"; then
         warn "not a complete halt record (opening header and closing fence): $hrec"
         return "$GATE_EXIT_VOCAB"
+      fi
+      # A SEAT ANSWER IS THE RECORD'S OWN RECOMMENDATION. With no `선택지` the
+      # gate copies the label; with one it has to be that label byte for byte,
+      # so the seat cannot pass off a choice of its own as the record's. What
+      # the recommendation rests on is quoted in the attachment, which is
+      # therefore required, and the kinds are stamped on the row as
+      # `근거 종류` because the record lives in the volatile run directory and
+      # the morning report reads the ledger.
+      if [ "$hby" = "좌석" ]; then
+        gate_halt_recommendation "$hrec" || return "$?"
+        if [ -z "$hopt" ]; then
+          hopt=$GATE_HALT_REC_LABEL
+        elif [ "$hopt" != "$GATE_HALT_REC_LABEL" ]; then
+          warn "a seat answer is the record's \`**추천**\` (\`$GATE_HALT_REC_LABEL\`), not \`$hopt\` — another option needs a person"
+          return "$GATE_EXIT_RULE"
+        fi
+        if [ -z "$(gate_field_of '첨부' "$@")" ]; then
+          warn "a seat answer carries \`첨부\` — the attachment quoting each \`**추천 근거**\` part with where it stands, and how to undo the answer"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        hkinds=$GATE_HALT_REC_KINDS
       fi
       # THE ANSWER IS ONE OF THE OPTIONS THE STAGE WROTE, byte for byte. A free
       # answer has no option line to match, and the stage resumed with it would
@@ -17532,12 +17803,12 @@ EOF
         # The shift's exception, in full. The step is read up to its first
         # ` — `, the same cut 「Handing on a person's answer to a halt」 item 2
         # makes, so the record this admits is exactly the one that item routes
-        # to re-convergence. Once per key, as that item's own bullet says: a
-        # binding-tier stop that comes back after a binding-tier re-convergence
-        # goes to a person, so the second answer is never automatic. What is
-        # counted is an earlier `중단 답` of this kind on the key, not any
-        # `종류=reconverge` row — a refutation's re-convergence moved another
-        # part of the document and is not the same repair run twice.
+        # to re-convergence. How many it may write is the manifest row's
+        # `상한`, counted over the key's automatic `재수렴` answers, and the
+        # same record re-converged once goes to a person — both are
+        # `gate_halt_auto_answer_admit`'s, below, which the seat's answers pass
+        # too. A person's earlier `재수렴` on another record of the key does not
+        # use up the bound.
         hstep=$(sed -n 's/^\*\*스텝\*\*: //p' "$hrec" | sed -n '1p')
         hstep="${hstep%% — *}"
         while IFS= read -r hrow; do
@@ -17552,15 +17823,15 @@ EOF
           warn "a \`중단 답\` row is written by the seat only — a shift may write one only for an implement-unattended binding-tier stop (CFI-U3 BT-STOP) answered \`재수렴\`, under a \`자동 채택\` row of class 구속-이탈 in \`## 인가\`"
           return "$GATE_EXIT_RULE"
         fi
-        hrow=$({ gate_rows '중단 답' || true; } | { grep -F "세그먼트=$seg " || true; } \
-               | { grep -F '| 스킬=implement-unattended |' || true; } \
-               | { grep -F '| 선택지=재수렴 |' || true; })
-        if [ -n "$hrow" ]; then
-          warn "$seg already had a binding-tier stop answered \`재수렴\` — a second one goes to a person, so the shift cannot answer it"
-          return "$GATE_EXIT_RULE"
-        fi
         hpre="자동 채택(구속-이탈) — "
-        log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
+      fi
+      if [ "$hby" != "사람" ]; then
+        gate_halt_auto_answer_admit "$seg" "$hrec" "$hopt" || return "$?"
+        if [ "$hby" = "교대" ]; then
+          log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
+        else
+          log "자동 답 — 좌석이 기록의 추천을 고름 ($seg ← $hopt)"
+        fi
       fi
       hdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1)
       hlane=$(gate_lane_label)
@@ -17568,7 +17839,8 @@ EOF
       while [ "$hw" -ge 40 ]; do
         hwhy=$(gate_row_safe "$hpre$(gate_field_of '근거' "$@")" "$hw")
         hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$hrec" \
-          "스킬=${hskill:-미상}" "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" \
+          "스킬=${hskill:-미상}" "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" \
+          ${hkinds:+"근거 종류=$hkinds"} "기록 다이제스트=$hdig" \
           ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
           "레인=$hlane" "기록 시각=$hat")
         [ "$hlen" -le "$GATE_ROW_MAX" ] && break
@@ -17581,10 +17853,11 @@ EOF
       # routes from. It enters no termination condition and no progress vector,
       # and nothing is notified from it.
       gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
-        "선택지=$hopt" "근거=$hwhy" "기록 다이제스트=$hdig" \
+        "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+        "기록 다이제스트=$hdig" \
         ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
         "레인=$hlane" "기록 시각=$hat"
-      log "중단 답 기록 — $seg ← $hopt"
+      log "중단 답 기록 — $seg ← $hopt ($hby)"
       ;;
     review-dismiss)
       # THE SEAT'S WAY TO CARRY A PERSON'S DISMISSAL OF REVIEW FINDINGS TO THE

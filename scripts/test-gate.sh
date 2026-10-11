@@ -21751,6 +21751,10 @@ check "34c A21: 그 행은 기록의 스킬을 게이트가 읽어 찍는다" \
   "$(row_field "$capc_harow" '스킬')" "design-audit-unattended"
 check "34c A21: 그 행은 기록의 다이제스트를 찍는다" \
   "$(row_field "$capc_harow" '기록 다이제스트')" "$(shasum -a 256 "$CAPC_HALT" | cut -d' ' -f1)"
+check "34c A21: 답한 주체를 넘기지 않은 좌석의 행은 사람의 답으로 찍힌다" \
+  "$(row_field "$capc_harow" '답한 주체')" "사람"
+check "34c A21: 스냅숏이 그 답의 answered_by 를 사람으로 내놓는다" \
+  "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '.answered_halts[] | select(.segment == "CC1") | .answered_by')" "사람"
 check "34c A21: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
   "$(capc_halts)" '[["CC1","adopt as a requirement"]]'
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
@@ -21830,8 +21834,9 @@ check "34c A22: 발견이 없는 사이클의 기각은 2 로 거절된다" "$rc
 # A23. THE ONE SHIFT CASE OF `중단 답`. An implement stage's binding-tier stop
 # answered `재수렴` is written by the shift itself when `## 인가` pre-adopts the
 # `구속-이탈` class — and by nothing else: without the row, with another option,
-# for another record, or once the key has been re-converged, the shift is
-# refused with 3 exactly as A21 refuses it.
+# for another record, or once the same record has been re-converged, the shift
+# is refused with 3 exactly as A21 refuses it. Another record of a key already
+# re-converged is admitted while the row's `상한` is `없음`.
 CAPC_BT="$CAP_DIR/halt/CC2#1.md"
 printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=CC2#1; run=R7 -->' \
   '**스킬**: implement-unattended' '**스텝**: Step 1 CFI-U3 BT-STOP — 계획 수립 중, 편집 전 정지' \
@@ -21875,8 +21880,17 @@ check "34c A23: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC2 | 스테이지=CC2 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-2 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 capc_ha0=$(capc_ha)
 capc_bt_answer CC2 "$CAPC_BT" 재수렴
-check "34c A23: 구속 이탈 재수렴을 한 번 거친 키는 교대가 다시 답하지 못한다" "$rc" "3"
+check "34c A23: 구속 이탈 재수렴을 한 번 거친 같은 기록은 교대가 다시 답하지 못한다" "$rc" "3"
+check "34c A23: 그 거절은 같은 기록의 두 번째 재수렴이 사람 몫이라고 말한다" \
+  "$( { grep -qF '같은 정지 기록을 두 번 재수렴하려면 사람의 답이 필요합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
 check "34c A23: 그 거절도 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
+CAPC_BT2="$CAP_DIR/halt/CC2#3.md"
+sed 's/stage=CC2#1;/stage=CC2#3;/' "$CAPC_BT" > "$CAPC_BT2"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC2 | 스테이지=CC2 | 종류=implement | 실행 버전=3 | 세션 id=s-impl-2b | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
+capc_bt_answer CC2 "$CAPC_BT2" 재수렴
+check "34c A23: 상한=없음 이면 재수렴을 거친 키의 다른 기록도 교대가 답한다" "$rc" "0"
+check "34c A23: 교대의 행은 게이트가 답한 주체=교대 로 찍는다" \
+  "$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "교대"
 # 반증 재수렴은 중단 답 없이 교대가 넘기는 다른 수선이다. 그 행이 있다고 해서
 # 같은 키의 첫 구속 이탈 답이 「두 번째」가 되지는 않는다.
 CAPC_BT3="$CAP_DIR/halt/CC3#2.md"
@@ -21886,6 +21900,335 @@ printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | �
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=3 | 세션 id=s-impl-3b | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
 capc_bt_answer CC3 "$CAPC_BT3" 재수렴
 check "34c A23: 반증 재수렴만 거친 키의 첫 구속 이탈 답은 통과한다" "$rc" "0"
+
+# --- 34d. 좌석 정지 답 — 기록의 추천을 사람 없이 고른다 ----------------------
+# --- section: 34d | group: cone | covers: act, snapshot | anchors: 34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다, 34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다 ---
+#
+# THE SEAT NEVER PICKS AN OPTION; IT COPIES THE ONE THE RECORD RECOMMENDS. The
+# five records below keep the shape of five halts that stood all night for a
+# person although their own grounds settled the answer — the step, the class
+# and the option lines as those stages wrote them, with the two recommendation
+# lines added. Every refusal is asserted together with the row count, because a
+# refusal that still wrote a row would hand the stage an answer anyway.
+#
+# THE SWITCH IS ON FOR THIS SECTION ONLY. The suite runs with
+# `CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0`, and with it off every seat answer below is
+# refused with 3 — which is itself one of the assertions, so it is turned back
+# off for that one call and restored at the end.
+SDH_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+SDH_RID=RSDH1
+cap_fx_new "$SDH_RID"
+SDH_SEAT="5d5d5d5d-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SDH_SEAT.jsonl"
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SDH0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34d: 픽스처의 세그먼트 행이 섰다" "$rc" "0"
+mkdir -p "$CAP_DIR/halt"
+sdh_rec() {
+  # sdh_rec <파일> <작성 스킬> <stage> <스텝> <추천 줄|-> <추천 근거 줄|-> <선택지 줄>…
+  local f="$1" sk="$2" st="$3" step="$4" rec="$5" basis="$6"; shift 6
+  { printf '<!-- cc-pipeline-halt v1; writer=%s; reader=orchestrator; stage=%s; run=%s -->\n' "$sk" "$st" "$SDH_RID"
+    printf '**중단 시각**: 2026-10-11T00:00:00Z\n**스킬**: %s\n**스텝**: %s\n' "$sk" "$step"
+    printf '**분류**: gate-unanswerable\n**질문 문면**: 픽스처의 질문\n**선택지**:\n'
+    printf '%s\n' "$@"
+    [ "$rec" = "-" ] || printf '%s\n' "$rec"
+    [ "$basis" = "-" ] || printf '%s\n' "$basis"
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$f"
+}
+sdh_sr() {  # sdh_sr <키> <종류> <실행 버전> <종단 부류>
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=%s | 실행 버전=%s | 세션 id=s-%s-%s | 종단 부류=%s | prev=x\n' \
+    "$1" "$1" "$2" "$3" "$1" "$3" "$4" >> "$CAP_LEDGER"
+}
+sdh_ha() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
+sdh_ok() {  # sdh_ok <이름> — the last call passed; a failure carries the gate's words
+  if [ "$rc" = "0" ]; then ok "$1"; else bad "$1" "rc=$rc $msg"; fi
+}
+sdh_last() { cap_rows '중단 답' | tail -1; }
+sdh_seat() {
+  # sdh_seat <키> <기록> [argv…] — the seat's automatic answer, with the
+  # attachment it is required to carry written beside the record.
+  local key="$1" rec="$2" att="${2%.md}.answer.md"; shift 2
+  printf '%s\n' '추천 근거 인용: 픽스처의 인용 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$att"
+  cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+           --rationale "픽스처 — 좌석의 자동 답" \
+           -- "중단 기록=$rec" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$att" "$@"
+}
+sdh_by() {  # sdh_by <기록> — that record's answered_by in the snapshot
+  cap_snap "$SDH_SEAT" '' | jq -r --arg r "$1" '[.answered_halts[] | select(.record == $r) | .answered_by] | last // ""'
+}
+SDH_BT_STEP='Step 3 CFI-U3 BT-STOP — 리뷰가 선언 파일 밖의 수정을 요구한다'
+SDH_BT_OPT1='- `재수렴` — 같은 런의 라우팅 교대가 design-reconverge 를 디스패치해 구속 티어를 옮기고, 이 세그먼트는 이 런 안에서 process A 부터 다시 계획한다(새 런 id·매니페스트·인가 기록 없음).'
+
+# THE FIVE SHAPES. Each is answered without `선택지`; the row's option is the
+# record's recommendation and its `근거 종류` the kinds the record names.
+SDH_853="$CAP_DIR/halt/A1#2.md"
+sdh_rec "$SDH_853" design-reconverge 'A1#2' 'Step 3 — 자율 채택 기준 S1·S4' \
+  '**추천**: `record in the unresolved-issues section` — 팀 라운드는 이 런 안에서 열리지 않으므로 미해결 이슈로 적는다' \
+  '**추천 근거**: 상시 지침:design-reconverge 「A team round is not carried out in the run」' \
+  '- `escalate to team round` — 이 요구를 사다리의 팀 라운드 단으로 올립니다.' \
+  '- `record in the unresolved-issues section` — 이 요구를 미해결 이슈로 적고, 감사는 7단계(잔여 공개)로 마칩니다.' \
+  '- `reject` — 채택을 거두고 요구로 묶지 않습니다.'
+sdh_sr A1 reconverge 1 '의도된 park'
+sdh_ha0=$(sdh_ha)
+sdh_seat A1 "$SDH_853"
+check "34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다" "$rc" "0"
+check "34d: 853c5bba 행의 선택지는 기록의 추천이다" "$(row_field "$(sdh_last)" '선택지')" "record in the unresolved-issues section"
+check "34d: 853c5bba 행은 답한 주체=좌석 이다" "$(row_field "$(sdh_last)" '답한 주체')" "좌석"
+check "34d: 853c5bba 행에 근거 종류가 찍힌다" "$(row_field "$(sdh_last)" '근거 종류')" "상시 지침"
+check "34d: 스냅숏이 그 답의 answered_by 를 좌석으로 내놓는다" "$(sdh_by "$SDH_853")" "좌석"
+
+# 673ae8f4: the option NOT recommended carries `(위험 수용)`, and only the
+# recommended option's description is read for the risk words.
+SDH_673="$CAP_DIR/halt/B1#1.md"
+sdh_rec "$SDH_673" design-audit-unattended 'B1#1' 'Step 6 — 조정 패스, 고유 결함 U1 처분' \
+  '**추천**: `창 값을 420초로 고친다` — 수렴된 규칙이 그 값을 정한다' \
+  '**추천 근거**: 인터뷰 기록:「경로마다 실제로 기다릴 수 있는 행의 수만큼 더한다」 / 상시 지침:요구 결정 13 의 셈법' \
+  '- `창 값을 420초로 고친다` — 조정 패스에서 A 류 식에 L(인식 결과 메시지 행)을 더하고 창 값을 다시 계산한다.' \
+  '- `미해결 이슈로 기록한다` — 창 값 370초를 그대로 두고 이 결함을 미해결 이슈에 기록한다(위험 수용).' \
+  '- `기각한다` — 인식 결과 메시지 행 대기를 항으로 세지 않는다.'
+sdh_sr B1 audit 1 '의도된 park'
+sdh_seat B1 "$SDH_673"
+check "34d: 673ae8f4 형상의 좌석 답이 통과한다" "$rc" "0"
+check "34d: 673ae8f4 행의 선택지는 기록의 추천이다" "$(row_field "$(sdh_last)" '선택지')" "창 값을 420초로 고친다"
+check "34d: 673ae8f4 행의 근거 종류는 기록이 이름 댄 둘이다" "$(row_field "$(sdh_last)" '근거 종류')" "인터뷰 기록/상시 지침"
+
+# bec8dd06: the recommendation that relaxes a prod path stands on the three
+# manifest facts — the pipeline applies, a POST is pre-authorized, and the run
+# reaches prod — so the fixture manifest carries the first two.
+sdh_nm="$CAP_NM.ins"
+: > "$sdh_nm"
+while IFS= read -r sdh_l || [ -n "$sdh_l" ]; do
+  case "$sdh_l" in
+    '**적용 주체**: '*) printf '%s\n' '**적용 주체**: 파이프라인' '**적용 지점**: `./scripts/upload-edge-apply.sh`' \
+                          '**적용 프로브**: `./scripts/upload-edge-apply.sh --check`' >> "$sdh_nm" ;;
+    *) printf '%s\n' "$sdh_l" >> "$sdh_nm" ;;
+  esac
+  [ "$sdh_l" = "## 인가" ] && printf '%s\n' '- `사전 인가` | 형태=curl -X POST | 사유=prod 업로드 경로 변이 요청' >> "$sdh_nm"
+done < "$CAP_NM"
+mv "$sdh_nm" "$CAP_NM"
+check "34d: bec8dd06 픽스처 매니페스트가 적용 주체와 사전 인가를 싣는다" \
+  "$(grep -c -e '^\*\*적용 주체\*\*: 파이프라인$' -e '형태=curl -X POST' "$CAP_NM" | tr -d ' ')" "2"
+SDH_BEC="$CAP_DIR/halt/C1#2.md"
+sdh_rec "$SDH_BEC" design-reconverge 'C1#2' 'Step 3 조정 패스 — 자율 채택 기준 S1·S3 판정(문서 편집 전)' \
+  '**추천**: `자동 묶음` — 적용 주체가 파이프라인이고 prod 로 가는 POST 가 사전 인가되어 있다' \
+  '**추천 근거**: 매니페스트 인가:적용 주체=파이프라인 / 매니페스트 인가:사전 인가 형태=curl -X POST / 매니페스트 인가:종료 지점이 prod 에 닿는다' \
+  '- `보수 묶음` — (가) tfvars 는 사람이 공급하는 전제로 둔다. (나) 부분 적용 재개는 자동화하지 않는다. (다) R1·R2·R5·R6 은 사람 있는 후속 런이 돌린다.' \
+  '- `자동 묶음` — (가) 래퍼가 레포 밖 고정 경로의 prod tfvars 를 읽는다. (나) 재시도에서만 계획 모양 판정을 완화한다. (다) R5 의 prod 변이 요청도 무인 단계가 실행한다.' \
+  '- `사람이 직접 정함` — 사람이 세 결정을 설계 문서에 직접 적는다.' \
+  '- `채택 철회` — 합성 요구의 채택을 거둔다.'
+sdh_sr C1 reconverge 1 '의도된 park'
+sdh_seat C1 "$SDH_BEC"
+sdh_ok "34d: bec8dd06 형상의 좌석 답이 통과한다"
+check "34d: bec8dd06 행의 선택지는 기록의 추천이다" "$(row_field "$(sdh_last)" '선택지')" "자동 묶음"
+check "34d: bec8dd06 행의 근거 종류는 한 번만 적힌다" "$(row_field "$(sdh_last)" '근거 종류')" "매니페스트 인가"
+
+# c81e719c through the seat; the shift branch takes the same shape in a run of
+# its own below.
+SDH_C81="$CAP_DIR/halt/S9#10.md"
+sdh_rec "$SDH_C81" implement-unattended 'S9#10' "$SDH_BT_STEP" \
+  '**추천**: `재수렴` — 구속 티어를 옮기는 길이 같은 런 안에 있다' \
+  '**추천 근거**: 상시 지침:implement-unattended CFI-U3 「offers it under the exact label `재수렴`」' \
+  "$SDH_BT_OPT1" '- `보류` — 이 세그먼트를 지금 상태로 멈춰 두고 사람이 처분을 정한다.'
+sdh_sr S9 implement 1 '의도된 park'
+sdh_seat S9 "$SDH_C81"
+check "34d: c81e719c 형상의 좌석 답이 통과한다" "$rc" "0"
+check "34d: c81e719c 행의 선택지는 재수렴이다" "$(row_field "$(sdh_last)" '선택지')" "재수렴"
+
+# a73e95ce: no `구속-이탈` row, so nothing bounds the key's count — a second
+# automatic `재수렴` to another record of the same key is admitted, and the same
+# record, once re-converged, is not.
+SDH_A73="$CAP_DIR/halt/D1#23.md"
+sdh_rec "$SDH_A73" implement-unattended 'D1#23' 'Step 3 CFI-U3 BT-STOP — 리뷰 사이클 6 의 P1 「master 가 같은 경로에 무관한 rekick.sh·test-rekick.sh 를 더해 병합 결과가 깨진다」' \
+  '**추천**: `재수렴` — 파일 이름을 옮기는 것은 구속 티어의 일이고 그 길이 같은 런 안에 있다' \
+  '**추천 근거**: 기기 사실:master 의 rekick.sh 「rk_refuse() { printf」 (:118) / 상시 지침:implement-unattended CFI-U3' \
+  "$SDH_BT_OPT1" '- `런 밖에서 해소` — 사람이 런 밖에서 두 파일의 충돌을 직접 푼다.'
+sdh_sr D1 implement 1 '의도된 park'
+sdh_seat D1 "$SDH_A73"
+check "34d: a73e95ce 형상의 좌석 답이 통과한다" "$rc" "0"
+check "34d: a73e95ce 행의 근거 종류는 기기 사실과 상시 지침이다" "$(row_field "$(sdh_last)" '근거 종류')" "기기 사실/상시 지침"
+check "34d: 다섯 양성이 행 다섯을 남긴다" "$(sdh_ha)" "$((sdh_ha0 + 5))"
+sdh_sr D1 reconverge 2 '정상 완료'
+sdh_sr D1 implement 3 '의도된 park'
+sdh_ha1=$(sdh_ha)
+sdh_seat D1 "$SDH_A73"
+check "34d: 재수렴을 한 번 거친 같은 기록의 두 번째 자동 재수렴은 거부된다" "$rc" "3"
+check "34d: 그 거절은 사람의 답이 필요하다고 말한다" \
+  "$( { grep -qF '같은 정지 기록을 두 번 재수렴하려면 사람의 답이 필요합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+check "34d: 그 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_ha1"
+SDH_A73B="$CAP_DIR/halt/D1#24.md"
+sed 's/stage=D1#23;/stage=D1#24;/' "$SDH_A73" > "$SDH_A73B"
+sdh_seat D1 "$SDH_A73B"
+check "34d: 구속-이탈 행이 없으면 같은 키 다른 기록의 두 번째 자동 재수렴은 받는다" "$rc" "0"
+
+# A CRASH TOOK NOTHING UP. An attempt that crashed before doing anything with
+# the answer does not count as the record's re-convergence, nor as its one
+# automatic answer.
+SDH_CR="$CAP_DIR/halt/E1#1.md"
+sdh_rec "$SDH_CR" implement-unattended 'E1#1' "$SDH_BT_STEP" \
+  '**추천**: `재수렴` — 구속 티어를 옮기는 길이 같은 런 안에 있다' \
+  '**추천 근거**: 상시 지침:implement-unattended CFI-U3' \
+  "$SDH_BT_OPT1" '- `보류` — 사람이 처분을 정한다.'
+sdh_sr E1 implement 1 '의도된 park'
+sdh_seat E1 "$SDH_CR"
+check "34d: 크래시 픽스처의 첫 좌석 답이 통과한다" "$rc" "0"
+sdh_sr E1 reconverge 2 '크래시'
+sdh_seat E1 "$SDH_CR"
+check "34d: 크래시로 소비된 기록의 재답은 통과한다" "$rc" "0"
+
+# THE REFUSALS. One record per reason, all on one key, and none leaves a row.
+sdh_sr N1 audit 1 '의도된 park'
+SDH_NOPT1='- `채택` — 요구로 채택한다'
+SDH_NOPT2='- `기각` — 기각한다'
+SDH_NBASIS='**추천 근거**: 상시 지침:픽스처'
+SDH_NSTEP='Step 6 조정 패스 — CFI-3b 종합 질문'
+sdh_neg() {  # sdh_neg <이름> <추천 줄|-> <근거 줄|-> [선택지 줄…] — leaves the record in $sdh_f
+  local n="$1" r="$2" b="$3"; shift 3
+  sdh_f="$CAP_DIR/halt/N1-$n.md"
+  [ "$#" -gt 0 ] || set -- "$SDH_NOPT1" "$SDH_NOPT2"
+  sdh_rec "$sdh_f" design-audit-unattended "N1-$n" "$SDH_NSTEP" "$r" "$b" "$@"
+}
+sdh_refused() {  # sdh_refused <이름> <기대 코드> — the call's code, and no row
+  check "34d: $1 은 $2 로 거절된다" "$rc" "$2"
+  check "34d: $1 의 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_hn"
+}
+sdh_hn=$(sdh_ha)
+sdh_neg ok '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS"
+SDH_NOK="$sdh_f"
+sdh_seat N1 "$SDH_NOK" '선택지=기각'
+sdh_refused "추천이 아닌 선택지를 실은 좌석 답" 3
+sdh_neg none - -
+sdh_seat N1 "$sdh_f"
+sdh_refused "추천 줄이 없는 기록" 3
+sdh_neg empty '**추천**: (없음) — 사람만 가진 정보가 필요하다' "$SDH_NBASIS"
+sdh_seat N1 "$sdh_f"
+sdh_refused "(없음) 을 추천한 기록" 3
+for sdh_w in '위험 수용' '게이트 비활성' '그대로 진행' '범위 축소'; do
+  sdh_neg "risk-$(printf '%s' "$sdh_w" | tr ' ' '-')" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" \
+    "- \`채택\` — 요구로 채택하고 ${sdh_w} 으로 둔다" "$SDH_NOPT2"
+  sdh_seat N1 "$sdh_f"
+  sdh_refused "설명에 「${sdh_w}」 를 단 추천" 3
+done
+sdh_neg seatrun '**추천**: `좌석 실행` — 좌석이 돌린다' "$SDH_NBASIS" \
+  '- `좌석 실행` — 좌석이 R2 의 레시피를 이 호스트에서 돌린다.' '- `보류` — 사람이 정한다.'
+sed 's/^\*\*스텝\*\*: .*/**스텝**: Step 3 잔여 검증 좌석 실행 — R2/' "$sdh_f" > "$sdh_f.t" && mv "$sdh_f.t" "$sdh_f"
+sdh_seat N1 "$sdh_f"
+sdh_refused "스텝이 좌석 실행 문면으로 시작하는 기록" 3
+sdh_neg badlabel '**추천**: `채택함` — 기록이 정한다' "$SDH_NBASIS"
+sdh_seat N1 "$sdh_f"
+sdh_refused "선택지에 없는 추천 라벨" 3
+sdh_neg two '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2" '**추천**: `기각` — 다른 추천'
+sdh_seat N1 "$sdh_f"
+sdh_refused "추천 줄이 둘인 기록" 3
+sdh_neg indent '  **추천**: `채택` — 줄머리에 있지 않다' "$SDH_NBASIS"
+sdh_seat N1 "$sdh_f"
+sdh_refused "추천이 줄머리에 있지 않은 기록" 3
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment N1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 첨부 없는 좌석 답" \
+         -- "중단 기록=$SDH_NOK" '답한 주체=좌석' '근거=기록의 추천을 고름'
+sdh_refused "첨부 없는 좌석 답" 2
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment N1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 좌석이 흉내 낸 교대의 답" \
+         -- "중단 기록=$SDH_NOK" '답한 주체=교대' '근거=기록의 추천을 고름' "첨부=${SDH_NOK%.md}.answer.md"
+sdh_refused "좌석이 넘긴 답한 주체=교대" 3
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+sdh_seat N1 "$SDH_NOK"
+sdh_refused "AUTO_RESOLVE=0 에서의 좌석 답" 3
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+sdh_seat N1 "$SDH_NOK"
+check "34d: 거절이 아닌 같은 기록의 좌석 답은 통과한다" "$rc" "0"
+sdh_hn=$(sdh_ha)
+sdh_seat N1 "$SDH_NOK"
+sdh_refused "앞선 자동 답이 아직 소비되지 않은 기록의 두 번째 자동 답" 3
+
+# THE SHIFT BRANCH AND THE COUNT, in a run of its own with a `구속-이탈` row.
+# `상한=없음` first: an earlier shift `재수렴` to another record of the key does
+# not stop the next one. Then `상한=1`: a person's `재수렴` uses up nothing, and
+# the first automatic one does.
+SDH_RID=RSDH2
+cap_fx_new "$SDH_RID"
+mkdir -p "$CAP_DIR/halt"
+sdh_cap_row() {  # sdh_cap_row <상한> — the manifest's one `구속-이탈` row, replaced
+  local out="$CAP_NM.ins" l
+  : > "$out"
+  while IFS= read -r l || [ -n "$l" ]; do
+    case "$l" in *'판단 부류=구속-이탈'*) continue ;; esac
+    printf '%s\n' "$l" >> "$out"
+    [ "$l" = "## 인가" ] && printf -- '- `자동 채택` | 판단 부류=구속-이탈 | 상한=%s | 심각도 상한=minor | 사유=범위 한정 수선\n' "$1" >> "$out"
+  done < "$CAP_NM"
+  mv "$out" "$CAP_NM"
+}
+sdh_cap_row 없음
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SDH0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+sdh_seg_rc=$rc
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34d: 교대 픽스처의 세그먼트 행과 기동이 섰다" "$sdh_seg_rc/$rc" "0/0"
+SDH_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SDH_SHIFT.jsonl"
+sdh_shift() {  # sdh_shift <키> <기록> [argv…] — the shift's pre-adopted `재수렴`
+  local key="$1" rec="$2"; shift 2
+  cap_gate "$SDH_SHIFT" "$SDH_RID#1" act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SHIFT" "$SDH_RID#1")" \
+           --rationale "픽스처 — 교대의 구속 이탈 자동 채택" \
+           -- "중단 기록=$rec" '선택지=재수렴' '근거=매니페스트가 미리 정한 답' "$@"
+}
+sdh_bt() {  # sdh_bt <키> <stage> — a binding-tier stop recommending `재수렴`, path in $sdh_f
+  sdh_f="$CAP_DIR/halt/$2.md"
+  sdh_rec "$sdh_f" implement-unattended "$2" "$SDH_BT_STEP" \
+    '**추천**: `재수렴` — 구속 티어를 옮기는 길이 같은 런 안에 있다' \
+    '**추천 근거**: 매니페스트 인가:자동 채택 판단 부류=구속-이탈' \
+    "$SDH_BT_OPT1" '- `보류` — 사람이 처분을 정한다.'
+}
+sdh_sr S9 implement 1 '의도된 park'
+sdh_bt S9 'S9#9'
+sdh_shift S9 "$sdh_f"
+check "34d: 앞선 교대 재수렴 행이 선다" "$rc" "0"
+sdh_sr S9 reconverge 2 '정상 완료'
+sdh_sr S9 implement 3 '의도된 park'
+SDH_C81S="$CAP_DIR/halt/S9#10.md"
+sed "s/run=RSDH1 /run=$SDH_RID /" "$SDH_C81" > "$SDH_C81S"
+sdh_hn=$(sdh_ha)
+sdh_shift S9 "$SDH_C81S" '답한 주체=좌석'
+sdh_refused "교대가 넘긴 답한 주체=좌석" 3
+sdh_shift S9 "$SDH_C81S"
+check "34d: c81e719c 형상은 교대 갈래에서도 통과한다" "$rc" "0"
+check "34d: 교대 갈래의 행은 답한 주체=교대 이다" "$(row_field "$(sdh_last)" '답한 주체')" "교대"
+check "34d: 스냅숏이 교대의 답을 answered_by 교대로 내놓는다" \
+  "$(cap_snap "$SDH_SEAT" '' | jq -r --arg r "$SDH_C81S" '[.answered_halts[] | select(.record == $r) | .answered_by] | last // ""')" "교대"
+
+sdh_cap_row 1
+sdh_sr T1 implement 1 '의도된 park'
+sdh_bt T1 'T1#1'
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment T1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 사람의 재수렴 답" \
+         -- "중단 기록=$sdh_f" '선택지=재수렴' '근거=사람이 재수렴을 고름'
+check "34d: 사람의 재수렴 답이 선다" "$rc/$(row_field "$(sdh_last)" '답한 주체')" "0/사람"
+sdh_sr T1 reconverge 2 '정상 완료'
+sdh_sr T1 implement 3 '의도된 park'
+sdh_bt T1 'T1#2'
+sdh_shift T1 "$sdh_f"
+check "34d: 사람 행은 상한을 쓰지 않는다 — 상한=1 에서 첫 자동 재수렴이 통과한다" "$rc" "0"
+sdh_sr T1 reconverge 4 '정상 완료'
+sdh_sr T1 implement 5 '의도된 park'
+sdh_bt T1 'T1#3'
+sdh_hn=$(sdh_ha)
+sdh_shift T1 "$sdh_f"
+check "34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다" "$rc" "3"
+check "34d: 상한 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_hn"
+sdh_seat T1 "$sdh_f"
+sdh_refused "상한에 닿은 키의 좌석 재수렴 답" 3
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SDH_PREV_AR"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
@@ -28819,6 +29162,7 @@ check "85: 기록 사본은 출처 행의 다이제스트와 같다" \
   "$(shasum -a 256 "$cp85k" 2>/dev/null | cut -d' ' -f1)|$(rf85 "$row85k" '기록 다이제스트')" "$DIG85|$DIG85"
 check "85: 들여온 행은 사람의 답의 레인과 시각을 그대로 싣는다" \
   "$(rf85 "$row85k" '레인')|$(rf85 "$row85k" '기록 시각')" "좌석|2026-01-01T01:00:00Z"
+check "85: 답한 주체가 없던 출처 행은 사람의 답으로 들여온다" "$(rf85 "$row85k" '답한 주체')" "사람"
 case "$(rf85 "$row85k" '근거')" in
   "입양 이월(출처 런 $SRC85 원장 5 번째 줄) — 사람이 재수렴을 골랐다") ok "85: 들여온 행의 근거는 출처와 사람의 말을 싣는다" ;;
   *) bad "85: 들여온 행의 근거는 출처와 사람의 말을 싣는다" "$row85k" ;;
