@@ -818,8 +818,10 @@ manifest_autoadopt_rows() {
 # (CFI-U3 BT-STOP) offers `재수렴`, and a `자동 채택` row of this class lets the
 # routing shift carry that answer itself instead of ending on a person. It is
 # permitted because re-convergence is a scoped repair inside the same run that
-# leaves its own `중단 답` row and stage rows, and it is once per key — a second
-# stop on the same key still goes to a person.
+# leaves its own `중단 답` row and stage rows. The row's `상한` bounds it: the
+# gate counts only the key's automatic `재수렴` answers against it (`없음` is
+# unbounded), and a second `재수렴` to the same halt record after the first one
+# was re-converged still goes to a person.
 readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈"
 readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
