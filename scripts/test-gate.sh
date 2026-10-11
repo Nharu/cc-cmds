@@ -2968,6 +2968,31 @@ SAGEOF
     ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
       | jq -r '.unmet_conditions[] | select(startswith("11 "))'
   }
+
+  # The base-push sections (35-31, 35-32) share these.
+  sp_act() {
+    # sp_act <세그먼트> <절단점> <argv...> — 머지 등급으로 라벨한 행위 하나.
+    local sid="$1" cut="$2"; shift 2
+    sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
+        --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x -- "$@"
+  }
+  sp_plan() {
+    # sp_plan <세그먼트> <절단점> <argv...> — 같은 행위의 `plan`. 행위를 돌리지 않는다.
+    local sid="$1" cut="$2"; shift 2
+    sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
+        --cutpoint "$cut" -- "$@"
+  }
+  sp_rbase() { git --git-dir="$SA_REMOTE" rev-parse "refs/heads/$SA_BASE" 2>/dev/null; }
+  sp_refused() {
+    # sp_refused <라벨> <want rc> <원격 베이스 기준값> — 거절의 세 면: rc, 게이트 통과 줄
+    # 없음, 원격 베이스 불변.
+    check "$1" "$rc" "$2"
+    case "$raw" in
+      *"게이트 통과"*) bad "$1 (통과 줄)" "거절인데 게이트 통과 줄이 있다: $raw" ;;
+      *) ok "$1 — 게이트 통과 줄이 없다" ;;
+    esac
+    check "$1 — 원격 베이스가 그대로다" "$(sp_rbase)" "$3"
+  }
 }
 
 # `review` — the head of section 37: the `SH_*` run derived from the clean
@@ -4516,7 +4541,7 @@ check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 # folds it for the rule and the rule compares it with the row it reads.
 printf -- '- `cycle` | 세그먼트=S9 | 사이클=1 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
 check "기각 없는 P0 사이클의 머지는 거부된다" "$rc" "3"
 case "$msg" in
   *"unresolved findings remain"*) ok "기각 없는 P0 사이클의 머지는 거부된다 — 리뷰 룰의 미해결 발견 거절이다" ;;
@@ -4524,11 +4549,11 @@ case "$msg" in
 esac
 printf -- '- `리뷰 기각` | 세그먼트=S9 | 사이클=1 | 리뷰 HEAD=%s | 기각 P0=1 | 기각 P1=0 | 근거=x\n' "$head0" >> "$FX_LEDGER"
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
 if passes_review; then ok "사람이 기각한 마지막 사이클은 머지 룰을 통과한다"; else bad "리뷰 기각 반영" "$msg"; fi
 printf -- '- `cycle` | 세그먼트=S9 | 사이클=2 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
 check "뒤에 선 새 사이클은 앞 사이클의 기각으로 통과하지 않는다" "$rc" "3"
 case "$msg" in
   *"unresolved findings remain"*) ok "뒤에 선 새 사이클은 앞 사이클의 기각으로 통과하지 않는다 — 리뷰 룰의 미해결 발견 거절이다" ;;
@@ -21319,24 +21344,6 @@ check "30: 리뷰가 덮은 머지가 통과한다 (행 선택 수리 뒤)" "$rc
 # 여야 한다. 철자를 읽던 판정은 `배포` 선언, `heads/<베이스>`, 빈 refspec·glob·
 # `--all`·`--mirror`·`--branches`, `-c`·`command`·`env` 앞붙이를 하나씩 놓쳤고, 그때마다
 # 리뷰되지 않은 커밋이 베이스에 착지했다.
-sp_act() {
-  # sp_act <세그먼트> <절단점> <argv...> — 머지 등급으로 라벨한 행위 하나.
-  local sid="$1" cut="$2"; shift 2
-  sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
-      --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x -- "$@"
-}
-sp_rbase() { git --git-dir="$SA_REMOTE" rev-parse "refs/heads/$SA_BASE" 2>/dev/null; }
-sp_refused() {
-  # sp_refused <라벨> <want rc> <원격 베이스 기준값> — 거절의 세 면: rc, 게이트 통과 줄
-  # 없음, 원격 베이스 불변.
-  check "$1" "$rc" "$2"
-  case "$raw" in
-    *"게이트 통과"*) bad "$1 (통과 줄)" "거절인데 게이트 통과 줄이 있다: $raw" ;;
-    *) ok "$1 — 게이트 통과 줄이 없다" ;;
-  esac
-  check "$1 — 원격 베이스가 그대로다" "$(sp_rbase)" "$3"
-}
-
 sa_new '배포 선언 push'
 sa_seg_row S31A ""
 T31A=$(sa_commit '리뷰된 작업')
@@ -21495,6 +21502,177 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S31N \
     --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
     -- 상태=계획됨 워크트리="$SA_SEGWT" 선행=없음 '리뷰 정책=선머지후리뷰'
 check "31p: 다른 세그먼트의 디스패치 행은 이 세그먼트의 완화를 막지 않는다" "$rc" "0"
+
+# --- 35-32. 게이트의 dry-run 은 push 를 재기만 하고, 잴 수 없는 push 는 거절된다 ---
+# --- section: 35-32 | group: sa | covers: act, plan | anchors: 32p: 축약 --no-dry 는 거절된다 ---
+#
+# 35-31 의 탐침은 push 의 옵션을 자기 `--dry-run --porcelain --no-verify` 뒤에 그대로
+# 붙였다. 그래서 `--no-dry-run` 은 탐침을 진짜 push 로 바꿔 판정 전에 베이스를
+# 움직였고, `--verify` 는 pre-push 훅을, 축약 `--exe=`·`--receive=` 는 명령을 돌렸으며,
+# `-q` 는 `Done` 한 줄만 남겨 결속이 철자 읽기로 내려갔다. 셸 `-c` 문자열과 `sudo`
+# 안의 push 는 탐침에 닿지 않았고, `gh pr -R <repo> merge` 는 머지로 읽히지 않았다.
+pre_sb
+sp_unwrap() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_push_unwrap_of_argv0 "$@"' _ "$GATE" "$@"; }
+sp_mb() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_merge_binding_of_argv0 "$@"' _ "$GATE" "$@"; }
+check "32p: bash -c 안의 push 는 불투명 이다"            "$(sp_unwrap bash -c 'git push origin x:main')" "불투명"
+check "32p: 묶음 -lc 안의 push 도 불투명 이다"          "$(sp_unwrap bash -lc 'cd d && /usr/bin/git push')" "불투명"
+check "32p: sh -c 안의 push 아닌 git 은 해당없음 이다"  "$(sp_unwrap sh -c 'git status; echo push')" "해당없음"
+check "32p: sudo 아래 push 는 불투명 이다"              "$(sp_unwrap sudo -u u git -C d push origin x)" "불투명"
+check "32p: gh pr -R <repo> merge 의 결속 인자를 읽는다" \
+  "$(sp_mb gh pr -R o/r merge 1 --match-head-commit 0123456789abcdef0123456789abcdef01234567)" \
+  "0123456789abcdef0123456789abcdef01234567"
+check "32p: gh pr --repo=<repo> merge 는 결속 없는 머지다" "$(sp_mb gh pr --repo=o/r merge 1)" "없음"
+check "32p: gh pr -R<repo> merge 는 결속 없는 머지다"      "$(sp_mb gh pr -Ro/r merge 1)" "없음"
+
+sp_unknown() {
+  # sp_unknown <라벨> — 형태 미상 거절의 문면.
+  case "$msg" in
+    *"형태 미상"*) ok "$1 — 문면이 형태 미상을 댄다" ;;
+    *) bad "$1 (문면)" "$msg" ;;
+  esac
+}
+sp_measured() {
+  # sp_measured <라벨> <sha> — 결속 거절이 dry-run 이 잰 커밋을 댄다(철자 읽기가 아니다).
+  case "$msg" in
+    *"베이스로 가는 git push 의 소스가"*"(올라갈 커밋: $2)"*) ok "$1 — dry-run 이 잰 커밋을 댄다" ;;
+    *) bad "$1 (잰 커밋)" "$msg" ;;
+  esac
+}
+
+sa_new '탐침 인자'
+sa_seg_row S32A ""
+T32A=$(sa_commit '리뷰된 작업')
+sa_cycle S32A 1 0 0 "$T32A"
+U32=$( cd "$SA_SEGWT" && git commit-tree -p HEAD -m U 'HEAD^{tree}' )
+( cd "$SA_REPO" && git branch "u-$SA_ID" "$U32" ) >/dev/null 2>&1
+B32=$(sp_rbase)
+SENT32="$SA_ROOT/sentinel"
+
+# 탐침의 출력과 동작만 바꾸는 옵션은 떨어진다 — 탐침은 여전히 dry-run 이다.
+for sp_d in --no-dry-run --dry-run --porcelain --no-porcelain; do
+  sp_plan S32A 머지 git push "$sp_d" origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: $sp_d 를 실은 다른 소스의 베이스 push 의 plan 은 거절된다" 2 "$B32"
+  sp_measured "32p: $sp_d (plan)" "$U32"
+  sp_act S32A 머지 git push "$sp_d" origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: $sp_d 를 실은 다른 소스의 베이스 push 는 거절된다" 2 "$B32"
+  sp_measured "32p: $sp_d (act)" "$U32"
+  sp_act S32A push git push "$sp_d" origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: $sp_d 를 실은 베이스 push 를 push 로 선언하면 8" 8 "$B32"
+done
+
+# 허용 목록 밖은 축약까지 형태 미상 — 탐침을 돌리지 않는다.
+sp_plan S32A 머지 git push --no-dry origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: 축약 --no-dry 의 plan 은 거절된다" 2 "$B32"
+sp_unknown "32p: 축약 --no-dry (plan)"
+sp_act S32A 머지 git push --no-dry origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: 축약 --no-dry 는 거절된다" 2 "$B32"
+sp_unknown "32p: 축약 --no-dry"
+for sp_x in --exe --receive --exec --receive-pack; do
+  rm -f "$SENT32"
+  sp_act S32A 머지 git push "$sp_x=touch $SENT32" origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: $sp_x=<명령> 의 베이스 push 는 거절된다" 2 "$B32"
+  check "32p: $sp_x=<명령> 의 명령이 돌지 않았다" "$( [ -e "$SENT32" ] && echo 돌았다 || echo 안돌았다 )" "안돌았다"
+  rm -f "$SENT32"
+  sp_act S32A push git push "$sp_x=touch $SENT32" origin "HEAD:other-$SA_ID"
+  check "32p: 베이스 밖 push 의 $sp_x=<명령> 도 거절된다" "$rc" "2"
+  check "32p: 베이스 밖 push 의 $sp_x=<명령> 의 명령이 돌지 않았다" "$( [ -e "$SENT32" ] && echo 돌았다 || echo 안돌았다 )" "안돌았다"
+done
+check "32p: 베이스 밖 push 도 원격에 ref 를 만들지 않았다" \
+  "$(git --git-dir="$SA_REMOTE" rev-parse --verify --quiet "refs/heads/other-$SA_ID" || echo 없음)" "없음"
+
+# --verify 는 떨어진다 — 탐침이 pre-push 훅을 돌리지 않는다.
+SP_HOOKS="$(cd "$SA_REPO" && git rev-parse --path-format=absolute --git-common-dir)/hooks"
+mkdir -p "$SP_HOOKS"
+printf '#!/bin/sh\ntouch "%s"\nexit 0\n' "$SENT32" > "$SP_HOOKS/pre-push"
+chmod +x "$SP_HOOKS/pre-push"
+rm -f "$SENT32"
+sp_act S32A 머지 git push --verify origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: --verify 를 실은 다른 소스의 베이스 push 는 거절된다" 2 "$B32"
+check "32p: 탐침이 pre-push 훅을 돌리지 않았다" "$( [ -e "$SENT32" ] && echo 돌았다 || echo 안돌았다 )" "안돌았다"
+rm -f "$SP_HOOKS/pre-push" "$SENT32"
+
+# -q 는 떨어진다 — 탐침이 ref 줄을 낸다. 선언과 철자의 자리를 바꿔도 같다.
+for sp_c in 배포 머지; do
+  sp_act S32A "$sp_c" git push -q origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: -q 의 다른 소스 베이스 push 는 거절된다 ($sp_c)" 2 "$B32"
+  sp_measured "32p: -q ($sp_c)" "$U32"
+  sp_act S32A "$sp_c" git push --quiet origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: --quiet 의 다른 소스 베이스 push 는 거절된다 ($sp_c)" 2 "$B32"
+  sp_measured "32p: --quiet ($sp_c)" "$U32"
+  sp_act S32A "$sp_c" git push -fq origin "u-$SA_ID:$SA_BASE"
+  sp_refused "32p: 묶음 -fq 의 다른 소스 베이스 push 는 거절된다 ($sp_c)" 2 "$B32"
+  sp_measured "32p: -fq ($sp_c)" "$U32"
+  sp_act S32A "$sp_c" git push origin "u-$SA_ID:$SA_BASE" -q
+  sp_refused "32p: 뒤에 붙은 -q 의 다른 소스 베이스 push 는 거절된다 ($sp_c)" 2 "$B32"
+  sp_measured "32p: 뒤의 -q ($sp_c)" "$U32"
+done
+
+# 로컬 베이스가 앞선 상태 — 철자에 베이스가 없는 push 도 탐침이 잰다.
+( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$U32" ) >/dev/null 2>&1
+sp_act S32A 배포 git push -q --all origin
+sp_refused "32p: 앞선 로컬 베이스를 올리는 push -q --all 은 거절된다" 2 "$B32"
+sp_measured "32p: -q --all" "$U32"
+sp_act S32A 머지 git -c remote.origin.mirror=true push origin
+sp_refused "32p: -c remote.origin.mirror=true 의 push 는 거절된다" 2 "$B32"
+sp_measured "32p: -c remote.origin.mirror=true" "$U32"
+sp_act S32A 머지 env "GIT_CONFIG_PARAMETERS='remote.origin.mirror'='true'" git push origin
+sp_refused "32p: GIT_ 환경 할당을 앞에 둔 push 는 거절된다" 2 "$B32"
+sp_unknown "32p: GIT_ 환경 할당"
+( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$B32" ) >/dev/null 2>&1
+
+# 셸 문자열과 sudo 안의 push — 탐침에 닿지 않으므로 거절된다. 리뷰된 HEAD 라도 같다.
+for sp_sh in bash sh; do
+  sp_act S32A 배포 "$sp_sh" -c "git push origin u-$SA_ID:$SA_BASE"
+  sp_refused "32p: $sp_sh -c 안의 다른 소스 베이스 push 는 거절된다" 2 "$B32"
+  sp_unknown "32p: $sp_sh -c"
+  sp_act S32A 머지 "$sp_sh" -c "git push origin HEAD:$SA_BASE"
+  sp_refused "32p: $sp_sh -c 안의 리뷰된 HEAD push 도 거절된다" 2 "$B32"
+  sp_act S32A push "$sp_sh" -c "git push origin u-$SA_ID:$SA_BASE"
+  sp_refused "32p: $sp_sh -c 안의 베이스 push 를 push 로 선언해도 거절된다" 2 "$B32"
+done
+if sa_names_rule; then bad "32p 셸 순서" "형태 미상보다 룰이 먼저 돌았다: $msg"; else ok "32p: 형태 미상 거절이 룰 앞에서 난다"; fi
+
+# 대조군 — 허용 목록 안의 옵션은 그대로 재고, 리뷰된 HEAD 는 착지한다.
+sp_plan S32A 머지 git push -u origin "HEAD:$SA_BASE"
+check "32p: -u 를 실은 리뷰된 HEAD push 의 plan 이 통과한다" "$rc" "0"
+sp_plan S32A 머지 git push --force-with-lease origin "HEAD:$SA_BASE"
+check "32p: --force-with-lease 를 실은 리뷰된 HEAD push 의 plan 이 통과한다" "$rc" "0"
+sp_plan S32A 머지 git push --force-with-lease origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: --force-with-lease 의 다른 소스 베이스 push 의 plan 은 거절된다" 2 "$B32"
+sp_measured "32p: --force-with-lease" "$U32"
+sp_act S32A 머지 git push origin "HEAD:$SA_BASE"
+check "32p: 리뷰된 HEAD 의 push 가 통과한다" "$rc" "0"
+check "32p: 그 push 가 리뷰된 HEAD 를 착지시킨다" "$(sp_rbase)" "$T32A"
+
+# 선머지후리뷰 의 배포 선언 — 셸 문자열이 감추는 베이스 push 는 의무 없이 지나지 못한다.
+sa_new '셸 안의 선머지후리뷰 push'
+sa_seg_row S32S 선머지후리뷰
+sa_commit '작업' >/dev/null
+B32S=$(sp_rbase)
+n32o=$(sa_ob_count)
+sp_act S32S 배포 bash -c "git push origin HEAD:$SA_BASE"
+sp_refused "32p: 선머지후리뷰 의 배포 선언 bash -c push 는 거절된다" 2 "$B32S"
+sp_unknown "32p: 선머지후리뷰 bash -c"
+check "32p: 그 거절이 리뷰 의무를 남기지 않는다" "$(sa_ob_count)" "$n32o"
+
+# gh pr -R <repo> merge — 머지로 읽혀 결속 검사를 받는다.
+sb_new '레포 지정 머지' 선머지후리뷰
+sa_seg_row S32G ""
+sa_commit '작업' >/dev/null
+H32G=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+for sp_r in "-R o/r" "--repo o/r" "--repo=o/r" "-Ro/r"; do
+  # shellcheck disable=SC2086
+  sp_plan S32G 머지 gh pr $sp_r merge 7
+  check "32p: 결속 없는 gh pr $sp_r merge 는 거절된다" "$rc" "2"
+  case "$msg" in
+    *"결속되지 않았습니다"*) ok "32p: gh pr $sp_r merge — 문면이 결속을 지목한다" ;;
+    *) bad "32p gh pr $sp_r 문면" "$msg" ;;
+  esac
+  # shellcheck disable=SC2086
+  sp_plan S32G 머지 gh pr $sp_r merge 7 --match-head-commit "$H32G"
+  check "32p: 워크트리 HEAD 에 결속된 gh pr $sp_r merge 는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
+  if sa_names_rule; then ok "32p: gh pr $sp_r merge — 그 거절이 리뷰-후-머지 를 지명한다"; else bad "32p gh pr $sp_r 룰 이름" "$msg"; fi
+done
 
 # ---------------------------------------------------------------------------
 # 36. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다

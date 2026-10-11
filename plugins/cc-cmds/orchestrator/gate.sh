@@ -1378,6 +1378,14 @@ gate_push_unwrap_of_argv0() {
         if [ "$(gate_git_subcommand "$@")" = push ]; then
           out="git $(printf '%q ' "$@")"
         fi ;;
+      # A SHELL STRING AND `sudo` HIDE THE PUSH FROM EVERY UNWRAP ABOVE, so
+      # they are not unwrapped into one: the probe would have to re-run the
+      # shell's own parsing to know what the push is. `불투명` says a push is in
+      # there, and the act is refused rather than read.
+      bash|sh|zsh|dash|ksh)
+        gate_push_text_has_push "$(gate_push_shell_payload "$@")" && out='불투명' ;;
+      sudo)
+        gate_push_text_has_push "$*" && out='불투명' ;;
     esac
   fi
   printf '%s' "${out:-해당없음}"
@@ -1393,19 +1401,43 @@ gate_push_unwrap_combine() {
   fi
 }
 
-gate_push_config_key_kept() {
-  # gate_push_config_key_kept <key> — true for a `-c` key that changes WHERE a
-  # push goes or WHAT it updates. Only those are carried into the dry-run; a
-  # key that makes git run a command (`core.sshCommand`, `core.hooksPath`, a
-  # credential helper) is left out, because the gate would otherwise run it
-  # for an act it may still refuse.
-  local k; k=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  case "$k" in
-    remote.*.push|remote.*.url|remote.*.pushurl|remote.pushdefault|push.default) return 0 ;;
-    branch.*.remote|branch.*.pushremote|branch.*.merge) return 0 ;;
-    url.*.insteadof|url.*.pushinsteadof) return 0 ;;
-  esac
+gate_push_text_has_push() {
+  # gate_push_text_has_push <text> — true when some simple command in <text>
+  # names `git` and later `push`. <text> is a shell `-c` string or a `sudo`
+  # argv joined by spaces; it is split at `;`, `&`, `|` and newlines, and the
+  # quote characters are dropped from each word. A false positive refuses an
+  # act that could be respelled without its wrapper; a false negative lets an
+  # unmeasured push through, so the reading is the wide one.
+  local line w seen_git
+  while IFS= read -r line; do
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    seen_git=0
+    for w in "$@"; do
+      w="${w//[\"\']/}"
+      case "${w##*/}" in git) seen_git=1; continue ;; esac
+      [ "$seen_git" = 1 ] && [ "$w" = push ] && return 0
+    done
+  done <<GATE_PUSH_TEXT
+$(printf '%s' "$1" | tr ';&|' '\n\n\n')
+GATE_PUSH_TEXT
   return 1
+}
+
+gate_push_shell_payload() {
+  # gate_push_shell_payload <a shell's args after argv0...> — prints the `-c`
+  # strings, one per line. `-c` may ride in a bundle (`-lc`, `-ec`); the word
+  # after it is the string either way.
+  local a next=0
+  for a in "$@"; do
+    if [ "$next" = 1 ]; then printf '%s\n' "$a"; next=0; continue; fi
+    case "$a" in
+      --*) : ;;
+      -*c*) next=1 ;;
+    esac
+  done
 }
 
 gate_push_base_updates() {
@@ -1414,11 +1446,16 @@ gate_push_base_updates() {
   # Sets, rather than prints, so the cutpoint and the binding read one answer:
   #
   #   GATE_PUSH_KIND     `해당없음` (not a git push) · `여럿` (more than one
-  #                      push in one act) · `판정불가` (the dry-run answered
-  #                      nothing) · `없음` (no base update) · `갱신`
+  #                      push in one act) · `형태미상` (a push the dry-run
+  #                      cannot reproduce; the act is refused) · `판정불가`
+  #                      (the dry-run answered no ref) · `없음` (no base
+  #                      update) · `갱신`
   #   GATE_PUSH_UPDATES  for `갱신`, one line per base update:
   #                      `<sha being pushed, empty for a delete><TAB><from>:<to>`
   #   GATE_PUSH_GIT      the unwrapped `git … push …`, shell-quoted
+  #   GATE_PUSH_FORM_WORD for `형태미상`, the word that made it so (an option
+  #                      name, a configuration key or a variable name — never
+  #                      a value)
   #
   # GIT IS ASKED, NOT THE SPELLING READ. Every reading of the refspec missed a
   # spelling git accepts — `heads/<base>`, the empty refspec, a glob, `--all`,
@@ -1429,34 +1466,62 @@ gate_push_base_updates() {
   # it would update as `<flag><TAB><from>:<to><TAB><summary>`. A rejected (`!`)
   # or up-to-date (`=`) line updates nothing.
   #
-  # WHAT IS DROPPED FROM THE DRY-RUN. Of git's global options, `-C`,
-  # `--git-dir`, `--work-tree`, `--namespace` and the `-c`/`--config-env` keys
-  # `gate_push_config_key_kept` names are kept, since they decide the
-  # repository, the remote and the refspecs. Every other global, and push's
-  # `--receive-pack`, `--exec`, `--signed` and `--recurse-submodules`, are
-  # dropped: they make git run something, and the act has not been admitted
-  # yet. `--no-verify` keeps the pre-push hook out for the same reason.
+  # THE PUSH'S OWN OPTIONS ARE PASSED BY AN ALLOW-LIST, NOT COPIED. Copied
+  # after the gate's `--dry-run --porcelain --no-verify`, they overrode it:
+  # `--no-dry-run` made the dry-run a real push, `--verify` ran the pre-push
+  # hook, an abbreviation git accepts (`--exe=`, `--receive=`) ran a command,
+  # and `-q` left only `Done` to read — all before the act was judged. So the
+  # push options fall in three sets. Those that decide what goes where are
+  # passed. Those the gate sets itself, or that change only the output, are
+  # dropped (`-q`, `-v`, `--progress`, `-n`, `--dry-run`, `--porcelain`,
+  # `--verify` and their `--no-` forms). Every other word starting with `-`,
+  # an abbreviation included, makes the push `형태미상`, and the dry-run is
+  # not run. A short bundle (`-fq`) is read letter by letter.
+  #
+  # THE SAME HOLDS FOR WHAT THE DRY-RUN READS AROUND THE PUSH. Every `-c` key
+  # is passed, so the dry-run reads the configuration the push will read; the
+  # grade already refuses the keys that run a command, and one that reaches
+  # here anyway makes the push `형태미상` instead of being run. `--config-env`
+  # and `--exec-path` do the same, and so does a `GIT_*=` assignment in front
+  # of git — the dry-run would read another repository or configuration than
+  # the push. Of the other globals, `-C`, `--git-dir`, `--work-tree` and
+  # `--namespace` are kept and the rest dropped. A push inside a shell string
+  # or under `sudo` is `형태미상` too (see `gate_push_unwrap_of_argv0`).
+  #
+  # ONLY A REF LINE IS AN ANSWER. Output with no `<flag><TAB>…` line — `Done`
+  # alone, an error, nothing — reads `판정불가`, and the static reading takes
+  # over; it never reads as "no base update".
   #
   # WHAT STAYS OPEN. A dry-run that reaches no remote answers `판정불가` and
   # the static reading takes over; the real push reaching the remote a moment
-  # later is a race this cannot close. An `env` that sets `GIT_DIR` or
-  # `GIT_WORK_TREE` in front of git is unwrapped without those assignments, so
-  # the dry-run reads another repository than the push will.
+  # later is a race this cannot close.
   local alias="$1"; shift
-  GATE_PUSH_KIND='해당없음'; GATE_PUSH_UPDATES=""; GATE_PUSH_GIT=""
+  GATE_PUSH_KIND='해당없음'; GATE_PUSH_UPDATES=""; GATE_PUSH_GIT=""; GATE_PUSH_FORM_WORD=""
   GATE_PUSH_DONE=1
   local u; u=$(gate_push_unwrap_of_argv0 "$@")
   case "$u" in
     해당없음) return 0 ;;
     여럿) GATE_PUSH_KIND='여럿'; return 0 ;;
   esac
+  local base; base=$(gate_push_base_branch "$alias")
+  if [ "$u" = '불투명' ]; then
+    [ -n "$base" ] || return 0
+    GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${1##*/}"
+    return 0
+  fi
   GATE_PUSH_GIT="$u"
   GATE_PUSH_KIND='판정불가'
-  local base; base=$(gate_push_base_branch "$alias")
   [ -n "$base" ] || return 0
+  local a k
+  for a in "$@"; do
+    case "${a##*/}" in git) break ;; esac
+    case "$a" in
+      GIT_*=*) GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${a%%=*}"; return 0 ;;
+    esac
+  done
   local -a gv=() glob=() pargs=()
   eval "gv=($u)"
-  local i=1 n="${#gv[@]}" a k
+  local i=1 n="${#gv[@]}"
   while [ "$i" -lt "$n" ]; do
     a="${gv[$i]}"
     i=$((i + 1))
@@ -1466,24 +1531,45 @@ gate_push_base_updates() {
         [ "$i" -lt "$n" ] || return 0
         glob+=("$a" "${gv[$i]}"); i=$((i + 1)) ;;
       --git-dir=*|--work-tree=*|--namespace=*) glob+=("$a") ;;
-      -c|--config-env)
+      -c)
         [ "$i" -lt "$n" ] || return 0
         k="${gv[$i]%%=*}"
-        if gate_push_config_key_kept "$k"; then glob+=("$a" "${gv[$i]}"); fi
-        i=$((i + 1)) ;;
-      --config-env=*)
-        k="${a#--config-env=}"; k="${k%%=*}"
-        if gate_push_config_key_kept "$k"; then glob+=("$a"); fi ;;
-      --exec-path) i=$((i + 1)) ;;
+        if gate_git_config_key_execs "$k"; then
+          GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="-c $k"; return 0
+        fi
+        glob+=("$a" "${gv[$i]}"); i=$((i + 1)) ;;
+      --config-env|--config-env=*|--exec-path|--exec-path=*)
+        GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${a%%=*}"; return 0 ;;
       *) : ;;
     esac
   done
+  local want=0 opts_done=0 s j c
   while [ "$i" -lt "$n" ]; do
     a="${gv[$i]}"
     i=$((i + 1))
+    if [ "$want" = 1 ] || [ "$opts_done" = 1 ]; then pargs+=("$a"); want=0; continue; fi
     case "$a" in
-      --receive-pack|--exec) i=$((i + 1)) ;;
-      --receive-pack=*|--exec=*|--signed|--signed=*|--recurse-submodules|--recurse-submodules=*) : ;;
+      --) opts_done=1; pargs+=("$a") ;;
+      --force|--force-with-lease|--force-with-lease=*|--no-force-with-lease|--force-if-includes|--no-force-if-includes) pargs+=("$a") ;;
+      --set-upstream|--delete|--all|--branches|--mirror|--tags|--follow-tags|--no-follow-tags) pargs+=("$a") ;;
+      --prune|--no-prune|--atomic|--no-atomic|--thin|--no-thin|--ipv4|--ipv6|--repo=*|--push-option=*) pargs+=("$a") ;;
+      --repo|--push-option) pargs+=("$a"); want=1 ;;
+      --quiet|--verbose|--progress|--no-progress|--dry-run|--no-dry-run|--porcelain|--no-porcelain|--verify|--no-verify) : ;;
+      --*) GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${a%%=*}"; return 0 ;;
+      -?*)
+        s="${a#-}"; j=0
+        while [ "$j" -lt "${#s}" ]; do
+          c="${s:$j:1}"
+          j=$((j + 1))
+          case "$c" in
+            f|u|d|4|6) pargs+=("-$c") ;;
+            q|v|n) : ;;
+            o)
+              if [ "$j" -lt "${#s}" ]; then pargs+=("-o" "${s:$j}"); else pargs+=("-o"); want=1; fi
+              break ;;
+            *) GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="-$c"; return 0 ;;
+          esac
+        done ;;
       *) pargs+=("$a") ;;
     esac
   done
@@ -1493,7 +1579,6 @@ gate_push_base_updates() {
                  ${pargs[@]+"${pargs[@]}"} 2>/dev/null; } || true)
   while IFS= read -r line; do
     case "$line" in
-      Done) valid=1; continue ;;
       ?"	"*"	"*) ;;
       *) continue ;;
     esac
@@ -1540,14 +1625,16 @@ gate_push_source_mismatch() {
   # prints what is pushed onto the base without being <head>, nothing when
   # every base update pushes <head> or the act updates no base.
   #
-  # ONE COMPARISON FOR EVERY SPELLING. A base update is the sha git will put on
-  # the remote base, read off the dry-run, so a refspec, `heads/<base>`, the
-  # empty refspec, a glob, `--all`, `--mirror`, `--branches` and a configured
-  # push refspec all reach this same line, and no spelling is refused as such.
+  # ONE COMPARISON FOR EVERY MEASURED SPELLING. A base update is the sha git
+  # will put on the remote base, read off the dry-run, so a refspec,
+  # `heads/<base>`, the empty refspec, a glob, `--all`, `--mirror`,
+  # `--branches` and a configured push refspec all reach this same line. A push
+  # the dry-run cannot reproduce (`형태미상`) is reported whole.
   local alias="$1" head="$2" line sha spec
   case "${GATE_PUSH_KIND:-해당없음}" in
     해당없음|없음) return 0 ;;
     여럿) printf '%s' '한 행위 안의 여러 git push'; return 0 ;;
+    형태미상) printf '게이트가 dry-run 으로 잴 수 없는 git push (%s)' "$GATE_PUSH_FORM_WORD"; return 0 ;;
     판정불가)
       local -a gv=()
       eval "gv=($GATE_PUSH_GIT)"
@@ -5045,10 +5132,15 @@ gate_git_config_key_execs() {
   # stdout is not a terminal, and every act this gate runs is captured — measured
   # on this machine with `git -c core.pager='touch …' log -1 >/dev/null`, which
   # created no file.
-  case "$1" in
-    core.sshCommand|core.gitProxy|core.editor|core.fsmonitor|core.hooksPath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packObjectsHook|web.browser)
+  #
+  # THE KEY IS COMPARED WITHOUT CASE. Git reads section and variable names
+  # without case, so `core.SSHCOMMAND` is the same key and passed a
+  # case-sensitive list.
+  local k; k=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$k" in
+    core.sshcommand|core.gitproxy|core.editor|core.fsmonitor|core.hookspath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packobjectshook|web.browser)
       return 0 ;;
-    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeIf.*|browser.*)
+    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeif.*|browser.*)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -5189,7 +5281,28 @@ surface_of_git() {
     # `fetch` and `clone` left this arm: the first only moves remote-tracking
     # refs unless a refspec names a local branch, and the second writes a tree.
     # `push` and `pull` stay — one publishes and the other merges what it fetched.
-    push|pull)
+    #
+    # `push --receive-pack=<cmd>` and `--exec=<cmd>` name a program git runs —
+    # on this machine, for a remote that is a local path — so they are refused
+    # as a form, the way `fetch --upload-pack` is. Git takes any unambiguous
+    # prefix of a long option, so every prefix is refused: `--e…` of `--exec`,
+    # and `--rec…` of `--receive-pack` from the first letter that is not also
+    # `--recurse-submodules`'s or `--repo`'s (`--rec` and shorter are ambiguous
+    # and git refuses them itself). This holds for a push to any target, with a
+    # base branch or without.
+    push)
+      local pa po
+      shift
+      for pa in "$@"; do
+        [ "$pa" = '--' ] && break
+        po="${pa%%=*}"
+        case "$po" in
+          --e|--ex|--exe|--exec|--rece|--recei|--receiv|--receive|--receive-|--receive-p|--receive-pa|--receive-pac|--receive-pack)
+            printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+        esac
+      done
+      printf '외부상태변경' ;;
+    pull)
       printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
   esac
@@ -5303,16 +5416,13 @@ surface_of_git_config() {
 
 surface_of_gh() {
   # `-R/--repo` rides BEFORE the verb, so it is skipped by name — otherwise
-  # `gh -R o/r pr view` reads `-R` as the group and grades unknown.
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -R|--repo)
-        [ $# -ge 2 ] || { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; }
-        shift 2 ;;
-      --repo=*) shift ;;
-      *) break ;;
-    esac
-  done
+  # `gh -R o/r pr view` reads `-R` as the group and grades unknown, and
+  # `gh pr -R o/r view` reads `-R` as the verb (see `gate_gh_strip_repo`).
+  gate_gh_strip_repo "$@"
+  set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  case "${1:-}" in
+    -R|--repo) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+  esac
   # `--web` and its short spelling open a BROWSER, which is a program this table
   # cannot answer for. Refused as a form wherever it appears, before the verb is
   # read: `gh pr view -w` is not the read that `gh pr view` is.
@@ -6414,7 +6524,35 @@ ladder_of_git() {
   return 0
 }
 
+gate_gh_strip_repo() {
+  # gate_gh_strip_repo <gh's args after argv0...> — fills GATE_GH_ARGV with the
+  # args minus every `-R <v>`, `-R<v>`, `--repo <v>` and `--repo=<v>` that
+  # stands before the verb (the second bare word). gh takes `-R` before the
+  # group and between the group and the verb alike, so `gh pr -R o/r merge`
+  # is the merge `gh pr merge -R o/r` is; reading `$2` as the verb took `-R`
+  # for it and the merge asserted nothing. A `-R` with no value is kept, so
+  # the caller sees it as written. The three readers of gh — the grade, the
+  # ladder and the merge binding — share this skip.
+  GATE_GH_ARGV=()
+  local bare=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$bare" -lt 2 ]; then
+      case "$1" in
+        -R|--repo)
+          if [ "$#" -ge 2 ]; then shift 2; continue; fi ;;
+        --repo=*|-R?*) shift; continue ;;
+        -*) : ;;
+        *) bare=$((bare + 1)) ;;
+      esac
+    fi
+    GATE_GH_ARGV+=("$1")
+    shift
+  done
+}
+
 ladder_of_gh() {
+  gate_gh_strip_repo "$@"
+  set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
     api) ladder_of_gh_api "$@" ;;
     pr)
@@ -6535,6 +6673,8 @@ gate_merge_binding_of_gh() {
   # gate_merge_binding_of_gh <gh's args after argv0...>. The LAST occurrence of
   # the argument wins, as it does for gh's own flag parsing.
   local have=0 v=""
+  gate_gh_strip_repo "$@"
+  set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
     pr)
       [ "${2:-}" = merge ] || { printf '%s' '해당없음'; return 0; }
@@ -17201,7 +17341,12 @@ gate_record_row() {
       # terminal row written after it is held to the record. The refusal does
       # not tell the caller to name the record: a record established on the
       # wrong tree is a halt, not a spelling to copy.
-      case "$st" in
+      #
+      # The apply arm's own terminal rows are not held to it. They name the
+      # apply worktree the gate itself pinned to the merge commit, after the
+      # `머지됨` row, so no caller chose that path and it cannot move the
+      # merge-tip read this pin protects.
+      [ -n "${GATE_APPLY_ARM:-}" ] || case "$st" in
         머지됨|완료|park)
           local rec_wt rec_p wt_p
           rec_wt=$(gate_segment_anchor_worktree "$seg" "$alias")
@@ -21528,9 +21673,19 @@ gate_verb_act() {
   # because the router labels acts with its target's cutpoint and `배포` on a
   # base push is the ordinary label — and the binding block below is keyed on
   # the merge rung. A push updating no base keeps its declaration.
+  #
+  # A PUSH THE DRY-RUN CANNOT REPRODUCE IS REFUSED HERE, before any rule and
+  # whatever the policy or `룰 설정` says: what such a push puts on the base is
+  # not known, and the probe was not run for it. The repair is a spelling the
+  # gate can measure, so the code is the vocabulary one.
   GATE_PUSH_DONE=0
   if [ "$argv_graded" = "1" ] && [ "${GATE_UNDECLARED:-0}" != "1" ]; then
     gate_push_base_updates "$alias" "$@"
+    if [ "$GATE_PUSH_KIND" = '형태미상' ]; then
+      warn "형태 미상 — 이 git push 는 게이트가 dry-run 으로 무엇이 베이스에 올라가는지 잴 수 없는 형태입니다: ${GATE_PUSH_FORM_WORD}"
+      warn "셸 -c·sudo 래퍼, GIT_ 환경 할당, 실행 설정 키, 허용 목록 밖 push 옵션(축약 포함) 없이 git push <원격> <refspec> 으로 다시 부릅니다 — 게이트가 아는 래퍼(command·env·lockf·timeout 등)와 -f·-u·--force-with-lease·--tags 같은 옵션은 그대로 둡니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
     if [ "$GATE_PUSH_KIND" != '해당없음' ]; then
       local _pr _pi _ei
       case "$GATE_PUSH_KIND" in
