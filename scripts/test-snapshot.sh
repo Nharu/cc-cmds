@@ -938,7 +938,9 @@ fi
 # After a review passed, no router text merged with a pinned head, recorded the
 # merge commit, or issued the apply; after a review raised P0·P1, none sent the
 # implementation back with the report as its fix target. The literals below are
-# the two merge pins, the fetch before the apply, the apply act's fixed token,
+# the two merge pins (the prescribed merge with its method, bound to the
+# worktree HEAD's full sha rather than a cycle row's review HEAD, and the bare
+# binding), the fetch before the apply, the apply act's fixed token,
 # the park-and-cone disposition of a precondition refusal, and the cycle cap's
 # reason. The fix prompt must be one string in both copies, and the fix section
 # does not restate the delta basis expression, which belongs to the delta
@@ -949,7 +951,7 @@ fix_prompt_rs=""
 for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
-    '#### Merging and applying a segment|--merge --match-head-commit <the 리뷰 HEAD of the segment'"'"'s last cycle row>' \
+    '#### Merging and applying a segment|--merge --match-head-commit <구현 워크트리 HEAD>' \
     '#### Merging and applying a segment|--match-head-commit <구현 워크트리 HEAD>' \
     '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
     "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
@@ -970,6 +972,13 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
       bad "$who 사본의 「${head#'#### '}」 절" "「${lit}」이 없다"
     fi
   done
+  msec=$(router_section "$file" '#### Merging and applying a segment')
+  nold=$(printf '%s\n' "$msec" | grep -cF -- 'last cycle row>' || true)
+  if [ "${nold:-0}" = "0" ]; then
+    ok "$who 사본의 「Merging and applying a segment」 절에 사이클 행의 리뷰 HEAD 로 묶는 옛 머지 처방이 없다"
+  else
+    bad "$who 사본의 「Merging and applying a segment」 절" "옛 자리표시 「last cycle row>」가 ${nold}번 있다"
+  fi
   fsec=$(router_section "$file" '#### Re-dispatching the implementation after review findings')
   prompt=$(printf '%s\n' "$fsec" | grep -oE -- '-- implement -p "/cc-cmds:implement-unattended .*"$' | sort -u)
   check "$who 사본의 수정 재파견 절에 지시 문구가 한 벌 실린다" \
