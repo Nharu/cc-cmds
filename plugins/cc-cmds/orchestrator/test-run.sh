@@ -9575,11 +9575,33 @@ printf 'window=%s/%s\n' "$( { wc -l < "$RUN_DIR/$ra_sid.window" 2>/dev/null || p
 printf 'cfgrec=%s\n' "$(stage_config_dir_of "$ra_sid")"
 printf 'record=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
 printf 'live=%s\n' "$(ra_live "$ra_sid")"
+ra_costs() {
+  if [ -f "$(run_pace_root)/costs/samples.jsonl" ]; then
+    jq -s --arg l "$1" '[.[] | select(.lineage == $l)] | length' "$(run_pace_root)/costs/samples.jsonl"
+  else
+    printf '0'
+  fi
+}
 if [ "$rc" = "0" ]; then
   stage_collect "$ra_sid"
+  # RA_COST 가 있으면 다시 붙은 파견처럼 시도 로그 둘을 둔다. `1` 이 아니면 그 값을
+  # 창 기록의 넷째 줄(계정)로 바꿔 쓴다.
+  if [ -n "${RA_COST:-}" ]; then
+    for n in 1 2; do
+      printf '{"type":"assistant","timestamp":"%s"}\n{"type":"result","duration_ms":1000}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN_DIR/log/$ra_sid#$n.json"
+    done
+    if [ "$RA_COST" != "1" ]; then
+      { sed -n '1,3p' "$RUN_DIR/$ra_sid.window"; printf '%s\n' "$RA_COST"; } > "$RUN_DIR/$ra_sid.window.t"
+      mv -f "$RUN_DIR/$ra_sid.window.t" "$RUN_DIR/$ra_sid.window"
+    fi
+  fi
   spawn_lease_release "$ra_sid"
   printf 'after=%s\n' "$(ra_live "$ra_sid")"
   printf 'record2=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
+  printf 'costs=%s\n' "$(ra_costs "$ra_sid")"
+  spawn_lease_release "$ra_sid"
+  printf 'costs2=%s\n' "$(ra_costs "$ra_sid")"
 fi
 RAEOF
 ra_spawn() {  # ra_spawn <stage-id> — probe 출력 전체
@@ -9612,6 +9634,21 @@ rc=0; bash -c 'g="$1"; l="$2"; set --; CC_GATE_SOURCE_ONLY=1 . "$g" >/dev/null 2
                unset CC_GATE_SOURCE_ONLY; LEDGER="$l"; RUN_DIR="${l%/*}"; RUN_ID=ra-run; gate_chain_verify' \
   _ "$RA/orch/gate.sh" "$RA/ledger.md" >/dev/null 2>&1 || rc=$?
 check "드라이버가 쓴 stage-lease 행이 원장 사슬을 끊지 않는다" "$rc" "0"
+check "구간 없는 로그의 파견은 비용 표본을 남기지 않는다" "$(ra_get "$ra_out" costs)" "0"
+
+# 비용 표본 — 반납 뒤 그 파견의 시도 로그마다 한 줄. 두 번째 반납은 기록이 없어
+# 일찍 돌아가고, 같은 로그 이름은 저장소가 바꿔 쓰므로 줄이 늘지 않는다.
+ra_out=$(RA_COST=1 ra_spawn "S4:segK:1")
+check "다시 붙은 파견의 로그 둘이 표본 두 줄이 된다" "$(ra_get "$ra_out" costs)" "2"
+check "같은 파견의 반복 반납 뒤에도 두 줄이다" "$(ra_get "$ra_out" costs2)" "2"
+check "드라이버 표본의 부류·계정·로그 이름은 그 파견의 것이다" \
+  "$(jq -sr '[.[] | select(.lineage == "S4:segK:1") | "\(.kind) \(.account) \(.run_id) \(.log)"] | sort | join(",")' \
+       "$RA/pace/costs/samples.jsonl" 2>/dev/null)" \
+  "implement ra1 ra-run S4:segK:1#1.json,implement ra1 ra-run S4:segK:1#2.json"
+ra_out=$(RA_COST='(미상)' ra_spawn "S4:segL:1")
+check "계정이 (미상) 인 파견은 비용 표본을 남기지 않는다" "$(ra_get "$ra_out" after)/$(ra_get "$ra_out" costs)" "/0"
+ra_out=$(RA_COST=- ra_spawn "S4:segM:1")
+check "계정이 - 인 파견은 비용 표본을 남기지 않는다" "$(ra_get "$ra_out" after)/$(ra_get "$ra_out" costs)" "/0"
 
 # 부여 뒤 이른 반환(설정 파일 없음 78)은 이 기동이 만든 임대를 돌려준다.
 mv "$RA/run/settings/implement.json" "$RA/run/settings/implement.json.off"
