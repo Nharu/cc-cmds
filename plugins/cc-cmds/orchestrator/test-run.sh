@@ -10975,11 +10975,124 @@ check "35: 선언통치 문서에서만 리뷰 파견에 --slice <세그먼트> 
   "$(slicing_branch "$R35SLI")|$(DOC="$R35SLI" review_slice_flag S2)|$(DOC="$R35/noslice.md" review_slice_flag S2)" \
   "선언통치| --slice S2|"
 r35_sc=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
-check "35: 첫 리뷰와 복구 리뷰가 모두 --slice 를 싣는다" \
-  "$(grep -c 'review-unattended .*\$(review_slice_flag "\$seg")' "$DRIVER" || true)" "2"
+check "35: 첫 리뷰는 --slice 를 고른 값으로, 복구 리뷰는 그대로 싣는다" \
+  "$(printf '%s\n' "$r35_sc" | grep -cF 'slice_flag=$(review_slice_flag "$seg")' || true)/$(printf '%s\n' "$r35_sc" | grep -cF -- '--report-path $rp$slice_flag$rscope' || true)/$(grep -c 'review-unattended .*--recover.*\$(review_slice_flag "\$seg")' "$DRIVER" || true)" \
+  "1/1/1"
 check "35: 수정 대상 지시는 사이클 2 부터, 앞 사이클 리포트가 있을 때만 구현 지시에 붙는다" \
   "$(printf '%s\n' "$r35_sc" | grep -cF '[ "$cycle" -lt 2 ] || [ -z "$prev_rp" ] || fix_target=" · 수정 대상: $prev_rp 의 P0·P1"' || true)/$(printf '%s\n' "$r35_sc" | grep -cF '선언 파일: $files$fix_target' || true)" \
   "1/1"
+
+# --- 사이클 루프: 마지막 사이클의 수렴, 다른 슬라이스 몫 거절, 복구 리포트의 리뷰 HEAD ---
+# 진짜 segment_cycle 을 돌린다. 스텁은 스테이지·판단·워크트리·머지 게이트와 cycle 번들뿐이고,
+# 번들은 호출 순서대로 미리 쓴 묶음(bq-1, bq-2 …)을 내며, 처분은 R35_DISPO 의 사이클별 값이다.
+# 게이트가 그 묶음을 실제로 낸다는 것은 아래 번들 단언이 따로 본다.
+R35SR="$R35/review-slice.md"
+{
+  printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$H35"
+  printf -- '- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n'
+  printf -- '- **다른 슬라이스 몫**: 1건 (집계 제외)\n'
+  printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n- **[c]** **[P1]** `x.sh:1` d — r\n    - **배정**: 슬라이스 S9 — 「줄」\n'
+} > "$R35SR"
+L35SR=$(r35_led sr)
+r35_bun=$(r35_in "$L35SR" "$M35" cycle_gate_bundle S2 home 1 "$R35SR" '[]' 2>/dev/null)
+check "35: 착지할 슬라이스가 아닌 곳에 배정한 리포트는 행 없이 거절되고 번들이 몫 거절 을 표시한다" \
+  "$(bundle_val "$r35_bun" '행')/$(bundle_val "$r35_bun" '몫 거절')/$(grep -c '^- `cycle`' "$L35SR" || true)" \
+  "$r35_vocab/1/0"
+r35_bun=$(r35_in "$L35SR" "$M35" cycle_gate_bundle S2 home 1 "$R35/review-bad.md" '[]' 2>/dev/null)
+check "35: 몫 거절 표시는 다른 슬라이스 몫 거절에만 붙는다" "$(bundle_val "$r35_bun" '몫 거절')" ""
+
+r35_loop_in() {
+  r35_stubs
+  local fn rc=0
+  for fn in segment_cycle review_redo_reason; do
+    eval "$(awk -v h="${fn}() {" 'index($0, h) == 1 { on = 1 } on { print } on && /^}/ { exit }' "$DRIVER")"
+  done
+  SLUG=r35; BASE="$R35/loop"; DOC="${R35DOC:-}"; RUN_CYCLE_BUDGET=99
+  stage_spawn() {
+    printf '%s %s\n' "$1" "$3" >> "$R35/spawn.log"
+    printf '0' > "$RUN_DIR/$1.rc"
+  }
+  ledger_row() { :; }
+  park() { printf 'park %s\n' "$*" >> "$R35/spawn.log"; }
+  park_router() { printf 'park_router %s\n' "$*" >> "$R35/spawn.log"; }
+  seg_alias() { printf 'home'; }; plan_uncell() { printf '%s' "$1"; }; segment_cap() { printf '%s' "$R35CAP"; }
+  wt_create() { printf '%s' "$MF_REPO"; }; base_sha() { printf '%s' "$H35"; }; stash_ref() { :; }
+  past_deadline() { return 1; }; run_cycles_spend() { printf '1'; }
+  quiet_window_begin() { :; }; quiet_window_end() { :; }; with_doc_lock() { return 0; }
+  answered_judgment_stage() { :; }; segment_process_b() { return 1; }; s4_attempt_base() { printf '%s' "$H35"; }
+  predicate_implement() { return 0; }; predicate_review() { return 0; }
+  classify_termination() {
+    if [ "${1%%:*}" = S5 ] && [ -n "${R35_CRASH:-}" ] && [ ! -f "$R35/crashed" ]; then
+      : > "$R35/crashed"; printf '크래시'
+    else
+      printf '정상 완료'
+    fi
+  }
+  stage_account_of() { :; }; stage_plan_sha256() { :; }; stage_session_id() { printf -- '-'; }
+  stage_parent_id() { printf -- '-'; }; stage_effort_rec_of() { printf -- '-'; }
+  stage_served_model_of() { printf -- '-'; }; stage_attempt_pinned() { printf '1'; }; stage_log_path() { printf '/dev/null'; }
+  fileset_escape() { return 0; }; stash_attribution_check() { return 0; }
+  review_recover() { printf 'recover %s\n' "$4" >> "$R35/spawn.log"; return 0; }
+  judgment_result() { printf '{"p0_count":0,"p1_count":0,"findings":[]}'; }
+  triage_count_mismatch() { return 0; }
+  cycle_gate_bundle() {
+    local n; n=$(( $(cat "$R35/bq-n" 2>/dev/null || printf '0') + 1 )); printf '%s' "$n" > "$R35/bq-n"
+    printf 'bundle %s\n' "$4" >> "$R35/spawn.log"
+    cat "$R35/bq-$n"
+  }
+  review_disposition() {
+    local d; d=$(printf '%s\n' $R35_DISPO | sed -n "${7}p")
+    return "${d:-1}"
+  }
+  ledger_last() { :; }; apply_stage() { return 0; }; wt_remove_or_defer() { :; }
+  merge_gate() { printf 'merge %s\n' "$1" >> "$R35/spawn.log"; return 0; }
+  segment_cycle S2 a.txt >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+# r35_loop <이름> <상한> <처분…> -- <묶음…> — 루프를 돌리고 종료 코드를 낸다. 기록은 spawn.log 에.
+r35_loop() {
+  local name=$1 cap=$2 dispo="" i=0 b; shift 2
+  while [ "$1" != -- ]; do dispo="$dispo $1"; shift; done; shift
+  rm -f "$R35"/bq-* "$R35/crashed"; : > "$R35/spawn.log"
+  for b in "$@"; do i=$((i + 1)); printf '%b' "$b" > "$R35/bq-$i"; done
+  R35RUN="$R35/run-loop-$name"; mkdir -p "$R35RUN/log" "$R35RUN/halt"
+  R35CAP=$cap R35_DISPO=$dispo r35_in "$(r35_led "loop-$name")" "$M35" r35_loop_in
+  R35RUN=""
+}
+r35_n() { grep -c -- "$1" "$R35/spawn.log" || true; }
+R35BOK="요약=정규\nP0=0\nP1=0\n리뷰 HEAD=$H35\n행=0\n다음=머지\n"
+R35BSL="요약=정규\nP0=0\nP1=0\n리뷰 HEAD=$H35\n몫 거절=1\n행=2\n다음=리뷰 없음\n"
+R35BNH="요약=정규\nP0=0\nP1=0\n리뷰 HEAD=\n행=건너뜀\n다음=리뷰 없음\n"
+
+r35_lrc=$(r35_loop conv 1 0 -- "$R35BOK")
+check "35: 마지막 허용 사이클에서 수렴한 세그먼트는 상한 park 없이 머지로 간다" \
+  "$r35_lrc/$(r35_n '^merge S2')/$(r35_n '사이클 예산 소진')" "0/1/0"
+r35_lrc=$(r35_loop exhaust 1 11 -- "$R35BOK")
+check "35: 수렴하지 못하고 사이클을 다 쓴 세그먼트는 머지하지 않고 상한 park 한다" \
+  "$r35_lrc/$(r35_n '^merge S2')/$(r35_n '사이클 예산 소진')" "1/0/1"
+
+r35_lrc=$(R35DOC="$R35SLI" r35_loop slice 1 0 -- "$R35BSL" "$R35BOK")
+check "35: 다른 슬라이스 몫 거절은 --slice 없는 리뷰 한 번으로 받고, 그 리포트로 머지까지 간다" \
+  "$r35_lrc/$(r35_n '^S5:S2:1 ')/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 1p | grep -c -- '--slice S2' || true)/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 2p | grep -c -- '--slice' || true)/$(grep '^S5:S2:1 ' "$R35/spawn.log" | sed -n 2p | grep -c -- '-c1-r2\.md' || true)/$(r35_n '^bundle .*-c1-r2\.md')/$(r35_n '^merge S2')/$(r35_n '^park')" \
+  "0/2/1/0/1/1/1/0"
+r35_lrc=$(R35DOC="$R35SLI" r35_loop slice2 1 0 -- "$R35BSL" "$R35BSL")
+check "35: 다시 파견한 리뷰도 몫 거절이면 세 번째를 보내지 않고 park 한다" \
+  "$r35_lrc/$(r35_n '^S5:S2:1 ')/$(r35_n 'cycle 행 거절(rc=2) — 다른 슬라이스 몫 거절 뒤')/$(r35_n '^merge S2')" "1/2/1/0"
+r35_lrc=$(r35_loop noslice 1 0 -- "$R35BSL")
+check "35: --slice 를 싣지 않은 리뷰의 거절은 다시 파견하지 않고 park 한다" \
+  "$r35_lrc/$(r35_n '^S5:S2:1 ')/$(r35_n 'cycle 행 거절(rc=2)')" "1/1/1"
+
+r35_lrc=$(R35_CRASH=1 r35_loop recov 1 0 -- "$R35BNH" "$R35BOK")
+check "35: 깨끗한 복구 리포트에 리뷰 HEAD 가 없으면 리뷰를 한 번 다시 파견하고 그 리포트로 머지까지 간다" \
+  "$r35_lrc/$(r35_n '^recover ')/$(r35_n '^S5:S2:1 ')/$(r35_n '^bundle .*-c1-r2\.md')/$(r35_n '리뷰 리포트 집계 부재')/$(r35_n '^merge S2')" \
+  "0/1/2/1/0/1"
+r35_lrc=$(R35_CRASH=1 r35_loop recov2 1 0 -- "$R35BNH" "$R35BNH")
+check "35: 다시 파견한 리뷰에도 리뷰 HEAD 가 없으면 집계 부재로 park 한다" \
+  "$r35_lrc/$(r35_n '^S5:S2:1 ')/$(r35_n '리뷰 리포트 집계 부재 — 복구 리포트에 리뷰 HEAD 없음 뒤')" "1/2/1"
+r35_lrc=$(r35_loop nohead 1 0 -- "$R35BNH")
+check "35: 복구를 거치지 않은 리포트의 리뷰 HEAD 부재는 다시 파견하지 않고 park 한다" \
+  "$r35_lrc/$(r35_n '^S5:S2:1 ')/$(r35_n '리뷰 리포트 집계 부재')" "1/1/1"
+
 check "35: 이 절의 어느 호출도 스텁 밖의 gh 에 닿지 않았다" \
   "$(cat "$R35/gh-unstubbed.log" 2>/dev/null | grep -c . || true)" "0"
 

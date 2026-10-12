@@ -6609,12 +6609,16 @@ CYCLE_BUNDLE_SCRIPT='
     lb=$(gate_row_projected_bytes "cycle" "세그먼트=$s" "사이클=$c" "P0=$p0" "P1=$p1" \
         "리뷰 HEAD=$rh" "리포트 경로=$r" "lane 결정=$l" "발견 지문=000000000000")
     if [ "${lb:-0}" -gt "$GATE_ROW_MAX" ]; then
-      ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
-          "리포트 경로=$r" ) >&2 || rc=$?
+      ro=$( ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
+          "리포트 경로=$r" ) 2>&1 ) || rc=$?
       printf "lane 생략=%s\n" "$lb"
     else
-      ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
-          "리포트 경로=$r" "lane 결정=$l" ) >&2 || rc=$?
+      ro=$( ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
+          "리포트 경로=$r" "lane 결정=$l" ) 2>&1 ) || rc=$?
+    fi
+    [ -z "$ro" ] || printf "%s\n" "$ro" >&2
+    if [ "$rc" != 0 ]; then
+      case "$ro" in *"again without --slice"*) printf "몫 거절=1\n" ;; esac
     fi
     printf "행=%s\n" "$rc"
   else
@@ -6644,7 +6648,38 @@ cycle_gate_bundle() {
   # reads `lane 결정`, while `발견 지문` feeds the stall readings, so the
   # gate's own drop of `발견 지문` is the second step and only runs on a row
   # still over the cap after this one.
+  #
+  # `몫 거절=1` marks a refusal of the report's other-slice section — the gate's
+  # refusal text for those checks names a review without `--slice` as the way
+  # out, and that text is what is matched, so the caller can take that way out
+  # once instead of parking (`review_redo_reason`).
   run_gate_call eval "set -- $(printf '%q ' "$@"); $CYCLE_BUNDLE_SCRIPT"
+}
+
+review_redo_reason() {
+  # review_redo_reason <bundle> <recovered 0|1> <slice flag> — why this cycle's
+  # review is dispatched once more instead of parking the segment, nothing when
+  # the bundle is to be judged as it stands. Two shapes, each the router's:
+  #
+  #   - a clean recovery whose report has a canonical `발견 요약` and no
+  #     `리뷰 HEAD` line. The recovery arm is not bound to write that line and
+  #     nothing may stand in for it, so the row has no source; a full review is
+  #     what a crashed review got before recovery existed.
+  #   - a `cycle` row refused for its other-slice section on a review that
+  #     carried `--slice`. The reviewer cannot see which slices have landed, and
+  #     this driver merges slices one after another, so the same dispatch would
+  #     write the same report again; without `--slice` every finding counts as
+  #     this segment's own.
+  #
+  # The caller asks once per cycle: a second report of either shape parks.
+  if [ "$2" = 1 ] && [ "$(bundle_val "$1" '요약')" = "정규" ] && [ -z "$(bundle_val "$1" '리뷰 HEAD')" ]; then
+    printf '복구 리포트에 리뷰 HEAD 없음'
+    return 0
+  fi
+  if [ -n "$3" ] && [ "$(bundle_val "$1" '행')" != "0" ] && [ "$(bundle_val "$1" '몫 거절')" = "1" ]; then
+    printf '다른 슬라이스 몫 거절'
+  fi
+  return 0
 }
 
 lane_dropped_warn() {
@@ -8587,7 +8622,7 @@ review_recover() {
 # ---------------------------------------------------------------------------
 segment_cycle() {
   local seg="$1" files="$2"
-  local branch="seg/$SLUG-$seg" wt pre_head f_count cap cycle=0 al seg_repo prev_rp=""
+  local branch="seg/$SLUG-$seg" wt pre_head f_count cap cycle=0 al seg_repo prev_rp="" converged=0
   # Resolved ONCE, at the top, and threaded through everything below. Every
   # git and `gh` call in this cycle belongs to this segment's repository, not
   # to whichever one the document happened to live in.
@@ -8878,72 +8913,90 @@ segment_cycle() {
     local rscope=""
     [ -z "$seg_base" ] || rscope=" --base-sha $seg_base"
     [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
-    src=0
-    local review_line="/cc-cmds:review-unattended $branch --report-path $rp$(review_slice_flag "$seg")$rscope \"설계는 $(doc_arg)\""
-    stage_spawn "$sid" "$seg_repo" "$review_line" || src=$?
-    if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-      park_router "$seg" "$seg" cone; return 1
-    fi
-    [ "$src" = "0" ] || (exit "$src")
-    stage_wait_all "$sid"
-    if predicate_review "$rp"; then pred=0; else pred=1; fi
-    rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
-    class=$(classify_termination "$sid" "$rc" "$pred")
-    acct=$(stage_account_of "$sid")
-    # The session lineage is on THIS row too. The separation rule reads `세션 id`
-    # and `부모` from both sides and treats an unrecorded one as a refusal rather
-    # than a pass, so a review row without them refused every merge on the fixed
-    # graph path; and the gate's `--resume` admits a session only when it appears
-    # as this segment's `세션 id`, so a stage cut mid-flight could not be
-    # re-attached and had to be paid for again.
-    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
-      "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
-      "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
-      "종단 부류=$class"
-    absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
-    if [ "$class" = "거절 종료" ]; then
-      # A REFUSED REVIEW TAKES THE REFUSAL'S OWN DISPOSITION, the same one the
-      # implement arm above takes: one re-attachment of the same session, then
-      # a park of the cone under `거절 소진`. It is not a crash, so it does not
-      # go to the crash recovery below, whose `*` arm would park it under
-      # `무효화`, a cause the run's termination cannot resolve.
-      if ! refusal_or_park "$sid" "$seg" "$seg" S5 "$seg_repo" "$review_line" \
-             "리뷰 리포트 $rp 에 종료 술어 줄이 없다" "$(seg_alias "$seg")" \
-             -- predicate_review "$rp"; then
-        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
-        [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-        [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-        park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+    # ONE MORE REVIEW, NEVER TWO. A report the row cannot take in one of the two
+    # shapes `review_redo_reason` names is answered by dispatching this cycle's
+    # review once more, to a report path of its own — the first report still
+    # carries the termination predicate, so on the same path a second review
+    # that died would read as finished. The second report is judged as it
+    # stands.
+    local redo="" recovered slice_flag review_line
+    local tri_out tri bundle brc p0 p1 rhead rowrc nx elem lanes
+    while :; do
+      recovered=0
+      slice_flag=$(review_slice_flag "$seg")
+      [ "$redo" != "다른 슬라이스 몫 거절" ] || slice_flag=""
+      src=0
+      review_line="/cc-cmds:review-unattended $branch --report-path $rp$slice_flag$rscope \"설계는 $(doc_arg)\""
+      stage_spawn "$sid" "$seg_repo" "$review_line" || src=$?
+      if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
+        park_router "$seg" "$seg" cone; return 1
       fi
-    elif [ "$class" != "정상 완료" ]; then
-      review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
-    fi
-    spawn_lineage_release "$sid"
+      [ "$src" = "0" ] || (exit "$src")
+      stage_wait_all "$sid"
+      if predicate_review "$rp"; then pred=0; else pred=1; fi
+      rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
+      class=$(classify_termination "$sid" "$rc" "$pred")
+      acct=$(stage_account_of "$sid")
+      # The session lineage is on THIS row too. The separation rule reads `세션 id`
+      # and `부모` from both sides and treats an unrecorded one as a refusal rather
+      # than a pass, so a review row without them refused every merge on the fixed
+      # graph path; and the gate's `--resume` admits a session only when it appears
+      # as this segment's `세션 id`, so a stage cut mid-flight could not be
+      # re-attached and had to be paid for again.
+      ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
+        "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
+        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+        "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
+        "종단 부류=$class"
+      absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
+      if [ "$class" = "거절 종료" ]; then
+        # A REFUSED REVIEW TAKES THE REFUSAL'S OWN DISPOSITION, the same one the
+        # implement arm above takes: one re-attachment of the same session, then
+        # a park of the cone under `거절 소진`. It is not a crash, so it does not
+        # go to the crash recovery below, whose `*` arm would park it under
+        # `무효화`, a cause the run's termination cannot resolve.
+        if ! refusal_or_park "$sid" "$seg" "$seg" S5 "$seg_repo" "$review_line" \
+               "리뷰 리포트 $rp 에 종료 술어 줄이 없다" "$(seg_alias "$seg")" \
+               -- predicate_review "$rp"; then
+          [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
+          [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+          [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+          park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+        fi
+      elif [ "$class" != "정상 완료" ]; then
+        review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
+        recovered=1
+      fi
+      spawn_lineage_release "$sid"
 
-    # --- S6 TRIAGE ---------------------------------------------------------
-    local tri_out tri
-    tri_out=$(judgment_call triage "$rp") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
-    tri=$(judgment_result "$tri_out")
-    # THE ROW IS THE REPORT'S, written by the gate. Its P0 and P1 are the
-    # report's `발견 요약`, the same numbers the gate's `다음` and the merge rule
-    # read; a count the driver cannot get from the report is a park, never a
-    # zero — the old `// 0` default turned a judgment that returned no count
-    # into a converged cycle.
-    local bundle brc=0 p0 p1 rhead rowrc nx elem lanes
-    lanes=$(printf '%s' "$tri" | jq -c '[.findings[]? | {id:.finding_id, lane:.lane}]' 2>/dev/null) || lanes='[]'
-    bundle=$(cycle_gate_bundle "$seg" "$al" "$cycle" "$rp" "$lanes") || brc=$?
+      # --- S6 TRIAGE -------------------------------------------------------
+      tri_out=$(judgment_call triage "$rp") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
+      tri=$(judgment_result "$tri_out")
+      # THE ROW IS THE REPORT'S, written by the gate. Its P0 and P1 are the
+      # report's `발견 요약`, the same numbers the gate's `다음` and the merge rule
+      # read; a count the driver cannot get from the report is a park, never a
+      # zero — the old `// 0` default turned a judgment that returned no count
+      # into a converged cycle.
+      brc=0
+      lanes=$(printf '%s' "$tri" | jq -c '[.findings[]? | {id:.finding_id, lane:.lane}]' 2>/dev/null) || lanes='[]'
+      bundle=$(cycle_gate_bundle "$seg" "$al" "$cycle" "$rp" "$lanes") || brc=$?
+      [ -z "$redo" ] || break
+      redo=$(review_redo_reason "$bundle" "$recovered" "$slice_flag")
+      [ -n "$redo" ] || break
+      rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle-r2.md"
+      log "$seg: $redo — 사이클 $cycle 의 리뷰를 한 번 더 파견한다 ($rp)"
+    done
     p0=$(bundle_val "$bundle" 'P0'); p1=$(bundle_val "$bundle" 'P1')
     rhead=$(bundle_val "$bundle" '리뷰 HEAD'); rowrc=$(bundle_val "$bundle" '행')
     if [ "$brc" = "9" ] || [ "$(bundle_val "$bundle" '요약')" != "정규" ] || [ -z "$rhead" ]; then
-      park "$seg" cone 무효화 "게이트 park" "리뷰 리포트 집계 부재"
+      park "$seg" cone 무효화 "게이트 park" "리뷰 리포트 집계 부재${redo:+ — $redo 뒤 다시 파견한 리뷰}"
       return 1
     fi
     # The row left `lane 결정` off to stay under the cap; the run log is where
     # the dropped value survives.
     lane_dropped_warn "$seg" "$cycle" "$lanes" "$(bundle_val "$bundle" 'lane 생략')"
     if [ "$rowrc" != "0" ]; then
-      park "$seg" cone 무효화 "게이트 park" "cycle 행 거절(rc=${rowrc:-?})"
+      park "$seg" cone 무효화 "게이트 park" "cycle 행 거절(rc=${rowrc:-?})${redo:+ — $redo 뒤 다시 파견한 리뷰}"
       return 1
     fi
     prev_rp="$rp"
@@ -8975,7 +9028,7 @@ segment_cycle() {
     review_disposition "$seg" "$al" "$branch" "$wt" "$seg_base" "$plan_digest" "$cycle" \
       "$rhead" "$p1" "$(bundle_val "$bundle" '다음')" "$(bundle_element "$bundle" "$seg")" || drc=$?
     case "$drc" in
-      0) break ;;
+      0) converged=1; break ;;
       "$DISPO_FIX") : ;;
       "$DISPO_NEXT") continue ;;   # no ladder step: the next cycle is the fix, aimed at the report
       2) return 2 ;;
@@ -9073,7 +9126,12 @@ EOF
     fi
   done
 
-  if [ "$cycle" -ge "$cap" ]; then
+  # A cycle that converged on its last allowed pass leaves `cycle` equal to
+  # `cap` too, and it goes to the merge gate: only a loop that ran out of
+  # cycles without converging is the budget's park. Read from the cycle count
+  # alone, a segment whose last review ended in `머지` or `이월 머지` parked
+  # here unmerged — after the carry-over issues were already open.
+  if [ "$converged" != 1 ] && [ "$cycle" -ge "$cap" ]; then
     park "$seg" cone 무효화 "사이클 예산 소진" "사이클 상한 ${cap}(${LADDER_RUNGS}F+1, F=$f_count) 도달"
     return 1
   fi
