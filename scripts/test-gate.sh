@@ -30994,6 +30994,82 @@ om86 읽기 bash -c "grep -E 'a|b' $T86/sh86c/g"
 check "86: 대조 — 읽기로 선언한 따옴표 안 | 의 grep 은 통과한다" "$rc" "0"
 rm -rf "$SIB86/sh86c" "$T86/sh86c" "$T86/rd86c" "$WT/rd86s"
 
+# 주석·heredoc·$'…' — 스캐너가 이 셋을 모르던 동안 주석이나 heredoc 본문의 아포스트로피
+# 둘이 따옴표로 읽혀, 그 사이의 머지와 형제 rm 이 주석 첫 낱말을 명령어로 하는 한 줄로
+# 접혀 읽기로 지나갔다. 짝 없는 하나는 나머지를 미독으로 만들어 don't 가 든 커밋
+# heredoc 이 머지로 강제됐다. 큰따옴표 안의 \n 은 착지 미독이 되어 자기 워크트리 쓰기가
+# 트리밖쓰기로 올랐고, 표에 없는 명령어(coproc·trap·앞선 <·zsh 수식어·caffeinate) 뒤의
+# 머지는 읽기로 지나갔으며, 따옴표 안 공백에서 쪼개진 형제 경로는 덮어쓰기 park 를
+# 비켜 갔다. -c 안의 find -exec 는 안쪽과 무관하게 머지로 강제됐다. 함수 수준의 바닥·
+# 사다리·런로컬 판정과 실행 수준의 거부·잔존을 함께 두고, 일상 철자가 정직한 선언으로
+# 지나가는 쌍을 둔다. 스텁·픽스처 파일은 이 블록이 만들고 지운다.
+for p86 in $'# Don\'t merge if CI fails\ngh pr merge 1 --squash\n# that\'s it' \
+           $'ls >/dev/null # it\'s\ngh pr merge 1\n# that\'s it' \
+           $'cat > /tmp/n86 <<\'EOF\'\nit\'s merged\nEOF\ngh pr merge 1 --squash\n# we\'re done' \
+           "echo 'a<<b'; gh pr merge 1; echo 'c<<d'" "echo \$'it\\'s'; gh pr merge 1" \
+           $'cat <<EOF\n$(gh pr merge 1)\nEOF' $'cat <<EOF\nnever closed\ngh pr merge 1' \
+           'coproc gh pr merge 1' "trap 'gh pr merge 1' EXIT" '</dev/null gh pr merge 1' \
+           '< /dev/null gh pr merge 1' '<<<x gh pr merge 1' 'caffeinate gh pr merge 1' \
+           'script -q /dev/null gh pr merge 1' 'true; noglob gh pr merge 1' \
+           'true; - gh pr merge 1' 'find . -exec gh pr merge 1 \;'; do
+  check "86: 주석·heredoc·표에 없는 명령어 뒤의 머지는 사다리 머지다 — ${p86//$'\n'/⏎}" "$(ld86 bash -c "$p86")" "머지"
+done
+for p86 in $'# Don\'t merge if CI fails\ngh pr merge 1 --squash\n# that\'s it' \
+           'coproc gh pr merge 1' 'caffeinate gh pr merge 1' "find . -exec bash -c 'x' \\;"; do
+  check "86: 그 머지 철자의 바닥은 외부상태변경이다 — ${p86//$'\n'/⏎}" "$(fl86 bash -c "$p86")" "외부상태변경"
+done
+check "86: zsh -c 의 noglob 뒤 머지는 사다리 머지다" "$(ld86 zsh -c 'noglob gh pr merge 1')" "머지"
+check "86: 대조 — 아포스트로피 주석 뒤 make test 는 사다리가 없다" "$(ld86 bash -c $'true # don\'t\nmake test')" ""
+check "86: 대조 — 아포스트로피 주석 뒤 make test 의 바닥은 워크트리쓰기다" "$(fl86 bash -c $'true # don\'t\nmake test')" "워크트리쓰기"
+check "86: 대조 — 표에 없는 make 뒤 읽기 낱말은 사다리가 없다" "$(ld86 bash -c 'make test')" ""
+check "86: 대조 — 본문에 don't 와 백틱 하나가 든 커밋 heredoc 은 사다리 커밋이다" \
+  "$(ld86 bash -c $'git commit -q -F - <<\'EOF\'\nfix: don\'t crash `x\nEOF')" "커밋"
+check "86: 대조 — 그 커밋 heredoc 의 바닥은 워크트리쓰기다" \
+  "$(fl86 bash -c $'git commit -q -F - <<\'EOF\'\nfix: don\'t crash `x\nEOF')" "워크트리쓰기"
+check "86: 대조 — 줄 끝 아포스트로피 주석의 echo 는 바닥 읽기다" "$(fl86 bash -c "echo hi # don't")" "읽기"
+check "86: 대조 — 큰따옴표 안 \\n 의 자기 워크트리 리다이렉션은 바닥 워크트리쓰기다" \
+  "$(fl86 bash -c 'printf "%s\n" a > pf86.txt')" "워크트리쓰기"
+check "86: 대조 — 큰따옴표 안 \\n 의 커밋 메시지는 바닥 워크트리쓰기다" "$(fl86 bash -c 'git commit -qm "a\nb"')" "워크트리쓰기"
+check "86: 대조 — 큰따옴표 안 \\n 의 자기 워크트리 리다이렉션은 런로컬 판정을 지난다" \
+  "$(rd86 bash -c 'printf "%s\n" a > pf86.txt')" ""
+check "86: 대조 — -c 안 find -exec rm 은 바닥 워크트리쓰기다" "$(fl86 bash -c "find . -name '*.o' -exec rm {} +")" "워크트리쓰기"
+check "86: 대조 — -c 안 find -exec rm 은 사다리가 없다" "$(ld86 bash -c "find . -name '*.o' -exec rm {} +")" ""
+check "86: 대조 — 따옴표 안 ; 커밋은 여전히 바닥 워크트리쓰기다" "$(fl86 bash -c "git commit -m 'fix: a; b'")" "워크트리쓰기"
+mkdir -p "$SIB86/sh86d" "$T86/sh86d"
+printf 'k\n' > "$SIB86/sh86d/f"; printf 'k\n' > "$SIB86/sh86d/my file.txt"; printf 'n\n' > "$T86/sh86d/src"
+for p86 in $'# don\'t\nrm -f '"$SIB86"$'/sh86d/f\n# that\'s it' \
+           $'cat <<\'EOF\'\nit\'s\nEOF\nrm -f '"$SIB86/sh86d/f" \
+           "</dev/null rm -rf $SIB86/sh86d" "coproc rm -rf $SIB86/sh86d" \
+           "cp $T86/sh86d/src '$SIB86/sh86d/my file.txt'"; do
+  check "86: 주석·heredoc·앞선 <·coproc·공백 경로의 형제 파괴는 런로컬 판정에서 park 된다 — ${p86#*"$WORK"}" \
+    "$(rd86 bash -c "$p86")" "파괴형태미명시"
+done
+
+GH86D="$WORK/gh86d"; mkdir -p "$GH86D"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$GH86D/ran" > "$GH86D/gh"
+chmod +x "$GH86D/gh"
+for p86 in $'ls >/dev/null # it\'s\n'"$GH86D"$'/gh pr merge 13\n# that\'s it' \
+           $'cat <<\'EOF\'\nit\'s merged\nEOF\n'"$GH86D/gh pr merge 14" \
+           "echo \$'it\\'s'; $GH86D/gh pr merge 15" "</dev/null $GH86D/gh pr merge 16"; do
+  mg86 bash -c "$p86"
+  case "$rc" in 0) bad "86: 읽기·커밋 선언의 주석·heredoc 뒤 머지는 거부된다 — ${p86%%$'\n'*}" "rc=$rc $msg" ;;
+    *) ok "86: 읽기·커밋 선언의 주석·heredoc 뒤 머지는 거부된다 — ${p86%%$'\n'*} (rc=$rc)" ;; esac
+done
+[ ! -e "$GH86D/ran" ] && ok "86: 거부된 주석·heredoc 머지 철자 중 어느 것도 스텁을 실행하지 않았다" \
+  || bad "86: 거부된 주석·heredoc 머지 철자 중 어느 것도 스텁을 실행하지 않았다" "$(cat "$GH86D/ran")"
+rm -rf "$GH86D"
+rl86 bash -c $'ls >/dev/null # it\'s\nrm -f '"$SIB86"$'/sh86d/f\n# that\'s it'
+case "$rc" in 0) bad "86: 런로컬로 선언한 아포스트로피 주석 사이 형제 rm 은 park 된다" "rc=$rc $msg" ;;
+  *) ok "86: 런로컬로 선언한 아포스트로피 주석 사이 형제 rm 은 park 된다 (rc=$rc)" ;; esac
+check "86: 그 주석 사이 형제 rm 의 파일이 남아 있다" "$(cat "$SIB86/sh86d/f" 2>/dev/null)" "k"
+rl86 bash -c "cp $T86/sh86d/src '$SIB86/sh86d/my file.txt'"
+case "$rc" in 0) bad "86: 런로컬로 선언한 공백 든 형제 경로 cp 덮어쓰기는 park 된다" "rc=$rc $msg" ;;
+  *) ok "86: 런로컬로 선언한 공백 든 형제 경로 cp 덮어쓰기는 park 된다 (rc=$rc)" ;; esac
+check "86: 그 공백 든 형제 경로의 파일 내용이 그대로다" "$(cat "$SIB86/sh86d/my file.txt" 2>/dev/null)" "k"
+TMPDIR="$T86" r86 워크트리쓰기 bash -c 'printf "%s\n" a > pf86.txt'
+check "86: 대조 — 워크트리쓰기 런로컬로 선언한 큰따옴표 안 \\n 의 자기 워크트리 쓰기는 통과한다" "$rc" "0"
+rm -rf "$SIB86/sh86d" "$T86/sh86d" "$WT/pf86.txt"
+
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
 # 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git
 # 디렉터리의 stash 가 지워졌다. 하한 판정을 직접 재고, 실행 수준에서 park 와 stash 항목의

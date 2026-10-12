@@ -2054,6 +2054,7 @@ gate_reach_runlocal_destruction() {
     set -- $kept
     set +f
     [ $# -gt 0 ] || continue
+    gate_opl_words "$@"; set -- "${GATE_OPL_WORDS[@]}"
     case "$unread" in
       1|3)
         [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ] || continue
@@ -7285,6 +7286,7 @@ gate_opaque_floor() {
     set -- $line
     set +f
     [ $# -gt 0 ] || continue
+    gate_opl_words "$@"; set -- "${GATE_OPL_WORDS[@]}"
     g=$(surface_of_argv0 "$@")
     # A LAUNCHER OPTION THE PEEL CANNOT READ FLOORS `트리밖쓰기`. The same argv
     # written bare is refused as `형태 미상`, and that is not a floor, so `bash
@@ -7319,8 +7321,10 @@ gate_opaque_floor() {
     # "lockf -p <sibling file> true"` grades `형태 미상` here, and that is not a
     # floor. So the line is floored the way the same argv is floored bare, and
     # only the first field is folded — the mark is `gate_act_mark`'s, below.
+    # A `find` line is floored the same way, through its `-exec` commands: the
+    # reader leaves one in the line only when it reads what that command is.
     case "${1##*/}" in
-      lockf|time)
+      lockf|time|find)
         g=$(gate_opaque_floor "$@")
         g="${g%%	*}"
         fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
@@ -7415,18 +7419,40 @@ gate_shell_scan() {
   # land on.
   #
   # The rules, outside single quotes and unescaped:
-  #   - A single quote holds everything up to the next one. A backslash binds
-  #     the character after it, outside quotes and inside double quotes; a
+  #   - A single quote holds everything up to the next one. `$'` opens an
+  #     ANSI-C quote, where a backslash binds the character after it (`\'`
+  #     does not close it) and the line is 3, because the shell expands the
+  #     escape. Inside double quotes a backslash binds only `$`, the
+  #     backtick, `"`, `\` and the newline, and anywhere else it is a plain
+  #     character — `"%s\n"` is `%s\n` to the shell too. Outside quotes it
+  #     binds whatever follows. A bound character makes the line 3, and a
   #     backslash before a newline joins the two lines. Inside double quotes
   #     only `$(` and the backtick open anything. Quotes and backslashes stay
   #     in the line, so the reader still sees how the command word was
   #     written; it removes the quotes from each word itself.
+  #   - A `#` at the start of a word is a comment up to the newline. It
+  #     changes no quote state, so an apostrophe in it opens nothing.
+  #   - A here-document (`<<`, `<<-`; not `<<<`) leaves neither its operator
+  #     nor its delimiter in the line. At the next newline outside quotes
+  #     the lines up to the delimiter line (its leading tabs removed for
+  #     `<<-`) are its body, which is data and prints nothing when the
+  #     delimiter is quoted in any part. An unquoted delimiter lets the
+  #     shell run a `$(` or a backtick in the body, so a body holding one is
+  #     printed as one line marked 2. A body whose delimiter line never comes
+  #     is printed as one line marked 2, and so is every line after it, and
+  #     so is every line after a `<<` with no delimiter word.
   #   - The cuts are `;`, the newline, `|`, `&`, `(` and `)`. The `&` of a
   #     redirection operator does not cut (`>&2`, `2>&1`, `<&0`, `&>f`,
   #     `&>>f`), nor the `|` of `>|f`. `{` and `}` cut only as words of their
-  #     own; inside a word (`{a,b}/x`, `${V}`) they stay in it.
-  #   - Inside quotes a newline becomes a space and `>`/`<` become `_`, so a
-  #     line is one record and a quoted `>` is not read as a redirection.
+  #     own; inside a word (`{a,b}/x`, `${V}`) they stay in it. A word `{}`
+  #     is literal to the shell and is kept without a mark.
+  #   - Inside quotes (and bound by a backslash) a space, a tab, a newline,
+  #     `>` and `<` are printed as the bytes 034, 035, 036, 037 and 031, so a
+  #     quoted operand stays one word when the reader splits the line, a line
+  #     is one record, and a quoted `>` is not read as a redirection. The
+  #     reader puts `>` and `<` back when it removes a word's quotes, and
+  #     each consumer puts the other three back once it has split a record
+  #     into words (`gate_opl_words`).
   #   - `$(…)` and a backtick substitution print their body as lines of their
   #     own ahead of the line using them, and stand in that line as the word
   #     `$_`. The body is read by the same rules.
@@ -7434,16 +7460,79 @@ gate_shell_scan() {
   #     operator is not left in the line and every line of its body is 2.
   #
   # `<m>` is 0 for a line read, 2 for a line whose command the reader cannot
-  # place — a process substitution's body, or what is left at the end when a
-  # quote or a substitution never closed (the lines before it may already have
-  # run, so only the rest is 2) — and 3 for a line the shell expands
-  # differently from the reader: it holds a `{` or `}` inside a word, or a
-  # backslash outside single quotes. A comment (`#`) is not modeled; what
-  # follows one is read as commands, which is the closed side.
+  # place — a process substitution's body, a here-document body above, or what
+  # is left at the end when a quote or a substitution never closed (the lines
+  # before it may already have run, so only the rest is 2) — and 3 for a line
+  # the shell expands differently from the reader: it holds a `{` or `}`
+  # inside a word, or a character bound by a backslash.
+  #
+  # COMMENTS, HERE-DOCUMENTS AND `$'…'` ARE MODELED BECAUSE A QUOTE IN THEM IS
+  # NO QUOTE TO THE SHELL. Read as quotes, two apostrophes in comments folded
+  # the `gh pr merge 1` between them into one line whose command word was the
+  # comment's first word: no rung, a `읽기` floor, and the stub merge ran under
+  # a `읽기` declaration; a sibling `rm -f` ran under `런로컬`. One apostrophe
+  # alone made the rest of the string 2, so a commit here-document whose body
+  # said `don't` was forced to `머지`. The marker `sed` that stripped `<<WORD`
+  # before scanning also ate the closing quote of `'a<<b'`.
   LC_ALL=C awk '
-    function curm() { return c2 ? 2 : (m3 ? 3 : 0) }
+    function curm() { return (c2 || bad) ? 2 : (m3 ? 3 : 0) }
     function emit(m) { if (buf ~ /[^ \t]/) print m "\t" buf; buf = ""; m3 = 0 }
     function cut() { emit(curm()) }
+    function enc(ch) {
+      if (ch == " ") return "\034"
+      if (ch == "\t") return "\035"
+      if (ch == "\n") return "\036"
+      if (ch == ">") return "\037"
+      if (ch == "<") return "\031"
+      return ch
+    }
+    function hdoc(   j, w, qd, ch, st) {
+      j = i + 2; st = 0
+      if (substr(s, j, 1) == "-") { st = 1; j++ }
+      while (j <= n && (substr(s, j, 1) == " " || substr(s, j, 1) == "\t")) j++
+      w = ""; qd = 0
+      while (j <= n) {
+        ch = substr(s, j, 1)
+        if (ch == "\047") {
+          qd = 1; j++
+          while (j <= n && substr(s, j, 1) != "\047") { w = w substr(s, j, 1); j++ }
+          j++; continue
+        }
+        if (ch == "\"") {
+          qd = 1; j++
+          while (j <= n && substr(s, j, 1) != "\"") {
+            if (substr(s, j, 1) == "\\") j++
+            w = w substr(s, j, 1); j++
+          }
+          j++; continue
+        }
+        if (ch == "\\") { qd = 1; w = w substr(s, j + 1, 1); j += 2; continue }
+        if (index(" \t\n;&|()<>", ch)) break
+        w = w ch; j++
+      }
+      i = j - 1
+      if (w == "") { bad = 1; return }
+      hn++; hw[hn] = w; hs[hn] = st; hq[hn] = qd
+    }
+    function hbody(   k, ls, le, ln, t, body, found) {
+      for (k = 1; k <= hn; k++) {
+        body = ""; found = 0
+        while (i < n) {
+          ls = i + 1; le = ls
+          while (le <= n && substr(s, le, 1) != "\n") le++
+          ln = substr(s, ls, le - ls); t = ln
+          if (hs[k]) sub(/^\t+/, "", t)
+          i = le
+          if (t == hw[k]) { found = 1; break }
+          body = body " " ln
+        }
+        if (i > n) i = n
+        gsub(/\t/, " ", body)
+        if (!found) { buf = body; emit(2); bad = 1; hn = 0; return }
+        if (!hq[k] && (index(body, "$(") || index(body, "`"))) { buf = body; emit(2) }
+      }
+      hn = 0
+    }
     function sopen(kind) {
       sp++; sb[sp] = buf; sq[sp] = q; sm[sp] = m3; sk[sp] = kind; sd[sp] = dep; sc[sp] = c2
       buf = ""; q = 0; m3 = 0; dep = 0; kd = kind
@@ -7457,37 +7546,51 @@ gate_shell_scan() {
     { s = s (NR > 1 ? "\n" : "") $0 }
     END {
       n = length(s); buf = ""; q = 0; m3 = 0; c2 = 0; sp = 0; dep = 0; kd = ""
+      bad = 0; hn = 0
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1); nx = substr(s, i + 1, 1)
         if (q == 1) {
           if (c == "\047") q = 0
-          if (c == "\n") c = " "; else if (c == ">" || c == "<") c = "_"
-          buf = buf c; continue
+          buf = buf enc(c); continue
+        }
+        if (q == 3) {
+          if (c == "\\") { m3 = 1; buf = buf c enc(nx); i++; continue }
+          if (c == "\047") q = 0
+          buf = buf enc(c); continue
         }
         if (c == "\\") {
+          if (q == 2 && (nx == "" || !index("$`\"\\\n", nx))) { buf = buf c; continue }
           if (nx == "\n") { i++; continue }
           m3 = 1
-          if (nx == ">" || nx == "<") nx = "_"
-          buf = buf c nx; i++; continue
+          buf = buf c enc(nx); i++; continue
         }
         if (c == "`") { if (kd == "b") sclose(); else sopen("b"); continue }
         if (c == "$" && nx == "(") { sopen("s"); i++; continue }
         if (q == 2) {
           if (c == "\"") q = 0
-          if (c == "\n") c = " "; else if (c == ">" || c == "<") c = "_"
-          buf = buf c; continue
+          buf = buf enc(c); continue
         }
+        l = substr(buf, length(buf), 1)
+        if (c == "#" && (buf == "" || l == " " || l == "\t")) {
+          while (i < n && substr(s, i + 1, 1) != "\n") i++
+          continue
+        }
+        if (c == "$" && nx == "\047") { q = 3; buf = buf c nx; i++; continue }
         if (c == "\047") { q = 1; buf = buf c; continue }
         if (c == "\"") { q = 2; buf = buf c; continue }
+        if (c == "<" && nx == "<") {
+          if (substr(s, i + 2, 1) == "<") { buf = buf "<<<"; i += 2; continue }
+          hdoc(); continue
+        }
         if ((c == ">" || c == "<") && nx == "(") { sopen("p"); i++; continue }
-        l = substr(buf, length(buf), 1)
         if (c == "(") { if (kd == "s" || kd == "p") dep++; cut(); continue }
         if (c == ")") {
           if ((kd == "s" || kd == "p") && dep == 0) { sclose(); continue }
           if (dep > 0) dep--
           cut(); continue
         }
-        if (c == ";" || c == "\n") { cut(); continue }
+        if (c == ";") { cut(); continue }
+        if (c == "\n") { cut(); if (hn > 0) hbody(); continue }
         if (c == "&") {
           if (l == ">" || l == "<" || nx == ">") { buf = buf c; continue }
           cut(); continue
@@ -7495,6 +7598,10 @@ gate_shell_scan() {
         if (c == "|") {
           if (l == ">") { buf = buf c; continue }
           cut(); continue
+        }
+        if (c == "{" && nx == "}" && (buf == "" || l == " " || l == "\t") \
+            && (substr(s, i + 2, 1) == "" || index(" \t\n;&|()", substr(s, i + 2, 1)))) {
+          buf = buf "{}"; i++; continue
         }
         if (c == "{" || c == "}") {
           if ((buf == "" || l == " " || l == "\t") && (nx == "" || index(" \t\n;&|()", nx))) { cut(); continue }
@@ -7513,6 +7620,94 @@ gate_shell_scan() {
 # the gate's own environment never reaches a line.
 GATE_OPL_ENV=''
 
+# The bytes `gate_shell_scan` prints for a quoted space, tab, newline, `>` and
+# `<`.
+GATE_SC_SP=$'\034'; GATE_SC_TAB=$'\035'; GATE_SC_NL=$'\036'
+GATE_SC_GT=$'\037'; GATE_SC_LT=$'\031'
+
+gate_opl_words() {
+  # gate_opl_words <word...> — GATE_OPL_WORDS: the words of a record of
+  # `gate_opaque_payload_lines` with the scanner's bytes for a quoted space,
+  # tab and newline put back. A record keeps them so a quoted operand is
+  # still one word when its consumer splits the record; `'<sibling>/my
+  # file.txt'` split at its space was `<sibling>/my` and `file.txt`, and the
+  # `cp` that overwrote the sibling's file was read as a copy to a relative
+  # name that did not exist.
+  local x
+  GATE_OPL_WORDS=()
+  for x in "$@"; do
+    x="${x//$GATE_SC_SP/ }"; x="${x//$GATE_SC_TAB/	}"; x="${x//$GATE_SC_NL/
+}"
+    GATE_OPL_WORDS[${#GATE_OPL_WORDS[@]}]="$x"
+  done
+}
+
+gate_opl_runs_other() {
+  # gate_opl_runs_other <word> — status 0 when the command word runs another
+  # command this reader does not read: a nested shell, `eval`, `source`, `.`,
+  # `xargs`, `sudo`, `builtin` or `command` left after the peel, `trap` and
+  # `alias` (each takes a command string), and the zsh precommand modifiers
+  # `noglob`, `nocorrect`, `repeat` and `-`.
+  case "${1##*/}" in
+    eval|source|.|bash|sh|zsh|dash|ksh|xargs|sudo|builtin|command|\
+    trap|alias|noglob|nocorrect|repeat|-) return 0 ;;
+  esac
+  return 1
+}
+
+gate_opl_find_runs_other() {
+  # gate_opl_find_runs_other <words as written...> — status 0 when an
+  # `-exec`, `-execdir`, `-ok` or `-okdir` of a `find` line runs a command
+  # this reader does not read: the word after the primary is missing, holds
+  # `$`, a quote or a backslash, or names a command `gate_opl_runs_other`
+  # names. Any other inner command is read the way a bare `find` reads it —
+  # `bash -c "find . -name '*.o' -exec rm {} +"` was forced to `머지` and no
+  # declaration let it through.
+  local x
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -exec|-execdir|-ok|-okdir)
+        [ $# -ge 2 ] || return 0
+        x="$2"
+        case "$x" in *'$'*|*\\*|*\'*|*\"*) return 0 ;; esac
+        gate_opl_runs_other "$x" && return 0 ;;
+    esac
+    shift
+  done
+  return 1
+}
+
+gate_opl_hides_command() {
+  # gate_opl_hides_command <argv...> — status 0 when the command word has no
+  # row in the grading table and a later word starts an argv the table
+  # grades above a read, gives a rung, or the local reader calls
+  # destructive. `caffeinate gh pr merge 1`, `watch …`, `script -q /dev/null
+  # …`, `unbuffer …` and `parallel … :::` run the argv behind them, and the
+  # line passed as a plain read with no rung while the same argv written
+  # bare is refused as `등급 미상`. A word after an unknown command that only
+  # reads (`make test`) leaves the line as it is.
+  local g j w
+  gate_opl_words "$@"
+  set -- "${GATE_OPL_WORDS[@]}"
+  g=$(surface_of_argv0 "$@" 2>/dev/null) || g=''
+  case "$g" in 읽기|워크트리쓰기|트리밖쓰기|외부상태변경) return 1 ;; esac
+  [ -z "$(gate_reach_local_destructive_here "$@" 2>/dev/null)" ] || return 1
+  j=2
+  while [ "$j" -le $# ]; do
+    w="${!j}"
+    case "$w" in
+      ''|-*|*=*|*[!A-Za-z0-9_./+-]*) ;;
+      *)
+        g=$(surface_of_argv0 "${@:j}" 2>/dev/null) || g=''
+        case "$g" in 워크트리쓰기|트리밖쓰기|외부상태변경) return 0 ;; esac
+        [ -z "$(ladder_of_argv0 "${@:j}" 2>/dev/null)" ] || return 0
+        [ -z "$(gate_reach_local_destructive_here "${@:j}" 2>/dev/null)" ] || return 0 ;;
+    esac
+    j=$((j + 1))
+  done
+  return 1
+}
+
 gate_opl_redir_record() {
   # gate_opl_redir_record <target> <poison> [<m>] — the record `gate_opaque_
   # payload_lines` prints for one write redirection: 4 with the target, or 5
@@ -7520,6 +7715,7 @@ gate_opl_redir_record() {
   # or a glob, <poison> is 1, or the line's scanner mark <m> is 3. Quotes are
   # removed as from any operand; a descriptor device has none.
   local t="${1//[\'\"]/}"
+  t="${t//$GATE_SC_GT/>}"; t="${t//$GATE_SC_LT/<}"
   case "$t" in
     ''|/dev/null|/dev/stdout|/dev/stderr|/dev/fd/*) return 0 ;;
   esac
@@ -7545,14 +7741,15 @@ gate_opaque_payload_lines() {
   # lines to it, and the destruction question did not read the string at all.
   # A new spelling closed in one of them stayed open in the other.
   #
-  # Heredoc markers are dropped first (their bodies are DATA, and a SQL heredoc
-  # naming `drop table` is not the shell running `drop`). A shell's `-c` string
-  # is then cut by `gate_shell_scan`, which knows quotes, backslashes and
+  # A here-document body is DATA (a SQL heredoc naming `drop table` is not the
+  # shell running `drop`). A shell's `-c` string is cut by `gate_shell_scan`,
+  # which knows quotes, backslashes, comments, here-documents and
   # substitutions: a substitution's body is read as lines of its own ahead of
   # the line that uses it, and stands in that line as a word holding `$`; `$`
   # is kept until the marks below are taken and removed only from what is
-  # printed. Every other payload is cut at `;&|(){}`, the backtick and the
-  # newline, with `$` and the quotes removed before reading. In a shell's
+  # printed. Every other payload has its heredoc markers dropped and is cut at
+  # `;&|(){}`, the backtick and the newline, with `$` and the quotes removed
+  # before reading. In a shell's
   # `-c` string the quotes come off each word once the command word is
   # settled: a quoted operand that kept its quotes as part of the word made
   # `lockf '<absolute path>' true` read as a relative path inside the target,
@@ -7574,7 +7771,7 @@ gate_opaque_payload_lines() {
   # git`, `env` alone) is not printed.
   #
   # The reserved words removed are the ones that may stand before a command:
-  # `!`, `if`, `then`, `elif`, `else`, `do`, `while`, `until`, and `time` when
+  # `!`, `if`, `then`, `elif`, `else`, `do`, `while`, `until`, `coproc`, and `time` when
   # the next word is not an option — with an option it is read as `time(1)`,
   # whose `-o` file the `time` arm of the floor reads. A line holding `fi`,
   # `done` or `esac` runs nothing and is not printed. Left in place, `then`
@@ -7592,29 +7789,36 @@ gate_opaque_payload_lines() {
   #
   # `<읽지 못함>` IS ONE OF SIX, AND WHAT THIS READER DOES NOT MODEL IS UNREAD.
   # In a shell's `-c` string it models the shell's option grammar
-  # (`gate_shell_c_string`), the quoting and substitutions `gate_shell_scan`
-  # reads, the reserved words above, `exec`, `builtin` and `command`, leading
-  # assignments, the launchers, what `lockf` and `time` run, the redirections
-  # and a glob in a directory component. Anything else is marked rather than
-  # guessed at, and each consumer takes the mark on its closed side:
+  # (`gate_shell_c_string`), the quoting, comments, here-documents and
+  # substitutions `gate_shell_scan` reads, the reserved words above, `exec`,
+  # `builtin` and `command`, leading assignments, the launchers, what `lockf`
+  # and `time` run, what a `find` runs through `-exec`, the redirections (an
+  # input redirection is taken out of the line as a read) and a glob in a
+  # directory component. Anything else is marked rather than guessed at, and
+  # each consumer takes the mark on its closed side:
   #   0 — read.
   #   1 — an option of a launcher the peel cannot read; the peel stops there.
   #       In a payload that is not a shell's `-c` string, an unread option of
   #       `exec` is 1 as well.
   #   2 — the command itself is unread (a shell's `-c` string only): its word
   #       holds `$`, a substitution, a quote, a backslash or a brace; it is a
-  #       command that runs another one (`eval`, `source`, `.`, a nested
-  #       shell, `xargs`, `sudo`, a `find` with `-exec`), directly or behind
-  #       `lockf` or `time`, or the word behind those holds `$`, a quote or a
-  #       backslash; it is still `builtin` or `command` after the peel; an
-  #       option of `exec` or `command` is unread; the shell's own option
-  #       region is (status 2 of `gate_shell_c_string`); or the scanner marked
-  #       the line 2 (a process substitution's body, or the rest of a string
-  #       whose quote or substitution never closed).
+  #       command that runs another one (`gate_opl_runs_other`: `eval`,
+  #       `source`, `.`, a nested shell, `xargs`, `sudo`, `trap`, `alias`,
+  #       the zsh precommand modifiers), directly or behind `lockf` or `time`,
+  #       or the word behind those holds `$`, a quote or a backslash; it is a
+  #       `find` whose `-exec` runs such a command or one written with `$`, a
+  #       quote or a backslash; it is a command no table grades followed by an
+  #       argv the table grades above a read (`gate_opl_hides_command`); it
+  #       is still `builtin` or `command` after the peel; an option of `exec`
+  #       or `command` is unread; the shell's own option region is (status 2
+  #       of `gate_shell_c_string`); or the scanner marked the line 2 (a
+  #       process substitution's body, a here-document body it could not
+  #       leave as data, or the rest of a string whose quote, substitution or
+  #       here-document never closed).
   #   3 — the command is read but not where it lands (a shell's `-c` string
   #       only): an operand holds `$` or a substitution, a directory component
   #       of an operand holds a glob, the scanner marked the line 3 (a brace
-  #       inside a word, or a backslash outside single quotes, which the shell
+  #       inside a word, or a character bound by a backslash, which the shell
   #       expands or removes and this reader does not), or an earlier line of
   #       the same string changed the working directory or the environment
   #       (`cd`, `pushd`, `popd`, `export`, `declare`, `typeset`, `readonly`,
@@ -7658,7 +7862,12 @@ gate_opaque_payload_lines() {
     *) payload="$*" ;;
   esac
   [ -n "$payload" ] || return 0
-  payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
+  # A shell's `-c` string has its here-documents read by the scanner, which
+  # knows where a quote stands; this `sed` does not, and ate the closing quote
+  # of `'a<<b'`.
+  if [ "$shellmode" != "1" ]; then
+    payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
+  fi
 
   local line unread kept out w k n st cw x poison=0 exec_unread=1 split
   local rx rt dup ci ii m lm=0 skipl _urc _l
@@ -7716,6 +7925,16 @@ gate_opaque_payload_lines() {
             else
               gate_opl_redir_record "$rt" "$poison" "$lm"
             fi ;;
+          # AN INPUT REDIRECTION is a read: the operator and its source are
+          # taken out of the line and leave no record. Left in place,
+          # `</dev/null gh pr merge 1` had `</dev/null` as its command word,
+          # read as `null`, and the merge went through as a plain read.
+          *'<'*)
+            rx="${1%%<*}"; rt="${1#*<}"
+            while :; do case "$rt" in '<'*) rt="${rt#<}" ;; *) break ;; esac; done
+            rt="${rt#&}"
+            case "$rx" in ''|*[!0-9]*) [ -z "$rx" ] || rw[${#rw[@]}]="$rx" ;; esac
+            if [ -z "$rt" ] && [ $# -ge 2 ]; then shift; fi ;;
           *) rw[${#rw[@]}]="$1" ;;
         esac
         shift
@@ -7724,7 +7943,7 @@ gate_opaque_payload_lines() {
     fi
     while [ $# -gt 0 ]; do
       case "$1" in
-        '!'|if|then|elif|else|do|while|until) shift ;;
+        '!'|if|then|elif|else|do|while|until|coproc) shift ;;
         time) case "${2:-}" in -*) break ;; esac; shift ;;
         *) break ;;
       esac
@@ -7743,7 +7962,8 @@ gate_opaque_payload_lines() {
       [ "${#pre[@]}" -gt 0 ] && poison=1
       continue
     fi
-    case "$1" in -*) continue ;; esac
+    # A lone `-` is zsh's precommand modifier, not an option word.
+    case "$1" in -?*) continue ;; esac
     unread=0; skipl=0
     ws=("$@"); n=$#; k=0
     while [ "$k" -lt "$n" ]; do
@@ -7786,11 +8006,21 @@ gate_opaque_payload_lines() {
       # from the whole line before the words were read, `'gh' pr merge` and
       # `"time" -p bash -c '…'` lost their quotes, and the nested shell's
       # string was flattened into the outer line's operands.
+      #
+      # A quoted `>` and `<` come back here; a quoted space, tab and newline
+      # stay as the scanner's bytes, so the record still splits into the
+      # shell's words (`gate_opl_words`).
       y=()
-      for x in "$@"; do y[${#y[@]}]="${x//[\'\"]/}"; done
+      for x in "$@"; do
+        x="${x//[\'\"]/}"; x="${x//$GATE_SC_GT/>}"
+        y[${#y[@]}]="${x//$GATE_SC_LT/<}"
+      done
       set -- "${y[@]}"
       y=()
-      for x in ${pre[@]+"${pre[@]}"}; do y[${#y[@]}]="${x//[\'\"]/}"; done
+      for x in ${pre[@]+"${pre[@]}"}; do
+        x="${x//[\'\"]/}"; x="${x//$GATE_SC_GT/>}"
+        y[${#y[@]}]="${x//$GATE_SC_LT/<}"
+      done
       pre=(${y[@]+"${y[@]}"})
     fi
     kept="$*"
@@ -7825,13 +8055,11 @@ gate_opaque_payload_lines() {
       case "$1" in *'$'*) st=2 ;; esac
       case "${raw[$ci]}" in *\\*|*\'*|*\"*|*[{}]*) st=2 ;; esac
       if [ "$st" = "0" ]; then
-        case "$cw" in
-          eval|source|.|bash|sh|zsh|dash|ksh|xargs|sudo|builtin|command) st=2 ;;
-          find)
-            for x in "$@"; do
-              case "$x" in -exec|-execdir|-ok|-okdir) st=2 ;; esac
-            done ;;
-        esac
+        if gate_opl_runs_other "$cw"; then
+          st=2
+        elif [ "$cw" = "find" ]; then
+          gate_opl_find_runs_other "${raw[@]:ci}" && st=2
+        fi
       fi
       # WHAT `lockf` AND `time` RUN IS READ TOO. They stay on the line for the
       # sake of their own file, so the command behind them was never the
@@ -7851,16 +8079,20 @@ gate_opaque_payload_lines() {
               [ "$ii" -lt "$m" ] || break
             done
             if [ "$_urc" = "2" ] && [ "$ii" -gt 0 ]; then
-              case "${y[$ii]##*/}" in
-                eval|source|.|bash|sh|zsh|dash|ksh|xargs|sudo|builtin|command) st=2 ;;
-                find)
-                  for x in "${y[@]:ii}"; do
-                    case "$x" in -exec|-execdir|-ok|-okdir) st=2 ;; esac
-                  done ;;
-              esac
+              if gate_opl_runs_other "${y[$ii]}"; then
+                st=2
+              elif [ "${y[$ii]##*/}" = "find" ]; then
+                gate_opl_find_runs_other "${raw[@]:ci+ii}" && st=2
+              fi
               case "${raw[$((ci + ii))]}" in *'$'*|*\\*|*\'*|*\"*) st=2 ;; esac
             fi ;;
         esac
+      fi
+      # A COMMAND NO TABLE GRADES may run the argv behind it
+      # (`gate_opl_hides_command`), and the line is then one this reader
+      # cannot place.
+      if [ "$st" = "0" ] && [ "$unread" = "0" ] && gate_opl_hides_command "$@"; then
+        st=2
       fi
       # A GLOB IN A DIRECTORY COMPONENT leaves the landing unread: the local
       # reader takes a glob in the last component, and `rm -f <dir>/wt-sib*/f`
@@ -8213,6 +8445,7 @@ ladder_of_shell() {
       set -- $kept
       set +f
       [ $# -gt 0 ] || continue
+      gate_opl_words "$@"; set -- "${GATE_OPL_WORDS[@]}"
       r=$(ladder_of_argv0 "$@")
     fi
     best=$(gate_answer_ladder_max "$best" "$r")
