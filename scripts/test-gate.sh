@@ -21630,12 +21630,18 @@ sp_unknown "32p: GIT_ 환경 할당"
 
 # 탐침은 행위의 환경을 싣지 않는다 — HOME=·XDG_CONFIG_HOME= 할당과 env 옵션도 형태
 # 미상이다. 할당이 가리키는 설정은 실제 push 만 읽는다.
-for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" -i "-u HOME"; do
+# 값이 /git·/env 로 끝나는 할당도 할당이다 — 명령 이름으로 읽으면 검사가 거기서 멈췄다.
+for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" -i "-u HOME" \
+            "HOME=$SA_ROOT/p/git" "XDG_CONFIG_HOME=$SA_ROOT/x/env" "GIT_CONFIG_GLOBAL=./git"; do
   # shellcheck disable=SC2086
   sp_act S32A 머지 env $sp_e git push origin "u-$SA_ID:$SA_BASE"
   sp_refused "32p: env $sp_e 를 앞에 둔 push 는 거절된다" 2 "$B32"
   sp_unknown "32p: env $sp_e"
 done
+# 래퍼의 인자가 git 으로 끝나도 그 뒤의 할당은 읽힌다.
+sp_act S32A 머지 lockf "$SA_ROOT/git" env "HOME=$SA_ROOT/home-x" git push origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: lockf <…/git> env HOME= 를 앞에 둔 push 는 거절된다" 2 "$B32"
+sp_unknown "32p: lockf <…/git> env HOME="
 # 대조군 — 로캘 할당은 설정을 바꾸지 않으므로 탐침이 잰다.
 sp_act S32A 머지 env LANG=C git push origin "u-$SA_ID:$SA_BASE"
 sp_refused "32p: env LANG=C 의 다른 소스 베이스 push 는 거절된다" 2 "$B32"
@@ -21739,6 +21745,60 @@ check "32p: 협업면이 쿼리스트링 REST 머지를 같은 판독으로 받�
 check "32p: 배포트리거 의 REST 머지는 협업면이 아니다" \
   "$(sp_cs 배포트리거 gh api -X PUT 'repos/o/r/pulls/1/merge/')" "아니오"
 check "32p: …/merges 는 협업면이 아니다" "$(sp_cs 협업 gh api -X POST repos/o/r/merges)" "아니오"
+
+# …/merges 의 본문에는 head 를 묶는 매개변수가 없다 — sha 필드를 붙여도 결속이 아니다.
+check "32p: -f sha= 를 붙인 …/merges 도 결속 없는 머지다" \
+  "$(sp_mb gh api -X POST repos/o/r/merges -f base=main -f head=x -f "sha=$X32")" "없음"
+check "32p: --raw-field=sha= 를 붙인 …/merges 도 결속 없는 머지다" \
+  "$(sp_mb gh api repos/o/r/merges --raw-field=base=main --raw-field=head=x "--raw-field=sha=$X32")" "없음"
+check "32p: 사다리가 --raw-field= 본문의 …/merges 를 머지로 읽는다" \
+  "$(sp_ld gh api repos/o/r/merges "--raw-field=sha=$X32")" "머지"
+
+# 짧은 옵션 묶음 — gh(pflag)는 -iXPUT 의 X 뒤를, -iX 다음 단어를 메서드로 읽는다.
+sp_sf() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; surface_of_argv0 "$@"' _ "$GATE" "$@"; }
+for sp_b in "-iXPUT" "-iX PUT"; do
+  # shellcheck disable=SC2086
+  check "32p: 묶음 $sp_b 의 PR 머지를 사다리가 머지로 읽는다" "$(sp_ld gh api $sp_b repos/o/r/pulls/1/merge)" "머지"
+  # shellcheck disable=SC2086
+  check "32p: 묶음 $sp_b 의 PR 머지는 결속 없는 머지다" "$(sp_mb gh api $sp_b repos/o/r/pulls/1/merge)" "없음"
+  # shellcheck disable=SC2086
+  check "32p: 묶음 $sp_b 의 PR 머지는 등급표에서 읽기가 아니다" "$(sp_sf gh api $sp_b repos/o/r/pulls/1/merge)" "외부상태변경"
+  # shellcheck disable=SC2086
+  check "32p: 묶음 $sp_b 와 -f sha= 의 PR 머지는 그 sha 에 결속된다" \
+    "$(sp_mb gh api $sp_b repos/o/r/pulls/1/merge -f "sha=$X32")" "$X32"
+done
+check "32p: 등급표가 --raw-field= 본문을 POST 로 읽는다" "$(sp_sf gh api repos/o/r/merges --raw-field=base=main)" "외부상태변경"
+check "32p: 대조군 — 묶음 -iX GET 은 등급표에서 읽기다" "$(sp_sf gh api -iX GET repos/o/r/pulls/1)" "읽기"
+check "32p: 대조군 — -i 만 있는 GET 은 머지가 아니다" "$(sp_mb gh api -i repos/o/r/pulls/1/merge)" "해당없음"
+
+# GraphQL 미끼 — 서버가 mergePullRequest 의 결속으로 받지 않는 자리의 expectedHeadOid.
+q32blk=$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x",commitBody:"""expectedHeadOid: "%s" """}){clientMutationId}}' "$X32")
+q32str=$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x",commitBody:"expectedHeadOid: \\"%s\\""}){clientMutationId}}' "$X32")
+q32sib=$(printf 'query=mutation{createCommitOnBranch(input:{expectedHeadOid:"%s"}){clientMutationId} mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}' "$X32")
+q32upd=$(printf 'query=mutation{updatePullRequestBranch(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId} mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}' "$X32")
+q32dif=$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId} createCommitOnBranch(input:{expectedHeadOid:"%s"}){clientMutationId}}' "$X32" "1111111111111111111111111111111111111111")
+q32frg=$(printf 'query=mutation{...M} fragment M on Mutation{mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$X32")
+q32dir=$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}) @skip(if:false){clientMutationId}}' "$X32")
+q32ops=$(printf 'query=mutation A{mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}} mutation B{mergePullRequest(input:{pullRequestId:"PR_y"}){clientMutationId}}' "$X32")
+check "32p: 미끼 본문이 한 인자씩 남는다 (중괄호 확장으로 갈리지 않았다)" \
+  "$(bash -c 'echo $#' _ "$q32blk" "$q32str" "$q32sib" "$q32upd" "$q32dif" "$q32frg" "$q32dir" "$q32ops")" "8"
+check "32p: \"\"\" 블록 문자열 안의 expectedHeadOid 는 결속이 아니다" "$(sp_mb gh api graphql -f "$q32blk")" "없음"
+check "32p: 문자열 값 안의 expectedHeadOid 는 결속이 아니다" "$(sp_mb gh api graphql -f "$q32str")" "없음"
+check "32p: 형제 createCommitOnBranch 의 expectedHeadOid 는 결속이 아니다" "$(sp_mb gh api graphql -f "$q32sib")" "없음"
+check "32p: 형제 updatePullRequestBranch 의 expectedHeadOid 는 결속이 아니다" "$(sp_mb gh api graphql -f "$q32upd")" "없음"
+check "32p: 서로 다른 두 expectedHeadOid 는 결속 없는 머지다" "$(sp_mb gh api graphql -f "$q32dif")" "없음"
+check "32p: 프래그먼트 안의 머지는 결속 없는 머지다" "$(sp_mb gh api graphql -f "$q32frg")" "없음"
+check "32p: 지시어가 붙은 머지는 결속 없는 머지다" "$(sp_mb gh api graphql -f "$q32dir")" "없음"
+check "32p: 두 연산을 둔 본문은 결속 없는 머지다" "$(sp_mb gh api graphql -f "$q32ops")" "없음"
+check "32p: query 필드가 둘이면 결속 없는 머지다" "$(sp_mb gh api graphql -f "$q32i" -f "$q32i")" "없음"
+check "32p: 대조군 — 별칭을 단 단일 머지의 인라인 expectedHeadOid 는 결속이다" \
+  "$(sp_mb gh api graphql -f "$(printf 'query=mutation M{m:mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$X32")")" "$X32"
+
+# 불투명 GraphQL — 파일 본문은 무엇도 드러내지 않으므로 GET 이 아니면 사다리가 머지로 읽는다.
+check "32p: 사다리가 파일 본문 GraphQL 을 머지로 읽는다" "$(sp_ld gh api graphql -F 'query=@q.graphql')" "머지"
+check "32p: 사다리가 --input 본문 GraphQL 을 머지로 읽는다" "$(sp_ld gh api graphql --input q.json)" "머지"
+check "32p: 대조군 — GET 파일 본문 GraphQL 에 사다리는 아무것도 말하지 않는다" \
+  "$(sp_ld gh api -X GET graphql -F 'query=@q.graphql')" ""
 # 끝에서 끝으로 — 결속 없는 철자는 룰 앞에서 2, 워크트리 HEAD 에 결속된 철자는 룰로 간다.
 for sp_p in 'repos/o/r/pulls/7/merge?merge_method=squash' 'repos/o/r/pulls/7/merge/'; do
   sp_plan S32G 머지 gh api -X PUT "$sp_p"
@@ -21759,6 +21819,24 @@ esac
 sp_plan S32G 머지 gh api graphql -f "$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$H32G")"
 check "32p: 워크트리 HEAD 에 결속된 GraphQL 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
 if sa_names_rule; then ok "32p: GraphQL 머지 — 그 거절이 리뷰-후-머지 를 지명한다"; else bad "32p GraphQL 룰 이름" "$msg"; fi
+# 우회 철자는 워크트리 HEAD 를 실어도 룰 앞에서 2 다 — 결속이 서버의 결속이 아니다.
+sp_plan S32G 머지 gh api graphql -f "$(printf 'query=mutation{createCommitOnBranch(input:{expectedHeadOid:"%s"}){clientMutationId} mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}' "$H32G")"
+check "32p: 형제 mutation 의 워크트리 HEAD 를 실은 GraphQL 머지는 거절된다" "$rc" "2"
+sp_bound() { case "$msg" in *"결속되지 않았습니다"*) return 0 ;; esac; return 1; }
+if sp_bound; then ok "32p: 형제 mutation 미끼 — 문면이 결속을 지목한다"; else bad "32p 형제 mutation 문면" "$msg"; fi
+sp_plan S32G 머지 gh api repos/o/r/merges --raw-field=base=main --raw-field=head=x "--raw-field=sha=$H32G"
+check "32p: 워크트리 HEAD 를 sha 로 실은 …/merges 는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: …/merges + sha — 문면이 결속을 지목한다"; else bad "32p …/merges 문면" "$msg"; fi
+sp_plan S32G 머지 gh api -iXPUT repos/o/r/pulls/7/merge
+check "32p: 결속 없는 묶음 -iXPUT 머지는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: -iXPUT — 문면이 결속을 지목한다"; else bad "32p -iXPUT 문면" "$msg"; fi
+sp_plan S32G 머지 gh api -iXPUT repos/o/r/pulls/7/merge -f "sha=$H32G"
+check "32p: 워크트리 HEAD 에 결속된 묶음 -iXPUT 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
+if sa_names_rule; then ok "32p: -iXPUT 머지 — 그 거절이 리뷰-후-머지 를 지명한다"; else bad "32p -iXPUT 룰 이름" "$msg"; fi
+sp_plan S32G 커밋 gh api graphql -F 'query=@q.graphql'
+check "32p: 파일 본문 GraphQL 을 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
+sp_plan S32G 커밋 gh api -iX PUT repos/o/r/pulls/7/merge
+check "32p: 묶음 -iX PUT 머지를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
 
 # ---------------------------------------------------------------------------
 # 36. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다

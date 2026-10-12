@@ -1528,25 +1528,48 @@ gate_push_base_updates() {
   # `remote.<n>.push`) than the one the dry-run reads, and `env -i`, `-u`,
   # `-C` and the other `env` options change what git starts from. Only the
   # locale and the time zone, which no push reads, pass.
-  local a k in_env=0
-  for a in "$@"; do
-    case "${a##*/}" in git) break ;; env) in_env=1; continue ;; esac
+  #
+  # THE WORDS READ ARE THE ONES IN FRONT OF THE GIT ARGV, and a word is read as
+  # an assignment before its basename is looked at. Stopping at the first word
+  # whose basename was `git` let `env HOME=/tmp/p/git git push` end the scan at
+  # its own assignment, and `lockf /tmp/git env HOME=/x git push` at the lock
+  # file, so the push read another configuration than the dry-run did. When the
+  # git argv is not the tail of this argv (it came out of a shell body), the
+  # scan stops at the first non-assignment word named `git`, as before.
+  local -a gv=() glob=() pargs=() av=("$@")
+  eval "gv=($u)"
+  local a k in_env=0 np=-1 x=0 lim="$#"
+  if [ "${#gv[@]}" -le "$#" ]; then
+    np=$(( $# - ${#gv[@]} ))
+    while [ "$x" -lt "${#gv[@]}" ]; do
+      [ "${av[$((np + x))]}" = "${gv[$x]}" ] || { np=-1; break; }
+      x=$((x + 1))
+    done
+  fi
+  [ "$np" -lt 0 ] || lim="$np"
+  x=0
+  while [ "$x" -lt "$lim" ]; do
+    a="${av[$x]}"; x=$((x + 1))
     case "$a" in
       LANG=*|LC_*=*|TZ=*) continue ;;
+      [A-Za-z_]*=*)
+        case "${a%%=*}" in
+          *[!A-Za-z0-9_]*) : ;;
+          *) GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${a%%=*}"; return 0 ;;
+        esac ;;
+    esac
+    case "${a##*/}" in
+      git) [ "$np" -ge 0 ] || break ;;
+      env) in_env=1; continue ;;
+    esac
+    case "$a" in
       -*)
         if [ "$in_env" = 1 ]; then
           GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="env ${a%%=*}"; return 0
         fi ;;
-      [A-Za-z_]*=*)
-        case "${a%%=*}" in
-          *[!A-Za-z0-9_]*) in_env=0 ;;
-          *) GATE_PUSH_KIND='형태미상'; GATE_PUSH_FORM_WORD="${a%%=*}"; return 0 ;;
-        esac ;;
       *) in_env=0 ;;
     esac
   done
-  local -a gv=() glob=() pargs=()
-  eval "gv=($u)"
   local i=1 n="${#gv[@]}"
   while [ "$i" -lt "$n" ]; do
     a="${gv[$i]}"
@@ -5586,33 +5609,15 @@ surface_of_gh_api() {
   # spelling that submits several inline comments as ONE review
   # (`POST …/pulls/{n}/reviews`; `gh pr review` carries no comments array), and
   # every read of a value `gh pr view --json` does not expose along with it.
+  #
+  # The method is the one `gate_gh_api_parse` reads — an explicit method wins,
+  # otherwise a body is what makes gh switch from GET to POST. This table kept a
+  # reading of its own, and it drifted: `-iXPUT` and `--raw-field=k=v` were a
+  # GET here while the merge ladder read a merge, and a read is passed before
+  # the reach cells are looked at.
   shift
-  local m="" body=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -X|--method)
-        [ $# -ge 2 ] || break
-        m="$2"; shift 2 ;;
-      --method=*) m="${1#--method=}"; shift ;;
-      -X*)        m="${1#-X}"; shift ;;
-      -f|-F|--field|--raw-field|--input)
-        body=1
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      -f*|-F*)    body=1; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  # An explicit method wins. Otherwise a field or an input body is exactly what
-  # makes gh itself switch from GET to POST, so the table reads the same signal
-  # the tool does rather than a second, divergent one.
-  if [ -z "$m" ]; then
-    if [ "$body" = "1" ]; then m=POST; else m=GET; fi
-  fi
-  case "$m" in
+  gate_gh_api_parse "$@"
+  case "$GATE_GHAPI_METHOD" in
     GET|get|HEAD|head) printf '읽기' ;;
     *) printf '외부상태변경' ;;
   esac
@@ -6595,6 +6600,17 @@ ladder_of_gh() {
   return 0
 }
 
+gate_gh_api_field() {
+  # gate_gh_api_field <typed 0|1> <k=v> — records one body field. A typed field
+  # (`-F`, `--field`) whose value is `@<file>` is read from a file this gate
+  # does not open.
+  GATE_GHAPI_FIELDS+=("$2")
+  if [ "$1" = 1 ]; then
+    case "${2#*=}" in @*) GATE_GHAPI_OPAQUE=1 ;; esac
+  fi
+  return 0
+}
+
 gate_gh_api_parse() {
   # gate_gh_api_parse <gh api's args after `api`...> — the one reading of a
   # `gh api` argv the merge ladder, the merge binding and the collaboration
@@ -6613,45 +6629,64 @@ gate_gh_api_parse() {
   # the binding never asked for a head; the collaboration surface matched a
   # substring and took them; and `--field=sha=…` set no body in the ladder, so
   # the merge read as a GET.
+  #
+  # SHORT OPTIONS ARE READ THE WAY PFLAG READS THEM: one letter at a time, and a
+  # value letter takes the rest of the word or, at its end, the next word. Read
+  # as one word, `-iXPUT` and `-iX PUT` were an unknown option, the method stayed
+  # GET, and the merge they send was graded a read with no binding asked. The
+  # letters are `gh api`'s own: `i` is its one short bool, and `X f F H p q t`
+  # take a value. A letter outside them is a word gh refuses, so it is read as
+  # nothing.
   GATE_GHAPI_METHOD="" GATE_GHAPI_PATH="" GATE_GHAPI_OPAQUE=0
   GATE_GHAPI_FIELDS=()
-  local body=0 fv typed
+  local body=0 ddash=0 w c val j
   while [ $# -gt 0 ]; do
-    fv=""; typed=0
-    case "$1" in
-      -X|--method)
-        [ $# -ge 2 ] || break
-        GATE_GHAPI_METHOD="$2"; shift 2; continue ;;
-      --method=*) GATE_GHAPI_METHOD="${1#--method=}"; shift; continue ;;
-      -X*)        GATE_GHAPI_METHOD="${1#-X}"; shift; continue ;;
-      --input)
-        body=1; GATE_GHAPI_OPAQUE=1
-        [ $# -ge 2 ] || break
-        shift 2; continue ;;
-      --input=*) body=1; GATE_GHAPI_OPAQUE=1; shift; continue ;;
-      -f|--raw-field|-F|--field)
-        case "$1" in -F|--field) typed=1 ;; esac
-        body=1
-        [ $# -ge 2 ] || break
-        fv="$2"; shift 2 ;;
-      --raw-field=*) fv="${1#--raw-field=}"; shift ;;
-      --field=*)     typed=1; fv="${1#--field=}"; shift ;;
-      -f?*)          fv="${1#-f}"; shift ;;
-      -F?*)          typed=1; fv="${1#-F}"; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache|-p|--preview)
-        [ $# -ge 2 ] || break
-        shift 2; continue ;;
+    w="$1"; shift
+    if [ "$ddash" = 1 ]; then
+      [ -n "$GATE_GHAPI_PATH" ] || GATE_GHAPI_PATH="$w"
+      continue
+    fi
+    case "$w" in
+      --) ddash=1 ;;
+      --method)    [ $# -ge 1 ] || break; GATE_GHAPI_METHOD="$1"; shift ;;
+      --method=*)  GATE_GHAPI_METHOD="${w#--method=}" ;;
+      --input)     body=1; GATE_GHAPI_OPAQUE=1; [ $# -ge 1 ] || break; shift ;;
+      --input=*)   body=1; GATE_GHAPI_OPAQUE=1 ;;
+      --raw-field) body=1; [ $# -ge 1 ] || break; gate_gh_api_field 0 "$1"; shift ;;
+      --field)     body=1; [ $# -ge 1 ] || break; gate_gh_api_field 1 "$1"; shift ;;
+      --raw-field=*) gate_gh_api_field 0 "${w#--raw-field=}"; body=1 ;;
+      --field=*)     gate_gh_api_field 1 "${w#--field=}"; body=1 ;;
+      --header|--jq|--template|--hostname|--cache|--preview)
+        [ $# -ge 1 ] || break; shift ;;
+      --*) : ;;
+      -?*)
+        j=1
+        while [ "$j" -lt "${#w}" ]; do
+          c="${w:j:1}"
+          case "$c" in
+            X|f|F|H|p|q|t)
+              if [ $((j + 1)) -lt "${#w}" ]; then
+                val="${w:j+1}"; val="${val#=}"
+              elif [ $# -ge 1 ]; then
+                val="$1"; shift
+              else
+                break
+              fi
+              case "$c" in
+                X) GATE_GHAPI_METHOD="$val" ;;
+                f) gate_gh_api_field 0 "$val"; body=1 ;;
+                F) gate_gh_api_field 1 "$val"; body=1 ;;
+              esac
+              break ;;
+            i) j=$((j + 1)) ;;
+            *) break ;;
+          esac
+        done ;;
       # The first bare word is the endpoint. Anything later is a positional this
       # table has no use for, so the first one wins and the scan continues —
       # stopping here would leave a trailing `-X` unread.
-      -*) shift; continue ;;
-      *)  [ -n "$GATE_GHAPI_PATH" ] || GATE_GHAPI_PATH="$1"; shift; continue ;;
+      *) [ -n "$GATE_GHAPI_PATH" ] || GATE_GHAPI_PATH="$w" ;;
     esac
-    body=1
-    GATE_GHAPI_FIELDS+=("$fv")
-    if [ "$typed" = 1 ]; then
-      case "${fv#*=}" in @*) GATE_GHAPI_OPAQUE=1 ;; esac
-    fi
   done
   if [ -z "$GATE_GHAPI_METHOD" ]; then
     if [ "$body" = 1 ]; then GATE_GHAPI_METHOD=POST; else GATE_GHAPI_METHOD=GET; fi
@@ -6664,18 +6699,23 @@ gate_gh_api_parse() {
 }
 
 gate_gh_api_merge_kind() {
-  # After `gate_gh_api_parse`: prints `rest` for a REST merge, `graphql` for a
-  # GraphQL mutation that merges, nothing otherwise.
+  # After `gate_gh_api_parse`: prints `rest` for a pull request merge over REST,
+  # `branch` for a REST branch merge, `graphql` for a GraphQL mutation that
+  # merges, nothing otherwise.
   #
-  # A REST merge is a non-GET against `…/pulls/<n>/merge` or `…/merges` (which
-  # merges a branch or a commit into another with no pull request at all). A
-  # GraphQL merge is any body that names `mergePullRequest`, `mergeBranch`,
-  # `enqueuePullRequest` or `enablePullRequestAutoMerge` — the field name is
-  # literal in the document whatever its alias, so a body naming none of them
-  # merges nothing.
+  # A REST merge is a non-GET against `…/pulls/<n>/merge`. `…/merges` merges a
+  # branch or a commit into another with no pull request at all, and its body
+  # has no parameter that pins the head (`base`, `head`, `commit_message`), so it
+  # is a kind of its own: a `sha` field sent to it is not a binding the server
+  # enforces, and reading it as one let an unreviewed branch merge under an
+  # honest declaration. A GraphQL merge is any body that names
+  # `mergePullRequest`, `mergeBranch`, `enqueuePullRequest` or
+  # `enablePullRequestAutoMerge` — the field name is literal in the document
+  # whatever its alias, so a body naming none of them merges nothing.
   case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) return 0 ;; esac
   case "$GATE_GHAPI_PATH" in
-    */pulls/*/merge|*/merges) printf 'rest'; return 0 ;;
+    */pulls/*/merge) printf 'rest'; return 0 ;;
+    */merges) printf 'branch'; return 0 ;;
     graphql|*/graphql) : ;;
     *) return 0 ;;
   esac
@@ -6695,59 +6735,116 @@ ladder_of_gh_api() {
   # the door a run takes when it wants the merge method spelled out; a GraphQL
   # `mergePullRequest` is a third. See `gate_gh_api_merge_kind` for what counts,
   # and every other endpoint asserts nothing.
+  #
+  # A GraphQL body in a file (`-F query=@f`, `--input`) names nothing this gate
+  # can read, so a non-GET one is taken at `머지`: it may be a merge, and
+  # asserting nothing let it be declared `커밋`, under every check a merge
+  # meets. At `머지` the binding refuses it, with the inline body as the repair.
   shift
   gate_gh_api_parse "$@"
-  [ -z "$(gate_gh_api_merge_kind)" ] || printf '머지'
+  if [ -n "$(gate_gh_api_merge_kind)" ]; then printf '머지'; return 0; fi
+  case "$GATE_GHAPI_PATH" in
+    graphql|*/graphql)
+      if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then
+        case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) : ;; *) printf '머지' ;; esac
+      fi ;;
+  esac
   return 0
 }
 
 gate_gh_graphql_binding() {
   # After `gate_gh_api_parse` on a GraphQL merge: the bound head, or `없음`.
   #
-  # Every merge-class field must be matched by an `expectedHeadOid`, and every
-  # `expectedHeadOid` must name the same head — inline as a string, or as a
-  # `$variable` whose value is a top-level `-f`/`-F` field. An input object
-  # passed whole as a variable (`input: $input`) is not read, and neither is a
-  # body with a `#`, which in GraphQL starts a comment and could hold an
-  # `expectedHeadOid` the server never sees. Both are refused with the inline
-  # spelling as the repair, rather than read and possibly misread.
-  local f nm=0 nb=0 v="" one rest pre name g cnt
+  # ONE SHAPE IS READ, AND IT IS THE ONE THE SERVER BINDS. The document — the
+  # single `query` field — must hold one operation whose only top-level field is
+  # a `mergePullRequest`, `enqueuePullRequest` or `enablePullRequestAutoMerge`,
+  # and exactly one `expectedHeadOid` argument, inside that field's arguments
+  # and outside every string. Its value is inline as a string, or a `$variable`
+  # whose value is a top-level `-f`/`-F` field.
+  #
+  # Counting the words did not tell the argument the server reads from text it
+  # does not: an `expectedHeadOid` inside a `"""` block string, or the argument
+  # of a sibling `createCommitOnBranch` or `updatePullRequestBranch`, bound a
+  # `mergePullRequest` the server merged whatever its head. So every other shape
+  # is refused, with the inline spelling as the repair: a block string, a `#`
+  # comment, a fragment spread, a directive, a second operation or top-level
+  # field, an input object passed whole as a variable (`input: $input`), and a
+  # second `expectedHeadOid` anywhere.
+  local f q="" nq=0
+  for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+    case "$f" in query=*) q="${f#query=}"; nq=$((nq + 1)) ;; esac
+  done
+  [ "$nq" = 1 ] || { printf '%s' '없음'; return 0; }
+  case "$q" in *'"""'*|*'#'*) printf '%s' '없음'; return 0 ;; esac
+  local n="${#q}" i=0 j k ch word prev nx instr=0 esc=0 pd=0 bd=0 ops=0
+  local top=0 topname="" pend=0 mpd=-1 inm=0 nb=0 bin=0 rest=""
+  while [ "$i" -lt "$n" ]; do
+    ch="${q:i:1}"
+    if [ "$instr" = 1 ]; then
+      if [ "$esc" = 1 ]; then esc=0
+      elif [ "$ch" = '\' ]; then esc=1
+      elif [ "$ch" = '"' ]; then instr=0
+      fi
+      i=$((i + 1)); continue
+    fi
+    case "$ch" in
+      '"') instr=1 ;;
+      '(')
+        pd=$((pd + 1))
+        if [ "$pend" = 1 ]; then mpd="$pd"; inm=1; pend=0; fi ;;
+      ')')
+        if [ "$inm" = 1 ] && [ "$pd" = "$mpd" ]; then inm=0; fi
+        pd=$((pd - 1)) ;;
+      '{') [ "$bd" != 0 ] || ops=$((ops + 1)); bd=$((bd + 1)) ;;
+      '}') bd=$((bd - 1)) ;;
+      '.'|'@') printf '%s' '없음'; return 0 ;;
+      [A-Za-z_])
+        j=$((i + 1))
+        while [ "$j" -lt "$n" ]; do
+          case "${q:j:1}" in [A-Za-z0-9_]) j=$((j + 1)) ;; *) break ;; esac
+        done
+        word="${q:i:j-i}"
+        prev=""; [ "$i" -eq 0 ] || prev="${q:i-1:1}"
+        if [ "$prev" != '$' ]; then
+          k="$j"
+          while [ "$k" -lt "$n" ]; do
+            case "${q:k:1}" in ' '|','|$'\t'|$'\n'|$'\r') k=$((k + 1)) ;; *) break ;; esac
+          done
+          nx="${q:k:1}"
+          if [ "$bd" = 1 ] && [ "$pd" = 0 ] && [ "$nx" != ':' ]; then
+            top=$((top + 1)); topname="$word"
+            case "$word" in
+              mergePullRequest|enqueuePullRequest|enablePullRequestAutoMerge)
+                [ "$nx" != '(' ] || pend=1 ;;
+            esac
+          fi
+          if [ "$word" = expectedHeadOid ]; then
+            nb=$((nb + 1)); bin="$inm"; rest="${q:j}"
+          fi
+        fi
+        i="$j"; continue ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ "$instr" = 1 ] || [ "$ops" != 1 ] || [ "$top" != 1 ] || [ "$nb" != 1 ] || [ "$bin" != 1 ]; then
+    printf '%s' '없음'; return 0
+  fi
+  case "$topname" in
+    mergePullRequest|enqueuePullRequest|enablePullRequestAutoMerge) : ;;
+    *) printf '%s' '없음'; return 0 ;;
+  esac
+  local v="" name g
   local re_str='^[[:space:]]*:[[:space:]]*"([^"]*)"'
   local re_var='^[[:space:]]*:[[:space:]]*[$]([A-Za-z_][A-Za-z0-9_]*)'
-  for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
-    case "$f" in
-      *mergePullRequest*|*mergeBranch*|*enqueuePullRequest*|*enablePullRequestAutoMerge*) : ;;
-      *) continue ;;
-    esac
-    case "$f" in *'#'*) printf '%s' '없음'; return 0 ;; esac
-    for name in mergePullRequest mergeBranch enqueuePullRequest enablePullRequestAutoMerge; do
-      rest="$f"; cnt=0
-      while [ "${rest#*"$name"}" != "$rest" ]; do rest="${rest#*"$name"}"; cnt=$((cnt + 1)); done
-      nm=$((nm + cnt))
+  if [[ "$rest" =~ $re_str ]]; then
+    v="${BASH_REMATCH[1]}"
+  elif [[ "$rest" =~ $re_var ]]; then
+    name="${BASH_REMATCH[1]}"
+    for g in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+      case "$g" in "$name="*) v="${g#*=}" ;; esac
     done
-    rest="$f"
-    while [ "${rest#*expectedHeadOid}" != "$rest" ]; do
-      pre="${rest%%expectedHeadOid*}"
-      rest="${rest#*expectedHeadOid}"
-      # `$expectedHeadOid` is a variable's name, not the argument.
-      case "$pre" in *'$') continue ;; esac
-      one=""
-      if [[ "$rest" =~ $re_str ]]; then
-        one="${BASH_REMATCH[1]}"
-      elif [[ "$rest" =~ $re_var ]]; then
-        name="${BASH_REMATCH[1]}"
-        for g in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
-          case "$g" in "$name="*) one="${g#*=}" ;; esac
-        done
-        case "$one" in @*) one="" ;; esac
-      fi
-      nb=$((nb + 1))
-      if [ "$nb" = 1 ]; then v="$one"
-      elif [ "$v" != "$one" ]; then printf '%s' '없음'; return 0
-      fi
-    done
-  done
-  if [ "$nb" -eq 0 ] || [ "$nb" -lt "$nm" ]; then printf '%s' '없음'; return 0; fi
+    case "$v" in @*) v="" ;; esac
+  fi
   gate_merge_binding_value "$v"
 }
 
@@ -6840,6 +6937,9 @@ gate_merge_binding_of_gh() {
         graphql)
           if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then printf '%s' '없음'; return 0; fi
           gate_gh_graphql_binding; return 0 ;;
+        # `…/merges` has no argument the server holds the head to, whatever
+        # fields it carries.
+        branch) printf '%s' '없음'; return 0 ;;
         rest) : ;;
         *)
           # A GraphQL body this gate cannot read may be a merge it cannot
@@ -22066,7 +22166,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 적고(# 주석·파일 본문·input 변수 통째 넘김은 읽지 않습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)는 gh pr merge 로 바꿔 부릅니다"
+        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)는 gh pr merge 로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else
