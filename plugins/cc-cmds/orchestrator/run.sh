@@ -6337,6 +6337,24 @@ segment_process_b() {
     | implement_process_b
 }
 
+reconverge_row() {
+  # reconverge_row <segment> <stage id> — the `stage-result` row of a driver
+  # re-convergence that ended on its terminal literal.
+  #
+  # A RE-CONVERGENCE THAT EDITED THE DOCUMENT VOIDS THE SEGMENT'S PLAN, and this
+  # row is how that is said. The implement skill and `implement_process_b`
+  # count only `plan_sha256` rows after the segment's last `종류=reconverge`
+  # row; the S4 rows carry the digest, so without this row the next S4 dispatch
+  # is admitted as process B on a plan derived from the document before the edit.
+  local seg="$1" sid="$2"
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S1'" "파견 id=$sid" "종류=reconverge" \
+    "종료 코드=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" \
+    "실행 버전=$(stage_attempt_pinned "$sid")" "세션 id=$(stage_session_id "$sid")" \
+    "부모=$(stage_parent_id)" "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" \
+    "기록자=드라이버" "종단 부류=정상 완료"
+  absorb_stage_judgment "$sid" "$sid" "$(seg_alias "$seg")"
+}
+
 refusal_message() {
   # refusal_message — the whole prompt of the one re-attachment a refused stage
   # gets. Shared with the gate, which substitutes it on a router's `--resume`.
@@ -8356,10 +8374,10 @@ segment_cycle() {
           fi
           [ "$src" = "0" ] || (exit "$src")
           stage_wait_all "$sid"
-          # The reconvergence writes no row of its own; its lineage ends with
-          # the predicate below, whichever way it reads.
+          # Its lineage ends with the predicate below, whichever way it reads.
           spawn_lineage_release "$sid"
           if predicate_reconverge "$sid"; then
+            reconverge_row "$seg" "$sid"
             # The impact payload is an AUDIT record now, not a control signal.
             # What decides whether the plan is stale is a MEASUREMENT of the
             # document, not the model's self-report about it: a self-report

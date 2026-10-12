@@ -3053,12 +3053,12 @@ AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   pend { cont = ($0 ~ /\\$/) }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "파견 팔의 stage-result 행 자리가 일곱이다 — 계속 시도 하나와 베이스 분할 하나 포함 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "7"
+check "파견 팔의 stage-result 행 자리가 여덟이다 — 계속 시도 하나, 베이스 분할 하나, 재수렴 하나 포함 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "8"
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
-# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나를 포함해 열하나)가 압축
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 재수렴 하나를 포함해 열둘)가 압축
 # 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
@@ -3066,13 +3066,13 @@ WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "드라이버의 stage-result 호출부가 열하나다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "11"
-check "열하나 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+check "드라이버의 stage-result 호출부가 열둘이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "12"
+check "열둘 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
   "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
 # 대기 표지도 같은 문면의 키를 싣는다 — 그 줄은 보유자의 지문과 함께 쓰이므로 뺀다.
 check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
-  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "11"
+  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "12"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -5802,6 +5802,24 @@ check "구동기 계속 시도의 S4 행이 방출된 plan_sha256 을 싣는다"
   "$(grep -F '`stage-result`' "$CONT/planA/ledger.md" | grep -F '실행 버전=2 ' | grep -cF "| plan_sha256=$CONT_PSHA |" || true)" "1"
 check "그 행이 선 뒤의 다음 시도는 프로세스 B 다" "$(cont_field planA procb)" "1"
 check "다이제스트 없는 계속 행만으로는 프로세스 B 가 아니다" "$(cont_field hollow procb)" "0"
+# 구동기 재수렴이 문서를 고친 뒤의 계획은 무효다 — 실제 재수렴 행 기록기가 쓴 행이
+# 그 뒤의 다음 시도를 프로세스 A 로 돌리고, 그 뒤에 다이제스트를 실은 S4 행이 서야
+# 다시 프로세스 B 다. 같은 원장 위에서 앞뒤를 함께 단언한다.
+check "구동기 재수렴 행 뒤의 다음 시도는 프로세스 A, 새 계획 행 뒤에는 다시 B 다" \
+  "$( ( RUN_DIR="$CONT/planA/run"; LEDGER="$CONT/planA/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+        stage_parent_id() { printf 'parent'; }; absorb_stage_judgment() { :; }
+        rsid="S1':sg:1:plugins-x.md"; printf '0' > "$RUN_DIR/$rsid.rc"
+        segment_process_b sg && printf B || printf A
+        reconverge_row sg "$rsid"
+        segment_process_b sg && printf B || printf A
+        ledger_row 'stage-result' '세그먼트=sg' '스테이지=S4' '파견 id=S4:sg:2' "plan_sha256=$CONT_PSHA" '종단 부류=정상 완료'
+        segment_process_b sg && printf B || printf A
+        grep -F '`stage-result`' "$LEDGER" | grep -F "| 스테이지=S1' |" | grep -cF '| 종류=reconverge |' ) 2>/dev/null )" "BAB1"
+check "다른 세그먼트의 재수렴 행은 이 세그먼트의 계획을 무효로 하지 않는다" \
+  "$( ( RUN_DIR="$CONT/planA/run"; LEDGER="$CONT/planA/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+        stage_parent_id() { printf 'parent'; }; absorb_stage_judgment() { :; }
+        reconverge_row other "S1':other:1:plugins-x.md"
+        segment_process_b sg && printf B || printf A ) 2>/dev/null )" "B"
 CONT_RKIND=S5 cont_case planS5 plan
 check "S4 가 아닌 행은 다이제스트를 싣지 않는다" \
   "$(grep -cF 'plan_sha256=' "$CONT/planS5/ledger.md" || true)/$(cont_field planS5 procb)" "0/0"
