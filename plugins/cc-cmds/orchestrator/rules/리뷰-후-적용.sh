@@ -13,13 +13,15 @@ if [ "$GATE_CLAUDEMD_SLOT" = "(세탁됨)" ]; then
   exit 1
 fi
 
-[ -f "$GATE_LEDGER" ] || { echo "리뷰-후-적용: cannot read the ledger" >&2; exit 1; }
 [ -n "$GATE_SEGMENT" ] && [ "$GATE_SEGMENT" != "-" ] || {
   echo "리뷰-후-적용: no 세그먼트 was given for the apply act — cannot judge which review covers it" >&2
   exit 1
 }
 
-row=$(grep -E '^- `cycle`' "$GATE_LEDGER" | grep -F "세그먼트=$GATE_SEGMENT " | tail -1)
+# 이 파일은 원장을 훑지 않는다. 세그먼트의 마지막 cycle 행은 게이트가 필드
+# 동등으로 골라 넘긴다 — 부분 문자열로 고르면 다른 세그먼트의 행에 든
+# `선행 세그먼트=<seg>` 나 이웃 id 의 행을 이 세그먼트의 리뷰로 읽는다.
+row="${GATE_SEGMENT_LAST_CYCLE:-}"
 [ -n "$row" ] || {
   echo "리뷰-후-적용: no review record for 세그먼트 '$GATE_SEGMENT'" >&2
   exit 1
@@ -28,11 +30,11 @@ row=$(grep -E '^- `cycle`' "$GATE_LEDGER" | grep -F "세그먼트=$GATE_SEGMENT 
 field() { printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$1=//p" | sed 's/[[:space:]]*$//' | tail -1; }
 
 p0=$(field 'P0'); p1=$(field 'P1'); reviewed=$(field '적용 대상')
-[ -n "$p0" ] || p0=0
-[ -n "$p1" ] || p1=0
 
+# 빈 카운트는 0 으로 읽지 않는다 — 카운트를 잃은 행이 깨끗한 리뷰로 읽힌다.
+# 이 룰은 이월을 보지 않는다. CLAUDE.md 적용을 덮는 리뷰는 발견이 0 이어야 한다.
 if [ "$p0" != "0" ] || [ "$p1" != "0" ]; then
-  echo "리뷰-후-적용: unresolved findings remain (P0=$p0 P1=$p1)" >&2
+  echo "리뷰-후-적용: unresolved or unreadable findings (P0='$p0' P1='$p1')" >&2
   exit 1
 fi
 
