@@ -68,6 +68,9 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     that the file has no control flow. Their `disable-model-invocation: false`
 #     puts `description` + `when_to_use` in every session's listing, which is
 #     precisely why these files stay short rather than growing a ritual heading.
+#   - Single-command runners (dashboard) — one call to a helper script and one
+#     line of output shown to the person. No loop, no counter, no phase
+#     transition, so there is nothing for compaction to summarize away.
 # In effect, the non-exempt members are `design` (whose phase-transition
 # invariants live in its top `## Control-Flow Invariants`), `design-audit`,
 # `design-analyze`, and the unattended arms — `implement-unattended`,
@@ -87,7 +90,7 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # could corrupt), `design-analyze` creates files while its source repo must stay
 # untouched, so a summarized-away read-only rule is a real silent-corruption
 # vector that first-5K placement guards against.
-EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply" "github-ops" "fanout-policy" "browser-policy" "local-html" "clickup-ops")
+EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply" "github-ops" "fanout-policy" "browser-policy" "local-html" "clickup-ops" "dashboard")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)

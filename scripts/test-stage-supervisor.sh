@@ -29,6 +29,9 @@ set -uo pipefail
 
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The gate's run-open branch starts the dashboard server; nothing here stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
 # THIS SUITE IS OFTEN RUN FROM INSIDE A PIPELINE STAGE, and the gate reads the

@@ -1,3 +1,8 @@
+# The gate's run-open branch starts the run dashboard, and a server it starts
+# outlives the suite that opened the run. Every suite already turns the switch
+# off for itself; this default covers one that forgets.
+export CC_CMDS_DASHBOARD := off
+
 .PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
 
 lint:
@@ -312,6 +317,7 @@ ORCH_TESTS := \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
+	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
