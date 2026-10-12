@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.65.0] - 2026-10-12
+
+이 호스트에서 도는 병렬 autopilot 런들은 그동안 런마다 원장과 상태줄을 따로 열어 보아야 했다. 이제 런을 시작하면 로컬 대시보드 서버가 함께 뜨고, 모든 런의 상태·세그먼트·스테이지 이력을 브라우저 한 화면에서 볼 수 있다. 서버는 읽기만 하며 런의 종료 코드와 원장에 아무 영향을 주지 않는다.
+
+### Added
+
+- **대시보드 서버와 화면** (`orchestrator/dashboard.py`, `orchestrator/dashboard_read.py`, `orchestrator/dashboard/`) — Python 3.9 표준 라이브러리만 쓰는 loopback 서버가 런 목록(살아 있는 런·최근 런·오래된 런 띠)과 런 상세(종료 절, 세그먼트, 스테이지 타임라인, 비용)를 보여 준다. 런 상태는 셸 `liveness.sh` 의 판정을 1:1 로 옮긴 포트로 읽고, 같은 틱의 요청은 한 번 계산한 결과를 나눠 쓴다. Host 정확 일치, GET/HEAD 한정, CSP 를 건다. 폴링만 받으면 유휴 시간 뒤 스스로 끝난다
+- **`/cc-cmds:dashboard`** — 서버를 띄우거나 이미 떠 있는 것을 확인하고 링크 한 줄을 내는 스킬
+- **런 개시의 자동 기동** (`orchestrator/gate.sh`) — 비스테이지 좌석에서 새 런의 첫 게이트 진입이 대시보드 서버를 분리 기동한다. 스테이지 좌석, 첫 진입이 `plan`·`digest-path` 인 경우, 끄개가 켜진 경우에는 띄우지 않고, 실패해도 런을 실패시키지 않는다
+- **링크 줄** (`autopilot`) — 킥오프 안내, 연기 안내, `--report` 맨 위에 `dashboard.py url` 의 출력 한 줄을 싣는다
+- **시험** — `scripts/test-dashboard.sh` 를 `make test` 에 넣고, `scripts/test-gate.sh` 86절과 `scripts/test-liveness-agreement.sh` 의 셸·포트 합의 픽스처를 더했다
+
+### Post-install notes
+
+- 자동 기동은 `CC_CMDS_DASHBOARD=off` 이거나 `CI` 가 설정되어 있으면 일어나지 않는다. `Makefile` 과 게이트를 부르는 시험 스위트는 기본값으로 끈다
+- `python3` 는 대시보드에만 필요하다. 없는 기기에서도 런은 그대로 돌고, 링크 줄은 「대시보드 없음 — python3 를 찾지 못했습니다」가 된다
+
 ## [2.64.2] - 2026-10-11
 
 질문지의 기타·메모·text 답 입력칸에서 포커스가 다른 곳으로 옮겨지면, 엔진이 그 칸을 한 줄로 잘라 그리고 위 줄은 전체 글을 보여 같은 글이 두 번 보였다. 메모 칸에서는 치는 동안에도 위 줄에 전체 글이 보였다. 이제 사람이 입력칸을 떠나면 칸이 닫히고 글은 위 줄에 한 번만 보이며, 칸이 열려 있는 동안 위 줄은 라벨만 보인다.
