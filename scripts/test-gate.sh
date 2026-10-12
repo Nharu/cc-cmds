@@ -23709,6 +23709,32 @@ sp_plan S32G 머지 gh api -X PUT "repos/o/r/pulls/7/merge?sha=$X32" -f "sha=$H3
 check "32p: 쿼리 sha 를 둔 REST 머지는 본문이 워크트리 HEAD 여도 거절된다" "$rc" "2"
 if sp_bound; then ok "32p: 쿼리 sha — 문면이 결속을 지목한다"; else bad "32p 쿼리 sha 문면" "$msg"; fi
 
+# 점 세그먼트·빈 세그먼트·% 이스케이프가 든 PR 경로 — gh 는 경로를 그대로 보내므로 서버가
+# 머지 엔드포인트로 풀 수 있다. 사다리는 머지로, 결속은 없음으로, 협업면은 아니오로 읽는다.
+for sp_p in 'repos/o/r/pulls/7/merge/reviews/..' 'repos/o/r/pulls/7/merge/issues/..' \
+            'repos/o/r/pulls/7/merge/labels/%2e%2e' 'repos/o/r/pulls//7/merge' \
+            'repos/o/r/pulls/7/./merge' 'repos/o/r/pull%73/7/merge'; do
+  check "32p: 사다리가 PR 경로 $sp_p 를 머지로 읽는다" "$(sp_ld gh api -X PUT "$sp_p")" "머지"
+  check "32p: PR 경로 $sp_p 는 본문 sha 가 있어도 결속 없는 머지다" \
+    "$(sp_mb gh api -X PUT "$sp_p" -f "sha=$X32")" "없음"
+  check "32p: PR 경로 $sp_p 는 협업면이 아니다" "$(sp_cs 협업 gh api -X PUT "$sp_p")" "아니오"
+done
+sp_plan S32G 머지 gh api -X PUT 'repos/o/r/pulls/7/merge/reviews/..' -f "sha=$H32G"
+check "32p: 점 세그먼트 PR 경로의 머지는 본문이 워크트리 HEAD 여도 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: 점 세그먼트 — 문면이 결속을 지목한다"; else bad "32p 점 세그먼트 문면" "$msg"; fi
+# 대조군 — 머지로 끝나는 점 세그먼트 경로는 머지로 읽혀 결속이 없다. 점 없는 리뷰 쓰기와
+# 이스케이프한 이름의 라벨 쓰기는 머지가 아니고 협업면이다.
+check "32p: 대조군 — …/reviews/../merge 는 결속 없는 머지다" \
+  "$(sp_mb gh api -X PUT 'repos/o/r/pulls/7/reviews/../merge' -f "sha=$X32")" "없음"
+check "32p: 대조군 — …/reviews/../merge 를 사다리가 머지로 읽는다" \
+  "$(sp_ld gh api -X PUT 'repos/o/r/pulls/7/reviews/../merge')" "머지"
+check "32p: 대조군 — PR 리뷰 쓰기는 머지가 아니다" "$(sp_mb gh api -X POST repos/o/r/pulls/7/reviews -f event=COMMENT)" "해당없음"
+check "32p: 대조군 — PR 리뷰 쓰기는 협업면이다" "$(sp_cs 협업 gh api -X POST repos/o/r/pulls/7/reviews -f event=COMMENT)" "예"
+check "32p: 대조군 — 이스케이프한 이름의 라벨 쓰기는 머지가 아니다" \
+  "$(sp_mb gh api -X PATCH 'repos/o/r/labels/bug%20fix' -f color=fff)" "해당없음"
+check "32p: 대조군 — 이스케이프한 이름의 라벨 쓰기는 협업면이다" \
+  "$(sp_cs 협업 gh api -X PATCH 'repos/o/r/labels/bug%20fix' -f color=fff)" "예"
+
 # find -exec 안에서 {} 를 받는 gh 호출 — 매치 경로가 들어간 뒤의 철자를 읽을 수 없으므로
 # 사다리는 머지로, 결속은 없음으로 읽는다.
 check "32p: find -exec 의 {} 를 받는 gh api 를 사다리가 머지로 읽는다" \

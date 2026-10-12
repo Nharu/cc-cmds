@@ -1042,7 +1042,10 @@ gate_collaboration_surface() {
               case "$GATE_GHAPI_PATH" in
                 */pulls/*/merge) [ "$rd" != "배포트리거" ] && return 0; return 1 ;;
               esac ;;
-            graphql-ref) return 1 ;;
+            # A pull request path with a dot segment or an escape is read
+            # before the `*/reviews/*` substrings below, which took
+            # `…/merge/reviews/..` as a review.
+            graphql-ref|rest-unbound) return 1 ;;
           esac
           # THE ENDPOINT IS READ FROM THE PARSE, NOT FROM THE WORDS. Matched as
           # a substring of the whole argv, an inert `-t graphql` or
@@ -6896,8 +6899,28 @@ gate_gh_api_parse() {
   GATE_GHAPI_PATH="$p"
 }
 
+gate_gh_api_path_unread() {
+  # After `gate_gh_api_parse`: true when the path names a `pulls` segment once
+  # its `%` escapes are decoded, and is not a path this gate can read as
+  # written — it has a `%` escape, or a `.`, `..` or empty segment.
+  local p="$GATE_GHAPI_PATH" d seg odd=0 pulls=0
+  case "$p" in *%*) odd=1 ;; esac
+  d=$(printf '%s' "$p" | sed 's/%/\\x/g')
+  d=$(printf '%b' "$d")
+  while IFS= read -r seg; do
+    case "$seg" in
+      pulls) pulls=1 ;;
+      ''|.|..) odd=1 ;;
+    esac
+  done <<GATE_GHAPI_SEGS
+$(printf '%s' "$d" | tr '/' '\n')
+GATE_GHAPI_SEGS
+  [ "$pulls" = 1 ] && [ "$odd" = 1 ]
+}
+
 gate_gh_api_merge_kind() {
   # After `gate_gh_api_parse`: prints `rest` for a pull request merge over REST,
+  # `rest-unbound` for a pull request path it cannot read as written,
   # `branch` for a REST branch merge, `graphql` for a GraphQL mutation that
   # merges, nothing otherwise.
   #
@@ -6920,7 +6943,19 @@ gate_gh_api_merge_kind() {
   # `gate_gh_graphql_inert` shows every operation is a query or calls only
   # mutations that move no ref. A body in a file is left to the callers, which
   # already take it as a merge they cannot bind.
+  #
+  # A PULL REQUEST PATH THIS GATE CANNOT READ AS WRITTEN IS `rest-unbound`. gh
+  # sends the endpoint verbatim, so `…/pulls/1/merge/reviews/..`,
+  # `…/merge/labels/%2e%2e` or `…/pulls//1/merge` reach a server that may
+  # resolve them to the merge endpoint. Read as written they ended in neither
+  # `/merge` nor anything else this table knows, so the ladder named no rung,
+  # the binding answered `해당없음` and the `*/reviews/*` substring put them on
+  # the collaboration surface. A non-GET path with a `pulls` segment once
+  # percent-decoded, and with a `.`, `..` or empty segment or any `%` escape,
+  # is a merge with no binding. A label or comment path with no `pulls`
+  # segment is not touched by this, so an escaped label name stays a label.
   case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) return 0 ;; esac
+  if gate_gh_api_path_unread; then printf 'rest-unbound'; return 0; fi
   case "$GATE_GHAPI_PATH" in
     */pulls/*/merge) printf 'rest'; return 0 ;;
     */merges) printf 'branch'; return 0 ;;
@@ -7196,7 +7231,8 @@ gate_gh_graphql_binding() {
 # name the worktree HEAD. A merge spelling with no such argument (`…/merges`,
 # `mergeBranch`), one that merges after the request (`--auto`,
 # `enablePullRequestAutoMerge`, `enqueuePullRequest`), a REST merge with a
-# `sha` in its query string, a gh call inside a `find -exec` whose words carry
+# `sha` in its query string, a pull request path with a dot segment, an empty
+# segment or a `%` escape, a gh call inside a `find -exec` whose words carry
 # `{}`, and a GraphQL body in a file the gate does not read are merges with no
 # binding, and are refused the same way.
 # ---------------------------------------------------------------------------
@@ -7318,7 +7354,9 @@ gate_merge_binding_of_gh() {
         # fields it carries, and neither does a GraphQL ref write: the
         # `expectedHeadOid` of `createCommitOnBranch` pins the branch it writes
         # on, not the content it puts there.
-        branch|graphql-ref) printf '%s' '없음'; return 0 ;;
+        # Nor does a pull request path the gate cannot read as written: the
+        # endpoint a `sha` field would reach is the server's resolution of it.
+        branch|graphql-ref|rest-unbound) printf '%s' '없음'; return 0 ;;
         rest) : ;;
         *)
           # A GraphQL body this gate cannot read may be a merge it cannot
