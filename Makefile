@@ -319,6 +319,7 @@ ORCH_TESTS := \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
+	scripts/test-display-tz.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \

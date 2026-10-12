@@ -1235,6 +1235,8 @@ Cover, in this order:
 
 With a manifest and no line beginning ``- `run` |`` in the ledger, judge by the trace's last stage: `연기` → 「이 런은 연기되었고 아직 기동되지 않았습니다 — 백로그에서 파킹됐는지는 이 보고가 보지 않습니다」 (a deferred record can be parked by the dispatcher, and a parked record is never planned again); `기동 직전` → 「이 런은 기동 직전에 멈췄고 시작되지 않았습니다」; anything else → 「이 킥오프는 1막 `<마지막 단계>` 에서 <시각>에 멈췄고 런은 시작되지 않았습니다」.
 
+**A time the report writes in its own words is shown in the display zone.** Every `<시각>` above is the UTC ISO from the trace or the ledger converted by `bash <plugin root>/orchestrator/display-tz.sh iso <ISO>` (KST unless `CC_CMDS_AUTOPILOT_TZ` names another zone); when the helper prints nothing, write the ISO string as it was. A time inside a ledger row the report quotes as recorded stays as recorded.
+
 **State the report's own limit at the end.** It is authored by the run it describes, so it is powerless against a run that improvises **and also** omits that from its own report. The conjunction being rarer than either part is why this control is worth having — it is not a gate, and the real protection against an irreversible autonomous act remains the permission cutpoints the user set in 5b.
 
 ---
