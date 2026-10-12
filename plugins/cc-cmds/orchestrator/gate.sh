@@ -17682,6 +17682,19 @@ EOF
         *) warn "the \`사유\` of a handoff row is out of vocabulary: ${hwhy:-(none)} — \`상한\` \`승인\` \`종단\` \`중단\`"
            return "$GATE_EXIT_VOCAB" ;;
       esac
+      # `종단` SAYS THE RUN HAS ENDED, SO IT IS TAKEN ONLY FROM A RUN THAT HAS.
+      # The vocabulary check alone let a shift write `사유=종단` with no accepted
+      # termination proposal behind it: the run then carried no `done`, the
+      # watcher read it as still going, and nothing would ever end it. The two
+      # marks read here are the ones the gate already treats as "the run has
+      # ended" — the `done` file and the end token of the ledger — so no third
+      # reader is introduced. Refused without a row: a shift that has not ended
+      # the run hands off with `중단`.
+      if [ "$hwhy" = "종단" ] && ! [ -s "$RUN_DIR/done" ] \
+         && [ -z "$(gate_end_token)" ]; then
+        warn "종료 제안 없이 종단 인계를 쓸 수 없습니다 — the run has neither \`done\` nor an ending row; propose termination first, or hand off with \`사유=중단\`"
+        return "$GATE_EXIT_RULE"
+      fi
       case "$hn" in
         ''|*[!0-9]*)
            warn "a handoff row needs \`교대=<정수>\` — the \`적용 이후 교대 수\` of the morning report stands on this scale"
@@ -18886,13 +18899,19 @@ gate_end_run() {
   # THE ROW CARRIES ITS CAUSE. A caller that names none gets the boundary's own
   # token (`gate_end_cause_of`); an unknown token is refused before anything is
   # published, so a defect cannot leave a `done` with no row behind it.
-  local cause="${3:-}" ekind="${4:-}" fp="${5:-}"
+  #
+  # A SIXTH ARGUMENT REPLACES THE BOUNDARY'S OWN `done` LINE. The all-met arm
+  # ends a run that is not stopped at a boundary but satisfied, so it hands in
+  # the line an accepted proposal writes (`gate_satisfied_done_line`) and keeps
+  # the race and the row of this function.
+  local cause="${3:-}" ekind="${4:-}" fp="${5:-}" line="${6:-}"
   [ -n "$cause" ] || cause=$(gate_end_cause_of "$name")
   if ! gate_rekick_cause_ok "$cause"; then
     warn "rekick cause '$cause' is not one of the twelve closed tokens — this is a defect in the gate"
     return 1
   fi
-  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
+  [ -n "$line" ] || line=$(printf '%s 종단 — 경계 %s · 근거 %s' "$(now_iso)" "$name" "$why")
+  printf '%s\n' "$line" > "$RUN_DIR/done.$$"
   if ! ln "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null; then
     # Lost the race, or the filesystem cannot hard-link. Either way something
     # else owns the mark now; the loser leaves no row and no leftover file.
@@ -18907,10 +18926,43 @@ gate_end_run() {
     # `ended` is the event kind the run's other terminal points already use. A
     # kind outside the notifier's closed set raises nothing at all, so a banner
     # spelled for this one caller would be a banner that never arrives.
-    cc_notify_fire ended "경계 $name 이 런을 끝냈습니다 — 아침 보고서를 확인하세요" || true
+    if [ -n "${6:-}" ]; then
+      cc_notify_fire ended "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
+    else
+      cc_notify_fire ended "경계 $name 이 런을 끝냈습니다 — 아침 보고서를 확인하세요" || true
+    fi
     cc_notify_mark_ended_fired
   fi
   return 0
+}
+
+gate_satisfied_done_line() {
+  # gate_satisfied_done_line <근거> — print the `done` line of a run that ends
+  # with every termination condition met.
+  #
+  # TWO SITES END A RUN ON THAT STATE — an accepted proposal and a refused act
+  # whose next obligation cannot be named — and they must write the same line.
+  # All-met still allows open judgment questions (condition 2 counts act
+  # approvals only) and clauses on `보류` (condition 10 counts them settled), and
+  # this line is the only place either becomes visible: the morning render, the
+  # morning report and the banner all read the first line of `done`.
+  local why="$1" qids qn held
+  qids=$(gate_pending_approval_ids 판단 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  qn=$(gate_pending_approval_ids 판단 | gate_count)
+  # THE HELD CLAUSES ARE NAMED. `보류` settles condition 10, so a clause on
+  # hold leaves no trace in the unmet list — and a run that answered every
+  # authorized clause and one that deferred all of them behind questions would
+  # otherwise write the same terminal line. This is the residual class the
+  # design put in this file rather than in an eleventh condition, so it has to
+  # carry what is actually outstanding.
+  held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  if [ -n "$qids" ]; then
+    printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s' \
+      "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$why"
+  else
+    printf '%s 종단 — 종료 조건 성립%s · 근거 %s' \
+      "$(now_iso)" "${held:+ · 보류 절 $held}" "$why"
+  fi
 }
 
 gate_fleet_busy_state() {
@@ -21526,25 +21578,12 @@ gate_verb_act() {
     # recorded in the `done` file beside `무효화`, which already sits there for
     # the same structural reason, and the morning tells the three apart at a
     # glance.
-    local qids qn held
-    qids=$(gate_pending_approval_ids 판단 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-    qn=$(gate_pending_approval_ids 판단 | gate_count)
-    # THE HELD CLAUSES ARE NAMED. `보류` settles condition 10, so a clause on
-    # hold leaves no trace in the unmet list — and a run that answered every
-    # authorized clause and one that deferred all of them behind questions would
-    # otherwise write the same terminal line. This is the residual class the
-    # design put in this file rather than in an eleventh condition, so it has to
-    # carry what is actually outstanding.
-    held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    gate_done_note "$(gate_satisfied_done_line "$rationale")"
     # Each arm writes its ending row beside `done`, as the invalidated arm does:
     # only the satisfied one is a normal completion, `종료 부류=완료`.
-    if [ -n "$qids" ]; then
-      gate_done_note "$(printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s' \
-        "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$rationale")"
+    if [ -n "$(gate_pending_approval_ids 판단)" ]; then
       gate_end_row "질의 잔여 종단" "$rationale" 해당없음 || true
     else
-      gate_done_note "$(printf '%s 종단 — 종료 조건 성립%s · 근거 %s' \
-        "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale")"
       gate_end_row "종료 조건 성립" "$rationale" 해당없음 완료 || true
     fi
     gate_write_disposition_report
@@ -21588,6 +21627,28 @@ gate_verb_act() {
     fi
     if ! gate_names_next_obligation "$rationale"; then
       warn "every termination condition holds, but the next obligation could not be named — the run terminates as satisfied"
+      # THE RUN IS ENDED HERE, NOT ONLY DECLARED ENDED. This arm has always said
+      # the run terminates as satisfied and then written neither `done` nor an
+      # ending row, so the watcher kept the run alive and a `사유=종단` handoff
+      # had nothing to stand on. `plan` predicts and never ends a run; an ended
+      # run is left as it is, because `gate_end_run` does nothing once `done`
+      # exists. The exit code stays 3: the act itself is still refused.
+      #
+      # AND IT IS ENDED THE WAY AN ACCEPTED PROPOSAL ENDS IT. All-met admits open
+      # judgment questions and held clauses, and `gate_names_next_obligation`
+      # does not look at either, so this arm meets that state too. It writes the
+      # proposal's `done` line, keeps `종료 부류=완료` for a run with no open
+      # question, and writes the disposition report — otherwise the first line,
+      # which `gate_done_note` never replaces, would call a run that still owes
+      # answers a normal completion.
+      if { [ "$verb" = "act" ] || [ "$verb" = "exec" ]; } && ! [ -s "$RUN_DIR/done" ]; then
+        local end_why end_kind=완료
+        end_why="${rationale:-다음 의무 지목 불가}"
+        [ -z "$(gate_pending_approval_ids 판단)" ] || end_kind=""
+        gate_end_run "종료 조건 성립" "$end_why" 해당없음 "$end_kind" "" \
+          "$(gate_satisfied_done_line "$end_why")" || true
+        gate_write_disposition_report || true
+      fi
       exit "$GATE_EXIT_RULE"
     fi
   fi
