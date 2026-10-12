@@ -307,6 +307,31 @@ printf '%s\n' '{"type":"tool_use","name":"ToolSearch","input":{"query":"select:m
 if decision_point_reached Sqf; then ok "결정 지점 탐지기는 질문지만 담은 흔적에서도 참"; else bad "결정 지점 탐지기" "질문지 흔적을 결정 지점으로 보지 않았다"; fi
 check "종단: 질문지에 닿은 정지도 산출물 없는 정지" "$(classify_termination Sqf 0 1)" "산출물 없는 정지"
 
+# 탐지기는 스테이지 자신의 행위만 읽는다. 실제 스트림 꼴(assistant 프레임 안의
+# tool_use)의 질문 도구 호출과 ToolSearch 질의, 결과 봉투의 질문 도구 권한 거부는
+# 결정 지점이다. 스테이지가 읽은 파일 글(user 프레임의 tool_result)이나 assistant 의
+# 산문에 질문 도구 이름이 있는 것은 결정 지점이 아니다 — 이 저장소의 설계 문서와
+# 스킬 본문은 그 이름을 늘 담고 있어, 원문 검색은 모든 스트림에서 발화했다.
+DP_READ='{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"grep -q -e AskUserQuestion -e mcp__cc-cmds__question_form \"$out\""}]}}'
+DP_PROSE='{"type":"assistant","message":{"content":[{"type":"text","text":"AskUserQuestion 은 이 갈래에 없다"}]}}'
+printf '%s\n' "$DP_READ" "$DP_PROSE" 'not json AskUserQuestion' '{"type":"result","num_turns":3,"permission_denials":[]}' \
+  > "$RUN_DIR/log/Sread.json"
+if decision_point_reached Sread; then bad "결정 지점 탐지기" "읽은 글·산문 속 질문 도구 이름에 발화했다"; else ok "결정 지점 탐지기는 읽은 글·산문 속 질문 도구 이름에 발화하지 않는다"; fi
+check "종단: 질문 도구 이름을 읽기만 한 시도는 공허한 성공" "$(classify_termination Sread 0 1)" "공허한 성공"
+printf '%s\n' "$DP_READ" '{"type":"assistant","message":{"content":[{"type":"text","text":"묻는다"},{"type":"tool_use","id":"t2","name":"AskUserQuestion","input":{}}]}}' \
+  > "$RUN_DIR/log/Sask.json"
+if decision_point_reached Sask; then ok "결정 지점 탐지기는 assistant 프레임의 질문 도구 tool_use 에서 참"; else bad "결정 지점 탐지기" "assistant 프레임의 질문 도구 호출을 보지 않았다"; fi
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"ToolSearch","input":{"query":"select:mcp__cc-cmds__question_form"}}]}}' \
+  > "$RUN_DIR/log/Stsq.json"
+if decision_point_reached Stsq; then ok "결정 지점 탐지기는 assistant 프레임의 질문 도구 ToolSearch 에서 참"; else bad "결정 지점 탐지기" "질문 도구 ToolSearch 를 보지 않았다"; fi
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t4","name":"ToolSearch","input":{"query":"select:TaskCreate"}}]}}' \
+  > "$RUN_DIR/log/Stso.json"
+if decision_point_reached Stso; then bad "결정 지점 탐지기" "질문 도구가 아닌 ToolSearch 에 발화했다"; else ok "결정 지점 탐지기는 다른 도구의 ToolSearch 에 발화하지 않는다"; fi
+printf '%s\n' "$DP_READ" '{"type":"result","num_turns":3,"permission_denials":[{"tool_name":"AskUserQuestion","tool_use_id":"t5","tool_input":{}}]}' \
+  > "$RUN_DIR/log/Sden.json"
+if decision_point_reached Sden; then ok "결정 지점 탐지기는 질문 도구의 권한 거부에서 참"; else bad "결정 지점 탐지기" "질문 도구 권한 거부를 보지 않았다"; fi
+check "종단: 질문 도구 권한 거부는 산출물 없는 정지" "$(classify_termination Sden 0 1)" "산출물 없는 정지"
+
 # 한도 종료 판정. 스테이지가 사용량 한도로 스스로 끝났는지는 그 시도 자신의
 # 스트림에서 타입이 있는 필드로만 읽는다. 최소 한도 스트림은 init · allowed
 # 프레임 · rejected 프레임 · 429 봉투 네 줄이고, 아래 변형은 그중 적힌 부분만
@@ -5859,6 +5884,8 @@ check "게이트의 행 기록기도 재수렴 행 뒤에 계획 파일을 무�
 # 원인은 첫 시도(프로세스 A, 늘 빈 목록)가 아니라 마지막 시도의 목록에서 나온다. 첫
 # 행은 스테이지가 방출한 다이제스트를 실은 실제 계획 행이고, 계속은 실제
 # `predicate_implement_share` 로 판정된다 — git 사다리와 잔여 몫 판독만 스텁한다.
+# 스텁 스트림은 질문 도구 이름을 담은 파일을 읽은 tool_result 를 지닌다. 그 이름에
+# 결정 지점 탐지기가 발화하면 첫 계속에서 `산출물 없는 정지` 로 멈춰 상한에 닿지 않는다.
 missb_case() {
   local d="$CONT/missb" did="S4:mb:1"
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
@@ -5879,11 +5906,11 @@ missb_case() {
       printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "$3" >> "$d/spawned"
       printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
       if [ -z "${STAGE_RESUME:-}" ]; then
-        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
-          "$MB_SID" "$CONT_PSHA" > "$(stage_log_path "$s")"
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n%s\n{"type":"result","num_turns":7,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
+          "$MB_SID" "$DP_READ" "$CONT_PSHA" > "$(stage_log_path "$s")"
       else
-        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7}\n' \
-          "$MB_SID" > "$(stage_log_path "$s")"
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n%s\n{"type":"result","num_turns":7}\n' \
+          "$MB_SID" "$DP_READ" > "$(stage_log_path "$s")"
         : > "$d/commit"
       fi
       printf '0' > "$RUN_DIR/$s.rc"
@@ -5945,6 +5972,9 @@ attbase_case() {
     rsid="S1':ab:1:plugins-x.md"; printf '0' > "$RUN_DIR/$rsid.rc"
     reconverge_row ab "$rsid"
     procb=0; segment_process_b ab && procb=1
+    # 그 시도의 스트림은 질문 도구 이름을 담은 파일을 읽은 흔적을 지닌다. 스트림이 없으면
+    # 결정 지점 탐지기가 늘 거짓이라, 이 단언은 탐지기의 오발을 보지 못한다.
+    mkdir -p "$RUN_DIR/log"; printf '%s\n' "$DP_READ" > "$(stage_log_path "S4:ab:2")"
     base=$(s4_attempt_base "$d/repo" "$c0" "$procb")
     if predicate_implement seg/ab "$base" ab; then pred=0; else pred=1; fi
     if predicate_implement seg/ab "$c0" ab; then opred=0; else opred=1; fi
@@ -5987,11 +6017,11 @@ crashA_case() {
       printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "${CC_SPAWN_EVENT:-}" >> "$d/spawned"
       printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
       if [ -z "${STAGE_RESUME:-}" ]; then
-        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
-          "$CA_SID" "$CONT_PSHA" > "$(stage_log_path "$s")"
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n%s\n{"type":"result","num_turns":7,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
+          "$CA_SID" "$DP_READ" "$CONT_PSHA" > "$(stage_log_path "$s")"
       else
-        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7}\n' \
-          "$CA_SID" > "$(stage_log_path "$s")"
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n%s\n{"type":"result","num_turns":7}\n' \
+          "$CA_SID" "$DP_READ" > "$(stage_log_path "$s")"
         [ "$variant" = "nocommit" ] || : > "$d/commit"
       fi
       printf '0' > "$RUN_DIR/$s.rc"

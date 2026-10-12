@@ -6233,7 +6233,27 @@ decision_point_reached() {
   [ -f "$out" ] || return 1
   # The question form asks a person exactly as AskUserQuestion does, so a stage
   # that reached for it reached the same kind of point.
-  grep -q -e 'AskUserQuestion' -e 'mcp__cc-cmds__question_form' "$out" 2>/dev/null
+  #
+  # ONLY THE STAGE'S OWN ACTS ARE READ: a `tool_use` in an assistant frame (or a
+  # bare `tool_use` line), and the result envelope's `permission_denials`. A
+  # text match over the whole stream also hits every `tool_result` the stage
+  # read and every compaction summary, and in this repository the design
+  # documents, the skill bodies and this function name the question tool all
+  # the time. Measured: every stage stream of one run matched, none of them on
+  # a `tool_use`, so each exit-0 attempt that missed its predicate was filed
+  # `산출물 없는 정지` instead of `공허한 성공` and parked where it should have
+  # been continued. Lines that are not JSON are skipped, not fatal.
+  local hit
+  hit=$(jq -R -c '
+    def q: type == "string" and (. == "AskUserQuestion" or . == "mcp__cc-cmds__question_form");
+    def qs: type == "string" and (contains("AskUserQuestion") or contains("mcp__cc-cmds__question_form"));
+    (fromjson? // empty) | objects
+    | ( ( ( select(.type == "tool_use"),
+            (select(.type == "assistant") | .message.content[]? | objects | select(.type == "tool_use")) )
+          | select((.name | q) or (.name == "ToolSearch" and (.input.query | qs))) | .name ),
+        ( select(.type == "result") | .permission_denials[]? | objects | select(.tool_name | q) | .tool_name ) )' \
+    "$out" 2>/dev/null | sed -n '1p')
+  [ -n "$hit" ]
 }
 
 stage_limit_exit() {
