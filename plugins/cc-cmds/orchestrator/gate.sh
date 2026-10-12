@@ -1389,7 +1389,13 @@ gate_push_unwrap_of_argv0() {
     case "$cmd" in
       lockf)   out=$(gate_unwrap_lockf   gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
       command) out=$(gate_unwrap_command gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
-      find)    out=$(gate_unwrap_find    gate_push_unwrap_of_argv0 '해당없음' '해당없음' '해당없음' gate_push_unwrap_combine "$@") ;;
+      # A push whose words find fills in with a path is not the push the
+      # dry-run would measure — see `gate_find_exec_substitutes`.
+      find)
+        out=$(gate_unwrap_find gate_push_unwrap_of_argv0 '해당없음' '해당없음' '해당없음' gate_push_unwrap_combine "$@")
+        if [ "$out" != '해당없음' ] && gate_find_exec_substitutes git "$@"; then
+          out='불투명'
+        fi ;;
       rg)      out=$(gate_unwrap_rg      gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
       # An `env` option the unwrap does not read ends it, and one of them —
       # `-S`, `--split-string` in any spelling — is a shell-like body of its
@@ -1531,8 +1537,9 @@ gate_push_base_updates() {
   # front of git other than the locale's (`GIT_*`, `HOME`, `XDG_CONFIG_HOME`)
   # or an `env` option — the dry-run would read another repository or
   # configuration than the push. Of the other globals, `-C`, `--git-dir`, `--work-tree` and
-  # `--namespace` are kept and the rest dropped. A push inside a shell string
-  # or under `sudo` is `형태미상` too (see `gate_push_unwrap_of_argv0`).
+  # `--namespace` are kept and the rest dropped. A push inside a shell string,
+  # under `sudo`, or inside a `find -exec` whose words carry `{}` is `형태미상`
+  # too (see `gate_push_unwrap_of_argv0`).
   #
   # ONLY A REF LINE IS AN ANSWER. Output with no `<flag><TAB>…` line — `Done`
   # alone, an error, nothing — reads `판정불가`, and the static reading takes
@@ -5042,6 +5049,43 @@ gate_unwrap_find() {
   printf '%s' "$walk_only"
 }
 
+gate_find_exec_substitutes() {
+  # gate_find_exec_substitutes <name> <find's args after argv0...> — true when
+  # one `-exec`/`-ok` command both names <name> (by basename, anywhere in its
+  # words) and carries a word holding `{}`.
+  #
+  # THE UNWRAP HANDS THE INNER COMMAND OVER AS WRITTEN, `{}` AND ALL, and find
+  # does not run it as written: BSD and GNU find both put the match's path in
+  # place of `{}` inside any word, so `-exec git push origin <sha>:{} ';'` run
+  # in `master` pushes to the base while its dry-run aimed at `refs/heads/{}`,
+  # and `gh api -X PUT repos/o/r/pulls/N/{}` run in `merge` merges while it
+  # read as no merge at all. find also runs the command once per match, which
+  # one reading cannot stand for. So the readers that need to know what such
+  # a command reaches do not read it: the push is `불투명`, a gh call is a
+  # merge with no binding. The terminators are the ones `gate_unwrap_find`
+  # reads.
+  local name="$1"; shift
+  local a prev in_exec=0 named=0 subst=0
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
+    if [ "$in_exec" = 0 ]; then
+      case "$a" in -exec|-ok) in_exec=1; named=0; subst=0; prev="" ;; esac
+      continue
+    fi
+    case "$a" in
+      ';'*) in_exec=0 ;;
+      '+'*) [ "$prev" = '{}' ] && in_exec=0 ;;
+    esac
+    if [ "$in_exec" = 1 ]; then
+      [ "${a##*/}" = "$name" ] && named=1
+      case "$a" in *'{}'*) subst=1 ;; esac
+      prev="$a"
+    fi
+    [ "$named" = 1 ] && [ "$subst" = 1 ] && return 0
+  done
+  return 1
+}
+
 gate_unwrap_rg() {
   # gate_unwrap_rg <resolver> <search-only> <truncated> <rg's args after argv0...>
   #
@@ -6564,7 +6608,15 @@ ladder_of_argv0() {
     # asserts nothing, the same as any other name with no row.
     lockf)   gate_unwrap_lockf   ladder_of_argv0 '' '' "$@" ;;
     command) gate_unwrap_command ladder_of_argv0 '' '' "$@" ;;
-    find)    gate_unwrap_find    ladder_of_argv0 '' '' '' gate_answer_ladder_max "$@" ;;
+    # A gh call whose words find fills in with a path may be a merge the parse
+    # below cannot see (`…/pulls/N/{}` run in `merge`), so it is read as one
+    # and meets the merge binding, which answers `없음` for it.
+    find)
+      if gate_find_exec_substitutes gh "$@"; then
+        printf '머지'
+      else
+        gate_unwrap_find ladder_of_argv0 '' '' '' gate_answer_ladder_max "$@"
+      fi ;;
     rg)      gate_unwrap_rg      ladder_of_argv0 '' '' "$@" ;;
     env)     gate_unwrap_env     ladder_of_argv0 '' '' "$@" ;;
     timeout) gate_unwrap_wrapper timeout ladder_of_argv0 '' '' "$@" ;;
@@ -6938,9 +6990,8 @@ gate_gh_graphql_binding() {
   #
   # ONE SHAPE IS READ, AND IT IS THE ONE THE SERVER BINDS. The document — the
   # single `query` field — must hold one operation whose only top-level field is
-  # a `mergePullRequest`, `enqueuePullRequest` or `enablePullRequestAutoMerge`,
-  # and exactly one `expectedHeadOid` argument, inside that field's arguments
-  # and outside every string. Its value is inline as a string, or a `$variable`
+  # a `mergePullRequest`, and exactly one `expectedHeadOid` argument, inside
+  # that field's arguments and outside every string. Its value is inline as a string, or a `$variable`
   # whose value is a top-level `-f`/`-F` field gh sends as a variable — any
   # field but `query` and `operationName`, on the endpoint written `graphql`.
   #
@@ -6952,6 +7003,12 @@ gate_gh_graphql_binding() {
   # comment, a fragment spread, a directive, a second operation or top-level
   # field, an input object passed whole as a variable (`input: $input`), and a
   # second `expectedHeadOid` anywhere.
+  #
+  # `enablePullRequestAutoMerge` AND `enqueuePullRequest` CARRY THE ARGUMENT
+  # AND BIND NOTHING. GitHub compares their `expectedHeadOid` when the request
+  # is made and merges later, so a commit pushed to the head branch in between
+  # is what merges — the same window as `gh pr merge --auto`. They are read as
+  # merges and always answer `없음`.
   local f q="" nq=0
   for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
     case "$f" in query=*) q="${f#query=}"; nq=$((nq + 1)) ;; esac
@@ -6996,8 +7053,7 @@ gate_gh_graphql_binding() {
           if [ "$bd" = 1 ] && [ "$pd" = 0 ] && [ "$nx" != ':' ]; then
             top=$((top + 1)); topname="$word"
             case "$word" in
-              mergePullRequest|enqueuePullRequest|enablePullRequestAutoMerge)
-                [ "$nx" != '(' ] || pend=1 ;;
+              mergePullRequest) [ "$nx" != '(' ] || pend=1 ;;
             esac
           fi
           if [ "$word" = expectedHeadOid ]; then
@@ -7012,7 +7068,7 @@ gate_gh_graphql_binding() {
     printf '%s' '없음'; return 0
   fi
   case "$topname" in
-    mergePullRequest|enqueuePullRequest|enablePullRequestAutoMerge) : ;;
+    mergePullRequest) : ;;
     *) printf '%s' '없음'; return 0 ;;
   esac
   local v="" name g
@@ -7053,8 +7109,11 @@ gate_gh_graphql_binding() {
 # --match-head-commit <sha>`, the REST merge's `sha` field and the GraphQL
 # `expectedHeadOid` — so the gate requires that argument and requires it to
 # name the worktree HEAD. A merge spelling with no such argument (`…/merges`,
-# `mergeBranch`) and a GraphQL body in a file the gate does not read are
-# merges with no binding, and are refused the same way.
+# `mergeBranch`), one that merges after the request (`--auto`,
+# `enablePullRequestAutoMerge`, `enqueuePullRequest`), a REST merge with a
+# `sha` in its query string, a gh call inside a `find -exec` whose words carry
+# `{}`, and a GraphQL body in a file the gate does not read are merges with no
+# binding, and are refused the same way.
 # ---------------------------------------------------------------------------
 gate_merge_binding_of_argv0() {
   # gate_merge_binding_of_argv0 <argv...> — prints `해당없음` when the argv is
@@ -7069,7 +7128,12 @@ gate_merge_binding_of_argv0() {
     case "$cmd" in
       lockf)   out=$(gate_unwrap_lockf   gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
       command) out=$(gate_unwrap_command gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
-      find)    out=$(gate_unwrap_find    gate_merge_binding_of_argv0 '해당없음' '해당없음' '해당없음' gate_merge_binding_combine "$@") ;;
+      find)
+        if gate_find_exec_substitutes gh "$@"; then
+          out='없음'
+        else
+          out=$(gate_unwrap_find gate_merge_binding_of_argv0 '해당없음' '해당없음' '해당없음' gate_merge_binding_combine "$@")
+        fi ;;
       rg)      out=$(gate_unwrap_rg      gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
       env)     out=$(gate_unwrap_env     gate_merge_binding_of_argv0 '해당없음' '해당없음' "$@") ;;
       timeout|nice|nohup|stdbuf)
@@ -7092,6 +7156,24 @@ gate_merge_binding_combine() {
   fi
 }
 
+gate_gh_api_query_names_sha() {
+  # After `gate_gh_api_parse`: true when the endpoint's query string has a key
+  # that is or may decode to `sha` — `sha`, `sha[…]`, or any key with a `%`
+  # escape. Pairs are split at `&` and `;`, and a `#fragment` is not sent.
+  local q="$GATE_GHAPI_ENDPOINT" pair key
+  case "$q" in *'?'*) q="${q#*\?}" ;; *) return 1 ;; esac
+  q="${q%%#*}"
+  while IFS= read -r pair; do
+    key="${pair%%=*}"
+    case "$key" in
+      sha|sha\[*|*%*) return 0 ;;
+    esac
+  done <<GATE_GHAPI_QUERY
+$(printf '%s' "$q" | tr '&;' '\n\n')
+GATE_GHAPI_QUERY
+  return 1
+}
+
 gate_merge_binding_value() {
   # A binding is a full lowercase sha. An abbreviation or a revision name is
   # resolved by the server against its own refs, which is the thing the
@@ -7105,7 +7187,14 @@ gate_merge_binding_value() {
 gate_merge_binding_of_gh() {
   # gate_merge_binding_of_gh <gh's args after argv0...>. The LAST occurrence of
   # the argument wins, as it does for gh's own flag parsing.
-  local have=0 v=""
+  #
+  # A MERGE THAT HAPPENS LATER IS NOT BOUND. `gh pr merge --auto` enables
+  # auto-merge or enters the merge queue, and GitHub compares
+  # `--match-head-commit` only when the request is made; the merge itself comes
+  # later, and a commit pushed to the head branch in between — a fix cycle's
+  # push, for one — is what merges. So `--auto` answers `없음` whatever head it
+  # names.
+  local have=0 v="" auto=0
   gate_gh_strip_repo "$@"
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
@@ -7118,9 +7207,14 @@ gate_merge_binding_of_gh() {
             have=1; v="${2:-}"
             if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
           --match-head-commit=*) have=1; v="${1#--match-head-commit=}"; shift ;;
+          --auto) auto=1; shift ;;
+          --auto=*)
+            case "${1#--auto=}" in 0|f|F|false|FALSE|False) auto=0 ;; *) auto=1 ;; esac
+            shift ;;
           *) shift ;;
         esac
-      done ;;
+      done
+      if [ "$auto" = 1 ]; then printf '%s' '없음'; return 0; fi ;;
     api)
       shift
       gate_gh_api_parse "$@"
@@ -7150,6 +7244,13 @@ gate_merge_binding_of_gh() {
       # `-F sha=@<file>` and `--input` put the value in a file this gate does
       # not read, so they bind nothing it can compare.
       if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then printf '%s' '없음'; return 0; fi
+      # A `sha` IN THE QUERY STRING IS A SECOND VALUE THE SERVER MAY READ. gh
+      # sends the endpoint's query as written, and the parse drops it, so
+      # `…/merge?sha=<X>` with `-f sha=<HEAD>` showed this reading the HEAD
+      # while the server received both — and which one a server takes when
+      # the two collide is not something this gate can know. Such a merge is
+      # no binding. Other query keys (`merge_method`) are left alone.
+      if gate_gh_api_query_names_sha; then printf '%s' '없음'; return 0; fi
       for fv in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
         case "$fv" in
           sha=*) have=1; v="${fv#sha=}" ;;
@@ -22128,7 +22229,7 @@ gate_verb_act() {
     gate_push_base_updates "$alias" "$@"
     if [ "$GATE_PUSH_KIND" = '형태미상' ]; then
       warn "형태 미상 — 이 git push 는 게이트가 dry-run 으로 무엇이 베이스에 올라가는지 잴 수 없는 형태입니다: ${GATE_PUSH_FORM_WORD}"
-      warn "셸 -c·sudo 래퍼, 환경 할당(LANG·LC_*·TZ 밖의 모두 — HOME=·XDG_CONFIG_HOME=·GIT_* 포함)과 env 옵션, 실행 설정 키, 허용 목록 밖 push 옵션(축약 포함) 없이 git push <원격> <refspec> 으로 다시 부릅니다 — 게이트가 아는 래퍼(command·할당 없는 env·lockf·timeout 등)와 -f·-u·--force-with-lease·--tags 같은 옵션은 그대로 둡니다"
+      warn "셸 -c·sudo 래퍼, {} 를 받는 find -exec, 환경 할당(LANG·LC_*·TZ 밖의 모두 — HOME=·XDG_CONFIG_HOME=·GIT_* 포함)과 env 옵션, 실행 설정 키, 허용 목록 밖 push 옵션(축약 포함) 없이 git push <원격> <refspec> 으로 다시 부릅니다 — 게이트가 아는 래퍼(command·할당 없는 env·lockf·timeout 등)와 -f·-u·--force-with-lease·--tags 같은 옵션은 그대로 둡니다"
       exit "$GATE_EXIT_VOCAB"
     fi
     if [ "$GATE_PUSH_KIND" != '해당없음' ]; then
@@ -22361,7 +22462,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다"
+        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다. 자동 머지·머지 큐 진입(gh pr merge --auto, enablePullRequestAutoMerge, enqueuePullRequest)은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어나므로 결속으로 받지 않습니다 — --auto 없이 바로 머지합니다. REST 머지의 쿼리스트링에 sha 를 두지 않고, find -exec 안에서 {} 를 받는 gh 호출은 맨 철자로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else

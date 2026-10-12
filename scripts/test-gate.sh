@@ -21664,6 +21664,20 @@ for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" "GIT_CONFIG_
     sp_unknown "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}="
   done
 done
+# find 는 -exec 단어 안의 {} 를 매치 경로로 바꿔 돌린다 — 탐침이 리터럴 {} 로 잰 push 는
+# 실제로 돌 push 가 아니다. 그래서 {} 를 받는 push 는 재지 않고 형태 미상으로 거절한다.
+check "32p: find -exec 의 {} 를 받는 push 는 불투명 이다" \
+  "$(sp_unwrap find master -maxdepth 0 -exec git push origin "u-$SA_ID:{}" ';')" "불투명"
+check "32p: 배치 종단 + 앞의 {} 도 같다" \
+  "$(sp_unwrap find master -maxdepth 0 -exec git push origin {} +)" "불투명"
+check "32p: 대조군 — 다른 -exec 의 {} 는 push 를 불투명으로 만들지 않는다" \
+  "$(sp_unwrap find . -maxdepth 0 -exec cat {} ';' -exec git push origin "x:main" ';')" "git push origin x:main "
+sp_act S32A 머지 find "$SA_ROOT" -maxdepth 0 -exec git push origin "u-$SA_ID:{}" ';'
+sp_refused "32p: find -exec 안의 {} 를 받는 베이스 push 는 거절된다" 2 "$B32"
+sp_unknown "32p: find -exec … {}"
+sp_act S32A push find "$SA_ROOT" -maxdepth 0 -exec git push origin "HEAD:{}" ';'
+sp_refused "32p: push 로 선언한 find -exec … {} 의 push 도 거절된다" 2 "$B32"
+sp_unknown "32p: push 선언의 find -exec … {}"
 # env 의 split-string 은 = 를 실어도 옵션이다 — 할당으로 읽으면 등급이 읽기였다.
 check "32p: env --split-string= 안의 push 는 불투명 이다" \
   "$(sp_unwrap env "--split-string=git push origin x:main")" "불투명"
@@ -21949,6 +21963,63 @@ sp_plan S32G 커밋 gh api graphql -F 'query=@q.graphql'
 check "32p: 파일 본문 GraphQL 을 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
 sp_plan S32G 커밋 gh api -iX PUT repos/o/r/pulls/7/merge
 check "32p: 묶음 -iX PUT 머지를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
+
+# 자동 머지·머지 큐 진입은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어난다 —
+# 결속 인자를 실어도 결속이 아니다.
+check "32p: --auto 의 gh pr merge 는 결속 없는 머지다" \
+  "$(sp_mb gh pr merge 7 --auto --match-head-commit "$X32")" "없음"
+check "32p: 뒤에 붙은 --auto=true 도 같다" \
+  "$(sp_mb gh pr merge 7 --match-head-commit "$X32" --auto=true)" "없음"
+check "32p: 대조군 — --auto=false 의 gh pr merge 는 그 sha 에 결속된다" \
+  "$(sp_mb gh pr merge 7 --auto=false --match-head-commit "$X32")" "$X32"
+q32ea=$(printf 'query=mutation{enablePullRequestAutoMerge(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$X32")
+q32eq=$(printf 'query=mutation{enqueuePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$X32")
+for sp_q in "$q32ea" "$q32eq"; do
+  sp_n="${sp_q#query=mutation\{}"; sp_n="${sp_n%%(*}"
+  check "32p: 사다리가 $sp_n 을 머지로 읽는다" "$(sp_ld gh api graphql -f "$sp_q")" "머지"
+  check "32p: expectedHeadOid 를 실은 $sp_n 은 결속 없는 머지다" "$(sp_mb gh api graphql -f "$sp_q")" "없음"
+done
+sp_plan S32G 머지 gh pr merge 7 --auto --match-head-commit "$H32G"
+check "32p: 워크트리 HEAD 를 실은 --auto 머지는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: --auto — 문면이 결속을 지목한다"; else bad "32p --auto 문면" "$msg"; fi
+case "$msg" in
+  *"요청 시점에만"*) ok "32p: --auto — 문면이 그 이유를 댄다" ;;
+  *) bad "32p --auto 이유 문면" "$msg" ;;
+esac
+sp_plan S32G 머지 gh api graphql -f "$(printf 'query=mutation{enablePullRequestAutoMerge(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$H32G")"
+check "32p: 워크트리 HEAD 를 실은 enablePullRequestAutoMerge 는 거절된다" "$rc" "2"
+
+# REST 머지 경로의 쿼리스트링 sha — 게이트가 버린 두 번째 값을 서버가 읽을 수 있다.
+for sp_p in 'repos/o/r/pulls/1/merge?sha=1111111111111111111111111111111111111111' \
+            'repos/o/r/pulls/1/merge?merge_method=squash&sha=1111111111111111111111111111111111111111' \
+            'repos/o/r/pulls/1/merge?s%68a=1111111111111111111111111111111111111111' \
+            'repos/o/r/pulls/1/merge?sha[]=1111111111111111111111111111111111111111'; do
+  check "32p: 쿼리에 sha 를 둔 REST 머지는 본문 sha 가 있어도 결속 없는 머지다 — ${sp_p#*\?}" \
+    "$(sp_mb gh api -X PUT "$sp_p" -f "sha=$X32")" "없음"
+done
+check "32p: 대조군 — sha 아닌 쿼리 키는 본문 sha 결속을 지우지 않는다" \
+  "$(sp_mb gh api -X PUT 'repos/o/r/pulls/1/merge?merge_method=squash&shax=1' -f "sha=$X32")" "$X32"
+sp_plan S32G 머지 gh api -X PUT "repos/o/r/pulls/7/merge?sha=$X32" -f "sha=$H32G"
+check "32p: 쿼리 sha 를 둔 REST 머지는 본문이 워크트리 HEAD 여도 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: 쿼리 sha — 문면이 결속을 지목한다"; else bad "32p 쿼리 sha 문면" "$msg"; fi
+
+# find -exec 안에서 {} 를 받는 gh 호출 — 매치 경로가 들어간 뒤의 철자를 읽을 수 없으므로
+# 사다리는 머지로, 결속은 없음으로 읽는다.
+check "32p: find -exec 의 {} 를 받는 gh api 를 사다리가 머지로 읽는다" \
+  "$(sp_ld find merge -maxdepth 0 -exec gh api -X PUT 'repos/o/r/pulls/7/{}' ';')" "머지"
+check "32p: find -exec 의 {} 를 받는 gh api 는 결속 없는 머지다" \
+  "$(sp_mb find merge -maxdepth 0 -exec gh api -X PUT 'repos/o/r/pulls/7/{}' ';')" "없음"
+check "32p: find -exec 의 {} 를 받는 gh pr merge 도 결속 없는 머지다" \
+  "$(sp_mb find . -maxdepth 0 -exec gh pr merge {} --match-head-commit "$X32" ';')" "없음"
+check "32p: 대조군 — {} 없는 find -exec gh 는 안쪽 철자로 읽는다" \
+  "$(sp_mb find . -maxdepth 0 -exec gh pr merge 7 --match-head-commit "$X32" ';')" "$X32"
+check "32p: 대조군 — 다른 -exec 의 {} 는 gh 를 머지로 만들지 않는다" \
+  "$(sp_ld find . -exec cat {} ';' -exec gh pr view 7 ';')" ""
+sp_plan S32G 머지 find "$SA_ROOT" -maxdepth 0 -exec gh api -X PUT 'repos/o/r/pulls/7/{}' -f "sha=$H32G" ';'
+check "32p: find -exec 의 {} 를 받는 gh 머지는 워크트리 HEAD 를 실어도 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: find {} gh — 문면이 결속을 지목한다"; else bad "32p find {} gh 문면" "$msg"; fi
+sp_plan S32G 커밋 find "$SA_ROOT" -maxdepth 0 -exec gh api -X PUT 'repos/o/r/pulls/7/{}' ';'
+check "32p: find -exec 의 {} 를 받는 gh 를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
 
 # ---------------------------------------------------------------------------
 # 36. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다
