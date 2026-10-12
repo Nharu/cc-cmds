@@ -25515,6 +25515,9 @@ gate_record_stage_outcome() {
       "effort=$effort" "서빙 모델=$served" \
       "종단 부류=$klass"
   fi
+  # A re-convergence row voids the segment's plan; the file goes too, or the
+  # plan-file fallback above would put the void digest back on the next row.
+  [ "$kind" != "reconverge" ] || void_segment_plan "$rowseg"
 
   # A TERMINAL CLASS THAT LEFT EVIDENCE OF REACHING A POINT NEEDING A PERSON is
   # announced the instant the row is seated — before the cost block, because the

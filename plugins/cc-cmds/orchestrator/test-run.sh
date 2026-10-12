@@ -5827,6 +5827,91 @@ check "스트림에 줄이 없으면 계획 파일의 해시로 물러선다" \
   "$( ( RUN_DIR="$CONT/planA/run"; printf 'x\n' > "$RUN_DIR/sgf.plan.md"
         stage_plan_sha256 "$CONT/none.json" sgf ) )" "$(printf 'x\n' | shasum -a 256 | cut -d' ' -f1)"
 check "줄도 파일도 없으면 빈 값이다" "$(stage_plan_sha256 "$CONT/none.json" nosuchseg)" ""
+# 재수렴 행은 계획 파일도 무효로 한다. 파일이 남으면 새 계획을 내기 전에 크래시한
+# 프로세스 A 의 행이 파일 폴백으로 옛 다이제스트를 싣고, 다음 시도가 무효화된 계획
+# 위에서 프로세스 B 로 입장한다. 실제 재수렴 행 기록기 뒤에 다이제스트 없는 스트림의
+# 행을 실제 행 구성 그대로 쓰고, 그 행에 다이제스트가 없고 판정이 A 인지 본다.
+check "재수렴 행 뒤의 다이제스트 없는 시도는 옛 계획 파일의 해시를 싣지 않고 프로세스 A 로 남는다" \
+  "$( ( d="$CONT/voidplan"; rm -rf "$d"; mkdir -p "$d/run"
+        RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun; : > "$LEDGER"
+        stage_parent_id() { printf 'parent'; }; absorb_stage_judgment() { :; }
+        printf '옛 계획\n' > "$RUN_DIR/sv.plan.md"
+        ledger_row 'stage-result' '세그먼트=sv' '스테이지=S4' '파견 id=S4:sv:1' \
+          "plan_sha256=$(shasum -a 256 "$RUN_DIR/sv.plan.md" | cut -d' ' -f1)" '종단 부류=정상 완료'
+        rsid="S1':sv:1:plugins-x.md"; printf '0' > "$RUN_DIR/$rsid.rc"
+        reconverge_row sv "$rsid"
+        psha=$(stage_plan_sha256 "$CONT/none.json" sv)
+        ledger_row 'stage-result' '세그먼트=sv' '스테이지=S4' '파견 id=S4:sv:2' ${psha:+"plan_sha256=$psha"} '종단 부류=크래시'
+        printf '%s/' "${psha:-빈값}"
+        segment_process_b sv && printf B || printf A
+        printf '/%s' "$(ls "$RUN_DIR" | grep -c '^sv\.plan\.md\.void-' || true)" ) 2>/dev/null )" "빈값/A/1"
+check "게이트의 행 기록기도 재수렴 행 뒤에 계획 파일을 무효로 한다" \
+  "$(sed -n '/^gate_record_stage_outcome() {/,/^}/p' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+     | grep -c '\[ "\$kind" != "reconverge" \] || void_segment_plan "\$rowseg"' || true)" "1"
+
+# 구동기 사이클 1에서 프로세스 B 는 프로세스 A 의 계속으로 들어간다. 그 계속이 커밋은
+# 하되 자기 몫 결과 줄을 빠뜨리면, 다음 계속 메시지는 빠진 표제를 축자로 대고, 상한의
+# 원인은 첫 시도(프로세스 A, 늘 빈 목록)가 아니라 마지막 시도의 목록에서 나온다. 첫
+# 행은 스테이지가 방출한 다이제스트를 실은 실제 계획 행이고, 계속은 실제
+# `predicate_implement_share` 로 판정된다 — git 사다리와 잔여 몫 판독만 스텁한다.
+missb_case() {
+  local d="$CONT/missb" did="S4:mb:1"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+    DOC_KEY="docs/x.md"; DOC="$d/doc.md"
+    : > "$LEDGER"
+    MB_SID="99999999-2222-3333-4444-555555555555"
+    resolve_account() { printf '%s' "$d/cfg"; }
+    stage_parent_id() { printf 'parent'; }
+    absorb_stage_judgment() { :; }
+    log() { :; }
+    predicate_implement() { [ -f "$d/commit" ]; }
+    residual_share_missing() { printf '### R5. 빠진 항목\n'; }
+    stage_spawn() {
+      local s="$1" att
+      att=$(stage_pin_attempt "$s")
+      printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "$3" >> "$d/spawned"
+      printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
+      if [ -z "${STAGE_RESUME:-}" ]; then
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
+          "$MB_SID" "$CONT_PSHA" > "$(stage_log_path "$s")"
+      else
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7}\n' \
+          "$MB_SID" > "$(stage_log_path "$s")"
+        : > "$d/commit"
+      fi
+      printf '0' > "$RUN_DIR/$s.rc"
+      return 0
+    }
+    : > "$d/cfg/projects/p/$MB_SID.jsonl"
+    stage_spawn "$did" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
+    psha=$(stage_plan_sha256 "$(stage_log_path "$did")" mb)
+    ledger_row 'stage-result' "세그먼트=mb" "스테이지=S4" "파견 id=$did" "종료 코드=0" \
+      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "$did")" \
+      ${psha:+"plan_sha256=$psha"} "종단 부류=$(classify_termination "$did" 0 1)"
+    : > "$d/spawned"
+    CONTINUE_MISSING=""
+    if continue_or_park "$did" "$did" mb S4 "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+         "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" home -- predicate_implement_share mb pre mb; then
+      printf 'rc=0\n'
+    else
+      printf 'rc=1\n'
+    fi
+    printf 'missing=%s\n' "$CONTINUE_MISSING"
+  ) > "$d/out" 2>/dev/null
+}
+missb_case
+check "프로세스 A 계속 뒤 결과 줄이 빠진 프로세스 B 는 상한에서 멈추고 마지막 시도의 빠진 표제를 남긴다" \
+  "$(cont_field missb rc)/$(cont_spawns missb)/$(cont_field missb missing)" "1/2/### R5. 빠진 항목"
+check "첫 계속(프로세스 B 진입)은 호출자의 문면을 받는다" \
+  "$(sed -n '1p' "$CONT/missb/spawned" | cut -f3 | grep -c '충족되지 않았다: 세그먼트 브랜치에 새 커밋도 정지 기록도 없다' || true)" "1"
+check "그 뒤의 계속 메시지는 프로세스 B 가 빠뜨린 표제를 축자로 댄다" \
+  "$(sed -n '2p' "$CONT/missb/spawned" | cut -f3 | grep -c '「### R5. 빠진 항목」' || true)" "1"
+check "S4 의 상한 원인은 마지막 시도의 빠진 목록으로 막힘을 고른다 (계속·거절 두 갈래)" \
+  "$(grep -c '\[ -z "\$CONTINUE_MISSING" \] || \[ "\$CONTINUE_CLASS" = "의도된 park" \]' "$DRIVER" || true)" "2"
+check "S4 의 상한 원인이 첫 시도의 \$missing 을 보지 않는다" \
+  "$(grep -c '\[ -z "\$missing" \] || \[ "\$CONTINUE_CLASS"' "$DRIVER" || true)" "0"
 
 cont_case restarted hollow 2
 check "계수기가 이미 상한이면 재시작한 드라이버도 더 계속하지 않는다" \
@@ -9409,7 +9494,7 @@ case "$REC_PARK" in
 esac
 # 호출부: S5 갈래가 거절 종료를 크래시 복구보다 먼저 refusal_or_park 로 보낸다.
 if sed -n '/# --- S5 REVIEW/,/# --- S6 TRIAGE/p' "$DRIVER" \
-     | grep -q 'refusal_or_park "\$sid" "\$seg" "\$seg" S5 '; then
+     | grep_all_q 'refusal_or_park "\$sid" "\$seg" "\$seg" S5 '; then
   ok "S5 리뷰 갈래는 거절 종료를 refusal_or_park 로 보낸다"
 else
   bad "S5 리뷰 거절 갈래" "refusal_or_park 호출이 S5 갈래에 없다"

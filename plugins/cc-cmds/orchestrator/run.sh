@@ -5828,9 +5828,18 @@ predicate_implement_share() {
   # B is judged here, per attempt (`segment_process_b`), and not handed in: the
   # attempt that emits the plan is process A and the continuation after it is
   # process B, inside one cycle.
+  #
+  # The missing headings of THIS attempt are left in CONTINUE_MISSING (empty
+  # when nothing was asked or nothing is missing). `continue_or_park` builds the
+  # next message from them and the S4 caller picks the cap cause from them: on
+  # this driver process B is entered as a continuation of process A, whose own
+  # unmet text says there is no commit, so the first attempt's reading names
+  # neither the headings nor the cause.
+  CONTINUE_MISSING=""
   predicate_implement "$1" "$2" "$3" || return 1
   segment_process_b "$3" || return 0
-  [ -z "$(residual_share_missing "$DOC" "$3" "$RUN_DIR/halt" "$RUN_DIR/$3.plan.md")" ]
+  CONTINUE_MISSING=$(residual_share_missing "$DOC" "$3" "$RUN_DIR/halt" "$RUN_DIR/$3.plan.md")
+  [ -z "$CONTINUE_MISSING" ]
 }
 
 predicate_implement() {
@@ -6353,6 +6362,28 @@ reconverge_row() {
     "부모=$(stage_parent_id)" "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" \
     "기록자=드라이버" "종단 부류=정상 완료"
   absorb_stage_judgment "$sid" "$sid" "$(seg_alias "$seg")"
+  void_segment_plan "$seg"
+}
+
+void_segment_plan() {
+  # void_segment_plan <segment> — move the segment's plan file aside, once a
+  # `종류=reconverge` row has voided the plan it holds.
+  #
+  # THE ROW ALONE DOES NOT VOID THE DIGEST, because the plan file outlives it.
+  # Both writers of an implement row fall back to hashing `<segment>.plan.md`
+  # when the stream names no digest, and they do not ask when the file was
+  # written. A first process A after the re-convergence that crashes or is
+  # refused before it writes its new plan would then leave a row carrying the
+  # old digest after the re-convergence row, and the attempt after it would be
+  # admitted as process B on the void plan. Kept beside it rather than removed,
+  # so the morning reader still has the plan the segment once worked from.
+  local seg="${1:-}" f
+  [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+  for f in "$RUN_DIR/$seg.plan.md" "$RUN_DIR/implement-$seg.plan.md"; do
+    [ -f "$f" ] || continue
+    mv -f "$f" "$f.void-$(date +%s)" 2>/dev/null || warn "$seg: 무효화된 계획 파일을 옮기지 못했다 — $f"
+  done
+  return 0
 }
 
 refusal_message() {
@@ -8128,7 +8159,11 @@ segment_cycle() {
         # residual share, so a continuation that commits again without the
         # missing lines is still not finished. At the cap a segment whose
         # result lines are what is missing parks `막힘`: the code is there and a
-        # person can write the lines, which is not an invalidation.
+        # person can write the lines, which is not an invalidation. The cause is
+        # read from the LAST attempt judged (CONTINUE_MISSING), not from this
+        # first one: in cycle 1 this first attempt is process A and its own
+        # reading is always empty.
+        CONTINUE_MISSING="$missing"
         if continue_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
              "$unmet" "$(seg_alias "$seg")" \
              -- predicate_implement_share "$branch" "$pre_head" "$seg"; then
@@ -8138,14 +8173,16 @@ segment_cycle() {
           [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
           [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
           [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$missing" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
-            || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $unmet"; return 1; }
+          [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
+            || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
           park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi ;;
       '거절 종료')
         # One re-attachment of the same session, then a park of this segment's
         # cone under `거절 소진`. Never the crash retry below, and nothing the
-        # stage committed is reset.
+        # stage committed is reset. A re-attachment that ended in prose goes on
+        # to the continuation, whose cap cause is read as in the arm above.
+        CONTINUE_MISSING=""
         if refusal_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
              "$unmet" "$(seg_alias "$seg")" \
              -- predicate_implement_share "$branch" "$pre_head" "$seg"; then
@@ -8155,6 +8192,8 @@ segment_cycle() {
           [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
           [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
           [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+          [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
+            || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
           park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi ;;
       '크래시')
@@ -8540,9 +8579,13 @@ continue_or_park() {
   local sid="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" retry_prompt="$6" unmet="$7" alias="$8"
   shift 8
   [ "${1:-}" = "--" ] && shift
-  local sess turns n
+  local sess turns n unmet0="$unmet"
   # The class is cleared here too: a `라우터 판정` left by an earlier call would
   # send this call's park through the router helper.
+  # CONTINUE_MISSING is NOT cleared on entry: it holds the caller's reading of
+  # the attempt before this call, which stands as the cap cause when this call
+  # dispatches nothing. Each attempt below clears it before it is judged, so a
+  # predicate that does not set it leaves it empty.
   CONTINUE_CLASS=""
   CONTINUE_BLOCKED=""
   CONTINUE_REFUSED=""
@@ -8565,6 +8608,7 @@ continue_or_park() {
       # a park under its own reason.
       log "$sid: 공허한 성공 — 트랜스크립트가 없거나 0턴이라 새 프로세스로 1회만 재시도"
       STAGE_RESUME=""
+      CONTINUE_MISSING=""
       CC_SPAWN_EVENT=hollow-retry continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$alias" -- "$@"
       case "$CONTINUE_CLASS" in
         '정상 완료') return 0 ;;
@@ -8580,7 +8624,15 @@ continue_or_park() {
     n=$(continue_spend "$sid")
     log "$sid: 공허한 성공 — 같은 세션 $sess 를 계속 메시지로 재개 ($n/$CONTINUE_MAX)"
     STAGE_RESUME="$sess"
+    CONTINUE_MISSING=""
     CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
+    # The next message says what THIS attempt left unmet: the residual headings
+    # when that is what is missing, otherwise the caller's own text.
+    if [ -n "$CONTINUE_MISSING" ]; then
+      unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+    else
+      unmet="$unmet0"
+    fi
     case "$CONTINUE_CLASS" in
       '정상 완료') return 0 ;;
       '의도된 park') return 1 ;;
@@ -8701,7 +8753,10 @@ refusal_or_park() {
   fi
   log "$sid: 거절 종료 — 같은 세션 $sess 에 한 번 다시 붙인다"
   STAGE_RESUME="$sess"
+  CONTINUE_MISSING=""
   CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(refusal_message)" "$alias" -- "$@"
+  # A re-attachment that ended in prose is continued with what IT left unmet.
+  [ -z "$CONTINUE_MISSING" ] || unmet=$(residual_unmet_message "$CONTINUE_MISSING")
   case "$CONTINUE_CLASS" in
     '정상 완료') return 0 ;;
     '의도된 park') return 1 ;;
