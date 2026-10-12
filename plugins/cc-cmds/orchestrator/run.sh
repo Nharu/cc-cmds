@@ -6606,8 +6606,16 @@ CYCLE_BUNDLE_SCRIPT='
   printf "요약=%s\nP0=%s\nP1=%s\n리뷰 HEAD=%s\n" "$sm" "$p0" "$p1" "$rh"
   if [ "$sm" = "정규" ] && [ -n "$rh" ]; then
     rc=0
-    ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
-        "리포트 경로=$r" "lane 결정=$l" ) >&2 || rc=$?
+    lb=$(gate_row_projected_bytes "cycle" "세그먼트=$s" "사이클=$c" "P0=$p0" "P1=$p1" \
+        "리뷰 HEAD=$rh" "리포트 경로=$r" "lane 결정=$l" "발견 지문=000000000000")
+    if [ "${lb:-0}" -gt "$GATE_ROW_MAX" ]; then
+      ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
+          "리포트 경로=$r" ) >&2 || rc=$?
+      printf "lane 생략=%s\n" "$lb"
+    else
+      ( gate_cycle_row "$a" "$s" "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$rh" \
+          "리포트 경로=$r" "lane 결정=$l" ) >&2 || rc=$?
+    fi
     printf "행=%s\n" "$rc"
   else
     printf "행=건너뜀\n"
@@ -6626,7 +6634,28 @@ cycle_gate_bundle() {
   # The row is written in its own subshell because the gate stops the shell on
   # a row over the cap rather than returning, and that stop would take `다음`
   # and the elements with it; the refusal still reaches the caller as `행=`.
+  #
+  # TWO STEPS OF DEGRADATION AT THE CAP, AND THIS ONE COMES FIRST. `lane 결정`
+  # grows by about 50 bytes per triage finding and nothing bounds the count, so
+  # the row is projected with it and a 12-character `발견 지문` stand-in; over
+  # `GATE_ROW_MAX`, the key is left off with no marker — a `cycle` row without
+  # it is already the routed path's ordinary row — and the bundle prints
+  # `lane 생략=<projected bytes>` for the caller to log. Nothing in the tree
+  # reads `lane 결정`, while `발견 지문` feeds the stall readings, so the
+  # gate's own drop of `발견 지문` is the second step and only runs on a row
+  # still over the cap after this one.
   run_gate_call eval "set -- $(printf '%q ' "$@"); $CYCLE_BUNDLE_SCRIPT"
+}
+
+lane_dropped_warn() {
+  # lane_dropped_warn <segment> <cycle> <lane 결정> <lane 생략 bytes> — one
+  # `warn` line when the cycle bundle left `lane 결정` off its row, naming the
+  # segment, cycle, finding count, projected bytes and the value itself; silent
+  # when the bundle kept it (empty bytes).
+  [ -n "$4" ] || return 0
+  local n
+  n=$(printf '%s' "$3" | jq 'length' 2>/dev/null) || n='?'
+  warn "$1: cycle 행이 상한을 넘어 「lane 결정」 을 빼고 기록했다 — 사이클 $2, 발견 ${n:-?}건, ${4} B — lane 결정=$3"
 }
 
 bundle_val() {
@@ -8910,6 +8939,9 @@ segment_cycle() {
       park "$seg" cone 무효화 "게이트 park" "리뷰 리포트 집계 부재"
       return 1
     fi
+    # The row left `lane 결정` off to stay under the cap; the run log is where
+    # the dropped value survives.
+    lane_dropped_warn "$seg" "$cycle" "$lanes" "$(bundle_val "$bundle" 'lane 생략')"
     if [ "$rowrc" != "0" ]; then
       park "$seg" cone 무효화 "게이트 park" "cycle 행 거절(rc=${rowrc:-?})"
       return 1

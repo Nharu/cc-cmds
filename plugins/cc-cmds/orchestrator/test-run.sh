@@ -10914,6 +10914,23 @@ check "35: cycle 행은 lane 결정 을 그대로 싣고 다음 을 함께 낸�
   "$(bundle_val "$r35_bun" '행')/$(grep -cF 'lane 결정=[{"id":"F-1","lane":"fast"}]' "$L35R3S" || true)/$(bundle_val "$r35_bun" '다음')" \
   "0/1/머지"
 
+# --- R3: 상한을 넘는 cycle 행은 lane 결정 을 먼저 빼고 기록된다 ---
+# 발견 하나가 lane 결정 에 약 50 B 를 더하므로 k=40 은 상한을 넘고 k=10 은 넘지 않는다.
+r35_lk() { jq -cn --argjson k "$1" '[range(0;$k) | {id: ("F-\(.)-0123456789abcdef"), lane: "reconcile"}]'; }
+r35_body() { { grep '^- `cycle`' "$1" || true; } | sed -n '1p' | sed 's/ | prev=[^|]*$//'; }
+L35K40=$(r35_led k40); r35_lk40=$(r35_lk 40)
+r35_bun=$(r35_in "$L35K40" "$M35" cycle_gate_bundle S2 home 1 "$R35CL" "$r35_lk40" 2>/dev/null)
+r35_b40=$(run_row_bytes_of_body "$(r35_body "$L35K40")")
+r35_w40=$(lane_dropped_warn S2 1 "$r35_lk40" "$(bundle_val "$r35_bun" 'lane 생략')" 2>&1 >/dev/null | grep -c '「lane 결정」 을 빼고' || true)
+check "35: 상한을 넘는 cycle 행은 lane 결정 없이 상한 안에 기록되고 경고가 한 줄 남는다 (R3, k=40)" \
+  "$(bundle_val "$r35_bun" '행')/$(grep -c '^- `cycle`' "$L35K40" || true)/$(grep -c 'lane 결정=' "$L35K40" || true)/$([ "$r35_b40" -le 1024 ] && printf 상한안 || printf "상한밖($r35_b40)")/$([ -n "$(bundle_val "$r35_bun" 'lane 생략')" ] && printf 생략 || printf 없음)/$r35_w40" \
+  "0/1/0/상한안/생략/1"
+L35K10=$(r35_led k10); r35_lk10=$(r35_lk 10)
+r35_bun=$(r35_in "$L35K10" "$M35" cycle_gate_bundle S2 home 1 "$R35CL" "$r35_lk10" 2>/dev/null)
+check "35: 상한 안의 cycle 행은 lane 결정 을 바이트 그대로 싣고 생략하지 않는다 (R3, k=10)" \
+  "$(bundle_val "$r35_bun" '행')/$(grep -cF "lane 결정=$r35_lk10 |" "$L35K10" || true)/$([ -n "$(bundle_val "$r35_bun" 'lane 생략')" ] && printf 생략 || printf 없음)/$(lane_dropped_warn S2 1 "$r35_lk10" "$(bundle_val "$r35_bun" 'lane 생략')" 2>&1 | grep -c . || true)" \
+  "0/1/없음/0"
+
 # --- 리포트 집계와 트리아지 대조 ---
 L35AG=$(r35_led ag)
 R35BAD="$R35/review-bad.md"; printf '# 리포트\n\n- **발견 요약**: 없음\n' > "$R35BAD"
