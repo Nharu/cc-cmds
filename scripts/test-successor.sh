@@ -700,6 +700,23 @@ out=$(sw --dry-run --lane present)
 check "dry-run 은 후보마다 선행 런·매니페스트·원장·판정을 찍는다" "$out" "$SW1$TAB$PR/$SW1.plan.md$TAB$PR/$SW1.md${TAB}자동"
 check "dry-run 은 클레임도 레코드도 쓰지 않는다" "$([ -e "$RUN_PACE_ROOT/rekick/$SW1" ] && echo 있음 || echo 없음)/$(records)" "없음/0"
 
+# The watcher fleet starts outlives the run and keeps rewriting its files, and
+# so do the feed, the CI poller and the notifier: none of them is a gate entry.
+SWQ=20261001-0000aaeb; ended "$SWQ"; mark "$SWQ"; hush "$SWQ"
+for f in watch.heartbeat watch.pid watch.stall watch.state watch.log watch.announced-rekick \
+         feed.heartbeat checks.observed checks.log notify.state stall; do
+  : > "$RRUN/$SWQ/$f"
+done
+check "감시자·관찰자가 방금 쓴 파일은 정지 창을 다시 열지 않는다" \
+  "$(sw --dry-run --lane present | grep -F "$SWQ$TAB" | cut -f4)" "자동"
+mkdir -p "$RRUN/$SWQ/digest"; : > "$RRUN/$SWQ/digest/gate-digest-x.json"
+check "게이트가 방금 남긴 흔적은 정지 창을 다시 연다" \
+  "$(sw --dry-run --lane present | grep -F "$SWQ$TAB" | cut -f4)" "정지 대기"
+rm -f "$RRUN/$SWQ/digest/gate-digest-x.json"; hush "$SWQ"; touch "$RRUN/$SWQ/rekick-candidate"
+check "끝 자리 후보 표지도 게이트의 흔적이다" \
+  "$(sw --dry-run --lane present | grep -F "$SWQ$TAB" | cut -f4)" "정지 대기"
+rm -rf "$RRUN/$SWQ"
+
 sw --lane present
 oc=$(outcome "$SW1"); N1=${oc#*"$TAB"}
 check "자동 판정의 후보는 열림으로 끝난다" "${oc%%"$TAB"*}" "열림"

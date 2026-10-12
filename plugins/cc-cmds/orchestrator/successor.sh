@@ -1195,14 +1195,34 @@ rekick_sweep_alive() {
   return 1
 }
 
+rekick_sweep_observer_file() {
+  # rekick_sweep_observer_file <path> — a file an observer of the run rewrites
+  # on its own clock, not a trace of a gate entry: the watcher's heartbeat,
+  # pid, threshold, state, markers and stall observations, the feed's and the
+  # CI poller's files, the notifier's state and the logs fleet redirects into
+  # the run directory.
+  case "${1##*/}" in
+    watch.*|feed.*|checks.*|notify.*|stall|*.log) return 0 ;;
+  esac
+  return 1
+}
+
 rekick_sweep_quiet() {
   # rekick_sweep_quiet <run id> <run dir> <ledger> — nothing is alive and the
   # last gate entry is at least REKICK_SWEEP_QUIET_SECONDS old. A gate entry
   # leaves its trace on the ledger, in the run directory and in its digest
   # emissions, so the newest of those is the entry's time.
+  #
+  # THE OBSERVERS' FILES ARE NOT COUNTED. fleet starts the watcher outside the
+  # dispatch job's process group, so it outlives the run, and it rewrites its
+  # heartbeat every pass until `done`, a vanished run directory or the shared
+  # idle predicate ends it. A run that ended on a forced surface move writes no
+  # `done`, so counting those files kept this window open for a day, and for
+  # ever while an approval stayed open.
   local id="$1" rd="$2" led="$3" f t newest=0
   rekick_sweep_alive "$id" "$rd" && return 1
   for f in "$led" "$rd"/* "$rd"/digest/*; do
+    rekick_sweep_observer_file "$f" && continue
     t=$(cc_mtime "$f")
     case "$t" in ''|*[!0-9]*) continue ;; esac
     [ "$t" -gt "$newest" ] && newest=$t
