@@ -30925,6 +30925,75 @@ check "86: 대조 — 임시 디렉터리 파일 unlink 는 런로컬로 통과�
 [ ! -e "$T86/sh86b/u" ] && ok "86: 그 unlink 가 실제로 지웠다" || bad "86: 그 unlink 가 실제로 지웠다" "$T86/sh86b/u"
 rm -rf "$SIB86/sh86b" "$T86/sh86b" "$T86/rd86a" "$T86/lk86n" "$WT/rd86r"
 
+# 따옴표를 아는 분할 — 셸 -c 문자열을 ;&|(){} 글자마다 자르던 동안 따옴표 안 | 가 든
+# 평범한 grep 이 외부상태변경·머지가 됐고, >( 의 ( 에서 잘린 맨 > 가 다음 줄의 명령
+# 낱말을 리다이렉션 대상으로 삼켜 그 안의 머지가 사다리 없이 지나갔다. 중괄호 확장은
+# 피연산자를 잃었고, 피연산자의 백슬래시와 command builtin 은 평범한 줄로 읽혀 형제
+# 파괴가 거짓 런로컬로 지나갔다. 함수 수준의 바닥·사다리·런로컬 판정과 실행 수준의
+# 거부·잔존을 함께 두고, 따옴표 안 구분자가 든 줄이 낮은 선언으로 지나가는 쌍을 둔다.
+# 스텁·픽스처 파일은 이 블록이 만들고 지운다.
+for p86 in 'tee >(gh pr merge 1)' 'cat <(gh pr merge 1)' "command builtin eval 'gh pr merge 1'" \
+           "command command builtin eval 'gh pr merge 1'" '{gh,} pr merge 1'; do
+  check "86: 따옴표·치환을 아는 분할의 바닥은 외부상태변경이다 — ${p86}" "$(fl86 bash -c "$p86")" "외부상태변경"
+  check "86: 따옴표·치환을 아는 분할의 사다리는 머지다 — ${p86}" "$(ld86 bash -c "$p86")" "머지"
+done
+mkdir -p "$SIB86/sh86c" "$T86/sh86c"
+printf 'k\n' > "$SIB86/sh86c/f"
+for p86 in "echo hi | tee >(rm -f $SIB86/sh86c/f)" "command builtin cd $SIB86/sh86c && rm -f f" \
+           "rm -f {/nonexistent,$SIB86}/sh86c/f" "rm -f $WORK/{tmp86,wt86-sibling}/sh86c/f" \
+           "rm -f $WORK/wt86-s\\ibling/sh86c/f" "echo x > $WORK/wt86-s\\ibling/sh86c/f" \
+           "git -C $WORK/wt86-s\\ibling checkout -f -- ."; do
+  check "86: 분할이 읽지 못하던 형제 파괴는 런로컬 판정에서 park 된다 — ${p86#"$WORK"}" "$(rd86 bash -c "$p86")" "파괴형태미명시"
+done
+for p86 in "grep -E 'a|b' f86.txt" "awk '{print \$1}' f86.txt" "jq '.a | .b' f86.json" \
+           "printf '%s\\n' \"(x)\"" 'echo x >/dev/null 2>&1' 'echo x >&2'; do
+  check "86: 따옴표 안 구분자와 fd 복제는 바닥 읽기다 — ${p86}" "$(fl86 bash -c "$p86")" "읽기"
+  check "86: 따옴표 안 구분자와 fd 복제는 사다리가 없다 — ${p86}" "$(ld86 bash -c "$p86")" ""
+done
+check "86: 따옴표 안 ; 가 든 커밋은 바닥 워크트리쓰기다" "$(fl86 bash -c "git commit -m 'fix: a; b'")" "워크트리쓰기"
+check "86: 따옴표 안 ; 가 든 커밋은 사다리 커밋이다" "$(ld86 bash -c "git commit -m 'fix: a; b'")" "커밋"
+check "86: 띄어 쓴 &> 리다이렉션의 바닥은 워크트리쓰기다" "$(fl86 bash -c 'echo x &> rd86s')" "워크트리쓰기"
+check "86: >| 리다이렉션의 바닥은 트리밖쓰기다" "$(fl86 bash -c "echo x >| $T86/rd86c")" "트리밖쓰기"
+check "86: 대상 없는 리다이렉션의 바닥은 트리밖쓰기다" "$(fl86 bash -c 'echo x >')" "트리밖쓰기"
+
+GH86D="$WORK/gh86c"; mkdir -p "$GH86D"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$GH86D/ran" > "$GH86D/gh"
+chmod +x "$GH86D/gh"
+TMPDIR="$T86" r86 워크트리쓰기 bash -c "echo hi | tee >($GH86D/gh pr merge 10) >/dev/null"
+case "$rc" in 8) ok "86: 런로컬·커밋 선언의 프로세스 치환 머지는 거부된다 (rc=$rc)" ;;
+  *) bad "86: 런로컬·커밋 선언의 프로세스 치환 머지는 거부된다" "rc=$rc $msg" ;; esac
+mg86 bash -c "command builtin eval '$GH86D/gh pr merge 11'"
+case "$rc" in 8) ok "86: 읽기 선언의 command builtin eval 머지는 거부된다 (rc=$rc)" ;;
+  *) bad "86: 읽기 선언의 command builtin eval 머지는 거부된다" "rc=$rc $msg" ;; esac
+[ ! -e "$GH86D/ran" ] && ok "86: 거부된 두 머지 철자 중 어느 것도 스텁을 실행하지 않았다" \
+  || bad "86: 거부된 두 머지 철자 중 어느 것도 스텁을 실행하지 않았다" "$(cat "$GH86D/ran")"
+rm -rf "$GH86D"
+
+# 프로세스 치환 본문은 명령을 읽지 못한 줄이라 바닥이 외부상태변경이고, 트리밖쓰기
+# 선언은 park 에 닿기 전에 저신고(exit 8)로 거부된다. 나머지 셋은 착지를 읽지 못한
+# 파괴로 park 된다.
+rl86 bash -c "echo hi | tee >(rm -f $SIB86/sh86c/f) >/dev/null"
+check "86: 런로컬·트리밖쓰기로 선언한 프로세스 치환 안 형제 rm 은 거부된다" "$rc" "8"
+check "86: 그 거부된 프로세스 치환 rm 의 형제 파일이 남아 있다" "$(cat "$SIB86/sh86c/f" 2>/dev/null)" "k"
+nb86=$(b86)
+for p86 in "rm -f {/nonexistent,$SIB86}/sh86c/f" "rm -f $WORK/wt86-s\\ibling/sh86c/f" \
+           "command builtin cd $SIB86/sh86c && rm -f f"; do
+  rl86 bash -c "$p86"
+  check "86: 런로컬로 선언한 분할 밖 형제 파괴는 park 된다 — ${p86#"$WORK"}" "$rc" "11"
+  check "86: 그 park 된 형제 파괴의 파일이 남아 있다 — ${p86#"$WORK"}" "$(cat "$SIB86/sh86c/f" 2>/dev/null)" "k"
+done
+check "86: 분할 밖 형제 파괴 park 셋이 blocked 행 셋을 남긴다" "$(( $(b86) - nb86 ))" "3"
+printf 'z\n' > "$T86/sh86c/a;b"
+nb86=$(b86)
+rl86 bash -c "rm -f '$T86/sh86c/a;b'"
+check "86: 대조 — 따옴표 안 ; 가 든 임시 디렉터리 파일 rm 은 런로컬로 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+[ ! -e "$T86/sh86c/a;b" ] && ok "86: 그 따옴표 안 ; 파일 rm 이 실제로 지웠다" \
+  || bad "86: 그 따옴표 안 ; 파일 rm 이 실제로 지웠다" "$T86/sh86c/a;b"
+printf 'a\nb\n' > "$T86/sh86c/g"
+om86 읽기 bash -c "grep -E 'a|b' $T86/sh86c/g"
+check "86: 대조 — 읽기로 선언한 따옴표 안 | 의 grep 은 통과한다" "$rc" "0"
+rm -rf "$SIB86/sh86c" "$T86/sh86c" "$T86/rd86c" "$WT/rd86s"
+
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
 # 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git
 # 디렉터리의 stash 가 지워졌다. 하한 판정을 직접 재고, 실행 수준에서 park 와 stash 항목의
