@@ -303,6 +303,7 @@ ORCH_TESTS := \
 	scripts/test-suite-isolation.sh \
 	scripts/test-kickoff-defaults.sh \
 	scripts/test-rekick.sh \
+	scripts/test-successor.sh \
 	scripts/test-team-witness-init.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-base-split.sh \

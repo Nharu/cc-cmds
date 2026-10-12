@@ -2448,6 +2448,12 @@ pre_cone() {
   # fixture, and for the same reason it is not `HN`: B1 compares against this one.
   PN() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" --render 2>/dev/null \
          | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
+  # The cone run's pacing root — where the gate paces by under `STATE_CONE`, and
+  # where its pacing guard has to refuse a stage's Bash writes. `fsha` is a
+  # file's digest, or `없음` when there is no file, so "unchanged" covers
+  # "still absent" too.
+  PACE_N="$STATE_CONE/cc-cmds/pace"
+  fsha() { if [ -e "$1" ]; then shasum -a 256 "$1" | cut -d' ' -f1; else printf '없음'; fi; }
   seg_row() {
     # seg_row <id> <worktree> <필드>… — one `segment` act, always through the gate
     # so the write-time floors actually run.
@@ -11626,6 +11632,72 @@ cp "$GBAK" "$FX_GRANT"
 gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
 check "온전한 인가 기록에서는 통과한다" "$rc" "0"
 
+# The successor deriver writes a successor's manifest and grant record, so a
+# stage is refused it on every spelling that runs it — and not on the suite that
+# tests it, whose name carries the deriver's as a suffix, nor on the kickoff's
+# restart helper, which is a different program under a different name.
+for spell in "successor.sh derive" "/x/orchestrator/successor.sh id" "bash /x/successor.sh verdict" \
+             "env A=1 /x/successor.sh derive" "lockf -k /tmp/l bash ./successor.sh derive" \
+             "sh -c ./successor.sh"; do
+  # shellcheck disable=SC2086
+  gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- $spell
+  check "후속 런 파생기는 등급표에서 거부된다: $spell" "$rc" "$GATE_EXIT_RULE"
+  case "$msg" in
+    *"successor deriver (successor.sh) runs only outside every run"*) ok "거부가 파생기를 지목한다: $spell" ;;
+    *) bad "파생기 거부 문면: $spell" "$msg" ;;
+  esac
+done
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash scripts/test-successor.sh
+check "파생기의 시험 스크립트는 거부되지 않는다" "$rc" "0"
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- grep -n derive successor.sh
+check "파생기 파일을 읽는 것은 거부되지 않는다" "$rc" "0"
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- bash /x/orchestrator/rekick.sh detect
+check "재킥오프 도우미는 파생기 거부에 걸리지 않는다" "$rc" "0"
+
+# The pacing guard answers on the grade verb too, so asking what to declare for
+# a write into the dispatcher's directory does not come back with a grade a
+# declaration could meet — and a read naming the same file still grades.
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 트리밖쓰기 \
+      -- cp x "$STATE_LATE/cc-cmds/pace/backlog.jsonl"
+check "페이싱 백로그 쓰기는 등급 동사에서 거부된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"축2=거부"*"the pacing directory belongs to the lane dispatcher"*|*"the pacing directory belongs to the lane dispatcher"*"축2=거부"*)
+    ok "등급 동사의 페이싱 거부가 축2=거부 와 그 이유를 낸다" ;;
+  *) bad "등급 동사 페이싱 거부 문면" "$msg" ;;
+esac
+# The destination inside one element of a command that is not a wrapper.
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 \
+      -- sed -n "w $STATE_LATE/cc-cmds/pace/backlog.jsonl" /dev/null
+check "sed 의 w 명령으로 페이싱 백로그에 쓰는 것은 등급 동사에서 거부된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"축2=거부"*) ok "sed 의 w 명령 페이싱 거부가 축2=거부 를 낸다" ;;
+  *) bad "등급 동사 sed w 페이싱 거부 문면" "$msg" ;;
+esac
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+      -- cat "$STATE_LATE/cc-cmds/pace/backlog.jsonl"
+check "페이싱 백로그를 읽는 행위는 등급 동사에서 거부되지 않는다" "$rc" "0"
+case "$msg" in
+  *"축2=거부"*) bad "페이싱 읽기 오탐" "$msg" ;;
+  *) ok "페이싱 백로그 읽기의 등급은 거부가 아니다" ;;
+esac
+# A destination read from a file: the program or argument list is in a file
+# the guard never opens, so the grade verb refuses the option itself.
+printf '$!w %s\n' "$STATE_LATE/cc-cmds/pace/backlog.jsonl" > "$WORK/progfile17"
+for spell in "sed -n -f $WORK/progfile17 /dev/null" "sed -nf $WORK/progfile17 /dev/null" \
+             "awk -f $WORK/progfile17 /dev/null" "xargs -a $WORK/progfile17 cp x"; do
+  # shellcheck disable=SC2086
+  gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- $spell
+  check "목적지를 파일에서 읽는 명령은 등급 동사에서 거부된다: $spell" "$rc" "$GATE_EXIT_RULE"
+  case "$msg" in
+    *"축2=거부"*"reads its program or its argument list from a file"*|*"reads its program or its argument list from a file"*"축2=거부"*)
+      ok "등급 동사의 프로그램 파일 거부가 축2=거부 와 그 이유를 낸다: $spell" ;;
+    *) bad "등급 동사 프로그램 파일 거부 문면: $spell" "$msg" ;;
+  esac
+done
+gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 -- sed -n p /dev/null
+check "프로그램 파일이 없는 sed 는 등급 동사에서 거부되지 않는다" "$rc" "0"
+rm -f "$WORK/progfile17"
+
 # ---------------------------------------------------------------------------
 # 18. Concurrent appends do not chain to the same parent
 # --- section: 18 | group: darwin | covers: gate_append, lock_tool | anchors: 여덟 행의 prev 가 서로 다르다, 체인이 끊긴 곳이 없다 ---
@@ -14775,6 +14847,86 @@ case "$msg" in
   *) bad "구속 다이제스트 문면" "$msg" ;;
 esac
 
+# THE CONSENT ROW AND THE CHAIN ROW ARE IN THE FROZEN SET, AND A MANIFEST THAT
+# CARRIES NEITHER HASHES TO THE SAME BYTES IT ALWAYS DID. The second half is
+# what keeps every run frozen before these rows existed admissible: a kind is
+# serialized only when its row is present, so absence adds no line.
+bsq_bytes() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; binding_set_bytes' \
+    _ "$GATE" "$1" 2>/dev/null
+}
+# Re-frozen IN PLACE: the fixture's `## 인가` is not its last section, so a
+# digest line appended at the end lands outside it and nothing is compared.
+bsq_reseal() {
+  local d
+  d=$(bsq_bytes "$1" | shasum -a 256 | cut -d' ' -f1)
+  sed "s/^\*\*구속 다이제스트\*\*: .*\$/**구속 다이제스트**: $d/" "$1" > "$1.r" && mv "$1.r" "$1"
+}
+BSQ_RK='- `재킥오프` | 연쇄 상한=3 | 길이=PT8H0M0S | 사유=밤새 이어서 돈다'
+BSQ_CH='- `연쇄` | 뿌리 런=20260921-aaaaaaaa | 선행 런=20260921-aaaaaaaa | 순번=1 | 선행 구속 다이제스트=0000000000000000000000000000000000000000000000000000000000000000 | 재킥오프 시각=2026-09-21T14:13:20Z | 원인=마감'
+case "$(bsq_bytes "$FX_MANIFEST")" in
+  *"rekick	"*|*"chain	"*) bad "두 행이 없는 매니페스트의 구속 집합" "rekick·chain 줄이 생겼다" ;;
+  "") bad "두 행이 없는 매니페스트의 구속 집합" "구속 집합을 계산하지 못했다" ;;
+  *) ok "두 행이 없는 매니페스트의 구속 집합에는 rekick·chain 줄이 없다 (다이제스트 불변)" ;;
+esac
+BRK="$WORK/rekick-binding.md"
+cp "$FX_MANIFEST" "$BRK"
+printf '%s\n%s\n' "$BSQ_RK" "$BSQ_CH" >> "$BRK"
+case "$(bsq_bytes "$BRK")" in
+  *"rekick	$BSQ_RK"*"chain	$BSQ_CH"*|*"chain	$BSQ_CH"*"rekick	$BSQ_RK"*)
+    ok "재킥오프 행과 연쇄 행이 구속 집합에 실린다" ;;
+  *) bad "재킥오프·연쇄 행의 구속 집합" "$(bsq_bytes "$BRK" | grep -E '^(rekick|chain)')" ;;
+esac
+cp "$FX_MANIFEST" "$BRK"
+printf '%s\n' "$BSQ_RK" >> "$BRK"
+gate snapshot --manifest "$BRK"
+case "$rc/$msg" in
+  0/*) bad "다시 얼리기 전의 재킥오프 행 사본은 대조에 걸린다" "통과했다 — 다이제스트가 대조되지 않는다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*) ok "다시 얼리기 전의 재킥오프 행 사본은 대조에 걸린다 (아래가 공허하지 않다)" ;;
+  *) bad "다시 얼리기 전의 재킥오프 행 사본은 대조에 걸린다" "$msg" ;;
+esac
+bsq_reseal "$BRK"
+gate snapshot --manifest "$BRK"
+check "재킥오프 행을 실어 다시 얼린 사본은 대조를 통과한다" "$rc" "0"
+sed 's/| 사유=밤새 이어서 돈다$/| 사유=런이 고쳐 썼다/' "$BRK" > "$BRK.t" && mv "$BRK.t" "$BRK"
+gate snapshot --manifest "$BRK"
+case "$rc/$msg" in
+  0/*) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"재킥오프·연쇄"*) ok "재킥오프 행을 고치면 구속 다이제스트가 깨진다" ;;
+  *) bad "재킥오프 행을 고치면 구속 다이제스트가 깨진다" "$msg" ;;
+esac
+# The form of each row is refused before anything reads it, fail-closed.
+bsq_form() {
+  cp "$FX_MANIFEST" "$BRK"
+  printf '%s\n' "$2" >> "$BRK"
+  bsq_reseal "$BRK"
+  gate snapshot --manifest "$BRK"
+  case "$rc/$msg" in
+    0/*) bad "$1" "통과했다" ;;
+    *"$3"*) ok "$1" ;;
+    *) bad "$1" "$msg" ;;
+  esac
+}
+bsq_form "연쇄 상한이 0 인 재킥오프 행은 거부된다" \
+  '- `재킥오프` | 연쇄 상한=0 | 길이=PT8H0M0S | 사유=x' "「재킥오프」 행의 형식이 어긋났습니다"
+bsq_form "길이가 빈 기간(PT)인 재킥오프 행은 거부된다" \
+  '- `재킥오프` | 연쇄 상한=3 | 길이=PT | 사유=x' "「재킥오프」 행의 길이가 ISO 8601 기간으로 읽히지 않습니다"
+bsq_form "재킥오프 행 둘은 거부된다" "$BSQ_RK
+${BSQ_RK%=3*}=2 | 길이=PT8H0M0S | 사유=둘째" "「재킥오프」 행이 2개입니다"
+bsq_form "원인이 닫힌 토큰 밖인 연쇄 행은 거부된다" \
+  "${BSQ_CH%원인=마감}원인=피곤" "「연쇄」 행의 원인이 닫힌 토큰 열두 개 중 하나가 아닙니다"
+bsq_form "재킥오프 시각이 Z 표기가 아닌 연쇄 행은 거부된다" \
+  "${BSQ_CH/2026-09-21T14:13:20Z/2026-09-21T23:13:20+09:00}" "「연쇄」 행의 형식이 어긋났습니다"
+bsq_form "재인가 승인만 있고 답변 다이제스트가 없는 연쇄 행은 거부된다" \
+  "$BSQ_CH | 재인가 승인=20260921-aaaaaaaa#3" "「연쇄」 행의 형식이 어긋났습니다"
+# A well-formed chain row is a claim about another run, and the gate entry
+# checks it against that run's files: with no predecessor manifest beside this
+# one, the entry is refused in the lineage wording, before anything acts.
+bsq_form "앞 런 매니페스트가 없는 연쇄 행은 lineage-invalid 로 거부된다" "$BSQ_RK
+$BSQ_CH" "lineage-invalid — (나) 앞 런 매니페스트가 없습니다"
+bsq_form "재킥오프 행 없이 연쇄 행만 있는 매니페스트는 lineage-invalid 로 거부된다" \
+  "$BSQ_CH" "lineage-invalid — (가) 재킥오프 행 0개 · 연쇄 행 1개"
+
 # THE FLOOR HONOURS ONLY `## 인가`. "Exactly one authorization section" is the
 # uniqueness guarantee arm (a) leans on, and a whole-file scan does not inherit
 # it — a row planted in any other section was honoured, so the guarantee
@@ -15256,6 +15408,589 @@ case "$msg" in
     bad "매니페스트 가드 오탐" "무관한 경로에 대한 쓰기를 매니페스트 쓰기로 거절했다: $msg" ;;
   *) ok "무관한 경로 쓰기는 매니페스트 가드에 걸리지 않는다 (모든 쓰기를 거절하는 구현이 아니다)" ;;
 esac
+
+# SIBLING RUNS' RECORDS. A rekick copies the predecessor's manifest and grant
+# record byte for byte, so a write to ANOTHER run's record is a write to the
+# authorization of whatever run comes after it — and every arm above is keyed
+# on this run's own manifest.
+for tgt in "$WT/docs/pipeline-grant/R9.md" "$WORK/R9.plan.md" "$WORK/R9.interview.md" "$WORK/R9.kickoff.md"; do
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- tee "$tgt"
+  check "형제 런 기록 쓰기가 거절된다: ${tgt##*/}" "$rc" "3"
+  [ -e "$tgt" ] && bad "형제 런 기록" "거절됐는데 파일이 생겼다: $tgt" || ok "거절된 형제 런 기록은 만들어지지 않았다: ${tgt##*/}"
+done
+case "$msg" in
+  *"another run's kickoff-frozen record"*) ok "형제 런 기록 쓰기가 그 이유로 지목된다" ;;
+  *) bad "형제 런 가드 문면" "$msg" ;;
+esac
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> $WT/docs/pipeline-grant/R9.md"
+check "인터프리터로 감싼 형제 런 인가 기록 쓰기도 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch docs/pipeline-grant/R9.md
+check "상대 철자의 형제 런 인가 기록 쓰기도 거절된다" "$rc" "3"
+# Name-only reads of a sibling's records pass — reading another run is not
+# writing it, and the read arm stands in front of every needle here.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- grep -c "" "$FX_GRANT"
+check "형제 런 인가 기록을 이름만 부르는 읽기는 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- ls "$WORK"
+check "매니페스트 디렉터리를 이름만 부르는 읽기는 통과한다" "$rc" "0"
+# The upper bound: a markdown file beside the manifest that is none of the
+# three frozen kinds is not a sibling record.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$WORK/R9.notes.md"
+case "$msg" in
+  *"another run's kickoff-frozen record"*)
+    bad "형제 런 가드 오탐" "세 접미가 아닌 파일 쓰기를 형제 런 기록으로 거절했다: $msg" ;;
+  *) ok "세 접미가 아닌 매니페스트 옆 파일 쓰기는 형제 런 가드에 걸리지 않는다" ;;
+esac
+rm -f "$WORK/R9.notes.md"
+
+# THE PACING DIRECTORY. The hook closes it to the edit tools and leaves Bash to
+# the gate, and the gate had no arm there: a stage could append a backlog record
+# the dispatcher launches an unattended run from, or create the claim a
+# successor's admission reads as proof the sweep derived it. Each write is made
+# where it would succeed — the file exists, the claim directory exists — so a
+# refusal is the guard's and not a missing directory's, and each is asserted on
+# the code, on the guard's own text, and on the target's bytes.
+mkdir -p "$PACE_N/rekick/R1"
+printf '{"schema":"cc-pace-backlog v1","id":"R0"}\n' > "$PACE_N/backlog.jsonl"
+printf 'r3x\n' > "$WORK/r3x"
+pace_try() {
+  # pace_try <라벨> <대상> <gateN 앞 인자…> -- <argv…>
+  local label="$1" tgt="$2" before; shift 2
+  before=$(fsha "$tgt")
+  "$@"
+  [ "$rc" != 0 ] && ok "페이싱 디렉터리 쓰기가 거절된다: $label" \
+    || bad "페이싱 디렉터리 쓰기가 거절된다: $label" "rc=$rc"
+  case "$msg" in
+    *"the pacing directory belongs to the lane dispatcher"*) ok "그 거절은 페이싱 가드의 것이다: $label" ;;
+    *) bad "페이싱 가드 문면: $label" "$msg" ;;
+  esac
+  check "거절된 쓰기의 대상은 바이트도 존재도 그대로다: $label" "$(fsha "$tgt")" "$before"
+}
+pace_try "백로그, 런로컬 선언" "$PACE_N/backlog.jsonl" \
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+        -- cp "$WORK/r3x" "$PACE_N/backlog.jsonl"
+pace_try "백로그, --reach 없이" "$PACE_N/backlog.jsonl" \
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- cp "$WORK/r3x" "$PACE_N/backlog.jsonl"
+gateN_ar() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=on gate_inproc "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+pace_try "백로그, 자동 해소 켬" "$PACE_N/backlog.jsonl" \
+  gateN_ar exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+        -- cp "$WORK/r3x" "$PACE_N/backlog.jsonl"
+pace_try "클레임 successor" "$PACE_N/rekick/R1/successor" \
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+        -- cp "$WORK/r3x" "$PACE_N/rekick/R1/successor"
+# Through an interpreter the path rides inside one argv element. This fixture's
+# pacing root sits under the manifest's own directory, which the manifest
+# guard's interpreter arm already refuses by name, so through the gate only the
+# code and the bytes are asserted; the pacing guard's interpreter arm is then
+# called alone, with no manifest to answer first.
+pace_ib=$(fsha "$PACE_N/backlog.jsonl")
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> $PACE_N/backlog.jsonl"
+[ "$rc" != 0 ] && ok "페이싱 디렉터리 쓰기가 거절된다: 인터프리터로 감싼 백로그 덧붙임" \
+  || bad "페이싱 디렉터리 쓰기가 거절된다: 인터프리터로 감싼 백로그 덧붙임" "rc=$rc"
+check "거절된 쓰기의 대상은 바이트도 존재도 그대로다: 인터프리터로 감싼 백로그 덧붙임" \
+  "$(fsha "$PACE_N/backlog.jsonl")" "$pace_ib"
+pace_iw=$(cd "$WT" && GATE_PACE_ROOT="$PACE_N" bash -c \
+  'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset MANIFEST; shift
+   r=0; gate_pace_write_guard 트리밖쓰기 "$@" || r=$?
+   [ "$r" = "$GATE_EXIT_RULE" ] && printf "rc=룰거부" || printf "rc=%s" "$r"' \
+  _ "$GATE" bash -c "printf x >> $PACE_N/backlog.jsonl" 2>&1)
+case "$pace_iw" in
+  *"the pacing directory belongs to the lane dispatcher"*"rc=룰거부")
+    ok "페이싱 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" ;;
+  *) bad "페이싱 가드의 인터프리터 갈래가 명령 줄 속 경로를 거절한다" "$pace_iw" ;;
+esac
+# A PATH CARRIED INSIDE ONE ELEMENT OF A COMMAND THAT IS NOT A WRAPPER. `sed`'s
+# `w` command, `dd`'s `of=` operand and awk's redirection each name the
+# destination inside a larger element, so neither the whole-element arm nor the
+# interpreter arm saw it. `sed` grades as a worktree write and goes through the
+# gate; `dd` and awk do not grade as anything a declaration meets, so the guard
+# is called alone for them, and `--out=` beside them pins the option arm.
+pace_try "sed 의 w 명령" "$PACE_N/backlog.jsonl" \
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- sed -n "w $PACE_N/backlog.jsonl" /dev/null
+check "sed 의 w 명령 거절은 룰 거부 코드다" "$rc" "$GATE_EXIT_RULE"
+pace_alone() {
+  # pace_alone <argv…> — the pacing guard called alone under a write grade.
+  (cd "$WT" && GATE_PACE_ROOT="$PACE_N" bash -c \
+    'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset MANIFEST; shift
+     r=0; gate_pace_write_guard 트리밖쓰기 "$@" || r=$?
+     [ "$r" = "$GATE_EXIT_RULE" ] && printf "rc=룰거부" || printf "rc=%s" "$r"' \
+    _ "$GATE" "$@" 2>&1)
+}
+for spell in "dd of=$PACE_N/rekick/R1/at" "dd if=/dev/null of=$PACE_N/backlog.jsonl" \
+             "awk {print>\"$PACE_N/backlog.jsonl\"} /dev/null" \
+             "jq --out=$PACE_N/backlog.jsonl ."; do
+  # shellcheck disable=SC2086
+  pace_iw=$(pace_alone $spell)
+  case "$pace_iw" in
+    *"the pacing directory belongs to the lane dispatcher"*"rc=룰거부")
+      ok "페이싱 가드가 원소 속에 실린 경로를 거절한다: $spell" ;;
+    *) bad "페이싱 가드가 원소 속에 실린 경로를 거절한다: $spell" "$pace_iw" ;;
+  esac
+done
+pace_iw=$(pace_alone dd of="$PACE_N-old/at")
+case "$pace_iw" in
+  "rc=0") ok "페이싱 루트 옆 이름을 실은 원소는 페이싱 가드에 걸리지 않는다" ;;
+  *) bad "페이싱 가드 오탐: 루트 옆 이름을 실은 원소" "$pace_iw" ;;
+esac
+# THE SPELLINGS THE WORD SPLIT STILL MISSED. A destination glued to a command
+# letter or an option has no separator to split at; a case variant is the same
+# file on the default case-insensitive volume; an ancestor of the root as a
+# directory destination merges a replacement tree over it. Each row is one argv
+# held in an array, so a path is never re-split.
+pace_rows() {
+  # pace_rows <라벨> <argv…> — one refused spelling, put to the guard alone.
+  local label="$1"; shift
+  pace_iw=$(pace_alone "$@")
+  case "$pace_iw" in
+    *"the pacing directory belongs to the lane dispatcher"*"rc=룰거부")
+      ok "페이싱 가드가 거절한다: $label" ;;
+    *) bad "페이싱 가드가 거절한다: $label" "$pace_iw" ;;
+  esac
+}
+pace_rows "sed 의 붙여 쓴 w" sed -n "w$PACE_N/backlog.jsonl" /dev/null
+pace_rows "sed 의 주소 붙은 w" sed "1w$PACE_N/backlog.jsonl" /dev/null
+pace_rows "sed 의 s///w" sed "s/a/b/w$PACE_N/backlog.jsonl" /dev/null
+pace_rows "sed -e 의 붙여 쓴 w" sed -n -e "w$PACE_N/backlog.jsonl" /dev/null
+# A SED ADDRESS ENDING IN `!`, `{`, A REGEX DELIMITER OR A GNU STEP, before a
+# relative destination. The reading of a glued `w` listed the address
+# characters it allowed and named none of these, and the `/` tails make only
+# absolute spellings, so each row wrote the backlog past the guard. The
+# relative spelling climbs only to the common ancestor of the worktree's
+# physical directory and the target: one that climbs to `/` would be caught by
+# an absolute `/../..` tail and pass with the old reading too.
+rel_from() {
+  # rel_from <from dir> <to path> — both physical; the relative spelling.
+  local f="$1/" t="$2" up=""
+  while [ "${t#"$f"}" = "$t" ]; do f="${f%/*/}/"; up="../$up"; done
+  printf '%s%s' "$up" "${t#"$f"}"
+}
+pace_rel=$(rel_from "$(cd "$WT" && pwd -P)" "$(cd "$PACE_N" && pwd -P)")
+pace_rows "sed 의 \$! 주소 뒤 상대 w" sed -n "\$!w$pace_rel/backlog.jsonl" /dev/null
+pace_rows "sed 의 /re/! 주소 뒤 상대 w" sed -n "/a/!w$pace_rel/backlog.jsonl" /dev/null
+pace_rows "sed 의 { 블록 속 상대 w" sed -n "1{w$pace_rel/backlog.jsonl
+}" /dev/null
+pace_rows "sed 의 \\%re% 주소 뒤 상대 w" sed -n "\\%a%w$pace_rel/backlog.jsonl" /dev/null
+pace_rows "sed 의 GNU ~ 주소 뒤 상대 w" sed -n "0~1w$pace_rel/backlog.jsonl" /dev/null
+pace_iw=$(pace_alone sed -n "\$!w$pace_rel-old/at" /dev/null)
+case "$pace_iw" in
+  "rc=0") ok "페이싱 루트 옆 이름을 가리키는 주소 뒤 상대 w 는 걸리지 않는다" ;;
+  *) bad "페이싱 가드 오탐: 루트 옆 이름을 가리키는 주소 뒤 상대 w" "$pace_iw" ;;
+esac
+pace_rows "sort 의 붙인 -o 값" sort "-o$PACE_N/backlog.jsonl" /dev/null
+pace_rows "대소문자 변형 루트" cp "$WORK/r3x" "${PACE_N%/pace}/PACE/backlog.jsonl"
+pace_rows "대소문자 변형 상태 디렉터리" cp "$WORK/r3x" "$STATE_CONE/CC-CMDS/pace/rekick/R1/successor"
+pace_rows "루트의 상위 디렉터리 목적지" cp -R "$WORK/r3x" "$STATE_CONE/cc-cmds/"
+pace_rows "루트의 상위 디렉터리, 옵션 값" cp -R "$WORK/r3x" "--target-directory=$STATE_CONE/cc-cmds"
+pace_rows "인터프리터 속 상위 디렉터리" bash -c "cp -R x $STATE_CONE/cc-cmds"
+# An ancestor glued to a single-dash option, as GNU `cp`/`mv` take `-t`: the
+# ancestor arm skipped every word starting with `-`, so these merged a tree
+# over the root.
+pace_rows "붙여 쓴 -t 의 상위 디렉터리" cp -R "$WORK/r3x" "-t$STATE_CONE/cc-cmds"
+pace_rows "옵션 묶음에 붙은 -t 의 상위 디렉터리" cp "-Rt$STATE_CONE/cc-cmds" "$WORK/r3x"
+pace_rows "mv 의 붙여 쓴 -t" mv "-t$STATE_CONE/cc-cmds" "$WORK/r3x"
+pace_rows "인터프리터 속 붙여 쓴 -t" bash -c "cp -R x -t$STATE_CONE/cc-cmds"
+# A path that spells none of the root's names reaches it through a link, which
+# is what the fork-free filter in front of the resolution has to let through.
+# The physical spelling of the link's directory, so no link above it does that.
+ln -s "$PACE_N" "$WORK/plk"
+pace_rows "이름 없이 링크로 닿는 루트" cp "$WORK/r3x" "$(cd "$WORK" && pwd -P)/plk/new.jsonl"
+rm -f "$WORK/plk"
+# A LINK PREPARED BEFORE THE WRITE, followed the way the kernel follows it. A
+# final component that is a link to the backlog, a `..` after a link to a
+# directory under the root, and a two-step chain all spell nothing under the
+# root, and each wrote the backlog past the guard. Asserted on the guard alone
+# and on the backlog's bytes, because the write lands exactly there.
+pace_lw=$(cd "$WORK" && pwd -P)
+mkdir -p "$pace_lw/pl"
+ln -s "$PACE_N/backlog.jsonl" "$pace_lw/pl/b"
+ln -s ../state-cone/cc-cmds/pace/backlog.jsonl "$pace_lw/pl/rb"
+ln -s "$PACE_N/rekick" "$pace_lw/pl/rk"
+ln -s b "$pace_lw/pl/b2"
+pace_lb=$(fsha "$PACE_N/backlog.jsonl")
+pace_rows "마지막 성분이 백로그로 가는 링크(tee)" tee -a "$pace_lw/pl/b"
+pace_rows "마지막 성분이 백로그로 가는 링크(cp)" cp "$WORK/r3x" "$pace_lw/pl/b"
+pace_rows "상대 문면의 마지막 성분 링크" cp "$WORK/r3x" "$pace_lw/pl/rb"
+pace_rows "두 단계 링크" cp "$WORK/r3x" "$pace_lw/pl/b2"
+pace_rows "디렉터리 링크 뒤의 .." cp /dev/null "$pace_lw/pl/rk/../backlog.jsonl"
+pace_rows "인터프리터 속 디렉터리 링크 뒤의 .." bash -c "cp /dev/null $pace_lw/pl/rk/../backlog.jsonl"
+pace_rows "디렉터리 링크 뒤 .. 로 상위 디렉터리" cp -R "$WORK/r3x" "$pace_lw/pl/rk/../.."
+# The link itself: target text read from the link's own directory. Two levels
+# down, so the same text read from the worktree names nothing under the root
+# and only the link arm can refuse it.
+mkdir -p "$pace_lw/pl/d"
+pace_rows "링크 위치 기준 상대 대상의 ln -s" ln -s ../../state-cone/cc-cmds/pace/backlog.jsonl "$pace_lw/pl/d/nb"
+# Through the gate end to end, where the write would otherwise run: the code
+# and the backlog's bytes, since another guard may answer first.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp "$WORK/r3x" "$pace_lw/pl/b"
+check "마지막 성분 링크로 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp /dev/null "$pace_lw/pl/rk/../backlog.jsonl"
+check "디렉터리 링크 뒤 .. 로 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+check "링크 철자로 거절된 백로그는 바이트도 존재도 그대로다" "$(fsha "$PACE_N/backlog.jsonl")" "$pace_lb"
+# A chain longer than the walk follows is refused rather than spelled away.
+pace_ci=0
+ln -s b "$pace_lw/pl/c0"
+while [ "$pace_ci" -lt 9 ]; do
+  ln -s "c$pace_ci" "$pace_lw/pl/c$((pace_ci + 1))"; pace_ci=$((pace_ci + 1))
+done
+pace_iw=$(pace_alone cp "$WORK/r3x" "$pace_lw/pl/c9")
+case "$pace_iw" in
+  *"symbolic link this gate could not resolve"*"rc=룰거부")
+    ok "페이싱 가드가 따라가지 못한 링크 사슬을 거절한다" ;;
+  *) bad "페이싱 가드가 따라가지 못한 링크 사슬을 거절한다" "$pace_iw" ;;
+esac
+# The neighbours pass: a link out of the root, a `..` after a link that leaves
+# the root, and `ln -s` whose target stays beside the root.
+mkdir -p "$pace_lw/pl/out"
+ln -s "$pace_lw/pl/out/f" "$pace_lw/pl/ob"
+ln -s "$pace_lw/pl/out" "$pace_lw/pl/od"
+for spell_row in "cp $WORK/r3x $pace_lw/pl/ob" "cp $WORK/r3x $pace_lw/pl/od/../x" \
+                 "ln -s ../../state-cone/cc-cmds/pace-old/x $pace_lw/pl/d/nb2"; do
+  read -r -a spell_argv <<< "$spell_row"
+  pace_iw=$(pace_alone "${spell_argv[@]}")
+  case "$pace_iw" in
+    "rc=0") ok "페이싱 루트 밖으로 가는 링크 철자는 걸리지 않는다: $spell_row" ;;
+    *) bad "페이싱 가드 오탐: $spell_row" "$pace_iw" ;;
+  esac
+done
+rm -rf "$pace_lw/pl"
+# A word the split cannot resolve is refused, not guessed: the arm the word
+# split brought with it, pinned so that deleting it fails here.
+pace_iw=$(pace_alone dd "of=~-/backlog.jsonl")
+case "$pace_iw" in
+  *"home-directory spelling this gate cannot resolve"*"rc=룰거부")
+    ok "페이싱 가드가 해석할 수 없는 홈 철자를 거절한다" ;;
+  *) bad "페이싱 가드가 해석할 수 없는 홈 철자를 거절한다" "$pace_iw" ;;
+esac
+# The neighbours of the refused rows pass: the same glued spellings beside the
+# root, and the root's sibling directory under the same parent.
+for spell_row in "sed -n w$PACE_N-old/at /dev/null" "sort -o$PACE_N-old/at /dev/null" \
+                 "cp $WORK/r3x $STATE_CONE/cc-cmds/run-old" \
+                 "cp -R $WORK/r3x -t$STATE_CONE/cc-cmds/run-old"; do
+  read -r -a spell_argv <<< "$spell_row"
+  pace_iw=$(pace_alone "${spell_argv[@]}")
+  case "$pace_iw" in
+    "rc=0") ok "페이싱 루트 밖 목적지는 걸리지 않는다: $spell_row" ;;
+    *) bad "페이싱 가드 오탐: $spell_row" "$pace_iw" ;;
+  esac
+done
+# THE ANCESTOR ARM READS DESTINATION SLOTS, NOT EVERY ARGUMENT. It took every
+# element and every glued option value, so `/` (an ancestor of every root) and
+# the state directory refused `awk -F/`, `sort -t/`, `xargs -d/` and `git -C`,
+# and on a Linux runner, where this suite's root lies under `/tmp`, the 15절
+# row `git -C /tmp commit` with it. Those pass; a tree merged into an ancestor
+# or an ancestor removed is still refused, behind a wrapper too.
+pace_pass() {
+  # pace_pass <라벨> <argv…> — one spelling the guard alone must let through.
+  local label="$1"; shift
+  pace_iw=$(pace_alone "$@")
+  case "$pace_iw" in
+    "rc=0") ok "조상 갈래가 목적지 아닌 인자를 거절하지 않는다: $label" ;;
+    *) bad "조상 갈래 오탐: $label" "$pace_iw" ;;
+  esac
+}
+pace_pass "awk -F/" awk -F/ '{print $NF}' "$WORK/r3x"
+pace_pass "awk -F /" awk -F / '{print $NF}' "$WORK/r3x"
+pace_pass "sort -t/ -o" sort -t/ -k2 -o "$WORK/sorted.txt" "$WORK/r3x"
+pace_pass "xargs -d/" xargs -d/ echo
+pace_pass "git -C / commit" git -C / commit -m x
+pace_pass "git -C <루트의 상위> commit" git -C "$STATE_CONE/cc-cmds" commit -m x
+pace_pass "npm --prefix=<루트의 상위>" npm install "--prefix=$STATE_CONE/cc-cmds" x
+pace_pass "추출이 아닌 tar -C <루트의 상위>" tar -c -C "$STATE_CONE/cc-cmds" -f "$WORK/a.tar" .
+pace_rows "rm 의 상위 디렉터리" rm -rf "$STATE_CONE/cc-cmds"
+pace_rows "tar -x -C 의 상위 디렉터리" tar -x -C "$STATE_CONE/cc-cmds" -f "$WORK/a.tar"
+pace_rows "tar 묶음 -xf 와 --directory= 의 상위 디렉터리" tar -xf "$WORK/a.tar" "--directory=$STATE_CONE/cc-cmds"
+pace_rows "find -delete 의 시작점인 상위 디렉터리" find "$STATE_CONE/cc-cmds" -name zz -delete
+pace_rows "감싸개 뒤 cp 의 붙여 쓴 -t" xargs cp -R "-t$STATE_CONE/cc-cmds"
+pace_rows "gcp 의 붙여 쓴 -t" gcp -R "$WORK/r3x" "-t$STATE_CONE/cc-cmds"
+# Through the gate end to end: the glued `-o` value of `sort`, which grades as
+# a write outside the tree. Another guard may answer first, so the code and the
+# bytes are what this row pins.
+pace_ob=$(fsha "$PACE_N/backlog.jsonl")
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- sort "-o$PACE_N/backlog.jsonl" "$WORK/r3x"
+check "sort 의 붙인 -o 값으로 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+check "sort 로 거절된 백로그는 바이트도 존재도 그대로다" "$(fsha "$PACE_N/backlog.jsonl")" "$pace_ob"
+# A sibling's plan beside the manifest, in the same recipe: the sibling record
+# guard answers it, so only the code and the bytes are this guard's business.
+r8before=$(fsha "$WORK/R8.plan.md")
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp "$WORK/r3x" "$WORK/R8.plan.md"
+[ "$rc" != 0 ] && ok "형제 R8.plan.md 쓰기가 거절된다" || bad "형제 R8.plan.md 쓰기가 거절된다" "rc=$rc"
+check "거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+# The same sibling plan named inside one element. Through the gate `sed`'s `w`
+# command is refused by the sibling record guard; `dd of=` and awk's
+# redirection are put to that guard alone, with the manifest directory and its
+# physical spelling as the caller hands them over.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n "w $WORK/R8.plan.md" /dev/null
+check "sed 의 w 명령으로 형제 R8.plan.md 에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"another run's kickoff-frozen record"*) ok "그 거절은 형제 런 가드의 것이다: sed 의 w 명령" ;;
+  *) bad "형제 런 가드 문면: sed 의 w 명령" "$msg" ;;
+esac
+check "sed 로 거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+sib_alone() {
+  # sib_alone <argv…> — the sibling record guard called alone.
+  (cd "$WT" && bash -c \
+    'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; d="$2"; shift 2
+     r=0; gate_sibling_record_write_guard "$d" "$(cd "$d" && pwd -P)" "$@" || r=$?
+     [ "$r" = "$GATE_EXIT_RULE" ] && printf "rc=룰거부" || printf "rc=%s" "$r"' \
+    _ "$GATE" "$WORK" "$@" 2>&1)
+}
+for spell in "dd of=$WORK/R8.plan.md" "awk {print>\"$WORK/R8.interview.md\"} /dev/null" \
+             "jq --out=$WORK/R8.kickoff.md ."; do
+  # shellcheck disable=SC2086
+  sib_iw=$(sib_alone $spell)
+  case "$sib_iw" in
+    *"another run's kickoff-frozen record"*"rc=룰거부")
+      ok "형제 런 가드가 원소 속에 실린 경로를 거절한다: $spell" ;;
+    *) bad "형제 런 가드가 원소 속에 실린 경로를 거절한다: $spell" "$sib_iw" ;;
+  esac
+done
+sib_iw=$(sib_alone dd of="$WORK/R9.notes.md")
+case "$sib_iw" in
+  "rc=0") ok "세 접미가 아닌 파일을 실은 원소는 형제 런 가드에 걸리지 않는다" ;;
+  *) bad "형제 런 가드 오탐: 세 접미가 아닌 파일을 실은 원소" "$sib_iw" ;;
+esac
+# The spellings the word split still missed, against the sibling guard: glued
+# to a command letter or option, case variants of the suffix and of the
+# directory, and the manifest directory itself as the destination of a source
+# that carries a record suffix — in either argument order.
+sib_rows() {
+  # sib_rows <라벨> <argv…> — one refused spelling, put to the guard alone.
+  local label="$1"; shift
+  sib_iw=$(sib_alone "$@")
+  case "$sib_iw" in
+    *"another run's kickoff-frozen record"*"rc=룰거부")
+      ok "형제 런 가드가 거절한다: $label" ;;
+    *) bad "형제 런 가드가 거절한다: $label" "$sib_iw" ;;
+  esac
+}
+printf 'r8\n' > "$WT/R8.plan.md"
+sib_rows "sed 의 붙여 쓴 w" sed -n "w$WORK/R8.plan.md" /dev/null
+sib_rows "sed 의 s///w" sed "s/a/b/w$WORK/R8.interview.md" /dev/null
+sib_rows "sort 의 붙인 -o 값" sort "-o$WORK/R8.kickoff.md" /dev/null
+# The sed addresses the glued-`w` reading did not list, before a relative
+# destination climbing from the worktree's physical directory.
+sib_rel=$(rel_from "$(cd "$WT" && pwd -P)" "$(cd "$WORK" && pwd -P)")
+sib_rows "sed 의 \$! 주소 뒤 상대 w" sed -n "\$!w$sib_rel/R8.plan.md" /dev/null
+sib_rows "sed 의 /re/! 주소 뒤 상대 w" sed -n "/a/!w$sib_rel/R8.plan.md" /dev/null
+sib_rows "sed 의 { 블록 속 상대 w" sed -n "1{w$sib_rel/R8.interview.md
+}" /dev/null
+sib_rows "sed 의 \\%re% 주소 뒤 상대 w" sed -n "\\%a%w$sib_rel/R8.kickoff.md" /dev/null
+sib_rows "대소문자 변형 접미" cp "$WORK/r3x" "$WORK/R8.PLAN.md"
+# A case variant of the directory names the same directory only on a
+# case-insensitive volume; elsewhere it is another directory and not refused.
+sib_upper="$(dirname "$WORK")/$(basename "$WORK" | tr '[:lower:]' '[:upper:]')"
+if [ "$sib_upper" != "$WORK" ] && [ "$sib_upper" -ef "$WORK" ]; then
+  sib_rows "대소문자 변형 디렉터리" cp "$WORK/r3x" "$sib_upper/R8.plan.md"
+fi
+sib_rows "디렉터리 목적지" cp R8.plan.md "$WORK/"
+sib_rows "디렉터리 목적지, -t" cp -t "$WORK" R8.plan.md
+rm -f "$WT/R8.plan.md"
+sib_iw=$(sib_alone dd "of=~-/R8.plan.md")
+case "$sib_iw" in
+  *"home-directory spelling this gate cannot resolve"*"rc=룰거부")
+    ok "형제 런 가드가 해석할 수 없는 홈 철자를 거절한다" ;;
+  *) bad "형제 런 가드가 해석할 수 없는 홈 철자를 거절한다" "$sib_iw" ;;
+esac
+# A LINK PREPARED BEFORE THE WRITE, and the `ln` that prepares it. The parent
+# test looked at the directory the link sits in and a name with neither suffix
+# was dropped before it, so each of these wrote a sibling's record past the
+# guard. The link directory lives inside the manifest directory, as a stage
+# would make it, and `sib-dl` reaches it from the worktree.
+sib_lw=$(cd "$WORK" && pwd -P)
+mkdir -p "$sib_lw/sl/d" "$sib_lw/sl/pipeline-grant"
+printf 'rb\n' > "$sib_lw/sl/pipeline-grant/RB.md"
+ln -s ../R8.plan.md "$sib_lw/sl/L"
+ln -s "$sib_lw/R8.interview.md" "$sib_lw/sl/A"
+ln -s pipeline-grant/RB.md "$sib_lw/sl/G"
+ln -s L "$sib_lw/sl/L2"
+ln -s "$sib_lw/sl" "$WT/sib-dl"
+sib_rows "마지막 성분이 형제 계획으로 가는 링크(cp)" cp /dev/null "$sib_lw/sl/L"
+sib_rows "마지막 성분이 형제 계획으로 가는 링크(tee)" tee -a "$sib_lw/sl/L"
+sib_rows "아직 없는 형제 기록으로 가는 절대 링크" cp "$WORK/r3x" "$sib_lw/sl/A"
+sib_rows "인가 기록으로 가는 링크" cp /dev/null "$sib_lw/sl/G"
+sib_rows "두 단계 링크" cp "$WORK/r3x" "$sib_lw/sl/L2"
+sib_rows "작업 트리의 디렉터리 링크 뒤의 .." cp "$WORK/r3x" "$WT/sib-dl/../R8.plan.md"
+sib_rows "인터프리터 속 마지막 성분 링크" bash -c "cp /dev/null $sib_lw/sl/L"
+# The link itself: target text read from the link's own directory, two levels
+# down so the same text read from the worktree names no record.
+sib_rows "링크 위치 기준 상대 대상의 ln -s" ln -s ../../R8.plan.md "$sib_lw/sl/d/nL"
+sib_rows "-t 디렉터리 기준 상대 대상의 ln -s" ln -s -t "$sib_lw/sl/d" ../../R8.kickoff.md
+# A chain longer than the walk follows is refused rather than spelled away.
+sib_ci=0
+ln -s L "$sib_lw/sl/c0"
+while [ "$sib_ci" -lt 9 ]; do
+  ln -s "c$sib_ci" "$sib_lw/sl/c$((sib_ci + 1))"; sib_ci=$((sib_ci + 1))
+done
+sib_iw=$(sib_alone cp "$WORK/r3x" "$sib_lw/sl/c9")
+case "$sib_iw" in
+  *"symbolic link this gate could not resolve"*"rc=룰거부")
+    ok "형제 런 가드가 따라가지 못한 링크 사슬을 거절한다" ;;
+  *) bad "형제 런 가드가 따라가지 못한 링크 사슬을 거절한다" "$sib_iw" ;;
+esac
+# The neighbours pass: a link to a non-record file beside the records, a link
+# to a record-suffixed name in another directory, and `ln -s` whose target is
+# not a record.
+ln -s ../R9.notes.md "$sib_lw/sl/N"
+ln -s "$WT/R8.plan.md" "$sib_lw/sl/O"
+for spell_row in "cp $WORK/r3x $sib_lw/sl/N" "cp $WORK/r3x $sib_lw/sl/O" \
+                 "ln -s ../../R9.notes.md $sib_lw/sl/d/nN" "ln -s R8.plan.md $WT/sib-x"; do
+  read -r -a spell_argv <<< "$spell_row"
+  sib_iw=$(sib_alone "${spell_argv[@]}")
+  case "$sib_iw" in
+    "rc=0") ok "형제 기록으로 가지 않는 링크 철자는 걸리지 않는다: $spell_row" ;;
+    *) bad "형제 런 가드 오탐: $spell_row" "$sib_iw" ;;
+  esac
+done
+# Through the gate end to end: the code, the guard's wording and the bytes.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp "$WORK/r3x" "$sib_lw/sl/L"
+check "마지막 성분 링크로 형제 R8.plan.md 에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"another run's kickoff-frozen record"*) ok "그 거절은 형제 런 가드의 것이다: 마지막 성분 링크" ;;
+  *) bad "형제 런 가드 문면: 마지막 성분 링크" "$msg" ;;
+esac
+check "링크로 거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+rm -rf "$sib_lw/sl" "$WT/sib-dl"
+# Neighbours that pass: a record-suffixed file written into another directory,
+# and a non-record file copied into the manifest directory.
+for spell_row in "sed -n w$WT/R8.plan.md /dev/null" "cp $WORK/r3x $WORK/R9.notes.md" \
+                 "cp $WORK/r3x $WORK/"; do
+  read -r -a spell_argv <<< "$spell_row"
+  sib_iw=$(sib_alone "${spell_argv[@]}")
+  case "$sib_iw" in
+    "rc=0") ok "형제 기록이 아닌 목적지는 걸리지 않는다: $spell_row" ;;
+    *) bad "형제 런 가드 오탐: $spell_row" "$sib_iw" ;;
+  esac
+done
+# A DESTINATION READ FROM A FILE. `sed -f`, `awk -f` and `xargs -a` take their
+# program or their argument list from a file neither guard opens, so the
+# destination is nowhere in the argv and both path arms let it write. A write
+# grade carrying such an option is refused whatever the file holds. Through the
+# gate `sed` grades as a worktree write, so it is driven end to end and the
+# target's bytes are pinned; awk, xargs and vim do not grade as anything a
+# declaration meets, so they are put to each guard alone.
+printf '$!w %s\n' "$PACE_N/backlog.jsonl" > "$WORK/progfile"
+printf '$!w %s\n' "$WORK/R8.plan.md" > "$WORK/progfile8"
+printf 'BEGIN { print "x" > "%s" }\n' "$WORK/R8.plan.md" > "$WORK/awkprog"
+printf '%s\n' "$PACE_N/backlog.jsonl" > "$WORK/argfile"
+pf_msg="reads its program or its argument list from a file"
+pace_pb=$(fsha "$PACE_N/backlog.jsonl")
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n -f "$WORK/progfile" /dev/null
+check "sed -f 로 페이싱 백로그에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"$pf_msg"*) ok "그 거절은 프로그램 파일 갈래의 것이다: sed -f 백로그" ;;
+  *) bad "프로그램 파일 거부 문면: sed -f 백로그" "$msg" ;;
+esac
+check "sed -f 로 거절된 백로그는 바이트도 존재도 그대로다" "$(fsha "$PACE_N/backlog.jsonl")" "$pace_pb"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n -f "$WORK/progfile8" /dev/null
+check "sed -f 로 형제 R8.plan.md 에 쓰는 것은 룰 거부 코드로 거절된다" "$rc" "$GATE_EXIT_RULE"
+case "$msg" in
+  *"$pf_msg"*) ok "그 거절은 프로그램 파일 갈래의 것이다: sed -f 형제 계획" ;;
+  *) bad "프로그램 파일 거부 문면: sed -f 형제 계획" "$msg" ;;
+esac
+check "sed -f 로 거절된 형제 R8.plan.md 는 바이트도 존재도 그대로다" "$(fsha "$WORK/R8.plan.md")" "$r8before"
+pf_rows() {
+  # pf_rows <pace|sib> <라벨> <argv…> — one refused spelling, put to one guard alone.
+  local which="$1" label="$2" out; shift 2
+  if [ "$which" = pace ]; then out=$(pace_alone "$@"); else out=$(sib_alone "$@"); fi
+  case "$out" in
+    *"$pf_msg"*"rc=룰거부") ok "프로그램 파일 갈래가 거절한다($which): $label" ;;
+    *) bad "프로그램 파일 갈래가 거절한다($which): $label" "$out" ;;
+  esac
+}
+pf_rows pace "sed -f" sed -n -f "$WORK/progfile" /dev/null
+pf_rows pace "sed 의 묶은 -nf" sed -nf "$WORK/progfile" /dev/null
+pf_rows pace "sed 의 붙인 -f" sed -n "-f$WORK/progfile" /dev/null
+pf_rows pace "sed --file=" sed -n "--file=$WORK/progfile" /dev/null
+pf_rows pace "sed --file 다음 원소" sed -n --file "$WORK/progfile" /dev/null
+pf_rows pace "피연산자 뒤의 sed -f" sed -n /dev/null -f "$WORK/progfile"
+pf_rows pace "awk -f" awk -f "$WORK/awkprog" /dev/null
+pf_rows pace "gawk --file" gawk --file "$WORK/awkprog" /dev/null
+pf_rows pace "xargs -a" xargs -a "$WORK/argfile" cp "$WORK/r3x"
+pf_rows pace "xargs --arg-file=" xargs "--arg-file=$WORK/argfile" cp "$WORK/r3x"
+pf_rows pace "값을 받는 옵션 뒤의 xargs -a" xargs -n 1 -a "$WORK/argfile" cp "$WORK/r3x"
+pf_rows pace "env 뒤의 sed -f" env A=1 sed -f "$WORK/progfile" /dev/null
+pf_rows pace "find -exec 속 awk -f" find /dev/null -exec awk -f "$WORK/awkprog" {} +
+pf_rows pace "vim -s" vim -s "$WORK/progfile" x
+pf_rows sib "awk -f" awk -f "$WORK/awkprog" /dev/null
+pf_rows sib "sed -f" sed -n -f "$WORK/progfile8" /dev/null
+pf_rows sib "xargs -a" xargs -a "$WORK/argfile" cp "$WORK/r3x"
+# The neighbours pass: an option of xargs's command is not xargs's, a value an
+# option takes is not an option, a sed with its program in the argv is read by
+# the path arms as before, and a word in an act no wrapper leads is not a
+# program name.
+for spell_row in "xargs cp -a $WORK/r3x $WT/pf-x" "awk -v x=-f {print} /dev/null" \
+                 "sed -n -e p /dev/null" "git commit -m sed -f"; do
+  read -r -a spell_argv <<< "$spell_row"
+  pace_iw=$(pace_alone "${spell_argv[@]}")
+  case "$pace_iw" in
+    "rc=0") ok "프로그램 파일을 받지 않는 철자는 걸리지 않는다: $spell_row" ;;
+    *) bad "프로그램 파일 갈래 오탐: $spell_row" "$pace_iw" ;;
+  esac
+done
+# A read grade is not refused: these programs still read.
+pace_iw=$(cd "$WT" && GATE_PACE_ROOT="$PACE_N" bash -c \
+  'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; unset MANIFEST; shift
+   r=0; gate_pace_write_guard 읽기 "$@" || r=$?; printf "rc=%s" "$r"' \
+  _ "$GATE" sed -n -f "$WORK/progfile" /dev/null 2>&1)
+check "읽기 등급의 sed -f 는 프로그램 파일 갈래에 걸리지 않는다" "$pace_iw" "rc=0"
+rm -f "$WORK/progfile" "$WORK/progfile8" "$WORK/awkprog" "$WORK/argfile"
+# Naming the directory while reading it passes: the read grade returns first.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- cat "$PACE_N/backlog.jsonl"
+check "페이싱 백로그를 이름만 부르는 읽기는 통과한다" "$rc" "0"
+# The upper bound: a write beside the pacing root, not under it, is not refused
+# by this guard — a prefix test that swallowed `pace-old` would refuse names it
+# has nothing to do with.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- cp "$WORK/r3x" "$PACE_N-old"
+case "$msg" in
+  *"the pacing directory belongs to the lane dispatcher"*)
+    bad "페이싱 가드 오탐" "페이싱 루트 옆 이름을 페이싱 쓰기로 거절했다: $msg" ;;
+  *) ok "페이싱 루트 옆 이름 쓰기는 페이싱 가드에 걸리지 않는다" ;;
+esac
+rm -f "$PACE_N-old"
 
 # --- 31ac-2. The run directory has the same guard through Bash as through Write
 # --- section: 31ac-2 | group: cone | covers: exec | anchors: 평문 이름의 스테이지 로그 쓰기가 거절된다 ---
