@@ -111,8 +111,12 @@ REF_IMPORT="@import[[:space:]]+(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ})"
 # inside one stays text. A file that ends inside a comment, a tag, a template
 # string or an unclosed <style>/<script> has lost its parse: the reason goes to
 # stderr and the function fails with 2, so it is never read as "no finding".
+# The parser walks bytes, so awk runs under the C locale: in a UTF-8 locale
+# macOS awk aborts with `illegal byte sequence` on a substr that cuts a
+# multi-byte character (Hangul in a string or comment) in half. A character's
+# bytes always land in one stream, so the streams stay valid text.
 split_streams() {
-  awk -v out="$2" -v file="$1" '
+  LC_ALL=C awk -v out="$2" -v file="$1" '
     BEGIN { mode = "html"; hc = 0; cc = 0; jc = 0; intag = 0; q = ""; sattr = 0; cq = ""; jq = "" }
     {
       line = $0; n = length(line); css = ""; mk = ""; js = ""; jline = 0; esc = 0; i = 1
@@ -215,7 +219,7 @@ ext_refs() {
     grep -noiE -- "$REF_ATTR" "$1" || true
     grep -noiE -- "$REF_URL" "$1" || true
     grep -noiE -- "$REF_IMPORT" "$1" || true
-  } | awk '
+  } | LC_ALL=C awk '
     {
       ln = $0; sub(/:.*/, "", ln); m = substr($0, length(ln) + 2); v = m
       if (tolower(m) ~ /^@import/) sub(/^@[Ii][Mm][Pp][Oo][Rr][Tt][[:space:]]*/, "", v)

@@ -19,7 +19,11 @@
 #              `//` comment, leave every later line scanned; a screen that ends
 #              inside a comment, a tag, a template string or an unclosed
 #              <style>/<script> is exit 2 with the reason, for scan and size
-#   size       the start-tag count leaves comments and script out
+#   scan hangul  Hangul in script and CSS strings and comments, a style
+#              attribute and body text, under a UTF-8 locale: scan is exit 1
+#              with an empty stderr, every later line is scanned and the
+#              finding text keeps its bytes; size is exit 0
+#   size      the start-tag count leaves comments and script out
 #   approval   no sidecar, state not 발행됨, no approval line, one screen byte
 #              changed, valid — and bundle --lines prints the bundle text
 #   grammar    the sidecar and ban-lift grammar examples of
@@ -51,7 +55,7 @@ SEED="$repo_root/plugins/cc-cmds/orchestrator/visual-bans.seed"
 fixtures="$repo_root/tests/fixtures/visual-check"
 REFS="$repo_root/plugins/cc-cmds/skills/visual/references/sidecar.md"
 
-for need in "$CHECK" "$CONFIG" "$SEED" "$fixtures/v11.txt" "$fixtures/v32.txt" "$fixtures/refs.txt" "$fixtures/bans.txt" "$fixtures/leak.txt"; do
+for need in "$CHECK" "$CONFIG" "$SEED" "$fixtures/v11.txt" "$fixtures/v32.txt" "$fixtures/refs.txt" "$fixtures/bans.txt" "$fixtures/leak.txt" "$fixtures/hangul.txt"; do
   if [[ ! -f "$need" ]]; then
     echo "test-visual-check: missing $need" >&2
     exit 2
@@ -228,6 +232,36 @@ eof_case "닫히지 않은 <style>" "<style> 이 닫히지 않았다" '<style>.a
 eof_case "열린 HTML 주석" "HTML 주석이 닫히지 않았다" '<p>a</p>' '<!-- open' '<p style="color: #fff">x</p>'
 eof_case "열린 템플릿 문자열" "스크립트 템플릿 문자열이 닫히지 않았다" '<script>var t = `open' 'var b = "#fff";'
 eof_case "닫히지 않은 태그" "태그가 닫히지 않았다" '<p>a</p>' '<img src="https://cdn.example.com/a.png'
+
+# --- scan hangul --------------------------------------------------------------
+# Hangul in a script string or comment, a CSS string or comment, a style
+# attribute and body text is parsed, not refused, under a UTF-8 locale — the
+# locale where a byte-wise awk cuts a character in half.
+utf8=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8|c\.utf-?8' | head -n 1 || true)
+if [ -z "$utf8" ]; then
+  fail "UTF-8 로캘이 없어 한글 화면을 잴 수 없다"
+else
+  materialize "$fixtures/hangul.txt" "$T/hangul.html" "$T/hangul.labels"
+  rc=0; LANG="$utf8" LC_ALL="$utf8" bash "$CHECK" scan "$T/hangul.html" > "$T/hangul.out" 2> "$T/hangul.out.err" || rc=$?
+  if [ "$rc" = 1 ] && [ ! -s "$T/hangul.out.err" ]; then
+    pass "한글 화면 scan 은 종료 1 이고 stderr 가 비어 있다 (${utf8})"
+  else
+    fail "한글 화면 scan 종료 ${rc} (기대 1, 빈 stderr): $(head -n 1 "$T/hangul.out.err")"
+  fi
+  lines_of token-color "$T/hangul.out" > "$T/hangul.color"
+  lines_of external-ref "$T/hangul.out" > "$T/hangul.ref"
+  got=$(tally "$T/hangul.labels" "$T/hangul.color" V)
+  [ "$got" = "5 5" ] && pass "한글 문자열·주석 뒤의 색이 모두 잡힌다 (5)" || fail "hangul V 줄 (전체 적중) = ${got}, 기대 5 5"
+  got=$(tally "$T/hangul.labels" "$T/hangul.ref" R)
+  [ "$got" = "1 1" ] && pass "한글 주석 뒤의 스크립트 외부 참조가 잡힌다" || fail "hangul R 줄 (전체 적중) = ${got}, 기대 1 1"
+  grep -qF '본문의 한글 문장' "$T/hangul.html" && ! grep -q '본문의' "$T/hangul.out" \
+    && pass "한글 본문 문장은 발견이 아니다" || fail "한글 본문 문장이 발견으로 잡혔다"
+  grep -qE "^token-color [^ ]*:15 <p style=\"content:'안내'; color: red\">한글</p>$" "$T/hangul.out" \
+    && pass "발견 줄의 한글 문면이 바이트 그대로 보존된다" || fail "발견 줄의 한글 문면이 원문과 다르다"
+  rc=0; got=$(LANG="$utf8" LC_ALL="$utf8" bash "$CHECK" size "$T/hangul.html" 2> "$T/hangul.size.err") || rc=$?
+  [ "$rc:$got" = "0:5" ] && [ ! -s "$T/hangul.size.err" ] && pass "한글 화면 size 는 종료 0 (5)" \
+    || fail "한글 화면 size = ${rc}:${got} (기대 0:5): $(head -n 1 "$T/hangul.size.err")"
+fi
 
 # --- size ---------------------------------------------------------------------
 printf '%s\n' '<!doctype html>' '<html><body>' '<!-- <div><div><div> -->' '<div><p>a</p><p>b</p></div>' \
