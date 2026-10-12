@@ -9901,14 +9901,6 @@ gate_snapshot() {
   printf '  "cycles": [\n'
   gate_snapshot_cycles_json
   printf '  ],\n'
-  # `다음` PER UNMERGED SEGMENT, the one value the routers branch on after a
-  # review. The constants ride beside it for display only; a router that read
-  # them would hold a second copy of the table `gate_segment_review_next` owns.
-  printf '  "review_carry": {"CYCLE_CARRY_FROM": %s, "CYCLE_CARRY_MAX": %s, "P0_GUARD_STREAK": %s},\n' \
-    "$CYCLE_CARRY_FROM" "$CYCLE_CARRY_MAX" "$P0_GUARD_STREAK"
-  printf '  "review_next": [\n'
-  gate_snapshot_review_next_json
-  printf '  ],\n'
   # THE STALL LABELS, right after the reviews they are derived from. Always
   # emitted, empty included, so no reader has to tell an absent key from an empty
   # list. Outside the default `--fields` projection and outside `H`: the labels
@@ -9917,6 +9909,15 @@ gate_snapshot() {
   # this object — so no label can refuse, park or hold anything.
   printf '  "stalls": [\n'
   gate_snapshot_stalls_json
+  printf '  ],\n'
+  # `다음` PER UNMERGED SEGMENT, the one value the routers branch on after a
+  # review. The constants ride beside it for display only; a router that read
+  # them would hold a second copy of the table `gate_segment_review_next` owns.
+  # After `stalls`, which keeps its place right after `cycles`.
+  printf '  "review_carry": {"CYCLE_CARRY_FROM": %s, "CYCLE_CARRY_MAX": %s, "P0_GUARD_STREAK": %s},\n' \
+    "$CYCLE_CARRY_FROM" "$CYCLE_CARRY_MAX" "$P0_GUARD_STREAK"
+  printf '  "review_next": [\n'
+  gate_snapshot_review_next_json
   printf '  ],\n'
   printf '  "shift": %s,\n' "$(gate_shift_state)"
   # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
