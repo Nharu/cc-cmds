@@ -21321,6 +21321,34 @@ check "29: 표에 없는 옵션이 있으면 결속이 아니다"            "$(
 check "29: 잎 앞의 -R 을 지나 결속을 읽는다"                 "$(mb gh -R o/r pr merge 1 --match-head-commit "$H40")" "$H40"
 check "29: --auto 는 결속이 있어도 없음 이다"                "$(mb gh pr merge 1 --auto --match-head-commit "$H40")" "없음"
 
+# 동사 앞의 값 옵션 — gh 는 값 옵션과 그 값을 어디에 있든 건너뛰고 `pr merge` 를
+# 찾으므로, 결속·사다리·등급·협업면도 위치가 아니라 파싱으로 머지를 찾는다.
+ld29() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
+sf29() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; surface_of_argv0 "$@"' _ "$GATE" "$@"; }
+cs29() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
+           if gate_collaboration_surface "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
+}
+check "29: 동사 앞 -b 를 지나 결속을 읽는다 (양성 대조)"      "$(mb gh pr -b x merge 1 --match-head-commit "$H40")" "$H40"
+check "29: 동사 앞 결속 옵션도 gh 처럼 읽는다"                "$(mb gh pr --match-head-commit "$H40" merge 1)" "$H40"
+check "29: 동사 앞 -b 의 결속 없는 머지는 없음 이다"          "$(mb gh pr -b x merge 1)" "없음"
+check "29: 동사 앞 --body= 의 결속 없는 머지는 없음 이다"     "$(mb gh pr --body=x merge 1)" "없음"
+check "29: pr 앞 -t 의 결속 없는 머지는 없음 이다"            "$(mb gh -t y pr merge 1)" "없음"
+check "29: -R 과 동사 앞 -t 의 결속 없는 머지는 없음 이다"    "$(mb gh pr -R o/r -t y merge 1)" "없음"
+check "29: 표가 읽지 못하는 머지 철자는 없음 이다"            "$(mb gh pr --squash merge 1 --match-head-commit "$H40")" "없음"
+check "29: 대조군 — merge 를 값으로 단 다른 pr 동사는 해당없음 이다" "$(mb gh pr comment 1 -b merge)" "해당없음"
+for g29 in 'pr -b x merge 1' '-t y pr merge 1' 'pr -R o/r -t y merge 1' 'pr --squash merge 1'; do
+  # shellcheck disable=SC2086
+  check "29: 사다리가 gh $g29 를 머지로 읽는다" "$(ld29 gh $g29)" "머지"
+  # shellcheck disable=SC2086
+  check "29: 배포트리거 의 gh $g29 는 협업면이 아니다" "$(cs29 배포트리거 gh $g29)" "아니오"
+done
+check "29: 동사 앞 -b 의 머지는 등급표에서 외부상태변경 이다" "$(sf29 gh pr -b x merge 1)" "외부상태변경"
+check "29: pr 앞 -t 의 머지는 등급표에서 외부상태변경 이다"   "$(sf29 gh -t y pr merge 1)" "외부상태변경"
+check "29: 표가 읽지 못하는 머지 철자는 형태 미상 이다"       "$(sf29 gh pr --squash merge 1)" "형태 미상"
+check "29: 대조군 — merge 를 값으로 단 pr 코멘트는 사다리가 말하지 않는다" "$(ld29 gh pr comment 1 -b merge)" ""
+check "29: 대조군 — 배포트리거 가 아닌 동사 앞 -b 의 머지는 협업면이다" "$(cs29 협업 gh pr -b x merge 1)" "예"
+
 sb_new '결속' 선머지후리뷰
 sa_seg_row S29 ""
 sa_commit '작업' >/dev/null
@@ -21348,6 +21376,12 @@ case "$msg" in
   *"결속 인자: $H40"*"워크트리 HEAD: $HEAD29"*) ok "29: 그 문면이 gh 가 묶은 sha 를 댄다" ;;
   *) bad "29 덮어쓰기 문면" "$msg" ;;
 esac
+sb_plan S29 gh pr -b x merge 1
+check "29: 동사 앞 -b 의 결속 없는 머지는 룰 앞에서 거절된다" "$rc" "2"
+if sb_bound; then ok "29: 동사 앞 -b 의 거절 문면이 결속을 지목한다"; else bad "29 동사 앞 -b 문면" "$msg"; fi
+sb_plan S29 gh pr -b x merge 1 --match-head-commit "$HEAD29"
+check "29: 동사 앞 -b 의 워크트리 HEAD 결속 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
+if sa_names_rule; then ok "29: 동사 앞 -b 의 그 거절이 리뷰-후-머지 를 지명한다"; else bad "29 동사 앞 -b 룰 이름" "$msg"; fi
 sb_plan S29 gh api -X PUT repos/t/r/pulls/1/merge
 check "29: sha 없는 REST 머지는 거절된다" "$rc" "2"
 sb_plan S29 gh api -X PUT repos/t/r/pulls/1/merge -f "sha=$HEAD29"

@@ -1004,6 +1004,11 @@ gate_collaboration_surface() {
   [ "$GATE_GRADE_SOURCE" = "표" ] || return 1
   case "$cmd" in
     gh)
+      # A merge spelled with a flag ahead of the verb read here as `pr -b`, a
+      # collaboration act, and so skipped the deploy-trigger check below.
+      case "$(gate_gh_pr_merge_kind "$@")" in
+        merge|form) [ "$rd" != "배포트리거" ] && return 0; return 1 ;;
+      esac
       case "${1:-}" in
         issue|label) return 0 ;;
         project) return 0 ;;
@@ -5569,6 +5574,13 @@ surface_of_gh() {
   # `-R/--repo` rides BEFORE the verb, so it is skipped by name — otherwise
   # `gh -R o/r pr view` reads `-R` as the group and grades unknown, and
   # `gh pr -R o/r view` reads `-R` as the verb (see `gate_gh_strip_repo`).
+  # A merge is found by the parse before any word is read by position, so a
+  # value flag ahead of the verb (`gh pr -b x merge 1`) grades as the merge it
+  # is (see `gate_gh_pr_merge_kind`).
+  case "$(gate_gh_pr_merge_kind "$@")" in
+    merge) printf '외부상태변경'; return 0 ;;
+    form)  printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+  esac
   gate_gh_strip_repo "$@"
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
@@ -6697,14 +6709,52 @@ gate_gh_strip_repo() {
   done
 }
 
+gate_gh_pr_merge_kind() {
+  # gate_gh_pr_merge_kind <gh's args after argv0...> — whether this gh argv is
+  # `pr merge`, found the way gh finds its command: `merge` when the gh flag
+  # table parses it to the path `pr merge`, `form` when the table cannot parse
+  # it but its words carry both `pr` and `merge`, `none` otherwise. The grade,
+  # the ladder, the collaboration surface and the merge binding all ask this
+  # one question, so a spelling one of them takes for a merge all of them take.
+  #
+  # THE COMMAND IS FOUND BY THE PARSE, NOT BY POSITION. gh skips a value flag
+  # and its value wherever they stand, so `gh pr -b x merge 1` and `gh -t y pr
+  # merge 1` merge. Read positionally after `-R` was stripped they were `pr -b`
+  # and `-t y`: the binding answered `해당없음`, the ladder named no rung and
+  # the collaboration surface let the act through, so an unreviewed head could
+  # land. A spelling the table cannot read is not known not to merge, which is
+  # why it is `form` and not `none`. `gh api` has its own reader and is left
+  # to it.
+  local w p=0 m=0 first=''
+  for w in "$@"; do
+    case "$w" in
+      pr) p=1 ;;
+      merge) m=1 ;;
+    esac
+  done
+  if [ "$p" = 0 ] || [ "$m" = 0 ]; then printf '%s' none; return 0; fi
+  gate_gh_strip_repo "$@"
+  first="${GATE_GH_ARGV[0]:-}"
+  [ "$first" != api ] || { printf '%s' none; return 0; }
+  gp_parse gh "$@"
+  if [ "$GP_STATUS" = ok ]; then
+    if gp_path_is pr merge; then printf '%s' merge; else printf '%s' none; fi
+    return 0
+  fi
+  printf '%s' form
+}
+
 ladder_of_gh() {
+  case "$(gate_gh_pr_merge_kind "$@")" in
+    merge|form) printf '머지'; return 0 ;;
+  esac
   gate_gh_strip_repo "$@"
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
     api) ladder_of_gh_api "$@" ;;
     pr)
       case "${2:-}" in
-        merge)  printf '머지' ;;
+        # `merge` was answered above, by the parse.
         create) printf 'PR' ;;
         # `view`, `list`, `review`, `comment` and everything else this row does
         # not name assert nothing. Naming them would be guessing, and the guess
@@ -7208,18 +7258,22 @@ gate_merge_binding_of_gh() {
   # `--match-head-commit <X> --body --match-head-commit=<HEAD>` gh binds X.
   # Skipping one word per unknown flag read both as bound to HEAD. A spelling
   # the table cannot read binds nothing.
-  local have=0 v="" auto=0
+  local have=0 v="" auto=0 kind
   local -a orig
   orig=("$@")
+  kind=$(gate_gh_pr_merge_kind "$@")
+  case "$kind" in
+    form) printf '%s' '없음'; return 0 ;;
+  esac
   gate_gh_strip_repo "$@"
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  [ "$kind" != merge ] || set -- pr merge
   case "${1:-}" in
     pr)
-      [ "${2:-}" = merge ] || { printf '%s' '해당없음'; return 0; }
+      # Only a `pr merge` the parse found gets here; any other `pr` verb binds
+      # nothing because it merges nothing.
+      [ "$kind" = merge ] || { printf '%s' '해당없음'; return 0; }
       gp_parse gh ${orig[@]+"${orig[@]}"}
-      if [ "$GP_STATUS" != ok ] || ! gp_path_is pr merge; then
-        printf '%s' '없음'; return 0
-      fi
       if v=$(gp_opt match-head-commit); then have=1; else v=""; fi
       if gp_has auto; then auto=1; fi
       if [ "$auto" = 1 ]; then printf '%s' '없음'; return 0; fi ;;
