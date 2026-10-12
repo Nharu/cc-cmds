@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.6] - 2026-10-12
+
+기기전역 칸에서 `run`·`create` 가 아닌 docker 행위는 행이 행위 전체를 담아야 열린다. 그런데 그 「행위 전체」를 `-x=y` 단어가 이미 빠진 단어열로 재어서, 행 `docker build -t T .` 이 `docker build -t T . --output=type=local,dest=<호스트 디렉터리>` 처럼 꼬리에 `=` 로 붙인 옵션까지 열었다. 이제 그런 docker 행위의 행위 전체는 떨어진 `-x=y` 단어가 하나도 없는 것까지이며, 꼬리에 `=` 철자 옵션이 붙은 행위는 어떤 행으로도 열리지 않는다. 공백 철자로 고쳐 쓰고 그 행위 전체를 행에 적어야 한다.
+
+### Fixed
+
+- **기기전역 docker 행위의 행위 전체** (오케스트레이터) — `run`·`create` 밖의 docker 행위에서는 행의 마지막 단어 뒤에서 떨어진 `-x=y` 단어(`--output=`·`--ssh=`·`--secret=`·`--build-context=`, `docker image rm T --force=true`)도 일치를 막고, 수리 문구는 공백 철자로 고쳐 쓰라고 말한다. `run`·`create` 의 이미지 뒤 단어와 기기전역 밖 칸의 꼬리는 그대로다
+- **스킬 문면** (`autopilot`, 무인 스킬, 사이드카 규약) — 그런 docker 행위에 `=` 철자 옵션이 있으면 어떤 행도 열지 않으므로 공백 철자로 적으라고 말한다
+
+### Post-install notes
+
+- 사전 인가 대조 규칙 파일 쪽 변경은 같은 PR 에 좌석 커밋으로 들어간다. 그 커밋 전에는 위 동작이 서지 않는다.
+
 ## [2.64.5] - 2026-10-12
 
 2.64.4 가 예고한 사전 인가 대조 규칙 쪽 변경이 들어왔다. 이제 범위 안에서 버려진 `=` 단어가 있으면 행이 일치하지 않고, docker 기기전역 행은 이미지나 행위 끝까지 적어야 연다. 그 결과 킥오프가 `-x=y` 형태를 거절하며 권하던 철자가 모든 행위를 열지는 않게 되어, 그 안내도 바로잡는다.
