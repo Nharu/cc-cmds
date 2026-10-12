@@ -326,7 +326,10 @@ ORCH_TESTS := \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
 	scripts/test-collect-run-metrics.sh \
-	scripts/test-run-issue-filing.sh
+	scripts/test-run-issue-filing.sh \
+	scripts/test-visual-config.sh \
+	scripts/test-visual-check.sh \
+	scripts/test-visual-capture.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \

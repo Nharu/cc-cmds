@@ -153,6 +153,7 @@ UNATTENDED_SKILLS=(
   "design-reconverge"
   "design-discuss-unattended"
   "design-base-unattended"
+  "visual-unattended"
   "autopilot-router-shift"
 )
 
@@ -190,6 +191,9 @@ REFERENCE_TREES=(
   # turn Reads `design/SKILL.md`; neither carries a references/ tree, so this
   # entry is a SKIP for the same reason as the line above and Rule 5 covers it.
   "design-base-unattended|design"
+  # The visual arm reads `visual/references/` (the shared contract), which
+  # holds no question point; the attended arm's questions live in its SKILL.md.
+  "visual-unattended|visual"
   # The router shard shares nobody's tree and has none of its own.
   "autopilot-router-shift|autopilot-router-shift"
 )

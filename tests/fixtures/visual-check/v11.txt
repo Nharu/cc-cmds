@@ -1,0 +1,75 @@
+-|<!doctype html>
+-|<html><head>
+-|<style>
+V|  color: #fff;
+V|  background: #1A1A1A;
+V|  border: 1px solid #e5e5e5;
+V|  box-shadow: 0 1px 2px rgba(0,0,0,.1);
+V|  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+V|  color: white;
+V|  background-color: black;
+-|</style>
+-|</head><body>
+V|<path fill="#333" d="M0 0h24v24H0z"/>
+V|<div style="color:#ff0000">x</div>
+-|<style>
+V|  background: hsl(210 40% 96%);
+V|  color: oklch(0.7 0.1 200);
+V|  accent-color: rebeccapurple;
+V|.a{color:#fff}.b{background:#000}
+V|  color: #FFF;
+V|  background: #ffffff80;
+V|  border-color: #abc
+-|</style>
+V|<circle fill="white" cx="1" cy="1" r="1"/>
+-|<style>
+V|  --color-brand: #0a7;
+V|  text-shadow: 0 0 4px rgb(255 255 255 / 0.6);
+C|  color: var(--color-text);
+A|  background: var(--color-surface, #fff);
+C|  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text) 10%, transparent);
+C|  color: currentColor;
+-|</style>
+C|<svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+C|<a href="#add">Jump</a>
+C|<svg><use href="#icon-check"/></svg>
+-|<style>
+C|  fill: url(#grad1);
+-|</style>
+C|<linearGradient id="grad1">
+-|<style>
+C|  #add { margin: 0; }
+-|</style>
+C|<p>&#169; 2026 &#x2713;</p>
+A|<meta name="theme-color" content="#ffffff">
+-|<style>
+C|  color: rgb(var(--color-text-rgb) / 0.5);
+C|  color: rgb(from var(--color-text) r g b / 50%);
+C|  background: transparent;
+C|  content: "#";
+A|/* old: #fff */
+C|  width: 100%; margin: 0 auto;
+-|</style>
+A|<p>Use #fff for white text</p>
+-|<style>
+A|  outline: 2px solid Highlight;
+C|  border: 1px solid var(--color-border);
+-|</style>
+C|<div class="bg-white text-black">
+-|<style>
+C|  font-family: "Times New Roman", serif; color: var(--c);
+C|  background: url("hero.png") center/cover;
+V|  color: RED;
+V|  border-bottom: 2px solid red;
+V|  background-image: radial-gradient(circle at 30% 20%, rgba(124, 58, 237, 0.15), transparent 60%);
+S|  margin: 0 0 8px;
+S|  padding: 13px 17px;
+s|  padding: var(--space-4) var(--space-6);
+s|  top: 50%; left: 50%;
+S|  gap: 1rem;
+s|  margin: 0 auto;
+A|  padding: 0 calc(var(--space-4) + 2px);
+s|  line-height: 1.5; letter-spacing: -0.01em;
+A|  margin-top: -1px;
+-|</style>
+-|</body></html>

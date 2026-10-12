@@ -1,0 +1,25 @@
+-|<!doctype html>
+-|<html><body>
+-|<script>
+V|const accent = '#e11d48';
+V|const ink = "#0f172a";
+A|ctx.fillStyle = palette[i];
+V|const bg = `#fafafa`;
+C|el.style.color = 'var(--color-text)';
+V|const tint = `hsl(${h} 70% 50%)`;
+C|const root = document.querySelector('#app');
+V|const edge = 'hsl(' + h + ', 60%, 40%)';
+C|location.hash = '#top';
+V|const brand = 'rebeccapurple';
+C|el.classList.add('is-active');
+V|Object.assign(el.style, { color: 'white' });
+C|const label = 'Save changes';
+V|el.style.background = 'red';
+C|el.setAttribute('fill', 'var(--color-brand)');
+V|const theme = { ink: "rgb(15, 23, 42)" };
+C|  // fallback #ffffff when tokens fail to load
+A|const c = mix(a, b);
+V|const props = { style: "color:#fff;background:#000" };
+C|const pad = 'var(--space-4)';
+-|</script>
+-|</body></html>

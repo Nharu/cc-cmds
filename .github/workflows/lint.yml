@@ -50,9 +50,11 @@ jobs:
       - name: Install mikefarah/yq
         uses: mikefarah/yq@v4
 
-      # The click handler's real-server suite fails under CI without tmux.
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      # The click handler's real-server suite fails under CI without tmux. The
+      # visual capture suite serves a loopback page with python3 and checks the
+      # port is closed with lsof; it fails rather than skips without either.
+      - name: Install tmux, python3 and lsof
+        run: sudo apt-get update && sudo apt-get install -y tmux python3 lsof
 
       - name: Run tests except the gate suite
         run: make -j"$(nproc)" test-rest
