@@ -109,19 +109,20 @@ REF_IMPORT="@import[[:space:]]+(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ})"
 # Split one file into the css / markup / script streams under $2, one output
 # line per input line in each. Inside <style> and <script> the closing tag is
 # looked for before anything else, as the HTML parser does, so a comment or a
-# string can never carry past it; quoted strings and script regex literals are
-# tracked so a `/*` or `//` inside one stays text. A file that ends inside a comment, a tag, a template
+# string can never carry past it; quoted strings, the `${…}` substitutions of a
+# template string and script regex literals are tracked so a `/*` or `//`
+# inside one stays text. A file that ends inside a comment, a tag, a template
 # string or an unclosed <style>/<script> has lost its parse, and so has one whose
-# block comment is still open where its block or style attribute closes: the
-# reason goes to stderr and the function fails with 2, so it is never read as
-# "no finding".
+# block comment or template string is still open where its block or style
+# attribute closes: the reason goes to stderr and the function fails with 2, so
+# it is never read as "no finding".
 # The parser walks bytes, so awk runs under the C locale: in a UTF-8 locale
 # macOS awk aborts with `illegal byte sequence` on a substr that cuts a
 # multi-byte character (Hangul in a string or comment) in half. A character's
 # bytes always land in one stream, so the streams stay valid text.
 split_streams() {
   LC_ALL=C awk -v out="$2" -v file="$1" '
-    BEGIN { mode = "html"; hc = 0; cc = 0; jc = 0; intag = 0; q = ""; aeq = 0; aval = 0; sattr = 0; cq = ""; jq = ""; lost = "" }
+    BEGIN { mode = "html"; hc = 0; cc = 0; jc = 0; intag = 0; q = ""; aeq = 0; aval = 0; sattr = 0; cq = ""; jq = ""; tk = 0; lost = "" }
     {
       line = $0; n = length(line); css = ""; mk = ""; js = ""; jline = 0; esc = 0; i = 1
       while (i <= n) {
@@ -193,12 +194,20 @@ split_streams() {
         # both are a lost parse, not a clean block.
         if (tolower(substr(line, i, 8)) == "</script") {
           if (jc && lost == "") lost = "스크립트 주석이 </script> 앞에서 닫히지 않았다 (" NR "행)"
-          mode = "html"; jc = 0; jq = ""; jr = 0; jrc = 0; jline = 0; continue
+          if ((jq == "`" || tk > 0) && lost == "") lost = "스크립트 템플릿 문자열이 </script> 앞에서 닫히지 않았다 (" NR "행)"
+          mode = "html"; jc = 0; jq = ""; tk = 0; jr = 0; jrc = 0; jline = 0; continue
         }
         if (jline) { i++; continue }
         if (jc) { if (substr(line, i, 2) == "*/") { jc = 0; i += 2 } else i++; continue }
         if (jq != "") {
           if (c == "\\") { js = js substr(line, i, 2); esc = (i == n); i += 2; continue }
+          # A `${` in a template string opens a code substitution, which can
+          # hold strings, comments and nested templates of its own; the
+          # template text resumes only at the `}` that closes it (tb counts
+          # the braces opened inside each of the tk open substitutions).
+          if (jq == "`" && substr(line, i, 2) == "${") {
+            tk++; tb[tk] = 0; jq = ""; jp = "{"; jw = ""; js = js "${"; i += 2; continue
+          }
           if (c == jq) jq = ""
           js = js c; i++; continue
         }
@@ -210,6 +219,11 @@ split_streams() {
           else if (c == "[") jrc = 1
           else if (c == "/") { jr = 0; jp = "a"; jw = "" }
           js = js c; i++; continue
+        }
+        if (tk > 0 && c == "{") tb[tk]++
+        else if (tk > 0 && c == "}") {
+          if (tb[tk] == 0) { tk--; jq = "`"; js = js c; i++; continue }
+          tb[tk]--
         }
         if (c == "\"" || c == "\047" || c == "`") { jq = c; jp = "a"; jw = ""; js = js c; i++; continue }
         if (substr(line, i, 2) == "/*") { jc = 1; i += 2; continue }
@@ -241,7 +255,7 @@ split_streams() {
       if (hc) why = "HTML 주석이 닫히지 않았다"
       else if (cc) why = "CSS 주석이 닫히지 않았다"
       else if (jc) why = "스크립트 주석이 닫히지 않았다"
-      else if (jq == "`") why = "스크립트 템플릿 문자열이 닫히지 않았다"
+      else if (jq == "`" || tk > 0) why = "스크립트 템플릿 문자열이 닫히지 않았다"
       else if (intag) why = "태그가 닫히지 않았다"
       else if (mode == "style") why = "<style> 이 닫히지 않았다"
       else if (mode == "script") why = "<script> 가 닫히지 않았다"

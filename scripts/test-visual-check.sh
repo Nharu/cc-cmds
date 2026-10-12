@@ -15,14 +15,15 @@
 #   scan bans  the seed's 마크업 items and a 스크립트 item are found under their
 #              own ids; a **금지 해제** id is skipped and named in the header;
 #              a malformed ban line is a usage error
-#   scan leak  a `/*` inside a script or CSS string, a script regex literal or
+#   scan leak  a `/*` inside a script or CSS string, a template string whose
+#              `${…}` holds another template, a script regex literal or
 #              a `//` comment glued to the token before it, a `</script>`
 #              inside a `//` comment, and an apostrophe inside an unquoted
 #              attribute value leave every later line scanned; a screen that
 #              ends inside a comment, a tag, a template string or an unclosed
-#              <style>/<script>, or whose block comment is still open at its
-#              closing tag or attribute quote, is exit 2 with the reason, for
-#              scan and size
+#              <style>/<script>, or whose block comment or template string is
+#              still open at its closing tag or attribute quote, is exit 2 with
+#              the reason, for scan and size
 #   scan hangul  Hangul in script and CSS strings and comments, a style
 #              attribute and body text, under a UTF-8 locale: scan is exit 1
 #              with an empty stderr, every later line is scanned and the
@@ -209,13 +210,13 @@ rc=$(run_scan "$T/leak.out" "$T/leak.html")
 lines_of token-color "$T/leak.out" > "$T/leak.color"
 lines_of external-ref "$T/leak.out" > "$T/leak.ref"
 got=$(tally "$T/leak.labels" "$T/leak.color" V)
-[ "$got" = "11 11" ] && pass "문자열·정규식·붙여 쓴 줄 주석 안의 /* 와 </script>, 따옴표 없는 속성값의 아포스트로피 뒤의 색이 모두 잡힌다 (11)" \
-  || fail "leak V 줄 (전체 적중) = ${got}, 기대 11 11"
+[ "$got" = "14 14" ] && pass "문자열·중첩 템플릿·정규식·붙여 쓴 줄 주석 안의 /* 와 </script>, 따옴표 없는 속성값의 아포스트로피 뒤의 색이 모두 잡힌다 (14)" \
+  || fail "leak V 줄 (전체 적중) = ${got}, 기대 14 14"
 [ ! -s "$T/leak.out.err" ] && pass "leak scan 의 stderr 는 비어 있다" \
   || fail "leak scan stderr: $(head -n 1 "$T/leak.out.err")"
 got=$(tally "$T/leak.labels" "$T/leak.ref" R)
-[ "$got" = "3 3" ] && pass "닫는 태그·정규식 뒤의 외부 참조가 모두 잡힌다 (3)" \
-  || fail "leak R 줄 (전체 적중) = ${got}, 기대 3 3"
+[ "$got" = "4 4" ] && pass "닫는 태그·정규식·중첩 템플릿 뒤의 외부 참조가 모두 잡힌다 (4)" \
+  || fail "leak R 줄 (전체 적중) = ${got}, 기대 4 4"
 # eof_case <name> <expected stderr reason> <screen lines...> — scan and size
 # both refuse a screen whose parse ends open, with exit 2 and the reason.
 eof_case() {
@@ -237,6 +238,8 @@ eof_case "닫히지 않은 <script>" "<script> 가 닫히지 않았다" '<script
 eof_case "닫히지 않은 <style>" "<style> 이 닫히지 않았다" '<style>.a { color: #fff; }'
 eof_case "열린 HTML 주석" "HTML 주석이 닫히지 않았다" '<p>a</p>' '<!-- open' '<p style="color: #fff">x</p>'
 eof_case "열린 템플릿 문자열" "스크립트 템플릿 문자열이 닫히지 않았다" '<script>var t = `open' 'var b = "#fff";'
+eof_case "열린 템플릿 치환" "스크립트 템플릿 문자열이 닫히지 않았다" '<script>var t = `a ${f({k: 1})' 'var b = "#fff";'
+eof_case "</script> 앞에서 열린 템플릿 문자열" "스크립트 템플릿 문자열이 </script> 앞에서 닫히지 않았다" '<script>var t = `open' '</script>' '<p style="color: #fff">x</p>'
 eof_case "닫히지 않은 태그" "태그가 닫히지 않았다" '<p>a</p>' '<img src="https://cdn.example.com/a.png'
 eof_case "</script> 앞에서 열린 스크립트 주석" "스크립트 주석이 </script> 앞에서 닫히지 않았다" '<script>var a = 1; /* open' '</script>' '<p style="color: #fff">x</p>'
 eof_case "</style> 앞에서 열린 CSS 주석" "CSS 주석이 </style> 앞에서 닫히지 않았다" '<style>.a { color: red; } /* open' '</style>' '<p style="color: #fff">x</p>'

@@ -29,6 +29,16 @@ V|var g = '#222222';
 -|var a = ['a']// glob src/*
 V|var m = '#333333';
 -|</script>
+-|<script>
+-|const list = (items) => `<ul>${items.map((i) => `<li>${i}</li>`).join('')}</ul>`;
+-|const tip = `files: src/*.png`;
+V|el.style.color = '#ff0000';
+V|el.style.background = 'rgb(1, 2, 3)';
+R|const img = 'https://cdn.example.com/a.png';
+-|/* end */
+-|const o = `${ {k: '`'}.k } accept="image/*"`;
+V|var n = '#abcdef';
+-|</script>
 -|<img alt=Bob's src="data:,">
 -|<style>
 V|.c { color: #444444; }
