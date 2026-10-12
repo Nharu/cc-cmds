@@ -31600,6 +31600,134 @@ if [ -x /bin/tcsh ]; then
   check "86: 트리밖쓰기·런로컬로 신고한 tcsh -c 형제 rm -f 는 바닥 외부상태변경 미달로 거부된다" "$rc" "8"
 fi
 check "86: 거부·park 된 tcsh 뒤에도 형제 파일이 남아 있다" "$(cat "$CY86/x" 2>/dev/null)" "k"
+
+# 띄운 리다이렉션과 입력 연산자 뒤의 > — 붙인 꼴만 연산자마다 잘랐고, 띄운 연산자가 가져간
+# 다음 낱말과 입력 연산자의 원천은 통째로 한 대상이어서 그 뒤의 형제 쓰기가 사라졌다.
+for p86 in "echo x > /dev/null>$CY86/README.md" "echo x >> /dev/null>$CY86/README.md" \
+           "echo x &> /dev/null>$CY86/README.md" "echo x >| /dev/null>$CY86/README.md" \
+           "cat < /dev/null>$CY86/README.md" "cat <<< x>$CY86/README.md" "cat 0< /dev/null>$CY86/README.md"; do
+  check "86: 띄운 연산자 뒤 낱말의 형제 대상은 런로컬 판정에서 park 된다 — ${p86//$WORK/}" "$(rd86 bash -c "$p86")" "파괴형태미명시"
+done
+check "86: 대조 — 띄운 > /dev/null 은 착지가 없다" "$(rd86 bash -c "echo x > /dev/null")" ""
+check "86: 대조 — 입력 원천 뒤 돌린 임시 디렉터리의 > 는 런로컬 판정을 지난다" "$(rd86 bash -c "cat < /dev/null > $T86/cy86/o")" ""
+rl86 bash -c "echo x > /dev/null>$CY86/README.md"
+check "86: 런로컬로 신고한 띄운 리다이렉션은 park 된다" "$rc" "11"
+rl86 bash -c "cat < /dev/null>$CY86/README.md"
+check "86: 런로컬로 신고한 입력 원천 뒤 리다이렉션은 park 된다" "$rc" "11"
+rl86 bash -c "cat <<< x>$CY86/README.md"
+check "86: 런로컬로 신고한 <<< 뒤 리다이렉션은 park 된다" "$rc" "11"
+check "86: 그 형제 파일 내용이 그대로다 (띄운·입력 뒤 리다이렉션)" "$(cy86)" "k"
+if command -v zsh >/dev/null 2>&1; then
+  check "86: zsh 의 띄운 >! 뒤 형제 대상은 런로컬 판정에서 park 된다" "$(rd86 zsh -c "echo x >! /dev/null>$CY86/README.md")" "파괴형태미명시"
+  rl86 zsh -c "echo x >! /dev/null>$CY86/README.md"
+  check "86: 런로컬로 신고한 zsh 의 띄운 >! 뒤 리다이렉션은 park 된다" "$rc" "11"
+  check "86: 그 형제 파일 내용이 그대로다 (zsh 띄운 >!)" "$(cy86)" "k"
+else
+  ok "86: zsh 가 없어 띄운 >! 실행 쌍은 측정하지 않음"
+fi
+
+# -C 뒤의 물결표 — 셸은 ~+ 를 제 작업 디렉터리로 펼치는데, 수집기는 git -C·env -C 가 옮긴
+# 디렉터리로 펼쳐 형제를 겨눈 값이 임시 디렉터리 아래 이름으로 읽혔다.
+mkdir -p "$T86/inner86"
+printf 'a\n' > "$T86/inner86/a"; printf 'b\n' > "$T86/inner86/b"
+check "86: git -C <임시> 뒤 띄운 --output ~+ 로 형제를 겨눈 셸 줄은 런로컬 판정에서 park 된다" \
+  "$(rd86 bash -c "git -C $T86/inner86 diff --no-index --output ~+${up86}$CY86/README.md a b")" "파괴형태미명시"
+check "86: git -C <임시> 뒤 --output=~+ 로 형제를 겨눈 맨 argv 는 런로컬 판정에서 park 된다" \
+  "$(rd86 git -C "$T86/inner86" diff --no-index --output="~+${up86}$CY86/README.md" a b)" "파괴형태미명시"
+check "86: env -C <임시> 뒤 ~+ 로 형제를 겨눈 rm -f 는 런로컬 판정에서 park 된다" \
+  "$(rd86 env -C "$T86" rm -f "~+${up86}$CY86/x")" "파괴형태미명시"
+rt86() {
+  # rt86 <argv...> — 돌린 임시 디렉터리를 작업 디렉터리로 두고 런로컬 칸의 파괴 질문의 답을 낸다.
+  ( cd "$T86" && TMPDIR="$T86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; GATE_MARK=""; shift 2
+      gate_reach_runlocal_destruction front 0 0 "$@"' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+check "86: 대조 — 작업 디렉터리가 임시 디렉터리일 때 ~+ 아래 --output 은 런로컬 판정을 지난다" \
+  "$(rt86 bash -c "git -C $T86/inner86 diff --no-index --output ~+/o86 a b")" ""
+rl86 bash -c "git -C $T86/inner86 diff --no-index --output ~+${up86}$CY86/README.md a b"
+check "86: 런로컬로 신고한 git -C 뒤 ~+ --output 의 형제 쓰기는 park 된다" "$rc" "11"
+check "86: 그 형제 파일 내용이 그대로다 (-C 뒤 물결표)" "$(cy86)" "k"
+
+# git --output 의 상대 값 — git 은 -C 가 합성한 디렉터리에서 그 이름을 찾는데, 수집기는
+# 행위의 디렉터리에 붙였고 띄운 --output <file> 은 줍지도 않았다.
+check "86: git -C <다른 트리> diff --output=<기존 이름> 은 대상트리 파괴 질문에서 park 된다" \
+  "$(TMPDIR="$T86" tds86 git -C "$CW86" diff --output=README.md)" "파괴형태미명시"
+check "86: git -C <다른 트리> diff --output <기존 이름> 은 대상트리 파괴 질문에서 park 된다" \
+  "$(TMPDIR="$T86" tds86 git -C "$CW86" diff --output README.md)" "파괴형태미명시"
+cyv86 'git -C <형제> diff --output=' git -C "$CY86" diff --output=README.md
+cyv86 'git -C <형제> diff --output' git -C "$CY86" diff --output README.md
+check "86: 대조 — 자기 워크트리의 새 --output=<이름> 은 런로컬 판정을 지난다" "$(rd86 git diff --output=new86o.txt)" ""
+check "86: 대조 — 자기 워크트리의 새 --output=<이름> 은 대상트리 파괴 질문을 지난다" "$(TMPDIR="$T86" tds86 git diff --output=new86o.txt)" ""
+rl86 git -C "$CY86" diff --output=README.md
+check "86: 런로컬로 신고한 git -C <형제> diff --output= 은 park 된다" "$rc" "11"
+# 생략 칸은 rd86 이 같은 판정 함수로 잰다. exec 는 이 쓰기를 워크트리쓰기로 낸 생략 신고를
+# 실행하지 않는다는 것(park 또는 미달 거부)만 단언한다.
+om86 워크트리쓰기 git -C "$CY86" diff --output README.md
+case "$rc" in 0) bad "86: --reach 를 생략한 git -C <형제> diff --output 은 실행되지 않는다" "rc=$rc" ;;
+  *) ok "86: --reach 를 생략한 git -C <형제> diff --output 은 실행되지 않는다 (rc=$rc)" ;; esac
+TMPDIR="$T86" x86 트리밖쓰기 git -C "$CY86" diff --output=./README.md
+check "86: 대상트리로 신고한 git -C <형제> diff --output= 은 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 (git --output)" ;;
+  *) bad "86: 그 park 가 파괴형태미명시다 (git --output)" "$msg" ;; esac
+check "86: 그 형제 파일 내용이 그대로다 (git --output)" "$(cy86)" "k"
+
+# 닫힌 읽기는 쓰는 자리만 센다 — 쓰는 자리를 이름으로 정하는 동사도 피연산자를 모두 착지로
+# 세어, 주 체크아웃을 읽고 임시 디렉터리에 쓰는 행위가 도달모순·파괴형태미명시로 park 됐다.
+# rs86 은 형제에서 돌아 주 체크아웃(WT)이 다른 트리다.
+mkdir -p "$T86/cy86/rs"
+for a86 in "sort -o $T86/cy86/so $CW86/README.md" "rsync -a $CW86/d/ $T86/cy86/rs" \
+           "tar -cf $T86/cy86/x.tar -C $WT cy86w" "ditto $CW86/d $T86/cy86/dt" \
+           "dd if=$CW86/README.md of=$T86/cy86/do"; do
+  # shellcheck disable=SC2086
+  check "86: 주 체크아웃을 읽고 임시 디렉터리에 쓰는 행위는 런로컬 판정을 지난다 — ${a86//$WORK/}" "$(rs86 $a86)" ""
+  # shellcheck disable=SC2086
+  check "86: 그 행위는 대상트리 파괴 질문도 지난다 — ${a86//$WORK/}" "$(TMPDIR="$T86" tds86 $a86)" ""
+done
+for p86 in "cat $CW86/README.md > $T86/cy86/out" "grep -rn foo $CW86 > $T86/cy86/g" \
+           "git -C $WT show HEAD:a.txt > $T86/cy86/x"; do
+  check "86: 읽기 줄의 피연산자는 착지가 아니다 — ${p86//$WORK/}" "$(rs86 bash -c "$p86")" ""
+done
+check "86: 대조 — 읽기 줄이라도 리다이렉션이 다른 트리를 덮으면 park 된다" \
+  "$(rs86 bash -c "cat $T86/cy86/src > $CW86/README.md")" "파괴형태미명시"
+cyv86 'sort -o <형제> <주>' sort -o "$CY86/README.md" "$CW86/README.md"
+cyv86 'rsync <임시>/ <형제>/' rsync -a "$T86/cy86/" "$CY86/d/"
+cyv86 'tee <임시> <형제>' tee "$T86/cy86/a" "$CY86/README.md"
+cyv86 'sort --outp=<형제>' sort --outp="$CY86/README.md" "$T86/cy86/src"
+cyv86 'tar --fil=<형제>' tar -c --fil="$CY86/README.md" "$T86/cy86/src"
+cyv86 'tar -xf -C <형제>' tar -xf "$T86/cy86/x.tar" -C "$CY86/d"
+cyv86 'curl -K' curl -K "$T86/cy86/src" -o "$T86/cy86/c" "$CY86/README.md"
+# shellcheck disable=SC2016
+check "86: 셸 문자열 안 \$ 로 쓴 mkdir -p 는 착지를 읽을 수 없어 도달모순이다" "$(rd86 bash -c 'mkdir -p "$TMPDIR/x86m"')" "도달모순"
+# shellcheck disable=SC2016
+check "86: 한 셸 문자열 안의 mktemp 와 mv -n \"\$T\" 는 도달모순이다" "$(rd86 bash -c 'T=$(mktemp); mv -n "$T" x86m')" "도달모순"
+check "86: 대조 — 같은 mkdir -p 를 펼친 경로로 따로 넘기면 런로컬 판정을 지난다" "$(rd86 mkdir -p "$T86/x86m")" ""
+rl86 sort -o "$T86/cy86/so2" "$CY86/README.md"
+check "86: 런로컬로 신고한 형제 읽기의 sort -o 는 통과한다" "$rc" "0"
+check "86: 그 sort -o 가 실제로 썼다" "$(cat "$T86/cy86/so2" 2>/dev/null)" "k"
+rl86 sort -o "$CY86/README.md" "$CW86/README.md"
+check "86: 런로컬로 신고한 형제 sort -o 는 좁힌 뒤에도 park 된다" "$rc" "11"
+check "86: 그 형제 파일 내용이 그대로다 (좁힌 sort -o)" "$(cy86)" "k"
+
+# 사이드카 원자 쓰기의 단계별 신고 — 세그먼트 워크트리에서 주 체크아웃 docs/ 로 쓰는 루프는
+# 한 셸 문자열이나 한 토큰으로 넘기면 park 되지만, 단계마다 제 착지의 토큰으로 따로 넘기면
+# 모두 지나간다. 디렉터리 준비·임시 파일·커밋은 대상트리, 스냅숏과 그 정리는 런로컬이다.
+DD86="$WT/docs/dd86"; mkdir -p "$DD86" "$WT/docs/dd86d/sub"
+printf 'old\n' > "$DD86/x.md"; printf 'new\n' > "$DD86/.x.md.Pq9r8s"
+printf 'old\n' > "$WT/docs/dd86d/sub/x.md"; printf 'new\n' > "$WT/docs/dd86d/sub/.x.md.Pq9r8s"
+SNAP86C=$(mktemp "$T86/cy86/snapc.XXXXXX")
+check "86: §1.3 단계 — mkdir -p 는 대상트리 파괴 질문을 지난다" "$(TMPDIR="$T86" tds86 mkdir -p "$DD86")" ""
+check "86: §1.3 단계 — 같은 디렉터리의 mktemp 는 대상트리 파괴 질문을 지난다" "$(TMPDIR="$T86" tds86 mktemp "$DD86/.x.md.XXXXXX")" ""
+check "86: §1.3 단계 — 스냅숏 cp 는 런로컬 판정을 지난다" "$(rs86 cp "$DD86/x.md" "$SNAP86C")" ""
+check "86: §1.3 단계 — 임시 파일에 내용을 쓰는 리다이렉션은 대상트리 파괴 질문을 지난다" \
+  "$(TMPDIR="$T86" tds86 bash -c "printf 'new\n' > $DD86/.x.md.Pq9r8s")" ""
+check "86: §1.3 단계 — 커밋 mv 는 대상트리 파괴 질문을 지난다" "$(TMPDIR="$T86" tds86 mv "$DD86/.x.md.Pq9r8s" "$DD86/x.md")" ""
+check "86: §1.3 단계 — 스냅숏 rm -f 는 런로컬 판정을 지난다" "$(rs86 rm -f "$SNAP86C")" ""
+check "86: §1.3 단계 — 실패 정리 rm -f 는 런로컬 판정을 지난다" "$(rs86 rm -f "$DD86/.x.md.Pq9r8s" "$SNAP86C")" ""
+check "86: §1.3 단계 — mkdir -p 를 런로컬로 내면 도달모순이다" "$(rs86 mkdir -p "$DD86")" "도달모순"
+check "86: §1.3 단계 — 한 단계 더 깊은 디렉터리의 커밋 mv 는 park 된다" \
+  "$(rs86 mv "$WT/docs/dd86d/sub/.x.md.Pq9r8s" "$WT/docs/dd86d/sub/x.md")" "파괴형태미명시"
+cyv86 '다른 형제 워크트리 docs/ 의 §1.3 커밋 mv' mv "$SR86/docs/k86/.x.md.AbC123" "$SR86/docs/k86/x.md"
+rm -rf "$DD86" "$WT/docs/dd86d" "$T86/inner86" "$T86/x86m" "$WT/new86o.txt"
 rm -rf "$CY86" "$CW86" "$T86/cy86" "$WORK/m86td.md" "$WT/cy86own" "$WT/cy86tl"
 git -C "$SIB86" stash clear >/dev/null 2>&1
 git -C "$WT" worktree remove --force "$SW86" >/dev/null 2>&1

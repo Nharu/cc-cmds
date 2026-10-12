@@ -2139,7 +2139,16 @@ gate_reach_unknown_overwrite() {
   # `git` is read by the local reader too, but for the one option that sends
   # its output to a named file — `--output` of `diff`, `log` and their kin —
   # that reader has nothing to say, so an existing file it names answers that
-  # word here.
+  # word here. The file is the one the collector resolves (`GATE_TT_OUTPUT`),
+  # a relative name taken against the directory git's `-C` options compose
+  # to and a tilde prefix against the shell's: resolved here against the
+  # gate's own directory, `git -C <sibling> diff --output=README.md` named
+  # this worktree's file and went through `대상트리` unmarked. When the
+  # collector gives up there is no file, and cell 5b has already closed that
+  # act as `대상트리불일치`.
+  #
+  # The places of the other verbs are narrowed to the ones each writes (see
+  # `gate_tt_write_slots`), so a read operand that exists is no overwrite.
   local alias="$1" n a v; shift
   n=$(gate_reach_peeled_verb "$@") || return 0
   shift $(( $# - n ))
@@ -2147,18 +2156,19 @@ gate_reach_unknown_overwrite() {
     git)
       v=''
       for a in "$@"; do
-        if [ "$v" = "1" ]; then v="$a"; break; fi
         case "$a" in
           --) break ;;
-          --output=*) v="${a#*=}"; break ;;
-          --output) v=1 ;;
+          --output=*) v="$a"; break ;;
+          --output) v="$a" ;;
         esac
       done
-      case "$v" in ''|1) return 0 ;; esac
-      v=$(gate_lexical_abs "$v" "$(gate_grade_cwd)")
-      gate_reach_runlocal_honest "$v" && return 0
-      [ -e "$v" ] || return 0
-      case "$a" in --output=*) printf '%s' "$a" ;; *) printf -- '--output' ;; esac
+      [ -n "$v" ] || return 0
+      a=$( gate_reach_target_tree_act "$alias" "$@" >/dev/null 2>&1 || :
+           printf '%s' "${GATE_TT_OUTPUT:-}" )
+      [ -n "$a" ] || return 0
+      gate_reach_runlocal_honest "$a" && return 0
+      [ -e "$a" ] || return 0
+      case "$v" in --output=*) printf '%s' "$v" ;; *) printf -- '--output' ;; esac
       return 0 ;;
     rm|unlink|truncate|mv|cp|ln|install|find|mkdir|mktemp|touch) return 0 ;;
   esac
@@ -2321,7 +2331,19 @@ gate_reach_runlocal_destruction() {
           r=''
         fi ;;
       5) r=$(gate_reach_tree_destruction 1 "$Pd" :) ;;
-      *) r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@") ;;
+      # A line the table grades `읽기` lands nowhere: its redirections are
+      # records of their own above, and its operands are what it reads.
+      # Counted as landing places, `bash -c "cat <main checkout>/README.md >
+      # $TMPDIR/out"` parked on `cat` as an unnamed destruction and `bash -c
+      # "git -C <main checkout> show HEAD:x > $TMPDIR/x"` as `도달모순`. A
+      # line the local reader reads as destructive is asked whatever its
+      # grade, as the 1|3 arm asks it.
+      *)
+        if [ "$X" != "1" ] && [ -z "$(gate_reach_local_destructive_here "$@")" ] \
+           && [ "$(surface_of_argv0 "$@")" = "읽기" ]; then
+          continue
+        fi
+        r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@") ;;
     esac
     [ -z "$r" ] || { printf '%s' "$r"; return 0; }
   done <<EOF
@@ -2813,15 +2835,196 @@ gate_tilde_path() {
 }
 
 gate_tt_dir() {
-  # gate_tt_dir <word> <dir> — the absolute directory a `-C`/`--chdir` value
-  # names, read against <dir>; 1 for a tilde prefix `gate_tilde_path` cannot
-  # expand.
+  # gate_tt_dir <word> <dir> [<shell dir>] — the absolute directory a
+  # `-C`/`--chdir` value names, a relative one read against <dir>; a tilde
+  # prefix is expanded against <shell dir> (default <dir>), the directory the
+  # shell stood in before any `-C` moved the act, because the shell expands it
+  # first. 1 for a tilde prefix `gate_tilde_path` cannot expand.
   local w
   case "$1" in
-    '~'*) w=$(gate_tilde_path "$1" "$2") || return 1
+    '~'*) w=$(gate_tilde_path "$1" "${3:-$2}") || return 1
           gate_lexical_abs "$w" "$2" ;;
     *) gate_lexical_abs "$1" "$2" ;;
   esac
+}
+
+gate_tt_long_is() {
+  # gate_tt_long_is <option name> <long...> — prints `=` when the name is one
+  # of the longs, `<` when it is a proper prefix of one (an abbreviation
+  # `getopt_long` accepts, or an ambiguous one), nothing otherwise.
+  local n="$1" l r=''; shift
+  for l in "$@"; do
+    [ "$n" = "$l" ] && { printf '='; return 0; }
+    case "$l" in "$n"?*) r='<' ;; esac
+  done
+  printf '%s' "$r"
+}
+
+gate_tt_write_slots() {
+  # gate_tt_write_slots <command> <args...> — for a verb whose writes go only
+  # to places it names by position or option, prints those places one per
+  # line and returns 0: nothing printed means the act writes no operand. 1
+  # for any other verb, or for a spelling whose write places this reader
+  # cannot pick out, and the caller keeps the whole collection.
+  #
+  #   sort          the value of `-o` and `-T`, in any bundle, and of their
+  #                 long names
+  #   curl          the value of `-o`, `-D`, `-c` and of the long options that
+  #                 name a file curl writes (`--output`, `--output-dir`,
+  #                 `--dump-header`, `--cookie-jar`, `--trace`, …)
+  #   wget          the value of `-O`, `-o`, `-a`, `-P` and their long names,
+  #                 `--save-cookies` and `--warc-file`
+  #   rsync, ditto  the last operand, and for rsync the value of `-T`,
+  #                 `--temp-dir`, `--backup-dir`, `--partial-dir` and
+  #                 `--log-file`; one operand alone is a listing
+  #   tar           with `c`, `r`, `u` or `A` the `-f`/`--file` value and the
+  #                 `-g`/`--listed-incremental` file, with `x` the
+  #                 `-C`/`--directory` value (none: the operating repository
+  #                 alone), with `t` nothing
+  #   dd            the value of `of=`
+  #
+  # A NARROWING IS ONLY TAKEN WHERE EVERY WORD IS READ. An abbreviated long
+  # option that could be a write option, a long option this reader does not
+  # know that may take the next word (rsync, ditto), a `curl -K`, a `wget
+  # -e`, `tar -P` or `--one-top-level` on an extract, a mode this reader
+  # cannot place, or an option left without its value keeps the whole
+  # collection: narrowed on a guess, `sort --outp=<sibling>/f` or `tar
+  # --fil=<sibling>/f` would have read as writing nothing. A letter that
+  # takes a value of another option can make a later letter part of that
+  # value; the slot read from it is then a place the act does not write,
+  # which over-collects and never narrows.
+  #
+  # Every other verb — `tee`, `sed -i`, `perl -i`, `shred`, a verb not known
+  # here — writes every operand as far as this reader can say.
+  local c="$1" a nm r nx='' m='' i=0 j ch S='' XS='' VS='' last=''
+  local -a o L X NV
+  shift; o=(); L=(); X=(); NV=()
+  case "$c" in
+    sort) S=oT; L=(--output --temporary-directory) ;;
+    curl) S=oDc; XS=K
+          L=(--output --output-dir --dump-header --cookie-jar --trace --trace-ascii
+             --stderr --etag-save --hsts --alt-svc --libcurl)
+          X=(--config) ;;
+    wget) S=OoaP; XS=e
+          L=(--output-document --output-file --append-output --directory-prefix
+             --save-cookies --warc-file)
+          X=(--execute --config) ;;
+    rsync) S=T; VS=efMB
+           L=(--temp-dir --backup-dir --partial-dir --log-file)
+           NV=(--archive --verbose --recursive --dry-run --quiet --progress --checksum
+               --times --perms --links --compress --update --existing --ignore-existing
+               --delete --delete-after --delete-before --delete-during --delete-excluded
+               --partial --inplace --whole-file --human-readable --stats
+               --itemize-changes --no-perms --no-owner --no-group --no-times
+               --relative --hard-links --copy-links --safe-links --numeric-ids
+               --one-file-system --prune-empty-dirs --mkpath --backup --force
+               --owner --group --devices --specials --acls --xattrs) ;;
+    ditto) NV=(--rsrc --norsrc --extattr --noextattr --qtn --noqtn --acl --noacl
+               --keepParent --sequesterRsrc --persistRootless --nocache --clone
+               --noclone --preserveHFSCompression --nopreserveHFSCompression
+               --hfsCompression --nohfsCompression) ;;
+    dd)
+      for a in "$@"; do
+        case "$a" in of=*) printf '%s\n' "${a#of=}" ;; esac
+      done
+      return 0 ;;
+    tar) ;;
+    *) return 1 ;;
+  esac
+  if [ "$c" = "tar" ]; then
+    # The mode is read from the first word when it is an option bundle (old
+    # style `cf` or `-czf`), or from a long mode option anywhere.
+    case "${1:-}" in
+      --*) ;;
+      -?*|[a-zA-Z]*)
+        a="${1#-}"
+        case "$a" in
+          *[!a-zA-Z0-9]*) ;;
+          *[cruA]*) m=w ;;
+          *x*) m=x ;;
+          *t*) m=t ;;
+        esac ;;
+    esac
+    for a in "$@"; do
+      case "$a" in
+        --create|--append|--update|--catenate|--concatenate) m=w ;;
+        --extract|--get) m=x ;;
+        --list) m=t ;;
+      esac
+    done
+    case "$m" in
+      w) S='fg'; L=(--file --listed-incremental) ;;
+      x) S=C; L=(--directory)
+         for a in "$@"; do
+           case "$a" in
+             --absolute-names|-P|--one-top-level*|--to-command*) return 1 ;;
+             --*) ;;
+             -*P*) return 1 ;;
+           esac
+         done
+         case "${1#-}" in *P*) return 1 ;; esac ;;
+      t) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  for a in "$@"; do
+    i=$((i + 1))
+    if [ "$nx" = "w" ]; then printf '%s\n' "$a"; nx=''; continue; fi
+    if [ "$nx" = "v" ]; then nx=''; continue; fi
+    case "$a" in
+      --)
+        [ "$c" = "rsync" ] || [ "$c" = "ditto" ] || break
+        last=1; continue ;;
+      --?*)
+        [ -z "$last" ] || { o[${#o[@]}]="$a"; continue; }
+        nm="${a%%=*}"
+        case "$(gate_tt_long_is "$nm" ${X[@]+"${X[@]}"})" in '='|'<') return 1 ;; esac
+        r=$(gate_tt_long_is "$nm" ${L[@]+"${L[@]}"})
+        case "$r" in
+          '=') if [ "$a" = "$nm" ]; then nx=w; else printf '%s\n' "${a#*=}"; fi
+               continue ;;
+          '<') return 1 ;;
+        esac
+        case "$c" in
+          rsync|ditto)
+            [ "$a" != "$nm" ] && continue
+            [ "$(gate_tt_long_is "$nm" ${NV[@]+"${NV[@]}"})" = "=" ] || return 1 ;;
+        esac ;;
+      -?*)
+        [ -z "$last" ] || { o[${#o[@]}]="$a"; continue; }
+        if [ "$c" = "ditto" ]; then
+          case "${a#-}" in *[!ckxVvXh]*) return 1 ;; esac
+          continue
+        fi
+        j=1
+        while [ "$j" -lt "${#a}" ]; do
+          ch="${a:$j:1}"; j=$((j + 1))
+          case "$XS" in *"$ch"*) return 1 ;; esac
+          case "$S" in
+            *"$ch"*)
+              if [ "$j" -lt "${#a}" ]; then printf '%s\n' "${a:$j}"; else nx=w; fi
+              break ;;
+          esac
+          case "$VS" in
+            *"$ch"*) [ "$j" -lt "${#a}" ] || nx=v; break ;;
+          esac
+        done ;;
+      *)
+        # The old-style first word of `tar cf <archive> …` takes its value
+        # from the word after it.
+        if [ "$c" = "tar" ] && [ "$i" = "1" ]; then
+          case "$a" in *[$S]*) nx=w ;; esac
+          continue
+        fi
+        o[${#o[@]}]="$a" ;;
+    esac
+  done
+  [ -z "$nx" ] || return 1
+  case "$c" in
+    rsync|ditto)
+      [ "${#o[@]}" -lt 2 ] || printf '%s\n' "${o[$(( ${#o[@]} - 1 ))]}" ;;
+  esac
+  return 0
 }
 
 gate_reach_target_tree_act() {
@@ -2848,7 +3051,34 @@ gate_reach_target_tree_act() {
   # under every reach token. With `GATE_TT_WRITES_ONLY` set, a copy whose
   # destination is plainly its last word collects that word alone (see
   # `gate_tt_copy_dest_only`); a launcher's own files are still collected,
-  # and `mv`, which removes its source, is not narrowed.
+  # and `mv`, which removes its source, is not narrowed. A verb whose write
+  # places `gate_tt_write_slots` can pick out collects those places alone,
+  # whatever their shape: `sort -o $TMPDIR/o <main checkout>/f`, `rsync -a
+  # <main checkout>/docs/ $TMPDIR/x`, `tar -cf $TMPDIR/x.tar -C <main
+  # checkout> docs`, `ditto` and `dd if=<main checkout>/f of=$TMPDIR/o` had
+  # their read operand counted as an overwrite and parked under every reach
+  # token. Narrowed by verb, not by operand shape:
+  #
+  #   cp, install, ln       the last word, under `gate_tt_copy_dest_only`
+  #   sort, curl, wget      the values of their output options
+  #   rsync, ditto          the last operand (and rsync's directory options)
+  #   tar                   the archive when creating, the `-C` when extracting
+  #   dd                    `of=`
+  #   anything else         every operand, the closed side
+  #
+  # For `git` the value of `--output` is a place it writes whatever its shape,
+  # a bare `--output=README.md` included, and it is taken against the
+  # directory the `-C` options compose to, as git takes it: read only when it
+  # held a `/`, `git -C <sibling> diff --output=README.md` truncated the
+  # sibling's file under `대상트리` with no landing place there. The value,
+  # resolved, is left in `GATE_TT_OUTPUT`.
+  #
+  # A TILDE PREFIX IS EXPANDED AGAINST THE SHELL'S DIRECTORY, not the one a
+  # `-C`, `--chdir` or `env -C` moves the act to: the shell expands `~+`
+  # before the command runs and moves, so `git -C <tmp>/inner diff --output
+  # ~+/../<sibling>/README.md` wrote the sibling while read against the
+  # temp directory it was a run-local act. Relative words still take the
+  # moved directory.
   #
   # EVERY PLACE THE ACT'S ARGV CAN SEND A WRITE IS A LANDING PLACE, and a
   # selector this reader cannot resolve makes it give up, which the callers
@@ -2894,12 +3124,13 @@ gate_reach_target_tree_act() {
   # the derived floor before this cell is reached.
   local alias="$1"; shift
   local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w _left _urc _ddash
-  local -a ops gx wrp
-  ops=(); gx=(); wrp=()
+  local cwd0 isgit=0 slotted=0 outv='' _sl
+  local -a ops gx wrp sl
+  ops=(); gx=(); wrp=(); sl=()
   # Emptied first, so an argv this reader gives up on leaves no landing places
   # of an earlier act behind for `gate_reach_runlocal_escapes` to read.
-  GATE_TT_LANDS=()
-  base=$(gate_grade_cwd)
+  GATE_TT_LANDS=(); GATE_TT_OUTPUT=''
+  base=$(gate_grade_cwd); cwd0="$base"
   # The launchers in front are peeled one layer at a time, so `timeout 60 git
   # worktree remove --force <name>` is read as the `git` act it runs, and the
   # file `lockf` or `time` names for itself is kept as a landing place; an
@@ -2934,8 +3165,8 @@ gate_reach_target_tree_act() {
             -u?*) shift ;;
             -C|--chdir)
                 [ "$#" -ge 2 ] || return 1
-                repo=$(gate_tt_dir "$2" "${repo:-$base}") || return 1; shift 2 ;;
-            --chdir=*) repo=$(gate_tt_dir "${1#*=}" "${repo:-$base}") || return 1; shift ;;
+                repo=$(gate_tt_dir "$2" "${repo:-$base}" "$cwd0") || return 1; shift 2 ;;
+            --chdir=*) repo=$(gate_tt_dir "${1#*=}" "${repo:-$base}" "$cwd0") || return 1; shift ;;
             -*) return 1 ;;
             GIT_PAGER=*|GIT_EDITOR=*|GIT_SEQUENCE_EDITOR=*|GIT_TERMINAL_PROMPT=*|\
             GIT_AUTHOR_*=*|GIT_COMMITTER_*=*|GIT_TRACE*=*|GIT_OPTIONAL_LOCKS=*|GIT_ADVICE=*) shift ;;
@@ -2966,7 +3197,7 @@ gate_reach_target_tree_act() {
           case "$v" in
             /*) wrp[${#wrp[@]}]="$v" ;;
             '~'*)
-              w=$(gate_tilde_path "$v" "${repo:-$base}") || return 1
+              w=$(gate_tilde_path "$v" "$cwd0") || return 1
               wrp[${#wrp[@]}]="$w" ;;
             *) wrp[${#wrp[@]}]="${repo:-$base}/$v" ;;
           esac
@@ -2982,11 +3213,11 @@ gate_reach_target_tree_act() {
   # `core.worktree`, or that includes another configuration file which could,
   # moves the work tree where no operand says so, and gives up as well.
   if [ "${1##*/}" = "git" ]; then
-    shift
+    shift; isgit=1
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -C) [ "$#" -ge 2 ] || return 1
-            repo=$(gate_tt_dir "$2" "${repo:-$base}") || return 1; shift 2 ;;
+            repo=$(gate_tt_dir "$2" "${repo:-$base}" "$cwd0") || return 1; shift 2 ;;
         --git-dir=*|--work-tree=*)
             gx[${#gx[@]}]="${1#*=}"; shift ;;
         --git-dir|--work-tree)
@@ -3025,8 +3256,20 @@ gate_reach_target_tree_act() {
     # pick the destination elsewhere — a `-t` or `--target-directory`, a `--`,
     # an option after the first operand, which BSD reads as an operand, an
     # `install -d`, or a single operand — keeps the whole collection.
-    if [ -n "${GATE_TT_WRITES_ONLY:-}" ] && gate_tt_copy_dest_only "$v" "$@"; then
-      set -- "${!#}"
+    # A verb whose write places `gate_tt_write_slots` picks out is narrowed to
+    # them the same way, and they are collected whatever their shape.
+    if [ -n "${GATE_TT_WRITES_ONLY:-}" ]; then
+      if gate_tt_copy_dest_only "$v" "$@"; then
+        set -- "${!#}"
+      elif _sl=$(gate_tt_write_slots "$v" "$@"); then
+        while IFS= read -r w; do
+          [ -n "$w" ] && sl[${#sl[@]}]="$w"
+        done <<EOF
+$_sl
+EOF
+        set -- ${sl[@]+"${sl[@]}"}
+        slotted=1
+      fi
     fi
   fi
   # Relative operands of a `git -C` act are relative to that repository.
@@ -3034,6 +3277,9 @@ gate_reach_target_tree_act() {
   local -a absops wts
   absops=(); wts=()
   for v in ${gx[@]+"${gx[@]}"}; do
+    case "$v" in
+      '~'*) v=$(gate_tilde_path "$v" "$cwd0") || return 1 ;;
+    esac
     w=$(gate_lexical_abs "$v" "$base")
     absops[${#absops[@]}]="$w"; wts[${#wts[@]}]="$w"
   done
@@ -3042,6 +3288,19 @@ gate_reach_target_tree_act() {
     # The value of `worktree add`'s branch and reason options is not its
     # creation path, so it is consumed before the exemption can take it.
     if [ "$eat" = "1" ]; then eat=0; continue; fi
+    # git's `--output <file>` takes the next word as the file it writes.
+    if [ "$eat" = "2" ]; then eat=0; a="--output=$a"; fi
+    if [ "$slotted" = "1" ] || { [ "$isgit" = "1" ] && case "$a" in --output=*) true ;; *) false ;; esac; }; then
+      [ "$slotted" = "1" ] || { a="${a#--output=}"; outv="$a"; }
+      case "$a" in
+        '~'*) w=$(gate_tilde_path "$a" "$cwd0") || return 1
+              ops[${#ops[@]}]="$w"
+              [ "$slotted" = "1" ] || outv="$w" ;;
+        *) ops[${#ops[@]}]="$a" ;;
+      esac
+      continue
+    fi
+    if [ "$isgit" = "1" ] && [ "$a" = "--output" ]; then eat=2; continue; fi
     case "$a" in
       # A path-shaped value of a long option, relative ones included:
       # `--target-directory=../<sibling>` writes there as surely as an
@@ -3077,7 +3336,7 @@ gate_reach_target_tree_act() {
           # to fall to the relative arm below and land under the act's own
           # directory, so `rm -f ~+/../<sibling>/f` read as a run-local act.
           '~'*)
-            w=$(gate_tilde_path "$a" "$base") || return 1
+            w=$(gate_tilde_path "$a" "$cwd0") || return 1
             case "$a" in
               '~'|'~/'*) ;;
               *) if [ "$skipped_wt" = "1" ]; then skipped_wt=2; continue; fi ;;
@@ -3101,6 +3360,9 @@ gate_reach_target_tree_act() {
         esac ;;
     esac
   done
+  # A `--output` with no word after it names no file this reader can place.
+  [ "$eat" = "2" ] && return 1
+  [ -z "$outv" ] || GATE_TT_OUTPUT=$(gate_lexical_abs "$outv" "$base")
   if [ -n "$spec" ]; then
     gate_reach_worktree_spec "$base" "$spec" || return 1
     absops+=(${GATE_WT_SPEC[@]+"${GATE_WT_SPEC[@]}"})
@@ -8444,7 +8706,7 @@ gate_opaque_payload_lines() {
   fi
 
   local line unread kept out w k n st cw x poison=0 exec_unread=1 split
-  local rx rt nx dup ci ii m lm=0 skipl _urc _l
+  local rx rt nx dup io ci ii m lm=0 skipl _urc _l
   local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL
   local -a pre ws raw rw y
   [ "$shellmode" = "1" ] && exec_unread=2
@@ -8482,54 +8744,71 @@ gate_opaque_payload_lines() {
       rw=()
       while [ $# -gt 0 ]; do
         case "$1" in
-          # EVERY OPERATOR IN THE WORD IS READ, not only the first. The shell
-          # ends a target at the next unquoted `>` or `<`, so `echo x
-          # >/dev/null><sibling>/README.md` and `cmd 2>/dev/null><sibling>/f`
-          # open the second file too; read as one target, the pair came back
-          # as a single path under `/dev` and the sibling's file had no record.
-          # An input operator glued behind a write leaves the rest unread (5).
+          # EVERY OPERATOR IN THE WORD IS READ, not only the first, and in the
+          # order the word holds them. The shell ends a target or a source at
+          # the next unquoted `>` or `<`, so `echo x >/dev/null><sibling>/f`,
+          # `cmd 2>/dev/null><sibling>/f` and `cat </dev/null><sibling>/f`
+          # open the sibling's file too; read as one target, the pair came
+          # back as a single path under `/dev`, and read as one source the
+          # write after it was dropped with the input. An operator standing
+          # alone takes the next word, and that word is cut at its operators
+          # the same way: `echo x > /dev/null><sibling>/f` and `cat <<< x>
+          # <sibling>/f` wrote the sibling while their next word was taken
+          # whole. The first operator decides the kind, so `<x>y` is a read of
+          # `x` and a write of `y`, and `<>` is a write. An input operator
+          # after a write leaves the rest unread (5).
           #
           # `!` after the operator is zsh's `>!`, `>>!` and `&>!`, which
           # overwrite as `>|` does. bash reads that `!` as the first byte of
           # the target's name, so taking it off reads the next word as the
           # target there — the closed side, a park and never a pass.
-          *'>'*)
-            rx="${1%%>*}"; rt="${1#*>}"
-            rx="${rx%<}"; rx="${rx%&}"
-            case "$rx" in ''|*[!0-9]*) [ -z "$rx" ] || rw[${#rw[@]}]="$rx" ;; esac
-            while :; do
-              while :; do case "$rt" in '>'*) rt="${rt#>}" ;; *) break ;; esac; done
-              rt="${rt#[|!]}"; dup=0
-              case "$rt" in '&'*) rt="${rt#&}"; dup=1 ;; esac
-              nx=''
-              case "$rt" in
-                *[\<\>]*) x="${rt%%[<>]*}"; nx="${rt#"$x"}"; rt="$x" ;;
-              esac
-              if [ -z "$rt" ] && [ -z "$nx" ] && [ $# -ge 2 ]; then rt="$2"; shift; fi
-              if [ -z "$rt" ]; then
-                printf '5\t>\t>\n'
-              elif [ "$dup" = "1" ]; then
-                case "$rt" in
-                  [0-9]|[0-9][0-9]|-) ;;
-                  *) gate_opl_redir_record "$rt" "$poison" "$lm" ;;
-                esac
-              else
-                gate_opl_redir_record "$rt" "$poison" "$lm"
-              fi
-              [ -n "$nx" ] || break
-              case "$nx" in '<'*) printf '5\t>\t>\n'; break ;; esac
-              rt="$nx"
-            done ;;
+          #
           # AN INPUT REDIRECTION is a read: the operator and its source are
           # taken out of the line and leave no record. Left in place,
           # `</dev/null gh pr merge 1` had `</dev/null` as its command word,
           # read as `null`, and the merge went through as a plain read.
-          *'<'*)
-            rx="${1%%<*}"; rt="${1#*<}"
-            while :; do case "$rt" in '<'*) rt="${rt#<}" ;; *) break ;; esac; done
-            rt="${rt#&}"
+          *[\<\>]*)
+            rx="${1%%[<>]*}"; rt="${1#"$rx"}"
+            rx="${rx%&}"
             case "$rx" in ''|*[!0-9]*) [ -z "$rx" ] || rw[${#rw[@]}]="$rx" ;; esac
-            if [ -z "$rt" ] && [ $# -ge 2 ]; then shift; fi ;;
+            while [ -n "$rt" ]; do
+              dup=0
+              case "$rt" in
+                '<>'*|'>'*)
+                  io=w; rt="${rt#<}"
+                  while :; do case "$rt" in '>'*) rt="${rt#>}" ;; *) break ;; esac; done
+                  rt="${rt#[|!]}"
+                  case "$rt" in '&'*) rt="${rt#&}"; dup=1 ;; esac ;;
+                *)
+                  io=r
+                  while :; do case "$rt" in '<'*) rt="${rt#<}" ;; *) break ;; esac; done
+                  rt="${rt#&}" ;;
+              esac
+              nx=''
+              case "$rt" in
+                *[\<\>]*) x="${rt%%[<>]*}"; nx="${rt#"$x"}"; rt="$x" ;;
+              esac
+              if [ -z "$rt" ] && [ -z "$nx" ] && [ $# -ge 2 ]; then
+                rt="$2"; shift
+                case "$rt" in
+                  *[\<\>]*) x="${rt%%[<>]*}"; nx="${rt#"$x"}"; rt="$x" ;;
+                esac
+              fi
+              if [ "$io" = "w" ]; then
+                if [ -z "$rt" ]; then
+                  printf '5\t>\t>\n'
+                elif [ "$dup" = "1" ]; then
+                  case "$rt" in
+                    [0-9]|[0-9][0-9]|-) ;;
+                    *) gate_opl_redir_record "$rt" "$poison" "$lm" ;;
+                  esac
+                else
+                  gate_opl_redir_record "$rt" "$poison" "$lm"
+                fi
+                case "$nx" in '<>'*) ;; '<'*) printf '5\t>\t>\n'; break ;; esac
+              fi
+              rt="$nx"
+            done ;;
           *) rw[${#rw[@]}]="$1" ;;
         esac
         shift
@@ -24901,7 +25180,7 @@ gate_verb_act() {
       도달모순)
         case "${GATE_REACH:--}:$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")" in
           런로컬:워크트리쓰기|런로컬:트리밖쓰기|-:워크트리쓰기|-:트리밖쓰기)
-            warn "repair: this write lands in another worktree of the target or in its main checkout, which is not where '런로컬' is honest — an act that writes there declares '대상트리'; one that should not write there changes the act" ;;
+            warn "repair: this write lands in another worktree of the target or in its main checkout, or sits in a shell string whose landing this gate cannot read, which is not where '런로컬' is honest — an act that writes there declares '대상트리', and one that replaces or removes what is there also needs its destructive form named by the manifest; a step inside a shell string goes to the gate on its own, without the shell string; one that should not write there changes the act" ;;
           *)
             warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
         esac ;;
