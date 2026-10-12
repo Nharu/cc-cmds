@@ -1619,16 +1619,16 @@ check "hands — 소리가 있다" "$(n_sound)" "1"
 
 # `rekick` — an invalidated run. The gate refuses to resolve this cause, so it is
 # NOT something anyone can put their hands on: it takes the per-run replace slot,
-# and the title names the only action actually available, which is to open a new
-# run. This is the case the older three-token shape could not express, and the
-# combination it names is title-says-a-person-is-needed with a replace group.
+# the title names the re-kickoff and the body the action that follows — a new
+# run, or the successor verdict when the manifest carries a `재킥오프` row. This
+# is the case the older three-token shape could not express.
 fresh
 : > "$NOTIFY_LOG"
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 blocked_row 무효화 "강제 표면 이동"
 runb >/dev/null
 notify_settle 1
-check "rekick — 제목이 새 런을 열라고 말한다" "$(has_title 'cc-cmds · 새 런을 여세요')" "1"
+check "rekick — 제목은 재킥오프다" "$(has_title 'cc-cmds · 재킥오프')" "1"
 check "rekick — 그룹은 런 단위 대체 슬롯" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "1"
 check "rekick — 대체 버킷이어도 소리가 있다" "$(n_sound)" "1"
@@ -1806,7 +1806,7 @@ check "종단 점유와 루프 종료 마커가 둘 다 남는다 (서로 침묵
 check "두 마커의 이름이 실제로 다르다" \
   "$( [ "$RD/notify.ended" != "$RD/watch.announced-loop-exit" ] && printf 'distinct' || printf 'shared')" "distinct"
 check "ended 가 rekick 보다 먼저 울린다" \
-  "$(banner_titles)" "cc-cmds · 결과를 확인하세요|cc-cmds · 새 런을 여세요|"
+  "$(banner_titles)" "cc-cmds · 결과를 확인하세요|cc-cmds · 재킥오프|"
 
 # The ninth firing point under the kill switch. It sits here rather than in the
 # table above because it needs the real loop: the marker is written on the way
@@ -2205,7 +2205,7 @@ check "감시자 hop — 경고가 핀이 남의 자리를 가리킨다고 적�
 # 발사 직전 재시험이 `done` 뒤에 멈춤 배너를 올리지 않는다.
 # ---------------------------------------------------------------------------
 ENDED_TITLE="cc-cmds · 결과를 확인하세요"
-REKICK_TITLE="cc-cmds · 새 런을 여세요"
+REKICK_TITLE="cc-cmds · 재킥오프"
 n_ended()  { has_title "$ENDED_TITLE"; }
 # 정산 멈춤 갈래의 문면만 센다 — 같은 `resume` 제목을 쓰는 다른 갈래가 섞여 들면
 # 이 갈래가 운 것으로 셀 수 없다.
@@ -2621,6 +2621,87 @@ case "$(idle_over "$(( $(date -u +%s) - 90000 ))")" in
   *"판정=끝나지 않음") ok "답 없는 중단 기록이 있으면 25시간 조용해도 감시자가 끝나지 않는다" ;;
   *) bad "중단 기록 대기" "$(idle_over "$(( $(date -u +%s) - 90000 ))")" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# A manifest with a `재킥오프` row: the next run is the successor sweep's, so the
+# watcher's notices say the run ended and, at the end, what the sweep decided.
+# ---------------------------------------------------------------------------
+RK_PACE="$WORK/rk-pace"
+# rk_fixture <토큰> — a run with a consent row, ended, its candidate marker
+# written the way the gate's end site writes it.
+rk_fixture() {
+  fresh
+  : > "$NOTIFY_LOG"
+  printf '# 매니페스트\n- `재킥오프` | 연쇄 상한=3 | 길이=PT8H | 사유=픽스처\n' > "$RD.plan.md"
+  printf '매니페스트=%s\n원장=%s\n런 id=%s\n토큰=%s\n기록 시각=2026-09-03T00:00:00Z\n' \
+    "$RD.plan.md" "$LG" "$(basename "$RD")" "$1" > "$RD/rekick-candidate"
+}
+rk_outcome() { mkdir -p "$RK_PACE/rekick/$(basename "$RD")"; printf '%s\n' "$1" > "$RK_PACE/rekick/$(basename "$RD")/outcome"; }
+rk_loop() {
+  RUN_PACE_ROOT="$RK_PACE" WATCH_REKICK_WAIT_SECONDS="${1:-5}" CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    bash "$WATCH" --run-dir "$RD" --ledger "$LG" --interval 1 >/dev/null 2>&1
+}
+has_message() { grep -cF -- "-message $1" "$NOTIFY_LOG" 2>/dev/null || true; }
+
+# Mid-run: the invalidation arm says the run ended and waits on nothing.
+rk_fixture 표면이동
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 무효화 "강제 표면 이동"
+t0=$(date -u +%s)
+RUN_PACE_ROOT="$RK_PACE" runb >/dev/null
+notify_settle 1
+check "재킥오프 행이 있으면 런 도중 무효화 고지는 중립 문면이다" \
+  "$(has_message '이 런은 끝났습니다 — 재킥오프 판정을 기다립니다')/$(has_message '이 런은 여기서 끝났습니다')" "1/0"
+check "그 자리는 판정을 기다리지 않는다" "$([ $(( $(date -u +%s) - t0 )) -lt 30 ] && echo 즉시 || echo 기다림)" "즉시"
+
+# The end: each outcome the sweep can write, raised once after `ended`.
+TB=$(printf '\t')
+for oc in "열림${TB}20261013-abcdef01|후속 런 20261013-abcdef01 를 열었습니다" \
+          "승인 대기${TB}R1#w1|재인가 승인을 기다립니다 — 좌석에서 닫으세요" \
+          "커밋 대기${TB}설정|이력에 없는 설정 변경 — 커밋하거나 되돌리세요" \
+          "사람${TB}레인이 없는 호스트입니다|재킥오프하지 않았습니다 — 레인이 없는 호스트입니다"; do
+  rk_fixture 마감
+  printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+  printf '2026-09-03T00:00:00Z 종단 — 마감\n' > "$RD/done"
+  rk_outcome "${oc%%|*}"
+  rk_loop
+  notify_settle 2
+  check "종단 갈래는 결과 '${oc%%"$TB"*}' 를 그 문면으로 한 번 고지한다" "$(has_message "${oc#*|}")" "1"
+done
+check "그 고지는 ended 뒤의 재킥오프 제목이다" "$(banner_titles)" "cc-cmds · 결과를 확인하세요|cc-cmds · 재킥오프|"
+
+# An outcome that arrives while the watcher waits.
+rk_fixture 마감
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf '2026-09-03T00:00:00Z 종단 — 마감\n' > "$RD/done"
+( sleep 2; rk_outcome "사람${TB}늦게 온 판정" ) &
+rk_loop 20
+wait
+notify_settle 2
+check "기다리는 동안 생긴 결과로 고지한다" "$(has_message '재킥오프하지 않았습니다 — 늦게 온 판정')" "1"
+
+# No outcome within the wait: one notice saying so.
+rk_fixture 마감
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf '2026-09-03T00:00:00Z 종단 — 마감\n' > "$RD/done"
+rk_loop 2
+notify_settle 2
+check "기다림이 끝나도 결과가 없으면 대체 문면으로 한 번 고지한다" \
+  "$(has_message '재킥오프 판정이 아직 없습니다 — 아침 보고에서 결과를 확인하세요')" "1"
+rk_loop 2
+sleep 0.3
+check "같은 런에 다시 띄운 감시자는 그 고지를 되풀이하지 않는다" \
+  "$(has_message '재킥오프 판정이 아직 없습니다')" "1"
+
+# A normal completion opens no successor: nothing to wait for.
+rk_fixture 해당없음
+printf -- '- `segment` | id=S1 | 상태=머지됨\n- `자율 승인` | kind=boundary | 결정=종료 | 재킥 원인=해당없음 | 종료 부류=완료 | prev=x\n' > "$LG"
+printf '2026-09-03T00:00:00Z 종단 — 완료\n' > "$RD/done"
+t0=$(date -u +%s)
+rk_loop 30
+sleep 0.3
+check "정상 완료는 재킥오프 결과를 기다리지도 고지하지도 않는다" \
+  "$([ -f "$RD/watch.announced-rekick" ] && echo 고지 || echo 없음)/$([ $(( $(date -u +%s) - t0 )) -lt 20 ] && echo 즉시 || echo 기다림)" "없음/즉시"
 
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

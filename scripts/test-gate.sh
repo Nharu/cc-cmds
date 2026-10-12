@@ -3029,6 +3029,15 @@ pre_sb() {
       | grep -c . || true
   }
 
+  # 38-5d 와 38-5e 가 함께 쓰는 끝난 런 픽스처. 같은 이유로 여기에 둔다.
+  sd_new() {  # sd_new <라벨> — 마감이 미래인 sb 픽스처를 만들고 런을 연다.
+    sb_new "$1" 선머지후리뷰
+    SAH >/dev/null
+    mkdir -p "$SA_RUN"
+  }
+  sd_end() { sag end-abandoned --manifest "$SA_MANIFEST" "$@"; }
+  sd_done() { if [ -s "$SA_RUN/done" ]; then printf 있음; else printf 없음; fi; }
+
   sb_target_field() {
     # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
     # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
@@ -19166,8 +19175,11 @@ fires_at() {
     *)              printf 'fires' ;;
   esac
 }
+# The window is 32 rather than 24: the arm now carries the paragraph on why a
+# manifest with a `재킥오프` row hands this notice to the watcher, between the
+# row and the notice.
 check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
-  "$(fires_at '사유=강제 표면 이동' 24)" "fires"
+  "$(fires_at '사유=강제 표면 이동' 32)" "fires"
 # The window is 16 rather than 8 for the same reason the 80 below is not 60: the
 # itemised disposition report now lands between the `done` write and the notice,
 # and it carries the paragraph explaining why it is beside that file rather than
@@ -24204,16 +24216,9 @@ check "5c: 표면 이동 행만 있는 런에는 아무것도 쓰지 않는다" 
 # 그 런에 done 과 종료 행 하나를 쓰고, 재킥 원인은 해당없음, 무슨 일이었는지는
 # 종료 부류가 싣는다. 부르는 것은 좌석이나 킥오프뿐이고, 무언가 아직 도는 런은
 # 버려진 런이 아니므로 아무것도 쓰지 않고 거절한다.
-sd_new() {  # sd_new <라벨> — 마감이 미래인 sb 픽스처를 만들고 런을 연다.
-  sb_new "$1" 선머지후리뷰
-  SAH >/dev/null
-  mkdir -p "$SA_RUN"
-}
-sd_end() { sag end-abandoned --manifest "$SA_MANIFEST" "$@"; }
 sd_row() {  # sd_row — 마지막 종료 행
   { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } | tail -1
 }
-sd_done() { if [ -s "$SA_RUN/done" ]; then printf 있음; else printf 없음; fi; }
 
 sd_new '5d 포기'
 sd_end --cause 포기
@@ -24261,6 +24266,80 @@ sd_end --cause 이어받음 --successor "$SA_ID"
 check "5d: 후계 런이 이 런 자신이면 거절한다" "$rc/$(sc_ends)" "2/0"
 sag end-overdue --manifest "$SA_MANIFEST" --cause 포기
 check "5d: --cause 는 다른 동사에 붙지 않는다" "$rc/$(sc_ends)" "2/0"
+
+# --- 38-5e. 끝난 런의 재인가 승인 — rekick-approval 과 종류 W ----------------
+# --- section: 38-5e | group: sb | covers: close, rekick-approval | anchors: 5e: 끝나지 않은 런에는 재인가 승인을 올리지 않는다, 5e: 원인 판단정지 는 거부되고 승인 행이 늘지 않는다, 5e: 스테이지나 shift 가 부르면 거부한다, 5e: 대상미선언 승인은 종류 W 대기 행 하나다, 5e: 승인 id 는 런 id 와 원인에서 유도된다, 5e: 같은 원인을 다시 불러도 행이 늘지 않는다, 5e: 자동 해소가 켜져 있어도 W 는 대기로 남는다, 5e: 대화 기록이 없으면 W 는 닫히지 않는다, 5e: id 만 쓴 줄로는 W 가 닫히지 않는다, 5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다, 5e: 닫힌 W 의 원장이 사슬 검증을 지난다 ---
+#
+# 끝난 런에 후속을 열려면 권한을 넓혀야 하는 원인은 그 런의 원장에 재인가 승인을
+# 올려 사람이 닫기를 기다린다. 승인은 끝난 런 위에 서므로 `done` 이 있어도 닫혀야
+# 하고, 닫기는 오늘의 승인처럼 대화 기록의 답변 프레임에서만 나온다. `판단정지` 는
+# 고정 그래프의 어떤 단계도 그 답을 읽지 못하므로 이 동사가 받지 않는다.
+se_appr() { sag rekick-approval --manifest "$SA_MANIFEST" "$@"; }
+se_w_rows() { { grep -F '`승인`' "$SA_LEDGER" 2>/dev/null || true; } | grep -c '| 종류=W |' || true; }
+se_appr_rows() { { grep -F '`승인`' "$SA_LEDGER" 2>/dev/null || true; } | grep -c . || true; }
+se_id() { printf 'W-%s' "$(printf '%s' "${SA_ID}W$1" | shasum -a 256 | cut -c1-8)"; }
+se_last() { { grep -F '`승인`' "$SA_LEDGER" 2>/dev/null || true; } | grep -F "| 승인 id=$1 |" | tail -1; }
+
+sd_new '5e 끝나지 않은 런'
+se_appr --cause 대상미선언
+check "5e: 끝나지 않은 런에는 재인가 승인을 올리지 않는다" "$rc/$(se_appr_rows)" "3/0"
+
+sd_new '5e 재인가'
+sd_end --cause 포기
+check "5e: 전제 — 런이 끝났다 (done 과 종료 행)" "$rc/$(sd_done)/$(sc_ends)" "0/있음/1"
+se_appr --cause 판단정지
+check "5e: 원인 판단정지 는 거부되고 승인 행이 늘지 않는다" "$rc/$(se_appr_rows)" "2/0"
+se_appr --cause 완료
+check "5e: 닫힌 집합 밖의 원인도 거부된다" "$rc/$(se_appr_rows)" "2/0"
+CC_PIPELINE_SEGMENT=SD CC_PIPELINE_STAGE_ID='SD#1' se_appr --cause 대상미선언
+se_stage="$rc/$(se_appr_rows)"
+CC_PIPELINE_SHIFT_ID="$SA_ID#1" se_appr --cause 대상미선언
+check "5e: 스테이지나 shift 가 부르면 거부한다" "$se_stage|$rc/$(se_appr_rows)" "3/0|3/0"
+se_appr --cause 상한
+check "5e: 상한 에는 새 연쇄 상한이 있어야 한다" "$rc/$(se_appr_rows)" "2/0"
+se_appr --cause 표면이동 --delta 3
+check "5e: 표면이동 은 변경분을 받지 않는다" "$rc/$(se_appr_rows)" "2/0"
+sag end-overdue --manifest "$SA_MANIFEST" --delta 3
+check "5e: --delta 는 다른 동사에 붙지 않는다" "$rc" "2"
+
+se_appr --cause 대상미선언 --delta 'infra'
+SE_W=$(se_id 대상미선언)
+se_row=$(se_last "$SE_W")
+case "$rc|$(se_w_rows)|$se_row" in
+  "0|1|"*'| 상태=대기 |'*'| 절단점=재인가 |'*'| 종류=W | 재인가 원인=대상미선언 | 변경분=새 대상 행 infra |'*)
+    ok "5e: 대상미선언 승인은 종류 W 대기 행 하나다" ;;
+  *) bad "5e: 대상미선언 승인은 종류 W 대기 행 하나다" "$rc|$(se_w_rows)|$se_row — $msg" ;;
+esac
+case "$raw" in
+  *"$SA_ID#$SE_W"*) ok "5e: 승인 id 는 런 id 와 원인에서 유도된다" ;;
+  *) bad "5e: 승인 id 는 런 id 와 원인에서 유도된다" "기대 $SA_ID#$SE_W — $raw" ;;
+esac
+se_appr --cause 대상미선언
+check "5e: 같은 원인을 다시 불러도 행이 늘지 않는다" "$rc/$(se_w_rows)" "0/1"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=on se_appr --cause 상한 --delta 4
+SE_W2=$(se_id 상한)
+check "5e: 자동 해소가 켜져 있어도 W 는 대기로 남는다" \
+  "$rc/$(se_w_rows)/$(sa_field "$(se_last "$SE_W2")" '상태')/$( [ "$SE_W2" != "$SE_W" ] && printf 다름 || printf 같음)" "0/2/대기/다름"
+
+sag close --manifest "$SA_MANIFEST" --approval "$SE_W"
+check "5e: 대화 기록이 없으면 W 는 닫히지 않는다" "$rc/$(sa_field "$(se_last "$SE_W")" '상태')" "5/대기"
+
+SE_CFG="$SA_ROOT/cfg"; SE_TX="$SE_CFG/projects/proj"; mkdir -p "$SE_TX"
+SE_SID="44444444-5555-6666-7777-888888888888"
+printf '{"role":"user","content":"%s 에 대한 답: 승인 · 응답 토큰=toolu_FAKE"}\n' "$SE_W" > "$SE_TX/$SE_SID.jsonl"
+se_before=$(se_appr_rows)
+CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W"
+check "5e: id 만 쓴 줄로는 W 가 닫히지 않는다" "$rc/$(se_appr_rows)/$(sa_field "$(se_last "$SE_W")" '상태')" "5/$se_before/대기"
+
+se_tid=$(auq_frame "$SE_TX/$SE_SID.jsonl" "$SE_W" "$(sa_field "$se_row" '질문 문면')" "승인" 승인 거부)
+CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W"
+se_closed=$(se_last "$SE_W")
+check "5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다" \
+  "$rc/$(sd_done)/$(sa_field "$se_closed" '상태')/$(sa_field "$se_closed" '응답 토큰')/$(sa_field "$se_closed" '답변 다이제스트')" \
+  "0/있음/승인/$se_tid/$(printf '%s' 승인 | shasum -a 256 | cut -d' ' -f1)"
+se_chain=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; LEDGER="$2"; RUN_ID="$3"; gate_chain_verify "$2" "$3" >/dev/null 2>&1; echo $?' _ \
+  "$GATE" "$SA_LEDGER" "$SA_ID" 2>/dev/null)
+check "5e: 닫힌 W 의 원장이 사슬 검증을 지난다" "$se_chain" "0"
 
 # --- 38-6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
 # --- section: 38-6 | group: sb | covers: act | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다 ---

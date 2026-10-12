@@ -1104,6 +1104,15 @@ fleet_dispatch() {
   mkdir -p "$PACE_ROOT"
   now=$(fleet_now); iso=$(fleet_iso "$now")
 
+  # THE SUCCESSOR SWEEP, BEFORE ELIGIBILITY. Ended runs whose manifest carries
+  # a `재킥오프` row are judged here and their successors enqueued, so a lane
+  # that may not work now still sweeps — a successor waits in the backlog for
+  # whichever lane is eligible next. It runs in the foreground and takes the
+  # same `backlog.lock` for its own claims; its failure is a log line, never a
+  # reason not to dispatch.
+  bash "$FLEET_DIR/successor.sh" sweep --pace-root "$PACE_ROOT" --lane present \
+    || fleet_log "dispatch $lane: 후속 런 sweep 이 실패했다 (rc=$?) — 디스패치는 그대로 간다"
+
   # (2) ELIGIBILITY, BEFORE THE LOCK. A lane that may not work now ends with one
   #     log line and no refusal row: that is "this lane is idle", not a verdict
   #     on the head record, and a row per tick would bury every real refusal.
@@ -1286,7 +1295,21 @@ fleet_dispatch() {
     mkdir -p "$(dirname "$ledger")"
     printf '# 파이프라인 런 %s\n\n런 id: %s · 파견 레인: %s · 파견 시각: %s\n' "$run_id" "$run_id" "$lane" "$iso" > "$ledger"
   fi
-  CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
+  # A SUCCESSOR THE ADMISSION CHECK REFUSES IS PARKED, NOT STARTED. The
+  # snapshot runs the same manifest check `run.sh` would, and a `lineage-invalid`
+  # stop there means the successor's chain does not hold: starting the run
+  # would only stop at its first gate entry. Any other failure goes on as it
+  # always did, because the run reports it itself.
+  local snap_rc=0 snap_err
+  snap_err=$( { CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/gate.sh" snapshot --manifest "$manifest" >/dev/null; } 2>&1 ) || snap_rc=$?
+  [ -z "$snap_err" ] || printf '%s\n' "$snap_err" >&2
+  if [ "$snap_rc" != "0" ] && printf '%s\n' "$snap_err" | grep -qF '[run][stop] lineage-invalid — '; then
+    line2=$(printf '%s' "$line" | jq -c '.status = "parked" | .park_reason = "lineage-invalid"')
+    fleet_backlog_rewrite_locked "$line" "$line2" || fleet_log "dispatch $lane: $id 의 park 재작성이 실패했다 (rc=$?)"
+    fleet_busy_drop
+    fleet_log "dispatch $lane: $id park — lineage-invalid (연쇄 입장 검사가 거부했다; 기동하지 않는다)"
+    return 0
+  fi
   mkdir -p "$run_dir"
   bash "$FLEET_DIR/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
@@ -1304,6 +1327,11 @@ fleet_dispatch() {
   line2=$(printf '%s' "$line" | jq -c '.status = "done"')
   fleet_backlog_rewrite_locked "$line" "$line2" || fleet_log "dispatch $lane: $id 의 done 재작성이 실패했다 (rc=$?) — 레코드는 dispatched 로 남는다"
   fleet_log "dispatch $lane: $id 종료 rc=$rc"
+  # The fast path: deadline closes and parked successors, now that this run is
+  # over. Candidates themselves wait for the next tick's full sweep, because a
+  # run that just ended is not yet quiet.
+  bash "$FLEET_DIR/successor.sh" sweep --pace-root "$PACE_ROOT" --lane present --fast \
+    || fleet_log "dispatch $lane: 빠른 sweep 이 실패했다 (rc=$?)"
   return 0
 }
 

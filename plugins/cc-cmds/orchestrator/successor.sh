@@ -16,6 +16,14 @@
 #       → `열림\t<id>\t<manifest>\t<문서 sha256>` and exit 0, or
 #         `사람\t<사유>` and exit 4 (nothing written), or
 #         `invalid\t<사유>` and exit 3.
+#   successor.sh sweep [--dry-run] [--pace-root <dir>] [--fast]
+#                      [--lane present|absent]
+#       → finds the runs that ended, judges each, claims, derives and commits
+#         the successor's backlog record; writes `<pace>/rekick/<run>/outcome`.
+#         `--fast` does only what needs no quiet run (closing overdue runs,
+#         carrying a parked successor's reason into its outcome). `--dry-run`
+#         prints `<선행 런>\t<매니페스트>\t<원장>\t<판정>` per candidate and
+#         writes nothing. A call with no `--lane` is a host with no lane.
 #
 # REFUSED INSIDE A PIPELINE STAGE. A stage carries `CC_PIPELINE_RUN_ID`, and a
 # stage that could run this program could open a run nobody authorized. The
@@ -393,7 +401,7 @@ rekick_surface_verdict() {
   # digest says what moved; the base branch tip says whether a moved target
   # setting is history or an edit nobody committed.
   local m="$1" led="$2" rd list kind rest sha path cur moved="" root alias base start
-  local wt tip ids seg c chain_touch=0 aliases
+  local wt tip ids seg c fp chain_touch=0 aliases
   rd=$(grep -E '^- `run` \| ' "$led" | head -1 | tr '|' '\n' | sed -n 's/^ *RUN_DIR=//p' | sed 's/[[:space:]]*$//')
   list="$rd/surface-digest.files"
   [ -n "$rd" ] && [ -f "$list" ] || { printf '사람\t파일별 표면 목록이 없어 무엇이 움직였는지 가를 수 없습니다'; return 0; }
@@ -430,9 +438,15 @@ rekick_surface_verdict() {
     tip=$( { cd "$root" && git show "$base:.claude/settings.json"; } 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
     [ "$tip" = "$(shasum -a 256 "$path" 2>/dev/null | cut -d' ' -f1)" ] \
       || { printf '사람\t설정 파일이 베이스 브랜치 %s 끝과 다릅니다: %s' "$base" "$path"; return 0; }
+    # A commit on the base branch's first-parent line landed there directly; a
+    # segment branch rebased over it contains it all the same, so containment
+    # is asked only of commits a merge brought in. The driver merges with a
+    # merge commit, whose message names the segment branch.
+    fp=$( { cd "$root" && git rev-list --first-parent ${start:+--since="$start"} "$base"; } 2>/dev/null)
     for c in $( { cd "$root" && git log --format=%H ${start:+--since="$start"} "$base" -- .claude/settings.json; } 2>/dev/null); do
       for seg in $ids; do
-        if [ -n "$( { cd "$root" && git branch --list "seg/$seg-*" --contains "$c"; } 2>/dev/null)" ] \
+        if { ! printf '%s\n' "$fp" | grep -qxF "$c" \
+               && [ -n "$( { cd "$root" && git branch --list "seg/$seg-*" --contains "$c"; } 2>/dev/null)" ]; } \
            || { cd "$root" && git log -1 --format=%B "$c"; } 2>/dev/null | grep -qF "seg/$seg-"; then
           chain_touch=1
         fi
@@ -519,7 +533,10 @@ cc_rekick_verdict() {
   # 9. Per token.
   case "$tok" in
     마감|연기마감|천장|무진전|사이클예산|결함) out 자동 "$tok" "자동 재킥 — $tok" ;;
-    판단정지) out 승인 "$tok" "판단 정지의 답변을 담은 재인가 승인" ;;
+    # A judgment stop goes to a person, never to an approval: no stage of the
+    # fixed graph has an input that would carry a person's answer, so a
+    # successor would stop at the same place again.
+    판단정지) out 사람 "$tok" "새 인가 필요 — 판단 정지의 답변을 받을 입력 자리가 고정 그래프 단계에 없습니다" ;;
     말단상한) out 사람 "$tok" "새 인가 필요 — 말단 행위 상한 소진" ;;
     표면이동)
       sv=$(rekick_surface_verdict "$m" "$led")
@@ -846,6 +863,9 @@ rekick_admission_history() {
     [ -f "$led" ] || { printf '(사) 앞 런 원장이 없습니다: %s' "$led"; return 1; }
     tok=$(rekick_end_token "$led") || { printf '(사) 앞 런의 종료 토큰이 없습니다 — 끝나지 않은 런'; return 1; }
     [ "$tok" != "해당없음" ] || { printf '(사) 앞 런이 분류 없이 멈췄습니다'; return 1; }
+    # The verdict never derives a judgment stop, so a row naming one is refused
+    # whatever approval it carries.
+    [ "$cause" != "판단정지" ] || { printf '(사) 원인 판단정지 는 후속 런을 열지 않습니다 — 사람 판정입니다'; return 1; }
     case "$cause" in
       대상미선언|슬라이싱)
         rekick_park_causes "$led" | grep -qxF "$cause" \
@@ -887,7 +907,7 @@ rekick_admission_history() {
   appr=$(rekick_row_field "$ch" '재인가 승인')
   if [ -z "$appr" ]; then
     case "$cause" in
-      대상미선언|슬라이싱|판단정지)
+      대상미선언|슬라이싱)
         printf '(사) 원인 %s 은 재인가 승인이 있어야 합니다' "$cause"; return 1 ;;
       표면이동)
         sv=$(rekick_surface_verdict "$pm" "$led")
@@ -944,6 +964,492 @@ rekick_memo_write() {
 }
 
 # ---------------------------------------------------------------------------
+# The sweep: find the runs that ended, judge each one, claim, derive, commit.
+#
+# IT RUNS OUTSIDE EVERY STAGE AND EVERY SHIFT, as a foreground child of a fleet
+# dispatch job, so the pacing guards that refuse a stage's write to `pace/` do
+# not stand in its way. Everything it writes lives under the pace root:
+# `backlog.jsonl`, under `backlog.lock` exactly as the dispatcher takes it, and
+# `rekick/<predecessor>/` — `at` (the claim), `successor` (the commit) and
+# `outcome` (what happened, one line `<결과>\t<사유>`).
+#
+# THE CLAIM AND THE COMMIT ARE TWO CRITICAL SECTIONS WITH THE DERIVATION
+# BETWEEN THEM. The deriver reads many files and the lock is the dispatcher's,
+# so it is not held across it; the deriver is resumable by byte comparison, so
+# a sweep that died between the two picks the same claim up again.
+# ---------------------------------------------------------------------------
+
+# A run counts as stopped once its last gate entry is this old. One
+# declaration; the guard is there because this file is sourced twice in the
+# program's own shell.
+[ -n "${REKICK_SWEEP_QUIET_SECONDS+x}" ] || readonly REKICK_SWEEP_QUIET_SECONDS=1200
+# The dispatcher's wait and stale ceiling for the same lock.
+REKICK_SWEEP_LOCK_WAIT=10
+REKICK_SWEEP_LOCK_STALE=60
+REKICK_SWEEP_LOCKED=""
+
+rekick_sweep_log() { printf '%s [sweep] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+rekick_sweep_lock() {
+  # Take `<pace>/backlog.lock` the way fleet's dispatcher does: a `mkdir`, a
+  # bounded wait, and a holder older than the stale ceiling is broken.
+  local d="$REKICK_PACE/backlog.lock" waited=0 mt age
+  mkdir -p "$REKICK_PACE" || return 1
+  while ! mkdir "$d" 2>/dev/null; do
+    mt=$(date -u -r "$d" +%s 2>/dev/null || true)
+    age=$(( $(date -u +%s) - ${mt:-0} ))
+    if [ -n "$mt" ] && [ "$age" -gt "$REKICK_SWEEP_LOCK_STALE" ]; then
+      rekick_sweep_log "backlog.lock 이 ${age}초 묵었다 — 죽은 소유자의 것으로 보고 깬다"
+      rm -rf "$d"
+      continue
+    fi
+    [ "$waited" -lt "$REKICK_SWEEP_LOCK_WAIT" ] || return 1
+    sleep 1; waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "$d/pid" 2>/dev/null || true
+  REKICK_SWEEP_LOCKED=1
+}
+
+rekick_sweep_unlock() {
+  [ -n "$REKICK_SWEEP_LOCKED" ] || return 0
+  REKICK_SWEEP_LOCKED=""
+  rm -rf "$REKICK_PACE/backlog.lock"
+}
+
+rekick_sweep_put() {
+  # rekick_sweep_put <path> <line> — create-only, by hard link: the first
+  # writer wins and a second finds the file there and fails.
+  local p="$1" tmp="$1.tmp.$$"
+  printf '%s\n' "$2" > "$tmp" || { rm -f "$tmp"; return 1; }
+  if ln "$tmp" "$p" 2>/dev/null; then rm -f "$tmp"; return 0; fi
+  rm -f "$tmp"; return 1
+}
+
+rekick_outcome_of() { sed -n '1p' "$REKICK_PACE/rekick/$1/outcome" 2>/dev/null || true; }
+
+rekick_outcome() {
+  # rekick_outcome <predecessor> <결과> <사유> — the result, by temp file and
+  # rename. The same line again is not rewritten, so a tick that decides
+  # nothing new leaves the file's time alone.
+  local d="$REKICK_PACE/rekick/$1" line tmp
+  line="$2$REKICK_TAB$3"
+  [ "$(rekick_outcome_of "$1")" = "$line" ] && return 0
+  mkdir -p "$d" || return 1
+  tmp="$d/.outcome.$$"
+  printf '%s\n' "$line" > "$tmp" && mv -f "$tmp" "$d/outcome" || { rm -f "$tmp"; return 1; }
+  rekick_sweep_log "$1: $2 — $3"
+}
+
+rekick_sweep_alive() {
+  # rekick_sweep_alive <run id> <run dir> — a fleet run marker that is alive
+  # by the gate's own reading, a live shift or a live stage. The backlog
+  # record's state is never evidence that a run is alive.
+  local st
+  st=$( RUN_ID="$1"; RUN_DIR="$2"; gate_fleet_busy_state 2>/dev/null || true )
+  [ "$st" = "live" ] && return 0
+  [ -d "$2" ] || return 1
+  cc_shift_is_live "$2" && return 0
+  [ "$(cc_live_stages "$2" 2>/dev/null || printf 0)" -gt 0 ] 2>/dev/null && return 0
+  return 1
+}
+
+rekick_sweep_quiet() {
+  # rekick_sweep_quiet <run id> <run dir> <ledger> — nothing is alive and the
+  # last gate entry is at least REKICK_SWEEP_QUIET_SECONDS old. A gate entry
+  # leaves its trace on the ledger, in the run directory and in its digest
+  # emissions, so the newest of those is the entry's time.
+  local id="$1" rd="$2" led="$3" f t newest=0
+  rekick_sweep_alive "$id" "$rd" && return 1
+  for f in "$led" "$rd"/* "$rd"/digest/*; do
+    t=$(cc_mtime "$f")
+    case "$t" in ''|*[!0-9]*) continue ;; esac
+    [ "$t" -gt "$newest" ] && newest=$t
+  done
+  [ $(( $(date -u +%s) - newest )) -ge "$REKICK_SWEEP_QUIET_SECONDS" ]
+}
+
+rekick_person_kickoff() {
+  # rekick_person_kickoff <predecessor manifest> — the id of a run a person
+  # opened on the same document after the predecessor was kicked off: a
+  # manifest beside it with the same `anchor-key`, no `연쇄` row and a later
+  # kickoff time, that is not a link of this chain. A person's kickoff wins.
+  local pm="$1" dir key kick_e f id e ids
+  dir=$(dirname "$pm")
+  key=$(rekick_hdr "$pm" 'anchor-key')
+  [ -n "$key" ] || return 1
+  kick_e=$(dr_abs_epoch "$(rekick_field "$pm" '런 정체' '킥오프 일시')") || return 1
+  ids=$(rekick_chain_links "$pm" 2>/dev/null | cut -f1)
+  for f in "$dir"/*.plan.md; do
+    [ -f "$f" ] && [ "$f" != "$pm" ] || continue
+    [ "$(rekick_hdr "$f" 'anchor-key')" = "$key" ] || continue
+    [ -z "$(rekick_chain_row "$f")" ] || continue
+    id=$(rekick_hdr "$f" 'run-id')
+    printf '%s\n' "$ids" | grep -qxF -- "$id" && continue
+    e=$(dr_abs_epoch "$(rekick_field "$f" '런 정체' '킥오프 일시')") || continue
+    [ "$e" -gt "$kick_e" ] && { printf '%s' "$id"; return 0; }
+  done
+  return 1
+}
+
+rekick_grant_cutpoint() {
+  # The predecessor's `권한 절단점`, from its own authorization block.
+  local pm="$1" p pid
+  p=$(rekick_paths "$pm") || return 1
+  pid=$(rekick_hdr "$pm" 'run-id')
+  ( GRANT=$(printf '%s' "$p" | cut -f2); grant_field "$pid" '권한 절단점' )
+}
+
+rekick_plugin_slug() {
+  # rekick_plugin_slug <run dir> — `owner/repo` of the checkout the run's
+  # plugin copy was taken from, read off its `origin`. A copy taken from
+  # another run's copy (an inherited pin) is followed back to its source.
+  local rd="$1" src guard=0 url
+  while :; do
+    guard=$((guard + 1))
+    [ "$guard" -le 16 ] || return 1
+    src=$(pin_read "$rd" 'source')
+    [ -n "$src" ] || return 1
+    case "$src" in
+      */plugin/cc-cmds)
+        if [ -f "$(pin_file "${src%/plugin/cc-cmds}")" ] && [ "${src%/plugin/cc-cmds}" != "$rd" ]; then
+          rd="${src%/plugin/cc-cmds}"; continue
+        fi ;;
+    esac
+    break
+  done
+  url=$( { cd "$src" && git --no-optional-locks config --get remote.origin.url; } 2>/dev/null) || return 1
+  printf '%s' "$url" | sed -E 's#^git@[^:]*:##; s#^(https?|ssh)://[^/]*/##; s#\.git$##' \
+    | grep -E '^[^/[:space:]]+/[^/[:space:]]+$'
+}
+
+rekick_pin_state() {
+  # rekick_pin_state <predecessor manifest> — `<usable|unusable|none>\t<사유>`;
+  # for `usable` the second field is the copy the successor is pinned to.
+  #
+  # A RUN THAT CHANGES THE PLUGIN KEEPS THE PLUGIN IT STARTED ON. When a target
+  # is the plugin's own repository, the run may merge, and a merge of the chain
+  # touched `plugins/cc-cmds/`, the successor would otherwise pin the code its
+  # own chain just merged; it is pinned to the predecessor's copy instead.
+  # Every doubt along the way is `unusable`, which sends the run to a person.
+  local pm="$1" pid prd slug a hit="" ts wt="" g gi mi links led row sha base touched=0
+  pid=$(rekick_hdr "$pm" 'run-id')
+  prd=$(rundir_of_run_id "$pid") || { printf 'unusable\t런 디렉터리를 유도하지 못했습니다'; return 0; }
+  [ -f "$(pin_file "$prd")" ] || { printf 'none\t앞 런에 플러그인 핀이 없습니다'; return 0; }
+  slug=$(rekick_plugin_slug "$prd") || { printf 'unusable\t플러그인 원본 레포의 슬러그를 읽지 못했습니다'; return 0; }
+  for a in $(rekick_in "$pm" target_aliases); do
+    ts=$(rekick_in "$pm" target_field "$a" '원격 슬러그')
+    if [ "$ts" = "$slug" ]; then
+      hit=1; [ -n "$wt" ] || wt=$(rekick_in "$pm" target_field "$a" '메인 워크트리')
+    fi
+  done
+  [ -n "$hit" ] || { printf 'none\t대상이 플러그인 원본 레포가 아닙니다'; return 0; }
+  g=$(rekick_grant_cutpoint "$pm")
+  gi=$(cutpoint_index "$g" 2>/dev/null) || { printf 'unusable\t권한 절단점을 읽지 못했습니다'; return 0; }
+  mi=$(cutpoint_index '머지')
+  [ "$gi" -ge "$mi" ] || { printf 'none\t권한 절단점이 머지보다 낮습니다'; return 0; }
+  links=$(rekick_chain_links "$pm") || { printf 'unusable\t연쇄 원장 사슬 검증 실패'; return 0; }
+  while IFS= read -r led; do
+    [ -n "$led" ] && [ "$led" != "-" ] || continue
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      [ "$(rekick_row_field "$row" '레포')" = "$slug" ] || continue
+      sha=$(rekick_row_field "$row" '머지 커밋'); base=$(rekick_row_field "$row" '베이스 sha')
+      [ -n "$sha" ] && [ -n "$base" ] && [ -d "$wt" ] \
+        || { printf 'unusable\t연쇄의 머지가 무엇을 건드렸는지 읽지 못했습니다'; return 0; }
+      ( cd "$wt" && git --no-optional-locks diff --name-only "$base" "$sha" -- 'plugins/cc-cmds/' ) > /dev/null 2>&1 \
+        || { printf 'unusable\t연쇄의 머지 %s 를 대상에서 읽지 못했습니다' "$sha"; return 0; }
+      [ -n "$( { cd "$wt" && git --no-optional-locks diff --name-only "$base" "$sha" -- 'plugins/cc-cmds/'; } 2>/dev/null)" ] && touched=1
+    done <<EOF
+$(grep -E '^- `segment` \| ' "$led" 2>/dev/null | grep -v ' | 출처=' | grep -E ' \| 상태=머지됨( \||$)')
+EOF
+  done <<EOF
+$(printf '%s\n' "$links" | cut -f3)
+EOF
+  [ "$touched" = 1 ] || { printf 'none\t연쇄의 머지가 플러그인을 건드리지 않았습니다'; return 0; }
+  [ -f "$prd/plugin/cc-cmds/orchestrator/gate.sh" ] || { printf 'unusable\t앞 런의 플러그인 사본이 없습니다'; return 0; }
+  printf 'usable\t%s' "$prd/plugin/cc-cmds"
+}
+
+rekick_backlog_record_of() {
+  # The last backlog record whose `manifest_path` is this manifest, or nothing.
+  [ -f "$REKICK_PACE/backlog.jsonl" ] || return 0
+  jq -R -c --arg mp "$1" 'fromjson? | select(.manifest_path == $mp)' "$REKICK_PACE/backlog.jsonl" 2>/dev/null | tail -1
+}
+
+rekick_sweep_commit_wait() {
+  # The predecessor waits on a target setting nobody committed. For one length
+  # after the run ended that is `커밋 대기`; after it, a person's.
+  local pid="$1" pm="$2" rd="$3" led="$4" reason="$5" end_e="" len n
+  end_e=$(dr_abs_epoch "$(sed -n 's/^기록 시각=//p' "$rd/rekick-candidate" 2>/dev/null | sed -n '1p')" 2>/dev/null) || end_e=""
+  [ -n "$end_e" ] || end_e=$(cc_mtime "$led")
+  len=$(rekick_row_field "$(rekick_consent_row "$pm")" '길이')
+  n=$(dr_duration_seconds "$len" 2>/dev/null) || n=""
+  if [ -z "$end_e" ] || [ -z "$n" ] || [ $(( $(date -u +%s) - end_e )) -ge "$n" ]; then
+    rekick_outcome "$pid" 사람 "커밋되지 않은 설정 변경이 길이 하나가 지나도록 남았습니다 — ${reason#커밋 대기 — }"
+  else
+    rekick_outcome "$pid" '커밋 대기' "${reason#커밋 대기 — }"
+  fi
+}
+
+rekick_sweep_open() {
+  # rekick_sweep_open <predecessor> <manifest> <ledger|-> <자동|승인>
+  #                   <approval|''> <answer digest|''> <pin state line>
+  local pid="$1" pm="$2" led="$3" v="$4" appr="$5" adig="$6" pin="$7"
+  local claim="$REKICK_PACE/rekick/$1" res rc nid nman docsha prec auth root e base dl lane enq rec
+  rekick_sweep_lock || { rekick_sweep_log "$pid: backlog.lock 을 잡지 못했다 — 다음 틱에 다시 본다"; return 0; }
+  mkdir -p "$claim" || { rekick_sweep_unlock; return 0; }
+  if [ -f "$claim/successor" ]; then rekick_sweep_unlock; return 0; fi
+  if [ ! -f "$claim/at" ]; then
+    rekick_sweep_put "$claim/at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || { rekick_sweep_unlock; return 0; }
+  fi
+  rekick_sweep_unlock
+
+  rc=0
+  if [ "$v" = "승인" ]; then
+    res=$(rekick_derive --predecessor "$pm" --claim "$claim" --verdict 승인 --approval "$appr" --answer-digest "$adig") || rc=$?
+  else
+    res=$(rekick_derive --predecessor "$pm" --claim "$claim" --verdict 자동) || rc=$?
+  fi
+  case "$rc" in
+    0) ;;
+    4) rekick_outcome "$pid" 사람 "${res#*"$REKICK_TAB"}"; return 0 ;;
+    *) rekick_outcome "$pid" 사람 "파생 실패 — ${res#*"$REKICK_TAB"}"; return 0 ;;
+  esac
+  nid=$(printf '%s' "$res" | cut -f2); nman=$(printf '%s' "$res" | cut -f3); docsha=$(printf '%s' "$res" | cut -f4)
+
+  # The record's fields, before anything is committed.
+  prec=$(rekick_backlog_record_of "$pm")
+  auth=$(printf '%s' "$prec" | jq -r '.authorized_at // empty' 2>/dev/null)
+  if [ -z "$auth" ]; then
+    root=$(rekick_position "$pm" | cut -f1)
+    e=$(dr_abs_epoch "$(rekick_field "$(dirname "$pm")/$root.plan.md" '런 정체' '킥오프 일시')" 2>/dev/null) || e=""
+    [ -n "$e" ] && auth=$(jq -nr --argjson e "$e" '$e | todate')
+  fi
+  [ -n "$auth" ] || { rekick_outcome "$pid" 사람 "뿌리 런의 인가 시각을 읽지 못했습니다"; return 0; }
+  base=""
+  [ "$led" != "-" ] && base=$(grep -E '^- `segment` \| ' "$led" 2>/dev/null | grep -v ' | 출처=' \
+                               | tr '|' '\n' | sed -n 's/^ *베이스 sha=//p' | sed 's/[[:space:]]*$//' \
+                               | grep -E '^[0-9a-f]{40}$' | sed -n '1p')
+  [ -n "$base" ] || base=$(printf '%s' "$prec" | jq -r '.base_commit // empty' 2>/dev/null)
+  [ -n "$base" ] || { rekick_outcome "$pid" 사람 "앞 런의 베이스 커밋을 읽지 못했습니다"; return 0; }
+  dl=$(rekick_field "$nman" '인가' '벽시계 마감')
+  lane=$(printf '%s' "$prec" | jq -r '.lane // empty' 2>/dev/null)
+
+  # The pin goes down before the commit: a committed record is dispatchable,
+  # and the run it starts must already find its pin. Taking it again on a
+  # resumed sweep finds the published pin and passes.
+  if [ "${pin%%"$REKICK_TAB"*}" = "usable" ]; then
+    pin_take "$(rundir_of_run_id "$nid")" "${pin#*"$REKICK_TAB"}" \
+      || { rekick_outcome "$pid" 사람 "후속 런 $nid 의 플러그인 핀을 앞 런 사본에서 발행하지 못했습니다"; return 0; }
+  fi
+
+  rekick_sweep_lock || { rekick_sweep_log "$pid: backlog.lock 을 잡지 못했다 — 다음 틱에 커밋한다"; return 0; }
+  if [ -f "$claim/successor" ]; then rekick_sweep_unlock; return 0; fi
+  enq=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  rec=$(jq -cn --arg schema 'cc-pace-backlog v1' --arg id "$nid" --arg mp "$nman" --arg auth "$auth" \
+          --arg enq "$enq" --arg dl "$dl" --arg base "$base" --arg doc "$docsha" --arg lane "$lane" \
+          '{schema: $schema, id: $id, manifest_path: $mp, status: "pending", authorized_at: $auth,
+            enqueued_at: $enq, deadline: $dl, base_commit: $base, doc_sha256: $doc, lane: $lane}') \
+    || { rekick_sweep_unlock; rekick_outcome "$pid" 사람 "백로그 레코드를 만들지 못했습니다"; return 0; }
+  if ! printf '%s\n' "$rec" >> "$REKICK_PACE/backlog.jsonl"; then
+    rekick_sweep_unlock; rekick_sweep_log "$pid: 백로그에 덧붙이지 못했다 — 다음 틱에 다시 커밋한다"; return 0
+  fi
+  rekick_sweep_put "$claim/successor" "$nid" || rekick_sweep_log "$pid: successor 파일을 쓰지 못했다"
+  rekick_sweep_unlock
+  rekick_outcome "$pid" 열림 "$nid"
+}
+
+rekick_sweep_approval() {
+  # rekick_sweep_approval <predecessor> <manifest> <ledger|-> <판정> <원인> <pin>
+  # — raise the re-authorization approval once; derive once a person closed it.
+  local pid="$1" pm="$2" led="$3" v="$4" cause="$5" pin="$6" wc delta="" aid st rc tok disp dig
+  if [ "$v" = "상한" ]; then
+    wc=상한
+    delta=$(( $(rekick_position "$pm" | cut -f3) + 1 ))
+  else
+    wc="$cause"
+  fi
+  case "$wc" in
+    대상미선언|슬라이싱|상한|표면이동) ;;
+    *) rekick_outcome "$pid" 사람 "재인가 승인을 올리는 원인이 아닙니다: $wc"; return 0 ;;
+  esac
+  [ "$led" != "-" ] || { rekick_outcome "$pid" 사람 "시작하지 않은 고리에는 재인가 승인을 올릴 원장이 없습니다"; return 0; }
+  aid=$( RUN_ID="$pid"; gate_rekick_approval_id "$wc" )
+  st=$( LEDGER="$led"; gate_approval_state "$aid" )
+  if [ -z "$st" ]; then
+    rc=0
+    if [ -n "$delta" ]; then
+      bash "$REKICK_SWEEP_GATE" rekick-approval --manifest "$pm" --cause "$wc" --delta "$delta" >/dev/null 2>&1 || rc=$?
+    else
+      bash "$REKICK_SWEEP_GATE" rekick-approval --manifest "$pm" --cause "$wc" >/dev/null 2>&1 || rc=$?
+    fi
+    [ "$rc" = 0 ] || { rekick_outcome "$pid" 사람 "재인가 승인을 올리지 못했습니다 (rc=$rc)"; return 0; }
+    rekick_outcome "$pid" '승인 대기' "$pid#$aid"
+    return 0
+  fi
+  case "$st" in
+    대기) rekick_outcome "$pid" '승인 대기' "$pid#$aid" ;;
+    승인)
+      tok=$( LEDGER="$led"; gate_approval_field "$aid" '응답 토큰' )
+      disp=$( LEDGER="$led"; gate_approval_field "$aid" '처분 사유' )
+      dig=$( LEDGER="$led"; gate_approval_field "$aid" '답변 다이제스트' )
+      if [ -z "$tok" ] || [ "$tok" = "-" ] || [ "$disp" = "자동 해소" ]; then
+        rekick_outcome "$pid" 사람 "재인가 승인 $pid#$aid 이 사람의 답변으로 닫히지 않았습니다"
+      else
+        rekick_sweep_open "$pid" "$pm" "$led" 승인 "$pid#$aid" "$dig" "$pin"
+      fi ;;
+    *) rekick_outcome "$pid" 사람 "재인가 승인 $pid#$aid 이 $st 로 닫혔습니다" ;;
+  esac
+}
+
+rekick_sweep_one() {
+  # rekick_sweep_one <predecessor> <manifest> <ledger|-> <run dir|-> — one
+  # candidate, start to finish.
+  local pid="$1" pm="$2" led="$3" rd="$4" oc out v cause reason pin other
+  [ -f "$pm" ] || { rekick_sweep_log "$pid: 매니페스트가 없다: $pm"; return 0; }
+  pm="$(cd "$(dirname "$pm")" && pwd)/$(basename "$pm")"
+  # A manifest with no consent row is not a candidate: it is filtered with no
+  # verdict, no claim and no outcome.
+  [ -n "$(rekick_consent_row "$pm")" ] || return 0
+  oc=$(rekick_outcome_of "$pid")
+  if [ "$REKICK_SWEEP_DRY" != 1 ]; then
+    case "${oc%%"$REKICK_TAB"*}" in 열림|사람) return 0 ;; esac
+  fi
+  if [ "$rd" != "-" ] && ! rekick_sweep_quiet "$pid" "$rd" "$led"; then
+    [ "$REKICK_SWEEP_DRY" = 1 ] && printf '%s\t%s\t%s\t정지 대기\n' "$pid" "$pm" "$led"
+    return 0
+  fi
+  pin=$(rekick_pin_state "$pm")
+  out=$(cc_rekick_verdict "$pm" --lane "$REKICK_SWEEP_LANE" --pin "${pin%%"$REKICK_TAB"*}")
+  v=$(printf '%s' "$out" | cut -f1); cause=$(printf '%s' "$out" | cut -f2); reason=$(printf '%s' "$out" | cut -f3)
+  if [ "$REKICK_SWEEP_DRY" = 1 ]; then
+    printf '%s\t%s\t%s\t%s\n' "$pid" "$pm" "$led" "$v"
+    return 0
+  fi
+  [ "${pin%%"$REKICK_TAB"*}" = "unusable" ] && [ "$v" = "사람" ] && reason="$reason — ${pin#*"$REKICK_TAB"}"
+  case "$v" in
+    없음) return 0 ;;
+    진행)
+      case "$reason" in
+        '커밋 대기'*) rekick_sweep_commit_wait "$pid" "$pm" "$rd" "$led" "$reason" ;;
+      esac
+      return 0 ;;
+    사람) rekick_outcome "$pid" 사람 "$reason"; return 0 ;;
+  esac
+  if other=$(rekick_person_kickoff "$pm"); then
+    rekick_outcome "$pid" 사람 "사람이 같은 문서로 런 $other 을 열었습니다 — 후속을 만들지 않습니다"
+    return 0
+  fi
+  case "$v" in
+    자동) rekick_sweep_open "$pid" "$pm" "$led" 자동 "" "" "$pin" ;;
+    승인|상한) rekick_sweep_approval "$pid" "$pm" "$led" "$v" "$cause" "$pin" ;;
+    *) rekick_outcome "$pid" 사람 "알 수 없는 판정: $v" ;;
+  esac
+}
+
+rekick_sweep_overdue() {
+  # Runs past their deadline with no end token are closed by the gate's own
+  # verb, which judges whether the driver is still alive. A manifest with no
+  # consent row is left alone, here as everywhere in the sweep.
+  local root="$1" lp rd led id m dl e
+  for lp in "$root"/*/ledger-path; do
+    [ -f "$lp" ] || continue
+    rd=$(dirname "$lp")
+    [ -e "$rd/rekick-candidate" ] && continue
+    led=$(sed -n '1p' "$lp" 2>/dev/null)
+    [ -f "$led" ] || continue
+    id=$(basename "$rd")
+    m="$(dirname "$led")/$id.plan.md"
+    [ -f "$m" ] || continue
+    [ -n "$(rekick_consent_row "$m")" ] || continue
+    rekick_end_token "$led" >/dev/null 2>&1 && continue
+    dl=$(rekick_field "$m" '인가' '벽시계 마감')
+    e=$(dr_abs_epoch "$dl" 2>/dev/null) || continue
+    [ "$(date -u +%s)" -ge "$e" ] || continue
+    if [ "$REKICK_SWEEP_DRY" = 1 ]; then
+      printf '%s\t%s\t%s\t마감 경과\n' "$id" "$m" "$led"
+      continue
+    fi
+    bash "$REKICK_SWEEP_GATE" end-overdue --manifest "$m" >/dev/null 2>&1 \
+      || rekick_sweep_log "$id: end-overdue 가 실패했다 (rc=$?)"
+  done
+}
+
+rekick_sweep_parked_successors() {
+  # A successor the dispatcher parked before it started is a person's,
+  # whatever the reason — except `deadline-passed` on a record whose run never
+  # started, which is a candidate of its own (`연기마감`).
+  local c pid nid oc rec reason mp
+  for c in "$REKICK_PACE"/rekick/*/successor; do
+    [ -f "$c" ] || continue
+    pid=$(basename "$(dirname "$c")")
+    nid=$(sed -n '1p' "$c")
+    oc=$(rekick_outcome_of "$pid")
+    [ "${oc%%"$REKICK_TAB"*}" = "열림" ] || continue
+    rec=$(jq -R -c --arg id "$nid" 'fromjson? | select(.id == $id)' "$REKICK_PACE/backlog.jsonl" 2>/dev/null | tail -1)
+    [ "$(printf '%s' "$rec" | jq -r '.status // empty' 2>/dev/null)" = "parked" ] || continue
+    reason=$(printf '%s' "$rec" | jq -r '.park_reason // empty')
+    if [ "$reason" = "deadline-passed" ]; then
+      mp=$(printf '%s' "$rec" | jq -r '.manifest_path // empty')
+      [ -f "$(dirname "$mp")/$nid.md" ] || continue
+    fi
+    rekick_outcome "$pid" 사람 "후속 런 $nid 의 레코드가 시작 전에 park 됐습니다 — ${reason:-(사유 없음)}"
+  done
+}
+
+rekick_sweep() {
+  # successor.sh sweep [--dry-run] [--pace-root <dir>] [--fast] [--lane present|absent]
+  local pace="" root f m led id mp
+  REKICK_SWEEP_DRY=0; REKICK_SWEEP_LANE=absent
+  local fast=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run)   REKICK_SWEEP_DRY=1; shift ;;
+      --fast)      fast=1; shift ;;
+      --pace-root) pace="${2:-}"; shift 2 ;;
+      --lane)
+        case "${2:-}" in present|absent) REKICK_SWEEP_LANE="$2" ;; *) printf 'successor.sh sweep: --lane 은 present 나 absent 입니다\n' >&2; return 2 ;; esac
+        shift 2 ;;
+      *) printf 'successor.sh sweep: 알 수 없는 인자: %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+  [ -n "$pace" ] || pace=$(run_pace_root)
+  REKICK_PACE="$pace"
+  # The gate's readers of the pace root — the fleet run markers above all —
+  # must read the root this sweep was handed.
+  RUN_PACE_ROOT="$pace"; export RUN_PACE_ROOT
+  REKICK_SWEEP_GATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gate.sh"
+  root=$(dirname "$(rundir_of_run_id x)")
+  trap 'rekick_sweep_unlock' EXIT
+
+  rekick_sweep_overdue "$root"
+  [ "$REKICK_SWEEP_DRY" = 1 ] || rekick_sweep_parked_successors
+  [ "$fast" = 1 ] && return 0
+
+  for f in "$root"/*/rekick-candidate; do
+    [ -f "$f" ] || continue
+    m=$(sed -n 's/^매니페스트=//p' "$f" | sed -n '1p')
+    led=$(sed -n 's/^원장=//p' "$f" | sed -n '1p')
+    id=$(sed -n 's/^런 id=//p' "$f" | sed -n '1p')
+    [ -n "$id" ] || id=$(basename "$(dirname "$f")")
+    rekick_sweep_one "$id" "$m" "${led:--}" "$(dirname "$f")"
+  done
+
+  # Records the dispatcher parked for their deadline before they ever started.
+  [ -f "$pace/backlog.jsonl" ] || return 0
+  jq -R -r --arg s 'cc-pace-backlog v1' \
+     'fromjson? | select(.schema == $s and .status == "parked" and .park_reason == "deadline-passed") | .manifest_path // empty' \
+     "$pace/backlog.jsonl" 2>/dev/null | awk '!seen[$0]++' | while IFS= read -r mp; do
+    [ -f "$mp" ] || continue
+    led=$(rekick_ledger_of "$mp") || continue
+    [ -f "$led" ] && continue
+    id=$(rekick_hdr "$mp" 'run-id')
+    rekick_sweep_one "$id" "$mp" - -
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Sourced: definitions only.
 # ---------------------------------------------------------------------------
 if [ "${BASH_SOURCE[0]}" != "$0" ] || [ "${CC_REKICK_SOURCE_ONLY:-0}" = "1" ]; then
@@ -966,5 +1472,6 @@ case "${1:-}" in
   verdict) shift; cc_rekick_verdict "$@" ;;
   id)      shift; nid=$(rekick_successor_id "$@") || { printf 'successor.sh: id 인자가 맞지 않습니다\n' >&2; exit 2; }; printf '%s\n' "$nid" ;;
   derive)  shift; rekick_derive "$@"; exit $? ;;
-  *) printf 'successor.sh: 하위 명령은 verdict · id · derive 입니다\n' >&2; exit 2 ;;
+  sweep)   shift; rekick_sweep "$@"; exit $? ;;
+  *) printf 'successor.sh: 하위 명령은 verdict · id · derive · sweep 입니다\n' >&2; exit 2 ;;
 esac

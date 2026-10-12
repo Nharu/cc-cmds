@@ -114,6 +114,12 @@
 #                    the cause). The seat in the person's turn and a kickoff
 #                    taking over an earlier run call it; a stage or a shift is
 #                    refused, and so is a run with a live shift or stage
+#   gate.sh rekick-approval --manifest <path>
+#                    --cause <대상미선언|슬라이싱|상한|표면이동> [--delta <값>]
+#                    raises the re-authorization approval (kind W) on a run that
+#                    has ended, once per cause, and prints `<run>#<id>\t<상태>`.
+#                    Only `close` answers it; a stage or a shift is refused, and
+#                    so is any other cause, `판단정지` included
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -12217,7 +12223,13 @@ gate_surface_check() {
     # until a person touches THAT" — so it takes the per-run replace slot, and
     # the title names the one action actually available here, which is to open a
     # fresh run because this one's baseline cannot be taken again.
-    if gate_may_raise_banner && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
+    #
+    # A MANIFEST WITH A `재킥오프` ROW HANDS THE NOTICE TO THE WATCHER. Opening
+    # the next run is then the successor sweep's to decide, so telling a person
+    # to do it would be the wrong instruction; the watcher's invalidation arm
+    # says the run ended and that the verdict is pending.
+    if [ -z "$(manifest_rekick_rows | head -1)" ] \
+       && gate_may_raise_banner && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
       : > "$RUN_DIR/notify.announced-void" 2>/dev/null || true
       cc_notify_fire rekick \
         "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
@@ -12473,6 +12485,7 @@ gate_main() {
   local wait_interval="" wait_timeout="" nonce=""
   local fields="" fields_seen=0
   local end_cause="" end_successor=""
+  local rekick_delta="" rekick_delta_seen=0
   GATE_RESUME=""; export GATE_RESUME
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
@@ -12526,6 +12539,7 @@ gate_main() {
       --nonce)           nonce="$2"; shift 2 ;;
       --cause)           end_cause="$2"; shift 2 ;;
       --successor)       end_successor="$2"; shift 2 ;;
+      --delta)           rekick_delta="$2"; rekick_delta_seen=1; shift 2 ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
       # token is another flag or the `--` separator) selects the default list;
       # the value is never read as a filename, so `--fields --` cannot swallow
@@ -12586,12 +12600,22 @@ gate_main() {
   fi
   # The same rule for the two closing flags: they decide something on one verb
   # only. Their vocabulary is checked in that verb, after the run is known.
-  if [ -n "$end_cause" ] || [ -n "$end_successor" ]; then
+  # `--cause` also names the re-authorization approval's cause, and `--delta`
+  # rides that verb alone.
+  if [ -n "$end_successor" ] && [ "$verb" != "end-abandoned" ]; then
+    printf 'gate: --successor is used only with end-abandoned (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
+  if [ -n "$end_cause" ]; then
     case "$verb" in
-      end-abandoned) ;;
-      *) printf 'gate: --cause and --successor are used only with end-abandoned (verb received: %s)\n' "$verb" >&2
+      end-abandoned|rekick-approval) ;;
+      *) printf 'gate: --cause is used only with end-abandoned and rekick-approval (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
+  fi
+  if [ "$rekick_delta_seen" = "1" ] && [ "$verb" != "rekick-approval" ]; then
+    printf 'gate: --delta is used only with rekick-approval (verb received: %s)\n' "$verb" >&2
+    exit 2
   fi
   # `wait` is not an act: it writes no row, so a digest bound to the ledger's
   # state has nothing to bind to, and accepting one would let a caller believe
@@ -13203,6 +13227,12 @@ GATE_DRIFT_DIRS
       # taking over this run: the run did not end at any boundary, so no
       # acting path reaches an end row for it.
       gate_verb_end_abandoned "$end_cause" "$end_successor"
+      ;;
+    rekick-approval)
+      # Writing, and the writer is the successor sweep outside every run: it
+      # raises the one question a widening cause needs on the ledger of a run
+      # that has ended, and only a person's close answers it.
+      gate_verb_rekick_approval "$end_cause" "$rekick_delta"
       ;;
     *)
       printf 'gate: unknown verb: %s\n' "$verb" >&2; exit 2 ;;
@@ -20670,6 +20700,118 @@ gate_verb_end_abandoned() {
     포기)     why="사람이 이 런을 포기했다" ;;
   esac
   gate_end_run "$cause" "$why" 해당없음 "$cause"
+}
+
+readonly GATE_REKICK_APPROVAL_CAUSES="대상미선언 슬라이싱 상한 표면이동"
+
+gate_rekick_approval_id() {
+  # gate_rekick_approval_id <원인> — the id of this run's re-authorization
+  # approval for one cause: `W-<sha256(RUN_ID + W + 원인) 앞 8자>`.
+  #
+  # THE CAUSE IS THE WHOLE BINDING. The run has ended, so nothing it could read
+  # moves any more; one cause is one question, and a second call for the same
+  # cause lands on the same id. `RUN_ID` stays in the salt for the reason the
+  # boundary ids carry it.
+  printf 'W-%s' "$(printf '%s' "${RUN_ID}W$1" | shasum -a 256 | cut -c1-8)"
+}
+
+gate_rekick_park_targets() {
+  # The `대상` of the park rows that carry `재킥 원인=대상미선언`, deduplicated
+  # and joined by `,` — the targets a successor would have to add.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  awk 'index($0, "- `blocked` | ") == 1 {
+         n = split($0, f, / \| /); park = 0; v = ""
+         for (i = 2; i <= n; i++) {
+           if (f[i] == "재킥 원인=대상미선언") park = 1
+           if (index(f[i], "대상=") == 1) { v = f[i]; sub(/^대상=/, "", v) }
+         }
+         if (park && v != "-" && v != "" && !(v in s)) { s[v] = 1; o = o (o == "" ? "" : ",") v }
+       }
+       END { printf "%s", o }' "$LEDGER" 2>/dev/null
+}
+
+gate_verb_rekick_approval() {
+  # gate_verb_rekick_approval <원인> [<변경분>] — raise the re-authorization
+  # approval (kind W) on this ENDED run's ledger, once per cause.
+  #
+  # THE QUESTION IS WHETHER A SUCCESSOR MAY BE OPENED WITH ONE CHANGE. A cause
+  # that widens what the run may do — a target it was not given, a slicing the
+  # document had to fix, a chain that reached its cap, a surface its own merge
+  # moved — is never derived on its own; a person closes this approval and the
+  # successor carries the change and the answer's digest.
+  #
+  # `판단정지` IS NOT ONE OF THEM, and neither is anything else. No stage of the
+  # fixed graph has an input that would carry a person's answer to a judgment
+  # stop, so a successor would stop at the same place again; that cause goes to
+  # a person, and here it is refused with nothing written.
+  #
+  # ONLY OUTSIDE EVERY STAGE AND SHIFT, the rule `end-abandoned` follows: the
+  # caller is the sweep, which runs beside the runs rather than inside one.
+  #
+  # NEVER AUTO-RESOLVED. The row carries no recommendation, and no closing path
+  # other than `close` names its cut point; a person's answer frame is the only
+  # way it leaves `대기`. Closing works on a run that has `done`: `gate_close`
+  # reads the transcript and the ledger, and neither depends on the run going on.
+  #
+  # Prints `<run-id>#<승인 id>\t<상태>` on stdout, issued or found.
+  local cause="$1" delta="${2:-}" t ok=0 id st q cur
+  if cc_caller_is_stage || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+    warn "rekick-approval is called by the successor sweep outside every run — not by a stage or a shift"
+    return "$GATE_EXIT_RULE"
+  fi
+  for t in $GATE_REKICK_APPROVAL_CAUSES; do [ "$t" = "$cause" ] && ok=1; done
+  if [ "$ok" != "1" ]; then
+    if [ "$cause" = "판단정지" ]; then
+      warn "--cause 판단정지 is not re-authorized — a judgment stop goes to a person, because no fixed-graph stage can read the answer; nothing is written"
+    else
+      warn "--cause has to be one of: $GATE_REKICK_APPROVAL_CAUSES (received: ${cause:-(none)}); nothing is written"
+    fi
+    return "$GATE_EXIT_VOCAB"
+  fi
+  if ! gate_end_token >/dev/null 2>&1; then
+    warn "this run has no end token — a re-authorization approval is raised only on a run that ended; nothing is written"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$cause" in
+    대상미선언)
+      [ -n "$delta" ] || delta=$(gate_rekick_park_targets)
+      delta="새 대상 행 ${delta:-(park 행의 대상 미상)}" ;;
+    슬라이싱)
+      [ -z "$delta" ] || { warn "--delta is not taken with 슬라이싱 — the change is the document digest read at close"; return "$GATE_EXIT_VOCAB"; }
+      delta="닫을 때의 설계 문서 sha256" ;;
+    상한)
+      case "$delta" in
+        ''|*[!0-9]*|0*) warn "--delta with 상한 is the new chain cap, a positive integer (received: ${delta:-(none)})"; return "$GATE_EXIT_VOCAB" ;;
+      esac
+      cur=$(manifest_row_fields "$(manifest_rekick_rows | head -1)" '연쇄 상한' 2>/dev/null || true)
+      case "$cur" in
+        ''|*[!0-9]*) ;;
+        *) [ "$delta" -gt "$cur" ] || { warn "--delta $delta does not raise the chain cap $cur"; return "$GATE_EXIT_VOCAB"; } ;;
+      esac
+      delta="새 연쇄 상한 $delta" ;;
+    표면이동)
+      [ -z "$delta" ] || { warn "--delta is not taken with 표면이동 — the chain's own merge moved the surface, so the approval only accepts it"; return "$GATE_EXIT_VOCAB"; }
+      delta="없음(받아들임만)" ;;
+  esac
+  id=$(gate_rekick_approval_id "$cause")
+  st=$(gate_approval_state "$id")
+  # ONE APPROVAL PER CAUSE, WHATEVER BECAME OF IT. Open, it is waited on;
+  # answered, the answer stands — a refused re-authorization re-raised on the
+  # next sweep would ask the same question of the same ended run every tick.
+  if [ -n "$st" ]; then
+    printf '%s#%s\t%s\n' "$RUN_ID" "$id" "$st"
+    return 0
+  fi
+  q=$(gate_row_safe "끝난 런 $RUN_ID 의 후속 런을 재인가할까요 — 원인 $cause · 변경분 $delta" 400)
+  gate_approval_sidecar_write "$id" issue '질문' "$q" \
+    || warn "could not write the question into the approval sidecar — the row is issued, but there is no block where the anchor $(gate_approval_sidecar_anchor "$id") points"
+  gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=재인가" \
+    "유도 절단점=-" "행위 다이제스트=-" "구속 튜플=W/$cause" "막는 세그먼트=-" \
+    "종류=W" "재인가 원인=$cause" "변경분=$(gate_row_safe "$delta" 300)" \
+    "질문 문면=$q" "답변 문면=-" "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
+    "발행 시각=$(now_iso)" "해소 시각=-"
+  gate_warn_canon_prompt "$id" "$q"
+  printf '%s#%s\t%s\n' "$RUN_ID" "$id" "대기"
 }
 
 gate_run_ended_ok() {

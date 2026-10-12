@@ -71,7 +71,20 @@ FLEET="$FX/fleet.sh"
 cat > "$FX/gate.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'gate %s CLAUDE_CONFIG_DIR=%s\n' "$*" "${CLAUDE_CONFIG_DIR:-}" >> "$TEST_LOG_DIR/gate.log"
+# TEST_GATE_STOP: the snapshot stops the way the driver's `die` does, with
+# that text after the stop tag.
+if [ -n "${TEST_GATE_STOP:-}" ]; then
+  printf '2026-10-13T00:00:00Z [run][stop] %s\n' "$TEST_GATE_STOP" >&2
+  exit 1
+fi
 exit 0
+EOF
+# The successor sweep stub: every call logged with the number of driver runs
+# that came before it, so the order against `run.sh` is readable.
+cat > "$FX/successor.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s runs=%s\n' "$*" "$(cat "$TEST_LOG_DIR/run.log" 2>/dev/null | grep -c '')" >> "$TEST_LOG_DIR/successor.log"
+exit "${TEST_SWEEP_RC:-0}"
 EOF
 cat > "$FX/watch.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -623,6 +636,33 @@ check "run.sh 는 앞단에서 그 계정의 홈으로 돈다" "$(sed -n '1p' "$
 check "집은 레인(인벤토리 id)이 레코드에 적힌다" "$(backlog_field a1 .dispatched_lane)" "u1"
 [ -s "$WT_MAIN/docs/pipeline-run/R1.md" ] && ok "보고서 스텁이 없으면 만든다" || bad "보고서 스텁이 없으면 만든다" "absent"
 check "기동이 끝나면 실행 표지가 남지 않는다" "$(ls "$PACE/busy" 2>/dev/null | count_lines /dev/stdin)" "0"
+check "기동한 틱은 적격성 앞에서 sweep 을, run.sh 뒤에 빠른 sweep 을 한 번씩 부른다" \
+  "$(tr '\n' ';' < "$TEST_LOG_DIR/successor.log")" \
+  "sweep --pace-root $PACE --lane present runs=0;sweep --pace-root $PACE --lane present --fast runs=1;"
+
+# --- the successor sweep: every tick, before eligibility ----------------------
+d_fresh d-sweep sw1
+fleet dispatch xx >/dev/null 2>&1
+check "부적격 레인의 틱에서도 sweep 이 돈다" "$(cat "$TEST_LOG_DIR/successor.log")" "sweep --pace-root $PACE --lane present runs=0"
+clear_logs
+TEST_SWEEP_RC=3 fleet dispatch u1 >/dev/null 2>"$WORK/sweep-fail.err"
+check "sweep 실패는 디스패치를 막지 않는다" "$(backlog_status sw1)" "done"
+check "sweep 실패는 로그 한 줄이다" "$(grep -c '후속 런 sweep 이 실패했다 (rc=3)' "$WORK/sweep-fail.err" || true)" "1"
+
+# --- a successor the admission check refuses is parked, never started ---------
+d_fresh d-lineage ln1
+TEST_GATE_STOP='lineage-invalid — (사) 클레임의 at 이 다릅니다' fleet dispatch u1 >/dev/null 2>"$WORK/lineage.err"
+check "lineage-invalid 로 멈춘 snapshot 의 레코드는 park 된다" \
+  "$(backlog_field ln1 '.status + " " + .park_reason')" "parked lineage-invalid"
+sleep 0.3
+check "그 레코드에는 감시자도 run.sh 도 띄우지 않는다" \
+  "$(count_lines "$TEST_LOG_DIR/watch.log")/$(count_lines "$TEST_LOG_DIR/run.log")/$(count_lines "$TEST_LOG_DIR/checks.log")" "0/0/0"
+check "park 뒤에 실행 표지가 남지 않는다" "$(ls "$PACE/busy" 2>/dev/null | count_lines /dev/stdin)" "0"
+check "snapshot 의 멈춤 문면은 로그에 그대로 남는다" "$(grep -c 'lineage-invalid — (사) 클레임의 at' "$WORK/lineage.err" || true)" "1"
+d_fresh d-snapfail sf1
+TEST_GATE_STOP='manifest check failed — 다른 이유' fleet dispatch u1 >/dev/null 2>&1
+check "다른 snapshot 실패는 오늘처럼 기동한다" "$(backlog_status sf1)/$(count_lines "$TEST_LOG_DIR/run.log")" "done/1"
+rm -rf "$RUNDIR"
 
 # --- a linked worktree as the origin: the ledger is the main worktree's ---------
 # run.sh writes the run ledger under the parent of the git common dir, so a run
