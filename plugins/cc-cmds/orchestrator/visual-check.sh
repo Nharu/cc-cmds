@@ -6,10 +6,10 @@
 #   scan <screen file>... [--bans <file>] [--lifts <system.md>]
 #       Print one finding per (rule, line) as `<rule id> <file>:<line> <text>`.
 #       Comments (`<!-- -->`, `/* */`, a script's `//` line-end comment) are
-#       stripped first — a `/*` or `//` inside a quoted string is not one, and
-#       `</style`/`</script` ends its block whatever comment or string is open
-#       — and every file is split into three streams that keep its line
-#       numbers:
+#       stripped first — a `/*` or `//` inside a quoted string is not one,
+#       `</style`/`</script` ends its block whatever comment or string is open,
+#       and a quote in a tag opens a value only right after `=` — and every
+#       file is split into three streams that keep its line numbers:
 #         css     — `<style>` content and `style="…"` attribute values
 #         markup  — everything outside `<script>` (style text included)
 #         script  — `<script>` content
@@ -55,7 +55,9 @@
 #   1 — scan: at least one finding; approval: none or void; bundle: no sidecar
 #   2 — usage error, an unreadable file, a malformed ban list or pattern, a
 #       screen that ends inside a comment, a tag, a template string or an
-#       unclosed <style>/<script> (scan and size)
+#       unclosed <style>/<script>, or whose CSS or script block comment is
+#       still open at its </style>/</script> or closing attribute quote
+#       (scan and size)
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`; BSD
 # and GNU userland alike; `grep -E` only.
@@ -109,15 +111,17 @@ REF_IMPORT="@import[[:space:]]+(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ})"
 # looked for before anything else, as the HTML parser does, so a comment or a
 # string can never carry past it; quoted strings and script regex literals are
 # tracked so a `/*` or `//` inside one stays text. A file that ends inside a comment, a tag, a template
-# string or an unclosed <style>/<script> has lost its parse: the reason goes to
-# stderr and the function fails with 2, so it is never read as "no finding".
+# string or an unclosed <style>/<script> has lost its parse, and so has one whose
+# block comment is still open where its block or style attribute closes: the
+# reason goes to stderr and the function fails with 2, so it is never read as
+# "no finding".
 # The parser walks bytes, so awk runs under the C locale: in a UTF-8 locale
 # macOS awk aborts with `illegal byte sequence` on a substr that cuts a
 # multi-byte character (Hangul in a string or comment) in half. A character's
 # bytes always land in one stream, so the streams stay valid text.
 split_streams() {
   LC_ALL=C awk -v out="$2" -v file="$1" '
-    BEGIN { mode = "html"; hc = 0; cc = 0; jc = 0; intag = 0; q = ""; sattr = 0; cq = ""; jq = "" }
+    BEGIN { mode = "html"; hc = 0; cc = 0; jc = 0; intag = 0; q = ""; aeq = 0; aval = 0; sattr = 0; cq = ""; jq = ""; lost = "" }
     {
       line = $0; n = length(line); css = ""; mk = ""; js = ""; jline = 0; esc = 0; i = 1
       while (i <= n) {
@@ -126,7 +130,10 @@ split_streams() {
         if (mode == "html") {
           if (intag) {
             if (q != "") {
-              if (c == q) { q = ""; sattr = 0; cc = 0; cq = ""; mk = mk c; tag = tag c; i++; continue }
+              if (c == q) {
+                if (sattr && cc && lost == "") lost = "style 속성의 CSS 주석이 닫히지 않았다 (" NR "행)"
+                q = ""; sattr = 0; cc = 0; cq = ""; mk = mk c; tag = tag c; i++; continue
+              }
               if (sattr) {
                 if (cc) { if (substr(line, i, 2) == "*/") { cc = 0; i += 2 } else i++; continue }
                 if (cq != "") { if (c == cq) cq = "" }
@@ -136,31 +143,41 @@ split_streams() {
               }
               mk = mk c; tag = tag c; i++; continue
             }
-            if (c == "\"" || c == "\047") {
-              q = c
+            # As in the HTML tokenizer, a quote opens a value only where a value
+            # starts — after `=` and optional whitespace. A quote inside an
+            # unquoted value or an attribute name is text, so an apostrophe in
+            # `alt=Bob<apostrophe>s` does not pair with one further down the file.
+            if ((c == "\"" || c == "\047") && aeq) {
+              q = c; aeq = 0
               if (tolower(tag) ~ /[[:space:]]style[[:space:]]*=[[:space:]]*$/) sattr = 1
               mk = mk c; tag = tag c; i++; continue
             }
             if (c == ">") {
-              intag = 0; mk = mk c; i++
+              intag = 0; aeq = 0; aval = 0; mk = mk c; i++
               if (!closing && tagname == "style") mode = "style"
               else if (!closing && tagname == "script") { mode = "script"; jp = ""; jw = "" }
               continue
             }
             if (naming) { if (c ~ /[A-Za-z0-9-]/) tagname = tagname tolower(c); else naming = 0 }
+            if (c ~ /[[:space:]]/) aval = 0
+            else if (c == "=" && !aval) aeq = 1
+            else if (aeq) { aeq = 0; aval = 1 }
             mk = mk c; tag = tag c; i++; continue
           }
           if (substr(line, i, 4) == "<!--") { hc = 1; i += 4; continue }
           nx = substr(line, i + 1, 1)
           if (c == "<" && (nx ~ /[A-Za-z]/ || nx == "/")) {
-            intag = 1; closing = 0; tagname = ""; naming = 1
+            intag = 1; closing = 0; tagname = ""; naming = 1; aeq = 0; aval = 0
             if (nx == "/") { closing = 1; mk = mk "</"; tag = "</"; i += 2; continue }
             mk = mk c; tag = "<"; i++; continue
           }
           mk = mk c; i++; continue
         }
         if (mode == "style") {
-          if (tolower(substr(line, i, 7)) == "</style") { mode = "html"; cc = 0; cq = ""; continue }
+          if (tolower(substr(line, i, 7)) == "</style") {
+            if (cc && lost == "") lost = "CSS 주석이 </style> 앞에서 닫히지 않았다 (" NR "행)"
+            mode = "html"; cc = 0; cq = ""; continue
+          }
           if (cc) { if (substr(line, i, 2) == "*/") { cc = 0; i += 2 } else i++; continue }
           if (cq != "") {
             if (c == "\\") { t = substr(line, i, 2); css = css t; mk = mk t; esc = (i == n); i += 2; continue }
@@ -171,7 +188,13 @@ split_streams() {
           if (substr(line, i, 2) == "/*") { cc = 1; i += 2; continue }
           css = css c; mk = mk c; i++; continue
         }
-        if (tolower(substr(line, i, 8)) == "</script") { mode = "html"; jc = 0; jq = ""; jr = 0; jrc = 0; jline = 0; continue }
+        # A block comment still open at the closing tag swallowed the rest of
+        # the block: either the script is broken or a `/*` was misread, and
+        # both are a lost parse, not a clean block.
+        if (tolower(substr(line, i, 8)) == "</script") {
+          if (jc && lost == "") lost = "스크립트 주석이 </script> 앞에서 닫히지 않았다 (" NR "행)"
+          mode = "html"; jc = 0; jq = ""; jr = 0; jrc = 0; jline = 0; continue
+        }
         if (jline) { i++; continue }
         if (jc) { if (substr(line, i, 2) == "*/") { jc = 0; i += 2 } else i++; continue }
         if (jq != "") {
@@ -190,10 +213,9 @@ split_streams() {
         }
         if (c == "\"" || c == "\047" || c == "`") { jq = c; jp = "a"; jw = ""; js = js c; i++; continue }
         if (substr(line, i, 2) == "/*") { jc = 1; i += 2; continue }
-        if (substr(line, i, 2) == "//") {
-          p = (i == 1) ? "" : substr(line, i - 1, 1)
-          if (p == "" || p ~ /[[:space:];{})]/) { jline = 1; i += 2; continue }
-        }
+        # Strings and regex literals are consumed above, so a `//` that gets
+        # here is a line comment whatever stands before it (`"a"// note`).
+        if (substr(line, i, 2) == "//") { jline = 1; i += 2; continue }
         # A `/` where no operand can stand (script start, after an operator or
         # an opening bracket, or after a keyword such as `return`) opens a
         # regex literal; after a name, a number or a closing bracket it divides.
@@ -215,6 +237,7 @@ split_streams() {
     }
     END {
       why = ""
+      if (lost != "") { print "visual-check.sh: " file " 파싱을 잃었다 — " lost > "/dev/stderr"; exit 2 }
       if (hc) why = "HTML 주석이 닫히지 않았다"
       else if (cc) why = "CSS 주석이 닫히지 않았다"
       else if (jc) why = "스크립트 주석이 닫히지 않았다"

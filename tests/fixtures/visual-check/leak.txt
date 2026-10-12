@@ -21,3 +21,16 @@ V|var d = '#00ff00';
 V|var e = '#0000ff';
 -|</script>
 -|<p>end</p>
+-|<script>
+-|input.accept = "image/png"// was image/* before
+V|var f = '#111111';
+-|var o = { k: 'v',// was */*
+V|var g = '#222222';
+-|var a = ['a']// glob src/*
+V|var m = '#333333';
+-|</script>
+-|<img alt=Bob's src="data:,">
+-|<style>
+V|.c { color: #444444; }
+-|</style>
+-|<p>It's fine</p>
