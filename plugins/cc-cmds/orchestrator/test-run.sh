@@ -5725,7 +5725,9 @@ check "계속 헬퍼 안에 CLI 직접 호출이 없다" \
 CONT="$WORK/continue"; mkdir -p "$CONT"
 # cont_case <라벨> <모드> <앞선 계속 수> — 모드: hollow(끝까지 산출물 없음) ·
 # done1(첫 계속에서 산출) · notr(트랜스크립트 없음) · zero(0턴) · judg(이 파견
-# id 로 대기 판단). 환경으로 파견 id(CONT_DID, 기본 S4:sg:1)·행 세그먼트
+# id 로 대기 판단) · diedwork/died(첫 계속이 산출한 뒤/산출 없이 0 이 아닌 코드로
+# 죽음) · notrdiedwork/notrdied(트랜스크립트가 없어 띄운 새 프로세스 재시도가 같은
+# 모양으로 죽음). 환경으로 파견 id(CONT_DID, 기본 S4:sg:1)·행 세그먼트
 # (CONT_RSEG, 기본 sg)·행 종류(CONT_RKIND, 기본 S4)와, 다른 스테이지가 낸 대기
 # 판단의 `막는 세그먼트` 목록(CONT_OPEN, 공백 구분)을 사례마다 준다. 판단 키는
 # 드라이버 호출부와 같이 파견 id 다.
@@ -5758,11 +5760,22 @@ cont_case() {
           "$CONT_SID" "$turns" > "$(stage_log_path "$s")"
       fi
       [ "$mode" = "done1" ] && [ -n "${STAGE_RESUME:-}" ] && : > "$d/artifact"
+      # died 계열 — 첫 시도 뒤의 시도(계속이든 새 프로세스 재시도든)가 0 이 아닌
+      # 코드로 죽는다. *diedwork 는 그 전에 커밋했다.
+      if [ "$3" != "/cc-cmds:implement-unattended 원래 프롬프트" ]; then
+        case "$mode" in
+          *died|*diedwork)
+            printf '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","session_id":"%s"}\n{"type":"result","num_turns":%s,"stop_reason":"end_turn"}\n' \
+              "$CONT_SID" "$turns" > "$(stage_log_path "$s")"
+            case "$mode" in *diedwork) : > "$d/artifact" ;; esac
+            printf '1' > "$RUN_DIR/$s.rc"; return 0 ;;
+        esac
+      fi
       printf '0' > "$RUN_DIR/$s.rc"
       return 0
     }
     cont_pred() { [ -f "$d/artifact" ]; }
-    [ "$mode" = "notr" ] || : > "$d/cfg/projects/p/$CONT_SID.jsonl"
+    case "$mode" in notr*) : ;; *) : > "$d/cfg/projects/p/$CONT_SID.jsonl" ;; esac
     if [ "$mode" = "judg" ]; then
       printf -- '- `승인` | 승인 id=J-1 | 상태=대기 | 절단점=판단 | 막는 세그먼트=%s\n' "$did" >> "$LEDGER"
     fi
@@ -6081,6 +6094,28 @@ check "재시도는 재개가 아니고 원래 프롬프트를 쓴다" \
 check "재시도 소진은 구별되는 park 사유다" "$(cont_field notr reason | grep -c '^재시도 소진 — ' || true)" "1"
 check "재시도도 자기 stage-result 행을 쓴다" \
   "$(grep -cF '파견 id=S4:sg:1.retry ' "$CONT/notr/ledger.md")" "1"
+
+# 구동기 사이클 1 의 프로세스 B 는 프로세스 A 의 계속으로 들어가므로, 일을 마친 뒤
+# 죽는 흔한 모양이 이 경로를 지난다. 커밋을 남기고 0 이 아닌 코드로 죽은 계속과 새
+# 프로세스 재시도는 술어로 받아들이고, 커밋 없이 죽은 것은 크래시 재시도 없이 그
+# 부류로 멈춘다.
+cont_case diedwork diedwork
+check "S4 계속이 커밋한 뒤 0 이 아닌 코드로 죽으면 술어로 받아들인다" \
+  "$(cont_field diedwork rc)/$(cont_spawns diedwork)" "0/1"
+check "그 계속의 행은 크래시 부류와 술어 성립을 함께 싣는다" \
+  "$(grep -F '실행 버전=2 ' "$CONT/diedwork/ledger.md" | grep -F '| 아티팩트 술어 결과=0 |' | grep -cF '종단 부류=크래시' || true)" "1"
+cont_case died died
+check "S4 계속이 커밋 없이 죽으면 크래시 재시도 없이 그 부류로 멈춘다" \
+  "$(cont_field died rc)/$(cont_spawns died)/$(cont_field died reason)" "1/1/종단 부류 크래시"
+cont_case notrdiedwork notrdiedwork
+check "S4 새 프로세스 재시도가 커밋한 뒤 죽으면 술어로 받아들인다" \
+  "$(cont_field notrdiedwork rc)/$(cont_spawns notrdiedwork)" "0/1"
+cont_case notrdied notrdied
+check "S4 새 프로세스 재시도가 커밋 없이 죽으면 재시도 소진으로 멈춘다" \
+  "$(cont_field notrdied rc)/$(cont_spawns notrdied)/$(cont_field notrdied reason)" "1/1/재시도 소진 — 새 프로세스 재시도도 종단 부류 크래시"
+CONT_RKIND=S5 cont_case diedworkS5 diedwork
+check "S4 가 아닌 계속은 커밋한 뒤 죽어도 받아들이지 않는다" \
+  "$(cont_field diedworkS5 rc)/$(cont_field diedworkS5 reason)" "1/종단 부류 크래시"
 
 cont_case zero zero
 check "0턴이면 새 프로세스 재시도 1회" \

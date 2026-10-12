@@ -8569,7 +8569,8 @@ absorb_stage_judgment() {
 # name on the design and audit stages. The row segment is only the `세그먼트=`
 # field of the attempt rows.
 #
-# Returns 0 when a later attempt completed normally. Returns 1 with
+# Returns 0 when a later attempt completed normally, or, on S4, died after its
+# predicate held (`s4_died_after_work`). Returns 1 with
 # CONTINUE_PARK_REASON (and CONTINUE_PARK_RECALL for a halt) set, and
 # CONTINUE_BLOCKED non-empty when the stage waits on a person rather than
 # having failed; the caller parks under its own scope. The predicate command is
@@ -8583,7 +8584,16 @@ absorb_stage_judgment() {
 # is kept for the one shape resuming cannot help: no transcript, or zero turns.
 # A stage whose own judgment is still open — one keyed on the judgment key, not
 # any open question in its segment or run — is waiting on a person and is not
-# continued. The limit-shape and crash classes never reach here.
+# continued.
+#
+# AN ATTEMPT MADE HERE THAT DIES IS NOT RETRIED. A crash or limit class reaches
+# here only as the end of an attempt this function made, never as the caller's
+# input. On S4 that is where cycle 1's process B runs, since it is always the
+# continuation of process A, so a B that committed and wrote its result lines
+# before dying is accepted on the predicate like any S4 retry. One that died
+# without its work parks: the segment's one crash retry belongs to the first
+# attempt's crash arm, and a continued attempt is already past the first, so
+# granting another here would give a chain of continuations a retry each.
 #
 # THE PARK REASON SAYS WHAT HAPPENS NEXT, AND ONLY THAT. The run does not
 # continue the stage and does not wait: the caller parks it `막힘` under its
@@ -8635,7 +8645,9 @@ continue_or_park() {
         '정상 완료') return 0 ;;
         '의도된 park') return 1 ;;
         '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
-        *) CONTINUE_PARK_REASON="재시도 소진 — 새 프로세스 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
+        *)
+          ! s4_died_after_work "$rkind" || return 0
+          CONTINUE_PARK_REASON="재시도 소진 — 새 프로세스 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
       esac
     fi
     if [ "$(continue_count "$sid")" -ge "$CONTINUE_MAX" ]; then
@@ -8664,7 +8676,9 @@ continue_or_park() {
       '거절 종료')
         refusal_or_park "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$unmet" "$alias" -- "$@"
         return $? ;;
-      *) CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
+      *)
+        ! s4_died_after_work "$rkind" || return 0
+        CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
     esac
   done
 }
@@ -8804,7 +8818,9 @@ s4_died_after_work() {
   # just judged died (a crash, a limit exit, a reap) AFTER its predicate held:
   # it committed, and on process B its residual share is complete.
   #
-  # A RETRY THAT DIED AFTER DOING THE WORK IS ACCEPTED ON THE PREDICATE. Before
+  # A RETRY OR CONTINUATION THAT DIED AFTER DOING THE WORK IS ACCEPTED ON THE
+  # PREDICATE. Every S4 attempt `continue_attempt` judges — retry, refusal
+  # re-attachment, continuation — passes here before it parks. Before
   # retries were judged as attempts, a crash or limit retry was accepted on the
   # commit ladder alone, whatever its exit code; judged by class, a retry that
   # committed and then died is `크래시` (`정상 완료` needs exit 0) and parked as
