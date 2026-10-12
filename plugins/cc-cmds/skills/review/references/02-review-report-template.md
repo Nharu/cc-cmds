@@ -49,8 +49,110 @@ Internal 5-level → document 4-level mapping:
 ## Merge Recommendation Rules
 
 - **P0 ≥ 1** → "머지 불가 (즉시 수정 필요)"
-- **P1 ≥ 1, P0 = 0** → "머지 전 수정 권장"
+- **P0 = 0, 차단 P1 = 0, 이월 가능 P1 1~3건** → "이월 후 머지 가능 (이월 가능 항목을 후속 이슈로 넘긴 뒤 머지)"
+- **P1 ≥ 1, P0 = 0** (위 줄에 해당하지 않을 때) → "머지 전 수정 권장"
 - **P0 + P1 = 0** → "머지 가능"
+
+무인 파이프라인은 「이월 후 머지 가능」 줄을 두 번째 리뷰(사이클 2)부터 적용하고, 이슈 등록과 머지 판정은 게이트가 한다. 대화형 리뷰에서는 사람이 정한다.
+
+The interactive `/review` and `/review-lite` take no `--slice` and register no issue: they write the classification below, and the person decides whether the carryable items go to follow-up issues before merging.
+
+### P1 분류 기준
+
+P1 은 아래 세 기준을 모두 만족할 때만 `이월 가능`이고, 하나라도 어긋나거나 리뷰어 사이 판정이 갈리면 `차단`이다. 갈린 경우는 `## 리뷰어 간 이견 사항`에 두 근거를 남긴다. 이 기준은 P0·P1 을 가르는 심각도 기준을 바꾸지 않으며, 이미 P1 으로 판정된 항목을 나눌 뿐이다.
+
+1. 이 변경을 되돌리거나 다시 설계하지 않고, 뒤따르는 별도 PR 하나로 고칠 수 있다.
+2. 이 슬라이스가 맡은 요구를 거짓으로 만들지 않는다. 설계 문서가 있으면 그 문서가 이 슬라이스에 배정한 항목이 기준이다.
+3. 머지된 채 고쳐지지 않은 동안 영속 상태·원장 행·외부 상태를 틀리게 남기지 않고, 게이트·룰·시험의 검사를 약하게 만들지 않는다.
+
+## P1 Classification Grammar
+
+All three review skills write this grammar. The gate parses it in the unattended pipeline, so the spellings below are byte-fixed. `N` is a decimal number with no leading zero.
+
+### Summary lines
+
+Directly after the `발견 요약` line of the overview block, in this order:
+
+```
+- **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건
+- **P1 분류**: 차단 N건 | 이월 가능 N건
+- **다른 슬라이스 몫**: N건 (집계 제외)
+```
+
+- The `발견 요약` line is byte-for-byte unchanged. Its P1, P2 and P3 counts exclude other-slice items; its P0 count includes them.
+- `P1 분류` is always present, in every skill. 차단 + 이월 가능 equals the `발견 요약` P1. With no P1 the line reads `- **P1 분류**: 차단 0건 | 이월 가능 0건`.
+- A recovery report whose summary key is `발견 요약(부분 복구)` writes exactly `- **P1 분류**: 차단 미상 | 이월 가능 미상`.
+- The gate parses the line with the regex below. A line that does not match, or no line, reads as `분류 미상`, and the report is ineligible for carryover.
+
+```
+^- \*\*P1 분류\*\*: 차단 (0|[1-9][0-9]*)건 \| 이월 가능 (0|[1-9][0-9]*)건$
+```
+
+- The `다른 슬라이스 몫` line is present only when the review applied a slice scope (`review-unattended --slice <id>`). Its absence reads as 0.
+- The slice overview line sits in the overview block directly above `발견 요약`, in exactly one of these two shapes:
+
+```
+- **슬라이스 범위**: 슬라이스 <id> (다른 슬라이스 <k>개)
+- **슬라이스 범위**: 적용 안 됨 — <인자 없음|설계 문서 없음|슬라이싱 절 없음|슬라이스 <id> 블록 없음>
+```
+
+### P1 disposition tag and sub-bullets — inside `## 🟠 P1 (머지 전 수정 권장)` only
+
+The first line of an item carries the tag one space after the category tag, without backticks:
+
+```
+- **[category]** **[차단]** `파일:라인` 이슈 설명 — 리뷰어
+- **[category]** **[이월 가능]** `파일:라인` 이슈 설명 — 리뷰어
+```
+
+An item written with a `### P1-n …` head carries exactly one of the same two tokens on that head line, without backticks. That head line is the item's first line.
+
+The sub-bullets come after the existing `근거` / `💡 수정 제안` / `📎` lines and before the blank line that precedes `💬`. Every P1 item has:
+
+```
+    - **분류 근거**: <한 줄 — 이월 가능이면 세 기준을 모두 만족하는 이유, 차단이면 어긋난 기준 번호와 이유>
+```
+
+A `**[이월 가능]**` item then has, in this order:
+
+```
+    - **이월 제목**: <한 줄 — 이슈 제목 끝에 그대로 쓰인다>
+    - **이월 본문**:
+      <문제 상황 한 줄>
+      <위치: 저장소 경로:줄>
+      <근거와 영향>
+```
+
+The rules the gate relies on:
+
+- **Section.** The P1 section runs from the line starting `## 🟠 P1` to the next line starting `## ` (two hashes, a space). Neither a `### ` line nor any line inside a head-form item ends the section.
+- **Tag line.** A line inside the P1 section that contains `**[차단]**` or `**[이월 가능]**`. Every P1 item has exactly one tag line and it is its first line. Every tag line starts with `- ` or `### `, contains one token exactly once, and never contains both tokens. The tokens appear nowhere else in the section (`근거`, `💬`). Tags outside the P1 section are ignored.
+- **What is counted.** The number of tag lines containing `**[차단]**` and the number containing `**[이월 가능]**`, counted the same way in both item forms. If any tag line breaks a rule above, the report is `분류 미상` and ineligible for carryover. A parser that counts every line carrying a token and one that counts only `- ` / `### ` tag lines therefore reach the same verdict on every report.
+- **Item extent.** An item runs from its tag line to the line before the next tag line, or to the end of the section. `분류 근거`, `이월 제목` and `이월 본문` belong to the item whose extent contains them. A column-0 `- ` line and a `### ` line without a token do not end the extent.
+- **Same indentation in both forms.** `분류 근거`, `이월 제목` and `이월 본문` are written exactly as fenced above, with four spaces before `- `. Every `이월 본문` body line starts with exactly six spaces. This holds when the item is a head and its other lines are column-0 bullets. The gate matches `    - **이월 제목**: ` and `    - **이월 본문**:` at that indentation; a line written otherwise is not one.
+- **No backticks.** The finding fingerprint takes the first backtick token as the finding identifier, so a backticked tag would change every fingerprint.
+- **`이월 본문` boundary.** Body lines all start with exactly six spaces. The body ends at the first line that does not and holds no blank line. Neither body lines nor disposition sub-bullets start at column 0, so the fingerprint's `- ` line matcher reads none of them in either item form.
+- **`이월 본문` content.** The problem, its location, the evidence and the impact. Forbidden: a fix suggestion; a design-document path, heading, section number or document-local label; a report path; the substring `docs/`; a credential value.
+- **Gate check on the body.** Each `**[이월 가능]**` item extent has exactly one non-empty `이월 제목` line, exactly one `이월 본문` line followed by at least one body line, and no `docs/` in the body. The `이월 제목` of the `**[이월 가능]**` items of one report differ byte-for-byte from each other — issue reuse looks an issue up by its title, so two items with one title would fold into one issue URL and the carryover record would refuse the duplicate. The rest is the reviewer contract.
+- **Who takes a tag.** P0, P2 and P3 items carry no disposition tag.
+
+### Other-slice section
+
+Placed after the `## 🟢 P3 (개선 제안)` section and before the `---` that precedes `## 리뷰어 간 이견 사항`, and present only when it has at least one item:
+
+```
+## 다른 슬라이스 몫 (집계 제외)
+
+- **[category]** **[P2]** `파일:라인` 이슈 설명 — 리뷰어
+    - **배정**: 슬라이스 <id> — 「<설계 문서의 그 슬라이스 블록에서 이 발견이 속하는 줄의 축자 문면>」
+    - **근거**: <왜 이 슬라이스가 아니라 그 슬라이스의 몫인가>
+```
+
+- The severity token is exactly one of `**[P1]**`, `**[P2]**`, `**[P3]**` — never P0.
+- An other-slice P0 stays in `## 🔴 P0 (즉시 수정 필수)` and is counted. It carries the same `    - **배정**: 슬라이스 <id> — 「…」` sub-bullet as information only.
+- **A finding is another slice's share only when all three hold:** its remedy is work the design assigns to a declared slice other than the current one; that slice has not merged; and it is not a defect in a line this slice changed — a defect in a line this slice changed is never another slice's share.
+- The head starts `## 다`, not `## 🔴 P0` or `## 🟠 P1`, so the fingerprint and every P0/P1 section reader skip this section unchanged.
+- When the pipeline records the cycle, the gate checks that every `**배정**: 슬라이스 <id>` names a segment of this run other than the current one that has not merged, and that this section's item count equals the `다른 슬라이스 몫` line. This is the one place a review drops a P1 from the count, which is why it is checked at record time. A run without slicing has no such section.
 
 ## Category Tags
 
@@ -253,7 +355,12 @@ conditions as written let it emit the ordinary line.
 - **모델 티어**:
     - <role-slug> | 부류=<class id> | 모델=<opus|sonnet|haiku> | 출처=<표|승격|사용자> | 지표=<trigger id[,trigger id]|-> | 재기동=<-|sonnet (한도 오류)>
     - ...
+- **슬라이스 범위**: 슬라이스 <id> (다른 슬라이스 <k>개)
 - **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건
+- **P1 분류**: 차단 N건 | 이월 가능 N건
+- **다른 슬라이스 몫**: N건 (집계 제외)
+
+`슬라이스 범위` 줄은 두 모양 중 정확히 하나로 쓰며, 슬라이스 범위를 적용하지 않았으면 `적용 안 됨 — <사유>` 모양이다. `다른 슬라이스 몫` 줄은 슬라이스 범위를 적용했을 때만 둔다. 세 줄의 문법은 "P1 Classification Grammar" 섹션이 소유한다.
 
 `모델 티어` 블록은 `_common/team-model-tier.md` 에 구속되는 스킬(`review`·`review-unattended`)만 채운다. 모델을 리터럴로 쓰는 `review-lite` 는 고르는 것이 없으므로 이 블록을 생략한다. 행 문법은 그 티어 파일이 소유하며 여기서 다시 적지 않는다.
 
@@ -279,10 +386,23 @@ Mention CI failure items if applicable.]
 
 ## 🟠 P1 (머지 전 수정 권장)
 
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
+- **[category]** **[차단]** `파일:라인` 이슈 설명 — 리뷰어
     - **근거**: [severity justification]
     - 💡 수정 제안: [specific fix direction]
     - 📎 관련 PR 코멘트: [if applicable]
+    - **분류 근거**: <한 줄 — 이월 가능이면 세 기준을 모두 만족하는 이유, 차단이면 어긋난 기준 번호와 이유>
+
+    💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (📎로 confirms-existing이면 블록쿼트 대신 평문 노트)
+
+- **[category]** **[이월 가능]** `파일:라인` 이슈 설명 — 리뷰어
+    - **근거**: [severity justification]
+    - 💡 수정 제안: [specific fix direction]
+    - **분류 근거**: <한 줄 — 이월 가능이면 세 기준을 모두 만족하는 이유, 차단이면 어긋난 기준 번호와 이유>
+    - **이월 제목**: <한 줄 — 이슈 제목 끝에 그대로 쓰인다>
+    - **이월 본문**:
+      <문제 상황 한 줄>
+      <위치: 저장소 경로:줄>
+      <근거와 영향>
 
     💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (📎로 confirms-existing이면 블록쿼트 대신 평문 노트)
 
@@ -298,6 +418,12 @@ Mention CI failure items if applicable.]
 
 - **[category]** `파일:라인` [정중체·자기완결 한 줄 — 그대로 붙여넣을 수 있는 개선 제안] — 리뷰어
 - **[category]** `파일:라인` [정중체·자기완결 한 줄 — 줄 끝 `— 리뷰어명`은 복사 시 제외] — 리뷰어
+
+## 다른 슬라이스 몫 (집계 제외) ← only when a slice scope was applied and it has at least one item
+
+- **[category]** **[P2]** `파일:라인` 이슈 설명 — 리뷰어
+    - **배정**: 슬라이스 <id> — 「<설계 문서의 그 슬라이스 블록에서 이 발견이 속하는 줄의 축자 문면>」
+    - **근거**: <왜 이 슬라이스가 아니라 그 슬라이스의 몫인가>
 
 ---
 
@@ -336,7 +462,9 @@ A recovery report follows the same skeleton with two changes. The `발견 요약
 line follows the interlock above — the ordinary line when every role resolved to
 `witness`, no role's resolution round is below the last round the ledger
 block records, and no role's resolution round is below the highest round at
-which that role left anything at all, the partial-recovery line otherwise — and
+which that role left anything at all, the partial-recovery line otherwise; with
+the partial-recovery line the `P1 분류` line reads exactly
+`- **P1 분류**: 차단 미상 | 이월 가능 미상` — and
 one extra section is
 added
 directly after `## 개요`:
