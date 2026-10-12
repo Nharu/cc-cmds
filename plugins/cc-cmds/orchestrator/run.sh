@@ -6350,11 +6350,19 @@ reconverge_row() {
   # reconverge_row <segment> <stage id> — the `stage-result` row of a driver
   # re-convergence that ended on its terminal literal.
   #
-  # A RE-CONVERGENCE THAT EDITED THE DOCUMENT VOIDS THE SEGMENT'S PLAN, and this
-  # row is how that is said. The implement skill and `implement_process_b`
-  # count only `plan_sha256` rows after the segment's last `종류=reconverge`
-  # row; the S4 rows carry the digest, so without this row the next S4 dispatch
-  # is admitted as process B on a plan derived from the document before the edit.
+  # A RE-CONVERGENCE VOIDS THE SEGMENT'S PLAN, and this row is how that is said.
+  # The implement skill and `implement_process_b` count only `plan_sha256` rows
+  # after the segment's last `종류=reconverge` row; the S4 rows carry the digest,
+  # so without this row the next S4 dispatch is admitted as process B on a plan
+  # derived from the document before the edit.
+  #
+  # Written for every re-convergence that ended on its terminal literal, the
+  # `불필요` one that left the document unchanged included: whether the document
+  # moved is measured only after the ladder, and a plan re-derived from an
+  # unchanged document costs one process A. That process A commits nothing, and
+  # the S4 arm judges it against the HEAD it was dispatched on
+  # (`s4_attempt_base`), so it is continued into process B rather than filed
+  # `정상 완료` on the previous cycle's commit.
   local seg="$1" sid="$2"
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S1'" "파견 id=$sid" "종류=reconverge" \
     "종료 코드=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" \
@@ -8097,8 +8105,11 @@ segment_cycle() {
     fi
     # PROCESS B IS READ BEFORE THE DISPATCH, from the rows already standing: the
     # rows this attempt leaves are not evidence about which process it was.
-    local procb=0
+    local procb=0 att_base
     segment_process_b "$seg" && procb=1
+    # Read here too, for the same reason: the base this attempt and every retry
+    # or continuation of it is judged against (`s4_attempt_base`).
+    att_base=$(s4_attempt_base "$wt" "$pre_head" "$procb")
     # THE ROUTER'S EVENT IS NAMED HERE, at the call: a re-attached answer is a
     # resume, everything else on this line is a first dispatch.
     local spawn_event=first src=0
@@ -8115,7 +8126,7 @@ segment_cycle() {
     quiet_window_end
     local rc pred class acct missing="" unmet="세그먼트 브랜치에 새 커밋도 정지 기록도 없다"
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
-    if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
+    if predicate_implement "$branch" "$att_base" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
     # A PROCESS B THAT LEFT ITS OWN RESIDUAL ITEMS WITHOUT A RESULT LINE did not
     # finish, however clean its exit: the item is read nowhere else before the
@@ -8157,25 +8168,18 @@ segment_cycle() {
         # again on the tree they left.
         # The predicate the continued attempts are judged by includes the
         # residual share, so a continuation that commits again without the
-        # missing lines is still not finished. At the cap a segment whose
-        # result lines are what is missing parks `막힘`: the code is there and a
-        # person can write the lines, which is not an invalidation. The cause is
-        # read from the LAST attempt judged (CONTINUE_MISSING), not from this
+        # missing lines is still not finished. At the cap the cause is read
+        # from the LAST attempt judged (`s4_park_unfinished`), not from this
         # first one: in cycle 1 this first attempt is process A and its own
         # reading is always empty.
         CONTINUE_MISSING="$missing"
         if continue_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
              "$unmet" "$(seg_alias "$seg")" \
-             -- predicate_implement_share "$branch" "$pre_head" "$seg"; then
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
           fileset_escape "$seg" "$files" "$wt" || return 1
           stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
         else
-          [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
-            || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
-          park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+          s4_park_unfinished "$seg"; return 1
         fi ;;
       '거절 종료')
         # One re-attachment of the same session, then a park of this segment's
@@ -8185,16 +8189,11 @@ segment_cycle() {
         CONTINUE_MISSING=""
         if refusal_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
              "$unmet" "$(seg_alias "$seg")" \
-             -- predicate_implement_share "$branch" "$pre_head" "$seg"; then
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
           fileset_escape "$seg" "$files" "$wt" || return 1
           stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
         else
-          [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
-            || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
-          park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+          s4_park_unfinished "$seg"; return 1
         fi ;;
       '크래시')
         # The same one retry as the arm three lines up, and for a stronger
@@ -8209,16 +8208,19 @@ segment_cycle() {
         # A crashed stage dies near the end rather than early — median 23.6
         # minutes against 22.3 for a stage that completes — so what a crash
         # throws away is close to a whole stage.
+        #
+        # The retry is judged as an attempt (`s4_retry`): a process A that died
+        # before writing its plan is retried as process A, and its clean end is
+        # continued into process B rather than parked as a second crash.
         log "$seg: $class — 1회만 재시도"
-        src=0
-        CC_SPAWN_EVENT=crash-retry stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" || src=$?
-        if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park_router "$seg" "$seg" cone; return 1
-        fi
-        [ "$src" = "0" ] || (exit "$src")
-        stage_wait_all "$sid.retry"
-        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
-          park "$seg" cone 무효화 "게이트 park" "크래시 2회 — 산출물 없음"; return 1
+        if s4_retry "$sid" "$jkey" "$seg" "$wt" \
+             "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" \
+             crash-retry "크래시 2회" "$(seg_alias "$seg")" \
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
+          fileset_escape "$seg" "$files" "$wt" || return 1
+          stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+        else
+          s4_park_unfinished "$seg"; return 1
         fi ;;
       '한도-형상 회수')
         # The driver itself signalled this stage, from the limit-shape arm,
@@ -8231,15 +8233,14 @@ segment_cycle() {
         log "$seg: 한도-형상 회수 ($(cat "$RUN_DIR/$sid.reap-cause" 2>/dev/null)) — 경계에서 1회 재파견"
         # `limit-reclaim` is what leaves the exhausted account out; any other
         # event would sit this lineage back on the account the reap ran from.
-        src=0
-        CC_SPAWN_EVENT=limit-reclaim stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" || src=$?
-        if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park_router "$seg" "$seg" cone; return 1
-        fi
-        [ "$src" = "0" ] || (exit "$src")
-        stage_wait_all "$sid.retry"
-        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
-          park "$seg" cone 무효화 "게이트 park" "한도-형상 회수 후 재파견 — 산출물 없음"; return 1
+        if s4_retry "$sid" "$jkey" "$seg" "$wt" \
+             "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" \
+             limit-reclaim "한도-형상 회수 후 재파견" "$(seg_alias "$seg")" \
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
+          fileset_escape "$seg" "$files" "$wt" || return 1
+          stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+        else
+          s4_park_unfinished "$seg"; return 1
         fi ;;
       *) park "$seg" cone 무효화 "게이트 park" "종단 부류 $class"; return 1 ;;
     esac
@@ -8770,6 +8771,89 @@ refusal_or_park() {
       return $? ;;
     *) CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
   esac
+}
+
+s4_attempt_base() {
+  # s4_attempt_base <worktree> <segment-start HEAD> <process B 0|1> — the commit
+  # an S4 attempt's implement predicate is judged against.
+  #
+  # A PROCESS A ATTEMPT IS JUDGED AGAINST THE HEAD IT WAS DISPATCHED ON. It
+  # emits a plan and commits nothing, so judged against the segment's start it
+  # reads the previous cycle's commit as its own: after a re-convergence that
+  # left the document unchanged, the plan-only attempt of the next cycle was
+  # filed `정상 완료`, the review re-read untouched code and the ladder climbed to
+  # its R4 park. Against its own dispatch HEAD it is a `공허한 성공`, continued
+  # into process B exactly as in cycle 1, where the two HEADs are the same.
+  # Process B keeps the segment's start, so a later cycle that answers its
+  # review without a code change still ends as it did before.
+  if [ "${3:-0}" = "1" ]; then
+    printf '%s' "$2"
+  else
+    ( cd "$1" && git rev-parse HEAD )
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# s4_retry — the one fresh re-dispatch of an S4 attempt that crashed or was
+# reaped at a limit shape.
+#
+#   s4_retry <stage id> <judgment key> <segment> <cwd> <prompt> <spawn event>
+#            <cause> <alias> -- <predicate cmd...>
+#
+# THE RETRY IS AN ATTEMPT LIKE ANY OTHER: it writes its own `stage-result` row
+# carrying the plan digest it emitted (`continue_attempt`), it is judged by the
+# predicate the caller passes — the residual share included — and a retry that
+# ended in prose or in a refusal goes on to `continue_or_park` or
+# `refusal_or_park`. Judged by the commit ladder alone and left without a row,
+# a process A retry that ended cleanly had committed nothing by design and
+# parked as a second crash, and a process B retry passed on any commit without
+# its own result lines.
+#
+# Returns 0 when the retry, or an attempt after it, completed normally. Returns
+# 1 with the CONTINUE_* outputs set; the caller parks with `s4_park_unfinished`.
+# ---------------------------------------------------------------------------
+s4_retry() {
+  local sid="$1" jkey="$2" seg="$3" cwd="$4" prompt="$5" ev="$6" cause="$7" alias="$8"
+  shift 8
+  [ "${1:-}" = "--" ] && shift
+  local unmet="세그먼트 브랜치에 새 커밋도 정지 기록도 없다"
+  CONTINUE_CLASS=""
+  CONTINUE_BLOCKED=""
+  CONTINUE_REFUSED=""
+  CONTINUE_PARK_REASON=""
+  CONTINUE_PARK_RECALL=""
+  STAGE_RESUME=""
+  CONTINUE_MISSING=""
+  CC_SPAWN_EVENT=$ev continue_attempt "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$alias" -- "$@"
+  [ -z "$CONTINUE_MISSING" ] || unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+  case "$CONTINUE_CLASS" in
+    '정상 완료') return 0 ;;
+    '의도된 park') return 1 ;;
+    '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
+    '공허한 성공')
+      continue_or_park "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$unmet" "$alias" -- "$@"
+      return $? ;;
+    '거절 종료')
+      refusal_or_park "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$unmet" "$alias" -- "$@"
+      return $? ;;
+    *) CONTINUE_PARK_REASON="$cause — 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
+  esac
+}
+
+s4_park_unfinished() {
+  # s4_park_unfinished <segment> — park an S4 attempt chain that did not finish,
+  # under the cause the CONTINUE_* outputs of the last call name. Always returns
+  # 1. The cap cause is read from the LAST attempt judged (CONTINUE_MISSING): a
+  # segment whose result lines are what is missing parks `막힘`, because the code
+  # is there and a person can write the lines, which is not an invalidation.
+  local seg="$1"
+  [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
+  [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+  [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+  [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
+    || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
+  park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"
+  return 1
 }
 
 # ---------------------------------------------------------------------------

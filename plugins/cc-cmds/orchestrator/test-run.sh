@@ -1941,17 +1941,18 @@ case "$(tail -1 "$LEDGER")" in
   *) bad "설계 스텝 마감 파킹" "$(tail -1 "$LEDGER")" ;;
 esac
 check "마감 파킹은 이미 파킹함을 남긴다" "$(cat "$TI_DIR/already" 2>/dev/null)" "1"
-# 라우터 파킹은 모두 도우미를 지난다 — 열네 자리, 그리고 그 중 실패 id 자리는
-# 대상이 실패 id 이고 앵커가 세그먼트다.
-check "드라이버의 라우터 파킹 자리는 열네 곳이다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "14"
+# 라우터 파킹은 모두 도우미를 지난다 — 열한 자리, 그리고 그 중 실패 id 자리는
+# 대상이 실패 id 이고 앵커가 세그먼트다. S4 의 계속·거절·크래시·한도-형상 회수
+# 갈래는 `s4_park_unfinished` 한 자리를 함께 쓴다.
+check "드라이버의 라우터 파킹 자리는 열한 곳이다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "11"
 check "실패 id 자리는 대상과 앵커를 나눠 싣는다" \
   "$(grep -c 'park_router "\$fid" "\$seg" cone' "$DRIVER" || true)" "1"
-# 계속 경로의 여섯 자리(공허한 성공 셋, 거절 재부착 셋 — 구현·리뷰·설계)는
-# 라우터 판정으로 막힌 계속만 도우미로 보낸다 — 판단 승인 대기나 앞 호출에서
-# 남은 부류로는 도우미를 쓰지 않는다.
-check "계속 경로의 라우터 파킹은 여섯이고 모두 부류를 묻는다" \
-  "$(grep -c '\[ "\$CONTINUE_CLASS" != "라우터 판정" \] || { park_router ' "$DRIVER" || true)" "6"
+# 계속 경로의 다섯 자리(구현은 `s4_park_unfinished` 하나, 그 밖에 공허한 성공
+# 둘과 거절 재부착 둘 — 리뷰·설계)는 라우터 판정으로 막힌 계속만 도우미로
+# 보낸다 — 판단 승인 대기나 앞 호출에서 남은 부류로는 도우미를 쓰지 않는다.
+check "계속 경로의 라우터 파킹은 다섯이고 모두 부류를 묻는다" \
+  "$(grep -c '\[ "\$CONTINUE_CLASS" != "라우터 판정" \] || { park_router ' "$DRIVER" || true)" "5"
 
 # 기소된 여덟 — 말단 행위가 막히면 세그먼트를 버리지 않는다. merge_gate 의
 # ACT 팔은 1(=CONE) 이 아니라 2 를 돌려주고, segment_cycle 이 그것을
@@ -5614,10 +5615,10 @@ if [ -n "$crash_arm" ]; then
 else
   bad "크래시 갈래" "'크래시') 갈래가 없다 — 와일드카드로 park 하면 재시도가 없다"
 fi
-if printf '%s' "$crash_arm" | grep_all_q 'stage_spawn' && printf '%s' "$crash_arm" | grep_all_q '\.retry'; then
+if printf '%s' "$crash_arm" | grep_all_q 's4_retry "\$sid"'; then
   ok "크래시 갈래가 1회 재시도를 띄운다"
 else
-  bad "크래시 재시도" "크래시 갈래에 stage_spawn ... .retry 가 없다"
+  bad "크래시 재시도" "크래시 갈래에 s4_retry \"\$sid\" 가 없다"
 fi
 if printf '%s' "$crash_arm" | grep_all_q 'predicate_implement'; then
   ok "재시도 뒤 산출물 술어로 판정한다"
@@ -5631,19 +5632,23 @@ else
 fi
 # 재시도는 갈래당 정확히 1회다. 갈래마다 하나씩 세고 총합도 함께 재는 이유는,
 # 총합만 재면 한 갈래가 둘을 갖고 다른 갈래가 0 을 갖는 배분도 통과하기 때문이다.
-# 직접 스폰하는 갈래는 둘이다 — 「크래시」·「한도-형상 회수」. 둘째는 드라이버
-# 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다.
+# 새로 띄우는 재시도 갈래는 둘이다 — 「크래시」·「한도-형상 회수」. 둘째는 드라이버
+# 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다. 둘 다
+# `s4_retry` 를 거치고, 그 함수가 `$sid.retry` 를 한 번 띄운다. 재시도가 텍스트나
+# 거절로 끝났을 때의 계속은 그 함수 안에서만 일어난다(아래 절에서 동작으로 잰다).
 # 「공허한 성공」은 스스로 스폰하지 않고 `continue_or_park` 를 거친다(아래 절).
 for retry_arm in '크래시' '한도-형상 회수'; do
   # `${...}` 를 쓰는 것은 취향이 아니다 — 뒤따르는 닫는 낫표가 ASCII 가 아니라서
   # 하한 인터프리터가 그 바이트를 이름에 붙여 읽고 unbound variable 로 죽는다.
-  check "재시도 스폰이 「${retry_arm}」 갈래에 정확히 1회" \
-    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || true)" "1"
-  check "「${retry_arm}」 갈래는 계속하지 않는다" \
+  check "재시도가 「${retry_arm}」 갈래에 정확히 1회" \
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 's4_retry "\$sid"'; } || true)" "1"
+  check "「${retry_arm}」 갈래는 계속을 직접 부르지 않는다" \
     "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'continue_or_park'; } || true)" "0"
 done
-check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 2회)" \
-  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+check "재시도는 드라이버 전체에서 갈래 수와 같다 (전체 2회)" \
+  "$(grep -c 's4_retry "\$sid"' "$DRIVER")" "2"
+check "s4_retry 는 \$sid.retry 를 정확히 1회 띄운다" \
+  "$( { sed -n '/^s4_retry() {/,/^}/p' "$DRIVER" | grep -c 'continue_attempt "\$sid\.retry"'; } || true)" "1"
 # 한도 종료 는 제 갈래를 갖지 않고 크래시 갈래를 타서 그 1회 재시도를 공유한다.
 # 위 핀들은 이 행동이 없어도 초록이라 그것을 배제하지 못하므로, 구현 팔의 case
 # 주어가 읽기 사상을 거치는지를 같은 소스 문면 형태로 단언한다. 같은 사상이
@@ -5908,10 +5913,111 @@ check "첫 계속(프로세스 B 진입)은 호출자의 문면을 받는다" \
   "$(sed -n '1p' "$CONT/missb/spawned" | cut -f3 | grep -c '충족되지 않았다: 세그먼트 브랜치에 새 커밋도 정지 기록도 없다' || true)" "1"
 check "그 뒤의 계속 메시지는 프로세스 B 가 빠뜨린 표제를 축자로 댄다" \
   "$(sed -n '2p' "$CONT/missb/spawned" | cut -f3 | grep -c '「### R5. 빠진 항목」' || true)" "1"
-check "S4 의 상한 원인은 마지막 시도의 빠진 목록으로 막힘을 고른다 (계속·거절 두 갈래)" \
-  "$(grep -c '\[ -z "\$CONTINUE_MISSING" \] || \[ "\$CONTINUE_CLASS" = "의도된 park" \]' "$DRIVER" || true)" "2"
+check "S4 의 상한 원인은 마지막 시도의 빠진 목록으로 막힘을 고른다 (s4_park_unfinished 한 곳)" \
+  "$(grep -c '\[ -z "\$CONTINUE_MISSING" \] || \[ "\$CONTINUE_CLASS" = "의도된 park" \]' "$DRIVER" || true)" "1"
+check "S4 의 네 갈래(계속·거절·크래시·한도-형상 회수)가 모두 같은 park 원인 선택을 쓴다" \
+  "$( { sed -n '/^segment_cycle() {/,/^}/p' "$DRIVER" | grep -c 's4_park_unfinished "\$seg"; return 1'; } || true)" "4"
 check "S4 의 상한 원인이 첫 시도의 \$missing 을 보지 않는다" \
   "$(grep -c '\[ -z "\$missing" \] || \[ "\$CONTINUE_CLASS"' "$DRIVER" || true)" "0"
+
+# 문서를 고치지 않은 재수렴 뒤에도 재수렴 행은 계획을 무효로 하므로, 다음 사이클의
+# S4 는 커밋하지 않는 프로세스 A 다. 그 시도는 세그먼트 시작 HEAD 가 아니라 자기
+# 디스패치 HEAD 로 판정되어야 앞 사이클의 커밋을 제 것으로 읽지 않는다. 실제 git
+# 저장소와 실제 재수렴 행 기록기·`predicate_implement`·`classify_termination` 위에서,
+# 앞 사이클 커밋이 선 브랜치의 사이클 2 프로세스 A 가 `정상 완료` 가 아니라
+# `공허한 성공` 임을 단언한다. 옛 판정 기준(세그먼트 시작 HEAD)으로는 같은 시도가
+# `정상 완료` 로 읽힌다는 것도 함께 재어, 이 단언이 그 차이를 실제로 가르는지 본다.
+attbase_case() {
+  local d="$CONT/attbase"
+  rm -rf "$d"; mkdir -p "$d/repo" "$d/run/halt"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun; : > "$LEDGER"
+    stage_parent_id() { printf 'parent'; }; absorb_stage_judgment() { :; }
+    seg_root() { printf '%s' "$d/repo"; }; seg_slug() { printf 'o/r'; }
+    authorized() { return 1; }
+    cd "$d/repo" || exit 1
+    git init -q . && git checkout -q -b seg/ab
+    git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m c0
+    c0=$(git rev-parse HEAD)
+    ledger_row 'stage-result' '세그먼트=ab' '스테이지=S4' '파견 id=S4:ab:1' "plan_sha256=$CONT_PSHA" '종단 부류=공허한 성공'
+    git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m c1
+    c1=$(git rev-parse HEAD)
+    rsid="S1':ab:1:plugins-x.md"; printf '0' > "$RUN_DIR/$rsid.rc"
+    reconverge_row ab "$rsid"
+    procb=0; segment_process_b ab && procb=1
+    base=$(s4_attempt_base "$d/repo" "$c0" "$procb")
+    if predicate_implement seg/ab "$base" ab; then pred=0; else pred=1; fi
+    if predicate_implement seg/ab "$c0" ab; then opred=0; else opred=1; fi
+    printf 'procb=%s\nbase=%s\nclass=%s\nold=%s\nb1=%s\n' "$procb" \
+      "$([ "$base" = "$c1" ] && printf c1 || printf '?')" \
+      "$(classify_termination "S4:ab:2" 0 "$pred")" "$(classify_termination "S4:ab:2" 0 "$opred")" \
+      "$([ "$(s4_attempt_base "$d/repo" "$c0" 1)" = "$c0" ] && printf c0 || printf '?')"
+  ) > "$d/out" 2>/dev/null
+}
+attbase_case
+check "재수렴 뒤 사이클 2 의 S4 는 프로세스 A 이고 자기 디스패치 HEAD 로 판정된다" \
+  "$(cont_field attbase procb)/$(cont_field attbase base)" "0/c1"
+check "새 커밋 없는 그 프로세스 A 는 정상 완료가 아니라 공허한 성공이다 (옛 기준으로는 정상 완료)" \
+  "$(cont_field attbase class)/$(cont_field attbase old)" "공허한 성공/정상 완료"
+check "프로세스 B 시도는 세그먼트 시작 HEAD 로 판정된다" "$(cont_field attbase b1)" "c0"
+
+# 크래시·한도-형상 회수 재시도는 시도로 판정된다. 계획 파일을 쓰기 전에 죽은 프로세스 A
+# 의 행에는 다이제스트가 없어 재시도도 프로세스 A 이고, 그 재시도는 커밋하지 않고
+# 깨끗이 끝난다. 그것이 `크래시 2회` 로 park 되지 않고, 다이제스트를 실은 자기 행을
+# 남긴 뒤 같은 세션의 계속(프로세스 B)으로 이어져 커밋하면 통과하는지 실제
+# `s4_retry`·`continue_attempt`·`continue_or_park`·`predicate_implement_share` 로 잰다.
+# git 사다리와 잔여 몫 판독만 스텁한다.
+crashA_case() {
+  local d="$CONT/crashA" did="S4:ca:1" variant="${1:-ok}"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=contrun
+    DOC_KEY="docs/x.md"; DOC="$d/doc.md"
+    : > "$LEDGER"
+    CA_SID="88888888-2222-3333-4444-555555555555"
+    resolve_account() { printf '%s' "$d/cfg"; }
+    stage_parent_id() { printf 'parent'; }
+    absorb_stage_judgment() { :; }
+    log() { :; }
+    predicate_implement() { [ -f "$d/commit" ]; }
+    residual_share_missing() { :; }
+    stage_spawn() {
+      local s="$1" att
+      att=$(stage_pin_attempt "$s")
+      printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "${CC_SPAWN_EVENT:-}" >> "$d/spawned"
+      printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
+      if [ -z "${STAGE_RESUME:-}" ]; then
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
+          "$CA_SID" "$CONT_PSHA" > "$(stage_log_path "$s")"
+      else
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7}\n' \
+          "$CA_SID" > "$(stage_log_path "$s")"
+        [ "$variant" = "nocommit" ] || : > "$d/commit"
+      fi
+      printf '0' > "$RUN_DIR/$s.rc"
+      return 0
+    }
+    : > "$d/cfg/projects/p/$CA_SID.jsonl"
+    ledger_row 'stage-result' "세그먼트=ca" "스테이지=S4" "파견 id=$did" "종료 코드=1" \
+      "아티팩트 술어 결과=1" "실행 버전=1" "종단 부류=크래시"
+    if s4_retry "$did" "$did" ca "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+         crash-retry "크래시 2회" home -- predicate_implement_share ca pre ca; then
+      printf 'rc=0\n'
+    else
+      printf 'rc=1\nreason=%s\n' "$CONTINUE_PARK_REASON"
+    fi
+  ) > "$d/out" 2>/dev/null
+}
+crashA_case
+check "계획 전에 죽은 프로세스 A 의 재시도는 프로세스 B 계속으로 이어져 통과한다" \
+  "$(cont_field crashA rc)/$(cont_spawns crashA)" "0/2"
+check "재시도는 crash-retry 로 새로 뜨고, 그 뒤는 같은 세션의 재개다" \
+  "$(cut -f1,3 "$CONT/crashA/spawned" | tr '\t\n' ' |')" "S4:ca:1.retry crash-retry|S4:ca:1.retry resume|"
+check "재시도가 다이제스트를 실은 자기 stage-result 행을 쓰고, 계속도 제 행을 쓴다" \
+  "$(grep -F '파견 id=S4:ca:1.retry ' "$CONT/crashA/ledger.md" | grep -cF "| plan_sha256=$CONT_PSHA |" || true)/$(grep -cF '파견 id=S4:ca:1.retry ' "$CONT/crashA/ledger.md" || true)" "1/2"
+crashA_case nocommit
+check "계속도 커밋하지 못하면 크래시 2회가 아니라 계속 소진으로 멈춘다" \
+  "$(cont_field crashA rc)/$(cont_field crashA reason | grep -c '^계속 소진 — ' || true)" "1/1"
 
 cont_case restarted hollow 2
 check "계수기가 이미 상한이면 재시작한 드라이버도 더 계속하지 않는다" \
@@ -5936,8 +6042,8 @@ check "0턴이면 새 프로세스 재시도 1회" \
 cont_case judg judg
 check "대기 중인 판단 승인이 있으면 계속하지 않는다" \
   "$(cont_field judg rc)/$(cont_spawns judg)/$(cont_field judg blocked)" "1/0/1"
-check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (계속 셋과 거절 재부착 셋, 여섯 호출부 모두)" \
-  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "6"
+check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (구현 s4_park_unfinished 하나와 리뷰·설계 넷, 다섯 호출부 모두)" \
+  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "5"
 # park 사유는 실제로 일어날 일만 적는다 — 승인 id 를 대고, 이 런 안에서 다시
 # 디스패치하지 않는다고 말하며, 어떤 경로도 수행하지 않는 재부착을 약속하지
 # 않는다. 옛 문구 하나가 아니라 `재부착` 이라는 말 자체가 없음을 본다 — 문구만
@@ -6029,8 +6135,8 @@ check "재부착이 산출 없이 끝나면 기존 계속 경로로 넘어가 �
 ref_case rspent twice 1
 check "이미 거절 종료 행이 둘이면 다시 붙이지 않는다" \
   "$(cont_field rspent rc)/$(cont_spawns rspent)/$(cont_field rspent refused)" "1/0/1"
-check "거절 소진 park 호출부는 구현 둘, 리뷰 하나, 설계 하나다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'CONTINUE_REFUSED" \] || { park "[^"]*" [a-z]* "거절 소진" ' || true)" "4"
+check "거절 소진 park 호출부는 구현 하나(s4_park_unfinished), 리뷰 하나, 설계 하나다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'CONTINUE_REFUSED" \] || { park "[^"]*" [a-z]* "거절 소진" ' || true)" "3"
 check "구현 스테이지 막힘 사유는 멈춘 스테이지에 답을 되돌리는 경로가 없다고 적는다" \
   "$(cont_field judg reason | grep -c '멈춘 스테이지에 답을 되돌리는 경로가 없' || true)" "1"
 
