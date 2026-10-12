@@ -18848,11 +18848,15 @@ gate_end_row() {
     return 1
   fi
   [ "$cause" = "결함" ] || fp=""
+  # `유도 절단점=-` for the reason the boundary approval row carries it: an
+  # ending has no act, so there is no argv to derive a rung from. Every row that
+  # fills `절단점` fills this slot beside it, and a reader holding one without
+  # the other cannot tell an ending from a row a writer forgot to finish.
   _why_free=$(gate_free_budget "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
-    "절단점=경계" "축2=읽기" "등급=1" "기준=$std" "되돌리는 법=새 런으로 다시 킥오프" \
+    "절단점=경계" "유도 절단점=-" "축2=읽기" "등급=1" "기준=$std" "되돌리는 법=새 런으로 다시 킥오프" \
     "재킥 원인=$cause" ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"})
   gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
-    "절단점=경계" "축2=읽기" "등급=1" "기준=$std" \
+    "절단점=경계" "유도 절단점=-" "축2=읽기" "등급=1" "기준=$std" \
     "되돌리는 법=새 런으로 다시 킥오프" "재킥 원인=$cause" \
     ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"} \
     "근거=$(gate_row_safe "$why" "$_why_free")"
