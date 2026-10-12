@@ -1522,7 +1522,9 @@ gate_park_repair_line() {
   # could not check a repair without performing the act.
   #
   # A cell a row can fix prints the row itself on a line of its own, built from
-  # the probe's `제안` — never shorter than what opens the cell. A cause no row
+  # the probe's `제안` — never shorter than what opens the cell, and never cut
+  # before an option name or the operand it reaches, because a row cut there
+  # also opens every sibling act that differs past the cut. A cause no row
   # fixes says so instead: printing a row there is a false repair, because the
   # stage pastes it, kicks off again and parks at the same cell. The facts come
   # from `GATE_PARK_*`, which the one disposition call site sets.
@@ -1545,7 +1547,7 @@ gate_park_repair_line() {
     파괴형태미명시/*)
       msg="repair: the gate saw no destructive word in this act, so a row opens it only by naming the whole act verbatim — kick off again with the row below"; row=1 ;;
     신고등급한도/opaque)
-      msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand, as the act spells them. A shape that names only the runner does not open it"; row=1 ;;
+      msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand and every option and option value before it (the whole act when no operand follows), as the act spells them. A shape that names only the runner does not open it"; row=1 ;;
     신고등급한도/code) sx=code ;;
     신고등급한도/wrapper)
       msg="repair: no row opens a command assembled by xargs or sudo — call the wrapped command directly" ;;
@@ -1582,7 +1584,7 @@ gate_park_repair_line() {
   fi
   if [ -z "$msg" ]; then
     case "$sx" in
-      dropped) msg="repair: no row can name this spelling — the matcher drops '$sw' (an option written with '='); respell it with a space or as the bare flag, and name the respelled act in a row at the next kickoff" ;;
+      dropped) msg="repair: no row can name this spelling — the matcher drops '$sw' (an option written with '='). If the program also accepts that option with a space or as a bare flag, respell it that way and name the respelled act in a row at the next kickoff; if it accepts only the '=' spelling (terraform's -chdir, for one), no row opens this act — leave it to a person" ;;
       none)    msg="repair: no \`사전 인가\` row opens this — no complete shape can be formed from this act (a runner with nothing after its subcommand, or a word containing '|'); leave it to a person" ;;
       code)    msg="repair: no row opens an interpreter run whose words before the script are not plain flags the gate knows — program text, a module or stdin ('-c', '-e', '-m', '-'), or an option that may take a value ('-o', '-W', '--norc', …) — put the commands in a script file in the worktree, run it as '<interpreter> <path>' (shell flags -e -u -v -x and python3 flags -u -B -E -I -s -S -O may precede the path), and name that shape in a row at the next kickoff" ;;
       argv0)   msg="repair: no \`사전 인가\` row opens this — a word that makes this act machine-global does not appear as one word in the shape a row is matched against (the program is named by a path, which a row names by its base name, or the path contains whitespace); leave it to a person" ;;

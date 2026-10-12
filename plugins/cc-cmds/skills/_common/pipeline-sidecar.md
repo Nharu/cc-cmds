@@ -284,7 +284,9 @@ form a runner at any length. A `-x=y` word the normalization dropped is still
 counted where the act spelled it: when one sits before the row's last word, the
 row — complete or runner — does not match the act at all, at any reach, so
 `node --require=/tmp/e.js scripts/x.js` is not opened by `node scripts/x.js` and
-`npm --script-shell=/tmp/s.sh run deploy` is not opened by `npm run deploy`. A
+`npm --script-shell=/tmp/s.sh run deploy` is not opened by `npm run deploy`.
+When the program accepts that option only in the `=` spelling (terraform's
+`-chdir=`, for one), no row opens the act, so it goes to an approval. A
 runner form longer than two words matches nothing. A `기기전역` act takes a
 complete row only, and only one that carries at least `Lreq = max(2, s, t,
 every trigger position)` words of the act: `s` is the subcommand (for a docker

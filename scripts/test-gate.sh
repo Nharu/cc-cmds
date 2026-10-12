@@ -28901,6 +28901,29 @@ pb_is "83b: prod 스크립트의 제안은 스크립트 자리까지다" 'Sx=ok 
 pb_is "83b: 표지가 있으면 제안이 트리거까지 간다" 'Sx=ok 제안=terraform destroy' 'Sx 제안' \
   'terraform' 'terraform destroy' GATE_REACH_EFF=prod GATE_MARK=파괴 GATE_MARK_TRIGGER=destroy
 
+# 기기전역 밖의 제안은 옵션 이름이나 피연산자 앞에서 끊기지 않는다 — 옵션 값과 피연산자
+# 까지, 피연산자가 없으면 행위 전체다. 끊긴 행은 그 뒤가 다른 형제 행위까지 열어, 사람이
+# 본 것보다 넓은 행위를 인가한다. 그래서 사례마다 제안만이 아니라 「그 제안 행이 같은
+# 행위를 열고, 고정한 값·피연산자를 바꾼 형제 행위는 열지 않는다」를 함께 단언한다.
+pb_narrow() {
+  # pb_narrow <label> <제안> <행위> <형제 행위>
+  pb_is "83b: $1 — 제안은 옵션 값과 피연산자까지다" "Sx=ok 제안=$2" 'Sx 제안' '' "$3" GATE_REACH_EFF=prod
+  pb_is "83b: $1 — 제안 행이 같은 행위를 연다" 'P=1 형태=완전' 'P 형태' "$2" "$3" GATE_REACH_EFF=prod
+  pb_is "83b: $1 — 제안 행이 형제 행위를 열지 않는다" 'P=0' 'P' "$2" "$4" GATE_REACH_EFF=prod
+}
+pb_narrow 'docker build -t app .' 'docker build -t app .' 'docker build -t app .' 'docker build -t evil . --push'
+pb_narrow 'cargo run --bin deploy' 'cargo run --bin deploy' 'cargo run --bin deploy' 'cargo run --bin wipe-db'
+pb_narrow 'docker -H 의 원격 실행' 'docker -H ssh://prod run --rm -p 80:80 nginx' 'docker -H ssh://prod run --rm -p 80:80 nginx' \
+  'docker -H ssh://prod run --rm --privileged -v /:/host alpine sh'
+pb_narrow 'terraform -chdir infra apply' 'terraform -chdir infra apply' 'terraform -chdir infra apply' 'terraform -chdir other apply'
+pb_narrow 'git -C /x commit' 'git -C /x commit' 'git -C /x commit -m m' 'git -C /y commit -m m'
+pb_narrow 'docker run --rm T' 'docker run --rm T' 'docker run --rm T true' 'docker run --rm U true'
+pb_is "83b: npm run build 의 제안은 행위 전체다" 'Sx=ok 제안=npm run build' 'Sx 제안' '' 'npm run build' GATE_REACH_EFF=prod
+# 떨어진 = 단어가 제안 범위 안에 남는 행위는 짧은 접두를 내지 않는다 — 그 접두가 떨어진
+# 단어 규칙을 수리 경로로 되돌린다.
+pb_is "83b: 떨어진 = 단어 앞에서 끊기는 제안은 없다" 'Sx=dropped 제안=-' 'Sx 제안' \
+  '' 'docker run --rm --name=foo img' GATE_REACH_EFF=prod
+
 # ---------------------------------------------------------------------------
 # 83c. 수리 문구 — park 한 칸마다 문구대로 고치면 같은 행위가 통과한다
 # --- section: 83c | group: reach | covers: plan, reach | anchors: 수리 문구 칸마다 문구대로 고치면 같은 행위가 통과한다 ---
@@ -29358,6 +29381,61 @@ for t in $t3_T; do
   t3_miss="$t3_miss $t"
 done
 check "83c: 표의 칸·원인을 모두 행으로 지났다" "${t3_miss# }" ""
+
+# 형제 행위 — 표 T 밖의 블록이라 칸은 고정하지 않고 park 여부만 본다. 찍힌 행은 사람이
+# 본 행위만큼 좁아야 한다: 그 행을 더한 매니페스트에서 같은 행위는 통과하고, 행이 고정한
+# 값·피연산자를 바꾼 형제 행위는 park 한다. 같은 행위의 통과만 보면 옵션 이름이나
+# 피연산자 앞에서 끊긴 행도 초록이다.
+t3_narrow() {
+  # t3_narrow <id> <찍힌 행 기대> <형제 argv> -- <argv...>
+  local id="$1" want="$2" sib="$3" r; shift 4
+  rx_manifest R83C ''
+  t3p front3 외부상태변경 prod -- "$@"
+  check "83c: $id — 행 없이 park 한다" "$rc" "11"
+  r=$(rx_row)
+  check "83c: $id — 찍힌 행은 행위 전체다" "$r" "$want"
+  rx_manifest R83C "$r"
+  t3p front3 외부상태변경 prod -- "$@"
+  check "83c: $id — 찍힌 행이 같은 행위를 연다" "$rc" "0"
+  # shellcheck disable=SC2086
+  t3p front3 외부상태변경 prod -- $sib
+  check "83c: $id — 찍힌 행이 형제 행위를 열지 않는다" "$rc" "11"
+}
+t3_narrow 형제-cargo 'cargo run --bin deploy' 'cargo run --bin wipe' -- cargo run --bin deploy
+
+# terraform 은 배포 등급이라 이 절의 push 절단점에서 plan 으로 묻지 못하고, 배포
+# 절단점에서는 리뷰 기록이 없는 세그먼트를 리뷰 룰이 먼저 거절한다. 그래서 terraform
+# 사례는 park 이 거치는 두 조각 — 규칙 스크립트의 비탐침 판정과 수리 함수 — 에 직접
+# 묻는다. 비탐침 판정의 5 는 승인 대기, 0 은 통과다.
+t3_rule_rc() {
+  # t3_rule_rc <행> <argv> — 행 하나를 둔 매니페스트로 규칙 스크립트를 비탐침 모드로 부른다.
+  local m="$WORK/t3-rule-manifest.md" rc=0
+  printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$1" > "$m"
+  env GATE_MARK= GATE_MARK_TRIGGER= GATE_DESTRUCTIVE=0 GATE_REACH_EFF= GATE_REACH_TRIGGERS= \
+    GATE_PREAUTH_PROBE=0 GATE_KIND=exec GATE_SURFACE=외부상태변경 GATE_ARGV="$2" GATE_MANIFEST="$m" \
+    /bin/sh "$(dirname "$GATE")/rules/사전-인가-대조.sh" >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+check "83c: 형제-terraform — 행위 전체 행이 같은 행위를 연다" \
+  "$(t3_rule_rc 'terraform -chdir infra apply' 'terraform -chdir infra apply')" "0"
+check "83c: 형제-terraform — 그 행이 다른 디렉터리의 형제 행위를 열지 않는다" \
+  "$(t3_rule_rc 'terraform -chdir infra apply' 'terraform -chdir other apply')" "5"
+
+# = 철자만 받는 옵션. terraform 의 -chdir 은 공백 철자를 거부하므로 문구가 고쳐 쓰기만
+# 권하면 따를 수 없는 안내다. 문구가 그 갈래를 말하고 행 줄을 찍지 않으며, 옵션을 뺀
+# 행으로도 열리지 않는다.
+t3_got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+  . "$0" >/dev/null 2>&1
+  GATE_PARK_SX=dropped GATE_PARK_SW=-chdir=infra GATE_PARK_PROPOSAL=- GATE_PARK_REFF=prod \
+    gate_park_repair_line prod인가없음 - 2>&1' "$GATE" 2>/dev/null)
+case "$t3_got" in *"accepts only the '=' spelling"*) ok "83c: = 철자 전용 — 문구가 = 철자만 받는 갈래를 말한다" ;;
+  *) bad "83c: = 철자 전용 — 문구가 = 철자만 받는 갈래를 말한다" "$t3_got" ;; esac
+case "$t3_got" in *"-chdir=infra"*) ok "83c: = 철자 전용 — 문구가 떨어진 철자를 이름한다" ;;
+  *) bad "83c: = 철자 전용 — 문구가 떨어진 철자를 이름한다" "$t3_got" ;; esac
+case "$t3_got" in *"repair row:"*) bad "83c: = 철자 전용 — 행 줄이 없다" "$t3_got" ;;
+  *) ok "83c: = 철자 전용 — 행 줄이 없다" ;; esac
+check "83c: = 철자 전용 — 옵션을 뺀 행으로도 열리지 않는다" \
+  "$(t3_rule_rc 'terraform apply' 'terraform -chdir=infra apply')" "5"
 
 # X — exec 도 같은 문구를 찍는다. 행위가 실제로 돌지 않도록 전역 git 설정 파일을 이
 # 절의 임시 파일로 돌려 둔다(park 하므로 돌지 않아야 하지만, 돌았다면 이 기계의 설정이
