@@ -7201,26 +7201,27 @@ gate_merge_binding_of_gh() {
   # later, and a commit pushed to the head branch in between — a fix cycle's
   # push, for one — is what merges. So `--auto` answers `없음` whatever head it
   # names.
+  #
+  # THE FLAGS ARE READ AS gh READS THEM, through the gh flag table. A value flag
+  # takes the next word even when it starts with `-`, so in `-b
+  # --match-head-commit=<HEAD>` the binding is the merge's body and in
+  # `--match-head-commit <X> --body --match-head-commit=<HEAD>` gh binds X.
+  # Skipping one word per unknown flag read both as bound to HEAD. A spelling
+  # the table cannot read binds nothing.
   local have=0 v="" auto=0
+  local -a orig
+  orig=("$@")
   gate_gh_strip_repo "$@"
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
     pr)
       [ "${2:-}" = merge ] || { printf '%s' '해당없음'; return 0; }
-      shift 2
-      while [ "$#" -gt 0 ]; do
-        case "$1" in
-          --match-head-commit)
-            have=1; v="${2:-}"
-            if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
-          --match-head-commit=*) have=1; v="${1#--match-head-commit=}"; shift ;;
-          --auto) auto=1; shift ;;
-          --auto=*)
-            case "${1#--auto=}" in 0|f|F|false|FALSE|False) auto=0 ;; *) auto=1 ;; esac
-            shift ;;
-          *) shift ;;
-        esac
-      done
+      gp_parse gh ${orig[@]+"${orig[@]}"}
+      if [ "$GP_STATUS" != ok ] || ! gp_path_is pr merge; then
+        printf '%s' '없음'; return 0
+      fi
+      if v=$(gp_opt match-head-commit); then have=1; else v=""; fi
+      if gp_has auto; then auto=1; fi
       if [ "$auto" = 1 ]; then printf '%s' '없음'; return 0; fi ;;
     api)
       shift
@@ -22977,7 +22978,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다. 자동 머지·머지 큐 진입(gh pr merge --auto, enablePullRequestAutoMerge, enqueuePullRequest)은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어나므로 결속으로 받지 않습니다 — --auto 없이 바로 머지합니다. REST 머지의 쿼리스트링에 sha 를 두지 않고, find -exec 안에서 {} 를 받는 gh 호출은 맨 철자로 바꿔 부릅니다"
+        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>(값 받는 옵션 -b·-t·-A·-F 의 값 자리가 아닌 곳에, gh 가 아는 옵션만 곁들여), REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다. 자동 머지·머지 큐 진입(gh pr merge --auto, enablePullRequestAutoMerge, enqueuePullRequest)은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어나므로 결속으로 받지 않습니다 — --auto 없이 바로 머지합니다. REST 머지의 쿼리스트링에 sha 를 두지 않고, find -exec 안에서 {} 를 받는 gh 호출은 맨 철자로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else

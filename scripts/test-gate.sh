@@ -21304,6 +21304,22 @@ check "29: sha 없는 REST 머지는 없음 이다"                  "$(mb gh ap
 check "29: 파일에서 읽는 sha 는 결속이 아니다"              "$(mb gh api -X PUT repos/o/r/pulls/1/merge -F sha=@head.txt)" "없음"
 check "29: --input 본문은 결속이 아니다"                    "$(mb gh api -X PUT repos/o/r/pulls/1/merge --input body.json)" "없음"
 check "29: REST 의 GET 은 해당없음 이다"                    "$(mb gh api repos/o/r/pulls/1/merge)" "해당없음"
+# 값 받는 옵션은 `-` 로 시작하는 다음 낱말도 값으로 삼킨다 — gh 가 그렇게 읽으므로
+# 삼켜진 결속은 결속이 아니고, 덮어쓰기처럼 보이는 철자는 gh 가 묶은 값으로 읽는다.
+H40B=fedcba9876543210fedcba9876543210fedcba98
+check "29: -b 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 -b --match-head-commit="$H40")" "없음"
+check "29: --body 가 삼킨 = 형 결속은 결속이 아니다"         "$(mb gh pr merge 1 --body --match-head-commit="$H40")" "없음"
+check "29: -t 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 -t --match-head-commit="$H40")" "없음"
+check "29: -A 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 -A --match-head-commit="$H40")" "없음"
+check "29: 묶음 -sb 가 삼킨 = 형 결속은 결속이 아니다"       "$(mb gh pr merge 1 -sb --match-head-commit="$H40")" "없음"
+check "29: 값 옵션이 삼킨 결속은 마지막 값으로 세지 않는다" \
+  "$(mb gh pr merge 1 --match-head-commit "$H40B" --body --match-head-commit="$H40")" "$H40B"
+check "29: 값을 붙여 쓴 옵션 뒤의 결속은 읽는다"             "$(mb gh pr merge 1 -bx --match-head-commit "$H40")" "$H40"
+check "29: 값을 따로 받은 옵션 뒤의 결속은 읽는다"           "$(mb gh pr merge 1 --body x --match-head-commit "$H40")" "$H40"
+check "29: -- 뒤의 결속 철자는 위치 인자다"                  "$(mb gh pr merge 1 -- --match-head-commit="$H40")" "없음"
+check "29: 표에 없는 옵션이 있으면 결속이 아니다"            "$(mb gh pr merge 1 --frobnicate --match-head-commit "$H40")" "없음"
+check "29: 잎 앞의 -R 을 지나 결속을 읽는다"                 "$(mb gh -R o/r pr merge 1 --match-head-commit "$H40")" "$H40"
+check "29: --auto 는 결속이 있어도 없음 이다"                "$(mb gh pr merge 1 --auto --match-head-commit "$H40")" "없음"
 
 sb_new '결속' 선머지후리뷰
 sa_seg_row S29 ""
@@ -21323,6 +21339,15 @@ esac
 sb_plan S29 gh pr merge 1 --match-head-commit "$HEAD29"
 check "29: 워크트리 HEAD 에 결속된 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
 if sa_names_rule; then ok "29: 그 거절이 리뷰-후-머지 를 지명한다"; else bad "29 룰 이름" "$msg"; fi
+sb_plan S29 gh pr merge 1 -b --match-head-commit="$HEAD29"
+check "29: 본문 옵션이 삼킨 결속의 머지는 룰 앞에서 거절된다" "$rc" "2"
+if sb_bound; then ok "29: 삼킨 결속의 거절 문면이 결속을 지목한다"; else bad "29 삼킨 결속 문면" "$msg"; fi
+sb_plan S29 gh pr merge 1 --match-head-commit "$H40" --body --match-head-commit="$HEAD29"
+check "29: 덮어쓰기처럼 보이는 결속의 머지는 gh 가 묶은 값으로 거절된다" "$rc" "2"
+case "$msg" in
+  *"결속 인자: $H40"*"워크트리 HEAD: $HEAD29"*) ok "29: 그 문면이 gh 가 묶은 sha 를 댄다" ;;
+  *) bad "29 덮어쓰기 문면" "$msg" ;;
+esac
 sb_plan S29 gh api -X PUT repos/t/r/pulls/1/merge
 check "29: sha 없는 REST 머지는 거절된다" "$rc" "2"
 sb_plan S29 gh api -X PUT repos/t/r/pulls/1/merge -f "sha=$HEAD29"
