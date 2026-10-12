@@ -1010,12 +1010,17 @@ gate_collaboration_surface() {
           # binding read, so a spelling one of them takes (`?merge_method=`, a
           # trailing `/`) is a spelling all three take. `…/merges` and the
           # GraphQL auto-merge stay off this surface as before.
+          # A GraphQL body `gate_gh_api_merge_kind` reads as a ref write is a
+          # base change, not a collaboration act, whatever words its argv
+          # carries.
           gate_gh_api_parse "${@:2}"
-          if [ "$(gate_gh_api_merge_kind)" = rest ]; then
-            case "$GATE_GHAPI_PATH" in
-              */pulls/*/merge) [ "$rd" != "배포트리거" ] && return 0; return 1 ;;
-            esac
-          fi
+          case "$(gate_gh_api_merge_kind)" in
+            rest)
+              case "$GATE_GHAPI_PATH" in
+                */pulls/*/merge) [ "$rd" != "배포트리거" ] && return 0; return 1 ;;
+              esac ;;
+            graphql-ref) return 1 ;;
+          esac
           case " $* " in
             *"/issues"*|*"/comments"*|*"/reviews"*|*"/requested_reviewers"*|*"/labels"*) return 0 ;;
           esac
@@ -1536,13 +1541,22 @@ gate_push_base_updates() {
   # file, so the push read another configuration than the dry-run did. When the
   # git argv is not the tail of this argv (it came out of a shell body), the
   # scan stops at the first non-assignment word named `git`, as before.
+  #
+  # THE FIRST WORD OF THE GIT ARGV IS MATCHED BY ITS BASENAME. The unwrap
+  # spells it as a literal `git` whatever the act wrote, so `/usr/bin/git`
+  # never matched, the alignment failed, and `lockf <dir>/git env HOME=<alt>
+  # /usr/bin/git push` fell back to stopping at the lock file again.
   local -a gv=() glob=() pargs=() av=("$@")
   eval "gv=($u)"
   local a k in_env=0 np=-1 x=0 lim="$#"
   if [ "${#gv[@]}" -le "$#" ]; then
     np=$(( $# - ${#gv[@]} ))
     while [ "$x" -lt "${#gv[@]}" ]; do
-      [ "${av[$((np + x))]}" = "${gv[$x]}" ] || { np=-1; break; }
+      if [ "$x" = 0 ]; then
+        [ "${av[$np]##*/}" = git ] || { np=-1; break; }
+      else
+        [ "${av[$((np + x))]}" = "${gv[$x]}" ] || { np=-1; break; }
+      fi
       x=$((x + 1))
     done
   fi
@@ -6711,7 +6725,17 @@ gate_gh_api_merge_kind() {
   # honest declaration. A GraphQL merge is any body that names
   # `mergePullRequest`, `mergeBranch`, `enqueuePullRequest` or
   # `enablePullRequestAutoMerge` — the field name is literal in the document
-  # whatever its alias, so a body naming none of them merges nothing.
+  # whatever its alias.
+  #
+  # A GRAPHQL BODY THAT NAMES NO MERGE IS NOT THEREBY HARMLESS. `updateRefs`,
+  # `updateRef` and `createCommitOnBranch` move the base without merging
+  # anything, and reading "no merge field" as "merges nothing" sent them to the
+  # push branch, which found no push and passed them, and onto the
+  # collaboration surface under an honest `협업`. So the default is reversed:
+  # a readable body is `graphql-ref`, a base change with no binding, unless
+  # `gate_gh_graphql_inert` shows every operation is a query or calls only
+  # mutations that move no ref. A body in a file is left to the callers, which
+  # already take it as a merge they cannot bind.
   case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) return 0 ;; esac
   case "$GATE_GHAPI_PATH" in
     */pulls/*/merge) printf 'rest'; return 0 ;;
@@ -6726,6 +6750,105 @@ gate_gh_api_merge_kind() {
         printf 'graphql'; return 0 ;;
     esac
   done
+  [ "$GATE_GHAPI_OPAQUE" = 1 ] && return 0
+  gate_gh_graphql_inert || printf 'graphql-ref'
+  return 0
+}
+
+gate_gh_graphql_mutation_inert() {
+  # 0 when the named top-level mutation field writes no git ref — comments,
+  # reactions, labels, assignees, issues, reviews, pull request state and
+  # project items. Anything not listed is taken as one that may.
+  case "$1" in
+    addComment|updateIssueComment|deleteIssueComment|minimizeComment|unminimizeComment) return 0 ;;
+    addReaction|removeReaction) return 0 ;;
+    addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable) return 0 ;;
+    addAssigneesToAssignable|removeAssigneesFromAssignable) return 0 ;;
+    createIssue|updateIssue|closeIssue|reopenIssue|pinIssue|unpinIssue|addSubIssue|removeSubIssue) return 0 ;;
+    lockLockable|unlockLockable) return 0 ;;
+    addPullRequestReview|submitPullRequestReview|updatePullRequestReview|deletePullRequestReview|dismissPullRequestReview) return 0 ;;
+    addPullRequestReviewComment|updatePullRequestReviewComment|deletePullRequestReviewComment) return 0 ;;
+    addPullRequestReviewThread|addPullRequestReviewThreadReply|resolveReviewThread|unresolveReviewThread) return 0 ;;
+    requestReviews|markPullRequestReadyForReview|convertPullRequestToDraft) return 0 ;;
+    createPullRequest|updatePullRequest|closePullRequest|reopenPullRequest) return 0 ;;
+    disablePullRequestAutoMerge|dequeuePullRequest) return 0 ;;
+    addProjectV2ItemById|addProjectV2DraftIssue|updateProjectV2ItemFieldValue|clearProjectV2ItemFieldValue) return 0 ;;
+    deleteProjectV2Item|archiveProjectV2Item|unarchiveProjectV2Item|updateProjectV2ItemPosition) return 0 ;;
+  esac
+  return 1
+}
+
+gate_gh_graphql_inert() {
+  # After `gate_gh_api_parse` on a non-GET GraphQL body that names no merge
+  # field: 0 when the single `query` document holds only `query` operations, or
+  # every top-level field of every other definition passes
+  # `gate_gh_graphql_mutation_inert`; 1 otherwise, and for every body this
+  # cannot read — a `"""` block string, a fragment spread, a directive, an
+  # unbalanced document, or not exactly one `query` field. `#` comments are
+  # skipped to the end of their line, so a word in one is never a field.
+  #
+  # The keyword of an operation is the first word at the document's top level
+  # since the last definition closed; a `{` with none is the query shorthand.
+  # Braces inside an argument list (an input object, a variable's default) do
+  # not open or close a definition.
+  local f q="" nq=0
+  for f in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+    case "$f" in query=*) q="${f#query=}"; nq=$((nq + 1)) ;; esac
+  done
+  [ "$nq" = 1 ] || return 1
+  case "$q" in *'"""'*) return 1 ;; esac
+  local n="${#q}" i=0 j k ch word prev nx instr=0 esc=0 incm=0 pd=0 bd=0 kw="" op=""
+  while [ "$i" -lt "$n" ]; do
+    ch="${q:i:1}"
+    if [ "$incm" = 1 ]; then
+      case "$ch" in $'\n'|$'\r') incm=0 ;; esac
+      i=$((i + 1)); continue
+    fi
+    if [ "$instr" = 1 ]; then
+      if [ "$esc" = 1 ]; then esc=0
+      elif [ "$ch" = '\' ]; then esc=1
+      elif [ "$ch" = '"' ]; then instr=0
+      fi
+      i=$((i + 1)); continue
+    fi
+    case "$ch" in
+      '"') instr=1 ;;
+      '#') incm=1 ;;
+      '(') pd=$((pd + 1)) ;;
+      ')') pd=$((pd - 1)) ;;
+      '{')
+        if [ "$bd" = 0 ] && [ "$pd" = 0 ]; then op="${kw:-query}"; fi
+        bd=$((bd + 1)) ;;
+      '}')
+        bd=$((bd - 1))
+        if [ "$bd" = 0 ] && [ "$pd" = 0 ]; then kw=""; fi ;;
+      '.'|'@') return 1 ;;
+      [A-Za-z_])
+        j=$((i + 1))
+        while [ "$j" -lt "$n" ]; do
+          case "${q:j:1}" in [A-Za-z0-9_]) j=$((j + 1)) ;; *) break ;; esac
+        done
+        word="${q:i:j-i}"
+        prev=""; [ "$i" -eq 0 ] || prev="${q:i-1:1}"
+        if [ "$prev" != '$' ] && [ "$pd" = 0 ]; then
+          if [ "$bd" = 0 ]; then
+            [ -n "$kw" ] || kw="$word"
+          elif [ "$bd" = 1 ] && [ "$op" != query ]; then
+            k="$j"
+            while [ "$k" -lt "$n" ]; do
+              case "${q:k:1}" in ' '|','|$'\t'|$'\n'|$'\r') k=$((k + 1)) ;; *) break ;; esac
+            done
+            nx="${q:k:1}"
+            if [ "$nx" != ':' ]; then
+              gate_gh_graphql_mutation_inert "$word" || return 1
+            fi
+          fi
+        fi
+        i="$j"; continue ;;
+    esac
+    i=$((i + 1))
+  done
+  [ "$instr" = 0 ] && [ "$bd" = 0 ] && [ "$pd" = 0 ] || return 1
   return 0
 }
 
@@ -6760,7 +6883,8 @@ gate_gh_graphql_binding() {
   # a `mergePullRequest`, `enqueuePullRequest` or `enablePullRequestAutoMerge`,
   # and exactly one `expectedHeadOid` argument, inside that field's arguments
   # and outside every string. Its value is inline as a string, or a `$variable`
-  # whose value is a top-level `-f`/`-F` field.
+  # whose value is a top-level `-f`/`-F` field gh sends as a variable — any
+  # field but `query` and `operationName`.
   #
   # Counting the words did not tell the argument the server reads from text it
   # does not: an `expectedHeadOid` inside a `"""` block string, or the argument
@@ -6840,7 +6964,13 @@ gate_gh_graphql_binding() {
     v="${BASH_REMATCH[1]}"
   elif [[ "$rest" =~ $re_var ]]; then
     name="${BASH_REMATCH[1]}"
+    # gh sends every field but `query` and `operationName` as a variable, and
+    # those two as the request's own keys. A `$operationName` bound to
+    # `-f operationName=<HEAD>` is a variable the server never receives, so the
+    # nullable `expectedHeadOid` goes unset and whatever head is there merges.
+    case "$name" in query|operationName) name="" ;; esac
     for g in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
+      [ -n "$name" ] || break
       case "$g" in "$name="*) v="${g#*=}" ;; esac
     done
     case "$v" in @*) v="" ;; esac
@@ -6938,8 +7068,10 @@ gate_merge_binding_of_gh() {
           if [ "$GATE_GHAPI_OPAQUE" = 1 ]; then printf '%s' '없음'; return 0; fi
           gate_gh_graphql_binding; return 0 ;;
         # `…/merges` has no argument the server holds the head to, whatever
-        # fields it carries.
-        branch) printf '%s' '없음'; return 0 ;;
+        # fields it carries, and neither does a GraphQL ref write: the
+        # `expectedHeadOid` of `createCommitOnBranch` pins the branch it writes
+        # on, not the content it puts there.
+        branch|graphql-ref) printf '%s' '없음'; return 0 ;;
         rest) : ;;
         *)
           # A GraphQL body this gate cannot read may be a merge it cannot
@@ -22166,7 +22298,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)는 gh pr merge 로 바꿔 부릅니다"
+        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 query·operationName 이 아닌 필드만 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else

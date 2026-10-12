@@ -21642,6 +21642,15 @@ done
 sp_act S32A 머지 lockf "$SA_ROOT/git" env "HOME=$SA_ROOT/home-x" git push origin "u-$SA_ID:$SA_BASE"
 sp_refused "32p: lockf <…/git> env HOME= 를 앞에 둔 push 는 거절된다" 2 "$B32"
 sp_unknown "32p: lockf <…/git> env HOME="
+# git 을 경로로 적어도 같다 — 풀어낸 git argv 의 첫 단어는 basename 으로 맞춘다.
+SP_GITABS=$(command -v git)
+check "32p: 경로 철자 시험의 git 이 절대 경로다" "${SP_GITABS:0:1}" "/"
+sp_act S32A 머지 lockf "$SA_ROOT/git" env "HOME=$SA_ROOT/home-x" "$SP_GITABS" push origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: lockf <…/git> env HOME= <경로 git> push 는 거절된다" 2 "$B32"
+sp_unknown "32p: lockf <…/git> env HOME= <경로 git>"
+sp_act S32A 머지 env "HOME=$SA_ROOT/home-x" "$SP_GITABS" push origin "u-$SA_ID:$SA_BASE"
+sp_refused "32p: env HOME= <경로 git> push 는 거절된다" 2 "$B32"
+sp_unknown "32p: env HOME= <경로 git>"
 # 대조군 — 로캘 할당은 설정을 바꾸지 않으므로 탐침이 잰다.
 sp_act S32A 머지 env LANG=C git push origin "u-$SA_ID:$SA_BASE"
 sp_refused "32p: env LANG=C 의 다른 소스 베이스 push 는 거절된다" 2 "$B32"
@@ -21746,6 +21755,33 @@ check "32p: 배포트리거 의 REST 머지는 협업면이 아니다" \
   "$(sp_cs 배포트리거 gh api -X PUT 'repos/o/r/pulls/1/merge/')" "아니오"
 check "32p: …/merges 는 협업면이 아니다" "$(sp_cs 협업 gh api -X POST repos/o/r/merges)" "아니오"
 
+# gh 는 query·operationName 을 변수로 보내지 않는다 — 그 이름의 $변수 는 결속이 아니다.
+X32a="abcdef0123456789abcdef0123456789abcdef01"
+check "32p: \$operationName 을 가리키는 expectedHeadOid 는 결속 없는 머지다" \
+  "$(sp_mb gh api graphql -f "query=mutation $X32a(\$operationName:GitObjectID){mergePullRequest(input:{pullRequestId:\"P\",expectedHeadOid:\$operationName}){clientMutationId}}" -f "operationName=$X32a")" "없음"
+check "32p: \$query 를 가리키는 expectedHeadOid 는 결속 없는 머지다" \
+  "$(sp_mb gh api graphql -f "query=mutation(\$query:GitObjectID){mergePullRequest(input:{pullRequestId:\"P\",expectedHeadOid:\$query}){clientMutationId}}")" "없음"
+
+# 머지 없이 ref 를 바꾸는 GraphQL mutation 은 결속할 수 없는 베이스 갱신이다.
+q32ur='mutation{updateRefs(input:{repositoryId:"R",refUpdates:[{name:"refs/heads/master",afterOid:"X",force:true}]}){clientMutationId}}'
+q32u1='mutation{updateRef(input:{refId:"F",oid:"X",force:true}){clientMutationId}}'
+q32cc='mutation{createCommitOnBranch(input:{branch:{repositoryNameWithOwner:"o/r",branchName:"master"},expectedHeadOid:"X",message:{headline:"h"}}){clientMutationId}}'
+q32al='mutation{c:addComment(input:{subjectId:"I",body:"b"}){clientMutationId} r:updateRef(input:{refId:"F",oid:"X"}){clientMutationId}}'
+q32dv='mutation M($x:In={a:1}){updateRef(input:{refId:"F",oid:"X"}){clientMutationId}}'
+q32cm=$(printf 'mutation{addComment(input:{subjectId:"I",body:"b"}){clientMutationId} # updateRef\n}')
+for sp_q in "$q32ur" "$q32u1" "$q32cc" "$q32al" "$q32dv"; do
+  check "32p: ref 쓰기 GraphQL 은 결속 없는 머지다 — ${sp_q:0:40}" "$(sp_mb gh api graphql -f "query=$sp_q")" "없음"
+  check "32p: 사다리가 ref 쓰기 GraphQL 을 머지로 읽는다 — ${sp_q:0:40}" "$(sp_ld gh api graphql -f "query=$sp_q")" "머지"
+  check "32p: ref 쓰기 GraphQL 은 협업면이 아니다 — ${sp_q:0:40}" "$(sp_cs 협업 gh api graphql -f "query=$sp_q")" "아니오"
+done
+# 대조군 — ref 를 바꾸지 않는 mutation 과 query 연산은 머지가 아니고 협업면이다.
+for sp_q in 'mutation{addComment(input:{subjectId:"I",body:"updateRef"}){clientMutationId}}' \
+            'mutation A{addLabelsToLabelable(input:{labelableId:"I",labelIds:["L"]}){clientMutationId}}' \
+            "$q32cm" 'query{viewer{login}}' '{viewer{login}}'; do
+  check "32p: 대조군 — ref 를 바꾸지 않는 GraphQL 은 머지가 아니다 — ${sp_q:0:40}" "$(sp_mb gh api graphql -f "query=$sp_q")" "해당없음"
+  check "32p: 대조군 — ref 를 바꾸지 않는 GraphQL 은 협업면이다 — ${sp_q:0:40}" "$(sp_cs 협업 gh api graphql -f "query=$sp_q")" "예"
+done
+
 # …/merges 의 본문에는 head 를 묶는 매개변수가 없다 — sha 필드를 붙여도 결속이 아니다.
 check "32p: -f sha= 를 붙인 …/merges 도 결속 없는 머지다" \
   "$(sp_mb gh api -X POST repos/o/r/merges -f base=main -f head=x -f "sha=$X32")" "없음"
@@ -21824,6 +21860,11 @@ sp_plan S32G 머지 gh api graphql -f "$(printf 'query=mutation{createCommitOnBr
 check "32p: 형제 mutation 의 워크트리 HEAD 를 실은 GraphQL 머지는 거절된다" "$rc" "2"
 sp_bound() { case "$msg" in *"결속되지 않았습니다"*) return 0 ;; esac; return 1; }
 if sp_bound; then ok "32p: 형제 mutation 미끼 — 문면이 결속을 지목한다"; else bad "32p 형제 mutation 문면" "$msg"; fi
+sp_plan S32G 머지 gh api graphql -f "query=$q32ur"
+check "32p: 머지 로 정직하게 선언한 updateRefs 는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: updateRefs — 문면이 결속을 지목한다"; else bad "32p updateRefs 문면" "$msg"; fi
+sp_plan S32G 커밋 gh api graphql -f "query=$q32ur"
+check "32p: updateRefs 를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
 sp_plan S32G 머지 gh api repos/o/r/merges --raw-field=base=main --raw-field=head=x "--raw-field=sha=$H32G"
 check "32p: 워크트리 HEAD 를 sha 로 실은 …/merges 는 거절된다" "$rc" "2"
 if sp_bound; then ok "32p: …/merges + sha — 문면이 결속을 지목한다"; else bad "32p …/merges 문면" "$msg"; fi
