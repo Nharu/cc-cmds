@@ -1307,7 +1307,18 @@ gate_reach_local_destructive() {
   # is the same closed reading one level up: the wrapped command is out of
   # view, so whether it destroys is unknown. Answering nothing there let
   # `env -C <sibling> rm -rf .` and `env -S 'rm -rf <sibling>/x'` through both
-  # `런로컬` and `대상트리`, while `env -i rm -rf <sibling>/x` parked.
+  # `런로컬` and `대상트리`, while `env -i rm -rf <sibling>/x` parked. The
+  # attached spellings `-SFOO=1 …`, `--split-string=…` and `--chdir=<dir>`
+  # reach the same answer only because `gate_unwrap_env` reads an option before
+  # it reads an assignment; with the order reversed they were skipped as
+  # assignments and the wrapped command came back as the act.
+  #
+  # Verbs it does not list answer nothing here, but the run-local and
+  # reach-omitted cells do not take that silence as "nothing in the target is
+  # touched": they collect where the act lands and park any write that reaches
+  # another tree of the target, whatever its verb (`gate_reach_runlocal_destruction_argv`),
+  # and the target-tree cell reads an unknown verb that lands on an existing
+  # file as an overwrite (`gate_reach_unknown_overwrite`).
   #
   # `lockf` and `time` destroy a file of their own besides what they wrap:
   # `lockf` without `-k` removes its lockfile, and `time -o` without `-a`
@@ -2072,8 +2083,18 @@ gate_reach_tree_destruction() {
   # table knows no local form, so without that word `Pd` could never be 1 for
   # one. Cell 5b and the `런로컬` cell both answer through this, so the two
   # spellings of one act take one verdict.
+  #
+  # A VERB THE LOCAL READER DOES NOT LIST IS AN OVERWRITE WHEN IT LANDS ON
+  # SOMETHING THAT EXISTS. That reader knows `rm`, `mv`, `cp` and a few more,
+  # and every other verb answered nothing, so `sort -o <sibling>/README.md`,
+  # `dd of=…` and `sed -i` replaced a file in another worktree under
+  # `대상트리` with no manifest form named. `gate_reach_unknown_overwrite`
+  # names the verb as the trigger, so a manifest shape carrying it opens it.
   local X="$1" Pd="$2" _ltrig probe; shift 2
   _ltrig=$(gate_reach_local_destructive_here "$@")
+  if [ -z "$_ltrig" ] && [ "$X" = "0" ]; then
+    _ltrig=$(gate_reach_unknown_overwrite "${alias:-}" "$@")
+  fi
   if [ -n "$_ltrig" ] && [ "$GATE_MARK" != "파괴" ]; then
     X=1
     probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='파괴' GATE_MARK_TRIGGER="$_ltrig" \
@@ -2084,6 +2105,91 @@ gate_reach_tree_destruction() {
   fi
   { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
   printf '파괴형태미명시'
+}
+
+gate_reach_peeled_verb() {
+  # gate_reach_peeled_verb <argv...> — prints how many words are left once the
+  # launchers `gate_unwrap_one` reads are peeled; 1 when one of them carries an
+  # option it does not know or wraps nothing.
+  local _urc _left
+  while [ "$#" -gt 0 ]; do
+    _urc=0; _left=$(gate_unwrap_one "$@") || _urc=$?
+    case "$_urc" in
+      0) shift $(( $# - _left )) ;;
+      2) break ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$#" -gt 0 ] || return 1
+  printf '%s' "$#"
+}
+
+gate_reach_unknown_overwrite() {
+  # gate_reach_unknown_overwrite <alias> <argv...> — prints the verb word when
+  # the act, its launchers peeled, is a verb the local reader does not list and
+  # one of the places it writes already exists; nothing otherwise.
+  #
+  # The places are the ones the destruction question collects, less the
+  # operating repository the collector always puts first — the act runs there
+  # and need not write it — and less the three places `런로컬` is honest for.
+  # A verb the local reader lists has its own closed reading there, and
+  # `mkdir`, `mktemp` and `touch` make or stamp a name without replacing what
+  # it holds. A script or interpreter is the stage's to declare, as before.
+  #
+  # `git` is read by the local reader too, but for the one option that sends
+  # its output to a named file — `--output` of `diff`, `log` and their kin —
+  # that reader has nothing to say, so an existing file it names answers that
+  # word here.
+  local alias="$1" n a v; shift
+  n=$(gate_reach_peeled_verb "$@") || return 0
+  shift $(( $# - n ))
+  case "${1##*/}" in
+    git)
+      v=''
+      for a in "$@"; do
+        if [ "$v" = "1" ]; then v="$a"; break; fi
+        case "$a" in
+          --) break ;;
+          --output=*) v="${a#*=}"; break ;;
+          --output) v=1 ;;
+        esac
+      done
+      case "$v" in ''|1) return 0 ;; esac
+      v=$(gate_lexical_abs "$v" "$(gate_grade_cwd)")
+      gate_reach_runlocal_honest "$v" && return 0
+      [ -e "$v" ] || return 0
+      case "$a" in --output=*) printf '%s' "$a" ;; *) printf -- '--output' ;; esac
+      return 0 ;;
+    rm|unlink|truncate|mv|cp|ln|install|find|mkdir|mktemp|touch) return 0 ;;
+  esac
+  [ "$(gate_argv_opaque "$@")" = "1" ] && return 0
+  (
+    GATE_TT_WRITES_ONLY=1
+    gate_reach_target_tree_act "$alias" "$@" || :
+    [ "${#GATE_TT_LANDS[@]}" -gt 1 ] || exit 0
+    for l in "${GATE_TT_LANDS[@]:1}"; do
+      gate_reach_runlocal_honest "$l" && continue
+      if [ -e "$l" ] || [ -L "$l" ]; then printf '%s' "$1"; exit 0; fi
+    done
+  )
+}
+
+gate_reach_runlocal_honest() {
+  # gate_reach_runlocal_honest <path> — 0 when the path lies in one of the
+  # three places `런로컬` is honest for: the temp directory as the act reads
+  # `TMPDIR`, the run's state root, and the act's own worktree, each compared
+  # by its physical spelling as `gate_reach_runlocal_escapes` compares them.
+  local full tmp sr own
+  full=$(gate_real_prefix "$1")
+  tmp="${TMPDIR:-/tmp}"; tmp="${tmp%/}"; [ -n "$tmp" ] || tmp=/
+  tmp=$(gate_real_prefix "$tmp")
+  sr=$(gate_real_prefix "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds")
+  case "$full" in "$tmp"|"$tmp"/*|"$sr"|"$sr"/*) return 0 ;; esac
+  own=$(gate_tree_root)
+  if [ -n "$own" ]; then
+    case "$full" in "$own"|"$own"/*) return 0 ;; esac
+  fi
+  return 1
 }
 
 gate_reach_runlocal_escapes() {
@@ -2178,18 +2284,34 @@ gate_reach_runlocal_destruction() {
     [ $# -gt 0 ] || continue
     gate_opl_words "$@"; set -- "${GATE_OPL_WORDS[@]}"
     case "$unread" in
+      # A line whose landing is unread and whose command the table grades a
+      # write is a write that may land in the target's trees, which the closed
+      # reading answers `도달모순` when nothing marks it destructive. A line the
+      # table does not grade a write (`make`, a read) is left as it was.
       1|3)
-        [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ] || continue
-        r=$(gate_reach_tree_destruction "$X" "$Pd" "$@") ;;
+        if [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ]; then
+          r=$(gate_reach_tree_destruction "$X" "$Pd" "$@")
+        else
+          case "$(surface_of_argv0 "$@")" in
+            워크트리쓰기|트리밖쓰기) r='도달모순' ;;
+            *) continue ;;
+          esac
+        fi ;;
       2) r=$(gate_reach_tree_destruction 1 "$Pd" "$@") ;;
       # A write redirection overwrites or appends to the file it names, so
       # landing in the target's trees it is a destruction; a target whose
       # place is unread is judged as landing there.
+      # A tilde prefix this file cannot expand (`~-`, another user's home) is
+      # a target whose place is unread.
       4)
         case "$1" in
           /*) kept="$1" ;;
-          '~') kept="$HOME" ;;
-          '~/'*) kept="$HOME/${1#'~/'}" ;;
+          '~'*)
+            kept=$(gate_tilde_path "$1" "$(gate_grade_cwd)") || {
+              r=$(gate_reach_tree_destruction 1 "$Pd" :)
+              [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+              continue
+            } ;;
           *) kept="$(gate_grade_cwd)/$1" ;;
         esac
         gate_reach_target_tree_act "$alias" : "$kept" || :
@@ -2212,15 +2334,39 @@ gate_reach_runlocal_destruction_argv() {
   # gate_reach_runlocal_destruction_argv <alias> <X> <Pd> <argv...> — the
   # question above for one argv as it stands. Its landing places are the
   # places the act writes, so the read source of a copy is left out.
-  local alias="$1" X="$2" Pd="$3"; shift 3
-  if [ "$X" != "1" ]; then
-    [ -n "$(gate_reach_local_destructive_here "$@")" ] || return 0
+  #
+  # THE READING IS CLOSED, NOT ONLY FOR DESTRUCTIVE ACTS. A write that lands in
+  # another of the target's trees is a false `런로컬` whatever its verb, and
+  # answers `도달모순` when nothing marks it destructive. Asked only of the
+  # forms the local reader lists, the question let `tee`, `dd of=`, `sed -i`,
+  # `sort -o`, `rsync` and `tar -C` overwrite a sibling worktree under
+  # `런로컬` and the omitted reach, because their verbs were simply not read.
+  # A script or interpreter (`gate_argv_opaque`) is still the declaration's
+  # to answer, and the atomic commit of a sidecar write — the one `mv` over
+  # an existing file and the one `rm` the local reader passes — stays a pass.
+  local alias="$1" X="$2" Pd="$3" _lt r n; shift 3
+  _lt=$(gate_reach_local_destructive_here "$@")
+  if [ "$X" != "1" ] && [ -z "$_lt" ]; then
+    [ "$(gate_argv_opaque "$@")" = "1" ] && return 0
+    if n=$(gate_reach_peeled_verb "$@"); then
+      case "${*:$(( $# - n + 1 )):1}" in
+        mv|*/mv|rm|*/rm)
+          ( cd "$(gate_grade_cwd)" 2>/dev/null || exit 1
+            set -- "${@:$(( $# - n + 1 ))}"
+            gate_reach_atomic_swap "${1##*/}" "${@:2}" ) && return 0 ;;
+      esac
+    fi
   fi
   GATE_TT_WRITES_ONLY=1
   gate_reach_target_tree_act "$alias" "$@" || :
   GATE_TT_WRITES_ONLY=''
   gate_reach_runlocal_escapes "$alias" || return 0
-  gate_reach_tree_destruction "$X" "$Pd" "$@"
+  r=$(gate_reach_tree_destruction "$X" "$Pd" "$@")
+  if [ -z "$r" ] && [ "$X" != "1" ] && [ -z "$_lt" ] \
+     && [ -z "$(gate_reach_unknown_overwrite "$alias" "$@")" ]; then
+    r='도달모순'
+  fi
+  printf '%s' "$r"
 }
 
 gate_reach_disposition() {
@@ -2646,6 +2792,38 @@ gate_tt_copy_dest_only() {
   [ "$n" -ge 2 ]
 }
 
+gate_tilde_path() {
+  # gate_tilde_path <word> <dir> — prints the path a shell makes of a word that
+  # starts with `~`, taking `~+` against <dir>, the directory the act runs in;
+  # 1 when it cannot say. `~` and `~<this user>` are `$HOME`. `~-` is the
+  # previous directory of a shell this file never sees, and `~<another user>`
+  # is a home directory it does not look up, so both give up — a caller reads
+  # that as a landing place it could not resolve, never as a relative path.
+  local w="$1" d="$2" pre rest='' me
+  pre="${w%%/*}"
+  case "$w" in */*) rest="/${w#*/}" ;; esac
+  case "$pre" in
+    '~')  printf '%s%s' "$HOME" "$rest" ;;
+    '~+') printf '%s%s' "$d" "$rest" ;;
+    *)
+      me=$(id -un 2>/dev/null) || return 1
+      [ -n "$me" ] && [ "$pre" = "~$me" ] || return 1
+      printf '%s%s' "$HOME" "$rest" ;;
+  esac
+}
+
+gate_tt_dir() {
+  # gate_tt_dir <word> <dir> — the absolute directory a `-C`/`--chdir` value
+  # names, read against <dir>; 1 for a tilde prefix `gate_tilde_path` cannot
+  # expand.
+  local w
+  case "$1" in
+    '~'*) w=$(gate_tilde_path "$1" "$2") || return 1
+          gate_lexical_abs "$w" "$2" ;;
+    *) gate_lexical_abs "$1" "$2" ;;
+  esac
+}
+
 gate_reach_target_tree_act() {
   # gate_reach_target_tree_act <alias> <argv...> — reads the operating
   # repository and the path-shaped operands out of argv and hands them to
@@ -2756,13 +2934,17 @@ gate_reach_target_tree_act() {
             -u?*) shift ;;
             -C|--chdir)
                 [ "$#" -ge 2 ] || return 1
-                repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
-            --chdir=*) repo=$(gate_lexical_abs "${1#*=}" "${repo:-$base}"); shift ;;
+                repo=$(gate_tt_dir "$2" "${repo:-$base}") || return 1; shift 2 ;;
+            --chdir=*) repo=$(gate_tt_dir "${1#*=}" "${repo:-$base}") || return 1; shift ;;
             -*) return 1 ;;
             GIT_PAGER=*|GIT_EDITOR=*|GIT_SEQUENCE_EDITOR=*|GIT_TERMINAL_PROMPT=*|\
             GIT_AUTHOR_*=*|GIT_COMMITTER_*=*|GIT_TRACE*=*|GIT_OPTIONAL_LOCKS=*|GIT_ADVICE=*) shift ;;
             GIT_*=*) return 1 ;;
-            *=*) shift ;;
+            # Read as `gate_unwrap_env` reads it: only a variable name before
+            # the `=` makes an assignment, and any other word is the command.
+            [A-Za-z_]*=*)
+              case "${1%%=*}" in *[!A-Za-z0-9_]*) break ;; esac
+              shift ;;
             *) break ;;
           esac
         done
@@ -2783,8 +2965,9 @@ gate_reach_target_tree_act() {
         for v in ${GATE_UW_PATHS[@]+"${GATE_UW_PATHS[@]}"}; do
           case "$v" in
             /*) wrp[${#wrp[@]}]="$v" ;;
-            '~') wrp[${#wrp[@]}]="$HOME" ;;
-            '~/'*) wrp[${#wrp[@]}]="$HOME/${v#'~/'}" ;;
+            '~'*)
+              w=$(gate_tilde_path "$v" "${repo:-$base}") || return 1
+              wrp[${#wrp[@]}]="$w" ;;
             *) wrp[${#wrp[@]}]="${repo:-$base}/$v" ;;
           esac
         done
@@ -2803,7 +2986,7 @@ gate_reach_target_tree_act() {
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -C) [ "$#" -ge 2 ] || return 1
-            repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
+            repo=$(gate_tt_dir "$2" "${repo:-$base}") || return 1; shift 2 ;;
         --git-dir=*|--work-tree=*)
             gx[${#gx[@]}]="${1#*=}"; shift ;;
         --git-dir|--work-tree)
@@ -2874,10 +3057,33 @@ gate_reach_target_tree_act() {
         # The worktree a `remove`, `move`, `lock`, `unlock` or `repair` names is
         # its first operand, whatever its shape.
         if [ "$skipped_wt" = "3" ]; then spec="$a"; skipped_wt=4; continue; fi
+        # The value of a `key=<path>` operand is where the write goes: `dd
+        # of=<sibling file>` truncates that file, and read whole the word was a
+        # relative path under the act's own directory, so no cell saw the
+        # sibling. The key must be a variable name and the value path-shaped.
         case "$a" in
-          '~') ops[${#ops[@]}]="$HOME" ;;
-          '~/'*) ops[${#ops[@]}]="$HOME/${a#'~/'}" ;;
-          */*|.*|'~'*)
+          [A-Za-z_]*=*)
+            case "${a%%=*}" in
+              *[!A-Za-z0-9_]*) ;;
+              *)
+                case "${a#*=}" in
+                  /*|.*|'~'*|*/*) a="${a#*=}" ;;
+                esac ;;
+            esac ;;
+        esac
+        case "$a" in
+          # Every tilde prefix is expanded as the shell expands it, and one
+          # this reader cannot expand gives up: `~+`, `~-` and `~<user>` used
+          # to fall to the relative arm below and land under the act's own
+          # directory, so `rm -f ~+/../<sibling>/f` read as a run-local act.
+          '~'*)
+            w=$(gate_tilde_path "$a" "$base") || return 1
+            case "$a" in
+              '~'|'~/'*) ;;
+              *) if [ "$skipped_wt" = "1" ]; then skipped_wt=2; continue; fi ;;
+            esac
+            ops[${#ops[@]}]="$w" ;;
+          */*|.*)
             if [ "$skipped_wt" = "1" ]; then skipped_wt=2; continue; fi
             ops[${#ops[@]}]="$a" ;;
           *)
@@ -7432,7 +7638,11 @@ gate_opaque_floor() {
       printf '%s' "$wf"; return 0 ;;
     command) gate_unwrap_command gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     rg)      gate_unwrap_rg      gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
-    env)     gate_unwrap_env     gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    # An option of `env` the unwrap does not know hides the command it runs
+    # (`-SFOO=1 rm -rf …` splits into one), so it floors as an unread
+    # launcher option does inside a payload. Answering "nothing readable"
+    # left that argv at `읽기` under a `읽기` declaration.
+    env)     gate_unwrap_env     gate_opaque_floor "$GATE_FLOOR_NONE" "$unread" "$@"; return 0 ;;
     time)
       wf=$(gate_unwrap_time gate_opaque_floor "$GATE_FLOOR_NONE" "$unread" "$@")
       gate_unwrap_time : '' '' "$@"
@@ -7956,10 +8166,26 @@ gate_opl_hides_command() {
   # grades above a read, gives a rung, or the local reader calls
   # destructive. `caffeinate gh pr merge 1`, `watch …`, `script -q /dev/null
   # …`, `unbuffer …` and `parallel … :::` run the argv behind them, and the
-  # line passed as a plain read with no rung while the same argv written
-  # bare is refused as `등급 미상`. A word after an unknown command that only
-  # reads (`make test`) leaves the line as it is.
+  # line passed as a plain read with no rung. A word after an unknown command
+  # that only reads (`cat README.md`) leaves the line as it is; `make test` is
+  # not one, because the table grades `make` a worktree write.
+  #
+  # IT IS ASKED OF THE OUTER ARGV TOO, not only of a line inside a shell's
+  # `-c` string (`gate_opl_unread_launch`). Written bare, `arch -arm64 rm -rf
+  # <sibling>/x` was no `등급 미상` refusal: the payload of a table-less argv0
+  # began with an option word and was skipped, so the floor stayed `읽기` and
+  # the `런로컬` destruction question had no word to answer.
+  #
+  # The ladder it asks is told so (`GATE_OPL_IN_HIDES`), because the
+  # ladder's own answer for a table-less argv0 is this search, and asked
+  # again for every later word the walk would grow with each word.
+  #
+  # `xargs`, `sudo` and `npx` are not asked: this file already reads them with
+  # their own arms (the payload reader's operand line, and the declared-grade
+  # ceiling of the reach cells), and a `머지` rung from this search would turn
+  # an honest `xargs git push` from that park into an under-declaration.
   local g j w
+  case "${1##*/}" in xargs|sudo|npx) return 1 ;; esac
   gate_opl_words "$@"
   set -- "${GATE_OPL_WORDS[@]}"
   g=$(surface_of_argv0 "$@" 2>/dev/null) || g=''
@@ -7973,12 +8199,60 @@ gate_opl_hides_command() {
       *)
         g=$(surface_of_argv0 "${@:j}" 2>/dev/null) || g=''
         case "$g" in 워크트리쓰기|트리밖쓰기|외부상태변경) return 0 ;; esac
-        [ -z "$(ladder_of_argv0 "${@:j}" 2>/dev/null)" ] || return 0
+        [ -z "$(GATE_OPL_IN_HIDES=1 ladder_of_argv0 "${@:j}" 2>/dev/null)" ] || return 0
         [ -z "$(gate_reach_local_destructive_here "${@:j}" 2>/dev/null)" ] || return 0 ;;
     esac
     j=$((j + 1))
   done
   return 1
+}
+
+gate_opl_unread_shell() {
+  # gate_opl_unread_shell <argv...> — status 0 when argv0 is a shell whose
+  # grammar this file does not read and its options ask it to run a command
+  # string: `tcsh -c`, `csh -fc`, `fish --command=…`, `mksh -c`, `rbash -c`,
+  # `busybox sh -c`. The five shells the payload reader reads, and a name the
+  # grading table grades (`ssh`), are not this. Without it `/bin/tcsh -c "rm -f
+  # <sibling>/x"`, a shell macOS ships, floored `읽기` and its `런로컬`
+  # destruction question had nothing to answer. A shell given a script file
+  # instead is still not read, as for any shell.
+  local cmd="${1##*/}" g
+  case "$cmd" in
+    bash|sh|zsh|dash|ksh) return 1 ;;
+    *sh|busybox) ;;
+    *) return 1 ;;
+  esac
+  g=$(surface_of_argv0 "$@" 2>/dev/null) || g=''
+  case "$g" in 읽기|워크트리쓰기|트리밖쓰기|외부상태변경) return 1 ;; esac
+  shift
+  [ "$cmd" = "busybox" ] && { [ $# -gt 0 ] || return 1; shift; }
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --) return 1 ;;
+      --command|--command=*) return 0 ;;
+      --*) ;;
+      # fish's `-C` runs a command string before anything else.
+      [-+]*[cC]*) return 0 ;;
+      [-+]*) ;;
+      *) return 1 ;;
+    esac
+    shift
+  done
+  return 1
+}
+
+gate_opl_unread_launch() {
+  # gate_opl_unread_launch <argv...> — status 0 when an argv no table grades
+  # runs a command this file cannot read: a shell `gate_opl_unread_shell`
+  # names, or a table-less argv0 with a graded argv behind it
+  # (`gate_opl_hides_command`). Its callers print such an argv as a record 2,
+  # the unread command, so the floor, the ladder and the `런로컬` destruction
+  # question take it on their closed side, as they take the same argv inside
+  # a shell's `-c` string. The second half is not asked from inside that
+  # search (`GATE_OPL_IN_HIDES`).
+  gate_opl_unread_shell "$@" && return 0
+  [ -z "${GATE_OPL_IN_HIDES:-}" ] || return 1
+  gate_opl_hides_command "$@"
 }
 
 gate_opl_redir_record() {
@@ -8084,7 +8358,11 @@ gate_opaque_payload_lines() {
   #       or the word behind those holds `$`, a quote or a backslash; it is a
   #       `find` whose `-exec` runs such a command or one written with `$`, a
   #       quote or a backslash; it is a command no table grades followed by an
-  #       argv the table grades above a read (`gate_opl_hides_command`); it
+  #       argv the table grades above a read (`gate_opl_hides_command`), or a
+  #       shell this reader does not read given a command string
+  #       (`gate_opl_unread_shell`) — both also when the act itself is such an
+  #       argv, which is then the one record; it is a zsh string with `=(` at
+  #       the start of a word; it
   #       is still `builtin` or `command` after the peel; an option of `exec`
   #       or `command` is unread; the shell's own option region is (status 2
   #       of `gate_shell_c_string`); or the scanner marked the line 2 (a
@@ -8128,14 +8406,34 @@ gate_opaque_payload_lines() {
         0) ;;
         1) return 0 ;;
         *) printf '2\t%s\t%s\n' "$cmd" "$cmd"; return 0 ;;
-      esac ;;
+      esac
+      # zsh's `=(…)` runs its body and stands as a file name, which the
+      # scanner, reading bash's grammar, does not open: `zsh -c "cp =(echo x)
+      # <sibling>/README.md"` read as a plain `cp` of an operand. A string
+      # with `=(` at the start of a word is unread as a whole; an array
+      # assignment `a=(…)` has it inside a word and is not this.
+      if [ "$cmd" = "zsh" ]; then
+        case "$payload" in
+          '=('*|*[[:space:]]'=('*|*[\;\|\&\(]'=('*)
+            printf '2\t%s\t%s\n' "$cmd" "$cmd"; return 0 ;;
+        esac
+      fi ;;
     # The wrappers that assemble a command line out of their own arguments, and
     # the table-less argv0 whose operands may name one. `docker run` is
     # deliberately absent: its image name is a word like `mysql`, and reading
     # that as a database client would park every container the pipeline starts.
     xargs|sudo|npx) payload="$*" ;;
     docker) payload="" ;;
-    *) payload="$*" ;;
+    # AN ARGV THAT RUNS A COMMAND THIS READER CANNOT READ is one unread line:
+    # a shell whose grammar is not read here, given a command string, or a
+    # table-less launcher with a graded argv behind it. Read as a payload,
+    # `caffeinate -i rm -rf <sibling>/x` began with the option word `-i` and
+    # was skipped whole.
+    *)
+      if gate_opl_unread_launch "$cmd" "$@"; then
+        printf '2\t%s\t%s\n' "$cmd" "$cmd"; return 0
+      fi
+      payload="$*" ;;
   esac
   [ -n "$payload" ] || return 0
   # A shell's `-c` string has its here-documents read by the scanner, which
@@ -8146,7 +8444,7 @@ gate_opaque_payload_lines() {
   fi
 
   local line unread kept out w k n st cw x poison=0 exec_unread=1 split
-  local rx rt dup ci ii m lm=0 skipl _urc _l
+  local rx rt nx dup ci ii m lm=0 skipl _urc _l
   local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL
   local -a pre ws raw rw y
   [ "$shellmode" = "1" ] && exec_unread=2
@@ -8184,24 +8482,44 @@ gate_opaque_payload_lines() {
       rw=()
       while [ $# -gt 0 ]; do
         case "$1" in
+          # EVERY OPERATOR IN THE WORD IS READ, not only the first. The shell
+          # ends a target at the next unquoted `>` or `<`, so `echo x
+          # >/dev/null><sibling>/README.md` and `cmd 2>/dev/null><sibling>/f`
+          # open the second file too; read as one target, the pair came back
+          # as a single path under `/dev` and the sibling's file had no record.
+          # An input operator glued behind a write leaves the rest unread (5).
+          #
+          # `!` after the operator is zsh's `>!`, `>>!` and `&>!`, which
+          # overwrite as `>|` does. bash reads that `!` as the first byte of
+          # the target's name, so taking it off reads the next word as the
+          # target there — the closed side, a park and never a pass.
           *'>'*)
             rx="${1%%>*}"; rt="${1#*>}"
-            while :; do case "$rt" in '>'*) rt="${rt#>}" ;; *) break ;; esac; done
-            rt="${rt#|}"; dup=0
-            case "$rt" in '&'*) rt="${rt#&}"; dup=1 ;; esac
             rx="${rx%<}"; rx="${rx%&}"
             case "$rx" in ''|*[!0-9]*) [ -z "$rx" ] || rw[${#rw[@]}]="$rx" ;; esac
-            if [ -z "$rt" ] && [ $# -ge 2 ]; then rt="$2"; shift; fi
-            if [ -z "$rt" ]; then
-              printf '5\t>\t>\n'
-            elif [ "$dup" = "1" ]; then
+            while :; do
+              while :; do case "$rt" in '>'*) rt="${rt#>}" ;; *) break ;; esac; done
+              rt="${rt#[|!]}"; dup=0
+              case "$rt" in '&'*) rt="${rt#&}"; dup=1 ;; esac
+              nx=''
               case "$rt" in
-                [0-9]|[0-9][0-9]|-) ;;
-                *) gate_opl_redir_record "$rt" "$poison" "$lm" ;;
+                *[\<\>]*) x="${rt%%[<>]*}"; nx="${rt#"$x"}"; rt="$x" ;;
               esac
-            else
-              gate_opl_redir_record "$rt" "$poison" "$lm"
-            fi ;;
+              if [ -z "$rt" ] && [ -z "$nx" ] && [ $# -ge 2 ]; then rt="$2"; shift; fi
+              if [ -z "$rt" ]; then
+                printf '5\t>\t>\n'
+              elif [ "$dup" = "1" ]; then
+                case "$rt" in
+                  [0-9]|[0-9][0-9]|-) ;;
+                  *) gate_opl_redir_record "$rt" "$poison" "$lm" ;;
+                esac
+              else
+                gate_opl_redir_record "$rt" "$poison" "$lm"
+              fi
+              [ -n "$nx" ] || break
+              case "$nx" in '<'*) printf '5\t>\t>\n'; break ;; esac
+              rt="$nx"
+            done ;;
           # AN INPUT REDIRECTION is a read: the operator and its source are
           # taken out of the line and leave no record. Left in place,
           # `</dev/null gh pr merge 1` had `</dev/null` as its command word,
@@ -8399,9 +8717,11 @@ gate_opaque_payload_lines() {
         esac
       fi
       # A COMMAND NO TABLE GRADES may run the argv behind it
-      # (`gate_opl_hides_command`), and the line is then one this reader
-      # cannot place.
-      if [ "$st" = "0" ] && [ "$unread" = "0" ] && gate_opl_hides_command "$@"; then
+      # (`gate_opl_hides_command`), or be a shell this reader does not read
+      # given a command string (`gate_opl_unread_shell`), and the line is then
+      # one this reader cannot place.
+      if [ "$st" = "0" ] && [ "$unread" = "0" ] \
+         && { gate_opl_unread_shell "$@" || gate_opl_hides_command "$@"; }; then
         st=2
       fi
       # A GLOB IN A DIRECTORY COMPONENT leaves the landing unread: the local
@@ -8490,7 +8810,17 @@ gate_opaque_shell_lines() {
     esac
   done
   [ $# -gt 0 ] || return 0
-  case "${1##*/}" in bash|sh|zsh|dash|ksh) ;; *) return 0 ;; esac
+  # What is not one of the five shells is no string to read, but an argv
+  # behind an unknown launcher or a shell this file does not read is a line
+  # whose command is unread (`gate_opl_unread_launch`), as it is inside one.
+  case "${1##*/}" in
+    bash|sh|zsh|dash|ksh) ;;
+    *)
+      if gate_opl_unread_launch "$@"; then
+        printf '2\t%s\t%s\n' "${1##*/}" "${1##*/}"
+      fi
+      return 0 ;;
+  esac
   _rc=0; gate_shell_c_string "${@:2}" >/dev/null || _rc=$?
   [ "$_rc" = "1" ] && return 0
   gate_opaque_payload_lines "$@"
@@ -8538,6 +8868,13 @@ gate_unwrap_env() {
   # next word moves the command out of view, which is the failure
   # `surface_of_git` already records.
   #
+  # OPTIONS ARE READ BEFORE ASSIGNMENTS, and an assignment is a word whose part
+  # before the first `=` is a variable name. With the assignment arm first,
+  # `-SFOO=1 rm -rf x`, `--split-string=…` and `--chdir=<dir>` each held an `=`
+  # and were skipped as assignments, so the wrapped command vanished or the
+  # directory change was dropped. A word like `a-b=1` is not an assignment to env
+  # either — it is the command it runs.
+  #
   # IT IS SHARED BY FIVE TABLES on purpose. Wired into the grader alone,
   # `env X=1 git merge seg` graded `워크트리쓰기` while the history predicate
   # answered 0 and the ladder saw no merge — the inert-repair shape this tree
@@ -8548,8 +8885,12 @@ gate_unwrap_env() {
       -i|-0|-v|--) shift ;;
       -u) [ $# -ge 2 ] || { printf '%s' "$unknown_opt"; return 0; }; shift 2 ;;
       -u*) shift ;;
-      *=*) shift ;;
       -*) printf '%s' "$unknown_opt"; return 0 ;;
+      [A-Za-z_]*=*)
+        case "${1%%=*}" in
+          *[!A-Za-z0-9_]*) break ;;
+        esac
+        shift ;;
       *) break ;;
     esac
   done
@@ -8739,7 +9080,10 @@ ladder_of_argv0() {
     git)       ladder_of_git "$@" ;;
     gh)        ladder_of_gh "$@" ;;
     terraform) ladder_of_terraform "$@" ;;
-    *) : ;;
+    # An argv this file cannot read the command of may be a merge, as an
+    # unread line of a shell's string is (`ladder_of_shell`): `caffeinate -i
+    # gh pr merge 1` derived no rung while `bash -c` around it derived `머지`.
+    *) gate_opl_unread_launch "$cmd" "$@" && printf '머지' ;;
   esac
   return 0
 }
@@ -24506,7 +24850,9 @@ gate_verb_act() {
         _ptrig="${GATE_MARK_TRIGGER:-}"
       else
         case "${GATE_REACH:--}" in
-          대상트리|런로컬|-) _ptrig=$(gate_reach_local_destructive_here "$@") ;;
+          대상트리|런로컬|-)
+            _ptrig=$(gate_reach_local_destructive_here "$@")
+            [ -n "$_ptrig" ] || _ptrig=$(gate_reach_unknown_overwrite "$alias" "$@") ;;
         esac
       fi
     fi
@@ -24548,8 +24894,17 @@ gate_verb_act() {
         warn "repair: rewrite it in a form that does not print the secret (printenv with a name, and so on). If the value is needed, leave it to a person" ;;
       push원격불일치)
         warn "repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
+      # A write declared `런로컬`, or with the reach left out, parks here when
+      # one of its landing places is another of the target's trees, whatever
+      # its verb. The general line named no token, and the honest one is
+      # `대상트리`.
       도달모순)
-        warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+        case "${GATE_REACH:--}:$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")" in
+          런로컬:워크트리쓰기|런로컬:트리밖쓰기|-:워크트리쓰기|-:트리밖쓰기)
+            warn "repair: this write lands in another worktree of the target or in its main checkout, which is not where '런로컬' is honest — an act that writes there declares '대상트리'; one that should not write there changes the act" ;;
+          *)
+            warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+        esac ;;
       # THE FOUR BELOW USED TO HAVE NO LINE, and two of them are the cells that
       # cannot see the authorization at all. A stage parked there was told only
       # that re-declaring does not help, so the one answer it found was to read
