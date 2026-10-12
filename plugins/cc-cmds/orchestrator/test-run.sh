@@ -6016,7 +6016,14 @@ crashA_case() {
       att=$(stage_pin_attempt "$s")
       printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "${CC_SPAWN_EVENT:-}" >> "$d/spawned"
       printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
-      if [ -z "${STAGE_RESUME:-}" ]; then
+      if [ "$variant" = "diedwork" ] || [ "$variant" = "died" ]; then
+        # 재시도 자신이 0 이 아닌 코드로 죽는다 — diedwork 는 그 전에 커밋했다.
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":7,"stop_reason":"end_turn"}\n' \
+          "$CA_SID" > "$(stage_log_path "$s")"
+        [ "$variant" = "died" ] || : > "$d/commit"
+        printf '1' > "$RUN_DIR/$s.rc"
+        return 0
+      elif [ -z "${STAGE_RESUME:-}" ]; then
         printf '{"type":"system","subtype":"init","session_id":"%s"}\n%s\n{"type":"result","num_turns":7,"result":"계획 방출\\n**plan_sha256**: %s\\n"}\n' \
           "$CA_SID" "$DP_READ" "$CONT_PSHA" > "$(stage_log_path "$s")"
       else
@@ -6048,6 +6055,16 @@ check "재시도가 다이제스트를 실은 자기 stage-result 행을 쓰고,
 crashA_case nocommit
 check "계속도 커밋하지 못하면 크래시 2회가 아니라 계속 소진으로 멈춘다" \
   "$(cont_field crashA rc)/$(cont_field crashA reason | grep -c '^계속 소진 — ' || true)" "1/1"
+# 커밋을 남기고 0 이 아닌 코드로 죽은 재시도는 술어로 받아들인다. 행의 부류는 크래시
+# 그대로이고, 커밋 없이 죽은 재시도는 전처럼 크래시 2회로 멈춘다.
+crashA_case diedwork
+check "커밋한 뒤 죽은 재시도는 무효화로 park 되지 않고 통과한다" \
+  "$(cont_field crashA rc)/$(cont_spawns crashA)" "0/1"
+check "그 재시도의 행은 크래시 부류와 술어 성립을 함께 싣는다" \
+  "$(grep -F '파견 id=S4:ca:1.retry ' "$CONT/crashA/ledger.md" | grep -F '| 아티팩트 술어 결과=0 |' | grep -cF '종단 부류=크래시' || true)" "1"
+crashA_case died
+check "커밋 없이 죽은 재시도는 크래시 2회로 멈춘다" \
+  "$(cont_field crashA rc)/$(cont_spawns crashA)/$(cont_field crashA reason)" "1/1/크래시 2회 — 재시도도 종단 부류 크래시"
 
 cont_case restarted hollow 2
 check "계수기가 이미 상한이면 재시작한 드라이버도 더 계속하지 않는다" \
@@ -6089,7 +6106,8 @@ check "막힘 사유가 수행되지 않는 재부착을 약속하지 않는다"
 # 번째 거절은 `거절 소진` 으로 멈춘다. 계수기는 원장의 `거절 종료` 행이다. 스테이지가
 # 앞서 저장한 산출물은 지우지 않는다.
 # ref_case <라벨> <모드> [앞선 거절 행 수] — 모드: twice(재부착도 거절) · ok1(재부착이
-# 산출) · prose(재부착이 산출 없이 끝남).
+# 산출) · prose(재부착이 산출 없이 끝남) · diedwork(재부착이 산출한 뒤 0 이 아닌 코드로
+# 죽음) · died(재부착이 산출 없이 0 이 아닌 코드로 죽음).
 ref_case() {
   local d="$CONT/$1" mode="$2" prior="${3:-0}" did="S4:rf:1" i
   rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
@@ -6114,8 +6132,8 @@ ref_case() {
       else
         printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":3,"stop_reason":"end_turn","session_id":"%s"}\n' \
           "$REF_SID" "$REF_SID" > "$(stage_log_path "$s")"
-        [ "$mode" = "ok1" ] && : > "$d/artifact"
-        printf '0' > "$RUN_DIR/$s.rc"
+        [ "$mode" = "ok1" ] || [ "$mode" = "diedwork" ] && : > "$d/artifact"
+        case "$mode" in diedwork|died) printf '1' ;; *) printf '0' ;; esac > "$RUN_DIR/$s.rc"
       fi
       return 0
     }
@@ -6161,6 +6179,13 @@ check "재부착이 산출하면 통과한다" "$(cont_field rok rc)/$(cont_spaw
 ref_case rprose prose
 check "재부착이 산출 없이 끝나면 기존 계속 경로로 넘어가 계속 소진에서 멈춘다" \
   "$(cont_field rprose rc)/$(cont_spawns rprose)/$(cont_field rprose reason | grep -c '^계속 소진 — ' || true)" "1/3/1"
+
+ref_case rdiedwork diedwork
+check "S4 재부착이 산출한 뒤 0 이 아닌 코드로 죽으면 술어로 받아들인다" \
+  "$(cont_field rdiedwork rc)/$(cont_spawns rdiedwork)" "0/1"
+ref_case rdied died
+check "S4 재부착이 산출 없이 죽으면 그 부류로 멈춘다" \
+  "$(cont_field rdied rc)/$(cont_spawns rdied)/$(cont_field rdied reason)" "1/1/종단 부류 크래시"
 
 ref_case rspent twice 1
 check "이미 거절 종료 행이 둘이면 다시 붙이지 않는다" \

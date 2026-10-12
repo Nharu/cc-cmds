@@ -8674,11 +8674,13 @@ continue_attempt() {
   #                  <prompt> <alias> -- <predicate cmd...>
   # One attempt of `continue_or_park`: dispatch (resuming when the caller set
   # STAGE_RESUME), classify, write its own `stage-result` row, absorb a judgment
-  # it emitted under the judgment key. Leaves the class in CONTINUE_CLASS, and
-  # the halt reason and recall command in CONTINUE_PARK_* when it halted.
+  # it emitted under the judgment key. Leaves the class in CONTINUE_CLASS, the
+  # predicate's own result (0 held) in CONTINUE_PRED, and the halt reason and
+  # recall command in CONTINUE_PARK_* when it halted.
   local did="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" prompt="$6" alias="$7" rc pred acct drc=0
   shift 7
   [ "${1:-}" = "--" ] && shift
+  CONTINUE_PRED=1
   rm -f "$RUN_DIR/$did.rc"
   quiet_window_begin
   dispatch_stage "$did" "$cwd" "$prompt" || drc=$?
@@ -8693,6 +8695,7 @@ continue_attempt() {
   fi
   rc=$(cat "$RUN_DIR/$did.rc" 2>/dev/null || printf '1')
   if "$@" "$did"; then pred=0; else pred=1; fi
+  CONTINUE_PRED=$pred
   CONTINUE_CLASS=$(classify_termination "$did" "$rc" "$pred")
   acct=$(stage_account_of "$did")
   # An implement attempt's row carries the plan digest it emitted, so the
@@ -8745,7 +8748,8 @@ refusal_count() {
 # it writes over the document the refused stage had already saved. Nothing the
 # stage saved is removed here.
 #
-# Returns 0 when the re-attached attempt completed normally. Returns 1 with
+# Returns 0 when the re-attached attempt completed normally, or, on S4, died
+# after its predicate held (`s4_died_after_work`). Returns 1 with
 # CONTINUE_PARK_REASON set, and CONTINUE_REFUSED non-empty when the cause is a
 # spent refusal; a re-attachment that ended in prose goes on to
 # `continue_or_park`, whose own outputs then stand.
@@ -8789,8 +8793,30 @@ refusal_or_park() {
     '공허한 성공')
       continue_or_park "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$unmet" "$alias" -- "$@"
       return $? ;;
-    *) CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
+    *)
+      ! s4_died_after_work "$rkind" || return 0
+      CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
   esac
+}
+
+s4_died_after_work() {
+  # s4_died_after_work <row kind> — true when the S4 attempt `continue_attempt`
+  # just judged died (a crash, a limit exit, a reap) AFTER its predicate held:
+  # it committed, and on process B its residual share is complete.
+  #
+  # A RETRY THAT DIED AFTER DOING THE WORK IS ACCEPTED ON THE PREDICATE. Before
+  # retries were judged as attempts, a crash or limit retry was accepted on the
+  # commit ladder alone, whatever its exit code; judged by class, a retry that
+  # committed and then died is `크래시` (`정상 완료` needs exit 0) and parked as
+  # `무효화` a segment whose work is on its branch. Crashes cluster at the end of
+  # a stage, after the work, so that is the common shape and not a corner. The
+  # class still stands on the row; only the disposition reads the predicate. A
+  # process A attempt commits nothing, so it never passes here.
+  [ "$1" = "S4" ] && [ "${CONTINUE_PRED:-1}" = "0" ] || return 1
+  case "$CONTINUE_CLASS" in
+    '크래시'|'한도 종료'|'한도-형상 회수') return 0 ;;
+  esac
+  return 1
 }
 
 s4_attempt_base() {
@@ -8829,8 +8855,9 @@ s4_attempt_base() {
 # parked as a second crash, and a process B retry passed on any commit without
 # its own result lines.
 #
-# Returns 0 when the retry, or an attempt after it, completed normally. Returns
-# 1 with the CONTINUE_* outputs set; the caller parks with `s4_park_unfinished`.
+# Returns 0 when the retry, or an attempt after it, completed normally or died
+# after its predicate held (`s4_died_after_work`). Returns 1 with the
+# CONTINUE_* outputs set; the caller parks with `s4_park_unfinished`.
 # ---------------------------------------------------------------------------
 s4_retry() {
   local sid="$1" jkey="$2" seg="$3" cwd="$4" prompt="$5" ev="$6" cause="$7" alias="$8"
@@ -8856,7 +8883,9 @@ s4_retry() {
     '거절 종료')
       refusal_or_park "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$unmet" "$alias" -- "$@"
       return $? ;;
-    *) CONTINUE_PARK_REASON="$cause — 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
+    *)
+      ! s4_died_after_work S4 || return 0
+      CONTINUE_PARK_REASON="$cause — 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
   esac
 }
 
