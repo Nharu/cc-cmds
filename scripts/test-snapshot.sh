@@ -36,6 +36,10 @@ set -uo pipefail
 # turning the channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one, and nothing in this suite stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 # Auto-resolution is off except in the section that tests it, so the approval
 # fixtures above it stay pending the way they are written.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
@@ -203,6 +207,16 @@ check "비용이 40배가 되어도 진전이 아니다" "$(digest)" "$d0"
 # that counted every `stage-result` row there is.
 printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=크래시 | 시각=2026-01-01T00:00:00Z\n' >> "$LEDGER"
 check "크래시로 끝난 스테이지 결과 행은 진전이 아니다" "$(digest)" "$d0"
+
+# `answered_by` says who chose the option, and a row written before `답한 주체`
+# existed is read by its `근거`: the shift's pre-adopted prefix is `교대`, any
+# other row a person's. An answer is not progress, whoever gave it.
+printf -- '- `중단 답` | 세그먼트=S2 | 중단 기록=/x/halt/S2.md | 스킬=design-reconverge | 선택지=reject | 답한 주체=좌석 | 근거=기록의 추천 | 근거 종류=상시 지침\n' >> "$LEDGER"
+printf -- '- `중단 답` | 세그먼트=S3 | 중단 기록=/x/halt/S3.md | 스킬=implement-unattended | 선택지=재수렴 | 근거=자동 채택(구속-이탈) — 매니페스트가 미리 정한 답\n' >> "$LEDGER"
+printf -- '- `중단 답` | 세그먼트=S4 | 중단 기록=/x/halt/S4.md | 스킬=design-audit-unattended | 선택지=reject | 근거=사람이 기각\n' >> "$LEDGER"
+ah=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -c '[.answered_halts[] | [.segment, .answered_by]]')
+check "스냅숏의 answered_by 는 답한 주체를 읽고, 옛 행은 근거의 접두로 가른다" "$ah" '[["S2","좌석"],["S3","교대"],["S4","사람"]]'
+check "중단 답 행은 진전이 아니다" "$(digest)" "$d0"
 
 # ---------------------------------------------------------------------------
 # 3. THE REGRESSION — issuing an approval must not move the digest
@@ -668,6 +682,26 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
   "$(jq -r "($sel_none) | if . == null then \"없음\" else .[\"사이클\"] end" "$SNAP_D" 2>/dev/null)" "없음"
 
 # ---------------------------------------------------------------------------
+# 6c-2. `review_next[]` carries each unmerged segment's next disposition
+#
+# The routers branch on `다음` and nothing else, so the snapshot hands it over
+# together with what a carry-over act names — the last cycle's number, review
+# HEAD and report path. A segment without a `segment` row is not in the run's
+# segment set and gets no element; `review_carry` carries the three constants
+# for display only.
+# ---------------------------------------------------------------------------
+printf -- '- `segment` | id=S8 | 상태=실행중 | 워크트리=/nonexistent/S8\n' >> "$LEDGER"
+SNAP_N="$WORK/review-next.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_N"
+check "review_next 가 세그먼트의 다음 과 마지막 사이클을 싣는다" \
+  "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [.["다음"], .["사이클"], .["리뷰 HEAD"], .["리포트 경로"], (.["연속"]|tostring), (.["발동"]|tostring)] | join("|")' "$SNAP_N")" \
+  "머지|11|aaa0011|/abs/s8-11.md|0|0"
+check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다" \
+  "$(jq -r '[.review_next[] | select(.["세그먼트"]=="S9")] | length' "$SNAP_N")" "0"
+check "review_carry 가 세 상수를 싣는다" \
+  "$(jq -c '.review_carry' "$SNAP_N")" '{"CYCLE_CARRY_FROM":2,"CYCLE_CARRY_MAX":3,"P0_GUARD_STREAK":3}'
+
+# ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
 #
 # The lead's loop and the shift skill each carry their own prose for dispatching
@@ -939,8 +973,9 @@ fi
 # merge commit, or issued the apply; after a review raised P0·P1, none sent the
 # implementation back with the report as its fix target. The literals below are
 # the two merge pins, the fetch before the apply, the apply act's fixed token,
-# the park-and-cone disposition of a precondition refusal, and the cycle cap's
-# reason. The fix prompt must be one string in both copies, and the fix section
+# the park-and-cone disposition of a precondition refusal, the cycle cap's
+# reason, and the `다음` branches that send a segment to the carry-over
+# procedure, the guard re-convergence and a sliced review. The fix prompt must be one string in both copies, and the fix section
 # does not restate the delta basis expression, which belongs to the delta
 # subsection.
 # ---------------------------------------------------------------------------
@@ -958,7 +993,10 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '#### Merging and applying a segment|--cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용' \
     '#### Merging and applying a segment|fetch and issue it once more, and only once' \
     '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
-    '#### Re-dispatching the implementation after review findings|P0+P1 above zero' \
+    '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
+    '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
+    '#### Branching on `다음` after a review|-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> <범위>"' \
+    '#### Branching on `다음` after a review|adds `--slice <seg>` to the prompt' \
     "#### Re-dispatching the implementation after review findings|'사유=사이클 예산 소진'"
   do
     head=${spec%%|*}; lit=${spec#*|}

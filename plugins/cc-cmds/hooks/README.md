@@ -443,10 +443,21 @@ dock scrolls whatever does not fit, so the budget decides what is seen first,
 not what is lost.
 
 **No value changes every second.** A running stage shows its start time
-`<HH:MM>Z 시작` (now minus the process's `etime`), and ledger and watcher ages
+`<HH:MM> 시작` (now minus the process's `etime`), and ledger and watcher ages
 are minutes (`1분 안`, `N분 전`, `N시간 전`), all made by the shell. Events
-show their UTC `HH:MM`. The status line keeps its `mm:ss` elapsed, and the two
-cannot disagree because the start time is defined from it.
+show their `HH:MM` under a `최근 이벤트 <zone>` heading. Both clocks are in the
+display zone; ages do not depend on it. The status line keeps its `mm:ss`
+elapsed, and the two cannot disagree because the start time is defined from it.
+
+**Display zone.** `CC_CMDS_AUTOPILOT_TZ` picks the zone of every clock a person
+reads; the records on disk stay UTC `Z`. Unset or empty means KST (UTC+09:00).
+`UTC` or `Z` (any case) means UTC, and `+HH:MM` / `-HH:MM` within -12:00..+14:00
+means that offset, labelled `KST` at `+09:00`, `UTC` at `+00:00` and
+`UTC±HH:MM` otherwise. Any other value, including a zone name such as
+`Asia/Seoul`, falls back to KST without a warning. The progress feed
+(`feed.sh`) and the status line's borrowed segment clock follow the same
+variable through the same helper, `orchestrator/display-tz.sh`; an install that
+lacks the helper keeps the pane on UTC and leaves the status line clock empty.
 
 **When the helper runs.** A ten-second clock checks the session id, the module's
 panes and the session index file's mtime without starting a process. A tick

@@ -1286,23 +1286,27 @@ bflat() {
 slb() {
   # slb <config dir|-> <session id|stdin JSON> — one render from `$SLB_DIR`
   # (default `$BW`) of `$SLB_SL` (default this checkout's script), with `TZ` at
-  # `$SLB_TZ` (default UTC0) and `CLAUDE_CONFIG_DIR` set to the first argument or,
-  # for `-`, unset — for this one command only.
+  # `$SLB_TZ` (default UTC0), `CC_CMDS_AUTOPILOT_TZ` at `$SLB_DTZ` (default
+  # unset, so the display zone is KST) and `CLAUDE_CONFIG_DIR` set to the first
+  # argument or, for `-`, unset — for this one command only.
   local in="$2" dir="${SLB_DIR:-$BW}"
   case "$in" in
     '{'*) ;;
     *) in=$(fx_statusline_stdin "$2" "$dir") ;;
   esac
   if [ "$1" = - ]; then
-    (cd "$dir" && printf '%s' "$in" | env -u CLAUDE_CONFIG_DIR TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
+    (cd "$dir" && printf '%s' "$in" | env -u CLAUDE_CONFIG_DIR -u CC_CMDS_AUTOPILOT_TZ \
+      ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
   else
-    (cd "$dir" && printf '%s' "$in" | env CLAUDE_CONFIG_DIR="$1" TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
+    (cd "$dir" && printf '%s' "$in" | env -u CC_CMDS_AUTOPILOT_TZ \
+      ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} CLAUDE_CONFIG_DIR="$1" TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
   fi
 }
 sb_in() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s"}' "$1" "$2" "$BW"; }
-# The clock oracle is jq's, in UTC — independent of the formatter under test.
-sb_hm()   { jq -rn --argjson e "$1" '$e | strftime("%H:%M")'; }
-sb_mdhm() { jq -rn --argjson e "$1" '$e | strftime("%m/%d %H:%M")'; }
+# The clock oracle is jq's over epoch + 9 hours, the default display zone —
+# independent of the formatter under test.
+sb_hm()   { jq -rn --argjson e "$(( $1 + 32400 ))" '$e | strftime("%H:%M")'; }
+sb_mdhm() { jq -rn --argjson e "$(( $1 + 32400 ))" '$e | strftime("%m/%d %H:%M")'; }
 sb_pad()  { local s="$1"; while [ "${#s}" -lt "$2" ]; do s="${s}x"; done; printf '%s' "$s"; }
 
 E=$((NOW + 7200))
@@ -1544,15 +1548,19 @@ for v in "\"$E\"" "$E.5" -60 1791000000000; do
   check "SB07g epoch $v — 시각 없는 구간" "$(slb "$LANE" sess-none)" "$BFALL · cc→u3"
 done
 
-# SB08. A daylight-saving oracle as a POSIX rule string, so CI needs no tzdata.
-# Both epochs are past 24 hours; in either season one of them fails arithmetic on
-# the current offset.
+# SB08. The host `TZ` no longer moves the clock: under a daylight-saving rule
+# string both seasons still read KST (2100-01-15T10:20Z and 2100-07-15T10:20Z
+# plus nine hours). `CC_CMDS_AUTOPILOT_TZ` is what moves it.
 bput borrowed '"five_hour"' 4103691600
-check "SB08 일광 절약 규칙 아래 1월 — 표준시" \
-  "$(SLB_TZ='EST5EDT,M3.2.0,M11.1.0' slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 01/15 05:20"
+check "SB08 TZ 가 일광 절약 규칙이어도 1월은 KST" \
+  "$(SLB_TZ='EST5EDT,M3.2.0,M11.1.0' slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 01/15 19:20"
+check "SB08 CC_CMDS_AUTOPILOT_TZ=-05:00 이면 1월은 05:20" \
+  "$(SLB_DTZ=-05:00 slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 01/15 05:20"
 bput borrowed '"five_hour"' 4119330000
-check "SB08 일광 절약 규칙 아래 7월 — 일광 절약 시간" \
-  "$(SLB_TZ='EST5EDT,M3.2.0,M11.1.0' slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 07/15 06:20"
+check "SB08 TZ 가 일광 절약 규칙이어도 7월은 KST" \
+  "$(SLB_TZ='EST5EDT,M3.2.0,M11.1.0' slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 07/15 19:20"
+check "SB08 CC_CMDS_AUTOPILOT_TZ=-05:00 이면 7월도 05:20 (서머타임 없음)" \
+  "$(SLB_DTZ=-05:00 slb "$LANE" sess-none)" "$BFALL · cc→u3 · 홈 07/15 05:20"
 
 # SB09. `intent` and `returning` carry no clock even with a valid epoch.
 bput intent '"five_hour"' "$E" '' intent/admit
@@ -1589,17 +1597,24 @@ out=$(PATH="$WORK/poison:$PATH" slb "$LANE" sess-none)
 check "SB12 jq 독 아래에서도 구간이 그대로" "$out" "$BFALL$SEG_LANE"
 hasnt "SB12 차용 구간은 jq 를 부르지 않는다" "$out" "JQ-WAS-CALLED"
 
-# SB13. A broken `perl`, on the PATH of the one render under test only. The
-# fallback itself carries escapes, so "no ESC in the output" would always fail;
-# the literal compare is what shows the stub's bytes did not leak.
+# SB13. The clock is shell arithmetic, so a broken `perl` on the PATH of the one
+# render under test changes nothing. The fallback itself carries escapes, so "no
+# ESC in the output" would always fail; the literal compare is what shows the
+# stub's bytes did not leak.
 mkdir -p "$WORK/perl127" "$WORK/perlesc"
 printf '#!/bin/sh\nexit 127\n' > "$WORK/perl127/perl"
 printf '#!/bin/sh\nprintf '"'"'\\033[31mX'"'"'\n' > "$WORK/perlesc/perl"
 chmod +x "$WORK/perl127/perl" "$WORK/perlesc/perl"
 out=$(PATH="$WORK/perl127:$PATH" slb "$LANE" sess-none); rc=$?
-check "SB13a perl 이 127 — 시각만 빠지고 rc 0" "$rc|$out" "0|$BFALL · cc→u3"
+check "SB13a perl 이 127 이어도 시각을 그대로 그린다" "$rc|$out" "0|$BFALL$SEG_LANE"
 out=$(PATH="$WORK/perlesc:$PATH" slb "$LANE" sess-none); rc=$?
-check "SB13b perl 이 이스케이프를 낸다 — 시각만 빠지고 새지 않는다" "$rc|$out" "0|$BFALL · cc→u3"
+check "SB13b perl 이 이스케이프를 내도 시각을 그대로 그리고 새지 않는다" "$rc|$out" "0|$BFALL$SEG_LANE"
+# Without `display-tz.sh` beside the script the clock goes and the rest of the
+# segment stays: a failed source is not a fallback.
+mkdir -p "$WORK/nodtz"
+cp "$SL" "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$WORK/nodtz/"
+out=$(SLB_SL="$WORK/nodtz/statusline.sh" slb "$LANE" sess-none); rc=$?
+check "SB13c display-tz.sh 없음 — 시각만 빠지고 대체 줄로 떨어지지 않는다" "$rc|$out" "0|$BFALL · cc→u3"
 
 # SB14. On a run line the segment is a pure suffix, after the watcher slot too.
 # A finished run carries no watcher slot, so the slot case is an approval line.
@@ -1620,6 +1635,10 @@ out14=$(slb "$LANE" sess-sb14)
 has "SB14 승인 대기 줄 — 구간을 붙여도 줄은 그대로" "$out14" "⏸ run-sb14 승인 대기 1건"
 check "SB14 승인 대기 줄 — 워처 슬롯 바로 뒤에 구간" "${out14##*" · 워처 미기동"}" "$SEG_LANE"
 check "SB14 시계 없는 버려짐 줄 — 줄 끝에 구간" "$(slb "$LANE" sess-sb14-nc)" "$base14nc$SEG_LANE"
+# The run line drawn without `display-tz.sh`: still the run line, not the
+# fallback, with only the clock gone from the segment.
+check "SB14 display-tz.sh 없음 — 런 줄 그대로, 시계 없는 구간" \
+  "$(SLB_SL="$WORK/nodtz/statusline.sh" slb "$LANE" sess-sb14-nc)" "$base14nc · cc→u3"
 
 # SB15. The width budget. This suite pins no locale, so `${#…}` counts
 # characters or bytes depending on the shell that started it, and every length
@@ -1683,10 +1702,16 @@ has   "SB15f 전제 — 슬롯 없는 도는중 줄" "$out" "⟳ $rid · 원장"
 has   "SB15f 슬롯 없는 도는중 — MARK 가 남는다" "$out" "cc→u3"
 hasnt "SB15f 슬롯 없는 도는중 — 세부가 버려진다" "$out" "홈 "
 
-# SB16. A partial checkout: case 13's copy, with no `liveness.sh` beside it.
+# SB16. A partial checkout: case 13's copy, with no `liveness.sh` beside it. It
+# has no `display-tz.sh` either, so the segment comes without its clock; a copy
+# that does have the helper keeps the clock on the fallback line.
 bput borrowed '"five_hour"' "$E"
-check "SB16 liveness.sh 없는 사본에서도 구간이 붙는다" \
-  "$(SLB_SL="$WORK/partial/statusline.sh" slb "$LANE" sess-none)" "$BFALL$SEG_LANE"
+check "SB16 liveness.sh 없는 사본에서도 구간이 붙는다 (도우미도 없어 시계는 없다)" \
+  "$(SLB_SL="$WORK/partial/statusline.sh" slb "$LANE" sess-none)" "$BFALL · cc→u3"
+mkdir -p "$WORK/partial-dtz"
+cp "$WORK/partial/statusline.sh" "$repo_root/plugins/cc-cmds/orchestrator/display-tz.sh" "$WORK/partial-dtz/"
+check "SB16 liveness.sh 없고 도우미만 있는 사본은 시계까지 붙는다" \
+  "$(SLB_SL="$WORK/partial-dtz/statusline.sh" slb "$LANE" sess-none)" "$BFALL$SEG_LANE"
 
 # SB19. Ids the terminal must not see. Written raw, each is a valid record route
 # calls borrowing; the line shows the mark with `?` in the id's place.

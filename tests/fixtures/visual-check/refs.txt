@@ -1,0 +1,23 @@
+-|<!doctype html>
+-|<html><head>
+R|<link rel="stylesheet" href="https://fonts.example.com/inter.css">
+R|<script src="http://cdn.example.com/lib.js"></script>
+R|<img src="//images.example.com/a.png" alt="">
+R|<img src="http://192.168.0.10/b.png" alt="">
+R|<img src="assets/hero.png" alt="">
+-|<style>
+R|  .hero { background-image: url("uploads/bg.jpg"); }
+R|  @import "https://fonts.example.com/more.css";
+-|</style>
+N|<script src="./support.js"></script>
+N|<img src="data:image/png;base64,iVBORw0KGgo=" alt="">
+N|<a href="#section-2">Next</a>
+N|<a href="mailto:team@example.com">Mail</a>
+N|<svg><use href="#icon-check"/></svg>
+-|<!-- <img src="https://comment.example.com/x.png"> -->
+N|<p>See https://example.com in the docs</p>
+-|<script>
+R|fetch('https://api.example.com/data');
+N|const anchor = '#top';
+-|</script>
+-|</head></html>

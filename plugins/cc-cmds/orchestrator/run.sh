@@ -98,6 +98,20 @@ ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$ORCH_DIR/route.sh"
 
+# The deadline arithmetic the kickoff resolved the first deadline with. A
+# successor run's deadline is the recorded length added to the moment it was
+# claimed, and the admission check recomputes that sum; one arithmetic on both
+# sides is the only way the two can agree to the second. Functions and plain
+# assignments only, so sourcing it twice is harmless.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/deadline-resolve.sh"
+
+# The successor verdict and its stop predicates, for definitions only: the
+# admission check of a successor manifest asks the same questions the verdict
+# that opened it asked, and two implementations would answer them differently.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/successor.sh"
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -423,6 +437,8 @@ manifest_snapshot_take() {
   #   BP <row>     every `- \`베이스 발행\`` row anywhere, in order
   #   BD <row>     every `- \`베이스 설계\`` row anywhere, in order
   #   PL <row>     every `- \`선행 착지\`` row anywhere, in order
+  #   RK <row>     every `- \`재킥오프\`` row anywhere, in order
+  #   CH <row>     every `- \`연쇄\`` row anywhere, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
@@ -455,6 +471,8 @@ $(LC_ALL=C awk '
     index($0, "- `베이스 설계`") == 1 { print "BD\t" $0 }
     index($0, "- `세그먼트 입양`") == 1 { print "AD\t" $0 }
     index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
+    index($0, "- `재킥오프`") == 1 { print "RK\t" $0 }
+    index($0, "- `연쇄`") == 1 { print "CH\t" $0 }
     END {
       if (kind) print "K\t1"
       print "N\t" n_auth
@@ -650,6 +668,16 @@ manifest_predecessor_landing_rows() {
   grep -E '^- `선행 착지`' "$MANIFEST" 2>/dev/null || true
 }
 
+manifest_rekick_rows() {
+  if manifest_memo_on; then manifest_memo_all "RK	"; return 0; fi
+  grep -E '^- `재킥오프`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_chain_rows() {
+  if manifest_memo_on; then manifest_memo_all "CH	"; return 0; fi
+  grep -E '^- `연쇄`' "$MANIFEST" 2>/dev/null || true
+}
+
 target_field() {
   # target_field <alias> <key>
   if manifest_memo_on; then
@@ -745,6 +773,15 @@ binding_set_bytes() {
     # dependent slice be dispatched over a predecessor nobody confirmed. A
     # whole-file scan, zero bytes when absent.
     manifest_predecessor_landing_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/predland\t/'
+    # THE `재킥오프` AND `연쇄` ROWS ARE IN THE FROZEN SET, on the same terms. The
+    # first is the person's consent to automatic successors, with the chain cap
+    # and the frozen length; the second is the deriver's statement of which run
+    # this one continues. Without them here, editing the root's `연쇄 상한` or
+    # `길이` after kickoff moved no digest, and the digest the person confirmed
+    # no longer covered what they agreed to. Whole-file scans, zero bytes when
+    # absent, so a manifest written before these rows existed keeps its digest.
+    manifest_rekick_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/rekick\t/'
+    manifest_chain_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/chain\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -818,8 +855,10 @@ manifest_autoadopt_rows() {
 # (CFI-U3 BT-STOP) offers `재수렴`, and a `자동 채택` row of this class lets the
 # routing shift carry that answer itself instead of ending on a person. It is
 # permitted because re-convergence is a scoped repair inside the same run that
-# leaves its own `중단 답` row and stage rows, and it is once per key — a second
-# stop on the same key still goes to a person.
+# leaves its own `중단 답` row and stage rows. The row's `상한` bounds it: the
+# gate counts only the key's automatic `재수렴` answers against it (`없음` is
+# unbounded), and a second `재수렴` to the same halt record after the first one
+# was re-converged still goes to a person.
 readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈"
 readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
@@ -1084,7 +1123,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·설계 로스터·베이스 발행·베이스 설계·세그먼트 입양·선행 착지·재킥오프·연쇄·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -1403,6 +1442,72 @@ EOF
   done <<EOF
 $pl_rows
 EOF
+
+  # 19 — `재킥오프` and `연쇄` rows. The first is the person's consent, at
+  # kickoff, that a run which ends may be followed by a successor; the second is
+  # what the deriver wrote into a successor about the run it follows. Both are in
+  # the binding set, so a row that changed after freezing already fails the
+  # digest above; what is checked here is the FORM, because a malformed row
+  # would otherwise be frozen as it is and read by every later consumer with its
+  # own guess at what it meant. Each kind is at most one row: two consent rows
+  # with different ceilings, or two chain rows naming different predecessors,
+  # leave no single answer to read.
+  local rk_rows rk_row ch_rows ch_row ch_cause rk_n=0 ch_n=0
+  rk_rows=$(manifest_rekick_rows)
+  while IFS= read -r rk_row; do
+    [ -n "$rk_row" ] || continue
+    rk_n=$((rk_n + 1))
+    grep -qE '^- `재킥오프` \| 연쇄 상한=[1-9][0-9]* \| 길이=P([0-9]+D)?(T([0-9]+H)?([0-9]+M)?([0-9]+S)?)? \| 사유=[^|]*[^ |]$' <<<"$rk_row" \
+      || die "「재킥오프」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`재킥오프\` | 연쇄 상한=<양의 정수> | 길이=<ISO 8601 기간> | 사유=<한 줄>\` 입니다: $rk_row"
+    # The pattern admits `P` and `PT`, which are no length at all; the
+    # resolver's own reader is the one that refuses them.
+    dr_duration_seconds "$(manifest_row_fields "$rk_row" '길이')" >/dev/null \
+      || die "「재킥오프」 행의 길이가 ISO 8601 기간으로 읽히지 않습니다: $rk_row"
+  done <<EOF
+$rk_rows
+EOF
+  [ "$rk_n" -le 1 ] || die "「재킥오프」 행이 ${rk_n}개입니다 — 많아야 하나입니다"
+
+  ch_rows=$(manifest_chain_rows)
+  while IFS= read -r ch_row; do
+    [ -n "$ch_row" ] || continue
+    ch_n=$((ch_n + 1))
+    grep -qE '^- `연쇄` \| 뿌리 런=[0-9]{8}-[0-9a-f]{8} \| 선행 런=[0-9]{8}-[0-9a-f]{8} \| 순번=[1-9][0-9]* \| 선행 구속 다이제스트=[0-9a-f]{64} \| 재킥오프 시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \| 원인=[^ |]+( \| 재인가 승인=[0-9]{8}-[0-9a-f]{8}#[^ |]+ \| 답변 다이제스트=[0-9a-f]{64})?$' <<<"$ch_row" \
+      || die "「연쇄」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`연쇄\` | 뿌리 런=<id> | 선행 런=<id> | 순번=<k> | 선행 구속 다이제스트=<64자리 hex> | 재킥오프 시각=<ISO Z> | 원인=<토큰> [| 재인가 승인=<런>#<승인 id> | 답변 다이제스트=<64자리 hex>]\` 입니다: $ch_row"
+    # The cause vocabulary is the gate's; this file is sourced by the gate, but
+    # the driver runs it alone, so the gate is asked in a child when its
+    # function is not already here.
+    ch_cause=$(manifest_row_fields "$ch_row" '원인')
+    if declare -F gate_rekick_cause_ok >/dev/null 2>&1; then
+      gate_rekick_cause_ok "$ch_cause"
+    else
+      run_gate_call gate_rekick_cause_ok "$ch_cause"
+    fi || die "「연쇄」 행의 원인이 닫힌 토큰 열두 개 중 하나가 아닙니다: $ch_cause"
+  done <<EOF
+$ch_rows
+EOF
+  [ "$ch_n" -le 1 ] || die "「연쇄」 행이 ${ch_n}개입니다 — 많아야 하나입니다"
+
+  # 20 — the lineage of a successor. A `연쇄` row says this run was derived
+  # from another, and that is only true if the files say so: the predecessor's
+  # recomputed digest, identity with it but for the allowed changes, the
+  # position and the deadline, and the id are checked on every entry; what the
+  # predecessor's ledger, the chain's ledgers and the dispatcher's claim say is
+  # checked once per manifest digest. This shell may not write the run
+  # directory yet, so the memo is only read here; `REKICK_MEMO_PENDING` asks
+  # the caller that prepared the directory to write it.
+  REKICK_MEMO_PENDING=""
+  if [ "$ch_n" -ge 1 ]; then
+    local lin_why lin_key
+    lin_why=$(run_lineage_call rekick_admission_static "$MANIFEST") \
+      || die "lineage-invalid — ${lin_why:-연쇄 입장 검사를 돌리지 못했습니다}"
+    lin_key=$(shasum -a 256 < "$MANIFEST" | cut -d' ' -f1)
+    if ! rekick_memo_hit "$RUN_ID" "$lin_key"; then
+      lin_why=$(run_lineage_call rekick_admission_history "$MANIFEST") \
+        || die "lineage-invalid — ${lin_why:-연쇄 입장 검사를 돌리지 못했습니다}"
+      REKICK_MEMO_PENDING="$lin_key"
+    fi
+  fi
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }
@@ -1774,6 +1879,142 @@ slice_field() {
   '
 }
 
+# The optional `**잔여 항목**` field, one verbatim `### R<n>` heading per line.
+# The field writes each heading in 「」 and joins them with a comma, so `」,「`
+# with any spacing around an ASCII or fullwidth comma is the separator; a
+# heading that itself contains one is not expressible. An absent field and the
+# value `없음` — the spelling `**선행**` uses for an empty list — both print
+# nothing: the slice owns no item.
+slice_residual_headings() {
+  # slice_residual_headings <doc> <id>
+  slice_field "$1" "$2" '잔여 항목' | awk '$0 == "없음" { next } {
+    n = split($0, part, /」[ \t]*(,|，)[ \t]*「/)
+    for (i = 1; i <= n; i++) {
+      s = part[i]; sub(/^[ \t]*「/, "", s); sub(/」[ \t]*$/, "", s)
+      if (s != "") print s
+    }
+  }'
+}
+
+implement_slice_count() {
+  # implement_slice_count <doc> — blocks of `## 구현 슬라이싱` whose `**스킬**` is
+  # implement. Zero for a document with no declaration.
+  local id n=0
+  for id in $(slice_ids "$1"); do
+    [ "$(slice_field "$1" "$id" '스킬')" = "implement" ] && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+# ---------------------------------------------------------------------------
+# residual_share_missing <doc> <segment> [<halt dir>] [<plan file>]
+#
+# The verbatim `### R<n>` headings of `## 구현 시 검증 항목` that are this
+# segment's share and still carry no result line: the grade still reads
+# `구현 시 검증` and no `**구현 시 검증 기록**` line follows it. Empty output
+# means nothing is missing. Shared with the gate, which reads it at the end of
+# an implement stage's process B; the driver mirrors it.
+#
+# THE SHARE. One implement slice owns every item. Two or more share them by
+# each slice's `**잔여 항목**`; a slice without the field, or with `없음`, owns
+# nothing, so an older document sliced before the field existed is never held
+# on items nobody assigned. A document with no declaration is one segment's
+# work on the router, which plans a single segment for it, and that segment
+# owns every item; when this run's ledger has two or more `segment` rows the
+# segments came from a planner the document did not instruct, nothing says
+# which items are whose, and no segment owns any.
+#
+# WHAT IS LEFT OUT is what an unattended implement stage does not run itself, so
+# counting it would only ever end at the continuation cap:
+#   - an item carrying `실행 주의`;
+#   - an item whose `검증 시점` is `구현 후`;
+#   - an (e) `미니 구현` item, whose recipe needs its own worktree;
+#   - an item a `좌석 실행` halt record of this segment handed to the seat
+#     (`**좌석 실행 항목**`);
+#   - an (c) `외부 환경` item the stage's own plan left unrun. Whether every act
+#     of a (c) recipe is a read cannot be decided from the document's bytes, so
+#     the stage says it: the implement skill has its plan carry one line
+#     `미실행 잔여: R<n>, …` naming the (c) probes it left unrun, and only that
+#     line excuses a (c) item. Each label is compared whole, so `R1` does not
+#     excuse `R12`; a label on the line that is not a (c) item excuses nothing,
+#     so the plan cannot widen the exclusions the document's bytes decide.
+# ---------------------------------------------------------------------------
+residual_share_missing() {
+  local doc="$1" seg="$2" hdir="${3:-}" plan="${4:-}" mode=all share="" seats="" cunrun="" f
+  [ -n "$doc" ] && [ -f "$doc" ] || return 0
+  local nslice; nslice=$(implement_slice_count "$doc")
+  if [ "$nslice" -ge 2 ]; then
+    mode=list
+    share=$(slice_residual_headings "$doc" "$seg")
+    [ -n "$share" ] || return 0
+  elif [ "$nslice" = "0" ] && [ "$(run_segment_ids 2>/dev/null | grep -c .)" -ge 2 ]; then
+    return 0
+  fi
+  if [ -n "$hdir" ] && [ -d "$hdir" ]; then
+    for f in "$hdir/$seg.md" "$hdir/$seg#"*.md; do
+      [ -f "$f" ] || continue
+      seats="$seats $(sed -n 's/^\*\*좌석 실행 항목\*\*: *//p' "$f" | tr ',' ' ')"
+    done
+  fi
+  if [ -n "$plan" ] && [ -f "$plan" ]; then
+    cunrun=$(sed -n 's/^미실행 잔여: *//p' "$plan" | tr ',' ' ')
+  fi
+  defenced "$doc" | RSM_MODE="$mode" RSM_SHARE="$share" RSM_SEATS=" $seats " RSM_CUNRUN=" $cunrun " awk '
+    function trim(s) { sub(/[ \t\r]+$/, "", s); return s }
+    function flush() {
+      if (head == "") return
+      if (ENVIRON["RSM_MODE"] == "list" && !(head in mine)) return
+      if (!pending || noted || caution || after || mini) return
+      if (label != "" && index(ENVIRON["RSM_SEATS"], " " label " ")) return
+      if (label != "" && ext && index(ENVIRON["RSM_CUNRUN"], " " label " ")) return
+      print head
+    }
+    BEGIN {
+      n = split(ENVIRON["RSM_SHARE"], s, "\n")
+      for (i = 1; i <= n; i++) if (s[i] != "") mine[trim(s[i])] = 1
+    }
+    /^## / { if (inr) { flush(); head = ""; inr = 0 } }
+    $0 == "## 구현 시 검증 항목" { inr = 1; next }
+    !inr { next }
+    /^### / {
+      flush()
+      head = trim($0); label = ""
+      if (match(head, /^### R[0-9]+/)) label = substr(head, 5, RLENGTH - 4)
+      pending = noted = caution = after = mini = ext = 0
+      next
+    }
+    /^(- )?(\*\*검증 등급\*\*|검증 등급): 구현 시 검증$/ { pending = 1; next }
+    /^(- )?(\*\*구현 시 검증 기록\*\*|구현 시 검증 기록): / { noted = 1; next }
+    /^(- )?(\*\*실행 주의\*\*|실행 주의): / { caution = 1; next }
+    /^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후[ \t]*$/ { after = 1; next }
+    /^(- )?(\*\*분류\*\*|분류): 미니 구현[ \t]*$/ { mini = 1; next }
+    /^(- )?(\*\*분류\*\*|분류): 외부 환경[ \t]*$/ { ext = 1; next }
+    END { if (inr) flush() }
+  '
+}
+
+implement_process_b() {
+  # implement_process_b — reads one key's `stage-result` rows on stdin, oldest
+  # first, and answers 0 when an implement row carrying `plan_sha256=` stands
+  # after the last `종류=reconverge` row: the dispatch these rows come BEFORE is
+  # process B. A plan older than a re-convergence is void, as the implement
+  # skill's phase resolution says, so the next dispatch is process A again.
+  # The driver's own rows carry no `종류`; an `S4` row is its implement row.
+  awk '
+    /종류=reconverge( |$)/ { b = 0; next }
+    /plan_sha256=/ && (/종류=implement( |$)/ || /\| 스테이지=S4 \|/) { b = 1 }
+    END { exit (b ? 0 : 1) }
+  '
+}
+
+residual_unmet_message() {
+  # residual_unmet_message <missing headings> — the unmet predicate a
+  # continuation names when this segment's result lines are what is missing.
+  # The headings go in verbatim, so the stage can find each item by them.
+  printf '자기 몫 잔여 검증 항목의 결과 줄(W1 뒤집기·W2 메모)이 없다 — %s' \
+    "$(printf '%s\n' "$1" | awk 'NF { printf "%s「%s」", (n++ ? ", " : ""), $0 }')"
+}
+
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
 # blocks whose cutpoint index is at or above `PR`, so the two cannot disagree.
 # A mismatch means the declaration was truncated or misnumbered, which is worth
@@ -1809,9 +2050,11 @@ slicing_fields_ok() {
     # how far a slice may go and cannot say when review happens, which is a
     # different axis entirely — a slice may be authorized to merge and still owe
     # its review afterwards.
-    # THIS WHOLE FUNCTION IS AN EARLY DIAGNOSTIC AND NOT AN ACCEPTANCE CRITERION —
-    # nothing in production calls it, so a green answer here proves the
-    # declaration is readable and proves nothing about the gate.
+    # THIS WHOLE FUNCTION IS A DECLARATION CHECK, NOT THE GATE'S ACCEPTANCE —
+    # the router's slicing branch and the driver's planner both call it, and a
+    # failure here refuses the whole segment plan, so a value a design skill
+    # tells its author to write must pass it. A green answer proves the
+    # declaration is readable and proves nothing about what the gate admits.
     #
     # The vocabulary goes through `review_policy_index` rather than through a
     # second literal list. A copy here would be the drift surface the single
@@ -1842,6 +2085,31 @@ slicing_fields_ok() {
         warn "슬라이스 $id: 리뷰 정책 '$v' 이 대상 '$sl_al' 의 상한 '$sl_ceil' 을 넘습니다"
         return 1
       fi
+    fi
+    # `잔여 항목` is OPTIONAL, and `없음` says the slice owns no item. Otherwise
+    # every element it names has to be a verbatim heading of the residual
+    # section in 「」: an element of another shape, or one naming a heading the
+    # section does not carry, is a share no item can match, so the check that
+    # reads it would silently see nothing.
+    v=$(slice_field "$doc" "$id" '잔여 항목')
+    if [ -n "$v" ] && [ "$v" != "없음" ]; then
+      case "$v" in 「*」) : ;; *) warn "슬라이스 $id: 잔여 항목이 「」 로 감싼 표제 목록이나 '없음' 이 아님"; return 1 ;; esac
+      local rh rhs
+      rhs=$(defenced "$doc" | awk '/^## /{inr = ($0 == "## 구현 시 검증 항목"); next} inr && /^### /{sub(/[ \t\r]+$/, ""); print}')
+      while IFS= read -r rh; do
+        [ -n "$rh" ] || continue
+        case "$rh" in '### R'[0-9]*'. '*) : ;; *) warn "슬라이스 $id: 잔여 항목에 \`### R<n>. \` 표제가 아닌 원소가 있음: $rh"; return 1 ;; esac
+        case "
+$rhs
+" in
+          *"
+$rh
+"*) : ;;
+          *) warn "슬라이스 $id: 잔여 항목의 표제가 '## 구현 시 검증 항목' 에 없음: $rh"; return 1 ;;
+        esac
+      done <<EOF
+$(slice_residual_headings "$doc" "$id")
+EOF
     fi
     v=$(slice_field "$doc" "$id" '적용 명령')
     if [ -n "$v" ]; then
@@ -2221,6 +2489,34 @@ declared_field_for_row() {
   fi
 }
 
+decl_norm() {
+  # decl_norm <value> — one declaration value in the form compared across runs:
+  # row-safe as every writer leaves it, with backticks and the outer whitespace
+  # gone, so a value read off a row and the same value read off the document
+  # compare equal.
+  printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ' | tr -d '`' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+slice_decl_digest() {
+  # slice_decl_digest <doc> <slice id> — sha256 of the slice's WHOLE declaration:
+  # `선언 파일`, `레포`, `선행`, `절단점` and `리뷰 정책`, each through
+  # `decl_norm`, one `키=값` line apiece in that order, an undeclared field as
+  # an empty value.
+  #
+  # THE PLANNED ROW CARRIES THIS BESIDE THE FIELDS because the fields are
+  # bounded and the declaration is not: `declared_field_for_row` keeps only the
+  # first ~289 bytes of a long `선언 파일`, so a later run comparing that clip
+  # with the document saw a list grown at its END as unchanged. The digest is
+  # whole whatever the length and needs no sidecar to have survived.
+  local doc="$1" id="$2" k dk
+  for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
+    dk=$k
+    [ "$k" = '선언 파일 집합' ] && dk='선언 파일'
+    printf '%s=%s\n' "$k" "$(decl_norm "$(slice_field "$doc" "$id" "$dk" 2>/dev/null || true)")"
+  done | shasum -a 256 | cut -d' ' -f1
+}
+
 # --- the chained row frame, shared by both writers ---------------------------
 #
 # The gate's writer stamps every row with `교대=<n>` and ends it with
@@ -2333,7 +2629,10 @@ run_chained_append() {
   # absence falls through to the same sequence without the lock.
   local body="$1" tool prev rc=0
   tool=$(lock_tool)
-  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+  # A run directory that is named but absent takes the unlocked path too: the
+  # lock file cannot be created there, and a row that cannot be locked is still
+  # a row the caller must not lose.
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -d "${RUN_DIR:-}" ]; then
     "$tool" -k "$RUN_DIR/ledger.lock" \
       /bin/sh -c '
         last=$(grep "$3" "$2" 2>/dev/null | tail -1)
@@ -2438,10 +2737,11 @@ run_ledger_series_check() {
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
   local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
-  local acct="" basis="" worst n
+  local acct="" basis="" cost="" csrc="" worst n
+  local cost_src='(group-kind|kind|default)'
   case "$series" in
-    stage-lease) want='파견 id|계보|계정|레인|예약|근거|관측' ;;
-    stage-wait)  want='계보|그룹|계정|까지|근거' ;;
+    stage-lease) want='파견 id|계보|계정|레인|예약|비용|비용 출처|근거|관측' ;;
+    stage-wait)  want='계보|그룹|계정|까지|비용|비용 출처|근거' ;;
     *) printf '%s [run][거부] 원장 계열 검사: 이 검사가 모르는 계열이다 (%s)\n' "$(now_iso)" "$series" >&2; return 2 ;;
   esac
   keys=""
@@ -2477,6 +2777,16 @@ run_ledger_series_check() {
       stage-lease:예약)
         if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_BP_RE ]]; then
           run_ledger_refuse "$series" "$k" 'I.FFFF/I.FFFF 모양'; return 2
+        fi ;;
+      *:비용)
+        cost="$v"
+        if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_BP_RE ]]; then
+          run_ledger_refuse "$series" "$k" 'I.FFFF/I.FFFF 모양'; return 2
+        fi ;;
+      *':비용 출처')
+        csrc="$v"
+        if [ "$v" != "-" ] && ! [[ $v =~ ^${cost_src}/${cost_src}$ ]]; then
+          run_ledger_refuse "$series" "$k" '닫힌 어휘 두 개의 「창5/창7」'; return 2
         fi ;;
       stage-lease:근거)
         basis="$v"
@@ -2514,6 +2824,11 @@ run_ledger_series_check() {
     if { [ "$bound" = "1" ] && [ "$acct" = "-" ]; } || { [ "$bound" = "0" ] && [ "$acct" != "-" ]; }; then
       run_ledger_refuse "$series" '계정' '재개 구속 원인일 때만 값'; return 2
     fi
+  fi
+  # The cost and its source come from one admission or from none: both `-`, or
+  # neither.
+  if { [ "$cost" = "-" ] && [ "$csrc" != "-" ]; } || { [ "$cost" != "-" ] && [ "$csrc" = "-" ]; }; then
+    run_ledger_refuse "$series" '비용 출처' '「비용」 과 함께만 「-」'; return 2
   fi
   # THE LENGTH, MEASURED ON THE WORST FRAME. `교대=999` in front, the 64-hex
   # `prev=` behind, the newline — and eight bytes more, because the shift number
@@ -2565,10 +2880,9 @@ ledger_row() {
   # it is split, so one without `=` — which skipped the split and went in raw —
   # cannot carry a pipe or a newline into the row either.
   #
-  # The length check reserves room for a `prev=` field this writer never emits,
-  # so anything this path accepts would also fit through the gate's. The
-  # asymmetry is in the safe direction: the two writers cannot disagree about
-  # what fits.
+  # The length check measures the row with its `prev=` field, which every row
+  # this writer appends carries, so anything this path accepts would also fit
+  # through the gate's: the two writers cannot disagree about what fits.
   local series="$1"; shift
   # `리뷰 정책` IS INHERITED AND NOT DEFAULTED, so this writer carries it forward
   # the way the gate's segment arm does. Without the carry, one ordinary state
@@ -2580,11 +2894,11 @@ ledger_row() {
   # inheritance loop creates a branch that never runs — whose existence teaches
   # the next reader that the field is optional.
   #
-  # THIS PATH IS UNREACHABLE TODAY and nothing may be accepted on the strength of
-  # it: the driver is loaded definitions-only under the source-only seam and no
-  # shipped skill runs it as a program. It is corrected anyway, because leaving
-  # one writer of this field behind is how the field goes missing on the day the
-  # path comes back.
+  # THIS PATH RUNS. The fleet dispatcher starts this driver as a program for a
+  # backlog record, and every `segment` row of such a run — the planned rows, the
+  # merge row, the PR-cutpoint terminal row — is written here. A row that drops
+  # the field here sends that run's merge to the strict default with no surface
+  # saying why, exactly as the gate's arm would.
   if [ "$series" = "segment" ]; then
     local _rid="" _has=0 _prev _pv _a
     for _a in "$@"; do
@@ -2599,13 +2913,16 @@ ledger_row() {
       [ -n "$_pv" ] && set -- "$@" "리뷰 정책=$_pv"
     fi
   fi
-  # `stage-lease` AND `stage-wait` ARE WRITTEN IN THE GATE'S FRAME, and only
-  # they. The gate writes the same two series, and a row both writers can put on
-  # one ledger has to be the same bytes on the same chain — which this path's
-  # own grammar (no `교대`, no `prev`, no lock) cannot give. Every other series
-  # stays on the path below, byte for byte. A refusal is 2 and no row; a failed
-  # append is a lost row, which this writer answers the way it answers every
-  # other lost row.
+  # EVERY ROW THIS WRITER APPENDS IS ON THE CHAIN: `run_chained_append` takes
+  # the ledger lock and puts the sha256 of the row before it in `prev=`, the
+  # same frame the gate's writer uses, so a fixed-graph ledger passes
+  # `gate_chain_verify` and a reader of another run's ledger can trust the rows
+  # it walks. `stage-lease` and `stage-wait` are handled apart only because the
+  # gate writes the same two series: they take `run_ledger_series_check` and the
+  # gate's row body (`run_row_body`), so a row both writers can put on one
+  # ledger is the same bytes. Every other series keeps the normalization below.
+  # A refusal is 2 and no row; a failed append is a lost row, which this writer
+  # answers the way it answers every other lost row.
   case "$series" in
     stage-lease|stage-wait)
       local _body _rc=0
@@ -2696,7 +3013,9 @@ ledger_row() {
     done
     die "원장 행이 상한을 넘습니다 (${n} > ${RUN_ROW_MAX} 바이트, 계열 ${series}) — 가장 긴 필드는 「${longest:-미상}」(${lmax} 바이트)입니다. 이 자리에서는 줄일 수 없으므로 이 행을 만드는 호출부가 전체 값을 런 디렉터리 아래 사이드카로 빼고 행에는 경계 있는 형태만 실어야 합니다"
   fi
-  printf '%s\n' "$line" >> "$LEDGER"
+  local _rc=0
+  run_chained_append "$line" || _rc=$?
+  [ "$_rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=${_rc}, 계열 ${series}) — 기록 없는 행위는 수행하지 않습니다"
 }
 
 run_row_sidecar() {
@@ -2722,9 +3041,12 @@ run_row_sidecar() {
 
 ledger_last() {
   # ledger_last <계열> <key> — last value for a key in the newest matching row.
+  #
+  # The trailing blanks are the ` | ` separator's, not the value's: every row
+  # ends in a `prev=` field, so no key read here is the last field of its row.
   local series="$1" key="$2"
   grep -E "^- \`$series\`" "$LEDGER" 2>/dev/null | tail -1 \
-    | tr '|' '\n' | sed -n "s/^ *$key=//p" | tail -1
+    | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/ *$//' | tail -1
 }
 
 # ---------------------------------------------------------------------------
@@ -4089,6 +4411,26 @@ spawn_did_segment() {
   esac
 }
 
+run_lineage_call() {
+  # run_lineage_call <function> [args...] — a lineage check that reads the
+  # gate's ledger readers. Called in place when the gate is the shell sourcing
+  # this file, otherwise through `run_gate_call`.
+  if declare -F gate_chain_verify >/dev/null 2>&1; then
+    "$@"
+  else
+    run_gate_call "$@"
+  fi
+}
+
+rekick_memo_settle() {
+  # After the run directory exists: write the lineage memo `check_manifest`
+  # asked for. A failed write is a recomputation on the next entry, no more.
+  [ -n "${REKICK_MEMO_PENDING:-}" ] || return 0
+  rekick_memo_write "$RUN_ID" "$REKICK_MEMO_PENDING" \
+    || warn "연쇄 입장 검사의 기억 파일을 쓰지 못했습니다 — 다음 진입에서 다시 계산합니다"
+  REKICK_MEMO_PENDING=""
+}
+
 run_gate_call() {
   # run_gate_call <function> [args...] — one gate function, run in a child shell
   # that sources the gate. The gate's row builders are defined once, there; a
@@ -4237,11 +4579,32 @@ spawn_lease_release() {
   fi
   lin=$(sed -n '1p' "$f"); nonce=$(sed -n '2p' "$f")
   route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" || rc=$?
+  spawn_cost_samples "$did" "$lin"
   if [ "$rc" = "0" ]; then
     rm -f "$f"
   else
     warn "$did: 임대 반납이 rc=$rc 로 끝났다 — 기록을 남겨 둔다"
   fi
+  return 0
+}
+
+spawn_cost_samples() {
+  # spawn_cost_samples <dispatch id> <lineage> — one cost sample per stream of
+  # this dispatch, taken after the release whatever it answered: the logs can
+  # run to hundreds of megabytes and are not read while the reservation is
+  # held. EVERY stream, not the newest — a resumed dispatch leaves one per
+  # attempt under the same id. The store replaces on (run, log name), so the
+  # second call a failed release leads to adds no line. A seat or an account
+  # the ledger would not accept writes nothing.
+  local did="$1" lin="$2" acct kind p
+  acct=$(stage_account_of "$did")
+  run_ledger_account_ok "$acct" || return 0
+  kind=$(stage_kind_of "$did")
+  for p in "$RUN_DIR/log/$did#"*.json; do
+    [ -f "$p" ] || continue
+    route_cost_sample_put "$(run_pace_root)/costs" --run-id "$RUN_ID" --lineage "$lin" --kind "$kind" \
+      --account "$acct" --log "$p" || warn "$did: 비용 표본을 쓰지 못했다 ($(basename "$p"))"
+  done
   return 0
 }
 
@@ -4421,7 +4784,11 @@ report_append() {
 # segment reaches PR and N blocked merges pile up in the morning report next to
 # the commands that finish them.
 readonly PARK_SCOPES="act cone run"
-readonly PARK_CAUSES="막힘 무효화 불명"
+# `|`-separated, not space-separated: `거절 소진` carries a space, and a space
+# list would also accept `거절` and `소진` alone. It is the cause of a scope that
+# a model refusal ended twice — a `막힘` with its own name, so the morning can
+# count it, and like `막힘` it is not an invalidation.
+readonly PARK_CAUSES="막힘|무효화|불명|거절 소진"
 
 park() {
   # park <target> <scope> <cause> <reason> <observed> [<resume command>]
@@ -4433,7 +4800,7 @@ park() {
   local anchor="${7:-}" basis="${8:-}"
   local -a extra=()
   case " $PARK_SCOPES " in *" $scope "*) : ;; *) die "park 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;; esac
-  case " $PARK_CAUSES " in *" $cause "*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
+  case "|$PARK_CAUSES|" in *"|$cause|"*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
   [ -z "$anchor" ] || extra+=("앵커 세그먼트=$anchor")
   [ -z "$basis" ] || extra+=("근거=$basis")
   ledger_row 'blocked' "대상=$target" "스코프=$scope" "원인=$cause" \
@@ -5615,6 +5982,27 @@ split_registry_complete() {
 
 predicate_split() { grep -qF "$LIT_SPLIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && split_registry_complete "$DOC"; }
 
+predicate_implement_share() {
+  # predicate_implement_share <branch> <pre_head> <segment> [<dispatch id>]
+  # The implement predicate, and on process B also an empty residual share
+  # (`residual_share_missing`). What a continued attempt is judged by. Process
+  # B is judged here, per attempt (`segment_process_b`), and not handed in: the
+  # attempt that emits the plan is process A and the continuation after it is
+  # process B, inside one cycle.
+  #
+  # The missing headings of THIS attempt are left in CONTINUE_MISSING (empty
+  # when nothing was asked or nothing is missing). `continue_or_park` builds the
+  # next message from them and the S4 caller picks the cap cause from them: on
+  # this driver process B is entered as a continuation of process A, whose own
+  # unmet text says there is no commit, so the first attempt's reading names
+  # neither the headings nor the cause.
+  CONTINUE_MISSING=""
+  predicate_implement "$1" "$2" "$3" || return 1
+  segment_process_b "$3" || return 0
+  CONTINUE_MISSING=$(residual_share_missing "$DOC" "$3" "$RUN_DIR/halt" "$RUN_DIR/$3.plan.md")
+  [ -z "$CONTINUE_MISSING" ]
+}
+
 predicate_implement() {
   # The git-state ladder, evaluated in the MAIN tree, in cutpoint order. A run
   # that answered in prose and moved on makes no commit, so the ladder is false
@@ -5951,6 +6339,13 @@ classify_termination() {
   # observation. The mark the arm left is; it outranks the rc rows below.
   if reap_marked "$stage"; then printf '한도-형상 회수'; return 0; fi
   if [ "$exit_rc" = "0" ] && [ "$pred_rc" = "0" ]; then printf '정상 완료'; return 0; fi
+  # A MODEL SAFETY REFUSAL is its own class, read at both exit codes. Below this
+  # line an exit 0 lands on `공허한 성공` and anything else on `크래시`, and both
+  # misdescribe it: the stage did not end in prose and did not die. Measured: a
+  # design stage whose refusal sat in the 13th of 14 result envelopes, the 14th
+  # an empty one after a fresh init, was filed `크래시` with its document
+  # already saved.
+  if stage_refusal_exit "$(stage_log_path "$stage")"; then printf '거절 종료'; return 0; fi
   # A stage that REACHED a decision point and declined to decide for the user is
   # not a stage that attempted nothing, and until this class existed the two
   # were indistinguishable — exit 0, no artifact, no halt record. The measured
@@ -5999,7 +6394,27 @@ decision_point_reached() {
   [ -f "$out" ] || return 1
   # The question form asks a person exactly as AskUserQuestion does, so a stage
   # that reached for it reached the same kind of point.
-  grep -q -e 'AskUserQuestion' -e 'mcp__cc-cmds__question_form' "$out" 2>/dev/null
+  #
+  # ONLY THE STAGE'S OWN ACTS ARE READ: a `tool_use` in an assistant frame (or a
+  # bare `tool_use` line), and the result envelope's `permission_denials`. A
+  # text match over the whole stream also hits every `tool_result` the stage
+  # read and every compaction summary, and in this repository the design
+  # documents, the skill bodies and this function name the question tool all
+  # the time. Measured: every stage stream of one run matched, none of them on
+  # a `tool_use`, so each exit-0 attempt that missed its predicate was filed
+  # `산출물 없는 정지` instead of `공허한 성공` and parked where it should have
+  # been continued. Lines that are not JSON are skipped, not fatal.
+  local hit
+  hit=$(jq -R -c '
+    def q: type == "string" and (. == "AskUserQuestion" or . == "mcp__cc-cmds__question_form");
+    def qs: type == "string" and (contains("AskUserQuestion") or contains("mcp__cc-cmds__question_form"));
+    (fromjson? // empty) | objects
+    | ( ( ( select(.type == "tool_use"),
+            (select(.type == "assistant") | .message.content[]? | objects | select(.type == "tool_use")) )
+          | select((.name | q) or (.name == "ToolSearch" and (.input.query | qs))) | .name ),
+        ( select(.type == "result") | .permission_denials[]? | objects | select(.tool_name | q) | .tool_name ) )' \
+    "$out" 2>/dev/null | sed -n '1p')
+  [ -n "$hit" ]
 }
 
 stage_limit_exit() {
@@ -6051,12 +6466,130 @@ stage_limit_exit() {
   esac
 }
 
+stage_refusal_exit() {
+  # stage_refusal_exit <stream>
+  # 0 when the last `result` envelope whose `num_turns` is above zero carries
+  # `stop_reason` "refusal"; 1 otherwise, and on every failure (no argument, no
+  # or empty file, no jq, a jq error).
+  #
+  # NOT THE LAST ENVELOPE. A refused session can be resumed by the harness into
+  # a fresh init that ends at once in an empty, zero-turn envelope, and that
+  # envelope is the last one in the file — the refusal sits before it. Nor ANY
+  # envelope: a session that was refused and then went on to finish its work
+  # normally did not end in a refusal. Zero-turn envelopes are skipped because
+  # they record no work at all.
+  # "Last" is file order over parsed top-level `.type`, as in `stage_limit_exit`;
+  # a line that does not parse is skipped here, since a torn tail says nothing
+  # about how the last turn that ran ended.
+  local stream="${1:-}" verdict
+  [ -n "$stream" ] && [ -s "$stream" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  verdict=$(jq -R -n -r '
+    reduce (inputs | select(test("\\S")) | (try fromjson catch null)
+            | select(type == "object" and .type == "result"
+                     and ((.num_turns | if type == "number" then . else 0 end) > 0))) as $r
+      (null; $r)
+    | if . != null and .stop_reason == "refusal" then "=" else "-" end' "$stream" 2>/dev/null) || return 1
+  [ "$verdict" = "=" ]
+}
+
+stage_plan_sha256() {
+  # stage_plan_sha256 <stream> <segment> — the plan digest an implement stage
+  # emitted, for the driver's own S4 rows. The stage writes it as prose,
+  # `**plan_sha256**: <64 hex>` in its terminal text, and the plan itself to
+  # `<RUN_DIR>/<segment>.plan.md`; the line wins and the file is the fallback,
+  # the same order the gate reads them in. Empty when neither is there.
+  #
+  # WITHOUT THIS FIELD ON A DRIVER ROW, NO DRIVER DISPATCH IS EVER PROCESS B: the
+  # implement skill admits process B only against a row carrying the digest,
+  # and `implement_process_b` reads the same field. Only the gate wrote it, so
+  # on this driver every continuation re-ran process A and the residual check
+  # never fired.
+  local stream="${1:-}" seg="${2:-}" psha=""
+  if [ -n "$stream" ] && [ -s "$stream" ] && command -v jq >/dev/null 2>&1; then
+    psha=$( { jq -R -r 'fromjson? | select(type == "object" and .type == "result") | .result // empty' "$stream" 2>/dev/null \
+           | sed -n 's/.*plan_sha256[^0-9a-f]*\([0-9a-f]\{64\}\).*/\1/p' | tail -1; } || true)
+  fi
+  if [ -z "$psha" ] && [ -n "$seg" ] && [ -f "$RUN_DIR/$seg.plan.md" ]; then
+    psha=$(shasum -a 256 "$RUN_DIR/$seg.plan.md" | cut -d' ' -f1)
+  fi
+  printf '%s' "$psha"
+}
+
+segment_process_b() {
+  # segment_process_b <segment> — 0 when the next implement attempt of that
+  # segment is process B, judged from the `stage-result` rows standing now.
+  # Read at the moment an attempt is classified and before its own row is
+  # written, so the rows it sees are the ones that stood when it was launched:
+  # a continuation of the attempt that emitted the plan is process B, which a
+  # value read once before the first dispatch of the cycle could not say.
+  { run_section_rows 'stage-result' || true; } | { grep -F "| 세그먼트=$1 |" || true; } \
+    | implement_process_b
+}
+
+reconverge_row() {
+  # reconverge_row <segment> <stage id> — the `stage-result` row of a driver
+  # re-convergence that ended on its terminal literal.
+  #
+  # A RE-CONVERGENCE VOIDS THE SEGMENT'S PLAN, and this row is how that is said.
+  # The implement skill and `implement_process_b` count only `plan_sha256` rows
+  # after the segment's last `종류=reconverge` row; the S4 rows carry the digest,
+  # so without this row the next S4 dispatch is admitted as process B on a plan
+  # derived from the document before the edit.
+  #
+  # Written for every re-convergence that ended on its terminal literal, the
+  # `불필요` one that left the document unchanged included: whether the document
+  # moved is measured only after the ladder, and a plan re-derived from an
+  # unchanged document costs one process A. That process A commits nothing, and
+  # the S4 arm judges it against the HEAD it was dispatched on
+  # (`s4_attempt_base`), so it is continued into process B rather than filed
+  # `정상 완료` on the previous cycle's commit.
+  local seg="$1" sid="$2"
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S1'" "파견 id=$sid" "종류=reconverge" \
+    "종료 코드=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" \
+    "실행 버전=$(stage_attempt_pinned "$sid")" "세션 id=$(stage_session_id "$sid")" \
+    "부모=$(stage_parent_id)" "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" \
+    "기록자=드라이버" "종단 부류=정상 완료"
+  absorb_stage_judgment "$sid" "$sid" "$(seg_alias "$seg")"
+  void_segment_plan "$seg"
+}
+
+void_segment_plan() {
+  # void_segment_plan <segment> — move the segment's plan file aside, once a
+  # `종류=reconverge` row has voided the plan it holds.
+  #
+  # THE ROW ALONE DOES NOT VOID THE DIGEST, because the plan file outlives it.
+  # Both writers of an implement row fall back to hashing `<segment>.plan.md`
+  # when the stream names no digest, and they do not ask when the file was
+  # written. A first process A after the re-convergence that crashes or is
+  # refused before it writes its new plan would then leave a row carrying the
+  # old digest after the re-convergence row, and the attempt after it would be
+  # admitted as process B on the void plan. Kept beside it rather than removed,
+  # so the morning reader still has the plan the segment once worked from.
+  local seg="${1:-}" f
+  [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+  for f in "$RUN_DIR/$seg.plan.md" "$RUN_DIR/implement-$seg.plan.md"; do
+    [ -f "$f" ] || continue
+    mv -f "$f" "$f.void-$(date +%s)" 2>/dev/null || warn "$seg: 무효화된 계획 파일을 옮기지 못했다 — $f"
+  done
+  return 0
+}
+
+refusal_message() {
+  # refusal_message — the whole prompt of the one re-attachment a refused stage
+  # gets. Shared with the gate, which substitutes it on a router's `--resume`.
+  printf '%s' "이 스테이지의 직전 턴이 모델 안전 거절(stop_reason=refusal)로 끝났다. 이미 저장한 산출물은 지우거나 다시 쓰지 말고, 처음부터 다시 시작하지 말고 멈춘 자리에서 이어 가라. 이 재부착은 한 번뿐이며 다시 거절로 끝나면 이 범위는 거절 소진으로 park 된다. 턴은 셋 중 하나로만 끝난다 — 지시가 지목한 산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다."
+}
+
 terminal_route_class() {
   # terminal_route_class <class>
   # The class a reader disposes of. `한도 종료` is a subset of what used to be
   # written `크래시` and is disposed of exactly like it, so every comparison and
   # `case` subject goes through here; rows, log lines and park reasons keep the
   # true class. Not named `route_…`: that prefix belongs to route.sh.
+  # `거절 종료` is NOT folded: a crash buys a fresh dispatch, and on a design
+  # stage that fresh dispatch writes over a document the refused stage had
+  # already saved. A refusal gets one re-attachment of its own instead.
   case "${1:-}" in
     '한도 종료') printf '크래시' ;;
     *) printf '%s' "${1:-}" ;;
@@ -6357,9 +6890,65 @@ merge_gate() {
   # merge may already have moved.
   MERGE_COMMIT=$(gh_q "$slug" pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid' || printf '')
   [ -n "$MERGE_COMMIT" ] || MERGE_COMMIT=$(base_sha "$al")
+  local ldd
+  ldd=$(landed_decl_field "$seg")
   ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" \
-    "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$(base_sha "$al")"
+    "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$(base_sha "$al")" ${ldd:+"$ldd"}
   return 0
+}
+
+# A LANDING CARRIES THE DECLARATION IT LANDED UNDER. A later run brings it in
+# only when it was built to the declaration the document carries then, and a
+# reconvergence inside this run can widen the declaration after the plan row —
+# so the plan row alone would refuse a landing that holds.
+landed_decl_field() {
+  # landed_decl_field <segment> — `선언 다이제스트=<hex>` when the frozen
+  # document declares <segment>, nothing otherwise
+  [ -n "${DOC:-}" ] || return 0
+  [ "$(slicing_branch "$DOC")" = "선언통치" ] || return 0
+  grep -qxF "$1" <<<"$(slice_ids "$DOC" 2>/dev/null)" || return 0
+  printf '선언 다이제스트=%s' "$(slice_decl_digest "$DOC" "$1")"
+}
+
+# A SLICE WHOSE DECLARED CUTPOINT IS PR HAS DELIVERED WHEN ITS PULL REQUEST
+# STANDS, and the merge that did not follow is not its work. `segment_cycle`'s
+# return 4 leaves such a slice with a branch, a review and a PR but no terminal
+# row, and the import a later run of the same document makes reads terminal rows
+# only — so without this row every re-kickoff built the slice again.
+#
+# THE DECLARATION DECIDES, NOT WHY THE MERGE STOPPED. The deadline is checked
+# before `merge_gate` and `merge_gate` stops on six different grounds, so the
+# source of the return 4 says nothing about whether the slice was meant to end at
+# a PR. A slice declared with a merge cutpoint gets no row from any source: its
+# open PR is unfinished work, and a terminal row would let the next run skip it.
+# A plan with no declaration has no cutpoint per slice and gets none either.
+#
+# THE PR IS OBSERVED, NOT ASSUMED. The row carries the number and head the remote
+# reports for the branch, open or merged; a PR the remote cannot show writes
+# nothing, and the slice is done again by the next run.
+pr_cutpoint_terminal_row() {
+  # pr_cutpoint_terminal_row <segment> <branch>
+  local seg="$1" branch="$2" c slug obs num st hd
+  [ -n "${DOC:-}" ] || return 0
+  [ "$(slicing_branch "$DOC")" = "선언통치" ] || return 0
+  c=$(slice_field "$DOC" "$seg" '절단점' | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] || return 0
+  slug=$(seg_slug "$seg" 2>/dev/null) || slug=""
+  [ -n "$slug" ] || { warn "$seg: PR 절단점 종단 행을 쓰지 않습니다 — 원격 슬러그를 알 수 없습니다"; return 0; }
+  obs=$(gh_q "$slug" pr view "$branch" --json number,state,headRefOid \
+          --jq '"\(.number) \(.state) \(.headRefOid)"' || printf '')
+  read -r num st hd <<<"$obs"
+  case "$num" in ''|*[!0-9]*) num="" ;; esac
+  case "$hd" in ''|*[!0-9a-f]*) hd="" ;; esac
+  case "$st" in OPEN|MERGED) : ;; *) st="" ;; esac
+  if [ -z "$num" ] || [ -z "$hd" ] || [ -z "$st" ]; then
+    warn "$seg: PR 절단점 종단 행을 쓰지 않습니다 — 브랜치 $branch 의 열린(또는 머지된) PR 을 원격 $slug 에서 관측하지 못했습니다"
+    return 0
+  fi
+  local ldd
+  ldd=$(landed_decl_field "$seg")
+  ledger_row 'segment' "id=$seg" "상태=완료" "PR=$num" "커밋=$hd" "브랜치=$branch" \
+    "레포=$slug" "워크트리=$(wt_path "$seg")" ${ldd:+"$ldd"}
 }
 
 # ---------------------------------------------------------------------------
@@ -7583,8 +8172,11 @@ review_recover() {
   # it was reaped BECAUSE `S5` is boundary idempotent, so the recovery dispatch
   # is its disposition too. It arrives under its own class rather than as a
   # crash, which is what keeps the two countable apart on the ledger.
+  # A refused review never arrives here — its caller sends it to
+  # `refusal_or_park` — and is parked under the refusal's own cause if it does.
   case "$(terminal_route_class "$class")" in
     '크래시'|'한도-형상 회수') : ;;
+    '거절 종료') park "$seg" cone "거절 소진" "게이트 park" "리뷰 종단 부류 $class"; return 1 ;;
     *) park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1 ;;
   esac
   if predicate_review "$rp"; then
@@ -7762,6 +8354,13 @@ segment_cycle() {
       prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 그리고 끝내기 전에 반드시 같은 판단을 다시 방출하라 — 같은 \`판단 기준\`·\`판단 근거\`로 재제출해야 게이트가 닫힌 승인의 상태를 읽어 \`해소 승인=$aj_id\` 를 담은 \`자율 승인\` 행을 남긴다. 그 행이 없으면 이 답은 소비되지 않은 것으로 남아 다음 사이클에 같은 스테이지가 같은 답을 다시 받는다. 선언 파일: $files"
       log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
     fi
+    # PROCESS B IS READ BEFORE THE DISPATCH, from the rows already standing: the
+    # rows this attempt leaves are not evidence about which process it was.
+    local procb=0 att_base
+    segment_process_b "$seg" && procb=1
+    # Read here too, for the same reason: the base this attempt and every retry
+    # or continuation of it is judged against (`s4_attempt_base`).
+    att_base=$(s4_attempt_base "$wt" "$pre_head" "$procb")
     # THE ROUTER'S EVENT IS NAMED HERE, at the call: a re-attached answer is a
     # resume, everything else on this line is a first dispatch.
     local spawn_event=first src=0
@@ -7776,11 +8375,23 @@ segment_cycle() {
     [ "$src" = "0" ] || (exit "$src")
     stage_wait_all "$sid"
     quiet_window_end
-    local rc pred class acct
+    local rc pred class acct missing="" unmet="세그먼트 브랜치에 새 커밋도 정지 기록도 없다"
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
-    if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
+    if predicate_implement "$branch" "$att_base" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
+    # A PROCESS B THAT LEFT ITS OWN RESIDUAL ITEMS WITHOUT A RESULT LINE did not
+    # finish, however clean its exit: the item is read nowhere else before the
+    # merge, and after it the segment cannot be sent back. The gate files the
+    # same attempt the same way; the existing continuation carries it on.
+    if [ "$class" = "정상 완료" ] && [ "$procb" = "1" ]; then
+      missing=$(residual_share_missing "$DOC" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md")
+      if [ -n "$missing" ]; then
+        class='공허한 성공'
+        unmet=$(residual_unmet_message "$missing")
+      fi
+    fi
     acct=$(stage_account_of "$sid")
+    local psha; psha=$(stage_plan_sha256 "$(stage_log_path "$sid")" "$seg")
     # `파견 id=` carries the FULL dispatch id beside the kind. `스테이지=` stays the
     # kind because the gate's readers group on it; the attempt counter needs the
     # id it actually dispatched, and nothing else in the row carries it.
@@ -7789,12 +8400,13 @@ segment_cycle() {
       "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
-      "종단 부류=$class"
+      ${psha:+"plan_sha256=$psha"} "종단 부류=$class"
     absorb_stage_judgment "$sid" "$jkey" "$(seg_alias "$seg")"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
+    local retry_prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
     case "$(terminal_route_class "$class")" in
       '정상 완료') : ;;
       '의도된 park')
@@ -7805,16 +8417,34 @@ segment_cycle() {
         # help, then a park under the reason `continue_or_park` names. The
         # continued attempts can write files too, so the escape checks run
         # again on the tree they left.
-        if continue_or_park "$sid" "$jkey" "$seg" S4 "$wt" \
-             "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" \
-             "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" "$(seg_alias "$seg")" \
-             -- predicate_implement "$branch" "$pre_head" "$seg"; then
+        # The predicate the continued attempts are judged by includes the
+        # residual share, so a continuation that commits again without the
+        # missing lines is still not finished. At the cap the cause is read
+        # from the LAST attempt judged (`s4_park_unfinished`), not from this
+        # first one: in cycle 1 this first attempt is process A and its own
+        # reading is always empty.
+        CONTINUE_MISSING="$missing"
+        if continue_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
+             "$unmet" "$(seg_alias "$seg")" \
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
           fileset_escape "$seg" "$files" "$wt" || return 1
           stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
         else
-          [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
-          [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
-          park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+          s4_park_unfinished "$seg"; return 1
+        fi ;;
+      '거절 종료')
+        # One re-attachment of the same session, then a park of this segment's
+        # cone under `거절 소진`. Never the crash retry below, and nothing the
+        # stage committed is reset. A re-attachment that ended in prose goes on
+        # to the continuation, whose cap cause is read as in the arm above.
+        CONTINUE_MISSING=""
+        if refusal_or_park "$sid" "$jkey" "$seg" S4 "$wt" "$retry_prompt" \
+             "$unmet" "$(seg_alias "$seg")" \
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
+          fileset_escape "$seg" "$files" "$wt" || return 1
+          stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+        else
+          s4_park_unfinished "$seg"; return 1
         fi ;;
       '크래시')
         # The same one retry as the arm three lines up, and for a stronger
@@ -7829,16 +8459,19 @@ segment_cycle() {
         # A crashed stage dies near the end rather than early — median 23.6
         # minutes against 22.3 for a stage that completes — so what a crash
         # throws away is close to a whole stage.
+        #
+        # The retry is judged as an attempt (`s4_retry`): a process A that died
+        # before writing its plan is retried as process A, and its clean end is
+        # continued into process B rather than parked as a second crash.
         log "$seg: $class — 1회만 재시도"
-        src=0
-        CC_SPAWN_EVENT=crash-retry stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" || src=$?
-        if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park_router "$seg" "$seg" cone; return 1
-        fi
-        [ "$src" = "0" ] || (exit "$src")
-        stage_wait_all "$sid.retry"
-        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
-          park "$seg" cone 무효화 "게이트 park" "크래시 2회 — 산출물 없음"; return 1
+        if s4_retry "$sid" "$jkey" "$seg" "$wt" \
+             "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\"" \
+             crash-retry "크래시 2회" "$(seg_alias "$seg")" \
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
+          fileset_escape "$seg" "$files" "$wt" || return 1
+          stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+        else
+          s4_park_unfinished "$seg"; return 1
         fi ;;
       '한도-형상 회수')
         # The driver itself signalled this stage, from the limit-shape arm,
@@ -7851,15 +8484,14 @@ segment_cycle() {
         log "$seg: 한도-형상 회수 ($(cat "$RUN_DIR/$sid.reap-cause" 2>/dev/null)) — 경계에서 1회 재파견"
         # `limit-reclaim` is what leaves the exhausted account out; any other
         # event would sit this lineage back on the account the reap ran from.
-        src=0
-        CC_SPAWN_EVENT=limit-reclaim stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" || src=$?
-        if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
-          park_router "$seg" "$seg" cone; return 1
-        fi
-        [ "$src" = "0" ] || (exit "$src")
-        stage_wait_all "$sid.retry"
-        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
-          park "$seg" cone 무효화 "게이트 park" "한도-형상 회수 후 재파견 — 산출물 없음"; return 1
+        if s4_retry "$sid" "$jkey" "$seg" "$wt" \
+             "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\"" \
+             limit-reclaim "한도-형상 회수 후 재파견" "$(seg_alias "$seg")" \
+             -- predicate_implement_share "$branch" "$att_base" "$seg"; then
+          fileset_escape "$seg" "$files" "$wt" || return 1
+          stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+        else
+          s4_park_unfinished "$seg"; return 1
         fi ;;
       *) park "$seg" cone 무효화 "게이트 park" "종단 부류 $class"; return 1 ;;
     esac
@@ -7910,7 +8542,8 @@ segment_cycle() {
     [ -z "$seg_base" ] || rscope=" --base-sha $seg_base"
     [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
     src=0
-    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\"" || src=$?
+    local review_line="/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\""
+    stage_spawn "$sid" "$seg_repo" "$review_line" || src=$?
     if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
       park_router "$seg" "$seg" cone; return 1
     fi
@@ -7932,7 +8565,21 @@ segment_cycle() {
       "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
-    if [ "$class" != "정상 완료" ]; then
+    if [ "$class" = "거절 종료" ]; then
+      # A REFUSED REVIEW TAKES THE REFUSAL'S OWN DISPOSITION, the same one the
+      # implement arm above takes: one re-attachment of the same session, then
+      # a park of the cone under `거절 소진`. It is not a crash, so it does not
+      # go to the crash recovery below, whose `*` arm would park it under
+      # `무효화`, a cause the run's termination cannot resolve.
+      if ! refusal_or_park "$sid" "$seg" "$seg" S5 "$seg_repo" "$review_line" \
+             "리뷰 리포트 $rp 에 종료 술어 줄이 없다" "$(seg_alias "$seg")" \
+             -- predicate_review "$rp"; then
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
+        [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+        [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+        park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+      fi
+    elif [ "$class" != "정상 완료" ]; then
       review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
     fi
     spawn_lineage_release "$sid"
@@ -8018,10 +8665,10 @@ segment_cycle() {
           fi
           [ "$src" = "0" ] || (exit "$src")
           stage_wait_all "$sid"
-          # The reconvergence writes no row of its own; its lineage ends with
-          # the predicate below, whichever way it reads.
+          # Its lineage ends with the predicate below, whichever way it reads.
           spawn_lineage_release "$sid"
           if predicate_reconverge "$sid"; then
+            reconverge_row "$seg" "$sid"
             # The impact payload is an AUDIT record now, not a control signal.
             # What decides whether the plan is stale is a MEASUREMENT of the
             # document, not the model's self-report about it: a self-report
@@ -8063,14 +8710,19 @@ EOF
     park "$seg" act 막힘 "예산·벽시계" "벽시계 마감 경과 — 머지하지 않는다. 세그먼트는 완성-미착지" \
       "gh -R $(seg_slug "$seg") pr merge $branch"
     run_deadline_end "벽시계 마감 경과 — $seg 를 머지하지 않는다"
+    pr_cutpoint_terminal_row "$seg" "$branch"
     return 4
   fi
   local mrc=0; merge_gate "$seg" "$branch" || mrc=$?
   # 2 is the ACT arm: the merge is blocked, everything the segment produced
   # survives, and the run keeps going. Collapsing it into 1 is the eight-site
   # defect this slice exists to fix — one cutpoint typo used to park every
-  # segment even though each had reached PR.
-  [ "$mrc" = "2" ] && return 4
+  # segment even though each had reached PR. The apply arm's return 4 below
+  # writes no terminal row: the `머지됨` row is already the slice's last.
+  if [ "$mrc" = "2" ]; then
+    pr_cutpoint_terminal_row "$seg" "$branch"
+    return 4
+  fi
   [ "$mrc" = "0" ] || return 1
 
   # --- S9 APPLY ------------------------------------------------------------
@@ -8153,7 +8805,8 @@ absorb_stage_judgment() {
 # name on the design and audit stages. The row segment is only the `세그먼트=`
 # field of the attempt rows.
 #
-# Returns 0 when a later attempt completed normally. Returns 1 with
+# Returns 0 when a later attempt completed normally, or, on S4, died after its
+# predicate held (`s4_died_after_work`). Returns 1 with
 # CONTINUE_PARK_REASON (and CONTINUE_PARK_RECALL for a halt) set, and
 # CONTINUE_BLOCKED non-empty when the stage waits on a person rather than
 # having failed; the caller parks under its own scope. The predicate command is
@@ -8167,7 +8820,16 @@ absorb_stage_judgment() {
 # is kept for the one shape resuming cannot help: no transcript, or zero turns.
 # A stage whose own judgment is still open — one keyed on the judgment key, not
 # any open question in its segment or run — is waiting on a person and is not
-# continued. The limit-shape and crash classes never reach here.
+# continued.
+#
+# AN ATTEMPT MADE HERE THAT DIES IS NOT RETRIED. A crash or limit class reaches
+# here only as the end of an attempt this function made, never as the caller's
+# input. On S4 that is where cycle 1's process B runs, since it is always the
+# continuation of process A, so a B that committed and wrote its result lines
+# before dying is accepted on the predicate like any S4 retry. One that died
+# without its work parks: the segment's one crash retry belongs to the first
+# attempt's crash arm, and a continued attempt is already past the first, so
+# granting another here would give a chain of continuations a retry each.
 #
 # THE PARK REASON SAYS WHAT HAPPENS NEXT, AND ONLY THAT. The run does not
 # continue the stage and does not wait: the caller parks it `막힘` under its
@@ -8184,11 +8846,16 @@ continue_or_park() {
   local sid="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" retry_prompt="$6" unmet="$7" alias="$8"
   shift 8
   [ "${1:-}" = "--" ] && shift
-  local sess turns n
+  local sess turns n unmet0="$unmet"
   # The class is cleared here too: a `라우터 판정` left by an earlier call would
   # send this call's park through the router helper.
+  # CONTINUE_MISSING is NOT cleared on entry: it holds the caller's reading of
+  # the attempt before this call, which stands as the cap cause when this call
+  # dispatches nothing. Each attempt below clears it before it is judged, so a
+  # predicate that does not set it leaves it empty.
   CONTINUE_CLASS=""
   CONTINUE_BLOCKED=""
+  CONTINUE_REFUSED=""
   CONTINUE_PARK_REASON=""
   CONTINUE_PARK_RECALL=""
   while :; do
@@ -8208,12 +8875,15 @@ continue_or_park() {
       # a park under its own reason.
       log "$sid: 공허한 성공 — 트랜스크립트가 없거나 0턴이라 새 프로세스로 1회만 재시도"
       STAGE_RESUME=""
+      CONTINUE_MISSING=""
       CC_SPAWN_EVENT=hollow-retry continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$alias" -- "$@"
       case "$CONTINUE_CLASS" in
         '정상 완료') return 0 ;;
         '의도된 park') return 1 ;;
         '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
-        *) CONTINUE_PARK_REASON="재시도 소진 — 새 프로세스 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
+        *)
+          ! s4_died_after_work "$rkind" || return 0
+          CONTINUE_PARK_REASON="재시도 소진 — 새 프로세스 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
       esac
     fi
     if [ "$(continue_count "$sid")" -ge "$CONTINUE_MAX" ]; then
@@ -8223,13 +8893,28 @@ continue_or_park() {
     n=$(continue_spend "$sid")
     log "$sid: 공허한 성공 — 같은 세션 $sess 를 계속 메시지로 재개 ($n/$CONTINUE_MAX)"
     STAGE_RESUME="$sess"
+    CONTINUE_MISSING=""
     CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
+    # The next message says what THIS attempt left unmet: the residual headings
+    # when that is what is missing, otherwise the caller's own text.
+    if [ -n "$CONTINUE_MISSING" ]; then
+      unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+    else
+      unmet="$unmet0"
+    fi
     case "$CONTINUE_CLASS" in
       '정상 완료') return 0 ;;
       '의도된 park') return 1 ;;
       '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
       '공허한 성공') : ;;
-      *) CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
+      # A continued session can end in a refusal too; it takes the refusal's
+      # own single re-attachment, counted on the same ledger rows.
+      '거절 종료')
+        refusal_or_park "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$unmet" "$alias" -- "$@"
+        return $? ;;
+      *)
+        ! s4_died_after_work "$rkind" || return 0
+        CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
     esac
   done
 }
@@ -8239,11 +8924,13 @@ continue_attempt() {
   #                  <prompt> <alias> -- <predicate cmd...>
   # One attempt of `continue_or_park`: dispatch (resuming when the caller set
   # STAGE_RESUME), classify, write its own `stage-result` row, absorb a judgment
-  # it emitted under the judgment key. Leaves the class in CONTINUE_CLASS, and
-  # the halt reason and recall command in CONTINUE_PARK_* when it halted.
+  # it emitted under the judgment key. Leaves the class in CONTINUE_CLASS, the
+  # predicate's own result (0 held) in CONTINUE_PRED, and the halt reason and
+  # recall command in CONTINUE_PARK_* when it halted.
   local did="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" prompt="$6" alias="$7" rc pred acct drc=0
   shift 7
   [ "${1:-}" = "--" ] && shift
+  CONTINUE_PRED=1
   rm -f "$RUN_DIR/$did.rc"
   quiet_window_begin
   dispatch_stage "$did" "$cwd" "$prompt" || drc=$?
@@ -8258,8 +8945,13 @@ continue_attempt() {
   fi
   rc=$(cat "$RUN_DIR/$did.rc" 2>/dev/null || printf '1')
   if "$@" "$did"; then pred=0; else pred=1; fi
+  CONTINUE_PRED=$pred
   CONTINUE_CLASS=$(classify_termination "$did" "$rc" "$pred")
   acct=$(stage_account_of "$did")
+  # An implement attempt's row carries the plan digest it emitted, so the
+  # attempt after it is admitted as process B (`stage_plan_sha256`).
+  local psha=""
+  [ "$rkind" != "S4" ] || psha=$(stage_plan_sha256 "$(stage_log_path "$did")" "$rseg")
   # One row per attempt. `실행 버전` is the attempt this dispatch pinned — the
   # value the gate writes for its own rows — so "one row per (segment,
   # attempt)" holds on driver rows too. A continued attempt is a resumed launch,
@@ -8270,12 +8962,199 @@ continue_attempt() {
     "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$did")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$did")")" \
-    "종단 부류=$CONTINUE_CLASS"
+    ${psha:+"plan_sha256=$psha"} "종단 부류=$CONTINUE_CLASS"
   absorb_stage_judgment "$did" "$jkey" "$alias"
   if [ "$CONTINUE_CLASS" = "의도된 park" ]; then
     CONTINUE_PARK_REASON="중단 기록"
     CONTINUE_PARK_RECALL=$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$did")" 2>/dev/null || true)
   fi
+}
+
+refusal_count() {
+  # refusal_count <row segment> <row kind> — this run's `stage-result` rows of
+  # that segment and kind filed `거절 종료`, the row just written included.
+  # The ledger is the counter, so a resumed driver keeps counting. A fixed
+  # string is a whole-value match here because no value of the class
+  # vocabulary has `거절 종료` as a prefix.
+  { run_section_rows 'stage-result' || true; } \
+    | { grep -F "| 세그먼트=$1 |" || true; } | { grep -F "| 스테이지=$2 |" || true; } \
+    | grep -cF '종단 부류=거절 종료' || true
+}
+
+# ---------------------------------------------------------------------------
+# refusal_or_park — what the driver does with a `거절 종료`, for the implement,
+# review and design stages.
+#
+#   refusal_or_park <stage id> <judgment key> <row segment> <row kind> <cwd>
+#                   <retry prompt> <unmet predicate> <alias> -- <predicate cmd...>
+#
+# The arguments are `continue_or_park`'s, which a re-attachment that ended in
+# prose is handed to.
+#
+# ONE RE-ATTACHMENT PER KEY, counted on the ledger: the first refusal of a
+# segment (or of the design step) resumes the same session once with the fixed
+# refusal message, and a second one parks the scope with `원인=거절 소진`. Not
+# the crash retry: a fresh process starts the stage over, and on a design stage
+# it writes over the document the refused stage had already saved. Nothing the
+# stage saved is removed here.
+#
+# Returns 0 when the re-attached attempt completed normally, or, on S4, died
+# after its predicate held (`s4_died_after_work`). Returns 1 with
+# CONTINUE_PARK_REASON set, and CONTINUE_REFUSED non-empty when the cause is a
+# spent refusal; a re-attachment that ended in prose goes on to
+# `continue_or_park`, whose own outputs then stand.
+# ---------------------------------------------------------------------------
+refusal_or_park() {
+  local sid="$1" jkey="$2" rseg="$3" rkind="$4" cwd="$5" retry_prompt="$6" unmet="$7" alias="$8"
+  shift 8
+  [ "${1:-}" = "--" ] && shift
+  local sess n
+  CONTINUE_CLASS=""
+  CONTINUE_BLOCKED=""
+  CONTINUE_REFUSED=""
+  CONTINUE_PARK_REASON=""
+  CONTINUE_PARK_RECALL=""
+  n=$(refusal_count "$rseg" "$rkind")
+  if [ "${n:-0}" -ge 2 ]; then
+    CONTINUE_REFUSED=1
+    CONTINUE_PARK_REASON="거절 소진 — 모델 안전 거절로 ${n}번 끝났다. 재부착은 한 번뿐이라 다시 붙이지 않으며, 저장된 산출물은 그대로 둔다"
+    return 1
+  fi
+  sess=$(stage_session_id_strict "$sid")
+  if [ -z "$sess" ]; then
+    CONTINUE_REFUSED=1
+    CONTINUE_PARK_REASON="거절 소진 — 모델 안전 거절로 끝났고 다시 붙일 세션 id 가 스트림에 없다. 새 프로세스로 처음부터 다시 띄우지 않으며, 저장된 산출물은 그대로 둔다"
+    return 1
+  fi
+  log "$sid: 거절 종료 — 같은 세션 $sess 에 한 번 다시 붙인다"
+  STAGE_RESUME="$sess"
+  CONTINUE_MISSING=""
+  CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(refusal_message)" "$alias" -- "$@"
+  # A re-attachment that ended in prose is continued with what IT left unmet.
+  [ -z "$CONTINUE_MISSING" ] || unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+  case "$CONTINUE_CLASS" in
+    '정상 완료') return 0 ;;
+    '의도된 park') return 1 ;;
+    '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
+    '거절 종료')
+      CONTINUE_REFUSED=1
+      CONTINUE_PARK_REASON="거절 소진 — 한 번 다시 붙인 세션이 또 모델 안전 거절로 끝났다. 저장된 산출물은 그대로 둔다"
+      return 1 ;;
+    '공허한 성공')
+      continue_or_park "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$unmet" "$alias" -- "$@"
+      return $? ;;
+    *)
+      ! s4_died_after_work "$rkind" || return 0
+      CONTINUE_PARK_REASON="종단 부류 $CONTINUE_CLASS"; return 1 ;;
+  esac
+}
+
+s4_died_after_work() {
+  # s4_died_after_work <row kind> — true when the S4 attempt `continue_attempt`
+  # just judged died (a crash, a limit exit, a reap) AFTER its predicate held:
+  # it committed, and on process B its residual share is complete.
+  #
+  # A RETRY OR CONTINUATION THAT DIED AFTER DOING THE WORK IS ACCEPTED ON THE
+  # PREDICATE. Every S4 attempt `continue_attempt` judges — retry, refusal
+  # re-attachment, continuation — passes here before it parks. Before
+  # retries were judged as attempts, a crash or limit retry was accepted on the
+  # commit ladder alone, whatever its exit code; judged by class, a retry that
+  # committed and then died is `크래시` (`정상 완료` needs exit 0) and parked as
+  # `무효화` a segment whose work is on its branch. Crashes cluster at the end of
+  # a stage, after the work, so that is the common shape and not a corner. The
+  # class still stands on the row; only the disposition reads the predicate. A
+  # process A attempt commits nothing, so it never passes here.
+  [ "$1" = "S4" ] && [ "${CONTINUE_PRED:-1}" = "0" ] || return 1
+  case "$CONTINUE_CLASS" in
+    '크래시'|'한도 종료'|'한도-형상 회수') return 0 ;;
+  esac
+  return 1
+}
+
+s4_attempt_base() {
+  # s4_attempt_base <worktree> <segment-start HEAD> <process B 0|1> — the commit
+  # an S4 attempt's implement predicate is judged against.
+  #
+  # A PROCESS A ATTEMPT IS JUDGED AGAINST THE HEAD IT WAS DISPATCHED ON. It
+  # emits a plan and commits nothing, so judged against the segment's start it
+  # reads the previous cycle's commit as its own: after a re-convergence that
+  # left the document unchanged, the plan-only attempt of the next cycle was
+  # filed `정상 완료`, the review re-read untouched code and the ladder climbed to
+  # its R4 park. Against its own dispatch HEAD it is a `공허한 성공`, continued
+  # into process B exactly as in cycle 1, where the two HEADs are the same.
+  # Process B keeps the segment's start, so a later cycle that answers its
+  # review without a code change still ends as it did before.
+  if [ "${3:-0}" = "1" ]; then
+    printf '%s' "$2"
+  else
+    ( cd "$1" && git rev-parse HEAD )
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# s4_retry — the one fresh re-dispatch of an S4 attempt that crashed or was
+# reaped at a limit shape.
+#
+#   s4_retry <stage id> <judgment key> <segment> <cwd> <prompt> <spawn event>
+#            <cause> <alias> -- <predicate cmd...>
+#
+# THE RETRY IS AN ATTEMPT LIKE ANY OTHER: it writes its own `stage-result` row
+# carrying the plan digest it emitted (`continue_attempt`), it is judged by the
+# predicate the caller passes — the residual share included — and a retry that
+# ended in prose or in a refusal goes on to `continue_or_park` or
+# `refusal_or_park`. Judged by the commit ladder alone and left without a row,
+# a process A retry that ended cleanly had committed nothing by design and
+# parked as a second crash, and a process B retry passed on any commit without
+# its own result lines.
+#
+# Returns 0 when the retry, or an attempt after it, completed normally or died
+# after its predicate held (`s4_died_after_work`). Returns 1 with the
+# CONTINUE_* outputs set; the caller parks with `s4_park_unfinished`.
+# ---------------------------------------------------------------------------
+s4_retry() {
+  local sid="$1" jkey="$2" seg="$3" cwd="$4" prompt="$5" ev="$6" cause="$7" alias="$8"
+  shift 8
+  [ "${1:-}" = "--" ] && shift
+  local unmet="세그먼트 브랜치에 새 커밋도 정지 기록도 없다"
+  CONTINUE_CLASS=""
+  CONTINUE_BLOCKED=""
+  CONTINUE_REFUSED=""
+  CONTINUE_PARK_REASON=""
+  CONTINUE_PARK_RECALL=""
+  STAGE_RESUME=""
+  CONTINUE_MISSING=""
+  CC_SPAWN_EVENT=$ev continue_attempt "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$alias" -- "$@"
+  [ -z "$CONTINUE_MISSING" ] || unmet=$(residual_unmet_message "$CONTINUE_MISSING")
+  case "$CONTINUE_CLASS" in
+    '정상 완료') return 0 ;;
+    '의도된 park') return 1 ;;
+    '라우터 판정') CONTINUE_BLOCKED=1; return 1 ;;
+    '공허한 성공')
+      continue_or_park "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$unmet" "$alias" -- "$@"
+      return $? ;;
+    '거절 종료')
+      refusal_or_park "$sid.retry" "$jkey" "$seg" S4 "$cwd" "$prompt" "$unmet" "$alias" -- "$@"
+      return $? ;;
+    *)
+      ! s4_died_after_work S4 || return 0
+      CONTINUE_PARK_REASON="$cause — 재시도도 종단 부류 $CONTINUE_CLASS"; return 1 ;;
+  esac
+}
+
+s4_park_unfinished() {
+  # s4_park_unfinished <segment> — park an S4 attempt chain that did not finish,
+  # under the cause the CONTINUE_* outputs of the last call name. Always returns
+  # 1. The cap cause is read from the LAST attempt judged (CONTINUE_MISSING): a
+  # segment whose result lines are what is missing parks `막힘`, because the code
+  # is there and a person can write the lines, which is not an invalidation.
+  local seg="$1"
+  [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "$seg" "$seg" cone "$CONTINUE_PARK_REASON"; return 1; }
+  [ -z "$CONTINUE_REFUSED" ] || { park "$seg" cone "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+  [ -z "$CONTINUE_BLOCKED" ] || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+  [ -z "$CONTINUE_MISSING" ] || [ "$CONTINUE_CLASS" = "의도된 park" ] \
+    || { park "$seg" cone 막힘 "게이트 park" "$CONTINUE_PARK_REASON — $(residual_unmet_message "$CONTINUE_MISSING")"; return 1; }
+  park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -8425,6 +9304,20 @@ design_arm() {
         report_append "설계" "문서 동결 — $DOC_KEY"
       else
         [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S1design" "S1design" run "$CONTINUE_PARK_REASON"; return 1; }
+        [ -z "$CONTINUE_BLOCKED" ] || { park "S1design" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
+        park "S1design" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
+      fi ;;
+    # A refused design stage is NOT in the crash redispatch window above: a fresh
+    # dispatch would design again over the document it had already saved. It
+    # gets one re-attachment of its own session, then a park under `거절 소진`.
+    '거절 종료')
+      if refusal_or_park S1design S1design - S1design "$(alias_root "$(home_alias)")" \
+           "/cc-cmds:$skill1 $DOC \"$(manifest_intent_line)\"" \
+           "동결된 설계 문서도 정지 기록도 없다" "$(home_alias)" -- predicate_design; then
+        report_append "설계" "문서 동결 — $DOC_KEY"
+      else
+        [ "$CONTINUE_CLASS" != "라우터 판정" ] || { park_router "S1design" "S1design" run "$CONTINUE_PARK_REASON"; return 1; }
+        [ -z "$CONTINUE_REFUSED" ] || { park "S1design" run "거절 소진" "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
         [ -z "$CONTINUE_BLOCKED" ] || { park "S1design" run 막힘 "게이트 park" "$CONTINUE_PARK_REASON"; return 1; }
         park "S1design" run 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
       fi ;;
@@ -8733,7 +9626,7 @@ main_loop_body() {
   # branch produced it; that is what lets the declaration bypass the planner
   # without forking the execution path.
   ladder_init
-  local merged=0 parked=0 landed=0 total=0 seg files rc
+  local merged=0 parked=0 landed=0 imported=0 imported_landed=0 total=0 seg files rc
   total=$(grep -c . "$RUN_DIR/plan.tsv" 2>/dev/null || printf '0')
   RUN_CYCLE_BUDGET=$(run_cycle_budget)
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
@@ -8741,6 +9634,23 @@ main_loop_body() {
     "벽시계 마감=$( [ -n "$MANIFEST" ] && manifest_field '인가' '벽시계 마감' || printf '(없음)' )"
   while IFS="$(printf '\t')" read -r seg repo files deps; do
     [ -n "$seg" ] || continue
+    # A SLICE AN EARLIER RUN LANDED IS ALREADY DONE. `plan_from_declaration`
+    # brought its terminal row in and put the id in `done.txt`; dispatching it
+    # would build and review the same work a second time. Counted apart from
+    # `merged`, which is what this run itself landed, and kept apart again in
+    # `imported_landed` because the run's end counts it as landed. A slice in
+    # `skipped.txt` stands at a pull request an earlier run left open: not sent
+    # out again, and reported the way this run reports its own, since it still
+    # waits on a person to finish it — so it never counts toward the end's
+    # "every slice landed".
+    if grep -qxF "$seg" "$RUN_DIR/done.txt" 2>/dev/null; then
+      imported=$((imported + 1)); imported_landed=$((imported_landed + 1)); continue
+    fi
+    if grep -qxF "$seg" "$RUN_DIR/skipped.txt" 2>/dev/null; then
+      imported=$((imported + 1))
+      report_append "완성-미착지" "$seg — 이전 런이 연 PR 이 아직 머지되지 않았다. 이번 런은 다시 하지 않았고, 이 슬라이스에 기대는 슬라이스는 디스패치하지 않았다"
+      continue
+    fi
     # The other of the two loop heads that read the deadline.
     if past_deadline; then
       park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 디스패치하지 않는다"
@@ -8804,7 +9714,7 @@ main_loop_body() {
   # report LAST NIGHT'S total for it. With no row in this run the figure is
   # `비용 불명`, never `0` — the same vocabulary as the settlement count beside
   # it, so a low total is never presented bare.
-  local last_cost settled limit_n
+  local last_cost settled limit_n refusal_n
   last_cost=$( { run_section_rows 'cost' || true; } | tail -1 \
                | tr '|' '\n' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
   settled=$( { run_section_rows 'stage-result' || true; } | grep -cF '종단 부류=외부 종료' || true)
@@ -8820,14 +9730,23 @@ main_loop_body() {
   if [ "${limit_n:-0}" -gt 0 ]; then
     report_append "한도 종료" "${limit_n}건 — 크래시와 같게 처분, 계정 이동 없음"
   fi
+  # Model refusals likewise, on the same terms.
+  refusal_n=$( { run_section_rows 'stage-result' || true; } | grep -cF '종단 부류=거절 종료' || true)
+  if [ "${refusal_n:-0}" -gt 0 ]; then
+    report_append "거절 종료" "${refusal_n}건 — 같은 세션 재부착 1회, 두 번째 거절은 거절 소진 park"
+  fi
   RUN_END_LOOP_DONE=1
-  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ "$merged" -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
+  # EVERY PLANNED SLICE LANDED counts the ones an earlier run landed too: a
+  # re-kicked run that merges the rest has delivered the whole plan, and an end
+  # without `종료 부류=완료` sends that run to a person.
+  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ $((merged + imported_landed)) -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
   run_end_record || true
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
   # driver parked, while `보류` is the disposition of a termination clause waiting
   # on a person's answer — and both appear in the same report, so the reader had
   # to guess which sense was meant on each line.
+  [ "$imported" -eq 0 ] || report_append "착지 들여오기" "${imported}건 — 이전 런이 착지시킨 슬라이스라 디스패치하지 않았다"
   report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · park ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
   # The walk is over and every stage it spawned has been collected; what the run
   # still holds goes back now, unless something of it is still running.
@@ -9116,7 +10035,7 @@ plan_from_declaration() {
   fi
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(slice_ids "$doc" | tr '\n' ',' | sed 's/,$//')" "segmentation=선언"
-  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
   for id in $(slice_ids "$doc"); do
     # `-` for an absent value, never an empty column. Tab is an IFS WHITESPACE
     # character, so `IFS=tab read a b c d` collapses a run of tabs and every
@@ -9130,6 +10049,37 @@ plan_from_declaration() {
   done
   plan_dep_floor_or_park || return 1
   for id in $(slice_ids "$doc"); do
+    # A SLICE AN EARLIER RUN OF THIS DOCUMENT LANDED IS BROUGHT IN, NOT PLANNED.
+    # The gate's import writes its terminal row, `done.txt` — emptied above —
+    # gets the id back, and the main loop skips it. The planned row is NOT
+    # written after it: the import reads the LAST segment row of an earlier
+    # ledger, so a `계획됨` row behind the terminal one would hide the landing
+    # from the run after this one. An import that fails to run plans the slice,
+    # which redoes work rather than skipping work that did not land.
+    #
+    # A slice brought in at a pull request still open goes to `skipped.txt`
+    # instead. The main loop skips it all the same, but `deps_satisfied` reads
+    # `done.txt` alone, so a slice that depends on it parks exactly as it does
+    # in the run that left the request open: every segment branches from the
+    # base, and the request's work is not there.
+    local _irc=0 _ikind=""
+    _ikind=$(run_gate_call gate_import_self_landed act "$id") || _irc=$?
+    case "$_irc/$_ikind" in
+      0/착지)
+         printf '%s\n' "$id" >> "$RUN_DIR/done.txt"
+         log "착지 들여오기 — ${id} 는 이전 런이 착지시켜 이번 런에서 디스패치하지 않습니다"
+         continue ;;
+      0/건너뜀)
+         printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"
+         log "착지 들여오기 — ${id} 는 이전 런의 PR 이 아직 열려 있어 디스패치하지 않고, 이 슬라이스에 기대는 슬라이스도 그 PR 이 머지될 때까지 디스패치하지 않습니다"
+         continue ;;
+      0/*)
+         warn "착지 들여오기가 처분을 알리지 않았습니다(「${_ikind}」) — ${id} 는 행이 들어왔으므로 디스패치하지 않고, 기대는 슬라이스도 디스패치하지 않습니다"
+         printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"
+         continue ;;
+      1/*) : ;;
+      *) warn "착지 들여오기 호출 실패(rc=${_irc}) — ${id} 는 계획대로 다시 합니다" ;;
+    esac
     # SLICE → SEGMENT. The slice declaration is where a person writes the review
     # policy, and the segment row is the only carrier that reaches the gate — so
     # a declaration that stops at the document changes nothing. The field is
@@ -9145,6 +10095,7 @@ plan_from_declaration() {
     local _rp
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
+    _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
     _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
     ledger_row 'segment' "${_segargs[@]}"
   done
@@ -9179,7 +10130,7 @@ plan_via_planner() {
   seg_mode=$(printf '%s' "$plan" | jq -r '.segmentation // "low-confidence"')
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(printf '%s' "$plan" | jq -c '.segments | map(.id)')" "segmentation=$seg_mode"
-  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
     printf '%s\t%s\t%s\t%s\n' "$seg" "-" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
@@ -9260,6 +10211,7 @@ else
 fi
 
 rundir_init
+rekick_memo_settle
 
 # THE RESIDUAL REPORT SITS ON THE EXIT PATH, not only on the walk's tail. A run
 # that stopped at a `die`, a signal or the cycle budget wrote its `done` file and

@@ -10,19 +10,16 @@ Engineering workflow commands for Claude Code.
 |---------|-------------|-------------|
 | `/cc-cmds:autopilot` | 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고 | 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널로 중계되고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때 |
 | `/cc-cmds:autopilot-router-shift` | 게이트가 띄운 헤드리스 라우터 샤드가 받는 라우팅 루프 — 스냅숏을 읽어 한 행위를 정하고 게이트에 넘기며, 상한·승인·종단·중단에서 인수인계 행을 남기고 끝난다 | 이 커맨드는 사람이 치는 것이 아니다 — 라우터 샤드가 받는 스킬이다. 리드 세션이 `gate.sh act --kind router-shift` 로 교대를 시작할 때 그 샤드가 이 문서를 프롬프트로 받는다 |
+| `/cc-cmds:dashboard` | 이 호스트의 autopilot 런들을 한 화면에 보여주는 로컬 대시보드 서버를 띄우고 링크를 알려준다 | 사용자가 런 진행 대시보드를 다시 열거나, 서버가 꺼졌다는 안내(「서버가 꺼져 있습니다 — `/cc-cmds:dashboard`」)를 보고 다시 올리려 할 때 |
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
 | `/cc-cmds:design-analyze` | 에이전트 팀을 활용한 제3자 설계 문서 다관점 분석 (읽기 전용) | 타인이 작성한 설계/리팩토링 문서를 원본 수정 없이 다관점으로 분석하고 분석 산출물(보고서/주석본/피드백)을 생성하고자 할 때 |
-| `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
-| `/cc-cmds:design-audit` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (반복 루프 없음) | 설계 문서 작성이 끝나 더 이상 수정하지 않을 시점에, 문서를 동결한 뒤 레포 실측 기반 독립 감사로 잔여 결함을 드러내고 이름 붙은 하류 소유자에게 인계하고자 할 때 (design 종단 이후 · design-apply의 impl-design.md · implement 직전) |
+| `/cc-cmds:design-audit` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (반복 루프 없음) | 설계 문서 작성이 끝나 더 이상 수정하지 않을 시점에, 문서를 동결한 뒤 레포 실측 기반 독립 감사로 잔여 결함을 드러내고 이름 붙은 하류 소유자에게 인계하고자 할 때 (design 종단 이후 · implement 직전) |
 | `/cc-cmds:design-audit-unattended` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (무인 — 사람 확인 없이 park) | 자율 파이프라인 드라이버가 감사 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:design-audit`를 쓸 것 |
 | `/cc-cmds:design-base` | 여러 티켓으로 나눌 큰 작업의 베이스 설계 — 티켓 간 계약과 병렬화 최대의 티켓 분할을 설계하고, 감사 뒤 트래커 발행까지 | 요청이 각자 독자적 설계 판단이 필요한 조각들로 나뉘는 큰 작업이라, 단일 설계 문서 하나로 구현 슬라이스를 나누기보다 먼저 조각 간 계약과 티켓 분할을 정하고 조각마다 따로 설계하려 할 때 |
 | `/cc-cmds:design-base-unattended` | 베이스 설계의 무인 팔 — 좌석·드라이버가 파견하면 베이스 문서의 토론·저장(드라이버면 동결까지)을, `--split` 이면 감사 뒤 분할 점검과 트래커 발행을 돈다 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design-base` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 이 베이스 런의 설계 단계와 분할 단계로 파견한다(스테이지) |
 | `/cc-cmds:design-discuss-unattended` | 설계 세션의 무인 팔 — 좌석이 파견하면 Step 3 토론과 Step 4 종합·저장을 도는 다리, autopilot 드라이버가 파견하면 Step 7U 동결까지 도는 스테이지 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 드라이버가 `design_required` 인 런의 첫 스테이지로 파견한다(스테이지) |
-| `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
-| `/cc-cmds:design-prompt` | Claude Design (claude.ai/design) 실행용 프롬프트+컨텍스트를 base 설계 문서에 authoring하고 붙여넣기 블록 emit (standalone + idempotent, HANDOFF CONTRACT 포함) | base 설계 작성 후, claude.ai/design 에 보낼 의도 중심 프롬프트와 DS 참조를 base 설계 문서에 추가하거나 리뷰 반영본으로 붙여넣기 블록을 재조립할 때 |
-| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
-| `/cc-cmds:design-system` | Claude Design (claude.ai/design) DS 생성 프롬프트 emit + DS 번들 ingest로 docs/design-system/ 워크스페이스 구축 (2-phase) | FE 파이프라인 시작 전 프로젝트 전역 design system을 claude.ai/design으로 생성·도입할 때 (1회성 또는 재ingest) |
+| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때, 또는 P0 반복 가드가 같은 세그먼트의 연속 세 사이클 P0 로 재수렴을 보낼 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
 | `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:implement-unattended` | 설계 문서 기반 구현 (무인 — 사람 확인 없이 오케스트레이터가 라우팅) | 자율 파이프라인 드라이버가 세그먼트 구현 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:implement`를 쓸 것 |
@@ -30,6 +27,8 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:review-lite` | 2인 팀을 활용한 경량 코드 리뷰 | 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능) |
 | `/cc-cmds:review-unattended` | 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주) | 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것 |
 | `/cc-cmds:review-upgrade` | 리뷰어 구성 강화 분석 (모델·역할 축) | 직전 `/review` Step 3 리뷰어 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 누락된 리뷰 관점을 메울 신규 리뷰어 추가가 필요한지, 또는 과부하 리뷰어 분할이 필요한지 second-opinion으로 검토할 때 |
+| `/cc-cmds:visual` | 설계 문서의 화면을 로컬에서 생성·검토하고, Claude Design 에 발행·동기하며, 구현 승인을 사이드카에 쓴다 (대화형, 고정 계정 좌석) | 무인 런이 `검토 통과` 로 남긴 화면을 아침에 발행·캔버스 편집·동기한 뒤 구현을 승인할 때, 또는 사이드카 없는 설계 문서의 화면을 대화형으로 처음 만들 때. 무인 파이프라인 스테이지는 `/cc-cmds:visual-unattended` 를 쓴다 |
+| `/cc-cmds:visual-unattended` | 동결된 설계 문서의 화면을 로컬에서 생성하고 세 회 안의 검토로 `검토 통과` 까지 올린다 (무인 — 사람 확인 없이 정지 기록) | 자율 파이프라인 드라이버나 라우터가 시각 단계를 헤드리스로 파견할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:visual` 을 쓸 것 |
 
 <!-- SKILLS_TABLE_END -->
 
@@ -71,15 +70,13 @@ brew install jq   # PreToolUse hook 의존성
 
 terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활성화됩니다.
 
-### Claude Design 핸드오프 품질 리뷰 (선택)
+### 시각 디자인 (Claude Design)
 
-`/cc-cmds:design-ingest`의 단일 에이전트 리뷰 단계는 환경에 `web-design-guidelines` 스킬이 설치되어 있으면 UI/접근성/반응형 평가를 그 스킬로 보강합니다. 이 스킬은 vercel-labs `agent-skills` 리포의 **skills-CLI 개별 스킬**이며 Claude Code 마켓플레이스 플러그인이 아닙니다 — 따라서 cc-cmds `plugin.json`의 `dependencies`로는 표현이 불가능하고, 다음 명령으로 `~/.claude/skills/`에 직접 설치합니다.
+`/cc-cmds:visual` 은 설계 문서의 화면을 로컬에서 만들고 검토한 뒤, Claude Design 에 발행하고 캔버스 편집을 되당겨 구현을 승인하는 대화형 스킬입니다. 무인 런에서는 `/cc-cmds:visual-unattended` 가 화면을 `검토 통과` 까지만 올리고, 발행·동기·구현 승인은 아침에 사람 좌석에서 `/cc-cmds:visual` 로 합니다.
 
-```bash
-npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-guidelines
-```
-
-부재 시 design-ingest는 자체 5축 기준(토큰-vs-DS 일치도, a11y 대비비 산술, 반응형/터치 영역 44px+, base 의도 충실도, 시각 품질)으로 fallback하며 리뷰는 중단되지 않습니다. terminal-notifier와 동일 doctrine — `plugin.json` `dependencies`로 표현 불가한 선택적 외부 의존성(skills-CLI 개별 스킬·brew 도구 등)은 graceful degradation + README 권장-설치-명령 패턴을 따릅니다.
+- **계정 고정**: Claude Design 에 닿는 국면은 `~/.config/cc-cmds/claude-design` 의 `account = <주소>` 와 `claude auth status` 의 계정이 같을 때만 진행합니다. 이 파일은 사람이 직접 쓰며, 없거나 다르면 그 국면에서 멈춥니다.
+- **금지 목록**: 흔히 AI 티로 불리는 패턴의 목록이 처음 쓸 때 `~/.config/cc-cmds/visual-bans` 로 심어지고, 검토자가 찾은 새 패턴은 사람이 하나씩 승인한 뒤에만 더해집니다. 레포 디자인 시스템의 `**금지 해제**` 줄로 항목별로 끌 수 있습니다.
+- **검토 렌더**: 검토용 스크린숏은 시스템 Chrome 헤드리스로 찍습니다. Chrome 이 없으면 HTML 만으로 검토하고 그 사실을 사이드카에 적습니다.
 
 ## Install
 
@@ -125,19 +122,16 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 - [/cc-cmds:autopilot](#cc-cmdsautopilot)
 - [/cc-cmds:autopilot-router-shift](#cc-cmdsautopilot-router-shift)
+- [/cc-cmds:dashboard](#cc-cmdsdashboard)
 - [/cc-cmds:design](#cc-cmdsdesign)
 - [/cc-cmds:design-analyze](#cc-cmdsdesign-analyze)
-- [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
 - [/cc-cmds:design-audit](#cc-cmdsdesign-audit)
 - [/cc-cmds:design-audit-unattended](#cc-cmdsdesign-audit-unattended)
 - [/cc-cmds:design-base](#cc-cmdsdesign-base)
 - [/cc-cmds:design-base-unattended](#cc-cmdsdesign-base-unattended)
 - [/cc-cmds:design-discuss-unattended](#cc-cmdsdesign-discuss-unattended)
-- [/cc-cmds:design-ingest](#cc-cmdsdesign-ingest)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
-- [/cc-cmds:design-prompt](#cc-cmdsdesign-prompt)
 - [/cc-cmds:design-reconverge](#cc-cmdsdesign-reconverge)
-- [/cc-cmds:design-system](#cc-cmdsdesign-system)
 - [/cc-cmds:design-upgrade](#cc-cmdsdesign-upgrade)
 - [/cc-cmds:implement](#cc-cmdsimplement)
 - [/cc-cmds:implement-unattended](#cc-cmdsimplement-unattended)
@@ -145,23 +139,35 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 - [/cc-cmds:review-lite](#cc-cmdsreview-lite)
 - [/cc-cmds:review-unattended](#cc-cmdsreview-unattended)
 - [/cc-cmds:review-upgrade](#cc-cmdsreview-upgrade)
+- [/cc-cmds:visual](#cc-cmdsvisual)
+- [/cc-cmds:visual-unattended](#cc-cmdsvisual-unattended)
 
 ### /cc-cmds:autopilot
 
-**Usage**: `/cc-cmds:autopilot <의도 또는 대상> [--report]`
+**Usage**: `/cc-cmds:autopilot [의도 또는 대상] [--report]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
-| `<의도 또는 대상>` | (required) | 이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. |
+| `<의도 또는 대상>` | _(optional)_ | 이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. 같은 세션이 연 런이 멈춘 뒤 비우거나 `다시`·`이어서`·`재개` 같은 재개 낱말, 또는 그 런의 의도 문면 그대로 부르면 그 런의 답을 이어받아 새 런을 바로 시작한다(재킥오프). |
 | `--report` | off (킥오프 모드 — 1막 인터뷰 후 드라이버 기동) | 아침 보고 모드. 그 런의 매니페스트·원장·보고서, 설계 문서, 그리고 매니페스트나 `run` 행이 없을 때 킥오프 흔적을 읽어 한국어로 렌더링만 하고, 새 런을 시작하지 않는다. |
 
-> _Parsing (`<의도 또는 대상>`): `$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다._
+> _Parsing (`<의도 또는 대상>`): `$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다. 재킥오프인지는 1막 맨 앞의 판별이 닫힌 낱말 목록으로 정하고, 그 밖의 인자는 새 런이다._
 
 ### /cc-cmds:autopilot-router-shift
 
 **Usage**: `(사람이 치는 커맨드가 아니다 — gate.sh act --kind router-shift 가 claude -p 로 넘긴다)`
 
 _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에게 묻는 자리도, 배너를 띄우는 자리도, 진행 채널을 여는 자리도 아니다 — 그 셋은 전부 리드에 남는다. 이 샤드가 하는 것은 스냅숏을 읽고 한 행위를 정해 게이트에 넘기는 것뿐이며, 끝날 때 후임이 읽을 인수인계 행 하나를 남긴다._
+
+### /cc-cmds:dashboard
+
+**Usage**: `/cc-cmds:dashboard [<run-id>]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<run-id>` | _(optional)_ | 링크가 바로 가리킬 런 id. 없으면 전체 런 목록 링크를 낸다. |
+
+> _Parsing (`<run-id>`): 인자 전체를 런 id 하나로 쓴다. 비어 있으면 목록 링크다._
 
 ### /cc-cmds:design
 
@@ -180,14 +186,6 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | `<design-doc-path>` | (required) | 분석 대상 제3자 설계 문서 경로 (`.md`). 원본은 절대 수정하지 않음. |
 | `--no-codebase` | off (코드베이스 grounding 활성) | 코드베이스 교차검증 비활성화 — 문서 자체만으로 분석 (doc-only 모드). |
 | `--report-only` | off (산출물 대화형 선택) | Step 7 산출물 선택 대화만 건너뛰고 보고서만 생성. Step 6 워크스루(발견별 검토)는 그대로 유지 — 완전 비대화 아님(산출물 범위 한정 플래그). |
-
-### /cc-cmds:design-apply
-
-**Usage**: `/cc-cmds:design-apply <handoff-extract-path>`
-
-| Option | Default | Summary |
-| --- | --- | --- |
-| `<handoff-extract-path>` | (required) | design-ingest가 확정한 안정 사본 (`docs/{slug}-fe/handoff-extract.md`); 본 스킬이 slug 파싱·출력 경로·원장 키의 단일 앵커 |
 
 ### /cc-cmds:design-audit
 
@@ -251,14 +249,6 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 
 > _Parsing (`<task-sentence>`): 첫 `.md` 토큰 이후의 모든 내용. 좌석 파견에서는 무시한다._
 
-### /cc-cmds:design-ingest
-
-**Usage**: `/cc-cmds:design-ingest <handoff-dir-path>`
-
-| Option | Default | Summary |
-| --- | --- | --- |
-| `<handoff-dir-path>` | (required) | 기능 핸드오프 디렉토리 (`docs/{slug}-fe/handoff`); incoming/ 하위 번들을 소비 |
-
 ### /cc-cmds:design-lite
 
 **Usage**: `/cc-cmds:design-lite <task>`
@@ -267,14 +257,6 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | --- | --- | --- |
 | `<task>` | (required) | 설계 토론을 진행할 작업 주제 (자유형 한국어/영문 텍스트). |
 
-### /cc-cmds:design-prompt
-
-**Usage**: `/cc-cmds:design-prompt <base-doc-path>`
-
-| Option | Default | Summary |
-| --- | --- | --- |
-| `<base-doc-path>` | (required) | base 설계 문서 경로 (`docs/{slug}.md`); 본 스킬이 그 안에 CD 프롬프트 섹션을 in-place authoring |
-
 ### /cc-cmds:design-reconverge
 
 **Usage**: `/cc-cmds:design-reconverge <design-doc-path> <scope>`
@@ -282,19 +264,11 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 재수렴 대상 설계 문서 경로 (`.md`). 드라이버와 라우터 교대가 메인 워크트리 절대 경로로 넘긴다. |
-| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구, 또는 `구속 티어 이탈 <중단 기록 절대 경로>` 형태의 사람이 재수렴을 고른 구속 티어 이탈. |
+| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구, `구속 티어 이탈 <중단 기록 절대 경로>` 형태의 사람이 재수렴을 고른 구속 티어 이탈, 또는 `P0 반복 <세그먼트> <리포트 절대 경로> <리포트 절대 경로> <리포트 절대 경로>` 형태의 P0 반복 가드 재수렴. |
 
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석._
 
 > _Parsing (`<scope>`): 첫 `.md` 토큰 이후의 모든 내용. 비어 있으면 중단 기록을 남기고 정지 — 스코프 없는 재설계는 이 스킬이 하는 일이 아니다._
-
-### /cc-cmds:design-system
-
-**Usage**: `/cc-cmds:design-system [<intent>]`
-
-| Option | Default | Summary |
-| --- | --- | --- |
-| `[<intent>]` | _(optional)_ | DS 생성 의도/스코프 서술용 자유형 토큰 (생략 시 base 설계·코드베이스에서 추론) |
 
 ### /cc-cmds:design-upgrade
 
@@ -372,7 +346,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -381,6 +355,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--report-path <abs-path>` | off (리포트를 cwd 상대 `docs/reviews/{slug}.md`에 기록) | 뒤에 오는 **메인 워크트리 절대 경로**에 리포트를 기록한다. 세그먼트 워크트리에서 실행될 때 리포트가 그 트리에 떨어져 철거와 함께 파괴되는 것을 막는 유일한 수단. |
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 드라이버가 지정. 드라이버는 세그먼트가 갈라져 나온 base 를 이미 알고 있으므로, 이 값이 있으면 리뷰가 그것을 다시 유도하지 않는다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
+| `--slice <id>` | off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`) | 이 세그먼트가 구현한 설계 슬라이스 id. 지시문의 `설계는 <doc>` 이 가리키는 설계 문서의 `## 구현 슬라이싱` 에서 같은 id 의 블록을 이 슬라이스의 범위로 읽고, 다른 선언 슬라이스에 배정된 P1·P2·P3 발견을 `## 다른 슬라이스 몫 (집계 제외)` 절로 옮겨 집계에서 뺀다. 문서·절·블록이 없으면 모두 센다. |
 | `--basis-cycle <n>` | off (delta mode is not attempted; review runs full) | The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt. |
 | `--basis-review-head <sha>` | off (delta mode is not attempted; review runs full) | The 리뷰 HEAD of the cycle named by --basis-cycle. Verified with git merge-base --is-ancestor against the target head named explicitly, never the caller's ambient HEAD. On failure, or when the three-flag set is incomplete or malformed, the arm falls back to a full review and records why in the report overview. |
 | `--basis-report-path <abs-path>` | off (delta mode is not attempted; review runs full) | Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed. |
@@ -389,13 +364,15 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
 
 > _Parsing (`--base-sha <sha>`): `--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다 — 정지하지 않는다._
 
 > _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다._
+
+> _Parsing (`--slice <id>`): `--slice` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다._
 
 > _Parsing (`--basis-cycle <n>`): `--basis-cycle` takes the next token as its value. Missing, or not a positive integer, or either companion flag itself missing or malformed → all three are treated as absent for this call; full review, no halt. One overview line records the attempt only when at least one of the three was actually supplied on argv._
 
@@ -412,6 +389,22 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 **Usage**: `/cc-cmds:review-upgrade`
 
 _이 커맨드는 별도 인자를 받지 않으며, 직전 `/review` Step 3 리뷰어 구성 제안이 현재 대화 컨텍스트에 있어야 동작한다. opus 승격, 누락 리뷰 관점 추가, 과부하 리뷰어 분할은 강화가 유의미할 때만 제안하며, 그 외에는 유지 사유를 제시한다. 독립 실행 시 결과가 불정확할 수 있다._
+
+### /cc-cmds:visual
+
+**Usage**: `/cc-cmds:visual <design-doc-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 대상 설계 문서 경로 (`.md`). 사이드카 `<base>/docs/visual/<slug>.md` 의 상태가 이번 국면을 정한다. |
+
+### /cc-cmds:visual-unattended
+
+**Usage**: `/cc-cmds:visual-unattended <design-doc-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 동결된 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. |
 
 <!-- SKILLS_OPTIONS_END -->
 

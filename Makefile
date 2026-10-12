@@ -1,3 +1,8 @@
+# The gate's run-open branch starts the run dashboard, and a server it starts
+# outlives the suite that opened the run. Every suite already turns the switch
+# off for itself; this default covers one that forgets.
+export CC_CMDS_DASHBOARD := off
+
 .PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
 
 lint:
@@ -297,6 +302,8 @@ ORCH_TESTS := \
 	scripts/test-gate.sh \
 	scripts/test-suite-isolation.sh \
 	scripts/test-kickoff-defaults.sh \
+	scripts/test-rekick.sh \
+	scripts/test-successor.sh \
 	scripts/test-team-witness-init.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-base-split.sh \
@@ -311,13 +318,18 @@ ORCH_TESTS := \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
+	scripts/test-dashboard.sh \
 	scripts/test-run-pane.sh \
+	scripts/test-display-tz.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
 	scripts/test-collect-run-metrics.sh \
-	scripts/test-run-issue-filing.sh
+	scripts/test-run-issue-filing.sh \
+	scripts/test-visual-config.sh \
+	scripts/test-visual-check.sh \
+	scripts/test-visual-capture.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \

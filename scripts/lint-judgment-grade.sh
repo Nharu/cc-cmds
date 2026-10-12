@@ -66,7 +66,12 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # skill borrows most of its ask points from `design` by Reading it, so the
 # marks this lint counts there are only the questions the base seat adds — the
 # borrowed ones are counted on the `design` lines above.
-PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge design|design-discuss-unattended design-base|design-base-unattended"
+#
+# `visual|visual-unattended` is the visual-design pair. The unattended arm has
+# no twin for the attended skill's publish, sync and approval phases, so most of
+# the attended marks dispose to "not this stage's phase" rather than to a halt;
+# the three grade dispositions are still owed.
+PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge design|design-discuss-unattended design-base|design-base-unattended visual|visual-unattended"
 
 GRADE_RE='등급 [0-9]'
 VALID_RE='등급 [012]'

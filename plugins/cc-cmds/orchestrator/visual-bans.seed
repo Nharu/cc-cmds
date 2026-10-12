@@ -1,0 +1,27 @@
+# 시각 디자인 금지 목록 씨앗 — 「AI 티」 로 흔히 불리는 패턴
+#
+# visual-config.sh seed 가 호스트 설정 디렉터리에 visual-bans 가 없을 때만 이 파일을
+# 그대로 복사한다. 호스트 파일이 없으면 visual-config.sh bans 가 이 파일을 읽기
+# 전용으로 돌려준다.
+#
+# 한 줄이 한 항목이다: <id> | <종류> | <설명> | <패턴 또는 ->
+#   종류 마크업   — 패턴을 grep -E 로 화면의 마크업·CSS(스크립트 밖, 주석 뺀 문면)에 건다
+#   종류 스크립트 — 패턴을 grep -E 로 화면의 스크립트 영역에 건다
+#   종류 판단     — 패턴 없이(-) 검토자 루브릭이 읽는다
+# 구분자는 앞뒤 공백을 낀 「 | 」 이고, 셋째 구분자 뒤 전부가 패턴이다.
+# 레포 디자인 시스템 system.md 의 「**금지 해제**: <id> — <사유>」 줄이 항목을 끈다.
+cream-background | 판단 | 크림·베이지·미색 바탕을 화면 전체 배경으로 쓴다 | -
+serif-display | 마크업 | 제목·히어로 글꼴에 세리프 계열(Georgia, Playfair, Fraunces, Instrument Serif 등)을 쓴다. sans-serif 는 해당하지 않는다 | font(-family)?[[:space:]]*:[^;}]*(Georgia|Playfair|Fraunces|Instrument Serif|Times|Garamond|Baskerville|Cormorant|Merriweather|Didot|Bodoni|(^|[^-A-Za-z])serif([^A-Za-z-]|$))
+italic-emphasis | 판단 | 제목 안의 강조어 한두 개만 이탤릭으로 꺾는다 | -
+numbered-label | 마크업 | 요소 안이 01, 02, 03 처럼 0 으로 시작하는 두 자리 번호뿐인 장식 라벨 | >[[:space:]]*0[1-9][[:space:]]*<
+mono-label | 판단 | 눈썹 라벨·메타 정보에 고정폭 글꼴을 쓴다. 코드 블록은 해당하지 않는다 | -
+eyebrow-caps | 판단 | 제목 위의 작은 대문자·넓은 자간 눈썹 라벨을 섹션마다 반복한다 | -
+pill-button | 마크업 | 버튼·배지를 완전히 둥근 알약 모양(border-radius 9999px, 999px, 100px 이상)으로 만든다 | border-radius[[:space:]]*:[^;}]*([^0-9.]|^)[1-9][0-9]{2,}px
+purple-gradient | 판단 | 보라에서 파랑·분홍으로 가는 그라디언트 바탕·버튼 | -
+gradient-text | 마크업 | 글자에 그라디언트를 입힌다(background-clip: text) | background-clip[[:space:]]*:[[:space:]]*text
+glassmorphism | 마크업 | 반투명 흐림 카드(backdrop-filter: blur) | backdrop-filter[[:space:]]*:[^;}]*blur[[:space:]]*\(
+glow-shadow | 판단 | 색이 든 큰 번짐 그림자로 카드·버튼을 빛나게 한다 | -
+blur-blob | 판단 | 배경에 흐린 색 원·덩어리 장식을 띄운다 | -
+left-accent-border | 마크업 | 카드·인용의 왼쪽에만 두꺼운 색 테두리(border-left 3px 이상 solid)를 둔다 | border-left[[:space:]]*:[[:space:]]*([3-9]|[1-9][0-9]+)(\.[0-9]+)?px[[:space:]]+solid
+feature-card-trio | 판단 | 아이콘·제목·두 줄 설명 카드 셋을 나란히 둔 기능 소개 격자 | -
+emoji-icon | 판단 | 기능 아이콘 자리를 이모지로 채운다 | -

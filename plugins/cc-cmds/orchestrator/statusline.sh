@@ -26,7 +26,8 @@
 #
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`, no `wait -n`.
 # No `date -r` or `date -d` either: the two date implementations disagree on
-# both, so the one epoch this file formats goes through `perl`.
+# both, so the one epoch this file formats goes through the shell arithmetic of
+# `display-tz.sh`, in the display zone the pane and the feed also use.
 
 set -uo pipefail
 
@@ -325,13 +326,16 @@ sl_borrow_read() {
 
 sl_borrow_clock() {
   # sl_borrow_clock — SL_BORROW_CLOCK for the lane view of `borrowed`, or empty.
-  # Local time comes from a perl that loads no module, the epoch passed as an
-  # argument; output of any other shape is no clock, which also keeps a doctored
-  # `perl` from putting terminal bytes on the line. "Within 24 hours" is strict:
+  # The time is in the display zone (`CC_CMDS_AUTOPILOT_TZ`, KST by default) and
+  # carries no zone label — the line's width budget is tight. The host `TZ` has
+  # no say, so this clock and the pane agree for one setting. Output of any
+  # other shape is no clock. With no helper loaded (`SL_DTZ` unset) the clock is
+  # empty and the rest of the segment still draws. "Within 24 hours" is strict:
   # exactly 86400 seconds out as `HH:MM` would read as now.
   SL_BORROW_CLOCK=
   local e="$SL_B_RESET" now out
   [ -n "$e" ] || return 0
+  [ "${SL_DTZ:-0}" = 1 ] || return 0
   now=$(date -u +%s)
   case "$now" in
     ''|*[!0123456789]*) return 0 ;;
@@ -340,7 +344,7 @@ sl_borrow_clock() {
     SL_BORROW_CLOCK="홈 리셋 지남"
     return 0
   fi
-  out=$(perl -e 'my @t = localtime($ARGV[0]); printf("%02d/%02d %02d:%02d", $t[4] + 1, $t[3], $t[2], $t[1]);' "$e" 2>/dev/null)
+  out=$(cc_display_mdhm "$e" 2>/dev/null)
   case "$out" in
     [0-9][0-9]/[0-9][0-9]\ [0-9][0-9]:[0-9][0-9])
       if [ $((e - now)) -lt 86400 ]; then
@@ -445,6 +449,17 @@ sl_borrow_compute
 
 CC_SL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) \
   || sl_exit_fallback
+# The display zone for the borrow clock, sourced beside `liveness.sh` and ahead
+# of it so that its fallback exit still carries the clock. A failed source
+# empties that clock and nothing else, so it does not fall back. The segment
+# was computed before the directory was known, so a session with a segment
+# computes it once more now that the clock can be drawn.
+SL_DTZ=0
+# shellcheck source=./display-tz.sh
+if . "$CC_SL_DIR/display-tz.sh" 2>/dev/null; then
+  cc_display_tz_load && SL_DTZ=1
+  [ -n "$SL_BORROW_SEG" ] && sl_borrow_compute
+fi
 # shellcheck source=./liveness.sh
 . "$CC_SL_DIR/liveness.sh" 2>/dev/null || sl_exit_fallback
 

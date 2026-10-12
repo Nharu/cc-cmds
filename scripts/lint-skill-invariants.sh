@@ -40,17 +40,14 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # notice-and-yield) — these carry no in-session counter yet still mis-fire if a
 # transition rule drops out of the post-compaction priority window. Skills that
 # recover all control state from elsewhere are exempt:
-#   - Multi-round agent-team skills (review / design-lite / review-lite
-#     / design-apply) — team members are nameless background tasks that
+#   - Multi-round agent-team skills (review / design-lite / review-lite) —
+#     team members are nameless background tasks that
 #     self-terminate on return (no shutdown handshake to maintain); the only
 #     durable control state is the role↔agentId ledger, recovered from disk
 #     (the doc HTML-comment block), and they declare no auto-advance /
 #     turn-yield contract that compaction could break.
-#   - Single-pass verdict-emit skills (design-ingest) — loop state recovered
-#     from `## Verdict:` headers on disk; every invocation is fresh-context.
-#   - Linear authoring / single-pass second-opinion skills (design-system /
-#     design-prompt / design-upgrade / review-upgrade) — no loop at all, no
-#     termination contract to lose. review-upgrade is a single-pass, teamless,
+#   - Single-pass second-opinion skills (design-upgrade / review-upgrade) —
+#     no loop at all, no termination contract to lose. review-upgrade is a single-pass, teamless,
 #     counterless second-opinion (same basis as design-upgrade).
 #   - IO orchestrators (active-notify / implement) — termination is a
 #     hook/tool-driven boundary, not a counter the model has to maintain.
@@ -68,11 +65,14 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     that the file has no control flow. Their `disable-model-invocation: false`
 #     puts `description` + `when_to_use` in every session's listing, which is
 #     precisely why these files stay short rather than growing a ritual heading.
+#   - Single-command runners (dashboard) — one call to a helper script and one
+#     line of output shown to the person. No loop, no counter, no phase
+#     transition, so there is nothing for compaction to summarize away.
 # In effect, the non-exempt members are `design` (whose phase-transition
 # invariants live in its top `## Control-Flow Invariants`), `design-audit`,
 # `design-analyze`, and the unattended arms — `implement-unattended`,
 # `review-unattended`, `design-audit-unattended`, `design-reconverge`,
-# `design-discuss-unattended` — whose halt/park termini are exactly the
+# `design-discuss-unattended`, `visual-unattended` — and `visual`, whose halt/park termini are exactly the
 # summarize-away class this rule protects. `design-audit` is non-exempt for the
 # core reason: its termination state is NOT recoverable from the ledger, so it
 # does not qualify for the multi-round agent-team exemption above. A ledger
@@ -87,7 +87,7 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # could corrupt), `design-analyze` creates files while its source repo must stay
 # untouched, so a summarized-away read-only rule is a real silent-corruption
 # vector that first-5K placement guards against.
-EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply" "github-ops" "fanout-policy" "browser-policy" "local-html" "clickup-ops")
+EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "github-ops" "fanout-policy" "browser-policy" "local-html" "clickup-ops" "dashboard")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)

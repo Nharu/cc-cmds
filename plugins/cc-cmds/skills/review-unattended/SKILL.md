@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -25,6 +25,11 @@ options:
       default: "off (변경 파일 집합을 diff 에서만 유도)"
       summary: "이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
       parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다."
+    - name: "--slice <id>"
+      kind: flag
+      default: "off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`)"
+      summary: "이 세그먼트가 구현한 설계 슬라이스 id. 지시문의 `설계는 <doc>` 이 가리키는 설계 문서의 `## 구현 슬라이싱` 에서 같은 id 의 블록을 이 슬라이스의 범위로 읽고, 다른 선언 슬라이스에 배정된 P1·P2·P3 발견을 `## 다른 슬라이스 몫 (집계 제외)` 절로 옮겨 집계에서 뺀다. 문서·절·블록이 없으면 모두 센다."
+      parse_note: "`--slice` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다."
     - name: "--basis-cycle <n>"
       kind: flag
       default: "off (delta mode is not attempted; review runs full)"
@@ -54,8 +59,8 @@ options:
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
-notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(정지 술어를 얇게 만들기 때문), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(수렴 술어를 얇게 만들기 때문 — 드라이버가 넘긴 `--slice` 에 따른 다른 슬라이스 몫 제외는 스스로 좁히기가 아니다), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
 Conduct a multi-perspective code review using an agent team, **without ever asking a human**.
@@ -114,9 +119,11 @@ dispositions, and says so.
 
 **CFI-U0 — There is no human-question surface.** `AskUserQuestion` is absent from the Step 0 roster and from every step below. Reaching a point that would have asked is a **halt**, never an improvised answer and never a silent default. This substitution is total and covers the shared team protocol: wherever `_common/agent-team-protocol.md`'s reconcile ladder or its escalation cases terminate in `AskUserQuestion`, **this arm resolves that terminus to `park`**. The protocol file is neither forked nor edited; this sentence is the substitution rule.
 
-**CFI-U1 — Scope is never narrowed autonomously.** The large-PR gate's narrowing options are a *user's* trade, not this arm's. `P0 + P1 == 0` is the pipeline's **only** termination predicate, so thinning the review thins the very signal that decides whether the loop stops — and unlike a token saving elsewhere, that failure is silent and self-congratulating. Review the whole confirmed scope. Where the change is genuinely large, say so in the report's overview and compose for it (a Scope Coordinator is outside the team-size ceiling), but do not drop files.
+**CFI-U1 — Scope is never narrowed autonomously.** The large-PR gate's narrowing options are a *user's* trade, not this arm's. `P0 + P1 == 0` is the pipeline's convergence predicate, and the review's counts are also what the gate reads to decide a carryover merge: the loop ends when that predicate holds or when the gate's `다음` reads `이월 머지`. Thinning the review therefore thins the very signal that decides whether the loop stops — and unlike a token saving elsewhere, that failure is silent and self-congratulating. Review the whole confirmed scope. Where the change is genuinely large, say so in the report's overview and compose for it (a Scope Coordinator is outside the team-size ceiling), but do not drop files.
 
 **Amendment — a driver-declared delta is not an autonomous narrowing.** When `--basis-cycle`, `--basis-review-head` and `--basis-report-path` are all supplied and clear every check in Step 1b′, "the whole confirmed scope" for this cycle *is* the delta file set **for new findings** — the driver, not the model, made the trade that a file untouched since the last full review does not need a fresh read to discover new issues, and it made that trade on a git-verifiable basis rather than a judgment call. This is the same category of decision `--declared-files` already lets the driver make without violating this invariant. What CFI-U1 continues to forbid, unconditionally, is the arm narrowing **within** whatever scope it was handed on its own initiative, and the arm shrinking the *set of prior findings it accounts for*. That second door is closed structurally: every basis P0/P1, whether or not its cited file lies inside the delta file set, gets a fresh evidence-backed verdict every cycle (context-package item 18), never inferred from a git fact alone. So "did not re-read a file for a new issue" and "silently dropped a known one" can never be the same event.
+
+**Amendment — a driver-supplied slice is not an autonomous narrowing.** When `--slice <id>` resolves to a slice block (Step 1c′), excluding another slice's share from the count follows the slice the driver passed as an argument, read from the design's own `## 구현 슬라이싱`; it is not the reviewer narrowing the scope on its own initiative. Nothing is dropped from the review: the whole confirmed scope is still read, and every finding judged another slice's share is listed as it stands in `## 다른 슬라이스 몫 (집계 제외)`, where the gate checks its assignment and its count when the cycle is recorded. An other-slice P0 is never excluded — it stays in the P0 section and is counted. Without a resolved slice block nothing is excluded.
 
 **CFI-U2 — There is no follow-up discussion step.** The base skill's Step 6 exists to talk to a user. This arm ends at Step 5 with the report written and the team cleaned up. Routing the findings is the orchestrator's triage stage, not this stage's job, and re-spawning a team to re-argue a severity here would duplicate that stage with worse information.
 
@@ -173,6 +180,7 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review, no `gh` commands
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope the driver already resolved. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit this segment branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the segment declared it would touch, quoted by the driver because it contains commas. A flag whose value is missing is dropped along with the flag: consuming the next token would swallow the following flag or the directive.
+- **`--slice <id>`** → the design slice this segment implemented. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. A `--slice` whose value is missing is dropped along with the flag and leaves one overview line naming the drop; the slice scope then falls back to `인자 없음` in 1c′. What the value selects is decided in 1c′, not here.
 - **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
 - **`--recover` and `--scratch-dir <abs-path>`** → the recovery dispatch. `--recover` takes no value; `--scratch-dir` takes the **next token**, and both the flag and its value are removed from the argument string before the directive is extracted. `--scratch-dir` with a missing or non-absolute value is dropped along with the flag and read as *no naming*, which routes to the enumerate-then-refuse path rather than to a halt. With `--recover` present, skip Steps 2–4 and go to `## Recovery arm` below.
 - **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
@@ -241,6 +249,18 @@ DELTA=$(LC_ALL=C comm -12 <(printf '%s\n' "$SET_A") <(printf '%s\n' "$SET_B"))
 There is no user to confirm with, and CFI-U1 forbids narrowing. **Record** the scope instead of confirming it — target type, PR title/number/URL, change statistics, key changed files, existing-comment summary, CI status with failed checks highlighted. This record becomes the report's overview.
 
 Where the change exceeds 50 files, note the scale and add a **Scope Coordinator** in Step 3 rather than reducing coverage.
+
+#### 1c′: Slice scope — what `--slice <id>` reads, and the four fallbacks
+
+The slice scope changes what is **counted**, never what is **read**: the whole confirmed scope is reviewed whichever way this resolves.
+
+- **Document.** The design document is the one the directive already names as `설계는 <doc>` — the same document that becomes context-package item 17.
+- **Section extraction is fence-aware, on the same contract as the driver's `defenced` / `slicing_body` / `slice_field` in `orchestrator/run.sh`.** A line whose first non-blank characters are a run of three or more backticks or tildes opens a fence, and a later run of the same character at least as long closes it; ignore every line inside one. The section starts at the first line outside a fence that equals `## 구현 슬라이싱`, and runs up to the next line outside a fence that starts with `## `.
+- **Block.** A block starts at a line inside the section that starts with `### 슬라이스 ` and runs up to the next `### ` line or the end of the section. Its id is the first alphanumeric run (`[A-Za-z0-9][A-Za-z0-9]*`) directly after `### 슬라이스 ` on that line, so `### 슬라이스 S1 — 리뷰 문법` has the id `S1`.
+- **Match is equality, never prefix.** The block whose id **equals** the argument is this slice's scope. A prefix match would let `S1` match an `S10` block. Every line of every other block is "assigned elsewhere", and those are the lines a `배정` sub-bullet quotes.
+- **Four fallbacks — each counts everything.** With no argument (`인자 없음`), no design document in the directive or none readable at that path (`설계 문서 없음`), no `## 구현 슬라이싱` section outside a fence (`슬라이싱 절 없음`), or no block whose id equals the argument (`슬라이스 <id> 블록 없음`), apply no slice scope: write no `다른 슬라이스 몫` line and no `## 다른 슬라이스 몫 (집계 제외)` section, and count every finding. Failing closed means counting more, never less.
+- **Overview line.** Directly above `발견 요약`, write exactly one of the two shapes the template's "P1 Classification Grammar" section fixes — `- **슬라이스 범위**: 슬라이스 <id> (다른 슬라이스 <k>개)` when a block matched, with `<k>` the number of other blocks in the section, and `- **슬라이스 범위**: 적용 안 됨 — <사유>` with the fallback's reason otherwise.
+- **Reviewers receive the blocks.** When a block matched, Step 4 hands every reviewer this slice's block verbatim and the other blocks' lines with their slice ids, together with the other-slice sub-bullet of context-package item 10, so each reviewer can judge a finding's slice against the design's own text rather than against a summary.
 
 #### 1d: Edge cases
 
@@ -315,6 +335,8 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 
 - **In delta mode, item 18 carries the full text of every basis P0/P1 finding** — not filtered to the reviewer's file scope and not filtered to the delta file set — and each one is assigned to the composed reviewer whose role/category tag is the closest match (the smallest-scoped reviewer takes the remainder). Each finding carries its `basis-<k>` identifier, and the identifiers number exactly the count 1b′ check 6 fixed. Item 2's review-scope diff is the whole-file diff of each `DELTA` file against the base, per 1b′.
 
+- **When 1c′ matched a slice block, item 10 carries its other-slice bullet** together with this slice's block verbatim and every other block's lines with their slice ids. Under any 1c′ fallback, omit that bullet and the blocks: nothing is another slice's share.
+
 - **Derive the review slug** from the target: PR → `review-pr{NUMBER}`; local diff → `review-{branch-name}`; file path → `review-{short-slug}`.
 - **Resolve the report path** per CFI-U4: `--report-path` when given, else `docs/reviews/{slug}.md`. Everything below writes to the resolved path.
 - **Early-stub the report doc** at spawn time so the ledger has a home (no TMPDIR fallback): an H1 title, then a `<!-- cc-design-ledger v3 … -->` HTML-comment block after the H1 and before the first `##`. Entry schema is the protocol's ledger v3.
@@ -337,7 +359,15 @@ Synthesize into the resolved report path, following the template. Leave the `<!-
 
 **Fill the report's model record.** Write each seat's `리뷰 팀 구성` parenthesis as one bare lowercase alias, and fill the template's `모델 티어` block directly after it with one row per seat. The row syntax belongs to `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` and is not restated here. This block is part of the shared template rather than an overlay, so it is filled the same way in both arms.
 
-The two elements below are this arm's overlay on the shared template, in the same way `## 자율 승인 기록` is: `02-review-report-template.md` is unchanged, because the interactive `review` reads it unconditionally.
+**Write the P1 classification and the slice scope the template defines.** The template's `### P1 분류 기준` and "P1 Classification Grammar" sections own the grammar, which all three review skills share; it is not restated here. This arm writes it exactly as spelled there, because the gate parses it:
+
+- the `- **P1 분류**: 차단 N건 | 이월 가능 N건` line directly after `발견 요약`, always — `차단 0건 | 이월 가능 0건` when there is no P1, `차단 미상 | 이월 가능 미상` in a report whose summary key is `발견 요약(부분 복구)`;
+- on every item of the P1 section, inherited ones included, exactly one `**[차단]**` or `**[이월 가능]**` tag and a `분류 근거` sub-bullet, and on every `**[이월 가능]**` item an `이월 제목` and an `이월 본문` — and the `이월 제목` lines of one report differ from each other byte for byte;
+- the `슬라이스 범위` overview line 1c′ resolved, and, only when a slice block matched, the `- **다른 슬라이스 몫**: N건 (집계 제외)` line and — when it has at least one item — the `## 다른 슬라이스 몫 (집계 제외)` section, whose item count equals that line.
+
+The reviewers' slice judgments are inputs, not the decision: the lead admits a finding to `## 다른 슬라이스 몫 (집계 제외)` only when the template's three-part rule holds for it, and a finding in a line this slice changed stays where its severity puts it. This arm registers no issue and decides no merge — `이월 후 머지 가능` is a recommendation the gate acts on.
+
+The template carries the P1 classification and the other-slice grammar, and this arm writes them as above. The two elements below are this arm's overlay on top of that template, in the same way `## 자율 승인 기록` is: the interactive `review` reads the template unconditionally and never writes them.
 
 #### `리뷰 모드` line — always
 
@@ -382,6 +412,8 @@ P1 = 미해결 기준 P1 + 델타 신규 P1
 P2 = 상속 기준 P2   + 델타 신규 P2
 P3 = 상속 기준 P3   + 델타 신규 P3
 ```
+
+In either mode, P1, P2 and P3 exclude the items listed in `## 다른 슬라이스 몫 (집계 제외)`, and P0 includes every P0, another slice's share or not. The `P1 분류` line's 차단 + 이월 가능 equals the P1 counted here.
 
 #### `## 자율 승인 기록` — the section CFI-U3 requires
 

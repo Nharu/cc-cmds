@@ -16,6 +16,9 @@ set -uo pipefail
 
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The gate's run-open branch starts the dashboard server; nothing here stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
 # 스테이지 안에서 돌리면 좌석 표지가 환경으로 물려온다 — 그러면 모든 픽스처 호출이

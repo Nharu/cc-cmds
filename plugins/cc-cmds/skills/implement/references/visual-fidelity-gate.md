@@ -72,6 +72,7 @@
 - 각 차원은 화면당 `MATCH | DRIFT | N/A | UNCERTAIN`으로 채점한다.
 - 참조에서 열거한 구체 요소(이메일 필드·비밀번호 토글 등)를 **파생 행**으로 같은 차원에 평가한다.
 - **루프의 이진 표면에서는 `UNCERTAIN`을 `FAIL`로 축약**(false-PASS 방지, 안전 방향)하되 `decidability=uncertain` 태그로 사용자 채널에 별도 surface한다.
+- 무인 구현의 Step 3 꼬리 스크린숏 비교(`orchestrator/visual-capture.sh`의 `ref`·`app` 캡처를 나란히 놓는 비교)도 이 고정 7차원 스파인을 같은 일곱 축으로 읽는다 — 두 비교가 축을 따로 두면 같은 화면이 한쪽에서만 드리프트로 잡힌다.
 
 ## 5. 감사 단위 (finding당)
 

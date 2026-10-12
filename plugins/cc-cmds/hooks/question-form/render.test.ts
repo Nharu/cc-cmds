@@ -1,7 +1,11 @@
 // 질문지 패널을 올려 누르고 쓴다: 그리기·제출·취소·CAS·도장·맥락 줄·이동·입력칸·미리보기·크기.
 import { describe, expect, test } from 'claude-code/testing'
 
-import { call, formIdOf, mount, prompt, start, twoQuestions, world } from './kit'
+import { call, drawnStops, focusEvent, formIdOf, mount, prompt, start, twoQuestions, world } from './kit'
+import { focusStops, layoutRows } from './layout'
+import type { FormInput } from './spec'
+import { openEditor, openRecord } from './transitions'
+import { normalizeForm } from './validate'
 
 const header = (text: string) => text.split('\n')[0]
 const json = (text: string) => JSON.parse(text.split('\n').slice(2, -1).join('\n'))
@@ -10,6 +14,12 @@ const expectFolded = async (ui: any, key: string, button: string, summary: strin
   expect((await ui.find({ key }))?.text).toBe(button)
   expect(await ui.find({ type: 'Text', text: summary })).toBeDefined()
 }
+// 시험 키트에서는 mod 가 부른 $.ui.focus 가 포커스 값까지 오지 않으므로, 위 줄을 단언하는
+// 시험은 포커스 자리를 엔진처럼 ui.focus 로 직접 정한다.
+const focus = ($: any, element: string) => $.ui.focus({ component: 'Pane', requestId: 'cc-cmds-question-form', plugin: 'cc-cmds', element })
+// 사람이 Tab·화살표·클릭으로 옮긴 포커스. 열린 입력칸을 떠나면 그 칸이 닫힌다.
+const personFocus = ($: any, element: string) =>
+  $.ui.focus({ component: 'Pane', requestId: 'cc-cmds-question-form', plugin: 'cc-cmds', element, origin: { kind: 'person' } })
 
 describe('패널', () => {
   test('제목 줄·펼친 질문·선택지·접힌 질문·동작 줄·안내 줄을 그린다', async ($, on) => {
@@ -177,7 +187,9 @@ describe('입력칸', () => {
     await ui.input({ key: 'q1-other-input-1', text: '중', kind: 'change' })
     await ui.input({ key: 'q1-other-input-1', text: '중간', kind: 'change' })
     expect((await ui.find({ key: 'q1-other-input-1' }))?.props).toMatchObject({ value: '' })
-    expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타: 중간')
+    // 입력칸에 포커스가 있는 동안 위 줄은 라벨만이다.
+    await focus($, 'q1-other-input-1')
+    expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타')
     expect(w.opens.at(-1)?.title).toBe('질문지 — 경계 질문 (답 1/2)')
     // Enter: 입력칸이 내려가고 single 이라 다음 질문으로 간다.
     await ui.input({ key: 'q1-other-input-1', text: '중간' })
@@ -239,10 +251,75 @@ describe('입력칸', () => {
     const ui = await mount($)
     await ui.press({ key: 'q1-other' })
     await ui.input({ key: 'q1-other-input-1', text: '앱으로\n가는데\u001b', kind: 'change' })
+    await focus($, 'q1-other-input-1')
+    expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타')
+    // 포커스가 입력칸을 떠나면 입력칸이 닫히고 위 줄에만 거른 글이 보인다.
+    await personFocus($, 'q1-o1')
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
     expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타: 앱으로 가는데')
   })
 
-  // 입력칸 value 는 칸을 열 때의 씨앗으로 고정이므로, 거른 글은 기타·메모 줄과 답 묶음에서 본다.
+  test('사람이 기타 입력칸 밖으로 포커스를 옮기면 칸이 닫히고, 0 으로 다시 열면 그 글이 씨앗이다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'q1-other' })
+    await focus($, 'q1-other-input-1')
+    await ui.input({ key: 'q1-other-input-1', text: '중간쯤', kind: 'change' })
+    await personFocus($, 'q1-note')
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
+    expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타: 중간쯤')
+    // 확정과 달리 다음 질문으로 가지 않는다.
+    expect(await ui.find({ type: 'Text', text: '▸ 1 범위  어디까지?' })).toBeDefined()
+    await ui.press({ key: 'q1-other' })
+    expect((await ui.find({ type: 'Input' }))?.props).toMatchObject({ key: 'q1-other-input-2', value: '중간쯤' })
+    await ui.press({ key: 'submit' })
+    expect(json(w.submits[0]!.text).answers[0].answer).toBe('중간쯤')
+  })
+
+  test('text 답 칸을 떠나면 칸이 닫히고 답 줄이 되며, 답 줄을 누르면 다시 열린다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'next' })
+    await focus($, 'q2-other-input-1')
+    await ui.input({ key: 'q2-other-input-1', text: '이유 글', kind: 'change' })
+    await personFocus($, 'prev')
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
+    expect((await ui.find({ key: 'q2-answer' }))?.text).toBe('이유 글')
+    await ui.press({ key: 'q2-answer' })
+    expect((await ui.find({ type: 'Input' }))?.props).toMatchObject({ key: 'q2-other-input-2', value: '이유 글' })
+  })
+
+  test('mod 자신이 옮긴 포커스는 열린 입력칸을 닫지 않는다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'q1-other' })
+    await focus($, 'q1-other-input-1')
+    await ui.input({ key: 'q1-other-input-1', text: '중간', kind: 'change' })
+    await $.ui.focus({ component: 'Pane', requestId: 'cc-cmds-question-form', plugin: 'cc-cmds', element: 'q1-o1', origin: { kind: 'plugin', name: 'cc-cmds' } })
+    expect((await ui.find({ type: 'Input' }))?.key).toBe('q1-other-input-1')
+  })
+
+  test('메모 입력칸에 포커스가 있는 동안 메모 줄은 라벨만이고, 떠나면 칸이 닫히고 메모 글이다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'q1-note' })
+    await ui.input({ key: 'q1-note-input-1', text: '천천히', kind: 'change' })
+    await focus($, 'q1-note-input-1')
+    expect((await ui.find({ key: 'q1-note' }))?.text).toBe('메모')
+    await personFocus($, 'q1-o2')
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
+    expect((await ui.find({ key: 'q1-note' }))?.text).toBe('메모: 천천히')
+  })
+
+  // 입력칸 value 는 칸을 열 때의 씨앗으로 고정이므로, 거른 글은 포커스가 떠난 위 줄과 답 묶음에서 본다.
   test('메모·text 답에 제어 문자를 섞어 제출하면 답 묶음에 제어 문자가 없다', async ($, on) => {
     const { w } = world(on)
     await start($)
@@ -252,7 +329,10 @@ describe('입력칸', () => {
     await ui.input({ key: 'q1-other-input-1', text: '앱으로\n가는데\u007f\u001b', kind: 'change' })
     await ui.press({ key: 'q1-note' })
     await ui.input({ key: 'q1-note-input-2', text: '메모\t한 줄\u0000', kind: 'change' })
+    await focus($, 'q1-note-input-2')
     expect((await ui.find({ key: 'q1-other' }))?.text).toBe('● 기타: 앱으로 가는데')
+    expect((await ui.find({ key: 'q1-note' }))?.text).toBe('메모')
+    await personFocus($, 'q1-o1')
     expect((await ui.find({ key: 'q1-note' }))?.text).toBe('메모: 메모 한 줄')
     await ui.press({ key: 'next' })
     await ui.input({ key: 'q2-other-input-3', text: '이유\r\n글\u0085', kind: 'change' })
@@ -306,6 +386,102 @@ describe('미리보기', () => {
     w.focusDeny = '다른 이동이 먼저'
     const moved = await $.ui.focus({ component: 'Pane', requestId: 'cc-cmds-question-form', plugin: 'cc-cmds', element: 'q1-o2' })
     expect(moved.deny).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeUndefined()
+  })
+})
+
+describe('정지점과 그리기', () => {
+  // 시험이 연 것과 같은 모델 입력의 기록. key 는 id 와 무관하다.
+  const sameRecord = () =>
+    openRecord({ id: 'f-00000001', toolUseId: 'tu', form: normalizeForm(twoQuestions() as unknown as FormInput), drafts: {}, sessionId: 'sid-test', now: 0 })
+
+  test('대조: 올린 패널의 Button·Input key 를 문서 순서로 모은 목록이 focusStops 와 같다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    expect(await drawnStops(ui)).toEqual(focusStops(layoutRows(sameRecord(), null)))
+    // 입력칸이 열린 기록에서도 같다.
+    await ui.press({ key: 'q1-other' })
+    expect(await drawnStops(ui)).toEqual(focusStops(layoutRows(openEditor(sameRecord(), 'scope', 'other'), null)))
+  })
+
+  test('선택지 바깥 상자에 <선택지 key>-block, 펼친 질문 머리말 상자에 q<n>-head 가 있다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    expect((await ui.find({ key: 'q1-o1-block' }))?.type).toBe('Box')
+    expect((await ui.find({ key: 'q1-o2-block' }))?.type).toBe('Box')
+    expect((await ui.find({ key: 'q1-head' }))?.type).toBe('Box')
+    expect(await ui.find({ key: 'q2-head' })).toBeUndefined()
+  })
+})
+
+// 키트는 이 mod 자신이 부른 $.ui.focus·$.ui.scroll 을 시험의 스텁에 보내지 않고 거절한다.
+// 그래서 여기서는 포커스 값(그 key 로 다시 그린 패널의 미리보기 줄)과 전이처럼 키트가 볼
+// 수 있는 것만 단언한다. 보이게 하기의 대상과 순서는 layout 의 revealKeys 시험이 맡는다.
+describe('포커스 추종 — 사람·엔진의 이동(ui.focus)', () => {
+  test('선택지 key 로 오면 포커스 값이 그 key 가 되고 던지지 않는다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    const moved = await focusEvent($, 'q1-o2')
+    expect(moved.deny).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeUndefined()
+  })
+
+  test('element 없는 ui.focus(엔진 자신의 정지점)는 포커스 값을 비우고 던지지 않는다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await focusEvent($, 'q1-o1')
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+    await focusEvent($)
+    expect(await ui.find({ type: 'Text', text: /범위 미리보기/ })).toBeUndefined()
+  })
+
+  test('focusDeny 로 거절되면 포커스 값은 바뀌지 않고 던지지 않는다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await focusEvent($, 'q1-o1')
+    w.focusDeny = '다른 이동이 먼저'
+    const moved = await focusEvent($, 'q1-o2')
+    expect(moved.deny).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeUndefined()
+  })
+})
+
+describe('포커스 추종 — 누름에서 시작하는 자기 이동의 실패 경로', () => {
+  // 열 때 포커스 값은 착지 key(q1-o1)다. 누름의 $.ui.focus 가 키트에서 실패하면 그 값이
+  // 그대로 남으므로, 1번으로 돌아왔을 때 q1-o1 의 미리보기가 다시 그려진다.
+  test('[다음]: 둘째 질문이 펼쳐지고 포커스 값은 바뀌지 않으며 누름은 던지지 않는다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'next' })
+    expect(await ui.find({ type: 'Text', text: '▸ 2 이유  왜?' })).toBeDefined()
+    await ui.press({ key: 'q1' })
+    expect(await ui.find({ type: 'Text', text: '▸ 1 범위  어디까지?' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
+  })
+
+  test('선택지를 고른 뒤의 자동 이동도 같다', async ($, on) => {
+    world(on)
+    await start($)
+    await call($, twoQuestions())
+    const ui = await mount($)
+    await ui.press({ key: 'q1-o2' })
+    expect(await ui.find({ type: 'Text', text: '▸ 2 이유  왜?' })).toBeDefined()
+    await ui.press({ key: 'q1' })
     expect(await ui.find({ type: 'Text', text: '│ 좁은 범위 미리보기' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '│ 넓은 범위 미리보기' })).toBeUndefined()
   })

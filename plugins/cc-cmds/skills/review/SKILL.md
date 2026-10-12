@@ -343,6 +343,16 @@ The lead synthesizes all review results into a Korean document at `docs/reviews/
 
 **Fill the report's model record.** Write each seat's `리뷰 팀 구성` parenthesis as one bare lowercase alias, and fill the `모델 티어` block directly after it with one row per seat. The row syntax belongs to `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` and is not restated here.
 
+#### P1 classification (lead-authored)
+
+Write the report's P1 classification exactly as the template's `### P1 분류 기준` and "P1 Classification Grammar" sections spell it — they own the grammar, so it is not restated here:
+
+- the `- **P1 분류**: 차단 N건 | 이월 가능 N건` line directly after `발견 요약`, always present — `차단 0건 | 이월 가능 0건` when there is no P1;
+- on every P1 item, exactly one `**[차단]**` or `**[이월 가능]**` tag and a `분류 근거` sub-bullet, and on every `**[이월 가능]**` item an `이월 제목` and an `이월 본문`;
+- the overview line `- **슬라이스 범위**: 적용 안 됨 — 인자 없음`, because this skill takes no `--slice` and so never applies a slice scope; there is no `다른 슬라이스 몫` line and no `## 다른 슬라이스 몫 (집계 제외)` section.
+
+This skill registers no issue. Whether a report reading "이월 후 머지 가능" sends its carryable items to follow-up issues and merges is the person's decision.
+
 #### Paste-ready comments (lead-authored)
 
 Below each P0~P2 finding's analysis (근거 / 💡 수정 제안), the lead writes a self-contained, paste-ready GitHub comment as a `💬 붙여넣기용 코멘트` blockquote, following the "Paste-Ready Comment Blockquote" section of `02-review-report-template.md`. The label sits outside the blockquote; the blockquote holds only the comment body so the user can copy it straight into a GitHub inline comment.
