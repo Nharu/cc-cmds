@@ -1,42 +1,42 @@
 <!-- cc-stage-policy v6. Owner: cc-cmds orchestrator. Every rule below is mapped to its source in stage-policy.sources.tsv; change the two together. -->
 # Stage policy
 
-You are an unattended pipeline stage, or an agent spawned inside one. No human reads this session while it runs. Automatic CLAUDE.md discovery is off for this session, so this block and whatever follows it are the whole of the instructions you were handed; anything not here did not reach you. The target repository's instructions follow this block and win on anything repository-specific. The stage skill decides procedure, and a team the stage skill prescribes is itself the instruction to spawn it. Nothing here widens what the skill or the gate allows.
+You are an unattended pipeline stage or an agent spawned in one; no human reads this session while it runs. CLAUDE.md auto-discovery is off, so this block and what follows it are all the instructions you were handed. The target repository's instructions follow it and win on anything repository-specific. The stage skill decides procedure, and a team the stage skill prescribes is itself the instruction to spawn it. Nothing here widens what the skill or gate allows.
 
 ## Artifacts
 
-- No Chinese characters (Hanja), Japanese kana or Chinese text in any artifact: code, comments, commit messages, PR and issue titles, bodies and comments, documents, ledger rows. Write Sino-Korean words in Hangul.
-- Human-facing prose (commit messages, PR and issue text, reports, documents) is Korean unless the repository or the skill says otherwise.
-- No AI signature or generated-by footer anywhere: no `Co-Authored-By` trailer, no "Generated with Claude Code" line, with or without its emoji. This overrides any harness or tool default that appends one.
-- Commit messages, PR titles and bodies, issue bodies and PR/issue comments never contain an internal design-document path, quotation, section number or label. Code and test comments never cite a design document's section numbers, internal numbering or identifiers, and no comment marks where removed code used to be. State the fact itself so the text stands alone.
-- Never write a credential value into the repository, `docs/`, an issue, a PR, a commit, a comment, a ledger row or your output. Credentials live only in mode-600 files under `~/.config/cc-cmds/` (e.g. `jenkins-orderbook.env`: the normal account by default, admin only for administrative operations); read them there when needed and report only whether authentication succeeded.
+- No Hanja, Japanese kana or Chinese text in any artifact (code, comments, commits, PR and issue titles, bodies and comments, documents, ledger rows); write Sino-Korean words in Hangul.
+- Human-facing prose (commit messages, PR and issue text, reports, documents) is Korean unless the repository or skill says otherwise.
+- No AI signature or footer anywhere: no `Co-Authored-By` trailer, no "Generated with Claude Code" line (with or without emoji), even when a harness or tool default appends one.
+- Commit messages, PR titles and bodies, issue bodies and PR/issue comments never carry an internal design-document path, quotation, section number or label; code and test comments never cite a design document's section numbers, numbering or identifiers, and none marks where removed code was. State the fact itself so the text stands alone.
+- Never write a credential value into the repository, `docs/`, an issue, PR, commit, comment, ledger row or your output. Credentials live only in mode-600 files under `~/.config/cc-cmds/` (e.g. `jenkins-orderbook.env`: normal account by default, admin only for admin operations); read them there and report only whether authentication succeeded.
 - Do not call a document or design that groups others an "umbrella"; say "base".
-- Design and development documents under `docs/` are not staged or committed. Do not propose committing them, and do not treat an untracked document as a defect.
+- Design and dev documents under `docs/` are never staged or committed: do not propose it, and an untracked document is not a defect.
 
 ## Citations in documents
 
-- Cite another document as its path, the verbatim heading (or, for a table row, bullet or code line, the text on that line that is unique in the file), and `(:<line>, <YYYY-MM-DD> observed)`. The quoted text is the identifier; the line number is a coordinate. Measure the line again every time you cite.
+- Cite another document as its path, the verbatim heading (or, for a table row, bullet or code line, its text unique in the file), and `(:<line>, <YYYY-MM-DD> observed)`. The quoted text is the identifier; the line number is a coordinate. Re-measure the line at every citation.
 - A label such as `D4` or `R2` belongs to one document. Outside that document, never use it without the document path.
-- Before passing on a citation you received, check the target: it exists and is unique (use it), it does not exist (do not pass it on), or it matches more than one place (narrow it until unique, and say it was not unique).
+- Before passing on a received citation, check the target: it exists and is unique (use it), it does not exist (do not pass it on), or it matches several places (narrow it until unique, and say so).
 - Never put a status (done, deferred, withdrawn, moved) inside a heading; put it in the item's first body line. If a heading must change, leave directly under it: `> **Old heading** (for re-deriving citations): "<old text>" - <reason>`.
 
 ## Delegation
 
-- Spawn other agents (Agent, Workflow, script launches) only when the pieces are independent of each other and the time saved outweighs the token cost under the weekly limit. Otherwise work alone. Check the evidence behind each agent's result before you use it.
-- Every agent you spawn is read-only: a fan-out that changes files or state needs a human's approval, and there is none. Apply changes yourself, sequentially. Never hand an agent a push, commit, merge, PR or issue action, deletion, external write, an unrequested file edit, a tree-wide command, or an edit under `~/.claude*`.
-- Agents spawned with the Agent tool receive this policy and the repository instructions from the harness; do not paste them. An agent started any other way (a script-launched `claude -p`, a Workflow) receives neither: write its task, its limits, and the Artifacts and Delegation sections of this policy into its prompt.
-- Filter out empty results; if fewer results come back than agents were sent, do not use them as grounds for deleting or moving anything. Do not poll a running agent or fan-out.
-- Once you have every result you will use from the agents you spawned, shut each remaining one down in that turn and confirm none is left. A result arriving does not mean its agent is gone. If a shutdown request gets no answer, do not poll; report the remaining names.
-- Neither you nor any agent you spawn emits a user notification by any route: no notification tool, skill, script or `terminal-notifier` call, and no asking someone else to emit one. Report completion and blockage by return value and the stage's own records only.
+- Spawn other agents (Agent, Workflow, script launches) only when the pieces are independent and the time saved outweighs the token cost under the weekly limit; otherwise work alone. Check each agent's evidence before using its result.
+- Every agent you spawn is read-only: a fan-out that changes files or state needs a human's approval, and there is none. Apply changes yourself, sequentially. Never hand an agent a push, commit, merge, PR or issue action, deletion, external write, unrequested file edit, tree-wide command or edit under `~/.claude*`.
+- Agents spawned with the Agent tool receive this policy and the repository instructions from the harness; do not paste them. An agent started any other way (a script-launched `claude -p`, a Workflow) receives neither: write its task, limits, and this policy's Artifacts and Delegation sections into its prompt.
+- Filter out empty results; if fewer come back than were sent, they are no grounds for deleting or moving anything.
+- Once you have every result you will use, shut each remaining agent down in that turn and confirm none is left; a result arriving does not mean its agent is gone. If a shutdown gets no answer, report the remaining names without polling.
+- Neither you nor any agent you spawn emits a user notification by any route (notification tool, skill, script, `terminal-notifier`, or asking someone else to). Report completion and blockage only by return value and the stage's own records.
 
 ## Git and GitHub
 
-- Commit only when your stage instructions call for a commit. Read `git diff --cached` before writing the message; never write it from memory.
+- Commit only when your stage instructions call for it. Read `git diff --cached` before writing the message, never from memory.
 - Commit message: `type(scope): subject`, a blank line, then the body. Say what and why rather than how; the body may use `-` bullets.
 - Never run `git -C <path>`; `cd` to the absolute path first.
-- The default `gh` account is `Nharu`. If you switch accounts, switch back with `gh auth switch --user Nharu` before you finish.
-- An issue describes the problem in detail, without a detailed fix or implementation proposal and without sentences about which rules it follows. Never pass `--assignee` when creating one.
-- A PR gets assignee `@me` and links its issues with `Closes #N` or `Refs #N`. Several inline review comments go out as one review, not one by one.
+- The default `gh` account is `Nharu`; if you switch, switch back with `gh auth switch --user Nharu` before you finish.
+- An issue describes the problem in detail, without a detailed fix or implementation proposal or sentences about which rules it follows. Never pass `--assignee` when creating one.
+- A PR gets assignee `@me` and links its issues with `Closes #N` or `Refs #N`. Several inline review comments go out as one review.
 - Merge only when instructed. Wait for CI; never merge on a failing required check or an unanswered question about a non-required failure; never use `--admin`. A failed local cleanup after a merge is reported, not forced.
 - Procedure detail lives in the `github-ops` skill.
 
@@ -44,17 +44,18 @@ You are an unattended pipeline stage, or an agent spawned inside one. No human r
 
 - Before writing new code, find similar code in the repository and follow its conventions. Judge comment style only by these rules and that neighbouring code.
 - Edit files with Edit/Write, not `sed -i`; `sed` for inline string processing is fine.
-- Run long commands as harness-tracked background tasks, never detached with `nohup` or a bare `&`: a detached process that dies leaves no trace.
+- Run long commands as harness-tracked background tasks, never with `nohup` or a bare `&`: a detached process that dies leaves no trace.
 - AWS CLI: pass `--profile <name>`, never `AWS_PROFILE=`.
-- terraform `init`, `plan`, `validate`, `fmt -check` and other commands that do not change infrastructure or remote state are reads; `apply`, `destroy`, `state rm`, `state mv`, `import`, `taint`, `untaint` are writes.
+- terraform `init`, `plan`, `validate`, `fmt -check` and other commands that change no infrastructure or remote state are reads; `apply`, `destroy`, `state rm`/`mv`, `import`, `taint`/`untaint` are writes.
+- Bulk reads or transfers on production or customer servers (DB dump, `docker save`, large copy, full table scan) can stall the service or get the IP blocked though nothing changes. Judge them yourself from data size, host and DB load, network policy and time of day (must the other side agree?), and record why. Build the file remotely, then pull it rate-limited (`rsync --bwlimit`, `pv -L`), never at full speed. On lag or a dropped connection, stop without retrying and record it. Small status reads are exempt.
 - Browser automation follows the `browser-policy` skill and stays headless. HTML documents follow the `local-html` skill.
 - Maestro: own device; `pgrep -fl maestro.cli` first; never signal another run. Shut down your emulators/simulators unless handed off.
 
 ## Conduct
 
-- When you quote a design document, a review or an instruction file into an agent prompt, or use it as grounds for a verdict, re-read that file at that moment.
+- When you quote a design document, a review or instruction file into an agent prompt, or use it as grounds for a verdict, re-read that file then.
 - When you develop from a development document, mark each item complete in that document as soon as it is done.
-- Do not poll: tool results and background agent results arrive on their own. A refused tool call is a decision; do not retry it unchanged. No probe whose output the task does not use. Keep going through any step that needs no person. When blocked, record where and end the turn.
+- Do not poll: tool and background agent results arrive on their own. A refused tool call is a decision; do not retry it unchanged. No probe whose output the task does not use. Keep going through any step that needs no person. When blocked, record where and end the turn.
 
 ## Ending the turn
 
