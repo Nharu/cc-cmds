@@ -4835,19 +4835,23 @@ for fence_f in "$FEED_SH" "$CHECKS_SH"; do
   # the door that is already named; asking which files it may source at all also
   # closes the one a future emitter under another name would use.
   #
-  # THE LIST IS TWO NAMES, AND THE SECOND ONE PAYS ITS WAY BELOW. `pin.sh` joined
+  # THE LIST IS THREE NAMES, AND THE LAST TWO PAY THEIR WAY BELOW. `pin.sh` joined
   # it because these processes have to hop into the run's pinned copy before they
   # write anything, and the predicate that decides that is shared with the gate
-  # and the watcher rather than re-implemented here. Widening a whitelist weakens
-  # it unless the new entry is fenced too, so the assertions after this one hold
-  # `pin.sh` to the same rule: it sources nothing and names no emitter.
+  # and the watcher rather than re-implemented here. `display-tz.sh` joined it
+  # because the feed's line prefix shows the time in the display zone, and that
+  # conversion lives in the one helper every surface shares rather than in a
+  # copy here. Widening a whitelist weakens it unless the new entry is fenced
+  # too, so the assertions after this loop hold `pin.sh` and `display-tz.sh` to
+  # the same rule: each sources nothing and names no emitter.
   fence_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$fence_f" || true; } \
                     | { grep -v 'liveness\.sh' || true; } \
-                    | { grep -v 'pin\.sh' || true; } )
+                    | { grep -v 'pin\.sh' || true; } \
+                    | { grep -v 'display-tz\.sh' || true; } )
   if [ -n "$fence_src_other" ]; then
-    bad "울타리" "$fence_n 이 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $fence_src_other"
+    bad "울타리" "$fence_n 이 허용 목록(liveness.sh · pin.sh · display-tz.sh) 밖의 것을 소스한다: $fence_src_other"
   else
-    ok "$fence_n 이 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+    ok "$fence_n 이 소스하는 것은 liveness.sh·pin.sh·display-tz.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
   fi
   # And the name reaches no executable line. A header sentence explaining the
   # fence is not a breach of it, so the comment lines are excluded rather than
@@ -4887,6 +4891,24 @@ if [ -f "$FEED_SH" ]; then
     fi
   else
     bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
+  fi
+  # The display-zone helper is held to the rule `pin.sh` is held to above, with
+  # the notifier's name split the same way and for the same reason.
+  DTZ_SH="$(dirname "$DRIVER")/display-tz.sh"
+  if [ -f "$DTZ_SH" ]; then
+    dtz_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$DTZ_SH" || true )
+    if [ -n "$dtz_src_any" ]; then
+      bad "피드 울타리" "display-tz.sh 가 무언가를 소스한다 — 허용 목록이 그만큼 넓어진다: $dtz_src_any"
+    else
+      ok "display-tz.sh 는 아무것도 소스하지 않는다 (허용 목록이 이 한 파일로 닫힌다)"
+    fi
+    if grep -qE 'notify-run\.sh|cc_notify_fire|cc_notify_clear|terminal-''notifier' "$DTZ_SH"; then
+      bad "피드 울타리" "display-tz.sh 가 방출 경로를 이름으로 담고 있다"
+    else
+      ok "display-tz.sh 의 어디에도 방출 경로가 없다"
+    fi
+  else
+    bad "피드 울타리" "display-tz.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
   fi
 else
   bad "진행 채널" "feed.sh 가 없다 — 라우팅이 리드를 떠난 밤에 사람이 볼 것이 없다"
