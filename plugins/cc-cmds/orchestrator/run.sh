@@ -2440,10 +2440,11 @@ run_ledger_series_check() {
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
   local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
-  local acct="" basis="" worst n
+  local acct="" basis="" cost="" csrc="" worst n
+  local cost_src='(group-kind|kind|default)'
   case "$series" in
-    stage-lease) want='파견 id|계보|계정|레인|예약|근거|관측' ;;
-    stage-wait)  want='계보|그룹|계정|까지|근거' ;;
+    stage-lease) want='파견 id|계보|계정|레인|예약|비용|비용 출처|근거|관측' ;;
+    stage-wait)  want='계보|그룹|계정|까지|비용|비용 출처|근거' ;;
     *) printf '%s [run][거부] 원장 계열 검사: 이 검사가 모르는 계열이다 (%s)\n' "$(now_iso)" "$series" >&2; return 2 ;;
   esac
   keys=""
@@ -2479,6 +2480,16 @@ run_ledger_series_check() {
       stage-lease:예약)
         if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_BP_RE ]]; then
           run_ledger_refuse "$series" "$k" 'I.FFFF/I.FFFF 모양'; return 2
+        fi ;;
+      *:비용)
+        cost="$v"
+        if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_BP_RE ]]; then
+          run_ledger_refuse "$series" "$k" 'I.FFFF/I.FFFF 모양'; return 2
+        fi ;;
+      *':비용 출처')
+        csrc="$v"
+        if [ "$v" != "-" ] && ! [[ $v =~ ^${cost_src}/${cost_src}$ ]]; then
+          run_ledger_refuse "$series" "$k" '닫힌 어휘 두 개의 「창5/창7」'; return 2
         fi ;;
       stage-lease:근거)
         basis="$v"
@@ -2516,6 +2527,11 @@ run_ledger_series_check() {
     if { [ "$bound" = "1" ] && [ "$acct" = "-" ]; } || { [ "$bound" = "0" ] && [ "$acct" != "-" ]; }; then
       run_ledger_refuse "$series" '계정' '재개 구속 원인일 때만 값'; return 2
     fi
+  fi
+  # The cost and its source come from one admission or from none: both `-`, or
+  # neither.
+  if { [ "$cost" = "-" ] && [ "$csrc" != "-" ]; } || { [ "$cost" != "-" ] && [ "$csrc" = "-" ]; }; then
+    run_ledger_refuse "$series" '비용 출처' '「비용」 과 함께만 「-」'; return 2
   fi
   # THE LENGTH, MEASURED ON THE WORST FRAME. `교대=999` in front, the 64-hex
   # `prev=` behind, the newline — and eight bytes more, because the shift number
@@ -4239,11 +4255,32 @@ spawn_lease_release() {
   fi
   lin=$(sed -n '1p' "$f"); nonce=$(sed -n '2p' "$f")
   route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" || rc=$?
+  spawn_cost_samples "$did" "$lin"
   if [ "$rc" = "0" ]; then
     rm -f "$f"
   else
     warn "$did: 임대 반납이 rc=$rc 로 끝났다 — 기록을 남겨 둔다"
   fi
+  return 0
+}
+
+spawn_cost_samples() {
+  # spawn_cost_samples <dispatch id> <lineage> — one cost sample per stream of
+  # this dispatch, taken after the release whatever it answered: the logs can
+  # run to hundreds of megabytes and are not read while the reservation is
+  # held. EVERY stream, not the newest — a resumed dispatch leaves one per
+  # attempt under the same id. The store replaces on (run, log name), so the
+  # second call a failed release leads to adds no line. A seat or an account
+  # the ledger would not accept writes nothing.
+  local did="$1" lin="$2" acct kind p
+  acct=$(stage_account_of "$did")
+  run_ledger_account_ok "$acct" || return 0
+  kind=$(stage_kind_of "$did")
+  for p in "$RUN_DIR/log/$did#"*.json; do
+    [ -f "$p" ] || continue
+    route_cost_sample_put "$(run_pace_root)/costs" --run-id "$RUN_ID" --lineage "$lin" --kind "$kind" \
+      --account "$acct" --log "$p" || warn "$did: 비용 표본을 쓰지 못했다 ($(basename "$p"))"
+  done
   return 0
 }
 

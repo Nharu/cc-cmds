@@ -8303,6 +8303,23 @@ gate_row_field() {
 # order, so a misspelt or reordered call is refused at run time.
 # ---------------------------------------------------------------------------
 
+gate_route_bp_jq() {
+  # The jq definitions both builders share: a null as `-`, basis points as
+  # `I.FFFF`, and the envelope's `cost` as two cells — `비용` and `비용 출처`,
+  # each `<five_hour>/<seven_day>`, or both `-` when the envelope carries none.
+  cat <<'JQ'
+def s: if . == null then "-" else tostring end;
+def four: tostring | ("0000" + .) | .[-4:];
+def bp: if (type == "number") and (. == floor) and (. >= 0) and (. <= 10000)
+        then "\(. / 10000 | floor).\(. % 10000 | four)" else error("reservation_bp") end;
+def cost_cells:
+  if ((.cost | type) == "object") and ((.cost.five_hour | type) == "object") and ((.cost.seven_day | type) == "object")
+  then ((.cost.five_hour.bp | bp) + "/" + (.cost.seven_day.bp | bp)),
+       ((.cost.five_hour.source | s) + "/" + (.cost.seven_day.source | s))
+  else "-", "-" end;
+JQ
+}
+
 gate_stage_lease_row() {
   # gate_stage_lease_row <파견 id> <봉투 json> [<구속 토큰>] — one `stage-lease`
   # row from a `GRANT` envelope. rc 2 and no row for anything but a `GRANT`, for
@@ -8321,23 +8338,21 @@ gate_stage_lease_row() {
   # NO DORMANT BRANCH. A valid `GRANT` renders whether or not it is dormant,
   # and with routing on both launch sites write the row for every grant, a
   # dormant or seat grant included.
-  local did="${1:-}" env="${2:-}" bind="${3:-}" verdict vals lineage acct cdir lane bp basis obs
+  local did="${1:-}" env="${2:-}" bind="${3:-}" verdict vals lineage acct cdir lane bp cost csrc basis obs
   verdict=$(printf '%s' "$env" | jq -r 'if type == "object" then (.verdict // "") else "" end' 2>/dev/null) || return 2
   [ "$verdict" = "GRANT" ] || return 2
-  vals=$(printf '%s' "$env" | jq -r '
-    def s: if . == null then "-" else tostring end;
-    def four: tostring | ("0000" + .) | .[-4:];
-    def bp: if (type == "number") and (. == floor) and (. >= 0) and (. <= 10000)
-            then "\(. / 10000 | floor).\(. % 10000 | four)" else error("reservation_bp") end;
+  vals=$(printf '%s' "$env" | jq -r "$(gate_route_bp_jq)"'
     [ (.account | s),
       (if .config_dir == null then "-" else "=" + (.config_dir | tostring) end),
       (if .reservation_bp == null then "-"
        else (.reservation_bp.five_hour | bp) + "/" + (.reservation_bp.seven_day | bp) end),
+      cost_cells,
       (.basis | s),
       (.observed | s) ]
     | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 2
   [ -n "$vals" ] || return 2
-  { IFS= read -r acct; IFS= read -r cdir; IFS= read -r bp; IFS= read -r basis; IFS= read -r obs; } <<EOF
+  { IFS= read -r acct; IFS= read -r cdir; IFS= read -r bp; IFS= read -r cost; IFS= read -r csrc
+    IFS= read -r basis; IFS= read -r obs; } <<EOF
 $vals
 EOF
   lineage=$(route_lineage_of "$did")
@@ -8347,7 +8362,7 @@ EOF
     gate_resume_grant_ok "$bind" "$env" || return 2
   fi
   gate_append 'stage-lease' "파견 id=$did" "계보=$lineage" "계정=$acct" "레인=$lane" \
-    "예약=$bp" "근거=$basis" "관측=$obs"
+    "예약=$bp" "비용=$cost" "비용 출처=$csrc" "근거=$basis" "관측=$obs"
 }
 
 gate_stage_wait_row() {
@@ -8357,18 +8372,19 @@ gate_stage_wait_row() {
   # derived from it. `까지` is `floor|todate`, the byte shape of `now_iso`. A
   # `resume-bound-*` reason needs the binding the same way a `resume-bound`
   # grant does.
-  local did="${1:-}" env="${2:-}" bind="${3:-}" verdict vals lineage grp acct upto reason
+  local did="${1:-}" env="${2:-}" bind="${3:-}" verdict vals lineage grp acct upto cost csrc reason
   verdict=$(printf '%s' "$env" | jq -r 'if type == "object" then (.verdict // "") else "" end' 2>/dev/null) || return 2
   [ "$verdict" = "WAIT" ] || return 2
-  vals=$(printf '%s' "$env" | jq -r '
-    def s: if . == null then "-" else tostring end;
+  vals=$(printf '%s' "$env" | jq -r "$(gate_route_bp_jq)"'
     [ (.group | s),
       (.account | s),
       (if .until_epoch == null then "-" else (.until_epoch | floor | todate) end),
+      cost_cells,
       (.reason | s) ]
     | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 2
   [ -n "$vals" ] || return 2
-  { IFS= read -r grp; IFS= read -r acct; IFS= read -r upto; IFS= read -r reason; } <<EOF
+  { IFS= read -r grp; IFS= read -r acct; IFS= read -r upto; IFS= read -r cost; IFS= read -r csrc
+    IFS= read -r reason; } <<EOF
 $vals
 EOF
   lineage=$(route_lineage_of "$did")
@@ -8377,7 +8393,8 @@ EOF
       [ -n "$bind" ] || return 2
       gate_resume_grant_ok "$bind" "$env" || return 2 ;;
   esac
-  gate_append 'stage-wait' "계보=$lineage" "그룹=$grp" "계정=$acct" "까지=$upto" "근거=$reason"
+  gate_append 'stage-wait' "계보=$lineage" "그룹=$grp" "계정=$acct" "까지=$upto" \
+    "비용=$cost" "비용 출처=$csrc" "근거=$reason"
 }
 
 gate_lease_of() {
@@ -24327,6 +24344,16 @@ gate_verb_supervise_stage() {
           "$RUN_DIR/$seg.window"
   else
     warn "there is no \`stage-result\` row for this attempt, so a segment file is left behind ($seg#$attempt) — the prelude settlement picks it up"
+  fi
+  # THE COST SAMPLE IS WRITTEN LAST, after the records above are gone. `gate.sh
+  # wait` keeps waiting while `.sup` is present, and summarising a log of a few
+  # hundred megabytes with it still there would hold the waiter for as long.
+  # Taken whatever the recorder answered — a failed attempt used the account
+  # all the same — but only for a routed launch on an account the ledger would
+  # accept as one: a seat or an unknown account has no quota group to divide by.
+  if [ "$routed" = "1" ] && run_ledger_account_ok "$r_acct"; then
+    route_cost_sample_put "$(run_pace_root)/costs" --run-id "$RUN_ID" --lineage "$r_lineage" \
+      --kind "$kind" --account "$r_acct" --log "$out" || warn "the cost sample was not written ($seg#$attempt)"
   fi
   log "스테이지 종단 — $seg#$attempt (rc=$rc)"
   return "$rc"
