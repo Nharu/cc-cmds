@@ -287,35 +287,30 @@ row — complete or runner — does not match the act at all, at any reach, so
 `npm --script-shell=/tmp/s.sh run deploy` is not opened by `npm run deploy`.
 When the program accepts that option only in the `=` spelling (terraform's
 `-chdir=`, for one), no row opens the act, so it goes to an approval.
-A complete row whose first word is a runner that is not an interpreter
-(`make`, `npm`, `npx`, `yarn`, `pnpm`, `pytest`, `go`, `cargo`, `docker`) does
-not match an act that carries any word after the row's last word and before
-the act's first `--` — a dash word or an operand, in the `=` spelling or the
-space spelling — because these runners read options and targets after their
-operand themselves: `npm run deploy` opens neither `npm run deploy
---script-shell /tmp/s.sh` nor `npm run deploy --flag`, but opens `npm run
-deploy -- --flag`, and `make deploy ENV=prod` does not open `make deploy
-ENV=prod -f x.mk`. Such an act separates its arguments with `--` or is named
-whole. The one exception is a docker `run` or `create` row that reaches the
-image: the words after the image are the container's command. After an
-interpreter's script, and after the last word of a row whose first word is not
-a runner, the words are the program's arguments, and every value of them is
-opened. A runner form longer than two words matches nothing. A `기기전역` act takes a
-complete row only, and only one that carries at least `Lreq = max(2, s, t,
-every trigger position)` words of the act: `s` is the subcommand (for a docker
-management group or `yarn global`, the next non-option word), and `t` is its
-operand — for docker `run` and `create` the image, found by skipping the flags
-known to take no value and the value of every other option; for any other
-docker act the whole act — every word of it, with no `-x=y` word dropped
-anywhere, even after the row's last word — because those verbs read options
-after their operand too; otherwise the first non-option word after the
-subcommand, the package or config key, omitted for an interpreter. That docker
-case is the runner rule above at this reach: the row has to be the whole act,
-so no word after it is left to open. The triggers are the flag and path words that made the act
-machine-global. `docker run --rm T true` is opened by `docker run --rm T`,
-`docker build -t T .` only by the whole act `docker build -t T .`, `git config
---global user.name x` by `git config --global user.name`; `docker build -t T .
---output=type=local,dest=/x` is opened by no row, and has to be respelled
+A complete row opens every non-destructive act that begins with its words,
+whatever follows its last word — an option, an operand or a `--` tail, for a
+runner such as `make` or `npm` as for any other program: `npm run deploy` opens
+`npm run deploy --script-shell /tmp/s.sh`, and `make deploy ENV=dev` opens
+`make deploy ENV=dev ENV=prod`. A row grants that whole family, so a narrower
+intent has to be written as a longer row. A runner form longer than two words
+matches nothing.
+
+A `기기전역` act is opened differently. The gate opens it without judgment only
+when a row names the act word for word: every word of the act, no `-x=y` word
+anywhere, the program by its name on `PATH` rather than by a path, and no
+argument that is empty or contains whitespace. Dropping the command path opens
+nothing here — a program named by a path opens no `기기전역` act. Any other
+`기기전역` act is decided by a separate judgment call, which reads the act
+against each row's `형태` and `사유` and opens it only when one row's intent
+covers it; whatever the row did not name — an operand, a package, an image, a
+mount, a configuration key — keeps the act parked unless the row's `사유`
+allows it. With auto-resolution off no judgment is made and the act goes to an
+approval. So a `기기전역` row is best written as the whole act, options in the
+space spelling and tags and image names as fixed strings set at kickoff; a
+shorter row, such as a subcommand alone, opens acts only through the judgment,
+and its `사유` should say what the row is for. `docker run --rm T true` is
+opened without judgment by the row `docker run --rm T true`; `docker build -t
+T . --output=type=local,dest=/x` has no verbatim row and has to be respelled
 `--output type=local,dest=/x` and named whole. A `기기전역` act that changes
 external state, or that names a path under the Claude configuration home, is
 opened by no row. An

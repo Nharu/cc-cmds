@@ -316,7 +316,9 @@ kd_is_runner_form() {
   [ -n "$pos" ] || pos=2
   case " bash sh zsh python3 node " in *" $first "*)
     w2=$(printf '%s' "$1" | awk -v p="$pos" '{ print $p }')
-    case "$w2" in ''|-*|/dev/stdin|/dev/fd/*|/proc/*/fd/*|'<('*) return 0 ;; esac
+    # `+*` too: `bash +e` turns an option off, it is not a script word, and a
+    # form that stopped there would open `bash +e -c …` and any path after it.
+    case "$w2" in ''|-*|+*|/dev/stdin|/dev/fd/*|/proc/*/fd/*|'<('*) return 0 ;; esac
     kd_closed_flags_only "$first" "$1" "$pos" && return 1
     return 0 ;;
   esac
@@ -445,7 +447,7 @@ kd_validate() {
           print ""
         }')
       if [ "$f1" != "$r" ]; then
-        kd_ign "$i" '형식 오류' "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`$r\`). 이 철자는 뗀 경로의 모든 값을 열고, 이 철자의 마지막 낱말 앞에 -x=y 낱말이 끼어든 행위는 열지 않습니다. 첫 낱말이 러너가 아니면 마지막 낱말 뒤에 오는 -x=y 낱말의 모든 값도 열고, 인터프리터가 아닌 러너(make npm npx yarn pnpm pytest go cargo docker)이면 행위의 첫 -- 앞에서 마지막 낱말 뒤의 어떤 낱말도 열지 않습니다(docker run·create 의 이미지 뒤는 예외) — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"; return
+        kd_ign "$i" '형식 오류' "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`$r\`). 이 철자는 뗀 경로의 모든 값을 열고, 이 철자의 마지막 낱말 앞에 -x=y 낱말이 끼어든 행위는 열지 않으며, 이 낱말들로 시작하는 비파괴 행위는 마지막 낱말 뒤에 무엇이 오든 전부 엽니다. 기기전역 칸은 다릅니다 — 행위를 명령 경로 없이 낱말 그대로 다 적은 행만 판단 없이 열고, 그 밖의 행위는 판단 호출이 행의 형태와 사유에 비추어 열지 정합니다 — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"; return
       fi
       if [ "$(kd_words "$f1")" -lt 2 ]; then
         kd_ign "$i" '형식 오류' '형태 는 <명령> <하위 명령> 처럼 두 낱말 이상의 접두입니다 — 한 낱말은 그 명령 전부를 엽니다'; return

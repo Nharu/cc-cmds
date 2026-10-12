@@ -7040,18 +7040,31 @@ APPLY_PARKED_RADIUS=""
 # ---------------------------------------------------------------------------
 PROMPT_DIR="$ORCH_DIR/prompts"
 
-readonly JUDGMENTS="segment-plan triage redesign-impact"
+readonly JUDGMENTS="segment-plan triage redesign-impact preauth-judge"
 
 judgment_call() {
-  # judgment_call <name> <input-file>  — prompt and schema are found by
-  # convention: <name>.md and <name>.schema.json beside this script.
-  local name="$1" input="$2"
+  # judgment_call <name> <input-file> [<output-file> [<prefix>...]] — prompt and
+  # schema are found by convention: <name>.md and <name>.schema.json beside this
+  # script. The output file defaults to `$RUN_DIR/log/judge-<name>.json`, which
+  # every call of one name overwrites; a caller that keeps one result per input
+  # names its own. The prefix is a command the CLI call runs under (the gate's
+  # deadline wrapper); without one the call runs as it always has.
+  local name="$1" input="$2" out="${3:-}"
+  shift 2
+  [ "$#" -gt 0 ] && shift
   case " $JUDGMENTS " in
     *" $name "*) : ;;
     *) warn "판단 호출 이름이 어휘 밖: $name"; return 1 ;;
   esac
   local prompt="$PROMPT_DIR/$name.md" schema="$PROMPT_DIR/$name.schema.json"
-  local out="$RUN_DIR/log/judge-$name.json"
+  [ -n "$out" ] || out="$RUN_DIR/log/judge-$name.json"
+  # THE PRE-AUTHORIZATION JUDGMENT GETS NO TOOLS AND LEAVES NO SESSION. Its input
+  # carries an argv a stage assembled, so a call that could run a tool is a call
+  # that argv could steer; every other judgment keeps the flags it always had.
+  local extra=()
+  case "$name" in
+    preauth-judge) extra=(--tools "" --no-session-persistence) ;;
+  esac
 
   [ -f "$prompt" ] || { warn "판단 호출 프롬프트 부재: $prompt"; return 1; }
   [ -f "$schema" ] || { warn "판단 호출 스키마 부재: $schema"; return 1; }
@@ -7061,11 +7074,12 @@ judgment_call() {
   # `modelUsage` keys — a single-turn call spawns no team to muddy them.
   local effort
   effort=$(stage_effort_of "$name")
-  "$CLI_BIN" -p "$(cat "$prompt")
+  "$@" "$CLI_BIN" -p "$(cat "$prompt")
 
 --- INPUT ---
 $(cat "$input")" \
     --json-schema "$(cat "$schema")" --output-format json --strict-mcp-config \
+    ${extra[@]+"${extra[@]}"} \
     $(stage_launch_flags "$name") \
     > "$out" 2>/dev/null || { warn "판단 호출 실패: $name"; return 1; }
   local served

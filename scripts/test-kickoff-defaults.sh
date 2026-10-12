@@ -308,7 +308,7 @@ expect repo act-allow '형식 오류' '형태=terraform -chdir=infra apply | 사
 expect repo act-allow 적용 '형태=terraform apply | 사유=a' '형태=git -C dir | 사유=a'
 check "정규화가 바꿀 형태의 거부 사유는 대조기가 보는 철자와 그 철자가 여는 범위, 행이 없을 때의 결과를 적는다" "$(col "$(kf '[Nharu/cc-cmds]
 act-allow = 형태=terraform -chdir=infra apply | 사유=a' $T)" act-allow 7)" \
-  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`). 이 철자는 뗀 경로의 모든 값을 열고, 이 철자의 마지막 낱말 앞에 -x=y 낱말이 끼어든 행위는 열지 않습니다. 첫 낱말이 러너가 아니면 마지막 낱말 뒤에 오는 -x=y 낱말의 모든 값도 열고, 인터프리터가 아닌 러너(make npm npx yarn pnpm pytest go cargo docker)이면 행위의 첫 -- 앞에서 마지막 낱말 뒤의 어떤 낱말도 열지 않습니다(docker run·create 의 이미지 뒤는 예외) — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"
+  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`). 이 철자는 뗀 경로의 모든 값을 열고, 이 철자의 마지막 낱말 앞에 -x=y 낱말이 끼어든 행위는 열지 않으며, 이 낱말들로 시작하는 비파괴 행위는 마지막 낱말 뒤에 무엇이 오든 전부 엽니다. 기기전역 칸은 다릅니다 — 행위를 명령 경로 없이 낱말 그대로 다 적은 행만 판단 없이 열고, 그 밖의 행위는 판단 호출이 행의 형태와 사유에 비추어 열지 정합니다 — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"
 check "거부 근거: 형태=terraform -chdir=infra apply 는 같은 철자의 행위와도 맞지 않는다" \
   "$(probe_row '형태=terraform -chdir=infra apply | 사유=a' 'terraform -chdir=infra apply -auto-approve')" "0"
 check "거부 근거: 형태=/usr/bin/gh pr 는 같은 철자의 행위와도 맞지 않는다" \
@@ -581,8 +581,22 @@ check "형태=gh pr 은 러너 형태가 아니다" "$(runner 'gh pr')" "아니�
 for p in 'bash scripts/x.sh|아니오' 'bash -x scripts/x.sh|아니오' 'bash -c x y|예' \
          'python3 -m pip install|예' 'bash /dev/stdin|예' 'sh -s|예' 'node -e|예' \
          'bash -o pipefail -c echo|예' 'python3 -W ignore -c x|예' 'node -r x -e y|예' \
-         'bash --norc scripts/x.sh a|예' 'bash scripts/x.sh -c|아니오'; do
+         'bash --norc scripts/x.sh a|예' 'bash scripts/x.sh -c|아니오' \
+         'bash +e scripts/x.sh|예' 'bash +e -c x|예'; do
   check "형태=${p%|*} 의 러너 판정" "$(runner "${p%|*}")" "${p#*|}"
+done
+# 거부 사유가 말하는 대로, 완전한 형태는 기기전역 칸 밖에서 마지막 낱말 뒤에 무엇이
+# 오든 그 낱말들로 시작하는 행위를 연다 — 러너의 꼬리도 대조기가 막지 않는다.
+match_rc() {   # match_rc <shape> <argv> → the matcher's exit status outside the probe
+  printf -- '- `사전 인가` | 형태=%s | 사유=a\n' "$1" > "$WORK/preauth.md"
+  env GATE_MARK= GATE_MARK_TRIGGER= GATE_DESTRUCTIVE=0 GATE_REACH_EFF= GATE_PREAUTH_PROBE=0 \
+    GATE_KIND=exec GATE_SURFACE=외부상태변경 GATE_ARGV="$2" GATE_MANIFEST="$WORK/preauth.md" \
+    sh "$MATCHER" >/dev/null 2>&1
+  echo $?
+}
+for p in 'npm run deploy|npm run deploy --script-shell x' 'make deploy ENV=dev|make deploy ENV=dev ENV=prod' \
+         'make deploy ENV=dev|make deploy ENV=dev -- ENV=prod' 'make deploy ENV=prod|make deploy ENV=prod -f x.mk'; do
+  check "형태=${p%%|*} 는 '${p#*|}' 를 연다" "$(match_rc "${p%%|*}" "${p#*|}")" "0"
 done
 # 러너 판정은 대조기의 판정과 같아야 한다 — 같은 형태를 행으로 두고 그 형태 자체를
 # 행위로 탐침했을 때, 러너라고 말한 형태만 `형태=완전` 이 아니다.
