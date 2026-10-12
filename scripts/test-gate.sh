@@ -28797,20 +28797,22 @@ pb_rc "83b: 비탐침 모드에서도 --eval= 행위는 승인 대기다"    5 '
 pb_rc "83b: 비탐침 모드에서도 --script-shell= 행위는 승인 대기다" 5 'npm run deploy' 'npm --script-shell=/tmp/evil.sh run deploy'
 pb_rc "83b: 비탐침 모드 대조 — 범위 밖 = 단어는 통과다"      0 'node scripts/x.js' 'node scripts/x.js --mode=fast'
 
-# `Lreq` 예시값. 여는 형태는 Pg=1, 한 단어 짧은 형태는 완전으로 남으면 Gc=short,
-# 러너가 되면 Gc=- 다.
+# `Lreq` 예시값. 여는 형태는 Pg=1 이다. 한 단어 짧은 형태는 러너가 아닌 명령에서 완전으로
+# 남아 Gc=short 이고, 러너 형태가 되면 Gc=- 다. 첫 단어가 인터프리터가 아닌 러너인 완전
+# 형태는 행위의 첫 `--` 앞 꼬리를 열지 않으므로 짧으면 일치 자체가 없다(P=0 형태=없음
+# Gc=-). docker `run` 은 이미지 앞에서 끝난 형태가 그렇다.
 pb_is "83b: docker build -t T . 가 빌드를 연다"     'Pg=1'          'Pg'    'docker build -t T .' 'docker build -t T .'       GATE_REACH_EFF=기기전역
-pb_is "83b: docker build -t T 는 짧다"              'Pg=0 Gc=short' 'Pg Gc' 'docker build -t T'  'docker build -t T .'        GATE_REACH_EFF=기기전역
-pb_is "83b: docker build -t 는 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker build -t'    'docker build -t T .'        GATE_REACH_EFF=기기전역
+pb_is "83b: docker build -t T 는 꼬리를 열지 않는다" 'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' 'docker build -t T'  'docker build -t T .' GATE_REACH_EFF=기기전역
+pb_is "83b: docker build -t 도 같다"                'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' 'docker build -t'    'docker build -t T .' GATE_REACH_EFF=기기전역
 pb_is "83b: docker run --rm T 가 실행을 연다"       'Pg=1'          'Pg'    'docker run --rm T'  'docker run --rm T true'     GATE_REACH_EFF=기기전역
-pb_is "83b: docker run --rm 은 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker run --rm'    'docker run --rm T true'     GATE_REACH_EFF=기기전역
+pb_is "83b: 이미지 앞에서 끝난 docker run --rm 은 꼬리를 열지 않는다" 'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' 'docker run --rm' 'docker run --rm T true' GATE_REACH_EFF=기기전역
 pb_is "83b: docker image rm T 가 삭제를 연다"       'Pg=1'          'Pg'    'docker image rm T'  'docker image rm T'          GATE_REACH_EFF=기기전역
-pb_is "83b: docker image rm 은 짧다"                'Pg=0 Gc=short' 'Pg Gc' 'docker image rm'    'docker image rm T'          GATE_REACH_EFF=기기전역
+pb_is "83b: docker image rm 은 꼬리를 열지 않는다"  'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' 'docker image rm'    'docker image rm T'   GATE_REACH_EFF=기기전역
 pb_is "83b: docker system prune -f 가 정리를 연다"  'Pg=1'          'Pg'    'docker system prune -f' 'docker system prune -f' GATE_REACH_EFF=기기전역
-pb_is "83b: docker system prune 은 짧다"            'Pg=0 Gc=short' 'Pg Gc' 'docker system prune' 'docker system prune -f'    GATE_REACH_EFF=기기전역
+pb_is "83b: docker system prune 은 꼬리를 열지 않는다" 'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' 'docker system prune' 'docker system prune -f' GATE_REACH_EFF=기기전역
 pb_is "83b: 러너가 되는 짧은 형태는 Gc 가 없다"     'Pg=0 형태=러너 Gc=-' 'Pg 형태 Gc' 'docker system' 'docker system prune -f' GATE_REACH_EFF=기기전역
 pb_is "83b: npm install -g c 가 전역 설치를 연다"   'Pg=1'          'Pg'    'npm install -g c'   'npm install -g c'           GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
-pb_is "83b: npm install -g 는 짧다"                 'Pg=0 Gc=short' 'Pg Gc' 'npm install -g'     'npm install -g c'           GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
+pb_is "83b: npm install -g 는 꼬리를 열지 않는다"   'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' 'npm install -g'     'npm install -g c'    GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
 pb_is "83b: git config --global user.name 이 그 키를 연다" 'Pg=1'   'Pg'    'git config --global user.name' 'git config --global user.name x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=--global
 pb_is "83b: git config --global 은 짧다"            'Pg=0 Gc=short' 'Pg Gc' 'git config --global' 'git config --global user.name x' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=--global
 pb_is "83b: brew install jq 가 설치를 연다"         'Pg=1'          'Pg'    'brew install jq'    'brew install jq'            GATE_REACH_EFF=기기전역
@@ -28818,12 +28820,11 @@ pb_is "83b: brew install 은 짧다"                   'Pg=0 Gc=short' 'Pg Gc' '
 pb_is "83b: 경로 트리거는 행위 전체를 요구한다"     'Pg=1'          'Pg'    "cp a.txt $HOME/.config/ccx" "cp a.txt $HOME/.config/ccx" GATE_REACH_EFF=기기전역 "GATE_REACH_TRIGGERS=$HOME/.config/ccx"
 pb_is "83b: 경로 트리거 앞에서 끝나는 행은 짧다"    'Pg=0 Gc=short' 'Pg Gc' 'cp a.txt'           "cp a.txt $HOME/.config/ccx" GATE_REACH_EFF=기기전역 "GATE_REACH_TRIGGERS=$HOME/.config/ccx"
 pb_is "83b: 인터프리터는 스크립트 자리까지다"       'Pg=1'          'Pg'    'bash scripts/x.sh'  'bash scripts/x.sh a'        GATE_REACH_EFF=기기전역
-# docker `run` 의 이미지 자리는 값을 받는 옵션의 값을 건너뛴 뒤의 단어다. 옵션 값에서
-# 끝나는 행은 뒤에 붙는 다른 옵션까지 연다. 그 밖의 docker 동사는 피연산자 뒤에서도
-# 옵션을 읽으므로 행위 전체를 요구한다. 행위 전체를 요구하는 docker 행위에서는 행의
-# 마지막 단어 뒤에서 떨어진 `=` 단어도 일치를 막는다 — 정규화된 단어 수는 떨어진 단어를
-# 세지 않으므로, 이 조건이 없으면 같은 옵션을 `=` 로 이은 철자만 행이 덮지 않은 꼬리로
-# 열린다. 행은 `-x=y` 단어를 담을 수 없어 그 행위는 어떤 행으로도 열리지 않는다.
+# docker `run` 의 이미지 자리는 값을 받는 옵션의 값을 건너뛴 뒤의 단어다. 그 밖의 docker
+# 동사는 피연산자 뒤에서도 옵션을 읽으므로 기기전역 칸이 행위 전체를 요구한다. docker 는
+# 인터프리터가 아닌 러너라, 이미지 앞이나 행위 끝 앞에서 끝나는 행은 꼬리의 단어가
+# 공백 철자든 `=` 철자든 일치하지 않는다. `=` 철자 꼬리는 행이 `-x=y` 단어를 담을 수
+# 없으므로 어떤 행으로도 열리지 않는다.
 pb_is "83b: docker run -p 의 제안은 이미지까지다" 'Sx=ok 제안=docker run --rm -p 8080:80 nginx' 'Sx 제안' \
   '' 'docker run --rm -p 8080:80 nginx' GATE_REACH_EFF=기기전역
 pb_is "83b: docker run -e 의 제안도 이미지까지다" 'Sx=ok 제안=docker run --rm -e CI=1 myimg' 'Sx 제안' \
@@ -28836,9 +28837,9 @@ pb_is "83b: docker image rm 의 제안은 행위 전체다" 'Sx=ok 제안=docker
   '' 'docker image rm T' GATE_REACH_EFF=기기전역
 pb_is "83b: docker system prune 의 제안은 행위 전체다" 'Sx=ok 제안=docker system prune -f' 'Sx 제안' \
   '' 'docker system prune -f' GATE_REACH_EFF=기기전역
-pb_is "83b: 옵션 값에서 끝나는 행은 뒤의 --privileged 를 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
+pb_is "83b: 옵션 값에서 끝나는 행은 뒤의 --privileged 를 열지 않는다" 'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' \
   'docker run --rm -p 8080:80' 'docker run --rm -p 8080:80 -v /:/host --privileged alpine sh' GATE_REACH_EFF=기기전역
-pb_is "83b: 빌드 행은 뒤에 붙은 --output 을 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
+pb_is "83b: 빌드 행은 뒤에 붙은 --output 을 열지 않는다" 'P=0 형태=없음 Pg=0 Gc=-' 'P 형태 Pg Gc' \
   'docker build -t T .' 'docker build -t T . --output type=local,dest=/x' GATE_REACH_EFF=기기전역
 pb_is "83b: 빌드 행은 뒤에 = 로 붙은 --output 도 열지 않는다" 'P=0 형태=없음 Pg=0 Sx=dropped 제안=-' 'P 형태 Pg Sx 제안' \
   'docker build -t T .' 'docker build -t T . --output=type=local,dest=/x' GATE_REACH_EFF=기기전역
@@ -28850,9 +28851,9 @@ pb_is "83b: 빌드 행은 뒤에 = 로 붙은 --build-context 를 열지 않는�
   'docker build -t T .' 'docker build -t T . --build-context=c=/x' GATE_REACH_EFF=기기전역
 pb_is "83b: 삭제 행은 뒤에 = 로 붙은 --force 를 열지 않는다" 'P=0 Pd=0 Pg=0 Sx=dropped' 'P Pd Pg Sx' \
   'docker image rm T' 'docker image rm T --force=true' GATE_MARK=파괴 GATE_MARK_TRIGGER=rm GATE_REACH_EFF=기기전역
-# 대조: 기기전역 밖 칸에서는 꼬리의 `=` 단어가 오늘처럼 일치를 막지 않고, `run` 의 이미지
-# 뒤 단어는 docker 옵션이 아니라 컨테이너 명령의 인자다.
-pb_is "83b: 기기전역 밖에서는 꼬리의 = 단어가 일치를 막지 않는다" 'P=1 형태=완전' 'P 형태' \
+# 러너 꼬리 규칙은 칸을 가리지 않으므로 기기전역 밖에서도 docker 의 꼬리는 닫힌다. 대조로,
+# `run` 의 이미지 뒤 단어는 docker 옵션이 아니라 컨테이너 명령의 인자라 일치를 막지 않는다.
+pb_is "83b: 기기전역 밖에서도 docker 의 꼬리는 닫힌다" 'P=0 형태=없음 Sx=dropped' 'P 형태 Sx' \
   'docker build -t T .' 'docker build -t T . --output=type=local,dest=/x'
 pb_is "83b: run 의 이미지 뒤 = 단어는 일치를 막지 않는다" 'Pg=1' 'Pg' \
   'docker run --rm T' 'docker run --rm T sh --x=y' GATE_REACH_EFF=기기전역
@@ -28876,6 +28877,56 @@ pb_is "83b: 신고만 있는 파괴는 짧은 행이 열지 않는다" 'Pd=0' 'P
 # 것이므로 `Pd` 만 서지 않는다.
 pb_is "83b: = 단어가 떨어진 행위는 전체 행으로도 열리지 않는다" 'P=1 형태=완전 Pd=0' 'P 형태 Pd' \
   'gh api /repos/o/r' 'gh api /repos/o/r --method=DELETE' GATE_DESTRUCTIVE=1
+
+# 인터프리터가 아닌 러너의 꼬리. 이 러너들은 피연산자 뒤의 옵션과 단어를 스스로 읽으므로,
+# 완전 행이 덮지 않는 꼬리는 프로그램의 인자가 아니라 러너 자신의 설정이 된다. 그래서
+# 행의 마지막 단어 뒤부터 행위의 첫 `--` 앞까지 단어가 하나라도 있으면 일치하지 않는다 —
+# 대시 단어든 피연산자든, `=` 철자든 공백 철자든, 어느 칸이든 같다. 탐침과 비탐침 모드가
+# 같은 「일치」를 쓰므로 둘을 함께 단언한다.
+pb_tail_closed() {
+  # pb_tail_closed <label> <행> <행위> [이름=값...]
+  local label="$1" row="$2" argv="$3"; shift 3
+  pb_is "83b: $label" 'P=0 형태=없음 Pg=0' 'P 형태 Pg' "$row" "$argv" "$@"
+  pb_rc "83b: $label — 비탐침 모드에서도 승인 대기다" 5 "$row" "$argv"
+}
+pb_tail_closed 'npm run deploy 행은 꼬리의 --script-shell 을 열지 않는다' \
+  'npm run deploy' 'npm run deploy --script-shell /tmp/evil.sh' GATE_REACH_EFF=prod
+pb_tail_closed 'npm run deploy 행은 꼬리의 --script-shell= 도 열지 않는다' \
+  'npm run deploy' 'npm run deploy --script-shell=/tmp/evil.sh' GATE_REACH_EFF=prod
+pb_tail_closed 'make 행은 꼬리의 -f 를 열지 않는다' \
+  'make deploy ENV=prod' 'make deploy ENV=prod -f /tmp/evil.mk' GATE_REACH_EFF=prod
+pb_tail_closed 'make 행은 꼬리의 --eval= 도 열지 않는다' \
+  'make deploy ENV=prod' 'make deploy ENV=prod --eval=x' GATE_REACH_EFF=prod
+pb_tail_closed 'make 행은 꼬리의 목표도 열지 않는다' \
+  'make deploy ENV=prod' 'make deploy ENV=prod other' GATE_REACH_EFF=prod
+pb_tail_closed 'cargo 행은 꼬리의 --config= 를 열지 않는다' \
+  'cargo run --bin deploy' 'cargo run --bin deploy --config=x' GATE_REACH_EFF=prod
+pb_tail_closed 'npm install -g c 행은 꼬리의 --registry 를 열지 않는다' \
+  'npm install -g c' 'npm install -g c --registry https://evil.example' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
+pb_tail_closed 'npm install -g c 행은 꼬리의 --registry= 도 열지 않는다' \
+  'npm install -g c' 'npm install -g c --registry=https://evil.example' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
+pb_tail_closed 'npm install -g c 행은 꼬리의 다른 패키지를 열지 않는다' \
+  'npm install -g c' 'npm install -g c evilpkg' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
+# 대조: `--` 뒤는 스크립트 인자를 넘기는 정해진 철자이고, docker `run` 의 이미지 뒤는
+# 컨테이너 명령이다. 둘 다 러너의 꼬리가 아니다.
+pb_is "83b: -- 뒤는 러너의 꼬리가 아니다" 'P=1 형태=완전' 'P 형태' \
+  'npm run deploy' 'npm run deploy -- --script-shell=/tmp/x' GATE_REACH_EFF=prod
+pb_rc "83b: -- 뒤는 러너의 꼬리가 아니다 — 비탐침 모드에서 통과다" 0 \
+  'npm run deploy' 'npm run deploy -- --script-shell=/tmp/x'
+pb_is "83b: docker run 의 이미지 뒤는 러너의 꼬리가 아니다" 'P=1 형태=완전' 'P 형태' \
+  'docker run --rm T' 'docker run --rm T npx vitest run --reporter dot' GATE_REACH_EFF=prod
+# 그런 행위의 제안은 행위의 첫 `--` 앞 단어를 모두 담는다. 찍힌 제안을 그대로 행으로 넣어
+# 같은 행위가 열리는지를 이어서 단언한다 — 기대 행을 넣으면 제안이 짧아도 초록이다.
+pb_is "83b: 러너 꼬리 행위의 제안은 행위 전체다" 'Sx=ok 제안=npm run deploy --script-shell /tmp/evil.sh' 'Sx 제안' \
+  '' 'npm run deploy --script-shell /tmp/evil.sh' GATE_REACH_EFF=prod
+pb_got=$(pa_field 제안 "$(pa_probe '' 'npm run deploy --script-shell /tmp/evil.sh' GATE_REACH_EFF=prod)")
+case "$pb_got" in -|'(없음)') pb_got='' ;; esac
+pb_is "83b: 러너 꼬리 행위의 찍힌 제안이 같은 행위를 연다" 'P=1 형태=완전' 'P 형태' \
+  "$pb_got" 'npm run deploy --script-shell /tmp/evil.sh' GATE_REACH_EFF=prod
+pb_is "83b: 러너 꼬리의 = 철자는 제안이 없다" 'Sx=dropped 제안=-' 'Sx 제안' \
+  '' 'npm run deploy --script-shell=/tmp/evil.sh' GATE_REACH_EFF=prod
+pb_is "83b: npm install -g 의 제안은 패키지까지다" 'Sx=ok 제안=npm install -g --prefix /x pkg' 'Sx 제안' \
+  '' 'npm install -g --prefix /x pkg' GATE_REACH_EFF=기기전역 GATE_REACH_TRIGGERS=-g
 
 # 원인마다 제안. 행으로 고칠 수 없는 원인은 제안이 `-` 다.
 pb_is "83b: 기기전역 행위의 제안은 Lreq 를 채운다" 'Sx=ok 제안=docker build -t T .' 'Sx 제안' \
@@ -28904,12 +28955,18 @@ pb_is "83b: 표지가 있으면 제안이 트리거까지 간다" 'Sx=ok 제안=
 # 기기전역 밖의 제안은 옵션 이름이나 피연산자 앞에서 끊기지 않는다 — 옵션 값과 피연산자
 # 까지, 피연산자가 없으면 행위 전체다. 끊긴 행은 그 뒤가 다른 형제 행위까지 열어, 사람이
 # 본 것보다 넓은 행위를 인가한다. 그래서 사례마다 제안만이 아니라 「그 제안 행이 같은
-# 행위를 열고, 고정한 값·피연산자를 바꾼 형제 행위는 열지 않는다」를 함께 단언한다.
+# 행위를 열고, 고정한 값·피연산자를 바꾼 형제 행위는 열지 않는다」를 함께 단언한다. 뒤의
+# 두 단언은 기대 행이 아니라 탐침이 실제로 찍은 제안을 행으로 쓴다 — 기대 행을 넣으면
+# 제안이 짧아도 두 단언이 초록이 된다. 제안이 없으면 빈 행이 되어 같은 행위 단언이
+# 실패하므로, 형제 단언이 빈 행으로 통과하는 것도 그 실패가 드러낸다.
 pb_narrow() {
   # pb_narrow <label> <제안> <행위> <형제 행위>
+  local got
   pb_is "83b: $1 — 제안은 옵션 값과 피연산자까지다" "Sx=ok 제안=$2" 'Sx 제안' '' "$3" GATE_REACH_EFF=prod
-  pb_is "83b: $1 — 제안 행이 같은 행위를 연다" 'P=1 형태=완전' 'P 형태' "$2" "$3" GATE_REACH_EFF=prod
-  pb_is "83b: $1 — 제안 행이 형제 행위를 열지 않는다" 'P=0' 'P' "$2" "$4" GATE_REACH_EFF=prod
+  got=$(pa_field 제안 "$(pa_probe '' "$3" GATE_REACH_EFF=prod)")
+  case "$got" in -|'(없음)') got='' ;; esac
+  pb_is "83b: $1 — 찍힌 제안 행이 같은 행위를 연다" 'P=1 형태=완전' 'P 형태' "$got" "$3" GATE_REACH_EFF=prod
+  pb_is "83b: $1 — 찍힌 제안 행이 형제 행위를 열지 않는다" 'P=0' 'P' "$got" "$4" GATE_REACH_EFF=prod
 }
 pb_narrow 'docker build -t app .' 'docker build -t app .' 'docker build -t app .' 'docker build -t evil . --push'
 pb_narrow 'cargo run --bin deploy' 'cargo run --bin deploy' 'cargo run --bin deploy' 'cargo run --bin wipe-db'
@@ -29056,17 +29113,17 @@ t3_c=$T3_CALL; rx_manifest R83C "$(rx_row)"
 t3p front3 트리밖쓰기 기기전역 -- brew install jq
 t3_pass 4 "$t3_c"
 
-# 5 — 맞은 행이 하위 명령의 피연산자 앞에서 끝난다. 앞의 러너 행이 가리지 않는다.
-t3_base="docker
-docker run --rm"
+# 5 — 맞은 행이 하위 명령의 피연산자 앞에서 끝난다. 인터프리터가 아닌 러너의 짧은 행은
+# 꼬리를 열지 않아 아예 맞지 않으므로, 러너가 아닌 명령으로 묻는다.
+t3_base='git config --global'
 rx_manifest R83C "$t3_base"
-t3p front3 트리밖쓰기 기기전역 -- docker run --rm img3:t true
+t3p front3 트리밖쓰기 기기전역 -- git config --global core.hooksPath /x
 t3_park 5 기기전역 short 'stops before the words that make this act machine-global' 1
 t3_c=$T3_CALL; t3_r=$(rx_row)
-check "83c: 5 — 찍힌 행은 실행할 이미지까지다" "$t3_r" "docker run --rm img3:t"
+check "83c: 5 — 찍힌 행은 설정 키까지다" "$t3_r" "git config --global core.hooksPath"
 rx_manifest R83C "$t3_base
 $t3_r"
-t3p front3 트리밖쓰기 기기전역 -- docker run --rm img3:t true
+t3p front3 트리밖쓰기 기기전역 -- git config --global core.hooksPath /x
 t3_pass 5 "$t3_c"
 
 # 6 — 경로 트리거 앞에서 끝나는 행.
@@ -29174,19 +29231,6 @@ t3p front3 외부상태변경 런로컬 -- gh issue comment 1 --body x
 t3_park 12 도달모순 - 'the reach you declared and where this act actually lands differ' 0
 t3p front3 외부상태변경 협업 -- gh issue comment 1 --body x
 t3_pass 12
-
-# 13 — 표지가 있는 파괴, 행이 트리거 앞에서 끝난다. docker 의 `run`·`create` 밖의 동사는
-# 행위 끝까지가 피연산자라, 3단어 행은 파괴 칸에 닿기 전에 기기전역 칸에서 짧다고 park
-# 한다. 찍히는 행은 같다. 표지 있는 파괴 칸은 14 가 덮는다.
-rx_manifest R83C 'docker compose down'
-t3p front3 트리밖쓰기 기기전역 --destructive -- docker compose down -v
-t3_park 13 기기전역 short 'stops before the words that make this act machine-global' 1
-t3_c=$T3_CALL; t3_r=$(rx_row)
-check "83c: 13 — 찍힌 행은 파괴 단어까지다" "$t3_r" "docker compose down -v"
-rx_manifest R83C "docker compose down
-$t3_r"
-t3p front3 트리밖쓰기 기기전역 --destructive -- docker compose down -v
-t3_pass 13 "$t3_c"
 
 # 14 — prod 의 표지 있는 파괴. terraform destroy 는 배포 등급이라 push 절단점에서 묻지
 # 못하므로, 문구가 예로 드는 외부 상태 변경의 파괴로 묻는다.
@@ -29402,6 +29446,37 @@ t3_narrow() {
   check "83c: $id — 찍힌 행이 형제 행위를 열지 않는다" "$rc" "11"
 }
 t3_narrow 형제-cargo 'cargo run --bin deploy' 'cargo run --bin wipe' -- cargo run --bin deploy
+
+# 인터프리터가 아닌 러너의 꼬리. 미리 둔 완전 행은 행위의 첫 `--` 앞 꼬리를 열지 않으므로
+# 행위는 park 하고, 찍힌 행은 행위 전체다. 그 찍힌 행을 그대로 더한 매니페스트에서 같은
+# 행위가 통과한다 — 기대 행이 아니라 찍힌 행을 잇는다. docker 행위는 유도가 기기전역이라
+# 외부상태변경으로 신고하면 어떤 행도 열지 않는 갈래로 가므로, 행이 대조되는 트리밖쓰기·
+# 기기전역으로 신고한다.
+t3_tail() {
+  # t3_tail <id> <미리 둘 행> <표면> <도달> [--destructive] -- <argv...>
+  local id="$1" base="$2" sf="$3" rr="$4" d='' r; shift 4
+  [ "$1" = --destructive ] && { d=--destructive; shift; }
+  shift
+  rx_manifest R83C "$base"
+  if [ -n "$d" ]; then t3p front3 "$sf" "$rr" --destructive -- "$@"
+  else t3p front3 "$sf" "$rr" -- "$@"; fi
+  if [ "$rc" = 11 ]; then ok "83c: $id — 미리 둔 행이 꼬리를 열지 않아 park 한다"
+  else bad "83c: $id — 미리 둔 행이 꼬리를 열지 않아 park 한다" "rc=$rc 칸=$(rx_cell): $msg"; fi
+  r=$(rx_row)
+  if [ "$r" = "$*" ]; then ok "83c: $id — 찍힌 행은 행위 전체다"
+  else bad "83c: $id — 찍힌 행은 행위 전체다" "got '$r', want '$*' (칸=$(rx_cell): $msg)"; fi
+  rx_manifest R83C "$base
+$r"
+  if [ -n "$d" ]; then t3p front3 "$sf" "$rr" --destructive -- "$@"
+  else t3p front3 "$sf" "$rr" -- "$@"; fi
+  check "83c: $id — 찍힌 행을 더하면 같은 행위가 통과한다" "$rc" "0"
+}
+t3_tail 꼬리-npm 'npm run deploy' 외부상태변경 prod -- npm run deploy --script-shell /tmp/evil.sh
+t3_tail 꼬리-make 'make deploy ENV=prod' 외부상태변경 prod -- make deploy ENV=prod -f /tmp/evil.mk
+t3_tail 꼬리-compose 'docker compose down' 트리밖쓰기 기기전역 --destructive -- docker compose down -v
+rx_manifest R83C 'npm run deploy'
+t3p front3 외부상태변경 prod -- npm run deploy -- --script-shell /tmp/evil.sh
+check "83c: 꼬리-npm -- — -- 뒤의 인자는 행 npm run deploy 만으로 통과한다" "$rc" "0"
 
 # terraform 은 배포 등급이라 이 절의 push 절단점에서 plan 으로 묻지 못하고, 배포
 # 절단점에서는 리뷰 기록이 없는 세그먼트를 리뷰 룰이 먼저 거절한다. 그래서 terraform

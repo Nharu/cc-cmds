@@ -286,8 +286,21 @@ row — complete or runner — does not match the act at all, at any reach, so
 `node --require=/tmp/e.js scripts/x.js` is not opened by `node scripts/x.js` and
 `npm --script-shell=/tmp/s.sh run deploy` is not opened by `npm run deploy`.
 When the program accepts that option only in the `=` spelling (terraform's
-`-chdir=`, for one), no row opens the act, so it goes to an approval. A
-runner form longer than two words matches nothing. A `기기전역` act takes a
+`-chdir=`, for one), no row opens the act, so it goes to an approval.
+A complete row whose first word is a runner that is not an interpreter
+(`make`, `npm`, `npx`, `yarn`, `pnpm`, `pytest`, `go`, `cargo`, `docker`) does
+not match an act that carries any word after the row's last word and before
+the act's first `--` — a dash word or an operand, in the `=` spelling or the
+space spelling — because these runners read options and targets after their
+operand themselves: `npm run deploy` opens neither `npm run deploy
+--script-shell /tmp/s.sh` nor `npm run deploy --flag`, but opens `npm run
+deploy -- --flag`, and `make deploy ENV=prod` does not open `make deploy
+ENV=prod -f x.mk`. Such an act separates its arguments with `--` or is named
+whole. The one exception is a docker `run` or `create` row that reaches the
+image: the words after the image are the container's command. After an
+interpreter's script, and after the last word of a row whose first word is not
+a runner, the words are the program's arguments, and every value of them is
+opened. A runner form longer than two words matches nothing. A `기기전역` act takes a
 complete row only, and only one that carries at least `Lreq = max(2, s, t,
 every trigger position)` words of the act: `s` is the subcommand (for a docker
 management group or `yarn global`, the next non-option word), and `t` is its
@@ -297,8 +310,8 @@ docker act the whole act — every word of it, with no `-x=y` word dropped
 anywhere, even after the row's last word — because those verbs read options
 after their operand too; otherwise the first non-option word after the
 subcommand, the package or config key, omitted for an interpreter. That docker
-case is the only one where a `-x=y` word after the row's last word stops the
-match. The triggers are the flag and path words that made the act
+case is the runner rule above at this reach: the row has to be the whole act,
+so no word after it is left to open. The triggers are the flag and path words that made the act
 machine-global. `docker run --rm T true` is opened by `docker run --rm T`,
 `docker build -t T .` only by the whole act `docker build -t T .`, `git config
 --global user.name x` by `git config --global user.name`; `docker build -t T .

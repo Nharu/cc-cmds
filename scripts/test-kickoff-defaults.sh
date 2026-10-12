@@ -308,13 +308,14 @@ expect repo act-allow '형식 오류' '형태=terraform -chdir=infra apply | 사
 expect repo act-allow 적용 '형태=terraform apply | 사유=a' '형태=git -C dir | 사유=a'
 check "정규화가 바꿀 형태의 거부 사유는 대조기가 보는 철자와 그 철자가 여는 범위, 행이 없을 때의 결과를 적는다" "$(col "$(kf '[Nharu/cc-cmds]
 act-allow = 형태=terraform -chdir=infra apply | 사유=a' $T)" act-allow 7)" \
-  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`). 이 철자는 뗀 경로의 모든 값과 이 철자의 마지막 낱말 뒤에 오는 -x=y 낱말의 모든 값을 열고, 그 앞에 -x=y 낱말이 끼어든 행위는 열지 않습니다 — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"
+  "형태 는 대조기가 보는 철자로 씁니다 — 명령 경로 없이, -x=y 낱말 없이 (대조기가 보는 철자: \`terraform apply\`). 이 철자는 뗀 경로의 모든 값을 열고, 이 철자의 마지막 낱말 앞에 -x=y 낱말이 끼어든 행위는 열지 않습니다. 첫 낱말이 러너가 아니면 마지막 낱말 뒤에 오는 -x=y 낱말의 모든 값도 열고, 인터프리터가 아닌 러너(make npm npx yarn pnpm pytest go cargo docker)이면 행위의 첫 -- 앞에서 마지막 낱말 뒤의 어떤 낱말도 열지 않습니다(docker run·create 의 이미지 뒤는 예외) — 행을 두지 않으면 그 행위는 승인 대기로 갑니다"
 check "거부 근거: 형태=terraform -chdir=infra apply 는 같은 철자의 행위와도 맞지 않는다" \
   "$(probe_row '형태=terraform -chdir=infra apply | 사유=a' 'terraform -chdir=infra apply -auto-approve')" "0"
 check "거부 근거: 형태=/usr/bin/gh pr 는 같은 철자의 행위와도 맞지 않는다" \
   "$(probe_row '형태=/usr/bin/gh pr | 사유=a' '/usr/bin/gh pr view 1')" "0"
-# 안내된 철자는 뗀 경로와 그 마지막 낱말 뒤의 `-x=y` 낱말은 열지만, 그 앞에 끼어든
-# `-x=y` 낱말이 있는 행위는 열지 않는다(대조기가 범위 안에서 떨어진 낱말을 불일치로 본다).
+# 안내된 철자는 뗀 경로를 열고, 러너가 아닌 명령이면 그 마지막 낱말 뒤의 `-x=y` 낱말도
+# 열지만, 그 앞에 끼어든 `-x=y` 낱말이 있는 행위는 열지 않는다(대조기가 범위 안에서
+# 떨어진 낱말을 불일치로 본다). 아래 셋은 모두 러너가 아닌 명령이다.
 for p in 'gh pr|/usr/bin/gh pr view 1|1' 'gh pr|gh pr view 1 --repo=o/r|1' \
          'terraform apply|terraform -chdir=infra apply -auto-approve|0'; do
   pf=${p%%|*}; pa=${p#*|}; pw=${pa##*|}; pa=${pa%|*}

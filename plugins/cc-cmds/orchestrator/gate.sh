@@ -1536,7 +1536,7 @@ gate_park_repair_line() {
   local msg='' row=0
   case "$cell/$cause" in
     기기전역/no-row)
-      msg="repair: no \`사전 인가\` row opens this machine-global act — kick off again with the row below. A shape that names only the runner, or stops before the subcommand's operand (for docker, before the image of run/create, or before the end of any other docker act), does not open it"; row=1 ;;
+      msg="repair: no \`사전 인가\` row opens this machine-global act — kick off again with the row below. A shape that names only the runner, or stops before the subcommand's operand (for docker, before the image of run/create; for any other act of make, npm, npx, yarn, pnpm, pytest, go, cargo or docker, before the end of the act or its '--'), does not open it"; row=1 ;;
     기기전역/short)
       msg="repair: the \`사전 인가\` row that matched stops before the words that make this act machine-global (the subcommand, its operand and '$trig') — kick off again with the row below"; row=1 ;;
     기기전역/argv0-path) sx=argv0 ;;
@@ -1547,7 +1547,7 @@ gate_park_repair_line() {
     파괴형태미명시/*)
       msg="repair: the gate saw no destructive word in this act, so a row opens it only by naming the whole act verbatim — kick off again with the row below"; row=1 ;;
     신고등급한도/opaque)
-      msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand and every option and option value before it (the whole act when no operand follows), as the act spells them. A shape that names only the runner does not open it"; row=1 ;;
+      msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand and every option and option value before it (the whole act when no operand follows; for make, npm, npx, yarn, pnpm, pytest, go, cargo and docker, every word before the act's '--', or through the image for docker run/create), as the act spells them. A shape that names only the runner does not open it"; row=1 ;;
     신고등급한도/code) sx=code ;;
     신고등급한도/wrapper)
       msg="repair: no row opens a command assembled by xargs or sudo — call the wrapped command directly" ;;
