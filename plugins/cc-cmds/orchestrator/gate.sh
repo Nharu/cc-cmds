@@ -13970,10 +13970,15 @@ gate_record_cone() {
   local alias="$1"; shift
   local anchor declared derived d missing="" cause dstep
   cause=$(gate_field_of '원인' "$@")
-  if [ "$cause" != "막힘" ]; then
-    warn "the \`원인\` of a cone row has to be \`막힘\` (observed: ${cause:-(none)}) — an invalidation means the run ended, and a cone is not that"
-    return "$GATE_EXIT_VOCAB"
-  fi
+  # `거절 소진` is a `막힘` with its own name: the stage a model refusal ended
+  # twice. Readers treat every cause but `무효화` alike, so it resolves the same
+  # way, and the name is what lets the morning count it apart.
+  case "$cause" in
+    '막힘' | '거절 소진') : ;;
+    *)
+      warn "the \`원인\` of a cone row has to be \`막힘\` or \`거절 소진\` (observed: ${cause:-(none)}) — an invalidation means the run ended, and a cone is not that"
+      return "$GATE_EXIT_VOCAB" ;;
+  esac
   anchor=$(gate_field_of '앵커 세그먼트' "$@")
   if [ -z "$anchor" ]; then
     warn "a cone row needs an \`앵커 세그먼트\` — it is where the derivation starts"
@@ -23409,8 +23414,39 @@ gate_continuation_argv() {
   local key="$1" skind="$2"
   shift 2
   GATE_CONTINUED=""
-  local last sess att turns n unmet i stream jid dstep
+  local last sess att turns n unmet i stream jid dstep missing
   last=$(gate_stage_result_rows_of "$key" | tail -1)
+  # A STAGE A MODEL REFUSAL ENDED gets ONE re-attachment of its own session,
+  # with the fixed refusal message in place of the router's prompt, and no
+  # more: the ledger's `거절 종료` rows of the key are the counter, so a second
+  # refusal is refused here and its disposition is a cone `blocked` with
+  # `원인=거절 소진`. It spends no continuation, and a fresh dispatch is not
+  # this function's to refuse.
+  if [ "$(gate_row_field "$last" '종단 부류')" = '거절 종료' ]; then
+    n=$( { gate_stage_result_rows_of "$key" || true; } | grep -cF '종단 부류=거절 종료' || true)
+    if [ "${n:-0}" -ge 2 ]; then
+      warn "this stage has ended in a model refusal ${n} times ($key) — it is re-attached once and no more; record a cone \`blocked\` anchored on it with \`원인=거절 소진\`, and leave what it saved in place"
+      return "$GATE_EXIT_RULE"
+    fi
+    sess=$(gate_row_field "$last" '세션 id')
+    if [ "$sess" != "$GATE_RESUME" ]; then
+      warn "a refused stage is re-attached to the last attempt's session ($key: ${sess:-미상}), not $GATE_RESUME — with no session on that row, record a cone \`blocked\` with \`원인=거절 소진\` rather than dispatching it afresh"
+      return "$GATE_EXIT_RULE"
+    fi
+    GATE_CONTINUE_ARGV=()
+    i=0
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
+        GATE_CONTINUE_ARGV+=(-p "$(refusal_message)"); shift 2; i=1
+      else
+        GATE_CONTINUE_ARGV+=("$1"); shift
+      fi
+    done
+    [ "$i" = "1" ] || GATE_CONTINUE_ARGV+=(-p "$(refusal_message)")
+    GATE_CONTINUED=1
+    log "거절 재부착 — $key ← 세션 $GATE_RESUME (1회)"
+    return 0
+  fi
   [ "$(gate_row_field "$last" '종단 부류')" = '공허한 성공' ] || return 0
   att=$(gate_row_field "$last" '실행 버전')
   stream="$RUN_DIR/log/$key#$att.json"
@@ -23453,6 +23489,12 @@ gate_continuation_argv() {
   case "$skind" in
     design) unmet="동결된 설계 문서도 정지 기록도 없다" ;;
     audit)  unmet="판독자 리포트 파일(docs/design-audit/<slug>.reader-*.md)도 감사 종결 문구($LIT_AUDIT_TERMINAL)도 없다" ;;
+    # An implement attempt filed `공허한 성공` for its residual share names the
+    # missing headings verbatim, so the continued session can find each item.
+    implement)
+      missing=$(residual_share_missing "${DOC:-}" "$key" "$RUN_DIR/halt" "$RUN_DIR/$key.plan.md")
+      if [ -n "$missing" ]; then unmet=$(residual_unmet_message "$missing")
+      else unmet="게이트를 거친 행위도 정지 기록도 없다"; fi ;;
     *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
   esac
   GATE_CONTINUE_ARGV=()
@@ -25305,6 +25347,13 @@ gate_record_stage_outcome() {
   if [ "$rc" = "0" ] && [ -s "$haltf" ] \
      && [ "$( { grep -vE '^[[:space:]]*$' "$haltf" 2>/dev/null || true; } | tail -1)" = '<!-- /cc-pipeline-halt v1 -->' ]; then
     klass='의도된 park'
+  # A MODEL SAFETY REFUSAL, before the crash arm and at either exit code: the
+  # driver's reader on the same stream (`stage_refusal_exit`), so the two
+  # writers of a row file one attempt alike. Without it a refused stage is a
+  # `크래시` here, and a crash buys a fresh dispatch that writes over what the
+  # refused stage had saved.
+  elif stage_refusal_exit "$out"; then
+    klass='거절 종료'
   elif [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
     klass='크래시'
     # A STAGE THAT DIED OF THE USAGE LIMIT BY ITSELF is `한도 종료`, carved out
@@ -25345,6 +25394,17 @@ gate_record_stage_outcome() {
   # literal in the stream and a registry complete for the current document.
   elif [ "$kind" = "split" ] \
        && ! { grep -qF "$LIT_SPLIT_TERMINAL" "$out" 2>/dev/null && split_registry_complete "${DOC:-}"; }; then
+    klass='공허한 성공'
+  # AN IMPLEMENT PROCESS B is asked for its own residual result lines. Its rows
+  # prove it acted, not that it wrote the W1 flip or the W2 note of every
+  # `### R<n>` that is its share — and nothing else reads those lines before the
+  # merge, after which the segment cannot be sent back. Process A emits a plan
+  # and edits nothing, so it is not asked. `공허한 성공` for the same reason as
+  # the two arms above: the continuation is keyed on that name, and it carries
+  # the missing headings in its message (`gate_continuation_argv`).
+  elif [ "$kind" = "implement" ] \
+       && gate_stage_result_rows_of "$seg" | implement_process_b \
+       && [ -n "$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md")" ]; then
     klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
     klass='정상 완료'

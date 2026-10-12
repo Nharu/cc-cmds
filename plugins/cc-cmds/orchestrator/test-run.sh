@@ -364,7 +364,7 @@ check "한도 판정: 거짓 글자는 F,R,P,T 순서로 이어진다" "$(sle "$
 
 check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
 for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \
-                '적용 불명' '외부 종료' '한도-형상 회수'; do
+                '적용 불명' '외부 종료' '한도-형상 회수' '거절 종료'; do
   check "읽기 사상: $rc_class 는 그대로" "$(terminal_route_class "$rc_class")" "$rc_class"
 done
 
@@ -408,6 +408,85 @@ lim_pin Lk9 1 "$LIMD/a.json" 1;  lk9_1=$(classify_termination Lk9 1 1)
 lim_pin Lk9 2 "$LIMD/ok.json" 0; lk9_2=$(classify_termination Lk9 0 0)
 lim_pin Lk9 3 "$LIMD/a.json" 1;  lk9_3=$(classify_termination Lk9 1 1)
 check "경로 A: 한 세션의 세 시도는 시도별로 분류된다" "$lk9_1/$lk9_2/$lk9_3" "한도 종료/정상 완료/한도 종료"
+
+# 거절 종료 판정. num_turns 가 0 보다 큰 마지막 result 봉투의 stop_reason 만 읽는다.
+# 실측 모양: 거절 봉투(47턴) 뒤에 새 init 과 0턴짜리 빈 봉투가 붙어 파일 끝이 거절이
+# 아니다. 마지막 봉투만 읽으면 이것을 놓치고, 아무 봉투나 읽으면 거절 뒤 정상으로
+# 끝난 세션을 잘못 잡는다.
+REF_INIT='{"type":"system","subtype":"init","session_id":"s-ref"}'
+REF_ENV='{"type":"result","subtype":"success","is_error":false,"num_turns":47,"stop_reason":"refusal","session_id":"s-ref","result":""}'
+REF_EMPTY='{"type":"result","subtype":"success","is_error":false,"num_turns":0,"session_id":"s-ref","result":""}'
+REF_OK='{"type":"result","subtype":"success","is_error":false,"num_turns":2,"stop_reason":"end_turn","session_id":"s-ref","result":"done"}'
+REFD="$WORK/refusal"; mkdir -p "$REFD"
+srx() { if stage_refusal_exit "$@"; then printf 0; else printf 1; fi; }
+printf '%s\n' "$REF_INIT" "$REF_OK" "$REF_INIT" "$REF_ENV" "$REF_INIT" "$REF_EMPTY" > "$REFD/a.json"
+check "거절 판정 a: 0턴 빈 봉투 뒤에 숨은 거절도 거절" "$(srx "$REFD/a.json")" "0"
+printf '%s\n' "$REF_INIT" "$REF_ENV" "$REF_INIT" "$REF_OK" > "$REFD/b.json"
+check "거절 판정 b: 거절 뒤 정상으로 끝난 세션은 거절 아님" "$(srx "$REFD/b.json")" "1"
+printf '%s\n' "$REF_INIT" "$REF_OK" > "$REFD/c.json"
+check "거절 판정 c: 거절 없는 스트림은 거절 아님" "$(srx "$REFD/c.json")" "1"
+printf '%s\n' "$REF_INIT" "$REF_ENV" '{"type":"result","subt' > "$REFD/d.json"
+check "거절 판정 d: 찢긴 꼬리는 건너뛴다" "$(srx "$REFD/d.json")" "0"
+check "거절 판정 e: 없는 파일은 거절 아님" "$(srx "$REFD/none.json")" "1"
+check "거절 판정 e: 빈 인자는 거절 아님" "$(srx '')" "1"
+lim_pin Rf1 1 "$REFD/a.json" 1
+check "종단: 거절 스트림 rc 1 은 거절 종료 (크래시 아님)" "$(classify_termination Rf1 1 1)" "거절 종료"
+lim_pin Rf2 1 "$REFD/a.json" 0
+check "종단: 거절 스트림 rc 0 은 거절 종료 (공허한 성공 아님)" "$(classify_termination Rf2 0 1)" "거절 종료"
+check "종단: 술어가 서면 거절 스트림도 정상 완료" "$(classify_termination Rf2 0 0)" "정상 완료"
+lim_pin Rf3 1 "$REFD/a.json" 1
+cp "$RUN_DIR/halt/Sx.md" "$RUN_DIR/halt/Rf3#1.md"
+check "종단: 멈춤 기록은 거절 스트림보다 앞선다" "$(classify_termination Rf3 1 1)" "의도된 park"
+lim_pin Rf4 1 "$REFD/b.json" 1
+check "종단: 거절 뒤 정상으로 끝난 크래시는 크래시" "$(classify_termination Rf4 1 1)" "크래시"
+check "읽기 사상: 거절 종료 는 크래시로 접지 않는다" "$(terminal_route_class '거절 종료')" "거절 종료"
+case "$(refusal_message)" in
+  *'한 번뿐'*'거절 소진'*) ok "거절 재부착 문면은 1회와 거절 소진 park 를 말한다" ;;
+  *) bad "거절 재부착 문면" "$(refusal_message)" ;;
+esac
+
+# 잔여 결과 줄. 몫·제외·결과 줄의 유무를 축자 표제로 돌려준다.
+RSD="$WORK/residual"; mkdir -p "$RSD/halt"
+rs_doc() {  # rs_doc <file> <구현 슬라이스 수 1|2> [A 의 잔여 항목 줄]
+  {
+    printf '# 문서\n\n## 구현 시 검증 항목\n\n'
+    printf '### R1. 첫 항목\n\n**분류**: 결정론적\n**검증 등급**: 구현 시 검증\n\n'
+    printf '### R2. 기록된 항목\n\n**분류**: 결정론적\n**검증 등급**: 검증됨(통과)\n**구현 시 검증 기록**: 2026-10-12 — 통과\n\n'
+    printf '### R3. 주의 항목\n\n**분류**: 결정론적\n**실행 주의**: 비용이 든다\n**검증 등급**: 구현 시 검증\n\n'
+    printf '### R4. 구현 후 항목\n\n**분류**: 결정론적\n**검증 시점**: 구현 후\n**검증 등급**: 구현 시 검증\n\n'
+    printf '### R5. 미니 구현 항목\n\n**분류**: 미니 구현\n**검증 등급**: 구현 시 검증\n\n'
+    printf '### R6. 외부 항목\n\n**분류**: 외부 환경\n**검증 등급**: 구현 시 검증\n\n'
+    printf '### R7. 좌석 항목\n\n**분류**: 결정론적\n**검증 등급**: 구현 시 검증\n\n'
+    printf '## 구현 슬라이싱\n\n### 슬라이스 A\n\n**스킬**: implement\n'
+    [ -z "${3:-}" ] || printf '%s\n' "$3"
+    if [ "$2" = "2" ]; then printf '\n### 슬라이스 B\n\n**스킬**: implement\n'; fi
+  } > "$1"
+}
+rs_doc "$RSD/one.md" 1
+check "잔여: 구현 슬라이스 하나는 전부가 몫, 제외 뒤 남는 표제" \
+  "$(residual_share_missing "$RSD/one.md" A | tr '\n' '|')" "### R1. 첫 항목|### R6. 외부 항목|### R7. 좌석 항목|"
+printf '**좌석 실행 항목**: R7\n' > "$RSD/halt/A#2.md"
+printf -- '- R6 은 (c) 외부 프로브로 이 스테이지에서 돌리지 않는다\n' > "$RSD/A.plan.md"
+check "잔여: 좌석 실행 항목과 미실행 (c) 항목은 빠진다" \
+  "$(residual_share_missing "$RSD/one.md" A "$RSD/halt" "$RSD/A.plan.md" | tr '\n' '|')" "### R1. 첫 항목|"
+rs_doc "$RSD/two.md" 2 '**잔여 항목**: 「### R1. 첫 항목」, 「### R2. 기록된 항목」'
+check "잔여 항목 필드는 축자 표제 줄로 읽힌다" \
+  "$(slice_residual_headings "$RSD/two.md" A | tr '\n' '|')" "### R1. 첫 항목|### R2. 기록된 항목|"
+check "잔여: 구현 슬라이스가 둘이면 필드에 적힌 몫만" \
+  "$(residual_share_missing "$RSD/two.md" A | tr '\n' '|')" "### R1. 첫 항목|"
+check "잔여: 필드 없는 슬라이스는 몫이 없다" "$(residual_share_missing "$RSD/two.md" B)" ""
+check "잔여: 없는 문서는 빈 몫" "$(residual_share_missing "$RSD/none.md" A)" ""
+check "잔여 이어가기 문면은 빠진 표제를 축자로 싣는다" \
+  "$(residual_unmet_message "$(printf '### R1. 첫 항목\n### R6. 외부 항목')")" \
+  "자기 몫 잔여 검증 항목의 결과 줄(W1 뒤집기·W2 메모)이 없다 — 「### R1. 첫 항목」, 「### R6. 외부 항목」"
+pb() { if printf '%s\n' "$@" | implement_process_b; then printf B; else printf A; fi; }
+check "프로세스: plan_sha256 행이 없으면 A" "$(pb '- `stage-result` | 세그먼트=A | 스테이지=A | 종류=implement | 종단 부류=크래시')" "A"
+check "프로세스: plan_sha256 을 지닌 implement 행 뒤는 B" \
+  "$(pb '- `stage-result` | 세그먼트=A | 스테이지=A | 종류=implement | 종단 부류=정상 완료 | plan_sha256=ab')" "B"
+check "프로세스: 드라이버 S4 행도 B 를 연다" \
+  "$(pb '- `stage-result` | 세그먼트=A | 스테이지=S4 | 종단 부류=정상 완료 | plan_sha256=ab')" "B"
+check "프로세스: 재수렴 행 뒤는 다시 A" \
+  "$(pb '- `stage-result` | 세그먼트=A | 스테이지=A | 종류=implement | plan_sha256=ab' '- `stage-result` | 세그먼트=A | 스테이지=A | 종류=reconverge | 종단 부류=정상 완료')" "A"
 
 # ---------------------------------------------------------------------------
 # 6. Worktree teardown guard — BOTH conditions required
@@ -1747,7 +1826,7 @@ TI_BASE_SAVE="$BASE"; BASE="$TI_DIR/base"; mkdir -p "$BASE/docs"
 
 # 모든 park 호출부가 어휘 안의 스코프·원인을 싣는가. 주석은 먼저 걷어낸다.
 UNSCOPED=$(sed 's/#.*//' "$DRIVER" | grep -nE '(^|[^_a-z])park "' \
-  | grep -vE 'park "[^"]*" (act|cone|run) (막힘|무효화|불명) ' | grep -v radius_park || true)
+  | grep -vE 'park "[^"]*" (act|cone|run) (막힘|무효화|불명|"거절 소진") ' | grep -v radius_park || true)
 if [ -z "$UNSCOPED" ]; then
   ok "모든 park 호출부가 스코프와 원인을 지명한다"
 else
@@ -1818,16 +1897,17 @@ case "$(tail -1 "$LEDGER")" in
   *) bad "설계 스텝 마감 파킹" "$(tail -1 "$LEDGER")" ;;
 esac
 check "마감 파킹은 이미 파킹함을 남긴다" "$(cat "$TI_DIR/already" 2>/dev/null)" "1"
-# 라우터 파킹은 모두 도우미를 지난다 — 열한 자리, 그리고 그 중 실패 id 자리는
+# 라우터 파킹은 모두 도우미를 지난다 — 열세 자리, 그리고 그 중 실패 id 자리는
 # 대상이 실패 id 이고 앵커가 세그먼트다.
-check "드라이버의 라우터 파킹 자리는 열한 곳이다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "11"
+check "드라이버의 라우터 파킹 자리는 열세 곳이다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "13"
 check "실패 id 자리는 대상과 앵커를 나눠 싣는다" \
   "$(grep -c 'park_router "\$fid" "\$seg" cone' "$DRIVER" || true)" "1"
-# 계속 경로의 세 자리는 라우터 판정으로 막힌 계속만 도우미로 보낸다 — 판단 승인
-# 대기나 앞 호출에서 남은 부류로는 도우미를 쓰지 않는다.
-check "계속 경로의 라우터 파킹은 셋이고 모두 부류를 묻는다" \
-  "$(grep -c '\[ "\$CONTINUE_CLASS" != "라우터 판정" \] || { park_router ' "$DRIVER" || true)" "3"
+# 계속 경로의 다섯 자리(공허한 성공 셋, 거절 재부착 둘)는 라우터 판정으로 막힌
+# 계속만 도우미로 보낸다 — 판단 승인 대기나 앞 호출에서 남은 부류로는 도우미를
+# 쓰지 않는다.
+check "계속 경로의 라우터 파킹은 다섯이고 모두 부류를 묻는다" \
+  "$(grep -c '\[ "\$CONTINUE_CLASS" != "라우터 판정" \] || { park_router ' "$DRIVER" || true)" "5"
 
 # 기소된 여덟 — 말단 행위가 막히면 세그먼트를 버리지 않는다. merge_gate 의
 # ACT 팔은 1(=CONE) 이 아니라 2 를 돌려주고, segment_cycle 이 그것을
@@ -3309,7 +3389,7 @@ RUN_DIR="$RUN_DIR_SAVE3"; BASE="$BASE_SAVE3"; RUN_ID="$RUN_ID_SAVE3"
 # 한도 종료 는 런 끝 정산에서 따로 센다. 정산 블록은 main_loop 끝에 있어 그대로
 # 구동할 수 없으므로, 그 블록만 뽑아 원장 읽기와 리포트 쓰기를 대신한 채 돌린다.
 # N=0 인 런의 보고는 이 줄이 생기기 전과 바이트가 같아야 한다.
-settle_block=$(sed -n '/^  local last_cost settled limit_n$/,/^  report_run_residual$/p' "$DRIVER" | sed '$d')
+settle_block=$(sed -n '/^  local last_cost settled limit_n refusal_n$/,/^  report_run_residual$/p' "$DRIVER" | sed '$d')
 settle_run() {  # settle_run <stage-result 행 파일> — 보고 줄을 출력한다
   (
     SETTLE_ROWS="$1"
@@ -3333,6 +3413,12 @@ check "한도 종료 가 없는 런의 정산 보고는 비용 줄 하나뿐이�
 check "한도 종료 가 있는 런은 그 수를 따로 한 줄로 보고한다" "$(settle_run "$WORK/settle2.md")" \
   "$SETTLE_COST
 한도 종료: 2건 — 크래시와 같게 처분, 계정 이동 없음"
+{ cat "$WORK/settle0.md"
+  printf -- '- `stage-result` | 스테이지=S4 | 종단 부류=거절 종료 |\n'
+} > "$WORK/settle3.md"
+check "거절 종료 가 있는 런은 그 수를 따로 한 줄로 보고한다" "$(settle_run "$WORK/settle3.md")" \
+  "$SETTLE_COST
+거절 종료: 1건 — 같은 세션 재부착 1회, 두 번째 거절은 거절 소진 park"
 # 종료 요약의 단어. `보류` 는 사람의 답을 기다리는 종료 절의 처분이고 이 계수기는
 # 드라이버가 park 한 세그먼트를 센다 — 같은 리포트에 둘 다 나오므로, 한 단어가 두
 # 뜻을 가지면 읽는 사람이 줄마다 어느 쪽인지 짐작해야 한다.
@@ -5679,8 +5765,8 @@ check "0턴이면 새 프로세스 재시도 1회" \
 cont_case judg judg
 check "대기 중인 판단 승인이 있으면 계속하지 않는다" \
   "$(cont_field judg rc)/$(cont_spawns judg)/$(cont_field judg blocked)" "1/0/1"
-check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (세 호출부 모두)" \
-  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "3"
+check "그 park 는 무효화가 아니라 사람을 기다리는 막힘이다 (계속 셋과 거절 재부착 둘, 다섯 호출부 모두)" \
+  "$(grep -c 'CONTINUE_BLOCKED" \] || { park "[^"]*" [a-z]* 막힘 ' "$DRIVER" || true)" "5"
 # park 사유는 실제로 일어날 일만 적는다 — 승인 id 를 대고, 이 런 안에서 다시
 # 디스패치하지 않는다고 말하며, 어떤 경로도 수행하지 않는 재부착을 약속하지
 # 않는다. 옛 문구 하나가 아니라 `재부착` 이라는 말 자체가 없음을 본다 — 문구만
@@ -5691,6 +5777,89 @@ check "구현 스테이지 막힘 사유는 이 런 안에서 다시 디스패�
   "$(cont_field judg reason | grep -c '이 런 안에서 이 세그먼트를 다시 디스패치하지 않는다' || true)" "1"
 check "막힘 사유가 수행되지 않는 재부착을 약속하지 않는다" \
   "$(cont_field judg reason | grep -c '재부착' || true)" "0"
+
+# 거절 종료 — `refusal_or_park`. 같은 세션에 고정 문면으로 한 번만 다시 붙이고, 두
+# 번째 거절은 `거절 소진` 으로 멈춘다. 계수기는 원장의 `거절 종료` 행이다. 스테이지가
+# 앞서 저장한 산출물은 지우지 않는다.
+# ref_case <라벨> <모드> [앞선 거절 행 수] — 모드: twice(재부착도 거절) · ok1(재부착이
+# 산출) · prose(재부착이 산출 없이 끝남).
+ref_case() {
+  local d="$CONT/$1" mode="$2" prior="${3:-0}" did="S4:rf:1" i
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/cfg/projects/p"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=refrun
+    DOC_KEY="docs/x.md"
+    : > "$LEDGER"
+    REF_SID="66666666-7777-8888-9999-000000000000"
+    resolve_account() { printf '%s' "$d/cfg"; }
+    stage_parent_id() { printf 'parent'; }
+    absorb_stage_judgment() { :; }
+    log() { :; }
+    stage_spawn() {
+      local s="$1" att
+      att=$(stage_pin_attempt "$s")
+      printf '%s\t%s\t%s\n' "$s" "${STAGE_RESUME:-}" "$3" >> "$d/spawned"
+      printf '300000\nmain\nmedium\n' > "$RUN_DIR/$s.window"
+      if [ -z "${STAGE_RESUME:-}" ] || [ "$mode" = "twice" ]; then
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":5,"stop_reason":"refusal","session_id":"%s"}\n{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":0,"session_id":"%s"}\n' \
+          "$REF_SID" "$REF_SID" "$REF_SID" "$REF_SID" > "$(stage_log_path "$s")"
+        printf '1' > "$RUN_DIR/$s.rc"
+      else
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n{"type":"result","num_turns":3,"stop_reason":"end_turn","session_id":"%s"}\n' \
+          "$REF_SID" "$REF_SID" > "$(stage_log_path "$s")"
+        [ "$mode" = "ok1" ] && : > "$d/artifact"
+        printf '0' > "$RUN_DIR/$s.rc"
+      fi
+      return 0
+    }
+    cont_pred() { [ -f "$d/artifact" ]; }
+    : > "$d/cfg/projects/p/$REF_SID.jsonl"
+    printf '저장된 산출물\n' > "$d/saved.md"
+    # BSD `seq 1 0` 은 거꾸로 세어 두 줄을 내므로 쓰지 않는다.
+    i=0
+    while [ "$i" -lt "$prior" ]; do
+      i=$((i + 1))
+      ledger_row 'stage-result' "세그먼트=rf" "스테이지=S4" "파견 id=$did" "실행 버전=0$i" "종단 부류=거절 종료"
+    done
+    stage_spawn "$did" "$d" "/cc-cmds:implement-unattended 원래 프롬프트"
+    ledger_row 'stage-result' "세그먼트=rf" "스테이지=S4" "파견 id=$did" "종료 코드=1" \
+      "아티팩트 술어 결과=1" "실행 버전=$(stage_attempt_pinned "$did")" \
+      "종단 부류=$(classify_termination "$did" 1 1)"
+    : > "$d/spawned"
+    if refusal_or_park "$did" "$did" rf S4 "$d" "/cc-cmds:implement-unattended 재시도 프롬프트" \
+         "세그먼트 브랜치에 새 커밋도 정지 기록도 없다" home -- cont_pred; then
+      printf 'rc=0\n'
+    else
+      printf 'rc=1\nrefused=%s\nreason=%s\n' "$CONTINUE_REFUSED" "$CONTINUE_PARK_REASON"
+    fi
+  ) > "$d/out" 2>/dev/null
+}
+ref_rows() { grep -cF '종단 부류=거절 종료' "$CONT/$1/ledger.md" || true; }
+
+ref_case rtwice twice
+check "거절 종료: 첫 거절은 같은 세션에 한 번 다시 붙고 두 번째 거절에서 멈춘다" \
+  "$(cont_field rtwice rc)/$(cont_spawns rtwice)/$(cont_field rtwice refused)" "1/1/1"
+check "거절 재부착은 직전 세션 id 로 붙는다" \
+  "$(cut -f2 "$CONT/rtwice/spawned")" "66666666-7777-8888-9999-000000000000"
+check "거절 재부착 프롬프트는 고정 거절 문면이다" \
+  "$(cut -f3 "$CONT/rtwice/spawned")" "$(refusal_message)"
+check "두 번째 거절은 거절 소진 사유로 멈춘다" "$(cont_field rtwice reason | grep -c '^거절 소진 — ' || true)" "1"
+check "거절 종료 행은 시도마다 하나씩 둘이다" "$(ref_rows rtwice)" "2"
+check "거절 재부착은 계속 계수기를 쓰지 않는다" "$(test -f "$CONT/rtwice/run/continue/S4:rf:1" && echo 있음 || echo 없음)" "없음"
+check "저장된 산출물은 그대로다" "$(cat "$CONT/rtwice/saved.md")" "저장된 산출물"
+
+ref_case rok ok1
+check "재부착이 산출하면 통과한다" "$(cont_field rok rc)/$(cont_spawns rok)" "0/1"
+
+ref_case rprose prose
+check "재부착이 산출 없이 끝나면 기존 계속 경로로 넘어가 계속 소진에서 멈춘다" \
+  "$(cont_field rprose rc)/$(cont_spawns rprose)/$(cont_field rprose reason | grep -c '^계속 소진 — ' || true)" "1/3/1"
+
+ref_case rspent twice 1
+check "이미 거절 종료 행이 둘이면 다시 붙이지 않는다" \
+  "$(cont_field rspent rc)/$(cont_spawns rspent)/$(cont_field rspent refused)" "1/0/1"
+check "거절 소진 park 호출부는 구현 둘, 설계 하나다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'CONTINUE_REFUSED" \] || { park "[^"]*" [a-z]* "거절 소진" ' || true)" "3"
 check "구현 스테이지 막힘 사유는 멈춘 스테이지에 답을 되돌리는 경로가 없다고 적는다" \
   "$(cont_field judg reason | grep -c '멈춘 스테이지에 답을 되돌리는 경로가 없' || true)" "1"
 
