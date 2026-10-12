@@ -327,7 +327,31 @@ case "$(vcol "$v" 3)" in *대상미선언*) ok "사람 사유에 park 행 변경
 RK=20261001-0000aab3; mk_root "$RK"; led_open "$RK"
 g "$RK" "gate_append 'blocked' '대상=other' '스코프=act' '원인=막힘' '사유=대상 미선언' '재킥 원인=대상미선언'"
 end_row "$RK" 마감
-vr "park 행이 있으면 런을 끝낸 토큰보다 먼저 보고 승인한다" "$RK" "승인/대상미선언"
+vr "종료 토큰만의 판정이 자동이면 park 행이 승인으로 바꾼다" "$RK" "승인/대상미선언"
+
+# The end token is judged first: a park row turns only `자동` and `없음` into
+# `승인`, and a verdict that needs a person stays a person's.
+PARK="gate_append 'blocked' '대상=other' '스코프=act' '원인=막힘' '사유=대상 미선언' '재킥 원인=대상미선언'"
+PK1=20261001-0000aa90; mk_root "$PK1"; led_open "$PK1"; g "$PK1" "$PARK"; end_row "$PK1" 해당없음 완료
+vr "park 행이 있으면 정상 완료도 승인이다" "$PK1" "승인/대상미선언"
+PK2=20261001-0000aa91; mk_root "$PK2"; led_open "$PK2"; g "$PK2" "$PARK"; end_row "$PK2" 판단정지
+vr "park 행이 있어도 판단정지는 사람이다" "$PK2" "사람/판단정지"
+PK3=20261001-0000aa92; mk_root "$PK3"; led_open "$PK3"; g "$PK3" "$PARK"; end_row "$PK3" 무진전
+v=$(verdict "$PK3")
+check "park 행이 있어도 정지 술어가 선 고리는 사람이다" "$(vcol "$v" 1)/$(vcol "$v" 2)" "사람/무진전"
+case "$(vcol "$v" 3)" in
+  *"진전 없이"*대상미선언*) ok "그 사유는 종료 토큰만의 판정과 park 행 변경분을 함께 싣는다" ;;
+  *) bad "그 사유는 종료 토큰만의 판정과 park 행 변경분을 함께 싣는다" "$v" ;;
+esac
+PK4=20261001-0000aa93; mk_root "$PK4"; led_open "$PK4"; g "$PK4" "$PARK"
+g "$PK4" "gate_append 'blocked' '대상=-' '스코프=run' '원인=표면 이동' '사유=표면' '재킥 원인=표면이동'"
+end_row "$PK4" 마감
+vr "park 행이 있어도 자동 조건을 못 채운 표면이동은 사람이다" "$PK4" "사람/표면이동"
+PK5=20261001-0000aa94; mk_root "$PK5" 1; led_open "$PK5"; end_row "$PK5" 마감
+mkdir -p "$W/claim-$PK5"; printf '2026-10-03T00:00:00Z\n' > "$W/claim-$PK5/at"
+P5=$(vcol "$(rk derive --predecessor "$PR/$PK5.plan.md" --claim "$W/claim-$PK5" --verdict 자동)" 2)
+led_open "$P5"; g "$P5" "$PARK"; end_row "$P5" 마감
+vr "park 행이 있어도 연쇄 상한에 닿은 고리는 사람이다" "$P5" "사람/마감"
 
 RS=20261001-0000aab4; mk_root "$RS"; led_open "$RS"
 g "$RS" "gate_append 'blocked' '대상=-' '스코프=run' '원인=표면 이동' '사유=표면' '재킥 원인=표면이동'"
@@ -354,11 +378,11 @@ vr "판단정지는 사람이다 (재인가 승인을 올리지 않는다)" "$RJ
 RM=20261001-0000aab8; mk_root "$RM"; led_open "$RM"; end_row "$RM" 말단상한
 vr "말단상한은 사람이다" "$RM" "사람/말단상한"
 RW=20261001-0000aab9; mk_root "$RW"; led_open "$RW"; end_row "$RW" 무진전
-vr "진전 없이 끝난 무진전 고리는 상한이다" "$RW" "상한/무진전"
+vr "진전 없이 끝난 무진전 고리는 사람이다 (정지 술어는 상한이 아니다)" "$RW" "사람/무진전"
 RX=20261001-0000aaba; mk_root "$RX"; led_open "$RX"; progress "$RX"; end_row "$RX" 무진전
 vr "진전한 무진전 고리는 자동이다" "$RX" "자동/무진전"
 RY=20261001-0000aabb; mk_root "$RY"; led_open "$RY"; end_row "$RY" 사이클예산
-vr "진전 없는 사이클예산은 상한이다" "$RY" "상한/사이클예산"
+vr "진전 없는 사이클예산은 사람이다" "$RY" "사람/사이클예산"
 RZ=20261001-0000aabc; mk_root "$RZ"; led_open "$RZ"; end_row "$RZ" 결함 '' 'implement/S4/pin1'
 vr "연쇄 안의 첫 결함은 자동이다" "$RZ" "자동/결함"
 
@@ -366,7 +390,7 @@ vr "연쇄 안의 첫 결함은 자동이다" "$RZ" "자동/결함"
 RI=20261001-0000aabd; mk_root "$RI"; led_open "$RI"
 g "$RI" "gate_append 'cycle' '세그먼트=A' '사이클=1' 'P0=0' 'P1=0' '출처=$R0'"
 end_row "$RI" 천장
-vr "들여온 행만 있는 천장 고리는 진전이 아니다" "$RI" "상한/천장"
+vr "들여온 행만 있는 천장 고리는 진전이 아니다" "$RI" "사람/천장"
 
 RF=20261001-0000aabe; mk_root "$RF"
 sed -i.bak 's/^\*\*상태\*\*: 동결됨$/**상태**: 초안/' "$REPO/docs/x.md"
@@ -383,7 +407,7 @@ vr "인가 기록이 없으면 사람이다" "$RO" "사람/-"
 # A ledger whose chain does not verify answers on the stopping side.
 RB=20261001-0000aac0; mk_root "$RB"; led_open "$RB"; end_row "$RB" 마감
 sed -i.bak -E '2s/ [|] prev=[0-9a-f]{64}$//' "$PR/$RB.md"; rm -f "$PR/$RB.md.bak"
-vr "사슬 검증에 실패한 원장은 상한이다" "$RB" "상한/마감"
+vr "사슬 검증에 실패한 원장은 사람이다" "$RB" "사람/마감"
 
 # ---------------------------------------------------------------------------
 # 6. Along a chain: the second link, the chain cap, and the stop predicates.
@@ -417,14 +441,14 @@ vr "연쇄 상한에 닿은 고리는 상한이다" "$C1" "상한/마감"
 RD=20261001-0000aac2; mk_root "$RD"; led_open "$RD"; progress "$RD"; end_row "$RD" 무진전
 D1=$(chain_next "$RD" 2026-10-03T00:00:00Z)
 led_open "$D1"; progress "$D1"; end_row "$D1" 무진전
-vr "무진전이 연달아 두 번이면 상한이다" "$D1" "상한/무진전"
+vr "무진전이 연달아 두 번이면 사람이다" "$D1" "사람/무진전"
 check "같은 원인 정지 술어가 그 연쇄를 멈춘다" "$(hx "rekick_same_cause_stop '$PR/$D1.plan.md' && echo stop")" "stop"
 
 # The same defect fingerprint a second time in the chain.
 RE=20261001-0000aac3; mk_root "$RE"; led_open "$RE"; end_row "$RE" 결함 '' 'implement/S4/pin1'
 E1=$(chain_next "$RE" 2026-10-03T00:00:00Z)
 led_open "$E1"; end_row "$E1" 결함 '' 'implement/S4/pin1'
-vr "같은 지문의 결함이 연쇄 안에서 두 번째면 상한이다" "$E1" "상한/결함"
+vr "같은 지문의 결함이 연쇄 안에서 두 번째면 사람이다" "$E1" "사람/결함"
 RE2=20261001-0000aac4; mk_root "$RE2"; led_open "$RE2"; end_row "$RE2" 결함 '' 'implement/S4/pin1'
 E2=$(chain_next "$RE2" 2026-10-03T00:00:00Z)
 led_open "$E2"; end_row "$E2" 결함 '' 'audit/S2/pin1'
@@ -525,7 +549,7 @@ out=$(rk derive --predecessor "$PR/$RJ2.plan.md" --claim "$W/claim-$RJ2" --verdi
         --approval "$RJ2#a1" --answer-digest "$ADIG")
 J1=$(vcol "$out" 2); SJ="$PR/$J1.plan.md"
 claim_commit "$RJ2" 2026-10-03T00:00:00Z "$J1"
-g "$RJ2" "gate_append '승인' '승인 id=a1' '상태=대기' '대상=home' '절단점=판단'"
+g "$RJ2" "gate_append '승인' '승인 id=a1' '상태=대기' '대상=-' '절단점=재인가' '종류=W' '재인가 원인=대상미선언' '변경분=-'"
 adm_is "(사) 아직 대기인 재인가 승인은 거부한다" "$SJ" "(사) 재인가 승인 $RJ2#a1 이 승인으로"
 g "$RJ2" "gate_append '승인' '승인 id=a1' '상태=승인' '응답 토큰=-' '답변 다이제스트=-' '처분 사유=자동 해소'"
 adm_is "(사) 자동 해소로 닫힌 승인은 사람의 승인이 아니다" "$SJ" "(사) 재인가 승인 $RJ2#a1 에 사람의 응답 토큰이 없습니다"
@@ -549,11 +573,43 @@ out=$(rk derive --predecessor "$PR/$RJ3.plan.md" --claim "$W/claim-$RJ3" --verdi
 J3=$(vcol "$out" 2); SJ3="$PR/$J3.plan.md"
 check "판단정지 원인의 후속 매니페스트가 픽스처로 생겼다" "$(grep -c ' | 원인=판단정지 | 재인가 승인=' "$SJ3" 2>/dev/null || true)" "1"
 claim_commit "$RJ3" 2026-10-03T00:00:00Z "$J3"
-g "$RJ3" "gate_append '승인' '승인 id=a1' '상태=대기' '대상=home' '절단점=판단'"
+g "$RJ3" "gate_append '승인' '승인 id=a1' '상태=대기' '대상=-' '절단점=재인가' '종류=W' '재인가 원인=판단정지' '변경분=-'"
 g "$RJ3" "gate_append '승인' '승인 id=a1' '상태=승인' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
 adm_is "(사) 사람이 닫은 재인가 승인이 있어도 원인 판단정지 는 거부한다" "$SJ3" "(사) 원인 판단정지 는 후속 런을 열지 않습니다"
 with_edit "$SJ3" 's/ \| 재인가 승인=[^|]* \| 답변 다이제스트=[0-9a-f]{64}$//' \
   "(사) 재인가 승인이 없는 원인 판단정지 도 거부한다" "$SJ3" "(사) 원인 판단정지 는 후속 런을 열지 않습니다"
+
+# The approval binds by its own rows: the kind, the cause and the run. The
+# close row carries none of them, so the last value any row of it gave counts.
+g "$RJ2" "gate_append '승인' '승인 id=a1' '상태=승인' '종류=V' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
+adm_is "(사) 종류 W 가 아닌 승인은 거부한다" "$SJ" "(사) 재인가 승인 $RJ2#a1 이 종류 W 가 아닙니다"
+g "$RJ2" "gate_append '승인' '승인 id=a1' '상태=승인' '종류=W' '재인가 원인=슬라이싱' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
+adm_is "(사) 원인이 다른 재인가 승인은 거부한다" "$SJ" "(사) 재인가 승인의 원인 슬라이싱 이"
+g "$RJ2" "gate_append '승인' '승인 id=a1' '상태=승인' '재인가 원인=대상미선언' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
+check "원인을 되돌린 승인이면 다시 지난다" "$(adm "$SJ")" "ok"
+# adm_park <pred> <end token> [<progress>] — a park-cause successor of a link
+# that ended on that token, with a person's W approval closed.
+adm_park() {
+  local p="$1" o
+  mk_root "$p"; led_open "$p"; g "$p" "$PARK"
+  [ -n "${3:-}" ] && progress "$p"
+  end_row "$p" "$2"
+  mkdir -p "$W/claim-$p"; printf '2026-10-03T00:00:00Z\n' > "$W/claim-$p/at"
+  o=$(rk derive --predecessor "$PR/$p.plan.md" --claim "$W/claim-$p" --verdict 승인 \
+        --approval "${4:-$p#a1}" --answer-digest "$ADIG")
+  claim_commit "$p" 2026-10-03T00:00:00Z "$(vcol "$o" 2)"
+  g "$p" "gate_append '승인' '승인 id=a1' '상태=대기' '대상=-' '절단점=재인가' '종류=W' '재인가 원인=대상미선언' '변경분=-'"
+  g "$p" "gate_append '승인' '승인 id=a1' '상태=승인' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
+  printf '%s' "$PR/$(vcol "$o" 2).plan.md"
+}
+SP=$(adm_park 20261001-0000aa95 마감)
+check "park 원인의 후속은 종료 토큰만의 판정이 자동이면 지난다" "$(adm "$SP")" "ok"
+SP=$(adm_park 20261001-0000aa96 무진전)
+adm_is "(사) park 원인이어도 정지 술어가 선 앞 런의 후속은 거부한다" "$SP" "(사) 진전 없이 끝난 고리"
+SP=$(adm_park 20261001-0000aa97 말단상한)
+adm_is "(사) park 원인이어도 종료 토큰만의 판정이 사람이면 거부한다" "$SP" "(사) 종료 토큰 말단상한 만의 판정이 사람"
+SP=$(adm_park 20261001-0000aa98 마감 '' "$RJ2#a1")
+adm_is "(사) 다른 런의 재인가 승인은 거부한다" "$SP" "(사) 재인가 승인 $RJ2#a1 은 선행 런"
 
 # The memo: read by key, written only by the caller that prepared the run
 # directory.
@@ -727,6 +783,45 @@ oc=$(outcome "$SW3"); N3=${oc#*"$TAB"}
 check "사람이 닫은 재인가 승인 뒤에는 후속을 연다" "${oc%%"$TAB"*}/$(records)" "열림/2"
 check "그 후속의 연쇄 행이 승인과 답변 다이제스트를 싣는다" \
   "$(grep -c " | 재인가 승인=$SW3#$AID | 답변 다이제스트=$ADIG\$" "$PR/$N3.plan.md")" "1"
+
+# A stop predicate is a person's: no re-authorization approval is raised.
+SN=20261001-0000aa9a; mk_root "$SN"; led_open "$SN"; end_row "$SN" 무진전; mark "$SN"; hush "$SN"
+( cd "$REPO" && rk sweep --pace-root "$RUN_PACE_ROOT" --lane present 2>/dev/null )
+check "정지 술어가 선 고리는 사람이고 재인가 승인을 올리지 않는다" \
+  "$(outcome "$SN" | cut -f1)/$(grep -c '^- `승인` | ' "$PR/$SN.md" || true)" "사람/0"
+
+# Only reaching the chain cap is `상한`: the sweep raises a W carrying the next
+# cap, and a person's close opens a successor with that cap.
+SC=20261001-0000aa9b; mk_root "$SC" 1; led_open "$SC"; end_row "$SC" 마감
+mkdir -p "$W/claim-$SC"; printf '2026-10-03T00:00:00Z\n' > "$W/claim-$SC/at"
+SC1=$(vcol "$(rk derive --predecessor "$PR/$SC.plan.md" --claim "$W/claim-$SC" --verdict 자동)" 2)
+claim_commit "$SC" 2026-10-03T00:00:00Z "$SC1"
+led_open "$SC1"
+g "$SC1" "gate_append 'segment' 'id=A' '상태=완료' '레포=home' '베이스 sha=$BASE'"
+end_row "$SC1" 마감; mark "$SC1"; hush "$SC1"
+( cd "$REPO" && rk sweep --pace-root "$RUN_PACE_ROOT" --lane present 2>/dev/null )
+oc=$(outcome "$SC1")
+check "연쇄 상한에만 닿은 고리는 재인가 승인을 올리고 기다린다" "${oc%%"$TAB"*}" "승인 대기"
+CAID=${oc#*"$TAB"}; CAID=${CAID#*#}
+check "그 승인은 상한 원인과 새 연쇄 상한 2 를 싣는다" \
+  "$(grep "^- \`승인\` | " "$PR/$SC1.md" | grep -F " 승인 id=$CAID " | grep -cF ' | 재인가 원인=상한 | 변경분=새 연쇄 상한 2 | ')" "1"
+g "$SC1" "gate_append '승인' '승인 id=$CAID' '상태=승인' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
+hush "$SC1"
+( cd "$REPO" && rk sweep --pace-root "$RUN_PACE_ROOT" --lane present 2>"$W/sc1.err" )
+oc=$(outcome "$SC1"); NC=${oc#*"$TAB"}; SNC="$PR/$NC.plan.md"
+check "사람이 닫은 상한 승인 뒤에는 후속을 연다" "${oc%%"$TAB"*}" "열림"
+[ "${oc%%"$TAB"*}" = "열림" ] || sed 's/^/  sc1: /' "$W/sc1.err" >&2
+check "그 후속은 동의 행의 연쇄 상한만 새 상한으로 바꾼다" \
+  "$(grep -c '^- `재킥오프` | 연쇄 상한=2 | ' "$SNC" 2>/dev/null || true)/$(grep -c " | 순번=2 | .* | 원인=마감 | 재인가 승인=$SC1#$CAID | " "$SNC" 2>/dev/null || true)" "1/1"
+check "새 상한을 담은 후속은 입장 검사를 지난다" "$(adm "$SNC")" "ok"
+with_edit "$SNC" 's/^(- `재킥오프` \| 연쇄 상한=)2 /\11 /' \
+  "상한을 바꾸지 않은 후속은 거부한다" "$SNC" "(라)"
+with_edit "$SNC" 's/^(- `재킥오프` \| 연쇄 상한=)2 /\13 /' \
+  "(사) 승인과 다른 상한을 단 후속은 거부한다" "$SNC" "(사) 상한 재인가 승인의 변경분"
+g "$SC1" "gate_append '승인' '승인 id=$CAID' '상태=승인' '재인가 원인=대상미선언' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
+adm_is "(사) 상한이 아닌 원인의 승인으로 상한을 바꾼 후속은 거부한다" "$SNC" "(사) 연쇄 상한 2 이 앞 런의 1 과 다른데"
+g "$SC1" "gate_append '승인' '승인 id=$CAID' '상태=승인' '재인가 원인=상한' '응답 토큰=t1' '답변 다이제스트=$ADIG'"
+check "원인을 되돌리면 다시 지난다" "$(adm "$SNC")" "ok"
 
 # The commit wait: one length after the run ended, it is a person's.
 CW="$W/cw"; mkdir -p "$CW"

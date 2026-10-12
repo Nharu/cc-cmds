@@ -13,6 +13,10 @@
 #       → the successor run id.
 #   successor.sh derive --predecessor <manifest> --claim <claim directory>
 #                    --verdict 자동|승인 [--approval <run>#<id> --answer-digest <hex>]
+#                    [--cap <새 연쇄 상한>]
+#       `--cap` is taken only with 승인, for a closed `상한` approval: the
+#       successor's consent row carries that cap and the position is checked
+#       against it.
 #       → `열림\t<id>\t<manifest>\t<문서 sha256>` and exit 0, or
 #         `사람\t<사유>` and exit 4 (nothing written), or
 #         `invalid\t<사유>` and exit 3.
@@ -462,6 +466,63 @@ EOF
   fi
 }
 
+rekick_end_verdict() {
+  # rekick_end_verdict <predecessor manifest> <ledger|-> <end token> —
+  # `<판정>\t<사유>`: the verdict the end token alone gives, as if the run had
+  # no park row. The verdict and the admission check both read it, so a park
+  # row never opens a successor its end token would have sent elsewhere.
+  #
+  # THE STOP PREDICATES COME BEFORE THE CHAIN CAP AND GO TO A PERSON. They are
+  # computed over the chain's earlier ledgers, which a new chain cap does not
+  # change, so an approval raising the cap would open a successor the
+  # admission check refuses on the same predicate.
+  local m="$1" led="$2" tok="$3" sv v why pos seq cap
+  if [ "$tok" = "해당없음" ]; then
+    if [ "$led" != "-" ] && rekick_completed "$led"; then
+      printf '없음\t정상 완료'
+    else
+      printf '사람\t분류 없이 멈춘 런'
+    fi
+    return 0
+  fi
+  if sv=$(rekick_stop_reason "$m" "$tok"); then
+    printf '사람\t새 인가 필요 — %s' "$sv"; return 0
+  fi
+  case "$tok" in
+    마감|연기마감|천장|무진전|사이클예산|결함) v=자동; why="자동 재킥 — $tok" ;;
+    # A judgment stop goes to a person, never to an approval: no stage of the
+    # fixed graph has an input that would carry a person's answer, so a
+    # successor would stop at the same place again.
+    판단정지) v=사람; why="새 인가 필요 — 판단 정지의 답변을 받을 입력 자리가 고정 그래프 단계에 없습니다" ;;
+    말단상한) v=사람; why="새 인가 필요 — 말단 행위 상한 소진" ;;
+    표면이동)
+      if [ "$led" = "-" ]; then
+        v=사람; why="원장이 없어 무엇이 움직였는지 가를 수 없습니다"
+      else
+        sv=$(rekick_surface_verdict "$m" "$led")
+        v=${sv%%"$REKICK_TAB"*}; why=${sv#*"$REKICK_TAB"}
+      fi ;;
+    *) v=사람; why="알 수 없는 종료 토큰" ;;
+  esac
+  case "$v" in
+    자동|승인)
+      pos=$(rekick_position "$m") || { printf '사람\t재킥오프 행을 읽지 못했습니다'; return 0; }
+      seq=$(printf '%s' "$pos" | cut -f2); cap=$(printf '%s' "$pos" | cut -f3)
+      case "$cap" in ''|*[!0-9]*) printf '사람\t연쇄 상한을 읽지 못했습니다'; return 0 ;; esac
+      if [ "$seq" -gt "$cap" ]; then
+        # One approval carries one change: a surface the chain's own merge
+        # moved and a new chain cap are two, so that case is a person's.
+        if [ "$v" = "자동" ]; then
+          printf '상한\t연쇄 상한 %s 에 닿았습니다' "$cap"
+        else
+          printf '사람\t새 인가 필요 — 연쇄 상한 %s 에 닿았고 %s' "$cap" "$why"
+        fi
+        return 0
+      fi ;;
+  esac
+  printf '%s\t%s' "$v" "$why"
+}
+
 cc_rekick_verdict() {
   # cc_rekick_verdict <predecessor manifest> [--lane present|absent]
   #                   [--pin usable|unusable|none]
@@ -469,7 +530,7 @@ cc_rekick_verdict() {
   # the numbered comments. Inputs only a sweep knows — the lane and the plugin
   # pin — arrive as arguments, and one that did not arrive sends the run to a
   # person rather than being assumed.
-  local m="${1:-}" lane="" pin="" led tok park p doc pos seq cap sv
+  local m="${1:-}" lane="" pin="" led tok park="" p doc pos seq cap ev v why pdelta
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -505,11 +566,12 @@ cc_rekick_verdict() {
   else
     # 4. No end token: the run has not ended.
     tok=$(rekick_end_token "$led") || { out 진행 - "종료 토큰 없음"; return 0; }
-    # 5. A normal completion.
-    rekick_completed "$led" && { out 없음 - "정상 완료"; return 0; }
     park=$(rekick_park_causes "$led")
-    # 6. An unclassified stop goes to a person, park rows and all.
-    if [ "$tok" = "해당없음" ]; then
+    # 5. A normal completion with no park row.
+    [ -z "$park" ] && rekick_completed "$led" && { out 없음 - "정상 완료"; return 0; }
+    # 6. An unclassified stop goes to a person, park rows and all. A normal
+    # completion with park rows goes on to the end-token verdict below.
+    if [ "$tok" = "해당없음" ] && ! rekick_completed "$led"; then
       out 사람 해당없음 "분류 없이 멈춘 런${park:+ — park 행 변경분: $(printf '%s' "$park" | tr '\n' ' ')}"
       return 0
     fi
@@ -520,28 +582,30 @@ cc_rekick_verdict() {
     usable|none) ;;
     *) out 사람 "$tok" "쓸 수 없는 플러그인 핀이거나 핀을 알지 못합니다"; return 0 ;;
   esac
-  # 7. A park row comes before the token that ended the run.
-  if [ -n "${park:-}" ]; then
-    out 승인 "$(printf '%s\n' "$park" | head -1)" "park 행의 변경분을 담은 재인가 승인: $(printf '%s' "$park" | tr '\n' ' ')"
-    return 0
+  # 7. The end token alone: the stop predicates, the token and the chain cap.
+  [ -f "$led" ] || led="-"
+  ev=$(rekick_end_verdict "$m" "$led" "$tok")
+  v=${ev%%"$REKICK_TAB"*}; why=${ev#*"$REKICK_TAB"}
+  if [ -z "$park" ]; then
+    out "$v" "$tok" "$why"; return 0
   fi
-  # 8. The chain cap and the stop predicates.
-  pos=$(rekick_position "$m") || { out 사람 "$tok" "재킥오프 행을 읽지 못했습니다"; return 0; }
-  seq=$(printf '%s' "$pos" | cut -f2); cap=$(printf '%s' "$pos" | cut -f3)
-  [ "$seq" -le "$cap" ] || { out 상한 "$tok" "연쇄 상한 $cap 에 닿았습니다"; return 0; }
-  sv=$(rekick_stop_reason "$m" "$tok") && { out 상한 "$tok" "$sv"; return 0; }
-  # 9. Per token.
-  case "$tok" in
-    마감|연기마감|천장|무진전|사이클예산|결함) out 자동 "$tok" "자동 재킥 — $tok" ;;
-    # A judgment stop goes to a person, never to an approval: no stage of the
-    # fixed graph has an input that would carry a person's answer, so a
-    # successor would stop at the same place again.
-    판단정지) out 사람 "$tok" "새 인가 필요 — 판단 정지의 답변을 받을 입력 자리가 고정 그래프 단계에 없습니다" ;;
-    말단상한) out 사람 "$tok" "새 인가 필요 — 말단 행위 상한 소진" ;;
-    표면이동)
-      sv=$(rekick_surface_verdict "$m" "$led")
-      out "${sv%%"$REKICK_TAB"*}" "$tok" "${sv#*"$REKICK_TAB"}" ;;
-    *) out 사람 "$tok" "알 수 없는 종료 토큰" ;;
+  # 8. A park row turns only an automatic verdict, or a normal completion,
+  # into an approval. Any other verdict of the end token keeps its own way out,
+  # with the park rows' change carried in the reason: an approval that showed
+  # only a target to add would open a successor over a surface move, a stop or
+  # a cap nobody was asked about.
+  pdelta=$(printf '%s' "$park" | tr '\n' ' ')
+  case "$v" in
+    자동|없음)
+      pos=$(rekick_position "$m") || { out 사람 "$tok" "재킥오프 행을 읽지 못했습니다"; return 0; }
+      seq=$(printf '%s' "$pos" | cut -f2); cap=$(printf '%s' "$pos" | cut -f3)
+      if [ "$seq" -le "$cap" ] 2>/dev/null; then
+        out 승인 "$(printf '%s\n' "$park" | head -1)" "park 행의 변경분을 담은 재인가 승인: $pdelta"
+      else
+        out 사람 "$tok" "새 인가 필요 — 연쇄 상한 $cap 에 닿았습니다 — park 행 변경분: $pdelta"
+      fi ;;
+    진행) out 진행 "$tok" "$why" ;;
+    *) out 사람 "$tok" "새 인가 필요 — 종료 토큰만의 판정 $v: $why — park 행 변경분: $pdelta" ;;
   esac
 }
 
@@ -617,7 +681,8 @@ rekick_deadline() {
 
 rekick_manifest_bytes() {
   # rekick_manifest_bytes <predecessor manifest> <선행 런> <후속 런> <킥오프 일시>
-  #                       <벽시계 마감> <연쇄 행> <구속 다이제스트> — the successor
+  #                       <벽시계 마감> <연쇄 행> <구속 다이제스트>
+  #                       [<새 연쇄 상한>] — the successor
   # manifest on stdout: the predecessor's bytes with exactly the allowed changes
   # — the run id in its three places, the kickoff time, the deadline, the chain
   # row (replaced, or put right after the consent row on the first link) and
@@ -625,7 +690,11 @@ rekick_manifest_bytes() {
   # compares a successor against them, so "identical but for the allowed
   # changes" has one definition. Read twice: the first pass only learns whether
   # a chain row is already there.
-  awk -v old="$2" -v new="$3" -v at="$4" -v dl="$5" -v ch="$6" -v bd="$7" '
+  #
+  # A NEW CHAIN CAP IS THE ONE CHANGE A CLOSED `상한` APPROVAL CARRIES. Given,
+  # it replaces the consent row's `연쇄 상한` and nothing else of that row;
+  # empty, the consent row is copied as it stands.
+  awk -v old="$2" -v new="$3" -v at="$4" -v dl="$5" -v ch="$6" -v bd="$7" -v nc="${8:-}" '
     NR == FNR { if (index($0, "- `연쇄` | ") == 1) had = 1; next }
     FNR == 1 { if ($0 == "# 파이프라인 런 매니페스트 — " old) { print "# 파이프라인 런 매니페스트 — " new; next } }
     FNR == 2 { s = $0; k = "run-id=" old ";"; i = index(s, k)
@@ -637,6 +706,7 @@ rekick_manifest_bytes() {
     sec == "## 인가" && /^\*\*벽시계 마감\*\*: / { print "**벽시계 마감**: " dl; next }
     sec == "## 인가" && /^\*\*구속 다이제스트\*\*: / { print "**구속 다이제스트**: " bd; next }
     index($0, "- `연쇄` | ") == 1 { print ch; next }
+    nc != "" && index($0, "- `재킥오프` | ") == 1 { sub(/ \| 연쇄 상한=[^ |]*/, " | 연쇄 상한=" nc) }
     { print }
     !had && index($0, "- `재킥오프` | ") == 1 { print ch }
   ' "$1" "$1"
@@ -662,7 +732,7 @@ rekick_grant_bytes() {
 }
 
 rekick_derive() {
-  local pred="" claim="" verdict="" appr="" adig=""
+  local pred="" claim="" verdict="" appr="" adig="" ncap=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --predecessor)   pred="${2:-}"; shift 2 ;;
@@ -670,6 +740,7 @@ rekick_derive() {
       --verdict)       verdict="${2:-}"; shift 2 ;;
       --approval)      appr="${2:-}"; shift 2 ;;
       --answer-digest) adig="${2:-}"; shift 2 ;;
+      --cap)           ncap="${2:-}"; shift 2 ;;
       *) printf 'invalid\t알 수 없는 인자: %s\n' "$1"; return 3 ;;
     esac
   done
@@ -685,6 +756,10 @@ rekick_derive() {
             || { inval "승인 판정에는 --approval <런>#<승인 id> 와 --answer-digest <64자리 hex> 가 필요합니다"; return 3; } ;;
     *) inval "파생하는 판정은 자동과 승인뿐입니다: $verdict"; return 3 ;;
   esac
+  if [ -n "$ncap" ]; then
+    [ "$verdict" = "승인" ] || { inval "--cap 은 닫힌 상한 승인의 파생에만 받습니다"; return 3; }
+    case "$ncap" in *[!0-9]*|0*) inval "--cap 은 양의 정수입니다: $ncap"; return 3 ;; esac
+  fi
 
   local dir pid at pos root seq cap rk len cause nid bd_stored bd_now dl_old note dl_new
   local chain_row p grant ngrant nman nkick docsha work
@@ -698,6 +773,10 @@ rekick_derive() {
   [ -n "$rk" ] || { inval "재킥오프 행이 없는 매니페스트"; return 3; }
   pos=$(rekick_position "$pred") || { inval "연쇄 위치를 읽지 못했습니다"; return 3; }
   root=$(printf '%s' "$pos" | cut -f1); seq=$(printf '%s' "$pos" | cut -f2); cap=$(printf '%s' "$pos" | cut -f3)
+  if [ -n "$ncap" ]; then
+    [ "$ncap" -gt "$cap" ] 2>/dev/null || { inval "새 연쇄 상한 $ncap 이 앞 런의 연쇄 상한 $cap 보다 크지 않습니다"; return 3; }
+    cap="$ncap"
+  fi
   [ "$seq" -le "$cap" ] || { inval "연쇄 상한 $cap 을 넘는 순번 $seq"; return 3; }
   len=$(rekick_row_field "$rk" '길이')
 
@@ -705,7 +784,12 @@ rekick_derive() {
   why=$(rekick_root_provenance "$pred") || { human "뿌리 출처 확인 실패 — $why"; return 4; }
   docsha=$(rekick_chain_doc_sha "$pred") || { human "기록된 문서 해시 없음"; return 4; }
 
-  cause=$(rekick_cause_of "$pred" "$verdict") || { inval "앞 런의 원인을 읽지 못했습니다"; return 3; }
+  # A cap approval re-authorizes the run's own end token, never a park row.
+  if [ -n "$ncap" ]; then
+    cause=$(rekick_cause_of "$pred" 자동) || { inval "앞 런의 원인을 읽지 못했습니다"; return 3; }
+  else
+    cause=$(rekick_cause_of "$pred" "$verdict") || { inval "앞 런의 원인을 읽지 못했습니다"; return 3; }
+  fi
   ( gate_rekick_cause_ok "$cause" ) || { inval "원인이 닫힌 토큰이 아닙니다: $cause"; return 3; }
   nid=$(rekick_successor_id "$at" "$pid" "$seq") || { inval "후속 런 id 를 계산하지 못했습니다"; return 3; }
 
@@ -732,7 +816,7 @@ rekick_derive() {
 
   # The manifest: the predecessor's bytes with exactly the allowed changes, the
   # binding digest a placeholder until the bytes it covers exist.
-  rekick_manifest_bytes "$pred" "$pid" "$nid" "$at" "$dl_new" "$chain_row" '@@BINDING@@' > "$work/m1" \
+  rekick_manifest_bytes "$pred" "$pid" "$nid" "$at" "$dl_new" "$chain_row" '@@BINDING@@' "$ncap" > "$work/m1" \
     || { rm -rf "$work"; inval "매니페스트 변환 실패"; return 3; }
   grep -c '@@BINDING@@' "$work/m1" | grep -qx 1 || { rm -rf "$work"; inval "구속 다이제스트 줄이 하나가 아닙니다"; return 3; }
   local bd_new
@@ -765,7 +849,7 @@ rekick_admission_static() {
   # rekick_admission_static <manifest> — the checks that read only manifests and
   # authorization records, cheap enough for every gate entry.
   local m="$1" dir id rk ch n_rk n_ch pid root seq at ch_pd pm pd_stored pd_now
-  local pch exp_root exp_seq cap len dl at_e dur dl_e kick bd pp sp pg sg
+  local pch exp_root exp_seq cap len dl at_e dur dl_e kick bd pp sp pg sg ncap
   dir=$(cd "$(dirname "$m")" && pwd) || { printf '매니페스트 디렉터리를 읽지 못했습니다'; return 1; }
   m="$dir/$(basename "$m")"
   id=$(rekick_hdr "$m" 'run-id')
@@ -826,9 +910,14 @@ rekick_admission_static() {
   # deriver's own transform with this manifest's values for the fields that
   # may differ must give this manifest's bytes. The digest field is taken as
   # it stands; `check_manifest` has already compared it with these bytes.
+  # A chain cap that differs from the predecessor's goes through the same
+  # transform; whether a closed `상한` approval carries exactly that cap is
+  # (사)'s question, because it reads the predecessor's ledger.
   kick=$(rekick_field "$m" '런 정체' '킥오프 일시')
   bd=$(rekick_field "$m" '인가' '구속 다이제스트')
-  rekick_manifest_bytes "$pm" "$pid" "$id" "$kick" "$dl" "$ch" "$bd" | cmp -s - "$m" \
+  ncap=""
+  [ "$cap" = "$(rekick_row_field "$(rekick_consent_row "$pm")" '연쇄 상한')" ] || ncap="$cap"
+  rekick_manifest_bytes "$pm" "$pid" "$id" "$kick" "$dl" "$ch" "$bd" "$ncap" | cmp -s - "$m" \
     || { printf '(다) 매니페스트가 앞 런 매니페스트와 허용 변경분 밖에서 다릅니다'; return 1; }
   pp=$(rekick_paths "$pm") && sp=$(rekick_paths "$m") \
     || { printf '(다) 인가 기록 경로를 유도하지 못했습니다'; return 1; }
@@ -844,6 +933,7 @@ rekick_admission_history() {
   # predecessor's ledger, the chain's ledgers, the sibling manifests and the
   # dispatcher's claim. Computed once per manifest digest; see the memo below.
   local m="$1" dir id ch pid cause at led pm tok f fch claim sv appr arun aid aled arow adig
+  local pcap scap acause adelta want ev
   dir=$(cd "$(dirname "$m")" && pwd) || { printf '(사) 매니페스트 디렉터리를 읽지 못했습니다'; return 1; }
   m="$dir/$(basename "$m")"
   id=$(rekick_hdr "$m" 'run-id')
@@ -862,15 +952,17 @@ rekick_admission_history() {
   else
     [ -f "$led" ] || { printf '(사) 앞 런 원장이 없습니다: %s' "$led"; return 1; }
     tok=$(rekick_end_token "$led") || { printf '(사) 앞 런의 종료 토큰이 없습니다 — 끝나지 않은 런'; return 1; }
-    [ "$tok" != "해당없음" ] || { printf '(사) 앞 런이 분류 없이 멈췄습니다'; return 1; }
     # The verdict never derives a judgment stop, so a row naming one is refused
     # whatever approval it carries.
     [ "$cause" != "판단정지" ] || { printf '(사) 원인 판단정지 는 후속 런을 열지 않습니다 — 사람 판정입니다'; return 1; }
     case "$cause" in
       대상미선언|슬라이싱)
+        # The end token may be any the end-token verdict below lets through,
+        # a normal completion included.
         rekick_park_causes "$led" | grep -qxF "$cause" \
           || { printf '(사) 원인 %s 의 park 행이 앞 런 원장에 없습니다' "$cause"; return 1; } ;;
       *)
+        [ "$tok" != "해당없음" ] || { printf '(사) 앞 런이 분류 없이 멈췄습니다'; return 1; }
         [ "$tok" = "$cause" ] || { printf '(사) 앞 런의 종료 토큰 %s 이 원인 %s 과 다릅니다' "$tok" "$cause"; return 1; } ;;
     esac
   fi
@@ -891,49 +983,99 @@ rekick_admission_history() {
   [ "$(tr -d '\n' < "$claim/at" 2>/dev/null)" = "$at" ] \
     || { printf '(사) 클레임의 at 이 재킥오프 시각과 다릅니다: %s' "$claim"; return 1; }
 
-  # The stop predicates, on chain-verified ledgers, as the verdict reads them:
-  # a park cause and a never-started link were decided before any of them.
+  # The stop predicates, on chain-verified ledgers, as the verdict reads them,
+  # computed with the end token whatever the row's cause: a park row does not
+  # lift them. Only a never-started link was decided before any of them.
   rekick_chain_links "$pm" >/dev/null || { printf '(사) 연쇄의 원장 사슬 검증 실패'; return 1; }
-  case "$cause" in
-    대상미선언|슬라이싱|연기마감) ;;
-    *) if sv=$(rekick_stop_reason "$pm" "$cause"); then printf '(사) %s' "$sv"; return 1; fi ;;
-  esac
+  if [ "$cause" != "연기마감" ] && sv=$(rekick_stop_reason "$pm" "$tok"); then
+    printf '(사) %s' "$sv"; return 1
+  fi
 
   rekick_integer_terminal_cap "$m" \
     && { printf '(사) 정수 말단 행위 상한을 가진 대상이 있습니다'; return 1; }
 
   # An approval cause needs a person's close. An automatic close also leaves
-  # `상태=승인`, so the state alone does not say a person answered.
+  # `상태=승인`, so the state alone does not say a person answered. The close
+  # row carries only the state and the answer, so what the approval was raised
+  # for — its kind, its cause and its change — is read from every row of it.
   appr=$(rekick_row_field "$ch" '재인가 승인')
-  if [ -z "$appr" ]; then
-    case "$cause" in
-      대상미선언|슬라이싱)
-        printf '(사) 원인 %s 은 재인가 승인이 있어야 합니다' "$cause"; return 1 ;;
-      표면이동)
-        sv=$(rekick_surface_verdict "$pm" "$led")
-        [ "${sv%%"$REKICK_TAB"*}" = "자동" ] \
-          || { printf '(사) 승인 없는 표면이동이 자동 조건을 채우지 않습니다 — %s' "${sv#*"$REKICK_TAB"}"; return 1; } ;;
+  acause=""; adelta=""
+  if [ -n "$appr" ]; then
+    arun=${appr%%#*}; aid=${appr#*#}
+    [ "$arun" = "$pid" ] \
+      || { printf '(사) 재인가 승인 %s 은 선행 런 %s 의 승인이 아닙니다' "$appr" "$pid"; return 1; }
+    aled="$dir/$arun.md"
+    [ -f "$aled" ] || { printf '(사) 재인가 승인의 원장이 없습니다: %s' "$aled"; return 1; }
+    ( LEDGER="$aled"; RUN_ID="$arun"; gate_chain_verify "$aled" "$arun" ) >/dev/null 2>&1 \
+      || { printf '(사) 재인가 승인의 원장이 사슬 검증을 지나지 못합니다'; return 1; }
+    arow=$(grep -E '^- `승인` \| ' "$aled" | awk -v a=" | 승인 id=$aid | " -v b=" | 승인 id=$appr | " \
+             'index($0, a) || index($0, b) { r = $0 } END { print r }')
+    [ -n "$arow" ] || { printf '(사) 재인가 승인 %s 의 행이 없습니다' "$appr"; return 1; }
+    [ "$(rekick_approval_field "$aled" "$aid" '종류')" = "W" ] \
+      || { printf '(사) 재인가 승인 %s 이 종류 W 가 아닙니다' "$appr"; return 1; }
+    acause=$(rekick_approval_field "$aled" "$aid" '재인가 원인')
+    adelta=$(rekick_approval_field "$aled" "$aid" '변경분')
+    [ "$(rekick_row_field "$arow" '상태')" = "승인" ] \
+      || { printf '(사) 재인가 승인 %s 이 승인으로 닫히지 않았습니다' "$appr"; return 1; }
+    case "$(rekick_row_field "$arow" '응답 토큰')" in
+      ''|-) printf '(사) 재인가 승인 %s 에 사람의 응답 토큰이 없습니다' "$appr"; return 1 ;;
     esac
-    return 0
+    [ "$(rekick_row_field "$arow" '처분 사유')" != "자동 해소" ] \
+      || { printf '(사) 재인가 승인 %s 은 자동 해소로 닫혔습니다' "$appr"; return 1; }
+    adig=$(rekick_row_field "$ch" '답변 다이제스트')
+    [ "$(rekick_row_field "$arow" '답변 다이제스트')" = "$adig" ] \
+      || { printf '(사) 연쇄 행의 답변 다이제스트가 재인가 승인의 답변과 다릅니다'; return 1; }
   fi
-  arun=${appr%%#*}; aid=${appr#*#}
-  aled="$dir/$arun.md"
-  [ -f "$aled" ] || { printf '(사) 재인가 승인의 원장이 없습니다: %s' "$aled"; return 1; }
-  ( LEDGER="$aled"; RUN_ID="$arun"; gate_chain_verify "$aled" "$arun" ) >/dev/null 2>&1 \
-    || { printf '(사) 재인가 승인의 원장이 사슬 검증을 지나지 못합니다'; return 1; }
-  arow=$(grep -E '^- `승인` \| ' "$aled" | awk -v a=" | 승인 id=$aid | " -v b=" | 승인 id=$appr | " \
-           'index($0, a) || index($0, b) { r = $0 } END { print r }')
-  [ -n "$arow" ] || { printf '(사) 재인가 승인 %s 의 행이 없습니다' "$appr"; return 1; }
-  [ "$(rekick_row_field "$arow" '상태')" = "승인" ] \
-    || { printf '(사) 재인가 승인 %s 이 승인으로 닫히지 않았습니다' "$appr"; return 1; }
-  case "$(rekick_row_field "$arow" '응답 토큰')" in
-    ''|-) printf '(사) 재인가 승인 %s 에 사람의 응답 토큰이 없습니다' "$appr"; return 1 ;;
+
+  # The chain cap changes only through a closed `상한` approval, and only to the
+  # cap that approval carries.
+  pcap=$(rekick_row_field "$(rekick_consent_row "$pm")" '연쇄 상한')
+  scap=$(rekick_row_field "$(rekick_consent_row "$m")" '연쇄 상한')
+  if [ "$scap" != "$pcap" ]; then
+    [ "$acause" = "상한" ] \
+      || { printf '(사) 연쇄 상한 %s 이 앞 런의 %s 과 다른데 그 상한을 담은 상한 재인가 승인이 없습니다' "$scap" "$pcap"; return 1; }
+    [ "$adelta" = "새 연쇄 상한 $scap" ] \
+      || { printf '(사) 상한 재인가 승인의 변경분 「%s」 이 이 런의 연쇄 상한 %s 이 아닙니다' "$adelta" "$scap"; return 1; }
+  elif [ "$acause" = "상한" ]; then
+    printf '(사) 상한 재인가 승인을 달았는데 연쇄 상한이 앞 런과 같은 %s 입니다 — 승인된 변경분이 적용되지 않았습니다' "$scap"; return 1
+  fi
+
+  # The branch the row claims must be the one the end token alone gives: no
+  # approval is the automatic branch, a cap approval the cap branch, a surface
+  # approval the approval branch, and a park cause stands on an automatic
+  # verdict or a normal completion only.
+  case "$cause" in
+    연기마감)
+      [ -z "$appr" ] || { printf '(사) 원인 연기마감 은 재인가 승인을 받지 않습니다'; return 1; }
+      return 0 ;;
+    대상미선언|슬라이싱)
+      [ -n "$appr" ] || { printf '(사) 원인 %s 은 재인가 승인이 있어야 합니다' "$cause"; return 1; }
+      [ "$acause" = "$cause" ] \
+        || { printf '(사) 재인가 승인의 원인 %s 이 연쇄 행의 원인 %s 과 다릅니다' "${acause:-(없음)}" "$cause"; return 1; }
+      want="자동 없음" ;;
+    *)
+      case "$acause" in
+        '') want="자동" ;;
+        상한) want="상한" ;;
+        표면이동)
+          [ "$cause" = "표면이동" ] \
+            || { printf '(사) 표면이동 재인가 승인이 원인 %s 의 후속을 엽니다' "$cause"; return 1; }
+          want="승인" ;;
+        *) printf '(사) 재인가 승인의 원인 %s 은 원인 %s 의 후속을 열지 않습니다' "$acause" "$cause"; return 1 ;;
+      esac ;;
   esac
-  [ "$(rekick_row_field "$arow" '처분 사유')" != "자동 해소" ] \
-    || { printf '(사) 재인가 승인 %s 은 자동 해소로 닫혔습니다' "$appr"; return 1; }
-  adig=$(rekick_row_field "$ch" '답변 다이제스트')
-  [ "$(rekick_row_field "$arow" '답변 다이제스트')" = "$adig" ] \
-    || { printf '(사) 연쇄 행의 답변 다이제스트가 재인가 승인의 답변과 다릅니다'; return 1; }
+  ev=$(rekick_end_verdict "$pm" "$led" "$tok")
+  case " $want " in
+    *" ${ev%%"$REKICK_TAB"*} "*) ;;
+    *) printf '(사) 종료 토큰 %s 만의 판정이 %s 입니다 — %s' "$tok" "${ev%%"$REKICK_TAB"*}" "${ev#*"$REKICK_TAB"}"; return 1 ;;
+  esac
+}
+
+rekick_approval_field() {
+  # rekick_approval_field <ledger> <승인 id> <키> — the last value the key ever
+  # carried on a row for that approval, the way the gate's own reader takes it.
+  grep -E '^- `승인` \| ' "$1" 2>/dev/null | grep -F " | 승인 id=$2 | " \
+    | tr '|' '\n' | sed -n "s/^ *$3=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
 # The memo of (사). `check_manifest` runs before the run directory may be
@@ -1194,7 +1336,8 @@ rekick_sweep_commit_wait() {
 rekick_sweep_open() {
   # rekick_sweep_open <predecessor> <manifest> <ledger|-> <자동|승인>
   #                   <approval|''> <answer digest|''> <pin state line>
-  local pid="$1" pm="$2" led="$3" v="$4" appr="$5" adig="$6" pin="$7"
+  #                   [<새 연쇄 상한>]
+  local pid="$1" pm="$2" led="$3" v="$4" appr="$5" adig="$6" pin="$7" ncap="${8:-}"
   local claim="$REKICK_PACE/rekick/$1" res rc nid nman docsha prec auth root e base dl lane enq rec
   rekick_sweep_lock || { rekick_sweep_log "$pid: backlog.lock 을 잡지 못했다 — 다음 틱에 다시 본다"; return 0; }
   mkdir -p "$claim" || { rekick_sweep_unlock; return 0; }
@@ -1206,7 +1349,8 @@ rekick_sweep_open() {
 
   rc=0
   if [ "$v" = "승인" ]; then
-    res=$(rekick_derive --predecessor "$pm" --claim "$claim" --verdict 승인 --approval "$appr" --answer-digest "$adig") || rc=$?
+    res=$(rekick_derive --predecessor "$pm" --claim "$claim" --verdict 승인 --approval "$appr" --answer-digest "$adig" \
+            ${ncap:+--cap "$ncap"}) || rc=$?
   else
     res=$(rekick_derive --predecessor "$pm" --claim "$claim" --verdict 자동) || rc=$?
   fi
@@ -1262,7 +1406,7 @@ rekick_sweep_open() {
 rekick_sweep_approval() {
   # rekick_sweep_approval <predecessor> <manifest> <ledger|-> <판정> <원인> <pin>
   # — raise the re-authorization approval once; derive once a person closed it.
-  local pid="$1" pm="$2" led="$3" v="$4" cause="$5" pin="$6" wc delta="" aid st rc tok disp dig
+  local pid="$1" pm="$2" led="$3" v="$4" cause="$5" pin="$6" wc delta="" aid st rc tok disp dig ncap
   if [ "$v" = "상한" ]; then
     wc=상한
     delta=$(( $(rekick_position "$pm" | cut -f3) + 1 ))
@@ -1295,9 +1439,15 @@ rekick_sweep_approval() {
       dig=$( LEDGER="$led"; gate_approval_field "$aid" '답변 다이제스트' )
       if [ -z "$tok" ] || [ "$tok" = "-" ] || [ "$disp" = "자동 해소" ]; then
         rekick_outcome "$pid" 사람 "재인가 승인 $pid#$aid 이 사람의 답변으로 닫히지 않았습니다"
-      else
-        rekick_sweep_open "$pid" "$pm" "$led" 승인 "$pid#$aid" "$dig" "$pin"
-      fi ;;
+        return 0
+      fi
+      # A closed cap approval opens a successor carrying the cap it names.
+      ncap=""
+      if [ "$wc" = "상한" ]; then
+        ncap=$( LEDGER="$led"; gate_approval_field "$aid" '변경분' | sed -n 's/^새 연쇄 상한 \([1-9][0-9]*\)$/\1/p' )
+        [ -n "$ncap" ] || { rekick_outcome "$pid" 사람 "재인가 승인 $pid#$aid 의 변경분에서 새 연쇄 상한을 읽지 못했습니다"; return 0; }
+      fi
+      rekick_sweep_open "$pid" "$pm" "$led" 승인 "$pid#$aid" "$dig" "$pin" "$ncap" ;;
     *) rekick_outcome "$pid" 사람 "재인가 승인 $pid#$aid 이 $st 로 닫혔습니다" ;;
   esac
 }
