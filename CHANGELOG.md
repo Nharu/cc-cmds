@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.7] - 2026-10-12
+
+기기전역 밖 칸에서 park 이 찍는 수리 행이 옵션 이름이나 피연산자 앞에서 끊기면, 그 행이 끊긴 자리 뒤만 다른 형제 행위(`cargo run --bin wipe`, `terraform -chdir other apply`)까지 열어 사람이 본 것보다 넓은 행위를 인가했다. 이제 수리 문구는 서브커맨드 앞의 옵션과 옵션 값, 그리고 피연산자까지 담으라고 말하고, 피연산자가 없으면 행위 전체를 담으라고 말한다. `=` 철자만 받는 옵션(terraform 의 `-chdir`)이 떨어진 행위는 어느 행으로도 열리지 않으니 사람에게 넘기라고 안내한다.
+
+### Fixed
+
+- **수리 문구** (오케스트레이터) — 신고 등급 한도 칸의 문구가 옵션 값과 피연산자까지 담으라고 말한다. 떨어진 `=` 단어 칸의 문구는 공백 철자를 받지 않는 옵션이면 행으로 열 수 없다고 말한다
+- **사이드카 규약** — `=` 철자만 받는 옵션이 붙은 행위는 행으로 열리지 않고 승인으로 간다는 문장을 더한다
+- **시험** — 제안 행이 같은 행위를 열고, 고정한 값이나 피연산자를 바꾼 형제 행위는 열지 않는다는 단언을 더한다
+
+### Post-install notes
+
+- 사전 인가 대조 규칙 파일의 제안 길이 수정은 같은 PR 에 좌석 커밋으로 들어간다. 그 커밋 전에는 제안이 옵션 값과 피연산자까지 가지 않는다.
+
 ## [2.64.6] - 2026-10-12
 
 기기전역 칸에서 `run`·`create` 가 아닌 docker 행위는 행이 행위 전체를 담아야 열린다. 그런데 그 「행위 전체」를 `-x=y` 단어가 이미 빠진 단어열로 재어서, 행 `docker build -t T .` 이 `docker build -t T . --output=type=local,dest=<호스트 디렉터리>` 처럼 꼬리에 `=` 로 붙인 옵션까지 열었다. 이제 그런 docker 행위의 행위 전체는 떨어진 `-x=y` 단어가 하나도 없는 것까지이며, 꼬리에 `=` 철자 옵션이 붙은 행위는 어떤 행으로도 열리지 않는다. 공백 철자로 고쳐 쓰고 그 행위 전체를 행에 적어야 한다.
