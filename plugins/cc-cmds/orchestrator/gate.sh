@@ -7886,22 +7886,36 @@ gate_prior_decl_diff() {
   # carries now; otherwise one phrase naming what differs, or that there is no
   # plan row to compare. See `gate_prior_run_landed` for why.
   local seg="$1" f="$2" row="$3" pr="" org of rr k dk pv cv pd side
+  # THE TERMINAL ROW NAMES THE DECLARATION THE SLICE LANDED UNDER, when it
+  # carries a digest. The segment arm stamps one on every landing it writes,
+  # and a reconvergence inside that run widens the declaration after the plan
+  # row — so the plan row names a narrower slice than the one reviewed and
+  # merged, and comparing it would refuse a landing that holds. A digest on the
+  # terminal row decides alone; when it differs and the slice landed as it was
+  # planned, the plan row below still names the field that differs.
   pr=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } \
         | { grep -F '| 상태=계획됨 |' || true; } | tail -1)
+  pd=$(gate_row_field "$row" '선언 다이제스트')
+  case "$pd" in *[!0-9a-f]*) pd="" ;; esac
+  [ "${#pd}" -eq 64 ] || pd=""
+  if [ -n "$pd" ]; then
+    [ "$pd" != "$(slice_decl_digest "$DOC" "$seg")" ] || return 0
+    if [ -z "$pr" ] || [ "$(gate_row_field "$pr" '선언 다이제스트')" != "$pd" ]; then
+      if [ "$(gate_row_field "$row" '출처')" = "매니페스트" ]; then
+        printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런이 매니페스트의 선행 착지 행으로 들인 ${seg} 의 선언과 지금 문서의 선언 전체가 다릅니다"
+      else
+        printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런이 ${seg} 를 착지시킬 때의 선언과 지금 문서의 선언 전체가 다릅니다"
+      fi
+      return 0
+    fi
+  fi
   # A LANDING THE MANIFEST BROUGHT IN WAS NEVER PLANNED BY ANY RUN. Its row is a
   # person's `선행 착지` claim that the gate checked against the base branch
   # when it wrote the row, and the caller checks that merge commit against the
   # base branch again, so `출처=매니페스트` names no ledger to follow and is its
-  # own evidence. The row keeps the declaration digest the slice had when it was
-  # brought in, and a revised declaration still differs; a row written before it
-  # kept one rests on the claim and the landing alone.
+  # own evidence. A row written before it kept a declaration digest rests on the
+  # claim and the landing alone.
   if [ -z "$pr" ] && [ "$(gate_row_field "$row" '출처')" = "매니페스트" ]; then
-    pd=$(gate_row_field "$row" '선언 다이제스트')
-    case "$pd" in *[!0-9a-f]*) pd="" ;; esac
-    [ "${#pd}" -eq 64 ] || pd=""
-    if [ -n "$pd" ] && [ "$pd" != "$(slice_decl_digest "$DOC" "$seg")" ]; then
-      printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런이 매니페스트의 선행 착지 행으로 들인 ${seg} 의 선언과 지금 문서의 선언 전체가 다릅니다"
-    fi
     return 0
   fi
   if [ -z "$pr" ]; then
@@ -8007,7 +8021,10 @@ gate_prior_run_landed() {
   # alone brought in a landing made under a narrower `선언 파일` or a weaker
   # `리뷰 정책`, the slice was not dispatched, and the scope the revision added
   # was never built. A candidate therefore also has to show the slice was
-  # planned under the declaration the frozen document carries now: the last
+  # built to the declaration the frozen document carries now. A terminal row
+  # carrying a `선언 다이제스트` says so by itself — the segment arm stamps the
+  # declaration the slice landed under, which a reconvergence inside that run
+  # may have widened past its plan row. Without one, it is the last
   # `계획됨` row for the id in that ledger, compared on `선언 파일 집합`,
   # `레포`, `선행`, `절단점` and `리뷰 정책` — by the row's `선언 다이제스트`
   # of the whole declaration when it carries one, and otherwise field by field,
@@ -8162,14 +8179,11 @@ gate_import_prior_landed() {
   pbr=$(gate_row_field "$GATE_PRIOR_ROW" '브랜치')
   org=$(gate_row_field "$GATE_PRIOR_ROW" '출처')
   [ -n "$org" ] || org=$GATE_PRIOR_RUN
-  # A manifest landing has no plan row to follow, so its declaration digest
-  # travels on the row itself, and the next run in the chain compares that.
-  pdg=""
-  if [ "$org" = "매니페스트" ]; then
-    pdg=$(gate_row_field "$GATE_PRIOR_ROW" '선언 다이제스트')
-    case "$pdg" in *[!0-9a-f]*) pdg="" ;; esac
-    [ "${#pdg}" -eq 64 ] || pdg=""
-  fi
+  # The declaration digest a landing carries travels on the row it is brought
+  # in as, and the next run in the chain compares that.
+  pdg=$(gate_row_field "$GATE_PRIOR_ROW" '선언 다이제스트')
+  case "$pdg" in *[!0-9a-f]*) pdg="" ;; esac
+  [ "${#pdg}" -eq 64 ] || pdg=""
   if [ "$GATE_PRIOR_KIND" = "머지" ]; then
     if [ "$pst" = "머지됨" ] && gate_segment_owes_apply "$dal" "$seg"; then
       if [ "$mode" = "self" ]; then
@@ -18397,6 +18411,20 @@ gate_record_row() {
       if [ "$st" = "머지됨" ] && gate_segment_owes_apply "$alias" "$seg"; then
         set -- "$@" "적용=대기"
       fi
+
+      # `선언 다이제스트` ON A LANDING. A later run brings this landing in only
+      # when it was built to the declaration the document carries then, and a
+      # reconvergence inside this run can widen the declaration after the plan
+      # row was written. The declaration the frozen document carries at the
+      # landing is the one the work was reviewed against, so the gate stamps
+      # it here; a slice the document does not declare gets none.
+      case "$st" in
+        머지됨|완료)
+          if [ -n "${DOC:-}" ] && grep -qxF '**상태**: 동결됨' "$DOC" 2>/dev/null \
+             && grep -qxF "$seg" <<<"$(slice_ids "$DOC" 2>/dev/null)"; then
+            set -- "$@" "선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")"
+          fi ;;
+      esac
 
       # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
       # deliberately. `cycle` and `problem` below carry the same shape for
