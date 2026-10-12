@@ -60,6 +60,10 @@ FEED_DIR=$(cd "$(dirname "$0")" && pwd)
 # The run's version pin, for the same hop the gate and the watcher take.
 # shellcheck source=/dev/null
 . "$FEED_DIR/pin.sh"
+# The display zone every line's clock is drawn in (`CC_CMDS_AUTOPILOT_TZ`).
+# shellcheck source=/dev/null
+. "$FEED_DIR/display-tz.sh"
+cc_display_tz_load
 
 FEED_ARGV=("$@")
 
@@ -112,7 +116,7 @@ LOCKD="$RUN_DIR/feed.lock.d"
 LOCK_OWNED=0
 
 now_epoch() { date +%s; }
-now_stamp() { date -u +%H:%MZ; }
+now_stamp() { printf '%s %s' "$(cc_display_hhmm "$(date -u +%s)")" "$CC_DTZ_LABEL"; }
 
 # The separator in `feed.state`, spelled once. A literal tab inside a `sed` or
 # `grep` expression is invisible in a diff and survives being turned into spaces
@@ -270,10 +274,12 @@ release_lock() {
 #
 # EVERY LINE CARRIES TIME, SUBJECT AND STATE — POSITIVELY, not by avoiding a
 # list of forbidden things. A rule made only of prohibitions passes a line like
-# `[06:22Z] 스테이지 종단`, and the lead that receives it has to read the snapshot
-# to learn what ended — which is the one act the router's channel invariant
-# forbids outright. The clock is the same UTC `Z` the ledger and the morning
-# report use, so any line can be grepped back to its row.
+# `[06:22 KST] 스테이지 종단`, and the lead that receives it has to read the
+# snapshot to learn what ended — which is the one act the router's channel
+# invariant forbids outright. The clock is in the display zone and the label
+# beside it names that zone, because a line falls into the conversation with no
+# heading to say it. Ledger rows stay UTC, so to find a line's row subtract the
+# label's offset first.
 #
 # THE RUN ID IS NOT IN THE LINE BODY. The monitor's `description` carries it into
 # every event's summary, and that string is the only thing separating two runs

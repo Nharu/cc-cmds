@@ -42,6 +42,10 @@ unset CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER CC_PIPELINE_RUN_ID \
 # turning the channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one, and nothing in this suite stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -4878,19 +4882,23 @@ for fence_f in "$FEED_SH" "$CHECKS_SH"; do
   # the door that is already named; asking which files it may source at all also
   # closes the one a future emitter under another name would use.
   #
-  # THE LIST IS TWO NAMES, AND THE SECOND ONE PAYS ITS WAY BELOW. `pin.sh` joined
+  # THE LIST IS THREE NAMES, AND THE LAST TWO PAY THEIR WAY BELOW. `pin.sh` joined
   # it because these processes have to hop into the run's pinned copy before they
   # write anything, and the predicate that decides that is shared with the gate
-  # and the watcher rather than re-implemented here. Widening a whitelist weakens
-  # it unless the new entry is fenced too, so the assertions after this one hold
-  # `pin.sh` to the same rule: it sources nothing and names no emitter.
+  # and the watcher rather than re-implemented here. `display-tz.sh` joined it
+  # because the feed's line prefix shows the time in the display zone, and that
+  # conversion lives in the one helper every surface shares rather than in a
+  # copy here. Widening a whitelist weakens it unless the new entry is fenced
+  # too, so the assertions after this loop hold `pin.sh` and `display-tz.sh` to
+  # the same rule: each sources nothing and names no emitter.
   fence_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$fence_f" || true; } \
                     | { grep -v 'liveness\.sh' || true; } \
-                    | { grep -v 'pin\.sh' || true; } )
+                    | { grep -v 'pin\.sh' || true; } \
+                    | { grep -v 'display-tz\.sh' || true; } )
   if [ -n "$fence_src_other" ]; then
-    bad "울타리" "$fence_n 이 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $fence_src_other"
+    bad "울타리" "$fence_n 이 허용 목록(liveness.sh · pin.sh · display-tz.sh) 밖의 것을 소스한다: $fence_src_other"
   else
-    ok "$fence_n 이 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+    ok "$fence_n 이 소스하는 것은 liveness.sh·pin.sh·display-tz.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
   fi
   # And the name reaches no executable line. A header sentence explaining the
   # fence is not a breach of it, so the comment lines are excluded rather than
@@ -4930,6 +4938,24 @@ if [ -f "$FEED_SH" ]; then
     fi
   else
     bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
+  fi
+  # The display-zone helper is held to the rule `pin.sh` is held to above, with
+  # the notifier's name split the same way and for the same reason.
+  DTZ_SH="$(dirname "$DRIVER")/display-tz.sh"
+  if [ -f "$DTZ_SH" ]; then
+    dtz_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$DTZ_SH" || true )
+    if [ -n "$dtz_src_any" ]; then
+      bad "피드 울타리" "display-tz.sh 가 무언가를 소스한다 — 허용 목록이 그만큼 넓어진다: $dtz_src_any"
+    else
+      ok "display-tz.sh 는 아무것도 소스하지 않는다 (허용 목록이 이 한 파일로 닫힌다)"
+    fi
+    if grep -qE 'notify-run\.sh|cc_notify_fire|cc_notify_clear|terminal-''notifier' "$DTZ_SH"; then
+      bad "피드 울타리" "display-tz.sh 가 방출 경로를 이름으로 담고 있다"
+    else
+      ok "display-tz.sh 의 어디에도 방출 경로가 없다"
+    fi
+  else
+    bad "피드 울타리" "display-tz.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
   fi
 else
   bad "진행 채널" "feed.sh 가 없다 — 라우팅이 리드를 떠난 밤에 사람이 볼 것이 없다"
@@ -9622,11 +9648,33 @@ printf 'window=%s/%s\n' "$( { wc -l < "$RUN_DIR/$ra_sid.window" 2>/dev/null || p
 printf 'cfgrec=%s\n' "$(stage_config_dir_of "$ra_sid")"
 printf 'record=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
 printf 'live=%s\n' "$(ra_live "$ra_sid")"
+ra_costs() {
+  if [ -f "$(run_pace_root)/costs/samples.jsonl" ]; then
+    jq -s --arg l "$1" '[.[] | select(.lineage == $l)] | length' "$(run_pace_root)/costs/samples.jsonl"
+  else
+    printf '0'
+  fi
+}
 if [ "$rc" = "0" ]; then
   stage_collect "$ra_sid"
+  # RA_COST 가 있으면 다시 붙은 파견처럼 시도 로그 둘을 둔다. `1` 이 아니면 그 값을
+  # 창 기록의 넷째 줄(계정)로 바꿔 쓴다.
+  if [ -n "${RA_COST:-}" ]; then
+    for n in 1 2; do
+      printf '{"type":"assistant","timestamp":"%s"}\n{"type":"result","duration_ms":1000}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN_DIR/log/$ra_sid#$n.json"
+    done
+    if [ "$RA_COST" != "1" ]; then
+      { sed -n '1,3p' "$RUN_DIR/$ra_sid.window"; printf '%s\n' "$RA_COST"; } > "$RUN_DIR/$ra_sid.window.t"
+      mv -f "$RUN_DIR/$ra_sid.window.t" "$RUN_DIR/$ra_sid.window"
+    fi
+  fi
   spawn_lease_release "$ra_sid"
   printf 'after=%s\n' "$(ra_live "$ra_sid")"
   printf 'record2=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
+  printf 'costs=%s\n' "$(ra_costs "$ra_sid")"
+  spawn_lease_release "$ra_sid"
+  printf 'costs2=%s\n' "$(ra_costs "$ra_sid")"
 fi
 RAEOF
 ra_spawn() {  # ra_spawn <stage-id> — probe 출력 전체
@@ -9659,6 +9707,21 @@ rc=0; bash -c 'g="$1"; l="$2"; set --; CC_GATE_SOURCE_ONLY=1 . "$g" >/dev/null 2
                unset CC_GATE_SOURCE_ONLY; LEDGER="$l"; RUN_DIR="${l%/*}"; RUN_ID=ra-run; gate_chain_verify' \
   _ "$RA/orch/gate.sh" "$RA/ledger.md" >/dev/null 2>&1 || rc=$?
 check "드라이버가 쓴 stage-lease 행이 원장 사슬을 끊지 않는다" "$rc" "0"
+check "구간 없는 로그의 파견은 비용 표본을 남기지 않는다" "$(ra_get "$ra_out" costs)" "0"
+
+# 비용 표본 — 반납 뒤 그 파견의 시도 로그마다 한 줄. 두 번째 반납은 기록이 없어
+# 일찍 돌아가고, 같은 로그 이름은 저장소가 바꿔 쓰므로 줄이 늘지 않는다.
+ra_out=$(RA_COST=1 ra_spawn "S4:segK:1")
+check "다시 붙은 파견의 로그 둘이 표본 두 줄이 된다" "$(ra_get "$ra_out" costs)" "2"
+check "같은 파견의 반복 반납 뒤에도 두 줄이다" "$(ra_get "$ra_out" costs2)" "2"
+check "드라이버 표본의 부류·계정·로그 이름은 그 파견의 것이다" \
+  "$(jq -sr '[.[] | select(.lineage == "S4:segK:1") | "\(.kind) \(.account) \(.run_id) \(.log)"] | sort | join(",")' \
+       "$RA/pace/costs/samples.jsonl" 2>/dev/null)" \
+  "implement ra1 ra-run S4:segK:1#1.json,implement ra1 ra-run S4:segK:1#2.json"
+ra_out=$(RA_COST='(미상)' ra_spawn "S4:segL:1")
+check "계정이 (미상) 인 파견은 비용 표본을 남기지 않는다" "$(ra_get "$ra_out" after)/$(ra_get "$ra_out" costs)" "/0"
+ra_out=$(RA_COST=- ra_spawn "S4:segM:1")
+check "계정이 - 인 파견은 비용 표본을 남기지 않는다" "$(ra_get "$ra_out" after)/$(ra_get "$ra_out" costs)" "/0"
 
 # 부여 뒤 이른 반환(설정 파일 없음 78)은 이 기동이 만든 임대를 돌려준다.
 mv "$RA/run/settings/implement.json" "$RA/run/settings/implement.json.off"
@@ -9714,6 +9777,270 @@ check "기동 뒤 대기 표지가 남지 않는다" "$( [ -e "$RA/run/segW.wait
 check "대기는 파킹 행을 쓰지 않는다" "$( { grep -F '`blocked`' "$RA/ledger.md" || true; } | { grep -cF 'S4:segW:1' || true; })" "0"
 kill -TERM "$RA_WRITER" 2>/dev/null; wait "$RA_WRITER" 2>/dev/null || true
 rm -f "$RA/run/watch.stall"
+
+# ---------------------------------------------------------------------------
+# 34. 남은 일 이어받기 — 이전 런이 착지시킨 슬라이스는 다시 하지 않는다
+#
+# 같은 문서를 다시 킥오프한 런은 선언된 슬라이스를 전부 다시 계획한다. 이전 런이
+# 착지시킨 슬라이스는 계획 때 게이트의 들여오기로 종단 행을 받아 `done.txt` 에
+# 들어가고, 주 루프는 그것을 디스패치하지 않는다. 들인 행 뒤에 `계획됨` 행이 붙으면
+# 그다음 런이 마지막 행을 미착지로 읽으므로, 세 고리 연쇄를 실제 게이트로 잰다 —
+# 드라이버가 `run_gate_call` 의 자식 셸로 부르는 그 경로 그대로다.
+# ---------------------------------------------------------------------------
+#
+# 30절은 끝에서 스파이로 덮었던 드라이버 함수를 `unset -f` 로 지운다 — 복원이
+# 아니라 제거다. 이 절은 그 가운데 셋을 진짜로 불러야 하므로 드라이버 원문에서
+# 정의를 다시 읽는다. 다시 소싱하면 첫 `readonly` 에서 죽는다.
+eval "$(grep -E '^log\(\) ' "$DRIVER")"
+for r34fn in ledger_row park; do
+  eval "$(awk -v h="${r34fn}() {" 'index($0, h) == 1 { on = 1 } on { print } on && /^}/ { exit }' "$DRIVER")"
+done
+R34="$WORK/r34"; mkdir -p "$R34/ledgers" "$R34/doc"
+r34_doc() {  # r34_doc <경로> <SA 의 절단점> — SA 와 SA 에 기대는 SB, 둘 다 홈 대상의 레포
+  local id dep cut
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+    for id in SA SB; do
+      dep='없음'; cut="$2"
+      [ "$id" = SB ] && { dep='SA'; cut='머지'; }
+      printf '\n### 슬라이스 %s — 픽스처\n\n**스킬**: implement\n**레포**: Nharu/cc-cmds\n' "$id"
+      printf '**선언 파일**: `%s.txt`\n**선행**: %s\n**절단점**: %s\n**리뷰 정책**: 선리뷰후머지\n' "$id" "$dep" "$cut"
+    done
+  } > "$1"
+}
+r34_last() {  # r34_last <원장> <id> — that id's last segment row
+  { grep -E '^- `segment` ' "$1" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | tail -1
+}
+r34_field() { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+r34_count() {  # r34_count <원장> <id> <상태> — that id's segment rows in that state
+  { grep -E '^- `segment` ' "$1" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } \
+    | { grep -F "| 상태=$3 " || true; } | grep -c . || true
+}
+R34DOC="$R34/doc/r34.md"; r34_doc "$R34DOC" 머지
+R34KEY="${R34DOC#/}"
+MF34="$R34/manifest.md"; write_manifest "$MF34" "" "" main "$R34KEY"
+M34=$(cd "$MF_REPO" && git rev-parse refs/heads/main)
+
+r34_ring() {  # r34_ring <런 id> [머지|실패] — one run of the document: its run row and its plan
+  # `머지` then records SA merged the way `merge_gate` does; `실패` makes the
+  # gate call fail outright, which must plan the slice rather than skip it.
+  local rid="$1"
+  mkdir -p "$R34/$rid"
+  (
+    MANIFEST="$MF34"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    RUN_ID="$rid"; RUN_DIR="$R34/$rid"; LEDGER="$R34/ledgers/$rid.md"; LEDGER_SCOPE=파일
+    GRANT="$R34/grant.md"; DOC="$R34DOC"; DOC_KEY="$R34KEY"
+    : > "$LEDGER"
+    ledger_row 'run' "run-id=$rid" "시작=$(now_iso)" "설계 문서=$DOC_KEY"
+    park() { printf '%s\n' "$*" >> "$RUN_DIR/parked"; }
+    binding_digest() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+    wt_path() { printf 'WT-%s' "$1"; }
+    if [ "${2:-}" = "실패" ]; then run_gate_call() { return 9; }; fi
+    plan_from_declaration "$DOC"
+    printf '%s\n' "$?" > "$RUN_DIR/plan.rc"
+    if [ "${2:-}" = "머지" ]; then
+      ledger_row 'segment' "id=SA" "상태=머지됨" "브랜치=seg/$rid-SA" "PR=3" "레포=Nharu/cc-cmds" \
+        "머지 커밋=$M34" "베이스 sha=$M34"
+    fi
+  ) >/dev/null 2>"$R34/$rid.err"
+}
+r34_done() { tr '\n' ' ' < "$R34/$1/done.txt" 2>/dev/null | sed 's/ $//'; }
+
+r34_ring ring1 머지
+check "34: 첫 고리는 들일 것이 없어 두 슬라이스를 계획하고 SA 를 머지한다" \
+  "$(cat "$R34/ring1/plan.rc")/$(r34_done ring1)/$(r34_count "$R34/ledgers/ring1.md" SA 계획됨)/$(r34_field "$(r34_last "$R34/ledgers/ring1.md" SA)" '상태')" \
+  "0//1/머지됨"
+r34_ring ring2
+r34_ring ring3
+for r34 in ring2 ring3; do
+  r34l="$R34/ledgers/$r34.md"
+  r34a=$(r34_last "$r34l" SA)
+  check "34: $r34 의 plan_from_declaration 은 착지한 SA 를 done.txt 에 다시 채운다" \
+    "$(cat "$R34/$r34/plan.rc")/$(r34_done "$r34")" "0/SA"
+  check "34: $r34 에서 SA 의 마지막 행은 들인 종단 행이고 계획 행이 없다" \
+    "$(r34_field "$r34a" '상태')/$(r34_field "$r34a" '머지 커밋')/$(r34_count "$r34l" SA 계획됨)" "머지됨/$M34/0"
+  check "34: $r34 이 들인 행의 출처 는 일을 한 첫 고리다" "$(r34_field "$r34a" '출처')" "ring1"
+  check "34: $r34 의 SB 는 계획된다" "$(r34_count "$r34l" SB 계획됨)" "1"
+done
+
+# 같은 경로의 문서가 개정돼 SA 의 선언 파일이 늘었다 — 그 넓어진 범위는 어느 고리도
+# 만들지 않았으므로 SA 는 들이지 않고 다시 계획한다. ring3 은 ring2 를, ring2 는
+# ring1 을 출처로 들였으니 대조되는 계획 행은 출처를 따라간 ring1 의 것이다.
+sed 's/^\*\*선언 파일\*\*: `SA.txt`$/**선언 파일**: `SA.txt`, `SA2.txt`/' "$R34DOC" > "$R34DOC.tmp" && mv "$R34DOC.tmp" "$R34DOC"
+r34_ring ring4
+case "$(cat "$R34/ring4/plan.rc")/$(r34_done ring4)/$(r34_count "$R34/ledgers/ring4.md" SA 계획됨)/$(cat "$R34/ring4.err")" in
+  "0//1/"*"슬라이스 SA 착지는 들여오지 않습니다 — 슬라이스 선언 불일치(선언 파일 집합)"*)
+    ok "34: 선언 파일을 고친 문서로 다시 킥오프한 고리는 SA 를 들이지 않고 다시 계획한다" ;;
+  *) bad "34: 개정 선언 재킥오프" "rc=$(cat "$R34/ring4/plan.rc") done=$(r34_done ring4) err=$(tr '\n' ' ' < "$R34/ring4.err")" ;;
+esac
+r34_doc "$R34DOC" 머지
+
+r34_ring ringx 실패
+case "$(r34_done ringx)/$(r34_count "$R34/ledgers/ringx.md" SA 계획됨)/$(cat "$R34/ringx.err")" in
+  "/1/"*"착지 들여오기 호출 실패(rc=9)"*) ok "34: 들여오기 호출이 실패하면 경고하고 SA 를 다시 계획한다" ;;
+  *) bad "34: 들여오기 실패" "done=$(r34_done ringx) err=$(tr '\n' ' ' < "$R34/ringx.err")" ;;
+esac
+
+# 주 루프 — 들인 슬라이스는 디스패치하지 않고 그 수를 보고하며, 그것에 기대는
+# 슬라이스는 그대로 진행한다. 같은 런에서 R7 의 레시피를 함께 잰다: 이전 런이
+# 감사를 마쳐 이 문서 슬러그의 리더 리포트가 있으면 감사를 띄우지 않는다.
+R34M="$R34/main"; mkdir -p "$R34M/run/log" "$R34M/docs/design-audit"
+MF34M="$R34M/manifest.md"; write_manifest "$MF34M" "" "" main "$R34KEY"
+: > "$R34M/docs/design-audit/r34slug.reader-1.md"
+printf -- '- `run` | run-id=r34prior | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n' \
+  "$R34KEY" > "$R34M/r34prior.md"
+(
+  RUN_DIR="$R34M/run"; LEDGER="$R34M/r34main.md"; LEDGER_SCOPE=파일; RUN_ID=r34main; GRANT="$R34/grant.md"
+  MANIFEST="$MF34M"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  DOC="$R34DOC"; DOC_KEY="$R34KEY"; DOC_SLUG=r34slug; DOC_BASE="$R34M"
+  ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=r34main; BASE="$R34M"
+  : > "$LEDGER"
+  design_arm() { return 0; }
+  dispatch_stage() { printf '%s\n' "$1" >> "$R34M/dispatched"; printf '0' > "$RUN_DIR/$1.rc"; }
+  slicing_branch() { printf '선언통치'; }
+  plan_from_declaration() {
+    printf 'SA\t-\t-\t-\nSB\t-\t-\tSA\n' > "$RUN_DIR/plan.tsv"
+    printf 'SA\n' > "$RUN_DIR/done.txt"
+  }
+  segment_cycle() { printf '%s\n' "$1" >> "$R34M/cycled"; return 0; }
+  past_deadline() { return 1; }
+  in_halted_radius() { return 1; }
+  cross_repo_deps() { :; }
+  report_append() { printf '%s | %s\n' "$1" "$2" >> "$R34M/report"; }
+  report_path() { printf '%s' "$R34M/report"; }
+  grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+  run_cycle_budget() { printf 10; }
+  spawn_lease_release_run() { :; }; report_run_residual() { :; }
+  quiet_window_begin() { :; }; quiet_window_end() { :; }
+  main_loop; printf 'rc=%s\n' "$?"
+  printf 'all=%s\n' "${RUN_END_ALL_LANDED:-}"
+) > "$R34M/out" 2>/dev/null
+check "34: 주 루프는 done.txt 의 SA 를 디스패치하지 않고 그것에 기대는 SB 만 돌린다" \
+  "$(sed -n 's/^rc=//p' "$R34M/out")/$(tr '\n' ' ' < "$R34M/cycled" 2>/dev/null | sed 's/ $//')" "0/SB"
+check "34: 종료 보고가 들인 슬라이스 수를 싣는다" \
+  "$(grep -c '^착지 들여오기 | 1건' "$R34M/report" 2>/dev/null || true)" "1"
+check "34: 들인 SA 와 이번 런이 머지한 SB 로 계획된 슬라이스가 모두 착지하면 모두 착지로 끝난다" \
+  "$(sed -n 's/^all=//p' "$R34M/out")" "1"
+check "34: R7 — 이전 런의 감사 리포트가 있으면 후속 런은 감사를 띄우지 않는다" \
+  "$( { cat "$R34M/dispatched" 2>/dev/null || true; } | grep -c '^S2$' || true)/$( { grep -F '`자율 승인`' "$R34M/r34main.md" 2>/dev/null || true; } | grep -cF '기준=이 문서 슬러그의 리더 리포트가 이미 존재한다' || true)" \
+  "0/1"
+
+# 반환 4 의 PR 절단점 종단 행 — 선언된 절단점이 PR 이고 살아 있는 PR 을 관측했을
+# 때만 쓴다. 스텁은 서브셸 안에서만 살린다(27절의 규율).
+R34PR="$R34/doc/pr.md"; r34_doc "$R34PR" PR
+H34=0123456789abcdef0123456789abcdef01234567
+r34_prrow() {  # r34_prrow <seg> <gh 답 | fail> [문서] — the rows pr_cutpoint_terminal_row writes
+  local out="$R34/prrow"
+  : > "$out"
+  (
+    DOC="${3-$R34PR}"; RUN_DIR="$R34"; R34GH="$2"
+    ledger_row() { printf '%s\n' "$*" >> "$out"; }
+    seg_slug() { printf 'o/r'; }
+    wt_path() { printf 'WT-%s' "$1"; }
+    gh() {
+      [ "$R34GH" != "fail" ] || return 1
+      case "$*" in *"pr view seg/x-"*) printf '%s\n' "$R34GH" ;; *) return 1 ;; esac
+    }
+    pr_cutpoint_terminal_row "$1" "seg/x-$1"
+  ) >/dev/null 2>&1
+  tr '\n' ';' < "$out"
+}
+check "34: 선언 PR 슬라이스의 열린 PR 은 완료 · PR · 커밋 종단 행을 남긴다" \
+  "$(r34_prrow SA "12 OPEN $H34")" "segment id=SA 상태=완료 PR=12 커밋=$H34 브랜치=seg/x-SA 레포=o/r 워크트리=WT-SA;"
+check "34: 머지된 PR 도 같은 행을 남긴다" "$(r34_prrow SA "12 MERGED $H34" | grep -c '상태=완료 PR=12' || true)" "1"
+check "34: 닫힌 PR · 관측 실패 · 선언 머지 슬라이스 · 문서 없는 런은 행을 남기지 않는다" \
+  "$(r34_prrow SA "12 CLOSED $H34")|$(r34_prrow SA fail)|$(r34_prrow SB "12 OPEN $H34")|$(r34_prrow SA "12 OPEN $H34" '')" "|||"
+# 이전 런이 PR 에서 멈춘 슬라이스 — 실제 plan_from_declaration 과 실제 게이트 들여오기로
+# 주 루프까지 돈다. PR 이 아직 열려 있으면 SA 는 다시 하지 않되 `done.txt` 에 들지
+# 않으므로, SA 에 기대는 SB 는 그 PR 을 연 런에서처럼 park 된다. 머지됐고 그 머지
+# 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다.
+#
+# gh 는 export 한 함수 스텁이다(test-gate.sh 15g 의 g15_pr 와 같은 방식). 게이트는
+# `run_gate_call` 의 자식 bash 에서 돌고, 그 셸이 소싱하는 run.sh 는 PATH 앞에
+# /usr/bin 을 다시 붙인다. 그래서 PATH 스텁은 /usr/bin/gh 가 있는 호스트(리눅스 CI
+# 러너)에서 가려져 실제 gh 가 돈다. export 한 함수는 자식 bash 에 그대로 넘어가
+# PATH 순서와 무관하게 이긴다. 스텁은 받은 argv 를 로그에 남기고 시험은 그 로그에
+# `pr view 12` 가 있음을 단언하므로, 스텁이 우회되면 「PR 을 읽지 못함」과 구별된다.
+R34PRKEY="${R34PR#/}"
+mkdir -p "$R34/ghbin"
+cat > "$R34/ghbin/gh" <<'GHSTUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "${R34LOG:-/dev/null}"
+case "$*" in *"pr view 12"*) [ -n "${R34GH:-}" ] && printf '%s\n' "$R34GH" && exit 0 ;; esac
+exit 1
+GHSTUB
+chmod +x "$R34/ghbin/gh"
+r34_prmain() {  # r34_prmain <이름> <gh 답> — a prior run left SA at PR 12; this run plans and walks
+  local d="$R34/$1"
+  mkdir -p "$d/run/log" "$d/ledgers" "$d/docs/design-audit"
+  write_manifest "$d/manifest.md" "" "" main "$R34PRKEY"
+  : > "$d/docs/design-audit/$1.reader-1.md"
+  # 이전 런의 계획 행은 지금 문서의 SA 선언과 같다 — 들여오기는 그 대조를 요구한다.
+  printf -- '- `run` | run-id=%s-prior | 시작=2026-01-01T00:00:00Z | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n- `segment` | id=SA | 상태=계획됨 | 선언 파일 집합=`SA.txt` | 레포=Nharu/cc-cmds | 선행=없음 | 절단점=PR | 리뷰 정책=선리뷰후머지 | 워크트리=-\n- `segment` | id=SA | 상태=완료 | PR=12 | 커밋=%s | 브랜치=seg/%s-prior-SA | 워크트리=- | 선행=없음\n' \
+    "$1" "$R34PRKEY" "$H34" "$1" > "$d/ledgers/$1-prior.md"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledgers/$1.md"; LEDGER_SCOPE=파일; RUN_ID="$1"; GRANT="$R34/grant.md"
+    MANIFEST="$d/manifest.md"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    DOC="$R34PR"; DOC_KEY="$R34PRKEY"; DOC_SLUG="$1"; DOC_BASE="$d"
+    ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG="$1"; BASE="$d"
+    # 스텁 경로는 export 한 변수로 넘긴다 — 함수 몸이 펼치는 곳은 자식 셸이다.
+    gh() { "$R34STUB" "$@"; }
+    export -f gh
+    R34STUB="$R34/ghbin/gh"; R34GH="$2"; R34LOG="$d/gh.log"; export R34STUB R34GH R34LOG
+    : > "$LEDGER"
+    ledger_row 'run' "run-id=$1" "시작=$(now_iso)" "설계 문서=$DOC_KEY"
+    design_arm() { return 0; }
+    dispatch_stage() { printf '0' > "$RUN_DIR/$1.rc"; }
+    slicing_branch() { printf '선언통치'; }
+    binding_digest() { printf x; }; wt_path() { printf 'WT-%s' "$1"; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    segment_cycle() { printf '%s\n' "$1" >> "$d/cycled"; return 0; }
+    past_deadline() { return 1; }
+    in_halted_radius() { return 1; }
+    cross_repo_deps() { :; }
+    report_append() { printf '%s | %s\n' "$1" "$2" >> "$d/report"; }
+    report_path() { printf '%s' "$d/report"; }
+    grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+    run_cycle_budget() { printf 10; }
+    spawn_lease_release_run() { :; }; report_run_residual() { :; }
+    quiet_window_begin() { :; }; quiet_window_end() { :; }
+    main_loop; printf 'rc=%s\n' "$?"
+    printf 'all=%s\n' "${RUN_END_ALL_LANDED:-}"
+  ) > "$d/out" 2>"$d/err"
+}
+# gh 의 답은 `state head mergeCommit headRefName baseRefName` 다섯 칸이다.
+r34_prmain r34open "OPEN $H34 - seg/r34open-prior-SA main"
+r34o="$R34/r34open"
+check "34: 게이트 들여오기의 gh 호출이 스텁에 닿는다(열린 PR)" \
+  "$( { grep -F 'pr view 12' "$r34o/gh.log" 2>/dev/null || true; } | grep -c . | sed 's/^[1-9][0-9]*$/있음/')" "있음"
+check "34: 이전 런의 열린 PR 로 들인 SA 는 done.txt 가 아니라 건너뛰기 목록에 들고 계획 행이 없다" \
+  "$(tr '\n' ' ' < "$r34o/run/done.txt" 2>/dev/null | sed 's/ $//')/$(tr '\n' ' ' < "$r34o/run/skipped.txt" 2>/dev/null | sed 's/ $//')/$(r34_field "$(r34_last "$r34o/ledgers/r34open.md" SA)" '상태')/$(r34_count "$r34o/ledgers/r34open.md" SA 계획됨)" \
+  "/SA/완료/0"
+check "34: 열린 PR 의 SA 는 디스패치되지 않고 그것에 기대는 SB 는 같은 런에서처럼 park 된다" \
+  "$(sed -n 's/^rc=//p' "$r34o/out")/$( { cat "$r34o/cycled" 2>/dev/null || true; } | grep -c . || true)/$( { grep -F 'SB cone' "$r34o/parked" 2>/dev/null || true; } | grep -cF '선행 슬라이스가 완료되지 않음' || true)" \
+  "0/0/1"
+check "34: 열린 PR 의 SA 는 사람을 기다리는 완성-미착지로 보고된다" \
+  "$( { grep -F '완성-미착지 | SA' "$r34o/report" 2>/dev/null || true; } | grep -c . || true)" "1"
+check "34: 열린 PR 로 건너뛴 SA 는 착지로 세지 않아 모두 착지로 끝나지 않고 종료 부류=완료 도 없다" \
+  "$(sed -n 's/^all=//p' "$r34o/out")/$( { grep -F '종료 부류=완료' "$r34o/ledgers/r34open.md" 2>/dev/null || true; } | grep -c . || true)" "/0"
+# 머지 전 리뷰 수정 push 로 head 가 행의 커밋에서 움직였어도, 머지 커밋이 베이스에 있고
+# head·base 브랜치 이름이 맞으면 착지로 들인다.
+r34_prmain r34merged "MERGED 3333333333333333333333333333333333333333 $M34 seg/r34merged-prior-SA main"
+r34m="$R34/r34merged"
+check "34: 게이트 들여오기의 gh 호출이 스텁에 닿는다(머지된 PR)" \
+  "$( { grep -F 'pr view 12' "$r34m/gh.log" 2>/dev/null || true; } | grep -c . | sed 's/^[1-9][0-9]*$/있음/')" "있음"
+check "34: 이전 런의 PR 이 머지돼 머지 커밋이 베이스에 있으면 SA 는 착지이고 SB 가 돈다" \
+  "$(tr '\n' ' ' < "$r34m/run/done.txt" 2>/dev/null | sed 's/ $//')/$(r34_field "$(r34_last "$r34m/ledgers/r34merged.md" SA)" '머지 커밋')/$(tr '\n' ' ' < "$r34m/cycled" 2>/dev/null | sed 's/ $//')" \
+  "SA SB/$M34/SB"
+check "34: 머지된 PR 로 들인 SA 와 이번 런의 SB 로 끝난 런은 종료 행에 종료 부류=완료 를 쓴다" \
+  "$(sed -n 's/^all=//p' "$r34m/out")/$( { grep -F '종료 부류=완료' "$r34m/ledgers/r34merged.md" 2>/dev/null || true; } | grep -c . || true)" "1/1"
+
+# 부르는 자리는 마감 경과와 머지 게이트의 2 둘이고, 적용 거부의 4 는 부르지 않는다
+# — 그때의 마지막 행은 이미 `머지됨` 이다.
+r34_sc=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
+check "34: segment_cycle 은 마감 경과와 머지 게이트 2 의 반환 4 앞에서만 종단 행을 쓴다" \
+  "$(printf '%s\n' "$r34_sc" | grep -c 'pr_cutpoint_terminal_row "\$seg" "\$branch"' || true)/$(printf '%s\n' "$r34_sc" | grep -A1 'pr_cutpoint_terminal_row "\$seg"' | grep -c 'return 4' || true)/$(printf '%s\n' "$r34_sc" | grep -B4 'pr_cutpoint_terminal_row "\$seg"' | grep -cE 'if past_deadline; then|if \[ "\$mrc" = "2" \]; then' || true)/$(printf '%s\n' "$r34_sc" | grep -c '\[ "\$arc" = "2" \] && return 4' || true)" \
+  "2/2/2/1"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

@@ -31,17 +31,17 @@ const REPLAY_CUT_1 = [
   'seg\tcut\tok\t✓\tnormal\t A 머지됨',
   'seg-detail\tcut\tdim\t   리뷰 3회차 P0 0 · P1 0 · PR #1115 통과',
   'seg\tcut\taccent\t⟳\tnormal\t B 실행중',
-  'seg-detail\tcut\tdim\t   implement 2회차 · 08:26Z 시작 · 선행 A',
+  'seg-detail\tcut\tdim\t   implement 2회차 · 17:26 시작 · 선행 A',
   'gap\tcut\tnormal\t',
   'gate-none\tcut\tdim\t승인 대기 없음 · 막힘 없음',
   'gap\tcut\tnormal\t',
-  'event-heading\tcut\tnormal.b\t최근 이벤트 UTC',
-  'event\tcut\tdim\t07:37\tnormal\t 비용 누적 $56.38 · 스테이지 6',
-  'event\tcut\tdim\t07:37\tnormal\t B implement 1회차 · rc 0',
-  'event\tcut\tdim\t07:31\tnormal\t 체크 PR #1115 통과',
-  'event\tcut\tdim\t07:22\tnormal\t 체크 PR #1115 대기',
-  'event\tcut\tdim\t07:18\tnormal\t A 리뷰 3회차 · P0 0 · P1 0',
-  'event\tcut\tdim\t07:18\tnormal\t A review 5회차 · rc 0',
+  'event-heading\tcut\tnormal.b\t최근 이벤트 KST',
+  'event\tcut\tdim\t16:37\tnormal\t 비용 누적 $56.38 · 스테이지 6',
+  'event\tcut\tdim\t16:37\tnormal\t B implement 1회차 · rc 0',
+  'event\tcut\tdim\t16:31\tnormal\t 체크 PR #1115 통과',
+  'event\tcut\tdim\t16:22\tnormal\t 체크 PR #1115 대기',
+  'event\tcut\tdim\t16:18\tnormal\t A 리뷰 3회차 · P0 0 · P1 0',
+  'event\tcut\tdim\t16:18\tnormal\t A review 5회차 · rc 0',
   // cc-pane-replay-cut-1:end
 ]
 const REPLAY_CUT_2 = [
@@ -59,10 +59,10 @@ const REPLAY_CUT_2 = [
   'block-heading\tcut\terror.b\t▲ 막힘 · cone B · 사람 결정 필요',
   'block-reason\twrap\tnormal\t구현 B#2 중단(precondition-failed, 계획 단계 5 편집 전): 설계가 발행 질문을 킥오프 글자 5o 로 정하나 master autopilot/SKILL.md:214 에 이미 5o(Kickoff defaults)가 있다. 선택지 5p 로 둔다 / 5o 로 두고 기존 단계를 옮긴다 / 설계를 재수렴한다 중 사람 결정 필요. 커밋 a5e9a43e·24e86570·c52618c1·79afb844 는 브랜치에 있음',
   'gap\tcut\tnormal\t',
-  'event-heading\tcut\tnormal.b\t최근 이벤트 UTC',
-  'event\tcut\tdim\t08:03\tnormal\t 막힘 cone B 기록',
-  'event\tcut\tdim\t08:03\tnormal\t 비용 누적 $66.42 · 스테이지 7',
-  'event\tcut\tdim\t08:03\tnormal\t B implement 2회차 · rc 0 · park',
+  'event-heading\tcut\tnormal.b\t최근 이벤트 KST',
+  'event\tcut\tdim\t17:03\tnormal\t 막힘 cone B 기록',
+  'event\tcut\tdim\t17:03\tnormal\t 비용 누적 $66.42 · 스테이지 7',
+  'event\tcut\tdim\t17:03\tnormal\t B implement 2회차 · rc 0 · park',
 ]
 const replay = (rows: string[]) => ({ exitCode: 0, stdout: rows.join('\n') + '\n' }) as Reply
 

@@ -45,6 +45,10 @@ set -uo pipefail
 # channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one, and nothing in this suite stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)

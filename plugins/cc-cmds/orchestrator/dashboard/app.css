@@ -1,0 +1,46 @@
+:root {
+  --bg: #fafafa; --fg: #1d1d1f; --muted: #6e6e73; --line: #d9d9de; --card: #fff;
+  --live: #1f7ae0; --pend: #b26b00; --going: #2e8b57; --stall: #c0392b; --done: #6e6e73; --dead: #a0a0a5;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161618; --fg: #ececf0; --muted: #9a9aa2; --line: #34343a; --card: #1f1f23; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; background: var(--bg); color: var(--fg); }
+a { color: var(--live); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.top { display: flex; gap: 16px; align-items: baseline; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.brand { font-weight: 600; color: var(--fg); }
+.muted { color: var(--muted); }
+.offline { background: var(--stall); color: #fff; padding: 8px 20px; }
+main { padding: 16px 20px 48px; max-width: 1400px; }
+h2 { font-size: 15px; margin: 24px 0 8px; }
+h3 { font-size: 13px; margin: 16px 0 6px; color: var(--muted); }
+table { border-collapse: collapse; width: 100%; background: var(--card); }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 500; color: var(--muted); font-size: 12px; }
+.state { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; }
+.s-도는중 { background: var(--live); }
+.s-승인대기 { background: var(--pend); }
+.s-진행중 { background: var(--going); }
+.s-정산중 { background: var(--going); }
+.s-정지경고 { background: var(--stall); }
+.s-종단 { background: var(--done); }
+.s-버려짐 { background: var(--dead); }
+.note { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.filters { display: flex; gap: 12px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.filters button, .copy { border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 2px 10px; cursor: pointer; font-size: 12px; }
+.filters button.on { border-color: var(--live); color: var(--live); }
+select { font-size: 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 12px 0; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.tile .big { font-size: 20px; font-weight: 600; }
+.split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+@media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+svg { background: var(--card); border: 1px solid var(--line); border-radius: 8px; max-width: 100%; }
+svg text { fill: var(--fg); font-size: 11px; }
+svg .axis { stroke: var(--line); }
+svg .shift { stroke: var(--pend); stroke-dasharray: 4 3; }
+svg .tick { stroke: var(--fg); }
+.empty { color: var(--muted); padding: 8px 0; }

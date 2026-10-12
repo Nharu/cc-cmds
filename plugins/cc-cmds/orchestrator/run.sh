@@ -855,8 +855,10 @@ manifest_autoadopt_rows() {
 # (CFI-U3 BT-STOP) offers `재수렴`, and a `자동 채택` row of this class lets the
 # routing shift carry that answer itself instead of ending on a person. It is
 # permitted because re-convergence is a scoped repair inside the same run that
-# leaves its own `중단 답` row and stage rows, and it is once per key — a second
-# stop on the same key still goes to a person.
+# leaves its own `중단 답` row and stage rows. The row's `상한` bounds it: the
+# gate counts only the key's automatic `재수렴` answers against it (`없음` is
+# unbounded), and a second `재수렴` to the same halt record after the first one
+# was re-converged still goes to a person.
 readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈"
 readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
@@ -2324,6 +2326,34 @@ declared_field_for_row() {
   fi
 }
 
+decl_norm() {
+  # decl_norm <value> — one declaration value in the form compared across runs:
+  # row-safe as every writer leaves it, with backticks and the outer whitespace
+  # gone, so a value read off a row and the same value read off the document
+  # compare equal.
+  printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ' | tr -d '`' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+slice_decl_digest() {
+  # slice_decl_digest <doc> <slice id> — sha256 of the slice's WHOLE declaration:
+  # `선언 파일`, `레포`, `선행`, `절단점` and `리뷰 정책`, each through
+  # `decl_norm`, one `키=값` line apiece in that order, an undeclared field as
+  # an empty value.
+  #
+  # THE PLANNED ROW CARRIES THIS BESIDE THE FIELDS because the fields are
+  # bounded and the declaration is not: `declared_field_for_row` keeps only the
+  # first ~289 bytes of a long `선언 파일`, so a later run comparing that clip
+  # with the document saw a list grown at its END as unchanged. The digest is
+  # whole whatever the length and needs no sidecar to have survived.
+  local doc="$1" id="$2" k dk
+  for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
+    dk=$k
+    [ "$k" = '선언 파일 집합' ] && dk='선언 파일'
+    printf '%s=%s\n' "$k" "$(decl_norm "$(slice_field "$doc" "$id" "$dk" 2>/dev/null || true)")"
+  done | shasum -a 256 | cut -d' ' -f1
+}
+
 # --- the chained row frame, shared by both writers ---------------------------
 #
 # The gate's writer stamps every row with `교대=<n>` and ends it with
@@ -2544,10 +2574,11 @@ run_ledger_series_check() {
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
   local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
-  local acct="" basis="" worst n
+  local acct="" basis="" cost="" csrc="" worst n
+  local cost_src='(group-kind|kind|default)'
   case "$series" in
-    stage-lease) want='파견 id|계보|계정|레인|예약|근거|관측' ;;
-    stage-wait)  want='계보|그룹|계정|까지|근거' ;;
+    stage-lease) want='파견 id|계보|계정|레인|예약|비용|비용 출처|근거|관측' ;;
+    stage-wait)  want='계보|그룹|계정|까지|비용|비용 출처|근거' ;;
     *) printf '%s [run][거부] 원장 계열 검사: 이 검사가 모르는 계열이다 (%s)\n' "$(now_iso)" "$series" >&2; return 2 ;;
   esac
   keys=""
@@ -2583,6 +2614,16 @@ run_ledger_series_check() {
       stage-lease:예약)
         if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_BP_RE ]]; then
           run_ledger_refuse "$series" "$k" 'I.FFFF/I.FFFF 모양'; return 2
+        fi ;;
+      *:비용)
+        cost="$v"
+        if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_BP_RE ]]; then
+          run_ledger_refuse "$series" "$k" 'I.FFFF/I.FFFF 모양'; return 2
+        fi ;;
+      *':비용 출처')
+        csrc="$v"
+        if [ "$v" != "-" ] && ! [[ $v =~ ^${cost_src}/${cost_src}$ ]]; then
+          run_ledger_refuse "$series" "$k" '닫힌 어휘 두 개의 「창5/창7」'; return 2
         fi ;;
       stage-lease:근거)
         basis="$v"
@@ -2620,6 +2661,11 @@ run_ledger_series_check() {
     if { [ "$bound" = "1" ] && [ "$acct" = "-" ]; } || { [ "$bound" = "0" ] && [ "$acct" != "-" ]; }; then
       run_ledger_refuse "$series" '계정' '재개 구속 원인일 때만 값'; return 2
     fi
+  fi
+  # The cost and its source come from one admission or from none: both `-`, or
+  # neither.
+  if { [ "$cost" = "-" ] && [ "$csrc" != "-" ]; } || { [ "$cost" != "-" ] && [ "$csrc" = "-" ]; }; then
+    run_ledger_refuse "$series" '비용 출처' '「비용」 과 함께만 「-」'; return 2
   fi
   # THE LENGTH, MEASURED ON THE WORST FRAME. `교대=999` in front, the 64-hex
   # `prev=` behind, the newline — and eight bytes more, because the shift number
@@ -2685,11 +2731,11 @@ ledger_row() {
   # inheritance loop creates a branch that never runs — whose existence teaches
   # the next reader that the field is optional.
   #
-  # THIS PATH IS UNREACHABLE TODAY and nothing may be accepted on the strength of
-  # it: the driver is loaded definitions-only under the source-only seam and no
-  # shipped skill runs it as a program. It is corrected anyway, because leaving
-  # one writer of this field behind is how the field goes missing on the day the
-  # path comes back.
+  # THIS PATH RUNS. The fleet dispatcher starts this driver as a program for a
+  # backlog record, and every `segment` row of such a run — the planned rows, the
+  # merge row, the PR-cutpoint terminal row — is written here. A row that drops
+  # the field here sends that run's merge to the strict default with no surface
+  # saying why, exactly as the gate's arm would.
   if [ "$series" = "segment" ]; then
     local _rid="" _has=0 _prev _pv _a
     for _a in "$@"; do
@@ -4370,11 +4416,32 @@ spawn_lease_release() {
   fi
   lin=$(sed -n '1p' "$f"); nonce=$(sed -n '2p' "$f")
   route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" || rc=$?
+  spawn_cost_samples "$did" "$lin"
   if [ "$rc" = "0" ]; then
     rm -f "$f"
   else
     warn "$did: 임대 반납이 rc=$rc 로 끝났다 — 기록을 남겨 둔다"
   fi
+  return 0
+}
+
+spawn_cost_samples() {
+  # spawn_cost_samples <dispatch id> <lineage> — one cost sample per stream of
+  # this dispatch, taken after the release whatever it answered: the logs can
+  # run to hundreds of megabytes and are not read while the reservation is
+  # held. EVERY stream, not the newest — a resumed dispatch leaves one per
+  # attempt under the same id. The store replaces on (run, log name), so the
+  # second call a failed release leads to adds no line. A seat or an account
+  # the ledger would not accept writes nothing.
+  local did="$1" lin="$2" acct kind p
+  acct=$(stage_account_of "$did")
+  run_ledger_account_ok "$acct" || return 0
+  kind=$(stage_kind_of "$did")
+  for p in "$RUN_DIR/log/$did#"*.json; do
+    [ -f "$p" ] || continue
+    route_cost_sample_put "$(run_pace_root)/costs" --run-id "$RUN_ID" --lineage "$lin" --kind "$kind" \
+      --account "$acct" --log "$p" || warn "$did: 비용 표본을 쓰지 못했다 ($(basename "$p"))"
+  done
   return 0
 }
 
@@ -6495,6 +6562,45 @@ merge_gate() {
   return 0
 }
 
+# A SLICE WHOSE DECLARED CUTPOINT IS PR HAS DELIVERED WHEN ITS PULL REQUEST
+# STANDS, and the merge that did not follow is not its work. `segment_cycle`'s
+# return 4 leaves such a slice with a branch, a review and a PR but no terminal
+# row, and the import a later run of the same document makes reads terminal rows
+# only — so without this row every re-kickoff built the slice again.
+#
+# THE DECLARATION DECIDES, NOT WHY THE MERGE STOPPED. The deadline is checked
+# before `merge_gate` and `merge_gate` stops on six different grounds, so the
+# source of the return 4 says nothing about whether the slice was meant to end at
+# a PR. A slice declared with a merge cutpoint gets no row from any source: its
+# open PR is unfinished work, and a terminal row would let the next run skip it.
+# A plan with no declaration has no cutpoint per slice and gets none either.
+#
+# THE PR IS OBSERVED, NOT ASSUMED. The row carries the number and head the remote
+# reports for the branch, open or merged; a PR the remote cannot show writes
+# nothing, and the slice is done again by the next run.
+pr_cutpoint_terminal_row() {
+  # pr_cutpoint_terminal_row <segment> <branch>
+  local seg="$1" branch="$2" c slug obs num st hd
+  [ -n "${DOC:-}" ] || return 0
+  [ "$(slicing_branch "$DOC")" = "선언통치" ] || return 0
+  c=$(slice_field "$DOC" "$seg" '절단점' | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ "$(cutpoint_token "$c" 2>/dev/null || true)" = "PR" ] || return 0
+  slug=$(seg_slug "$seg" 2>/dev/null) || slug=""
+  [ -n "$slug" ] || { warn "$seg: PR 절단점 종단 행을 쓰지 않습니다 — 원격 슬러그를 알 수 없습니다"; return 0; }
+  obs=$(gh_q "$slug" pr view "$branch" --json number,state,headRefOid \
+          --jq '"\(.number) \(.state) \(.headRefOid)"' || printf '')
+  read -r num st hd <<<"$obs"
+  case "$num" in ''|*[!0-9]*) num="" ;; esac
+  case "$hd" in ''|*[!0-9a-f]*) hd="" ;; esac
+  case "$st" in OPEN|MERGED) : ;; *) st="" ;; esac
+  if [ -z "$num" ] || [ -z "$hd" ] || [ -z "$st" ]; then
+    warn "$seg: PR 절단점 종단 행을 쓰지 않습니다 — 브랜치 $branch 의 열린(또는 머지된) PR 을 원격 $slug 에서 관측하지 못했습니다"
+    return 0
+  fi
+  ledger_row 'segment' "id=$seg" "상태=완료" "PR=$num" "커밋=$hd" "브랜치=$branch" \
+    "레포=$slug" "워크트리=$(wt_path "$seg")"
+}
+
 # ---------------------------------------------------------------------------
 # The four run-level caps. Each of them answers "when does this night end?" for a
 # different reason, and each records what it stopped.
@@ -8182,14 +8288,19 @@ EOF
     park "$seg" act 막힘 "예산·벽시계" "벽시계 마감 경과 — 머지하지 않는다. 세그먼트는 완성-미착지" \
       "gh -R $(seg_slug "$seg") pr merge $branch"
     run_deadline_end "벽시계 마감 경과 — $seg 를 머지하지 않는다"
+    pr_cutpoint_terminal_row "$seg" "$branch"
     return 4
   fi
   local mrc=0; merge_gate "$seg" "$branch" || mrc=$?
   # 2 is the ACT arm: the merge is blocked, everything the segment produced
   # survives, and the run keeps going. Collapsing it into 1 is the eight-site
   # defect this slice exists to fix — one cutpoint typo used to park every
-  # segment even though each had reached PR.
-  [ "$mrc" = "2" ] && return 4
+  # segment even though each had reached PR. The apply arm's return 4 below
+  # writes no terminal row: the `머지됨` row is already the slice's last.
+  if [ "$mrc" = "2" ]; then
+    pr_cutpoint_terminal_row "$seg" "$branch"
+    return 4
+  fi
   [ "$mrc" = "0" ] || return 1
 
   # --- S9 APPLY ------------------------------------------------------------
@@ -8852,7 +8963,7 @@ main_loop_body() {
   # branch produced it; that is what lets the declaration bypass the planner
   # without forking the execution path.
   ladder_init
-  local merged=0 parked=0 landed=0 total=0 seg files rc
+  local merged=0 parked=0 landed=0 imported=0 imported_landed=0 total=0 seg files rc
   total=$(grep -c . "$RUN_DIR/plan.tsv" 2>/dev/null || printf '0')
   RUN_CYCLE_BUDGET=$(run_cycle_budget)
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
@@ -8860,6 +8971,23 @@ main_loop_body() {
     "벽시계 마감=$( [ -n "$MANIFEST" ] && manifest_field '인가' '벽시계 마감' || printf '(없음)' )"
   while IFS="$(printf '\t')" read -r seg repo files deps; do
     [ -n "$seg" ] || continue
+    # A SLICE AN EARLIER RUN LANDED IS ALREADY DONE. `plan_from_declaration`
+    # brought its terminal row in and put the id in `done.txt`; dispatching it
+    # would build and review the same work a second time. Counted apart from
+    # `merged`, which is what this run itself landed, and kept apart again in
+    # `imported_landed` because the run's end counts it as landed. A slice in
+    # `skipped.txt` stands at a pull request an earlier run left open: not sent
+    # out again, and reported the way this run reports its own, since it still
+    # waits on a person to finish it — so it never counts toward the end's
+    # "every slice landed".
+    if grep -qxF "$seg" "$RUN_DIR/done.txt" 2>/dev/null; then
+      imported=$((imported + 1)); imported_landed=$((imported_landed + 1)); continue
+    fi
+    if grep -qxF "$seg" "$RUN_DIR/skipped.txt" 2>/dev/null; then
+      imported=$((imported + 1))
+      report_append "완성-미착지" "$seg — 이전 런이 연 PR 이 아직 머지되지 않았다. 이번 런은 다시 하지 않았고, 이 슬라이스에 기대는 슬라이스는 디스패치하지 않았다"
+      continue
+    fi
     # The other of the two loop heads that read the deadline.
     if past_deadline; then
       park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 디스패치하지 않는다"
@@ -8940,13 +9068,17 @@ main_loop_body() {
     report_append "한도 종료" "${limit_n}건 — 크래시와 같게 처분, 계정 이동 없음"
   fi
   RUN_END_LOOP_DONE=1
-  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ "$merged" -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
+  # EVERY PLANNED SLICE LANDED counts the ones an earlier run landed too: a
+  # re-kicked run that merges the rest has delivered the whole plan, and an end
+  # without `종료 부류=완료` sends that run to a person.
+  if [ "${total:-0}" -gt 0 ] 2>/dev/null && [ $((merged + imported_landed)) -eq "$total" ]; then RUN_END_ALL_LANDED=1; fi
   run_end_record || true
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
   # driver parked, while `보류` is the disposition of a termination clause waiting
   # on a person's answer — and both appear in the same report, so the reader had
   # to guess which sense was meant on each line.
+  [ "$imported" -eq 0 ] || report_append "착지 들여오기" "${imported}건 — 이전 런이 착지시킨 슬라이스라 디스패치하지 않았다"
   report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · park ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
   # The walk is over and every stage it spawned has been collected; what the run
   # still holds goes back now, unless something of it is still running.
@@ -9235,7 +9367,7 @@ plan_from_declaration() {
   fi
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(slice_ids "$doc" | tr '\n' ',' | sed 's/,$//')" "segmentation=선언"
-  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
   for id in $(slice_ids "$doc"); do
     # `-` for an absent value, never an empty column. Tab is an IFS WHITESPACE
     # character, so `IFS=tab read a b c d` collapses a run of tabs and every
@@ -9249,6 +9381,37 @@ plan_from_declaration() {
   done
   plan_dep_floor_or_park || return 1
   for id in $(slice_ids "$doc"); do
+    # A SLICE AN EARLIER RUN OF THIS DOCUMENT LANDED IS BROUGHT IN, NOT PLANNED.
+    # The gate's import writes its terminal row, `done.txt` — emptied above —
+    # gets the id back, and the main loop skips it. The planned row is NOT
+    # written after it: the import reads the LAST segment row of an earlier
+    # ledger, so a `계획됨` row behind the terminal one would hide the landing
+    # from the run after this one. An import that fails to run plans the slice,
+    # which redoes work rather than skipping work that did not land.
+    #
+    # A slice brought in at a pull request still open goes to `skipped.txt`
+    # instead. The main loop skips it all the same, but `deps_satisfied` reads
+    # `done.txt` alone, so a slice that depends on it parks exactly as it does
+    # in the run that left the request open: every segment branches from the
+    # base, and the request's work is not there.
+    local _irc=0 _ikind=""
+    _ikind=$(run_gate_call gate_import_self_landed act "$id") || _irc=$?
+    case "$_irc/$_ikind" in
+      0/착지)
+         printf '%s\n' "$id" >> "$RUN_DIR/done.txt"
+         log "착지 들여오기 — ${id} 는 이전 런이 착지시켜 이번 런에서 디스패치하지 않습니다"
+         continue ;;
+      0/건너뜀)
+         printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"
+         log "착지 들여오기 — ${id} 는 이전 런의 PR 이 아직 열려 있어 디스패치하지 않고, 이 슬라이스에 기대는 슬라이스도 그 PR 이 머지될 때까지 디스패치하지 않습니다"
+         continue ;;
+      0/*)
+         warn "착지 들여오기가 처분을 알리지 않았습니다(「${_ikind}」) — ${id} 는 행이 들어왔으므로 디스패치하지 않고, 기대는 슬라이스도 디스패치하지 않습니다"
+         printf '%s\n' "$id" >> "$RUN_DIR/skipped.txt"
+         continue ;;
+      1/*) : ;;
+      *) warn "착지 들여오기 호출 실패(rc=${_irc}) — ${id} 는 계획대로 다시 합니다" ;;
+    esac
     # SLICE → SEGMENT. The slice declaration is where a person writes the review
     # policy, and the segment row is the only carrier that reaches the gate — so
     # a declaration that stops at the document changes nothing. The field is
@@ -9264,6 +9427,7 @@ plan_from_declaration() {
     local _rp
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
+    _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
     _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
     ledger_row 'segment' "${_segargs[@]}"
   done
@@ -9298,7 +9462,7 @@ plan_via_planner() {
   seg_mode=$(printf '%s' "$plan" | jq -r '.segmentation // "low-confidence"')
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(printf '%s' "$plan" | jq -c '.segments | map(.id)')" "segmentation=$seg_mode"
-  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
     printf '%s\t%s\t%s\t%s\n' "$seg" "-" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \

@@ -33,6 +33,9 @@ mkdir -p "$XDG_STATE_HOME"
 # The borrow segment of the status line keys on the session's config directory;
 # unset, no case here sees one.
 unset CLAUDE_CONFIG_DIR
+# Clock times follow the display zone; every case below that does not name one
+# sees the default, KST, whatever the calling shell exports.
+unset CC_CMDS_AUTOPILOT_TZ
 trap 'fx_reap; chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 fx_require_isolated_state
 
@@ -89,6 +92,8 @@ segdetail(){ body "$1" | awk -F'\t' -v s="$2" '
 sl_line()  { printf '{"session_id":"%s"}' "$1" | bash "$SL" 2>/dev/null; }
 tok()      { printf '%s' "$1" | cut -d' ' -f"$2"; }
 gm_hhmm()  { perl -e 'my @t = gmtime($ARGV[0]); printf "%02d:%02d", $t[2], $t[1];' "$1"; }
+# kst_hhmm <epoch> — the default display zone's `HH:MM`, from the same oracle.
+kst_hhmm() { gm_hhmm $(( $1 + 32400 )); }
 
 # ---------------------------------------------------------------------------
 # 1. The head, arm by arm.
@@ -121,7 +126,7 @@ check "1 도는중 (스테이지 칸) — 그 세그먼트가 실행중이다" "
 # The first attempt with no `.kind`, no `.attempt` and no earlier stage-result:
 # no empty slot and no `회차` without a number.
 like "15 첫 회차 — 실행중 세부는 시작 시각뿐이다" "$(segdetail "$out" S1)" \
-  "^seg-detail${TAB}cut${TAB}dim${TAB}   [0-9][0-9]:[0-9][0-9]Z 시작\$"
+  "^seg-detail${TAB}cut${TAB}dim${TAB}   [0-9][0-9]:[0-9][0-9] 시작\$"
 
 # The only live pid is the watcher's: the count takes it and the slot does not.
 fx_mkrun pr-run0; fx_ledger_path; fx_segment S1 실행중; fx_stage_live watch; fx_heartbeat 0 5
@@ -523,15 +528,16 @@ check "11 절단 1 — 머지된 A 의 세부" "$(segdetail "$r1" A)" \
   "seg-detail${TAB}cut${TAB}dim${TAB}   리뷰 3회차 P0 0 · P1 0 · PR #1115 통과"
 check "11 절단 1 — B 세그먼트" "$(segrow "$r1" B)" "seg${TAB}cut${TAB}accent${TAB}⟳${TAB}normal${TAB} B 실행중"
 like  "11 절단 1 — B 의 실행중 세부" "$(segdetail "$r1" B)" \
-  "^seg-detail${TAB}cut${TAB}dim${TAB}   implement 2회차 · [0-2][0-9]:[0-5][0-9]Z 시작 · 선행 A\$"
+  "^seg-detail${TAB}cut${TAB}dim${TAB}   implement 2회차 · [0-2][0-9]:[0-5][0-9] 시작 · 선행 A\$"
 check "11 절단 1 — 관문" "$(brow "$r1" gate-none)" "gate-none${TAB}cut${TAB}dim${TAB}승인 대기 없음 · 막힘 없음"
 check "11 절단 1 — 이벤트" "$(brows "$r1" event | cut -f4,6 | tr '\t' ' ')" \
-"07:37  비용 누적 \$56.38 · 스테이지 6
-07:37  B implement 1회차 · rc 0
-07:31  체크 PR #1115 통과
-07:22  체크 PR #1115 대기
-07:18  A 리뷰 3회차 · P0 0 · P1 0
-07:18  A review 5회차 · rc 0"
+"16:37  비용 누적 \$56.38 · 스테이지 6
+16:37  B implement 1회차 · rc 0
+16:31  체크 PR #1115 통과
+16:22  체크 PR #1115 대기
+16:18  A 리뷰 3회차 · P0 0 · P1 0
+16:18  A review 5회차 · rc 0"
+check "11 절단 1 — 이벤트 머리말은 기본 표시 시간대를 말한다" "$(rtext "$(brow "$r1" event-heading)")" "최근 이벤트 KST"
 hasnt "11 절단 1 — 자율 승인은 이벤트가 아니다" "$(brows "$r1" event)" "자율"
 r1_bundles=$(body "$r1" | cut -f1)
 
@@ -563,9 +569,9 @@ check "11 절단 2 — 사유의 추정 줄 수는 8 이다" "$est" "8"
 check "11 절단 2 — 고정 13줄과 사유가 이벤트 $((24 - 13 - est))개를 남긴다" \
   "$(brows "$r2" event | grep -c . || true)" "$((24 - 13 - est))"
 check "11 절단 2 — 이벤트" "$(brows "$r2" event | cut -f4,6 | tr '\t' ' ')" \
-"08:03  막힘 cone B 기록
-08:03  비용 누적 \$66.42 · 스테이지 7
-08:03  B implement 2회차 · rc 0 · park"
+"17:03  막힘 cone B 기록
+17:03  비용 누적 \$66.42 · 스테이지 7
+17:03  B implement 2회차 · rc 0 · park"
 has "11 --cols 30 은 같은 사유를 더 많은 줄로 센다" \
   "$([ "$(printf '%s' "$reason" | bash "$PANE" --estimate 30)" -gt "$est" ] && echo yes || echo no)" "yes"
 
@@ -614,12 +620,12 @@ fx_heartbeat 0 5
 fx_session_index s-ev2 pr-ev2
 out=$(pane s-ev2)
 check "13 짝 규칙 — 최신부터 여섯, 가장 새 비용 하나만" "$(brows "$out" event | cut -f4,6 | tr '\t' ' ')" \
-"04:00  X implement 5회차 · 외부 종료
-03:00  비용 누적 \$3.00 · 스테이지 3
-02:01  X implement 4회차 · rc 0
-03:00  X implement 3회차 · rc 0
-02:00  X implement 2회차 · rc 0
-01:00  X implement 1회차 · rc 0"
+"13:00  X implement 5회차 · 외부 종료
+12:00  비용 누적 \$3.00 · 스테이지 3
+11:01  X implement 4회차 · rc 0
+12:00  X implement 3회차 · rc 0
+11:00  X implement 2회차 · rc 0
+10:00  X implement 1회차 · rc 0"
 
 # The driver's cost has no stage count, approvals open and settle, a run block
 # resolves, a `자율 승인` row is never an event, and the oldest event falls
@@ -637,12 +643,12 @@ fx_heartbeat 0 5
 fx_session_index s-ev1 pr-ev1
 out=$(pane s-ev1)
 check "13 드라이버 비용·승인·해소·자율 승인 제외·여섯 상한" "$(brows "$out" event | cut -f4,6 | tr '\t' ' ')" \
-"01:05  막힘 해소
-01:05  승인 A1 승인
-01:05  승인 대기 A1
-01:05  비용 누적 \$1.00
-01:00  X implement 2회차 · rc 0
-01:00  막힘 run 기록"
+"10:05  막힘 해소
+10:05  승인 A1 승인
+10:05  승인 대기 A1
+10:05  비용 누적 \$1.00
+10:00  X implement 2회차 · rc 0
+10:00  막힘 run 기록"
 
 fx_mkrun pr-ev0; fx_ledger_path; fx_segment X 실행중
 sr 1
@@ -650,6 +656,41 @@ fx_heartbeat 0 5
 fx_session_index s-ev0 pr-ev0
 check "13 앞에 시각 있는 행이 없으면 --:--" "$(brows "$(pane s-ev0)" event | cut -f4,6 | tr '\t' ' ')" \
   "--:--  X implement 1회차 · rc 0"
+
+# The display zone from `CC_CMDS_AUTOPILOT_TZ`: the heading names it and every
+# event time moves with it.
+out=$(CC_CMDS_AUTOPILOT_TZ=UTC pane s-ev1)
+check "13 표시 시간대 UTC — 머리말" "$(rtext "$(brow "$out" event-heading)")" "최근 이벤트 UTC"
+check "13 표시 시간대 UTC — 이벤트 시각은 원장 그대로다" "$(brows "$out" event | cut -f4 | tr '\n' ' ')" \
+  "01:05 01:05 01:05 01:05 01:00 01:00 "
+out=$(CC_CMDS_AUTOPILOT_TZ=-05:00 pane s-ev1)
+check "13 표시 시간대 -05:00 — 머리말" "$(rtext "$(brow "$out" event-heading)")" "최근 이벤트 UTC-05:00"
+check "13 표시 시간대 -05:00 — 다섯 시간 이르고 자정 앞으로 감긴다" "$(brows "$out" event | cut -f4 | tr '\n' ' ')" \
+  "20:05 20:05 20:05 20:05 20:00 20:00 "
+check "13 표시 시간대 Asia/Seoul — 기본과 같다" "$(CC_CMDS_AUTOPILOT_TZ=Asia/Seoul pane s-ev1)" "$(pane s-ev1)"
+check "13 기본 표시 시간대 — 머리말" "$(rtext "$(brow "$(pane s-ev1)" event-heading)")" "최근 이벤트 KST"
+
+# A time with a zone other than `Z` is no time: the row takes the time of the
+# row before it (rule 3) instead of a shifted guess.
+fx_mkrun pr-evz; fx_ledger_path; fx_segment X 실행중
+fx_row 'blocked' "대상=-" "스코프=run" "원인=불명" "사유=t" "관측=2026-10-06T01:00:00Z"
+fx_row 'blocked' "대상=-" "스코프=run" "원인=해소" "사유=t" "관측=2026-10-06T05:00:00+09:00"
+fx_heartbeat 0 5
+fx_session_index s-evz pr-evz
+check "13 영역이 +09:00 인 ISO 만 가진 행은 앞 행 시각을 물려받는다" \
+  "$(brows "$(pane s-evz)" event | cut -f4,6 | tr '\t' ' ')" \
+"10:00  막힘 해소
+10:00  막힘 run 기록"
+
+# Without the helper the pane stays on UTC and says so.
+mkdir -p "$WORK/nodtz"
+cp "$PANE" "$LIVENESS" "$WORK/nodtz/"
+printf '#!/usr/bin/env bash\nexec bash %s\n' "'$SL'" > "$WORK/nodtz/statusline.sh"
+out=$(bash "$WORK/nodtz/run-pane.sh" s-ev1); rc=$?
+check "13 display-tz.sh 없음 — exit 0" "$rc" "0"
+check "13 display-tz.sh 없음 — 머리말은 UTC 다" "$(rtext "$(brow "$out" event-heading)")" "최근 이벤트 UTC"
+check "13 display-tz.sh 없음 — 이벤트 시각은 원장 그대로다" "$(brows "$out" event | cut -f4 | tr '\n' ' ')" \
+  "01:05 01:05 01:05 01:05 01:00 01:00 "
 
 # ---------------------------------------------------------------------------
 # 14. The head: targets from the manifest, the shift ordinal, the watcher.
@@ -707,7 +748,7 @@ out=$(pane s-drv)
 check "15 드라이버 꼴 기록 — 세그먼트 B 가 실행중이다" "$(segrow "$out" B)" \
   "seg${TAB}cut${TAB}accent${TAB}⟳${TAB}normal${TAB} B 실행중"
 like  "15 드라이버 꼴 기록 — 종류 없이 회차와 시작" "$(segdetail "$out" B)" \
-  "^seg-detail${TAB}cut${TAB}dim${TAB}   3회차 · [0-9][0-9]:[0-9][0-9]Z 시작\$"
+  "^seg-detail${TAB}cut${TAB}dim${TAB}   3회차 · [0-9][0-9]:[0-9][0-9] 시작\$"
 
 # ---------------------------------------------------------------------------
 # 16. The start time from `ps -o etime=` in its three shapes and with leading
@@ -731,8 +772,8 @@ for g in "13:38 818" "01:13:38 4418" "2-01:13:38 177218" "08:09 489" "09:08:09 3
   t1=$(date -u +%s)
   check "16 etime $1 — 세그먼트가 실행중이다 (전제)" "$(segrow "$out" T | cut -f4)" "⟳"
   d=$(segdetail "$out" T)
-  a="seg-detail${TAB}cut${TAB}dim${TAB}   implement 1회차 · $(gm_hhmm $((t0 - $2)))Z 시작"
-  z="seg-detail${TAB}cut${TAB}dim${TAB}   implement 1회차 · $(gm_hhmm $((t1 - $2)))Z 시작"
+  a="seg-detail${TAB}cut${TAB}dim${TAB}   implement 1회차 · $(kst_hhmm $((t0 - $2))) 시작"
+  z="seg-detail${TAB}cut${TAB}dim${TAB}   implement 1회차 · $(kst_hhmm $((t1 - $2))) 시작"
   if [ "$d" = "$a" ] || [ "$d" = "$z" ]; then ok "16 etime $1 — 시작 시각"; else bad "16 etime $1 — 시작 시각" "got '$d', want '$a'"; fi
 done
 hasnt "16 헬퍼는 date -r 을 쓰지 않는다" "$(cat "$PANE")" "date -r"
@@ -831,7 +872,7 @@ tree_snap() {
 before=$(tree_snap)
 for s in s-run1 s-run0 s-prog s-appr s-stall s-done s-aband s-block s-demote \
          s-noindex s-empty s-gone s-oldid s-capseg s-captail s-fold s-nolp s-cone s-order \
-         s-replay s-ev2 s-ev1 s-ev0 s-h1 s-h2 s-w1 s-w2 s-w3 s-pre s-drv s-time; do
+         s-replay s-ev2 s-ev1 s-ev0 s-evz s-h1 s-h2 s-w1 s-w2 s-w3 s-pre s-drv s-time; do
   bash "$PANE" "$s" >/dev/null 2>&1
 done
 after=$(tree_snap)
