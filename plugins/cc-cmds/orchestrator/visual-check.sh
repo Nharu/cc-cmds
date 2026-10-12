@@ -6,8 +6,10 @@
 #   scan <screen file>... [--bans <file>] [--lifts <system.md>]
 #       Print one finding per (rule, line) as `<rule id> <file>:<line> <text>`.
 #       Comments (`<!-- -->`, `/* */`, a script's `//` line-end comment) are
-#       stripped first, and every file is split into three streams that keep
-#       its line numbers:
+#       stripped first — a `/*` or `//` inside a quoted string is not one, and
+#       `</style`/`</script` ends its block whatever comment or string is open
+#       — and every file is split into three streams that keep its line
+#       numbers:
 #         css     — `<style>` content and `style="…"` attribute values
 #         markup  — everything outside `<script>` (style text included)
 #         script  — `<script>` content
@@ -51,7 +53,9 @@
 # Exit codes:
 #   0 — scan: no finding; approval: valid; other subcommands: success
 #   1 — scan: at least one finding; approval: none or void; bundle: no sidecar
-#   2 — usage error, an unreadable file, a malformed ban list or pattern
+#   2 — usage error, an unreadable file, a malformed ban list or pattern, a
+#       screen that ends inside a comment, a tag, a template string or an
+#       unclosed <style>/<script> (scan and size)
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`; BSD
 # and GNU userland alike; `grep -E` only.
@@ -101,22 +105,29 @@ REF_URL="url\\([[:space:]]*(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ}|[^)\"${SQ}[:space:]]*
 REF_IMPORT="@import[[:space:]]+(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ})"
 
 # Split one file into the css / markup / script streams under $2, one output
-# line per input line in each.
+# line per input line in each. Inside <style> and <script> the closing tag is
+# looked for before anything else, as the HTML parser does, so a comment or a
+# string can never carry past it; quoted strings are tracked so a `/*` or `//`
+# inside one stays text. A file that ends inside a comment, a tag, a template
+# string or an unclosed <style>/<script> has lost its parse: the reason goes to
+# stderr and the function fails with 2, so it is never read as "no finding".
 split_streams() {
-  awk -v out="$2" '
-    BEGIN { mode = "html"; hc = 0; cc = 0; jc = 0; intag = 0; q = ""; sattr = 0 }
+  awk -v out="$2" -v file="$1" '
+    BEGIN { mode = "html"; hc = 0; cc = 0; jc = 0; intag = 0; q = ""; sattr = 0; cq = ""; jq = "" }
     {
-      line = $0; n = length(line); css = ""; mk = ""; js = ""; jline = 0; i = 1
+      line = $0; n = length(line); css = ""; mk = ""; js = ""; jline = 0; esc = 0; i = 1
       while (i <= n) {
         c = substr(line, i, 1)
         if (hc) { if (substr(line, i, 3) == "-->") { hc = 0; i += 3 } else i++; continue }
         if (mode == "html") {
           if (intag) {
             if (q != "") {
-              if (c == q) { q = ""; sattr = 0; mk = mk c; tag = tag c; i++; continue }
+              if (c == q) { q = ""; sattr = 0; cc = 0; cq = ""; mk = mk c; tag = tag c; i++; continue }
               if (sattr) {
                 if (cc) { if (substr(line, i, 2) == "*/") { cc = 0; i += 2 } else i++; continue }
-                if (substr(line, i, 2) == "/*") { cc = 1; i += 2; continue }
+                if (cq != "") { if (c == cq) cq = "" }
+                else if (c == "\"" || c == "\047") cq = c
+                else if (substr(line, i, 2) == "/*") { cc = 1; i += 2; continue }
                 css = css c
               }
               mk = mk c; tag = tag c; i++; continue
@@ -145,14 +156,26 @@ split_streams() {
           mk = mk c; i++; continue
         }
         if (mode == "style") {
+          if (tolower(substr(line, i, 7)) == "</style") { mode = "html"; cc = 0; cq = ""; continue }
           if (cc) { if (substr(line, i, 2) == "*/") { cc = 0; i += 2 } else i++; continue }
+          if (cq != "") {
+            if (c == "\\") { t = substr(line, i, 2); css = css t; mk = mk t; esc = (i == n); i += 2; continue }
+            if (c == cq) cq = ""
+            css = css c; mk = mk c; i++; continue
+          }
+          if (c == "\"" || c == "\047") { cq = c; css = css c; mk = mk c; i++; continue }
           if (substr(line, i, 2) == "/*") { cc = 1; i += 2; continue }
-          if (tolower(substr(line, i, 7)) == "</style") { mode = "html"; continue }
           css = css c; mk = mk c; i++; continue
         }
+        if (tolower(substr(line, i, 8)) == "</script") { mode = "html"; jc = 0; jq = ""; jline = 0; continue }
         if (jline) { i++; continue }
         if (jc) { if (substr(line, i, 2) == "*/") { jc = 0; i += 2 } else i++; continue }
-        if (tolower(substr(line, i, 8)) == "</script") { mode = "html"; continue }
+        if (jq != "") {
+          if (c == "\\") { js = js substr(line, i, 2); esc = (i == n); i += 2; continue }
+          if (c == jq) jq = ""
+          js = js c; i++; continue
+        }
+        if (c == "\"" || c == "\047" || c == "`") { jq = c; js = js c; i++; continue }
         if (substr(line, i, 2) == "/*") { jc = 1; i += 2; continue }
         if (substr(line, i, 2) == "//") {
           p = (i == 1) ? "" : substr(line, i - 1, 1)
@@ -161,7 +184,21 @@ split_streams() {
         js = js c; i++
       }
       if (intag) tag = tag " "
+      # A quoted CSS or JS string ends at an unescaped line end; only a JS
+      # template string carries on to the next line.
+      if (!esc) { cq = ""; if (jq != "`") jq = "" }
       print css > (out "/css"); print mk > (out "/markup"); print js > (out "/script")
+    }
+    END {
+      why = ""
+      if (hc) why = "HTML 주석이 닫히지 않았다"
+      else if (cc) why = "CSS 주석이 닫히지 않았다"
+      else if (jc) why = "스크립트 주석이 닫히지 않았다"
+      else if (jq == "`") why = "스크립트 템플릿 문자열이 닫히지 않았다"
+      else if (intag) why = "태그가 닫히지 않았다"
+      else if (mode == "style") why = "<style> 이 닫히지 않았다"
+      else if (mode == "script") why = "<script> 가 닫히지 않았다"
+      if (why != "") { print "visual-check.sh: " file " 파싱을 잃었다 — " why " (파일 끝)" > "/dev/stderr"; exit 2 }
     }
   ' "$1"
 }
@@ -262,7 +299,7 @@ cmd_scan() {
     rm -rf "$s"; mkdir "$s"
     FOUND="$WORK/found"
     : > "$FOUND"
-    split_streams "$f" "$s"
+    split_streams "$f" "$s" || exit 2
 
     { grep -nE -- "$CSS_HEX" "$s/css" || true; } | { grep -vE -- "$CSS_SELECTOR" || true; } \
       | cut -d: -f1 | awk '{print "token-color\t" $1}' >> "$FOUND"
@@ -304,7 +341,7 @@ cmd_size() {
   [ -f "$1" ] || { echo "visual-check.sh size: 화면 파일이 없다: $1" >&2; exit 2; }
   WORK=$(mktemp -d "${TMPDIR:-/tmp}/visual-check.XXXXXX")
   trap 'rm -rf "$WORK"' EXIT
-  split_streams "$1" "$WORK"
+  split_streams "$1" "$WORK" || exit 2
   { grep -oE '<[A-Za-z]' "$WORK/markup" || true; } | wc -l | tr -d ' '
 }
 

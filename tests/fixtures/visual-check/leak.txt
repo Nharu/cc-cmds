@@ -1,0 +1,13 @@
+-|<!doctype html>
+-|<script>var accept = 'image/*'; var glob = "*/*";</script>
+V|<p style="color: #ff0000">a</p>
+R|<img src="https://cdn.example.com/a.png">
+-|<style>.a { content: "/*"; }</style>
+V|<style>.b { color: #00ff00; }</style>
+-|<script>init(); // </script>
+R|<img src="//cdn.example.com/b.png">
+-|<script>var t = `a /* b`; // c
+V|var c = '#123456';
+-|</script>
+V|<p style="content:'/*'; color: red">b</p>
+-|<p>end</p>

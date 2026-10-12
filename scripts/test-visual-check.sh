@@ -15,6 +15,10 @@
 #   scan bans  the seed's 마크업 items and a 스크립트 item are found under their
 #              own ids; a **금지 해제** id is skipped and named in the header;
 #              a malformed ban line is a usage error
+#   scan leak  a `/*` inside a script or CSS string, and a `</script>` inside a
+#              `//` comment, leave every later line scanned; a screen that ends
+#              inside a comment, a tag, a template string or an unclosed
+#              <style>/<script> is exit 2 with the reason, for scan and size
 #   size       the start-tag count leaves comments and script out
 #   approval   no sidecar, state not 발행됨, no approval line, one screen byte
 #              changed, valid — and bundle --lines prints the bundle text
@@ -47,7 +51,7 @@ SEED="$repo_root/plugins/cc-cmds/orchestrator/visual-bans.seed"
 fixtures="$repo_root/tests/fixtures/visual-check"
 REFS="$repo_root/plugins/cc-cmds/skills/visual/references/sidecar.md"
 
-for need in "$CHECK" "$CONFIG" "$SEED" "$fixtures/v11.txt" "$fixtures/v32.txt" "$fixtures/refs.txt" "$fixtures/bans.txt"; do
+for need in "$CHECK" "$CONFIG" "$SEED" "$fixtures/v11.txt" "$fixtures/v32.txt" "$fixtures/refs.txt" "$fixtures/bans.txt" "$fixtures/leak.txt"; do
   if [[ ! -f "$need" ]]; then
     echo "test-visual-check: missing $need" >&2
     exit 2
@@ -189,6 +193,41 @@ rc=0; bash "$CHECK" scan >/dev/null 2>&1 || rc=$?
 printf '%s\n' '<!doctype html>' '<p>plain</p>' > "$T/clean.html"
 rc=$(run_scan "$T/clean.out" "$T/clean.html")
 [ "$rc" = 0 ] && pass "발견이 없으면 종료 0" || fail "발견 없는 화면 종료 ${rc} (기대 0)"
+
+# --- scan leak ----------------------------------------------------------------
+materialize "$fixtures/leak.txt" "$T/leak.html" "$T/leak.labels"
+rc=$(run_scan "$T/leak.out" "$T/leak.html")
+[ "$rc" = 1 ] && pass "문자열 안의 /* 뒤에도 발견이 있어 종료 1" || fail "leak scan 종료 ${rc} (기대 1)"
+lines_of token-color "$T/leak.out" > "$T/leak.color"
+lines_of external-ref "$T/leak.out" > "$T/leak.ref"
+got=$(tally "$T/leak.labels" "$T/leak.color" V)
+[ "$got" = "4 4" ] && pass "문자열·줄 주석 안의 /* 와 </script> 뒤의 색이 모두 잡힌다 (4)" \
+  || fail "leak V 줄 (전체 적중) = ${got}, 기대 4 4"
+got=$(tally "$T/leak.labels" "$T/leak.ref" R)
+[ "$got" = "2 2" ] && pass "닫는 태그 뒤의 외부 참조가 모두 잡힌다 (2)" \
+  || fail "leak R 줄 (전체 적중) = ${got}, 기대 2 2"
+# eof_case <name> <expected stderr reason> <screen lines...> — scan and size
+# both refuse a screen whose parse ends open, with exit 2 and the reason.
+eof_case() {
+  local name=$1 why=$2 rc
+  shift 2
+  printf '%s\n' "$@" > "$T/eof.html"
+  rc=$(run_scan "$T/eof.out" "$T/eof.html")
+  if [ "$rc" = 2 ] && grep -qF "파싱을 잃었다 — ${why}" "$T/eof.out.err"; then
+    pass "scan: ${name} 은 종료 2 와 이유"
+  else
+    fail "scan: ${name} 종료 ${rc} (기대 2, 이유 '${why}')"
+  fi
+  rc=0; bash "$CHECK" size "$T/eof.html" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] && pass "size: ${name} 은 종료 2" || fail "size: ${name} 종료 ${rc} (기대 2)"
+}
+eof_case "열린 CSS 주석" "CSS 주석이 닫히지 않았다" '<style>.a { color: red; } /* open' '<p style="color: #fff">x</p>'
+eof_case "열린 스크립트 주석" "스크립트 주석이 닫히지 않았다" '<script>var a = 1; /* open' 'var b = "#fff";'
+eof_case "닫히지 않은 <script>" "<script> 가 닫히지 않았다" '<script>var a = 1;' 'var b = "#fff";'
+eof_case "닫히지 않은 <style>" "<style> 이 닫히지 않았다" '<style>.a { color: #fff; }'
+eof_case "열린 HTML 주석" "HTML 주석이 닫히지 않았다" '<p>a</p>' '<!-- open' '<p style="color: #fff">x</p>'
+eof_case "열린 템플릿 문자열" "스크립트 템플릿 문자열이 닫히지 않았다" '<script>var t = `open' 'var b = "#fff";'
+eof_case "닫히지 않은 태그" "태그가 닫히지 않았다" '<p>a</p>' '<img src="https://cdn.example.com/a.png'
 
 # --- size ---------------------------------------------------------------------
 printf '%s\n' '<!doctype html>' '<html><body>' '<!-- <div><div><div> -->' '<div><p>a</p><p>b</p></div>' \
