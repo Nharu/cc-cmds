@@ -11784,9 +11784,15 @@ graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'         
 # first word after `lockf` was eaten. That only changes the answer when the
 # number of leading options is even — every fixture above passes `-k -t 0`, an
 # odd three, so the whole class sat under a green block.
-graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'      -- lockf /tmp/l.lock git status
+# Without `-k` the lock removes its lockfile, so a wrapped read is raised by
+# where the lockfile is: `/tmp` is outside the target tree and grades
+# `트리밖쓰기`, a lockfile inside it `워크트리쓰기`. The double shift would still
+# read `status` alone and answer `등급 미상`, so these rows keep telling the two
+# apart.
+graded_as '트리밖쓰기'   '-k 없는 lockf 는 감싼 읽기를 대상 밖 잠금 파일 삭제로 올린다' -- lockf /tmp/l.lock git status
+graded_as '워크트리쓰기' '-k 없는 lockf 의 대상 안 잠금 파일은 워크트리쓰기로 올린다'  -- lockf l.lock git status
 graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl -X POST https://x
-graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
+graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 l.lock git commit -m x
 
 # 등급표가 래퍼를 벗겨도 **불투명 축**이 벗기지 않으면 그 수리는 절반이다. 불투명이 0
 # 이면 하한도 표지도 아예 계산되지 않으므로, `lockf` 접두 하나로 `외부상태변경` 하한이
@@ -26558,7 +26564,13 @@ rm -f "$S70_GRANT" "$S70_LEDGER"
 # 두는 자리라, 앞 절이 남긴 베이스 픽스처(`FX_MANIFEST`·`RD`)를 빌리지 않아도 된다.
 # 빌렸다면 이 절은 그 두 이름이 어느 절에서 어떤 런을 가리키게 됐는지에 매여 있었을
 # 것이다.
+#
+# 자동 해소 스위치도 같은 이유로 이 절이 스스로 고정한다. 머지 예보는 `--reach`
+# 없이 걸리고 스위치가 꺼졌을 때만 받아들여지므로, 앞 절이 켠 채 남기면 이 절은
+# 다른 모드로 돈다.
 # ---------------------------------------------------------------------------
+CC_GATE_PREV_AR60="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 ck60_drain() {
   # 관측을 행으로 만드는 유일한 길 — 값싼 act 하나. 전사는 `snapshot` 이 아니라
   # act 경로에서 일어난다(원장을 쓰는 것은 이 동사뿐이다).
@@ -26942,6 +26954,7 @@ case "$msg" in
   *'park 예상: 도달 판정=CI실패'*) ok "60: 그 거절의 칸이 CI실패 다 (다른 park 가 11 을 낸 것이 아니다)" ;;
   *) bad "60 로컬 머지 거절 칸" "$msg" ;;
 esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR60"
 
 # ---------------------------------------------------------------------------
 # 69. 계측 필링 관문 — 케이던스·잠금·좌석·plan
@@ -29369,6 +29382,1233 @@ rm -rf "$SRCDIR85/halt"
 rm -f "$SMAN85"
 ( cd "$WT" && git worktree remove --force "$WT85" && git branch -D "seg/$SRC85-SA" ) >/dev/null 2>&1
 rm -f "$LEDGER85" "$WT/$DOC85"
+
+# ---------------------------------------------------------------------------
+# 86. 대상트리 — 대상의 다른 워크트리에 쓰는 행위는 그 칸에서 열린다
+# --- section: 86 | group: reach | covers: exec | anchors: 86: 형제 워크트리 생성이 대상트리로 통과한다, 86: 대상트리의 --destructive rm -f 는 park 된다, 86: 플래그 없는 대상트리 rm -f 도 park 된다, 86: 일상 삭제 철자의 park 마다 blocked 행이 하나씩 남는다, 86: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다, 86: 기기전역 접두는 대상트리 선언을 이긴다, 86: park 행이 등급 출처와 선언을 싣는다, 86: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다 ---
+#
+# 대상의 다른 워크트리를 만들거나 그 안에 쓰는 행위는 런로컬도 기기전역도 아니라서,
+# 정직하게 신고할 토큰이 없었고 기기전역 칸이 사전 인가를 보기도 전에 답했다. 이
+# 절은 그 칸이 통과시키는 것과 통과시키지 않는 것을 같은 모양의 쌍으로 못박는다 —
+# 통과만 두면 술어가 아무것이나 받아도 초록이고, park 만 두면 칸이 아예 닫혀 있어도
+# 초록이다. 각 행위의 argv 는 이 절에만 있는 이름을 쓴다: park 의 재신고 차단은 같은
+# argv 의 앞선 blocked 행을 찾으므로, 다른 절과 argv 가 겹치면 이 절의 park 가 새 행
+# 없이 끝나 아래 행 단언이 앞 절의 행을 읽는다.
+# ---------------------------------------------------------------------------
+CC_GATE_PREV_AR86="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+U86="$WORK/u86"
+( mkdir -p "$U86" && cd "$U86" && git init -q . \
+  && git config user.email t@example.invalid && git config user.name T \
+  && echo u > u.txt && git add -A && git commit -qm u ) >/dev/null 2>&1
+SIB86="$WORK/wt86-sibling"
+# 이 절이 만드는 워크트리는 모두 이 커밋에서 나온다. 픽스처의 HEAD 는 앞 절이 옮겨
+# 두는 자리라(절 8 은 base.txt 를 추적하지 않는 고아 브랜치에 남긴다), HEAD 에서 만들면
+# 같은 단언이 함께 도는 절에 따라 실패하거나, 미추적 파일 위에서 공허하게 통과했다.
+# 어느 브랜치에도 기대지 않도록 a.txt 와 base.txt 를 담은 트리를 직접 짓는다.
+B86=$(cd "$WT" \
+  && ba86=$(printf 'one\n' | git hash-object -w --stdin) \
+  && bb86=$(printf 'base\n' | git hash-object -w --stdin) \
+  && bt86=$(printf '100644 blob %s\ta.txt\n100644 blob %s\tbase.txt\n' "$ba86" "$bb86" | git mktree) \
+  && git commit-tree "$bt86" -m b86base 2>/dev/null)
+[ -n "$B86" ] && git -C "$WT" cat-file -e "$B86:base.txt" 2>/dev/null \
+  && ok "86: 절 전용 커밋이 base.txt 를 추적한다 (아래 형제 워크트리의 전제)" \
+  || bad "86: 절 전용 커밋이 base.txt 를 추적한다" "B86=$B86"
+b86() { { grep -c '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true; }; }
+t86() { { grep -c '도달=대상트리' "$FX_LEDGER" 2>/dev/null || true; }; }
+x86() {
+  # x86 <surface> <argv...> — 대상트리 신고로 한 번 부르고 rc 와 msg 를 남긴다.
+  local s="$1"; shift
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface "$s" --reach 대상트리 --snapshot-digest "$(HH)" --rationale 't86' -- "$@"
+}
+
+# 통과 — 형제 워크트리 생성, 그 안의 쓰기, 체크아웃 안의 이동과 임시 파일.
+nt86=$(t86)
+x86 트리밖쓰기 git worktree add -b b86 "$SIB86" "$B86"
+check "86: 형제 워크트리 생성이 대상트리로 통과한다" "$rc" "0"
+[ -d "$SIB86" ] && ok "86: 그 워크트리가 실제로 만들어졌다 (아래 쓰기가 공허하지 않다)" \
+  || bad "86: 그 워크트리가 실제로 만들어졌다" "$msg"
+x86 트리밖쓰기 cp base.txt "$SIB86/c86.txt"
+check "86: 형제 워크트리 안의 쓰기가 대상트리로 통과한다" "$rc" "0"
+printf 'm\n' > "$WT/m86a"
+x86 워크트리쓰기 mv "$WT/m86a" "$WT/m86b"
+check "86: 체크아웃 안의 이동이 대상트리로 통과한다" "$rc" "0"
+x86 트리밖쓰기 mktemp "$WT/tmp86.XXXXXX"
+check "86: 체크아웃 안의 임시 파일이 대상트리로 통과한다" "$rc" "0"
+rm -f "$WT/m86b" "$WT"/tmp86.*
+n=$(( $(t86) - nt86 ))
+[ "$n" -ge 4 ] && ok "86: 통과한 행위의 행이 도달=대상트리를 싣는다 (${n}행)" \
+  || bad "86: 통과한 행위의 행이 도달=대상트리를 싣는다" "n=$n"
+
+# 파괴 — 술어를 통과한 자리라도 파괴 표지가 선 행위는 매니페스트가 그 파괴 형태를
+# 명시하지 않았으면 파괴형태미명시 로 park 된다. 대상트리는 메인 체크아웃과 다른
+# 런의 워크트리까지 덮으므로, 거기서 정직하게 --destructive 를 단 정리가 통과하면
+# 누구의 미커밋 작업이든 지운다. 같은 자리의 비파괴 쓰기를 대조로 둔다 — 그것이
+# 통과해야 아래 park 가 술어 실패가 아니라 파괴 표지 때문임이 선다. 파일 잔존
+# 단언은 rc 만으로는 가려지지 않는 「park 했는데 실행됐다」를 잡는다.
+d86() {
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 대상트리 --destructive --snapshot-digest "$(HH)" --rationale 't86' -- "$@"
+}
+x86 트리밖쓰기 cp base.txt "$WT/d86keep"
+check "86: 대조 — 체크아웃 안의 비파괴 쓰기는 대상트리로 통과한다" "$rc" "0"
+[ -e "$WT/d86keep" ] && ok "86: 그 쓰기가 실제로 일어났다 (아래 잔존 단언이 공허하지 않다)" \
+  || bad "86: 그 쓰기가 실제로 일어났다" "$msg"
+nb86=$(b86)
+d86 rm -f "$WT/d86keep"
+check "86: 대상트리의 --destructive rm -f 는 park 된다" "$rc" "11"
+case "$msg" in *파괴형태미명시*) ok "86: 그 park 의 판정이 파괴형태미명시다" ;; *) bad "86: 그 park 의 판정이 파괴형태미명시다" "$msg" ;; esac
+[ -e "$WT/d86keep" ] && ok "86: park 된 rm -f 의 대상 파일이 남아 있다" \
+  || bad "86: park 된 rm -f 의 대상 파일이 남아 있다" "$WT/d86keep"
+# git clean 은 등급표가 읽지 못하는 꼴이라 오늘은 5b 앞의 신고등급한도 칸이 먼저
+# 답한다. 등급표가 그 꼴을 읽게 되면 5b 의 파괴 갈래가 답해야 하므로 둘 다 받고,
+# 받지 않는 것은 통과와 대상트리불일치(술어로 떨어진 것처럼 읽히는 판정)다.
+d86 git -C "$SIB86" clean -fdx
+check "86: 다른 워크트리의 --destructive git clean -fdx 는 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*|*"judgment '신고등급한도'"*) ok "86: 그 clean 의 판정이 파괴형태미명시나 신고등급한도다" ;;
+  *) bad "86: 그 clean 의 판정이 파괴형태미명시나 신고등급한도다" "$msg" ;;
+esac
+[ -e "$SIB86/c86.txt" ] && ok "86: park 된 clean 이 지웠을 미추적 파일이 남아 있다" \
+  || bad "86: park 된 clean 이 지웠을 미추적 파일이 남아 있다" "$SIB86/c86.txt"
+check "86: 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b86) - nb86 ))" "2"
+rm -f "$WT/d86keep"
+
+# 플래그 없는 지역 파괴 — 파괴 축은 표와 신고의 합집합이라, 단계가 --destructive 를
+# 달지 않아도 argv 의 rm -r/-f 가 표지를 세운다. 그 칸이 신고에만 기대면 플래그를
+# 뺀 같은 철자가 메인 체크아웃과 다른 런의 워크트리를 지운다. 두 행위는 위와 다른
+# 파일 이름을 쓴다 — 같은 argv 면 재신고 핀이 앞 행으로 답해 이 칸을 지나지 않는다.
+x86 트리밖쓰기 cp base.txt "$WT/d86nf"
+check "86: 대조 — 플래그 없는 쌍의 비파괴 쓰기는 대상트리로 통과한다" "$rc" "0"
+[ -e "$WT/d86nf" ] && ok "86: 그 쓰기가 실제로 일어났다 (플래그 없는 rm -f 의 잔존 단언이 공허하지 않다)" \
+  || bad "86: 그 쓰기가 실제로 일어났다 (플래그 없는 쌍)" "$msg"
+mkdir -p "$SIB86/d86dir" && printf 'k\n' > "$SIB86/d86dir/k"
+nb86=$(b86)
+x86 트리밖쓰기 rm -f "$WT/d86nf"
+check "86: 플래그 없는 대상트리 rm -f 도 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*) ok "86: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" ;;
+  *) bad "86: 플래그 없는 rm -f 의 판정이 파괴형태미명시다" "$msg" ;;
+esac
+[ -e "$WT/d86nf" ] && ok "86: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" \
+  || bad "86: park 된 플래그 없는 rm -f 의 대상 파일이 남아 있다" "$WT/d86nf"
+x86 트리밖쓰기 rm -rf "$SIB86/d86dir"
+check "86: 플래그 없는 다른 워크트리의 rm -rf 도 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*) ok "86: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" ;;
+  *) bad "86: 플래그 없는 rm -rf 의 판정이 파괴형태미명시다" "$msg" ;;
+esac
+[ -e "$SIB86/d86dir/k" ] && ok "86: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" \
+  || bad "86: park 된 플래그 없는 rm -rf 의 대상 파일이 남아 있다" "$SIB86/d86dir/k"
+check "86: 플래그 없는 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b86) - nb86 ))" "2"
+rm -rf "$WT/d86nf" "$SIB86/d86dir"
+
+# 일상 삭제 철자 — 단계가 삭제로 여기지 않을 철자도 같은 칸에서 park 된다. 각 쌍은
+# rc 11 과 정확한 판정, 그리고 그 행위가 지우거나 덮었을 것이 남아 있음을 함께
+# 단언한다. rc 만으로는 「park 했는데 실행됐다」가 가려지지 않는다. argv 마다 이름이
+# 달라야 한다 — 같은 argv 면 재신고 핀이 앞 행으로 답해 이 칸을 지나지 않는다.
+p86() {
+  # p86 <이름> <남아야 할 것을 확인하는 명령…> — 직전 x86 의 rc·판정과 잔존을 단언한다.
+  # P86_ALSO 는 등급표가 읽지 못해 5b 앞 칸이 먼저 답하는 철자에 그 판정을 함께 받는다.
+  local name="$1"; shift
+  check "86: 일상 삭제 철자가 park 된다 — $name" "$rc" "11"
+  case "$msg" in
+    *"judgment '파괴형태미명시'"*) ok "86: 그 판정이 파괴형태미명시다 — $name" ;;
+    *"judgment '${P86_ALSO:-파괴형태미명시}'"*) ok "86: 그 판정이 파괴형태미명시다 — $name (앞 칸 ${P86_ALSO:-})" ;;
+    *) bad "86: 그 판정이 파괴형태미명시다 — $name" "$msg" ;;
+  esac
+  "$@" && ok "86: park 된 행위가 지웠을 것이 남아 있다 — $name" \
+    || bad "86: park 된 행위가 지웠을 것이 남아 있다 — $name" "$*"
+}
+tf86=$(cd "$SIB86" && git ls-files | sed -n '1p')
+D86="$SIB86/e86"; mkdir -p "$D86/empty" "$D86/fd" "$D86/fx" "$D86/mvdir"
+for f in r rv ri; do printf 'k\n' > "$D86/$f"; done
+printf 'k\n' > "$D86/fd/k"; printf 'k\n' > "$D86/fx/k"
+printf 'keep\n' > "$D86/mvdst"; printf 'new\n' > "$D86/mvsrc"
+printf 'keep\n' > "$D86/mvdir/mvsrc2"; printf 'new\n' > "$D86/mvsrc2"
+printf 'local86\n' >> "$SIB86/$tf86"
+lm86() { grep -q '^local86$' "$SIB86/$tf86"; }
+git -C "$SIB86" branch bd86 >/dev/null 2>&1
+git -C "$WT" worktree add -q -b wr86 "$WORK/wt86-rm" "$B86" >/dev/null 2>&1
+nb86=$(b86)
+x86 트리밖쓰기 rm "$D86/r";                        p86 'rm' test -e "$D86/r"
+x86 트리밖쓰기 rm -v "$D86/rv";                    p86 'rm -v' test -e "$D86/rv"
+x86 트리밖쓰기 rm --interactive=never "$D86/ri";   p86 'rm --interactive=never' test -e "$D86/ri"
+x86 트리밖쓰기 rm -d "$D86/empty";                 p86 'rm -d' test -d "$D86/empty"
+x86 트리밖쓰기 find "$D86/fd" -delete;             p86 'find -delete' test -e "$D86/fd/k"
+x86 트리밖쓰기 find "$D86/fx" -exec rm -rf {} ';';  p86 'find -exec rm -rf' test -e "$D86/fx/k"
+x86 트리밖쓰기 mv "$D86/mvsrc" "$D86/mvdst";       p86 '덮어쓰는 mv' grep -q '^keep$' "$D86/mvdst"
+x86 트리밖쓰기 mv "$D86/mvsrc2" "$D86/mvdir";      p86 '디렉터리 안을 덮어쓰는 mv' grep -q '^keep$' "$D86/mvdir/mvsrc2"
+x86 트리밖쓰기 git -C "$SIB86" checkout "$tf86";   p86 '경로 하나의 checkout' lm86
+_c86=$PWD; cd "$SIB86" || exit 1
+x86 트리밖쓰기 git checkout "$tf86";               cd "$_c86" || exit 1
+p86 '-C 없는 경로 하나의 checkout' lm86
+x86 트리밖쓰기 git -C "$SIB86" checkout --ours "$tf86";            p86 'checkout --ours' lm86
+x86 트리밖쓰기 git -C "$SIB86" checkout --theirs "$tf86";          p86 'checkout --theirs' lm86
+x86 트리밖쓰기 git -C "$SIB86" checkout -m "$tf86";                p86 'checkout -m' lm86
+x86 트리밖쓰기 git -C "$SIB86" checkout --conflict=merge "$tf86";  p86 'checkout --conflict=merge' lm86
+x86 트리밖쓰기 git -C "$SIB86" checkout -fq bd86;                  p86 'checkout -fq' lm86
+x86 트리밖쓰기 git -C "$SIB86" switch -f bd86;                     p86 'switch -f' lm86
+x86 트리밖쓰기 git -C "$SIB86" switch --discard-changes bd86;      p86 'switch --discard-changes' lm86
+x86 트리밖쓰기 git -C "$SIB86" reset --har;                        p86 'reset --har' lm86
+x86 트리밖쓰기 git -C "$SIB86" branch -d -f bd86
+p86 'branch -d -f' git -C "$SIB86" show-ref --verify -q refs/heads/bd86
+x86 트리밖쓰기 git -C "$SIB86" branch --delete --force bd86
+p86 'branch --delete --force' git -C "$SIB86" show-ref --verify -q refs/heads/bd86
+x86 트리밖쓰기 git -C "$SIB86" branch -df bd86
+P86_ALSO=신고등급한도 p86 'branch -df' git -C "$SIB86" show-ref --verify -q refs/heads/bd86
+x86 트리밖쓰기 git -C "$WT" worktree remove -ff "$WORK/wt86-rm";    p86 'worktree remove -ff' test -d "$WORK/wt86-rm"
+x86 트리밖쓰기 git -C "$WT" worktree remove --forc "$WORK/wt86-rm"; p86 'worktree remove --forc' test -d "$WORK/wt86-rm"
+check "86: 일상 삭제 철자의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b86) - nb86 ))" "23"
+
+# 열거 밖의 철자 — 술어는 비파괴로 알아본 형태만 통과시키고 나머지는 트리거로 본다.
+# 아래 철자는 파괴 철자를 하나씩 늘려 가던 동안 매번 빠져나간 것들이다: 글롭과 `:`
+# 마법 경로의 checkout, 마지막 플래그가 이기는 mv/cp, 접두로 줄인 --worktree 와 값을
+# 먹는 -s, 덮어쓰는 cp·ln·install, 강제하는 branch 와 tag -d. 각 park 옆에 같은
+# 동사의 비파괴 쌍둥이를 두어, 동사만 보고 닫은 것이 아님을 함께 세운다.
+printf 'keep\n' > "$D86/nfdst"; printf 'new\n' > "$D86/nfsrc"
+printf 'keep\n' > "$D86/ndst"; printf 'new\n' > "$D86/nsrc"
+printf 'keep\n' > "$D86/cpdst"; printf 'new\n' > "$D86/cpsrc"
+printf 'keep\n' > "$D86/lndst"; printf 'keep\n' > "$D86/insdst"
+git -C "$SIB86" tag td86 >/dev/null 2>&1
+c86=$(git -C "$SIB86" commit-tree "HEAD^{tree}" -p HEAD -m c86 2>/dev/null)
+bd86_rev=$(git -C "$SIB86" rev-parse bd86 2>/dev/null)
+nb86=$(b86)
+x86 트리밖쓰기 git -C "$SIB86" checkout "*${tf86#?}";        p86 "글롭 경로의 checkout" lm86
+x86 트리밖쓰기 git -C "$SIB86" checkout ":/$tf86";           p86 ':/ 경로의 checkout' lm86
+x86 트리밖쓰기 mv -n -f "$D86/nfsrc" "$D86/nfdst";           p86 '마지막 -f 가 이기는 mv -n -f' grep -q '^keep$' "$D86/nfdst"
+x86 트리밖쓰기 mv -nf "$D86/nfsrc" "$D86/nfdst";             p86 '묶은 mv -nf' grep -q '^keep$' "$D86/nfdst"
+x86 트리밖쓰기 git -C "$SIB86" restore --staged --wor "$tf86"; p86 'restore --staged --wor' lm86
+x86 트리밖쓰기 git -C "$SIB86" restore -sS "$tf86";          p86 'restore -sS (값을 먹는 -s)' lm86
+x86 트리밖쓰기 cp "$D86/cpsrc" "$D86/cpdst";                 p86 '덮어쓰는 cp' grep -q '^keep$' "$D86/cpdst"
+x86 트리밖쓰기 ln -sf "$D86/cpsrc" "$D86/lndst";             p86 '덮어쓰는 ln -sf' grep -q '^keep$' "$D86/lndst"
+x86 트리밖쓰기 git -C "$SIB86" branch -M bd86 bm86
+p86 'branch -M' git -C "$SIB86" show-ref --verify -q refs/heads/bd86
+x86 트리밖쓰기 git -C "$SIB86" branch -C bd86 bc86
+p86 'branch -C' test -z "$(git -C "$SIB86" for-each-ref refs/heads/bc86)"
+x86 트리밖쓰기 git -C "$SIB86" branch -f bd86 "$c86"
+p86 'branch -f' test "$(git -C "$SIB86" rev-parse bd86)" = "$bd86_rev"
+x86 트리밖쓰기 git -C "$SIB86" tag -d td86
+p86 'tag -d' git -C "$SIB86" show-ref --verify -q refs/tags/td86
+check "86: 열거 밖 철자의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b86) - nb86 ))" "12"
+[ "$c86" != "$bd86_rev" ] && [ -n "$c86" ] \
+  && ok "86: branch -f 의 잔존 단언이 공허하지 않다 (옮겨 갈 커밋이 다르다)" \
+  || bad "86: branch -f 의 잔존 단언이 공허하지 않다" "c86=$c86 bd86=$bd86_rev"
+x86 트리밖쓰기 install "$D86/cpsrc" "$D86/insdst"
+case "$rc:$msg" in
+  "11:"*"judgment '파괴형태미명시'"*|"11:"*"judgment '신고등급한도'"*) ok "86: 덮어쓰는 install 은 park 된다" ;;
+  *) bad "86: 덮어쓰는 install 은 park 된다" "$rc $msg" ;;
+esac
+grep -q '^keep$' "$D86/insdst" && ok "86: park 된 install 이 덮었을 파일이 남아 있다" \
+  || bad "86: park 된 install 이 덮었을 파일이 남아 있다" "$D86/insdst"
+
+# 비파괴 쌍둥이 — 같은 동사에서 알아본 형태는 통과하고, 실제로 아무것도 잃지 않는다.
+# GNU mv -n 은 대상이 있어 건너뛰면 1 로 끝나므로(BSD 는 0), 게이트가 통과시켰는지는
+# rc 가 아니라 park 가 아니었다는 것과 blocked 행이 늘지 않았다는 것으로 잰다.
+nb86=$(b86)
+x86 트리밖쓰기 mv -n "$D86/nsrc" "$D86/ndst"
+check "86: 대조 — mv -n 은 대상트리로 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b86) - nb86 ))" "통과/0"
+grep -q '^keep$' "$D86/ndst" && ok "86: 그 mv -n 이 대상을 덮지 않았다" || bad "86: 그 mv -n 이 대상을 덮지 않았다" "$D86/ndst"
+nb86=$(b86)
+x86 트리밖쓰기 mv -f -n "$D86/nsrc" "$D86/ndst"
+check "86: 대조 — 마지막 -n 이 이기는 mv -f -n 은 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b86) - nb86 ))" "통과/0"
+{ grep -q '^keep$' "$D86/ndst" && [ -e "$D86/nsrc" ]; } && ok "86: 그 mv -f -n 이 대상을 덮지 않고 원본도 남겼다" \
+  || bad "86: 그 mv -f -n 이 대상을 덮지 않고 원본도 남겼다" "$D86/nsrc $D86/ndst"
+# BSD cp -n 도 대상이 있으면 아무것도 쓰지 않고 1 로 끝나므로 같은 방식으로 잰다.
+nb86=$(b86)
+x86 트리밖쓰기 cp -n "$D86/cpsrc" "$D86/cpdst"
+check "86: 대조 — cp -n 은 대상트리로 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b86) - nb86 ))" "통과/0"
+grep -q '^keep$' "$D86/cpdst" && ok "86: 그 cp -n 이 대상을 덮지 않았다" || bad "86: 그 cp -n 이 대상을 덮지 않았다" "$D86/cpdst"
+x86 트리밖쓰기 ln -s "$D86/cpsrc" "$D86/lnnew"
+check "86: 대조 — 새 이름의 ln -s 는 대상트리로 통과한다" "$rc" "0"
+x86 트리밖쓰기 git -C "$SIB86" restore --staged --quiet "$tf86"
+check "86: 대조 — restore --staged --quiet 는 대상트리로 통과한다" "$rc" "0"
+x86 트리밖쓰기 git -C "$SIB86" branch bn86
+check "86: 대조 — 새 branch 생성은 대상트리로 통과한다" "$rc" "0"
+x86 트리밖쓰기 git -C "$SIB86" tag tn86
+check "86: 대조 — 새 tag 생성은 대상트리로 통과한다" "$rc" "0"
+lm86 && ok "86: 열거 밖 철자의 대조 쌍이 작업 트리의 변경을 건드리지 않았다" \
+  || bad "86: 열거 밖 철자의 대조 쌍이 작업 트리의 변경을 건드리지 않았다" "$SIB86/$tf86"
+git -C "$SIB86" tag -d td86 tn86 >/dev/null 2>&1
+git -C "$SIB86" branch -D bn86 >/dev/null 2>&1
+
+# 비파괴로 잘못 읽히던 세 철자 — 옵션 없는 worktree remove 는 무시된 파일을 함께
+# 지우고, 피연산자 뒤의 -n 은 BSD 가 옵션으로 읽지 않아 대상을 덮으며, --work-tree
+# 로 다른 워크트리를 가리킨 checkout 은 그 루트에만 있는 경로의 변경을 버린다. 각
+# park 옆에 같은 동사의 비파괴 쌍둥이를 두고, 잔존 단언이 공허하지 않음을 먼저 세운다.
+IG86="$WORK/wt86-ig"
+git -C "$WT" worktree add -q -b wi86 "$IG86" "$B86" >/dev/null 2>&1
+ex86="$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+mkdir -p "${ex86%/*}" && printf 'ign86.md\n' >> "$ex86"
+printf 'only\n' > "$IG86/ign86.md"
+case "$(git -C "$IG86" status --porcelain --ignored 2>/dev/null)" in
+  *'!! ign86.md'*) ok "86: 무시된 파일이 실제로 무시된다 (worktree remove 잔존 단언이 공허하지 않다)" ;;
+  *) bad "86: 무시된 파일이 실제로 무시된다" "$(git -C "$IG86" status --porcelain --ignored 2>&1)" ;;
+esac
+mkdir -p "$D86/pn1" "$D86/pn2"
+printf 'keep\n' > "$D86/pn1/pa"; printf 'new\n' > "$D86/pa"
+printf 'keep\n' > "$D86/pn2/pb"; printf 'new\n' > "$D86/pb"
+printf 'w\n' > "$SIB86/wo86.txt"; git -C "$SIB86" add wo86.txt >/dev/null 2>&1
+printf 'local86w\n' >> "$SIB86/wo86.txt"
+lw86() { grep -q '^local86w$' "$SIB86/wo86.txt"; }
+gd86=$(cd "$SIB86" && git rev-parse --path-format=absolute --git-dir)
+{ [ ! -e "$PWD/wo86.txt" ] && lw86; } \
+  && ok "86: --work-tree 경로는 게이트의 cwd 에 없고 변경을 담는다 (아래 단언이 공허하지 않다)" \
+  || bad "86: --work-tree 경로는 게이트의 cwd 에 없고 변경을 담는다" "$PWD $SIB86/wo86.txt"
+nb86=$(b86)
+x86 트리밖쓰기 git -C "$WT" worktree remove "$IG86";  p86 '옵션 없는 worktree remove' test -e "$IG86/ign86.md"
+x86 트리밖쓰기 mv "$D86/pa" -n "$D86/pn1";            p86 '피연산자 뒤 -n 의 mv' grep -q '^keep$' "$D86/pn1/pa"
+x86 트리밖쓰기 cp "$D86/pb" -n "$D86/pn2";            p86 '피연산자 뒤 -n 의 cp' grep -q '^keep$' "$D86/pn2/pb"
+x86 트리밖쓰기 git --work-tree="$SIB86" --git-dir="$gd86" checkout wo86.txt
+p86 '--work-tree 루트에만 있는 경로의 checkout' lw86
+check "86: 세 철자의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b86) - nb86 ))" "4"
+nb86=$(b86)
+x86 트리밖쓰기 git -C "$WT" worktree lock "$IG86"
+check "86: 대조 — worktree lock 은 대상트리로 통과한다" "$rc" "0"
+x86 트리밖쓰기 mv -n "$D86/pa" "$D86/pn1"
+check "86: 대조 — 피연산자 앞 -n 의 mv 는 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)" "통과"
+grep -q '^keep$' "$D86/pn1/pa" && ok "86: 그 mv -n 이 디렉터리 안의 대상을 덮지 않았다" \
+  || bad "86: 그 mv -n 이 디렉터리 안의 대상을 덮지 않았다" "$D86/pn1/pa"
+x86 트리밖쓰기 cp -n "$D86/pb" "$D86/pn2"
+check "86: 대조 — 피연산자 앞 -n 의 cp 는 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)" "통과"
+grep -q '^keep$' "$D86/pn2/pb" && ok "86: 그 cp -n 이 디렉터리 안의 대상을 덮지 않았다" \
+  || bad "86: 그 cp -n 이 디렉터리 안의 대상을 덮지 않았다" "$D86/pn2/pb"
+x86 트리밖쓰기 git --work-tree="$SIB86" --git-dir="$gd86" checkout b86
+check "86: 대조 — --work-tree 로 가리킨 브랜치 하나의 checkout 은 통과한다" "$rc" "0"
+lw86 && ok "86: 그 checkout 이 --work-tree 의 변경을 건드리지 않았다" \
+  || bad "86: 그 checkout 이 --work-tree 의 변경을 건드리지 않았다" "$SIB86/wo86.txt"
+check "86: 비파괴 쌍둥이는 blocked 행을 남기지 않는다" "$(( $(b86) - nb86 ))" "0"
+git -C "$WT" worktree unlock "$IG86" >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$IG86" >/dev/null 2>&1
+git -C "$WT" branch -D wi86 >/dev/null 2>&1
+git -C "$SIB86" rm -q -f --cached wo86.txt >/dev/null 2>&1
+rm -f "$SIB86/wo86.txt"
+
+# 목적지 뒤의 옵션 — GNU 는 피연산자 뒤 옵션을 재배열해 그 앞의 목적지를 덮고, BSD 는
+# 그 낱말을 목적지로 읽어 거부한다. 옵션 낱말을 목적지로만 읽던 동안 덮어쓰기를 켜지
+# 않는 -v 까지 이 철자들을 트리거 없이 통과시켰다. rc·판정 절반은 모든 플랫폼에서,
+# 잔존 절반은 GNU 가 실제로 덮는 Linux 샤드에서 회귀를 가린다. 목적지가 없는 쌍둥이는
+# 어느 읽기에서도 덮을 것이 없어 통과한다.
+for f in qa qb qc qd; do printf 'new\n' > "$D86/${f}src"; printf 'keep\n' > "$D86/${f}dst"; done
+printf 'new\n' > "$D86/qesrc"
+nb86=$(b86)
+x86 트리밖쓰기 mv "$D86/qasrc" "$D86/qadst" -f;     p86 '목적지 뒤 -f 의 mv' grep -q '^keep$' "$D86/qadst"
+x86 트리밖쓰기 mv "$D86/qbsrc" "$D86/qbdst" -v;     p86 '목적지 뒤 -v 의 mv' grep -q '^keep$' "$D86/qbdst"
+x86 트리밖쓰기 cp "$D86/qcsrc" "$D86/qcdst" -f;     p86 '목적지 뒤 -f 의 cp' grep -q '^keep$' "$D86/qcdst"
+x86 트리밖쓰기 ln -s "$D86/qdsrc" "$D86/qddst" -f;  p86 '목적지 뒤 -f 의 ln -s' grep -q '^keep$' "$D86/qddst"
+check "86: 목적지 뒤 옵션의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b86) - nb86 ))" "4"
+nb86=$(b86)
+x86 트리밖쓰기 mv "$D86/qesrc" "$D86/qenew" -v
+check "86: 대조 — 목적지가 없는 mv 의 뒤 -v 는 통과한다" "$([ "$rc" != "11" ] && printf 통과 || printf park)/$(( $(b86) - nb86 ))" "통과/0"
+
+# find -exec 의 {} — find 가 맞은 경로마다 바꿔 넣는 자리표시자라 그 이름이 있는지는
+# 게이트가 알 수 없다. 문자 그대로의 경로로 검사하던 동안 checkout 은 브랜치 하나로의
+# 전환으로, 디렉터리로 가는 cp·mv 는 덮을 것 없는 쓰기로 읽혀, 형제 워크트리의 변경을
+# 버리거나 파일을 덮는 행위가 트리거 없이 통과했다. 같은 find 가 {} 없이 빈 디렉터리로
+# 복사하는 쌍둥이는 덮을 것이 없어 통과한다 — park 가 find 나 cp 만 보고 닫힌 것이 아니다.
+mkdir -p "$D86/fes" "$D86/fed" "$D86/fen"
+printf 'new\n' > "$D86/fes/fe86.md"; printf 'keep\n' > "$D86/fed/fe86.md"
+nb86=$(b86)
+x86 트리밖쓰기 find "$SIB86/$tf86" -exec git -C "$SIB86" checkout {} +
+p86 'find -exec checkout {}' lm86
+x86 트리밖쓰기 find "$D86/fes" -name '*.md' -exec cp {} "$D86/fed/" ';'
+p86 'find -exec cp {} <dir>/' grep -q '^keep$' "$D86/fed/fe86.md"
+x86 트리밖쓰기 find "$D86/fes" -name '*.md' -exec mv {} "$D86/fed/" ';'
+p86 'find -exec mv {} <dir>/' grep -q '^keep$' "$D86/fed/fe86.md"
+check "86: find -exec {} 의 park 마다 blocked 행이 하나씩 남는다" "$(( $(b86) - nb86 ))" "3"
+nb86=$(b86)
+x86 트리밖쓰기 find "$D86/fes" -name '*.md' -exec cp "$D86/fes/fe86.md" "$D86/fen/" ';'
+check "86: 대조 — {} 없이 빈 디렉터리로 복사하는 find -exec cp 는 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+[ -e "$D86/fen/fe86.md" ] && ok "86: 그 복사가 실제로 일어났다 (대조가 공허하지 않다)" \
+  || bad "86: 그 복사가 실제로 일어났다 (대조가 공허하지 않다)" "$msg"
+
+# 공유 stash 는 git 전역 옵션 뒤에 와도 기기전역 하한이 잡는다. 하한이 위치 인자로만
+# 읽던 동안 `-C <dir>`·`--no-pager` 가 앞에 오면 `-` 를 답해 이 칸을 통과했다. 지울
+# 항목을 하나 넣어 두고(작업 트리를 건드리지 않는 `stash create` + `store`), 각 park
+# 뒤에 그 항목과 작업 트리의 변경이 남아 있음을 함께 단언한다.
+s86=$(git -C "$SIB86" stash create 2>/dev/null)
+[ -n "$s86" ] && git -C "$SIB86" stash store -m s86keep "$s86" >/dev/null 2>&1
+sl86() { case "$(git -C "$SIB86" stash list 2>/dev/null)" in *s86keep*) return 0 ;; *) return 1 ;; esac; }
+sl86 && ok "86: stash 잔존 단언이 공허하지 않다 (지울 항목이 있다)" || bad "86: stash 잔존 단언이 공허하지 않다" "$s86"
+st86() {
+  # st86 <이름> — 직전 x86 이 기기전역으로 park 되고 stash 항목과 변경이 남았음을 단언한다.
+  check "86: 전역 옵션 뒤의 stash 가 park 된다 — $1" "$rc" "11"
+  case "$msg" in
+    *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "86: 그 판정이 기기전역이다 — $1" ;;
+    *) bad "86: 그 판정이 기기전역이다 — $1" "$msg" ;;
+  esac
+  { sl86 && lm86; } && ok "86: park 된 stash 가 지웠을 것이 남아 있다 — $1" \
+    || bad "86: park 된 stash 가 지웠을 것이 남아 있다 — $1" "$SIB86"
+}
+x86 워크트리쓰기 git -C "$SIB86" stash;                st86 '-C stash'
+x86 워크트리쓰기 git -C "$SIB86" stash push -m p86;    st86 '-C stash push'
+x86 워크트리쓰기 git -C "$SIB86" stash drop;           st86 '-C stash drop'
+x86 워크트리쓰기 git -C "$SIB86" stash clear;          st86 '-C stash clear'
+x86 워크트리쓰기 git --no-pager -C "$SIB86" stash clear; st86 '--no-pager stash clear'
+x86 워크트리쓰기 git -C "$SIB86" stash list
+check "86: 대조 — 전역 옵션 뒤의 stash list 는 통과한다" "$rc" "0"
+git -C "$SIB86" stash clear >/dev/null 2>&1
+
+# 비파괴 음성 쌍 — 같은 동사의 비파괴 철자는 그대로 통과한다. 위 park 가 동사만
+# 보고 닫힌 것이 아님을 이것이 세운다.
+x86 트리밖쓰기 git -C "$SIB86" checkout b86
+check "86: 대조 — 브랜치 하나의 checkout 은 대상트리로 통과한다" "$rc" "0"
+x86 트리밖쓰기 git -C "$SIB86" restore --staged "$tf86"
+check "86: 대조 — restore --staged 는 대상트리로 통과한다" "$rc" "0"
+lm86 && ok "86: 대조 쌍이 작업 트리의 변경을 건드리지 않았다" || bad "86: 대조 쌍이 작업 트리의 변경을 건드리지 않았다" "$SIB86/$tf86"
+x86 트리밖쓰기 mv "$D86/mvsrc" "$D86/mvnew"
+check "86: 대조 — 새 이름으로의 mv 는 대상트리로 통과한다" "$rc" "0"
+git -C "$WT" worktree remove --force "$WORK/wt86-rm" >/dev/null 2>&1
+git -C "$WT" branch -D wr86 >/dev/null 2>&1
+git -C "$SIB86" checkout -q -- "$tf86" >/dev/null 2>&1
+rm -rf "$D86"
+
+# 지역 파괴 형태의 트리거 낱말이 사전 인가의 Pd 를 실제로 연다 — 낱말을 담은 형태는
+# 열고, 동사만 적은 형태는 열지 않는다. 표지 표에 지역 형태가 없던 동안 이 탈출구는
+# 어떤 매니페스트로도 열리지 않았다.
+pd86() {
+  # pd86 <형태> <argv...> — 그 형태 하나를 사전 인가로 둔 매니페스트에서 Pd 를 낸다.
+  local shape="$1"; shift
+  printf -- '- `사전 인가` | 형태=%s\n' "$shape" > "$WORK/m86pd.md"
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; m="$2"; shift 2
+    t=$(gate_reach_local_destructive "$@")
+    GATE_PREAUTH_PROBE=1 GATE_MARK=파괴 GATE_MARK_TRIGGER="$t" GATE_ARGV="$*" GATE_MANIFEST="$m" \
+      /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null' \
+    _ "$GATE" "$WORK/m86pd.md" "$@" | sed -n 's/.*Pd=\([01]\).*/\1/p'
+}
+check "86: 파괴 낱말을 담은 형태가 플래그 없는 rm -rf 를 연다" "$(pd86 'rm -rf' rm -rf "$SIB86/x")" "1"
+check "86: 동사만 적은 형태는 rm -rf 를 열지 않는다" "$(pd86 'rm' rm -rf "$SIB86/x")" "0"
+check "86: 플래그 없는 rm 은 동사가 트리거라 rm 형태가 연다" "$(pd86 'rm' rm "$SIB86/x")" "1"
+check "86: git reset 만 적은 형태는 --hard 를 열지 않는다" "$(pd86 'git reset' git reset --hard)" "0"
+check "86: 경로 지정 checkout 은 -- 를 트리거로 쓴다" "$(pd86 'git checkout --' git checkout -- .)" "1"
+
+# 복사형 동사의 트리거는 덮어쓰기를 켠 낱말이다. 맨 동사를 트리거로 내던 동안
+# 비덮어쓰기 형태만 적은 사전 인가가 같은 머리의 강제 형태를 열었다. 사례마다 강제
+# 형태는 그 사전 인가로 열리지 않고(park), 비덮어쓰기 형태는 트리거가 없어 사전 인가
+# 없이 지나감을 쌍으로 단언한다. 대상이 있어야 덮어쓰기로 읽히므로 둘 다 만든다.
+P86="$WORK/pd86"; mkdir -p "$P86"
+printf 'keep\n' > "$P86/dst"; printf 'new\n' > "$P86/src"
+lt86() {
+  # lt86 <argv...> — 지역 파괴 판독기가 내는 트리거를 그대로 낸다(없으면 빈 문자열).
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_reach_local_destructive "$@"' _ "$GATE" "$@"
+}
+check "86: 형태=ln -s 는 ln -s -f 를 열지 않는다" "$(pd86 'ln -s' ln -s -f "$P86/src" "$P86/dst")" "0"
+check "86: 대조 — 비덮어쓰기 ln -s 는 트리거가 없다" "$(lt86 ln -s "$P86/src" "$P86/dst")" ""
+check "86: 형태=ln 은 ln -sf 를 열지 않는다" "$(pd86 'ln' ln -sf "$P86/src" "$P86/dst")" "0"
+check "86: 대조 — 비덮어쓰기 ln 은 트리거가 없다" "$(lt86 ln "$P86/src" "$P86/dst")" ""
+check "86: 형태=mv -n 은 mv -n -f 를 열지 않는다" "$(pd86 'mv -n' mv -n -f "$P86/src" "$P86/dst")" "0"
+check "86: 대조 — 비덮어쓰기 mv -n 은 트리거가 없다" "$(lt86 mv -n "$P86/src" "$P86/dst")" ""
+check "86: 형태=cp -n 은 cp -n -f 를 열지 않는다" "$(pd86 'cp -n' cp -n -f "$P86/src" "$P86/dst")" "0"
+check "86: 대조 — 비덮어쓰기 cp -n 은 트리거가 없다" "$(lt86 cp -n "$P86/src" "$P86/dst")" ""
+# 양성 쌍둥이 — 덮어쓰기를 켠 낱말을 담은 형태는 연다. 동사만으로 덮어쓰는 행위는
+# 여전히 동사가 트리거라 동사만 적은 형태가 연다.
+check "86: 형태=ln -sf 는 ln -sf 를 연다" "$(pd86 'ln -sf' ln -sf "$P86/src" "$P86/dst")" "1"
+check "86: 형태=mv -n -f 는 mv -n -f 를 연다" "$(pd86 'mv -n -f' mv -n -f "$P86/src" "$P86/dst")" "1"
+check "86: 형태=cp -n -f 는 cp -n -f 를 연다" "$(pd86 'cp -n -f' cp -n -f "$P86/src" "$P86/dst")" "1"
+check "86: 덮어쓰기를 켠 낱말이 트리거다 — ln -s -f" "$(lt86 ln -s -f "$P86/src" "$P86/dst")" "-f"
+check "86: 동사만으로 덮어쓰는 mv 는 동사가 트리거다" "$(lt86 mv "$P86/src" "$P86/dst")" "mv"
+check "86: 동사만 적은 형태는 동사만으로 덮어쓰는 mv 를 연다" "$(pd86 'mv' mv "$P86/src" "$P86/dst")" "1"
+# 목적지 뒤의 옵션 낱말은 종류와 무관하게 그 낱말이 트리거다 — GNU 읽기에서만 덮는다.
+check "86: 목적지 뒤 옵션 낱말이 트리거다 — mv … -f" "$(lt86 mv "$P86/src" "$P86/dst" -f)" "-f"
+check "86: 목적지 뒤 옵션 낱말이 트리거다 — mv … -v" "$(lt86 mv "$P86/src" "$P86/dst" -v)" "-v"
+check "86: 목적지 뒤 옵션 낱말이 트리거다 — cp … --verbose" "$(lt86 cp "$P86/src" "$P86/dst" --verbose)" "--verbose"
+check "86: 목적지 뒤 옵션 낱말이 트리거다 — ln -s … -f" "$(lt86 ln -s "$P86/src" "$P86/dst" -f)" "-f"
+check "86: 대조 — 목적지가 없으면 뒤 옵션에도 트리거가 없다" "$(lt86 mv "$P86/src" "$P86/new" -v)" ""
+check "86: 대조 — 피연산자 뒤 -n 의 mv 는 여전히 동사가 트리거다" "$(mkdir -p "$P86/nd" && printf k > "$P86/nd/src" && lt86 mv "$P86/src" -n "$P86/nd")" "mv"
+# 옵션 없는 worktree remove 는 하위 명령이 트리거라 그것을 적은 형태가 연다.
+check "86: 옵션 없는 worktree remove 는 하위 명령이 트리거다" "$(lt86 git worktree remove "$P86/w")" "remove"
+check "86: 형태=git worktree remove 는 옵션 없는 remove 를 연다" "$(pd86 'git worktree remove' git worktree remove "$P86/w")" "1"
+check "86: 형태=git worktree 는 옵션 없는 remove 를 열지 않는다" "$(pd86 'git worktree' git worktree remove "$P86/w")" "0"
+# find 는 argv 에 실재하는 기본식 낱말을 트리거로 낸다. 쓰기 기본식이 모두 `-delete`
+# 를 내던 동안 `-fprint` 행위는 argv 에 없는 낱말을 요구해 어떤 형태로도 열리지 않았다.
+check "86: find -fprint 의 트리거는 -fprint 다" "$(lt86 find "$P86" -fprint "$P86/o")" "-fprint"
+check "86: find -okdir 의 트리거는 -okdir 다" "$(lt86 find "$P86" -okdir rm {} ';')" "-okdir"
+check "86: find -delete 의 트리거는 여전히 -delete 다" "$(lt86 find "$P86" -delete)" "-delete"
+check "86: -fprint 를 담은 형태가 find -fprint 를 연다" "$(pd86 "find $P86 -fprint" find "$P86" -fprint "$P86/o")" "1"
+check "86: 대조 — -delete 를 담은 형태는 find -fprint 를 열지 않는다" "$(pd86 "find $P86 -delete" find "$P86" -fprint "$P86/o")" "0"
+rm -rf "$P86"
+
+# park — 같은 모양이 대상의 공통 git 디렉터리 밖에 닿는다.
+nb86=$(b86)
+x86 워크트리쓰기 git -C "$U86" add -A
+check "86: 다른 저장소에서 도는 행위는 대상트리불일치로 park 된다" "$rc" "11"
+case "$msg" in *대상트리불일치*) ok "86: 그 park 의 판정이 대상트리불일치다" ;; *) bad "86: 그 park 의 판정이 대상트리불일치다" "$msg" ;; esac
+case "$msg" in
+  *"repair:"*"'대상트리'"*"'런로컬'"*) ok "86: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" ;;
+  *) bad "86: 대상트리불일치의 수리 줄이 두 토큰을 이름으로 말한다" "$msg" ;;
+esac
+x86 트리밖쓰기 cp base.txt "$U86/c86.txt"
+check "86: 다른 저장소를 가리키는 피연산자는 park 된다" "$rc" "11"
+[ -e "$U86/c86.txt" ] && bad "86: park 된 쓰기는 일어나지 않았다" "$U86/c86.txt" \
+  || ok "86: park 된 쓰기는 일어나지 않았다"
+x86 트리밖쓰기 cp base.txt "${TMPDIR:-/tmp}/c86-$$.txt"
+check "86: 임시 디렉터리는 대상트리가 아니다 (런로컬이다)" "$rc" "11"
+check "86: park 셋이 blocked 행 셋을 남긴다" "$(( $(b86) - nb86 ))" "3"
+
+# 수리 줄과 park 행은 비교기가 대조하는 그 트리거 낱말을 싣는다. 안내가 「rm 이 아니라
+# rm -rf」였던 동안 동사 자체가 트리거인 행위는 안내대로 등록한 형태로 결코 열리지
+# 않았고, 행에는 그 낱말이 없어 맞는 형태를 알아낼 길도 없었다. 인쇄된 낱말로 만든
+# 형태가 실제로 그 행위를 여는지까지 대조해 안내와 비교기를 한 사슬로 묶는다.
+lb86() { grep '^- `blocked` ' "$FX_LEDGER" 2>/dev/null | tail -1; }
+R86="$SIB86/r86t"; printf 'k\n' > "$R86"
+x86 트리밖쓰기 rm "$R86"
+check "86: 플래그 없는 rm 은 park 된다 (수리 줄 사례)" "$rc" "11"
+case "$msg" in
+  *"repair: the destructive word of this act is 'rm'."*) ok "86: 수리 줄이 실제 트리거 rm 을 인쇄한다" ;;
+  *) bad "86: 수리 줄이 실제 트리거 rm 을 인쇄한다" "$msg" ;;
+esac
+case "$msg" in
+  *"not 'rm'"*|*"'rm -rf' or"*) bad "86: 수리 줄이 동사 트리거 행위에 rm -rf 를 권하지 않는다" "$msg" ;;
+  *) ok "86: 수리 줄이 동사 트리거 행위에 rm -rf 를 권하지 않는다" ;;
+esac
+case "$(lb86)" in
+  *"| 파괴 트리거=rm |"*) ok "86: park 행이 파괴 트리거=rm 을 싣는다" ;;
+  *) bad "86: park 행이 파괴 트리거=rm 을 싣는다" "$(lb86)" ;;
+esac
+[ -e "$R86" ] && ok "86: park 된 rm 의 대상 파일이 남아 있다 (수리 줄 사례)" \
+  || bad "86: park 된 rm 의 대상 파일이 남아 있다 (수리 줄 사례)" "$R86"
+rt86=$(printf '%s\n' "$msg" | sed -n "s/.*destructive word of this act is '\([^']*\)'.*/\1/p" | sed -n '1p')
+check "86: 수리 줄이 인쇄한 낱말로 만든 형태가 그 행위를 연다" "$(pd86 "$rt86" rm "$R86")" "1"
+# 신고만으로 선 표지에는 낱말이 없고, 그때 수리 줄은 열 형태가 없다고 말한다.
+d86 cp base.txt "$SIB86/r86d"
+check "86: 신고만으로 파괴인 대상트리 쓰기는 park 된다" "$rc" "11"
+case "$msg" in
+  *"repair: the destructive mark of this act came from --destructive alone"*) ok "86: 신고만의 표지에 수리 줄이 열 형태가 없다고 말한다" ;;
+  *) bad "86: 신고만의 표지에 수리 줄이 열 형태가 없다고 말한다" "$msg" ;;
+esac
+case "$(lb86)" in
+  *"| 파괴 트리거=- |"*) ok "86: 신고만의 park 행은 파괴 트리거=- 를 싣는다" ;;
+  *) bad "86: 신고만의 park 행은 파괴 트리거=- 를 싣는다" "$(lb86)" ;;
+esac
+rm -f "$R86" "$SIB86/r86d"
+
+# 실험 워크트리 — verification 계약이 임시 디렉터리 아래 만들고 판정 전에 강제로
+# 지우라고 정한 워크트리는 런로컬로 신고하고, 그 신고로 생성과 제거가 모두 통과한다.
+# 대상과 공통 git 디렉터리를 공유해 대상트리 술어도 통과하지만, 그렇게 신고하면 의무인
+# 제거가 파괴형태미명시로 park 되어 판정이 나갈 수 없다 — 그 대조를 다른 경로로 둔다.
+# 같은 argv 면 재신고 핀이 앞 행으로 답하므로 두 워크트리는 경로가 달라야 한다.
+r86() {
+  # r86 <surface> <argv...> — 런로컬 신고로 한 번 부르고 rc 와 msg 를 남긴다.
+  local s="$1"; shift
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface "$s" --reach 런로컬 --snapshot-digest "$(HH)" --rationale 't86' -- "$@"
+}
+EA86=$(mktemp -d "$WORK/cc-design-exp-t86-a.XXXXXX")
+EB86=$(mktemp -d "$WORK/cc-design-exp-t86-b.XXXXXX")
+nb86=$(b86)
+r86 트리밖쓰기 git worktree add --detach "$EA86" HEAD
+check "86: 실험 워크트리 생성이 런로컬로 통과한다" "$rc" "0"
+[ -e "$EA86/.git" ] && ok "86: 그 실험 워크트리가 실제로 만들어졌다 (아래 제거가 공허하지 않다)" \
+  || bad "86: 그 실험 워크트리가 실제로 만들어졌다" "$msg"
+printf 'ign\n' > "$EA86/scratch86"
+r86 트리밖쓰기 git worktree remove --force "$EA86"
+check "86: 실험 워크트리의 강제 제거가 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$EA86" ] && ok "86: 그 제거가 실제로 워크트리를 지웠다" \
+  || bad "86: 그 제거가 실제로 워크트리를 지웠다" "$EA86"
+r86 트리밖쓰기 git worktree add --detach "$EB86" HEAD
+check "86: 대조용 실험 워크트리 생성이 런로컬로 통과한다" "$rc" "0"
+x86 트리밖쓰기 git worktree remove --force "$EB86"
+check "86: 대상트리로 신고한 실험 워크트리 제거는 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*"destructive word of this act is '--force'"*) ok "86: 그 park 가 파괴형태미명시이고 트리거 --force 를 인쇄한다" ;;
+  *) bad "86: 그 park 가 파괴형태미명시이고 트리거 --force 를 인쇄한다" "$msg" ;;
+esac
+[ -e "$EB86/.git" ] && ok "86: park 된 제거의 실험 워크트리가 남아 있다" \
+  || bad "86: park 된 제거의 실험 워크트리가 남아 있다" "$EB86"
+check "86: 실험 워크트리 쌍은 대상트리 제거 하나만 blocked 행을 남긴다" "$(( $(b86) - nb86 ))" "1"
+git -C "$WT" worktree remove --force "$EB86" >/dev/null 2>&1
+rm -rf "$EA86" "$EB86"
+
+# 런로컬 신고의 파괴 — 런로컬 칸은 경로를 보지 않아, 대상트리로 park 되는 형제
+# 워크트리의 파괴가 런로컬 신고로는 그대로 실행됐다. 이제 대상의 트리에 닿는 파괴는
+# 그 칸에서도 5b 의 판정을 받고, 임시 디렉터리·상태 루트·자기 워크트리 안만 지나간다.
+# 이 절의 저장소와 형제 워크트리는 모두 $WORK 아래, 곧 실행 환경의 임시 디렉터리
+# 아래에 있다. 그래서 게이트가 읽는 TMPDIR 을 따로 둔 디렉터리로 돌려 둘을 가른다 —
+# 가르지 않으면 형제 워크트리도 임시 디렉터리 안이라 아래 park 쌍이 공허하게 통과한다.
+T86="$WORK/tmp86"; mkdir -p "$T86"
+rl86() { TMPDIR="$T86" r86 트리밖쓰기 "$@"; }
+SR86="$WORK/wt86-rl"
+git -C "$WT" worktree add -q --detach "$SR86" "$B86" >/dev/null 2>&1
+mkdir -p "$SIB86/rl86" && printf 'k\n' > "$SIB86/rl86/k"
+[ -e "$SR86/.git" ] && ok "86: 런로컬 park 쌍의 형제 워크트리가 있다 (잔존 단언이 공허하지 않다)" \
+  || bad "86: 런로컬 park 쌍의 형제 워크트리가 있다" "$SR86"
+nb86=$(b86)
+rl86 rm -rf "$SIB86/rl86"
+check "86: 형제 워크트리의 rm -rf 는 런로컬 신고로도 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*"destructive word of this act is '-rf'"*) ok "86: 그 park 가 파괴형태미명시이고 트리거 -rf 를 인쇄한다" ;;
+  *) bad "86: 그 park 가 파괴형태미명시이고 트리거 -rf 를 인쇄한다" "$msg" ;;
+esac
+[ -e "$SIB86/rl86/k" ] && ok "86: 런로컬로 park 된 rm -rf 의 대상 파일이 남아 있다" \
+  || bad "86: 런로컬로 park 된 rm -rf 의 대상 파일이 남아 있다" "$SIB86/rl86/k"
+rl86 git worktree remove --force "$SR86"
+check "86: 형제 워크트리의 강제 제거는 런로컬 신고로도 park 된다" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달=런로컬 | 파괴 트리거=--force |"*) ok "86: 그 park 행이 도달=런로컬 과 파괴 트리거=--force 를 싣는다" ;;
+  *) bad "86: 그 park 행이 도달=런로컬 과 파괴 트리거=--force 를 싣는다" "$(lb86)" ;;
+esac
+[ -e "$SR86/.git" ] && ok "86: 런로컬로 park 된 제거의 형제 워크트리가 남아 있다" \
+  || bad "86: 런로컬로 park 된 제거의 형제 워크트리가 남아 있다" "$SR86"
+check "86: 런로컬 파괴 park 둘이 blocked 행 둘을 남긴다" "$(( $(b86) - nb86 ))" "2"
+# 대조 — 돌린 임시 디렉터리 아래의 실험 워크트리는 생성·안의 파괴·강제 제거가 모두
+# 런로컬로 지나간다. 위 park 가 런로컬 칸을 통째로 닫은 것이 아님을 이것이 세운다.
+EC86=$(mktemp -d "$T86/cc-design-exp-t86-c.XXXXXX")
+nb86=$(b86)
+rl86 git worktree add --detach "$EC86" HEAD
+check "86: 대조 — 돌린 임시 디렉터리 아래 실험 워크트리 생성이 런로컬로 통과한다" "$rc" "0"
+printf 'x\n' > "$EC86/rl86x"
+rl86 rm -rf "$EC86/rl86x"
+check "86: 대조 — 실험 워크트리 안의 rm -rf 가 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$EC86/rl86x" ] && ok "86: 그 rm -rf 가 실제로 지웠다" || bad "86: 그 rm -rf 가 실제로 지웠다" "$EC86/rl86x"
+rl86 git worktree remove --force "$EC86"
+check "86: 대조 — 실험 워크트리의 강제 제거가 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$EC86" ] && ok "86: 그 제거가 실제로 실험 워크트리를 지웠다" \
+  || bad "86: 그 제거가 실제로 실험 워크트리를 지웠다" "$EC86"
+check "86: 대조 — 실험 워크트리 쌍은 blocked 행을 남기지 않는다" "$(( $(b86) - nb86 ))" "0"
+# 재신고 — 대상트리로 park 된 파괴를 런로컬로 다시 걸면 둘째 신고도 park 되므로 앞
+# 행의 다이제스트가 답한다. 런로컬 칸이 경로를 보지 않던 동안 이 재신고는 실행됐다.
+mkdir -p "$SIB86/rl86b" && printf 'k\n' > "$SIB86/rl86b/k"
+x86 트리밖쓰기 rm -rf "$SIB86/rl86b"
+check "86: 대상트리 신고의 형제 rm -rf 는 park 된다 (재신고의 앞 행)" "$rc" "11"
+nb86=$(b86)
+rl86 rm -rf "$SIB86/rl86b"
+check "86: 같은 파괴를 런로컬로 재신고하면 앞 판정이 답하고 새 행이 없다" "$rc/$(( $(b86) - nb86 ))" "11/0"
+case "$msg" in *"already parked"*) ok "86: 그 답이 재신고 핀의 것이다 (런로컬)" ;; *) bad "86: 그 답이 재신고 핀의 것이다 (런로컬)" "$msg" ;; esac
+[ -e "$SIB86/rl86b/k" ] && ok "86: 런로컬로 재신고한 파괴는 일어나지 않았다" \
+  || bad "86: 런로컬로 재신고한 파괴는 일어나지 않았다" "$SIB86/rl86b/k"
+
+# 혼합 착지 — 착지점 하나가 임시 디렉터리나 저장소 밖에 있으면 「모든 착지점이 대상
+# 트리 안」이라는 술어가 떨어졌고, 런로컬 칸에서는 그 실패가 곧 진행이었다. 위의
+# 단일 착지점 쌍은 이 구멍을 보지 못한다. 판정은 이제 착지점마다 내려지므로, 피연산자
+# 하나만 형제 워크트리에 닿아도 파괴는 park 된다. 쌍마다 잔존을 단언한다.
+mkdir -p "$SIB86/rlm86" "$T86/rlm86"
+printf 'k\n' > "$SIB86/rlm86/k"; printf 'k\n' > "$SIB86/rlm86/dst"
+printf 'new\n' > "$T86/rlm86/src"; printf 'j\n' > "$T86/rlm86/junk"
+printf 'u\n' > "$SIB86/rlm86/untracked86"
+nb86=$(b86)
+rl86 rm -rf "$SIB86/rlm86/k" "$T86/rlm86/junk"
+check "86: 형제 워크트리와 임시 디렉터리에 함께 닿는 rm -rf 는 런로컬로도 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 혼합 rm -rf 의 판정이 파괴형태미명시다" ;; *) bad "86: 그 혼합 rm -rf 의 판정이 파괴형태미명시다" "$msg" ;; esac
+[ -e "$SIB86/rlm86/k" ] && [ -e "$T86/rlm86/junk" ] && ok "86: park 된 혼합 rm -rf 의 두 피연산자가 모두 남아 있다" \
+  || bad "86: park 된 혼합 rm -rf 의 두 피연산자가 모두 남아 있다" "$SIB86/rlm86/k $T86/rlm86/junk"
+rl86 mv "$T86/rlm86/src" "$SIB86/rlm86/dst"
+check "86: 임시 디렉터리의 파일을 형제 워크트리의 기존 파일 위로 옮기는 mv 는 런로컬로도 park 된다" "$rc" "11"
+check "86: park 된 mv 의 덮일 파일이 그대로다" "$(cat "$SIB86/rlm86/dst" 2>/dev/null)" "k"
+rl86 git -C "$SIB86" clean -fdx --exclude=/nonexistent-rlm86
+check "86: 저장소 밖 --exclude 를 단 형제 워크트리의 clean -fdx 는 런로컬로도 park 된다" "$rc" "11"
+[ -e "$SIB86/rlm86/untracked86" ] && ok "86: park 된 clean 의 추적되지 않는 파일이 남아 있다" \
+  || bad "86: park 된 clean 의 추적되지 않는 파일이 남아 있다" "$SIB86/rlm86/untracked86"
+# X=1 갈래 — 판독기가 트리거를 내지 않는 쓰기라도 --destructive 를 단 런로컬 신고가
+# 형제 워크트리에 닿으면 park 된다. 신고된 표지를 런로컬 칸이 읽는다는 단언이다.
+TMPDIR="$T86" gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 --destructive --snapshot-digest "$(HH)" --rationale 't86' \
+  -- cp base.txt "$SIB86/rlm86/new86"
+check "86: --destructive 만으로 표지가 선 런로컬 쓰기는 형제 워크트리에서 park 된다" "$rc" "11"
+[ -e "$SIB86/rlm86/new86" ] && bad "86: 그 park 된 쓰기는 일어나지 않았다" "$SIB86/rlm86/new86" \
+  || ok "86: 그 park 된 쓰기는 일어나지 않았다"
+# 불투명·미상 등급 — 칸 4 는 런로컬 신고를 --destructive 를 읽지 않고 통과시켰다.
+# git rm 은 등급표가 읽지 못하는 꼴이고 unlink 는 표에 없는 동사다. 둘 다 이제 같은
+# 착지점 판정을 받고, 판독기가 내는 트리거가 park 행에 실린다.
+[ -e "$SIB86/base.txt" ] && ok "86: 칸 4 쌍의 형제 워크트리에 추적 파일이 있다 (잔존 단언이 공허하지 않다)" \
+  || bad "86: 칸 4 쌍의 형제 워크트리에 추적 파일이 있다" "$SIB86/base.txt"
+rl86 git -C "$SIB86" rm -q -f base.txt
+check "86: 형제 워크트리의 git rm -f 는 런로컬로도 park 된다 (칸 4)" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달=런로컬 | 파괴 트리거=-f |"*) ok "86: 그 park 행이 파괴 트리거=-f 를 싣는다" ;;
+  *) bad "86: 그 park 행이 파괴 트리거=-f 를 싣는다" "$(lb86)" ;;
+esac
+[ -e "$SIB86/base.txt" ] && ok "86: park 된 git rm 의 추적 파일이 남아 있다" \
+  || bad "86: park 된 git rm 의 추적 파일이 남아 있다" "$SIB86/base.txt"
+rl86 unlink "$SIB86/rlm86/k"
+check "86: 형제 워크트리의 unlink 는 런로컬로도 park 된다 (칸 4)" "$rc" "11"
+[ -e "$SIB86/rlm86/k" ] && ok "86: park 된 unlink 의 파일이 남아 있다" \
+  || bad "86: park 된 unlink 의 파일이 남아 있다" "$SIB86/rlm86/k"
+check "86: 혼합 착지·X=1·칸 4 의 park 여섯이 blocked 행 여섯을 남긴다" "$(( $(b86) - nb86 ))" "6"
+# 대조 — 착지점이 모두 돌린 임시 디렉터리 안인 파괴, 그리고 형제 워크트리에 새 이름을
+# 만드는 비파괴 혼합 쓰기는 런로컬로 지나간다. rc 0 과 실제 효과를 함께 단언해, 다른
+# 이유의 거부가 「park 되지 않음」으로 읽히지 않게 한다.
+printf 'a\n' > "$T86/rlm86/a"; printf 'b\n' > "$T86/rlm86/b"
+nb86=$(b86)
+rl86 rm -rf "$T86/rlm86/a" "$T86/rlm86/b"
+check "86: 대조 — 착지점이 모두 임시 디렉터리인 rm -rf 는 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$T86/rlm86/a" ] && [ ! -e "$T86/rlm86/b" ] && ok "86: 그 rm -rf 가 실제로 지웠다 (임시 디렉터리)" \
+  || bad "86: 그 rm -rf 가 실제로 지웠다 (임시 디렉터리)" "$T86/rlm86"
+printf 'n\n' > "$T86/rlm86/src2"
+rl86 cp "$T86/rlm86/src2" "$SIB86/rlm86/fresh86"
+check "86: 대조 — 형제 워크트리에 새 이름을 만드는 비파괴 혼합 쓰기는 런로컬로 통과한다" "$rc" "0"
+[ -e "$SIB86/rlm86/fresh86" ] && ok "86: 그 쓰기가 실제로 일어났다 (혼합 비파괴)" \
+  || bad "86: 그 쓰기가 실제로 일어났다 (혼합 비파괴)" "$SIB86/rlm86/fresh86"
+check "86: 대조 — 통과한 둘은 blocked 행을 남기지 않는다" "$(( $(b86) - nb86 ))" "0"
+# 대상트리 신고의 혼합 착지 — 정직하게 대상트리로 신고하면 임시 원본 때문에
+# 대상트리불일치로 park 되던 행위가, 거짓 런로컬 신고와 같은 판정을 받는다: 비파괴는
+# 통과하고 파괴는 파괴형태미명시로 park 된다. 정직한 신고가 더 불리하지 않다.
+printf 'm\n' > "$T86/rlm86/src3"; printf 'k\n' > "$SIB86/rlm86/dst3"
+TMPDIR="$T86" x86 트리밖쓰기 cp "$T86/rlm86/src3" "$SIB86/rlm86/fresh86t"
+check "86: 임시 디렉터리에서 형제 워크트리로의 비파괴 복사는 대상트리로 통과한다" "$rc" "0"
+[ -e "$SIB86/rlm86/fresh86t" ] && ok "86: 그 복사가 실제로 일어났다 (대상트리 혼합)" \
+  || bad "86: 그 복사가 실제로 일어났다 (대상트리 혼합)" "$SIB86/rlm86/fresh86t"
+TMPDIR="$T86" x86 트리밖쓰기 mv "$T86/rlm86/src3" "$SIB86/rlm86/dst3"
+check "86: 임시 디렉터리의 파일을 형제 워크트리의 기존 파일 위로 옮기는 mv 는 대상트리로도 park 된다" "$rc" "11"
+case "$msg" in
+  *"judgment '파괴형태미명시'"*) ok "86: 그 park 는 대상트리불일치가 아니라 파괴형태미명시다" ;;
+  *) bad "86: 그 park 는 대상트리불일치가 아니라 파괴형태미명시다" "$msg" ;;
+esac
+check "86: park 된 대상트리 mv 의 덮일 파일이 그대로다" "$(cat "$SIB86/rlm86/dst3" 2>/dev/null)" "k"
+
+# --reach 생략 — 등급표는 다른 워크트리를 겨눈 worktree remove 와 git -C <dir> reset
+# --hard 를 워크트리쓰기로 매기고, 그 등급에는 도달 신고가 필수가 아니다. 두 토큰이
+# 모두 park 하게 된 뒤로 토큰을 빼는 것이 그 파괴를 실행하는 유일한 철자였다. 생략은
+# 이제 런로컬 칸과 같은 착지점 판정을 받는다. 대조로 같은 자리의 비파괴 reset 과 돌린
+# 임시 디렉터리 아래 실험 워크트리의 reset --hard 가 지나감을 둔다.
+om86() {
+  # om86 <surface> <argv...> — --reach 없이, 돌린 임시 디렉터리로 한 번 부른다.
+  local s="$1"; shift
+  TMPDIR="$T86" gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface "$s" --snapshot-digest "$(HH)" --rationale 't86' -- "$@"
+}
+SO86="$WORK/wt86-om"
+git -C "$WT" worktree add -q --detach "$SO86" "$B86" >/dev/null 2>&1
+printf 'om86\n' >> "$SIB86/base.txt"
+om86k() { grep -q '^om86$' "$SIB86/base.txt"; }
+om86k && [ -e "$SO86/.git" ] && ok "86: 생략 쌍의 형제 워크트리와 미커밋 수정이 있다 (잔존 단언이 공허하지 않다)" \
+  || bad "86: 생략 쌍의 형제 워크트리와 미커밋 수정이 있다" "$SO86"
+nb86=$(b86)
+om86 워크트리쓰기 git worktree remove --force "$SO86"
+check "86: --reach 를 생략한 형제 워크트리 강제 제거는 park 된다" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달 판정=파괴형태미명시 |"*"| 도달=- | 파괴 트리거=--force |"*) ok "86: 그 park 행이 도달=- 와 파괴 트리거=--force 를 싣는다" ;;
+  *) bad "86: 그 park 행이 도달=- 와 파괴 트리거=--force 를 싣는다" "$(lb86)" ;;
+esac
+[ -e "$SO86/.git" ] && ok "86: 생략으로 park 된 제거의 형제 워크트리가 남아 있다" \
+  || bad "86: 생략으로 park 된 제거의 형제 워크트리가 남아 있다" "$SO86"
+om86 워크트리쓰기 git -C "$SIB86" reset -q --hard
+check "86: --reach 를 생략한 형제 워크트리의 git -C reset --hard 는 park 된다" "$rc" "11"
+om86k && ok "86: 생략으로 park 된 reset --hard 의 미커밋 수정이 남아 있다" \
+  || bad "86: 생략으로 park 된 reset --hard 의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
+check "86: 생략 park 둘이 blocked 행 둘을 남긴다" "$(( $(b86) - nb86 ))" "2"
+OX86="$T86/om86-exp"
+git -C "$WT" worktree add -q --detach "$OX86" "$B86" >/dev/null 2>&1
+printf 'x\n' >> "$OX86/base.txt"
+nb86=$(b86)
+om86 워크트리쓰기 git -C "$SIB86" reset -q
+check "86: 대조 — --reach 를 생략한 형제 워크트리의 비파괴 reset 은 통과한다" "$rc" "0"
+om86k && ok "86: 그 비파괴 reset 이 미커밋 수정을 남겼다" \
+  || bad "86: 그 비파괴 reset 이 미커밋 수정을 남겼다" "$SIB86/base.txt"
+om86 워크트리쓰기 git -C "$OX86" reset -q --hard
+check "86: 대조 — 임시 디렉터리 아래 실험 워크트리의 reset --hard 는 생략으로 통과한다" "$rc" "0"
+check "86: 그 reset --hard 가 실제로 되돌렸다" "$(git -C "$OX86" status --porcelain 2>/dev/null)" ""
+check "86: 대조 — 생략 통과 둘은 blocked 행을 남기지 않는다" "$(( $(b86) - nb86 ))" "0"
+git -C "$WT" worktree remove --force "$OX86" >/dev/null 2>&1
+
+# 래퍼의 모르는 옵션 — 래퍼 갈래가 모르는 옵션에 빈 답을 내던 동안 env -C <형제> rm
+# -rf 와 env -S '…' 는 판독기가 「파괴 아님」으로 읽어 런로컬로 실행됐다. 감춘 명령은
+# 읽을 수 없으므로 래퍼 이름이 트리거다. 착지점 판정은 env -C 를 작업 디렉터리로 읽어,
+# 형제 워크트리는 park 하고 돌린 임시 디렉터리는 지나가게 한다. 오늘 exec 는 이 두
+# 철자를 등급 칸에서 먼저 거부하므로(형태 미상), 판정 함수는 직접 부르고 exec 는 거부와
+# 잔존을 단언한다 — 등급표가 이 철자를 읽게 되면 판정이 이 칸에 넘어온다.
+check "86: env -C 는 래퍼 이름이 트리거다" "$(lt86 env -C "$SIB86" rm -rf x)" "env"
+check "86: env -S 는 래퍼 이름이 트리거다" "$(lt86 env -S 'rm -rf x')" "env"
+check "86: nice 의 모르는 옵션도 래퍼 이름이 트리거다" "$(lt86 nice -5 rm -rf x)" "nice"
+check "86: 대조 — 아는 옵션 env -i 는 감싼 명령의 트리거를 낸다" "$(lt86 env -i rm -rf x)" "-rf"
+check "86: 대조 — 감싼 명령이 파괴가 아니면 env -i 는 트리거가 없다" "$(lt86 env -i git status)" ""
+mkdir -p "$SIB86/ew86" "$T86/ew86"
+printf 'k\n' > "$SIB86/ew86/k"; printf 'k\n' > "$T86/ew86/k"
+rd86() {
+  # rd86 <argv...> — 돌린 임시 디렉터리에서 런로컬 칸의 파괴 질문(X=0, Pd=0)의 답을 낸다.
+  ( cd "$WT" && TMPDIR="$T86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; GATE_MARK=""; shift 2
+      gate_reach_runlocal_destruction front 0 0 "$@"' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+check "86: env -C 로 형제 워크트리에서 도는 rm -rf 는 런로컬 판정에서 park 된다" "$(rd86 env -C "$SIB86" rm -rf ew86)" "파괴형태미명시"
+check "86: env -S 로 감춘 형제 워크트리의 rm -rf 는 런로컬 판정에서 park 된다" "$(rd86 env -S "rm -rf $SIB86/ew86")" "파괴형태미명시"
+check "86: 대조 — env -C 로 돌린 임시 디렉터리에서 도는 rm -rf 는 런로컬 판정을 지난다" "$(rd86 env -C "$T86" rm -rf ew86)" ""
+check "86: 대조 — 아는 옵션 env -i 로 형제 워크트리를 겨눈 rm -rf 도 park 된다" "$(rd86 env -i rm -rf "$SIB86/ew86")" "파괴형태미명시"
+nb86=$(b86)
+rl86 env -C "$SIB86" rm -rf ew86
+case "$rc" in 0) bad "86: exec 는 env -C 의 형제 rm -rf 를 실행하지 않는다" "rc=$rc" ;; *) ok "86: exec 는 env -C 의 형제 rm -rf 를 실행하지 않는다 (rc=$rc)" ;; esac
+[ -e "$SIB86/ew86/k" ] && ok "86: 거부된 env -C rm -rf 의 파일이 남아 있다" \
+  || bad "86: 거부된 env -C rm -rf 의 파일이 남아 있다" "$SIB86/ew86/k"
+
+# 착지점 수집 — 행위가 실제로 쓰는 자리를 수집기가 놓치면 형제 워크트리 파괴가
+# 런로컬로 지나갔다. 이름만 쓴 worktree remove(git 은 끝 경로 성분으로 찾는다), -C 앞의
+# 절대 --work-tree(git 은 뒤의 -C 너머로 유지한다), 붙여 쓴 -t<dir>, 파일 심볼릭 링크와
+# 디렉터리 링크 뒤의 .. 가 그것이다. 수집 결과를 직접 재는 단언과, 실제 행위가 park 되고
+# 형제 워크트리가 남는 단언을 함께 둔다.
+ll86() {
+  # ll86 <argv...> — 수집기가 모은 착지점을 한 줄에 하나씩 낸다.
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; shift 2
+      gate_reach_target_tree_act front "$@" || :
+      printf "%s\n" ${GATE_TT_LANDS[@]+"${GATE_TT_LANDS[@]}"}' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+# 파이프 뒤 grep -q 는 0a 의 pipefail 함정이라, 줄 단위 일치를 case 로 잰다.
+has86() {
+  case "
+$1
+" in *"
+$2
+"*) return 0 ;; esac
+  return 1
+}
+# 수집기는 경로를 사전적으로 정규화하므로, 끝에 / 가 붙은 TMPDIR 이 남긴 // 를 접어 비교한다.
+f86() { local dd='//' d='/'; printf '%s' "${1//$dd/$d}"; }
+SN86="$WORK/wt86-name86"
+git -C "$WT" worktree add -q --detach "$SN86" "$B86" >/dev/null 2>&1
+SN86P=$(cd "$SN86" && pwd -P)
+ln86=$(ll86 git worktree remove --force wt86-name86)
+{ has86 "$ln86" "$SN86P" || has86 "$ln86" "$(f86 "$SN86")"; } \
+  && ok "86: 이름만 쓴 worktree remove 의 착지점에 그 형제 워크트리가 있다" \
+  || bad "86: 이름만 쓴 worktree remove 의 착지점에 그 형제 워크트리가 있다" "$ln86"
+has86 "$(ll86 git --work-tree="$SIB86" -C "$T86" checkout -f -- .)" "$(f86 "$SIB86")" \
+  && ok "86: -C 앞의 절대 --work-tree 가 착지점에 남는다" \
+  || bad "86: -C 앞의 절대 --work-tree 가 착지점에 남는다" "$(ll86 git --work-tree="$SIB86" -C "$T86" checkout -f -- .)"
+has86 "$(ll86 mv -t"$SIB86/rlm86" "$T86/x")" "$(f86 "$SIB86/rlm86")" \
+  && ok "86: 붙여 쓴 -t<dir> 의 값이 착지점에 있다" \
+  || bad "86: 붙여 쓴 -t<dir> 의 값이 착지점에 있다" "$(ll86 mv -t"$SIB86/rlm86" "$T86/x")"
+mkdir -p "$T86/lk86" "$SIB86/lk86sub"
+printf 'k\n' > "$SIB86/lk86f"
+ln -s "$SIB86/lk86f" "$T86/lk86/flink"
+ln -s "$SIB86/lk86sub" "$T86/lk86/dlink"
+SIB86P=$(cd "$SIB86" && pwd -P)
+has86 "$(ll86 cp "$T86/x" "$T86/lk86/flink")" "$SIB86P/lk86f" \
+  && ok "86: 파일 심볼릭 링크의 대상이 착지점에 있다" \
+  || bad "86: 파일 심볼릭 링크의 대상이 착지점에 있다" "$(ll86 cp "$T86/x" "$T86/lk86/flink")"
+has86 "$(ll86 rm -f "$T86/lk86/dlink/../lk86f")" "$SIB86P/lk86f" \
+  && ok "86: 디렉터리 링크 뒤의 .. 를 물리적으로 읽은 자리가 착지점에 있다" \
+  || bad "86: 디렉터리 링크 뒤의 .. 를 물리적으로 읽은 자리가 착지점에 있다" "$(ll86 rm -f "$T86/lk86/dlink/../lk86f")"
+check "86: 대조 — 링크 없는 임시 경로는 제 자리 하나만 더한다" "$(ll86 rm -f "$T86/lk86/plain" | sed -n '2,$p')" "$(f86 "$T86/lk86/plain")"
+printf 'nm86\n' >> "$SN86/base.txt"; printf 'u\n' > "$SN86/untracked86n"
+printf 'wt86\n' >> "$SIB86/base.txt"
+nb86=$(b86)
+rl86 git worktree remove --force wt86-name86
+check "86: 이름만 쓴 형제 워크트리 강제 제거는 런로컬로도 park 된다" "$rc" "11"
+[ -e "$SN86/untracked86n" ] && ok "86: park 된 이름 제거의 형제 워크트리와 미추적 파일이 남아 있다" \
+  || bad "86: park 된 이름 제거의 형제 워크트리와 미추적 파일이 남아 있다" "$SN86"
+EW86="$T86/ew86x"
+git -C "$WT" worktree add -q --detach "$EW86" "$B86" >/dev/null 2>&1
+rl86 git --work-tree="$SIB86" -C "$EW86" checkout -f -- .
+check "86: -C 앞의 절대 --work-tree 로 형제 워크트리를 덮는 checkout -f 는 런로컬로도 park 된다" "$rc" "11"
+grep -q '^wt86$' "$SIB86/base.txt" && ok "86: park 된 --work-tree checkout 의 미커밋 수정이 남아 있다" \
+  || bad "86: park 된 --work-tree checkout 의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
+rl86 truncate -s0 "$T86/lk86/flink"
+check "86: 임시 디렉터리의 파일 링크를 거쳐 형제 워크트리 파일을 비우는 truncate 는 런로컬로도 park 된다" "$rc" "11"
+check "86: park 된 truncate 의 형제 워크트리 파일이 그대로다" "$(cat "$SIB86/lk86f" 2>/dev/null)" "k"
+rl86 rm -f "$T86/lk86/dlink/../lk86f"
+check "86: 디렉터리 링크 뒤의 .. 로 형제 워크트리 파일을 지우는 rm -f 는 런로컬로도 park 된다" "$rc" "11"
+[ -e "$SIB86/lk86f" ] && ok "86: park 된 .. rm -f 의 형제 워크트리 파일이 남아 있다" \
+  || bad "86: park 된 .. rm -f 의 형제 워크트리 파일이 남아 있다" "$SIB86/lk86f"
+check "86: 착지점 수집 park 넷이 blocked 행 넷을 남긴다" "$(( $(b86) - nb86 ))" "4"
+# 대조 — 링크가 아닌 임시 디렉터리 파일의 truncate 는 지나간다.
+printf 'z\n' > "$T86/lk86/plainf"
+nb86=$(b86)
+rl86 truncate -s0 "$T86/lk86/plainf"
+check "86: 대조 — 임시 디렉터리 파일의 truncate 는 런로컬로 통과한다" "$rc" "0"
+check "86: 그 truncate 가 실제로 비웠다" "$(wc -c < "$T86/lk86/plainf" | tr -d ' ')" "0"
+check "86: 대조 — truncate 통과는 blocked 행을 남기지 않는다" "$(( $(b86) - nb86 ))" "0"
+
+# 착지점 수집 — 행위를 고르는 낱말. 수집기가 그 낱말을 다 보지 못하던 동안 아래 철자는
+# 형제 워크트리를 지우거나 덮으면서 런로컬·생략으로 지나갔다: git 앞의 래퍼, 값을 먹는
+# --attr-source 와 모르는 git 전역 옵션, GIT_* 대입과 -c core.worktree, 디렉터리 링크를
+# 거친 worktree 이름, 상대 --opt= 값, 맨 이름 심볼릭 링크, 그리고 게이트와 행위의 cwd 가
+# 다를 때의 존재 검사. 수집 결과나 판정을 직접 재는 단언과, 실행 수준에서 park 되고 형제
+# 워크트리가 남는 단언을 함께 둔다. 임시 디렉터리를 겨눈 같은 철자가 지나가는 쌍둥이가
+# park 가 래퍼나 옵션만 보고 닫힌 것이 아님을 세운다.
+SW86="$WORK/wt86-wrap86"
+git -C "$WT" worktree add -q --detach "$SW86" "$B86" >/dev/null 2>&1
+SW86P=$(cd "$SW86" && pwd -P)
+printf 'u\n' > "$SW86/untracked86w"
+[ -e "$SW86/untracked86w" ] && ok "86: 선택자 쌍의 형제 워크트리가 있다 (잔존 단언이 공허하지 않다)" \
+  || bad "86: 선택자 쌍의 형제 워크트리가 있다" "$SW86"
+ln -s "$SIB86" "$WT/lk86d"
+ln -s "$SIB86/lk86f" "$WT/fl86"
+printf 'p\n' > "$WT/pl86"
+has86 "$(ll86 timeout 60 git worktree remove --force wt86-wrap86)" "$SW86P" \
+  && ok "86: timeout 뒤 이름만 쓴 worktree remove 의 착지점에 그 형제 워크트리가 있다" \
+  || bad "86: timeout 뒤 이름만 쓴 worktree remove 의 착지점에 그 형제 워크트리가 있다" "$(ll86 timeout 60 git worktree remove --force wt86-wrap86)"
+has86 "$(ll86 git --attr-source HEAD worktree remove --force wt86-wrap86)" "$SW86P" \
+  && ok "86: --attr-source 의 값을 하위 명령으로 읽지 않는다 (착지점에 형제 워크트리가 있다)" \
+  || bad "86: --attr-source 의 값을 하위 명령으로 읽지 않는다" "$(ll86 git --attr-source HEAD worktree remove --force wt86-wrap86)"
+has86 "$(ll86 git worktree remove --force lk86d/../wt86-wrap86)" "$SW86P" \
+  && ok "86: 디렉터리 링크를 거친 worktree 이름의 물리 자리가 착지점에 있다" \
+  || bad "86: 디렉터리 링크를 거친 worktree 이름의 물리 자리가 착지점에 있다" "$(ll86 git worktree remove --force lk86d/../wt86-wrap86)"
+has86 "$(ll86 cp --target-directory=../wt86-sibling/rlm86 x86)" "$SIB86P/rlm86" \
+  && ok "86: 상대 --target-directory= 값이 착지점에 있다" \
+  || bad "86: 상대 --target-directory= 값이 착지점에 있다" "$(ll86 cp --target-directory=../wt86-sibling/rlm86 x86)"
+has86 "$(ll86 truncate -s0 fl86)" "$SIB86P/lk86f" \
+  && ok "86: 맨 이름 심볼릭 링크의 대상이 착지점에 있다" \
+  || bad "86: 맨 이름 심볼릭 링크의 대상이 착지점에 있다" "$(ll86 truncate -s0 fl86)"
+check "86: 래퍼 뒤 형제 워크트리 강제 제거는 런로컬 판정에서 park 된다" "$(rd86 timeout 60 git worktree remove --force wt86-wrap86)" "파괴형태미명시"
+check "86: nice 뒤 --work-tree 로 형제를 덮는 checkout -f 는 런로컬 판정에서 park 된다" "$(rd86 nice git --work-tree="$SIB86" checkout -f -- .)" "파괴형태미명시"
+check "86: GIT_WORK_TREE 대입으로 형제를 덮는 checkout -f 는 런로컬 판정에서 park 된다" "$(rd86 env GIT_WORK_TREE="$SIB86" git checkout -f -- .)" "파괴형태미명시"
+check "86: -c core.worktree 로 형제를 덮는 checkout -f 는 런로컬 판정에서 park 된다" "$(rd86 git -c core.worktree="$SIB86" checkout -f -- .)" "파괴형태미명시"
+check "86: 대소문자를 바꾼 -c Core.WorkTree 도 park 된다" "$(rd86 git -c Core.WorkTree="$SIB86" checkout -f -- .)" "파괴형태미명시"
+check "86: 모르는 git 전역 옵션 뒤의 강제 제거는 런로컬 판정에서 park 된다" "$(rd86 git --unknown86 worktree remove --force wt86-wrap86)" "파괴형태미명시"
+check "86: 맨 이름 링크를 거쳐 형제 파일을 비우는 truncate 는 런로컬 판정에서 park 된다" "$(rd86 truncate -s0 fl86)" "파괴형태미명시"
+check "86: 대조 — 래퍼 뒤 임시 디렉터리 실험 워크트리의 reset --hard 는 지난다" "$(rd86 timeout 60 git -C "$EW86" reset -q --hard)" ""
+check "86: 대조 — 사람·편집기 GIT_* 대입 뒤 임시 디렉터리의 reset --hard 는 지난다" "$(rd86 env GIT_PAGER=cat git -C "$EW86" reset -q --hard)" ""
+check "86: 대조 — 작업 트리를 옮기지 않는 -c 뒤 임시 디렉터리의 reset --hard 는 지난다" "$(rd86 git -c color.ui=never -C "$EW86" reset -q --hard)" ""
+check "86: 대조 — 링크가 아닌 맨 이름의 truncate 는 지난다" "$(rd86 truncate -s0 pl86)" ""
+rdc86() {
+  # rdc86 <argv...> — rd86 과 같되 게이트 프로세스는 $WORK 에 있고 행위는 $WT 에서 돈다.
+  ( cd "$WORK" && TMPDIR="$T86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; GATE_MARK=""; GATE_GRADE_CWD="$3"; shift 3
+      gate_reach_runlocal_destruction front 0 0 "$@"' _ "$GATE" "$CG" "$(cd "$WT" && pwd -P)" "$@" ) 2>/dev/null
+}
+ln -s "$SIB86" "$WT/ls86"; printf 'k\n' > "$SIB86/ow86"
+check "86: 게이트와 행위의 cwd 가 달라도 링크 너머 기존 파일을 덮는 cp 는 park 된다" "$(rdc86 cp base.txt ls86/ow86)" "파괴형태미명시"
+check "86: 대조 — 같은 링크 너머 새 이름의 cp 는 지난다" "$(rdc86 cp base.txt ls86/new86)" ""
+nb86=$(b86)
+om86 워크트리쓰기 timeout 60 git worktree remove --force wt86-wrap86
+check "86: --reach 를 생략한 timeout 뒤 형제 워크트리 강제 제거는 park 된다" "$rc" "11"
+[ -e "$SW86/untracked86w" ] && ok "86: 생략으로 park 된 timeout 제거의 형제 워크트리가 남아 있다" \
+  || bad "86: 생략으로 park 된 timeout 제거의 형제 워크트리가 남아 있다" "$SW86"
+rl86 env GIT_WORK_TREE="$SIB86" git checkout -f -- .
+check "86: GIT_WORK_TREE 대입으로 형제를 덮는 checkout -f 는 런로컬로도 park 된다" "$rc" "11"
+grep -q '^wt86$' "$SIB86/base.txt" && ok "86: park 된 GIT_WORK_TREE checkout 의 미커밋 수정이 남아 있다" \
+  || bad "86: park 된 GIT_WORK_TREE checkout 의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
+rl86 git -c core.worktree="$SIB86" checkout -f -- .
+check "86: -c core.worktree 로 형제를 덮는 checkout -f 는 런로컬로도 park 된다" "$rc" "11"
+grep -q '^wt86$' "$SIB86/base.txt" && ok "86: park 된 core.worktree checkout 의 미커밋 수정이 남아 있다" \
+  || bad "86: park 된 core.worktree checkout 의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
+rl86 git --attr-source HEAD worktree remove --force wt86-wrap86
+check "86: --attr-source 뒤 형제 워크트리 강제 제거는 런로컬로도 park 된다" "$rc" "11"
+rl86 git worktree remove --force lk86d/../wt86-wrap86
+check "86: 디렉터리 링크를 거친 형제 워크트리 강제 제거는 런로컬로도 park 된다" "$rc" "11"
+[ -e "$SW86/untracked86w" ] && ok "86: park 된 선택자 제거들의 형제 워크트리가 남아 있다" \
+  || bad "86: park 된 선택자 제거들의 형제 워크트리가 남아 있다" "$SW86"
+rl86 truncate -s0 fl86
+check "86: 맨 이름 링크를 거쳐 형제 파일을 비우는 truncate 는 런로컬로도 park 된다" "$rc" "11"
+check "86: park 된 맨 이름 truncate 의 형제 파일이 그대로다" "$(cat "$SIB86/lk86f" 2>/dev/null)" "k"
+check "86: 선택자 park 여섯이 blocked 행 여섯을 남긴다" "$(( $(b86) - nb86 ))" "6"
+printf 'x\n' >> "$EW86/base.txt"
+nb86=$(b86)
+rl86 timeout 60 git -C "$EW86" reset -q --hard
+check "86: 대조 — 래퍼 뒤 임시 디렉터리 실험 워크트리의 reset --hard 는 런로컬로 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+check "86: 그 reset --hard 가 실제로 되돌렸다 (래퍼 대조)" "$(git -C "$EW86" status --porcelain 2>/dev/null)" ""
+
+# env 의 -- 와 래퍼 자신의 파일 — 수집기의 env 루프가 -- 에서 멈추던 동안 그 뒤의
+# GIT_WORK_TREE=/GIT_DIR= 대입은 명령으로 읽혀 버려졌고, lockf·time 을 벗기면서는
+# lockf 의 잠금 파일(-k 없이 지운다)과 time -o 의 출력 파일(덮어쓴다)이 착지점에서
+# 빠졌다. 그 동안 아래 철자는 형제 워크트리를 덮거나 지우면서 런로컬·생략으로 지나갔고
+# 정직한 대상트리만 park 됐다. -k 없는 lockf 가 감싼 읽기는 읽기로 매겨져 도달을 보기
+# 전에 통과했다. 판정 함수 단언과 실행 수준의 park·잔존 단언을 함께 두고, 임시
+# 디렉터리를 겨누거나 파일을 남기는 같은 철자가 지나가는 쌍둥이를 둔다. 통과 쌍둥이는
+# 판정 함수로만 잰다 — 실행하면 lockf 와 /usr/bin/time 이 없는 러너에서 실패한다.
+check "86: env -- 뒤 GIT_WORK_TREE 대입으로 형제를 덮는 checkout -f 는 런로컬 판정에서 park 된다" "$(rd86 env -- GIT_WORK_TREE="$SIB86" git checkout -f -- .)" "파괴형태미명시"
+check "86: env -i -- 뒤 GIT_DIR 로 다른 저장소를 겨눈 reset --hard 는 런로컬 판정에서 park 된다" "$(rd86 env -i -- GIT_DIR="$U86/.git" GIT_WORK_TREE="$U86" git reset --hard)" "파괴형태미명시"
+check "86: nice env -- 뒤 GIT_WORK_TREE 대입으로 형제를 비우는 clean -fdx 는 런로컬 판정에서 park 된다" "$(rd86 nice env -- GIT_WORK_TREE="$SIB86" git clean -fdx)" "파괴형태미명시"
+check "86: 대조 — env -- 뒤 사람·편집기 GIT_* 대입의 임시 디렉터리 reset --hard 는 지난다" "$(rd86 env -- GIT_PAGER=cat git -C "$EW86" reset -q --hard)" ""
+printf 'k\n' > "$SIB86/lk86lock"; printf 'k\n' > "$SIB86/tm86out"
+SIB86L=$(f86 "$SIB86")
+has86 "$(ll86 lockf "$SIB86/lk86lock" rm -rf junk86)" "$SIB86L/lk86lock" \
+  && ok "86: lockf 의 잠금 파일이 착지점에 있다" \
+  || bad "86: lockf 의 잠금 파일이 착지점에 있다" "$(ll86 lockf "$SIB86/lk86lock" rm -rf junk86)"
+has86 "$(ll86 time -o "$SIB86/tm86out" true)" "$SIB86L/tm86out" \
+  && ok "86: time -o 의 출력 파일이 착지점에 있다" \
+  || bad "86: time -o 의 출력 파일이 착지점에 있다" "$(ll86 time -o "$SIB86/tm86out" true)"
+has86 "$(ll86 time --output="$SIB86/tm86out" true)" "$SIB86L/tm86out" \
+  && ok "86: time --output= 의 출력 파일이 착지점에 있다" \
+  || bad "86: time --output= 의 출력 파일이 착지점에 있다" "$(ll86 time --output="$SIB86/tm86out" true)"
+check "86: -k 없는 lockf 는 감싼 명령이 파괴가 아니어도 lockf 가 트리거다" "$(lt86 lockf "$SIB86/lk86lock" true)" "lockf"
+check "86: 대조 — 감싼 명령이 파괴면 그 트리거가 앞선다" "$(lt86 lockf "$SIB86/lk86lock" rm -rf x)" "-rf"
+check "86: 대조 — -k 를 단 lockf 는 감싼 명령이 파괴가 아니면 트리거가 없다" "$(lt86 lockf -k "$SIB86/lk86lock" true)" ""
+check "86: 기존 파일을 덮는 time -o 는 -o 가 트리거다" "$(lt86 time -o "$SIB86/tm86out" true)" "-o"
+check "86: 기존 파일을 덮는 time --output= 은 그 낱말이 트리거다" "$(lt86 time --output="$SIB86/tm86out" true)" "--output=$SIB86/tm86out"
+check "86: 대조 — -a 를 단 time -o 는 트리거가 없다" "$(lt86 time -a -o "$SIB86/tm86out" true)" ""
+check "86: 대조 — 새 이름의 time -o 는 트리거가 없다" "$(lt86 time -o "$T86/tm86new" true)" ""
+check "86: 형제 파일을 잠금 파일로 쓰는 lockf 는 런로컬 판정에서 park 된다" "$(rd86 lockf "$SIB86/lk86lock" true)" "파괴형태미명시"
+check "86: 형제 파일을 덮는 time -o 는 런로컬 판정에서 park 된다" "$(rd86 time -o "$SIB86/tm86out" true)" "파괴형태미명시"
+check "86: 대조 — 임시 디렉터리의 -k 잠금 파일 뒤 임시 경로 rm -rf 는 지난다" "$(rd86 lockf -k "$T86/lk86k" rm -rf "$T86/lk86junk")" ""
+check "86: 대조 — 임시 디렉터리 새 이름의 time -o 는 지난다" "$(rd86 time -o "$T86/tm86new" true)" ""
+nb86=$(b86)
+rl86 env -- GIT_WORK_TREE="$SIB86" git checkout -f -- .
+check "86: env -- 뒤 GIT_WORK_TREE 대입으로 형제를 덮는 checkout -f 는 런로컬로도 park 된다" "$rc" "11"
+om86 워크트리쓰기 env -i -- GIT_WORK_TREE="$SIB86" git checkout -f -- .
+check "86: --reach 를 생략한 env -i -- 뒤 GIT_WORK_TREE checkout -f 는 park 된다" "$rc" "11"
+grep -q '^wt86$' "$SIB86/base.txt" && ok "86: park 된 env -- checkout 들의 미커밋 수정이 남아 있다" \
+  || bad "86: park 된 env -- checkout 들의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
+rl86 lockf "$SIB86/lk86lock" rm -rf "$T86/lk86junk"
+check "86: 형제 파일을 잠금 파일로 쓰는 lockf rm -rf 는 런로컬로도 park 된다" "$rc" "11"
+# 대상 밖 잠금 파일은 등급이 트리밖쓰기라, 도달을 생략하면 park 이전에 필수 도달 누락으로
+# 거부된다. 같은 철자의 정직한 런로컬 선언은 파괴 질문에서 park 된다.
+om86 트리밖쓰기 lockf "$SIB86/lk86lock" true
+check "86: --reach 를 생략한 -k 없는 lockf 의 형제 잠금 파일은 도달 누락으로 거부된다 (읽기 칸에서 지나가지 않는다)" "$rc" "2"
+case "$msg" in *"--reach is required"*"grade '트리밖쓰기'"*) ok "86: 그 거부가 트리밖쓰기 등급의 도달 누락이다" ;;
+  *) bad "86: 그 거부가 트리밖쓰기 등급의 도달 누락이다" "$msg" ;; esac
+rl86 lockf "$SIB86/lk86lock" true
+check "86: 형제 파일을 잠금 파일로 쓰는 -k 없는 lockf true 는 런로컬로도 park 된다" "$rc" "11"
+check "86: park 된 lockf 들의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+rl86 time -o "$SIB86/tm86out" true
+check "86: 형제 파일을 덮는 time -o 는 런로컬로도 park 된다" "$rc" "11"
+check "86: park 된 time -o 의 형제 파일이 그대로다" "$(cat "$SIB86/tm86out" 2>/dev/null)" "k"
+check "86: env -- ·lockf·time -o park 다섯이 blocked 행 다섯을 남긴다" "$(( $(b86) - nb86 ))" "5"
+
+# lockf·time 의 잔여 철자 — BSD lockf 는 잠금 파일 앞에서만 옵션을 받는데 언랩이 잠금
+# 파일 뒤의 -k 도 보존 옵션으로 읽던 동안 `lockf <형제 파일> -k true` 는 읽기·트리거
+# 없음으로 지나갔고, 실제 lockf 는 -k 를 명령으로 돌린 뒤 파일을 지웠다. 불투명 바닥은
+# lockf 의 잠금 파일과 time -o 의 출력 파일을 세지 않아 `bash -c` 를 감싼 두 철자를
+# 읽기로 선언하면 통과했다. 등급은 잠금 파일 위치를 보지 않아 대상 밖 상대 경로의
+# 잠금 파일이 도달 선언 없이 워크트리쓰기로 지나갔다. 판정 함수 단언과 실행 수준의
+# park·잔존 단언을 함께 두고, 통과 쌍둥이는 판정 함수로만 잰다.
+check "86: 잠금 파일 뒤의 -k 는 보존 옵션이 아니라 lockf 가 트리거다" "$(lt86 lockf "$SIB86/lk86lock" -k true)" "lockf"
+check "86: 대조 — 잠금 파일 앞의 -k 는 보존 옵션이라 트리거가 없다" "$(lt86 lockf -k "$SIB86/lk86lock" true)" ""
+H86="$WORK/h86"; mkdir -p "$H86"
+sg86() {
+  # sg86 <argv...> — 대상 트리 안에서 HOME 을 픽스처로 돌려 argv 의 등급을 낸다.
+  ( cd "$WT" && HOME="$H86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      surface_of_argv0 "$@"' _ "$GATE" "$@" ) 2>/dev/null
+}
+check "86: 대상 밖 상대 경로 잠금 파일의 -k 없는 lockf 는 트리밖쓰기다" "$(sg86 lockf ../../.ssh/k86 true)" "트리밖쓰기"
+check "86: HOME 아래 잠금 파일의 -k 없는 lockf 는 트리밖쓰기다" "$(sg86 lockf "$H86/notes86" true)" "트리밖쓰기"
+check "86: 대조 — 대상 안 상대 경로 잠금 파일의 lockf 는 워크트리쓰기다" "$(sg86 lockf lk86in true)" "워크트리쓰기"
+check "86: 대조 — -k 를 단 대상 밖 잠금 파일의 lockf 는 감싼 읽기 그대로다" "$(sg86 lockf -k ../../.ssh/k86 true)" "읽기"
+fl86() {
+  # fl86 <argv...> — 대상 트리 안에서 불투명 바닥의 첫 필드를 낸다.
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      f=$(gate_opaque_floor "$@"); printf "%s" "${f%%	*}"' _ "$GATE" "$@" ) 2>/dev/null
+}
+check "86: 형제 잠금 파일의 lockf 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 lockf "$SIB86/lk86lock" bash -c true)" "트리밖쓰기"
+check "86: 형제 파일에 쓰는 time -o 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 time -o "$SIB86/tm86out" bash -c true)" "트리밖쓰기"
+check "86: 대조 — 무인 스킬이 처방하는 lockf -k -t 0 가 감싼 bash -c 의 바닥은 읽기다" "$(fl86 lockf -k -t 0 "$T86/lk86k" bash -c true)" "읽기"
+nb86=$(b86)
+rl86 lockf "$SIB86/lk86lock" -k true
+check "86: 잠금 파일 뒤에 -k 를 쓴 lockf 의 형제 잠금 파일은 런로컬로도 park 된다" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달 판정=파괴형태미명시 |"*"| 파괴 트리거=lockf |"*) ok "86: 그 park 행이 파괴형태미명시와 파괴 트리거=lockf 를 싣는다" ;;
+  *) bad "86: 그 park 행이 파괴형태미명시와 파괴 트리거=lockf 를 싣는다" "$(lb86)" ;;
+esac
+check "86: 그 park 된 lockf 의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+check "86: 잠금 파일 뒤 -k park 하나가 blocked 행 하나를 남긴다" "$(( $(b86) - nb86 ))" "1"
+om86 읽기 lockf "$SIB86/lk86lock" bash -c true
+case "$rc" in 6|11) ok "86: 읽기로 선언한 형제 잠금 파일 lockf bash -c 는 거부되거나 park 된다 (rc=$rc)" ;;
+  *) bad "86: 읽기로 선언한 형제 잠금 파일 lockf bash -c 는 거부되거나 park 된다" "rc=$rc $msg" ;; esac
+check "86: 그 lockf bash -c 의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+om86 읽기 time -o "$SIB86/tm86out" bash -c true
+case "$rc" in 6|11) ok "86: 읽기로 선언한 형제 파일 time -o bash -c 는 거부되거나 park 된다 (rc=$rc)" ;;
+  *) bad "86: 읽기로 선언한 형제 파일 time -o bash -c 는 거부되거나 park 된다" "rc=$rc $msg" ;; esac
+check "86: 그 time -o bash -c 의 형제 파일이 그대로다" "$(cat "$SIB86/tm86out" 2>/dev/null)" "k"
+
+# lockf·time 의 읽지 못하던 옵션 — 언랩이 lockf 옵션을 -k·-s·-n·-t 한 낱말씩만 알던
+# 동안 -w, 묶음 -sn·-ks·-st 0, -- 는 모르는 옵션이 되어 잠금 파일을 잃었다. 등급은
+# lockf 만 형태 미상이 아닌 등급 미상을 답해 비교기가 바닥과 비교했고, 바닥은 잠금
+# 파일을 세지 않아 읽기로 남았다. 그래서 읽기 선언이 도달·파괴 질문 없이 통과해 형제
+# 잠금 파일을 지웠다. 이제 언랩은 BSD getopt 문법을 읽고, 그래도 모르는 옵션은 등급에서
+# 형태 미상, 바닥에서 트리밖쓰기다. 바닥은 bash -c 페이로드 안의 lockf·time 줄도 센다.
+check "86: lockf -w 의 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -w "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: 묶은 lockf -sn 의 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -sn "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: 띄운 값을 묶은 lockf -st 0 의 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -st 0 "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: lockf -- 뒤 형제 잠금 파일은 트리밖쓰기다" "$(sg86 lockf -- "$SIB86/lk86lock" true)" "트리밖쓰기"
+check "86: 대조 — 묶음 안의 -k 는 보존 옵션이라 lockf -ks 는 감싼 읽기 그대로다" "$(sg86 lockf -ks "$SIB86/lk86lock" true)" "읽기"
+check "86: 문법에 없는 lockf -p 는 형태 미상이다" "$(sg86 lockf -p "$SIB86/lk86lock" true)" "형태 미상"
+check "86: lockf -w 의 형제 잠금 파일은 lockf 가 트리거다" "$(lt86 lockf -w "$SIB86/lk86lock" true)" "lockf"
+check "86: 대조 — lockf -ks 는 감싼 명령이 파괴가 아니면 트리거가 없다" "$(lt86 lockf -ks "$SIB86/lk86lock" true)" ""
+has86 "$(ll86 lockf -w "$SIB86/lk86lock" true)" "$SIB86L/lk86lock" \
+  && ok "86: lockf -w 의 잠금 파일이 착지점에 있다" \
+  || bad "86: lockf -w 의 잠금 파일이 착지점에 있다" "$(ll86 lockf -w "$SIB86/lk86lock" true)"
+check "86: lockf -w 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 lockf -w "$SIB86/lk86lock" bash -c true)" "트리밖쓰기"
+check "86: 모르는 옵션 lockf -p 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 lockf -p "$SIB86/lk86lock" bash -c true)" "트리밖쓰기"
+check "86: 묶음 time -lo 가 감싼 bash -c 의 바닥은 트리밖쓰기다" "$(fl86 time -lo "$SIB86/tm86out" bash -c true)" "트리밖쓰기"
+check "86: bash -c 페이로드 안 lockf -w 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "lockf -w $SIB86/lk86lock true")" "트리밖쓰기"
+check "86: bash -c 페이로드 안 lockf -p 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "lockf -p $SIB86/lk86lock true")" "트리밖쓰기"
+check "86: 대조 — bash -c 페이로드 안 lockf -k -t 0 의 바닥은 읽기다" "$(fl86 bash -c "lockf -k -t 0 $T86/lk86k true")" "읽기"
+for a86 in "lockf -w" "lockf -sn" "bash -c"; do
+  case "$a86" in
+    "bash -c") om86 읽기 bash -c "lockf -w $SIB86/lk86lock true" ;;
+    # shellcheck disable=SC2086
+    *) om86 읽기 $a86 "$SIB86/lk86lock" true ;;
+  esac
+  case "$rc" in 2|6|11) ok "86: 읽기로 선언한 형제 잠금 파일의 $a86 철자는 거부되거나 park 된다 (rc=$rc)" ;;
+    *) bad "86: 읽기로 선언한 형제 잠금 파일의 $a86 철자는 거부되거나 park 된다" "rc=$rc $msg" ;; esac
+  check "86: 그 $a86 철자의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+done
+om86 읽기 lockf -p "$SIB86/lk86lock" true
+check "86: 읽기로 선언한 lockf -p 는 형태 미상으로 거부된다" "$rc" "2"
+case "$msg" in *"형태 미상"*) ok "86: 그 거부 문면이 형태 미상을 말한다" ;;
+  *) bad "86: 그 거부 문면이 형태 미상을 말한다" "$msg" ;; esac
+check "86: 그 lockf -p 의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+
+# 페이로드 줄의 접두와 런로컬 파괴 질문 — 불투명 바닥은 페이로드 줄의 첫 낱말이
+# lockf·time 일 때만 그 파일을 셌다. 런처(nice·command·env)나 셸 내장 exec 가 앞에
+# 붙은 줄은 형태 미상·등급 미상이 되어 바닥이 읽기로 남았고, 읽기 선언이 형제 파일을
+# 덮어쓰거나 지웠다. 런로컬 파괴 질문은 바깥 argv(bash)만 읽어 형제 파일을 지우는
+# 페이로드가 거짓 런로컬로 지나갔고, 인용한 피연산자는 인용 부호째 대상 안 상대 경로로
+# 읽혔다. 이제 두 판정은 한 판독기의 줄을 읽는다. 바닥·판정 함수 단언과 실행 수준의
+# 거부·잔존 단언을 함께 두고, 임시 디렉터리를 겨눈 같은 철자가 지나가는 쌍둥이를 둔다.
+# 픽스처 파일은 이 블록이 만들고 지운다.
+printf 'k\n' > "$SIB86/pl86lock"; printf 'k\n' > "$SIB86/pl86out"
+check "86: 페이로드 nice time -lo 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice time -lo $SIB86/pl86out true")" "트리밖쓰기"
+check "86: 페이로드 command time -lo 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "command time -lo $SIB86/pl86out true")" "트리밖쓰기"
+check "86: 페이로드 nice /usr/bin/time -o<file> 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice /usr/bin/time -o$SIB86/pl86out true")" "트리밖쓰기"
+check "86: 페이로드 env lockf 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "env lockf $SIB86/pl86lock true")" "트리밖쓰기"
+check "86: 페이로드 exec lockf 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "exec lockf $SIB86/pl86lock true")" "트리밖쓰기"
+check "86: 페이로드 nice lockf -p 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice lockf -p $SIB86/pl86lock true")" "트리밖쓰기"
+check "86: 런처 옵션을 읽지 못한 페이로드 nice -5 rm 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice -5 rm -f $SIB86/pl86out")" "트리밖쓰기"
+check "86: 인용한 피연산자의 페이로드 lockf 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "lockf '$SIB86/pl86lock' true")" "트리밖쓰기"
+check "86: 대조 — 페이로드 nice lockf -k -t 0 의 바닥은 읽기다" "$(fl86 bash -c "nice lockf -k -t 0 $T86/lk86k true")" "읽기"
+check "86: 대조 — 페이로드 command -v 는 바닥을 올리지 않는다" "$(fl86 bash -c "command -v git")" "읽기"
+check "86: 묶음 time -lo 의 형제 파일은 트리밖쓰기다" "$(sg86 time -lo "$SIB86/pl86out" true)" "트리밖쓰기"
+check "86: 붙여 쓴 time -o<file> 의 형제 파일은 트리밖쓰기다" "$(sg86 time -o"$SIB86/pl86out" true)" "트리밖쓰기"
+check "86: 기존 파일을 덮는 묶음 time -lo 는 그 낱말이 트리거다" "$(lt86 time -lo "$SIB86/pl86out" true)" "-lo"
+for a86 in "nice time -lo" "command time -lo" "exec lockf"; do
+  case "$a86" in
+    *lockf) f86p="$SIB86/pl86lock" ;;
+    *) f86p="$SIB86/pl86out" ;;
+  esac
+  om86 읽기 bash -c "$a86 $f86p true"
+  case "$rc" in 0) bad "86: 읽기로 선언한 페이로드 $a86 는 거부되거나 park 된다" "rc=$rc $msg" ;;
+    *) ok "86: 읽기로 선언한 페이로드 $a86 는 거부되거나 park 된다 (rc=$rc)" ;; esac
+  check "86: 그 페이로드 $a86 의 형제 파일이 그대로다" "$(cat "$f86p" 2>/dev/null)" "k"
+done
+check "86: 페이로드 lockf 로 형제 잠금 파일을 지우는 bash -c 는 런로컬 판정에서 park 된다" "$(rd86 bash -c "lockf $SIB86/pl86lock true")" "파괴형태미명시"
+check "86: 페이로드 rm -f 로 형제 파일을 지우는 bash -c 는 런로컬 판정에서 park 된다" "$(rd86 bash -c "rm -f $SIB86/pl86lock")" "파괴형태미명시"
+check "86: 인용한 피연산자의 페이로드 lockf 도 런로컬 판정에서 park 된다" "$(rd86 bash -c "lockf '$SIB86/pl86lock' true")" "파괴형태미명시"
+check "86: 런처 옵션을 읽지 못한 페이로드 nice -5 rm 은 런로컬 판정에서 park 된다" "$(rd86 bash -c "nice -5 rm -f $T86/pl86x")" "파괴형태미명시"
+check "86: 두 번째 줄의 형제 파괴도 런로컬 판정에서 park 된다" "$(rd86 bash -c "true; rm -f $SIB86/pl86lock")" "파괴형태미명시"
+check "86: 대조 — 임시 디렉터리 파일을 지우는 페이로드 rm -f 는 런로컬 판정을 지난다" "$(rd86 bash -c "rm -f $T86/pl86x")" ""
+check "86: 대조 — 임시 디렉터리의 -k 잠금 파일을 쓰는 페이로드 lockf 는 런로컬 판정을 지난다" "$(rd86 bash -c "lockf -k $T86/lk86k true")" ""
+nb86=$(b86)
+rl86 bash -c "lockf $SIB86/pl86lock true"
+check "86: 런로컬로 신고한 형제 잠금 파일의 페이로드 lockf 는 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 (페이로드 lockf)" ;;
+  *) bad "86: 그 park 가 파괴형태미명시다 (페이로드 lockf)" "$msg" ;; esac
+rl86 bash -c "rm -f $SIB86/pl86lock"
+check "86: 런로컬로 신고한 형제 파일의 페이로드 rm -f 는 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 (페이로드 rm -f)" ;;
+  *) bad "86: 그 park 가 파괴형태미명시다 (페이로드 rm -f)" "$msg" ;; esac
+check "86: 페이로드 런로컬 park 둘이 blocked 행 둘을 남긴다" "$(( $(b86) - nb86 ))" "2"
+TMPDIR="$T86" r86 워크트리쓰기 bash -c "lockf '$SIB86/pl86lock' true"
+case "$rc" in 0) bad "86: 워크트리쓰기 런로컬로 신고한 인용 피연산자 페이로드 lockf 는 거부되거나 park 된다" "rc=$rc $msg" ;;
+  *) ok "86: 워크트리쓰기 런로컬로 신고한 인용 피연산자 페이로드 lockf 는 거부되거나 park 된다 (rc=$rc)" ;; esac
+check "86: park·거부된 페이로드들의 형제 파일이 그대로다" "$(cat "$SIB86/pl86lock" 2>/dev/null)" "k"
+printf 'z\n' > "$T86/pl86x"
+nb86=$(b86)
+rl86 bash -c "rm -f $T86/pl86x"
+check "86: 대조 — 임시 디렉터리 파일을 지우는 페이로드 rm -f 는 런로컬로 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+[ ! -e "$T86/pl86x" ] && ok "86: 그 페이로드 rm -f 가 실제로 지웠다" \
+  || bad "86: 그 페이로드 rm -f 가 실제로 지웠다" "$T86/pl86x"
+rm -f "$SIB86/pl86lock" "$SIB86/pl86out" "$T86/pl86x"
+rm -rf "$H86"
+rm -f "$SIB86/lk86lock" "$SIB86/tm86out"
+
+# 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
+# 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git
+# 디렉터리의 stash 가 지워졌다. 하한 판정을 직접 재고, 실행 수준에서 park 와 stash 항목의
+# 잔존을 함께 단언한다. stash list 와 래퍼 뒤 비 stash 명령이 하한을 올리지 않는 쌍둥이다.
+rdv86() {
+  # rdv86 <argv...> — 유도된 도달 하한을 낸다.
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; target_field() { return 1; }; shift
+    gate_reach_derived front "$@"' _ "$GATE" "$@" 2>/dev/null
+}
+check "86: env 대입 뒤 git stash clear 의 하한이 기기전역이다" "$(rdv86 env FOO=1 git stash clear)" "기기전역"
+check "86: nice 뒤 git stash drop 의 하한이 기기전역이다" "$(rdv86 nice git stash drop)" "기기전역"
+check "86: command 뒤 git stash drop 의 하한이 기기전역이다" "$(rdv86 command git stash drop)" "기기전역"
+check "86: 겹친 래퍼 뒤 -C 의 stash 하한이 기기전역이다" "$(rdv86 timeout 5 env FOO=1 git -C x stash)" "기기전역"
+check "86: 래퍼의 모르는 옵션이 있으면 stash 낱말만으로 하한이 오른다" "$(rdv86 env -S x git stash clear)" "기기전역"
+check "86: 대조 — 래퍼 뒤 stash list 는 하한을 올리지 않는다" "$(rdv86 env FOO=1 git stash list)" "-"
+check "86: 대조 — 래퍼 뒤 stash 아닌 git 은 하한을 올리지 않는다" "$(rdv86 nice git status)" "-"
+check "86: 형제 파일을 잠금 파일로 쓰는 lockf 의 하한은 기기전역 접두에서만 오른다 (대조)" "$(rdv86 lockf "$SIB86/lk86lock" true)" "-"
+check "86: 기기전역 접두의 lockf 잠금 파일은 하한을 기기전역으로 올린다" "$(rdv86 lockf "$HOME/.ssh/k86" true)" "기기전역"
+s86w=$(git -C "$SIB86" stash create 2>/dev/null)
+[ -n "$s86w" ] && git -C "$SIB86" stash store -m s86wkeep "$s86w" >/dev/null 2>&1
+sw86() { case "$(git -C "$SIB86" stash list 2>/dev/null)" in *s86wkeep*) return 0 ;; *) return 1 ;; esac; }
+sw86 && ok "86: 래퍼 stash 잔존 단언이 공허하지 않다 (지울 항목이 있다)" || bad "86: 래퍼 stash 잔존 단언이 공허하지 않다" "$s86w"
+om86 워크트리쓰기 env FOO=1 git stash clear
+check "86: --reach 를 생략한 env 대입 뒤 stash clear 는 park 된다" "$rc" "11"
+case "$msg" in *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "86: 그 판정이 기기전역이다 (env stash clear)" ;; *) bad "86: 그 판정이 기기전역이다 (env stash clear)" "$msg" ;; esac
+sw86 && ok "86: park 된 env stash clear 의 stash 항목이 남아 있다" || bad "86: park 된 env stash clear 의 stash 항목이 남아 있다" "$SIB86"
+rl86 nice git stash drop
+check "86: 런로컬로 신고한 nice 뒤 stash drop 은 park 된다" "$rc" "11"
+case "$msg" in *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "86: 그 판정이 기기전역이다 (nice stash drop)" ;; *) bad "86: 그 판정이 기기전역이다 (nice stash drop)" "$msg" ;; esac
+sw86 && ok "86: park 된 nice stash drop 의 stash 항목이 남아 있다" || bad "86: park 된 nice stash drop 의 stash 항목이 남아 있다" "$SIB86"
+git -C "$SIB86" stash clear >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$SW86" >/dev/null 2>&1
+rm -rf "$SW86" "$WT/lk86d" "$WT/fl86" "$WT/ls86" "$WT/pl86" "$SIB86/ow86"
+git -C "$WT" worktree remove --force "$SN86" >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$SO86" >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$EW86" >/dev/null 2>&1
+rm -rf "$SN86" "$SO86" "$SIB86/ew86" "$SIB86/lk86f" "$SIB86/lk86sub"
+git -C "$SIB86" checkout -q -- base.txt >/dev/null 2>&1
+git -C "$WT" worktree remove --force "$SR86" >/dev/null 2>&1
+rm -rf "$SIB86/rl86" "$SIB86/rl86b" "$SIB86/rlm86" "$T86" "$SR86"
+
+# 상태 루트 — 대상 트리 안에 놓여도 그 자리의 정직한 토큰은 런로컬이다. 시험 상태
+# 루트는 대상 트리 밖에 있으므로 exec 로는 이 갈래가 공허하다(술어가 어차피 떨어진다).
+# 그래서 술어를 직접 부르되, 상태 루트를 대상 체크아웃 안에 두고 대조 경로를 곁에 둔다.
+q86() {
+  local rc=0
+  ( cd "$WT" && XDG_STATE_HOME="$WT/.st86" bash -c \
+      'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"; target_field() { printf "%s" "$cg86"; }; shift 2; gate_reach_target_tree_ok front "$@"' \
+      _ "$GATE" "$CG" "$@" ) >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+check "86: 상태 루트는 대상 트리 안에 있어도 대상트리가 아니다" "$(q86 "$WT/.st86/cc-cmds/run/x")" "1"
+check "86: 대조 — 같은 깊이의 이웃 경로는 대상트리다" "$(q86 "$WT/.nst86/x")" "0"
+check "86: 대조 — 다른 저장소 경로는 술어가 떨어뜨린다" "$(q86 "$U86/x")" "1"
+
+# 기기전역 접두·공유 stash 는 대상트리 신고를 이긴다 — 유도된 하한이 5b 앞에서 답한다.
+x86 워크트리쓰기 git stash push -m s86
+check "86: 공유 stash 는 대상트리 신고로도 기기전역 park 다" "$rc" "11"
+case "$msg" in *"도달 판정=기기전역"*|*"judgment '기기전역'"*) ok "86: 그 판정이 기기전역이다" ;; *) bad "86: 그 판정이 기기전역이다" "$msg" ;; esac
+case "$msg" in
+  *"repair:"*"'런로컬'"*"'대상트리'"*) ok "86: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" ;;
+  *) bad "86: 기기전역의 수리 줄이 정직한 두 토큰을 이름으로 말한다" "$msg" ;;
+esac
+x86 워크트리쓰기 sed -i.bak s/a/b/ "$HOME/.claude-x86/f"
+check "86: 기기전역 접두는 대상트리 선언을 이긴다" "$rc" "11"
+x86 트리밖쓰기 git worktree add -b ssh86 "$HOME/.ssh/wt86"
+check "86: 기기전역 접두 아래의 워크트리 생성은 생성 경로 면제로 통과하지 않는다" "$rc" "11"
+[ -e "$HOME/.ssh/wt86" ] && bad "86: 그 워크트리는 만들어지지 않았다" "$HOME/.ssh/wt86" \
+  || ok "86: 그 워크트리는 만들어지지 않았다"
+x86 워크트리쓰기 cp /opt/homebrew/bin/gawk86 "$WT/g86"
+check "86: 기기전역 접두의 읽기 피연산자도 하한을 올린다" "$rc" "11"
+
+# 수리 줄이 없던 나머지 둘.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t86 -- touch u86-unknown
+check "86: 미상 신고는 park 된다" "$rc" "11"
+case "$msg" in *"repair:"*"'대상트리'"*) ok "86: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" ;; *) bad "86: 도달미상의 수리 줄이 대상트리를 이름으로 말한다" "$msg" ;; esac
+
+# 재신고 핀이 새 칸에서도 선다 — 미상으로 park 된 argv 를 대상트리로 다시 부르면, 그
+# 칸도 그 argv 를 park 하므로 앞 행의 다이제스트가 답하고 새 행은 없다. 핀은 park
+# 칸 안에서만 조회되므로, 둘째 신고가 통과하는 칸에 닿는 재신고는 핀이 닫지 않는다 —
+# 파괴 행위의 런로컬 재신고는 위의 런로컬 쌍이 보이듯 런로컬 칸 자신이 park 한다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" --rationale t86 -- cp base.txt "$U86/redeclare86"
+check "86: 미상 신고는 park 된다 (재신고의 앞 행)" "$rc" "11"
+nb86=$(b86)
+x86 트리밖쓰기 cp base.txt "$U86/redeclare86"
+check "86: 같은 argv 를 대상트리로 재신고하면 앞 판정이 답하고 새 행이 없다" "$rc/$(( $(b86) - nb86 ))" "11/0"
+case "$msg" in *"already parked"*) ok "86: 그 답이 재신고 핀의 것이다" ;; *) bad "86: 그 답이 재신고 핀의 것이다" "$msg" ;; esac
+[ -e "$U86/redeclare86" ] && bad "86: 재신고한 행위는 일어나지 않았다" "$U86/redeclare86" \
+  || ok "86: 재신고한 행위는 일어나지 않았다"
+
+# park 행의 진단 필드 — 래퍼가 숨긴 push 는 축2 가 러너의 등급이므로, 신고와 출처가
+# 곁에 없으면 그 행은 오등급처럼 읽힌다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint push \
+  --surface 외부상태변경 --reach 협업 --snapshot-digest "$(HH)" --rationale t86 \
+  -- bash -c 'git push origin HEAD:refs/heads/b86-push'
+check "86: 셸 문자열 안의 push 는 park 된다" "$rc" "11"
+l86=$({ grep '^- `blocked` ' "$FX_LEDGER" || true; } | sed -n '$p')
+case "$l86" in
+  *"축2=워크트리쓰기 | 등급 출처=불투명 | 선언=외부상태변경 |"*) ok "86: park 행이 등급 출처와 선언을 싣는다" ;;
+  *) bad "86: park 행이 등급 출처와 선언을 싣는다" "$l86" ;;
+esac
+n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
+[ "${n:-0}" -le 1024 ] && ok "86: 필드가 늘어도 park 행이 원장 행 상한 안이다 (최장 ${n}B)" \
+  || bad "86: park 행 길이" "최장 ${n}B > 1024"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR86"
+
+# 스테이지 대면 사본 — 토큰이 어휘에만 있고 사본에 없으면 스테이지는 그 토큰을 모른다.
+for f86 in skills/implement-unattended/SKILL.md skills/review-unattended/SKILL.md \
+           skills/design-audit-unattended/SKILL.md skills/design-discuss-unattended/SKILL.md \
+           skills/autopilot/SKILL.md skills/_common/agent-team-protocol.md \
+           hooks/gate-pretool.sh; do
+  grep -q '대상트리' "$repo_root/plugins/cc-cmds/$f86" 2>/dev/null \
+    && ok "86: 사본 $f86 가 대상트리를 싣는다" || bad "86: 사본 $f86 가 대상트리를 싣는다" "$repo_root/plugins/cc-cmds/$f86"
+done
+grep -qE '^(readonly )?REACHES=.*대상트리' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+  && ok "86: 도달 어휘가 대상트리를 싣는다" || bad "86: 도달 어휘가 대상트리를 싣는다" "REACHES"
 
 # --- epilogue-begin ---
 #

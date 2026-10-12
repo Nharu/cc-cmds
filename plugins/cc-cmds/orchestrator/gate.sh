@@ -884,8 +884,18 @@ surface_index() {
 # Tokens are space-free for the reason SURFACES states above: a value with a
 # space cannot round-trip through the `for x in $LIST` word-splitting this file
 # relies on, and the one time that was skipped every lookup answered "unknown".
+#
+# `대상트리` IS THE CHECKOUT AND THE WORKTREES OF THE TARGET THIS RUN ALREADY
+# ACTS ON, outside the act's own worktree: the main checkout a review report is
+# moved into, a sibling segment worktree, a new worktree of the target. Without
+# it the vocabulary had no honest word for those writes — they are not this
+# run's state, so `런로컬` was false, and `기기전역` was the only value left and
+# the only one no authorization could open. Measured: three runs answered that
+# park by reading this file and re-spelling the act as `런로컬`. The run's state
+# root and the temp directory are deliberately not part of it; their honest
+# token stays `런로컬`, and declaring `대상트리` there parks.
 # ---------------------------------------------------------------------------
-readonly REACHES="런로컬 기기전역 dev prod 협업 배포트리거 미상"
+readonly REACHES="런로컬 대상트리 기기전역 dev prod 협업 배포트리거 미상"
 
 # Same discipline as surface_index: signal by return status, never by `die`.
 gate_reach_required() {
@@ -925,11 +935,45 @@ gate_reach_derived() {
   # `배포트리거`. Everything finer than that is a claim about an environment,
   # and argv cannot prove one.
   local alias="$1"; shift
-  local cmd="${1##*/}" a
+  local -a _orig
+  _orig=(${1+"$@"})
+  # The tool is read past the launchers the grading table unwraps, so `env
+  # FOO=1 git stash clear` and `nice git stash drop` take the floor their bare
+  # spelling takes. A launcher option the unwrap does not know leaves the
+  # wrapped command undecidable, and then any `stash` word in argv raises the
+  # floor, as an unknown git global option does below.
+  local _left _urc a
+  while [ "$#" -gt 0 ]; do
+    case "${1##*/}" in env|lockf|command|time|timeout|nice|nohup|stdbuf) ;; *) break ;; esac
+    _urc=0; _left=$(gate_unwrap_one "$@") || _urc=$?
+    case "$_urc" in
+      0) shift $(( $# - _left )) ;;
+      *)
+        for a in "$@"; do
+          [ "$a" = "stash" ] && { printf '기기전역'; return 0; }
+        done
+        break ;;
+    esac
+  done
+  local cmd="${1##*/}"
   case "$cmd" in
     git)
-      case "${2:-}" in
-        stash) case "${3:-}" in list|show) ;; *) printf '기기전역'; return 0 ;; esac ;;
+      # The subcommand is read past git's own global options, because `-C <dir>`,
+      # `-c k=v` and `--no-pager` in front of `stash` are the ordinary spellings
+      # and a positional read let every one of them past this floor. A global
+      # option this reader does not know leaves the subcommand undecidable, and
+      # then any `stash` word in argv raises the floor.
+      local _gsub='' _gnext=''
+      if gate_git_globals "${@:2}"; then
+        _gsub="${*:$((GATE_GIT_NGLOB + 2)):1}"; _gnext="${*:$((GATE_GIT_NGLOB + 3)):1}"
+      else
+        for a in "${@:2}"; do
+          if [ "$_gsub" = "stash" ]; then _gnext="$a"; break; fi
+          [ "$a" = "stash" ] && _gsub=stash
+        done
+      fi
+      case "$_gsub" in
+        stash) case "$_gnext" in list|show) ;; *) printf '기기전역'; return 0 ;; esac ;;
         config)
           case " $* " in
             *" --global "*|*" --system "*) printf '기기전역'; return 0 ;;
@@ -946,6 +990,8 @@ gate_reach_derived() {
         install|upgrade|uninstall|tap|link) printf '기기전역'; return 0 ;;
       esac ;;
   esac
+  # The launcher words go back in: `time -o <file>` names a path of its own.
+  set -- ${_orig[@]+"${_orig[@]}"}
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   for a in "$@"; do
     case "$a" in
@@ -1224,12 +1270,818 @@ gate_destructive_source() {
   else printf -- '-'; fi
 }
 
+gate_reach_local_destructive() {
+  # gate_reach_local_destructive <argv...> — prints the argv word that makes
+  # this act a local destruction, or nothing.
+  #
+  # THE TABLE HALF OF THE DESTRUCTIVE UNION, FOR THE FORMS CELL 5b EXISTS FOR.
+  # `gate_act_mark` names cloud, database and remote acts and no local deletion,
+  # so in the target-tree cell the axis rested on the stage's `--destructive`
+  # alone, and `git checkout -- .` or `git restore .` is a spelling a stage
+  # need not think of as a deletion. Cell 5b reads this and no other cell does:
+  # widening the shared mark would park ordinary cleanup inside the stage's own
+  # worktree under every other token.
+  #
+  # The printed word is the trigger the preauthorization rule looks for, so a
+  # manifest shape that carries it (`rm -rf`, `git reset --hard`) is what opens
+  # the act — a shape naming only the verb does not, except where the verb is
+  # the only word the act has (`rm <file>`, a `mv` over an existing file).
+  # For `mv`, `cp` and `ln` the word is the option that turned replacing on
+  # (`-f` in `ln -s -f`), so a shape naming only the non-replacing form does
+  # not open the forced one.
+  #
+  # FOR THE VERBS IT READS, THE VERDICT IS CLOSED: only a form recognized as
+  # leaving work in place answers nothing, and any option or spelling this
+  # reader does not recognize is printed as the trigger. The list of
+  # destructive spellings was widened twice and each time a new one walked
+  # past it (`checkout '*.md'`, `mv -n -f`, `restore -sS`), because the
+  # spellings that destroy are open-ended and the ones that do not are few.
+  # Over-reading here parks an act in the target-tree cell only, where the
+  # stage can still declare `--destructive` or the manifest can name the form.
+  # Short options are read letter by letter up to the first one that takes a
+  # value (`-sS` is a source named `S`, not `--staged`), and long ones by any
+  # prefix that is unique among the options this reader knows for that verb.
+  # Verbs it does not list answer nothing, as before.
+  #
+  # A WRAPPER OPTION THE UNWRAP DOES NOT KNOW ANSWERS THE WRAPPER'S NAME, which
+  # is the same closed reading one level up: the wrapped command is out of
+  # view, so whether it destroys is unknown. Answering nothing there let
+  # `env -C <sibling> rm -rf .` and `env -S 'rm -rf <sibling>/x'` through both
+  # `런로컬` and `대상트리`, while `env -i rm -rf <sibling>/x` parked.
+  #
+  # `lockf` and `time` destroy a file of their own besides what they wrap:
+  # `lockf` without `-k` removes its lockfile, and `time -o` without `-a`
+  # overwrites a file that exists. When the wrapped command answers nothing,
+  # that file's word answers — `lockf`, or the `-o`/`--output` word.
+  local cmd="${1##*/}" _in; shift 2>/dev/null || true
+  case "$cmd" in
+    lockf)
+      _in=$(gate_unwrap_lockf gate_reach_local_destructive '' "$cmd" "$@")
+      gate_unwrap_lockf : '' '' "$@"
+      if [ -z "$_in" ] && [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
+        _in='lockf'
+      fi
+      printf '%s' "$_in"; return 0 ;;
+    command) gate_unwrap_command gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
+    time)
+      _in=$(gate_unwrap_time gate_reach_local_destructive '' "$cmd" "$@")
+      gate_unwrap_time : '' '' "$@"
+      if [ -z "$_in" ] && [ "$GATE_UW_KEEP" = "0" ] && [ -n "$GATE_UW_OPTW" ] \
+         && [ -e "${GATE_UW_PATHS[0]}" ]; then
+        _in="$GATE_UW_OPTW"
+      fi
+      printf '%s' "$_in"; return 0 ;;
+    env)     gate_unwrap_env     gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "$cmd" gate_reach_local_destructive '' "$cmd" "$@"; return 0 ;;
+    # `-delete` removes every match and `-exec rm …` hands each to the inner
+    # command, which this predicate reads in turn. `-fprint` and its kin
+    # truncate a file named in argv, and `-execdir`/`-okdir` run from a
+    # directory the gate cannot know. Each answers its own word, so the printed
+    # trigger is always one the argv carries.
+    find)
+      gate_unwrap_find gate_reach_local_destructive '' '=' '=' gate_answer_first "$@"
+      return 0 ;;
+  esac
+  local a
+  case "$cmd" in
+    rm)
+      # Every `rm` deletes: with no terminal on stdin a plain `rm <file>` asks
+      # nothing and removes exactly what `rm -f <file>` removes. A recursive or
+      # forcing flag is the trigger when there is one, so a `rm -rf` shape keeps
+      # meaning what it says; otherwise the verb is.
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --recursive|--force) printf '%s' "$a"; return 0 ;;
+          --*) ;;
+          -*[rRf]*) printf '%s' "$a"; return 0 ;;
+        esac
+      done
+      printf 'rm'; return 0 ;;
+    # Both destroy the file they name and have no form that does not, so the
+    # verb is the trigger. The grading table has no row for either, so they
+    # reach this reader only from the `런로컬` answer of the opaque cell.
+    unlink|truncate) printf '%s' "$cmd"; return 0 ;;
+    mv|cp|ln|install)
+      gate_reach_copy_form "$cmd" "$@"
+      return 0 ;;
+    git) ;;
+    *) return 0 ;;
+  esac
+  if ! gate_git_globals "$@"; then
+    printf '%s' "${*:$((GATE_GIT_NGLOB + 1)):1}"; return 0
+  fi
+  local base="$GATE_GIT_BASE" sub='' w rc p
+  shift "$GATE_GIT_NGLOB"
+  sub="${1:-}"; shift 2>/dev/null || true
+  case "$sub" in
+    clean)
+      # Only a dry run is recognized as keeping files: without `-f` git still
+      # deletes when `clean.requireForce` is off, and `-i` reads its answers
+      # from a stdin that is not a terminal here.
+      local dry=0 fw='' eat=0
+      for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --dry-run --force --quiet --exclude --interactive) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --dry-run) dry=1 ;;
+              --force) fw="${fw:-$a}" ;;
+              --quiet) ;;
+              --exclude) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" dfnqxX e) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1
+            case "$w" in *n*) dry=1 ;; esac
+            case "$w" in *f*) fw="${fw:-$a}" ;; esac ;;
+        esac
+      done
+      [ "$dry" = "1" ] && return 0
+      printf '%s' "${fw:-clean}" ;;
+    reset)
+      # Moving HEAD and the index keeps the working tree; `--hard`, `--merge`,
+      # `--keep` and anything unrecognized are the trigger.
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --soft --mixed --hard --merge --keep --quiet --patch \
+                  --intent-to-add --refresh --no-refresh --recurse-submodules \
+                  --no-recurse-submodules --pathspec-from-file --pathspec-file-nul) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --soft|--mixed|--quiet|--patch|--intent-to-add|--refresh|--no-refresh) ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" qNp '') || rc=$?
+            [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; } ;;
+        esac
+      done ;;
+    checkout)
+      # Recognized as a branch switch, which keeps local changes: at most one
+      # operand, and that operand is neither an existing path nor shaped like
+      # a pathspec — a glob or a `:` magic prefix, which no branch name can
+      # carry — nor a `{}`, which `find -exec` replaces with each path it
+      # matched and so names paths nobody can look for here. `--`, `.`, `-B`
+      # (it resets a branch that exists), `-f`, `-m`, `-p` and anything
+      # unrecognized are the trigger. A path is looked for under the
+      # directory the `-C` options lead to and, with `--work-tree`, under that
+      # root as well: git reads a pathspec from the work tree's root when that
+      # directory lies outside it, so a path only the other worktree has would
+      # otherwise read as a branch name.
+      local eat=0 n=0 wt="$GATE_GIT_WTREE"
+      case "$wt" in ''|/*) ;; *) wt="${base:+$base/}$wt" ;; esac
+      for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
+        case "$a" in
+          --|.) printf '%s' "$a"; return 0 ;;
+          --*)
+            p=$(gate_long_pick "$a" --quiet --progress --no-progress --track --no-track \
+                  --guess --no-guess --detach --orphan --ignore-other-worktrees \
+                  --force --merge --ours --theirs --conflict --patch --pathspec-from-file \
+                  --pathspec-file-nul --overlay --no-overlay --recurse-submodules \
+                  --no-recurse-submodules --overwrite-ignore --no-overwrite-ignore) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --quiet|--progress|--no-progress|--track|--no-track|--guess|--no-guess|--detach|--ignore-other-worktrees) ;;
+              --orphan) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" qlt b) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1 ;;
+          -) n=$((n + 1)) ;;
+          *) n=$((n + 1))
+             [ "$n" -ge 2 ] && { printf '%s' "$a"; return 0; }
+             case "$a" in *'*'*|*'?'*|*'['*|*:*|*'\'*|*'{}'*) printf '%s' "$a"; return 0 ;; esac
+             case "$a" in /*) p="$a" ;; *) p="${base:+$base/}$a" ;; esac
+             { [ -e "$p" ] || [ -L "$p" ]; } && { printf '%s' "$a"; return 0; }
+             case "$a" in /*) ;; *)
+               [ -n "$wt" ] && { [ -e "$wt/$a" ] || [ -L "$wt/$a" ]; } \
+                 && { printf '%s' "$a"; return 0; } ;;
+             esac ;;
+        esac
+      done ;;
+    switch)
+      # `switch` refuses to overwrite local changes unless forced; `-C` resets
+      # a branch that exists and `-m` merges into the working tree.
+      local eat=0
+      for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --create --detach --quiet --progress --no-progress \
+                  --track --no-track --guess --no-guess --orphan --ignore-other-worktrees \
+                  --force-create --force --discard-changes --merge --conflict \
+                  --recurse-submodules --no-recurse-submodules) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --detach|--quiet|--progress|--no-progress|--track|--no-track|--guess|--no-guess|--ignore-other-worktrees) ;;
+              --create|--orphan) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" qtd c) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1 ;;
+        esac
+      done ;;
+    restore)
+      # Every restore names paths, so the verb is the trigger. Only a restore
+      # recognized as touching the index alone — `--staged` and nothing that
+      # reaches the working tree — leaves the files as they are.
+      local staged=0 eat=0
+      for a in "$@"; do
+        if [ "$eat" = "1" ]; then eat=0; continue; fi
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --staged --source --quiet --progress --no-progress \
+                  --worktree --patch --ours --theirs --merge --conflict --ignore-unmerged \
+                  --overlay --no-overlay --recurse-submodules --no-recurse-submodules \
+                  --pathspec-from-file --pathspec-file-nul --ignore-skip-worktree-bits) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --staged) staged=1 ;;
+              --source) case "$a" in *=*) ;; *) eat=1 ;; esac ;;
+              --quiet|--progress|--no-progress) ;;
+              *) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" Sq s) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+            [ "$rc" = "2" ] && eat=1
+            case "$w" in *S*) staged=1 ;; esac ;;
+        esac
+      done
+      [ "$staged" = "1" ] && return 0
+      printf 'restore' ;;
+    worktree)
+      # Every `remove` deletes: without an option git refuses only a worktree
+      # with tracked changes or untracked files, and an ignored file is
+      # neither, so a `docs/` or `CLAUDE.md` the repository ignores goes with
+      # the directory. An option on it is the trigger, and the subcommand is
+      # when there is none.
+      [ "${1:-}" = "remove" ] || return 0
+      shift
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          -?*) printf '%s' "$a"; return 0 ;;
+        esac
+      done
+      printf 'remove' ;;
+    branch)
+      # Listing, creating, `-d`, `-m` and `-c` refuse to lose a commit or
+      # overwrite a branch. `-D`, `-M`, `-C`, `-f` and anything unrecognized
+      # are the trigger.
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --all --remotes --list --verbose --quiet --delete \
+                  --move --copy --track --no-track --set-upstream-to --unset-upstream \
+                  --edit-description --contains --no-contains --merged --no-merged \
+                  --points-at --format --sort --color --no-color --column --no-column \
+                  --show-current --ignore-case --omit-empty --abbrev --no-abbrev \
+                  --create-reflog --force --set-upstream --recurse-submodules) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --force|--set-upstream|--recurse-submodules) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" arlvqdmct u) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; } ;;
+        esac
+      done ;;
+    tag)
+      # Listing, creating and verifying keep every tag; `-d`, `-f` and
+      # anything unrecognized are the trigger.
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --annotate --sign --no-sign --local-user --list \
+                  --verify --message --file --edit --no-edit --cleanup --create-reflog \
+                  --contains --no-contains --merged --no-merged --points-at --column \
+                  --no-column --sort --format --color --ignore-case --omit-empty \
+                  --trailer --delete --force) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --delete|--force) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -n|-n[0-9]*) case "$a" in -n*[!0-9]*) printf '%s' "$a"; return 0 ;; esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" aslive muF) || rc=$?
+            [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; } ;;
+        esac
+      done ;;
+    rm)
+      # `git rm` deletes the working-tree copy of every path it names. Only
+      # `--cached`, which touches the index alone, and a dry run leave the
+      # files; a forcing or recursive flag is the trigger when there is one,
+      # and the subcommand is when there is none.
+      local keep=0 fw=''
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --cached --dry-run --force --quiet --ignore-unmatch --sparse) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --cached|--dry-run) keep=1 ;;
+              --force) fw="${fw:-$a}" ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" fnqr '') || rc=$?
+            [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; }
+            case "$w" in *n*) keep=1 ;; esac
+            case "$w" in *[fr]*) fw="${fw:-$a}" ;; esac ;;
+        esac
+      done
+      [ "$keep" = "1" ] && return 0
+      printf '%s' "${fw:-rm}" ;;
+    mv)
+      # Without `-f` git refuses to move onto a path that exists; the forcing
+      # flag and anything unrecognized are the trigger.
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --force --dry-run --verbose) \
+              || { printf '%s' "$a"; return 0; }
+            [ "$p" = "--force" ] && { printf '%s' "$a"; return 0; } ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" fknv '') || rc=$?
+            [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; }
+            case "$w" in *f*) printf '%s' "$a"; return 0 ;; esac ;;
+        esac
+      done ;;
+    checkout-index)
+      # Without `-f` an existing file is left as it is; the forcing flag and
+      # anything unrecognized are the trigger.
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --index --quiet --all --force --no-create --prefix \
+                  --stage --temp --stdin --ignore-skip-worktree-bits) \
+              || { printf '%s' "$a"; return 0; }
+            [ "$p" = "--force" ] && { printf '%s' "$a"; return 0; } ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" uqafnz '') || rc=$?
+            [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; }
+            case "$w" in *f*) printf '%s' "$a"; return 0 ;; esac ;;
+        esac
+      done ;;
+    read-tree)
+      # Only `-u` reaches the working tree, and with `--reset` it discards
+      # local changes where `-m` refuses to; anything unrecognized is the
+      # trigger.
+      local upd=0 rs=''
+      for a in "$@"; do
+        case "$a" in
+          --) break ;;
+          --*)
+            p=$(gate_long_pick "$a" --reset --prefix --index-output --trivial --aggressive \
+                  --dry-run --no-sparse-checkout --empty --quiet --exclude-per-directory \
+                  --recurse-submodules --no-recurse-submodules) \
+              || { printf '%s' "$a"; return 0; }
+            case "$p" in
+              --reset) rs="$a" ;;
+              --recurse-submodules|--no-recurse-submodules) printf '%s' "$a"; return 0 ;;
+            esac ;;
+          -?*)
+            rc=0; w=$(gate_short_letters "$a" imnuvq '') || rc=$?
+            [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; }
+            case "$w" in *u*) upd=1 ;; esac ;;
+        esac
+      done
+      [ "$upd" = "1" ] && [ -n "$rs" ] && printf '%s' "$rs" ;;
+    stash)
+      # The derived floor parks every stash but these two as machine-global
+      # before this cell is reached; this answer is the second line.
+      case "${1:-}" in list|show) ;; *) printf 'stash' ;; esac ;;
+  esac
+  return 0
+}
+
+gate_reach_local_destructive_here() {
+  # gate_reach_local_destructive_here <argv...> — the local reader asked from
+  # the directory the act runs in.
+  #
+  # The reader looks names up on disk — whether a `mv` destination exists,
+  # whether a `checkout` operand is a path — and a relative name means what
+  # it means from the act's directory, which is not the gate process's own:
+  # a stage gates from the main checkout an act that runs in its segment
+  # worktree. Asked from the gate's directory, `cp a.txt link/README.md`
+  # read as a write onto a name that did not exist while the landing
+  # collector, which resolves from the act's directory, saw the overwrite's
+  # target in another worktree, and the two halves of one verdict disagreed.
+  # A directory that cannot be entered answers the command's name, the
+  # closed reading.
+  local d; d=$(gate_grade_cwd)
+  ( cd "$d" 2>/dev/null || { printf '%s' "${1##*/}"; exit 0; }
+    gate_reach_local_destructive "$@" )
+}
+
+gate_git_config_moves_tree() {
+  # gate_git_config_moves_tree <k=v or k=envvar> — 0 when the configuration a
+  # `-c` or `--config-env` sets can move the work tree git writes to:
+  # `core.worktree` itself, `core.bare`, or an include that reads another file
+  # which could set it. git matches the section and key without regard to
+  # case, so this does too.
+  local k
+  k=$(printf '%s' "${1%%=*}" | tr 'A-Z' 'a-z')
+  case "$k" in
+    core.worktree|core.bare|include.*|includeif.*) return 0 ;;
+  esac
+  return 1
+}
+
+gate_git_globals() {
+  # gate_git_globals <argv after `git`...> — skips git's own global options.
+  # Sets GATE_GIT_NGLOB to the number of words they take, GATE_GIT_BASE to
+  # the directory the `-C` options compose to, and GATE_GIT_WTREE to the last
+  # `--work-tree` exactly as written (git resolves a relative one against the
+  # directory every `-C` leads to, so callers compose it with GATE_GIT_BASE).
+  # Returns 1 at a word that starts with `-` and is not a global option this
+  # reader knows; GATE_GIT_NGLOB then counts the words before it. git matches
+  # these options exactly, without abbreviation, so neither does this.
+  GATE_GIT_NGLOB=0; GATE_GIT_BASE=''; GATE_GIT_WTREE=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C)
+        [ "$#" -ge 2 ] || return 1
+        case "$2" in /*) GATE_GIT_BASE="$2" ;; *) GATE_GIT_BASE="${GATE_GIT_BASE:+$GATE_GIT_BASE/}$2" ;; esac
+        shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
+      --work-tree)
+        [ "$#" -ge 2 ] || return 1
+        GATE_GIT_WTREE="$2"
+        shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
+      --work-tree=*)
+        GATE_GIT_WTREE="${1#--work-tree=}"
+        shift; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 1)) ;;
+      -c|--git-dir|--namespace|--config-env|--attr-source)
+        [ "$#" -ge 2 ] || return 1
+        shift 2; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 2)) ;;
+      --git-dir=*|--namespace=*|--config-env=*|--attr-source=*|--exec-path=*|--super-prefix=*|--list-cmds=*|\
+      -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|\
+      --noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice)
+        shift; GATE_GIT_NGLOB=$((GATE_GIT_NGLOB + 1)) ;;
+      -*) return 1 ;;
+      *) return 0 ;;
+    esac
+  done
+  return 0
+}
+
+gate_long_pick() {
+  # gate_long_pick <word> <long option...> — prints the option <word> names:
+  # the one it equals, or the one it is an abbreviation of when that is unique
+  # in the list (`--har` is `--hard`). Fails on no match and on an ambiguous
+  # prefix. The list holds the options this reader knows for one verb, so a
+  # failure is "unrecognized", never "safe".
+  local w="${1%%=*}" c hit='' n=0; shift
+  case "$w" in --?*) ;; *) return 1 ;; esac
+  for c in "$@"; do
+    [ "$c" = "$w" ] && { printf '%s' "$c"; return 0; }
+    case "$c" in "$w"*) hit="$c"; n=$((n + 1)) ;; esac
+  done
+  [ "$n" = "1" ] || return 1
+  printf '%s' "$hit"
+}
+
+gate_short_letters() {
+  # gate_short_letters <word> <flag letters> <value letters> — reads a bundled
+  # short-option word the way getopt does and prints its letters up to and
+  # including the first one that takes a value. Returns 0 when no value
+  # follows, 2 when the value is the next argv word, 3 when it is the rest of
+  # this word, and 1 at a letter in neither set.
+  local w="${1#-}" ok="$2" val="$3" ch out=''
+  while [ -n "$w" ]; do
+    ch="${w%"${w#?}"}"; w="${w#?}"
+    if [ -n "$val" ]; then
+      case "$val" in
+        *"$ch"*)
+          printf '%s%s' "$out" "$ch"
+          [ -n "$w" ] && return 3
+          return 2 ;;
+      esac
+    fi
+    case "$ok" in
+      *"$ch"*) out="$out$ch" ;;
+      *) printf '%s' "$out"; return 1 ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+gate_reach_copy_form() {
+  # gate_reach_copy_form <mv|cp|ln|install> <args after argv0...> — prints the
+  # trigger when the act would replace a file that already exists, or uses an
+  # option this reader does not recognize; nothing otherwise.
+  #
+  # A write onto an existing name removes what was there with no prompt when
+  # stdin is not a terminal. `mv`, `cp` and `install` replace by default and
+  # `ln` only when forced; `-n` refuses and `-f` or `-i` replaces, and among
+  # the ones before the first operand the last one wins (`mv -n -f`
+  # replaces). `-i` counts as replacing because its answer comes from a stdin
+  # that is not a terminal. `install -d` makes directories and replaces
+  # nothing. The destination is `-t <dir>` when given, otherwise the last
+  # operand, and `ln` with one operand links into the current directory; when
+  # the destination is a directory each source lands under its own basename.
+  #
+  # The two dialects part at the first operand. BSD stops reading options
+  # there, so in `mv a -n dir` the `-n` is a missing source and `a` still
+  # replaces `dir/a`; GNU reads it as an option anywhere. An option word after
+  # the first operand never turns replacing off, and it turns replacing on
+  # when GNU would read it so. The destination is then worked out under each
+  # reading in turn: BSD's, where that word is an operand and can be the
+  # destination, and GNU's, where it is left out of the operands. `mv a b -v`
+  # has the destination `-v` under the first and replaces `b` under the
+  # second, so a reader that kept only the first let it through. A replace
+  # found only under GNU's reading has that word as its trigger, whatever
+  # option it is — `-v` replaces there as surely as `-f` does. One that would
+  # take a value there (`-t`) is the trigger outright, because the two
+  # dialects disagree on what the destination is.
+  #
+  # The trigger is the word that turned replacing on — the last `-f`, `-i`,
+  # `-F` or long form after any `-n` — and the verb only when the act replaces
+  # by default with no such word. Printing the verb for every replacing act let
+  # a manifest shape naming only the non-replacing form (`ln -s`, `mv -n`)
+  # open the forced one (`ln -s -f`, `mv -n -f`), since the verb is a word of
+  # both shapes.
+  local tool="$1"; shift
+  local ok val clob=1 cw='' dmode=0 eat=0 t='' a w rc p ch post=0 pw=''
+  case "$tool" in
+    mv)      ok='fhinv';           val='t' ;;
+    cp)      ok='RrHLPfinapvXx';    val='t' ;;
+    ln)      ok='sfFhinvw';         val='t'; clob=0 ;;
+    install) ok='bCcdMpSsUv';       val='BfghmoTNDl' ;;
+  esac
+  # ops is BSD's operand list and gops GNU's: they differ only by the option
+  # words after the first operand, the last of which is pw.
+  local -a ops=() gops=()
+  for a in "$@"; do
+    if [ "$eat" = "1" ]; then eat=0; continue; fi
+    if [ "$eat" = "t" ]; then t="$a"; eat=0; continue; fi
+    if [ "$eat" = "ops" ]; then ops+=("$a"); gops+=("$a"); continue; fi
+    if [ "$post" = "1" ]; then
+      case "$a" in
+        --) eat=ops; continue ;;
+        --*)
+          p=$(gate_long_pick "$a" --force --interactive --no-clobber --verbose \
+                --target-directory --recursive --archive --symbolic --no-dereference \
+                --dereference) || { printf '%s' "$a"; return 0; }
+          case "$p" in
+            --force|--interactive) clob=1; cw="$a" ;;
+            --target-directory) printf '%s' "$a"; return 0 ;;
+          esac
+          pw="$a" ;;
+        -?*)
+          rc=0; w=$(gate_short_letters "$a" "$ok" "$val") || rc=$?
+          [ "$rc" = "0" ] || { printf '%s' "$a"; return 0; }
+          while [ -n "$w" ]; do
+            ch="${w%"${w#?}"}"; w="${w#?}"
+            case "$tool:$ch" in
+              mv:f|mv:i|cp:f|cp:i|ln:f|ln:i|ln:F) clob=1; cw="$a" ;;
+            esac
+          done
+          pw="$a" ;;
+        *) gops+=("$a") ;;
+      esac
+      ops+=("$a"); continue
+    fi
+    case "$a" in
+      --) eat=ops ;;
+      --*)
+        p=$(gate_long_pick "$a" --force --interactive --no-clobber --verbose \
+              --target-directory --recursive --archive --symbolic --no-dereference \
+              --dereference) || { printf '%s' "$a"; return 0; }
+        case "$tool:$p" in
+          *:--force|*:--interactive) clob=1; cw="$a" ;;
+          mv:--no-clobber|cp:--no-clobber) clob=0; cw='' ;;
+          *:--verbose) ;;
+          *:--target-directory) case "$a" in *=*) t="${a#*=}" ;; *) eat=t ;; esac ;;
+          cp:--recursive|cp:--archive|cp:--dereference|cp:--no-dereference) ;;
+          ln:--symbolic|ln:--no-dereference) ;;
+          *) printf '%s' "$a"; return 0 ;;
+        esac ;;
+      -?*)
+        rc=0; w=$(gate_short_letters "$a" "$ok" "$val") || rc=$?
+        [ "$rc" = "1" ] && { printf '%s' "$a"; return 0; }
+        while [ -n "$w" ]; do
+          ch="${w%"${w#?}"}"; w="${w#?}"
+          case "$tool:$ch" in
+            mv:n|cp:n) clob=0; cw='' ;;
+            mv:f|mv:i|cp:f|cp:i|ln:f|ln:i|ln:F) clob=1; cw="$a" ;;
+            install:d) dmode=1 ;;
+          esac
+        done
+        case "$tool:$rc" in
+          mv:2|cp:2|ln:2) case "$a" in *t) eat=t ;; *) eat=1 ;; esac ;;
+          mv:3|cp:3|ln:3) t="${a#*t}" ;;
+          *:2) eat=1 ;;
+        esac ;;
+      *) ops+=("$a"); gops+=("$a"); post=1 ;;
+    esac
+  done
+  [ "$dmode" = "1" ] && return 0
+  [ "$clob" = "1" ] || return 0
+  [ "${#ops[@]}" -gt 0 ] || return 0
+  gate_reach_copy_dest "$tool" "$t" "${cw:-$tool}" "${ops[@]}" && return 0
+  [ -n "$pw" ] || return 0
+  gate_reach_copy_dest "$tool" "$t" "$pw" "${gops[@]}"
+  return 0
+}
+
+gate_reach_copy_dest() {
+  # gate_reach_copy_dest <tool> <target dir or ''> <trigger> <operands...> —
+  # prints the trigger and returns 0 when one reading's operands would replace
+  # a name that already exists; returns 1 otherwise.
+  #
+  # A `{}` in an operand or in the target directory is the placeholder
+  # `find -exec` replaces with each path it matched, so whether that name
+  # exists cannot be looked up here and the act counts as replacing.
+  local tool="$1" t="$2" trig="$3"; shift 3
+  local n=$# srcs=$# dest a
+  for a in "$t" "$@"; do
+    case "$a" in *'{}'*) printf '%s' "$trig"; return 0 ;; esac
+  done
+  if [ -z "$t" ]; then
+    if [ "$n" -ge 2 ]; then
+      dest="${!n}"
+      if [ ! -d "$dest" ]; then
+        { [ -e "$dest" ] || [ -L "$dest" ]; } || return 1
+        printf '%s' "$trig"; return 0
+      fi
+      t="$dest"; srcs=$((n - 1))
+    elif [ "$tool" = "ln" ] && [ "$n" = "1" ]; then
+      t='.'
+    else
+      return 1
+    fi
+  fi
+  while [ "$srcs" -gt 0 ]; do
+    a="$1"; shift; srcs=$((srcs - 1))
+    { [ -e "$t/${a##*/}" ] || [ -L "$t/${a##*/}" ]; } && { printf '%s' "$trig"; return 0; }
+  done
+  return 1
+}
+
+gate_reach_tree_destruction() {
+  # gate_reach_tree_destruction <X> <Pd> <argv...> — for an act that lands in
+  # the target's trees, prints `파괴형태미명시` when it is destructive and the
+  # manifest does not name its destructive form; nothing otherwise.
+  #
+  # The mark is the union of the declaration and the shared table (`X`) and
+  # the local forms `gate_reach_local_destructive` reads from argv, and a local
+  # form is matched against the manifest by its own trigger word — the shared
+  # table knows no local form, so without that word `Pd` could never be 1 for
+  # one. Cell 5b and the `런로컬` cell both answer through this, so the two
+  # spellings of one act take one verdict.
+  local X="$1" Pd="$2" _ltrig probe; shift 2
+  _ltrig=$(gate_reach_local_destructive_here "$@")
+  if [ -n "$_ltrig" ] && [ "$GATE_MARK" != "파괴" ]; then
+    X=1
+    probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='파괴' GATE_MARK_TRIGGER="$_ltrig" \
+            GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
+            /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
+    Pd=0
+    case "$probe" in *"Pd=1"*) Pd=1 ;; esac
+  fi
+  { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
+  printf '파괴형태미명시'
+}
+
+gate_reach_runlocal_escapes() {
+  # gate_reach_runlocal_escapes <alias> — 0 when at least one place the last
+  # `gate_reach_target_tree_act` call collected (`GATE_TT_LANDS`: the operating
+  # repository and every other place that reader says the act can write) lies
+  # outside the temp directory,
+  # the run's state root and the act's own worktree, and resolves into the
+  # target's trees; 1 otherwise. 0 when nothing was collected, because the
+  # collector gave up on an argv it could not read. Sets `GATE_TT_STRAY` to 1
+  # when some place outside those three resolves to no tree of the target.
+  #
+  # THE VERDICT IS PER LANDING PLACE, NOT ALL OR NOTHING. Asking whether every
+  # place passed the target-tree predicate let one operand under the temp
+  # directory fail it, and a failure there meant the act went ahead: `mv
+  # $TMPDIR/r.md <sibling>/README.md` overwrote another worktree under
+  # `런로컬` because its source was not in the target's trees. One place in
+  # the target's trees outside the three is enough.
+  #
+  # The three are where `런로컬` is honest. The temp directory is read from
+  # `TMPDIR` as the act would read it, and compared by its physical spelling
+  # because `mktemp` hands back the logical one (`/var/…` for `/private/var/…`
+  # on macOS). An experiment worktree made under it shares the target's common
+  # git directory and is still the temp directory here, removal included.
+  local alias="$1" l full tmp sr own sv hit=1
+  GATE_TT_STRAY=0
+  [ "${#GATE_TT_LANDS[@]}" -gt 0 ] || { GATE_TT_STRAY=1; return 0; }
+  tmp="${TMPDIR:-/tmp}"; tmp="${tmp%/}"; [ -n "$tmp" ] || tmp=/
+  tmp=$(gate_real_prefix "$tmp")
+  sr=$(gate_real_prefix "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds")
+  own=$(gate_tree_root)
+  for l in "${GATE_TT_LANDS[@]}"; do
+    full=$(gate_real_prefix "$l")
+    case "$full" in
+      "$tmp"|"$tmp"/*|"$sr"|"$sr"/*) continue ;;
+    esac
+    if [ -n "$own" ]; then
+      case "$full" in "$own"|"$own"/*) continue ;; esac
+    fi
+    # The predicate checks the operating repository first; handing it this
+    # place as that repository makes it check this place alone.
+    sv="$GATE_TT_REPO"; GATE_TT_REPO="$l"
+    if gate_reach_target_tree_ok "$alias"; then hit=0; else GATE_TT_STRAY=1; fi
+    GATE_TT_REPO="$sv"
+  done
+  return "$hit"
+}
+
+gate_reach_runlocal_destruction() {
+  # gate_reach_runlocal_destruction <alias> <X> <Pd> <argv...> — the
+  # destruction question of a `런로컬` write. Prints `파괴형태미명시` when the
+  # act is destructive (`X`, or a local form in argv), at least one of its
+  # landing places is in the target's trees outside the three places
+  # `런로컬` is honest for, and the manifest does not name its destructive
+  # form; nothing otherwise.
+  #
+  # The `런로컬` cell and the opaque cell's `런로컬` answer both ask it, so a
+  # destructive act takes one verdict whichever grade the table gave it — the
+  # opaque cell returned before `X` was read, and `git -C <sibling> rm -rf .`
+  # went ahead with `--destructive` on it.
+  #
+  # A SHELL'S `-c` STRING IS ASKED LINE BY LINE as well as on its outer argv.
+  # The outer argv of `bash -c "<string>"` names `bash`, which the local reader
+  # answers nothing for, so the question returned before any landing place was
+  # read: `bash -c "rm -f <sibling file>"` and `bash -c "lockf <sibling file>
+  # true"` went through a false `런로컬` while the honest `대상트리` parked.
+  # Each line `gate_opaque_payload_lines` reads takes the same question, with
+  # its own argv for the local reader, the collector and the manifest match. A
+  # line whose launcher option is unread has no landing place this file can
+  # read, so when it is destructive it is judged as the collector's giving up
+  # is: as landing in the target's trees. What is not a shell's `-c` string —
+  # a script file, another interpreter's code — is still not read, and a
+  # destruction inside it is the stage's to declare with `--destructive`.
+  local alias="$1" X="$2" Pd="$3"; shift 3
+  local r rec unread kept
+  r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
+  [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    unread="${rec%%	*}"; kept="${rec#*	}"; kept="${kept%%	*}"
+    set -f
+    # shellcheck disable=SC2086
+    set -- $kept
+    set +f
+    [ $# -gt 0 ] || continue
+    if [ "$unread" = "1" ]; then
+      [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ] || continue
+      r=$(gate_reach_tree_destruction "$X" "$Pd" "$@")
+    else
+      r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
+    fi
+    [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+  done <<EOF
+$(gate_opaque_shell_lines "$@")
+EOF
+  return 0
+}
+
+gate_reach_runlocal_destruction_argv() {
+  # gate_reach_runlocal_destruction_argv <alias> <X> <Pd> <argv...> — the
+  # question above for one argv as it stands.
+  local alias="$1" X="$2" Pd="$3"; shift 3
+  if [ "$X" != "1" ]; then
+    [ -n "$(gate_reach_local_destructive_here "$@")" ] || return 0
+  fi
+  gate_reach_target_tree_act "$alias" "$@" || :
+  gate_reach_runlocal_escapes "$alias" || return 0
+  gate_reach_tree_destruction "$X" "$Pd" "$@"
+}
+
 gate_reach_disposition() {
   # gate_reach_disposition <alias> <rules_rc> <graded> <argv...>
   #
   # Prints the `도달 판정` cell that parks this act, or nothing when it proceeds.
   # FIRST MATCH WINS, in the order written — the table is read top to bottom and
-  # no cell is reachable past the one that answered.
+  # no cell is reachable past the one that answered. Cell 5b (`대상트리`) sits
+  # between `도달미상` (5) and `기기전역` (6), so it is reached only by an act
+  # whose effective reach neither the declaration nor the derived floor made
+  # one of those two.
   local alias="$1" rules_rc="$2" graded="$3"; shift 3
   local R="${GATE_REACH:--}" cls="$GATE_GRADE_SOURCE" S=0 X=0
   [ -n "$R" ] || R='-'
@@ -1303,8 +2155,15 @@ gate_reach_disposition() {
   case "$cls" in
     불투명|미상)
       [ "${GATE_DECLARED:-}" = "읽기" ] && return 0
+      # A `런로컬` write is within the cap, but its destruction question is
+      # asked here, because this return comes before the `런로컬` cell below
+      # and `--destructive` would otherwise never be read for this class.
       case "${GATE_DECLARED:-}" in
-        워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
+        워크트리쓰기|트리밖쓰기)
+          if [ "$Reff" = "런로컬" ]; then
+            gate_reach_runlocal_destruction "$alias" "$X" "$Pd" "$@"
+            return 0
+          fi ;;
       esac
       [ "$lift" = "1" ] || { printf '신고등급한도'; return 0; }
       # Lifted: the manifest named this exact form, so the act is judged by the
@@ -1325,6 +2184,45 @@ gate_reach_disposition() {
 
   # 5·6 — nothing below can be judged without knowing where the act lands.
   [ "$Reff" = "미상" ] && { printf '도달미상'; return 0; }
+
+  # 5b — inside the target's own trees. SEATED BETWEEN 5 AND 6 ON PURPOSE: `Reff`
+  # stays sticky for `미상` and `기기전역`, so an act whose argv the derived floor
+  # proves machine-global (`.ssh`, a stash, a global install) has already left
+  # for cell 6 before it can claim this one. The predicate is the one the
+  # manifest check puts on a worktree — the common git directory of the target
+  # row — and not a path prefix, because a sibling worktree shares no prefix
+  # with the checkout it belongs to. An act that changes external state fails
+  # it outright: its write lands somewhere that is not a path at all, and a
+  # branch name shaped like a relative path would otherwise pass as an operand.
+  # This is the second place `rules_rc` is read, and the reason is the defect
+  # that minted the token: cell 6 answered before the authorization could be
+  # seen, so nothing a manifest said could open it.
+  # A destructive act that passes the predicate still parks unless the manifest
+  # named its destructive form, exactly as `prod` and `배포트리거` do: the token
+  # opens the width of the target's worktrees to writes, and every one of them
+  # — the main checkout, another run's segment worktree — is somewhere a
+  # `git clean -fdx` or `rm -rf` destroys work nobody can restore. The mark
+  # here is the union of the declaration, the shared table and the local forms
+  # `gate_reach_local_destructive` reads from argv, and a local form is matched
+  # against the manifest by its own trigger word — the shared table knows no
+  # local form, so without that word `Pd` could never be 1 for one.
+  # AN ACT LANDING BOTH IN THE TARGET'S TREES AND IN THE TEMP DIRECTORY OR THE
+  # RUN'S STATE ROOT is judged here as the `런로컬` cell judges it — moving a
+  # file finished under the temp directory over one in the main checkout is
+  # the everyday case. Parked here, its only passing token was `런로컬`, so
+  # the honest declaration was strictly worse off than the false one.
+  if [ "$Reff" = "대상트리" ]; then
+    if [ "$Geff" != "외부상태변경" ]; then
+      if gate_reach_target_tree_act "$alias" "$@" \
+         || { gate_reach_runlocal_escapes "$alias" && [ "$GATE_TT_STRAY" = "0" ]; }; then
+        case "$rules_rc" in
+          0|5) gate_reach_tree_destruction "$X" "$Pd" "$@"; return 0 ;;
+        esac
+      fi
+    fi
+    printf '대상트리불일치'; return 0
+  fi
+
   [ "$Reff" = "기기전역" ] && { printf '기기전역'; return 0; }
 
   # 7 — a push whose remote is not the target's.
@@ -1336,9 +2234,20 @@ gate_reach_disposition() {
   case "$Reff" in
     런로컬)
       case "$Geff" in
-        워크트리쓰기|트리밖쓰기) return 0 ;;
+        워크트리쓰기|트리밖쓰기) ;;
         *) printf '도달모순'; return 0 ;;
-      esac ;;
+      esac
+      # A DESTRUCTIVE ACT GETS CELL 5b's ANSWER WHEN ANY OF ITS LANDING PLACES
+      # IS IN THE TARGET'S TREES, whatever it declared. This cell checked no
+      # path, so the argv cell 5b parked went through the moment it was
+      # declared `런로컬`, and the act-digest pin below never saw it: the pin
+      # is looked up only for an act that parks again. The run's state root,
+      # the temp directory and the act's own worktree are where `런로컬` is
+      # honest, so an act whose landing places all lie there proceeds as
+      # before, and one that also reaches the main checkout or another
+      # worktree is judged as `대상트리` would be.
+      gate_reach_runlocal_destruction "$alias" "$X" "$Pd" "$@"
+      return 0 ;;
     협업)
       [ "$C" = "1" ] && return 0
       printf '도달모순'; return 0 ;;
@@ -1366,12 +2275,438 @@ gate_reach_disposition() {
     *)
       # `-` with nothing derived: the axis was optional for this act, which the
       # required-check upstream already decided. It is a local read or a
-      # non-opaque worktree write, so it lands as run-local.
+      # non-opaque worktree write, so it lands as run-local — AND A WRITE TAKES
+      # THE `런로컬` CELL'S DESTRUCTION QUESTION. The required-check reads
+      # neither `--destructive` nor the local reader, and the table grades
+      # `git worktree remove` and `git -C <dir> reset --hard` `워크트리쓰기`
+      # wherever they point, so once both tokens parked a destructive act in
+      # another of the target's trees, leaving the token out was the one
+      # spelling that still ran it.
       case "$Geff" in
-        읽기|워크트리쓰기|트리밖쓰기) return 0 ;;
+        읽기) return 0 ;;
+        워크트리쓰기|트리밖쓰기)
+          gate_reach_runlocal_destruction "$alias" "$X" "$Pd" "$@"
+          return 0 ;;
         *) printf '도달미상'; return 0 ;;
       esac ;;
   esac
+}
+
+gate_reach_target_tree_dir_ok() {
+  # gate_reach_target_tree_dir_ok <physical existing dir> — 0 when that
+  # directory belongs to a worktree whose common git directory is the one
+  # `GATE_TT_WANT` holds. Answers from `GATE_TT_CACHE` when it can.
+  local d="$1" nl tab cg cg_p
+  nl='
+'
+  printf -v tab '\t'
+  case "$GATE_TT_CACHE" in
+    *"$nl"1"$tab$d$nl"*) return 0 ;;
+    *"$nl"0"$tab$d$nl"*) return 1 ;;
+  esac
+  if cg=$(gate_common_git_of_dir "$d"); then
+    if [ "$cg" = "$GATE_TT_WANT" ]; then
+      GATE_TT_CACHE="${GATE_TT_CACHE:-$nl}1$tab$d$nl"; return 0
+    fi
+    cg_p=$(cd "$cg" 2>/dev/null && pwd -P) || cg_p=''
+    if [ -n "$cg_p" ] && [ "$cg_p" = "$GATE_TT_WANT_P" ]; then
+      GATE_TT_CACHE="${GATE_TT_CACHE:-$nl}1$tab$d$nl"; return 0
+    fi
+  fi
+  GATE_TT_CACHE="${GATE_TT_CACHE:-$nl}0$tab$d$nl"
+  return 1
+}
+
+gate_reach_target_tree_ok() {
+  # gate_reach_target_tree_ok <alias> <path>... — 0 only when the operating
+  # repository (`GATE_TT_REPO`, or the grading directory when that is empty)
+  # and every path given resolve to a directory sharing the target row's
+  # `공통 git 디렉터리`. A path that does not exist yet is measured at its
+  # deepest existing ancestor, because the destination of a move or a temp
+  # file is a name about to be created.
+  #
+  # THE RUN'S STATE ROOT FAILS WHATEVER IT RESOLVES TO. Its honest token is
+  # `런로컬`, and a cell that also admitted it would give a stage two
+  # spellings for one place — the shape every re-spelling in the corpus took.
+  #
+  # Closed in every unsure direction: no target row, no common directory, a
+  # path carrying a newline or a tab (which the cache's line format could not
+  # hold unambiguously) — each one fails rather than guessing.
+  #
+  # NO COMMAND SUBSTITUTION ON A CACHE HIT. Each `$(…)` forks, and resolving
+  # every operand through `gate_lexical_abs` and `gate_real_prefix` cost more
+  # than the `git rev-parse` the cache exists to save: measured, 859 calls of
+  # two operands took 11.6 s with every directory already cached. So an
+  # already-normal absolute path is taken as it is, and the physical spelling
+  # is resolved once per deepest existing directory and kept in
+  # `GATE_TT_PHYS`. The value compared is the one `gate_real_prefix` gives —
+  # that directory's physical spelling with the not-yet-existing tail after it.
+  local alias="$1"; shift
+  local base p abs d dp tail full rest tab nl
+  printf -v tab '\t'
+  nl='
+'
+  if [ "$GATE_TT_ALIAS" != "$alias" ]; then
+    GATE_TT_ALIAS="$alias"
+    GATE_TT_WANT=$(target_field "$alias" '공통 git 디렉터리' 2>/dev/null) || GATE_TT_WANT=''
+    GATE_TT_WANT_P=''
+    [ -n "$GATE_TT_WANT" ] && GATE_TT_WANT_P=$(cd "$GATE_TT_WANT" 2>/dev/null && pwd -P)
+    GATE_TT_CACHE=''
+    GATE_TT_PHYS=''
+    GATE_TT_SR=$(gate_real_prefix "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds")
+  fi
+  [ -n "$GATE_TT_WANT" ] || return 1
+  gate_grade_cwd >/dev/null
+  base="$GATE_GRADE_CWD"
+  for p in "${GATE_TT_REPO:-$base}" "$@"; do
+    case "$p" in *"$nl"*|*"$tab"*|'') return 1 ;; esac
+    case "$p" in
+      /*) case "$p" in
+            */./*|*/../*|*/.|*/..|*//*) abs=$(gate_lexical_abs "$p" "$base") ;;
+            *) abs="$p" ;;
+          esac ;;
+      *) abs=$(gate_lexical_abs "$p" "$base") ;;
+    esac
+    d="$abs"
+    while [ ! -d "$d" ]; do
+      d="${d%/*}"
+      [ -n "$d" ] || d=/
+    done
+    case "$GATE_TT_PHYS" in
+      *"$nl$d$tab"*)
+        rest="${GATE_TT_PHYS#*"$nl$d$tab"}"
+        dp="${rest%%"$nl"*}" ;;
+      *)
+        dp=$(cd "$d" 2>/dev/null && pwd -P) || dp=''
+        [ -n "$dp" ] || dp="$d"
+        GATE_TT_PHYS="${GATE_TT_PHYS:-$nl}$d$tab$dp$nl" ;;
+    esac
+    tail=''
+    [ "$d" = "$abs" ] || tail="${abs#"${d%/}"}"
+    full="${dp%/}$tail"
+    [ -n "$full" ] || full=/
+    case "$full" in "$GATE_TT_SR"|"$GATE_TT_SR"/*) return 1 ;; esac
+    gate_reach_target_tree_dir_ok "$dp" || return 1
+  done
+  return 0
+}
+
+gate_reach_worktree_spec() {
+  # gate_reach_worktree_spec <dir> <spec> — sets `GATE_WT_SPEC` to every place
+  # git could mean by the worktree <spec> names when run from <dir>: each
+  # listed worktree whose path is <spec> or ends in `/<spec>`, and <spec>
+  # resolved as a path against <dir>. git tries the trailing components first
+  # and the path second; both are kept, because an extra landing place can
+  # only park. Status 1 when the list cannot be read. The list is asked with
+  # the inherited git environment dropped, for the reason
+  # `gate_common_git_of_dir` gives.
+  local dir="$1" spec="$2" out line p
+  GATE_WT_SPEC=()
+  while :; do case "$spec" in ?*/) spec="${spec%/}" ;; *) break ;; esac; done
+  out=$( { cd "$dir" 2>/dev/null \
+           && env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_CEILING_DIRECTORIES \
+                git worktree list --porcelain 2>/dev/null; } ) || return 1
+  [ -n "$out" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      'worktree '*)
+        p="${line#worktree }"
+        case "$p" in "$spec"|*/"$spec") GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]="$p" ;; esac ;;
+    esac
+  done <<EOF
+$out
+EOF
+  p=$(gate_lexical_abs "$spec" "$dir")
+  GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]="$p"
+  # And the place the kernel reaches by that path, which the lexical reading
+  # misses when a `..` follows a directory link: `lnk/../<sibling>` cancels
+  # to a name under <dir> on paper and is the sibling on disk.
+  case "$spec" in /*) line="$spec" ;; *) line="$dir/$spec" ;; esac
+  line=$(gate_physical_walk "$line")
+  GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]="$line"
+  [ -L "$p" ] && GATE_WT_SPEC[${#GATE_WT_SPEC[@]}]=$(gate_physical_path "$p")
+  return 0
+}
+
+gate_physical_walk() {
+  # gate_physical_walk <absolute path> — the path read one component at a
+  # time the way the kernel reads it: an existing directory is resolved
+  # physically before the next component, so a `..` after a directory symlink
+  # leaves the directory the link leads to, where `gate_lexical_abs` cancels
+  # the two. From the first component that is not an existing directory on,
+  # the rest is appended lexically.
+  local rest="${1#/}" cur=/ seg
+  while [ -n "$rest" ]; do
+    seg="${rest%%/*}"
+    if [ "$seg" = "$rest" ]; then rest=''; else rest="${rest#*/}"; fi
+    case "$seg" in
+      ''|.) continue ;;
+      ..) cur="${cur%/*}"; [ -n "$cur" ] || cur=/; continue ;;
+    esac
+    if [ -d "${cur%/}/$seg" ]; then
+      cur=$(cd "${cur%/}/$seg" 2>/dev/null && pwd -P) || cur="${cur%/}/$seg"
+    else
+      gate_lexical_abs "${cur%/}/$seg${rest:+/$rest}" /
+      return 0
+    fi
+  done
+  printf '%s' "$cur"
+}
+
+gate_reach_target_tree_act() {
+  # gate_reach_target_tree_act <alias> <argv...> — reads the operating
+  # repository and the path-shaped operands out of argv and hands them to
+  # `gate_reach_target_tree_ok`.
+  #
+  # The operating repository is the grading directory, or the directory
+  # `env -C` moves to, or for `git` the directory its `-C` options compose
+  # to. An operand is a word that does not start with `-` and either contains
+  # `/` or starts with `.` or `~`, or is a bare name that is a symlink, plus
+  # the value of a `--opt=<value>` shaped the same way and the value glued to
+  # a short option (`-t<dir>`, or any `-X<value>` holding a `/`). That
+  # over-collects — a read operand or a `sed` script containing `/` is
+  # checked too — and it over-collects on purpose: an extra operand can only
+  # fail the predicate, never pass it.
+  #
+  # EVERY PLACE THE ACT'S ARGV CAN SEND A WRITE IS A LANDING PLACE, and a
+  # selector this reader cannot resolve makes it give up, which the callers
+  # read as closed: a launcher or git global option it does not know, a
+  # `GIT_*` assignment that can name a repository, a `-c` that can move the
+  # work tree. The launchers in front of the command are read through first.
+  # What the act inherits rather than spells — an exported `GIT_DIR`, the
+  # repository's own `core.worktree` — is not argv and is not read here.
+  # These places were missed while the set was narrower than the writes:
+  # - every `--work-tree` and `--git-dir`, not only the last of them and the
+  #   `-C` options. git keeps an absolute `--work-tree` past a later `-C`, so
+  #   `git --work-tree=<sibling> -C <tmp> checkout -f -- .` overwrote the
+  #   sibling while this read only the temp directory; a relative one is
+  #   taken against the directory the `-C` options compose to, as git does,
+  #   and a relative operand is taken against that work tree as well.
+  # - the worktree a `git worktree remove|move|lock|unlock|repair` names by a
+  #   bare name or a relative path. git finds it by its trailing path
+  #   components, so `git worktree remove --force <name>` removed a sibling
+  #   whose name carried no `/` for this reader to collect. Every listed
+  #   worktree those components could mean is collected, with the name
+  #   resolved as a path besides, lexically and physically; a list that
+  #   cannot be read gives up.
+  # - a value glued to its option, `mv -t<dir>` in GNU's spelling, and a
+  #   relative `--opt=<value>`.
+  # - what a symlink leads to. A final component that is a symlink adds the
+  #   file it points at — a bare name included — and an operand with a `..`
+  #   adds its physical reading too, because the kernel follows a directory
+  #   link before it applies the `..` that the lexical reading cancels
+  #   against it.
+  # - the act behind `timeout`, `nice`, `command`, `nohup`, `stdbuf`, `time`
+  #   and `lockf`, and the work tree `GIT_WORK_TREE=` or `-c core.worktree=`
+  #   names, which this reader gives up on rather than resolve — after `env
+  #   --` as well, because `--` ends env's options and not its assignments.
+  # - the file a launcher writes itself: the lockfile of `lockf`, which it
+  #   removes without `-k`, and the `-o`/`--output` file of `time`. Peeling
+  #   the launcher to read the act behind it dropped both, and `lockf
+  #   <sibling>/README.md rm -rf junk` went through `런로컬` and the omitted
+  #   reach while the honest `대상트리` parked.
+  #
+  # `git worktree add`'s first operand is left out, because it names a
+  # directory that does not exist yet; the repository check is what binds it,
+  # and a creation path under a machine-global prefix has already been taken by
+  # the derived floor before this cell is reached.
+  local alias="$1"; shift
+  local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w _left _urc _ddash
+  local -a ops gx wrp
+  ops=(); gx=(); wrp=()
+  # Emptied first, so an argv this reader gives up on leaves no landing places
+  # of an earlier act behind for `gate_reach_runlocal_escapes` to read.
+  GATE_TT_LANDS=()
+  base=$(gate_grade_cwd)
+  # The launchers in front are peeled one layer at a time, so `timeout 60 git
+  # worktree remove --force <name>` is read as the `git` act it runs, and the
+  # file `lockf` or `time` names for itself is kept as a landing place; an
+  # option of theirs the shared unwrap does not know gives up. `env` keeps its
+  # own loop because two of its words move the act: `-C` moves it to another
+  # directory, and an assignment of a variable git reads to find its
+  # repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG_PARAMETERS`, … — any
+  # `GIT_*` outside the few that only name a person, an editor or a trace)
+  # points it at another worktree with no word this reader could resolve, so
+  # it gives up there. An option of `env` this reader does not know — `-S`,
+  # which splits one word into a command line, among them — leaves the
+  # command out of view, so it gives up too.
+  while [ "$#" -gt 0 ]; do
+    case "${1##*/}" in
+      env)
+        shift
+        _ddash=0
+        while [ "$#" -gt 0 ]; do
+          # `--` ends env's options and not its assignments: `env --
+          # GIT_WORK_TREE=<sibling> git checkout -f -- .` applies the
+          # assignment as `gate_unwrap_env` reads it, and stopping here read
+          # the assignment as the command and let the overwrite through.
+          # A word after it that starts with `-` is no option any more, so
+          # it gives up rather than guess what env makes of it.
+          if [ "$_ddash" = "1" ]; then
+            case "$1" in -*) return 1 ;; esac
+          fi
+          case "$1" in
+            -i|-0|-v) shift ;;
+            --) _ddash=1; shift ;;
+            -u) [ "$#" -ge 2 ] || return 1; shift 2 ;;
+            -u?*) shift ;;
+            -C|--chdir)
+                [ "$#" -ge 2 ] || return 1
+                repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
+            --chdir=*) repo=$(gate_lexical_abs "${1#*=}" "${repo:-$base}"); shift ;;
+            -*) return 1 ;;
+            GIT_PAGER=*|GIT_EDITOR=*|GIT_SEQUENCE_EDITOR=*|GIT_TERMINAL_PROMPT=*|\
+            GIT_AUTHOR_*=*|GIT_COMMITTER_*=*|GIT_TRACE*=*|GIT_OPTIONAL_LOCKS=*|GIT_ADVICE=*) shift ;;
+            GIT_*=*) return 1 ;;
+            *=*) shift ;;
+            *) break ;;
+          esac
+        done
+        [ "$#" -gt 0 ] || return 1 ;;
+      lockf|command|time|timeout|nice|nohup|stdbuf)
+        _urc=0; _left=$(gate_unwrap_one "$@") || _urc=$?
+        [ "$_urc" = "0" ] || return 1
+        # The lockfile and the `time -o` file are landing places of this
+        # layer, taken from the directory the act runs in at this point and
+        # kept unnormalized, so the operand loop below reads their links and
+        # `..` as it reads any other. The peel above runs in a subshell, so
+        # the same unwrap is asked again here, where its globals survive.
+        GATE_UW_PATHS=()
+        case "${1##*/}" in
+          lockf) gate_unwrap_lockf : '' '' "${@:2}" ;;
+          time)  gate_unwrap_time  : '' '' "${@:2}" ;;
+        esac
+        for v in ${GATE_UW_PATHS[@]+"${GATE_UW_PATHS[@]}"}; do
+          case "$v" in
+            /*) wrp[${#wrp[@]}]="$v" ;;
+            '~') wrp[${#wrp[@]}]="$HOME" ;;
+            '~/'*) wrp[${#wrp[@]}]="$HOME/${v#'~/'}" ;;
+            *) wrp[${#wrp[@]}]="${repo:-$base}/$v" ;;
+          esac
+        done
+        shift $(( $# - _left )) ;;
+      *) break ;;
+    esac
+  done
+  # git's own global options are the ones `gate_git_globals` reads, and one
+  # it does not know gives up rather than being skipped: skipping read the
+  # value of `--attr-source <tree>` as the subcommand, and the worktree a
+  # `remove` named was never collected. A `-c` or `--config-env` that sets
+  # `core.worktree`, or that includes another configuration file which could,
+  # moves the work tree where no operand says so, and gives up as well.
+  if [ "${1##*/}" = "git" ]; then
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -C) [ "$#" -ge 2 ] || return 1
+            repo=$(gate_lexical_abs "$2" "${repo:-$base}"); shift 2 ;;
+        --git-dir=*|--work-tree=*)
+            gx[${#gx[@]}]="${1#*=}"; shift ;;
+        --git-dir|--work-tree)
+            [ "$#" -ge 2 ] || return 1
+            gx[${#gx[@]}]="$2"; shift 2 ;;
+        -c|--config-env)
+            [ "$#" -ge 2 ] || return 1
+            gate_git_config_moves_tree "$2" && return 1
+            shift 2 ;;
+        --config-env=*)
+            gate_git_config_moves_tree "${1#*=}" && return 1
+            shift ;;
+        --namespace|--attr-source)
+            [ "$#" -ge 2 ] || return 1; shift 2 ;;
+        --namespace=*|--attr-source=*|--exec-path=*|--super-prefix=*|--list-cmds=*|\
+        -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|\
+        --noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice)
+            shift ;;
+        -*) return 1 ;;
+        *) sub="$1"; shift; break ;;
+      esac
+    done
+    if [ "$sub" = "worktree" ]; then
+      wsub="${1:-}"
+      case "$wsub" in
+        add) shift; skipped_wt=1 ;;
+        remove|move|lock|unlock|repair) shift; skipped_wt=3 ;;
+      esac
+    fi
+  else
+    shift
+  fi
+  # Relative operands of a `git -C` act are relative to that repository.
+  [ -n "$repo" ] && base="$repo"
+  local -a absops wts
+  absops=(); wts=()
+  for v in ${gx[@]+"${gx[@]}"}; do
+    w=$(gate_lexical_abs "$v" "$base")
+    absops[${#absops[@]}]="$w"; wts[${#wts[@]}]="$w"
+  done
+  local eat=0
+  for a in "$@"; do
+    # The value of `worktree add`'s branch and reason options is not its
+    # creation path, so it is consumed before the exemption can take it.
+    if [ "$eat" = "1" ]; then eat=0; continue; fi
+    case "$a" in
+      # A path-shaped value of a long option, relative ones included:
+      # `--target-directory=../<sibling>` writes there as surely as an
+      # absolute value does.
+      --*=/*|--*=*/*|--*=.*|--*='~'*) ops[${#ops[@]}]="${a#*=}" ;;
+      -b|-B|--reason)
+        case "$skipped_wt" in 1|3) eat=1 ;; esac ;;
+      --*) ;;
+      -t?*) ops[${#ops[@]}]="${a#-t}" ;;
+      -?*/*) ops[${#ops[@]}]="${a#-?}" ;;
+      -*) ;;
+      *)
+        # The worktree a `remove`, `move`, `lock`, `unlock` or `repair` names is
+        # its first operand, whatever its shape.
+        if [ "$skipped_wt" = "3" ]; then spec="$a"; skipped_wt=4; continue; fi
+        case "$a" in
+          '~') ops[${#ops[@]}]="$HOME" ;;
+          '~/'*) ops[${#ops[@]}]="$HOME/${a#'~/'}" ;;
+          */*|.*|'~'*)
+            if [ "$skipped_wt" = "1" ]; then skipped_wt=2; continue; fi
+            ops[${#ops[@]}]="$a" ;;
+          *)
+            # The creation path need not contain a slash: a bare name is still
+            # the first operand of `worktree add`, and it is the one being
+            # exempted.
+            if [ "$skipped_wt" = "1" ]; then skipped_wt=2; continue; fi
+            # A bare name lands where it is only when it is no symlink: `cp
+            # a.txt flink` writes the file `flink` leads to, which can sit in
+            # another worktree. Only a link is collected, so a bare word that
+            # names nothing costs no resolution.
+            for v in "$base" ${wts[@]+"${wts[@]}"}; do
+              [ -L "$v/$a" ] && { ops[${#ops[@]}]="$a"; break; }
+            done ;;
+        esac ;;
+    esac
+  done
+  if [ -n "$spec" ]; then
+    gate_reach_worktree_spec "$base" "$spec" || return 1
+    absops+=(${GATE_WT_SPEC[@]+"${GATE_WT_SPEC[@]}"})
+  fi
+  ops+=(${wrp[@]+"${wrp[@]}"})
+  for a in ${ops[@]+"${ops[@]}"}; do
+    for v in "$base" ${wts[@]+"${wts[@]}"}; do
+      case "$a" in /*) [ "$v" = "$base" ] || continue ;; esac
+      w=$(gate_lexical_abs "$a" "$v")
+      absops[${#absops[@]}]="$w"
+      [ -L "$w" ] && absops[${#absops[@]}]=$(gate_physical_path "$w")
+      case "/$a/" in
+        */../*)
+          case "$a" in /*) w="$a" ;; *) w="$v/$a" ;; esac
+          w=$(gate_physical_walk "$w")
+          absops[${#absops[@]}]="$w"
+          [ -L "$w" ] && absops[${#absops[@]}]=$(gate_physical_path "$w") ;;
+      esac
+    done
+  done
+  GATE_TT_REPO="$repo"
+  GATE_TT_LANDS=("${repo:-$(gate_grade_cwd)}" ${absops[@]+"${absops[@]}"})
+  rc=0
+  gate_reach_target_tree_ok "$alias" ${absops[@]+"${absops[@]}"} || rc=1
+  GATE_TT_REPO=''
+  return "$rc"
 }
 
 gate_surface_max() {
@@ -1708,6 +3043,32 @@ gate_argv_has_opt() {
 # dropping them to `등급 미상` outside a checkout.
 GATE_TREE_ROOT=''
 GATE_GRADE_CWD=''
+
+# The `대상트리` cell asks git the same question per operand directory, and a
+# run's worst observed act count times its operands per write is thousands of
+# `git rev-parse` calls. So the target's expected common directory is read once
+# per alias, and every directory already answered is kept as one
+# `<0|1><TAB><dir>` line in `GATE_TT_CACHE` — a plain string because this file
+# runs under bash 3.2, which has no associative arrays. `GATE_TT_PHYS` keeps
+# each directory's physical spelling the same way, and `GATE_TT_SR` the state
+# root's. `GATE_TT_REPO` is the operating repository one act names; empty
+# means the grading directory. `GATE_TT_LANDS` keeps what the last act's
+# check collected — that repository and its path-shaped operands — for the
+# `런로컬` cell to measure against its own three roots.
+GATE_TT_ALIAS=''
+GATE_TT_WANT=''
+GATE_TT_WANT_P=''
+GATE_TT_CACHE=''
+GATE_TT_PHYS=''
+GATE_TT_SR=''
+GATE_TT_REPO=''
+GATE_TT_LANDS=()
+# What the last `gate_unwrap_lockf` or `gate_unwrap_time` read of the
+# wrapper's own words: its path operand, whether `-k`/`-a` kept the file, and
+# the `time` option word that named it. Each call empties them first.
+GATE_UW_PATHS=()
+GATE_UW_KEEP=0
+GATE_UW_OPTW=''
 
 # `GATE_UNDECLARED` is written in exactly one place — `gate_undeclared_target`
 # — and read in seven, every one of them as `${GATE_UNDECLARED:-0} != 1`. The
@@ -4290,11 +5651,22 @@ surface_of_argv0() {
 }
 
 gate_unwrap_lockf() {
-  # gate_unwrap_lockf <resolver> <lock-only> <unknown-opt> [-k] [-s] [-t <sec>] <lockfile> <command> [args...]
+  # gate_unwrap_lockf <resolver> <lock-only> <unknown-opt> [-knsw] [-t <sec>] [--] <lockfile> <command> [args...]
   #
   # Skip lockf's own options and its lockfile operand, then hand what is left to
-  # <resolver>. `-t` takes a value; `-k`, `-s` and `-n` do not. The lockfile is
-  # the first non-option word and is never itself the command.
+  # <resolver>. `-t` takes a value, attached or separate; `-k`, `-n`, `-s` and
+  # `-w` do not, and may be clustered (`-ks`, `-st 0`). `--` ends the options.
+  # The lockfile is the first non-option word and is never itself the command.
+  #
+  # THE WHOLE BSD GETOPT GRAMMAR, through `_gp_getopt` — the parser the hook's
+  # `_gp_peel_lockf` already reads the same synonym with. The hand-written loop
+  # this replaced knew `-k`, `-s`, `-n` and `-t` one word at a time, so `-w`,
+  # a cluster such as `-sn` or `-ks`, and `--` all answered <unknown-opt> with
+  # `GATE_UW_PATHS` empty. Every reader below then lost the lockfile at once:
+  # the grade fell to its unknown answer, the opaque floor skipped its raise,
+  # and a `읽기` declaration removed a sibling worktree's file while the honest
+  # `--destructive` one parked. An option this grammar still does not have, and
+  # a `-t` with no value, are <unknown-opt>.
   #
   # ONE UNWRAP SHARED BY TWO TABLES. The grader and the history-integration
   # predicate both have to see through `lockf`, and while each carried its own
@@ -4305,37 +5677,88 @@ gate_unwrap_lockf() {
   # predicate passes `0`/`1`.
   #
   # ARGV0 IS ALREADY GONE. `surface_of_argv0` drops it before dispatching and the
-  # lockf arm of the predicate drops it explicitly, so this loop starts at the
+  # lockf arm of the predicate drops it explicitly, so this parse starts at the
   # first option. The old code shifted a SECOND time here, which ate whatever
   # stood first: `lockf <file> git status` then read `git` as the lockfile and
   # graded `status` alone, and `lockf -t 5 <file> git commit` read `5` as the
   # lockfile. Both are the shapes the fixtures below now pin.
+  #
+  # THE LOCKFILE IS LEFT IN `GATE_UW_PATHS`, and `GATE_UW_KEEP` says whether
+  # `-k` kept it. Without `-k` the BSD `lockf` removes the file when the
+  # command ends, contents and all, so the file is a place the act writes to
+  # and destroys. The readers that need it call this unwrap in their own shell
+  # (resolver `:`) and read the two globals; one parser is what keeps the
+  # lockfile they read the same word the grader skipped.
+  #
+  # OPTIONS END AT THE LOCKFILE. The BSD synopsis is `lockf [-knsw] [-t
+  # seconds] file command`, and its getopt stops at the first operand, so a
+  # `-k` written after the lockfile is not an option: `lockf <file> -k true`
+  # runs `-k` as the command, fails, and removes the file. Reading on past the
+  # lockfile set `GATE_UW_KEEP=1` for that spelling, and that one value turned
+  # off the grade raise, the destruction trigger and the landing collector
+  # together. Everything after the lockfile goes to the resolver as it stands,
+  # so `-k` there is the wrapped argv0 and grades `등급 미상`.
+  #
+  # THE PARSER'S STATE IS LOCAL HERE. The readers that need the lockfile call
+  # this unwrap in their own shell, and some of them run inside a caller that
+  # is itself between `_gp_getopt` and reading its `_GP_*` answer; without the
+  # `local` line that caller would read this lockf's options as its own.
   local resolver="$1" lock_only="$2" unknown_opt="$3"; shift 3
-  local seen_file=0
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      # `-t` with no value after it emits NOTHING, which is what this did before
-      # it was factored out. Repairing that here would mix a second change into
-      # the one these fixtures measure.
-      -t) shift 2 || return 0 ;;
-      -t*) shift ;;
-      -k|-s|-n) shift ;;
-      -*) printf '%s' "$unknown_opt"; return 0 ;;
-      *)
-        if [ "$seen_file" = 0 ]; then seen_file=1; shift; continue; fi
-        "$resolver" "$@"
-        return 0 ;;
-    esac
-  done
+  local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL _GP_OPTVAL
+  GATE_UW_PATHS=(); GATE_UW_KEEP=0; GATE_UW_OPTW=''
+  _gp_getopt knsw t '' '' "$@"
+  if [ "$_GP_PEEL" = form ] || [ "${#_GP_REST[@]}" -eq 0 ]; then
+    printf '%s' "$unknown_opt"; return 0
+  fi
+  if _gp_optlast k; then GATE_UW_KEEP=1; fi
+  GATE_UW_PATHS=("${_GP_REST[0]}")
   # A lock with nothing after it locks and exits — that is a worktree write (it
   # creates the lockfile) and there is no wrapped command to defer to.
-  [ "$seen_file" = 1 ] && { printf '%s' "$lock_only"; return 0; }
-  printf '%s' "$unknown_opt"
+  if [ "${#_GP_REST[@]}" -eq 1 ]; then printf '%s' "$lock_only"; return 0; fi
+  "$resolver" "${_GP_REST[@]:1}"
+  return 0
 }
 
 surface_of_lockf() {
   # surface_of_lockf <lockf-args-after-argv0...>
-  gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@"
+  #
+  # Without `-k` the act removes its lockfile, so a wrapped read is not the
+  # whole answer: `lockf <file> true` graded `읽기` returned at the read cell
+  # before reach or the derived floor were looked at, and nothing parked the
+  # removal of a key under `$HOME/.ssh` or a file in another worktree.
+  #
+  # THE LOCKFILE IS GRADED BY WHERE IT IS, the way every other write operand
+  # is. A fixed `워크트리쓰기` asked for no reach on `lockf ../../.ssh/key true`
+  # while `rm` and `time -o` on the same path graded `트리밖쓰기`, and the
+  # derived floor only matches the absolute `$HOME/.ssh` spelling. So a read or
+  # a worktree write takes the higher of itself and `surface_of_write_paths`
+  # on the lockfile; `외부상태변경` and `등급 미상` already reach every cell the
+  # removal needs and are kept. The opaque floor applies the same rule in
+  # `gate_opaque_floor`, without which a payload declared `읽기` still passes.
+  #
+  # NOT WITH `-k`. The rule is kept to the spelling that removes the file. With
+  # `-k` the file outlives the act, and raising it too would regrade the
+  # `lockf -k -t 0 "${RUN_DIR}/designdoc.lock" …` the unattended skills
+  # prescribe for their design-document writes, a lock outside the worktree
+  # that is not the destruction this rule is here to park.
+  #
+  # AN UNREADABLE OPTION IS `형태 미상`, as for every other wrapper. This arm
+  # alone answered `등급 미상`, and that asymmetry was the hole: an unknown
+  # grade sends the comparator to the opaque floor instead of the grade, and
+  # with the lockfile unread the floor stayed `읽기`, so `lockf -w <sibling
+  # file> true` declared `읽기` removed the file. `형태 미상` is refused before
+  # the comparator. It and `외부상태변경` are kept as they come, without the
+  # raise below.
+  local g
+  g=$(gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' "$GATE_FORM_UNKNOWN" "$@")
+  gate_unwrap_lockf : '' '' "$@"
+  if [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
+    case "$g" in
+      읽기|워크트리쓰기)
+        g=$(gate_surface_max "$g" "$(surface_of_write_paths "${GATE_UW_PATHS[0]}")") ;;
+    esac
+  fi
+  printf '%s' "$g"
 }
 
 gate_unwrap_command() {
@@ -4434,12 +5857,20 @@ gate_unwrap_find() {
   # A PLAIN `find` WITH NO PRIMARY KEEPS COMING BACK `읽기`. The manifest guard
   # states that cost in place: without it every read that walks the manifest's
   # directory becomes a refusal.
+  #
+  # A <writes> or <form-unknown> of `=` answers the primary word itself. The
+  # local destructive reader prints a trigger that a manifest shape has to carry
+  # as one of its own words, so a fixed `-delete` for `-fprint` or `-execdir`
+  # for `-okdir` named a word the argv does not have and no shape could open.
   local resolver="$1" walk_only="$2" writes="$3" form_unknown="$4" combiner="$5"; shift 5
-  local acc="" seen=0 ans="" n term a prev
+  local acc="" seen=0 ans="" n term a prev prim
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      -execdir|-okdir) printf '%s' "$form_unknown"; return 0 ;;
+      -execdir|-okdir)
+        if [ "$form_unknown" = "=" ]; then printf '%s' "$1"; else printf '%s' "$form_unknown"; fi
+        return 0 ;;
       -exec|-ok)
+        prim="$1"
         shift
         # The inner command is the words up to one starting with `;`, or up to
         # one starting with `+` that stands directly after `{}`. Taking every
@@ -4457,7 +5888,7 @@ gate_unwrap_find() {
           n=$((n + 1))
         done
         if [ "$n" -eq 0 ]; then
-          ans="$writes"
+          if [ "$writes" = "=" ]; then ans="$prim"; else ans="$writes"; fi
         else
           ans=$(gate_call_prefix "$n" "$resolver" "$@")
         fi
@@ -4466,7 +5897,9 @@ gate_unwrap_find() {
       # NOT A RETURN ANY MORE. A higher-graded primary can stand behind this
       # one, and the operands these take are consumed by the arm below as
       # ordinary words — reading one of them as a primary can only over-grade.
-      -delete|-fprintf|-fprint|-fprint0|-fls) ans="$writes"; shift ;;
+      -delete|-fprintf|-fprint|-fprint0|-fls)
+        if [ "$writes" = "=" ]; then ans="$1"; else ans="$writes"; fi
+        shift ;;
       *) shift; continue ;;
     esac
     if [ "$seen" = 0 ]; then acc="$ans"; seen=1; else acc=$("$combiner" "$acc" "$ans"); fi
@@ -5755,12 +7188,44 @@ gate_opaque_floor() {
   # STRING read instead of the whole argument list. Both terminal answers are
   # "nothing readable", which is what the `*)` arm already answered for these
   # shapes.
+  #
+  # `lockf` AND `time` ALSO WRITE A FILE OF THEIR OWN, and the payload's floor
+  # does not see it. `lockf <file> bash -c true` floored `읽기`, so a `읽기`
+  # declaration passed the under-declaration comparator while the lockfile was
+  # removed, and only the honest declaration parked. Each arm reads its unwrap's
+  # globals in this shell after the payload's floor is taken and raises the
+  # first field: a lockfile without `-k` by where it is, as `surface_of_lockf`
+  # grades it, and a `-o` file to `트리밖쓰기`, as `gate_unwrap_time` grades it.
+  # The `-o` raise ignores `-a`, because the grading table does too — an append
+  # is still a write, and a floor lower than the table would split the same act
+  # between the two tables.
+  #
+  # AN OPTION THE UNWRAP CANNOT READ FLOORS `트리밖쓰기` in both arms. Where the
+  # option list is unread, so is where the lockfile or the `-o` file is, and
+  # answering "nothing readable" there left `lockf -p <sibling file> bash -c
+  # true` and `time -lo <sibling file> bash -c true` at `읽기`. Outside the
+  # target is the closed reading of a file whose place is unknown.
+  local wf unread
+  unread=$(printf '트리밖쓰기\t\t')
   case "$cmd" in
-    lockf)   gate_unwrap_lockf   gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    lockf)
+      wf=$(gate_unwrap_lockf gate_opaque_floor "$GATE_FLOOR_NONE" "$unread" "$@")
+      gate_unwrap_lockf : '' '' "$@"
+      if [ "$GATE_UW_KEEP" = "0" ] && [ "${#GATE_UW_PATHS[@]}" -gt 0 ]; then
+        wf=$(gate_answer_floor_max "$wf" \
+          "$(printf '%s\t\t' "$(surface_of_write_paths "${GATE_UW_PATHS[0]}")")")
+      fi
+      printf '%s' "$wf"; return 0 ;;
     command) gate_unwrap_command gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     rg)      gate_unwrap_rg      gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     env)     gate_unwrap_env     gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
-    time)    gate_unwrap_time    gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    time)
+      wf=$(gate_unwrap_time gate_opaque_floor "$GATE_FLOOR_NONE" "$unread" "$@")
+      gate_unwrap_time : '' '' "$@"
+      if [ -n "$GATE_UW_OPTW" ]; then
+        wf=$(gate_answer_floor_max "$wf" "$(printf '트리밖쓰기\t\t')")
+      fi
+      printf '%s' "$wf"; return 0 ;;
     timeout|nice|nohup|stdbuf)
       gate_unwrap_wrapper "$cmd" gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
     # A write primary (`-delete`, `-fprint` …) is a worktree write whatever
@@ -5769,6 +7234,92 @@ gate_opaque_floor() {
       gate_unwrap_find gate_opaque_floor_find_inner "$GATE_FLOOR_NONE" "$(printf '워크트리쓰기\t\t')" \
         "$GATE_FLOOR_NONE" gate_answer_floor_max "$@"; return 0 ;;
   esac
+  local floor='읽기' mark='' trig='' fi_ fidx rec unread line g mk
+  fidx=$(surface_index '읽기')
+  # Command POSITIONS only — the word after a separator. `grep "gh pr merge"` is
+  # an argument to grep and does not raise anything. The lines are the ones
+  # `gate_opaque_payload_lines` reads, with `exec` and the launchers in front
+  # already peeled.
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    unread="${rec%%	*}"; line="${rec##*	}"
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    [ $# -gt 0 ] || continue
+    g=$(surface_of_argv0 "$@")
+    # A LAUNCHER OPTION THE PEEL CANNOT READ FLOORS `트리밖쓰기`. The same argv
+    # written bare is refused as `형태 미상`, and that is not a floor, so `bash
+    # -c "nice -5 rm -f <sibling file>"` was admitted as `읽기`. Where the
+    # option list is unread, so is what the line writes.
+    [ "$unread" = "1" ] && g='트리밖쓰기'
+    case "$g" in
+      읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
+        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
+        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
+    esac
+    # A `lockf` or `time` line in the payload carries its own file, which the
+    # line's grade does not raise when the option list is unread: `bash -c
+    # "lockf -p <sibling file> true"` grades `형태 미상` here, and that is not a
+    # floor. So the line is floored the way the same argv is floored bare, and
+    # only the first field is folded — the mark is `gate_act_mark`'s, below.
+    case "${1##*/}" in
+      lockf|time)
+        g=$(gate_opaque_floor "$@")
+        g="${g%%	*}"
+        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
+        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
+    esac
+    mk=$(gate_act_mark "$@")
+    case "$mk" in
+      비밀출력*) mark='비밀출력'; trig="${mk#*	}" ;;
+      파괴*) [ "$mark" = "비밀출력" ] || { mark='파괴'; trig="${mk#*	}"; } ;;
+    esac
+  done <<EOF
+$(gate_opaque_payload_lines "$cmd" "$@")
+EOF
+  printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
+}
+
+gate_opaque_payload_lines() {
+  # gate_opaque_payload_lines <argv...> — the payload of an opaque act, one
+  # command per line, as `<읽지 못함>\t<줄>\t<벗긴 줄>`.
+  #
+  # ONE READER FOR EVERY QUESTION ASKED OF A PAYLOAD. The floor and the `런로컬`
+  # destruction question both read the commands inside a `-c` string, and
+  # while each split and peeled the string on its own the shallower reading
+  # decided: the floor saw only a line's first word, so `nice time -lo
+  # <sibling file>` and `exec lockf <sibling file>` were not `lockf`/`time`
+  # lines to it, and the destruction question did not read the string at all.
+  # A new spelling closed in one of them stayed open in the other.
+  #
+  # The split is the floor's: heredoc markers dropped (their bodies are DATA,
+  # and a SQL heredoc naming `drop table` is not the shell running `drop`),
+  # then a cut at `;&|(){}`, the backtick and the newline, `$` removed. Shell
+  # quotes are removed as well. The reader is quote-blind by construction, and
+  # a quoted operand kept its quotes as part of the word, so `lockf '<absolute
+  # path>' true` read as a relative path inside the target and the floor fell
+  # to `워크트리쓰기`; an unquoted word is the reading that lands where the
+  # shell lands. A line starting with an option word is skipped.
+  #
+  # `<줄>` is the line with its leading `VAR=value` assignments spelled as an
+  # `env` in front and the shell builtin `exec` (with its `-c`, `-l`, `-a
+  # <name>`) removed: the argv the line runs, which the landing collector and
+  # the local destruction reader take as they take any argv — the collector
+  # gives up on a `GIT_*` assignment through that `env`. `<벗긴 줄>` has the
+  # launchers in front removed too (`env`, `command`, `timeout`, `nice`,
+  # `nohup`, `stdbuf`), through the unwraps the grading table uses, so the
+  # floor sees the command the line runs. `lockf` and `time` are NOT removed:
+  # each writes a file of its own, and the reader of that file needs the
+  # launcher's argv. `<읽지 못함>` is 1 when an option of `exec` or of a
+  # launcher is one the peel cannot read; the peel stops there, and the
+  # caller takes that line as unread. A line whose launcher runs nothing
+  # (`command -v git`, `env` alone) is not printed.
+  #
+  # What it does not read is unchanged: `eval`, a command held in a variable,
+  # and the bytes of a script file.
+  local cmd="${1##*/}"; shift 2>/dev/null || true
   local payload="" a next_is_c=0
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
@@ -5788,47 +7339,90 @@ $a"; next_is_c=0; continue; fi
     docker) payload="" ;;
     *) payload="$*" ;;
   esac
-  [ -n "$payload" ] || { printf '읽기\t\t'; return 0; }
-
-  # Heredoc bodies are dropped before the split: their text is DATA, and a SQL
-  # heredoc naming `drop table` is not the shell running `drop`.
+  [ -n "$payload" ] || return 0
   payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
 
-  local floor='읽기' mark='' trig='' fi_ fidx
-  fidx=$(surface_index '읽기')
-  local line first
-  # Command POSITIONS only — the word after a separator. `grep "gh pr merge"` is
-  # an argument to grep and does not raise anything.
+  local line unread kept out w k j n
+  local -a pre ws
   while IFS= read -r line; do
-    # Leading `VAR=value` assignments belong to the command that follows them.
     set -f
     # shellcheck disable=SC2086
     set -- $line
     set +f
+    pre=()
     while [ $# -gt 0 ]; do
       case "$1" in
-        *=*) case "$1" in -*) break ;; *) shift ;; esac ;;
+        -*) break ;;
+        *=*) pre[${#pre[@]}]="$1"; shift ;;
         *) break ;;
       esac
     done
     [ $# -gt 0 ] || continue
-    first="$1"
-    case "$first" in -*|'') continue ;; esac
-    local g; g=$(surface_of_argv0 "$@")
-    case "$g" in
-      읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
-        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
-        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
-    esac
-    local mk; mk=$(gate_act_mark "$@")
-    case "$mk" in
-      비밀출력*) mark='비밀출력'; trig="${mk#*	}" ;;
-      파괴*) [ "$mark" = "비밀출력" ] || { mark='파괴'; trig="${mk#*	}"; } ;;
-    esac
+    case "$1" in -*) continue ;; esac
+    unread=0
+    ws=("$@"); n=$#; k=0
+    while [ "$k" -lt "$n" ] && [ "${ws[$k]}" = "exec" ]; do
+      j=$((k + 1))
+      while [ "$j" -lt "$n" ]; do
+        case "${ws[$j]}" in
+          -a) j=$((j + 2)) ;;
+          -c|-l|-cl|-lc) j=$((j + 1)) ;;
+          --) j=$((j + 1)); break ;;
+          -*) unread=1; break 2 ;;
+          *) break ;;
+        esac
+      done
+      k="$j"
+    done
+    [ "$k" -lt "$n" ] || continue
+    set -f
+    set -- "${ws[@]:k}"
+    set +f
+    kept="$*"
+    [ "${#pre[@]}" -gt 0 ] && kept="env ${pre[*]} $kept"
+    while [ "$unread" = "0" ] && [ $# -gt 0 ]; do
+      w="${1##*/}"
+      case "$w" in
+        env)     out=$(gate_unwrap_env     gate_unwrap_left N U "${@:2}") ;;
+        command) out=$(gate_unwrap_command gate_unwrap_left N U "${@:2}") ;;
+        timeout|nice|nohup|stdbuf)
+                 out=$(gate_unwrap_wrapper "$w" gate_unwrap_left N U "${@:2}") ;;
+        *) break ;;
+      esac
+      case "$out" in
+        N) set --; break ;;
+        U) unread=1; break ;;
+      esac
+      shift $(( $# - out ))
+    done
+    [ $# -gt 0 ] || continue
+    printf '%s\t%s\t%s\n' "$unread" "$kept" "$*"
   done <<EOF
-$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed 's/\$//g')
+$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed -e 's/\$//g' -e "s/['\"]//g")
 EOF
-  printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
+}
+
+gate_opaque_shell_lines() {
+  # gate_opaque_shell_lines <argv...> — `gate_opaque_payload_lines` for an act
+  # that is a shell's `-c` string behind any launchers, and nothing for every
+  # other act. The launchers are peeled with `gate_unwrap_one`, and one whose
+  # option it cannot read ends the search: that act is answered on its outer
+  # argv, where the unread option is already the closed reading.
+  local _l _rc a
+  while [ $# -gt 0 ]; do
+    _rc=0; _l=$(gate_unwrap_one "$@") || _rc=$?
+    case "$_rc" in
+      0) shift $(( $# - _l )) ;;
+      2) break ;;
+      *) return 0 ;;
+    esac
+  done
+  [ $# -gt 0 ] || return 0
+  case "${1##*/}" in bash|sh|zsh|dash|ksh) ;; *) return 0 ;; esac
+  for a in "${@:2}"; do
+    if [ "$a" = "-c" ]; then gate_opaque_payload_lines "$@"; return 0; fi
+  done
+  return 0
 }
 
 gate_opaque_floor_find_inner() {
@@ -5942,27 +7536,103 @@ gate_unwrap_wrapper() {
 gate_unwrap_time() {
   # `time` differs from the three above by one option: `-o <file>` WRITES, so the
   # wrapped command's grade is not the whole answer there.
+  #
+  # The file `-o` names is left in `GATE_UW_PATHS` and the option word that
+  # named it in `GATE_UW_OPTW`, and `GATE_UW_KEEP` says whether `-a` made the
+  # write an append. Without `-a` the file is overwritten, so it is a place the
+  # act destroys as well as writes; the same globals and the same reading
+  # discipline as `gate_unwrap_lockf`.
+  #
+  # THE BSD AND GNU GETOPT GRAMMAR, through `_gp_getopt` with the option set
+  # `_gp_peel_time` reads: `-a`, `-h`, `-l`, `-p`, `-q`, `-v` and their long
+  # names take nothing, `-f`/`--format` and `-o`/`--output` take a value,
+  # attached or separate, and `--` ends the options. The loop this replaced
+  # read one option per word, so a cluster such as `-lo <file>` and an
+  # attached `-o<file>` answered <unknown-opt> with `GATE_UW_PATHS` empty, and
+  # every reader of the `-o` file lost it at once. `GATE_UW_PATHS` holds the
+  # last `-o` value, as the command itself keeps the last one.
+  #
+  # `GATE_UW_OPTW` IS THE WORD THE ARGV CARRIES — `-lo`, `-o<file>`,
+  # `--output=<file>` — and not the option's name, because the
+  # pre-authorization matches a manifest shape against argv words, so a
+  # trigger the argv does not carry could never be matched. `-a` alone still
+  # counts as a write, as the grading table counts it.
+  #
+  # The parser's state is local here for the reason `gate_unwrap_lockf` gives.
   local resolver="$1" no_cmd="$2" unk="$3"; shift 3
-  local wrote=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -p|-l|-h|--portability|--verbose) shift ;;
-      -o|--output) [ $# -ge 2 ] || { printf '%s' "$unk"; return 0; }; wrote=1; shift 2 ;;
-      --output=*) wrote=1; shift ;;
-      -a|--append) wrote=1; shift ;;
-      -*) printf '%s' "$unk"; return 0 ;;
-      *) break ;;
-    esac
-  done
-  [ $# -gt 0 ] || { printf '%s' "$no_cmd"; return 0; }
-  local inner; inner=$("$resolver" "$@")
+  local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL _GP_OPTVAL
+  local wrote=0 a c j n skip=0
+  GATE_UW_PATHS=(); GATE_UW_KEEP=0; GATE_UW_OPTW=''
+  _gp_getopt ahlpqv fo 'append portability quiet verbose' 'format output' "$@"
+  [ "$_GP_PEEL" != form ] || { printf '%s' "$unk"; return 0; }
+  if _gp_optlast a append; then wrote=1; GATE_UW_KEEP=1; fi
+  if _gp_optlast o output; then
+    wrote=1; GATE_UW_PATHS=("$_GP_OPTVAL")
+    n=$(( $# - ${#_GP_REST[@]} ))
+    for a in "${@:1:n}"; do
+      if [ "$skip" = "1" ]; then skip=0; continue; fi
+      case "$a" in
+        --) break ;;
+        --output) GATE_UW_OPTW="$a"; skip=1 ;;
+        --output=*) GATE_UW_OPTW="$a" ;;
+        --format) skip=1 ;;
+        --*) ;;
+        -*)
+          j=1
+          while [ "$j" -lt "${#a}" ]; do
+            c="${a:j:1}"
+            case "$c" in
+              o|f)
+                [ "$c" = "o" ] && GATE_UW_OPTW="$a"
+                [ $((j + 1)) -lt "${#a}" ] || skip=1
+                break ;;
+            esac
+            j=$((j + 1))
+          done ;;
+      esac
+    done
+  fi
+  [ "${#_GP_REST[@]}" -gt 0 ] || { printf '%s' "$no_cmd"; return 0; }
+  local inner; inner=$("$resolver" "${_GP_REST[@]}")
   [ "$wrote" = "1" ] || { printf '%s' "$inner"; return 0; }
   # Only the GRADING table has a floor to raise; the other tables pass their own
-  # terminal answer through, which is what `''` means for them.
+  # terminal answer through, which is what `''` means for them. The opaque floor
+  # table is one of those others: its answer is the tab-joined `<하한>\t<표지>\t
+  # <트리거>`, which never equals `읽기` or `워크트리쓰기`, so the raise for that
+  # table is made in the `time` arm of `gate_opaque_floor`, not here.
   case "$inner" in
     읽기|워크트리쓰기) printf '트리밖쓰기' ;;
     *) printf '%s' "$inner" ;;
   esac
+}
+
+gate_unwrap_left() { printf '%s' "$#"; }
+
+gate_unwrap_one() {
+  # gate_unwrap_one <argv...> — when argv0 is one of the launchers the shared
+  # unwraps read (`env`, `lockf`, `command`, `time`, `timeout`, `nice`,
+  # `nohup`, `stdbuf`), prints how many words are left once that one layer is
+  # peeled, so the caller can `shift` to the wrapped command. Status 2 when
+  # argv0 is no launcher, 1 when the launcher carries an option the unwrap
+  # does not know or wraps nothing.
+  #
+  # THE SAME UNWRAPS THE GRADING TABLE USES, so a reader that has to see the
+  # wrapped command cannot disagree with the table about which word it is.
+  # The derived floor read `git` as argv0 only, and `env FOO=1 git stash
+  # clear` emptied the shared stash under `런로컬` while the table graded the
+  # same argv through `env`.
+  local cmd="${1##*/}" out; shift
+  case "$cmd" in
+    env)     out=$(gate_unwrap_env     gate_unwrap_left '' '' "$@") ;;
+    lockf)   out=$(gate_unwrap_lockf   gate_unwrap_left '' '' "$@") ;;
+    command) out=$(gate_unwrap_command gate_unwrap_left '' '' "$@") ;;
+    time)    out=$(gate_unwrap_time    gate_unwrap_left '' '' "$@") ;;
+    timeout|nice|nohup|stdbuf)
+             out=$(gate_unwrap_wrapper "$cmd" gate_unwrap_left '' '' "$@") ;;
+    *) return 2 ;;
+  esac
+  case "$out" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$out"
 }
 
 surface_of_env()     { gate_unwrap_env     surface_of_argv0 '읽기' "$GATE_FORM_UNKNOWN" "$@"; }
@@ -21626,12 +23296,14 @@ gate_verb_act() {
         "$GATE_PARK_CELL" "$kind" "$alias" "$graded" "${GATE_REACH:--}"
       return "$GATE_EXIT_PARK"
     fi
-    # RE-DECLARING DOES NOT RE-OPEN IT. The same act at the same digest takes the
-    # verdict already recorded, and no second row is written: a stage that
-    # answers a park by changing its `--reach` and trying again would otherwise
-    # walk the table until some cell let it through.
+    # A RE-DECLARATION THAT PARKS AGAIN TAKES THE FIRST VERDICT. The same act at
+    # the same digest takes the verdict already recorded, and no second row is
+    # written. The pin is looked up only here, for an act that parks again, so
+    # it does not stop a re-declaration under a token that passes; what stops
+    # the destructive one is that the `런로컬` cell asks cell 5b's question of
+    # an act landing in the target's trees.
     if gate_has_row 'blocked' "행위 다이제스트=$_ad"; then
-      warn "this act is already parked (act digest=$_ad) — re-declaring does not change the disposition"
+      warn "this act is already parked (act digest=$_ad) — re-declaring it under a reach that also parks returns the recorded judgment"
       exit "$GATE_EXIT_PARK"
     fi
     # THE THREE FREE-TEXT FIELDS ARE SIZED FROM WHAT IS LEFT, not from three
@@ -21640,10 +23312,36 @@ gate_verb_act() {
     # record would vanish exactly when it is most needed. The fixed part is
     # measured here rather than assumed: an alias, a segment id and a stage id
     # are caller-shaped and nothing bounds their length.
+    #
+    # THE ROW CARRIES WHERE ITS GRADE CAME FROM AND WHAT THE STAGE DECLARED,
+    # beside `축2`. `축2` is the runner's grade, so a wrapper that hides a push
+    # behind `bash -c` reads as `축2=워크트리쓰기` on a row whose stage declared
+    # `외부상태변경` — and without the other two fields that row read as a
+    # misgrade, when it was the opaque-class cap answering correctly. The
+    # template below carries the same two fields: left out, the budget would
+    # undercount by up to 54 bytes and a long row would make `gate_append`
+    # refuse it outright instead of trimming it.
     local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"
+    # THE WORD AN AUTHORIZATION SHAPE HAS TO CARRY, on the row and in the repair
+    # line. The comparator opens a destructive act only for a shape that is a
+    # head prefix of the argv holding the trigger as one of its words, and a
+    # trigger nobody can see left the morning guessing: the printed advice named
+    # `rm -rf`, which never opens an act whose trigger is the verb itself. The
+    # word is the one the cell compared — the table's, or in the target-tree
+    # cell the local reader's when the table gave none.
+    local _ptrig=''
+    if [ "$GATE_PARK_CELL" = "파괴형태미명시" ]; then
+      if [ "${GATE_MARK:-}" = "파괴" ]; then
+        _ptrig="${GATE_MARK_TRIGGER:-}"
+      else
+        case "${GATE_REACH:--}" in
+          대상트리|런로컬|-) _ptrig=$(gate_reach_local_destructive_here "$@") ;;
+        esac
+      fi
+    fi
     local _fixed _free _rb _ob _cb
-    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
-              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" 0 \
+    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 등급 출처=%s | 선언=%s | 도달=%s | 파괴 트리거=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
+              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_GRADE_SOURCE:--}" "${GATE_DECLARED:--}" "${GATE_REACH:--}" "$(gate_row_safe "${_ptrig:--}" 60)" "$_ad" 0 \
             | wc -c | tr -d ' ')
     _free=$(( GATE_ROW_MAX - _fixed - 8 ))
     [ "$_free" -lt 0 ] && _free=0
@@ -21656,17 +23354,23 @@ gate_verb_act() {
     _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
     gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
       "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
-      "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
+      "스테이지=$_stg" "축2=$graded" "등급 출처=${GATE_GRADE_SOURCE:--}" \
+      "선언=${GATE_DECLARED:--}" "도달=${GATE_REACH:--}" \
+      "파괴 트리거=$(gate_row_safe "${_ptrig:--}" 60)" \
       "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
-    warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
+    warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed. Retrying it gets the same judgment, and so does re-declaring it under a reach that also parks; a reach the act does not land in is a false declaration, and a destructive act any of whose landing places is in the target's trees outside the temp directory, this run's state root and its own worktree parks under \`런로컬\` too. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
     case "$GATE_PARK_CELL" in
       dev식별자부재|dev식별자불일치|dev대조불가)
         warn "repair: name the identifier of that tool in the argv, or kick off again with a manifest whose \`dev 식별자\` on the target row matches the real value" ;;
       prod인가없음|배포트리거인가없음)
         warn "repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen" ;;
       파괴형태미명시)
-        warn "repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds')" ;;
+        if [ -n "$_ptrig" ]; then
+          warn "repair: the destructive word of this act is '$_ptrig'. An authorization row opens it only when its \`형태\` is the first words of this argv and '$_ptrig' is one of them — 'rm' for a plain 'rm <file>', 'git worktree remove --force' for 'git worktree remove --force <dir>', 'aws rds delete-db-instance' rather than 'aws rds'. The authorization of this run is frozen, so that means kicking off again"
+        else
+          warn "repair: the destructive mark of this act came from --destructive alone and names no word, so no authorization row opens it — leave it to a person"
+        fi ;;
       신고등급한도)
         warn "repair: name that script shape in a \`사전 인가\` row or as an argv element of \`배포트리거 식별자\` — a shape that names only the runner does not open it" ;;
       비밀출력)
@@ -21675,6 +23379,18 @@ gate_verb_act() {
         warn "repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
       도달모순)
         warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+      # THE FOUR BELOW USED TO HAVE NO LINE, and two of them are the cells that
+      # cannot see the authorization at all. A stage parked there was told only
+      # that re-declaring does not help, so the one answer it found was to read
+      # this file and re-spell the act under a token that passes.
+      기기전역)
+        warn "repair: the next act of this shape declares where it really lands — the temp directory or this run's state root is '런로컬', the target's checkout or one of its worktrees is '대상트리'. Under a machine-global prefix (\$HOME/.ssh, .aws, .config, .claude*, /usr/local, /opt/homebrew), a global install or setting, or the shared stash, this park is final" ;;
+      도달미상)
+        warn "repair: the next act of this shape declares the reach it actually lands at — '런로컬' for the temp directory or this run's state root, '대상트리' for the target's checkout or worktrees, or another named token" ;;
+      dev파괴)
+        warn "repair: a destructive act against dev is not taken unattended — leave it to a person" ;;
+      대상트리불일치)
+        warn "repair: '대상트리' covers the checkouts and worktrees that share the target's common git directory, and an act landing in one of them may also land in the temp directory or this run's state root. An act landing only in the temp directory or this run's state root is '런로컬', and re-declaring an act that lands in the target's trees as '런로컬' does not get a destructive one past this question. Another repository or a machine-global path is neither, and this park is final — split off the part that lands there" ;;
       CI실패)
         warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
       등급회귀)
