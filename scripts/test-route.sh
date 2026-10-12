@@ -1298,7 +1298,11 @@ tr_cost_gather_case() {
     (range(0; 30000) | {schema: "padding", pad: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})' > "$f"
   rc=0
   cfg=$(route_gather_context "$req" /seat) || rc=$?
-  check "ARG_MAX 를 넘는 저장소로도 수집은 rc 0" "$rc/$( [ "$(wc -c < "$f")" -gt "$(getconf ARG_MAX)" ] && printf big || printf small)" "0/big"
+  # 기준은 고정값이다. `getconf ARG_MAX` 는 Linux 에서 스택 한도의 1/4 이라
+  # 러너마다 이 픽스처보다 클 수 있다. 2097152 는 macOS 의 ARG_MAX 와 Linux 의
+  # 단일 인자 상한 131072 를 모두 넘으므로, 표본이 인자로 넘어가면 어느 호스트에서나
+  # 수집이 실패한다.
+  check "인자 상한을 넘는 저장소로도 수집은 rc 0" "$rc/$( [ "$(wc -c < "$f")" -gt 2097152 ] && printf big || printf small)" "0/big"
   check "그 표본 원문의 길이가 파일 크기와 같다" \
     "$(printf '%s' "$cfg" | jq -r '.cost_samples | length')" "$(wc -c < "$f" | tr -d '[:space:]')"
   check "그 표본이 판정의 비용 표에 쓰인다" \
