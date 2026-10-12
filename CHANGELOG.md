@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.16] - 2026-10-13
+
+무인 스테이지 정책이 전역 CLAUDE.md 에 새로 생긴 운영·고객 서버 대량 읽기·전송 규칙을 옮기지 않아, 킥오프의 드리프트 대조가 매번 `mismatch 1` 로 끝나던 문제를 고친다.
+
+### Fixed
+
+- **대량 읽기·전송 규칙** — `stage-policy.md` 의 Code and tools 절에 운영·고객 서버의 대량 읽기·전송(DB 덤프, `docker save`, 큰 복사, 전체 스캔) 규칙을 더한다. 오케스트레이터가 없는 스테이지가 데이터 크기·호스트와 DB 부하·네트워크 정책·시간대로 스스로 판단하고 근거를 기록하며, 원격에서 파일로 만든 뒤 대역폭을 제한해 가져오고, 지연이나 끊김이 보이면 재시도 없이 멈춰 기록한다. 상태 확인용 소량 조회는 해당하지 않는다.
+- **정책 바이트 예산** — 8000 바이트 상한을 그대로 두고 기존 문면 23줄의 군더더기를 줄여 정책을 7981 바이트로 맞춘다. 금지·의무·예외의 범위는 바뀌지 않는다.
+- **원천 매니페스트** — `stage-policy.sources.tsv` 에 그 불릿의 `user-scope` 행을 넣어 `stage-policy-drift.sh` 가 `match` 로 끝난다.
+
 ## [2.72.15] - 2026-10-13
 
 2.72.14 의 셸 문자열 판독기가 래퍼 뒤의 `-` 로 시작하는 단어를 모두 값 없는 옵션으로 건너뛰어, `exec -a <이름>` 의 값을 명령 단어로 읽던 구멍을 닫는다. `exec -a echo perl -e 'system …push…'` 는 `echo` 가 허용 목록에 있어 push 없음으로 읽혔지만 셸은 perl 을 실행했으므로, 베이스로 가는 push 가 형태 미상 거부·dry-run·HEAD 결속·리뷰 기록 요구를 모두 건너뛰었다.
