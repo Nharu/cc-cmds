@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.68.0] - 2026-10-12
 
 끝난 무인 런의 후속 런을 사람 없이 파생할 수 있는 바탕을 놓는다. 킥오프가 연쇄 동의를 한 행으로 얼리고, 파생기가 앞 런의 매니페스트·인가 기록에서 후속 런을 바이트 단위로 이어 쓰며, 후속 런은 진입할 때마다 그 계보가 파일로 뒷받침되는지 검사받는다. 스테이지가 그 계보의 입력을 위조하지 못하도록 게이트의 쓰기 가드도 넓힌다. 파생기를 실제로 부르는 sweep 과 고지는 아직 없다.
 
@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **파생기 파일 이름** (`orchestrator/successor.sh`) — 파생기를 `rekick.sh` 로 두면 master 에 먼저 들어온 킥오프 재시작 도우미 `orchestrator/rekick.sh` 와 같은 이름이 되어, 한쪽이 다른 쪽을 덮고 게이트의 파생기 거부가 재시작 도우미까지 거부했다. 파생기를 `successor.sh`, 그 시험을 `scripts/test-successor.sh` 로 옮기고, 게이트는 `successor.sh` 만 거부한다. 기록자 계약과 `autopilot` 은 `재킥오프` 행(파생기의 동의)과 Step 1.0 의 재킥오프(사람이 킥오프를 다시 부르는 것)가 서로 다른 장치라고 적는다.
 - **`--carry` 의 다시 잡은 마감** (`kickoff-defaults.sh`) — 시간 jq 프로그램이 `deadline-resolve.sh` 로 옮겨진 뒤에도 `--carry` 가 지워진 `KD_JQ_TIME` 을 불러, 이어받은 마감마다 형식 오류가 났다. 같은 렌더를 정의하는 `DR_JQ_TIME` 을 부른다.
 - **파일에서 목적지를 읽는 명령** (게이트) — 페이싱 디렉터리 가드와 형제 런 기록 가드가 argv 에 적힌 목적지만 읽어, 프로그램이나 인자 목록을 파일에서 읽는 `sed -f`·`awk -f`·`xargs -a`·`vim -s` 는 백로그와 다른 런의 기록에 그대로 썼다. 쓰기 등급 행위가 그런 옵션(묶은·붙여 쓴 철자와 긴 옵션 포함)을 실으면 파일 내용과 무관하게 exec 와 등급 동사 양쪽에서 거부한다. 읽기 등급은 거부하지 않는다. 스크립트·인터프리터 본문 안의 쓰기는 여전히 이 가드들이 보지 못한다.
+- **페이싱 가드의 상위 디렉터리 갈래** (게이트) — 페이싱 루트의 상위 디렉터리를 가리키는 인자라면 목적지가 아니어도 거부해, `/` 나 `$HOME` 을 담은 `awk -F/`·`sort -t/ -o`·`xargs -d/`·`git -C $HOME commit`·`npm install --prefix=$HOME` 같은 흔한 쓰기 등급 행위가 막혔다. 시험의 페이싱 루트가 `/tmp` 아래에 놓이는 Linux CI 에서는 `git -C /tmp commit` 시험 행이 실패했다. 이 갈래는 이제 트리를 루트 위로 합치거나 지울 수 있는 자리만 본다: 복사·이동·링크·설치의 목적지와 `-t`/`--target-directory` 값, 추출할 때의 `tar -C`/`--directory`, `rm`·`rmdir` 의 피연산자, `-delete`·`-exec` 를 단 `find` 의 시작점이다. 인터프리터·감싸개의 피연산자와 낱말은 전과 같이 본다.
 
 ### Post-install notes
 
