@@ -29,11 +29,12 @@ name: 리뷰-후-머지
   머지 등급 이상의 행위 직전, 그 세그먼트의 리뷰 정책이 요구하는 것이
   만족되는가. 정책마다 요구하는 것이 다르다.
     리뷰 먼저   이 브랜치의 현재 HEAD 를 덮는 리뷰 기록이 원장에 있고 그
-                리뷰의 P0·P1 이 0인가 — 아래 신선도 사다리.
+                리뷰의 P0·P1 이 0인가(또는 사람이 기각했거나, P0 가 0 이고
+                P1 이 이슈로 이월됐는가) — 아래 신선도 사다리.
     머지 먼저   이 세그먼트에 미이행 리뷰 의무가 없는가. 첫 머지는 정당하게
                 리뷰가 없으며 그것이 이 정책이다. 거절되는 것은 빚을 갚지
                 않은 채로 오는 두 번째 머지다.
-    리뷰 없음   통과. 원장을 읽기 전에 통과하므로 원장 가독성으로 멈추지
+    리뷰 없음   통과. 리뷰 기록을 읽기 전에 통과하므로 그 가독성으로 멈추지
                 않는다.
     그 밖       거절. 판정 불가는 통과가 아니다.
 왜 발동 칸이 머지 「이상」인가:
@@ -84,10 +85,22 @@ name: 리뷰-후-머지
   아무 일도 하지 않은 실패와 완전히 같은 행 쌍을 남긴다. 종료 코드 한 비트는
   「세상이 바뀌었는가」의 대리값이 아니므로, 착지 판정은 이 검사기가 아니라
   이행 시점의 장부 경로가 세상에 직접 물어서 한다.
+왜 원장을 읽지 않는가:
+  세그먼트의 마지막 cycle 행과 segment 행은 게이트가 필드 동등으로 골라
+  GATE_SEGMENT_LAST_CYCLE·GATE_SEGMENT_LAST_SEGMENT 로 넘긴다. 이 검사기가
+  원장을 부분 문자열로 훑던 때에는 다른 세그먼트의 행에 든
+  `선행 세그먼트=<seg>` 나 이웃 id(`A` 에 대한 `A2`)를 이 세그먼트의 마지막
+  리뷰로 읽었다. 같은 선택이 게이트와 검사기에 둘로 살면 둘은 갈라진다.
+카운트를 읽는 순서:
+  게이트의 「다음」 표와 같다. 사람이 마지막 사이클을 기각했으면
+  (GATE_SEGMENT_REVIEW_DISMISSED) 카운트와 상관없이 통과한다. 그렇지 않으면
+  빈 값이나 정준 정수가 아닌 P0·P1 은 거절한다(0 으로 채우지 않는다). 발견이
+  남았으면 P0 가 0 이고 그 사이클의 P1 이 이슈로 이월됐을 때
+  (GATE_SEGMENT_REVIEW_CARRIED)만 통과한다.
 잔여:
   `reset` 은 이름만으로 결정되지 않는다 — 다른 ref 를 겨눈 `reset` 은 통합
   이지만 맨 `--hard` 는 아무것도 통합하지 않는다. 어느 피연산자가 ref 인지
   sh 에서 판정되지 않으므로 보수적으로 목록에 넣었고, 그래서 이 철자는
   과검사된다. `revert` 는 이 브랜치의 이력에서 만들어진 커밋을 이 브랜치
   위에서 되돌리는 것이라 목록에 넣지 않는다.
-읽는 값: GATE_ACT_INDEX GATE_MERGE_INDEX GATE_SURFACE GATE_HISTORY_INTEGRATION GATE_REVIEW_POLICY_INDEX GATE_SEGMENT_OPEN_OBLIGATIONS GATE_SEGMENT GATE_LEDGER
+읽는 값: GATE_ACT_INDEX GATE_MERGE_INDEX GATE_SURFACE GATE_HISTORY_INTEGRATION GATE_REVIEW_POLICY_INDEX GATE_SEGMENT_OPEN_OBLIGATIONS GATE_SEGMENT GATE_SEGMENT_LAST_CYCLE GATE_SEGMENT_LAST_SEGMENT GATE_SEGMENT_REVIEW_DISMISSED GATE_SEGMENT_REVIEW_CARRIED GATE_MANIFEST GATE_SUBJECT_HEAD
