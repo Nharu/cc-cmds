@@ -29600,6 +29600,8 @@ p cudotdot 외부상태변경 협업 "$BSX_DOTDOT" --list 1 --name x
 p bsplan 트리밖쓰기 런로컬 "$BSX_CU/base-split.py" plan --out "\$RD/split/\$CC_PIPELINE_STAGE_ID/"
 p touchsplit 워크트리쓰기 런로컬 touch "\$RD/split/S1/T1.md"
 p touchsplits 워크트리쓰기 런로컬 touch "\$RD/splits/T1.md"
+p ghcarry 외부상태변경 협업 gh issue create --repo t/infra --title x --body-file "\$RD/carry/S1-2-1.md"
+p touchcarryd 워크트리쓰기 런로컬 touch "\$RD/carry/S1/T1.md"
 p bsrecord 워크트리쓰기 런로컬 "$BSX_CU/base-split.py" record "$WT/docs/bsxd-RB7.md" --row '$BSX_PUB_NONE' --doc-only
 # And the one write a document-only split makes, actually made through the gate
 # from this seat: the registry beside the document in the main worktree.
@@ -29611,7 +29613,7 @@ bash "\$CC_PIPELINE_GATE" exec --manifest "\$CC_PIPELINE_MANIFEST" --target "\$C
 printf 'execrecord %s\n' "\$?" >> "$BSX_PLANLOG"
 BSXPROBEEOF
 bsx_stub "$WORK/bin/bsx-probe" "$BSX_LIT_SPLIT" ". \"$WORK/bin/bsx-probe-body.sh\""
-# Twelve probes, each a snapshot and a plan (the last an exec), so some two dozen
+# Fourteen probes, each a snapshot and a plan (the last an exec), so some thirty
 # gate starts inside one stage: on a loaded machine that ran past the default
 # 60-second wait and cut the list off at its tail.
 bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1 600
@@ -29636,6 +29638,11 @@ check "78:심볼릭 링크 뒤 .. 로 접은 clickup-create.py 는 통과하지 
 check "78:base-split.py plan 의 출력 디렉터리 쓰기가 통과한다" "$(bsx_plan_rc bsplan)" "0"
 check "78:split/ 아래 쓰기가 통과한다" "$(bsx_plan_rc touchsplit)" "0"
 check "78:split 이웃 이름 디렉터리 쓰기는 거부된다" "$(bsx_plan_rc touchsplits)" "3"
+# The carry-over body the gate wrote is named by the issue create one level
+# below `carry/`; a deeper name is not a body file and is refused.
+[ "$(bsx_plan_rc ghcarry)" = "0" ] || sed -n '1,12p' "$BSX_PLANLOG.ghcarry" >&2
+check "78:carry/ 바로 아래 본문 파일을 단 gh issue 발행은 통과한다" "$(bsx_plan_rc ghcarry)" "0"
+check "78:carry/ 두 단 아래 쓰기는 거부된다" "$(bsx_plan_rc touchcarryd)" "3"
 [ "$(bsx_plan_rc bsrecord)" = "0" ] || tail -12 "$BSX_PLANLOG.bsrecord" >&2
 check "78:base-split.py record 의 워크트리 쓰기가 통과한다" "$(bsx_plan_rc bsrecord)" "0"
 [ "$(bsx_plan_rc execrecord)" = "0" ] || tail -12 "$BSX_PLANLOG.err" >&2
@@ -30488,7 +30495,7 @@ check "86: 이 절이 띄운 서버가 남지 않는다" "$(d86_serving)" "0"
 
 # ---------------------------------------------------------------------------
 # 87. 리뷰 사이클의 수렴 — 리포트 파서, 이월 적격, 다음 표, P0 반복 가드
-# --- section: 87 | group: ledger_series | covers: gate_review_report_counts, gate_carry_eligibility, gate_review_carry_row, gate_segment_review_next, gate_segment_review_count_verdict, gate_segment_p0_guard, gate_segment_merged_row, gate_kind_is_bookkeeping, ladder_of_gh | anchors: 87: 정규 리포트의 계수·분류·태그·본문·몫을 읽는다, 87: 두 번째 사이클의 이월 가능 P1 둘은 적격이다, 87: 여덟 조건이 하나씩 거짓이면 그 번호로 부적격이다, 87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 기록된다, 87: 같은 사이클의 둘째 리뷰 이월 행은 룰 거절이다, 87: 다음 표의 아홉 갈래가 각각 나온다, 87: 가드는 같은 사이클의 다시 쓰기를 두 번 세지 않는다, 87: 정상 완료 재수렴은 연속을 지우고 발동을 센다, 87: gh issue create·comment 와 gh project item-add 는 커밋 칸이다 ---
+# --- section: 87 | group: ledger_series | covers: gate_review_report_counts, gate_carry_eligibility, gate_review_carry_row, gate_carry_issue_view, gate_carry_body, gate_segment_review_next, gate_segment_review_count_verdict, gate_segment_p0_guard, gate_segment_merged_row, gate_kind_is_bookkeeping, ladder_of_gh | anchors: 87: 정규 리포트의 계수·분류·태그·본문·몫을 읽는다, 87: 두 번째 사이클의 이월 가능 P1 둘은 적격이다, 87: 여덟 조건이 하나씩 거짓이면 그 번호로 부적격이다, 87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 기록된다, 87: 같은 사이클의 둘째 리뷰 이월 행은 룰 거절이다, 87: 다음 표의 아홉 갈래가 각각 나온다, 87: 가드는 같은 사이클의 다시 쓰기를 두 번 세지 않는다, 87: 정상 완료 재수렴은 연속을 지우고 발동을 센다, 87: gh issue create·comment 와 gh project item-add 는 커밋 칸이다 ---
 #
 # 리포트를 읽는 파서는 하나이고, 이월 적격·`다음`·cycle 팔이 모두 그 출력을 읽는다.
 # 이 절은 그 파서와 그 위의 판정들을 게이트를 올린 서브셸에서 직접 부른다. 원장과
@@ -30583,7 +30590,7 @@ pc87() { q87 "$L87P" "$M87" gate_review_report_counts "$1"; }
 out87=$(pc87 "$R87S")
 miss87=''
 for x87 in 요약=정규 P0=0 P1=2 '리뷰 HEAD=abc1234' 분류=정규 차단=0 '이월 가능=2' 몫=1 태그=정규 \
-           '태그 차단=0' '태그 이월 가능=2' 본문=정규 '몫 항목=1' 배정=S3 '이월 1 제목=첫째 제목' \
+           '태그 차단=0' '태그 이월 가능=2' 본문=정규 '몫 항목=1' '몫 배정=정규' 배정=S3 '이월 1 제목=첫째 제목' \
            '이월 2 제목=둘째 제목' '이월 1 본문=문제 상황' '이월 1 본문=위치: a/b.sh:10' '이월 2 본문=한 줄 본문'; do
   printf '%s\n' "$out87" | grep -Fx -- "$x87" >/dev/null || miss87="$miss87[$x87]"
 done
@@ -30607,6 +30614,32 @@ check "87: 같은 제목·여섯 칸이 아닌 본문·docs 경로는 본문=미
   "$(k87 "$(pc87 "$r87b1")" 본문)/$(k87 "$(pc87 "$r87b2")" 본문)/$(k87 "$(pc87 "$r87b3")" 본문)" "미상/미상/미상"
 r87s=$(sed 's/^    - \*\*배정\*\*: 슬라이스 S3 — 「줄」$/    - **배정**: 아무 데나/' "$R87S" > "$D87/review-badassign.md"; printf '%s' "$D87/review-badassign.md")
 check "87: 슬라이스 id 를 읽을 수 없는 배정은 (미상) 이다" "$(k87 "$(pc87 "$r87s")" 배정)" "(미상)"
+# 배정 줄이 하나도 없거나, 둘이거나, 항목 밖에 있으면 몫 배정=미상 이다 — 그대로 두면
+# 다른 슬라이스 검사가 볼 배정이 없어 조용히 꺼진다. 들여쓰기가 다른 배정 줄은 배정으로
+# 세되 id 를 읽지 않는다.
+r87sh() {  # r87sh <이름> <몫 절 본문> — 기본 리포트에 몫 줄과 그 절을 붙인 사본의 경로
+  {
+    sed 's/^- \*\*P1 분류\*\*: .*$/&\
+- **다른 슬라이스 몫**: 1건 (집계 제외)/' "$R87"
+    printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n%s' "$2"
+  } > "$D87/review-sh-$1.md"
+  printf '%s' "$D87/review-sh-$1.md"
+}
+it87='- **[c]** **[P2]** `x.sh:1` d — r\n'
+as87='    - **배정**: 슬라이스 S3 — 「줄」\n'
+r87sa=$(r87sh none "$(printf -- "$it87")
+")
+r87sb=$(r87sh two "$(printf -- "$it87$as87$as87")
+")
+r87sc=$(r87sh stray "$(printf -- "$as87\n$it87$as87")
+")
+r87sd=$(r87sh indent "$(printf -- "$it87")
+  - **배정**: 슬라이스 S3 — 「줄」
+")
+check "87: 배정 줄이 없거나 둘이거나 항목 밖에 있으면 몫 배정=미상 이다" \
+  "$(k87 "$(pc87 "$r87sa")" '몫 배정')/$(k87 "$(pc87 "$r87sb")" '몫 배정')/$(k87 "$(pc87 "$r87sc")" '몫 배정')/$(k87 "$(pc87 "$R87S")" '몫 배정')" \
+  "미상/미상/미상/정규"
+check "87: 들여쓰기가 다른 배정 줄은 배정=(미상) 이다" "$(k87 "$(pc87 "$r87sd")" 배정)" "(미상)"
 
 # --- 이월 적격 여덟 조건 ---
 e87() { local m=$1; shift; q87 "$(L87 "$@")" "$m" gate_carry_eligibility S2; }
@@ -30619,13 +30652,42 @@ check "87: 여덟 조건이 하나씩 거짓이면 그 번호로 부적격이다
   "부적격 1/부적격 1/부적격 2/부적격 3/부적격 4/부적격 5/부적격 6/부적격 7/부적격 8"
 
 # --- 리뷰 이월 행 ---
+# 게이트는 URL 마다 저장소에 묻는다. 그 물음은 PATH 앞에 둔 가짜 gh 가 받는다 —
+# `$D87/gh/<번호>` 파일이 있으면 그 내용(`<상태>\t<제목>`, 끌어오기 요청이면 상태 `pr`)을
+# 내고, 없으면 답하지 못한 원격처럼 rc 1 이다.
+mkdir -p "$D87/bin" "$D87/gh"
+cat > "$D87/bin/gh" <<GH87
+#!/bin/sh
+[ "\$1" = api ] || exit 1
+f="$D87/gh/\${2##*/}"
+[ -f "\$f" ] || exit 1
+cat "\$f"
+GH87
+chmod +x "$D87/bin/gh"
+gh87() { printf '%s\t%s\n' "$2" "$3" > "$D87/gh/$1"; }  # gh87 <번호> <상태|pr> <제목>
+gh87 11 open '[이월] LS S2 사이클 2 — 첫째 제목'
+gh87 12 open '[이월] LS S2 사이클 2 — 둘째 제목'
+gh87 21 open '[이월] LS S2 사이클 2 — 첫째 제목'
+gh87 22 closed '[이월] LS S2 사이클 2 — 둘째 제목'
+gh87 23 pr '[이월] LS S2 사이클 2 — 둘째 제목'
+gh87 24 open '[이월] LS S22 사이클 2 — 둘째 제목'
+gh87 25 open '[이월] XX S2 사이클 2 — 둘째 제목'
+gh87 31 open '[이월] LS S2 사이클 1 — 둘째 제목'
 L87C=$(L87 carry 1:0:2 2:0:2)
 U87="https://github.com/o/r/issues"
-cr87() { qrc87 "$L87C" "$M87" gate_review_carry_row S2 "$@"; }
+cr87() { local PATH="$D87/bin:$PATH"; qrc87 "$L87C" "$M87" gate_review_carry_row S2 "$@"; }
 dg87a=$(lsr_in Linux "$L87C" - lsr_digest "$M87" 2>/dev/null)
 check "87: 어휘가 어긋난 리뷰 이월 호출은 rc 2 이고 행을 쓰지 않는다" \
   "$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2" 근거=x)/$(cr87 사이클=2 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2")/$(cr87 사이클=1 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=1 "이슈=$U87/1")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=https://github.com/o/x/issues/1,$U87/2")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/1")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/01,$U87/2")/$( { grep -c '^- `리뷰 이월` ' "$L87C" || true; } )" \
   "2/2/2/2/2/2/2/2/0"
+c87i() { cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/11,$U87/$1"; }
+check "87: 다른 항목의 제목·닫힌 이슈·끌어오기 요청·다른 세그먼트·다른 런의 이슈는 rc 2 이고 행을 쓰지 않는다" \
+  "$(c87i 21)/$(c87i 22)/$(c87i 23)/$(c87i 24)/$(c87i 25)/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/12,$U87/11")/$( { grep -c '^- `리뷰 이월` ' "$L87C" || true; } )" \
+  "2/2/2/2/2/2/0"
+check "87: 저장소가 답하지 못한 이슈는 rc 3 이고 행을 쓰지 않는다" \
+  "$(c87i 99)/$( { grep -c '^- `리뷰 이월` ' "$L87C" || true; } )" "3/0"
+check "87: 앞 사이클에서 연 같은 항목의 이슈는 재사용으로 받는다" \
+  "$(PATH="$D87/bin:$PATH" qrc87 "$(L87 carryre 1:0:2 2:0:2)" "$M87" gate_review_carry_row S2 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/11,$U87/31")" "0"
 check "87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 기록된다" \
   "$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/11,$U87/12")/$( { grep '^- `리뷰 이월` ' "$L87C" || true; } | grep -c "| 세그먼트=S2 | 사이클=2 | 리뷰 HEAD=abc1234 | 건수=2 | 이슈=$U87/11,$U87/12 | 레인=.* | 기록 시각=" || true)" \
   "0/1"
@@ -30636,6 +30698,23 @@ check "87: 부적격 사이클의 리뷰 이월은 룰 거절이다" \
 check "87: 리뷰 이월 행은 장부 종류이고 진행 해시를 움직이지 않는다" \
   "$(qrc87 "$L87C" "$M87" gate_kind_is_bookkeeping review-carry)/$(qrc87 "$L87C" "$M87" gate_kind_is_bookkeeping skill)/$( [ -n "$dg87a" ] && [ "$dg87a" = "$(lsr_in Linux "$L87C" - lsr_digest "$M87" 2>/dev/null)" ] && printf same || printf moved)" \
   "0/1/same"
+
+# --- 이월 본문 파일 ---
+SG87='- `segment` | 교대=1 | id=S2 | 상태=리뷰중 | 워크트리=- | PR=https://github.com/o/r/pull/77 | prev=x'
+L87B=$(L87 body 1:0:2 2:0:2 "$SG87")
+b87=$(q87 "$L87B" "$M87" gate_carry_body S2)
+D87B=${L87B%/*}/carry
+check "87: carry-body 는 항목마다 제목과 본문 파일 경로를 낸다" \
+  "$(k87 "$b87" '이월 1 제목')|$(k87 "$b87" '이월 2 제목')|$(k87 "$b87" '이월 1 본문 파일')|$(k87 "$b87" '이월 2 본문 파일')" \
+  "[이월] LS S2 사이클 2 — 첫째 제목|[이월] LS S2 사이클 2 — 둘째 제목|$D87B/S2-2-1.md|$D87B/S2-2-2.md"
+check "87: 본문 파일은 이월 본문 줄 다음에 PR 과 사이클을 적은 한 줄이다" \
+  "$(tr '\n' '/' < "$D87B/S2-2-1.md")$(tr '\n' '/' < "$D87B/S2-2-2.md")" \
+  "문제 상황/위치: a/b.sh:10/PR #77 의 리뷰 사이클 2 에서 넘어온 항목입니다./한 줄 본문/PR #77 의 리뷰 사이클 2 에서 넘어온 항목입니다./"
+check "87: 다음이 이월이 아니거나 PR 이 없으면 carry-body 는 rc 3 이고 파일을 쓰지 않는다" \
+  "$(qrc87 "$L87C" "$M87" gate_carry_body S2)/$(qrc87 "$(L87 bodynopr 1:0:2 2:0:2)" "$M87" gate_carry_body S2)/$(ls "$lsr_root/w87-bodynopr" | tr '\n' ' ')" \
+  "3/3/ledger.md "
+check "87: 세그먼트를 이루지 못하는 carry-body 인자는 rc 2 다" \
+  "$(qrc87 "$L87B" "$M87" gate_carry_body ../x)/$(qrc87 "$L87B" "$M87" gate_carry_body -)" "2/2"
 
 # --- 다음 표 ---
 nx87() { q87 "$1" "${2:-$M87}" gate_segment_review_next S2; }
@@ -30738,6 +30817,8 @@ r87a=$rc
 h87_act S3 segment 상태=실행중 "워크트리=$WT" 선행=없음 '선언 파일 집합=b.txt'
 check "87b: 픽스처 세그먼트 행 둘이 기록된다 (아래가 공허하지 않다)" "$r87a/$rc" "0/0"
 printf -- '- `segment` | 교대=1 | id=S4 | 상태=머지됨 | 워크트리=- | prev=x\n' >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S5 | 상태=완료 | 워크트리=- | prev=x\n' >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S6 | 상태=park | 워크트리=- | prev=x\n' >> "$L87A"
 
 rp87 "$WORK/rv87-a.md" 0 2 -
 cy87 S2 1 0 1 "$WORK/rv87-a.md"
@@ -30760,6 +30841,21 @@ for a87 in S2 S4 S9; do
   printf '%s\n' "$rc" >> "$WORK/rv87-d.rc"
 done
 check "87b: 자기·머지된·없는 세그먼트에 배정한 몫은 rc 2 다" "$(tr '\n' '/' < "$WORK/rv87-d.rc")" "2/2/2/"
+# 완료·park 도 착지하지 않을 슬라이스다 — 받아 두면 그 P1 은 아무도 고치지 않는다.
+for a87 in S5 S6; do
+  rp87 "$WORK/rv87-d-$a87.md" 0 1 1 "$a87"
+  cy87 S2 3 0 1 "$WORK/rv87-d-$a87.md"
+  printf '%s\n' "$rc" >> "$WORK/rv87-dt.rc"
+done
+check "87b: 완료·park 세그먼트에 배정한 몫은 rc 2 다" "$(tr '\n' '/' < "$WORK/rv87-dt.rc")" "2/2/"
+case "$msg" in
+  *"without --slice"*) ok "87b: 그 거절은 --slice 없는 재리뷰를 안내한다" ;;
+  *) bad "87b 착지 안 할 슬라이스 거절 문면" "$msg" ;;
+esac
+rp87 "$WORK/rv87-f.md" 0 1 1
+printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n- **[c]** **[P1]** `x.sh:1` d — r\n' >> "$WORK/rv87-f.md"
+cy87 S2 3 0 1 "$WORK/rv87-f.md"
+check "87b: 배정 줄이 없는 몫 항목의 cycle 행은 rc 2 다" "$rc" "2"
 rp87 "$WORK/rv87-e.md" 0 1 1 S3
 cy87 S2 3 0 1 "$WORK/rv87-e.md"
 check "87b: 대조 — 다른 미머지 세그먼트에 배정한 몫은 기록된다" "$rc" "0"
@@ -30811,6 +30907,12 @@ check "87b: 부적격 사이클의 review-carry act 는 rc 3 이다" "$rc" "3"
 case "$msg" in
   *"not eligible for carry-over"*) ok "87b: 그 거절은 부적격 번호를 든다" ;;
   *) bad "87b review-carry 부적격 문면" "$msg" ;;
+esac
+gateL carry-body --manifest "$WORK/plan-R87.md" --segment S2
+check "87b: 다음이 이월이 아닌 세그먼트의 carry-body 동사는 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"there is nothing to carry over"*) ok "87b: 그 거절은 carry-body 함수에서 온다" ;;
+  *) bad "87b carry-body 동사 문면" "$msg" ;;
 esac
 
 # ---------------------------------------------------------------------------

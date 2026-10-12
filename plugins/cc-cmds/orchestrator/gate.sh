@@ -114,6 +114,11 @@
 #                    the cause). The seat in the person's turn and a kickoff
 #                    taking over an earlier run call it; a stage or a shift is
 #                    refused, and so is a run with a live shift or stage
+#   gate.sh carry-body --manifest <path> --segment <id>
+#                    writes the issue body file of every carry-over item of the
+#                    segment's last cycle under `<run-dir>/carry/` and prints
+#                    `이월 <k> 제목=…` and `이월 <k> 본문 파일=…` per item; refused
+#                    (3) unless the segment's `다음` is `이월`
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -9070,7 +9075,12 @@ gate_review_report_counts() {
   #                         rules below; 태그 차단= 태그 이월 가능= count them
   #   본문=정규|미상        whether every carry-over item passes the body checks
   #   몫 항목=<n>           items of the other-slice section; 배정=<id> per
-  #                         `배정` sub-bullet of that section
+  #                         line of that section carrying `**배정**`, `(미상)`
+  #                         unless it is exactly `    - **배정**: 슬라이스 <id>`
+  #                         with nothing or ` — …` after the id
+  #   몫 배정=정규|미상     whether every item of that section carries exactly
+  #                         one such line and no such line stands outside an
+  #                         item
   #   이월 <k> 제목=        title of the k-th carry-over item, in tag order
   #   이월 <k> 본문=        one line per body line, the six-space indent removed
   #
@@ -9167,14 +9177,17 @@ gate_review_report_counts() {
       }
       next
     }
+    # Every line of the section that carries `**배정**` is an assignment, at
+    # whatever indentation: a line the canonical match skipped would leave its
+    # item unchecked, and the item would still be dropped from the count.
     sec == "share" {
-      if (index(line, "- ") == 1) ns++
-      else if (index(line, "    - **배정**:") == 1) {
-        if (match(line, /^    - \*\*배정\*\*: 슬라이스 [A-Za-z0-9]+/)) {
-          id = substr(line, RSTART, RLENGTH); sub(/^.* /, "", id)
-        } else id = "(미상)"
-        as[++na] = id
-      }
+      if (index(line, "- ") == 1) { ns++; na_of[ns] = 0; next }
+      if (index(line, "**배정**") == 0) next
+      if (line ~ /^    - \*\*배정\*\*: 슬라이스 [A-Za-z0-9]+( — .*)?$/) {
+        id = substr(line, length("    - **배정**: 슬라이스 ") + 1); sub(/ .*$/, "", id)
+      } else id = "(미상)"
+      as[++na] = id
+      if (ns) na_of[ns]++; else stray = 1
     }
     END {
       print "요약=" (summ == "" ? "없음" : summ)
@@ -9193,6 +9206,9 @@ gate_review_report_counts() {
       }
       print "본문=" (ok ? "정규" : "미상")
       print "몫 항목=" ns
+      sok = !stray
+      for (k = 1; k <= ns; k++) if (na_of[k] != 1) sok = 0
+      print "몫 배정=" (sok ? "정규" : "미상")
       for (k = 1; k <= na; k++) print "배정=" as[k]
       for (k = 1; k <= nc; k++) {
         if (nt[k] >= 1) print "이월 " k " 제목=" title[k]
@@ -13407,6 +13423,12 @@ GATE_DRIFT_DIRS
       [ -n "$approval" ] || { printf 'gate: prompt requires --approval\n' >&2; exit 2; }
       gate_prompt "$approval"
       ;;
+    carry-body)
+      # Writing under the run directory and nowhere else: the body files of a
+      # carry-over the routing shift then files as issues. No ledger row — the
+      # issues and the `리뷰 이월` row are the acts, and both are rows.
+      gate_carry_body "$segment"
+      ;;
     answers)
       # Reading, and the reader is a STAGE rather than the router: it picks up
       # what the person said in answer to the judgment it raised. With an id it
@@ -14128,6 +14150,78 @@ gate_segment_review_next() {
   printf '수정'
 }
 
+gate_carry_body() {
+  # gate_carry_body <segment> — writes the body file of every carry-over item of
+  # the segment's last cycle to `$RUN_DIR/carry/<segment>-<사이클>-<k>.md` and
+  # prints, per item, `이월 <k> 제목=<issue title>` and `이월 <k> 본문 파일=<path>`.
+  # Refused with GATE_EXIT_RULE unless the segment's `다음` is `이월`.
+  #
+  # THE GATE WRITES THE FILE, NOT THE SHIFT. The run directory is an allow-list
+  # for a session's own writes, and a body file a shift wrote there with the
+  # file-edit tool was refused before a single issue was opened, so every
+  # carry-over fell back to the fix cycle it exists to end. Writing it here also
+  # makes "every path files the same bytes" a property of one function rather
+  # than of each reader's transcription of the report: the bytes are the
+  # parser's, the same parser the eligibility read.
+  #
+  # The body is the item's body lines and then one line naming the pull request
+  # and the cycle; the title is `[이월] <run id> <segment> 사이클 <n> — <title>`,
+  # the title `gate_review_carry_row` later asks the remote for.
+  local seg=$1 nx row c rep counts pr k n t f tmp
+  case "$seg" in
+    ''|-|*/*|.*) warn "carry-body needs --segment naming one segment"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+  nx=$(gate_segment_review_next "$seg")
+  if [ "$nx" != "이월" ]; then
+    warn "the next disposition of $seg is 「${nx}」, not 「이월」 — there is nothing to carry over"
+    return "$GATE_EXIT_RULE"
+  fi
+  row=$(gate_segment_last_cycle_row "$seg")
+  c=$(gate_row_field "$row" '사이클')
+  rep=$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")
+  counts=$(gate_review_report_counts "$rep") || counts=''
+  # The latest segment row that names a PR: a later state row need not repeat it.
+  pr=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values 'PR' \
+         | awk 'NF { v = $0 } END { print v }')
+  pr=${pr##*/}; pr=${pr#\#}
+  case "$pr" in
+    ''|*[!0-9]*) warn "the segment row of $seg carries no pull request — the body names the PR the finding came from"
+                 return "$GATE_EXIT_RULE" ;;
+  esac
+  n=$(gate_report_count "$counts" '태그 이월 가능')
+  gate_canon_count "$n" && [ "$n" -ge 1 ] || { warn "the report of $seg's last cycle has no carry-over item: $rep"; return "$GATE_EXIT_RULE"; }
+  mkdir -p "$RUN_DIR/carry" || return "$GATE_EXIT_RULE"
+  k=1
+  while [ "$k" -le "$n" ]; do
+    t=$(gate_report_count "$counts" "이월 $k 제목")
+    f="$RUN_DIR/carry/$seg-$c-$k.md"
+    tmp=$(mktemp "$RUN_DIR/carry/.body.XXXXXX") || return "$GATE_EXIT_RULE"
+    {
+      printf '%s\n' "$counts" | GATE_FEQ_K="이월 $k 본문" awk '
+        { p = index($0, "=") }
+        p && substr($0, 1, p - 1) == ENVIRON["GATE_FEQ_K"] { print substr($0, p + 1) }'
+      printf 'PR #%s 의 리뷰 사이클 %s 에서 넘어온 항목입니다.\n' "$pr" "$c"
+    } > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return "$GATE_EXIT_RULE"; }
+    printf '이월 %s 제목=[이월] %s %s 사이클 %s — %s\n' "$k" "$RUN_ID" "$seg" "$c" "$t"
+    printf '이월 %s 본문 파일=%s\n' "$k" "$f"
+    k=$((k + 1))
+  done
+}
+
+gate_carry_issue_view() {
+  # gate_carry_issue_view <slug> <number> — `<state>\t<title>` of that issue as
+  # the remote answers it, with the state `pr` when the number is a pull request
+  # (the issues endpoint answers for both). Status 1 when `gh` is missing or the
+  # remote does not answer, which the caller refuses on — the same rule as
+  # `gate_remote_landing`: cannot judge is never a pass.
+  local out
+  command -v gh >/dev/null 2>&1 || return 1
+  out=$(gh api "repos/$1/issues/$2" \
+          --jq '(if .pull_request then "pr" else .state end) + "\t" + .title' 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
 gate_review_carry_row() {
   # gate_review_carry_row <segment> <키=값>… — one `리뷰 이월` row: the open P1
   # findings of the segment's last cycle were carried over to issues. The act
@@ -14214,6 +14308,35 @@ EOF
     warn "\`이슈\` names $n issue(s) but \`건수\` is $rn"
     return "$GATE_EXIT_VOCAB"
   fi
+  # EACH URL IS ASKED OF THE REPOSITORY, NOT ONLY READ AS A SHAPE. The row is
+  # what lets a cycle with open P1 findings merge, so a URL that names some
+  # other issue — copied wrong from a command's output, or any number at all —
+  # would carry the finding into nothing. The k-th URL must be an open issue
+  # whose title is this run's and this segment's carry-over title for the k-th
+  # item of the report, any cycle: a reused issue keeps the cycle it was opened
+  # in. A repository that cannot be asked refuses the row as the state of the
+  # run, never as a pass.
+  local rcounts rk_n=0 rt rv rst rtt
+  rcounts=$(gate_review_report_counts "$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")") || rcounts=''
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    rk_n=$((rk_n + 1))
+    rt=$(gate_report_count "$rcounts" "이월 $rk_n 제목")
+    if ! rv=$(gate_carry_issue_view "$rslug" "${u##*/}"); then
+      warn "cannot ask $rslug about issue ${u##*/} — a carry-over issue that cannot be confirmed is not recorded"
+      return "$GATE_EXIT_RULE"
+    fi
+    rst=${rv%%"$(printf '\t')"*}; rtt=${rv#*"$(printf '\t')"}
+    case "$rtt" in
+      "[이월] $RUN_ID $seg 사이클 "*" — $rt") rtt=ok ;;
+    esac
+    if [ "$rst" != "open" ] || [ -z "$rt" ] || [ "$rtt" != "ok" ]; then
+      warn "$u is not the open carry-over issue of item $rk_n — its title must read \`[이월] $RUN_ID $seg 사이클 <n> — ${rt:-?}\` (state: ${rst:-?}); take the URL the create or the reuse search printed for that item"
+      return "$GATE_EXIT_VOCAB"
+    fi
+  done <<EOF
+$(printf '%s\n' "$riss" | tr ',' '\n')
+EOF
   rlane=$(gate_lane_label); rat=$(now_iso)
   # URLs are never clipped: a clipped URL names another issue or none.
   if [ "$(gate_row_projected_bytes '리뷰 이월' "세그먼트=$seg" "사이클=$rcyc" "리뷰 HEAD=$rhead" \
@@ -16536,6 +16659,15 @@ gate_rundir_write_guard() {
         # exception's terms — absent when the run opens, read by no
         # enforcement-surface check.
         split|split/*) continue ;;
+        # THE CARRY-OVER BODY FILES, ONE LEVEL DOWN ONLY. `gate.sh carry-body`
+        # writes them and the routing shift names one as the `--body-file` of
+        # `gh issue create`, an act that names a path under this directory and
+        # would meet the refusal below. Safe on the witness exception's terms —
+        # absent when the run opens, read by no enforcement-surface check. The
+        # run hook has no twin of this arm because no session writes here with
+        # the file-edit tool: the gate does.
+        carry/*/*) ;;
+        carry/*) continue ;;
         # `mkdir -p` names the directories it creates, so `halt` itself appears as
         # an argument. Allowing the directory opens nothing beyond `halt/*`, which
         # is already allowed, and `halt/*/*` is refused above.
@@ -18341,11 +18473,27 @@ EOF
           warn "the other-slice section of the report has $(gate_report_count "$rcounts" '몫 항목') item(s) but its \`다른 슬라이스 몫\` line reads '$(gate_report_count "$rcounts" '몫')' — the count the review dropped is not the count it lists: $rep"
           return "$GATE_EXIT_VOCAB"
         fi
+        # EVERY ITEM IS CHECKED, NOT EVERY ASSIGNMENT THE PARSER CAUGHT. An item
+        # whose `배정` line is missing, doubled or written at another indent
+        # would otherwise be dropped from the count with nothing below looking
+        # at it.
+        if [ "$(gate_report_count "$rcounts" '몫 배정')" != "정규" ]; then
+          warn "an item of the other-slice section does not carry exactly one \`    - **배정**: 슬라이스 <id>\` line (four spaces, one per item) — an item with no readable assignment cannot be dropped from the count. Dispatch the review of $seg again without --slice: $rep"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # ONLY A SLICE STILL TO LAND OWNS A FINDING. A slice that is merged,
+        # done, parked or ready to apply will not take the finding up, so the
+        # P1 would leave the count for nobody. The review is not told which
+        # slices have landed, so the refusal names the way out: review again
+        # without `--slice`, which counts every finding of this segment.
+        local ast
         while IFS= read -r aid; do
           [ -n "$aid" ] || continue
           arow=$(gate_segment_last_segment_row "$aid")
-          if [ "$aid" = "$seg" ] || [ -z "$arow" ] || [ "$(gate_row_field "$arow" '상태')" = "머지됨" ]; then
-            warn "the other-slice section assigns an item to slice '$aid', which is not another unmerged segment of this run — a finding of this segment, of a merged slice or of no slice is counted here: $rep"
+          ast=$(gate_row_field "$arow" '상태')
+          case "$ast" in 계획됨|실행중|리뷰중) ;; *) ast='' ;; esac
+          if [ "$aid" = "$seg" ] || [ -z "$arow" ] || [ -z "$ast" ]; then
+            warn "the other-slice section assigns an item to slice '$aid', which is not another segment of this run still to land (계획됨·실행중·리뷰중) — a finding of this segment, of a landed or parked slice or of no slice is counted here. Dispatch the review of $seg again without --slice: $rep"
             return "$GATE_EXIT_VOCAB"
           fi
         done <<EOF

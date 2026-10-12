@@ -23,35 +23,36 @@ Keep the element's `사이클`, `리뷰 HEAD` and `리포트 경로` (absolute).
 cycle carried over is that one and no other: the gate refuses a row that names
 any cycle but the segment's last.
 
-## 2. Read the carry-over items from the report
+## 2. Have the gate write the bodies
 
-Every read is a gate call (`gate.sh exec … --surface 읽기`), one command per
-call with no pipe after it. The items are in the report's P1 section — from the
-line that begins `## 🟠 P1` to the next line that begins `## `:
+Do not read the items out of the report, and do not write a body file yourself.
+The gate parses the report with the same parser that judged the cycle eligible
+and writes one body file per item under the run directory — a directory a
+session's own file-edit tool is refused, which is why the gate is the writer:
 
-- an item's tag line is the line carrying `**[이월 가능]**`; items come in the
-  order their tag lines do;
-- its title is the text after `    - **이월 제목**: ` (four spaces) within the
-  item;
-- its body is the lines after `    - **이월 본문**:` that begin with exactly six
-  spaces, up to the first line that does not; strip those six spaces.
+```
+gate.sh carry-body --manifest <매니페스트> --segment <id>
+```
 
-The number of items is the cycle's `P1`. The gate checked the shape when the
-cycle row was written and checks the count again when the row is written, so
-an item that does not read this way is a report the gate would not have called
-eligible: stop, and treat it as the failure in step 6.
+It prints two lines per item, in the order the report's tag lines come:
+
+```
+이월 <k> 제목=[이월] <run-id> <세그먼트> 사이클 <사이클> — <이월 제목>
+이월 <k> 본문 파일=<run-dir>/carry/<세그먼트>-<사이클>-<k>.md
+```
+
+The title carries the run id because segment ids (`1`, `S2`) repeat from run
+to run. The body file holds the item's `이월 본문` lines with their six-space
+indent removed, then one line, `PR #<n> 의 리뷰 사이클 <사이클> 에서 넘어온
+항목입니다.`, where `<n>` is the segment's pull request. Nothing else is added —
+the review wrote the body once, and every path files the bytes the gate wrote.
+The number of items is the cycle's `P1`. Exit 3 means the segment's `다음` is
+not `이월` or its segment row names no pull request: read `다음` again, and
+treat anything else as the failure in step 6.
 
 ## 3. One issue per item
 
-For the k-th item:
-
-- **Title**: `[이월] <run-id> <세그먼트> 사이클 <사이클> — <이월 제목>`. The run
-  id is part of it because segment ids (`1`, `S2`) repeat from run to run.
-- **Body**: the body lines from step 2, then one more line,
-  `PR #<n> 의 리뷰 사이클 <사이클> 에서 넘어온 항목입니다.`, where `<n>` is the
-  segment's pull request. Nothing else is added — the review wrote the body once,
-  so every path files the same bytes. Write it to
-  `$CC_PIPELINE_RUN_DIR/carry/<세그먼트>-<사이클>-<k>.md` with the file-edit tool.
+For the k-th item, take the title and the body file from step 2 as printed.
 
 **Reuse before creating.** Search the target repository's open issues for the
 title prefix:
@@ -73,7 +74,9 @@ gate.sh exec … --cutpoint 커밋 --surface 외부상태변경 --reach 협업 \
   -- gh issue create --repo <slug> --title '<제목>' --body-file <본문 파일>
 ```
 
-The URL is the command's last output line. A failed create is tried once more;
+`<본문 파일>` is the path step 2 printed, as printed; the gate lets an act name
+a file under `carry/` and no other new path under the run directory. The URL is
+the command's last output line. A failed create is tried once more;
 a second failure is step 6. **Do not add `--assignee`.**
 
 **The project is best effort.** When the manifest preauthorizes
@@ -90,11 +93,15 @@ gate.sh act --manifest <매니페스트> --kind review-carry --target <alias> --
 ```
 
 `이슈` lists the URLs in item order, comma-separated with no spaces. The gate
-stamps `세그먼트`, `레인` and `기록 시각`; passing any of them is exit 2. Exit 2
-means the call is wrong — the cycle, the count or the URLs; fix the argv once
-from the gate's wording. Exit 3 means the run's state refuses it: either the row
-already exists for this cycle (read `다음` again — it is `이월 머지`) or the cycle
-is not eligible (it is `수정`).
+stamps `세그먼트`, `레인` and `기록 시각`; passing any of them is exit 2. It
+also asks the repository about every URL: the k-th must be an open issue, not a
+pull request, whose title starts `[이월] <run-id> <세그먼트> 사이클 ` and ends
+` — <the k-th 이월 제목>` — so a URL copied wrong names no carried finding and is
+refused. Exit 2 means the call is wrong — the cycle, the count or a URL; fix the
+argv once from the gate's wording. Exit 3 means the run's state refuses it: the
+row already exists for this cycle (read `다음` again — it is `이월 머지`), the
+cycle is not eligible (it is `수정`), or the repository could not be asked about
+an issue.
 
 ## 5. Read `다음` again, then merge
 
