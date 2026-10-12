@@ -1021,16 +1021,23 @@ gate_collaboration_surface() {
               esac ;;
             graphql-ref) return 1 ;;
           esac
-          case " $* " in
-            *"/issues"*|*"/comments"*|*"/reviews"*|*"/requested_reviewers"*|*"/labels"*) return 0 ;;
+          # THE ENDPOINT IS READ FROM THE PARSE, NOT FROM THE WORDS. Matched as
+          # a substring of the whole argv, an inert `-t graphql` or
+          # `-H 'X-N: /comments'` put any endpoint on this surface. A GraphQL
+          # endpoint counts only when written exactly `graphql`, the one
+          # spelling gh sends its fields to as variables.
+          case "/$GATE_GHAPI_PATH" in
+            # A ref or a file named like one of these is still a ref or a file.
+            */git/*|*/contents/*) return 1 ;;
+            */issues|*/issues/*|*/comments|*/comments/*|*/reviews|*/reviews/*) return 0 ;;
+            */requested_reviewers|*/requested_reviewers/*|*/labels|*/labels/*) return 0 ;;
           esac
-          case " $* " in
-            *" graphql "*)
-              case " $* " in
-                *"enablePullRequestAutoMerge"*|*"createDeployment"*) return 1 ;;
-                *) return 0 ;;
-              esac ;;
-          esac ;;
+          if [ "$GATE_GHAPI_ENDPOINT" = graphql ]; then
+            case " $* " in
+              *"enablePullRequestAutoMerge"*|*"createDeployment"*) return 1 ;;
+              *) return 0 ;;
+            esac
+          fi ;;
       esac ;;
     git)
       case "${1:-}" in
@@ -1384,7 +1391,15 @@ gate_push_unwrap_of_argv0() {
       command) out=$(gate_unwrap_command gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
       find)    out=$(gate_unwrap_find    gate_push_unwrap_of_argv0 '해당없음' '해당없음' '해당없음' gate_push_unwrap_combine "$@") ;;
       rg)      out=$(gate_unwrap_rg      gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
-      env)     out=$(gate_unwrap_env     gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
+      # An `env` option the unwrap does not read ends it, and one of them —
+      # `-S`, `--split-string` in any spelling — is a shell-like body of its
+      # own. A push in there is `불투명`, so the refusal names the push.
+      env)
+        out=$(gate_unwrap_env gate_push_unwrap_of_argv0 '해당없음' '옵션' "$@")
+        if [ "$out" = '옵션' ]; then
+          out=""
+          gate_push_text_has_push "$(gate_push_env_payload "$@")" && out='불투명'
+        fi ;;
       timeout|nice|nohup|stdbuf)
                out=$(gate_unwrap_wrapper "$cmd" gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
       time)    out=$(gate_unwrap_time    gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
@@ -1452,6 +1467,22 @@ gate_push_shell_payload() {
       -*c*) next=1 ;;
     esac
   done
+}
+
+gate_push_env_payload() {
+  # gate_push_env_payload <env's args after argv0...> — the words of an `env`
+  # argv with each option's attached value split off (`-S<p>`, `--opt=<p>`),
+  # joined by spaces, for `gate_push_text_has_push`. The reading is the wide
+  # one: any option's value is searched, not only the split string's.
+  local a out=""
+  for a in "$@"; do
+    case "$a" in
+      --*=*) a="${a#*=}" ;;
+      -S?*)  a="${a#-S}" ;;
+    esac
+    out="$out $a"
+  done
+  printf '%s' "$out"
 }
 
 gate_push_base_updates() {
@@ -1538,9 +1569,14 @@ gate_push_base_updates() {
   # an assignment before its basename is looked at. Stopping at the first word
   # whose basename was `git` let `env HOME=/tmp/p/git git push` end the scan at
   # its own assignment, and `lockf /tmp/git env HOME=/x git push` at the lock
-  # file, so the push read another configuration than the dry-run did. When the
-  # git argv is not the tail of this argv (it came out of a shell body), the
-  # scan stops at the first non-assignment word named `git`, as before.
+  # file, so the push read another configuration than the dry-run did.
+  #
+  # THE GIT ARGV IS LOOKED FOR WHEREVER IT SITS, NOT ONLY AT THE TAIL. A
+  # `find … -exec env HOME=<alt> git push … ';'` ends past the git argv, the
+  # tail did not match, and the fallback stopped at the first word named
+  # `git` — the path operand `./git` — before the assignment. The last place
+  # the git argv matches is taken. When it matches nowhere, every word is
+  # scanned, so an assignment anywhere refuses the push.
   #
   # THE FIRST WORD OF THE GIT ARGV IS MATCHED BY ITS BASENAME. The unwrap
   # spells it as a literal `git` whatever the act wrote, so `/usr/bin/git`
@@ -1548,9 +1584,10 @@ gate_push_base_updates() {
   # /usr/bin/git push` fell back to stopping at the lock file again.
   local -a gv=() glob=() pargs=() av=("$@")
   eval "gv=($u)"
-  local a k in_env=0 np=-1 x=0 lim="$#"
-  if [ "${#gv[@]}" -le "$#" ]; then
-    np=$(( $# - ${#gv[@]} ))
+  local a k in_env=0 np=-1 p x lim="$#"
+  p=$(( $# - ${#gv[@]} ))
+  while [ "$np" -lt 0 ] && [ "$p" -ge 0 ]; do
+    np="$p"; x=0
     while [ "$x" -lt "${#gv[@]}" ]; do
       if [ "$x" = 0 ]; then
         [ "${av[$np]##*/}" = git ] || { np=-1; break; }
@@ -1559,7 +1596,8 @@ gate_push_base_updates() {
       fi
       x=$((x + 1))
     done
-  fi
+    p=$((p - 1))
+  done
   [ "$np" -lt 0 ] || lim="$np"
   x=0
   while [ "$x" -lt "$lim" ]; do
@@ -1573,7 +1611,6 @@ gate_push_base_updates() {
         esac ;;
     esac
     case "${a##*/}" in
-      git) [ "$np" -ge 0 ] || break ;;
       env) in_env=1; continue ;;
     esac
     case "$a" in
@@ -6412,14 +6449,20 @@ gate_unwrap_env() {
   # `env X=1 git merge seg` graded `워크트리쓰기` while the history predicate
   # answered 0 and the ladder saw no merge — the inert-repair shape this tree
   # already carries a comment about.
+  #
+  # A WORD STARTING WITH `-` IS AN OPTION EVEN WHEN IT CARRIES A `=`. Matched
+  # as an assignment first, `--split-string=git push origin HEAD:main` (and
+  # GNU env's abbreviation `--s=…`, and `--chdir=…`) was skipped like `X=1`,
+  # no command was left, and the act graded a read while GNU env ran the
+  # payload. No variable name starts with `-`, so nothing is lost.
   local resolver="$1" no_cmd="$2" unknown_opt="$3"; shift 3
   while [ $# -gt 0 ]; do
     case "$1" in
       -i|-0|-v|--) shift ;;
       -u) [ $# -ge 2 ] || { printf '%s' "$unknown_opt"; return 0; }; shift 2 ;;
       -u*) shift ;;
-      *=*) shift ;;
       -*) printf '%s' "$unknown_opt"; return 0 ;;
+      *=*) shift ;;
       *) break ;;
     esac
   done
@@ -6634,6 +6677,9 @@ gate_gh_api_parse() {
   #                      else GET)
   #   GATE_GHAPI_PATH    the endpoint with any `?query`, `#fragment`, leading
   #                      and trailing `/` removed
+  #   GATE_GHAPI_ENDPOINT the endpoint word exactly as written. gh wraps the
+  #                      fields into `variables` only when it is `graphql`, so
+  #                      a reading that depends on that wrapping reads this
   #   GATE_GHAPI_FIELDS  every `-f`/`-F`/`--field`/`--raw-field` value, `k=v`
   #   GATE_GHAPI_OPAQUE  1 when part of the body is in a file this gate does not
   #                      read (`--input`, or a `-F`/`--field` value `@<file>`)
@@ -6651,7 +6697,7 @@ gate_gh_api_parse() {
   # letters are `gh api`'s own: `i` is its one short bool, and `X f F H p q t`
   # take a value. A letter outside them is a word gh refuses, so it is read as
   # nothing.
-  GATE_GHAPI_METHOD="" GATE_GHAPI_PATH="" GATE_GHAPI_OPAQUE=0
+  GATE_GHAPI_METHOD="" GATE_GHAPI_PATH="" GATE_GHAPI_ENDPOINT="" GATE_GHAPI_OPAQUE=0
   GATE_GHAPI_FIELDS=()
   local body=0 ddash=0 w c val j
   while [ $# -gt 0 ]; do
@@ -6705,6 +6751,7 @@ gate_gh_api_parse() {
   if [ -z "$GATE_GHAPI_METHOD" ]; then
     if [ "$body" = 1 ]; then GATE_GHAPI_METHOD=POST; else GATE_GHAPI_METHOD=GET; fi
   fi
+  GATE_GHAPI_ENDPOINT="$GATE_GHAPI_PATH"
   local p="$GATE_GHAPI_PATH"
   p="${p%%[#]*}"; p="${p%%[?]*}"
   while [ "${p%/}" != "$p" ]; do p="${p%/}"; done
@@ -6783,8 +6830,9 @@ gate_gh_graphql_inert() {
   # field: 0 when the single `query` document holds only `query` operations, or
   # every top-level field of every other definition passes
   # `gate_gh_graphql_mutation_inert`; 1 otherwise, and for every body this
-  # cannot read — a `"""` block string, a fragment spread, a directive, an
-  # unbalanced document, or not exactly one `query` field. `#` comments are
+  # cannot read — a `"""` block string, a fragment spread or a directive among
+  # the top-level fields of a definition that is not a query, an unbalanced
+  # document, or not exactly one `query` field. `#` comments are
   # skipped to the end of their line, so a word in one is never a field.
   #
   # The keyword of an operation is the first word at the document's top level
@@ -6797,7 +6845,7 @@ gate_gh_graphql_inert() {
   done
   [ "$nq" = 1 ] || return 1
   case "$q" in *'"""'*) return 1 ;; esac
-  local n="${#q}" i=0 j k ch word prev nx instr=0 esc=0 incm=0 pd=0 bd=0 kw="" op=""
+  local n="${#q}" i=0 j k ch word prev nx instr=0 esc=0 incm=0 pd=0 bd=0 kw="" op="" cur
   while [ "$i" -lt "$n" ]; do
     ch="${q:i:1}"
     if [ "$incm" = 1 ]; then
@@ -6822,7 +6870,17 @@ gate_gh_graphql_inert() {
       '}')
         bd=$((bd - 1))
         if [ "$bd" = 0 ] && [ "$pd" = 0 ]; then kw=""; fi ;;
-      '.'|'@') return 1 ;;
+      '.'|'@')
+        # A spread or a directive can add or drop a top-level field only where
+        # the top-level fields are: in a definition's own selection set or its
+        # header, outside every argument list. Inside a query nothing it adds
+        # writes, and deeper down it selects from a payload. Refusing it
+        # everywhere turned `... on PullRequest`, `@include` and `1.5` in a
+        # read into a merge every declaration refused.
+        if [ "$pd" = 0 ] && [ "$bd" -le 1 ]; then
+          if [ "$bd" = 0 ]; then cur="$kw"; else cur="$op"; fi
+          [ "$cur" = query ] || return 1
+        fi ;;
       [A-Za-z_])
         j=$((i + 1))
         while [ "$j" -lt "$n" ]; do
@@ -6884,7 +6942,7 @@ gate_gh_graphql_binding() {
   # and exactly one `expectedHeadOid` argument, inside that field's arguments
   # and outside every string. Its value is inline as a string, or a `$variable`
   # whose value is a top-level `-f`/`-F` field gh sends as a variable — any
-  # field but `query` and `operationName`.
+  # field but `query` and `operationName`, on the endpoint written `graphql`.
   #
   # Counting the words did not tell the argument the server reads from text it
   # does not: an `expectedHeadOid` inside a `"""` block string, or the argument
@@ -6968,7 +7026,12 @@ gate_gh_graphql_binding() {
     # those two as the request's own keys. A `$operationName` bound to
     # `-f operationName=<HEAD>` is a variable the server never receives, so the
     # nullable `expectedHeadOid` goes unset and whatever head is there merges.
+    # The same holds for every field when the endpoint is not written exactly
+    # `graphql`: gh then sends the fields flat beside `query` rather than
+    # inside `variables`, so `/graphql`, `graphql/`, `graphql?x=1` and the
+    # absolute URL reach the same server with `$h` unset.
     case "$name" in query|operationName) name="" ;; esac
+    [ "$GATE_GHAPI_ENDPOINT" = graphql ] || name=""
     for g in ${GATE_GHAPI_FIELDS[@]+"${GATE_GHAPI_FIELDS[@]}"}; do
       [ -n "$name" ] || break
       case "$g" in "$name="*) v="${g#*=}" ;; esac
@@ -22298,7 +22361,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 query·operationName 이 아닌 필드만 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다"
+        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>, REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else

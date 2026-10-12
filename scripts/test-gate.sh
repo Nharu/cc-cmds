@@ -21655,6 +21655,28 @@ sp_unknown "32p: env HOME= <경로 git>"
 sp_act S32A 머지 env LANG=C git push origin "u-$SA_ID:$SA_BASE"
 sp_refused "32p: env LANG=C 의 다른 소스 베이스 push 는 거절된다" 2 "$B32"
 sp_measured "32p: env LANG=C" "$U32"
+# git argv 가 argv 끝에 오지 않아도 — find 의 ';' 뒤 — 그 앞의 할당이 읽힌다. 경로 피연산자
+# ./git 에서 검사가 멈추면 할당이 탐침에 닿지 않은 채 push 가 지났다.
+for sp_e in "HOME=$SA_ROOT/home-x" "XDG_CONFIG_HOME=$SA_ROOT/xdg-x" "GIT_CONFIG_GLOBAL=$SA_ROOT/g"; do
+  for sp_fd in "$SA_ROOT/git" "$SA_ROOT"; do
+    sp_act S32A 머지 find "$sp_fd" -maxdepth 0 -exec env "$sp_e" git push origin "u-$SA_ID:$SA_BASE" ';'
+    sp_refused "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}= git push ';' 는 거절된다" 2 "$B32"
+    sp_unknown "32p: find ${sp_fd##*/} -exec env ${sp_e%%=*}="
+  done
+done
+# env 의 split-string 은 = 를 실어도 옵션이다 — 할당으로 읽으면 등급이 읽기였다.
+check "32p: env --split-string= 안의 push 는 불투명 이다" \
+  "$(sp_unwrap env "--split-string=git push origin x:main")" "불투명"
+check "32p: env --split-string <문자열> 안의 push 는 불투명 이다" \
+  "$(sp_unwrap env --split-string "git push origin x:main")" "불투명"
+check "32p: env -S<문자열> 안의 push 는 불투명 이다" "$(sp_unwrap env "-Sgit push origin x:main")" "불투명"
+check "32p: 축약 env --s= 안의 push 는 불투명 이다" "$(sp_unwrap env "--s=git push origin x:main")" "불투명"
+check "32p: 대조군 — push 없는 split-string 은 해당없음 이다" "$(sp_unwrap env "--split-string=gh pr view 1")" "해당없음"
+for sp_s in "--split-string=git push origin u-$SA_ID:$SA_BASE" "-Sgit push origin u-$SA_ID:$SA_BASE"; do
+  sp_act S32A 머지 env "$sp_s"
+  sp_refused "32p: env ${sp_s%%git*}… 의 push 는 거절된다" 2 "$B32"
+  sp_unknown "32p: env ${sp_s%%git*}…"
+done
 
 # 셸 문자열과 sudo 안의 push — 탐침에 닿지 않으므로 거절된다. 리뷰된 HEAD 라도 같다.
 for sp_sh in bash sh; do
@@ -21781,6 +21803,47 @@ for sp_q in 'mutation{addComment(input:{subjectId:"I",body:"updateRef"}){clientM
   check "32p: 대조군 — ref 를 바꾸지 않는 GraphQL 은 머지가 아니다 — ${sp_q:0:40}" "$(sp_mb gh api graphql -f "query=$sp_q")" "해당없음"
   check "32p: 대조군 — ref 를 바꾸지 않는 GraphQL 은 협업면이다 — ${sp_q:0:40}" "$(sp_cs 협업 gh api graphql -f "query=$sp_q")" "예"
 done
+# 읽기 쿼리의 프래그먼트·지시어·실수 리터럴, mutation 응답 선택 안의 프래그먼트는 머지가 아니다.
+for sp_q in 'query{node(id:"X"){... on PullRequest{title}}}' \
+            'query($x:Boolean!){viewer{login @include(if:$x)}}' \
+            'query{x(f:1.5){id}}' \
+            'query Q @cached {viewer{login}}' \
+            'mutation{resolveReviewThread(input:{threadId:"T"}){thread{... on PullRequestReviewThread{id}}}}'; do
+  check "32p: 프래그먼트·지시어가 든 읽기는 머지가 아니다 — ${sp_q:0:40}" "$(sp_mb gh api graphql -f "query=$sp_q")" "해당없음"
+  check "32p: 사다리는 그 읽기에 아무것도 말하지 않는다 — ${sp_q:0:40}" "$(sp_ld gh api graphql -f "query=$sp_q")" ""
+  check "32p: 그 읽기는 협업면이다 — ${sp_q:0:40}" "$(sp_cs 협업 gh api graphql -f "query=$sp_q")" "예"
+done
+# 음성 — mutation 의 최상위 필드 자리의 프래그먼트·지시어는 읽지 못하므로 머지로 읽는다.
+for sp_q in 'mutation{...M} fragment M on Mutation{updateRef(input:{refId:"F",oid:"X"}){clientMutationId}}' \
+            'mutation{... on Mutation{updateRef(input:{refId:"F",oid:"X"}){clientMutationId}}}' \
+            'mutation{addComment(input:{subjectId:"I",body:"b"}) @include(if:true){clientMutationId}}'; do
+  check "32p: mutation 최상위의 프래그먼트·지시어는 머지로 읽는다 — ${sp_q:0:40}" "$(sp_ld gh api graphql -f "query=$sp_q")" "머지"
+done
+
+# gh 는 엔드포인트가 정확히 graphql 일 때만 필드를 variables 로 묶는다. 다른 철자에서는
+# 필드가 query 옆에 평평하게 가서 $변수 가 서버에 닿지 않는다.
+q32v='query=mutation($h:GitObjectID){mergePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:$h}){clientMutationId}}'
+for sp_e in /graphql graphql/ 'graphql?x=1' https://api.github.com/graphql; do
+  check "32p: 엔드포인트 $sp_e 의 \$변수 expectedHeadOid 는 결속 없는 머지다" \
+    "$(sp_mb gh api "$sp_e" -f "$q32v" -f "h=$X32")" "없음"
+  check "32p: 엔드포인트 $sp_e 의 GraphQL 머지는 사다리가 머지로 읽는다" \
+    "$(sp_ld gh api "$sp_e" -f "$q32v" -f "h=$X32")" "머지"
+  check "32p: 엔드포인트 $sp_e 의 인라인 expectedHeadOid 는 결속이다" \
+    "$(sp_mb gh api "$sp_e" -f "$q32i")" "$X32"
+done
+check "32p: 대조군 — 엔드포인트 graphql 의 \$변수 expectedHeadOid 는 결속이다" \
+  "$(sp_mb gh api graphql -f "$q32v" -f "h=$X32")" "$X32"
+# 협업면은 argv 의 부분 문자열이 아니라 파싱한 엔드포인트로 판정한다.
+check "32p: /graphql 머지에 -t graphql 을 붙여도 협업면이 아니다" \
+  "$(sp_cs 협업 gh api /graphql -f "$q32v" -f "h=$X32" -t graphql)" "아니오"
+check "32p: REST ref 쓰기에 -t graphql 을 붙여도 협업면이 아니다" \
+  "$(sp_cs 협업 gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=x -t graphql)" "아니오"
+check "32p: REST ref 쓰기에 /comments 헤더를 붙여도 협업면이 아니다" \
+  "$(sp_cs 협업 gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=x -H 'X-N: /comments')" "아니오"
+check "32p: comments 라는 브랜치의 ref 쓰기는 협업면이 아니다" \
+  "$(sp_cs 협업 gh api -X PATCH repos/o/r/git/refs/heads/comments -f sha=x)" "아니오"
+check "32p: 대조군 — 이슈 코멘트는 협업면이다" "$(sp_cs 협업 gh api repos/o/r/issues/1/comments -f body=x)" "예"
+check "32p: 대조군 — 라벨 쓰기는 협업면이다" "$(sp_cs 협업 gh api -X POST repos/o/r/issues/1/labels -f 'labels[]=x')" "예"
 
 # …/merges 의 본문에는 head 를 묶는 매개변수가 없다 — sha 필드를 붙여도 결속이 아니다.
 check "32p: -f sha= 를 붙인 …/merges 도 결속 없는 머지다" \
@@ -21806,6 +21869,14 @@ done
 check "32p: 등급표가 --raw-field= 본문을 POST 로 읽는다" "$(sp_sf gh api repos/o/r/merges --raw-field=base=main)" "외부상태변경"
 check "32p: 대조군 — 묶음 -iX GET 은 등급표에서 읽기다" "$(sp_sf gh api -iX GET repos/o/r/pulls/1)" "읽기"
 check "32p: 대조군 — -i 만 있는 GET 은 머지가 아니다" "$(sp_mb gh api -i repos/o/r/pulls/1/merge)" "해당없음"
+# env 의 - 로 시작하는 낱말은 = 를 실어도 옵션이다 — 등급표가 형태 미상으로 거절한다.
+for sp_s in "--split-string=git push origin HEAD:main" "--s=git push origin HEAD:main" "--chdir=/tmp"; do
+  check "32p: env $sp_s 는 등급표에서 형태 미상이다" "$(sp_sf env "$sp_s" git status)" "형태 미상"
+  check "32p: env $sp_s 만 둔 것도 형태 미상이다" "$(sp_sf env "$sp_s")" "형태 미상"
+done
+check "32p: 경로로 적은 GNU env 의 --split-string= 도 형태 미상이다" \
+  "$(sp_sf /opt/homebrew/opt/coreutils/libexec/gnubin/env "--split-string=git push origin HEAD:main")" "형태 미상"
+check "32p: 대조군 — env 할당 뒤의 git status 는 읽기다" "$(sp_sf env X=1 git status)" "읽기"
 
 # GraphQL 미끼 — 서버가 mergePullRequest 의 결속으로 받지 않는 자리의 expectedHeadOid.
 q32blk=$(printf 'query=mutation{mergePullRequest(input:{pullRequestId:"PR_x",commitBody:"""expectedHeadOid: "%s" """}){clientMutationId}}' "$X32")
