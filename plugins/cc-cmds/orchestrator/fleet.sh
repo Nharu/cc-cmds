@@ -73,7 +73,9 @@
 # single-writer rule above. One process does outlive this job all the same: the
 # first `snapshot` of a new run passes the gate's run-open branch, which starts
 # the run dashboard's server in its own session, and that server keeps serving
-# after the dispatch job has exited. The start lives in the gate, not here.
+# after the dispatch job has exited. The start lives in the gate, not here. The
+# run's watcher is the other: it is started in a process group of its own, so
+# the teardown of this job's group when the job returns does not take it.
 #
 # THE PACING SENSOR CAN NEVER STOP DISPATCH BY BEING ABSENT. `state.json` that
 # is missing, stale, or of an unknown schema is read as no verdict at all, which
@@ -1311,7 +1313,11 @@ fleet_dispatch() {
     return 0
   fi
   mkdir -p "$run_dir"
-  bash "$FLEET_DIR/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
+  # THE WATCHER LEADS A PROCESS GROUP OF ITS OWN. launchd tears down this job's
+  # group when the job exits, and the watcher's whole purpose is to speak after
+  # the run stopped — the moment this job returns. Job control in a subshell
+  # puts it in a new group; it is still started here, not detached by a helper.
+  ( set -m; bash "$FLEET_DIR/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 > "$run_dir/watch.log" 2>&1 < /dev/null & )
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
   # merge refusal it feeds is the only thing standing between a red check and a
   # merged branch, and this timer-driven path is the one with no session and no

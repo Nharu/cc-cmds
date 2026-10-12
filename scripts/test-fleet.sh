@@ -89,6 +89,9 @@ EOF
 cat > "$FX/watch.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'watch %s\n' "$*" >> "$TEST_LOG_DIR/watch.log"
+# Its own pid and process group, so the suite can tell whether it shares the
+# dispatch job's group.
+printf '%s %s\n' "$$" "$(ps -o pgid= -p $$ | tr -d ' ')" >> "$TEST_LOG_DIR/watch.pg"
 exit 0
 EOF
 cat > "$FX/checks.sh" <<'EOF'
@@ -99,6 +102,8 @@ EOF
 cat > "$FX/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'run %s CLAUDE_CONFIG_DIR=%s\n' "$*" "${CLAUDE_CONFIG_DIR:-}" >> "$TEST_LOG_DIR/run.log"
+# The driver runs in the dispatch job's foreground: its group is that job's.
+ps -o pgid= -p $$ | tr -d ' ' >> "$TEST_LOG_DIR/run.pg"
 # A slow driver keeps the dispatch job — and its run marker — alive.
 [ -n "${TEST_RUN_SLEEP:-}" ] && sleep "$TEST_RUN_SLEEP"
 # With TEST_RUN_STEAL set the stub rewrites the dispatched record under the
@@ -633,6 +638,14 @@ sleep 0.3
 check "워처는 정확히 한 번 기동된다" "$(count_lines "$TEST_LOG_DIR/watch.log")" "1"
 check "워처 인자는 autopilot 의 기동 줄과 같은 네 임계를 싣는다" "$(sed -n '1p' "$TEST_LOG_DIR/watch.log")" "watch --run-dir $RUNDIR --ledger $WT_MAIN/docs/pipeline-run/R1.md --stall 1200 --interval 60 --after-stage 120 --run-open 300"
 check "run.sh 는 앞단에서 그 계정의 홈으로 돈다" "$(sed -n '1p' "$TEST_LOG_DIR/run.log")" "run --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H1"
+# launchd tears down the dispatch job's process group when the job exits, so
+# the watcher has to lead a group of its own to outlive the job.
+read -r wpid wpg < "$TEST_LOG_DIR/watch.pg" 2>/dev/null || { wpid=""; wpg=""; }
+rpg=$(sed -n '1p' "$TEST_LOG_DIR/run.pg" 2>/dev/null)
+check "워처는 자기 프로세스 그룹의 리더다" "${wpg:-없음}" "${wpid:-?}"
+[ -n "$wpg" ] && [ "$wpg" != "$rpg" ] && [ "$wpg" != "$(ps -o pgid= -p $$ | tr -d ' ')" ] \
+  && ok "워처의 프로세스 그룹은 디스패치 작업과 시험 셸의 것이 아니다" \
+  || bad "워처의 프로세스 그룹은 디스패치 작업과 시험 셸의 것이 아니다" "watch=$wpg run=$rpg"
 check "집은 레인(인벤토리 id)이 레코드에 적힌다" "$(backlog_field a1 .dispatched_lane)" "u1"
 [ -s "$WT_MAIN/docs/pipeline-run/R1.md" ] && ok "보고서 스텁이 없으면 만든다" || bad "보고서 스텁이 없으면 만든다" "absent"
 check "기동이 끝나면 실행 표지가 남지 않는다" "$(ls "$PACE/busy" 2>/dev/null | count_lines /dev/stdin)" "0"
