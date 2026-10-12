@@ -15561,7 +15561,7 @@ check "Q3: 그 인수인계 행이 실제로 원장에 남는다" \
 # condition holds here, but no proposal has been accepted: there is no `done`
 # and no ending row, so a `종단` handoff would leave the watcher waiting on a
 # run nothing closes. Measured on a real night before the refusal existed.
-if [ -s "$DONE_DIR/done" ] || grep -qF '| 결정=종료 |' "$LEDGER4" 2>/dev/null; then
+if grep -qF '| 결정=종료 |' "$LEDGER4" 2>/dev/null || [ -s "$DONE_DIR/done" ]; then
   bad "Q3b 사전 조건" "done 이나 종료 행이 이미 있다 — 본 단언이 공허해진다"
 else
   ok "Q3b 사전 조건: done 도 종료 행도 아직 없다"
@@ -15801,23 +15801,26 @@ LEDGER5="$WT/docs/pipeline-run/$DONE5_RUN_ID.md"
   printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$DONE5_RUN_ID"
 } > "$LEDGER5"
 DONE5_DIR="$STATE_CONE/cc-cmds/run/$DONE5_RUN_ID"
-gate5() {
+# Named for this fixture rather than numbered: `gate5` and `H5` are defined again
+# at column zero by a later section, and a call written here would then read as
+# a call above that later definition.
+gateq2() {
   local out
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
-H5() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
-gate5 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(H5)" --rationale x \
+Hq2() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
+gateq2 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(Hq2)" --rationale x \
       -- 워크트리="$CONE_A" 상태=실행중 선행=없음
 check "Q2 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
 for q2k in K1 K2 K3; do
-  gate5 act --manifest "$NM5" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
-        --snapshot-digest "$(H5)" --rationale x -- id=$q2k 상태=충족 근거="Q2 픽스처"
+  gateq2 act --manifest "$NM5" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(Hq2)" --rationale x -- id=$q2k 상태=충족 근거="Q2 픽스처"
   check "Q2 픽스처의 종료 절 $q2k 가 충족으로 정산된다" "$rc" "0"
 done
-gate5 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(H5)" --rationale x \
+gateq2 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(Hq2)" --rationale x \
       -- 워크트리="$CONE_A" 상태=완료 선행=없음
 check "Q2 픽스처의 세그먼트가 완료로 옮겨간다" "$rc" "0"
 # Drained for the reason drain4 gives: a boundary approval counts against
@@ -15831,7 +15834,7 @@ for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --man
         CLAUDE_CODE_SESSION_ID="$D5SID" gate_inproc close --manifest "$NM5" --approval "$aid" 2>&1); rc=$?
   check "Q2 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
 done
-if [ -e "$DONE5_DIR/done" ] || grep -qF '| 결정=종료 |' "$LEDGER5" 2>/dev/null; then
+if grep -qF '| 결정=종료 |' "$LEDGER5" 2>/dev/null || [ -e "$DONE5_DIR/done" ]; then
   bad "Q2 사전 조건" "done 이나 종료 행이 이미 있다 — 본 단언이 공허해진다"
 else
   ok "Q2 사전 조건: done 도 종료 행도 아직 없다"
@@ -15842,7 +15845,7 @@ out=$(cd "$WT" && PATH="$DONE_NBIN:$PATH" XDG_STATE_HOME="$STATE_CONE" \
       CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin \
       CC_TEST_NOTIFY_LOG="$DONE5_NLOG" \
       bash "$GATE" act --manifest "$NM5" --kind x --target infra --segment SN1 --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(H5)" --rationale "이제 슬슬 정리하자" -- ls 2>&1); rc=$?
+      --surface 읽기 --snapshot-digest "$(Hq2)" --rationale "이제 슬슬 정리하자" -- ls 2>&1); rc=$?
 check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것이 없으므로" "$rc" "3"
 check "Q2: 그 거절이 런을 끝내 done 을 남긴다" \
   "$( [ -s "$DONE5_DIR/done" ] && printf 'done' || printf 'absent')" "done"
@@ -15923,8 +15926,8 @@ for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --man
         CLAUDE_CODE_SESSION_ID="$D6SID" gate_inproc close --manifest "$NM6" --approval "$aid" 2>&1); rc=$?
   check "Q2j 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
 done
-if [ -s "$DONE6_DIR/done" ] || [ -e "$DONE6_DIR/done-obligations" ] \
-   || grep -qF '| 결정=종료 |' "$LEDGER6" 2>/dev/null; then
+if grep -qF '| 결정=종료 |' "$LEDGER6" 2>/dev/null \
+   || [ -s "$DONE6_DIR/done" ] || [ -e "$DONE6_DIR/done-obligations" ]; then
   bad "Q2j 사전 조건" "done 이나 처분 보고서나 종료 행이 이미 있다 — 본 단언이 공허해진다"
 else
   ok "Q2j 사전 조건: done 도 처분 보고서도 종료 행도 아직 없다"
@@ -17790,13 +17793,14 @@ check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
 # inside it. The arm did not move; the helper's reach had to.
 check "F4 — 무효화 종료의 done 표시가 발사한다" \
   "$(fires_at '종단 — 무효화%s%s · 근거' 16)" "fires"
-# The anchor is the literal the line actually prints. It used to name a
-# condition count the line does not spell, so it matched nothing — and the
-# window is 20 because the reach was never measured against a live anchor: the
-# two terminal spellings share one notice below the disposition report, and the
-# arm sits fifteen lines past the `done` write that names it.
+# The anchor is the accepted proposal's `done` write, not the literal the line
+# prints. That literal now lives in `gate_satisfied_done_line`, which both
+# all-met endings call, so anchoring on it measured a function that fires
+# nothing and read `silent` while the arm still fired. The window is 22 because
+# the notice sits twenty lines past that write, below the two ending rows and
+# the disposition report.
 check "F4 — 충족 종료의 done 표시가 발사한다" \
-  "$(fires_at '종단 — 종료 조건 성립' 20)" "fires"
+  "$(fires_at 'gate_done_note "$(gate_satisfied_done_line "$rationale")"' 22)" "fires"
 # The shift's return has no literal of its own to anchor on — it reads its
 # sentence out of `done` — so it carries one comment line that occurs nowhere
 # else in the file, directly above its `if`. Without this row it is the one
