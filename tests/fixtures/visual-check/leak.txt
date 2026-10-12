@@ -10,4 +10,14 @@ R|<img src="//cdn.example.com/b.png">
 V|var c = '#123456';
 -|</script>
 V|<p style="content:'/*'; color: red">b</p>
+-|<script>
+-|var u = s.replace(/\/*$/, "");
+V|el.style.color = "#ff0000";
+-|var p = s.split(/[/*]/);
+R|fetch("https://api.example.com/x");
+-|function f(s) { return /.*\/*/.test(s); }
+V|var d = '#00ff00';
+-|var h = w / 2; /* half */ var k = 1;
+V|var e = '#0000ff';
+-|</script>
 -|<p>end</p>

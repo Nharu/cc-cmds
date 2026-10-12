@@ -107,8 +107,8 @@ REF_IMPORT="@import[[:space:]]+(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ})"
 # Split one file into the css / markup / script streams under $2, one output
 # line per input line in each. Inside <style> and <script> the closing tag is
 # looked for before anything else, as the HTML parser does, so a comment or a
-# string can never carry past it; quoted strings are tracked so a `/*` or `//`
-# inside one stays text. A file that ends inside a comment, a tag, a template
+# string can never carry past it; quoted strings and script regex literals are
+# tracked so a `/*` or `//` inside one stays text. A file that ends inside a comment, a tag, a template
 # string or an unclosed <style>/<script> has lost its parse: the reason goes to
 # stderr and the function fails with 2, so it is never read as "no finding".
 # The parser walks bytes, so awk runs under the C locale: in a UTF-8 locale
@@ -144,7 +144,7 @@ split_streams() {
             if (c == ">") {
               intag = 0; mk = mk c; i++
               if (!closing && tagname == "style") mode = "style"
-              else if (!closing && tagname == "script") mode = "script"
+              else if (!closing && tagname == "script") { mode = "script"; jp = ""; jw = "" }
               continue
             }
             if (naming) { if (c ~ /[A-Za-z0-9-]/) tagname = tagname tolower(c); else naming = 0 }
@@ -171,7 +171,7 @@ split_streams() {
           if (substr(line, i, 2) == "/*") { cc = 1; i += 2; continue }
           css = css c; mk = mk c; i++; continue
         }
-        if (tolower(substr(line, i, 8)) == "</script") { mode = "html"; jc = 0; jq = ""; jline = 0; continue }
+        if (tolower(substr(line, i, 8)) == "</script") { mode = "html"; jc = 0; jq = ""; jr = 0; jrc = 0; jline = 0; continue }
         if (jline) { i++; continue }
         if (jc) { if (substr(line, i, 2) == "*/") { jc = 0; i += 2 } else i++; continue }
         if (jq != "") {
@@ -179,18 +179,38 @@ split_streams() {
           if (c == jq) jq = ""
           js = js c; i++; continue
         }
-        if (c == "\"" || c == "\047" || c == "`") { jq = c; js = js c; i++; continue }
+        # Inside a regex literal a `/*` or a quote is text; the literal ends at
+        # the first unescaped `/` outside a [...] class.
+        if (jr) {
+          if (c == "\\") { js = js substr(line, i, 2); i += 2; continue }
+          if (jrc) { if (c == "]") jrc = 0 }
+          else if (c == "[") jrc = 1
+          else if (c == "/") { jr = 0; jp = "a"; jw = "" }
+          js = js c; i++; continue
+        }
+        if (c == "\"" || c == "\047" || c == "`") { jq = c; jp = "a"; jw = ""; js = js c; i++; continue }
         if (substr(line, i, 2) == "/*") { jc = 1; i += 2; continue }
         if (substr(line, i, 2) == "//") {
           p = (i == 1) ? "" : substr(line, i - 1, 1)
           if (p == "" || p ~ /[[:space:];{})]/) { jline = 1; i += 2; continue }
         }
+        # A `/` where no operand can stand (script start, after an operator or
+        # an opening bracket, or after a keyword such as `return`) opens a
+        # regex literal; after a name, a number or a closing bracket it divides.
+        if (c == "/" && (jp == "" || index("(,=:[!&|?{};+-*%<>~^", jp) > 0 || jw ~ /^(return|typeof|case|do|else|in|of|new|delete|void|throw|instanceof|yield|await)$/)) {
+          jr = 1; jrc = 0; js = js c; i++; continue
+        }
+        if (c ~ /[A-Za-z0-9_$]/) { jw = (jp ~ /[A-Za-z0-9_$]/ && !jsp) ? jw c : c; jp = c; jsp = 0 }
+        else if (c ~ /[[:space:]]/) jsp = 1
+        else { jp = c; jw = ""; jsp = 0 }
         js = js c; i++
       }
       if (intag) tag = tag " "
       # A quoted CSS or JS string ends at an unescaped line end; only a JS
-      # template string carries on to the next line.
+      # template string carries on to the next line. A regex literal never
+      # spans lines.
       if (!esc) { cq = ""; if (jq != "`") jq = "" }
+      jr = 0; jrc = 0; jsp = 1
       print css > (out "/css"); print mk > (out "/markup"); print js > (out "/script")
     }
     END {

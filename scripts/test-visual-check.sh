@@ -15,8 +15,9 @@
 #   scan bans  the seed's 마크업 items and a 스크립트 item are found under their
 #              own ids; a **금지 해제** id is skipped and named in the header;
 #              a malformed ban line is a usage error
-#   scan leak  a `/*` inside a script or CSS string, and a `</script>` inside a
-#              `//` comment, leave every later line scanned; a screen that ends
+#   scan leak  a `/*` inside a script or CSS string or a script regex literal,
+#              and a `</script>` inside a `//` comment, leave every later line
+#              scanned; a screen that ends
 #              inside a comment, a tag, a template string or an unclosed
 #              <style>/<script> is exit 2 with the reason, for scan and size
 #   scan hangul  Hangul in script and CSS strings and comments, a style
@@ -205,11 +206,11 @@ rc=$(run_scan "$T/leak.out" "$T/leak.html")
 lines_of token-color "$T/leak.out" > "$T/leak.color"
 lines_of external-ref "$T/leak.out" > "$T/leak.ref"
 got=$(tally "$T/leak.labels" "$T/leak.color" V)
-[ "$got" = "4 4" ] && pass "문자열·줄 주석 안의 /* 와 </script> 뒤의 색이 모두 잡힌다 (4)" \
-  || fail "leak V 줄 (전체 적중) = ${got}, 기대 4 4"
+[ "$got" = "7 7" ] && pass "문자열·정규식·줄 주석 안의 /* 와 </script> 뒤의 색이 모두 잡힌다 (7)" \
+  || fail "leak V 줄 (전체 적중) = ${got}, 기대 7 7"
 got=$(tally "$T/leak.labels" "$T/leak.ref" R)
-[ "$got" = "2 2" ] && pass "닫는 태그 뒤의 외부 참조가 모두 잡힌다 (2)" \
-  || fail "leak R 줄 (전체 적중) = ${got}, 기대 2 2"
+[ "$got" = "3 3" ] && pass "닫는 태그·정규식 뒤의 외부 참조가 모두 잡힌다 (3)" \
+  || fail "leak R 줄 (전체 적중) = ${got}, 기대 3 3"
 # eof_case <name> <expected stderr reason> <screen lines...> — scan and size
 # both refuse a screen whose parse ends open, with exit 2 and the reason.
 eof_case() {
