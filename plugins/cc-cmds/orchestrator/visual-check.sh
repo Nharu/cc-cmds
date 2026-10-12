@@ -374,7 +374,10 @@ cmd_approval() {
   fi
   locate_sidecar "$doc" >/dev/null
   [ -f "$SIDECAR" ] || { echo "승인 없음 — 사이드카 없음 (${SIDECAR})"; exit 1; }
-  owner=$(head -n 1 "$SIDECAR" | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  # The machine header is line 2 under the human H1, or line 1 of a sidecar
+  # written without one; nothing below line 2 is read as the header.
+  owner=$(sed -n '1,2p' "$SIDECAR" | { grep -E '^<!-- cc-visual v1;' || true; } | sed -n '1p' \
+    | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [ "$owner" = "$DOC_KEY" ] || { echo "승인 없음 — 사이드카의 owner-doc 이 이 문서가 아니다"; exit 1; }
   state=$(sed -nE 's/^\*\*상태\*\*:[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' "$SIDECAR" | head -n 1)
   [ "$state" = 발행됨 ] || { echo "승인 없음 — 상태가 발행됨이 아니다 (${state:-없음})"; exit 1; }

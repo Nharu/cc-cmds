@@ -209,6 +209,7 @@ DOC="$R/docs/feature.md"
 SC="$R/docs/visual/docs-feature.md"
 write_sidecar() { # <state> <approval line or ->
   {
+    echo "# 시각 디자인 연결 — docs/feature.md"
     echo "<!-- cc-visual v1; writer=visual|visual-unattended; reader=implement,implement-unattended; owner-doc=docs/feature.md; origin-worktree=$R; NOT a design doc; mechanism-local, never staged by a skill -->"
     echo "**상태**: $1"
     [ "$2" = - ] || echo "$2"
@@ -271,9 +272,11 @@ else
     G="$T/grepo"
     mkdir -p "$G/docs/visual"
     (cd "$G" && git init -q)
-    key=$(head -n 1 "$T/ex.sidecar" | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p')
+    key=$(sed -n '2p' "$T/ex.sidecar" | sed -nE 's/^<!-- cc-visual v1;.*owner-doc=([^;]*);.*$/\1/p')
+    sed -n '1p' "$T/ex.sidecar" | grep -qE '^# 시각 디자인 연결 — ' \
+      && pass "사이드카 예시의 1행은 사람이 읽는 H1" || fail "사이드카 예시의 1행이 H1 이 아니다"
     if [ -z "$key" ]; then
-      fail "사이드카 예시의 머리 줄에서 owner-doc 을 읽지 못했다"
+      fail "사이드카 예시의 2행 기계 머리에서 owner-doc 을 읽지 못했다"
     else
       mkdir -p "$G/$(dirname "$key")"
       printf '%s\n' '# 예시 설계' > "$G/$key"
