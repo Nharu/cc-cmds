@@ -24268,11 +24268,12 @@ sag end-overdue --manifest "$SA_MANIFEST" --cause 포기
 check "5d: --cause 는 다른 동사에 붙지 않는다" "$rc/$(sc_ends)" "2/0"
 
 # --- 38-5e. 끝난 런의 재인가 승인 — rekick-approval 과 종류 W ----------------
-# --- section: 38-5e | group: sb | covers: close, rekick-approval | anchors: 5e: 끝나지 않은 런에는 재인가 승인을 올리지 않는다, 5e: 원인 판단정지 는 거부되고 승인 행이 늘지 않는다, 5e: 스테이지나 shift 가 부르면 거부한다, 5e: 대상미선언 승인은 종류 W 대기 행 하나다, 5e: 승인 id 는 런 id 와 원인에서 유도된다, 5e: 같은 원인을 다시 불러도 행이 늘지 않는다, 5e: 자동 해소가 켜져 있어도 W 는 대기로 남는다, 5e: 대화 기록이 없으면 W 는 닫히지 않는다, 5e: id 만 쓴 줄로는 W 가 닫히지 않는다, 5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다, 5e: 닫힌 W 의 원장이 사슬 검증을 지난다, 5e: 환경 없이 뜬 리드가 좌석 기록이 다른 끝난 런의 W 를 닫는다 ---
+# --- section: 38-5e | group: sb | covers: close, rekick-approval | anchors: 5e: 끝나지 않은 런에는 재인가 승인을 올리지 않는다, 5e: 원인 판단정지 는 거부되고 승인 행이 늘지 않는다, 5e: 스테이지나 shift 가 부르면 거부한다, 5e: 대상미선언 승인은 종류 W 대기 행 하나다, 5e: 승인 id 는 런 id 와 원인에서 유도된다, 5e: 같은 원인을 다시 불러도 행이 늘지 않는다, 5e: 자동 해소가 켜져 있어도 W 는 대기로 남는다, 5e: 대화 기록이 없으면 W 는 닫히지 않는다, 5e: id 만 쓴 줄로는 W 가 닫히지 않는다, 5e: W 의 prompt 는 게이트의 세 라벨 메뉴를 낸다, 5e: 게이트 메뉴가 아닌 선택지로 물은 W 는 닫히지 않는다, 5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다, 5e: 닫힌 W 의 원장이 사슬 검증을 지난다, 5e: 라벨이 아닌 자유 응답으로는 맨 close 도 W 를 승인으로 닫지 않는다, 5e: 사람이 거부 를 고르면 맨 close 도 W 를 거부로 닫는다, 5e: 사람의 답과 다른 플래그로는 W 를 닫지 못한다, 5e: 환경 없이 뜬 리드가 좌석 기록이 다른 끝난 런의 W 를 닫는다 ---
 #
 # 끝난 런에 후속을 열려면 권한을 넓혀야 하는 원인은 그 런의 원장에 재인가 승인을
 # 올려 사람이 닫기를 기다린다. 승인은 끝난 런 위에 서므로 `done` 이 있어도 닫혀야
-# 하고, 닫기는 오늘의 승인처럼 대화 기록의 답변 프레임에서만 나온다. `판단정지` 는
+# 하고, 닫기는 오늘의 승인처럼 대화 기록의 답변 프레임에서만 나오며 처분은 판단
+# 승인처럼 사람이 고른 게이트 메뉴 라벨이 정한다. `판단정지` 는
 # 고정 그래프의 어떤 단계도 그 답을 읽지 못하므로 이 동사가 받지 않는다.
 se_appr() { sag rekick-approval --manifest "$SA_MANIFEST" "$@"; }
 se_w_rows() { { grep -F '`승인`' "$SA_LEDGER" 2>/dev/null || true; } | grep -c '| 종류=W |' || true; }
@@ -24331,7 +24332,19 @@ se_before=$(se_appr_rows)
 CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W"
 check "5e: id 만 쓴 줄로는 W 가 닫히지 않는다" "$rc/$(se_appr_rows)/$(sa_field "$(se_last "$SE_W")" '상태')" "5/$se_before/대기"
 
-se_tid=$(auq_frame "$SE_TX/$SE_SID.jsonl" "$SE_W" "$(sa_field "$se_row" '질문 문면')" "승인" 승인 거부)
+sag prompt --manifest "$SA_MANIFEST" --approval "$SE_W"
+case "$rc|$raw" in
+  "0|"*'"cutpoint": "재인가"'*'"label": "승인"'*'후속 런을 이 변경분으로 엽니다'*'"label": "거부"'*'"label": "무효"'*)
+    ok "5e: W 의 prompt 는 게이트의 세 라벨 메뉴를 낸다" ;;
+  *) bad "5e: W 의 prompt 는 게이트의 세 라벨 메뉴를 낸다" "$rc|$raw" ;;
+esac
+
+# 게이트 메뉴가 아닌 선택지로 물은 W 는 답이 무엇이든 닫히지 않는다.
+auq_frame "$SE_TX/$SE_SID.jsonl" "$SE_W" "$(sa_field "$se_row" '질문 문면')" "승인" 승인 거부 >/dev/null
+CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W"
+check "5e: 게이트 메뉴가 아닌 선택지로 물은 W 는 닫히지 않는다" "$rc/$(sa_field "$(se_last "$SE_W")" '상태')" "3/대기"
+
+se_tid=$(auq_frame "$SE_TX/$SE_SID.jsonl" "$SE_W" "$(sa_field "$se_row" '질문 문면')" "승인")
 CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W"
 se_closed=$(se_last "$SE_W")
 check "5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다" \
@@ -24341,6 +24354,26 @@ se_chain=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; LEDGER="$2"; R
   "$GATE" "$SA_LEDGER" "$SA_ID" 2>/dev/null)
 check "5e: 닫힌 W 의 원장이 사슬 검증을 지난다" "$se_chain" "0"
 
+# W 는 닫는 쪽 플래그가 아니라 사람이 고른 라벨로 닫힌다. 맨 close 가 「아직」 같은
+# 자유 응답을 승인으로 기록하면 아무도 동의하지 않은 후속 런이 열린다.
+se_appr --cause 슬라이싱
+SE_W3=$(se_id 슬라이싱)
+se_q3=$(sa_field "$(se_last "$SE_W3")" '질문 문면')
+auq_frame "$SE_TX/$SE_SID.jsonl" "$SE_W3" "$se_q3" "아직 — 대상은 나중에 정합니다" >/dev/null
+CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W3"
+se_free=$(se_last "$SE_W3")
+check "5e: 라벨이 아닌 자유 응답으로는 맨 close 도 W 를 승인으로 닫지 않는다" \
+  "$rc/$(sa_field "$se_free" '상태')/$(sa_field "$se_free" '처분 사유')" "5/대기/자유 입력"
+auq_frame "$SE_TX/$SE_SID.jsonl" "$SE_W3" "$se_q3" "거부" >/dev/null
+CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W3"
+check "5e: 사람이 거부 를 고르면 맨 close 도 W 를 거부로 닫는다" "$rc/$(sa_field "$(se_last "$SE_W3")" '상태')" "0/거부"
+
+se_appr --cause 표면이동
+SE_W4=$(se_id 표면이동)
+auq_frame "$SE_TX/$SE_SID.jsonl" "$SE_W4" "$(sa_field "$(se_last "$SE_W4")" '질문 문면')" "거부" >/dev/null
+CLAUDE_CONFIG_DIR="$SE_CFG" CLAUDE_CODE_SESSION_ID="$SE_SID" sag close --manifest "$SA_MANIFEST" --approval "$SE_W4" --void
+check "5e: 사람의 답과 다른 플래그로는 W 를 닫지 못한다" "$rc/$(sa_field "$(se_last "$SE_W4")" '상태')" "3/대기"
+
 # 끝난 런의 W 는 런을 연 좌석이 아니라 나중에 뜬 리드가 닫는다. 그 리드는 변수 없이
 # 떠서 대화 기록이 `$HOME/.claude` 아래에 있고, 런의 좌석 기록은 다른 레인을 가리킨다.
 SE_LHOME="$SA_ROOT/lead-home"; SE_LTX="$SE_LHOME/.claude/projects/proj"; mkdir -p "$SE_LTX"
@@ -24348,7 +24381,7 @@ SE_SEAT="$SA_ROOT/seat-lane"; mkdir -p "$SE_SEAT/projects/proj"
 printf '%s\n' "$SE_SEAT" > "$SA_RUN/config-dir"
 SE_LSID="55555555-6666-7777-8888-999999999999"
 : > "$SE_LTX/$SE_LSID.jsonl"
-se_ltid=$(auq_frame "$SE_LTX/$SE_LSID.jsonl" "$SE_W2" "$(sa_field "$(se_last "$SE_W2")" '질문 문면')" "승인" 승인 거부)
+se_ltid=$(auq_frame "$SE_LTX/$SE_LSID.jsonl" "$SE_W2" "$(sa_field "$(se_last "$SE_W2")" '질문 문면')" "승인")
 ( unset CLAUDE_CONFIG_DIR XDG_CONFIG_HOME; HOME="$SE_LHOME" CLAUDE_CODE_SESSION_ID="$SE_LSID" \
   CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
   sag close --manifest "$SA_MANIFEST" --approval "$SE_W2"; printf '%s\n%s\n' "$rc" "$msg" ) > "$SA_ROOT/se-lead.out"

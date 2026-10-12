@@ -641,6 +641,17 @@ readonly GATE_MENU_VERSION=v1
 gate_menu_labels() { printf '승인 거부 무효'; }
 
 gate_menu_description() {
+  # gate_menu_description <label> [<절단점>] — a re-authorization approval
+  # (`재인가`) is asked with the same three labels, so the comparison table is
+  # one; only the sentence beside each says what that answer does to a successor.
+  if [ "${2:-}" = "재인가" ]; then
+    case "$1" in
+      승인) printf '후속 런을 이 변경분으로 엽니다 — 다음 sweep 이 파생합니다' ; return 0 ;;
+      거부) printf '후속 런을 열지 않습니다 — 같은 원인으로 다시 묻지 않습니다' ; return 0 ;;
+      무효) printf '애초에 물어서는 안 됐던 질문입니다 — 후속 런 없이 승인만 닫습니다' ; return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
   case "$1" in
     승인) printf '이 판단을 채택합니다 — 게이트가 승인 행을 쓰고 런이 그 답으로 이어갑니다' ;;
     거부) printf '물었고 답은 아니오입니다 — 이 판단은 채택되지 않습니다' ;;
@@ -14673,7 +14684,8 @@ gate_prompt() {
   # answer frame by the id inside that question and compares the menu the
   # person saw against the same table this printed from. Act and boundary
   # approvals have no menu, so `options` is empty for them and the router asks
-  # as it does today.
+  # as it does today. A re-authorization approval (`재인가`) has the judgment
+  # menu: its answer, not the closer's flag, decides whether a successor opens.
   #
   # The question text is the sidecar's full text when the block exists and
   # proves itself this run's, and the row's excerpt otherwise — an approval
@@ -14685,11 +14697,12 @@ gate_prompt() {
   full=$(gate_approval_sidecar_question "$id" || true)
   [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
   opts='[]'
-  if [ "$cutp" = "판단" ]; then
-    opts=$(for l in $(gate_menu_labels); do
-      jq -n --arg label "$l" --arg description "$(gate_menu_description "$l")" '{label: $label, description: $description}'
-    done | jq -s '.')
-  fi
+  case "$cutp" in
+    판단|재인가)
+      opts=$(for l in $(gate_menu_labels); do
+        jq -n --arg label "$l" --arg description "$(gate_menu_description "$l" "$cutp")" '{label: $label, description: $description}'
+      done | jq -s '.') ;;
+  esac
   jq -n --arg id "$id" --arg cutpoint "$cutp" --arg state "$(gate_row_field "$row" '상태')" \
         --arg question "$(gate_canon_prompt "$id" "$full")" --arg mv "$GATE_MENU_VERSION" \
         --argjson options "$opts" \
@@ -27823,6 +27836,12 @@ gate_close() {
   # every rung; act and boundary approvals have no menu and no label set, so
   # they run 1, the frame approval of 2, 3 and 4 and never 2a/2b/2c.
   #
+  # A RE-AUTHORIZATION APPROVAL (`절단점=재인가`, kind W) RUNS EVERY RUNG TOO.
+  # It is asked with the gate's menu and closed by the label the person chose,
+  # never by the closer's flag: on the act branch a bare `close` grants, so an
+  # answer of "not yet" closed without `--reject` would open a successor run
+  # nobody agreed to. Free input on W stays `대기`, as on a judgment.
+  #
   # NO RAW-LINE FALLBACK AND NO PROSE SCAN. The fallback's whole observed record
   # was zero true positives and four false ones — a transport frame recorded as
   # the answer — and the polarity vocabulary was the ledger's own words (`승인`
@@ -27906,7 +27925,7 @@ gate_close() {
   fi
   tok="$GATE_FRAME_TID"
 
-  if [ "$cutp" != "판단" ]; then
+  if [ "$cutp" != "판단" ] && [ "$cutp" != "재인가" ]; then
     # ---- act and boundary approvals: the frame decides, the closer's flag is
     # the disposition. There is no menu to compare and no label set to read, so
     # `--void` and `--reject` remain the closer's word; what changed is that the
@@ -27991,11 +28010,14 @@ gate_close() {
     # answers are worth keeping would be deciding it once, at the only moment
     # the text exists.
     #
-    # `절단점=판단` ONLY, which is where this line sits: an act approval's answer
-    # is a disposition with nothing for a stage to resume from, and serving one
-    # would make the listing show entries that are not answers.
-    mkdir -p "$RUN_DIR/answer"
-    printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
+    # `절단점=판단` ONLY: an act approval's answer is a disposition with nothing
+    # for a stage to resume from, and serving one would make the listing show
+    # entries that are not answers. A re-authorization approval's run has ended,
+    # so no stage of it comes back to read one.
+    if [ "$cutp" = "판단" ]; then
+      mkdir -p "$RUN_DIR/answer"
+      printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
+    fi
     gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=$label" "질문 문면=$q" \
       "답변 문면=$aex" "해소 시각=$(now_iso)" \
       "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
