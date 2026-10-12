@@ -27502,46 +27502,30 @@ gate_segment_cycle_verdict() {
   # gate_segment_cycle_verdict <세그먼트> <대상 별칭> <머지 팁>
   #
   # What that segment's LAST `cycle` row says about a merge of <머지 팁>:
-  #   GATE_CYCLE_COUNT_VERDICT  충족 | 위반 | 판정 불가 | 리뷰 없음
+  #   GATE_CYCLE_COUNT_VERDICT  충족 | 이월 | 위반 | 판정 불가 | 리뷰 없음
   #   GATE_CYCLE_COVER_VERDICT  덮는다 | 덮지 않는다 | 판정 불가
   #   GATE_CYCLE_NUMBER         the row's `사이클`, or 없음
   #
   # THE ONE DERIVATION. The `머지 대조` of a merged segment row is formatted from
   # this, and the convergence value a later change writes on the cycle row is
   # meant to read the same function rather than a second reading of the same
-  # row. The count half restates the P0/P1 predicate that three places already
-  # enforce — the driver's review-verdict check in `run.sh` and the two review
-  # rules, `리뷰-후-머지` and `리뷰-후-적용` — so this is the FOURTH place a run
-  # that changes that predicate has to change with them.
+  # row. The count half is `gate_segment_review_count_verdict`, the function the
+  # review's `다음` table reads, so the merge record and the merge decision
+  # cannot disagree about the same cycle. `이월` binds only a `리뷰 이월` row with
+  # the last cycle's `사이클` and `리뷰 HEAD`; a dismissal is not read here.
   #
   # A MISSING COUNT IS NOT ZERO. The merge rule fills an absent `P0`/`P1` with 0
   # before comparing; that reading is left alone there, and not copied here —
   # a row that states no count has not said the findings are closed, and the
   # record of the merge is the place that has to be able to say so.
-  local seg="$1" al="$2" tip="$3" row p0 p1 rh n
+  # `gate_canon_count` in the count function keeps that.
+  local seg="$1" al="$2" tip="$3" row rh n
   GATE_CYCLE_COUNT_VERDICT=""
   GATE_CYCLE_COVER_VERDICT=""
   GATE_CYCLE_NUMBER='없음'
-  row=$(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" | tail -1)
-  if [ -z "$row" ]; then
-    GATE_CYCLE_COUNT_VERDICT='리뷰 없음'
-  else
-    p0=$(gate_row_field "$row" 'P0')
-    p1=$(gate_row_field "$row" 'P1')
-    # `0` or a digit string without a leading zero, and nothing else.
-    for n in "$p0" "$p1"; do
-      case "$n" in
-        0) : ;;
-        ''|*[!0-9]*|0*) GATE_CYCLE_COUNT_VERDICT='판정 불가' ;;
-      esac
-    done
-    if [ -z "$GATE_CYCLE_COUNT_VERDICT" ]; then
-      if [ "$p0" = 0 ] && [ "$p1" = 0 ]; then
-        GATE_CYCLE_COUNT_VERDICT='충족'
-      else
-        GATE_CYCLE_COUNT_VERDICT='위반'
-      fi
-    fi
+  row=$(gate_segment_last_cycle_row "$seg")
+  GATE_CYCLE_COUNT_VERDICT=$(gate_segment_review_count_verdict "$seg")
+  if [ -n "$row" ]; then
     n=$(gate_row_field "$row" '사이클')
     case "$n" in
       ''|*[!0-9]*|0*) : ;;
@@ -27588,8 +27572,12 @@ EOF
 
 gate_merge_check_value() {
   # gate_merge_check_value <리뷰 정책> <카운트 판정> <커버리지 판정> — the
-  # `머지 대조` value. Closed set: 충족 · 위반(카운트) · 위반(미포함) ·
+  # `머지 대조` value. Closed set: 충족 · 이월 · 위반(카운트) · 위반(미포함) ·
   # 위반(카운트·미포함) · 리뷰 없음 · 판정 불가 · 정책 면제.
+  #
+  # `이월` EXCUSES THE COUNT HALF ONLY. A carry-over moves the open P1 findings
+  # to issues; it says nothing about whether the review saw the merged commit,
+  # so a carried cycle that does not cover the merge is still `위반(미포함)`.
   #
   # `판정 불가` OUTRANKS A PARTIAL VIOLATION. A value that names one violation
   # while the other half went unmeasured reads as the whole answer, and the
@@ -27600,8 +27588,10 @@ gate_merge_check_value() {
   if [ "$cnt" = '판정 불가' ] || [ "$cov" = '판정 불가' ]; then printf '%s' '판정 불가'; return 0; fi
   case "$cnt:$cov" in
     '충족:덮는다') printf '%s' '충족' ;;
+    '이월:덮는다') printf '%s' '이월' ;;
     '위반:덮는다') printf '%s' '위반(카운트)' ;;
     '충족:덮지 않는다') printf '%s' '위반(미포함)' ;;
+    '이월:덮지 않는다') printf '%s' '위반(미포함)' ;;
     '위반:덮지 않는다') printf '%s' '위반(카운트·미포함)' ;;
     *) printf '%s' '판정 불가' ;;
   esac
@@ -31263,6 +31253,9 @@ gate_done_conditions() {
   # THE PASSING VALUES ARE NAMED AND EVERYTHING ELSE HOLDS, an empty value
   # included. Listing the failing values instead let any spelling outside the
   # list — the one a caller could still get onto the ledger — read as a pass.
+  # `이월` passes: it records a merge the merge rule let through after the last
+  # cycle's open P1 findings were carried over to issues. A `P1 > 0` without
+  # that carry-over still reads `위반(카운트)` and holds.
   if gate_rule_enabled '리뷰-후-머지'; then
     local pol mcv mrow
     for sid in $(gate_segment_ids); do
@@ -31274,7 +31267,7 @@ gate_done_conditions() {
       [ -n "$mrow" ] || continue
       mcv=$(gate_row_field "$mrow" '머지 대조')
       case "$mcv" in
-        '충족'|'정책 면제') ;;
+        '충족'|'정책 면제'|'이월') ;;
         *) printf '11 세그먼트 %s 의 머지 대조가 %s 입니다\n' "$sid" "${mcv:-(빈 값)}" ;;
       esac
     done

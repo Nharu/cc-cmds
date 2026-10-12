@@ -1081,7 +1081,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `리뷰 의무.상태` | `미이행` \| `이행` |
 | `리뷰 의무.이행 판정` | `착지·포함` \| `미착지` \| `앵커 없음` |
 | `segment.리뷰 정책` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; omission on a later row inherits) |
-| `segment.머지 대조` | `충족` \| `위반(카운트)` \| `위반(미포함)` \| `위반(카운트·미포함)` \| `리뷰 없음` \| `판정 불가` \| `정책 면제` (gate-written, `상태=머지됨` rows only) |
+| `segment.머지 대조` | `충족` \| `이월` \| `위반(카운트)` \| `위반(미포함)` \| `위반(카운트·미포함)` \| `리뷰 없음` \| `판정 불가` \| `정책 면제` (gate-written, `상태=머지됨` rows only) |
 | `segment.최종 사이클` | a positive integer \| `없음` (gate-written, `상태=머지됨` rows only) |
 | `target.리뷰 정책 상한` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; absence reads `선리뷰후머지`) |
 | `대상 추가.층` | `0` \| `1` |

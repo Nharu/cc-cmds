@@ -21923,6 +21923,8 @@ check "25: 충족과 덮음은 충족이다"                          "$(mcv 선
 check "25: 위반과 덮음은 위반(카운트) 다"                   "$(mcv 선리뷰후머지 '위반' '덮는다')" "위반(카운트)"
 check "25: 충족과 덮지 않음은 위반(미포함) 이다"            "$(mcv 선리뷰후머지 '충족' '덮지 않는다')" "위반(미포함)"
 check "25: 위반과 덮지 않음은 위반(카운트·미포함) 이다"     "$(mcv 선리뷰후머지 '위반' '덮지 않는다')" "위반(카운트·미포함)"
+check "25: 이월과 덮음은 이월 이다"                          "$(mcv 선리뷰후머지 '이월' '덮는다')" "이월"
+check "25: 이월과 덮지 않음은 위반(미포함) 이다"            "$(mcv 선리뷰후머지 '이월' '덮지 않는다')" "위반(미포함)"
 
 # --- 35-26. 열린 발견 위의 머지는 위반으로 남고, 덮는 리뷰와 둘째 머지됨만 지운다 ---
 # --- section: 35-26 | group: sa | covers: act, snapshot | anchors: 26: 열린 발견 위의 머지됨 행이 기록된다 ---
@@ -33634,7 +33636,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 88. K2 트립와이어 — 이월 머지가 머지 대조와 종료 조건 11 을 지나는가
-# --- section: 88 | group: ledger_series | covers: gate_segment_review_count_verdict, gate_merge_check_value, gate_done_conditions | anchors: 88: 이월된 사이클의 카운트 판정은 이월 이다, 88: 이월 없는 P1>0 의 카운트 판정은 위반 이다 ---
+# --- section: 88 | group: ledger_series | covers: gate_segment_review_count_verdict, gate_segment_cycle_verdict, gate_merge_check_value, gate_segment_merged_row, gate_done_conditions | anchors: 88: 이월된 사이클의 카운트 판정은 이월 이다, 88: 이월 없는 P1>0 의 카운트 판정은 위반 이다 ---
 #
 # 이월 머지가 `머지 대조` 를 쓰는 트리에서 무엇으로 기록되는지는 그 트리가 정한다.
 # 이 절은 두 갈래다. `gate_merge_check_value` 가 없으면 그 사실만 적는다 — 그 출력은
@@ -33677,8 +33679,26 @@ else
   L88V=$(l88 violated 0 '- `segment` | 교대=1 | id=S2 | 상태=머지됨 | 워크트리=- | 머지 대조=위반(카운트) | prev=x')
   check "88: K2 위에서 조건 11 은 머지 대조=이월 을 통과시키고 위반(카운트) 를 붙잡는다 (미끼 행이 있어도)" \
     "$(q88 "$L88M" gate_done_conditions | grep -c '^11 ' || true)/$(q88 "$L88V" gate_done_conditions | grep -c '^11 ' || true)" "0/1"
-  L88D=$(l88 driver 1 "- \`segment\` | 교대=1 | id=S2 | 상태=실행중 | 워크트리=$D88 | 선행=없음 | prev=x")
-  q88 "$L88D" gate_segment_merged_row t S2 워크트리=- 선행=없음 >/dev/null || true
+  # 드라이버 갈래는 기록된 워크트리를 세운다. 저장소 밖 디렉터리는 기록이 되지 못해
+  # 팁을 읽지 못하고, 그러면 커버리지가 `판정 불가` 라 이월 사상까지 닿지 않는다.
+  # 원격 없는 저장소의 로컬 베이스에 세그먼트 팁을 착지시키고, 두 사이클과 이월 행의
+  # `리뷰 HEAD` 를 그 팁으로 둔다.
+  G88="$D88/repo"; W88="$D88/seg"
+  ( mkdir -p "$G88" && cd "$G88" && git init -q . \
+    && git config user.email t@example.invalid && git config user.name T \
+    && echo one > a.txt && git add -A && git commit -qm one && git branch -M main \
+    && git worktree add -q -b seg-88 "$W88" main ) >/dev/null 2>&1
+  T88=$( ( cd "$W88" && echo two > b.txt && git add -A && git commit -qm two && git rev-parse HEAD ) 2>/dev/null)
+  ( cd "$G88" && git merge -q --ff-only seg-88 ) >/dev/null 2>&1
+  M88D="$D88/manifest-driver.md"
+  printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n- `사전 인가` | 형태=gh issue | 사유=테스트\n' "$G88" > "$M88D"
+  L88D=$(lsr_ledger "w88-driver")
+  printf -- '- `segment` | 교대=1 | id=S2 | 상태=실행중 | 워크트리=%s | 브랜치=seg-88 | 선행=없음 | prev=x\n' "$W88" >> "$L88D"
+  printf -- '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=1 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' "$T88" "$R88" >> "$L88D"
+  printf -- '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=2 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' "$T88" "$R88" >> "$L88D"
+  printf '%s\n' "$DECOY88" >> "$L88D"
+  printf -- '- `리뷰 이월` | 교대=1 | 세그먼트=S2 | 사이클=2 | 리뷰 HEAD=%s | 건수=1 | 이슈=https://github.com/o/r/issues/1 | 레인=~ | 기록 시각=2026-10-12T00:00:00Z | prev=x\n' "$T88" >> "$L88D"
+  lsr_in Linux "$L88D" - in88 "$M88D" gate_segment_merged_row t S2 워크트리="$W88" 선행=없음 >/dev/null 2>&1 || true
   check "88: K2 위에서 드라이버의 머지됨 조립 함수가 낸 행에도 머지 대조=이월 이 실린다" \
     "$( { grep '^- `segment` ' "$L88D" || true; } | tail -1 | grep -c '| 머지 대조=이월 ' || true)" "1"
 fi
