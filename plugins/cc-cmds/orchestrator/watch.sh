@@ -175,6 +175,12 @@ RUN_ID=$(basename "$RUN_DIR")
 now_epoch() { date +%s; }
 now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# When this watcher started watching. The idle exit counts from no earlier than
+# this: a watcher the seat starts again on a run that has been quiet for a day
+# reads the day-old `마지막성장` its predecessor left, and without this it would
+# leave on its first iteration, before writing a heartbeat of its own.
+WATCH_STARTED=$(now_epoch)
+
 # Delegated for the same reason the three predicates below are: the status line
 # has to measure the SAME quantity this watcher does, and two spellings of
 # "how big is the ledger" is how they stop agreeing. The `:-0` keeps this
@@ -1019,8 +1025,9 @@ pass() {
 }
 
 run_is_over() {
-  # The two ways this watcher's job ends. Neither is a judgment it makes — one
-  # is a fact the gate records, the other is the run's own directory going away.
+  # The ways this watcher's job ends. None is a judgment of its own — one is a
+  # fact the gate records, one is the run's own directory going away, and the
+  # third is the shared idle predicate in `liveness.sh`.
   #
   # Without them the loop had no exit at all and nothing else reaped it: the
   # gate ends a run without touching the watcher, and the report renderer is
@@ -1040,6 +1047,16 @@ run_is_over() {
   # at a path that never appears does not linger forever.
   if [ -d "$RUN_DIR" ]; then
     RUN_DIR_SEEN=1
+    # THE THIRD EXIT: A RUN THAT WAITS FOR NOBODY. Nothing alive, no approval,
+    # no unanswered halt record, and a ledger that has not grown for the shared
+    # threshold. It is the shared predicate with the shared threshold — this
+    # file declares no value of its own — and it writes no `done`: the run stays
+    # open, and the seat starts a watcher again when it next launches a shift.
+    if cc_run_idle_exit "$RUN_DIR" "" "$LEDGER" "${WATCH_STARTED:-}"; then
+      printf '%s [watch] 유휴 %s초 — 살아 있는 교대·스테이지도, 열린 승인도, 답 없는 정지 기록도 없고 원장이 그동안 자라지 않아 감시를 멈춥니다. 런은 열린 채 남습니다 — 닫으려면 게이트의 end-abandoned 동사를 씁니다\n' \
+        "$(now_iso)" "$CC_RUN_IDLE_EXIT_SECONDS"
+      return 0
+    fi
     return 1
   fi
   if [ "${RUN_DIR_SEEN:-0}" = "1" ]; then

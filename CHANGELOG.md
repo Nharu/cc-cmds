@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.64.3] - 2026-10-11
+## [2.65.1] - 2026-10-12
 
 무인 런에서 게이트를 거치지 않은 머지가 리뷰 대조 없이 `상태=머지됨` 으로만 기록되던 구멍(#916)을 닫는다. 게이트는 이제 `머지됨` 행을 쓸 때 그 세그먼트의 마지막 `cycle` 행을 머지된 팁과 대조해 결과를 행에 적고, `선리뷰후머지` 세그먼트의 대조가 통과하지 못했으면 새 종료 조건 11 이 런의 종료를 막는다. 베이스로 가는 `git push` 는 git 의 dry-run 으로 실측해 머지로 판정하고 올라가는 커밋을 리뷰한 HEAD 에 결속하며, dry-run 으로 잴 수 없는 push 는 거절한다. 리뷰 판정 술어(P0·P1 이 모두 0) 자체는 바뀌지 않는다.
 
@@ -53,6 +53,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fix(autopilot): GraphQL ref 쓰기와 operationName 결속, 경로로 적은 git 의 환경 할당을 거절한다`
 - `fix(autopilot): graphql 이 아닌 엔드포인트의 변수 결속과 env split-string·find 안의 push 를 거절한다`
 - `fix(autopilot): 자동 머지·쿼리 sha·find {} 를 거친 머지와 push 를 결속 없는 것으로 거절한다`
+
+## [2.65.0] - 2026-10-12
+
+이 호스트에서 도는 병렬 autopilot 런들은 그동안 런마다 원장과 상태줄을 따로 열어 보아야 했다. 이제 런을 시작하면 로컬 대시보드 서버가 함께 뜨고, 모든 런의 상태·세그먼트·스테이지 이력을 브라우저 한 화면에서 볼 수 있다. 서버는 읽기만 하며 런의 종료 코드와 원장에 아무 영향을 주지 않는다.
+
+### Added
+
+- **대시보드 서버와 화면** (`orchestrator/dashboard.py`, `orchestrator/dashboard_read.py`, `orchestrator/dashboard/`) — Python 3.9 표준 라이브러리만 쓰는 loopback 서버가 런 목록(살아 있는 런·최근 런·오래된 런 띠)과 런 상세(종료 절, 세그먼트, 스테이지 타임라인, 비용)를 보여 준다. 런 상태는 셸 `liveness.sh` 의 판정을 1:1 로 옮긴 포트로 읽고, 같은 틱의 요청은 한 번 계산한 결과를 나눠 쓴다. Host 정확 일치, GET/HEAD 한정, CSP 를 건다. 폴링만 받으면 유휴 시간 뒤 스스로 끝난다
+- **`/cc-cmds:dashboard`** — 서버를 띄우거나 이미 떠 있는 것을 확인하고 링크 한 줄을 내는 스킬
+- **런 개시의 자동 기동** (`orchestrator/gate.sh`) — 비스테이지 좌석에서 새 런의 첫 게이트 진입이 대시보드 서버를 분리 기동한다. 스테이지 좌석, 첫 진입이 `plan`·`digest-path` 인 경우, 끄개가 켜진 경우에는 띄우지 않고, 실패해도 런을 실패시키지 않는다
+- **링크 줄** (`autopilot`) — 킥오프 안내, 연기 안내, `--report` 맨 위에 `dashboard.py url` 의 출력 한 줄을 싣는다
+- **시험** — `scripts/test-dashboard.sh` 를 `make test` 에 넣고, `scripts/test-gate.sh` 86절과 `scripts/test-liveness-agreement.sh` 의 셸·포트 합의 픽스처를 더했다
+
+### Fixed
+
+- **런 종료 행** (`orchestrator/gate.sh`) — `결정=종료` 행이 `절단점=경계` 옆에 `유도 절단점=-` 을 함께 싣는다. 경계 승인 행은 이미 두 필드를 싣고 있었고, 종료 행만 한 칸을 비워 두어 `절단점` 을 싣는 모든 행이 두 필드를 함께 싣는다는 시험이 종료 행을 만든 절과 같은 실행에서 돌면 실패했다
+
+### Post-install notes
+
+- 자동 기동은 `CC_CMDS_DASHBOARD=off` 이거나 `CI` 가 설정되어 있으면 일어나지 않는다. `Makefile` 과 게이트를 부르는 시험 스위트는 기본값으로 끈다
+- `python3` 는 대시보드에만 필요하다. 없는 기기에서도 런은 그대로 돌고, 링크 줄은 「대시보드 없음 — python3 를 찾지 못했습니다」가 된다
+
+## [2.64.3] - 2026-10-12
+
+계정 라우터가 스테이지 비용을 고정 상수로만 잡아, 실제 사용량과 크게 어긋난 예약으로 계정을 막거나 넘치게 열었다. 이제 끝난 스테이지의 로그에서 창별 사용률 증가를 표본으로 남기고, 입장 판정이 같은 쿼터 그룹·같은 종류의 실측 중앙값을 비용으로 쓴다. 표본이 모자라면 예전처럼 기본값으로 떨어진다.
+
+### Fixed
+
+- **실측 비용 표본** (`orchestrator`) — 감독자와 드라이버가 라우팅된 시도가 끝나면 로그마다 한 줄씩 공유 저장소에 비용 표본을 쓴다. 기록기가 실패한 시도도 남기고, 좌석·미상 계정과 결과 줄이 없는 로그는 남기지 않는다
+- **입장 비용 추정** (`orchestrator`) — 입장 판정이 그룹·종류 칸 → 종류 칸 → 기본값 순으로 비용을 고르고, 같은 그룹 표본의 구간 겹침과 위생 문턱을 반영한 중앙값을 창별 바닥값 이상으로 쓴다. 기본 상수는 0.15/0.02 로 내렸다. 저장소가 상한을 넘거나 읽히지 않으면 경고하고 표본 없이 판정한다
+- **원장 행의 비용 칸** (`orchestrator`) — `stage-lease`·`stage-wait` 행이 입장에 쓴 창별 비용과 그 출처를 `비용`·`비용 출처` 칸에 싣고, 두 기록자가 같은 규칙으로 모양을 검사한다
 
 ## [2.64.2] - 2026-10-11
 

@@ -13,6 +13,15 @@
 #
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`, no `wait -n`.
 
+# THE ONE EXCEPTION TO "TOUCHES NOTHING": the dashboard's automatic start is
+# off by default for every suite that sources this file. Nothing here calls the
+# gate, but the suites that build runs with these functions are the ones that
+# then open them through it, and a run opened with the switch unset leaves a
+# real server listening after the suite ends. A default rather than an
+# assignment, so a suite that sets the switch before sourcing keeps its value.
+: "${CC_CMDS_DASHBOARD:=off}"
+export CC_CMDS_DASHBOARD
+
 # --------------------------------------------------------------------------
 # Run directory and ledger
 # --------------------------------------------------------------------------

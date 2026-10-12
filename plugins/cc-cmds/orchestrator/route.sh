@@ -43,12 +43,58 @@ case "${ROUTE_K_SHIFT:-}" in
   *) readonly ROUTE_K_SHIFT=1 ;;
 esac
 case "${ROUTE_C_FIVE_HOUR:-}" in
-  0.46) ;;
-  *) readonly ROUTE_C_FIVE_HOUR=0.46 ;;
+  0.15) ;;
+  *) readonly ROUTE_C_FIVE_HOUR=0.15 ;;
 esac
 case "${ROUTE_C_SEVEN_DAY:-}" in
-  0.08) ;;
-  *) readonly ROUTE_C_SEVEN_DAY=0.08 ;;
+  0.02) ;;
+  *) readonly ROUTE_C_SEVEN_DAY=0.02 ;;
+esac
+# 실측 비용 표. 칸의 표본은 끝난 지 `MAX_AGE_S` 안인 것 중 최신 `MAX_N` 개이고,
+# `MIN_N` 개 미만이면 칸을 만들지 않는다. 대표값 아래로는 창별 바닥값을 쓴다 —
+# 사용률이 0.01 단위로 와서 그냥 중앙값은 0 이 되고, 비용 0 은 입장을 무제한으로
+# 연다. 위생 문턱은 창 하나의 표본이 중앙값에 들어갈 조건이다.
+case "${ROUTE_COST_MAX_AGE_S:-}" in
+  604800) ;;
+  *) readonly ROUTE_COST_MAX_AGE_S=604800 ;;
+esac
+case "${ROUTE_COST_MAX_N:-}" in
+  40) ;;
+  *) readonly ROUTE_COST_MAX_N=40 ;;
+esac
+case "${ROUTE_COST_MIN_N:-}" in
+  3) ;;
+  *) readonly ROUTE_COST_MIN_N=3 ;;
+esac
+case "${ROUTE_COST_FLOOR_FIVE_HOUR:-}" in
+  0.01) ;;
+  *) readonly ROUTE_COST_FLOOR_FIVE_HOUR=0.01 ;;
+esac
+case "${ROUTE_COST_FLOOR_SEVEN_DAY:-}" in
+  0.005) ;;
+  *) readonly ROUTE_COST_FLOOR_SEVEN_DAY=0.005 ;;
+esac
+case "${ROUTE_COST_HYG_MIN_FRAMES:-}" in
+  3) ;;
+  *) readonly ROUTE_COST_HYG_MIN_FRAMES=3 ;;
+esac
+case "${ROUTE_COST_HYG_MIN_COVER:-}" in
+  0.5) ;;
+  *) readonly ROUTE_COST_HYG_MIN_COVER=0.5 ;;
+esac
+# 표본 저장소의 보존과 판독 상한. 문맥에 싣지 않는다 — 앞의 둘은 작성기 프로세스가,
+# 뒤의 하나는 수집 쪽 셸이 그대로 쓴다.
+case "${ROUTE_COST_KEEP_S:-}" in
+  1209600) ;;
+  *) readonly ROUTE_COST_KEEP_S=1209600 ;;
+esac
+case "${ROUTE_COST_KEEP_LINES:-}" in
+  4000) ;;
+  *) readonly ROUTE_COST_KEEP_LINES=4000 ;;
+esac
+case "${ROUTE_COST_READ_MAX_BYTES:-}" in
+  8388608) ;;
+  *) readonly ROUTE_COST_READ_MAX_BYTES=8388608 ;;
 esac
 # 스테이지 로그 출처의 TTL. 트래커 출처와 같은 값이지만 이름을 공유하지 않는다 —
 # 한쪽을 고칠 때 다른 쪽이 따라 움직이면 안 된다.
@@ -88,6 +134,10 @@ case "${ROUTE_BORROW_SCHEMA:-}" in
   'cc-lane-borrow v1') ;;
   *) readonly ROUTE_BORROW_SCHEMA='cc-lane-borrow v1' ;;
 esac
+case "${ROUTE_COST_SCHEMA:-}" in
+  'cc-cmds-cost-sample v1') ;;
+  *) readonly ROUTE_COST_SCHEMA='cc-cmds-cost-sample v1' ;;
+esac
 
 route__dir() { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; }
 
@@ -119,6 +169,9 @@ route__hook_revalidate() { :; }
 # 충돌 린트가 그런 줄을 소스 줄로 읽는다.
 # ---------------------------------------------------------------------------
 route__jq_lib() {
+  # 표본 스키마는 위의 가드가 문자 그대로 고정한 값이라 따옴표 안에 그대로 넣는다.
+  # 판독기가 판정 경로 안에 있어 인자로 넘기면 모든 호출자가 같은 인자를 날라야 한다.
+  printf 'def rt_cost_schema: "%s";\n' "$ROUTE_COST_SCHEMA"
   cat <<'JQ'
 def rt_wins: ["five_hour", "seven_day"];
 def rt_bp: (. * 10000 | round);
@@ -234,6 +287,61 @@ def rt_frames_of_file:
     end)
   | {five_hour, seven_day};
 
+# 비용 표본의 닫힌 부류와 계정 판정. 계정 판정은 원장의 `run_ledger_account_ok` 를 jq
+# 술어로 옮긴 것이고 작성기와 판독기가 함께 쓴다.
+def rt_cost_kinds: ["design", "audit", "split", "implement", "review", "reconverge"];
+def rt_cost_acct_ok: (type == "string") and test("^[A-Za-z0-9._:#+-]{1,64}$") and . != "-" and . != "(미상)";
+
+# 로그 한 번을 지나며 창별 첫·끝 판독을 모은다. `rt_frames_of_file` 은 창마다 마지막
+# 프레임만 남기므로 따로 둔다. 프레임 관측 시각은 같은 규칙(바로 앞의 타임스탬프
+# 줄)이고, 사용률과 리셋 시각이 둘 다 숫자인 프레임만 센다.
+def rt_cost_of_log:
+  reduce (inputs | (fromjson? // null)) as $f ({first: null, last: null, dur: null, usd: null, cli: null, w: {five_hour: null, seven_day: null}};
+    if ($f | type) != "object" then .
+    else
+      (if $f.type == "rate_limit_event" and .last != null then
+         ($f.rate_limit_info.unifiedWindows? // null) as $uw
+         | .last as $t
+         | reduce rt_wins[] as $w (.;
+             if ($uw | type) == "object" and ($uw[$w] | type) == "object"
+                and ($uw[$w].utilization | type) == "number" and ($uw[$w].resetsAt | type) == "number"
+             then $uw[$w].utilization as $u | $uw[$w].resetsAt as $r
+               | .w[$w] = (if .w[$w] == null then {u0: $u, u1: $u, r0: $r, r1: $r, n: 1, t0: $t, t1: $t}
+                           else .w[$w] + {u1: $u, r1: $r, n: (.w[$w].n + 1), t1: $t} end)
+             else . end)
+       else . end)
+      | (if $f.type == "result" and ($f.duration_ms | type) == "number" then
+           .dur = $f.duration_ms | .usd = (if ($f.total_cost_usd | type) == "number" then $f.total_cost_usd else null end)
+         else . end)
+      | (if $f.type == "system" and $f.subtype == "init" and .cli == null and ($f.claude_code_version | type) == "string"
+         then .cli = $f.claude_code_version else . end)
+      | if ($f.timestamp | type) == "string" then
+          ($f.timestamp | sub("[.][0-9]+"; "") | try fromdateiso8601 catch null) as $e
+          | if $e != null then .last = $e | .first = (.first // $e) else . end
+        else . end
+    end);
+
+# 모은 판독에서 표본 한 줄. 끝은 마지막 타임스탬프, 시작은 끝에서 `duration_ms` 를 뺀
+# 값이되 첫 타임스탬프보다 이르면 첫 타임스탬프다. 타임스탬프나 결과 줄이 없으면
+# 구간을 정할 수 없으므로 null — 결과 줄이 없는 로그는 정상 종료에 닿지 않은 시도다.
+def rt_cost_line($run; $lin; $log; $kind; $acct; $schema):
+  if .last == null or .first == null or .dur == null then null
+  else
+    {schema: $schema, run_id: $run, lineage: $lin, log: $log, kind: $kind, account: $acct,
+     t_start: ([(.last - (.dur / 1000)), .first] | max), t_end: .last, duration_ms: .dur, usd: .usd, cli: .cli,
+     windows: (.w | with_entries(select(.value != null)))}
+  end;
+
+# 저장소 정리. 입력은 기존 파일의 날 줄들이다. 파싱되지 않거나 스키마가 다른 줄을
+# 버리고, 같은 키(런·로그 이름)의 줄을 새 줄로 바꾸고, `t_end` 가 보존 기간보다
+# 오래된 줄을 지운 뒤 `t_end` 기준 최신 `$keep_n` 줄을 남긴다.
+def rt_cost_store($new; $now; $keep_s; $keep_n; $schema):
+  [inputs | (fromjson? // null) | select(type == "object" and .schema == $schema)
+   | select((.run_id != $new.run_id) or (.log != $new.log))]
+  + [$new]
+  | map(select((.t_end | type) == "number" and .t_end >= ($now - $keep_s)))
+  | sort_by(.t_end) | .[-$keep_n:] | .[];
+
 def rt_uaccts($c):
   if ($c.usage.state // "") == "valid"
   then [($c.usage.accounts // [])[] | select(type == "object" and ((.id | type) == "string"))]
@@ -346,16 +454,103 @@ def rt_prep($schema):
 def rt_need_cap: if (.config.cap_bp | rt_isint | not) then error("config.cap_bp") else . end;
 def rt_kv($c; $kind; $w):
   ($c.config.k[$kind][$w] // $c.config.k.default[$w]) | if rt_isint then . else error("config.k") end;
-def rt_cbp($c; $w; $kind; $g):
+# 단계 비용 조회. 그룹·부류 칸 → 부류 칸 → 기본값의 첫 숫자와 그 출처다. 그룹 칸은
+# 부류마다 따로이므로 한 그룹에 다른 부류 표본만 있으면 그 값이 새지 않는다.
+def rt_cost($c; $w; $kind; $g):
   ($c.config.c[$w]) as $cw
-  | (($cw.by_group[$g] // $cw.by_kind[$kind]) // $cw.default)
-  | if type == "number" then rt_bp else error("config.c") end;
+  | (if (($cw.by_group // null) | type) == "object" and (($cw.by_group[$g] // null) | type) == "object"
+        and ($cw.by_group[$g][$kind] // null) != null
+     then {v: $cw.by_group[$g][$kind], source: "group-kind"}
+     elif ($cw.by_kind[$kind] // null) != null then {v: $cw.by_kind[$kind], source: "kind"}
+     else {v: $cw.default, source: "default"} end)
+  | if (.v | type) == "number" then {bp: (.v | rt_bp), source: .source} else error("config.c") end;
+
+# 비용 표 — 저장소의 표본에서 창마다 부류 칸과 그룹·부류 칸의 값. 순수하다. 설정이
+# 없거나 숫자가 아니거나 표본 원문이 문자열이 아니면 빈 표이고, 그러면 조회는 모두
+# 기본값으로 떨어진다 — 추정기의 결함이 판정을 막지 않는다.
+def rt_cost_empty: {five_hour: {by_kind: {}, by_group: {}}, seven_day: {by_kind: {}, by_group: {}}};
+def rt_cost_cfg_ok:
+  if type != "object" then false
+  elif ((.floor | type) != "object") or ((.hygiene | type) != "object") then false
+  else (.max_age_s | type) == "number" and (.max_n | rt_isint) and .max_n >= 1 and (.min_n | rt_isint) and .min_n >= 1
+       and ((.floor.five_hour | type) == "number") and ((.floor.seven_day | type) == "number")
+       and ((.hygiene.min_frames | type) == "number") and ((.hygiene.min_cover | type) == "number") end;
+def rt_cost_win_ok:
+  (type == "object") and ((.u0 | type) == "number") and ((.u1 | type) == "number") and .u0 >= 0 and .u1 <= 1
+  and (.n | rt_isint) and .n >= 0 and ((.r0 | type) == "number") and ((.r1 | type) == "number");
+def rt_cost_sample_ok($now):
+  if type != "object" or .schema != rt_cost_schema then false
+  elif ((.run_id | type) != "string") or ((.log | type) != "string") then false
+  elif (.kind as $k | any(rt_cost_kinds[]; . == $k)) | not then false
+  elif (.account | rt_cost_acct_ok) | not then false
+  elif ((.t_start | type) != "number") or ((.t_end | type) != "number") then false
+  elif .t_start > .t_end or .t_end > ($now + 300) then false
+  elif (.windows | type) != "object" then false
+  else (.windows) as $ws | all(rt_wins[]; ($ws[.] // null) as $x | $x == null or ($x | rt_cost_win_ok)) end;
+
+# 같은 그룹 표본의 구간 겹침으로 정한 분모 m = (길이 + 겹침 합) / 길이. 입력은 한
+# 그룹의 표본 배열이다. 시작 순으로 늘어놓고 앞으로 훑다가 시작이 자기 끝을 넘는
+# 표본에서 멈춘다. 길이 0 인 표본의 m 은 1 이다(위생에서 빠진다).
+def rt_cost_m:
+  sort_by(.t_start) | . as $s | length as $n
+  | (reduce range(0; $n) as $i ([range(0; $n) | 0];
+       reduce (label $out | range($i + 1; $n) as $j
+               | if $s[$j].t_start >= $s[$i].t_end then break $out
+                 else {j: $j, o: (([$s[$i].t_end, $s[$j].t_end] | min) - $s[$j].t_start)} end) as $x
+         (.; .[$i] += $x.o | .[$x.j] += $x.o))) as $ov
+  | [range(0; $n) as $i | $s[$i] + {m: (if $s[$i].len > 0 then ($s[$i].len + $ov[$i]) / $s[$i].len else 1 end)}];
+
+# 창 판독 하나의 위생. 나눗셈 없이 쓴다 — 길이 0 인 표본이 오류 없이 빠지도록.
+def rt_cost_hyg($h; $x):
+  ($x.n >= $h.min_frames) and (.len > 0) and (($x.t0 | type) == "number") and (($x.t1 | type) == "number")
+  and (($x.t1 - $x.t0) >= ($h.min_cover * .len)) and ($x.r0 == $x.r1) and ($x.u1 >= $x.u0);
+
+# 칸 하나. 입력은 `{t_end, v}` 배열이다. 최신 `max_n` 개의 중앙값(짝수면 가운데 둘의
+# 평균)을 창 바닥값 아래로 내리지 않는다. 표본이 `min_n` 개보다 적으면 null.
+def rt_cost_cell($k; $w):
+  (sort_by(.t_end) | .[-$k.max_n:]) as $xs
+  | if ($xs | length) < $k.min_n then null
+    else ($xs | map(.v) | sort) as $v | ($v | length) as $n
+      | (if $n % 2 == 1 then $v[($n - 1) / 2] else ($v[$n / 2 - 1] + $v[$n / 2]) / 2 end) as $med
+      | {value: ([$k.floor[$w], $med] | max), n: $n, oldest: ($xs | map(.t_end) | min)} end;
+
+def rt_cost_table($c):
+  ($c.config.cost // null) as $k
+  | if (($k | rt_cost_cfg_ok) | not) or (($c.cost_samples | type) != "string") or (($c.now | type) != "number") then rt_cost_empty
+    else rt_orgs($c) as $orgs
+      | [$c.cost_samples | split("\n")[] | (fromjson? // null) | select(rt_cost_sample_ok($c.now))]
+      | (reduce .[] as $s ({}; .[[$s.run_id, $s.log] | tojson] = $s)) | [.[]]
+      | map(. + {g: rt_group_of($orgs; .account), len: (.t_end - .t_start)})
+      | [group_by(.g)[] | rt_cost_m[]]
+      | map(select(.t_end >= ($c.now - $k.max_age_s))) as $live
+      | reduce rt_wins[] as $w (rt_cost_empty;
+          [$live[] | (.) as $s | ($s.windows[$w] // null) as $x
+            | select($x != null) | select($s | rt_cost_hyg($k.hygiene; $x))
+            | {g: $s.g, kind: $s.kind, t_end: $s.t_end, v: (($x.u1 - $x.u0) / $s.m)}] as $vs
+          | reduce ($vs | group_by(.kind))[] as $kv (.;
+              ($kv | rt_cost_cell($k; $w)) as $cell
+              | if $cell == null then . else .[$w].by_kind[$kv[0].kind] = $cell end)
+          | reduce ($vs | group_by([.g, .kind]))[] as $gv (.;
+              ($gv | rt_cost_cell($k; $w)) as $cell
+              | if $cell == null then . else .[$w].by_group[$gv[0].g][$gv[0].kind] = $cell end))
+    end;
+
+# 표를 문맥의 `config.c` 위에 얹는다. 표의 칸이 주입된 같은 칸을 이긴다. 빈 창은
+# 건드리지 않는다.
+def rt_cost_apply:
+  rt_cost_table(.) as $t
+  | reduce rt_wins[] as $w (.;
+      if ($t[$w].by_kind == {}) and ($t[$w].by_group == {}) then .
+      else .config.c[$w].by_kind = ((.config.c[$w].by_kind // {}) + ($t[$w].by_kind | map_values(.value)))
+        | .config.c[$w].by_group = ((.config.c[$w].by_group // {}) * ($t[$w].by_group | map_values(map_values(.value))))
+      end);
 
 def rt_admit_core($c; $G; $ex):
   (($c.request.kind // "") | tostring) as $kind
-  | (reduce rt_wins[] as $w ({}; .[$w] = (rt_kv($c; $kind; $w) * rt_cbp($c; $w; $kind; $G.group)))) as $res
+  | (reduce rt_wins[] as $w ({}; .[$w] = rt_cost($c; $w; $kind; $G.group))) as $cost
+  | (reduce rt_wins[] as $w ({}; .[$w] = (rt_kv($c; $kind; $w) * $cost[$w].bp))) as $res
   | $G.windows as $W
-  | if $ex != null or any($W[]; .state == "exhausted") then
+  | (if $ex != null or any($W[]; .state == "exhausted") then
       {admitted: false, admitted_as: null, reservation_bp: $res, failed: ["exhausted"],
        ready_at: (if $ex != null then $ex
                   else ([$W[] | select(.state == "exhausted") | .resets_at] | if any(.[]; type != "number") then null else max end) end)}
@@ -369,11 +564,12 @@ def rt_admit_core($c; $G; $ex):
          ready_at: (if ($f | length) == 0 then null
                     else ([$f[] | (if . == "cap" then "five_hour" else . end) as $w | $W[$w].resets_at]
                           | if any(.[]; (type != "number") or (. <= $c.now)) then null else max end) end)}
-    end;
+    end)
+  + {cost: $cost};
 
 def rt_classify($schema): rt_prep($schema) as $p | {accounts: $p.accounts, groups: ([$p.groups[]] | sort_by(.group))};
 def rt_admit_all($schema):
-  rt_need_cap | rt_prep($schema) as $p
+  rt_need_cap | rt_cost_apply | rt_prep($schema) as $p
   | [$p.accounts[] | (.) as $a
       | rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) + {account: $a.id, group: $a.group, class: $a.class}];
 
@@ -404,7 +600,11 @@ def rt_park_borrow_corrupt:
   rt_park("borrow-record-corrupt"; "cc-lane 차용 기록을 읽을 수 없다 — 파일을 지우거나 옮기지 말고 cc-lane 이 기록을 다시 쓰기를 기다리거나 cc-lane borrow status 로 확인한다");
 def rt_park_deadline($until):
   {verdict: "PARK", reason: "deadline", ready_at: $until, recovery: "마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"};
-def rt_wait($g; $acct; $until; $reason): {verdict: "WAIT", group: $g, account: $acct, until_epoch: $until, reason: $reason};
+# 대기 봉투의 `cost` 는 그 대기를 정한 입장 판정의 창별 비용이고, 그런 판정이 없는
+# 대기(FIFO 양보·미상 동시성·후보 없음·거래 실패)는 null 이다.
+def rt_wait_c($g; $acct; $until; $reason; $cost):
+  {verdict: "WAIT", group: $g, account: $acct, until_epoch: $until, reason: $reason, cost: $cost};
+def rt_wait($g; $acct; $until; $reason): rt_wait_c($g; $acct; $until; $reason; null);
 def rt_seat_of($cfg; $basis; $b):
   {verdict: "GRANT", basis: $basis, account: null, config_dir: $cfg, group: null, reservation_bp: null,
    admitted_as: null, observed: null, lease_key: null, nonce: null, dormant: false}
@@ -413,11 +613,11 @@ def rt_seat($p; $basis): rt_seat_of($p.c.seat.config_dir; $basis; $p.c.borrow);
 def rt_grant_lease($p; $o; $basis):
   {verdict: "GRANT", basis: $basis, account: $o.account, config_dir: $o.config_dir, group: rt_group_of($p.orgs; $o.account),
    reservation_bp: ($o.reservation_bp // null), admitted_as: ($o.admitted_as // null), observed: ($o.observed // null),
-   lease_key: $p.okey, nonce: $o.nonce, dormant: false};
+   lease_key: $p.okey, nonce: $o.nonce, dormant: false, cost: null};
 def rt_grant_new($p; $a; $adm; $basis):
   {verdict: "GRANT", basis: $basis, account: $a.id, config_dir: $a.config_dir, group: $a.group,
    reservation_bp: $adm.reservation_bp, admitted_as: $adm.admitted_as, observed: rt_observed($p.groups[$a.group]),
-   lease_key: $p.okey, nonce: ($p.c.fresh_nonce // null), dormant: false};
+   lease_key: $p.okey, nonce: ($p.c.fresh_nonce // null), dormant: false, cost: $adm.cost};
 def rt_nextseq($p): ((([($p.c.leases.items // [])[] | .seq | select(type == "number")] | max) // 0) + 1);
 def rt_rec_new($p; $e):
   {schema: $p.schema, kind: "grant", run_id: $p.c.request.run_id, lineage: $p.c.request.lineage, nonce: $e.nonce,
@@ -434,7 +634,8 @@ def rt_resume($p):
       | $p.groups[rt_group_of($p.orgs; $o.account)] as $G
       | (if $a != null then $a.class else rt_class_of($G; null) end) as $cls
       | if $cls == "X" then
-          rt_env(rt_wait($G.group; $o.account; rt_admit_core($p.c; $G; ($a.exhausted_until? // null)).ready_at; "resume-bound-exhausted"); "none"; null)
+          rt_admit_core($p.c; $G; ($a.exhausted_until? // null)) as $adm
+          | rt_env(rt_wait_c($G.group; $o.account; $adm.ready_at; "resume-bound-exhausted"; $adm.cost); "none"; null)
         elif $a != null and $a.login_bad then
           rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
         else rt_env(rt_grant_lease($p; $o; "resume-bound"); "hold"; rt_rec_hold($p)) end
@@ -456,8 +657,8 @@ def rt_resume($p):
               | if $adm.admitted then
                   rt_grant_new($p; $a; $adm; "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
                 elif rt_past_deadline($p.c; $adm.ready_at) then rt_env(rt_park_deadline($adm.ready_at); "none"; null)
-                else rt_env(rt_wait($a.group; $a.id; $adm.ready_at;
-                       (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end)); "none"; null)
+                else rt_env(rt_wait_c($a.group; $a.id; $adm.ready_at;
+                       (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end); $adm.cost); "none"; null)
                 end
             end
         end
@@ -468,7 +669,7 @@ def rt_waitpick($p; $b; $reason):
   | (if $m != null then $m.ready else null end) as $until
   | (if $m != null then $m.g else ([$b[].g] | sort | .[0]) end) as $g
   | if rt_past_deadline($p.c; $until) then rt_env(rt_park_deadline($until); "none"; null)
-    else rt_env(rt_wait($g; null; $until; $reason); "none"; null) end;
+    else rt_env(rt_wait_c($g; null; $until; $reason; (if $m != null then $m.cost else null end)); "none"; null) end;
 
 def rt_nocand($p; $pool):
   [$pool[] | {g: .a.group,
@@ -476,7 +677,7 @@ def rt_nocand($p; $pool):
                     elif .adm.admitted and .fifo then "fifo"
                     elif .adm.failed == ["unknown-concurrency"] then "ucc"
                     else "room" end),
-              ready: (if .adm.admitted then null else .adm.ready_at end)}] as $b
+              ready: (if .adm.admitted then null else .adm.ready_at end), cost: .adm.cost}] as $b
   | if ($b | length) == 0 then rt_env(rt_wait(null; null; null; "no-room"); "none"; null)
     elif all($b[]; .why == "x") then rt_waitpick($p; $b; "group-exhausted")
     elif all($b[]; .why == "ucc") then rt_env(rt_wait(([$b[].g] | sort | .[0]); null; null; "unknown-concurrency"); "none"; null)
@@ -528,6 +729,7 @@ def rt_decide($schema):
   rt_need_cap
   | if ((.request.run_id | type) != "string") or .request.run_id == "" or (.request.run_id | startswith("."))
        or ((.request.lineage | type) != "string") or .request.lineage == "" then error("request.key") else . end
+  | rt_cost_apply
   | rt_prep($schema) as $p
   | $p.c as $c
   | (if $c.inventory.state == "corrupt" then rt_env(rt_park("inventory-corrupt"; "cc-lane account check"); "none"; null)
@@ -820,9 +1022,50 @@ route__config_json() {
     --argjson c5 "$ROUTE_C_FIVE_HOUR" --argjson c7 "$ROUTE_C_SEVEN_DAY" \
     --argjson tl "$ROUTE_TTL_STAGE_LOG_S" --argjson tt "$ROUTE_TTL_TRACKER_S" \
     --argjson ff "$ROUTE_FILE_STALE_FACTOR" --argjson cap "${1:-null}" \
+    --argjson ca "$ROUTE_COST_MAX_AGE_S" --argjson cn "$ROUTE_COST_MAX_N" --argjson cm "$ROUTE_COST_MIN_N" \
+    --argjson f5 "$ROUTE_COST_FLOOR_FIVE_HOUR" --argjson f7 "$ROUTE_COST_FLOOR_SEVEN_DAY" \
+    --argjson hf "$ROUTE_COST_HYG_MIN_FRAMES" --argjson hc "$ROUTE_COST_HYG_MIN_COVER" \
     '{k: {default: {five_hour: $k5, seven_day: $k7}, shift: {five_hour: $ks, seven_day: $ks}},
       c: {five_hour: {default: $c5, by_kind: {}, by_group: {}}, seven_day: {default: $c7, by_kind: {}, by_group: {}}},
+      cost: {max_age_s: $ca, max_n: $cn, min_n: $cm, floor: {five_hour: $f5, seven_day: $f7},
+             hygiene: {min_frames: $hf, min_cover: $hc}},
       cap_bp: $cap, ttl_s: {"stage-log": $tl, tracker: $tt}, file_stale_factor: $ff}'
+}
+
+route_cost_samples_read() {
+  # route_cost_samples_read <dir> — 문맥 조립이 `--rawfile` 로 읽을 표본 파일의 경로.
+  # 파일이 없으면 /dev/null 이고, 일반 파일이 아니거나 읽을 수 없거나
+  # `ROUTE_COST_READ_MAX_BYTES` 를 넘으면 경고하고 /dev/null 이다. 디렉터리를 만들지
+  # 않는다. 표본은 인자로 넘기지 않는다 — 상한까지 찬 저장소는 `ARG_MAX` 를 넘는다.
+  local f="${1:-}/samples.jsonl" sz
+  if [ ! -e "$f" ]; then
+    printf '%s\n' /dev/null
+    return 0
+  fi
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+    route__warn "비용 표본을 읽을 수 없어 기본값으로 판정한다: $f"
+    printf '%s\n' /dev/null
+    return 0
+  fi
+  sz=$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')
+  case "$sz" in
+    ''|*[!0-9]*)
+      route__warn "비용 표본의 크기를 읽을 수 없어 기본값으로 판정한다: $f"
+      printf '%s\n' /dev/null
+      return 0 ;;
+  esac
+  if [ "$sz" -gt "$ROUTE_COST_READ_MAX_BYTES" ]; then
+    route__warn "비용 표본이 ${ROUTE_COST_READ_MAX_BYTES} 바이트를 넘어 기본값으로 판정한다: $f (${sz})"
+    printf '%s\n' /dev/null
+    return 0
+  fi
+  printf '%s\n' "$f"
+}
+
+route_cost_table() {
+  # 표준 입력의 문맥 하나 → 그 문맥으로 계산한 비용 표. 칸마다 값·표본 수·가장
+  # 오래된 `t_end` 를 낸다.
+  jq -c "$(route__jq_lib)"' rt_cost_table(.)' || return 2
 }
 
 route_gather_context() {
@@ -830,7 +1073,9 @@ route_gather_context() {
   # 좌석 디렉터리는 호출자가 이미 얻은 `resolve_account` 의 답이다 — 해석기를
   # 다시 부르지 않는다. 5시간 상한은 호출 시점의 `RUN_PACE_SESSION_WINDOW_PCT_MAX`
   # 에서 bp 로 옮긴다. 그 변수가 없는 셸에서는 null 이 되고 결정은 rc 2 로 닫힌다.
+  # 비용 표본은 원문 그대로 `cost_samples` 에 싣고, 저장소 때문에 rc 2 로 닫지 않는다.
   local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg bpath borrow bpj
+  local costs prog out
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
   inv="${RUN_DIR:-}/inventory.json"
@@ -863,13 +1108,21 @@ route_gather_context() {
     *) cap=$((RUN_PACE_SESSION_WINDOW_PCT_MAX * 100)) ;;
   esac
   cfg=$(route__config_json "$cap") || return 2
-  jq -cn --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
-    --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
-    --argjson borrow "$borrow" --argjson bp "$bpj" \
-    '{now: $now, request: $req, inventory: $inv, usage: $usage, frames: $frames, leases: $leases,
+  costs=$(route_cost_samples_read "$(run_pace_root)/costs")
+  prog='{now: $now, request: $req, inventory: $inv, usage: $usage, frames: $frames, leases: $leases,
       sticky: ([$leases.items[] | select(.run_id == $req.run_id and .kind == "grant" and .live == true) | .account] | unique),
       seat: {config_dir: $seat}, config: $cfg, deadline: ($req.deadline // null),
-      borrow: $borrow, borrow_path: $bp}' || return 2
+      borrow: $borrow, borrow_path: $bp, cost_samples: $cost_samples}'
+  set -- --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
+    --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
+    --argjson borrow "$borrow" --argjson bp "$bpj"
+  # 판독 사이에 파일이 사라지거나 바뀌어 읽기가 실패하면 표본 없이 한 번 더 조립한다.
+  if ! out=$(jq -cn "$@" --rawfile cost_samples "$costs" "$prog" 2>/dev/null); then
+    [ "$costs" = /dev/null ] && return 2
+    route__warn "비용 표본을 읽지 못해 기본값으로 판정한다: $costs"
+    out=$(jq -cn "$@" --rawfile cost_samples /dev/null "$prog") || return 2
+  fi
+  printf '%s\n' "$out"
 }
 
 # ---------------------------------------------------------------------------
@@ -1434,6 +1687,62 @@ route__wait_drop_main() {
   return 0
 }
 
+route__cost_put_main() {
+  # cost-sample-put <costs-dir> --run-id <r> --lineage <l> --kind <k> --account <id> --log <file>
+  # 스테이지 로그 한 파일을 요약해 저장소에 한 줄을 쓴다. 단독 프로세스라 저장소
+  # 위치를 첫 인자로 받는다. 닫힌 여섯 부류 밖의 부류와 구간을 정할 수 없는 로그는
+  # 쓰지 않고 rc 0 이다. 디렉터리가 없으면 그것만 만든다. 락을 못 잡으면 표본을 버리고
+  # 그 rc 다. 로그는 락 밖에서 읽는다 — 수백 MB 로그를 읽는 동안 다른 작성기를 막지
+  # 않는다.
+  local d="${1:-}" run="" lin="" kind="" acct="" log="" line now rc=0 src tmp
+  [ $# -ge 1 ] || return 2
+  shift
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || return 2
+    case "$1" in
+      --run-id) run="$2" ;;
+      --lineage) lin="$2" ;;
+      --kind) kind="$2" ;;
+      --account) acct="$2" ;;
+      --log) log="$2" ;;
+      *) return 2 ;;
+    esac
+    shift 2
+  done
+  if [ -z "$d" ] || [ -z "$run" ] || [ -z "$lin" ] || [ -z "$log" ]; then return 2; fi
+  jq -en --arg k "$kind" "$(route__jq_lib)"' any(rt_cost_kinds[]; . == $k)' >/dev/null 2>&1 || return 0
+  jq -en --arg a "$acct" "$(route__jq_lib)"' $a | rt_cost_acct_ok' >/dev/null 2>&1 || return 2
+  [ -f "$log" ] || return 2
+  now=$(date -u +%s)
+  line=$(jq -n -R -c --arg run "$run" --arg lin "$lin" --arg log "$(basename "$log")" --arg kind "$kind" --arg acct "$acct" \
+         --arg schema "$ROUTE_COST_SCHEMA" "$(route__jq_lib)"' rt_cost_of_log | rt_cost_line($run; $lin; $log; $kind; $acct; $schema)' \
+         "$log" 2>/dev/null) || return 2
+  [ -n "$line" ] || return 2
+  [ "$line" != "null" ] || return 0
+  if [ ! -d "$d" ]; then
+    mkdir "$d" 2>/dev/null || [ -d "$d" ] || return 4
+  fi
+  route__lock_acquire "$d" || {
+    rc=$?
+    route__warn "비용 표본 락을 잡지 못해 표본을 버린다 ($d, rc=$rc)"
+    return "$rc"
+  }
+  src="$d/samples.jsonl"
+  [ -f "$src" ] || src=/dev/null
+  tmp="$d/.samples.jsonl.tmp.$$"
+  if jq -n -R -c --argjson new "$line" --argjson now "$now" --argjson ks "$ROUTE_COST_KEEP_S" \
+       --argjson kn "$ROUTE_COST_KEEP_LINES" --arg schema "$ROUTE_COST_SCHEMA" \
+       "$(route__jq_lib)"' rt_cost_store($new; $now; $ks; $kn; $schema)' "$src" > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$d/samples.jsonl" 2>/dev/null; then
+    rc=0
+  else
+    rm -f "$tmp" 2>/dev/null
+    rc=4
+  fi
+  route__lock_release
+  return "$rc"
+}
+
 route_lease_of() {
   # route_lease_of <table> <run_id> <lineage> — 그 계보의 임대 JSON, 없으면 빈 값.
   # 깨진 기록은 빈 값과 rc 1 이다. 읽기만 하므로 락도 자기 프로세스도 필요 없다.
@@ -1451,6 +1760,7 @@ route_lease_release() { bash "$(route__dir)/route.sh" lease-release "$@"; }
 route_lease_release_run() { bash "$(route__dir)/route.sh" lease-release-run "$@"; }
 route_lease_wait_put() { bash "$(route__dir)/route.sh" lease-wait-put "$@"; }
 route_lease_wait_drop() { bash "$(route__dir)/route.sh" lease-wait-drop "$@"; }
+route_cost_sample_put() { bash "$(route__dir)/route.sh" cost-sample-put "$@"; }
 
 # ---------------------------------------------------------------------------
 # 진입.
@@ -1550,7 +1860,7 @@ route_resolve() {
 }
 
 route__usage() {
-  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|borrow-read> [args]' >&2
+  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|borrow-read|cost-sample-put|cost-table> [args]' >&2
 }
 
 route__main() {
@@ -1575,6 +1885,8 @@ route__main() {
     lease-wait-put) route__wait_put_main "$@" ;;
     lease-wait-drop) route__wait_drop_main "$@" ;;
     borrow-read) route__borrow_read_main "$@" ;;
+    cost-sample-put) route__cost_put_main "$@" ;;
+    cost-table) route_cost_table ;;
     *)
       route__usage
       return 2 ;;
