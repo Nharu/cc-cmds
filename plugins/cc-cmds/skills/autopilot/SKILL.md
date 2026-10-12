@@ -667,6 +667,8 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `segments[]`, `segments_total` | `id`, `상태`, `워크트리`, `선행`, `커밋`, `마지막 스테이지` — one object per segment. A shift starts with no history, so this is where it learns the run has segments at all |
 | `blocked[]` | `스코프`, `사유`, `앵커` — unresolved blocks only; a row whose cause is `해소` closes an earlier one and is not carried |
 | `cycles[]` | `세그먼트`, `사이클`, `P0`, `P1`, `모드`, `리뷰 HEAD`, `리포트 경로` — the review results, capped. An empty `모드` reads as `전체` |
+| `review_next[]` | `세그먼트`, `다음`, `연속`, `발동`, `사이클`, `리뷰 HEAD`, `리포트 경로`, `범위`, `사유` — one object per segment that has a `cycle` row and has not merged. `다음` is the segment's next disposition after review (`머지`, `이월 머지`, `이월`, `수정`, `재수렴`, `사람`, `판정 불가`) and the one value the loop branches on there; `범위` is the whole `P0 반복 …` scope when `다음` is `재수렴`, `사유` the park reason when it is `사람` |
+| `review_carry` | `CYCLE_CARRY_FROM`, `CYCLE_CARRY_MAX`, `P0_GUARD_STREAK` — the gate's carry-over and guard constants, for display only; nothing branches on them |
 | `stalls[]` | `세그먼트`, `부류`, `사이클`, `처분` — the stall labels the classifier derives from the whole ledger, one object per segment and class that holds on the segment's last review and has not been consumed by a new plan. `부류` is `NO_DRIFT`, `SPINNING`, `OSCILLATION` or `DIMINISHING_RETURNS`; `처분` is `지시`. Always emitted (`[]` when empty or when the classifier failed), outside the default `--fields` and outside `H`. It blocks nothing and is not a key the router acts on: the implement stage's process A reads it into its plan |
 | `shift` | `n`, `context`, `soft`, `hard`, `over_soft`, `over_hard`, `floor` — the session cap's state. `over_soft` true is the signal to end this shift; `over_hard` true means `context` has reached or passed `hard`, the hard limit the gate enforces: from there every act but a bookkeeping kind, and `wait` too, comes back 15 |
 | `handoff[]` | `교대`, `사유`, `버린 선택지`, `막힌 지점`, `다음 후보`, `기록 시각` — the last three handoffs a shift wrote, plus the gate's `무기록` entry when the series ends on one, and no more. A run of `무기록` rows never pushes a real handoff out of this window. This is where a successor learns what its predecessor already tried and dropped, and `기록 시각` says when that was observed. A `사유` of `무기록` is the gate's entry for a shift that ended without a handoff, and carries no judgment |
@@ -996,7 +998,7 @@ Segment planning starts only after the audit has ended as above, or straight aft
 
 #### Merging and applying a segment
 
-**The merge.** For a segment whose resolved review policy is `선리뷰후머지`, merge once its review has passed, pinned to what the review read: `gh pr merge <n> --merge --match-head-commit <the 리뷰 HEAD of the segment's last cycle row>`. Under any other policy there may be no `cycle` row, so pin to the implementation worktree's HEAD instead (`--match-head-commit <구현 워크트리 HEAD>`), and issue no apply act afterwards. Either way read `gh pr view <n> --json mergeCommit` and record it:
+**The merge.** For a segment whose resolved review policy is `선리뷰후머지`, merge once its review has passed — its snapshot `review_next[]` element reads `다음` `머지` or `이월 머지` (see 「Branching on `다음` after a review」) — pinned to what the review read: `gh pr merge <n> --merge --match-head-commit <the 리뷰 HEAD of the segment's last cycle row>`. Under any other policy there may be no `cycle` row, so pin to the implementation worktree's HEAD instead (`--match-head-commit <구현 워크트리 HEAD>`), and issue no apply act afterwards. Either way read `gh pr view <n> --json mergeCommit` and record it:
 
 ```
 gate.sh act --manifest <매니페스트> --kind segment --target <alias> --segment <id> \
@@ -1015,9 +1017,31 @@ gate.sh act --manifest <매니페스트> --kind apply --target <alias> --segment
 
 The argv is the fixed token `적용`; the gate runs the frozen apply command itself after checking five preconditions it does not let any rule switch off, and it writes `적용 준비` and `완료` itself. Do not write either state for a segment that still has an apply pending: the gate refuses both from `act --kind segment`. **When the apply act is refused on a precondition**: a missing or stale remote ref (precondition 4) → fetch and issue it once more, and only once. Any other precondition refusal → write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` block whose `사유` names the refused precondition number and the gate's wording, then end the shift with a `사유=중단` handoff. The `park` makes the segment terminal, so the next shift does not walk into the same refusal.
 
+#### Branching on `다음` after a review
+
+Once a segment has a `cycle` row and has not merged, the snapshot's `review_next[]` carries one element for it: `세그먼트`, `다음`, the P0 repeat guard's `연속` and `발동`, the last cycle's `사이클`, `리뷰 HEAD` and `리포트 경로` (absolute), `범위` and `사유`. **`다음` is the only value this loop branches on after a review** — not the counts in `cycles[]`, not `review_carry`, which carries the gate's constants for display only. The gate derives it from the ledger and the report by the table in `_common/pipeline-sidecar.md` §3.2, and the merge rule reads the same facts in the same order, so a branch taken on anything else meets a refusal. Take it only when that review's `stage-result` row is `정상 완료` and the segment has no live stage:
+
+- **`머지`, `이월 머지`** → 「Merging and applying a segment」.
+- **`이월`** → carry the findings over by `_common/carryover-issue.md`: one issue per finding, then the `리뷰 이월` row (`act --kind review-carry`), then read `다음` again and merge on `이월 머지`. When the carry-over fails as that file's step 6 says, dispatch the fix as for `수정` below, once per cycle.
+- **`수정`** → 「Re-dispatching the implementation after review findings」.
+- **`재수렴`** → the P0 repeat guard stands: three cycles in a row left a P0 open and no guard re-convergence has run yet. Dispatch the re-convergence with the element's `범위` copied verbatim — it is the whole `P0 반복 <세그먼트> <리포트> <리포트> <리포트>` scope — and the document as the snapshot's `design_doc`. Write no `segment` row for it:
+
+  ```
+  gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment <seg> \
+    --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> \
+    --rationale 'P0 반복 가드 — 연속 <연속>' \
+    -- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> <범위>"
+  ```
+
+  The gate refuses (exit 3) a `P0 반복` scope while `다음` is not `재수렴` or whose segment and reports are not the three the guard chose, and refuses an implementation dispatch while `다음` is `재수렴` or `사람`. **After it ends**, read the terminal literal in its stream (`grep -cF '재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다.' "$CC_PIPELINE_RUN_DIR/log/<id>#<실행 버전>.json"`); there is no carrier block to read. Present → read the snapshot again: the re-convergence row ending `정상 완료` reset the guard, so `다음` is now `수정` — dispatch the fix with the last report as its target — and a `재설계 필요` verdict in that stream additionally parks every **other** unmerged segment holding a `plan_sha256`. Absent — a halt, a crash, no literal — → `blocked` for the segment with `사유=P0 반복 가드 — 재수렴 종단 술어 거짓`, and no second guard re-convergence: `다음` still reads `재수렴`, because a re-convergence that did not end `정상 완료` neither resets the streak nor counts as a firing.
+- **`사람`** → the guard fired before and the streak stands again, or the run has no design document to re-converge. Write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` block whose `사유` is the element's `사유` verbatim, and dispatch nothing more for the segment.
+- **`판정 불가`** → the last cycle's `P0` or `P1` is empty or not a canonical count. Write a segment `park` row and a `스코프=cone` block with `'사유=리뷰 집계 판정 불가'`.
+
+**A declared segment's review carries `--slice <seg>`.** When the segment came from the document's `## 구현 슬라이싱` — its id is a slice id — every `/cc-cmds:review-unattended` dispatch for it, a full or a delta review alike, adds `--slice <seg>` to the prompt, so the review counts other slices' findings apart from this one's. The gate refuses (exit 3) a review dispatch whose `--slice` is not its `--segment`. A segment that is not a slice carries no `--slice`; the recovery dispatch carries none either.
+
 #### Re-dispatching the implementation after review findings
 
-When a segment's last `cycle` row carries P0+P1 above zero, that review's `stage-result` row is `정상 완료`, and the segment has no live stage, dispatch the implementation again with the review report as its fix target. The values are already in the snapshot's `cycles[]` and `문서 인자`:
+When a segment's `review_next[]` element reads `다음` `수정` — or a carry-over failed as `_common/carryover-issue.md` step 6 says — that review's `stage-result` row is `정상 완료`, and the segment has no live stage, dispatch the implementation again with the review report as its fix target. The values are already in the snapshot's `cycles[]` and `문서 인자`:
 
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <seg> \
