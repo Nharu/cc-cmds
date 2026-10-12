@@ -15433,7 +15433,7 @@ pace_rows "sort 의 붙인 -o 값" sort "-o$PACE_N/backlog.jsonl" /dev/null
 pace_rows "대소문자 변형 루트" cp "$WORK/r3x" "${PACE_N%/pace}/PACE/backlog.jsonl"
 pace_rows "대소문자 변형 상태 디렉터리" cp "$WORK/r3x" "$STATE_CONE/CC-CMDS/pace/rekick/R1/successor"
 pace_rows "루트의 상위 디렉터리 목적지" cp -R "$WORK/r3x" "$STATE_CONE/cc-cmds/"
-pace_rows "루트의 상위 디렉터리, 옵션 값" rsync -a "$WORK/r3x" "--dest=$STATE_CONE/cc-cmds"
+pace_rows "루트의 상위 디렉터리, 옵션 값" cp -R "$WORK/r3x" "--target-directory=$STATE_CONE/cc-cmds"
 pace_rows "인터프리터 속 상위 디렉터리" bash -c "cp -R x $STATE_CONE/cc-cmds"
 # An ancestor glued to a single-dash option, as GNU `cp`/`mv` take `-t`: the
 # ancestor arm skipped every word starting with `-`, so these merged a tree
@@ -15530,6 +15530,35 @@ for spell_row in "sed -n w$PACE_N-old/at /dev/null" "sort -o$PACE_N-old/at /dev/
     *) bad "페이싱 가드 오탐: $spell_row" "$pace_iw" ;;
   esac
 done
+# THE ANCESTOR ARM READS DESTINATION SLOTS, NOT EVERY ARGUMENT. It took every
+# element and every glued option value, so `/` (an ancestor of every root) and
+# the state directory refused `awk -F/`, `sort -t/`, `xargs -d/` and `git -C`,
+# and on a Linux runner, where this suite's root lies under `/tmp`, the 15절
+# row `git -C /tmp commit` with it. Those pass; a tree merged into an ancestor
+# or an ancestor removed is still refused, behind a wrapper too.
+pace_pass() {
+  # pace_pass <라벨> <argv…> — one spelling the guard alone must let through.
+  local label="$1"; shift
+  pace_iw=$(pace_alone "$@")
+  case "$pace_iw" in
+    "rc=0") ok "조상 갈래가 목적지 아닌 인자를 거절하지 않는다: $label" ;;
+    *) bad "조상 갈래 오탐: $label" "$pace_iw" ;;
+  esac
+}
+pace_pass "awk -F/" awk -F/ '{print $NF}' "$WORK/r3x"
+pace_pass "awk -F /" awk -F / '{print $NF}' "$WORK/r3x"
+pace_pass "sort -t/ -o" sort -t/ -k2 -o "$WORK/sorted.txt" "$WORK/r3x"
+pace_pass "xargs -d/" xargs -d/ echo
+pace_pass "git -C / commit" git -C / commit -m x
+pace_pass "git -C <루트의 상위> commit" git -C "$STATE_CONE/cc-cmds" commit -m x
+pace_pass "npm --prefix=<루트의 상위>" npm install "--prefix=$STATE_CONE/cc-cmds" x
+pace_pass "추출이 아닌 tar -C <루트의 상위>" tar -c -C "$STATE_CONE/cc-cmds" -f "$WORK/a.tar" .
+pace_rows "rm 의 상위 디렉터리" rm -rf "$STATE_CONE/cc-cmds"
+pace_rows "tar -x -C 의 상위 디렉터리" tar -x -C "$STATE_CONE/cc-cmds" -f "$WORK/a.tar"
+pace_rows "tar 묶음 -xf 와 --directory= 의 상위 디렉터리" tar -xf "$WORK/a.tar" "--directory=$STATE_CONE/cc-cmds"
+pace_rows "find -delete 의 시작점인 상위 디렉터리" find "$STATE_CONE/cc-cmds" -name zz -delete
+pace_rows "감싸개 뒤 cp 의 붙여 쓴 -t" xargs cp -R "-t$STATE_CONE/cc-cmds"
+pace_rows "gcp 의 붙여 쓴 -t" gcp -R "$WORK/r3x" "-t$STATE_CONE/cc-cmds"
 # Through the gate end to end: the glued `-o` value of `sort`, which grades as
 # a write outside the tree. Another guard may answer first, so the code and the
 # bytes are what this row pins.

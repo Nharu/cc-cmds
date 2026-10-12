@@ -17267,9 +17267,20 @@ gate_pace_write_guard() {
   # ANCESTOR of the root named as a directory destination (`cp -R ./pace
   # <state>/cc-cmds/`), which merges a whole replacement tree over the root
   # and is now refused by the run directory guard's ancestor predicate, on the
-  # same terms: a whole element or an option value, and an interpreter's words.
-  # The value glued to a single-dash option is one of them (`gcp -R ./pace
-  # -t<state>/cc-cmds`), read apart by `gate_opt_attached_values`.
+  # same terms. The value glued to a single-dash option is one of them (`gcp -R
+  # ./pace -t<state>/cc-cmds`).
+  #
+  # THE ANCESTOR ARM ASKS WHERE A DESTINATION SITS, NOT WHAT AN ARGUMENT SPELLS.
+  # It first took every element, `=` value and glued option value, and `/` is
+  # an ancestor of every root and `$HOME` of the default one — so `awk -F/`,
+  # `sort -t/ -o out in`, `xargs -d/`, `git -C $HOME commit` and `npm install
+  # --prefix=$HOME` were all refused as pace writes, and on a Linux runner,
+  # where the test root lies under `/tmp`, `git -C /tmp commit` failed the
+  # suite. An ancestor is only dangerous where a tree is merged over the root or
+  # removed with it, so the arm now reads those slots (`gate_pace_dest_slots`):
+  # a copy, move, link or install destination and its `-t` value, `tar -C` when
+  # extracting, an `rm` operand, and a `find` starting point under `-delete` or
+  # `-exec`. An interpreter or wrapper keeps its whole operands and words.
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   case "$graded" in
@@ -17316,6 +17327,21 @@ gate_pace_write_guard() {
     done
   fi
 
+  # The ancestor arm: only the slots that merge a tree into a directory or
+  # remove one. Behind an interpreter or wrapper the command can start at any
+  # word, so every word that names one of those commands starts a reading.
+  if [ "$mode" = bare ]; then
+    gate_pace_dest_slots 1 "$@"
+  else
+    gate_pace_dest_slots 0 "$@"
+  fi
+  for v in ${GATE_PACE_SLOTS[@]+"${GATE_PACE_SLOTS[@]}"}; do
+    case "$v" in -*) v="./$v" ;; esac
+    rc=0
+    gate_pace_ancestor_guard "$v" "$v" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+  done
+
   first=1
   for a in "$@"; do
     # argv0 names what runs, not what is written — the run directory guard's
@@ -17325,16 +17351,21 @@ gate_pace_write_guard() {
     case "$a" in
       -*=*) ov=$(gate_arg_option_value "$a" 2>/dev/null) || ov="" ;;
     esac
-    # The ancestor arm: a whole element and an option value, as the run
-    # directory guard takes them, and an option's glued value.
     prim=()
     if ! gate_arg_is_compound "$a"; then prim[${#prim[@]}]=$a; fi
     if [ -n "$ov" ]; then prim[${#prim[@]}]=$ov; fi
-    for v in ${prim[@]+"${prim[@]}"}; do
-      rc=0
-      gate_pace_ancestor_guard "$a" "$v" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
-      [ "$rc" = 0 ] || return "$rc"
-    done
+    # An interpreter's operand is program text, so a whole one that names an
+    # ancestor is refused as its words are below. Its options are not: the
+    # destinations an option can carry are the slots read before this loop.
+    if [ "$mode" = bare ] && ! gate_arg_is_compound "$a"; then
+      case "$a" in
+        -*) ;;
+        *)
+          rc=0
+          gate_pace_ancestor_guard "$a" "$a" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+          [ "$rc" = 0 ] || return "$rc" ;;
+      esac
+    fi
     if gate_arg_is_compound "$a"; then
       gate_arg_words "$a" "$mode" \
         || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
@@ -17554,6 +17585,146 @@ gate_pace_ancestor_guard() {
       gate_pace_write_refuse "$a" "$1"; return "$GATE_EXIT_RULE"
     fi
   done
+  return 0
+}
+
+gate_pace_dest_slots() {
+  # gate_pace_dest_slots <all: 0|1> <argv...> — the elements of an act that name
+  # a directory a tree is merged into or removed from, in `GATE_PACE_SLOTS`, as
+  # spelled. With <all> 0 only argv0 starts a reading; with 1 every word whose
+  # name is one of the commands below starts one, for a command behind an
+  # interpreter or wrapper.
+  #
+  # `cp`, `mv`, `ln`, `install` (and their `g` forms): the last operand and the
+  # `-t`/`--target-directory` value. `rsync`, `ditto`: the last operand —
+  # their `-t` is not a directory. `tar` when extracting: the `-C`/`--directory`
+  # value. `rm`, `rmdir`: every operand, since removing an ancestor removes the
+  # root. `find` with `-delete`, `-exec`, `-execdir`, `-ok` or `-okdir`: the
+  # starting points. Over-reading an argument as a slot refuses more; it never
+  # admits a write the at-or-under arm would refuse.
+  local all="$1" k n
+  shift
+  GATE_PACE_SLOTS=()
+  n=$#
+  k=1
+  while [ "$k" -le "$n" ]; do
+    gate_pace_dest_slots_at "${@:$k}"
+    [ "$all" = 1 ] || break
+    k=$((k + 1))
+  done
+  return 0
+}
+
+gate_pace_cluster_value() {
+  # gate_pace_cluster_value <word> <letter> — rc 0 when the single-dash cluster
+  # <word> holds <letter> before any non-letter, with the text after it left in
+  # `GATE_PACE_CV` (empty when the value is the next word); rc 1 otherwise.
+  local w="$1" l="$2" c
+  GATE_PACE_CV=""
+  case "$w" in
+    --*|-|[!-]*|'') return 1 ;;
+  esac
+  w=${w#-}
+  while [ -n "$w" ]; do
+    c=${w%"${w#?}"}
+    case "$c" in
+      [A-Za-z]) ;;
+      *) return 1 ;;
+    esac
+    w=${w#?}
+    if [ "$c" = "$l" ]; then GATE_PACE_CV=$w; return 0; fi
+  done
+  return 1
+}
+
+gate_pace_slot_add() {
+  [ -n "$1" ] && GATE_PACE_SLOTS[${#GATE_PACE_SLOTS[@]}]=$1
+  return 0
+}
+
+gate_pace_dest_slots_at() {
+  # gate_pace_dest_slots_at <argv...> — appends to `GATE_PACE_SLOTS` the slots
+  # of the one command argv0 names; see `gate_pace_dest_slots`.
+  local cmd a last t ddash ex del
+  local -a cv sp
+  [ "$#" -ge 1 ] || return 0
+  cmd=${1##*/}; shift
+  last=""; t=""; ddash=0
+  case "$cmd" in
+    cp|gcp|mv|gmv|ln|gln|install|ginstall|rsync|ditto)
+      for a in "$@"; do
+        if [ -n "$t" ]; then gate_pace_slot_add "$a"; t=""; continue; fi
+        if [ "$ddash" = 1 ]; then last=$a; continue; fi
+        case "$a" in
+          --) ddash=1 ;;
+          --target-directory=*) gate_pace_slot_add "${a#*=}" ;;
+          --target-directory) t=1 ;;
+          -?*)
+            case "$cmd" in rsync|ditto) continue ;; esac
+            if gate_pace_cluster_value "$a" t; then
+              if [ -n "$GATE_PACE_CV" ]; then gate_pace_slot_add "$GATE_PACE_CV"; else t=1; fi
+            fi ;;
+          *) last=$a ;;
+        esac
+      done
+      gate_pace_slot_add "$last" ;;
+    tar|gtar|bsdtar)
+      ex=0; cv=()
+      case "${1:-}" in
+        -*|'') ;;
+        *x*) ex=1 ;;
+      esac
+      for a in "$@"; do
+        if [ -n "$t" ]; then cv[${#cv[@]}]=$a; t=""; continue; fi
+        case "$a" in
+          -x|--extract|--get) ex=1 ;;
+          --directory=*) cv[${#cv[@]}]=${a#*=} ;;
+          --directory) t=1 ;;
+          --*) ;;
+          -?*)
+            if gate_pace_cluster_value "$a" x; then ex=1; fi
+            if gate_pace_cluster_value "$a" C; then
+              if [ -n "$GATE_PACE_CV" ]; then cv[${#cv[@]}]=$GATE_PACE_CV; else t=1; fi
+            fi ;;
+        esac
+      done
+      if [ "$ex" = 1 ]; then
+        for a in ${cv[@]+"${cv[@]}"}; do gate_pace_slot_add "$a"; done
+      fi ;;
+    rm|grm|rmdir|grmdir)
+      for a in "$@"; do
+        if [ "$ddash" = 1 ]; then gate_pace_slot_add "$a"; continue; fi
+        case "$a" in
+          --) ddash=1 ;;
+          -?*) ;;
+          *) gate_pace_slot_add "$a" ;;
+        esac
+      done ;;
+    find|gfind)
+      sp=(); del=0
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -H|-L|-P|-O*|-E|-X|-s|-x) shift ;;
+          -D) shift; [ "$#" -gt 0 ] && shift ;;
+          -f) shift; [ "$#" -gt 0 ] && { sp[${#sp[@]}]=$1; shift; } ;;
+          *) break ;;
+        esac
+      done
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -*|'('|'!'|')') break ;;
+        esac
+        sp[${#sp[@]}]=$1; shift
+      done
+      for a in "$@"; do
+        case "$a" in
+          -delete|-exec|-execdir|-ok|-okdir) del=1 ;;
+        esac
+      done
+      if [ "$del" = 1 ]; then
+        for a in ${sp[@]+"${sp[@]}"}; do gate_pace_slot_add "$a"; done
+      fi ;;
+  esac
   return 0
 }
 
