@@ -2058,6 +2058,23 @@ gate_reach_runlocal_destruction() {
         [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ] || continue
         r=$(gate_reach_tree_destruction "$X" "$Pd" "$@") ;;
       2) r=$(gate_reach_tree_destruction 1 "$Pd" "$@") ;;
+      # A write redirection overwrites or appends to the file it names, so
+      # landing in the target's trees it is a destruction; a target whose
+      # place is unread is judged as landing there.
+      4)
+        case "$1" in
+          /*) kept="$1" ;;
+          '~') kept="$HOME" ;;
+          '~/'*) kept="$HOME/${1#'~/'}" ;;
+          *) kept="$(gate_grade_cwd)/$1" ;;
+        esac
+        gate_reach_target_tree_act "$alias" : "$kept" || :
+        if gate_reach_runlocal_escapes "$alias"; then
+          r=$(gate_reach_tree_destruction 1 "$Pd" :)
+        else
+          r=''
+        fi ;;
+      5) r=$(gate_reach_tree_destruction 1 "$Pd" :) ;;
       *) r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@") ;;
     esac
     [ -z "$r" ] || { printf '%s' "$r"; return 0; }
@@ -7249,6 +7266,19 @@ gate_opaque_floor() {
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
     unread="${rec%%	*}"; line="${rec##*	}"
+    # A REDIRECTION TARGET (4, 5) is a write, not a command: inside the target
+    # when it is a relative path without `..`, outside it otherwise, and
+    # outside it when its place is unread.
+    case "$unread" in
+      4|5)
+        case "$unread:$line" in
+          4:/*|4:~*|4:*..*|5:*) g='트리밖쓰기' ;;
+          *) g='워크트리쓰기' ;;
+        esac
+        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
+        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi
+        continue ;;
+    esac
     set -f
     # shellcheck disable=SC2086
     set -- $line
@@ -7268,6 +7298,15 @@ gate_opaque_floor() {
       1) g='트리밖쓰기' ;;
       2) g='외부상태변경' ;;
       3) [ "$g" = "워크트리쓰기" ] && g='트리밖쓰기' ;;
+    esac
+    # A COMMAND NO TABLE GRADES THAT THE LOCAL READER CALLS DESTRUCTIVE
+    # (`unlink`, `truncate`) floors `워크트리쓰기`. Left at no floor, `bash -c
+    # "unlink <sibling file>"` passed as `읽기` while the honest `트리밖쓰기
+    # --reach 런로컬` parked in the line's own destruction question — the
+    # under-declaration was the one rewarded.
+    case "$g" in
+      읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;;
+      *) [ -z "$(gate_reach_local_destructive_here "$@")" ] || g='워크트리쓰기' ;;
     esac
     case "$g" in
       읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
@@ -7310,11 +7349,20 @@ gate_shell_c_string() {
   # `읽기` and no cutpoint was derived from a `gh pr merge` inside. The option
   # region runs while words start with `-` or `+` and ends at `--` or a lone
   # `-`; a `c` anywhere in a dash or plus cluster selects `-c` mode; `o` and `O`
-  # take the next word as their value, at the end of a cluster too; a long
-  # option is skipped, and `--rcfile`/`--init-file` take a value. The string is
-  # the first operand after the region. Anything else in the region — a
-  # character that is no option letter — is not guessed at: status 2, and the
-  # caller takes the act as an unread command.
+  # take the next word as their value, at the end of a cluster too;
+  # `--rcfile`/`--init-file` take a value. The string is the first operand
+  # after the region.
+  #
+  # ONLY THE OPTIONS THIS GRAMMAR KNOWS ARE READ. The long options known to
+  # take nothing are skipped, and so are the option letters known to take
+  # nothing; every other word or letter in the region — a long option of
+  # another shell, a letter that may take a value — is not guessed at: status
+  # 2, and the caller takes the act as an unread command. Skipping every long
+  # option without a value read `zsh --emulate sh -c 'gh pr merge 1'` as a
+  # shell whose operand `sh` is a script file, status 1, and every caller took
+  # that as nothing to read: the floor, the ladder and the `런로컬` question
+  # all stayed silent, and `ksh -R <file> -c …` went the same way through a
+  # letter that takes a value.
   local a c j cmode=0 want=0 unk=0
   while [ $# -gt 0 ]; do
     a="$1"
@@ -7322,7 +7370,9 @@ gate_shell_c_string() {
     case "$a" in
       --|-) shift; break ;;
       --rcfile|--init-file) want=1 ;;
-      --*) ;;
+      --norc|--noprofile|--login|--posix|--noediting|--restricted|--verbose|\
+      --debugger|--dump-strings|--dump-po-strings|--protected|--pretty-print) ;;
+      --*) unk=1 ;;
       -?*|+?*)
         j=1
         while [ "$j" -lt "${#a}" ]; do
@@ -7330,7 +7380,7 @@ gate_shell_c_string() {
           case "$c" in
             c) cmode=1 ;;
             o|O) want=1 ;;
-            [A-Za-z]) ;;
+            [abefhiklmnprstuvxBCDEHPT]) ;;
             *) unk=1 ;;
           esac
           j=$((j + 1))
@@ -7345,6 +7395,29 @@ gate_shell_c_string() {
   [ "$cmode" = "1" ] || return 1
   [ $# -gt 0 ] || return 2
   printf '%s' "$1"
+}
+
+# Set only as a local of `gate_opaque_shell_lines`; emptied here so a value in
+# the gate's own environment never reaches a line.
+GATE_OPL_ENV=''
+
+gate_opl_redir_record() {
+  # gate_opl_redir_record <target> <poison> — the record `gate_opaque_payload_
+  # lines` prints for one write redirection: 4 with the target, or 5 when its
+  # place is unread — it holds `$`, a backtick or a glob, or <poison> is 1.
+  # Quotes are removed as from any operand; a descriptor device has none.
+  local t="${1//[\'\"]/}"
+  case "$t" in
+    ''|/dev/null|/dev/stdout|/dev/stderr|/dev/fd/*) return 0 ;;
+  esac
+  case "$t" in
+    *'$'*|*'`'*|*[\*\?\[]*) printf '5\t%s\t%s\n' "$t" "$t"; return 0 ;;
+  esac
+  if [ "$2" = "1" ]; then
+    printf '5\t%s\t%s\n' "$t" "$t"
+  else
+    printf '4\t%s\t%s\n' "$t" "$t"
+  fi
 }
 
 gate_opaque_payload_lines() {
@@ -7366,7 +7439,9 @@ gate_opaque_payload_lines() {
   # line that uses it, and stands in that line as a word holding `$`; `$` is
   # kept until the marks below are taken and removed only from what is
   # printed. In every other payload `$` is removed before reading. Shell
-  # quotes are removed as well. The reader is quote-blind by construction, and
+  # quotes are removed as well — in a shell's `-c` string from each word once
+  # the command word is settled, and before reading in every other payload.
+  # The reader is quote-blind by construction, and
   # a quoted operand kept its quotes as part of the word, so `lockf '<absolute
   # path>' true` read as a relative path inside the target and the floor fell
   # to `워크트리쓰기`; an unquoted word is the reading that lands where the
@@ -7393,26 +7468,38 @@ gate_opaque_payload_lines() {
   # and `!` were the command no table knew, so `bash -c "if true; then gh pr
   # merge 1; fi"` floored `읽기` and derived no cutpoint.
   #
-  # `<읽지 못함>` IS ONE OF FOUR, AND WHAT THIS READER DOES NOT MODEL IS UNREAD.
-  # It models the shell's option grammar (`gate_shell_c_string`), the reserved
-  # words above, `exec`, leading assignments and the launchers. Anything else
-  # is marked rather than guessed at, and each consumer takes the mark on its
-  # closed side:
+  # `<읽지 못함>` IS ONE OF SIX, AND WHAT THIS READER DOES NOT MODEL IS UNREAD.
+  # In a shell's `-c` string it models the shell's option grammar
+  # (`gate_shell_c_string`), the reserved words above, `exec` and `builtin`,
+  # leading assignments, the launchers, what `lockf` and `time` run, the
+  # redirections and a glob in a directory component. Anything else is marked
+  # rather than guessed at, and each consumer takes the mark on its closed
+  # side:
   #   0 — read.
   #   1 — an option of a launcher the peel cannot read; the peel stops there.
   #       In a payload that is not a shell's `-c` string, an unread option of
   #       `exec` is 1 as well.
   #   2 — the command itself is unread (a shell's `-c` string only): its word
-  #       holds `$` or a substitution; it is a command that runs another one
-  #       (`eval`, `source`, `.`, a nested shell, `xargs`, `sudo`, a `find`
-  #       with `-exec`); an option of `exec` is unread; or the shell's own
-  #       option region is (status 2 of `gate_shell_c_string`).
+  #       holds `$`, a substitution, a quote or a backslash; it is a command
+  #       that runs another one (`eval`, `source`, `.`, a nested shell,
+  #       `xargs`, `sudo`, a `find` with `-exec`), directly or behind `lockf`
+  #       or `time`, or the word behind those holds `$`, a quote or a
+  #       backslash; an option of `exec` is unread; or the shell's own option
+  #       region is (status 2 of `gate_shell_c_string`).
   #   3 — the command is read but not where it lands (a shell's `-c` string
-  #       only): an operand holds `$` or a substitution, or an earlier line of
-  #       the same string changed the working directory or the environment
-  #       (`cd`, `pushd`, `popd`, `export`, `declare`, `typeset`, `readonly`,
-  #       `set -a` or `allexport`, a bare assignment, `unset` of a `GIT_*`
-  #       name, or a line marked 2). Every later line is 3 from then on.
+  #       only): an operand holds `$` or a substitution, a directory component
+  #       of an operand holds a glob, or an earlier line of the same string
+  #       changed the working directory or the environment (`cd`, `pushd`,
+  #       `popd`, `export`, `declare`, `typeset`, `readonly`, `set -a` or
+  #       `allexport`, a bare assignment, `unset` of a `GIT_*` name, or a line
+  #       marked 2). Every later line is 3 from then on.
+  #   4 — not a command but the target of a write redirection (a shell's `-c`
+  #       string only), read: both fields hold the target as written.
+  #   5 — the target of a write redirection whose place is unread: it holds
+  #       `$`, a substitution or a glob, or an earlier line marked the rest 3.
+  # A redirection to `/dev/null`, `/dev/stdout`, `/dev/stderr` or `/dev/fd/*`
+  # has no record. Without these two, `bash -c "echo x > <sibling file>"`
+  # overwrote another worktree under `읽기` and under `런로컬`.
   # Removing `$` before reading turned `rm -f $D/x` into the relative path
   # `D/x` inside the target, and `cd <sibling> && rm -f f` was read as a `rm`
   # in the act's own worktree.
@@ -7445,8 +7532,9 @@ gate_opaque_payload_lines() {
   payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
 
   local line unread kept out w k n st cw x poison=0 exec_unread=1 split
+  local rpend=0 rx rt ci ii m _urc _l
   local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL
-  local -a pre ws
+  local -a pre ws raw rw y
   [ "$shellmode" = "1" ] && exec_unread=2
   if [ "$shellmode" = "1" ]; then
     # shellcheck disable=SC2016
@@ -7454,7 +7542,7 @@ gate_opaque_payload_lines() {
       | awk '{ n = split($0, p, "`"); o = ""
                for (i = 1; i <= n; i++) { if (i % 2 == 0) { print p[i]; o = o " $_ " } else o = o p[i] }
                print o }' \
-      | tr ';&|(){}' '\n\n\n\n\n\n\n' | sed -e "s/['\"]//g")
+      | tr ';&|(){}' '\n\n\n\n\n\n\n')
   else
     split=$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed -e 's/\$//g' -e "s/['\"]//g")
   fi
@@ -7463,6 +7551,43 @@ gate_opaque_payload_lines() {
     # shellcheck disable=SC2086
     set -- $line
     set +f
+    if [ "$shellmode" = "1" ]; then
+      # A REDIRECTION IS A WRITE, and its target a landing place. Each word
+      # holding `>` is read as one — the operator alone, with its target in
+      # the next word, or glued to its file descriptor, its target or the
+      # word before it — taken out of the line, and its target printed as a
+      # record of its own. `&` is a cut, so `&>f`, `>&2` and `2>&1` arrive as
+      # an operator closing one line and a word opening the next: that word
+      # is a descriptor when it is a number or `-`, and the target otherwise.
+      if [ "$rpend" = "1" ] && [ $# -gt 0 ]; then
+        rpend=0
+        case "$1" in
+          [0-9]|[0-9][0-9]|-) ;;
+          *) gate_opl_redir_record "$1" "$poison" ;;
+        esac
+        shift
+      fi
+      rw=()
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          *'>'*)
+            rx="${1%%>*}"; rt="${1#*>}"
+            while :; do case "$rt" in '>'*) rt="${rt#>}" ;; *) break ;; esac; done
+            rx="${rx%<}"
+            case "$rx" in ''|*[!0-9]*) [ -z "$rx" ] || rw[${#rw[@]}]="$rx" ;; esac
+            if [ -n "$rt" ]; then
+              gate_opl_redir_record "$rt" "$poison"
+            elif [ $# -ge 2 ]; then
+              gate_opl_redir_record "$2" "$poison"; shift
+            else
+              rpend=1
+            fi ;;
+          *) rw[${#rw[@]}]="$1" ;;
+        esac
+        shift
+      done
+      set -- ${rw[@]+"${rw[@]}"}
+    fi
     while [ $# -gt 0 ]; do
       case "$1" in
         '!'|if|then|elif|else|do|while|until) shift ;;
@@ -7489,7 +7614,12 @@ gate_opaque_payload_lines() {
     ws=("$@"); n=$#; k=0
     while [ "$k" -lt "$n" ]; do
       case "${ws[$k]}" in
-        builtin|command)
+        # `builtin` runs the builtin it names, whichever that is: `builtin
+        # eval …` is an `eval`, and `builtin cd <sibling>` a `cd` that moves
+        # every later line. Peeled in front of `exec` only, both read as a
+        # command no table knew and went through as plain lines.
+        builtin) k=$((k + 1)); continue ;;
+        command)
           [ "${ws[$((k + 1))]:-}" = "exec" ] || break
           k=$((k + 1)); continue ;;
         exec) ;;
@@ -7503,8 +7633,30 @@ gate_opaque_payload_lines() {
     set -f
     set -- "${ws[@]:k}"
     set +f
+    raw=("$@")
+    if [ "$shellmode" = "1" ]; then
+      # QUOTES COME OFF EACH WORD ONLY NOW, once the words are settled, so the
+      # command word is still seen as written: a quoted or backslashed command
+      # word is one the shell reads differently from this reader. Removed
+      # from the whole line before the words were read, `'gh' pr merge` and
+      # `"time" -p bash -c '…'` lost their quotes, and the nested shell's
+      # string was flattened into the outer line's operands.
+      y=()
+      for x in "$@"; do y[${#y[@]}]="${x//[\'\"]/}"; done
+      set -- "${y[@]}"
+      y=()
+      for x in ${pre[@]+"${pre[@]}"}; do y[${#y[@]}]="${x//[\'\"]/}"; done
+      pre=(${y[@]+"${y[@]}"})
+    fi
     kept="$*"
-    [ "${#pre[@]}" -gt 0 ] && kept="env ${pre[*]} $kept"
+    # The assignments of an `env` in front of the shell (`GATE_OPL_ENV`, set
+    # by `gate_opaque_shell_lines`) are in every line's environment, so each
+    # line carries them as it carries its own.
+    if [ -n "${GATE_OPL_ENV:-}" ]; then
+      kept="env $GATE_OPL_ENV ${pre[*]+${pre[*]}} $kept"
+    elif [ "${#pre[@]}" -gt 0 ]; then
+      kept="env ${pre[*]} $kept"
+    fi
     while [ "$unread" = "0" ] && [ $# -gt 0 ]; do
       w="${1##*/}"
       case "$w" in
@@ -7522,9 +7674,10 @@ gate_opaque_payload_lines() {
     done
     [ $# -gt 0 ] || continue
     if [ "$shellmode" = "1" ]; then
-      st=0; cw="${1##*/}"
+      st=0; cw="${1##*/}"; ci=$(( ${#raw[@]} - $# ))
       [ "$unread" = "2" ] && st=2
       case "$1" in *'$'*) st=2 ;; esac
+      case "${raw[$ci]}" in *\\*|*\'*|*\"*) st=2 ;; esac
       if [ "$st" = "0" ]; then
         case "$cw" in
           eval|source|.|bash|sh|zsh|dash|ksh|xargs|sudo) st=2 ;;
@@ -7534,9 +7687,44 @@ gate_opaque_payload_lines() {
             done ;;
         esac
       fi
+      # WHAT `lockf` AND `time` RUN IS READ TOO. They stay on the line for the
+      # sake of their own file, so the command behind them was never the
+      # command word here: `time -p bash -c '…/gh pr merge 1'` read as a line
+      # whose nested shell had been flattened into operands, and the merge
+      # went through a `커밋` declaration. The layers behind are peeled with
+      # the grading table's unwraps; a launcher option they cannot read leaves
+      # the line to the `lockf`/`time` arm of the floor.
+      if [ "$st" = "0" ]; then
+        case "$cw" in
+          lockf|time)
+            y=("$@"); m=$#; ii=0; _urc=0
+            while :; do
+              _urc=0; _l=$(gate_unwrap_one "${y[@]:ii}") || _urc=$?
+              [ "$_urc" = "0" ] || break
+              ii=$((m - _l))
+              [ "$ii" -lt "$m" ] || break
+            done
+            if [ "$_urc" = "2" ] && [ "$ii" -gt 0 ]; then
+              case "${y[$ii]##*/}" in
+                eval|source|.|bash|sh|zsh|dash|ksh|xargs|sudo) st=2 ;;
+                find)
+                  for x in "${y[@]:ii}"; do
+                    case "$x" in -exec|-execdir|-ok|-okdir) st=2 ;; esac
+                  done ;;
+              esac
+              case "${raw[$((ci + ii))]}" in *'$'*|*\\*|*\'*|*\"*) st=2 ;; esac
+            fi ;;
+        esac
+      fi
+      # A GLOB IN A DIRECTORY COMPONENT leaves the landing unread: the local
+      # reader takes a glob in the last component, and `rm -f <dir>/wt-sib*/f`
+      # was read as a path that does not exist.
       if [ "$st" = "0" ]; then
         [ "$poison" = "1" ] && st=3
         case "$kept" in *'$'*) st=3 ;; esac
+        for x in "${@:2}"; do
+          case "$x" in */*) case "${x%/*}" in *[\*\?\[]*) st=3 ;; esac ;; esac
+        done
       fi
       [ "$st" = "2" ] && poison=1
       case "$cw" in
@@ -7574,11 +7762,26 @@ gate_opaque_shell_lines() {
   # argv, where the unread option is already the closed reading. Whether the
   # shell is in `-c` mode is `gate_shell_c_string`'s answer, the same one the
   # reader takes; an option region it cannot read comes back as a line marked 2.
-  local _l _rc
+  #
+  # THE ASSIGNMENTS OF AN `env` IN FRONT ARE KEPT FOR EVERY LINE. Peeling it
+  # dropped them, so `env GIT_WORK_TREE=<sibling> bash -c 'git checkout -f --
+  # .'` reached the landing collector as a `git` in the act's own worktree and
+  # overwrote the sibling's uncommitted changes under `런로컬`. Each line now
+  # carries them through an `env` in front, where the collector gives up on a
+  # `GIT_*` as it does for the same argv written bare.
+  local _l _rc a GATE_OPL_ENV=''
   while [ $# -gt 0 ]; do
     _rc=0; _l=$(gate_unwrap_one "$@") || _rc=$?
     case "$_rc" in
-      0) shift $(( $# - _l )) ;;
+      0)
+        if [ "${1##*/}" = "env" ]; then
+          for a in "${@:2:$(( $# - 1 - _l ))}"; do
+            case "$a" in
+              [A-Za-z_]*=*) GATE_OPL_ENV="${GATE_OPL_ENV:+$GATE_OPL_ENV }$a" ;;
+            esac
+          done
+        fi
+        shift $(( $# - _l )) ;;
       2) break ;;
       *) return 0 ;;
     esac
@@ -7853,6 +8056,8 @@ ladder_of_shell() {
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
     unread="${rec%%	*}"; kept="${rec#*	}"; kept="${kept%%	*}"
+    # A redirection target (4, 5) is no command and has no rung.
+    case "$unread" in 4|5) continue ;; esac
     if [ "$unread" = "2" ]; then
       r='머지'
     else

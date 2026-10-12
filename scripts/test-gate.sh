@@ -30833,6 +30833,98 @@ check "86: 페이로드의 GIT_WORK_TREE 대입 뒤 checkout -f 는 런로컬 �
 check "86: 대조 — 자기 워크트리의 페이로드 checkout -f 는 런로컬 판정을 지난다" \
   "$(rd86 bash -c "git checkout -f -- .")" ""
 
+# 판독기가 모델링하지 않던 철자 — 셸 옵션 영역의 모르는 긴 옵션·값을 받는 글자, 명령
+# 낱말의 백슬래시, exec 앞에서만 벗기던 builtin, lockf·time 뒤의 중첩 셸은 평범한 줄로
+# 읽혀 머지가 낮은 선언으로 실행됐고, 리다이렉션·디렉터리 성분의 글롭·셸 앞 env 대입은
+# 착지점에 닿지 않아 형제 파일이 덮어써지거나 지워졌다. 이제 아는 문법만 읽고 나머지는
+# 읽지 못한 줄로 받는다. 함수 수준의 바닥·사다리와 실행 수준의 거부·잔존을 함께 둔다.
+# 스텁·픽스처 파일은 이 블록이 만들고 지운다.
+for p86 in "zsh --emulate sh -c|gh pr merge 1" "ksh -R rf86 -c|gh pr merge 1" \
+           'bash -c|g\h pr merge 1' "bash -c|builtin eval gh pr merge 1" \
+           "bash -c|time -p bash -c 'gh pr merge 1'" "bash -c|lockf -k lk86n bash -c 'gh pr merge 1'" \
+           "bash -c|'gh' pr merge 1"; do
+  s86="${p86%%|*}"; c86="${p86#*|}"
+  # shellcheck disable=SC2086
+  check "86: 모델링하지 않던 철자의 바닥은 외부상태변경이다 — ${s86} ${c86}" "$(fl86 $s86 "$c86")" "외부상태변경"
+  # shellcheck disable=SC2086
+  check "86: 모델링하지 않던 철자의 사다리는 머지다 — ${s86} ${c86}" "$(ld86 $s86 "$c86")" "머지"
+done
+check "86: 대조 — 아는 긴 옵션 bash --norc -c 의 git status 는 바닥 읽기다" "$(fl86 bash --norc -c "git status")" "읽기"
+check "86: 대조 — 아는 긴 옵션 bash --norc -c 의 git status 는 사다리가 없다" "$(ld86 bash --norc -c "git status")" ""
+check "86: 대조 — lockf -k 뒤 읽기 명령의 바닥은 읽기다" "$(fl86 bash -c "lockf -k $T86/lk86k git status")" "읽기"
+check "86: 절대 경로 리다이렉션의 바닥은 트리밖쓰기다" "$(fl86 bash -c "echo x > $T86/rd86a")" "트리밖쓰기"
+check "86: 붙여 쓴 절대 경로 리다이렉션의 바닥은 트리밖쓰기다" "$(fl86 bash -c "echo x 2>>$T86/rd86a")" "트리밖쓰기"
+check "86: &> 리다이렉션의 바닥은 트리밖쓰기다" "$(fl86 bash -c "echo x &>$T86/rd86a")" "트리밖쓰기"
+check "86: 상대 경로 리다이렉션의 바닥은 워크트리쓰기다" "$(fl86 bash -c "echo x > rd86r")" "워크트리쓰기"
+# shellcheck disable=SC2016
+check "86: \$ 대상 리다이렉션의 바닥은 트리밖쓰기다" "$(fl86 bash -c 'echo x > $D/rd86')" "트리밖쓰기"
+check "86: 대조 — /dev/null 과 fd 복제 리다이렉션은 바닥을 올리지 않는다" "$(fl86 bash -c "git status >/dev/null 2>&1")" "읽기"
+check "86: 대조 — >&2 는 바닥을 올리지 않는다" "$(fl86 bash -c "echo x >&2")" "읽기"
+mkdir -p "$SIB86/sh86b" "$T86/sh86b"
+printf 'k\n' > "$SIB86/sh86b/f"; printf 'k\n' > "$SIB86/sh86b/u"
+check "86: 등급표에 없는 파괴 동사 unlink 의 바닥은 워크트리쓰기다" "$(fl86 bash -c "unlink $SIB86/sh86b/u")" "워크트리쓰기"
+check "86: 리다이렉션으로 형제 파일을 덮는 bash -c 는 런로컬 판정에서 park 된다" "$(rd86 bash -c "echo x > $SIB86/sh86b/f")" "파괴형태미명시"
+check "86: 디렉터리 성분 글롭의 형제 rm 은 런로컬 판정에서 park 된다" "$(rd86 bash -c "rm -f $WORK/wt86-sib*/sh86b/f")" "파괴형태미명시"
+check "86: builtin cd 뒤의 rm 은 런로컬 판정에서 park 된다" "$(rd86 bash -c "builtin cd $T86/sh86b && rm -f f")" "파괴형태미명시"
+check "86: 셸 앞 env 의 GIT_WORK_TREE 대입 뒤 checkout -f 는 런로컬 판정에서 park 된다" \
+  "$(rd86 env GIT_WORK_TREE="$SIB86" bash -c "git checkout -f -- .")" "파괴형태미명시"
+check "86: 대조 — 임시 디렉터리를 덮는 리다이렉션은 런로컬 판정을 지난다" "$(rd86 bash -c "echo x > $T86/sh86b/t")" ""
+check "86: 대조 — 셸 앞 env 의 다른 대입 뒤 자기 워크트리 checkout -f 는 런로컬 판정을 지난다" \
+  "$(rd86 env FOO86=1 bash -c "git checkout -f -- .")" ""
+
+GH86D="$WORK/gh86b"; mkdir -p "$GH86D"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$GH86D/ran" > "$GH86D/gh"
+chmod +x "$GH86D/gh"
+for p86 in "time -p bash -c '$GH86D/gh pr merge 5'" "lockf -k $T86/lk86n bash -c '$GH86D/gh pr merge 6'"; do
+  TMPDIR="$T86" r86 워크트리쓰기 bash -c "$p86"
+  case "$rc" in 8) ok "86: 런로컬·커밋 선언의 래퍼 뒤 중첩 셸 머지는 거부된다 — ${p86%% *} (rc=$rc)" ;;
+    *) bad "86: 런로컬·커밋 선언의 래퍼 뒤 중첩 셸 머지는 거부된다 — ${p86%% *}" "rc=$rc $msg" ;; esac
+done
+for p86 in "zsh --emulate sh -c|$GH86D/gh pr merge 7" "bash -c|builtin eval $GH86D/gh pr merge 8" \
+           "bash -c|${GH86D%/*}/gh86\\b/gh pr merge 9"; do
+  s86="${p86%%|*}"; c86="${p86#*|}"
+  # shellcheck disable=SC2086
+  mg86 $s86 "$c86"
+  case "$rc" in 8) ok "86: 읽기 선언의 모델링하지 않던 머지 철자는 거부된다 — ${s86} (rc=$rc)" ;;
+    *) bad "86: 읽기 선언의 모델링하지 않던 머지 철자는 거부된다 — ${s86}" "rc=$rc $msg" ;; esac
+done
+[ ! -e "$GH86D/ran" ] && ok "86: 거부된 다섯 머지 철자 중 어느 것도 스텁을 실행하지 않았다" \
+  || bad "86: 거부된 다섯 머지 철자 중 어느 것도 스텁을 실행하지 않았다" "$(cat "$GH86D/ran")"
+rm -rf "$GH86D"
+
+om86 읽기 bash -c "echo x > $SIB86/sh86b/f"
+case "$rc" in 6) ok "86: 읽기로 선언한 형제 파일 리다이렉션은 거부된다 (rc=$rc)" ;;
+  *) bad "86: 읽기로 선언한 형제 파일 리다이렉션은 거부된다" "rc=$rc $msg" ;; esac
+om86 읽기 bash -c "unlink $SIB86/sh86b/u"
+case "$rc" in 6) ok "86: 읽기로 선언한 형제 파일 unlink 는 거부된다 (rc=$rc)" ;;
+  *) bad "86: 읽기로 선언한 형제 파일 unlink 는 거부된다" "rc=$rc $msg" ;; esac
+nb86=$(b86)
+rl86 bash -c "echo x > $SIB86/sh86b/f"
+check "86: 런로컬로 선언한 형제 파일 리다이렉션은 park 된다" "$rc" "11"
+rl86 bash -c "rm -f $WORK/wt86-sib*/sh86b/f"
+check "86: 런로컬로 선언한 디렉터리 성분 글롭의 형제 rm 은 park 된다" "$rc" "11"
+rl86 bash -c "builtin cd $SIB86/sh86b && rm -f f"
+check "86: 런로컬로 선언한 builtin cd 뒤의 형제 rm 은 park 된다" "$rc" "11"
+check "86: 그 park·거부된 셸 철자들의 형제 파일이 그대로다" "$(cat "$SIB86/sh86b/f" 2>/dev/null)" "k"
+printf 'ge86\n' >> "$SIB86/base.txt"
+rl86 env GIT_WORK_TREE="$SIB86" bash -c "git checkout -f -- ."
+check "86: 런로컬로 선언한 셸 앞 env GIT_WORK_TREE 의 checkout -f 는 park 된다" "$rc" "11"
+case "$(cat "$SIB86/base.txt" 2>/dev/null)" in *ge86*) ok "86: 그 형제 워크트리의 커밋되지 않은 변경이 남아 있다" ;;
+  *) bad "86: 그 형제 워크트리의 커밋되지 않은 변경이 남아 있다" "$SIB86/base.txt" ;; esac
+rl86 bash -c "unlink $SIB86/sh86b/u"
+check "86: 런로컬로 선언한 형제 파일 unlink 는 park 된다" "$rc" "11"
+check "86: 그 unlink 의 형제 파일이 그대로다" "$(cat "$SIB86/sh86b/u" 2>/dev/null)" "k"
+check "86: 셸 철자 형제 park 다섯이 blocked 행 다섯을 남긴다" "$(( $(b86) - nb86 ))" "5"
+nb86=$(b86)
+rl86 bash -c "echo x > $T86/sh86b/t"
+check "86: 대조 — 임시 디렉터리를 덮는 리다이렉션은 런로컬로 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+check "86: 그 리다이렉션이 실제로 썼다" "$(cat "$T86/sh86b/t" 2>/dev/null)" "x"
+printf 'z\n' > "$T86/sh86b/u"
+rl86 bash -c "unlink $T86/sh86b/u"
+check "86: 대조 — 임시 디렉터리 파일 unlink 는 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$T86/sh86b/u" ] && ok "86: 그 unlink 가 실제로 지웠다" || bad "86: 그 unlink 가 실제로 지웠다" "$T86/sh86b/u"
+rm -rf "$SIB86/sh86b" "$T86/sh86b" "$T86/rd86a" "$T86/lk86n" "$WT/rd86r"
+
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
 # 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git
 # 디렉터리의 stash 가 지워졌다. 하한 판정을 직접 재고, 실행 수준에서 park 와 stash 항목의
