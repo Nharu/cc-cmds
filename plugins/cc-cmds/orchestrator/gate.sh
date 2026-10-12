@@ -1344,6 +1344,12 @@ gate_reach_local_destructive() {
       return 0 ;;
   esac
   local a
+  # The commit step of the sidecar atomic write and its failure cleanup are
+  # the one `mv` over an existing file and the one `rm` this reader does not
+  # call destructive; `gate_reach_atomic_swap` says how narrow that is.
+  case "$cmd" in
+    mv|rm) gate_reach_atomic_swap "$cmd" "$@" && return 0 ;;
+  esac
   case "$cmd" in
     rm)
       # Every `rm` deletes: with no terminal on stdin a plain `rm <file>` asks
@@ -1676,6 +1682,117 @@ gate_reach_local_destructive() {
   return 0
 }
 
+gate_reach_atomic_swap() {
+  # gate_reach_atomic_swap <mv|rm> <args after argv0...> — 0 when the act is
+  # the commit step of the sidecar atomic write or the cleanup of its failure
+  # path, read from the directory the act runs in; 1 otherwise.
+  #
+  # THE SIDECAR CONTRACT WRITES EVERY SIDECAR BY RENAME. It makes a temp file
+  # beside the destination (`mktemp "$(dirname "$T")/.$(basename "$T").XXXXXX"`),
+  # fills it and `mv`s it over the destination, so once a sidecar exists each
+  # later write of it is a `mv` over an existing file, which the local reader
+  # calls destructive. A dispatched stage runs in a segment worktree while the
+  # sidecars live under the main checkout, so that `mv` landed in the target's
+  # trees outside every place `런로컬` is honest for, no manifest names its
+  # form, and it parked under every token: `design-reconverge` stopped each
+  # time it closed a carrier block, and the `design-drift` append of
+  # `implement-unattended` from its second write on. The failure path's
+  # `rm -f "$T" "$SNAP"` parked the same way.
+  #
+  # THE FORM IS READ EXACTLY, AND ANY DIFFERENCE IS DESTRUCTIVE AS BEFORE. A
+  # `mv` qualifies when it has no option but `-f`, exactly two operands, a
+  # destination that is not a directory, a source in the same directory named
+  # `.<destination name>.` and six or more letters and digits, and that
+  # directory is `docs/<one component>` directly under the main checkout of
+  # the repository it belongs to (the parent of its common git directory). A
+  # source in another directory, a source without the leading dot, a suffix
+  # shorter than six, any other option (`-t`, `--`, `-v`), a deeper directory
+  # or one in another worktree still parks. A `rm` qualifies when its only
+  # option is `-f` and every operand is such a temp name in such a directory
+  # or a place under the temp directory or the run's state root that is in
+  # no git work tree, and at least one operand is the temp name.
+  local tool="$1" a s d sd dd tmp sr full; shift
+  local -a ops=()
+  for a in "$@"; do
+    case "$a" in
+      -f) ;;
+      -*) return 1 ;;
+      *) ops[${#ops[@]}]="$a" ;;
+    esac
+  done
+  [ "${#ops[@]}" -gt 0 ] || return 1
+  if [ "$tool" = "mv" ]; then
+    [ "${#ops[@]}" = "2" ] || return 1
+    s="${ops[0]}"; d="${ops[1]}"
+    [ -d "$d" ] && return 1
+    gate_reach_swap_temp_name "${s##*/}" "${d##*/}" || return 1
+    sd=$(gate_reach_swap_dir "$s"); dd=$(gate_reach_swap_dir "$d")
+    [ -n "$sd" ] && [ "$sd" = "$dd" ] || return 1
+    gate_reach_sidecar_dir "$dd"
+    return
+  fi
+  # A place under the temp directory counts only outside every git work tree:
+  # a target's checkout or worktree may itself sit under the temp directory,
+  # and a plain `rm -f` there is the deletion this reader exists to catch. At
+  # least one operand must be the temp name, so a cleanup of scratch files
+  # alone is not read through this door.
+  tmp="${TMPDIR:-/tmp}"; tmp="${tmp%/}"; [ -n "$tmp" ] || tmp=/
+  tmp=$(gate_real_prefix "$tmp")
+  sr=$(gate_real_prefix "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds")
+  local seen=0
+  for a in "${ops[@]}"; do
+    if gate_reach_swap_temp_name "${a##*/}" '' \
+       && gate_reach_sidecar_dir "$(gate_reach_swap_dir "$a")"; then
+      seen=1; continue
+    fi
+    full=$(gate_real_prefix "$(gate_lexical_abs "$a" "$(pwd -P)")")
+    case "$full" in "$tmp"/?*|"$sr"/?*) ;; *) return 1 ;; esac
+    gate_common_git_of_dir "$(gate_reach_swap_dir "$a")" >/dev/null && return 1
+  done
+  [ "$seen" = "1" ]
+}
+
+gate_reach_swap_temp_name() {
+  # gate_reach_swap_temp_name <name> <destination name or ''> — 0 when <name>
+  # is `.<stem>.<suffix>` with a suffix of six or more letters and digits, and
+  # the stem is the destination name when one is given.
+  local n="$1" want="$2" sfx stem
+  case "$n" in .?*.*) ;; *) return 1 ;; esac
+  sfx="${n##*.}"; stem="${n%.*}"; stem="${stem#.}"
+  [ -n "$stem" ] || return 1
+  if [ -n "$want" ]; then [ "$stem" = "$want" ] || return 1; fi
+  [ "${#sfx}" -ge 6 ] || return 1
+  case "$sfx" in *[!A-Za-z0-9]*) return 1 ;; esac
+  return 0
+}
+
+gate_reach_swap_dir() {
+  # gate_reach_swap_dir <path> — the physical directory <path> names its file
+  # in, from the current directory; nothing when that directory cannot be
+  # entered.
+  local dir
+  case "$1" in
+    */*) dir="${1%/*}"; [ -n "$dir" ] || dir=/ ;;
+    *) dir=. ;;
+  esac
+  ( cd "$dir" 2>/dev/null && pwd -P ) || :
+}
+
+gate_reach_sidecar_dir() {
+  # gate_reach_sidecar_dir <physical directory> — 0 when it is `docs/<one
+  # component>` directly under the main checkout of the repository it belongs
+  # to: the parent of a common git directory named `.git`.
+  local dir="$1" cg mc
+  [ -n "$dir" ] || return 1
+  cg=$(gate_common_git_of_dir "$dir") || return 1
+  case "$cg" in */.git) ;; *) return 1 ;; esac
+  mc=$(cd "${cg%/.git}" 2>/dev/null && pwd -P) || return 1
+  [ -n "$mc" ] || return 1
+  case "$dir" in "$mc"/docs/?*) ;; *) return 1 ;; esac
+  case "${dir#"$mc"/docs/}" in */*) return 1 ;; esac
+  return 0
+}
+
 gate_reach_local_destructive_here() {
   # gate_reach_local_destructive_here <argv...> — the local reader asked from
   # the directory the act runs in.
@@ -1787,6 +1904,12 @@ gate_short_letters() {
   printf '%s' "$out"
 }
 
+# The long options `gate_reach_copy_form` knows for `mv`, `cp`, `ln` and
+# `install`. `gate_tt_copy_dest_only` resolves a long option against the same
+# list, so an abbreviation one of them reads as `--target-directory` the other
+# reads so too.
+GATE_COPY_LONGS='--force --interactive --no-clobber --verbose --target-directory --recursive --archive --symbolic --no-dereference --dereference'
+
 gate_reach_copy_form() {
   # gate_reach_copy_form <mv|cp|ln|install> <args after argv0...> — prints the
   # trigger when the act would replace a file that already exists, or uses an
@@ -1841,9 +1964,8 @@ gate_reach_copy_form() {
       case "$a" in
         --) eat=ops; continue ;;
         --*)
-          p=$(gate_long_pick "$a" --force --interactive --no-clobber --verbose \
-                --target-directory --recursive --archive --symbolic --no-dereference \
-                --dereference) || { printf '%s' "$a"; return 0; }
+          # shellcheck disable=SC2086
+          p=$(gate_long_pick "$a" $GATE_COPY_LONGS) || { printf '%s' "$a"; return 0; }
           case "$p" in
             --force|--interactive) clob=1; cw="$a" ;;
             --target-directory) printf '%s' "$a"; return 0 ;;
@@ -1866,9 +1988,8 @@ gate_reach_copy_form() {
     case "$a" in
       --) eat=ops ;;
       --*)
-        p=$(gate_long_pick "$a" --force --interactive --no-clobber --verbose \
-              --target-directory --recursive --archive --symbolic --no-dereference \
-              --dereference) || { printf '%s' "$a"; return 0; }
+        # shellcheck disable=SC2086
+        p=$(gate_long_pick "$a" $GATE_COPY_LONGS) || { printf '%s' "$a"; return 0; }
         case "$tool:$p" in
           *:--force|*:--interactive) clob=1; cw="$a" ;;
           mv:--no-clobber|cp:--no-clobber) clob=0; cw='' ;;
@@ -2488,13 +2609,31 @@ gate_tt_copy_dest_only() {
   # two operands, no `--`, no option after the first operand, no `-t` or
   # `--target-directory` in any spelling, and for `install` no `-d` or
   # `--directory`; 1 otherwise.
-  local c="$1" a seen=0 n=0; shift
+  #
+  # A LONG OPTION IS RESOLVED AS THE DESTRUCTION READER RESOLVES IT, against
+  # `GATE_COPY_LONGS` by `gate_long_pick`, and one that names
+  # `--target-directory` (or `install`'s `--directory`), is ambiguous or is
+  # not on the list leaves the act unnarrowed. Matched by its literal prefix,
+  # `--target=`, `--targ=`, `--t=` and the split `--target <dir>` were plain
+  # options here while the destruction reader read them as the target
+  # directory, so `cp --targ=<sibling> <tmp>/x <tmp>/y` narrowed its landing
+  # to `<tmp>/y` and overwrote the sibling's file under `런로컬` on a host
+  # whose `cp` is GNU's.
+  local c="$1" a p seen=0 n=0; shift
   case "$c" in cp|install|ln) ;; *) return 1 ;; esac
   for a in "$@"; do
     case "$a" in
       --) return 1 ;;
-      --target-directory*|--directory*) return 1 ;;
-      --*) [ "$seen" = "0" ] || return 1 ;;
+      --*)
+        [ "$seen" = "0" ] || return 1
+        if [ "$c" = "install" ]; then
+          # shellcheck disable=SC2086
+          p=$(gate_long_pick "$a" $GATE_COPY_LONGS --directory) || return 1
+        else
+          # shellcheck disable=SC2086
+          p=$(gate_long_pick "$a" $GATE_COPY_LONGS) || return 1
+        fi
+        case "$p" in --target-directory|--directory) return 1 ;; esac ;;
       -?*)
         [ "$seen" = "0" ] || return 1
         case "$a" in -*t*) return 1 ;; esac
@@ -7485,6 +7624,13 @@ gate_shell_scan() {
   #     a parameter expansion `${…}` it is no comment, so `${` and its `}`
   #     are counted and the rule is off between them: `echo ${x:- #}; gh pr
   #     merge 1` lost the merge to a comment that ran to the end of the line.
+  #     Inside one, a bare `{` is counted too, as zsh and ksh nest it; bash
+  #     and dash close at the first `}`, so once a bare `{` has been met
+  #     inside an expansion the two readings disagree on where a later `#`
+  #     stands, and such a `#` at the start of a word makes the rest of the
+  #     string 2 instead of a comment. Counted only by `${`, `zsh -c "echo
+  #     ${x:-{} #}; <cmd>"` ran `<cmd>` while the reader dropped it as a
+  #     comment.
   #   - A here-document (`<<`, `<<-`; not `<<<`) leaves neither its operator
   #     nor its delimiter in the line. At the next newline outside quotes
   #     the lines up to the delimiter line (its leading tabs removed for
@@ -7512,7 +7658,13 @@ gate_shell_scan() {
   #     word in a `$(…)` body is counted up to its `esac`, and a `)` while one
   #     is open ends a pattern, so it cuts and does not close the
   #     substitution: `$(case a in a) gh pr merge 1;; esac)` closed at the
-  #     pattern and the merge was read as the outer line's operands. Inside a
+  #     pattern and the merge was read as the outer line's operands. An
+  #     `esac` closes the count only in command position — nothing but
+  #     blanks before it in its simple command — so the argument of `echo
+  #     esac` does not close it, and one after nothing but assignments makes
+  #     the rest of the string 2: `$(case b in a) echo esac;; b) <cmd>;;
+  #     esac)` closed at the argument and `<cmd>` was read as an operand of
+  #     the `echo` line while zsh, dash and ksh ran it. Inside a
   #     backtick body a backslash before a backtick opens a nested
   #     substitution, which this reader does not read, so that line and every
   #     line after it are 2.
@@ -7596,14 +7748,14 @@ gate_shell_scan() {
     }
     function sopen(kind) {
       sp++; sb[sp] = buf; sq[sp] = q; sm[sp] = m3; sk[sp] = kind; sd[sp] = dep; sc[sp] = c2
-      spd[sp] = pd; scd[sp] = cd
-      buf = ""; q = 0; m3 = 0; dep = 0; kd = kind; pd = 0; cd = 0
+      spd[sp] = pd; scd[sp] = cd; sbk[sp] = bk
+      buf = ""; q = 0; m3 = 0; dep = 0; kd = kind; pd = 0; cd = 0; bk = 0
       if (kind == "p") c2 = 1
     }
     function sclose() {
       cut()
       buf = sb[sp] "$_"; q = sq[sp]; m3 = sm[sp]; dep = sd[sp]; c2 = sc[sp]
-      pd = spd[sp]; cd = scd[sp]; sp--
+      pd = spd[sp]; cd = scd[sp]; bk = sbk[sp]; sp--
       kd = (sp > 0) ? sk[sp] : ""
     }
     function inbq(   k) { for (k = 1; k <= sp; k++) if (sk[k] == "b") return 1; return 0 }
@@ -7611,7 +7763,7 @@ gate_shell_scan() {
     { s = s (NR > 1 ? "\n" : "") $0 }
     END {
       n = length(s); buf = ""; q = 0; m3 = 0; c2 = 0; sp = 0; dep = 0; kd = ""
-      bad = 0; hn = 0; pd = 0; cd = 0
+      bad = 0; hn = 0; pd = 0; cd = 0; bk = 0
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1); nx = substr(s, i + 1, 1)
         if (q == 1) {
@@ -7638,14 +7790,21 @@ gate_shell_scan() {
         }
         l = substr(buf, length(buf), 1)
         if (c == "$" && nx == "{") { pd++; buf = buf c nx; m3 = 1; i++; continue }
+        if (c == "{" && pd > 0) { pd++; bk = 1; buf = buf c; m3 = 1; continue }
         if (c == "}" && pd > 0) { pd--; buf = buf c; m3 = 1; continue }
         if ((kd == "s" || kd == "p") && wstart()) {
           if (substr(s, i, 4) == "case" && index(" \t", substr(s, i + 4, 1)) && substr(s, i + 4, 1) != "") cd++
-          else if (cd > 0 && substr(s, i, 4) == "esac" && (substr(s, i + 4, 1) == "" || index(" \t\n;&|()", substr(s, i + 4, 1)))) cd--
+          else if (cd > 0 && substr(s, i, 4) == "esac" && (substr(s, i + 4, 1) == "" || index(" \t\n;&|()", substr(s, i + 4, 1)))) {
+            if (buf ~ /^[ \t]*$/) cd--
+            else if (buf ~ /^[ \t]*([A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]+)+$/) bad = 1
+          }
         }
-        if (c == "#" && pd == 0 && (buf == "" || l == " " || l == "\t")) {
-          while (i < n && substr(s, i + 1, 1) != "\n") i++
-          continue
+        if (c == "#" && (buf == "" || l == " " || l == "\t")) {
+          if (bk) { bad = 1; buf = buf c; continue }
+          if (pd == 0) {
+            while (i < n && substr(s, i + 1, 1) != "\n") i++
+            continue
+          }
         }
         if (c == "$" && nx == "\047") { q = 3; buf = buf c nx; i++; continue }
         if (c == "\047") { q = 1; buf = buf c; continue }
@@ -7697,6 +7856,38 @@ GATE_OPL_ENV=''
 GATE_SC_SP=$'\034'; GATE_SC_TAB=$'\035'; GATE_SC_NL=$'\036'
 GATE_SC_GT=$'\037'; GATE_SC_LT=$'\031'
 
+gate_subst() {
+  # gate_subst <string> <char> <replacement char or ''> — GATE_SUBST: <string>
+  # with every <char> replaced by the replacement, or removed when it is
+  # empty. <char> and the replacement are single bytes other than `\` and
+  # `-`.
+  #
+  # THE ONE PLACE A PAYLOAD'S CHARACTERS ARE REPLACED, BECAUSE bash 3.2's
+  # `${x//c/r}` IS NOT LINEAR. With many matches its cost grows with the cube
+  # of the length, a bracket pattern or a single character alike: measured
+  # on the host's bash 3.2.57, a 16KB quoted word holding spaces took 17.9 s
+  # to read, a 16KB double-quoted body holding `$` 76 s, and an exec reads a
+  # payload three times. A string with no match, or a short one, takes the
+  # builtin; a long one with matches goes through `tr` in one fork, which is
+  # linear. The readers of a payload call this and never spell `${x//…}`
+  # themselves — `scripts/test-gate.sh` refuses the spelling in their bodies.
+  local s="$1" c="$2" r="$3"
+  case "$s" in
+    *"$c"*) ;;
+    *) GATE_SUBST="$s"; return 0 ;;
+  esac
+  if [ "${#s}" -le 256 ]; then
+    GATE_SUBST="${s//"$c"/$r}"
+    return 0
+  fi
+  if [ -n "$r" ]; then
+    GATE_SUBST=$(printf '%s.' "$s" | LC_ALL=C tr "$c" "$r")
+  else
+    GATE_SUBST=$(printf '%s.' "$s" | LC_ALL=C tr -d "$c")
+  fi
+  GATE_SUBST="${GATE_SUBST%.}"
+}
+
 gate_opl_words() {
   # gate_opl_words <word...> — GATE_OPL_WORDS: the words of a record of
   # `gate_opaque_payload_lines` with the scanner's bytes for a quoted space,
@@ -7706,11 +7897,21 @@ gate_opl_words() {
   # `cp` that overwrote the sibling's file was read as a copy to a relative
   # name that did not exist.
   local x
+  local -a w=("$@")
   GATE_OPL_WORDS=()
-  for x in "$@"; do
-    x="${x//$GATE_SC_SP/ }"; x="${x//$GATE_SC_TAB/	}"; x="${x//$GATE_SC_NL/
-}"
-    GATE_OPL_WORDS[${#GATE_OPL_WORDS[@]}]="$x"
+  # The positional arguments are emptied before the loop: a function call on
+  # bash 3.2 costs with their number, and a word holding none of the three
+  # skips the call besides.
+  set --
+  for x in ${w[@]+"${w[@]}"}; do
+    case "$x" in
+      *"$GATE_SC_SP"*|*"$GATE_SC_TAB"*|*"$GATE_SC_NL"*) ;;
+      *) GATE_OPL_WORDS[${#GATE_OPL_WORDS[@]}]="$x"; continue ;;
+    esac
+    gate_subst "$x" "$GATE_SC_SP" ' '; gate_subst "$GATE_SUBST" "$GATE_SC_TAB" '	'
+    gate_subst "$GATE_SUBST" "$GATE_SC_NL" '
+'
+    GATE_OPL_WORDS[${#GATE_OPL_WORDS[@]}]="$GATE_SUBST"
   done
 }
 
@@ -7786,8 +7987,10 @@ gate_opl_redir_record() {
   # when its place is unread — it holds `$`, a backtick, a backslash, a brace
   # or a glob, <poison> is 1, or the line's scanner mark <m> is 3. Quotes are
   # removed as from any operand; a descriptor device has none.
-  local t="${1//\'/}"; t="${t//\"/}"
-  t="${t//$GATE_SC_GT/>}"; t="${t//$GATE_SC_LT/<}"
+  local t
+  gate_subst "$1" "'" ''; gate_subst "$GATE_SUBST" '"' ''
+  gate_subst "$GATE_SUBST" "$GATE_SC_GT" '>'; gate_subst "$GATE_SUBST" "$GATE_SC_LT" '<'
+  t="$GATE_SUBST"
   case "$t" in
     ''|/dev/null|/dev/stdout|/dev/stderr|/dev/fd/*) return 0 ;;
   esac
@@ -7959,7 +8162,8 @@ gate_opaque_payload_lines() {
       # stands, and every later line is 3.
       if [ "$lm" = "2" ]; then
         poison=1
-        printf '2\t%s\t%s\n' "${line//\$/}" "${line//\$/}"
+        gate_subst "$line" '$' ''
+        printf '2\t%s\t%s\n' "$GATE_SUBST" "$GATE_SUBST"
         continue
       fi
     fi
@@ -8087,20 +8291,36 @@ gate_opaque_payload_lines() {
       # stay as the scanner's bytes, so the record still splits into the
       # shell's words (`gate_opl_words`).
       #
-      # Each quote character is removed by a substitution of its own. One
-      # bracket pattern `${x//[\'\"]/}` costs bash 3.2 time cubic in the
-      # word's length: a 16KB quoted word in `bash -c "printf '%s' '<16KB>'
-      # > out.txt"` took 181 seconds to read, and an exec reads it three times.
+      # Each character is replaced through `gate_subst`, which stays linear
+      # on bash 3.2: a bracket pattern `${x//[\'\"]/}` took 181 seconds on a
+      # 16KB quoted word in `bash -c "printf '%s' '<16KB>' > out.txt"`, and a
+      # substitution of one character still took 17.9 s on a 16KB word
+      # holding spaces. A function call on bash 3.2 costs with the number of
+      # the caller's positional arguments, so they are emptied before the
+      # loop, which walks `raw` instead: once per word of a line of thousands
+      # of words the call took 24.7 s where the inline spelling took 0.6. A
+      # word holding none of the four is kept without the call.
       y=()
-      for x in "$@"; do
-        x="${x//\'/}"; x="${x//\"/}"; x="${x//$GATE_SC_GT/>}"
-        y[${#y[@]}]="${x//$GATE_SC_LT/<}"
+      set --
+      for x in ${raw[@]+"${raw[@]}"}; do
+        case "$x" in
+          *"'"*|*'"'*|*"$GATE_SC_GT"*|*"$GATE_SC_LT"*)
+            gate_subst "$x" "'" ''; gate_subst "$GATE_SUBST" '"' ''
+            gate_subst "$GATE_SUBST" "$GATE_SC_GT" '>'; gate_subst "$GATE_SUBST" "$GATE_SC_LT" '<'
+            y[${#y[@]}]="$GATE_SUBST" ;;
+          *) y[${#y[@]}]="$x" ;;
+        esac
       done
       set -- "${y[@]}"
       y=()
       for x in ${pre[@]+"${pre[@]}"}; do
-        x="${x//\'/}"; x="${x//\"/}"; x="${x//$GATE_SC_GT/>}"
-        y[${#y[@]}]="${x//$GATE_SC_LT/<}"
+        case "$x" in
+          *"'"*|*'"'*|*"$GATE_SC_GT"*|*"$GATE_SC_LT"*)
+            gate_subst "$x" "'" ''; gate_subst "$GATE_SUBST" '"' ''
+            gate_subst "$GATE_SUBST" "$GATE_SC_GT" '>'; gate_subst "$GATE_SUBST" "$GATE_SC_LT" '<'
+            y[${#y[@]}]="$GATE_SUBST" ;;
+          *) y[${#y[@]}]="$x" ;;
+        esac
       done
       pre=(${y[@]+"${y[@]}"})
     fi
@@ -8213,8 +8433,9 @@ gate_opaque_payload_lines() {
         2) unread=2 ;;
         3) [ "$unread" = "1" ] || unread=3 ;;
       esac
-      w="$*"
-      printf '%s\t%s\t%s\n' "$unread" "${kept//\$/}" "${w//\$/}"
+      gate_subst "$kept" '$' ''; kept="$GATE_SUBST"
+      gate_subst "$*" '$' ''
+      printf '%s\t%s\t%s\n' "$unread" "$kept" "$GATE_SUBST"
     else
       printf '%s\t%s\t%s\n' "$unread" "$kept" "$*"
     fi
@@ -8238,6 +8459,15 @@ gate_opaque_shell_lines() {
   # overwrote the sibling's uncommitted changes under `런로컬`. Each line now
   # carries them through an `env` in front, where the collector gives up on a
   # `GIT_*` as it does for the same argv written bare.
+  #
+  # EACH ASSIGNMENT IS KEPT AS ONE WORD. A line's record is split back into
+  # words at spaces, so an assignment carries the scanner's bytes for a space,
+  # a tab and a newline in place of them, as a quoted word of the string does,
+  # and `gate_opl_words` puts them back. Joined as written, `env 'A=x y' bash
+  # -c "cp base.txt <sibling>/existing"` split into `A=x` and a command `y`,
+  # the `cp` became that command's operands, and the overwrite of the sibling's
+  # file went through with no park — `GIT_AUTHOR_NAME='Nano Bot'` is the
+  # ordinary spelling of it.
   local _l _rc a GATE_OPL_ENV=''
   while [ $# -gt 0 ]; do
     _rc=0; _l=$(gate_unwrap_one "$@") || _rc=$?
@@ -8246,7 +8476,11 @@ gate_opaque_shell_lines() {
         if [ "${1##*/}" = "env" ]; then
           for a in "${@:2:$(( $# - 1 - _l ))}"; do
             case "$a" in
-              [A-Za-z_]*=*) GATE_OPL_ENV="${GATE_OPL_ENV:+$GATE_OPL_ENV }$a" ;;
+              [A-Za-z_]*=*)
+                gate_subst "$a" ' ' "$GATE_SC_SP"; gate_subst "$GATE_SUBST" '	' "$GATE_SC_TAB"
+                gate_subst "$GATE_SUBST" '
+' "$GATE_SC_NL"
+                GATE_OPL_ENV="${GATE_OPL_ENV:+$GATE_OPL_ENV }$GATE_SUBST" ;;
             esac
           done
         fi

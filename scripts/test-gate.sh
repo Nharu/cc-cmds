@@ -31182,6 +31182,203 @@ check "86: 16KB 따옴표 낱말의 바닥 판독이 10초 안에 끝난다" \
   "$(if [ $((lt86e - lt86s)) -lt 10 ]; then printf yes; else printf "no ($((lt86e - lt86s))s)"; fi)" "yes"
 check "86: 그 16KB 따옴표 낱말의 바닥은 워크트리쓰기다" "$lf86" "워크트리쓰기"
 
+# 현실적인 꼴의 판독 비용 — 대괄호 패턴을 걷어낸 뒤에도 한 글자 치환 ${x//c/r} 이 일치가
+# 많으면 bash 3.2 에서 여전히 초선형이라, 공백 든 따옴표 낱말 16KB 가 약 18초, $ 가 든
+# 큰따옴표 본문 16KB 가 약 76초, 이스케이프 공백 16KB 가 약 89초 걸렸다. 치환을 함수로 옮긴
+# 뒤에는 짧은 낱말 수천 개가 낱말마다 그 함수를 불러 약 25초였다 — bash 3.2 의 함수
+# 호출은 부르는 쪽 위치 인자 수만큼 든다. 위 단언은 모두 a 인 낱말이라 그 꼴들을 보지 못했고,
+# CI 의 bash 5 에서는 어떤 꼴도 느리지 않다. 그래서 여섯 꼴을 짧은 꼴과 같은 판정인지
+# 재고, 이 호스트의 /bin/bash 가 3.x 면 그 인터프리터로 시간을 잰다. 없으면 시간은
+# 재지 않았다고 출력한다 — 리눅스 CI 가 지킬 수 있는 것은 아래 정적 단언이다.
+fb86() {
+  # fb86 <interpreter> <argv...> — 그 인터프리터로 대상 트리 안에서 불투명 바닥의 첫 필드를 낸다.
+  local i86="$1"; shift
+  ( cd "$WT" && "$i86" -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      f=$(gate_opaque_floor "$@"); printf "%s" "${f%%	*}"' _ "$GATE" "$@" ) 2>/dev/null
+}
+mk86() {
+  # mk86 <unit> <bytes> — unit 을 bytes 에 이를 때까지 되풀이한다. unit 은 환경으로 넘긴다 —
+  # awk -v 는 백슬래시를 이스케이프로 풀어, 'a\ b' 의 긴 꼴이 백슬래시 없는 'a b' 가 됐다.
+  U86="$1" awk -v n="$2" 'BEGIN { u = ENVIRON["U86"]; s = ""; while (length(s) < n) s = s u; printf "%s", s }'
+}
+B86I=''
+case "$(/bin/bash -c 'printf %s "${BASH_VERSINFO[0]}"' 2>/dev/null)" in 3) B86I=/bin/bash ;; esac
+# shellcheck disable=SC2016
+for u86 in "a b" '$a' 'a\ b' "'a' " '${x}a ' "a"$'\034'"aaaaaaaa"; do
+  case "$u86" in
+    '$a'|'${x}a ') sp86="echo \"$(mk86 "$u86" 16384)\" > out86.txt"; ss86="echo \"$u86$u86\" > out86.txt" ;;
+    'a\ b'|"'a' ") sp86="echo $(mk86 "$u86" 16384) > out86.txt"; ss86="echo $u86$u86 > out86.txt" ;;
+    *) sp86="printf '%s' '$(mk86 "$u86" 16384)' > out86.txt"; ss86="printf '%s' '$u86$u86' > out86.txt" ;;
+  esac
+  check "86: 16KB 꼴의 바닥이 짧은 같은 꼴의 바닥과 같다 — $(printf '%q' "$u86")" \
+    "$(fb86 bash bash -c "$sp86")" "$(fb86 bash bash -c "$ss86")"
+  if [ -n "$B86I" ]; then
+    lt86s=$(date -u +%s)
+    fb86 "$B86I" bash -c "$sp86" >/dev/null
+    lt86e=$(date -u +%s)
+    check "86: bash 3.2 에서 16KB 꼴의 바닥 판독이 10초 안에 끝난다 — $(printf '%q' "$u86")" \
+      "$(if [ $((lt86e - lt86s)) -lt 10 ]; then printf yes; else printf "no ($((lt86e - lt86s))s)"; fi)" "yes"
+  else
+    printf '%s\n' "86: bash 3.x 인터프리터가 없어 16KB 꼴의 시간을 측정하지 않음 — $(printf '%q' "$u86")"
+  fi
+done
+# 정적 단언 — 페이로드를 읽는 함수 본문은 ${x//…} 를 직접 쓰지 않고 gate_subst 를 부른다.
+# 함수 본문을 정의 줄부터 맨 앞 } 까지 잘라 주석 줄을 빼고, 본문 줄 수와 그 치환 꼴의 줄을 낸다.
+for f86 in gate_opl_words gate_opl_redir_record gate_opaque_payload_lines gate_opaque_shell_lines \
+           gate_reach_runlocal_destruction; do
+  b86s=$(awk -v f="$f86" '
+    $0 ~ "^" f "\\(\\) [{]" { on = 1; next }
+    on && /^}/ { exit }
+    on && !/^[ \t]*#/ { n++; if ($0 ~ /[$][{][A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\/\//) print "hit:" $0 }
+    END { print "lines:" n + 0 }' "$GATE")
+  case "$b86s" in
+    lines:0|'') bad "86: 핫패스 함수 본문을 찾았다 — $f86" "$b86s" ;;
+    *hit:*) bad "86: 핫패스 함수 본문에 \${x//…} 치환이 없다 — $f86" "$b86s" ;;
+    *) ok "86: 핫패스 함수 본문에 \${x//…} 치환이 없다 — $f86" ;;
+  esac
+done
+check "86: gate_subst 가 긴 문자열의 글자를 바꾼다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+      s=$(awk "BEGIN { for (i = 0; i < 300; i++) printf \"a b\" }"); gate_subst "$s" " " "_"
+      t=$(awk "BEGIN { for (i = 0; i < 300; i++) printf \"a_b\" }")
+      [ "$GATE_SUBST" = "$t" ] && printf ok' _ "$GATE" 2>/dev/null)" "ok"
+check "86: gate_subst 가 긴 문자열의 끝 줄바꿈과 지운 글자를 보존한다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+      s=$(awk "BEGIN { for (i = 0; i < 300; i++) printf \"x\$\" }"); s="$s
+"; gate_subst "$s" "\$" ""
+      t=$(awk "BEGIN { for (i = 0; i < 300; i++) printf \"x\" }"); t="$t
+"
+      [ "$GATE_SUBST" = "$t" ] && printf ok' _ "$GATE" 2>/dev/null)" "ok"
+
+# 사이드카 원자 쓰기 — 사이드카 계약은 목적지 곁의 점 접두 mktemp 파일을 채워 목적지 위로
+# mv 하는데, 세그먼트 워크트리에서 주 체크아웃의 기존 사이드카를 덮는 그 mv 가 파괴로
+# 읽혀 모든 도달 토큰에서 park 됐다. design-reconverge 는 운반 블록을 닫을 때마다 이 쓰기를
+# 한다. 그 커밋 형태와 실패 경로의 점 파일 rm -f 만 비파괴로 읽고, 형태가 조금이라도
+# 다르면 지금처럼 park 된다. 세그먼트 쪽은 형제 워크트리다.
+tds86() {
+  # tds86 <argv...> — 세그먼트 쪽 워크트리에서 대상트리 칸의 파괴 질문(X=0, Pd=0)의 답을 낸다.
+  ( cd "$SIB86" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; GATE_MARK=""; MANIFEST=/dev/null
+      shift; gate_reach_tree_destruction 0 0 "$@"' _ "$GATE" "$@" ) 2>/dev/null
+}
+DK86="$WT/docs/k86"; mkdir -p "$DK86/sub" "$SR86/docs/k86"
+printf 'old\n' > "$DK86/x.md"; printf 'new\n' > "$DK86/.x.md.AbC123"
+printf 'old\n' > "$DK86/sub/x.md"; printf 'new\n' > "$DK86/sub/.x.md.AbC123"
+printf 'old\n' > "$SR86/docs/k86/x.md"; printf 'new\n' > "$SR86/docs/k86/.x.md.AbC123"
+printf 'n\n' > "$DK86/x.md.AbC123"; printf 'n\n' > "$DK86/.x.md.AbC12"; printf 'n\n' > "$T86/.x.md.AbC123"
+printf 'n\n' > "$T86/snap86"
+check "86: §1.3 커밋 mv 는 세그먼트 쪽 런로컬 판정을 지난다" \
+  "$(rs86 mv "$DK86/.x.md.AbC123" "$DK86/x.md")" ""
+check "86: §1.3 커밋 mv 는 세그먼트 쪽 대상트리 파괴 질문을 지난다" \
+  "$(tds86 mv "$DK86/.x.md.AbC123" "$DK86/x.md")" ""
+check "86: -f 를 단 §1.3 커밋 mv 도 런로컬 판정을 지난다" \
+  "$(rs86 mv -f "$DK86/.x.md.AbC123" "$DK86/x.md")" ""
+check "86: 실패 경로의 점 파일과 임시 파일 rm -f 는 런로컬 판정을 지난다" \
+  "$(rs86 rm -f "$DK86/.x.md.AbC123" "$T86/snap86")" ""
+check "86: 실패 경로의 점 파일 rm -f 는 대상트리 파괴 질문을 지난다" \
+  "$(tds86 rm -f "$DK86/.x.md.AbC123")" ""
+for a86 in "mv $T86/.x.md.AbC123 $DK86/x.md" "mv $DK86/x.md.AbC123 $DK86/x.md" \
+           "mv $DK86/.x.md.AbC12 $DK86/x.md" "mv -v $DK86/.x.md.AbC123 $DK86/x.md" \
+           "mv $DK86/sub/.x.md.AbC123 $DK86/sub/x.md" \
+           "mv $SR86/docs/k86/.x.md.AbC123 $SR86/docs/k86/x.md" "rm -f $DK86/x.md" \
+           "rm -rf $DK86/.x.md.AbC123" "rm -f $DK86/sub/.x.md.AbC123" \
+           "rm -f $DK86/.x.md.AbC123 $SIB86/base.txt"; do
+  # shellcheck disable=SC2086
+  check "86: 대조 — §1.3 꼴이 아닌 덮어쓰기·삭제는 런로컬 판정에서 park 된다 — ${a86//$WORK/}" \
+    "$(rs86 $a86)" "파괴형태미명시"
+done
+# shellcheck disable=SC2086
+check "86: 대조 — 다른 디렉터리 원천의 mv 는 대상트리 파괴 질문에서 park 된다" \
+  "$(tds86 mv "$T86/.x.md.AbC123" "$DK86/x.md")" "파괴형태미명시"
+# 실행 수준 — 게이트의 작업 디렉터리는 주 체크아웃이라, 대상트리 신고에서 파괴 질문이
+# 갈린다. 커밋 mv 는 실행되어 목적지가 원천의 내용이 되고, 점 없는 원천은 park 되어
+# 목적지가 그대로다.
+nb86=$(b86)
+x86 워크트리쓰기 mv "$DK86/.x.md.AbC123" "$DK86/x.md"
+check "86: 대상트리로 신고한 §1.3 커밋 mv 는 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+check "86: 그 커밋 mv 의 목적지가 원천의 내용이다" "$(cat "$DK86/x.md" 2>/dev/null)" "new"
+x86 워크트리쓰기 mv "$DK86/x.md.AbC123" "$DK86/x.md"
+check "86: 대조 — 대상트리로 신고한 점 없는 원천의 덮어쓰기 mv 는 park 된다" "$rc" "11"
+check "86: 그 park 된 mv 의 목적지 내용이 그대로다" "$(cat "$DK86/x.md" 2>/dev/null)" "new"
+rm -rf "$WT/docs/k86" "$SR86/docs" "$T86/.x.md.AbC123" "$T86/snap86"
+
+# 셸 앞 env 대입 값의 공백 — 대입을 이어 붙여 넘기던 동안 값의 공백이 낱말 경계가 되어,
+# env 'A=x y' bash -c "cp … <형제 기존 파일>" 의 cp 가 명령 y 의 피연산자로 읽혀 park 없이
+# 지나갔다. 대입은 이제 한 낱말로 넘어간다.
+mkdir -p "$SIB86/ev86"; printf 'k\n' > "$SIB86/ev86/existing"
+check "86: 공백 든 env 대입 뒤 셸의 형제 덮어쓰기 cp 는 런로컬 판정에서 park 된다" \
+  "$(rd86 env 'A=x y' bash -c "cp $SIB86/base.txt $SIB86/ev86/existing")" "파괴형태미명시"
+check "86: 탭 든 env 대입 뒤 셸의 형제 덮어쓰기 cp 도 park 된다" \
+  "$(rd86 env "A=x	y" bash -c "cp $SIB86/base.txt $SIB86/ev86/existing")" "파괴형태미명시"
+check "86: 공백 든 GIT_AUTHOR_NAME 뒤 셸의 형제 checkout -f 는 park 된다" \
+  "$(rd86 env GIT_AUTHOR_NAME='Nano Bot' bash -c "git -C $SIB86 checkout -f -- .")" "파괴형태미명시"
+check "86: 대조 — 공백 든 env 대입 뒤 셸의 임시 디렉터리 cp 는 런로컬 판정을 지난다" \
+  "$(rd86 env 'A=x y' bash -c "cp $SIB86/base.txt $T86/ev86new")" ""
+rl86 env 'A=x y' bash -c "cp $SIB86/base.txt $SIB86/ev86/existing"
+case "$rc" in 0) bad "86: 런로컬로 선언한 공백 env 대입 뒤 형제 cp 는 실행되지 않는다" "rc=$rc $msg" ;;
+  *) ok "86: 런로컬로 선언한 공백 env 대입 뒤 형제 cp 는 실행되지 않는다 (rc=$rc)" ;; esac
+check "86: 그 형제 파일의 내용이 그대로다" "$(cat "$SIB86/ev86/existing" 2>/dev/null)" "k"
+rm -rf "$SIB86/ev86" "$T86/ev86new"
+
+# ${…} 안의 맨 { — zsh·ksh 는 확장 안의 중괄호를 세어 닫고, bash·dash 는 첫 } 에서 닫는다.
+# 판독기가 ${ 만 세던 동안 zsh -c "echo \${x:-{} #}; <cmd>" 의 # 를 주석으로 읽어 <cmd> 를
+# 버렸다. 이제 확장 안에서 맨 { 를 만난 뒤의 낱말 처음 # 는 나머지를 읽지 못한 줄로 둔다.
+mkdir -p "$SIB86/sh86f"; printf 'k\n' > "$SIB86/sh86f/f"
+for s86 in zsh ksh bash; do
+  # shellcheck disable=SC2016
+  check "86: $s86 -c 의 \${x:-{} #} 뒤 머지는 사다리 머지다" "$(ld86 "$s86" -c 'echo ${x:-{} #}; gh pr merge 1')" "머지"
+  check "86: $s86 -c 의 \${x:-{} #} 뒤 형제 rm 은 런로컬 판정에서 park 된다" \
+    "$(rd86 "$s86" -c "echo \${x:-{} #}; rm -f $SIB86/sh86f/f")" "파괴형태미명시"
+done
+# shellcheck disable=SC2016
+check "86: 대조 — \${x:-a} 뒤의 true 는 바닥 읽기다" "$(fl86 bash -c 'echo ${x:-a}; true')" "읽기"
+# shellcheck disable=SC2016
+check "86: 대조 — \${x:- #} 뒤의 true 는 바닥 읽기다" "$(fl86 bash -c 'echo ${x:- #}; true')" "읽기"
+
+# 명령 자리의 esac — $( ) 본문의 case 계수기가 인자 자리의 esac 에도 닫혀,
+# $(case b in a) echo esac;; b) <cmd>;; esac) 의 <cmd> 가 echo 의 피연산자로 읽혔다.
+for s86 in zsh dash; do
+  # shellcheck disable=SC2016
+  check "86: $s86 -c 의 인자 esac 뒤 갈래의 머지는 사다리 머지다" \
+    "$(ld86 "$s86" -c 'echo $(case b in a) echo esac;; b) gh pr merge 1;; esac)')" "머지"
+  check "86: $s86 -c 의 인자 esac 뒤 갈래의 형제 rm 은 런로컬 판정에서 park 된다" \
+    "$(rd86 "$s86" -c "echo \$(case b in a) echo esac;; b) rm -f $SIB86/sh86f/f;; esac)")" "파괴형태미명시"
+done
+# shellcheck disable=SC2016
+check "86: 대조 — 두 갈래 case 의 인자 esac 와 echo 는 바닥 읽기다" \
+  "$(fl86 zsh -c 'echo $(case b in a) echo esac;; b) echo hi;; esac)')" "읽기"
+rl86 zsh -c "echo \$(case b in a) echo esac;; b) rm -f $SIB86/sh86f/f;; esac)"
+case "$rc" in 0) bad "86: 런로컬로 선언한 인자 esac 뒤 형제 rm 은 실행되지 않는다" "rc=$rc $msg" ;;
+  *) ok "86: 런로컬로 선언한 인자 esac 뒤 형제 rm 은 실행되지 않는다 (rc=$rc)" ;; esac
+check "86: 그 형제 rm 의 파일이 남아 있다 (esac)" "$(cat "$SIB86/sh86f/f" 2>/dev/null)" "k"
+rm -rf "$SIB86/sh86f"
+
+# 축약 장옵션의 좁히기 — 읽기 원천을 착지점에서 빼는 좁히기가 --target-directory 를 문자
+# 접두로만 알아봐, --target=·--targ=·--t=·분리형 --target <dir> 를 평범한 옵션으로 넘기고
+# 착지점을 마지막 낱말로 줄였다. 파괴 판독기는 같은 철자를 대상 디렉터리로 읽으므로 두
+# 반쪽이 갈렸다. 원천이 돌린 임시 디렉터리이고 형제에 같은 이름이 있는 쌍으로 잰다 — 판정
+# 단계라 GNU cp 가 없어도 된다.
+mkdir -p "$T86/cl86"; printf 'n\n' > "$T86/cl86/x"; printf 'n\n' > "$T86/cl86/y"; printf 'k\n' > "$SR86/x"
+for o86 in "--target=$SR86" "--targ=$SR86" "--t=$SR86" "--target $SR86" "-t $SR86"; do
+  # shellcheck disable=SC2086
+  check "86: 축약 장옵션으로 형제를 겨눈 cp 는 런로컬 판정에서 park 된다 — ${o86//$WORK/}" \
+    "$(rs86 cp $o86 "$T86/cl86/x" "$T86/cl86/y")" "파괴형태미명시"
+done
+cl86=$(wl86 cp --targ="$SR86" "$T86/cl86/x" "$T86/cl86/y")
+{ has86 "$cl86" "$SR86" || has86 "$cl86" "$(f86 "$SR86")" || has86 "$cl86" "$(cd "$SR86" && pwd -P)"; } \
+  && ok "86: --targ= 의 착지 목록에 형제 디렉터리가 있다" \
+  || bad "86: --targ= 의 착지 목록에 형제 디렉터리가 있다" "$cl86"
+check "86: 원천 둘의 --target-directory= cp 도 park 된다" \
+  "$(rs86 cp --target-directory="$SR86" "$T86/cl86/x" "$T86/cl86/y")" "파괴형태미명시"
+check "86: ln --targ= 로 형제를 겨눈 강제 링크는 park 된다" \
+  "$(rs86 ln -f --targ="$SR86" "$T86/cl86/x" "$T86/cl86/y")" "파괴형태미명시"
+check "86: install --dir 은 좁히지 않는다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      gate_tt_copy_dest_only install --dir "$@" && printf narrowed || printf kept' _ "$GATE" "$T86/cl86/x" "$T86/cl86/y" 2>/dev/null)" "kept"
+check "86: 대조 — --verbose 는 여전히 좁힌다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      gate_tt_copy_dest_only cp --verbose "$@" && printf narrowed || printf kept' _ "$GATE" "$T86/cl86/x" "$T86/cl86/y" 2>/dev/null)" "narrowed"
+rm -rf "$T86/cl86" "$SR86/x"
+
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
 # 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git
 # 디렉터리의 stash 가 지워졌다. 하한 판정을 직접 재고, 실행 수준에서 park 와 stash 항목의
