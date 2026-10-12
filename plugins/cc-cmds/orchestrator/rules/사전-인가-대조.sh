@@ -50,6 +50,9 @@ runners=" bash sh zsh python3 node make npm npx yarn pnpm pytest go cargo docker
 # 러너 중 스크립트 피연산자를 받는 인터프리터. 이들의 형태는 길이가 아니라 스크립트
 # 자리의 단어와 그 앞 플래그로 완전 여부를 가른다(#1094).
 interps=" bash sh zsh python3 node "
+# 인터프리터가 아닌 러너. 피연산자 뒤의 옵션과 단어를 스스로 읽으므로(npm 의 옵션,
+# make 의 목표·변수 대입) 완전 행이 행위의 첫 `--` 앞 꼬리를 열지 않는다.
+tail_runners=" make npm npx yarn pnpm pytest go cargo docker "
 
 # 인터프리터 형태에서 스크립트 자리 앞 단어가 모두 프로그램 원문을 바꾸지 않는 닫힌
 # 플래그인가. 셸은 -e -u -v -x, python3 는 -u -B -E -I -s -S -O 의 묶음만이고 node 는
@@ -77,10 +80,12 @@ word_at() { printf '%s\n' "$1" | awk -v p="$2" '{ print $p; exit }'; }
 # 정규화 — argv0 은 basename 으로, `-*=*` 단어는 버린다.
 #
 # basename 이 없으면 `/usr/bin/gh pr view` 가 `gh pr` 행과 한 글자도 맞지 않아
-# 인가된 행위가 승인 대기로 떨어졌다. `-*=*` 버리기는 `terraform -chdir=<dir>
-# apply` 처럼 전역 플래그가 하위 명령 앞에 오는 철자를 위한 것이고, 값이 떨어져
-# 있는 형태(`git -C <path> commit`)는 여기서 알아볼 수 없어 손대지 않는다 —
-# 바로 다음 단어를 값이 아니라 하위 명령으로 읽으면 더 나쁜 답이 된다.
+# 인가된 행위가 승인 대기로 떨어졌다. `-*=*` 단어는 행이 담을 수 없으므로 정규화에서
+# 버리고, 그 원 자리(`drop`)를 따로 기억해 행의 범위 안에서 떨어졌으면 그 행과
+# 일치하지 않게 한다. 그래서 `terraform -chdir=<dir> apply` 처럼 `=` 철자로만 받는
+# 옵션을 쓰는 행위는 어떤 행으로도 열리지 않는다. 값이 떨어져 있는 형태
+# (`git -C <path> commit`)는 여기서 알아볼 수 없어 손대지 않는다 — 바로 다음 단어를
+# 값이 아니라 하위 명령으로 읽으면 더 나쁜 답이 된다.
 #
 # 줄바꿈은 먼저 공백으로 편다. awk 는 입력 줄마다 본문을 돌므로, `gh pr create
 # --body` 의 본문처럼 인자 하나에 줄바꿈이 들면 `norm` 이 여러 줄이 되고 한 줄짜리
@@ -113,6 +118,11 @@ map=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
   { for (i = 1; i <= NF; i++) if (i == 1 || $i !~ /^-.*=/) printf "%s%d", (o++ ? " " : ""), i; print "" }')
 drop=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
   { for (i = 2; i <= NF; i++) if ($i ~ /^-.*=/) printf "%s%d", (o++ ? " " : ""), i; print "" }')
+# 원 argv 의 2번 이후 첫 `--` 의 원 번호(`dd`), 없으면 원 단어 수 + 1. 그 뒤는 러너가
+# 프로그램에 넘기는 인자다.
+dd=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
+  { for (i = 2; i <= NF; i++) if ($i == "--") { print i; exit } print NF + 1; exit }')
+[ -n "$dd" ] || dd=1
 
 # 기기전역 칸이 행에 요구하는 길이 `Lreq` — 하위 명령, 그 피연산자, 유도가 낸 트리거
 # 단어의 자리 중 가장 먼 것(최소 2). docker 의 관리 그룹과 `yarn global` 은 그 다음
@@ -151,14 +161,21 @@ lreq_tw=$(printf '%s\n' "$norm" | awk '
     for (m = 1; m <= n; m++) {
       if (trg[m] == "") continue
       pw = 0; for (k = 2; k <= NF; k++) if ($k == trg[m]) { pw = k; break }
-      if (!pw) { print 0, tw; exit }
+      if (!pw) { print 0, tw, t; exit }
       if (pw > L) L = pw
     }
-    print L, tw; exit
+    print L, tw, t; exit
   }')
-lreq=${lreq_tw%% *}; tw=${lreq_tw#* }
+lreq=$(printf '%s\n' "$lreq_tw" | awk '{ print $1; exit }')
+tw=$(printf '%s\n' "$lreq_tw" | awk '{ print $2; exit }')
+lt=$(printf '%s\n' "$lreq_tw" | awk '{ print $3; exit }')
 [ -n "$lreq" ] || lreq=0
 [ "$tw" = "1" ] || tw=0
+[ -n "$lt" ] || lt=0
+# docker `run`·`create` 의 이미지 탐색이 이미지에서 멈췄는가(칸과 무관). 이미지 뒤는
+# 컨테이너의 명령이라, 이미지까지 담은 행은 그 뒤를 꼬리로 보지 않는다.
+imgstop=0
+[ "$argv0" = "docker" ] && [ "$tw" = "0" ] && [ "$lt" -gt 0 ] && imgstop=1
 # 기기전역 칸이 행위 전체를 요구하는 docker 행위에는 행이 덮지 않는 꼬리가 없다.
 tail_all=0
 [ "${GATE_REACH_EFF:-}" = "기기전역" ] && [ "$tw" = "1" ] && [ -n "$drop" ] && tail_all=1
@@ -235,6 +252,17 @@ while IFS= read -r line; do
     # 접두 매칭이 아니어서 `gh pr` 가 `gh project` 를 인가하던 번짐이 없다.
     head=$(printf '%s' "$norm" | awk -v n="$nwords" '{ for (i = 1; i <= n && i <= NF; i++) printf "%s%s", (i > 1 ? " " : ""), $i; print "" }')
     [ "$head" = "$shape" ] || continue
+    # 인터프리터가 아닌 러너의 완전 행은 행의 마지막 단어 뒤부터 행위의 첫 `--` 앞까지
+    # 원 단어가 하나라도 남으면 일치하지 않는다 — 대시 단어든 피연산자든, 떨어졌든
+    # 아니든 같다. 행 `npm run deploy` 가 `npm run deploy --script-shell /tmp/evil.sh` 를,
+    # 행 `make deploy ENV=prod` 가 `… -f /tmp/evil.mk` 를 열면 프로그램의 인자가 아니라
+    # 러너 자신의 설정을 연 것이다. 이미지까지 담은 docker `run`·`create` 행만 예외다.
+    case "$tail_runners" in
+      *" $first "*)
+        if ! { [ "$imgstop" = "1" ] && [ "$nwords" -ge "$lt" ]; } && [ $((last + 1)) -lt "$dd" ]; then
+          continue
+        fi ;;
+    esac
     matched=1; any_full=1
     # 파괴 명시 — 표지를 준 트리거 단어가 이 형태 안에 단어로 있어야 한다.
     # 형태를 다시 표지 함수에 넣는 방식은 형태가 행위와 다른 파괴 단어를 가질 때
@@ -286,6 +314,44 @@ if [ "$probe" = "1" ]; then
   # 제안 — park 의 수리 문구가 붙여 넣을 행의 형태. 행위의 앞 L 단어이며, L 은 이
   # 행위를 덮는 최소 완전 형태의 길이와 칸이 요구하는 길이 중 가장 긴 것이다. 어떤
   # 행으로도 고칠 수 없으면 그 원인(`Sx`)을 내고 제안은 `-` 다.
+  #
+  # 최소 길이는 하위 명령(`sp`)과 그 피연산자까지 닿는다. 값을 받는 옵션의 목록을
+  # 두지 않고 대시 단어는 모두 값을 받는다고 보아 다음 비대시 단어까지 건너뛰므로
+  # (docker `run`·`create` 뒤의 값 없는 플래그는 그것 하나만), 틀리면 더 긴 행을
+  # 제안하는 쪽으로만 틀린다. 피연산자가 없으면 행위 전체다. 옵션 이름이나 값에서
+  # 끊긴 행(`cargo run --bin`)은 붙여 넣으면 형제 행위(`cargo run --bin wipe-db`)까지
+  # 연다.
+  sp_nx=$(printf '%s\n' "$norm" | awk '
+    function nx(k,   j) {
+      for (j = k + 1; j <= NF; j++) {
+        if ($j ~ /^-/) {
+          if (rc && j > rc && $j ~ /^(--rm|-d|--detach|-i|--interactive|-t|--tty|-it|-ti|--init|--privileged|--read-only|-P|--publish-all)$/) continue
+          if (j < NF && $(j + 1) !~ /^-/) j++
+          continue
+        }
+        return j
+      }
+      return NF
+    }
+    {
+      rc = 0
+      sp = nx(1)
+      if (($1 == "docker" && $sp ~ /^(image|container|volume|network|node|service|secret|config|context|builder|buildx|manifest|plugin|system|compose|trust|swarm)$/) \
+          || ($1 == "yarn" && $sp == "global")) sp = nx(sp)
+      if ($1 == "docker" && ($sp == "run" || $sp == "create")) rc = sp
+      print sp, nx(sp); exit
+    }')
+  sp=$(printf '%s\n' "$sp_nx" | awk '{ print $1; exit }'); [ -n "$sp" ] || sp=1
+  nxs=$(printf '%s\n' "$sp_nx" | awk '{ print $2; exit }'); [ -n "$nxs" ] || nxs=0
+  # 인터프리터가 아닌 러너는 행위의 첫 `--` 앞 꼬리를 열지 않으므로(위 행 훑기), 그보다
+  # 짧은 제안은 붙여 넣어도 같은 행위를 열지 못한다 — 그 행위의 제안은 첫 `--` 앞
+  # 단어를 모두 담는다. 이미지에서 멈춘 docker `run`·`create` 는 이미지까지다.
+  rt=0
+  case "$tail_runners" in
+    *" $argv0 "*) [ "$imgstop" = "1" ] || rt=1 ;;
+  esac
+  ne=$(printf '%s\n' "$map" | awk -v dd="$dd" '{ c = 0; for (k = 1; k <= NF; k++) if ($k < dd) c++; print c; exit }')
+  [ -n "$ne" ] || ne=0
   sx=ok; sw='-'; prop='-'
   case "$interps" in
     *" $argv0 "*)
@@ -299,8 +365,8 @@ if [ "$probe" = "1" ]; then
       [ "$script_ok" = "1" ] || sx=code ;;
     *)
       case "$runners" in
-        *" $argv0 "*) cmin=$((operand_pos + 1)) ;;
-        *) cmin=2 ;;
+        *" $argv0 "*) cmin=$((operand_pos + 1)); [ "$nxs" -gt "$cmin" ] && cmin=$nxs ;;
+        *) cmin=2; [ "$sp" -gt "$cmin" ] && cmin=$sp ;;
       esac ;;
   esac
   L=2
@@ -313,6 +379,13 @@ if [ "$probe" = "1" ]; then
     [ "$tpos" -gt "$L" ] && L=$tpos
   fi
   [ "$declared_only" = "1" ] && [ "$nf" -gt "$L" ] && L=$nf
+  [ "$rt" = "1" ] && [ "$ne" -gt "$L" ] && L=$ne
+  # 길이가 옵션 이름에서 끝나면 그 값까지 담는다.
+  if [ "$L" -lt "$nf" ]; then
+    case "$(word_at "$norm" "$L")" in
+      -*) case "$(word_at "$norm" $((L + 1)))" in -*) ;; *) L=$((L + 1)) ;; esac ;;
+    esac
+  fi
   if [ "$sx" = "code" ]; then :
   elif [ "${GATE_REACH_EFF:-}" = "기기전역" ] && [ "$lreq" = "0" ]; then sx=argv0
   elif [ "$L" -gt "$nf" ]; then sx=none
@@ -333,6 +406,16 @@ if [ "$probe" = "1" ]; then
         if [ "$sx" = "ok" ] && [ "$tail_all" = "1" ]; then
           sx=dropped
           sw=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk -v p="${drop%% *}" '{ print $p; exit }')
+        fi
+        # 러너의 첫 `--` 앞에서 떨어진 단어는 그 러너의 어떤 완전 행도 담지 못한다.
+        if [ "$sx" = "ok" ] && [ "$rt" = "1" ]; then
+          for d in $drop; do
+            if [ "$d" -lt "$dd" ]; then
+              sx=dropped
+              sw=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk -v p="$d" '{ print $p; exit }')
+              break
+            fi
+          done
         fi ;;
     esac
   fi
