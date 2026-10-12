@@ -159,7 +159,10 @@ split_streams() {
               else if (!closing && tagname == "script") { mode = "script"; jp = ""; jw = "" }
               continue
             }
-            if (naming) { if (c ~ /[A-Za-z0-9-]/) tagname = tagname tolower(c); else naming = 0 }
+            # As in the HTML tokenizer, a tag name ends only at whitespace (a
+            # line end included, below), `/` or `>`: `<script.x>` is not a
+            # script, and `<script` with its attributes on the next line is.
+            if (naming) { if (c ~ /[[:space:]]/ || c == "/") naming = 0; else tagname = tagname tolower(c) }
             if (c ~ /[[:space:]]/) aval = 0
             else if (c == "=" && !aval) aeq = 1
             else if (aeq) { aeq = 0; aval = 1 }
@@ -175,7 +178,9 @@ split_streams() {
           mk = mk c; i++; continue
         }
         if (mode == "style") {
-          if (tolower(substr(line, i, 7)) == "</style") {
+          # A closing tag is its name followed by whitespace, a line end, `/`
+          # or `>`; `</stylex>` is text.
+          if (tolower(substr(line, i, 7)) == "</style" && substr(line, i + 7, 1) ~ /^([[:space:]]|\/|>)?$/) {
             if (cc && lost == "") lost = "CSS 주석이 </style> 앞에서 닫히지 않았다 (" NR "행)"
             mode = "html"; cc = 0; cq = ""; continue
           }
@@ -192,7 +197,7 @@ split_streams() {
         # A block comment still open at the closing tag swallowed the rest of
         # the block: either the script is broken or a `/*` was misread, and
         # both are a lost parse, not a clean block.
-        if (tolower(substr(line, i, 8)) == "</script") {
+        if (tolower(substr(line, i, 8)) == "</script" && substr(line, i + 8, 1) ~ /^([[:space:]]|\/|>)?$/) {
           if (jc && lost == "") lost = "스크립트 주석이 </script> 앞에서 닫히지 않았다 (" NR "행)"
           if ((jq == "`" || tk > 0) && lost == "") lost = "스크립트 템플릿 문자열이 </script> 앞에서 닫히지 않았다 (" NR "행)"
           mode = "html"; jc = 0; jq = ""; tk = 0; jr = 0; jrc = 0; jline = 0; continue
@@ -241,7 +246,7 @@ split_streams() {
         else { jp = c; jw = ""; jsp = 0 }
         js = js c; i++
       }
-      if (intag) tag = tag " "
+      if (intag) { tag = tag " "; if (q == "") { naming = 0; aval = 0 } }
       # A quoted CSS or JS string ends at an unescaped line end; only a JS
       # template string carries on to the next line. A regex literal never
       # spans lines.

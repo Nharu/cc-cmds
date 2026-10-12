@@ -210,13 +210,13 @@ rc=$(run_scan "$T/leak.out" "$T/leak.html")
 lines_of token-color "$T/leak.out" > "$T/leak.color"
 lines_of external-ref "$T/leak.out" > "$T/leak.ref"
 got=$(tally "$T/leak.labels" "$T/leak.color" V)
-[ "$got" = "14 14" ] && pass "문자열·중첩 템플릿·정규식·붙여 쓴 줄 주석 안의 /* 와 </script>, 따옴표 없는 속성값의 아포스트로피 뒤의 색이 모두 잡힌다 (14)" \
-  || fail "leak V 줄 (전체 적중) = ${got}, 기대 14 14"
+[ "$got" = "18 18" ] && pass "문자열·중첩 템플릿·정규식·붙여 쓴 줄 주석 안의 /* 와 </script>, 따옴표 없는 속성값의 아포스트로피, 다음 줄로 넘어간 여는 태그 속성, 이름이 다른 태그와 닫는 태그 뒤의 색이 모두 잡힌다 (18)" \
+  || fail "leak V 줄 (전체 적중) = ${got}, 기대 18 18"
 [ ! -s "$T/leak.out.err" ] && pass "leak scan 의 stderr 는 비어 있다" \
   || fail "leak scan stderr: $(head -n 1 "$T/leak.out.err")"
 got=$(tally "$T/leak.labels" "$T/leak.ref" R)
-[ "$got" = "4 4" ] && pass "닫는 태그·정규식·중첩 템플릿 뒤의 외부 참조가 모두 잡힌다 (4)" \
-  || fail "leak R 줄 (전체 적중) = ${got}, 기대 4 4"
+[ "$got" = "5 5" ] && pass "닫는 태그·정규식·중첩 템플릿 뒤와 다음 줄로 넘어간 여는 태그 속성 뒤의 외부 참조가 모두 잡힌다 (5)" \
+  || fail "leak R 줄 (전체 적중) = ${got}, 기대 5 5"
 # eof_case <name> <expected stderr reason> <screen lines...> — scan and size
 # both refuse a screen whose parse ends open, with exit 2 and the reason.
 eof_case() {

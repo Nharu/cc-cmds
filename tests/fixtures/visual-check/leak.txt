@@ -44,3 +44,21 @@ V|var n = '#abcdef';
 V|.c { color: #444444; }
 -|</style>
 -|<p>It's fine</p>
+-|<script
+-|type="module">
+V|el.style.color = "#ff0000";
+R|fetch("https://evil.example.com/x");
+-|</script>
+-|<style
+-|media="all">
+V|.d { color: #555555; padding: 12px }
+-|</style>
+-|<script.x>
+-|<p>/* note</p>
+V|<p style="color: #777777">x</p>
+-|<p>*/</p>
+-|</script.x>
+-|<script>
+-|var z = "</scriptx>";
+V|var y = '#888888';
+-|</script>
