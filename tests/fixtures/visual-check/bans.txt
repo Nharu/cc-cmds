@@ -1,0 +1,19 @@
+-|<!doctype html>
+-|<html><head>
+-|<style>
+pill-button|  .cta { border-radius: 9999px; }
+N|  .card { border-radius: var(--radius-2); }
+glassmorphism|  .panel { backdrop-filter: blur(12px); }
+gradient-text|  .title { background-clip: text; }
+left-accent-border|  .quote { border-left: 4px solid var(--color-accent); }
+N|  .rule { border-left: 1px solid var(--color-border); }
+serif-display|  h1 { font-family: "Playfair Display", Georgia, serif; }
+N|  body { font-family: "Inter", sans-serif; }
+-|</style>
+-|</head><body>
+numbered-label|<span class="step">02</span>
+N|<span class="count">12</span>
+-|<script>
+local-storage|localStorage.setItem('k', 'v');
+-|</script>
+-|</body></html>
