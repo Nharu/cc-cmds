@@ -18,6 +18,8 @@
 #   2  the launch line carries each of the four flags exactly once    [fail]
 #   3  each pinned value equals the declared default                  [fail]
 #   4  every other mention of a flag in the document agrees too       [fail]
+#   5  liveness.sh declares the idle self-exit threshold once, as
+#      86400, and neither watcher declares one of its own              [fail]
 #
 # Rule 3 derives the expected value from the script instead of pinning a literal
 # here, so this check cannot drift away from the value it protects. Rule 1 is not
@@ -44,6 +46,15 @@
 # line, and every other mention in that file agreeing. A consumer that is absent
 # is skipped by itself rather than skipping the whole check, so an incremental
 # rollout of one file does not switch off the pin on the other.
+#
+# RULE 5 PINS A LITERAL, unlike rule 3. The idle self-exit threshold is not a
+# launch flag: no document passes it, so there is no second place to derive it
+# from, and both watchers read the one declaration in liveness.sh through the
+# shared predicate. What can drift is a watcher growing a threshold of its own —
+# then the two watchers stop on different days for the same run, and a run that
+# one of them still watches is one the other has already left. The value itself
+# is the design's 24 hours; moving it is a decision, and this rule makes that
+# decision show up as an edit here.
 #
 # Usage:
 #   bash scripts/lint-watch-threshold-pins.sh
@@ -206,10 +217,46 @@ for CONSUMER in "${CONSUMERS[@]}"; do
   done
 done
 
+# --- Rule 5: the idle self-exit threshold lives in liveness.sh alone ----------
+IDLE_VAR=CC_RUN_IDLE_EXIT_SECONDS
+IDLE_WANT=86400
+LIVENESS="$orch_root/liveness.sh"
+idle_note="유휴 임계 생략(liveness.sh 부재)"
+if [[ -f "$LIVENESS" ]]; then
+  decls=$(LC_ALL=C grep -oE "(^|[;[:space:]])$IDLE_VAR=[^[:space:];]*" "$LIVENESS" || true)
+  ndecl=0
+  if [[ -n "$decls" ]]; then
+    ndecl=$(printf '%s\n' "$decls" | grep -c '' || true)
+  fi
+  if [[ "$ndecl" != "1" ]]; then
+    echo "FAIL: liveness.sh — $IDLE_VAR 의 선언이 정확히 1개여야 하는데 ${ndecl}개다" >&2
+    fail=1
+  else
+    got=$(printf '%s' "$decls" | sed -E "s/.*$IDLE_VAR=//")
+    if [[ "$got" != "$IDLE_WANT" ]]; then
+      echo "FAIL: liveness.sh — $IDLE_VAR 는 $IDLE_WANT(24시간)이어야 하는데 $got 이다" >&2
+      echo "       값을 옮기는 것은 결정이다 — 옮긴다면 이 린트의 고정값도 함께 고친다" >&2
+      fail=1
+    fi
+  fi
+  for w in "$WATCHER" "$orch_root/checks.sh"; do
+    [[ -f "$w" ]] || continue
+    # An assignment, not any occurrence of the number: watch.sh converts `ps`
+    # elapsed days to seconds with the same 86400, and that is not a threshold.
+    own=$(LC_ALL=C grep -nE "(^|[;[:space:]])($IDLE_VAR|[A-Za-z_][A-Za-z0-9_]*)=[\"']?$IDLE_WANT([^0-9]|$)|(^|[;[:space:]])$IDLE_VAR=" "$w" || true)
+    if [[ -n "$own" ]]; then
+      echo "FAIL: ${w##*/} — 유휴 자기 종료 임계를 제 안에 따로 둔다 (liveness.sh 의 $IDLE_VAR 만 읽어야 한다)" >&2
+      echo "       $own" >&2
+      fail=1
+    fi
+  done
+  idle_note="유휴 임계 $IDLE_VAR=$IDLE_WANT 가 liveness.sh 한 곳에만 선언"
+fi
+
 if [[ "$fail" != "0" ]]; then
   echo "lint-watch-threshold-pins: violations found" >&2
   exit 1
 fi
 
-echo "OK:   watch threshold pins — 임계 ${checked}개, 소비자 ${consumers_seen}개, 문서 안 기재 ${mentions_total}건이 watch.sh 기본값과 축자로 일치"
+echo "OK:   watch threshold pins — 임계 ${checked}개, 소비자 ${consumers_seen}개, 문서 안 기재 ${mentions_total}건이 watch.sh 기본값과 축자로 일치, ${idle_note}"
 exit 0
