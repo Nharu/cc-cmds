@@ -2016,6 +2016,47 @@ gate_reach_runlocal_destruction() {
   # destructive act takes one verdict whichever grade the table gave it — the
   # opaque cell returned before `X` was read, and `git -C <sibling> rm -rf .`
   # went ahead with `--destructive` on it.
+  #
+  # A SHELL'S `-c` STRING IS ASKED LINE BY LINE as well as on its outer argv.
+  # The outer argv of `bash -c "<string>"` names `bash`, which the local reader
+  # answers nothing for, so the question returned before any landing place was
+  # read: `bash -c "rm -f <sibling file>"` and `bash -c "lockf <sibling file>
+  # true"` went through a false `런로컬` while the honest `대상트리` parked.
+  # Each line `gate_opaque_payload_lines` reads takes the same question, with
+  # its own argv for the local reader, the collector and the manifest match. A
+  # line whose launcher option is unread has no landing place this file can
+  # read, so when it is destructive it is judged as the collector's giving up
+  # is: as landing in the target's trees. What is not a shell's `-c` string —
+  # a script file, another interpreter's code — is still not read, and a
+  # destruction inside it is the stage's to declare with `--destructive`.
+  local alias="$1" X="$2" Pd="$3"; shift 3
+  local r rec unread kept
+  r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
+  [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    unread="${rec%%	*}"; kept="${rec#*	}"; kept="${kept%%	*}"
+    set -f
+    # shellcheck disable=SC2086
+    set -- $kept
+    set +f
+    [ $# -gt 0 ] || continue
+    if [ "$unread" = "1" ]; then
+      [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ] || continue
+      r=$(gate_reach_tree_destruction "$X" "$Pd" "$@")
+    else
+      r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
+    fi
+    [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+  done <<EOF
+$(gate_opaque_shell_lines "$@")
+EOF
+  return 0
+}
+
+gate_reach_runlocal_destruction_argv() {
+  # gate_reach_runlocal_destruction_argv <alias> <X> <Pd> <argv...> — the
+  # question above for one argv as it stands.
   local alias="$1" X="$2" Pd="$3"; shift 3
   if [ "$X" != "1" ]; then
     [ -n "$(gate_reach_local_destructive_here "$@")" ] || return 0
@@ -7186,6 +7227,92 @@ gate_opaque_floor() {
       gate_unwrap_find gate_opaque_floor_find_inner "$GATE_FLOOR_NONE" "$(printf '워크트리쓰기\t\t')" \
         "$GATE_FLOOR_NONE" gate_answer_floor_max "$@"; return 0 ;;
   esac
+  local floor='읽기' mark='' trig='' fi_ fidx rec unread line g mk
+  fidx=$(surface_index '읽기')
+  # Command POSITIONS only — the word after a separator. `grep "gh pr merge"` is
+  # an argument to grep and does not raise anything. The lines are the ones
+  # `gate_opaque_payload_lines` reads, with `exec` and the launchers in front
+  # already peeled.
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    unread="${rec%%	*}"; line="${rec##*	}"
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    [ $# -gt 0 ] || continue
+    g=$(surface_of_argv0 "$@")
+    # A LAUNCHER OPTION THE PEEL CANNOT READ FLOORS `트리밖쓰기`. The same argv
+    # written bare is refused as `형태 미상`, and that is not a floor, so `bash
+    # -c "nice -5 rm -f <sibling file>"` was admitted as `읽기`. Where the
+    # option list is unread, so is what the line writes.
+    [ "$unread" = "1" ] && g='트리밖쓰기'
+    case "$g" in
+      읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
+        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
+        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
+    esac
+    # A `lockf` or `time` line in the payload carries its own file, which the
+    # line's grade does not raise when the option list is unread: `bash -c
+    # "lockf -p <sibling file> true"` grades `형태 미상` here, and that is not a
+    # floor. So the line is floored the way the same argv is floored bare, and
+    # only the first field is folded — the mark is `gate_act_mark`'s, below.
+    case "${1##*/}" in
+      lockf|time)
+        g=$(gate_opaque_floor "$@")
+        g="${g%%	*}"
+        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
+        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
+    esac
+    mk=$(gate_act_mark "$@")
+    case "$mk" in
+      비밀출력*) mark='비밀출력'; trig="${mk#*	}" ;;
+      파괴*) [ "$mark" = "비밀출력" ] || { mark='파괴'; trig="${mk#*	}"; } ;;
+    esac
+  done <<EOF
+$(gate_opaque_payload_lines "$cmd" "$@")
+EOF
+  printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
+}
+
+gate_opaque_payload_lines() {
+  # gate_opaque_payload_lines <argv...> — the payload of an opaque act, one
+  # command per line, as `<읽지 못함>\t<줄>\t<벗긴 줄>`.
+  #
+  # ONE READER FOR EVERY QUESTION ASKED OF A PAYLOAD. The floor and the `런로컬`
+  # destruction question both read the commands inside a `-c` string, and
+  # while each split and peeled the string on its own the shallower reading
+  # decided: the floor saw only a line's first word, so `nice time -lo
+  # <sibling file>` and `exec lockf <sibling file>` were not `lockf`/`time`
+  # lines to it, and the destruction question did not read the string at all.
+  # A new spelling closed in one of them stayed open in the other.
+  #
+  # The split is the floor's: heredoc markers dropped (their bodies are DATA,
+  # and a SQL heredoc naming `drop table` is not the shell running `drop`),
+  # then a cut at `;&|(){}`, the backtick and the newline, `$` removed. Shell
+  # quotes are removed as well. The reader is quote-blind by construction, and
+  # a quoted operand kept its quotes as part of the word, so `lockf '<absolute
+  # path>' true` read as a relative path inside the target and the floor fell
+  # to `워크트리쓰기`; an unquoted word is the reading that lands where the
+  # shell lands. A line starting with an option word is skipped.
+  #
+  # `<줄>` is the line with its leading `VAR=value` assignments spelled as an
+  # `env` in front and the shell builtin `exec` (with its `-c`, `-l`, `-a
+  # <name>`) removed: the argv the line runs, which the landing collector and
+  # the local destruction reader take as they take any argv — the collector
+  # gives up on a `GIT_*` assignment through that `env`. `<벗긴 줄>` has the
+  # launchers in front removed too (`env`, `command`, `timeout`, `nice`,
+  # `nohup`, `stdbuf`), through the unwraps the grading table uses, so the
+  # floor sees the command the line runs. `lockf` and `time` are NOT removed:
+  # each writes a file of its own, and the reader of that file needs the
+  # launcher's argv. `<읽지 못함>` is 1 when an option of `exec` or of a
+  # launcher is one the peel cannot read; the peel stops there, and the
+  # caller takes that line as unread. A line whose launcher runs nothing
+  # (`command -v git`, `env` alone) is not printed.
+  #
+  # What it does not read is unchanged: `eval`, a command held in a variable,
+  # and the bytes of a script file.
+  local cmd="${1##*/}"; shift 2>/dev/null || true
   local payload="" a next_is_c=0
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
@@ -7205,59 +7332,90 @@ $a"; next_is_c=0; continue; fi
     docker) payload="" ;;
     *) payload="$*" ;;
   esac
-  [ -n "$payload" ] || { printf '읽기\t\t'; return 0; }
-
-  # Heredoc bodies are dropped before the split: their text is DATA, and a SQL
-  # heredoc naming `drop table` is not the shell running `drop`.
+  [ -n "$payload" ] || return 0
   payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
 
-  local floor='읽기' mark='' trig='' fi_ fidx
-  fidx=$(surface_index '읽기')
-  local line first
-  # Command POSITIONS only — the word after a separator. `grep "gh pr merge"` is
-  # an argument to grep and does not raise anything.
+  local line unread kept out w k j n
+  local -a pre ws
   while IFS= read -r line; do
-    # Leading `VAR=value` assignments belong to the command that follows them.
     set -f
     # shellcheck disable=SC2086
     set -- $line
     set +f
+    pre=()
     while [ $# -gt 0 ]; do
       case "$1" in
-        *=*) case "$1" in -*) break ;; *) shift ;; esac ;;
+        -*) break ;;
+        *=*) pre[${#pre[@]}]="$1"; shift ;;
         *) break ;;
       esac
     done
     [ $# -gt 0 ] || continue
-    first="$1"
-    case "$first" in -*|'') continue ;; esac
-    local g; g=$(surface_of_argv0 "$@")
-    case "$g" in
-      읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
-        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
-        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
-    esac
-    # A `lockf` or `time` line in the payload carries its own file, which the
-    # line's grade does not raise when the option list is unread: `bash -c
-    # "lockf -p <sibling file> true"` grades `형태 미상` here, and that is not a
-    # floor. So the line is floored the way the same argv is floored bare, and
-    # only the first field is folded — the mark is `gate_act_mark`'s, below.
-    case "${first##*/}" in
-      lockf|time)
-        g=$(gate_opaque_floor "$@")
-        g="${g%%	*}"
-        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
-        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
-    esac
-    local mk; mk=$(gate_act_mark "$@")
-    case "$mk" in
-      비밀출력*) mark='비밀출력'; trig="${mk#*	}" ;;
-      파괴*) [ "$mark" = "비밀출력" ] || { mark='파괴'; trig="${mk#*	}"; } ;;
-    esac
+    case "$1" in -*) continue ;; esac
+    unread=0
+    ws=("$@"); n=$#; k=0
+    while [ "$k" -lt "$n" ] && [ "${ws[$k]}" = "exec" ]; do
+      j=$((k + 1))
+      while [ "$j" -lt "$n" ]; do
+        case "${ws[$j]}" in
+          -a) j=$((j + 2)) ;;
+          -c|-l|-cl|-lc) j=$((j + 1)) ;;
+          --) j=$((j + 1)); break ;;
+          -*) unread=1; break 2 ;;
+          *) break ;;
+        esac
+      done
+      k="$j"
+    done
+    [ "$k" -lt "$n" ] || continue
+    set -f
+    set -- "${ws[@]:k}"
+    set +f
+    kept="$*"
+    [ "${#pre[@]}" -gt 0 ] && kept="env ${pre[*]} $kept"
+    while [ "$unread" = "0" ] && [ $# -gt 0 ]; do
+      w="${1##*/}"
+      case "$w" in
+        env)     out=$(gate_unwrap_env     gate_unwrap_left N U "${@:2}") ;;
+        command) out=$(gate_unwrap_command gate_unwrap_left N U "${@:2}") ;;
+        timeout|nice|nohup|stdbuf)
+                 out=$(gate_unwrap_wrapper "$w" gate_unwrap_left N U "${@:2}") ;;
+        *) break ;;
+      esac
+      case "$out" in
+        N) set --; break ;;
+        U) unread=1; break ;;
+      esac
+      shift $(( $# - out ))
+    done
+    [ $# -gt 0 ] || continue
+    printf '%s\t%s\t%s\n' "$unread" "$kept" "$*"
   done <<EOF
-$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed 's/\$//g')
+$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed -e 's/\$//g' -e "s/['\"]//g")
 EOF
-  printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
+}
+
+gate_opaque_shell_lines() {
+  # gate_opaque_shell_lines <argv...> — `gate_opaque_payload_lines` for an act
+  # that is a shell's `-c` string behind any launchers, and nothing for every
+  # other act. The launchers are peeled with `gate_unwrap_one`, and one whose
+  # option it cannot read ends the search: that act is answered on its outer
+  # argv, where the unread option is already the closed reading.
+  local _l _rc a
+  while [ $# -gt 0 ]; do
+    _rc=0; _l=$(gate_unwrap_one "$@") || _rc=$?
+    case "$_rc" in
+      0) shift $(( $# - _l )) ;;
+      2) break ;;
+      *) return 0 ;;
+    esac
+  done
+  [ $# -gt 0 ] || return 0
+  case "${1##*/}" in bash|sh|zsh|dash|ksh) ;; *) return 0 ;; esac
+  for a in "${@:2}"; do
+    if [ "$a" = "-c" ]; then gate_opaque_payload_lines "$@"; return 0; fi
+  done
+  return 0
 }
 
 gate_opaque_floor_find_inner() {
@@ -7377,23 +7535,58 @@ gate_unwrap_time() {
   # write an append. Without `-a` the file is overwritten, so it is a place the
   # act destroys as well as writes; the same globals and the same reading
   # discipline as `gate_unwrap_lockf`.
+  #
+  # THE BSD AND GNU GETOPT GRAMMAR, through `_gp_getopt` with the option set
+  # `_gp_peel_time` reads: `-a`, `-h`, `-l`, `-p`, `-q`, `-v` and their long
+  # names take nothing, `-f`/`--format` and `-o`/`--output` take a value,
+  # attached or separate, and `--` ends the options. The loop this replaced
+  # read one option per word, so a cluster such as `-lo <file>` and an
+  # attached `-o<file>` answered <unknown-opt> with `GATE_UW_PATHS` empty, and
+  # every reader of the `-o` file lost it at once. `GATE_UW_PATHS` holds the
+  # last `-o` value, as the command itself keeps the last one.
+  #
+  # `GATE_UW_OPTW` IS THE WORD THE ARGV CARRIES — `-lo`, `-o<file>`,
+  # `--output=<file>` — and not the option's name, because the
+  # pre-authorization matches a manifest shape against argv words, so a
+  # trigger the argv does not carry could never be matched. `-a` alone still
+  # counts as a write, as the grading table counts it.
+  #
+  # The parser's state is local here for the reason `gate_unwrap_lockf` gives.
   local resolver="$1" no_cmd="$2" unk="$3"; shift 3
-  local wrote=0
+  local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL _GP_OPTVAL
+  local wrote=0 a c j n skip=0
   GATE_UW_PATHS=(); GATE_UW_KEEP=0; GATE_UW_OPTW=''
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -p|-l|-h|--portability|--verbose) shift ;;
-      -o|--output)
-          [ $# -ge 2 ] || { printf '%s' "$unk"; return 0; }
-          wrote=1; GATE_UW_OPTW="$1"; GATE_UW_PATHS=("$2"); shift 2 ;;
-      --output=*) wrote=1; GATE_UW_OPTW="$1"; GATE_UW_PATHS=("${1#--output=}"); shift ;;
-      -a|--append) wrote=1; GATE_UW_KEEP=1; shift ;;
-      -*) printf '%s' "$unk"; return 0 ;;
-      *) break ;;
-    esac
-  done
-  [ $# -gt 0 ] || { printf '%s' "$no_cmd"; return 0; }
-  local inner; inner=$("$resolver" "$@")
+  _gp_getopt ahlpqv fo 'append portability quiet verbose' 'format output' "$@"
+  [ "$_GP_PEEL" != form ] || { printf '%s' "$unk"; return 0; }
+  if _gp_optlast a append; then wrote=1; GATE_UW_KEEP=1; fi
+  if _gp_optlast o output; then
+    wrote=1; GATE_UW_PATHS=("$_GP_OPTVAL")
+    n=$(( $# - ${#_GP_REST[@]} ))
+    for a in "${@:1:n}"; do
+      if [ "$skip" = "1" ]; then skip=0; continue; fi
+      case "$a" in
+        --) break ;;
+        --output) GATE_UW_OPTW="$a"; skip=1 ;;
+        --output=*) GATE_UW_OPTW="$a" ;;
+        --format) skip=1 ;;
+        --*) ;;
+        -*)
+          j=1
+          while [ "$j" -lt "${#a}" ]; do
+            c="${a:j:1}"
+            case "$c" in
+              o|f)
+                [ "$c" = "o" ] && GATE_UW_OPTW="$a"
+                [ $((j + 1)) -lt "${#a}" ] || skip=1
+                break ;;
+            esac
+            j=$((j + 1))
+          done ;;
+      esac
+    done
+  fi
+  [ "${#_GP_REST[@]}" -gt 0 ] || { printf '%s' "$no_cmd"; return 0; }
+  local inner; inner=$("$resolver" "${_GP_REST[@]}")
   [ "$wrote" = "1" ] || { printf '%s' "$inner"; return 0; }
   # Only the GRADING table has a floor to raise; the other tables pass their own
   # terminal answer through, which is what `''` means for them. The opaque floor

@@ -29895,6 +29895,67 @@ check "86: 읽기로 선언한 lockf -p 는 형태 미상으로 거부된다" "$
 case "$msg" in *"형태 미상"*) ok "86: 그 거부 문면이 형태 미상을 말한다" ;;
   *) bad "86: 그 거부 문면이 형태 미상을 말한다" "$msg" ;; esac
 check "86: 그 lockf -p 의 형제 잠금 파일이 그대로다" "$(cat "$SIB86/lk86lock" 2>/dev/null)" "k"
+
+# 페이로드 줄의 접두와 런로컬 파괴 질문 — 불투명 바닥은 페이로드 줄의 첫 낱말이
+# lockf·time 일 때만 그 파일을 셌다. 런처(nice·command·env)나 셸 내장 exec 가 앞에
+# 붙은 줄은 형태 미상·등급 미상이 되어 바닥이 읽기로 남았고, 읽기 선언이 형제 파일을
+# 덮어쓰거나 지웠다. 런로컬 파괴 질문은 바깥 argv(bash)만 읽어 형제 파일을 지우는
+# 페이로드가 거짓 런로컬로 지나갔고, 인용한 피연산자는 인용 부호째 대상 안 상대 경로로
+# 읽혔다. 이제 두 판정은 한 판독기의 줄을 읽는다. 바닥·판정 함수 단언과 실행 수준의
+# 거부·잔존 단언을 함께 두고, 임시 디렉터리를 겨눈 같은 철자가 지나가는 쌍둥이를 둔다.
+# 픽스처 파일은 이 블록이 만들고 지운다.
+printf 'k\n' > "$SIB86/pl86lock"; printf 'k\n' > "$SIB86/pl86out"
+check "86: 페이로드 nice time -lo 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice time -lo $SIB86/pl86out true")" "트리밖쓰기"
+check "86: 페이로드 command time -lo 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "command time -lo $SIB86/pl86out true")" "트리밖쓰기"
+check "86: 페이로드 nice /usr/bin/time -o<file> 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice /usr/bin/time -o$SIB86/pl86out true")" "트리밖쓰기"
+check "86: 페이로드 env lockf 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "env lockf $SIB86/pl86lock true")" "트리밖쓰기"
+check "86: 페이로드 exec lockf 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "exec lockf $SIB86/pl86lock true")" "트리밖쓰기"
+check "86: 페이로드 nice lockf -p 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice lockf -p $SIB86/pl86lock true")" "트리밖쓰기"
+check "86: 런처 옵션을 읽지 못한 페이로드 nice -5 rm 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "nice -5 rm -f $SIB86/pl86out")" "트리밖쓰기"
+check "86: 인용한 피연산자의 페이로드 lockf 의 바닥은 트리밖쓰기다" "$(fl86 bash -c "lockf '$SIB86/pl86lock' true")" "트리밖쓰기"
+check "86: 대조 — 페이로드 nice lockf -k -t 0 의 바닥은 읽기다" "$(fl86 bash -c "nice lockf -k -t 0 $T86/lk86k true")" "읽기"
+check "86: 대조 — 페이로드 command -v 는 바닥을 올리지 않는다" "$(fl86 bash -c "command -v git")" "읽기"
+check "86: 묶음 time -lo 의 형제 파일은 트리밖쓰기다" "$(sg86 time -lo "$SIB86/pl86out" true)" "트리밖쓰기"
+check "86: 붙여 쓴 time -o<file> 의 형제 파일은 트리밖쓰기다" "$(sg86 time -o"$SIB86/pl86out" true)" "트리밖쓰기"
+check "86: 기존 파일을 덮는 묶음 time -lo 는 그 낱말이 트리거다" "$(lt86 time -lo "$SIB86/pl86out" true)" "-lo"
+for a86 in "nice time -lo" "command time -lo" "exec lockf"; do
+  case "$a86" in
+    *lockf) f86p="$SIB86/pl86lock" ;;
+    *) f86p="$SIB86/pl86out" ;;
+  esac
+  om86 읽기 bash -c "$a86 $f86p true"
+  case "$rc" in 0) bad "86: 읽기로 선언한 페이로드 $a86 는 거부되거나 park 된다" "rc=$rc $msg" ;;
+    *) ok "86: 읽기로 선언한 페이로드 $a86 는 거부되거나 park 된다 (rc=$rc)" ;; esac
+  check "86: 그 페이로드 $a86 의 형제 파일이 그대로다" "$(cat "$f86p" 2>/dev/null)" "k"
+done
+check "86: 페이로드 lockf 로 형제 잠금 파일을 지우는 bash -c 는 런로컬 판정에서 park 된다" "$(rd86 bash -c "lockf $SIB86/pl86lock true")" "파괴형태미명시"
+check "86: 페이로드 rm -f 로 형제 파일을 지우는 bash -c 는 런로컬 판정에서 park 된다" "$(rd86 bash -c "rm -f $SIB86/pl86lock")" "파괴형태미명시"
+check "86: 인용한 피연산자의 페이로드 lockf 도 런로컬 판정에서 park 된다" "$(rd86 bash -c "lockf '$SIB86/pl86lock' true")" "파괴형태미명시"
+check "86: 런처 옵션을 읽지 못한 페이로드 nice -5 rm 은 런로컬 판정에서 park 된다" "$(rd86 bash -c "nice -5 rm -f $T86/pl86x")" "파괴형태미명시"
+check "86: 두 번째 줄의 형제 파괴도 런로컬 판정에서 park 된다" "$(rd86 bash -c "true; rm -f $SIB86/pl86lock")" "파괴형태미명시"
+check "86: 대조 — 임시 디렉터리 파일을 지우는 페이로드 rm -f 는 런로컬 판정을 지난다" "$(rd86 bash -c "rm -f $T86/pl86x")" ""
+check "86: 대조 — 임시 디렉터리의 -k 잠금 파일을 쓰는 페이로드 lockf 는 런로컬 판정을 지난다" "$(rd86 bash -c "lockf -k $T86/lk86k true")" ""
+nb86=$(b86)
+rl86 bash -c "lockf $SIB86/pl86lock true"
+check "86: 런로컬로 신고한 형제 잠금 파일의 페이로드 lockf 는 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 (페이로드 lockf)" ;;
+  *) bad "86: 그 park 가 파괴형태미명시다 (페이로드 lockf)" "$msg" ;; esac
+rl86 bash -c "rm -f $SIB86/pl86lock"
+check "86: 런로컬로 신고한 형제 파일의 페이로드 rm -f 는 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 (페이로드 rm -f)" ;;
+  *) bad "86: 그 park 가 파괴형태미명시다 (페이로드 rm -f)" "$msg" ;; esac
+check "86: 페이로드 런로컬 park 둘이 blocked 행 둘을 남긴다" "$(( $(b86) - nb86 ))" "2"
+TMPDIR="$T86" r86 워크트리쓰기 bash -c "lockf '$SIB86/pl86lock' true"
+case "$rc" in 0) bad "86: 워크트리쓰기 런로컬로 신고한 인용 피연산자 페이로드 lockf 는 거부되거나 park 된다" "rc=$rc $msg" ;;
+  *) ok "86: 워크트리쓰기 런로컬로 신고한 인용 피연산자 페이로드 lockf 는 거부되거나 park 된다 (rc=$rc)" ;; esac
+check "86: park·거부된 페이로드들의 형제 파일이 그대로다" "$(cat "$SIB86/pl86lock" 2>/dev/null)" "k"
+printf 'z\n' > "$T86/pl86x"
+nb86=$(b86)
+rl86 bash -c "rm -f $T86/pl86x"
+check "86: 대조 — 임시 디렉터리 파일을 지우는 페이로드 rm -f 는 런로컬로 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+[ ! -e "$T86/pl86x" ] && ok "86: 그 페이로드 rm -f 가 실제로 지웠다" \
+  || bad "86: 그 페이로드 rm -f 가 실제로 지웠다" "$T86/pl86x"
+rm -f "$SIB86/pl86lock" "$SIB86/pl86out" "$T86/pl86x"
 rm -rf "$H86"
 rm -f "$SIB86/lk86lock" "$SIB86/tm86out"
 
