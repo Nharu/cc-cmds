@@ -29156,12 +29156,13 @@ t3_pass 7
 
 # 7b — 행위 전체를 요구하는 docker 행위의 꼬리에서 떨어진 = 단어. 행이 행위의 마지막
 # 단어까지 담아도 일치하지 않아 기기전역 칸에서 `dropped` 문구로 park 한다. 공백 철자로
-# 고쳐 쓴 행위는 그 행이 짧아 park 하고, 찍힌 행(행위 전체)이 연다.
+# 고쳐 쓴 행위는 그 행의 마지막 단어 뒤에 꼬리가 남아 인터프리터가 아닌 러너의 완전 행과
+# 맞지 않으므로 행 없는 문구로 park 하고, 찍힌 행(행위 전체)이 연다.
 rx_manifest R83C "docker build -t img3:t $WORK/ctx3"
 t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3" "--output=type=local,dest=$WORK/out"
 t3_park 7b 기기전역 no-row "the matcher drops '--output=type=local,dest=$WORK/out'" 0 dropped
 t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3" --output "type=local,dest=$WORK/out"
-t3_park 7b-고쳐쓴행위 기기전역 short 'stops before the words that make this act machine-global' 1
+t3_park 7b-고쳐쓴행위 기기전역 no-row 'no `사전 인가` row opens this machine-global act' 1
 t3_r=$(rx_row)
 check "83c: 7b — 찍힌 행은 고쳐 쓴 철자의 행위 전체다" "$t3_r" "docker build -t img3:t $WORK/ctx3 --output type=local,dest=$WORK/out"
 rx_manifest R83C "docker build -t img3:t $WORK/ctx3
