@@ -9763,6 +9763,177 @@ case "$cont3_15d" in
 esac
 
 # ---------------------------------------------------------------------------
+# 15d-2. A refused stage is re-attached once; an implement process B is asked for its result lines
+# --- section: 15d-2 | group: base | covers: act, gate_main | anchors: 15d-2: 거절로 끝난 시도는 거절 종료다, 15d-2: 거절 종료의 재개는 거절 메시지를 싣는다, 15d-2: 두 번째 거절 뒤의 재개는 exit 3 이다, 15d-2: 원인=거절 소진 cone 막힘이 받힌다, 15d-2: 결과 줄이 빠진 프로세스 B 는 공허한 성공이다, 15d-2: 그 계속 메시지는 빠진 표제를 축자로 든다, 15d-2: 결과 줄이 빠진 프로세스 B 의 계속도 상한에서 exit 3 이다 ---
+#
+# A stage whose last working turn ended in a model safety refusal is filed
+# `거절 종료` at either exit code, and a router's `--resume` of it carries the
+# fixed refusal message instead of the router's prompt — once. A second refusal
+# refuses the third resume, and the disposition the refusal names, a cone
+# `blocked` with `원인=거절 소진`, is accepted where a made-up cause is not. The
+# refusal stub ends in a fresh zero-turn envelope after the refused one, the
+# shape the harness leaves when it resumes a refused session.
+#
+# An implement attempt that follows a row carrying `plan_sha256=` is process B,
+# and it is asked for the result line of every residual item that is its
+# share: one missing is `공허한 성공` however many rows the stage wrote, and the
+# continuation names the missing heading verbatim. Process A, and a process B
+# whose lines are all there, stay `정상 완료`. Driven in-process on the base
+# manifest with `DOC` pointed at a fixture document, because the base
+# manifest carries no design document.
+# ---------------------------------------------------------------------------
+STUB15R="$WORK/bin/claude-stub-15r"
+mkdir -p "$WORK/bin"
+cat > "$STUB15R" <<'STUB15REOF'
+#!/usr/bin/env bash
+sid=s15r-fresh
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    --session-id|-r) sid="$a" ;;
+    -p) printf '%s\n' "$a" > "${CC_STUB15R_PROMPT:-/dev/null}" ;;
+  esac
+  prev="$a"
+done
+printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"%s","num_turns":47,"stop_reason":"refusal"}\n' "$sid"
+printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0,"session_id":"%s","num_turns":0}\n' "$sid"
+exit "${CC_STUB15R_RC:-1}"
+STUB15REOF
+chmod +x "$STUB15R"
+RD15R="$XDG_STATE_HOME/cc-cmds/run/R1"
+seg15r() {  # seg15r <segment> — the segment row a dispatch needs
+  gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+}
+last15r() {  # last15r <segment> <field> — that field of the segment's last stage-result row
+  { grep '^- `stage-result` ' "$FX_LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } | tail -1 \
+    | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'
+}
+rows15r() { { grep '^- `stage-result` ' "$FX_LEDGER" || true; } | { grep -cF "세그먼트=$1 " || true; }; }
+launch15r() {  # launch15r <segment> [--resume <id>] — dispatch through the refusal stub, then wait
+  local s="$1"; shift
+  : > "$WORK/p15r.txt"
+  out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB15R" CC_STUB15R_PROMPT="$WORK/p15r.txt" \
+        bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment "$s" \
+        --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x "$@" \
+        -- implement -p "/cc-cmds:implement-unattended 원래 프롬프트" 2>&1); rc=$?
+  [ "$rc" = "0" ] || return 0
+  ( cd "$WT" && CC_CLAUDE_BIN="$STUB15R" \
+    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment "$s" --interval 1 --timeout 60 >/dev/null 2>&1 )
+}
+refmsg15r=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; refusal_message')
+
+seg15r SR15
+launch15r SR15
+check "15d-2: 거절로 끝난 시도는 거절 종료다" "$(last15r SR15 '종단 부류')" "거절 종료"
+sr_sid=$(last15r SR15 '세션 id')
+launch15r SR15 --resume "$sr_sid"
+check "15d-2: 거절 종료의 재개가 기동한다" "$rc" "0"
+check "15d-2: 거절 종료의 재개는 거절 메시지를 싣는다" "$(cat "$WORK/p15r.txt")" "$refmsg15r"
+check "15d-2: 거절 재부착은 계속 계수기를 쓰지 않는다" \
+  "$( [ -e "$RD15R/continue/SR15" ] && printf counted || printf none )" "none"
+check "15d-2: 재부착한 시도도 거절로 끝나면 거절 종료 행이 둘이다" \
+  "$( { grep '^- `stage-result` ' "$FX_LEDGER" || true; } | { grep -F '세그먼트=SR15 ' || true; } \
+      | { grep -cF '종단 부류=거절 종료' || true; } )" "2"
+n15r=$(rows15r SR15)
+launch15r SR15 --resume "$(last15r SR15 '세션 id')"
+check "15d-2: 두 번째 거절 뒤의 재개는 exit 3 이다" "$rc" "3"
+case "$out" in
+  *"원인=거절 소진"*) ok "15d-2: 그 거부는 원인=거절 소진 처분을 든다" ;;
+  *) bad "15d-2 거절 소진 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+check "15d-2: 거부된 재개는 시도를 쓰지 않는다" "$(rows15r SR15)" "$n15r"
+gate act --manifest "$FX_MANIFEST" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(HH)" --rationale x \
+  -- 스코프=cone 원인=엉뚱 "앵커 세그먼트=SR15" "사유=거절 두 번" "근거=픽스처" "재개 명령=-"
+check "15d-2: 막힘·거절 소진 밖의 cone 원인은 거부된다" "$( [ "$rc" != "0" ] && printf refused || printf passed )" "refused"
+gate act --manifest "$FX_MANIFEST" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(HH)" --rationale x \
+  -- 스코프=cone "원인=거절 소진" "앵커 세그먼트=SR15" "사유=거절 두 번" \
+     "근거=게이트가 두 번째 거절 뒤의 재개를 거부했다" "재개 명령=-"
+check "15d-2: 원인=거절 소진 cone 막힘이 받힌다" "$rc" "0"
+# The same stream at exit 0 is a refusal too, not a success.
+seg15r SR15Z
+( export CC_STUB15R_RC=0; launch15r SR15Z )
+check "15d-2: 종료 코드 0 의 거절 스트림도 거절 종료다" "$(last15r SR15Z '종단 부류')" "거절 종료"
+
+# The residual share of an implement process B.
+E4D15R="$WORK/e4-15r"
+mkdir -p "$E4D15R"
+e4doc15r() {  # e4doc15r <path> <R1 노트 줄|-> — R1 is the share; R2 carries 실행 주의 and is not
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 시 검증 항목\n\n'
+    printf '### R1. 거절 판독이 선다\n\n- **검증 등급**: '
+    if [ "$2" = "-" ]; then printf '구현 시 검증\n'; else printf '검증됨(통과)\n- **구현 시 검증 기록**: %s\n' "$2"; fi
+    printf -- '- **검증 레시피**: `true`\n\n'
+    printf '### R2. 실행 주의가 붙은 항목\n\n- **검증 등급**: 구현 시 검증\n- **실행 주의**: 좌석에서 돈다\n'
+  } > "$1"
+}
+e4doc15r "$E4D15R/open.md" -
+e4doc15r "$E4D15R/noted.md" "2026-10-12 — 통과"
+e4probe15r() {  # e4probe15r <seg> <attempt> <doc> <stage row: 1|0> — one implement attempt, recorded
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$FX_MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    DOC="$3"
+    mkdir -p "$RUN_DIR/log"
+    printf "%s\n" "$2" > "$RUN_DIR/$1.attempt"
+    printf "계획 본문\n" > "$RUN_DIR/$1.plan.md"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.1,\"session_id\":\"s-e4\",\"num_turns\":5}\n" \
+      > "$RUN_DIR/log/$1#$2.json"
+    nb=$(wc -l < "$LEDGER" | tr -d " ")
+    if [ "$4" = 1 ]; then
+      printf -- "- \`자율 승인\` | kind=skill | 결정=act | 대상=infra | 세그먼트=%s | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=잔여 픽스처 | prev=x\n" "$1" >> "$LEDGER"
+    fi
+    gate_record_stage_outcome infra "$1" implement "$2" 0 "$nb" "$RUN_DIR/log/$1#$2.json" >/dev/null 2>&1
+  ' _ "$@"
+}
+e4cont15r() {  # e4cont15r <seg> <doc> — one router resume of it; prints rc, then the prompt it carries
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$FX_MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    DOC="$2"
+    GATE_RESUME=s-e4
+    r=0; gate_continuation_argv "$1" implement implement -p "원래 프롬프트" 2>/dev/null || r=$?
+    printf "%s\n" "$r"
+    [ "$r" != 0 ] || { i=0; for a in "${GATE_CONTINUE_ARGV[@]}"; do [ "$i" = 1 ] && printf "%s\n" "$a"; [ "$a" = -p ] && i=1 || i=0; done; }
+  ' _ "$@"
+}
+
+e4probe15r SE4A 1 "$E4D15R/open.md" 1
+check "15d-2: 계획 행이 없는 첫 시도(프로세스 A)는 결과 줄을 묻지 않고 정상 완료다" "$(last15r SE4A '종단 부류')" "정상 완료"
+case "$(grep '^- `stage-result` ' "$FX_LEDGER" | { grep -F '세그먼트=SE4A ' || true; } | tail -1)" in
+  *"plan_sha256="*) ok "15d-2 프로세스 A 행이 계획 다이제스트를 싣는다 (아래가 프로세스 B 다)" ;;
+  *) bad "15d-2 프로세스 A 행" "plan_sha256 이 없다" ;;
+esac
+e4probe15r SE4A 2 "$E4D15R/open.md" 1
+check "15d-2: 결과 줄이 빠진 프로세스 B 는 공허한 성공이다" "$(last15r SE4A '종단 부류')" "공허한 성공"
+c15r=$(e4cont15r SE4A "$E4D15R/open.md")
+check "15d-2: 그 재개는 계속으로 기동한다" "$(printf '%s\n' "$c15r" | sed -n 1p)" "0"
+case "$c15r" in
+  *"자기 몫 잔여 검증 항목의 결과 줄"*"「### R1. 거절 판독이 선다」"*) ok "15d-2: 그 계속 메시지는 빠진 표제를 축자로 든다" ;;
+  *) bad "15d-2 잔여 계속 메시지" "$c15r" ;;
+esac
+case "$c15r" in
+  *"R2."*) bad "15d-2 잔여 계속 메시지" "실행 주의 항목을 몫으로 셌다: $c15r" ;;
+  *) ok "15d-2: 실행 주의가 붙은 항목은 몫에서 빠진다" ;;
+esac
+e4cont15r SE4A "$E4D15R/open.md" >/dev/null
+check "15d-2: 결과 줄이 빠진 프로세스 B 의 계속도 상한에서 exit 3 이다" \
+  "$(e4cont15r SE4A "$E4D15R/open.md" | sed -n 1p)" "3"
+e4probe15r SE4B 1 "$E4D15R/noted.md" 1
+e4probe15r SE4B 2 "$E4D15R/noted.md" 1
+check "15d-2: 결과 줄이 모두 있는 프로세스 B 는 정상 완료다" "$(last15r SE4B '종단 부류')" "정상 완료"
+
+# ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
 # --- section: 15e | group: base | covers: act, plan, wait, supervise | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다 ---
 #

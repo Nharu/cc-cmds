@@ -236,6 +236,14 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 
 The lead synthesizes all review results into a Korean document under `docs/reviews/` following the template. Report length is unconstrained (length is not a lite-savings axis); structure is the floor — P0~P3 severity tags and the structured finding list MUST be preserved.
 
+**P1 classification.** Write it exactly as the template's `### P1 분류 기준` and "P1 Classification Grammar" sections spell it — they own the grammar, so it is not restated here:
+
+- the `- **P1 분류**: 차단 N건 | 이월 가능 N건` line directly after `발견 요약`, always present — `차단 0건 | 이월 가능 0건` when there is no P1;
+- on every P1 item, exactly one `**[차단]**` or `**[이월 가능]**` tag and a `분류 근거` sub-bullet, and on every `**[이월 가능]**` item an `이월 제목` and an `이월 본문`;
+- the overview line `- **슬라이스 범위**: 적용 안 됨 — 인자 없음`, because this skill takes no `--slice` and so never applies a slice scope; there is no `다른 슬라이스 몫` line and no `## 다른 슬라이스 몫 (집계 제외)` section.
+
+This skill registers no issue. Whether a report reading "이월 후 머지 가능" sends its carryable items to follow-up issues and merges is the person's decision.
+
 **Mandatory section — `## 리뷰 범위`** (coverage-gap explicit disclosure):
 
 Every review-lite report MUST include this section so the user is never silently misled about uncovered files when a PR exceeds context-window throughput.
