@@ -101,7 +101,10 @@ Findings and diffs (stage-policy-drift.sh --explain):
 
 # Past the cap, the findings are cut at a line boundary — which also keeps a
 # multibyte character whole — and a marker naming the total takes the place of
-# what was cut. Byte counts need LC_ALL=C.
+# what was cut. Byte counts and byte slices need LC_ALL=C. The cut is a
+# parameter slice, not a pipe into `head -c`: with SIGPIPE ignored, as a CI
+# runner can hand it down, the writer of a report larger than the pipe buffer
+# hits the closed pipe and bash prints a write error on stderr.
 cap=6000
 LC_ALL=C
 if [ $(( ${#context} + ${#report} )) -le "$cap" ]; then
@@ -112,7 +115,7 @@ else
   budget=$(( cap - ${#context} - ${#marker} ))
   cut=""
   if [ "$budget" -gt 0 ]; then
-    cut=$(printf '%s' "$report" | head -c "$budget")
+    cut="${report:0:budget}"
     case "$cut" in
       *$'\n'*) cut="${cut%$'\n'*}" ;;
       *) cut="" ;;
@@ -120,7 +123,7 @@ else
   fi
   context="$context$cut$marker"
 fi
-context=$(printf '%s' "$context" | head -c "$cap")
+context="${context:0:cap}"
 
 jq -cn --arg c "$context" \
   '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}' 2>/dev/null

@@ -169,6 +169,27 @@ partial=$(printf '%s\n' "$ctx" | grep -E '^(added|  - |  body:)' \
   | grep -vxE 'added user-scope padding item [0-9]+ with a few more words|  - padding item [0-9]+ with a few more words|  body:|  - alpha rule one' || true)
 check "상한을 넘는 보고: 줄 중간에서 자르지 않는다" "$partial" ""
 
+# A report far larger than a pipe buffer, cut with SIGPIPE ignored — the
+# disposition a CI runner can hand down. A cut that pipes the report into
+# `head -c` then has its writer hit a closed pipe, and bash puts "printf: write
+# error: Broken pipe" on stderr. Near a pipe buffer's size that is a race, so a
+# stub checker prints a report of about a megabyte at once: the real checker
+# would take minutes to find that many items.
+STUB="$WORK/stub-plugin"
+mkdir -p "$STUB/orchestrator"
+cat > "$STUB/orchestrator/stage-policy-drift.sh" <<'EOF'
+awk 'BEGIN {
+  print "changed user-scope alpha"
+  for (i = 1; i <= 20000; i++) print "added user-scope padding item " i " with a few more words"
+  print "mismatch 20001"
+}'
+EOF
+( trap '' PIPE; hook_run "$(payload "$CFG/CLAUDE.md")" CLAUDE_PLUGIN_ROOT="$STUB"; exit "$HOOK_RC" )
+HOOK_RC=$?
+spoke "SIGPIPE 무시 + 파이프 버퍼를 넘는 보고"
+check "SIGPIPE 무시 + 파이프 버퍼를 넘는 보고: 끝 줄이 잘림 표시" "$(printf '%s\n' "$ctx" | tail -n 1)" \
+  "[truncated: the checker reported 20001 finding(s); run bash \"$STUB/orchestrator/stage-policy-drift.sh\" --explain for the full list]"
+
 hook_run "$(payload "$CFG/notes.md")"
 silent "다른 파일 경로"
 
