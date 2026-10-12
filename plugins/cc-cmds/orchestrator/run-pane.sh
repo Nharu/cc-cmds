@@ -41,10 +41,12 @@
 # fixed order (see the reduction below). Some rows are protected and stay past
 # the cap: what is waiting for a person must not scroll away behind history.
 #
-# NOTHING HERE TICKS EVERY SECOND. Times are a stage's start as `HH:MMZ` and
+# NOTHING HERE TICKS EVERY SECOND. Times are a stage's start as `HH:MM` and
 # ages in whole minutes or hours, all computed from the one clock the fields
 # row carries, so two refreshes ten seconds apart draw the same bytes unless
-# the run moved.
+# the run moved. Clock times are in the display zone `display-tz.sh` reads
+# from `CC_CMDS_AUTOPILOT_TZ` (KST by default), and the event heading names
+# it; without that sibling they stay UTC and the heading says `UTC`.
 #
 # TOTAL, AND NOTHING HERE WRITES. Every path exits 0 with a valid head row — a
 # missing sibling, an unreadable run directory, a missing `ledger-path` and a
@@ -243,6 +245,13 @@ if [ -f "$PANE_DIR/liveness.sh" ]; then
   # shellcheck source=./liveness.sh
   . "$PANE_DIR/liveness.sh" 2>/dev/null && have_liveness=1
 fi
+# The display zone. Without the sibling the pane keeps UTC and its heading says
+# so, so the label always matches the times beside it.
+have_dtz=0; CC_DTZ_OFF=0; CC_DTZ_LABEL=UTC
+if [ -f "$PANE_DIR/display-tz.sh" ]; then
+  # shellcheck source=./display-tz.sh
+  . "$PANE_DIR/display-tz.sh" 2>/dev/null && cc_display_tz_load && have_dtz=1
+fi
 full=0
 [ "$have_liveness" = 1 ] && [ -n "$ledger" ] && full=1
 
@@ -309,9 +318,13 @@ EOF
 }
 
 pane_hhmm() {
-  # pane_hhmm <epoch> — UTC `HH:MM` by arithmetic, so neither date dialect is
-  # needed.
-  printf '%02d:%02d' $(( ($1 % 86400) / 3600 )) $(( ($1 % 3600) / 60 ))
+  # pane_hhmm <epoch> — `HH:MM` in the display zone by arithmetic, so neither
+  # date dialect is needed; UTC when the helper did not load.
+  if [ "$have_dtz" = 1 ]; then
+    printf '%s' "$(cc_display_hhmm "$1")"
+  else
+    printf '%02d:%02d' $(( ($1 % 86400) / 3600 )) $(( ($1 % 3600) / 60 ))
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -319,9 +332,14 @@ pane_hhmm() {
 # the recent events.
 #
 # EVENT TIME RULES — a display rule, applied in this order:
-#   1. The row's own time field, when it holds an ISO time: `관측 시각`,
-#      `관측`, `기록 시각`, or the `정산 시각` inside the `관측` of a lost
-#      dispatch settlement. A time quoted in prose such as `사유` is not read.
+#   1. The row's own time field, when it holds a UTC ISO time
+#      (`YYYY-MM-DDTHH:MM`, optional `:SS`, then `Z`): `관측 시각`, `관측`,
+#      `기록 시각`, or the `정산 시각` inside the `관측` of a lost dispatch
+#      settlement. Its `HH:MM` is shifted into the display zone and wrapped at
+#      midnight; the pane shows no date, so the day change is not drawn. A time
+#      with another zone or none counts as no time and falls to rule 2: adding
+#      an offset to a time of unknown zone draws a wrong time that looks right.
+#      A time quoted in prose such as `사유` is not read.
 #   2. Otherwise the k-th `stage-result` (k counted from the top of the file)
 #      takes the time of the first later `cost` row with `스테이지 수=k`. That
 #      count is the number of `stage-result` rows when the cost was written, so
@@ -329,13 +347,14 @@ pane_hhmm() {
 #      to rule 3 — a few seconds off at minute resolution.
 #   3. Otherwise the time of the nearest earlier row of any kind that has one.
 #   4. Otherwise `--:--`.
+# Rules 2 and 3 take a time rule 1 already shifted, so they shift nothing.
 # Kinds are `stage-result`, `cycle`, `checks`, `blocked`, `승인` and the
 # newest `cost` only; `자율 승인` is never an event. Newest first, at most six.
 # ---------------------------------------------------------------------------
 
 facts=""
 if [ "$full" = 1 ]; then
-  facts=$(LC_ALL=C awk -F'|' -v maxev="$PANE_EVENTS_MAX" '
+  facts=$(LC_ALL=C awk -F'|' -v maxev="$PANE_EVENTS_MAX" -v tzoff="$CC_DTZ_OFF" '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
     # The LAST occurrence wins: a row may repeat a field (`id=A | id=A`).
     function field(name,   i, f, n, v) {
@@ -346,13 +365,20 @@ if [ "$full" = 1 ]; then
       }
       return v
     }
-    function isiso(v) { return v ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]/ }
+    function isiso(v) { return v ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9](:[0-9][0-9])?Z/ }
+    # The HH:MM of a UTC ISO time in the display zone. awk `%` keeps the sign
+    # of the dividend, so a negative remainder is lifted by one more 1440.
+    function hm(v,   x) {
+      x = substr(v, 12, 2) * 60 + substr(v, 15, 2) + int(tzoff / 60)
+      x = ((x % 1440) + 1440) % 1440
+      return sprintf("%02d:%02d", int(x / 60), x % 60)
+    }
     function owntime(   v, p) {
-      v = field("관측 시각="); if (isiso(v)) return substr(v, 12, 5)
-      v = field("관측=");      if (isiso(v)) return substr(v, 12, 5)
+      v = field("관측 시각="); if (isiso(v)) return hm(v)
+      v = field("관측=");      if (isiso(v)) return hm(v)
       p = index(v, "정산 시각 ")
-      if (p > 0) { v = substr(v, p + length("정산 시각 ")); if (isiso(v)) return substr(v, 12, 5) }
-      v = field("기록 시각="); if (isiso(v)) return substr(v, 12, 5)
+      if (p > 0) { v = substr(v, p + length("정산 시각 ")); if (isiso(v)) return hm(v) }
+      v = field("기록 시각="); if (isiso(v)) return hm(v)
       return ""
     }
     function ev(text, k) {
@@ -576,7 +602,7 @@ if [ -n "$seg_states" ]; then
         et=$(ps -o etime= -p "$r_pid" 2>/dev/null | tr -d ' ')
         secs=$(pane_etime_secs "$et")
         if [ -n "$secs" ]; then
-          detail="$detail${detail:+ · }$(pane_hhmm $((f_now - secs)))Z 시작"
+          detail="$detail${detail:+ · }$(pane_hhmm $((f_now - secs))) 시작"
         fi
       fi
       [ -n "$pre_v" ] && [ "$pre_v" != "없음" ] && detail="$detail${detail:+ · }선행 $pre_v"
@@ -669,7 +695,7 @@ events=$(printf '%s\n' "$facts" | awk -F'\t' '$1 == "ev" { sub(/^ev\t/, ""); pri
 EV_GAP=-1; EV_HEAD=-1
 if [ -n "$events" ]; then
   EV_GAP=$NROWS; add_row gap cut - 0 1 normal ""
-  EV_HEAD=$NROWS; add_row event-heading cut - 0 1 normal.b "최근 이벤트 UTC"
+  EV_HEAD=$NROWS; add_row event-heading cut - 0 1 normal.b "최근 이벤트 $CC_DTZ_LABEL"
   while IFS="$TAB" read -r e_t e_x; do
     [ -n "$e_x" ] || continue
     add_row event cut - 0 1 dim "$e_t" normal " $e_x"

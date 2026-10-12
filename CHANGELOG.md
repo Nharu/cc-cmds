@@ -5,6 +5,30 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.66.0] - 2026-10-12
+
+autopilot 의 패널·진행 채널·상태줄·아침 보고서가 사람이 읽는 시각을 이제 표시 영역으로 보여 주며, 기본값은 KST 다. 원장·관측 행·킥오프 흔적·심장 박동 파일처럼 디스크에 남는 시각은 그대로 UTC `Z` 다.
+
+### Added
+
+- **표시 영역 도우미** (`orchestrator/display-tz.sh`) — `CC_CMDS_AUTOPILOT_TZ` 를 읽어 표시 오프셋과 라벨을 정하고 epoch 와 UTC ISO 를 셸 산술로 바꾼다. 비었거나 잘못된 값(`Asia/Seoul` 같은 영역 이름 포함)은 경고 없이 KST, `UTC`·`Z` 는 UTC, -12:00..+14:00 의 `±HH:MM` 은 그 오프셋이다. `bash display-tz.sh iso <ISO>` 로 직접 부를 수 있다
+- **시험** — `scripts/test-display-tz.sh` 를 `make test` 에 넣었다
+
+### Changed
+
+- **실행 패널** (`orchestrator/run-pane.sh`) — 스테이지 시작 시각(`HH:MM 시작`)과 최근 이벤트 시각을 표시 영역으로 그리고, 이벤트 제목이 그 라벨을 싣는다(`최근 이벤트 KST`). 도우미가 없는 설치본은 UTC 와 그 라벨을 유지한다
+- **진행 채널** (`orchestrator/feed.sh`) — 줄 머리 시각이 `[06:22 KST]` 처럼 라벨과 함께 찍힌다
+- **상태줄** (`orchestrator/statusline.sh`) — 세그먼트 차용 시계가 호스트 `TZ` 가 아니라 표시 영역을 따른다. 도우미가 없으면 그 시계만 비운다
+- **아침 보고서** (`autopilot`) — 보고서가 자기 말로 적는 시각을 도우미의 `iso` 출력으로 적는다. 인용하는 원장 행의 시각은 바꾸지 않는다
+
+### Fixed
+
+- **정책 편집 훅** (`hooks/stage-policy-edit-drift.sh`) — 상한을 넘는 드리프트 보고를 자를 때 `head -c` 파이프 대신 바이트 단위 변수 자르기를 쓴다. SIGPIPE 를 무시한 채 프로세스를 물려주는 CI 러너에서 파이프 버퍼보다 큰 보고를 자르면 `printf: write error: Broken pipe` 가 stderr 에 찍혀, 비어 있어야 할 훅의 stderr 가 채워졌다
+
+### Why
+
+- 무인 런을 지켜보는 사람이 화면의 UTC 시각에 매번 9시간을 더해야 했고, 상태줄만 호스트 시간대를 따라 같은 화면 안에서 두 시간대가 섞였다. 기록은 비교·정렬을 위해 UTC 로 두고, 사람이 읽는 표시만 한 변수로 맞춘다
+
 ## [2.65.0] - 2026-10-12
 
 이 호스트에서 도는 병렬 autopilot 런들은 그동안 런마다 원장과 상태줄을 따로 열어 보아야 했다. 이제 런을 시작하면 로컬 대시보드 서버가 함께 뜨고, 모든 런의 상태·세그먼트·스테이지 이력을 브라우저 한 화면에서 볼 수 있다. 서버는 읽기만 하며 런의 종료 코드와 원장에 아무 영향을 주지 않는다.
