@@ -4437,18 +4437,27 @@ run_gate_call() {
   # driver row built from the same function and the same arguments is the same
   # bytes as the gate's. Sourced in a child for the reason `absorb_stage_judgment`
   # states: sourcing re-initializes this shell's run state.
+  #
+  # THE DOCUMENT CONTEXT CROSSES TOO. Sourcing resets `DOC` and its kin to
+  # empty, and a gate function that reads the frozen document then sees none:
+  # the `segment` arm stamps no `선언 다이제스트` on a landing and `apply_field`
+  # falls back to the manifest alone. So the paths `derive_paths_from_manifest`
+  # resolved in this shell are restored beside the run identity.
   local gate="$ORCH_DIR/gate.sh"
   [ -f "$gate" ] || { warn "게이트 파일이 없습니다 — $gate"; return 9; }
   CC_GATE_SOURCE_ONLY=1 bash -c '
-    g=$1; mf=$2; rid=$3; rd=$4; led=$5; gr=$6; shift 6
+    g=$1; mf=$2; rid=$3; rd=$4; led=$5; gr=$6
+    cdoc=$7; ckey=$8; cdir=$9; cdb=${10}; cslug=${11}; cbase=${12}; shift 12
     cc_gate_call_argv=("$@")
     set --
     . "$g" >/dev/null 2>&1 || exit 9  # lint-harness-global-collisions: child-shell
     set +e
     unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
     MANIFEST=$mf; RUN_ID=$rid; RUN_DIR=$rd; LEDGER=$led; GRANT=$gr
+    DOC=$cdoc; DOC_KEY=$ckey; DOC_DIR=$cdir; DOC_BASE=$cdb; DOC_SLUG=$cslug; BASE=$cbase
     "${cc_gate_call_argv[@]}"
-  ' _ "$gate" "$MANIFEST" "$RUN_ID" "$RUN_DIR" "$LEDGER" "$GRANT" "$@"
+  ' _ "$gate" "$MANIFEST" "$RUN_ID" "$RUN_DIR" "$LEDGER" "$GRANT" \
+    "${DOC:-}" "${DOC_KEY:-}" "${DOC_DIR:-}" "${DOC_BASE:-}" "${DOC_SLUG:-}" "${BASE:-}" "$@"
 }
 
 spawn_resume_binding() {
@@ -7255,9 +7264,12 @@ merge_gate() {
   MERGE_COMMIT=$(gh_q "$slug" pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid' || printf '')
   [ -n "$MERGE_COMMIT" ] || MERGE_COMMIT=$(base_sha "$al")
   # The row is the gate's, so `적용`, the inherited `리뷰 정책` and the landing's
-  # `선언 다이제스트` are derived the way a routed run derives them. The merge
-  # has already landed, so a refusal here cannot undo it: the same fields go in
-  # by the driver's own writer, and the warning names why the gate refused.
+  # `선언 다이제스트` are derived the way a routed run derives them — the gate
+  # reads the frozen document through the context `run_gate_call` hands its
+  # child. The merge has already landed, so a refusal here cannot undo it: the
+  # caller's fields and the landing digest go in by the driver's own writer, and
+  # the warning names why the gate refused. That row carries no `적용`, which
+  # only the gate writes.
   local mbase mwt mdeps ldd mrc=0
   mbase=$(base_sha "$al"); mwt=$(wt_path "$seg") || mwt="-"
   mdeps=$(plan_deps "$seg")
@@ -7267,7 +7279,8 @@ merge_gate() {
     warn "$seg: 게이트가 머지됨 행을 거절했습니다(rc=$mrc) — 같은 필드를 드라이버 기록자로 남깁니다"
     ldd=$(landed_decl_field "$seg")
     ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" \
-      "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$mbase" "워크트리=$mwt" ${ldd:+"$ldd"}
+      "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$mbase" "워크트리=$mwt" \
+      "선행=${mdeps:-없음}" ${ldd:+"$ldd"}
   fi
   return 0
 }

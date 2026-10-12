@@ -10376,7 +10376,8 @@ MF34="$R34/manifest.md"; write_manifest "$MF34" "" "" main "$R34KEY"
 M34=$(cd "$MF_REPO" && git rev-parse refs/heads/main)
 
 r34_ring() {  # r34_ring <런 id> [머지|실패] — one run of the document: its run row and its plan
-  # `머지` then records SA merged the way `merge_gate` does; `실패` makes the
+  # `머지` then records SA merged by hand, with the identity fields and no
+  # landing digest, so the later rings fall to the plan row; `실패` makes the
   # gate call fail outright, which must plan the slice rather than skip it.
   local rid="$1"
   mkdir -p "$R34/$rid"
@@ -10966,6 +10967,43 @@ check "35: 다음 이 수정 이면 머지를 부르지 않고 act 로 park 한�
 r35_o=$(r35_merge 머지); r35_mm=${r35_o%%|*}; L35MM=${r35_o#*|}
 check "35: 다음 이 머지 면 머지를 한 번 부르고 워크트리를 실은 머지됨 행을 쓴다" \
   "$r35_mm/$( { grep -F '`segment`' "$L35MM" || true; } | grep -F '상태=머지됨' | grep -cF "워크트리=$MF_REPO" || true)" "0/1/1"
+
+# --- 머지됨 행의 착지 선언 다이제스트 ---
+# 게이트는 스텁이 아닌 `run_gate_call` 의 자식 셸에서 돈다. 그 셸은 run.sh 를 다시
+# 소싱해 DOC 를 비우므로, 부모가 넘긴 문서 문맥이 없으면 게이트는 다이제스트를 찍지
+# 못한다. 거절 갈래는 원장에 없는 선행으로 게이트 거절을 일으켜 드라이버 기록자의
+# 대체 행을 본다.
+R35LD="$R35/landed.md"; r34_doc "$R35LD.src" 머지
+sed 's/SA/S2/g; s/SB/S3/g' "$R35LD.src" > "$R35LD"
+R35LDD=$(slice_decl_digest "$R35LD" S2)
+check "35: 착지 다이제스트 픽스처는 S2 를 선언하는 동결 선언통치 문서다 (아래가 공허하지 않다)" \
+  "$(slicing_branch "$R35LD")/$(printf '%s' "$R35LDD" | grep -cE '^[0-9a-f]{64}$' || true)" "선언통치/1"
+r35_landed_in() {  # r35_landed_in [거절] — 동결 문서 문맥으로 merge_gate 를 돌리고 stderr 를 남긴다
+  r35_stubs; R35GH=ok
+  DOC="$R35LD"; DOC_KEY="${R35LD#/}"; DOC_DIR="$R35"
+  seg_alias() { printf 'home'; }; authorized() { return 0; }; pr_checks_settle() { printf '0'; }
+  base_fetch() { :; }; base_sha() { printf '%s' "$H35"; }; wt_path() { printf '%s' "$MF_REPO"; }
+  if [ "${1:-}" = 거절 ]; then plan_deps() { printf 'SZ'; }; fi
+  local rc=0
+  merge_gate S2 seg/r35-S2 >/dev/null 2>"$R35/landed-$1.err" || rc=$?
+  printf '%s' "$rc"
+}
+r35_landed() {  # r35_landed <수락|거절> — 종료 코드|원장
+  local l
+  l=$(r35_led "ld-$1" 1:0:0)
+  : > "$R35/gh.log"
+  R35RUN="$R35/run-ld-$1"; mkdir -p "$R35RUN/log" "$R35RUN/halt"
+  printf '%s|%s' "$(r35_in "$l" "$M35" r35_landed_in "$1")" "$l"
+  R35RUN=""
+}
+r35_o=$(r35_landed 수락); r35_la=${r35_o%%|*}; r35_lar=$(r34_last "${r35_o#*|}" S2)
+check "35: 게이트가 받아들인 머지됨 행은 동결 문서의 착지 선언 다이제스트와 선행 을 싣는다" \
+  "$r35_la/$(r34_field "$r35_lar" '상태')/$(r34_field "$r35_lar" '선언 다이제스트')/$(r34_field "$r35_lar" '선행')/$(grep -c '머지됨 행을 거절' "$R35/landed-수락.err" || true)" \
+  "0/머지됨/$R35LDD/없음/0"
+r35_o=$(r35_landed 거절); r35_lr=${r35_o%%|*}; r35_lrr=$(r34_last "${r35_o#*|}" S2)
+check "35: 게이트가 거절하면 경고하고 드라이버 기록자의 머지됨 행이 같은 다이제스트와 선행 을 싣는다" \
+  "$r35_lr/$(r34_field "$r35_lrr" '상태')/$(r34_field "$r35_lrr" '선언 다이제스트')/$(r34_field "$r35_lrr" '선행')/$(grep -c '머지됨 행을 거절' "$R35/landed-거절.err" || true)" \
+  "0/머지됨/$R35LDD/SZ/1"
 
 # --- 리뷰 파견의 --slice 와 수정 사이클의 지시 ---
 R35SLI="$R35/slice.md"
