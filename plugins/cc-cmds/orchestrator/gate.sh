@@ -965,6 +965,11 @@ gate_reach_derived_full() {
       done
       # The daemon's image and container store is shared by every run on this
       # machine. A push is graded 외부상태변경 and keeps its declared reach.
+      # This arm emits no trigger word. Outside run/create, a docker act opens
+      # only to a row that carries the whole act with no dropped `-x=y` word,
+      # and the preauthorization probe checks that. A list of option triggers
+      # would open every option missing from it, and a `-x=y` word is absent
+      # from the normalized words a trigger is located in, so no row could meet it.
       if [ "$remote" = 0 ]; then
         case "$(shift; surface_of_docker "$@")" in 트리밖쓰기) printf '기기전역\tcmd\n'; return 0 ;; esac
       fi ;;

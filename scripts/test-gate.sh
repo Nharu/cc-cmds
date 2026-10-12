@@ -28820,7 +28820,10 @@ pb_is "83b: 경로 트리거 앞에서 끝나는 행은 짧다"    'Pg=0 Gc=shor
 pb_is "83b: 인터프리터는 스크립트 자리까지다"       'Pg=1'          'Pg'    'bash scripts/x.sh'  'bash scripts/x.sh a'        GATE_REACH_EFF=기기전역
 # docker `run` 의 이미지 자리는 값을 받는 옵션의 값을 건너뛴 뒤의 단어다. 옵션 값에서
 # 끝나는 행은 뒤에 붙는 다른 옵션까지 연다. 그 밖의 docker 동사는 피연산자 뒤에서도
-# 옵션을 읽으므로 행위 전체를 요구한다.
+# 옵션을 읽으므로 행위 전체를 요구한다. 행위 전체를 요구하는 docker 행위에서는 행의
+# 마지막 단어 뒤에서 떨어진 `=` 단어도 일치를 막는다 — 정규화된 단어 수는 떨어진 단어를
+# 세지 않으므로, 이 조건이 없으면 같은 옵션을 `=` 로 이은 철자만 행이 덮지 않은 꼬리로
+# 열린다. 행은 `-x=y` 단어를 담을 수 없어 그 행위는 어떤 행으로도 열리지 않는다.
 pb_is "83b: docker run -p 의 제안은 이미지까지다" 'Sx=ok 제안=docker run --rm -p 8080:80 nginx' 'Sx 제안' \
   '' 'docker run --rm -p 8080:80 nginx' GATE_REACH_EFF=기기전역
 pb_is "83b: docker run -e 의 제안도 이미지까지다" 'Sx=ok 제안=docker run --rm -e CI=1 myimg' 'Sx 제안' \
@@ -28837,6 +28840,22 @@ pb_is "83b: 옵션 값에서 끝나는 행은 뒤의 --privileged 를 열지 않
   'docker run --rm -p 8080:80' 'docker run --rm -p 8080:80 -v /:/host --privileged alpine sh' GATE_REACH_EFF=기기전역
 pb_is "83b: 빌드 행은 뒤에 붙은 --output 을 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
   'docker build -t T .' 'docker build -t T . --output type=local,dest=/x' GATE_REACH_EFF=기기전역
+pb_is "83b: 빌드 행은 뒤에 = 로 붙은 --output 도 열지 않는다" 'P=0 형태=없음 Pg=0 Sx=dropped 제안=-' 'P 형태 Pg Sx 제안' \
+  'docker build -t T .' 'docker build -t T . --output=type=local,dest=/x' GATE_REACH_EFF=기기전역
+pb_is "83b: 빌드 행은 뒤에 = 로 붙은 --ssh 를 열지 않는다" 'P=0 형태=없음 Pg=0 Sx=dropped 제안=-' 'P 형태 Pg Sx 제안' \
+  'docker build -t T .' 'docker build -t T . --ssh=default' GATE_REACH_EFF=기기전역
+pb_is "83b: 빌드 행은 뒤에 = 로 붙은 --secret 을 열지 않는다" 'P=0 형태=없음 Pg=0 Sx=dropped 제안=-' 'P 형태 Pg Sx 제안' \
+  'docker build -t T .' 'docker build -t T . --secret=id=s,src=/x' GATE_REACH_EFF=기기전역
+pb_is "83b: 빌드 행은 뒤에 = 로 붙은 --build-context 를 열지 않는다" 'P=0 형태=없음 Pg=0 Sx=dropped 제안=-' 'P 형태 Pg Sx 제안' \
+  'docker build -t T .' 'docker build -t T . --build-context=c=/x' GATE_REACH_EFF=기기전역
+pb_is "83b: 삭제 행은 뒤에 = 로 붙은 --force 를 열지 않는다" 'P=0 Pd=0 Pg=0 Sx=dropped' 'P Pd Pg Sx' \
+  'docker image rm T' 'docker image rm T --force=true' GATE_MARK=파괴 GATE_MARK_TRIGGER=rm GATE_REACH_EFF=기기전역
+# 대조: 기기전역 밖 칸에서는 꼬리의 `=` 단어가 오늘처럼 일치를 막지 않고, `run` 의 이미지
+# 뒤 단어는 docker 옵션이 아니라 컨테이너 명령의 인자다.
+pb_is "83b: 기기전역 밖에서는 꼬리의 = 단어가 일치를 막지 않는다" 'P=1 형태=완전' 'P 형태' \
+  'docker build -t T .' 'docker build -t T . --output=type=local,dest=/x'
+pb_is "83b: run 의 이미지 뒤 = 단어는 일치를 막지 않는다" 'Pg=1' 'Pg' \
+  'docker run --rm T' 'docker run --rm T sh --x=y' GATE_REACH_EFF=기기전역
 # 트리거 단어만 담은 형태는 다른 설정 키까지 연다 — 키를 담아야 한다. 키를 담은 행은
 # 다른 키를 쓰는 행위와 맞지 않는다(피연산자 고정의 음성 행).
 pb_is "83b: git config --global 행은 다른 키를 열지 않는다" 'Pg=0 Gc=short' 'Pg Gc' \
@@ -29054,6 +29073,21 @@ rx_manifest R83C "docker run --rm img3:t
 $t3_r"
 t3p front3 트리밖쓰기 기기전역 -- docker run --rm --privileged img3:t true
 t3_pass 7
+
+# 7b — 행위 전체를 요구하는 docker 행위의 꼬리에서 떨어진 = 단어. 행이 행위의 마지막
+# 단어까지 담아도 일치하지 않아 기기전역 칸에서 `dropped` 문구로 park 한다. 공백 철자로
+# 고쳐 쓴 행위는 그 행이 짧아 park 하고, 찍힌 행(행위 전체)이 연다.
+rx_manifest R83C "docker build -t img3:t $WORK/ctx3"
+t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3" "--output=type=local,dest=$WORK/out"
+t3_park 7b 기기전역 no-row "the matcher drops '--output=type=local,dest=$WORK/out'" 0 dropped
+t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3" --output "type=local,dest=$WORK/out"
+t3_park 7b-고쳐쓴행위 기기전역 short 'stops before the words that make this act machine-global' 1
+t3_r=$(rx_row)
+check "83c: 7b — 찍힌 행은 고쳐 쓴 철자의 행위 전체다" "$t3_r" "docker build -t img3:t $WORK/ctx3 --output type=local,dest=$WORK/out"
+rx_manifest R83C "docker build -t img3:t $WORK/ctx3
+$t3_r"
+t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3" --output "type=local,dest=$WORK/out"
+t3_pass 7b
 
 # 8 — 경로로 지명된 프로그램. 행 없이는 상한에서, 행이 있어도 기기전역에서 멈추고 둘 다
 # 행 줄이 없다.

@@ -291,14 +291,19 @@ every trigger position)` words of the act: `s` is the subcommand (for a docker
 management group or `yarn global`, the next non-option word), and `t` is its
 operand — for docker `run` and `create` the image, found by skipping the flags
 known to take no value and the value of every other option; for any other
-docker act the end of the act, because those verbs read options after their
-operand too; otherwise the first non-option word after the subcommand, the
-package or config key, omitted for an interpreter. The triggers are the flag and
-path words that made the act machine-global. `docker run --rm T true` is opened
-by `docker run --rm T`, `docker build -t T .` only by the whole act `docker
-build -t T .`, `git config --global user.name x` by `git config --global
-user.name`. A `기기전역` act that changes external state, or that
-names a path under the Claude configuration home, is opened by no row. An
+docker act the whole act — every word of it, with no `-x=y` word dropped
+anywhere, even after the row's last word — because those verbs read options
+after their operand too; otherwise the first non-option word after the
+subcommand, the package or config key, omitted for an interpreter. That docker
+case is the only one where a `-x=y` word after the row's last word stops the
+match. The triggers are the flag and path words that made the act
+machine-global. `docker run --rm T true` is opened by `docker run --rm T`,
+`docker build -t T .` only by the whole act `docker build -t T .`, `git config
+--global user.name x` by `git config --global user.name`; `docker build -t T .
+--output=type=local,dest=/x` is opened by no row, and has to be respelled
+`--output type=local,dest=/x` and named whole. A `기기전역` act that changes
+external state, or that names a path under the Claude configuration home, is
+opened by no row. An
 external-state act with no matching row is **not refused**: it issues an
 approval and waits, because nobody being awake to ask is not the same fact as
 the answer being no.
