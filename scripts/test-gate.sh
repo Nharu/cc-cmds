@@ -22859,6 +22859,12 @@ case "$(sd_row)" in
   *'| 종료 부류=포기 |'*) ok "5d: 그 행의 종료 부류는 포기 다" ;;
   *) bad "5d 종료 부류" "포기 행에 종료 부류=포기 가 없다: $(sd_row)" ;;
 esac
+# 행위 없는 경계 행도 `유도 절단점=-` 을 싣는다. 38-8 의 누적 단언은 같은 샤드에서
+# 이 절이 돌 때만 이 행을 세므로, 이 절 안에서 직접 고정한다.
+case "$(sd_row)" in
+  *'| 절단점=경계 | 유도 절단점=- |'*) ok "5d: 포기 종료 행은 유도 절단점=- 을 싣는다" ;;
+  *) bad "5d 포기 유도 절단점" "포기 종료 행에 유도 절단점=- 가 없다: $(sd_row)" ;;
+esac
 sd_end --cause 포기
 check "5d: 다시 불러도 종료 행은 하나다" "$rc/$(sc_ends)" "0/1"
 
@@ -22868,6 +22874,10 @@ check "5d: 이어받음 도 해당없음 종료 행 하나를 쓴다" "$rc/$(sc_
 case "$(sd_row)" in
   *'| 종료 부류=이어받음 |'*'후계 런 20261012-abcdef01'*) ok "5d: 이어받음 행은 종료 부류와 후계 런을 싣는다" ;;
   *) bad "5d 이어받음 행" "종료 부류나 후계 런이 빠졌다: $(sd_row)" ;;
+esac
+case "$(sd_row)" in
+  *'| 절단점=경계 | 유도 절단점=- |'*) ok "5d: 이어받음 종료 행은 유도 절단점=- 을 싣는다" ;;
+  *) bad "5d 이어받음 유도 절단점" "이어받음 종료 행에 유도 절단점=- 가 없다: $(sd_row)" ;;
 esac
 
 sd_new '5d 산 shift'
@@ -23070,8 +23080,11 @@ for sb_l in "$WORK"/sa-*/repo/docs/pipeline-run/*.md; do
   while IFS= read -r sb_r; do
     [ -n "$sb_r" ] || continue
     sb_seen=$((sb_seen + 1))
-    [ -n "$(sa_field "$sb_r" '절단점')" ] && [ -n "$(sa_field "$sb_r" '유도 절단점')" ] \
-      || sb_miss=$((sb_miss + 1))
+    if [ -z "$(sa_field "$sb_r" '절단점')" ] || [ -z "$(sa_field "$sb_r" '유도 절단점')" ]; then
+      sb_miss=$((sb_miss + 1))
+      # 누적 단언이라 실패만으로는 어느 기록 지점인지 알 수 없다 — 세는 행을 낸다.
+      printf '  38-8 필드 누락 행 (%s): %s\n' "${sb_l#"$WORK"/}" "$sb_r"
+    fi
   done <<EOF
 $( { grep -E '^- `(자율 승인|승인)`' "$sb_l" || true; } )
 EOF
@@ -30711,6 +30724,114 @@ check "86: 대조 — 임시 디렉터리 파일을 지우는 페이로드 rm -f
 rm -f "$SIB86/pl86lock" "$SIB86/pl86out" "$T86/pl86x"
 rm -rf "$H86"
 rm -f "$SIB86/lk86lock" "$SIB86/tm86out"
+
+# 셸 옵션 문법과 판독기가 모델링하지 않는 것 — 판독기가 정확히 -c 인 낱말 뒤만 읽던
+# 동안 bash -lc·sh -ec·bash -c -e 는 페이로드가 비어 바닥이 읽기였고, 읽힌 페이로드도
+# then·!·cd·$VAR 를 몰랐다. 그래서 읽기·커밋 선언의 머지 페이로드가 실행되고 형제 파괴가
+# 거짓 런로컬로 지나갔다. 이제 셸 자신의 옵션 문법으로 문자열을 찾고, 명령을 읽지 못한
+# 줄은 바닥 외부상태변경·사다리 머지, 착지를 읽지 못한 줄은 쓰기면 트리밖쓰기다. 바닥과
+# 사다리는 함수로 재고, 실행 수준에서는 머지 스텁이 실행되지 않음과 형제 파일 잔존을 잰다.
+# 스텁·픽스처 파일은 이 블록이 만들고 지운다.
+ld86() {
+  # ld86 <argv...> — 대상 트리 안에서 절단점 사다리의 답을 낸다 (없으면 빈 값).
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      ladder_of_argv0 "$@"' _ "$GATE" "$@" ) 2>/dev/null
+}
+for a86 in "bash -lc" "sh -ec" "bash -c -e" "bash -o pipefail -c" "bash --norc -c"; do
+  # shellcheck disable=SC2086
+  check "86: $a86 의 gh pr merge 는 바닥 외부상태변경이다" "$(fl86 $a86 "gh pr merge 1")" "외부상태변경"
+  # shellcheck disable=SC2086
+  check "86: $a86 의 gh pr merge 는 사다리 머지다" "$(ld86 $a86 "gh pr merge 1")" "머지"
+done
+check "86: if…then 안의 gh pr merge 는 사다리 머지다" "$(ld86 bash -c "if true; then gh pr merge 1; fi")" "머지"
+check "86: ! 뒤의 gh pr merge 는 사다리 머지다" "$(ld86 bash -c "! gh pr merge 1")" "머지"
+check "86: while…do 안의 gh pr merge 는 사다리 머지다" "$(ld86 bash -c "while false; do gh pr merge 1; done")" "머지"
+# shellcheck disable=SC2016
+for p86 in '$X pr merge 1' "eval gh pr merge 1" "sh -c gh" "xargs gh pr merge"; do
+  check "86: 명령을 읽지 못한 페이로드의 바닥은 외부상태변경이다 — ${p86}" "$(fl86 bash -c "$p86")" "외부상태변경"
+  check "86: 명령을 읽지 못한 페이로드의 사다리는 머지다 — ${p86}" "$(ld86 bash -c "$p86")" "머지"
+done
+check "86: 형제로 cd 한 뒤의 rm 은 바닥 트리밖쓰기다" "$(fl86 bash -c "cd $SIB86 && rm f")" "트리밖쓰기"
+# shellcheck disable=SC2016
+check "86: \$ 피연산자의 rm 은 바닥 트리밖쓰기다" "$(fl86 bash -c 'rm -f $D/x')" "트리밖쓰기"
+check "86: 대조 — bash -lc 의 git status 는 바닥 읽기다" "$(fl86 bash -lc "git status")" "읽기"
+check "86: 대조 — bash -lc 의 git status 는 사다리가 없다" "$(ld86 bash -lc "git status")" ""
+check "86: 대조 — 셸 스크립트 파일은 사다리가 없다" "$(ld86 bash scripts/x86.sh)" ""
+
+# 실행 수준 머지 — 진짜 gh 는 돌 수 없으므로 실행되면 표지 파일을 쓰는 절대 경로 스텁을
+# 쓴다. 읽기·커밋 선언은 각 철자에서 저신고(exit 8)로 거부되고 스텁은 한 번도 실행되지
+# 않는다.
+GH86D="$WORK/gh86"; mkdir -p "$GH86D"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$GH86D/ran" > "$GH86D/gh"
+chmod +x "$GH86D/gh"
+mg86() {
+  # mg86 <argv...> — 읽기·커밋·도달 생략으로 한 번 부른다.
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(HH)" --rationale 't86' -- "$@"
+}
+mg86 bash -lc "$GH86D/gh pr merge 1"
+check "86: 읽기·커밋 선언의 bash -lc 머지는 거부된다" "$rc" "8"
+mg86 bash -c -e "$GH86D/gh pr merge 2"
+check "86: 읽기·커밋 선언의 bash -c -e 머지는 거부된다" "$rc" "8"
+mg86 bash -c "if true; then $GH86D/gh pr merge 3; fi"
+check "86: 읽기·커밋 선언의 if…then 머지는 거부된다" "$rc" "8"
+[ ! -e "$GH86D/ran" ] && ok "86: 거부된 세 머지 철자 중 어느 것도 스텁을 실행하지 않았다" \
+  || bad "86: 거부된 세 머지 철자 중 어느 것도 스텁을 실행하지 않았다" "$(cat "$GH86D/ran")"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 외부상태변경 --reach 협업 --snapshot-digest "$(HH)" --rationale 't86' \
+  -- bash -lc "$GH86D/gh pr merge 4"
+check "86: 바닥에 맞춘 커밋 선언의 bash -lc 머지는 유도 절단점 머지로 거부된다" "$rc" "8"
+[ ! -e "$GH86D/ran" ] && ok "86: 그 거부도 스텁을 실행하지 않았다" \
+  || bad "86: 그 거부도 스텁을 실행하지 않았다" "$(cat "$GH86D/ran")"
+rm -rf "$GH86D"
+
+# 실행 수준 파괴 — 예약어·! 뒤, 형제로 cd 한 뒤, bash -lc 의 형제 rm 은 거짓 런로컬로
+# park 되고 파일이 남는다. cd 없는 셋은 돌린 임시 디렉터리를 겨누면 지나가고 지운다.
+mkdir -p "$SIB86/sh86" "$T86/sh86"
+nb86=$(b86)
+for k86 in if 'not' cd; do
+  case "$k86" in
+    if)  p86="if true; then rm -f $SIB86/sh86/f; fi" ;;
+    not) p86="! rm -f $SIB86/sh86/f" ;;
+    cd)  p86="cd $SIB86/sh86 && rm -f f" ;;
+  esac
+  printf 'k\n' > "$SIB86/sh86/f"
+  rl86 bash -c "$p86"
+  check "86: 거짓 런로컬의 형제 rm 은 park 된다 — ${k86}" "$rc" "11"
+  case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 — ${k86}" ;;
+    *) bad "86: 그 park 가 파괴형태미명시다 — ${k86}" "$msg" ;; esac
+  check "86: 그 park 된 형제 rm 의 파일이 남아 있다 — ${k86}" "$(cat "$SIB86/sh86/f" 2>/dev/null)" "k"
+done
+printf 'k\n' > "$SIB86/sh86/g"
+rl86 bash -lc "rm -f $SIB86/sh86/g"
+check "86: 거짓 런로컬의 bash -lc 형제 rm 은 park 된다" "$rc" "11"
+check "86: 그 park 된 bash -lc rm 의 형제 파일이 남아 있다" "$(cat "$SIB86/sh86/g" 2>/dev/null)" "k"
+check "86: 셸 철자 파괴 park 넷이 blocked 행 넷을 남긴다" "$(( $(b86) - nb86 ))" "4"
+for k86 in if 'not'; do
+  case "$k86" in
+    if)  p86="if true; then rm -f $T86/sh86/f; fi" ;;
+    # `!` 가 성공한 rm 의 상태를 뒤집으므로 뒤의 true 가 페이로드의 종료 상태를 정한다.
+    not) p86="! rm -f $T86/sh86/f; true" ;;
+  esac
+  printf 'z\n' > "$T86/sh86/f"
+  rl86 bash -c "$p86"
+  check "86: 대조 — 임시 디렉터리를 겨눈 셸 철자 rm 은 런로컬로 통과한다 — ${k86}" "$rc" "0"
+  [ ! -e "$T86/sh86/f" ] && ok "86: 그 셸 철자 rm 이 실제로 지웠다 — ${k86}" \
+    || bad "86: 그 셸 철자 rm 이 실제로 지웠다 — ${k86}" "$T86/sh86/f"
+done
+printf 'z\n' > "$T86/sh86/g"
+rl86 bash -lc "rm -f $T86/sh86/g"
+check "86: 대조 — 임시 디렉터리를 겨눈 bash -lc rm 은 런로컬로 통과한다" "$rc" "0"
+[ ! -e "$T86/sh86/g" ] && ok "86: 그 bash -lc rm 이 실제로 지웠다" \
+  || bad "86: 그 bash -lc rm 이 실제로 지웠다" "$T86/sh86/g"
+rm -rf "$SIB86/sh86" "$T86/sh86"
+
+# 페이로드 앞머리 대입의 env 재구성 — 그 재구성이 없으면 수집기가 -c 문자열 안의 GIT_*
+# 대입에서 포기하지 못해 형제 워크트리의 checkout -f 가 거짓 런로컬로 지나간다.
+check "86: 페이로드의 GIT_WORK_TREE 대입 뒤 checkout -f 는 런로컬 판정에서 park 된다" \
+  "$(rd86 bash -c "GIT_WORK_TREE=$SIB86 git checkout -f -- .")" "파괴형태미명시"
+check "86: 대조 — 자기 워크트리의 페이로드 checkout -f 는 런로컬 판정을 지난다" \
+  "$(rd86 bash -c "git checkout -f -- .")" ""
 
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
 # 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git

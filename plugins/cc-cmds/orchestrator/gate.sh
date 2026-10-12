@@ -2033,9 +2033,14 @@ gate_reach_runlocal_destruction() {
   # its own argv for the local reader, the collector and the manifest match. A
   # line whose launcher option is unread has no landing place this file can
   # read, so when it is destructive it is judged as the collector's giving up
-  # is: as landing in the target's trees. What is not a shell's `-c` string —
-  # a script file, another interpreter's code — is still not read, and a
-  # destruction inside it is the stage's to declare with `--destructive`.
+  # is: as landing in the target's trees. A line whose landing is unread (3 —
+  # an operand holding `$`, or a line after a `cd` or an `export`) is judged
+  # the same way, and a line whose command is unread (2) is judged so whether
+  # or not it reads as destructive, because nothing says it is not: `bash -c
+  # "cd <sibling> && rm -f f"` and `bash -c "if true; then rm -f <sibling
+  # file>; fi"` went through a false `런로컬`. What is not a shell's `-c`
+  # string — a script file, another interpreter's code — is still not read,
+  # and a destruction inside it is the stage's to declare with `--destructive`.
   local alias="$1" X="$2" Pd="$3"; shift 3
   local r rec unread kept
   r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
@@ -2048,12 +2053,13 @@ gate_reach_runlocal_destruction() {
     set -- $kept
     set +f
     [ $# -gt 0 ] || continue
-    if [ "$unread" = "1" ]; then
-      [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ] || continue
-      r=$(gate_reach_tree_destruction "$X" "$Pd" "$@")
-    else
-      r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
-    fi
+    case "$unread" in
+      1|3)
+        [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ] || continue
+        r=$(gate_reach_tree_destruction "$X" "$Pd" "$@") ;;
+      2) r=$(gate_reach_tree_destruction 1 "$Pd" "$@") ;;
+      *) r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@") ;;
+    esac
     [ -z "$r" ] || { printf '%s' "$r"; return 0; }
   done <<EOF
 $(gate_opaque_shell_lines "$@")
@@ -7253,7 +7259,16 @@ gate_opaque_floor() {
     # written bare is refused as `형태 미상`, and that is not a floor, so `bash
     # -c "nice -5 rm -f <sibling file>"` was admitted as `읽기`. Where the
     # option list is unread, so is what the line writes.
-    [ "$unread" = "1" ] && g='트리밖쓰기'
+    #
+    # AN UNREAD COMMAND (2) FLOORS `외부상태변경`: nothing says it stays on this
+    # machine, and the same line written bare is refused as `등급 미상`. A line
+    # whose landing is unread (3) is raised to `트리밖쓰기` when it writes at
+    # all, because where it writes is unknown; a read stays a read.
+    case "$unread" in
+      1) g='트리밖쓰기' ;;
+      2) g='외부상태변경' ;;
+      3) [ "$g" = "워크트리쓰기" ] && g='트리밖쓰기' ;;
+    esac
     case "$g" in
       읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
         fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
@@ -7282,6 +7297,56 @@ EOF
   printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
 }
 
+gate_shell_c_string() {
+  # gate_shell_c_string <shell argv after the shell's name...> — the command
+  # string of a shell run in `-c` mode, read by the shell's own option grammar.
+  # Status 0 prints the string; 1 means the shell is not in `-c` mode (a script
+  # file or standard input, which is not read); 2 means it is in `-c` mode and
+  # the string cannot be found, or the option region holds a word this grammar
+  # does not know.
+  #
+  # THE SHELL'S GRAMMAR, NOT THE WORD `-c`. Matching the word let `bash -lc`,
+  # `sh -ec` and `bash -c -e` through with no payload at all, so their floor was
+  # `읽기` and no cutpoint was derived from a `gh pr merge` inside. The option
+  # region runs while words start with `-` or `+` and ends at `--` or a lone
+  # `-`; a `c` anywhere in a dash or plus cluster selects `-c` mode; `o` and `O`
+  # take the next word as their value, at the end of a cluster too; a long
+  # option is skipped, and `--rcfile`/`--init-file` take a value. The string is
+  # the first operand after the region. Anything else in the region — a
+  # character that is no option letter — is not guessed at: status 2, and the
+  # caller takes the act as an unread command.
+  local a c j cmode=0 want=0 unk=0
+  while [ $# -gt 0 ]; do
+    a="$1"
+    if [ "$want" = "1" ]; then want=0; shift; continue; fi
+    case "$a" in
+      --|-) shift; break ;;
+      --rcfile|--init-file) want=1 ;;
+      --*) ;;
+      -?*|+?*)
+        j=1
+        while [ "$j" -lt "${#a}" ]; do
+          c="${a:j:1}"
+          case "$c" in
+            c) cmode=1 ;;
+            o|O) want=1 ;;
+            [A-Za-z]) ;;
+            *) unk=1 ;;
+          esac
+          j=$((j + 1))
+        done ;;
+      *) break ;;
+    esac
+    shift
+  done
+  # A region this grammar could not read may have hidden the `c` as well, so
+  # it is status 2 whether or not a `c` was seen.
+  if [ "$unk" = "1" ] || [ "$want" = "1" ]; then return 2; fi
+  [ "$cmode" = "1" ] || return 1
+  [ $# -gt 0 ] || return 2
+  printf '%s' "$1"
+}
+
 gate_opaque_payload_lines() {
   # gate_opaque_payload_lines <argv...> — the payload of an opaque act, one
   # command per line, as `<읽지 못함>\t<줄>\t<벗긴 줄>`.
@@ -7296,41 +7361,78 @@ gate_opaque_payload_lines() {
   #
   # The split is the floor's: heredoc markers dropped (their bodies are DATA,
   # and a SQL heredoc naming `drop table` is not the shell running `drop`),
-  # then a cut at `;&|(){}`, the backtick and the newline, `$` removed. Shell
+  # then a cut at `;&|(){}`, the backtick and the newline. In a shell's `-c`
+  # string a backtick substitution is read as a line of its own ahead of the
+  # line that uses it, and stands in that line as a word holding `$`; `$` is
+  # kept until the marks below are taken and removed only from what is
+  # printed. In every other payload `$` is removed before reading. Shell
   # quotes are removed as well. The reader is quote-blind by construction, and
   # a quoted operand kept its quotes as part of the word, so `lockf '<absolute
   # path>' true` read as a relative path inside the target and the floor fell
   # to `워크트리쓰기`; an unquoted word is the reading that lands where the
   # shell lands. A line starting with an option word is skipped.
   #
-  # `<줄>` is the line with its leading `VAR=value` assignments spelled as an
-  # `env` in front and the shell builtin `exec` (with its `-c`, `-l`, `-a
-  # <name>`) removed: the argv the line runs, which the landing collector and
-  # the local destruction reader take as they take any argv — the collector
-  # gives up on a `GIT_*` assignment through that `env`. `<벗긴 줄>` has the
-  # launchers in front removed too (`env`, `command`, `timeout`, `nice`,
-  # `nohup`, `stdbuf`), through the unwraps the grading table uses, so the
-  # floor sees the command the line runs. `lockf` and `time` are NOT removed:
-  # each writes a file of its own, and the reader of that file needs the
-  # launcher's argv. `<읽지 못함>` is 1 when an option of `exec` or of a
-  # launcher is one the peel cannot read; the peel stops there, and the
-  # caller takes that line as unread. A line whose launcher runs nothing
-  # (`command -v git`, `env` alone) is not printed.
+  # `<줄>` is the line with the reserved words in command position removed, its
+  # leading `VAR=value` assignments spelled as an `env` in front, and the shell
+  # builtin `exec` (its options read by `_gp_getopt`, with `builtin` or
+  # `command` in front of it) removed: the argv the line runs, which the
+  # landing collector and the local destruction reader take as they take any
+  # argv — the collector gives up on a `GIT_*` assignment through that `env`.
+  # `<벗긴 줄>` has the launchers in front removed too (`env`, `command`,
+  # `timeout`, `nice`, `nohup`, `stdbuf`), through the unwraps the grading
+  # table uses, so the floor sees the command the line runs. `lockf` and `time`
+  # are NOT removed: each writes a file of its own, and the reader of that file
+  # needs the launcher's argv. A line whose launcher runs nothing (`command -v
+  # git`, `env` alone) is not printed.
   #
-  # What it does not read is unchanged: `eval`, a command held in a variable,
-  # and the bytes of a script file.
+  # The reserved words removed are the ones that may stand before a command:
+  # `!`, `if`, `then`, `elif`, `else`, `do`, `while`, `until`, and `time` when
+  # the next word is not an option — with an option it is read as `time(1)`,
+  # whose `-o` file the `time` arm of the floor reads. A line holding `fi`,
+  # `done` or `esac` runs nothing and is not printed. Left in place, `then`
+  # and `!` were the command no table knew, so `bash -c "if true; then gh pr
+  # merge 1; fi"` floored `읽기` and derived no cutpoint.
+  #
+  # `<읽지 못함>` IS ONE OF FOUR, AND WHAT THIS READER DOES NOT MODEL IS UNREAD.
+  # It models the shell's option grammar (`gate_shell_c_string`), the reserved
+  # words above, `exec`, leading assignments and the launchers. Anything else
+  # is marked rather than guessed at, and each consumer takes the mark on its
+  # closed side:
+  #   0 — read.
+  #   1 — an option of a launcher the peel cannot read; the peel stops there.
+  #       In a payload that is not a shell's `-c` string, an unread option of
+  #       `exec` is 1 as well.
+  #   2 — the command itself is unread (a shell's `-c` string only): its word
+  #       holds `$` or a substitution; it is a command that runs another one
+  #       (`eval`, `source`, `.`, a nested shell, `xargs`, `sudo`, a `find`
+  #       with `-exec`); an option of `exec` is unread; or the shell's own
+  #       option region is (status 2 of `gate_shell_c_string`).
+  #   3 — the command is read but not where it lands (a shell's `-c` string
+  #       only): an operand holds `$` or a substitution, or an earlier line of
+  #       the same string changed the working directory or the environment
+  #       (`cd`, `pushd`, `popd`, `export`, `declare`, `typeset`, `readonly`,
+  #       `set -a` or `allexport`, a bare assignment, `unset` of a `GIT_*`
+  #       name, or a line marked 2). Every later line is 3 from then on.
+  # Removing `$` before reading turned `rm -f $D/x` into the relative path
+  # `D/x` inside the target, and `cd <sibling> && rm -f f` was read as a `rm`
+  # in the act's own worktree.
+  #
+  # A script FILE, the bytes of a variable and an `eval`'s string are not read;
+  # in a shell's `-c` string the line that runs one is marked 2.
   local cmd="${1##*/}"; shift 2>/dev/null || true
-  local payload="" a next_is_c=0
+  local payload="" shellmode=0 _src
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
       # ONLY the `-c` string. A script FILE operand is not scanned — its bytes
       # are not in argv, and pretending to have read them would be the kind of
       # confident wrong answer this whole table refuses.
-      for a in "$@"; do
-        if [ "$next_is_c" = "1" ]; then payload="$payload
-$a"; next_is_c=0; continue; fi
-        case "$a" in -c) next_is_c=1 ;; esac
-      done ;;
+      shellmode=1
+      _src=0; payload=$(gate_shell_c_string "$@") || _src=$?
+      case "$_src" in
+        0) ;;
+        1) return 0 ;;
+        *) printf '2\t%s\t%s\n' "$cmd" "$cmd"; return 0 ;;
+      esac ;;
     # The wrappers that assemble a command line out of their own arguments, and
     # the table-less argv0 whose operands may name one. `docker run` is
     # deliberately absent: its image name is a word like `mysql`, and reading
@@ -7342,13 +7444,33 @@ $a"; next_is_c=0; continue; fi
   [ -n "$payload" ] || return 0
   payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
 
-  local line unread kept out w k j n
+  local line unread kept out w k n st cw x poison=0 exec_unread=1 split
+  local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL
   local -a pre ws
+  [ "$shellmode" = "1" ] && exec_unread=2
+  if [ "$shellmode" = "1" ]; then
+    # shellcheck disable=SC2016
+    split=$(printf '%s\n' "$payload" \
+      | awk '{ n = split($0, p, "`"); o = ""
+               for (i = 1; i <= n; i++) { if (i % 2 == 0) { print p[i]; o = o " $_ " } else o = o p[i] }
+               print o }' \
+      | tr ';&|(){}' '\n\n\n\n\n\n\n' | sed -e "s/['\"]//g")
+  else
+    split=$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed -e 's/\$//g' -e "s/['\"]//g")
+  fi
   while IFS= read -r line; do
     set -f
     # shellcheck disable=SC2086
     set -- $line
     set +f
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        '!'|if|then|elif|else|do|while|until) shift ;;
+        time) case "${2:-}" in -*) break ;; esac; shift ;;
+        *) break ;;
+      esac
+    done
+    case "${1:-}" in fi|done|esac) continue ;; esac
     pre=()
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -7357,22 +7479,25 @@ $a"; next_is_c=0; continue; fi
         *) break ;;
       esac
     done
-    [ $# -gt 0 ] || continue
+    if [ $# -eq 0 ]; then
+      # A bare assignment changes what every later line sees.
+      [ "${#pre[@]}" -gt 0 ] && poison=1
+      continue
+    fi
     case "$1" in -*) continue ;; esac
     unread=0
     ws=("$@"); n=$#; k=0
-    while [ "$k" -lt "$n" ] && [ "${ws[$k]}" = "exec" ]; do
-      j=$((k + 1))
-      while [ "$j" -lt "$n" ]; do
-        case "${ws[$j]}" in
-          -a) j=$((j + 2)) ;;
-          -c|-l|-cl|-lc) j=$((j + 1)) ;;
-          --) j=$((j + 1)); break ;;
-          -*) unread=1; break 2 ;;
-          *) break ;;
-        esac
-      done
-      k="$j"
+    while [ "$k" -lt "$n" ]; do
+      case "${ws[$k]}" in
+        builtin|command)
+          [ "${ws[$((k + 1))]:-}" = "exec" ] || break
+          k=$((k + 1)); continue ;;
+        exec) ;;
+        *) break ;;
+      esac
+      _gp_getopt cl a '' '' "${ws[@]:k+1}"
+      if [ "$_GP_PEEL" = "form" ]; then unread="$exec_unread"; break; fi
+      k=$((n - ${#_GP_REST[@]}))
     done
     [ "$k" -lt "$n" ] || continue
     set -f
@@ -7396,9 +7521,48 @@ $a"; next_is_c=0; continue; fi
       shift $(( $# - out ))
     done
     [ $# -gt 0 ] || continue
-    printf '%s\t%s\t%s\n' "$unread" "$kept" "$*"
+    if [ "$shellmode" = "1" ]; then
+      st=0; cw="${1##*/}"
+      [ "$unread" = "2" ] && st=2
+      case "$1" in *'$'*) st=2 ;; esac
+      if [ "$st" = "0" ]; then
+        case "$cw" in
+          eval|source|.|bash|sh|zsh|dash|ksh|xargs|sudo) st=2 ;;
+          find)
+            for x in "$@"; do
+              case "$x" in -exec|-execdir|-ok|-okdir) st=2 ;; esac
+            done ;;
+        esac
+      fi
+      if [ "$st" = "0" ]; then
+        [ "$poison" = "1" ] && st=3
+        case "$kept" in *'$'*) st=3 ;; esac
+      fi
+      [ "$st" = "2" ] && poison=1
+      case "$cw" in
+        cd|pushd|popd|export|declare|typeset|readonly) poison=1 ;;
+        set)
+          for x in "${@:2}"; do
+            case "$x" in --*) ;; -*a*|allexport) poison=1 ;; esac
+          done ;;
+        unset)
+          for x in "${@:2}"; do
+            case "$x" in GIT_*) poison=1 ;; esac
+          done ;;
+      esac
+      # An unread launcher option (1) is the stronger floor of the two marks
+      # that leave the command word read, so 3 does not replace it.
+      case "$st" in
+        2) unread=2 ;;
+        3) [ "$unread" = "1" ] || unread=3 ;;
+      esac
+      w="$*"
+      printf '%s\t%s\t%s\n' "$unread" "${kept//\$/}" "${w//\$/}"
+    else
+      printf '%s\t%s\t%s\n' "$unread" "$kept" "$*"
+    fi
   done <<EOF
-$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed -e 's/\$//g' -e "s/['\"]//g")
+$split
 EOF
 }
 
@@ -7407,8 +7571,10 @@ gate_opaque_shell_lines() {
   # that is a shell's `-c` string behind any launchers, and nothing for every
   # other act. The launchers are peeled with `gate_unwrap_one`, and one whose
   # option it cannot read ends the search: that act is answered on its outer
-  # argv, where the unread option is already the closed reading.
-  local _l _rc a
+  # argv, where the unread option is already the closed reading. Whether the
+  # shell is in `-c` mode is `gate_shell_c_string`'s answer, the same one the
+  # reader takes; an option region it cannot read comes back as a line marked 2.
+  local _l _rc
   while [ $# -gt 0 ]; do
     _rc=0; _l=$(gate_unwrap_one "$@") || _rc=$?
     case "$_rc" in
@@ -7419,10 +7585,9 @@ gate_opaque_shell_lines() {
   done
   [ $# -gt 0 ] || return 0
   case "${1##*/}" in bash|sh|zsh|dash|ksh) ;; *) return 0 ;; esac
-  for a in "${@:2}"; do
-    if [ "$a" = "-c" ]; then gate_opaque_payload_lines "$@"; return 0; fi
-  done
-  return 0
+  _rc=0; gate_shell_c_string "${@:2}" >/dev/null || _rc=$?
+  [ "$_rc" = "1" ] && return 0
+  gate_opaque_payload_lines "$@"
 }
 
 gate_opaque_floor_find_inner() {
@@ -7664,12 +7829,45 @@ ladder_of_argv0() {
     nohup)   gate_unwrap_wrapper nohup   ladder_of_argv0 '' '' "$@" ;;
     stdbuf)  gate_unwrap_wrapper stdbuf  ladder_of_argv0 '' '' "$@" ;;
     time)    gate_unwrap_time            ladder_of_argv0 '' '' "$@" ;;
+    bash|sh|zsh|dash|ksh) ladder_of_shell "$cmd" "$@" ;;
     git)       ladder_of_git "$@" ;;
     gh)        ladder_of_gh "$@" ;;
     terraform) ladder_of_terraform "$@" ;;
     *) : ;;
   esac
   return 0
+}
+
+ladder_of_shell() {
+  # ladder_of_shell <shell> <argv...> — the highest rung of the lines of a
+  # shell's `-c` string, read by `gate_opaque_payload_lines`.
+  #
+  # THE PAYLOAD IS WHERE A SHELL'S CUTPOINT IS. Without this arm the ladder
+  # answered nothing for every shell, so `bash -lc "gh pr merge 1"` declared at
+  # `커밋` derived no rung, the effective cutpoint stayed `커밋`, and neither
+  # the under-declaration refusal nor `리뷰-후-머지` saw a merge. A line whose
+  # command is unread (2) answers `머지`: it may be one, and answering it so is
+  # what lets those two see it. Lines marked 1 or 3 named their command, so
+  # they take that command's rung.
+  local cmd="$1" best='' rec unread kept r; shift
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    unread="${rec%%	*}"; kept="${rec#*	}"; kept="${kept%%	*}"
+    if [ "$unread" = "2" ]; then
+      r='머지'
+    else
+      set -f
+      # shellcheck disable=SC2086
+      set -- $kept
+      set +f
+      [ $# -gt 0 ] || continue
+      r=$(ladder_of_argv0 "$@")
+    fi
+    best=$(gate_answer_ladder_max "$best" "$r")
+  done <<EOF
+$(gate_opaque_payload_lines "$cmd" "$@")
+EOF
+  printf '%s' "$best"
 }
 
 ladder_of_git() {
@@ -20515,11 +20713,14 @@ gate_end_row() {
     return 1
   fi
   [ "$cause" = "결함" ] || fp=""
+  # `유도 절단점=-` FOR THE SAME REASON THE BOUNDARY APPROVAL ROW CARRIES IT. An
+  # ending row has no act, so there is no argv to derive a rung from, and `경계`
+  # in the slot beside it is not a rung at all.
   _why_free=$(gate_free_budget "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
-    "절단점=경계" "축2=읽기" "등급=1" "기준=$std" "되돌리는 법=새 런으로 다시 킥오프" \
+    "절단점=경계" "유도 절단점=-" "축2=읽기" "등급=1" "기준=$std" "되돌리는 법=새 런으로 다시 킥오프" \
     "재킥 원인=$cause" ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"})
   gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
-    "절단점=경계" "축2=읽기" "등급=1" "기준=$std" \
+    "절단점=경계" "유도 절단점=-" "축2=읽기" "등급=1" "기준=$std" \
     "되돌리는 법=새 런으로 다시 킥오프" "재킥 원인=$cause" \
     ${ekind:+"종료 부류=$ekind"} ${fp:+"재킥 지문=$fp"} \
     "근거=$(gate_row_safe "$why" "$_why_free")"
