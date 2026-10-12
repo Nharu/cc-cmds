@@ -303,6 +303,7 @@ ORCH_TESTS := \
 	scripts/test-suite-isolation.sh \
 	scripts/test-kickoff-defaults.sh \
 	scripts/test-rekick.sh \
+	scripts/test-successor.sh \
 	scripts/test-team-witness-init.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-base-split.sh \
@@ -325,7 +326,10 @@ ORCH_TESTS := \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
 	scripts/test-collect-run-metrics.sh \
-	scripts/test-run-issue-filing.sh
+	scripts/test-run-issue-filing.sh \
+	scripts/test-visual-config.sh \
+	scripts/test-visual-check.sh \
+	scripts/test-visual-capture.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh \

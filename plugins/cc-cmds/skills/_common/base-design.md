@@ -1,6 +1,6 @@
 # 베이스 설계 문서 계약
 
-이 파일의 「베이스 설계」는 **여러 티켓으로 나눌 상위 설계**다. `design-ingest`·`design-apply`·`design-prompt`·`design-system`·`design-audit` 가 쓰는 「base design document」와는 다른 말이다 — 그 스킬들에서 그 말은 일반 `/cc-cmds:design` 문서(앞의 셋)나 감사 모드의 대상 문서를 가리키며, 그 용어는 바뀌지 않는다. 이 파일은 `/cc-cmds:design-base`·`design-base-unattended` 와 `orchestrator/base-split.py` 가 함께 읽는 단일 정의다.
+이 파일의 「베이스 설계」는 **여러 티켓으로 나눌 상위 설계**다. `design-audit` 가 쓰는 「base design document」와는 다른 말이다 — 그 스킬에서 그 말은 감사 모드의 대상 문서를 가리키며, 그 용어는 바뀌지 않는다. 이 파일은 `/cc-cmds:design-base`·`design-base-unattended` 와 `orchestrator/base-split.py` 가 함께 읽는 단일 정의다.
 
 이 파일이 정하는 것은 넷이다 — 베이스 문서의 문법, 점검 술어, 발행 본문 규칙, 분할 등록부의 형식. 하위 설계가 베이스를 찾고 묶는 방법은 `base-linkage.md` 가 정한다.
 

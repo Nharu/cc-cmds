@@ -1,0 +1,64 @@
+-|<!doctype html>
+-|<script>var accept = 'image/*'; var glob = "*/*";</script>
+V|<p style="color: #ff0000">a</p>
+R|<img src="https://cdn.example.com/a.png">
+-|<style>.a { content: "/*"; }</style>
+V|<style>.b { color: #00ff00; }</style>
+-|<script>init(); // </script>
+R|<img src="//cdn.example.com/b.png">
+-|<script>var t = `a /* b`; // c
+V|var c = '#123456';
+-|</script>
+V|<p style="content:'/*'; color: red">b</p>
+-|<script>
+-|var u = s.replace(/\/*$/, "");
+V|el.style.color = "#ff0000";
+-|var p = s.split(/[/*]/);
+R|fetch("https://api.example.com/x");
+-|function f(s) { return /.*\/*/.test(s); }
+V|var d = '#00ff00';
+-|var h = w / 2; /* half */ var k = 1;
+V|var e = '#0000ff';
+-|</script>
+-|<p>end</p>
+-|<script>
+-|input.accept = "image/png"// was image/* before
+V|var f = '#111111';
+-|var o = { k: 'v',// was */*
+V|var g = '#222222';
+-|var a = ['a']// glob src/*
+V|var m = '#333333';
+-|</script>
+-|<script>
+-|const list = (items) => `<ul>${items.map((i) => `<li>${i}</li>`).join('')}</ul>`;
+-|const tip = `files: src/*.png`;
+V|el.style.color = '#ff0000';
+V|el.style.background = 'rgb(1, 2, 3)';
+R|const img = 'https://cdn.example.com/a.png';
+-|/* end */
+-|const o = `${ {k: '`'}.k } accept="image/*"`;
+V|var n = '#abcdef';
+-|</script>
+-|<img alt=Bob's src="data:,">
+-|<style>
+V|.c { color: #444444; }
+-|</style>
+-|<p>It's fine</p>
+-|<script
+-|type="module">
+V|el.style.color = "#ff0000";
+R|fetch("https://evil.example.com/x");
+-|</script>
+-|<style
+-|media="all">
+V|.d { color: #555555; padding: 12px }
+-|</style>
+-|<script.x>
+-|<p>/* note</p>
+V|<p style="color: #777777">x</p>
+-|<p>*/</p>
+-|</script.x>
+-|<script>
+-|var z = "</scriptx>";
+V|var y = '#888888';
+-|</script>

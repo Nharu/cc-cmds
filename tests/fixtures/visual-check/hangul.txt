@@ -1,0 +1,16 @@
+-|<!doctype html>
+-|<p>본문의 한글 문장</p>
+-|<script>var msg = "저장했습니다"; var t = '취소';
+V|var c = '#123456';
+-|// 한글 줄 주석
+V|var d = "#abcdef";
+-|/* 한글 블록 주석 */
+R|fetch("https://cdn.example.com/x.json");
+-|</script>
+-|<style>.a::before { content: "제목"; }
+V|.b { color: #00ff00; }
+-|/* 한글 CSS 주석 */
+V|.c { background: #0000ff; }
+-|</style>
+V|<p style="content:'안내'; color: red">한글</p>
+-|<p>끝</p>

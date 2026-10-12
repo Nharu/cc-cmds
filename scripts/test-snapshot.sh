@@ -682,6 +682,26 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
   "$(jq -r "($sel_none) | if . == null then \"없음\" else .[\"사이클\"] end" "$SNAP_D" 2>/dev/null)" "없음"
 
 # ---------------------------------------------------------------------------
+# 6c-2. `review_next[]` carries each unmerged segment's next disposition
+#
+# The routers branch on `다음` and nothing else, so the snapshot hands it over
+# together with what a carry-over act names — the last cycle's number, review
+# HEAD and report path. A segment without a `segment` row is not in the run's
+# segment set and gets no element; `review_carry` carries the three constants
+# for display only.
+# ---------------------------------------------------------------------------
+printf -- '- `segment` | id=S8 | 상태=실행중 | 워크트리=/nonexistent/S8\n' >> "$LEDGER"
+SNAP_N="$WORK/review-next.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_N"
+check "review_next 가 세그먼트의 다음 과 마지막 사이클을 싣는다" \
+  "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [.["다음"], .["사이클"], .["리뷰 HEAD"], .["리포트 경로"], (.["연속"]|tostring), (.["발동"]|tostring)] | join("|")' "$SNAP_N")" \
+  "머지|11|aaa0011|/abs/s8-11.md|0|0"
+check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다" \
+  "$(jq -r '[.review_next[] | select(.["세그먼트"]=="S9")] | length' "$SNAP_N")" "0"
+check "review_carry 가 세 상수를 싣는다" \
+  "$(jq -c '.review_carry' "$SNAP_N")" '{"CYCLE_CARRY_FROM":2,"CYCLE_CARRY_MAX":3,"P0_GUARD_STREAK":3}'
+
+# ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
 #
 # The lead's loop and the shift skill each carry their own prose for dispatching
@@ -955,8 +975,10 @@ fi
 # the two merge pins (the prescribed merge with its method, bound to the
 # worktree HEAD's full sha rather than a cycle row's review HEAD, and the bare
 # binding), the fetch before the apply, the apply act's fixed token,
-# the park-and-cone disposition of a precondition refusal, and the cycle cap's
-# reason. The fix prompt must be one string in both copies, and the fix section
+# the park-and-cone disposition of a precondition refusal, the cycle cap's
+# reason, and the `다음` branches that send a segment to the carry-over
+# procedure, the guard re-convergence and a sliced review. The fix prompt must
+# be one string in both copies, and the fix section
 # does not restate the delta basis expression, which belongs to the delta
 # subsection.
 # ---------------------------------------------------------------------------
@@ -974,7 +996,10 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '#### Merging and applying a segment|--cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용' \
     '#### Merging and applying a segment|fetch and issue it once more, and only once' \
     '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
-    '#### Re-dispatching the implementation after review findings|P0+P1 above zero' \
+    '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
+    '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
+    '#### Branching on `다음` after a review|-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> <범위>"' \
+    '#### Branching on `다음` after a review|adds `--slice <seg>` to the prompt' \
     "#### Re-dispatching the implementation after review findings|'사유=사이클 예산 소진'"
   do
     head=${spec%%|*}; lit=${spec#*|}

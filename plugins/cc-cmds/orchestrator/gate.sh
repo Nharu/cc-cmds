@@ -114,6 +114,11 @@
 #                    the cause). The seat in the person's turn and a kickoff
 #                    taking over an earlier run call it; a stage or a shift is
 #                    refused, and so is a run with a live shift or stage
+#   gate.sh carry-body --manifest <path> --segment <id>
+#                    writes the issue body file of every carry-over item of the
+#                    segment's last cycle under `<run-dir>/carry/` and prints
+#                    `이월 <k> 제목=…` and `이월 <k> 본문 파일=…` per item; refused
+#                    (3) unless the segment's `다음` is `이월`
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -189,6 +194,12 @@
 # `review-dismiss` is the seat's alone on the same terms: a person dismisses
 # the findings of the segment's last review cycle, named by its number and its
 # reviewed HEAD, and the merge checks then read that cycle as passed.
+#   gate.sh act --kind review-carry --target <alias> --segment <id> ... \\
+#               -- 사이클=<n> '리뷰 HEAD=<sha>' 건수=<n> '이슈=<url>[,<url>…]'
+# `review-carry` is written by the routing shift and the driver: the segment's
+# last cycle has P0 = 0 and only P1 findings its report classified as
+# carry-over, each now an issue, and the merge checks then read that cycle as
+# carried. The gate refuses it unless that cycle is eligible.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -6761,6 +6772,23 @@ ladder_of_gh() {
         # that costs is the high one.
         *) : ;;
       esac ;;
+    # OPENING OR COMMENTING ON AN ISSUE, AND PUTTING ONE ON A PROJECT, ARE
+    # `커밋`. They change a tracker, never a branch, so no review requirement
+    # is about them. Without these rows the effective cutpoint is whatever the
+    # caller declared, and a routing shift that declares its target cutpoint
+    # `머지` for a carry-over issue meets the merge review rule on the very
+    # cycle the issue exists to settle. `커밋` is the floor of the ladder, so
+    # this cannot become an under-declaration refusal either.
+    issue)
+      case "${2:-}" in
+        create|comment) printf '커밋' ;;
+        *) : ;;
+      esac ;;
+    project)
+      case "${2:-}" in
+        item-add) printf '커밋' ;;
+        *) : ;;
+      esac ;;
     *) : ;;
   esac
   return 0
@@ -7996,11 +8024,11 @@ gate_progress_vector() {
   # They are safe to include for the same reason segment rows are: the gate does
   # not write one on every act, only when a cycle is actually recorded.
   gate_rows 'cycle' \
-    | sed -n 's/.*세그먼트=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u \
+    | gate_rows_field_values '세그먼트' | LC_ALL=C sort -u \
     | while IFS= read -r cseg; do
         [ -n "$cseg" ] || continue
         printf 'cycle=%s|%s\n' "$cseg" \
-          "$( { gate_rows 'cycle' | grep -F "세그먼트=$cseg " || true; } | gate_count)"
+          "$(gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$cseg" | gate_count)"
       done
   # A DISPATCH IS PROGRESS. The router's own above-read acts used to be counted
   # here as `acts=`, and under the judgment definition `gate_boundaries` applies
@@ -9206,7 +9234,7 @@ gate_segment_cycle_cap() {
 gate_segment_cycle_count() {
   # gate_segment_cycle_count <segment> — the `cycle` rows the segment has. Crash
   # retries and resumes write none, so they spend nothing.
-  { gate_rows 'cycle' | grep -F "세그먼트=$1 " || true; } | gate_count
+  gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$1" | gate_count
 }
 
 gate_decl_block() {
@@ -9310,22 +9338,36 @@ gate_prior_decl_diff() {
   # carries now; otherwise one phrase naming what differs, or that there is no
   # plan row to compare. See `gate_prior_run_landed` for why.
   local seg="$1" f="$2" row="$3" pr="" org of rr k dk pv cv pd side
+  # THE TERMINAL ROW NAMES THE DECLARATION THE SLICE LANDED UNDER, when it
+  # carries a digest. The segment arm stamps one on every landing it writes,
+  # and a reconvergence inside that run widens the declaration after the plan
+  # row — so the plan row names a narrower slice than the one reviewed and
+  # merged, and comparing it would refuse a landing that holds. A digest on the
+  # terminal row decides alone; when it differs and the slice landed as it was
+  # planned, the plan row below still names the field that differs.
   pr=$( { grep -E '^- `segment` ' "$f" 2>/dev/null || true; } | { grep -F "| id=$seg |" || true; } \
         | { grep -F '| 상태=계획됨 |' || true; } | tail -1)
+  pd=$(gate_row_field "$row" '선언 다이제스트')
+  case "$pd" in *[!0-9a-f]*) pd="" ;; esac
+  [ "${#pd}" -eq 64 ] || pd=""
+  if [ -n "$pd" ]; then
+    [ "$pd" != "$(slice_decl_digest "$DOC" "$seg")" ] || return 0
+    if [ -z "$pr" ] || [ "$(gate_row_field "$pr" '선언 다이제스트')" != "$pd" ]; then
+      if [ "$(gate_row_field "$row" '출처')" = "매니페스트" ]; then
+        printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런이 매니페스트의 선행 착지 행으로 들인 ${seg} 의 선언과 지금 문서의 선언 전체가 다릅니다"
+      else
+        printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런이 ${seg} 를 착지시킬 때의 선언과 지금 문서의 선언 전체가 다릅니다"
+      fi
+      return 0
+    fi
+  fi
   # A LANDING THE MANIFEST BROUGHT IN WAS NEVER PLANNED BY ANY RUN. Its row is a
   # person's `선행 착지` claim that the gate checked against the base branch
   # when it wrote the row, and the caller checks that merge commit against the
   # base branch again, so `출처=매니페스트` names no ledger to follow and is its
-  # own evidence. The row keeps the declaration digest the slice had when it was
-  # brought in, and a revised declaration still differs; a row written before it
-  # kept one rests on the claim and the landing alone.
+  # own evidence. A row written before it kept a declaration digest rests on the
+  # claim and the landing alone.
   if [ -z "$pr" ] && [ "$(gate_row_field "$row" '출처')" = "매니페스트" ]; then
-    pd=$(gate_row_field "$row" '선언 다이제스트')
-    case "$pd" in *[!0-9a-f]*) pd="" ;; esac
-    [ "${#pd}" -eq 64 ] || pd=""
-    if [ -n "$pd" ] && [ "$pd" != "$(slice_decl_digest "$DOC" "$seg")" ]; then
-      printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런이 매니페스트의 선행 착지 행으로 들인 ${seg} 의 선언과 지금 문서의 선언 전체가 다릅니다"
-    fi
     return 0
   fi
   if [ -z "$pr" ]; then
@@ -9431,7 +9473,10 @@ gate_prior_run_landed() {
   # alone brought in a landing made under a narrower `선언 파일` or a weaker
   # `리뷰 정책`, the slice was not dispatched, and the scope the revision added
   # was never built. A candidate therefore also has to show the slice was
-  # planned under the declaration the frozen document carries now: the last
+  # built to the declaration the frozen document carries now. A terminal row
+  # carrying a `선언 다이제스트` says so by itself — the segment arm stamps the
+  # declaration the slice landed under, which a reconvergence inside that run
+  # may have widened past its plan row. Without one, it is the last
   # `계획됨` row for the id in that ledger, compared on `선언 파일 집합`,
   # `레포`, `선행`, `절단점` and `리뷰 정책` — by the row's `선언 다이제스트`
   # of the whole declaration when it carries one, and otherwise field by field,
@@ -9586,14 +9631,11 @@ gate_import_prior_landed() {
   pbr=$(gate_row_field "$GATE_PRIOR_ROW" '브랜치')
   org=$(gate_row_field "$GATE_PRIOR_ROW" '출처')
   [ -n "$org" ] || org=$GATE_PRIOR_RUN
-  # A manifest landing has no plan row to follow, so its declaration digest
-  # travels on the row itself, and the next run in the chain compares that.
-  pdg=""
-  if [ "$org" = "매니페스트" ]; then
-    pdg=$(gate_row_field "$GATE_PRIOR_ROW" '선언 다이제스트')
-    case "$pdg" in *[!0-9a-f]*) pdg="" ;; esac
-    [ "${#pdg}" -eq 64 ] || pdg=""
-  fi
+  # The declaration digest a landing carries travels on the row it is brought
+  # in as, and the next run in the chain compares that.
+  pdg=$(gate_row_field "$GATE_PRIOR_ROW" '선언 다이제스트')
+  case "$pdg" in *[!0-9a-f]*) pdg="" ;; esac
+  [ "${#pdg}" -eq 64 ] || pdg=""
   if [ "$GATE_PRIOR_KIND" = "머지" ]; then
     if [ "$pst" = "머지됨" ] && gate_segment_owes_apply "$dal" "$seg"; then
       if [ "$mode" = "self" ]; then
@@ -10096,6 +10138,21 @@ gate_rows_having_field() {
       if (have) print }'
 }
 
+gate_rows_field_values() {
+  # stdin: rows. gate_rows_field_values <key> — prints, per row that carries a
+  # field with exactly that key, the last such value (the reading
+  # `gate_rows_field_eq` compares against). A `sed 's/.*<key>=…'` extraction
+  # is greedy and takes the value of a later key that merely ends in <key>.
+  GATE_FEQ_K="$1" awk '
+    { n = split($0, f, "|"); have = 0; last = ""
+      for (i = 2; i <= n; i++) {
+        s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
+        p = index(s, "=")
+        if (p > 0 && substr(s, 1, p - 1) == ENVIRON["GATE_FEQ_K"]) { have = 1; last = substr(s, p + 1) }
+      }
+      if (have) print last }'
+}
+
 # ---------------------------------------------------------------------------
 # `stage-lease` / `stage-wait`: envelope to row, and the three readers.
 #
@@ -10428,6 +10485,184 @@ gate_cycle_fingerprint() {
     return 0
   fi
   printf '%s\n' "$ids" | LC_ALL=C sort -u | shasum -a 256 | cut -c1-12
+}
+
+# Carry-over and the P0 guard. A carry-over is taken only from the second review
+# of a segment on, and only for one to three P1 findings; three cycles in a row
+# that leave a P0 standing call the guard. The snapshot's `review_carry` carries
+# the three for display — the routers branch on `다음`, never on these numbers.
+readonly CYCLE_CARRY_FROM=2
+readonly CYCLE_CARRY_MAX=3
+readonly P0_GUARD_STREAK=3
+
+gate_review_report_counts() {
+  # gate_review_report_counts <report> — THE ONE PARSER of a review report's
+  # counts and P1 classification. Every reader that needs a number or a
+  # classification out of a report takes it from here, so the cycle arm, the
+  # carry-over eligibility and the driver cannot read one report two ways.
+  # Prints `key=value` lines and returns 0; returns 1 when the file is absent.
+  #
+  #   요약=정규|복구|없음   the first summary line: canonical, the recovery head
+  #                         `발견 요약(부분 복구)`, or none at all
+  #   P0= P1=               its numbers, only when 요약=정규
+  #   리뷰 HEAD=            the sha of the `- **리뷰 HEAD**: \`<sha>\`` line
+  #   분류=정규|미상        whether the `P1 분류` line parses; 차단= 이월 가능=
+  #                         follow only when it does
+  #   몫=<n>|미상           the `다른 슬라이스 몫` line; absent reads 0
+  #   태그=정규|미상        whether every tag line of the P1 section keeps the
+  #                         rules below; 태그 차단= 태그 이월 가능= count them
+  #   본문=정규|미상        whether every carry-over item passes the body checks
+  #   몫 항목=<n>           items of the other-slice section; 배정=<id> per
+  #                         line of that section carrying `**배정**`, `(미상)`
+  #                         unless it is exactly `    - **배정**: 슬라이스 <id>`
+  #                         with nothing or ` — …` after the id
+  #   몫 배정=정규|미상     whether every item of that section carries exactly
+  #                         one such line and no such line stands outside an
+  #                         item
+  #   이월 <k> 제목=        title of the k-th carry-over item, in tag order
+  #   이월 <k> 본문=        one line per body line, the six-space indent removed
+  #
+  # TAG LINES. Inside the P1 section — from a line that begins `## 🟠 P1` to the
+  # next line that begins `## ` — any line carrying `**[차단]**` or
+  # `**[이월 가능]**` is a tag line. It must begin `- ` or `### ` and carry one
+  # token exactly once; anything else makes the report `분류 미상`. So a parser
+  # that counts every line carrying a token and one that counts only `- ` and
+  # `### ` tag lines reach the same verdict on every report.
+  #
+  # ITEM RANGE. A carry-over item runs from its tag line to the line before the
+  # next tag line, or to the end of the section. Its `이월 제목` and `이월 본문`
+  # are matched at four spaces of indentation and its body lines at exactly six,
+  # in both item shapes; a line written otherwise is not one of them. The body
+  # ends at the first line that is not six spaces and a non-space.
+  #
+  # The emoji are octal escapes and the read runs under `LC_ALL=C`, the same as
+  # `gate_cycle_fingerprint`, so the bytes matched do not depend on the locale.
+  local rep=$1
+  [ -n "$rep" ] && [ -f "$rep" ] || return 1
+  LC_ALL=C awk '
+    function cnt(s, t,   n, p) {
+      n = 0
+      while ((p = index(s, t)) > 0) { n++; s = substr(s, p + length(t)) }
+      return n
+    }
+    function num(s, key,   v) {
+      if (!match(s, key " [0-9]+")) return ""
+      v = substr(s, RSTART + length(key) + 1, RLENGTH - length(key) - 1)
+      return v + 0
+    }
+    BEGIN {
+      R = "\360\237\224\264"; O = "\360\237\237\240"
+      Y = "\360\237\237\241"; G = "\360\237\237\242"
+      TB = "**[차단]**"; TC = "**[이월 가능]**"
+      summ = ""; cls = ""; share = ""; head = ""; sec = ""
+      bad = 0; nb = 0; nc = 0; ns = 0; na = 0; cur = ""; inbody = 0
+    }
+    { line = $0; sub(/[ \t\r]+$/, "", line) }
+    index(line, "## ") == 1 {
+      if (index(line, "## " O " P1") == 1) sec = "p1"
+      else if (index(line, "## 다른 슬라이스 몫") == 1) sec = "share"
+      else sec = ""
+      cur = ""; inbody = 0
+      next
+    }
+    summ == "" && index(line, "- **발견 요약(부분 복구)**:") == 1 { summ = "복구"; next }
+    summ == "" && index(line, "- **발견 요약**: ") == 1 {
+      s = line
+      gsub(R, "@R", s); gsub(O, "@O", s); gsub(Y, "@Y", s); gsub(G, "@G", s)
+      if (s ~ /^- \*\*발견 요약\*\*: @R P0 [0-9]+건 \| @O P1 [0-9]+건 \| @Y P2 [0-9]+건 \| @G P3 [0-9]+건/) {
+        summ = "정규"; p0 = num(s, "P0"); p1 = num(s, "P1")
+      }
+      next
+    }
+    cls == "" && index(line, "- **P1 분류**:") == 1 {
+      if (line ~ /^- \*\*P1 분류\*\*: 차단 (0|[1-9][0-9]*)건 \| 이월 가능 (0|[1-9][0-9]*)건$/) {
+        cls = "정규"; split(line, w, " "); cb = w[5]; cc = w[9]
+        sub(/건$/, "", cb); sub(/건$/, "", cc)
+      } else cls = "미상"
+      next
+    }
+    share == "" && index(line, "- **다른 슬라이스 몫**:") == 1 {
+      if (line ~ /^- \*\*다른 슬라이스 몫\*\*: (0|[1-9][0-9]*)건 \(집계 제외\)$/) {
+        split(line, w, " "); share = w[5]; sub(/건$/, "", share)
+      } else share = "미상"
+      next
+    }
+    head == "" && line ~ /^- \*\*리뷰 HEAD\*\*: `[0-9a-f]+`$/ {
+      head = line; sub(/^[^`]*`/, "", head); sub(/`$/, "", head)
+      next
+    }
+    sec == "p1" {
+      b = cnt(line, TB); c = cnt(line, TC)
+      if (b + c > 0) {
+        inbody = 0
+        if (b + c != 1 || (index(line, "- ") != 1 && index(line, "### ") != 1)) bad = 1
+        if (b) { nb++; cur = "" } else { nc++; cur = nc }
+        next
+      }
+      if (cur == "") next
+      if (inbody) {
+        if (line ~ /^      [^ ]/) {
+          nbody[cur]++; body[cur, nbody[cur]] = substr(line, 7)
+          if (index(line, "docs/") > 0) dirty[cur] = 1
+          next
+        }
+        inbody = 0
+      }
+      if (index(line, "    - **이월 제목**: ") == 1) {
+        nt[cur]++; title[cur] = substr(line, length("    - **이월 제목**: ") + 1)
+      } else if (line == "    - **이월 본문**:") {
+        nh[cur]++; inbody = 1
+      }
+      next
+    }
+    # Every line of the section that carries `**배정**` is an assignment, at
+    # whatever indentation: a line the canonical match skipped would leave its
+    # item unchecked, and the item would still be dropped from the count.
+    sec == "share" {
+      if (index(line, "- ") == 1) { ns++; na_of[ns] = 0; next }
+      if (index(line, "**배정**") == 0) next
+      if (line ~ /^    - \*\*배정\*\*: 슬라이스 [A-Za-z0-9]+( — .*)?$/) {
+        id = substr(line, length("    - **배정**: 슬라이스 ") + 1); sub(/ .*$/, "", id)
+      } else id = "(미상)"
+      as[++na] = id
+      if (ns) na_of[ns]++; else stray = 1
+    }
+    END {
+      print "요약=" (summ == "" ? "없음" : summ)
+      if (summ == "정규") { print "P0=" p0; print "P1=" p1 }
+      if (head != "") print "리뷰 HEAD=" head
+      if (cls == "정규") { print "분류=정규"; print "차단=" cb; print "이월 가능=" cc }
+      else print "분류=미상"
+      print "몫=" (share == "" ? 0 : share)
+      print "태그=" (bad ? "미상" : "정규")
+      print "태그 차단=" nb; print "태그 이월 가능=" nc
+      ok = 1
+      for (k = 1; k <= nc; k++) {
+        if (nt[k] != 1 || title[k] == "" || nh[k] != 1 || nbody[k] < 1 || dirty[k]) ok = 0
+        else if (title[k] in seen) ok = 0
+        else seen[title[k]] = 1
+      }
+      print "본문=" (ok ? "정규" : "미상")
+      print "몫 항목=" ns
+      sok = !stray
+      for (k = 1; k <= ns; k++) if (na_of[k] != 1) sok = 0
+      print "몫 배정=" (sok ? "정규" : "미상")
+      for (k = 1; k <= na; k++) print "배정=" as[k]
+      for (k = 1; k <= nc; k++) {
+        if (nt[k] >= 1) print "이월 " k " 제목=" title[k]
+        for (j = 1; j <= nbody[k]; j++) print "이월 " k " 본문=" body[k, j]
+      }
+    }' "$rep" 2>/dev/null
+}
+
+gate_report_count() {
+  # gate_report_count <counts> <key> — the first value of <key> in the output
+  # of `gate_review_report_counts`. Exact key, so `P1` never reads `P1 분류`.
+  # No early `exit`: under `pipefail` a reader that quits first can fail the
+  # pipeline it sits in, and a value that is there reads as absent.
+  printf '%s\n' "$1" | GATE_FEQ_K="$2" awk '
+    !got { p = index($0, "=")
+           if (p && substr($0, 1, p - 1) == ENVIRON["GATE_FEQ_K"]) { print substr($0, p + 1); got = 1 } }'
 }
 
 gate_problem_identities() {
@@ -11112,6 +11347,15 @@ gate_snapshot() {
   # this object — so no label can refuse, park or hold anything.
   printf '  "stalls": [\n'
   gate_snapshot_stalls_json
+  printf '  ],\n'
+  # `다음` PER UNMERGED SEGMENT, the one value the routers branch on after a
+  # review. The constants ride beside it for display only; a router that read
+  # them would hold a second copy of the table `gate_segment_review_next` owns.
+  # After `stalls`, which keeps its place right after `cycles`.
+  printf '  "review_carry": {"CYCLE_CARRY_FROM": %s, "CYCLE_CARRY_MAX": %s, "P0_GUARD_STREAK": %s},\n' \
+    "$CYCLE_CARRY_FROM" "$CYCLE_CARRY_MAX" "$P0_GUARD_STREAK"
+  printf '  "review_next": [\n'
+  gate_snapshot_review_next_json
   printf '  ],\n'
   printf '  "shift": %s,\n' "$(gate_shift_state)"
   # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
@@ -13265,6 +13509,17 @@ gate_chain_verify() {
   # the hex the row carried. There is no `sed` here now: the file is opened raw
   # and matched as bytes unconditionally, which is what the pin was buying. The
   # other three ledger readers still pin, because they still shell out.
+  #
+  # ANOTHER RUN'S LEDGER IS NAMED BY ARGUMENT, both halves or neither:
+  # `gate_chain_verify [<ledger> <run-id>]`. The chain's seed is that run's
+  # heading, so a ledger path without its own run id would be walked from this
+  # run's seed and reported broken at row one. The walk only reads, so naming a
+  # predecessor's ledger here writes nothing to it.
+  if [ "$#" -ne 0 ] && [ "$#" -ne 2 ]; then
+    warn "gate_chain_verify 는 인자를 받지 않거나 <원장> <런 id> 둘을 받습니다 — 미검증"
+    return 1
+  fi
+  local LEDGER="${1:-$LEDGER}" RUN_ID="${2:-$RUN_ID}"
   local walk rc broke cause
   # AN ABSENT LEDGER USED TO VERIFY. The redirection below fails, the loop body
   # never runs, `broke` stays 0, and the function returns "intact" for a file it
@@ -14194,6 +14449,7 @@ gate_main() {
   fi
 
   rundir_init
+  rekick_memo_settle
 
   # THE DETACHED METRICS ROUND LEAVES HERE, before anything below writes. What
   # follows is the per-entry bookkeeping of a caller — the ledger handle, the
@@ -14565,7 +14821,21 @@ GATE_DRIFT_DIRS
     grade)
       [ $# -ge 1 ] || { printf 'gate: grade needs an argv after --\n' >&2; exit 2; }
       local g
+      # The deriver's refusal answers here as well, so that asking what to
+      # declare for it does not come back with a grade a declaration could meet.
+      if gate_rekick_argv_refuse "$@"; then
+        printf '축2=거부\n'
+        warn "axis 2 refusal — the successor deriver (successor.sh) runs only outside every run, never from a stage: $1"
+        exit "$GATE_EXIT_RULE"
+      fi
       g=$(surface_of_argv0 "$@")
+      # The pacing guard answers here for the same reason: a write into the
+      # dispatcher's directory has no grade a declaration could meet. A read
+      # grade passes it, so naming the directory while reading still grades.
+      if ! gate_pace_write_guard "$g" "$@"; then
+        printf '축2=거부\n'
+        exit "$GATE_EXIT_RULE"
+      fi
       printf '축2=%s\n' "$g"
       # `[ … ] && exit` as the arm's last command hands the FALSE test's status
       # to the caller — a successful grade then exits 1 and reads as a refusal.
@@ -14617,6 +14887,12 @@ GATE_DRIFT_DIRS
       # menu for one approval and writes nothing.
       [ -n "$approval" ] || { printf 'gate: prompt requires --approval\n' >&2; exit 2; }
       gate_prompt "$approval"
+      ;;
+    carry-body)
+      # Writing under the run directory and nowhere else: the body files of a
+      # carry-over the routing shift then files as issues. No ledger row — the
+      # issues and the `리뷰 이월` row are the acts, and both are rows.
+      gate_carry_body "$segment"
       ;;
     answers)
       # Reading, and the reader is a STAGE rather than the router: it picks up
@@ -15089,15 +15365,481 @@ gate_cycle_dismissed() {
   gate_has_row '리뷰 기각' "세그먼트=$1" "사이클=$2" "리뷰 HEAD=$3"
 }
 
+gate_segment_last_cycle_row() {
+  # gate_segment_last_cycle_row <segment> — the segment's last `cycle` row, the
+  # one whose `세그먼트` field equals <segment> exactly. Every decision that
+  # reads "the last review of this segment" takes it from here, so a row of
+  # segment `A2`, or one carrying `선행 세그먼트=<segment>`, is never read as it.
+  [ -n "$1" ] || return 0
+  gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$1" | tail -1
+}
+
+gate_segment_last_segment_row() {
+  # gate_segment_last_segment_row <segment> — the segment's last `segment` row
+  # (`id` field equal to <segment>).
+  [ -n "$1" ] || return 0
+  gate_rows 'segment' | gate_rows_field_eq 'id' "$1" | tail -1
+}
+
 gate_segment_review_dismissed() {
   # gate_segment_review_dismissed <segment> — `<사이클>@<리뷰 HEAD>` of the
   # segment's last cycle when a person dismissed it, and nothing otherwise.
   local row c h
-  row=$( { gate_rows 'cycle' | grep -F "세그먼트=$1 " || true; } | tail -1)
+  row=$(gate_segment_last_cycle_row "$1")
   [ -n "$row" ] || return 0
   c=$(gate_row_field "$row" '사이클'); h=$(gate_row_field "$row" '리뷰 HEAD')
   gate_cycle_dismissed "$1" "$c" "$h" && printf '%s@%s' "$c" "$h"
   return 0
+}
+
+gate_cycle_carried() {
+  # gate_cycle_carried <segment> <사이클> <리뷰 HEAD> — true when a `리뷰 이월`
+  # row names exactly that cycle of that segment. The carry-over twin of
+  # `gate_cycle_dismissed`.
+  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 1
+  gate_has_row '리뷰 이월' "세그먼트=$1" "사이클=$2" "리뷰 HEAD=$3"
+}
+
+gate_segment_review_carried() {
+  # gate_segment_review_carried <segment> — `<사이클>@<리뷰 HEAD>` of the
+  # segment's last cycle when its open P1 findings were carried over to issues,
+  # and nothing otherwise. The twin of `gate_segment_review_dismissed`: a carry
+  # binds only the cycle it names, so a newer review is never covered by it.
+  local row c h
+  row=$(gate_segment_last_cycle_row "$1")
+  [ -n "$row" ] || return 0
+  c=$(gate_row_field "$row" '사이클'); h=$(gate_row_field "$row" '리뷰 HEAD')
+  gate_cycle_carried "$1" "$c" "$h" && printf '%s@%s' "$c" "$h"
+  return 0
+}
+
+gate_canon_count() {
+  # gate_canon_count <value> — true for `0` and a decimal with no leading zero.
+  # An empty or otherwise spelt count is never read as a number, so a row that
+  # lost its count does not pass as a clean review.
+  case "${1:-}" in
+    0) return 0 ;;
+    ''|0*|*[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+gate_manifest_preauthorizes() {
+  # gate_manifest_preauthorizes <argv…> — true when a `사전 인가` row of this
+  # run's manifest covers that argv. Asks the preauthorization rule in its probe
+  # mode, the same one copy the reach disposition asks, so the matching rule
+  # cannot split into two.
+  local probe
+  probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='' GATE_MARK_TRIGGER='' \
+          GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
+          /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || return 1
+  case "$probe" in *"P=1"*) return 0 ;; esac
+  return 1
+}
+
+gate_manifest_has_design_doc() {
+  # True when the manifest's `## 요소` → `설계 문서` is a value other than empty
+  # or `(없음)`. NOT the document-argument accessor: that one falls back to the
+  # run's anchor brief when a run has no design document, so it always answers
+  # "present".
+  local d
+  d=$(manifest_field '요소' '설계 문서' 2>/dev/null) || d=''
+  [ -n "$d" ] && [ "$d" != "(없음)" ]
+}
+
+gate_carry_eligibility() {
+  # gate_carry_eligibility <segment> — `적격`, or `부적격 <n>` naming the first
+  # of the eight conditions that failed for the segment's last cycle and its
+  # report. `gate_segment_carry_eligible` asks this; the number is what a
+  # measurement over a corpus reads to tell the demotions apart.
+  #
+  #   1 사이클 ≥ CYCLE_CARRY_FROM, and an earlier cycle row of this segment in
+  #     this ledger has another 사이클 — the first row's number is not a ledger
+  #     fact (an adopted segment's first row can carry 9)
+  #   2 P0 = 0
+  #   3 the report's `P1 분류` line parses
+  #   4 차단 = 0
+  #   5 이월 가능 = the report's summary P1 = the row's P1, within 1..CYCLE_CARRY_MAX
+  #   6 the tag lines keep the rules and their counts equal the `P1 분류` line
+  #   7 every carry-over item passes the body checks
+  #   8 the manifest preauthorizes `gh issue`
+  local seg=$1 row c p0 p1 rep counts v
+  row=$(gate_segment_last_cycle_row "$seg")
+  [ -n "$row" ] || { printf '부적격 1'; return 0; }
+  c=$(gate_row_field "$row" '사이클'); p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
+  if ! gate_canon_count "$c" || [ "$c" -lt "$CYCLE_CARRY_FROM" ] \
+     || ! gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_values '사이클' \
+          | awk -v c="$c" '$0 != c { n++ } END { exit n ? 0 : 1 }'; then
+    printf '부적격 1'; return 0
+  fi
+  [ "$p0" = "0" ] || { printf '부적격 2'; return 0; }
+  rep=$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")
+  counts=$(gate_review_report_counts "$rep") || counts=''
+  [ "$(gate_report_count "$counts" '분류')" = "정규" ] || { printf '부적격 3'; return 0; }
+  [ "$(gate_report_count "$counts" '차단')" = "0" ] || { printf '부적격 4'; return 0; }
+  v=$(gate_report_count "$counts" '이월 가능')
+  if ! gate_canon_count "$p1" || [ "$v" != "$p1" ] \
+     || [ "$(gate_report_count "$counts" '요약')" != "정규" ] \
+     || [ "$(gate_report_count "$counts" 'P1')" != "$p1" ] \
+     || [ "$p1" -lt 1 ] || [ "$p1" -gt "$CYCLE_CARRY_MAX" ]; then
+    printf '부적격 5'; return 0
+  fi
+  if [ "$(gate_report_count "$counts" '태그')" != "정규" ] \
+     || [ "$(gate_report_count "$counts" '태그 차단')" != "0" ] \
+     || [ "$(gate_report_count "$counts" '태그 이월 가능')" != "$v" ]; then
+    printf '부적격 6'; return 0
+  fi
+  [ "$(gate_report_count "$counts" '본문')" = "정규" ] || { printf '부적격 7'; return 0; }
+  gate_manifest_preauthorizes gh issue create || { printf '부적격 8'; return 0; }
+  printf '적격'
+}
+
+gate_segment_carry_eligible() {
+  # gate_segment_carry_eligible <segment> — true when the segment's last cycle
+  # may be carried over. Any failed condition reads as `다음=수정`, today's
+  # behaviour; it never refuses the cycle row.
+  [ "$(gate_carry_eligibility "$1")" = "적격" ]
+}
+
+gate_segment_review_count_verdict() {
+  # gate_segment_review_count_verdict <segment> — the count half of a merge
+  # verdict: `리뷰 없음`, `판정 불가` (a count empty or not canonical), `충족`
+  # (P0 = P1 = 0), `이월` (P0 = 0, P1 > 0 and that cycle carried over) or
+  # `위반`. A dismissal is not read here — it is a person's override the
+  # `다음` table takes before the counts.
+  local row p0 p1
+  row=$(gate_segment_last_cycle_row "$1")
+  [ -n "$row" ] || { printf '리뷰 없음'; return 0; }
+  p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
+  gate_canon_count "$p0" && gate_canon_count "$p1" || { printf '판정 불가'; return 0; }
+  if [ "$p0" = "0" ] && [ "$p1" = "0" ]; then printf '충족'; return 0; fi
+  if [ "$p0" = "0" ] && [ -n "$(gate_segment_review_carried "$1")" ]; then printf '이월'; return 0; fi
+  printf '위반'
+}
+
+gate_segment_p0_guard() {
+  # gate_segment_p0_guard <segment> — the P0 repeat guard. Prints `연속=<n>`,
+  # `발동=<n>`, `판정=<재수렴|사람|->` and, while a streak stands, up to three
+  # `리포트=<absolute path>` lines: the reports of the streak's last three cycle
+  # rows, in cycle order.
+  #
+  # THE WALK. The segment's `cycle` rows and its `stage-result 종류=reconverge`
+  # rows, together and in ledger order, both chosen by field equality.
+  #   - A cycle row whose P0 is the literal `0` resets the streak; any other
+  #     value — one or more, empty, misspelt — adds one. What does not read as
+  #     zero is counted as standing.
+  #   - A cycle row with the same 사이클 as the cycle row counted just before it
+  #     takes that row's place, so a recovery rewrite is not counted twice.
+  #   - A reconverge row whose `종단 부류` is `정상 완료` resets the streak, and
+  #     counts one firing when the streak stood at P0_GUARD_STREAK or more. A
+  #     reconverge that ended any other way touches neither: an intended park
+  #     exits 0 too, so the exit code cannot tell it apart.
+  #   - A dismissal does not reset the streak. A dismissed cycle leaves the loop
+  #     through `다음=머지`, so the reset would never be observed.
+  #
+  # THE VERDICT. A streak of P0_GUARD_STREAK or more with no firing yet and a
+  # design document goes to `재수렴`; with a firing already, or with no design
+  # document to re-converge, it goes to `사람`.
+  local seg=$1 walk st fired doc=0 p
+  [ -n "$seg" ] || return 0
+  walk=$({ grep -E '^- `(cycle|stage-result)` ' "$LEDGER" 2>/dev/null || true; } \
+    | GATE_FEQ_V="$seg" GATE_GUARD_K="$P0_GUARD_STREAK" awk '
+      function fld(k,   i, s, p, last) {
+        last = ""
+        for (i = 2; i <= nf; i++) {
+          s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
+          p = index(s, "=")
+          if (p > 0 && substr(s, 1, p - 1) == k) last = substr(s, p + 1)
+        }
+        return last
+      }
+      { nf = split($0, f, "|")
+        if (fld("세그먼트") != ENVIRON["GATE_FEQ_V"]) next
+        if (index($0, "- `cycle` ") == 1) {
+          c = fld("사이클")
+          if (have && c == lastc) { st = pst; rn = prn } else { pst = st; prn = rn }
+          if (fld("P0") == "0") { st = 0; rn = 0 } else { st++; rp[++rn] = fld("리포트 경로") }
+          lastc = c; have = 1
+          next
+        }
+        if (fld("종류") != "reconverge" || fld("종단 부류") != "정상 완료") next
+        if (st >= ENVIRON["GATE_GUARD_K"] + 0) fired++
+        st = 0; rn = 0; have = 0
+      }
+      END {
+        print "연속=" st + 0; print "발동=" fired + 0
+        if (st > 0) for (i = (rn > 3 ? rn - 2 : 1); i <= rn; i++) print "리포트=" rp[i]
+      }')
+  st=$(gate_report_count "$walk" '연속'); fired=$(gate_report_count "$walk" '발동')
+  printf '연속=%s\n발동=%s\n' "$st" "$fired"
+  gate_manifest_has_design_doc && doc=1
+  if [ "$st" -ge "$P0_GUARD_STREAK" ]; then
+    if [ "$fired" = "0" ] && [ "$doc" = "1" ]; then printf '판정=재수렴\n'; else printf '판정=사람\n'; fi
+  else
+    printf '판정=-\n'
+  fi
+  printf '%s\n' "$walk" | sed -n 's/^리포트=//p' | while IFS= read -r p; do
+    printf '리포트=%s\n' "$(gate_report_abs "$p")"
+  done
+  return 0
+}
+
+gate_segment_review_next() {
+  # gate_segment_review_next <segment> — `다음`, the segment's next disposition
+  # after review. The first row of this table that holds wins:
+  #   1 no cycle row                                   리뷰 없음
+  #   2 the last cycle was dismissed by a person       머지
+  #   3 its P0 or P1 is empty or not canonical         판정 불가
+  #   4 guard verdict 재수렴                           재수렴
+  #   5 guard verdict 사람                             사람
+  #   6 P0 = 0, P1 = 0                                 머지
+  #   7 P0 = 0, P1 > 0, that cycle carried over        이월 머지
+  #   8 P0 = 0, P1 > 0, carry-over eligible            이월
+  #   9 otherwise                                      수정
+  # The cycle cap is not in this table; the dispatch checks it first. The
+  # routers and the driver branch on this value and on nothing else, and the
+  # merge rule reads the same facts through its environment in the same order.
+  local seg=$1 row p0 p1 g
+  row=$(gate_segment_last_cycle_row "$seg")
+  [ -n "$row" ] || { printf '리뷰 없음'; return 0; }
+  [ -n "$(gate_segment_review_dismissed "$seg")" ] && { printf '머지'; return 0; }
+  p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
+  gate_canon_count "$p0" && gate_canon_count "$p1" || { printf '판정 불가'; return 0; }
+  g=$(gate_report_count "$(gate_segment_p0_guard "$seg")" '판정')
+  case "$g" in 재수렴|사람) printf '%s' "$g"; return 0 ;; esac
+  if [ "$p0" = "0" ] && [ "$p1" = "0" ]; then printf '머지'; return 0; fi
+  if [ "$p0" = "0" ]; then
+    [ -n "$(gate_segment_review_carried "$seg")" ] && { printf '이월 머지'; return 0; }
+    gate_segment_carry_eligible "$seg" && { printf '이월'; return 0; }
+  fi
+  printf '수정'
+}
+
+gate_carry_body() {
+  # gate_carry_body <segment> — writes the body file of every carry-over item of
+  # the segment's last cycle to `$RUN_DIR/carry/<segment>-<사이클>-<k>.md` and
+  # prints, per item, `이월 <k> 제목=<issue title>` and `이월 <k> 본문 파일=<path>`.
+  # Refused with GATE_EXIT_RULE unless the segment's `다음` is `이월`.
+  #
+  # THE GATE WRITES THE FILE, NOT THE SHIFT. The run directory is an allow-list
+  # for a session's own writes, and a body file a shift wrote there with the
+  # file-edit tool was refused before a single issue was opened, so every
+  # carry-over fell back to the fix cycle it exists to end. Writing it here also
+  # makes "every path files the same bytes" a property of one function rather
+  # than of each reader's transcription of the report: the bytes are the
+  # parser's, the same parser the eligibility read.
+  #
+  # The body is the item's body lines and then one line naming the pull request
+  # and the cycle; the title is `[이월] <run id> <segment> 사이클 <n> — <title>`,
+  # the title `gate_review_carry_row` later asks the remote for.
+  local seg=$1 nx row c rep counts pr k n t f tmp
+  case "$seg" in
+    ''|-|*/*|.*) warn "carry-body needs --segment naming one segment"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+  nx=$(gate_segment_review_next "$seg")
+  if [ "$nx" != "이월" ]; then
+    warn "the next disposition of $seg is 「${nx}」, not 「이월」 — there is nothing to carry over"
+    return "$GATE_EXIT_RULE"
+  fi
+  row=$(gate_segment_last_cycle_row "$seg")
+  c=$(gate_row_field "$row" '사이클')
+  rep=$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")
+  counts=$(gate_review_report_counts "$rep") || counts=''
+  # The latest segment row that names a PR: a later state row need not repeat it.
+  pr=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values 'PR' \
+         | awk 'NF { v = $0 } END { print v }')
+  pr=${pr##*/}; pr=${pr#\#}
+  case "$pr" in
+    ''|*[!0-9]*) warn "the segment row of $seg carries no pull request — the body names the PR the finding came from"
+                 return "$GATE_EXIT_RULE" ;;
+  esac
+  n=$(gate_report_count "$counts" '태그 이월 가능')
+  gate_canon_count "$n" && [ "$n" -ge 1 ] || { warn "the report of $seg's last cycle has no carry-over item: $rep"; return "$GATE_EXIT_RULE"; }
+  mkdir -p "$RUN_DIR/carry" || return "$GATE_EXIT_RULE"
+  k=1
+  while [ "$k" -le "$n" ]; do
+    t=$(gate_report_count "$counts" "이월 $k 제목")
+    f="$RUN_DIR/carry/$seg-$c-$k.md"
+    tmp=$(mktemp "$RUN_DIR/carry/.body.XXXXXX") || return "$GATE_EXIT_RULE"
+    {
+      printf '%s\n' "$counts" | GATE_FEQ_K="이월 $k 본문" awk '
+        { p = index($0, "=") }
+        p && substr($0, 1, p - 1) == ENVIRON["GATE_FEQ_K"] { print substr($0, p + 1) }'
+      printf 'PR #%s 의 리뷰 사이클 %s 에서 넘어온 항목입니다.\n' "$pr" "$c"
+    } > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return "$GATE_EXIT_RULE"; }
+    printf '이월 %s 제목=[이월] %s %s 사이클 %s — %s\n' "$k" "$RUN_ID" "$seg" "$c" "$t"
+    printf '이월 %s 본문 파일=%s\n' "$k" "$f"
+    k=$((k + 1))
+  done
+}
+
+gate_carry_issue_view() {
+  # gate_carry_issue_view <slug> <number> — `<state>\t<title>` of that issue as
+  # the remote answers it, with the state `pr` when the number is a pull request
+  # (the issues endpoint answers for both). Status 1 when `gh` is missing or the
+  # remote does not answer, which the caller refuses on — the same rule as
+  # `gate_remote_landing`: cannot judge is never a pass.
+  local out
+  command -v gh >/dev/null 2>&1 || return 1
+  out=$(gh api "repos/$1/issues/$2" \
+          --jq '(if .pull_request then "pr" else .state end) + "\t" + .title' 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+gate_review_carry_row() {
+  # gate_review_carry_row <segment> <키=값>… — one `리뷰 이월` row: the open P1
+  # findings of the segment's last cycle were carried over to issues. The act
+  # arm `review-carry` and the driver both call this, so the checks and the row
+  # cannot differ between the two paths. Returns GATE_EXIT_VOCAB and writes
+  # nothing for a malformed call, GATE_EXIT_RULE for one the run's state
+  # refuses; otherwise whatever `gate_append` answers.
+  #
+  # NOT SEAT ONLY, unlike `리뷰 기각`. A dismissal is a person overriding a
+  # review; a carry-over is the routing shift and the driver doing what the
+  # review itself classified, and the eligibility check below is what holds it
+  # to that classification.
+  #
+  # BOUND TO THE LAST CYCLE BY FIELD EQUALITY, by number and by head, the same
+  # binding a dismissal takes. A second row for the same `<사이클>@<리뷰 HEAD>`
+  # is refused: a shift that retries after its row landed reads
+  # `다음=이월 머지` and goes to the merge instead.
+  #
+  # THE KEYS ARE LITERAL. `lint-sidecar-field-table.sh` compares a series with
+  # the contract's field table only when every key of its append is a literal,
+  # so passing the caller's argv through would silently switch that check off.
+  local seg=${1:-} rf rk rseen=' ' rcyc rhead rn riss row rslug u n=0 useen=' ' rlane rat el
+  shift || true
+  if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+    warn "a \`리뷰 이월\` row needs --segment — it carries over the findings of one segment's last cycle"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  for rf in "$@"; do
+    rk="${rf%%=*}"
+    case "$rk" in
+      사이클|리뷰\ HEAD|건수|이슈) ;;
+      *) warn "a \`리뷰 이월\` row takes \`사이클\`, \`리뷰 HEAD\`, \`건수\` and \`이슈\` from argv and nothing else: ${rk} — the rest is the gate's"
+         return "$GATE_EXIT_VOCAB" ;;
+    esac
+    case "$rseen" in
+      *" $rk "*) warn "a \`리뷰 이월\` row takes \`${rk}\` once"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+    rseen="$rseen$rk "
+  done
+  rcyc=$(gate_field_of '사이클' "$@"); rhead=$(gate_field_of '리뷰 HEAD' "$@")
+  rn=$(gate_field_of '건수' "$@"); riss=$(gate_field_of '이슈' "$@")
+  if [ -z "$rcyc" ] || [ -z "$rhead" ] || [ -z "$rn" ] || [ -z "$riss" ]; then
+    warn "a \`리뷰 이월\` row needs \`사이클\` and \`리뷰 HEAD\` (of the cycle carried over), \`건수\` and \`이슈\`"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  row=$(gate_segment_last_cycle_row "$seg")
+  [ -n "$row" ] || { warn "no \`cycle\` row names $seg — there is no review to carry over"; return "$GATE_EXIT_VOCAB"; }
+  if [ "$(gate_row_field "$row" '사이클')" != "$rcyc" ] \
+     || [ "$(gate_row_field "$row" '리뷰 HEAD')" != "$rhead" ]; then
+    warn "the last \`cycle\` row of $seg is 사이클=$(gate_row_field "$row" '사이클') 리뷰 HEAD=$(gate_row_field "$row" '리뷰 HEAD') — a carry-over names that cycle exactly"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  if gate_cycle_carried "$seg" "$rcyc" "$rhead"; then
+    warn "cycle $rcyc@$rhead of $seg is already carried over — read \`다음\` again; it is \`이월 머지\`"
+    return "$GATE_EXIT_RULE"
+  fi
+  el=$(gate_carry_eligibility "$seg")
+  if [ "$el" != "적격" ]; then
+    warn "the last cycle of $seg is not eligible for carry-over (${el}) — \`다음\` is \`수정\`"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$rn" != "$(gate_row_field "$row" 'P1')" ]; then
+    warn "\`건수\` ($rn) is not the P1 of the last cycle ($(gate_row_field "$row" 'P1')) — every carry-over item is carried, one issue each"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  rslug=$(seg_slug "$seg" 2>/dev/null) || rslug=''
+  [ -n "$rslug" ] || { warn "cannot resolve the repository slug of $seg — the issues cannot be checked"; return "$GATE_EXIT_VOCAB"; }
+  while IFS= read -r u; do
+    case "$u" in
+      "https://github.com/$rslug/issues/"[1-9]*) ;;
+      *) warn "\`이슈\` takes issue URLs of $rslug only, comma-separated: '$u'"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+    case "${u#"https://github.com/$rslug/issues/"}" in
+      *[!0-9]*) warn "\`이슈\` takes issue URLs of $rslug only, comma-separated: '$u'"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+    case "$useen" in
+      *" $u "*) warn "\`이슈\` names $u twice — one issue per carried finding"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+    useen="$useen$u "; n=$((n + 1))
+  done <<EOF
+$(printf '%s\n' "$riss" | tr ',' '\n')
+EOF
+  if [ "$n" != "$rn" ]; then
+    warn "\`이슈\` names $n issue(s) but \`건수\` is $rn"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  # EACH URL IS ASKED OF THE REPOSITORY, NOT ONLY READ AS A SHAPE. The row is
+  # what lets a cycle with open P1 findings merge, so a URL that names some
+  # other issue — copied wrong from a command's output, or any number at all —
+  # would carry the finding into nothing. The k-th URL must be an open issue
+  # whose title is this run's and this segment's carry-over title for the k-th
+  # item of the report, any cycle: a reused issue keeps the cycle it was opened
+  # in. A repository that cannot be asked refuses the row as the state of the
+  # run, never as a pass.
+  local rcounts rk_n=0 rt rv rst rtt
+  rcounts=$(gate_review_report_counts "$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")") || rcounts=''
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    rk_n=$((rk_n + 1))
+    rt=$(gate_report_count "$rcounts" "이월 $rk_n 제목")
+    if ! rv=$(gate_carry_issue_view "$rslug" "${u##*/}"); then
+      warn "cannot ask $rslug about issue ${u##*/} — a carry-over issue that cannot be confirmed is not recorded"
+      return "$GATE_EXIT_RULE"
+    fi
+    rst=${rv%%"$(printf '\t')"*}; rtt=${rv#*"$(printf '\t')"}
+    case "$rtt" in
+      "[이월] $RUN_ID $seg 사이클 "*" — $rt") rtt=ok ;;
+    esac
+    if [ "$rst" != "open" ] || [ -z "$rt" ] || [ "$rtt" != "ok" ]; then
+      warn "$u is not the open carry-over issue of item $rk_n — its title must read \`[이월] $RUN_ID $seg 사이클 <n> — ${rt:-?}\` (state: ${rst:-?}); take the URL the create or the reuse search printed for that item"
+      return "$GATE_EXIT_VOCAB"
+    fi
+  done <<EOF
+$(printf '%s\n' "$riss" | tr ',' '\n')
+EOF
+  rlane=$(gate_lane_label); rat=$(now_iso)
+  # URLs are never clipped: a clipped URL names another issue or none.
+  if [ "$(gate_row_projected_bytes '리뷰 이월' "세그먼트=$seg" "사이클=$rcyc" "리뷰 HEAD=$rhead" \
+          "건수=$rn" "이슈=$riss" "레인=$rlane" "기록 시각=$rat")" -gt "$GATE_ROW_MAX" ]; then
+    warn "the \`리뷰 이월\` row does not fit the row cap — issue URLs are not clipped"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  gate_append '리뷰 이월' "세그먼트=$seg" "사이클=$rcyc" "리뷰 HEAD=$rhead" "건수=$rn" "이슈=$riss" "레인=$rlane" "기록 시각=$rat"
+}
+
+gate_cycle_row() {
+  # gate_cycle_row <target alias> <segment> <키=값>… — one `cycle` row, by the
+  # same code the `cycle` act arm runs: every write-time refusal, the report
+  # checks and the `발견 지문` the gate derives behind the caller's fields,
+  # including the branch that drops it when the row would cross the cap. The
+  # driver calls this through a child shell so its cycle rows meet the checks a
+  # routed run's rows meet. Same exit codes as the act arm.
+  [ "$#" -ge 2 ] || { warn "gate_cycle_row <target alias> <segment> <키=값>…"; return "$GATE_EXIT_VOCAB"; }
+  local ca=$1 cs=$2
+  shift 2
+  gate_record_row 'cycle' "$cs" "$ca" "$@"
+}
+
+gate_segment_merged_row() {
+  # gate_segment_merged_row <target alias> <segment> <키=값>… — the terminal
+  # `segment` row `상태=머지됨`, by the same code the `segment` act arm runs,
+  # so `적용=대기` and the inherited `리뷰 정책` are derived the same way on both
+  # paths. The caller passes everything but `상태`; `워크트리` stays required,
+  # and `워크트리=-` is the spelling for a tree the merge removed.
+  [ "$#" -ge 2 ] || { warn "gate_segment_merged_row <target alias> <segment> <키=값>…"; return "$GATE_EXIT_VOCAB"; }
+  local ma=$1 ms=$2 mf
+  shift 2
+  for mf in "$@"; do
+    case "$mf" in
+      상태=*) warn "gate_segment_merged_row writes \`상태=머지됨\` itself — leave \`상태\` out"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+  done
+  gate_record_row 'segment' "$ms" "$ma" '상태=머지됨' "$@"
 }
 
 gate_answer_servable() {
@@ -16884,6 +17626,168 @@ gate_arg_option_value() {
   printf '%s' "$v"
 }
 
+gate_nocase_glob() {
+  # gate_nocase_glob <string> <glob> — rc 0 when the string matches the glob
+  # (given unquoted, so its `*` is a wildcard) without regard to case.
+  #
+  # CASE IS NOT IDENTITY ON THIS PLATFORM, and the identity walk
+  # (`gate_path_is_at_or_under`) answers it only for a path whose ancestor
+  # exists. A pacing root before its first lease, a claim directory before the
+  # sweep and a record name before its file is written have no inode, and on
+  # the default case-insensitive volume `…/PACE/backlog.jsonl` and
+  # `R8.PLAN.md` create or overwrite the real files. Text compared case-blind
+  # closes that without touching the filesystem; on a case-sensitive volume it
+  # also refuses a neighbour that differs only in case, which is the safe
+  # direction. `nocasematch` is restored to what the caller had.
+  local rc=1 had=0
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  # shellcheck disable=SC2254
+  case "$1" in $2) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  return "$rc"
+}
+
+gate_nocase_at_or_under() {
+  # gate_nocase_at_or_under <path> <root> — rc 0 when the path is the root or
+  # lies under it, compared as text without regard to case. The root is taken
+  # literally; see `gate_nocase_glob` for why case is folded.
+  local rc=1 had=0
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  case "$1" in "$2"|"$2"/*) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  return "$rc"
+}
+
+gate_nocase_contains() {
+  # gate_nocase_contains <haystack> <needle> — rc 0 when the needle, taken
+  # literally, occurs in the haystack without regard to case.
+  local rc=1 had=0
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  case "$1" in *"$2"*) rc=0 ;; esac
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  return "$rc"
+}
+
+gate_record_suffix() {
+  # gate_record_suffix <name> — rc 0 when the name ends in one of the three
+  # kickoff-frozen record suffixes, without regard to case. Three calls rather
+  # than one `a|b|c` glob: `|` from an expansion is a character, not syntax.
+  gate_nocase_glob "$1" '*.plan.md' || gate_nocase_glob "$1" '*.interview.md' \
+    || gate_nocase_glob "$1" '*.kickoff.md'
+}
+
+gate_dest_tails() {
+  # gate_dest_tails <word> — every spelling of a destination the word can
+  # carry, the word itself first, in the global array `GATE_DEST_TAILS`.
+  #
+  # A DESTINATION IS OFTEN GLUED TO A COMMAND LETTER OR AN OPTION, not separated
+  # from it. `sed -n 'w<path>'`, `sed '1w<path>'`, `sed 's/a/b/w<path>'` and
+  # `sort -o<path>` are standard spellings, and none of them has a character
+  # `GATE_ARG_SEP` splits at — so the whole word was resolved against the act's
+  # directory as `<cwd>/w<path>` and missed the protected file it writes.
+  # Three readings are added beside the word:
+  #   - a single-dash option's attached value (`-o<path>` → `<path>`);
+  #   - the text after every `w` or `W` in the word (`1,5w<path>`,
+  #     `!w<path>`, `1{w<path>`, `\%re%w<path>`, `0~1w<path>` → `<path>`);
+  #   - every tail that starts at a `/`, so an absolute path anywhere inside
+  #     the word (`s/a/b/w/<abs>`) is a candidate.
+  # THE SED ADDRESS IS NOT ENUMERATED. A closed list of the characters that may
+  # stand before the `w` let `$!w<relative path>` and `1{w<relative path>` past
+  # both guards with BSD sed writing the file, because an address can end in
+  # `!`, `{`, a regex delimiter or a GNU `~` step and the list named none of
+  # them. Taking the text after every `w` needs no grammar of what precedes it.
+  # A reading that names nothing is harmless: it resolves to a path the guard
+  # does not protect. These are candidates for the at-or-under test only; the
+  # ancestor test is not given tails, because every word with a `/` has `/`
+  # itself among them.
+  local w="$1" t
+  GATE_DEST_TAILS=("$w")
+  case "$w" in
+    --*) ;;
+    -?*)
+      if [ -n "${w#-?}" ]; then
+        GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=${w#-?}
+      fi ;;
+  esac
+  t=$w
+  while :; do
+    case "$t" in *[wW]?*) ;; *) break ;; esac
+    t=${t#*[wW]}
+    GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=$t
+  done
+  t=${w#?}
+  while :; do
+    case "$t" in */*) ;; *) break ;; esac
+    t="/${t#*/}"
+    GATE_DEST_TAILS[${#GATE_DEST_TAILS[@]}]=$t
+    t=${t#/}
+  done
+  return 0
+}
+
+gate_opt_attached_values() {
+  # gate_opt_attached_values <word> — every value a single-dash option cluster
+  # can carry glued to it, in the global array `GATE_OPT_VALUES`: the text after
+  # each leading option letter (`-t<dir>` → `<dir>`, `-Rt<dir>` → `t<dir>` and
+  # `<dir>`). Empty for a word that is not a single-dash cluster.
+  #
+  # AN OPTION'S GLUED VALUE IS A DESTINATION TOO. The ancestor arms skipped every
+  # word starting with `-`, and `gate_arg_option_value` reads only the `-x=<v>`
+  # form, so GNU `gcp -R <tree> -t<state>/cc-cmds` merged a replacement tree over
+  # the pacing root with nothing looking at its target. Attaching an option's
+  # value is the standard utility syntax, and getopt lets letters cluster in
+  # front of it, so every split after a leading letter is a candidate; a reading
+  # that names nothing resolves to a path no guard protects.
+  local w="$1"
+  GATE_OPT_VALUES=()
+  case "$w" in
+    --*|-|[!-]*|'') return 0 ;;
+  esac
+  w=${w#-}
+  while [ -n "$w" ]; do
+    case "$w" in
+      [A-Za-z]*) ;;
+      *) break ;;
+    esac
+    w=${w#?}
+    [ -n "$w" ] && GATE_OPT_VALUES[${#GATE_OPT_VALUES[@]}]=$w
+  done
+  return 0
+}
+
+gate_pace_tail_may_hit() {
+  # gate_pace_tail_may_hit <path> <base> <root name>... — rc 0 when the path
+  # can lie at or under the pacing root and has to be resolved, rc 1 when it
+  # cannot. Forks nothing.
+  #
+  # RESOLVING EVERY TAIL WAS THE COST. `gate_dest_tails` hands over one
+  # candidate per `/` in a word, and each went through four command
+  # substitutions before any comparison — measured, the pacing guard went from
+  # 0.07 to 0.19 seconds a call on every write-graded act of every stage. A path
+  # whose spelling holds none of the root's final names (compared case-blind)
+  # can still land under the root only through a link somewhere on its way, so
+  # a path that carries neither is answered here without a fork. The caller
+  # skips this when its base itself lies under the root, because there a bare
+  # name is a path under the root that spells nothing.
+  local v="$1" base="$2" p n; shift 2
+  for n in "$@"; do
+    [ -n "$n" ] || continue
+    if gate_nocase_contains "$v" "$n"; then return 0; fi
+  done
+  case "$v" in
+    /*) p=$v ;;
+    *) p="$base/$v" ;;
+  esac
+  while [ -n "$p" ] && [ "$p" != "/" ]; do
+    if [ -L "$p" ]; then return 0; fi
+    p=${p%/*}
+  done
+  return 1
+}
+
 gate_argv0_wraps() {
   # gate_argv0_wraps <argv0> — rc 0 when argv0 is an interpreter or a wrapper
   # whose later arguments are program text: the list the CLAUDE.md slot guard
@@ -17389,6 +18293,15 @@ gate_rundir_write_guard() {
         # exception's terms — absent when the run opens, read by no
         # enforcement-surface check.
         split|split/*) continue ;;
+        # THE CARRY-OVER BODY FILES, ONE LEVEL DOWN ONLY. `gate.sh carry-body`
+        # writes them and the routing shift names one as the `--body-file` of
+        # `gh issue create`, an act that names a path under this directory and
+        # would meet the refusal below. Safe on the witness exception's terms —
+        # absent when the run opens, read by no enforcement-surface check. The
+        # run hook has no twin of this arm because no session writes here with
+        # the file-edit tool: the gate does.
+        carry/*/*) ;;
+        carry/*) continue ;;
         # `mkdir -p` names the directories it creates, so `halt` itself appears as
         # an argument. Allowing the directory opens nothing beyond `halt/*`, which
         # is already allowed, and `halt/*/*` is refused above.
@@ -18115,7 +19028,985 @@ gate_manifest_write_guard() {
     gate_manifest_write_refuse
     return "$GATE_EXIT_RULE"
   done
+  gate_sibling_record_write_guard "$mdir" "$mdirp" "$@" || return $?
   return 0
+}
+
+gate_progfile_word() {
+  # gate_progfile_word <sed|awk|xargs|vi> <element> — prints `hit` when the
+  # element hands that program a file to read its program or its argument list
+  # from, `arg` when it is an option whose value is the next element, `opt` for
+  # any other option and `operand` for a non-option.
+  #
+  # Short options are read as a cluster, letter by letter, the way getopt reads
+  # them: `-nf prog` and `-fprog` are `-f` as much as `-f prog` is, and a letter
+  # that takes a value ends the cluster, so `-v x=-f` is not a hit.
+  local k="$1" a="$2" c rest refl argl optl
+  case "$k:$a" in
+    sed:--file|sed:--file=*|awk:--file|awk:--file=*|awk:--exec|awk:--exec=*|awk:--include|awk:--include=*|awk:--load|awk:--load=*|xargs:--arg-file|xargs:--arg-file=*|vi:-s|vi:-S|vi:-S?*)
+      printf 'hit'; return 0 ;;
+    sed:--expression|sed:--line-length|awk:--field-separator|awk:--assign|xargs:--delimiter|xargs:--max-args|xargs:--max-procs|xargs:--max-chars|xargs:--max-lines|xargs:--process-slot-var|vi:-c|vi:--cmd|vi:-T|vi:-u|vi:-U|vi:-i|vi:-w|vi:-W|vi:-t|vi:-q)
+      printf 'arg'; return 0 ;;
+    *:--*|vi:-*|vi:+*) printf 'opt'; return 0 ;;
+    *:-?*) ;;
+    *) printf 'operand'; return 0 ;;
+  esac
+  case "$k" in
+    sed) refl=f argl=el optl=i ;;
+    awk) refl=fEil argl=FveWZ optl=dDLop ;;
+    *) refl=a argl=EIJLnPRSsd optl=eil ;;
+  esac
+  rest=${a#-}
+  while [ -n "$rest" ]; do
+    c=${rest:0:1}; rest=${rest:1}
+    case "$refl" in *"$c"*) printf 'hit'; return 0 ;; esac
+    case "$argl" in
+      *"$c"*) if [ -z "$rest" ]; then printf 'arg'; else printf 'opt'; fi; return 0 ;;
+    esac
+    case "$optl" in *"$c"*) printf 'opt'; return 0 ;; esac
+  done
+  printf 'opt'
+}
+
+gate_progfile_opt() {
+  # gate_progfile_opt <argv...> — rc 0, with the program and the option in
+  # GATE_PROGFILE_HIT, when the act hands sed, awk, xargs or vi a FILE to read
+  # its program or its argument list from.
+  #
+  # THE PATH ARMS OF THE PACING AND SIBLING RECORD GUARDS READ ONLY WHAT THE ACT
+  # SPELLS. `sed -n -f prog /dev/null` with `prog` holding `$!w <pace>/backlog.jsonl`,
+  # `awk -f prog` printing into a sibling's `R8.plan.md`, and `xargs -a list cp …`
+  # name the destination nowhere in the argv: it is a byte of a file the guards
+  # never open, so both arms let all three write. Opening the file would not
+  # settle it either — what it holds at the check is not what it holds when the
+  # program reads it. A write grade carrying such an option is therefore refused
+  # whatever the file says, and a read grade is not: these programs still read.
+  #
+  # A program counts where it is the act's argv0, or anywhere in the argv of an
+  # act an interpreter or a wrapper leads (`env sed -f`, `find … -exec awk -f`,
+  # `xargs sed -f`), because the argv0 alone says nothing there. Options are read
+  # until `--` or a `find -exec` terminator; for xargs, until its command, whose
+  # own options are not xargs's. vi takes `-s` and `-S`: in Ex mode `-s` reads
+  # its commands from standard input, which no guard sees either.
+  local n=$# i=0 j k a r lead=0
+  local -a av
+  av=("$@")
+  GATE_PROGFILE_HIT=''
+  if gate_argv0_wraps "${av[0]}"; then lead=1; fi
+  case "${av[0]##*/}" in sudo|doas) lead=1 ;; esac
+  while [ "$i" -lt "$n" ]; do
+    if [ "$i" -gt 0 ] && [ "$lead" = "0" ]; then break; fi
+    case "${av[i]##*/}" in
+      sed|gsed) k=sed ;;
+      awk|gawk|nawk|mawk) k=awk ;;
+      xargs|gxargs) k=xargs ;;
+      vi|vim|nvim|ex|view|rvim|gvim) k=vi ;;
+      *) i=$((i + 1)); continue ;;
+    esac
+    j=$((i + 1))
+    while [ "$j" -lt "$n" ]; do
+      a=${av[j]}
+      case "$a" in --|';'|'\;'|'+') break ;; esac
+      r=$(gate_progfile_word "$k" "$a")
+      case "$r" in
+        hit) GATE_PROGFILE_HIT="${av[i]} $a"; return 0 ;;
+        arg) j=$((j + 2)); continue ;;
+        operand) [ "$k" = xargs ] && break ;;
+      esac
+      j=$((j + 1))
+    done
+    i=$((i + 1))
+  done
+  return 1
+}
+
+gate_progfile_refuse() {
+  warn "rule refused: \`$GATE_PROGFILE_HIT\` reads its program or its argument list from a file, so where it writes is written in that file — a guard that does not open the file cannot judge the destination, and a write grade is not left to it ($1)"
+}
+
+gate_sibling_record_refuse() {
+  warn "this is a write to another run's kickoff-frozen record — only kickoff and the rekick deriver write it: $1"
+  warn "a rekick copies the predecessor's manifest and grant record byte for byte, so a run that edits a sibling's record writes the authorization of the run that comes after it"
+}
+
+gate_sibling_record_write_guard() {
+  # gate_sibling_record_write_guard <매니페스트 디렉터리> <그 물리 철자> <argv...>
+  #
+  # THE OWN-PATH ARMS ABOVE ARE NOT ENOUGH ONCE A RUN CAN BE DERIVED FROM
+  # ANOTHER. The deriver builds a successor by copying the predecessor's
+  # manifest and grant record byte for byte, so a stage that edits a SIBLING
+  # run's `*.plan.md`, `*.interview.md`, `*.kickoff.md` or grant record has
+  # written the authorization of a run it is not part of, and nothing above
+  # looks: every arm there is keyed on this run's own manifest.
+  #
+  # Reached only past the read early return of the caller, so an act that
+  # merely names a sibling path while reading it passes — the same boundary the
+  # own-manifest arms keep.
+  #
+  # Two arms, mirroring the caller's. The interpreter arm reads the whole
+  # command line, because `bash -c` hides which bytes become a filename; it
+  # tests the grant directory in its spellings (the manifest directory is
+  # already a needle of the caller's arm 2). The element arm resolves each
+  # element carrying one of the three suffixes, or any element under the grant
+  # directory, physically against the act's own directory and compares the
+  # parent directory — so a bare `X.plan.md` written from inside the manifest
+  # directory is caught, which no string test on the absolute spelling sees.
+  #
+  # THE ELEMENT ARM TAKES THE WORDS OF A COMPOUND ELEMENT, NOT THE ELEMENT. A
+  # destination carried inside one larger element — `sed -n 'w <dir>/R8.plan.md'`,
+  # `dd of=<dir>/R8.plan.md`, awk's `> "<path>"` — ends in the suffix the arm
+  # matches, but resolving the whole element names a directory `w <dir>` that
+  # does not exist, and the arm skipped it. A compound element is split by
+  # `gate_arg_words`, the run directory guard's word split, and each word goes
+  # through the arm as an element of its own. A word the split cannot resolve is
+  # refused rather than guessed.
+  #
+  # AND EACH WORD BY EVERY DESTINATION IT CAN CARRY, COMPARED BY IDENTITY. The
+  # split alone left three standard spellings open: a destination glued to a
+  # command letter or option (`sed -n 'w<dir>/R8.plan.md'`, `sort -o<path>`),
+  # which `gate_dest_tails` reads apart; a case variant (`R8.PLAN.md`,
+  # `<DIR>/R8.plan.md`) on the default case-insensitive volume, which the
+  # suffix test now folds and the directory test compares with `-ef`; and a
+  # DIRECTORY destination (`cp R8.plan.md <dir>/`, `cp -t <dir> R8.plan.md`),
+  # where the element naming the directory carries no suffix and the element
+  # carrying the suffix is the source. An act that names the manifest directory
+  # itself beside any record-suffixed name — or the grant directory beside any
+  # `.md` — is refused.
+  #
+  # A LINK MADE BEFORE THE WRITE IS FOLLOWED, AND `ln` IS READ FROM THE LINK'S
+  # DIRECTORY. Measured on the spellings above alone: `cp /dev/null sub/L` and
+  # `tee -a sub/L` through a link `sub/L` → `../R8.plan.md` returned 0, so did
+  # a `cp` through a link to the grant directory's record, and so did the `ln`
+  # that made the link — the parent test looks at the directory the link sits
+  # in, and a name with neither suffix was dropped before it. A final component
+  # that is a link is now judged by the file it leads to
+  # (`gate_sibling_target_hit`), a chain the walk cannot finish is refused, and
+  # an `ln` whose target text lands on a record is refused the way the pacing
+  # guard refuses one into its root (`gate_ln_operands`).
+  #
+  # RESIDUAL: an ancestor of either directory as the destination (`cp -R
+  # ./pipeline-run <docs>/`) is not refused here, because `docs/` is a
+  # directory ordinary writes name; neither is a path assembled by a `cd`
+  # inside a wrapper, or a link swapped between this check and the act. A
+  # destination written inside a script or an interpreter's program text is
+  # not read either. A program or an argument list taken from a file
+  # (`sed -f`, `awk -f`, `xargs -a`, `vim -s`) is refused outright, since no
+  # arm here could read where it writes (`gate_progfile_opt`). The edit tools
+  # are the hook's to refuse, and its guard keys on this run's own files only.
+  local mdir="$1" mdirp="$2"; shift 2
+  local gdir='' gdirp='' a b ap ad argv0 joinedn gdirn gdirpn cwd i x
+  local rec to_mdir=0 to_gdir=0 has_rec=0 has_md=0
+  local -a cand base_c raw
+  # A destination read from a file is not one the arms below can see.
+  if gate_progfile_opt "$@"; then
+    gate_progfile_refuse "another run's kickoff-frozen record"; return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "${GRANT:-}" ]; then
+    gdir=$(dirname "$GRANT")
+    gdirp=$(cd "$gdir" 2>/dev/null && pwd -P) || gdirp="$gdir"
+    [ -n "$gdirp" ] || gdirp="$gdir"
+  fi
+  cwd="${GATE_ACT_CWD:-$PWD}"
+
+  argv0=${1##*/}
+  case "$argv0" in
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+      joinedn=$(gate_path_spelling "$(printf '%s ' "$@")")
+      if gate_nocase_contains "$joinedn" 'pipeline-grant/'; then
+        gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE"
+      fi
+      if [ -n "$gdir" ]; then
+        gdirn=$(gate_path_spelling "$gdir")
+        gdirpn=$(gate_path_spelling "$gdirp")
+        case "$gdirn" in
+          ''|'/'|'.') ;;
+          *) if gate_nocase_contains "$joinedn" "$gdirn"; then
+               gate_sibling_record_refuse "$gdir"; return "$GATE_EXIT_RULE"
+             fi ;;
+        esac
+        case "$gdirpn" in
+          ''|'/'|'.') ;;
+          *) if gate_nocase_contains "$joinedn" "$gdirpn"; then
+               gate_sibling_record_refuse "$gdirp"; return "$GATE_EXIT_RULE"
+             fi ;;
+        esac
+      fi
+      # THE SUFFIX NEEDLE, ONLY FROM INSIDE THE MANIFEST DIRECTORY. There the
+      # caller's arm 2 has no directory to find, because a relative name spells
+      # none; everywhere else that needle already fires on the directory.
+      x=$(cd "$cwd" 2>/dev/null && pwd -P) || x=""
+      if [ -n "$x" ] && { [ "$x" = "$mdirp" ] || [ "$x" -ef "$mdirp" ]; }; then
+        if gate_nocase_glob "$joinedn" '*.plan.*' || gate_nocase_glob "$joinedn" '*.interview.*' \
+           || gate_nocase_glob "$joinedn" '*.kickoff.*'; then
+          gate_sibling_record_refuse "$joinedn"; return "$GATE_EXIT_RULE"
+        fi
+      fi ;;
+  esac
+
+  cand=()
+  for a in "$@"; do
+    base_c=()
+    if gate_arg_is_compound "$a"; then
+      gate_arg_words "$a" \
+        || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+      i=0
+      while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
+        base_c[${#base_c[@]}]=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+      done
+      # A `/`-less record name inside a compound element (`dd of=R8.plan.md`)
+      # is dropped by the word split, and from inside the manifest directory it
+      # is exactly the sibling's record.
+      # shellcheck disable=SC2295
+      x=${a//$GATE_ARG_SEP/ }
+      read -r -a raw <<< "$x"
+      for b in ${raw[@]+"${raw[@]}"}; do
+        case "$b" in */*) continue ;; esac
+        if gate_record_suffix "$b" || [ -L "$cwd/$b" ]; then
+          base_c[${#base_c[@]}]=$b
+        fi
+      done
+    else
+      base_c[0]=$a
+    fi
+    for b in ${base_c[@]+"${base_c[@]}"}; do
+      gate_dest_tails "$b"
+      i=0
+      while [ "$i" -lt "${#GATE_DEST_TAILS[@]}" ]; do
+        cand[${#cand[@]}]=${GATE_DEST_TAILS[$i]}; i=$((i + 1))
+      done
+    done
+  done
+  for a in ${cand[@]+"${cand[@]}"}; do
+    [ -n "$a" ] || continue
+    case "$a" in
+      /*) ap="$a" ;;
+      *) ap="$cwd/$a" ;;
+    esac
+    # A FINAL COMPONENT THAT IS A LINK names the record it leads to, not
+    # itself: `sub/L` made earlier as `../R8.plan.md` carries neither suffix
+    # nor directory, so every test below passed it while `cp` and `tee -a`
+    # wrote the sibling's plan. `-L` is a builtin, so only a link costs forks.
+    if [ -L "$ap" ]; then
+      i=0
+      gate_sibling_target_hit "$ap" "$mdirp" "$gdirp" || i=$?
+      if [ "$i" = 0 ]; then gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"; fi
+      if [ "$i" = "$GATE_LEAF_UNRESOLVED" ]; then
+        gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+    fi
+    # THE DIRECTORY ITSELF AS A DESTINATION, remembered and judged after every
+    # candidate is seen — the record-suffixed source may come before or after.
+    if [ -d "$ap" ]; then
+      if [ "$ap" -ef "$mdirp" ]; then to_mdir=1; fi
+      if [ -n "$gdirp" ] && [ "$ap" -ef "$gdirp" ]; then to_gdir=1; fi
+    fi
+    rec=0
+    if gate_record_suffix "$a"; then rec=1; has_rec=1; fi
+    if gate_nocase_glob "$a" '*.md'; then has_md=1; fi
+    if [ "$rec" = 0 ]; then
+      if gate_nocase_glob "/$a" '*/pipeline-grant/*.md'; then
+        gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+      gate_nocase_glob "$a" '*/*.md' || continue
+      [ -n "$gdir" ] || continue
+    fi
+    # THE PARENT IS COMPARED BY IDENTITY WITHOUT RESOLVING IT. `-ef` follows
+    # every link and folds case the way the kernel does, so it answers what a
+    # `cd -P` and a string compare answered, and neither it nor the parameter
+    # expansion forks — every `.md` tail of every word reaches this line.
+    ad=${ap%/*}
+    [ -n "$ad" ] || continue
+    [ -d "$ad" ] || continue
+    if [ "$rec" = 1 ] && [ "$ad" -ef "$mdirp" ]; then
+      gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
+    fi
+    if [ -n "$gdirp" ] && [ "$ad" -ef "$gdirp" ]; then
+      gate_sibling_record_refuse "$a"; return "$GATE_EXIT_RULE"
+    fi
+  done
+  if [ "$to_mdir" = 1 ] && [ "$has_rec" = 1 ]; then
+    gate_sibling_record_refuse "$mdir"; return "$GATE_EXIT_RULE"
+  fi
+  if [ "$to_gdir" = 1 ] && [ "$has_md" = 1 ]; then
+    gate_sibling_record_refuse "$gdir"; return "$GATE_EXIT_RULE"
+  fi
+  # THE LINK ITSELF, its target text read from the link's own directory, the
+  # way the pacing guard's link arm reads it: `ln -s ../R8.plan.md <dir>/sub/L`
+  # names, against the act's directory, no record at all.
+  if gate_ln_operands "$@"; then
+    for a in "${GATE_LN_OPS[@]}"; do
+      for b in "${GATE_LN_BASES[@]}"; do
+        case "$a" in
+          /*) ap="$a" ;;
+          *) case "$b" in
+               /*) ap="$b/$a" ;;
+               *) ap="$cwd/$b/$a" ;;
+             esac ;;
+        esac
+        i=0
+        gate_sibling_target_hit "$ap" "$mdirp" "$gdirp" || i=$?
+        if [ "$i" = 0 ]; then
+          gate_sibling_record_refuse "ln $a (from $b)"; return "$GATE_EXIT_RULE"
+        fi
+        if [ "$i" = "$GATE_LEAF_UNRESOLVED" ]; then
+          gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+        fi
+      done
+    done
+  fi
+  return 0
+}
+
+gate_rekick_argv_refuse() {
+  # gate_rekick_argv_refuse <argv...> — 0 when the act runs the successor
+  # deriver `successor.sh`. The kickoff's restart helper under the other name
+  # is a different program and is not refused here.
+  #
+  # THE DERIVER IS NOT A STAGE'S TOOL. It writes the successor's manifest and
+  # grant record, which are exactly the files the guards above keep a stage
+  # away from, so letting a stage call it would hand back through a script what
+  # those guards took away from a direct write. It refuses itself when it finds
+  # `CC_PIPELINE_RUN_ID`; this is the second wall, on the gate, for a caller who
+  # clears the variable first.
+  #
+  # Matched by basename at argv0, past the transparent wrappers by element, and
+  # inside a shell's `-c` body by containment. The containment arm refuses a
+  # `bash -c` that merely mentions the name; a read of the file goes through
+  # `cat` or `grep`, which this does not touch.
+  local a w shell=0
+  w=${1##*/}
+  [ "$w" = successor.sh ] && return 0
+  case "$w" in
+    bash|sh|zsh|dash|ksh) shell=1 ;;
+    env|command|nice|nohup|timeout|stdbuf|time|lockf|xargs|sudo|caffeinate)
+      for a in "$@"; do
+        [ "${a##*/}" = successor.sh ] && return 0
+        case "${a##*/}" in bash|sh|zsh|dash|ksh) shell=1 ;; esac
+      done ;;
+    *) return 1 ;;
+  esac
+  [ "$shell" = 1 ] || return 1
+  # A NAME BOUNDARY ON BOTH SIDES, because `test-successor.sh` is this tree's
+  # own suite for the deriver and runs under `bash` on every check.
+  for a in "$@"; do
+    case "$a" in
+      successor.sh|successor.sh[!A-Za-z0-9_.-]*) return 0 ;;
+      *[/\ \	\"\'\;\&\|\(\`]successor.sh) return 0 ;;
+      *[/\ \	\"\'\;\&\|\(\`]successor.sh[!A-Za-z0-9_.-]*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+gate_pace_write_refuse() {
+  warn "rule refused: the pacing directory belongs to the lane dispatcher, the sweep and the rekick deriver — a stage writing there forges the launch of an unattended run (backlog.jsonl) or the claim a successor's admission reads as evidence (rekick/), so no declaration and no auto-resolve admits it (pace root: $2): $1"
+}
+
+gate_pace_write_guard() {
+  # gate_pace_write_guard <graded-surface> <argv...>
+  #
+  # THE HOOK CLOSES THE PACING DIRECTORY TO THE EDIT TOOLS ONLY. Its own comment
+  # leaves a write through Bash to the gate, and the gate had no arm looking at
+  # that directory: measured, `cp x <pace>/backlog.jsonl` declared `트리밖쓰기 /
+  # 런로컬` returned 0 and changed the file, with auto-resolve on or off and with
+  # `--reach` left out, and `cp x <pace>/rekick/<런>/successor` created the
+  # claim's file the same way. A backlog record is what the dispatcher launches
+  # an unattended run from, and a claim is what a successor's admission reads as
+  # proof the sweep derived it — both are writes no stage has a reason to make.
+  #
+  # THE ROOT IS THE ONE THE GATE PACES BY, IN EVERY SPELLING IT CAN TAKE. The
+  # gate reads its verdict from `gate_pace_root` and holds leases under
+  # `run_pace_root`; the two read different override variables, so both are
+  # needles, each logically and through `gate_real_prefix` — a not-yet-created
+  # root or a symlinked state directory (`/var` on this platform) is otherwise a
+  # string no argument spells.
+  #
+  # A READ GRADE RETURNS AT ONCE, so an act that only names the directory while
+  # reading it passes — the boundary the sibling record guard keeps. Not keyed on
+  # the declared reach or on auto-resolve: neither appears here.
+  #
+  # Two arms. An interpreter or wrapper's whole command line is the operand, as
+  # in the manifest guard's second arm, and is tested by containment of a root
+  # spelling. Every other element (and an option's `=` value) is resolved
+  # against the act's directory — logically, then through its deepest existing
+  # ancestor, because `rekick/<런>/successor` does not exist before the claim —
+  # and refused when it is the root or lies under it. A symlinked final
+  # component and a `..` after a symlinked directory are followed the way the
+  # kernel follows them (`gate_pace_path_hit`), and `ln` is refused when its
+  # target, read from the link's own directory, lands in the root
+  # (`gate_pace_link_guard`). A program or an argument list taken from a file
+  # (`sed -f`, `awk -f`, `xargs -a`, `vim -s`) is refused before either arm,
+  # because its destination is in the file (`gate_progfile_opt`). RESIDUAL: a
+  # `cd` inside a wrapper, a destination written inside a script or an
+  # interpreter's program text, and a link swapped between this check and the
+  # act running, are not seen here; the
+  # dispatcher and the deriver run outside every gate, so nothing legitimate is
+  # refused by widening later.
+  #
+  # A PATH CARRIED INSIDE A LARGER ELEMENT IS A DESTINATION TOO, and the two arms
+  # above did not see it. `sed -n 'w <pace>/backlog.jsonl' /dev/null` grades as
+  # a worktree write, `dd of=<pace>/rekick/<런>/at` and awk's `> "<path>"` carry
+  # the path inside one element that is neither a whole path nor a `-x=` option,
+  # and none of those argv0 are wrappers — so all three wrote the file past both
+  # arms. A compound element is therefore split into words the way the run
+  # directory guard's word arm splits it (`gate_arg_words`), and each word is
+  # resolved like a whole element. A word the split cannot resolve (`~-`) is
+  # refused rather than guessed, the same as that arm.
+  #
+  # THE SPLIT WAS NOT THE LAST SPELLING. Measured on the split alone, four
+  # more standard ones wrote `backlog.jsonl`: a destination glued to a command
+  # letter or option (`sed -n 'w<pace>/backlog.jsonl'`, `sort -o<pace>/…`),
+  # which has no separator to split at and is now read apart by
+  # `gate_dest_tails`; a case variant (`…/PACE/backlog.jsonl`) on the default
+  # case-insensitive volume, now compared case-blind and by identity; and an
+  # ANCESTOR of the root named as a directory destination (`cp -R ./pace
+  # <state>/cc-cmds/`), which merges a whole replacement tree over the root
+  # and is now refused by the run directory guard's ancestor predicate, on the
+  # same terms. The value glued to a single-dash option is one of them (`gcp -R
+  # ./pace -t<state>/cc-cmds`).
+  #
+  # THE ANCESTOR ARM ASKS WHERE A DESTINATION SITS, NOT WHAT AN ARGUMENT SPELLS.
+  # It first took every element, `=` value and glued option value, and `/` is
+  # an ancestor of every root and `$HOME` of the default one — so `awk -F/`,
+  # `sort -t/ -o out in`, `xargs -d/`, `git -C $HOME commit` and `npm install
+  # --prefix=$HOME` were all refused as pace writes, and on a Linux runner,
+  # where the test root lies under `/tmp`, `git -C /tmp commit` failed the
+  # suite. An ancestor is only dangerous where a tree is merged over the root or
+  # removed with it, so the arm now reads those slots (`gate_pace_dest_slots`):
+  # a copy, move, link or install destination and its `-t` value, `tar -C` when
+  # extracting, an `rm` operand, and a `find` starting point under `-delete` or
+  # `-exec`. An interpreter or wrapper keeps its whole operands and words.
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  case "$graded" in
+    읽기) return 0 ;;
+  esac
+  # A destination read from a file is not one the arms below can see. This is
+  # the arm both verbs reach: `grade` calls this guard and not the sibling one.
+  if gate_progfile_opt "$@"; then
+    gate_progfile_refuse "pacing directory and every run's kickoff-frozen record"; return "$GATE_EXIT_RULE"
+  fi
+  local r1 r2 r1p r2p n a v an ap joinedn base first mode i ov gcwd eb inroot rc
+  local -a prim names
+  r1=$(gate_path_spelling "$(gate_lexical_abs "$(gate_pace_root)")")
+  r2=''
+  if declare -F run_pace_root >/dev/null 2>&1; then
+    r2=$(gate_path_spelling "$(gate_lexical_abs "$(run_pace_root)")")
+  fi
+  r1p=$(gate_path_spelling "$(gate_real_prefix "$r1")")
+  r2p=''
+  [ -n "$r2" ] && r2p=$(gate_path_spelling "$(gate_real_prefix "$r2")")
+  base="${GATE_ACT_CWD:-}"
+  # Once per call, for the fork-free filter of the at-or-under arm: the
+  # directory a relative path resolves from, whether that directory itself lies
+  # under the root, and the root's final name in each spelling.
+  gcwd=$(gate_grade_cwd)
+  eb="${base:-$gcwd}"
+  inroot=0
+  if gate_pace_path_hit "$eb" "$base" "$r1" "$r1p" "$r2" "$r2p"; then inroot=1; fi
+  names=()
+  for n in "$r1" "$r1p" "$r2" "$r2p"; do
+    case "$n" in ''|'/'|'.') continue ;; esac
+    names[${#names[@]}]=${n##*/}
+  done
+
+  mode=""
+  if gate_argv0_wraps "$1"; then
+    mode=bare
+    joinedn=$(gate_path_spelling "$(printf '%s ' "$@")")
+    for n in "$r1" "$r1p" "$r2" "$r2p"; do
+      case "$n" in ''|'/'|'.') continue ;; esac
+      if gate_nocase_contains "$joinedn" "$n"; then
+        gate_pace_write_refuse "$joinedn" "$n"; return "$GATE_EXIT_RULE"
+      fi
+    done
+  fi
+
+  # The ancestor arm: only the slots that merge a tree into a directory or
+  # remove one. Behind an interpreter or wrapper the command can start at any
+  # word, so every word that names one of those commands starts a reading.
+  if [ "$mode" = bare ]; then
+    gate_pace_dest_slots 1 "$@"
+  else
+    gate_pace_dest_slots 0 "$@"
+  fi
+  for v in ${GATE_PACE_SLOTS[@]+"${GATE_PACE_SLOTS[@]}"}; do
+    case "$v" in -*) v="./$v" ;; esac
+    rc=0
+    gate_pace_ancestor_guard "$v" "$v" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+  done
+
+  first=1
+  for a in "$@"; do
+    # argv0 names what runs, not what is written — the run directory guard's
+    # reasoning at the same place.
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    ov=""
+    case "$a" in
+      -*=*) ov=$(gate_arg_option_value "$a" 2>/dev/null) || ov="" ;;
+    esac
+    prim=()
+    if ! gate_arg_is_compound "$a"; then prim[${#prim[@]}]=$a; fi
+    if [ -n "$ov" ]; then prim[${#prim[@]}]=$ov; fi
+    # An interpreter's operand is program text, so a whole one that names an
+    # ancestor is refused as its words are below. Its options are not: the
+    # destinations an option can carry are the slots read before this loop.
+    if [ "$mode" = bare ] && ! gate_arg_is_compound "$a"; then
+      case "$a" in
+        -*) ;;
+        *)
+          rc=0
+          gate_pace_ancestor_guard "$a" "$a" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+          [ "$rc" = 0 ] || return "$rc" ;;
+      esac
+    fi
+    if gate_arg_is_compound "$a"; then
+      gate_arg_words "$a" "$mode" \
+        || { gate_word_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+      i=0
+      while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
+        v=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+        prim[${#prim[@]}]=$v
+        # An interpreter's words are destinations, so an ancestor among them
+        # is refused as well — the run directory guard's word arm.
+        [ "$mode" = bare ] || continue
+        rc=0
+        gate_pace_ancestor_guard "$a" "$v" "$gcwd" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+        [ "$rc" = 0 ] || return "$rc"
+      done
+    fi
+    # The at-or-under arm: every destination each primary spelling can carry.
+    for v in ${prim[@]+"${prim[@]}"}; do
+      gate_dest_tails "$v"
+      i=0
+      while [ "$i" -lt "${#GATE_DEST_TAILS[@]}" ]; do
+        n=${GATE_DEST_TAILS[$i]}; i=$((i + 1))
+        [ -n "$n" ] || continue
+        if [ "$inroot" = 0 ] \
+           && ! gate_pace_tail_may_hit "$n" "$eb" ${names[@]+"${names[@]}"}; then
+          continue
+        fi
+        rc=0
+        gate_pace_path_hit "$n" "$base" "$r1" "$r1p" "$r2" "$r2p" || rc=$?
+        if [ "$rc" = 0 ]; then
+          gate_pace_write_refuse "$a" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+        fi
+        if [ "$rc" = "$GATE_LEAF_UNRESOLVED" ]; then
+          gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+        fi
+      done
+    done
+  done
+  gate_pace_link_guard "$base" "$r1" "$r1p" "$r2" "$r2p" -- "$@"
+}
+
+gate_pace_link_guard() {
+  # gate_pace_link_guard <base> <root spelling>... -- <argv...> — for `ln`,
+  # `GATE_EXIT_RULE` with the refusal said when a link target resolves, from
+  # the directory the link is made in, to the pacing root or under it; 0
+  # otherwise and for every other argv0.
+  #
+  # A LINK'S TARGET TEXT IS READ FROM THE LINK'S DIRECTORY, not from the act's.
+  # `ln -s ../../../home/…/pace/backlog.jsonl a/b` names, against the worktree,
+  # a path that is nowhere near the root, so the at-or-under arm answered no
+  # and the next act wrote the backlog through `a/b`. The write itself is now
+  # refused by following the link, and this refuses the link in the first
+  # place: a stage has no reason to point anything into the dispatcher's
+  # directory. The operands and the directories they are read from come from
+  # `gate_ln_operands`, which the sibling record guard reads them from too.
+  local base="$1" a t rc i
+  local -a roots bases ops
+  shift
+  roots=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    roots[${#roots[@]}]=$1; shift
+  done
+  [ "$#" -gt 0 ] && shift
+  gate_ln_operands "$@" || return 0
+  ops=("${GATE_LN_OPS[@]}"); bases=("${GATE_LN_BASES[@]}")
+  i=0
+  while [ "$i" -lt "${#bases[@]}" ]; do
+    bases[$i]=$(gate_lexical_abs "${bases[$i]}" "$base")
+    i=$((i + 1))
+  done
+  for a in "${ops[@]}"; do
+    for t in "${bases[@]}"; do
+      rc=0
+      gate_pace_path_hit "$a" "$t" "${roots[@]}" || rc=$?
+      if [ "$rc" = 0 ]; then
+        gate_pace_write_refuse "ln $a (from $t)" "$GATE_PACE_HIT"; return "$GATE_EXIT_RULE"
+      fi
+      if [ "$rc" = "$GATE_LEAF_UNRESOLVED" ]; then
+        gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
+    done
+  done
+  return 0
+}
+
+gate_ln_operands() {
+  # gate_ln_operands <argv...> — rc 0 when argv0 is `ln` or `gln` with at least
+  # one operand; the operands are left in `GATE_LN_OPS` and the directories a
+  # link's target text is read from in `GATE_LN_BASES`, both as spelled.
+  #
+  # Every operand is tried against the directory of the last operand, against
+  # the last operand itself (a directory receives the link inside it) and
+  # against a `-t`/`--target-directory` value — the operand that is the source
+  # is not told apart from the one that is the link, so both are tried.
+  local a last t=""
+  GATE_LN_OPS=(); GATE_LN_BASES=()
+  [ "$#" -ge 1 ] || return 1
+  case "${1##*/}" in
+    ln|gln) ;;
+    *) return 1 ;;
+  esac
+  shift
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
+    if [ -n "$t" ]; then GATE_LN_BASES[${#GATE_LN_BASES[@]}]=$a; t=""; continue; fi
+    case "$a" in
+      --target-directory=*) GATE_LN_BASES[${#GATE_LN_BASES[@]}]=${a#*=} ;;
+      --target-directory|-t) t=1 ;;
+      --) ;;
+      -t?*) GATE_LN_BASES[${#GATE_LN_BASES[@]}]=${a#-t} ;;
+      -*) ;;
+      *) GATE_LN_OPS[${#GATE_LN_OPS[@]}]=$a ;;
+    esac
+  done
+  [ "${#GATE_LN_OPS[@]}" -ge 1 ] || return 1
+  last=${GATE_LN_OPS[$((${#GATE_LN_OPS[@]} - 1))]}
+  GATE_LN_BASES[${#GATE_LN_BASES[@]}]=$last
+  GATE_LN_BASES[${#GATE_LN_BASES[@]}]=$(dirname "$last")
+  return 0
+}
+
+gate_sibling_target_hit() {
+  # gate_sibling_target_hit <absolute path> <manifest dir, physical> <grant dir,
+  # physical or empty> — rc 0 when the path, or the file its final link leads
+  # to, is a sibling run's frozen record: a record-suffixed name directly in the
+  # manifest directory, a `.md` directly in the grant directory, or any `.md`
+  # under a `pipeline-grant/` directory. `GATE_LEAF_UNRESOLVED` when the final
+  # link is a chain the walk cannot finish; 1 otherwise.
+  #
+  # The parent is compared with `-d` and `-ef`, which the kernel answers, so a
+  # symlinked directory and a `..` after one inside the path resolve the way
+  # the write would. Only the final component needs following by hand, and
+  # `gate_leaf_spelling` is the walk the pacing guard follows it with — a link
+  # to a record that does not exist yet still names it, because the walk stops
+  # at the first name that is not a link.
+  local p="$1" mp="$2" gp="$3" s d
+  for s in "$p" "@leaf"; do
+    if [ "$s" = "@leaf" ]; then
+      [ -L "$p" ] || return 1
+      s=$(gate_leaf_spelling "$p") || return "$GATE_LEAF_UNRESOLVED"
+      [ -n "$s" ] || return 1
+    fi
+    if gate_nocase_glob "/$s" '*/pipeline-grant/*.md'; then return 0; fi
+    d=${s%/*}
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    if gate_record_suffix "$s" && [ "$d" -ef "$mp" ]; then return 0; fi
+    if [ -n "$gp" ] && [ "$d" -ef "$gp" ] && gate_nocase_glob "$s" '*.md'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+gate_pace_ancestor_guard() {
+  # gate_pace_ancestor_guard <element> <word> <grading dir> <root spelling>... —
+  # `GATE_EXIT_RULE`, with the refusal said, when the word or a value glued to
+  # it as an option is the pacing root or one of its ancestors; 0 otherwise.
+  #
+  # The ancestor arm of `gate_pace_write_guard`, for a whole element, an
+  # option's `=` value and an interpreter's words alike. A single-dash cluster
+  # is read through `gate_opt_attached_values`, so `-t<state>/cc-cmds` is
+  # judged by its directory; a long option is judged by its `=` value and is
+  # not a path otherwise.
+  #
+  # A NAME THAT CANNOT BE AN ANCESTOR IS NOT RESOLVED. Resolving forks four
+  # times, so a word without a `/` goes through only when it is `.`, `..`, a
+  # name that exists in the grading directory, or one component of a root
+  # spelling — the last because the root and its parents need not exist yet,
+  # and `cp -R x cc-cmds` from the state directory creates the tree the root
+  # will be read from.
+  local a="$1" v="$2" g="$3" w r hit anc; shift 3
+  local -a cs
+  case "$v" in
+    ''|-|--) return 0 ;;
+    --*=*) cs=("${v#*=}") ;;
+    --*) return 0 ;;
+    -?*)
+      gate_opt_attached_values "$v"
+      cs=(${GATE_OPT_VALUES[@]+"${GATE_OPT_VALUES[@]}"}) ;;
+    *) cs=("$v") ;;
+  esac
+  for w in ${cs[@]+"${cs[@]}"}; do
+    case "$w" in
+      */*|.|..) ;;
+      '') continue ;;
+      *)
+        if ! gate_arg_bare_name "$w" "$g"; then
+          hit=0
+          for r in "$@"; do
+            [ -n "$r" ] || continue
+            if gate_nocase_contains "$r/" "/$w/"; then hit=1; break; fi
+          done
+          [ "$hit" = 1 ] || continue
+        fi ;;
+    esac
+    anc=0
+    gate_word_is_at_or_above "$w" "$@" || anc=$?
+    # `<link>/..` names the parent of the link's target, which the lexical
+    # fold inside the predicate above cannot see.
+    if [ "$anc" = 1 ]; then
+      case "/$w/" in
+        */../*)
+          anc=$(gate_path_spelling "$(gate_physical_dotdot "$w")")
+          anc=$(gate_path_spelling "$(gate_real_prefix "$anc")")
+          for r in "$@"; do
+            [ -n "$r" ] || continue
+            if gate_path_is_at_or_above "$anc" "$r"; then
+              gate_pace_write_refuse "$a" "$1"; return "$GATE_EXIT_RULE"
+            fi
+          done
+          anc=1 ;;
+      esac
+    fi
+    if [ "$anc" = "$GATE_LEAF_UNRESOLVED" ]; then
+      gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"
+    fi
+    if [ "$anc" = 0 ]; then
+      gate_pace_write_refuse "$a" "$1"; return "$GATE_EXIT_RULE"
+    fi
+  done
+  return 0
+}
+
+gate_pace_dest_slots() {
+  # gate_pace_dest_slots <all: 0|1> <argv...> — the elements of an act that name
+  # a directory a tree is merged into or removed from, in `GATE_PACE_SLOTS`, as
+  # spelled. With <all> 0 only argv0 starts a reading; with 1 every word whose
+  # name is one of the commands below starts one, for a command behind an
+  # interpreter or wrapper.
+  #
+  # `cp`, `mv`, `ln`, `install` (and their `g` forms): the last operand and the
+  # `-t`/`--target-directory` value. `rsync`, `ditto`: the last operand —
+  # their `-t` is not a directory. `tar` when extracting: the `-C`/`--directory`
+  # value. `rm`, `rmdir`: every operand, since removing an ancestor removes the
+  # root. `find` with `-delete`, `-exec`, `-execdir`, `-ok` or `-okdir`: the
+  # starting points. Over-reading an argument as a slot refuses more; it never
+  # admits a write the at-or-under arm would refuse.
+  local all="$1" k n
+  shift
+  GATE_PACE_SLOTS=()
+  n=$#
+  k=1
+  while [ "$k" -le "$n" ]; do
+    gate_pace_dest_slots_at "${@:$k}"
+    [ "$all" = 1 ] || break
+    k=$((k + 1))
+  done
+  return 0
+}
+
+gate_pace_cluster_value() {
+  # gate_pace_cluster_value <word> <letter> — rc 0 when the single-dash cluster
+  # <word> holds <letter> before any non-letter, with the text after it left in
+  # `GATE_PACE_CV` (empty when the value is the next word); rc 1 otherwise.
+  local w="$1" l="$2" c
+  GATE_PACE_CV=""
+  case "$w" in
+    --*|-|[!-]*|'') return 1 ;;
+  esac
+  w=${w#-}
+  while [ -n "$w" ]; do
+    c=${w%"${w#?}"}
+    case "$c" in
+      [A-Za-z]) ;;
+      *) return 1 ;;
+    esac
+    w=${w#?}
+    if [ "$c" = "$l" ]; then GATE_PACE_CV=$w; return 0; fi
+  done
+  return 1
+}
+
+gate_pace_slot_add() {
+  [ -n "$1" ] && GATE_PACE_SLOTS[${#GATE_PACE_SLOTS[@]}]=$1
+  return 0
+}
+
+gate_pace_dest_slots_at() {
+  # gate_pace_dest_slots_at <argv...> — appends to `GATE_PACE_SLOTS` the slots
+  # of the one command argv0 names; see `gate_pace_dest_slots`.
+  local cmd a last t ddash ex del
+  local -a cv sp
+  [ "$#" -ge 1 ] || return 0
+  cmd=${1##*/}; shift
+  last=""; t=""; ddash=0
+  case "$cmd" in
+    cp|gcp|mv|gmv|ln|gln|install|ginstall|rsync|ditto)
+      for a in "$@"; do
+        if [ -n "$t" ]; then gate_pace_slot_add "$a"; t=""; continue; fi
+        if [ "$ddash" = 1 ]; then last=$a; continue; fi
+        case "$a" in
+          --) ddash=1 ;;
+          --target-directory=*) gate_pace_slot_add "${a#*=}" ;;
+          --target-directory) t=1 ;;
+          -?*)
+            case "$cmd" in rsync|ditto) continue ;; esac
+            if gate_pace_cluster_value "$a" t; then
+              if [ -n "$GATE_PACE_CV" ]; then gate_pace_slot_add "$GATE_PACE_CV"; else t=1; fi
+            fi ;;
+          *) last=$a ;;
+        esac
+      done
+      gate_pace_slot_add "$last" ;;
+    tar|gtar|bsdtar)
+      ex=0; cv=()
+      case "${1:-}" in
+        -*|'') ;;
+        *x*) ex=1 ;;
+      esac
+      for a in "$@"; do
+        if [ -n "$t" ]; then cv[${#cv[@]}]=$a; t=""; continue; fi
+        case "$a" in
+          -x|--extract|--get) ex=1 ;;
+          --directory=*) cv[${#cv[@]}]=${a#*=} ;;
+          --directory) t=1 ;;
+          --*) ;;
+          -?*)
+            if gate_pace_cluster_value "$a" x; then ex=1; fi
+            if gate_pace_cluster_value "$a" C; then
+              if [ -n "$GATE_PACE_CV" ]; then cv[${#cv[@]}]=$GATE_PACE_CV; else t=1; fi
+            fi ;;
+        esac
+      done
+      if [ "$ex" = 1 ]; then
+        for a in ${cv[@]+"${cv[@]}"}; do gate_pace_slot_add "$a"; done
+      fi ;;
+    rm|grm|rmdir|grmdir)
+      for a in "$@"; do
+        if [ "$ddash" = 1 ]; then gate_pace_slot_add "$a"; continue; fi
+        case "$a" in
+          --) ddash=1 ;;
+          -?*) ;;
+          *) gate_pace_slot_add "$a" ;;
+        esac
+      done ;;
+    find|gfind)
+      sp=(); del=0
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -H|-L|-P|-O*|-E|-X|-s|-x) shift ;;
+          -D) shift; [ "$#" -gt 0 ] && shift ;;
+          -f) shift; [ "$#" -gt 0 ] && { sp[${#sp[@]}]=$1; shift; } ;;
+          *) break ;;
+        esac
+      done
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -*|'('|'!'|')') break ;;
+        esac
+        sp[${#sp[@]}]=$1; shift
+      done
+      for a in "$@"; do
+        case "$a" in
+          -delete|-exec|-execdir|-ok|-okdir) del=1 ;;
+        esac
+      done
+      if [ "$del" = 1 ]; then
+        for a in ${sp[@]+"${sp[@]}"}; do gate_pace_slot_add "$a"; done
+      fi ;;
+  esac
+  return 0
+}
+
+gate_pace_path_hit() {
+  # gate_pace_path_hit <path> <base> <root spelling>... — rc 0 when the path,
+  # resolved against <base> logically and through its deepest existing
+  # ancestor, is one of the root spellings or lies under one; the spelling it
+  # met is left in `GATE_PACE_HIT`. An empty, `/` or `.` spelling is skipped,
+  # because a root that failed to resolve must not turn into a match on
+  # everything.
+  #
+  # Compared as text without regard to case, and by device+inode through the
+  # deepest existing ancestor (`gate_path_is_at_or_under`) — the two layers the
+  # run directory guard keeps, because a byte test let `…/PACE/backlog.jsonl`
+  # overwrite the real file on a case-insensitive volume.
+  #
+  # A LINK IS FOLLOWED THE WAY THE KERNEL FOLLOWS IT, and the two spellings
+  # above did not. `gate_real_prefix` folds only the deepest existing
+  # directory, so a final component that is a link to `<pace>/backlog.jsonl`
+  # stayed the link's own name; and `gate_lexical_abs` folds `..` as text, so
+  # `<link to pace/rekick>/../backlog.jsonl` lost the link before anything
+  # looked at it. Measured: `tee -a <link>` and `cp /dev/null
+  # <dirlink>/../backlog.jsonl` both wrote the backlog the lane dispatcher
+  # launches unattended runs from, with this predicate answering no. The final
+  # link is now followed by `gate_leaf_spelling`, as the run directory guard
+  # does, and a path carrying `..` is also resolved with each `..` taken from
+  # the physical parent (`gate_physical_dotdot`) and its own final link
+  # followed. A link chain the walk cannot finish returns
+  # `GATE_LEAF_UNRESOLVED`, which the caller refuses.
+  local v="$1" base="$2" an ap al ad adl n s; shift 2
+  GATE_PACE_HIT=""
+  an=$(gate_path_spelling "$(gate_lexical_abs "$v" "$base")")
+  ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+  al=$(gate_leaf_spelling "$ap") || return "$GATE_LEAF_UNRESOLVED"
+  ad=""; adl=""
+  case "/$v/" in
+    */../*)
+      ad=$(gate_path_spelling "$(gate_physical_dotdot "$v" "$base")")
+      ad=$(gate_path_spelling "$(gate_real_prefix "$ad")")
+      adl=$(gate_leaf_spelling "$ad") || return "$GATE_LEAF_UNRESOLVED" ;;
+  esac
+  for n in "$@"; do
+    case "$n" in ''|'/'|'.') continue ;; esac
+    if gate_nocase_at_or_under "$an" "$n" || gate_nocase_at_or_under "$ap" "$n" \
+       || gate_path_is_at_or_under "$ap" "$n"; then
+      GATE_PACE_HIT="$n"; return 0
+    fi
+    for s in "$al" "$ad" "$adl"; do
+      [ -n "$s" ] || continue
+      if gate_nocase_at_or_under "$s" "$n" || gate_path_is_at_or_under "$s" "$n"; then
+        GATE_PACE_HIT="$n"; return 0
+      fi
+    done
+  done
+  return 1
+}
+
+gate_physical_dotdot() {
+  # gate_physical_dotdot <path> [<base>] — the path absolutized against <base>
+  # (the grading directory by default) with every `..` taken from the PHYSICAL
+  # parent of what precedes it, the way the kernel takes it. Other components
+  # stay as spelled; the caller resolves the result's prefix and final link.
+  #
+  # `gate_lexical_abs` rewinds `..` as text, which is the right answer for a
+  # name about to be created and the wrong one after a symlinked directory:
+  # `<link>/..` is the parent of the link's TARGET. Each `..` resolves the
+  # prefix so far through `gate_real_prefix` (which follows a link to a
+  # directory) and drops its last component, so one `cd` per `..` and none for
+  # a path without one.
+  local p="$1" base="${2:-}" out='' seg d
+  [ -n "$base" ] || base=$(gate_grade_cwd)
+  case "$p" in
+    /*) ;;
+    *)  p="$base/$p" ;;
+  esac
+  while [ -n "$p" ]; do
+    seg="${p%%/*}"
+    if [ "$seg" = "$p" ]; then p=''; else p="${p#*/}"; fi
+    case "$seg" in
+      ''|.) ;;
+      ..)
+        d=$(gate_real_prefix "${out:-/}")
+        out="${d%/*}" ;;
+      *)  out="$out/$seg" ;;
+    esac
+  done
+  printf '%s' "${out:-/}"
 }
 
 gate_autoadopt_ok() {
@@ -18981,8 +20872,24 @@ gate_record_row() {
         set -- "$@" "$ap_field"
       fi
 
+      # `선언 다이제스트` ON A LANDING. A later run brings this landing in only
+      # when it was built to the declaration the document carries then, and a
+      # reconvergence inside this run can widen the declaration after the plan
+      # row was written. The declaration the frozen document carries at the
+      # landing is the one the work was reviewed against, so the gate stamps
+      # it here; a slice the document does not declare gets none.
+      local dd_field=""
+      case "$st" in
+        머지됨|완료)
+          if [ -n "${DOC:-}" ] && grep -qxF '**상태**: 동결됨' "$DOC" 2>/dev/null \
+             && grep -qxF "$seg" <<<"$(slice_ids "$DOC" 2>/dev/null)"; then
+            dd_field="선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")"
+            set -- "$@" "$dd_field"
+          fi ;;
+      esac
+
       # THE ROW IS PROJECTED BEFORE IT IS WRITTEN, AND REFUSED RATHER THAN
-      # TRIMMED. The two fields above cannot be dropped to make room: a merged
+      # TRIMMED. The gate's fields above cannot be dropped to make room: a merged
       # row without its comparison is the gap this record exists to close. So a
       # row over the cap is refused here with the caller field to shorten named,
       # instead of reaching `gate_append`'s cap and dying with the series name
@@ -18997,6 +20904,7 @@ gate_record_row() {
           [ "$f" = "$mc_field" ] && continue
           [ "$f" = "$fc_field" ] && continue
           [ -n "$ap_field" ] && [ "$f" = "$ap_field" ] && continue
+          [ -n "$dd_field" ] && [ "$f" = "$dd_field" ] && continue
           fn=$(printf '%s' "$f" | wc -c | tr -d ' ')
           if [ "$fn" -gt "$big_n" ]; then big_n="$fn"; big_k="${f%%=*}"; fi
         done
@@ -19468,6 +21376,64 @@ EOF
         # merge time. A delta row has nothing to back its claim without it.
         warn "cannot open the report of a cycle row with \`모드=델타\`: $rep$delta_repair"
         return "$GATE_EXIT_VOCAB"
+      fi
+      # Checks 9 to 11 — A DEFECT THAT MAKES THE COUNT ITSELF WRONG IS REFUSED;
+      # a classification defect is not. A report that cannot be classified only
+      # falls back to `다음=수정`, but a row whose numbers differ from its report,
+      # or a report that dropped a P1 from the count into a slice that does not
+      # own it, would feed the merge rule a count no review made.
+      #
+      # Check 9 compares NUMBERS only, never item counts: an item count disagrees
+      # with legitimate reports in either item shape. It is skipped when the
+      # summary line cannot be read or is the recovery head. Checks 10 and 11
+      # read the other-slice section, the one place a review drops a P1 from the
+      # count, which is why they run at record time.
+      local rcounts rsum rv cv aid arow
+      if [ -f "$rep" ] && rcounts=$(gate_review_report_counts "$rep"); then
+        rsum=$(gate_report_count "$rcounts" '요약')
+        if [ "$rsum" = "정규" ]; then
+          for k in P0 P1; do
+            rv=$(gate_report_count "$rcounts" "$k"); cv=$(gate_field_of "$k" "$@")
+            case "$cv" in
+              ''|*[!0-9]*) cv='x' ;;
+              *) cv=$((10#$cv)) ;;
+            esac
+            if [ "$cv" != "$rv" ]; then
+              warn "the \`${k}\` of the cycle row ($(gate_field_of "$k" "$@")) differs from the first \`발견 요약\` line of its report ($rv) — write the row with the report's numbers: $rep"
+              return "$GATE_EXIT_VOCAB"
+            fi
+          done
+        fi
+        if [ "$(gate_report_count "$rcounts" '몫 항목')" != "$(gate_report_count "$rcounts" '몫')" ]; then
+          warn "the other-slice section of the report has $(gate_report_count "$rcounts" '몫 항목') item(s) but its \`다른 슬라이스 몫\` line reads '$(gate_report_count "$rcounts" '몫')' — the count the review dropped is not the count it lists: $rep"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # EVERY ITEM IS CHECKED, NOT EVERY ASSIGNMENT THE PARSER CAUGHT. An item
+        # whose `배정` line is missing, doubled or written at another indent
+        # would otherwise be dropped from the count with nothing below looking
+        # at it.
+        if [ "$(gate_report_count "$rcounts" '몫 배정')" != "정규" ]; then
+          warn "an item of the other-slice section does not carry exactly one \`    - **배정**: 슬라이스 <id>\` line (four spaces, one per item) — an item with no readable assignment cannot be dropped from the count. Dispatch the review of $seg again without --slice: $rep"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # ONLY A SLICE STILL TO LAND OWNS A FINDING. A slice that is merged,
+        # done, parked or ready to apply will not take the finding up, so the
+        # P1 would leave the count for nobody. The review is not told which
+        # slices have landed, so the refusal names the way out: review again
+        # without `--slice`, which counts every finding of this segment.
+        local ast
+        while IFS= read -r aid; do
+          [ -n "$aid" ] || continue
+          arow=$(gate_segment_last_segment_row "$aid")
+          ast=$(gate_row_field "$arow" '상태')
+          case "$ast" in 계획됨|실행중|리뷰중) ;; *) ast='' ;; esac
+          if [ "$aid" = "$seg" ] || [ -z "$arow" ] || [ -z "$ast" ]; then
+            warn "the other-slice section assigns an item to slice '$aid', which is not another segment of this run still to land (계획됨·실행중·리뷰중) — a finding of this segment, of a landed or parked slice or of no slice is counted here. Dispatch the review of $seg again without --slice: $rep"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        done <<EOF
+$(printf '%s\n' "$rcounts" | sed -n 's/^배정=//p')
+EOF
       fi
       # NO LONGER DEFERRED FOR THIS ARM. The `segment` arm still leaves its
       # caller's `id=` free to win, but a caller's `세그먼트=` never reaches this
@@ -20168,7 +22134,7 @@ EOF
       # BOUND TO THE LAST CYCLE, BY NUMBER AND BY HEAD. A person dismisses what
       # they looked at; a cycle recorded after that is a review they have not
       # seen, and a dismissal naming an older one would wave the newer through.
-      drow=$( { gate_rows 'cycle' | grep -F "세그먼트=$seg " || true; } | tail -1)
+      drow=$(gate_segment_last_cycle_row "$seg")
       [ -n "$drow" ] || { warn "no \`cycle\` row names $seg — there is no review to dismiss"; return "$GATE_EXIT_VOCAB"; }
       if [ "$(gate_row_field "$drow" '사이클')" != "$dcyc" ] \
          || [ "$(gate_row_field "$drow" '리뷰 HEAD')" != "$dhead" ]; then
@@ -20201,6 +22167,14 @@ EOF
         "기각 P0=${dp0:-0}" "기각 P1=${dp1:-0}" "리포트 경로=${drep:--}" \
         "근거=$dwhy" "레인=$dlane" "기록 시각=$dat"
       log "리뷰 기각 기록 — $seg 사이클 $dcyc (P0=${dp0:-0} P1=${dp1:-0})"
+      ;;
+    review-carry)
+      # The carry-over twin of `review-dismiss`, without its seat-only refusal:
+      # the routing shift writes this row after opening one issue per
+      # carry-over finding. Every check lives in the row builder the driver
+      # calls too.
+      gate_review_carry_row "$seg" "$@" || return $?
+      log "리뷰 이월 기록 — $seg 사이클 $(gate_field_of '사이클' "$@") (이슈 $(gate_field_of '건수' "$@")건)"
       ;;
     obligation)
       # THE ONLY EXIT FROM TERMINATION CONDITION 9. `리뷰 의무` rows are written
@@ -20919,15 +22893,40 @@ gate_end_token() {
   # Matched on whole fields between ` | ` separators, the same exactness
   # `gate_run_ended_ok` uses: `gate_append` maps `|` out of every value, so a
   # separator on both sides only ever stands at a real field boundary.
+  local row
+  row=$(gate_end_token_row) || return 1
+  printf '%s' "$row" | awk '
+    { n = split($0, f, / \| /)
+      for (i = 2; i <= n; i++) {
+        if (index(f[i], "재킥 원인=") == 1) {
+          v = f[i]; sub(/^재킥 원인=/, "", v); print v; exit
+        }
+      }
+    }'
+}
+
+gate_end_token_row() {
+  # gate_end_token_row — print the whole row `gate_end_token` reads its token
+  # from, or print nothing and return 1. One selector for both, because the
+  # successor verdict also reads `종료 부류` and `재킥 지문` off that same row,
+  # and a second copy of the selection would be free to pick a different one.
+  #
+  # A run-scope `blocked` row whose cause is `대상미선언` or `슬라이싱` is NOT an
+  # ending: those two park a slice and the run goes on, so they settle no end
+  # token even when the row is run-scope (the slicing invalidation is). An
+  # ending row that carries one of them is still read — that is the run's own
+  # end site naming the park it stopped behind.
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
   awk '
     (index($0, "- `자율 승인` | ") == 1 && index($0, " | 결정=종료 | ") > 0) ||
     (index($0, "- `blocked` | ") == 1 && index($0, " | 스코프=run | ") > 0) {
+      blk = (index($0, "- `blocked` | ") == 1)
       n = split($0, f, / \| /)
       for (i = 2; i <= n; i++) {
         if (index(f[i], "재킥 원인=") == 1) {
           v = f[i]; sub(/^재킥 원인=/, "", v)
-          print v; found = 1; exit
+          if (blk && (v == "대상미선언" || v == "슬라이싱")) break
+          print; found = 1; exit
         }
       }
     }
@@ -21823,7 +23822,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -21898,10 +23897,14 @@ gate_segment_apply_pending() {
 }
 
 gate_apply_line_of() {
-  # gate_apply_line_of <series> <grep -F key> — the ledger line number of the
-  # last row of that series carrying the key, empty when none.
+  # gate_apply_line_of <series> <key> <value> — the ledger line number of the
+  # last row of that series whose <key> field equals <value>, empty when none.
+  # Field equality, not a substring: a later `cycle` row of another segment
+  # carrying `선행 세그먼트=<seg>` must not be read as this segment's last.
+  # The `<n>:` prefix `grep -n` adds sits in the row's first `|` field, which
+  # the field matcher never reads.
   { grep -nE "^- \`$1\`" "$LEDGER" 2>/dev/null || true; } \
-    | { grep -F "$2" || true; } | tail -1 | cut -d: -f1
+    | gate_rows_field_eq "$2" "$3" | tail -1 | cut -d: -f1
 }
 
 gate_apply_refuse() {
@@ -21946,11 +23949,15 @@ gate_apply_preconditions() {
 
   # 3 — the last cycle row passed, its report is a finished one, and it came
   # before the merge was recorded.
-  crow=$( { gate_rows 'cycle' | grep -F "세그먼트=$seg " || true; } | tail -1)
+  crow=$(gate_segment_last_cycle_row "$seg")
   [ -n "$crow" ] || { gate_apply_refuse 3 "세그먼트 ${seg} 의 cycle 행이 없습니다"; return $?; }
   p0=$(gate_row_field "$crow" 'P0'); p1=$(gate_row_field "$crow" 'P1')
+  # A carried-over cycle passes as a dismissed one does, but only with P0=0:
+  # a carry moves open P1 findings to issues and never waves a P0 through.
   if { [ "${p0:-}" != "0" ] || [ "${p1:-}" != "0" ]; } \
-     && ! gate_cycle_dismissed "$seg" "$(gate_row_field "$crow" '사이클')" "$(gate_row_field "$crow" '리뷰 HEAD')"; then
+     && ! gate_cycle_dismissed "$seg" "$(gate_row_field "$crow" '사이클')" "$(gate_row_field "$crow" '리뷰 HEAD')" \
+     && ! { [ "${p0:-}" = "0" ] \
+            && gate_cycle_carried "$seg" "$(gate_row_field "$crow" '사이클')" "$(gate_row_field "$crow" '리뷰 HEAD')"; }; then
     gate_apply_refuse 3 "세그먼트 ${seg} 의 마지막 cycle 행이 P0=${p0:-?} P1=${p1:-?} 입니다"; return $?
   fi
   rep=$(gate_row_field "$crow" '리포트 경로')
@@ -21959,8 +23966,8 @@ gate_apply_preconditions() {
     || { gate_apply_refuse 3 "마지막 cycle 행의 리포트가 없습니다: ${rep:-(없음)}"; return $?; }
   grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$rep_abs" \
     || { gate_apply_refuse 3 "리포트에 발견 요약 이 없습니다: ${rep}"; return $?; }
-  cline=$(gate_apply_line_of 'cycle' "세그먼트=$seg ")
-  sline=$(gate_apply_line_of 'segment' "id=$seg ")
+  cline=$(gate_apply_line_of 'cycle' '세그먼트' "$seg")
+  sline=$(gate_apply_line_of 'segment' 'id' "$seg")
   { [ -n "$cline" ] && [ -n "$sline" ] && [ "$cline" -lt "$sline" ]; } \
     || { gate_apply_refuse 3 "마지막 cycle 행이 원장 순서로 머지됨 행보다 앞서지 않습니다"; return $?; }
 
@@ -22107,10 +24114,12 @@ gate_kind_is_bookkeeping() {
   # cleared" does not wait for the seat to have room — and it enters no tree.
   # `halt-answer` is here on the same ground: a person's answer to a halt record
   # arrives whenever it arrives, and recording it enters no tree.
-  # `review-dismiss` likewise: the merge it unblocks is graded on its own.
+  # `review-dismiss` likewise: the merge it unblocks is graded on its own, and
+  # `review-carry` on the same ground — the issues it records were opened by
+  # acts graded on their own, and the merge after it is graded too.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
-    obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss) return 0 ;;
+    obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry) return 0 ;;
   esac
   return 1
 }
@@ -22806,6 +24815,57 @@ gate_verb_act() {
         exit "$GATE_EXIT_RULE"
       fi
     fi
+    # `다음` HOLDS THE DISPATCH AFTER THE CAP. While the P0 guard stands the
+    # segment's next step is a re-convergence or a person, and another
+    # implementation would add a fourth cycle to the streak the guard exists to
+    # stop. A re-convergence whose scope begins `P0 반복 ` is admitted only when
+    # the guard asked for it, over exactly the three reports it chose; a review
+    # dispatch's `--slice` must name the segment it reviews, or the report
+    # would drop that segment's own findings from the count as another slice's.
+    # These three reach the routing path only — the driver's dispatches do not
+    # pass here, and its own branch on `다음` is what holds them.
+    local rn_prompt rn_next rn_scope rn_want rn_got rn_slice
+    rn_prompt=$(gate_skill_prompt_of "$@")
+    case "${1:-}" in
+      implement)
+        rn_next=$(gate_segment_review_next "$segment")
+        case "$rn_next" in
+          재수렴|사람)
+            warn "세그먼트 ${segment} 의 다음 처분은 「${rn_next}」 입니다 — P0 반복 가드가 서 있는 동안 구현을 다시 파견하지 않습니다"
+            if [ "$rn_next" = "재수렴" ]; then
+              warn "스냅숏의 review_next[] 가 주는 범위로 P0 반복 재수렴을 파견하세요"
+            else
+              warn "세그먼트를 park 로, 스코프=cone 막힘을 P0 반복 가드 사유로 쓰세요"
+            fi
+            exit "$GATE_EXIT_RULE" ;;
+        esac ;;
+      reconverge)
+        # Found anywhere in the prompt rather than only right behind the
+        # document argument: a quoted or oddly spaced argument must not let the
+        # scope pass unchecked.
+        case "$rn_prompt" in
+          *' P0 반복 '*)
+            rn_scope="${rn_prompt#*" P0 반복 "}"
+            rn_got=$(printf '%s\n' "$rn_scope" | tr -d "\"'" | awk 'NR == 1 { print $1; print $2; print $3; print $4 }')
+            rn_next=$(gate_segment_review_next "$segment")
+            rn_want=$(printf '%s\n' "$segment"; gate_segment_p0_guard "$segment" | sed -n 's/^리포트=//p')
+            if [ "$rn_next" != "재수렴" ] || [ "$rn_got" != "$rn_want" ]; then
+              warn "P0 반복 재수렴은 세그먼트 ${segment} 의 다음 처분이 「재수렴」 이고 범위가 그 세그먼트와 가드가 고른 세 리포트일 때만 파견합니다 — 다음: ${rn_next}"
+              warn "범위는 스냅숏의 review_next[] 에서 그대로 옮기세요"
+              exit "$GATE_EXIT_RULE"
+            fi ;;
+        esac ;;
+      review)
+        # awk splits the words, not the shell: an unquoted expansion would
+        # glob a prompt that carries `*`.
+        rn_slice=$(printf '%s\n' "$rn_prompt" | awk '
+          !got { for (i = 1; i <= NF; i++) if ($i == "--slice") { print "S:" (i < NF ? $(i + 1) : ""); got = 1; break } }')
+        if [ -n "$rn_slice" ] && [ "${rn_slice#S:}" != "$segment" ]; then
+          rn_slice=${rn_slice#S:}
+          warn "리뷰 파견의 --slice (${rn_slice:-없음}) 가 --segment ${segment} 와 다릅니다 — 다른 슬라이스의 범위로 리뷰하면 이 세그먼트의 발견이 집계에서 빠집니다"
+          exit "$GATE_EXIT_RULE"
+        fi ;;
+    esac
   fi
 
   # ONE DISPATCH PER KEY ON A ROUTED RUN, refused before any row about this act.
@@ -23008,6 +25068,14 @@ gate_verb_act() {
   if [ "$graded" = "$GATE_FORM_UNKNOWN" ]; then
     warn "axis 2 \`형태 미상\` — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
     exit "$GATE_EXIT_VOCAB"
+  fi
+  # THE SUCCESSOR DERIVER IS REFUSED AS A ROW OF THE TABLE, NOT AS A GRADE. Left
+  # to the table it is `등급 미상`, and in auto-resolve mode a declared unknown
+  # command still runs capped at read — which is the deriver writing a
+  # successor's manifest from inside a stage. No declaration rescues it.
+  if [ "$argv_graded" = "1" ] && gate_rekick_argv_refuse "$@"; then
+    warn "axis 2 refusal — the successor deriver (successor.sh) runs only outside every run, never from a stage: $1"
+    exit "$GATE_EXIT_RULE"
   fi
   # --- 부류·표지·하한 -----------------------------------------------------
   # Three values the grade cannot carry, computed once here so the comparator,
@@ -23278,6 +25346,7 @@ gate_verb_act() {
     *) gate_manifest_write_guard "$graded" "$@" || exit $?
        gate_rundir_write_guard "$graded" "$@" || exit $?
        gate_plugin_root_write_guard "$graded" "$@" || exit $?
+       gate_pace_write_guard "$graded" "$@" || exit $?
        gate_shard_exec_guard "$@" || exit $? ;;
   esac
 
@@ -23432,10 +25501,18 @@ gate_verb_act() {
   GATE_SEGMENT_OPEN_OBLIGATIONS=$(gate_unfulfilled_review_obligations "$segment" \
     | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   export GATE_SEGMENT_OPEN_OBLIGATIONS
-  # A person's dismissal of the last cycle's findings, folded here for the same
-  # reason: the checker compares it with the cycle row it reads itself.
+  # The segment's last cycle row, its last segment row, a person's dismissal of
+  # that cycle and its carry-over to issues, all folded here for the same
+  # reason: the checkers read no ledger rows themselves. A checker that picked
+  # its own row by substring read a `선행 세그먼트=<seg>` field of another
+  # segment's row as this segment's last cycle; the selection is the gate's
+  # field-equality reader, written once.
+  GATE_SEGMENT_LAST_CYCLE=$(gate_segment_last_cycle_row "$segment")
+  GATE_SEGMENT_LAST_SEGMENT=$(gate_segment_last_segment_row "$segment")
   GATE_SEGMENT_REVIEW_DISMISSED=$(gate_segment_review_dismissed "$segment")
-  export GATE_SEGMENT_REVIEW_DISMISSED
+  GATE_SEGMENT_REVIEW_CARRIED=$(gate_segment_review_carried "$segment")
+  export GATE_SEGMENT_LAST_CYCLE GATE_SEGMENT_LAST_SEGMENT \
+    GATE_SEGMENT_REVIEW_DISMISSED GATE_SEGMENT_REVIEW_CARRIED
 
   local rules_rc=0
   # THE CHECKERS ARE NOT TOUCHED BY THIS AXIS AT ALL, and that is the point of
@@ -25359,7 +27436,7 @@ gate_segment_review_head() {
   # review that happened most recently, which is the one the containment test is
   # about.
   local row
-  row=$( { gate_rows 'cycle' | grep -F "세그먼트=$1 " || true; } | tail -1)
+  row=$(gate_segment_last_cycle_row "$1")
   [ -n "$row" ] || return 0
   gate_row_field "$row" '리뷰 HEAD'
 }
@@ -29897,6 +31974,40 @@ gate_snapshot_cycles_json() {
              "$(gate_json_escape "$(gate_row_field "$row" '리포트 경로')")" \
              "$cdis"
          done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_snapshot_review_next_json() {
+  # One element per segment that has a `cycle` row and has not merged:
+  # `다음`, the guard's `연속` and `발동`, the last cycle's `사이클`,
+  # `리뷰 HEAD` and `리포트 경로` (what a carry-over act names), `범위` — the
+  # whole `P0 반복 …` scope when `다음` is `재수렴`, so the router copies it
+  # rather than assembling it — and `사유` when `다음` is `사람`. A segment
+  # with no cycle row is left out: its `다음` is `리뷰 없음` by definition.
+  local out s row g nx st fd sc why
+  out=$(gate_segment_ids | while IFS= read -r s; do
+          [ -n "$s" ] || continue
+          [ "$(gate_segment_field "$s" '상태')" = "머지됨" ] && continue
+          row=$(gate_segment_last_cycle_row "$s")
+          [ -n "$row" ] || continue
+          g=$(gate_segment_p0_guard "$s")
+          nx=$(gate_segment_review_next "$s")
+          st=$(gate_report_count "$g" '연속'); fd=$(gate_report_count "$g" '발동')
+          sc=''; why=''
+          if [ "$nx" = "재수렴" ]; then
+            sc="P0 반복 $s $(printf '%s\n' "$g" | sed -n 's/^리포트=//p' | tr '\n' ' ')"
+            sc=${sc% }
+          elif [ "$nx" = "사람" ]; then
+            if [ "${fd:-0}" -ge 1 ]; then why='P0 반복 가드 — 재수렴 뒤 다시 3사이클'; else why='P0 반복 가드 — 설계 문서 없음'; fi
+          fi
+          printf '    {"세그먼트": "%s", "다음": "%s", "연속": %s, "발동": %s, "사이클": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s", "범위": "%s", "사유": "%s"},\n' \
+            "$(gate_json_escape "$s")" "$(gate_json_escape "$nx")" "${st:-0}" "${fd:-0}" \
+            "$(gate_json_escape "$(gate_row_field "$row" '사이클')")" \
+            "$(gate_json_escape "$(gate_row_field "$row" '리뷰 HEAD')")" \
+            "$(gate_json_escape "$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")")" \
+            "$(gate_json_escape "$sc")" "$(gate_json_escape "$why")"
+        done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
 }
