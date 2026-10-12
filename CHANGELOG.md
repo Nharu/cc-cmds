@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.8] - 2026-10-12
+
+첫 낱말이 인터프리터가 아닌 러너(`make` `npm` `npx` `yarn` `pnpm` `pytest` `go` `cargo` `docker`)인 완전 행은 행위의 첫 `--` 앞에서 자기 마지막 낱말 뒤의 낱말을 열지 않는다. 이 러너들은 피연산자 뒤의 옵션과 낱말을 스스로 읽으므로, 행 `npm run deploy` 가 `npm run deploy --script-shell /tmp/evil.sh` 를, 행 `npm install -g c` 가 `npm install -g c --registry=…` 를 열던 꼬리가 러너 자신의 설정이었다. 수리 문구, 킥오프 거절 문구, 스킬 문면은 이제 꼬리가 열린다고 안내하지 않고, 그런 행위는 인자를 `--` 뒤에 두거나 행위 전체를 행에 적으라고 말한다. docker `run`·`create` 의 이미지 뒤는 컨테이너 명령이라 예외다.
+
+### Fixed
+
+- **수리 문구** (오케스트레이터) — 기기전역 칸과 신고 등급 한도 칸의 문구가 러너 행위는 첫 `--` 앞 낱말을 모두 담아야 열린다고 말한다
+- **킥오프 거절 문구** — `-x=y` 형태를 거절할 때, 마지막 낱말 뒤 `-x=y` 값이 열리는 것은 러너가 아닌 명령뿐이고 러너 행은 꼬리를 열지 않는다고 말한다
+- **스킬 문면** (`autopilot`, 사이드카 규약) — 같은 러너 꼬리 규칙을 적는다
+- **시험** — 러너 꼬리 행위가 탐침·비탐침 모두에서 열리지 않는다는 단언, `--` 뒤와 docker 이미지 뒤의 대조, 찍힌 행이 행위 전체이고 그 행으로 같은 행위가 통과한다는 사슬을 더한다. 제안 단언은 기대 행이 아니라 실제로 찍힌 제안을 이어 쓴다. 기기전역 밖에서 docker 꼬리를 열린다고 고정하던 단언은 닫히는 쪽으로 뒤집는다
+
 ## [2.64.7] - 2026-10-12
 
 기기전역 밖 칸에서 park 이 찍는 수리 행이 옵션 이름이나 피연산자 앞에서 끊기면, 그 행이 끊긴 자리 뒤만 다른 형제 행위(`cargo run --bin wipe`, `terraform -chdir other apply`)까지 열어 사람이 본 것보다 넓은 행위를 인가했다. 이제 수리 문구는 서브커맨드 앞의 옵션과 옵션 값, 그리고 피연산자까지 담으라고 말하고, 피연산자가 없으면 행위 전체를 담으라고 말한다. `=` 철자만 받는 옵션(terraform 의 `-chdir`)이 떨어진 행위는 어느 행으로도 열리지 않으니 사람에게 넘기라고 안내한다.
