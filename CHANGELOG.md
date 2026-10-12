@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **링크 줄** (`autopilot`) — 킥오프 안내, 연기 안내, `--report` 맨 위에 `dashboard.py url` 의 출력 한 줄을 싣는다
 - **시험** — `scripts/test-dashboard.sh` 를 `make test` 에 넣고, `scripts/test-gate.sh` 86절과 `scripts/test-liveness-agreement.sh` 의 셸·포트 합의 픽스처를 더했다
 
+### Fixed
+
+- **런 종료 행** (`orchestrator/gate.sh`) — `결정=종료` 행이 `절단점=경계` 옆에 `유도 절단점=-` 을 함께 싣는다. 경계 승인 행은 이미 두 필드를 싣고 있었고, 종료 행만 한 칸을 비워 두어 `절단점` 을 싣는 모든 행이 두 필드를 함께 싣는다는 시험이 종료 행을 만든 절과 같은 실행에서 돌면 실패했다
+
 ### Post-install notes
 
 - 자동 기동은 `CC_CMDS_DASHBOARD=off` 이거나 `CI` 가 설정되어 있으면 일어나지 않는다. `Makefile` 과 게이트를 부르는 시험 스위트는 기본값으로 끈다
