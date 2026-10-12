@@ -24268,7 +24268,7 @@ sag end-overdue --manifest "$SA_MANIFEST" --cause 포기
 check "5d: --cause 는 다른 동사에 붙지 않는다" "$rc/$(sc_ends)" "2/0"
 
 # --- 38-5e. 끝난 런의 재인가 승인 — rekick-approval 과 종류 W ----------------
-# --- section: 38-5e | group: sb | covers: close, rekick-approval | anchors: 5e: 끝나지 않은 런에는 재인가 승인을 올리지 않는다, 5e: 원인 판단정지 는 거부되고 승인 행이 늘지 않는다, 5e: 스테이지나 shift 가 부르면 거부한다, 5e: 대상미선언 승인은 종류 W 대기 행 하나다, 5e: 승인 id 는 런 id 와 원인에서 유도된다, 5e: 같은 원인을 다시 불러도 행이 늘지 않는다, 5e: 자동 해소가 켜져 있어도 W 는 대기로 남는다, 5e: 대화 기록이 없으면 W 는 닫히지 않는다, 5e: id 만 쓴 줄로는 W 가 닫히지 않는다, 5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다, 5e: 닫힌 W 의 원장이 사슬 검증을 지난다 ---
+# --- section: 38-5e | group: sb | covers: close, rekick-approval | anchors: 5e: 끝나지 않은 런에는 재인가 승인을 올리지 않는다, 5e: 원인 판단정지 는 거부되고 승인 행이 늘지 않는다, 5e: 스테이지나 shift 가 부르면 거부한다, 5e: 대상미선언 승인은 종류 W 대기 행 하나다, 5e: 승인 id 는 런 id 와 원인에서 유도된다, 5e: 같은 원인을 다시 불러도 행이 늘지 않는다, 5e: 자동 해소가 켜져 있어도 W 는 대기로 남는다, 5e: 대화 기록이 없으면 W 는 닫히지 않는다, 5e: id 만 쓴 줄로는 W 가 닫히지 않는다, 5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다, 5e: 닫힌 W 의 원장이 사슬 검증을 지난다, 5e: 환경 없이 뜬 리드가 좌석 기록이 다른 끝난 런의 W 를 닫는다 ---
 #
 # 끝난 런에 후속을 열려면 권한을 넓혀야 하는 원인은 그 런의 원장에 재인가 승인을
 # 올려 사람이 닫기를 기다린다. 승인은 끝난 런 위에 서므로 `done` 이 있어도 닫혀야
@@ -24340,6 +24340,22 @@ check "5e: 사람의 답변 프레임이 done 이 있는 런의 W 를 닫는다"
 se_chain=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; LEDGER="$2"; RUN_ID="$3"; gate_chain_verify "$2" "$3" >/dev/null 2>&1; echo $?' _ \
   "$GATE" "$SA_LEDGER" "$SA_ID" 2>/dev/null)
 check "5e: 닫힌 W 의 원장이 사슬 검증을 지난다" "$se_chain" "0"
+
+# 끝난 런의 W 는 런을 연 좌석이 아니라 나중에 뜬 리드가 닫는다. 그 리드는 변수 없이
+# 떠서 대화 기록이 `$HOME/.claude` 아래에 있고, 런의 좌석 기록은 다른 레인을 가리킨다.
+SE_LHOME="$SA_ROOT/lead-home"; SE_LTX="$SE_LHOME/.claude/projects/proj"; mkdir -p "$SE_LTX"
+SE_SEAT="$SA_ROOT/seat-lane"; mkdir -p "$SE_SEAT/projects/proj"
+printf '%s\n' "$SE_SEAT" > "$SA_RUN/config-dir"
+SE_LSID="55555555-6666-7777-8888-999999999999"
+: > "$SE_LTX/$SE_LSID.jsonl"
+se_ltid=$(auq_frame "$SE_LTX/$SE_LSID.jsonl" "$SE_W2" "$(sa_field "$(se_last "$SE_W2")" '질문 문면')" "승인" 승인 거부)
+( unset CLAUDE_CONFIG_DIR XDG_CONFIG_HOME; HOME="$SE_LHOME" CLAUDE_CODE_SESSION_ID="$SE_LSID" \
+  CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+  sag close --manifest "$SA_MANIFEST" --approval "$SE_W2"; printf '%s\n%s\n' "$rc" "$msg" ) > "$SA_ROOT/se-lead.out"
+se_lclosed=$(se_last "$SE_W2")
+check "5e: 환경 없이 뜬 리드가 좌석 기록이 다른 끝난 런의 W 를 닫는다" \
+  "$(sed -n 1p "$SA_ROOT/se-lead.out")/$(sa_field "$se_lclosed" '상태')/$(sa_field "$se_lclosed" '응답 토큰')" \
+  "0/승인/$se_ltid"
 
 # --- 38-6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
 # --- section: 38-6 | group: sb | covers: act | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다 ---
