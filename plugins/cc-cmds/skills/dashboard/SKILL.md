@@ -32,8 +32,6 @@ Bring up the local run dashboard and show the person its link. This is a single 
 
     `open` starts the server when none of this plugin's servers answers (or replaces one of another version), then prints the link. It never fails the caller: a server that could not be started still yields a link line, ending in 「서버가 꺼져 있습니다 — `/cc-cmds:dashboard`」.
 
-    **Inside a pipeline stage** — `printenv CC_PIPELINE_RUN_ID` prints a value — call `url` instead of `open`. `url` is a pure read; starting a long-lived process from a gated stage is not this skill's to do.
-
 4. **Show the printed line to the person verbatim**, in Korean framing. Do not open a browser, do not fetch the link, and do not summarize the line away — the link is the whole output.
 
 Nothing here writes to a repository, a ledger or a run directory. `dashboard.py status` and `dashboard.py stop` exist for a person at a shell and are not part of this skill.

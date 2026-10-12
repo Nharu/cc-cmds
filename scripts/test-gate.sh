@@ -28849,7 +28849,7 @@ rm -f "$LEDGER85" "$WT/$DOC85"
 
 # ---------------------------------------------------------------------------
 # 86. 런 개시가 대시보드 서버를 하나 띄우고, 띄우지 말아야 할 자리에서는 띄우지 않는다
-# --- section: 86 | group: base | covers: snapshot, exec | anchors: 86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다, 86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다, 86: python3 가 없으면 서버 기록을 남기지 않는다, 86: python3 부재는 원장의 행 계열 순서를 바꾸지 않는다, 86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다, 86: 두 번째 런 개시는 서버를 더 띄우지 않는다, 86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다, 86: 자동 해소가 켜져도 기기전역 open 은 플러그인 보호 룰에 거부되고 실행되지 않는다, 86: 자동 해소가 꺼져도 기기전역 open 은 승인 대기 없이 같은 룰에 거부된다, 86: 순수 읽기인 url 도 쓰기 등급으로 매겨져 같은 룰에 거부된다 ---
+# --- section: 86 | group: base | covers: snapshot, exec | anchors: 86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다, 86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다, 86: python3 가 없으면 서버 기록을 남기지 않는다, 86: python3 부재는 원장의 행 계열 순서를 바꾸지 않는다, 86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다, 86: 두 번째 런 개시는 서버를 더 띄우지 않는다, 86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다, 86: 자동 해소가 켜져도 기기전역 open 은 플러그인 보호 룰에 거부되고 실행되지 않는다, 86: 자동 해소가 꺼져도 기기전역 open 은 승인 대기 없이 같은 룰에 거부된다, 86: 순수 읽기인 url 도 쓰기 등급으로 매겨져 같은 룰에 거부된다, 86: argv0 로 직접 부른 dashboard.py open 도 실행되지 않는다 ---
 #
 # 서버는 게이트의 런 개시 갈래에서만 뜨므로, 이 절의 모든 경우는 새 런 id 의 첫
 # 진입이다. 경우마다 상태 루트를 따로 둬 앞 경우의 서버 기록이 뒤 경우의 「없다」를
@@ -29036,6 +29036,20 @@ d86_dash() {
        --snapshot-digest "$(d86_h "$hf")" --rationale '대시보드를 연다' \
        -- python3 "$D86_DASH" "$4")
 }
+d86_dash_direct() {
+  # d86_dash_direct <state-home> — the same seat as d86_dash, but `dashboard.py
+  # open` is argv0 itself, deliberately under-declared as a run-local write. The
+  # gate exempts only that argv0 form from the protection rule, so what keeps it
+  # from running is the file's missing execute bit.
+  local hf="$WORK/86-dash.h"
+  d86_rc=$(D86_OUT="$hf" d86_gate "$1" "$D86_PORT" snapshot -- --fields H)
+  d86_orc=$(D86_OUT="$WORK/86-dash.out" \
+    d86_gate "$1" "$D86_PORT" exec CC_CMDS_DASHBOARD=on CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+    -CC_PIPELINE_STAGE_ID -CC_PIPELINE_SEGMENT \
+    -- --target front --cutpoint 커밋 --surface 트리밖쓰기 --reach 런로컬 \
+       --snapshot-digest "$(d86_h "$hf")" --rationale '대시보드를 연다' \
+       -- "$D86_DASH" open)
+}
 d86_count() { { grep -c "^- \`$1\` " "$D86_L" 2>/dev/null || true; }; }
 d86_parked() { { grep '^- `blocked` ' "$D86_L" 2>/dev/null || true; } | grep -cF '사유=도달 park' || true; }
 d86_guard() {
@@ -29059,7 +29073,18 @@ D86_S="$WORK/s86-url"; mkdir -p "$D86_S"; d86_new
 d86_dash "$D86_S" 1 런로컬 url
 check "86: (선행) url 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
 check "86: 순수 읽기인 url 도 쓰기 등급으로 매겨져 같은 룰에 거부된다" \
-  "$d86_orc/$(d86_guard)" "3/yes"
+  "$d86_orc/$(d86_guard)/$(d86_parked)/$(d86_count 승인)/$(d86_has "$D86_S")" "3/yes/0/0/no"
+# argv0 직접 꼴 — 보호 룰이 면제하는 유일한 꼴이라 게이트는 이 행위를 통과시킨다. 막는
+# 것은 실행 비트가 없다는 사실이므로, 종료 코드가 0 이 아니라는 것만이 아니라 그 원인이
+# 실행 거부라는 것까지 단언한다 — 다이제스트 낡음 같은 다른 거부도 0 이 아닌 종료 코드를
+# 내기 때문이다. `dashboard.py` 에 실행 비트가 생기면 이 경우가 서버 기록을 남겨 실패한다.
+D86_S="$WORK/s86-direct"; mkdir -p "$D86_S"; d86_new
+d86_dash_direct "$D86_S"
+check "86: (선행) argv0 직접 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+d86_drc=$([ "$d86_orc" != "0" ] && printf nonzero || printf zero)
+d86_denied=$(grep -qiF 'permission denied' "$WORK/86-dash.out" 2>/dev/null && printf yes || printf no)
+check "86: argv0 로 직접 부른 dashboard.py open 도 실행되지 않는다" \
+  "$d86_drc/$d86_denied/$(d86_has "$D86_S")" "nonzero/yes/no"
 D86_S="$WORK/s86-open-on"
 # 대조 — 같은 환경에서 게이트 밖으로 부른 `open` 은 서버 기록을 남긴다.
 ( cd "$WT" || exit 99
