@@ -31070,6 +31070,118 @@ TMPDIR="$T86" r86 워크트리쓰기 bash -c 'printf "%s\n" a > pf86.txt'
 check "86: 대조 — 워크트리쓰기 런로컬로 선언한 큰따옴표 안 \\n 의 자기 워크트리 쓰기는 통과한다" "$rc" "0"
 rm -rf "$SIB86/sh86d" "$T86/sh86d" "$WT/pf86.txt"
 
+# 복사의 읽기 원천 — 파괴 질문의 착지점이 읽기 원천까지 세던 동안, implement 스킬이
+# 처방하는 스냅숏 SNAP=$(mktemp) + cp <주 체크아웃 docs/ 원천> "$SNAP" 가 어느 도달
+# 토큰으로도 park 됐다. mktemp 가 목적지를 먼저 만들어 덮어쓰기 파괴로 표시되고, 세그먼트
+# 워크트리에서 본 주 체크아웃 원천이 대상의 다른 자리로 세어졌기 때문이다. 이제 목적지가
+# 마지막 낱말로 분명한 cp·install·ln 은 그 낱말만 센다. 목적지를 다른 데서 고를 수 있는
+# 꼴과 원천을 지우는 mv 는 지금처럼 전부 센다.
+mkdir -p "$WT/docs86s" "$T86/cs86"
+printf 'd\n' > "$WT/docs86s/d.md"; printf 'k\n' > "$SR86/cs86k"; printf 'm\n' > "$SR86/cs86m"
+printf 'k\n' > "$SR86/d.md"
+SNAP86=$(mktemp "$T86/cs86/snap.XXXXXX"); SNAP86B=$(mktemp "$T86/cs86/snapb.XXXXXX")
+[ -e "$SNAP86" ] && [ -e "$SNAP86B" ] && ok "86: 스냅숏 목적지가 이미 있다 (덮어쓰기 표지가 공허하지 않다)" \
+  || bad "86: 스냅숏 목적지가 이미 있다" "$SNAP86 $SNAP86B"
+rs86() {
+  # rs86 <argv...> — 세그먼트 쪽 워크트리(형제 워크트리)에서 런로컬 칸의 파괴 질문의 답을 낸다.
+  ( cd "$SIB86" && TMPDIR="$T86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; GATE_MARK=""; shift 2
+      gate_reach_runlocal_destruction front 0 0 "$@"' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+wl86() {
+  # wl86 <argv...> — 파괴 질문이 켜는 스위치로 수집기가 모은 착지점을 한 줄에 하나씩 낸다.
+  ( cd "$SIB86" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; shift 2
+      GATE_TT_WRITES_ONLY=1; gate_reach_target_tree_act front "$@" || :
+      printf "%s\n" ${GATE_TT_LANDS[@]+"${GATE_TT_LANDS[@]}"}' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+check "86: 주 체크아웃 원천을 기존 임시 파일로 복사하는 스냅숏 cp 는 런로컬 판정을 지난다" \
+  "$(rs86 cp "$WT/docs86s/d.md" "$SNAP86")" ""
+check "86: 그 스냅숏 cp 를 lockf -k -t 0 로 감싸도 런로컬 판정을 지난다" \
+  "$(rs86 lockf -k -t 0 "$T86/cs86/lk" cp "$WT/docs86s/d.md" "$SNAP86")" ""
+check "86: 형제 워크트리 원천의 스냅숏 cp 도 런로컬 판정을 지난다" "$(rs86 cp "$SR86/base.txt" "$SNAP86")" ""
+check "86: 자기 워크트리가 주 체크아웃일 때 형제 원천의 스냅숏 cp 도 런로컬 판정을 지난다" \
+  "$(rd86 cp "$SIB86/base.txt" "$SNAP86")" ""
+check "86: 대조 — 같은 원천으로 형제 워크트리의 기존 파일을 덮는 cp 는 park 된다" \
+  "$(rs86 cp "$WT/docs86s/d.md" "$SR86/cs86k")" "파괴형태미명시"
+check "86: 대조 — 형제 원천을 기존 임시 파일로 옮기는 mv 는 원천이 지워지므로 park 된다" \
+  "$(rs86 mv "$SR86/cs86m" "$SNAP86B")" "파괴형태미명시"
+cw86=$(wl86 cp "$WT/docs86s/d.md" "$SNAP86")
+has86 "$cw86" "$(f86 "$WT/docs86s/d.md")" && bad "86: 스냅숏 cp 의 착지점에 읽기 원천이 없다" "$cw86" \
+  || ok "86: 스냅숏 cp 의 착지점에 읽기 원천이 없다"
+has86 "$cw86" "$(f86 "$SNAP86")" && ok "86: 스냅숏 cp 의 착지점에 목적지가 있다" \
+  || bad "86: 스냅숏 cp 의 착지점에 목적지가 있다" "$cw86"
+for a86 in "cp -t $SR86 $WT/docs86s/d.md" "cp $WT/docs86s/d.md $SNAP86 -v" \
+           "cp -- $WT/docs86s/d.md $SNAP86" "install -d $WT/docs86s/d.md $SNAP86" \
+           "cp --target-directory=$T86/cs86 $WT/docs86s/d.md" "mv $WT/docs86s/d.md $SNAP86"; do
+  # shellcheck disable=SC2086
+  has86 "$(wl86 $a86)" "$(f86 "$WT/docs86s/d.md")" \
+    && ok "86: 목적지를 다른 데서 고를 수 있는 꼴은 좁히지 않는다 — ${a86//$WORK/}" \
+    || bad "86: 목적지를 다른 데서 고를 수 있는 꼴은 좁히지 않는다 — ${a86//$WORK/}" "$(wl86 $a86)"
+done
+check "86: 대조 — cp -t 로 형제 워크트리의 기존 이름을 덮는 복사는 park 된다" \
+  "$(rs86 cp -t "$SR86" "$WT/docs86s/d.md")" "파괴형태미명시"
+# 실행 수준 — 게이트의 작업 디렉터리는 주 체크아웃이므로 형제 워크트리를 원천으로 삼는다.
+printf 'w\n' > "$SIB86/cs86src"
+nb86=$(b86)
+rl86 cp "$SIB86/cs86src" "$SNAP86"
+check "86: 런로컬로 선언한 형제 원천의 스냅숏 cp 는 통과한다" "$rc/$(( $(b86) - nb86 ))" "0/0"
+check "86: 그 스냅숏 cp 가 실제로 복사했다" "$(cat "$SNAP86" 2>/dev/null)" "w"
+rl86 cp "$SIB86/cs86src" "$SR86/cs86k"
+check "86: 대조 — 런로컬로 선언한 형제 기존 파일 덮어쓰기 cp 는 park 된다" "$rc" "11"
+check "86: 그 park 된 cp 의 형제 파일 내용이 그대로다" "$(cat "$SR86/cs86k" 2>/dev/null)" "k"
+rm -rf "$WT/docs86s" "$T86/cs86" "$SR86/cs86k" "$SR86/cs86m" "$SR86/d.md" "$SIB86/cs86src"
+
+# 판독기가 모르던 다섯 구문 — 백틱 안의 이스케이프된 백틱(중첩 치환), ${…} 안의 # ,
+# 명령 낱말의 글롭, zsh 의 =cmd, $( ) 안 case 의 ) 는 셸이 실행하는 명령을 담는데,
+# 판독기가 읽지 못해 바닥 읽기·빈 사다리로 나오고 런로컬 파괴 질문도 지나갔다. 머지 철자는
+# 사다리 머지를, 형제 rm 철자는 런로컬 park 와 파일 잔존을 단언한다. 대조로 같은 구문의
+# 무해한 꼴이 읽기로 남음을 둔다.
+for p86 in 'echo `echo \`gh pr merge 1\``' 'echo ${x:- #}; gh pr merge 1' \
+           '/usr/bin/g[h] pr merge 1' 'echo $(case a in a) gh pr merge 1;; esac)'; do
+  check "86: 판독기가 모르던 구문 안의 머지는 사다리 머지다 — $p86" "$(ld86 bash -c "$p86")" "머지"
+done
+check "86: zsh -c 의 =gh 머지는 사다리 머지다" "$(ld86 zsh -c '=gh pr merge 1')" "머지"
+check "86: 백틱 안 이스케이프된 백틱 머지의 바닥은 외부상태변경이다" \
+  "$(fl86 bash -c 'echo `echo \`gh pr merge 1\``')" "외부상태변경"
+check "86: 글롭 명령 낱말 머지의 바닥은 외부상태변경이다" "$(fl86 bash -c '/usr/bin/g[h] pr merge 1')" "외부상태변경"
+# shellcheck disable=SC2016
+check "86: 대조 — \${x#*/} 의 echo 는 바닥 읽기다" "$(fl86 bash -c 'echo ${x#*/}')" "읽기"
+# shellcheck disable=SC2016
+check "86: 대조 — \${x#*/} 의 echo 는 사다리가 없다" "$(ld86 bash -c 'echo ${x#*/}')" ""
+# shellcheck disable=SC2016
+check "86: 대조 — \$( ) 안 case 의 echo 는 바닥 읽기다" "$(fl86 bash -c 'echo $(case a in a) echo hi;; esac)')" "읽기"
+# shellcheck disable=SC2016
+check "86: 대조 — \$( ) 안 case 의 echo 는 사다리가 없다" "$(ld86 bash -c 'echo $(case a in a) echo hi;; esac)')" ""
+check "86: 대조 — [ 시험 명령은 글롭이 아니라 바닥 읽기다" "$(fl86 bash -c '[ -n x ] && echo hi')" "읽기"
+mkdir -p "$SIB86/sh86e"; printf 'k\n' > "$SIB86/sh86e/f"
+for p86 in "echo \`echo \\\`rm -f $SIB86/sh86e/f\\\`\`" "echo \${x:- #}; rm -f $SIB86/sh86e/f" \
+           "/bin/r[m] -f $SIB86/sh86e/f" "echo \$(case a in a) rm -f $SIB86/sh86e/f;; esac)"; do
+  check "86: 판독기가 모르던 구문 안의 형제 rm 은 런로컬 판정에서 park 된다 — ${p86//$WORK/}" \
+    "$(rd86 bash -c "$p86")" "파괴형태미명시"
+  rl86 bash -c "$p86"
+  case "$rc" in 0) bad "86: 런로컬로 선언한 그 형제 rm 은 실행되지 않는다 — ${p86//$WORK/}" "rc=$rc $msg" ;;
+    *) ok "86: 런로컬로 선언한 그 형제 rm 은 실행되지 않는다 — ${p86//$WORK/} (rc=$rc)" ;; esac
+  check "86: 그 형제 rm 의 파일이 남아 있다 — ${p86//$WORK/}" "$(cat "$SIB86/sh86e/f" 2>/dev/null)" "k"
+done
+check "86: zsh -c 의 =rm 형제 파괴는 런로컬 판정에서 park 된다" "$(rd86 zsh -c "=rm -f $SIB86/sh86e/f")" "파괴형태미명시"
+rl86 zsh -c "=rm -f $SIB86/sh86e/f"
+case "$rc" in 0) bad "86: 런로컬로 선언한 zsh =rm 형제 파괴는 실행되지 않는다" "rc=$rc $msg" ;;
+  *) ok "86: 런로컬로 선언한 zsh =rm 형제 파괴는 실행되지 않는다 (rc=$rc)" ;; esac
+check "86: 그 zsh =rm 의 형제 파일이 남아 있다" "$(cat "$SIB86/sh86e/f" 2>/dev/null)" "k"
+rm -rf "$SIB86/sh86e"
+
+# 긴 따옴표 낱말의 판독 비용 — 따옴표를 대괄호 패턴 치환 하나로 지우던 동안 bash 3.2 에서
+# 비용이 낱말 길이의 세제곱으로 늘어, 16KB 한 낱말에 약 3분이 걸렸다. 넉넉한 상한을 걸고
+# 판정이 그대로임을 함께 단언한다.
+printf -v lw86w '%16384s' ''; lw86w="${lw86w// /a}"
+lt86s=$(date -u +%s)
+lf86=$(fl86 bash -c "printf '%s' '$lw86w' > out86.txt")
+lt86e=$(date -u +%s)
+check "86: 16KB 따옴표 낱말의 바닥 판독이 10초 안에 끝난다" \
+  "$(if [ $((lt86e - lt86s)) -lt 10 ]; then printf yes; else printf "no ($((lt86e - lt86s))s)"; fi)" "yes"
+check "86: 그 16KB 따옴표 낱말의 바닥은 워크트리쓰기다" "$lf86" "워크트리쓰기"
+
 # 래퍼 뒤의 공유 stash — 기기전역 하한이 git 을 argv0 로만 읽던 동안 env·nice·command
 # 가 앞에 오면 하한이 - 를 답했고, 런로컬·생략에서는 자기 워크트리만 착지점이라 공통 git
 # 디렉터리의 stash 가 지워졌다. 하한 판정을 직접 재고, 실행 수준에서 park 와 stash 항목의

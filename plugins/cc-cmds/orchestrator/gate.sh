@@ -2017,7 +2017,8 @@ gate_reach_runlocal_destruction() {
   # act is destructive (`X`, or a local form in argv), at least one of its
   # landing places is in the target's trees outside the three places
   # `런로컬` is honest for, and the manifest does not name its destructive
-  # form; nothing otherwise.
+  # form; nothing otherwise. A landing place is a place the act writes: the
+  # read source of a `cp`, `install` or `ln` is not one.
   #
   # The `런로컬` cell and the opaque cell's `런로컬` answer both ask it, so a
   # destructive act takes one verdict whichever grade the table gave it — the
@@ -2088,12 +2089,15 @@ EOF
 
 gate_reach_runlocal_destruction_argv() {
   # gate_reach_runlocal_destruction_argv <alias> <X> <Pd> <argv...> — the
-  # question above for one argv as it stands.
+  # question above for one argv as it stands. Its landing places are the
+  # places the act writes, so the read source of a copy is left out.
   local alias="$1" X="$2" Pd="$3"; shift 3
   if [ "$X" != "1" ]; then
     [ -n "$(gate_reach_local_destructive_here "$@")" ] || return 0
   fi
+  GATE_TT_WRITES_ONLY=1
   gate_reach_target_tree_act "$alias" "$@" || :
+  GATE_TT_WRITES_ONLY=''
   gate_reach_runlocal_escapes "$alias" || return 0
   gate_reach_tree_destruction "$X" "$Pd" "$@"
 }
@@ -2478,6 +2482,31 @@ gate_physical_walk() {
   printf '%s' "$cur"
 }
 
+gate_tt_copy_dest_only() {
+  # gate_tt_copy_dest_only <command> <args...> — 0 when <command> is `cp`,
+  # `install` or `ln` and its last word is the one place it writes: at least
+  # two operands, no `--`, no option after the first operand, no `-t` or
+  # `--target-directory` in any spelling, and for `install` no `-d` or
+  # `--directory`; 1 otherwise.
+  local c="$1" a seen=0 n=0; shift
+  case "$c" in cp|install|ln) ;; *) return 1 ;; esac
+  for a in "$@"; do
+    case "$a" in
+      --) return 1 ;;
+      --target-directory*|--directory*) return 1 ;;
+      --*) [ "$seen" = "0" ] || return 1 ;;
+      -?*)
+        [ "$seen" = "0" ] || return 1
+        case "$a" in -*t*) return 1 ;; esac
+        if [ "$c" = "install" ]; then
+          case "$a" in -*d*) return 1 ;; esac
+        fi ;;
+      *) seen=1; n=$((n + 1)) ;;
+    esac
+  done
+  [ "$n" -ge 2 ]
+}
+
 gate_reach_target_tree_act() {
   # gate_reach_target_tree_act <alias> <argv...> — reads the operating
   # repository and the path-shaped operands out of argv and hands them to
@@ -2492,6 +2521,17 @@ gate_reach_target_tree_act() {
   # over-collects — a read operand or a `sed` script containing `/` is
   # checked too — and it over-collects on purpose: an extra operand can only
   # fail the predicate, never pass it.
+  #
+  # THE DESTRUCTION QUESTION IS THE ONE EXCEPTION. There an extra operand does
+  # the opposite: a place the act only reads counts as a place it lands, and a
+  # destructive act parks. The snapshot `SNAP=$(mktemp)` followed by `cp <the
+  # main checkout's docs/ file> "$SNAP"` was marked an overwrite because
+  # `mktemp` had made the destination, and its read source in the main
+  # checkout counted as another place in the target's trees, so it parked
+  # under every reach token. With `GATE_TT_WRITES_ONLY` set, a copy whose
+  # destination is plainly its last word collects that word alone (see
+  # `gate_tt_copy_dest_only`); a launcher's own files are still collected,
+  # and `mv`, which removes its source, is not narrowed.
   #
   # EVERY PLACE THE ACT'S ARGV CAN SEND A WRITE IS A LANDING PLACE, and a
   # selector this reader cannot resolve makes it give up, which the callers
@@ -2655,7 +2695,17 @@ gate_reach_target_tree_act() {
       esac
     fi
   else
+    v="${1##*/}"
     shift
+    # Only the destination of a copy is written. When the destruction question
+    # sets `GATE_TT_WRITES_ONLY`, a `cp`, `install` or `ln` whose destination
+    # is plainly its last word is narrowed to that word; any spelling that can
+    # pick the destination elsewhere — a `-t` or `--target-directory`, a `--`,
+    # an option after the first operand, which BSD reads as an operand, an
+    # `install -d`, or a single operand — keeps the whole collection.
+    if [ -n "${GATE_TT_WRITES_ONLY:-}" ] && gate_tt_copy_dest_only "$v" "$@"; then
+      set -- "${!#}"
+    fi
   fi
   # Relative operands of a `git -C` act are relative to that repository.
   [ -n "$repo" ] && base="$repo"
@@ -7431,7 +7481,10 @@ gate_shell_scan() {
   #     in the line, so the reader still sees how the command word was
   #     written; it removes the quotes from each word itself.
   #   - A `#` at the start of a word is a comment up to the newline. It
-  #     changes no quote state, so an apostrophe in it opens nothing.
+  #     changes no quote state, so an apostrophe in it opens nothing. Inside
+  #     a parameter expansion `${…}` it is no comment, so `${` and its `}`
+  #     are counted and the rule is off between them: `echo ${x:- #}; gh pr
+  #     merge 1` lost the merge to a comment that ran to the end of the line.
   #   - A here-document (`<<`, `<<-`; not `<<<`) leaves neither its operator
   #     nor its delimiter in the line. At the next newline outside quotes
   #     the lines up to the delimiter line (its leading tabs removed for
@@ -7455,12 +7508,20 @@ gate_shell_scan() {
   #     into words (`gate_opl_words`).
   #   - `$(…)` and a backtick substitution print their body as lines of their
   #     own ahead of the line using them, and stand in that line as the word
-  #     `$_`. The body is read by the same rules.
+  #     `$_`. The body is read by the same rules. A `case` word starting a
+  #     word in a `$(…)` body is counted up to its `esac`, and a `)` while one
+  #     is open ends a pattern, so it cuts and does not close the
+  #     substitution: `$(case a in a) gh pr merge 1;; esac)` closed at the
+  #     pattern and the merge was read as the outer line's operands. Inside a
+  #     backtick body a backslash before a backtick opens a nested
+  #     substitution, which this reader does not read, so that line and every
+  #     line after it are 2.
   #   - A process substitution `>(…)` or `<(…)` is the same, except that its
   #     operator is not left in the line and every line of its body is 2.
   #
   # `<m>` is 0 for a line read, 2 for a line whose command the reader cannot
-  # place — a process substitution's body, a here-document body above, or what
+  # place — a process substitution's body, a here-document body above, the
+  # rest of the string from an escaped backtick inside a backtick body, or what
   # is left at the end when a quote or a substitution never closed (the lines
   # before it may already have run, so only the rest is 2) — and 3 for a line
   # the shell expands differently from the reader: it holds a `{` or `}`
@@ -7535,18 +7596,22 @@ gate_shell_scan() {
     }
     function sopen(kind) {
       sp++; sb[sp] = buf; sq[sp] = q; sm[sp] = m3; sk[sp] = kind; sd[sp] = dep; sc[sp] = c2
-      buf = ""; q = 0; m3 = 0; dep = 0; kd = kind
+      spd[sp] = pd; scd[sp] = cd
+      buf = ""; q = 0; m3 = 0; dep = 0; kd = kind; pd = 0; cd = 0
       if (kind == "p") c2 = 1
     }
     function sclose() {
       cut()
-      buf = sb[sp] "$_"; q = sq[sp]; m3 = sm[sp]; dep = sd[sp]; c2 = sc[sp]; sp--
+      buf = sb[sp] "$_"; q = sq[sp]; m3 = sm[sp]; dep = sd[sp]; c2 = sc[sp]
+      pd = spd[sp]; cd = scd[sp]; sp--
       kd = (sp > 0) ? sk[sp] : ""
     }
+    function inbq(   k) { for (k = 1; k <= sp; k++) if (sk[k] == "b") return 1; return 0 }
+    function wstart(   l) { l = substr(buf, length(buf), 1); return buf == "" || l == " " || l == "\t" }
     { s = s (NR > 1 ? "\n" : "") $0 }
     END {
       n = length(s); buf = ""; q = 0; m3 = 0; c2 = 0; sp = 0; dep = 0; kd = ""
-      bad = 0; hn = 0
+      bad = 0; hn = 0; pd = 0; cd = 0
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1); nx = substr(s, i + 1, 1)
         if (q == 1) {
@@ -7561,6 +7626,7 @@ gate_shell_scan() {
         if (c == "\\") {
           if (q == 2 && (nx == "" || !index("$`\"\\\n", nx))) { buf = buf c; continue }
           if (nx == "\n") { i++; continue }
+          if (nx == "`" && inbq()) bad = 1
           m3 = 1
           buf = buf c enc(nx); i++; continue
         }
@@ -7571,7 +7637,13 @@ gate_shell_scan() {
           buf = buf enc(c); continue
         }
         l = substr(buf, length(buf), 1)
-        if (c == "#" && (buf == "" || l == " " || l == "\t")) {
+        if (c == "$" && nx == "{") { pd++; buf = buf c nx; m3 = 1; i++; continue }
+        if (c == "}" && pd > 0) { pd--; buf = buf c; m3 = 1; continue }
+        if ((kd == "s" || kd == "p") && wstart()) {
+          if (substr(s, i, 4) == "case" && index(" \t", substr(s, i + 4, 1)) && substr(s, i + 4, 1) != "") cd++
+          else if (cd > 0 && substr(s, i, 4) == "esac" && (substr(s, i + 4, 1) == "" || index(" \t\n;&|()", substr(s, i + 4, 1)))) cd--
+        }
+        if (c == "#" && pd == 0 && (buf == "" || l == " " || l == "\t")) {
           while (i < n && substr(s, i + 1, 1) != "\n") i++
           continue
         }
@@ -7585,7 +7657,7 @@ gate_shell_scan() {
         if ((c == ">" || c == "<") && nx == "(") { sopen("p"); i++; continue }
         if (c == "(") { if (kd == "s" || kd == "p") dep++; cut(); continue }
         if (c == ")") {
-          if ((kd == "s" || kd == "p") && dep == 0) { sclose(); continue }
+          if ((kd == "s" || kd == "p") && dep == 0 && cd == 0) { sclose(); continue }
           if (dep > 0) dep--
           cut(); continue
         }
@@ -7714,7 +7786,7 @@ gate_opl_redir_record() {
   # when its place is unread — it holds `$`, a backtick, a backslash, a brace
   # or a glob, <poison> is 1, or the line's scanner mark <m> is 3. Quotes are
   # removed as from any operand; a descriptor device has none.
-  local t="${1//[\'\"]/}"
+  local t="${1//\'/}"; t="${t//\"/}"
   t="${t//$GATE_SC_GT/>}"; t="${t//$GATE_SC_LT/<}"
   case "$t" in
     ''|/dev/null|/dev/stdout|/dev/stderr|/dev/fd/*) return 0 ;;
@@ -7801,7 +7873,8 @@ gate_opaque_payload_lines() {
   #       In a payload that is not a shell's `-c` string, an unread option of
   #       `exec` is 1 as well.
   #   2 — the command itself is unread (a shell's `-c` string only): its word
-  #       holds `$`, a substitution, a quote, a backslash or a brace; it is a
+  #       holds `$`, a substitution, a quote, a backslash, a brace or a glob,
+  #       or starts with zsh's `=`; it is a
   #       command that runs another one (`gate_opl_runs_other`: `eval`,
   #       `source`, `.`, a nested shell, `xargs`, `sudo`, `trap`, `alias`,
   #       the zsh precommand modifiers), directly or behind `lockf` or `time`,
@@ -7952,7 +8025,10 @@ gate_opaque_payload_lines() {
     pre=()
     while [ $# -gt 0 ]; do
       case "$1" in
-        -*) break ;;
+        # A word starting with `=` names no variable, so it is no assignment:
+        # zsh runs `=rm` as the path of `rm`, and read as an assignment the
+        # `-f` after it made the whole line an option line that was skipped.
+        -*|=*) break ;;
         *=*) pre[${#pre[@]}]="$1"; shift ;;
         *) break ;;
       esac
@@ -8010,15 +8086,20 @@ gate_opaque_payload_lines() {
       # A quoted `>` and `<` come back here; a quoted space, tab and newline
       # stay as the scanner's bytes, so the record still splits into the
       # shell's words (`gate_opl_words`).
+      #
+      # Each quote character is removed by a substitution of its own. One
+      # bracket pattern `${x//[\'\"]/}` costs bash 3.2 time cubic in the
+      # word's length: a 16KB quoted word in `bash -c "printf '%s' '<16KB>'
+      # > out.txt"` took 181 seconds to read, and an exec reads it three times.
       y=()
       for x in "$@"; do
-        x="${x//[\'\"]/}"; x="${x//$GATE_SC_GT/>}"
+        x="${x//\'/}"; x="${x//\"/}"; x="${x//$GATE_SC_GT/>}"
         y[${#y[@]}]="${x//$GATE_SC_LT/<}"
       done
       set -- "${y[@]}"
       y=()
       for x in ${pre[@]+"${pre[@]}"}; do
-        x="${x//[\'\"]/}"; x="${x//$GATE_SC_GT/>}"
+        x="${x//\'/}"; x="${x//\"/}"; x="${x//$GATE_SC_GT/>}"
         y[${#y[@]}]="${x//$GATE_SC_LT/<}"
       done
       pre=(${y[@]+"${y[@]}"})
@@ -8054,6 +8135,15 @@ gate_opaque_payload_lines() {
       [ "$unread" = "2" ] && st=2
       case "$1" in *'$'*) st=2 ;; esac
       case "${raw[$ci]}" in *\\*|*\'*|*\"*|*[{}]*) st=2 ;; esac
+      # A glob in the command word is expanded by the shell before it runs,
+      # and zsh replaces a leading `=` with the command's path, so
+      # `/bin/r[m] -f <sibling>/f` and `=rm -f <sibling>/f` ran a `rm` this
+      # reader read as an unknown command. The test commands `[` and `[[` are
+      # words of their own and not globs.
+      case "${raw[$ci]}" in
+        '['|'[[') ;;
+        =*|*[\*\?\[]*) st=2 ;;
+      esac
       if [ "$st" = "0" ]; then
         if gate_opl_runs_other "$cw"; then
           st=2
@@ -8084,7 +8174,7 @@ gate_opaque_payload_lines() {
               elif [ "${y[$ii]##*/}" = "find" ]; then
                 gate_opl_find_runs_other "${raw[@]:ci+ii}" && st=2
               fi
-              case "${raw[$((ci + ii))]}" in *'$'*|*\\*|*\'*|*\"*) st=2 ;; esac
+              case "${raw[$((ci + ii))]}" in *'$'*|*\\*|*\'*|*\"*|=*|*[\*\?\[]*) st=2 ;; esac
             fi ;;
         esac
       fi
