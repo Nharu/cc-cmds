@@ -10499,7 +10499,7 @@ r34_prrow() {  # r34_prrow <seg> <gh 답 | fail> [문서] — the rows pr_cutpoi
   tr '\n' ';' < "$out"
 }
 check "34: 선언 PR 슬라이스의 열린 PR 은 완료 · PR · 커밋 종단 행을 남긴다" \
-  "$(r34_prrow SA "12 OPEN $H34")" "segment id=SA 상태=완료 PR=12 커밋=$H34 브랜치=seg/x-SA 레포=o/r 워크트리=WT-SA;"
+  "$(r34_prrow SA "12 OPEN $H34")" "segment id=SA 상태=완료 PR=12 커밋=$H34 브랜치=seg/x-SA 레포=o/r 워크트리=WT-SA 선언 다이제스트=$(slice_decl_digest "$R34PR" SA);"
 check "34: 머지된 PR 도 같은 행을 남긴다" "$(r34_prrow SA "12 MERGED $H34" | grep -c '상태=완료 PR=12' || true)" "1"
 check "34: 닫힌 PR · 관측 실패 · 선언 머지 슬라이스 · 문서 없는 런은 행을 남기지 않는다" \
   "$(r34_prrow SA "12 CLOSED $H34")|$(r34_prrow SA fail)|$(r34_prrow SB "12 OPEN $H34")|$(r34_prrow SA "12 OPEN $H34" '')" "|||"

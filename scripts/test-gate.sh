@@ -11334,6 +11334,48 @@ case "$msg" in
 esac
 check "15g: 선언이 바뀐 문서에서는 매니페스트로 들인 착지를 선행으로 들이지 않는다" "$r15gmd" "2/0/0/불일치 문면"
 
+# A reconvergence inside a run widens the slice's declaration after its plan
+# row, and the run then reviews and merges the wider slice. The landing row
+# carries the declaration it landed under, so the next run brings it in
+# although the plan row names the narrower one.
+DOC15GRW='docs/fixture-design-15grw.md'
+two_slice_doc "$WT/$DOC15GRW" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+g15_run R15GRW1 "$DOC15GRW" "$plan15c" 리뷰없음
+g15_mkwt R15GRW1 SA
+g15_plan act R15GRW1 SA 상태=계획됨 "워크트리=$(g15_wt R15GRW1 SA)"
+[ "$rc" = "0" ] || bad "15g 이전 런 R15GRW1 의 SA 계획" "rc=$rc $msg"
+sed 's/^\*\*선언 파일\*\*: `SA.txt`$/**선언 파일**: `SA.txt`, `SA2.txt`/' "$WT/$DOC15GRW" > "$WT/$DOC15GRW.tmp" \
+  && mv "$WT/$DOC15GRW.tmp" "$WT/$DOC15GRW"
+gateL act --manifest "$WORK/plan-R15GRW1.md" --kind segment --target infra --segment SA --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(au15_H R15GRW1)" --rationale x -- \
+  상태=머지됨 PR=7 "머지 커밋=$m15gp" "워크트리=$(g15_wt R15GRW1 SA)" 선행=없음
+r15grw1=$(g15_row R15GRW1 SA)
+d15grw=$(cd "$WT" && bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null; slice_decl_digest "$2" SA' _ \
+  "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$DOC15GRW" 2>/dev/null)
+check "15g: 착지 행은 착지 때의 슬라이스 선언 다이제스트를 싣는다" \
+  "$rc/$(seg_field "$r15grw1" '상태')/$(printf '%s' "$d15grw" | grep -cE '^[0-9a-f]{64}$' || true)/$( [ "$(seg_field "$r15grw1" '선언 다이제스트')" = "$d15grw" ] && printf 같음 || printf 다름)" \
+  "0/머지됨/1/같음"
+g15_run R15GRW2 "$DOC15GRW" "$plan15c" 리뷰없음
+g15_mkwt R15GRW2 SB
+g15_plan act R15GRW2 SB 상태=계획됨 "워크트리=$(g15_wt R15GRW2 SB)"
+r15grw2=$(g15_row R15GRW2 SA)
+check "15g: 계획 뒤 선언이 넓어진 채 착지한 슬라이스는 다음 런이 선행으로 들여온다" \
+  "$rc/$(seg_field "$r15grw2" '상태')/$(seg_field "$r15grw2" '출처')/$(g15_segrows R15GRW2 SB 계획됨)" \
+  "0/머지됨/R15GRW1/1"
+check "15g: 다시 들인 착지 행은 착지 때의 선언 다이제스트를 잇는다" \
+  "$(seg_field "$r15grw2" '선언 다이제스트')" "$d15grw"
+# Narrowed again after the landing, the document no longer declares what landed.
+sed 's/^\*\*선언 파일\*\*: `SA.txt`, `SA2.txt`$/**선언 파일**: `SA.txt`/' "$WT/$DOC15GRW" > "$WT/$DOC15GRW.tmp" \
+  && mv "$WT/$DOC15GRW.tmp" "$WT/$DOC15GRW"
+g15_run R15GRW3 "$DOC15GRW" "$plan15c" 리뷰없음
+g15_mkwt R15GRW3 SB
+g15_plan act R15GRW3 SB 상태=계획됨 "워크트리=$(g15_wt R15GRW3 SB)"
+r15grw3="$rc/$(g15_segrows R15GRW3 SA)/$(g15_segrows R15GRW3 SB)"
+case "$msg" in
+  *"이전 런 R15GRW1 의 슬라이스 SA 착지는 들여오지 않습니다 — 슬라이스 선언 불일치(선언 다이제스트) — 그 런이 SA 를 착지시킬 때의 선언과"*) r15grw3="$r15grw3/불일치 문면" ;;
+esac
+check "15g: 착지 뒤 선언이 바뀐 문서에서는 계획 행과 같아도 그 착지를 들이지 않는다" "$r15grw3" "2/0/0/불일치 문면"
+
 for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
             R15GP1:SA R15GP2:SB R15GQ1:SA R15GQ2:SB R15GR:SB R15GK:SA R15GK:SB \
             R15GS:SB R15GT:SB R15GV:SB R15GU:SB R15GW:SB \
@@ -11341,7 +11383,8 @@ for r15g in R15GA:SA R15GA:SB R15GB:S2 R15GC:S2 R15GD:SA R15GE:SA \
             R15GM1:SA R15GM2:SA R15GL1:SA R15GL2:SA R15GL3:SB R15GI2:SA \
             R15GF1:SA R15GF2:SA R15GF3:SA R15GF4:SB R15GF5:SA R15GF6:SB R15GY1:SA R15GY2:SA R15GH1:SA R15GH2:SA \
             R15GG1:SA R15GG2:SA R15GS1:SA R15GS2:SA R15GX2:SA R15GX4:SA R15GX6:SA \
-            R15GMA:SB R15GMB:SB R15GMC:SA R15GML2:SB R15GMD:SB; do
+            R15GMA:SB R15GMB:SB R15GMC:SA R15GML2:SB R15GMD:SB \
+            R15GRW1:SA R15GRW2:SB R15GRW3:SB; do
   ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15g%%:*}" "${r15g#*:}")" \
       && git branch -D "seg/${r15g%%:*}-${r15g#*:}" ) >/dev/null 2>&1 || true
 done
@@ -11349,7 +11392,7 @@ rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" 
   "$WT/$DOC15GK" "$WT/$DOC15GS" "$WT/$DOC15GT" "$WT/$DOC15GV" "$WT/$DOC15GU" "$WT/$DOC15GW" "$WT/$DOC15GJ" \
   "$WT/$DOC15GO" "$WT/$DOC15GM" "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GF" "$WT/$DOC15GY" "$WT/$DOC15GH" \
   "$WT/$DOC15GG" "$WT/$DOC15GS2" "$WT/$DOC15GX" "$WT/$DOC15GX3" "$WT/$DOC15GX5" \
-  "$WT/$DOC15GMF" "$WT/$DOC15GML"
+  "$WT/$DOC15GMF" "$WT/$DOC15GML" "$WT/$DOC15GRW"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget

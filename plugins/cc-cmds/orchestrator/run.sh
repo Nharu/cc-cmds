@@ -6890,9 +6890,24 @@ merge_gate() {
   # merge may already have moved.
   MERGE_COMMIT=$(gh_q "$slug" pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid' || printf '')
   [ -n "$MERGE_COMMIT" ] || MERGE_COMMIT=$(base_sha "$al")
+  local ldd
+  ldd=$(landed_decl_field "$seg")
   ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" \
-    "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$(base_sha "$al")"
+    "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$(base_sha "$al")" ${ldd:+"$ldd"}
   return 0
+}
+
+# A LANDING CARRIES THE DECLARATION IT LANDED UNDER. A later run brings it in
+# only when it was built to the declaration the document carries then, and a
+# reconvergence inside this run can widen the declaration after the plan row —
+# so the plan row alone would refuse a landing that holds.
+landed_decl_field() {
+  # landed_decl_field <segment> — `선언 다이제스트=<hex>` when the frozen
+  # document declares <segment>, nothing otherwise
+  [ -n "${DOC:-}" ] || return 0
+  [ "$(slicing_branch "$DOC")" = "선언통치" ] || return 0
+  grep -qxF "$1" <<<"$(slice_ids "$DOC" 2>/dev/null)" || return 0
+  printf '선언 다이제스트=%s' "$(slice_decl_digest "$DOC" "$1")"
 }
 
 # A SLICE WHOSE DECLARED CUTPOINT IS PR HAS DELIVERED WHEN ITS PULL REQUEST
@@ -6930,8 +6945,10 @@ pr_cutpoint_terminal_row() {
     warn "$seg: PR 절단점 종단 행을 쓰지 않습니다 — 브랜치 $branch 의 열린(또는 머지된) PR 을 원격 $slug 에서 관측하지 못했습니다"
     return 0
   fi
+  local ldd
+  ldd=$(landed_decl_field "$seg")
   ledger_row 'segment' "id=$seg" "상태=완료" "PR=$num" "커밋=$hd" "브랜치=$branch" \
-    "레포=$slug" "워크트리=$(wt_path "$seg")"
+    "레포=$slug" "워크트리=$(wt_path "$seg")" ${ldd:+"$ldd"}
 }
 
 # ---------------------------------------------------------------------------
