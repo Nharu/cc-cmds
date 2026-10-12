@@ -4,7 +4,13 @@ Nobody is awake to confirm any of this, so every rule below is written for the c
 
 ## Only P0 and P1 enter the loop
 
-The pipeline's **only** termination predicate is `P0 + P1 == 0`. P2 and P3 go straight to the morning batch. That is what keeps the loop cheap, and it is also why nothing below may quietly reduce a severity to make the loop end sooner.
+The pipeline's convergence predicate is `P0 + P1 == 0`. It is no longer the loop's only exit: the loop also ends on the next disposition the gate derives from the ledger — a carry-over merge, when every open P1 was classified carry-over and moved to an issue, and the P0 repeat guard, when P0 findings stand for three cycles in a row. Both are fed by the report's `발견 요약` line, not by this judgment, and the counts you return are compared with that line. P2 and P3 go straight to the morning batch. That is what keeps the loop cheap, and it is also why nothing below may quietly reduce a severity to make the loop end sooner.
+
+## Your counts must equal the report's summary
+
+The report's `## 다른 슬라이스 몫 (집계 제외)` section lists findings the review assigned to another slice of the design. They are reviewed and listed there, and they are excluded from the report's counts. Do not put them in `findings[]`, and do not count them in `p0_count` or `p1_count`.
+
+`p0_count` and `p1_count`, and the number of `findings[]` items whose `severity` is `P0` and `P1`, must equal the P0 and P1 of the report's `발견 요약` line. The driver compares the four with that line and parks the segment when any of them differs — it does not ask again. A severity tie you resolve upward under the rule below changes the grade a finding carries in `findings[]`; when that would make your P1 count differ from the summary, the summary is the record the loop runs on, so the segment stops for a person rather than looping on numbers that disagree.
 
 ## Severity ties take the higher grade
 
