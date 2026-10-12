@@ -125,35 +125,43 @@ drop=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
 # 건너뛰고, 그 밖의 대시 단어는 값을 받는다고 보아 다음 비대시 단어까지 건너뛴다.
 # 목록이 모자라면 더 많이 요구하는 쪽으로만 틀린다. 그 밖의 docker 동사는 피연산자
 # 뒤에서도 옵션을 읽으므로(`docker build -t T . --output …`) 행위 전체를 요구한다.
-lreq=$(printf '%s\n' "$norm" | awk '
+# 행위 전체를 요구할 때는 `Tw=1` 을 함께 낸다 — 정규화 단어 수는 떨어진 `-x=y`
+# 단어를 세지 않으므로, 그 행위의 「끝」은 떨어진 단어가 없는 것까지로 재야 한다.
+lreq_tw=$(printf '%s\n' "$norm" | awk '
   function nextop(k,   j) { for (j = k + 1; j <= NF; j++) if ($j !~ /^-/) return j; return 0 }
   {
     s = nextop(1); if (!s) s = 2
     if (($1 == "docker" && $s ~ /^(image|container|volume|network|node|service|secret|config|context|builder|buildx|manifest|plugin|system|compose|trust|swarm)$/) \
         || ($1 == "yarn" && $s == "global")) { j = nextop(s); if (j) s = j }
+    tw = 0
     if ($1 ~ /^(bash|sh|zsh|python3|node)$/) t = 0
     else if ($1 == "docker") {
-      t = NF
+      t = NF; tw = 1
       if (($s == "run" || $s == "create") && (s == 2 || (s == 3 && $2 == "container"))) {
         for (k = s + 1; k <= NF; k++) {
           if ($k ~ /^(--rm|-d|--detach|-i|--interactive|-t|--tty|-it|-ti|--init|--privileged|--read-only|-P|--publish-all)$/) continue
           if ($k ~ /^-/) { if (k < NF && $(k + 1) !~ /^-/) k++; continue }
-          t = k; break
+          t = k; tw = 0; break
         }
       }
     }
     else t = nextop(s)
     L = 2; if (s > L) L = s; if (t > L) L = t
-    n = split(ENVIRON["GATE_REACH_TRIGGERS"], tw, "\n")
+    n = split(ENVIRON["GATE_REACH_TRIGGERS"], trg, "\n")
     for (m = 1; m <= n; m++) {
-      if (tw[m] == "") continue
-      pw = 0; for (k = 2; k <= NF; k++) if ($k == tw[m]) { pw = k; break }
-      if (!pw) { print 0; exit }
+      if (trg[m] == "") continue
+      pw = 0; for (k = 2; k <= NF; k++) if ($k == trg[m]) { pw = k; break }
+      if (!pw) { print 0, tw; exit }
       if (pw > L) L = pw
     }
-    print L; exit
+    print L, tw; exit
   }')
+lreq=${lreq_tw%% *}; tw=${lreq_tw#* }
 [ -n "$lreq" ] || lreq=0
+[ "$tw" = "1" ] || tw=0
+# 기기전역 칸이 행위 전체를 요구하는 docker 행위에는 행이 덮지 않는 꼬리가 없다.
+tail_all=0
+[ "${GATE_REACH_EFF:-}" = "기기전역" ] && [ "$tw" = "1" ] && [ -n "$drop" ] && tail_all=1
 
 # 행위 표지가 파괴인가 — 게이트가 `GATE_MARK` 로 실어 준다. 러너만 적힌 형태는
 # 파괴 행위를 매칭하지 않는다(D14 호환 규칙). 표지 없이 스테이지가 `--destructive`
@@ -195,9 +203,10 @@ while IFS= read -r line; do
   # 단어를 담을 수 없으므로 `node --require=/tmp/e.js scripts/x.js` 가 행
   # `node scripts/x.js` 로, `npm --script-shell=… run deploy` 가 행 `npm run` 으로
   # 열리면 행이 말하지 않은 옵션을 연 것이다. 행의 마지막 단어 뒤에서 떨어진 단어는
-  # 행이 덮지 않는 꼬리라 일치를 막지 않는다.
+  # 행이 덮지 않는 꼬리라 일치를 막지 않는다 — 기기전역 칸이 행위 전체를 요구하는
+  # docker 행위만 예외로, 그 행위에는 꼬리가 없어 어디서 떨어졌든 막는다.
   last=$(word_at "$map" "$nwords")
-  dz_row=0
+  dz_row=$tail_all
   for d in $drop; do
     if [ -z "$last" ] || [ "$d" -lt "$last" ]; then dz_row=1; break; fi
   done
@@ -320,7 +329,11 @@ if [ "$probe" = "1" ]; then
             sw=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk -v p="$d" '{ print $p; exit }')
             break
           fi
-        done ;;
+        done
+        if [ "$sx" = "ok" ] && [ "$tail_all" = "1" ]; then
+          sx=dropped
+          sw=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk -v p="${drop%% *}" '{ print $p; exit }')
+        fi ;;
     esac
   fi
   [ "$sx" = "ok" ] || prop='-'
