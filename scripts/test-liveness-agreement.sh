@@ -30,6 +30,10 @@ set -uo pipefail
 # turning the channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one, and nothing in this suite stops it.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -534,6 +538,187 @@ printf '%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/shift.live"
 check "지문이 어긋난 shift.live 는 살아 있는 교대가 아니다" \
   "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
 rm -f "$FX_RUN_DIR/shift.live"
+RD_R="$FX_RUN_DIR"
+
+# ---------------------------------------------------------------------------
+# The sixth reader — the dashboard's port of these predicates.
+#
+# The dashboard cannot call this file: one run takes about a tenth of a second
+# through `cc_run_state`, and a host carries hundreds of run directories. So
+# `dashboard_read.py` carries a port, and a port is a second implementation —
+# exactly the shape this suite exists to hold to one answer. It joins the
+# census readings above as a sixth participant, on the same three fixtures.
+#
+# Called with `PYTHONDONTWRITEBYTECODE=1`, because only `dashboard.py` turns the
+# bytecode cache off for itself; importing the module any other way leaves a
+# `__pycache__` inside the plugin tree.
+# ---------------------------------------------------------------------------
+PORT_PY="$repo_root/plugins/cc-cmds/orchestrator/dashboard_read.py"
+port() { PYTHONDONTWRITEBYTECODE=1 python3 "$PORT_PY" "$@"; }
+shell_state() { bash -c '. "$1"; cc_run_state "$2" "$3"' _ "$LIVENESS" "$1" "$2"; }
+shell_grade() { bash -c '. "$1"; cc_run_grade "$2"' _ "$LIVENESS" "$1"; }
+
+if ! command -v python3 >/dev/null 2>&1; then
+  bad "포트 참가자" "python3 를 찾지 못했다 — 여섯째 읽기와 상태·등급 대조가 한 줄도 돌지 않는다"
+else
+  check "A 포트가 같은 수를 본다" "$(port live-stages "$RD_A")" "$(read_shared "$RD_A")"
+  check "A 포트가 이름 대는 스테이지가 살아 있는 그 하나다" "$(port live-names "$RD_A")" "S1"
+  check "B 포트가 같은 수를 본다" "$(port live-stages "$RD_B")" "$(read_shared "$RD_B")"
+  check "레코드 픽스처에서 포트의 이름이 레코드의 이름과 같다" \
+    "$(port live-names "$RD_R")" \
+    "$( { cc_live_stage_records "$RD_R" || true; } | cut -f1 | paste -sd, -)"
+  for lc in ko_KR.UTF-8 C; do
+    check "포트의 지문 비교가 로케일에 불변이다 (LC_ALL=$lc)" \
+      "$(LC_ALL="$lc" port live-stages "$RD_L")" "1"
+  done
+
+  # STATE AND GRADE HAVE NO EXISTING PARTICIPANT TO JOIN. Nothing above derives
+  # a state token, and the grade has one consumer, the status line. So these
+  # are two-participant comparisons — the port against the shell function — on
+  # a fixture built for each branch. Each case also asserts the token it was
+  # built for: a comparison that agrees on the wrong branch would be green while
+  # the branch it names went untested.
+  st_case() {
+    # st_case <설명> <기대 토큰> — compare the current fixture through both.
+    #
+    # THE PORT IS READ TWICE. `port state` is the command line's path, a ledger
+    # read whole and the clock re-derived; the server never takes it. It takes
+    # discovery, `Ledger` and `Model.evaluate`, which keep their own growth
+    # clock and override a clockless run on their own, so `port model-state`
+    # is that path over the same directory. Discovery needs `ledger-path`, which
+    # every real run directory carries.
+    local want="$2" sh py pm
+    [ -f "$FX_RUN_DIR/ledger-path" ] || fx_ledger_path
+    sh=$(shell_state "$FX_RUN_DIR" "$FX_LEDGER")
+    py=$(port state "$FX_RUN_DIR" "$FX_LEDGER")
+    pm=$(port model-state "$FX_RUN_DIR")
+    check "상태 갈래 $1 — 셸이 의도한 토큰을 낸다" "$sh" "$want"
+    check "상태 갈래 $1 — 포트가 셸과 같은 토큰을 낸다" "$py" "$sh"
+    check "상태 갈래 $1 — 서버 경로(Model.evaluate)가 셸과 같은 토큰을 낸다" "$pm" "$sh"
+  }
+
+  fx_mkrun st-live; fx_segment S1 실행중; fx_stage_live S1; fx_heartbeat 0 5
+  st_case "살아 있는 스테이지" "도는중"
+  fx_mkrun st-pend; fx_segment S1 실행중; fx_approval A1 대기; fx_heartbeat 0 5
+  st_case "열린 승인" "승인대기"
+  fx_mkrun st-pend-closed; fx_segment S1 실행중; fx_approval A1 대기; fx_approval A1 승인
+  fx_heartbeat 0 5
+  st_case "닫힌 승인은 대기로 세지 않는다" "진행중"
+  fx_mkrun st-done; fx_segment S1 실행중; fx_done
+  st_case "done 파일" "종단"
+  fx_mkrun st-segs; fx_segment S1 실행중; fx_segment S1 머지됨; fx_segment S2 완료
+  fx_segment S3 park
+  st_case "모든 세그먼트가 종단" "종단"
+  fx_mkrun st-blocked; fx_segment S1 머지됨; fx_done
+  fx_blocked '강제 표면 이동' 불명; fx_heartbeat 0 5
+  st_case "미해소 런 막힘이 done 을 이긴다" "진행중"
+  fx_mkrun st-unblocked; fx_segment S1 머지됨
+  fx_blocked '자동 채택 미달' 불명; fx_blocked '자동 채택 미달' 해소
+  st_case "해소된 막힘은 종단을 막지 않는다" "종단"
+  fx_mkrun st-going; fx_segment S1 실행중; fx_heartbeat 0 5
+  st_case "하트비트 성장 안" "진행중"
+  fx_mkrun st-stall; fx_segment S1 실행중; fx_heartbeat 0 600
+  st_case "정지 임계 너머" "정지경고"
+  fx_mkrun st-abandon; fx_segment S1 실행중; fx_heartbeat 0 7200
+  st_case "포기 임계 너머" "버려짐"
+  fx_mkrun st-mtime; fx_segment S1 실행중; fx_age_file "$FX_LEDGER" 600
+  st_case "하트비트 없이 원장 mtime" "정지경고"
+  fx_mkrun st-noclock; rm -f "$FX_LEDGER"
+  st_case "시계가 하나도 없다" "버려짐"
+  # A merge that still owes its apply is in flight, so the run is not over;
+  # the same row with the apply done is the control.
+  fx_mkrun st-apply-wait
+  fx_row 'segment' "id=S1" "상태=머지됨" "적용=대기" "워크트리=$FX_RUN_DIR"
+  fx_heartbeat 0 5
+  st_case "머지됨이지만 적용=대기" "진행중"
+  fx_mkrun st-apply-done
+  fx_row 'segment' "id=S1" "상태=머지됨" "적용=완료" "워크트리=$FX_RUN_DIR"
+  fx_heartbeat 0 5
+  st_case "머지됨이고 적용=완료" "종단"
+
+  # A STAGE WAITING FOR AN ACCOUNT HAS NO PID FILE, only `<key>.waiting`, and
+  # `cc_run_state` folds a fresh one into its live count. Each case below sits
+  # on a ledger whose growth clock is past the stall threshold, so a port that
+  # skips the waiter answers 정지경고 where the shell answers 도는중. The wake
+  # reading is taken off the host seam: on a machine that woke a minute ago the
+  # stale marker would be fresh by its wake time, and the case would stop
+  # testing what its name says.
+  ag_waiter() {
+    # ag_waiter <key> <갱신 age> <시도> <계보> — a marker held by a live process.
+    local pid fp
+    sleep 120 &
+    pid=$!
+    FX_PIDS="${FX_PIDS:-}$pid "
+    fp=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
+    printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=%s\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n시도=%s\n' \
+      "$pid" "$fp" "$4" "$(( $(date -u +%s) - $2 ))" "$3" > "$FX_RUN_DIR/$1.waiting"
+  }
+  ag_host_saved=${ORCH_HOST_OS-}
+  ORCH_HOST_OS=Linux; export ORCH_HOST_OS
+  fx_mkrun st-wait-fresh; fx_segment W1 실행중; fx_heartbeat 0 600
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "신선한 대기자" "도는중"
+  fx_mkrun st-wait-stale; fx_segment W1 실행중; fx_heartbeat 0 600
+  ag_waiter W1 100000 1 'B:W1#1'
+  st_case "갱신이 멈춘 대기자는 신선하지 않다" "정지경고"
+  fx_mkrun st-wait-result; fx_segment W1 실행중; fx_heartbeat 0 600
+  fx_row 'stage-result' "세그먼트=W1" "스테이지=W1" "종류=implement" "종료 코드=0" "실행 버전=1"
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "그 시도의 stage-result 가 있으면 대기자가 아니다" "정지경고"
+  fx_mkrun st-wait-blocked; fx_segment W1 실행중; fx_heartbeat 0 600
+  fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=픽스처" "계보=B:W1#1"
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "같은 계보의 blocked 행이 있으면 대기자가 아니다" "정지경고"
+  fx_mkrun st-wait-lin-prefix; fx_segment W1 실행중; fx_heartbeat 0 600
+  fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=픽스처" "계보=B:W1#10"
+  ag_waiter W1 5 1 'B:W1#1'
+  st_case "B:W1#10 은 B:W1#1 을 이름 대지 않는다" "도는중"
+  if [ -n "$ag_host_saved" ]; then ORCH_HOST_OS=$ag_host_saved; else unset ORCH_HOST_OS; fi
+
+  # THE BLOCKED FOLD'S INPUT SHAPES. A design step has no segment row, so a cone
+  # row anchored on one holds the whole run; a later attempt of the same key is
+  # what releases it, and an equal attempt is not. A `스코프=run` quoted inside
+  # another field is not the scope, and `사유=막힘` is not `사유=막힘 추가`.
+  fx_mkrun st-cone-step; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=불명" "사유=마감 정지" \
+    "근거=계보=B:STEP1#1 마감" "앵커 세그먼트=STEP1"
+  fx_heartbeat 0 5
+  st_case "스텝 앵커 cone 막힘이 종단을 막는다" "진행중"
+  fx_mkrun st-cone-released; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=불명" "사유=마감 정지" \
+    "근거=계보=B:STEP1#1 마감" "앵커 세그먼트=STEP1"
+  fx_row 'stage-wait' "교대=1" "계보=B:STEP1#2" "그룹=-" "근거=fifo-yield"
+  fx_heartbeat 0 5
+  st_case "같은 키의 더 큰 시도가 스텝 cone 을 푼다" "종단"
+  fx_mkrun st-cone-same; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=불명" "사유=마감 정지" \
+    "근거=계보=B:STEP1#1 마감" "앵커 세그먼트=STEP1"
+  fx_row 'stage-wait' "교대=1" "계보=B:STEP1#1" "그룹=-" "근거=fifo-yield"
+  fx_heartbeat 0 5
+  st_case "같은 시도는 스텝 cone 을 풀지 않는다" "진행중"
+  fx_mkrun st-scope-quoted; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=인용" "근거='스코프=run'"
+  st_case "다른 필드 안의 스코프=run 은 범위가 아니다" "종단"
+  fx_mkrun st-reason-prefix; fx_segment S1 머지됨
+  fx_blocked '막힘' 불명; fx_blocked '막힘 추가' 해소
+  fx_heartbeat 0 5
+  st_case "사유 막힘 추가의 해소가 막힘을 풀지 않는다" "진행중"
+
+  # THE GRADE TOKENS ARE READ OFF `cc_run_grade`, not listed here. A list
+  # written by hand is complete on the day it is written: it missed 정산중,
+  # where the shell answers 3 and a port without the arm answers 9, and
+  # nothing failed. The unknown token is added because no arm names it.
+  gr_toks=$(sed -n '/^cc_run_grade() {/,/^}/p' "$LIVENESS" \
+              | sed -n -E 's/^ *([^ ()*#]+)\).*/\1/p' | tr '\n' ' ')
+  case " $gr_toks " in
+    *"("*) bad "등급 토큰 유도" "함수 머리줄이 토큰으로 섞였다: '$gr_toks'" ;;
+    *" 정산중 "*) ok "등급 토큰 목록을 cc_run_grade 에서 유도했다 ($gr_toks)" ;;
+    *) bad "등급 토큰 유도" "cc_run_grade 에서 뽑은 목록이 비었거나 정산중을 담지 않는다: '$gr_toks'" ;;
+  esac
+  for tok in $gr_toks 미지의토큰; do
+    check "등급 갈래 $tok — 포트가 셸과 같은 등급을 낸다" "$(port grade "$tok")" "$(shell_grade "$tok")"
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # The run's STATE, read by every consumer that acts on it.
@@ -624,6 +809,12 @@ check "C 상태 독자 — 정산 창은 정산중이다" "$(read_statusline ses
 check "C 리퍼 독자 — 정산중이다" "$(read_reaper "$RD_C" "$LG_C")" "정산중"
 check "C 지표 독자 — 열린 런이다" "$(read_metrics "$RD_C" "$LG_C")" "열린 런"
 check "C 폴러 독자 — 끝나지 않았다" "$(read_poller "$RD_C" "$LG_C")" "끝나지 않음"
+# The dashboard reads the same window through its port, on the command line's
+# path and on the server's. Its absence was not visible to any reader above.
+if command -v python3 >/dev/null 2>&1; then
+  check "C 포트 독자 — 정산중이다" "$(port state "$RD_C" "$LG_C")" "정산중"
+  check "C 모델 독자 — 정산중이다" "$(port model-state "$RD_C")" "정산중"
+fi
 
 # Fixture D — the done-tail: marker, `done`, and the shift that wrote it still
 # alive.
@@ -638,6 +829,10 @@ check "D 상태 독자 — done 꼬리는 정산중이다" "$(read_statusline se
 check "D 리퍼 독자 — 정산중이다" "$(read_reaper "$RD_D" "$LG_D")" "정산중"
 check "D 지표 독자 — 열린 런이다" "$(read_metrics "$RD_D" "$LG_D")" "열린 런"
 check "D 폴러 독자 — done 을 먼저 보므로 끝났다" "$(read_poller "$RD_D" "$LG_D")" "끝남"
+if command -v python3 >/dev/null 2>&1; then
+  check "D 포트 독자 — 정산중이다" "$(port state "$RD_D" "$LG_D")" "정산중"
+  check "D 모델 독자 — 정산중이다" "$(port model-state "$RD_D")" "정산중"
+fi
 
 # And every reader flips together when the shift goes, so the agreement above
 # is not one fixture's coincidence.
@@ -646,6 +841,10 @@ check "D′ 상태 독자 — 교대가 끝나면 종단이다" "$(read_statusli
 check "D′ 리퍼 독자 — 종단이다" "$(read_reaper "$RD_D" "$LG_D")" "종단"
 check "D′ 지표 독자 — 닫힌 런이다" "$(read_metrics "$RD_D" "$LG_D")" "닫힌 런"
 check "D′ 폴러 독자 — 끝났다" "$(read_poller "$RD_D" "$LG_D")" "끝남"
+if command -v python3 >/dev/null 2>&1; then
+  check "D′ 포트 독자 — 종단이다" "$(port state "$RD_D" "$LG_D")" "종단"
+  check "D′ 모델 독자 — 종단이다" "$(port model-state "$RD_D")" "종단"
+fi
 
 # ---------------------------------------------------------------------------
 # The state table: marker × done × shift × nonterminal segment × ledger age ×
@@ -681,7 +880,12 @@ st_expect() {
 
 sleep 300 & ST_PID=$!
 FX_PIDS="${FX_PIDS:-}$ST_PID "; export FX_PIDS
-st_i=0; st_bad=0
+# The dashboard's port reads every case in both call shapes as well. The table
+# holds the marker, `done` and a live shift in every combination, which is the
+# set of branches the port once lacked while every fixture above agreed.
+st_port=no
+command -v python3 >/dev/null 2>&1 && st_port=yes
+st_i=0; st_bad=0; st_pbad=0; st_pn=0
 for st_m in n y; do for st_d in n y; do for st_s in n y; do for st_n in 0 1; do
 for st_a in 0 200 4000; do for st_b in n y; do
   st_i=$((st_i + 1))
@@ -697,12 +901,114 @@ for st_a in 0 200 4000; do for st_b in n y; do
   st_got=$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 180 3600)
   st_want=$(st_expect "$st_m" "$st_d" "$st_s" "$st_n" "$st_a" "$st_b" 180)
   [ "$st_got" = "$st_want" ] || { st_bad=$((st_bad + 1)); bad "상태표 (180 3600) $st_case" "got '$st_got', want '$st_want'"; }
+  if [ "$st_port" = yes ]; then
+    st_pn=$((st_pn + 1))
+    st_py=$(port state "$FX_RUN_DIR" "$FX_LEDGER" 180 3600)
+    [ "$st_py" = "$st_got" ] || { st_pbad=$((st_pbad + 1)); bad "상태표 포트 (180 3600) $st_case" "port '$st_py', shell '$st_got'"; }
+  fi
   st_got=$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 1200)
   st_want=$(st_expect "$st_m" "$st_d" "$st_s" "$st_n" "$st_a" "$st_b" 1200)
   [ "$st_got" = "$st_want" ] || { st_bad=$((st_bad + 1)); bad "상태표 (1200) $st_case" "got '$st_got', want '$st_want'"; }
+  if [ "$st_port" = yes ]; then
+    st_pn=$((st_pn + 1))
+    st_py=$(port state "$FX_RUN_DIR" "$FX_LEDGER" 1200 3600)
+    [ "$st_py" = "$st_got" ] || { st_pbad=$((st_pbad + 1)); bad "상태표 포트 (1200) $st_case" "port '$st_py', shell '$st_got'"; }
+  fi
 done; done; done; done; done; done
 check "상태표 96 사례가 두 호출 꼴 모두에서 규칙과 같다" "$st_bad" "0"
 check "상태표가 실제로 96 사례를 돌았다" "$st_i" "96"
+if [ "$st_port" = yes ]; then
+  check "상태표 192 판독에서 포트가 셸과 어긋난 수" "$st_pbad" "0"
+  check "포트가 상태표의 판독 192 개를 실제로 돌았다" "$st_pn" "192"
+fi
+
+# ---------------------------------------------------------------------------
+# The watchers' idle self-exit, `cc_run_idle_exit`, and the poller reading it.
+#
+# EVERY FIXTURE HERE IS 버려짐 TO THE STATE TABLE, and that is the point. The
+# ledger last grew 25 hours ago and a segment is still open, so `cc_run_state`
+# says 버려짐 for all of them; the idle predicate has to tell apart the run that
+# waits on a person — an unanswered halt record, an open approval — from the run
+# that waits on nobody. A predicate that reused 버려짐 would pass the first
+# fixture and take the progress channel away from a person's open question.
+# ---------------------------------------------------------------------------
+idle_of() {
+  # idle_of <run-dir> <ledger> [T] — the predicate's answer as a word, with the
+  # ledger's mtime moved back to the fixture's growth age first. The predicate
+  # takes the later of the heartbeat field and the mtime, and a fixture row
+  # appended a moment ago would otherwise be the growth every case reads.
+  fx_age_file "$2" "$ID_AGE"
+  if cc_run_idle_exit "$1" "${3:-}" "$2"; then printf '유휴'; else printf '유휴 아님'; fi
+}
+id_mkrun() {
+  # id_mkrun <run-id> <growth-age> — an open run whose ledger last grew that long ago.
+  fx_mkrun "$1"
+  fx_segment S1 실행중
+  fx_heartbeat 0 "$2"
+  ID_AGE="$2"
+}
+
+id_mkrun 20261012-0000000a 90000
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/S1.md"
+check "유휴 A — 상태표는 이 런을 버려짐 으로 읽는다 (아래 단언이 공허하지 않다)" \
+  "$(cc_run_state "$FX_RUN_DIR" "$FX_LEDGER" 1200)" "버려짐"
+check "유휴 A — 답 없는 중단 기록이 있으면 25시간 조용해도 유휴가 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+check "유휴 A 폴러 — 끝나지 않았다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝나지 않음"
+printf '답\n' > "$FX_RUN_DIR/halt/S1.answer.md"
+check "유휴 A — 답 첨부 파일은 원장의 답 행이 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/S1.md" "답=좌석 실행"
+check "유휴 A′ — 그 기록을 원장의 중단 답 행이 가리키면 유휴다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+check "유휴 A′ 폴러 — 끝났다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝남"
+
+id_mkrun 20261012-0000000b 90000
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/S1.md"
+fx_row '중단 답' "중단 기록=/elsewhere/20261012-0000000a/halt/S1.md" "답=좌석 실행"
+check "유휴 B — 다른 런의 같은 이름 기록을 가리키는 답은 이 기록의 답이 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+
+id_mkrun 20261012-0000000c 90000
+fx_approval A1 대기
+check "유휴 C — 대기 중인 승인이 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_approval A1 승인됨
+check "유휴 C′ — 그 승인이 풀리면 유휴다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+
+id_mkrun 20261012-0000000d 90000
+check "유휴 D — 아무도 기다리지 않는 런은 유휴다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+check "유휴 D 폴러 — done 없이도 끝났다" "$(read_poller "$FX_RUN_DIR" "$FX_LEDGER")" "끝남"
+check "유휴 D — 술어는 done 을 쓰지 않는다" "$( [ -e "$FX_RUN_DIR/done" ] && printf 있음 || printf 없음 )" "없음"
+ag_shift_live "$FX_RUN_DIR" "$ST_PID"
+check "유휴 D′ — 살아 있는 교대가 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+rm -f "$FX_RUN_DIR/shift.live"
+fx_stage_live S9
+check "유휴 D″ — 살아 있는 스테이지가 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+
+id_mkrun 20261012-0000000e 4000
+check "유휴 E — 기본 임계(24시간) 안에서는 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+check "유휴 E — 임계를 인자로 줄이면 같은 런이 유휴다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER" 3600)" "유휴"
+check "유휴 E — 숫자 아닌 임계는 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER" 1h)" "유휴 아님"
+check "기본 임계는 24시간이다" "$CC_RUN_IDLE_EXIT_SECONDS" "86400"
+
+# A watcher started again on a run its predecessor left as idle. The heartbeat's
+# `마지막성장` stays a day old once that watcher is gone, so the clock has to come
+# from somewhere it does not reach. F′ is F with the ledger aged back, so the
+# appended row is what F's answer rests on; F″ is F′ with a caller that started
+# watching just now, so the start epoch is what F″'s answer rests on.
+id_mkrun 20261012-0000000f 90000
+fx_row 'handoff' "사유=중단"
+check "유휴 F — 묵은 하트비트가 있어도 원장에 방금 행이 붙었으면 유휴가 아니다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" && printf '유휴' || printf '유휴 아님')" "유휴 아님"
+fx_age_file "$FX_LEDGER" 90000
+check "유휴 F′ — 원장도 하루 넘게 조용하면 유휴다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" && printf '유휴' || printf '유휴 아님')" "유휴"
+check "유휴 F″ — 같은 런이라도 방금 지켜보기 시작한 호출자에게는 유휴가 아니다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" "$(date -u +%s)" && printf '유휴' || printf '유휴 아님')" "유휴 아님"
+check "유휴 F‴ — 임계보다 오래 지켜본 호출자에게는 유휴다" \
+  "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" "$(( $(date -u +%s) - 90000 ))" && printf '유휴' || printf '유휴 아님')" "유휴"
 
 # ---------------------------------------------------------------------------
 # The notifier channel stays off for every suite that does not assert on it.
@@ -878,6 +1184,14 @@ for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrato
     ok "$b 가 알림 채널을 프로세스 수준에서 끈다"
   else
     bad "알림 누출" "$b 가 게이트 계열을 부르면서 CC_CMDS_AUTOPILOT_NOTIFY 를 내보내지 않는다 — 이 스위트가 도는 동안 사용자 화면에 실제 배너가 도달한다"
+  fi
+  # The same set runs the gate's run-open branch, which starts the dashboard
+  # server. Left on, every fixture run that opens there leaves a real server
+  # listening on this host after the suite ends.
+  if grep -q '^export CC_CMDS_DASHBOARD$' "$f"; then
+    ok "$b 가 대시보드 자동 기동을 프로세스 수준에서 끈다"
+  else
+    bad "대시보드 누출" "$b 가 게이트 계열을 부르면서 CC_CMDS_DASHBOARD 를 내보내지 않는다 — 픽스처 런 개시마다 실제 서버가 남는다"
   fi
 done
 

@@ -1089,11 +1089,11 @@ cc_run_grade() {
   # `scripts/lint-statusline-token-arms.sh` exists to catch on the render side,
   # and this function has to grow with the vocabulary in the same edit.
   #
-  # TODAY THIS GRADE HAS EXACTLY ONE CONSUMER, `statusline.sh`. That is why
-  # `scripts/test-liveness-agreement.sh` gained no case for it — an agreement
-  # suite with one participant tests a function against itself. When a second
-  # consumer appears, this function and this file are what it must be compared
-  # against.
+  # THIS GRADE HAS TWO CONSUMERS, `statusline.sh` and the dashboard's port in
+  # `dashboard_read.py`, and `scripts/test-liveness-agreement.sh` binds them: it
+  # compares the port's grade against this function on each token this function
+  # ranks, the list derived from the arms below, and on an unknown one. A token
+  # added here needs its arm in the port in the same edit, or that suite fails.
   case "$1" in
     도는중)   printf '1' ;;
     승인대기) printf '2' ;;
@@ -1201,4 +1201,119 @@ cc_run_state() {
 
   [ "$settle" = 1 ] && { printf '정산중'; return 0; }
   printf '진행중'
+}
+
+# THE WATCHERS' IDLE-EXIT THRESHOLD, declared here once and read by both
+# `watch.sh` and `checks.sh`. Neither declares a value of its own, and
+# `scripts/lint-watch-threshold-pins.sh` holds that: two watchers of one run
+# going quiet at two different moments would leave one of them behind for a
+# reason nobody could read off either file.
+#
+# 24 HOURS, AND THE NUMBER IS CHOSEN TO BE LONGER THAN A NIGHT. A run that waits
+# for a person overnight is in a legitimate state, and so is one that waits out
+# a weekend morning; a shorter value would take the progress channel away from
+# the very run somebody is about to answer. The predicate below already leaves
+# out runs with an open approval or an unanswered halt record, so this number
+# covers only the run that waits for nobody.
+#
+# NOT `readonly`: this file is sourced more than once in one shell, and a plain
+# assignment also overwrites whatever a caller's environment carried.
+CC_RUN_IDLE_EXIT_SECONDS=86400
+
+cc_unanswered_halts() {
+  # cc_unanswered_halts <run-dir> <ledger> — count of halt records under
+  # `<run-dir>/halt/` that no `중단 답` row names.
+  #
+  # A HALT RECORD IS A QUESTION TO A PERSON, and until a row answers it the run
+  # is waiting rather than idle. The answer attachment the seat writes beside a
+  # record (`<record>.answer.md`) is not a question and is not counted.
+  #
+  # MATCHED ON THE WHOLE FIELD, and on the path's tail from the run directory's
+  # own name down. The gate writes `중단 기록=<its run dir>/halt/<name>.md`, and a
+  # watcher may have been handed the same directory under another spelling (a
+  # trailing slash, a symlinked state home); the run id and the record name are
+  # what both spellings share. The ledger is this run's own, so the tail is
+  # unique in it.
+  local run_dir="${1%/}" ledger="$2" f name tail n=0
+  [ -n "$run_dir" ] && [ -d "$run_dir/halt" ] || { printf '0'; return 0; }
+  for f in "$run_dir"/halt/*.md; do
+    [ -f "$f" ] || continue
+    case "$f" in *.answer.md) continue ;; esac
+    name=${f##*/}
+    tail="/${run_dir##*/}/halt/$name"
+    if [ -n "$ledger" ] && [ -f "$ledger" ] && awk -v t="$tail" '
+         index($0, "- `중단 답` | ") == 1 {
+           n = split($0, f, / \| /)
+           for (i = 2; i <= n; i++) {
+             if (index(f[i], "중단 기록=") != 1) continue
+             v = substr(f[i], length("중단 기록=") + 1)
+             sub(/[[:space:]]+$/, "", v)
+             if (length(v) >= length(t) && substr(v, length(v) - length(t) + 1) == t) { hit = 1; exit }
+           }
+         }
+         END { exit hit ? 0 : 1 }' "$ledger" 2>/dev/null; then
+      continue
+    fi
+    n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+cc_run_idle_exit() {
+  # cc_run_idle_exit <run-dir> [T] [ledger] [since] — succeeds when the run's
+  # watchers have nothing left to watch: no live shift, no live stage and no
+  # fresh waiter; no open approval; no unanswered halt record; and a ledger that
+  # has not grown for T seconds, nor been watched by this caller for less than
+  # T. T defaults to `CC_RUN_IDLE_EXIT_SECONDS`, the ledger to the caller's
+  # `LEDGER`; `since` is the epoch the caller started watching.
+  #
+  # THIS IS NOT `버려짐`, and the difference is the whole reason it exists.
+  # `cc_run_state` reads a run that waits on a halt record as abandoned after
+  # an hour, because it never looks at `halt/`; a watcher that went quiet on
+  # that token would leave a person's unanswered question with no progress
+  # channel behind it. The two conditions that mean "a person owes this run an
+  # answer" are tested here first, and only a run that waits for nobody can
+  # pass.
+  #
+  # THE RUN STAYS OPEN. Nothing here writes, and a watcher that leaves on this
+  # predicate writes no `done`: closing a run that another run took over, or that
+  # a person gave up, is `gate.sh end-abandoned`. A run that moves again later
+  # gets its watchers back from the seat when it launches the next shift.
+  #
+  # UNREADABLE GROWTH IS NOT IDLENESS. When neither the heartbeat field nor the
+  # ledger's mtime can be read, the answer is "not idle", so a reader that
+  # cannot see the clock keeps watching rather than leaving.
+  #
+  # THE CLOCK IS THE LATEST OF THREE, NOT THE HEARTBEAT ALONE. A watcher that
+  # left on this predicate stops writing `watch.heartbeat`, so its `마지막성장`
+  # stays a day old for good; read first, as `cc_ledger_growth_at` does, it made
+  # a watcher the seat had just started again leave on its first iteration — a
+  # row appended since then could not move it, and the seat starts the watcher
+  # before the shift that would make anything live. So the ledger's own mtime
+  # counts beside the field, and the optional fourth argument — the epoch the
+  # caller started watching — counts too: a watcher leaves only after watching
+  # this run for T seconds itself, never on a clock a previous watcher left.
+  local run_dir="$1" t="${2:-}" ledger="${3:-${LEDGER:-}}" since="${4:-}" n grew v now idle
+  [ -n "$t" ] || t="$CC_RUN_IDLE_EXIT_SECONDS"
+  case "$t" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 1
+  cc_shift_is_live "$run_dir" && return 1
+  n=$(cc_live_stages "$run_dir")
+  n=$(( ${n:-0} + $(cc_waiting_fresh_count "$run_dir" "$ledger") ))
+  [ "$n" -eq 0 ] 2>/dev/null || return 1
+  n=$(cc_open_approvals "$ledger")
+  [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
+  n=$(cc_unanswered_halts "$run_dir" "$ledger")
+  [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
+  grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
+  [ -n "$grew" ] || return 1
+  case "$grew" in *[!0-9]*) return 1 ;; esac
+  for v in "$(cc_mtime "$ledger")" "$since"; do
+    case "$v" in ''|*[!0-9]*) continue ;; esac
+    [ "$v" -gt "$grew" ] && grew=$v
+  done
+  now=$(date -u +%s)
+  idle=$((now - grew))
+  [ "$idle" -lt 0 ] && idle=0
+  [ "$idle" -ge "$t" ]
 }

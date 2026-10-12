@@ -788,16 +788,17 @@ series_rows() {
       fi
       case "$c" in
         1) set -- stage-lease '파견 id=S1-impl-1.retry' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' \
-                  '예약=0.2500/0.1000' '근거=first' '관측=usage-cache@1790000000' ;;
+                  '예약=0.2500/0.1000' '비용=0.0300/0.0080' '비용 출처=group-kind/kind' '근거=first' \
+                  '관측=usage-cache@1790000000' ;;
         2) set -- stage-lease '파견 id=S1-impl-2' '계보=S1-impl-2' '계정=-' '레인=~' '예약=-' \
-                  '근거=single-seat' '관측=-' ;;
+                  '비용=-' '비용 출처=-' '근거=single-seat' '관측=-' ;;
         3) set -- stage-lease '파견 id=S1-impl-3' '계보=S1-impl-3' '계정=acct-b' '레인=/lanes/b' \
-                  '예약=1.0000/0.0000' '근거=resume-bound' '관측=none' ;;
+                  '예약=1.0000/0.0000' '비용=-' '비용 출처=-' '근거=resume-bound' '관측=none' ;;
         4) set -- stage-wait '계보=S2-impl-1' '그룹=org:0123456789abcdef' '계정=-' \
-                  '까지=2026-09-27T01:02:03Z' '근거=no-room' ;;
+                  '까지=2026-09-27T01:02:03Z' '비용=1.0000/0.0000' '비용 출처=default/default' '근거=no-room' ;;
         5) set -- stage-wait '계보=S2-impl-2' '그룹=acct:acct-a' '계정=acct-a' '까지=-' \
-                  '근거=resume-bound-exhausted' ;;
-        6) set -- stage-wait '계보=S2-impl-3' '그룹=-' '계정=-' '까지=-' '근거=fifo-yield' ;;
+                  '비용=-' '비용 출처=-' '근거=resume-bound-exhausted' ;;
+        6) set -- stage-wait '계보=S2-impl-3' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=fifo-yield' ;;
       esac
       series_write "$w" "$l" "$sh" "$@" || rc=1
     done
@@ -885,11 +886,11 @@ s_check "alternating the two writers on one ledger reproduces the single-writer 
 if [ -n "$(lock_tool)" ] && [ -x "$(lock_tool)" ]; then series_branch=locked; else series_branch=unlocked; fi
 for series_i in 1 2 3 4; do
   if [ "$series_branch" = locked ]; then
-    series_write gate_append "$series_m" - stage-wait "계보=G$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-lock-busy' &
-    series_write ledger_row "$series_m" - stage-wait "계보=D$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-contention' &
+    series_write gate_append "$series_m" - stage-wait "계보=G$series_i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-lock-busy' &
+    series_write ledger_row "$series_m" - stage-wait "계보=D$series_i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-contention' &
   else
-    series_write gate_append "$series_m" - stage-wait "계보=G$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-lock-busy'
-    series_write ledger_row "$series_m" - stage-wait "계보=D$series_i" '그룹=-' '계정=-' '까지=-' '근거=lease-contention'
+    series_write gate_append "$series_m" - stage-wait "계보=G$series_i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-lock-busy'
+    series_write ledger_row "$series_m" - stage-wait "계보=D$series_i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-contention'
   fi
 done
 wait

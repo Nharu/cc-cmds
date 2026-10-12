@@ -71,6 +71,11 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
+# The dashboard server is off for the same reason: the gate's run-open branch
+# starts one on every new run, and over a hundred calls here open runs. The
+# dashboard section turns it back on inside its own subshells only.
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 # THE WHOLE PIPELINE ENVIRONMENT IS CLEARED FOR THE WHOLE PROCESS — all eleven
 # `CC_PIPELINE_*` names, here and nowhere later. This suite runs from whatever
 # process starts it, including a pipeline stage, which exports every one of them.
@@ -1769,6 +1774,10 @@ refresh_bd() {
   mv "$FX_MANIFEST.bd" "$FX_MANIFEST"
 }
 refresh_bd
+# A pristine copy of the manifest, for the same reason as `GBAK`: a section that
+# opens runs of its own derives them from these bytes, not from whatever
+# `FX_MANIFEST` names by the time it runs.
+MBAK="$WORK/manifest.bak"; cp "$FX_MANIFEST" "$MBAK"
 
 gate snapshot --manifest "$FX_MANIFEST"
 check "구속 다이제스트가 있는 매니페스트가 통과한다" "$rc" "0"
@@ -3006,6 +3015,14 @@ pre_sb() {
     rm -rf "$SA_RUN"
   }
 
+  sc_ends() {
+    # sc_ends [토큰] — 종료 행의 수, 토큰을 주면 그 토큰의 것만. 38-5c 와 38-5d 가
+    # 함께 쓰므로 어느 한 절의 본문이 아니라 여기에 둔다.
+    { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } \
+      | { if [ -n "${1:-}" ]; then grep -F "| 재킥 원인=$1 |" || true; else cat; fi; } \
+      | grep -c . || true
+  }
+
   sb_target_field() {
     # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
     # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
@@ -3229,7 +3246,8 @@ pre_ledger_series() {
   lsr_lease_cases() {
     # 근거 여덟 × 예약 값/`-` × 관측 값/`none`/`-`. `계정` 은 결합 규칙에 맞는
     # 쪽만 — 좌석 근거는 `-`, 그 밖은 계정 id. 어긋난 조합은 거부 사례다.
-    local b acct lane bp obs
+    # `비용`·`비용 출처` 는 예약과 함께 값이거나 함께 `-` 다.
+    local b acct lane bp obs c cs
     for b in first sticky resume-bound reassigned-after-limit reassigned-no-room \
              after-wait shift-seat-fallback single-seat; do
       case "$b" in
@@ -3237,9 +3255,10 @@ pre_ledger_series() {
         *) acct='acct-a'; lane='~/.claude-a' ;;
       esac
       for bp in 0.2500/0.1000 -; do
+        case "$bp" in -) c='-'; cs='-' ;; *) c='0.0300/0.0080'; cs='group-kind/kind' ;; esac
         for obs in usage-cache@1790000000.5 none -; do
           lsr_row stage-lease '파견 id=S1-impl-1.retry' '계보=S1-impl-1' "계정=$acct" \
-            "레인=$lane" "예약=$bp" "근거=$b" "관측=$obs"
+            "레인=$lane" "예약=$bp" "비용=$c" "비용 출처=$cs" "근거=$b" "관측=$obs"
         done
       done
     done
@@ -3247,14 +3266,15 @@ pre_ledger_series() {
 
   lsr_wait_cases() {
     # 대기 원인 여덟 × `그룹` 세 모양 × `까지` 값/`-`. `계정` 은 재개 구속
-    # 원인에만 값이다.
-    local r acct g u
+    # 원인에만 값이다. `비용`·`비용 출처` 는 `까지` 와 함께 값이거나 함께 `-` 다.
+    local r acct g u c cs
     for r in group-exhausted no-room unknown-concurrency fifo-yield \
              resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention; do
       case "$r" in resume-bound-*) acct='acct-a' ;; *) acct='-' ;; esac
       for g in - org:0123456789abcdef acct:acct-b; do
         for u in 2026-09-27T01:02:03Z -; do
-          lsr_row stage-wait '계보=S2-impl-1' "그룹=$g" "계정=$acct" "까지=$u" "근거=$r"
+          case "$u" in -) c='-'; cs='-' ;; *) c='1.0000/0.0000'; cs='default/default' ;; esac
+          lsr_row stage-wait '계보=S2-impl-1' "그룹=$g" "계정=$acct" "까지=$u" "비용=$c" "비용 출처=$cs" "근거=$r"
         done
       done
     done
@@ -3264,8 +3284,8 @@ pre_ledger_series() {
     # 두 기록자를 넷씩 동시에 띄워 한 원장에 섞어 쓴다.
     local i
     for i in 1 2 3 4; do
-      gate_append 'stage-wait' "계보=G$i" '그룹=-' '계정=-' '까지=-' '근거=lease-lock-busy' &
-      ledger_row 'stage-wait' "계보=D$i" '그룹=-' '계정=-' '까지=-' '근거=lease-contention' &
+      gate_append 'stage-wait' "계보=G$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-lock-busy' &
+      ledger_row 'stage-wait' "계보=D$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-contention' &
     done
     wait
   }
@@ -15994,12 +16014,12 @@ case "$msg" in
   *"with no --rationale"*) ok "빠진 입력을 밝히되 축을 건너뛰지는 않는다" ;;
   *) bad "근거 부재 고지" "$msg" ;;
 esac
-gate4 act --manifest "$NM4" --kind x --target infra --segment SN1 --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(H4)" --rationale "이제 슬슬 정리하자" -- ls
-check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것이 없으므로" "$rc" "3"
+# Q2, the `act` half, runs on its own run at the end of this section: that act
+# now ENDS the run it is refused on, and this run still has a proposal, a
+# re-proposal and the excused corner ahead of it.
 
-# Q3 — AND A BOOKKEEPING ACT IS NOT REFUSED BY THAT AXIS. Q2 has just shown that
-# no rationale passes here; if the axis also covered bookkeeping, then all eleven
+# Q3 — AND A BOOKKEEPING ACT IS NOT REFUSED BY THAT AXIS. Q2 shows that no
+# rationale passes here; if the axis also covered bookkeeping, then all eleven
 # bookkeeping kinds would be refused in exactly the state where the protocol
 # requires the terminal shift to write its `handoff` row, and the morning would
 # lose the last shift's rejected alternatives whole. This suite reached the
@@ -16007,9 +16027,29 @@ check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것�
 # is why 1880 assertions passed over the refusal.
 gate4 act --manifest "$NM4" --kind handoff --target infra --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(H4)" --rationale "종단 교대의 인수인계" \
-      -- 교대=0 사유=종단 '버린 선택지=SN2 를 되살리는 길' '막힌 지점=없음' '다음 후보=없음'
+      -- 교대=0 사유=중단 '버린 선택지=SN2 를 되살리는 길' '막힌 지점=없음' '다음 후보=없음'
 check "Q3: 조건이 전부 성립해도 handoff 부기 행위는 통과한다" "$rc" "0"
 check "Q3: 그 인수인계 행이 실제로 원장에 남는다" \
+  "$( { grep -c '^- `handoff` ' "$LEDGER4" || true; } )" "1"
+
+# Q3b — `종단` BEFORE THE RUN HAS ENDED IS REFUSED, AND LEAVES NO ROW. Every
+# condition holds here, but no proposal has been accepted: there is no `done`
+# and no ending row, so a `종단` handoff would leave the watcher waiting on a
+# run nothing closes. Measured on a real night before the refusal existed.
+if grep -qF '| 결정=종료 |' "$LEDGER4" 2>/dev/null || [ -s "$DONE_DIR/done" ]; then
+  bad "Q3b 사전 조건" "done 이나 종료 행이 이미 있다 — 본 단언이 공허해진다"
+else
+  ok "Q3b 사전 조건: done 도 종료 행도 아직 없다"
+fi
+gate4 act --manifest "$NM4" --kind handoff --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 제안 전의 종단 인계" \
+      -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "Q3b: 종료 제안 전의 종단 인계는 3 으로 거부된다" "$rc" "3"
+case "$msg" in
+  *"종료 제안 없이 종단 인계를 쓸 수 없습니다"*) ok "Q3b: 거부가 종료 제안이 없다는 것을 말한다" ;;
+  *) bad "Q3b 거부 문면" "$msg" ;;
+esac
+check "Q3b: 거부된 종단 인계는 행을 남기지 않는다" \
   "$( { grep -c '^- `handoff` ' "$LEDGER4" || true; } )" "1"
 
 # AND Q3 IS EXACTLY THE SHIFT THE NOTE ABOVE PREDICTED. The drain before P is
@@ -16086,6 +16126,15 @@ if [ -n "$held_k3" ]; then
 else
   bad "다중 승인 보고" "종단 줄에 K3(…) 항목이 없다: $done_line"
 fi
+# Q3c — AND ONCE THE PROPOSAL IS ACCEPTED, `종단` IS THE TRUE REASON AND PASSES.
+# The refusal in Q3b reads the run's end marks, not the shift's word, so the
+# same handoff on the same run is taken here and leaves exactly one row.
+gate4 act --manifest "$NM4" --kind handoff --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 제안이 받아들여진 뒤의 종단 인계" \
+      -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "Q3c: 종료 제안 뒤의 종단 인계는 통과한다" "$rc" "0"
+check "Q3c: 그 종단 인계 행이 원장에 하나 남는다" \
+  "$( { grep -c '^- `handoff` .*| 사유=종단 |' "$LEDGER4" || true; } )" "1"
 # `보류` KEEPS COUNTING ONCE THE ANSWER ARRIVES, and the `done` file is where the
 # arrival becomes visible. The opposite reading was here first: the clause went
 # back to unsettled the moment its question closed, so a run a PERSON answered
@@ -16203,6 +16252,184 @@ fi
 if [ -n "$base_ter" ]; then printf '%s\n' "$base_ter" > "$DONE_DIR/surface-digest"
 else rm -f "$DONE_DIR/surface-digest"; fi
 rm -f "$DONE_DIR/done"
+
+# Q2 — THE `act` HALF, ON A RUN OF ITS OWN, AND THE REFUSAL NOW ENDS THE RUN.
+# With every condition met and nothing nameable, the act is refused with 3 as
+# Q1's `plan` is. That refusal used to say "the run terminates as satisfied" and
+# write neither `done` nor an ending row, so the watcher kept the run alive and
+# nothing could close it. Now the same refusal writes both, and the run's one
+# `ended` is raised. A separate run because ending R4 here would void every
+# proposal assertion above.
+DONE5_RUN_ID=R4Q2
+if [ "$DONE5_RUN_ID" = "$CONE_RUN_ID" ] || [ "$DONE5_RUN_ID" = "$prev_run_id" ] \
+   || [ "$DONE5_RUN_ID" = "$DONE_RUN_ID" ]; then
+  printf '31al: Q2 픽스처의 런 id 가 앞선 런과 겹친다 (%s)\n' "$DONE5_RUN_ID" >&2
+  exit 1
+fi
+NM5="$WORK/done5-plan.md"
+sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE5_RUN_ID;/" \
+    -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE5_RUN_ID/" "$NM" > "$NM5"
+sed "s/$CONE_RUN_ID/$DONE5_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE5_RUN_ID.md"
+LEDGER5="$WT/docs/pipeline-run/$DONE5_RUN_ID.md"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE5_RUN_ID"
+  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$DONE5_RUN_ID"
+} > "$LEDGER5"
+DONE5_DIR="$STATE_CONE/cc-cmds/run/$DONE5_RUN_ID"
+# Named for this fixture rather than numbered: `gate5` and `H5` are defined again
+# at column zero by a later section, and a call written here would then read as
+# a call above that later definition.
+gateq2() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+Hq2() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
+gateq2 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(Hq2)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "Q2 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+for q2k in K1 K2 K3; do
+  gateq2 act --manifest "$NM5" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(Hq2)" --rationale x -- id=$q2k 상태=충족 근거="Q2 픽스처"
+  check "Q2 픽스처의 종료 절 $q2k 가 충족으로 정산된다" "$rc" "0"
+done
+gateq2 act --manifest "$NM5" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(Hq2)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=완료 선행=없음
+check "Q2 픽스처의 세그먼트가 완료로 옮겨간다" "$rc" "0"
+# Drained for the reason drain4 gives: a boundary approval counts against
+# condition 2 and would refuse the act before it reaches the arm under test.
+D5SID="25252525-3434-5656-7878-909090909090"
+for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null \
+             | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+  aq=$(row_field "$( { grep -F '`승인`' "$LEDGER5" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+  auq_frame "$NTX/$D5SID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$D5SID" gate_inproc close --manifest "$NM5" --approval "$aid" 2>&1); rc=$?
+  check "Q2 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
+done
+if grep -qF '| 결정=종료 |' "$LEDGER5" 2>/dev/null || [ -e "$DONE5_DIR/done" ]; then
+  bad "Q2 사전 조건" "done 이나 종료 행이 이미 있다 — 본 단언이 공허해진다"
+else
+  ok "Q2 사전 조건: done 도 종료 행도 아직 없다"
+fi
+# Forked with the notifier stubbed on `PATH`, as the seat's proposal above is.
+DONE5_NLOG="$WORK/done5-notify.log"; : > "$DONE5_NLOG"
+out=$(cd "$WT" && PATH="$DONE_NBIN:$PATH" XDG_STATE_HOME="$STATE_CONE" \
+      CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_TEST_NOTIFY_LOG="$DONE5_NLOG" \
+      bash "$GATE" act --manifest "$NM5" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(Hq2)" --rationale "이제 슬슬 정리하자" -- ls 2>&1); rc=$?
+check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것이 없으므로" "$rc" "3"
+check "Q2: 그 거절이 런을 끝내 done 을 남긴다" \
+  "$( [ -s "$DONE5_DIR/done" ] && printf 'done' || printf 'absent')" "done"
+check "Q2: 종료 조건 성립 종료 행이 하나 남는다" \
+  "$( { grep -F '| 결정=종료 |' "$LEDGER5" 2>/dev/null || true; } | { grep -F '| 기준=종료 조건 성립 |' || true; } \
+      | { grep -F '| 종료 부류=완료 |' || true; } | grep -c . || true)" "1"
+done5_i=0
+while [ "$done5_i" -lt 30 ] && ! grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" 2>/dev/null; do
+  sleep 0.1; done5_i=$((done5_i + 1))
+done
+check "Q2: 그 종단이 ended 를 한 번 울린다" \
+  "$( { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" || true; } | tr -d ' ')" "1"
+case "$(head -n 1 "$DONE5_DIR/done" 2>/dev/null || true)" in
+  *"종단 — 종료 조건 성립 · 근거 이제 슬슬 정리하자") ok "Q2: done 첫 줄이 종료 제안의 충족 줄과 같은 꼴이다" ;;
+  *) bad "Q2 done 첫 줄" "$(head -n 1 "$DONE5_DIR/done" 2>/dev/null || true)" ;;
+esac
+
+# Q2j — THE SAME REFUSAL WITH A JUDGMENT QUESTION STILL OPEN. Condition 2 counts
+# act approvals only and condition 10 counts a held clause settled, so this state
+# is all-met too, and the next-obligation axis sees neither. The run must end the
+# way an accepted proposal ends it here: the first line of `done` names the open
+# question and the held clause, the ending row is not a normal completion, and
+# the disposition report is written. Ending it as satisfied left a first line no
+# later proposal can replace.
+DONE6_RUN_ID=R4Q2J
+if [ "$DONE6_RUN_ID" = "$CONE_RUN_ID" ] || [ "$DONE6_RUN_ID" = "$prev_run_id" ] \
+   || [ "$DONE6_RUN_ID" = "$DONE_RUN_ID" ] || [ "$DONE6_RUN_ID" = "$DONE5_RUN_ID" ]; then
+  printf '31al: Q2j 픽스처의 런 id 가 앞선 런과 겹친다 (%s)\n' "$DONE6_RUN_ID" >&2
+  exit 1
+fi
+NM6="$WORK/done6-plan.md"
+sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE6_RUN_ID;/" \
+    -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE6_RUN_ID/" "$NM" > "$NM6"
+sed "s/$CONE_RUN_ID/$DONE6_RUN_ID/g" "$CONE_GRANT" > "$WT/docs/pipeline-grant/$DONE6_RUN_ID.md"
+LEDGER6="$WT/docs/pipeline-run/$DONE6_RUN_ID.md"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE6_RUN_ID"
+  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$DONE6_RUN_ID"
+} > "$LEDGER6"
+DONE6_DIR="$STATE_CONE/cc-cmds/run/$DONE6_RUN_ID"
+gate6() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+H6() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM6" 2>/dev/null | jq -r .H; }
+gate6 act --manifest "$NM6" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "Q2j 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+gate6 act --manifest "$NM6" --kind judgment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale x \
+      -- 등급=2 기준="첫째 절을 이번 런에서 정산할지" 근거="사람이 정해야 한다"
+q2j=$(row_field "$( { grep -F '`승인`' "$LEDGER6" || true; } | grep -F '절단점=판단' \
+        | grep -F '상태=대기' | tail -1)" '승인 id')
+case "$q2j" in
+  J-*) ok "Q2j 픽스처가 판단 승인 하나를 연다" ;;
+  *) bad "Q2j 판단 승인" "승인 id 가 비었다: $q2j" ;;
+esac
+gate6 act --manifest "$NM6" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(H6)" --rationale x -- id=K1 상태=보류 "근거=열린 판단 승인 $q2j"
+check "Q2j 픽스처의 종료 절 K1 이 그 물음에 대해 보류로 정산된다" "$rc" "0"
+for q2k in K2 K3; do
+  gate6 act --manifest "$NM6" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(H6)" --rationale x -- id=$q2k 상태=충족 근거="Q2j 픽스처"
+  check "Q2j 픽스처의 종료 절 $q2k 가 충족으로 정산된다" "$rc" "0"
+done
+gate6 act --manifest "$NM6" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=완료 선행=없음
+check "Q2j 픽스처의 세그먼트가 완료로 옮겨간다" "$rc" "0"
+D6SID="26262626-3434-5656-7878-909090909090"
+for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM6" 2>/dev/null \
+             | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+  aq=$(row_field "$( { grep -F '`승인`' "$LEDGER6" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+  auq_frame "$NTX/$D6SID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$D6SID" gate_inproc close --manifest "$NM6" --approval "$aid" 2>&1); rc=$?
+  check "Q2j 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
+done
+if grep -qF '| 결정=종료 |' "$LEDGER6" 2>/dev/null \
+   || [ -s "$DONE6_DIR/done" ] || [ -e "$DONE6_DIR/done-obligations" ]; then
+  bad "Q2j 사전 조건" "done 이나 처분 보고서나 종료 행이 이미 있다 — 본 단언이 공허해진다"
+else
+  ok "Q2j 사전 조건: done 도 처분 보고서도 종료 행도 아직 없다"
+fi
+gate6 act --manifest "$NM6" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale "물음은 남았지만 정리하자" -- ls
+check "Q2j: 판단 물음이 열린 all-met 에서도 근거를 준 act 가 3 이다" "$rc" "3"
+q2j_line=$(head -n 1 "$DONE6_DIR/done" 2>/dev/null || true)
+case "$q2j_line" in
+  *"종단 — 질의 잔여 1건 · 승인 $q2j · 보류 절 K1($q2j:대기) · 근거 물음은 남았지만 정리하자")
+    ok "Q2j: done 첫 줄이 열린 물음과 보류 절을 싣는다" ;;
+  *) bad "Q2j done 첫 줄" "$q2j_line" ;;
+esac
+check "Q2j: 종료 행이 하나이고 정상 완료가 아니다" \
+  "$( { grep -F '| 결정=종료 |' "$LEDGER6" 2>/dev/null || true; } | { grep -F '| 기준=종료 조건 성립 |' || true; } \
+      | { grep -F '| 재킥 원인=해당없음 |' || true; } | { grep -vF '종료 부류=' || true; } | grep -c . || true)" "1"
+check "Q2j: 종료 부류=완료 인 종료 행은 없다" \
+  "$( { grep -F '| 결정=종료 |' "$LEDGER6" 2>/dev/null || true; } | { grep -cF '종료 부류=완료' || true; } )" "0"
+check "Q2j: 처분 보고서가 쓰인다" \
+  "$( [ -s "$DONE6_DIR/done-obligations" ] && printf 'written' || printf 'absent')" "written"
+# Refused again on the ended run, the act changes neither the mark nor the row.
+gate6 act --manifest "$NM6" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H6)" --rationale "한 번 더" -- ls
+check "Q2j: 끝난 런에서 같은 act 는 여전히 3 이다" "$rc" "3"
+check "Q2j: 그 반복이 done 첫 줄을 바꾸지 않는다" "$(head -n 1 "$DONE6_DIR/done" 2>/dev/null || true)" "$q2j_line"
+check "Q2j: 그 반복이 종료 행을 늘리지 않는다" \
+  "$( { grep -cF '| 결정=종료 |' "$LEDGER6" 2>/dev/null || true; } )" "1"
 
 # --- 31am. An ineligible frame is NAMED and held, and writes nothing --------
 # --- section: 31am | group: cone | covers: act, close | anchors: 다이얼로그 취소 프레임은 닫지 않는다 (exit 5) ---
@@ -18041,13 +18268,14 @@ check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
 # inside it. The arm did not move; the helper's reach had to.
 check "F4 — 무효화 종료의 done 표시가 발사한다" \
   "$(fires_at '종단 — 무효화%s%s · 근거' 16)" "fires"
-# The anchor is the literal the line actually prints. It used to name a
-# condition count the line does not spell, so it matched nothing — and the
-# window is 20 because the reach was never measured against a live anchor: the
-# two terminal spellings share one notice below the disposition report, and the
-# arm sits fifteen lines past the `done` write that names it.
+# The anchor is the accepted proposal's `done` write, not the literal the line
+# prints. That literal now lives in `gate_satisfied_done_line`, which both
+# all-met endings call, so anchoring on it measured a function that fires
+# nothing and read `silent` while the arm still fired. The window is 22 because
+# the notice sits twenty lines past that write, below the two ending rows and
+# the disposition report.
 check "F4 — 충족 종료의 done 표시가 발사한다" \
-  "$(fires_at '종단 — 종료 조건 성립' 20)" "fires"
+  "$(fires_at 'gate_done_note "$(gate_satisfied_done_line "$rationale")"' 22)" "fires"
 # The shift's return has no literal of its own to anchor on — it reads its
 # sentence out of `done` — so it carries one comment line that occurs nowhere
 # else in the file, directly above its `if`. Without this row it is the one
@@ -21435,10 +21663,12 @@ lc_launch() {  # lc_launch <mode> <out-dir name> — the seat launches one shift
 lc_unrec() { { cap_rows 'handoff' | grep -cF '| 사유=무기록 |' || true; }; }
 lc_unrec_row() { cap_rows 'handoff' | grep -F '| 사유=무기록 |' | tail -1; }
 lc_seat_handoff() {  # lc_seat_handoff <digest> — one bookkeeping act from the seat
+  # `중단`, not `종단`: this run has not ended and must not, because 34b and 34c
+  # go on writing to it, and the gate takes `종단` only from an ended run.
   cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra \
     --cutpoint 커밋 --surface 읽기 --snapshot-digest "$1" \
     --rationale "픽스처 — 좌석의 장부 행위" \
-    -- 교대=0 대상=infra 사유=종단 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
+    -- 교대=0 대상=infra 사유=중단 '버린 선택지=-' '막힌 지점=-' '다음 후보=-'
 }
 
 cap_gate "$LC_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment LC1 \
@@ -21593,7 +21823,7 @@ for lc_i in 1 2 3; do lc_launch plain "tail$lc_i"; done
 lc_tail_last=$(row_field "$(lc_unrec_row)" '교대')
 lc_snap=$(cap_snap "$LC_SEAT" '')
 check "(g) 무기록 교대 세 번 뒤에도 마지막 실제 인계가 스냅숏에 남는다" \
-  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | last | .["사유"]')" "종단"
+  "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | last | .["사유"]')" "중단"
 check "(g) 스냅숏의 실제 인계는 상한 세 개를 채운다" \
   "$(printf '%s' "$lc_snap" | jq -r '[.handoff[] | select(.["사유"] != "무기록")] | length')" "3"
 check "(g) 스냅숏의 무기록 항목은 마지막 하나뿐이고 마지막 교대의 것이다" \
@@ -22206,6 +22436,10 @@ check "34c A21: 그 행은 기록의 스킬을 게이트가 읽어 찍는다" \
   "$(row_field "$capc_harow" '스킬')" "design-audit-unattended"
 check "34c A21: 그 행은 기록의 다이제스트를 찍는다" \
   "$(row_field "$capc_harow" '기록 다이제스트')" "$(shasum -a 256 "$CAPC_HALT" | cut -d' ' -f1)"
+check "34c A21: 답한 주체를 넘기지 않은 좌석의 행은 사람의 답으로 찍힌다" \
+  "$(row_field "$capc_harow" '답한 주체')" "사람"
+check "34c A21: 스냅숏이 그 답의 answered_by 를 사람으로 내놓는다" \
+  "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '.answered_halts[] | select(.segment == "CC1") | .answered_by')" "사람"
 check "34c A21: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
   "$(capc_halts)" '[["CC1","adopt as a requirement"]]'
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
@@ -22285,8 +22519,9 @@ check "34c A22: 발견이 없는 사이클의 기각은 2 로 거절된다" "$rc
 # A23. THE ONE SHIFT CASE OF `중단 답`. An implement stage's binding-tier stop
 # answered `재수렴` is written by the shift itself when `## 인가` pre-adopts the
 # `구속-이탈` class — and by nothing else: without the row, with another option,
-# for another record, or once the key has been re-converged, the shift is
-# refused with 3 exactly as A21 refuses it.
+# for another record, or once the same record has been re-converged, the shift
+# is refused with 3 exactly as A21 refuses it. Another record of a key already
+# re-converged is admitted while the row's `상한` is `없음`.
 CAPC_BT="$CAP_DIR/halt/CC2#1.md"
 printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=CC2#1; run=R7 -->' \
   '**스킬**: implement-unattended' '**스텝**: Step 1 CFI-U3 BT-STOP — 계획 수립 중, 편집 전 정지' \
@@ -22330,17 +22565,410 @@ check "34c A23: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC2 | 스테이지=CC2 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-2 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 capc_ha0=$(capc_ha)
 capc_bt_answer CC2 "$CAPC_BT" 재수렴
-check "34c A23: 구속 이탈 재수렴을 한 번 거친 키는 교대가 다시 답하지 못한다" "$rc" "3"
+check "34c A23: 구속 이탈 재수렴을 한 번 거친 같은 기록은 교대가 다시 답하지 못한다" "$rc" "3"
+check "34c A23: 그 거절은 같은 기록의 두 번째 재수렴이 사람 몫이라고 말한다" \
+  "$( { grep -qF '같은 정지 기록을 두 번 재수렴하려면 사람의 답이 필요합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
 check "34c A23: 그 거절도 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
+CAPC_BT2="$CAP_DIR/halt/CC2#3.md"
+sed 's/stage=CC2#1;/stage=CC2#3;/' "$CAPC_BT" > "$CAPC_BT2"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC2 | 스테이지=CC2 | 종류=implement | 실행 버전=3 | 세션 id=s-impl-2b | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
+capc_bt_answer CC2 "$CAPC_BT2" 재수렴
+check "34c A23: 상한=없음 이면 재수렴을 거친 키의 다른 기록도 교대가 답한다" "$rc" "0"
+check "34c A23: 교대의 행은 게이트가 답한 주체=교대 로 찍는다" \
+  "$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "교대"
 # 반증 재수렴은 중단 답 없이 교대가 넘기는 다른 수선이다. 그 행이 있다고 해서
 # 같은 키의 첫 구속 이탈 답이 「두 번째」가 되지는 않는다.
-CAPC_BT3="$CAP_DIR/halt/CC3#2.md"
-sed 's/stage=CC2#1;/stage=CC3#2;/' "$CAPC_BT" > "$CAPC_BT3"
+CAPC_BT3="$CAP_DIR/halt/CC3#3.md"
+sed 's/stage=CC2#1;/stage=CC3#3;/' "$CAPC_BT" > "$CAPC_BT3"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-3 | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-3 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC3 | 스테이지=CC3 | 종류=implement | 실행 버전=3 | 세션 id=s-impl-3b | 종단 부류=의도된 park | prev=x\n' >> "$CAP_LEDGER"
 capc_bt_answer CC3 "$CAPC_BT3" 재수렴
 check "34c A23: 반증 재수렴만 거친 키의 첫 구속 이탈 답은 통과한다" "$rc" "0"
+
+# --- 34d. 좌석 정지 답 — 기록의 추천을 사람 없이 고른다 ----------------------
+# --- section: 34d | group: cone | covers: act, snapshot | anchors: 34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다, 34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다 ---
+#
+# THE SEAT NEVER PICKS AN OPTION; IT COPIES THE ONE THE RECORD RECOMMENDS. The
+# five records below keep the shape of five halts that stood all night for a
+# person although their own grounds settled the answer — the step, the class
+# and the option lines as those stages wrote them, with the two recommendation
+# lines added. Every refusal is asserted together with the row count, because a
+# refusal that still wrote a row would hand the stage an answer anyway.
+#
+# THE SWITCH IS ON FOR THIS SECTION ONLY. The suite runs with
+# `CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0`, and with it off every seat answer below is
+# refused with 3 — which is itself one of the assertions, so it is turned back
+# off for that one call and restored at the end.
+SDH_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+SDH_RID=RSDH1
+cap_fx_new "$SDH_RID"
+SDH_SEAT="5d5d5d5d-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SDH_SEAT.jsonl"
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SDH0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34d: 픽스처의 세그먼트 행이 섰다" "$rc" "0"
+mkdir -p "$CAP_DIR/halt"
+sdh_rec() {
+  # sdh_rec <파일> <작성 스킬> <stage> <스텝> <추천 줄|-> <추천 근거 줄|-> <선택지 줄>…
+  local f="$1" sk="$2" st="$3" step="$4" rec="$5" basis="$6"; shift 6
+  { printf '<!-- cc-pipeline-halt v1; writer=%s; reader=orchestrator; stage=%s; run=%s -->\n' "$sk" "$st" "$SDH_RID"
+    printf '**중단 시각**: 2026-10-11T00:00:00Z\n**스킬**: %s\n**스텝**: %s\n' "$sk" "$step"
+    printf '**분류**: gate-unanswerable\n**질문 문면**: 픽스처의 질문\n**선택지**:\n'
+    printf '%s\n' "$@"
+    [ "$rec" = "-" ] || printf '%s\n' "$rec"
+    [ "$basis" = "-" ] || printf '%s\n' "$basis"
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$f"
+}
+sdh_sr() {  # sdh_sr <키> <종류> <실행 버전> <종단 부류>
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=%s | 실행 버전=%s | 세션 id=s-%s-%s | 종단 부류=%s | prev=x\n' \
+    "$1" "$1" "$2" "$3" "$1" "$3" "$4" >> "$CAP_LEDGER"
+}
+sdh_ha() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
+sdh_ok() {  # sdh_ok <이름> — the last call passed; a failure carries the gate's words
+  if [ "$rc" = "0" ]; then ok "$1"; else bad "$1" "rc=$rc $msg"; fi
+}
+sdh_last() { cap_rows '중단 답' | tail -1; }
+sdh_seat() {
+  # sdh_seat <키> <기록> [argv…] — the seat's automatic answer, with the
+  # attachment it is required to carry written beside the record.
+  local key="$1" rec="$2" att="${2%.md}.answer.md"; shift 2
+  printf '%s\n' '추천 근거 인용: 픽스처의 인용 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$att"
+  cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+           --rationale "픽스처 — 좌석의 자동 답" \
+           -- "중단 기록=$rec" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$att" "$@"
+}
+sdh_by() {  # sdh_by <기록> — that record's answered_by in the snapshot
+  cap_snap "$SDH_SEAT" '' | jq -r --arg r "$1" '[.answered_halts[] | select(.record == $r) | .answered_by] | last // ""'
+}
+SDH_BT_STEP='Step 3 CFI-U3 BT-STOP — 리뷰가 선언 파일 밖의 수정을 요구한다'
+SDH_BT_OPT1='- `재수렴` — 같은 런의 라우팅 교대가 design-reconverge 를 디스패치해 구속 티어를 옮기고, 이 세그먼트는 이 런 안에서 process A 부터 다시 계획한다(새 런 id·매니페스트·인가 기록 없음).'
+
+# THE FIVE SHAPES. Each is answered without `선택지`; the row's option is the
+# record's recommendation and its `근거 종류` the kinds the record names.
+SDH_853="$CAP_DIR/halt/A1#2.md"
+sdh_rec "$SDH_853" design-reconverge 'A1#2' 'Step 3 — 자율 채택 기준 S1·S4' \
+  '**추천**: `record in the unresolved-issues section` — 팀 라운드는 이 런 안에서 열리지 않으므로 미해결 이슈로 적는다' \
+  '**추천 근거**: 상시 지침:design-reconverge 「A team round is not carried out in the run」' \
+  '- `escalate to team round` — 이 요구를 사다리의 팀 라운드 단으로 올립니다.' \
+  '- `record in the unresolved-issues section` — 이 요구를 미해결 이슈로 적고, 감사는 7단계(잔여 공개)로 마칩니다.' \
+  '- `reject` — 채택을 거두고 요구로 묶지 않습니다.'
+sdh_sr A1 reconverge 2 '의도된 park'
+sdh_ha0=$(sdh_ha)
+sdh_seat A1 "$SDH_853"
+check "34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다" "$rc" "0"
+check "34d: 853c5bba 행의 선택지는 기록의 추천이다" "$(row_field "$(sdh_last)" '선택지')" "record in the unresolved-issues section"
+check "34d: 853c5bba 행은 답한 주체=좌석 이다" "$(row_field "$(sdh_last)" '답한 주체')" "좌석"
+check "34d: 853c5bba 행에 근거 종류가 찍힌다" "$(row_field "$(sdh_last)" '근거 종류')" "상시 지침"
+check "34d: 스냅숏이 그 답의 answered_by 를 좌석으로 내놓는다" "$(sdh_by "$SDH_853")" "좌석"
+
+# 673ae8f4: the option NOT recommended carries `(위험 수용)`, and only the
+# recommended option's description is read for the risk words.
+SDH_673="$CAP_DIR/halt/B1#1.md"
+sdh_rec "$SDH_673" design-audit-unattended 'B1#1' 'Step 6 — 조정 패스, 고유 결함 U1 처분' \
+  '**추천**: `창 값을 420초로 고친다` — 수렴된 규칙이 그 값을 정한다' \
+  '**추천 근거**: 인터뷰 기록:「경로마다 실제로 기다릴 수 있는 행의 수만큼 더한다」 / 상시 지침:요구 결정 13 의 셈법' \
+  '- `창 값을 420초로 고친다` — 조정 패스에서 A 류 식에 L(인식 결과 메시지 행)을 더하고 창 값을 다시 계산한다.' \
+  '- `미해결 이슈로 기록한다` — 창 값 370초를 그대로 두고 이 결함을 미해결 이슈에 기록한다(위험 수용).' \
+  '- `기각한다` — 인식 결과 메시지 행 대기를 항으로 세지 않는다.'
+sdh_sr B1 audit 1 '의도된 park'
+sdh_seat B1 "$SDH_673"
+check "34d: 673ae8f4 형상의 좌석 답이 통과한다" "$rc" "0"
+check "34d: 673ae8f4 행의 선택지는 기록의 추천이다" "$(row_field "$(sdh_last)" '선택지')" "창 값을 420초로 고친다"
+check "34d: 673ae8f4 행의 근거 종류는 기록이 이름 댄 둘이다" "$(row_field "$(sdh_last)" '근거 종류')" "인터뷰 기록/상시 지침"
+
+# bec8dd06: the recommendation that relaxes a prod path stands on the three
+# manifest facts — the pipeline applies, a POST is pre-authorized, and the run
+# reaches prod — so the fixture manifest carries the first two.
+sdh_nm="$CAP_NM.ins"
+: > "$sdh_nm"
+while IFS= read -r sdh_l || [ -n "$sdh_l" ]; do
+  case "$sdh_l" in
+    '**적용 주체**: '*) printf '%s\n' '**적용 주체**: 파이프라인' '**적용 지점**: `./scripts/upload-edge-apply.sh`' \
+                          '**적용 프로브**: `./scripts/upload-edge-apply.sh --check`' >> "$sdh_nm" ;;
+    *) printf '%s\n' "$sdh_l" >> "$sdh_nm" ;;
+  esac
+  [ "$sdh_l" = "## 인가" ] && printf '%s\n' '- `사전 인가` | 형태=curl -X POST | 사유=prod 업로드 경로 변이 요청' >> "$sdh_nm"
+done < "$CAP_NM"
+mv "$sdh_nm" "$CAP_NM"
+check "34d: bec8dd06 픽스처 매니페스트가 적용 주체와 사전 인가를 싣는다" \
+  "$(grep -c -e '^\*\*적용 주체\*\*: 파이프라인$' -e '형태=curl -X POST' "$CAP_NM" | tr -d ' ')" "2"
+SDH_BEC="$CAP_DIR/halt/C1#2.md"
+sdh_rec "$SDH_BEC" design-reconverge 'C1#2' 'Step 3 조정 패스 — 자율 채택 기준 S1·S3 판정(문서 편집 전)' \
+  '**추천**: `자동 묶음` — 적용 주체가 파이프라인이고 prod 로 가는 POST 가 사전 인가되어 있다' \
+  '**추천 근거**: 매니페스트 인가:적용 주체=파이프라인 / 매니페스트 인가:사전 인가 형태=curl -X POST / 매니페스트 인가:종료 지점이 prod 에 닿는다' \
+  '- `보수 묶음` — (가) tfvars 는 사람이 공급하는 전제로 둔다. (나) 부분 적용 재개는 자동화하지 않는다. (다) R1·R2·R5·R6 은 사람 있는 후속 런이 돌린다.' \
+  '- `자동 묶음` — (가) 래퍼가 레포 밖 고정 경로의 prod tfvars 를 읽는다. (나) 재시도에서만 계획 모양 판정을 완화한다. (다) R5 의 prod 변이 요청도 무인 단계가 실행한다.' \
+  '- `사람이 직접 정함` — 사람이 세 결정을 설계 문서에 직접 적는다.' \
+  '- `채택 철회` — 합성 요구의 채택을 거둔다.'
+sdh_sr C1 reconverge 2 '의도된 park'
+sdh_seat C1 "$SDH_BEC"
+sdh_ok "34d: bec8dd06 형상의 좌석 답이 통과한다"
+check "34d: bec8dd06 행의 선택지는 기록의 추천이다" "$(row_field "$(sdh_last)" '선택지')" "자동 묶음"
+check "34d: bec8dd06 행의 근거 종류는 한 번만 적힌다" "$(row_field "$(sdh_last)" '근거 종류')" "매니페스트 인가"
+
+# c81e719c through the seat; the shift branch takes the same shape in a run of
+# its own below.
+SDH_C81="$CAP_DIR/halt/S9#10.md"
+sdh_rec "$SDH_C81" implement-unattended 'S9#10' "$SDH_BT_STEP" \
+  '**추천**: `재수렴` — 구속 티어를 옮기는 길이 같은 런 안에 있다' \
+  '**추천 근거**: 상시 지침:implement-unattended CFI-U3 「offers it under the exact label `재수렴`」' \
+  "$SDH_BT_OPT1" '- `보류` — 이 세그먼트를 지금 상태로 멈춰 두고 사람이 처분을 정한다.'
+sdh_sr S9 implement 10 '의도된 park'
+sdh_seat S9 "$SDH_C81"
+check "34d: c81e719c 형상의 좌석 답이 통과한다" "$rc" "0"
+check "34d: c81e719c 행의 선택지는 재수렴이다" "$(row_field "$(sdh_last)" '선택지')" "재수렴"
+
+# a73e95ce: no `구속-이탈` row, so nothing bounds the key's count — a second
+# automatic `재수렴` to another record of the same key is admitted, and the same
+# record, once re-converged, is not.
+SDH_A73="$CAP_DIR/halt/D1#23.md"
+sdh_rec "$SDH_A73" implement-unattended 'D1#23' 'Step 3 CFI-U3 BT-STOP — 리뷰 사이클 6 의 P1 「master 가 같은 경로에 무관한 rekick.sh·test-rekick.sh 를 더해 병합 결과가 깨진다」' \
+  '**추천**: `재수렴` — 파일 이름을 옮기는 것은 구속 티어의 일이고 그 길이 같은 런 안에 있다' \
+  '**추천 근거**: 기기 사실:master 의 rekick.sh 「rk_refuse() { printf」 (:118) / 상시 지침:implement-unattended CFI-U3' \
+  "$SDH_BT_OPT1" '- `런 밖에서 해소` — 사람이 런 밖에서 두 파일의 충돌을 직접 푼다.'
+sdh_sr D1 implement 23 '의도된 park'
+sdh_seat D1 "$SDH_A73"
+check "34d: a73e95ce 형상의 좌석 답이 통과한다" "$rc" "0"
+check "34d: a73e95ce 행의 근거 종류는 기기 사실과 상시 지침이다" "$(row_field "$(sdh_last)" '근거 종류')" "기기 사실/상시 지침"
+check "34d: 다섯 양성이 행 다섯을 남긴다" "$(sdh_ha)" "$((sdh_ha0 + 5))"
+sdh_sr D1 reconverge 24 '정상 완료'
+sdh_sr D1 implement 25 '의도된 park'
+sdh_ha1=$(sdh_ha)
+sdh_seat D1 "$SDH_A73"
+check "34d: 재수렴을 한 번 거친 같은 기록의 두 번째 자동 재수렴은 거부된다" "$rc" "3"
+check "34d: 그 거절은 사람의 답이 필요하다고 말한다" \
+  "$( { grep -qF '같은 정지 기록을 두 번 재수렴하려면 사람의 답이 필요합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+check "34d: 그 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_ha1"
+SDH_A73B="$CAP_DIR/halt/D1#25.md"
+sed 's/stage=D1#23;/stage=D1#25;/' "$SDH_A73" > "$SDH_A73B"
+sdh_seat D1 "$SDH_A73B"
+check "34d: 구속-이탈 행이 없으면 같은 키 다른 기록의 두 번째 자동 재수렴은 받는다" "$rc" "0"
+
+# A CRASH TOOK NOTHING UP. An attempt that crashed before doing anything with
+# the answer does not count as the record's re-convergence, nor as its one
+# automatic answer.
+SDH_CR="$CAP_DIR/halt/E1#1.md"
+sdh_rec "$SDH_CR" implement-unattended 'E1#1' "$SDH_BT_STEP" \
+  '**추천**: `재수렴` — 구속 티어를 옮기는 길이 같은 런 안에 있다' \
+  '**추천 근거**: 상시 지침:implement-unattended CFI-U3' \
+  "$SDH_BT_OPT1" '- `보류` — 사람이 처분을 정한다.'
+sdh_sr E1 implement 1 '의도된 park'
+sdh_seat E1 "$SDH_CR"
+check "34d: 크래시 픽스처의 첫 좌석 답이 통과한다" "$rc" "0"
+sdh_sr E1 reconverge 2 '크래시'
+sdh_seat E1 "$SDH_CR"
+check "34d: 크래시로 소비된 기록의 재답은 통과한다" "$rc" "0"
+
+# THE REFUSALS. One record per reason, all on one key, and none leaves a row.
+sdh_sr N1 audit 1 '의도된 park'
+SDH_NOPT1='- `채택` — 요구로 채택한다'
+SDH_NOPT2='- `기각` — 기각한다'
+SDH_NBASIS='**추천 근거**: 상시 지침:픽스처'
+SDH_NSTEP='Step 6 조정 패스 — CFI-3b 종합 질문'
+sdh_neg() {  # sdh_neg <이름> <추천 줄|-> <근거 줄|-> [선택지 줄…] — leaves the record in $sdh_f
+  local n="$1" r="$2" b="$3"; shift 3
+  sdh_f="$CAP_DIR/halt/N1-$n.md"
+  [ "$#" -gt 0 ] || set -- "$SDH_NOPT1" "$SDH_NOPT2"
+  sdh_rec "$sdh_f" design-audit-unattended 'N1#1' "$SDH_NSTEP" "$r" "$b" "$@"
+}
+sdh_refused() {  # sdh_refused <이름> <기대 코드> — the call's code, and no row
+  check "34d: $1 은 $2 로 거절된다" "$rc" "$2"
+  check "34d: $1 의 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_hn"
+}
+sdh_hn=$(sdh_ha)
+sdh_neg ok '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS"
+SDH_NOK="$sdh_f"
+sdh_seat N1 "$SDH_NOK" '선택지=기각'
+sdh_refused "추천이 아닌 선택지를 실은 좌석 답" 3
+sdh_neg none - -
+sdh_seat N1 "$sdh_f"
+sdh_refused "추천 줄이 없는 기록" 3
+sdh_neg empty '**추천**: (없음) — 사람만 가진 정보가 필요하다' "$SDH_NBASIS"
+sdh_seat N1 "$sdh_f"
+sdh_refused "(없음) 을 추천한 기록" 3
+for sdh_w in '위험 수용' '게이트 비활성' '그대로 진행' '범위 축소'; do
+  sdh_neg "risk-$(printf '%s' "$sdh_w" | tr ' ' '-')" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" \
+    "- \`채택\` — 요구로 채택하고 ${sdh_w} 으로 둔다" "$SDH_NOPT2"
+  sdh_seat N1 "$sdh_f"
+  sdh_refused "설명에 「${sdh_w}」 를 단 추천" 3
+done
+sdh_neg seatrun '**추천**: `좌석 실행` — 좌석이 돌린다' "$SDH_NBASIS" \
+  '- `좌석 실행` — 좌석이 R2 의 레시피를 이 호스트에서 돌린다.' '- `보류` — 사람이 정한다.'
+sed 's/^\*\*스텝\*\*: .*/**스텝**: Step 3 잔여 검증 좌석 실행 — R2/' "$sdh_f" > "$sdh_f.t" && mv "$sdh_f.t" "$sdh_f"
+sdh_seat N1 "$sdh_f"
+sdh_refused "스텝이 좌석 실행 문면으로 시작하는 기록" 3
+sdh_neg badlabel '**추천**: `채택함` — 기록이 정한다' "$SDH_NBASIS"
+sdh_seat N1 "$sdh_f"
+sdh_refused "선택지에 없는 추천 라벨" 3
+sdh_neg two '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2" '**추천**: `기각` — 다른 추천'
+sdh_seat N1 "$sdh_f"
+sdh_refused "추천 줄이 둘인 기록" 3
+sdh_neg indent '  **추천**: `채택` — 줄머리에 있지 않다' "$SDH_NBASIS"
+sdh_seat N1 "$sdh_f"
+sdh_refused "추천이 줄머리에 있지 않은 기록" 3
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment N1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 첨부 없는 좌석 답" \
+         -- "중단 기록=$SDH_NOK" '답한 주체=좌석' '근거=기록의 추천을 고름'
+sdh_refused "첨부 없는 좌석 답" 2
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment N1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 좌석이 흉내 낸 교대의 답" \
+         -- "중단 기록=$SDH_NOK" '답한 주체=교대' '근거=기록의 추천을 고름' "첨부=${SDH_NOK%.md}.answer.md"
+sdh_refused "좌석이 넘긴 답한 주체=교대" 3
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+sdh_seat N1 "$SDH_NOK"
+sdh_refused "AUTO_RESOLVE=0 에서의 좌석 답" 3
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+sdh_seat N1 "$SDH_NOK"
+check "34d: 거절이 아닌 같은 기록의 좌석 답은 통과한다" "$rc" "0"
+sdh_hn=$(sdh_ha)
+sdh_seat N1 "$SDH_NOK"
+sdh_refused "앞선 자동 답이 아직 소비되지 않은 기록의 두 번째 자동 답" 3
+
+# A PERSON'S ANSWER STILL WAITING IS NEVER WRITTEN OVER. The snapshot hands on
+# the last row per key, so a seat answer after it — to the same record or to
+# another record of the key — would replace the person's choice. Once a stage
+# took the person's answer up, a new record of the key is the seat's again.
+sdh_sr H1 audit 1 '의도된 park'
+SDH_HP="$CAP_DIR/halt/H1#1.md"
+sdh_rec "$SDH_HP" design-audit-unattended 'H1#1' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment H1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 사람의 답" \
+         -- "중단 기록=$SDH_HP" '선택지=기각' '근거=사람이 기각을 고름'
+check "34d: 사람의 기각 답이 선다" "$rc/$(row_field "$(sdh_last)" '답한 주체')" "0/사람"
+sdh_hn=$(sdh_ha)
+sdh_seat H1 "$SDH_HP"
+sdh_refused "아직 소비되지 않은 사람 답 위의 같은 기록 좌석 답" 3
+SDH_HP2="$CAP_DIR/halt/H1#2.md"
+sdh_rec "$SDH_HP2" design-audit-unattended 'H1#2' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_seat H1 "$SDH_HP2"
+sdh_refused "아직 소비되지 않은 사람 답이 있는 키의 다른 기록 좌석 답" 3
+check "34d: 스냅숏은 그 키의 사람 선택지를 그대로 넘긴다" \
+  "$(cap_snap "$SDH_SEAT" '' | jq -r '[.answered_halts[] | select(.segment == "H1") | "\(.option)/\(.answered_by)"] | last // ""')" "기각/사람"
+sdh_sr H1 audit 2 '의도된 park'
+sdh_seat H1 "$SDH_HP2"
+check "34d: 사람 답이 소비된 뒤 같은 키 새 기록의 좌석 답은 통과한다" "$rc" "0"
+
+# ONLY THE KEY'S LATEST SETTLED HALT. A record written by an attempt whose
+# `stage-result` row has not landed would be taken up by that row without any
+# stage receiving the answer, and a record the key has moved past would resume
+# the key's last session with a question it never asked. Both go to a person.
+sdh_err() {  # sdh_err <이름> <문면> — the last refusal carries that text
+  check "34d: $1" "$( { grep -qF -- "$2" "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+}
+sdh_sr K1 implement 1 '의도된 park'
+SDH_K1A="$CAP_DIR/halt/K1#1.md"
+SDH_K1B="$CAP_DIR/halt/K1#2.md"
+sdh_rec "$SDH_K1A" design-audit-unattended 'K1#1' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_rec "$SDH_K1B" design-audit-unattended 'K1#2' "$SDH_NSTEP" '**추천**: `채택` — 기록이 정한다' "$SDH_NBASIS" "$SDH_NOPT1" "$SDH_NOPT2"
+sdh_hn=$(sdh_ha)
+sdh_seat K1 "$SDH_K1B"
+sdh_refused "stage-result 가 아직 서지 않은 시도의 기록에 쓴 좌석 답" 3
+sdh_err "그 거절은 키의 마지막 정지가 아니라고 말한다" "is not the halt of K1's last settled attempt (K1#1"
+: > "$CAP_DIR/K1.pid"
+sdh_seat K1 "$SDH_K1A"
+rm -f "$CAP_DIR/K1.pid"
+sdh_refused "디스패치 기록이 남은 키의 기록에 쓴 좌석 답" 3
+sdh_err "그 거절은 키의 시도가 아직 열려 있다고 말한다" "an attempt of K1 is still open"
+sdh_sr K1 implement 2 '의도된 park'
+sdh_seat K1 "$SDH_K1A"
+sdh_refused "키가 이미 지나간 낡은 기록에 쓴 좌석 답" 3
+sdh_err "그 거절은 낡은 기록이 키의 마지막 정지가 아니라고 말한다" "is not the halt of K1's last settled attempt (K1#2"
+check "34d: 거절된 답은 스냅숏에 오르지 않는다" \
+  "$(cap_snap "$SDH_SEAT" '' | jq -r '[.answered_halts[] | select(.segment == "K1")] | length')" "0"
+sdh_seat K1 "$SDH_K1B"
+check "34d: 시도가 정착한 뒤 그 시도의 기록에 쓴 좌석 답은 통과한다" "$rc" "0"
+
+# THE SHIFT BRANCH AND THE COUNT, in a run of its own with a `구속-이탈` row.
+# `상한=없음` first: an earlier shift `재수렴` to another record of the key does
+# not stop the next one. Then `상한=1`: a person's `재수렴` uses up nothing, and
+# the first automatic one does.
+SDH_RID=RSDH2
+cap_fx_new "$SDH_RID"
+mkdir -p "$CAP_DIR/halt"
+sdh_cap_row() {  # sdh_cap_row <상한> — the manifest's one `구속-이탈` row, replaced
+  local out="$CAP_NM.ins" l
+  : > "$out"
+  while IFS= read -r l || [ -n "$l" ]; do
+    case "$l" in *'판단 부류=구속-이탈'*) continue ;; esac
+    printf '%s\n' "$l" >> "$out"
+    [ "$l" = "## 인가" ] && printf -- '- `자동 채택` | 판단 부류=구속-이탈 | 상한=%s | 심각도 상한=minor | 사유=범위 한정 수선\n' "$1" >> "$out"
+  done < "$CAP_NM"
+  mv "$out" "$CAP_NM"
+}
+sdh_cap_row 없음
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment SDH0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+sdh_seg_rc=$rc
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34d: 교대 픽스처의 세그먼트 행과 기동이 섰다" "$sdh_seg_rc/$rc" "0/0"
+SDH_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SDH_SHIFT.jsonl"
+sdh_shift() {  # sdh_shift <키> <기록> [argv…] — the shift's pre-adopted `재수렴`
+  local key="$1" rec="$2"; shift 2
+  cap_gate "$SDH_SHIFT" "$SDH_RID#1" act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SHIFT" "$SDH_RID#1")" \
+           --rationale "픽스처 — 교대의 구속 이탈 자동 채택" \
+           -- "중단 기록=$rec" '선택지=재수렴' '근거=매니페스트가 미리 정한 답' "$@"
+}
+sdh_bt() {  # sdh_bt <키> <stage> — a binding-tier stop recommending `재수렴`, path in $sdh_f
+  sdh_f="$CAP_DIR/halt/$2.md"
+  sdh_rec "$sdh_f" implement-unattended "$2" "$SDH_BT_STEP" \
+    '**추천**: `재수렴` — 구속 티어를 옮기는 길이 같은 런 안에 있다' \
+    '**추천 근거**: 매니페스트 인가:자동 채택 판단 부류=구속-이탈' \
+    "$SDH_BT_OPT1" '- `보류` — 사람이 처분을 정한다.'
+}
+sdh_sr S9 implement 8 '의도된 park'
+sdh_bt S9 'S9#8'
+sdh_shift S9 "$sdh_f"
+check "34d: 앞선 교대 재수렴 행이 선다" "$rc" "0"
+sdh_sr S9 reconverge 9 '정상 완료'
+sdh_sr S9 implement 10 '의도된 park'
+SDH_C81S="$CAP_DIR/halt/S9#10.md"
+sed "s/run=RSDH1 /run=$SDH_RID /" "$SDH_C81" > "$SDH_C81S"
+sdh_hn=$(sdh_ha)
+sdh_shift S9 "$SDH_C81S" '답한 주체=좌석'
+sdh_refused "교대가 넘긴 답한 주체=좌석" 3
+sdh_shift S9 "$SDH_C81S"
+check "34d: c81e719c 형상은 교대 갈래에서도 통과한다" "$rc" "0"
+check "34d: 교대 갈래의 행은 답한 주체=교대 이다" "$(row_field "$(sdh_last)" '답한 주체')" "교대"
+check "34d: 스냅숏이 교대의 답을 answered_by 교대로 내놓는다" \
+  "$(cap_snap "$SDH_SEAT" '' | jq -r --arg r "$SDH_C81S" '[.answered_halts[] | select(.record == $r) | .answered_by] | last // ""')" "교대"
+
+sdh_cap_row 1
+sdh_sr T1 implement 1 '의도된 park'
+sdh_bt T1 'T1#1'
+cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment T1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
+         --rationale "픽스처 — 사람의 재수렴 답" \
+         -- "중단 기록=$sdh_f" '선택지=재수렴' '근거=사람이 재수렴을 고름'
+check "34d: 사람의 재수렴 답이 선다" "$rc/$(row_field "$(sdh_last)" '답한 주체')" "0/사람"
+sdh_sr T1 reconverge 2 '정상 완료'
+sdh_sr T1 implement 3 '의도된 park'
+sdh_bt T1 'T1#3'
+sdh_shift T1 "$sdh_f"
+check "34d: 사람 행은 상한을 쓰지 않는다 — 상한=1 에서 첫 자동 재수렴이 통과한다" "$rc" "0"
+sdh_sr T1 reconverge 4 '정상 완료'
+sdh_sr T1 implement 5 '의도된 park'
+sdh_bt T1 'T1#5'
+sdh_hn=$(sdh_ha)
+sdh_shift T1 "$sdh_f"
+check "34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다" "$rc" "3"
+check "34d: 상한 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_hn"
+sdh_seat T1 "$sdh_f"
+sdh_refused "상한에 닿은 키의 좌석 재수렴 답" 3
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SDH_PREV_AR"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
@@ -22481,6 +23109,17 @@ sag end-overdue --manifest "$SA_MANIFEST"
 check "5: end-overdue 를 두 번 불러도 종료 행은 하나다" "$(sb5_end)" "1"
 check "5: 종료 행이 재킥 후보 표지를 남긴다" \
   "$( sed -n 's/^토큰=//p' "$SA_RUN/rekick-candidate" 2>/dev/null )" "마감"
+# 마감 갈래가 끝낸 런은 정말 끝난 런이다 — 종료 행과 함께 done 이 남고, 그래서
+# 그 뒤 교대의 `사유=종단` 인계는 종료 제안 없이도 받아들여진다. 종단 인계는
+# 끝난 런에서만 받으므로, 마감이 done 을 남기지 않으면 이 인계가 3 으로 선다.
+check "5: 마감 갈래가 런을 끝내 done 을 남긴다" \
+  "$( [ -s "$SA_RUN/done" ] && printf 'done' || printf 'absent')" "done"
+sag act --manifest "$SA_MANIFEST" --kind handoff --target main --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "마감으로 끝난 런의 인수인계" \
+    -- 교대=0 사유=종단 '버린 선택지=없음' '막힌 지점=없음' '다음 후보=없음'
+check "5: 마감으로 끝난 런의 종단 인계는 통과한다" "$rc" "0"
+check "5: 그 종단 인계 행이 원장에 하나 남는다" \
+  "$( { grep -c '^- `handoff` .*| 사유=종단 |' "$SA_LEDGER" || true; } )" "1"
 
 # --- 38-5b. 천장이 선언되면 시계가 발언권을 잃고, 종단이 그 자리를 받는다 --------
 # --- section: 38-5b | group: sb | covers: act | anchors: 5b: 비용 천장이 선언되면 지난 마감이 머지를 막지 않는다 ---
@@ -22591,11 +23230,6 @@ sc_new() {
   SC_PACE="$SA_ROOT/pace"
   mkdir -p "$SC_PACE/busy"
 }
-sc_ends() {  # sc_ends [토큰] — 종료 행의 수, 토큰을 주면 그 토큰의 것만
-  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } \
-    | { if [ -n "${1:-}" ]; then grep -F "| 재킥 원인=$1 |" || true; else cat; fi; } \
-    | grep -c . || true
-}
 sc_overdue() { RUN_PACE_ROOT="$SC_PACE" sag end-overdue --manifest "$SA_MANIFEST"; }
 
 sc_new '5c 관측 불가'
@@ -22656,6 +23290,71 @@ rm -rf "$SA_RUN"
 SC_PACE="$SA_ROOT/pace"; mkdir -p "$SC_PACE/busy"
 sc_overdue
 check "5c: 표면 이동 행만 있는 런에는 아무것도 쓰지 않는다" "$rc/$(sc_ends)" "0/0"
+
+# --- 38-5d. 이어받혔거나 포기된 런 — end-abandoned -----------------------------
+# --- section: 38-5d | group: sb | covers: act | anchors: 5d: 포기는 해당없음 종료 행 하나와 done 을 쓴다, 5d: 다시 불러도 종료 행은 하나다, 5d: 이어받음 행은 종료 부류와 후계 런을 싣는다, 5d: 살아 있는 shift 가 있으면 거절하고 아무것도 쓰지 않는다, 5d: 살아 있는 스테이지가 있으면 거절하고 아무것도 쓰지 않는다, 5d: 스테이지가 부르면 거절한다, 5d: shift 가 부르면 거절한다, 5d: 닫힌 집합 밖의 원인은 거절한다 ---
+#
+# 다른 런이 이어받았거나 사람이 포기한 런은 어떤 경계도 끝내지 않는다. 이 동사가
+# 그 런에 done 과 종료 행 하나를 쓰고, 재킥 원인은 해당없음, 무슨 일이었는지는
+# 종료 부류가 싣는다. 부르는 것은 좌석이나 킥오프뿐이고, 무언가 아직 도는 런은
+# 버려진 런이 아니므로 아무것도 쓰지 않고 거절한다.
+sd_new() {  # sd_new <라벨> — 마감이 미래인 sb 픽스처를 만들고 런을 연다.
+  sb_new "$1" 선머지후리뷰
+  SAH >/dev/null
+  mkdir -p "$SA_RUN"
+}
+sd_end() { sag end-abandoned --manifest "$SA_MANIFEST" "$@"; }
+sd_row() {  # sd_row — 마지막 종료 행
+  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; } | tail -1
+}
+sd_done() { if [ -s "$SA_RUN/done" ]; then printf 있음; else printf 없음; fi; }
+
+sd_new '5d 포기'
+sd_end --cause 포기
+check "5d: 포기는 해당없음 종료 행 하나와 done 을 쓴다" \
+  "$rc/$(sc_ends)/$(sc_ends 해당없음)/$(sd_done)" "0/1/1/있음"
+case "$(sd_row)" in
+  *'| 종료 부류=포기 |'*) ok "5d: 그 행의 종료 부류는 포기 다" ;;
+  *) bad "5d 종료 부류" "포기 행에 종료 부류=포기 가 없다: $(sd_row)" ;;
+esac
+sd_end --cause 포기
+check "5d: 다시 불러도 종료 행은 하나다" "$rc/$(sc_ends)" "0/1"
+
+sd_new '5d 이어받음'
+sd_end --cause 이어받음 --successor 20261012-abcdef01
+check "5d: 이어받음 도 해당없음 종료 행 하나를 쓴다" "$rc/$(sc_ends 해당없음)/$(sd_done)" "0/1/있음"
+case "$(sd_row)" in
+  *'| 종료 부류=이어받음 |'*'후계 런 20261012-abcdef01'*) ok "5d: 이어받음 행은 종료 부류와 후계 런을 싣는다" ;;
+  *) bad "5d 이어받음 행" "종료 부류나 후계 런이 빠졌다: $(sd_row)" ;;
+esac
+
+sd_new '5d 산 shift'
+printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/shift.live"
+sd_end --cause 포기
+check "5d: 살아 있는 shift 가 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_new '5d 산 스테이지'
+printf '%s\n' "$$" > "$SA_RUN/SD.pid"
+cc_proc_fingerprint "$$" > "$SA_RUN/SD.start"
+check "5d: 픽스처의 스테이지가 살아 있다 (아래 단언이 공허하지 않다)" \
+  "$(cc_live_stages "$SA_RUN" 2>/dev/null || printf 0)" "1"
+sd_end --cause 포기
+check "5d: 살아 있는 스테이지가 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_new '5d 스테이지 호출'
+CC_PIPELINE_SEGMENT=SD CC_PIPELINE_STAGE_ID='SD#1' sd_end --cause 포기
+check "5d: 스테이지가 부르면 거절한다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+CC_PIPELINE_SHIFT_ID="$SA_ID#1" sd_end --cause 포기
+check "5d: shift 가 부르면 거절한다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_end --cause 완료
+check "5d: 닫힌 집합 밖의 원인은 거절한다" "$rc/$(sc_ends)/$(sd_done)" "2/0/없음"
+sd_end --cause 포기 --successor 20261012-abcdef01
+check "5d: 후계 런은 이어받음 에만 붙는다" "$rc/$(sc_ends)" "2/0"
+sd_end --cause 이어받음 --successor "$SA_ID"
+check "5d: 후계 런이 이 런 자신이면 거절한다" "$rc/$(sc_ends)" "2/0"
+sag end-overdue --manifest "$SA_MANIFEST" --cause 포기
+check "5d: --cause 는 다른 동사에 붙지 않는다" "$rc/$(sc_ends)" "2/0"
 
 # --- 38-6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
 # --- section: 38-6 | group: sb | covers: act | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다 ---
@@ -24684,7 +25383,7 @@ check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b
 
 # ---------------------------------------------------------------------------
 # 57. 판본 고정 — 새 런은 사본으로 hop 한다
-# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다 ---
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다, 57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다 ---
 #
 # 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
 # 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
@@ -25175,6 +25874,46 @@ case "$rc:$msg" in
   3:*|*"rule refused"*) bad "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" "rc=$rc $msg" ;;
   *) ok "57S: 사본 경로를 직접 부르면 쓰기 대상으로 읽히지 않는다" ;;
 esac
+
+# (15) end-abandoned 를 모르는 사본에 고정된 런 ------------------------------------
+# 재킥오프는 원천 런을 이 동사로 닫는데, 호출은 동사를 가르기 전에 원천의 고정 사본으로
+# hop 한다. 그 동사보다 오래된 사본은 인자 루프에 `--cause` 갈래가 없어 동사 줄에 닿기
+# 전에 그 인자에서 멈춘다. 스킬이 「옛 사본」으로 읽는 문면이 그 사본이 실제로 내는
+# 문면과 같아야, 재킥오프가 그 원천에서 멈추지 않고 지나간다.
+p57_fixture R57V
+p57_gate snapshot --manifest "$P57_MAN"
+check "57V: 고정이 섰다" "$rc" "0"
+P57V_COPY="$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+sed -e '/^      --cause)  /d' -e '/^      --successor)  /d' "$P57V_COPY" > "$P57V_COPY.old" \
+  && mv "$P57V_COPY.old" "$P57V_COPY" && chmod +x "$P57V_COPY"
+check "57V: 사본의 인자 루프에서 두 갈래가 빠졌다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cE '^      --(cause|successor)\)' "$P57V_COPY" || true)" "0"
+p57_gate end-abandoned --manifest "$P57_MAN" --cause 이어받음 --successor 20261012-abcdef01
+check "57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다" "$rc" "2"
+case "$msg" in
+  *'gate: unknown argument: --cause'*) ok "57V: 그 사본은 --cause 를 모르는 인자로 거절한다" ;;
+  *) bad "57V: 그 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
+esac
+check "57V: 스킬의 재킥오프가 그 문면을 옛 사본 신호로 적는다" \
+  "$(grep -cF '`gate: unknown argument: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+check "57V: 원천 런에는 done 이 쓰이지 않았다" \
+  "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
+# 게이트의 거절 문면이 영어로 바뀌기 전에 고정된 사본은 같은 자리에서 한국어로 거절한다.
+# 스킬은 문면이 아니라 모양으로 가르므로, 그 문면도 옛 사본 신호로 적어야 한다.
+sed -e "s/'gate: unknown argument: %s\\\\n'/'gate: 알 수 없는 인자: %s\\\\n'/" "$P57V_COPY" > "$P57V_COPY.old" \
+  && mv "$P57V_COPY.old" "$P57V_COPY" && chmod +x "$P57V_COPY"
+check "57V: 한국어 사본의 인자 루프가 한국어 문면을 낸다 (다음 단언이 공허하지 않다)" \
+  "$(grep -cF "'gate: 알 수 없는 인자: %s" "$P57V_COPY" || true)" "1"
+p57_gate end-abandoned --manifest "$P57_MAN" --cause 이어받음 --successor 20261012-abcdef01
+check "57V: 한국어 옛 사본에 고정된 런의 end-abandoned 도 exit 2 다" "$rc" "2"
+case "$msg" in
+  *'gate: 알 수 없는 인자: --cause'*) ok "57V: 한국어 사본은 --cause 를 모르는 인자로 거절한다" ;;
+  *) bad "57V: 한국어 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
+esac
+check "57V: 스킬의 재킥오프가 한국어 문면도 옛 사본 신호로 적는다" \
+  "$(grep -cF '`gate: 알 수 없는 인자: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 않았다" \
+  "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
@@ -27151,7 +27890,7 @@ check "62: 드라이버가 쓴 원장의 사슬이 검증된다" "$rc" "0"
 lsr62_seed=$(printf '%s' '## 실행 LS' | shasum -a 256 | cut -d' ' -f1)
 check "62: 첫 행이 고정된 문법 그대로다" \
   "$( { grep '^- `' "$lsr62_d" || true; } | sed -n '1p')" \
-  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 근거=first | 관측=usage-cache@1790000000.5 | prev=$lsr62_seed"
+  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
   "96/2/2"
@@ -27213,45 +27952,50 @@ lsr64_d=$(lsr_ledger r64-driver)
 check "64: 두 기록자의 행 상한이 같다 (RUN_ROW_MAX == GATE_ROW_MAX)" \
   "$(lsr_in - "$lsr64_g" - printf '%s' "$RUN_ROW_MAX")" "$(lsr_in - "$lsr64_g" - printf '%s' "$GATE_ROW_MAX")"
 {
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=a|b' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=123e4567-e89b-12d3-a456-426614174000' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=0123456789abcdef' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=(미상)' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=-' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~' '예약=-' '근거=single-seat' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a/' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/me@example.com' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=lane-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=0.25/0.10' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=1.5000/0.0000' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=bogus' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=a@1@2'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=usage cache@1'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=usage-cache'
-  lsr_row stage-lease '파견 id=-' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1 impl' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '계보=S1-impl-1' '파견 id=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first'
-  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-' '비고=x'
-  lsr_row stage-lease '교대=3' '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-lease oops '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:ABCDEF0123456789' '계정=-' '까지=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:0123' '계정=-' '까지=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=acct:0123456789abcdef0123' '계정=-' '까지=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=bogus' '계정=-' '까지=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=2026-09-27 01:02:03' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=1790000000' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=bogus'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=acct-a' '까지=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=resume-bound-no-room'
-  lsr_row stage-wait '계보=(미상)' '그룹=-' '계정=-' '까지=-' '근거=no-room'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=a|b' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=123e4567-e89b-12d3-a456-426614174000' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=0123456789abcdef' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=(미상)' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=-' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~' '예약=-' '비용=-' '비용 출처=-' '근거=single-seat' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a/' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/me@example.com' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=lane-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=0.25/0.10' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=1.5000/0.0000' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=bogus' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=a@1@2'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=usage cache@1'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=usage-cache'
+  lsr_row stage-lease '파견 id=-' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1 impl' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '계보=S1-impl-1' '파견 id=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '비고=x'
+  lsr_row stage-lease '교대=3' '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-lease oops '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:ABCDEF0123456789' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=acct:0123456789abcdef0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=bogus' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=2026-09-27 01:02:03' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=1790000000' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=bogus'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=acct-a' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room'
+  lsr_row stage-wait '계보=(미상)' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.03/0.008' '비용 출처=kind/kind' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.0300/0.0080' '비용 출처=group/kind' '근거=first' '관측=-'
+  lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.0300/0.0080' '비용 출처=-' '근거=first' '관측=-'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=default/default' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=no-room'
 } > "$lsr_root/bad64.tsv"
 lsr64_sg=$(lsr_sha "$lsr64_g"); lsr64_sd=$(lsr_sha "$lsr64_d")
-check "64: 게이트 기록자가 거부 사례 33개를 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_g" - lsr_each gate_append < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "33 2"
+check "64: 게이트 기록자가 거부 사례 38개를 모두 rc 2 로 거부한다" \
+  "$(lsr_in Linux "$lsr64_g" - lsr_each gate_append < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "38 2"
 check "64: 드라이버 기록자가 같은 사례를 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_d" - lsr_each ledger_row < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "33 2"
+  "$(lsr_in Linux "$lsr64_d" - lsr_each ledger_row < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "38 2"
 check "64: 거부된 행은 한 바이트도 남기지 않는다" \
   "$(lsr_sha "$lsr64_g")/$(lsr_sha "$lsr64_d")" "$lsr64_sg/$lsr64_sd"
 check "64: 거부는 곁파일도 남기지 않는다" \
@@ -27268,7 +28012,7 @@ lsr64_try() {
   printf '%s\n' "$rc"
 }
 lsr64_adv() {
-  # lsr64_adv <기록자> — 사례 125개, 사례마다 rc 한 줄.
+  # lsr64_adv <기록자> — 사례 133개, 사례마다 rc 한 줄.
   local w="$1" v long
   long=$(printf '%*s' 65 '' | tr ' ' a)
   local -a ids=('a|b' $'a\nb' $'a\rb' $'a\tb' ' ab' 'ab ' 'a@b' 'a/b' 'a(b)' '-' '(미상)' '._-'
@@ -27276,41 +28020,47 @@ lsr64_adv() {
   local -a hexes=('123e4567-e89b-12d3-a456-426614174000' '0123456789abcdef'
                   "$(printf '0123456789abcdef%.0s' 1 2 3 4)")
   for v in "${ids[@]}"; do
-    lsr64_try "$w" stage-lease "파견 id=$v" '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' "계보=$v" '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-    lsr64_try "$w" stage-wait "계보=$v" '그룹=-' '계정=-' '까지=-' '근거=no-room'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '근거=resume-bound-no-room'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '근거=no-room'
+    lsr64_try "$w" stage-lease "파견 id=$v" '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' "계보=$v" '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+    lsr64_try "$w" stage-wait "계보=$v" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
   done
   for v in "${hexes[@]}"; do
-    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '근거=first' '관측=-'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '근거=resume-bound-exhausted'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '근거=group-exhausted'
+    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-exhausted'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted'
   done
   for v in 'org:123e4567-e89b-12d3-a456-426614174000' 'org:0123456789abcde' 'org:0123456789abcdef0' \
            'org:0123456789ABCDEF'; do
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=$v" '계정=-' '까지=-' '근거=group-exhausted'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted'
   done
   for v in '~/a@b' '~/a|b' '~/.claude-a/' '.claude-a'; do
-    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' "레인=$v" '예약=-' '근거=first' '관측=-'
+    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' "레인=$v" '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-'
   done
   for v in '1.0001/0.0000' '2.0000/0.0000' '0.25/0.07' '2500/700' '0.2500'; do
-    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' "예약=$v" '근거=first' '관측=-'
+    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' "예약=$v" '비용=-' '비용 출처=-' '근거=first' '관측=-'
+  done
+  for v in '1.0001/0.0000' '0.03/0.008' '0.0300' '0.0300/0.0080/0.0010'; do
+    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' "비용=$v" '비용 출처=kind/kind' '근거=first' '관측=-'
+  done
+  for v in 'kind' 'kind/kind/kind' 'Kind/kind' 'group-kind/-'; do
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=0.0300/0.0080' "비용 출처=$v" '근거=no-room'
   done
   for v in 'a|b@1' 'x@y@1' 'us age@1' $'us\rage@1' $'us\nage@1' 'usage-cache' 'usage-cache@' '@1' \
            'me@example.com@1'; do
-    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' "관측=$v"
+    lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' "관측=$v"
   done
-  lsr64_try "$w" stage-wait '그룹=-' '계보=S2-impl-1' '계정=-' '까지=-' '근거=no-room'
-  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '근거=no-room'
-  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=no-room' '비고=x'
-  lsr64_try "$w" stage-wait '교대=3' '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=no-room'
+  lsr64_try "$w" stage-wait '그룹=-' '계보=S2-impl-1' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' '비고=x'
+  lsr64_try "$w" stage-wait '교대=3' '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
 }
-check "64: 게이트 기록자가 적대 입력 125개를 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_g" - lsr64_adv gate_append | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "125 2"
+check "64: 게이트 기록자가 적대 입력 133개를 모두 rc 2 로 거부한다" \
+  "$(lsr_in Linux "$lsr64_g" - lsr64_adv gate_append | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "133 2"
 check "64: 드라이버 기록자가 같은 적대 입력을 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_d" - lsr64_adv ledger_row | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "125 2"
+  "$(lsr_in Linux "$lsr64_d" - lsr64_adv ledger_row | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "133 2"
 check "64: 적대 입력도 한 바이트를 남기지 않는다" \
   "$(lsr_sha "$lsr64_g")/$(lsr_sha "$lsr64_d")/$(ls -A "${lsr64_g%/*}" "${lsr64_d%/*}" | { grep -c '^row\.' || true; })" \
   "$lsr64_sg/$lsr64_sd/0"
@@ -27320,9 +28070,9 @@ lsr64_cg=$(lsr_ledger r64-ctl-gate)
 lsr64_cd=$(lsr_ledger r64-ctl-driver)
 check "64: uuid 모양의 파견 id 는 두 기록자 모두 받아들인다 (대조)" \
   "$(lsr_in Linux "$lsr64_cg" - lsr64_try gate_append stage-lease '파견 id=123e4567-e89b-12d3-a456-426614174000' \
-       '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-')$(lsr_in Linux "$lsr64_cd" - \
+       '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-')$(lsr_in Linux "$lsr64_cd" - \
      lsr64_try ledger_row stage-lease '파견 id=123e4567-e89b-12d3-a456-426614174000' \
-       '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '근거=first' '관측=-')" "00"
+       '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-')" "00"
 if cmp -s "$lsr64_cg" "$lsr64_cd"; then
   ok "64: 대조 행도 두 기록자가 같은 바이트로 쓴다"
 else
@@ -27331,18 +28081,18 @@ fi
 
 # 길이 경계. `레인` 은 길이 제한이 없는 유일한 필드라 그것으로 채운다.
 lsr64_n0=$(lsr_in - "$lsr64_g" - lsr_worst stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' \
-  '계정=acct-a' '레인=/p' '예약=-' '근거=first' '관측=-')
+  '계정=acct-a' '레인=/p' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-')
 lsr64_k=$(( 1017 - lsr64_n0 ))
 lsr64_lane="/$(printf '%*s' "$lsr64_k" '' | tr ' ' p)"
 lsr64_over="${lsr64_lane}p"
 check "64: 받는 쪽의 최악 틀이 1016 바이트다" \
   "$(lsr_in - "$lsr64_g" - lsr_worst stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' \
-     '계정=acct-a' "레인=$lsr64_lane" '예약=-' '근거=first' '관측=-')" "1016"
+     '계정=acct-a' "레인=$lsr64_lane" '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-')" "1016"
 for lsr64_w in gate_append ledger_row; do
   case "$lsr64_w" in gate_append) lsr64_l="$lsr64_g" ;; *) lsr64_l="$lsr64_d" ;; esac
   rc=0
   lsr_in Linux "$lsr64_l" 'LS#12' "$lsr64_w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' \
-    '계정=acct-a' "레인=$lsr64_lane" '예약=-' '근거=first' '관측=-' >/dev/null 2>&1 || rc=$?
+    '계정=acct-a' "레인=$lsr64_lane" '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' >/dev/null 2>&1 || rc=$?
   check "64: 최악 틀 1016 바이트는 받는다 ($lsr64_w)" "$rc" "0"
   check "64: 그 실제 행은 1015 바이트다 ($lsr64_w)" \
     "$( { grep '^- `' "$lsr64_l" || true; } | tail -1 | wc -c | tr -d ' ')" "1015"
@@ -27354,13 +28104,13 @@ else
 fi
 check "64: 넘친 쪽의 실제 행은 1016 바이트로 상한 안이다 (막는 것은 최악 틀이다)" \
   "$(lsr_in - "$lsr64_g" 'LS#12' lsr_actual stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' \
-     '계정=acct-a' "레인=$lsr64_over" '예약=-' '근거=first' '관측=-')" "1016"
+     '계정=acct-a' "레인=$lsr64_over" '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-')" "1016"
 lsr64_sg=$(lsr_sha "$lsr64_g"); lsr64_sd=$(lsr_sha "$lsr64_d")
 for lsr64_w in gate_append ledger_row; do
   case "$lsr64_w" in gate_append) lsr64_l="$lsr64_g" ;; *) lsr64_l="$lsr64_d" ;; esac
   rc=0
   lsr_in Linux "$lsr64_l" 'LS#12' "$lsr64_w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' \
-    '계정=acct-a' "레인=$lsr64_over" '예약=-' '근거=first' '관측=-' >/dev/null 2>&1 || rc=$?
+    '계정=acct-a' "레인=$lsr64_over" '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' >/dev/null 2>&1 || rc=$?
   check "64: 최악 틀 1017 바이트는 rc 2 로 거부한다 ($lsr64_w)" "$rc" "2"
 done
 check "64: 넘친 행도 한 바이트를 남기지 않는다" \
@@ -27387,36 +28137,37 @@ lsr65_d0=$(lsr_in Linux "$lsr65_l" - lsr_digest "$FX_MANIFEST" 2>/dev/null)
 
 lsr65_e1=$(jq -cn --arg d "$HOME/.claude-a" '{verdict: "GRANT", basis: "first", account: "acct-a",
   config_dir: $d, group: null, reservation_bp: {five_hour: 2500, seven_day: 7}, admitted_as: null,
-  observed: "usage-cache@1790000000", lease_key: null, nonce: "n1", dormant: false}')
+  observed: "usage-cache@1790000000", lease_key: null, nonce: "n1", dormant: false,
+  cost: {five_hour: {bp: 300, source: "group-kind"}, seven_day: {bp: 80, source: "kind"}}}')
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-1.retry.retry' "$lsr65_e1" >/dev/null 2>&1 || rc=$?
 check "65: GRANT 봉투는 임대 행이 된다" "$rc" "0"
 check "65: 봉투에서 만든 행이 고정된 필드 순서를 따른다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.0007 | 근거=first | 관측=usage-cache@1790000000"
+  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.0007 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000"
 lsr65_e2=$(jq -cn '{verdict: "GRANT", basis: "sticky", account: "acct-b", config_dir: "/lanes/b",
   reservation_bp: {five_hour: 10000, seven_day: 0}, observed: "none", dormant: false}')
 lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-2' "$lsr65_e2" >/dev/null 2>&1 || true
 check "65: 예약의 양 끝은 1.0000 과 0.0000 이고 틸드 밖 레인은 그대로다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-2 | 계보=S1-impl-2 | 계정=acct-b | 레인=/lanes/b | 예약=1.0000/0.0000 | 근거=sticky | 관측=none"
+  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-2 | 계보=S1-impl-2 | 계정=acct-b | 레인=/lanes/b | 예약=1.0000/0.0000 | 비용=- | 비용 출처=- | 근거=sticky | 관측=none"
 lsr65_seat=$(jq -cn --arg d "$HOME/.claude" '{verdict: "GRANT", basis: "shift-seat-fallback", account: null,
   config_dir: $d, group: null, reservation_bp: null, admitted_as: null, observed: null, lease_key: null,
   nonce: null, dormant: false}')
 lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-3' "$lsr65_seat" >/dev/null 2>&1 || true
 check "65: 좌석 GRANT 는 계정·예약·관측을 - 로 쓴다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-3 | 계보=S1-impl-3 | 계정=- | 레인=~/.claude | 예약=- | 근거=shift-seat-fallback | 관측=-"
+  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-3 | 계보=S1-impl-3 | 계정=- | 레인=~/.claude | 예약=- | 비용=- | 비용 출처=- | 근거=shift-seat-fallback | 관측=-"
 rc=0; lsr_in Linux "$lsr65_l" - lsr_dormant_row "$HOME" 'S1-impl-4' >/dev/null 2>&1 || rc=$?
 check "65: 휴면 GRANT 도 행이 된다 (휴면 여부는 기동 경로가 정한다)" "$rc" "0"
 check "65: 휴면 GRANT 는 계정·예약·관측을 - 로 쓴다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-4 | 계보=S1-impl-4 | 계정=- | 레인=~ | 예약=- | 근거=single-seat | 관측=-"
+  "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-4 | 계보=S1-impl-4 | 계정=- | 레인=~ | 예약=- | 비용=- | 비용 출처=- | 근거=single-seat | 관측=-"
 lsr65_w1=$(jq -cn '{verdict: "WAIT", reason: "no-room", group: "org:0123456789abcdef", account: null,
-  until_epoch: 1790000000.9}')
+  until_epoch: 1790000000.9, cost: {five_hour: {bp: 10000, source: "default"}, seven_day: {bp: 0, source: "kind"}}}')
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-1.retry' "$lsr65_w1" >/dev/null 2>&1 || rc=$?
 check "65: WAIT 봉투는 대기 행이 된다" "$rc" "0"
 check "65: 대기 행의 까지 는 floor|todate 다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-1 | 그룹=org:0123456789abcdef | 계정=- | 까지=2026-09-21T14:13:20Z | 근거=no-room"
+  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-1 | 그룹=org:0123456789abcdef | 계정=- | 까지=2026-09-21T14:13:20Z | 비용=1.0000/0.0000 | 비용 출처=default/kind | 근거=no-room"
 lsr65_w2=$(jq -cn '{verdict: "WAIT", reason: "fifo-yield", group: null, account: null, until_epoch: null}')
 lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-2' "$lsr65_w2" >/dev/null 2>&1 || true
 check "65: 그룹과 까지 가 없는 대기는 - 로 쓴다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-2 | 그룹=- | 계정=- | 까지=- | 근거=fifo-yield"
+  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-2 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=fifo-yield"
 
 # 재개 구속. 구속이 없거나 봉투의 계정과 다르면 행을 쓰지 않는다.
 lsr65_rb=$(jq -cn '{verdict: "GRANT", basis: "resume-bound", account: "acct-a", config_dir: "/lanes/a",
@@ -27446,6 +28197,16 @@ for lsr65_bp in -1 12.5 1E+20 10001 '"2500"'; do
   lsr65_try "bp7:$lsr65_bp" 2 gate_stage_lease_row 'S1-x' \
     "{\"verdict\":\"GRANT\",\"basis\":\"first\",\"account\":\"acct-a\",\"config_dir\":\"/lanes/a\",\"reservation_bp\":{\"five_hour\":0,\"seven_day\":$lsr65_bp},\"observed\":\"none\"}"
 done
+for lsr65_bp in -1 12.5 10001 '"300"'; do
+  lsr65_try "cost5:$lsr65_bp" 2 gate_stage_lease_row 'S1-x' \
+    "{\"verdict\":\"GRANT\",\"basis\":\"first\",\"account\":\"acct-a\",\"config_dir\":\"/lanes/a\",\"observed\":\"none\",\"cost\":{\"five_hour\":{\"bp\":$lsr65_bp,\"source\":\"kind\"},\"seven_day\":{\"bp\":0,\"source\":\"kind\"}}}"
+  lsr65_try "cost7:$lsr65_bp" 2 gate_stage_wait_row 'S1-x' \
+    "{\"verdict\":\"WAIT\",\"reason\":\"no-room\",\"group\":null,\"account\":null,\"until_epoch\":null,\"cost\":{\"five_hour\":{\"bp\":0,\"source\":\"kind\"},\"seven_day\":{\"bp\":$lsr65_bp,\"source\":\"kind\"}}}"
+done
+lsr65_try cost-source 2 gate_stage_lease_row 'S1-x' \
+  '{"verdict":"GRANT","basis":"first","account":"acct-a","config_dir":"/lanes/a","observed":"none","cost":{"five_hour":{"bp":0,"source":"bogus"},"seven_day":{"bp":0,"source":"kind"}}}'
+lsr65_try cost-no-source 2 gate_stage_wait_row 'S1-x' \
+  '{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null,"cost":{"five_hour":{"bp":0},"seven_day":{"bp":0,"source":"kind"}}}'
 lsr65_try line-break 2 gate_stage_lease_row 'S1-x' \
   '{"verdict":"GRANT","basis":"first","account":"acct\na","config_dir":"/lanes/a","observed":"none"}'
 lsr65_try unbound-account-wait 2 gate_stage_wait_row 'S1-x' \
@@ -27460,10 +28221,10 @@ check "65: 봉투 거부 사례가 모두 rc 2 다 (GRANT/WAIT 밖·빈 출력·
 check "65: 먼저 담기 — 거부된 봉투는 한 바이트도 남기지 않는다" "$(lsr_sha "$lsr65_l")" "$lsr65_sh"
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-5' "$lsr65_rb" acct-a >/dev/null 2>&1 || rc=$?
 check "65: 맞는 구속을 단 resume-bound GRANT 는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
-  "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-5 | 계보=S1-impl-5 | 계정=acct-a | 레인=/lanes/a | 예약=- | 근거=resume-bound | 관측=-"
+  "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-5 | 계보=S1-impl-5 | 계정=acct-a | 레인=/lanes/a | 예약=- | 비용=- | 비용 출처=- | 근거=resume-bound | 관측=-"
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-3' "$lsr65_rw" acct-a >/dev/null 2>&1 || rc=$?
 check "65: 맞는 구속을 단 resume-bound 대기는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
-  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 근거=resume-bound-exhausted"
+  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 비용=- | 비용 출처=- | 근거=resume-bound-exhausted"
 rc=0; lsr_in Linux "$lsr65_l" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "65: 래퍼가 쓴 원장의 사슬이 검증된다" "$rc" "0"
 
@@ -27726,7 +28487,7 @@ lsr75_w=$(lsr75_new w75)
 check "75: WAIT 의 라우터 반쪽은 0 이다" \
   "$(lsr75_route "$lsr75_w" '{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}' SW1)" "0 B:SW1#1"
 case "$(lsr_body "$lsr75_w")" in
-  '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 근거=no-room')
+  '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=no-room')
     ok "75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다" ;;
   *) bad "75 WAIT 행" "$(lsr_body "$lsr75_w")" ;;
 esac
@@ -29274,6 +30035,7 @@ check "85: 기록 사본은 출처 행의 다이제스트와 같다" \
   "$(shasum -a 256 "$cp85k" 2>/dev/null | cut -d' ' -f1)|$(rf85 "$row85k" '기록 다이제스트')" "$DIG85|$DIG85"
 check "85: 들여온 행은 사람의 답의 레인과 시각을 그대로 싣는다" \
   "$(rf85 "$row85k" '레인')|$(rf85 "$row85k" '기록 시각')" "좌석|2026-01-01T01:00:00Z"
+check "85: 답한 주체가 없던 출처 행은 사람의 답으로 들여온다" "$(rf85 "$row85k" '답한 주체')" "사람"
 case "$(rf85 "$row85k" '근거')" in
   "입양 이월(출처 런 $SRC85 원장 5 번째 줄) — 사람이 재수렴을 골랐다") ok "85: 들여온 행의 근거는 출처와 사람의 말을 싣는다" ;;
   *) bad "85: 들여온 행의 근거는 출처와 사람의 말을 싣는다" "$row85k" ;;
@@ -29292,6 +30054,255 @@ rm -rf "$SRCDIR85/halt"
 rm -f "$SMAN85"
 ( cd "$WT" && git worktree remove --force "$WT85" && git branch -D "seg/$SRC85-SA" ) >/dev/null 2>&1
 rm -f "$LEDGER85" "$WT/$DOC85"
+
+# ---------------------------------------------------------------------------
+# 86. 런 개시가 대시보드 서버를 하나 띄우고, 띄우지 말아야 할 자리에서는 띄우지 않는다
+# --- section: 86 | group: base | covers: snapshot, exec | anchors: 86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다, 86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다, 86: python3 가 없으면 서버 기록을 남기지 않는다, 86: python3 부재는 원장의 행 계열 순서를 바꾸지 않는다, 86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다, 86: 두 번째 런 개시는 서버를 더 띄우지 않는다, 86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다, 86: 자동 해소가 켜져도 기기전역 open 은 플러그인 보호 룰에 거부되고 실행되지 않는다, 86: 자동 해소가 꺼져도 기기전역 open 은 승인 대기 없이 같은 룰에 거부된다, 86: 순수 읽기인 url 도 쓰기 등급으로 매겨져 같은 룰에 거부된다, 86: argv0 로 직접 부른 dashboard.py open 도 실행되지 않는다 ---
+#
+# 서버는 게이트의 런 개시 갈래에서만 뜨므로, 이 절의 모든 경우는 새 런 id 의 첫
+# 진입이다. 경우마다 상태 루트를 따로 둬 앞 경우의 서버 기록이 뒤 경우의 「없다」를
+# 대신 답하지 못하게 하고, 각 경우는 `run` 행이 생겼는지를 먼저 단언한다 — 런
+# 개시를 지나지 않은 호출은 「서버가 없다」를 공짜로 통과하기 때문이다.
+#
+# 이 스위트는 프리앰블에서 `CC_CMDS_DASHBOARD=off` 를 내보낸다. 끄개를 푸는 것은
+# 아래 호출의 서브셸 안에서만이고, `CI` 도 거기서만 지운다. 포트는 비어 있는 것을
+# 골라 덮어쓰고, 띄운 서버는 절이 끝나기 전에 끝낸다.
+# ---------------------------------------------------------------------------
+d86_n=0
+d86_new() {
+  # d86_new — a fresh run id derived from the pristine fixture, so its first
+  # gate entry takes the run-open branch. Leaves the paths in D86_M / D86_L.
+  local rid
+  d86_n=$((d86_n + 1)); rid="R86-$d86_n"
+  sed -e "s/R1\([;.]\)/$rid\1/g" -e "s/R1\$/$rid/" "$GBAK" > "$WT/docs/pipeline-grant/$rid.md"
+  sed -e "s/R1\([;.]\)/$rid\1/g" -e "s/R1\$/$rid/" "$MBAK" > "$WT/plan-$rid.md"
+  D86_M="$WT/plan-$rid.md"
+  D86_L="$WT/docs/pipeline-run/$rid.md"
+}
+d86_gate() {
+  # d86_gate <state-home> <port> <verb> [NAME=value | -NAME]… [-- verb args…]
+  # One gate entry with the switch, CI and the seat set in its own subshell only.
+  # Prints the exit status.
+  local s="$1" port="$2" verb="$3" a r=0
+  shift 3
+  (
+    cd "$WT" || exit 99
+    unset CI
+    export XDG_STATE_HOME="$s" CC_CMDS_DASHBOARD_PORT="$port" CC_CMDS_DASHBOARD_IDLE=600
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+      a="$1"; shift
+      case "$a" in
+        -*) unset "${a#-}" ;;
+        *) export "${a?}" ;;
+      esac
+    done
+    [ "$#" -gt 0 ] && shift
+    # D86_NOPY — a host without python3. Only the lookup the gate makes fails;
+    # every other `command` goes to the builtin. In-process only: a forked gate
+    # does not see a function defined here.
+    if [ -n "${D86_NOPY:-}" ]; then
+      command() {
+        if [ "${1:-}" = "-v" ] && [ "${2:-}" = "python3" ]; then return 1; fi
+        builtin command "$@"
+      }
+    fi
+    if [ -n "${D86_FORK:-}" ]; then
+      bash "$GATE" "$verb" --manifest "$D86_M" "$@"
+    else
+      gate_inproc "$verb" --manifest "$D86_M" "$@"
+    fi
+  ) >"${D86_OUT:-/dev/null}" 2>&1 || r=$?
+  printf '%s' "$r"
+}
+d86_rec() { printf '%s/cc-cmds/dashboard/server' "$1"; }
+d86_pid() { jq -r '.pid // empty' "$(d86_rec "$1")" 2>/dev/null || true; }
+d86_has() { if [ -f "$(d86_rec "$1")" ]; then printf yes; else printf no; fi; }
+d86_runrow() { { grep -c '^- `run` ' "$D86_L" 2>/dev/null || true; }; }
+d86_serving() {
+  # Servers recorded under this section's state homes whose pid is alive and
+  # still the process whose start fingerprint the record holds. Not a host-wide
+  # `pgrep`: any run opened on this host starts a real server, and a baseline
+  # taken once cannot tell one that started mid-section from one of ours.
+  local f pid fp now n=0
+  for f in "$WORK"/s86-*/cc-cmds/dashboard/server; do
+    [ -f "$f" ] || continue
+    pid=$(jq -r '.pid // empty' "$f" 2>/dev/null || true)
+    fp=$(jq -r '.fingerprint // empty' "$f" 2>/dev/null || true)
+    [ -n "$pid" ] && [ -n "$fp" ] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    now=$( { LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
+    if [ "$now" = "$fp" ]; then n=$((n + 1)); fi
+  done
+  printf '%s' "$n"
+}
+d86_seq() { { grep -o '^- `[^`]*`' "$D86_L" 2>/dev/null || true; } | tr '\n' ' '; }
+d86_h() { { grep -E '^[0-9a-f]{64}(-[0-9a-f]{64})?$' "$1" 2>/dev/null || true; } | tail -1; }
+D86_DASH="$(cd "$(dirname "$GATE")" && pwd)/dashboard.py"
+d86_alive() { if [ -n "$1" ] && kill -0 "$1" 2>/dev/null; then printf yes; else printf no; fi; }
+d86_stop() {
+  local pid i=0
+  pid=$(d86_pid "$1")
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i + 1)); done
+}
+d86_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+D86_PORT=$(d86_port)
+
+# T15 — 끄개 기본값은 새지 않는다. 같은 준비에서 끄개만 풀면 서버 기록이 생기므로,
+# 프리앰블의 내보내기를 지우면 첫 단언이 실패한다.
+D86_S="$WORK/s86-off"; mkdir -p "$D86_S"; d86_new
+check "86: (선행) 끄개 기본값 경우의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot)/$(d86_runrow)" "0/1"
+check "86: 끄개 기본값 아래의 런 개시는 서버 기록을 남기지 않는다" "$(d86_has "$D86_S")" "no"
+D86_SEQ0=$(d86_seq)
+D86_S="$WORK/s86-unset"; mkdir -p "$D86_S"; d86_new
+check "86: (선행) 끄개를 푼 경우의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot -CC_CMDS_DASHBOARD)/$(d86_runrow)" "0/1"
+check "86: 끄개만 풀면 같은 런 개시가 서버 기록을 남긴다" "$(d86_has "$D86_S")" "yes"
+d86_stop "$D86_S"
+
+# python3 가 없는 호스트 — 끄개를 풀고 `CI` 를 지워 서버를 띄울 자리인데, 게이트가 찾는
+# `command -v python3` 만 실패한다. 런 개시는 그대로 성공하고, 서버 기록도 원장의 흔적도
+# 남지 않아야 한다. 이 단언들이 공허하지 않다는 것은 바로 위 경우가 보인다: 함수 정의만
+# 없는 같은 준비가 서버 기록을 남긴다. 원장은 끄개 기본값 경우의 행 계열 순서와 대조한다.
+D86_S="$WORK/s86-nopy"; mkdir -p "$D86_S"; d86_new
+check "86: python3 가 없어도 런 개시는 rc 0 으로 런을 연다" \
+  "$(D86_NOPY=1 d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
+check "86: python3 가 없으면 서버 기록을 남기지 않는다" "$(d86_has "$D86_S")" "no"
+check "86: python3 부재는 원장의 행 계열 순서를 바꾸지 않는다" "$(d86_seq)" "$D86_SEQ0"
+
+# T17 — 한 상태 루트에서 두 런의 개시. 첫째가 띄우고 둘째는 그 서버를 그대로 둔다.
+D86_S="$WORK/s86-on"; mkdir -p "$D86_S"; d86_new
+check "86: (선행) 첫 런의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
+D86_P1=$(d86_pid "$D86_S")
+check "86: 비스테이지 snapshot 의 런 개시가 서버 하나를 띄운다" \
+  "$(d86_alive "$D86_P1")/$(d86_serving)" "yes/1"
+check "86: 같은 런의 두 번째 snapshot 은 서버를 더 띄우지 않는다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_pid "$D86_S")/$(d86_serving)" "0/$D86_P1/1"
+d86_new
+check "86: (선행) 둘째 런의 snapshot 이 런을 연다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on)/$(d86_runrow)" "0/1"
+check "86: 두 번째 런 개시는 서버를 더 띄우지 않는다" \
+  "$(d86_pid "$D86_S")/$(d86_serving)" "$D86_P1/1"
+d86_stop "$D86_S"
+
+# 경합 — 같은 새 런에 비스테이지 snapshot 둘이 동시에 들어온다. 런 개시 갈래 둘레에는
+# 잠금이 없어 둘 다 그 갈래에 들 수 있고, 그 경합을 흡수하는 것은 `ensure` 의 잠금이다.
+# 기록 파일은 임시 이름까지 센다 — 이름을 바꾸지 못한 쓰기도 둘째 기록이다.
+#
+# 이 경우만 게이트를 새 bash 프로세스로 띄운다. 프로세스 내 이음매로 띄운 두 백그라운드
+# 서브셸은 `$$` 가 같아, 런 디렉터리의 `<파일>.tmp.$$` 임시 이름이 서로 겹쳐 한쪽이
+# 레인 기록을 쓰지 못하고 끝난다 — 별개의 두 게이트 프로세스에는 없는 충돌이다.
+D86_S="$WORK/s86-race"; mkdir -p "$D86_S"; d86_new
+D86_FORK=1 d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on > "$WORK/rc86a" &
+d86_ja=$!
+D86_FORK=1 d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on > "$WORK/rc86b" &
+d86_jb=$!
+wait "$d86_ja" "$d86_jb" || true
+d86_recs=$(find "$D86_S/cc-cmds/dashboard" \( -name server -o -name '.server.tmp*' \) 2>/dev/null | grep -c . || true)
+check "86: 동시에 들어온 첫 진입 둘도 서버 하나와 기록 하나를 남긴다" \
+  "$(cat "$WORK/rc86a")/$(cat "$WORK/rc86b")/$d86_recs/$(d86_serving)" "0/0/1/1"
+d86_stop "$D86_S"
+
+# 띄우지 않는 자리 — 스테이지 좌석, 첫 진입이 `plan`, 첫 진입이 `digest-path`, `CI`.
+# 각 경우는 런을 실제로 열었는지(`run` 행)를 함께 단언한다.
+D86_S="$WORK/s86-stage"; mkdir -p "$D86_S"; d86_new
+d86_rc=$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on CC_PIPELINE_STAGE_ID=S1#1)
+check "86: 스테이지 좌석의 런 개시는 서버를 띄우지 않는다" "$(d86_runrow)/$(d86_has "$D86_S")" "1/no"
+D86_S="$WORK/s86-plan"; mkdir -p "$D86_S"; d86_new
+d86_rc=$(d86_gate "$D86_S" "$D86_PORT" plan CC_CMDS_DASHBOARD=on -- --kind x --target front --cutpoint 커밋 -- git commit -m x)
+check "86: 첫 진입이 plan 인 런 개시는 서버를 띄우지 않는다" "$(d86_runrow)/$(d86_has "$D86_S")" "1/no"
+D86_S="$WORK/s86-digest"; mkdir -p "$D86_S"; d86_new
+d86_rc=$(d86_gate "$D86_S" "$D86_PORT" digest-path CC_CMDS_DASHBOARD=on)
+check "86: 첫 진입이 digest-path 인 런 개시는 서버를 띄우지 않는다" "$(d86_runrow)/$(d86_has "$D86_S")" "1/no"
+D86_S="$WORK/s86-ci"; mkdir -p "$D86_S"; d86_new
+check "86: CI 아래의 런 개시는 서버를 띄우지 않는다" \
+  "$(d86_gate "$D86_S" "$D86_PORT" snapshot CC_CMDS_DASHBOARD=on CI=1)/$(d86_runrow)/$(d86_has "$D86_S")" "0/1/no"
+
+# 게이트 아래의 좌석이 `python3 <플러그인 루트>/orchestrator/dashboard.py` 를 부르면
+# 실행되지 않는다. 표지 없는 비스테이지 좌석에서, 끄개를 풀고 `CI` 를 지운 환경으로
+# 부른다 — 게이트가 행위를 실행했다면 `open` 이 서버를 띄워 기록을 남겼을 자리다(맨 끝의
+# 대조 경우가 보인다). 런은 끄개 기본값의 `snapshot` 으로 먼저 열어 둔다. 그래야 `exec` 가
+# 런 개시 갈래를 지나지 않고, 서버 기록이 생긴다면 그것은 `open` 이 남긴 것이다.
+#
+# 처분은 도달 판정이 아니라 설치 플러그인 보호 룰이다. 등급표가 `python3` 를 쓰기 등급으로
+# 매기고 피연산자가 게이트 자신의 `orchestrator/` 아래 파일이라, 그 룰이 도달 판정보다 먼저
+# 종료 코드 3 으로 거부한다. 그래서 자동 해소 스위치의 두 모드가 같은 결과를 내고, `승인`
+# 대기도 도달 park 행도 생기지 않는다. 순수 읽기인 `url` 도 같은 룰에 걸린다.
+d86_dash() {
+  # d86_dash <state-home> <auto-resolve> <reach> <verb> — open the run, then the
+  # declared `dashboard.py <verb>`. Leaves the exit statuses in d86_rc (run open)
+  # and d86_orc (the act), and the act's output in $WORK/86-dash.out.
+  local hf="$WORK/86-dash.h"
+  d86_rc=$(D86_OUT="$hf" d86_gate "$1" "$D86_PORT" snapshot -- --fields H)
+  d86_orc=$(D86_OUT="$WORK/86-dash.out" \
+    d86_gate "$1" "$D86_PORT" exec CC_CMDS_DASHBOARD=on CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$2" \
+    -CC_PIPELINE_STAGE_ID -CC_PIPELINE_SEGMENT \
+    -- --target front --cutpoint 커밋 --surface 워크트리쓰기 --reach "$3" \
+       --snapshot-digest "$(d86_h "$hf")" --rationale '대시보드를 연다' \
+       -- python3 "$D86_DASH" "$4")
+}
+d86_dash_direct() {
+  # d86_dash_direct <state-home> — the same seat as d86_dash, but `dashboard.py
+  # open` is argv0 itself, deliberately under-declared as a run-local write. The
+  # gate exempts only that argv0 form from the protection rule, so what keeps it
+  # from running is the file's missing execute bit.
+  local hf="$WORK/86-dash.h"
+  d86_rc=$(D86_OUT="$hf" d86_gate "$1" "$D86_PORT" snapshot -- --fields H)
+  d86_orc=$(D86_OUT="$WORK/86-dash.out" \
+    d86_gate "$1" "$D86_PORT" exec CC_CMDS_DASHBOARD=on CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+    -CC_PIPELINE_STAGE_ID -CC_PIPELINE_SEGMENT \
+    -- --target front --cutpoint 커밋 --surface 트리밖쓰기 --reach 런로컬 \
+       --snapshot-digest "$(d86_h "$hf")" --rationale '대시보드를 연다' \
+       -- "$D86_DASH" open)
+}
+d86_count() { { grep -c "^- \`$1\` " "$D86_L" 2>/dev/null || true; }; }
+d86_parked() { { grep '^- `blocked` ' "$D86_L" 2>/dev/null || true; } | grep -cF '사유=도달 park' || true; }
+d86_guard() {
+  if grep -qF 'orchestrator or hook script of the installed plugin' "$WORK/86-dash.out" 2>/dev/null; then
+    printf yes
+  else
+    printf no
+  fi
+}
+D86_S="$WORK/s86-open-on"; mkdir -p "$D86_S"; d86_new
+d86_dash "$D86_S" 1 기기전역 open
+check "86: (선행) 자동 해소가 켜진 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+check "86: 자동 해소가 켜져도 기기전역 open 은 플러그인 보호 룰에 거부되고 실행되지 않는다" \
+  "$d86_orc/$(d86_guard)/$(d86_parked)/$(d86_count 승인)/$(d86_has "$D86_S")" "3/yes/0/0/no"
+D86_S="$WORK/s86-open-off"; mkdir -p "$D86_S"; d86_new
+d86_dash "$D86_S" 0 기기전역 open
+check "86: (선행) 자동 해소가 꺼진 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+check "86: 자동 해소가 꺼져도 기기전역 open 은 승인 대기 없이 같은 룰에 거부된다" \
+  "$d86_orc/$(d86_guard)/$(d86_parked)/$(d86_count 승인)/$(d86_has "$D86_S")" "3/yes/0/0/no"
+D86_S="$WORK/s86-url"; mkdir -p "$D86_S"; d86_new
+d86_dash "$D86_S" 1 런로컬 url
+check "86: (선행) url 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+check "86: 순수 읽기인 url 도 쓰기 등급으로 매겨져 같은 룰에 거부된다" \
+  "$d86_orc/$(d86_guard)/$(d86_parked)/$(d86_count 승인)/$(d86_has "$D86_S")" "3/yes/0/0/no"
+# argv0 직접 꼴 — 보호 룰이 면제하는 유일한 꼴이라 게이트는 이 행위를 통과시킨다. 막는
+# 것은 실행 비트가 없다는 사실이므로, 종료 코드가 0 이 아니라는 것만이 아니라 그 원인이
+# 실행 거부라는 것까지 단언한다 — 다이제스트 낡음 같은 다른 거부도 0 이 아닌 종료 코드를
+# 내기 때문이다. `dashboard.py` 에 실행 비트가 생기면 이 경우가 서버 기록을 남겨 실패한다.
+D86_S="$WORK/s86-direct"; mkdir -p "$D86_S"; d86_new
+d86_dash_direct "$D86_S"
+check "86: (선행) argv0 직접 경우의 런 개시가 런을 연다" "$d86_rc/$(d86_runrow)" "0/1"
+d86_drc=$([ "$d86_orc" != "0" ] && printf nonzero || printf zero)
+d86_denied=$(grep -qiF 'permission denied' "$WORK/86-dash.out" 2>/dev/null && printf yes || printf no)
+check "86: argv0 로 직접 부른 dashboard.py open 도 실행되지 않는다" \
+  "$d86_drc/$d86_denied/$(d86_has "$D86_S")" "nonzero/yes/no"
+D86_S="$WORK/s86-open-on"
+# 대조 — 같은 환경에서 게이트 밖으로 부른 `open` 은 서버 기록을 남긴다.
+( cd "$WT" || exit 99
+  unset CI CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  export XDG_STATE_HOME="$D86_S" CC_CMDS_DASHBOARD=on CC_CMDS_DASHBOARD_PORT="$D86_PORT" \
+         CC_CMDS_DASHBOARD_IDLE=600
+  python3 "$D86_DASH" open ) >/dev/null 2>&1 || true
+check "86: (대조) 같은 환경에서 게이트 밖으로 부른 open 은 서버 기록을 남긴다" "$(d86_has "$D86_S")" "yes"
+d86_stop "$D86_S"
+check "86: 이 절이 띄운 서버가 남지 않는다" "$(d86_serving)" "0"
 
 # --- epilogue-begin ---
 #
