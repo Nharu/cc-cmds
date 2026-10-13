@@ -5,6 +5,25 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.11] - 2026-10-13
+
+셸 문자열 안의 push 를 찾는 게이트 판독기가 셸이 실제로 실행하는 철자 몇 가지를 push 로 읽지 못해, 런로컬 쓰기로 선언된 베이스 push 가 결속 검사를 공허하게 지나던 구멍을 닫는다.
+
+### Fixed
+
+- **`-c` 문자열을 셸이 받는 자리에서 읽는다** — 셸은 옵션을 모두 읽은 뒤 첫 비옵션 단어를 명령 문자열로 받으므로, `-c` 바로 다음 단어가 아니라 그 단어를 읽는다. `--`·`-`·옵션 값(`-o pipefail`, `--rcfile <f>`)을 건너뛴다. 전에는 `bash -c -- 'git push origin X:master'` 와 `sh -c -e '…'` 가 `--`·`-e` 를 문자열로 읽어 push 없음(`해당없음`)으로 통과했다
+- **셸 문자열의 단어를 따옴표 제거 뒤의 모양으로 읽는다** — 따옴표와 함께 백슬래시도 지우고, `(`·`)`·`{`·`}`·백틱으로도 단어를 나누며, `$` 를 단어 경계로 읽은 판과 지운 판을 모두 본다. 전에는 `sh -c '\git push …'`, `gi\t push`, `git${IFS}push` 가 push 로 읽히지 않았다
+- **불투명 하한도 같은 판독을 쓴다** — 셸 `-c` 문자열의 하한 판정이 정확한 `-c` 뒤 단어만 읽고 백슬래시·따옴표·`$IFS` 를 그대로 두어, 위 철자의 push 를 `읽기` 로 두었다. 이제 `-ec`·`-c --`·`-c -e` 의 문자열을 읽고, `\git`·`'git'`·`git${IFS}push` 를 `git push` 로 읽어 `외부상태변경` 하한을 준다
+
+### Post-install notes
+
+- 셸 문자열이나 그 인자에 `git` 과 `push` 가 따옴표·백슬래시·`$` 로 갈라져 있으면 전보다 넓게 push 로 읽혀 거부될 수 있다. 래퍼 없이 `git push …` 를 직접 부르면 전처럼 dry-run 으로 잰다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): 셸 문자열의 push 를 셸이 실행하는 철자대로 읽는다`
+
 ## [2.72.10] - 2026-10-13
 
 2.72.9 가 REST 경로 분할에서 고친 로캘 결함이 같은 읽기 경로의 다른 세 판독기에 남아 있어, UTF-8 로캘의 macOS 에서 UTF-8 이 아닌 바이트 하나로 결속 없는 머지와 베이스 push 가 리뷰를 건너던 구멍을 닫는다.
