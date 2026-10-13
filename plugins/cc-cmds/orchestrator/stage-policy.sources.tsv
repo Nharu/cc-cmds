@@ -12,6 +12,7 @@ user-scope	playwright(-cli) `open`	0cfcf9046df1abf5fb93d651ff78c6925d9124e1d99ac
 user-scope	Maestro(Android) 는 세션마다	73b521dcf5cb88658246f52809a155c959f8fdf3678b70a8b422720b63cfdd2c	policy:Code and tools	compressed to own device, pgrep check first, never signal another run (shared netsimd); the 8000-byte policy ceiling leaves no room for the 2.6.0/2.11.0 port detail or README pointer
 user-scope	Android 에뮬레이터·iOS 시뮬레이터는	2a0e984d1b1f9a80b24331e46ae1bec469593ae432dc4a1d372f18df2f9063e8	policy:Code and tools	compressed to shut down when done unless handed off; shares one policy line with the Maestro row
 user-scope	terraform 의	c2e55dff5ca01f63357c052df54f3883b4721435887bff004610f54aac54b703	policy:Code and tools	
+user-scope	운영·고객 서버에서의	619ee9cfe9c227d14a3685a30ba685493e6003b9cac9a044a3496e36a1f592d7	policy:Code and tools	compressed; the stage judges from size, load, network policy and time of day and records its own grounds, since no orchestrator is present
 user-scope	sed를 사용한 파일 수정은	f51068eff7b4dbc7dc5f6f7bb30831552144906444bfe0681cb33018e8b99b6b	policy:Code and tools	
 user-scope	독립적인 읽기·편집은	03039215bf36940ff5db8a54852fcbff049c612b04a2c7b509dbf14f70ad2459	excluded:interactive-only	batching shape for the interactive permission flow
 user-scope	Dynamic Workflow(	ea03b8dd2cffd453a5c4252da0671fc581c60c05a55f39c58819c0964830905d	policy:Delegation	
