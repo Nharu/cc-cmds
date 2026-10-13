@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.73.1] - 2026-10-14
+
+autopilot 킥오프 세션이 1막 내내 싣던 `SKILL.md` 를 상주 본문과 진입 시점에 읽는 참조 파일 일곱으로 나눈다. 상주 본문은 약 64 KB(약 22k 토큰)로 줄고, 경계 질문·동결·2막 좌석·아침 보고서 문면은 그 단계에 들어설 때 읽는다.
+
+### Changed
+
+- **autopilot 분할** — `references/` 에 `rekickoff`·`lead-solo-document`·`boundaries`·`freeze`·`act2-seat`·`router-lead-copy`·`act3-report` 를 두고, 상주 본문은 각 파일을 언제 읽는지 지시하는 포인터를 싣는다. 5j 를 뺀 경계 질문(5a–5s)은 5j 마지막 라운드 뒤에, 2막 좌석 규칙은 Step 7 진입 때 읽는다. 라우터 리드 사본은 런 중에 아무도 읽지 않고 교대 사본과의 대조에만 쓴다.
+- 옮긴 문면을 고정하던 린트·시험·픽스처(cutpoint 어휘·watch 임계·terminal 리터럴·킥오프 기본값·인터뷰 기록 절·인터뷰 규약 참조·notify 환경 이름 린트, snapshot·gate·watch·issue-filing·kickoff-defaults 시험)가 그 문면이 있는 참조 파일을 읽는다. 인터뷰 규약 참조 린트의 순서 규칙은 5a 가 상주 본문에 없고 boundaries 를 읽는 줄이 5j 뒤에 있는지로 본다.
+
+### Fixed
+
+- snapshot 시험의 부재 단언이 상주 본문과 참조 파일 전체를 함께 읽고, `grep -q` 대신 센 수로 판정한다. 파이프 왼쪽이 조기 종료로 SIGPIPE 를 맞으면 pipefail 아래 매치가 미스로 읽혀, 금지 문면이 들어가도 단언이 통과했다.
+
+### Why
+
+킥오프 세션은 1막의 매 턴마다 상주 스킬 본문 전체를 컨텍스트로 다시 싣는다. 1막이 매 턴 쓰지 않는 문면을 그 단계의 진입 읽기로 미루면 턴당 컨텍스트의 바닥값이 줄어든다.
+
 ## [2.73.0] - 2026-10-14
 
 무인 스테이지가 이 기기의 설정을 바꾸는 행위(`--reach 기기전역`)를 매니페스트의 `사전 인가` 행으로 열 수 있게 하고, park 마다 고치는 법을 찍는다. 기기전역 칸은 행위를 낱말 그대로 다 적은 행만 판단 없이 열고, 그 밖의 행위는 새 판단 호출이 행의 형태와 사유에 비추어 열지 정한다. 다른 칸의 대조는 접두 일치 그대로다.
