@@ -18,6 +18,10 @@
 # carry the base split literal once. `FAIL-consumer-second-copy-same-line`
 # is the case that earns the per-occurrence count its keep: a per-line count
 # stays green when only the second copy on a line changes.
+#
+# The fixture emitters are the lint's `EMITTERS` list, the light design stage
+# `design-solo-unattended` included: the lint fails on an emitter file that is
+# absent, so a list line with no fixture file turns every fixture case red.
 
 set -uo pipefail
 
@@ -78,6 +82,7 @@ write_emitters() {
   write_emitter "$1" design "$2"
   write_emitter "$1" design-audit "$3"
   write_emitter "$1" design-discuss-unattended "$2"
+  write_emitter "$1" design-solo-unattended "$2"
   write_emitter "$1" design-reconverge "$4"
   write_emitter "$1" design-audit-unattended "$3"
   write_emitter "$1" design-base-unattended "${5:-$S}"
@@ -186,6 +191,14 @@ mk_root "$WORK/emit-absent"
 rm -f "$WORK/emit-absent/skills/design-audit-unattended/SKILL.md"
 run_case "FAIL-emitter-absent" 1 "$WORK/emit-absent" \
   "design-audit-unattended/SKILL.md" "LIT_AUDIT_TERMINAL"
+
+# FAIL — the light design stage's emitter file is gone. It prints the same
+# freeze literal as the discuss arm, so the discuss arm's copy must not stand in
+# for it.
+mk_root "$WORK/emit-solo-absent"
+rm -f "$WORK/emit-solo-absent/skills/design-solo-unattended/SKILL.md"
+run_case "FAIL-solo-emitter-absent" 1 "$WORK/emit-solo-absent" \
+  "design-solo-unattended/SKILL.md" "LIT_DESIGN_TERMINAL"
 
 # FAIL — one consumer copy changed by one character.
 mk_root "$WORK/cons-char"

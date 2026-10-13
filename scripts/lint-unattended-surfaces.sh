@@ -146,6 +146,9 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # names it: the base-design seat launches it as its leg, and the driver and
 # router wiring that makes it a stage lands separately, so the arm is checked
 # from the moment its file exists rather than from the moment it is dispatched.
+# `design-solo-unattended` is listed on the same footing: it is the light design
+# stage a `solo` run dispatches, and the selection that names it lands
+# separately from the file.
 UNATTENDED_SKILLS=(
   "implement-unattended"
   "design-audit-unattended"
@@ -153,6 +156,7 @@ UNATTENDED_SKILLS=(
   "design-reconverge"
   "design-discuss-unattended"
   "design-base-unattended"
+  "design-solo-unattended"
   "visual-unattended"
   "autopilot-router-shift"
 )
@@ -191,6 +195,10 @@ REFERENCE_TREES=(
   # turn Reads `design/SKILL.md`; neither carries a references/ tree, so this
   # entry is a SKIP for the same reason as the line above and Rule 5 covers it.
   "design-base-unattended|design"
+  # The light design arm Reads `design-discuss-unattended/SKILL.md` the same
+  # way and carries no references/ tree either, so this entry is a SKIP for the
+  # same reason and Rule 5 covers it.
+  "design-solo-unattended|design"
   # The visual arm reads `visual/references/` (the shared contract), which
   # holds no question point; the attended arm's questions live in its SKILL.md.
   "visual-unattended|visual"
@@ -218,6 +226,7 @@ U0_PIN='this arm resolves that terminus to `park`'
 U0_PINNED_SKILLS=(
   "design-discuss-unattended"
   "design-base-unattended"
+  "design-solo-unattended"
 )
 
 fail=0
