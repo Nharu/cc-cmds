@@ -1509,6 +1509,19 @@ EOF
     fi
   fi
 
+  # 21 — the entry judgment's structure, for a plan that carries one. The
+  # checker beside the entry prompt asserts it: a reason for every `team-4`
+  # judgment and none for `solo`, a confirmed tier never below the judged one,
+  # and a `solo` graph with one design step and no audit or split. A plan frozen
+  # before `design_tier_judged` existed has no key and is not asserted at all.
+  # The checker file is required once the key is there: a gate copy without it
+  # cannot say whether the judgment holds, and refuses.
+  if manifest_plan_json | jq -e 'type == "object" and has("design_tier_judged")' >/dev/null 2>&1; then
+    local ep_why
+    ep_why=$(manifest_plan_json | jq -f "$ORCH_DIR/prompts/entry-plan.check.jq" 2>&1 >/dev/null) \
+      || die "진입 판정이 검사기를 통과하지 못했습니다 — $(printf '%s' "${ep_why:-검사기를 돌리지 못했습니다}" | tr '\n' ' ')"
+  fi
+
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }
 
@@ -1519,6 +1532,37 @@ manifest_design_scope() {
     base) printf 'base' ;;
     *) printf 'single' ;;
   esac
+}
+
+manifest_design_tier() {
+  # The plan's `design_tier` as frozen. An absent key, `null` and an unparsable
+  # plan block all print the empty string — the callers only ask whether it is
+  # `solo`, and none of those may read as `solo`. A plan frozen before `solo`
+  # existed carries `team-2`, `team-4`, `lead-solo` or `null`, and is printed
+  # as it stands.
+  local v
+  v=$(manifest_plan_field '.design_tier')
+  case "$v" in
+    null) printf '' ;;
+    *) printf '%s' "$v" ;;
+  esac
+}
+
+manifest_design_skill() {
+  # THE ONE CHOICE OF DESIGN SKILL. `design_arm`, the gate's snapshot field
+  # `design_skill` and the gate's design-dispatch check all read it here, so the
+  # driver, the gate and the routers that send the snapshot's value cannot pick
+  # different skills for one plan. The scope comes first: a base run designs
+  # with the base skill whatever its tier, and the base scope only takes
+  # `team-4`. Everything that is not `solo` — `team-4`, and the `team-2` and
+  # `null` of a plan frozen before `solo` existed — keeps the discussion skill.
+  if [ "$(manifest_design_scope)" = "base" ]; then
+    printf 'design-base-unattended'
+  elif [ "$(manifest_design_tier)" = "solo" ]; then
+    printf 'design-solo-unattended'
+  else
+    printf 'design-discuss-unattended'
+  fi
 }
 
 # The value of a declaration's `끌 수 있는가`, wherever the declaration put it:
@@ -9729,11 +9773,13 @@ design_arm() {
   # stage that ran, billed, produced nothing and was classified a hollow
   # success. A missing file is a park, not a dispatch; that is the whole cost
   # of the check, and it does not depend on the observation.
-  # A BASE RUN DESIGNS WITH THE BASE SKILL. The scope is a frozen plan field, so
-  # the choice is read, not made; an absent key is `single`, the skill every run
-  # used before the field existed.
-  local plugin_dir1 skill_file1 skill1=design-discuss-unattended
-  [ "$(manifest_design_scope)" = "base" ] && skill1=design-base-unattended
+  # THE SKILL IS READ FROM THE FROZEN PLAN, NOT CHOSEN HERE. `manifest_design_skill`
+  # is the one place that maps scope and tier to a skill — a base run designs
+  # with the base skill, a `solo` run with the lead-only skill, and every other
+  # plan, including one frozen before either field existed, with the discussion
+  # skill.
+  local plugin_dir1 skill_file1 skill1
+  skill1=$(manifest_design_skill)
   plugin_dir1=$(cd "$ORCH_DIR/.." && pwd)
   skill_file1="$plugin_dir1/skills/$skill1/SKILL.md"
   if [ ! -f "$skill_file1" ]; then
@@ -9987,7 +10033,30 @@ main_loop_body() {
   # Skipping is the correct disposition rather than a concession: there is no
   # artifact to audit, so an audit here can only fail. Recorded as an autonomous
   # decision for the same reason the sibling skip below is.
-  if [ -z "$DOC" ]; then
+  #
+  # A `solo` RUN THAT DESIGNED ITS OWN DOCUMENT IS NOT AUDITED. The light path
+  # is a lead's summary frozen and implemented without the audit, and the
+  # router path gets that from a graph with no audit step; this driver never
+  # reads the graph, so the tier decides here. It is the tier and
+  # `design_required` together, not the absence of an audit step: a run anchored
+  # on a document written outside it is still audited, and so is every plan
+  # frozen before `solo` existed. No ledger row — leaving the audit out was the
+  # frozen plan's decision, not one this run made, and the gate's `설계 티어`
+  # row already carries `감사=없음`.
+  #
+  # THE FREEZE IS CHECKED HERE BECAUSE NOTHING AFTER THIS CHECKS IT. The segment
+  # plan does not read the status line, so a document left unfrozen — a stage
+  # that wrote it and died before the freeze edit — would go straight to
+  # implementation. Parked instead, neither audited nor implemented.
+  if [ "$(manifest_design_tier)" = "solo" ] && [ "$(manifest_plan_field '.design_required')" = "true" ]; then
+    if doc_is_frozen "$DOC"; then
+      log "S2 감사 건너뜀 — solo 티어 런이 설계한 동결 문서다 ($DOC_KEY)"
+      report_append "감사" "건너뜀 — solo 티어 런이 설계한 문서는 감사하지 않는다 ($DOC_KEY)"
+    else
+      park "S2" run 무효화 "게이트 park" "설계 문서가 동결돼 있지 않다 — 동결되지 않은 문서로 감사 없이 구현하지 않는다"
+      return 0
+    fi
+  elif [ -z "$DOC" ]; then
     log "S2 감사 건너뜀 — 이 런에는 설계 문서가 없다 (앵커 종류 $ANCHOR_KIND)"
     ledger_row '자율 승인' "kind=audit-composition" "결정=감사 스테이지를 띄우지 않는다" \
       "기각된 대안=빈 문서 인자로 감사를 띄운다" "등급=1" \

@@ -12526,6 +12526,11 @@ gate_snapshot() {
   # sends and whether the audit carries `--base` and a split follows. A plan
   # frozen before the field existed has no key and reads as `single`.
   printf '  "design_scope": "%s",\n' "$(gate_snapshot_design_scope)"
+  # THE DESIGN SKILL, so a shift sends `/cc-cmds:<design_skill>` rather than
+  # mapping scope and tier itself. The value is `manifest_design_skill`'s, the
+  # same function the driver's design arm and the design-dispatch check below
+  # read; `null` when the plan has no design step to dispatch.
+  printf '  "design_skill": %s,\n' "$(gate_snapshot_design_skill_json)"
   printf '  "steps": %s,\n' "$(gate_snapshot_steps_json)"
   # THE DECLARED SEGMENT PLAN, beside the graph for the same reason: the shift
   # that plans segments has no other input, and the values it would otherwise
@@ -12663,6 +12668,71 @@ gate_snapshot_design_scope() {
     base) printf 'base' ;;
     *) printf 'single' ;;
   esac
+}
+
+gate_snapshot_design_skill_json() {
+  # `"<skill>"` when the plan has a step whose skill is `design`, `null`
+  # otherwise — a `lead-solo` plan frozen before `solo` existed, a document-
+  # anchored run, a plan block that does not parse. The name itself comes from
+  # `manifest_design_skill` and nowhere else.
+  if [ "$(gate_plan_skill_step_count design)" != "0" ]; then
+    printf '"%s"' "$(gate_json_escape "$(manifest_design_skill)")"
+  else
+    printf 'null'
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# The `설계 티어` row — the entry judgment's tier, as the run opened on it.
+#
+# WRITTEN HERE AND NOWHERE ELSE: once, at run open, right after the `run` row.
+# Run open happens once per run and before the driver's first stage, so this
+# one writer covers the router path and the fixed-graph driver alike; the
+# driver and `feed.sh` neither write nor relay it. The kickoff writes no ledger,
+# so the plan in the manifest is the only place the judged value survives a
+# raise, and this row is where the morning reads it beside the reviews.
+#
+# NOT `자율 승인`. That series is what the run decided; the tier was decided
+# before the run, by the kickoff and the person, and a raise reads as
+# `판정 ≠ 확정` on this row.
+#
+# ONLY FOR A PLAN THAT CARRIES `design_tier_judged`, and only when the series
+# is still empty — the guard rides on top of run open's once-only property. A
+# plan frozen before the key existed gets no row. `사유` and `근거` are clipped
+# excerpts (200 and 240 bytes); the whole values stay in the manifest's plan.
+# ---------------------------------------------------------------------------
+gate_record_design_tier() {
+  manifest_plan_json 2>/dev/null | jq -e 'type == "object" and has("design_tier_judged")' >/dev/null 2>&1 \
+    || return 0
+  [ -z "$(gate_rows '설계 티어')" ] || return 0
+  local dt_judged dt_tier dt_skill dt_audit dt_est dt_reasons dt_why
+  dt_judged=$(manifest_plan_field '.design_tier_judged')
+  dt_tier=$(manifest_plan_field '.design_tier')
+  if [ "$(gate_plan_skill_step_count design)" != "0" ]; then
+    dt_skill=$(manifest_design_skill)
+  else
+    dt_skill='없음'
+  fi
+  if [ "$(gate_plan_skill_step_count design-audit)" != "0" ]; then
+    dt_audit='있음'
+  else
+    dt_audit='없음'
+  fi
+  dt_est=$(manifest_plan_field '.estimated_files')
+  dt_reasons=$( { manifest_plan_json 2>/dev/null \
+                  | jq -r '[.design_heavy_reasons[]? | tostring] | join(" / ")' 2>/dev/null; } || true)
+  [ -n "$dt_reasons" ] || dt_reasons='없음'
+  dt_why=$( { manifest_plan_json 2>/dev/null | jq -r '.design_tier_rationale // "" | tostring' 2>/dev/null; } || true)
+  [ -n "$dt_why" ] || dt_why='없음'
+  gate_append '설계 티어' \
+    "판정=$(gate_row_safe "$dt_judged" 40)" \
+    "확정=$(gate_row_safe "$dt_tier" 40)" \
+    "범위=$(manifest_design_scope)" \
+    "설계 스킬=$dt_skill" \
+    "감사=$dt_audit" \
+    "추정 파일=$(gate_row_safe "$dt_est" 40)" \
+    "사유=$(gate_row_safe "$dt_reasons" 200)" \
+    "근거=$(gate_row_safe "$dt_why" 240)"
 }
 
 gate_snapshot_steps_json() {
@@ -15927,6 +15997,7 @@ gate_main() {
       "판본 트리=$rr_pin_tree" \
       "판본 다이제스트=$rr_pin_digest" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
+    gate_record_design_tier
     # THE STAGE-POLICY DRIFT VERDICT, AS A LOG LINE AND NOTHING MORE. The policy
     # the gate injects into every stage was distilled from files a person edits
     # by hand, and the checker beside this file reports whether they still
@@ -25945,7 +26016,31 @@ gate_verb_act() {
       case "$dd_prompt" in
         *'/cc-cmds:design-discuss-unattended '*) dd_cmd='/cc-cmds:design-discuss-unattended ' ;;
         *'/cc-cmds:design-base-unattended '*)    dd_cmd='/cc-cmds:design-base-unattended ' ;;
+        *'/cc-cmds:design-solo-unattended '*)    dd_cmd='/cc-cmds:design-solo-unattended ' ;;
       esac
+      # THE TIER PICKS THE SKILL, AND A `solo` MISMATCH IS REFUSED BOTH WAYS. A
+      # `solo` plan's design stage is the lead-only skill and nothing else — a
+      # discussion command, or a design command this case does not know, would
+      # run a design the plan did not freeze; and the lead-only skill on a plan
+      # that is not `solo` would drop the discussion and the audit a person
+      # approved. The base and discussion commands keep what they did before,
+      # so no plan frozen before `solo` existed meets a new refusal.
+      #
+      # NOT ON A `--resume`, for the reason given above: a re-attachment carries
+      # a fixed sentence and no slash command, so testing it here would refuse
+      # every resume of a `solo` design stage.
+      if [ -z "${GATE_RESUME:-}" ]; then
+        if [ "$(manifest_design_tier)" = "solo" ] && [ "$dd_cmd" != '/cc-cmds:design-solo-unattended ' ]; then
+          warn "solo 티어 계획의 설계 스테이지는 /cc-cmds:design-solo-unattended 로만 띄웁니다 — 이 프롬프트는 ${dd_cmd:-알려진 설계 명령이 아닌 것}입니다"
+          warn "설계 명령은 스냅숏의 design_skill 값($(manifest_design_skill))을 그대로 쓰세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        if [ "$(manifest_design_tier)" != "solo" ] && [ "$dd_cmd" = '/cc-cmds:design-solo-unattended ' ]; then
+          warn "/cc-cmds:design-solo-unattended 는 solo 티어 계획에서만 띄웁니다 — 이 계획의 design_tier 는 $(manifest_design_tier) 입니다"
+          warn "설계 명령은 스냅숏의 design_skill 값($(manifest_design_skill))을 그대로 쓰세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+      fi
       case "$dd_cmd" in
         ?*)
           dd_path="${dd_prompt#*"$dd_cmd"}"
