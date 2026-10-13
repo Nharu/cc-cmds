@@ -1020,6 +1020,12 @@ gate_collaboration_surface() {
       case "$(gate_gh_pr_merge_kind "$@")" in
         merge|form) [ "$rd" != "배포트리거" ] && return 0; return 1 ;;
       esac
+      # `api` behind a flag is the `api` the ladder and the binding read (see
+      # `gate_gh_strip_repo`); one whose place cannot be told is no
+      # collaboration act.
+      gate_gh_strip_repo "$@"
+      [ "$GATE_GH_API_UNREAD" = 0 ] || return 1
+      if [ "${GATE_GH_ARGV[0]:-}" = api ]; then set -- "${GATE_GH_ARGV[@]}"; fi
       case "${1:-}" in
         issue|label) return 0 ;;
         project) return 0 ;;
@@ -1492,8 +1498,21 @@ gate_push_text_has_push() {
   # and once with `$` dropped (`g$'i't`). A push in either reading is a push.
   # A command held in a variable or built by `eval` is not read here; the
   # declaration ceiling is what holds there.
-  local text parted dropped
-  text=$(printf '%s' "$1" | LC_ALL=C tr -d '\\"'"'") || return 0
+  #
+  # A BACKSLASH-NEWLINE JOINS, AND A REDIRECTION PARTS. The shell drops a
+  # backslash before a newline before it reads words, so `git p\<newline>ush`
+  # runs `git push`; dropping only the backslash left the newline, and the
+  # split read `git p` and `ush`. A redirection ends the word it is glued to
+  # and is no command word, so `git push>/dev/null`, `git>/dev/null push` and
+  # `git 2>&1 push` all push; read as written they gave the words
+  # `push>/dev/null` and `git>/dev/null`, and the `&` of `>&` split the line.
+  # So the pairs are dropped first, `>&`, `<&` and `&>` lose their `&`, and
+  # every `<` and `>` parts words.
+  local text parted dropped nl=$'\n'
+  text=${1//\\"$nl"/}
+  text=${text//>&/> }; text=${text//<&/< }; text=${text//&>/ >}
+  text=$(printf '%s' "$text" | LC_ALL=C tr '<>' '  ') || return 0
+  text=$(printf '%s' "$text" | LC_ALL=C tr -d '\\"'"'") || return 0
   text=$(printf '%s' "$text" | LC_ALL=C tr '(){}`' '     ') || return 0
   parted=$(printf '%s' "$text" | LC_ALL=C tr '$' ' ') || return 0
   dropped=$(printf '%s' "$text" | LC_ALL=C tr -d '$') || return 0
@@ -1530,29 +1549,65 @@ gate_push_shell_payload() {
   # `-c`. A shell reads every option first and only then takes the string, so
   # `bash -c -- '<cmd>'` runs `<cmd>` and `sh -c -e '<cmd>'` does too; taking
   # the word after `-c` read `--` or `-e` and missed the push. `--` and a lone
-  # `-` end the options, and `-o`/`+o`/`-O`/`+O` (alone or closing a bundle)
-  # and `--rcfile`/`--init-file` take the next word as their value. The word
-  # right after the `-c` bundle is printed as well, so a spelling this skip
-  # misreads still has its string read: an extra line is a wider reading, never
-  # a narrower one.
-  local a seen_c=0 after_c=0 take=0 ended=0
+  # `-` end the options. `--rcfile`, `--init-file` and zsh's `--emulate` take
+  # the next word as their value, and so does every `o` and `O` in a bundle,
+  # wherever it stands in it: `-oc pipefail '<cmd>'` runs `<cmd>` with
+  # `pipefail` as the option's value, and `-ooc a b '<cmd>'` takes two. Read
+  # with only a closing `o` taking a value and `--emulate` taking none, `zsh
+  # --emulate sh -c 'git push …'` and `bash -oc pipefail 'git push …'` read
+  # `sh` or `pipefail` as the string and missed the push.
+  #
+  # EVERY WORD AFTER THE FIRST `-c` IS PRINTED AS WELL, so a value option this
+  # table does not know still has the string read: an extra line is a wider
+  # reading, never a narrower one.
+  #
+  # THE WORDS AFTER THE STRING ARE ITS POSITIONAL PARAMETERS, and a string that
+  # names them runs them: `bash -c 'git "$@"' _ push origin HEAD:master` pushes.
+  # When the string carries a `$` and words follow it, two more lines are
+  # printed — the string with `$0`…`$9`, `$@` and `$*` (bare or in braces)
+  # replaced by those words, and the string with its newlines made spaces and
+  # every following word appended. The first reads the push where the shell
+  # puts it; the second still holds `git` and `push` on one line when the
+  # string reaches its parameters some other way (`shift`, `${@:2}`).
+  local a seen_c=0 take=0 ended=0 str='' have_str=0
+  local -a pos=()
   for a in "$@"; do
-    if [ "$after_c" = 1 ]; then printf '%s\n' "$a"; after_c=0; fi
-    if [ "$take" = 1 ]; then take=0; continue; fi
+    [ "$seen_c" = 0 ] || printf '%s\n' "$a"
+    if [ "$have_str" = 1 ]; then pos+=("$a"); continue; fi
+    if [ "$take" -gt 0 ]; then take=$((take - 1)); continue; fi
     if [ "$ended" = 0 ]; then
       case "$a" in
         --|-) ended=1; continue ;;
-        --rcfile|--init-file) take=1; continue ;;
+        --rcfile|--init-file|--emulate) take=1; continue ;;
         --*) continue ;;
         -*|+*)
-          case "$a" in -*c*) seen_c=1; after_c=1 ;; esac
-          case "$a" in *[oO]) take=1 ;; esac
+          case "$a" in -*c*) seen_c=1 ;; esac
+          local rest="${a#?}" o
+          rest="${rest//[!oO]/}"
+          o="${#rest}"
+          take=$((take + o))
           continue ;;
       esac
     fi
-    [ "$seen_c" = 1 ] && printf '%s\n' "$a"
-    return 0
+    [ "$seen_c" = 1 ] || return 0
+    str="$a"; have_str=1
   done
+  [ "$have_str" = 1 ] && [ "${#pos[@]}" -gt 0 ] || return 0
+  case "$str" in *'$'*) ;; *) return 0 ;; esac
+  local sub="$str" all='' k=1 v nl=$'\n' flat
+  while [ "$k" -lt "${#pos[@]}" ]; do all="${all:+$all }${pos[$k]}"; k=$((k + 1)); done
+  sub=${sub//\$\{@\}/"$all"}; sub=${sub//\$@/"$all"}
+  sub=${sub//\$\{\*\}/"$all"}; sub=${sub//\$\*/"$all"}
+  k=0
+  while [ "$k" -le 9 ]; do
+    v="${pos[$k]:-}"
+    sub=${sub//\$\{$k\}/"$v"}; sub=${sub//\$$k/"$v"}
+    k=$((k + 1))
+  done
+  printf '%s\n' "$sub"
+  flat=${str//"$nl"/ }
+  for a in "${pos[@]}"; do flat="$flat $a"; done
+  printf '%s\n' "$flat"
 }
 
 gate_push_env_payload() {
@@ -5650,6 +5705,7 @@ surface_of_gh() {
     form)  printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
   esac
   gate_gh_strip_repo "$@"
+  [ "$GATE_GH_API_UNREAD" = 0 ] || { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; }
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
     -R|--repo) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
@@ -6300,14 +6356,16 @@ gate_act_mark() {
       case "${2:-}" in
         delete|item-delete|field-delete) printf '파괴\t%s' "$2"; return 0 ;;
       esac
-      case "${1:-}" in
-        # The method is the one `gate_gh_api_parse` reads, upper-cased: matched
-        # as ` -X DELETE `, the spellings `--method=DELETE`, `-XDELETE` and
-        # `-Xdelete` sent a DELETE with no mark.
-        api)
-          gate_gh_api_parse "${@:2}"
-          case "$GATE_GHAPI_METHOD" in [Dd][Ee][Ll][Ee][Tt][Ee]) printf '파괴\tDELETE'; return 0 ;; esac ;;
-      esac ;;
+      # The method is the one `gate_gh_api_parse` reads, upper-cased: matched
+      # as ` -X DELETE `, the spellings `--method=DELETE`, `-XDELETE` and
+      # `-Xdelete` sent a DELETE with no mark. `api` is found past the flags
+      # ahead of it (see `gate_gh_strip_repo`): read at the first position,
+      # `gh --hostname=github.com api --method=DELETE …` carried no mark.
+      gate_gh_strip_repo "$@"
+      if [ "${GATE_GH_ARGV[0]:-}" = api ]; then
+        gate_gh_api_parse "${GATE_GH_ARGV[@]:1}"
+        case "$GATE_GHAPI_METHOD" in [Dd][Ee][Ll][Ee][Tt][Ee]) printf '파괴\tDELETE'; return 0 ;; esac
+      fi ;;
     curl)
       case "$all" in
         *" -X DELETE "*|*" --request DELETE "*|*" --request=DELETE "*) printf '파괴\tDELETE'; return 0 ;;
@@ -6477,7 +6535,7 @@ gate_opaque_floor() {
       gate_unwrap_find gate_opaque_floor_find_inner "$GATE_FLOOR_NONE" "$(printf '워크트리쓰기\t\t')" \
         "$GATE_FLOOR_NONE" gate_answer_floor_max "$@"; return 0 ;;
   esac
-  local payload=""
+  local payload="" shell_push=0
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
       # ONLY the `-c` string. A script FILE operand is not scanned — its bytes
@@ -6486,7 +6544,15 @@ gate_opaque_floor() {
       # the way the push reader finds it, so `-c --`, `-ec` and `-c -e` reach
       # it: reading only an exact `-c` and the word after it scanned `--` and
       # left `bash -c -- 'git push …'` at `읽기`.
-      payload=$(gate_push_shell_payload "$@") ;;
+      #
+      # A STRING THE PUSH READER TAKES FOR A PUSH IS AT LEAST `외부상태변경`,
+      # whatever the command positions below read. They split at `&` and
+      # newlines and keep redirections glued to words, so `git 2>&1 push`,
+      # `git push>/dev/null`, `git p\<newline>ush` and a push run through the
+      # string's positional parameters read `읽기` there — and the floor is what
+      # an under-declaration of the shell is compared against.
+      payload=$(gate_push_shell_payload "$@")
+      gate_push_text_has_push "$payload" && shell_push=1 ;;
     # The wrappers that assemble a command line out of their own arguments, and
     # the table-less argv0 whose operands may name one. `docker run` is
     # deliberately absent: its image name is a word like `mysql`, and reading
@@ -6541,6 +6607,10 @@ gate_opaque_floor() {
   done <<EOF
 $(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed 's/\$//g')
 EOF
+  if [ "$shell_push" = 1 ]; then
+    fi_=$(surface_index '외부상태변경' 2>/dev/null) || fi_=""
+    if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor='외부상태변경'; fi
+  fi
   printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
 }
 
@@ -6770,7 +6840,21 @@ gate_gh_strip_repo() {
   # for it and the merge asserted nothing. A `-R` with no value is kept, so
   # the caller sees it as written. The three readers of gh — the grade, the
   # ladder and the merge binding — share this skip.
+  #
+  # `api` IS FOUND THE WAY gh FINDS IT, AND MOVED TO THE FRONT. cobra looks for
+  # the command past every flag ahead of it, so `gh --hostname=github.com api
+  # -X PUT repos/o/r/pulls/1/merge` merges, and each flag is then parsed
+  # against `api` wherever it stood. Read at the first position, that argv had
+  # no rung, bound nothing, graded unknown and carried no DELETE mark, and the
+  # preauthorization rewrite left it as written — so a merge declared honestly
+  # passed unbound. When the command is `api`, GATE_GH_ARGV is `api` followed
+  # by every other word in its order: the words ahead of it are flags and their
+  # values, and they mean the same after it. When a word is `api` but where
+  # gh takes its command cannot be told (a `--` or a run of value flags with no
+  # command after them), GATE_GH_API_UNREAD is 1 and every reader takes the
+  # argv for the unbound merge it may be.
   GATE_GH_ARGV=()
+  GATE_GH_API_UNREAD=0
   local bare=0
   while [ "$#" -gt 0 ]; do
     if [ "$bare" -lt 2 ]; then
@@ -6785,6 +6869,31 @@ gate_gh_strip_repo() {
     GATE_GH_ARGV+=("$1")
     shift
   done
+  [ "${GATE_GH_ARGV[0]:-}" != api ] || return 0
+  local w has_api=0
+  for w in ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}; do
+    [ "$w" != api ] || has_api=1
+  done
+  [ "$has_api" = 1 ] || return 0
+  local i=0 n="${#GATE_GH_ARGV[@]}" cand=-1 spec
+  _gp_gh_load
+  _gp_gh_row ''
+  spec="${_GP_GH_S[$_GP_GH_I]}"
+  while [ "$i" -lt "$n" ]; do
+    w="${GATE_GH_ARGV[$i]}"
+    case "$w" in
+      --) break ;;
+      --*=*) ;;
+      --*) _gp_gh_novalue "$spec" "${w#--}" '' || i=$((i + 1)) ;;
+      -?) _gp_gh_novalue "$spec" '' "${w#-}" || i=$((i + 1)) ;;
+      -*|'') ;;
+      *) cand="$i"; break ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ "$cand" -lt 0 ]; then GATE_GH_API_UNREAD=1; return 0; fi
+  [ "${GATE_GH_ARGV[$cand]}" = api ] || return 0
+  GATE_GH_ARGV=(api "${GATE_GH_ARGV[@]:0:$cand}" "${GATE_GH_ARGV[@]:$((cand + 1))}")
 }
 
 gate_gh_pr_merge_kind() {
@@ -6853,6 +6962,7 @@ ladder_of_gh() {
   esac
   if gate_gh_repo_sync_remote "$@"; then printf '머지'; return 0; fi
   gate_gh_strip_repo "$@"
+  [ "$GATE_GH_API_UNREAD" = 0 ] || { printf '머지'; return 0; }
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   case "${1:-}" in
     api) ladder_of_gh_api "$@" ;;
@@ -7664,6 +7774,7 @@ gate_merge_binding_of_gh() {
   # head to hold — see `gate_gh_repo_sync_remote`.
   if gate_gh_repo_sync_remote "$@"; then printf '%s' '없음'; return 0; fi
   gate_gh_strip_repo "$@"
+  [ "$GATE_GH_API_UNREAD" = 0 ] || { printf '%s' '없음'; return 0; }
   set -- ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
   [ "$kind" != merge ] || set -- pr merge
   case "${1:-}" in
@@ -15816,12 +15927,26 @@ gate_preauth_argv() {
   # GET — is put upper-cased right after `api`, so a row naming a method opens
   # that method and nothing else, and a row of bare `gh api` still opens every
   # call as it says.
+  #
+  # `api` IS FOUND PAST THE FLAGS AHEAD OF IT (see `gate_gh_strip_repo`). The
+  # rule drops every `-x=y` word before it compares, so `gh
+  # --hostname=github.com api -X PUT …`, left as written, matched a `gh api -X
+  # PUT` row word for word. The flags ahead of `api` go after it, where gh
+  # reads them too. An argv with an `api` word whose place cannot be told gets
+  # an `api` word no row names, so only a row of bare `gh` opens it.
   local cmd="${1##*/}" m
-  if [ "$cmd" = gh ] && [ "${2:-}" = api ]; then
-    gate_gh_api_parse "${@:3}"
-    m=$(printf '%s' "$GATE_GHAPI_METHOD" | LC_ALL=C tr '[:lower:]' '[:upper:]')
-    printf '%s api -X %s %s' "$1" "$m" "${*:3}"
-    return 0
+  if [ "$cmd" = gh ]; then
+    gate_gh_strip_repo "${@:2}"
+    if [ "$GATE_GH_API_UNREAD" = 1 ]; then
+      printf '%s api-위치미상 %s' "$1" "${*:2}"
+      return 0
+    fi
+    if [ "${GATE_GH_ARGV[0]:-}" = api ]; then
+      gate_gh_api_parse "${GATE_GH_ARGV[@]:1}"
+      m=$(printf '%s' "$GATE_GHAPI_METHOD" | LC_ALL=C tr '[:lower:]' '[:upper:]')
+      printf '%s api -X %s %s' "$1" "$m" "${GATE_GH_ARGV[*]:1}"
+      return 0
+    fi
   fi
   printf '%s' "$*"
 }

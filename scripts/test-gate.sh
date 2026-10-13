@@ -23317,8 +23317,35 @@ for sp_v in "bash|-c|--|git push origin x:main" \
   check "32p: 셸 문자열 철자 $sp_n (${sp_w[*]}) 의 하한은 외부상태변경 이다" "$(sp_floor "${sp_w[@]}")" "외부상태변경"
 done
 check "32p: 대조군 — -c -- 안의 push 아닌 git 은 해당없음 이다" "$(sp_unwrap bash -c -- 'git status; echo push')" "해당없음"
-check "32p: 대조군 — -c 문자열 뒤의 위치 인자는 문자열이 아니다" "$(sp_unwrap bash -c -- 'echo "$0"' 'git push')" "해당없음"
 check "32p: 대조군 — -c -- 안의 git status 의 하한은 읽기 이다" "$(sp_floor bash -c -- 'git status')" "읽기"
+# -c 앞의 값 옵션은 o·O 글자마다 값을 하나씩 받고 zsh 의 --emulate 도 값을 받는다. 묶음
+# 끝의 o 만 값을 받는다고 본 판독기는 sh·pipefail 을 문자열로 읽었다. -c 문자열이 위치
+# 인자를 부르면 셸은 그 인자로 push 를 돌리므로, 그 인자도 함께 읽는다. 셸 문자열 안의
+# 리다이렉션과 백슬래시-개행은 셸이 읽는 대로 단어를 가르고 잇는다.
+sp_n=0
+for sp_v in "zsh|--emulate|sh|-c|git push origin x:main" \
+            "bash|-oc|pipefail|git push origin x:main" \
+            "bash|-Oc|extglob|git push origin x:main" \
+            "bash|-eoc|pipefail|git push origin x:main" \
+            "bash|-ooc|pipefail|errexit|git push origin x:main" \
+            "bash|-c|git \"\$@\"|_|push|origin|x:main" \
+            "bash|-c|\$0 \"\$@\"|git|push|origin|x:main" \
+            "bash|-c|git \${1}|_|push" \
+            "bash|-c|shift; git \"\${@:1}\"|_|x|push|origin" \
+            "sh|-c|git push>/dev/null origin x:main" \
+            "sh|-c|git>/dev/null push origin x:main" \
+            "sh|-c|git 2>&1 push origin x:main" \
+            "sh|-c|git &>/dev/null push origin x:main" \
+            "sh|-c|git p\\"$'\n'"ush origin x:main"; do
+  sp_n=$((sp_n + 1))
+  IFS='|' read -r -d '' -a sp_w < <(printf '%s' "$sp_v")
+  check "32p: 셸 판독 철자 $sp_n (${sp_w[*]}) 안의 push 는 불투명 이다" "$(sp_unwrap "${sp_w[@]}")" "불투명"
+  check "32p: 셸 판독 철자 $sp_n 의 하한은 외부상태변경 이다" "$(sp_floor "${sp_w[@]}")" "외부상태변경"
+done
+check "32p: 위치 인자로 문자열에 들어가는 push 단어는 넓게 읽어 불투명 이다" "$(sp_unwrap bash -c -- 'echo "$0"' 'git push')" "불투명"
+check "32p: 대조군 — 위치 인자를 부르지 않는 문자열의 뒤 단어는 읽지 않는다" "$(sp_unwrap bash -c 'git status' _ push)" "해당없음"
+check "32p: 대조군 — 리다이렉션만 든 push 없는 문자열은 해당없음 이다" "$(sp_unwrap sh -c 'git status >/dev/null 2>&1; echo push')" "해당없음"
+check "32p: 대조군 — 값 옵션 뒤의 git status 의 하한은 읽기 이다" "$(sp_floor bash -oc pipefail 'git status')" "읽기"
 check "32p: gh pr -R <repo> merge 의 결속 인자를 읽는다" \
   "$(sp_mb gh pr -R o/r merge 1 --admin --match-head-commit 0123456789abcdef0123456789abcdef01234567)" \
   "0123456789abcdef0123456789abcdef01234567"
@@ -23914,6 +23941,56 @@ check "32p: 대조군 — 대상 저장소 없는 gh repo sync 는 머지가 아
 check "32p: 대조군 — 대상 저장소 없는 gh repo sync 에 사다리는 아무것도 말하지 않는다" "$(sp_ld gh repo sync)" ""
 check "32p: 대조군 — 백슬래시가 든 점 없는 라벨 쓰기는 머지가 아니다" \
   "$(sp_mb gh api -X PATCH 'repos/o/r/labels/a\cb' -f color=fff)" "해당없음"
+
+# gh 는 api 앞의 플래그와 그 값을 건너뛰어 명령을 찾는다. 첫 자리만 보던 판독기는 이
+# 철자에서 사다리를 비우고 결속을 해당없음으로 답해, 결속되지 않은 머지와 base 커밋이
+# 정직한 표면 신고로 통과했다.
+sp_n=0
+for sp_a in "--hostname=github.com api -X PUT repos/o/r/pulls/1/merge" \
+            "--hostname github.com api -X PUT repos/o/r/pulls/1/merge" \
+            "--method PUT api repos/o/r/pulls/1/merge" \
+            "-X PUT api repos/o/r/pulls/1/merge" \
+            "--hostname=github.com api -X PUT repos/o/r/contents/f.txt -f branch=master -f message=m -f content=YQ==" \
+            "--hostname=github.com api -X POST repos/o/r/branches/master/rename -f new_name=old" \
+            "--hostname api" \
+            "-X PUT -- api repos/o/r/pulls/1/merge"; do
+  sp_n=$((sp_n + 1))
+  # shellcheck disable=SC2086
+  check "32p: 사다리가 앞선 플래그 철자 $sp_n ($sp_a) 을 머지로 읽는다" "$(sp_ld gh $sp_a)" "머지"
+  # shellcheck disable=SC2086
+  check "32p: 앞선 플래그 철자 $sp_n 은 결속 없는 머지다" "$(sp_mb gh $sp_a)" "없음"
+done
+# 협업면은 맨 철자와 같은 답을 낸다 — PR 머지는 맨 철자에서도 협업면이고(결속이 거절을
+# 맡는다), base 파일 쓰기·브랜치 이름 바꾸기와 api 의 자리를 정할 수 없는 argv 는 아니다.
+for sp_v in "예|--hostname=github.com api -X PUT repos/o/r/pulls/1/merge|api -X PUT repos/o/r/pulls/1/merge" \
+            "예|-X PUT api repos/o/r/pulls/1/merge|api -X PUT repos/o/r/pulls/1/merge" \
+            "아니오|--hostname=github.com api -X PUT repos/o/r/contents/f.txt -f branch=master|api -X PUT repos/o/r/contents/f.txt -f branch=master" \
+            "아니오|--hostname=github.com api -X POST repos/o/r/branches/master/rename -f new_name=old|api -X POST repos/o/r/branches/master/rename -f new_name=old" \
+            "아니오|-X PUT -- api repos/o/r/pulls/1/merge|"; do
+  IFS='|' read -r sp_want sp_a sp_bare <<<"$sp_v"
+  # shellcheck disable=SC2086
+  check "32p: 앞선 플래그 철자 ($sp_a) 의 협업면은 $sp_want 이다" "$(sp_cs 협업 gh $sp_a)" "$sp_want"
+  if [ -n "$sp_bare" ]; then
+    # shellcheck disable=SC2086
+    check "32p: 대조군 — 맨 철자 ($sp_bare) 의 협업면도 $sp_want 이다" "$(sp_cs 협업 gh $sp_bare)" "$sp_want"
+  fi
+done
+check "32p: 앞선 플래그 뒤의 REST 머지는 그 sha 에 결속된다" \
+  "$(sp_mb gh --hostname=github.com api -X PUT repos/o/r/pulls/1/merge -f "sha=$X32")" "$X32"
+check "32p: 등급표가 앞선 플래그 뒤의 PR 머지를 외부상태변경으로 읽는다" \
+  "$(sp_sf gh --hostname=github.com api -X PUT repos/o/r/pulls/1/merge)" "외부상태변경"
+check "32p: 대조군 — 앞선 플래그 뒤의 GET 은 머지가 아니다" "$(sp_ld gh --hostname=github.com api repos/o/r/pulls/1)" ""
+check "32p: 대조군 — 앞선 플래그 뒤의 GET 은 등급표에서 읽기다" "$(sp_sf gh --hostname=github.com api repos/o/r/pulls/1)" "읽기"
+check "32p: 대조군 — 값으로 쓴 api 단어는 명령이 아니다" "$(sp_ld gh issue create -t api -b x)" "커밋"
+check "32p: 대조군 — 값으로 쓴 api 단어는 결속과 무관하다" "$(sp_mb gh issue create -t api -b x)" "해당없음"
+sp_plan S32G 머지 /usr/bin/gh --hostname=github.com api -X PUT repos/o/r/pulls/7/merge
+check "32p: 앞선 플래그 뒤의 결속 없는 머지는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: 앞선 플래그 머지 — 문면이 결속을 지목한다"; else bad "32p 앞선 플래그 머지 문면" "$msg"; fi
+sp_plan S32G 머지 /usr/bin/gh --hostname=github.com api -X PUT repos/o/r/contents/f.txt -f branch=master -f message=m -f content=YQ==
+check "32p: 앞선 플래그 뒤의 base 파일 쓰기는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: 앞선 플래그 파일 쓰기 — 문면이 결속을 지목한다"; else bad "32p 앞선 플래그 파일 쓰기 문면" "$msg"; fi
+sp_plan S32G 머지 gh --hostname=github.com api -X PUT repos/o/r/pulls/7/merge -f "sha=$H32G"
+check "32p: 앞선 플래그 뒤의 결속된 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
 
 # REST 경로는 바이트로 읽는다 — 런의 UTF-8 로캘에서 macOS 의 tr·sed 는 UTF-8 이 아닌
 # 바이트에서 멈췄고, 그때까지 쓴 접두 repos/o/r/issues 가 경로 전체로 읽혀 뒤의 PR 머지가
@@ -27601,6 +27678,22 @@ gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커�
   --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
   --rationale t -- sh -c 'cat base.txt'
 check "읽기만 하는 셸 문자열은 읽기 선언이 받아들여진다" "$rc" "0"
+# 값 옵션·묶음·위치 인자·리다이렉션·백슬래시-개행으로 감싼 push 도 맨 철자처럼 하한을
+# 올린다. 판독기가 이 철자에서 push 를 놓치면 하한이 읽기로 떨어져 같은 저선언이 통과했다.
+n53=0
+for v53 in "zsh|--emulate|sh|-c|git push origin b" \
+           "bash|-oc|pipefail|git push origin b" \
+           "bash|-c|git \"\$@\"|_|push|origin|b" \
+           "sh|-c|git push>/dev/null origin b" \
+           "sh|-c|git 2>&1 push origin b" \
+           "sh|-c|git p\\"$'\n'"ush origin b"; do
+  n53=$((n53 + 1))
+  IFS='|' read -r -d '' -a w53 < <(printf '%s' "$v53")
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+    --rationale t -- "${w53[@]}"
+  check "셸 판독 철자 $n53 (${w53[*]}) 안의 push 가 하한을 올려 저선언이 된다" "$rc" "6"
+done
 # 두 거절이 순서대로 선다. 하한이 먼저 보이는 것은 `xargs git push` 의 인자 목록
 # 안에서 push 가 읽히기 때문이고(저선언 → exit 6), 정직하게 올려 신고하면 그때는
 # 풀리지 않는 래퍼라는 이유로 park 된다. 둘 다 거절이지만 처방이 다르므로 둘 다
@@ -33041,6 +33134,21 @@ for p83a in "-X PUT repos/o/r --method=DELETE" "-X PUT repos/o/r -XDELETE" \
 done
 check "83: 대조 — DELETE 를 PUT 으로 덮은 철자에는 파괴 표지가 없다" \
   "$(p83m gh api -X DELETE repos/o/r/pulls/1/merge -X PUT -f "sha=$X83")" ""
+# gh 는 api 앞의 플래그를 건너뛰어 명령을 찾는다. 재작성이 둘째 단어가 api 일 때만 돌면
+# 대조기가 버리는 --hostname=… 뒤의 철자가 쓴 그대로 gh api -X PUT 행에 맞았고, 파괴
+# 표지도 붙지 않았다.
+check "83: 앞선 플래그 뒤의 DELETE 는 gh api -X PUT 형태에 맞지 않는다" \
+  "$(p83g gh --hostname=github.com api -X PUT repos/o/r --method=DELETE)" "P=0 형태=없음 Pd=0"
+check "83: 앞선 플래그 뒤의 PUT 머지는 gh api -X PUT 형태에 맞는다" \
+  "$(p83g gh --hostname=github.com api -X PUT repos/o/r/pulls/1/merge -f "sha=$X83")" "P=1 형태=완전 Pd=0"
+for p83a in "--hostname=github.com api --method=DELETE repos/o/r" \
+            "--hostname github.com api -X DELETE repos/o/r" \
+            "--method DELETE api repos/o/r/labels/bug"; do
+  # shellcheck disable=SC2086
+  check "83: gh $p83a 에 파괴 표지가 붙는다" "$(p83m gh $p83a)" "파괴"
+done
+check "83: api 의 자리를 정할 수 없는 argv 는 gh api -X PUT 형태에 맞지 않는다" \
+  "$(p83g gh -X PUT -- api repos/o/r/pulls/1/merge -f "sha=$X83")" "P=0 형태=없음 Pd=0"
 printf -- '- `사전 인가` | 형태=gh api -X DELETE | 사유=테스트\n' >> "$m83"
 check "83: gh api -X DELETE 형태는 -Xdelete 철자를 파괴 명시로 맞춘다" \
   "$(p83g gh api repos/o/r/labels/bug -Xdelete)" "P=1 형태=완전 Pd=1"
