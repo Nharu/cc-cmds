@@ -23399,6 +23399,32 @@ for sp_v in "printf '%cit push origin HEAD:master' g | X=1 . /dev/stdin" \
   check "32p: 허용 목록 밖 명령 $sp_n ($sp_v) 은 push 없음을 보일 수 없다" "$(sp_tu "$sp_v")" "참"
   check "32p: 허용 목록 밖 명령 $sp_n 을 실은 bash -c 는 불투명 이다" "$(sp_unwrap bash -c "$sp_v")" "불투명"
 done
+# 래퍼 뒤의 -* 를 모두 값 없는 옵션으로 건너뛰던 판독기는 exec -a 의 값을 명령 단어로
+# 읽었다. 그 값이 허용 목록 단어면 셸이 실제로 돌리는 프로그램은 대조되지 않아, perl 이
+# 만든 push 가 push 없음으로 읽혔다. 묶음 -la 도 -a 에 다음 단어를 준다.
+sp_n=0
+for sp_v in "exec -a echo perl -e 'system \"gi\".\"t\",\"push\",\"origin\",\"HEAD:master\"'" \
+            "exec -a true perl -e 'system join q/i/, q/g/, q/t push origin HEAD:master/'" \
+            "exec -la echo perl -e x" \
+            "exec -al echo perl -e x" \
+            "exec -c -a cat perl -e x" \
+            "command -pv cat" \
+            "builtin -x cat f" \
+            "nohup -x cat f" \
+            "! -x cat f"; do
+  sp_n=$((sp_n + 1))
+  check "32p: 값을 받거나 모르는 래퍼 옵션 $sp_n ($sp_v) 은 push 없음을 보일 수 없다" "$(sp_tu "$sp_v")" "참"
+  check "32p: 값을 받거나 모르는 래퍼 옵션 $sp_n 을 실은 bash -c 는 불투명 이다" "$(sp_unwrap bash -c "$sp_v")" "불투명"
+done
+# 대조군 — 값 없는 래퍼 옵션은 건너뛰고 그 뒤의 허용 목록 명령을 읽는다.
+sp_n=0
+for sp_v in "command -p cat f" "command -v cat" "command -V cat" "time -p cat f" \
+            "exec cat f" "exec -c cat f" "exec -l cat f" "exec -c -l cat f" \
+            "nohup cat f" "builtin echo x" "! cat f" "command -p -v cat"; do
+  sp_n=$((sp_n + 1))
+  check "32p: 대조군 — 값 없는 래퍼 옵션 $sp_n ($sp_v) 뒤의 허용 목록 명령은 읽힌다" "$(sp_tu "$sp_v")" "거짓"
+  check "32p: 대조군 — 값 없는 래퍼 옵션 $sp_n 을 실은 bash -c 는 해당없음 이다" "$(sp_unwrap bash -c "$sp_v")" "해당없음"
+done
 check "32p: 확장 판독은 하한을 올리지 않는다 — 하한은 철자대로 보이는 push 만 올린다" "$(sp_floor bash -c 'git {push,} origin x:main')" "읽기"
 check "32p: 대조군 — 값 옵션 뒤의 git status 의 하한은 읽기 이다" "$(sp_floor bash -oc pipefail 'git status')" "읽기"
 check "32p: gh pr -R <repo> merge 의 결속 인자를 읽는다" \
@@ -23579,13 +23605,14 @@ for sp_sh in bash sh; do
   sp_refused "32p: $sp_sh -c 안의 베이스 push 를 push 로 선언해도 거절된다" 2 "$B32"
 done
 if sa_names_rule; then bad "32p 셸 순서" "형태 미상보다 룰이 먼저 돌았다: $msg"; else ok "32p: 형태 미상 거절이 룰 앞에서 난다"; fi
-# `-c --`·백슬래시·`${IFS}` 철자도 같다 — plan 과 act 모두 형태 미상으로 거절된다.
-for sp_c in dashdash opt bslash ifs; do
+# `-c --`·백슬래시·`${IFS}`·`exec -a <목록 단어>` 철자도 같다 — plan 과 act 모두 형태 미상으로 거절된다.
+for sp_c in dashdash opt bslash ifs execa; do
   case "$sp_c" in
     dashdash) sp_argv=(bash -c -- "git push origin u-$SA_ID:$SA_BASE") ;;
     opt)      sp_argv=(sh -c -e "git push origin u-$SA_ID:$SA_BASE") ;;
     bslash)   sp_argv=(sh -c "\\git push origin u-$SA_ID:$SA_BASE") ;;
     ifs)      sp_argv=(sh -c "git\${IFS}push origin u-$SA_ID:$SA_BASE") ;;
+    execa)    sp_argv=(bash -c "exec -a echo perl -e 'system \"gi\".\"t\",\"push\",\"origin\",\"u-$SA_ID:$SA_BASE\"'") ;;
   esac
   sp_plan S32A 머지 "${sp_argv[@]}"
   sp_refused "32p: 셸 철자 $sp_c 의 베이스 push 의 plan 은 거절된다" 2 "$B32"
@@ -23600,7 +23627,7 @@ done
 # 뒤의 . 과 파일을 쓰고 경로로 실행하는 형태, perl -e 를 같은 식으로 놓쳤다. 이제 모두 형태
 # 미상으로 거절되고 원격 베이스는 움직이지 않는다. 읽기 신고는
 # 셸 러너의 하한 아래라 과소신고로 먼저 거절되므로 이 거절을 재지 못해 싣지 않는다.
-for sp_c in brace ansic default cmdsub setpos hidegit assigndot commanddot builtindot writerun perl; do
+for sp_c in brace ansic default cmdsub setpos hidegit assigndot commanddot builtindot writerun perl execa execla; do
   sp_p="printf '%cit push origin u-$SA_ID:$SA_BASE' g"
   case "$sp_c" in
     brace)      sp_argv=(bash -c "git {push,} origin u-$SA_ID:$SA_BASE") ;;
@@ -23614,6 +23641,8 @@ for sp_c in brace ansic default cmdsub setpos hidegit assigndot commanddot built
     builtindot) sp_argv=(bash -c "$sp_p | builtin . /dev/stdin") ;;
     writerun)   sp_argv=(bash -c "$sp_p >\"$SA_ROOT/p32\"; chmod +x \"$SA_ROOT/p32\"; \"$SA_ROOT/p32\"") ;;
     perl)       sp_argv=(bash -c "perl -e 'system \"gi\".\"t\",\"push\",\"origin\",\"u-$SA_ID:$SA_BASE\"'") ;;
+    execa)      sp_argv=(bash -c "exec -a echo perl -e 'system \"gi\".\"t\",\"push\",\"origin\",\"u-$SA_ID:$SA_BASE\"'") ;;
+    execla)     sp_argv=(bash -c "exec -la echo perl -e 'system \"gi\".\"t\",\"push\",\"origin\",\"u-$SA_ID:$SA_BASE\"'") ;;
   esac
   sag exec --manifest "$SA_MANIFEST" --target main --segment S32A --cutpoint 커밋 --surface 워크트리쓰기 \
       --reach 런로컬 --snapshot-digest "$(SAH)" --rationale x -- "${sp_argv[@]}"

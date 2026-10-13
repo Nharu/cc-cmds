@@ -1596,6 +1596,15 @@ gate_push_shell_text_unread() {
   # redirection operator parts words the way `gate_push_text_has_push` parts
   # them, so `2>&1` stays inside the command it belongs to.
   #
+  # A WRAPPER'S OPTION IS SKIPPED ONLY WHEN IT TAKES NO VALUE. `exec -a NAME`
+  # takes one, so skipping every `-*` after a wrapper read NAME as the command
+  # word: `exec -a echo perl -e 'system …push…'` passed on `echo` while the
+  # shell ran perl, and a base push landed with no dry-run and no binding. So
+  # after a wrapper only `command -p`, `-v`, `-V`, `time -p`, `exec -c` and
+  # `-l`, each as a word of its own, are skipped; every other option — `-a`,
+  # a bundle such as `-la`, an option on `builtin`, `nohup` or `!` — reads as
+  # a push.
+  #
   # WHAT THIS COSTS. `bash -c 'git status'`, `sh -c 'echo $HOME'` and `sh -c
   # 'make test'` are read as pushes too, and in a target with a base branch
   # they are refused as a push the dry-run cannot measure. The repair the
@@ -1630,9 +1639,13 @@ gate_push_shell_text_unread() {
         [A-Za-z_]*=*)
           case "${w%%=*}" in *[!A-Za-z0-9_]*) return 0 ;; esac
           continue ;;
-        command|builtin|exec|nohup|time|'!') wrapped=1; continue ;;
+        command|builtin|exec|nohup|time|'!') wrapped=$w; continue ;;
         if|then|else|elif|do|while|until|fi|done) continue ;;
-        -*) [ "$wrapped" = 1 ] && continue; return 0 ;;
+        -*)
+          case "$wrapped:$w" in
+            command:-p|command:-v|command:-V|time:-p|exec:-c|exec:-l) continue ;;
+          esac
+          return 0 ;;
         */*) return 0 ;;
         echo|printf|cat|grep|egrep|fgrep|head|tail|wc|ls|test|true|false|:) want=0 ;;
         pwd|cd|cut|tr|uniq|basename|dirname|date|sleep|diff|cmp) want=0 ;;
