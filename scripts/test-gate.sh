@@ -31718,16 +31718,138 @@ SNAP86C=$(mktemp "$T86/cy86/snapc.XXXXXX")
 check "86: §1.3 단계 — mkdir -p 는 대상트리 파괴 질문을 지난다" "$(TMPDIR="$T86" tds86 mkdir -p "$DD86")" ""
 check "86: §1.3 단계 — 같은 디렉터리의 mktemp 는 대상트리 파괴 질문을 지난다" "$(TMPDIR="$T86" tds86 mktemp "$DD86/.x.md.XXXXXX")" ""
 check "86: §1.3 단계 — 스냅숏 cp 는 런로컬 판정을 지난다" "$(rs86 cp "$DD86/x.md" "$SNAP86C")" ""
-check "86: §1.3 단계 — 임시 파일에 내용을 쓰는 리다이렉션은 대상트리 파괴 질문을 지난다" \
-  "$(TMPDIR="$T86" tds86 bash -c "printf 'new\n' > $DD86/.x.md.Pq9r8s")" ""
+# 내용은 임시 디렉터리에서 짓고 cp -n 으로 새 점 이름에 옮긴다. 다른 트리의 docs/ 를
+# 겨눈 셸 리다이렉션은 수집기가 착지를 읽어 두 토큰 모두에서 park 되므로 단계가 아니다.
+BU86="$T86/cy86/b86"; printf 'new\n' > "$BU86"
+check "86: §1.3 단계 — 임시 디렉터리에서 짓는 쓰기는 런로컬 판정을 지난다" "$(rs86 cp "$SNAP86C" "$BU86")" ""
+check "86: §1.3 단계 — 비교 cmp -s 는 읽기다" "$(sg86 cmp -s "$BU86" "$DD86/x.md")" "읽기"
+check "86: §1.3 단계 — 새 점 이름으로의 cp -n 은 대상트리 파괴 질문을 지난다" \
+  "$(TMPDIR="$T86" tds86 cp -n "$BU86" "$DD86/.x.md.Rs7t6u")" ""
+r86p() { case "$1" in '') bad "86: $2 는 park 된다" "[]" ;; *) ok "86: $2 는 park 된다 ($1)" ;; esac; }
+nz86() { case "$rc" in 0) bad "86: $1 는 실행되지 않는다" "rc=$rc" ;; *) ok "86: $1 는 실행되지 않는다 (rc=$rc)" ;; esac; }
+x86 트리밖쓰기 bash -c "printf 'zz\n' > $DD86/.x.md.Pq9r8s"
+nz86 "대상트리로 신고한 docs/ 점 파일 리다이렉션의 셸 문자열"
+check "86: 그 점 파일 내용이 그대로다 (대상트리 리다이렉션)" "$(cat "$DD86/.x.md.Pq9r8s" 2>/dev/null)" "new"
+r86p "$(rs86 bash -c "printf 'new\n' > $DD86/.x.md.Pq9r8s")" "런로컬 판정에서 다른 트리 docs/ 점 파일에 쓰는 리다이렉션"
+r86p "$(TMPDIR="$T86" tds86 cp "$BU86" "$DD86/x.md")" "대상트리 판정에서 다른 트리 docs/ 의 기존 파일을 덮는 cp"
+r86p "$(rs86 cp "$BU86" "$DD86/x.md")" "런로컬 판정에서 다른 트리 docs/ 의 기존 파일을 덮는 cp"
 check "86: §1.3 단계 — 커밋 mv 는 대상트리 파괴 질문을 지난다" "$(TMPDIR="$T86" tds86 mv "$DD86/.x.md.Pq9r8s" "$DD86/x.md")" ""
+check "86: §1.3 단계 — 스냅숏과 지은 파일의 rm -f 는 런로컬 판정을 지난다" "$(rs86 rm -f "$SNAP86C" "$BU86")" ""
 check "86: §1.3 단계 — 스냅숏 rm -f 는 런로컬 판정을 지난다" "$(rs86 rm -f "$SNAP86C")" ""
 check "86: §1.3 단계 — 실패 정리 rm -f 는 런로컬 판정을 지난다" "$(rs86 rm -f "$DD86/.x.md.Pq9r8s" "$SNAP86C")" ""
 check "86: §1.3 단계 — mkdir -p 를 런로컬로 내면 도달모순이다" "$(rs86 mkdir -p "$DD86")" "도달모순"
 check "86: §1.3 단계 — 한 단계 더 깊은 디렉터리의 커밋 mv 는 park 된다" \
   "$(rs86 mv "$WT/docs/dd86d/sub/.x.md.Pq9r8s" "$WT/docs/dd86d/sub/x.md")" "파괴형태미명시"
 cyv86 '다른 형제 워크트리 docs/ 의 §1.3 커밋 mv' mv "$SR86/docs/k86/.x.md.AbC123" "$SR86/docs/k86/x.md"
-rm -rf "$DD86" "$WT/docs/dd86d" "$T86/inner86" "$T86/x86m" "$WT/new86o.txt"
+
+# 리포트 사본 — 리포트 경로가 행위의 워크트리가 아니라 대상의 주 체크아웃에 있으면 그
+# 복사는 대상의 트리에 쓴다. 런로컬로 내면 도달모순이고, 점 이름 cp -n 과 커밋 mv 를
+# 대상트리로 내면 이미 있는 이름에도 닿는다.
+DA86="$WT/docs/design-audit"; mkdir -p "$DA86"
+printf 'old\n' > "$DA86/s.reader-1.md"; printf 'r\n' > "$T86/cy86/r86.md"
+check "86: 런 디렉터리 리포트를 주 체크아웃 docs/ 점 이름에 cp -n 하면 대상트리 판정을 지난다" \
+  "$(TMPDIR="$T86" tds86 cp -n "$T86/cy86/r86.md" "$DA86/.s.reader-1.md.Ab12Cd")" ""
+check "86: 같은 cp -n 을 런로컬로 내면 도달모순이다" \
+  "$(rs86 cp -n "$T86/cy86/r86.md" "$DA86/.s.reader-1.md.Ab12Cd")" "도달모순"
+printf 'r\n' > "$DA86/.s.reader-1.md.Ab12Cd"
+check "86: 이미 있는 리포트 이름 위의 커밋 mv 는 대상트리 판정을 지난다" \
+  "$(TMPDIR="$T86" tds86 mv "$DA86/.s.reader-1.md.Ab12Cd" "$DA86/s.reader-1.md")" ""
+
+# 쓰기 자리 판독기의 좁힘 — sort 의 묶은 -uo·줄인 --outp=, tar 의 xfC·--cd, curl 의
+# %output{}, 프로그램을 띄우는 tar 옵션, zsh 의 >&! 가 착지를 숨겨 형제 쓰기가 지나갔다.
+ws86() {
+  # ws86 <argv...> — 쓰기 자리 판독기가 읽은 자리를 쉼표로, 읽지 못하면 「실패」를 낸다.
+  ( bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      o=$(gate_tt_write_slots "$@") || { printf "실패"; exit 0; }
+      printf "%s" "$o" | tr "\n" ","' _ "$GATE" "$@" ) 2>/dev/null
+}
+printf 'z\ny\nz\n' > "$T86/cy86/us86"
+check "86: sort -uo 는 트리밖쓰기다" "$(sg86 sort -uo "$T86/cy86/so3" "$T86/cy86/us86")" "트리밖쓰기"
+check "86: sort --outp= 는 트리밖쓰기다" "$(sg86 sort --outp="$T86/cy86/so3" "$T86/cy86/us86")" "트리밖쓰기"
+check "86: sort --compress-program= 은 트리밖쓰기다" "$(sg86 sort --compress-program=gzip "$T86/cy86/us86")" "트리밖쓰기"
+check "86: 대조 — 구분자 o 의 sort -to 는 읽기다" "$(sg86 sort -to "$T86/cy86/us86")" "읽기"
+check "86: 대조 — sort -k2 -t, 는 읽기다" "$(sg86 sort -k2 -t, "$T86/cy86/us86")" "읽기"
+check "86: 판독기가 sort -uo 의 자리를 읽는다" "$(ws86 sort -uo /x f)" "/x"
+mg86 sort -uo "$CY86/README.md" "$T86/cy86/us86"
+check "86: 읽기로 신고한 형제 sort -uo 는 신고 불일치로 거부된다" "$rc" "6"
+check "86: 그 형제 파일 내용이 그대로다 (읽기 신고 sort -uo)" "$(cy86)" "k"
+for s86 in "sort -uo $CY86/README.md $T86/cy86/us86" "sort --outp=$CY86/README.md $T86/cy86/us86" \
+           "sort -u --output $CY86/README.md $T86/cy86/us86"; do
+  rl86 bash -c "$s86"
+  check "86: 셸 문자열 안 형제 착지의 ${s86%%$CY86*} 는 런로컬로 park 된다" "$rc" "11"
+  check "86: 그 형제 파일 내용이 그대로다 (${s86%%$CY86*})" "$(cy86)" "k"
+done
+check "86: 대조 — 주 체크아웃을 읽어 임시 파일로 내는 셸 문자열 sort -u 는 런로컬 판정을 지난다" \
+  "$(rs86 bash -c "sort -u $CW86/README.md > $T86/cy86/so4")" ""
+check "86: 대조 — 같은 꼴의 sort -k2 -t, 도 런로컬 판정을 지난다" \
+  "$(rs86 bash -c "sort -k2 -t, $CW86/README.md > $T86/cy86/so4")" ""
+check "86: tar xfC 의 옛 첫 낱말은 판독기가 읽지 않는다" "$(ws86 tar xfC a.tar /d)" "실패"
+check "86: tar cbf 20 의 값 글자 둘은 판독기가 읽지 않는다" "$(ws86 tar cbf 20 a.tar)" "실패"
+check "86: tar --cd= 는 쓰기 자리다" "$(ws86 tar -x --cd=/d -f a.tar)" "/d"
+check "86: tar --cd <d> 는 쓰기 자리다" "$(ws86 tar -xf a.tar --cd /d)" "/d"
+check "86: tar --index-file= 은 판독기가 읽지 않는다" "$(ws86 tar -tf a.tar --index-file=/f)" "실패"
+check "86: tar --remove-files 는 판독기가 읽지 않는다" "$(ws86 tar -cf a.tar --remove-files d)" "실패"
+check "86: rsync --write-batch= 는 판독기가 읽지 않는다" "$(ws86 rsync -a --write-batch=/f s/ /d)" "실패"
+check "86: wget --rejected-log= 는 판독기가 읽지 않는다" "$(ws86 wget --rejected-log=/f http://x)" "실패"
+check "86: 대조 — 값 옵션 --exclude= 와 -C 를 넘겨 tar -czf 의 아카이브를 읽는다" \
+  "$(ws86 tar -czf /a.tgz --exclude=.git -C /d docs)" "/a.tgz"
+mkdir -p "$T86/cy86/ta" && printf 'z\n' > "$T86/cy86/ta/README.md"
+tar -cf "$T86/cy86/a86.tar" -C "$T86/cy86/ta" README.md 2>/dev/null
+for t86 in "xfC|$T86/cy86/a86.tar|$CY86" "-x|--cd=$CY86|-f|$T86/cy86/a86.tar" \
+           "-xf|$T86/cy86/a86.tar|--cd|$CY86"; do
+  IFS='|' read -r -a ta86 <<< "$t86"
+  rl86 tar "${ta86[@]}"
+  check "86: 형제로 푸는 tar ${ta86[0]} 는 런로컬로 park 된다 (${t86//$WORK/})" "$rc" "11"
+  check "86: 그 형제 파일 내용이 그대로다 (tar ${ta86[0]})" "$(cy86)" "k"
+done
+rl86 tar -czf "$T86/cy86/d86.tgz" --exclude=.git -C "$WT" docs
+check "86: 대조 — 주 체크아웃 docs 를 임시 디렉터리로 묶는 tar 는 런로컬로 통과한다" "$rc" "0"
+check "86: curl -w 의 %output{} 은 쓰기 자리다" "$(ws86 curl -s -w '%output{/d/f}x' file:///dev/null)" "/d/f"
+check "86: curl -w 의 %output{>>} 도 쓰기 자리다" "$(ws86 curl -s -w '%output{>>/d/f}x' file:///dev/null)" "/d/f"
+check "86: curl -w 의 %output{} 둘은 둘 다 쓰기 자리다" "$(ws86 curl --write-out='%output{/a}%output{/b}' x)" "/a,/b"
+check "86: curl -w @파일은 판독기가 읽지 않는다" "$(ws86 curl -sw@fmt file:///dev/null)" "실패"
+check "86: 대조 — %{http_code} 의 curl -w 와 임시 -o 는 런로컬 판정을 지난다" \
+  "$(rd86 curl -s -w '%{http_code}' -o "$T86/cy86/co86" file:///dev/null)" ""
+for w86 in "%output{$CY86/README.md}x" "%output{>>$CY86/README.md}x"; do
+  rl86 curl -s -w "$w86" file:///dev/null
+  check "86: 형제를 겨눈 curl -w ${w86%%$CY86*} 는 런로컬로 park 된다" "$rc" "11"
+  # 트리밖쓰기는 도달을 생략할 수 없어 생략 칸에는 거부로 닿는다 — 실행되지 않음만 잰다.
+  om86 트리밖쓰기 curl -s -w "$w86" file:///dev/null
+  nz86 "도달을 생략한 같은 curl -w ${w86%%$CY86*}"
+  check "86: 그 형제 파일 내용이 그대로다 (curl -w ${w86%%$CY86*})" "$(cy86)" "k"
+done
+for p86 in "-I|rm x|-cf|a|f" "--checkpoint-action=exec=rm x|-cf|a|f" "--to-command=x|-xf|a" \
+           "-cF|x|-f|a|f" "--info-script=x|-cf|a|f" "--new-volume-script|x|-cf|a|f"; do
+  IFS='|' read -r -a pa86 <<< "$p86"
+  check "86: 프로그램을 띄우는 tar ${pa86[0]} 의 바닥은 외부상태변경이다" "$(fl86 tar "${pa86[@]}")" "외부상태변경"
+done
+check "86: 대조 — 프로그램을 띄우지 않는 tar -cf 의 바닥은 외부상태변경이 아니다" \
+  "$( [ "$(fl86 tar -cf "$T86/cy86/Foo.tar" f)" = "외부상태변경" ] && echo 외부상태변경 || echo 아님)" "아님"
+printf 'k\n' > "$CY86/x"
+for u86 in tar "bash -c"; do
+  if [ "$u86" = tar ]; then
+    rl86 tar --use-compress-program="rm -f $CY86/x" -cf "$T86/cy86/u86.tar" "$T86/cy86/src"
+  else
+    rl86 bash -c "tar --use-compress-program='rm -f $CY86/x' -cf $T86/cy86/u86.tar $T86/cy86/src"
+  fi
+  case "$rc" in 0) bad "86: --use-compress-program 의 형제 rm 은 실행되지 않는다 ($u86)" "rc=$rc" ;;
+    *) ok "86: --use-compress-program 의 형제 rm 은 실행되지 않는다 ($u86, rc=$rc)" ;; esac
+  [ -e "$CY86/x" ] && ok "86: 그 형제 파일이 남아 있다 ($u86)" || bad "86: 그 형제 파일이 남아 있다 ($u86)" "$CY86/x"
+done
+if command -v zsh >/dev/null 2>&1; then
+  for z86 in '>&!' '>>&!'; do
+    rl86 zsh -c "echo x $z86 $CY86/README.md"
+    check "86: 형제를 겨눈 zsh $z86 는 런로컬로 park 된다" "$rc" "11"
+    om86 워크트리쓰기 zsh -c "echo x $z86 $CY86/README.md"
+    nz86 "도달을 생략한 같은 zsh $z86"
+    check "86: 그 형제 파일 내용이 그대로다 (zsh $z86)" "$(cy86)" "k"
+  done
+  rl86 zsh -c "echo x >&! $T86/cy86/zo86"
+  check "86: 대조 — 임시 파일로 내는 zsh >&! 는 런로컬로 통과한다" "$rc" "0"
+else
+  ok "86: zsh 가 없어 >&! 의 실행 판정은 측정하지 않음"
+fi
+rm -rf "$DD86" "$WT/docs/dd86d" "$DA86""$T86/inner86" "$T86/x86m" "$WT/new86o.txt"
 rm -rf "$CY86" "$CW86" "$T86/cy86" "$WORK/m86td.md" "$WT/cy86own" "$WT/cy86tl"
 git -C "$SIB86" stash clear >/dev/null 2>&1
 git -C "$WT" worktree remove --force "$SW86" >/dev/null 2>&1

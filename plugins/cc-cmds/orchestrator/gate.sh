@@ -2281,7 +2281,7 @@ gate_reach_runlocal_destruction() {
   # string — a script file, another interpreter's code — is still not read,
   # and a destruction inside it is the stage's to declare with `--destructive`.
   local alias="$1" X="$2" Pd="$3"; shift 3
-  local r rec unread kept
+  local r rec unread kept n
   r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
   [ -z "$r" ] || { printf '%s' "$r"; return 0; }
   while IFS= read -r rec; do
@@ -2337,11 +2337,20 @@ gate_reach_runlocal_destruction() {
       # $TMPDIR/out"` parked on `cat` as an unnamed destruction and `bash -c
       # "git -C <main checkout> show HEAD:x > $TMPDIR/x"` as `도달모순`. A
       # line the local reader reads as destructive is asked whatever its
-      # grade, as the 1|3 arm asks it.
+      # grade, as the 1|3 arm asks it, and so is a line the table grades
+      # `읽기` while the write-slot reader reads a place it writes: a grade
+      # row that missed a spelling made `bash -c "sort -uo <sibling>/f x"`
+      # land nowhere. The reader's 1 for a verb it does not know does not
+      # stop the skip, or `cat` and `git show` would land on what they read.
       *)
         if [ "$X" != "1" ] && [ -z "$(gate_reach_local_destructive_here "$@")" ] \
            && [ "$(surface_of_argv0 "$@")" = "읽기" ]; then
-          continue
+          kept=''
+          if n=$(gate_reach_peeled_verb "$@"); then
+            kept="${*:$(( $# - n + 1 )):1}"
+            kept=$(gate_tt_write_slots "${kept##*/}" "${@:$(( $# - n + 2 ))}" 2>/dev/null) || kept=''
+          fi
+          [ -n "$kept" ] || continue
         fi
         r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@") ;;
     esac
@@ -2860,6 +2869,47 @@ gate_tt_long_is() {
   printf '%s' "$r"
 }
 
+gate_tt_curl_writeouts() {
+  # gate_tt_curl_writeouts <curl args...> — the files a `-w`/`--write-out`
+  # format names with `%output{<file>}` or `%output{>><file>}`, one per line.
+  # curl opens each of them for writing, so `curl -w "%output{<sibling>/f}x"
+  # file:///dev/null` overwrote a sibling's file while no output option was
+  # read. 1 when the format comes from a file (`@<file>`), a `%output{` does
+  # not close, or a `-w` has no value: the files are then not read.
+  #
+  # A bundle's `w` takes the rest of the word or the next word. A letter
+  # before it that takes a value of its own can make that `w` part of the
+  # value; the files read from it then over-collect and never narrow.
+  local a nx='' v t
+  for a in "$@"; do
+    v=''
+    if [ -n "$nx" ]; then
+      nx=''; v="$a"
+    else
+      case "$a" in
+        --write-out=*) v="${a#*=}" ;;
+        --write-out) nx=1; continue ;;
+        --*) continue ;;
+        -*w*)
+          v="${a#*w}"
+          [ -n "$v" ] || { nx=1; continue; } ;;
+        *) continue ;;
+      esac
+    fi
+    case "$v" in @*) return 1 ;; esac
+    while :; do
+      case "$v" in *'%output{'*) ;; *) break ;; esac
+      v="${v#*"%output{"}"
+      case "$v" in *'}'*) ;; *) return 1 ;; esac
+      t="${v%%\}*}"; v="${v#*\}}"
+      t="${t#>>}"
+      [ -z "$t" ] || printf '%s\n' "$t"
+    done
+  done
+  [ -z "$nx" ] || return 1
+  return 0
+}
+
 gate_tt_write_slots() {
   # gate_tt_write_slots <command> <args...> — for a verb whose writes go only
   # to places it names by position or option, prints those places one per
@@ -2871,7 +2921,8 @@ gate_tt_write_slots() {
   #                 long names
   #   curl          the value of `-o`, `-D`, `-c` and of the long options that
   #                 name a file curl writes (`--output`, `--output-dir`,
-  #                 `--dump-header`, `--cookie-jar`, `--trace`, …)
+  #                 `--dump-header`, `--cookie-jar`, `--trace`, …), and every
+  #                 `%output{<file>}` of a `-w`/`--write-out` format
   #   wget          the value of `-O`, `-o`, `-a`, `-P` and their long names,
   #                 `--save-cookies` and `--warc-file`
   #   rsync, ditto  the last operand, and for rsync the value of `-T`,
@@ -2879,36 +2930,71 @@ gate_tt_write_slots() {
   #                 `--log-file`; one operand alone is a listing
   #   tar           with `c`, `r`, `u` or `A` the `-f`/`--file` value and the
   #                 `-g`/`--listed-incremental` file, with `x` the
-  #                 `-C`/`--directory` value (none: the operating repository
-  #                 alone), with `t` nothing
+  #                 `-C`/`--directory`/`--cd` value (none: the operating
+  #                 repository alone), with `t` nothing
   #   dd            the value of `of=`
   #
-  # A NARROWING IS ONLY TAKEN WHERE EVERY WORD IS READ. An abbreviated long
-  # option that could be a write option, a long option this reader does not
-  # know that may take the next word (rsync, ditto), a `curl -K`, a `wget
-  # -e`, `tar -P` or `--one-top-level` on an extract, a mode this reader
-  # cannot place, or an option left without its value keeps the whole
-  # collection: narrowed on a guess, `sort --outp=<sibling>/f` or `tar
-  # --fil=<sibling>/f` would have read as writing nothing. A letter that
-  # takes a value of another option can make a later letter part of that
-  # value; the slot read from it is then a place the act does not write,
-  # which over-collects and never narrows.
+  # A NARROWING IS ONLY TAKEN WHERE EVERY WORD IS READ. Each of these keeps
+  # the whole collection, because narrowed on a guess it read as writing
+  # nothing — `sort --outp=<sibling>/f`, `tar --fil=<sibling>/f`, `tar xfC
+  # a.tar <sibling>/d` and `tar --index-file=<sibling>/f` among them:
+  # - an abbreviated long option that could be a write option;
+  # - for `sort`, `tar`, `wget`, `rsync` and `ditto`, a long option this
+  #   reader does not list as writing nothing, with or without its `=` value;
+  #   `curl` is not asked, because `surface_of_curl` refuses a long option it
+  #   does not know before this reader is reached;
+  # - an old-style `tar` key holding two letters that take a value, which
+  #   take the words after it in an order this reader does not settle;
+  # - a `tar` option that runs a program (`gate_opl_runs_value_program`);
+  # - a `-w` format curl reads from a file (`@<file>`) or whose `%output{`
+  #   does not close;
+  # - a `curl -K`, a `wget -e`, `tar -P` or `--one-top-level` on an extract,
+  #   a mode this reader cannot place, or an option left without its value.
+  # A letter that takes a value of another option can make a later letter
+  # part of that value; the slot read from it is then a place the act does
+  # not write, which over-collects and never narrows.
   #
   # Every other verb — `tee`, `sed -i`, `perl -i`, `shred`, a verb not known
   # here — writes every operand as far as this reader can say.
-  local c="$1" a nm r nx='' m='' i=0 j ch S='' XS='' VS='' last=''
-  local -a o L X NV
-  shift; o=(); L=(); X=(); NV=()
+  # `NV` are the long options that write nothing and take no value, `VL` the
+  # ones that write nothing and take one; a long option in neither keeps the
+  # whole collection for every verb but `curl`.
+  local c="$1" a nm r nx='' m='' i=0 j k ch S='' XS='' VS='' TV='' last=''
+  local -a o L X NV VL
+  shift; o=(); L=(); X=(); NV=(); VL=()
   case "$c" in
-    sort) S=oT; L=(--output --temporary-directory) ;;
-    curl) S=oDc; XS=K
+    sort) S=oT; VS=tkSy
+          L=(--output --temporary-directory)
+          X=(--compress-program)
+          NV=(--ignore-leading-blanks --dictionary-order --ignore-case
+              --general-numeric-sort --ignore-nonprinting --month-sort
+              --human-numeric-sort --numeric-sort --random-sort --reverse
+              --version-sort --check --merge --stable --unique --zero-terminated
+              --debug)
+          VL=(--key --field-separator --buffer-size --batch-size --parallel --sort
+              --random-source --files0-from) ;;
+    curl) S=oDc; XS=K; VS=w
           L=(--output --output-dir --dump-header --cookie-jar --trace --trace-ascii
              --stderr --etag-save --hsts --alt-svc --libcurl)
-          X=(--config) ;;
+          X=(--config)
+          VL=(--write-out)
+          gate_tt_curl_writeouts "$@" || return 1 ;;
     wget) S=OoaP; XS=e
           L=(--output-document --output-file --append-output --directory-prefix
              --save-cookies --warc-file)
-          X=(--execute --config) ;;
+          X=(--execute --config)
+          NV=(--quiet --no-verbose --verbose --debug --no-check-certificate
+              --continue --timestamping --no-clobber --recursive --no-parent
+              --mirror --page-requisites --convert-links --adjust-extension
+              --span-hosts --no-directories --force-directories
+              --no-host-directories --server-response --spider --show-progress
+              --no-cookies --keep-session-cookies --inet4-only --inet6-only
+              --https-only --ignore-case --no-proxy --no-cache)
+          VL=(--timeout --tries --user-agent --header --wait --waitretry
+              --limit-rate --dns-timeout --connect-timeout --read-timeout
+              --referer --method --level --accept --reject --domains
+              --exclude-domains --exclude-directories --include-directories
+              --cut-dirs --quota --max-redirect --progress) ;;
     rsync) S=T; VS=efMB
            L=(--temp-dir --backup-dir --partial-dir --log-file)
            NV=(--archive --verbose --recursive --dry-run --quiet --progress --checksum
@@ -2918,7 +3004,9 @@ gate_tt_write_slots() {
                --itemize-changes --no-perms --no-owner --no-group --no-times
                --relative --hard-links --copy-links --safe-links --numeric-ids
                --one-file-system --prune-empty-dirs --mkpath --backup --force
-               --owner --group --devices --specials --acls --xattrs) ;;
+               --owner --group --devices --specials --acls --xattrs)
+           VL=(--exclude --include --filter --chmod --max-size --min-size
+               --bwlimit --timeout) ;;
     ditto) NV=(--rsrc --norsrc --extattr --noextattr --qtn --noqtn --acl --noacl
                --keepParent --sequesterRsrc --persistRootless --nocache --clone
                --noclone --preserveHFSCompression --nopreserveHFSCompression
@@ -2932,6 +3020,25 @@ gate_tt_write_slots() {
     *) return 1 ;;
   esac
   if [ "$c" = "tar" ]; then
+    # An option that runs a program writes wherever that program does.
+    gate_opl_runs_value_program tar "$@" && return 1
+    # The letters that take a value, in a bundle or an old-style key.
+    TV=bCfgHKLNTVX; VS="$TV"
+    NV=(--create --append --update --catenate --concatenate --extract --get
+        --list --gzip --gunzip --ungzip --bzip2 --xz --zstd --lzma --lzip --lzop
+        --compress --uncompress --auto-compress --verbose --totals
+        --preserve-permissions --same-permissions --preserve-order --same-order
+        --same-owner --no-same-owner --no-same-permissions --numeric-owner
+        --exclude-vcs --exclude-vcs-ignores --exclude-backups --exclude-caches
+        --wildcards --no-wildcards --anchored --no-anchored --null --no-null
+        --recursion --no-recursion --one-file-system --dereference --sparse
+        --keep-old-files --skip-old-files --keep-newer-files --overwrite
+        --touch --no-overwrite-dir)
+    VL=(--file --directory --cd --listed-incremental --exclude --exclude-from
+        --files-from --strip-components --transform --xform --format --owner
+        --group --mode --mtime --sort --blocking-factor --record-size --label
+        --newer --newer-mtime --exclude-tag --exclude-tag-all
+        --exclude-tag-under --occurrence)
     # The mode is read from the first word when it is an option bundle (old
     # style `cf` or `-czf`), or from a long mode option anywhere.
     case "${1:-}" in
@@ -2954,16 +3061,18 @@ gate_tt_write_slots() {
     done
     case "$m" in
       w) S='fg'; L=(--file --listed-incremental) ;;
-      x) S=C; L=(--directory)
+      x) S=C; L=(--directory --cd)
          for a in "$@"; do
            case "$a" in
-             --absolute-names|-P|--one-top-level*|--to-command*) return 1 ;;
+             --absolute-names|-P|--one-top-level*) return 1 ;;
              --*) ;;
              -*P*) return 1 ;;
            esac
          done
          case "${1#-}" in *P*) return 1 ;; esac ;;
-      t) return 0 ;;
+      # A listing writes no operand, but its options are still read: GNU's
+      # `--index-file` writes the listing to a file.
+      t) S='' ;;
       *) return 1 ;;
     esac
   fi
@@ -2985,11 +3094,12 @@ gate_tt_write_slots() {
                continue ;;
           '<') return 1 ;;
         esac
-        case "$c" in
-          rsync|ditto)
-            [ "$a" != "$nm" ] && continue
-            [ "$(gate_tt_long_is "$nm" ${NV[@]+"${NV[@]}"})" = "=" ] || return 1 ;;
-        esac ;;
+        if [ "$(gate_tt_long_is "$nm" ${VL[@]+"${VL[@]}"})" = "=" ]; then
+          [ "$a" = "$nm" ] && nx=v
+          continue
+        fi
+        [ "$c" = "curl" ] && continue
+        [ "$(gate_tt_long_is "$nm" ${NV[@]+"${NV[@]}"})" = "=" ] || return 1 ;;
       -?*)
         [ -z "$last" ] || { o[${#o[@]}]="$a"; continue; }
         if [ "$c" = "ditto" ]; then
@@ -3011,9 +3121,19 @@ gate_tt_write_slots() {
         done ;;
       *)
         # The old-style first word of `tar cf <archive> …` takes its value
-        # from the word after it.
+        # from the word after it. Two letters that take a value take the
+        # words after it in turn, GNU and BSD in the order of the letters,
+        # which is not read here: `xfC a.tar <dir>` extracts into `<dir>`.
         if [ "$c" = "tar" ] && [ "$i" = "1" ]; then
-          case "$a" in *[$S]*) nx=w ;; esac
+          k=0; r=''; j=0
+          while [ "$j" -lt "${#a}" ]; do
+            ch="${a:$j:1}"; j=$((j + 1))
+            case "$TV" in *"$ch"*) k=$((k + 1)); r="$ch" ;; esac
+          done
+          [ "$k" -lt 2 ] || return 1
+          if [ "$k" = "1" ]; then
+            case "$S" in *"$r"*) nx=w ;; *) nx=v ;; esac
+          fi
           continue
         fi
         o[${#o[@]}]="$a" ;;
@@ -3125,8 +3245,8 @@ gate_reach_target_tree_act() {
   local alias="$1"; shift
   local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w _left _urc _ddash
   local cwd0 isgit=0 slotted=0 outv='' _sl
-  local -a ops gx wrp sl
-  ops=(); gx=(); wrp=(); sl=()
+  local -a ops gx wrp sl cwo
+  ops=(); gx=(); wrp=(); sl=(); cwo=()
   # Emptied first, so an argv this reader gives up on leaves no landing places
   # of an earlier act behind for `gate_reach_runlocal_escapes` to read.
   GATE_TT_LANDS=(); GATE_TT_OUTPUT=''
@@ -3250,6 +3370,19 @@ gate_reach_target_tree_act() {
   else
     v="${1##*/}"
     shift
+    # A file a curl `-w` format names with `%output{…}` is written whatever
+    # its shape, so it is collected as a landing place in every cell; a format
+    # this reader cannot read gives up.
+    if [ "$v" = "curl" ]; then
+      _sl=$(gate_tt_curl_writeouts "$@") || return 1
+      while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        case "$w" in '~'*) w=$(gate_tilde_path "$w" "$cwd0") || return 1 ;; esac
+        cwo[${#cwo[@]}]="$w"
+      done <<EOF
+$_sl
+EOF
+    fi
     # Only the destination of a copy is written. When the destruction question
     # sets `GATE_TT_WRITES_ONLY`, a `cp`, `install` or `ln` whose destination
     # is plainly its last word is narrowed to that word; any spelling that can
@@ -3367,7 +3500,7 @@ EOF
     gate_reach_worktree_spec "$base" "$spec" || return 1
     absops+=(${GATE_WT_SPEC[@]+"${GATE_WT_SPEC[@]}"})
   fi
-  ops+=(${wrp[@]+"${wrp[@]}"})
+  ops+=(${wrp[@]+"${wrp[@]}"} ${cwo[@]+"${cwo[@]}"})
   for a in ${ops[@]+"${ops[@]}"}; do
     for v in "$base" ${wts[@]+"${wts[@]}"}; do
       case "$a" in /*) [ "$v" = "$base" ] || continue ;; esac
@@ -3690,7 +3823,7 @@ gate_argv_has_opt() {
   #
   # AND THE PREFIX IS WHY THIS HELPER IS NOT FOR EVERY ROW. It may only be used
   # where NO LONGER OPTION OF THAT TOOL SHARES THE PREFIX, because the prefix
-  # would swallow it. Checked for each row that uses it: `sort -o`, `yq -i`,
+  # would swallow it. Checked for each row that uses it: `yq -i`,
   # `docker save -o`, `git archive -o` and `kubectl get -o` each have no other
   # option starting with those two characters. `openssl` is the row that does
   # not qualify — `-outform` shares the `-out` prefix — and the note beside it
@@ -6064,7 +6197,7 @@ _gp_unesc() {
 }
 
 surface_of_argv0() {
-  local cmd="${1##*/}"
+  local cmd="${1##*/}" _gso _gsl
   # THE GATE'S OWN HELPERS ARE TRUSTED BY WHERE THEY ARE, NOT BY THEIR NAME.
   # Their rows below grade a read, a tracker write the collaboration surface
   # admits, and a form the kickoff freezes as a `사전 인가` row — and a name is
@@ -6278,7 +6411,11 @@ surface_of_argv0() {
     # Four tools whose effect is decided by ONE option, so the row reads it
     # rather than taking the wider grade for the common case.
     yq)   if gate_argv_has_opt -i inplace "$@"; then printf '워크트리쓰기'; else printf '읽기'; fi ;;
-    sort) if gate_argv_has_opt -o output "$@";  then printf '트리밖쓰기'; else printf '읽기'; fi ;;
+    # `sort` asks the write-slot reader, which knows which of its letters take
+    # a value: `-uo <f>` and `--outp=<f>` write as `-o` does, and `-to <f>`
+    # (separator `o`) does not. A spelling it cannot read is a write.
+    sort) _gso=0; _gsl=$(gate_tt_write_slots sort "$@") || _gso=1
+          if [ "$_gso" = "1" ] || [ -n "$_gsl" ]; then printf '트리밖쓰기'; else printf '읽기'; fi ;;
     tsc)  case " $* " in *" --noEmit "*|*" --version "*|*" --showConfig "*) printf '읽기' ;; *) printf '워크트리쓰기' ;; esac ;;
     chmod|ln) printf '워크트리쓰기' ;;
     # Browser automation. With no row here every spelling fell to `등급 미상`,
@@ -8503,16 +8640,72 @@ gate_opl_unread_shell() {
   return 1
 }
 
+gate_opl_runs_value_program() {
+  # gate_opl_runs_value_program <argv...> — status 0 when argv0 is a `tar` and
+  # one of its options takes a program to run as its value: `-I` and
+  # `--use-compress-program`, `-F` and `--info-script`, `--new-volume-script`,
+  # `--to-command`, and `--checkpoint-action` with `exec=`, in either spelling
+  # of the value and in any abbreviation; `-I` and `-F` in a bundle or the
+  # old-style first word as well. bsdtar ran `--use-compress-program="rm -f
+  # <sibling>/f"` as a command, while its value read as a relative path and
+  # the act as a run-local archive.
+  local a nm i=0 j ch nxc=''
+  case "${1##*/}" in tar|gtar|bsdtar) ;; *) return 1 ;; esac
+  shift
+  for a in "$@"; do
+    i=$((i + 1))
+    if [ -n "$nxc" ]; then
+      nxc=''
+      case "$a" in exec=*) return 0 ;; esac
+      continue
+    fi
+    case "$a" in
+      --) return 1 ;;
+      --?*)
+        nm="${a%%=*}"
+        case "$(gate_tt_long_is "$nm" --use-compress-program --to-command \
+                 --info-script --new-volume-script)" in
+          '='|'<') return 0 ;;
+        esac
+        case "$(gate_tt_long_is "$nm" --checkpoint-action)" in
+          '='|'<')
+            case "$a" in
+              "$nm") nxc=1 ;;
+              *=exec=*) return 0 ;;
+            esac ;;
+        esac ;;
+      -?*)
+        # The letters of a bundle up to the first one that takes a value; the
+        # rest of the word is that value.
+        j=1
+        while [ "$j" -lt "${#a}" ]; do
+          ch="${a:$j:1}"; j=$((j + 1))
+          case "$ch" in
+            I|F) return 0 ;;
+            [bCfgHKLNTVX]) break ;;
+          esac
+        done ;;
+      *)
+        if [ "$i" = "1" ]; then
+          case "$a" in *[!a-zA-Z0-9]*) ;; *[IF]*) return 0 ;; esac
+        fi ;;
+    esac
+  done
+  return 1
+}
+
 gate_opl_unread_launch() {
   # gate_opl_unread_launch <argv...> — status 0 when an argv no table grades
   # runs a command this file cannot read: a shell `gate_opl_unread_shell`
-  # names, or a table-less argv0 with a graded argv behind it
+  # names, a `tar` given a program to run (`gate_opl_runs_value_program`),
+  # or a table-less argv0 with a graded argv behind it
   # (`gate_opl_hides_command`). Its callers print such an argv as a record 2,
   # the unread command, so the floor, the ladder and the `런로컬` destruction
   # question take it on their closed side, as they take the same argv inside
-  # a shell's `-c` string. The second half is not asked from inside that
+  # a shell's `-c` string. The last of them is not asked from inside that
   # search (`GATE_OPL_IN_HIDES`).
   gate_opl_unread_shell "$@" && return 0
+  gate_opl_runs_value_program "$@" && return 0
   [ -z "${GATE_OPL_IN_HIDES:-}" ] || return 1
   gate_opl_hides_command "$@"
 }
@@ -8759,9 +8952,12 @@ gate_opaque_payload_lines() {
           # after a write leaves the rest unread (5).
           #
           # `!` after the operator is zsh's `>!`, `>>!` and `&>!`, which
-          # overwrite as `>|` does. bash reads that `!` as the first byte of
-          # the target's name, so taking it off reads the next word as the
-          # target there — the closed side, a park and never a pass.
+          # overwrite as `>|` does, and so is the `!` after `>&` in `>&!` and
+          # `>>&!`: taken off only before the `&`, `echo x >&! <sibling>/f`
+          # read its target as the relative name `!`. bash reads that `!` as
+          # the first byte of the target's name, so taking it off reads the
+          # next word as the target there — the closed side, a park and never
+          # a pass.
           #
           # AN INPUT REDIRECTION is a read: the operator and its source are
           # taken out of the line and leave no record. Left in place,
@@ -8778,7 +8974,14 @@ gate_opaque_payload_lines() {
                   io=w; rt="${rt#<}"
                   while :; do case "$rt" in '>'*) rt="${rt#>}" ;; *) break ;; esac; done
                   rt="${rt#[|!]}"
-                  case "$rt" in '&'*) rt="${rt#&}"; dup=1 ;; esac ;;
+                  case "$rt" in
+                    '&'*)
+                      rt="${rt#&}"; dup=1
+                      # zsh's `>&!`, `>>&!` and `>&|` send both outputs to a
+                      # file, clobbering or appending: a write, not a copy of
+                      # a descriptor.
+                      case "$rt" in [\|!]*) rt="${rt#[|!]}"; dup=0 ;; esac ;;
+                  esac ;;
                 *)
                   io=r
                   while :; do case "$rt" in '<'*) rt="${rt#<}" ;; *) break ;; esac; done
@@ -8997,10 +9200,12 @@ gate_opaque_payload_lines() {
       fi
       # A COMMAND NO TABLE GRADES may run the argv behind it
       # (`gate_opl_hides_command`), or be a shell this reader does not read
-      # given a command string (`gate_opl_unread_shell`), and the line is then
-      # one this reader cannot place.
+      # given a command string (`gate_opl_unread_shell`), and a `tar` may be
+      # given a program to run (`gate_opl_runs_value_program`); the line is
+      # then one this reader cannot place.
       if [ "$st" = "0" ] && [ "$unread" = "0" ] \
-         && { gate_opl_unread_shell "$@" || gate_opl_hides_command "$@"; }; then
+         && { gate_opl_unread_shell "$@" || gate_opl_runs_value_program "$@" \
+              || gate_opl_hides_command "$@"; }; then
         st=2
       fi
       # A GLOB IN A DIRECTORY COMPONENT leaves the landing unread: the local
