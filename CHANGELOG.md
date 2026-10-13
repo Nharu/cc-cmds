@@ -5,6 +5,27 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.12] - 2026-10-13
+
+`gh` 의 전역 플래그가 `api` 앞에 오는 철자와, 셸 문자열의 값 옵션·위치 인자·리다이렉션·백슬래시-개행으로 감싼 push 를 게이트 판독기가 읽지 못해 결속되지 않은 머지와 베이스 push 가 선리뷰후머지 검사를 공허하게 지나던 구멍을 닫는다.
+
+### Fixed
+
+- **`gh` 는 `api` 를 플래그 너머에서 찾는다** — `gh --hostname=github.com api -X PUT …/pulls/<n>/merge` 처럼 `api` 앞에 플래그와 그 값이 오면, gh 처럼 그것들을 건너뛰어 명령을 찾고 `api` 를 맨 앞으로 옮겨 읽는다. 사다리·결속·등급·파괴 표지·협업면·사전 인가 재작성이 모두 같은 판독을 쓴다. 단어에 `api` 가 있는데 명령의 자리를 정할 수 없으면(`--` 뒤, 값으로 먹힌 뒤) 결속 없는 머지로 읽는다. 전에는 이 철자가 사다리 없음·결속 `해당없음`·`등급 미상`이 되어, 정직한 `외부상태변경` 신고로 결속 없는 머지와 base 파일 쓰기가 통과했고, `gh api -X PUT` 사전 인가 행이 뒤따르는 `--method=DELETE` 까지 열었다
+- **셸 `-c` 앞의 값 옵션을 셸처럼 센다** — 묶음 안의 `o`·`O` 글자마다 값을 하나씩 받고 zsh 의 `--emulate` 도 값을 받는다. 전에는 `zsh --emulate sh -c 'git push …'`(2.72.11 이 만든 회귀), `bash -oc pipefail '…'`, `-Oc extglob`, `-eoc pipefail` 이 `sh`·`pipefail` 을 문자열로 읽어 push 없음으로 통과했다
+- **`-c` 문자열이 부르는 위치 인자도 읽는다** — 문자열에 `$` 가 있고 뒤에 단어가 있으면 `$0`…`$9`·`$@`·`$*` 를 그 단어로 바꾼 판과, 문자열 뒤에 그 단어들을 이어 붙인 판을 함께 읽는다. 전에는 `bash -c 'git "$@"' _ push origin HEAD:master` 가 push 없음으로 통과했다
+- **셸 문자열의 리다이렉션과 백슬래시-개행을 셸처럼 읽는다** — 백슬래시-개행을 먼저 지우고 `<`·`>` 로 단어를 나누며 `>&`·`<&`·`&>` 의 `&` 를 명령 구분자로 읽지 않는다. 전에는 `git push>/dev/null`, `git>/dev/null push`, `git 2>&1 push`, 백슬래시-개행으로 나눈 `git p\` + 개행 + `ush` 가 push 로 읽히지 않았다
+- **push 를 담은 셸 문자열의 하한은 `외부상태변경` 이다** — 셸 래핑의 불투명 하한이 명령 자리만 읽어 위 철자의 push 를 `읽기` 로 두었으므로, push 판독기가 push 로 읽은 문자열은 하한을 `외부상태변경` 으로 올린다. 그 셸을 `읽기` 로 낮춰 신고하면 맨 철자처럼 저선언(exit 6)으로 거부된다
+
+### Post-install notes
+
+- `-c` 문자열이 `$` 로 위치 인자를 부르고 그 인자에 `git` 과 `push` 단어가 있으면, 실제로 push 하지 않는 문자열(`echo "$0"` 등)도 push 로 읽혀 거부될 수 있다. 래퍼 없이 명령을 직접 부르면 전처럼 읽힌다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): gh api 앞 플래그와 셸 문자열의 감싼 push 를 읽는다`
+
 ## [2.72.11] - 2026-10-13
 
 셸 문자열 안의 push 를 찾는 게이트 판독기가 셸이 실제로 실행하는 철자 몇 가지를 push 로 읽지 못해, 런로컬 쓰기로 선언된 베이스 push 가 결속 검사를 공허하게 지나던 구멍을 닫는다.
