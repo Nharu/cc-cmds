@@ -975,9 +975,12 @@ fi
 # the two merge pins (the prescribed REST merge with its method, bound by its
 # `sha` field to the worktree HEAD's full sha rather than a cycle row's review
 # HEAD, and the sentence that a `gh pr merge` without `--admin` binds nothing),
-# the park-and-cone disposition of a merge refused with 405 (a router has no
-# halt record to write, and without the `park` the next shift sends the same
-# merge again), the fetch before the apply, the apply act's fixed token,
+# the disposition of a merge refused with 405 by its cause — an already merged
+# pull request goes on to the merge record, a required check still pending is
+# waited on and left routable with a cone block and no `park`, and every other
+# cause takes the park-and-cone disposition (a router has no halt record to
+# write, and without the `park` the next shift sends the same merge again),
+# the fetch before the apply, the apply act's fixed token,
 # the park-and-cone disposition of a precondition refusal, the cycle cap's
 # reason, and the `다음` branches that send a segment to the carry-over
 # procedure, the guard re-convergence and a sliced review. The fix prompt must
@@ -992,6 +995,10 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   for spec in \
     '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
     '#### Merging and applying a segment|A `gh pr merge` without `--admin` is refused as unbound even with `--match-head-commit`' \
+    '#### Merging and applying a segment|gh pr view <n> --json state,mergeCommit,mergeStateStatus' \
+    '#### Merging and applying a segment|- **Already merged** (`state` reads `MERGED`' \
+    '#### Merging and applying a segment|whose `사유` is `CI 진행 중(실패 아님)` with the `message`, write no `park`' \
+    '#### Merging and applying a segment|- **Any other cause** — a base that requires a merge queue' \
     '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the 405' \
     '#### Merging and applying a segment|The `park` makes the segment terminal, so the next shift does not send the same merge again' \
     '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \

@@ -23821,6 +23821,51 @@ check "32p: …/merge-async 를 커밋 으로 낮춘 선언은 exit 8 이다" "$
 check "32p: 대조군 — ref 읽기는 머지가 아니다" "$(sp_mb gh api repos/o/r/git/refs/heads/master)" "해당없음"
 check "32p: 대조군 — …/merge-async GET 은 머지가 아니다" "$(sp_ld gh api -X GET repos/o/r/pulls/7/merge-async)" ""
 
+# REST 경로는 repos/<owner>/<repo>/ 에서 세그먼트 자리로 읽는다 — 글롭의 * 가 / 를 건너
+# contents/pulls/1/merge 를 PR 머지로 읽었다. 목록에 없는 비-GET REST 쓰기와 대상 저장소를
+# 적은 gh repo sync 도 결속 없는 base 변경이다.
+sp_n=0
+for sp_a in "api -X PUT repos/o/r/contents/pulls/1/merge -f branch=master -f message=m -f content=YQ== -f sha=$X32" \
+            "api -X POST repos/o/r/branches/seg/rename -f new_name=master" \
+            "api -X POST repos/o/r/branches/master/rename -f new_name=old" \
+            "api -X PUT repos/o/r/contents/graphql -f branch=master -f message=m -f content=YQ==" \
+            "api -X PUT repos/o/r/pulls/7/x\\c/../merge -f sha=$X32" \
+            "api -X PUT https://api.github.com/repos/o/r/contents/pulls/1/merge -f sha=$X32" \
+            "repo sync o/r --branch master --source x/y --force" \
+            "repo sync o/r"; do
+  sp_n=$((sp_n + 1))
+  # shellcheck disable=SC2086
+  check "32p: 사다리가 고정점 철자 $sp_n ($sp_a) 을 머지로 읽는다" "$(sp_ld gh $sp_a)" "머지"
+  # shellcheck disable=SC2086
+  check "32p: 고정점 철자 $sp_n 은 결속 없는 머지다" "$(sp_mb gh $sp_a)" "없음"
+  # shellcheck disable=SC2086
+  check "32p: 고정점 철자 $sp_n 은 협업면이 아니다" "$(sp_cs 협업 gh $sp_a)" "아니오"
+done
+sp_plan S32G 머지 gh api -X PUT repos/o/r/contents/pulls/1/merge -f branch=master -f message=m -f content=YQ== -f "sha=$H32G"
+check "32p: 워크트리 HEAD 를 sha 로 실은 contents/pulls/<n>/merge 파일 쓰기는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: contents/pulls — 문면이 결속을 지목한다"; else bad "32p contents/pulls 문면" "$msg"; fi
+sp_plan S32G 머지 gh api -X POST repos/o/r/branches/master/rename -f new_name=old
+check "32p: 머지 로 정직하게 선언한 브랜치 이름 바꾸기는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: branches/<b>/rename — 문면이 결속을 지목한다"; else bad "32p rename 문면" "$msg"; fi
+sp_plan S32G 머지 gh repo sync o/r --branch master --source x/y --force
+check "32p: 머지 로 정직하게 선언한 대상 저장소 gh repo sync 는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: gh repo sync — 문면이 결속을 지목한다"; else bad "32p repo sync 문면" "$msg"; fi
+sp_plan S32G 커밋 gh api -X POST repos/o/r/branches/master/rename -f new_name=old
+check "32p: 브랜치 이름 바꾸기를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
+# 대조군 — 자리에 맞는 절대 URL 머지는 그 sha 에 결속되고, ref 를 쓰지 않는 엔드포인트는
+# 머지가 아니며, 대상 저장소 없는 gh repo sync 는 로컬 클론만 바꾼다.
+check "32p: 대조군 — 절대 URL 의 REST 머지는 그 sha 에 결속된다" \
+  "$(sp_mb gh api -X PUT https://api.github.com/repos/o/r/pulls/1/merge -f "sha=$X32")" "$X32"
+check "32p: 대조군 — 절대 URL 의 이슈 코멘트는 머지가 아니다" \
+  "$(sp_mb gh api https://api.github.com/repos/o/r/issues/1/comments -f body=x)" "해당없음"
+check "32p: 대조군 — PR 만들기는 머지가 아니다" "$(sp_mb gh api -X POST repos/o/r/pulls -f head=x -f base=main)" "해당없음"
+check "32p: 대조군 — PR 고치기는 머지가 아니다" "$(sp_ld gh api -X PATCH repos/o/r/pulls/7 -f title=t)" ""
+check "32p: 대조군 — 커밋 코멘트는 머지가 아니다" "$(sp_ld gh api repos/o/r/commits/abc/comments -f body=x)" ""
+check "32p: 대조군 — 대상 저장소 없는 gh repo sync 는 머지가 아니다" "$(sp_mb gh repo sync --branch master)" "해당없음"
+check "32p: 대조군 — 대상 저장소 없는 gh repo sync 에 사다리는 아무것도 말하지 않는다" "$(sp_ld gh repo sync)" ""
+check "32p: 대조군 — 백슬래시가 든 점 없는 라벨 쓰기는 머지가 아니다" \
+  "$(sp_mb gh api -X PATCH 'repos/o/r/labels/a\cb' -f color=fff)" "해당없음"
+
 # find -exec 안에서 {} 를 받는 gh 호출 — 매치 경로가 들어간 뒤의 철자를 읽을 수 없으므로
 # 사다리는 머지로, 결속은 없음으로 읽는다.
 check "32p: find -exec 의 {} 를 받는 gh api 를 사다리가 머지로 읽는다" \
@@ -32724,7 +32769,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 83. 사전 인가 대조는 줄바꿈이 든 argv 도 한 행위로 읽는다
-# --- section: 83 | group: reach | covers: - | anchors: 83: 여러 줄 --body 의 gh pr create 가 gh pr 형태에 맞는다, 83: 대조 — 한 줄 --body 도 맞는다, 83: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다 ---
+# --- section: 83 | group: reach | covers: - | anchors: 83: 여러 줄 --body 의 gh pr create 가 gh pr 형태에 맞는다, 83: 대조 — 한 줄 --body 도 맞는다, 83: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다, 83: gh pr 형태는 결속된 REST 머지에 맞지 않는다, 83: gh api -X PUT 형태가 결속된 REST 머지에 맞는다 ---
 #
 # 사전 인가 대조는 argv 를 awk 로 정규화하는데, awk 는 입력 줄마다 본문을 돈다.
 # PR 본문처럼 인자 하나에 줄바꿈이 들면 정규화 결과가 여러 줄이 되어 한 줄짜리
@@ -32746,6 +32791,15 @@ check "83: 대조 — 한 줄 --body 도 맞는다" \
 check "83: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다" \
   "$(p83 "gh project item-list 1 --body x
 gh pr")" "P=0 형태=없음 Pd=0"
+# 라우터의 결속된 머지는 REST `gh api -X PUT …/pulls/<n>/merge` 하나다. `gh pr` 만 든
+# 매니페스트에서 그 머지는 목록 밖이라 승인 대기로 가고, 킥오프가 권하는
+# `gh api -X PUT` 행이 그 철자에 맞는다.
+p83h="gh api -X PUT repos/o/r/pulls/1/merge -f sha=0123456789abcdef0123456789abcdef01234567 -f merge_method=merge"
+check "83: gh pr 형태는 결속된 REST 머지에 맞지 않는다" "$(p83 "$p83h")" "P=0 형태=없음 Pd=0"
+printf -- '- `사전 인가` | 형태=gh api -X PUT | 사유=테스트\n' >> "$m83"
+check "83: gh api -X PUT 형태가 결속된 REST 머지에 맞는다" "$(p83 "$p83h")" "P=1 형태=완전 Pd=0"
+check "83: 대조 — gh api -X PUT 형태는 POST 에 맞지 않는다" \
+  "$(p83 'gh api -X POST repos/o/r/issues/1/comments -f body=x')" "P=0 형태=없음 Pd=0"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make
