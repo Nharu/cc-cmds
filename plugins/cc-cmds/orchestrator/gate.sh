@@ -1482,6 +1482,27 @@ gate_push_text_has_push() {
   # here-document its status was lost: `echo <byte>; git push origin
   # HEAD:master` read as no push, so a base push wrapped in `sh -c` passed as a
   # worktree write.
+  #
+  # THE WORDS ARE READ AFTER THE SHELL'S OWN QUOTE REMOVAL, as near as a
+  # reading without a shell gets. Dropping only the quote characters left
+  # `\git push` and `gi\t push` unlike `git`, and `git${IFS}push` one word,
+  # while the shell runs all three as a push. So backslashes are dropped with
+  # the quotes, `(`, `)`, `{`, `}` and the backtick part words, and the text is
+  # read twice — once with `$` parting words (`git${IFS}push`, `git$IFS push`)
+  # and once with `$` dropped (`g$'i't`). A push in either reading is a push.
+  # A command held in a variable or built by `eval` is not read here; the
+  # declaration ceiling is what holds there.
+  local text parted dropped
+  text=$(printf '%s' "$1" | LC_ALL=C tr -d '\\"'"'") || return 0
+  text=$(printf '%s' "$text" | LC_ALL=C tr '(){}`' '     ') || return 0
+  parted=$(printf '%s' "$text" | LC_ALL=C tr '$' ' ') || return 0
+  dropped=$(printf '%s' "$text" | LC_ALL=C tr -d '$') || return 0
+  gate_push_words_have_push "$parted" || gate_push_words_have_push "$dropped"
+}
+
+gate_push_words_have_push() {
+  # gate_push_words_have_push <text> — the split and the word scan of
+  # `gate_push_text_has_push`, on text whose quoting is already removed.
   local line w seen_git split
   split=$(printf '%s' "$1" | LC_ALL=C tr ';&|' '\n\n\n') || return 0
   while IFS= read -r line; do
@@ -1503,15 +1524,34 @@ GATE_PUSH_TEXT
 
 gate_push_shell_payload() {
   # gate_push_shell_payload <a shell's args after argv0...> — prints the `-c`
-  # strings, one per line. `-c` may ride in a bundle (`-lc`, `-ec`); the word
-  # after it is the string either way.
-  local a next=0
+  # string, one candidate per line. `-c` may ride in a bundle (`-lc`, `-ec`).
+  #
+  # THE STRING IS THE FIRST WORD THAT IS NOT AN OPTION, not the word after
+  # `-c`. A shell reads every option first and only then takes the string, so
+  # `bash -c -- '<cmd>'` runs `<cmd>` and `sh -c -e '<cmd>'` does too; taking
+  # the word after `-c` read `--` or `-e` and missed the push. `--` and a lone
+  # `-` end the options, and `-o`/`+o`/`-O`/`+O` (alone or closing a bundle)
+  # and `--rcfile`/`--init-file` take the next word as their value. The word
+  # right after the `-c` bundle is printed as well, so a spelling this skip
+  # misreads still has its string read: an extra line is a wider reading, never
+  # a narrower one.
+  local a seen_c=0 after_c=0 take=0 ended=0
   for a in "$@"; do
-    if [ "$next" = 1 ]; then printf '%s\n' "$a"; next=0; continue; fi
-    case "$a" in
-      --*) : ;;
-      -*c*) next=1 ;;
-    esac
+    if [ "$after_c" = 1 ]; then printf '%s\n' "$a"; after_c=0; fi
+    if [ "$take" = 1 ]; then take=0; continue; fi
+    if [ "$ended" = 0 ]; then
+      case "$a" in
+        --|-) ended=1; continue ;;
+        --rcfile|--init-file) take=1; continue ;;
+        --*) continue ;;
+        -*|+*)
+          case "$a" in -*c*) seen_c=1; after_c=1 ;; esac
+          case "$a" in *[oO]) take=1 ;; esac
+          continue ;;
+      esac
+    fi
+    [ "$seen_c" = 1 ] && printf '%s\n' "$a"
+    return 0
   done
 }
 
@@ -6437,17 +6477,16 @@ gate_opaque_floor() {
       gate_unwrap_find gate_opaque_floor_find_inner "$GATE_FLOOR_NONE" "$(printf '워크트리쓰기\t\t')" \
         "$GATE_FLOOR_NONE" gate_answer_floor_max "$@"; return 0 ;;
   esac
-  local payload="" a next_is_c=0
+  local payload=""
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
       # ONLY the `-c` string. A script FILE operand is not scanned — its bytes
       # are not in argv, and pretending to have read them would be the kind of
-      # confident wrong answer this whole table refuses.
-      for a in "$@"; do
-        if [ "$next_is_c" = "1" ]; then payload="$payload
-$a"; next_is_c=0; continue; fi
-        case "$a" in -c) next_is_c=1 ;; esac
-      done ;;
+      # confident wrong answer this whole table refuses. The string is found
+      # the way the push reader finds it, so `-c --`, `-ec` and `-c -e` reach
+      # it: reading only an exact `-c` and the word after it scanned `--` and
+      # left `bash -c -- 'git push …'` at `읽기`.
+      payload=$(gate_push_shell_payload "$@") ;;
     # The wrappers that assemble a command line out of their own arguments, and
     # the table-less argv0 whose operands may name one. `docker run` is
     # deliberately absent: its image name is a word like `mysql`, and reading
@@ -6461,6 +6500,12 @@ $a"; next_is_c=0; continue; fi
   # Heredoc bodies are dropped before the split: their text is DATA, and a SQL
   # heredoc naming `drop table` is not the shell running `drop`.
   payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
+
+  # Quote removal before the command positions are read: `\git push`,
+  # `'git' push` and `git${IFS}push` all run `git push`, and read as written
+  # their first word was `\git`, `'git'` or `git{IFS}push` and the floor stayed
+  # `읽기`. `$IFS` in any of its spellings parts words.
+  payload=$(printf '%s' "$payload" | sed 's/\$[{]IFS[^}]*[}]/ /g; s/\$IFS/ /g' | tr -d '\\"'"'")
 
   local floor='읽기' mark='' trig='' fi_ fidx
   fidx=$(surface_index '읽기')

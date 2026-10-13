@@ -23285,6 +23285,40 @@ check "32p: bash -c 안의 push 는 불투명 이다"            "$(sp_unwrap ba
 check "32p: 묶음 -lc 안의 push 도 불투명 이다"          "$(sp_unwrap bash -lc 'cd d && /usr/bin/git push')" "불투명"
 check "32p: sh -c 안의 push 아닌 git 은 해당없음 이다"  "$(sp_unwrap sh -c 'git status; echo push')" "해당없음"
 check "32p: sudo 아래 push 는 불투명 이다"              "$(sp_unwrap sudo -u u git -C d push origin x)" "불투명"
+# 셸은 옵션을 다 읽은 뒤 첫 비옵션 단어를 문자열로 받고, 따옴표·백슬래시를 지운 뒤
+# 실행한다. `-c` 바로 다음 단어만 읽고 따옴표만 지우던 판독기는 아래 철자를 모두
+# 해당없음으로 읽어, 결속 검사가 공허하게 통과했다.
+sp_floor() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; f=$(gate_opaque_floor "$@"); printf "%s" "${f%%	*}"' _ "$GATE" "$@"; }
+sp_n=0
+for sp_v in "bash|-c|--|git push origin x:main" \
+            "sh|-c|--|git push origin x:main" \
+            "sh|-c|-e|git push origin x:main" \
+            "bash|-o|pipefail|-c|git push origin x:main" \
+            "sh|-c|\\git push origin x:main" \
+            "sh|-c|gi\\t push origin x:main" \
+            "sh|-c|'git' push origin x:main" \
+            "sh|-c|git\${IFS}push origin x:main" \
+            "sh|-c|git\$IFS push origin x:main" \
+            "sh|-c|(git push origin x:main)" \
+            "sh|-c|{ git push origin x:main; }"; do
+  sp_n=$((sp_n + 1))
+  IFS='|' read -r -a sp_w <<<"$sp_v"
+  check "32p: 셸 문자열 철자 $sp_n (${sp_w[*]}) 안의 push 는 불투명 이다" "$(sp_unwrap "${sp_w[@]}")" "불투명"
+done
+sp_n=0
+for sp_v in "bash|-c|--|git push origin x:main" \
+            "sh|-c|-e|git push origin x:main" \
+            "sh|-ec|git push origin x:main" \
+            "sh|-c|\\git push origin x:main" \
+            "sh|-c|'git' push origin x:main" \
+            "sh|-c|git\${IFS}push origin x:main"; do
+  sp_n=$((sp_n + 1))
+  IFS='|' read -r -a sp_w <<<"$sp_v"
+  check "32p: 셸 문자열 철자 $sp_n (${sp_w[*]}) 의 하한은 외부상태변경 이다" "$(sp_floor "${sp_w[@]}")" "외부상태변경"
+done
+check "32p: 대조군 — -c -- 안의 push 아닌 git 은 해당없음 이다" "$(sp_unwrap bash -c -- 'git status; echo push')" "해당없음"
+check "32p: 대조군 — -c 문자열 뒤의 위치 인자는 문자열이 아니다" "$(sp_unwrap bash -c -- 'echo "$0"' 'git push')" "해당없음"
+check "32p: 대조군 — -c -- 안의 git status 의 하한은 읽기 이다" "$(sp_floor bash -c -- 'git status')" "읽기"
 check "32p: gh pr -R <repo> merge 의 결속 인자를 읽는다" \
   "$(sp_mb gh pr -R o/r merge 1 --admin --match-head-commit 0123456789abcdef0123456789abcdef01234567)" \
   "0123456789abcdef0123456789abcdef01234567"
@@ -23462,6 +23496,21 @@ for sp_sh in bash sh; do
   sp_refused "32p: $sp_sh -c 안의 베이스 push 를 push 로 선언해도 거절된다" 2 "$B32"
 done
 if sa_names_rule; then bad "32p 셸 순서" "형태 미상보다 룰이 먼저 돌았다: $msg"; else ok "32p: 형태 미상 거절이 룰 앞에서 난다"; fi
+# `-c --`·백슬래시·`${IFS}` 철자도 같다 — plan 과 act 모두 형태 미상으로 거절된다.
+for sp_c in dashdash opt bslash ifs; do
+  case "$sp_c" in
+    dashdash) sp_argv=(bash -c -- "git push origin u-$SA_ID:$SA_BASE") ;;
+    opt)      sp_argv=(sh -c -e "git push origin u-$SA_ID:$SA_BASE") ;;
+    bslash)   sp_argv=(sh -c "\\git push origin u-$SA_ID:$SA_BASE") ;;
+    ifs)      sp_argv=(sh -c "git\${IFS}push origin u-$SA_ID:$SA_BASE") ;;
+  esac
+  sp_plan S32A 머지 "${sp_argv[@]}"
+  sp_refused "32p: 셸 철자 $sp_c 의 베이스 push 의 plan 은 거절된다" 2 "$B32"
+  sp_unknown "32p: 셸 철자 $sp_c (plan)"
+  sp_act S32A 머지 "${sp_argv[@]}"
+  sp_refused "32p: 셸 철자 $sp_c 의 베이스 push 는 거절된다" 2 "$B32"
+  sp_unknown "32p: 셸 철자 $sp_c (act)"
+done
 
 # 대조군 — 허용 목록 안의 옵션은 그대로 재고, 리뷰된 HEAD 는 착지한다.
 sp_plan S32A 머지 git push -u origin "HEAD:$SA_BASE"
