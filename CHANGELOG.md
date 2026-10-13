@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.9] - 2026-10-13
+
+REST 경로를 세그먼트로 쪼개는 게이트 판독기가 UTF-8 로캘의 macOS 에서 UTF-8 이 아닌 바이트를 만나 `tr`/`sed` 가 멈추면, 그때까지 쓴 접두를 경로 전체로 읽어 뒤에 붙은 PR 머지를 이슈 쓰기로 통과시키던 구멍을 닫는다. 킥오프의 REST 머지 사전 인가 점검이 `선리뷰후머지` 에서만 돌아 다른 정책의 런이 매 머지마다 승인 대기에 빠지던 문제도 고친다.
+
+### Fixed
+
+- **REST 경로를 바이트로 읽고, 보조 도구가 실패하면 닫힌다** — `gh api` 경로를 쪼개고 `%` 이스케이프를 푸는 `tr`·`sed` 를 `LC_ALL=C` 로 부르고 종료 상태를 본다. 실패하면 판독기는 엔드포인트를 읽지 않고, 그 호출은 결속 없는 머지(사다리 `머지`·결속 없음)로 읽힌다. 전에는 `repos/o/r/issues/1<바이트>/../../../pulls/1/merge` 가 `repos/o/r/issues` 로 잘려 무해 계열로 분류됐다. 사전 인가 대조의 메서드 대문자화도 로캘과 무관하게 한다
+- **킥오프의 REST 머지 사전 인가 점검은 리뷰 정책과 무관하게 돈다** — 계획이 머지를 예측하면 정책이 `선머지후리뷰`·`리뷰없음` 이어도 확정된 행이 `gh api -X PUT` 을 덮는지 보고, 기본값이 없을 때 읽어 주는 행에 `gh api -X PUT` 을 싣는다. 라우터는 모든 정책에서 REST 철자로 머지하므로, 전에는 비엄격 정책 런이 `gh pr` 행만으로 매 머지마다 승인 대기(5)에 빠졌다
+
+### Post-install notes
+
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): REST 경로를 바이트로 읽고 보조 도구가 실패하면 결속 없는 머지로 닫는다`
+
 ## [2.72.8] - 2026-10-13
 
 킥오프가 권하는 `gh api -X PUT` 사전 인가 행이 뒤따르는 `-X`/`--method` 로 모든 HTTP 메서드를 승인 없이 열고, 절대 URL 의 호스트 자리에 둔 gh 자리표시자로 결속 없는 PR 머지가 커밋 선언으로 지나가던 두 구멍을 닫는다. 405 로 거부된 머지를 「이미 머지됨」으로 기록할 때 머지된 head 를 대조하지 않던 라우터 처방도 고친다.
