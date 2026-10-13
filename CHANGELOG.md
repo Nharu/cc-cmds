@@ -5,6 +5,26 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.8] - 2026-10-13
+
+킥오프가 권하는 `gh api -X PUT` 사전 인가 행이 뒤따르는 `-X`/`--method` 로 모든 HTTP 메서드를 승인 없이 열고, 절대 URL 의 호스트 자리에 둔 gh 자리표시자로 결속 없는 PR 머지가 커밋 선언으로 지나가던 두 구멍을 닫는다. 405 로 거부된 머지를 「이미 머지됨」으로 기록할 때 머지된 head 를 대조하지 않던 라우터 처방도 고친다.
+
+### Fixed
+
+- **`gh api` 의 사전 인가 대조는 gh 가 보낼 메서드로 한다** — 게이트가 사전 인가 대조기에 `gh api` argv 를 넘길 때, gh 가 실제로 보낼 메서드(마지막 `-X`/`--method`, 본문이 있으면 POST, 아니면 GET)를 대문자로 `api` 바로 뒤에 올려 넘긴다. `gh api -X PUT` 행은 이제 PUT 만 연다. 전에는 대조기가 앞 단어만 비교해 `gh api -X PUT repos/o/r --method=DELETE`·`-XDELETE`·`-X PATCH` 가 모두 그 행에 맞았다
+- **`gh api` 의 파괴 표지를 파싱된 메서드에서 정한다** — `--method=DELETE`·`-XDELETE`·`-Xdelete` 처럼 ` -X DELETE ` 문자열이 아닌 철자에도 `파괴` 표지가 붙는다
+- **절대 URL 의 호스트·userinfo·포트에 든 자리표시자도 읽을 수 없는 경로다** — gh 는 요청 문자열 전체를 채우므로 `https://{branch}/repos/o/r/issues/1` 은 브랜치 이름에 따라 PR 머지 엔드포인트로 나간다. 게이트는 그런 authority 를 가진 비-GET 호출을 결속 없는 베이스 변경(사다리 `머지`·결속 없음·협업면 아님)으로 읽고, 협업면 판정도 원시 엔드포인트가 아니라 사다리와 같은 정규화 경로를 읽는다
+- **405 「이미 머지됨」 갈래는 머지된 head 를 대조한다** — 두 라우터 SKILL 이 405 뒤에 `headRefOid` 까지 읽고, 그것이 구현 워크트리 HEAD 의 40자 전체와 같을 때만 `머지됨` 기록으로 간다. 다른 head 가 머지됐거나 게이트가 `머지됨` 기록을 거절하면 park 와 cone 차단의 처분으로 보내, 리뷰되지 않은 내용이 충족으로 기록되거나 같은 머지가 매 교대 되풀이되지 않는다
+
+### Post-install notes
+
+- 이제 `gh api -X PUT` 행은 PUT 호출만 연다. 다른 메서드의 REST 호출을 승인 없이 열던 런은 그 메서드의 행(`gh api -X PATCH` 등)을 따로 두어야 승인 대기(5)를 피한다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): gh api 사전 인가를 보낼 메서드로 대조하고 호스트 자리표시자를 결속 없는 머지로 읽는다`
+
 ## [2.72.7] - 2026-10-13
 
 gh 가 보내기 전에 채우는 경로 자리표시자(`{branch}`·`:branch`)가 든 REST 쓰기가 PR 수정으로 읽혀, 현재 브랜치 이름을 `7/merge` 로 두면 결속 없는 머지가 커밋 선언으로 지나가던 구멍을 닫는다. 호스트 킥오프 기본값이 사전 인가 행을 확정한 런에서 REST 머지를 덮는 행이 있는지 아무도 보지 않던 어긋남도 고친다.
