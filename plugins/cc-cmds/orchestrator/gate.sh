@@ -999,9 +999,80 @@ gate_reach_derived() {
         printf '기기전역'; return 0 ;;
     esac
   done
+  # The commands inside a shell's `-c` string take the same floor.
+  local _pd
+  if _pd=$(gate_reach_derived_payload "$alias" "$@"); then printf '%s' "$_pd"; return 0; fi
   # A deploy trigger the manifest named for this target.
   if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거'; return 0; fi
   printf -- '-'
+}
+
+gate_reach_derived_payload() {
+  # gate_reach_derived_payload <alias> <argv...> — the floor of the commands
+  # inside a shell's `-c` string anywhere in argv, read through the lines
+  # `gate_opaque_payload_lines` prints. Status 0 prints the first value that is
+  # not `-`; 1 when there is none.
+  #
+  # THE SHELL STRING TAKES THE FLOOR ITS LINES TAKE BARE. Read only in argv,
+  # `bash -c "rm -rf $HOME/.ssh/k"` derived `-`, so it passed declared
+  # `트리밖쓰기 --reach 런로컬` while `rm -rf $HOME/.ssh/k` written bare parked
+  # as `기기전역`. Every position is asked, not the first only: `env -i bash -c
+  # …`, `lockf <file> bash -c …` and `caffeinate bash -c …` behind a launcher
+  # the tables do not know carry the same string. A nested shell line is read
+  # again through `gate_reach_derived`, which comes back here.
+  #
+  # The reader prints `$HOME` with its `$` removed (`HOME/…`, `{HOME}/…`) on a
+  # command line and keeps it (`$HOME/…`, `~/…`) on a redirection target, and
+  # every one of those spellings is put back as the home it expands to. A
+  # relative directory literally named `HOME` inside a shell string is read as
+  # the home too, which over-closes and is accepted. A home path built in a
+  # variable (`d=$HOME; rm -rf $d/.ssh/k`) is not read here; the reader marks
+  # that line's landing unread and the cells take the mark on its closed side.
+  local alias="$1"; shift
+  local j=1 n=$# w rec u line x v
+  local -a hw
+  while [ "$j" -le "$n" ]; do
+    w="${!j}"
+    case "${w##*/}" in
+      bash|sh|zsh|dash|ksh)
+        if gate_shell_c_string "${@:$((j + 1))}" >/dev/null 2>&1; then
+          while IFS= read -r rec; do
+            [ -n "$rec" ] || continue
+            u="${rec%%	*}"; line="${rec#*	}"; line="${line#*	}"; line="${line%%	*}"
+            set -f
+            # shellcheck disable=SC2086
+            set -- $line
+            set +f
+            [ $# -gt 0 ] || continue
+            gate_opl_words "$@"
+            hw=()
+            for x in ${GATE_OPL_WORDS[@]+"${GATE_OPL_WORDS[@]}"}; do
+              case "$x" in
+                '~'|'$HOME'|'${HOME}') x="$HOME" ;;
+                '~/'*) x="$HOME/${x#\~/}" ;;
+                'HOME/'*|'$HOME/'*) x="$HOME/${x#*HOME/}" ;;
+                '{HOME}/'*|'${HOME}/'*) x="$HOME/${x#*\{HOME\}/}" ;;
+              esac
+              hw[${#hw[@]}]="$x"
+            done
+            [ "${#hw[@]}" -gt 0 ] || continue
+            case "$u" in
+              4|5)
+                case "${hw[0]}" in
+                  "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*|/usr/local/*|/opt/homebrew/*)
+                    printf '기기전역'; return 0 ;;
+                esac ;;
+              *)
+                v=$(gate_reach_derived "$alias" "${hw[@]}")
+                [ "$v" = "-" ] || { printf '%s' "$v"; return 0; } ;;
+            esac
+          done < <(gate_opaque_payload_lines "${@:$j}" 2>/dev/null)
+          return 1
+        fi ;;
+    esac
+    j=$((j + 1))
+  done
+  return 1
 }
 
 gate_deploy_trigger_match() {
@@ -2614,6 +2685,13 @@ gate_reach_disposition() {
       # (`gate_opaque_floor`), and a command with no row written bare is held
       # to a worktree write before it gets here.
       [ "${GATE_DECLARED:-}" = "읽기" ] && return 0
+      # A floor the payload proves machine-global parks by that name, as the
+      # same command written bare does in cell 6. Asked below it, `bash -c "rm
+      # -rf $HOME/.ssh/k"` declared `런로컬` went to the `런로컬` destruction
+      # question, and declared otherwise it parked as `신고등급한도`, a name
+      # that says nothing about where it lands. A declared `기기전역` with no
+      # such floor still takes the cells below.
+      [ "$_rd" = "기기전역" ] && { printf '기기전역'; return 0; }
       # A `런로컬` write is within the cap, but its destruction question is
       # asked here, because this return comes before the `런로컬` cell below
       # and `--destructive` would otherwise never be read for this class.
@@ -3195,8 +3273,14 @@ gate_tt_awk_program_writes() {
   #     been a regular expression holding the quote, and reading the quote as a
   #     string would hide what follows it;
   #   - `print` and `printf` open an output statement, closed by `;`, a brace
-  #     or a newline. A `>` at bracket depth 0 inside one is a redirection and
-  #     is 0; any other `>` compares;
+  #     or a newline that does not carry it on. A newline inside an open
+  #     bracket, or after `,`, a backslash, `&&`, `||`, `?`, `:` or `(`, is
+  #     read as a space, because awk continues the statement there. A `>` at
+  #     bracket depth 0 inside one is a redirection and is 0; any other `>`
+  #     compares. While every newline closed the statement,
+  #     `{ print $1,<newline> $2 > "<sibling>/f" }` was proven a read, and the
+  #     awk read row then let a `읽기` declaration of it pass the landing and
+  #     destruction questions;
   #   - a `|` that is not `||` is 0 (an output pipe, `"cmd" | getline`), and
   #     so are `system` and `getline` wherever they stand. A `getline` that
   #     only reads a file is closed too, which over-closes and is accepted.
@@ -3262,7 +3346,15 @@ gate_tt_awk_program_writes() {
       ')')
         if [ "$dep" -gt 0 ]; then dep=$((dep - 1)); fi
         prev=')' ;;
-      ';'|'{'|'}'|$'\n') inp=0; dep=0; prev="$ch" ;;
+      $'\n')
+        if [ "$inp" = "1" ]; then
+          [ "$dep" -gt 0 ] && continue
+          case "$prev" in
+            ,|\\|'&'|'|'|'?'|:|'(') continue ;;
+          esac
+        fi
+        inp=0; dep=0; prev="$ch" ;;
+      ';'|'{'|'}') inp=0; dep=0; prev="$ch" ;;
       *) prev="$ch" ;;
     esac
   done

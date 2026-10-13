@@ -32248,6 +32248,79 @@ case "$msg" in *"judgment '도달모순'"*|*"judgment '파괴형태미명시'"*)
   *) bad "86: 그 park 가 착지 판정이다 (awk print >)" "$msg" ;; esac
 check "86: park 된 awk 뒤에도 형제 파일이 그대로다" "$(cat "$CY86/p9" 2>/dev/null)" "k"
 
+# 이어지는 awk 출력문 — 판독기가 모든 줄바꿈에서 출력문을 끝내던 동안 쉼표나 백슬래시
+# 뒤 줄바꿈으로 이은 print 의 > 를 비교로 읽어, 형제 파일을 덮어쓰는 awk 가 읽기로
+# 증명되어 읽기 신고로 통과했다. awk 는 그 자리에서 문장을 잇는다.
+nl86='
+'
+for p86 in "{ print \$1,${nl86} \$2 > \"f\" }" "{ print \$1 \\${nl86} > \"f\" }" \
+           "{ printf \"%s\",${nl86} \$1 > \"f\" }" "{ print \$1,${nl86} \$2 >> \"f\" }" \
+           "{ print (\$1 &&${nl86} \$2) > \"f\" }" "{ print \$1, # c${nl86} \$2 > \"f\" }"; do
+  check "86: 줄을 이은 awk 출력문 $p86 는 쓰지 않음이 증명되지 않는다" "$(pw86 awk "$p86" f)" "1"
+  check "86: 줄을 이은 awk 출력문 $p86 는 읽기로 증명되지 않는다" "$(ro86 awk "$p86" f)" "1"
+done
+for p86 in "{ print \$1${nl86} x = \$3 > 100 }" "NR>1${nl86}\$3 > 100"; do
+  check "86: 대조 — 이어지지 않는 줄바꿈 뒤 비교 $p86 는 쓰지 않음이 증명된다" "$(pw86 awk "$p86" f)" "0"
+done
+printf 'k\n' > "$CY86/p11"; printf 'k\n' > "$CY86/p12"
+mg86 awk "{ print \$1,${nl86} \$2 > \"$CY86/p11\" }" "$T86/cy86/src"
+case "$rc" in 0) bad "86: 쉼표로 이은 형제 쓰기 awk 는 읽기 신고로 통과하지 않는다" "rc=$rc" ;;
+  *) ok "86: 쉼표로 이은 형제 쓰기 awk 는 읽기 신고로 통과하지 않는다 (rc=$rc)" ;; esac
+check "86: 그 awk 뒤에도 형제 파일이 그대로다 (쉼표)" "$(cat "$CY86/p11" 2>/dev/null)" "k"
+mg86 awk "{ print \$1 \\${nl86} > \"$CY86/p12\" }" "$T86/cy86/src"
+case "$rc" in 0) bad "86: 백슬래시로 이은 형제 쓰기 awk 는 읽기 신고로 통과하지 않는다" "rc=$rc" ;;
+  *) ok "86: 백슬래시로 이은 형제 쓰기 awk 는 읽기 신고로 통과하지 않는다 (rc=$rc)" ;; esac
+check "86: 그 awk 뒤에도 형제 파일이 그대로다 (백슬래시)" "$(cat "$CY86/p12" 2>/dev/null)" "k"
+mg86 awk 'NR>1' "$T86/cy86/src"
+check "86: 대조 — 같은 입력의 awk 'NR>1' 은 읽기로 통과한다" "$rc" "0"
+
+# 셸 문자열 안의 기기전역 바닥 — 유도 도달이 argv 낱말만 읽던 동안 bash -c "rm -rf
+# \$HOME/.ssh/k" 는 - 를 내어 트리밖쓰기 --reach 런로컬 신고로 통과했고, 같은 argv 를
+# 맨 채로 쓰면 기기전역으로 park 됐다. 이제 셸 문자열의 명령 줄과 리다이렉션 대상도
+# 같은 바닥을 받는다. 홈은 픽스처로 돌린다.
+rh86() {
+  # rh86 <argv...> — HOME 을 픽스처로 돌려 유도된 도달 하한을 낸다.
+  HOME="$H86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; target_field() { return 1; }; shift
+    gate_reach_derived front "$@"' _ "$GATE" "$@" 2>/dev/null
+}
+check "86: bash -c 안 홈 .ssh 의 rm -rf 하한이 기기전역이다" "$(rh86 bash -c "rm -rf $H86/.ssh/k")" "기기전역"
+check "86: bash -c 안 \$HOME 철자의 rm -rf 하한이 기기전역이다" "$(rh86 bash -c 'rm -rf $HOME/.ssh/k')" "기기전역"
+check "86: bash -c 안 \${HOME} 철자의 rm -rf 하한이 기기전역이다" "$(rh86 bash -c 'rm -rf ${HOME}/.ssh/k')" "기기전역"
+check "86: bash -c 안 물결표 철자의 rm -rf 하한이 기기전역이다" "$(rh86 bash -c 'rm -rf ~/.ssh/k')" "기기전역"
+check "86: bash -c 안 홈 .ssh 로의 리다이렉션 하한이 기기전역이다" "$(rh86 bash -c 'echo x > $HOME/.ssh/config')" "기기전역"
+check "86: bash -c 안 물결표 리다이렉션 하한이 기기전역이다" "$(rh86 bash -c 'echo x >> ~/.ssh/config')" "기기전역"
+check "86: env -i 뒤 bash -c 의 하한이 기기전역이다" "$(rh86 env -i bash -c 'rm -rf $HOME/.ssh/k')" "기기전역"
+check "86: 모르는 런처 뒤 bash -c 의 하한이 기기전역이다" "$(rh86 caffeinate bash -c 'rm -rf $HOME/.ssh/k')" "기기전역"
+check "86: 중첩 sh -c 의 하한이 기기전역이다" "$(rh86 bash -c "sh -c 'rm -rf \$HOME/.ssh/k'")" "기기전역"
+check "86: bash -c 안 전역 설치의 하한이 기기전역이다" "$(rh86 bash -c 'npm i -g x')" "기기전역"
+check "86: 대조 — bash -c 안 임시 디렉터리의 rm -rf 는 하한을 올리지 않는다" "$(rh86 bash -c 'rm -rf $TMPDIR/x')" "-"
+check "86: 대조 — 셸 아닌 낱말 뒤 문자열은 하한을 올리지 않는다" "$(rh86 echo 'rm -rf $HOME/.ssh/k')" "-"
+mkdir -p "$H86/.ssh"; printf 'k\n' > "$H86/.ssh/k86"; printf 'k\n' > "$H86/.ssh/config86"
+HOME="$H86" rl86 bash -c "rm -rf $H86/.ssh/k86"
+check "86: 런로컬로 신고한 bash -c 의 홈 .ssh rm -rf 는 park 된다" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달 판정=기기전역 |"*"| 선언=트리밖쓰기 | 도달=런로컬 |"*) ok "86: 그 park 행이 런로컬 신고 위의 도달 판정 기기전역을 싣는다 (bash -c rm)" ;;
+  *) bad "86: 그 park 행이 런로컬 신고 위의 도달 판정 기기전역을 싣는다 (bash -c rm)" "$(lb86)" ;;
+esac
+check "86: park 된 bash -c rm -rf 뒤에도 홈 파일이 그대로다" "$(cat "$H86/.ssh/k86" 2>/dev/null)" "k"
+HOME="$H86" rl86 bash -c "echo x > $H86/.ssh/config86"
+check "86: 런로컬로 신고한 bash -c 의 홈 .ssh 리다이렉션은 park 된다" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달 판정=기기전역 |"*) ok "86: 그 park 행이 도달 판정 기기전역을 싣는다 (bash -c >)" ;;
+  *) bad "86: 그 park 행이 도달 판정 기기전역을 싣는다 (bash -c >)" "$(lb86)" ;;
+esac
+check "86: park 된 리다이렉션 뒤에도 홈 파일이 그대로다" "$(cat "$H86/.ssh/config86" 2>/dev/null)" "k"
+HOME="$H86" rl86 rm -rf "$H86/.ssh/k86"
+check "86: 맨 철자의 홈 .ssh rm -rf 도 park 된다" "$rc" "11"
+case "$(lb86)" in
+  *"| 도달 판정=기기전역 |"*) ok "86: 셸 문자열과 맨 철자가 같은 판정 이름 기기전역을 받는다" ;;
+  *) bad "86: 셸 문자열과 맨 철자가 같은 판정 이름 기기전역을 받는다" "$(lb86)" ;;
+esac
+check "86: park 된 맨 rm -rf 뒤에도 홈 파일이 그대로다" "$(cat "$H86/.ssh/k86" 2>/dev/null)" "k"
+HOME="$H86" mg86 bash -c "wc -l $H86/.ssh/config86"
+check "86: 대조 — 읽기로 신고한 bash -c 안 홈 파일 읽기는 통과한다" "$rc" "0"
+rm -rf "$H86/.ssh" "$CY86/p11" "$CY86/p12"
+
 # 도달 생략의 착지 — 생략된 도달을 런로컬로 판정해, 재수렴 운반 블록처럼 다른 트리에 쓰는
 # 단계를 도달 없이 낸 스테이지가 도달모순으로 park 됐다. 생략된 쓰기는 이제 착지로 판정되어,
 # 대상의 다른 트리에 닿으면 대상트리 칸의 판정을 받고 행에 도달=대상트리 를 남긴다.
