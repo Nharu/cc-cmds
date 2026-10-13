@@ -3746,8 +3746,8 @@ RXEOF
   rx_H() { cd "$WT" && gate_inproc snapshot --manifest "$1" 2>/dev/null | jq -r .H; }
   # park 예상 줄의 칸과, 수리 줄이 붙여 넣으라고 찍은 형태. 둘 다 마지막 `gate` 호출의
   # 전체 출력에서 읽는다.
-  rx_cell() { sed -n 's/^park 예상: 도달 판정=\([^ ]*\) .*$/\1/p' "$WORK/last-output.txt" | head -1; }
-  rx_row()  { sed -n 's/^.*repair row: - `사전 인가` | 형태=\(.*\) | 사유=park 수리(.*)$/\1/p' "$WORK/last-output.txt" | head -1; }
+  rx_cell() { sed -n '/^park 예상: 도달 판정=\([^ ]*\) .*$/{s//\1/p;q;}' "$WORK/last-output.txt"; }
+  rx_row()  { sed -n '/^.*repair row: - `사전 인가` | 형태=\(.*\) | 사유=park 수리(.*)$/{s//\1/p;q;}' "$WORK/last-output.txt"; }
 
   # 사전 인가 판단 호출의 스텁. 응답은 `PJ_VERDICT`(`park`·`open`·`fail`·`nonsuccess`·
   # `badrow`)와 `PJ_ROW`·`PJ_REASON` 이 고르고, 받은 argv 를 `$PJ_DIR/<n>.argv` 에,
@@ -27979,6 +27979,27 @@ axis_is gate_reach_derived_full '기기전역/cmd' '이미지 뒤의 -H 는 데�
 # 감싸개는 첫 줄의 첫 필드다 — 원장의 `유도 도달` 과 처분이 같은 값을 읽는다.
 axis_is gate_reach_derived '기기전역' '감싸개도 docker build 를 기기전역으로 낸다' -- front docker build -t x .
 axis_is gate_reach_derived '-'        '감싸개도 docker push 는 올리지 않는다'      -- front docker push x
+# 감싸개 철자도 같은 바닥에 닿는다. 유도가 첫 단어만 보던 동안 등급과 파괴 표지는 감싸개를
+# 벗겨 읽는데 도달만 `-` 를 내, 런로컬로 신고한 `timeout 60 docker system prune` 이
+# 표지를 읽지 않는 런로컬 칸을 그대로 지났다.
+axis_is gate_reach_derived_full '기기전역/cmd' 'timeout 뒤의 system prune 도 오른다'     -- front timeout 60 docker system prune -af --volumes
+axis_is gate_reach_derived_full '기기전역/cmd' 'env 뒤의 image rm 도 오른다'             -- front env docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' '할당을 둔 env 뒤도 같다'                 -- front env A=1 docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' 'nice 뒤도 같다'                          -- front nice -n 5 docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' 'command 뒤도 같다'                       -- front command docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' 'lockf 뒤도 같다'                         -- front lockf -k /tmp/l docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' 'time 뒤도 같다'                          -- front time docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' 'stdbuf 뒤도 같다'                        -- front stdbuf -o L docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' 'nohup 뒤도 같다'                         -- front nohup docker image rm T
+axis_is gate_reach_derived_full '기기전역/cmd' '감싸개를 겹쳐도 같다'                    -- front env timeout 60 docker system prune -af
+axis_is gate_reach_derived_full '-/-'          '감싸개 뒤의 docker push 는 오르지 않는다' -- front timeout 60 docker push x
+axis_is gate_reach_derived_full $'기기전역/cmd\n--global' '감싸개 뒤의 git config --global 도 트리거를 낸다' -- front env git config --global core.hooksPath /x
+axis_is gate_reach_derived_full $'기기전역/cmd\n-g' '감싸개 뒤의 npm -g 도 같다'          -- front timeout 60 npm install -g x
+# 감싸개 안에서 아무것도 유도되지 않으면 argv 전체를 훑는 아래 갈래가 그대로 답한다 —
+# 감싸개 자신의 피연산자에 놓인 설정 경로도 오른다.
+axis_is gate_reach_derived_full "기기전역/path
+$HOME/.config/x.lock" 'lockf 의 잠금 파일이 설정 경로면 오른다' -- front lockf -k "$HOME/.config/x.lock" true
+axis_is gate_reach_derived '-'        '감싸개 뒤의 읽기는 오르지 않는다'          -- front timeout 5 git status
 # 파괴 표지는 docker 쌍둥이 철자 일곱에 더해졌다. 첫 단어 `rm`·`rmi`·`prune` 만 보던
 # 동안에는 같은 삭제를 하위 명령으로 쓰면 표지가 없었다.
 axis_is gate_act_mark '파괴/rm'    'docker image rm 은 파괴다'      -- docker image rm T
@@ -34119,7 +34140,8 @@ t3_k=$(printf '%s' "$t3_row" | sed -n 's/^.*사전 인가 판단=park\/\([0-9a-f
 check "83c: 6x — 행이 park 판단과 키 앞자리를 담는다" "${#t3_k}" "16"
 case "$t3_row" in *'판단 이유='*) ok "83c: 6x — 행이 판단 이유를 담는다" ;; *) bad "83c: 6x — 행이 판단 이유를 담는다" "$t3_row" ;; esac
 case "$t3_row" in *"$PJ_REASON"*) bad "83c: 6x — 행의 판단 이유는 잘렸다" "$t3_row" ;; *) ok "83c: 6x — 행의 판단 이유는 잘렸다" ;; esac
-t3_f=$(find "$XDG_STATE_HOME" -path "*/preauth-judge/${t3_k:-none}*.json" ! -name '*.failed.json' 2>/dev/null | head -1)
+t3_f=$(find "$XDG_STATE_HOME" -path "*/preauth-judge/${t3_k:-none}*.json" ! -name '*.failed.json' 2>/dev/null)
+t3_f=${t3_f%%$'\n'*}
 check "83c: 6x — 키 앞자리의 파일에 이유 전문이 있다" "$(jq -r '.reason' "${t3_f:-/dev/null}" 2>/dev/null)" "$PJ_REASON"
 if [ -s "$WORK/gitconfig-83c6x" ]; then bad "83c: 6x — park 한 행위는 돌지 않았다" "$(cat "$WORK/gitconfig-83c6x")"
 else ok "83c: 6x — park 한 행위는 돌지 않았다"; fi
@@ -34378,6 +34400,12 @@ t3p front3 트리밖쓰기 런로컬 -- docker --context desktop-linux system pr
 check "83c: 22e — 로컬 맥락의 system prune 은 기기전역 칸에서 park 한다" "$rc/$(rx_cell)" "11/기기전역"
 t3p front3 트리밖쓰기 런로컬 -- docker -H=unix:///var/run/docker.sock image rm img3:t
 check "83c: 22e — = 를 붙인 unix 소켓 -H 의 image rm 도 같다" "$rc/$(rx_cell)" "11/기기전역"
+# 감싸개 철자도 같다. 도달 유도가 감싸개를 벗기지 않던 동안 이 둘은 런로컬 칸을 그대로
+# 지났다.
+t3p front3 트리밖쓰기 런로컬 -- timeout 60 docker system prune -af --volumes
+check "83c: 22e — timeout 뒤의 system prune 도 기기전역 칸에서 park 한다" "$rc/$(rx_cell)" "11/기기전역"
+t3p front3 트리밖쓰기 런로컬 -- env docker image rm img3:t
+check "83c: 22e — env 뒤의 image rm 도 같다" "$rc/$(rx_cell)" "11/기기전역"
 if [ "$DK83_PREV_SET" = set ]; then DOCKER_CONFIG="$DK83_PREV"; export DOCKER_CONFIG; else unset DOCKER_CONFIG; fi
 
 # 23 — 래퍼. sudo 가 감싼 명령은 push 가 없다고 보일 수 있는 짧은 목록의 것이어야
@@ -34560,7 +34588,7 @@ pj_reset; PJ_VERDICT=park
 rx_manifest R83C "$t3_other"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 t3p front3 트리밖쓰기 기기전역 -- docker build -t img3:t "$WORK/ctx3"
-t3_w=$(grep -F 'reach judgment' "$WORK/last-output.txt" | head -1)
+t3_w=$(sed -n '/reach judgment/{p;q;}' "$WORK/last-output.txt")
 case "$t3_w" in
   *"reach judgment '기기전역' (cause off)"*) ok "83c: Y — 꺼진 모드의 경고가 칸과 원인을 가른다" ;;
   *) bad "83c: Y — 꺼진 모드의 경고가 칸과 원인을 가른다" "$t3_w" ;;
@@ -34570,7 +34598,7 @@ t3_calls Y 0
 PJ_VERDICT=open PJ_ROW="$t3_base"
 rx_manifest R83C "$t3_base"
 t3p front3 트리밖쓰기 기기전역 -- git config --global core.hooksPath /x
-case "$(grep -F 'reach judgment' "$WORK/last-output.txt" | head -1)" in
+case "$(sed -n '/reach judgment/{p;q;}' "$WORK/last-output.txt")" in
   *"auto-resolution is off, so it is issued as an approval"*) ok "83c: Y — 판단이 열었을 행위도 승인으로 간다" ;;
   *) bad "83c: Y — 판단이 열었을 행위도 승인으로 간다" "rc=$rc: $msg" ;;
 esac

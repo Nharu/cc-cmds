@@ -951,7 +951,26 @@ gate_reach_derived_full() {
   # pre-authorization probe measures itself, and a word listed here is one a
   # `사전 인가` row has to carry before the machine-global cell opens.
   local alias="$1"; shift
-  local cmd="${1##*/}" a w remote paths=''
+  local cmd="${1##*/}" a w remote paths='' _gw=''
+  # THE WRAPPERS THE GRADE AND THE MARK PEEL ARE PEELED HERE TOO, with the same
+  # unwraps. This floor asked for argv0 once and stopped, so `timeout 60 docker
+  # system prune -af --volumes` graded `트리밖쓰기` and carried `파괴` while its
+  # reach derived `-`, and declared `런로컬` it passed a cell that reads no mark.
+  # A wrapped act that derives nothing, or a wrapper spelling the unwrap cannot
+  # read, falls through to the scan of the whole argv below — a configuration
+  # path in a wrapper's own operand (`lockf`'s lock file) still raises.
+  case "$cmd" in
+    lockf)   _gw=$(shift; gate_unwrap_lockf   gate_reach_derived_unwrapped '' '' "$@") ;;
+    command) _gw=$(shift; gate_unwrap_command gate_reach_derived_unwrapped '' '' "$@") ;;
+    time)    _gw=$(shift; gate_unwrap_time    gate_reach_derived_unwrapped '' '' "$@") ;;
+    env)     _gw=$(shift; gate_unwrap_env     gate_reach_derived_unwrapped '' '' "$@") ;;
+    timeout|nice|nohup|stdbuf)
+      _gw=$(shift; gate_unwrap_wrapper "$cmd" gate_reach_derived_unwrapped '' '' "$@") ;;
+  esac
+  case "$_gw" in
+    ''|'-	-') ;;
+    *) printf '%s\n' "$_gw"; return 0 ;;
+  esac
   case "$cmd" in
     git)
       case "${2:-}" in
@@ -1006,6 +1025,12 @@ gate_reach_derived_full() {
   # A deploy trigger the manifest named for this target.
   if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거\tdeploy\n'; return 0; fi
   printf -- '-\t-\n'
+}
+
+gate_reach_derived_unwrapped() {
+  # The resolver the unwraps above call with the wrapped argv alone. The alias is
+  # the caller's `alias` local, which bash's dynamic scope makes visible here.
+  gate_reach_derived_full "$alias" "$@"
 }
 
 gate_docker_globals() {
