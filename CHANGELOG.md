@@ -24,10 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - docker 의 원격 판정을 닫힌 목록으로 바꾼다. `-H`/`--host` 는 `tcp://`·`ssh://`·`http(s)://` 일 때만, `--context` 는 맥락 메타가 그런 호스트를 기록했을 때만 원격으로 읽는다. 로컬 소켓을 기록한 맥락(Docker Desktop 의 `desktop-linux`)·모르는 맥락·`=` 를 붙인 `-H=unix://…` 는 이 기계의 데몬이므로, 런로컬로 낮춰 신고한 `system prune`·`image rm` 도 기기전역 칸에서 행 없이 park 한다. 하위 명령 앞 전역 옵션을 벗긴 뒤 파괴 표지를 정한다.
-
-### Post-install notes
-
-- 규칙 파일 쪽 `bash +e` 분류 수정(`+*` 를 스크립트 낱말로 보지 않음)은 이 릴리스에 들지 않았다. 그 전까지 탐침은 `bash +e …` 를 완전 형태로 답한다.
+- 도달 유도가 등급표·파괴 표지와 같은 감싸개(`timeout`·`env`·`nice`·`command`·`lockf`·`time`·`stdbuf`·`nohup`)를 벗겨 읽는다. 첫 단어만 보던 동안 `timeout 60 docker system prune` 같은 감싸개 철자는 기기전역으로 오르지 않아, 런로컬로 신고하면 행도 park 도 없이 지나갔다. `git config --global`·`npm -g` 갈래도 같다. `xargs`·`sudo` 뒤의 행위는 벗기지 않는다.
+- 사전 인가 대조 규칙과 킥오프 도우미가 `+` 로 시작하는 인터프리터 옵션(`bash +e`)을 스크립트 낱말로 읽지 않는다. 그래서 행 `bash +e` 는 완전 형태가 아니고 `bash +e -c …` 나 임의 경로를 열지 않는다.
 
 ## [2.72.16] - 2026-10-13
 
