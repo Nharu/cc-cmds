@@ -6951,6 +6951,17 @@ gate_gh_api_rest_path() {
   printf '%s' "$p"
 }
 
+gate_gh_api_seg_placeholder() {
+  # 0 when the path segment <seg> holds something gh replaces before sending
+  # the request: a `{…}`, or `:owner`, `:repo` or `:branch` not followed by a
+  # word character. gh matches `\{[a-z]+\}` and `:(owner|repo|branch)\b`; any
+  # brace pair is taken here, so a spelling gh leaves alone only reads as
+  # unread too.
+  local re=':(owner|repo|branch)([^A-Za-z0-9_]|$)'
+  case "$1" in *'{'*'}'*) return 0 ;; esac
+  [[ "$1" =~ $re ]]
+}
+
 gate_gh_api_rest_class() {
   # After `gate_gh_api_parse`, on a non-GET REST call: prints `merge`,
   # `merge-async` or `merges` when the path is exactly that endpoint, `inert`
@@ -6967,7 +6978,17 @@ gate_gh_api_rest_class() {
   # A SEGMENT THAT IS EMPTY, `.`, `..` OR DECODES TO ONE, OR WHOSE ESCAPES
   # DECODE TO A `/`, is a path the server may resolve to another endpoint, so
   # no endpoint here is read from it.
-  local p seg d n
+  #
+  # NOR FROM A SEGMENT gh FILLS IN BEFORE SENDING. gh replaces `{owner}`,
+  # `{repo}`, `{branch}` and `:owner`, `:repo`, `:branch` anywhere in the
+  # endpoint, and puts the current branch's name in unescaped, so after
+  # `git switch -c 7/merge` the path `repos/{owner}/{repo}/pulls/{branch}`
+  # reaches `…/pulls/7/merge`. Read as written it had five segments and was a
+  # pull request edit, so a merge bound to nothing passed as a write that moves
+  # no ref. Only `repos/{owner}/{repo}/` (or `:owner`, `:repo`) is read through:
+  # an owner or repository name holds no `/`, so it is one segment whatever it
+  # is. Any other segment gh fills in leaves the endpoint unread.
+  local p seg d n i=0
   local -a s=()
   p=$(gate_gh_api_rest_path)
   while IFS= read -r seg; do
@@ -6982,6 +7003,13 @@ GATE_GHAPI_REST_SEGS
         d=$(gate_gh_api_pct_decode "$seg")
         case "$d" in ''|.|..|*/*) return 0 ;; esac ;;
     esac
+    if gate_gh_api_seg_placeholder "$seg"; then
+      case "$i:$seg" in
+        '1:{owner}'|'1::owner'|'2:{repo}'|'2::repo') : ;;
+        *) return 0 ;;
+      esac
+    fi
+    i=$((i + 1))
   done
   n="${#s[@]}"
   [ "$n" -ge 4 ] && [ "${s[0]}" = repos ] || return 0
@@ -7080,7 +7108,8 @@ gate_gh_api_merge_kind() {
   # surface and with no rung, so the binding check passed them and a base
   # renamed or replaced under an honest declaration. A non-GET REST call is
   # `rest-ref` unless `gate_gh_api_rest_class` reads it as one of the
-  # endpoints that write no git ref.
+  # endpoints that write no git ref — which it never does for a path with a
+  # segment gh fills in (`{branch}`, `:branch`) past `repos/{owner}/{repo}/`.
   #
   # GRAPHQL IS THE ENDPOINT `graphql` AND NOTHING ELSE. Matched as
   # `*/graphql`, a file write to `repos/o/r/contents/graphql` was read as a

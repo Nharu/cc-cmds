@@ -967,6 +967,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6e-2c. The kickoff's pre-authorization rows cover the REST merge
+#
+# The gate binds only the REST merge spelling, and the matcher compares whole
+# words from the front, so a run whose rows hold `gh pr` alone sends every merge
+# to approval. The literals below are the check that host defaults do not skip
+# and the read-back that offers `gh api -X PUT` when no default exists.
+# ---------------------------------------------------------------------------
+for lit in \
+  'with one check they do not skip: when the plan predicts a merge under `선리뷰후머지`, see whether a confirmed form covers the REST merge spelling' \
+  '사유: 워크트리 HEAD 에 결속된 REST 머지 — 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 엽니다' \
+  '**When the plan predicts a merge under `선리뷰후머지`, the rows read back carry `gh api -X PUT`**'
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "1" ]; then
+    ok "킥오프의 사전 인가 행 계약이 「${lit}」을 한 번 싣는다"
+  else
+    bad "킥오프의 사전 인가 행 계약" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 # 6e-3. Merge, apply and the fix re-dispatch are carried by BOTH router copies
 #
 # After a review passed, no router text merged with a pinned head, recorded the

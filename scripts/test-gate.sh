@@ -23866,6 +23866,44 @@ check "32p: 대조군 — 대상 저장소 없는 gh repo sync 에 사다리는 
 check "32p: 대조군 — 백슬래시가 든 점 없는 라벨 쓰기는 머지가 아니다" \
   "$(sp_mb gh api -X PATCH 'repos/o/r/labels/a\cb' -f color=fff)" "해당없음"
 
+# gh 가 보내기 전에 채우는 경로 자리표시자 — {branch}·:branch 는 현재 브랜치 이름이
+# 이스케이프 없이 들어가므로, 7/merge 브랜치에서 pulls/{branch} 는 pulls/7/merge 로 나간다.
+# repos/{owner}/{repo}/ 뒤의 자리표시자 세그먼트는 읽을 수 없는 경로로 다룬다.
+sp_n=0
+for sp_a in "-X PUT repos/{owner}/{repo}/pulls/{branch} -f merge_method=merge" \
+            "-X PUT repos/o/r/pulls/:branch -f merge_method=merge" \
+            "-X PUT repos/:owner/:repo/pulls/{branch}" \
+            "-X PUT repos/o/r/pulls/{branch}/merge-async" \
+            "-X POST repos/o/r/issues/{branch}/comments -f body=x" \
+            "-X PUT repos/o/r/pulls/{branch}/merge -f sha=$X32" \
+            "-X PUT repos/o/r/pulls/7:branch -f merge_method=merge" \
+            "-X PUT repos/{branch}/r/pulls/7 -f merge_method=merge"; do
+  sp_n=$((sp_n + 1))
+  # shellcheck disable=SC2086
+  check "32p: 사다리가 자리표시자 철자 $sp_n ($sp_a) 을 머지로 읽는다" "$(sp_ld gh api $sp_a)" "머지"
+  # shellcheck disable=SC2086
+  check "32p: 자리표시자 철자 $sp_n 은 결속 없는 머지다" "$(sp_mb gh api $sp_a)" "없음"
+  # shellcheck disable=SC2086
+  check "32p: 자리표시자 철자 $sp_n 은 협업면이 아니다" "$(sp_cs 협업 gh api $sp_a)" "아니오"
+done
+sp_plan S32G 머지 gh api -X PUT 'repos/{owner}/{repo}/pulls/{branch}' -f merge_method=merge
+check "32p: 머지 로 선언한 pulls/{branch} 는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: pulls/{branch} — 문면이 결속을 지목한다"; else bad "32p pulls/{branch} 문면" "$msg"; fi
+sp_plan S32G 커밋 gh api -X PUT 'repos/o/r/pulls/:branch' -f merge_method=merge
+check "32p: pulls/:branch 를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
+# 대조군 — owner·repo 자리의 자리표시자는 한 세그먼트로 채워지므로 그대로 읽고, 경로가 아닌
+# 필드의 {branch} 는 경로를 바꾸지 않으며, 단어 문자가 이어지는 :branchx 는 gh 가 채우지 않는다.
+check "32p: 대조군 — repos/{owner}/{repo} 의 REST 머지는 그 sha 에 결속된다" \
+  "$(sp_mb gh api -X PUT 'repos/{owner}/{repo}/pulls/1/merge' -f "sha=$X32")" "$X32"
+check "32p: 대조군 — repos/:owner/:repo 의 REST 머지는 그 sha 에 결속된다" \
+  "$(sp_mb gh api -X PUT 'repos/:owner/:repo/pulls/1/merge' -f "sha=$X32")" "$X32"
+check "32p: 대조군 — repos/{owner}/{repo} 의 이슈 코멘트는 머지가 아니다" \
+  "$(sp_mb gh api -X POST 'repos/{owner}/{repo}/issues/1/comments' -f body=x)" "해당없음"
+check "32p: 대조군 — 필드의 {branch} 는 경로를 바꾸지 않는다" \
+  "$(sp_mb gh api -X POST 'repos/o/r/issues/1/comments' -f 'body={branch}')" "해당없음"
+check "32p: 대조군 — :branchx 는 자리표시자가 아니다" \
+  "$(sp_ld gh api -X PATCH 'repos/o/r/labels/x:branchx' -f color=fff)" ""
+
 # find -exec 안에서 {} 를 받는 gh 호출 — 매치 경로가 들어간 뒤의 철자를 읽을 수 없으므로
 # 사다리는 머지로, 결속은 없음으로 읽는다.
 check "32p: find -exec 의 {} 를 받는 gh api 를 사다리가 머지로 읽는다" \
