@@ -1476,7 +1476,14 @@ gate_push_text_has_push() {
   # quote characters are dropped from each word. A false positive refuses an
   # act that could be respelled without its wrapper; a false negative lets an
   # unmeasured push through, so the reading is the wide one.
-  local line w seen_git
+  #
+  # THE SPLIT READS BYTES, AND ONE THAT FAILS IS A PUSH. In the run's UTF-8
+  # locale macOS `tr` stopped at the first byte not valid there, and inside the
+  # here-document its status was lost: `echo <byte>; git push origin
+  # HEAD:master` read as no push, so a base push wrapped in `sh -c` passed as a
+  # worktree write.
+  local line w seen_git split
+  split=$(printf '%s' "$1" | LC_ALL=C tr ';&|' '\n\n\n') || return 0
   while IFS= read -r line; do
     set -f
     # shellcheck disable=SC2086
@@ -1489,7 +1496,7 @@ gate_push_text_has_push() {
       [ "$seen_git" = 1 ] && [ "$w" = push ] && return 0
     done
   done <<GATE_PUSH_TEXT
-$(printf '%s' "$1" | tr ';&|' '\n\n\n')
+$split
 GATE_PUSH_TEXT
   return 1
 }
@@ -6967,6 +6974,25 @@ gate_gh_api_rest_path() {
   printf '%s' "$p"
 }
 
+gate_gh_api_endpoint_raw() {
+  # gate_gh_api_endpoint_raw <s> — 0 when <s> holds a byte outside printable
+  # ASCII, a control byte or one of 0x80 and above, or when that cannot be
+  # told.
+  #
+  # SUCH AN ENDPOINT IS NOT READ, IN ANY LOCALE. Every reading of the endpoint
+  # here splits or matches it, and in the run's UTF-8 locale macOS `tr`, `sed`
+  # and bash's own regex stop at or fail on a byte not valid there — each one
+  # a reading that saw a prefix, or nothing, and answered as if it had seen the
+  # whole. gh sends the bytes as written, so what reaches the server is the
+  # endpoint none of those readings saw. Taking the byte itself as the signal
+  # does not depend on which locale the next reading runs in. A label or path
+  # that needs such a character percent-escapes it, and an escape is ASCII.
+  local rest
+  case "$1" in *$'\n'*) return 0 ;; esac
+  rest=$(printf '%s' "$1" | LC_ALL=C tr -d ' -~') || return 0
+  [ -n "$rest" ]
+}
+
 gate_gh_api_authority_unread() {
   # After `gate_gh_api_parse`: 0 when the endpoint is an absolute URL whose
   # authority — userinfo, host or port — holds something gh fills in before
@@ -6993,9 +7019,17 @@ gate_gh_api_seg_placeholder() {
   # word character. gh matches `\{[a-z]+\}` and `:(owner|repo|branch)\b`; any
   # brace pair is taken here, so a spelling gh leaves alone only reads as
   # unread too.
-  local re=':(owner|repo|branch)([^A-Za-z0-9_]|$)'
+  #
+  # THE SEGMENT IS MATCHED AS BYTES, AND A MATCH THAT FAILS TO RUN IS A
+  # PLACEHOLDER. A `[[ =~ ]]` runs in the run's UTF-8 locale, and macOS bash
+  # 3.2 matched nothing in a segment that also held a byte not valid there:
+  # `:branch<byte>` read as no placeholder, while gh's `\b` treats the byte as
+  # a non-word character and fills the branch in. A merge reached through the
+  # branch's name then passed as an issue write with no rung.
+  local re=':(owner|repo|branch)([^A-Za-z0-9_]|$)' rc=0
   case "$1" in *'{'*'}'*) return 0 ;; esac
-  [[ "$1" =~ $re ]]
+  printf '%s' "$1" | LC_ALL=C grep -Eq -e "$re" || rc=$?
+  [ "$rc" != 1 ]
 }
 
 gate_gh_api_rest_class() {
@@ -7170,7 +7204,12 @@ gate_gh_api_merge_kind() {
   # AN AUTHORITY gh FILLS IN NAMES NO ENDPOINT AT ALL, so a non-GET call to one
   # is `rest-ref` before the path is read — `https://{branch}/graphql` included,
   # whose path only looks like the GraphQL endpoint.
+  #
+  # AN ENDPOINT WITH A BYTE OUTSIDE PRINTABLE ASCII NAMES NONE EITHER — see
+  # `gate_gh_api_endpoint_raw` — so a non-GET call to one is `rest-ref` before
+  # any reading of it runs, and its binding is `없음` whatever `sha` it carries.
   case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) return 0 ;; esac
+  if gate_gh_api_endpoint_raw "$GATE_GHAPI_ENDPOINT"; then printf 'rest-ref'; return 0; fi
   if gate_gh_api_authority_unread; then printf 'rest-ref'; return 0; fi
   if gate_gh_api_path_unread; then printf 'rest-unbound'; return 0; fi
   if [ "$(gate_gh_api_rest_path)" != graphql ]; then
@@ -7508,16 +7547,24 @@ gate_gh_api_query_names_sha() {
   # After `gate_gh_api_parse`: true when the endpoint's query string has a key
   # that is or may decode to `sha` — `sha`, `sha[…]`, or any key with a `%`
   # escape. Pairs are split at `&` and `;`, and a `#fragment` is not sent.
-  local q="$GATE_GHAPI_ENDPOINT" pair key
+  #
+  # THE SPLIT READS BYTES, AND A QUERY IT CANNOT READ NAMES `sha`. Split by a
+  # bare `tr` in the run's UTF-8 locale, `?x=<byte>&sha=<X>` stopped macOS `tr`
+  # at the byte with its status lost, so the query's `sha` went unseen and the
+  # merge read as bound to its body `sha`. A query holding a byte outside
+  # printable ASCII is not read at all (`gate_gh_api_endpoint_raw`).
+  local q="$GATE_GHAPI_ENDPOINT" pair key pairs
   case "$q" in *'?'*) q="${q#*\?}" ;; *) return 1 ;; esac
   q="${q%%#*}"
+  gate_gh_api_endpoint_raw "$q" && return 0
+  pairs=$(printf '%s' "$q" | LC_ALL=C tr '&;' '\n\n') || return 0
   while IFS= read -r pair; do
     key="${pair%%=*}"
     case "$key" in
       sha|sha\[*|*%*) return 0 ;;
     esac
   done <<GATE_GHAPI_QUERY
-$(printf '%s' "$q" | tr '&;' '\n\n')
+$pairs
 GATE_GHAPI_QUERY
   return 1
 }

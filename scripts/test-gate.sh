@@ -23878,12 +23878,13 @@ for sp_lc in C ${sp_u8:+"$sp_u8"}; do
     "$(LC_ALL=$sp_lc sp_mb gh api -X PUT "$sp_badp" -f "sha=$X32")" "없음"
 done
 # 보조 도구가 실패하면 판독기는 부분 출력을 읽지 않는다 — tr·sed 를 접두만 쓰고 실패하는
-# 함수로 바꿔, GNU 도구가 바이트를 그대로 넘기는 호스트에서도 실패 갈래를 구동한다.
+# 함수로 바꿔, GNU 도구가 바이트를 그대로 넘기는 호스트에서도 실패 갈래를 구동한다. tr 은
+# 경로를 나누는 인자 / 에서만 실패해, 그보다 먼저 도는 바이트 검사는 이 갈래를 가리지 않는다.
 # 출력은 「rest_class|path_unread|merge_kind」.
 sp_rc() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; stub="$2"; shift 2
     case "$stub" in
-      tr)  tr()  { printf "repos\no\nr\nissues\n"; return 1; } ;;
+      tr)  tr()  { case "$1" in /) printf "repos\no\nr\nissues\n"; return 1 ;; esac; command tr "$@"; } ;;
       sed) sed() { printf "repos/o/r/issues"; return 1; } ;;
     esac
     gate_gh_api_parse "$@"
@@ -23894,6 +23895,58 @@ check "32p: 대조군 — 도구가 성공하면 이슈 쓰기는 무해 계열�
 check "32p: tr 이 실패하면 경로를 읽지 않고 결속 없는 머지로 닫힌다" "$(sp_rc tr -X PUT repos/o/r/issues/1)" "|참|rest-unbound"
 check "32p: sed 가 실패하면 경로를 읽을 수 없는 것으로 닫힌다" "$(sp_rc sed -X PUT repos/o/r/issues/1)" "inert|참|rest-unbound"
 check "32p: sed 가 실패하면 % 세그먼트를 무해 계열로 읽지 않는다" "$(sp_rc sed -X PUT repos/o/r/issues/%31)" "|참|rest-unbound"
+
+# 출력 가능한 ASCII 밖의 바이트가 든 엔드포인트는 어느 로캘에서든 읽지 않는다 — 권한부의
+# :branch<바이트>, 경로의 :branch<바이트>, 쿼리의 <바이트>&sha= 가 UTF-8 로캘의 정규식·tr 에서
+# 보이지 않아 무해 호출이나 본문 sha 에 결속된 머지로 읽혔다. 바이트 자체가 신호이므로
+# 같은 철자를 두 로캘에서 함께 잰다.
+for sp_lc in C ${sp_u8:+"$sp_u8"}; do
+  sp_n=0
+  for sp_raw in $'https://:branch\xff/repos/o/r/issues/1' \
+                $'repos/o/r/pulls/:branch\xff' \
+                $'repos/o/r/issues/:branch\xff' \
+                $'repos/o/r/pulls/x\xff:branch' \
+                $'repos/o/r/issues/1\xff' \
+                $'repos/o/r/pulls/7/merge?x=\xff&sha=1'; do
+    sp_n=$((sp_n + 1))
+    check "32p: 비ASCII 바이트 엔드포인트 $sp_n 을 사다리가 머지로 읽는다 (LC_ALL=$sp_lc)" \
+      "$(LC_ALL=$sp_lc sp_ld gh api -X PUT "$sp_raw" -f body=x)" "머지"
+    check "32p: 비ASCII 바이트 엔드포인트 $sp_n 은 결속 없는 머지다 (LC_ALL=$sp_lc)" \
+      "$(LC_ALL=$sp_lc sp_mb gh api -X PUT "$sp_raw" -f "sha=$X32")" "없음"
+  done
+done
+check "32p: 대조군 — 비ASCII 바이트가 든 엔드포인트도 GET 은 머지가 아니다" \
+  "$(sp_ld gh api $'repos/o/r/issues/1\xff')" ""
+# 바이트 규칙 앞의 판독기도 각자 바이트로 읽고, 보조 도구가 실패하면 높은 쪽으로 닫힌다 —
+# grep·tr 을 실패하는 함수로 바꿔 GNU 도구가 바이트를 그대로 넘기는 호스트에서도 그 갈래를
+# 구동한다. tr 스텁은 그 판독기의 분할 인자에서만 실패한다.
+sp_fn() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; stub="$2"; shift 2
+    case "$stub" in
+      grep)  grep() { return 2; } ;;
+      tr-q)  tr() { case "$1" in "&;") printf "x=1\n"; return 1 ;; esac; command tr "$@"; } ;;
+      tr-p)  tr() { case "$1" in ";&|") printf "echo a\n"; return 1 ;; esac; command tr "$@"; } ;;
+    esac
+    case "$1" in
+      q) shift; gate_gh_api_parse "$@"; set -- gate_gh_api_query_names_sha ;;
+    esac
+    if "$@"; then printf 참; else printf 거짓; fi' _ "$GATE" "$@"
+}
+for sp_lc in C ${sp_u8:+"$sp_u8"}; do
+  check "32p: :branch<바이트> 조각은 자리표시자다 (LC_ALL=$sp_lc)" \
+    "$(LC_ALL=$sp_lc sp_fn none gate_gh_api_seg_placeholder $':branch\xff')" "참"
+  check "32p: 셸 문자열의 <바이트> 뒤 git push 를 본다 (LC_ALL=$sp_lc)" \
+    "$(LC_ALL=$sp_lc sp_fn none gate_push_text_has_push $'echo \xff; git push origin HEAD:master')" "참"
+  check "32p: sh -c 로 감싼 <바이트> 뒤 push 는 불투명이다 (LC_ALL=$sp_lc)" \
+    "$(LC_ALL=$sp_lc bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_push_unwrap_of_argv0 "$@"' _ "$GATE" sh -c $'echo \xff; git push origin HEAD:master')" "불투명"
+done
+check "32p: 대조군 — 자리표시자 없는 조각은 자리표시자가 아니다" "$(sp_fn none gate_gh_api_seg_placeholder ':branchx')" "거짓"
+check "32p: grep 이 실패하면 조각을 자리표시자로 닫는다" "$(sp_fn grep gate_gh_api_seg_placeholder 'issues')" "참"
+check "32p: 대조군 — push 없는 셸 문자열은 push 가 아니다" "$(sp_fn none gate_push_text_has_push 'echo a; git status')" "거짓"
+check "32p: tr 이 실패하면 셸 문자열을 push 로 닫는다" "$(sp_fn tr-p gate_push_text_has_push 'echo a; git status')" "참"
+check "32p: 대조군 — sha 없는 쿼리는 sha 를 이름하지 않는다" "$(sp_fn none q -X PUT 'repos/o/r/pulls/7/merge?x=1')" "거짓"
+check "32p: 쿼리의 & 뒤 sha 를 본다" "$(sp_fn none q -X PUT 'repos/o/r/pulls/7/merge?x=1&sha=1')" "참"
+check "32p: tr 이 실패하면 쿼리를 sha 있음으로 닫는다" "$(sp_fn tr-q q -X PUT 'repos/o/r/pulls/7/merge?x=1&y=2')" "참"
 
 # gh 가 보내기 전에 채우는 경로 자리표시자 — {branch}·:branch 는 현재 브랜치 이름이
 # 이스케이프 없이 들어가므로, 7/merge 브랜치에서 pulls/{branch} 는 pulls/7/merge 로 나간다.
