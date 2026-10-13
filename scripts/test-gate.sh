@@ -3718,6 +3718,8 @@ pre_tier() {
   TIER_P_SOLO='/cc-cmds:design-solo-unattended @DOC@ "테스트"'
   TIER_P_DISCUSS='/cc-cmds:design-discuss-unattended @DOC@ "테스트"'
   TIER_P_UNKNOWN='/cc-cmds:design-unknown-unattended @DOC@ "테스트"'
+  # 라우터는 의도 첫 줄을 축자로 붙인다 — 이 스킬들을 다루는 티켓은 형제 명령을 그대로 적는다.
+  TIER_P_SOLO_QUOTING='/cc-cmds:design-solo-unattended @DOC@ "/cc-cmds:design-discuss-unattended 가 멈춘다"'
   # tier_check <계획 json> — 검사기의 위반 줄을 내고, 종료 코드를 TIER_RC 에 둔다.
   tier_check() {
     local f="$WORK/tier-check.json"
@@ -35878,7 +35880,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
-# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan | anchors: 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
+# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan | anchors: 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
 #
 # 진입 판정은 킥오프 모델 자신의 행위라 CI 가 그 선택을 결정적으로 돌릴 수 없다. 이
 # 절은 그 대신 판정이 놓인 뒤의 사슬 — 검사기, 매니페스트 검사, 런 개시의 행, 스냅숏,
@@ -36009,6 +36011,15 @@ tier_plan_rc RTT "$TIER_P_SOLO"
 check "89: team-4 계획의 solo 설계 명령은 룰 거절이다" "$rc" "3"
 tier_plan_rc RTT "$TIER_P_DISCUSS"
 check "89: team-4 계획의 팀 설계 명령은 통과한다 (대조군)" "$rc" "0"
+# 의도 첫 줄이 형제 설계 명령을 인용해도, 판정하는 것은 프롬프트를 여는 명령이다.
+# 경로 검사도 같은 exit 3 을 쓰므로 rc 와 함께 거절 문면을 본다.
+tier_plan_rc RTS "$TIER_P_SOLO_QUOTING"
+check "89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다" "$rc" "0"
+tier_plan_rc RTT "$TIER_P_SOLO_QUOTING"
+case "$rc/$msg" in
+  3/*"/cc-cmds:design-solo-unattended 는 solo 티어 계획에서만"*) ok "89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다" ;;
+  *) bad "89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다" "$rc/$msg" ;;
+esac
 
 # 띄우고, 다시 붙고, 동결 뒤를 본다. 재부착은 슬래시 명령이 아니라 고정 문장을 싣고
 # 이 단계의 행에 묶이므로, 티어 강제는 그것을 읽지 않는다.

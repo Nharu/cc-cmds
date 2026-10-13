@@ -26013,7 +26013,15 @@ gate_verb_act() {
       dd_prev="$dd_arg"
     done
     if [ "$rs_kind" = "design" ]; then
+      # THE LEADING COMMAND WINS. The router appends the intent's first line
+      # verbatim, so a ticket about these skills can quote a sibling design
+      # command later in the prompt; matched anywhere in a fixed order, that
+      # quotation would decide which command the tier refusals below judge. A
+      # prompt that begins with none of them keeps the anywhere match it had.
       case "$dd_prompt" in
+        '/cc-cmds:design-discuss-unattended '*) dd_cmd='/cc-cmds:design-discuss-unattended ' ;;
+        '/cc-cmds:design-base-unattended '*)    dd_cmd='/cc-cmds:design-base-unattended ' ;;
+        '/cc-cmds:design-solo-unattended '*)    dd_cmd='/cc-cmds:design-solo-unattended ' ;;
         *'/cc-cmds:design-discuss-unattended '*) dd_cmd='/cc-cmds:design-discuss-unattended ' ;;
         *'/cc-cmds:design-base-unattended '*)    dd_cmd='/cc-cmds:design-base-unattended ' ;;
         *'/cc-cmds:design-solo-unattended '*)    dd_cmd='/cc-cmds:design-solo-unattended ' ;;
