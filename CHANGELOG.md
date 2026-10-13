@@ -5,6 +5,27 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.6] - 2026-10-13
+
+REST 쓰기를 알려진 철자 목록으로 가려 목록 밖의 베이스 변경(`…/branches/<b>/rename`, 원격을 겨눈 `gh repo sync`)이 결속 없이 지나가고, 경로 중간에 `pulls/<n>/merge` 를 담은 다른 엔드포인트(`…/contents/pulls/1/merge`)가 결속되는 PR 머지로 읽히던 구멍을 닫는다. 405 로 거부된 머지가 원인과 무관하게 세그먼트를 park 하던 처방과, 킥오프 사전 인가 예시가 REST 머지를 덮지 못하던 어긋남도 고친다.
+
+### Fixed
+
+- **REST 경로를 세그먼트 단위로 읽는다** — `gh api` 의 엔드포인트를 `repos/<owner>/<repo>/…` 의 세그먼트로 나눠 PR 머지(`pulls/<n>/merge`)·백그라운드 머지(`pulls/<n>/merge-async`)·`merges` 를 정확한 자리에서만 알아본다. 절대 URL(`https://<host>/`, `api/v3/`)은 벗겨서 읽고, GraphQL 은 엔드포인트가 정확히 `graphql` 일 때만이다. 전에는 앵커 없는 글로브라 `…/contents/pulls/1/merge -f sha=…` 가 결속되는 REST 머지로 받아져, 리뷰 HEAD 와 같은 `sha` 만 실으면 기본 브랜치에 리뷰되지 않은 파일을 커밋할 수 있었다
+- **목록 밖 REST 쓰기는 결속 없는 베이스 변경이다** — 비-GET REST 쓰기 중 이슈·라벨·마일스톤·코멘트, PR 생성·수정, 리뷰·리뷰 요청처럼 베이스를 옮기지 않는 엔드포인트만 머지 밖으로 두고, 나머지는 모두 결속할 수 없는 머지로 읽는다. 대상 저장소를 지목한 `gh repo sync` 도 같다. 사다리는 `머지` 를 유도하고 `선리뷰후머지` 세그먼트에서는 룰보다 먼저 종료 코드 2 로 거절한다. 전에는 `…/branches/<b>/rename` 이나 `gh repo sync <repo> --force` 가 등급도 결속도 없이 지나갔다
+- **퍼센트 디코딩이 `\c` 에서 잘리지 않는다** — 경로를 디코딩할 때 백슬래시를 먼저 두 겹으로 만들어, `\c` 를 담은 경로가 그 자리에서 잘린 채 다른 엔드포인트로 읽히지 않는다
+- **405 의 처분을 원인별로 가른다** — 두 라우터 SKILL 이 405 를 받으면 `gh pr view <n> --json state,mergeCommit,mergeStateStatus` 로 다시 읽는다. 이미 머지됐으면 그 머지 커밋으로 `머지됨` 기록으로 가고, 필수 체크가 아직 끝나지 않았으면 포그라운드로 기다려 한 번 다시 보내며, 그래도 대기 중이면 park 없이 `CI 진행 중(실패 아님)` 사유의 cone 차단만 남겨 세그먼트를 라우팅 가능한 채로 둔다. 머지 큐를 요구하는 베이스 등 그 밖의 원인만 전처럼 park 한다
+- **킥오프 사전 인가 예시가 REST 머지를 덮는다** — `선리뷰후머지` 에서 머지를 예측하는 계획은 사전 인가 행에 `gh api -X PUT` 을 싣는다. 사전 인가 대조는 단어 단위 접두 일치라 `gh pr` 만으로는 REST 머지가 승인 대기(5)가 되고, `gh api` 는 모든 REST 호출을 연다
+
+### Post-install notes
+
+- 사전 인가에 `gh api` 를 실은 매니페스트는 `gh api -X PUT` 으로 좁힐 수 있다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): REST 경로를 세그먼트로 읽고 목록 밖 REST 쓰기를 결속 없는 머지로 다룬다`
+
 ## [2.72.5] - 2026-10-13
 
 GitHub 이 권장하는 백그라운드 머지 `…/pulls/<n>/merge-async` 와 머지 없이 베이스 브랜치를 옮기는 REST 쓰기가 머지로 읽히지 않아 리뷰 HEAD 결속을 건너뛰던 구멍과, 라우터가 쓸 수 없는 halt 기록을 쓰라는 지시 때문에 405 로 거부된 머지가 시프트마다 되풀이되던 문제를 고친다.
