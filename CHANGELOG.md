@@ -5,6 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.7] - 2026-10-13
+
+gh 가 보내기 전에 채우는 경로 자리표시자(`{branch}`·`:branch`)가 든 REST 쓰기가 PR 수정으로 읽혀, 현재 브랜치 이름을 `7/merge` 로 두면 결속 없는 머지가 커밋 선언으로 지나가던 구멍을 닫는다. 호스트 킥오프 기본값이 사전 인가 행을 확정한 런에서 REST 머지를 덮는 행이 있는지 아무도 보지 않던 어긋남도 고친다.
+
+### Fixed
+
+- **경로 자리표시자가 든 REST 쓰기는 결속 없는 머지다** — gh 는 엔드포인트의 `{owner}`·`{repo}`·`{branch}` 와 `:owner`·`:repo`·`:branch` 를 이스케이프 없이 채우므로, `7/merge` 브랜치에서 `repos/{owner}/{repo}/pulls/{branch}` 는 `…/pulls/7/merge` 로 나간다. 게이트는 `repos/{owner}/{repo}/`(또는 `:owner`·`:repo`) 자리만 채워진 채로 읽고, 그 뒤 세그먼트에 자리표시자가 있으면 읽을 수 없는 경로로 보아 사다리 `머지`·결속 없음·협업면 아님으로 다룬다. 전에는 다섯 세그먼트짜리 PR 수정으로 읽혀 사다리도 결속도 없이 지나갔다
+- **호스트 기본값 갈래도 REST 머지 사전 인가 행을 확인한다** — 킥오프가 호스트 기본값의 `act-allow` 를 그대로 답으로 쓸 때도, 계획이 `선리뷰후머지` 머지를 예측하면 확정된 형태 중 `gh api -X PUT` 또는 그 단어 접두가 있는지 보고, 없으면 `gh api -X PUT` 행을 물어본다. 전에는 `gh pr` 만 담은 기본값이면 런의 결속 머지가 모두 승인 대기(5)로 갔다
+
+### Post-install notes
+
+- 호스트 킥오프 기본값의 `act-allow` 가 `gh pr` 만 담고 있다면, 머지를 하는 런을 위해 `gh api -X PUT` 을 더할지 점검한다. 이 행은 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 연다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): 경로 자리표시자가 든 REST 쓰기를 결속 없는 머지로 읽고 기본값 갈래의 REST 머지 사전 인가를 확인한다`
+
 ## [2.72.6] - 2026-10-13
 
 REST 쓰기를 알려진 철자 목록으로 가려 목록 밖의 베이스 변경(`…/branches/<b>/rename`, 원격을 겨눈 `gh repo sync`)이 결속 없이 지나가고, 경로 중간에 `pulls/<n>/merge` 를 담은 다른 엔드포인트(`…/contents/pulls/1/merge`)가 결속되는 PR 머지로 읽히던 구멍을 닫는다. 405 로 거부된 머지가 원인과 무관하게 세그먼트를 park 하던 처방과, 킥오프 사전 인가 예시가 REST 머지를 덮지 못하던 어긋남도 고친다.
