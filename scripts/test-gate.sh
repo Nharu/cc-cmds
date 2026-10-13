@@ -23283,7 +23283,8 @@ sp_unwrap() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_push
 sp_mb() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_merge_binding_of_argv0 "$@"' _ "$GATE" "$@"; }
 check "32p: bash -c 안의 push 는 불투명 이다"            "$(sp_unwrap bash -c 'git push origin x:main')" "불투명"
 check "32p: 묶음 -lc 안의 push 도 불투명 이다"          "$(sp_unwrap bash -lc 'cd d && /usr/bin/git push')" "불투명"
-check "32p: sh -c 안의 push 아닌 git 은 해당없음 이다"  "$(sp_unwrap sh -c 'git status; echo push')" "해당없음"
+check "32p: sh -c 안의 push 아닌 git 도 push 없음을 보일 수 없어 불투명 이다" "$(sp_unwrap sh -c 'git status; echo push')" "불투명"
+check "32p: 대조군 — git 을 부르지 않는 셸 문자열은 해당없음 이다" "$(sp_unwrap sh -c 'cat base.txt; echo push')" "해당없음"
 check "32p: sudo 아래 push 는 불투명 이다"              "$(sp_unwrap sudo -u u git -C d push origin x)" "불투명"
 # 셸은 옵션을 다 읽은 뒤 첫 비옵션 단어를 문자열로 받고, 따옴표·백슬래시를 지운 뒤
 # 실행한다. `-c` 바로 다음 단어만 읽고 따옴표만 지우던 판독기는 아래 철자를 모두
@@ -23316,7 +23317,8 @@ for sp_v in "bash|-c|--|git push origin x:main" \
   IFS='|' read -r -a sp_w <<<"$sp_v"
   check "32p: 셸 문자열 철자 $sp_n (${sp_w[*]}) 의 하한은 외부상태변경 이다" "$(sp_floor "${sp_w[@]}")" "외부상태변경"
 done
-check "32p: 대조군 — -c -- 안의 push 아닌 git 은 해당없음 이다" "$(sp_unwrap bash -c -- 'git status; echo push')" "해당없음"
+check "32p: -c -- 안의 push 아닌 git 도 불투명 이다" "$(sp_unwrap bash -c -- 'git status; echo push')" "불투명"
+check "32p: 대조군 — -c -- 안의 git 없는 문자열은 해당없음 이다" "$(sp_unwrap bash -c -- 'cat base.txt; echo push')" "해당없음"
 check "32p: 대조군 — -c -- 안의 git status 의 하한은 읽기 이다" "$(sp_floor bash -c -- 'git status')" "읽기"
 # -c 앞의 값 옵션은 o·O 글자마다 값을 하나씩 받고 zsh 의 --emulate 도 값을 받는다. 묶음
 # 끝의 o 만 값을 받는다고 본 판독기는 sh·pipefail 을 문자열로 읽었다. -c 문자열이 위치
@@ -23343,8 +23345,41 @@ for sp_v in "zsh|--emulate|sh|-c|git push origin x:main" \
   check "32p: 셸 판독 철자 $sp_n 의 하한은 외부상태변경 이다" "$(sp_floor "${sp_w[@]}")" "외부상태변경"
 done
 check "32p: 위치 인자로 문자열에 들어가는 push 단어는 넓게 읽어 불투명 이다" "$(sp_unwrap bash -c -- 'echo "$0"' 'git push')" "불투명"
-check "32p: 대조군 — 위치 인자를 부르지 않는 문자열의 뒤 단어는 읽지 않는다" "$(sp_unwrap bash -c 'git status' _ push)" "해당없음"
-check "32p: 대조군 — 리다이렉션만 든 push 없는 문자열은 해당없음 이다" "$(sp_unwrap sh -c 'git status >/dev/null 2>&1; echo push')" "해당없음"
+check "32p: 대조군 — 위치 인자를 부르지 않는 문자열의 뒤 단어는 읽지 않는다" "$(sp_unwrap bash -c 'cat f' _ push)" "해당없음"
+check "32p: 대조군 — 리다이렉션만 든 git 없는 문자열은 해당없음 이다" "$(sp_unwrap sh -c 'cat f >/dev/null 2>&1; echo push')" "해당없음"
+# 철자를 하나씩 더하던 판독기는 셸이 확장해 만드는 push 를 읽지 못했다 — 중괄호 확장,
+# ANSI-C 이스케이프, 매개변수 기본값, 명령 치환, 위치 인자, 글로브, 별칭, xargs, 셸로 넘기는
+# 파이프, git 을 숨긴 철자. 판독은 이제 거꾸로 묻는다: git 을 부르거나 확장·실행기를 담은
+# 문자열은 push 가 없다고 보일 수 없으므로 push 로 읽는다.
+sp_n=0
+for sp_v in "bash|-c|git {push,} origin x:main" \
+            "bash|-c|git \$'\\x70ush' origin x:main" \
+            "bash|-c|git \${u:-push} origin x:main" \
+            "bash|-c|git \"\${1:-push}\" origin x:main" \
+            "bash|-c|git \$(echo pu)sh origin x:main" \
+            "bash|-c|git \`echo pu\`sh origin x:main" \
+            "bash|-c|git pu\"\$@\"sh origin x:main" \
+            "bash|-c|set -- push; git \"\$@\" origin x:main" \
+            "bash|-c|\$'\\x67it' push origin x:main" \
+            "bash|-c|g{i,}t push origin x:main" \
+            "bash|-c|/usr/bin/gi? push origin x:main" \
+            "zsh|-c|alias p=git; p push origin x:main" \
+            "sh|-c|git send-pack origin x:main" \
+            "sh|-c|/usr/libexec/git-core/git-push origin x:main" \
+            "sh|-c|. ./f" \
+            "sudo|sh|-c|git {push,} origin x:main" \
+            "env|-Sgit \${P} origin x:main"; do
+  sp_n=$((sp_n + 1))
+  IFS='|' read -r -a sp_w <<<"$sp_v"
+  check "32p: 확장 철자 $sp_n (${sp_w[*]}) 은 push 없음을 보일 수 없어 불투명 이다" "$(sp_unwrap "${sp_w[@]}")" "불투명"
+done
+check "32p: xargs 로 넘기는 git 도 불투명 이다" "$(sp_unwrap sh -c 'echo push | xargs git')" "불투명"
+check "32p: 셸로 넘기는 파이프도 불투명 이다" "$(sp_unwrap sh -c 'printf %cit g | sh')" "불투명"
+sp_tu() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; if gate_push_shell_text_unread "$@"; then printf 참; else printf 거짓; fi' _ "$GATE" "$@"; }
+check "32p: 대조군 — 실행기·git·확장이 없는 문자열은 읽힌다" "$(sp_tu 'ls . && make test; echo push')" "거짓"
+check "32p: 대조군 — 머리가 아닌 . 은 실행기가 아니다" "$(sp_tu 'ls .')" "거짓"
+check "32p: 백슬래시-개행만 든 문자열은 확장으로 읽지 않는다" "$(sp_tu "cat a \\"$'\n'"b")" "거짓"
+check "32p: 확장 판독은 하한을 올리지 않는다 — 하한은 철자대로 보이는 push 만 올린다" "$(sp_floor bash -c 'git {push,} origin x:main')" "읽기"
 check "32p: 대조군 — 값 옵션 뒤의 git status 의 하한은 읽기 이다" "$(sp_floor bash -oc pipefail 'git status')" "읽기"
 check "32p: gh pr -R <repo> merge 의 결속 인자를 읽는다" \
   "$(sp_mb gh pr -R o/r merge 1 --admin --match-head-commit 0123456789abcdef0123456789abcdef01234567)" \
@@ -23538,6 +23573,28 @@ for sp_c in dashdash opt bslash ifs; do
   sp_refused "32p: 셸 철자 $sp_c 의 베이스 push 는 거절된다" 2 "$B32"
   sp_unknown "32p: 셸 철자 $sp_c (act)"
 done
+# 확장으로 만든 push 를 커밋·워크트리쓰기·런로컬로 신고한 exec — 판독기가 push 를 놓치면
+# 하한이 셸 러너의 워크트리쓰기에 머물러 이 신고가 그대로 통과했고, 리뷰하지 않은 커밋이
+# 베이스에 올라갔다. 이제 형태 미상으로 거절되고 원격 베이스는 움직이지 않는다. 읽기 신고는
+# 셸 러너의 하한 아래라 과소신고로 먼저 거절되므로 이 거절을 재지 못해 싣지 않는다.
+for sp_c in brace ansic default cmdsub setpos hidegit; do
+  case "$sp_c" in
+    brace)   sp_argv=(bash -c "git {push,} origin u-$SA_ID:$SA_BASE") ;;
+    ansic)   sp_argv=(bash -c "git \$'\\x70ush' origin u-$SA_ID:$SA_BASE") ;;
+    default) sp_argv=(bash -c "git \${u:-push} origin u-$SA_ID:$SA_BASE") ;;
+    cmdsub)  sp_argv=(bash -c "git \$(echo pu)sh origin u-$SA_ID:$SA_BASE") ;;
+    setpos)  sp_argv=(bash -c "set -- push; git \"\$@\" origin u-$SA_ID:$SA_BASE") ;;
+    hidegit) sp_argv=(bash -c "\$'\\x67it' push origin u-$SA_ID:$SA_BASE") ;;
+  esac
+  sag exec --manifest "$SA_MANIFEST" --target main --segment S32A --cutpoint 커밋 --surface 워크트리쓰기 \
+      --reach 런로컬 --snapshot-digest "$(SAH)" --rationale x -- "${sp_argv[@]}"
+  sp_refused "32p: 확장 철자 $sp_c 의 베이스 push 를 워크트리쓰기로 신고한 exec 는 거절된다" 2 "$B32"
+  sp_unknown "32p: 확장 철자 $sp_c (exec 워크트리쓰기)"
+done
+# 대조군 — git 을 부르지 않는 셸 문자열의 같은 신고는 같은 세그먼트에서 통과한다.
+sag exec --manifest "$SA_MANIFEST" --target main --segment S32A --cutpoint 커밋 --surface 워크트리쓰기 \
+    --reach 런로컬 --snapshot-digest "$(SAH)" --rationale x -- sh -c 'echo push'
+check "32p: 대조군 — git 없는 셸 문자열의 워크트리쓰기 exec 는 통과한다" "$rc" "0"
 
 # 대조군 — 허용 목록 안의 옵션은 그대로 재고, 리뷰된 HEAD 는 착지한다.
 sp_plan S32A 머지 git push -u origin "HEAD:$SA_BASE"

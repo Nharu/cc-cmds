@@ -1443,7 +1443,7 @@ gate_push_unwrap_of_argv0() {
         out=$(gate_unwrap_env gate_push_unwrap_of_argv0 '해당없음' '옵션' "$@")
         if [ "$out" = '옵션' ]; then
           out=""
-          gate_push_text_has_push "$(gate_push_env_payload "$@")" && out='불투명'
+          gate_push_shell_text_pushes "$(gate_push_env_payload "$@")" && out='불투명'
         fi ;;
       timeout|nice|nohup|stdbuf)
                out=$(gate_unwrap_wrapper "$cmd" gate_push_unwrap_of_argv0 '해당없음' '해당없음' "$@") ;;
@@ -1455,11 +1455,13 @@ gate_push_unwrap_of_argv0() {
       # A SHELL STRING AND `sudo` HIDE THE PUSH FROM EVERY UNWRAP ABOVE, so
       # they are not unwrapped into one: the probe would have to re-run the
       # shell's own parsing to know what the push is. `불투명` says a push is in
-      # there, and the act is refused rather than read.
+      # there, and the act is refused rather than read. A string that cannot be
+      # shown to run no push is read the same way — see
+      # `gate_push_shell_text_unread`.
       bash|sh|zsh|dash|ksh)
-        gate_push_text_has_push "$(gate_push_shell_payload "$@")" && out='불투명' ;;
+        gate_push_shell_text_pushes "$(gate_push_shell_payload "$@")" && out='불투명' ;;
       sudo)
-        gate_push_text_has_push "$*" && out='불투명' ;;
+        gate_push_shell_text_pushes "$*" && out='불투명' ;;
     esac
   fi
   printf '%s' "${out:-해당없음}"
@@ -1496,8 +1498,8 @@ gate_push_text_has_push() {
   # the quotes, `(`, `)`, `{`, `}` and the backtick part words, and the text is
   # read twice — once with `$` parting words (`git${IFS}push`, `git$IFS push`)
   # and once with `$` dropped (`g$'i't`). A push in either reading is a push.
-  # A command held in a variable or built by `eval` is not read here; the
-  # declaration ceiling is what holds there.
+  # This is the reading of a push spelled out; a string that spells it by
+  # expansion is closed by `gate_push_shell_text_unread`, not here.
   #
   # A BACKSLASH-NEWLINE JOINS, AND A REDIRECTION PARTS. The shell drops a
   # backslash before a newline before it reads words, so `git p\<newline>ush`
@@ -1537,6 +1539,75 @@ gate_push_words_have_push() {
     done
   done <<GATE_PUSH_TEXT
 $split
+GATE_PUSH_TEXT
+  return 1
+}
+
+gate_push_shell_text_pushes() {
+  # gate_push_shell_text_pushes <text> — true when <text>, a string a shell or
+  # `env -S` or `sudo` runs, is read as a push: one spelled out, or one that
+  # cannot be shown absent.
+  gate_push_text_has_push "$1" || gate_push_shell_text_unread "$1"
+}
+
+gate_push_shell_text_unread() {
+  # gate_push_shell_text_unread <text> — true when <text> cannot be shown to
+  # run no push, which is every string that names git at all, expands a word
+  # before running it, or runs text as a command.
+  #
+  # THE SPELLINGS WERE NOT ENUMERABLE. `gate_push_text_has_push` gained one
+  # reading per review and each time the push moved to a spelling it did not
+  # read: `git {push,}`, `git $'\x70ush'`, `git ${u:-push}`, `git $(echo
+  # pu)sh`, `set -- push; git "$@"` all run `git push`, and all read as no
+  # push, so a base push in `bash -c` landed with no dry-run and no binding
+  # once the act was declared below its floor. So the question is turned
+  # round: a string is a push unless it is plainly not one. It is a push when
+  #
+  #   - it holds any of `$`, a backtick, `\` (other than before a newline),
+  #     `*`, `?`, `[`, `{`, `}`, `(` or `)` — an expansion, a glob, a group or
+  #     a function body can spell `git` or `push` out of other bytes
+  #     (`$'\x67it'`, `g{i,}t`, `/usr/bin/gi?`);
+  #   - a word, after quote removal and once a leading `<name>=` and a path are
+  #     taken off, is `git` or `git-<anything>` — the word may be an alias
+  #     body, an `xargs` operand, a `send-pack` or a dashed `git-push`;
+  #   - a word is a reader that runs text as a command: a shell, `eval`,
+  #     `source`, `alias`, `hash`, `xargs`, `parallel`, or `.` at the head of
+  #     a command (`printf '%cit push' g | sh`).
+  #
+  # WHAT THIS COSTS. `bash -c 'git status'` and `sh -c 'echo $HOME'` are read
+  # as pushes too, and in a target with a base branch they are refused as a
+  # push the dry-run cannot measure. Every stage is already told to call
+  # commands directly rather than inside `bash -c`, so the refusal lands on
+  # a spelling no stage needs; the repair it names is the direct call. The
+  # floor (`gate_opaque_floor`) is not raised by this — only by a push spelled
+  # out — so a string with no base branch behind it keeps the grade its
+  # visible commands give it.
+  #
+  # The reading is bytewise and a helper that fails reads as a push.
+  local nl=$'\n' text line w first special
+  text=${1//\\"$nl"/}
+  special=$(printf '%s' "$text" | LC_ALL=C tr -d -c '$`\\*?{}()[') || return 0
+  [ -z "$special" ] || return 0
+  text=$(printf '%s' "$text" | LC_ALL=C tr -d '"'"'") || return 0
+  text=$(printf '%s' "$text" | LC_ALL=C tr ';&|<>' '\n\n\n  ') || return 0
+  while IFS= read -r line; do
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    first=1
+    for w in "$@"; do
+      w="${w##*=}"
+      w="${w##*/}"
+      case "$w" in
+        git|git-*|eval|source|alias|hash|xargs|parallel) return 0 ;;
+        sh|bash|zsh|dash|ksh|mksh|yash|fish|csh|tcsh) return 0 ;;
+        .) [ "$first" = 1 ] && return 0 ;;
+      esac
+      first=0
+    done
+  done <<GATE_PUSH_TEXT
+$text
 GATE_PUSH_TEXT
   return 1
 }
@@ -1674,7 +1745,8 @@ gate_push_base_updates() {
   # configuration than the push. Of the other globals, `-C`, `--git-dir`, `--work-tree` and
   # `--namespace` are kept and the rest dropped. A push inside a shell string,
   # under `sudo`, or inside a `find -exec` whose words carry `{}` is `형태미상`
-  # too (see `gate_push_unwrap_of_argv0`).
+  # too, and so is a shell string that cannot be shown to run no push (see
+  # `gate_push_unwrap_of_argv0`).
   #
   # ONLY A REF LINE IS AN ANSWER. Output with no `<flag><TAB>…` line — `Done`
   # alone, an error, nothing — reads `판정불가`, and the static reading takes
@@ -25767,15 +25839,19 @@ gate_verb_act() {
   # whatever the policy or `룰 설정` says: what such a push puts on the base is
   # not known, and the probe was not run for it. The repair is a spelling the
   # gate can measure, so the code is the vocabulary one.
+  #
+  # THE REFUSAL ITSELF LANDS AFTER THE WRITE GUARDS BELOW, not here. A shell
+  # string reaches `형태미상` when it cannot be shown to run no push, which is
+  # most strings that write anything — so a string that writes the manifest
+  # would otherwise be refused as an unmeasurable push, and the guard that names
+  # the real cause would never speak. Both refuse before the act runs; the order
+  # only decides which cause the caller is told.
   GATE_PUSH_DONE=0
+  local push_unknown=0
   if [ "$argv_graded" = "1" ] && [ "${GATE_UNDECLARED:-0}" != "1" ]; then
     gate_push_base_updates "$alias" "$@"
-    if [ "$GATE_PUSH_KIND" = '형태미상' ]; then
-      warn "형태 미상 — 이 git push 는 게이트가 dry-run 으로 무엇이 베이스에 올라가는지 잴 수 없는 형태입니다: ${GATE_PUSH_FORM_WORD}"
-      warn "셸 -c·sudo 래퍼, {} 를 받는 find -exec, 환경 할당(LANG·LC_*·TZ 밖의 모두 — HOME=·XDG_CONFIG_HOME=·GIT_* 포함)과 env 옵션, 실행 설정 키, 허용 목록 밖 push 옵션(축약 포함) 없이 git push <원격> <refspec> 으로 다시 부릅니다 — 게이트가 아는 래퍼(command·할당 없는 env·lockf·timeout 등)와 -f·-u·--force-with-lease·--tags 같은 옵션은 그대로 둡니다"
-      exit "$GATE_EXIT_VOCAB"
-    fi
-    if [ "$GATE_PUSH_KIND" != '해당없음' ]; then
+    [ "$GATE_PUSH_KIND" = '형태미상' ] && push_unknown=1
+    if [ "$push_unknown" = 0 ] && [ "$GATE_PUSH_KIND" != '해당없음' ]; then
       local _pr _pi _ei
       case "$GATE_PUSH_KIND" in
         갱신|여럿) _pr='머지' ;;
@@ -25881,6 +25957,13 @@ gate_verb_act() {
        gate_pace_write_guard "$graded" "$@" || exit $?
        gate_shard_exec_guard "$@" || exit $? ;;
   esac
+
+  if [ "$push_unknown" = 1 ]; then
+    warn "형태 미상 — 이 git push 는 게이트가 dry-run 으로 무엇이 베이스에 올라가는지 잴 수 없는 형태입니다: ${GATE_PUSH_FORM_WORD}"
+    warn "셸 -c·env -S·sudo 문자열은 git 을 부르거나 \$·백틱·백슬래시·글로브·괄호를 담거나 셸·eval·xargs 같은 실행기를 담으면 push 가 없다고 읽을 수 없어 이 거절에 닿습니다 — 그 명령을 래퍼 없이 직접 부릅니다"
+    warn "셸 -c·sudo 래퍼, {} 를 받는 find -exec, 환경 할당(LANG·LC_*·TZ 밖의 모두 — HOME=·XDG_CONFIG_HOME=·GIT_* 포함)과 env 옵션, 실행 설정 키, 허용 목록 밖 push 옵션(축약 포함) 없이 git push <원격> <refspec> 으로 다시 부릅니다 — 게이트가 아는 래퍼(command·할당 없는 env·lockf·timeout 등)와 -f·-u·--force-with-lease·--tags 같은 옵션은 그대로 둡니다"
+    exit "$GATE_EXIT_VOCAB"
+  fi
 
   # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
   # values the `리뷰-후-적용` rule reads. Placed after the manifest guard so an
