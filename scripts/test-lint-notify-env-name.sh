@@ -4,8 +4,9 @@
 # tests/fixtures/lint-notify-env-name/.
 #
 # Each fixture is a self-contained set of THREE roots — `orchestrator/notify-run.sh`
-# (the code that reads the three switches), `skills/autopilot/SKILL.md` (the prose
-# that tells a user what to type for the unattended banners) and `hooks/README.md`
+# (the code that reads the three switches), `skills/autopilot/references/boundaries.md`
+# (the prose that tells a user what to type for the unattended banners; the
+# fixture's `SKILL.md` beside it no longer carries that sentence) and `hooks/README.md`
 # (the same for the session banners and for the return hook's dismissal, one
 # marker sentence each) — so the lint can be driven against a whole
 # name pairing without touching the real tree. The third root is not decoration:

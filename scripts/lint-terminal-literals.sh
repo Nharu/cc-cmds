@@ -71,8 +71,8 @@ _common/pipeline-sidecar.md LIT_SPLIT_TERMINAL 1
 autopilot-router-shift/SKILL.md LIT_DESIGN_TERMINAL 2
 autopilot-router-shift/SKILL.md LIT_RECONVERGE_TERMINAL 1
 autopilot-router-shift/SKILL.md LIT_SPLIT_TERMINAL 1
-autopilot/SKILL.md LIT_DESIGN_TERMINAL 2
-autopilot/SKILL.md LIT_SPLIT_TERMINAL 1"
+autopilot/references/router-lead-copy.md LIT_DESIGN_TERMINAL 2
+autopilot/references/router-lead-copy.md LIT_SPLIT_TERMINAL 1"
 
 # --- Rule 1: extract the source ----------------------------------------------
 #

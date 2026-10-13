@@ -23,8 +23,8 @@
 #
 # Assertions (each FAIL line names its number as `[단언 N]`):
 #    1. The header table's interview-record row carries T.
-#    2. The `## ` spans on the one line of the autopilot 5m zone that carries T
-#       equal C, in order.
+#    2. The `## ` spans on the one line of the autopilot 5m zone (in the
+#       boundaries reference) that carries T equal C, in order.
 #    3. In the design stage's Step 1 zone, the spans on the one line carrying T
 #       equal C − X, and on the one line carrying T1 equal C1 − X, in order.
 #    4. X is not empty, X ⊆ C, and C1 ⊆ C.
@@ -62,6 +62,9 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 PS="$skills_root/_common/pipeline-sidecar.md"
 RI="$skills_root/_common/requirements-interview.md"
 AP="$skills_root/autopilot/SKILL.md"
+# 5m — the writer — lives in the boundaries reference; 5j and the kickoff trace
+# token stay in the resident body.
+APB="$skills_root/autopilot/references/boundaries.md"
 DDU="$skills_root/design-discuss-unattended/SKILL.md"
 
 KICKOFF_TOKEN='cc-run-kickoff v1'
@@ -144,7 +147,7 @@ T1=$(printf '%s\n' "$prev_line" | { grep -o 'cc-run-interview v[0-9][0-9]*' || t
 K=$(printf '%s\n' "$fence5" | block '## 배포 형상' | sed -n 's/^\*\*\([^*]*\)\*\*:.*/\1/p')
 B=$(printf '%s\n' "$fence5" | block '## 확인된 요구' | sed -n 's/^\*\*\([^*]*\)\*\*:$/\1/p')
 
-for f in "$AP" "$DDU" "$RI"; do
+for f in "$AP" "$APB" "$DDU" "$RI"; do
   [[ -f "$f" ]] || { echo "FAIL: $f — 없다 ; 절 목록을 대조할 쪽이 사라졌다" >&2; fail=1; }
 done
 if [[ "$fail" != "0" ]]; then
@@ -153,7 +156,7 @@ if [[ "$fail" != "0" ]]; then
 fi
 
 z5j=$(zone "$AP" '**5j — ')
-z5m=$(zone "$AP" '**5m — ')
+z5m=$(zone "$APB" '**5m — ')
 zs1=$(zone "$DDU" '### Step 1: ')
 
 # --- 1. The header table carries T ------------------------------------------
@@ -167,10 +170,10 @@ esac
 w_lines=$(printf '%s\n' "$z5m" | grep -F -- "$T" || true)
 n=$(printf '%s\n' "$w_lines" | grep -c . || true)
 if [[ "$n" != "1" ]]; then
-  flag 2 "$AP" "5m 구역에 \`$T\` 를 담은 줄이 ${n}개다 ; 정확히 하나여야 쓰는 쪽 목록이 정해진다"
+  flag 2 "$APB" "5m 구역에 \`$T\` 를 담은 줄이 ${n}개다 ; 정확히 하나여야 쓰는 쪽 목록이 정해진다"
 else
   W=$(printf '%s\n' "$w_lines" | spans)
-  [[ "$W" == "$C" ]] || flag 2 "$AP" "5m 의 절 목록 「$(join_list "$W")」 이 계약 「$(join_list "$C")」 과 다르다"
+  [[ "$W" == "$C" ]] || flag 2 "$APB" "5m 의 절 목록 「$(join_list "$W")」 이 계약 「$(join_list "$C")」 과 다르다"
 fi
 
 # --- 3. The reader's lists equal C − X and C1 − X ---------------------------

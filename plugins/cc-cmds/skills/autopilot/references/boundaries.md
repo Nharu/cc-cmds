@@ -1,0 +1,201 @@
+# autopilot seat — the boundary questions 5o, 5a–5i, 5p, 5q, 5k, 5r, 5s, 5l, 5m and 5n (Step 5)
+
+**5o — Kickoff defaults: read once, show once, confirm once.** A person may have written answers to the boundary questions ahead of time — 킥오프 기본값 — in a host file, and overridden the run-wide ones for this run with environment variables. This step reads them through a helper, shows them on one screen, and takes one confirmation; a confirmed value answers its question, and every other question is asked as before. Call the helper right after 5j, with the targets Step 2 confirmed (in target order) and 5j's `적용 주체` answer (`없음` when 5j answered that there is no apply):
+
+```
+bash <plugin root>/orchestrator/kickoff-defaults.sh --target <owner>/<name> [--target …] [--apply-actor 파이프라인|사람|없음]
+```
+
+On a run without 5j, call it after Step 4, before the first boundary question, without `--apply-actor`. **When the call is refused by the user's permission settings or exits non-zero, say 「킥오프 기본값을 읽지 못했습니다 — 모든 질문을 평소처럼 묻습니다」 in one line and ask every question as before.** The helper refuses inside a pipeline run, so this step only ever runs here.
+
+**Where the values come from.** The file is `${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/autopilot-defaults`, one line each of: an empty line, a whole-line `#` comment, a `[<owner>/<name>]` section header, or `<키> = <값>`. Lines before the first header are run-wide; lines under a header belong to that repository. No credential value goes into this file. `CC_CMDS_AUTOPILOT_DEFAULTS_FILE=<absolute path>` replaces the file for one run and `off` reads none; `CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS`, `CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND`, `CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING`, `CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE` and `CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL` override the run-wide keys, and a valid variable beats the file. The keys are a closed set, one per row:
+
+| 키 | 범위 | 답하는 질문 |
+|---|---|---|
+| `ladder-rungs` | 런 | 5h |
+| `stagnation-bound` | 런 | 5g |
+| `cost-ceiling` | 런 | 5f |
+| `deadline` | 런 | 5e — `+Nh[Mm]`·`+Mm`·`HH:MM`·`+Dd HH:MM`·`다음 날 HH:MM`, or an absolute time with a `±HH:MM` offset, resolved once now |
+| `roster-model` | 런 | 5k, as a proposal |
+| `roster-model.<역할>` | 런 | 5k, as a proposal for that role's row |
+| `auto-adopt` | 런 | 5q, one manifest row tail per line |
+| `cutpoint` | 레포 | 5b, the token form |
+| `review-ceiling` | 레포 | 5b's tail |
+| `terminal-cap` | 레포 | 5d |
+| `dev-ids` | 레포 | 5b's second tail |
+| `deploy-triggers` | 레포 | 5b's second tail |
+| `act-allow` | 레포 | 5p, one manifest row tail per line |
+| `apply-probe` | 레포 | 5c, as a proposal |
+| `apply-actor` | 레포 | 5c, as a proposal |
+
+`termination`, `launch`, `defer`, `notify`, `apply-command` and `apply-radius` are refused by name, and the screen says why: the termination point, the launch timing, the banner switch and the apply command and radius are never taken from a default.
+
+**What the helper prints.** The first line is `cc-kickoff-defaults v1`, then one `원천` row (path or `off`/`없음`/`해석불가`, the file's whole sha256 or `-`, the number of run-wide variables read), then `적용` rows (scope, key, value, source, a `1` in the widening column when the value widens what the run may do, and a fixed effect line) and `무시` rows (scope, key or variable, raw value, source, reason token, reason text). **Show those cells as they are — the effect lines and the widening mark come from the helper's fixed table, so do not rewrite, soften or drop them**; the only things you add are a clue the graph supplies (for example, after the deadline line on an audit-first graph, that what exists at that hour may be the audit's output alone) and, once at the end of the screen, the one line of 5e saying which bound will actually end this run.
+
+**Which screen.** With zero `적용` and zero `무시` rows — the file absent included — there is no screen and no trace line, and the interview goes on exactly as without this step. With zero `적용` and one or more `무시` rows, append the trace line `기본값 고지`, list the ignored rows, and move to the next question in the same message, without the confirmation. Otherwise append the trace line `기본값 고지`, then show the screen, then make the confirmation call. The screen, without emoji:
+
+- one line naming how many defaults were read, the file path with its sha256, and how many came from environment variables;
+- **when any `적용` row carries the widening mark**, first a block headed 「[이번 런이 새로 갖게 되는 권한] — 「이대로」 한 번으로 아래 권한이 모두 이 런에 생깁니다」 gathering every such row whatever its scope — a repository row prefixed with its slug — each in bold with the tag `[권한 확대]`; with no such row there is no such block;
+- then `[런 전체]` and one block per target slug, each row as `<질문 이름>: <값> — <효과 한 줄> (<파일|환경변수>)`;
+- then 「무시한 항목 <m>건 — 해당 질문은 평소처럼 묻습니다」 and every `무시` row with its reason.
+
+**The confirmation is one question** — header `기본값`, question 「위 기본값으로 진행할까요?」, options `이대로` and `고칠 항목 지정`, and **no recommendation suffix on either**: the skill does not recommend accepting a value that widens the run. `이대로` confirms the values shown as `적용` and nothing else, and the question each one answers is skipped. `고칠 항목 지정` leads to one multi-select question (header `고칠 항목`) whose options are only the bundles that are on the screen — `런 경계` (5f·5g·5h), `마감` (5e), `레포별 권한·식별자·적용` (5b·5c·5d), `사전 인가·자동 채택·로스터 모델` (5p·5q·5k). A chosen bundle is released whole and its questions are asked as before, with the released value as the first option, without a recommendation suffix and with the description 「킥오프 기본값」 — the value may have come from either source. A key name typed into the free-input answer releases that key alone; releasing a repository's `cutpoint` releases that repository's whole bundle, because the other values of the bundle lean on it. Right after the answer append the trace line `기본값 확정`. The confirmation utterance goes into the manifest's `사용자 확인 문면` verbatim, as every other answer does.
+
+**5a — Termination point.** What does "done" mean for this run? Free-form; it goes into the manifest verbatim and into the morning report. This is what the run is measured against. When 5j ran, propose it from the closing read-back's `완료 기준`; the answer taken here is the one that freezes.
+
+**A `base` run's termination clauses are fixed rows, not a decomposition of the answer.** Write these into `종료 지점`'s clauses, C3 only when 5r's tracker is not `없음`:
+
+```
+- `종료 절` | id=C1 | 문면=베이스 설계 문서가 동결되고 design-audit(--base) 감사를 마쳤다
+- `종료 절` | id=C2 | 문면=티켓 분할이 동결된 베이스 발행 행대로 끝나 분할 등록부가 문서 해시와 일치한다
+- `종료 절` | id=C3 | 문면=티켓 간 의존이 트래커 고유 관계로 걸리고 모든 티켓이 베이스 티켓 아래에 묶였다
+```
+
+C3's evidence is a read: `gh api -X GET …/sub_issues` and `…/dependencies/blocked_by` on GitHub, `clickup_get` on ClickUp.
+
+**When the graph puts an audit before the work, say that the audit can move this out of reach — before taking the answer.** An audit routes its findings to owners, and one of those owners is the design document's `## 미해결 이슈` bucket, which means *a person has to answer this*. Unattended there is nobody, so a single audit can make the termination point being frozen right now unreachable, and it is the **second** step that does it.
+
+An audited-first graph is the *normal* path for a run that starts from a design document, so this is not an edge case. Offer the user the choice explicitly: freeze a termination point that stops at the audit's output, or keep the further one and accept that the morning may show it unmet for a reason that is the mechanism working.
+
+**5b — The permission cutpoint, one per target (ordered, exactly one each).** A `base` run does not ask this: every target row carries `절단점=커밋` and `## 인가` carries `**런 최대 절단점**: 커밋`, so the review-policy tail below has nothing to bound either. Otherwise present the ladder and take one value for each confirmed target:
+
+```
+커밋 → 브랜치 → push → PR → 머지 → 배포 → 머지 후 후속 착수
+```
+
+**The ladder above is the DISPLAY form; the manifest stores the TOKEN.** Six of the seven are the same string in both forms, and the seventh is not — the last rung displays as `머지 후 후속 착수` and stores as `머지후착수`. Write the **token** into each target row's `절단점`, never the spaced display text — a display-form value matches no token, so every act is denied. `scripts/lint-cutpoint-vocabulary.sh` derives this ladder from the driver's own vocabulary, so the two forms cannot drift apart.
+
+At or below the chosen point the run acts on its own; the first act above it sends that segment to the blocked queue **without asking**, because there is nobody to ask. Two consequences must be stated out loud when the user picks `머지` or above:
+
+- **`머지` does not carry an `--admin` exception.** A run blocked by branch protection parks. A driver that granted itself that exception because it "was authorized to merge" would be widening the grant silently.
+- **A failed non-required check parks.** The shipped policy enumerates such failures and asks whether to merge, and forbids merging without an answer — so unattended, that branch *is* the park branch. It fires rarely with a human present and becomes a default path without one.
+
+**Then, for each target whose cutpoint is `머지` or above, take that target's `리뷰 정책 상한`.** This is the tail of 5b and not a new step — it is asked about the same target, immediately after that target's cutpoint, and only when the answer put the target at `머지` or higher. A target that cannot merge has nothing for this value to bound.
+
+**Do not take the default silently.** Present it as a choice being confirmed rather than a question being skipped, because this is the last moment it can be set at all. Three things the wording must say:
+
+- **It is a CEILING and not a default.** Each slice declares its own review policy at or below this value; raising the ceiling does not mean any slice will use it, and lowering it refuses slices that declare looser.
+- **What `선머지후리뷰` actually buys and costs.** The first merge of a segment passes and leaves one obligation behind; while that obligation is unfulfilled the **second** merge of that segment is refused, and the run cannot terminate.
+- **It can only be set here.** Once the manifest is frozen, editing this field moves both digests and the next gate entry is a hard stop — there is no amendment form.
+
+**When this run declares `적용 주체=파이프라인` — 5j's answer, or 5c's once 5c has run, since 5c's wins — drop `리뷰없음` from the offered options** and say why in one clause: the apply would then be held by a rule the manifest cannot turn off, so it could never be performed and the run could not end. **Removing it here is shaping the question, not enforcing the answer** — the enforcement is the manifest check, which hard-stops on that combination however the manifest came to carry it.
+
+**5b (second tail) — the two identifier questions, asked per target and asked unconditionally.** A run with a low cutpoint can still run `terraform` against dev, so there is no cutpoint below which these stop mattering.
+
+**Say this once, before asking** — it is the whole of what the reach axis does, and it is the only moment a person hears it:
+
+- Local reads have nothing to declare; a read through a remote-capable tool must declare where it lands, and prod personal data, heavy queries and billed queries are **recorded rather than refused**.
+- Local execution and collaboration — issues, comments, labels, projects, and a push that is not a deploy branch — proceed on their own. **Destructive dev acts, prod writes and deploy triggers park unless a `사전 인가` row names them**, and only that act parks: the run keeps going. **A machine-global act** — a local docker build or run, `brew install`, `npm install -g`, `git config --global`, a write under this machine's configuration — parks too unless a row **names the act word for word** — `docker build -t <tag> <context>`, `npm install -g <package>`, `git config --global <key> <value>`, options spelled with a space — which opens it without judgment, or a separate judgment call finds the act within one row's `형태` and `사유`. A shorter row, such as a subcommand alone, opens acts only through that judgment, so its `사유` should say what the row is for. A tag or image name in such a row must be a fixed string decided now; one picked on the day cannot be in a row frozen before it.
+- A write run through a shell, an interpreter or a build tool is capped at read and run-local. To let one reach dev or prod, the manifest must name that form **down to the script operand** — `npm run` and `make` alone open nothing.
+- Declare `dev 식별자` and a `dev` claim is checked against argv; a mismatch or nothing to compare against parks. Declare none and the claim is believed and recorded.
+- A destructive prod act needs the authorization row to carry the destructive word itself — `aws rds` authorizes the queries, not `aws rds delete-db-instance`. A destructive word that sits AFTER the operands (`aws s3 sync ./d s3://b --delete`, a `+main` refspec) can only be authorized by spelling the whole argv in `형태`.
+- A spelling whose global flag comes first — `aws --profile x ssm …` — does not match an authorization row and parks.
+- A push needs the target's cutpoint at `push` or above, and a push to the base branch is judged as a merge.
+- A CLAUDE.md slot apply proceeds only when a review record covers it; every other slot write parks.
+- **Once frozen none of this can be edited**, and the switch that decides park-versus-approval cannot be changed mid-run.
+
+**Then ask, per target, in ONE `AskUserQuestion` call with two questions** (headers `dev 식별자` and `배포 트리거`): whether this target has dev identifiers, and whether it has deploy triggers. On a yes, take the `<종류>:<값>` elements as free text — kinds `aws-profile` · `aws-account` · `kube-context` · `host` · `domain` · `dir` for the first, `branch` · `workflow` · `jenkins-job` · `argv` for the second — and **read them back before freezing**. The manifest check hard-stops on a malformed element at the next gate entry, which is after the person has gone; the read-back here is the only correction opportunity there is. **An element taken by hand meets the same element rule before freezing** — no `|`, no backtick, no whitespace at either end or right after the `:` — and one that fails it is asked again rather than frozen: the target row splits on `|`, so a `|` inside an element becomes a separate field once frozen, and the manifest check, which sees only the already-split value, cannot see it. **When 5o confirmed a target's `dev-ids` or `deploy-triggers`, the 5o screen is that read-back** and the question is not asked again — the helper has already run each element through the manifest check's own element rule, and the screen in front of the person is still the only correction opportunity.
+
+**5c — Apply, if any target's cutpoint is `배포`.** Take the apply command verbatim, the read-only probe that decides whether an apply is needed, the actor (`파이프라인` or `사람` — start from 5j's `적용 주체`; once 5c has taken an answer, that answer is the one in force), and — when the actor is the pipeline — the blast radius that parks if the apply's outcome cannot be judged. The default radius is the repository and it may only be **narrowed**. State plainly that the driver executes an apply itself, with zero retries, and that an outcome it cannot judge stops the declared radius and preserves the worktree for the morning.
+
+**A confirmed `apply-probe` or `apply-actor` from 5o is a prefilled proposal, not an answer.** Ask 5c as above with those values filled in, and ask the apply command and the blast radius fresh; the answer the person accepts here is the one in force.
+
+**5d — Terminal-act cap, per target.** Default is `없음`, and say why the question is being asked at all: at this moment nobody knows how many merges the cutpoint authorizes, because segmentation happens later and a re-design can re-split it. Offer `없음` (recommended) or an integer. A number latches against the measured segment count and routes the excess to the blocked queue.
+
+**5e — Wall-clock deadline.** An absolute ISO8601 timestamp, and it is **required** — `없음` is refused by the driver's own manifest check. It is a dispatch gate and never a kill signal: a stage in flight runs to completion and is classified normally, and no merge happens after it. Offer a default of the next morning and let the user move it.
+
+**Capture the run's length in the same breath.** The `재킥오프` row Step 6 writes carries `길이` — the resolved deadline minus the moment it was resolved, as an ISO 8601 duration — and a successor run's deadline is its claim time plus that length. Take it from `bash <plugin root>/orchestrator/kickoff-defaults.sh --resolve-deadline <답>`, which prints `ok`, the absolute deadline, the kind of answer (`상대` or `절대`) and the length as four tab-separated fields, or a reason token and its text when the answer cannot be resolved; that helper sources `orchestrator/deadline-resolve.sh`, the pure resolver the deriver also uses, so the kickoff and the deriver compute the same thing. Never derive the length from the absolute value alone afterwards: once only the timestamp is left, the original length cannot be recovered from it. With the length now known, say the chain's wall-clock maximum, (연쇄 상한 + 1) × 길이, as a number once.
+
+The deadline rests on the same assumption 5a just qualified: the user picks a time believing the implementation happens overnight. If an audit stands first in the graph, what exists at that hour may be the audit's output and nothing else. Say so while they choose the time, not afterwards.
+
+**Say which bound will actually end this run, because it may not be this one.** The clock measures elapsed time and the thing worth stopping is pointless spinning, so the clock is the bound for a run that declares no cost ceiling, and **5f below is where a run gets one**. A user who answers both should hear, in one line, that the ceiling is what will stop the night and the timestamp is the outer edge.
+
+**5f — Cost ceiling.** A plain number in USD — **no currency symbol and no unit**, because the boundary's arithmetic reads digits and a value it cannot read is not a ceiling. `없음` is allowed and means this axis is unbounded.
+
+Say both thresholds out loud, because they do different things and only one of them involves the user: at **80%** the run opens a boundary approval and waits for a person; at **100%** it **ends the run** without asking. The second one is not a harsher version of the first — an approval nobody answers is not a bound at all, and the state this whole design targets is the one where nobody is awake to be asked.
+
+Offer a number the user can reason about. The runs this pipeline has actually billed sit in the tens of dollars per review cycle, so a ceiling is a decision about how many cycles a night may spend, not a round number picked for comfort.
+
+**5g — Stagnation bound.** An integer, or `없음`. It counts consecutive router judgments over an unmoved progress digest, and when the count reaches it the run **ends**.
+
+Say why the question is separate from the boundary that already watches this. A boundary at this axis fires at a fixed threshold and **asks**, and the approval it opens suppresses that boundary while it waits — so unattended, the counter freezes at the value that opened the question and the run spins against a bound that can no longer advance. This one is the disposition nobody has to be awake for, and it is why the axis gets a number the user chooses rather than one the code fixes.
+
+Offer `없음` only alongside the ceiling: a run that declares neither progress-axis bound falls back to the wall clock, which is what 5e just said is the weaker yardstick.
+
+**5h — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
+
+**5i — The banner kill switch, announced rather than asked.** There is no question here any more: the run's seats named in CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
+
+Say all three of these:
+
+- 「이 런의 배너를 전부 끄시려면 런을 시작하기 전에 `CC_CMDS_AUTOPILOT_NOTIFY=0` 을 걸어 주세요 — `off`·`false`·`no` 도 대소문자 구분 없이 같게 읽습니다.」
+- 「런 도중에는 끌 수 없습니다. 감시자는 기동할 때 환경을 물려받고 다시 읽지 않고, 게이트는 호출마다 별개의 프로세스라 앞 호출에서 건 값이 다음 호출에 남지 않습니다 — 지금이 정하는 자리입니다.」
+- 「이 배너들은 서로를 밀어내지 않고 쌓입니다. 런이 도는 동안 통틀어 여덟 건까지 하나씩 따로 남고, 그 뒤로는 나머지가 한 자리에 모여 개수로만 표시됩니다 — 여덟은 한 화면에 동시에 뜨는 수가 아니라 이 런 전체가 쓸 수 있는 자리 수이고, 한 번 그 자리를 넘어간 항목은 앞의 배너에 답해 자리가 비어도 다시 개별 배너로 올라오지 않습니다. 빠짐없는 목록은 아침 보고서에 있습니다.」
+
+**Say what cannot be promised.** Before writing anything, state the two limits in one line each. First: 「이 채널이 파는 것은 「깨우기」가 아니라 「처음 보는 화면」입니다 — 돌아와서 보실 때 답을 기다리는 멈춤이 한눈에 들어오는 것. 개별 배너 자리는 런 전체에 걸쳐 여덟이고 그 뒤는 묶여서 보이며, 넘어간 항목은 자리가 비어도 되돌아오지 않습니다. 전수를 보장하는 것은 배너가 아니라 디스크의 보고서입니다.」 **Say the two halves of that separately**, because they are a measurement and an ordinary fact rather than one observation: this notifier has no permission to override a focus mode, and a focus or sleep schedule suppresses banners and sounds together. "No banner wakes a sleeping person" is the *sum* of those two, and someone who reads only the first will over- or under-trust the channel. Second: **a stage that improvises past a decision point is not detectable**, which is why the report enumerates every autonomous decision the run recorded, for you to audit in the morning.
+
+**5p — Pre-authorization rows.** These are the `사전 인가` rows that carry `형태=` — each one lets the run perform the acts that start with that form without an approval, and **one row reaches every target of the run**, because the gate's pre-authorization check does not look at the target. When 5o confirmed `act-allow` values, they are the answer — **with one check they do not skip: when the plan predicts a merge under any review policy, see whether a confirmed form covers the REST merge spelling**, that is whether it is `gh api -X PUT` or one of its whole-word prefixes. The check is not limited to `선리뷰후머지`: the routers merge with the REST spelling under every policy pin, so a run under `선머지후리뷰` or `리뷰없음` meets the same matcher. A host default written for `gh pr` merges does not, and with it every merge of the run waits for approval (exit 5). When none covers it, ask with `AskUserQuestion` (header chip `사전 인가`), offering `gh api -X PUT` (사유: 워크트리 HEAD 에 결속된 REST 머지 — 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 엽니다) and 「행을 두지 않음 — 그 행위는 승인 대기로 갑니다」, neither with a recommendation suffix, and freeze only what the person picks. When the helper listed rows that only some targets carry (reason `일부 대상만`), offer those rows in one question together with the fact that each would apply to every target of this run (「이 런의 모든 대상에 적용」), without a recommendation suffix, and take only what the person picks. When there is no default, ask as the kickoff has asked: read back the form rows for the irreversible acts the plan predicts — a form is two or more words, such as `gh pr`, `git push`, `terraform apply`, each with a `사유` — and take the confirmation with `AskUserQuestion` (header chip `사전 인가`). **When the plan predicts a merge under any review policy, the rows read back carry `gh api -X PUT`** (사유: 워크트리 HEAD 에 결속된 REST 머지): the one merge spelling the gate binds is `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=…` (see `autopilot-router-shift` 「Merging and applying a segment」), and the matcher compares whole words from the front, so `gh pr` does not match it and every merge of the run would wait for approval (exit 5). Offer `gh api -X PUT` rather than `gh api`, which would open every REST call. Say in one line that a runner form such as `npm run` opens every non-destructive act that starts with it, and that a runner form longer than two words opens nothing. A row that names a machine-global act word for word opens it without judgment (`docker build -t <tag> <context>`, `docker image rm <tag>`, `npm install -g <package>`); any other machine-global act is opened only when a separate judgment call finds it within one row's `형태` and `사유`, so a shorter row — a subcommand alone — opens acts only through that judgment, and its `사유` should say what the row is for. A tag or image name in such a row must be the fixed string the plan will use, not one chosen when the act runs. Write every form in the spelling the matcher compares against — no command path (`gh pr`, not `/usr/bin/gh pr`) and no `-x=y` word (`terraform apply`, not `terraform -chdir=infra apply`): the matcher strips both from the act's argv but not from the form, so a form carrying either matches no act, not even the one spelled like it. The helper refuses such a form as `형식 오류`, names the spelling the matcher sees, and says what that spelling opens. A row typed here by hand gets no such check, and **do not quietly rewrite it**: Step 6 freezes the form exactly as confirmed, so a spelling the person did not confirm must not reach it. When a form the person gave carries a command path or a `-x=y` word, say what the matcher's spelling opens: every value of a dropped command path, but no act with a `-x=y` word before its last word, so `terraform apply` does not open `terraform -chdir=infra apply`; and every non-destructive act that starts with these words, whatever comes after the last one — `gh pr` opens `gh pr view --repo=<any>` on every repository, and `npm run deploy` opens `npm run deploy --script-shell <file>`. Say too that a machine-global act is different: only a row naming it word for word, without a command path, opens it without judgment, and any other is decided by the judgment call against the row's `형태` and `사유`. Say too that without a row the act waits for approval. **When the matcher's spelling comes to fewer than two words, do not offer it** — `kubectl --context=prod` comes to `kubectl` and `gh -R=org/repo` to `gh`, and a one-word form opens every non-destructive act of that command on every target, which the two-word floor above and the helper both refuse. Say so, and leave only 「행을 두지 않음 — 그 행위는 승인 대기로 갑니다」: drop the row. Otherwise ask again with `AskUserQuestion` (header chip `사전 인가`), offering the matcher's spelling and 「행을 두지 않음 — 그 행위는 승인 대기로 갑니다」, neither with a recommendation suffix. Freeze only what the person picks there; if they pick neither, drop the row.
+
+**5q — Auto-adoption rows.** These are the `자동 채택` rows — each names one judgment class, a count cap, a severity cap and a reason, and lets the gate adopt a judgment of that class without a person. **The gate matches the row on its class alone**: the two cap fields are frozen into the manifest and read by nothing, so a row adopts every judgment of its class whatever their number and severity. Say so whenever a row is read back, and never present a cap as a limit. When 5o confirmed `auto-adopt` values, they are the answer. Otherwise read back the proposed rows and take the confirmation with `AskUserQuestion` (header chip `자동 채택`). **Never offer a forbidden class**, in the proposal or as an option — the manifest check refuses it, after the person has gone.
+
+**5k — The design team's roster, when the tier is `team-2` or `team-4`.** Propose the rows of `### Default roster (driver dispatch)` in `design-discuss-unattended/SKILL.md` — on a `base` run, the default roster under `### Steps 0–2` of `design-base-unattended/SKILL.md` instead — **read from that file and quoted verbatim** — never retyped from memory — and let the person remove a row, add one, or change a row's scope or model. **When 5o confirmed `roster-model` or `roster-model.<역할>`, change only the model column** of the verbatim rows — the role-specific key wins over the run-wide one — say that the models were changed and from which value, and take the approval below exactly as without it; a role-specific key for a role not on the roster is used only if the person adds that role. Read the approved rows back in their frozen spelling, one member per row,
+
+```
+- `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>
+```
+
+and take the confirmation with `AskUserQuestion` (header chip `설계 팀`). Say in one line what a malformed row costs: the stage halts before it spawns anyone when a row lacks a field, names a model outside the three aliases, or repeats a `역할` — and that halt happens after the person has left. **Write the approved rows even when they equal the default.** A manifest with no row falls back to the same default, but only a row is inside `구속 다이제스트`, and only what the person approved here is authority for a class the gate never adopts on its own.
+
+**5k also names the document, because nothing else in Act 1 does.** `## 요소`'s `설계 문서` is what the dispatch, all three of its guards and the audit resolve the document through, and the entry judgment is forbidden to supply it — a judgment that pre-empted the path would name a file nothing creates. So derive it here: fold the intent into a short kebab-case topic slug and take `docs/{topic-slug}.md`, relative to the home target's repository root, keeping the slug plain enough that the sidecar slug later folded out of it stays readable. Read the path back to the person in the same breath as the roster — one line, exactly as it will be written — and Step 6 writes it into `## 요소`. **On a `design_required` run this field may not be `(없음)`**: Step 6's self-check refuses such a manifest and the gate refuses the dispatch, so a design with no name stops the run here, in front of the person, rather than at three in the morning.
+
+**5r — Where a `base` run publishes its tickets, when `design_scope` is `base`.** Asked before 5l, because the approval below covers it. Ask with `AskUserQuestion` (header chip `발행`) and offer three options: `발행 안 함 (문서만)` (recommended), `GitHub 이슈` and `ClickUp`. On `GitHub 이슈` take the repository slug — it must be the `원격 슬러그` of a target confirmed in Step 2, because the manifest check refuses any other value after the person has gone; on `ClickUp` take the list id. **When a call to `clickup-create.py` or `clickup-relate.py` by its path is not judged a collaboration surface on this install, do not offer `ClickUp`** and say so in one line: its tracker writes would wait for an approval nobody answers. Step 6 freezes the answer as exactly one row, and the split stage publishes as that row says and as nothing else does:
+
+```
+- `베이스 발행` | 트래커=github | 대상=<owner>/<name>
+- `베이스 발행` | 트래커=clickup | 대상=<목록 id>
+- `베이스 발행` | 트래커=없음 | 대상=-
+```
+
+When the tracker is not `없음`, freeze the forms its writes start with as `사전 인가` rows beside it — `형태=gh issue create` and `형태=gh issue edit` (the second fills in relations on a resume) for GitHub, `형태=clickup-create.py` and `형태=clickup-relate.py` for ClickUp, each with a `사유`. Read the row and its forms back with the plan.
+
+**5s — Predecessors that landed outside every run ledger, when the document declares a slicing.** Asked before 5l, because the approval below covers it. The planning act brings a predecessor in only from evidence: the other run ledgers of the same document in `<base>/docs/pipeline-run/` (the last `segment` row for that slice id, `머지됨` or `완료`, carrying a hex `머지 커밋`, in a repository this run targets), or a `선행 착지` row frozen here. Take every slice the document declares as a `선행` of a slice this run will plan and that this run will not deliver itself, and check that evidence for each, reading those ledgers. For each one it does not cover — delivered under another segment id, recorded without a `머지 커밋`, or living in a repository this run does not target — find its merge commit on that repository's base branch (the merged pull request's `mergeCommit`, through `gh pr view` or `gh pr list --state merged --search`), and read the rows back in their frozen spelling, `- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<the slice's 레포> | 머지 커밋=<40자리 hex>`, each with the pull request it came from. Take the confirmation with `AskUserQuestion` (header chip `선행 착지`), offering 「이대로」 (recommended) and 「행을 두지 않음」, and say in one clause what the second costs: the planning act refuses the dependent slice at night and the shift ends there. When no predecessor is uncovered, or the document declares no slicing, there is nothing to ask and this step is skipped without a word. A merge commit nobody can find is not guessed: say so, and the slice's row is not offered.
+
+**5l — The plan's approval.** Taken here rather than in Step 4, because the first check below reads 5b's cutpoints.
+
+**Before asking, check the graph against the cutpoints — the gate will.** Where any target's cutpoint reaches `머지`, two rules fire at the merge that the graph must already satisfy: a review record covering the branch's current HEAD with P0·P1 at zero, and a review session whose ancestry is disjoint from the implementation's. A graph that runs `implement` and then merges is **not executable**, and the schema accepts it, so nothing else catches this — the user approves a plan that cannot run and the mismatch surfaces at the merge, in the middle of the night. Add the review step, and say out loud that it is a separate stage rather than a phase of the implement one.
+
+**When the graph carries a design stage, say in one clause what it does before asking** — the discussion team from 5k, a walkthrough whose dispositions the stage takes and records, a coherence pass, the residual-item ladder, and the freeze — and that nothing downstream reads the document until it is frozen.
+
+**The approval utterance is captured verbatim.** It approves the STEP GRAPH, which is not the same thing as granting authority — that is what the rest of Step 5 took. Collapsing the two promotes plan approval into permission approval silently, so the manifest carries them as two separate fields.
+
+**5m — Freeze the interview record, when 5j ran.** Use the run id Step 2 minted and the `<base>` Step 2 resolved. Write `<base>/docs/pipeline-run/<run-id>.interview.md` **whole, once** — creation-only, no append form — in the shape of `pipeline-sidecar.md` `### 2b.5`, byte for byte. Its sections (`cc-run-interview v2`), in this order: `## 과제` · `## 요구사항 문답` · `## 확인된 요구` · `## 배포 형상` · `## 탐색 결과` · `## 재현 근거` · `## 검증 선결` · `## 골격 사전 판정` · `## 로스터`.
+
+**Read `### 2b.5 The interview record` of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` now**, before writing the record — from its heading line up to, not including, `### 2b.6` outside a code fence, never up to the next `###`: its template carries `### 문 1` and `### 답 1` inside the fence. Find both lines with `grep -n` and read between them with the Read tool's `offset` and `limit`.
+
+Before writing it, check it yourself against these, and fix what fails:
+
+- every `### 문 n` has a `**선택지**`, and under it two or more `- 라벨:` lines or the value `없음(자유 입력)`;
+- `## 확인된 요구` has `**확인 문항**` and the three labels;
+- a suffix such as `← 추천` appears only in the question-and-answer section, and no derived value is copied in a spelling equal in normal form to an offered label;
+- no section that gives a reason is a bare negation, and no reason is itself a bare negation;
+- every exploration entry carries `근거:`, `→` and `@`;
+- `가설(추측)` appears exactly when `재현 차단요인` does;
+- all five delivery-shape keys are present;
+- when 5c ran, `적용 주체` equals 5c's answer.
+
+Then take its whole-file `sha256` (`shasum -a 256`) and append `단계=인터뷰 동결 | 경로=<기록 경로> | sha256=<기록 해시>` to the kickoff trace; Step 6 writes the path and that value into the manifest. The record does not carry the roster — it refers to the manifest's `설계 로스터` rows. **Do not edit it after the hash is taken.** Nothing re-hashes the file at runtime, so an edit after that point is seen by no gate, and the manifest goes on vouching for bytes that are gone.
+
+**A re-kickoff whose design step stays writes this record once too, but 5j does not run for it**: the record is the source run's record copied byte for byte by Step 1.0 item 7, creation-only under the new run id, and its hash is the source row's. Its title and header lines keep naming the run that held the interview.
+
+**A `lead-solo` document is written after 5m**, in this conversation, out of the interview it has just held, under the contract in Step 4 (「What a `lead-solo` document owes」). Write the freeze line of (c) into it, then take its path and whole-file `sha256`; that record is its freeze.
+
+**5n — Immediate or deferred kickoff. This step is the criterion, and there is no other.** Ask with `AskUserQuestion` (header chip `기동 시점`) whether the run starts in this session or is frozen into the pace backlog for a lane's `fleet.sh dispatch` job to start later. Offer `즉시` (recommended) and `연기`, and say in one clause what `연기` costs: nothing is relayed into this terminal, and the authorization sitting in the backlog is spent by a job that runs while nobody is here. **When the answer is `연기`, say the frozen absolute deadline once more**, and in one line that a launch after it parks the run with `deadline-passed` — a relative deadline was resolved once, against this kickoff's time, and is not resolved again at launch.
+
+**Nothing else in this pipeline carries this branch, so an answer taken anywhere else is invented.** The frontmatter has no deferral option, no environment variable selects it, the entry judgment does not produce it, and the manifest contract has no field for it — Step 7 reads this step's answer and only this step's answer. A deferred record's own fields say *when* the work was authorized and by when it must start; they do not say that deferral was chosen, because by then it already had been.
+
+**A run that reaches Step 7 with no answer here is immediate — and that is a fallback, not a default this step may take instead of asking.** The rule at the head of Step 5 stands: ask. What this sentence covers is the run that skipped a mandatory step, and the disposition is asymmetric on purpose — `연기` freezes a grant that a job spends hours later with nobody present, so it is the branch that has to be chosen out loud, while `즉시` keeps the person who is sitting here in the loop. Read the answer back before Step 6: a run deferred by mistake does not start tonight, and a run started by mistake cannot be put back into the backlog.
+
+**This step sits after 5m because it enters nothing 5m freezes.** The interview record, the manifest and the authorization record are byte-identical on both branches — which is exactly what lets the deferred path perform Step 6 unchanged and diverge only at Step 7.
+
+---
+

@@ -10031,7 +10031,8 @@ item1_15d() {  # item1_15d <SKILL.md> — item 1 of 「Dispatching the design st
        f && /^1\. \*\*Resume is decided by the ledger\.\*\*/ { print; exit }' "$1"
 }
 RS15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md")
-LD15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md")
+# The lead's copy of the router loop sits in the autopilot router reference.
+LD15D=$(item1_15d "$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md")
 check "15d: 두 라우터 사본에서 설계 단계 item 1 을 찾는다" \
   "$( [ -n "$RS15D" ] && [ -n "$LD15D" ] && printf found || printf missing )" "found"
 case "$RS15D" in
@@ -29659,7 +29660,7 @@ case "$msg" in
   *) bad "57V: 그 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
 esac
 check "57V: 스킬의 재킥오프가 그 문면을 옛 사본 신호로 적는다" \
-  "$(grep -cF '`gate: unknown argument: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+  "$(grep -cF '`gate: unknown argument: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/references/rekickoff.md" || true)" "1"
 check "57V: 원천 런에는 done 이 쓰이지 않았다" \
   "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
 # 게이트의 거절 문면이 영어로 바뀌기 전에 고정된 사본은 같은 자리에서 한국어로 거절한다.
@@ -29675,7 +29676,7 @@ case "$msg" in
   *) bad "57V: 한국어 사본은 --cause 를 모르는 인자로 거절한다" "$msg" ;;
 esac
 check "57V: 스킬의 재킥오프가 한국어 문면도 옛 사본 신호로 적는다" \
-  "$(grep -cF '`gate: 알 수 없는 인자: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" || true)" "1"
+  "$(grep -cF '`gate: 알 수 없는 인자: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/references/rekickoff.md" || true)" "1"
 check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 않았다" \
   "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
 

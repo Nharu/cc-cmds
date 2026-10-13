@@ -13,8 +13,8 @@
 # The fixture consumers copy the real placement: the sidecar quotes the design
 # literal twice and the audit literal once and does not quote the
 # re-convergence literal, the router shift carries two design copies on one
-# line and the re-convergence literal on another, and the autopilot skill
-# carries two design copies on one line. The sidecar and both routers also
+# line and the re-convergence literal on another, and the autopilot skill's
+# router reference carries two design copies on one line. The sidecar and both routers also
 # carry the base split literal once. `FAIL-consumer-second-copy-same-line`
 # is the case that earns the per-occurrence count its keep: a per-line count
 # stays green when only the second copy on a line changes.
@@ -106,11 +106,13 @@ write_router_shift() {
 
 write_autopilot() {
   # write_autopilot <root> <design-1> <design-2> [<split>]
-  mkdir -p "$1/skills/autopilot"
+  # The lead's copy of the router loop lives in a reference file, not in the
+  # skill's resident body.
+  mkdir -p "$1/skills/autopilot/references"
   {
     printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3"
     printf "7. the split literal \`%s\` in its stream\n" "${4:-$S}"
-  } > "$1/skills/autopilot/SKILL.md"
+  } > "$1/skills/autopilot/references/router-lead-copy.md"
 }
 
 write_consumers() {
@@ -197,7 +199,7 @@ run_case "FAIL-consumer-one-char" 1 "$WORK/cons-char" \
 mk_root "$WORK/cons-second"
 write_autopilot "$WORK/cons-second" "$D" "$(one_char "$D")"
 run_case "FAIL-consumer-second-copy-same-line" 1 "$WORK/cons-second" \
-  "autopilot/SKILL.md" "LIT_DESIGN_TERMINAL"
+  "autopilot/references/router-lead-copy.md" "LIT_DESIGN_TERMINAL"
 
 # FAIL — a consumer file is gone.
 mk_root "$WORK/cons-absent"
