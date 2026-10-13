@@ -967,15 +967,62 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6e-2c. The kickoff's pre-authorization rows cover the REST merge
+#
+# The gate binds only the REST merge spelling, and the matcher compares whole
+# words from the front, so a run whose rows hold `gh pr` alone sends every merge
+# to approval. The literals below are the check that host defaults do not skip
+# and the read-back that offers `gh api -X PUT` when no default exists. Both
+# run under every review policy, because the routers merge with the REST
+# spelling under every policy pin; the old wording that confined them to
+# `선리뷰후머지` must be gone.
+# ---------------------------------------------------------------------------
+for lit in \
+  'with one check they do not skip: when the plan predicts a merge under any review policy, see whether a confirmed form covers the REST merge spelling' \
+  'The check is not limited to `선리뷰후머지`: the routers merge with the REST spelling under every policy pin' \
+  '사유: 워크트리 HEAD 에 결속된 REST 머지 — 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 엽니다' \
+  '**When the plan predicts a merge under any review policy, the rows read back carry `gh api -X PUT`**'
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "1" ]; then
+    ok "킥오프의 사전 인가 행 계약이 「${lit}」을 한 번 싣는다"
+  else
+    bad "킥오프의 사전 인가 행 계약" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+done
+for lit in \
+  'when the plan predicts a merge under `선리뷰후머지`, see whether' \
+  'When the plan predicts a merge under `선리뷰후머지`, the rows read back'
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "킥오프의 사전 인가 행 계약이 「${lit}」로 정책을 좁히지 않는다"
+  else
+    bad "킥오프의 사전 인가 행 계약 — 정책 한정 잔존" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 # 6e-3. Merge, apply and the fix re-dispatch are carried by BOTH router copies
 #
 # After a review passed, no router text merged with a pinned head, recorded the
 # merge commit, or issued the apply; after a review raised P0·P1, none sent the
 # implementation back with the report as its fix target. The literals below are
-# the two merge pins, the fetch before the apply, the apply act's fixed token,
+# the two merge pins (the prescribed REST merge with its method, bound by its
+# `sha` field to the worktree HEAD's full sha rather than a cycle row's review
+# HEAD, and the sentence that a `gh pr merge` without `--admin` binds nothing),
+# the disposition of a merge refused with 405 by its cause — an already merged
+# pull request goes on to the merge record only when its `headRefOid` is the
+# worktree HEAD, and otherwise, or when that record is refused, takes the
+# park-and-cone disposition, a required check still pending is
+# waited on and left routable with a cone block and no `park`, and every other
+# cause takes the park-and-cone disposition (a router has no halt record to
+# write, and without the `park` the next shift sends the same merge again),
+# the fetch before the apply, the apply act's fixed token,
 # the park-and-cone disposition of a precondition refusal, the cycle cap's
 # reason, and the `다음` branches that send a segment to the carry-over
-# procedure, the guard re-convergence and a sliced review. The fix prompt must be one string in both copies, and the fix section
+# procedure, the guard re-convergence and a sliced review. The fix prompt must
+# be one string in both copies, and the fix section
 # does not restate the delta basis expression, which belongs to the delta
 # subsection.
 # ---------------------------------------------------------------------------
@@ -984,8 +1031,16 @@ fix_prompt_rs=""
 for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
-    '#### Merging and applying a segment|--merge --match-head-commit <the 리뷰 HEAD of the segment'"'"'s last cycle row>' \
-    '#### Merging and applying a segment|--match-head-commit <구현 워크트리 HEAD>' \
+    '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
+    '#### Merging and applying a segment|A `gh pr merge` without `--admin` is refused as unbound even with `--match-head-commit`' \
+    '#### Merging and applying a segment|gh pr view <n> --json state,headRefOid,mergeCommit,mergeStateStatus' \
+    '#### Merging and applying a segment|- **Already merged** (`state` reads `MERGED` and `headRefOid` equals the implementation worktree'"'"'s HEAD, all 40 characters' \
+    '#### Merging and applying a segment|**`MERGED` with any other `headRefOid`, or a `상태=머지됨` record the gate refuses, is the last bullet'"'"'s case, not this one**' \
+    '#### Merging and applying a segment|so take **Any other cause** with `MERGED` and the `headRefOid` (or the refusal) as its `사유`' \
+    '#### Merging and applying a segment|whose `사유` is `CI 진행 중(실패 아님)` with the `message`, write no `park`' \
+    '#### Merging and applying a segment|- **Any other cause** — a base that requires a merge queue' \
+    '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the 405' \
+    '#### Merging and applying a segment|The `park` makes the segment terminal, so the next shift does not send the same merge again' \
     '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
     "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
     '#### Merging and applying a segment|First issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
@@ -1008,6 +1063,26 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
       bad "$who 사본의 「${head#'#### '}」 절" "「${lit}」이 없다"
     fi
   done
+  msec=$(router_section "$file" '#### Merging and applying a segment')
+  nold=$(printf '%s\n' "$msec" | grep -cF -- 'last cycle row>' || true)
+  if [ "${nold:-0}" = "0" ]; then
+    ok "$who 사본의 「Merging and applying a segment」 절에 사이클 행의 리뷰 HEAD 로 묶는 옛 머지 처방이 없다"
+  else
+    bad "$who 사본의 「Merging and applying a segment」 절" "옛 자리표시 「last cycle row>」가 ${nold}번 있다"
+  fi
+  nold=$(printf '%s\n' "$msec" | grep -cF -e '--json state,mergeCommit,mergeStateStatus' \
+    -e '(`state` reads `MERGED` — an earlier shift' || true)
+  if [ "${nold:-0}" = "0" ]; then
+    ok "$who 사본의 「Merging and applying a segment」 절에 head 를 대조하지 않는 옛 「이미 머지됨」 갈래가 없다"
+  else
+    bad "$who 사본의 「Merging and applying a segment」 절" "headRefOid 없는 옛 405 읽기·갈래 문면이 ${nold}줄 있다"
+  fi
+  nhalt=$(grep -cF -- 'write a halt record' "$file" || true)
+  if [ "${nhalt:-0}" = "0" ]; then
+    ok "$who 사본은 라우터에게 halt 기록을 쓰라고 지시하지 않는다"
+  else
+    bad "$who 사본" "라우터가 쓸 수 없는 halt 기록을 쓰라는 지시가 ${nhalt}줄 있다"
+  fi
   fsec=$(router_section "$file" '#### Re-dispatching the implementation after review findings')
   prompt=$(printf '%s\n' "$fsec" | grep -oE -- '-- implement -p "/cc-cmds:implement-unattended .*"$' | sort -u)
   check "$who 사본의 수정 재파견 절에 지시 문구가 한 벌 실린다" \
