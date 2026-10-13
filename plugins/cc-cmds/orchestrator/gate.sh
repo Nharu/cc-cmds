@@ -934,39 +934,188 @@ gate_reach_derived() {
   # gate_reach_derived <alias> <argv...> — the floor argv itself proves, which RAISES a
   # declaration and never lowers one. Three values only: `-`, `기기전역` and
   # `배포트리거`. Everything finer than that is a claim about an environment,
-  # and argv cannot prove one.
+  # and argv cannot prove one. The first field of `gate_reach_derived_full`, so
+  # the ledger's `유도 도달` and the disposition read one derivation.
+  local _f; _f=$(gate_reach_derived_full "$@")
+  _f=${_f%%
+*}
+  printf '%s' "${_f%%	*}"
+}
+
+gate_reach_derived_full() {
+  # gate_reach_derived_full <alias> <argv...> — the same floor, with where it came
+  # from. The first line is `<도달>\t<유래>`, the origin being `cmd` (a command
+  # arm), `path` (a configuration path in argv), `deploy` (a deploy-trigger
+  # identifier) or `-`; every further line is one trigger word. Only flag and
+  # path triggers are emitted: the subcommand and its operand are positions the
+  # pre-authorization probe measures itself, and a word listed here is one a
+  # `사전 인가` row has to carry before the machine-global cell opens.
   local alias="$1"; shift
-  local cmd="${1##*/}" a
+  local cmd="${1##*/}" a w remote paths='' _gw=''
+  # Set when an `env` this act runs through assigns `DOCKER_CONFIG`, and kept
+  # through the nested call the unwrap makes, so the docker arm below knows the
+  # context store it would read is not the one docker will use.
+  local _gate_docker_cfg="${_gate_docker_cfg:-0}"
+  if [ "$cmd" = env ]; then
+    for w in "$@"; do
+      case "$w" in DOCKER_CONFIG=*) _gate_docker_cfg=1 ;; esac
+    done
+  fi
+  # THE WRAPPERS THE GRADE AND THE MARK PEEL ARE PEELED HERE TOO, with the same
+  # unwraps. This floor asked for argv0 once and stopped, so `timeout 60 docker
+  # system prune -af --volumes` graded `트리밖쓰기` and carried `파괴` while its
+  # reach derived `-`, and declared `런로컬` it passed a cell that reads no mark.
+  # A wrapped act that derives nothing, or a wrapper spelling the unwrap cannot
+  # read, falls through to the scan of the whole argv below — a configuration
+  # path in a wrapper's own operand (`lockf`'s lock file) still raises.
+  case "$cmd" in
+    lockf)   _gw=$(shift; gate_unwrap_lockf   gate_reach_derived_unwrapped '' '' "$@") ;;
+    command) _gw=$(shift; gate_unwrap_command gate_reach_derived_unwrapped '' '' "$@") ;;
+    time)    _gw=$(shift; gate_unwrap_time    gate_reach_derived_unwrapped '' '' "$@") ;;
+    env)     _gw=$(shift; gate_unwrap_env     gate_reach_derived_unwrapped '' '' "$@") ;;
+    timeout|nice|nohup|stdbuf)
+      _gw=$(shift; gate_unwrap_wrapper "$cmd" gate_reach_derived_unwrapped '' '' "$@") ;;
+  esac
+  case "$_gw" in
+    ''|'-	-') ;;
+    *) printf '%s\n' "$_gw"; return 0 ;;
+  esac
   case "$cmd" in
     git)
       case "${2:-}" in
-        stash) case "${3:-}" in list|show) ;; *) printf '기기전역'; return 0 ;; esac ;;
+        stash) case "${3:-}" in list|show) ;; *) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
         config)
-          case " $* " in
-            *" --global "*|*" --system "*) printf '기기전역'; return 0 ;;
-          esac ;;
+          for w in "$@"; do
+            case "$w" in --global|--system) printf '기기전역\tcmd\n%s\n' "$w"; return 0 ;; esac
+          done ;;
       esac ;;
     npm|pnpm|yarn)
-      case " $* " in
-        *" -g "*|*" --global "*|*" global "*) printf '기기전역'; return 0 ;;
-      esac ;;
+      for w in "$@"; do
+        case "$w" in -g|--global|global) printf '기기전역\tcmd\n%s\n' "$w"; return 0 ;; esac
+      done ;;
     cargo|go)
-      case "${2:-}" in install) printf '기기전역'; return 0 ;; esac ;;
+      case "${2:-}" in install) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
+    # THE GRADING TABLE DECIDES, not a verb list of its own. The five verbs this
+    # arm used to name left `reinstall`, `tap`'s siblings and `services` to
+    # whatever the declaration said, while the table already knew they write
+    # outside the tree.
     brew)
-      case "${2:-}" in
-        install|upgrade|uninstall|tap|link) printf '기기전역'; return 0 ;;
-      esac ;;
+      case "$(shift; surface_of_brew "$@")" in 트리밖쓰기) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
+    docker)
+      # A deploy-trigger identifier still wins over the daemon store, and a
+      # spelling that names another daemon is not this machine's store.
+      if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거\tdeploy\n'; return 0; fi
+      # ONLY THE GLOBAL OPTIONS BEFORE THE SUBCOMMAND CHOOSE THE DAEMON. A `-H`
+      # after it belongs to the subcommand or to the container's own command
+      # (`… alpine grep -H pat /f`), and only a network host names another
+      # daemon — reading a local socket or a local context as remote switched
+      # the floor off for an ordinary local act.
+      local _dg _dn
+      _dg=$(shift; gate_docker_globals "$@")
+      _dn=${_dg%%	*}; remote=${_dg#*	}
+      # The daemon's image and container store is shared by every run on this
+      # machine. A push is graded 외부상태변경 and keeps its declared reach.
+      # This arm emits no trigger word: a row opens a machine-global act only by
+      # naming it word for word, or through the pre-authorization judgment.
+      if [ "$remote" = 0 ]; then
+        case "$(shift $((_dn + 1)); surface_of_docker "$@")" in 트리밖쓰기) printf '기기전역\tcmd\n'; return 0 ;; esac
+      fi ;;
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
+  # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
   for a in "$@"; do
     case "$a" in
       "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*|/usr/local/*|/opt/homebrew/*)
-        printf '기기전역'; return 0 ;;
+        paths="$paths$a
+" ;;
     esac
   done
+  [ -n "$paths" ] && { printf '기기전역\tpath\n%s' "$paths"; return 0; }
   # A deploy trigger the manifest named for this target.
-  if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거'; return 0; fi
-  printf -- '-'
+  if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거\tdeploy\n'; return 0; fi
+  printf -- '-\t-\n'
+}
+
+gate_reach_derived_unwrapped() {
+  # The resolver the unwraps above call with the wrapped argv alone. The alias is
+  # the caller's `alias` local, which bash's dynamic scope makes visible here.
+  gate_reach_derived_full "$alias" "$@"
+}
+
+gate_docker_globals() {
+  # gate_docker_globals <argv after `docker`...> — `<count>\t<remote>`: how many
+  # leading words are docker's own global options, values included, and 1 when
+  # one of them names a daemon other than this machine's. REMOTE IS THE CLOSED
+  # LIST, not its complement: a host is remote only when it is a network
+  # address (`gate_docker_host_remote`), and a context only when its stored
+  # endpoint is one (`gate_docker_context_remote`). Anything else — a local
+  # socket, Docker Desktop's `desktop-linux`, a context this machine has no
+  # record of — keeps the floor on, because a spelling read as remote drops the
+  # act to its declared reach and the run-local cell does not read the
+  # destructive mark. Every other dash word is taken as a valueless flag, and
+  # the first word without a dash is the subcommand.
+  #
+  # A CONTEXT IS LOOKED UP ONLY IN THE STORE DOCKER WILL USE. The gate can read
+  # its own store and no other: when the act names one with `--config` — or an
+  # `env` it runs through assigns `DOCKER_CONFIG` — the context is read as local
+  # whatever the gate's own store says of that name. Looked up in the gate's
+  # store, `docker --config /tmp/c --context prod system prune -af --volumes`
+  # read as remote whenever the user's own `prod` was a network host, the floor
+  # dropped, and declared `런로컬` it passed a cell that reads no mark. The store
+  # the act names is not read instead: the stage can write it, so a remote
+  # endpoint planted there would switch the floor off.
+  local n=0 remote=0 a v k ctx='' cfg="${_gate_docker_cfg:-0}"
+  while [ "$#" -gt 0 ]; do
+    a="$1"; k=''; v=''
+    case "$a" in
+      -H|--host|-c|--context|--config|-l|--log-level|--tlscacert|--tlscert|--tlskey)
+        k="$a"
+        if [ "$#" -ge 2 ]; then v="$2"; n=$((n + 2)); shift 2
+        else n=$((n + 1)); shift; fi ;;
+      --host=*|--context=*|--config=*|--log-level=*|--tlscacert=*|--tlscert=*|--tlskey=*)
+        k="${a%%=*}"; v="${a#*=}"; n=$((n + 1)); shift ;;
+      # The attached short form takes an optional `=` as well (`-H=unix://…`),
+      # which left on the value hid the scheme.
+      -H?*) k=-H; v="${a#-H}"; v="${v#=}"; n=$((n + 1)); shift ;;
+      -c?*) k=-c; v="${a#-c}"; v="${v#=}"; n=$((n + 1)); shift ;;
+      -l?*) n=$((n + 1)); shift ;;
+      -*) n=$((n + 1)); shift ;;
+      *) break ;;
+    esac
+    case "$k" in
+      -H|--host) gate_docker_host_remote "$v" && remote=1 ;;
+      -c|--context) ctx="$v" ;;
+      --config) cfg=1 ;;
+    esac
+  done
+  # Decided after the scan: `--context prod --config /tmp/c` names the store
+  # after the context.
+  if [ -n "$ctx" ] && [ "$cfg" = 0 ]; then
+    gate_docker_context_remote "$ctx" && remote=1
+  fi
+  printf '%s\t%s' "$n" "$remote"
+}
+
+gate_docker_host_remote() {
+  # gate_docker_host_remote <host> — 0 when a docker host names a daemon reached
+  # over the network. `unix://`, `fd://` and `npipe://` are this machine's own
+  # sockets, and an unknown spelling keeps the floor on.
+  case "$1" in tcp://?*|ssh://?*|http://?*|https://?*) return 0 ;; esac
+  return 1
+}
+
+gate_docker_context_remote() {
+  # gate_docker_context_remote <name> — 0 when the named context's stored docker
+  # endpoint is a network host. docker keeps each context under its config
+  # directory as `contexts/meta/<sha256 of the name>/meta.json`; `default` is
+  # built in and has no record. A name with no readable record is not known to
+  # be remote, so it is read as local.
+  local name="$1" meta host
+  [ -n "$name" ] && [ "$name" != default ] || return 1
+  meta="${DOCKER_CONFIG:-${HOME:-}/.docker}/contexts/meta/$(printf '%s' "$name" | shasum -a 256 | cut -d' ' -f1)/meta.json"
+  [ -f "$meta" ] || return 1
+  host=$(jq -r '.Endpoints.docker.Host // empty' "$meta" 2>/dev/null) || return 1
+  gate_docker_host_remote "$host"
 }
 
 gate_deploy_trigger_match() {
@@ -977,6 +1126,10 @@ gate_deploy_trigger_match() {
   # here RAISES the reach rather than being the only thing that can.
   local ids; ids=$(target_field "$alias" '배포트리거 식별자' 2>/dev/null) || return 1
   [ -n "$ids" ] || return 1
+  # The argv is joined with spaces BEFORE the field separator changes: `$*`
+  # joins with the first character of IFS, so under `,` the `workflow` and
+  # `argv` kinds compared against a comma-joined line and never matched.
+  local joined=" $* "
   local IFS=','; local id rest kind val a
   for id in $ids; do
     kind="${id%%:*}"; val="${id#*:}"
@@ -989,7 +1142,7 @@ gate_deploy_trigger_match() {
           esac
         done ;;
       workflow)
-        case " $* " in
+        case "$joined" in
           *" workflow run $val "*|*"/actions/workflows/$val/dispatches"*) return 0 ;;
         esac ;;
       jenkins-job)
@@ -997,7 +1150,7 @@ gate_deploy_trigger_match() {
           case "$a" in "$val"|*"/job/$val/"*) return 0 ;; esac
         done ;;
       argv)
-        case " $* " in *" $val "*|*" $val") return 0 ;; esac ;;
+        case "$joined" in *" $val "*) return 0 ;; esac ;;
     esac
   done
   return 1
@@ -2081,19 +2234,37 @@ gate_destructive_source() {
 gate_reach_disposition() {
   # gate_reach_disposition <alias> <rules_rc> <graded> <argv...>
   #
-  # Prints the `도달 판정` cell that parks this act, or nothing when it proceeds.
-  # FIRST MATCH WINS, in the order written — the table is read top to bottom and
-  # no cell is reachable past the one that answered.
+  # Prints `<칸>\t<원인>\t<판단>` for the `도달 판정` cell that parks this act —
+  # the cause is `-` where the cell has only one, and `<판단>` is `-` unless the
+  # pre-authorization judgment was called, when it is `<open|park|failed>/<key>`.
+  # An act that proceeds prints nothing, or `\t\t<판단>` when a judgment opened
+  # it. FIRST MATCH WINS, in the order written — the table is read top to bottom
+  # and no cell is reachable past the one that answered.
+  #
+  # WHAT THE REPAIR LINE NEEDS IS LEFT IN `GATE_RF_*`, as globals rather than
+  # locals. The one caller runs this in a command substitution and prints them in
+  # the same subshell right after it returns; the ledger's vocabulary does not
+  # carry them, so they never reach a row. The judgment is the exception, and it
+  # rides in the third field because the ledger does carry it.
   local alias="$1" rules_rc="$2" graded="$3"; shift 3
   local R="${GATE_REACH:--}" cls="$GATE_GRADE_SOURCE" S=0 X=0
   [ -n "$R" ] || R='-'
   [ "$GATE_MARK" = "비밀출력" ] && S=1
   { [ "$GATE_MARK" = "파괴" ] || [ "${GATE_DESTRUCTIVE:-0}" = "1" ]; } && X=1
+  GATE_RF_SX='-' GATE_RF_SW='-' GATE_RF_PROPOSAL='-' GATE_RF_REFF='-' GATE_RF_GEFF='-'
+  GATE_RF_NEVER='-' GATE_RF_TRIG='-' GATE_RF_EV=1
 
   # 1 — a credential on stdout is not undone by anything the morning can do.
-  [ "$S" = "1" ] && { printf '비밀출력'; return 0; }
+  [ "$S" = "1" ] && { printf '비밀출력\t-\t-'; return 0; }
 
-  local _rd; _rd=$(gate_reach_derived "$alias" "$@")
+  local _rfull _rd _ro _rt=''
+  _rfull=$(gate_reach_derived_full "$alias" "$@")
+  _rd=${_rfull%%
+*}
+  case "$_rfull" in *"
+"*) _rt=${_rfull#*
+} ;; esac
+  _ro=${_rd#*	}; _rd=${_rd%%	*}
 
   # 2 — a CLAUDE.md slot write that the review rule already passed. The rule runs
   # in the catalog, so this cell can only be read after it: `rules_rc` of 0 or 5
@@ -2104,8 +2275,9 @@ gate_reach_disposition() {
         case "$rules_rc" in 0|5) return 0 ;; esac ;;
     esac
     # Declared as something else, the slot's own contribution to the derived
-    # floor is removed and the act takes the cells its declaration asks for.
-    [ "$_rd" = "기기전역" ] && _rd='-'
+    # floor is removed and the act takes the cells its declaration asks for —
+    # its origin and trigger words with it, or the probe would still demand them.
+    [ "$_rd" = "기기전역" ] && { _rd='-'; _ro='-'; _rt=''; }
   fi
 
   # 3 — a read the table proved. Reach is recorded and nothing is refused, which
@@ -2115,28 +2287,50 @@ gate_reach_disposition() {
 
   # 3b — the two wrappers that assemble a command line out of their own operands.
   # Neither is unwrapped by the tables, so no declaration about them is checkable.
-  case "${1##*/}" in xargs|sudo) printf '신고등급한도'; return 0 ;; esac
+  case "${1##*/}" in xargs|sudo) printf '신고등급한도\twrapper\t-'; return 0 ;; esac
 
+  # A DERIVED DEPLOY TRIGGER BEATS A DECLARED MACHINE-GLOBAL REACH. Both raise,
+  # but only the first is true of the act: without this a deploy-trigger push
+  # declared `기기전역` would land in the ledger as a machine-local act and the
+  # morning report would not show the deploy.
   local Reff
   case "$R" in
-    미상|기기전역) Reff="$R" ;;
+    미상) Reff="$R" ;;
+    기기전역) if [ "$_rd" = "배포트리거" ]; then Reff=배포트리거; else Reff=기기전역; fi ;;
     *) if [ "$_rd" != "-" ]; then Reff="$_rd"; else Reff="$R"; fi ;;
   esac
+  GATE_RF_REFF="$Reff"
+  [ -n "$_rt" ] && GATE_RF_TRIG=$(printf '%s' "$_rt" | tr '\n' ' ' | sed 's/ *$//')
 
-  local C=0 lift=0 P=0 Pd=0 pkind='없음' probe=''
+  # EVERY PROBE FIELD IS READ AS A WHOLE SPACE-DELIMITED WORD. `제안` is free
+  # text and comes last, so it is cut off before the others are read — a bare
+  # `*"Pd=1"*` would match inside a proposed shape. A field the probe does not
+  # print reads as its closed default (`Pv=0`, `Sx` `-`), which keeps the
+  # machine-global cell's machine opening shut under a matcher that predates it.
+  local C=0 lift=0 P=0 Pd=0 Pv=0 Sx='-' Sw='-' pkind='없음' probe='' _pf _ps _t
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="$GATE_MARK" GATE_MARK_TRIGGER="$GATE_MARK_TRIGGER" \
+          GATE_DESTRUCTIVE="${GATE_DESTRUCTIVE:-0}" GATE_REACH_EFF="$Reff" \
           GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
-  case "$probe" in
-    *"P=1"*) P=1 ;;
+  _pf=${probe%% 제안=*}; case "$probe" in *" 제안="*) _ps=${probe#* 제안=} ;; *) _ps='-' ;; esac
+  [ -n "$_ps" ] || _ps='-'
+  case " $_pf " in *" P=1 "*) P=1 ;; esac
+  case " $_pf " in
+    *" 형태=완전 "*) pkind=완전 ;;
+    *" 형태=러너 "*) pkind=러너 ;;
   esac
-  case "$probe" in
-    *"형태=완전"*) pkind=완전 ;;
-    *"형태=러너"*) pkind=러너 ;;
+  case " $_pf " in *" Pd=1 "*) Pd=1 ;; esac
+  case " $_pf " in *" Pv=1 "*) Pv=1 ;; esac
+  case " $_pf " in
+    *" Sx=ok "*) Sx=ok ;;
+    *" Sx=dropped "*) Sx=dropped ;;
+    *" Sx=none "*) Sx=none ;;
+    *" Sx=code "*) Sx=code ;;
   esac
-  case "$probe" in
-    *"Pd=1"*) Pd=1 ;;
-  esac
+  _t=" $_pf "
+  case "$_t" in *" Sw="*) Sw=${_t#* Sw=}; Sw=${Sw%% *} ;; esac
+  [ -n "$Sw" ] || Sw='-'
+  GATE_RF_SX="$Sx" GATE_RF_SW="$Sw" GATE_RF_PROPOSAL="$_ps"
   if [ "$pkind" = "완전" ]; then
     case "$cls" in
       불투명) lift=1 ;;
@@ -2151,16 +2345,66 @@ gate_reach_disposition() {
     esac
   fi
 
+  # THE EFFECTIVE GRADE, read before the opaque cap below as well as after it:
+  # the machine-global cells ask whether the act changes state outside this
+  # machine, and for the opaque and unknown classes that answer is the
+  # declaration — the table never saw the payload.
+  local Geff
+  if [ "$cls" = "표" ]; then
+    Geff=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")
+  else
+    Geff=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기')
+  fi
+  GATE_RF_GEFF="$Geff"
+
+  # THE CLAUDE CONFIGURATION HOME IS NEVER OPENED BY A ROW. Every argv element is
+  # scanned for it anywhere inside, whatever arm derived the reach: a command arm
+  # returns before the path loop, and a bind-mount source sits inside a word, so
+  # neither the derived path triggers nor a prefix glob would see it. Measured
+  # here, before the cap, because a parked opaque act's repair line has to say so
+  # too — otherwise the row it prints lifts the cap and parks again below.
+  local _a _nw='' _ev=1
+  if [ "$Reff" = "기기전역" ]; then
+    for _a in "$@"; do
+      case "$_a" in *"$HOME"/.claude*) _nw="$_a"; break ;; esac
+      if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+        case "$_a" in *"${CLAUDE_CONFIG_DIR}"/*) _nw="$_a"; break ;; esac
+      fi
+    done
+    [ -n "$_nw" ] && GATE_RF_NEVER="$_nw"
+    # THE ELEMENT CHECK. The probe receives argv flattened into one string, so an
+    # element that is empty or carries whitespace (`"--rm -v /:/host"`) reads to
+    # it as other words, and a row could appear to name the act verbatim while
+    # naming a different one. Only here, on `"$@"`, are element bounds visible.
+    for _a in "$@"; do
+      case "$_a" in ''|*[[:space:]]*) _ev=0; break ;; esac
+    done
+    GATE_RF_EV="$_ev"
+  fi
+
   # 4 — the opaque and unknown classes. The cap is the user's decision: a payload
   # the gate cannot see is read-and-run-local unless the manifest named the exact
   # form, script operand included.
   case "$cls" in
     불투명|미상)
-      [ "${GATE_DECLARED:-}" = "읽기" ] && return 0
+      # A read is trusted only when nothing but a path raised the reach. A
+      # command arm or a deploy trigger is argv saying what the act does, and a
+      # `docker run` declared `읽기` would otherwise pass with no row at all.
+      [ "${GATE_DECLARED:-}" = "읽기" ] && [ "$_ro" != "cmd" ] && [ "$_rd" != "배포트리거" ] && return 0
       case "${GATE_DECLARED:-}" in
         워크트리쓰기|트리밖쓰기) [ "$Reff" = "런로컬" ] && return 0 ;;
       esac
-      [ "$lift" = "1" ] || { printf '신고등급한도'; return 0; }
+      if [ "$lift" != "1" ]; then
+        if [ "$Sx" = "code" ]; then printf '신고등급한도\tcode\t-'; return 0
+        elif [ "$cls" = "미상" ] && case "$1" in */*) false ;; *) true ;; esac; then
+          printf '신고등급한도\tunlisted\t-'; return 0
+        fi
+        # AN OPAQUE ACT THAT LANDS MACHINE-GLOBAL IS LEFT TO THE CELLS BELOW. The
+        # cap would print a row for it, and that row lifts the cap only to meet
+        # the machine-global cell, which opens on a verbatim row or a judgment —
+        # so the cap's own repair would be the wrong one.
+        [ "$Reff" = "기기전역" ] || { printf '신고등급한도\topaque\t-'; return 0; }
+      fi
       # Lifted: the manifest named this exact form, so the act is judged by the
       # cells below — but never as the collaboration surface, which is a claim
       # about a tool the table can read.
@@ -2170,62 +2414,334 @@ gate_reach_disposition() {
       gate_collaboration_surface "$_rd" "$@" && C=1 ;;
   esac
 
-  local Geff
-  if [ "$cls" = "표" ]; then
-    Geff=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")
-  else
-    Geff=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기')
-  fi
+  # 5 — nothing below can be judged without knowing where the act lands.
+  [ "$Reff" = "미상" ] && { printf '도달미상\t-\t-'; return 0; }
 
-  # 5·6 — nothing below can be judged without knowing where the act lands.
-  [ "$Reff" = "미상" ] && { printf '도달미상'; return 0; }
-  [ "$Reff" = "기기전역" ] && { printf '기기전역'; return 0; }
+  # 6 — MACHINE-GLOBAL OPENS ON A VERBATIM ROW, OR ON A JUDGMENT. The machine
+  # opens only an act a row names word for word; anything else a row might
+  # cover is decided by the pre-authorization judgment against that row's
+  # shape and `사유`. Three things no row opens come first: the Claude
+  # configuration home, an act that changes state outside this machine — the
+  # user opened acts that change this machine's configuration, not a remote
+  # write that happens to name a home path — and a program named by a path,
+  # which a row names by its base name and so never word for word.
+  if [ "$Reff" = "기기전역" ]; then
+    [ -n "$_nw" ] && { printf '기기전역\tnever\t-'; return 0; }
+    if [ "$Geff" = "외부상태변경" ]; then
+      if [ "$_rd" = "기기전역" ]; then printf '기기전역\texternal\t-'; else printf '도달모순\t-\t-'; fi
+      return 0
+    fi
+    case "$1" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
+    # A verbatim row opens even a destructive act: it names the act whole, the
+    # destructive word with it.
+    [ "$Pv" = "1" ] && [ "$_ev" = "1" ] && return 0
+    # A destruction only the stage declared names no word a judgment could
+    # check a row against, so only the verbatim row above opens it.
+    if [ "$GATE_MARK" != "파괴" ] && [ "${GATE_DESTRUCTIVE:-0}" = "1" ]; then
+      printf '파괴형태미명시\tdeclared\t-'; return 0
+    fi
+    # Read whole rather than piped into `grep -q`: an early exit there would
+    # fail the producer under pipefail and read as "no row".
+    [ -n "$(gate_preauth_rows)" ] || { printf '기기전역\tno-row\t-'; return 0; }
+    # With a person in front of the run, the approval they answer stays the
+    # answer: a judgment would open what used to be asked.
+    gate_auto_resolve_enabled || { printf '기기전역\toff\t-'; return 0; }
+    gate_preauth_judge_disposition "$alias" "$R" "$_ro" "$_rt" "$Geff" "$@"
+    return 0
+  fi
 
   # 7 — a push whose remote is not the target's.
   case "${1##*/}:${2:-}" in
     git:push)
-      gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치'; return 0; } ;;
+      gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치\t-\t-'; return 0; } ;;
   esac
 
   case "$Reff" in
     런로컬)
       case "$Geff" in
         워크트리쓰기|트리밖쓰기) return 0 ;;
-        *) printf '도달모순'; return 0 ;;
+        *) printf '도달모순\t-\t-'; return 0 ;;
       esac ;;
     협업)
       [ "$C" = "1" ] && return 0
-      printf '도달모순'; return 0 ;;
+      printf '도달모순\t-\t-'; return 0 ;;
     dev)
-      [ "$X" = "1" ] && { printf 'dev파괴'; return 0; }
+      [ "$X" = "1" ] && { printf 'dev파괴\t-\t-'; return 0; }
       local I; I=$(gate_dev_identifier_check "$alias" "$@")
       case "$I" in
-        불일치) printf 'dev식별자불일치'; return 0 ;;
-        부재)   printf 'dev식별자부재'; return 0 ;;
+        불일치) printf 'dev식별자불일치\t-\t-'; return 0 ;;
+        부재)   printf 'dev식별자부재\t-\t-'; return 0 ;;
         대조불가)
           # A lifted script named in the manifest IS the authorization, so the
           # absence of a comparable identifier does not park it — otherwise
           # declaring `dev` would park what declaring `prod` performs.
-          [ "$P" = "1" ] || { printf 'dev대조불가'; return 0; } ;;
+          [ "$P" = "1" ] || { printf 'dev대조불가\t-\t-'; return 0; } ;;
       esac
       return 0 ;;
     prod)
-      [ "$P" = "1" ] || { printf 'prod인가없음'; return 0; }
+      [ "$P" = "1" ] || { printf 'prod인가없음\t-\t-'; return 0; }
       { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
-      printf '파괴형태미명시'; return 0 ;;
+      if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked\t-'; else printf '파괴형태미명시\tdeclared\t-'; fi
+      return 0 ;;
     배포트리거)
-      [ "$P" = "1" ] || { printf '배포트리거인가없음'; return 0; }
+      [ "$P" = "1" ] || { printf '배포트리거인가없음\t-\t-'; return 0; }
       { [ "$X" = "0" ] || [ "$Pd" = "1" ]; } && return 0
-      printf '파괴형태미명시'; return 0 ;;
+      if [ "$GATE_MARK" = "파괴" ]; then printf '파괴형태미명시\tmarked\t-'; else printf '파괴형태미명시\tdeclared\t-'; fi
+      return 0 ;;
     *)
       # `-` with nothing derived: the axis was optional for this act, which the
       # required-check upstream already decided. It is a local read or a
       # non-opaque worktree write, so it lands as run-local.
       case "$Geff" in
         읽기|워크트리쓰기|트리밖쓰기) return 0 ;;
-        *) printf '도달미상'; return 0 ;;
+        *) printf '도달미상\t-\t-'; return 0 ;;
       esac ;;
   esac
+}
+
+gate_preauth_rows() {
+  # gate_preauth_rows — one `<shape>\t<사유>` line for every `사전 인가` row of
+  # the manifest whose `형태=` is not empty. THE SHAPE IS CUT EXACTLY AS THE
+  # MATCHER CUTS IT, so the byte comparison of a judged row against these
+  # shapes compares like with like. Rows without a shape (the interview record,
+  # a resumed run's row) are skipped, as the matcher skips them.
+  local line shape reason
+  [ -f "${MANIFEST:-}" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in '- `사전 인가`'*) ;; *) continue ;; esac
+    shape=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *형태=//p' | sed 's/[[:space:]]*$//')
+    [ -n "$shape" ] || continue
+    reason=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//')
+    printf '%s\t%s\n' "$shape" "$reason"
+  done < "$MANIFEST"
+}
+
+# The deadline of one pre-authorization judgment, in seconds. The environment
+# may shorten it (the tests do); a value that is not an integer reads as 120.
+case "${GATE_PREAUTH_JUDGE_TIMEOUT_S:-}" in
+  ''|*[!0-9]*) GATE_PREAUTH_JUDGE_TIMEOUT_S=120 ;;
+esac
+
+gate_preauth_judge_key() {
+  # gate_preauth_judge_key <input-json> — the cache key of a judgment. THE
+  # STAGE'S OWN DECLARATIONS ARE LEFT OUT: they reach the judgment as context,
+  # but a key that held them would let the same argv draw a fresh verdict by
+  # changing only what it declares. The declarations that change the
+  # disposition (an external-state grade, a declared-only destruction) are
+  # decided by the machine before any judgment. The prompt and the schema are
+  # in the key, so a change to either is a new question.
+  {
+    printf '%s' "$1" | jq -cS 'del(.reach.declared, .grade, .destructive.declared)'
+    cat "$PROMPT_DIR/preauth-judge.md" "$PROMPT_DIR/preauth-judge.schema.json"
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_preauth_judge_disposition() {
+  # gate_preauth_judge_disposition <alias> <declared reach> <origin> <triggers>
+  # <Geff> <argv...> — cell 6g. Prints the disposition line: `\t\topen/<k>` when
+  # the judgment opens the act, otherwise the park cell with
+  # `<park|open|failed>/<k>`.
+  #
+  # THE VERDICT IS CHECKED, NOT TRUSTED. A verdict opens only when it is `open`,
+  # names a row whose shape is byte-equal to one of this manifest's, and — for an
+  # act the gate marked destructive — that row carries the destructive word. The
+  # checks run on a cached verdict as well as a fresh one.
+  local alias="$1" rd="$2" ro="$3" rt="$4" geff="$5"; shift 5
+  local role=other cwd main wt rows_json input k dir cache failed tmp out v row hit=0
+  cwd="${GATE_ACT_CWD:-$PWD}"
+  main=$(target_field "$alias" '메인 워크트리' 2>/dev/null || true)
+  wt=$(gate_act_worktree "$alias" "${CC_PIPELINE_SEGMENT:-}" 2>/dev/null || true)
+  if [ -n "$main" ] && [ "$cwd" = "$main" ]; then role=main
+  elif [ -n "$wt" ] && [ "$cwd" = "$wt" ]; then role=worktree
+  fi
+  rows_json=$(gate_preauth_rows | jq -R -s -c \
+    'split("\n") | map(select(length > 0) | (index("\t")) as $i | {shape: .[0:$i], reason: .[$i+1:]})')
+  # `--args --`: every argv element stays one positional string, a leading dash
+  # included — without the `--` jq reads `--rm` as an option of its own.
+  input=$(jq -n -c --arg role "$role" --arg cwd "$cwd" --arg rd "$rd" --arg ro "$ro" \
+    --arg rt "$rt" --arg g "$geff" --arg mark "${GATE_MARK:-}" --arg mt "${GATE_MARK_TRIGGER:-}" \
+    --arg dd "${GATE_DESTRUCTIVE:-0}" --argjson rows "$rows_json" \
+    '{argv: $ARGS.positional, cwd: {role: $role, path: $cwd},
+      reach: {declared: $rd, effective: "기기전역", origin: $ro,
+              triggers: ($rt | split("\n") | map(select(length > 0)))},
+      grade: $g,
+      destructive: {mark: $mark, trigger: $mt, declared: ($dd == "1")},
+      rows: $rows}' --args -- "$@")
+  k=$(gate_preauth_judge_key "$input")
+  # No run directory means no cache and nowhere to keep the verdict the ledger
+  # points at, so no call is made.
+  [ -n "${RUN_DIR:-}" ] || { printf '기기전역\tjudge-failed\tfailed/%s' "$k"; return 0; }
+  dir="$RUN_DIR/preauth-judge"; cache="$dir/$k.json"; failed="$dir/$k.failed.json"
+  mkdir -p "$dir" 2>/dev/null || { printf '기기전역\tjudge-failed\tfailed/%s' "$k"; return 0; }
+  if [ ! -s "$cache" ]; then
+    tmp=$(mktemp "$dir/input.XXXXXX") || { printf '기기전역\tjudge-failed\tfailed/%s' "$k"; return 0; }
+    out=$(mktemp "$dir/out.XXXXXX") || { rm -f "$tmp"; printf '기기전역\tjudge-failed\tfailed/%s' "$k"; return 0; }
+    printf '%s\n' "$input" > "$tmp"
+    if judgment_call preauth-judge "$tmp" "$out" gate_metrics_timed "$GATE_PREAUTH_JUDGE_TIMEOUT_S" >/dev/null 2>&1; then
+      # Only an answer that passed the call's own check is kept, and it is
+      # moved into place whole, so a concurrent gate never reads half of it.
+      if jq -c '.structured_output' "$out" > "$out.so" 2>/dev/null && [ -s "$out.so" ]; then
+        mv -f "$out.so" "$cache"
+      fi
+    fi
+    # A failure is kept under a name the cache never reads, so a transient
+    # failure does not hold the park for the rest of the run.
+    [ -s "$cache" ] || mv -f "$out" "$failed" 2>/dev/null || true
+    rm -f "$tmp" "$out" "$out.so"
+  fi
+  [ -s "$cache" ] || { printf '기기전역\tjudge-failed\tfailed/%s' "$k"; return 0; }
+  v=$(jq -r '.verdict // ""' "$cache" 2>/dev/null)
+  row=$(jq -r '.row // ""' "$cache" 2>/dev/null)
+  case "$v" in
+    park) printf '기기전역\tjudged\tpark/%s' "$k"; return 0 ;;
+    open) ;;
+    *) printf '기기전역\tjudge-failed\tfailed/%s' "$k"; return 0 ;;
+  esac
+  if [ -z "$row" ] || ! printf '%s' "$rows_json" | jq -e --arg r "$row" 'any(.[]; .shape == $r)' >/dev/null 2>&1; then
+    printf '기기전역\tjudge-failed\tfailed/%s' "$k"; return 0
+  fi
+  if [ "${GATE_MARK:-}" = "파괴" ]; then
+    [ -n "${GATE_MARK_TRIGGER:-}" ] && case " $row " in *" $GATE_MARK_TRIGGER "*) hit=1 ;; esac
+    [ "$hit" = "1" ] || { printf '파괴형태미명시\tmarked\topen/%s' "$k"; return 0; }
+  fi
+  printf '\t\topen/%s' "$k"
+}
+
+gate_preauth_judge_label() {
+  # gate_preauth_judge_label <open|park|failed>/<k> — the ledger's fixed-length
+  # `사전 인가 판단=` value: the verdict and the key's first 16 hex digits, which
+  # name the file under `$RUN_DIR/preauth-judge/` holding the whole answer.
+  local k="${1#*/}"
+  printf '%s/%s' "${1%%/*}" "${k:0:16}"
+}
+
+gate_preauth_judge_failure() {
+  # gate_preauth_judge_failure <failed/<k>> — what made a judgment unusable, in
+  # the words the `judge-failed` repair line and the ledger's `판단 이유=` use.
+  local k="${1#*/}"
+  if [ -z "${RUN_DIR:-}" ]; then
+    printf 'no run directory to keep a verdict in'
+  elif [ -s "$RUN_DIR/preauth-judge/$k.json" ]; then
+    printf 'the verdict was neither open nor park, or the row it chose is not a shape of this manifest'
+  else
+    printf 'the call failed, timed out or returned no structured output'
+  fi
+}
+
+gate_preauth_judge_reason() {
+  # gate_preauth_judge_reason <verdict>/<k> — `<row or -> — <reason>` for the
+  # ledger's `판단 이유=`, read from the kept answer; a call that left no answer
+  # says why instead.
+  local k="${1#*/}" f row reason
+  f="${RUN_DIR:-}/preauth-judge/$k.json"
+  if [ -n "${RUN_DIR:-}" ] && [ -s "$f" ]; then
+    row=$(jq -r '.row // "-"' "$f" 2>/dev/null || true)
+    reason=$(jq -r '.reason // ""' "$f" 2>/dev/null || true)
+  else
+    row='-'; reason=$(gate_preauth_judge_failure "$1")
+  fi
+  [ -n "$row" ] || row='-'
+  printf '%s — %s' "$row" "$reason"
+}
+
+gate_park_repair_line() {
+  # gate_park_repair_line <칸> <원인> — the repair a parked act's stage reads, on
+  # stderr. ONE FUNCTION FOR BOTH VERBS: `plan` used to return before the repair
+  # `case`, so a forecast never said how to fix what it predicted, and a test
+  # could not check a repair without performing the act.
+  #
+  # A cell a row can fix prints the row itself on a line of its own, built from
+  # the probe's `제안` — never shorter than what opens the cell, and never cut
+  # before an option name or the operand it reaches, because a row cut there
+  # also opens every sibling act that differs past the cut. A cause no row
+  # fixes says so instead: printing a row there is a false repair, because the
+  # stage pastes it, kicks off again and parks at the same cell. The facts come
+  # from `GATE_PARK_*`, which the one disposition call site sets.
+  local cell="$1" cause="${2:--}"
+  local sx="${GATE_PARK_SX:--}" sw="${GATE_PARK_SW:--}" prop="${GATE_PARK_PROPOSAL:--}"
+  local nw="${GATE_PARK_NEVER:--}" ev="${GATE_PARK_EV:-1}" a0="${GATE_PARK_ARGV0:-}"
+  local B="this row opens this act and every act that begins with these words, on every target of the run; this run's authorization is frozen, so the row takes effect from the next kickoff"
+  # The machine-global cell's own clause: there the machine opens only the act
+  # the row names word for word, and a judgment decides everything else.
+  local Bm="this row opens exactly this act without judgment; any other machine-global act is opened only when a separate judgment call finds it within this row's intent; this run's authorization is frozen, so the row takes effect from the next kickoff"
+  local msg='' row=0
+  case "$cell/$cause" in
+    기기전역/no-row)
+      msg="repair: the manifest has no \`사전 인가\` row, so this machine-global act was not judged — kick off again with the row below"; row=1; B="$Bm" ;;
+    기기전역/judged)
+      msg="repair: the pre-authorization judgment found no \`사전 인가\` row whose intent covers this machine-global act (its reason is in the ledger row \`preauth-judge\`) — kick off again with the row below, or leave it to a person"; row=1; B="$Bm" ;;
+    기기전역/judge-failed)
+      msg="repair: the pre-authorization judgment returned no usable verdict ($(gate_preauth_judge_failure "${GATE_PREAUTH_JUDGE:--}")), so this machine-global act stays parked — kick off again with the row below, or leave it to a person"; row=1; B="$Bm" ;;
+    기기전역/argv0-path)
+      msg="repair: no \`사전 인가\` row opens a machine-global act whose program is named by a path — call it by its name on PATH, or leave it to a person" ;;
+    기기전역/external) msg=external ;;
+    기기전역/never) msg=never ;;
+    파괴형태미명시/marked)
+      msg="repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds') — kick off again with the row below"; row=1 ;;
+    파괴형태미명시/*)
+      msg="repair: the gate saw no destructive word in this act, so a row opens it only by naming the whole act verbatim — kick off again with the row below"; row=1 ;;
+    신고등급한도/opaque)
+      msg="repair: kick off again with the row below — the runner with its script operand, or the subcommand with its operand and every option and option value before it (the whole act when no operand follows), as the act spells them. A shape that names only the runner does not open it"; row=1 ;;
+    신고등급한도/code) sx=code ;;
+    신고등급한도/wrapper)
+      msg="repair: no row opens a command assembled by xargs or sudo — call the wrapped command directly" ;;
+    신고등급한도/unlisted)
+      msg="repair: no row lifts '$a0' — the grading table does not know it; leave it to a person" ;;
+    prod인가없음/*|배포트리거인가없음/*)
+      msg="repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen"; row=1 ;;
+    dev식별자부재/*|dev식별자불일치/*|dev대조불가/*)
+      msg="repair: name the identifier of that tool in the argv, or kick off again with a manifest whose \`dev 식별자\` on the target row matches the real value" ;;
+    비밀출력/*)
+      msg="repair: rewrite it in a form that does not print the secret (printenv with a name, and so on). If the value is needed, leave it to a person" ;;
+    push원격불일치/*)
+      msg="repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
+    도달모순/*)
+      msg="repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+    CI실패/*)
+      msg="repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
+    등급회귀/*)
+      msg="repair: the gate in the tree this merge would land grades the argv named above as empty or '등급 미상' where the base's gate knew it — fix the grading table and push a new head" ;;
+    등급회귀판정불가/*)
+      msg="repair: the grade-regression probe could not decide for this merge — a person checks the landing tree's gate and merges it" ;;
+    *) return 0 ;;
+  esac
+  # A ROW THAT CANNOT NAME THE ACT WORD FOR WORD IS NOT PRINTED. An argument
+  # that is empty or carries whitespace has no verbatim row, so pasting one
+  # would park the same act again; only a judgment can open it.
+  case "$cell/$cause" in
+    기기전역/no-row|기기전역/judged|기기전역/judge-failed)
+      [ "$ev" = "0" ] && { msg=spaced; row=0; } ;;
+  esac
+  # A ROW-SHAPED REPAIR GIVES WAY TO A CAUSE NO ROW FIXES: a shape the matcher
+  # cannot form is a row the stage pastes, kicks off with and parks on again.
+  if [ "$row" = "1" ]; then
+    case "$sx" in dropped|none|code) msg=''; row=0 ;; esac
+  fi
+  if [ -z "$msg" ]; then
+    case "$sx" in
+      dropped) msg="repair: no row can name this spelling — the matcher drops '$sw' (an option written with '='). If the program also accepts that option with a space or as a bare flag, respell it that way and name the respelled act in a row at the next kickoff; if it accepts only the '=' spelling (terraform's -chdir, for one), no row opens this act — leave it to a person" ;;
+      none)    msg="repair: no \`사전 인가\` row opens this — no complete shape can be formed from this act (a runner with nothing after its subcommand, or a word containing '|'); leave it to a person" ;;
+      code)    msg="repair: no row opens an interpreter run whose words before the script are not plain flags the gate knows — program text, a module or stdin ('-c', '-e', '-m', '-'), or an option that may take a value ('-o', '-W', '--norc', …) — put the commands in a script file in the worktree, run it as '<interpreter> <path>' (shell flags -e -u -v -x and python3 flags -u -B -E -I -s -S -O may precede the path), and name that shape in a row at the next kickoff" ;;
+    esac
+  fi
+  case "$msg" in
+    spaced)   msg="repair: no row can name this act word for word — an argument is empty or contains whitespace, so only the judgment can open it; respell the act without such an argument and name it in a row at the next kickoff, or leave it to a person" ;;
+    never)    msg="repair: no \`사전 인가\` row opens this — '$nw' is under the Claude configuration home; leave it to a person" ;;
+    external) msg="repair: no \`사전 인가\` row opens this — it changes state outside this machine while carrying a machine-global path; leave it to a person" ;;
+  esac
+  [ -n "$msg" ] || return 0
+  # BEFORE THE MATCHER CAN PROPOSE A SHAPE there is no row to print, and a
+  # message pointing at "the row below" with nothing below it is the false
+  # repair this function exists to stop.
+  if [ "$row" = "1" ] && [ "$prop" != "-" ]; then
+    warn "$msg — $B"
+    warn "repair row: - \`사전 인가\` | 형태=$prop | 사유=park 수리($cell)"
+  elif [ "$row" = "1" ]; then
+    local _norow="a row that names the shape of this act"
+    warn "${msg//the row below/$_norow}"
+  else
+    warn "$msg"
+  fi
 }
 
 gate_surface_max() {
@@ -5074,6 +5590,7 @@ surface_of_argv0() {
     aws)     surface_of_aws "$@" ;;
     kubectl) surface_of_kubectl "$@" ;;
     docker)  surface_of_docker "$@" ;;
+    brew)    surface_of_brew "$@" ;;
     # Not split here, and each for its own reason. `ssh`/`scp`/`rsync` carry the
     # effect in an operand rather than a verb, `wget` has no read-only form worth
     # carving out, and `gcloud`'s verb surface is wide enough that a partial
@@ -6249,8 +6766,16 @@ surface_of_docker() {
       case "${2:-}" in
         ls|list|inspect) printf '읽기' ;;
         push) printf '외부상태변경' ;;
-        *) case " $* " in *" --push "*) printf '외부상태변경' ;; *) printf '트리밖쓰기' ;; esac ;;
+        *)
+          case " $* " in *" --push "*) printf '외부상태변경'; return 0 ;; esac
+          if gate_docker_output_pushes "$@"; then printf '외부상태변경'; else printf '트리밖쓰기'; fi ;;
       esac ;;
+    # THREE SPELLINGS OF A REGISTRY PUSH, and the top-level `build` fell to the
+    # catch-all below with all three: `--push`, and an exporter whose value says
+    # `type=registry` or `push=true`. Graded a local write, each passed as one.
+    build)
+      case " $* " in *" --push "*) printf '외부상태변경'; return 0 ;; esac
+      if gate_docker_output_pushes "$@"; then printf '외부상태변경'; else printf '트리밖쓰기'; fi ;;
     compose)
       case "${2:-}" in
         ps|logs|config|ls|images|top|version|port) printf '읽기' ;;
@@ -6263,6 +6788,45 @@ surface_of_docker() {
     push) printf '외부상태변경' ;;
     '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
     *) printf '트리밖쓰기' ;;
+  esac
+}
+
+gate_docker_output_pushes() {
+  # gate_docker_output_pushes <argv after `docker`...> — true when an exporter
+  # value (`--output=v`, `-o=v`, or `--output`/`-o` followed by v) sends the
+  # build to a registry. It only ever raises a grade: a value that names a file
+  # or a local exporter is left to the row it was already in.
+  local a v next=0
+  for a in "$@"; do
+    if [ "$next" = 1 ]; then v="$a"; next=0
+    else
+      case "$a" in
+        --) break ;;
+        --output|-o) next=1; continue ;;
+        --output=*) v="${a#--output=}" ;;
+        -o=*) v="${a#-o=}" ;;
+        *) continue ;;
+      esac
+    fi
+    case "$v" in *type=registry*|*push=true*) return 0 ;; esac
+  done
+  return 1
+}
+
+surface_of_brew() {
+  # surface_of_brew <argv after `brew`...>. A verb that changes what is installed
+  # on this machine writes outside the tree; a verb that only reports is a read.
+  # EVERY OTHER VERB STAYS `등급 미상`, not the form-unknown token: that token is
+  # refused before the declaration is even read, which would turn `brew update`
+  # and `brew shellenv` from passing on their declaration into refusals — and
+  # the merge-time grade probe skips an argv whose base grade is `등급 미상`, so
+  # it could not see that narrowing either.
+  case "${1:-}" in
+    install|upgrade|uninstall|remove|rm|reinstall|tap|untap|link|unlink|pin|unpin|cleanup|autoremove|services)
+      printf '트리밖쓰기' ;;
+    list|ls|info|search|deps|uses|outdated|leaves|desc|home|config|doctor|--prefix|--version|--cellar|--repository)
+      printf '읽기' ;;
+    *) printf '등급 미상' ;;
   esac
 }
 
@@ -6534,9 +7098,17 @@ gate_act_mark() {
           done ;;
       esac ;;
     docker)
+      # The subcommand is read past docker's global options, so a leading
+      # `--context default` or `-H unix://…` does not hide `system prune`.
+      local _dn; _dn=$(gate_docker_globals "$@"); _dn=${_dn%%	*}
+      [ "$_dn" -gt 0 ] && shift "$_dn"
       case "${1:-}" in
         rm|rmi|prune) printf '파괴\t%s' "$1"; return 0 ;;
         volume) case "${2:-}" in rm|prune) printf '파괴\t%s' "$2"; return 0 ;; esac ;;
+        # The management-group spellings of the same removals carry the same
+        # mark, so the grouped form is not the unmarked way to delete an image.
+        image|container) case "${2:-}" in rm|prune) printf '파괴\t%s' "$2"; return 0 ;; esac ;;
+        system|builder|buildx) case "${2:-}" in prune) printf '파괴\tprune'; return 0 ;; esac ;;
         compose) case "${2:-}" in down) case "$all" in *" -v "*|*" --volumes "*) printf '파괴\t-v'; return 0 ;; esac ;; esac ;;
       esac ;;
     rsync)
@@ -26233,7 +26805,12 @@ gate_verb_act() {
   # check, the segment-row check and the merge anchor have had their say. Those
   # three refuse acts this one would have parked, and a park row written ahead of
   # them would record a disposition the act never actually reached.
-  GATE_PARK_CELL=""
+  GATE_PARK_CELL="" GATE_PARK_CAUSE='-' GATE_PARK_SX='-' GATE_PARK_SW='-' GATE_PARK_REFF='-'
+  GATE_PARK_GEFF='-' GATE_PARK_NEVER='-' GATE_PARK_TRIG='-' GATE_PARK_PROPOSAL='-'
+  GATE_PARK_EV=1 GATE_PREAUTH_JUDGE='-'
+  # A plan that carries no act (`--kind propose-done`) has no argv at all.
+  GATE_PARK_ARGV0="${1:-}"
+  GATE_PARK_ARGV0="${GATE_PARK_ARGV0##*/}"
   # OFF MODE WITH NOTHING DECLARED IS TODAY, EXACTLY. The reach axis is optional
   # there — the required-check above runs only while the switch is on — so an act
   # that declared no reach has made no claim for the evaluator to judge, and
@@ -26242,9 +26819,33 @@ gate_verb_act() {
   # because this evaluator answered in its place.
   if [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
      && { gate_auto_resolve_enabled || [ -n "${GATE_REACH:-}" ]; }; then
-    local _cell; _cell=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@")
+    # The verdict is `<칸>\t<원인>\t<판단>` on the first line; the facts the
+    # repair line reads follow on the second, printed from the same subshell. The
+    # cause and the facts stay here — the ledger's `도달 판정=` takes the cell
+    # alone, and the judgment goes to fields of its own on the row.
+    local _out _cell _pcause _facts _rest
+    _out=$(gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
+           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
+             "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" "$GATE_RF_PROPOSAL")
+    _cell=${_out%%
+*}
+    _facts=${_out#*
+}
+    _pcause='-'
+    case "$_cell" in
+      *"	"*)
+        _rest=${_cell#*	}; _cell=${_cell%%	*}
+        _pcause=${_rest%%	*}
+        case "$_rest" in *"	"*) GATE_PREAUTH_JUDGE=${_rest#*	} ;; esac ;;
+    esac
+    [ -n "$_pcause" ] || _pcause='-'
+    [ -n "$GATE_PREAUTH_JUDGE" ] || GATE_PREAUTH_JUDGE='-'
+    IFS='	' read -r GATE_PARK_SX GATE_PARK_SW GATE_PARK_REFF GATE_PARK_GEFF GATE_PARK_NEVER \
+      GATE_PARK_TRIG GATE_PARK_EV GATE_PARK_PROPOSAL <<EOF || true
+$_facts
+EOF
     if gate_auto_resolve_enabled; then
-      GATE_PARK_CELL="$_cell"
+      GATE_PARK_CELL="$_cell" GATE_PARK_CAUSE="$_pcause"
       # THE EVALUATOR REPLACES THE PRE-AUTHORIZATION RULE'S QUESTION, and only in
       # this mode. That rule answers `승인 대기` for an external-state act with no
       # matching row — the one approval class that is never auto-resolved,
@@ -26264,7 +26865,11 @@ gate_verb_act() {
       # acts stop, as questions rather than as rows. The opaque and unknown
       # classes keep today's behaviour entirely, which is what "off mode is
       # unchanged" has to mean for them.
-      warn "reach judgment '$_cell' — auto-resolution is off, so it is issued as an approval"
+      if [ "$_pcause" = "-" ]; then
+        warn "reach judgment '$_cell' — auto-resolution is off, so it is issued as an approval"
+      else
+        warn "reach judgment '$_cell' (cause $_pcause) — auto-resolution is off, so it is issued as an approval"
+      fi
       rules_rc="$GATE_EXIT_APPROVAL"
     fi
   fi
@@ -26719,6 +27324,7 @@ gate_verb_act() {
       # of what it refused depend on who asked.
       printf 'park 예상: 도달 판정=%s kind=%s target=%s 축2=%s 도달=%s\n' \
         "$GATE_PARK_CELL" "$kind" "$alias" "$graded" "${GATE_REACH:--}"
+      gate_park_repair_line "$GATE_PARK_CELL" "${GATE_PARK_CAUSE:--}"
       return "$GATE_EXIT_PARK"
     fi
     # RE-DECLARING DOES NOT RE-OPEN IT. The same act at the same digest takes the
@@ -26736,47 +27342,40 @@ gate_verb_act() {
     # measured here rather than assumed: an alias, a segment id and a stage id
     # are caller-shaped and nothing bounds their length.
     local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"
-    local _fixed _free _rb _ob _cb
-    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
-              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" 0 \
+    local _fixed _free _rb _jb=0 _ob _cb _jl='' _jfix='' _jx=()
+    # A JUDGMENT'S VERDICT RIDES IN FIELDS OF ITS OWN, never inside `근거=`: that
+    # field is the stage's rationale, and a verdict folded into it could not be
+    # told apart from what the stage claimed. Absent a judgment the row is the
+    # row it always was.
+    if [ "${GATE_PREAUTH_JUDGE:--}" != "-" ]; then
+      _jl=$(gate_preauth_judge_label "$GATE_PREAUTH_JUDGE")
+      _jfix="사전 인가 판단=$_jl | 판단 이유= | "
+    fi
+    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | %s근거= | 관측= | 재개 명령= | prev=%064d\n' \
+              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" "$_jfix" 0 \
             | wc -c | tr -d ' ')
     _free=$(( GATE_ROW_MAX - _fixed - 8 ))
     [ "$_free" -lt 0 ] && _free=0
     # The rationale first — it is the one a person reads in the morning — then the
-    # act excerpt, then the re-invocation line, each capped at its own ceiling.
+    # judgment's reason, then the act excerpt, then the re-invocation line, each
+    # capped at its own ceiling.
     _rb=$(( _free / 2 )); [ "$_rb" -gt 160 ] && _rb=160
     _free=$(( _free - _rb ))
+    if [ -n "$_jl" ]; then
+      _jb=$(( _free / 2 )); [ "$_jb" -gt 400 ] && _jb=400
+      _free=$(( _free - _jb ))
+      _jx=("사전 인가 판단=$_jl" "판단 이유=$(gate_row_safe "$(gate_preauth_judge_reason "$GATE_PREAUTH_JUDGE")" "$_jb")")
+    fi
     _ob=$(( _free / 3 )); [ "$_ob" -gt 60 ] && _ob=60
     _free=$(( _free - _ob ))
     _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
     gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
       "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
       "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
-      "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
+      "행위 다이제스트=$_ad" ${_jx[@]+"${_jx[@]}"} "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "reach park — judgment '$GATE_PARK_CELL'. This act was not performed, and retrying or re-declaring with a different reach gets the same judgment. If it is not essential, carry on with what can be done without it; if it was essential, write a halt record with \`분류\` 'gate-unanswerable' and stop"
-    case "$GATE_PARK_CELL" in
-      dev식별자부재|dev식별자불일치|dev대조불가)
-        warn "repair: name the identifier of that tool in the argv, or kick off again with a manifest whose \`dev 식별자\` on the target row matches the real value" ;;
-      prod인가없음|배포트리거인가없음)
-        warn "repair: kick off again with a manifest that carries this shape as a \`사전 인가\` row — the authorization of this run is frozen" ;;
-      파괴형태미명시)
-        warn "repair: the \`형태\` of the authorization row has to carry the destructive word itself (for example 'aws rds delete-db-instance', not 'aws rds')" ;;
-      신고등급한도)
-        warn "repair: name that script shape in a \`사전 인가\` row or as an argv element of \`배포트리거 식별자\` — a shape that names only the runner does not open it" ;;
-      비밀출력)
-        warn "repair: rewrite it in a form that does not print the secret (printenv with a name, and so on). If the value is needed, leave it to a person" ;;
-      push원격불일치)
-        warn "repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
-      도달모순)
-        warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
-      CI실패)
-        warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
-      등급회귀)
-        warn "repair: the gate in the tree this merge would land grades the argv named above as empty or '등급 미상' where the base's gate knew it — fix the grading table and push a new head" ;;
-      등급회귀판정불가)
-        warn "repair: the grade-regression probe could not decide for this merge — a person checks the landing tree's gate and merges it" ;;
-    esac
+    gate_park_repair_line "$GATE_PARK_CELL" "${GATE_PARK_CAUSE:--}"
     exit "$GATE_EXIT_PARK"
   fi
 
@@ -26887,7 +27486,8 @@ gate_verb_act() {
     _argv_budget=$(( 1024 - 16 - _row_fixed ))
     [ "$_argv_budget" -gt 128 ] && _argv_budget=128
     [ "$_argv_budget" -lt 0 ] && _argv_budget=0
-    gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
+    local _ex=() _jx2=() _jl2
+    _ex=("kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
       "축2=$graded" "자격=$credmode" "행위자=$actor" \
       "등급 출처=$GATE_GRADE_SOURCE" "선언=${GATE_DECLARED:--}" \
@@ -26895,7 +27495,16 @@ gate_verb_act() {
       "도달=${GATE_REACH:--}" "유도 도달=$(gate_reach_derived "$alias" "$@")" \
       "식별자 대조=$(gate_dev_identifier_check "$alias" "$@")" \
       "행위 다이제스트=$_ad2" \
-      "argv=$(gate_row_safe "$*" "$_argv_budget")" \
+      "argv=$(gate_row_safe "$*" "$_argv_budget")")
+    # A machine-global act a judgment opened carries the verdict and its reason,
+    # the reason taking only what the row has left once everything else is in.
+    if [ "${GATE_PREAUTH_JUDGE:--}" != "-" ]; then
+      _jl2=$(gate_preauth_judge_label "$GATE_PREAUTH_JUDGE")
+      _jx2=("사전 인가 판단=$_jl2")
+      _jx2+=("판단 이유=$(gate_row_safe "$(gate_preauth_judge_reason "$GATE_PREAUTH_JUDGE")" \
+        "$(gate_free_budget "${_ex[@]}" "사전 인가 판단=$_jl2" "판단 이유=" "근거=$(gate_row_safe "$rationale" 240)")")")
+    fi
+    gate_append '자율 승인' "${_ex[@]}" ${_jx2[@]+"${_jx2[@]}"} \
       "근거=$(gate_row_safe "$rationale" 240)"
   else
     local _act_free

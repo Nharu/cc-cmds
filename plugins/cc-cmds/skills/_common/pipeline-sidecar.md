@@ -294,10 +294,53 @@ An act carrying `--segment` runs in **that segment row's `워크트리` first**,
 **The `사전 인가` rows are the list an irreversible act is checked against**, and
 they are rows rather than a field because the set is open and each entry carries
 its own reason. `형태` is an argv **prefix** — `gh pr`, `git push`, `terraform
-apply` — matched against the first two words of the act, so a row grants a
-family of acts rather than one spelling. An external-state act with no matching
-row is **not refused**: it issues an approval and waits, because nobody being
-awake to ask is not the same fact as the answer being no.
+apply` — matched word by word against the act's normalized argv (command path
+reduced to its basename, `-x=y` words dropped), and every row is scanned, not
+only the first that matches. A row is one of two kinds. A **complete** form
+matches an act whose normalized argv begins with all of its words, so a row
+grants a family of acts rather than one spelling. A **runner** form — its first
+word is a runner (`npm`, `make`, an interpreter, …) and it does not reach past
+the script or target operand — matches only the act's first one or two words
+and opens no destructive act; an interpreter form is complete only when the word
+at the script position is a real script (not a dash word, not stdin) and every
+word before it is a closed flag, so a code string, a module or stdin keeps the
+form a runner at any length. A `-x=y` word the normalization dropped is still
+counted where the act spelled it: when one sits before the row's last word, the
+row — complete or runner — does not match the act at all, at any reach, so
+`node --require=/tmp/e.js scripts/x.js` is not opened by `node scripts/x.js` and
+`npm --script-shell=/tmp/s.sh run deploy` is not opened by `npm run deploy`.
+When the program accepts that option only in the `=` spelling (terraform's
+`-chdir=`, for one), no row opens the act, so it goes to an approval.
+A complete row opens every non-destructive act that begins with its words,
+whatever follows its last word — an option, an operand or a `--` tail, for a
+runner such as `make` or `npm` as for any other program: `npm run deploy` opens
+`npm run deploy --script-shell /tmp/s.sh`, and `make deploy ENV=dev` opens
+`make deploy ENV=dev ENV=prod`. A row grants that whole family, so a narrower
+intent has to be written as a longer row. A runner form longer than two words
+matches nothing.
+
+A `기기전역` act is opened differently. The gate opens it without judgment only
+when a row names the act word for word: every word of the act, no `-x=y` word
+anywhere, the program by its name on `PATH` rather than by a path, and no
+argument that is empty or contains whitespace. Dropping the command path opens
+nothing here — a program named by a path opens no `기기전역` act. Any other
+`기기전역` act is decided by a separate judgment call, which reads the act
+against each row's `형태` and `사유` and opens it only when one row's intent
+covers it; whatever the row did not name — an operand, a package, an image, a
+mount, a configuration key — keeps the act parked unless the row's `사유`
+allows it. With auto-resolution off no judgment is made and the act goes to an
+approval. So a `기기전역` row is best written as the whole act, options in the
+space spelling and tags and image names as fixed strings set at kickoff; a
+shorter row, such as a subcommand alone, opens acts only through the judgment,
+and its `사유` should say what the row is for. `docker run --rm T true` is
+opened without judgment by the row `docker run --rm T true`; `docker build -t
+T . --output=type=local,dest=/x` has no verbatim row and has to be respelled
+`--output type=local,dest=/x` and named whole. A `기기전역` act that changes
+external state, or that names a path under the Claude configuration home, is
+opened by no row. An
+external-state act with no matching row is **not refused**: it issues an
+approval and waits, because nobody being awake to ask is not the same fact as
+the answer being no.
 
 An act at or below `워크트리쓰기` needs no row at all — the list exists for the
 acts whose effects outlive the run directory.

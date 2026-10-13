@@ -30,6 +30,10 @@ jobs:
   # the whole suite, and a cancelled run cannot answer it.
   gate-shards:
     runs-on: ubuntu-latest
+    # The hosted runner has a docker daemon, so the real docker section must run
+    # here: a missing daemon is a failure, not a skip.
+    env:
+      CC_GATE_REQUIRE_DOCKER: '1'
     strategy:
       fail-fast: false
       matrix:

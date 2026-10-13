@@ -10138,6 +10138,33 @@ if grep_all_q -F -- '판단 호출 triage — effort=medium 서빙 모델=claude
 else
   bad "판단 호출 log" "$(tr '\n' ' ' < "$JCD/log.txt")"
 fi
+# 셋째 인자를 주지 않은 호출은 예전 이름의 출력 파일에 쓰고, 도구·세션 플래그를 싣지 않는다.
+check "출력 파일을 주지 않은 판단 호출은 log/judge-<이름>.json 에 쓴다" \
+  "$([ -s "$JCD/run/log/judge-triage.json" ] && echo 있음 || echo 없음)" "있음"
+case "$(cat "$JCD/argv.txt" 2>/dev/null)" in
+  *--tools*|*--no-session-persistence*) bad "다른 판단 호출의 argv" "도구·세션 플래그가 실렸다: $(cat "$JCD/argv.txt")" ;;
+  *) ok "사전 인가 판단이 아닌 판단 호출은 --tools 도 --no-session-persistence 도 싣지 않는다" ;;
+esac
+# 사전 인가 판단은 도구 없이(빈 --tools 값) 세션을 남기지 않고 돌며, 준 출력 파일과
+# 접두 명령을 그대로 쓴다.
+cat > "$JCD/cli-words" <<'JCEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$JC_ARGV_OUT"
+printf '%s\n' '{"subtype":"success","structured_output":{"verdict":"park","row":null,"reason":"r"}}'
+JCEOF
+chmod +x "$JCD/cli-words"
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL JC_ARGV_OUT="$JCD/argv-words.txt" \
+  bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
+           RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli-words"
+           judgment_call preauth-judge "$jc_root/input" "$jc_root/pj-out.json" env JC_PREFIX=1' \
+  _ "$DRIVER" "$JCD" >"$JCD/pj-stdout.txt" 2>/dev/null
+check "사전 인가 판단 호출은 --tools 바로 뒤에 빈 값을 싣는다" \
+  "$(awk 'p { print (length($0) == 0 ? "빈 값" : "값 " $0); exit } $0 == "--tools" { p = 1 }' "$JCD/argv-words.txt" 2>/dev/null)" "빈 값"
+check "사전 인가 판단 호출은 --no-session-persistence 를 싣는다" \
+  "$(grep -cx -- '--no-session-persistence' "$JCD/argv-words.txt" 2>/dev/null || true)" "1"
+check "사전 인가 판단 호출은 준 출력 파일에 쓰고 그 경로를 돌려준다" \
+  "$(cat "$JCD/pj-stdout.txt" 2>/dev/null)|$([ -s "$JCD/run/log/judge-preauth-judge.json" ] && echo 기본에도씀 || echo 기본없음)" \
+  "$JCD/pj-out.json|기본없음"
 
 # 드라이버 stage-result 호출부 — S9 적용 행을 뺀 일곱(계속 시도 행과 베이스 분할 행
 # 포함)이 effort 와 서빙 모델을 싣는다.
