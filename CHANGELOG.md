@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.5] - 2026-10-13
+
+GitHub 이 권장하는 백그라운드 머지 `…/pulls/<n>/merge-async` 와 머지 없이 베이스 브랜치를 옮기는 REST 쓰기가 머지로 읽히지 않아 리뷰 HEAD 결속을 건너뛰던 구멍과, 라우터가 쓸 수 없는 halt 기록을 쓰라는 지시 때문에 405 로 거부된 머지가 시프트마다 되풀이되던 문제를 고친다.
+
+### Fixed
+
+- **백그라운드 머지와 REST ref 쓰기를 머지로 읽는다** — 비-GET `gh api …/pulls/<n>/merge-async` 는 요청 뒤에 머지하거나 큐에 넣으므로 `sha` 를 실어도 결속 없는 머지로, 비-GET `…/git/refs…`·`…/contents/…`(`branch` 가 없으면 기본 브랜치에 커밋한다)·`…/merge-upstream` 은 GraphQL ref 쓰기처럼 결속할 수 없는 베이스 변경으로 읽는다. 사다리는 `머지` 를 유도하고, `선리뷰후머지` 세그먼트에서는 룰보다 먼저 종료 코드 2 로 거절하며, 협업면에서 뺀다. 전에는 어느 판독기도 이 철자를 알지 못해 결속이 `해당없음` 이었고 사다리 단계도 없었다
+- **405 로 거부된 머지는 세그먼트를 park 한다** — 두 라우터 SKILL 이 405(머지 큐를 요구하는 베이스가 한 원인이고 필수 리뷰 누락 등도 같은 코드를 받는다)를 받은 머지에 세그먼트 `park` 행·`스코프=cone` 차단 블록(사유에 405 와 응답 `message`)·`사유=중단` 인계를 처방한다. 기록된 워크트리를 세울 수 없거나 머지된 팁을 읽을 수 없어 사람에게 넘기는 자리도 같은 차단 블록과 인계로 바꾼다. 전에는 halt 기록을 쓰라고 했으나 halt 기록은 멈추는 스테이지만 쓰는 파일이고 세그먼트를 종단으로 만들지 않아, 다음 시프트가 같은 머지를 다시 보냈다
+
+### Post-install notes
+
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): 백그라운드 머지와 REST ref 쓰기를 결속 없는 머지로 읽고 405 머지를 park 로 넘긴다`
+
 ## [2.72.4] - 2026-10-13
 
 사람이 좌석에서 기각한 사이클의 머지가 머지 룰과 리뷰 `다음` 표는 통과했는데도 `머지됨` 행에 `위반(카운트)` 로 남아 런의 종료를 막던 어긋남과, 머지 큐를 요구하는 베이스에서 `gh pr merge --match-head-commit` 이 결속으로 받아져 리뷰되지 않은 헤드가 머지될 수 있던 구멍을 닫는다.
@@ -12,12 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **기각 사이클 머지의 머지 대조** — 머지 대조의 카운트 판정이 마지막 사이클의 `리뷰 기각` 을 `다음` 표와 같은 순서(사이클 없음 → 기각 → 카운트의 정규형 → 카운트)로 먼저 읽어 `기각` 을 낸다. 리뷰가 머지된 팁을 덮으면 `머지 대조=기각`(P0 포함)이고 종료 조건 11 이 그것을 통과시키며, 덮지 않으면 `위반(미포함)` 이다. 기각은 그 사이클과 리뷰 HEAD 에만 묶이므로 뒤에 선 새 사이클은 다시 카운트로 읽힌다. 카운트 위반으로 이미 머지된 세그먼트는 좌석의 기각과 둘째 `머지됨` 행으로 조건 11 이 풀리며, 앞의 위반 행은 원장에 남는다
-- **`gh pr merge` 의 결속은 `--admin` 과 함께일 때만** — 머지 큐를 요구하는 베이스에서 `--admin` 없는 `gh pr merge` 는 필수 체크가 대기 중이면 자동 머지를 켜고 통과 뒤 큐에 넣어, `--match-head-commit` 을 달아도 헤드를 요청 시점에만 대조한다. 그래서 이제 `--admin` 없는 `gh pr merge` 는 대상과 무관하게 결속 없는 머지로 룰보다 먼저 종료 코드 2 를 받는다. `--admin` 과 함께면 결속을 지나 `인가-자기확장-금지` 룰이 거절한다. 모든 베이스에서 결속되는 철자는 REST 머지 `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<워크트리 HEAD> -f merge_method=…` 이고, 거절 문면과 두 라우터 SKILL 이 그것을 처방한다. 머지 큐를 요구하는 베이스는 REST 머지를 405 로 거부하므로 그 머지는 halt 기록으로 사람에게 넘긴다
+- **`gh pr merge` 의 결속은 `--admin` 과 함께일 때만** — 머지 큐를 요구하는 베이스에서 `--admin` 없는 `gh pr merge` 는 필수 체크가 대기 중이면 자동 머지를 켜고 통과 뒤 큐에 넣어, `--match-head-commit` 을 달아도 헤드를 요청 시점에만 대조한다. 그래서 이제 `--admin` 없는 `gh pr merge` 는 대상과 무관하게 결속 없는 머지로 룰보다 먼저 종료 코드 2 를 받는다. `--admin` 과 함께면 결속을 지나 `인가-자기확장-금지` 룰이 거절한다. 모든 베이스에서 결속되는 철자는 REST 머지 `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<워크트리 HEAD> -f merge_method=…` 이고, 거절 문면과 두 라우터 SKILL 이 그것을 처방한다. 머지 큐를 요구하는 베이스는 REST 머지를 405 로 거부하므로 그 머지는 사람에게 넘긴다
 - **등급 회귀 프로브가 REST 머지의 `sha` 를 읽는다** — 착지할 head 를 `--match-head-commit` 처럼 REST 머지의 `-f sha=`·`-F sha=`·`--field=sha=`·`--raw-field=sha=` 에서도 읽는다. 파일에서 읽는 `sha=@…` 는 읽지 않는다
 
 ### Post-install notes
 
-- 라우터의 원격 머지는 `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<워크트리 HEAD> -f merge_method=merge` 로 부른다. 이 argv 는 브랜치를 지우지 않는다. 머지 큐를 요구하는 베이스에서는 그 머지가 405 로 거부되므로 halt 기록을 쓴다
+- 라우터의 원격 머지는 `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<워크트리 HEAD> -f merge_method=merge` 로 부른다. 이 argv 는 브랜치를 지우지 않는다. 머지 큐를 요구하는 베이스에서는 그 머지가 405 로 거부되므로 세그먼트를 park 하고 사람에게 넘긴다
 - 사전 인가에 `gh pr` 만 실은 매니페스트는 REST 머지가 승인 대기(5)가 되므로 `gh api` 형태를 함께 싣는다
 - 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
 
