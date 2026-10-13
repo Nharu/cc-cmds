@@ -5,6 +5,25 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.10] - 2026-10-13
+
+2.72.9 가 REST 경로 분할에서 고친 로캘 결함이 같은 읽기 경로의 다른 세 판독기에 남아 있어, UTF-8 로캘의 macOS 에서 UTF-8 이 아닌 바이트 하나로 결속 없는 머지와 베이스 push 가 리뷰를 건너던 구멍을 닫는다.
+
+### Fixed
+
+- **출력 가능한 ASCII 밖의 바이트가 든 `gh api` 엔드포인트는 읽지 않는다** — 제어 바이트나 0x80 이상 바이트가 엔드포인트(권한부·경로·쿼리)에 있으면 비-GET 호출을 결속 없는 베이스 변경(사다리 `머지`·결속 없음)으로 읽는다. 바이트 자체를 신호로 삼으므로 판독기가 어느 로캘에서 돌든 같다. 전에는 `https://:branch<바이트>/repos/o/r/issues/1` 과 `repos/o/r/pulls/:branch<바이트>` 가 자리표시자 없는 무해 호출로, `…/merge?x=<바이트>&sha=<X>` 가 본문 `sha` 에 결속된 머지로 읽혔다
+- **`:owner`·`:repo`·`:branch` 자리표시자를 바이트로 찾는다** — 셸 정규식 대신 `LC_ALL=C grep` 으로 맞추고, 그 매칭이 실패하면 자리표시자로 본다
+- **셸 문자열의 push 와 쿼리의 `sha` 를 바이트로 읽는다** — `sh -c`·`sudo`·`env -S` 문자열과 쿼리 문자열을 나누는 `tr` 을 `LC_ALL=C` 로 부르고 종료 상태를 본다. 실패하면 각각 push 있음(`불투명`, 거부)과 `sha` 있음(결속 없음)으로 닫힌다. 전에는 `sh -c $'echo <바이트>; git push origin HEAD:master'` 가 push 없는 워크트리 쓰기로 통과했다
+
+### Post-install notes
+
+- 한글 등 비ASCII 문자를 그대로 쓴 엔드포인트의 비-GET `gh api` 호출(예: 이름이 한글인 라벨 고치기)은 이제 결속 없는 베이스 변경으로 거부된다. 그 문자를 `%` 이스케이프로 적으면 전처럼 읽힌다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): gh api 엔드포인트와 셸 push 문자열을 바이트로 읽는다`
+
 ## [2.72.9] - 2026-10-13
 
 REST 경로를 세그먼트로 쪼개는 게이트 판독기가 UTF-8 로캘의 macOS 에서 UTF-8 이 아닌 바이트를 만나 `tr`/`sed` 가 멈추면, 그때까지 쓴 접두를 경로 전체로 읽어 뒤에 붙은 PR 머지를 이슈 쓰기로 통과시키던 구멍을 닫는다. 킥오프의 REST 머지 사전 인가 점검이 `선리뷰후머지` 에서만 돌아 다른 정책의 런이 매 머지마다 승인 대기에 빠지던 문제도 고친다.
