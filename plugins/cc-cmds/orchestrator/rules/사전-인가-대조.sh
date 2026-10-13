@@ -177,7 +177,9 @@ while IFS= read -r line; do
   # 형태의 완전 여부. 인터프리터가 아닌 러너는 첫 비옵션 operand 자리 너머까지 담아야
   # 완전이다. 인터프리터는 그 자리의 단어가 실제 스크립트 단어이고 — 비어 있지 않고,
   # 대시로 시작하지 않고, stdin 계열이 아니고 — 그 앞이 모두 닫힌 플래그일 때만
-  # 완전이다. 스크립트 자리 뒤의 단어는 스크립트 인자라 보지 않는다.
+  # 완전이다. 스크립트 자리 뒤의 단어는 스크립트 인자라 보지 않는다. `+e` 처럼 `+` 로
+  # 시작하는 단어는 옵션을 끄는 것이지 스크립트 단어가 아니다 — 거기서 멈춘 형태가
+  # 완전이면 `bash +e -c …` 와 그 뒤 아무 경로나 연다.
   kind=완전
   case "$runners" in
     *" $first "*)
@@ -186,7 +188,7 @@ while IFS= read -r line; do
         *" $first "*)
           wop=$(word_at "$shape" "$operand_pos")
           case "$wop" in
-            ''|-*|/dev/stdin|/dev/fd/*|/proc/*/fd/*|'<('*) ;;
+            ''|-*|+*|/dev/stdin|/dev/fd/*|/proc/*/fd/*|'<('*) ;;
             *) closed_flags_only "$first" "$shape" "$operand_pos" && kind=완전 ;;
           esac ;;
         *) [ "$nwords" -gt "$operand_pos" ] && kind=완전 ;;
@@ -271,7 +273,7 @@ if [ "$probe" = "1" ]; then
       script_ok=0
       wop=$(word_at "$norm" "$operand_pos")
       case "$wop" in
-        ''|-*|/dev/stdin|/dev/fd/*|/proc/*/fd/*|'<('*) ;;
+        ''|-*|+*|/dev/stdin|/dev/fd/*|/proc/*/fd/*|'<('*) ;;
         *) closed_flags_only "$argv0" "$norm" "$operand_pos" && script_ok=1 ;;
       esac
       cmin=$operand_pos
