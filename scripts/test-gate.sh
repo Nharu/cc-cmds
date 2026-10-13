@@ -30298,9 +30298,10 @@ check "86: park 된 대상트리 mv 의 덮일 파일이 그대로다" "$(cat "$
 # --reach 생략 — 등급표는 다른 워크트리를 겨눈 worktree remove 와 git -C <dir> reset
 # --hard 를 워크트리쓰기로 매기고, 그 등급에는 도달 신고가 필수가 아니다. 두 토큰이
 # 모두 park 하게 된 뒤로 토큰을 빼는 것이 그 파괴를 실행하는 유일한 철자였다. 생략은
-# 이제 런로컬 칸과 같은 착지점 판정을 받는다. 같은 자리의 비파괴 reset 도 형제
-# 워크트리에 닿는 쓰기이므로 도달모순으로 park 되고, 대조로 돌린 임시 디렉터리 아래 실험
-# 워크트리의 reset --hard 가 지나감을 둔다.
+# 이제 착지점 판정을 받는다 — 대상의 다른 트리에 닿으면 대상트리 칸의 판정이고 행은
+# 도달=대상트리 를 싣는다. 그래서 파괴는 park 되고, 같은 자리의 비파괴 reset 은 대상트리로
+# 신고한 것처럼 지나간다. 대조로 돌린 임시 디렉터리 아래 실험 워크트리의 reset --hard 가
+# 지나감을 둔다.
 om86() {
   # om86 <surface> <argv...> — --reach 없이, 돌린 임시 디렉터리로 한 번 부른다.
   local s="$1"; shift
@@ -30317,8 +30318,8 @@ nb86=$(b86)
 om86 워크트리쓰기 git worktree remove --force "$SO86"
 check "86: --reach 를 생략한 형제 워크트리 강제 제거는 park 된다" "$rc" "11"
 case "$(lb86)" in
-  *"| 도달 판정=파괴형태미명시 |"*"| 도달=- | 파괴 트리거=--force |"*) ok "86: 그 park 행이 도달=- 와 파괴 트리거=--force 를 싣는다" ;;
-  *) bad "86: 그 park 행이 도달=- 와 파괴 트리거=--force 를 싣는다" "$(lb86)" ;;
+  *"| 도달 판정=파괴형태미명시 |"*"| 도달=대상트리 | 파괴 트리거=--force |"*) ok "86: 그 park 행이 도달=대상트리 와 파괴 트리거=--force 를 싣는다" ;;
+  *) bad "86: 그 park 행이 도달=대상트리 와 파괴 트리거=--force 를 싣는다" "$(lb86)" ;;
 esac
 [ -e "$SO86/.git" ] && ok "86: 생략으로 park 된 제거의 형제 워크트리가 남아 있다" \
   || bad "86: 생략으로 park 된 제거의 형제 워크트리가 남아 있다" "$SO86"
@@ -30332,17 +30333,17 @@ git -C "$WT" worktree add -q --detach "$OX86" "$B86" >/dev/null 2>&1
 printf 'x\n' >> "$OX86/base.txt"
 nb86=$(b86)
 om86 워크트리쓰기 git -C "$SIB86" reset -q
-check "86: --reach 를 생략한 형제 워크트리의 비파괴 reset 도 park 된다" "$rc" "11"
-case "$(lb86)" in
-  *"| 도달 판정=도달모순 |"*) ok "86: 그 park 행의 도달 판정이 도달모순이다 (생략 비파괴)" ;;
-  *) bad "86: 그 park 행의 도달 판정이 도달모순이다 (생략 비파괴)" "$(lb86)" ;;
+check "86: --reach 를 생략한 형제 워크트리의 비파괴 reset 은 대상트리로 통과한다" "$rc" "0"
+case "$(grep '^- `자율 승인` ' "$FX_LEDGER" 2>/dev/null | tail -1)" in
+  *"| 도달=대상트리 |"*) ok "86: 그 승인 행이 도달=대상트리 를 싣는다 (생략 비파괴)" ;;
+  *) bad "86: 그 승인 행이 도달=대상트리 를 싣는다 (생략 비파괴)" "$(grep '^- `자율 승인` ' "$FX_LEDGER" 2>/dev/null | tail -1)" ;;
 esac
-om86k && ok "86: park 된 비파괴 reset 의 미커밋 수정이 남아 있다" \
-  || bad "86: park 된 비파괴 reset 의 미커밋 수정이 남아 있다" "$SIB86/base.txt"
+om86k && ok "86: 비파괴 reset 뒤에도 미커밋 수정이 남아 있다" \
+  || bad "86: 비파괴 reset 뒤에도 미커밋 수정이 남아 있다" "$SIB86/base.txt"
 om86 워크트리쓰기 git -C "$OX86" reset -q --hard
 check "86: 대조 — 임시 디렉터리 아래 실험 워크트리의 reset --hard 는 생략으로 통과한다" "$rc" "0"
 check "86: 그 reset --hard 가 실제로 되돌렸다" "$(git -C "$OX86" status --porcelain 2>/dev/null)" ""
-check "86: 생략 비파괴 reset 의 park 하나만 blocked 행을 남긴다" "$(( $(b86) - nb86 ))" "1"
+check "86: 생략 비파괴 reset 과 그 대조는 blocked 행을 남기지 않는다" "$(( $(b86) - nb86 ))" "0"
 git -C "$WT" worktree remove --force "$OX86" >/dev/null 2>&1
 
 # 래퍼의 모르는 옵션 — 래퍼 갈래가 모르는 옵션에 빈 답을 내던 동안 env -C <형제> rm
@@ -31560,9 +31561,16 @@ for p86 in "caffeinate -i make" "gtimeout 600 make test" "taskpolicy -c utility 
   # shellcheck disable=SC2086
   check "86: 런처 뒤의 워크트리 쓰기 $p86 는 숨은 명령이 아니다" "$(hc86 $p86)" "1"
 done
-for p86 in "script -q /dev/null rm -f x" "taskpolicy -c utility rm -f x" "flock /tmp/l rm -f x" "caffeinate -i gh pr merge 1"; do
+# 런처 뒤의 지역 파괴 형태는 그 뒤 낱말이 정직한 세 자리 밖을 가리킬 때만 숨은 명령이다 —
+# 자기 워크트리 안의 rm -f x 는 맨 철자에서도 착지 질문에 걸리지 않는다. 형제 경로를 가르려면
+# 게이트가 읽는 TMPDIR 을 돌린 디렉터리로 둔다.
+for p86 in "script -q /dev/null rm -f $CY86/x" "taskpolicy -c utility rm -f $CY86/x" "flock /tmp/l rm -f $CY86/x" "caffeinate -i gh pr merge 1"; do
   # shellcheck disable=SC2086
-  check "86: 대조 — $p86 는 숨은 명령이다" "$(hc86 $p86)" "0"
+  check "86: 대조 — ${p86//$WORK/} 는 숨은 명령이다" "$(TMPDIR="$T86" hc86 $p86)" "0"
+done
+for p86 in "script -q /dev/null rm -f x" "taskpolicy -c utility rm -f x" "flock /tmp/l rm -f x"; do
+  # shellcheck disable=SC2086
+  check "86: 자기 워크트리 안을 가리키는 $p86 는 숨은 명령이 아니다" "$(TMPDIR="$T86" hc86 $p86)" "1"
 done
 check "86: uv run pytest 는 사다리가 없다" "$(ld86 uv run pytest)" ""
 
@@ -32171,6 +32179,166 @@ TMPDIR="$T86" x86 트리밖쓰기 git apply --directory="../$(basename "$SIB86")
 check "86: 대상트리로 신고한 형제 git apply --directory 는 park 된다" "$rc" "11"
 check "86: park 된 git apply 뒤에도 형제 파일 내용이 그대로다" "$(cat "$CY86/p8" 2>/dev/null)" "k"
 rm -rf "$SB86" "$SZ86" "$CW86/h6" "$CW86/h6b" "$CW86/g6" "$CW86/p3.txt" "$CW86/sub4" "$CW86/d/Makefile"
+
+# 설치의 install — 숨은 명령 탐색이 런처 뒤 모든 낱말에서 지역 파괴 형태를 세어, pip·uv·
+# conda·bundle 의 install 낱말이 coreutils install 로 읽혀 정직한 설치가 어느 신고로도
+# 통과하지 못했다. 지역 파괴 형태는 이제 그 뒤 낱말이 임시 디렉터리·상태 루트·자기
+# 워크트리 밖이나 읽지 못하는 자리를 가리킬 때만 센다. 스텁은 0 으로 끝난다.
+# 인프로세스 게이트는 PATH 를 바꾼 호출을 거절하므로 스텁은 절대 경로로 부른다.
+PS86="$WORK/st86p"; mkdir -p "$PS86"
+for s86 in pip pip3 python uv conda bundle gtimeout; do printf '#!/bin/sh\nexit 0\n' > "$PS86/$s86"; chmod +x "$PS86/$s86"; done
+for p86 in "pip install -r requirements.txt" "pip install -e ." "pip3 install --upgrade pip" \
+           "python -m pip install -e ." "uv pip install -r requirements.txt" "conda install -y numpy" \
+           "bundle install --path vendor" "gtimeout 60 grep -rn rm src"; do
+  # shellcheck disable=SC2086
+  TMPDIR="$T86" r86 워크트리쓰기 "$PS86/"$p86
+  check "86: 런로컬로 신고한 $p86 는 통과한다" "$rc" "0"
+done
+for p86 in "pip install -r requirements.txt" "uv pip install -e ."; do
+  TMPDIR="$T86" r86 워크트리쓰기 bash -c "$PS86/$p86"
+  check "86: 런로컬로 신고한 셸 문자열 안 $p86 는 통과한다" "$rc" "0"
+done
+ho86() {
+  # ho86 <fn> <argv...> — 주 체크아웃에서 돌린 임시 디렉터리로 그 함수의 상태를 낸다.
+  ( cd "$WT" && TMPDIR="$T86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; GATE_MARK=""; shift 2
+      r=0; "$@" >/dev/null || r=$?; printf "%s" "$r"' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+check "86: pip install -r requirements.txt 는 숨은 명령이 아니다" "$(ho86 gate_opl_hides_command pip install -r requirements.txt)" "1"
+check "86: caffeinate -i rm -rf <형제>/x 는 숨은 명령이다" "$(ho86 gate_opl_hides_command caffeinate -i rm -rf "$CY86/x")" "0"
+check "86: caffeinate git --work-tree=<형제> checkout . 는 숨은 명령이다" \
+  "$(ho86 gate_opl_hides_command caffeinate git --work-tree="$SIB86" checkout .)" "0"
+check "86: 낱말 -r requirements.txt 는 정직한 자리에 머문다" "$(ho86 gate_opl_words_stay_local -r requirements.txt)" "0"
+check "86: 붙인 값 -C<형제> 는 정직한 자리에 머물지 않는다" "$(ho86 gate_opl_words_stay_local "-C$SIB86")" "1"
+check "86: 상대 경로 ../<형제> 는 정직한 자리에 머물지 않는다" \
+  "$(ho86 gate_opl_words_stay_local "../$(basename "$SIB86")/x")" "1"
+check "86: 대조 — 임시 디렉터리 아래 경로는 정직한 자리에 머문다" "$(ho86 gate_opl_words_stay_local "$T86/x")" "0"
+check "86: python 은 python3 처럼 워크트리쓰기다" "$(sg86 python -m pip install -e .)" "워크트리쓰기"
+
+# awk 의 비교 — awk 프로그램의 > 를 모두 출력 리다이렉션으로 읽어, awk 'NR>1' 같은 비교가
+# 어느 신고로도 통과하지 못했다. 판독기는 이제 print·printf 문장의 괄호 밖 > 와 파이프·
+# system·getline 만 쓰기로 본다.
+for p86 in 'NR>1' '$3 > 100' 'length($0)>80' '$1 ~ /a>b/' '{print ($1 > 2)}'; do
+  check "86: awk 프로그램 $p86 는 쓰지 않음이 증명된다" "$(pw86 awk "$p86" f)" "0"
+done
+check "86: awk -F: 의 \$2>=1{print} 는 쓰지 않음이 증명된다" "$(pw86 awk -F: '$2>=1{print}' f)" "0"
+check "86: gawk 의 NR>1 은 쓰지 않음이 증명된다" "$(pw86 gawk 'NR>1' f)" "0"
+for p86 in '{print >> "f"}' '{print | "sh"}' '{printf "x" > "/tmp/f"}' 'BEGIN{system("x")}' \
+           '{"date" | getline d}' '{print "a>b" > f}' '/"/{print > f} /"/' '{print "a}'; do
+  check "86: awk 프로그램 $p86 는 쓰지 않음이 증명되지 않는다" "$(pw86 awk "$p86" f)" "1"
+done
+ro86() {
+  ( bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      r=0; gate_tt_reads_only "$@" || r=$?; printf "%s" "$r"' _ "$GATE" "$@" ) 2>/dev/null
+}
+check "86: awk 'NR>1' README.md 는 읽기로 증명된다" "$(ro86 awk 'NR>1' README.md)" "0"
+check "86: 대조 — awk '{print > \"o\"}' f 는 읽기로 증명되지 않는다" "$(ro86 awk '{print > "o"}' f)" "1"
+check "86: awk 'NR>1' README.md 의 등급은 읽기다" "$(sg86 awk 'NR>1' README.md)" "읽기"
+mg86 awk 'NR>1' "$CY86/README.md"
+check "86: 읽기로 신고한 다른 트리의 awk 'NR>1' 은 통과한다" "$rc" "0"
+TMPDIR="$T86" r86 읽기 awk 'NR>1' "$CY86/README.md"
+check "86: 런로컬을 붙인 다른 트리의 awk 'NR>1' 도 통과한다" "$rc" "0"
+TMPDIR="$T86" r86 트리밖쓰기 bash -c "awk 'NR>1' $(basename "$CW86")/README.md > $T86/cy86/aw86"
+check "86: 임시 파일로 내는 셸 문자열 안 awk 'NR>1' 은 런로컬로 통과한다" "$rc" "0"
+[ -e "$T86/cy86/aw86" ] && ok "86: 그 awk 가 실제로 임시 파일을 냈다" || bad "86: 그 awk 가 실제로 임시 파일을 냈다" "$msg"
+printf 'k\n' > "$CY86/p9"
+rl86 awk "{print > \"$CY86/p9\"}" "$T86/cy86/src"
+check "86: 형제에 print > 하는 awk 는 런로컬로 park 된다" "$rc" "11"
+case "$msg" in *"judgment '도달모순'"*|*"judgment '파괴형태미명시'"*) ok "86: 그 park 가 착지 판정이다 (awk print >)" ;;
+  *) bad "86: 그 park 가 착지 판정이다 (awk print >)" "$msg" ;; esac
+check "86: park 된 awk 뒤에도 형제 파일이 그대로다" "$(cat "$CY86/p9" 2>/dev/null)" "k"
+
+# 도달 생략의 착지 — 생략된 도달을 런로컬로 판정해, 재수렴 운반 블록처럼 다른 트리에 쓰는
+# 단계를 도달 없이 낸 스테이지가 도달모순으로 park 됐다. 생략된 쓰기는 이제 착지로 판정되어,
+# 대상의 다른 트리에 닿으면 대상트리 칸의 판정을 받고 행에 도달=대상트리 를 남긴다.
+la86() { grep '^- `자율 승인` ' "$FX_LEDGER" 2>/dev/null | tail -1; }
+ar86() {
+  # ar86 <name> <want> — 마지막 승인 행의 도달 필드를 잰다.
+  case "$(la86)" in
+    *"| 도달=$2 |"*) ok "86: $1 의 승인 행이 도달=$2 를 싣는다" ;;
+    *) bad "86: $1 의 승인 행이 도달=$2 를 싣는다" "$(la86)" ;;
+  esac
+}
+K86="$SIB86/docs/k86"
+om86 워크트리쓰기 mkdir -p "$K86"
+check "86: 도달 생략 — 형제 docs/ 의 mkdir -p 는 통과한다" "$rc" "0"
+ar86 "그 mkdir -p" 대상트리
+om86 워크트리쓰기 cp -n "$T86/cy86/src" "$K86/.x.md.Ab12Cd"
+check "86: 도달 생략 — 형제 docs/ 의 점 이름 cp -n 은 통과한다" "$rc" "0"
+ar86 "그 cp -n" 대상트리
+printf 'old\n' > "$K86/x.md"
+om86 워크트리쓰기 cp "$K86/x.md" "$T86/cy86/snap86"
+check "86: 도달 생략 — 임시 디렉터리로의 스냅숏 cp 는 통과한다" "$rc" "0"
+ar86 "그 스냅숏 cp" -
+# 등급표가 트리밖쓰기로 매기는 단계는 도달을 생략할 수 없다. 그 거부는 park 가 아니고
+# 같은 착지 판독으로 정직한 토큰을 말하므로, 스테이지는 그 토큰으로 다시 신고한다.
+rq86() {
+  # rq86 <name> <token> — 마지막 호출이 도달 필수로 거부되고 그 토큰을 말했는지 잰다.
+  case "$rc:$msg" in
+    0:*|11:*) bad "86: $1 는 도달 필수로 거부되고 $2 를 말한다" "rc=$rc $msg" ;;
+    *"--reach is required"*"declare '$2'"*) ok "86: $1 는 도달 필수로 거부되고 $2 를 말한다" ;;
+    *) bad "86: $1 는 도달 필수로 거부되고 $2 를 말한다" "rc=$rc $msg" ;;
+  esac
+}
+om86 트리밖쓰기 mktemp "$K86/.y.md.XXXXXX"
+rq86 "도달 생략의 형제 docs/ 점 이름 mktemp" 대상트리
+check "86: 거부된 mktemp 가 파일을 만들지 않았다" "$(find "$K86" -name '.y.md.*' 2>/dev/null)" ""
+om86 트리밖쓰기 rm -f "$T86/cy86/snap86"
+rq86 "도달 생략의 임시 스냅숏 rm -f" 런로컬
+[ -e "$T86/cy86/snap86" ] && ok "86: 거부된 rm -f 의 스냅숏이 남아 있다" || bad "86: 거부된 rm -f 의 스냅숏이 남아 있다" "$T86/cy86/snap86"
+TMPDIR="$T86" r86 트리밖쓰기 rm -f "$T86/cy86/snap86"
+check "86: 수리 줄이 말한 런로컬로 다시 낸 스냅숏 rm -f 는 통과한다" "$rc" "0"
+om86 트리밖쓰기 mv "$K86/.x.md.Ab12Cd" "$K86/x.md"
+rq86 "도달 생략의 형제 docs/ 원자 교체 mv" 대상트리
+check "86: 거부된 mv 뒤에도 원본이 그대로다" "$(cat "$K86/x.md" 2>/dev/null)" "old"
+# 원자 교체 면제는 메인 체크아웃의 docs/<한 단계> 에만 선다 — 형제 워크트리 docs/ 의 같은
+# mv 는 대상트리로 다시 내도 기존 파일을 덮는 파괴로 park 된다.
+TMPDIR="$T86" x86 트리밖쓰기 mv "$K86/.x.md.Ab12Cd" "$K86/x.md"
+check "86: 대상트리로 다시 낸 형제 docs/ 의 덮어쓰는 mv 는 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 (형제 mv)" ;; *) bad "86: 그 park 가 파괴형태미명시다 (형제 mv)" "$msg" ;; esac
+check "86: park 된 mv 뒤에도 원본이 그대로다" "$(cat "$K86/x.md" 2>/dev/null)" "old"
+rl86 mkdir -p "$SIB86/docs/k86c"
+check "86: 명시적 런로컬의 형제 docs/ mkdir -p 는 park 된다" "$rc" "11"
+case "$msg" in *"judgment '도달모순'"*) ok "86: 그 park 가 도달모순이다" ;; *) bad "86: 그 park 가 도달모순이다" "$msg" ;; esac
+printf 'k\n' > "$CY86/p10"; printf 'k\n' > "$K86/y"
+om86 워크트리쓰기 tee "$CY86/p10" </dev/null
+check "86: 도달 생략의 형제 파일 tee 는 park 된다" "$rc" "11"
+case "$msg" in *"judgment '파괴형태미명시'"*) ok "86: 그 park 가 파괴형태미명시다 (tee)" ;; *) bad "86: 그 park 가 파괴형태미명시다 (tee)" "$msg" ;; esac
+check "86: park 된 tee 뒤에도 형제 파일이 그대로다" "$(cat "$CY86/p10" 2>/dev/null)" "k"
+om86 트리밖쓰기 rm -f "$K86/y"
+rq86 "도달 생략의 형제 docs/ rm -f" 대상트리
+[ -e "$K86/y" ] && ok "86: 거부된 rm -f 의 형제 파일이 남아 있다" || bad "86: 거부된 rm -f 의 형제 파일이 남아 있다" "$K86/y"
+od86() {
+  # od86 <argv...> — 주 체크아웃에서 도달을 생략한 워크트리쓰기의 도달 판정을 낸다.
+  ( cd "$WT" && TMPDIR="$T86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cg86="$2"
+      target_field() { printf "%s" "$cg86"; }; GATE_MARK=""; GATE_MARK_TRIGGER=""; MANIFEST=/dev/null
+      GATE_REACH=""; GATE_GRADE_SOURCE=표; GATE_DECLARED=워크트리쓰기; shift 2
+      gate_reach_disposition front 0 워크트리쓰기 "$@"
+      [ "${GATE_REACH_OMIT_TT:-}" != 1 ] || printf "\n@대상트리"' _ "$GATE" "$CG" "$@" ) 2>/dev/null
+}
+check "86: 도달 생략의 다른 저장소 쓰기는 런로컬 판정과 같다" "$(od86 mkdir -p "$U86/d86")" "$(rd86 mkdir -p "$U86/d86")"
+check "86: 도달 생략의 임시 디렉터리 쓰기는 런로컬 판정과 같다" "$(od86 mkdir -p "$T86/d86")" "$(rd86 mkdir -p "$T86/d86")"
+case "$(od86 mkdir -p "$SIB86/docs/k86d")" in
+  *'@대상트리') ok "86: 도달 생략의 형제 쓰기는 대상트리 표지를 낸다" ;;
+  *) bad "86: 도달 생략의 형제 쓰기는 대상트리 표지를 낸다" "[$(od86 mkdir -p "$SIB86/docs/k86d")]" ;;
+esac
+
+# 델타 파일 집합 — 처방한 셸 블록의 프로세스 치환이 숨은 명령으로 park 됐다. 처방은 이제
+# 게이트에 한 행위씩 넘기는 단계이고, 그 정렬과 교집합이 적힌 신고로 통과한다.
+DS86="$T86/ds86"; mkdir -p "$DS86"
+printf 'b\na\nb\n' > "$DS86/a.raw"; printf 'c\na\n' > "$DS86/b.raw"
+TMPDIR="$T86" r86 트리밖쓰기 env LC_ALL=C sort -u -o "$DS86/a" "$DS86/a.raw"
+check "86: 델타 단계 — env LC_ALL=C sort -u -o 는 런로컬로 통과한다 (a)" "$rc" "0"
+TMPDIR="$T86" r86 트리밖쓰기 env LC_ALL=C sort -u -o "$DS86/b" "$DS86/b.raw"
+check "86: 델타 단계 — env LC_ALL=C sort -u -o 는 런로컬로 통과한다 (b)" "$rc" "0"
+mg86 env LC_ALL=C comm -12 "$DS86/a" "$DS86/b"
+check "86: 델타 단계 — env LC_ALL=C comm -12 는 읽기로 통과한다" "$rc" "0"
+case " $msg " in *" a "*) ok "86: 그 comm 이 교집합 a 를 낸다" ;; *) bad "86: 그 comm 이 교집합 a 를 낸다" "$msg" ;; esac
+check "86: review-unattended 의 델타 파일 집합 처방에 프로세스 치환이 없다" \
+  "$(awk '/^#### Delta file set/{f=1;next} /^#### /{f=0} f' "$repo_root/plugins/cc-cmds/skills/review-unattended/SKILL.md" | grep -c '<(' || true)" "0"
+rm -rf "$PS86" "$DS86" "$CY86/p9" "$CY86/p10" "$K86" "$SIB86/docs/k86b" "$SIB86/docs/k86c" "$SIB86/docs/k86d" \
+  "$T86/d86" "$U86/d86"
+rmdir "$SIB86/docs" 2>/dev/null || :
 
 rm -rf "$ST86" "$OUT86" "$WT/docs/x86" "$DR86"
 rm -rf "$DD86" "$WT/docs/dd86d" "$DA86" "$T86/inner86" "$T86/x86m" "$WT/new86o.txt"

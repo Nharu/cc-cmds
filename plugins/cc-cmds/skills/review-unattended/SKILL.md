@@ -212,23 +212,24 @@ Degradation overview line, for example: `델타 조건이 성립하지 않아 �
 
 #### Delta file set
 
-The set is "files changed on the segment's side since the basis review HEAD, conflict resolutions included, intersected with the segment's own diff". Two tree diffs intersected naively do not remove files that arrived only from master — the segment's three-dot diff contains merged-in files too — and `--first-parent --no-merges` alone misses the conflict-resolution edits inside a merge commit. The two are combined:
+The set is "files changed on the segment's side since the basis review HEAD, conflict resolutions included, intersected with the segment's own diff". Two tree diffs intersected naively do not remove files that arrived only from master — the segment's three-dot diff contains merged-in files too — and `--first-parent --no-merges` alone misses the conflict-resolution edits inside a merge commit. The two are combined.
 
-```sh
-# BASIS = --basis-review-head, TARGET = 대상 head(명시), BASE = 1b 에서 확정한 diff 베이스
-SET_A=$( { git -c core.quotePath=false log --first-parent --no-merges -M --name-only --format= "$BASIS..$TARGET"
-           for m in $(git log --first-parent --merges --format=%H "$BASIS..$TARGET"); do
-             git -c core.quotePath=false diff-tree --cc --name-only --no-commit-id "$m"
-           done; } | grep . | LC_ALL=C sort -u )
-SET_B=$(git -c core.quotePath=false diff -M --name-only "$BASE...$TARGET" | LC_ALL=C sort -u)
-DELTA=$(LC_ALL=C comm -12 <(printf '%s\n' "$SET_A") <(printf '%s\n' "$SET_B"))
-```
+**Each step is its own call, with no shell string around it.** In a driver dispatch every Bash act goes through `gate.sh exec`, and a block holding shell variables, a pipe, `$(…)`, a `for` loop or a process substitution reaches the gate only as one `bash -c` string, whose process substitution parks as an unread command. Run the steps below one at a time, with `BASIS` = `--basis-review-head`, `TARGET` = the explicit target head and `BASE` = the diff base fixed in 1b written out as the shas they are; an interactive run outside the gate takes the same steps.
+
+1. `git -c core.quotePath=false log --first-parent --no-merges -M --name-only --format= <BASIS>..<TARGET>` — `--surface 읽기`.
+2. `git log --first-parent --merges --format=%H <BASIS>..<TARGET>` — `--surface 읽기`; then, one call for each merge commit `<m>` it printed, `git -c core.quotePath=false diff-tree --cc --name-only --no-commit-id <m>` — `--surface 읽기`.
+3. `git -c core.quotePath=false diff -M --name-only <BASE>...<TARGET>` — `--surface 읽기`.
+4. `mktemp -d` — `--surface 트리밖쓰기 --reach 런로컬`. With the file-edit tool, write the paths steps 1 and 2 printed into `<dir>/a.raw` and those step 3 printed into `<dir>/b.raw`, one per line, leaving out empty lines.
+5. `env LC_ALL=C sort -u -o <dir>/a <dir>/a.raw` and `env LC_ALL=C sort -u -o <dir>/b <dir>/b.raw` — each `--surface 트리밖쓰기 --reach 런로컬`; then `env LC_ALL=C comm -12 <dir>/a <dir>/b` — `--surface 읽기`. Its output is `DELTA`.
+6. `rm -rf <dir>` — `--surface 트리밖쓰기 --reach 런로컬 --destructive`.
+
+The union of steps 1 and 2 is the segment-side set (`a`), and step 3 is the segment's own diff (`b`).
 
 - **Every `DELTA` entry is a raw repository-relative path and is used verbatim** — as the pathspec of Step 3's size sum and of Step 4's whole-file diff, and as a `Read` argument. That is why every `git` call that prints a path carries `-c core.quotePath=false`: under git's default a path holding a non-ASCII byte is printed as a double-quoted, octal-escaped string, a diff taken with that string as its pathspec is empty with exit 0, and the file is counted as in scope while no reviewer sees a line of it. This repository's own merge and apply rules have Korean filenames. `sort` and `comm` run under `LC_ALL=C` so that both sides of the intersection are ordered by bytes and not by a locale's collation.
 - **An entry that names nothing degrades the cycle to a full review.** If neither `git cat-file -e "$TARGET:<entry>"` nor `git cat-file -e "$BASE:<entry>"` succeeds for some entry, the set was mis-computed; review in full, as for any 1b′ failure, and record one overview line naming the entry.
 
 - `--cc` emits only the paths whose merge result differs from both parents, so a conflict a person resolved by hand is included and a clean merge that took one side as-is is not.
-- A **rename inside a merge commit** is not paired by `--cc`: the old path comes out as `DD` and the new one as `AA`, separately. `SET_B` is taken with `-M`, so only the new path survives the intersection. A basis finding that cites the old path is followed by the reviewer in the re-adjudication below regardless.
+- A **rename inside a merge commit** is not paired by `--cc`: the old path comes out as `DD` and the new one as `AA`, separately. Step 3 is taken with `-M`, so only the new path survives the intersection. A basis finding that cites the old path is followed by the reviewer in the re-adjudication below regardless.
 - An empty `DELTA` (nothing on the segment side since the basis but clean merges) is still a delta review: there is no new-finding scope, and the basis P0/P1 re-adjudication is all that remains.
 - 1c's `--declared-files` comparison is **still against the whole segment diff**. The scope record is independent of the reading mode. A path outside the declaration that is also outside `DELTA` has that overlap noted under `## 미검토 영역`.
 
