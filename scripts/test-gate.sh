@@ -25449,6 +25449,19 @@ graded_as 외부상태변경 'buildx 의 -o type=image,push=true 도 같다' -- 
 # docker 유도 갈래. 데몬의 이미지·컨테이너 저장소는 이 기계의 모든 런이 함께 쓰므로,
 # 등급표가 트리 밖 쓰기로 매기는 docker 형태는 명령 갈래에서 기기전역으로 오르고 트리거
 # 줄이 없다. 푸시와 다른 데몬을 지명한 철자는 오르지 않는다.
+# 맥락이 원격인지는 docker 설정 디렉터리의 맥락 기록이 정하므로, 이 기계의 기록이
+# 판정에 섞이지 않게 이 절 동안 설정 디렉터리를 픽스처로 바꾼다. `c` 는 tcp 엔드포인트,
+# `desktop-linux` 는 Docker Desktop 처럼 로컬 소켓 엔드포인트를 가진다.
+DK50_PREV_SET="${DOCKER_CONFIG+set}"; DK50_PREV="${DOCKER_CONFIG:-}"
+DOCKER_CONFIG="$WORK/docker-config-50"; export DOCKER_CONFIG
+dk50_ctx() {
+  local d
+  d="$DOCKER_CONFIG/contexts/meta/$(printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1)"
+  mkdir -p "$d"
+  printf '{"Name":"%s","Metadata":{},"Endpoints":{"docker":{"Host":"%s","SkipTLSVerify":false}}}\n' "$1" "$2" > "$d/meta.json"
+}
+dk50_ctx c tcp://h:2376
+dk50_ctx desktop-linux "unix://$WORK/docker.sock"
 axis_is gate_reach_derived_full '기기전역/cmd' 'docker build 는 기기전역으로 오른다'      -- front docker build -t x .
 axis_is gate_reach_derived_full '기기전역/cmd' 'docker run 도 같다'                       -- front docker run --rm x
 axis_is gate_reach_derived_full '기기전역/cmd' 'docker pull 도 같다'                      -- front docker pull a
@@ -25463,6 +25476,18 @@ axis_is gate_reach_derived_full '-/-'          '= 로 쓴 --host 도 다른 데�
 axis_is gate_reach_derived_full '기기전역/cmd' '--context default 는 이 기계다'           -- front docker --context default build -t x .
 axis_is gate_reach_derived_full '기기전역/cmd' 'unix 소켓의 -H 도 이 기계다'              -- front docker -H unix:///var/run/docker.sock run --rm x
 axis_is gate_reach_derived_full '기기전역/cmd' '값을 받는 -l 뒤의 하위 명령도 읽는다'     -- front docker -l debug build -t x .
+# 원격은 닫힌 목록이다 — 네트워크 호스트와 그런 엔드포인트를 기록한 맥락만 다른 데몬이다.
+# `default` 가 아닌 로컬 맥락 이름과 `=` 를 붙인 짧은 -H 를 원격으로 읽으면 바닥이
+# 꺼지고, 런로컬 칸은 파괴 표지를 보지 않으므로 지우는 행위가 park 없이 통과했다.
+axis_is gate_reach_derived_full '기기전역/cmd' '로컬 소켓을 기록한 맥락은 이 기계다'      -- front docker --context desktop-linux build -t x .
+axis_is gate_reach_derived_full '기기전역/cmd' '= 로 쓴 --context 도 같다'               -- front docker --context=desktop-linux run --rm x
+axis_is gate_reach_derived_full '기기전역/cmd' '붙여 쓴 -c 도 같다'                       -- front docker -cdesktop-linux run --rm x
+axis_is gate_reach_derived_full '기기전역/cmd' '기록이 없는 맥락은 원격으로 알려지지 않았다' -- front docker --context nosuch run --rm x
+axis_is gate_reach_derived_full '기기전역/cmd' '= 를 붙인 짧은 -H 의 unix 소켓도 이 기계다' -- front docker -H=unix:///var/run/docker.sock run --rm x
+axis_is gate_reach_derived_full '기기전역/cmd' 'unix 소켓의 --host= 도 이 기계다'         -- front docker --host=unix:///var/run/docker.sock build -t x .
+axis_is gate_reach_derived_full '기기전역/cmd' '로컬 맥락 뒤의 system prune 도 오른다'    -- front docker --context desktop-linux system prune -af --volumes
+axis_is gate_reach_derived_full '-/-'          '= 를 붙인 짧은 -H 의 tcp 는 다른 데몬이다' -- front docker -H=tcp://h build -t x .
+axis_is gate_reach_derived_full '-/-'          'ssh 호스트도 다른 데몬이다'              -- front docker -H ssh://u@h build -t x .
 # 이미지 뒤의 -H 는 컨테이너 명령의 인자라 다른 데몬이 아니다.
 axis_is gate_reach_derived_full '기기전역/cmd' '이미지 뒤의 -H 는 데몬을 지명하지 않는다' -- front docker run --rm x -H tcp://h
 # 감싸개는 첫 줄의 첫 필드다 — 원장의 `유도 도달` 과 처분이 같은 값을 읽는다.
@@ -25482,6 +25507,8 @@ axis_is gate_act_mark '파괴/prune' '-H 뒤의 system prune 도 파괴다'     
 axis_is gate_act_mark '파괴/prune' '--context default 뒤의 system prune 도 같다' -- docker --context default system prune -f
 axis_is gate_act_mark '파괴/rm'    '값을 받는 -l 뒤의 image rm 도 같다'       -- docker -l debug image rm T
 axis_is gate_act_mark '파괴/rm'    '= 로 쓴 --config 뒤의 image rm 도 같다'   -- docker --config=/tmp/c image rm T
+axis_is gate_act_mark '파괴/prune' '로컬 맥락 뒤의 system prune 도 파괴다'   -- docker --context desktop-linux system prune -af --volumes
+if [ "$DK50_PREV_SET" = set ]; then DOCKER_CONFIG="$DK50_PREV"; export DOCKER_CONFIG; else unset DOCKER_CONFIG; fi
 
 # ---------------------------------------------------------------------------
 # 51. 형태 미상 — 표에 있는 도구의 읽을 수 없는 형태는 선언으로 넘길 수 없다
@@ -30986,6 +31013,11 @@ pb_is "83b: make test 는 러너 그대로다"                        'P=1 형�
 pb_is "83b: npm run 도 러너 그대로다"                          'P=1 형태=러너' 'P 형태' 'npm run'   'npm run build'
 pb_is "83b: pytest x 도 러너 그대로다"                         'P=1 형태=러너' 'P 형태' 'pytest x'  'pytest x'
 pb_is "83b: bash scripts/x.sh 행이 x.sh.evil 을 열지 않는다"   'P=0 형태=없음' 'P 형태' 'bash scripts/x.sh' 'bash scripts/x.sh.evil'
+# `+e` 는 스크립트 낱말이 아니다. 그 자리를 스크립트로 읽으면 행 `bash +e` 가 완전이
+# 되어, 게이트가 스스로 제안하는 그 행이 `bash +e -c <코드>` 와 아무 경로의 불투명
+# 상한을 들었다. 킥오프 도우미는 이 행을 러너로 보이므로 대조기도 같아야 한다.
+pb_not_complete "83b: 행 bash +e 는 bash +e -c x 를 완전으로 열지 않는다"       'bash +e' 'bash +e -c x'
+pb_not_complete "83b: 행 bash +e 는 bash +e /tmp/x.sh 도 완전으로 열지 않는다"  'bash +e' 'bash +e /tmp/x.sh'
 
 # 행 가림. 대조가 첫 일치에서 멈추던 동안에는 앞 행이 뒤 행을 가렸다.
 pb_is "83b: 앞의 러너 행이 뒤의 완전 행을 가리지 않는다" 'P=1 형태=완전' 'P 형태' \
@@ -31751,6 +31783,21 @@ check "83c: 22d — 원격 데몬의 파괴는 dev파괴다" "$rc/$(rx_cell)" "1
 rx_manifest R83C 'docker -H tcp://h image rm img3:t'
 t3p front3 트리밖쓰기 dev --destructive -- docker -H tcp://h image rm img3:t
 check "83c: 22d — 행을 더해도 dev파괴다" "$rc/$(rx_cell)" "11/dev파괴"
+
+# 22e — 로컬 소켓을 기록한 맥락(Docker Desktop 의 `desktop-linux`)과 `=` 를 붙인 짧은
+# -H 는 이 기계의 데몬이다. 런로컬로 낮춰 신고한 파괴도 기기전역 칸에서 행 없이 park
+# 한다 — 원격으로 읽으면 런로컬 칸이 파괴 표지를 보지 않아 그대로 지웠다.
+DK83_PREV_SET="${DOCKER_CONFIG+set}"; DK83_PREV="${DOCKER_CONFIG:-}"
+DOCKER_CONFIG="$WORK/docker-config-83c"; export DOCKER_CONFIG
+dk83_meta="$DOCKER_CONFIG/contexts/meta/$(printf '%s' desktop-linux | shasum -a 256 | cut -d' ' -f1)"
+mkdir -p "$dk83_meta"
+printf '{"Name":"desktop-linux","Metadata":{},"Endpoints":{"docker":{"Host":"unix://%s/docker.sock","SkipTLSVerify":false}}}\n' "$WORK" > "$dk83_meta/meta.json"
+rx_manifest R83C ''
+t3p front3 트리밖쓰기 런로컬 -- docker --context desktop-linux system prune -af --volumes
+check "83c: 22e — 로컬 맥락의 system prune 은 기기전역 칸에서 park 한다" "$rc/$(rx_cell)" "11/기기전역"
+t3p front3 트리밖쓰기 런로컬 -- docker -H=unix:///var/run/docker.sock image rm img3:t
+check "83c: 22e — = 를 붙인 unix 소켓 -H 의 image rm 도 같다" "$rc/$(rx_cell)" "11/기기전역"
+if [ "$DK83_PREV_SET" = set ]; then DOCKER_CONFIG="$DK83_PREV"; export DOCKER_CONFIG; else unset DOCKER_CONFIG; fi
 
 # 23 — 래퍼.
 rx_manifest R83C ''

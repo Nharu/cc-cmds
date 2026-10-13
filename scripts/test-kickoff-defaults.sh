@@ -655,7 +655,8 @@ probe_form() {   # probe_form <shape> → the probe's 형태= field
 }
 for s in 'npm run' 'go run' 'gh pr' 'bash scripts/x.sh' 'bash -x scripts/x.sh' 'bash -c x y' \
          'python3 -m pip install' 'bash /dev/stdin' 'sh -s' 'node -e' 'bash -o pipefail -c echo' \
-         'python3 -W ignore -c x' 'node -r x -e y' 'bash --norc scripts/x.sh a' 'bash scripts/x.sh -c'; do
+         'python3 -W ignore -c x' 'node -r x -e y' 'bash --norc scripts/x.sh a' 'bash scripts/x.sh -c' \
+         'bash +e' 'bash +e -c x' 'bash +e scripts/x.sh'; do
   f=$(probe_form "$s")
   case "$(runner "$s"):$f" in
     예:완전|아니오:러너|아니오:없음|*:) bad "형태=$s 의 러너 판정이 대조기의 형태 판정과 같다" "러너=$(runner "$s") 형태=$f" ;;

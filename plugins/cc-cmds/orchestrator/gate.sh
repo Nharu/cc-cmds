@@ -979,9 +979,9 @@ gate_reach_derived_full() {
       if gate_deploy_trigger_match "$alias" "$@"; then printf '배포트리거\tdeploy\n'; return 0; fi
       # ONLY THE GLOBAL OPTIONS BEFORE THE SUBCOMMAND CHOOSE THE DAEMON. A `-H`
       # after it belongs to the subcommand or to the container's own command
-      # (`… alpine grep -H pat /f`), and `-H unix://…` or `--context default`
-      # names this machine's daemon — reading either as remote switched the
-      # floor off for an ordinary local act.
+      # (`… alpine grep -H pat /f`), and only a network host names another
+      # daemon — reading a local socket or a local context as remote switched
+      # the floor off for an ordinary local act.
       local _dg _dn
       _dg=$(shift; gate_docker_globals "$@")
       _dn=${_dg%%	*}; remote=${_dg#*	}
@@ -1011,10 +1011,16 @@ gate_reach_derived_full() {
 gate_docker_globals() {
   # gate_docker_globals <argv after `docker`...> — `<count>\t<remote>`: how many
   # leading words are docker's own global options, values included, and 1 when
-  # one of them names a daemon other than this machine's. A host that is not
-  # `unix://…` and a context that is not `default` are remote; `--config` is
-  # read as local, which keeps the floor on. Every other dash word is taken as a
-  # valueless flag, and the first word without a dash is the subcommand.
+  # one of them names a daemon other than this machine's. REMOTE IS THE CLOSED
+  # LIST, not its complement: a host is remote only when it is a network
+  # address (`gate_docker_host_remote`), and a context only when its stored
+  # endpoint is one (`gate_docker_context_remote`). Anything else — a local
+  # socket, Docker Desktop's `desktop-linux`, a context this machine has no
+  # record of — keeps the floor on, because a spelling read as remote drops the
+  # act to its declared reach and the run-local cell does not read the
+  # destructive mark. `--config` is read as local too. Every other dash word is
+  # taken as a valueless flag, and the first word without a dash is the
+  # subcommand.
   local n=0 remote=0 a v k
   while [ "$#" -gt 0 ]; do
     a="$1"; k=''; v=''
@@ -1025,18 +1031,42 @@ gate_docker_globals() {
         else n=$((n + 1)); shift; fi ;;
       --host=*|--context=*|--config=*|--log-level=*|--tlscacert=*|--tlscert=*|--tlskey=*)
         k="${a%%=*}"; v="${a#*=}"; n=$((n + 1)); shift ;;
-      -H?*) k=-H; v="${a#-H}"; n=$((n + 1)); shift ;;
-      -c?*) k=-c; v="${a#-c}"; n=$((n + 1)); shift ;;
+      # The attached short form takes an optional `=` as well (`-H=unix://…`),
+      # which left on the value hid the scheme.
+      -H?*) k=-H; v="${a#-H}"; v="${v#=}"; n=$((n + 1)); shift ;;
+      -c?*) k=-c; v="${a#-c}"; v="${v#=}"; n=$((n + 1)); shift ;;
       -l?*) n=$((n + 1)); shift ;;
       -*) n=$((n + 1)); shift ;;
       *) break ;;
     esac
     case "$k" in
-      -H|--host) case "$v" in unix://?*) ;; *) remote=1 ;; esac ;;
-      -c|--context) [ "$v" = "default" ] || remote=1 ;;
+      -H|--host) gate_docker_host_remote "$v" && remote=1 ;;
+      -c|--context) gate_docker_context_remote "$v" && remote=1 ;;
     esac
   done
   printf '%s\t%s' "$n" "$remote"
+}
+
+gate_docker_host_remote() {
+  # gate_docker_host_remote <host> — 0 when a docker host names a daemon reached
+  # over the network. `unix://`, `fd://` and `npipe://` are this machine's own
+  # sockets, and an unknown spelling keeps the floor on.
+  case "$1" in tcp://?*|ssh://?*|http://?*|https://?*) return 0 ;; esac
+  return 1
+}
+
+gate_docker_context_remote() {
+  # gate_docker_context_remote <name> — 0 when the named context's stored docker
+  # endpoint is a network host. docker keeps each context under its config
+  # directory as `contexts/meta/<sha256 of the name>/meta.json`; `default` is
+  # built in and has no record. A name with no readable record is not known to
+  # be remote, so it is read as local.
+  local name="$1" meta host
+  [ -n "$name" ] && [ "$name" != default ] || return 1
+  meta="${DOCKER_CONFIG:-${HOME:-}/.docker}/contexts/meta/$(printf '%s' "$name" | shasum -a 256 | cut -d' ' -f1)/meta.json"
+  [ -f "$meta" ] || return 1
+  host=$(jq -r '.Endpoints.docker.Host // empty' "$meta" 2>/dev/null) || return 1
+  gate_docker_host_remote "$host"
 }
 
 gate_deploy_trigger_match() {
