@@ -2124,6 +2124,50 @@ gate_reach_peeled_verb() {
   printf '%s' "$#"
 }
 
+gate_reach_git_apply_place() {
+  # gate_reach_git_apply_place <alias> <git argv...> — prints the place a `git
+  # apply` writes the files of its patch under: its `--directory` taken
+  # against the repository the collector reads the act to run in, or that
+  # repository itself. Status 1, with nothing printed, when the act is no
+  # `git apply`, when it only reports (`--check`, `--stat`, `--numstat` or
+  # `--summary` without `--apply`), when it writes the index alone
+  # (`--cached` without `--index`), or when the collector gives up on it.
+  local alias="$1" a sub='' dir='' eatd=0 rd=0 ap=0 ca=0 ix=0 repo; shift
+  local -a av
+  av=("$@")
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C|-c|--git-dir|--work-tree|--namespace|--config-env|--attr-source)
+        [ $# -ge 2 ] || return 1; shift 2 ;;
+      -*) shift ;;
+      *) sub="$1"; shift; break ;;
+    esac
+  done
+  [ "$sub" = "apply" ] || return 1
+  for a in "$@"; do
+    if [ "$eatd" = "1" ]; then eatd=0; dir="$a"; continue; fi
+    case "$a" in
+      --) break ;;
+      --check|--stat|--numstat|--summary) rd=1 ;;
+      --apply) ap=1 ;;
+      --cached) ca=1 ;;
+      --index) ix=1 ;;
+      --directory) eatd=1 ;;
+      --directory=*) dir="${a#*=}" ;;
+    esac
+  done
+  [ "$eatd" = "0" ] || return 1
+  [ "$rd" = "1" ] && [ "$ap" = "0" ] && return 1
+  [ "$ca" = "1" ] && [ "$ix" = "0" ] && return 1
+  repo=$( gate_reach_target_tree_act "$alias" "${av[@]}" >/dev/null 2>&1 || :
+          printf '%s' "${GATE_TT_LANDS[0]:-}" )
+  [ -n "$repo" ] || return 1
+  if [ -z "$dir" ]; then printf '%s' "$repo"; return 0; fi
+  case "$dir" in '~'*) dir=$(gate_tilde_path "$dir" "$(gate_grade_cwd)") || return 1 ;; esac
+  gate_lexical_abs "$dir" "$repo"
+}
+
 gate_reach_unknown_overwrite() {
   # gate_reach_unknown_overwrite <alias> <argv...> — prints the verb word when
   # the act, its launchers peeled, is a verb the local reader does not list and
@@ -2154,6 +2198,17 @@ gate_reach_unknown_overwrite() {
   shift $(( $# - n ))
   case "${1##*/}" in
     git)
+      # `git apply` writes the files its patch names, under its `--directory`
+      # or under the repository it runs in, and the local reader reads no
+      # `apply`: `git apply --directory=../<sibling> p.diff` rewrote the
+      # sibling's files under `대상트리` with no manifest form named. Its
+      # forms that only report (`--check`, `--stat`, `--numstat`,
+      # `--summary` without `--apply`) and `--cached` alone, which writes the
+      # index only, are no overwrite.
+      a=$(gate_reach_git_apply_place "$alias" "$@") || a=''
+      if [ -n "$a" ] && [ -e "$a" ] && ! gate_reach_runlocal_honest "$a"; then
+        printf 'apply'; return 0
+      fi
       v=''
       for a in "$@"; do
         case "$a" in
@@ -2184,12 +2239,31 @@ gate_reach_unknown_overwrite() {
   )
 }
 
+gate_reach_hardlinked() {
+  # gate_reach_hardlinked <path> — 0 when the path is an existing regular file
+  # with more than one link, 1 otherwise.
+  #
+  # A WRITE TO A HARD LINK IS A WRITE TO EVERY NAME OF THE FILE. A link in the
+  # act's own worktree to a file of another worktree read as a place `런로컬`
+  # is honest for, so `tee <own worktree>/h` rewrote the sibling's file. The
+  # other names cannot be found from here, so such a file counts as landing in
+  # the target's trees. `find -links` reads the count the same way on BSD and
+  # GNU, where `stat` does not. An honest run-local file with more than one
+  # link — an object of a `git clone --local` under the temp directory — is
+  # closed with it, and is accepted.
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  [ -n "$(find "$1" -maxdepth 0 -type f -links +1 2>/dev/null)" ]
+}
+
 gate_reach_runlocal_honest() {
   # gate_reach_runlocal_honest <path> — 0 when the path lies in one of the
   # three places `런로컬` is honest for: the temp directory as the act reads
   # `TMPDIR`, the run's state root, and the act's own worktree, each compared
   # by its physical spelling as `gate_reach_runlocal_escapes` compares them.
+  # A regular file with more than one link is in none of them
+  # (`gate_reach_hardlinked`).
   local full tmp sr own
+  gate_reach_hardlinked "$1" && return 1
   full=$(gate_real_prefix "$1")
   tmp="${TMPDIR:-/tmp}"; tmp="${tmp%/}"; [ -n "$tmp" ] || tmp=/
   tmp=$(gate_real_prefix "$tmp")
@@ -2232,6 +2306,9 @@ gate_reach_runlocal_escapes() {
   sr=$(gate_real_prefix "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds")
   own=$(gate_tree_root)
   for l in "${GATE_TT_LANDS[@]}"; do
+    # A file with another link may be the same file as one in the target's
+    # trees, and where that link is cannot be read from here.
+    if gate_reach_hardlinked "$l"; then hit=0; continue; fi
     full=$(gate_real_prefix "$l")
     case "$full" in
       "$tmp"|"$tmp"/*|"$sr"|"$sr"/*) continue ;;
@@ -2283,7 +2360,7 @@ gate_reach_runlocal_destruction() {
   # string — a script file, another interpreter's code — is still not read,
   # and a destruction inside it is the stage's to declare with `--destructive`.
   local alias="$1" X="$2" Pd="$3"; shift 3
-  local r rec unread kept n outer
+  local r rec unread kept n outer gcw
   # The outer argv's `도달모순` waits for the lines: a shell string holds blanks,
   # so the collector gives the outer argv up and answers it, and the
   # destruction a line names — with its trigger word — is the answer the
@@ -2293,9 +2370,18 @@ gate_reach_runlocal_destruction() {
     ''|도달모순) ;;
     *) printf '%s' "$outer"; return 0 ;;
   esac
+  # A line after a literal `cd` the reader follows carries that directory as
+  # a fourth field, and every question of the line is asked from there. The
+  # act's own worktree is settled first, so it is never read from that
+  # directory.
+  gcw=$(gate_grade_cwd)
+  [ -n "$GATE_TREE_ROOT" ] || GATE_TREE_ROOT=$(gate_tree_root)
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
-    unread="${rec%%	*}"; kept="${rec#*	}"; kept="${kept%%	*}"
+    unread="${rec%%	*}"; kept="${rec#*	}"
+    GATE_GRADE_CWD="$gcw"
+    case "$kept" in *'	'*'	'*) GATE_GRADE_CWD="${kept##*	}" ;; esac
+    kept="${kept%%	*}"
     set -f
     # shellcheck disable=SC2086
     set -- $kept
@@ -2343,7 +2429,7 @@ gate_reach_runlocal_destruction() {
           '~'*)
             kept=$(gate_tilde_path "$1" "$(gate_grade_cwd)") || {
               r=$(gate_reach_tree_destruction 1 "$Pd" :)
-              [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+              [ -z "$r" ] || { GATE_GRADE_CWD="$gcw"; printf '%s' "$r"; return 0; }
               continue
             } ;;
           *) kept="$(gate_grade_cwd)/$1" ;;
@@ -2378,10 +2464,11 @@ gate_reach_runlocal_destruction() {
         fi
         r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@") ;;
     esac
-    [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+    [ -z "$r" ] || { GATE_GRADE_CWD="$gcw"; printf '%s' "$r"; return 0; }
   done <<EOF
 $(gate_opaque_shell_lines "$@")
 EOF
+  GATE_GRADE_CWD="$gcw"
   printf '%s' "$outer"
   return 0
 }
@@ -2507,8 +2594,11 @@ gate_reach_disposition() {
   case "$cls" in
     불투명|미상)
       # Only an opaque runner whose floor the comparator held at `읽기` reaches
-      # this with a `읽기` declaration: a command with no row is held to a
-      # worktree write before it gets here.
+      # this with a `읽기` declaration, and that floor is `읽기` only when every
+      # line of its payload is one the table grades `읽기` with no redirection
+      # target: a payload line with no row floors `워크트리쓰기`
+      # (`gate_opaque_floor`), and a command with no row written bare is held
+      # to a worktree write before it gets here.
       [ "${GATE_DECLARED:-}" = "읽기" ] && return 0
       # A `런로컬` write is within the cap, but its destruction question is
       # asked here, because this return comes before the `런로컬` cell below
@@ -2834,7 +2924,14 @@ gate_tt_copy_dest_only() {
   # directory, so `cp --targ=<sibling> <tmp>/x <tmp>/y` narrowed its landing
   # to `<tmp>/y` and overwrote the sibling's file under `런로컬` on a host
   # whose `cp` is GNU's.
-  local c="$1" a p seen=0 n=0; shift
+  #
+  # A HARD LINK IS NO COPY. `ln` without `-s` and `cp -l` make the destination
+  # the same file as the source, so a later write to the destination is a
+  # write to the source wherever it lies; narrowed to the destination, `ln
+  # <sibling>/README.md <own worktree>/h` went through `런로컬` and the next
+  # `tee <own worktree>/h` rewrote the sibling's file. Both keep the whole
+  # collection, the source a landing place.
+  local c="$1" a p seen=0 n=0 sym=0 lnk=0; shift
   case "$c" in cp|install|ln) ;; *) return 1 ;; esac
   for a in "$@"; do
     case "$a" in
@@ -2848,16 +2945,24 @@ gate_tt_copy_dest_only() {
           # shellcheck disable=SC2086
           p=$(gate_long_pick "$a" $GATE_COPY_LONGS) || return 1
         fi
-        case "$p" in --target-directory|--directory) return 1 ;; esac ;;
+        case "$p" in
+          --target-directory|--directory) return 1 ;;
+          --symbolic) sym=1 ;;
+          --link) lnk=1 ;;
+        esac ;;
       -?*)
         [ "$seen" = "0" ] || return 1
         case "$a" in -*t*) return 1 ;; esac
+        case "$a" in -*s*) sym=1 ;; esac
+        case "$a" in -*l*) lnk=1 ;; esac
         if [ "$c" = "install" ]; then
           case "$a" in -*d*) return 1 ;; esac
         fi ;;
       *) seen=1; n=$((n + 1)) ;;
     esac
   done
+  [ "$c" = "ln" ] && [ "$sym" = "0" ] && return 1
+  [ "$c" = "cp" ] && [ "$lnk" = "1" ] && return 1
   [ "$n" -ge 2 ]
 }
 
@@ -3063,7 +3168,29 @@ gate_tt_program_writes() {
   # neither is an option this reader does not know. awk's program is closed
   # on any `>`, `|`, `system` or `getline`: a `>` that compares closes it too,
   # which over-closes and is accepted.
-  local c="${1##*/}" i=0 a w b k pos='' nf=0 sfx=0
+  #
+  # THE IN-PLACE SUFFIX IS READ AS THE SED THAT RUNS READS IT. BSD sed's `-i`
+  # and `-I` take the next word as the suffix whatever it is when nothing is
+  # glued to them; GNU sed's `-i` takes only a glued suffix and it has no
+  # `-I`. Read as one spelling for both, only an empty or dotted word was a
+  # suffix, so on this host `sed -I '' "1w<sibling>/f" in` read `''` as the
+  # program, and `sed -i bak "1w<sibling>/f" in` read `bak`, and the `w`
+  # that truncated the sibling's file was never read. The flavor is GNU for
+  # `gsed` or a path through `gnubin`, BSD for any other `sed` on a Darwin or
+  # BSD kernel, GNU otherwise; `GATE_SED_FLAVOR` sets it for a test.
+  local c="${1##*/}" i=0 a w b k pos='' nf=0 fl
+  case "${GATE_SED_FLAVOR:-}" in
+    BSD|GNU) fl="$GATE_SED_FLAVOR" ;;
+    *)
+      case "$c|$1" in
+        gsed\|*|*\|*gnubin*) fl=GNU ;;
+        *)
+          case "$(uname -s 2>/dev/null)" in
+            Darwin|*BSD) fl=BSD ;;
+            *) fl=GNU ;;
+          esac ;;
+      esac ;;
+  esac
   shift
   local -a args
   args=("$@")
@@ -3071,11 +3198,6 @@ gate_tt_program_writes() {
     sed|gsed)
       while [ "$i" -lt "${#args[@]}" ]; do
         a="${args[$i]}"
-        if [ "$sfx" = "1" ]; then
-          # BSD's `-i <suffix>`: an empty word or a dotted suffix.
-          sfx=0
-          case "$a" in ''|.*) i=$((i + 1)); continue ;; esac
-        fi
         case "$a" in
           --) i=$((i + 1)); break ;;
           -e|--expression)
@@ -3087,7 +3209,6 @@ gate_tt_program_writes() {
             gate_tt_sed_script_safe "${a#*=}" || return 1
             pos="$pos$((i + 1))"$'\n' ;;
           -f|-f?*|--file|--file=*) return 1 ;;
-          -i) sfx=1 ;;
           --in-place|--in-place=*|--quiet|--silent|--regexp-extended|--posix|--separate|\
           --unbuffered|--null-data|--zero-terminated|--debug|--sandbox|--follow-symlinks) ;;
           --*) return 1 ;;
@@ -3097,7 +3218,15 @@ gate_tt_program_writes() {
               k="${b:0:1}"; b="${b:1}"
               case "$k" in
                 n|E|r|s|u|z|a) ;;
-                i|I) b='' ;;
+                i|I)
+                  [ "$fl$k" = "GNUI" ] && return 1
+                  # A glued value is the suffix in both flavors; with none,
+                  # BSD eats the next word and GNU eats nothing.
+                  if [ -z "$b" ] && [ "$fl" = "BSD" ]; then
+                    i=$((i + 1))
+                    [ "$i" -lt "${#args[@]}" ] || return 1
+                  fi
+                  b='' ;;
                 l) [ -n "$b" ] || i=$((i + 1)); b='' ;;
                 f) return 1 ;;
                 e)
@@ -3150,6 +3279,73 @@ gate_tt_program_writes() {
   esac
   printf '%s' "$pos"
   return 0
+}
+
+gate_tt_reads_only() {
+  # gate_tt_reads_only <verb> <args...> — status 0 when the argv is proven to
+  # write no file and run no command, 1 when that is not proven. The grading
+  # table grades these verbs `읽기` on a 0 and a worktree write otherwise.
+  #
+  #   sed, gsed           no in-place option (`-i…`, `-I…`, `--in-place…`, or
+  #                       `i`/`I` among the letters of a short bundle before
+  #                       one that takes a value) and a program
+  #                       `gate_tt_program_writes` proves writes nothing
+  #   awk and its kin     a program `gate_tt_program_writes` proves writes
+  #                       nothing (it is 1 for `-i inplace` and any option it
+  #                       does not know)
+  #   xxd                 at most one word that is no option once the values
+  #                       of `-c -g -l -o -s -n` are skipped: the second is
+  #                       the file it writes
+  #   md5, readlink       always
+  #
+  # WITHOUT THESE ROWS A READ OF ANOTHER TREE HAD NO DECLARATION THAT PASSED.
+  # A verb with no row is held to a worktree write, and under `런로컬` the
+  # landing question reads every existing operand of a verb it does not know
+  # as overwritten, so `sed -n 1,5p <main checkout>/docs/…` from a segment
+  # worktree — the path a stage reads its design document by — parked under
+  # every token. Graded `읽기`, the act passes cell 3 before any landing
+  # question. A spelling not proven here keeps the write grade.
+  local c="${1##*/}" a b k n=0 dd=''
+  shift
+  case "$c" in
+    sed|gsed)
+      for a in "$@"; do
+        [ -z "$dd" ] || break
+        case "$a" in
+          --) dd=1 ;;
+          --in-place|--in-place=*) return 1 ;;
+          --*) ;;
+          -?*)
+            b="${a#-}"
+            while [ -n "$b" ]; do
+              k="${b:0:1}"; b="${b:1}"
+              case "$k" in
+                i|I) return 1 ;;
+                e|f|l) b='' ;;
+              esac
+            done ;;
+        esac
+      done
+      gate_tt_program_writes "$c" "$@" >/dev/null ;;
+    awk|gawk|mawk|nawk)
+      gate_tt_program_writes "$c" "$@" >/dev/null ;;
+    xxd)
+      while [ $# -gt 0 ]; do
+        a="$1"; shift
+        if [ -n "$dd" ]; then n=$((n + 1)); continue; fi
+        case "$a" in
+          --) dd=1 ;;
+          -c|-g|-l|-o|-s|-n)
+            [ $# -gt 0 ] || return 1
+            shift ;;
+          -?*) ;;
+          *) n=$((n + 1)) ;;
+        esac
+      done
+      [ "$n" -le 1 ] ;;
+    md5|readlink) return 0 ;; # lint-bash-portability: disable=md5
+    *) return 1 ;;
+  esac
 }
 
 gate_tt_write_slots() {
@@ -3523,6 +3719,12 @@ gate_reach_target_tree_act() {
           if [ "$_ddash" = "1" ]; then
             case "$1" in -*) return 1 ;; esac
           fi
+          # An editor or another variable that makes the command run a program
+          # gives up whatever its name, the skipped `GIT_EDITOR` included
+          # (`gate_env_assign_execs`).
+          case "$1" in
+            [A-Za-z_]*=*) gate_env_assign_execs "$1" && return 1 ;;
+          esac
           case "$1" in
             -i|-0|-v) shift ;;
             --) _ddash=1; shift ;;
@@ -3637,9 +3839,13 @@ EOF
         local -a pw
         pw=()
         i=0
+        # The positions come back one per line with the trailing newline the
+        # command substitution stripped, so both ends are padded: read bare,
+        # the last position never matched, and when the program was the last
+        # word it was collected as a place.
         for a in "$@"; do
           i=$((i + 1))
-          case $'\n'"$_sl" in *$'\n'"$i"$'\n'*) continue ;; esac
+          case $'\n'"$_sl"$'\n' in *$'\n'"$i"$'\n'*) continue ;; esac
           pw[${#pw[@]}]="$a"
         done
         set -- ${pw[@]+"${pw[@]}"} ;;
@@ -3685,6 +3891,20 @@ EOF
     if [ "$eat" = "1" ]; then eat=0; continue; fi
     # git's `--output <file>` takes the next word as the file it writes.
     if [ "$eat" = "2" ]; then eat=0; a="--output=$a"; fi
+    # The `--directory` of `git apply` is where the patch lands, whatever its
+    # shape: read as an operand only when it held a `/`, `--directory=<sibling
+    # name>` with a relative `..` path was collected but a bare name was not.
+    if [ "$eat" = "3" ]; then eat=0; a="--directory=$a"; fi
+    if [ "$sub" = "apply" ]; then
+      case "$a" in
+        --directory) eat=3; continue ;;
+        --directory=*)
+          a="${a#--directory=}"
+          case "$a" in '~'*) a=$(gate_tilde_path "$a" "$cwd0") || return 1 ;; esac
+          ops[${#ops[@]}]="$a"
+          continue ;;
+      esac
+    fi
     if [ "$slotted" = "1" ] || { [ "$isgit" = "1" ] && case "$a" in --output=*) true ;; *) false ;; esac; }; then
       [ "$slotted" = "1" ] || { a="${a#--output=}"; outv="$a"; }
       case "$a" in
@@ -3766,8 +3986,10 @@ EOF
         esac ;;
     esac
   done
-  # A `--output` with no word after it names no file this reader can place.
+  # A `--output` or a `--directory` with no word after it names no file this
+  # reader can place.
   [ "$eat" = "2" ] && return 1
+  [ "$eat" = "3" ] && return 1
   [ -z "$outv" ] || GATE_TT_OUTPUT=$(gate_lexical_abs "$outv" "$base")
   if [ -n "$spec" ]; then
     gate_reach_worktree_spec "$base" "$spec" || return 1
@@ -6544,10 +6766,10 @@ surface_of_argv0() {
     # `openssl` is deliberately NOT here. It computes digests, and it also
     # opens network connections — one name covering both is the kind of
     # imprecision this table exists to refuse.
-    # `md5`/`md5sum` are deliberately absent: they are the BSD and GNU spellings
-    # of one tool, so naming both trips the portability lint on this very line —
-    # and nothing here needs them, since every digest this pipeline compares is
-    # sha256.
+    # `md5sum` is absent and `md5` has a read row of its own below: they are the
+    # BSD and GNU spellings of one tool, so naming both on one line trips the
+    # portability lint. `md5` is there because a stage reads a file of another
+    # tree with it, not for a digest this pipeline compares — those are sha256.
     shasum|sha256sum|sha1sum|sha512sum|cksum|b2sum)
       printf '읽기' ;;
     # Witness primitives. The same DEADLOCK shape as the digest tools above, one
@@ -6565,10 +6787,10 @@ surface_of_argv0() {
     # template it may or may not be given, so it takes the higher of the two
     # spellings rather than a guess — `트리밖쓰기` covers a tree path too.
     #
-    # `xxd` and `od` stay out. They were tried here only as nonce fallbacks and
-    # are not needed once the two above resolve; `xxd` also takes an output file
-    # as its second operand, so a bare-name grade would be the same imprecision
-    # the `openssl` note below refuses.
+    # `od` stays out; it was tried here only as a nonce fallback. `xxd` takes an
+    # output file as its second operand, so a bare-name grade would be the same
+    # imprecision the `openssl` note below refuses — its row below reads the
+    # operands (`gate_tt_reads_only`) and grades the two-operand form a write.
     uuidgen)
       printf '읽기' ;;
     mktemp)
@@ -6664,8 +6886,15 @@ surface_of_argv0() {
     lockf) surface_of_lockf "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
       printf '워크트리쓰기' ;;
-    mkdir|touch|cp|sed|tee|install)
+    mkdir|touch|cp|tee|install)
       printf '워크트리쓰기' ;;
+    # Read when `gate_tt_reads_only` proves the argv writes nothing and runs
+    # nothing, a worktree write otherwise — `sed -i`, a sed `w`, an awk
+    # `print >`, `xxd in out`.
+    sed|gsed|awk|gawk|mawk|nawk|xxd)
+      if gate_tt_reads_only "$cmd" "$@"; then printf '읽기'; else printf '워크트리쓰기'; fi ;;
+    md5|readlink) # lint-bash-portability: disable=md5
+      printf '읽기' ;;
     # `mv` AND `rm` ARE GRADED BY WHAT THEY TOUCH, not by their name. The shared
     # agent-team contract publishes every witness with an atomic `mv -n` into an
     # out-of-tree scratch directory, and a name-level `워크트리쓰기` made the
@@ -7209,13 +7438,52 @@ gate_git_config_key_execs() {
   # stdout is not a terminal, and every act this gate runs is captured — measured
   # on this machine with `git -c core.pager='touch …' log -1 >/dev/null`, which
   # created no file.
-  case "$1" in
-    core.sshCommand|core.gitProxy|core.editor|core.fsmonitor|core.hooksPath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packObjectsHook|web.browser)
+  #
+  # git matches the section and the key name without regard to case, so the
+  # key is lowered before the match and the list is spelled lower case; a
+  # quote left on the key comes off first. Matched as written, `git -c
+  # Alias.x=… x` ran the alias while this read no key it knew.
+  local k="$1"
+  gate_subst "$k" "'" ''; gate_subst "$GATE_SUBST" '"' ''; k="$GATE_SUBST"
+  case "$k" in *[A-Z]*) k=$(printf '%s' "$k" | tr '[:upper:]' '[:lower:]') ;; esac
+  case "$k" in
+    core.sshcommand|core.gitproxy|core.editor|core.fsmonitor|core.hookspath|core.askpass|sequence.editor|diff.external|gpg.program|credential.helper|uploadpack.packobjectshook|web.browser)
       return 0 ;;
-    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeIf.*|browser.*)
+    gpg.*.program|credential.*.helper|alias.*|protocol.allow|protocol.*.allow|url.*|http.proxy|remote.*.uploadpack|remote.*.receivepack|remote.*.proxy|filter.*|merge.*.driver|diff.*.command|diff.*.textconv|include.path|includeif.*|browser.*)
       return 0 ;;
     *) return 1 ;;
   esac
+}
+
+gate_env_assign_execs() {
+  # gate_env_assign_execs <NAME=VALUE | NAME> — 0 when the assignment names a
+  # variable git or the shell runs as a command or reads a command from, and
+  # its value is not one of the few that run nothing (`true`, `:`, `false`,
+  # `cat`, `/dev/null`); a bare NAME, whose value this reader does not see,
+  # counts when the name does. 1 otherwise.
+  #
+  # AN ASSIGNMENT IS NOT ALWAYS INERT. `GIT_EXTERNAL_DIFF=<program> git diff`
+  # runs the program on every changed file, and `env GIT_EXTERNAL_DIFF=… git
+  # diff` graded `읽기` and passed cell 3 because the env unwrap skipped every
+  # assignment. The same holds for an editor, an ssh or askpass helper, the
+  # directory git runs its own subcommands and hooks from, and a configuration
+  # file or a configuration entry passed through the environment — each the
+  # environment twin of a `-c` key `gate_git_config_key_execs` refuses.
+  # `GIT_PAGER` and `PAGER` are left out for the reason `core.pager` is.
+  local n="${1%%=*}" v=''
+  case "$1" in *=*) v="${1#*=}" ;; esac
+  case "$n" in
+    GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|\
+    SSH_ASKPASS|GIT_PROXY_COMMAND|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_CONFIG|GIT_CONFIG_GLOBAL|\
+    GIT_CONFIG_SYSTEM|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|\
+    EDITOR|VISUAL) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in *=*) ;; *) return 0 ;; esac
+  case "$v" in
+    true|:|false|cat|/dev/null) return 1 ;;
+  esac
+  return 0
 }
 
 surface_of_git_fetch() {
@@ -8349,15 +8617,24 @@ gate_opaque_floor() {
       gate_unwrap_find gate_opaque_floor_find_inner "$GATE_FLOOR_NONE" "$(printf '워크트리쓰기\t\t')" \
         "$GATE_FLOOR_NONE" gate_answer_floor_max "$@"; return 0 ;;
   esac
-  local floor='읽기' mark='' trig='' fi_ fidx rec unread line g mk
+  local floor='읽기' mark='' trig='' fi_ fidx rec unread line g mk gcw hascase=0 cs
   fidx=$(surface_index '읽기')
+  gcw=$(gate_grade_cwd)
+  case "$cmd" in
+    bash|sh|zsh|dash|ksh)
+      cs=$(gate_shell_c_string "$@" 2>/dev/null) || cs=''
+      case " $cs" in *[[:space:]\;\(\&\|]case[[:space:]]*) hascase=1 ;; esac ;;
+  esac
+  [ -n "$GATE_TREE_ROOT" ] || GATE_TREE_ROOT=$(gate_tree_root)
   # Command POSITIONS only — the word after a separator. `grep "gh pr merge"` is
   # an argument to grep and does not raise anything. The lines are the ones
   # `gate_opaque_payload_lines` reads, with `exec` and the launchers in front
-  # already peeled.
+  # already peeled. A line after a followed `cd` is graded in its directory.
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
-    unread="${rec%%	*}"; line="${rec##*	}"
+    unread="${rec%%	*}"; line="${rec#*	}"; line="${line#*	}"
+    GATE_GRADE_CWD="$gcw"
+    case "$line" in *'	'*) GATE_GRADE_CWD="${line#*	}"; line="${line%%	*}" ;; esac
     # A REDIRECTION TARGET (4, 5) is a write, not a command: inside the target
     # when it is a relative path without `..`, outside it otherwise, and
     # outside it when its place is unread.
@@ -8392,14 +8669,49 @@ gate_opaque_floor() {
       2) g='외부상태변경' ;;
       3) [ "$g" = "워크트리쓰기" ] && g='트리밖쓰기' ;;
     esac
-    # A COMMAND NO TABLE GRADES THAT THE LOCAL READER CALLS DESTRUCTIVE
-    # (`unlink`, `truncate`) floors `워크트리쓰기`. Left at no floor, `bash -c
-    # "unlink <sibling file>"` passed as `읽기` while the honest `트리밖쓰기
-    # --reach 런로컬` parked in the line's own destruction question — the
-    # under-declaration was the one rewarded.
-    case "$g" in
-      읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;;
-      *) [ -z "$(gate_reach_local_destructive_here "$@")" ] || g='워크트리쓰기' ;;
+    # A LINE NO TABLE GRADES FLOORS `워크트리쓰기` (`등급 미상`, `형태 미상`, an
+    # empty answer), whatever the local destruction reader says of it. That is
+    # the level the comparator caps the same argv at when it is written bare.
+    # Left at no floor, `bash -c "dd if=in of=<sibling file>"`, `"shred -u
+    # <sibling file>"` and `"setsid tee <sibling file>"` passed as `읽기`,
+    # because neither the table nor the destruction reader knew the verb, while
+    # the honest `워크트리쓰기 --reach 런로컬` parked in the line's own landing
+    # question — the under-declaration was the one rewarded. At `워크트리쓰기`
+    # the `*)` branch of `gate_reach_runlocal_destruction` asks that landing
+    # question of every such line. The shell builtins that write no file and
+    # run no command are no such line: they keep the floor where it was, as
+    # they did when a line with no row raised nothing. What they change — a
+    # later line's directory or environment — is the reader's record 3.
+    #
+    # A LINE THE TABLE REFUSES AS A FORM floors `외부상태변경`, as an unread
+    # command does: the form is refused because it runs a program of the
+    # caller's choosing, a `-c` key such as `alias.*`, `diff.external` or
+    # `core.fsmonitor` among them, and nothing says that program stays on this
+    # machine. At the worktree floor `bash -c "git -c 'alias.x=!rm -f <sibling
+    # file>' x"` passed as a `워크트리쓰기` the same argv written bare is refused.
+    #
+    # Both are asked of a shell's command lines only. Any other payload is the
+    # argument list of a command (`git commit -m x` behind `lockf`, `tee <file>`,
+    # a script operand), whose first word is no command at all; the comparator
+    # caps the act written bare. A `lockf`, `time` or `find` line is floored
+    # below through its own reader, which reads the file it writes and the
+    # command it runs. In a string holding a `case`, a lone word with no row is
+    # taken as one of its patterns (`b) echo hi;;` leaves `b` as a line): it
+    # names no place, so no landing is lost by keeping the floor.
+    case "$cmd:${1##*/}" in
+      bash:*|sh:*|zsh:*|dash:*|ksh:*)
+        case "${1##*/}:$g" in
+          lockf:*|time:*|find:*|*:읽기|*:워크트리쓰기|*:트리밖쓰기|*:외부상태변경) ;;
+          *:"$GATE_FORM_UNKNOWN") g='외부상태변경' ;;
+          *)
+            case "${1##*/}" in
+              cd|pushd|popd|:|'['|'[['|set|shift|local|read|wait|return|exit|unset|\
+              export|declare|typeset|readonly|type|umask|ulimit|compgen|case) g='읽기' ;;
+              *)
+                g='워크트리쓰기'
+                if [ $# -eq 1 ] && [ "$hascase" = "1" ]; then g='읽기'; fi ;;
+            esac ;;
+        esac ;;
     esac
     case "$g" in
       읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
@@ -8428,6 +8740,7 @@ gate_opaque_floor() {
   done <<EOF
 $(gate_opaque_payload_lines "$cmd" "$@")
 EOF
+  GATE_GRADE_CWD="$gcw"
   printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
 }
 
@@ -8578,7 +8891,9 @@ gate_shell_scan() {
   # is left at the end when a quote or a substitution never closed (the lines
   # before it may already have run, so only the rest is 2) — and 3 for a line
   # the shell expands differently from the reader: it holds a `{` or `}`
-  # inside a word, or a character bound by a backslash.
+  # inside a word, or a character bound by a backslash. A line the string ends
+  # with `&&` outside any substitution carries `&` after its `<m>` (`0&`), so
+  # the reader knows the next line runs only when this one succeeded.
   #
   # COMMENTS, HERE-DOCUMENTS AND `$'…'` ARE MODELED BECAUSE A QUOTE IN THEM IS
   # NO QUOTE TO THE SHELL. Read as quotes, two apostrophes in comments folded
@@ -8725,6 +9040,7 @@ gate_shell_scan() {
         if (c == "\n") { cut(); if (hn > 0) hbody(); continue }
         if (c == "&") {
           if (l == ">" || l == "<" || nx == ">") { buf = buf c; continue }
+          if (nx == "&" && sp == 0) { emit(curm() "&"); i++; continue }
           cut(); continue
         }
         if (c == "|") {
@@ -8851,93 +9167,30 @@ gate_opl_find_runs_other() {
   return 1
 }
 
-gate_opl_launch_slot() {
-  # gate_opl_launch_slot <argv...> — when argv0 is a launcher whose options
-  # this reader knows, print the position (argv0 is 1) of the word its command
-  # starts at and return 0; print `*` when that launcher's options cannot be
-  # read to the end — an option outside its list, a value missing, an option
-  # word after `--`, or an option that takes a command string (`script -c`,
-  # `flock -c`) — so the caller counts every position, as it did before this
-  # reader. Status 1 when argv0 is no launcher on the list: its later words
-  # are subcommands and operands of a program, not a command it runs.
-  #
-  # The words before the command that are no option are counted per launcher:
-  # `script` takes a record file, `timeout` a duration and `flock` a lock file
-  # before the command, the others none. `parallel` reads too many option
-  # forms to place its command and is always `*`.
-  local cmd="${1##*/}" flags='' vals='' strs='' lead=0 pos=2 w dd=''
-  case "$cmd" in
-    caffeinate) flags=' -d -i -m -s -u '; vals=' -t -w ' ;;
-    arch) flags=' -arm64 -arm64e -x86_64 -i386 -32 -64 -c -h '; vals=' -e -d ' ;;
-    script) flags=' -a -d -e -F -f -k -p -q -r '; vals=' -t -T '; strs=' -c '; lead=1 ;;
-    gtimeout|timeout) flags=' --preserve-status --foreground -v --verbose '; vals=' -s -k --signal --kill-after '; lead=1 ;;
-    taskpolicy) flags=' -b -B '; vals=' -c -d -g -t -l -p ' ;;
-    flock) flags=' -s -x -n -u -o -e -F --shared --exclusive --nonblock --unlock --close --no-fork '; vals=' -w -E --timeout --conflict-exit-code '; strs=' -c --command '; lead=1 ;;
-    sandbox-exec) vals=' -f -n -p -D ' ;;
-    doas) flags=' -n '; vals=' -u -C ' ;;
-    unbuffer) flags=' -p ' ;;
-    watch) flags=' -d -t -b -e -g -c -x -p '; vals=' -n -q ' ;;
-    nohup) ;;
-    stdbuf) vals=' -i -o -e ' ;;
-    parallel) printf '*'; return 0 ;;
-    *) return 1 ;;
-  esac
-  shift
-  while [ $# -gt 0 ]; do
-    w="$1"
-    if [ -z "$dd" ]; then
-      case "$w" in
-        --) dd=1; shift; pos=$((pos + 1)); continue ;;
-        -?*)
-          case "$strs" in *" ${w%%=*} "*) printf '*'; return 0 ;; esac
-          case "$flags" in *" $w "*) shift; pos=$((pos + 1)); continue ;; esac
-          case "$vals" in
-            *" $w "*)
-              [ $# -ge 2 ] || { printf '*'; return 0; }
-              shift 2; pos=$((pos + 2)); continue ;;
-          esac
-          # A value written onto its option: `-t5`, `--signal=KILL`, `-oL`.
-          case "$w" in
-            --*=*) case "$vals" in *" ${w%%=*} "*) shift; pos=$((pos + 1)); continue ;; esac ;;
-            -[!-]?*) case "$vals" in *" ${w:0:2} "*) shift; pos=$((pos + 1)); continue ;; esac ;;
-          esac
-          printf '*'; return 0 ;;
-      esac
-    else
-      case "$w" in -*) printf '*'; return 0 ;; esac
-    fi
-    if [ "$lead" -gt 0 ]; then
-      lead=$((lead - 1)); shift; pos=$((pos + 1)); continue
-    fi
-    printf '%s' "$pos"; return 0
-  done
-  printf '*'
-  return 0
-}
-
 gate_opl_hides_command() {
   # gate_opl_hides_command <argv...> — status 0 when the command word has no
   # row in the grading table and a later word starts an argv the table
   # grades into another tree or external state, gives a rung, or the local
-  # reader calls destructive — at any position — or starts an argv the table
-  # grades a worktree write at the position a known launcher runs its command
-  # from (`gate_opl_launch_slot`). `caffeinate gh pr merge 1`, `watch …`,
-  # `script -q /dev/null …`, `unbuffer …` and `parallel … :::` run the argv
-  # behind them, and the line passed as a plain read with no rung. A word
-  # after an unknown command that only reads (`cat README.md`) leaves the line
-  # as it is; `caffeinate -i make test` is not one, because the table grades
-  # `make` a worktree write and it stands where caffeinate runs its command.
+  # reader calls destructive — at any position. `caffeinate gh pr merge 1`,
+  # `watch …`, `script -q /dev/null rm …`, `unbuffer …` and `parallel … :::`
+  # run the argv behind them, and the line passed as a plain read with no
+  # rung. A word after an unknown command that only reads (`cat README.md`)
+  # leaves the line as it is.
   #
-  # A WORKTREE WRITE IS COUNTED ONLY AT A LAUNCHER'S COMMAND POSITION. The
-  # later words of `uv run pytest`, `poetry install`, `bundle install` or
-  # `ninja -C build install` are a program's subcommand and operands, not a
-  # command it launches: counted anywhere, `install` and `pytest` raised those
-  # honest test and install steps to a floor of `외부상태변경` and, through the
-  # ladder below, to the `머지` cutpoint, and no declaration let them through.
-  # The other three signals stay at every position, because a launcher that
-  # takes a value (`script -q /dev/null rm …`, `taskpolicy -c utility rm …`,
-  # `flock /tmp/l rm …`) would hide a destruction behind a reading of only its
-  # first word.
+  # A WORKTREE WRITE BEHIND THE COMMAND WORD IS NOT THIS. The line keeps its
+  # own grade, and a table-less argv0 floors `워크트리쓰기` (`gate_opaque_
+  # floor`, and the comparator's cap on the same argv written bare), where
+  # the `*)` branch of `gate_reach_runlocal_destruction` asks where every
+  # operand lands — so `caffeinate tee <sibling file>` parks on its landing,
+  # and `gtimeout 600 make test` or `caffeinate -i make test` passes as an
+  # honest `워크트리쓰기 --reach 런로컬`. Counted as an unread command, a
+  # worktree write at a launcher's command position floored the honest test
+  # run `외부상태변경`, and no declaration let it through; counted at any
+  # position, `install` and `pytest` did the same to `uv run pytest` and
+  # `poetry install`. The other three signals stay at every position, because
+  # a launcher that takes a value (`script -q /dev/null rm …`, `taskpolicy -c
+  # utility rm …`, `flock /tmp/l rm …`) would hide a destruction behind a
+  # reading of only its first word.
   #
   # IT IS ASKED OF THE OUTER ARGV TOO, not only of a line inside a shell's
   # `-c` string (`gate_opl_unread_launch`). Written bare, `arch -arm64 rm -rf
@@ -8953,14 +9206,13 @@ gate_opl_hides_command() {
   # their own arms (the payload reader's operand line, and the declared-grade
   # ceiling of the reach cells), and a `머지` rung from this search would turn
   # an honest `xargs git push` from that park into an under-declaration.
-  local g j w slot
+  local g j w
   case "${1##*/}" in xargs|sudo|npx) return 1 ;; esac
   gate_opl_words "$@"
   set -- "${GATE_OPL_WORDS[@]}"
   g=$(surface_of_argv0 "$@" 2>/dev/null) || g=''
   case "$g" in 읽기|워크트리쓰기|트리밖쓰기|외부상태변경) return 1 ;; esac
   [ -z "$(gate_reach_local_destructive_here "$@" 2>/dev/null)" ] || return 1
-  slot=$(gate_opl_launch_slot "$@") || slot=''
   j=2
   while [ "$j" -le $# ]; do
     w="${!j}"
@@ -8970,7 +9222,6 @@ gate_opl_hides_command() {
         g=$(surface_of_argv0 "${@:j}" 2>/dev/null) || g=''
         case "$g" in
           트리밖쓰기|외부상태변경) return 0 ;;
-          워크트리쓰기) { [ "$slot" = '*' ] || [ "$slot" = "$j" ]; } && return 0 ;;
         esac
         [ -z "$(GATE_OPL_IN_HIDES=1 ladder_of_argv0 "${@:j}" 2>/dev/null)" ] || return 0
         [ -z "$(gate_reach_local_destructive_here "${@:j}" 2>/dev/null)" ] || return 0 ;;
@@ -9090,6 +9341,10 @@ gate_opl_redir_record() {
   # when its place is unread — it holds `$`, a backtick, a backslash, a brace
   # or a glob, <poison> is 1, or the line's scanner mark <m> is 3. Quotes are
   # removed as from any operand; a descriptor device has none.
+  #
+  # With [<dir>], the directory a literal `cd` moved the string to, a relative
+  # target is printed against it, and one starting with `~+` or `~-`, which the
+  # shell expands against that directory, is unread.
   local t
   gate_subst "$1" "'" ''; gate_subst "$GATE_SUBST" '"' ''
   gate_subst "$GATE_SUBST" "$GATE_SC_GT" '>'; gate_subst "$GATE_SUBST" "$GATE_SC_LT" '<'
@@ -9097,6 +9352,13 @@ gate_opl_redir_record() {
   case "$t" in
     ''|/dev/null|/dev/stdout|/dev/stderr|/dev/fd/*) return 0 ;;
   esac
+  if [ -n "${4:-}" ]; then
+    case "$1" in
+      '~+'*|'~-'*) printf '5\t%s\t%s\n' "$t" "$t"; return 0 ;;
+      /*|'~'*) ;;
+      *) case "$t" in /*) ;; *) t="$4/$t" ;; esac ;;
+    esac
+  fi
   case "$t" in
     *'$'*|*'`'*|*\\*|*[\*\?\[\{\}]*) printf '5\t%s\t%s\n' "$t" "$t"; return 0 ;;
   esac
@@ -9107,9 +9369,38 @@ gate_opl_redir_record() {
   fi
 }
 
+gate_opl_cd_dir() {
+  # gate_opl_cd_dir <word> <dir> — the directory a literal `cd <word>` run
+  # from <dir> moves to, printed when `gate_opaque_payload_lines` may follow
+  # it, and 1 when it may not: the word holds a glob, an encoded blank, a
+  # leading `-` or a `..` component (the shell's `cd ..` takes it against the
+  # logical directory and the kernel against the physical one, and the two
+  # part where a link stands), a relative word meets a set `CDPATH`, a tilde
+  # does not expand, the place is no existing directory, or it lies outside
+  # the places `런로컬` is honest for. The directory is printed physical, as
+  # the kernel resolves a later relative operand against it.
+  local w="$1" b="$2" p
+  case "$w" in
+    ''|-*|*[\*\?\[]*|*"$GATE_SC_SP"*|*"$GATE_SC_TAB"*|*"$GATE_SC_NL"*) return 1 ;;
+  esac
+  case "/$w/" in */../*) return 1 ;; esac
+  case "$w" in
+    /*) p="$w" ;;
+    '~'*) p=$(gate_tilde_path "$w" "$b") || return 1 ;;
+    *) [ -z "${CDPATH:-}" ] || return 1; p="$b/$w" ;;
+  esac
+  [ -d "$p" ] || return 1
+  p=$(cd "$p" 2>/dev/null && pwd -P) || return 1
+  gate_reach_runlocal_honest "$p" || return 1
+  printf '%s' "$p"
+}
+
 gate_opaque_payload_lines() {
   # gate_opaque_payload_lines <argv...> — the payload of an opaque act, one
-  # command per line, as `<읽지 못함>\t<줄>\t<벗긴 줄>`.
+  # command per line, as `<읽지 못함>\t<줄>\t<벗긴 줄>`, and `\t<디렉터리>`
+  # after them for a command line that runs where a literal `cd` this reader
+  # follows moved the string (see the `cd` arm below). A consumer that
+  # resolves the line's operands takes them against that directory.
   #
   # ONE READER FOR EVERY QUESTION ASKED OF A PAYLOAD. The floor and the `런로컬`
   # destruction question both read the commands inside a `-c` string, and
@@ -9204,7 +9495,8 @@ gate_opaque_payload_lines() {
   #       inside a word, or a character bound by a backslash, which the shell
   #       expands or removes and this reader does not), or an earlier line of
   #       the same string changed the working directory or the environment
-  #       (`cd`, `pushd`, `popd`, `export`, `declare`, `typeset`, `readonly`,
+  #       (a `cd` this reader does not follow, `pushd`, `popd`, `export`,
+  #       `declare`, `typeset`, `readonly`,
   #       `set -a` or `allexport`, a bare assignment, `unset` of a `GIT_*`
   #       name, or a line marked 2). Every later line is 3 from then on.
   #   4 — not a command but the target of a write redirection (a shell's `-c`
@@ -9273,18 +9565,33 @@ gate_opaque_payload_lines() {
   fi
 
   local line unread kept out w k n st cw x poison=0 exec_unread=1 split
-  local rx rt nx dup io ci ii m lm=0 skipl _urc _l
+  local rx rt nx dup io ci ii m lm=0 skipl _urc _l tdir='' cdok=0 aa=0 _cd
   local _GP_OPTN _GP_OPTV _GP_REST _GP_PEEL
   local -a pre ws raw rw y
   [ "$shellmode" = "1" ] && exec_unread=2
   if [ "$shellmode" = "1" ]; then
     split=$(printf '%s\n' "$payload" | gate_shell_scan)
+    # A LITERAL `cd` IS FOLLOWED ONLY IN A STRING WITH NOTHING THAT UNDOES IT.
+    # A subshell or a group gives the directory back where it closes, a `&`
+    # runs the `cd` in a subshell of its own, and a control construct may
+    # skip it, so a string holding a parenthesis, a brace, a backtick or a
+    # lone `&` keeps every `cd` as an unread change of directory; a reserved
+    # word met on the way does the same from there on.
+    case "$payload" in
+      *[\(\)\{\}\`]*) ;;
+      *)
+        gate_subst "$payload" '&&' ''; gate_subst "$GATE_SUBST" '>&' ''
+        gate_subst "$GATE_SUBST" '&>' ''; gate_subst "$GATE_SUBST" '<&' ''
+        case "$GATE_SUBST" in *'&'*) ;; *) cdok=1 ;; esac ;;
+    esac
   else
     split=$(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed -e 's/\$//g' -e "s/['\"]//g")
   fi
   while IFS= read -r line; do
     if [ "$shellmode" = "1" ]; then
       lm="${line%%	*}"; line="${line#*	}"
+      aa=0
+      case "$lm" in *'&') aa=1; lm="${lm%&}" ;; esac
       # A line whose command the scanner could not place is printed as it
       # stands, and every later line is 3.
       if [ "$lm" = "2" ]; then
@@ -9377,10 +9684,10 @@ gate_opaque_payload_lines() {
                 elif [ "$dup" = "1" ]; then
                   case "$rt" in
                     [0-9]|[0-9][0-9]|-) ;;
-                    *) gate_opl_redir_record "$rt" "$poison" "$lm" ;;
+                    *) gate_opl_redir_record "$rt" "$poison" "$lm" "$tdir" ;;
                   esac
                 else
-                  gate_opl_redir_record "$rt" "$poison" "$lm"
+                  gate_opl_redir_record "$rt" "$poison" "$lm" "$tdir"
                 fi
                 case "$nx" in '<>'*) ;; '<'*) printf '5\t>\t>\n'; break ;; esac
               fi
@@ -9394,11 +9701,17 @@ gate_opaque_payload_lines() {
     fi
     while [ $# -gt 0 ]; do
       case "$1" in
-        '!'|if|then|elif|else|do|while|until|coproc) shift ;;
+        '!'|if|then|elif|else|do|while|until|coproc)
+          cdok=0; [ -n "$tdir" ] && poison=1
+          shift ;;
         time) case "${2:-}" in -*) break ;; esac; shift ;;
         *) break ;;
       esac
     done
+    case "${1:-}" in
+      fi|done|esac|for|select|case|function|in)
+        cdok=0; [ -n "$tdir" ] && poison=1 ;;
+    esac
     case "${1:-}" in fi|done|esac) continue ;; esac
     pre=()
     while [ $# -gt 0 ]; do
@@ -9527,6 +9840,19 @@ gate_opaque_payload_lines() {
     if [ "$shellmode" = "1" ]; then
       st=0; cw="${1##*/}"; ci=$(( ${#raw[@]} - $# ))
       [ "$unread" = "2" ] && st=2
+      # An assignment in front of the command, or one an `export` makes, that
+      # has git or the shell run another program (`gate_env_assign_execs`)
+      # leaves the command unread: `GIT_EXTERNAL_DIFF=<program> git diff` is
+      # that program and not the diff.
+      for x in ${pre[@]+"${pre[@]}"}; do
+        if gate_env_assign_execs "$x"; then st=2; fi
+      done
+      case "$cw" in
+        export|declare|typeset|readonly)
+          for x in "${@:2}"; do
+            if gate_env_assign_execs "$x"; then st=2; fi
+          done ;;
+      esac
       case "$1" in *'$'*) st=2 ;; esac
       case "${raw[$ci]}" in *\\*|*\'*|*\"*|*[{}]*) st=2 ;; esac
       # A glob in the command word is expanded by the shell before it runs,
@@ -9592,10 +9918,34 @@ gate_opaque_payload_lines() {
         for x in "${@:2}"; do
           case "$x" in */*) case "${x%/*}" in *[\*\?\[]*) st=3 ;; esac ;; esac
         done
+        # `~+` and `~-` are the shell's directories, which a followed `cd`
+        # moved, and the readers that expand a tilde take them against the
+        # act's own directory, so such a word is unread.
+        if [ -n "$tdir" ]; then
+          for x in ${raw[@]+"${raw[@]:ci}"}; do
+            case "$x" in '~+'*|'~-'*) st=3 ;; esac
+          done
+        fi
       fi
       [ "$st" = "2" ] && poison=1
       case "$cw" in
-        cd|pushd|popd|export|declare|typeset|readonly) poison=1 ;;
+        # A LITERAL `cd` INTO A PLACE `런로컬` IS HONEST FOR IS FOLLOWED: one
+        # operand, no option, nothing the shell expands but a tilde, an
+        # existing directory with no `..` component (`gate_opl_cd_dir`), the line
+        # ended by `&&` and nothing in the string that undoes the move (see
+        # `cdok`). Every later line is then read in that directory. Kept as
+        # an unread change of directory, `bash -c "cd <own worktree>/plugins
+        # && make test"` had every later line 3 and parked a stage's own
+        # build under every reach token. Any other `cd` still marks the rest.
+        cd)
+          if [ "$cdok" = "1" ] && [ "$aa" = "1" ] && [ "$st" = "0" ] && [ "$unread" = "0" ] \
+             && [ "${#pre[@]}" = "0" ] && [ -z "${GATE_OPL_ENV:-}" ] && [ $# -eq 2 ] \
+             && _cd=$(gate_opl_cd_dir "$2" "${tdir:-$(gate_grade_cwd)}"); then
+            tdir="$_cd"
+          else
+            poison=1
+          fi ;;
+        pushd|popd|export|declare|typeset|readonly) poison=1 ;;
         set)
           for x in "${@:2}"; do
             case "$x" in --*) ;; -*a*|allexport) poison=1 ;; esac
@@ -9613,7 +9963,11 @@ gate_opaque_payload_lines() {
       esac
       gate_subst "$kept" '$' ''; kept="$GATE_SUBST"
       gate_subst "$*" '$' ''
-      printf '%s\t%s\t%s\n' "$unread" "$kept" "$GATE_SUBST"
+      if [ -n "$tdir" ]; then
+        printf '%s\t%s\t%s\t%s\n' "$unread" "$kept" "$GATE_SUBST" "$tdir"
+      else
+        printf '%s\t%s\t%s\n' "$unread" "$kept" "$GATE_SUBST"
+      fi
     else
       printf '%s\t%s\t%s\n' "$unread" "$kept" "$*"
     fi
@@ -9748,6 +10102,9 @@ gate_unwrap_env() {
         case "${1%%=*}" in
           *[!A-Za-z0-9_]*) break ;;
         esac
+        # An assignment that makes the command run another program is read
+        # as an option this unwrap does not know (`gate_env_assign_execs`).
+        gate_env_assign_execs "$1" && { printf '%s' "$unknown_opt"; return 0; }
         shift ;;
       *) break ;;
     esac
@@ -24910,7 +25267,7 @@ gate_verb_act() {
     if [ "$_si" -lt "$_bi" ]; then
       warn "axis 2 under-declaration: declared '$surface' is lower than the $( [ "$_bound" = "$graded" ] && printf 'grade' || printf 'floor' ) '$_bound'"
       if [ "$graded" = "등급 미상" ]; then
-        warn "repair: the grading table has no row for '${1##*/}', so it is not proven a read — declare it '워크트리쓰기' or higher, with the --reach of the place it writes"
+        warn "repair: the grading table has no row for '${1##*/}', so it is not proven a read — declare it '워크트리쓰기' or higher, with the --reach of the place it writes. A command with no row that only reads a file of another of the target's trees passes under no declaration: read it with a tool the table proves a read (cat, head, sed -n, awk, xxd, md5, readlink), or copy the file into the temp directory first as its own '런로컬' act"
         gate_orchestrator_script_hint "$1"
       fi
       exit "$GATE_EXIT_GRADE"
@@ -25753,6 +26110,9 @@ gate_verb_act() {
       파괴형태미명시)
         if [ -n "$_ptrig" ]; then
           warn "repair: the destructive word of this act is '$_ptrig'. An authorization row opens it only when its \`형태\` is the first words of this argv and '$_ptrig' is one of them — 'rm' for a plain 'rm <file>', 'git worktree remove --force' for 'git worktree remove --force <dir>', 'aws rds delete-db-instance' rather than 'aws rds'. The authorization of this run is frozen, so that means kicking off again"
+          if [ "${GATE_MARK:-}" != "파괴" ] && [ -z "$(gate_reach_local_destructive_here "$@")" ]; then
+            warn "repair: '$_ptrig' is a verb this gate does not read, so every existing file it names counts as overwritten. If the act only reads that file, read it with a tool the table proves a read (cat, head, sed -n, awk, xxd, md5, readlink), or copy the file into the temp directory first as its own '런로컬' act" # lint-bash-portability: disable=md5
+          fi
         else
           warn "repair: the destructive mark of this act came from --destructive alone and names no word, so no authorization row opens it — leave it to a person"
         fi ;;
@@ -25769,7 +26129,7 @@ gate_verb_act() {
       도달모순)
         case "${GATE_REACH:--}:$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")" in
           런로컬:워크트리쓰기|런로컬:트리밖쓰기|-:워크트리쓰기|-:트리밖쓰기)
-            warn "repair: this write lands in another worktree of the target or in its main checkout, or sits in a shell string whose landing this gate cannot read, which is not where '런로컬' is honest — an act that writes there declares '대상트리', and one that replaces or removes what is there also needs its destructive form named by the manifest; a step inside a shell string goes to the gate on its own, without the shell string; a step that writes a docs/ sidecar of the main checkout from a segment worktree follows the per-step declaration table of skills/_common/pipeline-sidecar.md; one that should not write there changes the act" ;;
+            warn "repair: this write lands in another worktree of the target or in its main checkout, or sits in a shell string whose landing this gate cannot read, which is not where '런로컬' is honest — an act that writes there declares '대상트리', and one that replaces or removes what is there also needs its destructive form named by the manifest; a step inside a shell string goes to the gate on its own, without the shell string; a line after a change of directory inside a shell string has no landing this gate reads — for a directory inside this worktree, follow 'cd <dir>' directly with '&&' and keep parentheses, braces, a lone '&' and control words out of the string, or spell the later paths absolute; a step that writes a docs/ sidecar of the main checkout from a segment worktree follows the per-step declaration table of skills/_common/pipeline-sidecar.md; one that should not write there changes the act" ;;
           *)
             warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
         esac ;;

@@ -30876,7 +30876,9 @@ printf 'k\n' > "$SIB86/sh86b/f"; printf 'k\n' > "$SIB86/sh86b/u"
 check "86: 등급표에 없는 파괴 동사 unlink 의 바닥은 워크트리쓰기다" "$(fl86 bash -c "unlink $SIB86/sh86b/u")" "워크트리쓰기"
 check "86: 리다이렉션으로 형제 파일을 덮는 bash -c 는 런로컬 판정에서 park 된다" "$(rd86 bash -c "echo x > $SIB86/sh86b/f")" "파괴형태미명시"
 check "86: 디렉터리 성분 글롭의 형제 rm 은 런로컬 판정에서 park 된다" "$(rd86 bash -c "rm -f $WORK/wt86-sib*/sh86b/f")" "파괴형태미명시"
-check "86: builtin cd 뒤의 rm 은 런로컬 판정에서 park 된다" "$(rd86 bash -c "builtin cd $T86/sh86b && rm -f f")" "파괴형태미명시"
+check "86: 형제로 builtin cd 한 뒤의 rm 은 런로컬 판정에서 park 된다" "$(rd86 bash -c "builtin cd $SIB86/sh86b && rm -f f")" "파괴형태미명시"
+check "86: 대조 — 임시 디렉터리로 builtin cd 한 뒤의 rm 은 그 디렉터리에서 읽혀 런로컬 판정을 지난다" \
+  "$(rd86 bash -c "builtin cd $T86/sh86b && rm -f f")" ""
 check "86: 셸 앞 env 의 GIT_WORK_TREE 대입 뒤 checkout -f 는 런로컬 판정에서 park 된다" \
   "$(rd86 env GIT_WORK_TREE="$SIB86" bash -c "git checkout -f -- .")" "파괴형태미명시"
 check "86: 대조 — 임시 디렉터리를 덮는 리다이렉션은 런로컬 판정을 지난다" "$(rd86 bash -c "echo x > $T86/sh86b/t")" ""
@@ -31542,11 +31544,6 @@ hc86() {
   ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
       r=0; gate_opl_hides_command "$@" || r=$?; printf "%s" "$r"' _ "$GATE" "$@" ) 2>/dev/null
 }
-sl86() {
-  # sl86 <argv...> — 런처가 명령을 띄우는 자리를 낸다 (런처가 아니면 「없음」).
-  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
-      o=$(gate_opl_launch_slot "$@") || { printf "없음"; exit 0; }; printf "%s" "$o"' _ "$GATE" "$@" ) 2>/dev/null
-}
 # 인프로세스 게이트는 PATH 를 바꾼 호출을 거절하므로 스텁은 절대 경로로 부른다.
 for p86 in "uv run pytest" "poetry install" "bundle install" "pod install"; do
   # shellcheck disable=SC2086
@@ -31557,18 +31554,16 @@ for p86 in "uv run pytest" "poetry install" "bundle install" "pod install" "uv r
   # shellcheck disable=SC2086
   check "86: $p86 의 하위 명령 낱말은 숨은 명령이 아니다" "$(hc86 $p86)" "1"
 done
-for p86 in "caffeinate -i make" "script -q /dev/null rm -f x" "taskpolicy -c utility rm -f x" "flock /tmp/l rm -f x" "caffeinate -i gh pr merge 1"; do
+# 런처 뒤의 워크트리 쓰기도 숨은 명령이 아니다 — 그 줄은 표 없는 argv0 의 바닥
+# 워크트리쓰기와 착지 질문을 받는다 (gtimeout·caffeinate 로 감싼 시험 실행이 통과).
+for p86 in "caffeinate -i make" "gtimeout 600 make test" "taskpolicy -c utility make"; do
+  # shellcheck disable=SC2086
+  check "86: 런처 뒤의 워크트리 쓰기 $p86 는 숨은 명령이 아니다" "$(hc86 $p86)" "1"
+done
+for p86 in "script -q /dev/null rm -f x" "taskpolicy -c utility rm -f x" "flock /tmp/l rm -f x" "caffeinate -i gh pr merge 1"; do
   # shellcheck disable=SC2086
   check "86: 대조 — $p86 는 숨은 명령이다" "$(hc86 $p86)" "0"
 done
-check "86: caffeinate -i make 의 명령 자리는 3 이다" "$(sl86 caffeinate -i make)" "3"
-check "86: script -q /dev/null rm 의 명령 자리는 기록 파일 뒤 4 다" "$(sl86 script -q /dev/null rm -f x)" "4"
-check "86: gtimeout 5 make 의 명령 자리는 시간 뒤 3 이다" "$(sl86 gtimeout 5 make)" "3"
-check "86: flock <file> make 의 명령 자리는 잠금 파일 뒤 3 이다" "$(sl86 flock /tmp/l make)" "3"
-check "86: taskpolicy -c utility make 의 명령 자리는 값 뒤 4 다" "$(sl86 taskpolicy -c utility make)" "4"
-check "86: parallel 은 명령 자리를 읽지 않는다" "$(sl86 parallel make ::: a)" "*"
-check "86: 모르는 옵션 뒤의 명령 자리는 읽지 않는다" "$(sl86 caffeinate -z make)" "*"
-check "86: 런처가 아닌 uv 는 명령 자리가 없다" "$(sl86 uv run pytest)" "없음"
 check "86: uv run pytest 는 사다리가 없다" "$(ld86 uv run pytest)" ""
 
 # 붙여 쓴 여러 리다이렉션 — 첫 연산자만 벗기고 나머지를 한 대상으로 남겼다.
@@ -31599,7 +31594,10 @@ check "86: zsh 의 >>! 형제 대상은 런로컬 판정에서 park 된다" "$(r
 check "86: zsh 의 =(…) 을 쓴 형제 cp 는 런로컬 판정에서 park 된다" "$(rd86 zsh -c "cp =(echo x) $CY86/README.md")" "파괴형태미명시"
 check "86: zsh 의 =(…) 줄의 바닥은 외부상태변경이다" "$(fl86 zsh -c "cp =(echo x) $CY86/README.md")" "외부상태변경"
 # shellcheck disable=SC2016
-check "86: 대조 — zsh 배열 대입 a=(x y) 의 바닥은 읽기다" "$(fl86 zsh -c 'a=(x y); echo $a')" "읽기"
+# 배열 원소 `x y` 는 괄호에서 잘린 줄로 읽히고 표에 행이 없어 바닥 워크트리쓰기를 받는다 —
+# 정직한 배열 대입을 한 단 높이 닫는 과잉 폐쇄이며, 대조가 재는 것은 =( 형태(외부상태변경)가
+# 아니라는 점이다.
+check "86: 대조 — zsh 배열 대입 a=(x y) 는 =( 형태가 아니라 바닥 워크트리쓰기다" "$(fl86 zsh -c 'a=(x y); echo $a')" "워크트리쓰기"
 if command -v zsh >/dev/null 2>&1; then
   rl86 zsh -c "echo x >! $CY86/README.md"
   check "86: 런로컬로 신고한 zsh >! 는 park 된다" "$rc" "11"
@@ -31966,8 +31964,9 @@ done
 check "86: sed -f 의 프로그램은 읽지 않는다" "$(pw86 sed -f prog.sed f)" "1"
 check "86: awk 의 {print \$1} 는 쓰지 않음이 증명된다" "$(pw86 awk '{print $1}' f)" "0"
 check "86: awk 의 print > 는 쓰지 않음이 증명되지 않는다" "$(pw86 awk '{print > "o"}' f)" "1"
-# 대조의 입력은 임시 디렉터리에 둔다 — -i 없는 sed 도 피연산자를 쓰기 자리로 세므로,
-# 다른 트리의 입력은 프로그램 낱말과 무관하게 착지가 된다.
+# 대조의 입력은 임시 디렉터리에 둔다 — rs86 은 파괴 질문을 바로 불러 칸 3 을 거치지 않으므로,
+# 맨 argv 의 다른 트리 입력은 읽기 등급과 무관하게 착지가 된다. 주 체크아웃 입력의 대조는
+# 이 절 끝의 읽기 도구 묶음에 있다.
 check "86: 대조 — 임시 파일을 읽어 임시 파일로 내는 sed -n s///p 는 런로컬 판정을 지난다" \
   "$(rs86 bash -c "sed -n 's/a/b/p' $T86/cy86/src > $T86/cy86/sd86")" ""
 check "86: 대조 — 같은 sed -n s///p 를 맨 argv 로 쓰면 런로컬 판정을 지난다" \
@@ -32000,8 +31999,181 @@ check "86: 재수렴 단계 — 점 이름 cp -n 은 대상트리로 통과한�
 printf 'new\n' > "$DR86/.s86.md.Ab12Cd"
 check "86: 재수렴 단계 — 커밋 mv 는 대상트리로 통과한다" "$(dt86 mv "$DR86/.s86.md.Ab12Cd" "$DR86/s86.md")" ""
 check "86: 재수렴 단계 — mkdir -p 를 런로컬로 내면 도달모순이다" "$(rs86 mkdir -p "$DR86")" "도달모순"
+
+# 셸 문자열 안 표 없는 argv0 — 등급표에 행이 없는 줄은 바닥을 올리지 않아, 셸 문자열
+# 안의 dd of=·shred -u·setsid tee·uv run sed -i 가 읽기 신고로 형제 파일을 덮거나 지웠다.
+# 이제 그 줄의 바닥은 워크트리쓰기이고, 쓰기로 신고하면 그 줄의 착지 질문이 park 한다.
+# 스텁 setsid·uv 는 뒤의 명령을 그대로 실행하므로, park 가 풀리면 형제 파일이 바뀐다.
+SB86="$WORK/st86b"; mkdir -p "$SB86"
+printf '#!/bin/sh\nexec "$@"\n' > "$SB86/setsid"
+printf '#!/bin/sh\n[ "$1" = run ] && shift\nexec "$@"\n' > "$SB86/uv"
+chmod +x "$SB86/setsid" "$SB86/uv"
+for f86 in p1d p1s p1t p1u; do printf 'k\n' > "$CY86/$f86"; done
+p1n86=0
+for p86 in "dd if=$T86/cy86/src of=$CY86/p1d" "shred -u $CY86/p1s" "$SB86/setsid tee $CY86/p1t </dev/null" \
+           "$SB86/uv run sed -i.b s/k/z/ $CY86/p1u"; do
+  p1n86=$((p1n86 + 1)); n86="${p86#"$SB86/"}"; n86="${n86%% *}"
+  case "$(fl86 bash -c "$p86")" in
+    워크트리쓰기|트리밖쓰기|외부상태변경) ok "86: 셸 문자열 안 표 없는 $n86 줄의 바닥은 워크트리쓰기 이상이다" ;;
+    *) bad "86: 셸 문자열 안 표 없는 $n86 줄의 바닥은 워크트리쓰기 이상이다" "[$(fl86 bash -c "$p86")]" ;;
+  esac
+  mg86 bash -c "$p86"
+  check "86: 읽기로 신고한 셸 문자열 안 $n86 는 미달 신고로 거부된다 (exit 6)" "$rc" "6"
+  TMPDIR="$T86" r86 워크트리쓰기 bash -c "$p86"
+  check "86: 런로컬로 신고한 셸 문자열 안 $n86 는 park 된다" "$rc" "11"
+  case "$msg" in *"judgment '도달모순'"*|*"judgment '파괴형태미명시'"*) ok "86: 그 park 가 착지 판정이다 ($n86)" ;;
+    *) bad "86: 그 park 가 착지 판정이다 ($n86)" "$msg" ;; esac
+done
+for f86 in p1d p1s p1t p1u; do
+  check "86: 거부·park 된 셸 문자열 뒤에도 형제 파일 $f86 이 그대로다" "$(cat "$CY86/$f86" 2>/dev/null)" "k"
+done
+
+# 런처 뒤 워크트리 쓰기 — 표 없는 런처 뒤의 워크트리 쓰기를 숨은 명령으로 읽어, gtimeout·
+# caffeinate 로 감싼 시험 실행이 어느 신고로도 통과하지 못했다. 스텁은 0 으로 끝난다.
+SZ86="$WORK/st86z"; mkdir -p "$SZ86"
+for s86 in gtimeout caffeinate; do printf '#!/bin/sh\nexit 0\n' > "$SZ86/$s86"; chmod +x "$SZ86/$s86"; done
+TMPDIR="$T86" r86 워크트리쓰기 "$SZ86/gtimeout" 600 make test
+check "86: 런로컬로 신고한 gtimeout 600 make test 는 통과한다" "$rc" "0"
+TMPDIR="$T86" r86 워크트리쓰기 "$SZ86/caffeinate" -i make test
+check "86: 런로컬로 신고한 caffeinate -i make test 는 통과한다" "$rc" "0"
+
+# 읽기로 증명되는 도구 — 행이 없는 읽기 도구로 다른 트리의 파일을 읽는 단계가 어느
+# 신고로도 통과하지 못했다(읽기는 미달, 런로컬은 덮어쓰기로 읽힘). sed -n·awk·xxd·md5·
+# readlink 는 이제 표가 읽기로 증명하고, 칸 3 에서 착지 질문 전에 지나간다.
+ln -s README.md "$CY86/rl86"
+p2l86=("sed -n 1,5p $CY86/README.md" "awk {print\$1} $CY86/README.md" "readlink $CY86/rl86")
+command -v xxd >/dev/null 2>&1 && p2l86+=("xxd $CY86/README.md")
+command -v md5 >/dev/null 2>&1 && p2l86+=("md5 $CY86/README.md")
+for p86 in "${p2l86[@]}"; do
+  # shellcheck disable=SC2086
+  mg86 $p86
+  check "86: 읽기로 신고한 다른 트리 읽기 ${p86%% *} 는 통과한다" "$rc" "0"
+  # shellcheck disable=SC2086
+  TMPDIR="$T86" r86 읽기 $p86
+  check "86: 런로컬을 붙인 다른 트리 읽기 ${p86%% *} 도 통과한다" "$rc" "0"
+done
+check "86: sed -i s/a/b/ f 는 워크트리쓰기다" "$(sg86 sed -i s/a/b/ f)" "워크트리쓰기"
+check "86: sed -n 1p f 는 읽기다" "$(sg86 sed -n 1p f)" "읽기"
+check "86: xxd a b 는 워크트리쓰기다" "$(sg86 xxd a b)" "워크트리쓰기"
+check "86: 대조 — 주 체크아웃을 읽어 임시 파일로 내는 셸 문자열 sed -n s///p 는 런로컬 판정을 지난다" \
+  "$(rs86 bash -c "sed -n 's/a/b/p' $CW86/README.md > $T86/cy86/sd86m")" ""
+
+# 프로그램 위치의 마지막 줄 — 수집기가 $( ) 가 지운 끝 줄바꿈 때문에 마지막 프로그램
+# 위치를 빼지 못해, 공백 든 sed 프로그램이 피연산자로 남아 수집이 포기됐다.
+pwp86() {
+  # pwp86 <flavor> <verb> <args...> — 그 sed 풍미로 프로그램 판독기의 「상태:위치들」을 낸다.
+  local f="$1"; shift
+  ( GATE_SED_FLAVOR="$f" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      r=0; o=$(gate_tt_program_writes "$@") || r=$?; printf "%s:%s" "$r" "$(printf "%s" "$o" | tr "\n" ",")"' _ "$GATE" "$@" ) 2>/dev/null
+}
+check "86: GNU sed -i 's/foo bar/baz/' README.md 의 프로그램 위치는 2 다" "$(pwp86 GNU sed -i 's/foo bar/baz/' README.md)" "0:2"
+check "86: BSD sed -i '' 's/foo bar/baz/' README.md 의 프로그램 위치는 3 이다" "$(pwp86 BSD sed -i '' 's/foo bar/baz/' README.md)" "0:3"
+check "86: 수집기는 공백 든 프로그램 낱말을 빼고 착지를 모은다 (포기하지 않는다)" \
+  "$(wl86 sed -i.b 's/foo bar/baz/' "$CW86/README.md" | grep -c 'cy86w/README.md$')" "1"
+if [ "$(uname -s)" = "Darwin" ]; then
+  printf 'foo bar\nx\ny\n' > "$CW86/p3.txt"
+  TMPDIR="$T86" r86 워크트리쓰기 sed -i '' 's/foo bar/baz/' "$CW86/p3.txt"
+  check "86: 자기 워크트리의 sed -i '' 's/foo bar/baz/' 는 런로컬로 통과한다" "$rc" "0"
+  check "86: 그 sed 가 실제로 고쳤다" "$(head -n 1 "$CW86/p3.txt")" "baz"
+  om86 워크트리쓰기 sed -i '' '/x/{n;d;}' "$CW86/p3.txt"
+  check "86: 자기 워크트리의 sed -i '' '/x/{n;d;}' 는 도달 생략으로 통과한다" "$rc" "0"
+else
+  ok "86: BSD sed 가 아니어서 sed -i '' 의 실행 판정은 측정하지 않음"
+fi
+
+# BSD sed 의 접미사 — 빈 낱말·점 낱말만 접미사로 보아, BSD 에서 sed -I '' 와 sed -i bak 의
+# 다음 낱말이 프로그램으로 읽혔고, 형제 파일을 비우는 1w 가 읽히지 않았다.
+check "86: BSD 의 sed -I '' 1w<형제> 는 쓰지 않음이 증명되지 않는다" "$(pwp86 BSD sed -I '' "1w$CY86/p7" in)" "1:"
+check "86: BSD 의 sed -i bak 1w<형제> 는 쓰지 않음이 증명되지 않는다" "$(pwp86 BSD sed -i bak "1w$CY86/p7" in)" "1:"
+check "86: GNU 의 sed -I 는 읽지 않는다" "$(pwp86 GNU sed -I '' s/a/b/ in)" "1:"
+check "86: 대조 — GNU 의 sed -i bak 은 bak 을 프로그램으로 읽는다" "$(pwp86 GNU sed -i bak in)" "0:2"
+if [ "$(uname -s)" = "Darwin" ]; then
+  printf 'k\n' > "$CY86/p7"
+  rl86 sed -I '' "1w$CY86/p7" "$T86/cy86/src"
+  check "86: 런로컬로 신고한 sed -I '' 1w<형제> 는 park 된다" "$rc" "11"
+  rl86 sed -i bak "1w$CY86/p7" "$T86/cy86/src"
+  check "86: 런로컬로 신고한 sed -i bak 1w<형제> 는 park 된다" "$rc" "11"
+  check "86: park 된 sed 뒤에도 형제 파일이 비지 않았다" "$(cat "$CY86/p7" 2>/dev/null)" "k"
+else
+  ok "86: BSD sed 가 아니어서 sed -I 의 실행 판정은 측정하지 않음"
+fi
+
+# 문자 그대로의 cd — 셸 문자열 안의 cd 뒤 줄을 모두 착지 미상으로 읽어, 자기 워크트리의
+# 하위 디렉터리로 cd 한 뒤 make 를 도는 정직한 단계가 모든 토큰에서 park 됐다.
+printf 'test:\n\t@true\n' > "$CW86/d/Makefile"
+# 상대 철자로 쓴다 — 픽스처의 매니페스트가 이 워크트리 루트에 있어, 그 디렉터리를 절대 경로로
+# 적은 셸 문자열은 매니페스트 쓰기 가드가 먼저 거절한다(exit 3).
+TMPDIR="$T86" r86 워크트리쓰기 bash -c "cd $(basename "$CW86")/d && make test"
+case "$rc" in 0) ok "86: 자기 워크트리 하위로 cd 한 뒤의 make test 는 런로컬로 통과한다" ;;
+  *) bad "86: 자기 워크트리 하위로 cd 한 뒤의 make test 는 런로컬로 통과한다" "rc=$rc $msg" ;; esac
+check "86: cd 뒤의 상대 경로 rm 은 그 디렉터리에서 읽혀 형제를 겨누면 park 된다" \
+  "$(rd86 bash -c "cd $CW86/d && rm -f ../../../$(basename "$SIB86")/cy86/x")" "파괴형태미명시"
+check "86: 대조 — cd 뒤의 상대 경로 rm 이 자기 워크트리 안이면 런로컬 판정을 지난다" \
+  "$(rd86 bash -c "cd $CW86/d && rm -f ../gone86")" ""
+# 따라가지 않는 cd 뒤 줄은 착지 미상이라 바닥이 트리밖쓰기다 — 워크트리쓰기 신고는 exit 6 으로
+# 먼저 멈추므로, 도달 칸을 재려면 트리밖쓰기로 신고한다.
+rl86 bash -c "cd $SIB86 && make test"
+check "86: 형제로 cd 한 뒤의 make test 는 park 된다" "$rc" "11"
+mkdir -p "$CW86/sub4"
+rl86 bash -c "cd $(basename "$CW86")/sub4; rm -f ../../../$(basename "$SIB86")/cy86/x"
+check "86: ; 로 이은 cd 뒤의 rm 은 park 된다" "$rc" "11"
+check "86: 서브셸 안의 cd 는 뒤 줄을 그 디렉터리에서 읽지 않는다" \
+  "$(rd86 bash -c "(cd $CW86/d && true); rm -f ../$(basename "$SIB86")/cy86/x")" "파괴형태미명시"
+check "86: park 된 cd 단계 뒤에도 형제 파일이 남아 있다" "$(cat "$CY86/x" 2>/dev/null)" "k"
+
+# 명령을 실행하는 git 설정·환경 — 셸 문자열 안의 형태 미상 줄이 바닥을 올리지 않았고,
+# 키를 대소문자째 비교했으며, env 의 대입은 모두 건너뛰었다.
+printf 'k\n' > "$CY86/p5"
+for p86 in "git -c 'alias.x=!rm -f $CY86/p5' x" "git -c diff.external=$T86/cy86/ext diff" \
+           "git -c core.fsmonitor=$T86/cy86/ext status" "GIT_EXTERNAL_DIFF=$T86/cy86/ext git diff"; do
+  check "86: 셸 문자열 ${p86%%=*} 의 바닥은 외부상태변경이다" "$(fl86 bash -c "$p86")" "외부상태변경"
+done
+mg86 bash -c "git -c 'alias.x=!rm -f $CY86/p5' x"
+check "86: 읽기로 신고한 셸 문자열 안 alias 실행은 거부된다 (exit 6)" "$rc" "6"
+check "86: 거부된 alias 실행 뒤에도 형제 파일이 남아 있다" "$(cat "$CY86/p5" 2>/dev/null)" "k"
+check "86: env GIT_EXTERNAL_DIFF=true git diff 는 읽기 그대로다" "$(sg86 env GIT_EXTERNAL_DIFF=true git diff)" "읽기"
+check "86: env GIT_EXTERNAL_DIFF=/bin/sh git diff 는 형태 미상이다" "$(sg86 env GIT_EXTERNAL_DIFF=/bin/sh git diff)" "형태 미상"
+kx86() {
+  ( bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift
+      r=0; gate_git_config_key_execs "$@" || r=$?; printf "%s" "$r"' _ "$GATE" "$@" ) 2>/dev/null
+}
+check "86: 키 Alias.x 는 명령을 실행하는 키다" "$(kx86 Alias.x)" "0"
+check "86: 따옴표 든 키 'diff.external' 은 명령을 실행하는 키다" "$(kx86 "'diff.external'")" "0"
+check "86: 대조 — core.pager 는 실행 키가 아니다" "$(kx86 core.pager)" "1"
+
+# 하드 링크 — ln 의 목적지만 착지로 세어 형제 파일의 하드 링크를 자기 워크트리에 만들 수
+# 있었고, 그 링크에 쓰는 tee 는 자기 워크트리 쓰기로 읽혀 형제 파일을 고쳤다.
+printf 'k\n' > "$CY86/p6"; printf 'k\n' > "$CY86/p6b"
+rl86 ln "$CY86/p6" "$CW86/h6"
+check "86: 런로컬로 신고한 형제 파일의 하드 링크 생성은 park 된다" "$rc" "11"
+[ ! -e "$CW86/h6" ] && ok "86: park 된 ln 의 링크가 생기지 않았다" || bad "86: park 된 ln 의 링크가 생기지 않았다" "$CW86/h6"
+ln "$CY86/p6b" "$CW86/h6b"
+TMPDIR="$T86" r86 워크트리쓰기 tee "$CW86/h6b" </dev/null
+check "86: 런로컬로 신고한 하드 링크 파일의 tee 는 park 된다" "$rc" "11"
+check "86: park 된 tee 뒤에도 형제 파일 내용이 그대로다" "$(cat "$CY86/p6b" 2>/dev/null)" "k"
+printf 'k\n' > "$CW86/g6"
+TMPDIR="$T86" r86 워크트리쓰기 tee "$CW86/g6" </dev/null
+check "86: 대조 — 링크 수 1 인 자기 워크트리 파일의 tee 는 통과한다" "$rc" "0"
+
+# git apply --directory — 지역 판독기가 apply 를 읽지 않아, 패치를 형제 워크트리에 적용하는
+# git apply --directory=<형제> 가 대상트리 칸에서 덮어쓰기 표지 없이 지나갔다.
+tda86() {
+  # tda86 <argv...> — 형제 워크트리에서 돌린 임시 디렉터리로 대상트리 칸의 파괴 질문의 답을 낸다.
+  ( cd "$SIB86" && TMPDIR="$T86" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; GATE_MARK=""; MANIFEST=/dev/null
+      shift; gate_reach_tree_destruction 0 0 "$@"' _ "$GATE" "$@" ) 2>/dev/null
+}
+printf 'k\n' > "$CY86/p8"
+printf -- '--- a/p8\n+++ b/p8\n@@ -1 +1 @@\n-k\n+z\n' > "$T86/cy86/p8.diff"
+check "86: 형제 상대 경로로 적용하는 git apply --directory 는 대상트리 칸에서 파괴형태미명시다" \
+  "$(tda86 git apply --directory="../$(basename "$WT")/cy86w" "$T86/cy86/p8.diff")" "파괴형태미명시"
+check "86: 대조 — git apply --check 는 대상트리 칸의 파괴 질문을 지난다" "$(tda86 git apply --check "$T86/cy86/p8.diff")" ""
+TMPDIR="$T86" x86 트리밖쓰기 git apply --directory="../$(basename "$SIB86")/cy86" "$T86/cy86/p8.diff"
+check "86: 대상트리로 신고한 형제 git apply --directory 는 park 된다" "$rc" "11"
+check "86: park 된 git apply 뒤에도 형제 파일 내용이 그대로다" "$(cat "$CY86/p8" 2>/dev/null)" "k"
+rm -rf "$SB86" "$SZ86" "$CW86/h6" "$CW86/h6b" "$CW86/g6" "$CW86/p3.txt" "$CW86/sub4" "$CW86/d/Makefile"
+
 rm -rf "$ST86" "$OUT86" "$WT/docs/x86" "$DR86"
-rm -rf "$DD86""$WT/docs/dd86d" "$DA86""$T86/inner86" "$T86/x86m" "$WT/new86o.txt"
+rm -rf "$DD86" "$WT/docs/dd86d" "$DA86" "$T86/inner86" "$T86/x86m" "$WT/new86o.txt"
 rm -rf "$CY86" "$CW86" "$T86/cy86" "$WORK/m86td.md" "$WT/cy86own" "$WT/cy86tl"
 git -C "$SIB86" stash clear >/dev/null 2>&1
 git -C "$WT" worktree remove --force "$SW86" >/dev/null 2>&1
