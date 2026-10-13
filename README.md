@@ -20,6 +20,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-discuss-unattended` | 설계 세션의 무인 팔 — 좌석이 파견하면 Step 3 토론과 Step 4 종합·저장을 도는 다리, autopilot 드라이버가 파견하면 Step 7U 동결까지 도는 스테이지 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 드라이버가 `design_required` 인 런의 첫 스테이지로 파견한다(스테이지) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때, 또는 P0 반복 가드가 같은 세그먼트의 연속 세 사이클 P0 로 재수렴을 보낼 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
+| `/cc-cmds:design-solo-unattended` | 가벼운 설계의 무인 팔 — autopilot 이 `solo` 티어 런의 설계 단계로 파견하면 리드 혼자 요약을 쓰고 동결한다 (팀 없음, 질문은 정지 기록으로) | 사람이 직접 부르지 않는다. autopilot 드라이버·게이트가 `solo` 티어이고 `design_required` 인 런의 설계 스테이지로 파견한다 |
 | `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:implement-unattended` | 설계 문서 기반 구현 (무인 — 사람 확인 없이 오케스트레이터가 라우팅) | 자율 파이프라인 드라이버가 세그먼트 구현 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:implement`를 쓸 것 |
@@ -132,6 +133,7 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 - [/cc-cmds:design-discuss-unattended](#cc-cmdsdesign-discuss-unattended)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
 - [/cc-cmds:design-reconverge](#cc-cmdsdesign-reconverge)
+- [/cc-cmds:design-solo-unattended](#cc-cmdsdesign-solo-unattended)
 - [/cc-cmds:design-upgrade](#cc-cmdsdesign-upgrade)
 - [/cc-cmds:implement](#cc-cmdsimplement)
 - [/cc-cmds:implement-unattended](#cc-cmdsimplement-unattended)
@@ -269,6 +271,19 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석._
 
 > _Parsing (`<scope>`): 첫 `.md` 토큰 이후의 모든 내용. 비어 있으면 중단 기록을 남기고 정지 — 스코프 없는 재설계는 이 스킬이 하는 일이 아니다._
+
+### /cc-cmds:design-solo-unattended
+
+**Usage**: `/cc-cmds:design-solo-unattended <doc-path> [<task-sentence>]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<doc-path>` | (required) | 설계 문서 경로(메인 워크트리 절대 경로, 드라이버가 준다 — 아직 없을 수 있다). |
+| `<task-sentence>` | _(optional)_ | 매니페스트 `## 의도` 의 첫 줄. 인터뷰 기록이 없을 때 과제 문면이 되는 한 문장. |
+
+> _Parsing (`<doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰. 드라이버 파견 전용이라 `CC_PIPELINE_RUN_ID` 가 비어 있으면 아무것도 쓰지 않고 끝난다._
+
+> _Parsing (`<task-sentence>`): 첫 `.md` 토큰 이후의 모든 내용._
 
 ### /cc-cmds:design-upgrade
 
