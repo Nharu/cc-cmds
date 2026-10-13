@@ -663,9 +663,19 @@ check "델타 행의 모드가 실린다" \
 # "10" and offers a basis the gate refuses as stale on every re-dispatch. The
 # carried expression compares integers, and the two copies are held
 # byte-identical so a fix to one cannot leave the other behind.
+#
+# The autopilot skill keeps its resident body in SKILL.md and the rest in
+# references/: the lead's copy of the router loop in router-lead-copy.md, the
+# Act 2 seat's shift rules in act2-seat.md. A pin names the file its text lives
+# in, and an absence pin reads the resident body and every reference together,
+# so text moved between them can neither hide nor slip past it.
 AP_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+AP_REFS="$repo_root/plugins/cc-cmds/skills/autopilot/references"
+AP_ROUTER="$AP_REFS/router-lead-copy.md"
+AP_SEAT="$AP_REFS/act2-seat.md"
+ap_all() { cat "$AP_SKILL" "$AP_REFS"/*.md; }
 RS_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
-sel_ap=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$AP_SKILL" || true)
+sel_ap=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$AP_ROUTER" || true)
 sel_rs=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$RS_SKILL" || true)
 check "기반 라우터 문서에 기준 선택 식이 한 번 실린다" "$(printf '%s\n' "$sel_ap" | grep -c '^\[')" "1"
 check "라우터 두 사본의 기준 선택 식이 바이트 동일하다" "$sel_rs" "$sel_ap"
@@ -725,7 +735,7 @@ design_section() {
 }
 design_sel=""
 design_sel_rs=""
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}
   sec=$(design_section "${pair#*:}")
   if [ -n "$sec" ]; then
@@ -809,7 +819,7 @@ reattach_section() {
 }
 reattach_prompt=""
 reattach_prompt_rs=""
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}
   sec=$(reattach_section "${pair#*:}")
   if [ -n "$sec" ]; then
@@ -861,13 +871,13 @@ for pair in \
   "교대:$RS_SKILL:**A live stage holds back none of the four.**" \
   "교대:$RS_SKILL:CFI-S1 still holds: the snapshot and the gate-routed reads this skill prescribes are the input" \
   "교대:$RS_SKILL:CFI-S1 still holds: whether to dispatch was decided from the snapshot" \
-  "리드:$AP_SKILL:**Four reasons end a shift, and a live stage holds back none of them.**" \
-  "리드:$AP_SKILL:**\`무기록\` is the gate's alone**" \
-  "리드:$AP_SKILL:or from a gate-routed read of the ledger or the run directory that this skill prescribes" \
-  "리드:$AP_SKILL:read from the snapshot, not from a read of the plan" \
-  "리드:$AP_SKILL:start the next shift only when a person at this seat asked for it or the reset has passed" \
-  "리드:$AP_SKILL:**except when the person at this seat asks to continue or says the limit has cleared.**" \
-  "리드:$AP_SKILL:a \`handoff\` row with \`사유=무기록\`, its \`종료 코드\` and its \`행위 수\`"
+  "리드:$AP_SEAT:**Four reasons end a shift, and a live stage holds back none of them.**" \
+  "리드:$AP_SEAT:**\`무기록\` is the gate's alone**" \
+  "리드:$AP_ROUTER:or from a gate-routed read of the ledger or the run directory that this skill prescribes" \
+  "리드:$AP_ROUTER:read from the snapshot, not from a read of the plan" \
+  "리드:$AP_SEAT:start the next shift only when a person at this seat asked for it or the reset has passed" \
+  "리드:$AP_SEAT:**except when the person at this seat asks to continue or says the limit has cleared.**" \
+  "리드:$AP_SEAT:a \`handoff\` row with \`사유=무기록\`, its \`종료 코드\` and its \`행위 수\`"
 do
   who=${pair%%:*}; rest=${pair#*:}; file=${rest%%:*}; lit=${rest#*:}
   nlit=$(grep -cF -- "$lit" "$file" || true)
@@ -892,7 +902,7 @@ done
 router_section() {
   awk -v h="$2" '$0 == h { f = 1; next } f && /^#+ / { exit } f' "$1"
 }
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Dispatching the audit stage|.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty' \
@@ -947,20 +957,34 @@ done
 # paragraph's order (line first, hash second), and the Step 6 refusal that
 # catches a document frozen without it.
 # ---------------------------------------------------------------------------
-for lit in \
-  '(c) **Freeze line and `sha256`**' \
-  'a line reading exactly `**상태**: 동결됨`, once, below the H1' \
-  'Write the freeze line of (c) into it, then take its path and whole-file `sha256`' \
-  "the tier is \`lead-solo\` and the document \`설계 문서\` names does not carry the line \`**상태**: 동결됨\` exactly once"
+# Each literal is pinned in the reference that carries it — the contract in
+# lead-solo-document.md, the 5m paragraph in boundaries.md, the Step 6 refusal
+# in freeze.md — and pinned absent from the resident body, so a copy left behind
+# in SKILL.md is a second spelling rather than a pass.
+for spec in \
+  'lead-solo-document.md|(c) **Freeze line and `sha256`**' \
+  'lead-solo-document.md|a line reading exactly `**상태**: 동결됨`, once, below the H1' \
+  'boundaries.md|Write the freeze line of (c) into it, then take its path and whole-file `sha256`' \
+  "freeze.md|the tier is \`lead-solo\` and the document \`설계 문서\` names does not carry the line \`**상태**: 동결됨\` exactly once"
 do
-  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  ref=${spec%%|*}; lit=${spec#*|}
+  nlit=$(grep -cF -- "$lit" "$AP_REFS/$ref" || true)
   if [ "${nlit:-0}" = "1" ]; then
-    ok "킥오프의 lead-solo 동결 계약이 「${lit}」을 한 번 싣는다"
+    ok "킥오프의 lead-solo 동결 계약이 「${lit}」을 ${ref} 에 한 번 싣는다"
   else
-    bad "킥오프의 lead-solo 동결 계약" "「${lit}」이 ${nlit:-0}번 있다"
+    bad "킥오프의 lead-solo 동결 계약" "「${lit}」이 ${ref} 에 ${nlit:-0}번 있다"
+  fi
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "킥오프의 상주 본문은 「${lit}」을 싣지 않는다"
+  else
+    bad "킥오프의 상주 본문" "「${lit}」이 SKILL.md 에 ${nlit:-0}번 남아 있다"
   fi
 done
-if grep -qF '(c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment' "$AP_SKILL"; then
+# Counted, not `grep -q`: an early exit SIGPIPEs `cat` on the left, and under
+# pipefail the match then reads as a miss.
+nlit=$(ap_all | grep -cF -- '(c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment' || true)
+if [ "${nlit:-0}" != "0" ]; then
   bad "킥오프의 lead-solo 동결 계약" "해시만으로 동결하는 옛 문면이 남아 있다"
 else
   ok "킥오프의 lead-solo 동결 계약에 해시만으로 동결하는 옛 문면이 없다"
@@ -983,18 +1007,26 @@ for lit in \
   '사유: 워크트리 HEAD 에 결속된 REST 머지 — 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 엽니다' \
   '**When the plan predicts a merge under any review policy, the rows read back carry `gh api -X PUT`**'
 do
-  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  # The 5p paragraph lives in boundaries.md, and the resident body carries none
+  # of it.
+  nlit=$(grep -cF -- "$lit" "$AP_REFS/boundaries.md" || true)
   if [ "${nlit:-0}" = "1" ]; then
     ok "킥오프의 사전 인가 행 계약이 「${lit}」을 한 번 싣는다"
   else
     bad "킥오프의 사전 인가 행 계약" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "킥오프의 상주 본문은 「${lit}」을 싣지 않는다"
+  else
+    bad "킥오프의 상주 본문" "「${lit}」이 SKILL.md 에 ${nlit:-0}번 남아 있다"
   fi
 done
 for lit in \
   'when the plan predicts a merge under `선리뷰후머지`, see whether' \
   'When the plan predicts a merge under `선리뷰후머지`, the rows read back'
 do
-  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  nlit=$(ap_all | grep -cF -- "$lit" || true)
   if [ "${nlit:-0}" = "0" ]; then
     ok "킥오프의 사전 인가 행 계약이 「${lit}」로 정책을 좁히지 않는다"
   else
@@ -1028,7 +1060,7 @@ done
 # ---------------------------------------------------------------------------
 fix_prompt=""
 fix_prompt_rs=""
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
@@ -1077,7 +1109,13 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   else
     bad "$who 사본의 「Merging and applying a segment」 절" "headRefOid 없는 옛 405 읽기·갈래 문면이 ${nold}줄 있다"
   fi
-  nhalt=$(grep -cF -- 'write a halt record' "$file" || true)
+  # The lead's absence is read across the whole skill, not only its router
+  # reference: the instruction must not reach the lead from any file it reads.
+  if [ "$who" = "리드" ]; then
+    nhalt=$(ap_all | grep -cF -- 'write a halt record' || true)
+  else
+    nhalt=$(grep -cF -- 'write a halt record' "$file" || true)
+  fi
   if [ "${nhalt:-0}" = "0" ]; then
     ok "$who 사본은 라우터에게 halt 기록을 쓰라고 지시하지 않는다"
   else

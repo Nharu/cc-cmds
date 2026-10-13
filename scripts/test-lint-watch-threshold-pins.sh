@@ -3,7 +3,8 @@
 # tests/fixtures/lint-watch-threshold-pins/.
 #
 # Each fixture is a self-contained pair of roots — `orchestrator/watch.sh` (the
-# defaults' SOT) and `skills/autopilot/SKILL.md` (the document that pins them) —
+# defaults' SOT) and `skills/autopilot/references/act2-seat.md` (the document
+# that pins them) —
 # so the lint can be driven over a whole disagreement without touching the real
 # tree. The directory name encodes the expected exit code:
 #   OK-*   → expected exit 0

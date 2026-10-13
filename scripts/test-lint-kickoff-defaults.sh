@@ -2,8 +2,8 @@
 # lint-bash-portability: self-skip
 # Test scripts/lint-kickoff-defaults.sh against mutants of the real tree.
 #
-# There is no fixture directory: each case copies the real orchestrator, hooks
-# and autopilot SKILL.md into a scratch workspace, changes one thing, and runs
+# There is no fixture directory: each case copies the real orchestrator, hooks,
+# autopilot SKILL.md and its boundaries reference into a scratch workspace, changes one thing, and runs
 # the lint against the copy. The real tree is the clean case, so a fixture can
 # never be the thing that passes while the shipped files have drifted.
 #
@@ -26,10 +26,12 @@ failures=0
 # fresh <name> — a scratch copy of the three roots the lint reads.
 fresh() {
   local d="$WORK/$1"
-  mkdir -p "$d/skills/autopilot"
+  mkdir -p "$d/skills/autopilot/references"
   cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$d/orchestrator"
   cp -R "$repo_root/plugins/cc-cmds/hooks" "$d/hooks"
   cp "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" "$d/skills/autopilot/SKILL.md"
+  cp "$repo_root/plugins/cc-cmds/skills/autopilot/references/boundaries.md" \
+    "$d/skills/autopilot/references/boundaries.md"
   printf '%s' "$d"
 }
 
@@ -56,7 +58,7 @@ case_run() {
 }
 
 R1='킥오프 보조 밖에서 킥오프 기본값을 가리키는 파일이 있다'
-R2='키 집합이 보조 스크립트와 SKILL.md 5o 사이에서 갈렸다'
+R2='키 집합이 보조 스크립트와 boundaries.md 5o 사이에서 갈렸다'
 R3='드라이버 어휘 상수를 대입한다'
 R4='재킥오프 보조 밖에서 rekick.sh 를 가리키는 파일이 있다'
 
@@ -82,7 +84,8 @@ case_run "hooks 파일이 kickoff-defaults.sh 를 부른다" "$d" 1 "$R1"
 
 # 5. a key row goes missing from the 5o table
 d=$(fresh table-missing-key)
-awk '!/^\| `terminal-cap` \|/' "$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md" > "$d/skills/autopilot/SKILL.md"
+awk '!/^\| `terminal-cap` \|/' "$repo_root/plugins/cc-cmds/skills/autopilot/references/boundaries.md" \
+  > "$d/skills/autopilot/references/boundaries.md"
 case_run "5o 표에서 terminal-cap 행이 빠졌다" "$d" 1 "$R2"
 
 # 6. the helper reads a key the 5o table does not name

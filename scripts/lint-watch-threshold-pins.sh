@@ -61,7 +61,7 @@
 #
 # Env overrides (fixture runner):
 #   ORCH_ROOT=<dir>     # directory holding watch.sh (the defaults' SOT) and fleet.sh
-#   SKILLS_ROOT=<dir>   # skills root holding autopilot/SKILL.md
+#   SKILLS_ROOT=<dir>   # skills root holding autopilot/references/act2-seat.md
 #
 # Posture: if the watcher is absent the whole check is a silent skip; an absent
 # consumer skips that consumer only.
@@ -79,8 +79,10 @@ repo_root=$(cd "$script_dir/.." && pwd)
 orch_root="${ORCH_ROOT:-$repo_root/plugins/cc-cmds/orchestrator}"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 WATCHER="$orch_root/watch.sh"
+# The autopilot launch line and the paragraph restating its thresholds sit in
+# the Act 2 seat reference, which Step 7 reads before it launches the watcher.
 CONSUMERS=(
-  "$skills_root/autopilot/SKILL.md"
+  "$skills_root/autopilot/references/act2-seat.md"
   "$orch_root/fleet.sh"
 )
 

@@ -2,9 +2,9 @@
 # Test scripts/lint-interview-record-sections.sh against
 # tests/fixtures/lint-interview-record-sections/.
 #
-# Each fixture is a `skills/` root holding the four files the lint compares —
-# the sidecar contract, the shared interview convention, autopilot and the
-# unattended design stage. The directory name encodes the expectation:
+# Each fixture is a `skills/` root holding the five files the lint compares —
+# the sidecar contract, the shared interview convention, autopilot's resident
+# body and its boundaries reference, and the unattended design stage. The directory name encodes the expectation:
 #   OK-*       → exit 0
 #   FAIL-<n>-* → exit 1, and the output names `[단언 <n>]`
 #

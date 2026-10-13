@@ -2037,7 +2037,8 @@ esac
 # own default, or the sentence beside it saying these are the defaults becomes
 # false and nothing says so.
 # ---------------------------------------------------------------------------
-SKILL_MD="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+# The launch line lives in the Act 2 seat reference that Step 7 reads.
+SKILL_MD="$repo_root/plugins/cc-cmds/skills/autopilot/references/act2-seat.md"
 sa_decl=$( { grep -oE '(^|[;[:space:]])STAGE_AGE=[0-9]+' "$WATCH" || true; } \
            | sed -E 's/.*STAGE_AGE=//')
 check "watch.sh 가 STAGE_AGE 기본값을 정확히 하나 선언한다" \

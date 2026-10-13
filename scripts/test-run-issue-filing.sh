@@ -31,7 +31,8 @@ export CC_GATE_PIN_DISABLE=1
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
-SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+# 아침 보고서 렌더링 열거는 Act 3 이 읽는 참조 파일에 있다.
+SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/references/act3-report.md"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-issue-filing.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
