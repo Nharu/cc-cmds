@@ -3639,7 +3639,7 @@ GH87
   }
   ap87() {  # ap87 <원장> — 적용 전제 검사의 거절 문면(통과면 빈 값)
     lsr_in Linux "$1" - in87 "$M87N" gate_apply_preconditions apply t S2 2>&1 >/dev/null \
-      | grep -o '적용 행위 전제 [0-9]' | head -1 || true
+      | grep -o '적용 행위 전제 [0-9]' | sed -n '1p' || true
   }
 
   fx87_run_init() {
