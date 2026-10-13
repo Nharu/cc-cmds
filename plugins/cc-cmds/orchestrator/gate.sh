@@ -952,6 +952,15 @@ gate_reach_derived_full() {
   # `사전 인가` row has to carry before the machine-global cell opens.
   local alias="$1"; shift
   local cmd="${1##*/}" a w remote paths='' _gw=''
+  # Set when an `env` this act runs through assigns `DOCKER_CONFIG`, and kept
+  # through the nested call the unwrap makes, so the docker arm below knows the
+  # context store it would read is not the one docker will use.
+  local _gate_docker_cfg="${_gate_docker_cfg:-0}"
+  if [ "$cmd" = env ]; then
+    for w in "$@"; do
+      case "$w" in DOCKER_CONFIG=*) _gate_docker_cfg=1 ;; esac
+    done
+  fi
   # THE WRAPPERS THE GRADE AND THE MARK PEEL ARE PEELED HERE TOO, with the same
   # unwraps. This floor asked for argv0 once and stopped, so `timeout 60 docker
   # system prune -af --volumes` graded `트리밖쓰기` and carried `파괴` while its
@@ -1043,10 +1052,19 @@ gate_docker_globals() {
   # socket, Docker Desktop's `desktop-linux`, a context this machine has no
   # record of — keeps the floor on, because a spelling read as remote drops the
   # act to its declared reach and the run-local cell does not read the
-  # destructive mark. `--config` is read as local too. Every other dash word is
-  # taken as a valueless flag, and the first word without a dash is the
-  # subcommand.
-  local n=0 remote=0 a v k
+  # destructive mark. Every other dash word is taken as a valueless flag, and
+  # the first word without a dash is the subcommand.
+  #
+  # A CONTEXT IS LOOKED UP ONLY IN THE STORE DOCKER WILL USE. The gate can read
+  # its own store and no other: when the act names one with `--config` — or an
+  # `env` it runs through assigns `DOCKER_CONFIG` — the context is read as local
+  # whatever the gate's own store says of that name. Looked up in the gate's
+  # store, `docker --config /tmp/c --context prod system prune -af --volumes`
+  # read as remote whenever the user's own `prod` was a network host, the floor
+  # dropped, and declared `런로컬` it passed a cell that reads no mark. The store
+  # the act names is not read instead: the stage can write it, so a remote
+  # endpoint planted there would switch the floor off.
+  local n=0 remote=0 a v k ctx='' cfg="${_gate_docker_cfg:-0}"
   while [ "$#" -gt 0 ]; do
     a="$1"; k=''; v=''
     case "$a" in
@@ -1066,9 +1084,15 @@ gate_docker_globals() {
     esac
     case "$k" in
       -H|--host) gate_docker_host_remote "$v" && remote=1 ;;
-      -c|--context) gate_docker_context_remote "$v" && remote=1 ;;
+      -c|--context) ctx="$v" ;;
+      --config) cfg=1 ;;
     esac
   done
+  # Decided after the scan: `--context prod --config /tmp/c` names the store
+  # after the context.
+  if [ -n "$ctx" ] && [ "$cfg" = 0 ]; then
+    gate_docker_context_remote "$ctx" && remote=1
+  fi
   printf '%s\t%s' "$n" "$remote"
 }
 

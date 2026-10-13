@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - docker 의 원격 판정을 닫힌 목록으로 바꾼다. `-H`/`--host` 는 `tcp://`·`ssh://`·`http(s)://` 일 때만, `--context` 는 맥락 메타가 그런 호스트를 기록했을 때만 원격으로 읽는다. 로컬 소켓을 기록한 맥락(Docker Desktop 의 `desktop-linux`)·모르는 맥락·`=` 를 붙인 `-H=unix://…` 는 이 기계의 데몬이므로, 런로컬로 낮춰 신고한 `system prune`·`image rm` 도 기기전역 칸에서 행 없이 park 한다. 하위 명령 앞 전역 옵션을 벗긴 뒤 파괴 표지를 정한다.
+- docker 의 `--context` 는 docker 가 쓸 설정 저장소가 게이트의 저장소일 때만 원격 판정에 쓴다. 행위가 `--config DIR` 이나 `env DOCKER_CONFIG=…` 로 다른 저장소를 지명하면 그 맥락은 원격으로 알려지지 않은 것으로 읽는다. 게이트 저장소로 찾던 동안 같은 이름의 원격 맥락이 사용자 저장소에 있으면 `docker --config /tmp/c --context prod system prune -af --volumes` 가 원격으로 읽혀, 런로컬로 신고하면 기기전역 칸도 파괴 park 도 없이 지나갔다.
 - 도달 유도가 등급표·파괴 표지와 같은 감싸개(`timeout`·`env`·`nice`·`command`·`lockf`·`time`·`stdbuf`·`nohup`)를 벗겨 읽는다. 첫 단어만 보던 동안 `timeout 60 docker system prune` 같은 감싸개 철자는 기기전역으로 오르지 않아, 런로컬로 신고하면 행도 park 도 없이 지나갔다. `git config --global`·`npm -g` 갈래도 같다. `xargs`·`sudo` 뒤의 행위는 벗기지 않는다.
 - 사전 인가 대조 규칙과 킥오프 도우미가 `+` 로 시작하는 인터프리터 옵션(`bash +e`)을 스크립트 낱말로 읽지 않는다. 그래서 행 `bash +e` 는 완전 형태가 아니고 `bash +e -c …` 나 임의 경로를 열지 않는다.
 

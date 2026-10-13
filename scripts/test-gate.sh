@@ -27974,6 +27974,17 @@ axis_is gate_reach_derived_full '기기전역/cmd' 'unix 소켓의 --host= 도 �
 axis_is gate_reach_derived_full '기기전역/cmd' '로컬 맥락 뒤의 system prune 도 오른다'    -- front docker --context desktop-linux system prune -af --volumes
 axis_is gate_reach_derived_full '-/-'          '= 를 붙인 짧은 -H 의 tcp 는 다른 데몬이다' -- front docker -H=tcp://h build -t x .
 axis_is gate_reach_derived_full '-/-'          'ssh 호스트도 다른 데몬이다'              -- front docker -H ssh://u@h build -t x .
+# 맥락은 docker 가 쓸 설정 저장소에서만 찾는다. 행위가 `--config` 나 env 의
+# `DOCKER_CONFIG=` 로 다른 저장소를 지명하면, 게이트 저장소의 같은 이름 `c`(tcp)는
+# 그 행위의 맥락이 아니다. 게이트 저장소로 찾던 동안 이 철자가 원격으로 읽혀 바닥이
+# 꺼졌고, 런로컬로 신고한 system prune 이 표지를 읽지 않는 칸을 그대로 지났다.
+axis_is gate_reach_derived_full '기기전역/cmd' '--config 뒤의 --context 는 게이트 저장소로 찾지 않는다' -- front docker --config /tmp/c --context c system prune -af --volumes
+axis_is gate_reach_derived_full '기기전역/cmd' '--context 뒤에 온 --config 도 같다'        -- front docker --context c --config /tmp/c run --rm x
+axis_is gate_reach_derived_full '기기전역/cmd' '= 로 쓴 --config 도 같다'                  -- front docker --config=/tmp/c -c c build -t x .
+axis_is gate_reach_derived_full '기기전역/cmd' 'env 의 DOCKER_CONFIG= 도 같다'              -- front env DOCKER_CONFIG=/tmp/c docker --context c system prune -af --volumes
+axis_is gate_reach_derived_full '기기전역/cmd' '감싸개를 겹친 env 의 DOCKER_CONFIG= 도 같다' -- front env DOCKER_CONFIG=/tmp/c timeout 60 docker --context c image rm T
+# 지명한 저장소가 있어도 네트워크 -H 는 argv 가 직접 지명한 다른 데몬이다.
+axis_is gate_reach_derived_full '-/-'          '--config 가 있어도 tcp -H 는 다른 데몬이다' -- front docker --config /tmp/c -H tcp://h build -t x .
 # 이미지 뒤의 -H 는 컨테이너 명령의 인자라 다른 데몬이 아니다.
 axis_is gate_reach_derived_full '기기전역/cmd' '이미지 뒤의 -H 는 데몬을 지명하지 않는다' -- front docker run --rm x -H tcp://h
 # 감싸개는 첫 줄의 첫 필드다 — 원장의 `유도 도달` 과 처분이 같은 값을 읽는다.
