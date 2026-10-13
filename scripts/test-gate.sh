@@ -23866,6 +23866,35 @@ check "32p: 대조군 — 대상 저장소 없는 gh repo sync 에 사다리는 
 check "32p: 대조군 — 백슬래시가 든 점 없는 라벨 쓰기는 머지가 아니다" \
   "$(sp_mb gh api -X PATCH 'repos/o/r/labels/a\cb' -f color=fff)" "해당없음"
 
+# REST 경로는 바이트로 읽는다 — 런의 UTF-8 로캘에서 macOS 의 tr·sed 는 UTF-8 이 아닌
+# 바이트에서 멈췄고, 그때까지 쓴 접두 repos/o/r/issues 가 경로 전체로 읽혀 뒤의 PR 머지가
+# 이슈 쓰기로 통과했다. 같은 철자를 UTF-8 로캘과 C 로캘에서 함께 잰다.
+sp_badp=$'repos/o/r/issues/1\xff/x/../../../pulls/1/merge'
+sp_u8=$(locale -a 2>/dev/null | grep -i -m1 -E '^(C|en_US)\.utf-?8$' || true)
+for sp_lc in C ${sp_u8:+"$sp_u8"}; do
+  check "32p: UTF-8 아닌 바이트 뒤의 PR 머지를 사다리가 머지로 읽는다 (LC_ALL=$sp_lc)" \
+    "$(LC_ALL=$sp_lc sp_ld gh api -X PUT "$sp_badp")" "머지"
+  check "32p: UTF-8 아닌 바이트 뒤의 PR 머지는 결속 없는 머지다 (LC_ALL=$sp_lc)" \
+    "$(LC_ALL=$sp_lc sp_mb gh api -X PUT "$sp_badp" -f "sha=$X32")" "없음"
+done
+# 보조 도구가 실패하면 판독기는 부분 출력을 읽지 않는다 — tr·sed 를 접두만 쓰고 실패하는
+# 함수로 바꿔, GNU 도구가 바이트를 그대로 넘기는 호스트에서도 실패 갈래를 구동한다.
+# 출력은 「rest_class|path_unread|merge_kind」.
+sp_rc() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; stub="$2"; shift 2
+    case "$stub" in
+      tr)  tr()  { printf "repos\no\nr\nissues\n"; return 1; } ;;
+      sed) sed() { printf "repos/o/r/issues"; return 1; } ;;
+    esac
+    gate_gh_api_parse "$@"
+    if gate_gh_api_path_unread; then u=참; else u=거짓; fi
+    printf "%s|%s|%s" "$(gate_gh_api_rest_class)" "$u" "$(gate_gh_api_merge_kind)"' _ "$GATE" "$@"
+}
+check "32p: 대조군 — 도구가 성공하면 이슈 쓰기는 무해 계열이다" "$(sp_rc none -X PUT repos/o/r/issues/1)" "inert|거짓|"
+check "32p: tr 이 실패하면 경로를 읽지 않고 결속 없는 머지로 닫힌다" "$(sp_rc tr -X PUT repos/o/r/issues/1)" "|참|rest-unbound"
+check "32p: sed 가 실패하면 경로를 읽을 수 없는 것으로 닫힌다" "$(sp_rc sed -X PUT repos/o/r/issues/1)" "inert|참|rest-unbound"
+check "32p: sed 가 실패하면 % 세그먼트를 무해 계열로 읽지 않는다" "$(sp_rc sed -X PUT repos/o/r/issues/%31)" "|참|rest-unbound"
+
 # gh 가 보내기 전에 채우는 경로 자리표시자 — {branch}·:branch 는 현재 브랜치 이름이
 # 이스케이프 없이 들어가므로, 7/merge 브랜치에서 pulls/{branch} 는 pulls/7/merge 로 나간다.
 # repos/{owner}/{repo}/ 뒤의 자리표시자 세그먼트는 읽을 수 없는 경로로 다룬다.

@@ -972,18 +972,33 @@ fi
 # The gate binds only the REST merge spelling, and the matcher compares whole
 # words from the front, so a run whose rows hold `gh pr` alone sends every merge
 # to approval. The literals below are the check that host defaults do not skip
-# and the read-back that offers `gh api -X PUT` when no default exists.
+# and the read-back that offers `gh api -X PUT` when no default exists. Both
+# run under every review policy, because the routers merge with the REST
+# spelling under every policy pin; the old wording that confined them to
+# `선리뷰후머지` must be gone.
 # ---------------------------------------------------------------------------
 for lit in \
-  'with one check they do not skip: when the plan predicts a merge under `선리뷰후머지`, see whether a confirmed form covers the REST merge spelling' \
+  'with one check they do not skip: when the plan predicts a merge under any review policy, see whether a confirmed form covers the REST merge spelling' \
+  'The check is not limited to `선리뷰후머지`: the routers merge with the REST spelling under every policy pin' \
   '사유: 워크트리 HEAD 에 결속된 REST 머지 — 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 엽니다' \
-  '**When the plan predicts a merge under `선리뷰후머지`, the rows read back carry `gh api -X PUT`**'
+  '**When the plan predicts a merge under any review policy, the rows read back carry `gh api -X PUT`**'
 do
   nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
   if [ "${nlit:-0}" = "1" ]; then
     ok "킥오프의 사전 인가 행 계약이 「${lit}」을 한 번 싣는다"
   else
     bad "킥오프의 사전 인가 행 계약" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+done
+for lit in \
+  'when the plan predicts a merge under `선리뷰후머지`, see whether' \
+  'When the plan predicts a merge under `선리뷰후머지`, the rows read back'
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "킥오프의 사전 인가 행 계약이 「${lit}」로 정책을 좁히지 않는다"
+  else
+    bad "킥오프의 사전 인가 행 계약 — 정책 한정 잔존" "「${lit}」이 ${nlit:-0}번 있다"
   fi
 done
 

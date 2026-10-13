@@ -6942,8 +6942,13 @@ gate_gh_api_pct_decode() {
   # else touched. A backslash is doubled before `printf '%b'` reads the string,
   # so a literal `\c` in a path no longer ends the output there and hides the
   # segments after it, and a literal `\n` stays two characters.
+  #
+  # THE BYTES ARE READ AS BYTES, AND A FAILED `sed` RETURNS 1 WITH NOTHING
+  # PRINTED. The run picks a UTF-8 locale, and macOS `sed` stops at the first
+  # byte that is not valid UTF-8 there, so the prefix it had written read as
+  # the whole path. The callers take a status of 1 as a path they cannot read.
   local d
-  d=$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/%/\\x/g')
+  d=$(printf '%s' "$1" | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/%/\\x/g') || return 1
   printf '%b' "$d"
 }
 
@@ -7020,20 +7025,29 @@ gate_gh_api_rest_class() {
   # an owner or repository name holds no `/`, so it is one segment whatever it
   # is. Any other segment gh fills in leaves the endpoint unread, and so does
   # one in an absolute URL's authority (`gate_gh_api_authority_unread`).
-  local p seg d n i=0
+  #
+  # A PATH THE SPLIT DID NOT FINISH READING NAMES NO ENDPOINT. Split by a `tr`
+  # in the run's UTF-8 locale, a byte that is not valid UTF-8 stopped macOS `tr`
+  # there, and the prefix it had written — `repos/o/r/issues` before
+  # `…/1<byte>/../../../pulls/1/merge` — read as an issue write, so a merge
+  # bound to nothing passed with no rung. The split reads bytes, and a split
+  # that fails prints nothing here, which the caller reads as a write that
+  # moves a ref.
+  local p seg d n segs i=0
   local -a s=()
   gate_gh_api_authority_unread && return 0
   p=$(gate_gh_api_rest_path)
+  segs=$(printf '%s' "$p" | LC_ALL=C tr '/' '\n') || return 0
   while IFS= read -r seg; do
     s[${#s[@]}]="$seg"
   done <<GATE_GHAPI_REST_SEGS
-$(printf '%s' "$p" | tr '/' '\n')
+$segs
 GATE_GHAPI_REST_SEGS
   for seg in ${s[@]+"${s[@]}"}; do
     case "$seg" in ''|.|..) return 0 ;; esac
     case "$seg" in
       *%*)
-        d=$(gate_gh_api_pct_decode "$seg")
+        d=$(gate_gh_api_pct_decode "$seg") || return 0
         case "$d" in ''|.|..|*/*) return 0 ;; esac ;;
     esac
     if gate_gh_api_seg_placeholder "$seg"; then
@@ -7068,17 +7082,22 @@ gate_gh_api_path_unread() {
   # its `%` escapes are decoded, and is not a path this gate can read as
   # written — it has a `%` escape, or a `.`, `..` or empty segment. An absolute
   # URL is read from its path, so the `//` after its scheme is no empty segment.
-  local p d seg odd=0 pulls=0
+  #
+  # A decode or split that fails is a path this gate cannot read, and true:
+  # stopped at a byte that is not valid UTF-8, the prefix before it held no
+  # `pulls` segment and the merge after it went unseen.
+  local p d seg segs odd=0 pulls=0
   p=$(gate_gh_api_rest_path)
   case "$p" in *%*) odd=1 ;; esac
-  d=$(gate_gh_api_pct_decode "$p")
+  d=$(gate_gh_api_pct_decode "$p") || return 0
+  segs=$(printf '%s' "$d" | LC_ALL=C tr '/' '\n') || return 0
   while IFS= read -r seg; do
     case "$seg" in
       pulls) pulls=1 ;;
       ''|.|..) odd=1 ;;
     esac
   done <<GATE_GHAPI_SEGS
-$(printf '%s' "$d" | tr '/' '\n')
+$segs
 GATE_GHAPI_SEGS
   [ "$pulls" = 1 ] && [ "$odd" = 1 ]
 }
@@ -15708,7 +15727,7 @@ gate_preauth_argv() {
   local cmd="${1##*/}" m
   if [ "$cmd" = gh ] && [ "${2:-}" = api ]; then
     gate_gh_api_parse "${@:3}"
-    m=$(printf '%s' "$GATE_GHAPI_METHOD" | tr '[:lower:]' '[:upper:]')
+    m=$(printf '%s' "$GATE_GHAPI_METHOD" | LC_ALL=C tr '[:lower:]' '[:upper:]')
     printf '%s api -X %s %s' "$1" "$m" "${*:3}"
     return 0
   fi
