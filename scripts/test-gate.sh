@@ -22770,7 +22770,7 @@ ld29() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv
 sf29() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; surface_of_argv0 "$@"' _ "$GATE" "$@"; }
 cs29() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
-           if gate_collaboration_surface "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
+           if gate_collaboration_surface "" "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
 }
 check "29: 동사 앞 -b 를 지나 결속을 읽는다 (양성 대조)"      "$(mb gh pr -b x merge 1 --admin --match-head-commit "$H40")" "$H40"
 check "29: 동사 앞 결속 옵션도 gh 처럼 읽는다"                "$(mb gh pr --match-head-commit "$H40" merge 1 --admin)" "$H40"
@@ -23704,7 +23704,7 @@ done
 sp_ld() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
 sp_cs() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
-           if gate_collaboration_surface "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
+           if gate_collaboration_surface "" "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
 }
 X32="0123456789abcdef0123456789abcdef01234567"
 q32m='mutation{mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}'
@@ -27849,6 +27849,15 @@ n=$(grep -c '스코프=act' "$FX_LEDGER" 2>/dev/null || true)
 # 텍스트 셋은 고정부를 실제로 재고 남는 바이트로 자른다.
 n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
 [ "${n:-0}" -le 1024 ] && ok "park blocked 행이 원장 행 상한 안이다 (최장 ${n}B)" || bad "park blocked 행 길이" "최장 ${n}B > 1024"
+# 표지는 git 이 읽는 자리의 하위 명령에서 읽는다. 전역 플래그가 앞서면 `push`·
+# `credential` 이 둘째 낱말이 아니어서, `git -C <x> push --force` 와 `git -c a=b
+# credential fill` 은 맨 철자가 받는 표지를 받지 못했다. 맨 철자가 짝으로 든다.
+m54() { ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_act_mark "$@" | tr "\t" "/"' _ "$GATE" "$@" ); }
+check "맨 철자 대조군 — git push --force 는 파괴 표지를 받는다" "$(m54 git push --force origin b)" "파괴/--force"
+check "전역 플래그 뒤의 git push --force 도 파괴 표지를 받는다" "$(m54 git -C /x push --force origin b)" "파괴/--force"
+check "등호 위치 플래그 뒤의 git push +refspec 도 파괴 표지를 받는다" "$(m54 git --git-dir=/x/.git push origin +b)" "파괴/+b"
+check "맨 철자 대조군 — git credential fill 은 비밀출력 표지를 받는다" "$(m54 git credential fill)" "비밀출력/fill"
+check "-c 뒤의 git credential fill 도 비밀출력 표지를 받는다" "$(m54 git -c a=b credential fill)" "비밀출력/fill"
 # 켠 스위치는 절 안에서 되돌린다 — 되돌리지 않으면 같은 샤드에서 이 절 뒤에 도는
 # 절이 자동 해소 모드로 돌아, 표 등급 행위마다 --reach 를 요구받고 rc 2 로 끝난다.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
@@ -27909,6 +27918,241 @@ case "$msg" in
   *) bad "그 거부가 리뷰 룰의 것이다" "$msg" ;;
 esac
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
+
+# ---------------------------------------------------------------------------
+# 55b. git 전역 플래그 철자 — 같은 행위의 두 철자가 같은 처분을 받는다
+# --- section: 55b | group: reach | covers: plan, exec | anchors: -C 대상 워크트리 push 가 통과 예상이다 ---
+# ---------------------------------------------------------------------------
+#
+# 게이트가 git argv 를 둘째 낱말로 읽던 자리는 `git -C <워크트리> push` 와
+# `git --git-dir=<g> --work-tree=<w> push` 를 push 로 보지 못했다. 그래서 대상
+# 워크트리로 가는 두 철자가 도달모순으로 park 되고, 사전 인가 대조기는 `-…=` 낱말을
+# 버려 다른 저장소를 가리키는 등호 철자를 `git push` 행에 맞췄다. 이 절은 그 두
+# 방향을 함께 못박는다: 대상 안을 가리키는 철자는 맨 철자와 같은 처분을 받고, 대상
+# 밖이거나 못 읽는 플래그를 실은 철자는 협업도 사전 인가도 받지 않는다.
+#
+# 원격 슬러그를 맞춰야 하므로 공유 픽스처(원격이 로컬 베어 경로)를 쓰지 않고 자기
+# 저장소를 만든다. 원격 URL 은 질의만 되고 push 는 `plan` 이라 나가지 않는다.
+CC_GATE_PREV_AR55B="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+S55B="$(cd -P "$WORK" && pwd)/s55b"
+S55B_R="$S55B/repo"; S55B_W="$S55B/wt"; S55B_O="$S55B/other"
+mkdir -p "$S55B"
+( git init -q "$S55B_R" && cd "$S55B_R" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && mkdir -p docs/pipeline-run docs/pipeline-grant \
+  && echo a > a.txt && git add -A && git commit -qm a && git branch -M main \
+  && git remote add origin https://github.com/t/s55b.git \
+  && git remote add fork https://github.com/me/fork.git \
+  && git config branch.main.remote origin && git config branch.main.merge refs/heads/main \
+  && git branch up-fork && git config branch.up-fork.remote fork \
+  && git config branch.up-fork.merge refs/heads/up-fork \
+  && git worktree add -q -b seg/x "$S55B_W" ) >/dev/null 2>&1
+( git init -q "$S55B_O" && cd "$S55B_O" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && echo o > o.txt && git add -A && git commit -qm o && git branch -M main \
+  && git remote add origin https://github.com/o/other.git ) >/dev/null 2>&1
+S55B_CG=$(cd "$S55B_R" && git rev-parse --path-format=absolute --git-common-dir)
+S55B_WG=$(cd "$S55B_W" && git rev-parse --absolute-git-dir)
+S55B_M="$S55B_R/plan55b.md"
+S55B_RULE="$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh"
+row55b="- \`target\` | 별칭=s55b | 메인 워크트리=$S55B_R | 공통 git 디렉터리=$S55B_CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/s55b | 절단점=배포 | 말단 행위 상한=없음"
+td55b=$(printf '%s\n' "$row55b" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+s55b_manifest() {
+  # s55b_manifest [<구속 다이제스트>] — the fixture manifest, with the digest line
+  # inside `## 인가` when one is given.
+  printf '# 파이프라인 런 매니페스트 — R55B\n'
+  printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=R55B;\n'
+  printf '     anchor-kind=repo; anchor-key=t/s55b;\n'
+  printf '     owner-doc=(없음); origin-worktree=%s;\n' "$S55B_R"
+  printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+  printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: R55B\n'
+  printf '**앵커 종류**: repo\n**앵커 키**: t/s55b\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+  printf '## 의도\n```text\n테스트\n```\n\n'
+  printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td55b" "$row55b"
+  printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+  printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n{ "steps": [] }\n```\n\n'
+  printf '## 인가\n'
+  [ -z "${1:-}" ] || printf '**구속 다이제스트**: %s\n' "$1"
+  printf '**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
+  printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+  printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+  printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
+  printf -- '- `사전 인가` | 형태=terraform apply | 사유=테스트\n'
+}
+s55b_manifest > "$S55B_M"
+bd55b=$(cd "$S55B_R" && bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1"; MANIFEST="$2"; binding_set_bytes | shasum -a 256 | cut -d" " -f1' \
+  _ "$RUNSH" "$S55B_M" 2>/dev/null)
+s55b_manifest "$bd55b" > "$S55B_M"
+{
+  printf '# 파이프라인 인가 기록 — R55B\n'
+  printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$S55B_R"
+  printf '## 인가 R55B\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n'
+  printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+  printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+  printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/R55B.md\n' "$S55B_R"
+} > "$S55B_R/docs/pipeline-grant/R55B.md"
+
+# `s55b_plan <cutpoint> <argv…>` 은 공유 `gate` 와 같은 모양으로 `rc`·`msg` 를 남기되,
+# 이 절의 저장소에서 돈다 — 매니페스트 검사는 cwd 의 작업 트리를 origin-worktree 와
+# 대조한다. stderr 는 `s55b_err` 에 따로 남겨 `dirname` 소음을 잰다.
+s55b_err=""
+s55b_plan() {
+  local cut="$1" out; shift
+  out=$(cd "$S55B_R" && gate_inproc plan --manifest "$S55B_M" --target s55b --cutpoint "$cut" \
+          --surface 외부상태변경 --reach 협업 -- "$@" 2>"$S55B/plan.err"); rc=$?
+  s55b_err=$(cat "$S55B/plan.err")
+  msg=$(printf '%s\n%s' "$out" "$s55b_err" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+# 소싱한 게이트의 한 함수를 이 절의 매니페스트로 부른다. 첫 인자는 함수 뒤에 붙일
+# 셸 조각이다 — 참·거짓을 값으로 바꾸거나 출력을 그대로 둔다.
+s55b_fn() {
+  local tail="$1"; shift
+  ( cd "$S55B_R" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; t="$3"; shift 3
+      eval "\"\$@\" $t"' _ "$GATE" "$S55B_M" "$tail" "$@" 2>/dev/null )
+}
+# 게이트 처분 경로가 대조기에 넘기는 그 문자열로 사전 인가를 묻는다(gate.sh 의
+# 처분 7단계 앞과 같은 세 줄). 규칙 파일을 직접 부르는 탐침이 아니다.
+s55b_p() {
+  ( cd "$S55B_R" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; r="$3"; a="$4"; shift 4
+      GATE_PREAUTH_PROBE=1 GATE_MARK= GATE_MARK_TRIGGER= GATE_ARGV="$(gate_preauth_argv "$a" "$@")" \
+        GATE_MANIFEST="$MANIFEST" /bin/sh "$r" 2>/dev/null' _ "$GATE" "$S55B_M" "$S55B_RULE" "$@" \
+    | sed -n 's/^\(P=[01]\).*/\1/p' )
+}
+s55b_rm() { s55b_fn '&& printf 일치 || printf 불일치' gate_push_remote_match s55b "$@"; }
+
+# 1 — 대상 안을 가리키는 두 철자(351e739d 의 `-C`, 513e903b 의 `--git-dir=`·
+# `--work-tree=`)는 도달모순 없이 통과하고 `git push` 행에 맞는다.
+s55b_plan push git -C "$S55B_W" push origin seg/x
+check "-C 대상 워크트리 push 가 통과 예상이다" "$rc" "0"
+s55b_plan push git --git-dir="$S55B_WG" --work-tree="$S55B_W" push origin seg/x
+check "--git-dir=·--work-tree= 대상 워크트리 push 가 통과 예상이다" "$rc" "0"
+case "$s55b_err" in
+  *"illegal option"*|*"unrecognized option"*) bad "-- 로 시작하는 낱말이 dirname 소음을 내지 않는다" "$s55b_err" ;;
+  *) ok "-- 로 시작하는 낱말이 dirname 소음을 내지 않는다" ;;
+esac
+check "-C 대상 워크트리 push 가 git push 행에 맞는다" "$(s55b_p s55b git -C "$S55B_W" push origin seg/x)" "P=1"
+check "등호 위치 플래그 대상 워크트리 push 가 git push 행에 맞는다" \
+  "$(s55b_p s55b git --git-dir="$S55B_WG" --work-tree="$S55B_W" push origin seg/x)" "P=1"
+check "공백 위치 플래그 대상 워크트리 push 도 같다" \
+  "$(s55b_p s55b git --git-dir "$S55B_WG" --work-tree "$S55B_W" push origin seg/x)" "P=1"
+check "다시 쓴 사전 인가 문자열은 git <서브커맨드 이후> 다" \
+  "$(s55b_fn '' gate_preauth_argv s55b git -C "$S55B_W" push origin seg/x)" "git push origin seg/x"
+
+# 2 — 대상 밖이거나 못 읽는 플래그를 실은 철자는 사전 인가에 맞지 않는다(R1).
+s55b_n=0
+for s55b_a in "-C|$S55B_O|push|origin|main" \
+              "--git-dir=$S55B_CG|--work-tree=$S55B_O|push|origin|seg/x" \
+              "-C|$S55B/nope|push|origin|seg/x" \
+              "-C|$S55B_W|-c|remote.origin.pushurl=https://github.com/o/x.git|push|origin|seg/x" \
+              "--git-dir=$S55B_O/.git|--work-tree=$S55B_O|push|origin|x" \
+              "--git-dir|$S55B_O/.git|--work-tree|$S55B_O|push|origin|x" \
+              "--namespace=n|push|origin|seg/x"; do
+  s55b_n=$((s55b_n + 1))
+  IFS='|' read -r -a s55b_w <<< "$s55b_a"
+  check "대상 밖·못 읽는 철자 $s55b_n (git ${s55b_w[*]}) 은 git push 행에 맞지 않는다" \
+    "$(s55b_p s55b git "${s55b_w[@]}")" "P=0"
+  s55b_plan push git "${s55b_w[@]}"
+  case "$rc" in
+    0) bad "대상 밖·못 읽는 철자 $s55b_n 은 통과 예상이 아니다" "$msg" ;;
+    *) ok "대상 밖·못 읽는 철자 $s55b_n 은 통과 예상이 아니다 (rc=$rc)" ;;
+  esac
+done
+# 도착지가 베이스 이름이면 머지 칸 상향(8)이 먼저 서므로, 원격 대조만 재려고 베이스
+# 아닌 도착지를 쓴다.
+s55b_plan push git -C "$S55B_O" push origin seg/x
+check "-C 다른 저장소 push 는 원격 불일치 승인 대상이다" "$rc" "5"
+case "$msg" in *push원격불일치*) ok "그 거절이 push원격불일치다" ;; *) bad "그 거절이 push원격불일치다" "$msg" ;; esac
+s55b_plan push git --git-dir="$S55B_CG" --work-tree="$S55B_O" push origin seg/x
+case "$msg" in *도달모순*|*"it was not issued"*) ok "대상 밖 작업 트리 push 는 협업이 아니다" ;; *) bad "대상 밖 작업 트리 push 는 협업이 아니다" "rc=$rc $msg" ;; esac
+# 대상 메인 워크트리도 대상 안이다. 그곳에서 베이스로 가는 push 는 전역 플래그를
+# 실은 채 현재 가지·도착지를 읽어 머지 칸으로 오른다.
+s55b_plan push git -C "$S55B_R" push origin main
+check "메인 워크트리에서 베이스로 가는 -C push 는 머지 칸 상향이다" "$rc" "8"
+s55b_plan push git -C "$S55B_R" push
+check "refspec 없는 -C push 도 그 워크트리의 가지(베이스)로 머지 칸에 오른다" "$rc" "8"
+
+# 3 — 다시 쓰지 않는 git argv 는 서브커맨드 앞의 `-…=<값>` 만 갈라 넘긴다.
+check "대상 밖 등호 플래그는 두 낱말로 갈려 넘겨진다" \
+  "$(s55b_fn '' gate_preauth_argv s55b git --git-dir="$S55B_O/.git" push origin x)" "git --git-dir $S55B_O/.git push origin x"
+check "별칭 없는 호출처도 같은 가르기를 받는다" \
+  "$(s55b_fn '' gate_preauth_argv '' git --work-tree=/w push origin x)" "git --work-tree /w push origin x"
+check "서브커맨드 뒤의 -…= 낱말은 가르지 않는다" \
+  "$(s55b_fn '' gate_preauth_argv s55b git push --push-option=x origin seg/x)" "git push --push-option=x origin seg/x"
+check "서브커맨드 뒤 -…= 낱말을 실은 push 의 대조가 오늘과 같다" \
+  "$(s55b_p s55b git push --push-option=x origin seg/x)" "P=1"
+check "git 밖의 도구는 그대로 넘겨진다" \
+  "$(s55b_fn '' gate_preauth_argv s55b terraform -chdir=infra apply)" "terraform -chdir=infra apply"
+check "terraform -chdir= 의 대조가 오늘과 같다" "$(s55b_p s55b terraform -chdir=infra apply)" "P=1"
+
+# 4 — 못 읽는 플래그는 처분 경로 맨 앞에서 형태 미상으로 선다(R3).
+for s55b_a in "--exec-path=/x|push|origin|seg/x" \
+              "--config-env=remote.origin.pushurl=X|push|origin|seg/x" \
+              "-c|core.sshCommand=x|push|origin|seg/x"; do
+  IFS='|' read -r -a s55b_w <<< "$s55b_a"
+  s55b_plan push git "${s55b_w[@]}"
+  check "못 읽는 플래그 철자 (git ${s55b_w[*]}) 는 형태 미상 exit 2 다" "$rc" "2"
+  case "$msg" in
+    *"형태 미상"*) ok "그 거절이 형태 미상을 이름으로 말한다 (git ${s55b_w[*]})" ;;
+    *) bad "그 거절이 형태 미상을 이름으로 말한다 (git ${s55b_w[*]})" "$msg" ;;
+  esac
+  case "$msg" in
+    *"사전 인가"*) bad "그 거절에 사전 인가 문면이 없다 (git ${s55b_w[*]})" "$msg" ;;
+    *) ok "그 거절에 사전 인가 문면이 없다 (git ${s55b_w[*]})" ;;
+  esac
+done
+
+# 5 — 원격 대조는 git 이 실제로 쓸 목적지로 하고, 풀리지 않으면 불일치다.
+check "맨 철자 대조군 — origin push 는 일치다" "$(s55b_rm git push origin seg/x)" "일치"
+check "-C 대상 워크트리 push 도 일치다" "$(s55b_rm git -C "$S55B_W" push origin seg/x)" "일치"
+check "푸시 옵션 값은 원격으로 읽히지 않는다" "$(s55b_rm git push --push-option ci.skip origin seg/x)" "일치"
+s55b_n=0
+for s55b_a in "--repo=https://github.com/o/x.git" \
+              "--repo|https://github.com/o/x.git" \
+              "$S55B_O|main" \
+              "./rel|main" \
+              "file://$S55B_O|main" \
+              "nosuch|main" \
+              "-o|https://github.com/t/s55b.git|$S55B_O|main"; do
+  s55b_n=$((s55b_n + 1))
+  IFS='|' read -r -a s55b_w <<< "$s55b_a"
+  check "원격 대조 구멍 $s55b_n (git push ${s55b_w[*]}) 은 불일치다" "$(s55b_rm git push "${s55b_w[@]}")" "불일치"
+done
+check "-C 다른 저장소 push 는 불일치다" "$(s55b_rm git -C "$S55B_O" push origin main)" "불일치"
+check "-c remote.origin.pushurl= 은 실제 목적지로 반영돼 불일치다" \
+  "$(s55b_rm git -c remote.origin.pushurl=https://github.com/o/x.git push origin seg/x)" "불일치"
+# 원격을 생략한 push 는 현재 가지의 푸시 원격으로 푼다(R4).
+check "(가) 상류가 매니페스트 원격인 가지의 원격 생략 push 는 일치다" \
+  "$(cd "$S55B_R" && git checkout -q main && s55b_rm git push)" "일치"
+check "(가) 상류가 다른 원격인 가지의 원격 생략 push 는 불일치다" \
+  "$(cd "$S55B_R" && git checkout -q up-fork && s55b_rm git push; git checkout -q main)" "불일치"
+check "(나) -c remote.pushDefault=<다른 원격> 은 원격 이름을 바꿔 불일치다" \
+  "$(cd "$S55B_R" && s55b_rm git -c remote.pushDefault=fork push)" "불일치"
+check "(다) 상류도 푸시 원격도 없는 가지의 푸시 원격은 빈 값이다" \
+  "$(cd "$S55B_W" && git for-each-ref --format='%(push:remotename)' refs/heads/seg/x)" ""
+check "(다) 그 빈 값은 불일치다" "$(s55b_rm git -C "$S55B_W" push)" "불일치"
+
+# 6 — 행위 환경의 git 위치 변수는 플래그 판독을 넘어서므로, 그 아래에서는 포함
+# 술어가 거짓이고 원격 질의도 그 변수가 가리키는 저장소를 본다.
+check "GIT_DIR 아래의 -C 대상 워크트리 push 는 포함 술어가 거짓이다" \
+  "$(GIT_DIR="$S55B_O/.git" s55b_fn '&& printf 참 || printf 거짓' gate_git_argv_in_target s55b git -C "$S55B_W" push origin seg/x)" "거짓"
+check "GIT_DIR 아래의 -C 대상 워크트리 push 는 협업이 아니다" \
+  "$(GIT_DIR="$S55B_O/.git" GATE_GRADE_SOURCE=표 s55b_fn '&& printf 협업 || printf 아님' gate_collaboration_surface s55b - git -C "$S55B_W" push origin seg/x)" "아님"
+check "GIT_DIR 아래의 -C 대상 워크트리 push 는 다시 쓰이지 않는다" \
+  "$(GIT_DIR="$S55B_O/.git" s55b_p s55b git -C "$S55B_W" push origin seg/x)" "P=0"
+check "GIT_DIR 아래의 맨 철자 push 는 원격 불일치다" \
+  "$(GIT_DIR="$S55B_O/.git" s55b_rm git push origin seg/x)" "불일치"
+check "대조군 — 변수 없는 같은 포함 술어는 참이다" \
+  "$(s55b_fn '&& printf 참 || printf 거짓' gate_git_argv_in_target s55b git -C "$S55B_W" push origin seg/x)" "참"
+
+# 7 — 위치 플래그의 값은 두 철자 모두 경로 낱말로 훑는다.
+check "git --work-tree=\$HOME/.claude status 의 유도 도달은 기기전역이다" \
+  "$(s55b_fn '' gate_reach_derived s55b git --work-tree="$HOME/.claude" status)" "기기전역"
+check "git --work-tree \$HOME/.claude status 의 유도 도달도 기기전역이다" \
+  "$(s55b_fn '' gate_reach_derived s55b git --work-tree "$HOME/.claude" status)" "기기전역"
+check "git -C <x> stash 는 stash 로 읽혀 기기전역이다" \
+  "$(s55b_fn '' gate_reach_derived s55b git -C "$S55B_W" stash)" "기기전역"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55B"
 
 # ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질
@@ -33218,7 +33462,7 @@ p83g() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; m="$2"; r="$3"; shift 3
     mk=$(gate_act_mark "$@")
     GATE_PREAUTH_PROBE=1 GATE_MARK="${mk%%	*}" GATE_MARK_TRIGGER="${mk#*	}" \
-      GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$m" /bin/sh "$r" 2>/dev/null' \
+      GATE_ARGV="$(gate_preauth_argv "" "$@")" GATE_MANIFEST="$m" /bin/sh "$r" 2>/dev/null' \
     _ "$GATE" "$m83" "$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh" "$@"
 }
 p83m() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; mk=$(gate_act_mark "$@"); printf "%s" "${mk%%	*}"' _ "$GATE" "$@"; }
