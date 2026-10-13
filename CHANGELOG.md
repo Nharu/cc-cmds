@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.15] - 2026-10-13
+
+2.72.14 의 셸 문자열 판독기가 래퍼 뒤의 `-` 로 시작하는 단어를 모두 값 없는 옵션으로 건너뛰어, `exec -a <이름>` 의 값을 명령 단어로 읽던 구멍을 닫는다. `exec -a echo perl -e 'system …push…'` 는 `echo` 가 허용 목록에 있어 push 없음으로 읽혔지만 셸은 perl 을 실행했으므로, 베이스로 가는 push 가 형태 미상 거부·dry-run·HEAD 결속·리뷰 기록 요구를 모두 건너뛰었다.
+
+### Fixed
+
+- **래퍼 옵션은 값 없는 것만 건너뛴다** — 셸 `-c`·`env -S`·`sudo` 문자열의 명령 단어 판독이 래퍼 뒤에서 건너뛰는 옵션을 `command -p`·`-v`·`-V`, `time -p`, `exec -c`·`-l`(각각 따로 적힌 단어)로 한정한다. 그 밖의 래퍼 옵션(`exec -a`, `-la` 같은 묶음, `builtin`·`nohup`·`!` 뒤의 옵션)은 `불투명` 으로 읽어, 베이스 브랜치가 있는 대상에서는 신고와 무관하게 형태 미상(exit 2)으로 거부한다
+
+### Post-install notes
+
+- 베이스 브랜치가 있는 대상에서 `bash -c 'exec -a n cat f'` 처럼 값 없는 집합 밖의 래퍼 옵션을 담은 셸 문자열은 push 가 아니어도 형태 미상으로 거부된다. 래퍼 없이 명령을 직접 부르면 전처럼 읽힌다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): 셸 문자열의 래퍼 옵션은 값 없는 것만 건너뛴다`
+
 ## [2.72.14] - 2026-10-13
 
 2.72.13 의 셸 문자열 판독기가 여전히 텍스트를 실행하는 명령을 열거하고 있어, 그 목록 밖의 흔한 철자 안의 베이스 push 가 형태 미상 거부·dry-run·HEAD 결속·리뷰 기록 요구를 모두 건너뛰던 구멍을 닫는다. 2.72.13 은 명령 머리의 `.` 만 실행기로 읽었으므로 `X=1 . /dev/stdin`, `command . /dev/stdin`, `builtin . /dev/stdin`, 파일을 쓰고 경로로 실행하는 형태, `perl -e 'system …'` 이 push 없음으로 읽혔고, 셸 러너에는 사다리 칸이 없어 절단점이 선언값에 머물렀으므로 리뷰 룰이 리뷰 기록을 읽기 전에 통과시켰다.
