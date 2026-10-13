@@ -2978,6 +2978,153 @@ regb_write 없음 문서만 문서만
 printf '바뀐 줄\n' >> "$REGB/docs/b.md"
 check "레지스트리 — 첫 줄의 sha256 이 문서와 다르면 미완결이다" "$(regb_rc)" "1"
 
+# --- 21c-c solo 티어 — 스킬을 고르는 한 함수, 감사를 건너뛰는 갈래, 진입 판정 검사 ---
+# 계획의 `design_tier` 가 설계 스킬을 정한다. `solo` 계획은 리드 단독 스킬로 설계하고
+# 감사를 띄우지 않으며, 그 밖의 계획은 지금처럼 토론 스킬로 설계하고 감사를 돈다.
+# 감사를 건너뛰는 갈래는 동결 줄을 묻는다 — 그 뒤의 세그먼트 계획은 동결을 읽지 않으므로,
+# 동결되지 않은 문서는 거기서 멈추지 않으면 감사도 동결도 없이 구현으로 간다.
+# `설계 티어` 행은 게이트가 런 개시에 쓰는 행이라 이 드라이버 픽스처의 원장에는 하나도
+# 없어야 한다 — 게이트 행의 수는 test-gate 의 티어 절이 센다.
+ARMS="$WORK/solo-arm"; mkdir -p "$ARMS"
+SOLO_PLAN='{ "design_required": true, "design_tier_judged": "solo", "design_tier": "solo", "design_heavy_reasons": [], "estimated_files": 3, "design_tier_rationale": "한 스크립트 안의 작은 변경", "steps": [ { "id": "D1", "skill": "design", "summary": "s", "depends_on": [] }, { "id": "I1", "skill": "implement", "summary": "s", "depends_on": ["D1"] } ] }'
+TEAM2_PLAN='{ "design_required": true, "design_tier": "team-2", "steps": ["design", "audit"] }'
+arms_manifest() {
+  # arms_manifest <출력> <계획 json> — write_manifest 의 기본 계획 한 줄만 갈아 끼운다.
+  write_manifest "$1" "" "" main "docs/x.md"
+  awk -v p="$2" '{ if ($0 == "{ \"steps\": [\"audit\", \"implement\"] }") print p; else print }' "$1" > "$1.t" \
+    && mv "$1.t" "$1"
+}
+MFSOLO="$ARMS/solo.md";   arms_manifest "$MFSOLO" "$SOLO_PLAN"
+MFTEAM2="$ARMS/team2.md"; arms_manifest "$MFTEAM2" "$TEAM2_PLAN"
+check "solo 픽스처가 실제로 design_tier=solo 를 얻었다 (아래가 공허하지 않다)" \
+  "$(MANIFEST="$MFSOLO"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_tier)" "solo"
+check "선택 함수 — solo 계획은 리드 단독 스킬이다" \
+  "$(MANIFEST="$MFSOLO"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_skill)" "design-solo-unattended"
+check "선택 함수 — team-2 계획은 토론 스킬이다" \
+  "$(MANIFEST="$MFTEAM2"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_skill)" "design-discuss-unattended"
+check "선택 함수 — 베이스 계획은 베이스 스킬이다" \
+  "$(MANIFEST="$MFB"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_skill)" "design-base-unattended"
+
+arms_arm() {
+  # arms_arm <라벨> <매니페스트> <문서: 없음|초안> <스테이지 종단 부류> [이어 진입: 이어]
+  # 설계 팔을 한 번 태운다. 파견은 프롬프트를 기록하고, `초안` 이면 스테이지가 `## ` 절과
+  # `**상태**: 초안` 을 가진 문서를 쓰고 동결 문구 없이 끝난 모양을 파견 안에서 만든다.
+  # 다섯째 인자가 `이어` 이면 디렉터리를 비우지 않고 같은 원장 위로 다시 진입한다.
+  local d="$ARMS/$1" mf="$2"
+  ARMS_DOC="$3"; ARMS_CLASS="$4"
+  [ "${5:-}" = "이어" ] || { rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs"; : > "$d/ledger.md"; }
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=armsrun
+    MANIFEST="$mf"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds
+    CLI_BIN=true
+    dispatch_stage() {
+      printf '%s\t%s\n' "$1" "$3" >> "$d/dispatched"; printf '0' > "$RUN_DIR/$1.rc"
+      [ "$ARMS_DOC" != "초안" ] || printf '# 설계\n\n**상태**: 초안\n\n## 문제\n\n본문\n' > "$DOC"
+    }
+    classify_termination() { printf '%s' "$ARMS_CLASS"; }
+    stage_session_id() { printf 'sid'; }
+    stage_parent_id() { printf 'parent'; }
+    report_append() { :; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    absorb_stage_judgment() { :; }
+    continue_or_park() { CONTINUE_BLOCKED=""; CONTINUE_CLASS=""; CONTINUE_PARK_REASON="계속 없음"; return 1; }
+    design_arm; printf 'rc=%s\n' "$?"
+  ) >> "$d/out" 2>/dev/null
+}
+arms_disp() { [ -f "$ARMS/$1/dispatched" ] && grep -c . "$ARMS/$1/dispatched" || printf '0'; }
+
+arms_arm solo "$MFSOLO" 없음 '정상 완료'
+check "solo 계획의 설계 팔은 리드 단독 스킬을 그 문서로 띄운다" \
+  "$( { cut -f2 "$ARMS/solo/dispatched" 2>/dev/null || true; } | { grep -c -F "/cc-cmds:design-solo-unattended $ARMS/solo/docs/x.md " || true; })" "1"
+arms_arm team2 "$MFTEAM2" 없음 '정상 완료'
+check "team-2 계획의 설계 팔은 토론 스킬을 띄운다 (대조군)" \
+  "$( { cut -f2 "$ARMS/team2/dispatched" 2>/dev/null || true; } | { grep -c '^/cc-cmds:design-discuss-unattended ' || true; })" "1"
+
+# 쓰기와 동결 사이에서 끝난 가벼운 스테이지. 첫 진입은 그 시도를 공허한 성공으로 적고
+# 멈추며, 다시 들어오면 그 문서 위로 두 번째 파견을 하지 않고 같은 park 갈래로 멈춘다.
+arms_arm draft "$MFSOLO" 초안 '공허한 성공'
+check "동결 없이 끝난 solo 설계가 공허한 성공 행을 남긴다 (아래가 공허하지 않다)" \
+  "$(arms_disp draft)/$( { grep -F '스테이지=S1design ' "$ARMS/draft/ledger.md" || true; } | { grep -c -F '종단 부류=공허한 성공' || true; })" "1/1"
+check "그 문서는 동결되지 않은 저장된 문서다" \
+  "$(grep -c -x -F '**상태**: 초안' "$ARMS/draft/docs/x.md")/$(grep -c '^## ' "$ARMS/draft/docs/x.md")" "1/1"
+: > "$ARMS/draft/parked"
+arms_arm draft "$MFSOLO" 초안 '정상 완료' 이어
+check "다시 들어온 설계 팔은 두 번째로 파견하지 않는다" "$(arms_disp draft)" "1"
+check "그 진입은 S1design 을 런 범위 무효화 게이트 park 로 멈춘다" \
+  "$(grep -c '^S1design run 무효화 게이트 park 이 런의 설계 스테이지가 이미 종단 부류 공허한 성공 로 끝났다' "$ARMS/draft/parked" 2>/dev/null || true)" "1"
+
+# S2 — 주 루프를 태운다. 설계 팔은 통과로 두고 문서의 동결 여부만 바꾼다.
+arms_loop() {
+  # arms_loop <라벨> <매니페스트> <문서: 동결|초안>
+  local d="$ARMS/$1"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=armsloop
+    MANIFEST="$2"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; GRANT=""
+    DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; DOC_SLUG=x; DOC_BASE="$d"
+    ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG=x; BASE="$d"
+    : > "$LEDGER"
+    case "$3" in
+      동결) printf '# 설계\n\n**상태**: 동결됨\n\n## 문제\n\n본문\n' > "$DOC" ;;
+      초안) printf '# 설계\n\n**상태**: 초안\n\n## 문제\n\n본문\n' > "$DOC" ;;
+    esac
+    CLI_BIN=true
+    design_arm() { return 0; }
+    dispatch_stage() { printf '%s\t%s\n' "$1" "$3" >> "$d/dispatched"; printf '0' > "$RUN_DIR/$1.rc"; }
+    classify_termination() { printf '정상 완료'; }
+    predicate_audit() { return 0; }
+    stage_session_id() { printf 'sid'; }
+    stage_parent_id() { printf 'parent'; }
+    report_append() { printf '%s\n' "$*" >> "$d/report"; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    absorb_stage_judgment() { :; }
+    spawn_lineage_release() { :; }
+    quiet_window_begin() { :; }
+    quiet_window_end() { :; }
+    whole_digest() { printf 'x'; }
+    grant_field() { printf 'x'; }
+    report_path() { printf '%s' "$d/report"; }
+    slicing_branch() { printf 'S3\n' >> "$d/s3"; printf '미통치'; }
+    plan_via_planner() { printf 'S3\n' >> "$d/s3"; return 1; }
+    main_loop; printf 'rc=%s\n' "$?"
+  ) > "$d/out" 2>&1
+}
+arms_s3() { [ -f "$ARMS/$1/s3" ] && printf '도달' || printf '없음'; }
+arms_s2() { { cut -f1 "$ARMS/$1/dispatched" 2>/dev/null || true; } | { grep -c -x 'S2' || true; }; }
+
+arms_loop s2-frozen "$MFSOLO" 동결
+check "solo 런의 동결 문서는 감사를 띄우지 않고 세그먼트 계획으로 간다" \
+  "$(arms_s2 s2-frozen)/$(arms_s3 s2-frozen)" "0/도달"
+check "그 건너뜀이 로그 한 줄과 보고서 한 줄로 남는다" \
+  "$(grep -c 'S2 감사 건너뜀 — solo 티어 런이 설계한 동결 문서다' "$ARMS/s2-frozen/out" || true)/$(grep -c '^감사 건너뜀 — solo 티어 런이 설계한 문서는 감사하지 않는다' "$ARMS/s2-frozen/report" 2>/dev/null || true)" "1/1"
+# 다른 감사 건너뜀 갈래는 `kind=audit-composition` 자율 승인 행을 쓰지만 이 갈래는
+# 쓰지 않는다 — 감사를 빼는 것은 얼린 계획의 결정이지 이 런의 결정이 아니다.
+check "그 건너뜀은 감사 구성 자율 승인 행을 쓰지 않는다" \
+  "$(grep -c -F 'kind=audit-composition' "$ARMS/s2-frozen/ledger.md" || true)" "0"
+arms_loop s2-draft "$MFSOLO" 초안
+check "solo 런의 동결되지 않은 문서는 감사도 세그먼트 계획도 없이 S2 에서 멈춘다" \
+  "$(arms_s2 s2-draft)/$(arms_s3 s2-draft)/$(grep -c '^S2 run 무효화 게이트 park 설계 문서가 동결돼 있지 않다' "$ARMS/s2-draft/parked" 2>/dev/null || true)" "0/없음/1"
+arms_loop s2-team2 "$MFTEAM2" 동결
+check "team-2 런은 같은 동결 문서로 감사를 띄운다 (대조군)" "$(arms_s2 s2-team2)" "1"
+check "드라이버 픽스처의 원장에는 설계 티어 행이 하나도 없다" \
+  "$(cat "$ARMS"/*/ledger.md 2>/dev/null | { grep -c -F -e '- `설계 티어` |' || true; })" "0"
+
+# 검사 21 — 진입 판정의 구조. 내린 계획은 드라이버의 시작에서 죽는다.
+MFLOW="$ARMS/lowered.md"
+arms_manifest "$MFLOW" '{ "design_required": true, "design_tier_judged": "team-4", "design_tier": "solo", "design_heavy_reasons": ["여러 레포에 걸친 계약 변경"], "estimated_files": 9, "steps": [ { "id": "D1", "skill": "design", "summary": "s", "depends_on": [] }, { "id": "I1", "skill": "implement", "summary": "s", "depends_on": ["D1"] } ] }'
+if ( MANIFEST="$MFSOLO"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) >/dev/null 2>&1; then
+  ok "검사 21 — solo 판정 계획이 매니페스트 검사를 통과한다"
+else
+  bad "검사 21" "solo 판정 계획이 거부됐다: $( ( MANIFEST="$MFSOLO"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 | tail -1 )"
+fi
+arms_low=$( ( MANIFEST="$MFLOW"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 ); arms_low_rc=$?
+case "$arms_low_rc/$arms_low" in
+  0/*) bad "검사 21 — team-4 판정을 solo 로 내린 계획은 죽는다" "통과했다" ;;
+  *"진입 판정이 검사기를 통과하지 못했습니다"*"보다 낮습니다"*) ok "검사 21 — team-4 판정을 solo 로 내린 계획은 죽는다" ;;
+  *) bad "검사 21 — team-4 판정을 solo 로 내린 계획은 죽는다" "$arms_low" ;;
+esac
+
 # --- 21c-2 라우터 경로가 같은 계획을 읽는 자리 — 스냅숏 직렬화와 설계 단계 id ------
 # 라우터가 구동하는 런에서는 위 팔이 돌지 않고, 교대는 스냅숏 말고 입력이 없다. 그래서
 # 드라이버가 `manifest_plan_field` 로 읽는 같은 얼린 계획을 게이트가 스냅숏의

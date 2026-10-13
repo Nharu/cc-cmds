@@ -3691,6 +3691,58 @@ BSXSTUBEOF
   }
 }
 
+# tier 그룹의 공유 도우미 — 설계 티어 절이 쓴다. 매니페스트·인가·스텁·파견 도우미는
+# pre_bsplit 의 것을 그대로 쓰고(그래서 먼저 부른다), 여기에는 진입 판정 계획들과
+# 검사기 호출, 그 런의 원장 행 조회만 더한다. 계획마다 판정과 확정을 따로 적는다 —
+# 사람이 올린 런은 둘이 다르고, 그 차이가 `설계 티어` 행이 아침에 보이는 것이다.
+pre_tier() {
+  [ -n "${PRE_TIER_DONE:-}" ] && return 0
+  PRE_TIER_DONE=1
+  pre_bsplit
+  TIER_CHECK="$repo_root/plugins/cc-cmds/orchestrator/prompts/entry-plan.check.jq"
+  TIER_STEPS_SOLO='"steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": ["D1"] } ]'
+  TIER_STEPS_TEAM4='"steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": ["D1", "A1"] } ]'
+  # 평범한 의도의 판정 — 한 스크립트 안의 작은 변경, 무거운 사유 없음.
+  TIER_PLAN_SOLO="{ \"design_required\": true, \"design_tier_judged\": \"solo\", \"design_tier\": \"solo\", \"design_heavy_reasons\": [], \"estimated_files\": 2, \"design_tier_rationale\": \"한 스크립트 안의 옵션 하나\", $TIER_STEPS_SOLO }"
+  # 대조군 — 무거운 사유 하나를 가진 team-4 판정.
+  TIER_PLAN_TEAM4="{ \"design_required\": true, \"design_tier_judged\": \"team-4\", \"design_tier\": \"team-4\", \"design_heavy_reasons\": [\"세 레포의 계약을 함께 바꾼다\"], \"estimated_files\": 14, \"design_tier_rationale\": \"레포 경계를 넘는 계약\", $TIER_STEPS_TEAM4 }"
+  # 사람이 올린 런 — solo 로 판정됐고 team-4 로 얼었다.
+  TIER_PLAN_RAISED="{ \"design_required\": true, \"design_tier_judged\": \"solo\", \"design_tier\": \"team-4\", \"design_heavy_reasons\": [], \"estimated_files\": 2, \"design_tier_rationale\": \"한 스크립트 안의 옵션 하나\", $TIER_STEPS_TEAM4 }"
+  # 거부돼야 하는 셋 — 내림, 사유 불일치, 감사 낀 solo 그래프.
+  TIER_PLAN_LOWERED="{ \"design_required\": true, \"design_tier_judged\": \"team-4\", \"design_tier\": \"solo\", \"design_heavy_reasons\": [\"세 레포의 계약을 함께 바꾼다\"], \"estimated_files\": 14, $TIER_STEPS_SOLO }"
+  TIER_PLAN_NOREASON="{ \"design_required\": true, \"design_tier_judged\": \"team-4\", \"design_tier\": \"team-4\", \"design_heavy_reasons\": [\"  \"], \"estimated_files\": 14, $TIER_STEPS_TEAM4 }"
+  TIER_PLAN_SOLOAUDIT="{ \"design_required\": true, \"design_tier_judged\": \"solo\", \"design_tier\": \"solo\", \"design_heavy_reasons\": [], \"estimated_files\": 2, $TIER_STEPS_TEAM4 }"
+  TIER_PLAN_SOLOREASON="{ \"design_required\": true, \"design_tier_judged\": \"solo\", \"design_tier\": \"solo\", \"design_heavy_reasons\": [\"세 레포의 계약을 함께 바꾼다\"], \"estimated_files\": 2, $TIER_STEPS_SOLO }"
+  # 키가 생기기 전에 얼린 계획 — 검사기도 행도 건드리지 않는다.
+  TIER_PLAN_OLD="{ \"design_required\": true, \"design_tier\": \"team-2\", $TIER_STEPS_TEAM4 }"
+  TIER_P_SOLO='/cc-cmds:design-solo-unattended @DOC@ "테스트"'
+  TIER_P_DISCUSS='/cc-cmds:design-discuss-unattended @DOC@ "테스트"'
+  TIER_P_UNKNOWN='/cc-cmds:design-unknown-unattended @DOC@ "테스트"'
+  # 라우터는 의도 첫 줄을 축자로 붙인다 — 이 스킬들을 다루는 티켓은 형제 명령을 그대로 적는다.
+  TIER_P_SOLO_QUOTING='/cc-cmds:design-solo-unattended @DOC@ "/cc-cmds:design-discuss-unattended 가 멈춘다"'
+  # tier_check <계획 json> — 검사기의 위반 줄을 내고, 종료 코드를 TIER_RC 에 둔다.
+  tier_check() {
+    local f="$WORK/tier-check.json"
+    printf '%s\n' "$1" > "$f"
+    TIER_OUT=$(jq -f "$TIER_CHECK" "$f" 2>&1); TIER_RC=$?
+  }
+  # tier_fresh <run id> <계획 json> — 단일 설계 런의 매니페스트와 인가. 경로는
+  # bsx_launch·bsx_p 가 읽는 자리(`bsx-<run id>.md`)다.
+  tier_fresh() {
+    bsx_write "$WORK/bsx-$1.md" "$1" "$2" "docs/bsxd-$1.md" ""
+    bsx_grant "$1" "docs/bsxd-$1.md"
+  }
+  # tier_rows <run id> — 그 런 원장의 `설계 티어` 행.
+  tier_rows() { { grep -F -e '- `설계 티어` |' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; }; }
+  # tier_field <run id> <필드> — 그 런의 첫 `설계 티어` 행의 필드 값.
+  tier_field() { tier_rows "$1" | sed -n '1p' | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'; }
+  # tier_plan_rc <run id> <프롬프트> — 그 런의 설계 파견 드라이런. rc 와 msg 를 남긴다.
+  tier_plan_rc() {
+    gateB plan --manifest "$WORK/bsx-$1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+      --surface 워크트리쓰기 -- design -p "$(bsx_p "$1" "$2")"
+  }
+}
+
 # reach 그룹의 공유 도우미 — 수리 문구 표 절과 실제 docker 절이 함께 쓴다. 두 절이
 # 각자 자기 매니페스트를 만들므로, 그 매니페스트 작성기와 docker 탐지·정리가 여기
 # 있다. 좁힌 실행에서는 선택기가, 전량 직렬 실행에서는 50절 앞의 호출 줄이 부른다.
@@ -35826,6 +35878,166 @@ else
   check "88: 위반(카운트) 머지 뒤 기각과 둘째 머지됨 행이 조건 11 을 푼다 — 위반 행은 남는다" \
     "$(q88 "$L88KR" gate_done_conditions | grep -c '^11 ' || true)/$(grep -c '| 머지 대조=위반(카운트) ' "$L88KR" || true)" "0/1"
 fi
+
+# ---------------------------------------------------------------------------
+# 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
+# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan | anchors: 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
+#
+# 진입 판정은 킥오프 모델 자신의 행위라 CI 가 그 선택을 결정적으로 돌릴 수 없다. 이
+# 절은 그 대신 판정이 놓인 뒤의 사슬 — 검사기, 매니페스트 검사, 런 개시의 행, 스냅숏,
+# 설계 파견의 강제 — 을 단언하고, 같은 절 안의 team-4 대조군이 각 단언의 반대편을
+# 보인다. 대조군을 다른 절에 두면 이 절만 고른 실행이 그 반대편을 한 줄도 돌리지 않고
+# 초록이 된다.
+#
+# 런들의 계획과 도우미는 `pre_tier` 에 있고(그것이 `pre_bsplit` 을 부른다), 여기서
+# 부른다. 좁힌 실행에서는 선택기가 같은 호출을 넣는다.
+# ---------------------------------------------------------------------------
+pre_tier
+# 검사기 단위 — 킥오프와 매니페스트 검사가 함께 돌리는 그 파일을 직접 돌린다.
+tier_check "$TIER_PLAN_SOLO"
+check "89: 검사기가 solo 판정 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_TEAM4"
+check "89: 검사기가 team-4 대조군 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_RAISED"
+check "89: 검사기가 사람이 올린 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_OLD"
+check "89: 키 이전 계획은 검사기가 단언하지 않는다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_LOWERED"
+case "$TIER_RC/$TIER_OUT" in
+  0/*) bad "89: 검사기가 내린 계획을 거부한다" "통과했다" ;;
+  *"(b) design_tier(solo) 가 design_tier_judged(team-4) 보다 낮습니다"*) ok "89: 검사기가 내린 계획을 거부한다" ;;
+  *) bad "89: 검사기가 내린 계획을 거부한다" "$TIER_OUT" ;;
+esac
+tier_check "$TIER_PLAN_NOREASON"
+case "$TIER_RC/$TIER_OUT" in
+  0/*) bad "89: 검사기가 공백 사유뿐인 team-4 판정을 거부한다" "통과했다" ;;
+  *"(a) design_tier_judged 가 team-4 인데"*) ok "89: 검사기가 공백 사유뿐인 team-4 판정을 거부한다" ;;
+  *) bad "89: 검사기가 공백 사유뿐인 team-4 판정을 거부한다" "$TIER_OUT" ;;
+esac
+tier_check "$TIER_PLAN_SOLOREASON"
+case "$TIER_RC/$TIER_OUT" in
+  0/*) bad "89: 검사기가 사유를 가진 solo 판정을 거부한다" "통과했다" ;;
+  *"(a) design_tier_judged 가 solo 인데"*) ok "89: 검사기가 사유를 가진 solo 판정을 거부한다" ;;
+  *) bad "89: 검사기가 사유를 가진 solo 판정을 거부한다" "$TIER_OUT" ;;
+esac
+tier_check "$TIER_PLAN_SOLOAUDIT"
+case "$TIER_RC/$TIER_OUT" in
+  0/*) bad "89: 검사기가 감사 낀 solo 그래프를 거부한다" "통과했다" ;;
+  *"(c) solo 계획에 design-audit 단계가 있습니다"*) ok "89: 검사기가 감사 낀 solo 그래프를 거부한다" ;;
+  *) bad "89: 검사기가 감사 낀 solo 그래프를 거부한다" "$TIER_OUT" ;;
+esac
+tier_check '"solo"'
+case "$TIER_RC/$TIER_OUT" in
+  0/*) bad "89: 검사기가 객체가 아닌 계획을 거부한다" "통과했다" ;;
+  *"계획이 JSON 객체가 아닙니다"*) ok "89: 검사기가 객체가 아닌 계획을 거부한다" ;;
+  *) bad "89: 검사기가 객체가 아닌 계획을 거부한다" "$TIER_OUT" ;;
+esac
+
+# 매니페스트 검사 — 게이트의 첫 진입이 검사기를 돌리고, 나쁜 계획은 런이 열리기 전에
+# 죽어 행을 남기지 않는다.
+for tier_bad in LOWERED NOREASON SOLOAUDIT; do
+  eval "tier_plan=\$TIER_PLAN_$tier_bad"
+  tier_fresh "RT$tier_bad" "$tier_plan"
+  gateB snapshot --manifest "$WORK/bsx-RT$tier_bad.md"
+  case "$rc/$msg" in
+    0/*) bad "89: 매니페스트 검사가 $tier_bad 계획을 거부한다" "통과했다" ;;
+    *"진입 판정이 검사기를 통과하지 못했습니다"*) ok "89: 매니페스트 검사가 $tier_bad 계획을 거부한다" ;;
+    *) bad "89: 매니페스트 검사가 $tier_bad 계획을 거부한다" "$msg" ;;
+  esac
+  check "89: 거부된 $tier_bad 계획의 런에는 설계 티어 행이 없다" "$(tier_rows "RT$tier_bad" | grep -c . || true)" "0"
+done
+gateB snapshot --manifest "$WORK/bsx-RTLOWERED.md"
+case "$rc/$msg" in
+  0/*) bad "89: 매니페스트 검사가 내린 계획을 거부한다" "통과했다" ;;
+  *"보다 낮습니다"*) ok "89: 매니페스트 검사가 내린 계획을 거부한다" ;;
+  *) bad "89: 매니페스트 검사가 내린 계획을 거부한다" "$msg" ;;
+esac
+
+# 런 개시의 행 — solo 와 team-4 대조군, 사람이 올린 런, 키 이전 계획.
+tier_fresh RTS "$TIER_PLAN_SOLO"
+gateB snapshot --manifest "$WORK/bsx-RTS.md"
+check "89: solo 판정 계획의 매니페스트가 검사를 통과한다" "$rc" "0"
+check "89: 첫 진입이 설계 티어 행 하나를 쓴다" "$(tier_rows RTS | grep -c . || true)" "1"
+check "89: 그 행이 판정·확정·범위·스킬·감사·추정 파일을 싣는다" \
+  "$(tier_field RTS 판정)/$(tier_field RTS 확정)/$(tier_field RTS 범위)/$(tier_field RTS '설계 스킬')/$(tier_field RTS 감사)/$(tier_field RTS '추정 파일')" \
+  "solo/solo/single/design-solo-unattended/없음/2"
+check "89: 그 행이 근거를 싣고 사유는 없음 이다" "$(tier_field RTS 근거)/$(tier_field RTS 사유)" "한 스크립트 안의 옵션 하나/없음"
+gateB snapshot --manifest "$WORK/bsx-RTS.md"
+check "89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다" "$rc/$(tier_rows RTS | grep -c . || true)" "0/1"
+check "89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다" \
+  "$(bsx_snap "$WORK/bsx-RTS.md" | jq -r .design_skill)" "design-solo-unattended"
+
+tier_fresh RTT "$TIER_PLAN_TEAM4"
+gateB snapshot --manifest "$WORK/bsx-RTT.md"
+check "89: team-4 대조군의 매니페스트가 검사를 통과한다" "$rc" "0"
+check "89: team-4 대조군의 행은 하나이고 확정=team-4 · 토론 스킬 · 감사 있음 이다" \
+  "$(tier_rows RTT | grep -c . || true)/$(tier_field RTT 판정)/$(tier_field RTT 확정)/$(tier_field RTT '설계 스킬')/$(tier_field RTT 감사)/$(tier_field RTT '추정 파일')" \
+  "1/team-4/team-4/design-discuss-unattended/있음/14"
+check "89: team-4 대조군의 행이 무거운 사유를 싣는다" "$(tier_field RTT 사유)" "세 레포의 계약을 함께 바꾼다"
+check "89: team-4 대조군의 스냅숏 design_skill 은 design-discuss-unattended 다" \
+  "$(bsx_snap "$WORK/bsx-RTT.md" | jq -r .design_skill)" "design-discuss-unattended"
+
+tier_fresh RTR "$TIER_PLAN_RAISED"
+gateB snapshot --manifest "$WORK/bsx-RTR.md"
+check "89: 사람이 올린 런의 행은 판정과 확정이 다르다" \
+  "$rc/$(tier_field RTR 판정)/$(tier_field RTR 확정)/$(tier_field RTR '설계 스킬')/$(tier_field RTR 감사)" \
+  "0/solo/team-4/design-discuss-unattended/있음"
+
+tier_fresh RTO "$TIER_PLAN_OLD"
+gateB snapshot --manifest "$WORK/bsx-RTO.md"
+check "89: 키 이전 계획의 런에는 설계 티어 행이 없다" "$rc/$(tier_rows RTO | grep -c . || true)" "0/0"
+check "89: 키 이전 계획의 설계 스킬은 토론 스킬 그대로다" \
+  "$(bsx_snap "$WORK/bsx-RTO.md" | jq -r .design_skill)" "design-discuss-unattended"
+tier_fresh RTN '{ "design_required": false, "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+check "89: 설계 단계가 없는 계획의 design_skill 은 null 이다" \
+  "$(bsx_snap "$WORK/bsx-RTN.md" | jq -c .design_skill)" "null"
+bsx_fresh RTB
+check "89: 베이스 계획의 design_skill 은 design-base-unattended 다" \
+  "$(bsx_snap "$WORK/bsx-RTB.md" | jq -r .design_skill)" "design-base-unattended"
+
+# 설계 파견의 강제 — solo 계획은 리드 단독 명령으로만, 리드 단독 명령은 solo 계획에서만.
+bsx_doc_frozen RTS
+bsx_doc_frozen RTT
+tier_plan_rc RTS "$TIER_P_SOLO"
+check "89: solo 계획의 solo 설계 명령은 통과한다" "$rc" "0"
+tier_plan_rc RTS "$TIER_P_DISCUSS"
+check "89: solo 계획의 팀 설계 명령은 룰 거절이다" "$rc" "3"
+case "$msg" in
+  *"design_skill"*"design-solo-unattended"*) ok "89: 그 거절은 스냅숏의 design_skill 을 쓰라고 든다" ;;
+  *) bad "89: 그 거절은 스냅숏의 design_skill 을 쓰라고 든다" "$msg" ;;
+esac
+tier_plan_rc RTS "$TIER_P_UNKNOWN"
+check "89: solo 계획의 모르는 설계 명령은 룰 거절이다" "$rc" "3"
+tier_plan_rc RTT "$TIER_P_SOLO"
+check "89: team-4 계획의 solo 설계 명령은 룰 거절이다" "$rc" "3"
+tier_plan_rc RTT "$TIER_P_DISCUSS"
+check "89: team-4 계획의 팀 설계 명령은 통과한다 (대조군)" "$rc" "0"
+# 의도 첫 줄이 형제 설계 명령을 인용해도, 판정하는 것은 프롬프트를 여는 명령이다.
+# 경로 검사도 같은 exit 3 을 쓰므로 rc 와 함께 거절 문면을 본다.
+tier_plan_rc RTS "$TIER_P_SOLO_QUOTING"
+check "89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다" "$rc" "0"
+tier_plan_rc RTT "$TIER_P_SOLO_QUOTING"
+case "$rc/$msg" in
+  3/*"/cc-cmds:design-solo-unattended 는 solo 티어 계획에서만"*) ok "89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다" ;;
+  *) bad "89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다" "$rc/$msg" ;;
+esac
+
+# 띄우고, 다시 붙고, 동결 뒤를 본다. 재부착은 슬래시 명령이 아니라 고정 문장을 싣고
+# 이 단계의 행에 묶이므로, 티어 강제는 그것을 읽지 않는다.
+bsx_launch RTS "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
+check "89: solo 설계 스테이지가 동결 문서로 정상 완료한다" \
+  "$BSX_ACT_RC/$BSX_WAIT_RC/$(bsx_class RTS '| 스테이지=D1 | 종류=design ')" "0/0/정상 완료"
+tier_sid=$(bsx_rows RTS '| 스테이지=D1 | 종류=design ' | tail -1 | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')
+BSX_RESUME="$tier_sid" bsx_launch RTS "$WORK/bin/bsx-design" design \
+  "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요." D1
+check "89: solo 설계 스테이지의 재부착은 거부되지 않는다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "89: 그 재부착이 설계 행을 하나 더 남긴다" \
+  "$(bsx_rows RTS '| 세그먼트=- | 스테이지=D1 | 종류=design ' | grep -c . || true)" "2"
+check "89: solo 런의 동결 뒤 다음 스텝은 구현이다" \
+  "$(bsx_snap "$WORK/bsx-RTS.md" | jq -c '[.steps[] | select(.depends_on == ["D1"]) | .skill]')" '["implement"]'
+check "89: team-4 대조군의 설계 뒤 다음 스텝은 감사다" \
+  "$(bsx_snap "$WORK/bsx-RTT.md" | jq -c '[.steps[] | select(.depends_on == ["D1"]) | .skill]')" '["design-audit"]'
+check "89: 진입이 거듭돼도 solo 런의 설계 티어 행은 하나다" "$(tier_rows RTS | grep -c . || true)" "1"
 
 # --- epilogue-begin ---
 #
