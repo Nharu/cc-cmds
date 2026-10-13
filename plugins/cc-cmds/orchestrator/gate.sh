@@ -2274,16 +2274,25 @@ gate_reach_runlocal_destruction() {
   # is: as landing in the target's trees. A line whose landing is unread (3 —
   # an operand holding `$`, a brace inside a word or a backslash, or a line
   # after a `cd` or an `export`) is judged
-  # the same way, and a line whose command is unread (2) is judged so whether
+  # the same way, and when nothing marks it destructive it answers `도달모순`
+  # unless the table grades it `읽기` and the write-slot reader reads no place
+  # it writes. A line whose command is unread (2) is judged so whether
   # or not it reads as destructive, because nothing says it is not: `bash -c
   # "cd <sibling> && rm -f f"` and `bash -c "if true; then rm -f <sibling
   # file>; fi"` went through a false `런로컬`. What is not a shell's `-c`
   # string — a script file, another interpreter's code — is still not read,
   # and a destruction inside it is the stage's to declare with `--destructive`.
   local alias="$1" X="$2" Pd="$3"; shift 3
-  local r rec unread kept n
-  r=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
-  [ -z "$r" ] || { printf '%s' "$r"; return 0; }
+  local r rec unread kept n outer
+  # The outer argv's `도달모순` waits for the lines: a shell string holds blanks,
+  # so the collector gives the outer argv up and answers it, and the
+  # destruction a line names — with its trigger word — is the answer the
+  # repair line needs. Either one parks.
+  outer=$(gate_reach_runlocal_destruction_argv "$alias" "$X" "$Pd" "$@")
+  case "$outer" in
+    ''|도달모순) ;;
+    *) printf '%s' "$outer"; return 0 ;;
+  esac
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
     unread="${rec%%	*}"; kept="${rec#*	}"; kept="${kept%%	*}"
@@ -2295,15 +2304,30 @@ gate_reach_runlocal_destruction() {
     gate_opl_words "$@"; set -- "${GATE_OPL_WORDS[@]}"
     case "$unread" in
       # A line whose landing is unread and whose command the table grades a
-      # write is a write that may land in the target's trees, which the closed
-      # reading answers `도달모순` when nothing marks it destructive. A line the
-      # table does not grade a write (`make`, a read) is left as it was.
+      # write, or does not grade at all, is a write that may land in the
+      # target's trees, which the closed reading answers `도달모순` when nothing
+      # marks it destructive. A line the table grades `읽기` is asked the
+      # write-slot reader the `*)` arm below asks, and answers so when the
+      # reader reads a place it writes: a grade row that missed a spelling
+      # (`yq -Pi`) and a verb with no row (`dd of=`, `uniq in out`) let `bash -c
+      # "S=<sibling>; dd if=in of=\$S/f"` overwrite a sibling worktree under
+      # `런로컬` while the honest `대상트리` parked. A read the reader finds no
+      # write in, or a verb it does not know, is left as it was, so `cat` and
+      # `git show` stay reads.
       1|3)
         if [ "$X" = "1" ] || [ -n "$(gate_reach_local_destructive_here "$@")" ]; then
           r=$(gate_reach_tree_destruction "$X" "$Pd" "$@")
         else
-          case "$(surface_of_argv0 "$@")" in
-            워크트리쓰기|트리밖쓰기) r='도달모순' ;;
+          case "$(surface_of_argv0 "$@" 2>/dev/null)" in
+            워크트리쓰기|트리밖쓰기|'등급 미상'|'') r='도달모순' ;;
+            읽기)
+              kept=''
+              if n=$(gate_reach_peeled_verb "$@"); then
+                kept="${*:$(( $# - n + 1 )):1}"
+                kept=$(gate_tt_write_slots "${kept##*/}" "${@:$(( $# - n + 2 ))}" 2>/dev/null) || kept=''
+              fi
+              [ -n "$kept" ] || continue
+              r='도달모순' ;;
             *) continue ;;
           esac
         fi ;;
@@ -2358,6 +2382,7 @@ gate_reach_runlocal_destruction() {
   done <<EOF
 $(gate_opaque_shell_lines "$@")
 EOF
+  printf '%s' "$outer"
   return 0
 }
 
@@ -2481,6 +2506,9 @@ gate_reach_disposition() {
   # form, script operand included.
   case "$cls" in
     불투명|미상)
+      # Only an opaque runner whose floor the comparator held at `읽기` reaches
+      # this with a `읽기` declaration: a command with no row is held to a
+      # worktree write before it gets here.
       [ "${GATE_DECLARED:-}" = "읽기" ] && return 0
       # A `런로컬` write is within the cap, but its destruction question is
       # asked here, because this return comes before the `런로컬` cell below
@@ -2538,9 +2566,19 @@ gate_reach_disposition() {
   # file finished under the temp directory over one in the main checkout is
   # the everyday case. Parked here, its only passing token was `런로컬`, so
   # the honest declaration was strictly worse off than the false one.
+  # THE CELL READS THE PLACES THE ACT WRITES, as the `런로컬` cell does. Read
+  # whole, the read source of a copy outside every tree of the target was a
+  # landing place outside them, so `cp -n <outside>/o.md <main
+  # checkout>/docs/…/.o.md.<suffix>` parked here as `대상트리불일치` and under
+  # `런로컬` as `도달모순`: no honest token passed it. A `mv` removes its
+  # source and is not narrowed.
   if [ "$Reff" = "대상트리" ]; then
     if [ "$Geff" != "외부상태변경" ]; then
-      if gate_reach_target_tree_act "$alias" "$@" \
+      local _tt=1
+      GATE_TT_WRITES_ONLY=1
+      gate_reach_target_tree_act "$alias" "$@" && _tt=0
+      GATE_TT_WRITES_ONLY=''
+      if [ "$_tt" = "0" ] \
          || { gate_reach_runlocal_escapes "$alias" && [ "$GATE_TT_STRAY" = "0" ]; }; then
         case "$rules_rc" in
           0|5) gate_reach_tree_destruction "$X" "$Pd" "$@"; return 0 ;;
@@ -2910,6 +2948,210 @@ gate_tt_curl_writeouts() {
   return 0
 }
 
+gate_tt_sed_script_safe() {
+  # gate_tt_sed_script_safe <script> — 0 when the sed program is read to its
+  # end and holds no command that writes a file or runs one: no `w`, `W` or
+  # `e` command and no `w` or `e` flag on an `s`. 1 for anything else — such a
+  # command, an unclosed regular expression or delimiter, a command letter
+  # this reader does not know.
+  #
+  # Each command is read past its addresses (a number, `$`, `/re/`, `\cREc`,
+  # with `,`, `~`, `+`, `!` and blanks between), then by its letter: `s` and
+  # `y` skip their two parts by their delimiter, `a`, `i`, `c`, `r`, `R` and a
+  # `#` comment take the rest of the line, `:`, `b`, `t` and `T` take a label
+  # up to the next `;` or newline, and the others are one letter, `q`, `Q`,
+  # `l` and `L` with an optional number.
+  local s="$1" n i=0 ch d k
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    ch="${s:i:1}"
+    case "$ch" in
+      ' '|'	'|';'|'{'|'}'|$'\n') i=$((i + 1)); continue ;;
+    esac
+    # Addresses.
+    while [ "$i" -lt "$n" ]; do
+      ch="${s:i:1}"
+      case "$ch" in
+        [0-9]|'$'|','|'~'|'+'|'!'|' '|'	') i=$((i + 1)) ;;
+        '/'|'\')
+          if [ "$ch" = '\' ]; then
+            i=$((i + 1)); d="${s:i:1}"
+            [ -n "$d" ] && [ "$d" != $'\n' ] || return 1
+          else
+            d='/'
+          fi
+          i=$((i + 1))
+          while :; do
+            [ "$i" -lt "$n" ] || return 1
+            k="${s:i:1}"
+            if [ "$k" = '\' ]; then i=$((i + 2)); continue; fi
+            [ "$k" = $'\n' ] && return 1
+            i=$((i + 1))
+            [ "$k" = "$d" ] && break
+          done
+          # GNU's address flags.
+          case "${s:i:1}" in I|M) i=$((i + 1)) ;; esac ;;
+        *) break ;;
+      esac
+    done
+    [ "$i" -lt "$n" ] || return 1
+    ch="${s:i:1}"; i=$((i + 1))
+    case "$ch" in
+      w|W|e) return 1 ;;
+      s|y)
+        d="${s:i:1}"
+        case "$d" in ''|'\'|$'\n'|' ') return 1 ;; esac
+        i=$((i + 1))
+        for k in 1 2; do
+          while :; do
+            [ "$i" -lt "$n" ] || return 1
+            if [ "${s:i:1}" = '\' ]; then i=$((i + 2)); continue; fi
+            if [ "${s:i:1}" = "$d" ]; then i=$((i + 1)); break; fi
+            i=$((i + 1))
+          done
+        done
+        if [ "$ch" = "s" ]; then
+          while [ "$i" -lt "$n" ]; do
+            case "${s:i:1}" in
+              w|e) return 1 ;;
+              [gpiImM0-9]) i=$((i + 1)) ;;
+              *) break ;;
+            esac
+          done
+        fi ;;
+      a|i|c|r|R|'#')
+        while [ "$i" -lt "$n" ]; do
+          k="${s:i:1}"
+          if [ "$k" = '\' ]; then i=$((i + 2)); continue; fi
+          i=$((i + 1))
+          [ "$k" = $'\n' ] && break
+        done ;;
+      :|b|t|T)
+        while [ "$i" -lt "$n" ]; do
+          case "${s:i:1}" in ';'|$'\n') break ;; esac
+          i=$((i + 1))
+        done ;;
+      q|Q|l|L)
+        while [ "$i" -lt "$n" ]; do
+          case "${s:i:1}" in [0-9]|' ') i=$((i + 1)) ;; *) break ;; esac
+        done ;;
+      # A block opened after an address; its commands are read in turn.
+      '='|d|D|g|G|h|H|n|N|p|P|x|z|F|'{'|'}') ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+gate_tt_program_writes() {
+  # gate_tt_program_writes <verb> <args...> — for `sed`, `gsed`, `awk`,
+  # `gawk`, `mawk` and `nawk`, reads the words that hold the program as a
+  # program rather than as paths. Status 0 when every such word is read and
+  # none writes a file or runs a command, and the positions of those words
+  # among <args> (1 is the first) are printed one per line, so the collector
+  # leaves them out of its operands. Status 1 when that is not proven, and
+  # the caller reads the act as closed. Status 2 for any other verb.
+  #
+  # THE PROGRAM WORD WAS READ AS A PATH. `sed -n "/x/w <sibling>/f" in`
+  # holds a `/`, so the collector took the whole word as a path under the
+  # act's own worktree, no cell saw the sibling, and sed truncated the
+  # sibling's file when it opened its `w` target, whether or not a line
+  # matched. awk's `print > "<sibling>/f"` went the same way.
+  #
+  # The program words are every `-e`/`--expression` value, or with none the
+  # first word that is no option. A program in a file (`-f`) is not read, and
+  # neither is an option this reader does not know. awk's program is closed
+  # on any `>`, `|`, `system` or `getline`: a `>` that compares closes it too,
+  # which over-closes and is accepted.
+  local c="${1##*/}" i=0 a w b k pos='' nf=0 sfx=0
+  shift
+  local -a args
+  args=("$@")
+  case "$c" in
+    sed|gsed)
+      while [ "$i" -lt "${#args[@]}" ]; do
+        a="${args[$i]}"
+        if [ "$sfx" = "1" ]; then
+          # BSD's `-i <suffix>`: an empty word or a dotted suffix.
+          sfx=0
+          case "$a" in ''|.*) i=$((i + 1)); continue ;; esac
+        fi
+        case "$a" in
+          --) i=$((i + 1)); break ;;
+          -e|--expression)
+            i=$((i + 1))
+            [ "$i" -lt "${#args[@]}" ] || return 1
+            gate_tt_sed_script_safe "${args[$i]}" || return 1
+            pos="$pos$((i + 1))"$'\n' ;;
+          --expression=*)
+            gate_tt_sed_script_safe "${a#*=}" || return 1
+            pos="$pos$((i + 1))"$'\n' ;;
+          -f|-f?*|--file|--file=*) return 1 ;;
+          -i) sfx=1 ;;
+          --in-place|--in-place=*|--quiet|--silent|--regexp-extended|--posix|--separate|\
+          --unbuffered|--null-data|--zero-terminated|--debug|--sandbox|--follow-symlinks) ;;
+          --*) return 1 ;;
+          -?*)
+            b="${a#-}"
+            while [ -n "$b" ]; do
+              k="${b:0:1}"; b="${b:1}"
+              case "$k" in
+                n|E|r|s|u|z|a) ;;
+                i|I) b='' ;;
+                l) [ -n "$b" ] || i=$((i + 1)); b='' ;;
+                f) return 1 ;;
+                e)
+                  if [ -n "$b" ]; then
+                    w="$b"
+                  else
+                    i=$((i + 1))
+                    [ "$i" -lt "${#args[@]}" ] || return 1
+                    w="${args[$i]}"
+                  fi
+                  gate_tt_sed_script_safe "$w" || return 1
+                  pos="$pos$((i + 1))"$'\n'
+                  b='' ;;
+                *) return 1 ;;
+              esac
+            done ;;
+          *)
+            if [ -z "$pos" ] && [ "$nf" = "0" ]; then
+              gate_tt_sed_script_safe "$a" || return 1
+              pos="$((i + 1))"$'\n'
+            fi
+            nf=1 ;;
+        esac
+        i=$((i + 1))
+      done
+      if [ -z "$pos" ] && [ "$nf" = "0" ] && [ "$i" -lt "${#args[@]}" ]; then
+        gate_tt_sed_script_safe "${args[$i]}" || return 1
+        pos="$((i + 1))"$'\n'
+      fi ;;
+    awk|gawk|mawk|nawk)
+      while [ "$i" -lt "${#args[@]}" ]; do
+        a="${args[$i]}"
+        case "$a" in
+          --) i=$((i + 1)); break ;;
+          -v|-F)
+            i=$((i + 1))
+            [ "$i" -lt "${#args[@]}" ] || return 1 ;;
+          -v?*|-F?*) ;;
+          -*) return 1 ;;
+          *) break ;;
+        esac
+        i=$((i + 1))
+      done
+      [ "$i" -lt "${#args[@]}" ] || return 1
+      case "${args[$i]}" in
+        *'>'*|*'|'*|*system*|*getline*) return 1 ;;
+      esac
+      pos="$((i + 1))"$'\n' ;;
+    *) return 2 ;;
+  esac
+  printf '%s' "$pos"
+  return 0
+}
+
 gate_tt_write_slots() {
   # gate_tt_write_slots <command> <args...> — for a verb whose writes go only
   # to places it names by position or option, prints those places one per
@@ -3158,9 +3400,12 @@ gate_reach_target_tree_act() {
   # `/` or starts with `.` or `~`, or is a bare name that is a symlink, plus
   # the value of a `--opt=<value>` shaped the same way and the value glued to
   # a short option (`-t<dir>`, or any `-X<value>` holding a `/`). That
-  # over-collects — a read operand or a `sed` script containing `/` is
-  # checked too — and it over-collects on purpose: an extra operand can only
-  # fail the predicate, never pass it.
+  # over-collects — a read operand is checked too — and it over-collects on
+  # purpose: an extra operand can only fail the predicate, never pass it.
+  # The program of a `sed` or `awk` is read as a program and not collected,
+  # and one that may write a file gives up (`gate_tt_program_writes`); a
+  # path-shaped word holding a blank, a quote, a brace or a `>` gives up too,
+  # outside `git`.
   #
   # THE DESTRUCTION QUESTION IS THE ONE EXCEPTION. There an extra operand does
   # the opposite: a place the act only reads counts as a place it lands, and a
@@ -3244,7 +3489,7 @@ gate_reach_target_tree_act() {
   # the derived floor before this cell is reached.
   local alias="$1"; shift
   local repo='' a sub='' wsub='' skipped_wt=0 base rc spec='' v w _left _urc _ddash
-  local cwd0 isgit=0 slotted=0 outv='' _sl
+  local cwd0 isgit=0 slotted=0 outv='' _sl i
   local -a ops gx wrp sl cwo
   ops=(); gx=(); wrp=(); sl=(); cwo=()
   # Emptied first, so an argv this reader gives up on leaves no landing places
@@ -3383,6 +3628,23 @@ gate_reach_target_tree_act() {
 $_sl
 EOF
     fi
+    # The program of a `sed` or `awk` is no path. Read as a program it is left
+    # out of the operands; a program this reader cannot prove writes nothing
+    # gives up (`gate_tt_program_writes`).
+    _urc=0; _sl=$(gate_tt_program_writes "$v" "$@") || _urc=$?
+    case "$_urc" in
+      0)
+        local -a pw
+        pw=()
+        i=0
+        for a in "$@"; do
+          i=$((i + 1))
+          case $'\n'"$_sl" in *$'\n'"$i"$'\n'*) continue ;; esac
+          pw[${#pw[@]}]="$a"
+        done
+        set -- ${pw[@]+"${pw[@]}"} ;;
+      1) return 1 ;;
+    esac
     # Only the destination of a copy is written. When the destruction question
     # sets `GATE_TT_WRITES_ONLY`, a `cp`, `install` or `ln` whose destination
     # is plainly its last word is narrowed to that word; any spelling that can
@@ -3434,6 +3696,17 @@ EOF
       continue
     fi
     if [ "$isgit" = "1" ] && [ "$a" = "--output" ]; then eat=2; continue; fi
+    # A path-shaped word holding a blank, a quote, a brace or a `>` is more
+    # likely a program or a format than a place, and read as one place it
+    # hid where the act writes; this reader gives up on it. `git` is left
+    # out: its words of that shape are the values of `-m` and its kin, and
+    # it writes inside the repository its `-C` options compose to.
+    if [ "$isgit" = "0" ]; then
+      case "$a" in
+        --*=/*|--*=*/*|--*=.*|--*='~'*|-?*/*|*/*|.*)
+          case "$a" in *' '*|*'	'*|*"'"*|*'"'*|*'{'*|*'>'*) return 1 ;; esac ;;
+      esac
+    fi
     case "$a" in
       # A path-shaped value of a long option, relative ones included:
       # `--target-directory=../<sibling>` writes there as surely as an
@@ -3796,6 +4069,22 @@ gate_orchestrator_script_hint() {
   if [ -z "$hit" ] && [ -f "$GATE_DIR/$b" ]; then hit="$GATE_DIR/$b"; fi
   [ -n "$hit" ] || return 0
   warn "that name is an orchestrator script this plugin ships ($hit) — it is not an unknown tool, it means this copy of the gate is older than the tree that carries its grade row. The gate used for the judgment is $GATE_DIR/gate.sh, and editing the grade table of another copy does not change this judgment. Do not route around it by putting an interpreter in front or by dropping to a lower spelling — the first passes while reviving what that row meant to stop, and the second loses the artifact"
+}
+
+gate_yq_bundled_inplace() {
+  # gate_yq_bundled_inplace <argv...> — true when a bundle of short options
+  # before `--` holds the letter `i`, which `yq` reads as `-i`: `yq -Pi .a=1
+  # f` edits `f` in place, and the prefix match of `gate_argv_has_opt` sees
+  # only `-P`. Long options are not bundles.
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --) return 1 ;;
+      --*) ;;
+      -*i*) return 0 ;;
+    esac
+  done
+  return 1
 }
 
 gate_argv_has_opt() {
@@ -6410,7 +6699,10 @@ surface_of_argv0() {
       printf '읽기' ;;
     # Four tools whose effect is decided by ONE option, so the row reads it
     # rather than taking the wider grade for the common case.
-    yq)   if gate_argv_has_opt -i inplace "$@"; then printf '워크트리쓰기'; else printf '읽기'; fi ;;
+    # `yq` reads `i` inside a bundle of short options (`-Pi`, `-iP`) as the
+    # in-place switch too. A bundle whose `i` is the value of a letter before
+    # it is graded a write as well: the wider grade is the closed side.
+    yq)   if gate_argv_has_opt -i inplace "$@" || gate_yq_bundled_inplace "$@"; then printf '워크트리쓰기'; else printf '읽기'; fi ;;
     # `sort` asks the write-slot reader, which knows which of its letters take
     # a value: `-uo <f>` and `--outp=<f>` write as `-o` does, and `-to <f>`
     # (separator `o`) does not. A spelling it cannot read is a write.
@@ -8559,15 +8851,93 @@ gate_opl_find_runs_other() {
   return 1
 }
 
+gate_opl_launch_slot() {
+  # gate_opl_launch_slot <argv...> — when argv0 is a launcher whose options
+  # this reader knows, print the position (argv0 is 1) of the word its command
+  # starts at and return 0; print `*` when that launcher's options cannot be
+  # read to the end — an option outside its list, a value missing, an option
+  # word after `--`, or an option that takes a command string (`script -c`,
+  # `flock -c`) — so the caller counts every position, as it did before this
+  # reader. Status 1 when argv0 is no launcher on the list: its later words
+  # are subcommands and operands of a program, not a command it runs.
+  #
+  # The words before the command that are no option are counted per launcher:
+  # `script` takes a record file, `timeout` a duration and `flock` a lock file
+  # before the command, the others none. `parallel` reads too many option
+  # forms to place its command and is always `*`.
+  local cmd="${1##*/}" flags='' vals='' strs='' lead=0 pos=2 w dd=''
+  case "$cmd" in
+    caffeinate) flags=' -d -i -m -s -u '; vals=' -t -w ' ;;
+    arch) flags=' -arm64 -arm64e -x86_64 -i386 -32 -64 -c -h '; vals=' -e -d ' ;;
+    script) flags=' -a -d -e -F -f -k -p -q -r '; vals=' -t -T '; strs=' -c '; lead=1 ;;
+    gtimeout|timeout) flags=' --preserve-status --foreground -v --verbose '; vals=' -s -k --signal --kill-after '; lead=1 ;;
+    taskpolicy) flags=' -b -B '; vals=' -c -d -g -t -l -p ' ;;
+    flock) flags=' -s -x -n -u -o -e -F --shared --exclusive --nonblock --unlock --close --no-fork '; vals=' -w -E --timeout --conflict-exit-code '; strs=' -c --command '; lead=1 ;;
+    sandbox-exec) vals=' -f -n -p -D ' ;;
+    doas) flags=' -n '; vals=' -u -C ' ;;
+    unbuffer) flags=' -p ' ;;
+    watch) flags=' -d -t -b -e -g -c -x -p '; vals=' -n -q ' ;;
+    nohup) ;;
+    stdbuf) vals=' -i -o -e ' ;;
+    parallel) printf '*'; return 0 ;;
+    *) return 1 ;;
+  esac
+  shift
+  while [ $# -gt 0 ]; do
+    w="$1"
+    if [ -z "$dd" ]; then
+      case "$w" in
+        --) dd=1; shift; pos=$((pos + 1)); continue ;;
+        -?*)
+          case "$strs" in *" ${w%%=*} "*) printf '*'; return 0 ;; esac
+          case "$flags" in *" $w "*) shift; pos=$((pos + 1)); continue ;; esac
+          case "$vals" in
+            *" $w "*)
+              [ $# -ge 2 ] || { printf '*'; return 0; }
+              shift 2; pos=$((pos + 2)); continue ;;
+          esac
+          # A value written onto its option: `-t5`, `--signal=KILL`, `-oL`.
+          case "$w" in
+            --*=*) case "$vals" in *" ${w%%=*} "*) shift; pos=$((pos + 1)); continue ;; esac ;;
+            -[!-]?*) case "$vals" in *" ${w:0:2} "*) shift; pos=$((pos + 1)); continue ;; esac ;;
+          esac
+          printf '*'; return 0 ;;
+      esac
+    else
+      case "$w" in -*) printf '*'; return 0 ;; esac
+    fi
+    if [ "$lead" -gt 0 ]; then
+      lead=$((lead - 1)); shift; pos=$((pos + 1)); continue
+    fi
+    printf '%s' "$pos"; return 0
+  done
+  printf '*'
+  return 0
+}
+
 gate_opl_hides_command() {
   # gate_opl_hides_command <argv...> — status 0 when the command word has no
   # row in the grading table and a later word starts an argv the table
-  # grades above a read, gives a rung, or the local reader calls
-  # destructive. `caffeinate gh pr merge 1`, `watch …`, `script -q /dev/null
-  # …`, `unbuffer …` and `parallel … :::` run the argv behind them, and the
-  # line passed as a plain read with no rung. A word after an unknown command
-  # that only reads (`cat README.md`) leaves the line as it is; `make test` is
-  # not one, because the table grades `make` a worktree write.
+  # grades into another tree or external state, gives a rung, or the local
+  # reader calls destructive — at any position — or starts an argv the table
+  # grades a worktree write at the position a known launcher runs its command
+  # from (`gate_opl_launch_slot`). `caffeinate gh pr merge 1`, `watch …`,
+  # `script -q /dev/null …`, `unbuffer …` and `parallel … :::` run the argv
+  # behind them, and the line passed as a plain read with no rung. A word
+  # after an unknown command that only reads (`cat README.md`) leaves the line
+  # as it is; `caffeinate -i make test` is not one, because the table grades
+  # `make` a worktree write and it stands where caffeinate runs its command.
+  #
+  # A WORKTREE WRITE IS COUNTED ONLY AT A LAUNCHER'S COMMAND POSITION. The
+  # later words of `uv run pytest`, `poetry install`, `bundle install` or
+  # `ninja -C build install` are a program's subcommand and operands, not a
+  # command it launches: counted anywhere, `install` and `pytest` raised those
+  # honest test and install steps to a floor of `외부상태변경` and, through the
+  # ladder below, to the `머지` cutpoint, and no declaration let them through.
+  # The other three signals stay at every position, because a launcher that
+  # takes a value (`script -q /dev/null rm …`, `taskpolicy -c utility rm …`,
+  # `flock /tmp/l rm …`) would hide a destruction behind a reading of only its
+  # first word.
   #
   # IT IS ASKED OF THE OUTER ARGV TOO, not only of a line inside a shell's
   # `-c` string (`gate_opl_unread_launch`). Written bare, `arch -arm64 rm -rf
@@ -8583,13 +8953,14 @@ gate_opl_hides_command() {
   # their own arms (the payload reader's operand line, and the declared-grade
   # ceiling of the reach cells), and a `머지` rung from this search would turn
   # an honest `xargs git push` from that park into an under-declaration.
-  local g j w
+  local g j w slot
   case "${1##*/}" in xargs|sudo|npx) return 1 ;; esac
   gate_opl_words "$@"
   set -- "${GATE_OPL_WORDS[@]}"
   g=$(surface_of_argv0 "$@" 2>/dev/null) || g=''
   case "$g" in 읽기|워크트리쓰기|트리밖쓰기|외부상태변경) return 1 ;; esac
   [ -z "$(gate_reach_local_destructive_here "$@" 2>/dev/null)" ] || return 1
+  slot=$(gate_opl_launch_slot "$@") || slot=''
   j=2
   while [ "$j" -le $# ]; do
     w="${!j}"
@@ -8597,7 +8968,10 @@ gate_opl_hides_command() {
       ''|-*|*=*|*[!A-Za-z0-9_./+-]*) ;;
       *)
         g=$(surface_of_argv0 "${@:j}" 2>/dev/null) || g=''
-        case "$g" in 워크트리쓰기|트리밖쓰기|외부상태변경) return 0 ;; esac
+        case "$g" in
+          트리밖쓰기|외부상태변경) return 0 ;;
+          워크트리쓰기) { [ "$slot" = '*' ] || [ "$slot" = "$j" ]; } && return 0 ;;
+        esac
         [ -z "$(GATE_OPL_IN_HIDES=1 ladder_of_argv0 "${@:j}" 2>/dev/null)" ] || return 0
         [ -z "$(gate_reach_local_destructive_here "${@:j}" 2>/dev/null)" ] || return 0 ;;
     esac
@@ -24515,7 +24889,14 @@ gate_verb_act() {
     if [ "$GATE_GRADE_SOURCE" = "불투명" ] && gate_auto_resolve_enabled; then
       _bound="${GATE_FLOOR:-읽기}"
     elif [ "$GATE_GRADE_SOURCE" = "미상" ]; then
-      _bound="${GATE_FLOOR:-읽기}"
+      # A COMMAND WITH NO ROW IS NOT PROVEN A READ, so its declaration is held
+      # to a worktree write at least. Held to the floor alone, a bare `dd
+      # of=<sibling>/f` or `shred -u <sibling>/f` declared `읽기` floored
+      # `읽기`, and cell 4 passed that declaration before any reach question
+      # was asked: the file was overwritten or removed while the honest
+      # `대상트리` parked. An opaque runner keeps its floor, which is what the
+      # gate read of its payload.
+      _bound=$(gate_surface_max "${GATE_FLOOR:-읽기}" 워크트리쓰기)
     fi
     if [ "$_bound" = "등급 미상" ]; then
       # Off mode, unknown command: today's answer, unchanged — a declaration
@@ -24528,7 +24909,10 @@ gate_verb_act() {
     _si=$(surface_index "$surface") || exit "$GATE_EXIT_VOCAB"
     if [ "$_si" -lt "$_bi" ]; then
       warn "axis 2 under-declaration: declared '$surface' is lower than the $( [ "$_bound" = "$graded" ] && printf 'grade' || printf 'floor' ) '$_bound'"
-      if [ "$graded" = "등급 미상" ]; then gate_orchestrator_script_hint "$1"; fi
+      if [ "$graded" = "등급 미상" ]; then
+        warn "repair: the grading table has no row for '${1##*/}', so it is not proven a read — declare it '워크트리쓰기' or higher, with the --reach of the place it writes"
+        gate_orchestrator_script_hint "$1"
+      fi
       exit "$GATE_EXIT_GRADE"
     fi
     GATE_DECLARED="$surface"
@@ -25385,7 +25769,7 @@ gate_verb_act() {
       도달모순)
         case "${GATE_REACH:--}:$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")" in
           런로컬:워크트리쓰기|런로컬:트리밖쓰기|-:워크트리쓰기|-:트리밖쓰기)
-            warn "repair: this write lands in another worktree of the target or in its main checkout, or sits in a shell string whose landing this gate cannot read, which is not where '런로컬' is honest — an act that writes there declares '대상트리', and one that replaces or removes what is there also needs its destructive form named by the manifest; a step inside a shell string goes to the gate on its own, without the shell string; one that should not write there changes the act" ;;
+            warn "repair: this write lands in another worktree of the target or in its main checkout, or sits in a shell string whose landing this gate cannot read, which is not where '런로컬' is honest — an act that writes there declares '대상트리', and one that replaces or removes what is there also needs its destructive form named by the manifest; a step inside a shell string goes to the gate on its own, without the shell string; a step that writes a docs/ sidecar of the main checkout from a segment worktree follows the per-step declaration table of skills/_common/pipeline-sidecar.md; one that should not write there changes the act" ;;
           *)
             warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
         esac ;;
@@ -25400,7 +25784,7 @@ gate_verb_act() {
       dev파괴)
         warn "repair: a destructive act against dev is not taken unattended — leave it to a person" ;;
       대상트리불일치)
-        warn "repair: '대상트리' covers the checkouts and worktrees that share the target's common git directory, and an act landing in one of them may also land in the temp directory or this run's state root. An act landing only in the temp directory or this run's state root is '런로컬', and re-declaring an act that lands in the target's trees as '런로컬' does not get a destructive one past this question. Another repository or a machine-global path is neither, and this park is final — split off the part that lands there" ;;
+        warn "repair: '대상트리' covers the checkouts and worktrees that share the target's common git directory, and an act landing in one of them may also land in the temp directory or this run's state root. An act landing only in the temp directory or this run's state root is '런로컬', and re-declaring an act that lands in the target's trees as '런로컬' does not get a destructive one past this question. Another repository or a machine-global path is neither, and this park is final — split off the part that lands there. A verb other than a copy counts every operand as a landing place, so when the part outside is a file it only reads, copy that file into the temp directory first as its own '런로컬' act, then write from there under '대상트리'" ;;
       CI실패)
         warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
       등급회귀)
