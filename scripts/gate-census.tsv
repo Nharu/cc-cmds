@@ -190,7 +190,7 @@ id	group	status	wall_seconds	passed	failed	needs	crash_symbol
 53	reach	ok	10	8	0	-	-
 54	reach	ok	7	9	0	-	-
 55	reach	ok	7	5	0	-	-
-55b	reach	ok	49	69	0	-	-
+55b	reach	ok	37	71	0	-	-
 40	base	ok	25	21	0	-	-
 41	base	ok	15	34	0	-	-
 42	base	ok	24	11	0	-	-

@@ -27932,12 +27932,22 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
 # 밖이거나 못 읽는 플래그를 실은 철자는 협업도 사전 인가도 받지 않는다.
 #
 # 원격 슬러그를 맞춰야 하므로 공유 픽스처(원격이 로컬 베어 경로)를 쓰지 않고 자기
-# 저장소를 만든다. 원격 URL 은 질의만 되고 push 는 `plan` 이라 나가지 않는다.
+# 저장소를 만든다. 원격 URL 이 https 라도 `plan` 은 베이스 갱신을 재려고 게이트의
+# `git push --dry-run` 을 그 원격으로 보낸다 — dry-run 도 전송을 열고 자격 증명
+# 도우미를 부른다. 그래서 이 절 동안 `GIT_ALLOW_PROTOCOL=file` 로 전송이 기기를
+# 떠나지 못하게 하고, `HOME` 을 픽스처로 돌려 개발자 전역 git 설정(도우미·
+# `insteadOf`·`push.default`)이 판정에 스며들지 않게 한다. `GIT_CONFIG_*` 는 포함
+# 술어가 그 변수의 존재만으로 거짓이 되므로 쓰지 않는다. `GIT_TRACE` 기록으로
+# 원격 헬퍼가 한 번도 뜨지 않았음을 절 끝에서 단언한다.
 CC_GATE_PREV_AR55B="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 S55B="$(cd -P "$WORK" && pwd)/s55b"
 S55B_R="$S55B/repo"; S55B_W="$S55B/wt"; S55B_O="$S55B/other"
-mkdir -p "$S55B"
+mkdir -p "$S55B/home"
+CC_GATE_PREV_HOME55B="$HOME"
+CC_GATE_PREV_GAP55B="${GIT_ALLOW_PROTOCOL-__unset__}"
+CC_GATE_PREV_GTR55B="${GIT_TRACE-__unset__}"
+export HOME="$S55B/home" GIT_ALLOW_PROTOCOL=file GIT_TRACE="$S55B/git-trace.log"
 ( git init -q "$S55B_R" && cd "$S55B_R" \
   && git config user.email t@example.invalid && git config user.name T \
   && mkdir -p docs/pipeline-run docs/pipeline-grant \
@@ -28152,6 +28162,19 @@ check "git --work-tree \$HOME/.claude status 의 유도 도달도 기기전역�
   "$(s55b_fn '' gate_reach_derived s55b git --work-tree "$HOME/.claude" status)" "기기전역"
 check "git -C <x> stash 는 stash 로 읽혀 기기전역이다" \
   "$(s55b_fn '' gate_reach_derived s55b git -C "$S55B_W" stash)" "기기전역"
+
+# 8 — 이 절의 어떤 git 호출도 기기 밖 전송을 열지 않았다. 대조군으로 dry-run 이
+# 실제로 돌았는지(기록에 `--dry-run` 이 있는지)를 먼저 본다 — 그것이 없으면
+# 헬퍼 부재는 아무것도 배제하지 못한다.
+case "$(cat "$S55B/git-trace.log" 2>/dev/null)" in
+  *"--dry-run"*) ok "대조군 — 이 절의 계획이 게이트의 push dry-run 을 실제로 불렀다" ;;
+  *) bad "대조군 — 이 절의 계획이 게이트의 push dry-run 을 실제로 불렀다" "추적 기록에 --dry-run 없음" ;;
+esac
+check "이 절의 git 호출은 원격 전송 헬퍼를 한 번도 띄우지 않는다" \
+  "$(grep -cE 'remote-(https?|ftps?)|git-remote-http|credential' "$S55B/git-trace.log" 2>/dev/null)" "0"
+export HOME="$CC_GATE_PREV_HOME55B"
+if [ "$CC_GATE_PREV_GAP55B" = __unset__ ]; then unset GIT_ALLOW_PROTOCOL; else export GIT_ALLOW_PROTOCOL="$CC_GATE_PREV_GAP55B"; fi
+if [ "$CC_GATE_PREV_GTR55B" = __unset__ ]; then unset GIT_TRACE; else export GIT_TRACE="$CC_GATE_PREV_GTR55B"; fi
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55B"
 
 # ---------------------------------------------------------------------------
