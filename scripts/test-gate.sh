@@ -5245,6 +5245,123 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 8b-4. cycle 행의 술어 판정 — 게이트가 정준 P0·P1 에서 유도해 호출자 필드 뒤에 싣는다
+# --- section: 8b-4 | group: base | covers: act | needs: 8e | anchors: 무발견 cycle 행은 술어 판정=충족(v1) 을 지문 앞에 싣는다, 지문 없이도 상한을 넘는 cycle 행은 거절되고 남지 않는다 ---
+#
+# The arm appends `술어 판정` after the caller's fields and before `발견 지문`:
+# `충족(v1)` exactly when the row's own P0 and P1 are both `0`, `미충족(v1)`
+# otherwise. A caller may not supply it whatever the value, and at the cap it
+# is never shed — the fingerprint goes first, and a row still over is refused
+# rather than written without the verdict.
+#
+# A FRESH SEGMENT `SQ`, so the newest rows of SW and SD stay as 8b-2 and 8b-3
+# left them. FXREPORT's summary line is not the regular emoji form, so the
+# report-count comparison is skipped and non-zero counts land against it.
+# ---------------------------------------------------------------------------
+q84_rows() { grep -c '^- `cycle` ' "$FX_LEDGER" 2>/dev/null || true; }
+q84_last() { grep '^- `cycle` ' "$FX_LEDGER" | grep -F '| 세그먼트=SQ |' | tail -1; }
+q84_cycle() {
+  # q84_cycle <cycle> <P0> <P1> [field...]
+  local cyc=$1 p0=$2 p1=$3; shift 3
+  gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SQ --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale x \
+       -- "사이클=$cyc" "P0=$p0" "P1=$p1" "리뷰 HEAD=$head_b" "리포트 경로=$FXREPORT" "$@"
+}
+q84_proj() {
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_row_projected_bytes "$@"' _ "$GATE" "$@" )
+}
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SQ --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+check "술어 판정 픽스처 세그먼트 행이 기록된다" "$rc" "0"
+
+q84_cycle 1 0 0 비고=x
+check "무발견 cycle 행이 기록된다" "$rc" "0"
+case "$(q84_last)" in
+  *"| 비고=x | 술어 판정=충족(v1) | 발견 지문=- | prev="*) ok "무발견 cycle 행은 술어 판정=충족(v1) 을 지문 앞에 싣는다" ;;
+  *) bad "충족 행의 꼬리" "$(q84_last)" ;;
+esac
+q84_cycle 2 0 1 비고=x
+check "P1>0 cycle 행이 기록된다" "$rc" "0"
+case "$(q84_last)" in
+  *"| 비고=x | 술어 판정=미충족(v1) | 발견 지문="*) ok "P1>0 cycle 행은 술어 판정=미충족(v1) 을 싣는다" ;;
+  *) bad "P1>0 행의 꼬리" "$(q84_last)" ;;
+esac
+q84_cycle 3 1 0 비고=x
+check "P0>0 cycle 행이 기록된다" "$rc" "0"
+case "$(q84_last)" in
+  *"| 비고=x | 술어 판정=미충족(v1) | 발견 지문="*) ok "P0>0 cycle 행은 술어 판정=미충족(v1) 을 싣는다" ;;
+  *) bad "P0>0 행의 꼬리" "$(q84_last)" ;;
+esac
+
+# A caller-supplied verdict, right or empty, is refused before anything lands.
+for q84_v in '충족(v1)' ''; do
+  q84_n=$(q84_rows)
+  q84_cycle 4 0 0 "술어 판정=$q84_v"
+  check "호출자가 넘긴 술어 판정은 거부된다 ('$q84_v')" "$rc" "2"
+  case "$msg" in
+    *'`술어 판정`'*"게이트만 쓰는 필드"*) ok "그 거절이 술어 판정을 게이트 필드로 지목한다 ('$q84_v')" ;;
+    *) bad "호출자 술어 판정 문면 ('$q84_v')" "$msg" ;;
+  esac
+  check "그 거절은 cycle 행을 늘리지 않는다 ('$q84_v')" "$(q84_rows)" "$q84_n"
+done
+
+# THE MARGIN. The worst cycle row observed in a real ledger was 970 bytes by the
+# gate's own ruler, fingerprint included. Rebuilt to that length here, the
+# verdict at its longest value still keeps it under the cap.
+q84_fix=(cycle 세그먼트=SQ 사이클=1 P0=0 P1=1 "리뷰 HEAD=$head_b" "리포트 경로=$FXREPORT")
+q84_p=$(q84_proj "${q84_fix[@]}" 근거= '발견 지문=0123456789ab')
+q84_fill=$(printf '%*s' "$((970 - q84_p))" '' | tr ' ' x)
+check "투영의 바탕 행이 관측된 최악 cycle 행의 970 B 다" \
+  "$(q84_proj "${q84_fix[@]}" "근거=$q84_fill" '발견 지문=0123456789ab')" "970"
+q84_pw=$(q84_proj "${q84_fix[@]}" "근거=$q84_fill" '술어 판정=미충족(v1)' '발견 지문=0123456789ab')
+if [ -n "$q84_pw" ] && [ "$q84_pw" -le 1024 ]; then
+  ok "최악 cycle 행에 술어 판정을 더한 투영이 상한 안이다 (${q84_pw} B)"
+else
+  bad "cycle 행 상한 여유" "투영이 상한을 넘는다: ${q84_pw:-없음} B"
+fi
+
+# Over the cap even without the fingerprint: refused with exit 1 — the same
+# argv overflows again, so it is not a vocabulary refusal — naming the longest
+# caller field and both byte counts, and nothing lands.
+q84_n=$(q84_rows)
+q84_cycle 5 0 1 "비고=$(printf '%*s' 1000 '' | tr ' ' a)"
+check "지문 없이도 상한을 넘는 cycle 행은 exit 1 로 거절된다" "$rc" "1"
+case "$msg" in
+  *"over the cap (projected "*" > 1024 bytes)"*'`비고`'*) ok "그 거절이 투영과 상한과 가장 긴 호출자 필드를 댄다" ;;
+  *) bad "cycle 넘침 문면" "$msg" ;;
+esac
+check "지문 없이도 상한을 넘는 cycle 행은 거절되고 남지 않는다" "$(q84_rows)" "$q84_n"
+
+# ---------------------------------------------------------------------------
+# 8b-5. cycle 행의 P0·P1 은 정준 정수다
+# --- section: 8b-5 | group: base | covers: act | needs: 8e | anchors: 정준 카운트 픽스처 세그먼트 행이 기록된다, 두 자리 정준 정수는 통과한다 (하한이 공허하지 않다) ---
+#
+# The merge rules compare the counts as strings against `0` while the
+# convergence verdict reads them as integers, so `00` or `01` would be clean to
+# one reader and dirty to the other. The arm accepts `0` or a decimal with no
+# leading zero and refuses every other spelling before the row lands.
+# ---------------------------------------------------------------------------
+q85_rows() { grep -c '^- `cycle` ' "$FX_LEDGER" 2>/dev/null || true; }
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SR --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+check "정준 카운트 픽스처 세그먼트 행이 기록된다" "$rc" "0"
+for q85_c in 'P0=00 P1=0 P0' 'P0=0 P1=01 P1' 'P0=x P1=0 P0' 'P0=-1 P1=0 P0'; do
+  read -r q85_a q85_b q85_k <<<"$q85_c"
+  q85_n=$(q85_rows)
+  gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SR --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale x -- 사이클=1 "$q85_a" "$q85_b" "리뷰 HEAD=$head_b" "리포트 경로=$FXREPORT"
+  check "정준이 아닌 $q85_k 는 거부된다 ($q85_a $q85_b)" "$rc" "2"
+  case "$msg" in
+    *"\`$q85_k\`"*"canonical integer"*) ok "그 거절이 $q85_k 필드와 정준 형식을 지목한다 ($q85_a $q85_b)" ;;
+    *) bad "비정준 카운트 문면 ($q85_a $q85_b)" "$msg" ;;
+  esac
+  check "그 거절은 cycle 행을 늘리지 않는다 ($q85_a $q85_b)" "$(q85_rows)" "$q85_n"
+done
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SR --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=10 "리뷰 HEAD=$head_b" "리포트 경로=$FXREPORT"
+check "두 자리 정준 정수는 통과한다 (하한이 공허하지 않다)" "$rc" "0"
+
+# ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
 # --- section: 8c | group: base | covers: - | needs: 8e | anchors: 행마다 어느 자격으로 돌았는지가 남는다 ---
 #
@@ -8539,8 +8656,10 @@ if [ -d "$OV1" ] && [ -d "$OV2" ] && [ -d "$OV3" ] && [ -n "$row_max" ]; then
   seg_ov SOV1 "$OV1" park $((row_max - park_base))
   check "투영이 상한에 딱 맞는 행은 기록된다" "$rc" "0"
   check "그 행의 길이가 상한과 같다" "$(row_bytes "$(seg_last SOV1)")" "$row_max"
+  # A terminal row carries the `수렴` the gate derives — `리뷰 없음` here, since
+  # SOV1 has no `cycle` row — so the projection carries it too.
   check "투영이 그 행을 상한으로 잰다" \
-        "$(proj segment "교대=$ov_shift" id=SOV1 상태=park "워크트리=$OV1" 선행=없음 "선언 파일 집합=$(pad $((row_max - park_base)))")" "$row_max"
+        "$(proj segment "교대=$ov_shift" id=SOV1 상태=park "워크트리=$OV1" 선행=없음 "선언 파일 집합=$(pad $((row_max - park_base)))" '수렴=리뷰 없음')" "$row_max"
   n_seg=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
   seg_ov SOV1 "$OV1" park $((row_max - park_base + 1))
   if [ "$rc" != "0" ]; then
@@ -24278,6 +24397,91 @@ if sp_bound; then ok "32p: find {} gh — 문면이 결속을 지목한다"; els
 sp_plan S32G 커밋 find "$SA_ROOT" -maxdepth 0 -exec gh api -X PUT 'repos/o/r/pulls/7/{}' ';'
 check "32p: find -exec 의 {} 를 받는 gh 를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
 
+# --- 35-33. 종단 segment 행은 마지막 사이클의 수렴을 싣는다 ------------------------
+# --- section: 35-33 | group: sa | covers: act, snapshot | anchors: 33: 덮는 무발견 사이클 뒤의 머지됨 행은 수렴=충족(v1) 을 싣는다, 33: cycle 행 없는 완료 행은 수렴=리뷰 없음 을 싣는다 ---
+#
+# `완료` · `머지됨` · `park` 행에 게이트가 `수렴` 을 단다. 값은 그 세그먼트의 마지막
+# cycle 행이 종료 술어를 만족했는지이고, 머지 대조와 같은 헬퍼가 같은 행에서
+# 읽는다. 머지를 통과시킨 다른 이유(이월·기각)는 수렴에 들지 않는다. 비종단 행은
+# 싣지 않고, 호출자는 어느 상태에서도 넘길 수 없다.
+sa_new '수렴 충족'
+sa_seg_row S33A ""
+T33A=$(sa_commit '작업')
+sa_cycle S33A 1 0 0 "$T33A"
+sa_land
+sa_seg_state S33A 머지됨
+check "33: 덮는 무발견 사이클 뒤의 머지됨 행은 수렴=충족(v1) 을 싣는다" "$rc/$(sa_field "$(sa_seg_last S33A)" '수렴')" "0/충족(v1)"
+check "33: 그 행의 머지 대조도 충족이다" "$(sa_field "$(sa_seg_last S33A)" '머지 대조')" "충족"
+case "$(sa_seg_last S33A)" in
+  *"| 최종 사이클=1 | 수렴=충족(v1) | prev="*) ok "33: 수렴은 최종 사이클 뒤 행 끝에 선다" ;;
+  *) bad "33 수렴의 자리" "$(sa_seg_last S33A)" ;;
+esac
+
+sa_new '수렴 미충족'
+sa_seg_row S33B ""
+T33B=$(sa_commit '작업')
+sa_cycle S33B 1 0 1 "$T33B"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S33B \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=리뷰중 워크트리="$SA_SEGWT" 선행=없음
+check "33: 사이클 뒤의 리뷰중 행이 기록된다" "$rc" "0"
+check "33: 비종단 행은 수렴을 싣지 않는다" "$(sa_seg_last S33B | grep -c '| 수렴=' || true)" "0"
+nb=$(sa_rows)
+sa_seg_state S33B 리뷰중 '수렴=충족(v1)'
+check "33: 호출자가 넘긴 수렴은 비종단 행에서 거절된다" "$rc" "2"
+sa_seg_state S33B 머지됨 '수렴=충족(v1)'
+check "33: 호출자가 넘긴 수렴은 머지됨 행에서도 거절된다" "$rc" "2"
+case "$msg" in
+  *"「수렴」는 게이트가 유도해 적는 필드"*) ok "33: 그 거절 문면이 수렴을 게이트 필드로 지목한다" ;;
+  *) bad "33 호출자 수렴 문면" "$msg" ;;
+esac
+check "33: 두 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+sa_land
+sa_seg_state S33B 머지됨
+check "33: 열린 발견 위의 머지됨 행은 수렴=미충족(v1) 을 싣는다" "$rc/$(sa_field "$(sa_seg_last S33B)" '수렴')" "0/미충족(v1)"
+sa_seg_state S33B 완료
+check "33: 머지 뒤의 완료 행도 같은 수렴을 싣는다" "$rc/$(sa_field "$(sa_seg_last S33B)" '수렴')" "0/미충족(v1)"
+check "33: 완료 행은 수렴을 싣고도 머지 대조는 싣지 않는다" "$(sa_field "$(sa_seg_last S33B)" '머지 대조')" ""
+
+sa_new '수렴 리뷰 없음'
+sa_seg_row S33C ""
+sa_seg_state S33C 완료
+check "33: cycle 행 없는 완료 행은 수렴=리뷰 없음 을 싣는다" "$rc/$(sa_field "$(sa_seg_last S33C)" '수렴')" "0/리뷰 없음"
+
+sa_new '수렴 park'
+sa_seg_row S33D ""
+T33D=$(sa_commit '작업')
+sa_cycle S33D 1 1 0 "$T33D"
+sa_cycle S33D 2 0 0 "$T33D"
+sa_seg_state S33D park
+check "33: park 행은 마지막 사이클의 수렴을 싣는다" "$rc/$(sa_field "$(sa_seg_last S33D)" '수렴')" "0/충족(v1)"
+
+# 상한 — 관측된 최악 종단 행(976 B)과 최악 머지됨 행(905 B, 머지 대조·최종 사이클
+# 을 빼고 잰 값)을 게이트의 자로 다시 만들고, 수렴을 가장 긴 값으로 단다.
+s33_proj() { ( cd "$SA_WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_row_projected_bytes "$@"' _ "$GATE" "$@" ); }
+s33_fix=(segment id=S33W "워크트리=$SA_SEGWT" 선행=없음)
+s33_p=$(s33_proj "${s33_fix[@]}" 상태=완료 근거=)
+s33_fill=$(printf '%*s' "$((976 - s33_p))" '' | tr ' ' x)
+check "33: 투영의 바탕 행이 관측된 최악 종단 행의 976 B 다" \
+  "$(s33_proj "${s33_fix[@]}" 상태=완료 "근거=$s33_fill")" "976"
+s33_pw=$(s33_proj "${s33_fix[@]}" 상태=완료 "근거=$s33_fill" '수렴=미충족(v1)')
+if [ -n "$s33_pw" ] && [ "$s33_pw" -le 1024 ]; then
+  ok "33: 최악 종단 행에 수렴을 더한 투영이 상한 안이다 (${s33_pw} B)"
+else
+  bad "33 종단 행 상한" "투영이 상한을 넘는다: ${s33_pw:-없음} B"
+fi
+s33_p=$(s33_proj "${s33_fix[@]}" 상태=머지됨 근거=)
+s33_fill=$(printf '%*s' "$((905 - s33_p))" '' | tr ' ' x)
+check "33: 투영의 바탕 행이 관측된 최악 머지됨 행의 905 B 다" \
+  "$(s33_proj "${s33_fix[@]}" 상태=머지됨 "근거=$s33_fill")" "905"
+s33_pw=$(s33_proj "${s33_fix[@]}" 상태=머지됨 "근거=$s33_fill" \
+  '머지 대조=위반(카운트·미포함)' '최종 사이클=없음' '수렴=미충족(v1)')
+if [ -n "$s33_pw" ] && [ "$s33_pw" -le 1024 ]; then
+  ok "33: 최악 머지됨 행에 세 게이트 필드를 가장 긴 값으로 더한 투영이 상한 안이다 (${s33_pw} B)"
+else
+  bad "33 머지됨 행 상한" "투영이 상한을 넘는다: ${s33_pw:-없음} B"
+fi
+
 # ---------------------------------------------------------------------------
 # 36. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다
 # --- section: 36 | group: sa | covers: act | anchors: 31: 룰이 켜진 채 선머지후리뷰 머지가 통과한다 ---
@@ -30551,7 +30755,7 @@ s70_cycle SF 1 1 1 "$S70A" 비고=x
 check "70: 발견 둘을 지닌 리포트의 cycle 기록은 exit 0 이다" "$rc" "0"
 s70_row=$(s70_last SF)
 case "$s70_row" in
-  *"| 비고=x | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | prev="*)
+  *"| 비고=x | 술어 판정=미충족(v1) | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | prev="*)
     ok "70: 행이 호출자 필드 뒤 발견 지문으로 끝난다" ;;
   *) bad "70: 발견 지문의 자리" "$s70_row" ;;
 esac
@@ -30657,6 +30861,10 @@ case "$s70_ovr" in
   *) ok "70: 상한을 넘기는 행은 발견 지문 없이 기록된다" ;;
 esac
 check "70: 그 행의 길이는 상한보다 지문만큼 짧다" "$(s70_bytes "$s70_ovr")" "$((s70_max + 1 - s70_fb))"
+case "$s70_ovr" in
+  *"| 술어 판정=미충족(v1) | prev="*) ok "70: 지문을 뺀 행도 술어 판정은 지닌다" ;;
+  *) bad "70: 상한 생략 뒤 술어 판정" "$s70_ovr" ;;
+esac
 case "$msg" in
   *"상한"*"발견 지문"*) ok "70: 필드를 뺀 기록은 경고를 남긴다" ;;
   *) bad "70: 상한 경고" "$msg" ;;
@@ -34346,6 +34554,10 @@ else
   lsr_in Linux "$L88D" - in88 "$M88D" gate_segment_merged_row t S2 워크트리="$W88" 선행=없음 >/dev/null 2>&1 || true
   check "88: K2 위에서 드라이버의 머지됨 조립 함수가 낸 행에도 머지 대조=이월 이 실린다" \
     "$( { grep '^- `segment` ' "$L88D" || true; } | tail -1 | grep -c '| 머지 대조=이월 ' || true)" "1"
+  # The carry-over let the merge through; it did not meet the predicate, so the
+  # same row records the last cycle as not converged.
+  check "88: 드라이버의 머지됨 행은 이월된 P1>0 사이클의 수렴=미충족(v1) 을 싣는다" \
+    "$( { grep '^- `segment` ' "$L88D" || true; } | tail -1 | grep -c '| 수렴=미충족(v1) | prev=' || true)" "1"
 
   # 기각 — 사람이 좌석에서 마지막 사이클을 기각하면 `다음` 표와 머지 룰은 카운트보다
   # 먼저 그것을 읽어 머지를 통과시킨다. 머지 대조의 카운트 절반도 같은 순서로 읽어
@@ -34381,6 +34593,54 @@ else
   check "88: 위반(카운트) 머지 뒤 기각과 둘째 머지됨 행이 조건 11 을 푼다 — 위반 행은 남는다" \
     "$(q88 "$L88KR" gate_done_conditions | grep -c '^11 ' || true)/$(grep -c '| 머지 대조=위반(카운트) ' "$L88KR" || true)" "0/1"
 fi
+
+# ---------------------------------------------------------------------------
+# 88b. 수렴은 마지막 cycle 행의 술어 판정이고, 그 필드가 없는 옛 행에서는 정준 카운트로 v1 을 계산한다
+# --- section: 88b | group: ledger_series | covers: gate_segment_cycle_verdict | anchors: 88b: 술어 판정 없는 옛 무발견 행의 수렴은 충족(v1) 이다, 88b: 정준이 아닌 카운트를 심은 옛 행의 수렴은 판정 불가 다 ---
+#
+# Rows are planted directly, so the ledger can carry what the cycle arm no
+# longer writes: a row from before `술어 판정` existed, a non-canonical count,
+# a version this gate does not know. The function is read in place of a
+# terminal row, with an empty tip as the `완료` and `park` rows call it.
+# ---------------------------------------------------------------------------
+D88B="$lsr_root/s88b"; rm -rf "$D88B"; mkdir -p "$D88B"
+M88B="$D88B/manifest.md"
+printf '## 대상\n\n- `target` | 별칭=t | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n- `사전 인가` | 형태=gh issue | 사유=테스트\n' > "$M88B"
+l88b() {  # l88b <이름> [행…] — 행들을 차례로 심은 원장
+  local l r
+  l=$(lsr_ledger "w88b-$1"); shift
+  for r in "$@"; do printf '%s\n' "$r" >> "$l"; done
+  printf '%s' "$l"
+}
+c88b() {  # c88b <cycle 행 꼬리> — 세그먼트 S2 의 cycle 행 하나
+  printf -- '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=1 | %s | 리뷰 HEAD=abc1234 | 리포트 경로=x | prev=x' "$1"
+}
+cv88b() { MANIFEST="$M88B"; gate_segment_cycle_verdict S2 t "" 2>/dev/null; printf '%s' "$GATE_CYCLE_CONVERGENCE"; }
+q88b() { lsr_in Linux "$1" - cv88b 2>/dev/null; }
+check "88b: cycle 행 없는 세그먼트의 수렴은 리뷰 없음 이다" "$(q88b "$(l88b none)")" "리뷰 없음"
+check "88b: 술어 판정 없는 옛 무발견 행의 수렴은 충족(v1) 이다" "$(q88b "$(l88b old-clean "$(c88b 'P0=0 | P1=0')")")" "충족(v1)"
+check "88b: 술어 판정 없는 옛 P1>0 행의 수렴은 미충족(v1) 이다" "$(q88b "$(l88b old-open "$(c88b 'P0=0 | P1=2')")")" "미충족(v1)"
+check "88b: 정준이 아닌 카운트를 심은 옛 행의 수렴은 판정 불가 다" "$(q88b "$(l88b old-01 "$(c88b 'P0=01 | P1=0')")")" "판정 불가"
+check "88b: P1 이 빠진 옛 행의 수렴은 판정 불가 다 (빈 카운트는 0 이 아니다)" "$(q88b "$(l88b old-nop1 "$(c88b 'P0=0')")")" "판정 불가"
+check "88b: 기록된 술어 판정은 그대로 읽힌다" \
+  "$(q88b "$(l88b written "$(c88b 'P0=0 | P1=1 | 술어 판정=미충족(v1)')")")" "미충족(v1)"
+check "88b: 이 게이트가 모르는 판의 술어 판정은 v1 으로 접지 않고 그대로 싣는다" \
+  "$(q88b "$(l88b v2 "$(c88b 'P0=0 | P1=1 | 술어 판정=충족(v2)')")")" "충족(v2)"
+check "88b: 판 번호가 정준이 아닌 술어 판정은 판정 불가 다" \
+  "$(q88b "$(l88b v0 "$(c88b 'P0=0 | P1=0 | 술어 판정=충족(v0)')")")/$(q88b "$(l88b v01 "$(c88b 'P0=0 | P1=0 | 술어 판정=충족(v01)')")")" "판정 불가/판정 불가"
+check "88b: 어휘 밖 술어 판정은 카운트로 되돌아가지 않고 판정 불가 다" \
+  "$(q88b "$(l88b junk "$(c88b 'P0=0 | P1=0 | 술어 판정=예')")")" "판정 불가"
+check "88b: 마지막 cycle 행만 읽는다" \
+  "$(q88b "$(l88b last "$(c88b 'P0=1 | P1=0')" \
+      '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=2 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=x | prev=x')")" "충족(v1)"
+check "88b: 기각된 P1>0 사이클의 수렴은 미충족(v1) 이다 (기각은 머지 대조의 몫이다)" \
+  "$(q88b "$(l88b dismissed "$(c88b 'P0=0 | P1=1')" \
+      '- `리뷰 기각` | 교대=1 | 세그먼트=S2 | 사이클=1 | 리뷰 HEAD=abc1234 | 기각 P0=0 | 기각 P1=1 | 근거=x | prev=x')")" "미충족(v1)"
+check "88b: 이월된 P1>0 사이클의 수렴은 미충족(v1) 이다" \
+  "$(q88b "$(l88b carried "$(c88b 'P0=0 | P1=1')" \
+      '- `리뷰 이월` | 교대=1 | 세그먼트=S2 | 사이클=1 | 리뷰 HEAD=abc1234 | 건수=1 | 이슈=https://github.com/o/r/issues/1 | 레인=~ | 기록 시각=2026-10-12T00:00:00Z | prev=x')")" "미충족(v1)"
+check "88b: 다른 세그먼트의 cycle 행은 읽지 않는다" \
+  "$(q88b "$(l88b other '- `cycle` | 교대=1 | 세그먼트=S3 | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=x | prev=x')")" "리뷰 없음"
 
 # --- epilogue-begin ---
 #

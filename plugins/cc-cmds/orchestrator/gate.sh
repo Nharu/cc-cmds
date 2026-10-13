@@ -16492,8 +16492,9 @@ EOF
 gate_cycle_row() {
   # gate_cycle_row <target alias> <segment> <키=값>… — one `cycle` row, by the
   # same code the `cycle` act arm runs: every write-time refusal, the report
-  # checks and the `발견 지문` the gate derives behind the caller's fields,
-  # including the branch that drops it when the row would cross the cap. The
+  # checks, and the `술어 판정` and `발견 지문` the gate derives behind the
+  # caller's fields, including the branch that drops the fingerprint when the
+  # row would cross the cap and the refusal when even that is not enough. The
   # driver calls this through a child shell so its cycle rows meet the checks a
   # routed run's rows meet. Same exit codes as the act arm.
   [ "$#" -ge 2 ] || { warn "gate_cycle_row <target alias> <segment> <키=값>…"; return "$GATE_EXIT_VOCAB"; }
@@ -16505,8 +16506,8 @@ gate_cycle_row() {
 gate_segment_merged_row() {
   # gate_segment_merged_row <target alias> <segment> <키=값>… — the terminal
   # `segment` row `상태=머지됨`, by the same code the `segment` act arm runs,
-  # so `적용=대기` and the inherited `리뷰 정책` are derived the same way on both
-  # paths. The caller passes everything but `상태`; `워크트리` stays required,
+  # so `적용=대기`, the inherited `리뷰 정책`, `머지 대조` and `수렴` are derived
+  # the same way on both paths. The caller passes everything but `상태`; `워크트리` stays required,
   # and `워크트리=-` is the spelling for a tree the merge removed.
   [ "$#" -ge 2 ] || { warn "gate_segment_merged_row <target alias> <segment> <키=값>…"; return "$GATE_EXIT_VOCAB"; }
   local ma=$1 ms=$2 mf
@@ -21450,11 +21451,12 @@ gate_record_row() {
       # such a key would be read as the row's segment or id — and neither is a
       # bare `판정`, which another series already uses with another meaning.
       local rpol_eff="${rpol:-선리뷰후머지}" k
-      local mc_field="" fc_field=""
+      local mc_field="" fc_field="" cv_field=""
 
       # THE GATE'S FIELDS ARE THE GATE'S ALONE, in every state. `수렴` is refused
-      # with them because it is the cycle-row value of the same derivation, and a
-      # segment row carrying it would read as a verdict nothing computed.
+      # with them because the gate derives it from the same cycle row, and a
+      # caller's value — on a non-terminal row as much as on a terminal one —
+      # would read as a verdict nothing computed.
       #
       # THE KEY'S PRESENCE IS REFUSED, NOT A NON-EMPTY VALUE. Condition 11 reads
       # the last row carrying `머지 대조` whatever its value, so a later
@@ -21536,8 +21538,22 @@ gate_record_row() {
         gate_segment_cycle_verdict "$seg" "$alias" "$mtip"
         mc_field="머지 대조=$(gate_merge_check_value "$rpol_eff" "$GATE_CYCLE_COUNT_VERDICT" "$GATE_CYCLE_COVER_VERDICT")"
         fc_field="최종 사이클=$GATE_CYCLE_NUMBER"
-        set -- "$@" "$mc_field" "$fc_field"
+        cv_field="수렴=$GATE_CYCLE_CONVERGENCE"
+        set -- "$@" "$mc_field" "$fc_field" "$cv_field"
       fi
+
+      # `수렴` ON EVERY TERMINAL ROW — whether the segment's last review met the
+      # termination predicate, read by the same derivation as the merged row's
+      # comparison. `완료` and `park` merged nothing, so no tip is handed in and
+      # only the convergence is taken from the result. A non-terminal row
+      # carries none: the segment has not ended, and a reader counting rates
+      # over ended segments would count it twice.
+      case "$st" in
+        완료|park)
+          gate_segment_cycle_verdict "$seg" "$alias" ""
+          cv_field="수렴=$GATE_CYCLE_CONVERGENCE"
+          set -- "$@" "$cv_field" ;;
+      esac
 
       # `적용=대기` ON A MERGE THAT STILL OWES ITS APPLY. Whether a segment owes
       # one is derived from the manifest and the frozen declaration, and the
@@ -21580,6 +21596,7 @@ gate_record_row() {
         for f in "$@"; do
           [ "$f" = "$mc_field" ] && continue
           [ "$f" = "$fc_field" ] && continue
+          [ -n "$cv_field" ] && [ "$f" = "$cv_field" ] && continue
           [ -n "$ap_field" ] && [ "$f" = "$ap_field" ] && continue
           [ -n "$dd_field" ] && [ "$f" = "$dd_field" ] && continue
           fn=$(printf '%s' "$f" | wc -c | tr -d ' ')
@@ -21806,8 +21823,10 @@ gate_record_row() {
       # makes them agree on a new row is refusing the second value at write
       # time. So: a key whose spelling changes when its surrounding spaces and
       # tabs are trimmed is refused; `세그먼트` is refused whatever its value,
-      # because the gate writes it from `--segment`; and `발견 지문` is refused
-      # because it is a field only the gate writes. A refusal writes nothing.
+      # because the gate writes it from `--segment`; and `발견 지문` and
+      # `술어 판정` are refused because they are fields only the gate writes —
+      # the key's presence, whatever its value, so a caller's empty
+      # `술어 판정=` cannot stand on the row either. A refusal writes nothing.
       local ca ck ckt cnl cr ctb
       cnl=$'\n'; cr=$'\r'; ctb=$'\t'
       for ca in "$@"; do
@@ -21825,8 +21844,8 @@ gate_record_row() {
           세그먼트)
             warn "\`세그먼트\` 는 게이트가 --segment 로 쓴다 — 이 필드를 빼고 다시 부른다"
             return "$GATE_EXIT_VOCAB" ;;
-          '발견 지문')
-            warn "\`발견 지문\` 은 게이트만 쓰는 필드다 — 이 필드를 빼고 다시 부른다"
+          '발견 지문'|'술어 판정')
+            warn "\`${ckt}\` 은 게이트만 쓰는 필드다 — 이 필드를 빼고 다시 부른다"
             return "$GATE_EXIT_VOCAB" ;;
         esac
       done
@@ -21838,6 +21857,23 @@ gate_record_row() {
           # vocabulary refusal into a bare exit 1 with no message a reader can
           # act on. Measured here, not imagined.
           warn "a cycle row needs \`${k}\`"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      done
+      # THE COUNTS ARE CANONICAL INTEGERS: `0`, or a decimal with no leading
+      # zero. The two rule files that enforce the termination predicate compare
+      # them as STRINGS (`[ "$p0" != "0" ]`), while the `술어 판정` below is
+      # derived from them as integers — `P0=00` would read as a finding there
+      # and as none here, and the row would carry a verdict the merge decision
+      # did not make. Fixing the spelling at write time is what keeps the two
+      # readings one. Every occurrence is checked, not only the one
+      # `gate_field_of` returns, so a second `P0=` cannot carry another spelling.
+      local cpk
+      for ca in "$@"; do
+        case "$ca" in P0=*|P1=*) ;; *) continue ;; esac
+        cpk=${ca%%=*}
+        if ! gate_canon_count "${ca#*=}"; then
+          warn "the \`${cpk}\` of a cycle row has to be a canonical integer — \`0\` or a decimal with no leading zero: '${ca#*=}'"
           return "$GATE_EXIT_VOCAB"
         fi
       done
@@ -22131,13 +22167,45 @@ EOF
       # marker would be longer than the 12-byte value it replaces. Without this
       # step a long cycle row that is legal today — a review already paid for —
       # would turn into a refused write.
-      local fp
+      #
+      # `술어 판정` GOES BETWEEN THE CALLER'S FIELDS AND `발견 지문`, and it is
+      # never the field dropped. It is the termination predicate `P0 + P1 == 0`
+      # read off this row's own canonical counts, with the version of the
+      # predicate in force when the row was written — `(v1)` — so a later
+      # change of predicate cannot fold old and new rows into one rate. The
+      # counts stay on the row, so the value can always be derived again; what
+      # cannot be derived again is which predicate was in force, and that is
+      # why it is written rather than left to the reader. No control path reads
+      # it to decide anything: the predicate's enforcement stays where it is.
+      #
+      # A ROW THAT IS OVER THE CAP EVEN WITHOUT `발견 지문` IS REFUSED, with the
+      # caller's longest field named, rather than written without the verdict.
+      # The exit code is the one the `segment` arm gives the same refusal: the
+      # same argv cannot fit any better, so the vocabulary code would invite a
+      # retry that fails the same way.
+      local fp pv
       fp=$(gate_cycle_fingerprint "$rep" "$(gate_field_of 'P0' "$@")" "$(gate_field_of 'P1' "$@")")
-      if [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp")" -gt "$GATE_ROW_MAX" ]; then
-        warn "cycle 행이 상한을 넘어 「발견 지문」 을 빼고 기록합니다 — 세그먼트 $seg, 사이클 $(gate_field_of '사이클' "$@")"
-        gate_append 'cycle' "세그먼트=$seg" "$@"
+      if [ "$(gate_field_of 'P0' "$@")" = 0 ] && [ "$(gate_field_of 'P1' "$@")" = 0 ]; then
+        pv='충족(v1)'
       else
-        gate_append 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp"
+        pv='미충족(v1)'
+      fi
+      if [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "술어 판정=$pv" "발견 지문=$fp")" -gt "$GATE_ROW_MAX" ]; then
+        local cproj
+        cproj=$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "술어 판정=$pv")
+        if [ "$cproj" -gt "$GATE_ROW_MAX" ]; then
+          local f big_k="" big_n=0 fn
+          for f in "$@"; do
+            fn=$(printf '%s' "$f" | wc -c | tr -d ' ')
+            if [ "$fn" -gt "$big_n" ]; then big_n="$fn"; big_k="${f%%=*}"; fi
+          done
+          warn "the cycle row is over the cap (projected ${cproj} > ${GATE_ROW_MAX} bytes) even without \`발견 지문\` — the longest caller field is \`${big_k}\` (${big_n} bytes): shorten it and write the row again; \`술어 판정\` is not trimmed to make room"
+          return 1
+        fi
+        warn "cycle 행이 상한을 넘어 「발견 지문」 을 빼고 기록합니다 — 세그먼트 $seg, 사이클 $(gate_field_of '사이클' "$@")"
+        gate_append 'cycle' "세그먼트=$seg" "$@" "술어 판정=$pv"
+      else
+        gate_append 'cycle' "세그먼트=$seg" "$@" "술어 판정=$pv" "발견 지문=$fp"
       fi
       log "리뷰 사이클 기록 — $seg"
       ;;
@@ -28195,12 +28263,13 @@ gate_obligation_covers() {
   GATE_COVER_VERDICT='덮지 않는다'; return 0
 }
 
-# The three answers `gate_segment_cycle_verdict` leaves, in globals for the same
+# The four answers `gate_segment_cycle_verdict` leaves, in globals for the same
 # reason the landing and cover verdicts are: a caller reading them through
-# `$(…)` would run the function in a subshell and lose two of the three.
+# `$(…)` would run the function in a subshell and lose three of the four.
 GATE_CYCLE_COUNT_VERDICT=""
 GATE_CYCLE_COVER_VERDICT=""
 GATE_CYCLE_NUMBER=""
+GATE_CYCLE_CONVERGENCE=""
 
 gate_segment_cycle_verdict() {
   # gate_segment_cycle_verdict <세그먼트> <대상 별칭> <머지 팁>
@@ -28209,11 +28278,13 @@ gate_segment_cycle_verdict() {
   #   GATE_CYCLE_COUNT_VERDICT  충족 | 이월 | 기각 | 위반 | 판정 불가 | 리뷰 없음
   #   GATE_CYCLE_COVER_VERDICT  덮는다 | 덮지 않는다 | 판정 불가
   #   GATE_CYCLE_NUMBER         the row's `사이클`, or 없음
+  #   GATE_CYCLE_CONVERGENCE    충족(v<n>) | 미충족(v<n>) | 리뷰 없음 | 판정 불가
+  # An empty <머지 팁> — a `완료` or `park` row, which merged nothing — leaves the
+  # cover half at `판정 불가` and the other three as they are.
   #
   # THE ONE DERIVATION. The `머지 대조` of a merged segment row is formatted from
-  # this, and the convergence value a later change writes on the cycle row is
-  # meant to read the same function rather than a second reading of the same
-  # row. The count half is `gate_segment_review_count_verdict`, the function the
+  # this, and so is the `수렴` of every terminal segment row, from the same row
+  # rather than a second reading of it. The count half is `gate_segment_review_count_verdict`, the function the
   # review's `다음` table reads, and it reads a dismissal and a carry-over the
   # way that table does, so the merge record and the merge decision cannot
   # disagree about the same cycle. `기각` and `이월` bind only a `리뷰 기각` or
@@ -28225,10 +28296,19 @@ gate_segment_cycle_verdict() {
   # a row that states no count has not said the findings are closed, and the
   # record of the merge is the place that has to be able to say so.
   # `gate_canon_count` in the count function keeps that.
-  local seg="$1" al="$2" tip="$3" row rh n
+  #
+  # THE CONVERGENCE IS THE PREDICATE, NOT THE MERGE DECISION. It is the row's
+  # `술어 판정` as written — a version the gate does not know is carried as it
+  # is, never folded into v1 — and for a row written before that field existed,
+  # v1 computed from the same row's canonical counts. A dismissal or a carry-over
+  # does not enter it: such a cycle did not meet the predicate, the merge was
+  # let through for another reason, and that reason is `머지 대조`'s to record.
+  # A count that cannot be read is `판정 불가`, for the same reason as above.
+  local seg="$1" al="$2" tip="$3" row rh n pj ver p0 p1
   GATE_CYCLE_COUNT_VERDICT=""
   GATE_CYCLE_COVER_VERDICT=""
   GATE_CYCLE_NUMBER='없음'
+  GATE_CYCLE_CONVERGENCE='리뷰 없음'
   row=$(gate_segment_last_cycle_row "$seg")
   GATE_CYCLE_COUNT_VERDICT=$(gate_segment_review_count_verdict "$seg")
   if [ -n "$row" ]; then
@@ -28237,6 +28317,24 @@ gate_segment_cycle_verdict() {
       ''|*[!0-9]*|0*) : ;;
       *) GATE_CYCLE_NUMBER="$n" ;;
     esac
+    GATE_CYCLE_CONVERGENCE='판정 불가'
+    pj=$(gate_row_field "$row" '술어 판정')
+    if [ -n "$pj" ]; then
+      case "$pj" in
+        '충족(v'*')'|'미충족(v'*')')
+          ver=${pj#*'(v'}; ver=${ver%')'}
+          if gate_canon_count "$ver" && [ "$ver" != 0 ]; then GATE_CYCLE_CONVERGENCE="$pj"; fi ;;
+      esac
+    else
+      p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
+      if gate_canon_count "$p0" && gate_canon_count "$p1"; then
+        if [ "$p0" = 0 ] && [ "$p1" = 0 ]; then
+          GATE_CYCLE_CONVERGENCE='충족(v1)'
+        else
+          GATE_CYCLE_CONVERGENCE='미충족(v1)'
+        fi
+      fi
+    fi
   fi
   if [ -z "$tip" ]; then
     GATE_CYCLE_COVER_VERDICT='판정 불가'
