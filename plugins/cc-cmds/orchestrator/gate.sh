@@ -1053,7 +1053,13 @@ gate_collaboration_surface() {
           # `-H 'X-N: /comments'` put any endpoint on this surface. A GraphQL
           # endpoint counts only when written exactly `graphql`, the one
           # spelling gh sends its fields to as variables.
-          case "/$GATE_GHAPI_PATH" in
+          #
+          # AND FROM THE PATH THE LADDER READS, not the endpoint as written: an
+          # absolute URL is read after its authority, and an authority gh fills
+          # in names no endpoint, so `https://{branch}/repos/o/r/issues/1` is
+          # not an issue edit whatever its path says.
+          gate_gh_api_authority_unread && return 1
+          case "/$(gate_gh_api_rest_path)" in
             # A ref or a file named like one of these is still a ref or a file.
             */git/*|*/contents/*) return 1 ;;
             */issues|*/issues/*|*/comments|*/comments/*|*/reviews|*/reviews/*) return 0 ;;
@@ -1872,7 +1878,7 @@ gate_reach_disposition() {
 
   local C=0 lift=0 P=0 Pd=0 pkind='없음' probe=''
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="$GATE_MARK" GATE_MARK_TRIGGER="$GATE_MARK_TRIGGER" \
-          GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
+          GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
   case "$probe" in
     *"P=1"*) P=1 ;;
@@ -6248,7 +6254,12 @@ gate_act_mark() {
         delete|item-delete|field-delete) printf '파괴\t%s' "$2"; return 0 ;;
       esac
       case "${1:-}" in
-        api) case "$all" in *" -X DELETE "*|*" --method DELETE "*) printf '파괴\tDELETE'; return 0 ;; esac ;;
+        # The method is the one `gate_gh_api_parse` reads, upper-cased: matched
+        # as ` -X DELETE `, the spellings `--method=DELETE`, `-XDELETE` and
+        # `-Xdelete` sent a DELETE with no mark.
+        api)
+          gate_gh_api_parse "${@:2}"
+          case "$GATE_GHAPI_METHOD" in [Dd][Ee][Ll][Ee][Tt][Ee]) printf '파괴\tDELETE'; return 0 ;; esac ;;
       esac ;;
     curl)
       case "$all" in
@@ -6951,6 +6962,26 @@ gate_gh_api_rest_path() {
   printf '%s' "$p"
 }
 
+gate_gh_api_authority_unread() {
+  # After `gate_gh_api_parse`: 0 when the endpoint is an absolute URL whose
+  # authority — userinfo, host or port — holds something gh fills in before
+  # sending the request.
+  #
+  # gh FILLS THE WHOLE REQUEST STRING, NOT ONLY ITS PATH, and puts the current
+  # branch's name in unescaped. With a branch named
+  # `api.github.com/repos/o/r/pulls/7/merge#`, `https://{branch}/repos/o/r/issues/1`
+  # is the merge endpoint of pull request 7 and the rest is a fragment.
+  # `gate_gh_api_rest_path` drops the authority before any segment is read, so
+  # the placeholder there was seen by nothing and the merge passed as an issue
+  # edit. Nothing after such an authority says what the endpoint is.
+  local a="$GATE_GHAPI_PATH"
+  case "$a" in
+    http://*|https://*) a="${a#*://}"; a="${a%%/*}" ;;
+    *) return 1 ;;
+  esac
+  gate_gh_api_seg_placeholder "$a"
+}
+
 gate_gh_api_seg_placeholder() {
   # 0 when the path segment <seg> holds something gh replaces before sending
   # the request: a `{…}`, or `:owner`, `:repo` or `:branch` not followed by a
@@ -6987,9 +7018,11 @@ gate_gh_api_rest_class() {
   # pull request edit, so a merge bound to nothing passed as a write that moves
   # no ref. Only `repos/{owner}/{repo}/` (or `:owner`, `:repo`) is read through:
   # an owner or repository name holds no `/`, so it is one segment whatever it
-  # is. Any other segment gh fills in leaves the endpoint unread.
+  # is. Any other segment gh fills in leaves the endpoint unread, and so does
+  # one in an absolute URL's authority (`gate_gh_api_authority_unread`).
   local p seg d n i=0
   local -a s=()
+  gate_gh_api_authority_unread && return 0
   p=$(gate_gh_api_rest_path)
   while IFS= read -r seg; do
     s[${#s[@]}]="$seg"
@@ -7114,7 +7147,12 @@ gate_gh_api_merge_kind() {
   # GRAPHQL IS THE ENDPOINT `graphql` AND NOTHING ELSE. Matched as
   # `*/graphql`, a file write to `repos/o/r/contents/graphql` was read as a
   # GraphQL body with no merge in it.
+  #
+  # AN AUTHORITY gh FILLS IN NAMES NO ENDPOINT AT ALL, so a non-GET call to one
+  # is `rest-ref` before the path is read — `https://{branch}/graphql` included,
+  # whose path only looks like the GraphQL endpoint.
   case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) return 0 ;; esac
+  if gate_gh_api_authority_unread; then printf 'rest-ref'; return 0; fi
   if gate_gh_api_path_unread; then printf 'rest-unbound'; return 0; fi
   if [ "$(gate_gh_api_rest_path)" != graphql ]; then
     case "$(gate_gh_api_rest_class)" in
@@ -11340,9 +11378,11 @@ gate_rule_enabled() {
 }
 
 gate_run_rules() {
-  # gate_run_rules <act-token> <alias> <segment> <argv-string>
+  # gate_run_rules <act-token> <alias> <segment> <argv-string> [<preauth-argv>]
   # Returns 0 when every loaded rule passes, GATE_EXIT_RULE on the first refusal.
-  local act="$1" alias="$2" seg="$3" argv="$4"
+  # The preauthorization rule reads <preauth-argv> (`gate_preauth_argv`) when
+  # it is given, so the catalog and the reach disposition compare one string.
+  local act="$1" alias="$2" seg="$3" argv="$4" pargv="${5-$4}"
   local dir decl name checker
   # THE FIRST APPROVAL REQUEST NO LONGER ENDS THE CATALOG. A checker that asks
   # for an approval used to return immediately, so every rule ordered after it
@@ -11369,8 +11409,9 @@ gate_run_rules() {
       continue
     fi
     gate_rule_enabled "$name" || continue
-    local rc=0
-    GATE_ACT="$act" GATE_ALIAS="$alias" GATE_SEGMENT="$seg" GATE_ARGV="$argv" \
+    local rc=0 cargv="$argv"
+    [ "$name" = "사전-인가-대조" ] && cargv="$pargv"
+    GATE_ACT="$act" GATE_ALIAS="$alias" GATE_SEGMENT="$seg" GATE_ARGV="$cargv" \
       GATE_LEDGER="$LEDGER" GATE_MANIFEST="$MANIFEST" GATE_GRANT="$GRANT" \
       /bin/sh "$checker" || rc=$?
     [ "$rc" = "0" ] && continue
@@ -15650,6 +15691,30 @@ gate_canon_count() {
   return 0
 }
 
+gate_preauth_argv() {
+  # gate_preauth_argv <argv…> — the argv string the preauthorization rule
+  # compares a `사전 인가` row's shape against. For every command but `gh api`
+  # it is the argv as written.
+  #
+  # A `gh api` ARGV IS COMPARED WITH THE METHOD gh WILL SEND IN FRONT. The rule
+  # compares a shape's words with the argv's first words, and gh takes the
+  # last `-X`/`--method`, so under a `gh api -X PUT` row the argv
+  # `gh api -X PUT repos/o/r --method=DELETE` matched word for word and sent a
+  # DELETE; `-XDELETE`, `-Xdelete` and a trailing `-X PATCH` did the same. The
+  # method `gate_gh_api_parse` reads — the last one, or POST with a body, or
+  # GET — is put upper-cased right after `api`, so a row naming a method opens
+  # that method and nothing else, and a row of bare `gh api` still opens every
+  # call as it says.
+  local cmd="${1##*/}" m
+  if [ "$cmd" = gh ] && [ "${2:-}" = api ]; then
+    gate_gh_api_parse "${@:3}"
+    m=$(printf '%s' "$GATE_GHAPI_METHOD" | tr '[:lower:]' '[:upper:]')
+    printf '%s api -X %s %s' "$1" "$m" "${*:3}"
+    return 0
+  fi
+  printf '%s' "$*"
+}
+
 gate_manifest_preauthorizes() {
   # gate_manifest_preauthorizes <argv…> — true when a `사전 인가` row of this
   # run's manifest covers that argv. Asks the preauthorization rule in its probe
@@ -15657,7 +15722,7 @@ gate_manifest_preauthorizes() {
   # cannot split into two.
   local probe
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='' GATE_MARK_TRIGGER='' \
-          GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
+          GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || return 1
   case "$probe" in *"P=1"*) return 0 ;; esac
   return 1
@@ -25752,7 +25817,8 @@ gate_verb_act() {
   # putting the seam upstream: `GATE_ACT` arrives already corrected, so not one
   # line of the catalog changes and no checker acquires a second copy of the
   # ladder.
-  gate_run_rules "$GATE_ACT_EFFECTIVE" "$alias" "$segment" "$argv" || rules_rc=$?
+  gate_run_rules "$GATE_ACT_EFFECTIVE" "$alias" "$segment" "$argv" \
+    "$(gate_preauth_argv "$@")" || rules_rc=$?
 
   # THE AUTO-ADOPTION FLOOR. It runs beside the catalog rather than only inside
   # it because its other consumer — a judgment a stage emitted in its terminal

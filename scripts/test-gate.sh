@@ -23904,6 +23904,39 @@ check "32p: 대조군 — 필드의 {branch} 는 경로를 바꾸지 않는다" 
 check "32p: 대조군 — :branchx 는 자리표시자가 아니다" \
   "$(sp_ld gh api -X PATCH 'repos/o/r/labels/x:branchx' -f color=fff)" ""
 
+# gh 는 요청 문자열 전체를 채우므로 절대 URL 의 호스트·userinfo·포트 자리도 자리표시자다 —
+# api.github.com/repos/o/r/pulls/7/merge# 라는 브랜치에서 https://{branch}/repos/o/r/issues/1
+# 은 PR 7 의 머지로 나간다. 그런 authority 뒤의 경로는 아무 엔드포인트도 말하지 않는다.
+sp_n=0
+for sp_a in "-X PUT https://{branch}/repos/o/r/issues/1" \
+            "-X POST https://api.{branch}/repos/o/r/issues/1/comments -f body=x" \
+            "-X PUT https://api:branch/repos/o/r/issues/1" \
+            "-X PUT https://{owner}/repos/o/r/issues/1" \
+            "-X PUT https://{branch}@api.github.com/repos/o/r/labels/x" \
+            "-X PUT https://api.github.com:{branch}/repos/o/r/issues/1" \
+            "-X POST https://{branch}/graphql -f query=query{viewer{login}}"; do
+  sp_n=$((sp_n + 1))
+  # shellcheck disable=SC2086
+  check "32p: 사다리가 호스트 자리표시자 철자 $sp_n ($sp_a) 을 머지로 읽는다" "$(sp_ld gh api $sp_a)" "머지"
+  # shellcheck disable=SC2086
+  check "32p: 호스트 자리표시자 철자 $sp_n 은 결속 없는 머지다" "$(sp_mb gh api $sp_a)" "없음"
+  # shellcheck disable=SC2086
+  check "32p: 호스트 자리표시자 철자 $sp_n 은 협업면이 아니다" "$(sp_cs 협업 gh api $sp_a)" "아니오"
+done
+sp_plan S32G 머지 gh api -X PUT 'https://{branch}/repos/o/r/issues/1'
+check "32p: 머지 로 선언한 https://{branch}/… 는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: https://{branch}/… — 문면이 결속을 지목한다"; else bad "32p 호스트 자리표시자 문면" "$msg"; fi
+sp_plan S32G 커밋 gh api -X PUT 'https://{branch}/repos/o/r/issues/1'
+check "32p: https://{branch}/… 를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
+# 대조군 — 경로 자리의 {owner}/{repo} 와 GHE 의 api/v3 머지는 그 sha 에 결속되고,
+# 자리표시자 없는 절대 URL 의 이슈 쓰기는 협업면이다.
+check "32p: 대조군 — 절대 URL 의 repos/{owner}/{repo} 머지는 그 sha 에 결속된다" \
+  "$(sp_mb gh api -X PUT 'https://api.github.com/repos/{owner}/{repo}/pulls/1/merge' -f "sha=$X32")" "$X32"
+check "32p: 대조군 — GHE api/v3 의 REST 머지는 그 sha 에 결속된다" \
+  "$(sp_mb gh api -X PUT https://ghe.example/api/v3/repos/o/r/pulls/1/merge -f "sha=$X32")" "$X32"
+check "32p: 대조군 — 절대 URL 의 이슈 고치기는 협업면이다" \
+  "$(sp_cs 협업 gh api -X PATCH https://api.github.com/repos/o/r/issues/1 -f state=closed)" "예"
+
 # find -exec 안에서 {} 를 받는 gh 호출 — 매치 경로가 들어간 뒤의 철자를 읽을 수 없으므로
 # 사다리는 머지로, 결속은 없음으로 읽는다.
 check "32p: find -exec 의 {} 를 받는 gh api 를 사다리가 머지로 읽는다" \
@@ -32807,7 +32840,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 83. 사전 인가 대조는 줄바꿈이 든 argv 도 한 행위로 읽는다
-# --- section: 83 | group: reach | covers: - | anchors: 83: 여러 줄 --body 의 gh pr create 가 gh pr 형태에 맞는다, 83: 대조 — 한 줄 --body 도 맞는다, 83: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다, 83: gh pr 형태는 결속된 REST 머지에 맞지 않는다, 83: gh api -X PUT 형태가 결속된 REST 머지에 맞는다 ---
+# --- section: 83 | group: reach | covers: - | anchors: 83: 여러 줄 --body 의 gh pr create 가 gh pr 형태에 맞는다, 83: 대조 — 한 줄 --body 도 맞는다, 83: 줄바꿈 뒤에 형태 단어가 와도 앞 단어가 다르면 맞지 않는다, 83: gh pr 형태는 결속된 REST 머지에 맞지 않는다, 83: gh api -X PUT 형태가 결속된 REST 머지에 맞는다, 83: 게이트가 넘긴 결속된 REST 머지가 gh api -X PUT 형태에 맞는다, 83: gh api -X DELETE 형태는 -Xdelete 철자를 파괴 명시로 맞춘다 ---
 #
 # 사전 인가 대조는 argv 를 awk 로 정규화하는데, awk 는 입력 줄마다 본문을 돈다.
 # PR 본문처럼 인자 하나에 줄바꿈이 들면 정규화 결과가 여러 줄이 되어 한 줄짜리
@@ -32838,6 +32871,48 @@ printf -- '- `사전 인가` | 형태=gh api -X PUT | 사유=테스트\n' >> "$m
 check "83: gh api -X PUT 형태가 결속된 REST 머지에 맞는다" "$(p83 "$p83h")" "P=1 형태=완전 Pd=0"
 check "83: 대조 — gh api -X PUT 형태는 POST 에 맞지 않는다" \
   "$(p83 'gh api -X POST repos/o/r/issues/1/comments -f body=x')" "P=0 형태=없음 Pd=0"
+
+# gh 는 마지막 -X/--method 를 보내므로, 게이트는 대조기에 gh 가 보낼 메서드를 api 바로
+# 뒤에 올려 넘긴다. 뒤따르는 메서드 플래그가 gh api -X PUT 행을 다른 메서드로 열지 않고,
+# 파괴 표지도 철자가 아니라 그 메서드에서 나온다.
+p83g() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; m="$2"; r="$3"; shift 3
+    mk=$(gate_act_mark "$@")
+    GATE_PREAUTH_PROBE=1 GATE_MARK="${mk%%	*}" GATE_MARK_TRIGGER="${mk#*	}" \
+      GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$m" /bin/sh "$r" 2>/dev/null' \
+    _ "$GATE" "$m83" "$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh" "$@"
+}
+p83m() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; mk=$(gate_act_mark "$@"); printf "%s" "${mk%%	*}"' _ "$GATE" "$@"; }
+X83="0123456789abcdef0123456789abcdef01234567"
+check "83: 게이트가 넘긴 결속된 REST 머지가 gh api -X PUT 형태에 맞는다" \
+  "$(p83g gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$X83" -f merge_method=merge)" "P=1 형태=완전 Pd=0"
+check "83: 같은 메서드를 되풀이한 철자도 gh api -X PUT 형태에 맞는다" \
+  "$(p83g gh api -X PUT repos/o/r/pulls/1/merge -X PUT -f "sha=$X83")" "P=1 형태=완전 Pd=0"
+check "83: 메서드를 뒤에 적은 PUT 도 gh api -X PUT 형태에 맞는다" \
+  "$(p83g gh api repos/o/r/pulls/1/merge --method PUT -f "sha=$X83")" "P=1 형태=완전 Pd=0"
+p83n=0
+for p83a in "-X PUT repos/o/r --method=DELETE" \
+            "-X PUT repos/o/r -XDELETE" \
+            "-X PUT repos/o/r/hooks/1 --method=delete" \
+            "-X PUT repos/o/r/labels/bug -Xdelete" \
+            "-X PUT repos/o/r/issues/1 -X PATCH -f state=closed" \
+            "-X PUT repos/o/r/git/refs/heads/master -X PATCH -f sha=$X83 -F force=true" \
+            "-X PUT graphql -X POST -f query=query{viewer{login}}"; do
+  p83n=$((p83n + 1))
+  # shellcheck disable=SC2086
+  check "83: 뒤따르는 메서드 플래그 $p83n ($p83a) 는 gh api -X PUT 형태에 맞지 않는다" \
+    "$(p83g gh api $p83a)" "P=0 형태=없음 Pd=0"
+done
+for p83a in "-X PUT repos/o/r --method=DELETE" "-X PUT repos/o/r -XDELETE" \
+            "repos/o/r/labels/bug -Xdelete" "repos/o/r --method delete" "-X DELETE repos/o/r"; do
+  # shellcheck disable=SC2086
+  check "83: gh api $p83a 에 파괴 표지가 붙는다" "$(p83m gh api $p83a)" "파괴"
+done
+check "83: 대조 — DELETE 를 PUT 으로 덮은 철자에는 파괴 표지가 없다" \
+  "$(p83m gh api -X DELETE repos/o/r/pulls/1/merge -X PUT -f "sha=$X83")" ""
+printf -- '- `사전 인가` | 형태=gh api -X DELETE | 사유=테스트\n' >> "$m83"
+check "83: gh api -X DELETE 형태는 -Xdelete 철자를 파괴 명시로 맞춘다" \
+  "$(p83g gh api repos/o/r/labels/bug -Xdelete)" "P=1 형태=완전 Pd=1"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make

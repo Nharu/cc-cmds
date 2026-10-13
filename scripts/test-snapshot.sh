@@ -997,7 +997,9 @@ done
 # `sha` field to the worktree HEAD's full sha rather than a cycle row's review
 # HEAD, and the sentence that a `gh pr merge` without `--admin` binds nothing),
 # the disposition of a merge refused with 405 by its cause — an already merged
-# pull request goes on to the merge record, a required check still pending is
+# pull request goes on to the merge record only when its `headRefOid` is the
+# worktree HEAD, and otherwise, or when that record is refused, takes the
+# park-and-cone disposition, a required check still pending is
 # waited on and left routable with a cone block and no `park`, and every other
 # cause takes the park-and-cone disposition (a router has no halt record to
 # write, and without the `park` the next shift sends the same merge again),
@@ -1016,8 +1018,10 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   for spec in \
     '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
     '#### Merging and applying a segment|A `gh pr merge` without `--admin` is refused as unbound even with `--match-head-commit`' \
-    '#### Merging and applying a segment|gh pr view <n> --json state,mergeCommit,mergeStateStatus' \
-    '#### Merging and applying a segment|- **Already merged** (`state` reads `MERGED`' \
+    '#### Merging and applying a segment|gh pr view <n> --json state,headRefOid,mergeCommit,mergeStateStatus' \
+    '#### Merging and applying a segment|- **Already merged** (`state` reads `MERGED` and `headRefOid` equals the implementation worktree'"'"'s HEAD, all 40 characters' \
+    '#### Merging and applying a segment|**`MERGED` with any other `headRefOid`, or a `상태=머지됨` record the gate refuses, is the last bullet'"'"'s case, not this one**' \
+    '#### Merging and applying a segment|so take **Any other cause** with `MERGED` and the `headRefOid` (or the refusal) as its `사유`' \
     '#### Merging and applying a segment|whose `사유` is `CI 진행 중(실패 아님)` with the `message`, write no `park`' \
     '#### Merging and applying a segment|- **Any other cause** — a base that requires a merge queue' \
     '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the 405' \
@@ -1050,6 +1054,13 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     ok "$who 사본의 「Merging and applying a segment」 절에 사이클 행의 리뷰 HEAD 로 묶는 옛 머지 처방이 없다"
   else
     bad "$who 사본의 「Merging and applying a segment」 절" "옛 자리표시 「last cycle row>」가 ${nold}번 있다"
+  fi
+  nold=$(printf '%s\n' "$msec" | grep -cF -e '--json state,mergeCommit,mergeStateStatus' \
+    -e '(`state` reads `MERGED` — an earlier shift' || true)
+  if [ "${nold:-0}" = "0" ]; then
+    ok "$who 사본의 「Merging and applying a segment」 절에 head 를 대조하지 않는 옛 「이미 머지됨」 갈래가 없다"
+  else
+    bad "$who 사본의 「Merging and applying a segment」 절" "headRefOid 없는 옛 405 읽기·갈래 문면이 ${nold}줄 있다"
   fi
   nhalt=$(grep -cF -- 'write a halt record' "$file" || true)
   if [ "${nhalt:-0}" = "0" ]; then
