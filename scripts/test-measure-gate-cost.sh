@@ -216,7 +216,9 @@ check "없는 원장은 0 이 아니라 거부다" "$?" "2"
 #    that set was the second read of each segment row, so the law was fourteen
 #    while it did. It was seven until the vector warmed its ledger reads: the
 #    `segment` rows are now read once per call instead of once per id, which
-#    took one `grep` out of every field read. The fixed part is deliberately
+#    took one `grep` out of every field read. The one segment row of an id is
+#    now picked by an `awk` field-equality filter instead of a `grep`, which
+#    swapped the tool and left the law at six. The fixed part is deliberately
 #    not pinned.
 # ---------------------------------------------------------------------------
 bash "$MEASURE" --rows 10 --segments 3 > "$WORK/seg3.txt" 2>&1
@@ -233,11 +235,12 @@ else
   bad "기울기 축의 선형성" "3·4·5개에서 '$p3' '$p4' '$p5' — 증분이 서로 다르면 계측기가 id 수 외의 것에 반응하고 있다"
 fi
 check "구별 세그먼트 id 하나가 정확히 6 프로세스다" "$((p4 - p3))" "6"
-# The slope's composition, so a regression is named by tool: one `grep`, two
-# `sed`, two `tail`, one `tr` per id — the one field read of one segment row,
-# filtered out of the memoised `segment` rows. A second `grep` here means the
-# field read went back to the ledger.
-for pair in grep:1 sed:2 tail:2 tr:1; do
+# The slope's composition, so a regression is named by tool: one `awk`, two
+# `sed`, two `tail`, one `tr` and no `grep` per id — the one field read of one
+# segment row, picked out of the memoised `segment` rows by a single `awk`
+# field-equality filter. A `grep` here means the field read went back to the
+# ledger.
+for pair in grep:0 awk:1 sed:2 tail:2 tr:1; do
   t="${pair%%:*}"; want="${pair##*:}"
   got=$(( $(field "$WORK/seg4.txt" "progress_$t") - $(field "$WORK/seg3.txt" "progress_$t") ))
   check "id 당 증분의 $t 몫이 $want 다" "$got" "$want"
