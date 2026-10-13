@@ -1459,7 +1459,10 @@ gate_push_unwrap_of_argv0() {
       # shown to run no push is read the same way — see
       # `gate_push_shell_text_unread`.
       bash|sh|zsh|dash|ksh)
-        gate_push_shell_text_pushes "$(gate_push_shell_payload "$@")" && out='불투명' ;;
+        if gate_push_text_has_push "$(gate_push_shell_payload "$@")" \
+           || gate_push_shell_text_unread "$(gate_push_shell_string "$@")"; then
+          out='불투명'
+        fi ;;
       sudo)
         gate_push_shell_text_pushes "$*" && out='불투명' ;;
     esac
@@ -1571,40 +1574,70 @@ gate_push_shell_text_unread() {
   #     taken off, is `git` or `git-<anything>` — the word may be an alias
   #     body, an `xargs` operand, a `send-pack` or a dashed `git-push`;
   #   - a word is a reader that runs text as a command: a shell, `eval`,
-  #     `source`, `alias`, `hash`, `xargs`, `parallel`, or `.` at the head of
-  #     a command (`printf '%cit push' g | sh`).
+  #     `source`, `alias`, `hash`, `xargs` or `parallel`;
+  #   - a command word is not on the short list below of commands that run no
+  #     text of their own.
   #
-  # WHAT THIS COSTS. `bash -c 'git status'` and `sh -c 'echo $HOME'` are read
-  # as pushes too, and in a target with a base branch they are refused as a
-  # push the dry-run cannot measure. Every stage is already told to call
-  # commands directly rather than inside `bash -c`, so the refusal lands on
-  # a spelling no stage needs; the repair it names is the direct call. The
-  # floor (`gate_opaque_floor`) is not raised by this — only by a push spelled
-  # out — so a string with no base branch behind it keeps the grade its
-  # visible commands give it.
+  # THE COMMAND WORD IS CHECKED AGAINST WHAT IS ALLOWED, NOT AGAINST WHAT RUNS
+  # TEXT. A list of readers that run text was the same enumeration over again:
+  # `.` was caught only as a command's first word, so `X=1 . /dev/stdin`,
+  # `command . /dev/stdin` and `builtin . /dev/stdin` ran a piped push, and
+  # `>p; chmod +x p; ./p` or `perl -e 'system …'` named no reader at all. So a
+  # command word — the first word of each command once `<name>=` assignments,
+  # the wrappers `command`, `builtin`, `exec`, `nohup`, `time` and `!` with
+  # their options, and the keywords `if`, `then`, `else`, `elif`, `do`,
+  # `while`, `until`, `fi` and `done` are skipped — is read as no push only
+  # when it carries no `/` and is one of `echo`, `printf`, `cat`, `grep`,
+  # `egrep`, `fgrep`, `head`, `tail`, `wc`, `ls`, `test`, `true`, `false`,
+  # `:`, `pwd`, `cd`, `cut`, `tr`, `uniq`, `basename`, `dirname`, `date`,
+  # `sleep`, `diff` or `cmp`. Every other command word — `.`, a path, an
+  # interpreter, `make`, `sort` (its `--compress-program` runs a command),
+  # `sed`, `awk`, `find`, `env`, `sudo`, a loop's `for` — reads as a push. A
+  # redirection operator parts words the way `gate_push_text_has_push` parts
+  # them, so `2>&1` stays inside the command it belongs to.
+  #
+  # WHAT THIS COSTS. `bash -c 'git status'`, `sh -c 'echo $HOME'` and `sh -c
+  # 'make test'` are read as pushes too, and in a target with a base branch
+  # they are refused as a push the dry-run cannot measure. The repair the
+  # refusal names is the direct call, one command per gate call. The floor
+  # (`gate_opaque_floor`) is not raised by this — only by a push spelled out —
+  # so a string with no base branch behind it keeps the grade its visible
+  # commands give it.
   #
   # The reading is bytewise and a helper that fails reads as a push.
-  local nl=$'\n' text line w first special
+  local nl=$'\n' text line w base want wrapped special
   text=${1//\\"$nl"/}
   special=$(printf '%s' "$text" | LC_ALL=C tr -d -c '$`\\*?{}()[') || return 0
   [ -z "$special" ] || return 0
   text=$(printf '%s' "$text" | LC_ALL=C tr -d '"'"'") || return 0
+  text=${text//>&/> }; text=${text//<&/< }; text=${text//&>/ >}
   text=$(printf '%s' "$text" | LC_ALL=C tr ';&|<>' '\n\n\n  ') || return 0
   while IFS= read -r line; do
     set -f
     # shellcheck disable=SC2086
     set -- $line
     set +f
-    first=1
+    want=1; wrapped=0
     for w in "$@"; do
-      w="${w##*=}"
-      w="${w##*/}"
-      case "$w" in
+      base="${w##*=}"
+      base="${base##*/}"
+      case "$base" in
         git|git-*|eval|source|alias|hash|xargs|parallel) return 0 ;;
         sh|bash|zsh|dash|ksh|mksh|yash|fish|csh|tcsh) return 0 ;;
-        .) [ "$first" = 1 ] && return 0 ;;
       esac
-      first=0
+      [ "$want" = 1 ] || continue
+      case "$w" in
+        [A-Za-z_]*=*)
+          case "${w%%=*}" in *[!A-Za-z0-9_]*) return 0 ;; esac
+          continue ;;
+        command|builtin|exec|nohup|time|'!') wrapped=1; continue ;;
+        if|then|else|elif|do|while|until|fi|done) continue ;;
+        -*) [ "$wrapped" = 1 ] && continue; return 0 ;;
+        */*) return 0 ;;
+        echo|printf|cat|grep|egrep|fgrep|head|tail|wc|ls|test|true|false|:) want=0 ;;
+        pwd|cd|cut|tr|uniq|basename|dirname|date|sleep|diff|cmp) want=0 ;;
+        *) return 0 ;;
+      esac
     done
   done <<GATE_PUSH_TEXT
 $text
@@ -1640,10 +1673,33 @@ gate_push_shell_payload() {
   # every following word appended. The first reads the push where the shell
   # puts it; the second still holds `git` and `push` on one line when the
   # string reaches its parameters some other way (`shift`, `${@:2}`).
+  gate_push_shell_scan all "$@"
+}
+
+gate_push_shell_string() {
+  # gate_push_shell_string <a shell's args after argv0...> — prints the `-c`
+  # string alone, the word `gate_push_shell_payload` takes for it; nothing
+  # when there is none.
+  #
+  # THE COMMAND-WORD READING TAKES THE STRING, NOT THE PAYLOAD. The payload's
+  # extra lines — every word after `-c`, so `--`, an option's value and each
+  # positional parameter — are words the shell does not run as commands, and
+  # `gate_push_shell_text_unread` would read `--`, `pipefail` or `_` as a
+  # command word off the list. A positional parameter runs only through a
+  # `$` in the string, which that reading already takes as a push.
+  gate_push_shell_scan string "$@"
+}
+
+gate_push_shell_scan() {
+  # gate_push_shell_scan <all|string> <a shell's args after argv0...> — the
+  # one option scan behind `gate_push_shell_payload` (`all`) and
+  # `gate_push_shell_string` (`string`). The mode is the first word so no
+  # word of the act's own argv can choose it.
+  local mode="$1"; shift
   local a seen_c=0 take=0 ended=0 str='' have_str=0
   local -a pos=()
   for a in "$@"; do
-    [ "$seen_c" = 0 ] || printf '%s\n' "$a"
+    [ "$seen_c" = 0 ] || [ "$mode" != all ] || printf '%s\n' "$a"
     if [ "$have_str" = 1 ]; then pos+=("$a"); continue; fi
     if [ "$take" -gt 0 ]; then take=$((take - 1)); continue; fi
     if [ "$ended" = 0 ]; then
@@ -1663,6 +1719,10 @@ gate_push_shell_payload() {
     [ "$seen_c" = 1 ] || return 0
     str="$a"; have_str=1
   done
+  if [ "$mode" = string ]; then
+    [ "$have_str" = 1 ] && printf '%s' "$str"
+    return 0
+  fi
   [ "$have_str" = 1 ] && [ "${#pos[@]}" -gt 0 ] || return 0
   case "$str" in *'$'*) ;; *) return 0 ;; esac
   local sub="$str" all='' k=1 v nl=$'\n' flat

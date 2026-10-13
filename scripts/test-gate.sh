@@ -23376,9 +23376,29 @@ done
 check "32p: xargs 로 넘기는 git 도 불투명 이다" "$(sp_unwrap sh -c 'echo push | xargs git')" "불투명"
 check "32p: 셸로 넘기는 파이프도 불투명 이다" "$(sp_unwrap sh -c 'printf %cit g | sh')" "불투명"
 sp_tu() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; if gate_push_shell_text_unread "$@"; then printf 참; else printf 거짓; fi' _ "$GATE" "$@"; }
-check "32p: 대조군 — 실행기·git·확장이 없는 문자열은 읽힌다" "$(sp_tu 'ls . && make test; echo push')" "거짓"
-check "32p: 대조군 — 머리가 아닌 . 은 실행기가 아니다" "$(sp_tu 'ls .')" "거짓"
+check "32p: 대조군 — 허용 목록 명령만 든 문자열은 읽힌다" "$(sp_tu 'ls . && wc -l f; echo push')" "거짓"
+check "32p: 대조군 — 명령 단어가 아닌 . 은 실행기가 아니다" "$(sp_tu 'ls .')" "거짓"
+check "32p: 대조군 — 할당·래퍼·키워드 뒤의 허용 목록 명령은 읽힌다" \
+  "$(sp_tu 'X=1 command cat f 2>&1; if test -f f; then echo y; fi')" "거짓"
 check "32p: 백슬래시-개행만 든 문자열은 확장으로 읽지 않는다" "$(sp_tu "cat a \\"$'\n'"b")" "거짓"
+# 실행기를 열거하던 판독기는 명령 단어 자리의 . 을 첫 단어일 때만 잡았고, 경로 실행과
+# 인터프리터는 아무 실행기도 이름 짓지 않아 지나갔다. 이제 명령 단어는 텍스트를 돌리지
+# 않는 허용 목록에 있을 때만 push 없음으로 읽는다.
+sp_n=0
+for sp_v in "printf '%cit push origin HEAD:master' g | X=1 . /dev/stdin" \
+            "printf '%cit push origin HEAD:master' g | command . /dev/stdin" \
+            "printf '%cit push origin HEAD:master' g | builtin . /dev/stdin" \
+            "printf '%cit push origin HEAD:master' g >p; chmod +x p; ./p" \
+            "perl -e 'system \"gi\".\"t\",\"push\",\"origin\",\"HEAD:master\"'" \
+            "python3 x.py" \
+            "make test" \
+            "sort --compress-program=p f" \
+            "cat f | exec -a n p" \
+            "for x in a; do echo y; done"; do
+  sp_n=$((sp_n + 1))
+  check "32p: 허용 목록 밖 명령 $sp_n ($sp_v) 은 push 없음을 보일 수 없다" "$(sp_tu "$sp_v")" "참"
+  check "32p: 허용 목록 밖 명령 $sp_n 을 실은 bash -c 는 불투명 이다" "$(sp_unwrap bash -c "$sp_v")" "불투명"
+done
 check "32p: 확장 판독은 하한을 올리지 않는다 — 하한은 철자대로 보이는 push 만 올린다" "$(sp_floor bash -c 'git {push,} origin x:main')" "읽기"
 check "32p: 대조군 — 값 옵션 뒤의 git status 의 하한은 읽기 이다" "$(sp_floor bash -oc pipefail 'git status')" "읽기"
 check "32p: gh pr -R <repo> merge 의 결속 인자를 읽는다" \
@@ -23540,7 +23560,8 @@ check "32p: env --split-string <문자열> 안의 push 는 불투명 이다" \
   "$(sp_unwrap env --split-string "git push origin x:main")" "불투명"
 check "32p: env -S<문자열> 안의 push 는 불투명 이다" "$(sp_unwrap env "-Sgit push origin x:main")" "불투명"
 check "32p: 축약 env --s= 안의 push 는 불투명 이다" "$(sp_unwrap env "--s=git push origin x:main")" "불투명"
-check "32p: 대조군 — push 없는 split-string 은 해당없음 이다" "$(sp_unwrap env "--split-string=gh pr view 1")" "해당없음"
+check "32p: 대조군 — 허용 목록 명령만 든 split-string 은 해당없음 이다" "$(sp_unwrap env "--split-string=cat f")" "해당없음"
+check "32p: 허용 목록 밖 명령을 든 split-string 은 불투명 이다" "$(sp_unwrap env "--split-string=gh pr view 1")" "불투명"
 for sp_s in "--split-string=git push origin u-$SA_ID:$SA_BASE" "-Sgit push origin u-$SA_ID:$SA_BASE"; do
   sp_act S32A 머지 env "$sp_s"
   sp_refused "32p: env ${sp_s%%git*}… 의 push 는 거절된다" 2 "$B32"
@@ -23575,16 +23596,24 @@ for sp_c in dashdash opt bslash ifs; do
 done
 # 확장으로 만든 push 를 커밋·워크트리쓰기·런로컬로 신고한 exec — 판독기가 push 를 놓치면
 # 하한이 셸 러너의 워크트리쓰기에 머물러 이 신고가 그대로 통과했고, 리뷰하지 않은 커밋이
-# 베이스에 올라갔다. 이제 형태 미상으로 거절되고 원격 베이스는 움직이지 않는다. 읽기 신고는
+# 베이스에 올라갔다. 명령 단어 자리의 . 을 첫 단어일 때만 잡던 판독기는 할당·command·builtin
+# 뒤의 . 과 파일을 쓰고 경로로 실행하는 형태, perl -e 를 같은 식으로 놓쳤다. 이제 모두 형태
+# 미상으로 거절되고 원격 베이스는 움직이지 않는다. 읽기 신고는
 # 셸 러너의 하한 아래라 과소신고로 먼저 거절되므로 이 거절을 재지 못해 싣지 않는다.
-for sp_c in brace ansic default cmdsub setpos hidegit; do
+for sp_c in brace ansic default cmdsub setpos hidegit assigndot commanddot builtindot writerun perl; do
+  sp_p="printf '%cit push origin u-$SA_ID:$SA_BASE' g"
   case "$sp_c" in
-    brace)   sp_argv=(bash -c "git {push,} origin u-$SA_ID:$SA_BASE") ;;
-    ansic)   sp_argv=(bash -c "git \$'\\x70ush' origin u-$SA_ID:$SA_BASE") ;;
-    default) sp_argv=(bash -c "git \${u:-push} origin u-$SA_ID:$SA_BASE") ;;
-    cmdsub)  sp_argv=(bash -c "git \$(echo pu)sh origin u-$SA_ID:$SA_BASE") ;;
-    setpos)  sp_argv=(bash -c "set -- push; git \"\$@\" origin u-$SA_ID:$SA_BASE") ;;
-    hidegit) sp_argv=(bash -c "\$'\\x67it' push origin u-$SA_ID:$SA_BASE") ;;
+    brace)      sp_argv=(bash -c "git {push,} origin u-$SA_ID:$SA_BASE") ;;
+    ansic)      sp_argv=(bash -c "git \$'\\x70ush' origin u-$SA_ID:$SA_BASE") ;;
+    default)    sp_argv=(bash -c "git \${u:-push} origin u-$SA_ID:$SA_BASE") ;;
+    cmdsub)     sp_argv=(bash -c "git \$(echo pu)sh origin u-$SA_ID:$SA_BASE") ;;
+    setpos)     sp_argv=(bash -c "set -- push; git \"\$@\" origin u-$SA_ID:$SA_BASE") ;;
+    hidegit)    sp_argv=(bash -c "\$'\\x67it' push origin u-$SA_ID:$SA_BASE") ;;
+    assigndot)  sp_argv=(bash -c "$sp_p | X=1 . /dev/stdin") ;;
+    commanddot) sp_argv=(bash -c "$sp_p | command . /dev/stdin") ;;
+    builtindot) sp_argv=(bash -c "$sp_p | builtin . /dev/stdin") ;;
+    writerun)   sp_argv=(bash -c "$sp_p >\"$SA_ROOT/p32\"; chmod +x \"$SA_ROOT/p32\"; \"$SA_ROOT/p32\"") ;;
+    perl)       sp_argv=(bash -c "perl -e 'system \"gi\".\"t\",\"push\",\"origin\",\"u-$SA_ID:$SA_BASE\"'") ;;
   esac
   sag exec --manifest "$SA_MANIFEST" --target main --segment S32A --cutpoint 커밋 --surface 워크트리쓰기 \
       --reach 런로컬 --snapshot-digest "$(SAH)" --rationale x -- "${sp_argv[@]}"
