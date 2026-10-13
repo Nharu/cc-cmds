@@ -5,6 +5,25 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.72.13] - 2026-10-13
+
+셸 문자열 안의 push 를 철자 하나씩 더해 읽던 게이트 판독기가 셸이 확장해서 만드는 push 를 읽지 못해, `bash -c` 안의 베이스 push 를 낮춰 신고하면 dry-run 도 HEAD 결속도 없이 통과하던 구멍을 닫는다. 2.72.11·2.72.12 의 「셸처럼 읽는다」는 철자로 적힌 push 에만 해당했고 확장은 읽지 않았다.
+
+### Fixed
+
+- **push 가 없다고 보일 수 없는 셸 문자열은 push 로 읽는다** — 셸 `-c`·`env -S`·`sudo` 문자열이 `git`(또는 `git-<명령>`)을 부르거나, `$`·백틱·백슬래시(백슬래시-개행 밖)·`*`·`?`·`[`·중괄호·괄호를 담거나, 셸·`eval`·`source`·`alias`·`hash`·`xargs`·`parallel`·명령 머리의 `.` 같은 실행기를 담으면 `불투명` 으로 읽어, 베이스 브랜치가 있는 대상에서는 신고와 무관하게 형태 미상(exit 2)으로 거부한다. 전에는 `git {push,}`, `git $'\x70ush'`, `git ${u:-push}`, `git $(echo pu)sh`, `set -- push; git "$@"`, `$'\x67it' push` 가 push 없음으로 읽혀, `읽기`·`워크트리쓰기 --reach 런로컬` 신고로 리뷰하지 않은 커밋이 베이스에 올라갈 수 있었다
+- 형태 미상 거부는 매니페스트·런 디렉터리·플러그인 루트 쓰기 가드 뒤에 내린다 — 셸 문자열의 대부분이 이제 형태 미상에 닿으므로, 매니페스트에 쓰는 `bash -c` 가 진짜 원인 대신 「잴 수 없는 push」로 거부되지 않게 한다. 두 거부 모두 행위 전에 내려지고, 순서는 어느 원인을 알리는지만 정한다
+- 셸 래핑의 불투명 하한은 바꾸지 않는다 — 하한은 철자로 보이는 push 만 올리므로, 베이스가 없는 대상의 셸 문자열은 보이는 명령의 등급을 그대로 받는다
+
+### Post-install notes
+
+- 베이스 브랜치가 있는 대상에서 `bash -c 'git status'`, `sh -c 'echo $HOME'` 처럼 git 을 부르거나 확장을 담은 셸 문자열은 push 가 아니어도 형태 미상으로 거부된다. 래퍼 없이 명령을 직접 부르면 전처럼 읽힌다
+- 런은 킥오프 시점의 플러그인 사본에 고정되므로, 이미 열려 있는 런에는 이 수정이 닿지 않는다
+
+포함 커밋:
+
+- `fix(orchestrator): push 가 없다고 보일 수 없는 셸 문자열을 push 로 읽는다`
+
 ## [2.72.12] - 2026-10-13
 
 `gh` 의 전역 플래그가 `api` 앞에 오는 철자와, 셸 문자열의 값 옵션·위치 인자·리다이렉션·백슬래시-개행으로 감싼 push 를 게이트 판독기가 읽지 못해 결속되지 않은 머지와 베이스 push 가 선리뷰후머지 검사를 공허하게 지나던 구멍을 닫는다.
