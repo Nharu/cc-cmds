@@ -1,11 +1,16 @@
 # Carrying review findings over to issues
 
 A segment whose snapshot `review_next[]` element reads `다음` `이월` has a last
-review cycle with no P0 and one to three P1 findings, every one of which its
-review classified `이월 가능` and wrote up as a follow-up. This file is the one
-procedure the routing shifts and the driver follow to carry those findings
-over: one issue per finding, then the `리뷰 이월` row, then the merge. The row's
-contract is `pipeline-sidecar.md` §3.2; the report grammar it reads is the
+review cycle with no P0 and P1 findings its review classified and wrote up. In
+the ordinary case there are one to three of them and every one is `이월 가능`.
+Once the segment has kept returning P1 findings (`P1 연속` at
+`P1_REPEAT_STREAK` or more), the gate widens the carry-over: any number of
+`이월 가능` findings, as long as their row fits the row cap, and `차단` findings
+may stand beside them — those stay for the next fix cycle. This file is the one
+procedure the routing shifts and the driver follow to carry the `이월 가능`
+findings over: one issue per finding, then the `리뷰 이월` row, then the merge
+when nothing is left, or the fix of the `차단` findings when something is. The
+row's contract is `pipeline-sidecar.md` §3.2; the report grammar it reads is the
 review report template's `### P1 분류 기준` and its P1 item shape.
 
 **The order is fixed: issues, then the row, then the merge.** There is no state
@@ -46,7 +51,9 @@ to run. The body file holds the item's `이월 본문` lines with their six-spac
 indent removed, then one line, `PR #<n> 의 리뷰 사이클 <사이클> 에서 넘어온
 항목입니다.`, where `<n>` is the segment's pull request. Nothing else is added —
 the review wrote the body once, and every path files the bytes the gate wrote.
-The number of items is the cycle's `P1`. Exit 3 means the segment's `다음` is
+The number of items is the report's `이월 가능` count — the cycle's `P1` in a full
+carry-over, fewer when `차단` findings stand beside them; a `차단` finding never
+gets a body file or an issue. Exit 3 means the segment's `다음` is
 not `이월` or its segment row names no pull request: read `다음` again, and
 treat anything else as the failure in step 6.
 
@@ -89,26 +96,37 @@ here is noted in `--rationale` of the next act and does not stop the carry-over.
 ```
 gate.sh act --manifest <매니페스트> --kind review-carry --target <alias> --segment <id> \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest <H> \
-  -- '사이클=<사이클>' '리뷰 HEAD=<리뷰 HEAD>' '건수=<P1>' '이슈=<url>,<url>,…'
+  -- '사이클=<사이클>' '리뷰 HEAD=<리뷰 HEAD>' '건수=<이월 본문 항목 수>' '이슈=<url>,<url>,…'
 ```
 
-`이슈` lists the URLs in item order, comma-separated with no spaces. The gate
+`건수` is the number of items step 2 printed — the report's `이월 가능` count,
+never the cycle's `P1` when `차단` findings stand beside them. `이슈` lists the
+URLs in item order, comma-separated with no spaces. The gate
 stamps `세그먼트`, `레인` and `기록 시각`; passing any of them is exit 2. It
 also asks the repository about every URL: the k-th must be an open issue, not a
 pull request, whose title starts `[이월] <run-id> <세그먼트> 사이클 ` and ends
 ` — <the k-th 이월 제목>` — so a URL copied wrong names no carried finding and is
 refused. Exit 2 means the call is wrong — the cycle, the count or a URL; fix the
 argv once from the gate's wording. Exit 3 means the run's state refuses it: the
-row already exists for this cycle (read `다음` again — it is `이월 머지`), the
-cycle is not eligible (it is `수정`), or the repository could not be asked about
-an issue.
+row already exists for this cycle (read `다음` again — step 5), the cycle is not
+eligible (it is `수정`), or the repository could not be asked about an issue.
 
-## 5. Read `다음` again, then merge
+## 5. Read `다음` again, then merge or fix
 
-Take a fresh snapshot. Merge only when this segment's `다음` now reads `이월
-머지`, exactly as a passed review is merged — pinned to the cycle's `리뷰 HEAD`.
-The merge rule reads the same row, so a merge issued on anything else is
-refused.
+Take a fresh snapshot and branch on this segment's `다음`:
+
+- **`이월 머지`** — every P1 finding went to an issue. Merge exactly as a passed
+  review is merged, pinned to the cycle's `리뷰 HEAD`. The merge rule reads the
+  same row, so a merge issued on anything else is refused.
+- **`수정`, with the row landed** — a partial carry-over: the `차단` findings are
+  still open. Do not merge; the merge rule and the apply precondition read only
+  a full carry-over as carried. Dispatch the implementation to fix the `차단`
+  findings alone, as a `수정` disposition is dispatched after a partial
+  carry-over (the router's re-dispatch section): the carried findings are named
+  as passed to issues and not to be fixed, with the URLs from the element's
+  `이월 이슈`. This is not a failure, so step 6 does not apply.
+- **`사람`** — the segment has had too many widened cycles that could not carry
+  everything; park it as `사람` is parked.
 
 ## 6. When the carry-over fails
 

@@ -687,8 +687,9 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # The routers branch on `다음` and nothing else, so the snapshot hands it over
 # together with what a carry-over act names — the last cycle's number, review
 # HEAD and report path. A segment without a `segment` row is not in the run's
-# segment set and gets no element; `review_carry` carries the three constants
-# for display only.
+# segment set and gets no element. The P1 repeat's `P1 연속` and `차단 반복` are
+# numbers, and `이월 이슈` is empty while no carry-over binds the last cycle;
+# `review_carry` carries the five constants for display only.
 # ---------------------------------------------------------------------------
 printf -- '- `segment` | id=S8 | 상태=실행중 | 워크트리=/nonexistent/S8\n' >> "$LEDGER"
 SNAP_N="$WORK/review-next.json"
@@ -696,10 +697,13 @@ SNAP_N="$WORK/review-next.json"
 check "review_next 가 세그먼트의 다음 과 마지막 사이클을 싣는다" \
   "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [.["다음"], .["사이클"], .["리뷰 HEAD"], .["리포트 경로"], (.["연속"]|tostring), (.["발동"]|tostring)] | join("|")' "$SNAP_N")" \
   "머지|11|aaa0011|/abs/s8-11.md|0|0"
+check "review_next 가 P1 반복의 두 수와 빈 이월 이슈 를 싣는다" \
+  "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [(.["P1 연속"]|type), (.["차단 반복"]|type), .["이월 이슈"]] | join("|")' "$SNAP_N")" \
+  "number|number|"
 check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다" \
   "$(jq -r '[.review_next[] | select(.["세그먼트"]=="S9")] | length' "$SNAP_N")" "0"
-check "review_carry 가 세 상수를 싣는다" \
-  "$(jq -c '.review_carry' "$SNAP_N")" '{"CYCLE_CARRY_FROM":2,"CYCLE_CARRY_MAX":3,"P0_GUARD_STREAK":3}'
+check "review_carry 가 다섯 상수를 싣는다" \
+  "$(jq -c '.review_carry' "$SNAP_N")" '{"CYCLE_CARRY_FROM":2,"CYCLE_CARRY_MAX":3,"P0_GUARD_STREAK":3,"P1_REPEAT_STREAK":3,"P1_BLOCK_REPEAT":2}'
 
 # ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
@@ -1087,6 +1091,8 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   prompt=$(printf '%s\n' "$fsec" | grep -oE -- '-- implement -p "/cc-cmds:implement-unattended .*"$' | sort -u)
   check "$who 사본의 수정 재파견 절에 지시 문구가 한 벌 실린다" \
     "$(printf '%s\n' "$prompt" | grep -c -- '수정 대상: <리포트 절대 경로> 의 P0·P1')" "1"
+  check "$who 사본의 수정 재파견 절에 일부 이월 뒤의 수정 대상 문구가 한 벌 실린다" \
+    "$(printf '%s\n' "$fsec" | grep -cF -- '· 수정 대상: <리포트 절대 경로> 의 차단 P1 · 이슈로 넘김, 고치지 않음: <리포트 절대 경로> 의 이월 가능 P1 (<이월 이슈>)')" "1"
   if [ -z "$fix_prompt" ]; then fix_prompt="$prompt"; else fix_prompt_rs="$prompt"; fi
   nlit=$(printf '%s\n' "$fsec" | grep -cF 'max_by((.["사이클"]' || true)
   if [ "${nlit:-0}" != "0" ]; then

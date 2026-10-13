@@ -3426,6 +3426,261 @@ pre_ledger_series() {
   }
 
   lsr_sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
+
+  # THE REVIEW-CYCLE TOOLS. Sections 87, 87b and 87c–87f read the same
+  # manifests, report, ledger builder, fake `gh` and fixture run, so they are
+  # defined here rather than in a section body: a cut that leaves 87 out must
+  # not die on a helper 87 used to define. The files are made on first use —
+  # `fx87_init` for the read-side fixtures, `fx87_run_init` for the fixture run
+  # 87b acts on — so a section cut on its own makes what it reads, and a full
+  # run makes them once.
+  D87="$lsr_root/s87"
+  M87="$D87/manifest.md"; M87N="$D87/manifest-nopreauth.md"; M87D="$D87/manifest-nodoc.md"
+  R87="$D87/review.md"; R87S="$D87/review-share.md"
+  U87="https://github.com/o/r/issues"
+  m87_write() {  # m87_write <파일> <설계 문서 값> <사전 인가 줄|->
+    {
+      printf '## 대상\n\n- `target` | 별칭=t | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n'
+      printf '## 요소\n\n**설계 문서**: %s\n\n## 인가\n\n' "$2"
+      [ "$3" = "-" ] || printf '%s\n' "$3"
+    } > "$1"
+  }
+  r87_variant() {  # r87_variant <이름> <sed 식> — 기본 리포트에 식 하나를 건 사본의 경로
+    sed "$2" "$R87" > "$D87/review-$1.md"
+    printf '%s' "$D87/review-$1.md"
+  }
+  L87() {
+    # L87 <이름> <행 명세…> — 원장을 새로 떠 행을 붙이고 경로를 낸다. 명세
+    # `<사이클>:<P0>:<P1>[:<리포트>]` 는 S2 의 cycle 행이고, `- \`` 로 시작하는
+    # 것은 그대로 붙는다.
+    local l s c p0 p1 r
+    l=$(lsr_ledger "w87-$1"); shift
+    for s in "$@"; do
+      case "$s" in
+        '- `'*) printf '%s\n' "$s" >> "$l" ;;
+        *) IFS=: read -r c p0 p1 r <<EOF87
+$s
+EOF87
+           printf -- '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=%s | P0=%s | P1=%s | 리뷰 HEAD=abc1234 | 리포트 경로=%s | prev=x\n' \
+             "$c" "$p0" "$p1" "${r:-$R87}" >> "$l" ;;
+      esac
+    done
+    printf '%s' "$l"
+  }
+  in87() { MANIFEST="$1"; shift; "$@"; }
+  q87() { local l=$1 m=$2; shift 2; lsr_in Linux "$l" - in87 "$m" "$@" 2>/dev/null; }
+  qrc87() { local rc=0; q87 "$@" >/dev/null || rc=$?; printf '%s' "$rc"; }
+  k87() { printf '%s\n' "$1" | awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'; }
+  # gh87 <번호> <상태|pr> <제목> — 가짜 gh 가 그 이슈 번호에 낼 답
+  gh87() { printf '%s\t%s\n' "$2" "$3" > "$D87/gh/$1"; }
+  # gh87q <qrc87 인자…> — 가짜 gh 를 건 qrc87. 가짜 gh 는 PATH 가 아니라 셸 함수로
+  # 건다: 게이트가 소싱하는 run.sh 가 PATH 앞에 /usr/bin 을 붙이므로, gh 가
+  # /usr/bin 에 깔린 호스트(GitHub 러너)에서는 PATH 앞에 둔 스텁이 진짜 gh 에
+  # 가려진다. 함수는 서브셸 안에서만 서서 다른 절로 새지 않는다.
+  gh87q() { ( eval "gh() { '$D87/bin/gh' \"\$@\"; }"; qrc87 "$@" ); }
+  cr87() { gh87q "$L87C" "$M87" gate_review_carry_row S2 "$@"; }
+  e87() { local m=$1; shift; q87 "$(L87 "$@")" "$m" gate_carry_eligibility S2; }
+  nx87() { q87 "$1" "${2:-$M87}" gate_segment_review_next S2; }
+  cv87() { q87 "$1" "$M87" gate_segment_review_count_verdict S2; }
+  gd87() { q87 "$1" "${2:-$M87}" gate_segment_p0_guard S2; }
+  RC87_OK='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=0 | 종단 부류=정상 완료 | prev=x'
+  RC87_PARK='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=0 | 종단 부류=의도된 park | prev=x'
+  RC87_S3='- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=reconverge | 종료 코드=0 | 종단 부류=정상 완료 | prev=x'
+  RC87_CRASH='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=1 | 종단 부류=크래시 | prev=x'
+  RC87_LIMIT='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=1 | 종단 부류=한도 종료 | prev=x'
+
+  fx87_init() {
+    # 매니페스트 셋(대상 하나·슬러그 `o/r`·설계 문서·`gh issue` 사전 인가만 든 최소
+    # 꼴과, 그 인가 줄이나 설계 문서를 뺀 사본), 정규 리포트와 몫 사본, 가짜 gh,
+    # 그리고 87 이 리뷰 이월 행을 쓰는 원장 L87C.
+    [ -n "${FX87_DONE:-}" ] && return 0
+    FX87_DONE=1
+    rm -rf "$D87"; mkdir -p "$D87/bin" "$D87/gh"
+    m87_write "$M87" 'docs/x.md' '- `사전 인가` | 형태=gh issue | 사유=테스트'
+    m87_write "$M87N" 'docs/x.md' -
+    m87_write "$M87D" '(없음)' '- `사전 인가` | 형태=gh issue | 사유=테스트'
+    cat > "$R87" <<'REPORT'
+# 코드 리뷰 리포트
+
+- **리뷰 HEAD**: `abc1234`
+- **발견 요약**: 🔴 P0 0건 | 🟠 P1 2건 | 🟡 P2 0건 | 🟢 P3 0건
+- **P1 분류**: 차단 0건 | 이월 가능 2건
+
+## 🔴 P0 (즉시 수정 필수)
+
+없음
+
+## 🟠 P1 (머지 전 수정 권장)
+
+- **[correctness]** **[이월 가능]** `a/b.sh:10` 첫째 — r1
+    - **근거**: x
+    - **분류 근거**: 세 기준 만족
+    - **이월 제목**: 첫째 제목
+    - **이월 본문**:
+      문제 상황
+      위치: a/b.sh:10
+
+### P1-2 **[이월 가능]** 둘째
+- 0 열 불릿
+    - **이월 제목**: 둘째 제목
+    - **이월 본문**:
+      한 줄 본문
+
+## 🟡 P2
+
+- y
+REPORT
+    # 몫 절을 더한 사본 — 몫 줄과 항목 하나, 그 항목의 배정.
+    {
+      sed 's/^- \*\*P1 분류\*\*: .*$/&\
+- **다른 슬라이스 몫**: 1건 (집계 제외)/' "$R87"
+      printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n- **[c]** **[P2]** `x.sh:1` d — r\n    - **배정**: 슬라이스 S3 — 「줄」\n'
+    } > "$R87S"
+    # 게이트는 URL 마다 저장소에 묻는다. 그 물음은 가짜 gh 가 받는다 —
+    # `$D87/gh/<번호>` 파일이 있으면 그 내용(`<상태>\t<제목>`, 끌어오기 요청이면
+    # 상태 `pr`)을 내고, 없으면 답하지 못한 원격처럼 rc 1 이다.
+    cat > "$D87/bin/gh" <<GH87
+#!/bin/sh
+[ "\$1" = api ] || exit 1
+f="$D87/gh/\${2##*/}"
+[ -f "\$f" ] || exit 1
+cat "\$f"
+GH87
+    chmod +x "$D87/bin/gh"
+    gh87 11 open '[이월] LS S2 사이클 2 — 첫째 제목'
+    gh87 12 open '[이월] LS S2 사이클 2 — 둘째 제목'
+    gh87 21 open '[이월] LS S2 사이클 2 — 첫째 제목'
+    gh87 22 closed '[이월] LS S2 사이클 2 — 둘째 제목'
+    gh87 23 pr '[이월] LS S2 사이클 2 — 둘째 제목'
+    gh87 24 open '[이월] LS S22 사이클 2 — 둘째 제목'
+    gh87 25 open '[이월] XX S2 사이클 2 — 둘째 제목'
+    gh87 31 open '[이월] LS S2 사이클 1 — 둘째 제목'
+    L87C=$(L87 carry 1:0:2 2:0:2)
+    H87=$(cd "$WT" && git rev-parse HEAD)
+  }
+
+  # --- 87c–87f 가 함께 쓰는 리포트·cycle 행 도구 ---
+  rq87() {
+    # rq87 <파일> <P0> <P1> <차단|-> <이월 가능> — 요약이 행과 같은 리포트. 차단이
+    # `-` 면 `P1 분류` 줄이 없고 P1 항목에 태그도 없다. 그 밖에는 `[차단]` 항목
+    # 다음에 `[이월 가능]` 항목이 오고, 이월 가능 항목마다 서로 다른 이월 제목과
+    # 여섯 칸 들여 쓴 본문을 단다.
+    local f=$1 p0=$2 p1=$3 b=$4 v=$5 i
+    {
+      printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$H87"
+      printf -- '- **발견 요약**: 🔴 P0 %s건 | 🟠 P1 %s건 | 🟡 P2 0건 | 🟢 P3 0건\n' "$p0" "$p1"
+      [ "$b" = "-" ] || printf -- '- **P1 분류**: 차단 %s건 | 이월 가능 %s건\n' "$b" "$v"
+      printf '\n## 🔴 P0 (즉시 수정 필수)\n\n'
+      i=1
+      while [ "$i" -le "$p0" ]; do printf -- '- **[correctness]** `p0/f%s.sh:1` 결함 %s — r\n' "$i" "$i"; i=$((i + 1)); done
+      [ "$p0" != "0" ] || printf '없음\n'
+      printf '\n## 🟠 P1 (머지 전 수정 권장)\n\n'
+      if [ "$b" = "-" ]; then
+        i=1
+        while [ "$i" -le "$p1" ]; do printf -- '- **[correctness]** `p1/f%s.sh:1` 발견 %s — r\n' "$i" "$i"; i=$((i + 1)); done
+      else
+        i=1
+        while [ "$i" -le "$b" ]; do
+          printf -- '- **[correctness]** **[차단]** `b/f%s.sh:1` 차단 %s — r\n    - **분류 근거**: 즉시 고친다\n' "$i" "$i"
+          i=$((i + 1))
+        done
+        i=1
+        while [ "$i" -le "$v" ]; do
+          printf -- '- **[correctness]** **[이월 가능]** `c/f%s.sh:1` 이월 %s — r\n' "$i" "$i"
+          printf -- '    - **분류 근거**: 세 기준 만족\n    - **이월 제목**: 이월 제목 %s\n    - **이월 본문**:\n      문제 상황 %s\n      위치: c/f%s.sh:1\n' "$i" "$i" "$i"
+          i=$((i + 1))
+        done
+      fi
+      [ "$p1" != "0" ] || printf '없음\n'
+      printf '\n## 🟡 P2\n\n- y\n'
+    } > "$f"
+  }
+  rpb87() {  # rpb87 <갈래 A|B|C> <파일> <P0> <P1> — 그 갈래 모양의 리포트
+    case "$1" in
+      A) rq87 "$2" "$3" "$4" 0 "$4" ;;
+      B) rq87 "$2" "$3" "$4" 1 $(( $4 - 1 )) ;;
+      C) rq87 "$2" "$3" "$4" - - ;;
+    esac
+  }
+  cw87() {
+    # cw87 <사이클> <P0> <P1> <리포트> [필드…] — 게이트의 cycle 갈래로 S2 의 행을
+    # 쓰고 한 줄을 낸다: `rc|다음|찍힌 리뷰 종결|P1 연속|차단 반복|다시 읽은 리뷰
+    # 종결|자격`. 다시 읽은 값은 착지한 원장에서 후보 행 없이 차례를 다시 적용한
+    # 것이다. lsr_in 아래에서 부른다.
+    local c=$1 p0=$2 p1=$3 r=$4 rc=0 st
+    shift 4
+    gate_cycle_row t S2 "사이클=$c" "P0=$p0" "P1=$p1" "리뷰 HEAD=$H87" "리포트 경로=$r" "$@" >/dev/null 2>&1 || rc=$?
+    st=$(gate_segment_p1_streak S2)
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "$rc" "$(gate_segment_review_next S2)" \
+      "$(gate_row_field "$(gate_segment_last_cycle_row S2)" '리뷰 종결')" \
+      "$(gate_report_count "$st" '연속')" "$(gate_report_count "$st" '차단 반복')" \
+      "$(gate_cycle_review_close S2)" "$(gate_carry_eligibility S2)"
+  }
+  cq87() {  # cq87 <원장> <사이클> <P0> <P1> <리포트> [필드…] — M87N 아래의 cw87
+    local l=$1; shift
+    q87 "$l" "$M87N" cw87 "$@"
+  }
+  col87() {  # col87 <cw87 줄들> <열 번호> — 그 열을 `/` 로 이은 것
+    printf '%s\n' "$1" | awk -F'|' -v k="$2" 'NF { printf "%s%s", (n++ ? "/" : ""), $k }'
+  }
+  rule87() {
+    # rule87 <원장> <매니페스트> — 0 이면 리뷰-후-머지 통과. 룰은 원장을 스스로
+    # 읽지 않으므로, 게이트가 S2 의 머지에 넘길 네 행을 게이트의 같은 선택
+    # 함수로 골라 넘긴다. 대상 HEAD 는 리뷰 HEAD 그대로다.
+    local l=$1 m=$2
+    ( cd "$WT" && env GATE_ACT_INDEX=9 GATE_MERGE_INDEX=1 GATE_SUBJECT_HEAD="$H87" \
+        GATE_SURFACE=외부상태변경 GATE_HISTORY_INTEGRATION=0 GATE_REVIEW_POLICY_INDEX=0 \
+        GATE_LEDGER="$l" GATE_MANIFEST="$m" GATE_SEGMENT=S2 \
+        GATE_SEGMENT_LAST_CYCLE="$(q87 "$l" "$m" gate_segment_last_cycle_row S2)" \
+        GATE_SEGMENT_LAST_SEGMENT="$(q87 "$l" "$m" gate_segment_last_segment_row S2)" \
+        GATE_SEGMENT_REVIEW_DISMISSED="$(q87 "$l" "$m" gate_segment_review_dismissed S2)" \
+        GATE_SEGMENT_REVIEW_CARRIED="$(q87 "$l" "$m" gate_segment_review_carried S2)" \
+        /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-머지.sh" ) >/dev/null 2>&1
+  }
+  ap87() {  # ap87 <원장> — 적용 전제 검사의 거절 문면(통과면 빈 값)
+    lsr_in Linux "$1" - in87 "$M87N" gate_apply_preconditions apply t S2 2>&1 >/dev/null \
+      | grep -o '적용 행위 전제 [0-9]' | head -1 || true
+  }
+
+  fx87_run_init() {
+    # 87b 가 act·plan 경로로 쓰는 픽스처 런 R87 — 세그먼트 S2·S3 을 계획하고,
+    # 매니페스트에는 사전 인가가 없다.
+    [ -n "${FX87_RUN_DONE:-}" ] && return 0
+    FX87_RUN_DONE=1
+    plan87='{ "design_required": false, "steps": [ { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "S3", "skill": "implement", "summary": "구현 2", "depends_on": [] } ] }'
+    write15c "$WORK/plan-R87.md" "$plan87" 'docs/fixture-design.md' R87
+    grant15c R87 'docs/fixture-design.md'
+    L87A="$WT/docs/pipeline-run/R87.md"
+    head87=$(cd "$WT" && git rev-parse HEAD)
+  }
+  h87_H() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null | jq -r .H ); }
+  h87_plan() {  # h87_plan <세그먼트> <스테이지 종류> <프롬프트>
+    gateL plan --manifest "$WORK/plan-R87.md" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
+         --surface 워크트리쓰기 -- "$2" -p "$3"
+  }
+  h87_act() {  # h87_act <세그먼트> <종류> <필드…>
+    local s=$1 k=$2; shift 2
+    gateL act --manifest "$WORK/plan-R87.md" --kind "$k" --target infra --segment "$s" --cutpoint 커밋 \
+         --surface 읽기 --snapshot-digest "$(h87_H)" --rationale x -- "$@"
+  }
+  rp87() {  # rp87 <파일> <P0> <P1> <몫 줄 수|-> [배정…]
+    local f=$1 p0=$2 p1=$3 ns=$4 a; shift 4
+    {
+      printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$head87"
+      printf -- '- **발견 요약**: 🔴 P0 %s건 | 🟠 P1 %s건 | 🟡 P2 0건 | 🟢 P3 0건\n' "$p0" "$p1"
+      [ "$ns" = "-" ] || printf -- '- **다른 슬라이스 몫**: %s건 (집계 제외)\n' "$ns"
+      printf '\n## 🔴 P0\n\n- P0 픽스처 `a.txt:1` x\n\n## 🟠 P1\n\n- P1 픽스처 `a.txt:2` y\n'
+      if [ $# -gt 0 ]; then
+        printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n'
+        for a in "$@"; do
+          printf -- '- **[c]** **[P1]** `x.sh:1` d — r\n    - **배정**: 슬라이스 %s — 「줄」\n' "$a"
+        done
+      fi
+    } > "$f"
+  }
+  cy87() {  # cy87 <세그먼트> <사이클> <P0> <P1> <리포트>
+    h87_act "$1" cycle "사이클=$2" "P0=$3" "P1=$4" "리뷰 HEAD=$head87" "리포트 경로=$5"
+  }
 }
 
 # THE BASE RUN FAMILY. A base run is `design → design-audit → split` with no
@@ -11579,13 +11834,16 @@ h15_plan implement '/cc-cmds:implement-unattended "세그먼트 S2 (사이클 0)
 check "15h: 문서 인자 없는 프롬프트는 통과한다" "$rc" "0"
 
 # The budget: F=1, so five cycle rows. A launch that wrote only a stage-result
-# row spent nothing, and the sixth dispatch is refused.
+# row spent nothing, and the sixth dispatch is refused. Even cycles are 0/0 so
+# the P1 repeat never stands: four P1-only cycles in a row would park the
+# segment with `다음` `사람`, and the refusal measured here is the budget's.
 h15_n=0
 while [ "$h15_n" -lt 5 ]; do
   h15_n=$((h15_n + 1))
-  printf '# 코드 리뷰 리포트 — 사이클 %s\n\n## 개요\n\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 0건 | P1 1건\n\n- P1-%s 픽스처 발견\n' \
-    "$h15_n" "$h15_n" > "$WORK/rv15h-$h15_n.md"
-  h15_act cycle "사이클=$h15_n" P0=0 P1=1 "리뷰 HEAD=$(cd "$WT" && git rev-parse HEAD)" "리포트 경로=$WORK/rv15h-$h15_n.md"
+  h15_p1=$(( h15_n % 2 ))
+  printf '# 코드 리뷰 리포트 — 사이클 %s\n\n## 개요\n\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 0건 | P1 %s건\n\n- P1-%s 픽스처 발견\n' \
+    "$h15_n" "$h15_p1" "$h15_n" > "$WORK/rv15h-$h15_n.md"
+  h15_act cycle "사이클=$h15_n" P0=0 "P1=$h15_p1" "리뷰 HEAD=$(cd "$WT" && git rev-parse HEAD)" "리포트 경로=$WORK/rv15h-$h15_n.md"
   [ "$rc" = "0" ] || bad "15h cycle 행 $h15_n" "$msg"
   if [ "$h15_n" = "4" ]; then
     h15_plan implement "$(impl15h "$BRIEF15H" 4)"
@@ -30551,7 +30809,7 @@ s70_cycle SF 1 1 1 "$S70A" 비고=x
 check "70: 발견 둘을 지닌 리포트의 cycle 기록은 exit 0 이다" "$rc" "0"
 s70_row=$(s70_last SF)
 case "$s70_row" in
-  *"| 비고=x | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | prev="*)
+  *"| 비고=x | 리뷰 종결="*" | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | prev="*)
     ok "70: 행이 호출자 필드 뒤 발견 지문으로 끝난다" ;;
   *) bad "70: 발견 지문의 자리" "$s70_row" ;;
 esac
@@ -33855,94 +34113,16 @@ check "86: 이 절이 띄운 서버가 남지 않는다" "$(d86_serving)" "0"
 
 # ---------------------------------------------------------------------------
 # 87. 리뷰 사이클의 수렴 — 리포트 파서, 이월 적격, 다음 표, P0 반복 가드
-# --- section: 87 | group: ledger_series | covers: gate_review_report_counts, gate_carry_eligibility, gate_review_carry_row, gate_carry_issue_view, gate_carry_body, gate_segment_review_next, gate_segment_review_count_verdict, gate_segment_p0_guard, gate_segment_merged_row, gate_kind_is_bookkeeping, ladder_of_gh | anchors: 87: 정규 리포트의 계수·분류·태그·본문·몫을 읽는다, 87: 두 번째 사이클의 이월 가능 P1 둘은 적격이다, 87: 여덟 조건이 하나씩 거짓이면 그 번호로 부적격이다, 87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 기록된다, 87: 같은 사이클의 둘째 리뷰 이월 행은 룰 거절이다, 87: 다음 표의 아홉 갈래가 각각 나온다, 87: 가드는 같은 사이클의 다시 쓰기를 두 번 세지 않는다, 87: 정상 완료 재수렴은 연속을 지우고 발동을 센다, 87: gh issue create·comment 와 gh project item-add 는 커밋 칸이다 ---
+# --- section: 87 | group: ledger_series | covers: gate_review_report_counts, gate_carry_eligibility, gate_review_carry_row, gate_carry_issue_view, gate_carry_body, gate_segment_review_next, gate_segment_review_count_verdict, gate_segment_p0_guard, gate_segment_merged_row, gate_kind_is_bookkeeping, ladder_of_gh | anchors: 87: 정규 리포트의 계수·분류·태그·본문·몫을 읽는다, 87: 두 번째 사이클의 이월 가능 P1 둘은 적격이다, 87: 일곱 조건이 하나씩 거짓이면 그 번호로 부적격이다, 87: 사전 인가 줄이 없는 매니페스트에서도 같은 사이클은 적격이다, 87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 기록된다, 87: 같은 사이클의 둘째 리뷰 이월 행은 룰 거절이다, 87: 다음 표의 열 갈래가 각각 나온다, 87: 가드는 같은 사이클의 다시 쓰기를 두 번 세지 않는다, 87: 정상 완료 재수렴은 연속을 지우고 발동을 센다, 87: gh issue create·comment 와 gh project item-add 는 커밋 칸이다 ---
 #
 # 리포트를 읽는 파서는 하나이고, 이월 적격·`다음`·cycle 팔이 모두 그 출력을 읽는다.
 # 이 절은 그 파서와 그 위의 판정들을 게이트를 올린 서브셸에서 직접 부른다. 원장과
-# 리포트와 매니페스트는 이 절이 스스로 쓴다 — 매니페스트는 대상 하나(슬러그 `o/r`),
-# 설계 문서, `gh issue` 사전 인가만 든 최소 꼴이고, 조건 8 과 「설계 문서 없음」 갈래는
-# 그 한 줄씩을 뺀 사본으로 잰다. 리포트 경로는 절대 경로라 매니페스트 위치에 기대지
-# 않는다.
+# 리포트와 매니페스트는 프리앰블의 `fx87_init` 이 쓴다 — 매니페스트는 대상 하나(슬러그
+# `o/r`), 설계 문서, `gh issue` 사전 인가만 든 최소 꼴이고, 인가 줄이 없는 갈래와
+# 「설계 문서 없음」 갈래는 그 한 줄씩을 뺀 사본으로 잰다. 리포트 경로는 절대 경로라
+# 매니페스트 위치에 기대지 않는다.
 # ---------------------------------------------------------------------------
-D87="$lsr_root/s87"; rm -rf "$D87"; mkdir -p "$D87"
-M87="$D87/manifest.md"; M87N="$D87/manifest-nopreauth.md"; M87D="$D87/manifest-nodoc.md"
-m87_write() {  # m87_write <파일> <설계 문서 값> <사전 인가 줄|->
-  {
-    printf '## 대상\n\n- `target` | 별칭=t | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n'
-    printf '## 요소\n\n**설계 문서**: %s\n\n## 인가\n\n' "$2"
-    [ "$3" = "-" ] || printf '%s\n' "$3"
-  } > "$1"
-}
-m87_write "$M87" 'docs/x.md' '- `사전 인가` | 형태=gh issue | 사유=테스트'
-m87_write "$M87N" 'docs/x.md' -
-m87_write "$M87D" '(없음)' '- `사전 인가` | 형태=gh issue | 사유=테스트'
-
-R87="$D87/review.md"
-cat > "$R87" <<'REPORT'
-# 코드 리뷰 리포트
-
-- **리뷰 HEAD**: `abc1234`
-- **발견 요약**: 🔴 P0 0건 | 🟠 P1 2건 | 🟡 P2 0건 | 🟢 P3 0건
-- **P1 분류**: 차단 0건 | 이월 가능 2건
-
-## 🔴 P0 (즉시 수정 필수)
-
-없음
-
-## 🟠 P1 (머지 전 수정 권장)
-
-- **[correctness]** **[이월 가능]** `a/b.sh:10` 첫째 — r1
-    - **근거**: x
-    - **분류 근거**: 세 기준 만족
-    - **이월 제목**: 첫째 제목
-    - **이월 본문**:
-      문제 상황
-      위치: a/b.sh:10
-
-### P1-2 **[이월 가능]** 둘째
-- 0 열 불릿
-    - **이월 제목**: 둘째 제목
-    - **이월 본문**:
-      한 줄 본문
-
-## 🟡 P2
-
-- y
-REPORT
-# 몫 절을 더한 사본 — 몫 줄과 항목 하나, 그 항목의 배정.
-R87S="$D87/review-share.md"
-{
-  sed 's/^- \*\*P1 분류\*\*: .*$/&\
-- **다른 슬라이스 몫**: 1건 (집계 제외)/' "$R87"
-  printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n- **[c]** **[P2]** `x.sh:1` d — r\n    - **배정**: 슬라이스 S3 — 「줄」\n'
-} > "$R87S"
-r87_variant() {  # r87_variant <이름> <sed 식> — 기본 리포트에 식 하나를 건 사본의 경로
-  sed "$2" "$R87" > "$D87/review-$1.md"
-  printf '%s' "$D87/review-$1.md"
-}
-
-L87() {
-  # L87 <이름> <행 명세…> — 원장을 새로 떠 행을 붙이고 경로를 낸다. 명세
-  # `<사이클>:<P0>:<P1>[:<리포트>]` 는 S2 의 cycle 행이고, `- \`` 로 시작하는
-  # 것은 그대로 붙는다.
-  local l s c p0 p1 r
-  l=$(lsr_ledger "w87-$1"); shift
-  for s in "$@"; do
-    case "$s" in
-      '- `'*) printf '%s\n' "$s" >> "$l" ;;
-      *) IFS=: read -r c p0 p1 r <<EOF87
-$s
-EOF87
-         printf -- '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=%s | P0=%s | P1=%s | 리뷰 HEAD=abc1234 | 리포트 경로=%s | prev=x\n' \
-           "$c" "$p0" "$p1" "${r:-$R87}" >> "$l" ;;
-    esac
-  done
-  printf '%s' "$l"
-}
-in87() { MANIFEST="$1"; shift; "$@"; }
-q87() { local l=$1 m=$2; shift 2; lsr_in Linux "$l" - in87 "$m" "$@" 2>/dev/null; }
-qrc87() { local rc=0; q87 "$@" >/dev/null || rc=$?; printf '%s' "$rc"; }
-k87() { printf '%s\n' "$1" | awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'; }
+fx87_init
 
 # --- 파서 ---
 L87P=$(L87 parse)
@@ -34001,45 +34181,18 @@ check "87: 배정 줄이 없거나 둘이거나 항목 밖에 있으면 몫 배�
   "미상/미상/미상/정규"
 check "87: 들여쓰기가 다른 배정 줄은 배정=(미상) 이다" "$(k87 "$(pc87 "$r87sd")" 배정)" "(미상)"
 
-# --- 이월 적격 여덟 조건 ---
-e87() { local m=$1; shift; q87 "$(L87 "$@")" "$m" gate_carry_eligibility S2; }
+# --- 이월 적격 일곱 조건 ---
 check "87: 두 번째 사이클의 이월 가능 P1 둘은 적격이다" "$(e87 "$M87" ok 1:0:2 2:0:2)" "적격"
+check "87: 사전 인가 줄이 없는 매니페스트에서도 같은 사이클은 적격이다" "$(e87 "$M87N" noauth 1:0:2 2:0:2)" "적격"
 r87e3=$(r87_variant c3 '/P1 분류/d')
 r87e4=$(r87_variant c4 's/^- \*\*P1 분류\*\*: .*$/- **P1 분류**: 차단 1건 | 이월 가능 1건/')
 r87e6=$(r87_variant c6 's/^### P1-2 \*\*\[이월 가능\]\*\* 둘째$/### P1-2 둘째/')
-check "87: 여덟 조건이 하나씩 거짓이면 그 번호로 부적격이다" \
-  "$(e87 "$M87" c1a 2:0:2)/$(e87 "$M87" c1b 2:0:2 2:0:2)/$(e87 "$M87" c2 1:0:2 2:1:2)/$(e87 "$M87" c3 1:0:2 "2:0:2:$r87e3")/$(e87 "$M87" c4 1:0:2 "2:0:2:$r87e4")/$(e87 "$M87" c5 1:0:3 2:0:3)/$(e87 "$M87" c6 1:0:2 "2:0:2:$r87e6")/$(e87 "$M87" c7 1:0:2 "2:0:2:$r87b3")/$(e87 "$M87N" c8 1:0:2 2:0:2)" \
-  "부적격 1/부적격 1/부적격 2/부적격 3/부적격 4/부적격 5/부적격 6/부적격 7/부적격 8"
+check "87: 일곱 조건이 하나씩 거짓이면 그 번호로 부적격이다" \
+  "$(e87 "$M87" c1a 2:0:2)/$(e87 "$M87" c1b 2:0:2 2:0:2)/$(e87 "$M87" c2 1:0:2 2:1:2)/$(e87 "$M87" c3 1:0:2 "2:0:2:$r87e3")/$(e87 "$M87" c4 1:0:2 "2:0:2:$r87e4")/$(e87 "$M87" c5 1:0:3 2:0:3)/$(e87 "$M87" c6 1:0:2 "2:0:2:$r87e6")/$(e87 "$M87" c7 1:0:2 "2:0:2:$r87b3")" \
+  "부적격 1/부적격 1/부적격 2/부적격 3/부적격 4/부적격 5/부적격 6/부적격 7"
 
 # --- 리뷰 이월 행 ---
-# 게이트는 URL 마다 저장소에 묻는다. 그 물음은 가짜 gh 가 받는다 —
-# `$D87/gh/<번호>` 파일이 있으면 그 내용(`<상태>\t<제목>`, 끌어오기 요청이면 상태 `pr`)을
-# 내고, 없으면 답하지 못한 원격처럼 rc 1 이다. 가짜 gh 는 PATH 가 아니라 셸 함수로
-# 건다: 게이트가 소싱하는 run.sh 가 PATH 앞에 /usr/bin 을 붙이므로, gh 가 /usr/bin 에
-# 깔린 호스트(GitHub 러너)에서는 PATH 앞에 둔 스텁이 진짜 gh 에 가려진다. 함수는
-# 서브셸 안에서만 서서 다른 절로 새지 않는다.
-mkdir -p "$D87/bin" "$D87/gh"
-cat > "$D87/bin/gh" <<GH87
-#!/bin/sh
-[ "\$1" = api ] || exit 1
-f="$D87/gh/\${2##*/}"
-[ -f "\$f" ] || exit 1
-cat "\$f"
-GH87
-chmod +x "$D87/bin/gh"
-gh87() { printf '%s\t%s\n' "$2" "$3" > "$D87/gh/$1"; }  # gh87 <번호> <상태|pr> <제목>
-gh87 11 open '[이월] LS S2 사이클 2 — 첫째 제목'
-gh87 12 open '[이월] LS S2 사이클 2 — 둘째 제목'
-gh87 21 open '[이월] LS S2 사이클 2 — 첫째 제목'
-gh87 22 closed '[이월] LS S2 사이클 2 — 둘째 제목'
-gh87 23 pr '[이월] LS S2 사이클 2 — 둘째 제목'
-gh87 24 open '[이월] LS S22 사이클 2 — 둘째 제목'
-gh87 25 open '[이월] XX S2 사이클 2 — 둘째 제목'
-gh87 31 open '[이월] LS S2 사이클 1 — 둘째 제목'
-L87C=$(L87 carry 1:0:2 2:0:2)
-U87="https://github.com/o/r/issues"
-gh87q() { ( eval "gh() { '$D87/bin/gh' \"\$@\"; }"; qrc87 "$@" ); }  # gh87q <qrc87 인자…> — 가짜 gh 를 건 qrc87
-cr87() { gh87q "$L87C" "$M87" gate_review_carry_row S2 "$@"; }
+# 게이트는 URL 마다 저장소에 묻는다. 그 물음은 프리앰블의 가짜 gh 가 받는다.
 dg87a=$(lsr_in Linux "$L87C" - lsr_digest "$M87" 2>/dev/null)
 check "87: 어휘가 어긋난 리뷰 이월 호출은 rc 2 이고 행을 쓰지 않는다" \
   "$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2" 근거=x)/$(cr87 사이클=2 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2")/$(cr87 사이클=1 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=1 "이슈=$U87/1")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=https://github.com/o/x/issues/1,$U87/2")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/1")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1")/$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/01,$U87/2")/$( { grep -c '^- `리뷰 이월` ' "$L87C" || true; } )" \
@@ -34058,7 +34211,7 @@ check "87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 
 check "87: 같은 사이클의 둘째 리뷰 이월 행은 룰 거절이다" \
   "$(cr87 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/11,$U87/12")/$( { grep -c '^- `리뷰 이월` ' "$L87C" || true; } )" "3/1"
 check "87: 부적격 사이클의 리뷰 이월은 룰 거절이다" \
-  "$(qrc87 "$(L87 carryno 1:0:2 2:0:2)" "$M87N" gate_review_carry_row S2 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2")" "3"
+  "$(qrc87 "$(L87 carryno 1:0:2 2:1:2)" "$M87" gate_review_carry_row S2 사이클=2 '리뷰 HEAD=abc1234' 건수=2 "이슈=$U87/1,$U87/2")" "3"
 check "87: 리뷰 이월 행은 장부 종류이고 진행 해시를 움직이지 않는다" \
   "$(qrc87 "$L87C" "$M87" gate_kind_is_bookkeeping review-carry)/$(qrc87 "$L87C" "$M87" gate_kind_is_bookkeeping skill)/$( [ -n "$dg87a" ] && [ "$dg87a" = "$(lsr_in Linux "$L87C" - lsr_digest "$M87" 2>/dev/null)" ] && printf same || printf moved)" \
   "0/1/same"
@@ -34081,14 +34234,17 @@ check "87: 세그먼트를 이루지 못하는 carry-body 인자는 rc 2 다" \
   "$(qrc87 "$L87B" "$M87" gate_carry_body ../x)/$(qrc87 "$L87B" "$M87" gate_carry_body -)" "2/2"
 
 # --- 다음 표 ---
-nx87() { q87 "$1" "${2:-$M87}" gate_segment_review_next S2; }
 L87G3=$(L87 n3 1:1:0 2:1:0 3:1:0)
-check "87: 다음 표의 아홉 갈래가 각각 나온다" \
-  "$(nx87 "$(L87 n0)")/$(nx87 "$(L87 n8 1:1:0 '- `리뷰 기각` | 교대=1 | 세그먼트=S2 | 사이클=1 | 리뷰 HEAD=abc1234 | 근거=x | prev=x')")/$(nx87 "$(L87 n2 1:0:)")/$(nx87 "$L87G3")/$(nx87 "$L87G3" "$M87D")/$(nx87 "$(L87 n1 1:0:0)")/$(nx87 "$L87C")/$(nx87 "$(L87 n5 1:0:2 2:0:2)")/$(nx87 "$(L87 n7 1:0:2)")" \
-  "리뷰 없음/머지/판정 불가/재수렴/사람/머지/이월 머지/이월/수정"
+# 행 8 — 연속 3 이상에서 착지한 차단 사이클이 둘이면 사람이다. 리뷰 종결 은 게이트가
+# 찍는 필드라 여기서는 원장 행에 그대로 싣는다.
+cz87() { printf -- '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=%s | P0=0 | P1=1 | 리뷰 HEAD=abc1234 | 리포트 경로=%s | 리뷰 종결=차단 | prev=x' "$1" "$R87"; }
+check "87: 다음 표의 열 갈래가 각각 나온다" \
+  "$(nx87 "$(L87 n0)")/$(nx87 "$(L87 n8 1:1:0 '- `리뷰 기각` | 교대=1 | 세그먼트=S2 | 사이클=1 | 리뷰 HEAD=abc1234 | 근거=x | prev=x')")/$(nx87 "$(L87 n2 1:0:)")/$(nx87 "$L87G3")/$(nx87 "$L87G3" "$M87D")/$(nx87 "$(L87 n1 1:0:0)")/$(nx87 "$L87C")/$(nx87 "$(L87 n6 1:0:1 2:0:1 "$(cz87 3)" "$(cz87 4)")")/$(nx87 "$(L87 n5 1:0:2 2:0:2)")/$(nx87 "$(L87 n7 1:0:2)")" \
+  "리뷰 없음/머지/판정 불가/재수렴/사람/머지/이월 머지/사람/이월/수정"
+check "87: 차단 반복이 하나뿐이면 행 8 은 서지 않는다" \
+  "$(nx87 "$(L87 n6b 1:0:1 2:0:1 "$(cz87 3)")")" "수정"
 check "87: 기각은 그 사이클에만 묶여 더 새 리뷰를 덮지 않는다" \
   "$(nx87 "$(L87 n9 1:1:0 '- `리뷰 기각` | 교대=1 | 세그먼트=S2 | 사이클=1 | 리뷰 HEAD=abc1234 | 근거=x | prev=x' 2:1:0)")" "수정"
-cv87() { q87 "$1" "$M87" gate_segment_review_count_verdict S2; }
 check "87: 카운트 판정은 리뷰 없음·충족·이월·위반·판정 불가를 가른다" \
   "$(cv87 "$(L87 v0)")/$(cv87 "$(L87 v1 1:0:0)")/$(cv87 "$L87C")/$(cv87 "$(L87 v3 1:0:2 2:0:2)")/$(cv87 "$(L87 v4 '1:0:01')")" \
   "리뷰 없음/충족/이월/위반/판정 불가"
@@ -34096,10 +34252,6 @@ check "87: 다른 세그먼트의 행에 든 선행 세그먼트 키와 이웃 i
   "$(nx87 "$(L87 d1 1:1:0 '- `cycle` | 교대=1 | 세그먼트=S3 | 선행 세그먼트=S2 | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | prev=x' '- `cycle` | 교대=1 | 세그먼트=S22 | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | prev=x')")" "수정"
 
 # --- P0 반복 가드 ---
-gd87() { q87 "$1" "${2:-$M87}" gate_segment_p0_guard S2; }
-RC87_OK='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=0 | 종단 부류=정상 완료 | prev=x'
-RC87_PARK='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=0 | 종단 부류=의도된 park | prev=x'
-RC87_S3='- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=reconverge | 종료 코드=0 | 종단 부류=정상 완료 | prev=x'
 g87=$(gd87 "$(L87 g1 1:1:0 2:1:0 2:1:0)")
 check "87: 가드는 같은 사이클의 다시 쓰기를 두 번 세지 않는다" "$(k87 "$g87" 연속)/$(k87 "$g87" 판정)" "2/-"
 g87=$(gd87 "$(L87 g2 1:1:0 2:0:0 3:1:0 4:1:0)")
@@ -34113,8 +34265,6 @@ g87=$(gd87 "$(L87 g5 1:1:0 2:1:0 3:1:0 "$RC87_OK" 4:1:0 5:1:0 6:1:0)")
 check "87: 발동 뒤 다시 세 사이클이면 사람이다" "$(k87 "$g87" 연속)/$(k87 "$g87" 발동)/$(k87 "$g87" 판정)" "3/1/사람"
 g87=$(gd87 "$(L87 g6 1:1:0 2:1:0 "$RC87_PARK" 3:1:0)")
 check "87: 정상 완료가 아닌 재수렴은 연속을 지우지 않는다" "$(k87 "$g87" 연속)/$(k87 "$g87" 발동)/$(k87 "$g87" 판정)" "3/0/재수렴"
-RC87_CRASH='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=1 | 종단 부류=크래시 | prev=x'
-RC87_LIMIT='- `stage-result` | 교대=1 | 세그먼트=S2 | 스테이지=S2 | 종류=reconverge | 종료 코드=1 | 종단 부류=한도 종료 | prev=x'
 g87=$(gd87 "$(L87 g6c 1:1:0 2:1:0 3:1:0 "$RC87_CRASH")")
 g87b=$(gd87 "$(L87 g6l 1:1:0 2:1:0 3:1:0 "$RC87_LIMIT")")
 check "87: 크래시·한도 종료 재수렴은 연속도 발동도 건드리지 않는다" \
@@ -34136,46 +34286,16 @@ check "87: 머지됨 조립 함수는 호출자의 상태 필드를 거절한다
 
 # ---------------------------------------------------------------------------
 # 87b. 리뷰 사이클의 수렴 — cycle 팔의 거절, 파견 거절 셋, review-carry act
-# --- section: 87b | group: base | covers: act, plan, snapshot | anchors: 87b: 리포트 요약과 숫자가 다른 cycle 행은 rc 2 다, 87b: 몫 줄과 몫 항목 수가 다른 cycle 행은 rc 2 다, 87b: 자기·머지된·없는 세그먼트에 배정한 몫은 rc 2 다, 87b: 가드가 선 세그먼트의 구현 파견은 rc 3 이다, 87b: 가드가 고른 범위가 아닌 P0 반복 재수렴은 rc 3 이다, 87b: 세그먼트와 다른 --slice 의 리뷰 파견은 rc 3 이다, 87b: 부적격 사이클의 review-carry act 는 rc 3 이다 ---
+# --- section: 87b | group: ledger_series | covers: act, plan, snapshot | anchors: 87b: 리포트 요약과 숫자가 다른 cycle 행은 rc 2 다, 87b: 몫 줄과 몫 항목 수가 다른 cycle 행은 rc 2 다, 87b: 자기·머지된·없는 세그먼트에 배정한 몫은 rc 2 다, 87b: 가드가 선 세그먼트의 구현 파견은 rc 3 이다, 87b: 가드가 고른 범위가 아닌 P0 반복 재수렴은 rc 3 이다, 87b: 세그먼트와 다른 --slice 의 리뷰 파견은 rc 3 이다, 87b: 부적격 사이클의 review-carry act 는 rc 3 이다 ---
 #
 # 87 의 판정이 실제 act·plan 경로에 꽂혀 있는지를 픽스처 런 하나로 잰다. 런은
 # 세그먼트 S2·S3 을 계획하고, 머지된 S4 의 행은 원장에 그대로 심는다 — 머지된
 # 세그먼트를 만드는 경로는 이 절의 관심이 아니고, 배정 검사는 원장의 행만 읽는다.
-# 매니페스트에는 사전 인가가 없으므로 이월은 어느 사이클에서도 조건 8 에서 부적격이다.
+# 런과 그 위의 행위 도구는 프리앰블의 `fx87_run_init` 이 세운다. 매니페스트에는 사전
+# 인가가 없지만 이월 적격은 그 인가를 묻지 않는다 — 아래의 부적격 review-carry 는
+# 마지막 사이클의 리포트에 분류 줄이 없어 조건 3 에서 부적격이다.
 # ---------------------------------------------------------------------------
-plan87='{ "design_required": false, "steps": [ { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "S3", "skill": "implement", "summary": "구현 2", "depends_on": [] } ] }'
-write15c "$WORK/plan-R87.md" "$plan87" 'docs/fixture-design.md' R87
-grant15c R87 'docs/fixture-design.md'
-L87A="$WT/docs/pipeline-run/R87.md"
-h87_H() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null | jq -r .H ); }
-h87_plan() {  # h87_plan <세그먼트> <스테이지 종류> <프롬프트>
-  gateL plan --manifest "$WORK/plan-R87.md" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
-       --surface 워크트리쓰기 -- "$2" -p "$3"
-}
-h87_act() {  # h87_act <세그먼트> <종류> <필드…>
-  local s=$1 k=$2; shift 2
-  gateL act --manifest "$WORK/plan-R87.md" --kind "$k" --target infra --segment "$s" --cutpoint 커밋 \
-       --surface 읽기 --snapshot-digest "$(h87_H)" --rationale x -- "$@"
-}
-head87=$(cd "$WT" && git rev-parse HEAD)
-rp87() {  # rp87 <파일> <P0> <P1> <몫 줄 수|-> [배정…]
-  local f=$1 p0=$2 p1=$3 ns=$4 a; shift 4
-  {
-    printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$head87"
-    printf -- '- **발견 요약**: 🔴 P0 %s건 | 🟠 P1 %s건 | 🟡 P2 0건 | 🟢 P3 0건\n' "$p0" "$p1"
-    [ "$ns" = "-" ] || printf -- '- **다른 슬라이스 몫**: %s건 (집계 제외)\n' "$ns"
-    printf '\n## 🔴 P0\n\n- P0 픽스처 `a.txt:1` x\n\n## 🟠 P1\n\n- P1 픽스처 `a.txt:2` y\n'
-    if [ $# -gt 0 ]; then
-      printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n'
-      for a in "$@"; do
-        printf -- '- **[c]** **[P1]** `x.sh:1` d — r\n    - **배정**: 슬라이스 %s — 「줄」\n' "$a"
-      done
-    fi
-  } > "$f"
-}
-cy87() {  # cy87 <세그먼트> <사이클> <P0> <P1> <리포트>
-  h87_act "$1" cycle "사이클=$2" "P0=$3" "P1=$4" "리뷰 HEAD=$head87" "리포트 경로=$5"
-}
+fx87_run_init
 h87_act S2 segment 상태=실행중 "워크트리=$WT" 선행=없음 '선언 파일 집합=a.txt'
 r87a=$rc
 h87_act S3 segment 상태=실행중 "워크트리=$WT" 선행=없음 '선언 파일 집합=b.txt'
@@ -34236,8 +34356,8 @@ doc87=$(printf '%s' "$snap87" | jq -r '.["문서 인자"]')
 check "87b: 스냅숏 review_next 가 S3 의 재수렴과 그 범위를 낸다" \
   "$(printf '%s' "$snap87" | jq -r '.review_next[] | select(.["세그먼트"] == "S3") | .["다음"] + "|" + .["범위"]')" \
   "재수렴|P0 반복 S3 $WORK/rv87-g1.md $WORK/rv87-g2.md $WORK/rv87-g3.md"
-check "87b: 스냅숏 review_carry 가 세 상수를 낸다" \
-  "$(printf '%s' "$snap87" | jq -r '.review_carry | "\(.CYCLE_CARRY_FROM)/\(.CYCLE_CARRY_MAX)/\(.P0_GUARD_STREAK)"')" "2/3/3"
+check "87b: 스냅숏 review_carry 가 다섯 상수를 낸다" \
+  "$(printf '%s' "$snap87" | jq -r '.review_carry | "\(.CYCLE_CARRY_FROM)/\(.CYCLE_CARRY_MAX)/\(.P0_GUARD_STREAK)/\(.P1_REPEAT_STREAK)/\(.P1_BLOCK_REPEAT)"')" "2/3/3/3/2"
 h87_plan S3 implement '/cc-cmds:implement-unattended "세그먼트 S3 (사이클 3)"'
 check "87b: 가드가 선 세그먼트의 구현 파견은 rc 3 이다" "$rc" "3"
 case "$msg" in
@@ -34313,6 +34433,12 @@ q88() { local l=$1; shift; lsr_in Linux "$l" - in88 "$M88" "$@" 2>/dev/null; }
 L88C=$(l88 carried 1); L88U=$(l88 uncarried 0)
 check "88: 이월된 사이클의 카운트 판정은 이월 이다" "$(q88 "$L88C" gate_segment_review_count_verdict S2)" "이월"
 check "88: 이월 없는 P1>0 의 카운트 판정은 위반 이다" "$(q88 "$L88U" gate_segment_review_count_verdict S2)" "위반"
+# 위의 이월 행은 건수=1 이 그 사이클의 P1=1 과 같은 전부 이월이다. 건수가 P1 보다
+# 작은 일부 이월은 이월로 접히지 않는다 — 차단 발견이 남은 사이클이다.
+L88P=$(l88 partial 0 \
+  '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=3 | P0=0 | P1=2 | 리뷰 HEAD=abc1234 | 리포트 경로=x | prev=x' \
+  '- `리뷰 이월` | 교대=1 | 세그먼트=S2 | 사이클=3 | 리뷰 HEAD=abc1234 | 건수=1 | 이슈=https://github.com/o/r/issues/1 | 레인=~ | 기록 시각=2026-10-12T00:00:00Z | prev=x')
+check "88: 일부 이월된 사이클의 카운트 판정은 위반 이다" "$(q88 "$L88P" gate_segment_review_count_verdict S2)" "위반"
 if ! q88 "$L88C" declare -F gate_merge_check_value >/dev/null; then
   ok "88: K2 부재 — 순서 B 증거 아님"
 else
@@ -34381,6 +34507,269 @@ else
   check "88: 위반(카운트) 머지 뒤 기각과 둘째 머지됨 행이 조건 11 을 푼다 — 위반 행은 남는다" \
     "$(q88 "$L88KR" gate_done_conditions | grep -c '^11 ' || true)/$(grep -c '| 머지 대조=위반(카운트) ' "$L88KR" || true)" "0/1"
 fi
+
+# ---------------------------------------------------------------------------
+# 87c. P1 반복 — 한 세그먼트의 열일곱 사이클 재생
+# --- section: 87c | group: ledger_series | covers: gate_segment_p1_streak, gate_cycle_review_close, gate_carry_assess, gate_carry_eligibility, gate_segment_review_next, gate_cycle_row | anchors: 87c: 갈래 A 의 다음이 표대로다, 87c: 갈래 B 의 다음이 표대로다, 87c: 갈래 C 의 다음이 표대로다, 87c: 세 갈래의 착지 때 리뷰 종결과 착지 뒤 다시 적용한 값이 같다, 87c: 일부 이월 행 뒤의 다음은 수정이다 ---
+#
+# P0 가 섞인 채 P1 만 남아 멈추지 않던 세그먼트의 P0/P1 열을 접두마다 재생한다.
+# 각 사이클의 행은 게이트의 cycle 갈래(`gate_cycle_row`)로 써서 게이트가 `리뷰 종결`
+# 을 찍게 한다 — 원장에 printf 로 붙인 행에는 그 필드가 없어 `차단 반복` 이 늘 0 이고,
+# 그러면 사람 칸에 닿지 않는다. 리포트는 세 모양이다: 갈래 A 는 모든 P1 이
+# `[이월 가능]`, 갈래 B 는 매번 `차단 1 | 이월 가능 P1−1`, 갈래 C 는 `P1 분류` 줄이
+# 없다. 매니페스트는 설계 문서가 있고 `gh issue` 사전 인가 줄이 없는 M87N 이다. 이월
+# 행은 덧붙이지 않는다(마지막 단언만 사본에 붙인다).
+#
+# 가드 변형은 둘이다. cycle 행만 쓰면 사이클 7–10 은 P0 반복 가드의 재수렴이다.
+# 사이클 7 을 읽은 뒤 `정상 완료` 재수렴 행을 덧붙인 변형에서는 사이클 8·9 가
+# 수정이고 사이클 10 이 사람이다(발동 1). 사이클 7–10 과 갈래 A 의 사이클 11 이후는
+# 그 변형에서 덧붙인 행 위의 반사실 접두이고, P1 열과 차단 반복 열은 두 변형에서
+# 같아야 한다.
+#
+# 사람 칸은 P1_REPEAT_STREAK=3·P1_BLOCK_REPEAT=2 에서 유도한 것이다. 상수가 바뀌면
+# 첫 단언이 먼저 빨개진다 — 그때 표를 그 상수에서 다시 유도하고 옮겨 적지 않는다.
+# ---------------------------------------------------------------------------
+fx87_init
+SEQ87C='1:1:3 2:0:2 3:0:1 4:0:2 5:1:1 6:3:2 7:5:1 8:1:5 9:1:2 10:1:5 11:0:7 12:0:5 13:0:6 14:1:5 15:0:8 16:0:4 17:0:2'
+cst87() { printf '%s/%s' "$P1_REPEAT_STREAK" "$P1_BLOCK_REPEAT"; }
+check "87c: 표가 유도된 상수는 P1_REPEAT_STREAK 3 과 P1_BLOCK_REPEAT 2 다" "$(q87 "$(L87 c0)" "$M87N" cst87)" "3/2"
+rpl87() {  # rpl87 <갈래> <변형 0|1> — 열일곱 사이클을 재생하고 cw87 줄들을 낸다
+  local b=$1 v=$2 l s c p0 p1 r
+  l=$(lsr_ledger "w87c-$b$v")
+  for s in $SEQ87C; do
+    IFS=: read -r c p0 p1 <<EOF87C
+$s
+EOF87C
+    r="$D87/c-$b-$c.md"
+    rpb87 "$b" "$r" "$p0" "$p1"
+    cq87 "$l" "$c" "$p0" "$p1" "$r"
+    [ "$v" = 1 ] && [ "$c" = 7 ] && printf '%s\n' "$RC87_OK" >> "$l"
+    if [ "$b$v" = B0 ] && [ "$c" = 4 ]; then cp "$l" "$(lsr_ledger w87c-B4)"; fi
+  done
+}
+o87cA0=$(rpl87 A 0); o87cA1=$(rpl87 A 1)
+o87cB0=$(rpl87 B 0); o87cB1=$(rpl87 B 1)
+o87cC0=$(rpl87 C 0); o87cC1=$(rpl87 C 1)
+ST87C='0/1/2/3/3/3/3/3/3/3/4/5/6/6/7/8/9'
+check "87c: 여섯 재생의 cycle 행이 모두 기록된다 (아래가 공허하지 않다)" \
+  "$(for o in "$o87cA0" "$o87cA1" "$o87cB0" "$o87cB1" "$o87cC0" "$o87cC1"; do col87 "$o" 1; printf ' '; done)" \
+  "0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0 0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0 0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0 0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0 0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0 0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0 "
+check "87c: P1 연속 열은 세 갈래·두 변형에서 같다" \
+  "$(for o in "$o87cA0" "$o87cA1" "$o87cB0" "$o87cB1" "$o87cC0" "$o87cC1"; do col87 "$o" 4; printf ' '; done)" \
+  "$ST87C $ST87C $ST87C $ST87C $ST87C $ST87C "
+check "87c: 갈래 A 의 다음이 표대로다" "$(col87 "$o87cA0" 2) $(col87 "$o87cA1" 2)" \
+  "수정/이월/이월/이월/수정/수정/재수렴/재수렴/재수렴/재수렴/이월/이월/이월/수정/이월/이월/이월 수정/이월/이월/이월/수정/수정/재수렴/수정/수정/사람/이월/이월/이월/수정/이월/이월/이월"
+check "87c: 갈래 A 의 리뷰 종결과 차단 반복이 표대로다" "$(col87 "$o87cA0" 3) $(col87 "$o87cA0" 5)" \
+  "미종결/이월/이월/이월/미종결/미종결/미종결/미종결/미종결/미종결/넓힌 이월/넓힌 이월/넓힌 이월/미종결/넓힌 이월/넓힌 이월/이월 0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0"
+check "87c: 갈래 B 의 다음이 표대로다" "$(col87 "$o87cB0" 2) $(col87 "$o87cB1" 2)" \
+  "수정/수정/수정/이월/수정/수정/재수렴/재수렴/재수렴/재수렴/사람/사람/사람/수정/사람/사람/사람 수정/수정/수정/이월/수정/수정/재수렴/수정/수정/사람/사람/사람/사람/수정/사람/사람/사람"
+check "87c: 갈래 B 의 리뷰 종결과 차단 반복이 표대로다" "$(col87 "$o87cB0" 3) $(col87 "$o87cB0" 5)" \
+  "미종결/차단/차단/일부 이월/미종결/미종결/미종결/미종결/미종결/미종결/일부 이월/일부 이월/일부 이월/미종결/일부 이월/일부 이월/일부 이월 0/0/0/1/1/1/1/1/1/1/2/3/4/4/5/6/7"
+check "87c: 갈래 C 의 다음이 표대로다" "$(col87 "$o87cC0" 2) $(col87 "$o87cC1" 2)" \
+  "수정/수정/수정/수정/수정/수정/재수렴/재수렴/재수렴/재수렴/사람/사람/사람/수정/사람/사람/사람 수정/수정/수정/수정/수정/수정/재수렴/수정/수정/사람/사람/사람/사람/수정/사람/사람/사람"
+check "87c: 갈래 C 의 리뷰 종결과 차단 반복이 표대로다" "$(col87 "$o87cC0" 3) $(col87 "$o87cC0" 5)" \
+  "미종결/분류 결함/분류 결함/분류 결함/미종결/미종결/미종결/미종결/미종결/미종결/분류 결함/분류 결함/분류 결함/미종결/분류 결함/분류 결함/분류 결함 0/0/0/1/1/1/1/1/1/1/2/3/4/4/5/6/7"
+check "87c: 재수렴 행 변형에서도 리뷰 종결과 차단 반복 열은 같다" \
+  "$( [ "$(col87 "$o87cA0" 3)$(col87 "$o87cA0" 5)$(col87 "$o87cB0" 3)$(col87 "$o87cB0" 5)$(col87 "$o87cC0" 3)$(col87 "$o87cC0" 5)" \
+       = "$(col87 "$o87cA1" 3)$(col87 "$o87cA1" 5)$(col87 "$o87cB1" 3)$(col87 "$o87cB1" 5)$(col87 "$o87cC1" 3)$(col87 "$o87cC1" 5)" ] && printf same || printf differ)" "same"
+check "87c: 재수렴 행 변형의 가드는 발동 1 을 센다" \
+  "$(k87 "$(gd87 "$lsr_root/w87c-A1/ledger.md" "$M87N")" 발동)/$(k87 "$(gd87 "$lsr_root/w87c-A0/ledger.md" "$M87N")" 발동)" "1/0"
+# 착지 때 찍힌 값(3 열)과, 착지한 원장에서 후보 행 없이 연속·차단 반복·자격을 다시
+# 읽어 차례를 다시 적용한 값(6 열)이 백두 줄 모두 같은가.
+check "87c: 세 갈래의 착지 때 리뷰 종결과 착지 뒤 다시 적용한 값이 같다" \
+  "$(printf '%s\n' "$o87cA0" "$o87cA1" "$o87cB0" "$o87cB1" "$o87cC0" "$o87cC1" \
+      | awk -F'|' 'NF { n++; if ($3 != $6) d++ } END { printf "%d/%d", n, d + 0 }')" "102/0"
+# 갈래 B 의 사이클 4 는 일부 이월 자격이다. 그 사본에 건수=1 의 이월 행이 착지하면
+# 행 7 은 전부 이월이 아니라 서지 않고, 행 9 는 묶는 이월 행이 있어 서지 않는다.
+L87C4="$lsr_root/w87c-B4/ledger.md"
+printf -- '- `리뷰 이월` | 교대=1 | 세그먼트=S2 | 사이클=4 | 리뷰 HEAD=%s | 건수=1 | 이슈=%s/1 | 레인=~ | 기록 시각=2026-10-13T00:00:00Z | prev=x\n' "$H87" "$U87" >> "$L87C4"
+check "87c: 일부 이월 행 뒤의 다음은 수정이다" \
+  "$(nx87 "$L87C4" "$M87N")/[$(q87 "$L87C4" "$M87N" gate_segment_review_carried S2)]" "수정/[]"
+
+# ---------------------------------------------------------------------------
+# 87d. 인가 없는 이월과 리뷰 종결
+# --- section: 87d | group: ledger_series | covers: gate_review_carry_row, gate_cycle_review_close, gate_cycle_row, plan, gate_segment_review_carried | anchors: 87d: 인가 줄 없는 매니페스트에서 이월이 기록되고 다음은 이월 머지다, 87d: 라우터 경로의 이월 이슈 생성은 자동 해소가 켜져 있으면 경고와 함께 통과한다, 87d: 아홉 차례가 여덟 값을 찍는다, 87d: 호출자가 준 게이트 필드는 rc 2 이고 행을 쓰지 않는다, 87d: 상한 근처 행은 발견 지문 다음 리뷰 종결 순으로 버리고 착지한다 ---
+#
+# 이월은 매니페스트의 `gh issue` 사전 인가를 묻지 않는다. 인가 줄 없는 매니페스트에서
+# 이월 행이 착지하고, 라우터 경로의 이슈 생성이 게이트의 도달 판정으로 지나는지(자동
+# 해소가 꺼지면 승인)를 잰다. 이어 `리뷰 종결` 의 차례가 여덟 값을 각각 내는지, 호출자
+# 값을 거절하는지, 상한 근처의 행에서 두 필드를 차례로 버리고 행은 거절하지 않는지를
+# 단언한다. 87b 의 픽스처 런(plan-R87.md)은 사전 인가 줄이 없는 매니페스트라 라우터
+# 경로의 plan 은 그 런에 직접 부른다 — 87b 의 h87_plan 은 고정된 꼴이라 이 명령을
+# 낼 수 없다.
+# ---------------------------------------------------------------------------
+fx87_init; fx87_run_init
+SG87D="- \`segment\` | 교대=1 | id=S2 | 상태=리뷰중 | 워크트리=$WT | PR=https://github.com/o/r/pull/77 | prev=x"
+L87D=$(L87 d-carry "$SG87D")
+rpb87 A "$D87/d-1.md" 1 3; rpb87 A "$D87/d-2.md" 0 2
+cq87 "$L87D" 1 1 3 "$D87/d-1.md" >/dev/null
+o87d=$(cq87 "$L87D" 2 0 2 "$D87/d-2.md")
+gh87 41 open '[이월] LS S2 사이클 2 — 이월 제목 1'
+gh87 42 open '[이월] LS S2 사이클 2 — 이월 제목 2'
+check "87d: 인가 줄 없는 매니페스트에서 이월이 기록되고 다음은 이월 머지다" \
+  "$(col87 "$o87d" 2)/$(gh87q "$L87D" "$M87N" gate_review_carry_row S2 사이클=2 "리뷰 HEAD=$H87" 건수=2 "이슈=$U87/41,$U87/42")/$(nx87 "$L87D" "$M87N")" \
+  "이월/0/이월 머지"
+if rule87 "$L87D" "$M87N"; then ok "87d: 그 사이클의 머지는 리뷰-후-머지 를 지난다"
+else bad "87d: 인가 없는 이월 머지" "리뷰-후-머지 가 거부했다"; fi
+
+bd87="$D87/carry-body.md"; printf '본문\n' > "$bd87"
+r5_87() {
+  gateL plan --manifest "$WORK/plan-R87.md" --target infra --cutpoint 커밋 --surface 외부상태변경 --reach 협업 \
+    --rationale x -- gh issue create --repo t/infra --title t --body-file "$bd87"
+  printf '%s|%s' "$rc" "$msg"
+}
+o87r5a=$(unset CC_CMDS_AUTOPILOT_AUTO_RESOLVE; r5_87)
+o87r5b=$(CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0; export CC_CMDS_AUTOPILOT_AUTO_RESOLVE; r5_87)
+check "87d: 라우터 경로의 이월 이슈 생성은 자동 해소가 켜져 있으면 경고와 함께 통과한다" \
+  "${o87r5a%%|*}/$(case "$o87r5a" in (*"outside the pre-authorization, but the reach judgment passes"*) printf 경고 ;; (*) printf 없음 ;; esac)" "0/경고"
+check "87d: 자동 해소가 꺼지면 같은 이슈 생성은 승인을 올린다" "${o87r5b%%|*}" "5"
+
+# 아홉 차례 — 앞 사이클 행은 printf 로 붙이고 마지막 행만 cycle 갈래로 쓴다.
+rv87d() {  # rv87d <이름> <사이클> <P0> <P1> <갈래|리포트 경로> [앞 행 명세…] — 찍힌 리뷰 종결
+  local n=$1 c=$2 p0=$3 p1=$4 b=$5 l r
+  shift 5
+  l=$(L87 "d-$n" "$@")
+  case "$b" in
+    /*) r=$b ;;
+    *) r="$D87/d-$n.md"; rpb87 "$b" "$r" "$p0" "$p1" ;;
+  esac
+  col87 "$(cq87 "$l" "$c" "$p0" "$p1" "$r")" 3
+}
+r87dz=$(r87_variant d-recov 's/^- \*\*발견 요약\*\*: .*$/- **발견 요약(부분 복구)**: 일부/')
+rq87 "$D87/d-zero.md" 0 0 0 0
+check "87d: 아홉 차례가 여덟 값을 찍는다" \
+  "$(rv87d nc 2 0 01 "$r87dz" 1:0:1)/$(rv87d cv 2 0 0 "$D87/d-zero.md" 1:0:1)/$(rv87d p0 2 1 1 A 1:0:1)/$(rv87d cr 2 0 2 A 1:0:1)/$(rv87d df 2 0 2 C 1:0:1)/$(rv87d wd 3 0 5 A 1:0:1 2:0:1)/$(rv87d pt 3 0 3 B 1:0:1 2:0:1)/$(rv87d bl 2 0 2 B 1:0:1)/$(rv87d c1 1 0 2 A)" \
+  "판정 불가/수렴/미종결/이월/분류 결함/넓힌 이월/일부 이월/차단/미종결"
+L87DF=$(L87 d-field 1:0:1)
+rq87 "$D87/d-field.md" 0 2 0 2
+check "87d: 호출자가 준 게이트 필드는 rc 2 이고 행을 쓰지 않는다" \
+  "$(qrc87 "$L87DF" "$M87N" gate_cycle_row t S2 사이클=2 P0=0 P1=2 "리뷰 HEAD=$H87" "리포트 경로=$D87/d-field.md" '리뷰 종결=수렴')/$(qrc87 "$L87DF" "$M87N" gate_cycle_row t S2 사이클=2 P0=0 P1=2 "리뷰 HEAD=$H87" "리포트 경로=$D87/d-field.md" '발견 지문=000000000000')/$(grep -c '^- `cycle` ' "$L87DF")" \
+  "2/2/1"
+cq87 "$L87DF" 2 0 2 "$D87/d-field.md" >/dev/null
+check "87d: 리뷰 종결 은 호출자 필드 뒤, 발견 지문 바로 앞에 선다" \
+  "$(lsr_body "$L87DF" | grep -cE " \| 리포트 경로=[^|]* \| 리뷰 종결=이월 \| 발견 지문=[0-9a-f]{12}\$" || true)" "1"
+
+# 상한 근처 — 지문의 세 꼴(12 hex · 식별자 없는 리포트의 (미상) · 0/0 의 -)마다
+# `lane 결정` 을 늘려 세 경계를 만든다: 두 필드를 다 실은 행이 상한과 같음, 상한보다
+# 1 B 큼, 그리고 지문을 뺀 행이 상한보다 1 B 큼. 길이는 cycle 갈래가 재는 자로 잰다.
+len87() {  # len87 <full|nofp> <리포트> <P0> <P1> <lane 결정> — cycle 갈래가 잴 바이트 수
+  local m=$1 r=$2 p0=$3 p1=$4 ln=$5 cand rz fp
+  cand="- \`cycle\` | 세그먼트=S2 | 사이클=1 | P0=$p0 | P1=$p1 | 리뷰 HEAD=$H87 | 리포트 경로=$r | lane 결정=$ln"
+  rz=$(gate_cycle_review_close S2 "$cand"); fp=$(gate_cycle_fingerprint "$r" "$p0" "$p1")
+  if [ "$m" = full ]; then
+    gate_row_projected_bytes cycle 세그먼트=S2 사이클=1 "P0=$p0" "P1=$p1" "리뷰 HEAD=$H87" "리포트 경로=$r" "lane 결정=$ln" "리뷰 종결=$rz" "발견 지문=$fp"
+  else
+    gate_row_projected_bytes cycle 세그먼트=S2 사이클=1 "P0=$p0" "P1=$p1" "리뷰 HEAD=$H87" "리포트 경로=$r" "lane 결정=$ln" "리뷰 종결=$rz"
+  fi
+}
+cap87() { printf '%s' "$GATE_ROW_MAX"; }
+CAP87=$(q87 "$(L87 d-cap)" "$M87N" cap87)
+xs87() { awk -v n="$1" 'BEGIN { while (i++ < n) printf "x" }'; }
+cap87row() {  # cap87row <이름> <리포트> <P0> <P1> <full|nofp> <목표 바이트> — 착지 모양 `<종결><지문>:<경고 둘>`
+  local n=$1 r=$2 p0=$3 p1=$4 m=$5 t=$6 l b0 w body
+  l=$(lsr_ledger "w87d-cap-$n")
+  b0=$(q87 "$l" "$M87N" len87 "$m" "$r" "$p0" "$p1" x)
+  w=$(lsr_in Linux "$l" - in87 "$M87N" gate_cycle_row t S2 사이클=1 "P0=$p0" "P1=$p1" "리뷰 HEAD=$H87" \
+        "리포트 경로=$r" "lane 결정=$(xs87 $(( t - b0 + 1 )))" 2>&1 >/dev/null || true)
+  body=$(lsr_body "$l")
+  printf '%s%s:%s%s' \
+    "$(case "$body" in (*' | 리뷰 종결='*) printf 1 ;; (*) printf 0 ;; esac)" \
+    "$(case "$body" in (*' | 발견 지문='*) printf 1 ;; (*) printf 0 ;; esac)" \
+    "$(case "$w" in (*'「발견 지문」 을 빼고'*) printf 1 ;; (*) printf 0 ;; esac)" \
+    "$(case "$w" in (*'「리뷰 종결」 도 빼고'*) printf 1 ;; (*) printf 0 ;; esac)"
+}
+rq87 "$D87/d-hex.md" 0 2 0 2
+sed 's/`[^`]*`//g' "$D87/d-hex.md" > "$D87/d-unk.md"
+check "87d: 식별자 없는 리포트의 지문은 (미상) 이고 0/0 의 지문은 - 다 (경계의 세 꼴이 공허하지 않다)" \
+  "$(q87 "$(L87 d-fp)" "$M87N" gate_cycle_fingerprint "$D87/d-unk.md" 0 2)|$(q87 "$(L87 d-fp)" "$M87N" gate_cycle_fingerprint "$D87/d-zero.md" 0 0)" "(미상)|-"
+o87cap=''
+for f87 in hex:d-hex:2 unk:d-unk:2 zero:d-zero:0; do
+  IFS=: read -r n87 r87n p87 <<EOF87D
+$f87
+EOF87D
+  o87cap="$o87cap$n87=$(cap87row "$n87-a" "$D87/$r87n.md" 0 "$p87" full "$CAP87"),$(cap87row "$n87-b" "$D87/$r87n.md" 0 "$p87" full $(( CAP87 + 1 ))),$(cap87row "$n87-c" "$D87/$r87n.md" 0 "$p87" nofp $(( CAP87 + 1 ))) "
+done
+check "87d: 상한 근처 행은 발견 지문 다음 리뷰 종결 순으로 버리고 착지한다" "$o87cap" \
+  "hex=11:00,10:10,00:11 unk=11:00,10:10,00:11 zero=11:00,10:10,00:11 "
+
+# ---------------------------------------------------------------------------
+# 87e. 일부 이월
+# --- section: 87e | group: ledger_series | covers: gate_review_carry_row, gate_carry_body, gate_segment_carried_issues, gate_segment_review_carried, gate_segment_review_next, gate_apply_preconditions, gate_snapshot_review_next_json | anchors: 87e: 연속 3 의 차단 1·이월 가능 2 사이클은 일부 이월 자격이다, 87e: 일부 이월의 건수는 이월 가능 수다, 87e: 일부 이월 행 뒤 다음은 수정이고 접기는 비어 있다, 87e: 일부 이월 뒤의 머지는 리뷰-후-머지 와 적용 전제 3 이 거절한다, 87e: 연속 4 에서 전부 이월 가능한 사이클은 다시 이월이다 ---
+#
+# 넓힌 상태에서 차단 발견이 남은 사이클은 이월 가능 발견만 이슈로 넘기고 차단 발견은
+# 다음 수정 사이클에 남긴다. 그 이월 행은 사이클을 묶어 둘째 이월을 막지만 머지를 열지
+# 않는다 — 전부 이월만 머지를 연다. 대조군은 같은 원장 모양의 전부 이월이다.
+# ---------------------------------------------------------------------------
+fx87_init
+SG87E='- `segment` | 교대=1 | id=S2 | 상태=리뷰중 | 워크트리=- | PR=https://github.com/o/r/pull/77 | prev=x'
+MG87E='- `segment` | 교대=1 | id=S2 | 상태=머지됨 | 워크트리=- | 머지 커밋=abc1234 | prev=x'
+L87E=$(L87 e-part "$SG87E" 1:0:1 2:0:1)
+rpb87 B "$D87/e-3.md" 0 3
+o87e=$(cq87 "$L87E" 3 0 3 "$D87/e-3.md")
+check "87e: 연속 3 의 차단 1·이월 가능 2 사이클은 일부 이월 자격이다" \
+  "$(col87 "$o87e" 7)/$(col87 "$o87e" 3)/$(col87 "$o87e" 2)/[$(q87 "$L87E" "$M87N" gate_segment_carried_issues S2)]" "적격 일부/일부 이월/이월/[]"
+b87e=$(q87 "$L87E" "$M87N" gate_carry_body S2)
+check "87e: carry-body 는 이월 가능 항목만 1..k 로 쓴다" \
+  "$(k87 "$b87e" '이월 1 제목')|$(k87 "$b87e" '이월 2 제목')|[$(k87 "$b87e" '이월 3 제목')]|$(ls "${L87E%/*}/carry" | tr '\n' ' ')" \
+  "[이월] LS S2 사이클 3 — 이월 제목 1|[이월] LS S2 사이클 3 — 이월 제목 2|[]|S2-3-1.md S2-3-2.md "
+gh87 51 open '[이월] LS S2 사이클 3 — 이월 제목 1'
+gh87 52 open '[이월] LS S2 사이클 3 — 이월 제목 2'
+check "87e: 일부 이월의 건수는 이월 가능 수다" \
+  "$(gh87q "$L87E" "$M87N" gate_review_carry_row S2 사이클=3 "리뷰 HEAD=$H87" 건수=3 "이슈=$U87/51,$U87/52,$U87/53")/$(gh87q "$L87E" "$M87N" gate_review_carry_row S2 사이클=3 "리뷰 HEAD=$H87" 건수=2 "이슈=$U87/51,$U87/52")/$(gh87q "$L87E" "$M87N" gate_review_carry_row S2 사이클=3 "리뷰 HEAD=$H87" 건수=2 "이슈=$U87/51,$U87/52")" \
+  "2/0/3"
+check "87e: 일부 이월 행 뒤 다음은 수정이고 접기는 비어 있다" \
+  "$(nx87 "$L87E" "$M87N")/[$(q87 "$L87E" "$M87N" gate_segment_review_carried S2)]/$(q87 "$L87E" "$M87N" gate_segment_review_count_verdict S2)" "수정/[]/위반"
+check "87e: 이월 이슈 는 그 이월 행의 이슈 값이다" \
+  "$(q87 "$L87E" "$M87N" gate_segment_carried_issues S2)|$(printf '[%s]' "$(q87 "$L87E" "$M87N" gate_snapshot_review_next_json)" | jq -r '.[] | select(.["세그먼트"] == "S2") | .["이월 이슈"]' 2>&1)" \
+  "$U87/51,$U87/52|$U87/51,$U87/52"
+# 대조군 — 같은 모양의 전부 이월(갈래 A 의 사이클 3).
+L87EF=$(L87 e-full "$SG87E" 1:0:1 2:0:1)
+rpb87 A "$D87/e-3f.md" 0 2
+cq87 "$L87EF" 3 0 2 "$D87/e-3f.md" >/dev/null
+check "87e: 대조 — 전부 이월이 착지하면 다음은 이월 머지다" \
+  "$(gh87q "$L87EF" "$M87N" gate_review_carry_row S2 사이클=3 "리뷰 HEAD=$H87" 건수=2 "이슈=$U87/51,$U87/52")/$(nx87 "$L87EF" "$M87N")" "0/이월 머지"
+r87e_p=거부; rule87 "$L87E" "$M87N" && r87e_p=통과
+r87e_f=거부; rule87 "$L87EF" "$M87N" && r87e_f=통과
+L87EM=$(lsr_ledger w87e-pm); cp "$L87E" "$L87EM"; printf '%s\n' "$MG87E" >> "$L87EM"
+L87EFM=$(lsr_ledger w87e-fm); cp "$L87EF" "$L87EFM"; printf '%s\n' "$MG87E" >> "$L87EFM"
+check "87e: 일부 이월 뒤의 머지는 리뷰-후-머지 와 적용 전제 3 이 거절한다" \
+  "$r87e_p/$r87e_f/$(ap87 "$L87EM")/$( [ "$(ap87 "$L87EFM")" = '적용 행위 전제 3' ] && printf 3 || printf 지남)" \
+  "거부/통과/적용 행위 전제 3/지남"
+L87E4=$(L87 e-four 1:0:1 2:0:1 3:0:1)
+rpb87 A "$D87/e-4.md" 0 5
+o87e4=$(cq87 "$L87E4" 4 0 5 "$D87/e-4.md")
+check "87e: 연속 4 에서 전부 이월 가능한 사이클은 다시 이월이다" \
+  "$(col87 "$o87e4" 4)/$(col87 "$o87e4" 3)/$(col87 "$o87e4" 2)" "4/넓힌 이월/이월"
+
+# ---------------------------------------------------------------------------
+# 87f. 조건 9 — 이월 행이 행 상한에 드는가
+# --- section: 87f | group: ledger_series | covers: gate_carry_row_fits, gate_carry_assess, gate_cycle_review_close, gate_segment_p1_streak | anchors: 87f: 들어가는 최대 이월 수에서 적격이고 하나 더면 부적격 9 다, 87f: 그 최대 이월 수는 8 이상이다, 87f: 조건 9 에 걸린 사이클은 차단 0 이면 미종결 이고 차단이 있으면 차단 이다 ---
+#
+# 넓힌 모드에서 이월 가능 수를 늘려 가며, 예상 리뷰 이월 행(번호 열 자리의 최악 길이
+# URL)이 GATE_ROW_MAX 에 드는 최대 수 N 과 N+1 의 경계를 잰다. 경계의 수는 슬러그와
+# 필드 길이에서 나오므로 적어 두지 않고 찾는다.
+# ---------------------------------------------------------------------------
+fx87_init
+f87e() {  # f87e <N> — 연속 3 이상에서 이월 가능 N 건 사이클의 자격
+  rq87 "$D87/f-$1.md" 0 "$1" 0 "$1"
+  q87 "$(L87 "f-$1" 1:0:1 2:0:1 3:0:1 "4:0:$1:$D87/f-$1.md")" "$M87N" gate_carry_eligibility S2
+}
+n87f=8; e87f=$(f87e 8); e87f1=''
+while [ "$e87f" = "적격" ] && [ "$n87f" -lt 60 ]; do
+  e87f1=$(f87e $(( n87f + 1 )))
+  [ "$e87f1" = "적격" ] || break
+  n87f=$(( n87f + 1 )); e87f=$e87f1
+done
+check "87f: 들어가는 최대 이월 수에서 적격이고 하나 더면 부적격 9 다" "$e87f/$e87f1" "적격/부적격 9"
+check "87f: 그 최대 이월 수는 8 이상이다" "$( [ "$n87f" -ge 8 ] && [ "$e87f" = "적격" ] && printf yes || printf "no($n87f)")" "yes"
+m87f=$(( n87f + 1 ))
+rq87 "$D87/f-z.md" 0 "$m87f" 0 "$m87f"
+rq87 "$D87/f-b.md" 0 $(( m87f + 1 )) 1 "$m87f"
+o87fz=$(cq87 "$(L87 f-z 1:0:1 2:0:1 3:0:1)" 4 0 "$m87f" "$D87/f-z.md")
+o87fb=$(cq87 "$(L87 f-b 1:0:1 2:0:1 3:0:1)" 4 0 $(( m87f + 1 )) "$D87/f-b.md")
+check "87f: 조건 9 에 걸린 사이클은 차단 0 이면 미종결 이고 차단이 있으면 차단 이다" \
+  "$(col87 "$o87fz" 7)|$(col87 "$o87fz" 3)|$(col87 "$o87fz" 5)|$(col87 "$o87fz" 2) $(col87 "$o87fb" 7)|$(col87 "$o87fb" 3)|$(col87 "$o87fb" 5)|$(col87 "$o87fb" 2)" \
+  "부적격 9|미종결|0|수정 부적격 9|차단|1|수정"
 
 # --- epilogue-begin ---
 #
