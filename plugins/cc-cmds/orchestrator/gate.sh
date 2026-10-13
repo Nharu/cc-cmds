@@ -7225,12 +7225,14 @@ gate_gh_graphql_binding() {
 # that moment. Nothing tied the two together: a push after the check, or a
 # worktree that never pushed its last commit, merged a head the rule had not
 # looked at, and the ledger recorded a pass. The remote spellings carry an
-# argument that makes the server refuse any other head — `gh pr merge
-# --match-head-commit <sha>`, the REST merge's `sha` field and the GraphQL
+# argument that makes the server refuse any other head — the REST merge's `sha`
+# field, `gh pr merge --admin --match-head-commit <sha>` and the GraphQL
 # `expectedHeadOid` — so the gate requires that argument and requires it to
 # name the worktree HEAD. A merge spelling with no such argument (`…/merges`,
 # `mergeBranch`), one that merges after the request (`--auto`,
-# `enablePullRequestAutoMerge`, `enqueuePullRequest`), a REST merge with a
+# `enablePullRequestAutoMerge`, `enqueuePullRequest`, and a `gh pr merge`
+# without `--admin`, which enables auto-merge or enters the merge queue on a
+# base that requires one, `--match-head-commit` or not), a REST merge with a
 # `sha` in its query string, a pull request path with a dot segment, an empty
 # segment or a `%` escape, a gh call inside a `find -exec` whose words carry
 # `{}`, and a GraphQL body in a file the gate does not read are merges with no
@@ -7316,6 +7318,18 @@ gate_merge_binding_of_gh() {
   # push, for one — is what merges. So `--auto` answers `없음` whatever head it
   # names.
   #
+  # NOR IS A BARE `gh pr merge`, WITHOUT `--admin`. On a base that requires a
+  # merge queue it enables auto-merge while required checks are pending and
+  # adds the pull request to the queue once they have passed — the same
+  # compare-now, merge-later shape as `--auto`. Whether a base requires a
+  # queue is not in the argv, so the gate reads a bare `gh pr merge` as
+  # unbound on every target, `--match-head-commit` or not. `--admin` bypasses
+  # the queue and merges at once, so with it `--match-head-commit` binds; that
+  # argv then passes the binding check and the `인가-자기확장-금지` rule
+  # refuses it. The spelling that binds on every base is the REST merge with
+  # its `sha` field, which merges at once or is refused (405 on a queue base,
+  # 409 on another head) and never enqueues.
+  #
   # THE FLAGS ARE READ AS gh READS THEM, through the gh flag table. A value flag
   # takes the next word even when it starts with `-`, so in `-b
   # --match-head-commit=<HEAD>` the binding is the merge's body and in
@@ -7340,7 +7354,8 @@ gate_merge_binding_of_gh() {
       gp_parse gh ${orig[@]+"${orig[@]}"}
       if v=$(gp_opt match-head-commit); then have=1; else v=""; fi
       if gp_has auto; then auto=1; fi
-      if [ "$auto" = 1 ]; then printf '%s' '없음'; return 0; fi ;;
+      if [ "$auto" = 1 ]; then printf '%s' '없음'; return 0; fi
+      gp_has admin || { printf '%s' '없음'; return 0; } ;;
     api)
       shift
       gate_gh_api_parse "$@"
@@ -15541,13 +15556,18 @@ gate_segment_carry_eligible() {
 
 gate_segment_review_count_verdict() {
   # gate_segment_review_count_verdict <segment> — the count half of a merge
-  # verdict: `리뷰 없음`, `판정 불가` (a count empty or not canonical), `충족`
-  # (P0 = P1 = 0), `이월` (P0 = 0, P1 > 0 and that cycle carried over) or
-  # `위반`. A dismissal is not read here — it is a person's override the
-  # `다음` table takes before the counts.
+  # verdict: `리뷰 없음`, `기각` (a person dismissed the last cycle),
+  # `판정 불가` (a count empty or not canonical), `충족` (P0 = P1 = 0), `이월`
+  # (P0 = 0, P1 > 0 and that cycle carried over) or `위반`. The order is the
+  # first three rows of the `다음` table: no cycle, then a dismissal, then the
+  # counts' canonical form, then the counts. A dismissal is read before the
+  # counts because the `다음` table and the merge rule read it there and let
+  # the merge through on it, P0 included; reading it after `판정 불가` would
+  # hold again a merge those two allowed.
   local row p0 p1
   row=$(gate_segment_last_cycle_row "$1")
   [ -n "$row" ] || { printf '리뷰 없음'; return 0; }
+  [ -n "$(gate_segment_review_dismissed "$1")" ] && { printf '기각'; return 0; }
   p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
   gate_canon_count "$p0" && gate_canon_count "$p1" || { printf '판정 불가'; return 0; }
   if [ "$p0" = "0" ] && [ "$p1" = "0" ]; then printf '충족'; return 0; fi
@@ -25470,8 +25490,10 @@ gate_verb_act() {
   # THIS SITE CHANGES WHICH CODE AN UNBOUND MERGE GETS. A remote merge argv
   # with no binding, or one naming another commit, now gets 2 from this line
   # where before it reached a `--admin` refusal (3), an act outside
-  # pre-authorization (5) or the cutpoint ceiling (3). The repair is one
-  # argument, and every one of those later checks still runs once it is there.
+  # pre-authorization (5) or the cutpoint ceiling (3). The repair is the REST
+  # merge with its `sha` field — a `gh pr merge` without `--admin` binds
+  # nothing whatever it carries — and every one of those later checks still
+  # runs once it is there.
   #
   # NOT IN THE RULE FILE AND NOT IN THE ANCHOR CHECK. The rule files carry the
   # review predicate and are kept byte-identical, so a check added there would
@@ -25512,7 +25534,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "gh pr merge 는 --match-head-commit <워크트리 HEAD>(값 받는 옵션 -b·-t·-A·-F 의 값 자리가 아닌 곳에, gh 가 아는 옵션만 곁들여), REST 머지는 -f sha=<워크트리 HEAD> 를 붙여 다시 부릅니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 gh pr merge 로 바꿔 부릅니다. 자동 머지·머지 큐 진입(gh pr merge --auto, enablePullRequestAutoMerge, enqueuePullRequest)은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어나므로 결속으로 받지 않습니다 — --auto 없이 바로 머지합니다. REST 머지의 쿼리스트링에 sha 를 두지 않고, find -exec 안에서 {} 를 받는 gh 호출은 맨 철자로 바꿔 부릅니다"
+        warn "머지는 REST 서식 gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<워크트리 HEAD 40자> -f merge_method=<merge|squash|rebase> 로 다시 부릅니다. --admin 없는 gh pr merge 는 --match-head-commit 을 달아도 결속이 아닙니다 — 머지 큐를 요구하는 베이스에서 그것은 자동 머지를 켜거나 큐에 넣어 헤드를 요청 시점에만 대조하기 때문입니다. 머지 큐를 요구하는 베이스에서는 REST 머지가 405 로 거부되어 게이트를 지나는 결속된 머지가 서지 않으므로, 그 머지는 사람에게 넘깁니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 위 REST 서식으로 바꿔 부릅니다. 자동 머지·머지 큐 진입(gh pr merge --auto, enablePullRequestAutoMerge, enqueuePullRequest)은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어나므로 결속으로 받지 않습니다 — 위 REST 서식으로 바로 머지합니다. REST 머지의 쿼리스트링에 sha 를 두지 않고, find -exec 안에서 {} 를 받는 gh 호출은 맨 철자로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else
@@ -27220,12 +27242,25 @@ gate_check_grade_regression() {
   # the local tip would let a tip that leaves the orchestrator alone wave
   # through a named head that does not, at the zero-cost return below. A named
   # sha this repository cannot resolve to a commit leaves nothing honest to
-  # compare, so it parks rather than falling back to the local tip.
+  # compare, so it parks rather than falling back to the local tip. The REST
+  # merge names its head in the `sha` field (`-f sha=<sha>`, `-F sha=<sha>`)
+  # and lands exactly that commit too, so that field is read the same way; a
+  # value in a file (`sha=@<file>`) is not read here, and the binding check
+  # has refused that argv before this runs.
   while [ "$#" -gt 0 ]; do
     a="$1"; shift
     case "$a" in
       --match-head-commit) mhc_set=1; mhc="${1:-}"; [ "$#" -eq 0 ] || shift ;;
       --match-head-commit=*) mhc_set=1; mhc="${a#--match-head-commit=}" ;;
+      -f|-F|--field|--raw-field)
+        case "${1:-}" in
+          sha=@*) : ;;
+          sha=*) mhc_set=1; mhc="${1#sha=}" ;;
+        esac
+        [ "$#" -eq 0 ] || shift ;;
+      -fsha=*|-Fsha=*|--field=sha=*|--raw-field=sha=*)
+        a="${a#*sha=}"
+        case "$a" in @*) : ;; *) mhc_set=1; mhc="$a" ;; esac ;;
     esac
   done
   if [ "$mhc_set" = "1" ]; then
@@ -27540,7 +27575,7 @@ gate_segment_cycle_verdict() {
   # gate_segment_cycle_verdict <세그먼트> <대상 별칭> <머지 팁>
   #
   # What that segment's LAST `cycle` row says about a merge of <머지 팁>:
-  #   GATE_CYCLE_COUNT_VERDICT  충족 | 이월 | 위반 | 판정 불가 | 리뷰 없음
+  #   GATE_CYCLE_COUNT_VERDICT  충족 | 이월 | 기각 | 위반 | 판정 불가 | 리뷰 없음
   #   GATE_CYCLE_COVER_VERDICT  덮는다 | 덮지 않는다 | 판정 불가
   #   GATE_CYCLE_NUMBER         the row's `사이클`, or 없음
   #
@@ -27548,9 +27583,11 @@ gate_segment_cycle_verdict() {
   # this, and the convergence value a later change writes on the cycle row is
   # meant to read the same function rather than a second reading of the same
   # row. The count half is `gate_segment_review_count_verdict`, the function the
-  # review's `다음` table reads, so the merge record and the merge decision
-  # cannot disagree about the same cycle. `이월` binds only a `리뷰 이월` row with
-  # the last cycle's `사이클` and `리뷰 HEAD`; a dismissal is not read here.
+  # review's `다음` table reads, and it reads a dismissal and a carry-over the
+  # way that table does, so the merge record and the merge decision cannot
+  # disagree about the same cycle. `기각` and `이월` bind only a `리뷰 기각` or
+  # `리뷰 이월` row with the last cycle's `사이클` and `리뷰 HEAD`, so a newer
+  # cycle is read by its counts again.
   #
   # A MISSING COUNT IS NOT ZERO. The merge rule fills an absent `P0`/`P1` with 0
   # before comparing; that reading is left alone there, and not copied here —
@@ -27610,12 +27647,15 @@ EOF
 
 gate_merge_check_value() {
   # gate_merge_check_value <리뷰 정책> <카운트 판정> <커버리지 판정> — the
-  # `머지 대조` value. Closed set: 충족 · 이월 · 위반(카운트) · 위반(미포함) ·
-  # 위반(카운트·미포함) · 리뷰 없음 · 판정 불가 · 정책 면제.
+  # `머지 대조` value. Closed set: 충족 · 이월 · 기각 · 위반(카운트) ·
+  # 위반(미포함) · 위반(카운트·미포함) · 리뷰 없음 · 판정 불가 · 정책 면제.
   #
   # `이월` EXCUSES THE COUNT HALF ONLY. A carry-over moves the open P1 findings
   # to issues; it says nothing about whether the review saw the merged commit,
   # so a carried cycle that does not cover the merge is still `위반(미포함)`.
+  # `기각` excuses the count half only too, P0 included: a person read the
+  # cycle's findings at the seat and let the merge through, which says nothing
+  # about whether that review saw the merged commit either.
   #
   # `판정 불가` OUTRANKS A PARTIAL VIOLATION. A value that names one violation
   # while the other half went unmeasured reads as the whole answer, and the
@@ -27627,9 +27667,11 @@ gate_merge_check_value() {
   case "$cnt:$cov" in
     '충족:덮는다') printf '%s' '충족' ;;
     '이월:덮는다') printf '%s' '이월' ;;
+    '기각:덮는다') printf '%s' '기각' ;;
     '위반:덮는다') printf '%s' '위반(카운트)' ;;
     '충족:덮지 않는다') printf '%s' '위반(미포함)' ;;
     '이월:덮지 않는다') printf '%s' '위반(미포함)' ;;
+    '기각:덮지 않는다') printf '%s' '위반(미포함)' ;;
     '위반:덮지 않는다') printf '%s' '위반(카운트·미포함)' ;;
     *) printf '%s' '판정 불가' ;;
   esac
@@ -31281,9 +31323,13 @@ gate_done_conditions() {
   #
   # THE LAST ROW CARRYING `머지 대조` ANSWERS, not the last row. A later row
   # without the field — a `완료` written after the merge — says nothing about
-  # the comparison and does not clear it. What clears it is a review covering
-  # the merged commit, its `cycle` row, and a second `머지됨` row whose
-  # comparison then reads `충족`.
+  # the comparison and does not clear it. What clears it is an appended second
+  # `머지됨` row whose comparison reads a passing value. A coverage violation
+  # clears with a review covering the merged commit and its `cycle` row before
+  # that second row; a count violation clears with the person's `리뷰 기각` of
+  # the merged last cycle at the seat before it, which reads `기각`. A run
+  # cannot write a dismissal, so an unattended run is held here on a count
+  # violation until a person answers.
   #
   # `룰 설정: 끔` turns this off with the rule, and only this: the field is still
   # written, so the morning can read what the setting let through.
@@ -31292,8 +31338,12 @@ gate_done_conditions() {
   # included. Listing the failing values instead let any spelling outside the
   # list — the one a caller could still get onto the ledger — read as a pass.
   # `이월` passes: it records a merge the merge rule let through after the last
-  # cycle's open P1 findings were carried over to issues. A `P1 > 0` without
-  # that carry-over still reads `위반(카운트)` and holds.
+  # cycle's open P1 findings were carried over to issues. `기각` passes: it
+  # records a merge of a cycle a person dismissed at the seat — only the seat
+  # writes `리뷰 기각` — which the merge rule and the `다음` table read before
+  # the counts and let through. A `P0 > 0` or `P1 > 0` with neither still reads
+  # `위반(카운트)` and holds, and either one that does not cover the merged tip
+  # reads `위반(미포함)` and holds.
   if gate_rule_enabled '리뷰-후-머지'; then
     local pol mcv mrow
     for sid in $(gate_segment_ids); do
@@ -31305,7 +31355,7 @@ gate_done_conditions() {
       [ -n "$mrow" ] || continue
       mcv=$(gate_row_field "$mrow" '머지 대조')
       case "$mcv" in
-        '충족'|'정책 면제'|'이월') ;;
+        '충족'|'정책 면제'|'이월'|'기각') ;;
         *) printf '11 세그먼트 %s 의 머지 대조가 %s 입니다\n' "$sid" "${mcv:-(빈 값)}" ;;
       esac
     done

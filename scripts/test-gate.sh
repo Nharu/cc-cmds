@@ -1162,6 +1162,15 @@ trap 'rm -rf "$WORK"' EXIT
 FXREPORT="$WORK/fixture-review.md"
 printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
+# gh 는 이 프로세스 전체에서 미인증이고 도달할 수 없는 호스트를 본다. 결속된 원격
+# 머지의 픽스처 철자는 REST `gh api … /pulls/<n>/merge -f sha=…` 이고, 그것을 `act`
+# 로 통과시키면 게이트가 실제로 실행한다 — `gh pr merge` 는 픽스처 원격이 로컬 베어
+# 경로라 저장소를 찾지 못하고 끝났지만, `gh api` 는 경로에 저장소를 적어 그 검사 없이
+# 호스트로 나간다. 사람의 자격 증명을 실은 쓰기 요청이 시험에서 나가지 않게 한다.
+# 스텁을 쓰는 절은 함수나 PATH 로 gh 를 가리므로 이 값과 무관하다.
+mkdir -p "$WORK/gh-offline"
+export GH_CONFIG_DIR="$WORK/gh-offline" GH_HOST=invalid.invalid GH_TOKEN='' GITHUB_TOKEN='' \
+  GH_ENTERPRISE_TOKEN='' GITHUB_ENTERPRISE_TOKEN='' GH_NO_UPDATE_NOTIFIER=1
 # A run opened where an account inventory exists is routed, so the config root
 # the inventory is read under is moved off the host's: every fixture run opens
 # unrouted, as on CI, unless a section plants a routing record of its own.
@@ -1721,6 +1730,7 @@ PD=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' -f1)
   printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
   printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
   printf -- '- `사전 인가` | 형태=gh pr | 사유=테스트\n'
+  printf -- '- `사전 인가` | 형태=gh api | 사유=테스트\n'
   printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
 } > "$FX_MANIFEST"
 
@@ -2791,11 +2801,14 @@ SAGEOF
       printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
       printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
       # 선택 2행. 기본이 빈 문자열이라 이 블록의 기존 매니페스트는 바이트 그대로
-      # 유지된다 — 슬라이스 B 집합만 `gh pr` 를 실어야 하고, 그 집합의 argv 는
-      # `gh pr merge` 라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
-      # 멈춘다. 그 5 는 이 집합이 재려는 어떤 거절과도 구별되지 않는다.
+      # 유지된다 — 슬라이스 B 집합만 `gh pr`·`gh api` 를 실어야 하고, 그 집합의
+      # argv 는 `gh` 머지라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
+      # 멈춘다. 그 5 는 이 집합이 재려는 어떤 거절과도 구별되지 않는다. 값은 줄마다
+      # 한 행이다.
       [ -z "${SA_PREAUTH_EXTRA:-}" ] || \
-        printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$SA_PREAUTH_EXTRA"
+        printf '%s\n' "$SA_PREAUTH_EXTRA" | while IFS= read -r pa; do
+          printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$pa"
+        done
       if [ $# -gt 0 ]; then
         printf '\n## 룰 설정\n'
         for extra in "$@"; do printf '%s\n' "$extra"; done
@@ -3084,9 +3097,9 @@ pre_sb() {
   PRE_SB_DONE=1
   pre_sa
   sb_new() {
-    # sb_new <라벨> [상한] — sa_new 와 같되 `gh pr` 를 사전 인가에 싣는다.
+    # sb_new <라벨> [상한] — sa_new 와 같되 `gh pr` 와 `gh api` 를 사전 인가에 싣는다.
     sa_new "$@"
-    SA_PREAUTH_EXTRA='gh pr'
+    SA_PREAUTH_EXTRA=$'gh pr\ngh api'
     sa_manifest "${2-선머지후리뷰}"
     rm -rf "$SA_RUN"
   }
@@ -3144,11 +3157,12 @@ pre_sb() {
         --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x -- "$@"
   }
   # Bound to the segment worktree's HEAD, the way a router has to spell a remote
-  # merge under `선리뷰후머지`: an unbound `gh pr merge` is refused before the
+  # merge under `선리뷰후머지`: the REST merge with its `sha` field. An unbound
+  # merge — a `gh pr merge` without `--admin` among them — is refused before the
   # rules run, and the checks this set measures sit behind them.
   sb_merge() {
-    sb_act "$1" "$2" merge gh pr merge 1 \
-      --match-head-commit "$(cd "$SA_SEGWT" && git rev-parse HEAD 2>/dev/null)"
+    sb_act "$1" "$2" merge gh api -X PUT repos/o/r/pulls/1/merge \
+      -f "sha=$(cd "$SA_SEGWT" && git rev-parse HEAD 2>/dev/null)"
   }
 
   sb_land_merge() {
@@ -4563,7 +4577,7 @@ esac
 } >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 
 # A person's `리뷰 기각` of the last cycle lets the same merge through, and only
@@ -4572,7 +4586,7 @@ check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 # folds it for the rule and the rule compares it with the row it reads.
 printf -- '- `cycle` | 세그먼트=S9 | 사이클=1 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 check "기각 없는 P0 사이클의 머지는 거부된다" "$rc" "3"
 case "$msg" in
   *"unresolved findings remain"*) ok "기각 없는 P0 사이클의 머지는 거부된다 — 리뷰 룰의 미해결 발견 거절이다" ;;
@@ -4580,11 +4594,11 @@ case "$msg" in
 esac
 printf -- '- `리뷰 기각` | 세그먼트=S9 | 사이클=1 | 리뷰 HEAD=%s | 기각 P0=1 | 기각 P1=0 | 근거=x\n' "$head0" >> "$FX_LEDGER"
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 if passes_review; then ok "사람이 기각한 마지막 사이클은 머지 룰을 통과한다"; else bad "리뷰 기각 반영" "$msg"; fi
 printf -- '- `cycle` | 세그먼트=S9 | 사이클=2 | P0=1 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 check "뒤에 선 새 사이클은 앞 사이클의 기각으로 통과하지 않는다" "$rc" "3"
 case "$msg" in
   *"unresolved findings remain"*) ok "뒤에 선 새 사이클은 앞 사이클의 기각으로 통과하지 않는다 — 리뷰 룰의 미해결 발견 거절이다" ;;
@@ -4596,7 +4610,7 @@ H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq 
 # Judged by `passes_review`, defined in `pre_base` in the head — section 9 calls
 # it too.
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 if passes_review; then ok "무이동 등급은 통과한다"; else bad "무이동 등급" "$msg"; fi
 
 # 동일 트리 — amend rewrites the commit and leaves the tree byte-identical.
@@ -4604,7 +4618,7 @@ if passes_review; then ok "무이동 등급은 통과한다"; else bad "무이�
 head_amend=$(cd "$WT" && git rev-parse HEAD)
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 if passes_review; then ok "동일 트리 등급(amend)은 통과한다"; else bad "동일 트리 등급" "$msg"; fi
 if [ "$head_amend" = "$head0" ]; then
   bad "동일 트리 전제" "amend 가 커밋 sha 를 바꾸지 않았다 — 이 절이 공허하다"
@@ -4620,7 +4634,7 @@ printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포�
 ( cd "$WT" && echo two > b.txt && git add -A && git commit -qm two ) >/dev/null 2>&1
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 check "리뷰 이후 커밋이 추가되면 거부된다" "$rc" "3"
 case "$msg" in
   *"commits were added"*) ok "낡음 등급이 「추가 커밋」으로 보고된다" ;;
@@ -4635,7 +4649,7 @@ esac
   && echo x > c.txt && git add c.txt && git commit -qm sideline ) >/dev/null 2>&1
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 check "리뷰 HEAD 가 조상이 아니면 거부된다" "$rc" "3"
 case "$msg" in
   *"is not an ancestor"*) ok "낡음 등급이 「무관/베이스 이동」으로 보고된다" ;;
@@ -4664,7 +4678,7 @@ printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S4 | 세션 id=imp
 printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S5 | 세션 id=rev-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment SEP --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"share an ancestor"*) bad "디스패처 판정" "라우터를 공유했다는 이유로 거부됐다 — 라우터가 돌린 모든 런의 머지가 막힌다" ;;
   *) ok "디스패처를 공유하는 것은 자기 작업 리뷰가 아니다" ;;
@@ -4679,7 +4693,7 @@ printf -- '- `segment` | id=SEPF | 상태=구현완료 | 커밋=%s | 워크트�
 printf -- '- `cycle` | 세그먼트=SEPF | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$FXREPORT" >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment SEPF --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"share an ancestor"*) ok "구현 세션의 포크가 리뷰하면 거부된다 (폐포가 존재하는 이유)" ;;
   *) bad "포크 판정" "포크가 자기 작업을 리뷰했는데 통과했다" ;;
@@ -4692,7 +4706,7 @@ printf -- '- `segment` | id=SEPD | 상태=구현완료 | 커밋=%s | 워크트�
 printf -- '- `cycle` | 세그먼트=SEPD | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$FXREPORT" >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment SEPD --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"share an ancestor"*) ok "한 세션이 양쪽이면 거부된다" ;;
   *) bad "직접 판정" "같은 세션이 자기 작업을 리뷰했는데 통과했다" ;;
@@ -4704,7 +4718,7 @@ printf -- '- `segment` | id=SEP2 | 상태=구현완료 | 커밋=%s | 워크트�
 printf -- '- `cycle` | 세그먼트=SEP2 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$FXREPORT" >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment SEP2 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"undecidable is not a pass"*) ok "계보가 기록되지 않으면 통과가 아니다 (공허한 참으로 돌아가지 않는다)" ;;
   *) bad "미기록 처리" "'$msg'" ;;
@@ -4818,7 +4832,7 @@ check "사이클 행이 기록된다" "$rc" "0"
 printf -- '- `cycle` | 세그먼트=SW | 사이클=9 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$head_b" >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
-     -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"has no 「리포트 경로」"*) ok "리포트 경로 없는 사이클 행으로는 머지가 통과하지 않는다" ;;
   *) bad "리포트 경로 부재" "$msg" ;;
@@ -4831,7 +4845,7 @@ gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SW --cu
      "리포트 경로=$WORK/no-such-report.md"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
-     -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"the report the review record points at does not exist"*) ok "가리키는 리포트가 없으면 머지가 통과하지 않는다" ;;
   *) bad "리포트 부재" "$msg" ;;
@@ -4848,7 +4862,7 @@ gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SW --cu
      "리포트 경로=$SWSTUB"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
-     -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"has no 「발견 요약」"*) ok "발견 요약 없는 스텁 리포트로는 머지가 통과하지 않는다" ;;
   *) bad "스텁 리포트" "$msg" ;;
@@ -4865,7 +4879,7 @@ gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SW --cu
 check "리포트를 갖춘 사이클 행이 기록된다" "$rc" "0"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
-     -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 case "$msg" in
   *"rule refused: 리뷰-후-머지"*) bad "라우터 기록" "게이트가 쓴 리뷰 기록을 룰이 읽지 못한다: '"'"'$msg'"'"'" ;;
   *) ok "게이트가 쓴 세그먼트·사이클 행과 실재하는 리포트로 머지가 통과한다" ;;
@@ -5307,7 +5321,7 @@ check "인가-자기확장-금지 는 「끔」을 무시한다" "$rc" "3"
 # is real rather than decorative — the same act refused in section 8 by the
 # staleness grade now passes.
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --match-head-commit "$(wt_head)"
+     --snapshot-digest "$(HH)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
 if passes_review; then
   ok "리뷰-후-머지 는 「끔」을 따른다 (스위치가 장식이 아니다)"
 else
@@ -21925,6 +21939,8 @@ check "25: 충족과 덮지 않음은 위반(미포함) 이다"            "$(mc
 check "25: 위반과 덮지 않음은 위반(카운트·미포함) 이다"     "$(mcv 선리뷰후머지 '위반' '덮지 않는다')" "위반(카운트·미포함)"
 check "25: 이월과 덮음은 이월 이다"                          "$(mcv 선리뷰후머지 '이월' '덮는다')" "이월"
 check "25: 이월과 덮지 않음은 위반(미포함) 이다"            "$(mcv 선리뷰후머지 '이월' '덮지 않는다')" "위반(미포함)"
+check "25: 기각과 덮음은 기각 이다"                          "$(mcv 선리뷰후머지 '기각' '덮는다')" "기각"
+check "25: 기각과 덮지 않음은 위반(미포함) 이다"            "$(mcv 선리뷰후머지 '기각' '덮지 않는다')" "위반(미포함)"
 
 # --- 35-26. 열린 발견 위의 머지는 위반으로 남고, 덮는 리뷰와 둘째 머지됨만 지운다 ---
 # --- section: 35-26 | group: sa | covers: act, snapshot | anchors: 26: 열린 발견 위의 머지됨 행이 기록된다 ---
@@ -22712,11 +22728,17 @@ H40=0123456789abcdef0123456789abcdef01234567
 check "29: gh pr merge 가 아닌 gh 는 해당없음 이다"         "$(mb gh pr view 1)" "해당없음"
 check "29: git push 는 해당없음 이다"                       "$(mb git push origin seg:main)" "해당없음"
 check "29: 결속 인자 없는 gh pr merge 는 없음 이다"         "$(mb gh pr merge 1 --squash)" "없음"
-check "29: --match-head-commit 의 값을 읽는다"              "$(mb gh pr merge 1 --match-head-commit "$H40")" "$H40"
-check "29: = 붙은 철자도 읽는다"                            "$(mb gh pr merge 1 --match-head-commit="$H40")" "$H40"
-check "29: 줄인 sha 는 결속이 아니다"                       "$(mb gh pr merge 1 --match-head-commit 0123456)" "없음"
-check "29: 마지막 인자가 이긴다"                            "$(mb gh pr merge 1 --match-head-commit "$H40" --match-head-commit 0123456)" "없음"
-check "29: 감싼 명령을 벗겨 읽는다"                         "$(mb env X=1 timeout 5 gh pr merge 1 --match-head-commit "$H40")" "$H40"
+# `--admin` 없는 gh pr merge 는 머지 큐를 요구하는 베이스에서 자동 머지를 켜거나 큐에
+# 넣으므로 `--match-head-commit` 이 있어도 결속이 아니다. 파서를 재는 아래 단언은
+# 그래서 `--admin` 을 곁들인다 — 그 argv 는 결속을 지나 `인가-자기확장-금지` 가 거절한다.
+check "29: --admin 없는 --match-head-commit 은 결속이 아니다" "$(mb gh pr merge 1 --match-head-commit "$H40")" "없음"
+check "29: --admin 없는 = 붙은 결속도 결속이 아니다"        "$(mb gh pr merge 1 --match-head-commit="$H40")" "없음"
+check "29: --match-head-commit 의 값을 읽는다"              "$(mb gh pr merge 1 --admin --match-head-commit "$H40")" "$H40"
+check "29: = 붙은 철자도 읽는다"                            "$(mb gh pr merge 1 --admin --match-head-commit="$H40")" "$H40"
+check "29: --admin 이 결속 뒤에 와도 읽는다"                "$(mb gh pr merge 1 --match-head-commit "$H40" --admin)" "$H40"
+check "29: 줄인 sha 는 결속이 아니다"                       "$(mb gh pr merge 1 --admin --match-head-commit 0123456)" "없음"
+check "29: 마지막 인자가 이긴다"                            "$(mb gh pr merge 1 --admin --match-head-commit "$H40" --match-head-commit 0123456)" "없음"
+check "29: 감싼 명령을 벗겨 읽는다"                         "$(mb env X=1 timeout 5 gh pr merge 1 --admin --match-head-commit "$H40")" "$H40"
 check "29: REST 머지의 sha 필드를 읽는다"                   "$(mb gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$H40")" "$H40"
 check "29: 본문이 있는 REST 머지는 메서드 없이도 머지다"    "$(mb gh api repos/o/r/pulls/1/merge -F"sha=$H40")" "$H40"
 check "29: sha 없는 REST 머지는 없음 이다"                  "$(mb gh api -X PUT repos/o/r/pulls/1/merge -f merge_method=squash)" "없음"
@@ -22726,19 +22748,21 @@ check "29: REST 의 GET 은 해당없음 이다"                    "$(mb gh api
 # 값 받는 옵션은 `-` 로 시작하는 다음 낱말도 값으로 삼킨다 — gh 가 그렇게 읽으므로
 # 삼켜진 결속은 결속이 아니고, 덮어쓰기처럼 보이는 철자는 gh 가 묶은 값으로 읽는다.
 H40B=fedcba9876543210fedcba9876543210fedcba98
-check "29: -b 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 -b --match-head-commit="$H40")" "없음"
-check "29: --body 가 삼킨 = 형 결속은 결속이 아니다"         "$(mb gh pr merge 1 --body --match-head-commit="$H40")" "없음"
-check "29: -t 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 -t --match-head-commit="$H40")" "없음"
-check "29: -A 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 -A --match-head-commit="$H40")" "없음"
-check "29: 묶음 -sb 가 삼킨 = 형 결속은 결속이 아니다"       "$(mb gh pr merge 1 -sb --match-head-commit="$H40")" "없음"
+check "29: -b 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 --admin -b --match-head-commit="$H40")" "없음"
+check "29: --body 가 삼킨 = 형 결속은 결속이 아니다"         "$(mb gh pr merge 1 --admin --body --match-head-commit="$H40")" "없음"
+check "29: -t 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 --admin -t --match-head-commit="$H40")" "없음"
+check "29: -A 가 삼킨 = 형 결속은 결속이 아니다"             "$(mb gh pr merge 1 --admin -A --match-head-commit="$H40")" "없음"
+check "29: 묶음 -sb 가 삼킨 = 형 결속은 결속이 아니다"       "$(mb gh pr merge 1 --admin -sb --match-head-commit="$H40")" "없음"
 check "29: 값 옵션이 삼킨 결속은 마지막 값으로 세지 않는다" \
-  "$(mb gh pr merge 1 --match-head-commit "$H40B" --body --match-head-commit="$H40")" "$H40B"
-check "29: 값을 붙여 쓴 옵션 뒤의 결속은 읽는다"             "$(mb gh pr merge 1 -bx --match-head-commit "$H40")" "$H40"
-check "29: 값을 따로 받은 옵션 뒤의 결속은 읽는다"           "$(mb gh pr merge 1 --body x --match-head-commit "$H40")" "$H40"
-check "29: -- 뒤의 결속 철자는 위치 인자다"                  "$(mb gh pr merge 1 -- --match-head-commit="$H40")" "없음"
-check "29: 표에 없는 옵션이 있으면 결속이 아니다"            "$(mb gh pr merge 1 --frobnicate --match-head-commit "$H40")" "없음"
-check "29: 잎 앞의 -R 을 지나 결속을 읽는다"                 "$(mb gh -R o/r pr merge 1 --match-head-commit "$H40")" "$H40"
-check "29: --auto 는 결속이 있어도 없음 이다"                "$(mb gh pr merge 1 --auto --match-head-commit "$H40")" "없음"
+  "$(mb gh pr merge 1 --admin --match-head-commit "$H40B" --body --match-head-commit="$H40")" "$H40B"
+check "29: 값을 붙여 쓴 옵션 뒤의 결속은 읽는다"             "$(mb gh pr merge 1 --admin -bx --match-head-commit "$H40")" "$H40"
+check "29: 값을 따로 받은 옵션 뒤의 결속은 읽는다"           "$(mb gh pr merge 1 --admin --body x --match-head-commit "$H40")" "$H40"
+check "29: -- 뒤의 결속 철자는 위치 인자다"                  "$(mb gh pr merge 1 --admin -- --match-head-commit="$H40")" "없음"
+check "29: -- 뒤의 --admin 철자도 위치 인자다"               "$(mb gh pr merge 1 --match-head-commit "$H40" -- --admin)" "없음"
+check "29: 값 옵션이 삼킨 --admin 은 --admin 이 아니다"      "$(mb gh pr merge 1 -b --admin --match-head-commit "$H40")" "없음"
+check "29: 표에 없는 옵션이 있으면 결속이 아니다"            "$(mb gh pr merge 1 --admin --frobnicate --match-head-commit "$H40")" "없음"
+check "29: 잎 앞의 -R 을 지나 결속을 읽는다"                 "$(mb gh -R o/r pr merge 1 --admin --match-head-commit "$H40")" "$H40"
+check "29: --auto 는 결속이 있어도 없음 이다"                "$(mb gh pr merge 1 --admin --auto --match-head-commit "$H40")" "없음"
 
 # 동사 앞의 값 옵션 — gh 는 값 옵션과 그 값을 어디에 있든 건너뛰고 `pr merge` 를
 # 찾으므로, 결속·사다리·등급·협업면도 위치가 아니라 파싱으로 머지를 찾는다.
@@ -22748,13 +22772,15 @@ cs29() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
            if gate_collaboration_surface "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
 }
-check "29: 동사 앞 -b 를 지나 결속을 읽는다 (양성 대조)"      "$(mb gh pr -b x merge 1 --match-head-commit "$H40")" "$H40"
-check "29: 동사 앞 결속 옵션도 gh 처럼 읽는다"                "$(mb gh pr --match-head-commit "$H40" merge 1)" "$H40"
+check "29: 동사 앞 -b 를 지나 결속을 읽는다 (양성 대조)"      "$(mb gh pr -b x merge 1 --admin --match-head-commit "$H40")" "$H40"
+check "29: 동사 앞 결속 옵션도 gh 처럼 읽는다"                "$(mb gh pr --match-head-commit "$H40" merge 1 --admin)" "$H40"
+# 동사 앞의 `--admin` 은 결속으로 세지 않는다 — 닫히는 쪽이라 룰 앞의 2 를 받는다.
+check "29: 동사 앞 --admin 은 결속으로 세지 않는다"           "$(mb gh pr --admin merge 1 --match-head-commit "$H40")" "없음"
 check "29: 동사 앞 -b 의 결속 없는 머지는 없음 이다"          "$(mb gh pr -b x merge 1)" "없음"
 check "29: 동사 앞 --body= 의 결속 없는 머지는 없음 이다"     "$(mb gh pr --body=x merge 1)" "없음"
 check "29: pr 앞 -t 의 결속 없는 머지는 없음 이다"            "$(mb gh -t y pr merge 1)" "없음"
 check "29: -R 과 동사 앞 -t 의 결속 없는 머지는 없음 이다"    "$(mb gh pr -R o/r -t y merge 1)" "없음"
-check "29: 표가 읽지 못하는 머지 철자는 없음 이다"            "$(mb gh pr --squash merge 1 --match-head-commit "$H40")" "없음"
+check "29: 표가 읽지 못하는 머지 철자는 없음 이다"            "$(mb gh pr --squash merge 1 --admin --match-head-commit "$H40")" "없음"
 check "29: 대조군 — merge 를 값으로 단 다른 pr 동사는 해당없음 이다" "$(mb gh pr comment 1 -b merge)" "해당없음"
 for g29 in 'pr -b x merge 1' '-t y pr merge 1' 'pr -R o/r -t y merge 1' 'pr --squash merge 1'; do
   # shellcheck disable=SC2086
@@ -22777,19 +22803,34 @@ sb_bound() { case "$msg" in *"결속되지 않았습니다"*) return 0 ;; esac; 
 sb_plan S29 gh pr merge 1
 check "29: 결속 인자 없는 gh pr merge 는 룰 앞에서 거절된다" "$rc" "2"
 if sb_bound; then ok "29: 문면이 결속을 지목한다"; else bad "29 문면" "$msg"; fi
-sb_plan S29 gh pr merge 1 --match-head-commit "$H40"
+sb_plan S29 gh pr merge 1 --admin --match-head-commit "$H40"
 check "29: 워크트리 HEAD 와 다른 결속은 거절된다" "$rc" "2"
 case "$msg" in
   *"결속 인자: $H40"*"워크트리 HEAD: $HEAD29"*) ok "29: 문면이 두 sha 를 함께 댄다" ;;
   *) bad "29 불일치 문면" "$msg" ;;
 esac
+# `--admin` 없는 gh pr merge 는 워크트리 HEAD 를 달아도 결속이 아니다 — 머지 큐를
+# 요구하는 베이스에서 그 argv 는 헤드를 요청 시점에만 대조하고 나중에 머지한다.
 sb_plan S29 gh pr merge 1 --match-head-commit "$HEAD29"
-check "29: 워크트리 HEAD 에 결속된 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
+check "29: --admin 없이 워크트리 HEAD 를 단 gh pr merge 는 룰 앞에서 거절된다" "$rc" "2"
+if sb_bound; then ok "29: 그 거절 문면이 결속을 지목한다"; else bad "29 --admin 없는 결속 문면" "$msg"; fi
+case "$msg" in
+  *"gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha="*) ok "29: 그 거절 문면이 REST 머지 서식을 처방한다" ;;
+  *) bad "29 REST 처방 문면" "$msg" ;;
+esac
+sb_plan S29 gh pr merge 1 --admin --match-head-commit "$HEAD29"
+check "29: --admin 과 함께 워크트리 HEAD 에 결속된 머지는 룰로 진행한다 (exit 3)" "$rc" "3"
+case "$msg" in
+  *"--admin"*) ok "29: 그 거절이 관리자 우회를 지목한다 (인가-자기확장-금지)" ;;
+  *) bad "29 --admin 룰 문면" "$msg" ;;
+esac
+sb_plan S29 gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$HEAD29" -f merge_method=merge
+check "29: sha 가 워크트리 HEAD 인 REST 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
 if sa_names_rule; then ok "29: 그 거절이 리뷰-후-머지 를 지명한다"; else bad "29 룰 이름" "$msg"; fi
-sb_plan S29 gh pr merge 1 -b --match-head-commit="$HEAD29"
+sb_plan S29 gh pr merge 1 --admin -b --match-head-commit="$HEAD29"
 check "29: 본문 옵션이 삼킨 결속의 머지는 룰 앞에서 거절된다" "$rc" "2"
 if sb_bound; then ok "29: 삼킨 결속의 거절 문면이 결속을 지목한다"; else bad "29 삼킨 결속 문면" "$msg"; fi
-sb_plan S29 gh pr merge 1 --match-head-commit "$H40" --body --match-head-commit="$HEAD29"
+sb_plan S29 gh pr merge 1 --admin --match-head-commit "$H40" --body --match-head-commit="$HEAD29"
 check "29: 덮어쓰기처럼 보이는 결속의 머지는 gh 가 묶은 값으로 거절된다" "$rc" "2"
 case "$msg" in
   *"결속 인자: $H40"*"워크트리 HEAD: $HEAD29"*) ok "29: 그 문면이 gh 가 묶은 sha 를 댄다" ;;
@@ -22798,13 +22839,25 @@ esac
 sb_plan S29 gh pr -b x merge 1
 check "29: 동사 앞 -b 의 결속 없는 머지는 룰 앞에서 거절된다" "$rc" "2"
 if sb_bound; then ok "29: 동사 앞 -b 의 거절 문면이 결속을 지목한다"; else bad "29 동사 앞 -b 문면" "$msg"; fi
-sb_plan S29 gh pr -b x merge 1 --match-head-commit "$HEAD29"
-check "29: 동사 앞 -b 의 워크트리 HEAD 결속 머지는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
-if sa_names_rule; then ok "29: 동사 앞 -b 의 그 거절이 리뷰-후-머지 를 지명한다"; else bad "29 동사 앞 -b 룰 이름" "$msg"; fi
+sb_plan S29 gh pr -b x merge 1 --admin --match-head-commit "$HEAD29"
+check "29: 동사 앞 -b 의 워크트리 HEAD 결속 머지는 룰로 진행한다 (exit 3)" "$rc" "3"
+case "$msg" in
+  *"--admin"*) ok "29: 동사 앞 -b 의 그 거절이 관리자 우회를 지목한다" ;;
+  *) bad "29 동사 앞 -b 룰 문면" "$msg" ;;
+esac
+sb_plan S29 gh pr --auto merge 1 --admin --match-head-commit "$HEAD29"
+check "29: 동사 앞 --auto 의 머지는 --admin 이 있어도 룰 앞에서 거절된다" "$rc" "2"
+case "$msg" in
+  *"rule refused"*) bad "29 동사 앞 --auto 문면" "룰까지 갔다: $msg" ;;
+  *) ok "29: 동사 앞 --auto 의 거절은 룰에 닿기 전이다" ;;
+esac
 sb_plan S29 gh api -X PUT repos/t/r/pulls/1/merge
 check "29: sha 없는 REST 머지는 거절된다" "$rc" "2"
 sb_plan S29 gh api -X PUT repos/t/r/pulls/1/merge -f "sha=$HEAD29"
 if sb_bound; then bad "29 REST 결속" "워크트리 HEAD 를 실은 REST 머지가 결속 검사에 걸렸다: $msg"; else ok "29: sha 가 워크트리 HEAD 인 REST 머지는 결속 검사를 지난다"; fi
+sb_plan S29 gh api -X PUT repos/t/r/pulls/1/merge -f "sha=$H40"
+check "29: sha 가 워크트리 HEAD 와 다른 REST 머지는 거절된다" "$rc" "2"
+if sb_bound; then ok "29: 그 거절 문면이 결속을 지목한다 (REST)"; else bad "29 REST 불일치 문면" "$msg"; fi
 sa_merge S29
 check "29: git push 머지는 결속 없이 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
 if sb_bound; then bad "29 git push" "git push 머지가 결속 검사에 걸렸다: $msg"; else ok "29: git push 머지는 결속 검사에 걸리지 않는다"; fi
@@ -22818,7 +22871,7 @@ sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S29 --cut
     --snapshot-digest "$(SAH)" --rationale x \
     -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$HEAD29" ' 리뷰 HEAD=HEAD' "리포트 경로=$FXREPORT"
 check "29: 덧댄 리뷰 HEAD 의 cycle 행은 거절된다" "$rc" "2"
-sb_plan S29 gh pr merge 1 --match-head-commit "$HEAD29B"
+sb_plan S29 gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$HEAD29B"
 check "29: 리뷰 뒤 커밋이 더해진 결속된 머지는 여전히 룰이 거절한다" "$rc" "3"
 if sa_names_rule; then ok "29: 그 거절이 리뷰-후-머지 를 지명한다 (덧댄 리뷰 HEAD 뒤)"; else bad "29 덧댄 리뷰 HEAD 룰 이름" "$msg"; fi
 
@@ -23233,7 +23286,7 @@ check "32p: 묶음 -lc 안의 push 도 불투명 이다"          "$(sp_unwrap b
 check "32p: sh -c 안의 push 아닌 git 은 해당없음 이다"  "$(sp_unwrap sh -c 'git status; echo push')" "해당없음"
 check "32p: sudo 아래 push 는 불투명 이다"              "$(sp_unwrap sudo -u u git -C d push origin x)" "불투명"
 check "32p: gh pr -R <repo> merge 의 결속 인자를 읽는다" \
-  "$(sp_mb gh pr -R o/r merge 1 --match-head-commit 0123456789abcdef0123456789abcdef01234567)" \
+  "$(sp_mb gh pr -R o/r merge 1 --admin --match-head-commit 0123456789abcdef0123456789abcdef01234567)" \
   "0123456789abcdef0123456789abcdef01234567"
 check "32p: gh pr --repo=<repo> merge 는 결속 없는 머지다" "$(sp_mb gh pr --repo=o/r merge 1)" "없음"
 check "32p: gh pr -R<repo> merge 는 결속 없는 머지다"      "$(sp_mb gh pr -Ro/r merge 1)" "없음"
@@ -23447,9 +23500,12 @@ for sp_r in "-R o/r" "--repo o/r" "--repo=o/r" "-Ro/r"; do
     *) bad "32p gh pr $sp_r 문면" "$msg" ;;
   esac
   # shellcheck disable=SC2086
-  sp_plan S32G 머지 gh pr $sp_r merge 7 --match-head-commit "$H32G"
-  check "32p: 워크트리 HEAD 에 결속된 gh pr $sp_r merge 는 룰로 진행한다 (리뷰 없으니 exit 3)" "$rc" "3"
-  if sa_names_rule; then ok "32p: gh pr $sp_r merge — 그 거절이 리뷰-후-머지 를 지명한다"; else bad "32p gh pr $sp_r 룰 이름" "$msg"; fi
+  sp_plan S32G 머지 gh pr $sp_r merge 7 --admin --match-head-commit "$H32G"
+  check "32p: 워크트리 HEAD 에 결속된 gh pr $sp_r merge 는 룰로 진행한다 (exit 3)" "$rc" "3"
+  case "$msg" in
+    *"--admin"*) ok "32p: gh pr $sp_r merge — 그 거절이 관리자 우회를 지목한다" ;;
+    *) bad "32p gh pr $sp_r 룰 문면" "$msg" ;;
+  esac
 done
 
 # gh api 의 머지 철자 — 사다리·결속·협업면이 한 판독을 쓴다. `?query`·`#`·후행 `/` 가
@@ -23673,11 +23729,11 @@ check "32p: 묶음 -iX PUT 머지를 커밋 으로 낮춘 선언은 exit 8 이�
 # 자동 머지·머지 큐 진입은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어난다 —
 # 결속 인자를 실어도 결속이 아니다.
 check "32p: --auto 의 gh pr merge 는 결속 없는 머지다" \
-  "$(sp_mb gh pr merge 7 --auto --match-head-commit "$X32")" "없음"
+  "$(sp_mb gh pr merge 7 --admin --auto --match-head-commit "$X32")" "없음"
 check "32p: 뒤에 붙은 --auto=true 도 같다" \
-  "$(sp_mb gh pr merge 7 --match-head-commit "$X32" --auto=true)" "없음"
-check "32p: 대조군 — --auto=false 의 gh pr merge 는 그 sha 에 결속된다" \
-  "$(sp_mb gh pr merge 7 --auto=false --match-head-commit "$X32")" "$X32"
+  "$(sp_mb gh pr merge 7 --admin --match-head-commit "$X32" --auto=true)" "없음"
+check "32p: 대조군 — --auto=false 의 --admin gh pr merge 는 그 sha 에 결속된다" \
+  "$(sp_mb gh pr merge 7 --admin --auto=false --match-head-commit "$X32")" "$X32"
 q32ea=$(printf 'query=mutation{enablePullRequestAutoMerge(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$X32")
 q32eq=$(printf 'query=mutation{enqueuePullRequest(input:{pullRequestId:"PR_x",expectedHeadOid:"%s"}){clientMutationId}}' "$X32")
 for sp_q in "$q32ea" "$q32eq"; do
@@ -23685,7 +23741,7 @@ for sp_q in "$q32ea" "$q32eq"; do
   check "32p: 사다리가 $sp_n 을 머지로 읽는다" "$(sp_ld gh api graphql -f "$sp_q")" "머지"
   check "32p: expectedHeadOid 를 실은 $sp_n 은 결속 없는 머지다" "$(sp_mb gh api graphql -f "$sp_q")" "없음"
 done
-sp_plan S32G 머지 gh pr merge 7 --auto --match-head-commit "$H32G"
+sp_plan S32G 머지 gh pr merge 7 --admin --auto --match-head-commit "$H32G"
 check "32p: 워크트리 HEAD 를 실은 --auto 머지는 거절된다" "$rc" "2"
 if sp_bound; then ok "32p: --auto — 문면이 결속을 지목한다"; else bad "32p --auto 문면" "$msg"; fi
 case "$msg" in
@@ -23742,9 +23798,9 @@ check "32p: find -exec 의 {} 를 받는 gh api 를 사다리가 머지로 읽�
 check "32p: find -exec 의 {} 를 받는 gh api 는 결속 없는 머지다" \
   "$(sp_mb find merge -maxdepth 0 -exec gh api -X PUT 'repos/o/r/pulls/7/{}' ';')" "없음"
 check "32p: find -exec 의 {} 를 받는 gh pr merge 도 결속 없는 머지다" \
-  "$(sp_mb find . -maxdepth 0 -exec gh pr merge {} --match-head-commit "$X32" ';')" "없음"
+  "$(sp_mb find . -maxdepth 0 -exec gh pr merge {} --admin --match-head-commit "$X32" ';')" "없음"
 check "32p: 대조군 — {} 없는 find -exec gh 는 안쪽 철자로 읽는다" \
-  "$(sp_mb find . -maxdepth 0 -exec gh pr merge 7 --match-head-commit "$X32" ';')" "$X32"
+  "$(sp_mb find . -maxdepth 0 -exec gh pr merge 7 --admin --match-head-commit "$X32" ';')" "$X32"
 check "32p: 대조군 — 다른 -exec 의 {} 는 gh 를 머지로 만들지 않는다" \
   "$(sp_ld find . -exec cat {} ';' -exec gh pr view 7 ';')" ""
 sp_plan S32G 머지 find "$SA_ROOT" -maxdepth 0 -exec gh api -X PUT 'repos/o/r/pulls/7/{}' -f "sha=$H32G" ';'
@@ -25889,16 +25945,17 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SDH_PREV_AR"
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
 #
 # 섹션 35 의 픽스처 규약을 그대로 쓴다(자기 저장소·자기 원장·자기 매니페스트).
-# 다른 점은 하나다 — 이 집합의 argv 는 `gh pr merge` 이고, 그것이 사전 인가에
-# 있어야 사전-인가-대조 의 exit 5 가 먼저 서지 않는다. `sb_new` 가 그 한 줄을
-# 더한다.
+# 다른 점은 하나다 — 이 집합의 argv 는 `gh` 머지(결속된 것은 REST `gh api`)이고,
+# 그것이 사전 인가에 있어야 사전-인가-대조 의 exit 5 가 먼저 서지 않는다. `sb_new`
+# 가 그 행들을 더한다.
 #
 # 이 집합의 단언이 지키는 계약은 섹션 35 의 넷에 하나를 더한 것이다:
 #   5. 거절 단언은 그 거절을 낸 **소비자**를 함께 가른다. 저신고의 exit 8 과
 #      인가 상한의 exit 3 은 같은 argv 를 다른 이유로 막으므로, 코드만 재면
 #      한쪽을 지워도 다른 쪽이 초록으로 덮어 준다.
 #
-# `gh pr merge` 는 픽스처의 원격이 로컬 베어 경로라 **반드시 실패한다**. 그래서
+# `gh` 머지는 픽스처의 원격이 로컬 베어 경로이고 gh 가 미인증·도달 불가 호스트를
+# 보므로 **반드시 실패한다**. 그래서
 # 통과를 재는 단언은 rc 가 아니라 **게이트가 행위 앞에 쓴 `결정=act` 행**을
 # 읽는다 — 그 행이 곧 게이트의 판정이고, 행위의 rc 는 게이트의 답이 아니다.
 # ---------------------------------------------------------------------------
@@ -26061,7 +26118,7 @@ sa_seg_row SB5B 선머지후리뷰
 check "5b: 세그먼트 행은 기록된다" "$rc" "0"
 sa_commit '작업' >/dev/null
 # 통과의 증인은 종료 코드가 아니라 원장 행이다. 픽스처 레포에는 GitHub 원격이
-# 없어 `gh pr merge` 자체가 실패하므로 rc 0 은 애초에 관측되지 않는다 — 재려는
+# 없어 `gh` 머지 자체가 실패하므로 rc 0 은 애초에 관측되지 않는다 — 재려는
 # 것은 명령의 성공이 아니라 게이트가 그 명령을 내보냈는가이고, 그것을 말하는 것은
 # 인가 행이다. rc 3 은 그 반대 방향의 증인이라 함께 본다.
 sb_merge SB5B 머지
@@ -31770,11 +31827,12 @@ fi
 # ---------------------------------------------------------------------------
 c61_new() {
   # c61_new <라벨> — 베이스에 플러그인·프로브를 커밋해 원격까지 올리고, 세그먼트를
-  # 그 위로 당긴 뒤 세그먼트 행을 쓴다. 사전 인가에 `gh pr` 를 싣는 것은 착지 argv 가
-  # 지명한 head 를 재는 `gh pr merge … --match-head-commit` 예보가 사전-인가-대조 의
-  # exit 5 에서 먼저 멈추지 않게 하려는 것이다 — 그 5 는 프로브까지 닿지 못한 답이다.
+  # 그 위로 당긴 뒤 세그먼트 행을 쓴다. 사전 인가에 `gh pr`·`gh api` 를 싣는 것은 착지
+  # argv 가 지명한 head 를 재는 `gh pr merge … --match-head-commit`·REST `sha` 예보가
+  # 사전-인가-대조 의 exit 5 에서 먼저 멈추지 않게 하려는 것이다 — 그 5 는 프로브까지
+  # 닿지 못한 답이다.
   sa_new "$1" 리뷰없음
-  SA_PREAUTH_EXTRA='gh pr'
+  SA_PREAUTH_EXTRA=$'gh pr\ngh api'
   sa_manifest 리뷰없음
   rm -rf "$SA_RUN"
   mkdir -p "$SA_WT/plugins" "$SA_WT/scripts"
@@ -31866,6 +31924,16 @@ case "$raw" in
   *'grade-regression probe: 양성 대조: true 읽기 → 읽기'*)
     ok "61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다" ;;
   *) bad "61c: 지명된 head 가 오케스트레이터를 바꾸면 로컬 tip 이 무관해도 프로브가 돈다" "$raw" ;;
+esac
+# REST 머지는 `sha` 필드로 head 를 지명하고 바로 그 커밋을 착지시키므로 같은 head 를 잰다.
+sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CG \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$c61_side"
+check "61c: 오케스트레이터를 바꾼 head 를 sha 로 지명한 REST 머지 예보가 통과한다" "$rc" "0"
+case "$raw" in
+  *'grade-regression probe: 양성 대조: true 읽기 → 읽기'*)
+    ok "61c: REST 머지의 sha 가 지명한 head 로 프로브가 돈다" ;;
+  *) bad "61c: REST 머지의 sha 가 지명한 head 로 프로브가 돈다" "$raw" ;;
 esac
 c61_plan_mhc deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 check "61c: 풀리지 않는 head 를 지명한 머지 예보가 11 로 끝난다" "$rc" "11"
@@ -33727,6 +33795,40 @@ else
   lsr_in Linux "$L88D" - in88 "$M88D" gate_segment_merged_row t S2 워크트리="$W88" 선행=없음 >/dev/null 2>&1 || true
   check "88: K2 위에서 드라이버의 머지됨 조립 함수가 낸 행에도 머지 대조=이월 이 실린다" \
     "$( { grep '^- `segment` ' "$L88D" || true; } | tail -1 | grep -c '| 머지 대조=이월 ' || true)" "1"
+
+  # 기각 — 사람이 좌석에서 마지막 사이클을 기각하면 `다음` 표와 머지 룰은 카운트보다
+  # 먼저 그것을 읽어 머지를 통과시킨다. 머지 대조의 카운트 절반도 같은 순서로 읽어
+  # `기각` 을 내고, 조건 11 은 그것을 통과시킨다. 기각은 그 사이클과 리뷰 HEAD 에만
+  # 묶이므로 뒤에 선 새 사이클은 다시 카운트로 읽히고, 덮지 않는 머지는 기각이어도
+  # 위반(미포함) 이다.
+  DISM88='- `리뷰 기각` | 교대=1 | 세그먼트=S2 | 사이클=2 | 리뷰 HEAD=abc1234 | 기각 P0=0 | 기각 P1=1 | 근거=x | prev=x'
+  L88K=$(l88 dismissed 0 "$DISM88")
+  check "88: 기각된 P1>0 사이클의 카운트 판정은 기각 이다" "$(q88 "$L88K" gate_segment_review_count_verdict S2)" "기각"
+  check "88: 기각된 P1>0 사이클을 덮는 머지의 머지 대조는 기각 이다" \
+    "$(q88 "$L88K" gate_merge_check_value 선리뷰후머지 "$(q88 "$L88K" gate_segment_review_count_verdict S2)" 덮는다)" "기각"
+  check "88: 기각된 사이클을 덮지 않는 머지의 머지 대조는 위반(미포함) 이다" \
+    "$(q88 "$L88K" gate_merge_check_value 선리뷰후머지 "$(q88 "$L88K" gate_segment_review_count_verdict S2)" '덮지 않는다')" "위반(미포함)"
+  L88K0=$(l88 dismissed-p0 0 \
+    '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=3 | P0=1 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=x | prev=x' \
+    '- `리뷰 기각` | 교대=1 | 세그먼트=S2 | 사이클=3 | 리뷰 HEAD=abc1234 | 기각 P0=1 | 기각 P1=0 | 근거=x | prev=x')
+  check "88: 기각된 P0>0 사이클의 카운트 판정도 기각 이다" "$(q88 "$L88K0" gate_segment_review_count_verdict S2)" "기각"
+  L88KQ=$(l88 dismissed-noncanon 0 \
+    '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=3 | P0=0 | 리뷰 HEAD=abc1234 | 리포트 경로=x | prev=x' \
+    '- `리뷰 기각` | 교대=1 | 세그먼트=S2 | 사이클=3 | 리뷰 HEAD=abc1234 | 기각 P0=0 | 기각 P1=0 | 근거=x | prev=x')
+  check "88: 기각은 카운트의 정규형보다 먼저 읽힌다" "$(q88 "$L88KQ" gate_segment_review_count_verdict S2)" "기각"
+  L88KN=$(l88 dismissed-then-new 0 "$DISM88" \
+    '- `cycle` | 교대=1 | 세그먼트=S2 | 사이클=3 | P0=0 | P1=1 | 리뷰 HEAD=abc1234 | 리포트 경로=x | prev=x')
+  check "88: 기각 뒤에 선 새 사이클의 카운트 판정은 위반 이다" "$(q88 "$L88KN" gate_segment_review_count_verdict S2)" "위반"
+  L88KM=$(l88 dismissed-merged 0 "$DISM88" '- `segment` | 교대=1 | id=S2 | 상태=머지됨 | 워크트리=- | 머지 대조=기각 | prev=x')
+  L88KU=$(l88 dismissed-uncovered 0 "$DISM88" '- `segment` | 교대=1 | id=S2 | 상태=머지됨 | 워크트리=- | 머지 대조=위반(미포함) | prev=x')
+  check "88: 조건 11 은 머지 대조=기각 을 통과시키고 덮지 않는 기각 머지의 위반(미포함) 를 붙잡는다" \
+    "$(q88 "$L88KM" gate_done_conditions | grep -c '^11 ' || true)/$(q88 "$L88KU" gate_done_conditions | grep -c '^11 ' || true)" "0/1"
+  # 카운트 위반으로 머지된 뒤의 해소 — 좌석의 기각과 둘째 머지됨 행이 조건 11 을
+  # 풀고, 앞의 위반 행은 원장에 그대로 남는다.
+  L88KR=$(l88 resolved 0 '- `segment` | 교대=1 | id=S2 | 상태=머지됨 | 워크트리=- | 머지 대조=위반(카운트) | prev=x' \
+    "$DISM88" '- `segment` | 교대=1 | id=S2 | 상태=머지됨 | 워크트리=- | 머지 대조=기각 | prev=x')
+  check "88: 위반(카운트) 머지 뒤 기각과 둘째 머지됨 행이 조건 11 을 푼다 — 위반 행은 남는다" \
+    "$(q88 "$L88KR" gate_done_conditions | grep -c '^11 ' || true)/$(grep -c '| 머지 대조=위반(카운트) ' "$L88KR" || true)" "0/1"
 fi
 
 # --- epilogue-begin ---
