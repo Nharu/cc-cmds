@@ -975,7 +975,9 @@ fi
 # the two merge pins (the prescribed REST merge with its method, bound by its
 # `sha` field to the worktree HEAD's full sha rather than a cycle row's review
 # HEAD, and the sentence that a `gh pr merge` without `--admin` binds nothing),
-# the fetch before the apply, the apply act's fixed token,
+# the park-and-cone disposition of a merge refused with 405 (a router has no
+# halt record to write, and without the `park` the next shift sends the same
+# merge again), the fetch before the apply, the apply act's fixed token,
 # the park-and-cone disposition of a precondition refusal, the cycle cap's
 # reason, and the `다음` branches that send a segment to the carry-over
 # procedure, the guard re-convergence and a sliced review. The fix prompt must
@@ -990,6 +992,8 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   for spec in \
     '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
     '#### Merging and applying a segment|A `gh pr merge` without `--admin` is refused as unbound even with `--match-head-commit`' \
+    '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the 405' \
+    '#### Merging and applying a segment|The `park` makes the segment terminal, so the next shift does not send the same merge again' \
     '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
     "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
     '#### Merging and applying a segment|First issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
@@ -1018,6 +1022,12 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     ok "$who 사본의 「Merging and applying a segment」 절에 사이클 행의 리뷰 HEAD 로 묶는 옛 머지 처방이 없다"
   else
     bad "$who 사본의 「Merging and applying a segment」 절" "옛 자리표시 「last cycle row>」가 ${nold}번 있다"
+  fi
+  nhalt=$(grep -cF -- 'write a halt record' "$file" || true)
+  if [ "${nhalt:-0}" = "0" ]; then
+    ok "$who 사본은 라우터에게 halt 기록을 쓰라고 지시하지 않는다"
+  else
+    bad "$who 사본" "라우터가 쓸 수 없는 halt 기록을 쓰라는 지시가 ${nhalt}줄 있다"
   fi
   fsec=$(router_section "$file" '#### Re-dispatching the implementation after review findings')
   prompt=$(printf '%s\n' "$fsec" | grep -oE -- '-- implement -p "/cc-cmds:implement-unattended .*"$' | sort -u)

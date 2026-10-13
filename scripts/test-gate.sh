@@ -23791,6 +23791,36 @@ check "32p: 대조군 — 이스케이프한 이름의 라벨 쓰기는 머지�
 check "32p: 대조군 — 이스케이프한 이름의 라벨 쓰기는 협업면이다" \
   "$(sp_cs 협업 gh api -X PATCH 'repos/o/r/labels/bug%20fix' -f color=fff)" "예"
 
+# 백그라운드 머지 …/merge-async 와 머지 없이 브랜치를 옮기는 REST 쓰기 — 어느 쪽도
+# 리뷰된 HEAD 에 묶이지 않는다. 사다리는 머지로, 결속은 없음으로, 협업면은 아니오로 읽는다.
+sp_n=0
+for sp_a in "-X PUT repos/o/r/pulls/7/merge-async -f sha=$X32" \
+            "-X PUT repos/o/r/pulls/7/merge-async -f sha=$X32 -f merge_action=direct_merge" \
+            "-X POST repos/o/r/pulls/7/merge-async -f merge_action=merge_queue" \
+            "-X PATCH repos/o/r/git/refs/heads/master -f sha=$X32" \
+            "-X POST repos/o/r/git/refs -f ref=refs/heads/master -f sha=$X32" \
+            "-X PUT repos/o/r/contents/a.txt -f branch=master -f message=m -f content=YQ==" \
+            "-X PUT repos/o/r/contents/a.txt -f message=m -f content=YQ==" \
+            "-X POST repos/o/r/merge-upstream -f branch=master"; do
+  sp_n=$((sp_n + 1))
+  # shellcheck disable=SC2086
+  check "32p: 사다리가 REST 철자 $sp_n ($sp_a) 을 머지로 읽는다" "$(sp_ld gh api $sp_a)" "머지"
+  # shellcheck disable=SC2086
+  check "32p: REST 철자 $sp_n 은 결속 없는 머지다" "$(sp_mb gh api $sp_a)" "없음"
+  # shellcheck disable=SC2086
+  check "32p: REST 철자 $sp_n 은 협업면이 아니다" "$(sp_cs 협업 gh api $sp_a)" "아니오"
+done
+sp_plan S32G 머지 gh api -X PUT repos/o/r/pulls/7/merge-async -f "sha=$H32G"
+check "32p: 워크트리 HEAD 를 sha 로 실은 …/merge-async 는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: …/merge-async — 문면이 결속을 지목한다"; else bad "32p …/merge-async 문면" "$msg"; fi
+sp_plan S32G 머지 gh api -X PATCH repos/o/r/git/refs/heads/master -f "sha=$H32G"
+check "32p: 워크트리 HEAD 로 base ref 를 옮기는 REST 쓰기는 거절된다" "$rc" "2"
+if sp_bound; then ok "32p: …/git/refs — 문면이 결속을 지목한다"; else bad "32p …/git/refs 문면" "$msg"; fi
+sp_plan S32G 커밋 gh api -X PUT repos/o/r/pulls/7/merge-async
+check "32p: …/merge-async 를 커밋 으로 낮춘 선언은 exit 8 이다" "$rc" "8"
+check "32p: 대조군 — ref 읽기는 머지가 아니다" "$(sp_mb gh api repos/o/r/git/refs/heads/master)" "해당없음"
+check "32p: 대조군 — …/merge-async GET 은 머지가 아니다" "$(sp_ld gh api -X GET repos/o/r/pulls/7/merge-async)" ""
+
 # find -exec 안에서 {} 를 받는 gh 호출 — 매치 경로가 들어간 뒤의 철자를 읽을 수 없으므로
 # 사다리는 머지로, 결속은 없음으로 읽는다.
 check "32p: find -exec 의 {} 를 받는 gh api 를 사다리가 머지로 읽는다" \

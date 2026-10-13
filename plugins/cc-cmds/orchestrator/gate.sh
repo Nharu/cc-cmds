@@ -1044,8 +1044,9 @@ gate_collaboration_surface() {
               esac ;;
             # A pull request path with a dot segment or an escape is read
             # before the `*/reviews/*` substrings below, which took
-            # `…/merge/reviews/..` as a review.
-            graphql-ref|rest-unbound) return 1 ;;
+            # `…/merge/reviews/..` as a review. The background merge and the
+            # REST ref writes are base changes the same way.
+            graphql-ref|rest-unbound|rest-async|rest-ref) return 1 ;;
           esac
           # THE ENDPOINT IS READ FROM THE PARSE, NOT FROM THE WORDS. Matched as
           # a substring of the whole argv, an inert `-t graphql` or
@@ -6921,8 +6922,10 @@ GATE_GHAPI_SEGS
 gate_gh_api_merge_kind() {
   # After `gate_gh_api_parse`: prints `rest` for a pull request merge over REST,
   # `rest-unbound` for a pull request path it cannot read as written,
-  # `branch` for a REST branch merge, `graphql` for a GraphQL mutation that
-  # merges, nothing otherwise.
+  # `rest-async` for the background pull request merge, `rest-ref` for a REST
+  # write that moves a branch without a pull request, `branch` for a REST
+  # branch merge, `graphql` for a GraphQL mutation that merges, nothing
+  # otherwise.
   #
   # A REST merge is a non-GET against `…/pulls/<n>/merge`. `…/merges` merges a
   # branch or a commit into another with no pull request at all, and its body
@@ -6954,10 +6957,25 @@ gate_gh_api_merge_kind() {
   # percent-decoded, and with a `.`, `..` or empty segment or any `%` escape,
   # is a merge with no binding. A label or comment path with no `pulls`
   # segment is not touched by this, so an escaped label name stays a label.
+  #
+  # THE BACKGROUND MERGE AND THE REST REF WRITES ARE MERGES TOO. `…/merge-async`
+  # merges a pull request in the background or adds it to a merge queue, and
+  # GitHub recommends it over `…/merge`; ending in neither `/merge` nor
+  # `/merges`, it named no rung, answered `해당없음` to the binding and stayed
+  # off the collaboration surface, so a remote merge passed with nothing tied
+  # to the reviewed HEAD. Its merge comes after the request, as a queue entry's
+  # does, so it is `rest-async`, a merge with no binding whatever `sha` it
+  # carries. The REST twins of the GraphQL ref writes move a branch without
+  # merging anything: a write to `…/git/refs…`, a write to `…/contents/…`
+  # (which commits to the default branch when it names no `branch`) and
+  # `…/merge-upstream`. They are `rest-ref`, a base change with no binding,
+  # whichever branch they name — as `updateRef` is.
   case "$GATE_GHAPI_METHOD" in GET|get|HEAD|head) return 0 ;; esac
   if gate_gh_api_path_unread; then printf 'rest-unbound'; return 0; fi
   case "$GATE_GHAPI_PATH" in
     */pulls/*/merge) printf 'rest'; return 0 ;;
+    */pulls/*/merge-async) printf 'rest-async'; return 0 ;;
+    */git/refs|*/git/refs/*|*/contents/*|*/merge-upstream) printf 'rest-ref'; return 0 ;;
     */merges) printf 'branch'; return 0 ;;
     graphql|*/graphql) : ;;
     *) return 0 ;;
@@ -7229,7 +7247,9 @@ gate_gh_graphql_binding() {
 # field, `gh pr merge --admin --match-head-commit <sha>` and the GraphQL
 # `expectedHeadOid` — so the gate requires that argument and requires it to
 # name the worktree HEAD. A merge spelling with no such argument (`…/merges`,
-# `mergeBranch`), one that merges after the request (`--auto`,
+# `mergeBranch`), a REST write that moves a branch (`…/git/refs…`,
+# `…/contents/…`, `…/merge-upstream`), one that merges after the request
+# (`…/merge-async`, `--auto`,
 # `enablePullRequestAutoMerge`, `enqueuePullRequest`, and a `gh pr merge`
 # without `--admin`, which enables auto-merge or enters the merge queue on a
 # base that requires one, `--match-head-commit` or not), a REST merge with a
@@ -7371,7 +7391,9 @@ gate_merge_binding_of_gh() {
         # on, not the content it puts there.
         # Nor does a pull request path the gate cannot read as written: the
         # endpoint a `sha` field would reach is the server's resolution of it.
-        branch|graphql-ref|rest-unbound) printf '%s' '없음'; return 0 ;;
+        # Nor does the background merge, which merges after the request, nor
+        # a REST ref write, which moves a branch with no head to hold.
+        branch|graphql-ref|rest-unbound|rest-async|rest-ref) printf '%s' '없음'; return 0 ;;
         rest) : ;;
         *)
           # A GraphQL body this gate cannot read may be a merge it cannot
@@ -25534,7 +25556,7 @@ gate_verb_act() {
       mhead=$(gate_segment_tip "$segment") || mhead=""
       if [ "$mbind" = '없음' ] || [ -z "$mhead" ] || [ "$mbind" != "$mhead" ]; then
         warn "원격 머지 argv 가 세그먼트 $segment 의 워크트리 HEAD 에 결속되지 않았습니다 — 결속 인자: ${mbind}, 워크트리 HEAD: ${mhead:-읽지 못함}"
-        warn "머지는 REST 서식 gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<워크트리 HEAD 40자> -f merge_method=<merge|squash|rebase> 로 다시 부릅니다. --admin 없는 gh pr merge 는 --match-head-commit 을 달아도 결속이 아닙니다 — 머지 큐를 요구하는 베이스에서 그것은 자동 머지를 켜거나 큐에 넣어 헤드를 요청 시점에만 대조하기 때문입니다. 머지 큐를 요구하는 베이스에서는 REST 머지가 405 로 거부되어 게이트를 지나는 결속된 머지가 서지 않으므로, 그 머지는 사람에게 넘깁니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)은 세그먼트 브랜치로 push 한 뒤 위 REST 서식으로 바꿔 부릅니다. 자동 머지·머지 큐 진입(gh pr merge --auto, enablePullRequestAutoMerge, enqueuePullRequest)은 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어나므로 결속으로 받지 않습니다 — 위 REST 서식으로 바로 머지합니다. REST 머지의 쿼리스트링에 sha 를 두지 않고, find -exec 안에서 {} 를 받는 gh 호출은 맨 철자로 바꿔 부릅니다"
+        warn "머지는 REST 서식 gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<워크트리 HEAD 40자> -f merge_method=<merge|squash|rebase> 로 다시 부릅니다. --admin 없는 gh pr merge 는 --match-head-commit 을 달아도 결속이 아닙니다 — 머지 큐를 요구하는 베이스에서 그것은 자동 머지를 켜거나 큐에 넣어 헤드를 요청 시점에만 대조하기 때문입니다. 머지 큐를 요구하는 베이스에서는 REST 머지가 405 로 거부되어 게이트를 지나는 결속된 머지가 서지 않으므로, 그 머지는 사람에게 넘깁니다. GraphQL mergePullRequest 는 그 필드 하나만 둔 mutation 의 input 안에 expectedHeadOid: \"<워크트리 HEAD>\" 를 인라인으로 한 번 적고(# 주석·\"\"\" 블록 문자열·프래그먼트·지시어·다른 mutation 필드·파일 본문·input 변수 통째 넘김은 읽지 않고, \$변수 는 엔드포인트를 정확히 graphql 로 적었을 때만 query·operationName 이 아닌 필드에서 읽습니다), 결속 인자가 없는 머지(…/merges, mergeBranch)와 머지 없이 ref 를 바꾸는 GraphQL mutation(updateRefs·updateRef·createCommitOnBranch 등)과 머지 없이 브랜치를 옮기는 REST 쓰기(…/git/refs, …/contents/…, …/merge-upstream)는 세그먼트 브랜치로 push 한 뒤 위 REST 서식으로 바꿔 부릅니다. 자동 머지·머지 큐 진입·백그라운드 머지(gh pr merge --auto, enablePullRequestAutoMerge, enqueuePullRequest, …/pulls/<n>/merge-async)는 HEAD 를 요청 시점에만 대조하고 머지는 나중에 일어나므로 결속으로 받지 않습니다 — 위 REST 서식으로 바로 머지합니다. REST 머지의 쿼리스트링에 sha 를 두지 않고, find -exec 안에서 {} 를 받는 gh 호출은 맨 철자로 바꿔 부릅니다"
         exit "$GATE_EXIT_VOCAB"
       fi
     else
