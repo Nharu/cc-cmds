@@ -1145,6 +1145,61 @@ done
 check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "$fix_prompt_rs" "$fix_prompt"
 
 # ---------------------------------------------------------------------------
+# 6e-4. The merge-order sentences are byte-identical in BOTH router copies
+#
+# The two copies are not compared whole — their paragraphs already differ in
+# parentheses and wording — so each sentence that carries the second kind of
+# ordering is pinned on its own: the dependency condition that reads `선행`
+# alone, the planning rule over both lists, the merge that waits for an empty
+# `머지 대기`, the 405 disposition that never brings the base into the branch,
+# and the clause that chooses which live stage to wait on. Each literal must
+# occur exactly once in each copy, which is what makes the two byte-identical
+# without comparing the paragraphs around them. A literal under a heading both
+# copies share is searched inside that section; the dependency sentence and the
+# waiting clause sit under different headings in the two copies and are counted
+# over the whole file. The full waiting sentence, with its `--timeout 540`
+# foreground wait, belongs to the shift's copy alone: the lead copy waits in the
+# background under `Monitor`.
+# ---------------------------------------------------------------------------
+mo_count() {  # mo_count <text> <literal> — occurrences, not lines
+  printf '%s\n' "$1" | grep -oF -- "$2" | wc -l | tr -d ' '
+}
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for spec in \
+    '|The **dependency** condition reads `선행` alone — implementation precedence, a predecessor that has not landed. A predecessor named only in `머지 순서` does not hold back the dispatch; it holds back the merge alone (see 「Merging and applying a segment」).' \
+    '|on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment.' \
+    '#### Planning the segments|**A slice is planned when two conditions hold together**: every `선행` token'"'"'s predecessor has its last `segment` row at `머지됨` or `완료`, and every `머지 순서` token of the slice — read from the snapshot'"'"'s `슬라이싱.세그먼트[]`, because a slice with no row yet is not in `segments[]` — already has a `segment` row.' \
+    '#### Planning the segments|A slice whose `선행` is `없음` and whose `머지 순서` tokens all have rows is planned and dispatched at once, cut from the current base.' \
+    '#### Planning the segments|A `머지 순서` token with no row yet (that slice still waits on its own `선행`) defers the slice until the row appears, and a slice carrying both lists follows the same product: with D `선행` A and D `머지 순서` C, D waits for C'"'"'s row even after A has landed.' \
+    '#### Planning the segments|Planned earlier, the slice is refused with exit 2 by the floor that requires every token to name a segment this ledger knows.' \
+    '#### Planning the segments|The two imports below — a predecessor an earlier run already merged, and one the manifest'"'"'s `선행 착지` row names — apply to a `머지 순서` token as well, and the planning act writes that predecessor'"'"'s row itself; without them the row would never appear and the slice would never be planned.' \
+    '#### Planning the segments|With C `머지 순서` B and B `선행` A, B is planned after A lands, and C is planned once B'"'"'s row exists and runs alongside B.' \
+    '#### Planning the segments|Pass no `머지 순서` on the planning row: the gate writes it from the declaration and carries it forward.' \
+    '#### Merging and applying a segment|**Whatever the review policy, merge a segment only when its snapshot `머지 대기` is empty.** A non-empty `머지 대기` names the predecessors, by `선행` or `머지 순서`, that have not landed yet: do other work, or wait as 「Waiting on a stage」 chooses.' \
+    '#### Merging and applying a segment|A refusal with exit 3 that names such a predecessor and its `상태` means the same — wait — whether the refused act was the merge or another act leaving the worktree whose grade the gate could not read; it is not **Any other cause** below, and nothing is written for it. A predecessor that was parked has already parked this segment through its cone.' \
+    '#### Merging and applying a segment|A `머지 순서` successor refused with 405 for a conflict takes this branch as it stands: never merge or rebase the moved base into its branch, which would make a HEAD no review read.'
+  do
+    head=${spec%%|*}; lit=${spec#*|}
+    if [ -n "$head" ]; then
+      text=$(router_section "$file" "$head"); where="「${head#'#### '}」 절"
+    else
+      text=$(cat "$file"); where="파일 전체"
+    fi
+    n=$(mo_count "$text" "$lit")
+    if [ "$n" = "1" ]; then
+      ok "$who 사본의 ${where}에 머지 순서 문장이 한 번 실린다 — 「${lit:0:60}…」"
+    else
+      bad "$who 사본의 ${where} — 머지 순서 문장" "「${lit:0:60}…」이 ${n}번 있다 (기대 1)"
+    fi
+  done
+done
+mo_wait='When nothing is dispatchable or mergeable and two or more segment stages are live, wait (`gate.sh wait --segment <id> --timeout 540`) on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment. On exit 13 or when that stage ends, take a fresh snapshot and route every stage that has left `live_stages[]` before waiting again.'
+check "교대 사본의 「Waiting on a stage」 절에 대기 문장 전체가 한 번 실린다" \
+  "$(mo_count "$(router_section "$RS_SKILL" '### Waiting on a stage')" "$mo_wait")" "1"
+check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
+
+# ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key
 #
 # Every ledger here is synthetic and written to its own file under $WORK; the
