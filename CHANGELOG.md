@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **팀원용 지시 파일** — 게이트가 리드 파일과 함께 팀원 파일(정책 전문, 레포 밖 조상 원문, 레포 지시 파일은 절대 경로 한 줄)을 내용 주소 이름으로 합성하고, 리드 파일 옆 `<리드 sha256>.member` 포인터로 잇는다. 감독자와 라우터 교대 기동은 포인터가 있으면 래퍼에 `--member-instructions` 를 넘긴다.
 - **`stage-wrapper.sh --member-instructions <file>`** — 서브에이전트 append 프롬프트를 그 파일로 한다. `--instructions` 없이 쓰거나 없는·빈 파일이면 거부한다. 주입하는 분기에서 `CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1` 을 켠다.
-- **`stage-policy-drift.sh --identity <file>`** — 작업 공간 지시 파일의 모든 절이 TSV `workspace` 행과 축자 표제로 맞고 본문이 신선하면 0 을 낸다. 식별된 파일이 깨지면 어느 절인지 한 줄로 말한다. `--ack-store` 로 확인 저장소를 바꿀 수 있고, `--explain`·`--ack` 는 `--workspace <file>` 로 맵 없이 원천을 찾으며 그 형태에서는 `excluded:*` 행 본문도 비교한다.
+- **`stage-policy-drift.sh --identity <file>`** — 작업 공간 지시 파일의 모든 절이 TSV `workspace` 행과 축자 표제로 맞고 본문이 신선하면 0 을 낸다. `--ack-added` 로 기록한 호스트 로컬 처분은 그 접두가 파일에서 한 절에만 맞고, `excluded:*` 이며, 본문이 이 호스트가 그 처분에 기록한 해시와 같을 때만 그 절을 덮는다. 그 아래 본문을 고치면 파일이 다시 실리고 `--explain --workspace` 가 `changed` 로 보인다. 식별된 파일이 깨지면 어느 절인지 한 줄로 말한다. `--ack-store` 로 확인 저장소를 바꿀 수 있고, `--explain`·`--ack` 는 `--workspace <file>` 로 맵 없이 원천을 찾으며 그 형태에서는 `excluded:*` 행 본문도 비교한다.
 - **맵의 `keep` 줄** — 그 파일은 동일성 판정 없이 원문 전체로 싣는다.
 - **무인 표면 린트 규칙 9** — 가벼운 설계 팔이 목록에 적은 discuss 팔 부분이 정확히 한 줄에 맞는지 단언한다.
 
