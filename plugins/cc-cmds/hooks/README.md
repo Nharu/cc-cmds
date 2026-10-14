@@ -349,19 +349,29 @@ two files a person edits by hand, and the session that just made the edit is the
 one that knows what the edit meant.
 
 **When it acts.** Only when `.tool_input.file_path` is the user-scope
-`CLAUDE.md` (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md`) or the file the
-host map's `workspace` line names (`~/.config/cc-cmds/stage-policy-sources`).
-Both sides are compared with their directory resolved by `pwd -P`, so a path
-that came in through a linked settings directory is the same file. Every other
-edit ends after one `jq` call.
+`CLAUDE.md` (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md`), the file the
+host map's `workspace` line names (`~/.config/cc-cmds/stage-policy-sources`),
+or — with no such map line — a `CLAUDE.md` with at least one heading equal to a
+`workspace` anchor of `../orchestrator/stage-policy.sources.tsv`. That last one
+is how the gate identifies the workspace source before it leaves the file out
+of a stage by content identity, so an edit that brings the file back into every
+stage is shown to the person who made it. (A map line names a file the gate
+always leaves out; a map line whose source id is `keep` names one it always
+keeps verbatim and never judges.) Both sides are compared with their directory
+resolved by `pwd -P`, so a path that came in through a linked settings
+directory is the same file. Every other edit ends after one `jq` call.
 
-**What it does.** It runs `../orchestrator/stage-policy-drift.sh --explain`, and
+**What it does.** It runs `../orchestrator/stage-policy-drift.sh --explain` —
+with `--workspace <file>` when the file was identified without a map line — and
 when the last line is `mismatch` it writes one object to stdout:
 `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"…"}}`.
 The context, cut at 6000 bytes, carries the findings and their diffs, the policy
 section to compare each one with, the instruction to run `--ack` once and only
 after the user confirms every pending finding — `--ack` has no per-row form and
-records them all, so a single rejection means it is not run — the rule that an `added` item
+records them all, so a single rejection means it is not run; under `--workspace`
+that includes a `changed` item on an `excluded:*` row, a manifest row or a
+host-local disposition recorded with `--ack-added`, whose record lets stages
+leave the file out again — the rule that an `added` item
 is recorded with `--ack-added` when it is excluded or belongs to a skill and
 needs a repository change when it belongs in the policy, and the prohibition on
 recording anything without that confirmation. The instructions come before the
@@ -369,7 +379,8 @@ findings, so the cap cuts findings and never the prohibition. They also state
 the checker's finding count (from the `mismatch <n>` line) and tell the session
 to run `--explain` itself before any `--ack`. When the findings do not fit, they
 are cut at a line boundary and end in
-`[truncated: the checker reported <n> finding(s); run bash "<checker>" --explain for the full list]`,
+`[truncated: the checker reported <n> finding(s); run bash "<checker>" --explain for the full list]`
+(with `--workspace "<file>"` after the checker path in the identified case),
 so a partial list never reads as the whole one.
 
 **Why stdout is used here.** The banner seats keep stdout empty because it is

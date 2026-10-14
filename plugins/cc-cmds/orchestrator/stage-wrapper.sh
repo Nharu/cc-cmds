@@ -48,9 +48,20 @@
 # Usage:
 #   stage-wrapper.sh --settings <file> --plugin-dir <dir> --session-id <uuid>
 #                    [--mode A|B] [--fifo <path>] [--resume <session-id>]
-#                    [--instructions <file>] [--autocompact <n>]
-#                    [--effort <level>] [--model <model>]
+#                    [--instructions <file> [--member-instructions <file>]]
+#                    [--autocompact <n>] [--effort <level>] [--model <model>]
 #                    -- <cli args...>
+#
+# `--member-instructions <file>` is the file the Agent-tool members get through
+# `--append-subagent-system-prompt-file`; without it they get the
+# `--instructions` file, as the lead does. The gate synthesizes it beside the
+# lead file — the same policy, the ancestors outside the repository, and the
+# repository's own instruction files as paths to read — so a read-only member
+# does not carry the lead's whole chain. It is refused (exit 2) without
+# `--instructions`, and when the file is absent or empty, for the same reason
+# as an empty `--instructions`: the members would run with no rules. It is not
+# a flag after `--`, so it is not on the reserved list below; that list guards
+# the arguments handed to the CLI.
 #
 # With `--instructions`, the arguments after `--` must not contain any of the
 # twelve flags the gate owns when it injects instructions
@@ -81,7 +92,7 @@
 set -uo pipefail
 
 SETTINGS=""; PLUGIN_DIR=""; SESSION_ID=""; MODE="A"; FIFO=""; RESUME=""; INSTRUCTIONS=""; AUTOCOMPACT=""
-EFFORT=""; MODEL=""
+EFFORT=""; MODEL=""; MEMBER_INSTRUCTIONS=""; MEMBER_GIVEN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --settings)   SETTINGS="$2"; shift 2 ;;
@@ -91,6 +102,7 @@ while [ $# -gt 0 ]; do
     --fifo)       FIFO="$2"; shift 2 ;;
     --resume)     RESUME="$2"; shift 2 ;;
     --instructions) INSTRUCTIONS="$2"; shift 2 ;;
+    --member-instructions) MEMBER_INSTRUCTIONS="$2"; MEMBER_GIVEN=1; shift 2 ;;
     --autocompact) AUTOCOMPACT="$2"; shift 2 ;;
     --effort)     EFFORT="$2"; shift 2 ;;
     --model)      MODEL="$2"; shift 2 ;;
@@ -117,9 +129,16 @@ done
 # runs with no rules and ends as a success. The reserved flags are refused
 # because the CLI lets a repeated `--append-system-prompt-file` win silently
 # (rc 0), so one after `--` would replace the gate's policy without a trace.
+if [ "$MEMBER_GIVEN" = 1 ]; then
+  [ -n "$INSTRUCTIONS" ] \
+    || { printf 'stage-wrapper: --member-instructions needs --instructions — without it nothing is injected and the members file would have no lead beside it\n' >&2; exit 2; }
+  [ -s "$MEMBER_INSTRUCTIONS" ] \
+    || { printf 'stage-wrapper: --member-instructions file is missing or empty: %s\n' "$MEMBER_INSTRUCTIONS" >&2; exit 2; }
+fi
 if [ -n "$INSTRUCTIONS" ]; then
   [ -s "$INSTRUCTIONS" ] \
     || { printf 'stage-wrapper: --instructions file is missing or empty: %s\n' "$INSTRUCTIONS" >&2; exit 2; }
+  [ -n "$MEMBER_INSTRUCTIONS" ] || MEMBER_INSTRUCTIONS="$INSTRUCTIONS"
   for arg in "$@"; do
     case "$arg" in
       --append-system-prompt|--append-system-prompt=*|\
@@ -176,7 +195,14 @@ CLI_BIN="${CC_CLAUDE_BIN:-}"
 # would leave its team with no rules either; keeping the two in one `if` makes
 # that state unexpressible. `--append-system-prompt-file` reaches only the main
 # session and `--append-subagent-system-prompt-file` reaches the Agent-tool
-# members, so both carry the same file. `--exclude-dynamic-system-prompt-sections`
+# members: the lead file goes to the first, and the members file — or the lead
+# file again when none was given — to the second. The subagent flag is
+# `@internal` and takes effect only under
+# `CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1`, which nothing else in this
+# repository sets, so the injecting branches export it themselves: with
+# discovery switched off and the flag inert, a member would run with no rules
+# at all. The non-injecting branches unset it for the same inheritance reason
+# as the discovery switch below. `--exclude-dynamic-system-prompt-sections`
 # moves the per-machine sections (cwd, git status) out of the system prompt so
 # the injected block stays cacheable across stages. Automatic memory is left on:
 # only CLAUDE.md discovery is switched off here.
@@ -206,15 +232,17 @@ CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -n "$RESUME" ]; then
   if [ -n "$INSTRUCTIONS" ]; then
     export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+    export CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            -r "$RESUME" --strict-mcp-config \
            ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \
            ${EFFORT:+--effort "$EFFORT"} ${MODEL:+--model "$MODEL"} \
            --append-system-prompt-file "$INSTRUCTIONS" \
-           --append-subagent-system-prompt-file "$INSTRUCTIONS" \
+           --append-subagent-system-prompt-file "$MEMBER_INSTRUCTIONS" \
            --exclude-dynamic-system-prompt-sections "$@"
   else
     unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+    unset CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            -r "$RESUME" --strict-mcp-config \
            ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \
@@ -223,15 +251,17 @@ if [ -n "$RESUME" ]; then
 else
   if [ -n "$INSTRUCTIONS" ]; then
     export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+    export CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            --session-id "$SESSION_ID" --strict-mcp-config \
            ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \
            ${EFFORT:+--effort "$EFFORT"} ${MODEL:+--model "$MODEL"} \
            --append-system-prompt-file "$INSTRUCTIONS" \
-           --append-subagent-system-prompt-file "$INSTRUCTIONS" \
+           --append-subagent-system-prompt-file "$MEMBER_INSTRUCTIONS" \
            --exclude-dynamic-system-prompt-sections "$@"
   else
     unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+    unset CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            --session-id "$SESSION_ID" --strict-mcp-config \
            ${AUTOCOMPACT:+--autocompact "$AUTOCOMPACT"} \

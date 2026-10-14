@@ -1216,6 +1216,9 @@ export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
 # what a launch injects and make a fixture pass or fail by host. The sections
 # that test the map name their own fixture map on the call, which wins over this.
 export CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map"
+# The identity judgment reads the host's acknowledgement store the same way, so
+# it is pointed at a store that does not exist.
+export CC_GATE_STAGE_POLICY_ACK="$WORK/no-such-ack-store"
 
 # THE METRICS ROUND IS INERT FOR THIS WHOLE PROCESS, for the same two reasons.
 # Every verb but `plan` runs the collector from the prelude once the stamp is
@@ -2150,7 +2153,8 @@ pre_base() {
   # THE CLI-SHAPED STUB IS A DEFINITION, so it lives here: 14h launches through
   # it and 14g resumes through it, and a cut of 14g alone died on `STUB: unbound
   # variable` while it sat in 14h's body. It records the argv it was handed and
-  # the two discovery switches in its environment, then emits one result line.
+  # the two discovery switches and the subagent-append switch in its
+  # environment, then emits one result line.
   # With `CC_STUB_ECHO_SID=1` the result's `session_id` is the `--session-id` or
   # `-r` value on the argv, which is what the real CLI answers — the resume
   # fixtures need the ledger's session id to be the one the gate recorded its
@@ -2165,7 +2169,8 @@ pre_base() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "${CC_STUB_ARGV_OUT:-/dev/null}"
 { printf 'MDS=%s\n' "${CLAUDE_CODE_DISABLE_CLAUDE_MDS-unset}"
-  printf 'MEM=%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
+  printf 'MEM=%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}"
+  printf 'SUB=%s\n' "${CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
 if [ -n "${CC_STUB_MODEL:-}" ]; then
   printf '{"type":"system","subtype":"init","model":"%s"}\n' "$CC_STUB_MODEL"
 fi
@@ -7129,6 +7134,9 @@ esac
 # path with the stub CLI echoing the session id the gate handed it, so the
 # ledger's `세션 id` is the name the record was written under.
 printf '# resume fixture root\n\nSG-ROOT-CANARY-4T\n' > "$WT/CLAUDE.md"
+# The host shell may carry the subagent-append switch; cleared so the unset
+# branches below are asserted rather than inherited.
+unset CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SG --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
@@ -7156,8 +7164,13 @@ sg_launch "$WORK/sg-argv-1.txt" "$WORK/sg-env-1.txt" --resume "$sg_sid"
 check "기록 있는 세션의 재개가 끝까지 간다" "$rc" "0"
 check "재개 argv 가 -r 로 그 세션을 잇는다" "$(si_argv_value "$WORK/sg-argv-1.txt" -r)" "$sg_sid"
 check "기록 있는 세션의 재개는 append 플래그를 받는다 — 기록된 파일로" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-system-prompt-file)" "$sg_f0"
-check "서브에이전트 append 도 같은 파일이다" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-subagent-system-prompt-file)" "$sg_f0"
+# The members file is found through the pointer beside the recorded lead file,
+# so a resume cannot put the lead and its team on different syntheses.
+sg_m0=$(head -n 1 "${sg_f0%.md}.member" 2>/dev/null)
+check "첫 기동의 서브에이전트 append 는 리드 파일 옆 포인터가 가리키는 팀원 파일이다" "$(si_argv_value "$WORK/sg-argv-0.txt" --append-subagent-system-prompt-file)" "$sg_m0"
+check "서브에이전트 append 도 리드 파일의 포인터를 따른다" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-subagent-system-prompt-file)" "$sg_m0"
 check "재개 환경에도 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-1.txt")" "1"
+check "재개 환경에 서브에이전트 append 활성 변수가 서 있다" "$(sed -n 's/^SUB=//p' "$WORK/sg-env-1.txt")" "1"
 # The re-attachment passes through the same injection block as a fresh launch,
 # so a `review` resume carries the window beside `-r` — read anew, not copied.
 check "재개 argv 에 -r 와 --autocompact 300000 이 함께 있다" \
@@ -7193,6 +7206,7 @@ check "기록 없는 세션의 재개는 append 플래그를 받지 않는다" "
 check "서브에이전트 append 도 없다" "$(si_argv_has "$WORK/sg-argv-4.txt" --append-subagent-system-prompt-file)" "0"
 check "동적 절 제외도 없다" "$(si_argv_has "$WORK/sg-argv-4.txt" --exclude-dynamic-system-prompt-sections)" "0"
 check "그 환경에는 끄기 변수가 없다 — 옛 방식 그대로" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-4.txt")" "unset"
+check "그 환경에는 서브에이전트 append 활성 변수도 없다" "$(sed -n 's/^SUB=//p' "$WORK/sg-env-4.txt")" "unset"
 case "$out" in
   *"launching in legacy mode"*) ok "옛 방식 재개를 log 한다" ;;
   *) bad "옛 방식 log" "$(printf '%s' "$out" | grep -i 'legacy\|stage instructions' | tr '\n' ' ')" ;;
@@ -7206,11 +7220,12 @@ check "재개는 새 세션 기록을 만들지 않는다" "$( [ -e "$RD/instruc
 # dispatches. Argv alone cannot tell the two apart: both legacy launches expand
 # no `--append-...` flag, and only the environment says whether discovery is off.
 # Run the same legacy resume with the variable exported by the caller.
-export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1
 sg_launch "$WORK/sg-argv-5.txt" "$WORK/sg-env-5.txt" --resume "$sg_sid"
-unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+unset CLAUDE_CODE_DISABLE_CLAUDE_MDS CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT
 check "물려받은 끄기 변수가 서 있어도 옛 방식 재개가 끝까지 간다" "$rc" "0"
 check "옛 방식 재개는 물려받은 끄기 변수를 지운다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-5.txt")" "unset"
+check "옛 방식 재개는 물려받은 서브에이전트 append 활성 변수도 지운다" "$(sed -n 's/^SUB=//p' "$WORK/sg-env-5.txt")" "unset"
 check "그 재개도 append 플래그를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-system-prompt-file)" "0"
 check "그 재개도 서브에이전트 append 를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-subagent-system-prompt-file)" "0"
 rm -f "$WT/CLAUDE.md"
@@ -7439,7 +7454,13 @@ esac
 SI_POLICY="$repo_root/plugins/cc-cmds/orchestrator/stage-policy.md"
 SI_F=$(si_argv_value "$WORK/stub-argv.txt" --append-system-prompt-file)
 SI_SUB=$(si_argv_value "$WORK/stub-argv.txt" --append-subagent-system-prompt-file)
-check "기동 argv 의 메인·서브에이전트 append 플래그가 같은 파일을 가리킨다" "$SI_SUB" "$SI_F"
+# The members file is the one the pointer beside the lead file names: the lead
+# gets the repository's own files as text, the members get them as paths.
+SI_M=$(head -n 1 "${SI_F%.md}.member" 2>/dev/null)
+check "리드 파일 옆에 팀원 파일 포인터가 있다" "$( [ -n "$SI_M" ] && [ -s "$SI_M" ] && printf yes || printf no )" "yes"
+check "기동 argv 의 서브에이전트 append 플래그가 포인터의 팀원 파일을 가리킨다" "$SI_SUB" "$SI_M"
+check "팀원 파일은 리드 파일과 다른 파일이다" "$( [ "$SI_SUB" != "$SI_F" ] && printf differ || printf same )" "differ"
+check "스텁 환경에 서브에이전트 append 활성 변수가 서 있다" "$(sed -n 's/^SUB=//p' "$WORK/stub-env.txt")" "1"
 case "$SI_F" in
   "$RD_SL/instructions/"*.md)
     si_base=$(basename "$SI_F" .md)
@@ -7492,7 +7513,37 @@ check "직접 호출한 합성이 기동이 넘긴 것과 같은 파일이다 (�
 si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>/dev/null); si_rc=$?
 check "같은 별칭의 두 번째 합성도 같은 경로다" "$si_out" "$SI_F"
 check "두 번째 합성 뒤에도 임시 파일이 남지 않는다 (mv -n 이 건너뛴 사본을 지운다)" \
-  "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
+  "$( { ls "$RD_SL"/instructions/.stage.* "$RD_SL"/instructions/.member.* "$RD_SL"/instructions/.pointer.* 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# THE MEMBERS FILE: the same policy and ancestors, the repository's own files as
+# a path line each. Read through the pointer the synthesis left, never by name.
+si_mf=$(head -n 1 "${SI_F%.md}.member" 2>/dev/null)
+case "$si_mf" in
+  "$RD_SL/instructions/"*.md)
+    if [[ "$(basename "$si_mf" .md)" =~ ^[0-9a-f]{64}$ ]]; then
+      ok "팀원 파일도 instructions/ 아래 내용 주소(<sha256>.md)다"
+    else
+      bad "팀원 파일 이름" "$si_mf"
+    fi ;;
+  *) bad "팀원 파일 위치" "$si_mf — \$RUN_DIR/instructions/ 아래가 아니다" ;;
+esac
+check "팀원 파일 이름은 자기 바이트의 sha256 이다" \
+  "$(shasum -a 256 "$si_mf" 2>/dev/null | cut -d' ' -f1)" "$(basename "$si_mf" .md)"
+if [ -f "$si_mf" ] && head -c "$(wc -c < "$SI_POLICY" | tr -d ' ')" "$si_mf" | cmp -s - "$SI_POLICY"; then
+  ok "팀원 파일도 정책 바이트로 시작한다"
+else
+  bad "팀원 파일 머리" "정책 바이트로 시작하지 않는다: $si_mf"
+fi
+check "팀원 파일은 레포 밖 조상 CLAUDE.md 를 본문째 담는다" "$(grep -c 'SI-ANCESTOR-CANARY-3K' "$si_mf" 2>/dev/null || true)" "1"
+check "팀원 파일은 대상 루트 CLAUDE.md 의 본문을 담지 않는다" "$(grep -c 'SI-ROOT-CANARY-7Q' "$si_mf" 2>/dev/null || true)" "0"
+si_rootabs="$(cd "$WT" && pwd -P)/CLAUDE.md"
+check "대상 루트 파일은 라벨 아래 경로 한 줄로 온다" \
+  "$(awk -v l='# t/infra/CLAUDE.md' -v p="$si_rootabs" '$0 == l { getline; getline; if ($0 == p) print "path"; exit }' "$si_mf")" "path"
+check "그 경로 줄은 파일에 한 번만 있다" "$(grep -c -x -F "$si_rootabs" "$si_mf" 2>/dev/null || true)" "1"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>/dev/null)
+check "같은 바이트의 재합성은 같은 팀원 파일을 가리킨다" "$(head -n 1 "${si_out%.md}.member" 2>/dev/null)" "$si_mf"
+printf '  정보: 이 픽스처의 리드 파일 %s 바이트, 팀원 파일 %s 바이트\n' \
+  "$(wc -c < "$SI_F" | tr -d ' ')" "$(wc -c < "$si_mf" | tr -d ' ')"
 
 # Host map, guard by guard. `WORKP` spellings in the map, because the map is
 # compared physically; the chain-side normalization gets its own case below.
@@ -7547,6 +7598,122 @@ sed "s#별칭=infra | 메인 워크트리=$WT #별칭=infra | 메인 워크트�
 printf 'workspace\t%s/anc/real/CLAUDE.md\n' "$WORKP" > "$WORK/map-physanc"
 si_out=$(si_synth "$WORK/plan-symroot.md" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-physanc" 2>/dev/null); si_rc=$?
 check "심링크를 거친 메인 워크트리의 체인도 물리 철자의 맵 줄에 맞는다" "$(grep -c 'SI-SYMANC-CANARY-8R' "$si_out" 2>/dev/null || true)" "0"
+
+# IDENTITY WITHOUT A MAP: an ancestor no map line names is left out when every
+# section of it matches a workspace row of the stage policy manifest. A gate
+# copy of its own carries a manifest of two workspace rows for the ancestor
+# below, hashed through the checker's own extraction, so the real manifest's
+# rows are not what is measured. The ancestor file is restored afterwards.
+SI_IDG="$WORK/gate-ident"
+rm -rf "$SI_IDG"; cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$SI_IDG"
+cp "$WORK/CLAUDE.md" "$WORK/CLAUDE.md.keep"
+printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+si_idh() {
+  ( . "$SI_IDG/stage-policy-drift.sh"; drift_entries workspace "$WORK/CLAUDE.md" ) \
+    | awk -F'\t' -v a="$1" '$1 == a { print $2 }'
+}
+{
+  printf 'source\tanchor\tsha256\tdisposition\tnote\n'
+  printf 'workspace\t# Ident top\t%s\texcluded:workspace-local\t\n' "$(si_idh '# Ident top')"
+  printf 'workspace\t## Ident rules\t%s\tpolicy:Citations in documents\t\n' "$(si_idh '## Ident rules')"
+} > "$SI_IDG/stage-policy.sources.tsv"
+si_idsynth() {
+  si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra SI_GATE_DIR="$SI_IDG" "$@" 2>"$WORK/si-err.txt"); si_rc=$?
+}
+si_idsynth
+check "정체 판정: 모든 절이 매니페스트와 맞으면 합성이 성공한다" "$si_rc" "0"
+check "그 조상 파일이 리드 파일에서 빠진다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "0"
+check "팀원 파일에서도 빠진다" "$(grep -c 'SI-IDENT-CANARY-6W' "$(head -n 1 "${si_out%.md}.member")" 2>/dev/null || true)" "0"
+case "$(cat "$WORK/si-err.txt")" in
+  *"excluding $WORKP/CLAUDE.md — every section matches the stage policy manifest"*) ok "정체 판정의 제외가 log 한 줄로 남는다" ;;
+  *) bad "정체 판정 제외 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# The host map still wins: a map line names the same file and the log says so.
+si_idsynth CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-anc"
+case "$(cat "$WORK/si-err.txt")" in
+  *"excluding $WORKP/CLAUDE.md by the host map"*) ok "맵 줄이 있으면 정체 판정보다 맵이 먼저다" ;;
+  *) bad "맵 우선" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# A `keep` line includes the file whole, without asking the checker.
+printf 'keep\t%s/CLAUDE.md\n' "$WORKP" > "$WORK/map-keep"
+si_idsynth CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-keep"
+check "keep 줄이 지목한 조상은 판정이 맞아도 통째로 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"keeping $WORKP/CLAUDE.md by the host map"*) ok "keep 은 log 한 줄로 남는다" ;;
+  *) bad "keep log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# A body edit under an excluded row breaks identity: included, one log line
+# naming the section.
+printf '# Ident top\nSI-IDENT-CANARY-6W edited\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "본문이 바뀐 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+check "깨진 절마다 keeping log 한 줄이다" \
+  "$(grep -c -F "keeping $WORKP/CLAUDE.md — stage-policy-drift: identity broken: " "$WORK/si-err.txt" || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"identity broken: "*"# Ident top: manifest "*) ok "그 log 는 깨진 절의 표제를 지목한다" ;;
+  *) bad "깨짐 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# The same edit acknowledged in the store passes again: the checker reads
+# `CC_GATE_STAGE_POLICY_ACK` as the gate passes it.
+mkdir -p "$WORK/si-ackstore"
+{
+  printf 'source\tanchor\tsha256\tdisposition\tacked-at\n'
+  printf 'workspace\t# Ident top\t%s\texcluded:workspace-local\t2026-01-01T00:00:00Z\n' "$(si_idh '# Ident top')"
+} > "$WORK/si-ackstore/acks.tsv"
+si_ack_ok=$(cd "$WORK" && env -u CC_PIPELINE_RUN_ID bash "$SI_IDG/stage-policy-drift.sh" \
+  --identity "$WORK/CLAUDE.md" --ack-store "$WORK/si-ackstore" >/dev/null 2>&1 && printf 0 || printf 1)
+if [ "$si_ack_ok" = 0 ]; then
+  si_idsynth CC_GATE_STAGE_POLICY_ACK="$WORK/si-ackstore"
+  check "확인 저장소에 든 excluded 행의 새 해시는 다시 제외된다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "0"
+else
+  bad "확인 저장소 픽스처" "검사기가 손으로 쓴 저장소를 받지 않았다 — 저장소 형식을 다시 볼 것"
+fi
+# An added section breaks identity.
+printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n## Ident extra\nmore\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "절이 하나 늘어난 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"## Ident extra: added section"*) ok "늘어난 절이 log 에 지목된다" ;;
+  *) bad "추가 절 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# Text before the first heading belongs to no row.
+printf 'loose line\n# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "첫 표제 앞에 본문이 있는 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"(before the first heading)"*) ok "첫 표제 앞 본문이 log 에 지목된다" ;;
+  *) bad "첫 표제 앞 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# An ancestor no workspace row names is included silently.
+printf '# Unrelated\nSI-IDENT-CANARY-6W\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "어느 행에도 맞지 않는 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+check "그때는 keeping log 가 없다" "$(grep -c -F "keeping $WORKP/CLAUDE.md" "$WORK/si-err.txt" || true)" "0"
+# The sizes after the change, on a chain shaped like this host's: this
+# repository's own CLAUDE.md as the root file and an identified ancestor that
+# the judgment leaves out. Printed, not asserted — the measurement is the output.
+# That file is not tracked: a linked worktree reads the main worktree's copy,
+# and a fresh checkout without one (CI) skips the measurement.
+si_host_claude="$repo_root/CLAUDE.md"
+if [[ ! -s "$si_host_claude" ]]; then
+  si_common=$(cd "$repo_root" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  [[ -n "$si_common" ]] && si_host_claude="$(dirname "$si_common")/CLAUDE.md"
+fi
+if [[ -s "$si_host_claude" ]]; then
+  cp "$WT/CLAUDE.md" "$WORK/root-claude.keep"; cp "$si_host_claude" "$WT/CLAUDE.md"
+  printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+  si_idsynth
+  check "호스트 모양 픽스처의 합성도 성공한다" "$si_rc" "0"
+  printf '  정보: 호스트 모양 픽스처(레포 CLAUDE.md 루트, 식별된 조상 제외)의 리드 파일 %s 바이트, 팀원 파일 %s 바이트, 레포 CLAUDE.md %s 바이트\n' \
+    "$(wc -c < "$si_out" | tr -d ' ')" "$(wc -c < "$(head -n 1 "${si_out%.md}.member")" | tr -d ' ')" \
+    "$(wc -c < "$si_host_claude" | tr -d ' ')"
+  cp "$WORK/root-claude.keep" "$WT/CLAUDE.md"; rm -f "$WORK/root-claude.keep"
+else
+  printf '  정보: 레포 CLAUDE.md 가 없어 호스트 모양 측정을 건너뛴다 (추적되지 않는 파일)\n'
+fi
+unset si_host_claude si_common
+cp "$WORK/CLAUDE.md.keep" "$WORK/CLAUDE.md"; rm -f "$WORK/CLAUDE.md.keep"
+unset -f si_idh si_idsynth
 
 # Refusals, each restoring the fixture afterwards.
 mkdir -p "$WORK/.claude/rules"
@@ -7698,6 +7865,30 @@ check "--instructions 가 있으면 두 append 와 동적 절 제외가 --strict
 si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --instructions "$SI_F" -- -p a; si_rc=$?
 check "재개 분기도 같은 플래그를 받는다" "$(cat "$WORK/wrap-argv.txt")" \
   "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+# `--member-instructions` splits the two appends: the lead file to the main
+# session, the members file to the subagents, on both id branches.
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" --member-instructions "$SI_M" -- -p a; si_rc=$?
+check "--member-instructions 가 있으면 서브에이전트 append 만 팀원 파일로 바뀐다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_M --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --instructions "$SI_F" --member-instructions "$SI_M" -- -p a; si_rc=$?
+check "재개 분기도 팀원 파일을 서브에이전트 append 로 받는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_M --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" --member-instructions "$WORK/no-such-members" -- -p a; si_rc=$?
+check "없는 팀원 파일은 exit 2 다" "$si_rc" "2"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" --member-instructions "$WORK/empty-instructions" -- -p a; si_rc=$?
+check "빈 팀원 파일도 exit 2 다" "$si_rc" "2"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --member-instructions "$SI_M" -- -p a; si_rc=$?
+check "--instructions 없는 --member-instructions 는 exit 2 다" "$si_rc" "2"
+# The subagent-append switch is exported on the injecting branches and removed
+# on the others, whatever the caller's environment held.
+( cd "$WT" && env -u CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT CC_CLAUDE_BIN="$STUB" \
+    CC_STUB_ARGV_OUT="$WORK/wrap-argv.txt" CC_STUB_ENV_OUT="$WORK/wrap-env.txt" \
+    bash "$SI_WRAP" --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p a >/dev/null 2>&1 )
+check "주입 분기는 서브에이전트 append 활성 변수를 세운다" "$(sed -n 's/^SUB=//p' "$WORK/wrap-env.txt")" "1"
+( cd "$WT" && CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1 CC_CLAUDE_BIN="$STUB" \
+    CC_STUB_ARGV_OUT="$WORK/wrap-argv.txt" CC_STUB_ENV_OUT="$WORK/wrap-env.txt" \
+    bash "$SI_WRAP" --settings "$SI_SET" --plugin-dir "$WORK" --session-id x -- -p a >/dev/null 2>&1 )
+check "주입하지 않는 분기는 물려받은 활성 변수를 지운다" "$(sed -n 's/^SUB=//p' "$WORK/wrap-env.txt")" "unset"
 # The wrapper's own `--autocompact <n>` lands on the CLI argv after
 # `--strict-mcp-config`, on both id branches, and only when given.
 si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --autocompact 300000 --instructions "$SI_F" -- -p a; si_rc=$?
@@ -25423,7 +25614,9 @@ out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
       -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5" 2>&1); rc=$?
 check "(f) 지침 주입 픽스처의 교대가 기동한다" "$rc" "0"
 f_shift_f=$(si_argv_value "$WORK/shift-argv.txt" --append-system-prompt-file)
-check "(f) 교대 argv 의 두 append 플래그가 같은 파일을 가리킨다" "$(si_argv_value "$WORK/shift-argv.txt" --append-subagent-system-prompt-file)" "$f_shift_f"
+check "(f) 교대 argv 의 서브에이전트 append 는 리드 파일 옆 포인터의 팀원 파일이다" \
+  "$(si_argv_value "$WORK/shift-argv.txt" --append-subagent-system-prompt-file)" "$(head -n 1 "${f_shift_f%.md}.member" 2>/dev/null)"
+check "(f) 교대 환경에 서브에이전트 append 활성 변수가 서 있다" "$(sed -n 's/^SUB=//p' "$WORK/shift-env.txt")" "1"
 case "$f_shift_f" in
   "$SHIFT_DIR/instructions/"*.md) ok "(f) 교대의 합성 파일도 런 디렉터리 instructions/ 아래다" ;;
   *) bad "(f) 교대 합성 파일 위치" "$f_shift_f" ;;

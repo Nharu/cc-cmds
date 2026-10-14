@@ -3,7 +3,8 @@
 # Test scripts/lint-unattended-surfaces.sh against
 # tests/fixtures/lint-unattended-surfaces/.
 #
-# Each fixture directory is a SKILLS_ROOT: it holds `<skill>/SKILL.md` trees.
+# Each fixture directory is a SKILLS_ROOT: it holds `<skill>/SKILL.md` trees,
+# with the arm's own `<skill>/references/*.md` where a case needs one.
 # The directory name encodes the expected exit code:
 #   OK-*   → expected exit 0
 #   FAIL-* → expected exit 1
