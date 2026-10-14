@@ -123,7 +123,7 @@ unset TMUX TMUX_PANE
 # The launch switches go too: the effort, model and window on every launch argv
 # the suite measures would otherwise be a property of the caller's shell. The
 # sections that exercise a switch set it on the call.
-unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
+unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL
 # VERSION PINNING IS OFF FOR THE WHOLE SUITE, and this seam only ever turns off
 # the taking of a NEW pin — it can never make the gate ignore one that exists.
 # Every fixture run below would otherwise copy the plugin root into its fixture
@@ -6888,15 +6888,29 @@ check "끄기 스위치는 review 도 빈 값으로 만든다" "$(ac_kind AC_KIN
 # reached through the gate's source of `run.sh`: the gate holds no copy, so a
 # gate-side definition that drifts from the driver's is a failure here.
 lf_kind() {
-  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL "$@" \
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL "$@" \
     bash -c '. "'"$GATE"'"; stage_launch_flags "$LF_KIND"' _
 }
 for lf_k in design reconverge audit; do
   check "$lf_k 기동 플래그는 high 와 opus 다" "$(lf_kind LF_KIND=$lf_k)" "--effort high --model opus"
 done
-for lf_k in implement review shift generic; do
+for lf_k in implement review generic; do
   check "$lf_k 기동 플래그는 medium 과 opus 다" "$(lf_kind LF_KIND=$lf_k)" "--effort medium --model opus"
 done
+# The shift alone takes its model from `CC_ORCH_SHIFT_MODEL`, `sonnet` by
+# default and for any value outside `sonnet`/`opus`.
+check "shift 기동 플래그는 medium 과 sonnet 이다" "$(lf_kind LF_KIND=shift)" "--effort medium --model sonnet"
+check "CC_ORCH_SHIFT_MODEL=opus 는 교대를 opus 로 되돌린다" \
+  "$(lf_kind LF_KIND=shift CC_ORCH_SHIFT_MODEL=opus)" "--effort medium --model opus"
+check "CC_ORCH_SHIFT_MODEL 의 닫힌 집합 밖 값은 무시된다" \
+  "$(lf_kind LF_KIND=shift CC_ORCH_SHIFT_MODEL=haiku)" "--effort medium --model sonnet"
+for lf_k in implement review generic; do
+  check "$lf_k 는 CC_ORCH_SHIFT_MODEL 을 읽지 않는다" \
+    "$(lf_kind LF_KIND=$lf_k CC_ORCH_SHIFT_MODEL=sonnet)" "--effort medium --model opus"
+done
+check "model 끄기 스위치는 교대의 --model 도 뺀다" \
+  "$(lf_kind LF_KIND=shift CC_ORCH_STAGE_MODEL=off)|$(lf_kind LF_KIND=shift CC_ORCH_STAGE_MODEL=off CC_ORCH_SHIFT_MODEL=opus)" \
+  "--effort medium|--effort medium"
 check "review:low 재정의는 review 만 낮춘다" \
   "$(lf_kind LF_KIND=review CC_ORCH_STAGE_EFFORT=review:low)|$(lf_kind LF_KIND=implement CC_ORCH_STAGE_EFFORT=review:low)" \
   "--effort low --model opus|--effort medium --model opus"
@@ -25179,6 +25193,11 @@ case "$a_shift_row" in
   *" | effort=medium | "*) ok "(a) 기동 행이 교대의 effort 를 싣는다" ;;
   *) bad "(a) 교대 기동 effort" "$a_shift_row" ;;
 esac
+# The model the argv requested rides on the row too — `sonnet` by default.
+case "$a_shift_row" in
+  *" | 모델=sonnet | "*) ok "(a) 기동 행이 교대의 모델을 싣는다" ;;
+  *) bad "(a) 교대 기동 모델" "$a_shift_row" ;;
+esac
 # THE LIVE STAGE IS STILL THERE AFTERWARDS. The launch did not touch it — the
 # stage's liveness is the supervisor's business, not the shift launcher's.
 check "(a) 기동이 살아 있는 스테이지를 건드리지 않는다" \
@@ -25410,8 +25429,8 @@ case "$f_shift_f" in
   *) bad "(f) 교대 합성 파일 위치" "$f_shift_f" ;;
 esac
 check "(f) 교대 argv 에 동적 절 제외가 있다" "$(si_argv_has "$WORK/shift-argv.txt" --exclude-dynamic-system-prompt-sections)" "1"
-check "(f) 교대 argv 가 shift 종류의 effort 와 opus 를 싣는다" \
-  "$(si_argv_value "$WORK/shift-argv.txt" --effort):$(si_argv_value "$WORK/shift-argv.txt" --model)" "medium:opus"
+check "(f) 교대 argv 가 shift 종류의 effort 와 sonnet 을 싣는다" \
+  "$(si_argv_value "$WORK/shift-argv.txt" --effort):$(si_argv_value "$WORK/shift-argv.txt" --model)" "medium:sonnet"
 check "(f) 교대 환경에 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/shift-env.txt")" "1"
 check "(f) 교대도 자동 메모리는 끄지 않는다" "$(sed -n 's/^MEM=//p' "$WORK/shift-env.txt")" "unset"
 f_shift_sid=$(si_argv_value "$WORK/shift-argv.txt" --session-id)
