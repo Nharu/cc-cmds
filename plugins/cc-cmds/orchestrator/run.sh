@@ -4390,7 +4390,8 @@ spawn_route_wait() {
     fi
   fi
   if ! wait_marker_write "$m" "보유자=$holder" "지문=$(cc_proc_fingerprint "$holder")" "기록자=드라이버" \
-         "계보=$SPAWN_LINEAGE" "그룹=$grp" "까지=$upto" "갱신=$(now_epoch)" "종류=$kind" "논스=$wnonce"; then
+         "계보=$SPAWN_LINEAGE" "그룹=$grp" "까지=$upto" "갱신=$(now_epoch)" "종류=$kind" "논스=$wnonce" \
+         "$(wait_seen_kv "$env")"; then
     [ "$wnonce" = "-" ] || route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$SPAWN_LINEAGE" "$wnonce" >/dev/null 2>&1 || true
     STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (대기 표지를 쓰지 못했다)"
     return 1
@@ -7653,6 +7654,17 @@ wait_router_why() {
     || printf '라우터 판정 미상'
 }
 
+wait_seen_kv() {
+  # wait_seen_kv <envelope> — the marker line `예비=<one-line JSON array>` that
+  # carries the reset passes this wait has seen, `[]` when the envelope has
+  # none. The router judges a pass that left the held list as pressed only
+  # against this memory, so the two places that create a wait plant it from the
+  # first envelope and the loop refreshes it from every WAIT.
+  local v
+  v=$(printf '%s' "$1" | jq -c 'if (.reserve_seen | type) == "array" then .reserve_seen else [] end' 2>/dev/null) || v=""
+  printf '예비=%s' "${v:-[]}"
+}
+
 stage_wait_loop() {
   # stage_wait_loop <key> <kind> <marker> <event> <bound> <heartbeat-fn>
   #                 <deadline-fn> <stop-fn> [<ended-fn>]
@@ -7689,7 +7701,7 @@ stage_wait_loop() {
   # sleep (so no `stage-wait` row lands after the end), and once more on a
   # grant, whose fresh lease is then given back.
   local key="$1" kind="$2" m="$3" ev="$4" bound="$5" hb="$6" dl="$7" stopfn="$8" endedfn="${9:-}"
-  local lin holder stall chunk now upto ready e d slp t req env verdict why basis rdy gnonce
+  local lin holder stall chunk now upto ready e d slp t seen req env verdict why basis rdy gnonce
   WAIT_LOOP_ENV=""
   lin=$(cc_waiting_field "$m" '계보')
   holder=$(cc_waiting_field "$m" '보유자' | tr -d '[:space:]')
@@ -7734,12 +7746,19 @@ stage_wait_loop() {
     fi
     # THE EVENT STAYS THE ORIGINAL ONE and `after_wait` is added beside it: the
     # router refuses an event it does not know.
+    #
+    # THE SEEN PASSES GO AS A STRING and are parsed here: a marker value that is
+    # not a JSON array is sent as `[]`, so a damaged marker reads as no memory
+    # instead of failing the request and ending the wait.
+    seen=$(cc_waiting_field "$m" '예비')
     req=$(jq -cn --arg run "$RUN_ID" --arg lin "$lin" --arg ev "$ev" --arg kind "$kind" \
             --arg bound "$bound" --argjson pid "${holder:-0}" \
-            --argjson dl "$(wait_request_deadline "$kind")" \
+            --argjson dl "$(wait_request_deadline "$kind")" --arg seen "$seen" \
             '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid], after_wait: true,
               bound_account: (if $bound == "" then null else $bound end)}
-             + (if $dl == null then {} else {deadline: $dl} end)') || {
+             + (if $dl == null then {} else {deadline: $dl} end)
+             + {reserve_seen: ([$seen | try fromjson catch null]
+                               | if length == 1 and (.[0] | type) == "array" then .[0] else [] end)}') || {
       "$stopfn" "라우터 재질의 요청을 만들지 못했다 — $key 는 기동하지 않는다"
       wait_drop "$m"; return 3
     }
@@ -7769,6 +7788,10 @@ stage_wait_loop() {
         upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
         wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" \
           '그룹' "$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')" || true
+        # A WAIT without `reserve_seen` keeps the memory the marker already has.
+        if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
+          wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true
+        fi
         ;;
       PARK)
         if [ "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" = "deadline" ]; then
