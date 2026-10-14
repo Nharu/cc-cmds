@@ -27232,6 +27232,34 @@ check "34e: (16) 폴링 < AFTER_STAGE" "$( [ "$rl_poll" -lt "$rl_after" ] && pri
 check "34e: (16) 폴링 < SILENCE / 2" "$( [ $((rl_poll * 2)) -lt "$rl_sil" ] && printf ok || printf no)" "ok"
 check "34e: (16) SILENCE ≤ STALL" "$( [ "$rl_sil" -le "$rl_stall" ] && printf ok || printf no)" "ok"
 
+# (18) A TRANSITION OBSERVED DURING THE SEAT'S TURN IS DRAINED BY THE RE-ENTRY
+# ACT. The first call hands a CI wait back; the poller writes `통과` while no
+# gate runs, so the line is still in `checks.observed`; the re-entering
+# `router-shift -- 대기` is the act that turns it into a `checks` row, between
+# the `대기` handoff and the launch it makes.
+sleep 300 & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
+printf '%s\n' "$RL_POLL" > "$CAP_DIR/checks.pid"
+rl_case ci-handback wait
+RL_CI=RLC4 RL_HOLD=2 rl_call 상한
+rl_join
+check "34e: (18) 살아 있는 폴러의 CI 대기가 상한으로 돌아온다" "$rc:$(rl_calls)" "0:1"
+rl_observe RLC4 통과
+check "34e: (18) 좌석 턴에 관측된 통과는 아직 행이 아니다" \
+  "$( { cap_rows checks | grep -cE '\| 세그먼트=RLC4( \||$)' || true; } | tr -d ' ')" "0"
+rl_case ci-reentry cap
+rl_t=$(date +%s)
+rl_call 대기
+rl_until 30 rl_has start.1
+rl_join
+check "34e: (18) 재진입 act 가 배수한 통과로 곧바로 기동한다" \
+  "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$rc" "in:0"
+check "34e: (18) 그 checks 행은 대기 인계 뒤, 재진입의 기동 행 앞에 있다" \
+  "$(awk '/^- `handoff` / && /\| 사유=대기 \|/ && /\| CI 대기=RLC4 \|/ { h = NR }
+          /^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC4( \||$)/ { c = NR }
+          /^- `교대 기동` / && h && !l { l = NR }
+          END { print (h && c && l && h < c && c < l) ? "between" : "no" }' "$CAP_LEDGER")" "between"
+rl_stage_end "$RL_POLL"
+
 # (17) A RUN THAT ENDS WHILE THE RELAY WAITS: it hands back, launching nothing.
 # Last, because `done` closes this run.
 rl_stage RL1; rl_s="$RL_SPID"
