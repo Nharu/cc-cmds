@@ -24882,8 +24882,9 @@ gate_stage_instructions() {
   # WHAT REPLACES AUTOMATIC CLAUDE.md LOADING. A stage launched with these
   # instructions runs with `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, so nothing it
   # would have loaded on its own reaches it; this file is the whole of what it
-  # gets, and its team members get the same bytes through the subagent append.
-  # It is `stage-policy.md` (the English stage policy, byte-identical for every
+  # gets. Its team members get a second file through the subagent append (THE
+  # MEMBERS FILE, below). The lead file is `stage-policy.md` (the English stage
+  # policy, byte-identical for every
   # target, kind and segment — the cache-stable head), then the target's
   # instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
   # every ancestor of the target's MAIN worktree, root first, whichever exist.
@@ -24899,8 +24900,9 @@ gate_stage_instructions() {
   #
   # CONTENT-ADDRESSED AND FREE OF VOLATILE TOKENS: no run id, time, segment,
   # attempt or worktree path goes in, the name is the sha256 of the bytes, and
-  # so every stage and team member of one target in one run shares one file —
-  # and one prompt-cache head. `umask 077` because an ancestor file may carry
+  # so every stage of one target in one run shares one lead file — and one
+  # prompt-cache head — and every team member shares one members file. `umask
+  # 077` because an ancestor file may carry
   # a credential line: the automatic loader sent those bytes too, but the disk
   # copy must not be readable by another user, and the hook denies a stage every
   # write under `instructions/`.
@@ -24935,10 +24937,34 @@ gate_stage_instructions() {
   # comparison is between PHYSICAL paths on both sides: with one side left as
   # spelled, a symlinked spelling (`/var` vs `/private/var`) would judge a real
   # ancestor as "outside the chain" and the exclusion would vanish silently.
-  # No map at all excludes nothing — fail-open toward today's behaviour.
-  local alias="$1" root slug policy rootp cfgdir cfgp map excl=$'\n' n line id p pp
-  local d f name label fence_hit i tmp sha dst
-  local chain_files=() labels=()
+  # A line whose source id is `keep` is the opposite: the file joins the keep
+  # set, goes into the chain verbatim, and the identity judgment below is
+  # skipped for it — the one-line way a person switches the exclusion off.
+  #
+  # WITHOUT A MAP LINE, AN ANCESTOR OUTSIDE THE REPOSITORY ROOT IS JUDGED BY
+  # IDENTITY. `stage-policy-drift.sh --identity` answers whether the policy and
+  # the manifest already account for every section of the file, body hashes
+  # included; exit 0 leaves it out, anything else keeps it verbatim. An
+  # identified workspace file that fails names the breaking sections, and those
+  # lines go to this log; a file that is not the workspace source fails
+  # silently. An edit therefore brings the file back rather than dropping a
+  # rule. `CC_GATE_STAGE_POLICY_ACK` is the test seam for the acknowledgement
+  # store the judgment reads, as `CC_GATE_STAGE_POLICY_SOURCES` is for the map.
+  #
+  # THE MEMBERS FILE. Beside the lead file the same inputs make a second one,
+  # for the Agent-tool members, who are read-only: the same policy, a header
+  # saying the repository's files come as paths, the ancestors outside the
+  # repository root verbatim (after the same exclusion), and in place of each
+  # of the repository root's own instruction files the absolute path of the
+  # main worktree's file with one sentence telling the member to read the parts
+  # it needs. It is content-addressed the same way, and a pointer
+  # `instructions/<lead sha256>.member` holding its path is written beside the
+  # lead file, so a launcher that holds only the lead path — a launch token
+  # carries one — finds the members file, and a resume that follows the lead
+  # file follows its members file too.
+  local alias="$1" root slug policy rootp cfgdir cfgp map excl=$'\n' keep=$'\n' n line id p pp
+  local d f name label fence_hit i tmp sha dst mtmp msha mdst ptmp idrc idlog ackstore
+  local chain_files=() labels=() roots=()
   root=$(target_field "$alias" '메인 워크트리')
   if [ -z "$root" ] || [ ! -d "$root" ]; then
     warn "stage instructions: target '$alias' has no usable main worktree ('${root:-}') — refusing to launch; an empty chain would drop every repository rule"
@@ -24983,6 +25009,10 @@ gate_stage_instructions() {
         continue
       fi
       pp="$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
+      if [ "$id" = keep ]; then
+        keep="$keep$pp"$'\n'
+        continue
+      fi
       case "$pp" in
         "$rootp/CLAUDE.md"|"$rootp/.claude/CLAUDE.md"|"$rootp/CLAUDE.local.md")
           warn "stage instructions: host map line $n names a target root instruction file, which cannot be excluded: $p"
@@ -25011,6 +25041,24 @@ gate_stage_instructions() {
       case "$excl" in
         *$'\n'"$pp"$'\n'*) log "stage instructions: excluding $pp by the host map"; continue ;;
       esac
+      if [ "$d" != "$rootp" ]; then
+        case "$keep" in
+          *$'\n'"$pp"$'\n'*) log "stage instructions: keeping $pp by the host map" ;;
+          *)
+            ackstore="${CC_GATE_STAGE_POLICY_ACK:-${HOME:-}/.config/cc-cmds/stage-policy-ack}"
+            idrc=0
+            idlog=$(bash "$GATE_DIR/stage-policy-drift.sh" --identity "$f" --ack-store "$ackstore" 2>&1 >/dev/null) || idrc=$?
+            if [ "$idrc" = 0 ]; then
+              log "stage instructions: excluding $pp — every section matches the stage policy manifest"
+              continue
+            fi
+            if [ -n "$idlog" ]; then
+              while IFS= read -r line; do
+                [ -n "$line" ] && log "stage instructions: keeping $pp — $line"
+              done <<< "$idlog"
+            fi ;;
+        esac
+      fi
       # An `@import` line outside a fenced block: verbatim injection does not
       # expand it, so the imported rules would be lost silently. The shape
       # requires a path (`@~`, `@.`, `@/`, or `@name/`), so an annotation line
@@ -25025,8 +25073,10 @@ gate_stage_instructions() {
       fi
       if [ "$d" = "$rootp" ]; then
         label="$slug/$name"
+        roots[${#roots[@]}]=1
       else
         label="$f"
+        roots[${#roots[@]}]=0
       fi
       chain_files[${#chain_files[@]}]="$f"
       labels[${#labels[@]}]="$label"
@@ -25056,6 +25106,31 @@ gate_stage_instructions() {
     mv -n "$tmp" "$dst" 2>/dev/null || true
     [ ! -e "$tmp" ] || rm -f "$tmp"
     [ -f "$dst" ] || exit 1
+    # The members file and its pointer, published the same way.
+    mtmp=$(mktemp "$RUN_DIR/instructions/.member.XXXXXX") || exit 1
+    {
+      cat "$policy"
+      printf '\n# Repository instructions\n\nThe files below are the instruction chain of the target repository, root first. Each begins with a heading naming its file; the repository'"'"'s own files are given as paths to read, not as their text.\n'
+      i=0
+      while [ "$i" -lt "${#chain_files[@]}" ]; do
+        printf '\n---\n# %s\n\n' "${labels[$i]}"
+        if [ "${roots[$i]}" = 1 ]; then
+          printf '%s\n\nRead the parts that bear on a file before you judge or quote a rule about it.\n' "${chain_files[$i]}"
+        else
+          cat "${chain_files[$i]}"
+        fi
+        i=$((i + 1))
+      done
+    } > "$mtmp" || { rm -f "$mtmp"; exit 1; }
+    msha=$(shasum -a 256 "$mtmp" | cut -d' ' -f1)
+    mdst="$RUN_DIR/instructions/$msha.md"
+    mv -n "$mtmp" "$mdst" 2>/dev/null || true
+    [ ! -e "$mtmp" ] || rm -f "$mtmp"
+    [ -f "$mdst" ] || exit 1
+    ptmp=$(mktemp "$RUN_DIR/instructions/.pointer.XXXXXX") || exit 1
+    printf '%s\n' "$mdst" > "$ptmp" || { rm -f "$ptmp"; exit 1; }
+    mv -n "$ptmp" "$RUN_DIR/instructions/$sha.member" 2>/dev/null || true
+    [ ! -e "$ptmp" ] || rm -f "$ptmp"
     printf '%s' "$dst"
   ) || {
     warn "stage instructions: could not publish the synthesized file under $RUN_DIR/instructions — refusing to launch"
@@ -25105,6 +25180,20 @@ gate_stage_instructions_for_launch() {
     log "stage instructions: session $resume was launched with $(basename "$recf" .md); current synthesis is $(basename "$now" .md) — keeping the recorded file"
   fi
   printf '%s' "$recf"
+}
+
+gate_stage_member_instructions() {
+  # gate_stage_member_instructions <lead file> — the members file the pointer
+  # beside <lead file> names, printed; empty when there is no pointer (a file
+  # synthesized before the members file existed) or it names nothing usable, and
+  # then the wrapper gives the members the lead file, as before.
+  local lead="$1" ptr m
+  [ -n "$lead" ] || return 0
+  ptr="${lead%.md}.member"
+  [ -f "$ptr" ] || return 0
+  m=$(head -n 1 "$ptr")
+  [ -n "$m" ] && [ -s "$m" ] || return 0
+  printf '%s' "$m"
 }
 
 gate_stage_instructions_record() {
@@ -30346,6 +30435,12 @@ gate_verb_supervise_stage() {
   # account from its fourth line, and it must be there however early the stage
   # dies — and the wrapper is handed the grant's directory explicitly; the
   # wrapper itself is not changed.
+  #
+  # THE MEMBERS FILE IS FOUND FROM THE LEAD PATH, through the pointer beside it,
+  # so the token keeps its one instructions line and a resume, which follows the
+  # recorded lead file, follows that file's members file with it.
+  local member_instr
+  member_instr=$(gate_stage_member_instructions "${instr:-}")
   if [ "$routed" = "1" ]; then
     if [ -n "$r_nonce" ]; then
       hrc=0
@@ -30374,6 +30469,7 @@ gate_verb_supervise_stage() {
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     ${instr:+--instructions "$instr"} \
+    ${member_instr:+--member-instructions "$member_instr"} \
     $id_flag \
     $ac_flags \
     $launch_flags \
@@ -33829,8 +33925,9 @@ gate_launch_shift() {
   # row and the in-progress marker, so a refusal (127) leaves no shift on record
   # that never started. A shift is always a new session, so there is no resume
   # arm here.
-  local instr
+  local instr member_instr
   instr=$(gate_stage_instructions_for_launch "$alias" "") || return $?
+  member_instr=$(gate_stage_member_instructions "$instr")
 
   local plugin_dir n rc=0
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
@@ -33942,6 +34039,7 @@ gate_launch_shift() {
     --settings "$(gate_settings_file shift)" \
     --plugin-dir "$plugin_dir" \
     --instructions "$instr" \
+    ${member_instr:+--member-instructions "$member_instr"} \
     --session-id "$(session_uuid "shift" "$n")" \
     $launch_flags \
     -- "$@" > "$RUN_DIR/log/shift-$n.json" 2> "$RUN_DIR/log/shift-$n.err" < /dev/null &

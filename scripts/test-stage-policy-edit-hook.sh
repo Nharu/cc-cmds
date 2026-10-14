@@ -203,6 +203,53 @@ printf '%s' "$BASE" > "$CFG/CLAUDE.md"
 hook_run "$(payload "$CFG/CLAUDE.md")"
 silent "드리프트 없음"
 
+# A WORKSPACE FILE NO MAP LINE NAMES is identified by a heading equal to a
+# `workspace` anchor, and the checker is called with `--workspace <file>`, which
+# compares an `excluded:*` row's body too. A plugin copy of its own carries the
+# user-scope rows above and two workspace rows built from the fixture file.
+WSPLUG="$WORK/ws-plugin"
+WSD="$WORK/ws"
+mkdir -p "$WSPLUG/orchestrator" "$WSD"
+cp "$CHECKER" "$WSPLUG/orchestrator/stage-policy-drift.sh"
+printf '# Top\nlocal notes\n## Rules\nthe citation rule\n' > "$WSD/CLAUDE.md"
+ws_hash_of() {
+  ( . "$CHECKER"; drift_entries workspace "$WSD/CLAUDE.md" ) \
+    | awk -F'\t' -v a="$1" '$1 == a { print $2 }'
+}
+{
+  cat "$PLUG/orchestrator/stage-policy.sources.tsv"
+  printf 'workspace\t# Top\t%s\texcluded:workspace-local\t\n' "$(ws_hash_of '# Top')"
+  printf 'workspace\t## Rules\t%s\tpolicy:Conduct\t\n' "$(ws_hash_of '## Rules')"
+} > "$WSPLUG/orchestrator/stage-policy.sources.tsv"
+WSDP="$(cd "$WSD" && pwd -P)/CLAUDE.md"
+
+hook_run "$(payload "$WSD/CLAUDE.md")" CLAUDE_PLUGIN_ROOT="$WSPLUG"
+silent "지목된 워크스페이스 파일, 드리프트 없음"
+
+printf '# Top\nlocal notes, edited\n## Rules\nthe citation rule\n' > "$WSD/CLAUDE.md"
+hook_run "$(payload "$WSD/CLAUDE.md")" CLAUDE_PLUGIN_ROOT="$WSPLUG"
+check "워크스페이스 excluded 행 본문 변경: rc 0" "$HOOK_RC" "0"
+check "워크스페이스 excluded 행 본문 변경: stderr 비어 있음" "$(err_bytes)" "0"
+ctx=$(jq -r '.hookSpecificOutput.additionalContext' "$OUTF" 2>/dev/null)
+case "$ctx" in
+  *"changed workspace # Top"*) ok "워크스페이스 excluded 행 본문 변경: 문맥에 changed 발견" ;;
+  *) bad "워크스페이스 excluded 행 본문 변경: 문맥에 changed 발견" "$ctx" ;;
+esac
+case "$ctx" in
+  *"bash \"$WSPLUG/orchestrator/stage-policy-drift.sh\" --workspace \"$WSDP\" --ack"*)
+    ok "워크스페이스 excluded 행 본문 변경: --ack 안내가 --workspace 를 싣는다" ;;
+  *) bad "워크스페이스 excluded 행 본문 변경: --ack 안내가 --workspace 를 싣는다" "$ctx" ;;
+esac
+case "$ctx" in
+  *"A 'changed' item on an excluded:<reason> row is confirmed too"*)
+    ok "워크스페이스 excluded 행 본문 변경: excluded 행 변경도 확인 대상이라고 말한다" ;;
+  *) bad "워크스페이스 excluded 행 본문 변경: excluded 행 변경도 확인 대상이라고 말한다" "$ctx" ;;
+esac
+
+printf '# Elsewhere\nlocal notes\n' > "$WSD/CLAUDE.md"
+hook_run "$(payload "$WSD/CLAUDE.md")" CLAUDE_PLUGIN_ROOT="$WSPLUG"
+silent "어느 workspace 표제와도 맞지 않는 CLAUDE.md"
+
 check "호스트 ack 저장소를 만들지 않는다" \
   "$([ -e "$FAKE_HOME/.config/cc-cmds/stage-policy-ack" ] && echo made || echo none)" "none"
 
