@@ -1000,6 +1000,50 @@ g wait --manifest "$MANIFEST" --segment D --interval 1 --timeout 5 >/dev/null; r
 check "(13) 마감 파킹된 시도의 wait 은 16 이다" "$rc_dw" "16"
 kill -TERM "$W13_BLOCK" 2>/dev/null || true
 
+# WAIT ON A RESET PASS, then the deadline. Usage written at the supervisor's start
+# leaves the account's weekly window without room until its reset, which is past
+# the deadline — today that is a deadline park. The group holds a weekly reset
+# pass that would let the stage in, so the router answers WAIT with no release
+# time and no account instead. Nobody presses the pass, so the supervisor's own
+# turn must still park once a release now could no longer finish in time.
+W13_USAGE="$XDG_STATE_HOME/cc-lane/usage.json"
+mkdir -p "$XDG_STATE_HOME/cc-lane"
+W13_NOW=$(date +%s)
+jq -cn --argjson now "$W13_NOW" --arg d "$R12_CFG" \
+  '{schema: "cc-lane-usage v1", written_at_epoch: $now, publish_interval_s: 60,
+    accounts: [{id: "r12a", config_dir: $d, org_hash: "abcdefabcdefabcd", login: "ok", status: null,
+      exhausted_until_epoch: null,
+      windows: {five_hour: {utilization: 0.1, resets_at_epoch: ($now + 3600), observed_at_epoch: $now, source: "tracker"},
+                seven_day: {utilization: 0.99, resets_at_epoch: ($now + 432000), observed_at_epoch: $now, source: "tracker"}},
+      reset_passes: {held: [{id: "rp-13", kind: "seven_day", expires_at_epoch: ($now + 864000)}],
+                     reserve: {five_hour: 0, seven_day: 0.99}}}]}' > "$W13_USAGE"
+# The margin covers opening the run: once a release now could not finish in time
+# the router itself parks the dispatch, and this case is about the waiting loop.
+W13_DL=$(( W13_NOW + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 20 ))
+mk_run SUPRV '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
+w13_stall
+seg RV
+dispatch RV >/dev/null; rc_rv=$?
+if [ "$rc_rv" = "0" ]; then
+  ok "(13) 리셋권 예비 공급 WAIT 파견도 0 으로 반환한다"
+else
+  bad "(13) 리셋권 예비 공급 WAIT 파견도 0 으로 반환한다" \
+    "rc=$rc_rv — $( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '세그먼트=RV ' || true; } | tail -1)"
+fi
+wait_rv=$( { grep -F '`stage-wait`' "$LEDGER" || true; } | { grep -F '계보=B:RV#1 ' || true; } | head -1)
+case "$wait_rv" in
+  *"| 그룹=org:abcdefabcdefabcd | 계정=- | 까지=- | 비용=0."*"| 근거=no-room"*) ok "(13) 첫 대기 행은 마감 없이 비용을 단 no-room 이다" ;;
+  *) bad "(13) 예비 공급 대기 행" "${wait_rv:-행 없음}" ;;
+esac
+SUP_RV=$( { cat "$RD/RV.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+n=0
+while [ "$(alive "$SUP_RV")" = "alive" ] && [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done
+check "(13) 리셋권이 눌리지 않으면 감독자가 마감에 스스로 끝난다" "$(alive "$SUP_RV")" "dead"
+row_rv=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — RV ' || true; } )
+check "(13) 예비 공급 대기의 마감 파킹은 cone 행 하나다" "$(printf '%s' "$row_rv" | { grep -c . || true; })" "1"
+check "(13) 예비 공급 대기의 마감 파킹은 스테이지를 띄우지 않는다" "$( [ -e "$RD/RV.pid" ] && printf yes || printf no)" "no"
+rm -f "$W13_USAGE"
+
 # THE SAME DEADLINE ON A RUN-SCOPE DESIGN STEP. Its key is the plan's step id,
 # but `act` takes the step only as `--segment -` with `design` as the first
 # stage argument; the step id in `--segment` is refused there as a segment with

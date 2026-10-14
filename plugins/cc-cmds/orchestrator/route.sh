@@ -20,8 +20,9 @@
 # `route_`(내부는 `route__`) 접두다 — 전역 충돌 린트는 하네스와 게이트 사이만 보고
 # 게이트 쪽 파일끼리나 함수 이름끼리의 충돌은 보지 않는다.
 #
-# 제품 코드는 아직 `route_*` 를 부르지 않는다. 라우팅은 `run.sh` 의 휴면 스위치가
-# 1 이 될 때 켜지고, 그때까지 이 파일이 더하는 것은 정의뿐이다.
+# 드라이버는 스테이지를 띄울 때마다 `route_resolve` 를 부른다. 인벤토리 기준선을
+# 받아 런의 라우팅 기록(`run.sh` 의 `run_routed`)이 1 인 런은 여기서 계정을 고르고,
+# 기록이 없는 런과 이 파일만 소싱한 셸은 휴면 답을 받는다.
 #
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`, no `wait -n`.
 
@@ -381,6 +382,20 @@ def rt_items($c):
     | select(((.run_id == $c.request.run_id) and (.lineage == $c.request.lineage)) | not)
     | select(rt_counted)];
 
+# 그룹의 보유 리셋권. 신선한 사용량 파일의 것만 센다 — 낡은 파일에서 정규화기는 창만
+# 지우고 `reset_passes` 는 남기며, 스테이지 로그 창은 신선도와 무관하게 합쳐진다.
+# 구성 계정 어느 쪽 것을 눌러도 공유 카운터가 채워지므로 id 로 합친다. 형이 틀린
+# 기록은 빈 목록이다 — 이 정의는 fleet 도 부르는 `rt_prep` 안에서 돈다.
+def rt_gpasses($c; $orgs; $fresh; $g):
+  if $fresh | not then []
+  else [rt_uaccts($c)[] | select(rt_group_of($orgs; .id) == $g) | .id as $id
+         | (if ((.reset_passes | type) == "object") and ((.reset_passes.held | type) == "array") then .reset_passes.held[] else empty end)
+         | select(type == "object")
+         | select(((.id | type) == "string") and ((.kind | type) == "string")
+                  and ((.expires_at_epoch | type) == "number") and (.expires_at_epoch > $c.now))
+         | . + {account: $id}]
+       | unique_by(.id) | sort_by([.expires_at_epoch, .id]) end;
+
 def rt_gview($c; $orgs; $fresh; $inv; $items; $g):
   [$items[] | select(rt_group_of($orgs; .account) == $g)] as $gi
   | {group: $g,
@@ -388,7 +403,8 @@ def rt_gview($c; $orgs; $fresh; $inv; $items; $g):
        .[$w] = (rt_cands($c; $orgs; $fresh; $g; $w) | (if length == 0 then null else max_by([.observed, .u]) end) | rt_wstate($c)))),
      sigma: (reduce rt_wins[] as $w ({}; .[$w] = ([$gi[] | (.reservation_bp[$w]? // 0)] | add // 0))),
      count: ($gi | length),
-     reserved: any($inv[]; (rt_group_of($orgs; .id) == $g) and (.interactive_reserved == true))};
+     reserved: any($inv[]; (rt_group_of($orgs; .id) == $g) and (.interactive_reserved == true)),
+     passes: rt_gpasses($c; $orgs; $fresh; $g)};
 
 def rt_class_of($G; $ex):
   if $ex != null or any($G.windows[]; .state == "exhausted") then "X"
@@ -567,6 +583,50 @@ def rt_admit_core($c; $G; $ex):
     end)
   + {cost: $cost};
 
+# 버려질 한도 W7(bp). 최대 속도 ρ7 로 써도 주간 정기 리셋 때 남아 사라지는 양이다.
+# ρ7 은 비용표의 주간/5시간 비율에 5시간 상한을 곱한 속도이고, 리셋 전에 만료되는
+# 주간 리셋권은 만료 직전에 눌러 다시 차는 양 U(E) 만큼 공급을 늘린다. 리셋권을 더해도
+# 줄지 않도록 리셋권 없는 값과의 최댓값을 쓰고, 정수로 반올림해 `remaining_bp` 동률
+# 깨기를 가로채지 않는다.
+def rt_w7($c; $G; $cost):
+  $G.windows.seven_day as $x
+  | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now)
+       or ((($cost.five_hour.bp // 0) > 0) | not) then 0
+    else (10000 - $x.u_bp - $G.sigma.seven_day) as $r7
+      | ($x.resets_at - $c.now) as $t
+      | (($cost.seven_day.bp / $cost.five_hour.bp) * $c.config.cap_bp / 18000) as $rho
+      | ([($G.passes // [])[]
+          | select((.kind == "seven_day" or .kind == "both") and (.expires_at_epoch > $c.now) and (.expires_at_epoch < $x.resets_at))
+          | ([10000, (10000 - $r7) + $rho * (.expires_at_epoch - $c.now)] | min) as $u
+          | ([0, $r7 + $u - $rho * $t] | max)]
+         + [([0, $r7 - $rho * $t] | max)])
+      | max | round
+    end;
+
+# 리셋권 종류가 덮는 창. 모르는 종류는 아무 창도 덮지 않는다.
+def rt_pass_wins($kind):
+  if $kind == "five_hour" then ["five_hour"]
+  elif $kind == "seven_day" then ["seven_day"]
+  elif $kind == "both" then rt_wins
+  else [] end;
+
+# 이 종류의 리셋권을 누르면 오늘의 입장 규칙을 통과하는가. 덮는 창만 리셋 경과로 바꾼
+# 사본에 바꾸지 않은 입장 판정을 돌린다. 계정 단위 소진은 넘기지 않는다 — 발행기의
+# 소진 시각은 창에서만 오고, 리셋권이 덮지 않는 소진 창은 사본에서도 소진으로 남는다.
+def rt_press_ok($c; $G; $kind):
+  rt_pass_wins($kind) as $ws
+  | if (($ws | length) == 0) or any($G.windows[]; .state == "unknown") then false
+    else (reduce $ws[] as $w ($G; .windows[$w] |= {state: "reset_elapsed", u_bp: 0, resets_at, observed, source}))
+      | rt_admit_core($c; .; null) | .admitted
+    end;
+
+# 예비 공급으로 쓸 리셋권. 인식된 종류마다 만료가 가장 이른 것 하나를 보고, 누를 수
+# 있는 것 중 만료·종류·id 가 가장 앞선 것이다. 없으면 null.
+def rt_pass_pick($c; $G):
+  [($G.passes // []) | group_by(.kind)[] | select(.[0].kind as $k | any(rt_pass_wins($k)[]; true))
+    | min_by([.expires_at_epoch, .id]) | select(rt_press_ok($c; $G; .kind))]
+  | sort_by([.expires_at_epoch, .kind, .id]) | .[0];
+
 def rt_classify($schema): rt_prep($schema) as $p | {accounts: $p.accounts, groups: ([$p.groups[]] | sort_by(.group))};
 def rt_admit_all($schema):
   rt_need_cap | rt_cost_apply | rt_prep($schema) as $p
@@ -605,6 +665,15 @@ def rt_park_deadline($until):
 def rt_wait_c($g; $acct; $until; $reason; $cost):
   {verdict: "WAIT", group: $g, account: $acct, until_epoch: $until, reason: $reason, cost: $cost};
 def rt_wait($g; $acct; $until; $reason): rt_wait_c($g; $acct; $until; $reason; null);
+# 예비 공급 대기. 오늘이면 마감 PARK 일 자리에서 누를 수 있는 리셋권이 있을 때, 같은
+# 사유와 비용에 마감 없이 기다리고 어느 리셋권을 기다리는지 덧붙인다. 그룹을 단 다른
+# 대기처럼 드라이버·게이트가 그 그룹의 FIFO 대기 항목을 넣으므로, 대기자가 사는 동안
+# 같은 그룹의 새 스테이지는 입장할 수 있어도 fifo-yield 로 양보한다. 의도된 동작이다 —
+# 리셋권이 눌려 자리가 생기면 먼저 기다린 대기자가 그 자리를 받고, 끝내 눌리지 않으면
+# 대기 루프가 마감 − 예상 소요에서 PARK 해 항목을 내린다.
+def rt_wait_reserve($g; $acct; $reason; $cost; $pass):
+  rt_wait_c($g; $acct; null; $reason; $cost)
+  + {reserve: {group: $g, account: $acct, pass_id: $pass.id, kind: $pass.kind, expires_at_epoch: $pass.expires_at_epoch}};
 def rt_seat_of($cfg; $basis; $b):
   {verdict: "GRANT", basis: $basis, account: null, config_dir: $cfg, group: null, reservation_bp: null,
    admitted_as: null, observed: null, lease_key: null, nonce: null, dormant: false}
@@ -654,11 +723,15 @@ def rt_resume($p):
               rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
             elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
             else rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
+              | (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end) as $why
               | if $adm.admitted then
                   rt_grant_new($p; $a; $adm; "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
-                elif rt_past_deadline($p.c; $adm.ready_at) then rt_env(rt_park_deadline($adm.ready_at); "none"; null)
-                else rt_env(rt_wait_c($a.group; $a.id; $adm.ready_at;
-                       (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end); $adm.cost); "none"; null)
+                elif rt_past_deadline($p.c; $adm.ready_at) then
+                  rt_pass_pick($p.c; $p.groups[$a.group]) as $pass
+                  | if $pass != null and (rt_past_deadline($p.c; $p.c.now) | not) then
+                      rt_env(rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $pass); "none"; null)
+                    else rt_env(rt_park_deadline($adm.ready_at); "none"; null) end
+                else rt_env(rt_wait_c($a.group; $a.id; $adm.ready_at; $why; $adm.cost); "none"; null)
                 end
             end
         end
@@ -668,7 +741,13 @@ def rt_waitpick($p; $b; $reason):
   ([$b[] | select((.ready | type) == "number")] | sort_by([.ready, .g]) | .[0]) as $m
   | (if $m != null then $m.ready else null end) as $until
   | (if $m != null then $m.g else ([$b[].g] | sort | .[0]) end) as $g
-  | if rt_past_deadline($p.c; $until) then rt_env(rt_park_deadline($until); "none"; null)
+  | if rt_past_deadline($p.c; $until) then
+      # 지명은 `$m` 과 다른 그룹일 수 있으므로 그룹과 비용을 지명된 항목에서 꺼낸다.
+      ([$b[] | (.) as $e | rt_pass_pick($p.c; $p.groups[$e.g]) as $pass | select($pass != null) | {e: $e, pass: $pass}]
+       | sort_by([.pass.expires_at_epoch, .e.g]) | .[0]) as $n
+      | if $n != null and (rt_past_deadline($p.c; $p.c.now) | not) then
+          rt_env(rt_wait_reserve($n.e.g; null; $reason; $n.e.cost; $n.pass); "none"; null)
+        else rt_env(rt_park_deadline($until); "none"; null) end
     else rt_env(rt_wait_c($g; null; $until; $reason; (if $m != null then $m.cost else null end)); "none"; null) end;
 
 def rt_nocand($p; $pool):
@@ -698,10 +777,11 @@ def rt_new($p; $basis0; $excl):
     else
       [$p.accounts[] | select(rt_policy_ok(.)) | select(.id != $excl) | (.) as $a
         | rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
-        | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group)}] as $pool
+        | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group),
+           w7: rt_w7($p.c; $p.groups[$a.group]; $adm.cost)}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
       | if ($cands | length) > 0 then
-          ($cands | sort_by([(if .a.class == "U" then 1 else 0 end), (0 - .a.remaining_bp),
+          ($cands | sort_by([(if .a.class == "U" then 1 else 0 end), (0 - .w7), (0 - .a.remaining_bp),
                              (.a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end), .a.id])
                   | .[0]) as $best
           | rt_grant_new($p; $best.a; $best.adm; $basis) as $e
