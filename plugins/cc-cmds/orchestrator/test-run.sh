@@ -10063,7 +10063,7 @@ for want in '--recover' "--scratch-dir $RUN_DIR/cc-team-witness-hit" "--report-p
   fi
 done
 # 확인 리뷰가 아닌 리뷰의 복구는 --recheck 를 싣지 않는다.
-if printf '%s' "$REC_SPAWN" | grep -qF -- '--recheck'; then
+if printf '%s' "$REC_SPAWN" | grep_all_q -F -- '--recheck'; then
   bad "파견 줄" "확인 리뷰가 아닌 복구가 --recheck 를 싣는다: $REC_SPAWN"
 else
   ok "확인 리뷰가 아닌 복구는 --recheck 를 싣지 않는다"
