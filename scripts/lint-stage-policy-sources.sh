@@ -14,8 +14,8 @@
 #   (i)    the policy file exists and is ASCII apart from tab and newline —
 #          the injected block is the cache-stable head of every stage prompt,
 #          and a stray non-ASCII byte is the kind of edit that goes unnoticed;
-#   (ii)   the policy is at most 8000 bytes — it rides on every request of
-#          every stage and every team member;
+#   (ii)   the policy is at most `MAX_BYTES` (8192) bytes — it rides on every
+#          request of every stage and every team member;
 #   (iii)  the policy carries no volatile token (a date, a `run-<n>`, a
 #          `/Users/` path) — one would make the bytes differ per host or per
 #          run and break the shared cache head;
@@ -35,9 +35,9 @@
 #   (viii) every `user-scope` anchor and every `plugin` anchor is unique
 #          within the manifest;
 #   (ix)   `memory` rows carry hash `-` and every other row a 64-hex sha256.
-#          An `excluded:*` row keeps the form although the checker compares
-#          only its anchor, and the column stays the shipped baseline that a
-#          host's acknowledgement store is read against.
+#          An `excluded:*` row keeps the form: the checker's `--identity` and
+#          `--workspace` forms compare its body hash, and the column stays the
+#          shipped baseline that a host's acknowledgement store is read against.
 #
 # Usage:
 #   bash scripts/lint-stage-policy-sources.sh
@@ -58,8 +58,12 @@ done
 
 POLICY="$policy_root/stage-policy.md"
 MANIFEST="$policy_root/stage-policy.sources.tsv"
-MAX_BYTES=8000
-PIN_HARNESS='Agents spawned with the Agent tool receive this policy and the repository instructions from the harness; do not paste them.'
+# Raised from 8000 when the delegation, re-read and repository-instruction
+# sentences were rewritten for the member prefix: the rule is to measure after
+# an edit and raise the ceiling to 8192 rather than cut a safety sentence to
+# fit, and a policy past 8192 is a stop, not a further raise.
+MAX_BYTES=8192
+PIN_HARNESS='Agents spawned with the Agent tool receive this policy and the repository instructions from the harness (the target repository'"'"'s own files by path); do not paste them.'
 PIN_TEAM='a team the stage skill prescribes is itself the instruction to spawn it'
 MANIFEST_HEADER=$'source\tanchor\tsha256\tdisposition\tnote'
 DISPOSITION_RE='^(policy:[^	]+|skill:[^	]+|repo:CLAUDE\.md|excluded:(mcp-unavailable|interactive-only|driver-owned|superseded|host-mutation|workspace-local|no-stage-login))$'

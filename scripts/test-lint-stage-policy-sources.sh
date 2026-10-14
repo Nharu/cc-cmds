@@ -13,7 +13,8 @@
 # exist, a disposition outside the closed vocabulary, a duplicated user-scope
 # anchor, a four-column row, a memory row carrying a hash, a plugin anchor
 # without its `<path>:` part, a duplicated plugin anchor, a source outside the
-# closed set.
+# closed set. Two more cases are built at run time from the OK pair: the
+# policy padded to exactly the lint's size ceiling, and to one byte more.
 #
 # Source half — `plugins/cc-cmds/orchestrator/stage-policy-drift.sh`. Each
 # case under `drift/` carries the manifest and the fake sources it is compared
@@ -81,6 +82,40 @@ for fixture in "$fixtures"/T-POLICY-*/; do
     echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
   fi
 done
+
+# The size ceiling at its boundary: the OK pair padded to exactly the lint's
+# ceiling passes and one byte more fails. The ceiling is read from the lint,
+# not retyped, so raising it moves both cases with it.
+max_bytes=$(sed -n 's/^MAX_BYTES=\([0-9][0-9]*\)$/\1/p' "$script_dir/lint-stage-policy-sources.sh")
+if [[ -z "$max_bytes" ]]; then
+  failures=$((failures + 1))
+  echo "FAIL: size boundary — no 'MAX_BYTES=<n>' line in lint-stage-policy-sources.sh" >&2
+else
+  bound_scratch=$(mktemp -d)
+  for over in 0 1; do
+    case_dir="$bound_scratch/size-$over"
+    mkdir -p "$case_dir"
+    cp "$fixtures/T-POLICY-OK-1/stage-policy.md" "$fixtures/T-POLICY-OK-1/stage-policy.sources.tsv" "$case_dir/"
+    have=$(wc -c < "$case_dir/stage-policy.md" | tr -d ' ')
+    pad=$((max_bytes + over - have))
+    # One final line of `x`: no heading, no pin, no volatile token.
+    printf '%s\n' "$(printf '%*s' $((pad - 1)) '' | tr ' ' x)" >> "$case_dir/stage-policy.md"
+    size=$(wc -c < "$case_dir/stage-policy.md" | tr -d ' ')
+    want=$over
+    set +e
+    POLICY_ROOT="$case_dir" bash "$script_dir/lint-stage-policy-sources.sh" >/dev/null 2>&1
+    ec=$?
+    set -e
+    if [[ "$size" == "$((max_bytes + over))" && "$ec" == "$want" ]]; then
+      passed=$((passed + 1))
+      echo "PASS: size boundary — $size bytes against a $max_bytes-byte ceiling (exit=$ec, expected=$want)"
+    else
+      failures=$((failures + 1))
+      echo "FAIL: size boundary — $size bytes against a $max_bytes-byte ceiling (exit=$ec, expected=$want)" >&2
+    fi
+  done
+  rm -rf "$bound_scratch"
+fi
 
 # ---------- source half ------------------------------------------------------
 
