@@ -666,7 +666,11 @@ def rt_wait_c($g; $acct; $until; $reason; $cost):
   {verdict: "WAIT", group: $g, account: $acct, until_epoch: $until, reason: $reason, cost: $cost};
 def rt_wait($g; $acct; $until; $reason): rt_wait_c($g; $acct; $until; $reason; null);
 # 예비 공급 대기. 오늘이면 마감 PARK 일 자리에서 누를 수 있는 리셋권이 있을 때, 같은
-# 사유와 비용에 마감 없이 기다리고 어느 리셋권을 기다리는지 덧붙인다.
+# 사유와 비용에 마감 없이 기다리고 어느 리셋권을 기다리는지 덧붙인다. 그룹을 단 다른
+# 대기처럼 드라이버·게이트가 그 그룹의 FIFO 대기 항목을 넣으므로, 대기자가 사는 동안
+# 같은 그룹의 새 스테이지는 입장할 수 있어도 fifo-yield 로 양보한다. 의도된 동작이다 —
+# 리셋권이 눌려 자리가 생기면 먼저 기다린 대기자가 그 자리를 받고, 끝내 눌리지 않으면
+# 대기 루프가 마감 − 예상 소요에서 PARK 해 항목을 내린다.
 def rt_wait_reserve($g; $acct; $reason; $cost; $pass):
   rt_wait_c($g; $acct; null; $reason; $cost)
   + {reserve: {group: $g, account: $acct, pass_id: $pass.id, kind: $pass.kind, expires_at_epoch: $pass.expires_at_epoch}};

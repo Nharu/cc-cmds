@@ -80,8 +80,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 706(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
-ASSERTION_FLOOR=685
+# 실측 710(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=689
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -2132,6 +2132,16 @@ expect "라우터-7: 주간 0.99 이면 마감 PARK" "$(fxdecide "$F7 | UAC(\"fu
 
 # 라우터-7b — 그룹 소진.
 expect "라우터-7b: 소진 그룹의 예비 공급 WAIT" "$(fxdecide "$EXH | FONLY([\"full\"]) | DL(86400)")" ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .account == null and .until_epoch == null and .reserve.pass_id == \"rp-0000000e\""
+
+# 예비 공급 대기도 그룹 FIFO 에 선다. 대기자(S1)의 대기 항목이 사는 동안 같은 그룹에
+# 입장할 수 있는 더 싼 스테이지(S2)는 양보하고, 대기자 자신은 같은 예비 공급 대기를 다시 받는다.
+F7F='UAC("full"; .windows.five_hour.utilization = 0.75 | .windows.seven_day.utilization = 0.5 | .reset_passes.held[0].kind = "five_hour") | FONLY(["full"]) | DL(3000)'
+CHEAP='.config.c.five_hour.by_kind.review = 0.01 | REQ({lineage: "S2", kind: "review"})'
+RWAIT='ITEMS([LR("r1"; "S1"; "full"; "wait"; null; true; 1)])'
+expect "FIFO: 대기자의 예비 공급 WAIT" "$(fxdecide "$F7F")" ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .group == \"$G_FULL\" and .reserve.kind == \"five_hour\""
+expect "FIFO: 대기자가 없으면 더 싼 스테이지는 입장한다" "$(fxdecide "$F7F | $CHEAP")" '.verdict == "GRANT" and .account == "full"'
+expect "FIFO: 예비 공급 대기자 뒤의 같은 그룹 스테이지는 fifo-yield" "$(fxdecide "$F7F | $CHEAP | $RWAIT")" ".verdict == \"WAIT\" and .reason == \"fifo-yield\" and .group == \"$G_FULL\" and (has(\"reserve\") | not)"
+expect "FIFO: 대기자 자신은 예비 공급 대기를 다시 받는다" "$(fxdecide "$F7F | $RWAIT")" ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .group == \"$G_FULL\" and .reserve.kind == \"five_hour\""
 
 # 라우터-8 — 낡은 파일의 리셋권은 세지 않는다. 스테이지 로그 창은 신선도와 무관하다.
 FX_STALE=1800000181
