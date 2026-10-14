@@ -11,19 +11,25 @@
 #     PushNotification / notify.sh / terminal-notifier. Reaching a sleeping
 #     user is the driver's exclusive job; a stage that works AND notifies is
 #     forbidden without exception.
+#   Rules 1 and 2 read the arm's `SKILL.md` and every `<arm>/references/*.md`
+#     of the arm's own directory: a body moved out of `SKILL.md` into a file
+#     the arm Reads on a condition is still the arm's instruction.
 #   Rule 3 (forked-spine constant parity) — where an unattended arm forks a
 #     base skill that pins fixed constants under `### CFI-0`, the fork's
 #     fenced block must be byte-identical to the base's. A forked spine's one
 #     real drift risk is a budget that quietly diverges, so it is pinned
 #     rather than trusted.
 #   Rule 4 (inherited question points are dispositioned) — an arm does not
-#     copy its `references/`, it SHARES the base skill's tree, and the two
+#     copy the base skill's `references/`, it SHARES that tree, and the two
 #     shipped question points in this repo are in exactly that tree. The arm
 #     cannot delete them, because the interactive arm needs them, so what it
 #     owes is a statement of what it does instead, naming the file. Checked in
 #     both directions: an undispositioned question point is a surface the arm
 #     claims not to have, and a disposition for a file carrying none is a
-#     clause pointing at nothing.
+#     clause pointing at nothing. An arm may ALSO keep a `references/` of its
+#     own for text only it reads (the review arm's recovery body is one); that
+#     directory is not shared, nothing in it is inherited, and Rules 1 and 2
+#     cover it rather than this rule.
 #   Rule 5 (CFI-U0 sentence pin) — an arm that Reads its base skill's step
 #     bodies at runtime instead of carrying them applies one substitution
 #     sentence to every question terminus it meets there. That sentence is
@@ -84,8 +90,8 @@
 #
 # Rule 4 exists because Rules 1 and 2 could not reach those two points twice
 # over, and repairing either layer alone leaves them still passing. The scan
-# set opened one file per arm — `<skill>/SKILL.md` — and the shared tree is
-# not under the arm's directory at all. The pattern then required an opening
+# set opened the arm's own directory only — `<skill>/SKILL.md` and its own
+# `references/` — and the shared tree is not under the arm's directory at all. The pattern then required an opening
 # parenthesis, while both occurrences are a backticked bare name inside a
 # sentence. A contract that asserts an absence, measured by a device that
 # cannot reach the place the absence is claimed about, is green forever.
@@ -245,15 +251,23 @@ for skill in "${UNATTENDED_SKILLS[@]}"; do
   fi
   checked=$((checked + 1))
 
-  if grep -qE "$QUESTION_RE" "$file"; then
+  # The arm's own `references/*.md` are the arm's text too: a body moved out of
+  # SKILL.md into a file the arm Reads on a condition is still an instruction
+  # the arm follows, so the same call-form predicates cover it.
+  scan=("$file")
+  for ref in "$skills_root/$skill/references/"*.md; do
+    [[ -f "$ref" ]] && scan+=("$ref")
+  done
+
+  if grep -qE "$QUESTION_RE" "${scan[@]}"; then
     echo "FAIL: $skill — reaches a human-question surface" >&2
-    grep -nE "$QUESTION_RE" "$file" >&2
+    grep -HnE "$QUESTION_RE" "${scan[@]}" >&2
     fail=1
   fi
 
-  if grep -qE "$NOTIFY_RE" "$file"; then
+  if grep -qE "$NOTIFY_RE" "${scan[@]}"; then
     echo "FAIL: $skill — reaches a notification surface" >&2
-    grep -nE "$NOTIFY_RE" "$file" >&2
+    grep -HnE "$NOTIFY_RE" "${scan[@]}" >&2
     fail=1
   fi
 
