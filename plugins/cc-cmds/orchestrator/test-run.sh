@@ -10281,7 +10281,7 @@ fi
 # ---------------------------------------------------------------------------
 # 물려받은 스위치가 기댓값을 바꾸지 않게 먼저 지운다. 이 절의 스위치 값은 전부
 # 호출마다 앞에 붙여 그 호출에만 건다.
-unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
+unset CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL
 while IFS='|' read -r ef_kind ef_want; do
   [ -n "$ef_kind" ] || continue
   check "stage_effort_of $ef_kind → $ef_want" "$(stage_effort_of "$ef_kind")" "$ef_want"
@@ -10303,8 +10303,21 @@ check "CC_ORCH_STAGE_EFFORT=off 는 --effort 만 뺀다" "$(CC_ORCH_STAGE_EFFORT
 check "CC_ORCH_STAGE_MODEL=off 는 --model 만 뺀다" "$(CC_ORCH_STAGE_MODEL=off stage_launch_flags review)" "--effort medium"
 check "두 스위치를 다 끄면 아무 플래그도 없다" \
   "$(CC_ORCH_STAGE_EFFORT=off CC_ORCH_STAGE_MODEL=off stage_launch_flags review)" ""
-check "off 가 아닌 model 값은 무시된다 (종류별 모델은 없다)" \
+check "off 가 아닌 model 값은 무시된다 (스테이지 종류별 모델은 없다)" \
   "$(CC_ORCH_STAGE_MODEL=sonnet stage_launch_flags review)" "--effort medium --model opus"
+# 교대만 CC_ORCH_SHIFT_MODEL 로 모델을 정한다 — 기본과 닫힌 집합 밖의 값은 sonnet.
+check "교대 기동 플래그는 sonnet 이다" "$(stage_launch_flags shift)" "--effort medium --model sonnet"
+check "CC_ORCH_SHIFT_MODEL=opus 는 교대를 opus 로 되돌린다" \
+  "$(CC_ORCH_SHIFT_MODEL=opus stage_launch_flags shift)" "--effort medium --model opus"
+check "CC_ORCH_SHIFT_MODEL 의 닫힌 집합 밖 값은 sonnet 이다" \
+  "$(CC_ORCH_SHIFT_MODEL=haiku stage_launch_flags shift)" "--effort medium --model sonnet"
+check "CC_ORCH_STAGE_MODEL=off 는 교대의 --model 도 뺀다" \
+  "$(CC_ORCH_STAGE_MODEL=off stage_launch_flags shift)|$(CC_ORCH_STAGE_MODEL=off CC_ORCH_SHIFT_MODEL=opus stage_launch_flags shift)" \
+  "--effort medium|--effort medium"
+for sm_kind in triage segment-plan redesign-impact implement review generic design; do
+  check "$sm_kind 는 CC_ORCH_SHIFT_MODEL 을 읽지 않고 opus 다" \
+    "$(CC_ORCH_SHIFT_MODEL=sonnet stage_model_of "$sm_kind")" "opus"
+done
 check "review:low 는 review 만 낮춘다" \
   "$(CC_ORCH_STAGE_EFFORT=review:low stage_effort_of review):$(CC_ORCH_STAGE_EFFORT=review:low stage_effort_of implement)" "low:medium"
 check "triage:low 는 triage 만 낮춘다" \
@@ -10349,7 +10362,7 @@ SPEOF
 sp_spawn() {  # sp_spawn <stage-id> <argv-out> [VAR=value...]
   local sid="$1" argv_out="$2"; shift 2
   rm -f "$argv_out"
-  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL SP_ARGV_OUT="$argv_out" "$@" \
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL SP_ARGV_OUT="$argv_out" "$@" \
     bash "$SPD/probe.sh" "$DRIVER" "$SPD" "$sid" >/dev/null 2>&1
   cat "$argv_out" 2>/dev/null || true
 }
@@ -10394,7 +10407,7 @@ printf '%s\n' "$*" > "$JC_ARGV_OUT"
 printf '%s\n' '{"subtype":"success","structured_output":{},"modelUsage":{"claude-opus-5-5[1m]":{"inputTokens":1},"claude-sonnet-5":{"inputTokens":9}}}'
 JCEOF
 chmod +x "$JCD/cli"
-env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL JC_ARGV_OUT="$JCD/argv.txt" \
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv.txt" \
   bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
            RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli"; judgment_call triage "$jc_root/input"' \
   _ "$DRIVER" "$JCD" >/dev/null 2>"$JCD/log.txt"
@@ -10423,7 +10436,7 @@ printf '%s\n' "$@" > "$JC_ARGV_OUT"
 printf '%s\n' '{"subtype":"success","structured_output":{"verdict":"park","row":null,"reason":"r"}}'
 JCEOF
 chmod +x "$JCD/cli-words"
-env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL JC_ARGV_OUT="$JCD/argv-words.txt" \
+env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL JC_ARGV_OUT="$JCD/argv-words.txt" \
   bash -c 'jc_drv="$1"; jc_root="$2"; set --; . "$jc_drv"; set +e
            RUN_DIR="$jc_root/run"; CLI_BIN="$jc_root/cli-words"
            judgment_call preauth-judge "$jc_root/input" "$jc_root/pj-out.json" env JC_PREFIX=1' \
