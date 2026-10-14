@@ -80,8 +80,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 710(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
-ASSERTION_FLOOR=689
+# 실측 752(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=731
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -981,6 +981,46 @@ out=$(decide "$UCC | .deadline = {deadline_epoch: ($NOW + 1), expected_duration_
 expect "until 이 없으면 마감이 있어도 기다린다" "$out" '.verdict == "WAIT" and .until_epoch == null'
 out=$(decide "$ONE | $FULL_A | REQ({event: \"resume\", bound_account: \"a\"}) | .deadline = {deadline_epoch: ($NOW + 100), expected_duration_s: 200}")
 expect "재개 대기도 마감을 넘기면 PARK deadline" "$out" '.verdict == "PARK" and .reason == "deadline"'
+
+# 섞인 후보의 사유 — 지명된 그룹의 후보 항목이 모두 소진일 때만 group-exhausted 다.
+# 소진 계정(XU)은 계정 수준 소진 시각을 싣고, 자리 없음 계정은 5시간 0.9(RU)나 주간
+# 0.99(KU)로 입장에 실패한다. 같은 org 의 두 계정은 한 그룹이고, 그룹 창은 관측이 더
+# 신선한 계정의 것이다.
+MIXD='def WO($u; $r; $o): {utilization: $u, resets_at_epoch: $r, observed_at_epoch: ($now + $o), source: "tracker"};
+  def PX: {reset_passes: {held: [{id: "rp-x", kind: "seven_day", expires_at_epoch: ($now + 864000)}]}};
+  def XU($id; $org; $ready; $o): UW($id; WO(0.2; $now + 3600; $o); WO(1.0; $ready; $o)) + {org_hash: $org, exhausted_until_epoch: $ready};
+  def RU($id; $org; $r5): UW($id; WO(0.9; $r5; -60); WO(0.1; $now + 86400; -60)) + {org_hash: $org};
+  def KU($id; $org): UW($id; WO(0.2; $now + 3600; -60); WO(0.99; $now + 432000; -60)) + {org_hash: $org};
+  def MDL: .deadline = {deadline_epoch: ($now + 3000), expected_duration_s: 600};'
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 3000; -60), RU(\"y\"; \"bb\"; \$now + 9000)])")
+expect "섞인 후보: 소진 그룹이 먼저 준비되면 group-exhausted" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .group == \"org:aa\" and .until_epoch == $((NOW + 3000))"
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 432000; -60), RU(\"y\"; \"bb\"; \$now + 3600)])")
+expect "섞인 후보: 자리 없음 그룹이 먼저 준비되면 no-room" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"no-room\" and .group == \"org:bb\" and .until_epoch == $((NOW + 3600))"
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 432000; -60) + PX, RU(\"y\"; \"bb\"; \$now + 3600)]) | MDL")
+expect "섞인 후보: 리셋권으로 지명된 소진 그룹의 예비 공급은 group-exhausted" "$out" \
+  '.verdict == "WAIT" and .reason == "group-exhausted" and .group == "org:aa" and .until_epoch == null and .account == null and .reserve.pass_id == "rp-x"'
+for ids in x:y y:x; do
+  xi=${ids%%:*} ki=${ids#*:}
+  out=$(decide "$MIXD ONLY([\"$xi\",\"$ki\"]) | USE([XU(\"$xi\"; \"aa\"; \$now + 432000; -600) + PX, KU(\"$ki\"; \"aa\")]) | MDL")
+  expect "섞인 후보: 한 그룹 안 소진 ${xi}·자리 없음 $ki 의 예비 공급은 no-room" "$out" \
+    '.verdict == "WAIT" and .reason == "no-room" and .group == "org:aa" and .until_epoch == null and .reserve.pass_id == "rp-x"'
+  out=$(decide "$MIXD ONLY([\"$xi\",\"$ki\"]) | USE([XU(\"$xi\"; \"aa\"; \$now + 1800; -600), KU(\"$ki\"; \"aa\")])")
+  expect "섞인 후보: 한 그룹 안 소진 ${xi}·자리 없음 $ki 의 시각 대기는 no-room" "$out" \
+    ".verdict == \"WAIT\" and .reason == \"no-room\" and .group == \"org:aa\" and .until_epoch == $((NOW + 1800))"
+done
+out=$(decide "$MIXD ONLY([\"x\",\"y\"]) | USE([XU(\"x\"; \"aa\"; \$now + 3000; -60), XU(\"y\"; \"aa\"; \$now + 5000; -60)])")
+expect "섞인 후보: 한 그룹 전부 소진이면 group-exhausted" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .group == \"org:aa\" and .until_epoch == $((NOW + 3000))"
+out=$(decide "$MIXD ONLY([\"u\",\"x\"]) | USE([UW(\"u\"; null; null) + {org_hash: \"cc\"},
+  UW(\"x\"; null; null) + {org_hash: \"cc\", exhausted_until_epoch: (\$now + 3000)}]) | ITEMS([LG(\"r2\"; \"S1\"; \"u\"; true)])")
+expect "섞인 후보: 한 그룹 안 미상 동시성·소진 혼합은 no-room" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"no-room\" and .group == \"org:cc\" and .until_epoch == $((NOW + 3000))"
+out=$(decide "$MIXD ONLY([\"u\",\"z\"]) | USE([UW(\"u\"; null; null), UW(\"z\"; WO(0.9; null; -60); WO(0.1; \$now + 86400; -60))])
+  | ITEMS([LG(\"r2\"; \"S1\"; \"u\"; true)])")
+expect "섞인 후보: 시각 없는 대기가 미상 동시성만의 그룹을 지명해도 no-room" "$out" \
+  '.verdict == "WAIT" and .reason == "no-room" and .group == "acct:u" and .until_epoch == null'
 
 FIFO='ONLY(["a"]) | USE([UA("a"; 0.1; 0.1)])'
 out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; true; 1)])")
@@ -2133,6 +2173,73 @@ expect "라우터-7: 주간 0.99 이면 마감 PARK" "$(fxdecide "$F7 | UAC(\"fu
 # 라우터-7b — 그룹 소진.
 expect "라우터-7b: 소진 그룹의 예비 공급 WAIT" "$(fxdecide "$EXH | FONLY([\"full\"]) | DL(86400)")" ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .account == null and .until_epoch == null and .reserve.pass_id == \"rp-0000000e\""
 
+# 눌린 리셋권의 유예. 대기 루프가 표지에서 나르는 기억(`reserve_seen`)을 재질의에
+# 싣는다. 보유 목록에서 빠진 리셋권은 파일이 신선하고, 만료 전이고, 그 계정이 보유
+# 목록을 싣고, 오늘도 누를 수 있었던 종류일 때만 눌림이다. 기억 없는 입력은 위
+# 라우터-5·7 단언 그대로다.
+SN='def SP($id; $kind; $exp; $pr): {group: "org:4444444444444444", account: "full", id: $id, kind: $kind, expires_at_epoch: $exp, pressed_at_epoch: $pr};
+  def SEEN($xs): REQ({after_wait: true, reserve_seen: $xs});
+  def GONE: UAC("full"; .reset_passes.held = []);
+  def AGE($s): UAC("full"; .windows.five_hour.observed_at_epoch = ($now - $s) | .windows.seven_day.observed_at_epoch = ($now - $s));'
+EL5='SP("rp-0000000e"; "five_hour"; 1800864000; null)'
+EL7='SP("rp-0000000e"; "seven_day"; 1800864000; null)'
+expect "눌림-1: 기억 없는 재질의는 오늘의 마감 PARK" "$(fxdecide "$SN $F7 | GONE | REQ({after_wait: true})")" \
+  '.verdict == "PARK" and .reason == "deadline" and .ready_at == 1800003600'
+p2=$(fxdecide "$SN $F7 | GONE | SEEN([$EL5])")
+expect "눌림-2: 사용 표시로 빠진 리셋권은 예비 공급 WAIT 를 잇는다" "$p2" \
+  ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .account == null and .reserve.account == null
+   and .group == \"$G_FULL\" and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == $FX_NOW"
+check "눌림-2: 비용은 같은 입력의 보유 지명 봉투와 같다" "$(printf '%s' "$p2" | jq -c .cost)" "$(fxdecide "$F7" | jq -c .cost)"
+check "눌림-2: 내보낸 기억에 눌림 표시" "$(printf '%s' "$p2" | jq -c .reserve_seen)" \
+  "[{\"group\":\"$G_FULL\",\"account\":\"full\",\"id\":\"rp-0000000e\",\"kind\":\"five_hour\",\"expires_at_epoch\":1800864000,\"pressed_at_epoch\":$FX_NOW}]"
+expect "눌림-3: 한 번 눌린 리셋권은 만료가 지나도 눌림" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([SP(\"rp-0000000e\"; \"five_hour\"; 1799999000; 1799990000)])")" \
+  '.verdict == "WAIT" and .reserve.pass_id == "rp-0000000e" and .reserve.pressed_at_epoch == 1799990000'
+expect "눌림-4: 눌리지 않은 채 만료로 빠지면 마감 PARK" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([SP(\"rp-0000000e\"; \"five_hour\"; $FX_NOW; null)])")" \
+  '.verdict == "PARK" and .reason == "deadline" and (has("reserve_seen") | not)'
+for v in "REQ({reserve_seen: [$EL5]})" "SEEN([$EL5 | .group = \"$G_FULL2\"])" "SEEN([$EL5]) | UAC(\"full\"; .reset_passes = null)" \
+         "SEEN([$EL5 | .account = \"gone\"])" "SEEN([$EL5 | .kind = \"bogus\"])"; do
+  expect "눌림-5: $v → 마감 PARK" "$(fxdecide "$SN $F7 | GONE | $v")" '.verdict == "PARK" and .reason == "deadline"'
+done
+expect "눌림-7: 지금 + 예상 소요가 마감을 넘으면 기억이 있어도 마감 PARK" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([$EL5 | .pressed_at_epoch = 1799999000]) | DL(500)")" '.verdict == "PARK" and .reason == "deadline"'
+expect "눌림-8: 만료로 빠진 리셋권은 버리고 만료 전에 빠진 리셋권을 지명한다" \
+  "$(fxdecide "$SN $F7 | GONE | SEEN([SP(\"rp-p1\"; \"five_hour\"; $FX_NOW; null), SP(\"rp-p2\"; \"five_hour\"; 1800700000; null)])")" \
+  '.verdict == "WAIT" and .reserve.pass_id == "rp-p2" and ([.reserve_seen[].id] == ["rp-p2"])'
+expect "눌림-9: 재개 자리도 눌린 리셋권으로 기다린다" "$(fxdecide "$SN R4 | GONE | SEEN([$EL7])")" \
+  ".verdict == \"WAIT\" and .reason == \"resume-bound-no-room\" and .account == \"full\" and .reserve.account == \"full\"
+   and .until_epoch == null and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == $FX_NOW"
+base10=$(fxdecide "$SN $F7 | GONE | REQ({after_wait: true})")
+for v in 'null' '"s"' '{}' '[1, "x", {id: "rp-0000000e"}, SP("rp-0000000e"; "five_hour"; "1800864000"; null), SP("rp-0000000e"; "five_hour"; 1800864000; "now")]'; do
+  check "눌림-10: reserve_seen $v 는 기억 없음과 같다" "$(fxdecide "$SN $F7 | GONE | SEEN($v)")" "$base10"
+done
+check "눌림-11: 분류는 기억 유무와 무관하다" "$(fxctx "$FX_NOW" "$FXU" "$SN $F7 | GONE | SEEN([$EL5])" | bash "$TR_ROUTE" classify)" \
+  "$(fxctx "$FX_NOW" "$FXU" "$SN $F7 | GONE" | bash "$TR_ROUTE" classify)"
+expect "눌림-11: 보유 지명 봉투의 reserve 는 기억이 있어도 오늘과 같다" "$(fxdecide "$SN R4 | SEEN([$EL7])")" ".reserve == $R4_RESERVE"
+expect "눌림-12: 소진 그룹의 눌린 리셋권 지명은 group-exhausted 로 기다린다" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | SEEN([$EL7])")" \
+  ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .account == null and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == $FX_NOW"
+expect "눌림-12: 판독이 리셋을 반영하면 GRANT known" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | UAC(\"full\"; .windows.seven_day.utilization = 0 | .exhausted_until_epoch = null)
+     | SEEN([$EL7 | .pressed_at_epoch = 1799999000])")" '.verdict == "GRANT" and .admitted_as == "known" and .basis == "after-wait"'
+expect "눌림-13: 기억 없는 첫 예비 공급 봉투도 기억을 싣는다" "$(fxdecide "$F7")" \
+  ".reserve_seen == [{group: \"$G_FULL\", account: \"full\", id: \"rp-0000000e\", kind: \"five_hour\", expires_at_epoch: 1800864000, pressed_at_epoch: null}]"
+expect "눌림-13: 시각 대기에는 기억이 없다" "$r4today" '.verdict == "WAIT" and (has("reserve_seen") | not)'
+expect "눌림-13: 마감 PARK 에는 기억이 없다" "$(fxdecide "$F7 | UAC(\"full\"; del(.reset_passes))")" '.verdict == "PARK" and (has("reserve_seen") | not)'
+expect "눌림-13: GRANT 에는 기억이 없다" "$(fxdecide '.')" '.verdict == "GRANT" and (has("reserve_seen") | not)'
+expect "눌림-14: 판독 나이 1700초면 소진 계정의 눌림 유예가 선다" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | AGE(1700) | SEEN([$EL7])")" '.verdict == "WAIT" and .reserve.pass_id == "rp-0000000e"'
+expect "눌림-14: 판독 나이 1801초면 소진 계정의 눌림 유예도 마감 PARK" \
+  "$(fxdecide "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | AGE(1801) | SEEN([$EL7 | .pressed_at_epoch = 1799999000])")" \
+  '.verdict == "PARK" and .reason == "deadline"'
+t15=$(fxdecide "$SN $SECOND | GONE | LEND(\"full\") | SEEN([$EL7 | .pressed_at_epoch = 1799999000])")
+expect "눌림-15: 후보에서 빠진 그룹의 눌린 원소는 그대로 남는다" "$t15" \
+  ".verdict == \"WAIT\" and .group == \"$G_FULL2\" and ([.reserve_seen[] | select(.id == \"rp-0000000e\") | .pressed_at_epoch] == [1799999000])"
+expect "눌림-15: 계정이 돌아온 다음 턴에 눌린 리셋권으로 기다린다" \
+  "$(fxdecide "$SN $SECOND | GONE | FONLY([\"full\"]) | SEEN($(printf '%s' "$t15" | jq -c .reserve_seen))")" \
+  ".verdict == \"WAIT\" and .group == \"$G_FULL\" and .reserve.pass_id == \"rp-0000000e\" and .reserve.pressed_at_epoch == 1799999000"
+
 # 예비 공급 대기도 그룹 FIFO 에 선다. 대기자(S1)의 대기 항목이 사는 동안 같은 그룹에
 # 입장할 수 있는 더 싼 스테이지(S2)는 양보하고, 대기자 자신은 같은 예비 공급 대기를 다시 받는다.
 F7F='UAC("full"; .windows.five_hour.utilization = 0.75 | .windows.seven_day.utilization = 0.5 | .reset_passes.held[0].kind = "five_hour") | FONLY(["full"]) | DL(3000)'
@@ -2156,6 +2263,13 @@ FRAME='.frames = [{account: "full", observed_at_epoch: $now,
   windows: {five_hour: {u: 0.2, resets_at: 1800003600}, seven_day: {u: 0.99, resets_at: 1800432000}}}]'
 expect "라우터-8: 스테이지 로그 창으로 닿아도 낡은 리셋권은 없다" "$(fxctx "$FX_STALE" "$FXU_STALE" "$FRAME | R4" | bash "$TR_ROUTE" decide)" \
   '.verdict == "PARK" and .reason == "deadline" and .ready_at == 1800432000 and (has("reserve") | not)'
+# 낡은 파일 한 턴은 눌림 기억이 있어도 오늘처럼 판정한다.
+expect "눌림-6: 낡은 파일에서 계정 수준 소진은 눌림 기억이 있어도 마감 PARK" \
+  "$(fxctx "$FX_STALE" "$FXU_STALE" "$SN $EXH | FONLY([\"full\"]) | DL(86400) | GONE | SEEN([$EL7 | .pressed_at_epoch = 1799999000])" | bash "$TR_ROUTE" decide)" \
+  '.verdict == "PARK" and .reason == "deadline"'
+expect "눌림-6: 낡은 파일에서 창만 있는 판독은 미지 입장 GRANT" \
+  "$(fxctx "$FX_STALE" "$FXU_STALE" "$SN $F7 | GONE | SEEN([$EL5 | .pressed_at_epoch = 1799999000])" | bash "$TR_ROUTE" decide)" \
+  '.verdict == "GRANT" and .admitted_as == "unknown"'
 
 # 버려질 한도의 경계. 그룹 보기를 직접 만들어 rt_w7 만 돈다. r7 3000, 리셋까지
 # 36000초이면 ρ7·T ≈ 4266.67 이라 리셋권 없는 값은 0 이고, 항이 켜지면 양수다.

@@ -502,7 +502,8 @@ cc_wait_chunk() {
 # a marker, `<key>.waiting`, written by whoever waits — the gate's supervisor or
 # the driver — as `key=value` lines: 보유자 (the waiting process), 지문 (its
 # fingerprint), 기록자 (게이트 or 드라이버), 계보, 그룹, 까지 (epoch or `-`),
-# 갱신 (epoch of the last heartbeat), 종류, 논스, 시도, 재파견.
+# 갱신 (epoch of the last heartbeat), 종류, 논스, 시도, 재파견, 예비 (the reset
+# passes the wait has seen, a one-line JSON array the router reads back).
 #
 # MEMBERSHIP IS THE HOLDER'S LIFE, NOT A CLOCK. A key is waiting when the holder
 # is still the process that wrote the marker, the key has no live stage, and the

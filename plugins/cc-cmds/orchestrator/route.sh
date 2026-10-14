@@ -627,6 +627,57 @@ def rt_pass_pick($c; $G):
     | min_by([.expires_at_epoch, .id]) | select(rt_press_ok($c; $G; .kind))]
   | sort_by([.expires_at_epoch, .kind, .id]) | .[0];
 
+# 대기가 앞 턴에 본 리셋권의 기억. 대기 루프가 표지에서 읽어 재질의에 싣는 것이라
+# 재질의(`after_wait`)에서만 읽고, 여섯 필드의 형이 맞는 원소만 받는다 — 깨진
+# 기억은 기억 없음과 같다.
+def rt_seen_in($c):
+  if ($c.request.after_wait == true) and (($c.request.reserve_seen | type) == "array") then
+    [$c.request.reserve_seen[] | select(type == "object")
+      | select(((.group | type) == "string") and ((.account | type) == "string") and ((.id | type) == "string")
+               and ((.kind | type) == "string") and ((.expires_at_epoch | type) == "number")
+               and ((.pressed_at_epoch == null) or ((.pressed_at_epoch | type) == "number")))
+      | {group, account, id, kind, expires_at_epoch, pressed_at_epoch}]
+  else [] end;
+
+# 기억을 이번 판독으로 판정한다. 후보 그룹의 원소만 본다 — 한 턴 후보에서 빠진
+# 그룹의 원소는 판정 없이 남아 그 그룹이 돌아오는 턴에 판정된다. 한 번 눌린 원소는
+# 대기가 끝날 때까지 눌림이다. 새로 눌림으로 보는 것은 파일이 신선하고, 만료 전이고,
+# 그 계정이 이번 판독에 보유 목록을 싣고, 그룹 보유 집합에서 빠졌고, 오늘의 보유
+# 리셋권으로도 셌을 종류일 때뿐이다. 사용과 `remove` 는 구별되지 않아 둘 다 눌림이다.
+# 눌리지 않은 채 만료된 원소는 버리고, 그 밖(아직 보유, 판독 보류)은 그대로 둔다.
+def rt_pressed($p; $gs; $mem):
+  [$mem[] | (.) as $s
+    | if (any($gs[]; . == $s.group) | not) or (($s.pressed_at_epoch | type) == "number") then $s
+      elif $p.fresh and ($s.expires_at_epoch > $p.c.now)
+           and any(rt_uaccts($p.c)[]; (.id == $s.account) and ((.reset_passes | type) == "object")
+                                       and ((.reset_passes.held | type) == "array"))
+           and (any(($p.groups[$s.group].passes // [])[]; .id == $s.id) | not)
+           and rt_press_ok($p.c; $p.groups[$s.group]; $s.kind)
+      then $s + {pressed_at_epoch: $p.c.now}
+      elif $s.expires_at_epoch <= $p.c.now then empty
+      else $s end];
+
+# 눌린 리셋권 가운데 이 그룹에 지금 누르면 입장이 서는 것. 만료·그룹·id 순 첫째다.
+def rt_press_pick_pressed($p; $g; $mem):
+  [$mem[] | select((.group == $g) and ((.pressed_at_epoch | type) == "number"))
+    | select(rt_press_ok($p.c; $p.groups[$g]; .kind))]
+  | sort_by([.expires_at_epoch, .group, .id]) | .[0];
+
+# 예비 대기 봉투가 내보내는 기억. 후보 그룹들의 지금 보유 리셋권과 판정한 기억을 id 로
+# 합치고, 같은 id 면 눌림이 이긴다.
+def rt_seen_out($p; $gs; $mem):
+  [$gs[] as $g | ($p.groups[$g].passes // [])[]
+    | {group: $g, account, id, kind, expires_at_epoch, pressed_at_epoch: null}] + $mem
+  | group_by(.id)
+  | map([.[] | select((.pressed_at_epoch | type) == "number")] + . | .[0]);
+
+# 대기 사유는 지명된 그룹의 후보 항목 전체로 정한다. 모두 소진이면 group-exhausted,
+# 하나라도 아니면(미상 동시성이 섞인 것 포함) no-room 이다 — 그룹에 소진 아닌 계정이
+# 남아 있으면 그 그룹이 기다리는 이유는 여유 부족이다.
+def rt_wait_why($b; $g):
+  [$b[] | select(.g == $g)] as $in
+  | if ($in | length) > 0 and all($in[]; .why == "x") then "group-exhausted" else "no-room" end;
+
 def rt_classify($schema): rt_prep($schema) as $p | {accounts: $p.accounts, groups: ([$p.groups[]] | sort_by(.group))};
 def rt_admit_all($schema):
   rt_need_cap | rt_cost_apply | rt_prep($schema) as $p
@@ -727,9 +778,16 @@ def rt_resume($p):
               | if $adm.admitted then
                   rt_grant_new($p; $a; $adm; "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
                 elif rt_past_deadline($p.c; $adm.ready_at) then
-                  rt_pass_pick($p.c; $p.groups[$a.group]) as $pass
-                  | if $pass != null and (rt_past_deadline($p.c; $p.c.now) | not) then
-                      rt_env(rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $pass); "none"; null)
+                  [$a.group] as $gs
+                  | rt_pressed($p; $gs; rt_seen_in($p.c)) as $mem
+                  | rt_pass_pick($p.c; $p.groups[$a.group]) as $pass
+                  | (if rt_past_deadline($p.c; $p.c.now) then null
+                     elif $pass != null then rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $pass)
+                     else rt_press_pick_pressed($p; $a.group; $mem) as $q
+                       | if $q == null then null
+                         else rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $q) | .reserve.pressed_at_epoch = $q.pressed_at_epoch end
+                     end) as $w
+                  | if $w != null then rt_env($w + {reserve_seen: rt_seen_out($p; $gs; $mem)}; "none"; null)
                     else rt_env(rt_park_deadline($adm.ready_at); "none"; null) end
                 else rt_env(rt_wait_c($a.group; $a.id; $adm.ready_at; $why; $adm.cost); "none"; null)
                 end
@@ -737,18 +795,28 @@ def rt_resume($p):
         end
     end;
 
-def rt_waitpick($p; $b; $reason):
+def rt_waitpick($p; $b):
   ([$b[] | select((.ready | type) == "number")] | sort_by([.ready, .g]) | .[0]) as $m
   | (if $m != null then $m.ready else null end) as $until
   | (if $m != null then $m.g else ([$b[].g] | sort | .[0]) end) as $g
   | if rt_past_deadline($p.c; $until) then
       # 지명은 `$m` 과 다른 그룹일 수 있으므로 그룹과 비용을 지명된 항목에서 꺼낸다.
-      ([$b[] | (.) as $e | rt_pass_pick($p.c; $p.groups[$e.g]) as $pass | select($pass != null) | {e: $e, pass: $pass}]
-       | sort_by([.pass.expires_at_epoch, .e.g]) | .[0]) as $n
-      | if $n != null and (rt_past_deadline($p.c; $p.c.now) | not) then
-          rt_env(rt_wait_reserve($n.e.g; null; $reason; $n.e.cost; $n.pass); "none"; null)
+      ([$b[].g] | unique) as $gs
+      | rt_pressed($p; $gs; rt_seen_in($p.c)) as $mem
+      | ([$b[] | (.) as $e | rt_pass_pick($p.c; $p.groups[$e.g]) as $pass | select($pass != null) | {e: $e, pass: $pass}]
+         | sort_by([.pass.expires_at_epoch, .e.g]) | .[0]) as $n
+      # 보유 리셋권이 없을 때만 눌린 리셋권을 같은 짝짓기로 지명한다.
+      | (if rt_past_deadline($p.c; $p.c.now) then null
+         elif $n != null then rt_wait_reserve($n.e.g; null; rt_wait_why($b; $n.e.g); $n.e.cost; $n.pass)
+         else ([$b[] | (.) as $e | rt_press_pick_pressed($p; $e.g; $mem) as $pass | select($pass != null) | {e: $e, pass: $pass}]
+               | sort_by([.pass.expires_at_epoch, .e.g]) | .[0]) as $q
+           | if $q == null then null
+             else rt_wait_reserve($q.e.g; null; rt_wait_why($b; $q.e.g); $q.e.cost; $q.pass)
+               | .reserve.pressed_at_epoch = $q.pass.pressed_at_epoch end
+         end) as $w
+      | if $w != null then rt_env($w + {reserve_seen: rt_seen_out($p; $gs; $mem)}; "none"; null)
         else rt_env(rt_park_deadline($until); "none"; null) end
-    else rt_env(rt_wait_c($g; null; $until; $reason; (if $m != null then $m.cost else null end)); "none"; null) end;
+    else rt_env(rt_wait_c($g; null; $until; rt_wait_why($b; $g); (if $m != null then $m.cost else null end)); "none"; null) end;
 
 def rt_nocand($p; $pool):
   [$pool[] | {g: .a.group,
@@ -758,11 +826,11 @@ def rt_nocand($p; $pool):
                     else "room" end),
               ready: (if .adm.admitted then null else .adm.ready_at end), cost: .adm.cost}] as $b
   | if ($b | length) == 0 then rt_env(rt_wait(null; null; null; "no-room"); "none"; null)
-    elif all($b[]; .why == "x") then rt_waitpick($p; $b; "group-exhausted")
+    elif all($b[]; .why == "x") then rt_waitpick($p; $b)
     elif all($b[]; .why == "ucc") then rt_env(rt_wait(([$b[].g] | sort | .[0]); null; null; "unknown-concurrency"); "none"; null)
     elif any($b[]; .why == "fifo") then
       rt_env(rt_wait(([$b[] | select(.why == "fifo") | .g] | sort | .[0]); null; null; "fifo-yield"); "none"; null)
-    else rt_waitpick($p; $b; "no-room") end;
+    else rt_waitpick($p; $b) end;
 
 def rt_new($p; $basis0; $excl):
   $p.own as $o
