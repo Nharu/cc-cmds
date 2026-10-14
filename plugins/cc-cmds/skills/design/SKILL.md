@@ -199,7 +199,7 @@ A single-surface change with no contract change does not need a full design team
 
 **Floor.** This gate selects among composed rows that each carry at least two roster rows — one domain seat and the verification seat — so it cannot yield an empty roster; an empty roster is not a saving but a hard stop, because the ledger stub is created at spawn time and every resume path fail-closes on a missing or unparseable ledger. The floor belongs to the roster contract in `_common/agent-team-protocol.md` alongside the team-size ceiling; do not write a second floor rule here.
 
-`lead-solo` — the kickoff tier under which the conversation writes the document itself — is not a row of this roster; it is a different document-production path with no ledger, and it is only named here so that nobody builds it as a zero-member team.
+The kickoff's design tier is `solo` or `team-4`. `team-4` is this roster, dispatched as `design-discuss-unattended`; `solo` is not a row of it — it is `design-solo-unattended`, a headless lead with no team, and it is only named here so that nobody builds it as a zero-member team.
 
 ### Step 3: Design Discussion (English, internal only)
 

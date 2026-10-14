@@ -30,15 +30,19 @@ Two of these you must not choose casually. `implement` on an unaudited document 
 
 ## `design_required` is about the TOOL, not about ambition
 
-Set it when the run needs a design document that does not exist yet. Then say plainly in `design_rationale` what that costs the person present: `design` interviews through a question tool that is **absent from every headless process**, so a design stage dispatched into the night cannot ask. The design's inputs therefore belong to the act that has a human in it — the requirements interview and the team roster are taken at kickoff and frozen — and the design itself runs unattended as the graph's first stage, with the team the person approved. That is a constraint, not a preference, and stating it as a preference invites someone to "just let it run" without the interview.
+Set it when the run needs a design document that does not exist yet. Then say plainly in `design_rationale` what that costs the person present: `design` interviews through a question tool that is **absent from every headless process**, so a design stage dispatched into the night cannot ask. The design's inputs therefore belong to the act that has a human in it — the requirements interview and, for a `team-4` design, the team roster are taken at kickoff and frozen — and the design itself runs unattended as the graph's first stage. That is a constraint, not a preference, and stating it as a preference invites someone to "just let it run" without the interview.
 
-## `design_tier` sizes the design team — it is not an entry skill
+## `design_tier` picks the design path — it is not an entry skill
 
-`design_tier` is a sibling of `design_required`, not a new `entry_skill` value. `entry_skill` names the stage the run enters; the tier is a configuration parameter of one stage. Its runtime effect is who writes the document: `lead-solo` → the kickoff conversation writes it itself and the graph carries no design stage; `team-2` and `team-4` → the graph's first step is an unattended design stage, and the kickoff takes that stage's team roster from the person before it freezes the run.
+`design_tier` is a sibling of `design_required`, not a new `entry_skill` value. `entry_skill` names the stage the run enters; the tier is a configuration parameter of one stage, `solo` | `team-4`. Its runtime effect is which unattended stage writes the document: `solo` → the `design-solo-unattended` stage, one headless lead who writes the summary and freezes it with no team and no audit after it; `team-4` → the `design-discuss-unattended` stage, a design discussion team whose roster the kickoff takes from the person before it freezes the run, followed by a design audit.
 
-The judgment is the review skill's small-work gate transposed, and **risk indicators outrank the size row**: if any of these fires — a public contract or shared schema change, a public API surface, a DB schema, auth/authorization, an external service integration, async/concurrency — the tier is `team-4` no matter how small the surface is. More than one entry in `targets` is also `team-4`; that signal is already a schema field and needs no new input. Otherwise a single surface with no contract change is `lead-solo`, and everything else is `team-2`. The tier is a default the person may raise and never one the model may quietly lower — the kickoff presents the judged tier and the tiers above it, nothing below.
+**The default is `solo`.** Read this ticket and this tree, and judge `team-4` only when you find a reason particular to this work why it needs a design discussion and an audit. Write each such reason as its own free sentence in `design_heavy_reasons`; a `solo` judgment carries an empty array. There is no list of categories to match against and no number of targets that decides it — a reason is something you can say about this work, not a class it falls into.
 
-**Write `design_tier` and `design_tier_rationale` even when `design_required` is false.** Produce the judged value and say in `design_tier_rationale` that it is inactive — the same posture the schema takes by requiring `design_rationale` unconditionally.
+Estimate from the tree how many files the work will touch and write it in `estimated_files`. It is material for your judgment and nothing more: no count makes a tier on its own. The morning report sets the estimate beside the files the run actually declared, which is how a threshold could ever be learned.
+
+`design_tier_judged` carries the same value as `design_tier`. It is the record of what this judgment said; the person may raise `design_tier` afterwards and never lower it, and the kickoff presents the judged tier and the tier above it, nothing below. `design_tier_rationale` is the prose reason for the whole judgment, `solo` included.
+
+**Write all five tier keys even when `design_required` is false.** Then the judgment is `solo` with an empty `design_heavy_reasons`, and `design_tier_rationale` says that the tier is inactive — the same posture the schema takes by requiring `design_rationale` unconditionally.
 
 ## `design_scope` says whether one document can decide the work
 
@@ -46,7 +50,7 @@ The judgment is the review skill's small-work gate transposed, and **risk indica
 
 `base` fixes the rest of this judgment, so do not weigh it as one more opinion:
 
-- `design_required` is `true` and `design_tier` is `team-4` — a base settles contracts shared across tickets, which is already the tier's risk indicator.
+- `design_required` is `true` and `design_tier` is `team-4` — a base settles the contracts between tickets, and that is reason enough for a discussion and an audit. Write it as the heavy reason.
 - The step graph is exactly `D1 design` (no prerequisite) → `A1 design-audit` (depends on `D1`) → `S1 split` (depends on `D1`, `A1`), and **nothing comes after it**. A base run ends at the split; designing and implementing each ticket is a later run. `split` is a step skill only — it is never an `entry_skill`.
 
 Write both keys on every judgment; a manifest frozen before this field existed has no such key, and a reader takes it as `single`.
@@ -75,7 +79,7 @@ Mark exactly one target `home` when you can tell which one the work is anchored 
 
 ## The step graph is what the person approves
 
-`steps` is the plan, in the order it would run, each step naming its skill and what it depends on. When `design_required` is true and the tier is `team-2` or `team-4`, the first step is `skill: design` and every later step depends on it; a `lead-solo` graph starts after the design, because the document exists before the run does. Keep it at the granularity a person can read and refuse — the segment-level plan is built later by a different judgment, and duplicating it here produces two plans that disagree.
+`steps` is the plan, in the order it would run, each step naming its skill and what it depends on. When `design_required` is true, the first step is `skill: design` and every later step depends on it. With `team-4` a `design-audit` step follows the design; a `solo` graph carries no audit step and goes from the design straight to implementation and review. Keep it at the granularity a person can read and refuse — the segment-level plan is built later by a different judgment, and duplicating it here produces two plans that disagree.
 
 **A graph that reaches a merge must contain a review step, and the schema will not tell you that.** Two rules fire at the merge: one wants a review record covering the branch's current HEAD with P0·P1 at zero, the other wants the reviewing session's ancestry disjoint from the implementing one's. So `implement` followed directly by `apply` — which this schema happily accepts — is a plan that cannot execute, and the person approving it finds out at the merge rather than here. Put the review in, as its own step depending on the implementation, whenever the work is meant to land.
 

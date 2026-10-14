@@ -948,47 +948,50 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
 done
 
 # ---------------------------------------------------------------------------
-# 6e-2b. The kickoff writes the freeze line into a lead-solo document
+# 6e-2b. The kickoff writes no design document on any tier
 #
-# The gate dispatches the audit and plans segments only from a document carrying
-# `**상태**: 동결됨`, while the kickoff's lead-solo contract froze by hash alone.
-# Every lead-solo run then stopped at its first dispatch with nobody at the seat.
-# The literals below are the contract's instruction to write the line, the 5m
-# paragraph's order (line first, hash second), and the Step 6 refusal that
-# catches a document frozen without it.
+# The tiers are `solo` and `team-4`, and on both the design is the run's first
+# stage — `design-solo-unattended` or `design-discuss-unattended`. The tier
+# under which the kickoff conversation wrote the document itself is gone, and
+# with it the reference that carried its contract. A copy of that contract left
+# behind anywhere in the kickoff would be a second document-production path the
+# router and the gate no longer know.
 # ---------------------------------------------------------------------------
-# Each literal is pinned in the reference that carries it — the contract in
-# lead-solo-document.md, the 5m paragraph in boundaries.md, the Step 6 refusal
-# in freeze.md — and pinned absent from the resident body, so a copy left behind
-# in SKILL.md is a second spelling rather than a pass.
-for spec in \
-  'lead-solo-document.md|(c) **Freeze line and `sha256`**' \
-  'lead-solo-document.md|a line reading exactly `**상태**: 동결됨`, once, below the H1' \
-  'boundaries.md|Write the freeze line of (c) into it, then take its path and whole-file `sha256`' \
-  "freeze.md|the tier is \`lead-solo\` and the document \`설계 문서\` names does not carry the line \`**상태**: 동결됨\` exactly once"
-do
-  ref=${spec%%|*}; lit=${spec#*|}
-  nlit=$(grep -cF -- "$lit" "$AP_REFS/$ref" || true)
-  if [ "${nlit:-0}" = "1" ]; then
-    ok "킥오프의 lead-solo 동결 계약이 「${lit}」을 ${ref} 에 한 번 싣는다"
-  else
-    bad "킥오프의 lead-solo 동결 계약" "「${lit}」이 ${ref} 에 ${nlit:-0}번 있다"
-  fi
-  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
-  if [ "${nlit:-0}" = "0" ]; then
-    ok "킥오프의 상주 본문은 「${lit}」을 싣지 않는다"
-  else
-    bad "킥오프의 상주 본문" "「${lit}」이 SKILL.md 에 ${nlit:-0}번 남아 있다"
-  fi
-done
+if [ -e "$AP_REFS/lead-solo-document.md" ]; then
+  bad "킥오프의 설계 문서 경로" "references/lead-solo-document.md 가 남아 있다"
+else
+  ok "킥오프에 대화가 설계 문서를 쓰는 계약 파일이 없다"
+fi
 # Counted, not `grep -q`: an early exit SIGPIPEs `cat` on the left, and under
 # pipefail the match then reads as a miss.
-nlit=$(ap_all | grep -cF -- '(c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment' || true)
-if [ "${nlit:-0}" != "0" ]; then
-  bad "킥오프의 lead-solo 동결 계약" "해시만으로 동결하는 옛 문면이 남아 있다"
-else
-  ok "킥오프의 lead-solo 동결 계약에 해시만으로 동결하는 옛 문면이 없다"
-fi
+for lit in \
+  '(c) **Freeze line and `sha256`**' \
+  '(c) **Freeze and `sha256`**' \
+  'A `lead-solo` document is written after 5m' \
+  'Write the freeze line of (c) into it, then take its path and whole-file `sha256`' \
+  'the tier is `lead-solo` and the document `설계 문서` names does not carry the line `**상태**: 동결됨` exactly once' \
+  '| `lead-solo` | this conversation, after Step 5m'
+do
+  nlit=$(ap_all | grep -cF -- "$lit" || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "킥오프는 「${lit}」을 싣지 않는다"
+  else
+    bad "킥오프의 설계 문서 경로" "옛 lead-solo 계약 「${lit}」이 ${nlit}번 남아 있다"
+  fi
+done
+# The tier table names the stage each tier dispatches, once, in the resident
+# body the kickoff always reads.
+for lit in \
+  '| `solo` | the `design-solo-unattended` stage' \
+  '| `team-4` | the `design-discuss-unattended` stage'
+do
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "1" ]; then
+    ok "킥오프 상주 본문의 티어 표가 「${lit}」을 한 번 싣는다"
+  else
+    bad "킥오프의 티어 표" "「${lit}」이 SKILL.md 에 ${nlit:-0}번 있다"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 6e-2c. The kickoff's pre-authorization rows cover the REST merge
