@@ -1288,7 +1288,7 @@ fleet_dispatch() {
   fi
   CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
   mkdir -p "$run_dir"
-  bash "$FLEET_DIR/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
+  bash "$FLEET_DIR/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
   # merge refusal it feeds is the only thing standing between a red check and a
   # merged branch, and this timer-driven path is the one with no session and no

@@ -21,6 +21,11 @@
 # and only the paragraph restating the four thresholds has gone stale — the
 # paragraph that carries no script name and is therefore invisible to a scan
 # that locates the launch line by the script it invokes.
+#
+# `FAIL-5-silence-drift` pins the fifth pair. Its launch line spells every flag
+# once and agrees on the other four, so it fails only if the lint reads
+# `--silence` at all — and its failure is checked to name that flag, because an
+# exit code alone would also be 1 for a fixture broken for some other reason.
 
 set -euo pipefail
 
@@ -62,6 +67,25 @@ for fixture in "$fixtures"/*/; do
     echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
   fi
 done
+
+# The silence fixture fails for its own reason and no other.
+silence_fx="$fixtures/FAIL-5-silence-drift"
+if [[ -d "$silence_fx" ]]; then
+  set +e
+  silence_err=$(ORCH_ROOT="$silence_fx/orchestrator" SKILLS_ROOT="$silence_fx/skills" \
+    bash "$script_dir/lint-watch-threshold-pins.sh" 2>&1 >/dev/null)
+  set -e
+  silence_fails=$(printf '%s\n' "$silence_err" | grep -c '^FAIL:' || true)
+  silence_named=$(printf '%s\n' "$silence_err" | grep '^FAIL:' | grep -c -- '--silence' || true)
+  if [[ "$silence_fails" != "0" && "$silence_fails" == "$silence_named" ]]; then
+    passed=$((passed + 1))
+    echo "PASS: FAIL-5-silence-drift 의 실패는 모두 --silence 를 지목한다 (${silence_fails}건)"
+  else
+    failures=$((failures + 1))
+    echo "FAIL: FAIL-5-silence-drift — FAIL 줄 ${silence_fails}건 중 --silence 를 지목한 것은 ${silence_named}건" >&2
+    printf '%s\n' "$silence_err" >&2
+  fi
+fi
 
 echo "test-lint-watch-threshold-pins: $passed passed, $failures failed"
 
