@@ -859,22 +859,24 @@ done
 check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
 
 # THE RULES AROUND THE RE-ATTACHMENT, which all sit outside the section the
-# extraction above cuts out — the fourth ending reason, the gate's `무기록` row,
+# extraction above cuts out — the fourth and fifth ending reasons, the gate's `무기록` row,
 # a handoff entry read as a past observation, the seat's exception for a person
 # who asks to continue, and the input contract that admits the prescribed
 # gate-routed reads. Each copy is read whole, so the section extraction above
 # keeps its own range.
 for pair in \
-  "교대:$RS_SKILL:상한·승인·종단·중단에서 인수인계 행을 남기고 끝난다" \
+  "교대:$RS_SKILL:상한·승인·종단·중단·대기에서 인수인계 행을 남기고 끝난다" \
   "교대:$RS_SKILL:**The gate-routed reads this skill names are input too**" \
-  "교대:$RS_SKILL:Four reasons end a shift:" \
+  "교대:$RS_SKILL:Five reasons end a shift:" \
   "교대:$RS_SKILL:**\`무기록\` is the gate's value and never yours**" \
   "교대:$RS_SKILL:**A \`handoff\` entry is what that shift observed at its own \`기록 시각\`, not what holds now.**" \
   "교대:$RS_SKILL:or you are ending on \`중단\` (the gate answered exit 7, or no act is left to dispatch)" \
-  "교대:$RS_SKILL:**A live stage holds back none of the four.**" \
+  "교대:$RS_SKILL:**A live stage holds back none of the other four.**" \
+  "교대:$RS_SKILL:or you are ending on \`대기\` (all that is left is a live stage's result or a pending CI verdict)" \
   "교대:$RS_SKILL:CFI-S1 still holds: the snapshot and the gate-routed reads this skill prescribes are the input" \
   "교대:$RS_SKILL:CFI-S1 still holds: whether to dispatch was decided from the snapshot" \
-  "리드:$AP_SEAT:**Four reasons end a shift, and a live stage holds back none of them.**" \
+  "리드:$AP_SEAT:**Five reasons end a shift, and a live stage holds back none of them but \`대기\`.**" \
+  "리드:$AP_SEAT:When the returned call's latest \`handoff\` is \`대기\` and no \`교대 기동\` follows it" \
   "리드:$AP_SEAT:**\`무기록\` is the gate's alone**" \
   "리드:$AP_ROUTER:or from a gate-routed read of the ledger or the run directory that this skill prescribes" \
   "리드:$AP_ROUTER:read from the snapshot, not from a read of the plan" \
@@ -1075,7 +1077,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Merging and applying a segment|- **Already merged** (`state` reads `MERGED` and `headRefOid` equals the implementation worktree'"'"'s HEAD, all 40 characters' \
     '#### Merging and applying a segment|**`MERGED` with any other `headRefOid`, or a `상태=머지됨` record the gate refuses, is the last bullet'"'"'s case, not this one**' \
     '#### Merging and applying a segment|so take **Any other cause** with `MERGED` and the `headRefOid` (or the refusal) as its `사유`' \
-    '#### Merging and applying a segment|whose `사유` is `CI 진행 중(실패 아님)` with the `message`, write no `park`' \
+    '#### Merging and applying a segment|Still pending → write no block and no `park`; route other work, and when nothing else is dispatchable end with `대기` carrying `'"'"'CI 대기=<id>'"'"'`' \
     '#### Merging and applying a segment|- **Any other cause** — a base that requires a merge queue' \
     '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the 405' \
     '#### Merging and applying a segment|The `park` makes the segment terminal, so the next shift does not send the same merge again' \
