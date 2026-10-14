@@ -697,19 +697,22 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # The routers branch on `다음` and nothing else, so the snapshot hands it over
 # together with what a carry-over act names — the last cycle's number, review
 # HEAD and report path. A segment without a `segment` row is not in the run's
-# segment set and gets no element; `review_carry` carries the three constants
-# for display only.
+# segment set and gets no element; `review_carry` carries the re-implementation
+# cycle cap for display only. The element has no streak or trigger field: the
+# repeated-P0 guard is gone, and a field nothing writes is one a router reads.
 # ---------------------------------------------------------------------------
 printf -- '- `segment` | id=S8 | 상태=실행중 | 워크트리=/nonexistent/S8\n' >> "$LEDGER"
 SNAP_N="$WORK/review-next.json"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_N"
 check "review_next 가 세그먼트의 다음 과 마지막 사이클을 싣는다" \
-  "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [.["다음"], .["사이클"], .["리뷰 HEAD"], .["리포트 경로"], (.["연속"]|tostring), (.["발동"]|tostring)] | join("|")' "$SNAP_N")" \
-  "머지|11|aaa0011|/abs/s8-11.md|0|0"
+  "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [.["다음"], .["사이클"], .["리뷰 HEAD"], .["리포트 경로"]] | join("|")' "$SNAP_N")" \
+  "머지|11|aaa0011|/abs/s8-11.md"
+check "review_next 원소에 가드 필드가 없다" \
+  "$(jq -c '.review_next[] | select(.["세그먼트"]=="S8") | keys' "$SNAP_N")" '["다음","리뷰 HEAD","리포트 경로","사이클","세그먼트"]'
 check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다" \
   "$(jq -r '[.review_next[] | select(.["세그먼트"]=="S9")] | length' "$SNAP_N")" "0"
-check "review_carry 가 세 상수를 싣는다" \
-  "$(jq -c '.review_carry' "$SNAP_N")" '{"CYCLE_CARRY_FROM":2,"CYCLE_CARRY_MAX":3,"P0_GUARD_STREAK":3}'
+check "review_carry 가 재구현 사이클 상한 하나를 싣는다" \
+  "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2}'
 
 # ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
@@ -1054,9 +1057,9 @@ done
 # cause takes the park-and-cone disposition (a router has no halt record to
 # write, and without the `park` the next shift sends the same merge again),
 # the fetch before the apply, the apply act's fixed token,
-# the park-and-cone disposition of a precondition refusal, the cycle cap's
-# reason, and the `다음` branches that send a segment to the carry-over
-# procedure, the guard re-convergence and a sliced review. The fix prompt must
+# the park-and-cone disposition of a precondition refusal, the cycle cap, and
+# the `다음` branches that send a segment to the carry-over procedure, the lead
+# fix, the re-check, the residual park and a sliced review. The fix prompt must
 # be one string in both copies, and the fix section
 # does not restate the delta basis expression, which belongs to the delta
 # subsection.
@@ -1085,9 +1088,12 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
     '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
     '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
-    '#### Branching on `다음` after a review|-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> <범위>"' \
+    '#### Branching on `다음` after a review|-- lead-fix -p "/cc-cmds:review-unattended <리뷰 파견 프롬프트와 같은 인자> --lead-fix <리포트 경로>"' \
+    '#### Branching on `다음` after a review|with `--recheck <리포트 경로>` added to the prompt' \
+    '#### Branching on `다음` after a review|`gate.sh residual-body --manifest <매니페스트> --segment <seg>`' \
+    "#### Branching on \`다음\` after a review|\`'사유=리뷰 잔여'\`" \
     '#### Branching on `다음` after a review|adds `--slice <seg>` to the prompt' \
-    "#### Re-dispatching the implementation after review findings|'사유=사이클 예산 소진'"
+    '#### Re-dispatching the implementation after review findings|once they reach `REIMPL_CYCLE_CAP` (2)'
   do
     head=${spec%%|*}; lit=${spec#*|}
     sec=$(router_section "$file" "$head")

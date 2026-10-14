@@ -119,6 +119,12 @@
 #                    segment's last cycle under `<run-dir>/carry/` and prints
 #                    `이월 <k> 제목=…` and `이월 <k> 본문 파일=…` per item; refused
 #                    (3) unless the segment's `다음` is `이월`
+#   gate.sh residual-body --manifest <path> --segment <id>
+#                    writes the body of the one issue a `리뷰 잔여` park files
+#                    to `<run-dir>/carry/<segment>-<cycle>-잔여.md` and prints
+#                    `잔여 제목=…`, `잔여 본문 파일=…` and `잔여 부류=…`;
+#                    refused (3) unless the segment's `다음` is `잔여 보류`, or
+#                    `이월` on the re-check, and its row names a pull request
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -10380,7 +10386,7 @@ gate_dispatch_doc_arg() {
   # design document hands its implement, review and reconverge stages, the way
   # the driver's `doc_arg` does on first use. The driver's own writer, so the
   # two produce the same bytes.
-  case "${1:-}" in implement|review|reconverge) : ;; *) return 0 ;; esac
+  case "${1:-}" in implement|review|lead-fix|reconverge) : ;; *) return 0 ;; esac
   [ -z "${DOC:-}" ] || return 0
   doc_arg >/dev/null
 }
@@ -10398,7 +10404,8 @@ gate_skill_prompt_of() {
 gate_prompt_doc_arg() {
   # gate_prompt_doc_arg <stage kind> <prompt> — the document argument the stage
   # skill will read out of its prompt, by each skill's own rule: the first `.md`
-  # token for implement and reconverge, the path after `설계는 ` for review. The
+  # token for implement and reconverge, the path after `설계는 ` for review and
+  # for the lead fix, which runs the review skill with that prompt. The
   # report path behind `--report-path` is never a document argument. Empty when
   # the prompt names none.
   #
@@ -10410,7 +10417,7 @@ gate_prompt_doc_arg() {
   # prefix the halt-answer row is held to; any other `.md` is still compared.
   local sk="$1" prompt="$2"
   case "$sk" in
-    review)
+    review|lead-fix)
       case "$prompt" in *'설계는 '*) : ;; *) return 0 ;; esac
       printf '%s' "${prompt#*설계는 }" | sed -E 's/".*$//; s/[[:space:]]+$//'
       ;;
@@ -10425,13 +10432,10 @@ gate_prompt_doc_arg() {
 }
 
 gate_segment_cycle_cap() {
-  # gate_segment_cycle_cap <segment> — the driver's `segment_cap(F)`, with F the
-  # element count of the segment row's `선언 파일 집합` (at least 1).
-  local files f
-  files=$(gate_segment_field "$1" '선언 파일 집합')
-  f=$(printf '%s' "$files" | tr ',' '\n' | grep -c '[^[:space:]]' || true)
-  [ "${f:-0}" -ge 1 ] 2>/dev/null || f=1
-  printf '%s' $(( LADDER_RUNGS * f + 1 ))
+  # gate_segment_cycle_cap <segment> — the re-implementation cycle cap, the
+  # driver's REIMPL_CYCLE_CAP sourced from run.sh. The segment's declared file
+  # count does not enter it; the argument is kept for the callers.
+  printf '%s' "$REIMPL_CYCLE_CAP"
 }
 
 gate_segment_cycle_count() {
@@ -11690,14 +11694,6 @@ gate_cycle_fingerprint() {
   printf '%s\n' "$ids" | LC_ALL=C sort -u | shasum -a 256 | cut -c1-12
 }
 
-# Carry-over and the P0 guard. A carry-over is taken only from the second review
-# of a segment on, and only for one to three P1 findings; three cycles in a row
-# that leave a P0 standing call the guard. The snapshot's `review_carry` carries
-# the three for display — the routers branch on `다음`, never on these numbers.
-readonly CYCLE_CARRY_FROM=2
-readonly CYCLE_CARRY_MAX=3
-readonly P0_GUARD_STREAK=3
-
 gate_review_report_counts() {
   # gate_review_report_counts <report> — THE ONE PARSER of a review report's
   # counts and P1 classification. Every reader that needs a number or a
@@ -12560,11 +12556,10 @@ gate_snapshot() {
   gate_snapshot_stalls_json
   printf '  ],\n'
   # `다음` PER UNMERGED SEGMENT, the one value the routers branch on after a
-  # review. The constants ride beside it for display only; a router that read
-  # them would hold a second copy of the table `gate_segment_review_next` owns.
+  # review. The cycle cap rides beside it for display only; a router that read
+  # it would hold a second copy of the table `gate_segment_review_next` owns.
   # After `stalls`, which keeps its place right after `cycles`.
-  printf '  "review_carry": {"CYCLE_CARRY_FROM": %s, "CYCLE_CARRY_MAX": %s, "P0_GUARD_STREAK": %s},\n' \
-    "$CYCLE_CARRY_FROM" "$CYCLE_CARRY_MAX" "$P0_GUARD_STREAK"
+  printf '  "review_carry": {"REIMPL_CYCLE_CAP": %s},\n' "$REIMPL_CYCLE_CAP"
   printf '  "review_next": [\n'
   gate_snapshot_review_next_json
   printf '  ],\n'
@@ -16171,6 +16166,10 @@ GATE_DRIFT_DIRS
       # issues and the `리뷰 이월` row are the acts, and both are rows.
       gate_carry_body "$segment"
       ;;
+    residual-body)
+      # The same shape for the one issue of a segment parked `리뷰 잔여`.
+      gate_residual_body "$segment"
+      ;;
     answers)
       # Reading, and the reader is a STAGE rather than the router: it picks up
       # what the person said in answer to the judgment it raised. With an id it
@@ -16764,29 +16763,38 @@ gate_manifest_has_design_doc() {
 
 gate_carry_eligibility() {
   # gate_carry_eligibility <segment> — `적격`, or `부적격 <n>` naming the first
-  # of the eight conditions that failed for the segment's last cycle and its
-  # report. `gate_segment_carry_eligible` asks this; the number is what a
-  # measurement over a corpus reads to tell the demotions apart.
+  # condition that failed for the segment's last cycle and its report.
+  # `gate_segment_carry_eligible` asks this; the number is what a measurement
+  # over a corpus reads to tell the demotions apart. Number 8 is no longer a
+  # condition — the carry-over issues are opened under the router's declared
+  # reach rather than a preauthorization — and is kept free so a recorded
+  # demotion keeps its meaning.
   #
-  #   1 사이클 ≥ CYCLE_CARRY_FROM, and an earlier cycle row of this segment in
-  #     this ledger has another 사이클 — the first row's number is not a ledger
-  #     fact (an adopted segment's first row can carry 9)
+  #   1 the last cycle row is the re-check review: a lead-fix row of this
+  #     segment precedes it in the ledger
   #   2 P0 = 0
   #   3 the report's `P1 분류` line parses
   #   4 차단 = 0
-  #   5 이월 가능 = the report's summary P1 = the row's P1, within 1..CYCLE_CARRY_MAX
+  #   5 이월 가능 = the report's summary P1 = the row's P1, at least 1
   #   6 the tag lines keep the rules and their counts equal the `P1 분류` line
   #   7 every carry-over item passes the body checks
-  #   8 the manifest preauthorizes `gh issue`
+  #   9 the `리뷰 이월` row, with an issue URL of the longest form per item,
+  #     fits the row cap — a URL is never clipped, so a row that cannot fit
+  #     would be refused after the issues were opened
+  #
+  # A second argument is a `cycle` row about to be written: it is judged as the
+  # last one, and every lead-fix row already in the ledger precedes it — the
+  # cycle arm stamps `리뷰 종결` that way before the append.
   local seg=$1 row c p0 p1 rep counts v
-  row=$(gate_segment_last_cycle_row "$seg")
-  [ -n "$row" ] || { printf '부적격 1'; return 0; }
-  c=$(gate_row_field "$row" '사이클'); p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
-  if ! gate_canon_count "$c" || [ "$c" -lt "$CYCLE_CARRY_FROM" ] \
-     || ! gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_values '사이클' \
-          | awk -v c="$c" '$0 != c { n++ } END { exit n ? 0 : 1 }'; then
-    printf '부적격 1'; return 0
+  if [ -n "${2:-}" ]; then
+    row=$2
+    gate_segment_has_lead_fix "$seg" || { printf '부적격 1'; return 0; }
+  else
+    row=$(gate_segment_last_cycle_row "$seg")
+    [ -n "$row" ] || { printf '부적격 1'; return 0; }
+    gate_segment_last_cycle_is_recheck "$seg" || { printf '부적격 1'; return 0; }
   fi
+  c=$(gate_row_field "$row" '사이클'); p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
   [ "$p0" = "0" ] || { printf '부적격 2'; return 0; }
   rep=$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")
   counts=$(gate_review_report_counts "$rep") || counts=''
@@ -16796,7 +16804,7 @@ gate_carry_eligibility() {
   if ! gate_canon_count "$p1" || [ "$v" != "$p1" ] \
      || [ "$(gate_report_count "$counts" '요약')" != "정규" ] \
      || [ "$(gate_report_count "$counts" 'P1')" != "$p1" ] \
-     || [ "$p1" -lt 1 ] || [ "$p1" -gt "$CYCLE_CARRY_MAX" ]; then
+     || [ "$p1" -lt 1 ]; then
     printf '부적격 5'; return 0
   fi
   if [ "$(gate_report_count "$counts" '태그')" != "정규" ] \
@@ -16805,14 +16813,24 @@ gate_carry_eligibility() {
     printf '부적격 6'; return 0
   fi
   [ "$(gate_report_count "$counts" '본문')" = "정규" ] || { printf '부적격 7'; return 0; }
-  gate_manifest_preauthorizes gh issue create || { printf '부적격 8'; return 0; }
+  local es eu eiss='' ek=0
+  es=$(seg_slug "$seg" 2>/dev/null) || es=''
+  eu="https://github.com/${es:-owner/repository}/issues/9999999999"
+  while [ "$ek" -lt "$p1" ]; do
+    eiss="${eiss:+$eiss,}$eu"; ek=$((ek + 1))
+  done
+  if [ "$(gate_row_projected_bytes '리뷰 이월' "세그먼트=$seg" "사이클=$c" \
+          "리뷰 HEAD=$(gate_row_field "$row" '리뷰 HEAD')" "건수=$p1" "이슈=$eiss" \
+          "레인=$(gate_lane_label)" "기록 시각=$(now_iso)")" -gt "$GATE_ROW_MAX" ]; then
+    printf '부적격 9'; return 0
+  fi
   printf '적격'
 }
 
 gate_segment_carry_eligible() {
   # gate_segment_carry_eligible <segment> — true when the segment's last cycle
-  # may be carried over. Any failed condition reads as `다음=수정`, today's
-  # behaviour; it never refuses the cycle row.
+  # may be carried over. Any failed condition on the re-check reads as
+  # `다음=잔여 보류`; it never refuses the cycle row.
   [ "$(gate_carry_eligibility "$1")" = "적격" ]
 }
 
@@ -16837,33 +16855,24 @@ gate_segment_review_count_verdict() {
   printf '위반'
 }
 
-gate_segment_p0_guard() {
-  # gate_segment_p0_guard <segment> — the P0 repeat guard. Prints `연속=<n>`,
-  # `발동=<n>`, `판정=<재수렴|사람|->` and, while a streak stands, up to three
-  # `리포트=<absolute path>` lines: the reports of the streak's last three cycle
-  # rows, in cycle order.
+gate_segment_review_walk() {
+  # gate_segment_review_walk <segment> — four facts of the segment's review
+  # loop, one walk over its `cycle` and `stage-result` rows in ledger order,
+  # both chosen by field equality on `세그먼트`:
+  #   리드 수정 있음=<0|1>   a lead-fix row of the segment exists
+  #   리드 수정 뒤=<0|1>     a lead-fix row follows the last cycle row
+  #   확인 리뷰=<0|1>        a lead-fix row precedes the last cycle row, so
+  #                          that cycle is the re-check review
+  #   저작 뒤=<0|1>          an authoring row follows the last cycle row
   #
-  # THE WALK. The segment's `cycle` rows and its `stage-result 종류=reconverge`
-  # rows, together and in ledger order, both chosen by field equality.
-  #   - A cycle row whose P0 is the literal `0` resets the streak; any other
-  #     value — one or more, empty, misspelt — adds one. What does not read as
-  #     zero is counted as standing.
-  #   - A cycle row with the same 사이클 as the cycle row counted just before it
-  #     takes that row's place, so a recovery rewrite is not counted twice.
-  #   - A reconverge row whose `종단 부류` is `정상 완료` resets the streak, and
-  #     counts one firing when the streak stood at P0_GUARD_STREAK or more. A
-  #     reconverge that ended any other way touches neither: an intended park
-  #     exits 0 too, so the exit code cannot tell it apart.
-  #   - A dismissal does not reset the streak. A dismissed cycle leaves the loop
-  #     through `다음=머지`, so the reset would never be observed.
-  #
-  # THE VERDICT. A streak of P0_GUARD_STREAK or more with no firing yet and a
-  # design document goes to `재수렴`; with a firing already, or with no design
-  # document to re-converge, it goes to `사람`.
-  local seg=$1 walk st fired doc=0 p
-  [ -n "$seg" ] || return 0
-  walk=$({ grep -E '^- `(cycle|stage-result)` ' "$LEDGER" 2>/dev/null || true; } \
-    | GATE_FEQ_V="$seg" GATE_GUARD_K="$P0_GUARD_STREAK" awk '
+  # A LEAD-FIX ROW is `종류=lead-fix`, or the driver's `스테이지=S5F` with no
+  # `종류`; an AUTHORING ROW is that, `종류=implement`, or the driver's
+  # `스테이지=S4` with no `종류`. Every attempt counts whatever it ended as: a
+  # crashed implementation may still have committed, and the lead fix is one per
+  # segment however it ended.
+  [ -n "${1:-}" ] || return 0
+  { grep -E '^- `(cycle|stage-result)` ' "$LEDGER" 2>/dev/null || true; } \
+    | GATE_FEQ_V="$1" awk '
       function fld(k,   i, s, p, last) {
         last = ""
         for (i = 2; i <= nf; i++) {
@@ -16876,62 +16885,103 @@ gate_segment_p0_guard() {
       { nf = split($0, f, "|")
         if (fld("세그먼트") != ENVIRON["GATE_FEQ_V"]) next
         if (index($0, "- `cycle` ") == 1) {
-          c = fld("사이클")
-          if (have && c == lastc) { st = pst; rn = prn } else { pst = st; prn = rn }
-          if (fld("P0") == "0") { st = 0; rn = 0 } else { st++; rp[++rn] = fld("리포트 경로") }
-          lastc = c; have = 1
+          recheck = lf; lfa = 0; aa = 0
           next
         }
-        if (fld("종류") != "reconverge" || fld("종단 부류") != "정상 완료") next
-        if (st >= ENVIRON["GATE_GUARD_K"] + 0) fired++
-        st = 0; rn = 0; have = 0
+        k = fld("종류"); st = fld("스테이지"); sub(/:.*/, "", st)
+        islf = (k == "lead-fix" || (k == "" && st == "S5F"))
+        if (islf) { lf = 1; lfa = 1 }
+        if (islf || k == "implement" || (k == "" && st == "S4")) aa = 1
       }
       END {
-        print "연속=" st + 0; print "발동=" fired + 0
-        if (st > 0) for (i = (rn > 3 ? rn - 2 : 1); i <= rn; i++) print "리포트=" rp[i]
-      }')
-  st=$(gate_report_count "$walk" '연속'); fired=$(gate_report_count "$walk" '발동')
-  printf '연속=%s\n발동=%s\n' "$st" "$fired"
-  gate_manifest_has_design_doc && doc=1
-  if [ "$st" -ge "$P0_GUARD_STREAK" ]; then
-    if [ "$fired" = "0" ] && [ "$doc" = "1" ]; then printf '판정=재수렴\n'; else printf '판정=사람\n'; fi
-  else
-    printf '판정=-\n'
-  fi
-  printf '%s\n' "$walk" | sed -n 's/^리포트=//p' | while IFS= read -r p; do
-    printf '리포트=%s\n' "$(gate_report_abs "$p")"
-  done
-  return 0
+        print "리드 수정 있음=" lf + 0; print "리드 수정 뒤=" lfa + 0
+        print "확인 리뷰=" recheck + 0; print "저작 뒤=" aa + 0
+      }'
+}
+
+gate_segment_has_lead_fix() {
+  # gate_segment_has_lead_fix <segment> — true when the segment already has a
+  # lead-fix row; the lead fix is dispatched once per segment.
+  [ "$(gate_report_count "$(gate_segment_review_walk "$1")" '리드 수정 있음')" = "1" ]
+}
+
+gate_segment_lead_fix_after_last_cycle() {
+  # gate_segment_lead_fix_after_last_cycle <segment> — true when a lead-fix row
+  # follows the segment's last cycle row: the re-check review is next.
+  [ "$(gate_report_count "$(gate_segment_review_walk "$1")" '리드 수정 뒤')" = "1" ]
+}
+
+gate_segment_last_cycle_is_recheck() {
+  # gate_segment_last_cycle_is_recheck <segment> — true when a lead-fix row
+  # precedes the segment's last cycle row, so that cycle is the re-check.
+  [ "$(gate_report_count "$(gate_segment_review_walk "$1")" '확인 리뷰')" = "1" ]
+}
+
+gate_segment_authored_after_last_cycle() {
+  # gate_segment_authored_after_last_cycle <segment> — true when an implement or
+  # lead-fix row follows the segment's last cycle row.
+  [ "$(gate_report_count "$(gate_segment_review_walk "$1")" '저작 뒤')" = "1" ]
 }
 
 gate_segment_review_next() {
   # gate_segment_review_next <segment> — `다음`, the segment's next disposition
-  # after review. The first row of this table that holds wins:
-  #   1 no cycle row                                   리뷰 없음
-  #   2 the last cycle was dismissed by a person       머지
-  #   3 its P0 or P1 is empty or not canonical         판정 불가
-  #   4 guard verdict 재수렴                           재수렴
-  #   5 guard verdict 사람                             사람
-  #   6 P0 = 0, P1 = 0                                 머지
-  #   7 P0 = 0, P1 > 0, that cycle carried over        이월 머지
-  #   8 P0 = 0, P1 > 0, carry-over eligible            이월
-  #   9 otherwise                                      수정
-  # The cycle cap is not in this table; the dispatch checks it first. The
-  # routers and the driver branch on this value and on nothing else, and the
-  # merge rule reads the same facts through its environment in the same order.
-  local seg=$1 row p0 p1 g
+  # after review. "Re-check" is a last cycle row with a lead-fix row before it.
+  # The first row of this table that holds wins:
+  #    1 no cycle row                                        리뷰 없음
+  #    2 the last cycle was dismissed by a person            머지
+  #    3 its P0 or P1 is empty or not canonical              판정 불가
+  #    4 P0 = 0, P1 = 0                                      머지
+  #    5 a lead-fix row follows the last cycle row           확인 리뷰
+  #    6 re-check, P0 = 0, P1 > 0, that cycle carried over   이월 머지
+  #    7 re-check, P0 = 0, P1 > 0, carry-over eligible       이월
+  #    8 re-check, otherwise                                 잔여 보류
+  #    9 cycle rows ≥ REIMPL_CYCLE_CAP, no lead-fix row      리드 수정
+  #   10 otherwise                                           수정
+  # The implement dispatch's cap refusal reads the same cycle count. The routers
+  # and the driver branch on this value and on nothing else, and the merge rule
+  # reads the same facts through its environment in the same order.
+  local seg=$1 row p0 p1 walk n
   row=$(gate_segment_last_cycle_row "$seg")
   [ -n "$row" ] || { printf '리뷰 없음'; return 0; }
   [ -n "$(gate_segment_review_dismissed "$seg")" ] && { printf '머지'; return 0; }
   p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
   gate_canon_count "$p0" && gate_canon_count "$p1" || { printf '판정 불가'; return 0; }
-  g=$(gate_report_count "$(gate_segment_p0_guard "$seg")" '판정')
-  case "$g" in 재수렴|사람) printf '%s' "$g"; return 0 ;; esac
   if [ "$p0" = "0" ] && [ "$p1" = "0" ]; then printf '머지'; return 0; fi
-  if [ "$p0" = "0" ]; then
-    [ -n "$(gate_segment_review_carried "$seg")" ] && { printf '이월 머지'; return 0; }
-    gate_segment_carry_eligible "$seg" && { printf '이월'; return 0; }
+  walk=$(gate_segment_review_walk "$seg")
+  [ "$(gate_report_count "$walk" '리드 수정 뒤')" = "1" ] && { printf '확인 리뷰'; return 0; }
+  if [ "$(gate_report_count "$walk" '확인 리뷰')" = "1" ]; then
+    if [ "$p0" = "0" ]; then
+      [ -n "$(gate_segment_review_carried "$seg")" ] && { printf '이월 머지'; return 0; }
+      gate_segment_carry_eligible "$seg" && { printf '이월'; return 0; }
+    fi
+    printf '잔여 보류'; return 0
   fi
+  n=$(gate_segment_cycle_count "$seg")
+  if [ "${n:-0}" -ge "$(gate_segment_cycle_cap "$seg")" ] \
+     && [ "$(gate_report_count "$walk" '리드 수정 있음')" != "1" ]; then
+    printf '리드 수정'; return 0
+  fi
+  printf '수정'
+}
+
+gate_cycle_review_closure() {
+  # gate_cycle_review_closure <segment> <row> — the `리뷰 종결` of a `cycle` row
+  # about to be written: `다음` as it will read once that row is the last,
+  # with `머지` spelt `수렴`. A new row has no dismissal, no carry-over and no
+  # lead-fix row after it, so rows 2, 5 and 6 of the `다음` table cannot hold
+  # and the six values are 수렴, 수정, 리드 수정, 이월, 잔여 보류 and 판정 불가.
+  local seg=$1 row=$2 p0 p1 n
+  p0=$(gate_row_field "$row" 'P0'); p1=$(gate_row_field "$row" 'P1')
+  gate_canon_count "$p0" && gate_canon_count "$p1" || { printf '판정 불가'; return 0; }
+  if [ "$p0" = "0" ] && [ "$p1" = "0" ]; then printf '수렴'; return 0; fi
+  if gate_segment_has_lead_fix "$seg"; then
+    if [ "$p0" = "0" ] && [ "$(gate_carry_eligibility "$seg" "$row")" = "적격" ]; then
+      printf '이월'; return 0
+    fi
+    printf '잔여 보류'; return 0
+  fi
+  n=$(gate_segment_cycle_count "$seg")
+  if [ "$(( ${n:-0} + 1 ))" -ge "$(gate_segment_cycle_cap "$seg")" ]; then printf '리드 수정'; return 0; fi
   printf '수정'
 }
 
@@ -16991,6 +17041,92 @@ gate_carry_body() {
     printf '이월 %s 본문 파일=%s\n' "$k" "$f"
     k=$((k + 1))
   done
+}
+
+gate_residual_body() {
+  # gate_residual_body <segment> — writes the body of the one issue a segment
+  # parked with `리뷰 잔여` files, to `$RUN_DIR/carry/<segment>-<사이클>-잔여.md`,
+  # and prints three lines: `잔여 제목=[잔여] <run id> <segment> 사이클 <n> —
+  # <부류>`, `잔여 본문 파일=<path>` and `잔여 부류=<부류>`. The router and the
+  # driver both call this and start the `blocked` row's `근거` with the third.
+  #
+  # THE CLASS. With `다음=잔여 보류` it comes from the re-check report: P0 above
+  # zero is `P0 잔존`, a `P1 분류` line that does not parse is `분류 미상`, and
+  # anything else is `차단 P1`. With `다음=이월` on a re-check it is `이월 실패`
+  # — a carry-over that failed leaves the ledger as it was, so `다음` still
+  # reads `이월` — and the body lists every carry-over item. Any other `다음`,
+  # and a segment row with no pull request, is refused with GATE_EXIT_RULE.
+  #
+  # The body names the findings by their heading lines, the pull request and
+  # the cycle, never the report's path; a `docs/` path inside a heading is
+  # left out of the issue.
+  local seg=$1 nx row c rep counts pr cls f tmp n k
+  case "$seg" in
+    ''|-|*/*|.*) warn "residual-body needs --segment naming one segment"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+  nx=$(gate_segment_review_next "$seg")
+  row=$(gate_segment_last_cycle_row "$seg")
+  rep=$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")
+  counts=$(gate_review_report_counts "$rep") || counts=''
+  case "$nx" in
+    '잔여 보류')
+      if [ "$(gate_row_field "$row" 'P0')" != "0" ]; then cls='P0 잔존'
+      elif [ "$(gate_report_count "$counts" '분류')" != "정규" ]; then cls='분류 미상'
+      else cls='차단 P1'
+      fi ;;
+    이월)
+      if ! gate_segment_last_cycle_is_recheck "$seg"; then
+        warn "the next disposition of $seg is 「이월」 but its last cycle is not the re-check — there is no residual"
+        return "$GATE_EXIT_RULE"
+      fi
+      cls='이월 실패' ;;
+    *)
+      warn "the next disposition of $seg is 「${nx}」, not 「잔여 보류」 or a failed carry-over — there is no residual"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  c=$(gate_row_field "$row" '사이클')
+  pr=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values 'PR' \
+         | awk 'NF { v = $0 } END { print v }')
+  pr=${pr##*/}; pr=${pr#\#}
+  case "$pr" in
+    ''|*[!0-9]*) warn "the segment row of $seg carries no pull request — the body names the PR the findings came from"
+                 return "$GATE_EXIT_RULE" ;;
+  esac
+  mkdir -p "$RUN_DIR/carry" || return "$GATE_EXIT_RULE"
+  f="$RUN_DIR/carry/$seg-$c-잔여.md"
+  tmp=$(mktemp "$RUN_DIR/carry/.body.XXXXXX") || return "$GATE_EXIT_RULE"
+  {
+    printf 'PR #%s 의 확인 리뷰(사이클 %s) 뒤에 남은 발견입니다. 사유 부류: %s\n\n' "$pr" "$c" "$cls"
+    if [ "$cls" = '이월 실패' ]; then
+      n=$(gate_report_count "$counts" '태그 이월 가능')
+      k=1
+      while gate_canon_count "$n" && [ "$k" -le "$n" ]; do
+        printf -- '- %s\n' "$(gate_report_count "$counts" "이월 $k 제목")"
+        printf '%s\n' "$counts" | GATE_FEQ_K="이월 $k 본문" awk '
+          { p = index($0, "=") }
+          p && substr($0, 1, p - 1) == ENVIRON["GATE_FEQ_K"] { print "  " substr($0, p + 1) }'
+        k=$((k + 1))
+      done
+    else
+      LC_ALL=C GATE_RES_ALLP1="$([ "$cls" = '분류 미상' ] && printf 1)" awk '
+        BEGIN { R = "\360\237\224\264"; O = "\360\237\237\240"; TB = "**[차단]**" }
+        { line = $0; sub(/[ \t\r]+$/, "", line) }
+        index(line, "## ") == 1 {
+          sec = ""
+          if (index(line, "## " R " P0") == 1) sec = "p0"
+          else if (index(line, "## " O " P1") == 1) sec = "p1"
+          next
+        }
+        sec == "" { next }
+        index(line, "- ") != 1 && index(line, "### ") != 1 { next }
+        sec == "p1" && ENVIRON["GATE_RES_ALLP1"] != "1" && index(line, TB) == 0 { next }
+        { sub(/^### /, "- ", line); gsub(/[^ `]*docs\/[^ `]*/, "(문서 경로 생략)", line)
+          print (sec == "p0" ? "[P0] " : "[P1] ") substr(line, 3) }' "$rep" 2>/dev/null | sed 's/^/- /'
+    fi
+  } > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return "$GATE_EXIT_RULE"; }
+  printf '잔여 제목=[잔여] %s %s 사이클 %s — %s\n' "$RUN_ID" "$seg" "$c" "$cls"
+  printf '잔여 본문 파일=%s\n' "$f"
+  printf '잔여 부류=%s\n' "$cls"
 }
 
 gate_carry_issue_view() {
@@ -17065,7 +17201,7 @@ gate_review_carry_row() {
   fi
   el=$(gate_carry_eligibility "$seg")
   if [ "$el" != "적격" ]; then
-    warn "the last cycle of $seg is not eligible for carry-over (${el}) — \`다음\` is \`수정\`"
+    warn "the last cycle of $seg is not eligible for carry-over (${el}) — read \`다음\` again; it is not \`이월\`"
     return "$GATE_EXIT_RULE"
   fi
   if [ "$rn" != "$(gate_row_field "$row" 'P1')" ]; then
@@ -22468,8 +22604,8 @@ gate_record_row() {
           세그먼트)
             warn "\`세그먼트\` 는 게이트가 --segment 로 쓴다 — 이 필드를 빼고 다시 부른다"
             return "$GATE_EXIT_VOCAB" ;;
-          '발견 지문')
-            warn "\`발견 지문\` 은 게이트만 쓰는 필드다 — 이 필드를 빼고 다시 부른다"
+          '발견 지문'|'리뷰 종결')
+            warn "\`${ckt}\` 은 게이트만 쓰는 필드다 — 이 필드를 빼고 다시 부른다"
             return "$GATE_EXIT_VOCAB" ;;
         esac
       done
@@ -22774,13 +22910,25 @@ EOF
       # marker would be longer than the 12-byte value it replaces. Without this
       # step a long cycle row that is legal today — a review already paid for —
       # would turn into a refused write.
-      local fp
+      #
+      # `리뷰 종결` GOES LAST, behind the fingerprint: `다음` as it reads once
+      # this row is the segment's last, so the ledger says why each review
+      # ended the loop or did not. It is derived from the row's own counts and
+      # the rows before it, and the fingerprint is computed from the report
+      # alone, so the field never enters it. A row still over the cap without
+      # the fingerprint drops this field too, with its own warning.
+      local fp rc_end crow_new
       fp=$(gate_cycle_fingerprint "$rep" "$(gate_field_of 'P0' "$@")" "$(gate_field_of 'P1' "$@")")
-      if [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp")" -gt "$GATE_ROW_MAX" ]; then
+      crow_new="- \`cycle\` | 세그먼트=$seg$(printf ' | %s' "$@")"
+      rc_end=$(gate_cycle_review_closure "$seg" "$crow_new")
+      if [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp" "리뷰 종결=$rc_end")" -le "$GATE_ROW_MAX" ]; then
+        gate_append 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp" "리뷰 종결=$rc_end"
+      elif [ "$(gate_row_projected_bytes 'cycle' "세그먼트=$seg" "$@" "리뷰 종결=$rc_end")" -le "$GATE_ROW_MAX" ]; then
         warn "cycle 행이 상한을 넘어 「발견 지문」 을 빼고 기록합니다 — 세그먼트 $seg, 사이클 $(gate_field_of '사이클' "$@")"
-        gate_append 'cycle' "세그먼트=$seg" "$@"
+        gate_append 'cycle' "세그먼트=$seg" "$@" "리뷰 종결=$rc_end"
       else
-        gate_append 'cycle' "세그먼트=$seg" "$@" "발견 지문=$fp"
+        warn "cycle 행이 상한을 넘어 「발견 지문」 과 「리뷰 종결」 을 빼고 기록합니다 — 세그먼트 $seg, 사이클 $(gate_field_of '사이클' "$@")"
+        gate_append 'cycle' "세그먼트=$seg" "$@"
       fi
       log "리뷰 사이클 기록 — $seg"
       ;;
@@ -26138,15 +26286,16 @@ gate_verb_act() {
   # anchor brief of a run without one — so a stage cannot be pointed at another
   # document under this run's authorization.
   #
-  # The budget is the driver's `LADDER_RUNGS*F+1`, counted in `cycle` rows only,
-  # so a crash retry or a resume spends nothing. Reaching it refuses the next
-  # implement dispatch; the router then parks the segment with a cone block.
+  # The budget is the re-implementation cycle cap `REIMPL_CYCLE_CAP`, counted in
+  # `cycle` rows only, so a crash retry or a resume spends nothing. Reaching it
+  # refuses the next implement dispatch; the router then reads `다음`, which at
+  # the cap is `리드 수정` or a value that ends the segment's review loop.
   # The run-scope audit's re-convergence carries the same document argument as
   # a segment's, so the comparison reaches it too.
   if [ "$kind" = "skill" ] \
      && { [ "$stage_is_run_scope_step" = "0" ] || [ "${1:-}" = "reconverge" ]; }; then
     case "${1:-}" in
-      implement|review|reconverge)
+      implement|review|lead-fix|reconverge)
         local da_got da_want
         da_got=$(gate_prompt_doc_arg "$1" "$(gate_skill_prompt_of "$@")")
         da_want=$(gate_doc_arg_path)
@@ -26162,52 +26311,51 @@ gate_verb_act() {
       cy_n=$(gate_segment_cycle_count "$segment")
       cy_cap=$(gate_segment_cycle_cap "$segment")
       if [ "${cy_n:-0}" -ge "$cy_cap" ]; then
-        warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${cy_n}개, 상한 ${cy_cap}(${LADDER_RUNGS}F+1)"
-        warn "구현을 다시 파견하지 말고 세그먼트를 park 로, 스코프=cone 막힘을 사유=사이클 예산 소진 으로 쓰세요"
+        warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${cy_n}개, 상한 ${cy_cap}"
+        warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
         exit "$GATE_EXIT_RULE"
       fi
     fi
-    # `다음` HOLDS THE DISPATCH AFTER THE CAP. While the P0 guard stands the
-    # segment's next step is a re-convergence or a person, and another
-    # implementation would add a fourth cycle to the streak the guard exists to
-    # stop. A re-convergence whose scope begins `P0 반복 ` is admitted only when
-    # the guard asked for it, over exactly the three reports it chose; a review
-    # dispatch's `--slice` must name the segment it reviews, or the report
-    # would drop that segment's own findings from the count as another slice's.
-    # These three reach the routing path only — the driver's dispatches do not
-    # pass here, and its own branch on `다음` is what holds them.
-    local rn_prompt rn_next rn_scope rn_want rn_got rn_slice
+    # `다음` HOLDS THE LEAD FIX AND THE REVIEW AFTER IT. The lead fix is
+    # dispatched only while `다음` is `리드 수정`, and once per segment: a
+    # second one, whatever the first ended as, is refused. A review dispatch
+    # with no implement or lead-fix row after the segment's last cycle row
+    # passes only when the segment's tree has moved past that row's
+    # `리뷰 HEAD` — the same head reviewed again writes the same report. Its
+    # `--slice` must name the segment it reviews, or the report would drop that
+    # segment's own findings from the count as another slice's. These reach the
+    # routing path only — the driver's dispatches do not pass here, and its own
+    # branch on `다음` is what holds them.
+    local rn_prompt rn_next rn_slice rn_row rn_rhead rn_head
     rn_prompt=$(gate_skill_prompt_of "$@")
     case "${1:-}" in
-      implement)
+      lead-fix)
         rn_next=$(gate_segment_review_next "$segment")
-        case "$rn_next" in
-          재수렴|사람)
-            warn "세그먼트 ${segment} 의 다음 처분은 「${rn_next}」 입니다 — P0 반복 가드가 서 있는 동안 구현을 다시 파견하지 않습니다"
-            if [ "$rn_next" = "재수렴" ]; then
-              warn "스냅숏의 review_next[] 가 주는 범위로 P0 반복 재수렴을 파견하세요"
-            else
-              warn "세그먼트를 park 로, 스코프=cone 막힘을 P0 반복 가드 사유로 쓰세요"
-            fi
-            exit "$GATE_EXIT_RULE" ;;
-        esac ;;
-      reconverge)
-        # Found anywhere in the prompt rather than only right behind the
-        # document argument: a quoted or oddly spaced argument must not let the
-        # scope pass unchecked.
-        case "$rn_prompt" in
-          *' P0 반복 '*)
-            rn_scope="${rn_prompt#*" P0 반복 "}"
-            rn_got=$(printf '%s\n' "$rn_scope" | tr -d "\"'" | awk 'NR == 1 { print $1; print $2; print $3; print $4 }')
-            rn_next=$(gate_segment_review_next "$segment")
-            rn_want=$(printf '%s\n' "$segment"; gate_segment_p0_guard "$segment" | sed -n 's/^리포트=//p')
-            if [ "$rn_next" != "재수렴" ] || [ "$rn_got" != "$rn_want" ]; then
-              warn "P0 반복 재수렴은 세그먼트 ${segment} 의 다음 처분이 「재수렴」 이고 범위가 그 세그먼트와 가드가 고른 세 리포트일 때만 파견합니다 — 다음: ${rn_next}"
-              warn "범위는 스냅숏의 review_next[] 에서 그대로 옮기세요"
-              exit "$GATE_EXIT_RULE"
-            fi ;;
-        esac ;;
+        if [ "$rn_next" != "리드 수정" ]; then
+          warn "세그먼트 ${segment} 의 다음 처분은 「${rn_next}」 입니다 — 리드 수정은 「다음」 이 「리드 수정」 일 때만 파견합니다"
+          warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
+          exit "$GATE_EXIT_RULE"
+        fi
+        if gate_segment_has_lead_fix "$segment"; then
+          warn "세그먼트 ${segment} 에는 리드 수정 행이 이미 있습니다 — 리드 수정은 세그먼트마다 한 번입니다"
+          warn "스냅숏의 review_next[] 의 「다음」 을 읽으세요"
+          exit "$GATE_EXIT_RULE"
+        fi ;;
       review)
+        rn_row=$(gate_segment_last_cycle_row "$segment")
+        if [ -n "$rn_row" ] && ! gate_segment_authored_after_last_cycle "$segment"; then
+          rn_rhead=$(gate_row_field "$rn_row" '리뷰 HEAD')
+          rn_head=$( { cd "$(gate_act_worktree "$alias" "$segment")" 2>/dev/null \
+                       && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || true)
+          case "$rn_head" in
+            "$rn_rhead"*)
+              if [ -n "$rn_rhead" ]; then
+                warn "세그먼트 ${segment} 의 마지막 cycle 행 뒤에 구현·리드 수정 행이 없고 작업 트리 HEAD 가 그 행의 리뷰 HEAD (${rn_rhead}) 그대로입니다 — 같은 HEAD 를 다시 리뷰하지 않습니다"
+                warn "스냅숏의 review_next[] 의 「다음」 을 읽으세요"
+                exit "$GATE_EXIT_RULE"
+              fi ;;
+          esac
+        fi
         # awk splits the words, not the shell: an unquoted expansion would
         # glob a prompt that carries `*`.
         rn_slice=$(printf '%s\n' "$rn_prompt" | awk '
@@ -29333,7 +29481,16 @@ gate_continuation_argv() {
     warn "the last attempt ran zero turns, so there is nothing to continue — dispatch the stage afresh instead ($key#$att)"
     return "$GATE_EXIT_RULE"
   fi
-  if [ "$(continue_count "$key")" -ge "$CONTINUE_MAX" ]; then
+  # THE SAME FAILURE REASON ENDS THE CHAIN AS THE CAP DOES. Two attempts in a
+  # row with one `실패 서명` whose cause is not `-` would only spend the next
+  # continuation on the same wall; the refusal is the cap's, with the reason
+  # and the signature named.
+  local fsig_prev fsig_last fsig_same=0
+  fsig_last=$(gate_row_field "$last" '실패 서명')
+  fsig_prev=$(gate_row_field "$(gate_stage_result_rows_of "$key" | tail -2 | sed -n '1{$!p;}')" '실패 서명')
+  same_failure_reason "$fsig_prev" "$fsig_last" && fsig_same=1
+  if [ "$fsig_same" = "1" ] || [ "$(continue_count "$key")" -ge "$CONTINUE_MAX" ]; then
+    [ "$fsig_same" = "0" ] || warn "같은 실패 사유 — 직전 시도와 실패 서명이 같다: $fsig_last ($key)"
     # THE DESIGN STEP HAS NO `blocked` ROW TO TAKE: a cone row needs a
     # `segment` row, and the step has none. What it has is the design stop,
     # which termination condition 1 records once the same counter reaches the cap.
@@ -30391,7 +30548,7 @@ gate_settle_lost_dispatches() {
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
         "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} "기록자=게이트" \
         "effort=(미상)" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$seg")")" \
-        "종단 부류=외부 종료" \
+        "종단 부류=외부 종료" "실패 서명=$(failure_signature "${kind:-미상}" '외부 종료' - -)" \
         "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
       log "잃어버린 파견 정산 — $seg#$attempt (외부 종료)"
     else
@@ -30464,7 +30621,7 @@ gate_settle_dead_waiters() {
        && { [ -z "$lin" ] || [ -z "$( { gate_rows 'blocked' || true; } | cc_rows_naming_lineage "$lin")" ]; }; then
       gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$key" "${kind:-}")" "스테이지=$key" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$att" "세션 id=-" "부모=-" "기록자=게이트" \
-        "종단 부류=외부 종료" \
+        "종단 부류=외부 종료" "실패 서명=$(failure_signature "${kind:-미상}" '외부 종료' - -)" \
         "관측=스폰 전 대기 중 감독자가 사라졌다 — 정산 시각 $(now_iso)"
       log "스폰 전 대기자 정산 — $key#$att (외부 종료)"
       GATE_SETTLED_SEGMENTS="${GATE_SETTLED_SEGMENTS:-} $key"
@@ -31363,20 +31520,31 @@ gate_record_stage_outcome() {
            "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
   fi
 
+  # `실패 서명`, by the driver's one helper. The cause clue is the halt record's
+  # id for a halt and the unmet residual headings for an implementation's
+  # hollow success; otherwise the helper reads the stream's last error event.
+  local fsig_clue='' fsig
+  if [ "$klass" = "의도된 park" ]; then
+    fsig_clue="$seg#$attempt"
+  elif [ "$kind" = "implement" ] && [ "$klass" = "공허한 성공" ]; then
+    fsig_clue=$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md" 2>/dev/null || true)
+  fi
+  fsig=$(failure_signature "$kind" "$klass" "$out" \
+           "$(stage_progress_of "$kind" "$(gate_segment_worktree "$rowseg" 2>/dev/null || true)" -)" "$fsig_clue")
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
       "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} "기록자=게이트" \
       "effort=$effort" "서빙 모델=$served" \
-      "plan_sha256=$psha" "종단 부류=$klass"
+      "plan_sha256=$psha" "종단 부류=$klass" "실패 서명=$fsig"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
       "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} "기록자=게이트" \
       "effort=$effort" "서빙 모델=$served" \
-      "종단 부류=$klass"
+      "종단 부류=$klass" "실패 서명=$fsig"
   fi
   # A re-convergence row voids the segment's plan; the file goes too, or the
   # plan-file fallback above would put the void digest back on the next row.
@@ -33404,33 +33572,22 @@ gate_snapshot_cycles_json() {
 
 gate_snapshot_review_next_json() {
   # One element per segment that has a `cycle` row and has not merged:
-  # `다음`, the guard's `연속` and `발동`, the last cycle's `사이클`,
-  # `리뷰 HEAD` and `리포트 경로` (what a carry-over act names), `범위` — the
-  # whole `P0 반복 …` scope when `다음` is `재수렴`, so the router copies it
-  # rather than assembling it — and `사유` when `다음` is `사람`. A segment
-  # with no cycle row is left out: its `다음` is `리뷰 없음` by definition.
-  local out s row g nx st fd sc why
+  # `다음` and the last cycle's `사이클`, `리뷰 HEAD` and `리포트 경로` — what a
+  # carry-over act names, and at `리드 수정` and `확인 리뷰` the cap report the
+  # lead fix and the re-check name. A segment with no cycle row is left out:
+  # its `다음` is `리뷰 없음` by definition.
+  local out s row nx
   out=$(gate_segment_ids | while IFS= read -r s; do
           [ -n "$s" ] || continue
           [ "$(gate_segment_field "$s" '상태')" = "머지됨" ] && continue
           row=$(gate_segment_last_cycle_row "$s")
           [ -n "$row" ] || continue
-          g=$(gate_segment_p0_guard "$s")
           nx=$(gate_segment_review_next "$s")
-          st=$(gate_report_count "$g" '연속'); fd=$(gate_report_count "$g" '발동')
-          sc=''; why=''
-          if [ "$nx" = "재수렴" ]; then
-            sc="P0 반복 $s $(printf '%s\n' "$g" | sed -n 's/^리포트=//p' | tr '\n' ' ')"
-            sc=${sc% }
-          elif [ "$nx" = "사람" ]; then
-            if [ "${fd:-0}" -ge 1 ]; then why='P0 반복 가드 — 재수렴 뒤 다시 3사이클'; else why='P0 반복 가드 — 설계 문서 없음'; fi
-          fi
-          printf '    {"세그먼트": "%s", "다음": "%s", "연속": %s, "발동": %s, "사이클": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s", "범위": "%s", "사유": "%s"},\n' \
-            "$(gate_json_escape "$s")" "$(gate_json_escape "$nx")" "${st:-0}" "${fd:-0}" \
+          printf '    {"세그먼트": "%s", "다음": "%s", "사이클": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s"},\n' \
+            "$(gate_json_escape "$s")" "$(gate_json_escape "$nx")" \
             "$(gate_json_escape "$(gate_row_field "$row" '사이클')")" \
             "$(gate_json_escape "$(gate_row_field "$row" '리뷰 HEAD')")" \
-            "$(gate_json_escape "$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")")" \
-            "$(gate_json_escape "$sc")" "$(gate_json_escape "$why")"
+            "$(gate_json_escape "$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")")"
         done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
