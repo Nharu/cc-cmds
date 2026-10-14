@@ -277,7 +277,7 @@ In an ordinary checkout that is the same string as `git rev-parse --show-topleve
 The loop is routed by the headless shift, which runs `autopilot-router-shift` with its own copy and reads nothing from this file. This act's text is kept in two files:
 
 - `${CLAUDE_SKILL_DIR}/references/act2-seat.md` — the parts this seat runs (read at Step 7).
-- `${CLAUDE_SKILL_DIR}/references/router-lead-copy.md` — the lead copy of the router's parts. No session reads it at run time; `scripts/test-snapshot.sh` and `scripts/test-gate.sh` compare it with the shift's copy.
+- `${CLAUDE_SKILL_DIR}/references/router-lead-copy.md` — the lead copy of the router's parts. No session reads it at run time; `scripts/test-snapshot.sh` and `scripts/test-gate.sh` compare only the passages they pin with the shift's copy, not the whole file — the two copies differ elsewhere, so an unpinned sentence can drift between them unnoticed.
 
 ## Act 3 — the morning report (`--report`)
 
