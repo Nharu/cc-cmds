@@ -30356,7 +30356,27 @@ gate_verb_supervise_stage() {
       fi
     fi
     printf '%s\n%s\n%s\n%s\n' "$window" "$(lane_label_of "$r_cfg")" "${effort:--}" "$r_acct" > "$RUN_DIR/$seg.window"
+    # The directory this attempt runs under, the record the driver's launch
+    # writes too: with routing on, `transcript_of_session` finds a stage's
+    # transcript only through it, and without it the terminal row could not
+    # count the session's organization moves.
+    write_run_record "$RUN_DIR/$seg.config-dir" "$r_cfg" \
+      || warn "the attempt's config directory record was not written ($seg#$attempt) — the transcript readers will not find it"
     local -x CLAUDE_CONFIG_DIR="$r_cfg"
+  fi
+  # THE RE-ATTACHMENT ORGANIZATION CHECK, the same one the driver's launch makes.
+  # The previous attempt's record goes first, so a fresh session never carries
+  # it; a re-attachment then compares the session's last organization with the
+  # one its directory requests now, records a difference and launches anyway.
+  rm -f "$RUN_DIR/$seg.org-reattach"
+  if [ -n "$resume" ]; then
+    local rcfg=""
+    if [ "$routed" = "1" ]; then
+      rcfg="$r_cfg"
+    else
+      rcfg=$(resolve_account 2>/dev/null) || rcfg=""
+    fi
+    [ -z "$rcfg" ] || reattach_org_note "$seg" "$rcfg" "$resume"
   fi
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
@@ -30548,12 +30568,19 @@ gate_settle_lost_dispatches() {
     if [ -z "$( gate_stage_result_rows_of "$seg" \
                 | { grep -F "실행 버전=$attempt " || true; } )" ]; then
       sid=$(stage_session_id "$seg")
+      # The attempt ran a session, so its moves and re-attachment record go on
+      # its row as on a supervisor's.
+      local om ro re
+      om=$(stage_org_moves_of "$seg" || true)
+      ro=$(stage_reattach_org_of "$seg")
+      re=$(stage_reattach_ctx_of "$seg")
       # No effort was recorded anywhere the settlement can read, so it says
       # `(미상)`; the served model is in the stream's first frame if the stage
       # got that far.
       gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$seg" "${kind:-}")" "스테이지=$seg" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
-        "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} "기록자=게이트" \
+        "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} \
+        ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=게이트" \
         "effort=(미상)" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$seg")")" \
         "종단 부류=외부 종료" "실패 서명=$(failure_signature "${kind:-미상}" '외부 종료' - -)" \
         "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
@@ -31538,18 +31565,27 @@ gate_record_stage_outcome() {
   fi
   fsig=$(failure_signature "$kind" "$klass" "$out" \
            "$(stage_progress_of "$kind" "$(gate_segment_worktree "$rowseg" 2>/dev/null || true)" -)" "$fsig_clue")
+  # The session's organization moves and this attempt's re-attachment record,
+  # by the driver's readers; each is silent when there is nothing to say, so a
+  # row with no move is the row written before these fields existed.
+  local om ro re
+  om=$(stage_org_moves_of "$seg" || true)
+  ro=$(stage_reattach_org_of "$seg")
+  re=$(stage_reattach_ctx_of "$seg")
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
-      "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} "기록자=게이트" \
+      "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} \
+      ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=게이트" \
       "effort=$effort" "서빙 모델=$served" \
       "plan_sha256=$psha" "종단 부류=$klass" "실패 서명=$fsig"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
-      "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} "기록자=게이트" \
+      "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} \
+      ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=게이트" \
       "effort=$effort" "서빙 모델=$served" \
       "종단 부류=$klass" "실패 서명=$fsig"
   fi
@@ -33397,6 +33433,26 @@ gate_shift_context_of() {
   printf '%s' "$v"
 }
 
+gate_shift_org_moves_of() {
+  # gate_shift_org_moves_of <ordinal> — the organization moves routing shift
+  # <ordinal>'s session went through, read from the transcript
+  # `gate_shift_context_of` reads, by the same session id and with the same
+  # refusal to fall back. Nothing when the transcript cannot be found or the
+  # session never moved, so the launch row stays as it was; a move is logged
+  # once as a warning. A shift runs under the seat it was launched from, which
+  # is where a person's `/login` reaches a running session.
+  local n="$1" sid f m
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -ge 1 ] || return 0
+  sid=$(session_uuid "shift" "$n")
+  f=$(gate_transcript_of_session "$sid") || f=""
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  m=$(transcript_org_moves "$f")
+  case "$m" in ''|0|*[!0-9]*) return 0 ;; esac
+  warn "교대 $n 세션 $sid 이 실행 중 조직을 ${m}번 옮겼다"
+  printf '%s' "$m"
+}
+
 gate_shift_floor() {
   # The context this routing session STARTED at — the price of having restarted.
   #
@@ -33894,16 +33950,20 @@ gate_launch_shift() {
   # launching — the seat — which is the confusion the floor guard above records.
   # A kickoff launch has no outgoing shift and an unresolved transcript has no
   # honest number, so both carry `-`.
-  local window effort launch_flags prev_ctx=''
+  #
+  # `조직 이동` IS THE OUTGOING SHIFT'S TOO, for the same reason, and silent
+  # when it is 0 or unreadable — a kickoff launch has no outgoing shift at all.
+  local window effort launch_flags prev_ctx='' som=''
   window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
   effort=$(stage_effort_of shift)
   launch_flags=$(stage_launch_flags shift)
   if [ "$n" -gt 1 ]; then
     prev_ctx=$(gate_shift_context_of "$((n - 1))")
+    som=$(gate_shift_org_moves_of "$((n - 1))" || true)
   fi
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
     "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
-    "컨텍스트=${prev_ctx:--}" "effort=${effort:--}"
+    "컨텍스트=${prev_ctx:--}" "effort=${effort:--}" ${som:+"조직 이동=$som"}
   # THE RUN NOW ENDS ON `done`, AND ONLY THE SEAT SAYS SO. A seat that hands its
   # turn to a shift settles the exit clauses after the last segment, so from here
   # the ledger-derived terminal conjunction opens a settlement window instead of
