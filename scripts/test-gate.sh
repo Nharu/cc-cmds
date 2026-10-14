@@ -5003,7 +5003,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 8b. Implementation and review must be separate sessions
-# --- section: 8b | group: base | covers: snapshot, act | anchors: 디스패처를 공유하는 것은 자기 작업 리뷰가 아니다 ---
+# --- section: 8b | group: base | covers: snapshot, act | anchors: 디스패처를 공유하는 것은 자기 작업 리뷰가 아니다, 8b-R6: 리드 수정 뒤 리뷰가 아직 없으면 쌍 b·c 는 판정하지 않는다 ---
 #
 # The rule this replaces compared session ids while those ids were DERIVED from
 # `run|doc|stage|attempt` — values that differ by construction. So the check was
@@ -5068,6 +5068,65 @@ case "$msg" in
   *"undecidable is not a pass"*) ok "계보가 기록되지 않으면 통과가 아니다 (공허한 참으로 돌아가지 않는다)" ;;
   *) bad "미기록 처리" "'$msg'" ;;
 esac
+
+# A LEAD FIX ADDS AN AUTHOR, so the rule judges three pairs once a lead-fix row
+# exists: (a) last implementation × the last review before the lead fix, (b) the
+# lead fix × the last review, (c) last implementation × the last review. Each
+# pair is checked alone on both ledger shapes — router rows carry `종류`, driver
+# rows are bare S4/S5/S5F. Pair (a) is the one a rule pairing only the LAST review
+# misses: the re-check review is clean, the cap review was the implementer's fork.
+# The rule is run directly against its own ledgers, so nothing here leans on the
+# ledger the sections above built.
+SEP3=$(mktemp -d "${TMPDIR:-/tmp}/sep3.XXXXXX")
+sep3_rule="$repo_root/plugins/cc-cmds/orchestrator/rules/구현-리뷰-분리.sh"
+sep3_row() {  # sep3_row <r|d> <impl|rev|lf> <세션 id> <부모>
+  local k st
+  if [ "$1" = r ]; then
+    st=S1
+    case "$2" in impl) k="종류=implement | " ;; rev) k="종류=review | " ;; lf) k="종류=lead-fix | " ;; esac
+  else
+    case "$2" in impl) st=S4; k="" ;; rev) st=S5; k="" ;; lf) st=S5F; k="종류=lead-fix | " ;; esac
+  fi
+  printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=%s | %s세션 id=%s | 부모=%s | 종단 부류=정상 완료\n' "$st" "$k" "$3" "$4"
+}
+sep3_run() { GATE_ACT=머지 GATE_SEGMENT=S1 GATE_LEDGER="$1" /bin/sh "$sep3_rule" 2>&1 >/dev/null; printf '|%s' "$?"; }
+# sep3_ledger <shape> <file> <cap 리뷰 부모> <확인 리뷰 세션> <확인 리뷰 부모>
+sep3_ledger() {
+  { sep3_row "$1" impl i1 R; sep3_row "$1" rev c1 "$3"; sep3_row "$1" lf l1 R; sep3_row "$1" rev "$4" "$5"; } > "$2"
+}
+for sh3 in r d; do
+  sep3_ledger $sh3 "$SEP3/a" i1 x1 R
+  case "$(sep3_run "$SEP3/a")" in
+    *"share an ancestor"*"쌍 a"*"|1") ok "8b-R6 ($sh3): 상한 리뷰가 구현의 포크면 확인 리뷰가 깨끗해도 거부된다 (쌍 a)" ;;
+    *) bad "8b-R6 쌍 a ($sh3)" "$(sep3_run "$SEP3/a")" ;;
+  esac
+  sep3_ledger $sh3 "$SEP3/b" R x1 l1
+  case "$(sep3_run "$SEP3/b")" in
+    *"share an ancestor"*"쌍 b"*"|1") ok "8b-R6 ($sh3): 확인 리뷰가 리드 수정의 포크면 거부된다 (쌍 b)" ;;
+    *) bad "8b-R6 쌍 b ($sh3)" "$(sep3_run "$SEP3/b")" ;;
+  esac
+  sep3_ledger $sh3 "$SEP3/c" R x1 i1
+  case "$(sep3_run "$SEP3/c")" in
+    *"share an ancestor"*"쌍 c"*"|1") ok "8b-R6 ($sh3): 확인 리뷰가 구현의 포크면 거부된다 (쌍 c)" ;;
+    *) bad "8b-R6 쌍 c ($sh3)" "$(sep3_run "$SEP3/c")" ;;
+  esac
+  sep3_ledger $sh3 "$SEP3/ok" R x1 R
+  check "8b-R6 ($sh3): 세 쌍이 모두 서로소면 통과한다" "$(sep3_run "$SEP3/ok")" "|0"
+  # With no lead-fix row the rule is the one pair it always was.
+  { sep3_row $sh3 impl i1 R; sep3_row $sh3 rev c1 R; } > "$SEP3/n0"
+  check "8b-R6 ($sh3): 리드 수정이 없으면 디스패처 공유는 통과한다" "$(sep3_run "$SEP3/n0")" "|0"
+  { sep3_row $sh3 impl i1 R; sep3_row $sh3 rev c1 i1; } > "$SEP3/n1"
+  case "$(sep3_run "$SEP3/n1")" in
+    *"쌍 "*) bad "8b-R6 리드 수정 없음 ($sh3)" "쌍 표지가 붙었다 — 리드 수정 없는 판정이 바뀌었다" ;;
+    *"share an ancestor"*"|1") ok "8b-R6 ($sh3): 리드 수정이 없으면 포크 거부는 쌍 표지 없이 그대로다" ;;
+    *) bad "8b-R6 리드 수정 없음 ($sh3)" "$(sep3_run "$SEP3/n1")" ;;
+  esac
+done
+# A missing side skips its pair rather than failing it: a lead fix with no
+# review yet judges nothing but (a).
+{ sep3_row r impl i1 R; sep3_row r rev c1 R; sep3_row r lf l1 R; } > "$SEP3/nr"
+check "8b-R6: 리드 수정 뒤 리뷰가 아직 없으면 쌍 b·c 는 판정하지 않는다" "$(sep3_run "$SEP3/nr")" "|0"
+rm -rf "$SEP3"
 
 # ---------------------------------------------------------------------------
 # 8e. The router's own writer for `segment` and `cycle`
