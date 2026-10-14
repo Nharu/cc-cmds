@@ -252,7 +252,7 @@ if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
       fi
     done <<< "$read_keys"
     for k in design_tier_judged design_heavy_reasons design_tier design_required design_scope steps; do
-      if ! printf '%s\n' "$read_keys" | grep -qxF "$k"; then
+      if ! grep -qxF "$k" <<<"$read_keys"; then
         echo "FAIL: $rel — the checker does not read '$k', on which its assertions rest" >&2
         check_ok=0
       fi
