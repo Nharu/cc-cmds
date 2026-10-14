@@ -50,11 +50,12 @@
 #
 #   --workspace <file>
 #                 compare the workspace rows against <file> without a map. In
-#                 this form only, an `excluded:*` row's body is compared too:
-#                 the gate leaves such a file out of a stage by the identity
-#                 judgment below, which hashes every body, so a body edit is
-#                 reported `changed` under `--explain` and recorded by `--ack`
-#                 at its new hash. A source found through the map, and the
+#                 this form only, an `excluded:*` row's body is compared too,
+#                 a host-local one recorded with `--ack-added` as well as a
+#                 manifest row: the gate leaves such a file out of a stage by
+#                 the identity judgment below, which hashes every body, so a
+#                 body edit is reported `changed` under `--explain` and
+#                 recorded by `--ack` at its new hash. A source found through the map, and the
 #                 user-scope source, still check an `excluded:*` row by its
 #                 anchor alone: a mapped file is excluded whatever it says.
 #
@@ -71,9 +72,11 @@
 #                 manifest hash, or the store holds (workspace, anchor,
 #                 sha256) — for `excluded:*` rows as for `policy:*` rows — or
 #                 it resolves to a host-local disposition recorded with
-#                 `--ack-added`, which matches by its anchor alone; (c) the
-#                 row's disposition is `policy:*` or `excluded:*`, or a
-#                 host-local `excluded:*` or `skill:*`. A file with at least
+#                 `--ack-added`, whose prefix matches that section alone of
+#                 the file and whose body hashes to a sha256 the store holds
+#                 for it (the one `--ack-added` recorded, or a later `--ack`);
+#                 (c) the row's disposition is `policy:*` or `excluded:*`, or a
+#                 host-local `excluded:*`. A file with at least
 #                 one heading equal to a `workspace` anchor is identified as
 #                 the workspace source; when an identified file fails, one line
 #                 per breaking section (the heading, both hashes, or `added
@@ -97,7 +100,8 @@
 #                 it is not a finding and is not counted in the verdict.
 #   --ack         record every finding a person can acknowledge — `changed` on a
 #                 `policy:*` or `skill:*` row at its current hash (and, under
-#                 `--workspace`, on an `excluded:*` workspace row too), `removed` on
+#                 `--workspace`, on an `excluded:*` workspace row too, host-local
+#                 or not), `removed` on
 #                 an `excluded:*` row at hash `-` — then store the current body of
 #                 every resolved row, then compare again and print as usual. It
 #                 records every pending finding at once; there is no per-row
@@ -138,7 +142,8 @@
 # `excluded:*` row's body reaches no stage, so only its anchor is checked: it
 # is fresh when the anchor resolves to exactly one item, or when it resolves to
 # none and the store holds (source, anchor, `-`). Under `--workspace` a
-# workspace `excluded:*` row is compared like a `policy:*` row as well, because
+# workspace `excluded:*` row, a host-local one included, is compared like a
+# `policy:*` row as well, because
 # there the gate's identity judgment is what keeps the body out of a stage, and
 # that judgment hashes it. A store row whose disposition
 # is `excluded:*` or `skill:*` and whose anchor is no manifest anchor is a
@@ -447,12 +452,11 @@ compare_source() {
       else
         RESOLVED="$RESOLVED$found_hash"$'\n'
         # an excluded row's body reaches no stage: its anchor is all that is
-        # checked — except a workspace table row under `--workspace`, whose body
-        # the gate's identity judgment hashes
+        # checked — except a workspace row under `--workspace`, table or
+        # host-local, whose body the gate's identity judgment hashes
         case "$adisp" in
           excluded:*)
-            [ -n "$WORKSPACE_FILE" ] && [ "$source" = workspace ] && [ "$akind" = table ] \
-              || continue ;;
+            [ -n "$WORKSPACE_FILE" ] && [ "$source" = workspace ] || continue ;;
         esac
         [ "$akind" = table ] && [ "$found_hash" = "$asha" ] && continue
         acked "$source" "$anchor" "$found_hash" && continue
@@ -663,8 +667,8 @@ identity() {
   if [ -f "$ACK_FILE" ]; then
     local_rows=$(awk -F'\t' '
       FNR == NR { if (FNR > 1 && $1 == "workspace") t[$2] = 1; next }
-      FNR > 1 && $1 == "workspace" && !($2 in t) && $4 ~ /^(excluded|skill):/ { d[$2] = $4 }
-      END { for (a in d) print a "\t-\t" d[a] }' "$manifest" "$ACK_FILE")
+      FNR > 1 && $1 == "workspace" && !($2 in t) && $4 ~ /^(excluded|skill):/ { d[$2] = $4; h[$2] = $3 }
+      END { for (a in d) print a "\t" (h[a] == "" ? "-" : h[a]) "\t" d[a] }' "$manifest" "$ACK_FILE")
   fi
   # (a) text before the first heading is in no row's hash
   while IFS= read -r line || [ -n "$line" ]; do
@@ -673,9 +677,23 @@ identity() {
     esac
     [ -z "${line//[[:space:]]/}" ] || { pre=1; break; }
   done < "$file"
-  local candidates
+  local candidates live_local="" n c
   candidates=$(drift_entries workspace "$file")
   [ -n "$candidates" ] || return 1
+  # a host-local disposition resolves as the checker resolves it: its prefix is
+  # counted over every section, and one that matches none or several resolves
+  # nothing, so the sections it would match read as added
+  if [ -n "$local_rows" ]; then
+    while IFS=$'\t' read -r anchor asha adisp; do
+      [ -n "$anchor" ] || continue
+      n=0
+      while IFS= read -r c; do
+        c="${c%	*}"
+        [ "${c:0:${#anchor}}" = "$anchor" ] && n=$((n + 1))
+      done < <(printf '%s\n' "$candidates")
+      [ "$n" -eq 1 ] && live_local="${live_local}${anchor}	${asha}	${adisp}"$'\n'
+    done < <(printf '%s\n' "$local_rows")
+  fi
   while IFS= read -r cand; do
     text="${cand%	*}"
     hash="${cand##*	}"
@@ -687,12 +705,11 @@ identity() {
     done < <(printf '%s\n' "$anchors")
     if [ "$hits" -ge 1 ]; then
       identified=1
-    elif [ -n "$local_rows" ]; then
-      # a host-local disposition matches by its anchor prefix, as the checker resolves it
+    elif [ -n "$live_local" ]; then
       while IFS=$'\t' read -r anchor asha adisp; do
         [ -n "$anchor" ] || continue
         if [ "${text:0:${#anchor}}" = "$anchor" ]; then hits=$((hits + 1)); row="${anchor}	${asha}	${adisp}	local"; fi
-      done < <(printf '%s\n' "$local_rows")
+      done < <(printf '%s' "$live_local")
     fi
     if [ "$hits" -eq 0 ]; then
       broken="${broken}${text}: added section"$'\n'
@@ -703,7 +720,16 @@ identity() {
       continue
     fi
     IFS=$'\t' read -r anchor asha adisp akind <<< "$row"
+    # a host-local row is fresh only at a hash this host recorded for it, and
+    # only an excluded one leaves the file out: a skill's body reaches a stage
+    # through that skill, not through this judgment
     if [ "$akind" = local ]; then
+      case "$adisp" in
+        excluded:*) : ;;
+        *) broken="${broken}${text}: host-local disposition $adisp is not excluded"$'\n'; continue ;;
+      esac
+      acked workspace "$anchor" "$hash" && continue
+      broken="${broken}${text}: host-local acknowledged $asha, current $hash"$'\n'
       continue
     fi
     case "$adisp" in

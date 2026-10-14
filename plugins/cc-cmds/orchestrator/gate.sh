@@ -24944,7 +24944,9 @@ gate_stage_instructions() {
   # WITHOUT A MAP LINE, AN ANCESTOR OUTSIDE THE REPOSITORY ROOT IS JUDGED BY
   # IDENTITY. `stage-policy-drift.sh --identity` answers whether the policy and
   # the manifest already account for every section of the file, body hashes
-  # included; exit 0 leaves it out, anything else keeps it verbatim. An
+  # included — a section an `excluded:*` disposition recorded on this host with
+  # `--ack-added` accounts for is held to the body hash recorded for it as
+  # well; exit 0 leaves it out, anything else keeps it verbatim. An
   # identified workspace file that fails names the breaking sections, and those
   # lines go to this log; a file that is not the workspace source fails
   # silently. An edit therefore brings the file back rather than dropping a

@@ -664,7 +664,8 @@ ack_assert identity-policy-acked ws_ok 0 ''
 rm -rf "$WS_DIR"
 
 # an added section breaks identity until it is given a host-local disposition,
-# which then matches by its anchor alone
+# which then holds only at a body hash this host recorded for it: an edit under
+# it brings the file back, and `--workspace` shows that edit as `changed`
 ws_case
 printf '%s' "$WS_BASE"'## Extra
 something new
@@ -679,7 +680,33 @@ printf '%s' "$WS_BASE"'## Extra
 something new, edited
 ' > "$WS_FILE"
 ws_identity
-ack_assert identity-local-disposition-anchor-only ws_ok 0 ''
+ack_assert identity-local-disposition-body-changed ws_ok 1 '## Extra: host-local acknowledged '
+ws_run --explain
+ack_expect workspace-explain-local-excluded-changed 1 'mismatch 1' 'changed workspace ## Extra' \
+  '  disposition: excluded:workspace-local'
+ws_run --ack
+ack_expect workspace-ack-local-excluded 0 match
+ws_identity
+ack_assert identity-local-disposition-acked ws_ok 0 ''
+# a later section sharing the host-local prefix leaves it resolving nothing
+printf '%s' "$WS_BASE"'## Extra
+something new, edited
+## Extra rules
+another section
+' > "$WS_FILE"
+ws_identity
+ack_assert identity-local-shared-prefix ws_ok 1 '## Extra: added section'
+rm -rf "$WS_DIR"
+
+# a host-local skill disposition keeps the file, as a manifest skill row does
+ws_case
+printf '%s' "$WS_BASE"'## Extra
+something new
+' > "$WS_FILE"
+ws_run --ack-added '## Extra' skill:autopilot
+ack_expect workspace-ack-added-skill 0 match
+ws_identity
+ack_assert identity-local-skill-kept ws_ok 1 '## Extra: host-local disposition skill:autopilot is not excluded'
 rm -rf "$WS_DIR"
 
 # text before the first heading is in no row's hash

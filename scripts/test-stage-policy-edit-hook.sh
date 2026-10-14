@@ -253,5 +253,32 @@ silent "어느 workspace 표제와도 맞지 않는 CLAUDE.md"
 check "호스트 ack 저장소를 만들지 않는다" \
   "$([ -e "$FAKE_HOME/.config/cc-cmds/stage-policy-ack" ] && echo made || echo none)" "none"
 
+# A section this host gave an `excluded:*` disposition with `--ack-added` is
+# held to the body hash recorded for it, so an edit under it is a `changed`
+# finding the hook carries, as an edit under an `excluded:*` manifest row is.
+# This case writes the host store, so it runs after the check above.
+printf '# Top\nlocal notes\n## Rules\nthe citation rule\n## Extra\nsomething new\n' > "$WSD/CLAUDE.md"
+env -u CC_PIPELINE_RUN_ID HOME="$FAKE_HOME" CLAUDE_CONFIG_DIR="$CFG" \
+  bash "$WSPLUG/orchestrator/stage-policy-drift.sh" --workspace "$WSD/CLAUDE.md" \
+  --ack-added '## Extra' excluded:workspace-local > /dev/null 2>&1
+check "호스트 국소 excluded 처분 기록" "$?" "0"
+hook_run "$(payload "$WSD/CLAUDE.md")" CLAUDE_PLUGIN_ROOT="$WSPLUG"
+silent "호스트 국소 excluded 처분, 드리프트 없음"
+
+printf '# Top\nlocal notes\n## Rules\nthe citation rule\n## Extra\nsomething new, edited\n' > "$WSD/CLAUDE.md"
+hook_run "$(payload "$WSD/CLAUDE.md")" CLAUDE_PLUGIN_ROOT="$WSPLUG"
+check "호스트 국소 excluded 처분 본문 변경: rc 0" "$HOOK_RC" "0"
+check "호스트 국소 excluded 처분 본문 변경: stderr 비어 있음" "$(err_bytes)" "0"
+ctx=$(jq -r '.hookSpecificOutput.additionalContext' "$OUTF" 2>/dev/null)
+case "$ctx" in
+  *"changed workspace ## Extra"*) ok "호스트 국소 excluded 처분 본문 변경: 문맥에 changed 발견" ;;
+  *) bad "호스트 국소 excluded 처분 본문 변경: 문맥에 changed 발견" "$ctx" ;;
+esac
+case "$ctx" in
+  *"bash \"$WSPLUG/orchestrator/stage-policy-drift.sh\" --workspace \"$WSDP\" --ack"*)
+    ok "호스트 국소 excluded 처분 본문 변경: --ack 안내가 --workspace 를 싣는다" ;;
+  *) bad "호스트 국소 excluded 처분 본문 변경: --ack 안내가 --workspace 를 싣는다" "$ctx" ;;
+esac
+
 printf 'test-stage-policy-edit-hook: %s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

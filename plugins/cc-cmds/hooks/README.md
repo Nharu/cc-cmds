@@ -369,7 +369,8 @@ The context, cut at 6000 bytes, carries the findings and their diffs, the policy
 section to compare each one with, the instruction to run `--ack` once and only
 after the user confirms every pending finding — `--ack` has no per-row form and
 records them all, so a single rejection means it is not run; under `--workspace`
-that includes a `changed` item on an `excluded:*` row, whose record lets stages
+that includes a `changed` item on an `excluded:*` row, a manifest row or a
+host-local disposition recorded with `--ack-added`, whose record lets stages
 leave the file out again — the rule that an `added` item
 is recorded with `--ack-added` when it is excluded or belongs to a skill and
 needs a repository change when it belongs in the policy, and the prohibition on
