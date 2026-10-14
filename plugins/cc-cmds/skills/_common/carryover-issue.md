@@ -1,8 +1,10 @@
 # Carrying review findings over to issues
 
 A segment whose snapshot `review_next[]` element reads `다음` `이월` has a last
-review cycle with no P0 and one to three P1 findings, every one of which its
-review classified `이월 가능` and wrote up as a follow-up. This file is the one
+review cycle that is the re-check after the lead fix, with no P0 and at least
+one P1 finding, every one of which its review classified `이월 가능` and wrote
+up as a follow-up. There is no upper bound on the count: every P1 is carried or
+none is, and a cycle before the lead fix is never carried. This file is the one
 procedure the routing shifts and the driver follow to carry those findings
 over: one issue per finding, then the `리뷰 이월` row, then the merge. The row's
 contract is `pipeline-sidecar.md` §3.2; the report grammar it reads is the
@@ -79,6 +81,9 @@ a file under `carry/` and no other new path under the run directory. The URL is
 the command's last output line. A failed create is tried once more;
 a second failure is step 6. **Do not add `--assignee`.**
 
+The create needs no `사전 인가` row: eligibility no longer asks the manifest
+for one, and the act is opened by the reach it declares.
+
 **The project is best effort.** When the manifest preauthorizes
 `gh project item-add` for the target, put each issue on the project the
 manifest names, declared the same way as the create. A refusal or a failure
@@ -100,8 +105,8 @@ pull request, whose title starts `[이월] <run-id> <세그먼트> 사이클 ` a
 refused. Exit 2 means the call is wrong — the cycle, the count or a URL; fix the
 argv once from the gate's wording. Exit 3 means the run's state refuses it: the
 row already exists for this cycle (read `다음` again — it is `이월 머지`), the
-cycle is not eligible (it is `수정`), or the repository could not be asked about
-an issue.
+cycle is not eligible (it is `잔여 보류`), or the repository could not be asked
+about an issue.
 
 ## 5. Read `다음` again, then merge
 
@@ -113,10 +118,21 @@ refused.
 ## 6. When the carry-over fails
 
 When an issue cannot be created after the retry, or the row is refused for a
-reason step 4 does not repair, write no row and send the segment to the fix
-cycle: dispatch the implementation with the cycle's report as its fix target,
-as a `수정` disposition is dispatched. `다음` still reads `이월` after a failed
-carry-over — nothing in the ledger changed — so this step is the one place a
-shift dispatches a fix on `이월`; do it once per cycle, and name the failure in
-the dispatch's `--rationale`. Issues already created stay open; name their URLs
-in that `--rationale` too, so the morning report can close them with the fix.
+reason step 4 does not repair, write no row and park the segment as a residual
+(`이월 실패`). The carry-over comes only after the re-check, where no
+implementation is dispatched again, so there is no fix cycle to fall back to.
+`다음` still reads `이월` after a failed carry-over — nothing in the ledger
+changed — and that is what the gate reads to write the residual body:
+
+```
+gate.sh residual-body --manifest <매니페스트> --segment <id>
+```
+
+It prints `잔여 제목=`, `잔여 본문 파일=` and `잔여 부류=이월 실패`; the body
+lists every carry-over item. Create the one issue with the same form as step 3,
+`--surface 외부상태변경 --reach 협업`, with that title and `--body-file`, then
+park the segment: a `스코프=cone` `blocked` row with `원인=막힘`,
+`사유=리뷰 잔여`, `이슈=<url>` and a `근거` that starts `이월 실패` and names
+the failure and the URLs of the carry-over issues already opened — they stay
+open. When `residual-body` exits 3 or the create fails, park with the same
+`사유` and no `이슈=`, and put that failure in `근거`.

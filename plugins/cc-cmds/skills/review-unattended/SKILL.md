@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -55,11 +55,21 @@ options:
       default: "off (지명 없음 — 후보를 열거하고 하나가 지명될 때까지 아무것도 복구하지 않는다)"
       summary: "드라이버가 지명한 위트니스 scratch 디렉터리. 한 논리 세그먼트가 여러 번 재시도되면 디렉터리도 여럿이고 각 시도가 자기 원장에서 `epoch 1` 을 얻으므로, 어느 시도를 관측했는지 아는 드라이버만 지명할 수 있다."
       parse_note: "`--scratch-dir` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 지명이 없는 것으로 다뤄 열거 후 거부 경로로 간다."
+    - name: "--lead-fix <abs-path>"
+      kind: flag
+      default: "off (리뷰 모드 — 코드를 고치지 않는다)"
+      summary: "리드 수정 모드. 뒤에 오는 상한 리포트의 P0·P1 항목만 리드가 직접 고쳐 세그먼트 브랜치에 커밋하고(대상 절단점이 push 를 인가하면 민 뒤), 항목마다 `수정됨` 또는 `수정 불가 — <사유>` 한 줄을 적은 수정 기록을 리포트 옆에 남긴다. 팀을 띄우지 않고 새 리포트를 쓰지 않는다."
+      parse_note: "`--lead-fix` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니거나 읽을 수 있는 리포트가 아니면 중단 기록을 남기고 정지 — 고칠 항목을 모르는 수정은 하지 않는다. `--recover`·`--recheck` 와 함께 오면 중단 기록을 남기고 정지."
+    - name: "--recheck <abs-path>"
+      kind: flag
+      default: "off (상한 리포트 항목을 다시 판정하지 않는다)"
+      summary: "확인 리뷰. 평소의 리뷰를 그대로 돌리면서, 뒤에 오는 상한 리포트의 P0·P1 항목을 리드 수정의 수정 기록과 함께 항목마다 코드에서 다시 판정하고, 중복을 걷어 이번 사이클의 발견과 합쳐 센다."
+      parse_note: "`--recheck` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니거나 읽을 수 있는 리포트가 아니면 중단 기록을 남기고 정지 — 상한 항목을 빼고 센 리뷰는 알려진 결함을 머지로 보낸다. 수정 기록이 없는 것은 정지 사유가 아니다. `--recover` 와 함께 오면 크래시한 확인 리뷰의 복구이며, 위트니스에 판정이 없는 상한 항목은 `미해결` 로 센다."
     - name: "<directive>"
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(수렴 술어를 얇게 만들기 때문 — 드라이버가 넘긴 `--slice` 에 따른 다른 슬라이스 몫 제외는 스스로 좁히기가 아니다), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -131,7 +141,7 @@ dispositions, and says so.
 
 **CFI-U4 — The report is written where the driver can still read it.** With `--report-path`, write there. Without it, the default path is cwd-relative — and a segment worktree is torn down after its segment terminates, taking the report with it. The driver always passes the flag; a missing one is worth a line in the report's overview so the loss is visible if it happens.
 
-**CFI-U5 — No code modifications.** Review only. Unchanged from the base skill and not weakened by unattended operation.
+**CFI-U5 — No code modifications in review mode.** Review only. Unchanged from the base skill and not weakened by unattended operation. It binds every dispatch of this arm without `--lead-fix` — a review, a re-check under `--recheck`, a recovery — and every reviewer such a dispatch spawns. `--lead-fix` is a different stage that this file hosts, not a review: it fixes the cap report's own items and nothing else, under the rules of `## Lead-fix mode`.
 
 **CFI-U6 — A source file is read once per stage, and a turn yield is not an invalidation point.** This is a control-flow invariant rather than a constraint because the load-bearing half of it is about control flow: the model stopping and resuming changes nothing about a file's bytes, so a yield that triggers a re-read is spending context to learn what it already knows. Common to all three review arms; CFI-U5's `Unchanged from the base skill` is the precedent for stating a shared rule here. Exactly **three** invalidation points exist — this session wrote to that path with `Edit`/`Write`; a git operation moved `HEAD` or the working tree (`checkout`, `rebase`, `merge`, `stash`, `pull`); or a new stage was entered. **Four things the cache never covers, each for a different reason:**
 
@@ -183,6 +193,7 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **`--slice <id>`** → the design slice this segment implemented. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. A `--slice` whose value is missing is dropped along with the flag and leaves one overview line naming the drop; the slice scope then falls back to `인자 없음` in 1c′. What the value selects is decided in 1c′, not here.
 - **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
 - **`--recover` and `--scratch-dir <abs-path>`** → the recovery dispatch. `--recover` takes no value; `--scratch-dir` takes the **next token**, and both the flag and its value are removed from the argument string before the directive is extracted. `--scratch-dir` with a missing or non-absolute value is dropped along with the flag and read as *no naming*, which routes to the enumerate-then-refuse path rather than to a halt. With `--recover` present, skip Steps 2–4 and go to `## Recovery arm` below.
+- **`--lead-fix <abs-path>` and `--recheck <abs-path>`** → the two dispatches after a segment reaches its re-implementation cycle cap. Each takes the **next token** — the cap report, an absolute path — and both the flag and its value are removed before the directive is extracted. Unlike the basis flags, a missing, non-absolute or unreadable value is a **halt** with `분류: precondition-failed`, not a degradation: a lead fix that does not know its items has nothing to fix, and a re-check that drops the cap items would count a known P0 out of the merge decision. `--lead-fix` together with `--recover` or `--recheck` is the same halt. With `--lead-fix` present, run Step 1 only as far as parsing and the 1b context, then go to `## Lead-fix mode` below. With `--recheck` present, run the whole workflow and add to it the re-check section below. **`--recheck` together with `--recover` is not a halt**: it is the recovery of a crashed re-check, and the recovery arm's item 11 below says what it adds.
 - **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
 - **Directive** → propagate to Step 3 (composition weighting) and Step 4 (`User directive: …` in the context package) and Step 5 (`Review focus:` in the overview). The directive influences depth and coverage; **severity is assessed independently on technical criteria.**
 - **Anything that resolves to no target, or to more than one** — an unparseable argument, a branch carrying multiple open PRs, an empty argument — is a **halt** with `분류: precondition-failed`, listing the candidates it found.
@@ -502,12 +513,41 @@ The driver dispatches this arm when a review stage terminated as a crash and the
     - `_common/team-cleanup.md`'s `rm -rf` of the scratch dir is scoped to *normal workflow completion*, and it specifies retention on a workflow-level abort. What is on disk here is a crashed stage's leftovers, which is the second case, not the first. Deleting it destroys the only forensic record of a crash and the only input a second recovery could read.
     - `TaskStop` is likewise excluded. Every row of a crashed stage's ledger is still `state=running` and those `agentId`s belong to a dead session, so this process does not own them; the crashed stage's tasks are not this process's to stop.
     - **What this arm does inherit from Step 5** is exactly: reading the report template, the synthesis itself, the `## 자율 승인 기록` section, and the paste-ready comments. Item 1 calls the product "a Step 5 synthesis", and that phrase names the synthesis, not the step's terminal cleanup.
+11. **A recovered re-check is still a re-check (`--recover` with `--recheck`).** The crashed stage was the re-check, so the recovered report owes every cap item a verdict exactly as `## Re-check of the cap cycle` below does — a recovery that counts only new findings drops an item the lead fix recorded as `수정 불가` out of `발견 요약`, and a `0/0` there is read as `머지`. Read the cap report's P0 and P1 items and the fix record by that section's first bullet, count check and halt included. Take each item's verdict from the `recheck-<k>` line of the witness the roster resolved for the seat it was assigned to. **An item no resolved witness carries a verdict for — its seat `absent`, `checkpoint`, or a witness without that line — is judged `미해결`**, never `해결됨`: a verdict nobody wrote is not a fix anybody checked. Deduplicate, write `## 상한 사이클 재확인` and count by the same section's last two bullets. Item 8's interlock is unchanged and applies on top: the predicate line still goes out only when every seat resolved to `witness`.
 
 ---
 
+## The fix record and its path
+
+**This is the one place the rule is defined; both `--lead-fix` and `--recheck` read it here.** The fix record of a cap report sits beside it: take the cap report's absolute path and replace its trailing `.md` with `.lead-fix.md` — `review-<slug>-<seg>-c2.md` → `review-<slug>-<seg>-c2.lead-fix.md`. A cap report path that does not end in `.md` has no fix record path; `--lead-fix` halts on it as on a missing value, and `--recheck` treats every item as carrying no fix claim.
+
+The record holds one line per P0 and P1 item of the cap report, in the shape the report template's "Fix Record" section fixes (`- <항목>: 수정됨` or `- <항목>: 수정 불가 — <사유>`). `<항목>` is `P0-<k>` or `P1-<k>`, `<k>` counting from 1 down that severity's section of the cap report, inherited items included, in report order. The driver's artifact predicate counts these lines against the cap report's `발견 요약` P0 + P1, so a lead fix that leaves an item without a line has not finished.
+
+## Lead-fix mode (`--lead-fix`)
+
+The router or the driver dispatches this mode once per segment, in the segment worktree, after the segment's last review cycle reached the cap with P0 or P1 left. It is the review lead fixing that cycle's findings itself, in a new session — **no team is spawned, Steps 2–5 do not run, and no review report is written.** The cap report is read only; the fix record is the one file this mode writes outside the code.
+
+1. **Read the items.** From the cap report take every top-level entry of its P0 and P1 sections, inherited ones included, and number them as the fix record path rule above says. Their count must equal the report's `발견 요약` P0 + P1; a mismatch is a halt (`precondition-failed`) naming both counts, because an item missed here is a known finding nobody fixed and nobody recorded. P2 and P3 are not this mode's: leave them.
+2. **Check where you stand.** The current branch is the review target's branch — `git rev-parse --abbrev-ref HEAD` equals it — and the working tree is clean. Either failing is a halt (`precondition-failed`): a fix committed onto another branch is a fix the re-check never reads.
+3. **Fix item by item, and only the items.** For each item, read the code it cites and fix that defect, with `Edit`/`Write`. Change nothing the items do not call for — no refactor, no P2 or P3, no file no item leads to. When the repository's own instructions name a check for what you changed, run it; a fix that fails its check is undone and the item is `수정 불가`. An item you judge not a defect, or cannot fix without leaving the design's binding text or the segment's declared files, is `수정 불가` with that reason — this mode never redesigns and never writes the design document.
+4. **Commit, and push when the cutpoint allows it.** Commit the fixes on the segment branch in the repository's commit form. Then `git push` that branch — never a force push, never another branch — **only when this target's cutpoint authorizes a push**: the `절단점` of this target's row in the manifest (`$CC_PIPELINE_MANIFEST`) is `push` or above on the ladder `커밋 브랜치 push PR 머지 배포 머지후착수`. Below `push` the commit is the product and nothing is pushed, the same branch the implementation stage's artifact predicate takes; the cutpoint rule cannot be turned off and refuses that push, so attempting it would only end this mode on a halt. A cutpoint this mode cannot read is read as below `push`: an unpushed fix leaves the server head unreviewed-for-merge, and the driver's merge refuses a head that is not the re-check's `리뷰 HEAD`, so the cost is a park, never a merge of the wrong head. A lead fix that fixed nothing commits and pushes nothing; that is not a failure.
+5. **Write the fix record** at the path the rule above gives, one line per item, every item. Write it last, after the commit and any push, so that a record carrying `수정됨` never names a fix the branch does not hold. Write it whole, through a temporary file in the same directory renamed with a plain `mv`.
+6. **Stop.** No report, no summary line, no team cleanup beyond what this mode made. The next stage is the re-check review, which judges each item again whatever the record says.
+
+A question this mode cannot answer from the report, the code and the repository's instructions is a halt, as everywhere in this arm.
+
+## Re-check of the cap cycle (`--recheck`)
+
+The first review after a lead fix. It is a review in every respect — CFI-U5 holds, the team is composed and run as usual, delta mode applies when the basis flags qualify — with one addition: **every P0 and P1 item of the cap report gets a fresh verdict judged in the code**, in the same way context-package item 18 carries basis findings in delta mode.
+
+- **Read the items and the record.** Take the cap report's P0 and P1 items, numbered by the fix record path rule, and check their count against its `발견 요약` exactly as 1b′ check 6 does; a mismatch is a halt (`precondition-failed`), never a re-check of fewer items. Then read the fix record at the path the rule gives. A missing record, or an item without a line, means **no fix claim for that item** — it is judged from the code like any other, and the absence alone fails nothing.
+- **Hand them to the reviewers.** Each item travels in item 18's shape under a `recheck-<k>` identifier together with its fix record line, assigned to the closest-matching reviewer as item 18 assigns. A record's `수정됨` is a claim to be checked, not a verdict; `수정 불가` means the defect is expected to remain, and is judged so unless the code shows otherwise. A witness missing the verdict for any `recheck-<k>` assigned to it is non-conforming, as in Case 3.
+- **Deduplicate before counting.** When the delta basis report is the cap report itself, a basis item and a cap item are the same finding: write it once, in `## 상한 사이클 재확인`, and give it no `## 기준 사이클 재판정` entry of its own. A new finding of this cycle that is the same defect as an unresolved cap item is folded into that item. Nothing is counted twice and nothing drops out.
+- **Write and count.** The section, its entry shape and the counting rule are the report template's "Cap Cycle Re-check" section. An item judged `미해결` re-enters this cycle's section at its cap severity carrying `(상한 사이클 N에서 상속, 재확인 미해결)` and is classified like any P1 when it is one; an item judged `해결됨` leaves the severity sections, and its entry is its only record.
+
 ## Constraints
 
-- **No code modifications.** Review only.
+- **No code modifications** outside `## Lead-fix mode`. Review only.
 - **Inter-agent communication in English.** Saved documents in Korean.
 - **Nameless background sub-agents required**: reviewers MUST be spawned as nameless `Agent` background tasks and driven through a retained-context, lead-mediated resume loop. Do NOT collapse a round into an isolated one-shot `Agent()` — that throws away retained context and breaks cross-review.
 - **Codebase grounding required**: reviewers ground findings in the source with their own `grep`/`Glob`/`Read`; the lead does not proxy searches. The one second grounding surface is a `design-conformance` finding, which grounds in the supplied design document *and* in the source, because its claim is a mismatch between the two. No finding is ever grounded in the design document alone.
