@@ -30745,7 +30745,7 @@ check "68: 구간 도중 원장 경로가 바뀌면 메모가 아니라 새 경�
 
 # ---------------------------------------------------------------------------
 # 71. 정체 라벨 — cycle 팔의 호출자 키 거부, stalls 의 루트·자리, 라벨이 답을 바꾸지 않음
-# --- section: 71 | group: base | covers: act, snapshot | anchors: 71: 호출자 키 거부는 exit 2 다, 71: 그 필드가 없는 같은 호출은 한 행을 쓴다, 71: 매니페스트 철자가 달라도 같은 리포트는 한 번 센다, 71: 라벨이 서도 스킬 파견의 답은 바이트로 같다, 71: stalls 는 cycles 바로 뒤에 온다, 71: 빌더 본문에 종료·디렉터리 유도가 없다 ---
+# --- section: 71 | group: base | covers: act, snapshot | anchors: 71: 호출자 키 거부는 exit 2 다, 71: 그 필드가 없는 같은 호출은 한 행을 쓴다, 71: 매니페스트 철자가 달라도 같은 리포트는 한 번 센다, 71: 라벨이 서도 스킬 파견의 답은 바이트로 같다, 71: 같은 HEAD 의 재리뷰는 N 에서만 거절되고 C 에서는 인가된다, 71: stalls 는 cycles 바로 뒤에 온다, 71: 빌더 본문에 종료·디렉터리 유도가 없다 ---
 #
 # The cycle arm now refuses, from the row reader's point of view, a caller key
 # that is padded, a `세그먼트` (the gate writes that one from `--segment`), and a
@@ -30948,7 +30948,11 @@ check "71: N 에서 라벨이 선다" "$(cat "$S71ROOT/twin-N/stalls")" "NO_DRIF
 check "71: C 에는 라벨이 없다" "$(cat "$S71ROOT/twin-C/stalls")" ""
 check "71: 같은 HEAD 의 둘째 리뷰를 쓰는 cycle 호출이 exit 0 이다" \
   "$(cat "$S71ROOT/twin-N/cycle.rc")/$(cat "$S71ROOT/twin-C/cycle.rc")" "0/0"
-for s71_f in "$S71ROOT"/twin-N/*-*.*; do
+# 리뷰 파견은 쌍둥이 비교에서 뺀다. 마지막 cycle 행 뒤에 저작 행이 없으면 게이트는
+# 작업 트리 HEAD 가 그 행의 리뷰 HEAD 와 다를 때만 리뷰를 인가하는데, N 의 둘째 리뷰는
+# 작업 트리 HEAD 위에, C 의 것은 그 자식 위에 있다 — 둘의 리뷰 답은 라벨이 아니라 HEAD
+# 로 갈리므로 바이트 비교는 라벨의 효과를 재지 못한다. 그 갈림은 따로 단언한다.
+for s71_f in "$S71ROOT"/twin-N/implement-*.*; do
   s71_b=${s71_f##*/}
   if cmp -s "$s71_f" "$S71ROOT/twin-C/$s71_b"; then
     ok "71: 라벨이 서도 스킬 파견의 답은 바이트로 같다 ($s71_b)"
@@ -30956,8 +30960,11 @@ for s71_f in "$S71ROOT"/twin-N/*-*.*; do
     bad "71: 쌍둥이 답 ($s71_b)" "$(diff "$s71_f" "$S71ROOT/twin-C/$s71_b" | awk 'NR<=5' | tr '\n' ' ')"
   fi
 done
-check "71: 비교한 답은 열둘이다 (두 스킬 × 두 동사 × 세 산출물)" \
-  "$(find "$S71ROOT/twin-N" -name '*-*.*' | grep -c '' || true)" "12"
+check "71: 비교한 답은 여섯이다 (구현 스킬 × 두 동사 × 세 산출물)" \
+  "$(find "$S71ROOT/twin-N" -name 'implement-*.*' | grep -c '' || true)" "6"
+check "71: 같은 HEAD 의 재리뷰는 N 에서만 거절되고 C 에서는 인가된다 (plan·act)" \
+  "$(cat "$S71ROOT/twin-N/review-plan.rc")/$(cat "$S71ROOT/twin-N/review-act.rc")/$(cat "$S71ROOT/twin-C/review-plan.rc")/$(cat "$S71ROOT/twin-C/review-act.rc")/$(grep -cF '같은 HEAD 를 다시 리뷰하지 않습니다' "$S71ROOT/twin-N/review-act.err.t" || true)" \
+  "3/3/0/0/1"
 
 # (6) The builder body ---------------------------------------------------------------
 s71_body=$(awk '/^gate_snapshot_stalls_json\(\) \{$/ { f = 1; next } f && /^}$/ { exit } f' "$GATE")
@@ -30968,7 +30975,7 @@ rm -f "$S71_GRANT" "$S71_LEDGER"
 
 # ---------------------------------------------------------------------------
 # 70. 발견 지문 — cycle 팔이 리포트의 P0/P1 불릿에서 식별자 집합을 해시해 행에 굳힌다
-# --- section: 70 | group: base | covers: act, snapshot | anchors: 70: 행이 호출자 필드 뒤 발견 지문으로 끝난다, 70: 지문이 다시 계산한 집합 해시와 같다, 70: 불릿 순서와 중복 지목은 지문을 바꾸지 않는다, 70: 발견 하나를 바꾸면 지문이 바뀐다, 70: 상한을 넘기는 행은 발견 지문 없이 기록된다, 70: 창 밖으로 밀린 세그먼트에도 OSCILLATION 이 선다, 70: 실제 기록자를 지난 세 행이 SPINNING 을 세운다 ---
+# --- section: 70 | group: base | covers: act, snapshot | anchors: 70: 행이 호출자 필드 뒤 발견 지문과 리뷰 종결로 끝난다, 70: 지문이 다시 계산한 집합 해시와 같다, 70: 불릿 순서와 중복 지목은 지문을 바꾸지 않는다, 70: 발견 하나를 바꾸면 지문이 바뀐다, 70: 상한을 넘기는 행은 발견 지문 없이 기록된다, 70: 창 밖으로 밀린 세그먼트에도 OSCILLATION 이 선다, 70: 실제 기록자를 지난 세 행이 SPINNING 을 세운다 ---
 #
 # The cycle arm writes one field of its own behind the caller's: `발견 지문`,
 # the first 12 hex characters of the sha256 of the SET of identifiers in the
@@ -31075,8 +31082,8 @@ s70_cycle SF 1 1 1 "$S70A" 비고=x
 check "70: 발견 둘을 지닌 리포트의 cycle 기록은 exit 0 이다" "$rc" "0"
 s70_row=$(s70_last SF)
 case "$s70_row" in
-  *"| 비고=x | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | prev="*)
-    ok "70: 행이 호출자 필드 뒤 발견 지문으로 끝난다" ;;
+  *"| 비고=x | 발견 지문="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" | 리뷰 종결=수정 | prev="*)
+    ok "70: 행이 호출자 필드 뒤 발견 지문과 리뷰 종결로 끝난다" ;;
   *) bad "70: 발견 지문의 자리" "$s70_row" ;;
 esac
 check "70: 지문이 다시 계산한 집합 해시와 같다" "$(s70_fp SF)" "$S70_FPA"
@@ -35533,7 +35540,7 @@ check "86: 이 절이 띄운 서버가 남지 않는다" "$(d86_serving)" "0"
 
 # ---------------------------------------------------------------------------
 # 87. 리뷰 사이클의 수렴 — 리포트 파서, 이월 적격, 다음 표, 리뷰 종결, 잔여 본문
-# --- section: 87 | group: ledger_series | covers: gate_review_report_counts, gate_carry_eligibility, gate_review_carry_row, gate_carry_issue_view, gate_carry_body, gate_segment_review_next, gate_segment_review_walk, gate_cycle_review_closure, gate_residual_body, gate_segment_review_count_verdict, gate_segment_merged_row, gate_kind_is_bookkeeping, ladder_of_gh | anchors: 87: 정규 리포트의 계수·분류·태그·본문·몫을 읽는다, 87: 확인 리뷰의 이월 가능 P1 둘은 적격이다, 87: 조건이 하나씩 거짓이면 그 번호로 부적격이다, 87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 기록된다, 87: 같은 사이클의 둘째 리뷰 이월 행은 룰 거절이다, 87: 다음 표의 열 갈래가 각각 나온다, 87: 리뷰 종결은 행이 마지막이 된 뒤의 다음 을 수렴 철자로 낸다, 87: 잔여 본문은 네 부류를 가르고 문서 경로를 싣지 않는다, 87: gh issue create·comment 와 gh project item-add 는 커밋 칸이다 ---
+# --- section: 87 | group: ledger_series | covers: gate_review_report_counts, gate_carry_eligibility, gate_review_carry_row, gate_carry_issue_view, gate_carry_body, gate_segment_review_next, gate_segment_review_walk, gate_cycle_review_closure, gate_residual_body, gate_segment_review_count_verdict, gate_segment_merged_row, gate_kind_is_bookkeeping, ladder_of_gh | anchors: 87: 정규 리포트의 계수·분류·태그·본문·몫을 읽는다, 87: 확인 리뷰의 이월 가능 P1 둘은 적격이다, 87: 조건이 하나씩 거짓이면 그 번호로 부적격이다, 87: 리뷰 이월 행은 같은 사이클을 이름으로 묶어 한 번 기록된다, 87: 같은 사이클의 둘째 리뷰 이월 행은 룰 거절이다, 87: 다음 표의 열 갈래가 각각 나온다, 87: 리뷰 종결은 행이 마지막이 된 뒤의 다음 을 수렴 철자로 낸다, 87: 잔여 본문은 네 부류를 가르고 문서 경로를 싣지 않는다, 87: 차단 P1 잔여 본문은 이월 가능 P1 까지 태그와 함께 싣는다, 87: gh issue create·comment 와 gh project item-add 는 커밋 칸이다 ---
 #
 # 리포트를 읽는 파서는 하나이고, 이월 적격·`다음`·cycle 팔이 모두 그 출력을 읽는다.
 # 이 절은 그 파서와 그 위의 판정들을 게이트를 올린 서브셸에서 직접 부른다. 원장과
@@ -35828,6 +35835,17 @@ check "87: 잔여 제목은 런·세그먼트·사이클·부류를 싣고 본�
 check "87: P0 잔존 본문은 P0 머리 줄을, 이월 실패 본문은 이월 제목 둘을 싣는다" \
   "$(grep -c '^- \[P0\] ' "$(k87 "$rb87o0" '잔여 본문 파일')" || true)/$(grep -cE '^- (첫째|둘째) 제목$' "$(k87 "$rb87o3" '잔여 본문 파일')" || true)" \
   "1/2"
+# 이월은 전부 아니면 없음이라 잔여 보류된 세그먼트는 아무것도 이월하지 않았다 — 그
+# 이슈가 발견의 유일한 영속 기록이므로 차단 P1 만이 아니라 이월 가능 P1 도 태그와
+# 함께 싣는다. 차단 1·이월 가능 2·P0 0 인 확인 리뷰로 태그별 줄 수를 고정한다.
+R87B3="$D87/review-b3.md"
+sed -e 's/🟠 P1 2건/🟠 P1 3건/' -e 's/^- \*\*P1 분류\*\*: .*$/- **P1 분류**: 차단 1건 | 이월 가능 2건/' "$R87" \
+  | awk '/^## 🟡 P2/ { print "- **[logic]** **[차단]** `c.sh:3` 셋째 — r3"; print "" } { print }' > "$R87B3"
+rb87o4=$(rb87 "$(L87 rb3 1:0:2 "$LF87" "2:0:3:$R87B3" "$SG87")")
+rb87f4=$(k87 "$rb87o4" '잔여 본문 파일')
+check "87: 차단 P1 잔여 본문은 이월 가능 P1 까지 태그와 함께 싣는다" \
+  "$(k87 "$rb87o4" '잔여 부류')/$(grep '^- \[P1\] ' "$rb87f4" | grep -cF '**[차단]**' || true)/$(grep '^- \[P1\] ' "$rb87f4" | grep -cF '**[이월 가능]**' || true)/$(grep -cE '^- \[P1\] .*(첫째|둘째|셋째)' "$rb87f4" || true)" \
+  "차단 P1/1/2/3"
 check "87: 다음 이 잔여 보류도 이월도 아니거나 PR 이 없으면 잔여 본문은 rc 3 이다" \
   "$(qrc87 "$(L87 rbn 1:0:2 "$SG87")" "$M87" gate_residual_body S2)/$(qrc87 "$(L87 rbnp 1:0:2 "$LF87" 2:1:2)" "$M87" gate_residual_body S2)/$(qrc87 "$L87B" "$M87" gate_residual_body ../x)" \
   "3/3/2"

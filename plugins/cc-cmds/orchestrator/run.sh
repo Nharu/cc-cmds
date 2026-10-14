@@ -7390,6 +7390,21 @@ merge_gate() {
   esac
   local head_sha
   head_sha=$(gh_q "$slug" pr view "$pr" --json headRefOid --jq '.headRefOid' || printf '')
+  # THE MERGED HEAD IS THE REVIEWED HEAD. `--match-head-commit` pins the head
+  # this read saw, not the one the review read: a lead fix that committed and
+  # crashed before its push leaves the re-check reading the local commit while
+  # the server still holds the cap head, and the ledger reads clean over a head
+  # nobody re-checked. The router pins its REST merge to the worktree HEAD for
+  # the same reason. A head whose tree equals the reviewed one (a rebase that
+  # moved nothing, an amend) passes, as it does in the merge rule's ladder.
+  local rv_head
+  rv_head=$(review_head_of "$seg")
+  if ! merge_head_is_reviewed "$seg" "$head_sha" "$rv_head"; then
+    park "$seg" act 막힘 "머지 직전 리뷰 HEAD 대조" \
+      "PR head ${head_sha:-(읽지 못함)} 가 마지막 cycle 행의 리뷰 HEAD ${rv_head:-(읽지 못함)} 와 다르다" \
+      "gh -R $slug pr merge $pr"
+    return 2
+  fi
   gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {
     park "$seg" act 막힘 "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
     return 2
@@ -8721,7 +8736,14 @@ review_slice_flag() {
 }
 
 review_recover() {
-  local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7"
+  local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7" recheck="${8:-}"
+  # A RECOVERED RE-CHECK IS STILL A RE-CHECK. `recheck` is the cap report the
+  # original line carried as `--recheck`; the recovery line carries it too, so
+  # the recovered report re-judges the cap report's items. Without it the
+  # report counts only new findings, and an item the lead fix recorded as
+  # `수정 불가` drops out of `발견 요약` — a `0/0` the `다음` table reads as
+  # `머지`.
+  #
   # A review the driver reaped from the limit-shape arm is in the same state a
   # crashed one is — gone mid-flight, witness directory possibly on disk — and
   # it was reaped BECAUSE `S5` is boundary idempotent, so the recovery dispatch
@@ -8785,7 +8807,7 @@ review_recover() {
   reaped="${reaped##* }"
   [ -n "$reaped" ] || reaped=미상
   local src=0
-  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp$(review_slice_flag "$seg") \"설계는 $(doc_arg)\"" || src=$?
+  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp$(review_slice_flag "$seg")${recheck:+ --recheck $recheck} \"설계는 $(doc_arg)\"" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
     park_router "$seg" "$seg" cone; return 1
   fi
@@ -8891,6 +8913,26 @@ cycle_report_of() {
   # `cycle` row, read from the ledger, so a resumed run aims the lead fix and
   # the re-check at the cap report it did not write in this process.
   run_gate_call eval "gate_report_abs \"\$(gate_row_field \"\$(gate_segment_last_cycle_row $(printf '%q' "$1"))\" '리포트 경로')\"" 2>/dev/null || true
+}
+
+review_head_of() {
+  # review_head_of <segment> — the `리뷰 HEAD` of the segment's last `cycle`
+  # row, read from the ledger; empty when there is none.
+  run_gate_call eval "gate_row_field \"\$(gate_segment_last_cycle_row $(printf '%q' "$1"))\" '리뷰 HEAD'" 2>/dev/null || true
+}
+
+merge_head_is_reviewed() {
+  # merge_head_is_reviewed <segment> <PR head> <review HEAD> — 0 when the PR
+  # head is the reviewed commit, or a commit whose tree is the reviewed one's
+  # in the segment's repository. Either value empty, or a commit this
+  # repository does not hold, is 1: an unreadable head is not a reviewed one.
+  local seg="$1" head="$2" rv="$3" root ht rt
+  [ -n "$head" ] && [ -n "$rv" ] || return 1
+  [ "$head" != "$rv" ] || return 0
+  root=$(seg_root "$seg") || return 1
+  ht=$(git -C "$root" rev-parse --verify -q "$head^{tree}" 2>/dev/null) || return 1
+  rt=$(git -C "$root" rev-parse --verify -q "$rv^{tree}" 2>/dev/null) || return 1
+  [ -n "$ht" ] && [ "$ht" = "$rt" ]
 }
 
 segment_cycle() {
@@ -9303,7 +9345,7 @@ segment_cycle() {
           park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi
       elif [ "$class" != "정상 완료" ]; then
-        review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
+        review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" "$cap_rp" || return 1
         recovered=1
       fi
       spawn_lineage_release "$sid"

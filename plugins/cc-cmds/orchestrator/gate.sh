@@ -17057,6 +17057,13 @@ gate_residual_body() {
   # reads `이월` — and the body lists every carry-over item. Any other `다음`,
   # and a segment row with no pull request, is refused with GATE_EXIT_RULE.
   #
+  # EVERY P0 AND EVERY P1, TAGS AND ALL. A carry-over is all or nothing, so a
+  # segment parked here carried nothing, and the park row holds no report path:
+  # this issue is the one durable record a person gets. A `이월 가능` P1 left
+  # out of it is a finding no issue holds. Each P1 line keeps its own
+  # `**[차단]**` or `**[이월 가능]**` tag, so the reader still sees which ones
+  # blocked the carry-over.
+  #
   # The body names the findings by their heading lines, the pull request and
   # the cycle, never the report's path; a `docs/` path inside a heading is
   # left out of the issue.
@@ -17108,8 +17115,8 @@ gate_residual_body() {
         k=$((k + 1))
       done
     else
-      LC_ALL=C GATE_RES_ALLP1="$([ "$cls" = '분류 미상' ] && printf 1)" awk '
-        BEGIN { R = "\360\237\224\264"; O = "\360\237\237\240"; TB = "**[차단]**" }
+      LC_ALL=C awk '
+        BEGIN { R = "\360\237\224\264"; O = "\360\237\237\240" }
         { line = $0; sub(/[ \t\r]+$/, "", line) }
         index(line, "## ") == 1 {
           sec = ""
@@ -17119,7 +17126,6 @@ gate_residual_body() {
         }
         sec == "" { next }
         index(line, "- ") != 1 && index(line, "### ") != 1 { next }
-        sec == "p1" && ENVIRON["GATE_RES_ALLP1"] != "1" && index(line, TB) == 0 { next }
         { sub(/^### /, "- ", line); gsub(/[^ `]*docs\/[^ `]*/, "(문서 경로 생략)", line)
           print (sec == "p0" ? "[P0] " : "[P1] ") substr(line, 3) }' "$rep" 2>/dev/null | sed 's/^/- /'
     fi

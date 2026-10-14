@@ -10062,6 +10062,12 @@ for want in '--recover' "--scratch-dir $RUN_DIR/cc-team-witness-hit" "--report-p
     bad "파견 줄" "$want 가 없다: $REC_SPAWN"
   fi
 done
+# 확인 리뷰가 아닌 리뷰의 복구는 --recheck 를 싣지 않는다.
+if printf '%s' "$REC_SPAWN" | grep -qF -- '--recheck'; then
+  bad "파견 줄" "확인 리뷰가 아닌 복구가 --recheck 를 싣는다: $REC_SPAWN"
+else
+  ok "확인 리뷰가 아닌 복구는 --recheck 를 싣지 않는다"
+fi
 
 # --- (3) 회수 호출 지점과 허용 목록 ------------------------------------------
 # 5번과 같은 픽스처의 관측이다 — `rec_reset` 을 사이에 두지 않는다.
@@ -10093,6 +10099,20 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '원회수=미상'; then
 else
   bad "stage-result 행" "스탬프 부재인데 미상 이 없다: $REC_ROWS"
 fi
+
+# 크래시한 확인 리뷰의 복구는 원래 줄의 --recheck <상한 리포트> 를 그대로 싣는다 —
+# 빠지면 복구된 리포트가 새 발견만 세어, 리드 수정이 수정 불가 로 적은 상한 항목이
+# 발견 요약 에서 사라진 채 0/0 머지로 읽힌다. segment_cycle 의 호출 자리도 상한
+# 리포트를 넘긴다.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" "$WORK/cap-c2.md" >/dev/null
+if printf '%s' "$REC_SPAWN" | grep_all_q -F -- "--recheck $WORK/cap-c2.md"; then
+  ok "확인 리뷰의 복구 파견 줄이 --recheck <상한 리포트> 를 싣는다"
+else
+  bad "파견 줄" "확인 리뷰의 복구에 --recheck 가 없다: $REC_SPAWN"
+fi
+check "segment_cycle 의 복구 호출이 상한 리포트를 넘긴다" \
+  "$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -cF 'review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" "$cap_rp"' || true)" "1"
 
 # --- (3b) 압축 창·레인·기록자 — 파견 id 의 `.window` 기록이 행에 옮겨진다 ---------
 # 여기의 `stage_spawn` 은 스파이라 `.window` 를 쓰지 않으므로, 실제 기동이 남겼을
@@ -11053,7 +11073,7 @@ r35_stubs() {
     [ "$R35GH" != fail ] || return 1
     case "$a" in
       *"pr list"*) printf '7\n' ;;
-      *"pr view"*) printf '%s\n' "$H35" ;;
+      *"pr view"*) printf '%s\n' "${R35PRHEAD:-$H35}" ;;
       *"issue list"*) printf '[]\n' ;;
       *"issue create"*)
         [ "$R35GH" != nocreate ] || return 1
@@ -11070,7 +11090,7 @@ r35_stubs() {
   }
   # 게이트는 `run_gate_call` 의 자식 bash 에서 돌므로 스텁과 그 상태를 넘긴다(34절과 같은 방식).
   export -f gh
-  export R35 H35 R35GH="${R35GH:-fail}"
+  export R35 H35 R35GH="${R35GH:-fail}" R35PRHEAD="${R35PRHEAD:-}"
 }
 # r35_disp_in <리터럴> <사이클> — 게이트에 다음 과 원소를 물어 review_disposition 을
 # 그대로 태우고 종료 코드를 낸다.
@@ -11271,6 +11291,11 @@ check "35: 다음 이 수정 이면 머지를 부르지 않고 act 로 park 한�
 r35_o=$(r35_merge 머지); r35_mm=${r35_o%%|*}; L35MM=${r35_o#*|}
 check "35: 다음 이 머지 면 머지를 한 번 부르고 워크트리를 실은 머지됨 행을 쓴다" \
   "$r35_mm/$( { grep -F '`segment`' "$L35MM" || true; } | grep -F '상태=머지됨' | grep -cF "워크트리=$MF_REPO" || true)" "0/1/1"
+# 서버의 PR head 가 마지막 cycle 행의 리뷰 HEAD 가 아니면 — push 전에 끝난 리드 수정
+# 뒤에 확인 리뷰가 로컬 커밋을 읽은 경우 — 다음 이 머지 여도 머지를 부르지 않는다.
+r35_o=$(R35PRHEAD=0123456789abcdef0123456789abcdef01234567 r35_merge 머지); r35_mh=${r35_o%%|*}; L35MH=${r35_o#*|}
+check "35: PR head 가 리뷰 HEAD 가 아니면 다음 이 머지 여도 머지를 부르지 않고 act 로 park 한다" \
+  "$r35_mh/$(r35_parks "$L35MH" "PR head 0123456789abcdef0123456789abcdef01234567 가 마지막 cycle 행의 리뷰 HEAD $H35 와 다르다")" "2/0/1"
 
 # --- 머지됨 행의 착지 선언 다이제스트 ---
 # 게이트는 스텁이 아닌 `run_gate_call` 의 자식 셸에서 돈다. 그 셸은 run.sh 를 다시
