@@ -27270,8 +27270,21 @@ rl_until 60 rl_relay_waiting
 printf '종단\n' > "$CAP_DIR/done"
 rl_join
 check "34e: (17) 대기 중 런이 끝나면 띄우지 않고 돌려준다" \
-  "$rc:$(grep -c '\[relay\] 대기가 이어진다 — 런이 끝났다' "$RL_O/call.out" || true):$(rl_calls):$(rl_launches)" \
+  "$rc:$(grep -c '\[relay\] 대기를 거둔다 — 런이 끝났다 · 다시 내지 않는다' "$RL_O/call.out" || true):$(rl_calls):$(rl_launches)" \
   "0:1:1:$((rl_n0 + 1))"
+check "34e: (17) 끝난 런의 반환은 재발행을 권하지 않는다" \
+  "$(grep -c '같은 호출을 대기 로 다시 낸다' "$RL_O/call.out" || true)" "0"
+# THE RE-ISSUE IS REFUSED. The ledger is still in the re-entry state — the
+# latest handoff is `대기` and nothing was launched after it — so only the
+# closed run stops a seat that issues the same call again from re-entering,
+# seeing `done` on its first poll and handing back once per turn.
+rl_case done-reissue cap
+rl_call 대기
+rl_join
+check "34e: (17) 끝난 런에 대기 재발행은 exit 3 이고 아무것도 띄우지 않는다" \
+  "$rc:$(rl_calls):$(rl_launches)" "3:0:$((rl_n0 + 1))"
+check "34e: (17) 그 거절은 끝난 런을 이유로 댄다" \
+  "$(grep -c 'does not re-enter a wait on a run that has ended' "$RL_O/call.err" "$RL_O/call.out" | awk -F: '{ s += $NF } END { print (s > 0) ? "yes" : "no" }')" "yes"
 rl_stage_end "$rl_s"
 rm -f "$CAP_DIR/done"
 CAP_STUB="$RL_CAP_STUB_SAVE"

@@ -33779,6 +33779,14 @@ gate_launch_shift() {
     상한|승인|종단|중단) : ;;
     대기) gate_relay_reentry_allowed || {
             warn "\`대기\` re-enters a wait only when the latest handoff is \`대기\` and no shift was launched after it"
+            return "$GATE_EXIT_RULE"; }
+          # A CLOSED RUN IS NOT WAITED ON AGAIN. The relay hands a closed run back
+          # with the ledger still in the re-entry state above — nothing was
+          # launched after the `대기` handoff — so without this refusal the seat's
+          # re-issue would re-enter, see `done` on its first poll and hand back at
+          # once, appending an act row to the closed run's ledger every turn.
+          [ ! -e "$RUN_DIR/done" ] || {
+            warn "\`대기\` does not re-enter a wait on a run that has ended — read the end from \`done\`"
             return "$GATE_EXIT_RULE"; } ;;
     *) warn "the handoff reason is out of vocabulary: ${reason:-(none)} — \`상한\` \`승인\` \`종단\` \`중단\` \`대기\`"
        return "$GATE_EXIT_VOCAB" ;;
@@ -34016,11 +34024,19 @@ gate_launch_shift() {
   # sentence is read from `done`'s first line, so a boundary or an invalidation
   # inside the shift is announced as what it was. Without `done` nothing is said.
   # SHIFT-RETURN FIRING SITE — the ended banner of a settled seat run.
+  gate_shift_return_banner
+  return "$rc"
+}
+
+gate_shift_return_banner() {
+  # The ended banner of a settled seat run, raised where the seat gets its turn
+  # back: a shift's return, and a relay's hand-back of a run that closed while it
+  # waited — that return launched nothing, so it never passes the line above.
   if gate_may_raise_banner && cc_run_end_settled "$RUN_DIR" && cc_notify_claim_ended; then
     cc_notify_fire ended "$(cc_notify_ended_text "$RUN_DIR")" || true
     cc_notify_mark_ended_fired
   fi
-  return "$rc"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -34070,6 +34086,12 @@ gate_relay_route() {
   gate_launch_shift "$alias" "$reason" "$@" || rc=$?
   while [ "$rc" = "0" ] && [ -n "$GATE_RELAY_ENTERED" ] && [ -z "$GATE_RELAY_HANDED_BACK" ]; do
     gate_relay_wait || return 0
+    # `done` AGAIN, BETWEEN THE WAKE AND THE LAUNCH. The wait checked it before
+    # judging the wake, and a run that closed in between must not get a successor.
+    if [ -e "$RUN_DIR/done" ]; then
+      gate_relay_hand_back "$(cc_relay_wait_stages "$RUN_DIR")" "$(gate_relay_ci_segments)" "런이 끝났다"
+      return 0
+    fi
     # THE INNER MARKER SKIPS THE PRE-LAUNCH WAIT. The wake was judged here a
     # moment ago, and judging it again at the launcher would wait on the rest of
     # the set instead of the element that just finished. The launch row still
@@ -34231,8 +34253,18 @@ gate_relay_hand_back() {
   # gate_relay_hand_back <stages> <ci> <why> — rc 0 to the seat with nothing
   # launched and nothing appended; `handback` is the one trace, and it is what
   # the watcher measures the following seat turn from.
+  #
+  # A CLOSED RUN IS HANDED BACK AS ENDED. The ledger is still in the re-entry
+  # state, so a line inviting the re-issue would send the seat into a call the
+  # launcher refuses; this one says not to, and raises the ended banner the
+  # seat would otherwise only see on a shift's return.
   gate_relay_write "$1" "$2" "$(date -u +%s)"
   GATE_RELAY_HANDED_BACK=1
+  if [ -e "$RUN_DIR/done" ]; then
+    printf '%s [relay] 대기를 거둔다 — %s · 다시 내지 않는다\n' "$(now_iso)" "$3"
+    gate_shift_return_banner
+    return 0
+  fi
   printf '%s [relay] 대기가 이어진다 — %s · 같은 호출을 대기 로 다시 낸다\n' "$(now_iso)" "$3"
   return 0
 }
