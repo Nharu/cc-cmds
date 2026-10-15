@@ -1274,6 +1274,74 @@ fi
 grep -v '^\*\*무진전 상한\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "상한 필드가 없어도 그 필드를 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+
+# 적용 프로브 코드 행 — 프로브의 종료 코드 대응은 `## 인가` 의 행으로 얼린다. 행이
+# 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고, 있으면
+# 정확히 한 줄을 낸다. 깨진 행은 0/2 로 떨어지지 않고 런 시작에서 거부된다.
+AC_SHA=$(printf '%s' 'make probe' | shasum -a 256 | cut -d' ' -f1)
+ac_mf() {   # ac_mf [<행>...] — 적용 프로브 `make probe` 와 주어진 행을 얹은 매니페스트
+  local r
+  write_manifest "$MF"
+  awk '/^\*\*설계 문서\*\*: /{print; print "**적용 프로브**: `make probe`"; next} {print}' "$MF" > "$MF.a" && mv "$MF.a" "$MF"
+  for r in "$@"; do printf '%s\n' "$r" >> "$MF"; done
+}
+ac_mf
+bd_noac=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+check "적용 프로브 필드만으로는 구속 다이제스트가 움직이지 않는다 (요소 필드는 얼리지 않는다)" \
+  "$bd_noac" "$bd_nocost"
+check "적용 프로브 코드 행이 없으면 다이제스트 입력에 그 줄이 없다" \
+  "$( { binding_set_bytes | grep -c '^applycodes' || true; } )" "0"
+ac_mf "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$AC_SHA"
+check "적용 프로브 코드 행이 있으면 다이제스트 입력에 정확히 한 줄이 든다" \
+  "$( { binding_set_bytes | grep -c '^applycodes' || true; } )" "1"
+bd_ac=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_ac" = "$bd_noac" ]; then
+  bad "구속 집합 감도" "적용 프로브 코드 행을 더했는데 다이제스트가 그대로다"
+else
+  ok "적용 프로브 코드 행이 생기면 구속 다이제스트가 움직인다"
+fi
+ac_mf "- \`적용 프로브 코드\` | 불필요=0 | 필요=22 | 프로브 sha256=$AC_SHA"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_ac" ]; then
+  bad "구속 집합 감도" "대응 값을 바꿨는데 다이제스트가 그대로다 — 런 도중 대응을 바꿀 수 있다"
+else
+  ok "적용 프로브 코드 값이 바뀌면 구속 다이제스트가 움직인다"
+fi
+ac_mf "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$AC_SHA"
+MANIFEST="$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "올바른 적용 프로브 코드 행이 매니페스트 검사를 통과한다"
+else
+  bad "조건 9" "올바른 대응 행이 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+check "대응 행은 같은 바이트의 프로브에 대응을 준다" "$(apply_probe_codes 'make probe')" "0 21"
+ac_rc=0; ac_out=$(apply_probe_codes 'make other') || ac_rc=$?
+check "대응 행은 다른 프로브에 0/2 를 주지 않고 상태 2 와 두 해시를 낸다" "$ac_rc/$ac_out" \
+  "2/$AC_SHA $(printf '%s' 'make other' | shasum -a 256 | cut -d' ' -f1)"
+ac_mf
+check "대응 행이 없으면 0/2 다" "$(apply_probe_codes 'make probe')" "0 2"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "적용 프로브 코드 행의 부재는 위반이 아니다"
+else
+  bad "조건 9" "대응 행이 없는 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+ac_reject() {   # ac_reject <설명> <행>...
+  local what="$1"; shift
+  ac_mf "$@"
+  if ( check_manifest ) >/dev/null 2>&1; then
+    bad "조건 9" "$what 이 통과했다 — 깨진 대응이 조용히 0/2 로 읽힌다"
+  else
+    ok "적용 프로브 코드 행: $what 은 런 시작에서 거부된다"
+  fi
+}
+ac_reject "불필요=1" "- \`적용 프로브 코드\` | 불필요=1 | 필요=21 | 프로브 sha256=$AC_SHA"
+ac_reject "필요=1" "- \`적용 프로브 코드\` | 불필요=0 | 필요=1 | 프로브 sha256=$AC_SHA"
+ac_reject "필요=126" "- \`적용 프로브 코드\` | 불필요=0 | 필요=126 | 프로브 sha256=$AC_SHA"
+ac_reject "같은 두 값" "- \`적용 프로브 코드\` | 불필요=21 | 필요=21 | 프로브 sha256=$AC_SHA"
+ac_reject "앞자리 0" "- \`적용 프로브 코드\` | 불필요=0 | 필요=021 | 프로브 sha256=$AC_SHA"
+ac_reject "프로브 sha256 불일치" "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' 'make other' | shasum -a 256 | cut -d' ' -f1)"
+ac_reject "대문자 hex" "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' "$AC_SHA" | tr 'a-f' 'A-F')"
+ac_reject "행 둘" "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$AC_SHA" \
+  "- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$AC_SHA"
 write_manifest "$MF"
 
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
@@ -1818,6 +1886,111 @@ else
 fi
 check "park 이 선언된 폭발 반경을 싣는다" \
   "$(grep -c "폭발 반경 '레포'" "$LEDGER")" "1"
+
+# (5b) 처분 함수는 대응을 인자로 받는 순수 함수다. 기본 0/2 에서 옛 처분과 같고,
+# 다른 대응에서는 「불필요」·「필요」 코드로만 가른다. 사후 프로브도 같은 대응으로 읽는다.
+ap_disp() {   # ap_disp <기대> <인자>...
+  local want="$1"; shift
+  check "apply_disposition $*" "$(apply_disposition "$@")" "$want"
+}
+ap_disp 건너뜀 0 2 0
+ap_disp '적용 불명' 0 2 2
+ap_disp 수렴 0 2 2 0 0
+ap_disp '적용 불명' 0 2 2 0 2
+ap_disp '적용 불명' 0 2 2 1 0
+ap_disp '사전 실패' 0 2 1
+ap_disp '사전 실패' 0 2 21
+ap_disp '적용 불명' 0 21 21
+ap_disp 수렴 0 21 21 0 0
+ap_disp '적용 불명' 0 21 21 0 21
+ap_disp '사전 실패' 0 21 2
+ap_disp '사전 실패' 0 21 3
+ap_disp 건너뜀 3 21 3
+ap_disp 수렴 3 21 21 0 3
+ap_disp '적용 불명' 3 21 21 0 0
+
+# (5c) 「필요=21」 을 얼린 매니페스트 — 사전 21 은 적용 필요이고 사전 21·명령 0·사후 0 은
+# 수렴이다. 대응 밖의 코드는 사전 실패이며 그 문면에 실제 코드와 대응이 실린다.
+ap_manifest_codes() {   # ap_manifest_codes <적용명령> <불필요> <필요>
+  ap_manifest "$1" "파이프라인"
+  printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=%s | 필요=%s | 프로브 sha256=%s\n' "$2" "$3" \
+    "$(apply_probe_sha "$(apply_probe_cmd segA)")" >> "$MANIFEST"
+}
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT; echo 0 > $AP_ST'" 0 21
+check "픽스처의 대응 행이 이 프로브에 묶였다 (아래가 공허하지 않다)" "$(apply_probe_codes "$(apply_probe_cmd segA)")" "0 21"
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
+if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
+  ok "필요=21: 사전 21 → 사후 0 이 수렴하고 apply 가 1회 돈다"
+else
+  bad "필요=21 수렴" "사전 21 이 적용 필요로 읽히지 않았다"
+fi
+check "필요=21 수렴 행이 실제 코드와 대응을 싣는다" \
+  "$( { grep -c '관측=사전 21 → 사후 0 (대응 불필요=0·필요=21), 수렴' "$LEDGER" || true; } )" "1"
+: > "$LEDGER"; : > "$AP_CNT"; printf '3\n' > "$AP_ST"
+if apply_stage segA; then
+  bad "필요=21 사전 3" "대응 밖 코드가 성공으로 읽혔다"
+else
+  ok "필요=21: 사전 3 은 사전 실패로 거부된다"
+fi
+check "필요=21: 사전 실패에서 명령은 돌지 않는다" "$(grep -c . "$AP_CNT")" "0"
+check "사전 실패 문면이 실제 코드와 대응을 싣는다" \
+  "$( { grep -c 'exit 3, 대응 불필요=0·필요=21' "$LEDGER" || true; } )" "1"
+: > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
+if apply_stage segA; then
+  bad "필요=21 사전 2" "대응 밖이 된 기본 「필요」 코드가 적용으로 읽혔다"
+else
+  ok "필요=21: 사전 2 는 대응 밖이라 사전 실패다"
+fi
+: > "$LEDGER"; : > "$AP_CNT"; printf '0\n' > "$AP_ST"
+apply_stage segA
+check "건너뜀 문면이 실제 코드와 대응을 싣는다" \
+  "$( { grep -c '관측=사전 프로브 0 (대응 불필요=0·필요=21) — 적용할 변경 없음' "$LEDGER" || true; } )" "1"
+
+# (5d) 해시 불일치 — 매니페스트 프로브 A 에 얼린 뒤집힌 대응(불필요=2·필요=0)이 있고
+# 설계 문서 슬라이스가 프로브 B 를 선언하면, 0/2 로 떨어지지 않고 사전 프로브 전에
+# park 한다. 0/2 로 읽으면 사전 0 이 「필요」 가 아니라 건너뜀이 되고, 사전 2 에서는
+# 「불필요」 코드에 명령이 돈다. 같은 행에 프로브 A 가 돌면 대응대로 처분된다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT; echo 2 > $AP_ST'" 2 0
+AP_SHA_A=$(apply_probe_sha "$(apply_probe_cmd segA)")
+AP_PROBE_B="touch $AP_DIR/probe-b-ran; exit 0"
+AP_SHA_B=$(apply_probe_sha "$AP_PROBE_B")
+AP_SLICE_DOC="$AP_DIR/slice-doc.md"
+printf '# 픽스처\n\n## 구현 슬라이싱\n\n### 슬라이스 segA — 적용\n\n**스킬**: implement\n**레포**: o/repo\n**선언 파일**: `a.txt`\n**선행**: 없음\n**적용 프로브**: `%s`\n' \
+  "$AP_PROBE_B" > "$AP_SLICE_DOC"
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+DOC="$AP_SLICE_DOC"
+check "슬라이스 선언이 실행 프로브를 B 로 바꾼다 (아래가 공허하지 않다)" "$(apply_probe_cmd segA)" "$AP_PROBE_B"
+apc_rc=0; apc_out=$(apply_probe_codes "$(apply_probe_cmd segA)") || apc_rc=$?
+check "해시 불일치에서 판독기는 상태 2 와 두 해시를 낸다" "$apc_rc/$apc_out" "2/$AP_SHA_A $AP_SHA_B"
+: > "$LEDGER"; : > "$AP_CNT"; rm -f "$AP_DIR/probe-b-ran"; printf '0\n' > "$AP_ST"
+if apply_stage segA; then
+  bad "해시 불일치" "얼린 행과 다른 프로브인데 처분이 났다"
+else
+  ok "해시 불일치: 구동기가 적용을 거부한다"
+fi
+case "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 )" in
+  *"$AP_SHA_A"*"$AP_SHA_B"*"사전 프로브도 apply 도 실행하지 않는다"*) ok "해시 불일치 park 사유가 두 해시를 싣는다" ;;
+  *) bad "해시 불일치 park" "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 )" ;;
+esac
+check "해시 불일치: 사전 프로브가 돌지 않는다" "$( [ -e "$AP_DIR/probe-b-ran" ] && echo 돌았다 || echo 안돌았다 )" "안돌았다"
+check "해시 불일치: 적용 명령이 돌지 않는다" "$(grep -c . "$AP_CNT")" "0"
+check "해시 불일치: 적용 준비 행이 없다" "$( { grep -c '상태=적용 준비' "$LEDGER" || true; } )" "0"
+check "해시 불일치: 적용 워크트리를 만들지 않는다" "$( [ -e "$AP_WT" ] && echo 있다 || echo 없다 )" "없다"
+check "해시 불일치: 건너뜀·정상 완료 행이 없다" "$( { grep -c '종단 부류=정상 완료' "$LEDGER" || true; } )" "0"
+DOC=""
+: > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
+if apply_stage segA && [ ! -s "$AP_CNT" ]; then
+  ok "불필요=2·필요=0: 프로브 A 의 사전 2 는 건너뜀이고 명령이 돌지 않는다"
+else
+  bad "뒤집힌 대응 건너뜀" "사전 2 가 「불필요」 로 읽히지 않았다"
+fi
+: > "$LEDGER"; : > "$AP_CNT"; printf '0\n' > "$AP_ST"
+if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
+  ok "불필요=2·필요=0: 프로브 A 의 사전 0 은 적용 필요이고 명령이 1회 돈다"
+else
+  bad "뒤집힌 대응 수렴" "사전 0 이 「필요」 로 읽히지 않았다"
+fi
 
 # (6) 반경 판정 — 런은 전부 멈추고, 레포는 같은 레포만, 슬라이스 목록은 그 셋만.
 RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"

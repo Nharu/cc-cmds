@@ -426,6 +426,23 @@ apply-actor = 사람
 [b/two]
 cutpoint = 배포' --target a/one --target b/two)
 check "배포 대상 둘 → 배포 대상 수" "$(st "$out" apply-actor)" "배포 대상 수"
+# apply-probe-codes — `<불필요>/<필요>`, held to the manifest check's own value rule.
+for pc in '0/21:적용' '0/2:적용' '3/0:적용' '125/0:적용' '0/1:형식 오류' '1/0:형식 오류' '0/126:형식 오류' \
+          '0/128:형식 오류' '2/2:형식 오류' '0/021:형식 오류' '0:형식 오류' '0/2/3:형식 오류' '/2:형식 오류' 'x/2:형식 오류'; do
+  out=$(kf "[Nharu/cc-cmds]
+cutpoint = 배포
+apply-probe = make probe
+apply-probe-codes = ${pc%%:*}" $T)
+  check "apply-probe-codes '${pc%%:*}' → ${pc#*:}" "$(st "$out" apply-probe-codes)" "${pc#*:}"
+done
+out=$(kf '[Nharu/cc-cmds]
+cutpoint = 머지
+apply-probe-codes = 0/21' $T)
+check "절단점이 배포가 아니면 apply-probe-codes 도 불활성" "$(st "$out" apply-probe-codes)" "불활성"
+out=$(kf '[Nharu/cc-cmds]
+cutpoint = 배포
+apply-probe-codes = 0/21' $T --apply-actor 없음)
+check "--apply-actor 없음 → apply-probe-codes 인터뷰 답과 다름" "$(st "$out" apply-probe-codes)" "인터뷰 답과 다름"
 
 # ---------------------------------------------------------------------------
 # 다중 대상
@@ -888,6 +905,71 @@ widen() { printf '%s\n' "$out" | awk -F'\t' -v k="$1" '$1=="권한" && $3==k { p
 check "권한 넓힘 표식 — 절단점 머지 1 · 리뷰 상한 선리뷰후머지 0 · 말단 상한 없음 1 · 사전 인가 1 · 자동 채택 1 · 적용 주체 없음 0" \
   "$(widen cutpoint)$(widen review-ceiling)$(widen terminal-cap)$(widen act-allow)$(widen auto-adopt)$(widen apply-actor)" "101110"
 check "권한 행 수가 원천 자동 채택+사전 인가 형태 행 수와 대상별 권한 필드 수의 합" "$(cnt "$out" 권한 '')" "7"
+check "적용 프로브 코드 행 없는 원천 → 이어받지 않음 행 없음" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="apply-probe-codes" { print $4 }')" "행 없음"
+
+# 적용 프로브 코드 행은 `<불필요>/<필요>` 로 이어받는다. 원천 절단점이 머지라
+# 파일의 적용 키는 불활성이고, 차이 행도 빈칸 행도 생기지 않는다.
+CW_ROWS_SAVE="$CW_ROWS"; CW_AP_SAVE="$CW_AP"
+CW_AP='`make probe`'
+CW_ROWS="$CW_ROWS
+- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' 'make probe' | shasum -a 256 | awk '{ print $1 }')"
+cw_write "$CW"
+out=$(kc '[Nharu/cc-cmds]
+apply-probe-codes = 0/2')
+check "원천의 적용 프로브 코드 행을 0/21 로 이어받는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="apply-probe-codes" { print $4 }')" "0/21"
+check "적용 프로브 코드는 차이·빈칸 행이 되지 않는다" "$(cnt "$out" 차이 apply-probe-codes)$(cnt "$out" 빈칸 apply-probe-codes)" "00"
+CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"
+cw_write "$CW"
+out=$(kc '[Nharu/cc-cmds]
+apply-probe-codes = 0/21')
+check "원천에 행이 없으면 파일 값이 있어도 빈칸이 아니다" "$(cnt "$out" 빈칸 apply-probe-codes)" "0"
+
+# ---------------------------------------------------------------------------
+# --apply-probe-sha — 초안의 프로브 해시를 드라이버 함수로 재고, 적용 프로브
+# 코드 행을 매니페스트 검사의 그 절반으로 판정한다. 작은따옴표가 든 프로브는
+# `printf '%s' '<프로브>'` 로 재면 셸이 따옴표를 벗겨 다른 해시가 나오므로,
+# 그 해시로 얼린 행은 여기서 거부돼야 한다.
+# ---------------------------------------------------------------------------
+aps() { kd --apply-probe-sha "$1"; }
+aps_row() { printf '%s\n' "$1" | awk -F'\t' '$1=="행" { print $2 }'; }
+APS_PROBE="grep -q 'needle' f || exit 3"
+APS_SHA=$(printf '%s' "$APS_PROBE" | shasum -a 256 | awk '{ print $1 }')
+APS_BAD=$(printf '%s' "grep -q needle f || exit 3" | shasum -a 256 | awk '{ print $1 }')
+[ "$APS_SHA" != "$APS_BAD" ] && ok "전제: 따옴표를 벗긴 해시는 원래 바이트의 해시와 다르다" \
+  || bad "전제" "두 해시가 같다"
+CW_ROWS_SAVE="$CW_ROWS"; CW_AP_SAVE="$CW_AP"
+CW_AP="\`$APS_PROBE\`"
+cw_write "$CW"
+out=$(aps "$CW"); rc=$?
+check "--apply-probe-sha 는 0 으로 끝난다" "$rc" "0"
+check "--apply-probe-sha 는 백틱을 벗긴 원래 바이트를 잰다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="프로브" { print $2 }')" "$APS_SHA"
+check "--apply-probe-sha 행 없는 초안 → 행 없음" "$(aps_row "$out")" "없음"
+CW_ROWS="$CW_ROWS
+- \`적용 프로브 코드\` | 불필요=2 | 필요=0 | 프로브 sha256=$APS_SHA"
+cw_write "$CW"
+check "--apply-probe-sha 원래 바이트로 얼린 행 → 맞음" "$(aps_row "$(aps "$CW")")" "맞음"
+CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | 불필요=2 | 필요=0 | 프로브 sha256=$APS_BAD"
+cw_write "$CW"
+out=$(aps "$CW")
+check "--apply-probe-sha 따옴표를 벗겨 잰 행 → 거부" "$(aps_row "$out")" "거부"
+case "$(printf '%s\n' "$out" | awk -F'\t' '$1=="행" { print $3 }')" in
+  *"행 $APS_BAD, 프로브 $APS_SHA"*) ok "--apply-probe-sha 거부 문면은 매니페스트 검사의 두 해시를 싣는다" ;;
+  *) bad "--apply-probe-sha 거부 문면" "$out" ;;
+esac
+CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | 불필요=2 | 필요=2 | 프로브 sha256=$APS_SHA"
+cw_write "$CW"
+check "--apply-probe-sha 깨진 행 → 거부" "$(aps_row "$(aps "$CW")")" "거부"
+check "--apply-probe-sha 는 원본을 바꾸지 않는다" "$(grep -c '필요=2 | 프로브' "$CW")" "1"
+CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"
+cw_write "$CW"
+check "--apply-probe-sha 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --apply-probe-sha "$CW" >/dev/null 2>&1; echo $?)" "3"
+check "--apply-probe-sha 는 --target 과 함께 쓰지 않는다" "$(kd --apply-probe-sha "$CW" $T >/dev/null 2>&1; echo $?)" "2"
+check "--apply-probe-sha 에 없는 파일 → 3" "$(kd --apply-probe-sha "$WORK/none.md" >/dev/null 2>&1; echo $?)" "3"
 
 # 행 0개 원천 + 파일의 auto-adopt — 「없음으로 답함」 은 적용이지 빈칸이 아니다.
 CW_ROWS_SAVE="$CW_ROWS"; CW_ROWS=''

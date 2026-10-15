@@ -57,6 +57,13 @@
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
 #
+# The `적용 프로브 코드` row of `## 인가` has no `--set` key: it is bound to the
+# probe's hash, so `render-manifest` copies it byte for byte with the rest of
+# the section and `verify-subset` refuses a draft whose row differs from the
+# previous one — added, dropped or changed. A previous run without the row
+# keeps the default mapping. Nothing here writes the previous run's pinned
+# plugin copy or its pin record; the draft is the only file this mode makes.
+#
 # `--blank-rows` is the `--carry` output 5o showed, saved byte for byte. It is
 # required with `--set` in `verify-subset`: each entry must equal one of its
 # `빈칸` rows in scope, key and value, so a value moved to another target or
@@ -232,7 +239,7 @@ set +o pipefail
 for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_json manifest_plan_field \
             manifest_targets manifest_rule_lines manifest_preauth_rows manifest_autoadopt_rows_anywhere \
             manifest_design_roster_rows_anywhere manifest_clause_rows_raw manifest_base_design_rows \
-            manifest_design_scope target_field target_aliases canonical_targets binding_set_bytes \
+            manifest_design_scope manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
             check_manifest rundir_of_run_id deadline_instant cutpoint_index \
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_unresolved_blocked cc_open_approval_rows cc_segment_states; do
@@ -1306,6 +1313,9 @@ EOF
     if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"
   done
+  # The apply mapping row has no `--set`: it is the previous row, or none.
+  [ "$(MANIFEST="$prev" manifest_apply_code_rows)" = "$(MANIFEST="$draft" manifest_apply_code_rows)" ] \
+    || why="${why:+$why; }적용 프로브 코드 행이 원천과 다릅니다"
   local prules drules rl rk rv
   prules=$(MANIFEST="$prev" manifest_rule_lines | sort); drules=$(MANIFEST="$draft" manifest_rule_lines | sort)
   if [ "$prules" != "$drules" ]; then
