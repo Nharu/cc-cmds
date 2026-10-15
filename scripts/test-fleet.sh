@@ -781,8 +781,9 @@ case "$verb:$kind" in
     # A run carrying `handback` comes back as a relay that met a return
     # condition at once: no shift, no row.
     [ ! -e "$rd/handback" ] || exit 0
+    # `t2.caps` holds how many calls leave `상한` before the `중단`, one when absent.
     n=$(cat "$rd/t2.calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$rd/t2.calls"
-    if [ "$n" = 1 ]; then r=상한; else r=중단; fi
+    if [ "$n" -le "$(cat "$rd/t2.caps" 2>/dev/null || echo 1)" ]; then r=상한; else r=중단; fi
     printf -- '- `교대 기동` | 서수=%s\n- `handoff` | 교대=%s | 사유=%s | 대상=infra\n' "$n" "$n" "$r" >> "$led" ;;
 esac
 exit 0
@@ -839,6 +840,13 @@ printf '%s\nx\nhandback=%s\n' "$t2_dead" "$NOW" > "$WORK/xdg/cc-cmds/run/T2J/rel
 # A run the boot cut whose relay keeps coming back at once with no shift — the
 # poller of a CI wait is dead and stays dead.
 t2_run T2I "$T2_LAUNCH" "$T2_WAIT"; : > "$WORK/xdg/cc-cmds/run/T2I/handback"
+# A run the boot cut on another label's account (u2): this label leaves it.
+t2_run T2K "$T2_LAUNCH"; : > "$WORK/xdg/cc-cmds/run/T2K/needs-settle"
+printf '%s\n' "$H2" > "$WORK/xdg/cc-cmds/run/T2K/config-dir"
+# A run whose every call launches a shift and comes back on its cap, past the
+# twelve calls the chain allows a call that launched nothing.
+t2_run T2L "$T2_LAUNCH"; : > "$WORK/xdg/cc-cmds/run/T2L/needs-settle"
+printf '14\n' > "$WORK/xdg/cc-cmds/run/T2L/t2.caps"
 rm -f "$TEST_LOG_DIR/t2.log" "$TEST_LOG_DIR/t2-checks.log"
 FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T2BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t2-1.err"; rc=$?
 t2n() { grep -c "^$1 $2 " "$TEST_LOG_DIR/t2.log" 2>/dev/null || true; }
@@ -875,6 +883,10 @@ check "재진입: 곧바로 돌아오는 대기는 두 번째에서 사슬을 �
   "$(grep '^router-shift T2I ' "$TEST_LOG_DIR/t2.log" | cut -d' ' -f3 | tr '\n' ' ')" "대기 대기 "
 check "재진입: 첫 번째 곧바로 돌아온 대기 뒤 죽은 폴러만 다시 띄운다" \
   "$(grep -c '^watch T2I$' "$TEST_LOG_DIR/t2.log" || true):$(grep -c '^checks T2I$' "$TEST_LOG_DIR/t2-checks.log" || true)" "1:2"
+check "재진입: 다른 레이블 계정의 런에는 스냅숏도 호출도 감시자도 부팅 표지도 없다" \
+  "$(grep -c -E '^[a-z-]+ T2K( |$)' "$TEST_LOG_DIR/t2.log" || true):$( [ -e "$PACE/reentry/T2K.boot" ] && printf marked || printf none)" "0:none"
+check "재진입: 교대를 띄운 상한 호출은 세지 않아 사슬이 열두 번에서 멈추지 않는다" \
+  "$(t2n router-shift T2L):$(grep '^router-shift T2L ' "$TEST_LOG_DIR/t2.log" | tail -1 | cut -d' ' -f3)" "15:상한"
 check "재진입: 재진입을 돌린 틱은 백로그를 집지 않는다" "$(backlog_status t2h)" "pending"
 check "재진입: 런마다의 점유는 풀려 있다" "$(ls -d "$PACE"/reentry/*.lock 2>/dev/null | count_lines /dev/stdin)" "0"
 t2_before=$(count_lines "$TEST_LOG_DIR/t2.log")

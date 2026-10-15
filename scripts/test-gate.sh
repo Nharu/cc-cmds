@@ -28658,13 +28658,15 @@ rl_join
 check "34i: (5) 재진입 표지를 단 호출은 교대를 띄우되 seat-call 을 쓰지 않는다" \
   "$rc:$(rl_calls):$( [ -e "$CAP_DIR/seat-call" ] && printf written || printf none)" "0:1:none"
 rl_case stagecall cap
+# The stub CLI is named on each call, not inside the wrapper, so the seam
+# census reads both calls as the forks they are.
 ri_stage_env() {
   env XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$RI_SEAT" \
-    CC_CLAUDE_BIN="$RL_STUB" CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='RRI1:RI0#1' CC_PIPELINE_SEGMENT='' \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='RRI1:RI0#1' CC_PIPELINE_SEGMENT='' \
     CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" "$@"
 }
-ri_sh=$(cd "$WT" && ri_stage_env bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null | jq -r .H)
-( cd "$WT" && ri_stage_env bash "$GATE" act --manifest "$CAP_NM" --kind router-shift --target infra \
+ri_sh=$(cd "$WT" && ri_stage_env CC_CLAUDE_BIN="$RL_STUB" bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null | jq -r .H)
+( cd "$WT" && ri_stage_env CC_CLAUDE_BIN="$RL_STUB" bash "$GATE" act --manifest "$CAP_NM" --kind router-shift --target infra \
     --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$ri_sh" --rationale "픽스처 — 스테이지 표지" \
     -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM" ) > "$RL_O/call.out" 2> "$RL_O/call.err"; rc=$?
 check "34i: (5) 스테이지 표지가 있는 호출은 교대를 띄우되 seat-call 을 쓰지 않는다" \

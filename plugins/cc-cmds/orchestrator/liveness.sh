@@ -747,9 +747,19 @@ platform_supported() { [ "${ORCH_HOST_OS:-${CC_CMDS_ORCH_HOST_OS:-$(uname -s)}}"
 # Source selection is seam-driven, so it is exercised under injection on any
 # runner. Whether the selected binary EXISTS is a separate question, and it is
 # one only the darwin leg can answer.
-boot_source() { platform_supported && printf 'kern.boottime' || printf ''; }
-wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
-sleep_source() { platform_supported && printf 'kern.sleeptime' || printf ''; }
+#
+# A KEY THE TEST HOOK NAMES IS SELECTED ON ANY HOST. The hook below answers it
+# without the kernel, so the host does not decide whether it is read; tying it
+# to the host test left it unread wherever the caller's `ORCH_HOST_OS` does not
+# reach the reading — a gate entered in-process restores the host it was
+# sourced on, over the value the call set.
+sysctl_source() {
+  case ",${CC_SYSCTL_TEST_VALUES:-}," in *",$1="*) printf '%s' "$1"; return 0 ;; esac
+  platform_supported && printf '%s' "$1" || printf ''
+}
+boot_source() { sysctl_source kern.boottime; }
+wake_source() { sysctl_source kern.waketime; }
+sleep_source() { sysctl_source kern.sleeptime; }
 
 # Sleep discriminator. Closing the lid leaves a stage alive with a stalled
 # transcript, which the resume table would otherwise read as the limit-exhaustion

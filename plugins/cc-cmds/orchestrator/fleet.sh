@@ -159,7 +159,7 @@ readonly FLEET_TARGET_CONCURRENCY_DEGRADED=1    # the lane rung's target while u
 readonly FLEET_LANE_OCCUPANCY_MAX=1             # K: a lane admits a launch below this occupancy
 readonly FLEET_SCAN_FILES_MAX=1000              # transcript scan caps, per home; over either -> that home is truncated
 readonly FLEET_SCAN_BYTES_MAX=2147483648
-readonly FLEET_REENTRY_CALLS_MAX=12             # router-shift calls one boot-time re-entry chain issues at most
+readonly FLEET_REENTRY_CALLS_MAX=12             # router-shift calls that launched no shift, at most, in one boot-time re-entry chain
 readonly FLEET_REENTRY_QUICK_SECONDS=60         # a `대기` call back sooner than this with no launch is a quick return
 # The burn calibration is a literal by decision, and it is not an integer, so the
 # threshold lint does not own it: 0.104 %p of weekly quota per million weighted
@@ -1361,30 +1361,35 @@ fleet_reentry_run() {
   # a return condition that will stand on the next call too — the poller of a
   # CI wait is dead, or the gate keeps failing. The first quick return restarts
   # a dead poller and waits one quick period before the next call; a second in
-  # a row ends the chain. FLEET_REENTRY_CALLS_MAX caps the chain whatever the
-  # returns, above the calls a reset at the far end of the horizon needs.
-  local calls=0 quick=0 t0 launches pause
+  # a row ends the chain. FLEET_REENTRY_CALLS_MAX caps the calls that launched
+  # no shift, above the calls a reset at the far end of the horizon needs. A
+  # call that launched one worked, so it is not counted: a `상한` chain runs as
+  # long as the night does, and ends on the floor's approval, a quick return
+  # or `done`.
+  local calls=0 quick=0 t0 launches after pause
   pause=$FLEET_REENTRY_QUICK_SECONDS
   case "${FLEET_REENTRY_PAUSE_TEST_SECONDS:-}" in
     ''|*[!0-9]*) : ;;
     *) [ "$FLEET_REENTRY_PAUSE_TEST_SECONDS" -lt "$pause" ] && pause=$FLEET_REENTRY_PAUSE_TEST_SECONDS ;;
   esac
   while :; do
-    rc=0; calls=$((calls + 1))
+    rc=0
     t0=$(date -u +%s); launches=$(fleet_reentry_launches "$ledger")
     fleet_reentry_act --kind router-shift --target "$R_TGT" --cutpoint "$R_CP" --surface "$R_SF" \
       -- "$reason" -p "/cc-cmds:autopilot-router-shift $R_MAN" || rc=$?
+    after=$(fleet_reentry_launches "$ledger")
+    [ "$after" != "$launches" ] || calls=$((calls + 1))
     # 3: another launcher holds the run, or a rule refused. 4: still stale
     # after three fresh digests. 5: an approval for a person.
     case "$rc" in 3|4|5) break ;; esac
     [ ! -e "$rd/done" ] || break
     if [ "$calls" -ge "$FLEET_REENTRY_CALLS_MAX" ]; then
-      fleet_log "재진입 $lane: $id — 호출 ${calls}번에 이르러 사슬을 멈춘다"
+      fleet_log "재진입 $lane: $id — 교대를 띄우지 않은 호출이 ${calls}번에 이르러 사슬을 멈춘다"
       break
     fi
     if fleet_reentry_reason_wait "$rd" "$ledger"; then
       if [ $(( $(date -u +%s) - t0 )) -lt "$FLEET_REENTRY_QUICK_SECONDS" ] \
-        && [ "$(fleet_reentry_launches "$ledger")" = "$launches" ]; then
+        && [ "$after" = "$launches" ]; then
         quick=$((quick + 1))
         if [ "$quick" -ge 2 ]; then
           fleet_log "재진입 $lane: $id — 교대 없이 곧바로 돌아온 대기가 두 번 이어져 사슬을 멈춘다"
@@ -1412,15 +1417,31 @@ fleet_reentry_run() {
 }
 
 fleet_reentry_tick() {
-  # fleet_reentry_tick <lane> — re-enter every run this boot cut. Succeeds when
-  # at least one call was issued, and the tick then dispatches no backlog head.
-  # No boot reading — a host whose kernel gives none — is no re-entry.
-  local lane="$1" boot rd ran=1
+  # fleet_reentry_tick <lane> — re-enter every run this boot cut on this
+  # label's account. Succeeds when at least one call was issued, and the tick
+  # then dispatches no backlog head. No boot reading — a host whose kernel
+  # gives none — is no re-entry.
+  #
+  # A RUN ON ANOTHER LABEL'S ACCOUNT IS THAT LABEL'S. The chain holds the tick
+  # for hours, so a label that took it would dispatch nothing on its own idle
+  # account all that time, while the run's own label is held off its backlog
+  # by the run's lane occupancy anyway. A run whose account no label holds —
+  # the interactive lane — has no label of its own, and any label takes it.
+  local lane="$1" boot rd ran=1 inv home homes rh
   boot=$(boot_epoch 2>/dev/null || true)
   case "$boot" in ''|0|*[!0-9]*) return 1 ;; esac
+  inv=$(fleet_inventory_json)
+  home=$(printf '%s' "$inv" | jq -r --arg i "$lane" '.accounts[] | select(.id == $i) | .config_dir')
+  home=${home%/}
+  homes=$(fleet_label_homes_json "$inv" "$(fleet_dirs_json "$inv")")
   for rd in "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"/*; do
     [ -d "$rd" ] || continue
     fleet_reentry_candidate "$rd" "$boot" || continue
+    rh=$(sed -n '1p' "$rd/config-dir" 2>/dev/null); rh=${rh%/}
+    if [ "$rh" != "$home" ] \
+      && printf '%s' "$homes" | jq -e --arg d "$rh" 'any(.[]; .home == $d)' >/dev/null 2>&1; then
+      continue
+    fi
     if fleet_reentry_run "$lane" "$rd" "$boot"; then ran=0; fi
   done
   return "$ran"
