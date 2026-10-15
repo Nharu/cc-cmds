@@ -22231,11 +22231,27 @@ gate_record_row() {
         done
         [ -z "$mo_out" ] || { mo="$mo_out"; set -- "$@" "머지 순서=$mo"; }
       fi
+      # A SLICE THE FROZEN DOCUMENT DECLARES IS NOT YET PLANNED, NOT UNLANDABLE.
+      # A merge-order predecessor held back by its own `선행` has no row while
+      # this slice is planned, and the refusal stays — the floor is what keeps
+      # the order readable — but it must not read like the unknown-token one:
+      # a router maps that one to "a new run with a `선행 착지` row", which is
+      # false here, since planning the predecessor first is the whole remedy.
+      local decl_ids=""
+      if [ -n "${DOC:-}" ] && grep -qxF '**상태**: 동결됨' "$DOC" 2>/dev/null; then
+        decl_ids=" $(slice_ids "$DOC" 2>/dev/null | tr '\n' ' ') "
+      fi
       cur_mo=$(gate_dep_tokens "$mo")
       for d in $cur_mo; do
         case "$known" in
           *" $d "*) ;;
-          *) warn "the segment \`머지 순서\` names is not in the ledger, and no earlier run ledger of the same document shows it landed: '$d' — such a segment cannot land, so this segment could never merge"
+          *) case "$decl_ids" in
+               *" $d "*)
+                 warn "the slice \`머지 순서\` names is declared in the frozen document and has no segment row on this ledger yet: '$d' — this is the order of planning, not a missing landing"
+                 warn "plan '$d' first and then plan this slice again; nothing else is needed, and no new run is"
+                 return "$GATE_EXIT_VOCAB" ;;
+             esac
+             warn "the segment \`머지 순서\` names is not in the ledger, and no earlier run ledger of the same document shows it landed: '$d' — such a segment cannot land, so this segment could never merge"
              return "$GATE_EXIT_VOCAB" ;;
         esac
       done

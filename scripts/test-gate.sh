@@ -12189,8 +12189,12 @@ g15_run R15MC "$DOC15MC" "$plan15c" 리뷰없음
 m15_planned R15MC CA
 g15_mkwt R15MC CC
 g15_plan act R15MC CC 상태=계획됨 "워크트리=$(g15_wt R15MC CC)"
+# The refusal reads as an order of planning: a router maps the unknown-token
+# wording to "a new run with a `선행 착지` row", which is false for a slice the
+# document declares and nobody has planned yet.
 case "$rc/$msg" in
-  2/*"\`머지 순서\` names is not in the ledger"*"'CB'"*) ok "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" ;;
+  *"no earlier run ledger"*|*"new run with"*) bad "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" "rc=$rc $msg" ;;
+  2/*"declared in the frozen document and has no segment row on this ledger yet: 'CB'"*"no new run is"*) ok "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" ;;
   *) bad "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" "rc=$rc $msg" ;;
 esac
 m15_planned R15MC CB
