@@ -430,20 +430,80 @@ cc_ci_observed_verdict() {
 }
 
 cc_relay_result_after_ref() {
-  # cc_relay_result_after_ref <ledger> — succeeds when a `stage-result` row
-  # follows the reference row, the ledger's latest `handoff 사유=대기`.
+  # cc_relay_result_after_ref <ledger> [<run-dir>] — succeeds when a
+  # `stage-result` row follows the reference row: the ledger's latest `handoff
+  # 사유=대기`, or — while the relay waits out a shift that died of the limit,
+  # which the gate says by a `reset=교대#…` entry in `relay.live` — the latest
+  # `handoff` of all, that shift's `무기록`.
   #
   # THE STAGE WAKE IS ALSO READ FROM THE LEDGER, NOT FROM LIVENESS ALONE. The
   # wait set is derived again at three moments — the handoff, the relay's start,
   # a seat re-entry — and a stage that ended between two of them has left the
   # live set without ever being seen to end. Its `stage-result` row is still
   # there, after the reference row.
+  #
+  # THE `무기록` REFERENCE IS WHY THE SECOND ARGUMENT EXISTS. Read from an older
+  # shift's `대기`, the cut attempt's own `한도 종료` row — and after a reboot the
+  # settlement's `외부 종료` rows — would stand after the reference and wake the
+  # relay before the reset it is holding for. Whether the death was limit-shaped
+  # is the gate's judgement, from the stream with jq; it reaches this file only
+  # as the entry it wrote, so no stream is read here.
+  local anyref=0
   [ -n "$1" ] && [ -f "$1" ] || return 1
-  LC_ALL=C awk '
-    /^- `handoff` / { if (index($0, " | 사유=대기 | ") > 0) { ref = 1; after = 0 } }
+  case ",$(cc_relay_field "${2:-}" reset)," in *,교대#*) anyref=1 ;; esac
+  LC_ALL=C awk -v anyref="$anyref" '
+    /^- `handoff` / {
+      if (anyref == 1 || index($0, " | 사유=대기 | ") > 0) { ref = 1; after = 0 }
+    }
     /^- `stage-result` / { if (ref) after = 1 }
     END { exit(after ? 0 : 1) }
   ' "$1"
+}
+
+# THE RESET GRACE — how long past a cut's `resetsAt` the relay waits before it
+# wakes for that reset. Every one of 37 re-attachments after a reset found a
+# first frame that was not `rejected`, the earliest 118 seconds after it, so 60
+# is the floor that was measured to hold and nothing below it was. The test hook
+# `CC_GATE_RESET_GRACE_TEST_SECONDS` may only shorten it, the shape of the
+# relay's hold hook: a test waits less, and a real wait is never lengthened.
+CC_RESET_GRACE_SECONDS=60
+
+cc_reset_grace() {
+  local t="${CC_GATE_RESET_GRACE_TEST_SECONDS:-}"
+  case "$t" in
+    ''|*[!0-9]*) printf '%s' "$CC_RESET_GRACE_SECONDS"; return 0 ;;
+  esac
+  t=$((10#$t))
+  if [ "$t" -ge 0 ] && [ "$t" -lt "$CC_RESET_GRACE_SECONDS" ]; then
+    printf '%s' "$t"
+  else
+    printf '%s' "$CC_RESET_GRACE_SECONDS"
+  fi
+}
+
+cc_relay_cut_cleared_at() {
+  # cc_relay_cut_cleared_at <ledger> <key> — the `기록 시각` epoch of the first
+  # `한도 해제` row below the cut row of <key>, or empty. The cut row of a stage
+  # key is that stage's latest `stage-result`; of `교대#<n>` it is that shift's
+  # `무기록` handoff. The row is found by its fixed head, never by a substring
+  # of the line, so a field that quotes the row name does not match.
+  local ledger="$1" key="$2" at
+  [ -n "$ledger" ] && [ -f "$ledger" ] && [ -n "$key" ] || return 0
+  at=$(LC_ALL=C awk -F'|' -v key="$key" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function has(f,   i) { for (i = 2; i <= NF; i++) if (trim($i) == f) return 1; return 0 }
+    function val(n,   i, f) {
+      for (i = 2; i <= NF; i++) { f = trim($i); if (index(f, n "=") == 1) return substr(f, length(n) + 2) }
+      return ""
+    }
+    BEGIN { shift = (index(key, "교대#") == 1) ? substr(key, length("교대#") + 1) : "" }
+    /^- `stage-result` / { if (shift == "" && has("스테이지=" key)) { cut = 1; at = "" } ; next }
+    /^- `handoff` / { if (shift != "" && has("교대=" shift) && has("사유=무기록")) { cut = 1; at = "" } ; next }
+    /^- `한도 해제` / { if (cut && at == "") at = val("기록 시각") }
+    END { printf "%s", at }
+  ' "$ledger" 2>/dev/null || true)
+  [ -n "$at" ] || return 0
+  cc_iso_to_epoch "$at"
 }
 
 cc_relay_wake_keys() {
@@ -454,14 +514,31 @@ cc_relay_wake_keys() {
   #   sr\t            a `stage-result` row after the reference row
   #   st:<key>\t      a stage or supervisor of the wait set is no longer live
   #   ci:<seg>\t<ep>  the segment's newest verdict is not `대기` (clock: `관측`)
+  #   rl:<key>\t<ep>  a cut's reset plus the grace has passed (clock: that sum)
+  #   lc:<key>\t<ep>  a `한도 해제` row stands below the cut row (clock: its
+  #                   `기록 시각`)
   #
   # ONE READER FOR THE RELAY AND THE WATCHER. The relay wakes when this prints
   # anything; the watcher asks how long each line has stood. A segment with no
-  # verdict yet does not wake.
-  local run_dir="$1" ledger="$2" k v st ob tab
+  # verdict yet does not wake. The two reset keys carry their own clock, so the
+  # watcher ages them by it and not by the pass that first saw them.
+  local run_dir="$1" ledger="$2" k v st ob tab now grace ep at
   [ -f "$run_dir/relay.live" ] || return 0
   tab=$(printf '\t')
-  if cc_relay_result_after_ref "$ledger"; then printf 'sr\t\n'; fi
+  if cc_relay_result_after_ref "$ledger" "$run_dir"; then printf 'sr\t\n'; fi
+  now=$(date -u +%s)
+  grace=$(cc_reset_grace)
+  for v in $(cc_relay_field "$run_dir" reset | tr ',' ' '); do
+    [ "$v" != "-" ] || continue
+    k=${v%:*}; ep=${v##*:}
+    case "$ep" in ''|*[!0-9]*) continue ;; esac
+    [ -n "$k" ] && [ "$k" != "$v" ] || continue
+    if [ "$now" -ge $((ep + grace)) ]; then
+      printf 'rl:%s\t%s\n' "$k" "$((ep + grace))"
+    fi
+    at=$(cc_relay_cut_cleared_at "$ledger" "$k")
+    [ -z "$at" ] || printf 'lc:%s\t%s\n' "$k" "$at"
+  done
   for k in $(cc_relay_field "$run_dir" stages | tr ',' ' '); do
     [ "$k" != "-" ] || continue
     if ! cc_stage_is_live "$run_dir" "$k" && ! cc_supervisor_is_live "$run_dir" "$k"; then
@@ -558,6 +635,29 @@ cc_iso_to_epoch() {
   printf '%s' $(( days * 86400 + hh * 3600 + mm * 60 + ss ))
 }
 
+cc_epoch_to_iso() {
+  # Epoch seconds → `YYYY-MM-DDTHH:MM:SSZ`, or empty when it is not a
+  # non-negative integer. The inverse of `cc_iso_to_epoch`, in the shell for the
+  # same reason: `date -r` is BSD, `date -d @` is GNU, and the portability lint
+  # denies both.
+  local e="${1:-}" days secs z era doe yoe y doy mp d m
+  case "$e" in ''|*[!0-9]*) return 0 ;; esac
+  e=$((10#$e))
+  days=$((e / 86400)); secs=$((e % 86400))
+  z=$((days + 719468))
+  era=$((z / 146097))
+  doe=$((z - era * 146097))
+  yoe=$(( (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 ))
+  y=$((yoe + era * 400))
+  doy=$((doe - (365 * yoe + yoe / 4 - yoe / 100)))
+  mp=$(( (5 * doy + 2) / 153 ))
+  d=$((doy - (153 * mp + 2) / 5 + 1))
+  if [ "$mp" -lt 10 ]; then m=$((mp + 3)); else m=$((mp - 9)); fi
+  if [ "$m" -le 2 ]; then y=$((y + 1)); fi
+  printf '%04d-%02d-%02dT%02d:%02d:%02dZ' "$y" "$m" "$d" \
+    $((secs / 3600)) $((secs % 3600 / 60)) $((secs % 60))
+}
+
 cc_pid_exists() {
   # cc_pid_exists <pid> — succeeds when some process holds that pid, and says
   # nothing about WHICH process that is.
@@ -649,6 +749,7 @@ platform_supported() { [ "${ORCH_HOST_OS:-${CC_CMDS_ORCH_HOST_OS:-$(uname -s)}}"
 # one only the darwin leg can answer.
 boot_source() { platform_supported && printf 'kern.boottime' || printf ''; }
 wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
+sleep_source() { platform_supported && printf 'kern.sleeptime' || printf ''; }
 
 # Sleep discriminator. Closing the lid leaves a stage alive with a stalled
 # transcript, which the resume table would otherwise read as the limit-exhaustion
@@ -658,12 +759,27 @@ sysctl_sec() {
   # No key selected (non-darwin) means no reading, not a reading of zero. The
   # pipeline is guarded so a missing key cannot abort a caller running under
   # `set -e`.
+  #
+  # THE TEST HOOK OVERRIDES ALL THREE KERNEL VALUES AT ONE SEAM.
+  # `CC_SYSCTL_TEST_VALUES` holds `<key>=<epoch>` pairs joined by `,` —
+  # `kern.boottime=…,kern.sleeptime=…,kern.waketime=…` — and a key it names is
+  # answered from there instead of the kernel, so the boot marker of a
+  # boot-time re-entry and the measured fields of a re-attachment pass through
+  # the same reading the tests set. A key it does not name is still read live.
   [ -n "$1" ] || return 0
+  local t
+  case ",${CC_SYSCTL_TEST_VALUES:-}," in
+    *",$1="*)
+      t=",${CC_SYSCTL_TEST_VALUES},"; t=${t#*",$1="}; t=${t%%,*}
+      case "$t" in ''|*[!0-9]*) return 0 ;; esac
+      printf '%s\n' "$t"; return 0 ;;
+  esac
   { sysctl -n "$1" 2>/dev/null || true; } \
     | awk -F'[ ,]+' '{for(i=1;i<=NF;i++) if($i=="sec"){print $(i+2); exit}}'
 }
 boot_epoch() { sysctl_sec "$(boot_source)"; }
 wake_epoch() { sysctl_sec "$(wake_source)"; }
+sleep_epoch() { sysctl_sec "$(sleep_source)"; }
 
 machine_slept_since() {
   local since="$1" w

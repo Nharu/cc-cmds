@@ -2840,6 +2840,38 @@ awk -F'\t' -v t="$(( $(date -u +%s) - 121 ))" 'BEGIN { OFS = "\t" } { $3 = t; pr
 run >/dev/null
 check "릴레이: 첫 관측이 121초 전이면 둘째 --once 가 기록한다" "$(sil_fired)" "1"
 
+# 리셋 깨움 — relay.live 의 reset= 줄은 rl:<key> 를 epoch+G 전에는 내지 않고 뒤에는
+# 내며, 그 키는 제 시계(epoch+G)를 싣는다. 그래서 나이는 watch.relay-seen 이 아니라
+# 그 시계로 매겨진다: 처음 본 패스에서도 오래 선 키는 늦은 것이다.
+sil_relay 0 - -
+printf 'reset=RJ1:%s\n' "$(( $(date -u +%s) + 30 ))" >> "$RD/relay.live"
+check "릴레이: 리셋+G 전에는 rl 깨움 키가 서지 않는다" \
+  "$( { cc_relay_wake_keys "$RD" "$LG" | grep -c '^rl:' || true; } | tr -d ' ')" "0"
+sil_relay 0 - -
+sil_rl=$(( $(date -u +%s) - 61 ))
+printf 'reset=RJ1:%s\n' "$sil_rl" >> "$RD/relay.live"
+check "릴레이: 리셋+G 가 지나면 rl 키가 그 합을 시계로 선다" \
+  "$(cc_relay_wake_keys "$RD" "$LG" | grep '^rl:')" "$(printf 'rl:RJ1\t%s' "$((sil_rl + 60))")"
+sil_measure 301
+check "릴레이: 막 선 rl 키 옆에서는 기록하지 않고 relay-seen 에 그 키를 남기지 않는다" \
+  "$(sil_fired):$( { cat "$RD/watch.relay-seen" 2>/dev/null | grep -c 'rl:' || true; } | tr -d ' ')" "0:0"
+sil_relay 0 - -
+printf 'reset=RJ1:%s\n' "$(( $(date -u +%s) - 60 - 200 ))" >> "$RD/relay.live"
+sil_measure 301
+check "릴레이: 200초 전에 선 rl 키는 첫 패스에서도 그 시계로 늦어 기록한다" "$(sil_fired)" "1"
+
+# 한도 해제 — 끊긴 행보다 뒤의 `한도 해제` 행만 lc:<key> 를 그 `기록 시각` 으로 낸다.
+sil_relay 0 - -
+printf 'reset=RJ2:%s\n' "$(( $(date -u +%s) + 900 ))" >> "$RD/relay.live"
+printf -- '- `한도 해제` | 근거=앞선 해제 | 레인=~/.claude | 기록 시각=2020-01-01T00:00:00Z\n' >> "$LG"
+printf -- '- `stage-result` | 세그먼트=RJ2 | 스테이지=RJ2 | 종단 부류=한도 종료\n' >> "$LG"
+check "릴레이: 끊긴 행보다 앞의 한도 해제 행은 lc 키를 내지 않는다" \
+  "$( { cc_relay_wake_keys "$RD" "$LG" | grep -c '^lc:' || true; } | tr -d ' ')" "0"
+sil_lc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf -- '- `한도 해제` | 근거=좌석 | 레인=~/.claude | 기록 시각=%s\n' "$sil_lc" >> "$LG"
+check "릴레이: 끊긴 행보다 뒤의 한도 해제 행이 lc 키를 그 기록 시각으로 낸다" \
+  "$(cc_relay_wake_keys "$RD" "$LG" | grep '^lc:')" "$(printf 'lc:RJ2\t%s' "$(cc_iso_to_epoch "$sil_lc")")"
+
 # 걸린 릴레이는 스테이지 종료 뒤 갈래가 잡는다 — 마지막 행이 stage-result, 스테이지 pid
 # 없음, 릴레이 표지는 낡았다(pid 죽음).
 sil_case 121
