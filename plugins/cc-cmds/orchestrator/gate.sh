@@ -291,8 +291,9 @@ export CC_ORCH_SOURCE_ONLY
 #
 # THE NAME SURVIVES THOUGH THE TEST MOVED. Eight firing sites call it, and
 # leaving the alias in place meant the fix touched none of them; the eighth, the
-# shift's return in `gate_launch_shift`, was added later and still reaches the
-# one predicate its siblings already use.
+# ended banner in `gate_shift_return_banner` — called by a shift's return and by
+# a relay's hand-back of a run that closed while it waited — was added later and
+# still reaches the one predicate its siblings already use.
 # ---------------------------------------------------------------------------
 gate_may_raise_banner() {
   cc_caller_is_router
@@ -34023,7 +34024,6 @@ gate_launch_shift() {
   # is gone now, so the settlement is over and the seat has its turn back. The
   # sentence is read from `done`'s first line, so a boundary or an invalidation
   # inside the shift is announced as what it was. Without `done` nothing is said.
-  # SHIFT-RETURN FIRING SITE — the ended banner of a settled seat run.
   gate_shift_return_banner
   return "$rc"
 }
@@ -34032,6 +34032,9 @@ gate_shift_return_banner() {
   # The ended banner of a settled seat run, raised where the seat gets its turn
   # back: a shift's return, and a relay's hand-back of a run that closed while it
   # waited — that return launched nothing, so it never passes the line above.
+  # The anchor sits here, beside the emitter, and not at either caller: the
+  # firing table reads a few lines past it, and a caller holds only the call.
+  # SHIFT-RETURN FIRING SITE — the ended banner of a settled seat run.
   if gate_may_raise_banner && cc_run_end_settled "$RUN_DIR" && cc_notify_claim_ended; then
     cc_notify_fire ended "$(cc_notify_ended_text "$RUN_DIR")" || true
     cc_notify_mark_ended_fired

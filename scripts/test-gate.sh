@@ -19877,7 +19877,10 @@ check "F4 — 충족 종료의 done 표시가 발사한다" \
 # The shift's return has no literal of its own to anchor on — it reads its
 # sentence out of `done` — so it carries one comment line that occurs nowhere
 # else in the file, directly above its `if`. Without this row it is the one
-# `ended` site the source axis cannot see.
+# `ended` site the source axis cannot see. That `if` lives in
+# `gate_shift_return_banner`, which the relay's hand-back of a closed run calls
+# too, so the anchor marks the helper and not the call in `gate_launch_shift`: a
+# window below the call holds only the call and reads `silent`.
 check "F4 — 교대 복귀 자리가 발사한다" \
   "$(fires_at 'SHIFT-RETURN FIRING SITE' 3)" "fires"
 check "F4 — 교대 복귀 자리의 앵커가 파일에서 유일하다" \
