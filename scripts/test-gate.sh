@@ -138,6 +138,13 @@ unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH
 # does, a test says so rather than the suite vanishing mid-run.
 CC_GATE_PIN_DISABLE=1
 export CC_GATE_PIN_DISABLE
+# THE FETCH AND FAST-FORWARD BEFORE A PIN ARE OFF TOO, separately: a pin taken
+# with them on would fetch the checkout's real `origin` and could pin the remote
+# tip instead of the tree under test. Section 57 lifts only the pin seam above
+# and keeps this one; the one place that lifts this seam is the helper of
+# section 57p, whose sources are clones of a bare remote it makes itself.
+CC_GATE_PIN_SYNC_DISABLE=1
+export CC_GATE_PIN_SYNC_DISABLE
 # AUTO-RESOLUTION IS OFF FOR THIS WHOLE PROCESS. Most assertions here pin the
 # approval lifecycle a person drives — issue, wait, close — and that lifecycle
 # is still what the gate does with the switch off. The auto-resolving path is
@@ -31805,6 +31812,225 @@ check "57V: 스킬의 재킥오프가 한국어 문면도 옛 사본 신호로 �
   "$(grep -cF '`gate: 알 수 없는 인자: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/references/rekickoff.md" || true)" "1"
 check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 않았다" \
   "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
+
+# ---------------------------------------------------------------------------
+# 57p. 고정 전 fetch 와 빨리감기 — 원천이 원격보다 뒤처지면 앞당기거나 원격 끝을 고정한다
+# --- section: 57p | group: base | covers: pin | anchors: 57p: 뒤처진 깨끗한 클론은 ff 뒤 원격 끝 하위 트리를 고정한다, 57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다, 57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다, 57p: 봉합이 서면 fetch 없이 클론 자신의 HEAD 를 고정한다 ---
+#
+# 원천은 저장소 체크아웃이 아니라 이 절이 만든 bare 원격의 클론들이다. 실제
+# origin 을 fetch 하는 고정은 이 절 밖에서 일어나면 안 되므로, 프리앰블의 동기화
+# 봉합 `CC_GATE_PIN_SYNC_DISABLE=1` 을 벗기는 곳은 아래 헬퍼 `p57p_take` 하나다.
+# 게이트 런 픽스처를 쓰지 않고 pin.sh 를 소싱해 `pin_take` 를 직접 구동하므로
+# `--sections 57p` 로 홀로 돌 수 있다.
+#
+# 원격의 역사: C1(첫 플러그인 트리) → C2(플러그인 하위 트리를 바꿈) → C3(빈 커밋).
+# 대부분의 클론은 C1 에 서 있고, 빈 커밋만 앞선 경우를 재는 클론 하나는 C2 에 선다.
+# ---------------------------------------------------------------------------
+P57P=$(mktemp -d "$WORK/pin57p.XXXXXX")
+P57P_SLEEP=4517
+p57p_g() {  # p57p_g <dir> <git 인자…> — 사용자 설정의 서명·훅에 기대지 않는 git
+  local d="$1"; shift
+  ( cd "$d" && GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@example.invalid \
+      GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@example.invalid \
+      git -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@" )
+}
+p57p_take() {  # p57p_take <run-dir> <src> [<targets>] — 동기화 봉합을 벗기는 유일한 자리
+  ( unset CC_GATE_PIN_SYNC_DISABLE
+    if [ -n "${P57P_SSH:-}" ]; then
+      GIT_SSH_COMMAND="$P57P_SSH"; GIT_SSH_VARIANT=ssh
+      export GIT_SSH_COMMAND GIT_SSH_VARIANT
+    fi
+    . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"
+    pin_take "$@" ) >/dev/null 2>&1
+}
+p57p_seam_take() {  # p57p_seam_take <run-dir> <src> — 봉합을 세운 채 고정한다
+  ( CC_GATE_PIN_SYNC_DISABLE=1; export CC_GATE_PIN_SYNC_DISABLE
+    . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"
+    pin_take "$@" ) >/dev/null 2>&1
+}
+p57p_pin() {  # p57p_pin <run-dir> <키>
+  awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1/plugin-pin" 2>/dev/null
+}
+p57p_state() {  # p57p_state <클론> — 체크아웃의 상태·HEAD·원격 추적 참조
+  printf '%s|%s|%s' \
+    "$(p57p_g "$1" --no-optional-locks status --porcelain 2>/dev/null)" \
+    "$(p57p_g "$1" rev-parse HEAD 2>/dev/null)" \
+    "$(p57p_g "$1" rev-parse --verify --quiet refs/remotes/origin/master 2>/dev/null)"
+}
+p57p_head() { p57p_g "$1" rev-parse HEAD 2>/dev/null; }
+p57p_rtree() {  # p57p_rtree <클론> — 원격 끝의 플러그인 하위 트리
+  p57p_g "$1" rev-parse refs/remotes/origin/master:plugins/cc-cmds 2>/dev/null
+}
+
+# 원격과 작성 클론. 작성 클론이 원격을 앞당긴다.
+P57P_REMOTE="$P57P/remote.git"
+git init -q --bare "$P57P_REMOTE" >/dev/null 2>&1
+p57p_g "$P57P_REMOTE" symbolic-ref HEAD refs/heads/master
+P57P_AUTH="$P57P/author"
+mkdir -p "$P57P_AUTH/plugins/cc-cmds/orchestrator" "$P57P_AUTH/plugins/cc-cmds/.claude-plugin"
+printf 'gate one\n' > "$P57P_AUTH/plugins/cc-cmds/orchestrator/gate.sh"
+printf '{ "version": "1.0.0" }\n' > "$P57P_AUTH/plugins/cc-cmds/.claude-plugin/plugin.json"
+printf 'top\n' > "$P57P_AUTH/README.md"
+{ p57p_g "$P57P_AUTH" init -q . \
+  && p57p_g "$P57P_AUTH" symbolic-ref HEAD refs/heads/master \
+  && p57p_g "$P57P_AUTH" add -A && p57p_g "$P57P_AUTH" commit -qm C1 \
+  && p57p_g "$P57P_AUTH" remote add origin "$P57P_REMOTE" \
+  && p57p_g "$P57P_AUTH" push -q origin master master:rel; } >/dev/null 2>&1
+P57P_C1=$(p57p_head "$P57P_AUTH")
+
+p57p_clone() {  # p57p_clone <이름> — 지금의 원격 끝에 선 클론
+  git clone -q "$P57P_REMOTE" "$P57P/$1" >/dev/null 2>&1
+  printf '%s' "$P57P/$1"
+}
+P57P_BEHIND=$(p57p_clone behind)
+P57P_DIRTY=$(p57p_clone dirty)
+printf 'mine\n' > "$P57P_DIRTY/plugins/cc-cmds/orchestrator/local.txt"
+P57P_OVER=$(p57p_clone overlap)
+printf 'my edit\n' >> "$P57P_OVER/plugins/cc-cmds/orchestrator/gate.sh"
+P57P_DIV=$(p57p_clone diverged)
+printf 'local\n' >> "$P57P_DIV/README.md"
+p57p_g "$P57P_DIV" commit -qam local >/dev/null 2>&1
+P57P_FEATC=$(p57p_clone featbase)
+P57P_FEAT="$P57P/feat-wt"
+p57p_g "$P57P_FEATC" worktree add -q -b feat "$P57P_FEAT" >/dev/null 2>&1
+P57P_LOCK=$(p57p_clone locked)
+P57P_NOGIT="$P57P/nogit"
+mkdir -p "$P57P_NOGIT"
+cp -R "$P57P_BEHIND/plugins" "$P57P_NOGIT/"
+P57P_UNREACH=$(p57p_clone unreachable)
+p57p_g "$P57P_UNREACH" remote set-url origin "$P57P/does-not-exist.git"
+P57P_HANG=$(p57p_clone hanging)
+p57p_g "$P57P_HANG" remote set-url origin "ssh://hang.example.invalid/x.git"
+P57P_SEAM=$(p57p_clone seam)
+P57P_TGT=$(p57p_clone target)
+P57P_NOHEAD=$(p57p_clone nohead)
+p57p_g "$P57P_NOHEAD" remote set-head origin -d >/dev/null 2>&1
+
+# C2 — 플러그인 하위 트리를 바꾼다. 그 뒤에 C2 에 선 클론 하나를 뜨고 빈 커밋 C3 을 올린다.
+printf 'gate two\n' > "$P57P_AUTH/plugins/cc-cmds/orchestrator/gate.sh"
+printf 'new\n' > "$P57P_AUTH/plugins/cc-cmds/orchestrator/added.sh"
+{ p57p_g "$P57P_AUTH" add -A && p57p_g "$P57P_AUTH" commit -qm C2 \
+  && p57p_g "$P57P_AUTH" push -q origin master; } >/dev/null 2>&1
+P57P_EMPTY=$(p57p_clone emptyahead)
+{ p57p_g "$P57P_AUTH" commit -q --allow-empty -m C3 \
+  && p57p_g "$P57P_AUTH" push -q origin master; } >/dev/null 2>&1
+P57P_C3=$(p57p_head "$P57P_AUTH")
+check "57p: 픽스처 — 원격 끝이 C3 이고 C1 과 다르다 (아래 단언이 공허하지 않다)" \
+  "$( [ -n "$P57P_C3" ] && [ "$P57P_C3" != "$P57P_C1" ] && [ "$(p57p_head "$P57P_BEHIND")" = "$P57P_C1" ] \
+      && printf yes || printf no )" "yes"
+
+# (1) 뒤처진 깨끗한 클론 → ff, 원격 끝 하위 트리 ----------------------------------
+p57p_take "$P57P/rd-behind" "$P57P_BEHIND/plugins/cc-cmds"
+check "57p: 뒤처진 깨끗한 클론은 ff 뒤 원격 끝 하위 트리를 고정한다" \
+  "$(p57p_pin "$P57P/rd-behind" origin-sync)/$(p57p_pin "$P57P/rd-behind" method)/$(p57p_pin "$P57P/rd-behind" tree)" \
+  "ff/archive/$(p57p_rtree "$P57P_BEHIND")"
+check "57p: ff 뒤 HEAD 가 원격 끝이고 commit 이 그것이다" \
+  "$(p57p_head "$P57P_BEHIND")/$(p57p_pin "$P57P/rd-behind" commit)" "$P57P_C3/$P57P_C3"
+check "57p: ff 갈래의 나머지 키" \
+  "$(p57p_pin "$P57P/rd-behind" dirty)|$(p57p_pin "$P57P/rd-behind" commit-on-origin)|$(p57p_pin "$P57P/rd-behind" base-branch)|$(p57p_pin "$P57P/rd-behind" origin-commit)|$(p57p_pin "$P57P/rd-behind" ff-refused)|$(p57p_pin "$P57P/rd-behind" subtree-differs)" \
+  "아니오|예|master|$P57P_C3|-|예"
+check "57p: ff 갈래의 사본이 원격 끝의 바이트다" \
+  "$(cat "$P57P/rd-behind/plugin/cc-cmds/orchestrator/gate.sh" 2>/dev/null)" "gate two"
+
+# (2) 겹치지 않는 더러운 변경 → ff 뒤 dirty=예 ---------------------------------------
+p57p_dirty_before=$(p57p_g "$P57P_DIRTY" --no-optional-locks status --porcelain)
+p57p_take "$P57P/rd-dirty" "$P57P_DIRTY/plugins/cc-cmds"
+check "57p: 겹치지 않는 더러운 변경은 ff 뒤 copy 와 dirty=예 로 고정된다" \
+  "$(p57p_pin "$P57P/rd-dirty" origin-sync)/$(p57p_pin "$P57P/rd-dirty" method)/$(p57p_pin "$P57P/rd-dirty" dirty)/$(p57p_head "$P57P_DIRTY")" \
+  "ff/copy/예/$P57P_C3"
+check "57p: 그 로컬 변경은 그대로 남는다" \
+  "$(p57p_g "$P57P_DIRTY" --no-optional-locks status --porcelain)" "$p57p_dirty_before"
+
+# (3)–(6) 빨리감지 못하는 원천 → 체크아웃 불변, 원격 끝 고정 ------------------------
+p57p_remote_case() {  # p57p_remote_case <이름> <클론> <원천> <기대 ff-refused>
+  local name="$1" clone="$2" src="$3" want="$4" rd before after
+  rd="$P57P/rd-$name"
+  before=$(p57p_state "$clone")
+  p57p_take "$rd" "$src"
+  after=$(p57p_state "$clone")
+  check "57p: $name — 체크아웃의 상태와 HEAD 가 바이트 그대로다" \
+    "$(printf '%s' "$after" | cut -d'|' -f1,2)" "$(printf '%s' "$before" | cut -d'|' -f1,2)"
+  check "57p: $name — 원격 추적 참조만 원격 끝으로 왔다" \
+    "$(printf '%s' "$after" | cut -d'|' -f3)" "$P57P_C3"
+  check "57p: $name — 원격 끝을 archive-remote 로 고정한다" \
+    "$(p57p_pin "$rd" origin-sync)|$(p57p_pin "$rd" ff-refused)|$(p57p_pin "$rd" method)|$(p57p_pin "$rd" commit)|$(p57p_pin "$rd" tree)|$(p57p_pin "$rd" dirty)|$(p57p_pin "$rd" commit-on-origin)" \
+    "원격 끝|$want|archive-remote|$P57P_C3|$(p57p_rtree "$clone")|아니오|예"
+  check "57p: $name — 사본이 원격 끝의 바이트다" \
+    "$(cat "$rd/plugin/cc-cmds/orchestrator/gate.sh" 2>/dev/null)" "gate two"
+}
+p57p_remote_case overlap "$P57P_OVER" "$P57P_OVER/plugins/cc-cmds" "충돌 변경"
+check "57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다" \
+  "$(p57p_pin "$P57P/rd-overlap" origin-sync)/$(tail -1 "$P57P_OVER/plugins/cc-cmds/orchestrator/gate.sh")" "원격 끝/my edit"
+p57p_remote_case diverged "$P57P_DIV" "$P57P_DIV/plugins/cc-cmds" "로컬 커밋"
+p57p_remote_case feature "$P57P_FEAT" "$P57P_FEAT/plugins/cc-cmds" "다른 브랜치"
+check "57p: feature — 기능 브랜치 워크트리는 feat 에 그대로 선다" \
+  "$(p57p_g "$P57P_FEAT" symbolic-ref --short HEAD)" "feat"
+# 잠금 경합: fetch 는 ref 잠금만 쓰므로 지나가고, index 를 잡는 병합만 실패한다.
+P57P_LOCKF=$(p57p_g "$P57P_LOCK" rev-parse --absolute-git-dir)/index.lock
+: > "$P57P_LOCKF"
+p57p_remote_case locked "$P57P_LOCK" "$P57P_LOCK/plugins/cc-cmds" "ff 실패"
+check "57p: locked — 고정이 섰다" \
+  "$( [ -f "$P57P/rd-locked/plugin-pin" ] && [ -f "$P57P/rd-locked/plugin/cc-cmds/orchestrator/gate.sh" ] && printf yes || printf no )" "yes"
+rm -f "$P57P_LOCKF"
+
+# (7) .git 없는 원천 → 비git, 지금처럼 copy ----------------------------------------
+p57p_take "$P57P/rd-nogit" "$P57P_NOGIT/plugins/cc-cmds"
+check "57p: .git 없는 원천은 비git 이고 copy·(미상) 으로 고정된다" \
+  "$(p57p_pin "$P57P/rd-nogit" origin-sync)/$(p57p_pin "$P57P/rd-nogit" method)/$(p57p_pin "$P57P/rd-nogit" commit)/$(p57p_pin "$P57P/rd-nogit" base-branch)" \
+  "비git/copy/(미상)/-"
+
+# (8) 닿지 않는 원격 → fetch 실패, 로컬 HEAD 고정 --------------------------------
+p57p_unreach_before=$(p57p_state "$P57P_UNREACH")
+p57p_take "$P57P/rd-unreach" "$P57P_UNREACH/plugins/cc-cmds"
+check "57p: 닿지 않는 원격은 fetch 실패 로 적고 로컬 HEAD 를 고정한다" \
+  "$(p57p_pin "$P57P/rd-unreach" origin-sync)/$(p57p_pin "$P57P/rd-unreach" method)/$(p57p_pin "$P57P/rd-unreach" commit)/$(p57p_pin "$P57P/rd-unreach" ff-refused)" \
+  "fetch 실패/archive/$P57P_C1/-"
+check "57p: 그 클론은 바이트 그대로다" "$(p57p_state "$P57P_UNREACH")" "$p57p_unreach_before"
+
+# (9) 매달리는 원격 → 20초 감시가 끊는다 -------------------------------------------
+# ssh 전송을 오래 자는 명령으로 갈아 끼워 네트워크 없이 매달린다. `#` 이 git 이 덧붙이는
+# 인자를 주석으로 만든다.
+p57p_t0=$(date +%s)
+P57P_SSH="sleep $P57P_SLEEP #" p57p_take "$P57P/rd-hang" "$P57P_HANG/plugins/cc-cmds"
+p57p_el=$(( $(date +%s) - p57p_t0 ))
+check "57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다" \
+  "$(p57p_pin "$P57P/rd-hang" origin-sync)/$( [ "$p57p_el" -ge 15 ] && [ "$p57p_el" -le 35 ] && printf 상한안 || printf "경과${p57p_el}s" )" \
+  "fetch 실패/상한안"
+check "57p: 그때도 런은 로컬 HEAD 로 고정된다" \
+  "$(p57p_pin "$P57P/rd-hang" method)/$(p57p_pin "$P57P/rd-hang" commit)" "archive/$P57P_C1"
+pkill -f "sleep $P57P_SLEEP" 2>/dev/null || true
+
+# (10) 빈 커밋만 앞선 원격 → 하위 트리는 같다 --------------------------------------
+p57p_take "$P57P/rd-empty" "$P57P_EMPTY/plugins/cc-cmds"
+check "57p: 빈 커밋만 앞선 원격은 subtree-differs=아니오 다" \
+  "$(p57p_pin "$P57P/rd-empty" origin-sync)/$(p57p_pin "$P57P/rd-empty" subtree-differs)" "ff/아니오"
+
+# (11) 베이스 브랜치 — 선언된 대상이면 그 베이스, 아니면 origin/HEAD ------------------
+P57P_TGT_CG="$(cd "$P57P_TGT" && pwd -P)/.git"
+p57p_take "$P57P/rd-tgt" "$P57P_TGT/plugins/cc-cmds" "$(printf '%s\trel' "$P57P_TGT_CG")"
+check "57p: 공통 git 디렉터리가 맞는 대상 줄의 베이스 브랜치를 쓴다" \
+  "$(p57p_pin "$P57P/rd-tgt" base-branch)/$(p57p_pin "$P57P/rd-tgt" ff-refused)/$(p57p_head "$P57P_TGT")" \
+  "rel/다른 브랜치/$P57P_C1"
+p57p_take "$P57P/rd-tgt2" "$P57P_TGT/plugins/cc-cmds" "$(printf '%s\trel' "$P57P/elsewhere/.git")"
+check "57p: 맞지 않는 대상 줄은 무시하고 origin/HEAD 의 브랜치를 쓴다" \
+  "$(p57p_pin "$P57P/rd-tgt2" base-branch)/$(p57p_pin "$P57P/rd-tgt2" origin-sync)" "master/ff"
+p57p_nohead_before=$(p57p_state "$P57P_NOHEAD")
+p57p_take "$P57P/rd-nohead" "$P57P_NOHEAD/plugins/cc-cmds"
+check "57p: 대상 줄도 origin/HEAD 도 없으면 베이스 미상 으로 지금처럼 고정한다" \
+  "$(p57p_pin "$P57P/rd-nohead" origin-sync)/$(p57p_pin "$P57P/rd-nohead" method)/$(p57p_pin "$P57P/rd-nohead" commit)" \
+  "베이스 미상/archive/$P57P_C1"
+check "57p: 그때 fetch 도 하지 않았다" "$(p57p_state "$P57P_NOHEAD")" "$p57p_nohead_before"
+
+# (12) 봉합 → fetch 없이 클론 자신의 HEAD -------------------------------------------
+p57p_seam_before=$(p57p_state "$P57P_SEAM")
+p57p_seam_take "$P57P/rd-seam" "$P57P_SEAM/plugins/cc-cmds"
+check "57p: 봉합이 서면 fetch 없이 클론 자신의 HEAD 를 고정한다" \
+  "$(p57p_pin "$P57P/rd-seam" origin-sync)/$(p57p_pin "$P57P/rd-seam" tree)/$(p57p_pin "$P57P/rd-seam" commit)" \
+  "시험 봉합/$(p57p_g "$P57P_SEAM" rev-parse HEAD:plugins/cc-cmds)/$P57P_C1"
+check "57p: 봉합 아래에서 HEAD 와 원격 추적 참조가 그대로다" "$(p57p_state "$P57P_SEAM")" "$p57p_seam_before"
+check "57p: 봉합 아래에서는 동기화 키가 비어 있다" \
+  "$(p57p_pin "$P57P/rd-seam" base-branch)|$(p57p_pin "$P57P/rd-seam" origin-commit)|$(p57p_pin "$P57P/rd-seam" ff-refused)|$(p57p_pin "$P57P/rd-seam" subtree-differs)" \
+  "-|-|-|-"
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다

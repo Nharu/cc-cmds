@@ -15958,7 +15958,7 @@ gate_main() {
   # caller-supplied bytes read before the header/body cross-check, so the one
   # helper that builds the path refuses an id carrying a path component and the
   # call dies rather than continuing with an unchecked directory.
-  local hop_rid hop_rd
+  local hop_rid hop_rd hop_tg hop_al
   hop_rid=$(manifest_hdr_field 'run-id' 2>/dev/null) || hop_rid=""
   if [ -n "$hop_rid" ]; then
     hop_rd=$(rundir_of_run_id "$hop_rid") \
@@ -15982,7 +15982,13 @@ gate_main() {
   # `CC_GATE_PIN_DISABLE` is a TEST SEAM AND ONLY THAT: it suppresses pinning a
   # new run and never makes hop (A) ignore an existing pin. A stage cannot set it
   # — the stage hook refuses a leading assignment in front of the gate path — so
-  # it cannot be used to escape a pinned run's copy.
+  # it cannot be used to escape a pinned run's copy. Its sibling seam
+  # `CC_GATE_PIN_SYNC_DISABLE` is read by `pin_sync` in pin.sh and keeps the pin
+  # on while turning off only the fetch and fast-forward before it.
+  #
+  # THE TARGET LIST IS HANDED TO THE PIN so `pin_sync` can tell a source that is
+  # a declared target — and take that target's base branch — from one that is
+  # not: one line per alias, its common git directory and its base branch.
   #
   # THE HOP IS UNCONDITIONAL; ONLY THE PINNING IS CONDITIONAL. It used to sit
   # INSIDE the pair of absences, so a second opener that arrived after the pin was
@@ -15998,7 +16004,11 @@ gate_main() {
     hop_rd=$(rundir_of_run_id "$RUN_ID") \
       || die "the run id carries a path component: $RUN_ID"
     if [ ! -d "$hop_rd/settings" ] && [ ! -f "$hop_rd/plugin-pin" ]; then
-      pin_take "$hop_rd" "$(cd "$(dirname "$GATE_DIR")" && pwd -P)" \
+      hop_tg=""
+      for hop_al in $(target_aliases); do
+        hop_tg="$hop_tg$(printf '%s\t%s' "$(target_field "$hop_al" '공통 git 디렉터리')" "$(target_field "$hop_al" '베이스 브랜치')")"$'\n'
+      done
+      pin_take "$hop_rd" "$(cd "$(dirname "$GATE_DIR")" && pwd -P)" "$hop_tg" \
         || die "version pin failed — no copy could be obtained that a concurrent checkout stampede had not torn"
     fi
     gate_hop_or_die "$hop_rd"

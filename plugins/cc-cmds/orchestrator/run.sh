@@ -9094,6 +9094,9 @@ base_branch() {
 # Refresh the remote-tracking refs. This does NOT touch the working tree — it
 # reads the remote and moves `refs/remotes/origin/*` only — so it is compatible
 # with the decision never to fast-forward the tree a human is working in.
+# That decision has exactly one exception: right before a new run is pinned,
+# `pin_sync` in pin.sh fast-forwards the plugin's source checkout, `--ff-only`
+# and only when no local change is in the way.
 # The root is resolved into a variable rather than substituted into `cd`: an alias
 # the manifest does not declare makes `alias_root` fail and print nothing, and
 # `cd ""` is a successful no-op — so the fetch would have run in whatever directory
