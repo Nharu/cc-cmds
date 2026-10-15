@@ -958,6 +958,7 @@ gate_reach_derived_full() {
   # `사전 인가` row has to carry before the machine-global cell opens.
   local alias="$1"; shift
   local cmd="${1##*/}" a w remote paths='' _gw=''
+  local -a gpaths=()
   # Set when an `env` this act runs through assigns `DOCKER_CONFIG`, and kept
   # through the nested call the unwrap makes, so the docker arm below knows the
   # context store it would read is not the one docker will use.
@@ -988,10 +989,22 @@ gate_reach_derived_full() {
   esac
   case "$cmd" in
     git)
-      case "${2:-}" in
-        stash) case "${3:-}" in list|show) ;; *) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
+      # Read past git's global flags, so `git -C <dir> stash` is the stash it
+      # is. The location flags' values are paths the act works in, and the
+      # scan below reads them in both spellings — `--work-tree=<p>` hides the
+      # path inside one word.
+      gate_git_subcommand "${@:2}" >/dev/null
+      local i=0
+      while [ "$i" -lt "${#GATE_GIT_LOCFLAGS[@]}" ]; do
+        gpaths+=("${GATE_GIT_LOCFLAGS[$((i + 1))]}")
+        i=$((i + 2))
+      done
+      local -a sargs=()
+      [ "$GATE_GIT_SUBIDX" -gt 0 ] && sargs=("${@:$((GATE_GIT_SUBIDX + 2))}")
+      case "$GATE_GIT_SUB" in
+        stash) case "${sargs[0]:-}" in list|show) ;; *) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
         config)
-          for w in "$@"; do
+          for w in ${sargs[@]+"${sargs[@]}"}; do
             case "$w" in --global|--system) printf '기기전역\tcmd\n%s\n' "$w"; return 0 ;; esac
           done ;;
       esac ;;
@@ -1029,7 +1042,7 @@ gate_reach_derived_full() {
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
-  for a in "$@"; do
+  for a in "$@" ${gpaths[@]+"${gpaths[@]}"}; do
     case "$a" in
       "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*|/usr/local/*|/opt/homebrew/*)
         paths="$paths$a
@@ -1163,13 +1176,14 @@ gate_deploy_trigger_match() {
 }
 
 gate_collaboration_surface() {
-  # gate_collaboration_surface <derived-reach> <argv...> — 1 when this act is the
-  # collaboration surface the user authorized to proceed unattended: issues,
-  # comments, labels, projects, and a push that is not a deploy trigger.
+  # gate_collaboration_surface <alias> <derived-reach> <argv...> — 1 when this act
+  # is the collaboration surface the user authorized to proceed unattended:
+  # issues, comments, labels, projects, and a push that is not a deploy trigger.
   #
   # `gh run rerun`/`cancel` are NOT here. Re-running CI can start the very deploy
   # workflow the deploy-trigger cell exists to hold, so they take that cell.
-  local rd="$1"; shift
+  local alias="$1" rd="$2"; shift 2
+  local -a whole=("$@")
   local cmd="${1##*/}"; shift
   [ "$GATE_GRADE_SOURCE" = "표" ] || return 1
   case "$cmd" in
@@ -1238,8 +1252,17 @@ gate_collaboration_surface() {
           fi ;;
       esac ;;
     git)
-      case "${1:-}" in
-        push) [ "$rd" != "배포트리거" ] && return 0 ;;
+      # THE SUBCOMMAND IS READ PAST GIT'S GLOBAL FLAGS, and a push carrying any
+      # of them counts only when those flags still land it in this target:
+      # `git -C <dir>` and `--git-dir=`/`--work-tree=` used to fall through as
+      # no collaboration act, and a target-external spelling must not become
+      # one. Which remote it reaches is disposition step 7's to check.
+      gate_git_subcommand "$@" >/dev/null
+      case "$GATE_GIT_SUB" in
+        push)
+          [ "$rd" != "배포트리거" ] || return 1
+          [ "${#GATE_GIT_GLOBALS[@]}" -eq 0 ] && return 0
+          gate_git_argv_in_target "$alias" "${whole[@]}" && return 0 ;;
       esac ;;
     # The ClickUp ticket and dependency writers file tickets and relations,
     # which is the same surface as `gh issue` on the other tracker.
@@ -1336,30 +1359,69 @@ gate_push_remote_match() {
   # the target row names? Two working trees in this very tree carry an `origin`
   # that is NOT the manifest's slug, so a push naming a remote by name alone can
   # land in an undeclared repository while every other check passes.
+  #
+  # THE DESTINATION IS THE ONE GIT WILL USE, and anything this cannot resolve
+  # to a remote URL is a mismatch. Read past git's global flags, after the
+  # subcommand only: `--repo=<x>`/`--repo <x>` names a destination, the values
+  # of `-o`/`--push-option`/`--receive-pack`/`--exec` are skipped, and the
+  # first operand is a destination too — every one named must match. With no
+  # destination written, the remote is the current branch's push remote, asked
+  # of git with the act's own global flags. A name becomes a URL through
+  # `remote get-url --push` under the same flags. Every question runs in the
+  # act's directory with the environment the act inherits, so a `GIT_DIR` the
+  # act would carry answers here too. An unresolved name or URL, a local path
+  # (`/`, `./`, `../`, `file://`, or anything not shaped `…://…` or `…@…:…`)
+  # and a different slug are all mismatches: each of them used to read as a
+  # match, and a push spelled that way reached a repository nobody declared.
   local alias="$1"; shift
   local want; want=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || want=""
   [ -n "$want" ] || return 0
-  local a rname="" seen_push=0 url=""
-  for a in "$@"; do
-    case "$a" in
-      push) seen_push=1; continue ;;
-      -*) continue ;;
-    esac
-    [ "$seen_push" = "1" ] || continue
-    [ -n "$rname" ] || { rname="$a"; }
+  gate_git_subcommand "${@:2}" >/dev/null
+  [ "$GATE_GIT_SUB" = push ] || return 1
+  local -a glob=(${GATE_GIT_GLOBALS[@]+"${GATE_GIT_GLOBALS[@]}"}) dests=()
+  local a skip=0 want_repo=0 dd=0 pos=0 cwd="${GATE_ACT_CWD:-.}" br url d slug
+  for a in "${@:$((GATE_GIT_SUBIDX + 2))}"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    if [ "$want_repo" = 1 ]; then dests+=("$a"); want_repo=0; continue; fi
+    if [ "$dd" = 0 ]; then
+      case "$a" in
+        --) dd=1; continue ;;
+        --repo) want_repo=1; continue ;;
+        --repo=*) dests+=("${a#--repo=}"); continue ;;
+        -o|--push-option|--receive-pack|--exec) skip=1; continue ;;
+        -*) continue ;;
+      esac
+    fi
+    [ "$pos" = 0 ] || continue
+    pos=1; dests+=("$a")
   done
-  [ -n "$rname" ] || return 0
-  case "$rname" in
-    *://*|*@*:*) url="$rname" ;;
-    *) url=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git remote get-url --push "$rname" 2>/dev/null; } || true) ;;
-  esac
-  [ -n "$url" ] || return 0
-  local slug
-  slug=$(printf '%s' "$url" \
-    | sed -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#^www\.##' \
-          -e 's#^[^/:]*[:/]##' \
-    | tr '[:upper:]' '[:lower:]')
-  [ "$slug" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
+  [ "$want_repo" = 0 ] || return 1
+  if [ "${#dests[@]}" -eq 0 ]; then
+    br=$( { cd "$cwd" 2>/dev/null && git ${glob[@]+"${glob[@]}"} branch --show-current 2>/dev/null; } || true)
+    [ -n "$br" ] || return 1
+    d=$( { cd "$cwd" 2>/dev/null && git ${glob[@]+"${glob[@]}"} for-each-ref --format='%(push:remotename)' "refs/heads/$br" 2>/dev/null; } || true)
+    [ -n "$d" ] || return 1
+    dests=("$d")
+  fi
+  want=$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')
+  for d in "${dests[@]}"; do
+    case "$d" in
+      ''|/*|./*|../*|file://*) return 1 ;;
+      *://*|*@*:*) url="$d" ;;
+      *) url=$( { cd "$cwd" 2>/dev/null && git ${glob[@]+"${glob[@]}"} remote get-url --push -- "$d" 2>/dev/null; } || true) ;;
+    esac
+    case "$url" in
+      ''|/*|./*|../*|file://*) return 1 ;;
+      *://*|*@*:*) ;;
+      *) return 1 ;;
+    esac
+    slug=$(printf '%s' "$url" \
+      | sed -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#^www\.##' \
+            -e 's#^[^/:]*[:/]##' \
+      | tr '[:upper:]' '[:lower:]')
+    [ "$slug" = "$want" ] || return 1
+  done
+  return 0
 }
 
 gate_push_rung() {
@@ -1389,10 +1451,23 @@ gate_push_rung() {
   # EVERY REFSPEC IS READ, not only the last one: `git push origin U:<base>
   # x:other` lands U on the base, and reading the last refspec alone graded it
   # `push` and kept the review rule out of its way.
+  #
+  # The refspecs are read after the subcommand as git's global flags place it,
+  # and the current branch is asked with those same flags: `git -C <dir> push`
+  # pushes the branch `<dir>` is on, not the one the act's directory is on.
   local a seen_push=0 seen_remote=0 dst="" last=""
+  local -a glob=()
+  if [ "${1##*/}" = git ]; then
+    gate_git_subcommand "${@:2}" >/dev/null
+    if [ "$GATE_GIT_SUB" = push ]; then
+      glob=(${GATE_GIT_GLOBALS[@]+"${GATE_GIT_GLOBALS[@]}"})
+      set -- "${@:$((GATE_GIT_SUBIDX + 2))}"
+      seen_push=1
+    fi
+  fi
   for a in "$@"; do
     case "$a" in
-      push) seen_push=1; continue ;;
+      push) [ "$seen_push" = "1" ] || { seen_push=1; continue; } ;;
       -*) continue ;;
     esac
     [ "$seen_push" = "1" ] || continue
@@ -1411,7 +1486,7 @@ gate_push_rung() {
     # No refspec: the destination is whatever branch the act's worktree is on,
     # and a worktree that cannot answer takes the higher rung rather than the
     # convenient one.
-    dst=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    dst=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git ${glob[@]+"${glob[@]}"} branch --show-current 2>/dev/null; } || true)
     [ -n "$dst" ] || { printf '머지'; return 0; }
     [ "$dst" = "$base" ] && { printf '머지'; return 0; }
   fi
@@ -1458,10 +1533,11 @@ gate_push_source_unbound() {
   # runs (`rev-parse <src>^{commit}` in the act's worktree) and compared with
   # <head>. A bare name is its own source; a leading `+` is dropped; an empty
   # source deletes the branch and resolves to nothing. With no refspec the
-  # current branch is pushed, so its source is the act's HEAD. A `-C <dir>`
-  # before the subcommand is followed, since that is where git resolves the
-  # source; `--git-dir` and `--work-tree` are not, and an argv carrying either
-  # is reported whole.
+  # current branch is pushed, so its source is the act's HEAD. The location
+  # flags before the subcommand — `-C`, `--git-dir`, `--work-tree`, in either
+  # spelling — are carried into every question, since that is where git
+  # resolves the source. A global flag that cannot be followed (a `-c`, or
+  # anything `GATE_GIT_UNREAD` names) gets the argv reported whole.
   #
   # `--all`, `--mirror`, `--branches`, the empty refspec and a glob push the
   # LOCAL base ref, and the local base is not the reviewed HEAD whenever the
@@ -1475,40 +1551,35 @@ gate_push_source_unbound() {
   [ "${1##*/}" = git ] || return 0
   local base; base=$(gate_push_base_branch "$alias")
   [ -n "$base" ] || return 0
-  local a seen_push=0 seen_remote=0 n=0 src dst r0 sha cwd="${GATE_ACT_CWD:-.}" want_c=0
-  local -a specs=()
+  local a seen_remote=0 n=0 src dst r0 sha cwd="${GATE_ACT_CWD:-.}"
+  local -a specs=() loc=()
   shift
-  for a in "$@"; do
-    if [ "$seen_push" = "0" ]; then
-      if [ "$want_c" = "1" ]; then
-        case "$a" in /*) cwd="$a" ;; *) cwd="$cwd/$a" ;; esac
-        want_c=0
-        continue
-      fi
-      case "$a" in
-        push) seen_push=1 ;;
-        -C) want_c=1 ;;
-        -C?*) a="${a#-C}"; case "$a" in /*) cwd="$a" ;; *) cwd="$cwd/$a" ;; esac ;;
-        --git-dir|--git-dir=*|--work-tree|--work-tree=*) printf '%s' "$*"; return 0 ;;
-      esac
-      continue
-    fi
+  gate_git_subcommand "$@" >/dev/null
+  if [ "$GATE_GIT_SUB" != push ]; then
+    # A push behind a flag this reading cannot follow is still a push.
+    [ -z "$GATE_GIT_SUB" ] && case " $* " in *" push "*) printf '%s' "$*" ;; esac
+    return 0
+  fi
+  if [ -n "$GATE_GIT_UNREAD" ] || [ "$GATE_GIT_HAS_CONFIG" = 1 ]; then
+    printf '%s' "$*"; return 0
+  fi
+  loc=(${GATE_GIT_LOCFLAGS[@]+"${GATE_GIT_LOCFLAGS[@]}"})
+  for a in "${@:$((GATE_GIT_SUBIDX + 1))}"; do
     case "$a" in -*) continue ;; esac
     if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
     specs+=("$a")
   done
-  [ "$seen_push" = "1" ] || return 0
   local lbase=""
   case " $* " in
     *" --all "*|*" --mirror "*|*" --branches "*)
-      lbase=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
+      lbase=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
       if [ -z "$lbase" ] || [ "$lbase" != "$head" ]; then
         printf '%s' "$*"
       fi
       return 0 ;;
   esac
   if [ "${#specs[@]}" -eq 0 ]; then
-    dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    dst=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} branch --show-current 2>/dev/null; } || true)
     [ "$dst" = "$base" ] || return 0
     specs=('HEAD')
     dst="$base"
@@ -1519,7 +1590,7 @@ gate_push_source_unbound() {
     r0="${a#+}"
     case "$r0" in
       :|*'*'*)
-        lbase=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
+        lbase=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
         if [ -z "$lbase" ] || [ "$lbase" != "$head" ]; then
           printf '%s' "$a"
           return 0
@@ -1531,11 +1602,11 @@ gate_push_source_unbound() {
       *)   src="$r0"; dst="$r0" ;;
     esac
     if [ "$dst" = 'HEAD' ]; then
-      dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+      dst=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} branch --show-current 2>/dev/null; } || true)
     fi
     gate_push_dst_is_base "$dst" "$base" || continue
     sha=""
-    [ -z "$src" ] || sha=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "${src}^{commit}" 2>/dev/null; } || true)
+    [ -z "$src" ] || sha=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} rev-parse --verify --quiet "${src}^{commit}" 2>/dev/null; } || true)
     if [ -z "$sha" ] || [ "$sha" != "$head" ]; then
       printf '%s' "$a"
       return 0
@@ -1560,18 +1631,86 @@ gate_git_subcommand() {
   # gate_git_subcommand <git's args after argv0...> — the subcommand once git's
   # global options are skipped, the same skip `ladder_of_git` performs; nothing
   # when an unknown global option stands first.
+  #
+  # THE SAME CALL READS WHAT STANDS IN FRONT OF THE SUBCOMMAND. A caller that
+  # needs more than the name calls this directly, not inside `$(...)`, and
+  # reads these:
+  #   GATE_GIT_SUB         the subcommand (what stdout prints)
+  #   GATE_GIT_SUBIDX      its 1-based place among the args given; 0 if none
+  #   GATE_GIT_GLOBALS     the words ahead of it, verbatim
+  #   GATE_GIT_LOCFLAGS    only `-C`, `--git-dir` and `--work-tree`, in order,
+  #                        each folded to two words `<flag> <value>` whether
+  #                        written with `=` or with a space
+  #   GATE_GIT_HAS_CONFIG  1 when a `-c` stands there
+  #   GATE_GIT_LOCONLY     1 when every global is one of the three location
+  #                        flags — the only globals a rewrite to the bare
+  #                        `git <subcommand…>` may drop
+  #   GATE_GIT_UNREAD      empty, or the first of `exec-key` (a `-c` key whose
+  #                        value git runs), `exec-path`, `config-env` and
+  #                        `unknown-option`
+  # `--exec-path` and `--config-env` were skipped silently as value-taking
+  # flags, and they still are: they change where git finds its programs and
+  # what configuration it reads, which no spelling here can follow, so they
+  # surface in `GATE_GIT_UNREAD` and leave the subcommand as it was read.
+  # `-C<dir>` written as one word is an unknown option — git refuses it too.
+  GATE_GIT_SUB=""; GATE_GIT_SUBIDX=0; GATE_GIT_GLOBALS=(); GATE_GIT_LOCFLAGS=()
+  GATE_GIT_HAS_CONFIG=0; GATE_GIT_LOCONLY=1; GATE_GIT_UNREAD=""
+  local i=1
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
-        [ "$#" -ge 2 ] || return 0
-        shift 2 ;;
-      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*) shift ;;
-      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects) shift ;;
-      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) shift ;;
-      -*) return 0 ;;
-      *)  printf '%s' "$1"; return 0 ;;
+        GATE_GIT_GLOBALS+=("$1")
+        if [ "$#" -lt 2 ]; then
+          case "$1" in
+            --exec-path) gate_git_unread exec-path ;;
+            *) gate_git_unread unknown-option ;;
+          esac
+          return 0
+        fi
+        GATE_GIT_GLOBALS+=("$2")
+        gate_git_global_value "$1" "$2"
+        shift 2; i=$((i + 2)) ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*)
+        GATE_GIT_GLOBALS+=("$1")
+        gate_git_global_value "${1%%=*}" "${1#*=}"
+        shift; i=$((i + 1)) ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        GATE_GIT_GLOBALS+=("$1"); GATE_GIT_LOCONLY=0
+        shift; i=$((i + 1)) ;;
+      -*)
+        GATE_GIT_GLOBALS+=("$1"); GATE_GIT_LOCONLY=0
+        gate_git_unread unknown-option
+        return 0 ;;
+      *)
+        GATE_GIT_SUB="$1"; GATE_GIT_SUBIDX="$i"
+        printf '%s' "$1"; return 0 ;;
     esac
   done
+}
+
+gate_git_unread() {
+  # gate_git_unread <reason> — the first reason a global flag could not be
+  # followed is the one kept.
+  [ -n "$GATE_GIT_UNREAD" ] || GATE_GIT_UNREAD="$1"
+}
+
+gate_git_global_value() {
+  # gate_git_global_value <flag> <value> — `gate_git_subcommand`'s reading of
+  # one value-taking global flag.
+  case "$1" in
+    -C|--git-dir|--work-tree)
+      GATE_GIT_LOCFLAGS+=("$1" "$2") ;;
+    -c)
+      GATE_GIT_HAS_CONFIG=1; GATE_GIT_LOCONLY=0
+      gate_git_config_key_execs "${2%%=*}" && gate_git_unread exec-key ;;
+    --namespace)
+      GATE_GIT_LOCONLY=0 ;;
+    --exec-path)
+      GATE_GIT_LOCONLY=0; gate_git_unread exec-path ;;
+    --config-env)
+      GATE_GIT_LOCONLY=0; gate_git_unread config-env ;;
+  esac
+  return 0
 }
 
 gate_push_unwrap_of_argv0() {
@@ -2316,7 +2455,7 @@ gate_reach_disposition() {
   local C=0 lift=0 P=0 Pd=0 Pv=0 Sx='-' Sw='-' pkind='없음' probe='' _pf _ps _t
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="$GATE_MARK" GATE_MARK_TRIGGER="$GATE_MARK_TRIGGER" \
           GATE_DESTRUCTIVE="${GATE_DESTRUCTIVE:-0}" GATE_REACH_EFF="$Reff" \
-          GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$MANIFEST" \
+          GATE_ARGV="$(gate_preauth_argv "$alias" "$@")" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
   _pf=${probe%% 제안=*}; case "$probe" in *" 제안="*) _ps=${probe#* 제안=} ;; *) _ps='-' ;; esac
   [ -n "$_ps" ] || _ps='-'
@@ -2417,7 +2556,7 @@ gate_reach_disposition() {
       C=0 ;;
     *)
       C=0
-      gate_collaboration_surface "$_rd" "$@" && C=1 ;;
+      gate_collaboration_surface "$alias" "$_rd" "$@" && C=1 ;;
   esac
 
   # 5 — nothing below can be judged without knowing where the act lands.
@@ -2456,11 +2595,11 @@ gate_reach_disposition() {
     return 0
   fi
 
-  # 7 — a push whose remote is not the target's.
-  case "${1##*/}:${2:-}" in
-    git:push)
-      gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치\t-\t-'; return 0; } ;;
-  esac
+  # 7 — a push whose remote is not the target's. The subcommand is read past
+  # git's global flags, so `git -C <dir> push` is checked like `git push`.
+  if [ "${1##*/}" = git ] && [ "$(gate_git_subcommand "${@:2}")" = push ]; then
+    gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치\t-\t-'; return 0; }
+  fi
 
   case "$Reff" in
     런로컬)
@@ -6888,6 +7027,20 @@ gate_act_mark() {
       gate_unwrap_find gate_act_mark "$GATE_MARK_NONE" "$GATE_MARK_NONE" "$GATE_MARK_NONE" \
         gate_answer_mark_max "$@"; return 0 ;;
   esac
+
+  # ---- git 전역 플래그 -----------------------------------------------------
+  # git's subcommand is read where git reads it, past its global flags, and
+  # the word match below covers only what follows the subcommand: `git -C <x>
+  # push --force` and `git -c a=b credential fill` carried no mark while their
+  # bare spellings did, and a global flag's value is not an option of the
+  # subcommand.
+  if [ "$cmd" = git ]; then
+    gate_git_subcommand "$@" >/dev/null
+    if [ "$GATE_GIT_SUBIDX" -gt 0 ]; then
+      set -- "${@:$GATE_GIT_SUBIDX}"
+      all=" ${*:2} "
+    fi
+  fi
 
   # ---- 비밀출력 -----------------------------------------------------------
   case "$cmd" in
@@ -16701,9 +16854,27 @@ gate_canon_count() {
 }
 
 gate_preauth_argv() {
-  # gate_preauth_argv <argv…> — the argv string the preauthorization rule
-  # compares a `사전 인가` row's shape against. For every command but `gh api`
-  # it is the argv as written.
+  # gate_preauth_argv <alias> <argv…> — the argv string the preauthorization
+  # rule compares a `사전 인가` row's shape against. For every command but
+  # `gh api` and a git command carrying global flags it is the argv as
+  # written.
+  #
+  # A GIT COMMAND THAT ONLY SAYS WHERE IT RUNS IS COMPARED WITHOUT SAYING IT.
+  # `git -C <worktree> push …` and `git --git-dir=<g> --work-tree=<w> push …`
+  # are the `git push` a `git push` row authorizes when, and only when, those
+  # flags land in a worktree of <alias> (`gate_git_argv_in_target`) and they are
+  # the only global flags. Then it is rewritten to `git <subcommand…>`.
+  #
+  # ANY OTHER GIT COMMAND HAS ITS `-…=<value>` GLOBALS SPLIT, and is otherwise
+  # passed as written. The rule drops every `-…=` word before it compares, so
+  # `git --git-dir=<elsewhere>/.git push origin x` reached it as `git push
+  # origin x` and matched a `git push` row while the space spelling
+  # `git --git-dir <elsewhere>/.git push …` did not. Each such word ahead of
+  # the subcommand goes as `<flag> <value>`, which the rule keeps, so another
+  # global flag (`-c`, `--namespace`, …), a location outside the target or an
+  # empty <alias> matches no `git <subcommand>` row in either spelling. The
+  # words after the subcommand (`--push-option=…`) are left for the rule to
+  # drop as before. With no subcommand read, every `-…=` word is split.
   #
   # A `gh api` ARGV IS COMPARED WITH THE METHOD gh WILL SEND IN FRONT. The rule
   # compares a shape's words with the argv's first words, and gh takes the
@@ -16721,7 +16892,32 @@ gate_preauth_argv() {
   # PUT` row word for word. The flags ahead of `api` go after it, where gh
   # reads them too. An argv with an `api` word whose place cannot be told gets
   # an `api` word no row names, so only a row of bare `gh` opens it.
+  local alias="$1"; shift
   local cmd="${1##*/}" m
+  if [ "$cmd" = git ] && [ -n "$alias" ]; then
+    gate_git_subcommand "${@:2}" >/dev/null
+    if [ "${#GATE_GIT_GLOBALS[@]}" -gt 0 ] && [ "$GATE_GIT_LOCONLY" = 1 ] \
+       && [ -z "$GATE_GIT_UNREAD" ] && [ "$GATE_GIT_SUBIDX" -gt 0 ] \
+       && gate_git_argv_in_target "$alias" "$@"; then
+      printf '%s %s' "$1" "${*:$((GATE_GIT_SUBIDX + 1))}"
+      return 0
+    fi
+  fi
+  if [ "$cmd" = git ]; then
+    gate_git_subcommand "${@:2}" >/dev/null
+    local -a gw=("$1")
+    local a k=1
+    for a in "${@:2}"; do
+      if [ "$GATE_GIT_SUBIDX" -eq 0 ] || [ "$k" -lt "$GATE_GIT_SUBIDX" ]; then
+        case "$a" in
+          -*=*) gw+=("${a%%=*}" "${a#*=}"); k=$((k + 1)); continue ;;
+        esac
+      fi
+      gw+=("$a"); k=$((k + 1))
+    done
+    printf '%s' "${gw[*]}"
+    return 0
+  fi
   if [ "$cmd" = gh ]; then
     gate_gh_strip_repo "${@:2}"
     if [ "$GATE_GH_API_UNREAD" = 1 ]; then
@@ -16745,7 +16941,7 @@ gate_manifest_preauthorizes() {
   # cannot split into two.
   local probe
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='' GATE_MARK_TRIGGER='' \
-          GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$MANIFEST" \
+          GATE_ARGV="$(gate_preauth_argv '' "$@")" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || return 1
   case "$probe" in *"P=1"*) return 0 ;; esac
   return 1
@@ -17541,6 +17737,78 @@ gate_path_of_target() {
   cg_p=$(cd "$cg" 2>/dev/null && pwd -P) || return 1
   want_p=$(cd "$want" 2>/dev/null && pwd -P) || return 1
   [ "$cg_p" = "$want_p" ]
+}
+
+gate_git_argv_in_target() {
+  # gate_git_argv_in_target <alias> <argv...> — 0 only when the repository and
+  # working tree this git command acts on are a worktree of THAT TARGET, read
+  # from its global flags as git reads them. Any condition that cannot be
+  # decided is a no.
+  #
+  # FOUR CONDITIONS, ALL OF THEM.
+  #   1. No git location or configuration variable in the environment the act
+  #      inherits — the gate's own, and an assignment written ahead of git in
+  #      argv on the line `gate_push_base_updates` draws: `LANG`, `LC_*` and
+  #      `TZ` only. Such a variable moves the repository git opens past every
+  #      flag the argv carries, so a flag reading cannot speak for it.
+  #   2. Every global flag was read (`GATE_GIT_UNREAD` empty).
+  #   3. The common git directory git names for these location flags, asked in
+  #      the act's directory with the inherited variables removed, is the
+  #      target row's `공통 git 디렉터리` — compared as `gate_path_of_target`
+  #      compares it, as written and then physically. The query is absolute so
+  #      the main worktree compares too. Removing the variables is safe only
+  #      because condition 1 already refused an act that would carry them.
+  #   4. The top of the working tree is, physically, one of the `worktree`
+  #      entries the target's own `git worktree list --porcelain` prints. A
+  #      `--work-tree` pointing anywhere else checks files out somewhere the
+  #      target's common directory does not own.
+  local alias="$1"; shift
+  local a v cmd_seen=0 out cg top want cg_p want_p top_p wt line
+  for a in "$@"; do
+    case "${a##*/}" in git) cmd_seen=1; break ;; esac
+    case "$a" in
+      LANG=*|LC_*=*|TZ=*) continue ;;
+    esac
+    [ "${a##*/}" = env ] && continue
+    return 1
+  done
+  [ "$cmd_seen" = 1 ] || return 1
+  while [ "$#" -gt 0 ]; do
+    case "${1##*/}" in git) shift; break ;; esac
+    shift
+  done
+  for v in GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_NAMESPACE GIT_OBJECT_DIRECTORY ${!GIT_CONFIG@}; do
+    [ -z "${!v+x}" ] || return 1
+  done
+  gate_git_subcommand "$@" >/dev/null
+  [ -z "$GATE_GIT_UNREAD" ] || return 1
+  [ -n "$GATE_GIT_SUB" ] || return 1
+  want=$(target_field "$alias" '공통 git 디렉터리' 2>/dev/null) || return 1
+  [ -n "$want" ] || return 1
+  out=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null \
+           && env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_CEILING_DIRECTORIES \
+                git ${GATE_GIT_LOCFLAGS[@]+"${GATE_GIT_LOCFLAGS[@]}"} rev-parse --path-format=absolute --git-common-dir --show-toplevel 2>/dev/null; } || true)
+  cg=$(printf '%s\n' "$out" | sed -n 1p)
+  top=$(printf '%s\n' "$out" | sed -n 2p)
+  [ -n "$cg" ] && [ -n "$top" ] || return 1
+  if [ "$cg" != "$want" ]; then
+    cg_p=$(cd "$cg" 2>/dev/null && pwd -P) || return 1
+    want_p=$(cd "$want" 2>/dev/null && pwd -P) || return 1
+    [ "$cg_p" = "$want_p" ] || return 1
+  fi
+  top_p=$(cd "$top" 2>/dev/null && pwd -P) || return 1
+  out=$(env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_CEILING_DIRECTORIES \
+          git --git-dir="$want" worktree list --porcelain 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      'worktree '*)
+        wt="${line#worktree }"
+        [ "$(cd "$wt" 2>/dev/null && pwd -P)" = "$top_p" ] && return 0 ;;
+    esac
+  done <<EOF
+$out
+EOF
+  return 1
 }
 
 gate_path_of_some_target() {
@@ -18560,7 +18828,7 @@ gate_physical_path() {
   # then resolved here to the gate's own copy while the kernel ran a planted file
   # of that name — and the helper trust check compares exactly this value.
   local p="$1" d b link n=0
-  d=$(dirname "$p"); b=$(basename "$p")
+  d=$(dirname -- "$p"); b=$(basename -- "$p")
   [ -d "$d" ] || { printf '%s' "$p"; return 0; }
   p="$(cd -P -- "$d" && pwd -P)/$b"
   while [ -L "$p" ] && [ "$n" -lt 8 ]; do
@@ -18568,9 +18836,9 @@ gate_physical_path() {
     [ -n "$link" ] || break
     case "$link" in
       /*) p="$link" ;;
-      *) p="$(dirname "$p")/$link" ;;
+      *) p="$(dirname -- "$p")/$link" ;;
     esac
-    d=$(dirname "$p"); b=$(basename "$p")
+    d=$(dirname -- "$p"); b=$(basename -- "$p")
     [ -d "$d" ] || break
     p="$(cd -P -- "$d" && pwd -P)/$b"
     n=$((n + 1))
@@ -20471,7 +20739,9 @@ gate_manifest_write_guard() {
   mreal=$(gate_physical_path "$MANIFEST")
   for a in "$@"; do
     case "$a" in */*) ;; *) continue ;; esac
-    adir=$(dirname "$a")
+    # `--`: a word like `--git-dir=<p>/x` is an operand here, not an option
+    # of dirname.
+    adir=$(dirname -- "$a")
     [ -d "$adir" ] || continue
     areal=$(gate_physical_path "$a")
     [ "$areal" = "$mreal" ] || continue
@@ -27130,7 +27400,7 @@ gate_verb_act() {
   # line of the catalog changes and no checker acquires a second copy of the
   # ladder.
   gate_run_rules "$GATE_ACT_EFFECTIVE" "$alias" "$segment" "$argv" \
-    "$(gate_preauth_argv "$@")" || rules_rc=$?
+    "$(gate_preauth_argv "$alias" "$@")" || rules_rc=$?
 
   # THE AUTO-ADOPTION FLOOR. It runs beside the catalog rather than only inside
   # it because its other consumer — a judgment a stage emitted in its terminal
