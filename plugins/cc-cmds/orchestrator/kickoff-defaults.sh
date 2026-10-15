@@ -53,6 +53,7 @@
 #   kickoff-defaults.sh --resolve-deadline <5e answer> [--now <epoch>]
 #   kickoff-defaults.sh --carry <previous manifest> --kickoff-at <ISO8601>
 #                       --expect-sha256 <hex> [--now <epoch>]
+#   kickoff-defaults.sh --apply-probe-sha <manifest draft>
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
 #
@@ -64,6 +65,18 @@
 # `--resolve-deadline` prints one line and no header: `ok<TAB><absolute><TAB>
 # <상대|절대><TAB><length>`, the length being the resolved deadline minus now as
 # an ISO 8601 duration, or `<사유 토큰><TAB><사유 문면>`; it exits 0 either way.
+#
+# `--apply-probe-sha` reads a manifest draft the kickoff wrote with its file
+# tool and prints two lines and no header, both measured by the driver's own
+# functions on the draft's bytes:
+#
+#   프로브  <sha256 of the `**적용 프로브**` value, backticks stripped>
+#   행      없음 | 맞음 | 거부<TAB><the manifest check's refusal text>
+#
+# The probe never passes through a shell command line, so a `'` inside it is
+# measured as written; `printf '%s' '<probe>'` would strip it. The `행` line is
+# the manifest check's `적용 프로브 코드` half, which the run's first gate call
+# would otherwise be the first to run.
 #
 # `--carry` reads a previous run's frozen manifest as the answers and the file
 # only as the thing it is compared with. The same header and `원천` row, then:
@@ -107,7 +120,7 @@ done
 # The key table — a closed set. These two lines are the code side of the key
 # table SKILL.md 5o carries, and a lint compares the two sets.
 KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline roster-model roster-model.<역할> auto-adopt'
-KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-actor'
+KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-probe-codes apply-actor'
 # Where `--carry` finds each key in a frozen manifest. Not compared by the lint
 # that compares the two lines above with 5o, so the test asserts that every key
 # there yields a row. `<인가>` and `<요소>` are `**<필드>**: ` lines of that
@@ -128,6 +141,7 @@ kd_carry_field() {
     deploy-triggers)    printf '대상\t배포트리거 식별자' ;;
     act-allow)          printf '행\t사전 인가' ;;
     apply-probe)        printf '요소\t적용 프로브' ;;
+    apply-probe-codes)  printf '행\t적용 프로브 코드' ;;
     apply-actor)        printf '요소\t적용 주체' ;;
     *) return 1 ;;
   esac
@@ -150,6 +164,7 @@ KD_NOW=''
 KD_CHECK_GIVEN=0; KD_CHECK=''
 KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
 KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''
+KD_APS_GIVEN=0; KD_APS=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
@@ -190,10 +205,18 @@ while [ $# -gt 0 ]; do
       printf '%s\n' "$2" | grep -E '^[0-9a-f]{64}$' >/dev/null \
         || kd_usage "--expect-sha256 은 소문자 16진 64자여야 합니다"
       KD_XSHA="$2"; shift 2 ;;
+    --apply-probe-sha)
+      [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--apply-probe-sha 에 값이 없습니다"
+      KD_APS_GIVEN=1; KD_APS="$2"; shift 2 ;;
     *) kd_usage "모르는 인자: '$1'" ;;
   esac
 done
 
+if [ "$KD_APS_GIVEN" = "1" ]; then
+  [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
+    && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ -z "$KD_KAT$KD_XSHA" ] \
+    || kd_usage "--apply-probe-sha 는 다른 인자와 함께 쓰지 않습니다"
+fi
 if [ "$KD_CHECK_GIVEN" = "1" ] && [ "$KD_RESOLVE_GIVEN" = "1" ]; then
   kd_usage "--check-deadline 과 --resolve-deadline 은 함께 쓰지 않습니다"
 fi
@@ -205,6 +228,8 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
     || kd_usage "--carry 는 --target·--apply-actor·--check-deadline 과 함께 쓰지 않습니다 — 대상과 적용 주체는 이전 매니페스트에서 읽습니다"
   [ -n "$KD_KAT" ] || kd_usage "--carry 에는 --kickoff-at 이 필요합니다"
   [ -n "$KD_XSHA" ] || kd_usage "--carry 에는 --expect-sha256 이 필요합니다"
+elif [ "$KD_APS_GIVEN" = "1" ]; then
+  :
 elif [ -n "$KD_KAT$KD_XSHA" ]; then
   kd_usage "--kickoff-at·--expect-sha256 은 --carry 와 함께만 씁니다"
 elif [ "$KD_CHECK_GIVEN" = "1" ]; then
@@ -273,6 +298,31 @@ done
 # The runner names come from the one line the pre-authorization matcher reads.
 KD_RUNNERS=$(awk -F'"' '/^runners="/ { print $2; exit }' "$KD_DIR/rules/사전-인가-대조.sh" 2>/dev/null)
 [ -n "$(printf '%s' "$KD_RUNNERS" | tr -d ' ')" ] || kd_refuse "사전 인가 대조기에서 러너 목록을 읽지 못했습니다"
+
+# ---------------------------------------------------------------------------
+# `--apply-probe-sha` — the hash of the draft's probe and the manifest check's
+# verdict on its `적용 프로브 코드` row, from the driver's own functions. Read
+# from a private copy so the hash and the check measure the same bytes.
+# ---------------------------------------------------------------------------
+if [ "$KD_APS_GIVEN" = "1" ]; then
+  for kd_f in manifest_field apply_unquote apply_probe_sha apply_code_row_check; do
+    command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
+  done
+  [ -r "$KD_APS" ] && [ ! -d "$KD_APS" ] || kd_refuse "매니페스트 초안을 읽을 수 없습니다: $KD_APS"
+  KD_COPY=$(mktemp "${TMPDIR:-/tmp}/cc-kickoff-aps.XXXXXX" 2>/dev/null) || kd_refuse "개인 사본을 만들지 못했습니다"
+  trap 'rm -f "$KD_COPY"' EXIT
+  cat -- "$KD_APS" > "$KD_COPY" 2>/dev/null || kd_refuse "매니페스트 초안을 개인 사본으로 옮기지 못했습니다"
+  MANIFEST="$KD_COPY"
+  printf '프로브\t%s\n' "$(apply_probe_sha "$(apply_unquote "$(manifest_field '요소' '적용 프로브')")")"
+  if [ -z "$(manifest_apply_code_rows)" ]; then
+    printf '행\t없음\n'
+  elif kd_err=$( (apply_code_row_check) 2>&1 >/dev/null ); then
+    printf '행\t맞음\n'
+  else
+    printf '행\t거부\t%s\n' "$(printf '%s' "${kd_err#*\[run\]\[stop\] }" | LC_ALL=C tr '\001-\037\177' ' ')"
+  fi
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # `--carry` — the previous manifest, copied once and read only as the copy.
@@ -582,6 +632,20 @@ kd_validate() {
       [ -n "$f4" ] || { kd_ign "$i" '형식 오류' '사유 는 비지 않습니다'; return; }
       E_ID[$i]="$f1"; E_X[$i]="상한=$f2 · 심각도 상한=$f3" ;;
     apply-probe) ;;
+    apply-probe-codes)
+      # `<불필요>/<필요>`, each the manifest check's value — 0–125, no leading
+      # zero, never 1 — and the two different. The check is the driver's own, so
+      # a value applied here is one the frozen row passes.
+      case "$v" in
+        */*/*|/*|*/) kd_ign "$i" '형식 오류' '<불필요>/<필요> 꼴입니다 (예: 0/21)'; return ;;
+        */*) ;;
+        *) kd_ign "$i" '형식 오류' '<불필요>/<필요> 꼴입니다 (예: 0/21)'; return ;;
+      esac
+      f1="${v%%/*}"; f2="${v#*/}"
+      if ! apply_code_value_ok "$f1" || ! apply_code_value_ok "$f2"; then
+        kd_ign "$i" '형식 오류' '각 값은 앞자리 0 없는 0–125 의 정수이고 1 이 아닙니다 — 1 은 일반 실패, 126·127 은 실행 불가·없는 명령, 128 이상은 신호와 도구 오류입니다'; return
+      fi
+      [ "$f1" != "$f2" ] || kd_ign "$i" '형식 오류' '두 값이 같습니다 — 불필요와 필요는 서로 다른 코드입니다' ;;
     apply-actor)
       case "$v" in 파이프라인|사람) ;; *) kd_ign "$i" '어휘 밖' '허용: 파이프라인 사람' ;; esac ;;
   esac
@@ -884,14 +948,15 @@ while [ "$kd_t" -lt "$KD_NT" ]; do
 done
 KD_I_MERGE=$(kd_cut_i '머지'); KD_I_PUSH=$(kd_cut_i 'push')
 
-# apply-probe / apply-actor first: the review ceiling's conflict reads them.
+# apply-probe / apply-probe-codes / apply-actor first: the review ceiling's
+# conflict reads them.
 KD_PIPE_APPLY=0
 [ "$KD_AA" = "파이프라인" ] && KD_PIPE_APPLY=1
 kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
   if [ "${E_ST[kd_i]}" = "ok" ]; then
     case "${E_KEY[kd_i]}" in
-      apply-probe|apply-actor)
+      apply-probe|apply-probe-codes|apply-actor)
         kd_c="${T_CUT[${E_SCOPE[kd_i]}]}"
         if [ -z "$kd_c" ]; then
           kd_ign "$kd_i" '절단점 미정' '이 레포의 절단점이 기본값으로 정해질 때만 판정합니다'
@@ -1052,6 +1117,8 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
       [ "${E_DIFF[$i]:-0}" = "1" ] && KD_EFF="$KD_EFF. 사유가 대상마다 다릅니다 — 첫 대상(${KD_TARGET[0]})의 사유를 씁니다" ;;
     apply-probe)
       KD_EFF='5c 에 적용 프로브로 미리 채우는 제안입니다 — 적용 명령과 파급 범위는 새로 묻습니다' ;;
+    apply-probe-codes)
+      KD_EFF="5c 에 적용 프로브 코드 대응(불필요=${v%%/*}·필요=${v#*/})으로 미리 채우는 제안입니다 — 5c 가 다시 묻고, 답한 대응은 그 프로브 바이트에 묶여 매니페스트에 얼립니다" ;;
     apply-actor)
       [ "$v" = "파이프라인" ] && KD_WIDE=1
       KD_EFF='5c 에 적용 주체로 미리 채우는 제안입니다 — 적용 명령과 파급 범위는 새로 묻습니다'
@@ -1101,6 +1168,7 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
           *) KD_EFF='적용이 없습니다' ;;
         esac ;;
       apply-probe) KD_WIDE=0; KD_EFF='이전 런의 적용 프로브를 그대로 씁니다' ;;
+      apply-probe-codes) KD_WIDE=0; KD_EFF='이전 런의 적용 프로브 코드 대응을 그대로 씁니다 — 프로브가 바뀌면 대응도 다시 묻습니다' ;;
       *) kd_effect "$1" ;;
     esac
   }
@@ -1151,9 +1219,9 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
     fi
     kd_out_apply "$ci"
     [ -n "$auth" ] && kd_out_auth "$ci" "$pv"
-    # The two apply keys sit in each repository's section of the file and in
-    # one run-wide field of the manifest, so any section's value compares.
-    case "$k" in apply-probe|apply-actor) xs=any ;; esac
+    # The apply keys sit in each repository's section of the file and in one
+    # run-wide field or row of the manifest, so any section's value compares.
+    case "$k" in apply-probe|apply-probe-codes|apply-actor) xs=any ;; esac
     if xi=$(kd_file_ok "$xs" "$k"); then
       [ "${E_NORM[xi]}" = "${E_NORM[ci]}" ] || kd_out_diff "$sc" "$k" "${E_NORM[ci]}" "${E_NORM[xi]}" "${E_SRC[xi]}"
     fi
@@ -1262,6 +1330,17 @@ EOF
     kd_t=$((kd_t + 1))
   done
   kd_carry_scalar run apply-probe "$(manifest_field '요소' '적용 프로브')"
+  # The mapping is a `## 인가` row, not a field, and is offered as the
+  # `<불필요>/<필요>` the file spells it in. The row itself is carried byte for
+  # byte by the re-kickoff renderer; this is the value the kickoff asks with.
+  # No row is never a blank to fill: the renderer has no `--set` for a row
+  # bound to the probe's hash, so the previous run's default mapping stands.
+  kd_ac=$(manifest_apply_code_rows | head -1)
+  if [ -n "$kd_ac" ]; then
+    kd_carry_scalar run apply-probe-codes "$(manifest_row_fields "$kd_ac" '불필요' 1 | head -1)/$(manifest_row_fields "$kd_ac" '필요' 1 | head -1)"
+  else
+    kd_out_not run apply-probe-codes '행 없음' '이전 매니페스트에 적용 프로브 코드 행이 없어 기본 대응 0/2 를 그대로 이어받습니다 — 다시 킥오프는 이 행을 새로 쓰지 않습니다'
+  fi
   kd_carry_scalar run apply-actor "$(manifest_field '요소' '적용 주체')" auth
 
   # The deadline: the previous interval, started again from this kickoff.

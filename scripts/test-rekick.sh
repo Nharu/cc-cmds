@@ -147,7 +147,7 @@ mf_check() {
 }
 
 # write_manifest <path> <id> — the previous run's manifest. Knobs (all optional):
-#   P_KAT P_DL P_PLAN P_DOC P_CUT P_AXES P_RULES P_EXTRA P_NOIV P_INTENT
+#   P_KAT P_DL P_PLAN P_DOC P_CUT P_AXES P_RULES P_EXTRA P_NOIV P_INTENT P_PROBE
 #   P_AUTOADOPT (the auto-adoption row's class)
 write_manifest() {
   local m="$1" id="$2" doc="${P_DOC:-$DOC}" cut="${P_CUT:-머지}" ivsha
@@ -163,7 +163,9 @@ write_manifest() {
     printf '## 의도\n```text\n%s\n```\n\n' "${P_INTENT:-$INTENT}"
     printf '## 대상\n**대상 맵 다이제스트**: @TD@\n'
     printf -- '- `target` | 별칭=rk | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/rk | 절단점=%s | 말단 행위 상한=없음\n\n' "$WT" "$CG" "$cut"
-    printf '## 요소\n**설계 문서**: %s\n**적용 주체**: (해당 없음)\n\n' "$doc"
+    printf '## 요소\n**설계 문서**: %s\n' "$doc"
+    [ -z "${P_PROBE:-}" ] || printf '**적용 프로브**: %s\n' "$P_PROBE"
+    printf '**적용 주체**: (해당 없음)\n\n'
     printf '## 실행 계획\n**승인 문면**: 진행\n```json\n%s\n```\n\n' "${P_PLAN:-$PLAN4}"
     if [ -n "${P_RULES:-}" ]; then printf '## 룰 설정\n%s\n\n' "$P_RULES"; fi
     printf '## 인가\n**구속 다이제스트**: @BD@\n**런 최대 절단점**: %s\n**종료 지점**: 픽스처가 끝나면\n' "$cut"
@@ -1016,6 +1018,46 @@ vs "인터뷰 행이 둘이면 실패한다" 실패 "$WORK/v-iv-2.md" "$E" 인�
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 { cat "$NM1"; printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/%s.interview.md | sha256=%s\n' "$NEW1" "$OLDBASESHA"; } > "$WORK/v-iv-left.md"
 vs "설계가 빠졌는데 인터뷰 행이 남으면 실패한다" 실패 "$WORK/v-iv-left.md" "$E" 인터뷰
+
+# (f) The apply probe code row is carried byte for byte, and the source run's
+# pinned plugin copy and its pin record are left alone by the whole flow.
+AC_ROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' 'make probe' | shasum -a 256 | cut -d' ' -f1)"
+P_PROBE='`make probe`' P_EXTRA="$AC_ROW" mk_prev RKAC; fx_done
+AC_RD="$XDG_STATE_HOME/cc-cmds/run/RKAC"
+mkdir -p "$AC_RD/plugin/cc-cmds/orchestrator"
+printf 'pinned copy\n' > "$AC_RD/plugin/cc-cmds/orchestrator/run.sh"
+printf 'digest\t%s\n' "$(printf 'pinned copy\n' | shasum -a 256 | cut -d' ' -f1)" > "$AC_RD/plugin-pin"
+pin_sum() {
+  { printf '%s\n' "$(sha "$AC_RD/plugin-pin")"
+    find "$AC_RD/plugin" -type f | LC_ALL=C sort | while IFS= read -r f; do printf '%s %s\n' "$f" "$(sha "$f")"; done
+  } | shasum -a 256 | cut -d' ' -f1
+}
+PIN_BEFORE=$(pin_sum)
+mf_check "$BASE/docs/pipeline-run/RKAC.plan.md"; rc=$?
+check "7: 적용 프로브 코드 행을 가진 원천이 check_manifest 를 통과한다" "$rc" "0"
+detect_case "8 적용 프로브 코드" RKAC ""
+vac=$(rk verify --prev RKAC --base "$BASE")
+PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+rk graph --prev RKAC --base "$BASE" --expect-sha256 "$PMA" >/dev/null
+"$BASH" "$KD" --carry "$BASE/docs/pipeline-run/RKAC.plan.md" --kickoff-at "$KAT1" --expect-sha256 "$PMA" >/dev/null 2>&1
+rk render-manifest --prev RKAC --base "$BASE" --run-id RKNA --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" > "$WORK/v-ac.md"; rc=$?
+check "7: 적용 프로브 코드 행을 가진 원천의 render-manifest 는 0 으로 끝난다" "$rc" "0"
+check "7: 적용 프로브 코드 행이 초안에 바이트 그대로 하나 옮겨진다" \
+  "$(grep -c '^- `적용 프로브 코드`' "$WORK/v-ac.md")/$(grep -cxF -- "$AC_ROW" "$WORK/v-ac.md")" "1/1"
+mf_check "$WORK/v-ac.md"; rc=$?
+check "7: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+VS_PREV="$BASE/docs/pipeline-run/RKAC.plan.md"; VS_PMSHA="$PMA"; VS_PGSHA="$PGA"
+vs "적용 프로브 코드 행이 원천과 같은 초안은 통과한다" 통과 "$WORK/v-ac.md" "$E"
+sed 's/| 필요=21 |/| 필요=22 |/' "$WORK/v-ac.md" > "$WORK/v-ac-ch.md"
+vs "적용 프로브 코드 행의 값이 바뀐 초안은 실패한다" 실패 "$WORK/v-ac-ch.md" "$E" 고정값
+grep -vF -- "$AC_ROW" "$WORK/v-ac.md" > "$WORK/v-ac-drop.md"
+vs "적용 프로브 코드 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ac-drop.md" "$E" 고정값
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+{ cat "$NM1"; printf '%s\n' "$AC_ROW"; } > "$WORK/v-ac-add.md"
+vs "원천에 없는 적용 프로브 코드 행을 더한 초안은 실패한다" 실패 "$WORK/v-ac-add.md" "$E" 고정값
+check "7: 재킥오프 흐름 전후 원 런의 plugin-pin 과 plugin/cc-cmds 사본이 같다" "$(pin_sum)" "$PIN_BEFORE"
 
 # The interview copy.
 out=$(rk render-interview --prev RKIV --base "$BASE" --expect-sha256 "$PMI"); rc=$?
