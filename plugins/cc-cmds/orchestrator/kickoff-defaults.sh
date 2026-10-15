@@ -53,6 +53,7 @@
 #   kickoff-defaults.sh --resolve-deadline <5e answer> [--now <epoch>]
 #   kickoff-defaults.sh --carry <previous manifest> --kickoff-at <ISO8601>
 #                       --expect-sha256 <hex> [--now <epoch>]
+#   kickoff-defaults.sh --apply-probe-sha <manifest draft>
 #
 # Output (main mode) is TAB-separated, the first line `cc-kickoff-defaults v1`:
 #
@@ -64,6 +65,18 @@
 # `--resolve-deadline` prints one line and no header: `ok<TAB><absolute><TAB>
 # <상대|절대><TAB><length>`, the length being the resolved deadline minus now as
 # an ISO 8601 duration, or `<사유 토큰><TAB><사유 문면>`; it exits 0 either way.
+#
+# `--apply-probe-sha` reads a manifest draft the kickoff wrote with its file
+# tool and prints two lines and no header, both measured by the driver's own
+# functions on the draft's bytes:
+#
+#   프로브  <sha256 of the `**적용 프로브**` value, backticks stripped>
+#   행      없음 | 맞음 | 거부<TAB><the manifest check's refusal text>
+#
+# The probe never passes through a shell command line, so a `'` inside it is
+# measured as written; `printf '%s' '<probe>'` would strip it. The `행` line is
+# the manifest check's `적용 프로브 코드` half, which the run's first gate call
+# would otherwise be the first to run.
 #
 # `--carry` reads a previous run's frozen manifest as the answers and the file
 # only as the thing it is compared with. The same header and `원천` row, then:
@@ -151,6 +164,7 @@ KD_NOW=''
 KD_CHECK_GIVEN=0; KD_CHECK=''
 KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
 KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''
+KD_APS_GIVEN=0; KD_APS=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
@@ -191,10 +205,18 @@ while [ $# -gt 0 ]; do
       printf '%s\n' "$2" | grep -E '^[0-9a-f]{64}$' >/dev/null \
         || kd_usage "--expect-sha256 은 소문자 16진 64자여야 합니다"
       KD_XSHA="$2"; shift 2 ;;
+    --apply-probe-sha)
+      [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--apply-probe-sha 에 값이 없습니다"
+      KD_APS_GIVEN=1; KD_APS="$2"; shift 2 ;;
     *) kd_usage "모르는 인자: '$1'" ;;
   esac
 done
 
+if [ "$KD_APS_GIVEN" = "1" ]; then
+  [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
+    && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ -z "$KD_KAT$KD_XSHA" ] \
+    || kd_usage "--apply-probe-sha 는 다른 인자와 함께 쓰지 않습니다"
+fi
 if [ "$KD_CHECK_GIVEN" = "1" ] && [ "$KD_RESOLVE_GIVEN" = "1" ]; then
   kd_usage "--check-deadline 과 --resolve-deadline 은 함께 쓰지 않습니다"
 fi
@@ -206,6 +228,8 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
     || kd_usage "--carry 는 --target·--apply-actor·--check-deadline 과 함께 쓰지 않습니다 — 대상과 적용 주체는 이전 매니페스트에서 읽습니다"
   [ -n "$KD_KAT" ] || kd_usage "--carry 에는 --kickoff-at 이 필요합니다"
   [ -n "$KD_XSHA" ] || kd_usage "--carry 에는 --expect-sha256 이 필요합니다"
+elif [ "$KD_APS_GIVEN" = "1" ]; then
+  :
 elif [ -n "$KD_KAT$KD_XSHA" ]; then
   kd_usage "--kickoff-at·--expect-sha256 은 --carry 와 함께만 씁니다"
 elif [ "$KD_CHECK_GIVEN" = "1" ]; then
@@ -274,6 +298,31 @@ done
 # The runner names come from the one line the pre-authorization matcher reads.
 KD_RUNNERS=$(awk -F'"' '/^runners="/ { print $2; exit }' "$KD_DIR/rules/사전-인가-대조.sh" 2>/dev/null)
 [ -n "$(printf '%s' "$KD_RUNNERS" | tr -d ' ')" ] || kd_refuse "사전 인가 대조기에서 러너 목록을 읽지 못했습니다"
+
+# ---------------------------------------------------------------------------
+# `--apply-probe-sha` — the hash of the draft's probe and the manifest check's
+# verdict on its `적용 프로브 코드` row, from the driver's own functions. Read
+# from a private copy so the hash and the check measure the same bytes.
+# ---------------------------------------------------------------------------
+if [ "$KD_APS_GIVEN" = "1" ]; then
+  for kd_f in manifest_field apply_unquote apply_probe_sha apply_code_row_check; do
+    command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
+  done
+  [ -r "$KD_APS" ] && [ ! -d "$KD_APS" ] || kd_refuse "매니페스트 초안을 읽을 수 없습니다: $KD_APS"
+  KD_COPY=$(mktemp "${TMPDIR:-/tmp}/cc-kickoff-aps.XXXXXX" 2>/dev/null) || kd_refuse "개인 사본을 만들지 못했습니다"
+  trap 'rm -f "$KD_COPY"' EXIT
+  cat -- "$KD_APS" > "$KD_COPY" 2>/dev/null || kd_refuse "매니페스트 초안을 개인 사본으로 옮기지 못했습니다"
+  MANIFEST="$KD_COPY"
+  printf '프로브\t%s\n' "$(apply_probe_sha "$(apply_unquote "$(manifest_field '요소' '적용 프로브')")")"
+  if [ -z "$(manifest_apply_code_rows)" ]; then
+    printf '행\t없음\n'
+  elif kd_err=$( (apply_code_row_check) 2>&1 >/dev/null ); then
+    printf '행\t맞음\n'
+  else
+    printf '행\t거부\t%s\n' "$(printf '%s' "${kd_err#*\[run\]\[stop\] }" | LC_ALL=C tr '\001-\037\177' ' ')"
+  fi
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # `--carry` — the previous manifest, copied once and read only as the copy.
