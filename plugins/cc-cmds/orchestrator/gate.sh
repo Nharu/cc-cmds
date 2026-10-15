@@ -119,6 +119,13 @@
 #                    segment's last cycle under `<run-dir>/carry/` and prints
 #                    `이월 <k> 제목=…` and `이월 <k> 본문 파일=…` per item; refused
 #                    (3) unless the segment's `다음` is `이월`
+#   gate.sh meta-merge --manifest <path> --segment <id>
+#                    the fixed helper of a release-metadata resolution: in the
+#                    segment worktree, builds the merge commit whose parents
+#                    are the reviewed HEAD and the base of the segment's latest
+#                    `베이스 판정` row (`부류=릴리스 메타`) and whose tree is the
+#                    expected release tree, fast-forwards the branch to it and
+#                    prints its sha; pushes nothing. Refused (3) otherwise
 #   gate.sh residual-body --manifest <path> --segment <id>
 #                    writes the body of the one issue a `리뷰 잔여` park files
 #                    to `<run-dir>/carry/<segment>-<cycle>-잔여.md` and prints
@@ -216,6 +223,13 @@
 # halt record itself under `halt/shift/` with that site's options, and a cone
 # `blocked` row carrying the record's path and digest. `자리=<자리>` after `--`
 # is the same as `--site`.
+#   gate.sh act --kind base-check --target <alias> --segment <id> ...
+# `base-check` takes nothing after `--`. It asks the remote for the tip of the
+# target's base branch (`git ls-remote`, no fetch), merges the segment's
+# reviewed HEAD with it in an object directory of its own, and writes a
+# `베이스 판정` row: `일치`, `이동` or `충돌` with the conflicted files and
+# whether only the release files conflict. Refused (3) unless the segment's
+# review lets a merge through, and when the base tip is not fetched yet.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -10651,8 +10665,11 @@ gate_segment_cycle_cap() {
 
 gate_segment_cycle_count() {
   # gate_segment_cycle_count <segment> — the `cycle` rows the segment has. Crash
-  # retries and resumes write none, so they spend nothing.
-  gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$1" | gate_count
+  # retries and resumes write none, so they spend nothing. A resolution cycle
+  # (`모드=해소`) is not counted: the base resolution has a cap of its own, and
+  # one budget for both would let a fix cycle and a resolution spend each
+  # other's.
+  gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_ne '모드' '해소' | gate_count
 }
 
 gate_decl_block() {
@@ -11564,6 +11581,20 @@ gate_rows_field_eq() {
         if (p > 0 && substr(s, 1, p - 1) == ENVIRON["GATE_FEQ_K"]) { have = 1; last = substr(s, p + 1) }
       }
       if (have && last == ENVIRON["GATE_FEQ_V"]) print }'
+}
+
+gate_rows_field_ne() {
+  # stdin: rows. gate_rows_field_ne <key> <value> — the complement of
+  # `gate_rows_field_eq`: each row whose last field with that key is not
+  # <value>, a row without the key included.
+  GATE_FEQ_K="$1" GATE_FEQ_V="$2" awk '
+    { n = split($0, f, "|"); have = 0; last = ""
+      for (i = 2; i <= n; i++) {
+        s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s)
+        p = index(s, "=")
+        if (p > 0 && substr(s, 1, p - 1) == ENVIRON["GATE_FEQ_K"]) { have = 1; last = substr(s, p + 1) }
+      }
+      if (!(have && last == ENVIRON["GATE_FEQ_V"])) print }'
 }
 
 gate_rows_having_field() {
@@ -15697,6 +15728,9 @@ gate_main() {
   # the segment arm accept `적용 준비` and `완료` for a segment that still owes
   # an apply, and a caller that could export it would write those states by hand.
   unset GATE_SUBJECT_HEAD
+  # The renumbering merge the merge rule passes is proved by the act itself,
+  # below, and by nothing a caller can set.
+  unset GATE_META_RESOLVED_HEAD
   GATE_APPLY_ARM=""; GATE_APPLY_COMMAND=""
   # The emit path travels to `gate_verb_act` as a global rather than as an
   # eleventh positional argument, the same way `GATE_RESUME`, `GATE_ACT_CWD` and
@@ -16421,6 +16455,12 @@ GATE_DRIFT_DIRS
       # The same shape for the one issue of a segment parked `리뷰 잔여`.
       gate_residual_body "$segment"
       ;;
+    meta-merge)
+      # Writing into the segment's repository and nowhere else: the merge
+      # commit of a release-metadata resolution. No ledger row — the push and
+      # the merge after it are the acts, and the merge act judges the commit.
+      gate_meta_merge "$segment"
+      ;;
     answers)
       # Reading, and the reader is a STAGE rather than the router: it picks up
       # what the person said in answer to the judgment it raised. With an id it
@@ -17028,7 +17068,7 @@ gate_shift_halt_site_table() {
 병합 거절|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 거절 원인을 다시 읽고 이 세그먼트의 병합을 다시 시도한다
 push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남길지는 원격을 본 사람만 안다|사람이 원격 가지를 맞춘 뒤, 다음 교대가 이 세그먼트의 push 를 다시 시도한다
 도달 거부|없음|그 행위가 닿는 곳에 이 런이 닿아도 되는지는 사람만 정한다|사람이 그 도달을 정한 뒤, 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
-베이스 해소 한도|없음|어느 베이스 위에 다시 쌓을지는 사람만 정한다|사람이 베이스를 정한 뒤, 다음 교대가 이 세그먼트의 베이스 해소를 다시 시도한다
+베이스 해소 한도|없음|어느 베이스 위에 다시 쌓을지는 사람만 정한다|사람이 베이스를 정해 이 세그먼트의 가지에 해소를 올린 뒤, 다음 교대가 그 해소를 리뷰에 보낸다 — 충돌 수는 세그먼트마다 쌓이므로 교대의 해소 파견은 다시 열리지 않는다
 워크트리 기록 없음|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 세그먼트 행의 워크트리를 다시 읽고 이 세그먼트를 다시 시도한다
 종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
 EOF
@@ -17522,9 +17562,10 @@ gate_segment_authored_after_last_cycle() {
   [ "$(gate_report_count "$(gate_segment_review_walk "$1")" '저작 뒤')" = "1" ]
 }
 
-gate_segment_review_next() {
-  # gate_segment_review_next <segment> — `다음`, the segment's next disposition
-  # after review. "Re-check" is a last cycle row with a lead-fix row before it.
+gate_segment_review_next_table() {
+  # gate_segment_review_next_table <segment> — `다음` as the review alone reads
+  # it; `gate_segment_review_next` lays the base overlay on top. "Re-check" is a
+  # last cycle row with a lead-fix row before it.
   # The first row of this table that holds wins:
   #    1 no cycle row                                        리뷰 없음
   #    2 the last cycle was dismissed by a person            머지
@@ -17579,9 +17620,517 @@ gate_cycle_review_closure() {
     fi
     printf '잔여 보류'; return 0
   fi
+  # A `모드=해소` row does not count toward the cap, so it adds nothing here.
   n=$(gate_segment_cycle_count "$seg")
-  if [ "$(( ${n:-0} + 1 ))" -ge "$(gate_segment_cycle_cap "$seg")" ]; then printf '리드 수정'; return 0; fi
+  [ "$(gate_row_field "$row" '모드')" = 해소 ] || n=$(( ${n:-0} + 1 ))
+  if [ "${n:-0}" -ge "$(gate_segment_cycle_cap "$seg")" ]; then printf '리드 수정'; return 0; fi
   printf '수정'
+}
+
+gate_segment_review_next() {
+  # gate_segment_review_next <segment> — `다음`: the review table below, and on a
+  # routed run the base overlay on top of its two merging values.
+  #
+  # THE OVERLAY STANDS ONLY ON A ROUTED RUN. The fixed-graph driver rebases onto
+  # its base and parks a conflict of its own, and it never calls `base-check`,
+  # so the values the overlay adds would reach a loop that has no branch for
+  # them.
+  local seg=$1 nx
+  nx=$(gate_segment_review_next_table "$seg")
+  case "$nx" in
+    머지|'이월 머지') run_routed && { gate_base_next "$seg" "$nx"; return 0; } ;;
+  esac
+  printf '%s' "$nx"
+}
+
+# ---------------------------------------------------------------------------
+# The base check — `act --kind base-check`, and what `다음` reads from it.
+#
+# A REVIEWED PULL REQUEST THAT CONFLICTS WITH ITS BASE USED TO REACH NOTHING.
+# The gate and the driver read no mergeable state, so a segment whose review had
+# passed went to its merge, the merge was refused, and the shift ended with no
+# record of why. The check asks the remote where the base is, merges in an
+# object directory of its own, and writes what it found on a series of its own:
+# `일치` and `이동` are not blocks, so `blocked` cannot carry them.
+#
+# R IS THE CYCLE THAT LETS THE MERGE THROUGH. The last cycle's `리뷰 HEAD` when
+# the review table reads `머지` or `이월 머지` — a cycle that passed, one a
+# person dismissed, one whose open findings went to issues — and nothing
+# otherwise. A resolution cycle that passes becomes the next R.
+#
+# T IS WHAT THE REMOTE SAYS. A local tracking ref is moved by a spelling the
+# grade table reads as a read, so the base is the answer `git ls-remote` gives
+# for the base branch of the target's remote slug, and the gate does not fetch:
+# an object it does not have is a refusal that names the fetch.
+
+gate_base_rows() {
+  # gate_base_rows <segment> — the segment's `베이스 판정` rows, oldest first.
+  gate_rows '베이스 판정' | gate_rows_field_eq '세그먼트' "$1"
+}
+
+gate_base_last_row() {
+  gate_base_rows "$1" | awk 'NF { r = $0 } END { if (r != "") print r }'
+}
+
+gate_base_conflict_count() {
+  # gate_base_conflict_count <segment> — how many `베이스 판정` rows of the
+  # segment say `충돌`. Counted apart from the review cycle budget: a fix cycle
+  # and a base resolution must not spend each other's allowance.
+  gate_base_rows "$1" | gate_rows_field_eq '판정' '충돌' | gate_count
+}
+
+gate_commit_in() {
+  # gate_commit_in <dir> <rev> — the full commit sha <rev> names in <dir>, or 1.
+  local out
+  [ -n "$2" ] || return 1
+  out=$( { cd "$1" 2>/dev/null && git rev-parse --verify --quiet "$2^{commit}" 2>/dev/null; } || true)
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+gate_base_review_head() {
+  # gate_base_review_head <segment> — R, resolved in the segment worktree.
+  local seg=$1 nx row
+  nx=$(gate_segment_review_next_table "$seg")
+  case "$nx" in 머지|'이월 머지') ;; *) return 1 ;; esac
+  row=$(gate_segment_last_cycle_row "$seg")
+  gate_commit_in "$(gate_segment_worktree "$seg")" "$(gate_row_field "$row" '리뷰 HEAD')"
+}
+
+gate_base_resolve_basis_row() {
+  # gate_base_resolve_basis_row <segment> — B's cycle row: the segment's last
+  # cycle whose `모드` is not `해소`. A resolution cycle is never a basis, so a
+  # resolution stacked on a resolution reviews against the same B.
+  gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_ne '모드' '해소' \
+    | awk 'NF { r = $0 } END { if (r != "") print r }'
+}
+
+gate_base_remote_tip() {
+  # gate_base_remote_tip <alias> <dir> — T: the tip the remote reports for the
+  # target's base branch, a 40-character sha, or 1 with the reason on stderr.
+  # `GIT_TERMINAL_PROMPT=0` for the reason `base_fetch_ref` gives: a credential
+  # prompt in an unattended night is a wait nobody answers.
+  local al=$1 dir=$2 slug br out sha
+  slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+  br=$(base_branch "$al" 2>/dev/null || true)
+  if [ -z "$slug" ] || [ -z "$br" ]; then
+    warn "cannot ask the remote for the base — target '$al' has no 원격 슬러그 or base branch"
+    return 1
+  fi
+  if ! out=$(cd "$dir" 2>/dev/null && GIT_TERMINAL_PROMPT=0 git ls-remote "https://github.com/$slug.git" "refs/heads/$br" 2>/dev/null); then
+    warn "git ls-remote did not answer for https://github.com/$slug.git refs/heads/$br"
+    return 1
+  fi
+  sha=$(printf '%s\n' "$out" | GATE_FEQ_V="refs/heads/$br" awk '$2 == ENVIRON["GATE_FEQ_V"] { n++; s = $1 } END { if (n == 1) print s }')
+  case "$sha" in
+    *[!0-9a-f]*|'') warn "the remote does not report one tip for refs/heads/$br: ${out:-(nothing)}"; return 1 ;;
+  esac
+  [ "${#sha}" -eq 40 ] || { warn "the remote reported a tip that is not a full sha: $sha"; return 1; }
+  printf '%s' "$sha"
+}
+
+# THE ISOLATED OBJECT DIRECTORY. A merge or an expected tree computed for a
+# judgment writes blobs and trees nobody refers to; written into the common git
+# they would pile up under every segment's check and every merge. Each judgment
+# opens a directory of its own, reads the repository's objects through
+# `GIT_ALTERNATE_OBJECT_DIRECTORIES`, and removes the directory when it is done.
+# With no directory open the same functions write into the repository — the
+# helper that builds the merge commit is the one caller that wants that.
+GATE_ISO_DIR=""
+GATE_ISO_ALT=""
+
+gate_iso_open() {
+  # gate_iso_open <dir> — opens the isolated object directory for <dir>'s repository.
+  local common
+  common=$( { cd "$1" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+  [ -n "$common" ] && [ -d "$common/objects" ] || return 1
+  GATE_ISO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gate-iso.XXXXXX") || return 1
+  GATE_ISO_ALT="$common/objects"
+}
+
+gate_iso_close() {
+  [ -z "$GATE_ISO_DIR" ] || rm -rf "$GATE_ISO_DIR"
+  GATE_ISO_DIR=""; GATE_ISO_ALT=""
+}
+
+gate_iso_git() {
+  # gate_iso_git <dir> <git args…> — git in <dir>, writing into the isolated
+  # object directory while one is open.
+  local dir=$1; shift
+  if [ -n "$GATE_ISO_DIR" ]; then
+    ( cd "$dir" && GIT_OBJECT_DIRECTORY="$GATE_ISO_DIR" GIT_ALTERNATE_OBJECT_DIRECTORIES="$GATE_ISO_ALT" git "$@" )
+  else
+    ( cd "$dir" && git "$@" )
+  fi
+}
+
+gate_merge_tree() {
+  # gate_merge_tree <dir> <a> <b> — the merged tree on the first line and the
+  # conflicted paths after it. 0 clean, 1 conflicted, anything else no answer.
+  local rc=0
+  gate_iso_git "$1" merge-tree --write-tree --name-only --no-messages "$2" "$3" 2>/dev/null || rc=$?
+  return "$rc"
+}
+
+# --- release metadata --------------------------------------------------------
+#
+# TWO RELEASES OF THE SAME PLUGIN CONFLICT IN TWO FILES AND NOWHERE ELSE, and
+# the resolution is not a judgment: this segment's version is the base's bumped
+# by the grade the segment bumped its own, and its changelog entry goes on top
+# of the base's. `release_meta_expected_tree` builds the one tree that answer
+# allows, E*, and every reader compares a merge commit's tree to it whole — a
+# conflict list cannot be the test, because two same-grade bumps merge
+# `plugin.json` cleanly to the wrong number, and a path list hides a change
+# inside the file. Any premise that does not hold returns 1 and the segment goes
+# to a resolution review.
+GATE_META_PLUGIN='plugins/cc-cmds/.claude-plugin/plugin.json'
+GATE_META_LOG='CHANGELOG.md'
+GATE_META_WHY=""
+GATE_META_TREE=""
+
+gate_meta_blob() {
+  # gate_meta_blob <dir> <rev> <path> <out file> — the blob's bytes, or 1.
+  gate_iso_git "$1" cat-file blob "$2:$3" > "$4" 2>/dev/null
+}
+
+gate_meta_version_of() {
+  # gate_meta_version_of <plugin.json file> — the one version line's value.
+  awk '/^[ \t]*"version"[ \t]*:[ \t]*"[0-9]+\.[0-9]+\.[0-9]+"[ \t]*,?[ \t]*$/ {
+         n++; v = $0; sub(/^[^:]*:[ \t]*"/, "", v); sub(/".*$/, "", v) }
+       END { if (n == 1) print v }' "$1"
+}
+
+gate_meta_log_split() {
+  # gate_meta_log_split <changelog file> <preamble out> <head out> <rest out>
+  # — the lines before the first `## [` heading, that first entry, and every
+  # entry after it. 1 when there is no entry.
+  awk -v p="$2" -v h="$3" -v r="$4" '
+    /^## \[/ { e++ }
+    { if (e == 0) print > p; else if (e == 1) print > h; else print > r }
+    END { if (e == 0) exit 1 }' "$1" || return 1
+  touch "$2" "$3" "$4"
+}
+
+gate_meta_head_version() {
+  # gate_meta_head_version <head entry file> — X.Y.Z of `## [X.Y.Z] - YYYY-MM-DD`.
+  awk 'NR == 1 && /^## \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][ \t]*$/ {
+         v = $0; sub(/^## \[/, "", v); sub(/\].*$/, "", v); print v }' "$1"
+}
+
+gate_meta_bump_grade() {
+  # gate_meta_bump_grade <from> <to> — major, minor or patch when <to> is <from>
+  # bumped one step with no suffix, nothing otherwise.
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<EOF
+$1
+EOF
+  IFS=. read -r b1 b2 b3 <<EOF
+$2
+EOF
+  if [ "$b1" -eq "$a1" ] && [ "$b2" -eq "$a2" ] && [ "$b3" -eq "$((a3 + 1))" ]; then printf patch
+  elif [ "$b1" -eq "$a1" ] && [ "$b2" -eq "$((a2 + 1))" ] && [ "$b3" -eq 0 ]; then printf minor
+  elif [ "$b1" -eq "$((a1 + 1))" ] && [ "$b2" -eq 0 ] && [ "$b3" -eq 0 ]; then printf major
+  fi
+}
+
+gate_meta_bump() {
+  # gate_meta_bump <version> <grade>
+  local a1 a2 a3
+  IFS=. read -r a1 a2 a3 <<EOF
+$1
+EOF
+  case "$2" in
+    patch) printf '%s.%s.%s' "$a1" "$a2" "$((a3 + 1))" ;;
+    minor) printf '%s.%s.0' "$a1" "$((a2 + 1))" ;;
+    major) printf '%s.0.0' "$((a1 + 1))" ;;
+  esac
+}
+
+release_meta_expected_tree() {
+  # release_meta_expected_tree <dir> <R> <T> — leaves E*, the tree an honest
+  # renumbering merge of R onto T has, in `GATE_META_TREE`, or returns 1 with
+  # the failed premise in `GATE_META_WHY`. Globals and not stdout, so a caller
+  # keeps the reason: a command substitution would drop it with its subshell.
+  # The premises:
+  #   (a) the merge of R and T conflicts in the two release files at most;
+  #   (b) from MB = merge-base(R, T) to R, plugin.json differs in its version
+  #       line and nowhere else;
+  #   (c) R's changelog is MB's with one entry added on top, and the preamble
+  #       left as it was;
+  #   (d) MB's version to R's is one step with no suffix, and R's head entry
+  #       names R's version;
+  #   (e) T's plugin.json version is the version of T's head changelog entry;
+  #   (f) R's head entry body carries no version token — a sentence naming the
+  #       previous release would change meaning under a new number, and no
+  #       mechanical check can tell.
+  # E* is the merged tree with plugin.json as T's bytes with the version line
+  # bumped from T's by R's grade, and the changelog as T's preamble, R's head
+  # entry under the new number with R's date, and T's entries.
+  local dir=$1 r=$2 t=$3 w mb mt rc=0 p v rev v_mb v_r v_t v_h g v_new pm lm blob_p blob_l
+  GATE_META_WHY=""; GATE_META_TREE=""
+  w=$(mktemp -d "${TMPDIR:-/tmp}/gate-meta.XXXXXX") || { GATE_META_WHY="no scratch directory"; return 1; }
+  # A subshell so every early return removes the scratch directory.
+  (
+    fail() { printf '%s' "$1" > "$w/why"; exit 1; }
+    mb=$(gate_iso_git "$dir" merge-base "$r" "$t" 2>/dev/null) || fail "no merge base of R and T"
+    mt=$(gate_merge_tree "$dir" "$r" "$t") || rc=$?
+    case "$rc" in 0|1) ;; *) fail "the merge of R and T did not answer" ;; esac
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case "$p" in
+        "$GATE_META_PLUGIN"|"$GATE_META_LOG") ;;
+        *) fail "(a) the merge conflicts outside the release files: $p" ;;
+      esac
+    done <<EOF
+$(printf '%s\n' "$mt" | sed '1d')
+EOF
+    mt=$(printf '%s\n' "$mt" | sed -n '1p')
+    for v in mb r t; do
+      eval "rev=\$$v"
+      gate_meta_blob "$dir" "$rev" "$GATE_META_PLUGIN" "$w/$v.json" || fail "no $GATE_META_PLUGIN at $v"
+      gate_meta_blob "$dir" "$rev" "$GATE_META_LOG" "$w/$v.log" || fail "no $GATE_META_LOG at $v"
+      gate_meta_log_split "$w/$v.log" "$w/$v.pre" "$w/$v.head" "$w/$v.rest" || fail "$GATE_META_LOG at $v has no entry"
+    done
+    # (b) — lines, not JSON: a parser reads duplicate keys and order its own way.
+    [ "$(wc -l < "$w/mb.json")" -eq "$(wc -l < "$w/r.json")" ] || fail "(b) plugin.json changed more than its version line"
+    awk 'NR == FNR { a[FNR] = $0; next }
+         a[FNR] != $0 { d++; if ($0 !~ /^[ \t]*"version"[ \t]*:/) bad = 1 }
+         END { exit (d == 1 && !bad) ? 0 : 1 }' "$w/mb.json" "$w/r.json" \
+      || fail "(b) plugin.json changed more than its version line"
+    # (c)
+    cmp -s "$w/r.pre" "$w/mb.pre" || fail "(c) R changed the changelog preamble"
+    cat "$w/mb.head" "$w/mb.rest" > "$w/mb.entries"
+    cmp -s "$w/r.rest" "$w/mb.entries" || fail "(c) R changed changelog entries below its own"
+    # (d)
+    v_mb=$(gate_meta_version_of "$w/mb.json"); v_r=$(gate_meta_version_of "$w/r.json")
+    v_t=$(gate_meta_version_of "$w/t.json")
+    [ -n "$v_mb" ] && [ -n "$v_r" ] && [ -n "$v_t" ] || fail "(d) a plugin.json does not carry one plain version line"
+    g=$(gate_meta_bump_grade "$v_mb" "$v_r")
+    [ -n "$g" ] || fail "(d) $v_mb to $v_r is not one bump step"
+    [ "$(gate_meta_head_version "$w/r.head")" = "$v_r" ] || fail "(d) R's head changelog entry does not name $v_r"
+    # (e)
+    v_h=$(gate_meta_head_version "$w/t.head")
+    [ "$v_h" = "$v_t" ] || fail "(e) T's plugin.json ($v_t) and head changelog entry (${v_h:-none}) disagree"
+    # (f)
+    awk 'NR > 1 && /[0-9]+\.[0-9]+\.[0-9]+/ { bad = 1 } END { exit bad ? 1 : 0 }' "$w/r.head" \
+      || fail "(f) R's head changelog entry body carries a version token"
+    v_new=$(gate_meta_bump "$v_t" "$g")
+    GATE_FEQ_V="$v_new" awk '
+      /^[ \t]*"version"[ \t]*:[ \t]*"[0-9]+\.[0-9]+\.[0-9]+"[ \t]*,?[ \t]*$/ {
+        i = index($0, "\""); pre = substr($0, 1, i); rest = substr($0, i + 1)
+        j = index(rest, ":"); pre = pre substr(rest, 1, j); rest = substr(rest, j + 1)
+        k = index(rest, "\""); pre = pre substr(rest, 1, k); rest = substr(rest, k + 1)
+        l = index(rest, "\""); print pre ENVIRON["GATE_FEQ_V"] substr(rest, l); next }
+      { print }' "$w/t.json" > "$w/e.json"
+    {
+      cat "$w/t.pre"
+      GATE_FEQ_V="$v_new" awk 'NR == 1 { i = index($0, "]"); print "## [" ENVIRON["GATE_FEQ_V"] substr($0, i); next } { print }' "$w/r.head"
+      cat "$w/t.head" "$w/t.rest"
+    } > "$w/e.log"
+    pm=$(gate_iso_git "$dir" ls-tree "$t" -- "$GATE_META_PLUGIN" | awk '{ print $1 }')
+    lm=$(gate_iso_git "$dir" ls-tree "$t" -- "$GATE_META_LOG" | awk '{ print $1 }')
+    [ -n "$pm" ] && [ -n "$lm" ] || fail "T does not carry both release files"
+    blob_p=$(gate_iso_git "$dir" hash-object -w --no-filters "$w/e.json") || fail "could not write the expected plugin.json"
+    blob_l=$(gate_iso_git "$dir" hash-object -w --no-filters "$w/e.log") || fail "could not write the expected changelog"
+    GIT_INDEX_FILE="$w/index" gate_iso_git "$dir" read-tree "$mt" 2>/dev/null || fail "could not read the merged tree"
+    GIT_INDEX_FILE="$w/index" gate_iso_git "$dir" update-index \
+      --cacheinfo "$pm,$blob_p,$GATE_META_PLUGIN" --cacheinfo "$lm,$blob_l,$GATE_META_LOG" 2>/dev/null \
+      || fail "could not stage the expected release files"
+    GIT_INDEX_FILE="$w/index" gate_iso_git "$dir" write-tree 2>/dev/null || fail "could not write the expected tree"
+  ) > "$w/out" || rc=$?
+  if [ "$rc" = 0 ]; then
+    GATE_META_TREE=$(cat "$w/out")
+  else
+    GATE_META_WHY=$(cat "$w/why" 2>/dev/null || printf 'no answer')
+  fi
+  rm -rf "$w"
+  return "$rc"
+}
+
+gate_meta_resolved() {
+  # gate_meta_resolved <dir> <R> <H> [<T>] — 0 when H is the honest renumbering
+  # merge of R: H's parents are exactly R and some X, X is T or an ancestor of T
+  # when T is given, and H's tree is E*(R, X) to the object id. The reason of a
+  # 1 is left in `GATE_META_WHY`. Every reader calls it in an isolated object
+  # directory of its own, so a judgment leaves nothing behind.
+  local dir=$1 r=$2 h=$3 t=${4:-} parents pself p1 p2 extra th e opened=0 rc=0
+  GATE_META_WHY=""
+  parents=$(gate_iso_git "$dir" rev-list --parents -n 1 "$h" 2>/dev/null) || { GATE_META_WHY="H does not resolve"; return 1; }
+  read -r pself p1 p2 extra <<EOF
+$parents
+EOF
+  if [ -z "$p2" ] || [ -n "$extra" ] || [ "$p1" != "$r" ]; then
+    GATE_META_WHY="H is not a two-parent merge whose first parent is R"; return 1
+  fi
+  if [ -n "$t" ]; then
+    gate_iso_git "$dir" merge-base --is-ancestor "$p2" "$t" >/dev/null 2>&1 \
+      || { GATE_META_WHY="H's second parent is not the base or an ancestor of it"; return 1; }
+  fi
+  if [ -z "$GATE_ISO_DIR" ]; then gate_iso_open "$dir" || { GATE_META_WHY="no isolated object directory"; return 1; }; opened=1; fi
+  release_meta_expected_tree "$dir" "$r" "$p2" || rc=1
+  e=$GATE_META_TREE
+  th=$(gate_iso_git "$dir" rev-parse "$h^{tree}" 2>/dev/null || true)
+  [ "$opened" = 0 ] || gate_iso_close
+  [ "$rc" = 0 ] || return 1
+  [ -n "$th" ] && [ "$th" = "$e" ] || { GATE_META_WHY="H's tree is not the expected release tree"; return 1; }
+}
+
+gate_meta_resolved_export() {
+  # gate_meta_resolved_export <segment> <HEAD> — THE RENUMBERING MERGE IS JUDGED
+  # HERE AND HANDED TO THE MERGE RULE AS ONE SHA. A release-metadata conflict is
+  # resolved by a merge commit whose tree is fixed by R and the base — see
+  # `release_meta_expected_tree` — so no review reads it. The rule cannot compute
+  # that tree (it is a `/bin/sh` checker that reads no ledger), so the gate
+  # proves it against the base the segment's latest `베이스 판정` row named and
+  # exports the HEAD it proved. Nothing is exported otherwise; the gate's entry
+  # has already unset whatever a caller passed.
+  local seg=$1 h=$2 r t wt
+  [ -n "$h" ] || return 0
+  r=$(gate_base_review_head "$seg") || return 0
+  [ "$h" != "$r" ] || return 0
+  t=$(gate_row_field "$(gate_base_last_row "$seg")" '베이스')
+  wt=$(gate_segment_worktree "$seg")
+  if [ -n "$t" ] && gate_meta_resolved "$wt" "$r" "$h" "$t"; then
+    GATE_META_RESOLVED_HEAD=$h
+    export GATE_META_RESOLVED_HEAD
+  fi
+  return 0
+}
+
+gate_base_next() {
+  # gate_base_next <segment> <다음 of the table> — the overlay. First the subject
+  # the base checks judge, the way base-check picks it:
+  #   HEAD is R, or R's tree                      R
+  #   HEAD is the honest renumbering merge of R   that merge
+  #     onto the base a check observed
+  #   HEAD moved past R otherwise                 none — 해소 리뷰
+  # Then the latest check: `충돌` of that subject → 베이스 해소 (그 수가 3 을
+  # 넘으면 베이스 해소 한도), anything else → the table's.
+  # THE RENUMBERING IS PROVED, NOT READ OFF THE ROW'S `부류`. A check of the
+  # merge itself writes `일치` with `부류=-` as the latest row, and reading the
+  # class there would turn a merge the rule lets through into a review.
+  # A worktree or a sha that does not resolve leaves the table's value: the
+  # merge rule reads the same HEAD and refuses on its own.
+  local seg=$1 nx=$2 wt r head brow t subj
+  wt=$(gate_segment_worktree "$seg")
+  r=$(gate_base_review_head "$seg") || { printf '%s' "$nx"; return 0; }
+  head=$(gate_worktree_tip "$wt") || { printf '%s' "$nx"; return 0; }
+  brow=$(gate_base_last_row "$seg")
+  subj=$r
+  if [ "$head" != "$r" ] \
+     && [ "$(gate_iso_git "$wt" rev-parse "$head^{tree}" 2>/dev/null || true)" != "$(gate_iso_git "$wt" rev-parse "$r^{tree}" 2>/dev/null || true)" ]; then
+    t=$(gate_row_field "$brow" '베이스')
+    if [ -n "$t" ] && gate_meta_resolved "$wt" "$r" "$head" "$t"; then
+      subj=$head
+    else
+      printf '해소 리뷰'; return 0
+    fi
+  fi
+  if [ "$(gate_row_field "$brow" '판정')" = '충돌' ] \
+     && [ "$(gate_commit_in "$wt" "$(gate_row_field "$brow" '판정 HEAD')" || true)" = "$subj" ]; then
+    if [ "$(gate_base_conflict_count "$seg")" -gt 3 ]; then printf '베이스 해소 한도'; else printf '베이스 해소'; fi
+    return 0
+  fi
+  printf '%s' "$nx"
+}
+
+gate_base_check_row() {
+  # gate_base_check_row <segment> <alias> <argv…> — the `base-check` arm: judge
+  # the segment's R (or its renumbering merge) against the remote's base and
+  # write the `베이스 판정` row. Refused with GATE_EXIT_RULE when there is no R,
+  # when HEAD has moved past it, when the remote does not answer or when its tip
+  # is not here yet; nothing is written then.
+  local seg=$1 al=$2 wt r head subj t last v cf cls rc=0 mt n
+  shift 2
+  if [ $# -gt 0 ]; then
+    warn "\`base-check\` takes nothing after -- — R, the base and the verdict are the gate's: $*"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  wt=$(gate_segment_worktree "$seg")
+  [ -n "$wt" ] && [ -d "$wt" ] || { warn "segment $seg has no worktree to judge: '${wt:-(none)}'"; return "$GATE_EXIT_RULE"; }
+  if ! r=$(gate_base_review_head "$seg"); then
+    warn "the review of $seg does not let a merge through (다음=$(gate_segment_review_next_table "$seg")) — base-check judges a segment whose review reads 머지 or 이월 머지"
+    return "$GATE_EXIT_RULE"
+  fi
+  head=$(gate_worktree_tip "$wt") || { warn "cannot read the HEAD of $wt"; return "$GATE_EXIT_RULE"; }
+  t=$(gate_base_remote_tip "$al" "$wt") || return "$GATE_EXIT_RULE"
+  if ! gate_commit_in "$wt" "$t" >/dev/null; then
+    warn "the base tip $t the remote reports is not in this repository — fetch the base first (the gate does not fetch), then call base-check again"
+    return "$GATE_EXIT_RULE"
+  fi
+  subj=$r
+  if [ "$head" != "$r" ]; then
+    if [ "$(gate_iso_git "$wt" rev-parse "$head^{tree}" 2>/dev/null || true)" = "$(gate_iso_git "$wt" rev-parse "$r^{tree}" 2>/dev/null || true)" ]; then
+      subj=$head
+    elif gate_meta_resolved "$wt" "$r" "$head" "$t"; then
+      subj=$head
+    else
+      warn "the HEAD of $seg ($head) moved past the reviewed $r and is not a renumbering merge of it onto $t ($GATE_META_WHY) — 다음 is 해소 리뷰; review first"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  # THE SAME QUESTION ASKED TWICE IS ONE ROW. The conflict cap counts rows, so a
+  # second check of the same R, HEAD and base would spend it on nothing.
+  last=$(gate_base_last_row "$seg")
+  if [ -n "$last" ] && [ "$(gate_row_field "$last" '리뷰 HEAD')" = "$r" ] \
+     && [ "$(gate_row_field "$last" '판정 HEAD')" = "$subj" ] && [ "$(gate_row_field "$last" '베이스')" = "$t" ]; then
+    log "베이스 판정 — $seg 는 이미 같은 판정이 있습니다: $(gate_row_field "$last" '판정') (다음=$(gate_segment_review_next "$seg"))"
+    return 0
+  fi
+  cf='-'; cls='-'
+  if gate_iso_git "$wt" merge-base --is-ancestor "$t" "$subj" >/dev/null 2>&1; then
+    v='일치'
+  else
+    gate_iso_open "$wt" || { warn "could not open an isolated object directory for $wt"; return "$GATE_EXIT_RULE"; }
+    mt=$(gate_merge_tree "$wt" "$subj" "$t") || rc=$?
+    case "$rc" in
+      0) v='이동' ;;
+      1) v='충돌'
+         cf=$(printf '%s\n' "$mt" | sed '1d' | awk 'NF' | paste -sd, -)
+         [ -n "$cf" ] || cf='-'
+         if [ "$subj" = "$r" ] && release_meta_expected_tree "$wt" "$r" "$t"; then
+           cls='릴리스 메타'
+         else
+           cls='일반'
+         fi ;;
+      *) gate_iso_close
+         warn "the merge of $subj and $t did not answer (git rc=$rc)"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+    gate_iso_close
+  fi
+  # A long conflict list is clipped, not the row: the cap is the row's.
+  n=$(printf '%s' "$cf" | tr ',' '\n' | gate_count)
+  if [ "${#cf}" -gt 400 ]; then cf="$(printf '%s' "$cf" | cut -c1-400)…(${n}개)"; fi
+  gate_append '베이스 판정' "세그먼트=$seg" "리뷰 HEAD=$r" "판정 HEAD=$subj" "베이스=$t" \
+    "판정=$v" "충돌 파일=$cf" "부류=$cls" "기록 시각=$(now_iso)"
+  log "베이스 판정 — $seg: $v$( [ "$cls" = '-' ] || printf ' (%s)' "$cls") (다음=$(gate_segment_review_next "$seg"))"
+}
+
+gate_meta_merge() {
+  # gate_meta_merge <segment> — the fixed helper a resolution stage runs for a
+  # `부류=릴리스 메타` conflict: builds the merge commit M whose parents are R
+  # and the base T of the segment's latest `베이스 판정` row and whose tree is
+  # E*(R, T), and moves the worktree's branch to it with a fast-forward. It
+  # writes into the repository and pushes nothing; the stage pushes M.
+  local seg=$1 wt row r t head e m
+  wt=$(gate_segment_worktree "$seg")
+  [ -n "$wt" ] && [ -d "$wt" ] || { warn "segment $seg has no worktree: '${wt:-(none)}'"; return "$GATE_EXIT_RULE"; }
+  row=$(gate_base_last_row "$seg")
+  if [ "$(gate_row_field "$row" '판정')" != '충돌' ] || [ "$(gate_row_field "$row" '부류')" != '릴리스 메타' ]; then
+    warn "the latest 베이스 판정 of $seg is not a 릴리스 메타 conflict — the helper builds only that merge"
+    return "$GATE_EXIT_RULE"
+  fi
+  r=$(gate_commit_in "$wt" "$(gate_row_field "$row" '리뷰 HEAD')") || { warn "R does not resolve in $wt"; return "$GATE_EXIT_RULE"; }
+  t=$(gate_commit_in "$wt" "$(gate_row_field "$row" '베이스')") || { warn "the base does not resolve in $wt — fetch it first"; return "$GATE_EXIT_RULE"; }
+  head=$(gate_worktree_tip "$wt") || { warn "cannot read the HEAD of $wt"; return "$GATE_EXIT_RULE"; }
+  [ "$head" = "$r" ] || { warn "the HEAD of $seg ($head) is not R ($r) — the helper merges R only"; return "$GATE_EXIT_RULE"; }
+  release_meta_expected_tree "$wt" "$r" "$t" || { warn "no expected tree: $GATE_META_WHY"; return "$GATE_EXIT_RULE"; }
+  e=$GATE_META_TREE
+  m=$( (cd "$wt" && printf 'merge: 베이스 %s 위에 릴리스 메타를 다시 매긴다\n' "$(printf '%s' "$t" | cut -c1-12)" \
+        | git commit-tree "$e" -p "$r" -p "$t") ) || { warn "git commit-tree failed"; return "$GATE_EXIT_RULE"; }
+  ( cd "$wt" && git merge --ff-only --quiet "$m" ) || { warn "could not fast-forward $wt to $m"; return "$GATE_EXIT_RULE"; }
+  printf '%s\n' "$m"
 }
 
 gate_carry_body() {
@@ -22566,7 +23115,8 @@ gate_record_row() {
     warn "a $kind row needs --segment"
     return "$GATE_EXIT_VOCAB"
   fi
-  [ $# -ge 1 ] || { warn "a $kind row carries no fields at all"; return "$GATE_EXIT_VOCAB"; }
+  # `base-check` takes nothing after `--`: every field of its row is the gate's.
+  [ $# -ge 1 ] || [ "$kind" = "base-check" ] || { warn "a $kind row carries no fields at all"; return "$GATE_EXIT_VOCAB"; }
 
   # THE KEY IS CHECKED HERE AND NOT ONLY NORMALIZED IN `gate_append`. The two are
   # not redundant. Normalization rewrites the field silently; this path is the one
@@ -23135,7 +23685,20 @@ gate_record_row() {
           fi
         fi
         gate_segment_cycle_verdict "$seg" "$alias" "$mtip"
-        mc_field="머지 대조=$(gate_merge_check_value "$rpol_eff" "$GATE_CYCLE_COUNT_VERDICT" "$GATE_CYCLE_COVER_VERDICT")"
+        # A tip the review did not cover may be the renumbering merge of the
+        # reviewed HEAD — the one merge whose tree R and its other parent fix
+        # without a review. Proved the way the merge act proves it.
+        # The other parent has to be the base this segment's latest
+        # `베이스 판정` observed, or an ancestor of it: without that base any
+        # commit could stand as the other side.
+        local mmeta=0 mr mt_seen
+        if [ "$GATE_CYCLE_COVER_VERDICT" = '덮지 않는다' ] && [ -n "$mtip" ]; then
+          mr=$(gate_commit_in "$mwt" "$(gate_row_field "$(gate_segment_last_cycle_row "$seg")" '리뷰 HEAD')" || true)
+          mt_seen=$(gate_row_field "$(gate_base_last_row "$seg")" '베이스')
+          if [ -n "$mr" ] && [ "$mr" != "$mtip" ] && [ -n "$mt_seen" ] \
+             && gate_meta_resolved "$mwt" "$mr" "$mtip" "$mt_seen"; then mmeta=1; fi
+        fi
+        mc_field="머지 대조=$(gate_merge_check_value "$rpol_eff" "$GATE_CYCLE_COUNT_VERDICT" "$GATE_CYCLE_COVER_VERDICT" "$mmeta")"
         fc_field="최종 사이클=$GATE_CYCLE_NUMBER"
         set -- "$@" "$mc_field" "$fc_field"
       fi
@@ -23481,7 +24044,7 @@ gate_record_row() {
       # mode is the conservative claim ("no delta is asserted"), and check 8
       # below confirms against the report that the conservative reading is
       # also the true one.
-      local cmode cbasis cbasis_n ccyc ccyc_ok eff_mode crow cs csn cm brow brow_full latest bmode bhead wt rc brep delta_repair
+      local cmode cbasis cbasis_n ccyc ccyc_ok eff_mode crow cs csn cm rnx brow brow_full latest bmode bhead wt rc brep delta_repair resolve_repair
       cmode=$(gate_field_of '모드' "$@")
       cbasis=$(gate_field_of '기준 사이클' "$@")
       # Every refusal of a delta row except the mode mismatch carries this
@@ -23489,10 +24052,11 @@ gate_record_row() {
       # the same check, rewritten as 전체 it meets check 8 because the report
       # still says 델타. The only repair left is a review the gate accepts.
       delta_repair=" — if a row rewritten to match the review-mode line of the report and the cycle numbers of this segment still meets the same check, the row cannot repair it: re-dispatch the review of this segment as a full review without the three basis flags, and write no cycle row until there is a report the gate accepts"
+      resolve_repair=" — the row cannot repair it: re-dispatch the review of this segment as a full review without the three resolution flags, and write no cycle row until there is a report the gate accepts"
       # Check 1 — vocabulary, whenever the field is present at all.
       case "$cmode" in
-        ''|전체|델타) ;;
-        *) warn "the \`모드\` of a cycle row is out of vocabulary: '$cmode' — \`전체\` \`델타\`"
+        ''|전체|델타|해소) ;;
+        *) warn "the \`모드\` of a cycle row is out of vocabulary: '$cmode' — \`전체\` \`델타\` \`해소\`"
            return "$GATE_EXIT_VOCAB" ;;
       esac
       eff_mode=${cmode:-전체}
@@ -23600,6 +24164,67 @@ EOF
           return "$GATE_EXIT_VOCAB"
         fi
       fi
+      # --- RESOLUTION MODE: a review of what a base resolution added ---
+      #
+      # `모드=해소` claims a review that read only the commits a resolution of a
+      # base conflict added — `HEAD ^B ^T` — with `--remerge-diff`, where B is
+      # the `리뷰 HEAD` of the segment's last cycle that is not itself a
+      # resolution and T the base the resolution merged. A combined diff hides
+      # a side taken whole; the remerge diff shows it. Everything that makes the
+      # claim sound is checked before the row exists: B's row is that last
+      # non-resolution cycle, B is an ancestor of this review HEAD, and — read
+      # off the report's mode line in check 8 — T is a base this segment's
+      # `베이스 판정` named, the set is not empty, and every merge in it brings
+      # in nothing but T or its history.
+      if [ "$eff_mode" = 해소 ]; then
+        case "$cbasis" in
+          ''|*[!0-9]*)
+            warn "a cycle row with \`모드=해소\` needs a positive integer \`기준 사이클\`: '${cbasis:-(none)}'$resolve_repair"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
+        cbasis_n=$((10#$cbasis))
+        ccyc=$(gate_field_of '사이클' "$@")
+        case "$ccyc" in
+          ''|*[!0-9]*) ccyc_ok=0 ;;
+          *) if [ "$((10#$ccyc))" -gt "$cbasis_n" ]; then ccyc_ok=1; else ccyc_ok=0; fi ;;
+        esac
+        if [ "$ccyc_ok" != 1 ]; then
+          warn "the \`사이클\` ('$ccyc') of a \`모드=해소\` cycle row has to be an integer greater than \`기준 사이클\` ($cbasis)$resolve_repair"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        brow=$(gate_base_resolve_basis_row "$seg")
+        cs=$(gate_row_field "$brow" '사이클')
+        case "$cs" in ''|*[!0-9]*) cs=-1 ;; *) cs=$((10#$cs)) ;; esac
+        if [ -z "$brow" ] || [ "$cs" -ne "$cbasis_n" ]; then
+          warn "basis cycle $cbasis is not the last cycle of segment $seg that is not a resolution (${cs#-1}) — a resolution review takes that cycle as its basis$resolve_repair"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        bhead=$(gate_row_field "$brow" '리뷰 HEAD')
+        wt=$(gate_segment_worktree "$seg")
+        if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+          warn "cannot judge the ancestry of basis review HEAD $bhead and review HEAD $rh — there is no segment worktree: '${wt:-(none)}'$resolve_repair"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        rc=0
+        ( cd "$wt" && git merge-base --is-ancestor "$bhead" "$rh" ) >/dev/null 2>&1 || rc=$?
+        case "$rc" in
+          0) ;;
+          1) warn "basis review HEAD $bhead is not an ancestor of the review HEAD $rh of this row — a resolution review does not hold$resolve_repair"
+             return "$GATE_EXIT_VOCAB" ;;
+          *) warn "cannot judge the ancestry of basis review HEAD $bhead and review HEAD $rh (git exit $rc, worktree $wt)$resolve_repair"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+        # ONLY A SEGMENT WHOSE 다음 READS 해소 리뷰 TAKES ONE. That value stands
+        # only when the basis cycle let a merge through and HEAD has since moved
+        # past it, so a resolution review never stands in for the re-review of
+        # a cycle that asked for a fix: it reads only what came after B, and B's
+        # findings are not judged again.
+        rnx=$(gate_segment_review_next "$seg")
+        if [ "$rnx" != '해소 리뷰' ]; then
+          warn "segment $seg reads 다음=$rnx, not 해소 리뷰 — a cycle row with \`모드=해소\` is written only for a HEAD a base resolution moved past a review that let the merge through"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
       # Check 8 — EVERY row, not only delta rows: the report is the source of
       # the mode and the row must agree with it. The dangerous direction is
       # under-claiming, not over-claiming. A report that says 델타 under a row
@@ -23618,11 +24243,11 @@ EOF
       # `awk 'NR==1'` and not `head -1`: the first line is wanted, but an
       # early-exiting reader on the right of a pipe is the pipefail trap this
       # tree's suite refuses, and `awk` reads to the end.
-      local rep line rmode rcyc rhead r1 r2
+      local rep line rmode rcyc rhead rbase r1 r2 rt rset rbad
       rep=$(gate_report_abs "$(gate_field_of '리포트 경로' "$@")")
       if [ -f "$rep" ]; then
-        line=$({ grep -E '^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타)( |$)' "$rep" || true; } | awk 'NR==1')
-        rmode=$(printf '%s\n' "$line" | sed -E -n 's/^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타).*/\1/p')
+        line=$({ grep -E '^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타|해소)( |$)' "$rep" || true; } | awk 'NR==1')
+        rmode=$(printf '%s\n' "$line" | sed -E -n 's/^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타|해소).*/\1/p')
         [ -n "$rmode" ] || rmode=전체
         if [ "$rmode" != "$eff_mode" ]; then
           warn "the mode ($eff_mode) of the cycle row differs from the review mode ($rmode) of the report — rewrite the row with the mode the report states: $rep"
@@ -23648,6 +24273,55 @@ EOF
             return "$GATE_EXIT_VOCAB"
           fi
         fi
+        if [ "$eff_mode" = 해소 ]; then
+          rcyc=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 사이클 ([0-9]+).*/\1/p')
+          rhead=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 리뷰 HEAD `([0-9a-f]+)`.*/\1/p')
+          rbase=$(printf '%s\n' "$line" | sed -E -n 's/.*베이스 `([0-9a-f]+)`.*/\1/p')
+          if [ -z "$rcyc" ] || [ "$((10#$rcyc))" -ne "$cbasis_n" ]; then
+            warn "the basis cycle (${rcyc:-(none)}) of the report differs from the basis cycle ($cbasis) of the row: $rep$resolve_repair"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          r1=$(gate_commit_in "$wt" "$rhead" || true)
+          r2=$(gate_commit_in "$wt" "$bhead" || true)
+          if [ -z "$r1" ] || [ "$r1" != "$r2" ]; then
+            warn "the basis review HEAD (${rhead:-(none)}) of the report is not the commit of the basis row's review HEAD ($bhead): $rep$resolve_repair"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          rt=$(gate_commit_in "$wt" "$rbase" || true)
+          if [ -z "$rt" ]; then
+            warn "the base (${rbase:-(none)}) on the report's review-mode line does not resolve in $wt: $rep$resolve_repair"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          # T IS A BASE THE GATE OBSERVED. A resolution review reads `^T`, so a
+          # T the caller chose would cut any commit it liked out of the review.
+          if [ -z "$(gate_base_rows "$seg" | gate_rows_field_values '베이스' | while IFS= read -r c; do
+                       [ "$(gate_commit_in "$wt" "$c" || true)" = "$rt" ] && { printf y; break; }
+                     done || true)" ]; then
+            warn "the base $rbase on the report's review-mode line is not one a \`베이스 판정\` row of $seg named — a resolution review reviews against a base the gate observed: $rep$resolve_repair"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          rset=$( (cd "$wt" && git rev-list "$rh" "^$r1" "^$rt") 2>/dev/null) || rset=''
+          if [ -z "$rset" ]; then
+            warn "there is no commit in $rh ^$r1 ^$rt — a resolution review has nothing to read: $rep$resolve_repair"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          # Every merge in the set brings in the base and nothing else: a parent
+          # other than the first that is not T or its history would put another
+          # branch's commits past a review that reads only this set's remerge.
+          rbad=$( (cd "$wt" && git rev-list --merges --parents "$rh" "^$r1" "^$rt") 2>/dev/null \
+                  | while read -r _m _p1 rest; do
+                      for c in $rest; do
+                        (cd "$wt" && git merge-base --is-ancestor "$c" "$rt") >/dev/null 2>&1 || printf '%s ' "$c"
+                      done
+                    done || true)
+          if [ -n "$rbad" ]; then
+            warn "a merge in $rh ^$r1 ^$rt brings in ${rbad% } — not the base $rt or its history: $rep$resolve_repair"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        fi
+      elif [ "$eff_mode" = 해소 ]; then
+        warn "cannot open the report of a cycle row with \`모드=해소\`: $rep$resolve_repair"
+        return "$GATE_EXIT_VOCAB"
       elif [ "$eff_mode" = 델타 ]; then
         # A full row whose report cannot be opened passes here — no new refusal
         # on the existing path; the merge rule already catches the absence at
@@ -24684,6 +25358,11 @@ EOF
         "기각 P0=${dp0:-0}" "기각 P1=${dp1:-0}" "리포트 경로=${drep:--}" \
         "근거=$dwhy" "레인=$dlane" "기록 시각=$dat"
       log "리뷰 기각 기록 — $seg 사이클 $dcyc (P0=${dp0:-0} P1=${dp1:-0})"
+      ;;
+    base-check)
+      # A read of the remote and an isolated merge, and one row. The routing
+      # shift calls it before a merge; every check lives in the row builder.
+      gate_base_check_row "$seg" "$alias" "$@" || return $?
       ;;
     review-carry)
       # The carry-over twin of `review-dismiss`, without its seat-only refusal:
@@ -26433,7 +27112,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry|shift-halt)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry|shift-halt|base-check)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -26747,11 +27426,12 @@ gate_kind_is_bookkeeping() {
   # `review-carry` on the same ground — the issues it records were opened by
   # acts graded on their own, and the merge after it is graded too.
   # `shift-halt` writes one file under the run directory's `halt/shift/` and one
-  # row, and enters no tree.
+  # row, and enters no tree. `base-check` reads the remote's ref and merges in
+  # an object directory it removes again, and writes one row.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
     obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry) return 0 ;;
-    shift-halt) return 0 ;;
+    shift-halt|base-check) return 0 ;;
   esac
   return 1
 }
@@ -27470,7 +28150,37 @@ gate_verb_act() {
         fi
         ;;
     esac
+    # A BASE RESOLUTION IS AN IMPLEMENT DISPATCH WHOSE PROMPT CARRIES
+    # `베이스 해소: <sha>`, and it spends the base resolution's allowance, not the
+    # cycle budget. It is dispatched only while `다음` is `베이스 해소`, and only
+    # onto the base the segment's latest `베이스 판정` row named: a base the
+    # router picked would merge a tree no check judged.
+    local br_dir
+    br_dir=""
     if [ "${1:-}" = "implement" ]; then
+      br_dir=$(printf '%s\n' "$(gate_skill_prompt_of "$@")" | awk '
+        !got && /베이스 해소:/ { s = $0; sub(/.*베이스 해소:[ \t]*/, "", s); n = split(s, w, /[ \t]+/)
+                                print "T:" (n > 0 ? w[1] : ""); got = 1 }')
+    fi
+    if [ -n "$br_dir" ]; then
+      local br_next br_t br_want br_c1 br_c2 br_wt
+      br_next=$(gate_segment_review_next "$segment")
+      br_t=${br_dir#T:}
+      if [ "$br_next" != "베이스 해소" ]; then
+        warn "세그먼트 ${segment} 의 다음 처분은 「${br_next}」 입니다 — 베이스 해소는 「다음」 이 「베이스 해소」 일 때만 파견합니다"
+        warn "스냅숏의 review_next[] 의 「다음」 을 읽고 그 처분으로 가세요"
+        exit "$GATE_EXIT_RULE"
+      fi
+      br_want=$(gate_row_field "$(gate_base_last_row "$segment")" '베이스')
+      br_wt=$(gate_act_worktree "$alias" "$segment")
+      br_c1=$(gate_commit_in "$br_wt" "$br_t" || true)
+      br_c2=$(gate_commit_in "$br_wt" "$br_want" || true)
+      if [ -z "$br_c1" ] || [ "$br_c1" != "$br_c2" ]; then
+        warn "베이스 해소 파견의 베이스 (${br_t:-없음}) 가 세그먼트 ${segment} 의 마지막 베이스 판정의 베이스 (${br_want:-없음}) 와 다릅니다"
+        warn "스냅숏의 review_next[] 의 「베이스」 값을 그대로 「베이스 해소:」 뒤에 실어 다시 파견하세요"
+        exit "$GATE_EXIT_RULE"
+      fi
+    elif [ "${1:-}" = "implement" ]; then
       local cy_n cy_cap
       cy_n=$(gate_segment_cycle_count "$segment")
       cy_cap=$(gate_segment_cycle_cap "$segment")
@@ -28211,6 +28921,7 @@ gate_verb_act() {
         exit "$GATE_EXIT_VOCAB"
       fi
     fi
+    gate_meta_resolved_export "$segment" "$mhead"
   fi
 
   # WHAT THE ORDER PREDICATE READS. The checker is a separate `/bin/sh` and
@@ -30346,9 +31057,15 @@ EOF
 }
 
 gate_merge_check_value() {
-  # gate_merge_check_value <리뷰 정책> <카운트 판정> <커버리지 판정> — the
-  # `머지 대조` value. Closed set: 충족 · 이월 · 기각 · 위반(카운트) ·
-  # 위반(미포함) · 위반(카운트·미포함) · 리뷰 없음 · 판정 불가 · 정책 면제.
+  # gate_merge_check_value <리뷰 정책> <카운트 판정> <커버리지 판정> [<메타>] —
+  # the `머지 대조` value. Closed set: 충족 · 이월 · 기각 · 메타 해소 ·
+  # 위반(카운트) · 위반(미포함) · 위반(카운트·미포함) · 리뷰 없음 · 판정 불가 ·
+  # 정책 면제.
+  #
+  # `메타 해소` is a passing count over a tip the review did not cover, when
+  # <메타> is 1: the tip is the renumbering merge of the reviewed HEAD, whose
+  # tree that HEAD and the merged base fix to the object id. Only the coverage
+  # half is excused, and only by that proof.
   #
   # `이월` EXCUSES THE COUNT HALF ONLY. A carry-over moves the open P1 findings
   # to issues; it says nothing about whether the review saw the merged commit,
@@ -30360,7 +31077,7 @@ gate_merge_check_value() {
   # `판정 불가` OUTRANKS A PARTIAL VIOLATION. A value that names one violation
   # while the other half went unmeasured reads as the whole answer, and the
   # repair it points to may not be the one that is missing.
-  local pol="$1" cnt="$2" cov="$3"
+  local pol="$1" cnt="$2" cov="$3" meta="${4:-0}"
   if [ "$pol" != '선리뷰후머지' ]; then printf '%s' '정책 면제'; return 0; fi
   if [ "$cnt" = '리뷰 없음' ]; then printf '%s' '리뷰 없음'; return 0; fi
   if [ "$cnt" = '판정 불가' ] || [ "$cov" = '판정 불가' ]; then printf '%s' '판정 불가'; return 0; fi
@@ -30369,9 +31086,8 @@ gate_merge_check_value() {
     '이월:덮는다') printf '%s' '이월' ;;
     '기각:덮는다') printf '%s' '기각' ;;
     '위반:덮는다') printf '%s' '위반(카운트)' ;;
-    '충족:덮지 않는다') printf '%s' '위반(미포함)' ;;
-    '이월:덮지 않는다') printf '%s' '위반(미포함)' ;;
-    '기각:덮지 않는다') printf '%s' '위반(미포함)' ;;
+    '충족:덮지 않는다'|'이월:덮지 않는다'|'기각:덮지 않는다')
+      if [ "$meta" = 1 ]; then printf '%s' '메타 해소'; else printf '%s' '위반(미포함)'; fi ;;
     '위반:덮지 않는다') printf '%s' '위반(카운트·미포함)' ;;
     *) printf '%s' '판정 불가' ;;
   esac
@@ -34107,7 +34823,9 @@ gate_done_conditions() {
   # writes `리뷰 기각` — which the merge rule and the `다음` table read before
   # the counts and let through. A `P0 > 0` or `P1 > 0` with neither still reads
   # `위반(카운트)` and holds, and either one that does not cover the merged tip
-  # reads `위반(미포함)` and holds.
+  # reads `위반(미포함)` and holds — save `메타 해소`, which passes: the tip the
+  # review did not cover is the renumbering merge of the reviewed HEAD, whose
+  # tree that HEAD and the merged base fix to the object id.
   if gate_rule_enabled '리뷰-후-머지'; then
     local pol mcv mrow
     for sid in $(gate_segment_ids); do
@@ -34119,7 +34837,7 @@ gate_done_conditions() {
       [ -n "$mrow" ] || continue
       mcv=$(gate_row_field "$mrow" '머지 대조')
       case "$mcv" in
-        '충족'|'정책 면제'|'이월'|'기각') ;;
+        '충족'|'정책 면제'|'이월'|'기각'|'메타 해소') ;;
         *) printf '11 세그먼트 %s 의 머지 대조가 %s 입니다\n' "$sid" "${mcv:-(빈 값)}" ;;
       esac
     done
@@ -34858,18 +35576,36 @@ gate_snapshot_review_next_json() {
   # carry-over act names, and at `리드 수정` and `확인 리뷰` the cap report the
   # lead fix and the re-check name. A segment with no cycle row is left out:
   # its `다음` is `리뷰 없음` by definition.
-  local out s row nx
+  #
+  # At the three base values the element also carries what the resolution and
+  # its review name: the basis cycle and its `리뷰 HEAD` (the segment's last
+  # cycle that is not a resolution), and the base, the conflicted files and
+  # the class of the latest `베이스 판정` row.
+  local out s row nx brow bcy
   out=$(gate_segment_ids | while IFS= read -r s; do
           [ -n "$s" ] || continue
           [ "$(gate_segment_field "$s" '상태')" = "머지됨" ] && continue
           row=$(gate_segment_last_cycle_row "$s")
           [ -n "$row" ] || continue
           nx=$(gate_segment_review_next "$s")
-          printf '    {"세그먼트": "%s", "다음": "%s", "사이클": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s"},\n' \
+          printf '    {"세그먼트": "%s", "다음": "%s", "사이클": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s"' \
             "$(gate_json_escape "$s")" "$(gate_json_escape "$nx")" \
             "$(gate_json_escape "$(gate_row_field "$row" '사이클')")" \
             "$(gate_json_escape "$(gate_row_field "$row" '리뷰 HEAD')")" \
             "$(gate_json_escape "$(gate_report_abs "$(gate_row_field "$row" '리포트 경로')")")"
+          # An if, not a case: this runs inside `$( … )`, and bash 3.2 closes the
+          # substitution at a case pattern's `)`.
+          if [ "$nx" = '베이스 해소' ] || [ "$nx" = '해소 리뷰' ] || [ "$nx" = '베이스 해소 한도' ]; then
+              bcy=$(gate_base_resolve_basis_row "$s")
+              brow=$(gate_base_last_row "$s")
+              printf ', "기준 사이클": "%s", "기준 리뷰 HEAD": "%s", "베이스": "%s", "충돌 파일": "%s", "부류": "%s"' \
+                "$(gate_json_escape "$(gate_row_field "$bcy" '사이클')")" \
+                "$(gate_json_escape "$(gate_row_field "$bcy" '리뷰 HEAD')")" \
+                "$(gate_json_escape "$(gate_row_field "$brow" '베이스')")" \
+                "$(gate_json_escape "$(gate_row_field "$brow" '충돌 파일')")" \
+                "$(gate_json_escape "$(gate_row_field "$brow" '부류')")"
+          fi
+          printf '},\n'
         done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"

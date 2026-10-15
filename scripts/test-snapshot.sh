@@ -1198,7 +1198,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Planning the segments|When an earlier pass already made the slice'"'"'s derived branch and worktree (the `슬라이싱` entry'"'"'s branch and worktree), planning it again does not cut them a second time: skip calls 1 and 2 and issue call 3 alone.' \
     '#### Merging and applying a segment|**Whatever the review policy, merge a segment only when its snapshot `머지 대기` is empty.** A non-empty `머지 대기` names the predecessors, by `선행` or `머지 순서`, that have not landed yet: do other work, or wait as 「Waiting on a stage」 chooses.' \
     '#### Merging and applying a segment|A refusal with exit 3 that names such a predecessor and its `상태` means the same — wait — whether the refused act was the merge or another act leaving the worktree whose grade the gate could not read; it is not **Any other cause** below, and nothing is written for it. A predecessor that was parked has already parked this segment through its cone.' \
-    '#### Merging and applying a segment|A `머지 순서` successor refused with 405 for a conflict takes this branch as it stands: never merge or rebase the moved base into its branch, which would make a HEAD no review read.'
+    '#### Merging and applying a segment|Never merge or rebase the moved base into a branch yourself: only a `베이스 해소` dispatch does that, and what it adds is reviewed before it merges.'
   do
     head=${spec%%|*}; lit=${spec#*|}
     if [ -n "$head" ]; then

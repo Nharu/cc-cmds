@@ -72,6 +72,8 @@ name: 리뷰-후-머지
 낡음 다섯 등급:
   무이동      리뷰 기록의 HEAD 와 현재 HEAD 가 같다 — 통과
   동일 트리   커밋 sha 는 다르나 트리 해시가 같다(리베이스·amend) — 통과
+  (메타 재번호 현재 HEAD 가 게이트가 넘긴 GATE_META_RESOLVED_HEAD 와 같다 —
+              통과. 아래 「왜 메타 재번호를 통과시키는가」)
   추가 커밋   리뷰 HEAD 가 현재 HEAD 의 조상이고 그 사이 커밋이 있다 — 거부
   베이스 이동 리뷰 HEAD 가 조상이 아니고 베이스가 움직였다 — 거부
   무관        어느 쪽도 아니다 — 거부
@@ -79,6 +81,15 @@ name: 리뷰-후-머지
   리베이스는 베이스를 따라가려고 하는 일이고, 트리가 한 바이트도 다르지 않은
   재작성까지 거부하면 그 룰은 켜 두는 것 자체가 비용이 되어 꺼진다. 꺼진 룰은
   없는 룰이다.
+왜 메타 재번호를 통과시키는가:
+  같은 플러그인의 두 릴리스는 plugin.json 과 CHANGELOG.md 에서만 충돌하고,
+  그 해소는 판단이 아니다 — 판은 베이스의 판을 이 세그먼트가 올린 등급만큼
+  올린 것이고, 이 세그먼트의 항목은 베이스의 항목들 위에 놓인다. 리뷰된 HEAD
+  와 베이스가 주어지면 그 해소가 가질 수 있는 트리는 하나뿐이므로, 그 머지를
+  다시 리뷰시키면 사람이 볼 것이 없는 리뷰가 상한을 먹는다. 게이트가 머지
+  행위 직전에 그 머지의 부모와 트리를 객체 id 까지 대조해 증명한 HEAD 만
+  GATE_META_RESOLVED_HEAD 로 싣고, 이 검사기는 지금 HEAD 가 그것과 같은지만
+  본다. 게이트가 진입할 때 이 값을 비우므로 호출자가 환경으로 실을 수 없다.
 왜 착지 여부를 세지 않는가:
   초안은 이전 머지가 실제로 착지했는지를 세는 산술을 여기 두었고 그것은
   측정으로 반증됐다. 상태를 바꾸고 나서 종료 코드가 0이 아닌 복합 명령은
@@ -103,4 +114,4 @@ name: 리뷰-후-머지
   sh 에서 판정되지 않으므로 보수적으로 목록에 넣었고, 그래서 이 철자는
   과검사된다. `revert` 는 이 브랜치의 이력에서 만들어진 커밋을 이 브랜치
   위에서 되돌리는 것이라 목록에 넣지 않는다.
-읽는 값: GATE_ACT_INDEX GATE_MERGE_INDEX GATE_SURFACE GATE_HISTORY_INTEGRATION GATE_REVIEW_POLICY_INDEX GATE_SEGMENT_OPEN_OBLIGATIONS GATE_SEGMENT GATE_SEGMENT_LAST_CYCLE GATE_SEGMENT_LAST_SEGMENT GATE_SEGMENT_REVIEW_DISMISSED GATE_SEGMENT_REVIEW_CARRIED GATE_MANIFEST GATE_SUBJECT_HEAD
+읽는 값: GATE_ACT_INDEX GATE_MERGE_INDEX GATE_SURFACE GATE_HISTORY_INTEGRATION GATE_REVIEW_POLICY_INDEX GATE_SEGMENT_OPEN_OBLIGATIONS GATE_SEGMENT GATE_SEGMENT_LAST_CYCLE GATE_SEGMENT_LAST_SEGMENT GATE_SEGMENT_REVIEW_DISMISSED GATE_SEGMENT_REVIEW_CARRIED GATE_MANIFEST GATE_SUBJECT_HEAD GATE_META_RESOLVED_HEAD
