@@ -412,6 +412,13 @@ check "--fields 의 기본 목록은 라우터가 읽는 여덟 필드를 그 �
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
   "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
 check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이다" "$(jq -c .waiting_stages "$WORK/s1.json")" "[]"
+# THE CONE AND REPLAN ARRAYS ARE ALWAYS PRESENT, right after `blocked`, and stay
+# out of the default projection: the router asks for them by name, and a key that
+# appeared only when it had elements would read as absent on the ordinary night.
+check "cone_blocks 와 replan_due 가 blocked 바로 뒤에 그 순서로 온다" \
+  "$(jq -r 'keys_unsorted | "\(index("cone_blocks") - index("blocked")),\(index("replan_due") - index("blocked"))"' "$WORK/s1.json")" "1,2"
+check "막힘·재계획이 없으면 둘 다 빈 배열이다" \
+  "$(jq -c '[.cone_blocks, .replan_due]' "$WORK/s1.json")" "[[],[]]"
 check "--fields H 는 스냅숏의 H 를 날값 한 줄로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null)" \
   "$(jq -r .H "$WORK/s1.json")"
@@ -579,6 +586,10 @@ check "대기 승인 항목이 절단점을 싣는다" \
   "$(jq -r '.pending_approvals[0].cutpoint' "$SNAP_U")" "판단"
 check "대기 승인 항목이 질문 문면을 싣는다" \
   "$(jq -r '.pending_approvals[0].question' "$SNAP_U")" "q"
+# The class is what tells the router a 사람-결정 wait from an ordinary one, and a
+# question raised without one still carries the key, as `-`.
+check "대기 승인 항목이 판단 부류를 싣고, 부류 없는 질문은 - 다" \
+  "$(jq -r '.pending_approvals[0].class' "$SNAP_U")" "-"
 
 RENDER_U="$WORK/render.txt"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null ) > "$RENDER_U"
@@ -2874,6 +2885,22 @@ check "드라이버도 답한 판단을 그 스테이지에 다시 붙인다" \
 # Spent-ness is still read — the whole-field pin did not turn the test off.
 check "실제로 소진된 판단은 여전히 배열에 오르지 않는다" \
   "$(qj_ids | { grep -xF QJ-CITING || true; } | gate_count)" "0"
+
+# A 사람-결정 refusal IS listed, with its state beside it, because the router
+# parks the segment on it; the driver's re-dispatch pick still takes only `승인`,
+# so the refusal is never handed back to the stage as an answer to carry out.
+gate_append '승인' "승인 id=QJ-PERSON" "상태=대기" "대상=repo" "절단점=판단" "막는 세그먼트=S4:QW:1" \
+  "질문 문면=사람이 정할 물음" "판단 부류=사람-결정"
+qj_close QJ-PERSON 거부 "사람이 정할 물음" "하지 않는다"
+: > "$RUN_DIR/log/S4:QW:1.json"
+check "사람-결정 판단의 거부는 답이 온 판단 배열에 state 거부로 오른다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-PERSON") | .state' 2>/dev/null)" "거부"
+check "답한 판단의 원소는 state 승인을 싣는다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-ANSWERED") | .state' 2>/dev/null)" "승인"
+check "부류 없는 판단의 거부는 여전히 배열에 오르지 않는다" \
+  "$(qj_ids | { grep -xF QJ-REFUSED || true; } | gate_count)" "0"
+check "드라이버는 사람-결정 거부를 그 스테이지에 답으로 다시 붙이지 않는다" \
+  "$(answered_judgment_stage QW S4 2>/dev/null)" ""
 
 LEDGER="$LEDGER_SAVE"
 RUN_DIR="$RUN_DIR_SAVE"
