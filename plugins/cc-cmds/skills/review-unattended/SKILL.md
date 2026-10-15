@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--slice <id>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -45,6 +45,21 @@ options:
       default: "off (delta mode is not attempted; review runs full)"
       summary: "Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed."
       parse_note: "`--basis-report-path` takes the next token as its value. Value missing or not an absolute path → treated as absent; see --basis-cycle's parse_note for the joint-absence rule."
+    - name: "--resolve-basis-cycle <n>"
+      kind: flag
+      default: "off (resolution mode is not attempted; review runs full)"
+      summary: "The 사이클 number of this segment's last cycle that is not a resolution, whose 리뷰 HEAD a base resolution merged onto the base. Required together with --resolve-basis-head and --resolve-base to attempt resolution mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt."
+      parse_note: "`--resolve-basis-cycle` takes the next token as its value. Missing, or not a positive integer, or either companion flag missing or malformed → all three are treated as absent for this call; full review, no halt, one overview line when at least one was supplied."
+    - name: "--resolve-basis-head <sha>"
+      kind: flag
+      default: "off (resolution mode is not attempted; review runs full)"
+      summary: "B — the 리뷰 HEAD of the cycle named by --resolve-basis-cycle. Must be an ancestor of the target head named explicitly."
+      parse_note: "`--resolve-basis-head` takes the next token as its value. Value missing → treated as absent; see --resolve-basis-cycle's parse_note for the joint-absence rule."
+    - name: "--resolve-base <sha>"
+      kind: flag
+      default: "off (resolution mode is not attempted; review runs full)"
+      summary: "T — the base the resolution merged, as the gate's 베이스 판정 row named it. The review reads only what `<target head> ^B ^T` adds, with --remerge-diff."
+      parse_note: "`--resolve-base` takes the next token as its value. Value missing → treated as absent; see --resolve-basis-cycle's parse_note for the joint-absence rule."
     - name: "--recover"
       kind: flag
       default: "off (팀을 띄워 Steps 2~4 를 정상 수행)"
@@ -69,7 +84,7 @@ options:
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--slice`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(수렴 술어를 얇게 만들기 때문 — 드라이버가 넘긴 `--slice` 에 따른 다른 슬라이스 몫 제외는 스스로 좁히기가 아니다), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -192,6 +207,7 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope the driver already resolved. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit this segment branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the segment declared it would touch, quoted by the driver because it contains commas. A flag whose value is missing is dropped along with the flag: consuming the next token would swallow the following flag or the directive.
 - **`--slice <id>`** → the design slice this segment implemented. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. A `--slice` whose value is missing is dropped along with the flag and leaves one overview line naming the drop; the slice scope then falls back to `인자 없음` in 1c′. What the value selects is decided in 1c′, not here.
 - **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
+- **`--resolve-basis-cycle <n>`, `--resolve-basis-head <sha>` and `--resolve-base <sha>`** → the resolution basis the router read off `review_next[]`. Stripped with their values before the directive is extracted, exactly as the basis flags are; whether they qualify is decided in 1b″. The three together with any basis flag is not a delta and not a halt: the basis flags are dropped with one overview line, and 1b″ decides alone.
 - **`--recover` and `--scratch-dir <abs-path>`** → the recovery dispatch. `--recover` takes no value; `--scratch-dir` takes the **next token**, and both the flag and its value are removed from the argument string before the directive is extracted. `--scratch-dir` with a missing or non-absolute value is dropped along with the flag and read as *no naming*, which routes to the enumerate-then-refuse path rather than to a halt. With `--recover` present, skip Steps 2–4, Read `${CLAUDE_SKILL_DIR}/references/recovery-arm.md` and follow its `## Recovery arm` section; without `--recover`, do not read that file.
 - **`--lead-fix <abs-path>` and `--recheck <abs-path>`** → the two dispatches after a segment reaches its re-implementation cycle cap. Each takes the **next token** — the cap report, an absolute path — and both the flag and its value are removed before the directive is extracted. Unlike the basis flags, a missing, non-absolute or unreadable value is a **halt** with `분류: precondition-failed`, not a degradation: a lead fix that does not know its items has nothing to fix, and a re-check that drops the cap items would count a known P0 out of the merge decision. `--lead-fix` together with `--recover` or `--recheck` is the same halt. With `--lead-fix` present, run Step 1 only as far as parsing and the 1b context, then go to `## Lead-fix mode` below. With `--recheck` present, run the whole workflow and add to it the re-check section below. **`--recheck` together with `--recover` is not a halt**: it is the recovery of a crashed re-check, and the recovery arm's item 11 (`references/recovery-arm.md`) says what it adds.
 - **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
@@ -252,6 +268,26 @@ DELTA=$(LC_ALL=C comm -12 <(printf '%s\n' "$SET_A") <(printf '%s\n' "$SET_B"))
 - 1c's `--declared-files` comparison is **still against the whole segment diff**. The scope record is independent of the reading mode. A path outside the declaration that is also outside `DELTA` has that overlap noted under `## 미검토 영역`.
 
 **What is read.** Each file in `DELTA` is read as **that file's whole diff against the base**, not as the hunks since the basis. The saving comes from which files are opened, not from slicing the ones that are — a slice loses the surrounding function, and the loss is largest in exactly the files both sides touched.
+
+#### 1b″: Resolution mode — what a base resolution added, and nothing else
+
+A segment whose reviewed HEAD B conflicted with its base T is merged onto T by an implementation stage, and the review that follows reads only what that resolution added — B was reviewed, T is the base's own history. It is attempted only when all three resolution flags are present, and **every failure below degrades to a full review, never a halt**, for 1b′'s reason.
+
+| # | Check | On failure |
+| --- | --- | --- |
+| 0 | All three flags are present; `--resolve-basis-cycle` is a positive integer | Degrade; one overview line names what arrived |
+| 1 | `git rev-parse --verify <B>^{commit}` and `git rev-parse --verify <T>^{commit}` resolve | Degrade |
+| 2 | `git merge-base --is-ancestor <B> <target head>`, the target head named explicitly | Degrade |
+| 3 | `git rev-list <target head> ^<B> ^<T>` is not empty | Degrade — nothing to read |
+| 4 | every merge commit in that set has its second and later parents as ancestors of T | Degrade — a merge brought in something other than the base |
+
+**What is read** is one command's output, and nothing else for new findings:
+
+```sh
+git -c core.quotePath=false log --no-renames -p --remerge-diff "$TARGET" "^$B" "^$T"
+```
+
+`--remerge-diff` shows each merge as the difference between git's automatic merge — conflict markers included — and the committed result, so a side taken whole, a hunk dropped or a change slipped in while resolving shows as lines; a combined diff (`--cc`) hides a side taken whole. Non-merge commits in the set show as ordinary patches. Read the files those lines touch whole where a finding needs the context, as any review would. B's findings are not re-adjudicated — B's cycle passed — and the slice and declared-file records of 1c and 1c′ still apply to the segment diff. The gate refuses a `cycle` row claiming `모드=해소` unless the same checks hold, so this mode is never a cheaper way to a merge.
 
 #### 1c: Scope record (no confirmation, no narrowing)
 
@@ -387,9 +423,10 @@ Directly after the overview's `리뷰 대상` line, in every report, full or del
 ```
 - **리뷰 모드**: 전체
 - **리뷰 모드**: 델타 (기준 사이클 <n>, 기준 리뷰 HEAD `<sha>`)
+- **리뷰 모드**: 해소 (기준 사이클 <n>, 기준 리뷰 HEAD `<B>`, 베이스 `<T>`)
 ```
 
-The line states **what actually happened**. Whatever the flags requested, if any 1b′ check failed the line says `전체`. The router copies this line onto the ledger's `cycle` row and the gate compares the two on every write, so the format is load-bearing.
+The line states **what actually happened**. Whatever the flags requested, if any 1b′ check failed the line says `전체`, and if any 1b″ check failed it says `전체` too. The router copies this line onto the ledger's `cycle` row and the gate compares the two on every write, so the format is load-bearing.
 
 Directly after it, in every report, full or delta, one line naming the commit this review actually read — the target head the diff was taken to, as a full sha:
 

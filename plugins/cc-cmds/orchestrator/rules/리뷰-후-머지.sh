@@ -229,6 +229,14 @@ if [ -n "$t_now" ] && [ "$t_now" = "$t_rev" ]; then
   exit 0
 fi
 
+# 릴리스 메타 재번호 — 현재 HEAD 가 리뷰된 HEAD 와 게이트가 판정한 베이스를
+# 부모로 갖고, 그 트리가 둘에서 기계적으로 정해지는 기대 트리와 객체 id 까지
+# 같은 머지다. 이 검사기는 원장을 읽지 않고 그 트리를 계산할 수도 없으므로,
+# 게이트가 증명한 HEAD 하나만 받아 지금 HEAD 와 같은지 본다.
+if [ -n "${GATE_META_RESOLVED_HEAD:-}" ] && [ "$now" = "$GATE_META_RESOLVED_HEAD" ]; then
+  exit 0
+fi
+
 # 등급 3~5 — 전부 거부이며, 어느 것인지만 다르게 보고한다.
 if (cd "$wt" && git merge-base --is-ancestor "$reviewed" "$now" 2>/dev/null); then
   echo "rule refused: 리뷰-후-머지 — commits were added after the review (reviewed ${reviewed} → now ${now})" >&2

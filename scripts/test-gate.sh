@@ -3690,6 +3690,17 @@ pre_ledger_series() {
 
   lsr_sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
+  lsr_last_fields() {
+    # lsr_last_fields <원장> <계열> <필드…> — 그 계열 마지막 행의 필드 값들을 | 로 잇는다.
+    local r f out=''
+    r=$( { grep "^- \`$2\` " "$1" || true; } | tail -1)
+    shift 2
+    for f in "$@"; do
+      out="$out${out:+|}$(printf '%s\n' "$r" | tr '|' '\n' | sed -n "s/^ $f=\\(.*\\)\$/\\1/p" | sed 's/ *$//')"
+    done
+    printf '%s' "$out"
+  }
+
   # 리뷰 수열 재생. 원장의 cycle 행 수열을 행 위치대로 다시 놓고 각 행 뒤의 `다음` 과 파견
   # 인가가 읽는 사실을 잰다. 매니페스트와 리포트는 이 헬퍼가 쓴다 — 매니페스트는 대상 하나와
   # 설계 문서만 든 최소 꼴이고 사전 인가 행이 없다.
@@ -29393,7 +29404,7 @@ sb13b_bad=$( { grep -E '^- `segment`' "$SA_LEDGER" || true; } | grep -F 'id=SB13
 check "13: 적용 팔의 적용 준비·완료 행은 전부 선행 을 다시 싣는다" "$sb13b_bad" "0"
 
 # --- 38-14. 대상 HEAD 바인딩 -----------------------------------------------------
-# --- section: 38-14 | group: sb | covers: act, apply, exec | anchors: 14: 구현 워크트리가 지워져도 적용은 게이트의 대상 HEAD 로 통과한다, 14: 적용 준비 뒤 같은 세그먼트의 배포 exec 은 여전히 거부된다 ---
+# --- section: 38-14 | group: sb | covers: act, apply, exec | anchors: 14: 구현 워크트리가 지워져도 적용은 게이트의 대상 HEAD 로 통과한다, 14: 적용 준비 뒤 같은 세그먼트의 배포 exec 은 여전히 거부된다, 14: 물려준 GATE_META_RESOLVED_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다 ---
 #
 # 구현 워크트리가 남아 있으면 규칙은 변수 없이도 통과한다 — 규칙을 직접 부른다.
 sb_apply_new '14 바인딩' "if [ -f $WORK/sb14-applied ]; then exit 0; else exit 2; fi" "touch $WORK/sb14-applied"
@@ -29437,6 +29448,18 @@ GATE_SUBJECT_HEAD="$SB_TIP" sa_merge SB14U
 check "14: 적용 준비 뒤 같은 세그먼트의 배포 exec 은 여전히 거부된다" "$rc" "3"
 sa_names_rule || bad "14: exec 거부 주체" "$msg"
 check "14: 물려준 GATE_SUBJECT_HEAD 로는 원격이 움직이지 않는다" \
+  "$( cd "$SA_REMOTE" && git rev-parse main )" "$sb14u_remote"
+# 릴리스 메타 재번호 HEAD 의 표지도 같다 — 게이트 진입이 비우므로, 규칙이 읽을 지금
+# HEAD(세그먼트 행의 워크트리 HEAD, 리뷰 뒤 커밋)를 호출자가 지명해 내보내도 규칙은
+# 그것을 보지 못한다.
+sb14u_wt=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; LEDGER="$2"; MANIFEST="$3"; gate_row_field "$(gate_segment_last_segment_row SB14U)" 워크트리' \
+             _ "$GATE" "$SA_LEDGER" "$SA_MANIFEST" 2>/dev/null)
+sb14u_tip=$( { cd "$sb14u_wt" 2>/dev/null && git rev-parse HEAD; } 2>/dev/null || true)
+check "14: 메타 해소 표지 픽스처의 지금 HEAD 가 읽힌다" "$([ -n "$sb14u_tip" ] && printf 0 || printf 1)" "0"
+GATE_META_RESOLVED_HEAD="$sb14u_tip" sa_merge SB14U
+check "14: 물려준 GATE_META_RESOLVED_HEAD 로도 리뷰 뒤 커밋의 머지는 거부된다" "$rc" "3"
+sa_names_rule || bad "14: 메타 해소 표지 거부 주체" "$msg"
+check "14: 물려준 GATE_META_RESOLVED_HEAD 로는 원격이 움직이지 않는다" \
   "$( cd "$SA_REMOTE" && git rev-parse main )" "$sb14u_remote"
 
 # --- R13. 홈이 아닌 레포 ------------------------------------------------------
@@ -38187,6 +38210,263 @@ r88rz=$(grep -F '| 사이클=3 |' "$lsr_root/w88r-cz/ledger.md")
 check "88r: 리뷰 종결을 실은 행에서도 P1 과 리뷰 종결을 읽는다" \
   "$(lsr_in Linux "$L88RZ" - lsr_rp_in "$M88R" gate_row_field "$r88rz" P1 2>/dev/null)|$(lsr_in Linux "$L88RZ" - lsr_rp_in "$M88R" gate_row_field "$r88rz" '리뷰 종결' 2>/dev/null)" \
   "1|이월"
+
+# ---------------------------------------------------------------------------
+# 88b. 베이스 판정과 해소 — base-check 의 세 판정, 다음 오버레이, 해소 사이클, 상한
+# --- section: 88b | group: ledger_series | covers: gate_base_check_row, gate_base_next, gate_segment_review_next, gate_base_remote_tip, gate_segment_cycle_count, gate_base_resolve_basis_row, gate_record_row | anchors: 88b: 베이스가 리뷰 HEAD 의 조상이면 일치 다, 88b: 같은 R·판정 HEAD·베이스의 둘째 판정은 행을 더 쓰지 않는다, 88b: 원격 팁이 아직 이 저장소에 없으면 rc 3 이다, 88b: 깨끗이 합쳐지는 베이스는 이동 이고 다음은 머지 다, 88b: 충돌한 베이스는 충돌·일반 이고 다음은 베이스 해소 다, 88b: 충돌 행이 넷이면 다음은 베이스 해소 한도 다, 88b: 라우팅 기록이 없는 런은 충돌에도 다음이 머지 다, 88b: 해소 커밋이 선 HEAD 의 다음은 해소 리뷰 다, 88b: 해소 사이클 행이 기록된다, 88b: 해소 사이클 뒤의 다음은 머지 이고 베이스 판정은 일치 다, 88b: 다음이 해소 리뷰 가 아닌 세그먼트의 해소 사이클 행은 rc 3 이다 ---
+#
+# 리뷰를 통과한 세그먼트가 베이스와 충돌하면 머지가 거절되고 교대가 이유를 남기지 않고
+# 끝나던 결함을 막는 사슬을 잰다. 원격은 로컬 베어 저장소이고, 저장소 설정의
+# `insteadOf` 가 대상의 원격 슬러그 URL 을 그리로 돌린다 — 게이트는 슬러그에서 만든
+# https URL 로 `git ls-remote` 를 부르므로, 전송이 기기를 떠나지 않고 그 질문이 그대로
+# 돈다. 상류의 커밋은 따로 된 클론에서 만들어 민다. 그래야 그 커밋이 세그먼트
+# 저장소에 아직 없는 자리(가져오기 전의 거절)를 잴 수 있다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88B="$lsr_root/s88b"; rm -rf "$D88B"; mkdir -p "$D88B"
+O88B="$D88B/origin.git"; G88B="$D88B/repo"; W88B="$D88B/seg"; U88B="$D88B/up"
+( git init -q --bare "$O88B" && git init -q "$G88B" && cd "$G88B" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git config "url.$O88B.insteadOf" https://github.com/o/r.git \
+  && printf 'a\nb\nc\n' > a.txt && git add -A && git commit -qm one && git branch -M main \
+  && git remote add origin https://github.com/o/r.git && git push -q origin main \
+  && git worktree add -q -b seg-88b "$W88B" main \
+  && git clone -q -b main "$O88B" "$U88B" && cd "$U88B" \
+  && git config user.email t@example.invalid && git config user.name T ) >/dev/null 2>&1
+R88B=$( ( cd "$W88B" && printf 'A\nb\nc\n' > a.txt && git commit -qam seg && git rev-parse HEAD ) 2>/dev/null)
+M88B="$D88B/manifest.md"
+printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88B" > "$M88B"
+L88B=$(lsr_ledger w88b)
+printf '1\n' > "${L88B%/*}/routing-guard"
+printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88b | 선행=없음 | prev=x\n' "$W88B" >> "$L88B"
+printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+  "$R88B" "$(lsr_rp_report "$D88B/c1.md" 0 0 차단)" >> "$L88B"
+q88b() { local l=$1; shift; lsr_in Linux "$l" - lsr_rp_in "$M88B" "$@" 2>/dev/null; }
+c88b() {  # c88b <원장> — base-check 를 부르고 rc 를 낸다
+  local rc88b=0
+  lsr_in Linux "$1" - lsr_rp_in "$M88B" gate_record_row base-check S t >/dev/null 2>&1 || rc88b=$?
+  printf '%s' "$rc88b"
+}
+nb88b() { { grep -c '^- `베이스 판정` ' "$1" || true; }; }
+up88b() {  # up88b <파일> <내용> <메시지> — 상류 클론에서 커밋을 만들어 민다
+  ( cd "$U88B" && git pull -q --ff-only origin main && printf "$2" > "$1" && git add -A \
+    && git commit -qm "$3" && git push -q origin HEAD:main && git rev-parse HEAD ) 2>/dev/null
+}
+B088B=$(cd "$G88B" && git rev-parse main)
+
+check "88b: 베이스가 리뷰 HEAD 의 조상이면 일치 다" \
+  "$(c88b "$L88B")|$(lsr_last_fields "$L88B" '베이스 판정' 리뷰\ HEAD 판정\ HEAD 베이스 판정 충돌\ 파일 부류)" \
+  "0|$R88B|$R88B|$B088B|일치|-|-"
+check "88b: 일치 뒤의 다음은 머지 다" "$(q88b "$L88B" gate_segment_review_next S)" "머지"
+c88b "$L88B" >/dev/null
+check "88b: 같은 R·판정 HEAD·베이스의 둘째 판정은 행을 더 쓰지 않는다" "$(nb88b "$L88B")" "1"
+check "88b: base-check 는 -- 뒤의 인자를 받지 않는다 (rc 2)" \
+  "$(rc88x=0; lsr_in Linux "$L88B" - lsr_rp_in "$M88B" gate_record_row base-check S t 판정=일치 >/dev/null 2>&1 || rc88x=$?; printf '%s' "$rc88x")" "2"
+
+T188B=$(up88b b.txt 'b\n' up-clean)
+check "88b: 원격 팁이 아직 이 저장소에 없으면 rc 3 이다" "$(c88b "$L88B")/$(nb88b "$L88B")" "3/1"
+( cd "$G88B" && git fetch -q origin ) >/dev/null 2>&1
+check "88b: 깨끗이 합쳐지는 베이스는 이동 이고 다음은 머지 다" \
+  "$(c88b "$L88B")|$(lsr_last_fields "$L88B" '베이스 판정' 베이스 판정 부류)|$(q88b "$L88B" gate_segment_review_next S)" \
+  "0|$T188B|이동|-|머지"
+
+T288B=$(up88b a.txt 'Z\nb\nc\n' up-conflict)
+( cd "$G88B" && git fetch -q origin ) >/dev/null 2>&1
+check "88b: 충돌한 베이스는 충돌·일반 이고 다음은 베이스 해소 다" \
+  "$(c88b "$L88B")|$(lsr_last_fields "$L88B" '베이스 판정' 베이스 판정 충돌\ 파일 부류)|$(q88b "$L88B" gate_segment_review_next S)" \
+  "0|$T288B|충돌|a.txt|일반|베이스 해소"
+
+# 상한 — 같은 R 의 충돌 행 수로 센다. 사본 원장에 같은 행을 셋 더 붙인다.
+L88BC=$(lsr_ledger w88b-cap); cp "$L88B" "$L88BC"; printf '1\n' > "${L88BC%/*}/routing-guard"
+row88b=$( { grep '^- `베이스 판정` ' "$L88B" || true; } | tail -1)
+printf '%s\n%s\n' "$row88b" "$row88b" >> "$L88BC"
+check "88b: 충돌 행이 셋이면 다음은 여전히 베이스 해소 다" "$(q88b "$L88BC" gate_segment_review_next S)" "베이스 해소"
+printf '%s\n' "$row88b" >> "$L88BC"
+check "88b: 충돌 행이 넷이면 다음은 베이스 해소 한도 다" "$(q88b "$L88BC" gate_segment_review_next S)" "베이스 해소 한도"
+check "88b: 해소 행은 리뷰 사이클 수에 들지 않는다 (해소 전 대조)" "$(q88b "$L88B" gate_segment_cycle_count S)" "1"
+L88BU=$(lsr_ledger w88b-unrouted); cp "$L88B" "$L88BU"
+check "88b: 라우팅 기록이 없는 런은 충돌에도 다음이 머지 다" "$(q88b "$L88BU" gate_segment_review_next S)" "머지"
+
+# 해소 — 구현 스테이지가 하는 일을 그대로: 베이스를 --no-ff 로 들이고 충돌을 손으로 푼다.
+M288B=$( ( cd "$W88B" && { git merge -q --no-ff "$T288B" -m "merge: 베이스" >/dev/null 2>&1 || true; } \
+           && printf 'A\nZ\nb\nc\n' > a.txt && git add a.txt && git commit -qm "merge: 베이스" \
+           && git rev-parse HEAD ) 2>/dev/null)
+check "88b: 해소 커밋이 선 HEAD 의 다음은 해소 리뷰 다" "$(q88b "$L88B" gate_segment_review_next S)" "해소 리뷰"
+check "88b: 리뷰 HEAD 를 지나간 HEAD 의 base-check 는 rc 3 이다" "$(c88b "$L88B")/$(nb88b "$L88B")" "3/3"
+
+rp88b() {  # rp88b <파일> <리뷰 모드 줄> — 0/0 리포트에 리뷰 모드 줄을 얹는다
+  lsr_rp_report "$1" 0 0 차단 >/dev/null
+  printf '%s\n' "- **리뷰 모드**: $2" >> "$1"
+  printf '%s' "$1"
+}
+cy88b() {  # cy88b <사이클> <리포트> <필드…> — 해소 cycle 행을 쓰고 rc 를 낸다
+  local cyc=$1 rep=$2 rc88c=0; shift 2
+  lsr_in Linux "$L88B" - lsr_rp_in "$M88B" gate_record_row cycle S t "사이클=$cyc" P0=0 P1=0 \
+    "리뷰 HEAD=$M288B" "리포트 경로=$rep" "$@" >/dev/null 2>&1 || rc88c=$?
+  printf '%s' "$rc88c"
+}
+GOOD88B="해소 (기준 사이클 1, 기준 리뷰 HEAD \`$R88B\`, 베이스 \`$T288B\`)"
+# 게이트가 본 적 없는 베이스 — T288B 의 자손이라 머지의 둘째 부모 검사는 지나고, 관측된
+# 베이스인지의 검사만 이것을 막는다. 베이스 가지를 움직이지 않게 곁가지로 민다.
+T388B=$( ( cd "$U88B" && git checkout -q -b side-88b && echo c > c.txt && git add -A && git commit -qm side \
+           && git push -q origin side-88b && git rev-parse HEAD && git checkout -q main ) 2>/dev/null)
+( cd "$G88B" && git fetch -q origin side-88b ) >/dev/null 2>&1
+check "88b: 관측 안 된 베이스 픽스처는 해소 머지의 둘째 부모를 조상으로 갖는다" \
+  "$( cd "$G88B" && git merge-base --is-ancestor "$T288B" "$T388B" && printf 0 || printf 1)" "0"
+check "88b: 기준 사이클이 마지막 비해소 사이클이 아닌 해소 행은 rc 2 다" \
+  "$(cy88b 5 "$(rp88b "$D88B/c2a.md" "해소 (기준 사이클 3, 기준 리뷰 HEAD \`$R88B\`, 베이스 \`$T288B\`)")" 모드=해소 '기준 사이클=3')" "2"
+check "88b: 게이트가 본 적 없는 베이스를 적은 해소 행은 rc 2 다" \
+  "$(cy88b 2 "$(rp88b "$D88B/c2b.md" "해소 (기준 사이클 1, 기준 리뷰 HEAD \`$R88B\`, 베이스 \`$T388B\`)")" 모드=해소 '기준 사이클=1')" "2"
+check "88b: 리포트가 해소라 말하는데 모드가 없는 행은 rc 2 다" \
+  "$(cy88b 2 "$(rp88b "$D88B/c2c.md" "$GOOD88B")")" "2"
+check "88b: 해소 사이클 행이 기록된다" \
+  "$(cy88b 2 "$(rp88b "$D88B/c2.md" "$GOOD88B")" 모드=해소 '기준 사이클=1')" "0"
+check "88b: 해소 사이클은 리뷰 사이클 수에 들지 않고 기준 행은 여전히 사이클 1 이다" \
+  "$(q88b "$L88B" gate_segment_cycle_count S)|$(q88b "$L88B" gate_base_resolve_basis_row S | tr '|' '\n' | sed -n 's/^ 사이클=\(.*\) $/\1/p')" "1|1"
+check "88b: 해소 사이클 뒤의 다음은 머지 이고 베이스 판정은 일치 다" \
+  "$(q88b "$L88B" gate_segment_review_next S)|$(c88b "$L88B")|$(lsr_last_fields "$L88B" '베이스 판정' 리뷰\ HEAD 판정)" \
+  "머지|0|$M288B|일치"
+check "88b: 다음이 해소 리뷰 가 아닌 세그먼트의 해소 사이클 행은 rc 3 이다" \
+  "$(cy88b 3 "$(rp88b "$D88B/c3.md" "$GOOD88B")" 모드=해소 '기준 사이클=1')|$(q88b "$L88B" gate_segment_review_next S)" "3|머지"
+
+# ---------------------------------------------------------------------------
+# 88c. 릴리스 메타만의 충돌 — 기대 트리, 고정 도우미, 머지 대조의 메타 해소
+# --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions | anchors: 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다 ---
+#
+# 두 세그먼트가 같은 플러그인의 판을 올리면 `plugin.json` 과 `CHANGELOG.md` 에서만
+# 충돌하고, 그 해소는 판단이 아니다. 여기서는 같은 등급(minor) 의 두 올림을 쓴다 —
+# `plugin.json` 은 두 쪽이 같은 줄을 같은 값으로 바꿔 깨끗이 합쳐지지만 그 값이
+# 틀린 판이다. 그래서 충돌 목록이 아니라 기대 트리 전체를 대조하는지를 잰다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88C="$lsr_root/s88c"; rm -rf "$D88C"; mkdir -p "$D88C"
+O88C="$D88C/origin.git"; G88C="$D88C/repo"; W88C="$D88C/seg"; U88C="$D88C/up"
+PJ88C='plugins/cc-cmds/.claude-plugin/plugin.json'
+pj88c() { printf '{\n  "name": "cc-cmds",\n  "version": "%s",\n  "description": "x"\n}\n' "$1" > "$PJ88C"; }
+cl88c() {  # cl88c <판> <날짜> <본문> — 맨 위에 항목 하나를 얹는다
+  { sed -n '1,2p' CHANGELOG.md; printf '## [%s] - %s\n\n### Added\n- %s\n\n' "$1" "$2" "$3"; sed '1,2d' CHANGELOG.md; } > CHANGELOG.new
+  mv CHANGELOG.new CHANGELOG.md
+}
+( git init -q --bare "$O88C" && git init -q "$G88C" && cd "$G88C" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git config "url.$O88C.insteadOf" https://github.com/o/r.git \
+  && mkdir -p plugins/cc-cmds/.claude-plugin && pj88c 1.0.0 \
+  && printf '# Changelog\n\n## [1.0.0] - 2026-10-01\n\n### Added\n- 처음\n' > CHANGELOG.md \
+  && git add -A && git commit -qm one && git branch -M main \
+  && git remote add origin https://github.com/o/r.git && git push -q origin main \
+  && git worktree add -q -b seg-88c "$W88C" main \
+  && git clone -q -b main "$O88C" "$U88C" && cd "$U88C" \
+  && git config user.email t@example.invalid && git config user.name T ) >/dev/null 2>&1
+B88C=$(cd "$G88C" && git rev-parse main)
+R88C=$( ( cd "$W88C" && pj88c 1.1.0 && cl88c 1.1.0 2026-10-14 '세그먼트 기능' && echo s > seg.txt \
+          && git add -A && git commit -qm seg && git rev-parse HEAD ) 2>/dev/null)
+T88C=$( ( cd "$U88C" && pj88c 1.1.0 && cl88c 1.1.0 2026-10-13 '상류 기능' && echo u > up.txt \
+          && git add -A && git commit -qm up && git push -q origin HEAD:main && git rev-parse HEAD ) 2>/dev/null)
+( cd "$G88C" && git fetch -q origin ) >/dev/null 2>&1
+M88C="$D88C/manifest.md"
+printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$G88C" > "$M88C"
+L88C=$(lsr_ledger w88c)
+printf '1\n' > "${L88C%/*}/routing-guard"
+printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88c | 선행=없음 | prev=x\n' "$W88C" >> "$L88C"
+printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+  "$R88C" "$(lsr_rp_report "$D88C/c1.md" 0 0 차단)" >> "$L88C"
+q88c() { local l=$1; shift; lsr_in Linux "$l" - lsr_rp_in "$M88C" "$@" 2>/dev/null; }
+c88c() {
+  local rc88c=0
+  lsr_in Linux "$L88C" - lsr_rp_in "$M88C" gate_record_row base-check S t >/dev/null 2>&1 || rc88c=$?
+  printf '%s' "$rc88c"
+}
+
+check "88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다" \
+  "$(c88c)|$(lsr_last_fields "$L88C" '베이스 판정' 베이스 판정 충돌\ 파일 부류)|$(q88c "$L88C" gate_segment_review_next S)" \
+  "0|$T88C|충돌|CHANGELOG.md|릴리스 메타|베이스 해소"
+
+MM88C=$(q88c "$L88C" gate_meta_merge S)
+check "88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다" \
+  "$(cd "$W88C" && git rev-parse HEAD)|$(cd "$W88C" && git rev-list --parents -n 1 HEAD | cut -d' ' -f2-)|$(cd "$W88C" && sed -n 's/^  "version": "\(.*\)",$/\1/p' "$PJ88C")|$(cd "$W88C" && grep '^## \[' CHANGELOG.md | tr '\n' ';')" \
+  "$MM88C|$R88C $T88C|1.2.0|## [1.2.0] - 2026-10-14;## [1.1.0] - 2026-10-13;## [1.0.0] - 2026-10-01;"
+check "88c: 도우미가 만든 트리에는 두 쪽의 다른 파일이 모두 있다" \
+  "$(cd "$W88C" && git ls-tree --name-only HEAD | grep -c -e '^seg.txt$' -e '^up.txt$' || true)" "2"
+check "88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다" \
+  "$(q88c "$L88C" gate_segment_review_next S)|$(c88c)|$(lsr_last_fields "$L88C" '베이스 판정' 리뷰\ HEAD 판정\ HEAD 판정)" \
+  "머지|0|$R88C|$MM88C|일치"
+check "88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다" "$(q88c "$L88C" gate_segment_review_next S)" "머지"
+check "88c: 메타 해소의 검증은 그 자리에서 다시 선다 (게이트 함수 직접)" \
+  "$(q88c "$L88C" gate_meta_resolved "$W88C" "$R88C" "$MM88C" "$T88C" >/dev/null && printf 0 || printf 1)" "0"
+
+# 판을 잘못 매긴 머지 — 같은 부모, plugin.json 만 1.1.0 으로 둔 트리.
+mkdir -p "$D88C/bad/${PJ88C%/*}"; ( cd "$D88C/bad" && pj88c 1.1.0 )
+BAD88C=$( ( cd "$W88C" && b=$(git hash-object -w "$D88C/bad/$PJ88C") && export GIT_INDEX_FILE="$D88C/bad.index" \
+            && git read-tree "$MM88C" && git update-index --cacheinfo "100644,$b,$PJ88C" \
+            && t=$(git write-tree) && git commit-tree "$t" -p "$R88C" -p "$T88C" -m bad ) 2>/dev/null)
+check "88c: 판을 잘못 매긴 머지는 메타 해소가 아니다" \
+  "$(q88c "$L88C" gate_meta_resolved "$W88C" "$R88C" "$BAD88C" "$T88C" >/dev/null && printf 0 || printf 1)" "1"
+# 판은 맞게 매기고 다른 파일 하나를 끼워 넣은 머지 — 충돌 목록이 아니라 트리 전체를 대조한다.
+printf 'slipped\n' > "$D88C/bad/extra.txt"
+SLIP88C=$( ( cd "$W88C" && b=$(git hash-object -w "$D88C/bad/extra.txt") && export GIT_INDEX_FILE="$D88C/slip.index" \
+             && git read-tree "$MM88C" && git update-index --add --cacheinfo "100644,$b,extra.txt" \
+             && t=$(git write-tree) && git commit-tree "$t" -p "$R88C" -p "$T88C" -m slip ) 2>/dev/null)
+check "88c: 판은 맞고 다른 파일을 끼워 넣은 머지도 메타 해소가 아니다" \
+  "$(q88c "$L88C" gate_meta_resolved "$W88C" "$R88C" "$SLIP88C" "$T88C" >/dev/null && printf 0 || printf 1)" "1"
+check "88c: 부모가 R 과 베이스가 아닌 커밋도 메타 해소가 아니다" \
+  "$(q88c "$L88C" gate_meta_resolved "$W88C" "$R88C" "$R88C" "$T88C" >/dev/null && printf 0 || printf 1)" "1"
+L88CB=$(lsr_ledger w88c-bad); cp "$L88C" "$L88CB"; printf '1\n' > "${L88CB%/*}/routing-guard"
+# 메타 해소 판정 행을 떼어 R 의 충돌 행을 마지막으로 둔다.
+awk '/^- `베이스 판정` / && /판정=일치/ { next } { print }' "$L88C" > "$L88CB"
+( cd "$W88C" && git branch -q bad-88c "$BAD88C" && git checkout -q bad-88c ) >/dev/null 2>&1
+check "88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다" "$(q88c "$L88CB" gate_segment_review_next S)" "해소 리뷰"
+( cd "$W88C" && git checkout -q seg-88c ) >/dev/null 2>&1
+
+# 머지 행위가 규칙에 넘기는 값 — 증명된 HEAD 만 내보내고, 규칙은 그 값이 지금 HEAD 일
+# 때만 리뷰 뒤 커밋을 통과시킨다.
+ex88c() {  # ex88c <HEAD> — 머지 행위의 내보내기가 남기는 값
+  unset GATE_META_RESOLVED_HEAD
+  gate_meta_resolved_export S "$1"
+  printf '%s' "${GATE_META_RESOLVED_HEAD:-}"
+}
+check "88c: 머지 행위는 메타 해소 HEAD 만 규칙에 내보낸다" \
+  "$(q88c "$L88C" ex88c "$MM88C")|$(q88c "$L88C" ex88c "$BAD88C")|$(q88c "$L88C" ex88c "$R88C")" "$MM88C||"
+rl88c() {  # rl88c [env 할당…] — 리뷰-후-머지 규칙을 머지 자리의 입력으로 직접
+  ( cd "$G88C" && env -u GATE_SUBJECT_HEAD -u GATE_META_RESOLVED_HEAD "$@" GATE_ACT_INDEX=9 GATE_MERGE_INDEX=1 \
+      GATE_SURFACE=외부상태변경 GATE_HISTORY_INTEGRATION=0 GATE_REVIEW_POLICY_INDEX=0 \
+      GATE_LEDGER="$L88C" GATE_MANIFEST="$M88C" GATE_SEGMENT=S \
+      GATE_SEGMENT_LAST_CYCLE="$(q88c "$L88C" gate_segment_last_cycle_row S)" \
+      GATE_SEGMENT_LAST_SEGMENT="$(q88c "$L88C" gate_segment_last_segment_row S)" \
+      /bin/sh "$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-머지.sh" ) >/dev/null 2>&1 && printf 0 || printf 1
+}
+check "88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다" \
+  "$(rl88c)|$(rl88c GATE_META_RESOLVED_HEAD="$MM88C")|$(rl88c GATE_META_RESOLVED_HEAD="$R88C")" "1|0|1"
+
+# 전제 (f) — 머리 항목 본문에 판 번호가 든 R. 새 번호 아래에서 뜻이 바뀌는 문장이다.
+RF88C=$( ( cd "$U88C" && git checkout -q -b f-88c "$B88C" && pj88c 1.1.0 && cl88c 1.1.0 2026-10-14 '1.0.0 의 회귀를 고친다' \
+           && git add -A && git commit -qm f && git rev-parse HEAD ) 2>/dev/null)
+( cd "$G88C" && git fetch -q "$U88C" f-88c ) >/dev/null 2>&1
+rm88c() {  # rm88c <dir> <R> <T> — 기대 트리의 rc 와 떨어진 전제의 머리말
+  local rc=0
+  release_meta_expected_tree "$1" "$2" "$3" || rc=$?
+  printf '%s|%s' "$rc" "${GATE_META_WHY%% *}"
+}
+check "88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다" \
+  "$(q88c "$L88C" rm88c "$W88C" "$RF88C" "$T88C")" "1|(f)"
+check "88c: 대조 — 같은 전제를 지나는 R 의 기대 트리는 선다" \
+  "$(q88c "$L88C" rm88c "$W88C" "$R88C" "$T88C")" "0|"
+
+check "88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다" \
+  "$(q88c "$L88C" gate_merge_check_value 선리뷰후머지 충족 '덮지 않는다' 1)|$(q88c "$L88C" gate_merge_check_value 선리뷰후머지 충족 '덮지 않는다' 0)" \
+  "메타 해소|위반(미포함)"
+L88CM=$(lsr_ledger w88c-done)
+printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=%s | prev=x\n' "$D88C/c1.md" >> "$L88CM"
+printf -- '- `segment` | 교대=1 | id=S | 상태=머지됨 | 워크트리=- | 머지 대조=메타 해소 | prev=x\n' >> "$L88CM"
+check "88c: 조건 11 은 메타 해소 를 통과시킨다" "$(q88c "$L88CM" gate_done_conditions | grep -c '^11 ' || true)" "0"
+
+# 메타 해소 뒤 베이스가 다시 움직여 그 머지와 충돌한다 — 판정 대상은 메타 해소 HEAD 이고,
+# 다음은 해소 리뷰가 아니라 베이스 해소다.
+T288C=$( ( cd "$U88C" && git checkout -q main && echo x > seg.txt && git add -A && git commit -qm up2 \
+           && git push -q origin HEAD:main && git rev-parse HEAD ) 2>/dev/null)
+( cd "$G88C" && git fetch -q origin ) >/dev/null 2>&1
+check "88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다" \
+  "$(c88c)|$(lsr_last_fields "$L88C" '베이스 판정' 판정\ HEAD 베이스 판정 부류)|$(q88c "$L88C" gate_segment_review_next S)" \
+  "0|$MM88C|$T288C|충돌|일반|베이스 해소"
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제

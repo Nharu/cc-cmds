@@ -158,6 +158,14 @@ Load via `ToolSearch("select:TaskCreate,TaskList,TaskUpdate,TaskGet")`.
 
 The phase comes from durable state, not an input flag, so a re-dispatch lands in the same phase.
 
+**A `베이스 해소: <sha>` line in the prompt is a base resolution, not a scope directive, and it takes neither process.** The router dispatches it when the segment's reviewed HEAD conflicts with the base, and the gate admits it only onto the base the segment's latest `베이스 판정` row named. It plans nothing, emits no plan and edits no design document. Read that row from `$CC_PIPELINE_LEDGER` — the last line carrying `| 세그먼트=<this segment> |` in the `베이스 판정` series — and take its `부류`:
+
+- **`부류=릴리스 메타`** → the conflict is the two release files alone and its resolution is fixed. Call the gate's helper once, on a line of its own, with the gate's absolute path written out literally: `<gate> meta-merge --manifest "$CC_PIPELINE_MANIFEST" --segment <this segment>`. It builds the renumbering merge commit, fast-forwards the worktree branch to it and prints its sha. Push the segment branch the way this stage pushes its implementation, and end. Do not edit `plugin.json` or `CHANGELOG.md` by hand: a merge whose tree differs from the one the helper builds by a byte is reviewed again.
+- **Any other `부류`** → `git merge --no-ff <sha>` in the segment worktree through the gate, resolve every conflicted file keeping what each side meant — the base's change and this segment's both survive; where they cannot, keep the base's and re-apply this segment's intent on top — commit the merge, run the checks the design document's verification section names for the files the merge touched, and push the segment branch. Never rebase, never squash the merge and never take a side whole with `-s ours`/`-X theirs`: the resolution review reads exactly what this merge adds with `--remerge-diff`, and a rewritten history leaves it nothing to read against.
+- **No `베이스 판정` row, or its `베이스` is not the sha on the prompt line** → write the halt record with `분류: precondition-failed`, naming the row you read, and stop.
+
+A conflict whose resolution would change behaviour the design document's binding tier fixes is CFI-U3's case, not this one's.
+
 ---
 
 ### Step 1: Read Design Document
