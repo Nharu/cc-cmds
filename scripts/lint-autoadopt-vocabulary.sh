@@ -20,7 +20,7 @@
 #   4  the Korean numeral inside every `판단 부류=<N 값…>` placeholder says
 #      how many tokens the vocabulary actually holds                    [fail]
 #
-# Rule 1 is not bookkeeping. The design's whole point about the three forbidden
+# Rule 1 is not bookkeeping. The design's whole point about the forbidden
 # values is that they are NAMED and forbidden rather than left out: a class with
 # no token has to borrow a permitted one when the decision is recorded, and that
 # borrowing is the leak. With a token, the leak arrives as a refusal. Dropping

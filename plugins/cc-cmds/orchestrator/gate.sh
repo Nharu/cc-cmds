@@ -230,6 +230,13 @@
 # `베이스 판정` row: `일치`, `이동` or `충돌` with the conflicted files and
 # whether only the release files conflict. Refused (3) unless the segment's
 # review lets a merge through, and when the base tip is not fetched yet.
+#   gate.sh act --kind replan --target <alias> --segment <형제> ... \\
+#               -- 재수렴=<스테이지>#<실행 버전>
+# `replan` voids a sibling's plan after another segment's re-convergence read
+# `재수렴 판정=재설계 필요`: it moves `<형제>.plan.md` aside and writes a
+# `재계획` row, so the sibling's next implement dispatch is process A. Refused
+# (3) unless every clause `gate_replan_eval` names holds — the same evaluation
+# the snapshot's `replan_due[]` shows — and after the run has ended.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -10040,6 +10047,205 @@ gate_stage_result_rows_of() {
                -e "세그먼트=- | 스테이지=$1 | 종류=$rk2 " || true; }
 }
 
+gate_reconverge_verdict() {
+  # gate_reconverge_verdict <stream> — `재설계 필요`, `불필요` or `없음`, read
+  # from the text of the stream's LAST `result` object and nothing else.
+  #
+  # THE TERMINAL TEXT ONLY, AND WHOLE LINES ONLY. The transcript quotes the
+  # skill's own grammar — `판정: 재설계 필요|불필요` sits on one line in its
+  # template — so a substring match over the stream reads a normal
+  # re-convergence as both verdicts, or as one it did not give. A verdict is a
+  # line that IS `판정: 재설계 필요` or `판정: 불필요` (trailing whitespace
+  # aside), in a text that also carries the closing literal; a text with
+  # neither line, with both, or without the literal is `없음`, and `없음` cites
+  # nothing for a re-plan.
+  local out="${1:-}" txt need=0 unneeded=0 line
+  [ -n "$out" ] && [ -s "$out" ] && command -v jq >/dev/null 2>&1 || { printf '없음'; return 0; }
+  txt=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1 \
+         | { jq -r '.result // empty' 2>/dev/null || true; })
+  case "$txt" in *"$LIT_RECONVERGE_TERMINAL"*) ;; *) printf '없음'; return 0 ;; esac
+  while IFS= read -r line; do
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in
+      '판정: 재설계 필요') need=$((need + 1)) ;;
+      '판정: 불필요') unneeded=$((unneeded + 1)) ;;
+    esac
+  done <<EOF
+$txt
+EOF
+  if [ "$need" -gt 0 ] && [ "$unneeded" = "0" ]; then printf '재설계 필요'
+  elif [ "$unneeded" -gt 0 ] && [ "$need" = "0" ]; then printf '불필요'
+  else printf '없음'
+  fi
+}
+
+gate_replan_eval() {
+  # gate_replan_eval <sibling> <스테이지>#<실행 버전> — the seven clauses of a
+  # sibling re-plan, decided once for both readers: `act --kind replan` refuses
+  # on the first false clause, and `replan_due[]` derives `state` from the same
+  # answers. Returns 0 when every clause holds.
+  #
+  # Sets, for the caller:
+  #   GATE_REPLAN_C1 … GATE_REPLAN_C7  `1` or `0`, one per clause
+  #   GATE_REPLAN_CLAUSE / _WHY        the first false clause and why
+  #   GATE_REPLAN_ROUND                the `회차` the row would carry
+  #
+  # 1 the sibling has a `segment` row and has not ended;
+  # 2 no stage of the sibling is live;
+  # 3 the sibling has an implement row with `plan_sha256` above the cited row;
+  # 4 the cite key names exactly one row, a gate-written `종류=reconverge` row
+  #   with `재수렴 판정=재설계 필요` whose `세그먼트` is not the sibling;
+  # 5 no earlier `재계획` row pairs the sibling with this cite;
+  # 6 the sibling's round is at most two in this run;
+  # 7 no open `사람-결정` holds the sibling, directly or through `선행`.
+  local sib="$1" cite="$2" st at out n4 ok4 plan3 dup5 nrep held
+  GATE_REPLAN_C1=0 GATE_REPLAN_C2=0 GATE_REPLAN_C3=0 GATE_REPLAN_C4=0
+  GATE_REPLAN_C5=0 GATE_REPLAN_C6=0 GATE_REPLAN_C7=0
+  GATE_REPLAN_CLAUSE="" GATE_REPLAN_WHY="" GATE_REPLAN_ROUND=1
+  st="${cite%#*}"; at="${cite##*#}"
+  case "$cite" in *'#'*) ;; *) st=""; at="" ;; esac
+  case "$at" in ''|*[!0-9]*) st=""; at="" ;; esac
+  if [ -n "$(gate_segment_field "$sib" '상태')" ] && ! gate_segment_terminal "$sib"; then GATE_REPLAN_C1=1; fi
+  gate_stage_live_attempt "$sib" || GATE_REPLAN_C2=1
+  # Clauses 3 to 6 in one pass over the ledger, so the order clause 3 asks
+  # about is the ledger's own. Whole-field matches on the row padded with a
+  # trailing separator, the way `gate_has_row` reads a field.
+  out=$(awk -v sib="$sib" -v st="$st" -v at="$at" '
+    BEGIN { n4 = 0; ok4 = 0; cl = 0; minplan = 0; dup = 0; nrep = 0 }
+    { r = $0 " | " }
+    index($0, "- `stage-result`") == 1 {
+      if (st != "" && index(r, " | 스테이지=" st " | ") && index(r, " | 실행 버전=" at " | ")) {
+        n4++; cl = NR
+        ok4 = (index(r, " | 기록자=게이트 | ") && index(r, " | 종류=reconverge | ") \
+               && index(r, " | 재수렴 판정=재설계 필요 | ") && !index(r, " | 세그먼트=" sib " | "))
+      }
+      # An implement row is `종류=implement`, or the driver`s `스테이지=S4` row,
+      # which carries no `종류` — the reading `implement_process_b` makes.
+      if (index(r, " | 세그먼트=" sib " | ") && index(r, " | plan_sha256=") \
+          && (index(r, " | 종류=implement | ") || index(r, " | 스테이지=S4 | ")) && minplan == 0) minplan = NR
+    }
+    index($0, "- `재계획`") == 1 && index(r, " | 세그먼트=" sib " | ") {
+      nrep++
+      if (st != "" && index(r, " | 재수렴=" st "#" at " | ")) dup = 1
+    }
+    END { printf "%d %d %d %d %d", n4, ok4, (minplan > 0 && cl > 0 && minplan < cl), dup, nrep }
+  ' "$LEDGER" 2>/dev/null) || out="0 0 0 0 0"
+  read -r n4 ok4 plan3 dup5 nrep <<EOF
+$out
+EOF
+  [ "${plan3:-0}" = "1" ] && GATE_REPLAN_C3=1
+  [ "${n4:-0}" = "1" ] && [ "${ok4:-0}" = "1" ] && GATE_REPLAN_C4=1
+  [ "${dup5:-0}" = "1" ] || GATE_REPLAN_C5=1
+  GATE_REPLAN_ROUND=$(( ${nrep:-0} + 1 ))
+  [ "$GATE_REPLAN_ROUND" -le 2 ] && GATE_REPLAN_C6=1
+  held=$(for id in $(gate_pending_approval_ids 사람); do gate_approval_field "$id" '막는 세그먼트'; printf ' '; done)
+  # shellcheck disable=SC2086
+  if [ -z "${held// /}" ] || ! gate_slice_reaches_any "$sib" $held; then GATE_REPLAN_C7=1; fi
+  export GATE_REPLAN_C1 GATE_REPLAN_C2 GATE_REPLAN_C3 GATE_REPLAN_C4 GATE_REPLAN_C5 \
+    GATE_REPLAN_C6 GATE_REPLAN_C7 GATE_REPLAN_ROUND
+  local c cv
+  for c in 1 2 3 4 5 6 7; do
+    cv="GATE_REPLAN_C$c"
+    [ "${!cv}" = 1 ] && continue
+    GATE_REPLAN_CLAUSE=$c
+    case "$c" in
+      1) GATE_REPLAN_WHY="$sib has no segment row, or has ended" ;;
+      2) GATE_REPLAN_WHY="a stage of $sib is still live — read again after it ends" ;;
+      3) GATE_REPLAN_WHY="$sib has no implement row with plan_sha256 before the cited row" ;;
+      4) GATE_REPLAN_WHY="the cite does not name exactly one gate-written reconverge row with 재수렴 판정=재설계 필요 on another segment (rows found: ${n4:-0})" ;;
+      5) GATE_REPLAN_WHY="$sib was already re-planned for $cite" ;;
+      6) GATE_REPLAN_WHY="$sib has been re-planned twice in this run — raise a 사람-결정 instead" ;;
+      7) GATE_REPLAN_WHY="an open 사람-결정 holds $sib" ;;
+    esac
+    export GATE_REPLAN_CLAUSE GATE_REPLAN_WHY
+    return 1
+  done
+  return 0
+}
+
+gate_snapshot_cone_blocks_json() {
+  # One element per line of `cc_cone_blocked`: `subject`, `state` (`held` or
+  # `unresolved`, passed through), `cause`, `reason` and `observed` — `null`
+  # where the row carries no `관측`. The fold, the hiding rule and the order are
+  # that function's; this only changes the encoding.
+  local LC_CTYPE=C; export LC_CTYPE
+  # The tabs become a unit separator before the split: a tab is IFS
+  # whitespace, so two of them around an empty field would collapse into one
+  # and shift every field after it.
+  local k s c r o first=1 obs us
+  us=$(printf '\037')
+  while IFS="$us" read -r k s c r o; do
+    [ -n "$k" ] || continue
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    if [ -z "$o" ] || [ "$o" = "-" ]; then obs='null'; else obs="\"$(gate_json_escape "$o")\""; fi
+    printf '    {"subject": "%s", "state": "%s", "cause": "%s", "reason": "%s", "observed": %s}' \
+      "$(gate_json_escape "$s")" "$(gate_json_escape "$k")" \
+      "$(gate_json_escape "$c")" "$(gate_json_escape "$r")" "$obs"
+  done <<EOF
+$( { cc_cone_blocked "$LEDGER" 2>/dev/null || true; } | tr '\t' '\037')
+EOF
+  [ "$first" = "1" ] || printf '\n'
+}
+
+gate_replan_due_json() {
+  # One element per sibling a gate-written `재설계 필요` re-convergence leaves
+  # with a void plan: clauses 1, 3 and 4 hold and clause 5 finds no earlier row.
+  # `state` names the first of the remaining clauses that is false, in the
+  # order the router acts on — `보류` (7), `살아 있음` (2), `상한` (6) — and
+  # `가능` when none is. Same evaluation as the `replan` act, so an element
+  # whose state is `가능` is an act the gate admits.
+  local LC_CTYPE=C; export LC_CTYPE
+  local row rs st at cite sib state first=1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    rs=$(gate_row_field "$row" '세그먼트')
+    st=$(gate_row_field "$row" '스테이지')
+    at=$(gate_row_field "$row" '실행 버전')
+    [ -n "$st" ] && [ -n "$at" ] || continue
+    cite="$st#$at"
+    for sib in $(gate_segment_ids); do
+      [ -n "$sib" ] && [ "$sib" != "$rs" ] || continue
+      # STDIN IS CUT. This loop reads its rows from the here-document, and the
+      # clause 7 readers called inside the evaluation read standard input once
+      # a `사람-결정` is open — so they ate the rows still to come, and every
+      # re-convergence after the first went missing from the key.
+      gate_replan_eval "$sib" "$cite" </dev/null || true
+      [ "$GATE_REPLAN_C1$GATE_REPLAN_C3$GATE_REPLAN_C4$GATE_REPLAN_C5" = "1111" ] || continue
+      if [ "$GATE_REPLAN_C7" != 1 ]; then state='보류'
+      elif [ "$GATE_REPLAN_C2" != 1 ]; then state='살아 있음'
+      elif [ "$GATE_REPLAN_C6" != 1 ]; then state='상한'
+      else state='가능'
+      fi
+      [ "$first" = "1" ] || printf ',\n'
+      first=0
+      printf '    {"segment": "%s", "reconverge": "%s", "state": "%s"}' \
+        "$(gate_json_escape "$sib")" "$(gate_json_escape "$cite")" "$(gate_json_escape "$state")"
+    done
+  done <<EOF
+$( { gate_rows 'stage-result' || true; } | { grep -F '| 종류=reconverge |' || true; } \
+     | { grep -F '| 기록자=게이트 |' || true; } | { grep -F '| 재수렴 판정=재설계 필요 |' || true; })
+EOF
+  [ "$first" = "1" ] || printf '\n'
+}
+
+gate_plan_rows_of() {
+  # gate_plan_rows_of <stage-key> — `gate_stage_result_rows_of` with the key's
+  # `재계획` rows interleaved in ledger order: the input `implement_process_b`
+  # reads, because a re-plan voids a plan the way a re-convergence does and the
+  # reader has to see which of the two came last. One read over both series, so
+  # the order is the ledger's and not a merge of two reads; `awk` with `index`
+  # rather than a regex, because a Korean series name handed to a regex engine
+  # is the construction run.sh had to rewrite after it failed on one CI leg.
+  local rk rk2
+  rk=$(gate_run_scope_kind_of_key "$1" 2>/dev/null) || rk=design
+  rk2=$rk
+  [ "$rk" = "audit" ] && rk2=reconverge
+  { awk 'index($0, "- `stage-result`") == 1 || index($0, "- `재계획`") == 1' "$LEDGER" 2>/dev/null || true; } \
+    | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=$rk " \
+               -e "세그먼트=- | 스테이지=$1 | 종류=$rk2 " || true; }
+}
+
 gate_audit_result_rows_of() {
   # gate_audit_result_rows_of <audit step id> — the run-scope audit step's own
   # `종류=audit` rows, without the re-convergence that may share its key, in
@@ -12813,6 +13019,23 @@ gate_snapshot() {
   printf '  "blocked": [\n'
   gate_snapshot_blocked_json
   printf '  ],\n'
+  # THE CONE BLOCKS, right after the run-wide ones they are not part of. A cone
+  # row anchored on a segment holds what stands on that segment and nothing
+  # else, so `blocked[]` leaves it out — and with no other key carrying it, a
+  # shift could not see that a sibling was held at all. A projection of
+  # `cc_cone_blocked`, the fold the run pane already shows, and no new
+  # judgement: outside the default `--fields` projection and outside `H`, and
+  # no termination condition reads it. Always emitted, empty included.
+  printf '  "cone_blocks": [\n'
+  gate_snapshot_cone_blocks_json
+  printf '  ],\n'
+  # THE SIBLINGS A `재설계 필요` RE-CONVERGENCE LEFT WITH A VOID PLAN, and
+  # whether each may be re-planned now. The same evaluation the `replan` act
+  # makes (`gate_replan_eval`), so a router reading `state` here is reading the
+  # gate's own answer. Outside the default projection and `H`; always emitted.
+  printf '  "replan_due": [\n'
+  gate_replan_due_json
+  printf '  ],\n'
   printf '  "cycles": [\n'
   gate_snapshot_cycles_json
   printf '  ],\n'
@@ -13320,12 +13543,20 @@ gate_pending_approvals_json() {
     # whose last `대기` row carries `처분 사유` was answered by a person and the
     # gate could derive no disposition from the answer; without this field it
     # is indistinguishable in the array from one nobody has answered.
-    local disp
+    local disp pcls
     disp=$(gate_row_field "$row" '처분 사유'); [ -n "$disp" ] || disp='-'
-    printf '    {"id": "%s", "blocks": "%s", "cutpoint": "%s", "disposition": "%s", "question": "%s"}' \
+    # `class` IS WHAT SEPARATES A QUESTION ONLY A PERSON ANSWERS from one the
+    # gate holds for any other reason: a `사람-결정` approval keeps its segment
+    # held and counts against the run's end, and the router reads that here.
+    # Every row the issuer and the free-input close write for a judgment
+    # approval carries the class; an act approval, or one issued before the field
+    # existed, reads `-`.
+    pcls=$(gate_row_field "$row" '판단 부류'); [ -n "$pcls" ] || pcls='-'
+    printf '    {"id": "%s", "blocks": "%s", "cutpoint": "%s", "class": "%s", "disposition": "%s", "question": "%s"}' \
       "$(gate_json_escape "$id")" \
       "$(gate_json_escape "$(gate_row_field "$row" '막는 세그먼트')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '절단점')")" \
+      "$(gate_json_escape "$pcls")" \
       "$(gate_json_escape "$disp")" \
       "$(gate_json_escape "$(gate_row_field "$row" '질문 문면')")"
   done
@@ -16533,10 +16764,20 @@ gate_answered_judgments_json() {
   for id in $ids; do
     [ -n "$id" ] || continue
     row=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } | tail -1)
-    [ "$(gate_row_field "$row" '상태')" = "승인" ] || continue
+    st=$(gate_row_field "$row" '상태')
+    case "$st" in 승인|거부|무효) ;; *) continue ;; esac
     iss=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } \
            | { grep -F '| 절단점=판단 |' || true; } | tail -1)
     [ -n "$iss" ] || continue
+    # A REFUSAL IS AN ANSWER HERE ONLY FOR `사람-결정`. That class's `거부` and
+    # `무효` are what the router parks the segment on, so they are candidates
+    # until the parking resubmission spends them — the same `해소 승인=<id>`
+    # test below, which is why `state` travels on the element: the router must
+    # not read a refusal as a recommendation to carry out. Every other class's
+    # refusal stays a closed question nobody acts on, and is left out as before.
+    if [ "$st" != "승인" ] && [ "$(gate_row_field "$iss" '판단 부류')" != "$JUDGMENT_CLASSES_PERSON" ]; then
+      continue
+    fi
     if gate_has_row '자율 승인' "| 해소 승인=$id |"; then continue; fi
     seg=$(gate_row_field "$iss" '막는 세그먼트')
     [ "$first" = "1" ] || printf ',\n'
@@ -16550,14 +16791,16 @@ gate_answered_judgments_json() {
     # and says the bytes are gone, and the ledger's `답변 문면` still holds the
     # clipped copy.
     if [ -f "$RUN_DIR/answer/$id.md" ]; then
-      printf '    {"id": "%s", "segment": "%s", "answer": "%s"}' \
+      printf '    {"id": "%s", "segment": "%s", "state": "%s", "answer": "%s"}' \
         "$(gate_json_escape "$id")" \
         "$(gate_json_escape "${seg:--}")" \
+        "$(gate_json_escape "$st")" \
         "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
     else
-      printf '    {"id": "%s", "segment": "%s", "answer": null}' \
+      printf '    {"id": "%s", "segment": "%s", "state": "%s", "answer": null}' \
         "$(gate_json_escape "$id")" \
-        "$(gate_json_escape "${seg:--}")"
+        "$(gate_json_escape "${seg:--}")" \
+        "$(gate_json_escape "$st")"
     fi
   done
   [ "$first" = "1" ] || printf '\n'
@@ -18459,8 +18702,13 @@ gate_answer_servable() {
   # of the same tests, because two copies is how one of them comes to be fixed
   # alone.
   #
-  # FOUR FACTS: the three ledger facts `gate_answered_judgments_json` computes,
-  # plus the sidecar being on disk. The STATE test is the one that used to be
+  # FOUR FACTS: a `승인` row carries the id, its latest `상태` is `승인`, the
+  # issuing row has `절단점=판단`, and the sidecar is on disk.
+  # `gate_answered_judgments_json` asks the first and third the same way but NOT
+  # the second: it also lists a `사람-결정` question closed `거부` or `무효`,
+  # with that state on the element, because the router parks on such a refusal.
+  # Parking needs the state, never the refusal's words, so this door still serves
+  # `승인` alone. The STATE test is the one that used to be
   # missing on this side, and its absence is not cosmetic. `gate_close` writes
   # the answer sidecar BEFORE it branches on a refusal, so a judgment closed as
   # 거부 or 무효 leaves a fully formed file behind — and without this test the
@@ -18526,16 +18774,16 @@ gate_answers() {
   # out is the bytes a person typed, and it used to decide on a path existing
   # under `$RUN_DIR/answer/` and nothing else — so any file that landed in that
   # directory was served as an answer, with no row behind it saying a person had
-  # ever been asked. The predicate is the one `gate_answered_judgments_json`
-  # already computes, and it is THREE ledger facts: a `승인` row carries this id,
+  # ever been asked. The predicate is `gate_answer_servable`, and its ledger
+  # part is THREE facts: a `승인` row carries this id,
   # that row's latest `상태` is `승인`, and the row that ISSUED it has
   # `절단점=판단`. This comment used to name the first and the third while
   # calling them three, and the middle one — the state — was the one the code
   # was missing too. An enumeration that miscounts itself is how the gap got
   # past a reader.
   #
-  # No new state, and the two readers of an answer cannot disagree about whether
-  # it is one.
+  # No new state, and the two forms of this verb cannot disagree about whether
+  # an answer is one.
   local id="${1:-}"
   # THE CHARACTER-TYPE PIN, for the `gate_row_field` call the predicate makes.
   # `tr` and `sed` abort on a byte that is not valid in the locale's encoding,
@@ -19718,6 +19966,31 @@ gate_issue_judgment_approval() {
       # nothing to issue.
       return "$GATE_APPROVAL_ANSWERED" ;;
   esac
+  # A `사람-결정` QUESTION IS OPENED ONLY AGAINST A SEGMENT THE LEDGER KNOWS, AND
+  # AT MOST TWICE PER SEGMENT. The approval holds that segment's dispatches until
+  # a person answers, so a question naming no segment, or one this run never
+  # dispatched, would hold nothing a reader can find and would still count
+  # against the run's end. The cap counts distinct ids already issued for the
+  # segment in any state: a third question is the router asking the same person
+  # again instead of parking, and parking is what the refusal leaves it.
+  if [ "$cls" = "$JUDGMENT_CLASSES_PERSON" ]; then
+    local nl=$'\n' pn
+    if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+      warn "a '$cls' judgment names no segment — it is not opened (pass --segment)"
+      return "$GATE_EXIT_RULE"
+    fi
+    case "$nl$(gate_segment_ids)$nl" in
+      *"$nl$seg$nl"*) ;;
+      *) warn "a '$cls' judgment names segment '$seg', which has no segment row in this ledger — it is not opened"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+    pn=$({ gate_rows '승인' | grep -F "| 판단 부류=$cls |" | grep -F "| 막는 세그먼트=$seg |" || true; } \
+      | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u | gate_count)
+    if [ "${pn:-0}" -ge 2 ]; then
+      warn "segment $seg already has $pn '$cls' questions — a third is not opened; park the segment with a blocked row instead"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
   # THE SIDECAR BLOCK IS WRITTEN BEFORE THE ROW, so the anchor the row carries
   # names a block that exists. A block whose row never lands is an orphan and
   # harmless; a row whose block never lands is an anchor to nothing, and the
@@ -19741,6 +20014,7 @@ gate_issue_judgment_approval() {
     "행위 다이제스트=-" "구속 튜플=${seg:--}/$qdig/$GATE_MENU_VERSION/$(gate_tuple_snap)" \
     "막는 세그먼트=${seg:--}" "질문 문면=$q" "답변 문면=-" \
     "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
+    "판단 부류=${cls:--}" \
     "발행 시각=$(now_iso)" "해소 시각=-"
   if gate_auto_resolve_enabled; then
     local ar=0
@@ -19758,7 +20032,39 @@ gate_judgment_class_adoptable() {
   # and the emission absorber's answered branch both decide on it, and two
   # copies of the condition would grow apart.
   local cls="${1:-}"
+  [ "$cls" != "$JUDGMENT_CLASSES_PERSON" ] || return 1
   [ -n "$cls" ] && judgment_class_ok "$cls" && ! judgment_class_forbidden "$cls"
+}
+
+gate_segment_person_hold() {
+  # gate_segment_person_hold <segment> — the id of an open `사람-결정` question
+  # that names this segment in `막는 세그먼트`, or nothing. The first such id is
+  # enough: the caller asks whether the segment is held, not by how many.
+  local seg="$1" id
+  for id in $(gate_pending_approval_ids 사람); do
+    if [ "$(gate_approval_field "$id" '막는 세그먼트')" = "$seg" ]; then
+      printf '%s' "$id"
+      return 0
+    fi
+  done
+  return 0
+}
+
+gate_person_refusal_consumable() {
+  # gate_person_refusal_consumable <승인 id> — true when the approval is a
+  # `사람-결정` question a person closed `거부` or `무효` and no `자율 승인` row
+  # has named it yet.
+  #
+  # A PERSON'S NO TO THIS CLASS IS AN ANSWER THE ROUTER ACTS ON, so it is spent
+  # once, the way a `승인` is. The router parks the segment on it and resubmits
+  # the same judgment to say so; the row that resubmission writes carries
+  # `해소 승인=<id>` and `결정=거절 소비`, and that row is what takes the answer
+  # out of `answered_judgments[]`. Every other class keeps its refusal as a
+  # closed question: nobody acts on it, so there is nothing to consume.
+  local id="$1"
+  case "$(gate_approval_state "$id")" in 거부|무효) ;; *) return 1 ;; esac
+  [ "$(gate_approval_field "$id" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ] || return 1
+  ! gate_has_row '자율 승인' "| 해소 승인=$id |"
 }
 
 gate_auto_resolve_judgment() {
@@ -19782,6 +20088,18 @@ gate_auto_resolve_judgment() {
   # derived from the state that close left — the same three answers the issuer
   # gives for an approval it finds already closed or still open.
   local id="$1" q="$2" cls="${3:-}" st rec rc=0
+  # `사람-결정` IS HELD, NEITHER ADOPTED NOR REFUSED. Refusing it would close the
+  # question nobody was asked, and the router would then park on a refusal no
+  # person gave. The recorded class is read too, so a resubmission that dropped
+  # the class still finds the approval held. The id is not exported: nothing was
+  # resolved by this call.
+  if [ "$cls" = "$JUDGMENT_CLASSES_PERSON" ] \
+     || [ "$(gate_approval_field "$id" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ]; then
+    GATE_AUTO_RESOLVED_APPROVAL=""; export GATE_AUTO_RESOLVED_APPROVAL
+    warn "judgment approval $id is a '$JUDGMENT_CLASSES_PERSON' question — the gate does not answer it, and it waits for a person"
+    gate_warn_canon_prompt "$id" "$q"
+    return 0
+  fi
   GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
   if gate_judgment_class_adoptable "$cls"; then
     st=승인; rec="라우터 판단 채택"
@@ -24584,7 +24902,11 @@ EOF
           jq_id=$(gate_judgment_approval_id "$seg" \
                   "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")")
           jq_st=$(gate_approval_state "$jq_id")
-          if [ "$jq_st" = "승인" ]; then
+          if gate_person_refusal_consumable "$jq_id"; then
+            log "승인 $jq_id 의 거절을 이 판단이 소비합니다 (세그먼트를 park 합니다)"
+            GATE_RESOLVED_APPROVAL="$jq_id"
+            GATE_JUDGMENT_DECISION="거절 소비"
+          elif [ "$jq_st" = "승인" ]; then
             # ONE ANSWER OPENS ONE JUDGMENT, the same floor the acting path
             # applies. A judgment approval carries no binding tuple, so nothing
             # about it expires — without this the first answer would adopt every
@@ -24644,7 +24966,9 @@ EOF
       # whether an answer has already been spent, and a judgment approval has no
       # binding tuple to expire — so one answered question opened every later
       # judgment that hashed to the same id.
-      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=${seg:--}" \
+      # `결정=거절 소비` is the one other decision: a person's refusal of a
+      # `사람-결정` question, spent by the resubmission that parks on it.
+      gate_append '자율 승인' "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" "세그먼트=${seg:--}" \
         "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
       # The grade is read from the row rather than hard-coded: a grade-2 judgment
       # whose question has been answered lands here too, and a line claiming
@@ -25358,6 +25682,46 @@ EOF
         "기각 P0=${dp0:-0}" "기각 P1=${dp1:-0}" "리포트 경로=${drep:--}" \
         "근거=$dwhy" "레인=$dlane" "기록 시각=$dat"
       log "리뷰 기각 기록 — $seg 사이클 $dcyc (P0=${dp0:-0} P1=${dp1:-0})"
+      ;;
+    replan)
+      # A SIBLING'S PLAN, VOIDED BY ANOTHER SEGMENT'S RE-CONVERGENCE. The
+      # re-convergence moved the binding surface, and a plan derived before it
+      # would be carried into process B on a document that is no longer the one
+      # it read. The row resets `implement_process_b` the way a re-convergence
+      # row does, so the sibling's next implement dispatch is process A.
+      #
+      # ARGV IS THE CITE KEY AND NOTHING ELSE. The segment is `--segment`, and
+      # `회차` is counted here — a caller that could supply it could reset the
+      # cap. Every clause is the one `gate_replan_eval` decides, the same call
+      # `replan_due[]` makes, so the snapshot and this refusal cannot disagree.
+      local rpf rpk rpc
+      for rpf in "$@"; do
+        rpk="${rpf%%=*}"
+        [ "$rpk" = "재수렴" ] && continue
+        warn "\`replan\` takes \`재수렴=<스테이지>#<실행 버전>\` from argv and nothing else: ${rpk} — the segment is --segment and the round is counted by the gate"
+        return "$GATE_EXIT_VOCAB"
+      done
+      rpc=$(gate_field_of '재수렴' "$@")
+      [ -n "$rpc" ] || { warn "\`replan\` needs \`재수렴=<스테이지>#<실행 버전>\`"; return "$GATE_EXIT_VOCAB"; }
+      # A RUN THAT HAS ENDED IS NOT RE-PLANNED. The plan file would move under a
+      # run nothing will dispatch again, and the row would say a sibling is to be
+      # planned afresh by a run that is over.
+      if [ -s "$RUN_DIR/done" ]; then
+        warn "this run has already ended — a re-plan is not recorded after the end"
+        return "$GATE_EXIT_RULE"
+      fi
+      if ! gate_replan_eval "$seg" "$rpc"; then
+        warn "re-plan of $seg citing $rpc is refused — clause $GATE_REPLAN_CLAUSE: $GATE_REPLAN_WHY"
+        return "$GATE_EXIT_RULE"
+      fi
+      # THE PLAN FILE MOVES FIRST, THEN THE ROW. A row without the move leaves a
+      # plan file both implement-row writers fall back to hashing, so a process A
+      # that died before writing its new plan would put the void digest back
+      # after the row. A move without the row is a plan file the next process A
+      # replaces anyway.
+      void_segment_plan "$seg"
+      gate_append '재계획' "세그먼트=$seg" "재수렴=$rpc" "회차=$GATE_REPLAN_ROUND"
+      log "형제 재계획 — $seg ($rpc 인용, 회차 $GATE_REPLAN_ROUND): 다음 구현 파견은 과정 A 입니다"
       ;;
     base-check)
       # A read of the remote and an isolated merge, and one row. The routing
@@ -27112,7 +27476,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry|shift-halt|base-check)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry|shift-halt|base-check|replan)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -27427,11 +27791,13 @@ gate_kind_is_bookkeeping() {
   # acts graded on their own, and the merge after it is graded too.
   # `shift-halt` writes one file under the run directory's `halt/shift/` and one
   # row, and enters no tree. `base-check` reads the remote's ref and merges in
-  # an object directory it removes again, and writes one row.
+  # an object directory it removes again, and writes one row. `replan` moves one
+  # plan file under the run directory aside and writes one row, and enters no
+  # tree.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
     obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry) return 0 ;;
-    shift-halt|base-check) return 0 ;;
+    shift-halt|base-check|replan) return 0 ;;
   esac
   return 1
 }
@@ -28118,6 +28484,20 @@ gate_verb_act() {
     warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
     exit "$GATE_EXIT_RULE"
   fi
+  # A SEGMENT HELD ON A `사람-결정` QUESTION IS NOT DISPATCHED TO. The question
+  # is open because only a person can say what that segment does next, and a
+  # stage or a re-plan sent there meanwhile would be the router answering it.
+  # Every other segment is routed as before; the hold is the question's
+  # `막는 세그먼트` and nothing wider.
+  if { [ "$kind" = "skill" ] || [ "$kind" = "replan" ]; } && [ "$segment" != "-" ]; then
+    local ph_id
+    ph_id=$(gate_segment_person_hold "$segment")
+    if [ -n "$ph_id" ]; then
+      warn "세그먼트 ${segment} 는 사람-결정 판단 승인 ${ph_id} 의 답을 기다리고 있습니다 — 답이 오기 전에는 이 세그먼트로 ${kind} 를 보내지 않습니다"
+      warn "보류 집합 밖의 세그먼트를 계속 라우팅하세요. 답이 오면 answered_judgments 에 나타납니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+  fi
 
   # THE DOCUMENT ARGUMENT AND THE CYCLE BUDGET, the two facts the driver fixes
   # for its own dispatches and a router dispatch used to leave to the router.
@@ -28754,6 +29134,7 @@ gate_verb_act() {
   # Set only when an ANSWERED approval is what opened this act, so the row can
   # say which one and a second use of the same answer is refusable.
   GATE_RESOLVED_APPROVAL=""
+  GATE_JUDGMENT_DECISION=""
   if [ "$kind" = "judgment" ]; then
     # THE ROW IS WELL-FORMED BEFORE THE FLOOR IS ASKED ABOUT IT. Otherwise a
     # judgment missing a required field fails the floor for want of the very
@@ -29064,7 +29445,18 @@ EOF
       ap_id=$(gate_act_approval_id "$alias" "$argv" "$(gate_act_worktree "$alias" "$segment")")
     fi
     ap_st=$(gate_approval_state "$ap_id")
+    if [ "$kind" = "judgment" ] && gate_person_refusal_consumable "$ap_id"; then
+      # A PERSON'S REFUSAL OF A `사람-결정` QUESTION IS SPENT HERE, not refused
+      # again: the resubmission is the router saying it parked on that answer,
+      # and the row it writes is what retires the answer.
+      log "승인 $ap_id 의 거절을 이 판단이 소비합니다 (세그먼트를 park 합니다)"
+      GATE_RESOLVED_APPROVAL="$ap_id"
+      GATE_JUDGMENT_DECISION="거절 소비"
+      rules_rc=0
+      ap_st="소비"
+    fi
     case "$ap_st" in
+      소비) : ;;
       승인)
         # AN ANSWER IS SPENT ONCE. A judgment approval carries no binding tuple,
         # so nothing about it goes stale — `gate_approval_state` returns `승인`
@@ -29388,6 +29780,10 @@ EOF
     # recorded in the `done` file beside `무효화`, which already sits there for
     # the same structural reason, and the morning tells the three apart at a
     # glance.
+    #
+    # `사람-결정` IS THE EXCEPTION AND NEVER REACHES THIS ARM OPEN. Termination
+    # condition 2 counts it, because a segment of this run is held on it, so
+    # `unmet` is not empty while one is waiting and the run does not end over it.
     gate_done_note "$(gate_satisfied_done_line "$rationale")"
     # Each arm writes its ending row beside `done`, as the invalidated arm does:
     # only the satisfied one is a normal completion, `종료 부류=완료`.
@@ -33383,7 +33779,7 @@ gate_record_stage_outcome() {
   # the two arms above: the continuation is keyed on that name, and it carries
   # the missing headings in its message (`gate_continuation_argv`).
   elif [ "$kind" = "implement" ] \
-       && gate_stage_result_rows_of "$seg" | implement_process_b \
+       && gate_plan_rows_of "$seg" | implement_process_b \
        && [ -n "$(residual_share_missing "${DOC:-}" "$seg" "$RUN_DIR/halt" "$RUN_DIR/$seg.plan.md")" ]; then
     klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
@@ -33494,10 +33890,13 @@ gate_record_stage_outcome() {
   # The session's organization moves and this attempt's re-attachment record,
   # by the driver's readers; each is silent when there is nothing to say, so a
   # row with no move is the row written before these fields existed.
-  local om ro re
+  local om ro re rv=""
   om=$(stage_org_moves_of "$seg" || true)
   ro=$(stage_reattach_org_of "$seg")
   re=$(stage_reattach_ctx_of "$seg")
+  # `재수렴 판정`, on a re-convergence's row only — the field a sibling's re-plan
+  # cites and `replan_due[]` reads, so no router reads the verdict off a stream.
+  [ "$kind" != "reconverge" ] || rv=$(gate_reconverge_verdict "$out")
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -33505,7 +33904,7 @@ gate_record_stage_outcome() {
       "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} \
       ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=게이트" \
       "effort=$effort" "서빙 모델=$served" \
-      "plan_sha256=$psha" "종단 부류=$klass" "실패 서명=$fsig"
+      "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" "실패 서명=$fsig"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -33513,7 +33912,7 @@ gate_record_stage_outcome() {
       "압축 창=$window" "레인=$lane" ${acct:+"계정=$acct"} \
       ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=게이트" \
       "effort=$effort" "서빙 모델=$served" \
-      "종단 부류=$klass" "실패 서명=$fsig"
+      ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" "실패 서명=$fsig"
   fi
   # A re-convergence row voids the segment's plan; the file goes too, or the
   # plan-file fallback above would put the void digest back on the next row.
@@ -34306,12 +34705,29 @@ gate_close() {
       warn "could not write the free-text answer of approval $id into the sidecar — to keep from discarding the answer, nothing is written to the ledger either and it is looked at again on the next judgment"
       exit "$GATE_EXIT_APPROVAL"
     fi
+    # A `사람-결정` QUESTION HAS NO DISPOSITION TO DERIVE: what the person wrote
+    # IS the decision, and holding it at `대기` would leave the segment held on
+    # a question already answered. So free text closes it `승인`, the reason
+    # field says the answer was free text, and the words go to the answer store
+    # where the router reads them (`gate.sh answers`) — never onto the row.
+    if [ "$(gate_approval_field "$id" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ]; then
+      adig=$(printf '%s' "$afull" | shasum -a 256 | cut -d' ' -f1)
+      mkdir -p "$RUN_DIR/answer"
+      printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
+      gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
+        "답변 문면=자유 입력(답변 저장소)" "해소 시각=$(now_iso)" "처분 사유=$reason" \
+        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
+      gate_close_settle "$id"
+      log "승인 해소 — $id (자유 입력, $RUN_DIR/answer/$id.md)"
+      return 0
+    fi
     warn "the answer of approval $id matches none of the labels offered (free text, $(printf '%s' "$afull" | wc -c | tr -d ' ') bytes — recorded in sidecar $anchor) — no disposition was derived and it is left waiting"
   else
     warn "the answer frame of approval $id has no question slot carrying that id (slot absent) — no disposition was derived and it is left waiting"
   fi
   gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=대기" "대상=$(gate_row_field "$row" '대상')" "절단점=$cutp" \
     "막는 세그먼트=$(gate_row_field "$row" '막는 세그먼트')" "질문 문면=$q" \
+    "판단 부류=$(c=$(gate_approval_field "$id" '판단 부류'); printf '%s' "${c:--}")" \
     "처분 사유=$reason" "응답 토큰=$tok" "사이드카 앵커=$anchor" "관측 시각=$(now_iso)" || gate_close_lost "$id"
   exit "$GATE_EXIT_APPROVAL"
 }
@@ -34677,6 +35093,14 @@ gate_done_conditions() {
   # while a question was open is the failure this whole design removes.
   n=$(gate_pending_approval_ids act | gate_count)
   [ "$n" = "0" ] || printf '2 대기 중인 행위 승인이 %s건 있습니다\n' "$n"
+  # THE ONE QUESTION THE RUN DOES NOT END AROUND is `사람-결정`. Its answer is
+  # not an input a successor consumes but the decision a segment of THIS run is
+  # held on — the segment cannot reach a terminal state while it is open, and a
+  # run that ended over it would leave the held work with no run to resume it.
+  # So it counts here, as its own line, while every other `판단` approval stays
+  # excluded as above.
+  n=$(gate_pending_approval_ids 사람 | gate_count)
+  [ "$n" = "0" ] || printf '2 대기 중인 사람-결정 판단 승인이 %s건 있습니다\n' "$n"
 
   # 3 — obligations empty, or disposed. THE SUBTRACTION MOVED INTO
   # `gate_open_obligations` and is no longer applied a second time here: three
@@ -34856,6 +35280,11 @@ gate_pending_approval_ids() {
   # and a successor run can consume it. Counting the second kind in termination
   # condition 2 is what made one open question a run that could never say it was
   # done, which is the defect this design exists to remove.
+  #
+  # `사람` NARROWS FURTHER, to the `판단` approvals whose class is `사람-결정`:
+  # the one kind of question the run does not end around. Its answer is not an
+  # input a successor consumes but the decision the held segment is waiting on,
+  # so termination condition 2 counts these beside the act approvals.
   local want="${1:-}" id st row cut
   for id in $(gate_rows '승인' | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
@@ -34867,6 +35296,8 @@ gate_pending_approval_ids() {
       case "$want" in
         act)  [ "$cut" = "판단" ] && continue ;;
         판단) [ "$cut" = "판단" ] || continue ;;
+        사람) [ "$cut" = "판단" ] || continue
+              [ "$(gate_row_field "$row" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ] || continue ;;
       esac
     fi
     printf '%s\n' "$id"
@@ -36436,6 +36867,15 @@ gate_boundaries() {
     fi
   fi
   pending=$(printf '%s\n' "$ids" | gate_count)
+  # A `사람-결정` QUESTION SUSPENDS B1..B3 ONLY WHEN NO SHIFT IS LIVE. It is the
+  # one question the run does not end around, so with no shift running the run
+  # is genuinely waiting on a person and stagnation is not what is happening. A
+  # live shift is still routing the segments the question does not hold, and
+  # counting the question there would switch off the very detection the
+  # paragraph above restored for open questions.
+  if ! cc_shift_is_live "$RUN_DIR"; then
+    pending=$((pending + $(gate_pending_approval_ids 사람 | gate_count)))
+  fi
 
   # THE JUDGMENT PREDICATE — see the block comment above. A stage is not a
   # judging actor, a read is not a judgment, and a dispatch or a shift launch

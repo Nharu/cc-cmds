@@ -1112,7 +1112,8 @@ cc_cone_blocked() {
   # cc_cone_blocked <ledger> — one line per cone-scope block still standing, as
   # `<held|unresolved><TAB><subject><TAB><원인><TAB><사유><TAB><관측|->`.
   #
-  # ITS ONLY CONSUMER IS `run-pane.sh`. `cc_run_state`, `cc_run_grade`, the
+  # ITS CONSUMERS ARE `run-pane.sh` AND THE GATE SNAPSHOT'S `cone_blocks[]`,
+  # which projects these lines as they are. `cc_run_state`, `cc_run_grade`, the
   # gate's termination conditions and `statusline.sh` do not call it, and a
   # cone block is deliberately not part of any run verdict: no ledger field
   # records whether a cone block is still in force and no verb resolves one, so
