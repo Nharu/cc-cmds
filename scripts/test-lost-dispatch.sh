@@ -272,8 +272,10 @@ esac
 # BEFORE it reports: a print-mode shift ends the moment it stops producing
 # output, the harness reaps the tracked job with it, and no shift ever observes
 # a stage terminate — so the seat starts successor after successor, each dying
-# in the same place. That instruction is now a bounded FOREGROUND wait, and the
-# two assertions at the end of this file hold that shape.
+# in the same place. A shift now waits on a stage in no turn at all — it ends
+# with `대기` and the gate waits in the shell — and the one `wait` left inside a
+# shift is a bounded FOREGROUND call. The assertions at the end of this file
+# hold both.
 SHIFT_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
 dispatch_lines() { { grep -n -- '--kind skill' "$SHIFT_SKILL" || true; }; }
 dl=$(dispatch_lines)
@@ -303,10 +305,16 @@ if grep -q 'gate.sh wait' "$SHIFT_SKILL"; then
 else
   bad "교대 스킬" "wait 발행 형태가 없다 — 파견 뒤 기다리는 경로가 문서에 없다"
 fi
-if grep -q 'in the FOREGROUND, and never as a background job' "$SHIFT_SKILL"; then
-  ok "그 wait 은 전경으로 낸다 (print-mode 교대는 출력을 멈추는 순간 끝난다)"
+if grep -q 'Never put a wait in the background of any kind' "$SHIFT_SKILL" \
+   && grep -q '^in the FOREGROUND\.' "$SHIFT_SKILL"; then
+  ok "그 wait 은 전경으로 내고 배경에는 두지 않는다 (print-mode 교대는 출력을 멈추는 순간 끝난다)"
 else
   bad "교대 스킬" "wait 을 어떻게 내는지가 없다"
+fi
+if grep -q 'You do not wait inside your turn' "$SHIFT_SKILL"; then
+  ok "스테이지 대기는 교대 턴 밖에서 한다 (대기 인수인계로 끝내고 게이트가 기다린다)"
+else
+  bad "교대 스킬" "스테이지를 턴 밖에서 기다린다는 문장이 없다"
 fi
 # AND IT IS BOUNDED. A foreground call over the harness's own ceiling never
 # returns a usable result, so the loop only works with a timeout under it.

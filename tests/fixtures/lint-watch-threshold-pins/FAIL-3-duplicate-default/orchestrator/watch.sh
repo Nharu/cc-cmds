@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fixture watcher declaring one threshold twice. Whichever assignment runs last
 # wins, and the document pins the other — drift with no detector.
-RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300
+RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300; SILENCE=300
 STALL=1800
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -9,6 +9,7 @@ while [ $# -gt 0 ]; do
     --stall)    STALL="$2"; shift 2 ;;
     --after-stage) AFTER_STAGE="$2"; shift 2 ;;
     --run-open) RUN_OPEN="$2"; shift 2 ;;
+    --silence)  SILENCE="$2"; shift 2 ;;
     *) shift ;;
   esac
 done

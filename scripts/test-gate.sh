@@ -2831,6 +2831,127 @@ pre_cone() {
   cap_rows() {  # cap_rows <계열> — that series' rows in the cap ledger
     { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
   }
+
+  # THE RELAY FIXTURE (34e) SHARES THE CAP LEDGER HELPERS AND ADDS ITS OWN
+  # SUCCESSOR. The stub is every shift the seat's `router-shift` launches; a plan
+  # file holds one mode per launch and the counter in the case's out directory
+  # says which line a launch is, so one call can script a shift and its
+  # successor. Each launch leaves its pid, start and end times there, which is
+  # how the wait is measured from outside: a relay that waits in a shift would
+  # show a live stub, and one that waits in the shell shows none.
+  RL_STUB="$WORK/bin/claude-rlstub"
+  cat > "$RL_STUB" <<'STUB'
+#!/usr/bin/env bash
+g="$CC_PIPELINE_GATE"; m="$CC_PIPELINE_MANIFEST"; n="${CC_PIPELINE_SHIFT_ID##*#}"; o="$CC_TEST_RL_OUT"
+mkdir -p "$o"
+k=$(( $(cat "$o/k" 2>/dev/null || printf 0) + 1 )); printf '%s\n' "$k" > "$o/k"
+printf '%s\n' "$$" > "$o/pid.$k"
+date +%s > "$o/start.$k"
+hh() { bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null; }
+handoff() {  # handoff <사유> <CI 대기> — the shift's own handoff; its code lands in handoff.<k>.rc
+  bash "$g" act --manifest "$m" --kind handoff --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(hh)" --rationale "픽스처 — 릴레이 교대의 인계" \
+    -- "교대=$n" 대상=infra "사유=$1" '버린 선택지=-' '막힌 지점=기다릴 것만 남았다' '다음 후보=-' \
+       "CI 대기=$2" > /dev/null 2>&1
+  printf '%s\n' "$?" > "$o/handoff.$k.rc"
+}
+rcv=0
+case "$(sed -n "${k}p" "$CC_TEST_RL_PLAN")" in
+  wait)      handoff 대기 "${CC_TEST_RL_CI:--}" ;;
+  wait-fail) handoff 대기 "${CC_TEST_RL_CI:--}"; rcv=1 ;;
+  wait-kill) handoff 대기 "${CC_TEST_RL_CI:--}"; kill "$CC_TEST_RL_KILL" 2>/dev/null ;;
+  cap)       handoff 상한 - ;;
+  fgwait)    bash "$g" wait --manifest "$m" --segment "$CC_TEST_RL_SEG" --interval 1 --timeout 60 \
+               > /dev/null 2>&1 ;;
+esac
+date +%s > "$o/end.$k"
+exit "$rcv"
+STUB
+  chmod +x "$RL_STUB"
+  rl_case() {  # rl_case <name> <mode…> — a fresh out directory and plan, left in RL_O
+    RL_O="$RL_OUT/$1"; shift
+    rm -rf "$RL_O"; mkdir -p "$RL_O"
+    printf '%s\n' "$@" > "$RL_O/plan"
+    RL_GAP=0; RL_STUBS=0
+  }
+  rl_call() {
+    # rl_call <사유> — the seat's `router-shift` on the relay run, IN THE BACKGROUND,
+    # so the wait can be watched while it happens. Its code lands in call.rc and
+    # its output beside it. `RL_CI`, `RL_KILL`, `RL_SEG` and `RL_HOLD` reach the
+    # stub and the gate through the environment.
+    ( CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" CC_TEST_RL_CI="${RL_CI:-}" \
+      CC_TEST_RL_KILL="${RL_KILL:-}" CC_TEST_RL_SEG="${RL_SEG:-}" \
+      CC_GATE_RELAY_HOLD_TEST_SECONDS="${RL_HOLD:-}" \
+        cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+          --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" \
+          --rationale "픽스처 — 릴레이 (${RL_O##*/})" \
+          -- "$1" -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+      printf '%s\n' "$rc" > "$RL_O/call.rc"
+      cp "$CAP_OUT" "$RL_O/call.out"; cp "$CAP_ERR" "$RL_O/call.err" ) &
+    RL_BG=$!
+  }
+  rl_join() {  # rl_join — wait for the background call; leaves `rc`
+    wait "$RL_BG" 2>/dev/null || true
+    rc=$(cat "$RL_O/call.rc" 2>/dev/null || printf 'none')
+  }
+  rl_until() {  # rl_until <seconds> <command…> — poll every 0.1 s; 1 on timeout
+    local end=$(( $(date +%s) + $1 )); shift
+    while ! "$@"; do
+      [ "$(date +%s)" -lt "$end" ] || return 1
+      sleep 0.1
+    done
+  }
+  rl_has() { [ -e "$RL_O/$1" ]; }
+  rl_calls() { cat "$RL_O/k" 2>/dev/null || printf 0; }
+  rl_live_stubs() {  # rl_live_stubs — this case's stub launches still alive
+    local f c=0
+    for f in "$RL_O"/pid.*; do
+      [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null && c=$((c + 1))
+    done
+    printf '%s' "$c"
+  }
+  rl_pid_of() { sed -n 1p "$CAP_DIR/$1" 2>/dev/null; }
+  rl_relay_waiting() {  # a relay is alive and has not handed back
+    local p; p=$(rl_pid_of relay.live)
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null \
+      && ! grep -q '^handback=' "$CAP_DIR/relay.live" 2>/dev/null
+  }
+  rl_live_marker() {
+    # The three tokens the watcher reads as "routing is held": the shift's
+    # expiry marker by existence, `shift.live` and `relay.live` by a live pid.
+    local p
+    [ -e "$CAP_DIR/shift.in-progress" ] && return 0
+    p=$(rl_pid_of shift.live); [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0
+    p=$(rl_pid_of relay.live); [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0
+    return 1
+  }
+  rl_sample() {
+    # rl_sample <seconds> [<file in RL_O that ends it>] — sample every 0.1 s.
+    # RL_GAP counts samples with no live marker, RL_STUBS keeps the most stubs
+    # alive at once.
+    local end=$(( $(date +%s) + $1 )) stop="${2:-}" s
+    while [ "$(date +%s)" -lt "$end" ]; do
+      [ -z "$stop" ] || [ ! -e "$RL_O/$stop" ] || break
+      rl_live_marker || RL_GAP=$((RL_GAP + 1))
+      s=$(rl_live_stubs); [ "$s" -le "$RL_STUBS" ] || RL_STUBS="$s"
+      sleep 0.1
+    done
+  }
+  rl_launches() { { cap_rows '교대 기동' | grep -c . || true; } | tr -d ' '; }
+  rl_lines() { { grep -c . "$CAP_LEDGER" || true; } | tr -d ' '; }
+  rl_stage() {  # rl_stage <key> — a live stub stage in the relay run, pid in RL_SPID
+    local save="${FX_RUN_DIR:-}"
+    FX_RUN_DIR="$CAP_DIR"; fx_stage_live "$1"; FX_RUN_DIR="$save"
+    RL_SPID="$FX_LAST_PID"
+  }
+  rl_stage_end() {  # rl_stage_end <pid> — the stage ends; reaped, so its pid is gone
+    kill "$1" 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+  }
+  rl_observe() {  # rl_observe <세그먼트> <상태> — one line as the `checks` poller writes it
+    printf '%s\t%s\t7\tabc1234\t%s\t-\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
+      >> "$CAP_DIR/checks.observed"
+  }
 }
 
 # `sa` — the container of section 35: the `SA_*` state and the `sa_*`/`sag`
@@ -20406,7 +20527,10 @@ check "F4 — 충족 종료의 done 표시가 발사한다" \
 # The shift's return has no literal of its own to anchor on — it reads its
 # sentence out of `done` — so it carries one comment line that occurs nowhere
 # else in the file, directly above its `if`. Without this row it is the one
-# `ended` site the source axis cannot see.
+# `ended` site the source axis cannot see. That `if` lives in
+# `gate_shift_return_banner`, which the relay's hand-back of a closed run calls
+# too, so the anchor marks the helper and not the call in `gate_launch_shift`: a
+# window below the call holds only the call and reads `silent`.
 check "F4 — 교대 복귀 자리가 발사한다" \
   "$(fires_at 'SHIFT-RETURN FIRING SITE' 3)" "fires"
 check "F4 — 교대 복귀 자리의 앵커가 파일에서 유일하다" \
@@ -27492,6 +27616,351 @@ sdh_seat T1 "$sdh_f"
 sdh_refused "상한에 닿은 키의 좌석 재수렴 답" 3
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SDH_PREV_AR"
 
+# --- 34e. 릴레이 — 교대 밖에서 기다리고 깨움에 후임을 띄운다 -------------------
+# --- section: 34e | group: cone | covers: act, snapshot | anchors: 34e: 릴레이 픽스처의 세그먼트 행이 기록된다 ---
+#
+# A SHIFT THAT HAS NOTHING LEFT BUT WAITING ENDS `handoff 사유=대기`, AND THE
+# SEAT'S `router-shift` CALL WAITS IN THE SHELL. Measured from outside: while
+# the relay waits no stub `claude` is alive, no launch is counted and no row is
+# written; it wakes within a poll of the condition; the markers hand over with
+# no sample that finds none; and it hands the turn back rather than launching
+# when it may not go on. Every call runs in the background so the wait can be
+# sampled while it happens, and the 10-second windows are the test's own: twice
+# the 5-second poll.
+# ---------------------------------------------------------------------------
+cap_fx_new RRL1
+RL_SEAT="e4e4e4e4-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RL_SEAT.jsonl"
+RL_OUT="$WORK/rl-out"; mkdir -p "$RL_OUT"
+RL_CAP_STUB_SAVE="$CAP_STUB"
+CAP_STUB="$RL_STUB"
+RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''
+cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RL1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34e: 릴레이 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+
+# THE NEGATIVE CONTROL: the same stub waiting the old way, in the foreground,
+# is a live shift for the whole wait. Without this the zero below could be a
+# sampler that never sees a stub at all.
+rl_stage RL1; rl_s="$RL_SPID"
+rl_case fg fgwait
+RL_SEG=RL1 rl_call 상한
+rl_until 60 rl_has start.1 || bad "34e 음성 대조" "스텁이 뜨지 않았다"
+rl_sample 3
+rl_stage_end "$rl_s"
+rl_join
+check "34e: 음성 대조 — 옛 전경 wait 를 부르는 교대는 대기 동안 살아 있다" "$RL_STUBS" "1"
+check "34e: 음성 대조의 호출은 0 이다" "$rc" "0"
+
+# (1) A STAGE WAIT. The stub hands off `대기` under a live stage; the stage
+# ends; the successor ends `상한`, which ends the loop. Sampled through the
+# shift → relay and relay → successor hand-overs.
+rl_stage RL1; rl_s="$RL_SPID"
+rl_case stage wait cap
+rl_n0=$(rl_launches)
+rl_call 상한
+rl_until 60 test -e "$CAP_DIR/shift.live" || bad "34e 스테이지 대기" "교대 표지가 서지 않았다"
+rl_sample 30 end.1
+rl_until 15 rl_relay_waiting || bad "34e 스테이지 대기" "릴레이가 대기에 들지 않았다"
+RL_STUBS=0
+rl_l0=$(rl_lines)
+rl_sample 6
+check "34e: (1) 스테이지 대기 동안 살아 있는 교대 스텁이 없다" "$RL_STUBS" "0"
+check "34e: (1) 대기 동안 스텁 호출 수가 늘지 않는다" "$(rl_calls)" "1"
+check "34e: (1) 대기 동안 원장 행 수가 변하지 않는다" "$(rl_lines)" "$rl_l0"
+check "34e: (1) 대기 동안 기동 행은 첫 기동 하나뿐이다" "$(rl_launches)" "$((rl_n0 + 1))"
+rl_t=$(date +%s)
+rl_stage_end "$rl_s"
+rl_sample 15 start.2
+rl_join
+check "34e: (1) 스테이지가 끝난 뒤 10초 안에 후임이 뜬다" \
+  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
+check "34e: (1) 릴레이가 사는 동안 살아 있는 표지가 없는 샘플이 없다" "$RL_GAP" "0"
+check "34e: (1) 후임이 상한 으로 끝나면 루프가 끝나고 rc 0 이다" "$rc:$(rl_calls)" "0:2"
+check "34e: (1) 루프가 다시 띄운 교대의 기동 행은 사유=대기 다" \
+  "$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유'):$(rl_launches)" "대기:$((rl_n0 + 2))"
+
+# (2) A CI WAIT ON A LIVE POLLER. No stage; `대기` lines written while it waits
+# do not wake it, and neither the relay nor anything else turns them into rows.
+# A `통과` line wakes it within a poll.
+sleep 300 & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
+printf '%s\n' "$RL_POLL" > "$CAP_DIR/checks.pid"
+rl_case ci wait plain
+RL_CI=RLC1 rl_call 상한
+rl_until 60 rl_has end.1 || bad "34e CI 대기" "스텁이 끝나지 않았다"
+rl_until 15 rl_relay_waiting || bad "34e CI 대기" "릴레이가 대기에 들지 않았다"
+rl_l0=$(rl_lines); rl_c0=$( { cap_rows checks | grep -c . || true; } | tr -d ' ')
+for rl_i in 1 2 3 4 5 6 7 8; do rl_observe RLC1 대기; rl_sample 1; done
+check "34e: (2) 대기 줄에는 깨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
+check "34e: (2) CI 대기 동안 살아 있는 교대 스텁이 없다" "$RL_STUBS:$(rl_calls)" "0:1"
+check "34e: (2) 폴러가 쓰는 동안 원장 행 수가 변하지 않는다" "$(rl_lines)" "$rl_l0"
+rl_t=$(date +%s)
+rl_observe RLC1 통과
+rl_until 15 rl_has start.2
+rl_join
+check "34e: (2) 통과 줄 뒤 10초 안에 후임이 뜬다" \
+  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
+check "34e: (2) 릴레이는 폴러의 줄을 배수하지 않는다 (checks 행 불변, 줄은 파일에 남음)" \
+  "$( { cap_rows checks | grep -c . || true; } | tr -d ' '):$( { grep -c "$(printf '\t')통과$(printf '\t')" "$CAP_DIR/checks.observed" || true; } | tr -d ' ')" \
+  "$rl_c0:1"
+
+# (3) A TRANSITION THE HANDOFF ACT DRAINED. The `통과` is already in
+# `checks.observed` when the shift is launched, so a gate act moves it into a
+# `checks` row before the `대기` handoff exists; the relay reads the ledger too.
+rl_observe RLC2 통과
+rl_case drained wait plain
+RL_CI=RLC2 rl_call 상한
+rl_until 60 rl_has end.1
+rl_until 15 rl_has start.2
+rl_join
+check "34e: (3) 배수된 통과는 대기 인계보다 앞의 checks 행이다" \
+  "$(awk '/^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC2( \||$)/ { c = NR }
+          /^- `handoff` / && /\| 사유=대기 \|/ && /\| CI 대기=RLC2 \|/ { h = NR }
+          END { print (c && h && c < h) ? "before" : "no" }' "$CAP_LEDGER")" "before"
+check "34e: (3) 배수된 전이에도 10초 안에 후임이 뜬다" \
+  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - $(cat "$RL_O/end.1") )) -le 10 ] && printf in || printf out)" "in"
+
+# (4) A DEAD POLLER UNDER A CI WAIT HANDS THE TURN BACK: rc 0, the line, a
+# `handback`, and nothing launched or written.
+rl_stage_end "$RL_POLL"
+rl_n0=$(rl_launches)
+rl_case deadpoller wait
+RL_CI=RLC3 rl_call 상한
+rl_until 60 rl_has end.1
+rl_l0=$(rl_lines)
+rl_join
+check "34e: (4) 폴러가 죽은 CI 대기는 rc 0 으로 돌아온다" "$rc" "0"
+check "34e: (4) 그 반환은 대기가 이어진다 줄을 낸다" \
+  "$(grep -c '\[relay\] 대기가 이어진다 — CI 를 기다리는데 checks 폴러가 살아 있지 않다' "$RL_O/call.out" || true)" "1"
+check "34e: (4) relay.live 에 handback 이 남는다" \
+  "$(grep -c '^handback=[0-9]' "$CAP_DIR/relay.live" || true)" "1"
+check "34e: (4) 반환은 교대를 띄우지 않고 행을 쓰지 않는다" \
+  "$(rl_calls):$(rl_launches):$(rl_lines)" "1:$((rl_n0 + 1)):$rl_l0"
+
+# (5) THE HOLD. The test hook shortens it; the stage stays alive throughout.
+rl_stage RL1; rl_s="$RL_SPID"
+rl_n0=$(rl_launches)
+rl_case hold wait
+RL_HOLD=2 rl_call 상한
+rl_until 60 rl_has end.1
+rl_l0=$(rl_lines)
+rl_join
+check "34e: (5) 상한 반환은 rc 0 과 대기가 이어진다 줄이다" \
+  "$rc:$(grep -c '\[relay\] 대기가 이어진다 — 좌석 호출의 대기 상한 2초가 지났다' "$RL_O/call.out" || true)" "0:1"
+check "34e: (5) 상한 반환은 교대를 띄우지 않고 행을 쓰지 않으며 handback 을 남긴다" \
+  "$(rl_calls):$(rl_launches):$(rl_lines):$(grep -c '^handback=' "$CAP_DIR/relay.live" || true)" \
+  "1:$((rl_n0 + 1)):$rl_l0:1"
+
+# (6) RE-ENTRY AFTER A HAND-BACK. The first sample of `relay.live` belongs to
+# the re-entered gate — a live pid that is not the old one, refreshed at or
+# after the call, no `handback` — not the file the last relay left behind.
+rl_old=$(rl_pid_of relay.live)
+rl_case reentry
+rl_t=$(date +%s)
+RL_HOLD=2 rl_call 대기
+rl_until 30 eval '[ "$(rl_pid_of relay.live)" != "$rl_old" ]'
+rl_new=$(rl_pid_of relay.live)
+rl_ref=$(sed -n 's/^refreshed=//p' "$CAP_DIR/relay.live")
+rl_hb=$(grep -c '^handback=' "$CAP_DIR/relay.live" || true)
+rl_alive=$(kill -0 "$rl_new" 2>/dev/null && printf alive || printf dead)
+rl_join
+check "34e: (6) 대기 뒤의 재진입을 받는다 (rc 0)" "$rc" "0"
+check "34e: (6) 재진입 첫 표지는 새 게이트의 것이다 (산 pid · 진입 뒤 갱신 · handback 없음)" \
+  "$rl_alive:$( [ "${rl_ref:-0}" -ge "$rl_t" ] && printf fresh || printf stale):$rl_hb" "alive:fresh:0"
+check "34e: (6) 깨지 않은 재진입은 다시 돌려줄 뿐 띄우지 않는다" \
+  "$(rl_calls):$(rl_launches)" "0:$((rl_n0 + 1))"
+
+# (7) THE STAGE ENDED DURING THE SEAT'S TURN: the set derived at re-entry is
+# empty, so the launch goes at once; that successor ends `상한`.
+rl_stage_end "$rl_s"
+rl_case reentry-empty cap
+rl_t=$(date +%s)
+rl_call 대기
+rl_until 30 rl_has start.1
+rl_join
+check "34e: (7) 재진입 시점의 빈 대기 집합은 곧바로 기동한다" \
+  "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$rc" "in:0"
+check "34e: (7) 그 기동 행은 사유=대기 다" "$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')" "대기"
+
+# (8) THE LATEST HANDOFF IS `상한`: re-entry is refused with exit 3.
+rl_n0=$(rl_launches)
+rl_case refused-cap
+rl_call 대기
+rl_join
+check "34e: (8) 최신 인계가 상한 이면 재진입은 3 이다" "$rc:$(rl_calls):$(rl_launches)" "3:0:$rl_n0"
+
+# (9) TWO STAGES, ONE ENDS DURING THE SEAT'S TURN. The set derived at re-entry
+# still holds the other one, but the ended stage's `stage-result` row after the
+# reference row wakes the relay within a poll.
+rl_stage RLa; rl_sa="$RL_SPID"
+rl_stage RLb; rl_sb="$RL_SPID"
+rl_case two wait
+RL_HOLD=2 rl_call 상한
+rl_join
+check "34e: (9) 두 스테이지 대기가 상한으로 돌아온다" "$rc:$(rl_calls)" "0:1"
+rl_stage_end "$rl_sa"
+printf -- '- `stage-result` | 교대=0 | id=RLa:implement#1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+rl_case two-reentry cap
+rl_t=$(date +%s)
+rl_call 대기
+rl_until 30 rl_has start.1
+rl_join
+check "34e: (9) 남은 스테이지가 살아 있어도 기준 행 뒤의 stage-result 로 깨어난다" \
+  "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$(kill -0 "$rl_sb" 2>/dev/null && printf alive || printf dead)" "in:alive"
+rl_stage_end "$rl_sb"
+
+# (10) THE STAGE ENDS AFTER THE HANDOFF AND BEFORE THE SHIFT DOES: the set
+# derived at the relay's start is empty and the successor goes at once.
+rl_stage RL1
+rl_case between wait-kill cap
+RL_KILL="$RL_SPID" rl_call 상한
+rl_until 60 rl_has start.2
+rl_join
+check "34e: (10) 인계 뒤 스테이지가 끝나면 릴레이 시작에서 곧바로 기동한다" \
+  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - $(cat "$RL_O/end.1") )) -le 10 ] && printf in || printf out):$rc" "in:0"
+
+# (11) A SHIFT THAT HANDS OFF `대기` AND THEN FAILS does not enter the relay;
+# its code comes back.
+rl_stage RL1; rl_s="$RL_SPID"
+rl_n0=$(rl_launches)
+rl_case fail wait-fail
+rl_call 상한
+rl_join
+check "34e: (11) 대기 인계 뒤 0 이 아닌 rc 는 그대로 돌아오고 릴레이가 없다" \
+  "$rc:$(rl_calls):$(rl_launches):$( [ -e "$CAP_DIR/relay.live" ] && printf relay || printf none)" \
+  "1:1:$((rl_n0 + 1)):none"
+
+# (12) THE RELAY DIES WHILE IT WAITS: the call's code is not 0, the pid in
+# `relay.live` is dead, and no successor is launched.
+rl_case killed wait
+rl_call 상한
+rl_until 60 rl_relay_waiting
+rl_rp=$(rl_pid_of relay.live)
+kill -TERM "$rl_rp" 2>/dev/null
+rl_join
+check "34e: (12) 죽은 릴레이의 좌석 호출은 0 이 아니다" "$( [ "$rc" != "0" ] && printf nonzero || printf zero)" "nonzero"
+check "34e: (12) relay.live 의 pid 는 죽어 있고 후임은 뜨지 않았다" \
+  "$(kill -0 "$rl_rp" 2>/dev/null && printf alive || printf dead):$(rl_calls)" "dead:1"
+
+# (13) `대기` FOLLOWED BY A `교대 기동` ROW: re-entry is refused with exit 3.
+printf -- '- `교대 기동` | 교대=0 | 서수=900 | 사유=대기 | 대상=infra | prev=x\n' >> "$CAP_LEDGER"
+rl_case refused-launched
+rl_call 대기
+rl_join
+check "34e: (13) 대기 뒤에 교대 기동이 있으면 재진입은 3 이다" "$rc:$(rl_calls)" "3:0"
+rl_stage_end "$rl_s"
+
+# (14) NOTHING TO WAIT ON AT THE HANDOFF: no live stage and `CI 대기=-` — the
+# field's empty spelling — so the handoff is refused with 3 and leaves no row.
+rl_w0=$( { cap_rows handoff | grep -cF '| 사유=대기 |' || true; } | tr -d ' ')
+rl_case empty wait
+RL_CI=- rl_call 상한
+rl_join
+check "34e: (14) 대기 집합이 빈 대기 인계는 3 이고 행이 없다" \
+  "$(cat "$RL_O/handoff.1.rc" 2>/dev/null):$( { cap_rows handoff | grep -cF '| 사유=대기 |' || true; } | tr -d ' ')" "3:$rl_w0"
+check "34e: (14) 그 교대 뒤에는 릴레이가 없다" "$rc:$(rl_calls)" "0:1"
+
+# (15) THE ROW LENGTH. Three free-text fields at full width and eight `CI 대기`
+# segments fit under the cap with the list whole; a list that cannot fit is
+# refused with 2 rather than cut.
+rl_long=$(printf '가%.0s' $(seq 1 300))
+rl_list="RLA1,RLA2,RLA3,RLA4,RLA5,RLA6,RLA7,RLA8"
+cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra --cutpoint 커밋 \
+         --surface 읽기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" --rationale "픽스처 — 긴 대기 인계" \
+         -- 교대=0 대상=infra 사유=대기 "버린 선택지=$rl_long" "막힌 지점=$rl_long" "다음 후보=$rl_long" \
+            "CI 대기=$rl_list"
+rl_row=$(cap_rows handoff | tail -1)
+check "34e: (15) 최대 폭 자유 텍스트와 CI 대기 여덟 개의 인계 행이 1024바이트 안이다" \
+  "$rc:$( [ "$(printf '%s' "$rl_row" | wc -c | tr -d ' ')" -le 1024 ] && printf under || printf over)" "0:under"
+check "34e: (15) 그 행의 CI 대기 는 잘리지 않는다" "$(row_field "$rl_row" 'CI 대기')" "$rl_list"
+rl_huge=$(printf 'RLX%03d,' $(seq 1 160)); rl_huge="${rl_huge%,}"
+rl_h0=$( { cap_rows handoff | grep -c . || true; } | tr -d ' ')
+cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra --cutpoint 커밋 \
+         --surface 읽기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" --rationale "픽스처 — 넘치는 대기 인계" \
+         -- 교대=0 대상=infra 사유=대기 '버린 선택지=-' '막힌 지점=-' '다음 후보=-' "CI 대기=$rl_huge"
+check "34e: (15) 들어가지 않는 CI 대기 는 2 로 거절되고 행이 없다" \
+  "$rc:$( { cap_rows handoff | grep -c . || true; } | tr -d ' ')" "2:$rl_h0"
+
+# (16) THE CONSTANT RELATIONS, read from the declaration lines — so the test
+# hook does not move them. `3600` is one shift's lifetime, a literal: the
+# longest measured shift ran 3612.6 seconds, and a seat call lasts at most the
+# hold plus one shift.
+rl_hold=$(sed -n 's/^readonly GATE_RELAY_HOLD_SECONDS=\([0-9][0-9]*\)$/\1/p' "$GATE")
+rl_poll=$(sed -n 's/^readonly GATE_WAIT_POLL_SECONDS=\([0-9][0-9]*\)$/\1/p' "$GATE")
+rl_wl=$(grep -E '^RUN_DIR=""; LEDGER=""; ' "$(dirname "$GATE")/watch.sh")
+rl_wv() { printf '%s' "$rl_wl" | sed -n "s/.*[; ]$1=\([0-9][0-9]*\).*/\1/p"; }
+rl_stall=$(rl_wv STALL); rl_after=$(rl_wv AFTER_STAGE); rl_sil=$(rl_wv SILENCE)
+rl_ints() {  # rl_ints <값…> — 정수 하나마다 o, 아니면 x
+  local v
+  for v in "$@"; do
+    case "$v" in ''|*[!0-9]*) printf x ;; *) printf o ;; esac
+  done
+}
+check "34e: (16) 다섯 값이 선언 줄에서 읽힌다" \
+  "$(rl_ints "$rl_hold" "$rl_poll" "$rl_stall" "$rl_after" "$rl_sil")" "ooooo"
+check "34e: (16) 대기 상한 + 교대 수명 3600 ≤ 7200" "$( [ $((rl_hold + 3600)) -le 7200 ] && printf ok || printf "$rl_hold")" "ok"
+check "34e: (16) 폴링 < AFTER_STAGE" "$( [ "$rl_poll" -lt "$rl_after" ] && printf ok || printf no)" "ok"
+check "34e: (16) 폴링 < SILENCE / 2" "$( [ $((rl_poll * 2)) -lt "$rl_sil" ] && printf ok || printf no)" "ok"
+check "34e: (16) SILENCE ≤ STALL" "$( [ "$rl_sil" -le "$rl_stall" ] && printf ok || printf no)" "ok"
+
+# (18) A TRANSITION OBSERVED DURING THE SEAT'S TURN IS DRAINED BY THE RE-ENTRY
+# ACT. The first call hands a CI wait back; the poller writes `통과` while no
+# gate runs, so the line is still in `checks.observed`; the re-entering
+# `router-shift -- 대기` is the act that turns it into a `checks` row, between
+# the `대기` handoff and the launch it makes.
+sleep 300 & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
+printf '%s\n' "$RL_POLL" > "$CAP_DIR/checks.pid"
+rl_case ci-handback wait
+RL_CI=RLC4 RL_HOLD=2 rl_call 상한
+rl_join
+check "34e: (18) 살아 있는 폴러의 CI 대기가 상한으로 돌아온다" "$rc:$(rl_calls)" "0:1"
+rl_observe RLC4 통과
+check "34e: (18) 좌석 턴에 관측된 통과는 아직 행이 아니다" \
+  "$( { cap_rows checks | grep -cE '\| 세그먼트=RLC4( \||$)' || true; } | tr -d ' ')" "0"
+rl_case ci-reentry cap
+rl_t=$(date +%s)
+rl_call 대기
+rl_until 30 rl_has start.1
+rl_join
+check "34e: (18) 재진입 act 가 배수한 통과로 곧바로 기동한다" \
+  "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$rc" "in:0"
+check "34e: (18) 그 checks 행은 대기 인계 뒤, 재진입의 기동 행 앞에 있다" \
+  "$(awk '/^- `handoff` / && /\| 사유=대기 \|/ && /\| CI 대기=RLC4 \|/ { h = NR }
+          /^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC4( \||$)/ { c = NR }
+          /^- `교대 기동` / && h && !l { l = NR }
+          END { print (h && c && l && h < c && c < l) ? "between" : "no" }' "$CAP_LEDGER")" "between"
+rl_stage_end "$RL_POLL"
+
+# (17) A RUN THAT ENDS WHILE THE RELAY WAITS: it hands back, launching nothing.
+# Last, because `done` closes this run.
+rl_stage RL1; rl_s="$RL_SPID"
+rl_n0=$(rl_launches)
+rl_case done wait
+rl_call 상한
+rl_until 60 rl_relay_waiting
+printf '종단\n' > "$CAP_DIR/done"
+rl_join
+check "34e: (17) 대기 중 런이 끝나면 띄우지 않고 돌려준다" \
+  "$rc:$(grep -c '\[relay\] 대기를 거둔다 — 런이 끝났다 · 다시 내지 않는다' "$RL_O/call.out" || true):$(rl_calls):$(rl_launches)" \
+  "0:1:1:$((rl_n0 + 1))"
+check "34e: (17) 끝난 런의 반환은 재발행을 권하지 않는다" \
+  "$(grep -c '같은 호출을 대기 로 다시 낸다' "$RL_O/call.out" || true)" "0"
+# THE RE-ISSUE IS REFUSED. The ledger is still in the re-entry state — the
+# latest handoff is `대기` and nothing was launched after it — so only the
+# closed run stops a seat that issues the same call again from re-entering,
+# seeing `done` on its first poll and handing back once per turn.
+rl_case done-reissue cap
+rl_call 대기
+rl_join
+check "34e: (17) 끝난 런에 대기 재발행은 exit 3 이고 아무것도 띄우지 않는다" \
+  "$rc:$(rl_calls):$(rl_launches)" "3:0:$((rl_n0 + 1))"
+check "34e: (17) 그 거절은 끝난 런을 이유로 댄다" \
+  "$(grep -c 'does not re-enter a wait on a run that has ended' "$RL_O/call.err" "$RL_O/call.out" | awk -F: '{ s += $NF } END { print (s > 0) ? "yes" : "no" }')" "yes"
+rl_stage_end "$rl_s"
+rm -f "$CAP_DIR/done"
+CAP_STUB="$RL_CAP_STUB_SAVE"
+
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
 #
@@ -27768,6 +28237,12 @@ printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/shift.live"
 sc_overdue
 check "5c: 진전 축이 없는 살아 있는 라우터는 마감 으로 끝난다" "$rc/$(sc_ends)/$(sc_ends 마감)" "0/1/1"
 
+# 교대 밖에서 기다리는 릴레이도 살아 있는 라우터다 — 교대 표지 없이 relay.live 만 있다.
+sc_new '5c 릴레이'
+printf '%s\n%s\nrefreshed=%s\n' "$$" "$(cc_proc_fingerprint "$$")" "$(date -u +%s)" > "$SA_RUN/relay.live"
+sc_overdue
+check "5c: 살아 있는 릴레이만 있는 런은 마감 으로 끝난다" "$rc/$(sc_ends)/$(sc_ends 마감)" "0/1/1"
+
 sc_new '5c 천장' '**비용 천장**: 100'
 check "5c: 픽스처가 지난 마감과 천장을 함께 싣는다" \
   "$({ grep -cE '^\*\*(벽시계 마감\*\*: 2020|비용 천장\*\*: 100)' "$SA_MANIFEST" || true; })" "2"
@@ -27855,6 +28330,17 @@ sd_new '5d 산 shift'
 printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/shift.live"
 sd_end --cause 포기
 check "5d: 살아 있는 shift 가 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+sd_new '5d 산 릴레이'
+printf '%s\n%s\nrefreshed=%s\n' "$$" "$(cc_proc_fingerprint "$$")" "$(date -u +%s)" > "$SA_RUN/relay.live"
+sd_end --cause 포기
+check "5d: 살아 있는 릴레이만 있으면 거절하고 아무것도 쓰지 않는다" "$rc/$(sc_ends)/$(sd_done)" "3/0/없음"
+
+# 릴레이가 끝난 뒤에도 파일은 남는다(handback 줄의 기준 시각). 죽은 pid 의 파일은 런을 붙잡지 않는다.
+sd_new '5d 죽은 릴레이'
+printf '%s\n%s\nrefreshed=1\nhandback=1\n' 99999999 'Thu Jan  1 00:00:00 1970' > "$SA_RUN/relay.live"
+sd_end --cause 포기
+check "5d: 죽은 릴레이의 파일은 포기를 막지 않는다" "$rc/$(sc_ends)/$(sd_done)" "0/1/있음"
 
 sd_new '5d 산 스테이지'
 printf '%s\n' "$$" > "$SA_RUN/SD.pid"

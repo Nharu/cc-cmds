@@ -618,7 +618,7 @@ check "기동은 좌석 홈으로 gate.sh snapshot 을 한 번 부른다" "$(cou
 check "snapshot 은 매니페스트를 받고 인벤토리 config_dir 을 CLAUDE_CONFIG_DIR 로 받는다" "$(sed -n '1p' "$TEST_LOG_DIR/gate.log")" "gate snapshot --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H1"
 sleep 0.3
 check "워처는 정확히 한 번 기동된다" "$(count_lines "$TEST_LOG_DIR/watch.log")" "1"
-check "워처 인자는 autopilot 의 기동 줄과 같은 네 임계를 싣는다" "$(sed -n '1p' "$TEST_LOG_DIR/watch.log")" "watch --run-dir $RUNDIR --ledger $WT_MAIN/docs/pipeline-run/R1.md --stall 1200 --interval 60 --after-stage 120 --run-open 300"
+check "워처 인자는 autopilot 의 기동 줄과 같은 임계를 싣는다 (--silence 300 포함)" "$(sed -n '1p' "$TEST_LOG_DIR/watch.log")" "watch --run-dir $RUNDIR --ledger $WT_MAIN/docs/pipeline-run/R1.md --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300"
 check "run.sh 는 앞단에서 그 계정의 홈으로 돈다" "$(sed -n '1p' "$TEST_LOG_DIR/run.log")" "run --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H1"
 check "집은 레인(인벤토리 id)이 레코드에 적힌다" "$(backlog_field a1 .dispatched_lane)" "u1"
 [ -s "$WT_MAIN/docs/pipeline-run/R1.md" ] && ok "보고서 스텁이 없으면 만든다" || bad "보고서 스텁이 없으면 만든다" "absent"

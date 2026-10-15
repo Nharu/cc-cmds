@@ -41,6 +41,7 @@
 # Usage:
 #   watch.sh --run-dir <dir> --ledger <path> [--interval <sec>] [--stall <sec>]
 #                                            [--after-stage <sec>] [--run-open <sec>]
+#                                            [--silence <sec>]
 #   watch.sh --run-dir <dir> --ledger <path> --once      # one pass, no loop
 #
 # THIS PROCESS IS ONE OF THE TWO SEATS THAT CAN CARRY THE NEWS; the other is the
@@ -132,7 +133,16 @@ WATCH_ARGV=("$@")
 # file mtimes as a proxy for stage end; the arm below reads the stage's start
 # fingerprint instead, so if that reading is ever swapped the threshold has to be
 # re-measured rather than carried over.
-RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300
+#
+# `SILENCE` IS THE GENERAL AND SETTLE-STALL ARMS' OWN THRESHOLD, and only theirs:
+# they fire at `min(STALL, SILENCE)` when the run is quiet on every signal — the
+# ledger, the gate's own entry, a relay's hand-back and a live shift's stream —
+# and at `STALL` while a seat turn follows a handoff, a halt record waits for a
+# person or a fixed-graph run's dispatch marker is alive. Every other reader of
+# `STALL` (the waiter refresh and its freshness, `watch.stall`, the run state,
+# the feed-silence arm, the `done` tail) keeps reading `STALL`. It is a literal on this line rather than a value derived from
+# another, so the pin lint can read it.
+RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300; SILENCE=300
 STAGE_AGE=7200
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -142,6 +152,7 @@ while [ $# -gt 0 ]; do
     --stall)    STALL="$2"; shift 2 ;;
     --after-stage) AFTER_STAGE="$2"; shift 2 ;;
     --run-open) RUN_OPEN="$2"; shift 2 ;;
+    --silence)  SILENCE="$2"; shift 2 ;;
     --stage-age) STAGE_AGE="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
@@ -256,46 +267,11 @@ open_approval_ids() {
 
 nonterminal_segments() { cc_nonterminal_segments "$LEDGER"; }
 
-iso_to_epoch() {
-  # `YYYY-MM-DDTHH:MM:SSZ` → epoch seconds, or empty when it does not parse.
-  #
-  # NEITHER `date -d` NOR `date -j -f` MAY BE USED. The first is GNU, the second
-  # BSD, and the portability lint denies both — the same wall the gate's deadline
-  # check hit, which it got around by comparing digit strings because it only
-  # needed an ordering. This caller needs a DIFFERENCE against a threshold in
-  # seconds, and no digit-string compare yields one, so the conversion is done in
-  # the shell.
-  #
-  # The arithmetic is the standard civil-to-days one. Every intermediate stays
-  # non-negative for years at or after 1970, which is what lets `$(( ))`'s
-  # truncating division stand in for floor. `10#` on every field because `08` and
-  # `09` are invalid octal and would abort the expansion.
-  local s="$1" digits y m d hh mm ss era yoe doy doe days
-  digits=$(printf '%s' "$s" | tr -cd '0-9')
-  [ ${#digits} -ge 14 ] || return 0
-  y=$((10#$(printf '%s' "$digits" | cut -c1-4)))
-  m=$((10#$(printf '%s' "$digits" | cut -c5-6)))
-  d=$((10#$(printf '%s' "$digits" | cut -c7-8)))
-  hh=$((10#$(printf '%s' "$digits" | cut -c9-10)))
-  mm=$((10#$(printf '%s' "$digits" | cut -c11-12)))
-  ss=$((10#$(printf '%s' "$digits" | cut -c13-14)))
-  [ "$y" -ge 1970 ] || return 0
-  [ "$m" -ge 1 ] && [ "$m" -le 12 ] || return 0
-  [ "$d" -ge 1 ] && [ "$d" -le 31 ] || return 0
-  # March-based year: January and February belong to the preceding one, which is
-  # what removes the leap day from the middle of the count.
-  if [ "$m" -le 2 ]; then y=$((y - 1)); fi
-  era=$((y / 400))
-  yoe=$((y - era * 400))
-  if [ "$m" -gt 2 ]; then
-    doy=$(( (153 * (m - 3) + 2) / 5 + d - 1 ))
-  else
-    doy=$(( (153 * (m + 9) + 2) / 5 + d - 1 ))
-  fi
-  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
-  days=$(( era * 146097 + doe - 719468 ))
-  printf '%s' $(( days * 86400 + hh * 3600 + mm * 60 + ss ))
-}
+# `YYYY-MM-DDTHH:MM:SSZ` → epoch seconds, or empty. The conversion moved to
+# `liveness.sh` when the relay's CI wake clock needed it there too: one parser
+# for the run-open arm and the relay's `관측` clock, so the two cannot read one
+# timestamp as two times.
+iso_to_epoch() { cc_iso_to_epoch "$1"; }
 
 run_open_seconds() {
   # Seconds since the gate opened this run, read from the `run` row's own
@@ -408,6 +384,132 @@ shift_active() {
     if [ -n "$exp" ] && [ "$(now_epoch)" -lt "$exp" ]; then return 0; fi
   fi
   cc_shift_is_live "$RUN_DIR"
+}
+
+seat_turn_open() {
+  # Is the seat's turn open after a handoff? The ledger's latest `handoff` row
+  # comes after its latest `교대 기동` row, and no relay is alive to hold the
+  # wait. The ROW ORDER decides, not a clock: the launcher writes nothing after a
+  # shift but the `무기록` handoff, and other writers during the seat turn do not
+  # move the order. A live relay gets no grace — the `! relay_effective`
+  # conjunct is what speaks for it, so a hung relay cannot hide in this window.
+  [ -n "$LEDGER" ] && [ -f "$LEDGER" ] || return 1
+  cc_relay_is_live "$RUN_DIR" && return 1
+  LC_ALL=C awk '
+    /^- `handoff` / { h = NR }
+    /^- `교대 기동` / { l = NR }
+    END { exit((h > 0 && h > l) ? 0 : 1) }
+  ' "$LEDGER" 2>/dev/null
+}
+
+fleet_run_marker_live() {
+  # Is a fixed-graph run's dispatch job alive for THIS run? rc 0 when a fleet
+  # run marker under `busy/` carries this watcher's run id on its third line and
+  # its pid is still the process that wrote it (first line pid, second line the
+  # start fingerprint taken in UTC, the way the writer took it). rc 1 when the
+  # directory is absent, no marker names this run, or every one that does is
+  # dead.
+  #
+  # Only the pid half of fleet's own liveness test: the probe half is the run's
+  # live stages, and a stage that is alive already keeps the arms quiet on its
+  # own. The gate's `gate_fleet_busy_state` reads the same marker the same way.
+  # Read only — removing a dead marker is the dispatcher's job under its lock.
+  local d f pid fp run
+  d="${FLEET_PACE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace}/busy"
+  [ -d "$d" ] || return 1
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    run=$(sed -n '3p' "$f" 2>/dev/null | tr -d '[:space:]')
+    [ "$run" = "$RUN_ID" ] || continue
+    pid=$(sed -n '1p' "$f" 2>/dev/null | tr -d '[:space:]')
+    fp=$(sed -n '2p' "$f" 2>/dev/null || true)
+    if TZ=UTC0 cc_holder_is_live "$pid" "$fp"; then return 0; fi
+  done
+  return 1
+}
+
+stall_threshold() {
+  # The threshold T of the general and settle-stall arms. `STALL` while a seat
+  # turn is open or a halt record waits for a person's answer — neither is a
+  # router that stopped, and both are as long as the measured seat-turn gaps or
+  # longer — and `min(STALL, SILENCE)` otherwise, so a fixture passing a small
+  # `--stall` keeps its meaning.
+  #
+  # `STALL` too while a fixed-graph run's marker is alive. That run has no
+  # router, no shift and no handoff row, and its driver polls CI inline outside
+  # the gate for up to an hour — no gate entry, no ledger row, no stage — so
+  # `SILENCE` would call a healthy merge wait a stall and leave a run-scope
+  # `blocked` row only a person can resolve.
+  local h
+  if seat_turn_open; then printf '%s' "$STALL"; return 0; fi
+  h=$(cc_unanswered_halts "$RUN_DIR" "$LEDGER" 2>/dev/null || printf 0)
+  if [ "${h:-0}" -ge 1 ] 2>/dev/null; then printf '%s' "$STALL"; return 0; fi
+  if fleet_run_marker_live; then printf '%s' "$STALL"; return 0; fi
+  if [ "$SILENCE" -lt "$STALL" ]; then printf '%s' "$SILENCE"; else printf '%s' "$STALL"; fi
+}
+
+quiet_seconds() {
+  # Seconds since the run last showed activity on any signal, or empty when it
+  # cannot be judged. The base is the LATEST of: the ledger's last growth, the
+  # gate's last entry (`started-at`, left out when unreadable), a relay's
+  # `handback`, and a live shift's newest stream log. `refreshed` is not one of
+  # them: a relay that refreshes and never wakes would hide behind it, and a
+  # relay doing its job is already held off by `! relay_effective`.
+  #
+  # A LIVE SHIFT WITH NO STREAM LOG IS NOT JUDGED. The log is created by the
+  # redirection before `shift.live` exists, so this is not a normal state, and
+  # without the shift's own signal its silence would be measured on the two that
+  # a working shift may well leave quiet.
+  local now base b lg
+  now=$(now_epoch)
+  base=$((now - ${age:-0}))
+  if [ -n "${gate_idle:-}" ]; then
+    b=$((now - gate_idle)); [ "$b" -le "$base" ] || base=$b
+  fi
+  b=$(cc_relay_field "$RUN_DIR" handback)
+  case "$b" in ''|*[!0-9]*) : ;; *) [ "$b" -le "$base" ] || base=$b ;; esac
+  if cc_shift_is_live "$RUN_DIR"; then
+    lg=$( { ls -t "$RUN_DIR"/log/shift-*.json 2>/dev/null || true; } | sed -n '1p')
+    [ -n "$lg" ] || return 0
+    b=$(file_mtime "$lg")
+    [ -n "$b" ] || return 0
+    [ "$b" -le "$base" ] || base=$b
+  fi
+  [ "$base" -le "$now" ] || base=$now
+  printf '%s' $((now - base))
+}
+
+relay_seen_note() {
+  # Record, per relay and per key, the pass that first saw a wake condition
+  # whose evidence carries no clock of its own — a `stage-result` after the
+  # reference row, or a waited key no longer live. Kept in `watch.relay-seen`,
+  # the way `watch.state` keeps the ledger's size, so the clock survives `--once`
+  # and a restarted watcher. A CI wake carries its verdict's `관측` and is not
+  # recorded here.
+  local started k c now tab
+  [ -d "$RUN_DIR" ] && [ -f "$RUN_DIR/relay.live" ] || return 0
+  started=$(cc_relay_field "$RUN_DIR" started)
+  [ -n "$started" ] || return 0
+  now=$(now_epoch)
+  tab=$(printf '\t')
+  while IFS="$tab" read -r k c; do
+    [ -n "$k" ] && [ -z "$c" ] || continue
+    [ -z "$(cc_relay_seen_at "$RUN_DIR" "$started" "$k")" ] || continue
+    printf '%s\t%s\t%s\n' "$started" "$k" "$now" >> "$RUN_DIR/watch.relay-seen"
+  done <<EOF
+$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER")
+EOF
+  return 0
+}
+
+relay_effective() {
+  # A relay that is alive, refreshing within `SILENCE` and not sitting on a wake
+  # condition for longer than `AFTER_STAGE`. A separate conjunct of the general
+  # and settle-stall arms only: folded into `live_w` or `shift_active` it would
+  # also switch off the after-stage arm, the one cross-check that names a relay
+  # which saw its stage end and launched nothing.
+  relay_seen_note
+  cc_relay_is_effective "$RUN_DIR" "$LEDGER" "$SILENCE" "$AFTER_STAGE"
 }
 
 record_blocked() {
@@ -535,7 +637,9 @@ settle_stall_arm() {
   # NO BLOCK ROW. An unresolved run-scope block is an input to the termination
   # condition, so writing one here could refuse the very `propose-done` the
   # banner asks the seat to make. A live shift is not excluded: one that has
-  # written nothing for `STALL` may be hung, and that is a person's to look at.
+  # been quiet for T, its stream quiet too, may be hung, and that is a person's
+  # to look at. T, the quiet base and the `! relay_effective` conjunct are the
+  # general arm's, read from the calling `pass`.
   #
   # THE TWO FILES ARE TESTED AGAIN JUST BEFORE THE FIRE. `resume` shares the
   # run's slot with `ended`, and the later banner replaces the earlier — so a
@@ -548,7 +652,8 @@ settle_stall_arm() {
   [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$nonterm" = "0" ] || return 0
   [ "$(cc_segment_count "$LEDGER")" -ge 1 ] 2>/dev/null || return 0
   [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" = "0" ] || return 0
-  [ "$age" -ge "$STALL" ] || return 0
+  [ -n "${quiet:-}" ] && [ "$quiet" -ge "$thr" ] || return 0
+  [ "${relay_eff:-0}" = "0" ] || return 0
   mk="$RUN_DIR/watch.announced-settle-stall-$size"
   [ ! -f "$mk" ] || return 0
   : > "$mk"
@@ -568,8 +673,15 @@ pass() {
   # so no arm can skip it; each arm still carries its own once-marker, so two
   # firing in one pass is harmless.
   local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
-  local cause reason slug mk
+  local cause reason slug mk thr quiet relay_eff
   beat
+  # THE GATE'S IDLE TIME SITS BESIDE `age` because two arms read it: the
+  # run-open arm, and the quiet base of the general and settle-stall arms.
+  gate_idle=$(gate_idle_seconds)
+  thr=$(stall_threshold)
+  quiet=$(quiet_seconds)
+  relay_eff=0
+  if relay_effective; then relay_eff=1; fi
   # The emitter's own state, once per run, into this process's file. The gate
   # transcribes it into the report on its next call; this seat never appends
   # there itself, because it holds no lock and the ledger rows beside the prose
@@ -777,11 +889,13 @@ pass() {
   # how long the run has been silent — and giving them separate thresholds would
   # make "silent" mean two things in one condition.
   #
-  # IT DOES NOT DISPLACE THE STALL ARM. That arm keeps the zero-segment window
-  # under its own reason, so a run parked here records two observations — this
-  # one at `RUN_OPEN` and the general one at `STALL`. Both are true and each
-  # names a different thing; suppressing the second would be this arm deciding
-  # what the more general detector may say.
+  # THE STALL ARM YIELDS TO IT IN THE ZERO-SEGMENT WINDOW. The two once fired at
+  # `RUN_OPEN` and `STALL`, two different moments, and recording both was
+  # intended. With the general arm now firing at `min(STALL, SILENCE)` the two
+  # reach the same silence in the same pass, so once this arm has recorded
+  # (`watch.announced-run-open`) the general arm says nothing for a run with no
+  # segment. A run that never entered the gate is not recorded here — the gate
+  # idle conjunct needs `started-at` — so the general arm still records that one.
   #
   # A NORMALLY TERMINATED RUN CANNOT REACH IT: a clean finish has at least one
   # segment row, so the segment count alone excludes it, and the `done` guard
@@ -791,7 +905,6 @@ pass() {
   # the gate empties `stall` on every act, so a guard that read that file would
   # come back to life and this arm would re-fire every pass.
   run_age=$(run_open_seconds)
-  gate_idle=$(gate_idle_seconds)
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
@@ -831,18 +944,24 @@ pass() {
   # the same test in prose and cannot reach it, which is why the copy there came
   # back out.
   #
-  # WHAT COVERING IT HERE COSTS IS TIME: this arm's threshold is `STALL`, twenty
-  # minutes. The run-age arm above is what makes the same window audible
-  # earlier; it does not replace this one, and the two record different reasons
-  # on purpose.
+  # THE THRESHOLD IS T AND THE CLOCK IS THE QUIET BASE (`stall_threshold`,
+  # `quiet_seconds`): `min(STALL, SILENCE)` measured from the latest activity on
+  # any signal, `STALL` while a seat turn is open or a halt record is unanswered.
+  # An empty quiet reading — a live shift with no stream log — does not fire. An
+  # effective relay holds the arm off as its own conjunct. In the zero-segment
+  # window the arm yields once the run-age arm above has recorded.
   #
   # AND NOT AFTER `done`, as the run-open and feed-silence arms already hold.
   # The loop runs no pass while `done` is on disk, but a `done` written during
   # this pass would otherwise be followed by a `라이브니스 침묵` block row on a
   # run that has ended.
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
-  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
-     && { [ "$nonterm" -ge 1 ] || [ "$(cc_segment_count "$LEDGER")" = "0" ]; } \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
+     && [ -n "$quiet" ] && [ "$quiet" -ge "$thr" ] \
+     && [ "$relay_eff" = "0" ] \
+     && { [ "$nonterm" -ge 1 ] \
+          || { [ "$(cc_segment_count "$LEDGER")" = "0" ] \
+               && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; }; } \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && ! grep -q '라이브니스 침묵' "$RUN_DIR/stall" 2>/dev/null \
      && [ "${silent:-0}" = "0" ]; then
