@@ -31815,7 +31815,7 @@ check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 �
 
 # ---------------------------------------------------------------------------
 # 57p. 고정 전 fetch 와 빨리감기 — 원천이 원격보다 뒤처지면 앞당기거나 원격 끝을 고정한다
-# --- section: 57p | group: base | covers: pin | anchors: 57p: 뒤처진 깨끗한 클론은 ff 뒤 원격 끝 하위 트리를 고정한다, 57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다, 57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다, 57p: 봉합이 서면 fetch 없이 클론 자신의 HEAD 를 고정한다 ---
+# --- section: 57p | group: base | covers: pin | anchors: 57p: 뒤처진 깨끗한 클론은 ff 뒤 원격 끝 하위 트리를 고정한다, 57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다, 57p: 상류가 추적을 시작한 경로의 무시 파일은 덮어쓰이지 않는다, 57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다, 57p: 봉합이 서면 fetch 없이 클론 자신의 HEAD 를 고정한다 ---
 #
 # 원천은 저장소 체크아웃이 아니라 이 절이 만든 bare 원격의 클론들이다. 실제
 # origin 을 fetch 하는 고정은 이 절 밖에서 일어나면 안 되므로, 프리앰블의 동기화
@@ -31905,6 +31905,11 @@ P57P_SEAM=$(p57p_clone seam)
 P57P_TGT=$(p57p_clone target)
 P57P_NOHEAD=$(p57p_clone nohead)
 p57p_g "$P57P_NOHEAD" remote set-head origin -d >/dev/null 2>&1
+# 무시 파일: C2 가 추적을 시작할 경로에 로컬에서 무시 중인 파일이 있다. `git status` 는
+# 아무것도 내지 않고, git 의 병합은 기본값으로 그 파일을 말없이 덮어쓴다.
+P57P_IGN=$(p57p_clone ignored)
+printf 'added.sh\n' >> "$(p57p_g "$P57P_IGN" rev-parse --absolute-git-dir)/info/exclude"
+printf 'my ignored\n' > "$P57P_IGN/plugins/cc-cmds/orchestrator/added.sh"
 
 # C2 — 플러그인 하위 트리를 바꾼다. 그 뒤에 C2 에 선 클론 하나를 뜨고 빈 커밋 C3 을 올린다.
 printf 'gate two\n' > "$P57P_AUTH/plugins/cc-cmds/orchestrator/gate.sh"
@@ -31961,6 +31966,11 @@ p57p_remote_case() {  # p57p_remote_case <이름> <클론> <원천> <기대 ff-r
 p57p_remote_case overlap "$P57P_OVER" "$P57P_OVER/plugins/cc-cmds" "충돌 변경"
 check "57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다" \
   "$(p57p_pin "$P57P/rd-overlap" origin-sync)/$(tail -1 "$P57P_OVER/plugins/cc-cmds/orchestrator/gate.sh")" "원격 끝/my edit"
+check "57p: 픽스처 — 무시 파일이 있는 클론의 git status 는 비어 있다 (겹침이 status 밖에서 재졌다)" \
+  "$(p57p_g "$P57P_IGN" --no-optional-locks status --porcelain --untracked-files=all)" ""
+p57p_remote_case ignored "$P57P_IGN" "$P57P_IGN/plugins/cc-cmds" "충돌 변경"
+check "57p: 상류가 추적을 시작한 경로의 무시 파일은 덮어쓰이지 않는다" \
+  "$(cat "$P57P_IGN/plugins/cc-cmds/orchestrator/added.sh" 2>/dev/null)/$(p57p_head "$P57P_IGN")" "my ignored/$P57P_C1"
 p57p_remote_case diverged "$P57P_DIV" "$P57P_DIV/plugins/cc-cmds" "로컬 커밋"
 p57p_remote_case feature "$P57P_FEAT" "$P57P_FEAT/plugins/cc-cmds" "다른 브랜치"
 check "57p: feature — 기능 브랜치 워크트리는 feat 에 그대로 선다" \

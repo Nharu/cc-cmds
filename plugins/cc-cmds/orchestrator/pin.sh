@@ -232,14 +232,29 @@ pin__overlap() {
   # (tracked or untracked, anywhere in the repository) is a path the fast-forward
   # to `origin/<branch>` would write. Both sides of a rename are compared, on the
   # status side and on the diff side, so a moved file cannot slip between them.
-  local top="$1" b="$2" mine theirs
+  #
+  # AN IGNORED FILE IS A LOCAL CHANGE TOO. `git status` does not list it, and
+  # `git merge` overwrites it without refusing when the merge starts tracking
+  # its path; it lives in no object store, so nothing could bring it back. This
+  # repository ignores `/docs/`, where uncommitted design documents live. So
+  # every path the merge would add is checked for something already on disk
+  # there — which also covers an untracked file, whatever the ignore rules say.
+  local top="$1" b="$2" mine theirs p
+  theirs=$(cd "$top" 2>/dev/null && git --no-optional-locks diff --no-renames --name-only -z HEAD "refs/remotes/origin/$b" 2>/dev/null \
+    | tr '\0' '\n') || theirs=""
+  [ -n "$theirs" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -e "$top/$p" ] || [ -L "$top/$p" ]; then
+      return 0
+    fi
+  done <<EOF
+$(cd "$top" 2>/dev/null && git --no-optional-locks diff --no-renames --diff-filter=A --name-only -z HEAD "refs/remotes/origin/$b" 2>/dev/null | tr '\0' '\n')
+EOF
   mine=$(cd "$top" 2>/dev/null && git --no-optional-locks status --porcelain -z --untracked-files=all 2>/dev/null \
     | tr '\0' '\n' \
     | awk 'skip { print; skip = 0; next } { xy = substr($0, 1, 2); print substr($0, 4); if (xy ~ /[RC]/) skip = 1 }') || mine=""
   [ -n "$mine" ] || return 1
-  theirs=$(cd "$top" 2>/dev/null && git --no-optional-locks diff --no-renames --name-only -z HEAD "refs/remotes/origin/$b" 2>/dev/null \
-    | tr '\0' '\n') || theirs=""
-  [ -n "$theirs" ] || return 1
   # One stream, the merge's paths first and then a separator no path can be,
   # so the comparison needs neither a temporary file nor a second descriptor.
   { printf '%s\n' "$theirs"; printf '\001\n'; printf '%s\n' "$mine"; } \
@@ -278,7 +293,9 @@ pin_sync() {
   # and only when no local change sits on a path the merge would write; that
   # overlap is measured before the merge rather than read back from git's refusal
   # text, so an overwrite refusal (`충돌 변경`) and a lock race (`ff 실패`) are
-  # told apart.
+  # told apart. An ignored file counts as a local change in that measure, and
+  # the merge itself runs with `--no-overwrite-ignore`, because git's default is
+  # to overwrite ignored files silently.
   #
   # `CC_GATE_PIN_SYNC_DISABLE=1` IS A TEST SEAM. A test harness opens runs with
   # the repository's own gate, and without the seam every such run would fetch
@@ -362,7 +379,7 @@ EOF
     PIN_SYNC_REFUSED='로컬 커밋'
   elif pin__overlap "$top" "$b"; then
     PIN_SYNC_REFUSED='충돌 변경'
-  elif ( cd "$top" 2>/dev/null && GIT_TERMINAL_PROMPT=0 git merge --ff-only --quiet "refs/remotes/origin/$b" ) </dev/null >/dev/null 2>&1; then
+  elif ( cd "$top" 2>/dev/null && GIT_TERMINAL_PROMPT=0 git merge --ff-only --no-overwrite-ignore --quiet "refs/remotes/origin/$b" ) </dev/null >/dev/null 2>&1; then
     PIN_SYNC_ORIGIN='ff'
     return 0
   else
