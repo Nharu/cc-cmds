@@ -1092,7 +1092,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Merging and applying a segment|fetch and issue it once more, and only once' \
     '리드=#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
     '교대=#### Merging and applying a segment|stop the segment at site `적용 전제 거부` (「Stopping one segment for a person」)' \
-    '교대=#### Merging and applying a segment|stop the segment at site `적용 사전 실패` or `적용 불명` respectively' \
+    '교대=#### Merging and applying a segment|so write no `shift-halt` for it: a `park` segment is terminal and no answer could retry its apply' \
     '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
     '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
     '#### Branching on `다음` after a review|-- lead-fix -p "/cc-cmds:review-unattended <리뷰 파견 프롬프트와 같은 인자> --lead-fix <리포트 경로>"' \

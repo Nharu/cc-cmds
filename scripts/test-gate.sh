@@ -28187,14 +28187,13 @@ cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --tar
             "중단 기록=$CAP_DIR/halt/shift/SH2#9.md" '기록 다이제스트=0000'
 shh_refused "중단 기록·기록 다이제스트를 실은 blocked" 2 blocked "$shh_b0"
 # The marker `shift-halt` sets around its own row is cleared on entry, so a
-# caller that exports it is refused the same way.
-export GATE_SHIFT_HALT_WRITING=1
-cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
+# caller that exports it is refused the same way. A command prefix, so the
+# value reaches the gate's process and never this shell.
+GATE_SHIFT_HALT_WRITING=1 cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
          --rationale "픽스처 — 표지를 환경에 얹은 손 기록 행" \
          -- 스코프=cone 원인=막힘 '앵커 세그먼트=SH2' '사유=손으로 쓴 정지' '근거=x' \
             "중단 기록=$CAP_DIR/halt/shift/SH2#9.md" '기록 다이제스트=0000'
-unset GATE_SHIFT_HALT_WRITING
 shh_refused "환경에 shift-halt 표지를 얹고 중단 기록을 실은 blocked" 2 blocked "$shh_b0"
 cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
