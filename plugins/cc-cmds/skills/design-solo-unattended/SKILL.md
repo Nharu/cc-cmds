@@ -21,7 +21,16 @@ notes: "팀을 띄우지 않고 5U·6U 를 돌지 않는다. 멈춤 자리는 �
 Run the light design stage of an autopilot run in a headless session, **without ever asking a human and without a team**. The lead alone reads the interview record and the tree, writes a design summary under the headings implementation already reads, and freezes it; the run then goes to implementation without a design audit.
 Everything written for a person — the saved document and a halt record — is Korean.
 
-This file is a separate arm so that "it has no human-question surface" is a whole-file predicate `scripts/lint-unattended-surfaces.sh` can check. It is **dispatched by the driver or the gate only**, for a run whose plan reads `design_tier: solo` with `design_required` true; there is no seat-dispatch branch. **Read `${CLAUDE_SKILL_DIR}/../design-discuss-unattended/SKILL.md` before Step 0** and follow its driver-dispatch path, with only the steps below replaced.
+This file is a separate arm so that "it has no human-question surface" is a whole-file predicate `scripts/lint-unattended-surfaces.sh` can check. It is **dispatched by the driver or the gate only**, for a run whose plan reads `design_tier: solo` with `design_required` true; there is no seat-dispatch branch. **Before Step 0, Read only the parts of `${CLAUDE_SKILL_DIR}/../design-discuss-unattended/SKILL.md` listed below** and follow their driver-dispatch path, with only the steps below replaced. A part named by a heading runs from that heading to the next heading of the same or a higher level; a part named by a list item's text is that item with its indented lines. The rest of that file is the team's and the seat's, and this arm does not Read it: every other mention of the discuss arm below restates what this arm needs from it.
+
+Discuss-arm parts this arm reads:
+
+- `## Halt record (driver dispatch)`
+- `### Step 1: Read the brief and guard it`
+- `6. (driver dispatch only) the interview record governs, and what the team decides in its place is listed:`
+- `### Step 7U: Coherence, slicing self-check, residual ladder, freeze (driver dispatch)`
+- `### The requirement-decision list (driver dispatch)`
+- `- **Research.** Research is open:`
 
 ## Control-Flow Invariants
 
@@ -95,7 +104,7 @@ Unchanged: `STATE="${CC_PIPELINE_RUN_DIR}/design/{slug}"`, with `{slug}` from th
 The lead alone reads the interview record (or, without one, the task sentence and the manifest's `## 의도`) and the tree, and writes the summary. Every claim of the record's `## 탐색 결과` and `## 재현 근거` that the design rests on is checked again against the current tree; the rest of the tree is read as the design needs it.
 
 - **Verification.** `${CLAUDE_SKILL_DIR}/../_common/verification.md` applies as written: a claim settled against the tree goes to `## 검증 기록`, a claim that cannot be settled now goes to `## 구현 시 검증 항목` as an `### R<n>` with its required fields, and the pre-save sweep's four conditions hold before the Write.
-- **Substitution 6** of the discuss arm's `### Step 3 · Step 4: Interim body` applies as written: the record governs, a requirement-level choice the record left open is decided and listed in `## 팀이 정한 요구 결정` in the form of `### The requirement-decision list (driver dispatch)`, and a verified base-design row brings `## 베이스 제약` with its fixed first sentence in `## 합의된 아키텍처`.
+- **Substitution 6** of the discuss arm's `### Step 3 · Step 4: Interim body` (the listed item, not the rest of that section) applies as written: the record governs, a requirement-level choice the record left open is decided and listed in `## 팀이 정한 요구 결정` in the form of `### The requirement-decision list (driver dispatch)`, and a verified base-design row brings `## 베이스 제약` with its fixed first sentence in `## 합의된 아키텍처`.
 - **Headings, in this order:** the H1; the document status line; `## 팀이 정한 요구 결정`; `## 베이스 제약` (only with a base-design row); `## 합의된 아키텍처`; `## 주요 결정사항과 근거`; `## 검증 기록` (when a claim was settled); `## 미해결 이슈 / 트레이드오프` (its entries at `상태: 보류`, or the single line `없음`); `## 구현 시 검증 항목` (when an item exists); `## 구현 슬라이싱` (always, in the declaration form `design/SKILL.md` defines). Implementation binds by section identity, so no other heading is invented to carry a decision.
 - **The document status line before the freeze is `**상태**: 초안`**, on its own line below the H1. That value is this arm's own: no other skill defines a pre-freeze document status, and it overlaps none of the item status values (`대기`·`조사중`·`결정대기`·`해결`·`보류`), so the freeze Edit matches exactly one line.
 - **Save** the complete document with **one Write**. No design-ledger comment block, no hidden temporary file, no `mv`, no spawn-time stub. "One page" is the target length, not a check.

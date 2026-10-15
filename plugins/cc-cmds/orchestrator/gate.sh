@@ -967,6 +967,7 @@ gate_reach_derived_full() {
   # `사전 인가` row has to carry before the machine-global cell opens.
   local alias="$1"; shift
   local cmd="${1##*/}" a w remote paths='' _gw=''
+  local -a gpaths=()
   # Set when an `env` this act runs through assigns `DOCKER_CONFIG`, and kept
   # through the nested call the unwrap makes, so the docker arm below knows the
   # context store it would read is not the one docker will use.
@@ -997,10 +998,22 @@ gate_reach_derived_full() {
   esac
   case "$cmd" in
     git)
-      case "${2:-}" in
-        stash) case "${3:-}" in list|show) ;; *) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
+      # Read past git's global flags, so `git -C <dir> stash` is the stash it
+      # is. The location flags' values are paths the act works in, and the
+      # scan below reads them in both spellings — `--work-tree=<p>` hides the
+      # path inside one word.
+      gate_git_subcommand "${@:2}" >/dev/null
+      local i=0
+      while [ "$i" -lt "${#GATE_GIT_LOCFLAGS[@]}" ]; do
+        gpaths+=("${GATE_GIT_LOCFLAGS[$((i + 1))]}")
+        i=$((i + 2))
+      done
+      local -a sargs=()
+      [ "$GATE_GIT_SUBIDX" -gt 0 ] && sargs=("${@:$((GATE_GIT_SUBIDX + 2))}")
+      case "$GATE_GIT_SUB" in
+        stash) case "${sargs[0]:-}" in list|show) ;; *) printf '기기전역\tcmd\n'; return 0 ;; esac ;;
         config)
-          for w in "$@"; do
+          for w in ${sargs[@]+"${sargs[@]}"}; do
             case "$w" in --global|--system) printf '기기전역\tcmd\n%s\n' "$w"; return 0 ;; esac
           done ;;
       esac ;;
@@ -1038,7 +1051,7 @@ gate_reach_derived_full() {
   esac
   # Absolute paths into the user's own configuration, wherever they sit in argv.
   # EVERY MATCH IS COLLECTED, not the first: each is a word the row must carry.
-  for a in "$@"; do
+  for a in "$@" ${gpaths[@]+"${gpaths[@]}"}; do
     case "$a" in
       "$HOME"/.aws/*|"$HOME"/.ssh/*|"$HOME"/.config/*|"$HOME"/.kube/*|"$HOME"/.docker/*|"$HOME"/.claude*|/usr/local/*|/opt/homebrew/*)
         paths="$paths$a
@@ -1172,13 +1185,14 @@ gate_deploy_trigger_match() {
 }
 
 gate_collaboration_surface() {
-  # gate_collaboration_surface <derived-reach> <argv...> — 1 when this act is the
-  # collaboration surface the user authorized to proceed unattended: issues,
-  # comments, labels, projects, and a push that is not a deploy trigger.
+  # gate_collaboration_surface <alias> <derived-reach> <argv...> — 1 when this act
+  # is the collaboration surface the user authorized to proceed unattended:
+  # issues, comments, labels, projects, and a push that is not a deploy trigger.
   #
   # `gh run rerun`/`cancel` are NOT here. Re-running CI can start the very deploy
   # workflow the deploy-trigger cell exists to hold, so they take that cell.
-  local rd="$1"; shift
+  local alias="$1" rd="$2"; shift 2
+  local -a whole=("$@")
   local cmd="${1##*/}"; shift
   [ "$GATE_GRADE_SOURCE" = "표" ] || return 1
   case "$cmd" in
@@ -1247,8 +1261,17 @@ gate_collaboration_surface() {
           fi ;;
       esac ;;
     git)
-      case "${1:-}" in
-        push) [ "$rd" != "배포트리거" ] && return 0 ;;
+      # THE SUBCOMMAND IS READ PAST GIT'S GLOBAL FLAGS, and a push carrying any
+      # of them counts only when those flags still land it in this target:
+      # `git -C <dir>` and `--git-dir=`/`--work-tree=` used to fall through as
+      # no collaboration act, and a target-external spelling must not become
+      # one. Which remote it reaches is disposition step 7's to check.
+      gate_git_subcommand "$@" >/dev/null
+      case "$GATE_GIT_SUB" in
+        push)
+          [ "$rd" != "배포트리거" ] || return 1
+          [ "${#GATE_GIT_GLOBALS[@]}" -eq 0 ] && return 0
+          gate_git_argv_in_target "$alias" "${whole[@]}" && return 0 ;;
       esac ;;
     # The ClickUp ticket and dependency writers file tickets and relations,
     # which is the same surface as `gh issue` on the other tracker.
@@ -1345,30 +1368,69 @@ gate_push_remote_match() {
   # the target row names? Two working trees in this very tree carry an `origin`
   # that is NOT the manifest's slug, so a push naming a remote by name alone can
   # land in an undeclared repository while every other check passes.
+  #
+  # THE DESTINATION IS THE ONE GIT WILL USE, and anything this cannot resolve
+  # to a remote URL is a mismatch. Read past git's global flags, after the
+  # subcommand only: `--repo=<x>`/`--repo <x>` names a destination, the values
+  # of `-o`/`--push-option`/`--receive-pack`/`--exec` are skipped, and the
+  # first operand is a destination too — every one named must match. With no
+  # destination written, the remote is the current branch's push remote, asked
+  # of git with the act's own global flags. A name becomes a URL through
+  # `remote get-url --push` under the same flags. Every question runs in the
+  # act's directory with the environment the act inherits, so a `GIT_DIR` the
+  # act would carry answers here too. An unresolved name or URL, a local path
+  # (`/`, `./`, `../`, `file://`, or anything not shaped `…://…` or `…@…:…`)
+  # and a different slug are all mismatches: each of them used to read as a
+  # match, and a push spelled that way reached a repository nobody declared.
   local alias="$1"; shift
   local want; want=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || want=""
   [ -n "$want" ] || return 0
-  local a rname="" seen_push=0 url=""
-  for a in "$@"; do
-    case "$a" in
-      push) seen_push=1; continue ;;
-      -*) continue ;;
-    esac
-    [ "$seen_push" = "1" ] || continue
-    [ -n "$rname" ] || { rname="$a"; }
+  gate_git_subcommand "${@:2}" >/dev/null
+  [ "$GATE_GIT_SUB" = push ] || return 1
+  local -a glob=(${GATE_GIT_GLOBALS[@]+"${GATE_GIT_GLOBALS[@]}"}) dests=()
+  local a skip=0 want_repo=0 dd=0 pos=0 cwd="${GATE_ACT_CWD:-.}" br url d slug
+  for a in "${@:$((GATE_GIT_SUBIDX + 2))}"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    if [ "$want_repo" = 1 ]; then dests+=("$a"); want_repo=0; continue; fi
+    if [ "$dd" = 0 ]; then
+      case "$a" in
+        --) dd=1; continue ;;
+        --repo) want_repo=1; continue ;;
+        --repo=*) dests+=("${a#--repo=}"); continue ;;
+        -o|--push-option|--receive-pack|--exec) skip=1; continue ;;
+        -*) continue ;;
+      esac
+    fi
+    [ "$pos" = 0 ] || continue
+    pos=1; dests+=("$a")
   done
-  [ -n "$rname" ] || return 0
-  case "$rname" in
-    *://*|*@*:*) url="$rname" ;;
-    *) url=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git remote get-url --push "$rname" 2>/dev/null; } || true) ;;
-  esac
-  [ -n "$url" ] || return 0
-  local slug
-  slug=$(printf '%s' "$url" \
-    | sed -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#^www\.##' \
-          -e 's#^[^/:]*[:/]##' \
-    | tr '[:upper:]' '[:lower:]')
-  [ "$slug" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
+  [ "$want_repo" = 0 ] || return 1
+  if [ "${#dests[@]}" -eq 0 ]; then
+    br=$( { cd "$cwd" 2>/dev/null && git ${glob[@]+"${glob[@]}"} branch --show-current 2>/dev/null; } || true)
+    [ -n "$br" ] || return 1
+    d=$( { cd "$cwd" 2>/dev/null && git ${glob[@]+"${glob[@]}"} for-each-ref --format='%(push:remotename)' "refs/heads/$br" 2>/dev/null; } || true)
+    [ -n "$d" ] || return 1
+    dests=("$d")
+  fi
+  want=$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')
+  for d in "${dests[@]}"; do
+    case "$d" in
+      ''|/*|./*|../*|file://*) return 1 ;;
+      *://*|*@*:*) url="$d" ;;
+      *) url=$( { cd "$cwd" 2>/dev/null && git ${glob[@]+"${glob[@]}"} remote get-url --push -- "$d" 2>/dev/null; } || true) ;;
+    esac
+    case "$url" in
+      ''|/*|./*|../*|file://*) return 1 ;;
+      *://*|*@*:*) ;;
+      *) return 1 ;;
+    esac
+    slug=$(printf '%s' "$url" \
+      | sed -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#^www\.##' \
+            -e 's#^[^/:]*[:/]##' \
+      | tr '[:upper:]' '[:lower:]')
+    [ "$slug" = "$want" ] || return 1
+  done
+  return 0
 }
 
 gate_push_rung() {
@@ -1398,10 +1460,23 @@ gate_push_rung() {
   # EVERY REFSPEC IS READ, not only the last one: `git push origin U:<base>
   # x:other` lands U on the base, and reading the last refspec alone graded it
   # `push` and kept the review rule out of its way.
+  #
+  # The refspecs are read after the subcommand as git's global flags place it,
+  # and the current branch is asked with those same flags: `git -C <dir> push`
+  # pushes the branch `<dir>` is on, not the one the act's directory is on.
   local a seen_push=0 seen_remote=0 dst="" last=""
+  local -a glob=()
+  if [ "${1##*/}" = git ]; then
+    gate_git_subcommand "${@:2}" >/dev/null
+    if [ "$GATE_GIT_SUB" = push ]; then
+      glob=(${GATE_GIT_GLOBALS[@]+"${GATE_GIT_GLOBALS[@]}"})
+      set -- "${@:$((GATE_GIT_SUBIDX + 2))}"
+      seen_push=1
+    fi
+  fi
   for a in "$@"; do
     case "$a" in
-      push) seen_push=1; continue ;;
+      push) [ "$seen_push" = "1" ] || { seen_push=1; continue; } ;;
       -*) continue ;;
     esac
     [ "$seen_push" = "1" ] || continue
@@ -1420,7 +1495,7 @@ gate_push_rung() {
     # No refspec: the destination is whatever branch the act's worktree is on,
     # and a worktree that cannot answer takes the higher rung rather than the
     # convenient one.
-    dst=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    dst=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git ${glob[@]+"${glob[@]}"} branch --show-current 2>/dev/null; } || true)
     [ -n "$dst" ] || { printf '머지'; return 0; }
     [ "$dst" = "$base" ] && { printf '머지'; return 0; }
   fi
@@ -1467,10 +1542,11 @@ gate_push_source_unbound() {
   # runs (`rev-parse <src>^{commit}` in the act's worktree) and compared with
   # <head>. A bare name is its own source; a leading `+` is dropped; an empty
   # source deletes the branch and resolves to nothing. With no refspec the
-  # current branch is pushed, so its source is the act's HEAD. A `-C <dir>`
-  # before the subcommand is followed, since that is where git resolves the
-  # source; `--git-dir` and `--work-tree` are not, and an argv carrying either
-  # is reported whole.
+  # current branch is pushed, so its source is the act's HEAD. The location
+  # flags before the subcommand — `-C`, `--git-dir`, `--work-tree`, in either
+  # spelling — are carried into every question, since that is where git
+  # resolves the source. A global flag that cannot be followed (a `-c`, or
+  # anything `GATE_GIT_UNREAD` names) gets the argv reported whole.
   #
   # `--all`, `--mirror`, `--branches`, the empty refspec and a glob push the
   # LOCAL base ref, and the local base is not the reviewed HEAD whenever the
@@ -1484,40 +1560,35 @@ gate_push_source_unbound() {
   [ "${1##*/}" = git ] || return 0
   local base; base=$(gate_push_base_branch "$alias")
   [ -n "$base" ] || return 0
-  local a seen_push=0 seen_remote=0 n=0 src dst r0 sha cwd="${GATE_ACT_CWD:-.}" want_c=0
-  local -a specs=()
+  local a seen_remote=0 n=0 src dst r0 sha cwd="${GATE_ACT_CWD:-.}"
+  local -a specs=() loc=()
   shift
-  for a in "$@"; do
-    if [ "$seen_push" = "0" ]; then
-      if [ "$want_c" = "1" ]; then
-        case "$a" in /*) cwd="$a" ;; *) cwd="$cwd/$a" ;; esac
-        want_c=0
-        continue
-      fi
-      case "$a" in
-        push) seen_push=1 ;;
-        -C) want_c=1 ;;
-        -C?*) a="${a#-C}"; case "$a" in /*) cwd="$a" ;; *) cwd="$cwd/$a" ;; esac ;;
-        --git-dir|--git-dir=*|--work-tree|--work-tree=*) printf '%s' "$*"; return 0 ;;
-      esac
-      continue
-    fi
+  gate_git_subcommand "$@" >/dev/null
+  if [ "$GATE_GIT_SUB" != push ]; then
+    # A push behind a flag this reading cannot follow is still a push.
+    [ -z "$GATE_GIT_SUB" ] && case " $* " in *" push "*) printf '%s' "$*" ;; esac
+    return 0
+  fi
+  if [ -n "$GATE_GIT_UNREAD" ] || [ "$GATE_GIT_HAS_CONFIG" = 1 ]; then
+    printf '%s' "$*"; return 0
+  fi
+  loc=(${GATE_GIT_LOCFLAGS[@]+"${GATE_GIT_LOCFLAGS[@]}"})
+  for a in "${@:$((GATE_GIT_SUBIDX + 1))}"; do
     case "$a" in -*) continue ;; esac
     if [ "$seen_remote" = "0" ]; then seen_remote=1; continue; fi
     specs+=("$a")
   done
-  [ "$seen_push" = "1" ] || return 0
   local lbase=""
   case " $* " in
     *" --all "*|*" --mirror "*|*" --branches "*)
-      lbase=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
+      lbase=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
       if [ -z "$lbase" ] || [ "$lbase" != "$head" ]; then
         printf '%s' "$*"
       fi
       return 0 ;;
   esac
   if [ "${#specs[@]}" -eq 0 ]; then
-    dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+    dst=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} branch --show-current 2>/dev/null; } || true)
     [ "$dst" = "$base" ] || return 0
     specs=('HEAD')
     dst="$base"
@@ -1528,7 +1599,7 @@ gate_push_source_unbound() {
     r0="${a#+}"
     case "$r0" in
       :|*'*'*)
-        lbase=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
+        lbase=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} rev-parse --verify --quiet "refs/heads/${base}^{commit}" 2>/dev/null; } || true)
         if [ -z "$lbase" ] || [ "$lbase" != "$head" ]; then
           printf '%s' "$a"
           return 0
@@ -1540,11 +1611,11 @@ gate_push_source_unbound() {
       *)   src="$r0"; dst="$r0" ;;
     esac
     if [ "$dst" = 'HEAD' ]; then
-      dst=$( { cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+      dst=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} branch --show-current 2>/dev/null; } || true)
     fi
     gate_push_dst_is_base "$dst" "$base" || continue
     sha=""
-    [ -z "$src" ] || sha=$( { cd "$cwd" 2>/dev/null && git rev-parse --verify --quiet "${src}^{commit}" 2>/dev/null; } || true)
+    [ -z "$src" ] || sha=$( { cd "$cwd" 2>/dev/null && git ${loc[@]+"${loc[@]}"} rev-parse --verify --quiet "${src}^{commit}" 2>/dev/null; } || true)
     if [ -z "$sha" ] || [ "$sha" != "$head" ]; then
       printf '%s' "$a"
       return 0
@@ -1569,18 +1640,86 @@ gate_git_subcommand() {
   # gate_git_subcommand <git's args after argv0...> — the subcommand once git's
   # global options are skipped, the same skip `ladder_of_git` performs; nothing
   # when an unknown global option stands first.
+  #
+  # THE SAME CALL READS WHAT STANDS IN FRONT OF THE SUBCOMMAND. A caller that
+  # needs more than the name calls this directly, not inside `$(...)`, and
+  # reads these:
+  #   GATE_GIT_SUB         the subcommand (what stdout prints)
+  #   GATE_GIT_SUBIDX      its 1-based place among the args given; 0 if none
+  #   GATE_GIT_GLOBALS     the words ahead of it, verbatim
+  #   GATE_GIT_LOCFLAGS    only `-C`, `--git-dir` and `--work-tree`, in order,
+  #                        each folded to two words `<flag> <value>` whether
+  #                        written with `=` or with a space
+  #   GATE_GIT_HAS_CONFIG  1 when a `-c` stands there
+  #   GATE_GIT_LOCONLY     1 when every global is one of the three location
+  #                        flags — the only globals a rewrite to the bare
+  #                        `git <subcommand…>` may drop
+  #   GATE_GIT_UNREAD      empty, or the first of `exec-key` (a `-c` key whose
+  #                        value git runs), `exec-path`, `config-env` and
+  #                        `unknown-option`
+  # `--exec-path` and `--config-env` were skipped silently as value-taking
+  # flags, and they still are: they change where git finds its programs and
+  # what configuration it reads, which no spelling here can follow, so they
+  # surface in `GATE_GIT_UNREAD` and leave the subcommand as it was read.
+  # `-C<dir>` written as one word is an unknown option — git refuses it too.
+  GATE_GIT_SUB=""; GATE_GIT_SUBIDX=0; GATE_GIT_GLOBALS=(); GATE_GIT_LOCFLAGS=()
+  GATE_GIT_HAS_CONFIG=0; GATE_GIT_LOCONLY=1; GATE_GIT_UNREAD=""
+  local i=1
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
-        [ "$#" -ge 2 ] || return 0
-        shift 2 ;;
-      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*) shift ;;
-      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects) shift ;;
-      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) shift ;;
-      -*) return 0 ;;
-      *)  printf '%s' "$1"; return 0 ;;
+        GATE_GIT_GLOBALS+=("$1")
+        if [ "$#" -lt 2 ]; then
+          case "$1" in
+            --exec-path) gate_git_unread exec-path ;;
+            *) gate_git_unread unknown-option ;;
+          esac
+          return 0
+        fi
+        GATE_GIT_GLOBALS+=("$2")
+        gate_git_global_value "$1" "$2"
+        shift 2; i=$((i + 2)) ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*)
+        GATE_GIT_GLOBALS+=("$1")
+        gate_git_global_value "${1%%=*}" "${1#*=}"
+        shift; i=$((i + 1)) ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        GATE_GIT_GLOBALS+=("$1"); GATE_GIT_LOCONLY=0
+        shift; i=$((i + 1)) ;;
+      -*)
+        GATE_GIT_GLOBALS+=("$1"); GATE_GIT_LOCONLY=0
+        gate_git_unread unknown-option
+        return 0 ;;
+      *)
+        GATE_GIT_SUB="$1"; GATE_GIT_SUBIDX="$i"
+        printf '%s' "$1"; return 0 ;;
     esac
   done
+}
+
+gate_git_unread() {
+  # gate_git_unread <reason> — the first reason a global flag could not be
+  # followed is the one kept.
+  [ -n "$GATE_GIT_UNREAD" ] || GATE_GIT_UNREAD="$1"
+}
+
+gate_git_global_value() {
+  # gate_git_global_value <flag> <value> — `gate_git_subcommand`'s reading of
+  # one value-taking global flag.
+  case "$1" in
+    -C|--git-dir|--work-tree)
+      GATE_GIT_LOCFLAGS+=("$1" "$2") ;;
+    -c)
+      GATE_GIT_HAS_CONFIG=1; GATE_GIT_LOCONLY=0
+      gate_git_config_key_execs "${2%%=*}" && gate_git_unread exec-key ;;
+    --namespace)
+      GATE_GIT_LOCONLY=0 ;;
+    --exec-path)
+      GATE_GIT_LOCONLY=0; gate_git_unread exec-path ;;
+    --config-env)
+      GATE_GIT_LOCONLY=0; gate_git_unread config-env ;;
+  esac
+  return 0
 }
 
 gate_push_unwrap_of_argv0() {
@@ -2325,7 +2464,7 @@ gate_reach_disposition() {
   local C=0 lift=0 P=0 Pd=0 Pv=0 Sx='-' Sw='-' pkind='없음' probe='' _pf _ps _t
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="$GATE_MARK" GATE_MARK_TRIGGER="$GATE_MARK_TRIGGER" \
           GATE_DESTRUCTIVE="${GATE_DESTRUCTIVE:-0}" GATE_REACH_EFF="$Reff" \
-          GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$MANIFEST" \
+          GATE_ARGV="$(gate_preauth_argv "$alias" "$@")" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
   _pf=${probe%% 제안=*}; case "$probe" in *" 제안="*) _ps=${probe#* 제안=} ;; *) _ps='-' ;; esac
   [ -n "$_ps" ] || _ps='-'
@@ -2426,7 +2565,7 @@ gate_reach_disposition() {
       C=0 ;;
     *)
       C=0
-      gate_collaboration_surface "$_rd" "$@" && C=1 ;;
+      gate_collaboration_surface "$alias" "$_rd" "$@" && C=1 ;;
   esac
 
   # 5 — nothing below can be judged without knowing where the act lands.
@@ -2465,11 +2604,11 @@ gate_reach_disposition() {
     return 0
   fi
 
-  # 7 — a push whose remote is not the target's.
-  case "${1##*/}:${2:-}" in
-    git:push)
-      gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치\t-\t-'; return 0; } ;;
-  esac
+  # 7 — a push whose remote is not the target's. The subcommand is read past
+  # git's global flags, so `git -C <dir> push` is checked like `git push`.
+  if [ "${1##*/}" = git ] && [ "$(gate_git_subcommand "${@:2}")" = push ]; then
+    gate_push_remote_match "$alias" "$@" || { printf 'push원격불일치\t-\t-'; return 0; }
+  fi
 
   case "$Reff" in
     런로컬)
@@ -6898,6 +7037,20 @@ gate_act_mark() {
         gate_answer_mark_max "$@"; return 0 ;;
   esac
 
+  # ---- git 전역 플래그 -----------------------------------------------------
+  # git's subcommand is read where git reads it, past its global flags, and
+  # the word match below covers only what follows the subcommand: `git -C <x>
+  # push --force` and `git -c a=b credential fill` carried no mark while their
+  # bare spellings did, and a global flag's value is not an option of the
+  # subcommand.
+  if [ "$cmd" = git ]; then
+    gate_git_subcommand "$@" >/dev/null
+    if [ "$GATE_GIT_SUBIDX" -gt 0 ]; then
+      set -- "${@:$GATE_GIT_SUBIDX}"
+      all=" ${*:2} "
+    fi
+  fi
+
   # ---- 비밀출력 -----------------------------------------------------------
   case "$cmd" in
     gh)
@@ -9938,9 +10091,15 @@ gate_slicing_branch() {
 
 gate_slicing_defects() {
   # gate_slicing_defects — one line per defect of an incomplete declaration:
-  # every missing required field of every slice, then the driver's own first
-  # complaint when the fields are all there and something else is wrong.
-  local doc="${DOC:-}" rc=0 id="" f="" n=0 msg=""
+  # every missing required field of every slice — the reason fields a
+  # new-grammar block owes included — and every merge-order defect of every
+  # slice, then the driver's own first complaint when something else is wrong.
+  #
+  # EVERY SLICE TO THE END, NOT THE FIRST DEFECT. The defect set decides which
+  # slices park, so a second defective slice left out of it would be judged
+  # clean and planned. The merge-order lines are `slicing_order_defects`' own,
+  # which the driver's validator warns with, so the two speak the same bytes.
+  local doc="${DOC:-}" rc=0 id="" f="" n=0 msg="" ord=""
   slicing_present "$doc" || rc=$?
   case "$rc" in
     2) printf '「## 구현 슬라이싱」이 펜스 밖에 둘 이상 있습니다\n'; return 0 ;;
@@ -9953,9 +10112,21 @@ gate_slicing_defects() {
         n=$((n + 1))
       fi
     done
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if [ -z "$(slice_field "$doc" "$id" "$f" 2>/dev/null || true)" ]; then
+        printf '슬라이스 %s: 필수 필드 「%s」 없음\n' "$id" "$f"
+        n=$((n + 1))
+      fi
+    done <<EOF
+$(slice_reason_keys "$doc" "$id" 2>/dev/null || true)
+EOF
   done
+  ord=$(slicing_order_defects "$doc" 2>/dev/null || true)
+  [ -z "$ord" ] || printf '%s\n' "$ord"
   [ "$n" = "0" ] || return 0
-  msg=$( { slicing_fields_ok "$doc" 2>&1 >/dev/null || true; } | sed -E 's/^[^]]*\] *(\[warn\] *)?//' | sed -n 1p)
+  msg=$( { slicing_fields_ok "$doc" base 2>&1 >/dev/null || true; } | sed -E 's/^[^]]*\] *(\[warn\] *)?//' | sed -n 1p)
+  [ -z "$msg" ] && [ -n "$ord" ] && return 0
   printf '%s\n' "${msg:-선언을 읽을 수 없습니다}"
 }
 
@@ -10333,12 +10504,24 @@ gate_adoption_halt_carry() {
   log "중단 답 이월 — $seg ← 출처 런 $GATE_CARRY_SRC ($(gate_row_field "$GATE_CARRY_ROW" '선택지'))"
 }
 
+gate_json_id_array() {
+  # gate_json_id_array <id>... — a JSON array of strings; none gives `[]`.
+  local t first=1
+  printf '['
+  for t in "$@"; do
+    [ "$first" = "1" ] || printf ', '
+    first=0
+    printf '"%s"' "$(gate_json_escape "$t")"
+  done
+  printf ']'
+}
+
 gate_snapshot_slicing_json() {
   # The segment plan the frozen document declares, for the shift that has to
   # write it: the branch, and per segment its id, branch name and worktree path
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
-  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects=""
+  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo=""
   br=$(gate_slicing_branch)
   case "$br" in
     미통치) ids=$(gate_plan_implement_step) ;;
@@ -10359,11 +10542,20 @@ gate_snapshot_slicing_json() {
         "$(gate_json_escape "$(manifest_row_fields "$ad" '출처 런')")" \
         "$(gate_json_escape "$(manifest_row_fields "$ad" 'PR')")")
     fi
+    # THE TWO PREDECESSOR LISTS, as normalized ids. The router dispatches a
+    # `머지 순서` predecessor beside this slice and holds only its merge, so it
+    # has to see the two kinds apart; the planner path declares neither.
+    dpre=""; dmo=""
+    if [ "$br" != "미통치" ]; then
+      dpre=$(gate_dep_tokens "$(slice_field "$DOC" "$id" '선행' 2>/dev/null || true)")
+      dmo=$(gate_dep_tokens "$(slice_field "$DOC" "$id" '머지 순서' 2>/dev/null || true)")
+    fi
     [ "$first" = "1" ] || printf ', '
     first=0
-    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s"%s}' \
+    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s", "선행": %s, "머지 순서": %s%s}' \
       "$(gate_json_escape "$id")" "$(gate_json_escape "$al")" \
-      "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" "$adx"
+      "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" \
+      "$(gate_json_id_array $dpre)" "$(gate_json_id_array $dmo)" "$adx"
   done
   printf ']'
   if [ "$br" = "선언불완전" ]; then
@@ -10480,7 +10672,7 @@ gate_decl_defect_slices() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in
-      "슬라이스 "*": 필수 필드 「"*"」 없음")
+      "슬라이스 "*": 필수 필드 「"*"」 없음"|"슬라이스 "*": 머지 순서 "*)
         id=${line#슬라이스 }; id=${id%%:*}
         case " $ids " in *" $id "*) : ;; *) ids="$ids $id" ;; esac ;;
       *) return 0 ;;
@@ -10493,8 +10685,9 @@ EOF
 
 gate_slice_reaches_any() {
   # gate_slice_reaches_any <slice id> <id>... — true when the slice is one of
-  # the ids or depends on one through `선행`, transitively. A dependent of a
-  # parked slice cannot land on it, so it parks with it.
+  # the ids or depends on one through `선행 ∪ 머지 순서`, transitively. A
+  # dependent of a parked slice cannot land on it, and a merge-order successor
+  # cannot merge after it, so either parks with it.
   local todo="$1" ids d want seen=""
   shift
   ids=" $* "
@@ -10504,7 +10697,7 @@ gate_slice_reaches_any() {
     case " $seen " in *" $d "*) continue ;; esac
     seen="$seen $d"
     case "$ids" in *" $d "*) return 0 ;; esac
-    for want in $(gate_dep_tokens "$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)"); do
+    for want in $(slice_chain_tokens "$DOC" "$d" 2>/dev/null || true); do
       todo="${todo:+$todo }$want"
     done
   done
@@ -10635,6 +10828,17 @@ gate_prior_decl_diff() {
       return 0
     fi
   done
+  # `머지 순서` on the condition the digest uses: `없음` and an absent field are
+  # one value, so a new document reading `없음` matches an old one without the
+  # line, and only a declared merge-order predecessor can differ.
+  pv=$(gate_row_field "$pr" '머지 순서')
+  cv=$(slice_field "$DOC" "$seg" '머지 순서' 2>/dev/null || true)
+  [ -n "$(gate_dep_tokens "$pv")" ] || pv=""
+  [ -n "$(gate_dep_tokens "$cv")" ] || cv=""
+  if [ "$(gate_decl_norm "$pv")" != "$(gate_decl_norm "$cv")" ]; then
+    printf '%s' "슬라이스 선언 불일치(머지 순서) — 그 런의 계획 「$(gate_row_safe "$(gate_decl_norm "$pv")" 120)」, 지금 문서 「$(gate_row_safe "$(gate_decl_norm "$cv")" 120)」"
+    return 0
+  fi
   if [ -n "$pd" ]; then
     printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런의 계획과 지금 문서의 선언 전체가 다릅니다"
   fi
@@ -11032,7 +11236,7 @@ gate_from_declaration() {
   for f in "$@"; do
     k=${f%%=*}
     case "$k" in
-      레포|'선언 파일 집합'|선행|절단점|'리뷰 정책'|'선언 다이제스트'|plan-binding-digest)
+      레포|'선언 파일 집합'|선행|'머지 순서'|절단점|'리뷰 정책'|'선언 다이제스트'|plan-binding-digest)
         warn "--from-declaration 은 「${k}」 를 동결 문서에서 채웁니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB" ;;
     esac
@@ -11113,6 +11317,10 @@ gate_from_declaration() {
         "레포=$(slice_field "$DOC" "$seg" '레포')" \
         "선행=$(slice_field "$DOC" "$seg" '선행')" \
         "절단점=$(slice_field "$DOC" "$seg" '절단점')" )
+      # `머지 순서` only when it is not `없음`, the condition the declaration
+      # digest uses for its sixth line: an absent field reads as `없음`.
+      k=$(slice_field "$DOC" "$seg" '머지 순서')
+      [ -z "$(gate_dep_tokens "$k")" ] || GATE_DECL_FIELDS+=( "머지 순서=$k" )
       k=$(slice_field "$DOC" "$seg" '리뷰 정책')
       [ -z "$k" ] || GATE_DECL_FIELDS+=( "리뷰 정책=$k" )
       GATE_DECL_FIELDS+=( "선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")" )
@@ -11200,15 +11408,19 @@ gate_from_declaration() {
       gate_decl_block "$verb" "$why"
       return "$GATE_EXIT_RULE"
     fi
+    # A `머지 순서` token naming no declared slice has no owner either, so it
+    # joins the same run-scope check.
     for f in $(slice_ids "$DOC" 2>/dev/null || true); do
-      for d in $(gate_dep_tokens "$(slice_field "$DOC" "$f" '선행')"); do
-        case "$ids" in
-          *" $d "*) : ;;
-          *) why="구현 슬라이싱 선언 불완전 — 슬라이스 $f: 「선행」이 지목한 슬라이스가 선언에 없습니다: $d"
-             warn "세그먼트 계획 거부: $why"
-             gate_decl_block "$verb" "$why"
-             return "$GATE_EXIT_RULE" ;;
-        esac
+      for k in 선행 '머지 순서'; do
+        for d in $(gate_dep_tokens "$(slice_field "$DOC" "$f" "$k")"); do
+          case "$ids" in
+            *" $d "*) : ;;
+            *) why="구현 슬라이싱 선언 불완전 — 슬라이스 $f: 「${k}」이 지목한 슬라이스가 선언에 없습니다: $d"
+               warn "세그먼트 계획 거부: $why"
+               gate_decl_block "$verb" "$why"
+               return "$GATE_EXIT_RULE" ;;
+          esac
+        done
       done
     done
   fi
@@ -11249,9 +11461,13 @@ gate_from_declaration() {
   # repository's base branch: through the target's anchor when the repository
   # is a target, through the remote's own comparison when it is not. The row
   # written is `머지됨` with `출처=매니페스트` and no worktree.
+  #
+  # BOTH KINDS ARE BROUGHT IN. A `머지 순서` token is held by the same
+  # known-token floor as a `선행` token, so a merge-order predecessor an earlier
+  # run landed would otherwise leave its successor unplannable for good.
   if [ "$br" = "선언통치" ]; then
     known=" $(gate_segment_ids | tr '\n' ' ') "
-    for d in $(gate_dep_tokens "$(slice_field "$DOC" "$seg" '선행')"); do
+    for d in $(slice_chain_tokens "$DOC" "$seg"); do
       case "$known" in *" $d "*) continue ;; esac
       dal=$(gate_slice_alias "$d" 2>/dev/null) || dal=""
       if [ -n "$dal" ]; then
@@ -16710,9 +16926,27 @@ gate_canon_count() {
 }
 
 gate_preauth_argv() {
-  # gate_preauth_argv <argv…> — the argv string the preauthorization rule
-  # compares a `사전 인가` row's shape against. For every command but `gh api`
-  # it is the argv as written.
+  # gate_preauth_argv <alias> <argv…> — the argv string the preauthorization
+  # rule compares a `사전 인가` row's shape against. For every command but
+  # `gh api` and a git command carrying global flags it is the argv as
+  # written.
+  #
+  # A GIT COMMAND THAT ONLY SAYS WHERE IT RUNS IS COMPARED WITHOUT SAYING IT.
+  # `git -C <worktree> push …` and `git --git-dir=<g> --work-tree=<w> push …`
+  # are the `git push` a `git push` row authorizes when, and only when, those
+  # flags land in a worktree of <alias> (`gate_git_argv_in_target`) and they are
+  # the only global flags. Then it is rewritten to `git <subcommand…>`.
+  #
+  # ANY OTHER GIT COMMAND HAS ITS `-…=<value>` GLOBALS SPLIT, and is otherwise
+  # passed as written. The rule drops every `-…=` word before it compares, so
+  # `git --git-dir=<elsewhere>/.git push origin x` reached it as `git push
+  # origin x` and matched a `git push` row while the space spelling
+  # `git --git-dir <elsewhere>/.git push …` did not. Each such word ahead of
+  # the subcommand goes as `<flag> <value>`, which the rule keeps, so another
+  # global flag (`-c`, `--namespace`, …), a location outside the target or an
+  # empty <alias> matches no `git <subcommand>` row in either spelling. The
+  # words after the subcommand (`--push-option=…`) are left for the rule to
+  # drop as before. With no subcommand read, every `-…=` word is split.
   #
   # A `gh api` ARGV IS COMPARED WITH THE METHOD gh WILL SEND IN FRONT. The rule
   # compares a shape's words with the argv's first words, and gh takes the
@@ -16730,7 +16964,32 @@ gate_preauth_argv() {
   # PUT` row word for word. The flags ahead of `api` go after it, where gh
   # reads them too. An argv with an `api` word whose place cannot be told gets
   # an `api` word no row names, so only a row of bare `gh` opens it.
+  local alias="$1"; shift
   local cmd="${1##*/}" m
+  if [ "$cmd" = git ] && [ -n "$alias" ]; then
+    gate_git_subcommand "${@:2}" >/dev/null
+    if [ "${#GATE_GIT_GLOBALS[@]}" -gt 0 ] && [ "$GATE_GIT_LOCONLY" = 1 ] \
+       && [ -z "$GATE_GIT_UNREAD" ] && [ "$GATE_GIT_SUBIDX" -gt 0 ] \
+       && gate_git_argv_in_target "$alias" "$@"; then
+      printf '%s %s' "$1" "${*:$((GATE_GIT_SUBIDX + 1))}"
+      return 0
+    fi
+  fi
+  if [ "$cmd" = git ]; then
+    gate_git_subcommand "${@:2}" >/dev/null
+    local -a gw=("$1")
+    local a k=1
+    for a in "${@:2}"; do
+      if [ "$GATE_GIT_SUBIDX" -eq 0 ] || [ "$k" -lt "$GATE_GIT_SUBIDX" ]; then
+        case "$a" in
+          -*=*) gw+=("${a%%=*}" "${a#*=}"); k=$((k + 1)); continue ;;
+        esac
+      fi
+      gw+=("$a"); k=$((k + 1))
+    done
+    printf '%s' "${gw[*]}"
+    return 0
+  fi
   if [ "$cmd" = gh ]; then
     gate_gh_strip_repo "${@:2}"
     if [ "$GATE_GH_API_UNREAD" = 1 ]; then
@@ -16754,7 +17013,7 @@ gate_manifest_preauthorizes() {
   # cannot split into two.
   local probe
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK='' GATE_MARK_TRIGGER='' \
-          GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$MANIFEST" \
+          GATE_ARGV="$(gate_preauth_argv '' "$@")" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || return 1
   case "$probe" in *"P=1"*) return 0 ;; esac
   return 1
@@ -17552,6 +17811,78 @@ gate_path_of_target() {
   [ "$cg_p" = "$want_p" ]
 }
 
+gate_git_argv_in_target() {
+  # gate_git_argv_in_target <alias> <argv...> — 0 only when the repository and
+  # working tree this git command acts on are a worktree of THAT TARGET, read
+  # from its global flags as git reads them. Any condition that cannot be
+  # decided is a no.
+  #
+  # FOUR CONDITIONS, ALL OF THEM.
+  #   1. No git location or configuration variable in the environment the act
+  #      inherits — the gate's own, and an assignment written ahead of git in
+  #      argv on the line `gate_push_base_updates` draws: `LANG`, `LC_*` and
+  #      `TZ` only. Such a variable moves the repository git opens past every
+  #      flag the argv carries, so a flag reading cannot speak for it.
+  #   2. Every global flag was read (`GATE_GIT_UNREAD` empty).
+  #   3. The common git directory git names for these location flags, asked in
+  #      the act's directory with the inherited variables removed, is the
+  #      target row's `공통 git 디렉터리` — compared as `gate_path_of_target`
+  #      compares it, as written and then physically. The query is absolute so
+  #      the main worktree compares too. Removing the variables is safe only
+  #      because condition 1 already refused an act that would carry them.
+  #   4. The top of the working tree is, physically, one of the `worktree`
+  #      entries the target's own `git worktree list --porcelain` prints. A
+  #      `--work-tree` pointing anywhere else checks files out somewhere the
+  #      target's common directory does not own.
+  local alias="$1"; shift
+  local a v cmd_seen=0 out cg top want cg_p want_p top_p wt line
+  for a in "$@"; do
+    case "${a##*/}" in git) cmd_seen=1; break ;; esac
+    case "$a" in
+      LANG=*|LC_*=*|TZ=*) continue ;;
+    esac
+    [ "${a##*/}" = env ] && continue
+    return 1
+  done
+  [ "$cmd_seen" = 1 ] || return 1
+  while [ "$#" -gt 0 ]; do
+    case "${1##*/}" in git) shift; break ;; esac
+    shift
+  done
+  for v in GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_NAMESPACE GIT_OBJECT_DIRECTORY ${!GIT_CONFIG@}; do
+    [ -z "${!v+x}" ] || return 1
+  done
+  gate_git_subcommand "$@" >/dev/null
+  [ -z "$GATE_GIT_UNREAD" ] || return 1
+  [ -n "$GATE_GIT_SUB" ] || return 1
+  want=$(target_field "$alias" '공통 git 디렉터리' 2>/dev/null) || return 1
+  [ -n "$want" ] || return 1
+  out=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null \
+           && env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_CEILING_DIRECTORIES \
+                git ${GATE_GIT_LOCFLAGS[@]+"${GATE_GIT_LOCFLAGS[@]}"} rev-parse --path-format=absolute --git-common-dir --show-toplevel 2>/dev/null; } || true)
+  cg=$(printf '%s\n' "$out" | sed -n 1p)
+  top=$(printf '%s\n' "$out" | sed -n 2p)
+  [ -n "$cg" ] && [ -n "$top" ] || return 1
+  if [ "$cg" != "$want" ]; then
+    cg_p=$(cd "$cg" 2>/dev/null && pwd -P) || return 1
+    want_p=$(cd "$want" 2>/dev/null && pwd -P) || return 1
+    [ "$cg_p" = "$want_p" ] || return 1
+  fi
+  top_p=$(cd "$top" 2>/dev/null && pwd -P) || return 1
+  out=$(env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_CEILING_DIRECTORIES \
+          git --git-dir="$want" worktree list --porcelain 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      'worktree '*)
+        wt="${line#worktree }"
+        [ "$(cd "$wt" 2>/dev/null && pwd -P)" = "$top_p" ] && return 0 ;;
+    esac
+  done <<EOF
+$out
+EOF
+  return 1
+}
+
 gate_path_of_some_target() {
   # gate_path_of_some_target <path> — 0 when <path> passes
   # `gate_path_of_target` for at least one declared target.
@@ -17730,6 +18061,54 @@ gate_deps_of() {
   gate_dep_tokens "$(gate_segment_field "$1" '선행')"
 }
 
+gate_chain_deps_of() {
+  # gate_chain_deps_of <segment> — `선행 ∪ 머지 순서` of that segment's last
+  # row, without duplicates. The cone's declared axis reads this union: a
+  # merge-order predecessor that parks holds this segment's merge forever, so
+  # it is an edge of the same kind an implementation predecessor is.
+  local t out=" "
+  for t in $(gate_deps_of "$1") $(gate_dep_tokens "$(gate_segment_field "$1" '머지 순서')"); do
+    case "$out" in *" $t "*) continue ;; esac
+    out="$out$t "
+  done
+  out=${out# }
+  printf '%s' "${out% }"
+}
+
+gate_segment_row_landed() {
+  # gate_segment_row_landed <row> — 0 when that one `segment` row records a
+  # landing: `머지됨`, or `완료` — except a `완료` brought in from an earlier
+  # run (`출처`) without a hex `머지 커밋`, which an open pull request left and
+  # which put nothing on the base. The dispatch floor and the merge-order
+  # check read landing through this one predicate.
+  local row="$1"
+  case "$(gate_row_field "$row" '상태')" in
+    머지됨) return 0 ;;
+    완료)
+      [ -n "$(gate_row_field "$row" '출처')" ] || return 0
+      case "$(gate_row_field "$row" '머지 커밋')" in
+        ''|*[!0-9a-f]*) return 1 ;;
+      esac
+      return 0 ;;
+  esac
+  return 1
+}
+
+gate_segment_ever_landed() {
+  # gate_segment_ever_landed <segment> — 0 when ANY `segment` row of that id
+  # records a landing. The merge-order check asks "has the predecessor's work
+  # reached the base", and a landing stays on the base whatever a later row
+  # says, so a re-planned row after `머지됨` does not take it back.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    gate_segment_row_landed "$row" && return 0
+  done <<ROWS
+$(gate_rows 'segment' | gate_rows_field_eq 'id' "$1")
+ROWS
+  return 1
+}
+
 gate_ancestor_of() {
   # gate_ancestor_of <A> <B> — 0 A's tip is an ancestor of B's tip, 1 it is not,
   # 2 the question could not be answered.
@@ -17849,7 +18228,10 @@ gate_cone_edge() {
   #
   # Nothing below is weakened by the move: the arms it precedes all answer "does
   # git place these two", and a declaration is not a claim about git.
-  for d in $(gate_deps_of "$s"); do
+  #
+  # The axis reads `선행 ∪ 머지 순서`: a candidate whose merge waits on a parked
+  # member is held by that member just as a dependent is.
+  for d in $(gate_chain_deps_of "$s"); do
     if [ "$d" = "$m" ]; then return 0; fi
   done
 
@@ -17911,7 +18293,8 @@ gate_cone_members() {
   #                   declared — seeding rather than anchoring can only WIDEN
   #                   the cone, and widening is the direction already declared
   #                   safe
-  #   declared axis   non-terminal segments whose `선행` names a member
+  #   declared axis   non-terminal segments whose `선행` or `머지 순서` names a
+  #                   member
   #   ancestor axis   non-terminal segments whose tip has a member's tip as an
   #                   ancestor
   #
@@ -18569,7 +18952,7 @@ gate_physical_path() {
   # then resolved here to the gate's own copy while the kernel ran a planted file
   # of that name — and the helper trust check compares exactly this value.
   local p="$1" d b link n=0
-  d=$(dirname "$p"); b=$(basename "$p")
+  d=$(dirname -- "$p"); b=$(basename -- "$p")
   [ -d "$d" ] || { printf '%s' "$p"; return 0; }
   p="$(cd -P -- "$d" && pwd -P)/$b"
   while [ -L "$p" ] && [ "$n" -lt 8 ]; do
@@ -18577,9 +18960,9 @@ gate_physical_path() {
     [ -n "$link" ] || break
     case "$link" in
       /*) p="$link" ;;
-      *) p="$(dirname "$p")/$link" ;;
+      *) p="$(dirname -- "$p")/$link" ;;
     esac
-    d=$(dirname "$p"); b=$(basename "$p")
+    d=$(dirname -- "$p"); b=$(basename -- "$p")
     [ -d "$d" ] || break
     p="$(cd -P -- "$d" && pwd -P)/$b"
     n=$((n + 1))
@@ -20480,7 +20863,9 @@ gate_manifest_write_guard() {
   mreal=$(gate_physical_path "$MANIFEST")
   for a in "$@"; do
     case "$a" in */*) ;; *) continue ;; esac
-    adir=$(dirname "$a")
+    # `--`: a word like `--git-dir=<p>/x` is an operand here, not an option
+    # of dirname.
+    adir=$(dirname -- "$a")
     [ -d "$adir" ] || continue
     areal=$(gate_physical_path "$a")
     [ "$areal" = "$mreal" ] || continue
@@ -21945,6 +22330,14 @@ gate_record_row() {
         warn "segment 행의 「선언 다이제스트」는 게이트가 동결 문서에서 계획 행을 채울 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB"
       fi
+      # `머지 순서` is the gate's for the same reason: it holds a merge until
+      # the slices it names have landed, so a caller who could write it could
+      # also leave it off a row the declaration orders. The declaration-filled
+      # act writes it, and later rows carry it forward below.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ -n "$(gate_field_of '머지 순서' "$@")" ]; then
+        warn "segment 행의 「머지 순서」는 게이트가 동결 문서에서 계획 행을 채울 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
+        return "$GATE_EXIT_VOCAB"
+      fi
 
       # THE APPLY STATES BELONG TO THE APPLY ARM. This arm carries a caller's
       # fields with no allow-list and lets a terminal row skip the worktree
@@ -22097,6 +22490,86 @@ gate_record_row() {
              return "$GATE_EXIT_VOCAB" ;;
         esac
       done
+
+      # `머지 순서` — the merge-order predecessors, CARRIED FORWARD AT WRITE
+      # TIME like `리뷰 정책` below, and for the same reason: the router's row
+      # template does not carry it, so an ordinary state transition would drop
+      # the order and the merge check would read nothing. A token this row
+      # names in `선행` leaves the carried value — an implementation
+      # predecessor is also landed before the merge, so the stronger list
+      # absorbs it. The same known-token floor holds, since the field reads a
+      # landing just as `선행` does.
+      local mo cur_mo prev_mo prev_union cur_union mo_out
+      mo=$(gate_field_of '머지 순서' "$@")
+      if [ -z "$mo" ] && [ -n "$prior" ]; then
+        prev_mo=$(gate_dep_tokens "$(gate_row_field "$prior" '머지 순서')")
+        mo_out=""
+        for d in $prev_mo; do
+          case " $cur_deps " in *" $d "*) continue ;; esac
+          mo_out="${mo_out:+$mo_out, }슬라이스 $d"
+        done
+        [ -z "$mo_out" ] || { mo="$mo_out"; set -- "$@" "머지 순서=$mo"; }
+      fi
+      # A SLICE THE FROZEN DOCUMENT DECLARES IS NOT YET PLANNED, NOT UNLANDABLE.
+      # A merge-order predecessor held back by its own `선행` has no row while
+      # this slice is planned, and the refusal stays — the floor is what keeps
+      # the order readable — but it must not read like the unknown-token one:
+      # a router maps that one to "a new run with a `선행 착지` row", which is
+      # false here, since planning the predecessor first is the whole remedy.
+      #
+      # THE REMEDY IS TO DEFER, AND THE TEXT SAYS SO IN THE SHAPE THE ROUTER
+      # CAN DO. "Plan the predecessor first" is not always doable: a predecessor
+      # still held back by its own `선행` may not be planned yet either, and
+      # then the only thing that works is to leave this slice for a later pass
+      # until the predecessor's row appears. So the refusal names the unlanded
+      # `선행` of the predecessor when there is one, and in both cases says
+      # "defer" rather than "stop". A declared slice whose `레포` names no
+      # target of this run cannot be planned here at all, so it is not given
+      # this remedy: it falls through to the unknown-token refusal, whose
+      # remedy — a `선행 착지` row in a new run — is the true one for it.
+      local decl_ids="" d_pre p
+      if [ -n "${DOC:-}" ] && grep -qxF '**상태**: 동결됨' "$DOC" 2>/dev/null; then
+        decl_ids=" $(slice_ids "$DOC" 2>/dev/null | tr '\n' ' ') "
+      fi
+      cur_mo=$(gate_dep_tokens "$mo")
+      for d in $cur_mo; do
+        case "$known" in
+          *" $d "*) ;;
+          *) case "$decl_ids" in
+               *" $d "*)
+                 if gate_slice_alias "$d" >/dev/null 2>&1; then
+                   d_pre=""
+                   for p in $(gate_dep_tokens "$(slice_field "$DOC" "$d" '선행' 2>/dev/null)"); do
+                     gate_segment_ever_landed "$p" || d_pre="${d_pre:+$d_pre, }'$p'"
+                   done
+                   warn "the slice \`머지 순서\` names is declared in the frozen document and has no segment row on this ledger yet: '$d' — this is the order of planning, not a missing landing"
+                   if [ -n "$d_pre" ]; then
+                     warn "'$d' is held back by its own \`선행\` $d_pre and cannot be planned yet: defer this slice until '$d' has a row, which it gets once that \`선행\` lands — this is a wait, not a stop, and no new run is needed"
+                   else
+                     warn "defer this slice until '$d' has a row: plan '$d' first and then this slice again — this is a wait, not a stop, and no new run is needed"
+                   fi
+                   return "$GATE_EXIT_VOCAB"
+                 fi ;;
+             esac
+             warn "the segment \`머지 순서\` names is not in the ledger, and no earlier run ledger of the same document shows it landed: '$d' — such a segment cannot land, so this segment could never merge"
+             warn "a predecessor that landed outside every run ledger is brought in only from a \`선행 착지\` row the kickoff froze into the manifest — a new run with that row"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+      done
+      # THE UNION IS MONOTONE. A token may move from `머지 순서` to `선행` and
+      # never leave both: narrowing the union after the predecessor parks would
+      # let this segment merge ahead of a slice the declaration ordered first.
+      if [ -n "$prior" ]; then
+        prev_union="$(gate_dep_tokens "$(gate_row_field "$prior" '선행')") $(gate_dep_tokens "$(gate_row_field "$prior" '머지 순서')")"
+        cur_union=" $cur_deps $cur_mo "
+        for d in $prev_union; do
+          case "$cur_union" in
+            *" $d "*) ;;
+            *) warn "「선행 ∪ 머지 순서」는 세그먼트마다 단조롭습니다 — 앞선 행의 '$d' 가 이 행에 없습니다(더할 수는 있고 뺄 수는 없습니다)"
+               return "$GATE_EXIT_VOCAB" ;;
+          esac
+        done
+      fi
 
       # `리뷰 정책` — OPTIONAL on this row, and its absence in a LATER row is
       # INHERITANCE and not a reset. The router's row template carries the
@@ -24061,8 +24534,10 @@ gate_drain_checks() {
   # it cares about moved. The two rules above bound it: rows are written only on
   # transitions, and one `(PR, head sha)` lifecycle transitions a handful of
   # times. A single-segment run cannot reach the window; THREE OR MORE SEGMENTS
-  # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with the
-  # concurrent-stage cap rather than with anything here.
+  # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with how many
+  # segments run at once rather than with anything here. There is no numeric
+  # cap on concurrent stages: what bounds it is the route's usage admission,
+  # which dispatches a stage only while the lane's weekly allowance admits it.
   #
   # THE SWEEP, THE RENAME AND THE TRANSCRIPTION RUN UNDER ONE LOCK, and without it
   # the sweep undid the ordering it was written to keep. `gate_verb_act` holds no
@@ -24922,8 +25397,9 @@ gate_stage_instructions() {
   # WHAT REPLACES AUTOMATIC CLAUDE.md LOADING. A stage launched with these
   # instructions runs with `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, so nothing it
   # would have loaded on its own reaches it; this file is the whole of what it
-  # gets, and its team members get the same bytes through the subagent append.
-  # It is `stage-policy.md` (the English stage policy, byte-identical for every
+  # gets. Its team members get a second file through the subagent append (THE
+  # MEMBERS FILE, below). The lead file is `stage-policy.md` (the English stage
+  # policy, byte-identical for every
   # target, kind and segment — the cache-stable head), then the target's
   # instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
   # every ancestor of the target's MAIN worktree, root first, whichever exist.
@@ -24939,8 +25415,9 @@ gate_stage_instructions() {
   #
   # CONTENT-ADDRESSED AND FREE OF VOLATILE TOKENS: no run id, time, segment,
   # attempt or worktree path goes in, the name is the sha256 of the bytes, and
-  # so every stage and team member of one target in one run shares one file —
-  # and one prompt-cache head. `umask 077` because an ancestor file may carry
+  # so every stage of one target in one run shares one lead file — and one
+  # prompt-cache head — and every team member shares one members file. `umask
+  # 077` because an ancestor file may carry
   # a credential line: the automatic loader sent those bytes too, but the disk
   # copy must not be readable by another user, and the hook denies a stage every
   # write under `instructions/`.
@@ -24975,10 +25452,36 @@ gate_stage_instructions() {
   # comparison is between PHYSICAL paths on both sides: with one side left as
   # spelled, a symlinked spelling (`/var` vs `/private/var`) would judge a real
   # ancestor as "outside the chain" and the exclusion would vanish silently.
-  # No map at all excludes nothing — fail-open toward today's behaviour.
-  local alias="$1" root slug policy rootp cfgdir cfgp map excl=$'\n' n line id p pp
-  local d f name label fence_hit i tmp sha dst
-  local chain_files=() labels=()
+  # A line whose source id is `keep` is the opposite: the file joins the keep
+  # set, goes into the chain verbatim, and the identity judgment below is
+  # skipped for it — the one-line way a person switches the exclusion off.
+  #
+  # WITHOUT A MAP LINE, AN ANCESTOR OUTSIDE THE REPOSITORY ROOT IS JUDGED BY
+  # IDENTITY. `stage-policy-drift.sh --identity` answers whether the policy and
+  # the manifest already account for every section of the file, body hashes
+  # included — a section an `excluded:*` disposition recorded on this host with
+  # `--ack-added` accounts for is held to the body hash recorded for it as
+  # well; exit 0 leaves it out, anything else keeps it verbatim. An
+  # identified workspace file that fails names the breaking sections, and those
+  # lines go to this log; a file that is not the workspace source fails
+  # silently. An edit therefore brings the file back rather than dropping a
+  # rule. `CC_GATE_STAGE_POLICY_ACK` is the test seam for the acknowledgement
+  # store the judgment reads, as `CC_GATE_STAGE_POLICY_SOURCES` is for the map.
+  #
+  # THE MEMBERS FILE. Beside the lead file the same inputs make a second one,
+  # for the Agent-tool members, who are read-only: the same policy, a header
+  # saying the repository's files come as paths, the ancestors outside the
+  # repository root verbatim (after the same exclusion), and in place of each
+  # of the repository root's own instruction files the absolute path of the
+  # main worktree's file with one sentence telling the member to read the parts
+  # it needs. It is content-addressed the same way, and a pointer
+  # `instructions/<lead sha256>.member` holding its path is written beside the
+  # lead file, so a launcher that holds only the lead path — a launch token
+  # carries one — finds the members file, and a resume that follows the lead
+  # file follows its members file too.
+  local alias="$1" root slug policy rootp cfgdir cfgp map excl=$'\n' keep=$'\n' n line id p pp
+  local d f name label fence_hit i tmp sha dst mtmp msha mdst ptmp idrc idlog ackstore
+  local chain_files=() labels=() roots=()
   root=$(target_field "$alias" '메인 워크트리')
   if [ -z "$root" ] || [ ! -d "$root" ]; then
     warn "stage instructions: target '$alias' has no usable main worktree ('${root:-}') — refusing to launch; an empty chain would drop every repository rule"
@@ -25023,6 +25526,10 @@ gate_stage_instructions() {
         continue
       fi
       pp="$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
+      if [ "$id" = keep ]; then
+        keep="$keep$pp"$'\n'
+        continue
+      fi
       case "$pp" in
         "$rootp/CLAUDE.md"|"$rootp/.claude/CLAUDE.md"|"$rootp/CLAUDE.local.md")
           warn "stage instructions: host map line $n names a target root instruction file, which cannot be excluded: $p"
@@ -25051,6 +25558,24 @@ gate_stage_instructions() {
       case "$excl" in
         *$'\n'"$pp"$'\n'*) log "stage instructions: excluding $pp by the host map"; continue ;;
       esac
+      if [ "$d" != "$rootp" ]; then
+        case "$keep" in
+          *$'\n'"$pp"$'\n'*) log "stage instructions: keeping $pp by the host map" ;;
+          *)
+            ackstore="${CC_GATE_STAGE_POLICY_ACK:-${HOME:-}/.config/cc-cmds/stage-policy-ack}"
+            idrc=0
+            idlog=$(bash "$GATE_DIR/stage-policy-drift.sh" --identity "$f" --ack-store "$ackstore" 2>&1 >/dev/null) || idrc=$?
+            if [ "$idrc" = 0 ]; then
+              log "stage instructions: excluding $pp — every section matches the stage policy manifest"
+              continue
+            fi
+            if [ -n "$idlog" ]; then
+              while IFS= read -r line; do
+                [ -n "$line" ] && log "stage instructions: keeping $pp — $line"
+              done <<< "$idlog"
+            fi ;;
+        esac
+      fi
       # An `@import` line outside a fenced block: verbatim injection does not
       # expand it, so the imported rules would be lost silently. The shape
       # requires a path (`@~`, `@.`, `@/`, or `@name/`), so an annotation line
@@ -25065,8 +25590,10 @@ gate_stage_instructions() {
       fi
       if [ "$d" = "$rootp" ]; then
         label="$slug/$name"
+        roots[${#roots[@]}]=1
       else
         label="$f"
+        roots[${#roots[@]}]=0
       fi
       chain_files[${#chain_files[@]}]="$f"
       labels[${#labels[@]}]="$label"
@@ -25096,6 +25623,31 @@ gate_stage_instructions() {
     mv -n "$tmp" "$dst" 2>/dev/null || true
     [ ! -e "$tmp" ] || rm -f "$tmp"
     [ -f "$dst" ] || exit 1
+    # The members file and its pointer, published the same way.
+    mtmp=$(mktemp "$RUN_DIR/instructions/.member.XXXXXX") || exit 1
+    {
+      cat "$policy"
+      printf '\n# Repository instructions\n\nThe files below are the instruction chain of the target repository, root first. Each begins with a heading naming its file; the repository'"'"'s own files are given as paths to read, not as their text.\n'
+      i=0
+      while [ "$i" -lt "${#chain_files[@]}" ]; do
+        printf '\n---\n# %s\n\n' "${labels[$i]}"
+        if [ "${roots[$i]}" = 1 ]; then
+          printf '%s\n\nRead the parts that bear on a file before you judge or quote a rule about it.\n' "${chain_files[$i]}"
+        else
+          cat "${chain_files[$i]}"
+        fi
+        i=$((i + 1))
+      done
+    } > "$mtmp" || { rm -f "$mtmp"; exit 1; }
+    msha=$(shasum -a 256 "$mtmp" | cut -d' ' -f1)
+    mdst="$RUN_DIR/instructions/$msha.md"
+    mv -n "$mtmp" "$mdst" 2>/dev/null || true
+    [ ! -e "$mtmp" ] || rm -f "$mtmp"
+    [ -f "$mdst" ] || exit 1
+    ptmp=$(mktemp "$RUN_DIR/instructions/.pointer.XXXXXX") || exit 1
+    printf '%s\n' "$mdst" > "$ptmp" || { rm -f "$ptmp"; exit 1; }
+    mv -n "$ptmp" "$RUN_DIR/instructions/$sha.member" 2>/dev/null || true
+    [ ! -e "$ptmp" ] || rm -f "$ptmp"
     printf '%s' "$dst"
   ) || {
     warn "stage instructions: could not publish the synthesized file under $RUN_DIR/instructions — refusing to launch"
@@ -25145,6 +25697,20 @@ gate_stage_instructions_for_launch() {
     log "stage instructions: session $resume was launched with $(basename "$recf" .md); current synthesis is $(basename "$now" .md) — keeping the recorded file"
   fi
   printf '%s' "$recf"
+}
+
+gate_stage_member_instructions() {
+  # gate_stage_member_instructions <lead file> — the members file the pointer
+  # beside <lead file> names, printed; empty when there is no pointer (a file
+  # synthesized before the members file existed) or it names nothing usable, and
+  # then the wrapper gives the members the lead file, as before.
+  local lead="$1" ptr m
+  [ -n "$lead" ] || return 0
+  ptr="${lead%.md}.member"
+  [ -f "$ptr" ] || return 0
+  m=$(head -n 1 "$ptr")
+  [ -n "$m" ] && [ -s "$m" ] || return 0
+  printf '%s' "$m"
 }
 
 gate_stage_instructions_record() {
@@ -26980,6 +27546,50 @@ gate_verb_act() {
   # still saw it would reopen a slot the segment already fulfilled.
   gate_check_merge_anchor "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$kind" || exit $?
 
+  # THE MERGE WAITS FOR ITS ORDER. A segment whose `선행 ∪ 머지 순서` names a
+  # slice that has not landed may be implemented beside it, but may not put its
+  # work on the base first — that order is what the declaration's `머지 순서`
+  # promised. Only an act that lands is held: a remote merge argv, a `git push`
+  # git says updates the base, or a command the table cannot read that writes
+  # outside the worktree. A commit or a push to the segment branch is not.
+  #
+  # NO ROW AND NO PARK CELL. The refusal is a wait, not a defect: the router
+  # retries once the predecessor lands, and a parked predecessor holds this
+  # segment through the cone instead. And it is outside `gate_rule_enabled` and
+  # the review policy, because the order is the declaration's, not a rule a
+  # manifest may switch off.
+  local _moi _mom _mo_land=0 _mo_dep _mo_st
+  _moi=$(cutpoint_index "$GATE_ACT_EFFECTIVE" 2>/dev/null) || _moi=-1
+  _mom=$(cutpoint_index '머지' 2>/dev/null) || _mom=0
+  if [ "$_moi" -ge "$_mom" ] && ! gate_kind_is_bookkeeping "$kind" \
+     && [ -n "$segment" ] && [ "$segment" != '-' ] \
+     && [ -n "$(gate_segment_field "$segment" '상태')" ]; then
+    case "$kind" in
+      propose-done|skill|router-shift|apply) : ;;
+      *)
+        [ "$(gate_merge_binding_of_argv0 "$@")" = '해당없음' ] || _mo_land=1
+        if [ "$_mo_land" = 0 ]; then
+          [ "${GATE_PUSH_DONE:-0}" = 1 ] || gate_push_base_updates "$alias" "$@"
+          case "${GATE_PUSH_KIND:-}" in 갱신|여럿) _mo_land=1 ;; esac
+        fi
+        if [ "$_mo_land" = 0 ]; then
+          case "$GATE_GRADE_SOURCE" in
+            미상|불투명)
+              case "$GATE_SURFACE" in 읽기|워크트리쓰기) : ;; *) _mo_land=1 ;; esac ;;
+          esac
+        fi ;;
+    esac
+    if [ "$_mo_land" = 1 ]; then
+      for _mo_dep in $(gate_chain_deps_of "$segment"); do
+        gate_segment_ever_landed "$_mo_dep" && continue
+        _mo_st=$(gate_segment_field "$_mo_dep" '상태')
+        warn "세그먼트 ${segment} 의 머지 순서 선행 ${_mo_dep} 가 아직 착지하지 않았습니다(「상태」=${_mo_st:-(없음)}) — 그 세그먼트가 머지된 뒤에 이 세그먼트를 머지합니다"
+        warn "구현은 함께 진행할 수 있지만 베이스에 올리는 순서는 선언의 「선행 ∪ 머지 순서」를 따릅니다 — 선행이 머지되면 같은 argv 로 다시 부릅니다"
+        exit "$GATE_EXIT_RULE"
+      done
+    fi
+  fi
+
   # THE MERGE ARGV IS BOUND TO THE HEAD THE RULE READS. The review rule compares
   # the review against the segment worktree's HEAD; a remote merge merges the
   # pull request's head as the server holds it. An argv that does not pin the
@@ -27079,7 +27689,7 @@ gate_verb_act() {
   # line of the catalog changes and no checker acquires a second copy of the
   # ladder.
   gate_run_rules "$GATE_ACT_EFFECTIVE" "$alias" "$segment" "$argv" \
-    "$(gate_preauth_argv "$@")" || rules_rc=$?
+    "$(gate_preauth_argv "$alias" "$@")" || rules_rc=$?
 
   # THE AUTO-ADOPTION FLOOR. It runs beside the catalog rather than only inside
   # it because its other consumer — a judgment a stage emitted in its terminal
@@ -27355,20 +27965,21 @@ EOF
     # with its `출처` and without a `머지 커밋`, so that this run does not do the
     # slice again — and its work is on no base this segment could branch from.
     # That row is not a landing here.
-    local dep dst
+    #
+    # Only `선행` is read here: a `머지 순서` predecessor orders the merge, not
+    # the dispatch, and is checked at the merge below.
+    local dep dst dep_row
     for dep in $(gate_deps_of "$segment"); do
       [ -n "$dep" ] || continue
-      dst=$(gate_segment_field "$dep" '상태')
-      if [ "$dst" = "완료" ] && [ -n "$(gate_segment_field "$dep" '출처')" ]; then
-        case "$(gate_segment_field "$dep" '머지 커밋')" in
-          ''|*[!0-9a-f]*)
-            warn "the preceding segment ${dep} was brought in from an earlier run at a pull request that is not merged — its work is not on the base this segment branches from"
-            warn "dispatch again once that pull request is merged and a run brings the merge in, or if there is no dependency rewrite the \`선행\` of the segment row"
-            exit "$GATE_EXIT_RULE" ;;
-        esac
+      dep_row=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$dep" | tail -1)
+      dst=$(gate_row_field "$dep_row" '상태')
+      gate_segment_row_landed "$dep_row" && continue
+      if [ "$dst" = "완료" ]; then
+        warn "the preceding segment ${dep} was brought in from an earlier run at a pull request that is not merged — its work is not on the base this segment branches from"
+        warn "dispatch again once that pull request is merged and a run brings the merge in, or if there is no dependency rewrite the \`선행\` of the segment row"
+        exit "$GATE_EXIT_RULE"
       fi
       case "$dst" in
-        머지됨|완료) : ;;
         *) warn "the preceding segment ${dep} has not landed yet (\`상태\`=${dst:-(none)}) — this segment has to branch on top of it"
            warn "dispatch again once the predecessor reaches \`머지됨\` or \`완료\`, or if there is no dependency rewrite the \`선행\` of the segment row"
            exit "$GATE_EXIT_RULE" ;;
@@ -30386,6 +30997,12 @@ gate_verb_supervise_stage() {
   # account from its fourth line, and it must be there however early the stage
   # dies — and the wrapper is handed the grant's directory explicitly; the
   # wrapper itself is not changed.
+  #
+  # THE MEMBERS FILE IS FOUND FROM THE LEAD PATH, through the pointer beside it,
+  # so the token keeps its one instructions line and a resume, which follows the
+  # recorded lead file, follows that file's members file with it.
+  local member_instr
+  member_instr=$(gate_stage_member_instructions "${instr:-}")
   if [ "$routed" = "1" ]; then
     if [ -n "$r_nonce" ]; then
       hrc=0
@@ -30414,6 +31031,7 @@ gate_verb_supervise_stage() {
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     ${instr:+--instructions "$instr"} \
+    ${member_instr:+--member-instructions "$member_instr"} \
     $id_flag \
     $ac_flags \
     $launch_flags \
@@ -33545,14 +34163,23 @@ gate_cap_directive() {
 }
 
 gate_snapshot_segments_json() {
+  # `머지 대기` is the part of `선행 ∪ 머지 순서` that has not landed — what
+  # the merge-order check would hold this segment's merge on right now.
   local out sid
   out=$( gate_segment_ids | while IFS= read -r sid; do
            [ -n "$sid" ] || continue
-           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "커밋": "%s", "마지막 스테이지": "%s"},\n' \
+           mo=$(gate_segment_field "$sid" '머지 순서')
+           mw=""
+           for d in $(gate_chain_deps_of "$sid"); do
+             gate_segment_ever_landed "$d" || mw="$mw $d"
+           done
+           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s"},\n' \
              "$(gate_json_escape "$sid")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '상태')")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '워크트리')")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '선행')")" \
+             "$(gate_json_escape "${mo:-없음}")" \
+             "$(gate_json_id_array $mw)" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '커밋')")" \
              "$(gate_json_escape "$(gate_row_field "$( { gate_rows 'stage-result' | grep -F "세그먼트=$sid " || true; } | tail -1)" '스테이지')")"
          done )
@@ -33881,8 +34508,9 @@ gate_launch_shift() {
   # row and the in-progress marker, so a refusal (127) leaves no shift on record
   # that never started. A shift is always a new session, so there is no resume
   # arm here.
-  local instr
+  local instr member_instr
   instr=$(gate_stage_instructions_for_launch "$alias" "") || return $?
+  member_instr=$(gate_stage_member_instructions "$instr")
 
   local plugin_dir n rc=0
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
@@ -33946,16 +34574,17 @@ gate_launch_shift() {
   # launching — the seat — which is the confusion the floor guard above records.
   # A kickoff launch has no outgoing shift and an unresolved transcript has no
   # honest number, so both carry `-`.
-  local window effort launch_flags prev_ctx=''
+  local window effort model launch_flags prev_ctx=''
   window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
   effort=$(stage_effort_of shift)
+  model=$(stage_model_of shift)
   launch_flags=$(stage_launch_flags shift)
   if [ "$n" -gt 1 ]; then
     prev_ctx=$(gate_shift_context_of "$((n - 1))")
   fi
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
     "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
-    "컨텍스트=${prev_ctx:--}" "effort=${effort:--}"
+    "컨텍스트=${prev_ctx:--}" "effort=${effort:--}" "모델=${model:--}"
   # THE RUN NOW ENDS ON `done`, AND ONLY THE SEAT SAYS SO. A seat that hands its
   # turn to a shift settles the exit clauses after the last segment, so from here
   # the ledger-derived terminal conjunction opens a settlement window instead of
@@ -33994,6 +34623,7 @@ gate_launch_shift() {
     --settings "$(gate_settings_file shift)" \
     --plugin-dir "$plugin_dir" \
     --instructions "$instr" \
+    ${member_instr:+--member-instructions "$member_instr"} \
     --session-id "$(session_uuid "shift" "$n")" \
     $launch_flags \
     -- "$@" > "$RUN_DIR/log/shift-$n.json" 2> "$RUN_DIR/log/shift-$n.err" < /dev/null &

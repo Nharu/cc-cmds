@@ -235,8 +235,24 @@ run-check-gate-selftest:
 # unrelated unattended stage's `make check` red. Run by hand, at autopilot
 # kickoff, and logged at run open. `--explain` puts the diff of each changed
 # item under its finding, which is what a person needs to judge an `--ack`.
+# Every `CLAUDE.md` above this repository that a `workspace` anchor identifies
+# is checked again with `--workspace`: without a host map line the gate leaves
+# such a file out of a stage only while every section of it still matches, and
+# that form is the one that compares the bodies of its `excluded:*` rows.
 policy-drift:
-	bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh --explain
+	@rc=0; bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh --explain || rc=$$?; \
+	d=$$(cd .. && pwd -P); \
+	while :; do \
+	  f="$$d/CLAUDE.md"; \
+	  if [ -f "$$f" ] && awk -F'\t' 'FNR == NR { if (FNR > 1 && $$1 == "workspace") a[$$2] = 1; next } ($$0 in a) { f = 1; exit } END { exit !f }' \
+	       plugins/cc-cmds/orchestrator/stage-policy.sources.tsv "$$f"; then \
+	    echo "workspace $$f"; \
+	    bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh --explain --workspace "$$f" || rc=$$?; \
+	  fi; \
+	  [ "$$d" != / ] || break; \
+	  d=$$(dirname "$$d"); \
+	done; \
+	exit $$rc
 
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe

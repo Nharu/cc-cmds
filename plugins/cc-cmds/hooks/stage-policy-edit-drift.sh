@@ -60,6 +60,13 @@ canon() {
 edited=$(canon "$file_path")
 [ -n "$edited" ] || exit 0
 
+plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "$plugin_root" ]; then
+  plugin_root=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || exit 0
+fi
+checker="$plugin_root/orchestrator/stage-policy-drift.sh"
+[ -f "$checker" ] || exit 0
+
 cfgdir="${CLAUDE_CONFIG_DIR:-}"
 [ -n "$cfgdir" ] || cfgdir="${HOME:-}/.claude"
 watched=0
@@ -69,16 +76,34 @@ if [ "$watched" = 0 ] && [ -f "$map" ]; then
   ws=$(awk -F'\t' '$1 == "workspace" { print $2; exit }' "$map" 2>/dev/null)
   [ -n "$ws" ] && [ "$edited" = "$(canon "$ws")" ] && watched=1
 fi
+# WITHOUT A MAP LINE, A `CLAUDE.md` IS THE WORKSPACE SOURCE when one of its
+# headings equals a `workspace` anchor of the manifest — the same identification
+# the gate makes before it leaves the file out of a stage by identity. The
+# checker is then pointed at the file with `--workspace`, which also compares
+# the bodies of its `excluded:*` rows, because those bodies are what the gate's
+# judgment hashes.
+ws_flag=""
+if [ "$watched" = 0 ] && [ "$(basename "$edited")" = CLAUDE.md ] && [ -f "$edited" ]; then
+  if awk -F'\t' '
+       FNR == NR { if (FNR > 1 && $1 == "workspace") a[$2] = 1; next }
+       ($0 in a) { f = 1; exit }
+       END { exit !f }' "$plugin_root/orchestrator/stage-policy.sources.tsv" "$edited" 2>/dev/null; then
+    watched=1
+    ws_flag=1
+  fi
+fi
 [ "$watched" = 1 ] || exit 0
 
-plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
-if [ -z "$plugin_root" ]; then
-  plugin_root=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || exit 0
-fi
-checker="$plugin_root/orchestrator/stage-policy-drift.sh"
-[ -f "$checker" ] || exit 0
+# the checker as the session should call it: with `--workspace <file>` when the
+# file was identified without a map line
+cmd="bash \"$checker\""
+[ -z "$ws_flag" ] || cmd="$cmd --workspace \"$edited\""
 
-report=$(bash "$checker" --explain 2>/dev/null)
+if [ -n "$ws_flag" ]; then
+  report=$(bash "$checker" --workspace "$edited" --explain 2>/dev/null)
+else
+  report=$(bash "$checker" --explain 2>/dev/null)
+fi
 verdict=$(printf '%s\n' "$report" | tail -n 1)
 case "$verdict" in
   mismatch*) : ;;
@@ -92,9 +117,9 @@ total="${verdict#mismatch }"
 # prints the whole list, because `--ack` records every pending finding and the
 # list below may not show them all.
 context="The file just edited ($edited) is a source of the cc-cmds stage policy ($plugin_root/orchestrator/stage-policy.md), an English distillation injected into unattended stages, and the edit moved an item the policy tracks.
-The checker reported $total finding(s). The list below may be cut short by the context size cap, so before any --ack run bash \"$checker\" --explain yourself and read its full output.
-For each 'changed' item, compare the edited item with the policy section its disposition names (policy:<Section> is the '## <Section>' heading of stage-policy.md; skill:<name> is that skill's SKILL.md) and judge whether the distillation still says what the item now says, then ask the user to confirm your judgment; ask the same for a 'removed' item on an excluded row. --ack has no per-row form: one run records every such pending finding at once. So ask about all of them first, and only when the user has confirmed every one run once: bash \"$checker\" --ack. If they reject any, do not run --ack at all; tell them the rejected item needs the policy text changed in the repository.
-For an 'added' item, recommend a disposition and ask the user. If it is excluded:<reason> or skill:<name>, record it after their confirmation with: bash \"$checker\" --ack-added '<anchor prefix>' <disposition>. If it belongs in the policy, tell the user it needs a repository change to stage-policy.md and stage-policy.sources.tsv; do not record it.
+The checker reported $total finding(s). The list below may be cut short by the context size cap, so before any --ack run $cmd --explain yourself and read its full output.
+For each 'changed' item, compare the edited item with the policy section its disposition names (policy:<Section> is the '## <Section>' heading of stage-policy.md; skill:<name> is that skill's SKILL.md) and judge whether the distillation still says what the item now says, then ask the user to confirm your judgment. A 'changed' item on an excluded:<reason> row is confirmed too: judge whether the edited item still needs nothing in the policy for that reason, since recording it lets unattended stages leave the file out again. Ask the same for a 'removed' item on an excluded row. --ack has no per-row form: one run records every such pending finding at once. So ask about all of them first, and only when the user has confirmed every one run once: $cmd --ack. If they reject any, do not run --ack at all; tell them the rejected item needs the policy text changed in the repository.
+For an 'added' item, recommend a disposition and ask the user. If it is excluded:<reason> or skill:<name>, record it after their confirmation with: $cmd --ack-added '<anchor prefix>' <disposition>. If it belongs in the policy, tell the user it needs a repository change to stage-policy.md and stage-policy.sources.tsv; do not record it.
 Do not run --ack or --ack-added without the user's explicit confirmation: an acknowledgement is the user's claim that the policy still holds, not yours.
 Findings and diffs (stage-policy-drift.sh --explain):
 "
@@ -111,7 +136,7 @@ if [ $(( ${#context} + ${#report} )) -le "$cap" ]; then
   context="$context$report"
 else
   marker="
-[truncated: the checker reported $total finding(s); run bash \"$checker\" --explain for the full list]"
+[truncated: the checker reported $total finding(s); run $cmd --explain for the full list]"
   budget=$(( cap - ${#context} - ${#marker} ))
   cut=""
   if [ "$budget" -gt 0 ]; then
