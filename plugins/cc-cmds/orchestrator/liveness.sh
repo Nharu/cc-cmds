@@ -1465,13 +1465,21 @@ cc_unanswered_halts() {
   # trailing slash, a symlinked state home); the run id and the record name are
   # what both spellings share. The ledger is this run's own, so the tail is
   # unique in it.
+  #
+  # `halt/shift/` IS SCANNED TOO. The gate writes a routing shift's halt record
+  # there, one level down, and it is as much a question to a person as a
+  # stage's; its tail keeps the `shift/` component, which is what the gate's
+  # row carries.
   local run_dir="${1%/}" ledger="$2" f name tail n=0
   [ -n "$run_dir" ] && [ -d "$run_dir/halt" ] || { printf '0'; return 0; }
-  for f in "$run_dir"/halt/*.md; do
+  for f in "$run_dir"/halt/*.md "$run_dir"/halt/shift/*.md; do
     [ -f "$f" ] || continue
     case "$f" in *.answer.md) continue ;; esac
     name=${f##*/}
-    tail="/${run_dir##*/}/halt/$name"
+    case "$f" in
+      "$run_dir"/halt/shift/*) tail="/${run_dir##*/}/halt/shift/$name" ;;
+      *) tail="/${run_dir##*/}/halt/$name" ;;
+    esac
     if [ -n "$ledger" ] && [ -f "$ledger" ] && awk -v t="$tail" '
          index($0, "- `중단 답` | ") == 1 {
            n = split($0, f, / \| /)

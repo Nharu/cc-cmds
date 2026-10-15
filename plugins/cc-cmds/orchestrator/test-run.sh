@@ -7820,6 +7820,12 @@ check "rundir_init 이 오케스트레이터 디렉터리를 기록한다" "$(ca
 # 만들어 두지 않으면 첫 교대의 첫 발행이 그 자리에서 거부된다.
 check "rundir_init 이 공유 세대 디렉터리 shared/ 를 빈 채로 만든다" \
   "$( [ -d "$RI/shared" ] && printf '%s' "$(ls -A "$RI/shared" | grep -c . || true)" )" "0"
+# 교대 정지 기록의 자리도 런 개시에 만든다 — 게이트는 실제 디렉터리인
+# `halt/shift/` 에만 그 기록을 쓰고, 스스로 만들지 않으므로 여기서 빠지면 모든
+# 교대 정지가 기록 자리 없음으로 거절된다. 게이트 시험은 픽스처가 이 디렉터리를
+# 손으로 만들어 이 빠짐을 보지 못한다.
+check "rundir_init 이 교대 정지 기록 디렉터리 halt/shift/ 를 실제 디렉터리로 만든다" \
+  "$( [ -d "$RI/halt/shift" ] && [ ! -L "$RI/halt/shift" ] && printf 'yes' )" "yes"
 # 재기동한 드라이버가 살아 있는 스테이지의 레인을 옮기면 안 된다.
 printf '%s\n' "$LD/runrec" > "$RI/config-dir"
 ( unset CLAUDE_CONFIG_DIR

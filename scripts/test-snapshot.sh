@@ -1056,12 +1056,13 @@ done
 # worktree HEAD, and otherwise, or when that record is refused, takes the
 # park-and-cone disposition, a required check still pending is
 # waited on and left routable with a cone block and no `park`, and every other
-# cause takes the park-and-cone disposition (a router has no halt record to
-# write, and without the `park` the next shift sends the same merge again),
-# the fetch before the apply, the apply act's fixed token,
-# the park-and-cone disposition of a precondition refusal, the cycle cap, and
-# the `다음` branches that send a segment to the carry-over procedure, the lead
-# fix, the re-check, the residual park and a sliced review. The fix prompt must
+# cause takes the park-and-cone disposition in the lead's copy (a router has no
+# halt record to write, and without the `park` the next shift sends the same
+# merge again) and a `shift-halt` stop of that one segment in the shift's, the
+# fetch before the apply, the apply act's fixed token, the same split for a
+# precondition refusal, the cycle cap, and the `다음` branches that send a
+# segment to the carry-over procedure, the lead fix, the re-check, the residual
+# park and a sliced review. The fix prompt must
 # be one string in both copies, and the fix section
 # does not restate the delta basis expression, which belongs to the delta
 # subsection.
@@ -1079,15 +1080,19 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Merging and applying a segment|so take **Any other cause** with `MERGED` and the `headRefOid` (or the refusal) as its `사유`' \
     '#### Merging and applying a segment|Still pending → write no block and no `park`; route other work, and when nothing else is dispatchable end with `대기` carrying `'"'"'CI 대기=<id>'"'"'`' \
     '#### Merging and applying a segment|- **Any other cause** — a base that requires a merge queue' \
-    '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the 405' \
-    '#### Merging and applying a segment|The `park` makes the segment terminal, so the next shift does not send the same merge again' \
+    '리드=#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the 405' \
+    '리드=#### Merging and applying a segment|The `park` makes the segment terminal, so the next shift does not send the same merge again' \
+    '교대=#### Merging and applying a segment|stop the segment at site `병합 거절` (「Stopping one segment for a person」)' \
+    '교대=#### Merging and applying a segment|No shift sends the same merge again until the answer comes back' \
     '#### Merging and applying a segment|gh pr view <n> --json mergeCommit' \
     "#### Merging and applying a segment|-- 상태=머지됨 PR=<n> '머지 커밋=<M>' 워크트리=<구현 워크트리> 선행=<계획 행의 선행>" \
     '#### Merging and applying a segment|First issue the pre-authorized `gate.sh exec … -- git fetch` once more' \
     '#### Merging and applying a segment|--kind apply --target <alias> --segment <id>' \
     '#### Merging and applying a segment|--cutpoint 배포 --surface 외부상태변경 --snapshot-digest <H> -- 적용' \
     '#### Merging and applying a segment|fetch and issue it once more, and only once' \
-    '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
+    '리드=#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
+    '교대=#### Merging and applying a segment|stop the segment at site `적용 전제 거부` (「Stopping one segment for a person」)' \
+    '교대=#### Merging and applying a segment|so write no `shift-halt` for it: a `park` segment is terminal and no answer could retry its apply' \
     '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
     '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
     '#### Branching on `다음` after a review|-- lead-fix -p "/cc-cmds:review-unattended <리뷰 파견 프롬프트와 같은 인자> --lead-fix <리포트 경로>"' \
@@ -1097,6 +1102,12 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Branching on `다음` after a review|adds `--slice <seg>` to the prompt' \
     '#### Re-dispatching the implementation after review findings|once they reach `REIMPL_CYCLE_CAP` (2)'
   do
+    # A `<사본>=` prefix pins a literal to one copy: the shift stops one
+    # segment with `shift-halt`, which a lead running alone cannot write, so
+    # the lead keeps the park-and-cone disposition.
+    case "$spec" in
+      리드=*|교대=*) [ "${spec%%=*}" = "$who" ] || continue; spec=${spec#*=} ;;
+    esac
     head=${spec%%|*}; lit=${spec#*|}
     sec=$(router_section "$file" "$head")
     nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
@@ -2918,6 +2929,58 @@ cnt_row '외부상태변경'
 check "외부 상태 변경도 예산을 쓴다"   "$(cnt_read b3)"         "3"
 check "외부 상태 변경도 진전이 아니다" "$(cnt_read dispatches)" "0"
 rm -rf "$CNT_DIR"
+
+# ---------------------------------------------------------------------------
+# 11. An answer to a shift's halt record is listed, and the next shift spends it
+#
+# NO STAGE TAKES IT UP. A shift's record names a site table option the next
+# shift carries out itself, so waiting for a `stage-result` of the key would
+# list the answer forever once the shift parked the segment or retried an act
+# that dispatches nothing. What spends it is the first later row that carries
+# the option out: the key's `segment` row, an act a shift took on the key, or a
+# resolution of a block anchored on it. A stage's record keeps its one consumer.
+# ---------------------------------------------------------------------------
+SHR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-snap-shifthalt.XXXXXX")
+SHR_LEDGER="$SHR_DIR/ledger.md"
+SHR_REC="$SHR_DIR/halt/shift/S5#1.md"
+SHR_STAGE="$SHR_DIR/halt/S6#1.md"
+mkdir -p "$SHR_DIR/halt/shift"
+printf '%s\n' '교대 기록' > "$SHR_REC"
+printf '%s\n' '스테이지 기록' > "$SHR_STAGE"
+shr_fresh() {  # shr_fresh — the ledger with the shift's row and the two answers
+  {
+    printf -- '- `blocked` | 교대=1 | 대상=t | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S5 | 사유=교대 정지 — 병합 거절 | 근거=x | 중단 기록=%s | 기록 다이제스트=abc | 자리=병합 거절 | prev=0\n' "$SHR_REC"
+    printf -- '- `중단 답` | 교대=0 | 세그먼트=S5 | 중단 기록=%s | 스킬=autopilot-router-shift | 선택지=재시도 | 답한 주체=사람 | 근거=사람이 재시도를 고름 | prev=0\n' "$SHR_REC"
+    printf -- '- `중단 답` | 교대=0 | 세그먼트=S6 | 중단 기록=%s | 스킬=implement-unattended | 선택지=reject | 답한 주체=사람 | 근거=사람이 기각 | prev=0\n' "$SHR_STAGE"
+  } > "$SHR_LEDGER"
+}
+shr_read() {  # shr_read — `[[segment, option], …]` of answered_halts on that ledger
+  local frag
+  frag=$(CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" >/dev/null 2>&1; set +e +u
+    LEDGER="$2"; MANIFEST=/nonexistent; RUN_ID=R; RUN_DIR="$3"
+    gate_answered_halts_json 2>/dev/null' _ "$GATE" "$SHR_LEDGER" "$SHR_DIR")
+  printf '[%s]' "$frag" | jq -c '[.[] | [.segment, .option]]'
+}
+shr_fresh
+check "교대 기록의 중단 답이 answered_halts 에 오른다" "$(shr_read)" '[["S5","재시도"],["S6","reject"]]'
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S7 | 스테이지=S7 | 종류=implement | 실행 버전=1 | 종단 부류=정상 완료 | prev=0\n' >> "$SHR_LEDGER"
+printf -- '- `자율 승인` | 교대=1 | kind=segment | 결정=act | 대상=t | 세그먼트=S5 | 절단점=커밋 | 행위자=스테이지 | 근거=x | prev=0\n' >> "$SHR_LEDGER"
+check "다른 키의 행과 스테이지의 행위는 교대 기록의 답을 소비하지 않는다" "$(shr_read)" '[["S5","재시도"],["S6","reject"]]'
+printf -- '- `segment` | 교대=2 | id=S6 | 워크트리=/x | 상태=park | prev=0\n' >> "$SHR_LEDGER"
+check "스테이지 기록의 답은 세그먼트 행으로 소비되지 않는다" "$(shr_read)" '[["S5","재시도"],["S6","reject"]]'
+printf -- '- `segment` | 교대=2 | id=S5 | 워크트리=/x | 상태=park | prev=0\n' >> "$SHR_LEDGER"
+check "다음 교대의 세그먼트 행이 교대 기록의 답을 소비한다" "$(shr_read)" '[["S6","reject"]]'
+shr_fresh
+printf -- '- `자율 승인` | 교대=2 | kind=merge | 결정=act | 대상=t | 세그먼트=S5 | 절단점=커밋 | 행위자=교대 | 근거=x | prev=0\n' >> "$SHR_LEDGER"
+check "교대가 그 키에 한 행위가 교대 기록의 답을 소비한다" "$(shr_read)" '[["S6","reject"]]'
+shr_fresh
+printf -- '- `blocked` | 교대=2 | 대상=t | 스코프=cone | 원인=해소 | 앵커 세그먼트=S5 | 사유=재시도 | prev=0\n' >> "$SHR_LEDGER"
+check "그 키에 앵커를 둔 막힘의 해소가 교대 기록의 답을 소비한다" "$(shr_read)" '[["S6","reject"]]'
+shr_fresh
+printf -- '- `stage-result` | 교대=2 | 세그먼트=S5 | 스테이지=S5 | 종류=implement | 실행 버전=1 | 종단 부류=정상 완료 | prev=0\n' >> "$SHR_LEDGER"
+check "그 키의 stage-result 도 교대 기록의 답을 소비한다" "$(shr_read)" '[["S6","reject"]]'
+rm -rf "$SHR_DIR"
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

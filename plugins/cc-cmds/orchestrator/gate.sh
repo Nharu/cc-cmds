@@ -206,6 +206,16 @@
 # last cycle has P0 = 0 and only P1 findings its report classified as
 # carry-over, each now an issue, and the merge checks then read that cycle as
 # carried. The gate refuses it unless that cycle is eligible.
+#   gate.sh act --kind shift-halt --target <alias> --segment <id> --site <자리> ... \\
+#               -- 질문=<사람에게 물을 문면> 관측=<교대가 본 것> \\
+#                  ['추천=<자리 표의 선택지 라벨>' '추천 근거=<종류>: <인용> / …']
+# `shift-halt` is the routing shift's alone — the seat and a stage are refused
+# with 3. It stops ONE segment on a question only a person can answer, at one
+# of the segment-scope sites of `gate_shift_halt_site_table`, so the shift goes
+# on with the other segments instead of ending the run. The gate writes the
+# halt record itself under `halt/shift/` with that site's options, and a cone
+# `blocked` row carrying the record's path and digest. `자리=<자리>` after `--`
+# is the same as `--site`.
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for. Its `--target` IS compared against that row's `대상` and a mismatch is
@@ -12680,6 +12690,10 @@ gate_snapshot() {
   printf '  "answered_halts": [\n'
   gate_answered_halts_json
   printf '  ],\n'
+  # The shift stops no answer has reached yet — what a shift holds.
+  printf '  "shift_halts": [\n'
+  gate_shift_halts_json
+  printf '  ],\n'
 
   # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
   # to read every turn. The top-level keys carried the goal, the targets, the
@@ -15690,6 +15704,12 @@ gate_main() {
   # and the `shift 9` arithmetic inside the callee at the same time, for a value
   # neither of them decides anything on.
   GATE_EMIT_DIGEST_TO=""; export GATE_EMIT_DIGEST_TO
+  # The site of a shift's halt record travels the same way, for the same reason.
+  GATE_SHIFT_HALT_SITE=""
+  # The marker that lets `shift-halt` carry its four record fields onto a cone
+  # row is set by that act around its one call. A caller that could export it
+  # would write a row vouching for a record the gate never wrote.
+  GATE_SHIFT_HALT_WRITING=""
   MANIFEST=""
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
@@ -15718,6 +15738,7 @@ gate_main() {
       --void)            void=1; shift ;;
       --reject)          reject=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
+      --site)            GATE_SHIFT_HALT_SITE="$2"; shift 2 ;;
       --from-declaration) GATE_FROM_DECLARATION=1; shift ;;
       --interval)        wait_interval="$2"; shift 2 ;;
       --timeout)         wait_timeout="$2"; shift 2 ;;
@@ -15748,6 +15769,11 @@ gate_main() {
       *) printf 'gate: --from-declaration is used only with act/plan --kind segment (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
          exit 2 ;;
     esac
+  fi
+  # `--site` names a row of the shift-halt site table and nothing else.
+  if [ -n "$GATE_SHIFT_HALT_SITE" ] && [ "$verb:$kind" != "act:shift-halt" ]; then
+    printf 'gate: --site is used only with act --kind shift-halt (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
+    exit 2
   fi
   # `apply` names an act the gate performs and a forecast of it; under any other
   # verb the kind would be carried by a verb that never reads it.
@@ -16497,6 +16523,60 @@ gate_answered_judgments_json() {
   [ "$first" = "1" ] || printf '\n'
 }
 
+gate_shift_halts_json() {
+  # One element per segment a routing shift stopped that no answer has reached
+  # yet: each cone row `shift-halt` wrote whose record no `중단 답` row names,
+  # and each cone row a shift wrote when the gate could not write the record
+  # (`사유=교대 정지 기록 불가 — <자리>`), which no answer can reach and which
+  # therefore holds for the rest of the run. `보류` is the cone's members now,
+  # the anchor left out. A segment that has ended is left out.
+  #
+  # THIS IS THE HOLD A LATER SHIFT READS. The gate does not refuse acts on such
+  # a cone, and the shift that wrote it hands over with no memory its successor
+  # shares. Without this array the next shift saw the segment as routable,
+  # sent the same merge again and wrote a second record of the same question.
+  #
+  # The answered test is one awk pass that reads to the end, not `grep -q` on
+  # the right of a pipe, for the SIGPIPE reason `gate_answered_halts_json`
+  # gives.
+  local first=1 r ln row seg rec site why held m
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    ln=${r%%:*}; row=${r#*:}
+    [ "$(gate_row_field "$row" '스코프')" = "cone" ] || continue
+    seg=$(gate_row_field "$row" '앵커 세그먼트')
+    [ -n "$seg" ] || continue
+    rec=$(gate_row_field "$row" '중단 기록')
+    if [ -n "$rec" ]; then
+      [ "$(gate_shift_halt_row_of "$rec" | cut -d: -f1)" = "$ln" ] || continue
+      site=$(gate_row_field "$row" '자리')
+      LC_ALL=C awk -v r="| 중단 기록=$rec |" '
+        index($0, "- `중단 답` ") == 1 && index($0, r) { f = 1 }
+        END { exit !f }' "$LEDGER" 2>/dev/null && continue
+    else
+      why=$(gate_row_field "$row" '사유')
+      case "$why" in
+        '교대 정지 기록 불가 — '*) site=${why#'교대 정지 기록 불가 — '} ;;
+        *) continue ;;
+      esac
+    fi
+    gate_segment_terminal "$seg" && continue
+    held=''
+    for m in $(gate_cone_members "$seg"); do
+      [ "$m" = "$seg" ] && continue
+      held="$held${held:+, }\"$(gate_json_escape "$m")\""
+    done
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"세그먼트": "%s", "자리": "%s", "기록": "%s", "줄": %s, "보류": [%s]}' \
+      "$(gate_json_escape "$seg")" "$(gate_json_escape "$site")" \
+      "$(gate_json_escape "$rec")" "$ln" "$held"
+  done <<EOF
+$( { grep -n "^- \`blocked\` " "${LEDGER:-/dev/null}" 2>/dev/null || true; } )
+EOF
+  [ "$first" = "1" ] || printf '\n'
+}
+
 gate_answered_halts_json() {
   # The halt records a person has ANSWERED at the seat (`중단 답` rows) that no
   # stage has yet taken up.
@@ -16506,7 +16586,9 @@ gate_answered_halts_json() {
   # dispatching the next stage on that key, and either one lands a
   # `stage-result` row for the key when it ends. An answer read twice would
   # re-attach the same session with the same answer twice; an answer that
-  # stayed visible after it was used would do exactly that.
+  # stayed visible after it was used would do exactly that. An answer to a
+  # shift's halt record is spent by the next shift carrying its option out as
+  # well (`gate_halt_answer_consumer`).
   #
   # A ROW THAT SETTLES AN ATTEMPT WHICH NEVER SPAWNED does not spend the answer:
   # its `관측` starts `스폰 전 대기 중`, and no stage read the answer.
@@ -16578,10 +16660,35 @@ gate_halt_answer_consumer() {
   # never name two different rows: the automatic-answer checks read its `종류`
   # and `종단 부류` to tell a re-convergence that ran from an attempt that
   # crashed before doing anything with the answer.
-  { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
+  #
+  # A SHIFT'S HALT RECORD IS TAKEN UP BY THE NEXT SHIFT, not by a stage. The
+  # answer to one names a site table option the next shift carries out itself
+  # — a retry dispatches or acts on the segment, `세그먼트 park` writes its
+  # segment row — so the first of these on a later line spends it as well: a
+  # `stage-result` of the key, a `segment` row of the key, an act a shift took
+  # on the key, or a resolution of a block anchored on it. Whichever comes
+  # first is the consumer.
+  local sr st
+  sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
-    | awk -F: -v l="$3" '$1 > l && !p { print; p = 1 }'
+    | awk -F: -v l="$3" '$1 > l && !p { print; p = 1 }')
+  if [ "$1" = "${LEDGER:-}" ] \
+     && [ -n "$(gate_shift_halt_row_of "$(gate_row_field "$(sed -n "${3}p" "$1" 2>/dev/null)" '중단 기록')")" ]; then
+    st=$(LC_ALL=C awk -v l="$3" -v k="$2" '
+      NR > l && !p {
+        if ((index($0, "- `segment` ") == 1 && index($0, "| id=" k " |")) \
+            || ((index($0, "- `자율 승인` ") == 1 || index($0, "- `승인` ") == 1) \
+                && index($0, "| 세그먼트=" k " |") && index($0, "| 결정=act |") \
+                && index($0, "| 행위자=교대 |")) \
+            || (index($0, "- `blocked` ") == 1 && index($0, "| 앵커 세그먼트=" k " |") \
+                && index($0, "| 원인=해소 |"))) { print NR ":" $0; p = 1 }
+      }' "$1" 2>/dev/null)
+    if [ -n "$st" ] && { [ -z "$sr" ] || [ "${st%%:*}" -lt "${sr%%:*}" ]; }; then
+      sr=$st
+    fi
+  fi
+  [ -z "$sr" ] || printf '%s\n' "$sr"
 }
 
 gate_halt_answer_is_auto() {
@@ -16764,6 +16871,11 @@ gate_halt_auto_answer_admit() {
       warn "this halt record already has an automatic answer no stage has taken up yet (ledger line $ln) — a second one would hand the stage two answers: $rec"
       return "$GATE_EXIT_RULE"
     fi
+    # The consumer of an answer to a shift's record is usually not a
+    # `stage-result` row — the next shift's segment row, act or resolution
+    # spends it — so `종단 부류` reads empty and the second automatic answer to
+    # that record goes to a person. That is intended: no attempt ended
+    # `크래시`, `한도 종료` or `외부 종료` there, so nothing excuses a second one.
     cls=$(gate_row_field "${c#*:}" '종단 부류')
     case "$cls" in
       크래시|'한도 종료'|'외부 종료') ;;
@@ -16830,6 +16942,37 @@ gate_halt_auto_answer_current() {
     warn "$key is waiting to come back, and its next attempt would take an automatic answer up — answer once it has settled: $rec"
     return "$GATE_EXIT_RULE"
   fi
+  # A SHIFT'S RECORD IS CURRENT BY ITS ROW, since no attempt of the key halted
+  # on it: the bytes are still the ones the gate wrote, and nothing on a later
+  # line has moved the key past it — no later block anchored on the key, which
+  # would be a newer stop, and no later `stage-result` of the key, which would
+  # mean the segment ran again after the shift stopped it.
+  local srow sln
+  srow=$(gate_shift_halt_row_of "$rec")
+  if [ -n "$srow" ]; then
+    gate_shift_halt_record_intact "$key" "$rec" "$srow" || return "$?"
+    sln=${srow%%:*}
+    if [ -n "$(LC_ALL=C awk -v l="$sln" -v k="$key" 'NR > l && index($0, "- `blocked` ") == 1 && index($0, "| 앵커 세그먼트=" k " |") { print NR }' "$LEDGER" 2>/dev/null)" ]; then
+      warn "a later block is anchored on $key after this shift's record (ledger line $sln), so this record is not the question the key is stopped on — an automatic answer goes only to the key's latest stop: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ -n "$( { grep -n -F -e "세그먼트=$key " -e "세그먼트=- | 스테이지=$key | 종류=" "$LEDGER" 2>/dev/null || true; } \
+                | { grep "^[0-9]*:- \`stage-result\` " || true; } \
+                | awk -F: -v l="$sln" '$1 > l { print $1 }')" ]; then
+      warn "$key ran again after this shift's record (a \`stage-result\` follows ledger line $sln), so the record no longer describes where the key stands: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+    return 0
+  fi
+  # A file under `halt/shift/` that no shift-halt row vouches for never takes
+  # the stage branch below: its header's `stage=<세그먼트>#<n>` could match the
+  # key's last attempt and pass by header alone, past the digest and the
+  # latest-stop checks above.
+  case "$rec" in
+    "$RUN_DIR"/halt/shift/*)
+      warn "no \`shift-halt\` row of this run wrote this record, so it is not a question this run asked: $rec"
+      return "$GATE_EXIT_RULE" ;;
+  esac
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     case "$row" in *'| 관측=스폰 전 대기 중'*) continue ;; esac
@@ -16853,6 +16996,194 @@ EOF
   [ "$hst" = "$want" ] && return 0
   warn "this record is not the halt of $key's last settled attempt ($want, \`halt/$want.md\`) — an automatic answer goes only to the key's latest halt, and an older one goes to a person: $rec"
   return "$GATE_EXIT_RULE"
+}
+
+gate_shift_halt_site_table() {
+  # gate_shift_halt_site_table — the closed table of the sites at which a
+  # routing shift stops ONE segment on a question only a person can answer, one
+  # line per site: `<자리>|<추천>|<what only a person knows>|<재시도 설명>`.
+  #
+  # THE OPTIONS ARE THE TABLE'S, NOT THE SHIFT'S. Every site offers the same two
+  # labels, `재시도` and `세그먼트 park`, and the next shift executes whichever
+  # one is answered — so an answer always names something a shift of this run
+  # can carry out, and no shift composes an option a person would then be
+  # bound by.
+  #
+  # `추천=없음` IS FIXED FOR THE IRREVERSIBLE SITES. A push the remote disagrees
+  # with, a reach the gate refused and a base that could not be resolved each
+  # hang on the state of something outside this run, which no record of the
+  # run settles. Whatever the shift passes as a recommendation there is dropped
+  # and the record reads `(없음)`.
+  #
+  # Run-scope stops are not here: the enforcement surface moving (exit 7), a
+  # lane or limit wait, a design step's stop and a structural refusal stop the
+  # whole run, and stay a `handoff` with `사유=중단`. Neither are two stops a
+  # site could not carry out an answer to. A refused predecessor landing or
+  # adoption leaves the slice with no `segment` row, so there is nothing to
+  # anchor a cone on or to park. An apply that failed has already been parked
+  # by the apply act itself, with its own `blocked` row, and the apply's first
+  # precondition refuses every retry of a parked segment.
+  cat <<'EOF'
+적용 전제 거부|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|사람이 적용 전제를 갖춘 뒤, 다음 교대가 이 세그먼트의 적용을 다시 시도한다
+병합 거절|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 거절 원인을 다시 읽고 이 세그먼트의 병합을 다시 시도한다
+push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남길지는 원격을 본 사람만 안다|사람이 원격 가지를 맞춘 뒤, 다음 교대가 이 세그먼트의 push 를 다시 시도한다
+도달 거부|없음|그 행위가 닿는 곳에 이 런이 닿아도 되는지는 사람만 정한다|사람이 그 도달을 정한 뒤, 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
+베이스 해소 한도|없음|어느 베이스 위에 다시 쌓을지는 사람만 정한다|사람이 베이스를 정한 뒤, 다음 교대가 이 세그먼트의 베이스 해소를 다시 시도한다
+워크트리 기록 없음|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 세그먼트 행의 워크트리를 다시 읽고 이 세그먼트를 다시 시도한다
+종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
+EOF
+}
+
+gate_shift_halt_site_row() {
+  # gate_shift_halt_site_row <자리> — that site's table line, or nothing (exit
+  # 1) when the site is not in the table.
+  local line
+  line=$(gate_shift_halt_site_table | awk -F'|' -v s="$1" '$1 == s { print }')
+  [ -n "$line" ] || return 1
+  printf '%s\n' "$line"
+}
+
+gate_shift_halt_options() {
+  # gate_shift_halt_options <자리> — the option lines of that site's record,
+  # each `- \`<라벨>\` — <설명>`, the form the seat's answer is matched against.
+  local row retry
+  row=$(gate_shift_halt_site_row "$1") || return 1
+  retry=$(printf '%s' "$row" | cut -d'|' -f4)
+  printf '%s\n' "- \`재시도\` — $retry"
+  printf '%s\n' "- \`세그먼트 park\` — 다음 교대가 이 세그먼트를 park 로 기록하고, 이 세그먼트에 기대는 세그먼트를 빼고 나머지로 계속한다"
+}
+
+gate_shift_halt_dir() {
+  # gate_shift_halt_dir — the run's `halt/shift` directory, or nothing (exit 1)
+  # when it is not a real directory at the place it is named.
+  #
+  # A SYMLINK ANYWHERE ON THE WAY IS REFUSED, by comparing physical paths: a
+  # `halt/shift` that resolves elsewhere would put a record the gate vouches for
+  # in a directory something else controls, and a record the seat answers from
+  # in a place a later write could swap. Checked when the record is written and
+  # again when it is answered.
+  local d="$RUN_DIR/halt/shift" have want
+  [ -n "${RUN_DIR:-}" ] && [ -d "$d" ] && [ ! -L "$d" ] || return 1
+  have=$(cd -P -- "$d" 2>/dev/null && pwd -P) || return 1
+  want="$(cd -P -- "$RUN_DIR" 2>/dev/null && pwd -P)/halt/shift" || return 1
+  [ "$have" = "$want" ] || return 1
+  printf '%s' "$d"
+}
+
+gate_shift_halt_row_of() {
+  # gate_shift_halt_row_of <record> — the ledger's cone `blocked` row that
+  # wrote <record>, as `<line>:<row>`, or nothing when <record> is not a
+  # shift's halt record.
+  #
+  # THE ROW DECIDES, NOT THE RECORD. A shift's record is one the gate wrote,
+  # and the gate's own row naming it — with the digest of the bytes it wrote —
+  # is the only thing that says so. A file under `halt/shift/` with no such row,
+  # or a record elsewhere whose header or `**스킬**` reads like a shift's, is
+  # not one: a header is bytes anybody can write.
+  local rec="$1" r ln row hit=''
+  case "$rec" in
+    "$RUN_DIR"/halt/shift/*.md) ;;
+    *) return 0 ;;
+  esac
+  case "$rec" in */../*|*/./*) return 0 ;; esac
+  case "${rec#"$RUN_DIR"/halt/shift/}" in */*) return 0 ;; esac
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    ln=${r%%:*}; row=${r#*:}
+    [ "$(gate_row_field "$row" '스코프')" = "cone" ] || continue
+    [ "$(gate_row_field "$row" '중단 기록')" = "$rec" ] || continue
+    [ -n "$(gate_row_field "$row" '기록 다이제스트')" ] || continue
+    hit="$ln:$row"
+  done <<EOF
+$( { grep -n "^- \`blocked\` " "$LEDGER" 2>/dev/null || true; } | { grep -F "중단 기록=$rec " || true; } )
+EOF
+  [ -z "$hit" ] || printf '%s\n' "$hit"
+}
+
+gate_shift_halt_record_intact() {
+  # gate_shift_halt_record_intact <key> <record> <line:row> — whether a shift's
+  # halt record is still the one its row vouches for: the row is anchored on
+  # <key>, `halt/shift` is still a real directory at its own place, and the
+  # file's bytes hash to the row's `기록 다이제스트`. Warned and GATE_EXIT_RULE
+  # otherwise. Asked of every answer to such a record, a person's included —
+  # a person answers from what the seat shows them, and that has to be what the
+  # gate wrote.
+  local key="$1" rec="$2" row="${3#*:}" want have
+  if [ "$(gate_row_field "$row" '앵커 세그먼트')" != "$key" ]; then
+    warn "this shift's record stops $(gate_row_field "$row" '앵커 세그먼트'), not $key: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  gate_shift_halt_dir >/dev/null || {
+    warn "this run's halt/shift is no longer a real directory at its own place, so the record cannot be vouched for: $rec"
+    return "$GATE_EXIT_RULE"; }
+  [ -f "$rec" ] && [ ! -L "$rec" ] || {
+    warn "the shift's record is not a regular file: $rec"
+    return "$GATE_EXIT_RULE"; }
+  want=$(gate_row_field "$row" '기록 다이제스트')
+  have=$(shasum -a 256 "$rec" | cut -d' ' -f1)
+  if [ "$have" != "$want" ]; then
+    warn "the shift's record changed after the gate wrote it (digest $have, the row says $want): $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+}
+
+gate_shift_halt_fields_refused() {
+  # gate_shift_halt_fields_refused <키=값>... — true (and warned) when a caller
+  # of `act --kind blocked` passed one of the four fields only `shift-halt`
+  # writes. A `blocked` row carrying `중단 기록` and `기록 다이제스트` is what
+  # makes a file a shift's halt record, so a router able to write them by hand
+  # could vouch for a record the gate never wrote.
+  local f
+  [ -z "${GATE_SHIFT_HALT_WRITING:-}" ] || return 1
+  for f in "$@"; do
+    case "${f%%=*}" in
+      '중단 기록'|'기록 다이제스트'|'자리'|'교대')
+        warn "\`${f%%=*}\` on a \`blocked\` row is written by \`act --kind shift-halt\` only — the gate writes the halt record and its digest itself"
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+gate_shift_halt_grounds() {
+  # gate_shift_halt_grounds <alias> <추천 근거> — whether every part of a shift's
+  # recommendation grounds is a kind the shift may rest on and a quote that
+  # stands, verbatim, in the file that kind names. Warned and GATE_EXIT_RULE on
+  # the first part that is not.
+  #
+  # FEWER KINDS THAN A STAGE'S RECORD MAY NAME. `기기 사실` is a measurement no
+  # file holds, so nothing here can find its quote, and a part with no kind the
+  # gate knows reads `미상` on the row — both are refused rather than written,
+  # because the seat answers from this line without a person.
+  local alias="$1" grounds="$2" part kind quote file interview root rest
+  [ -n "$grounds" ] || { warn "a recommendation needs \`추천 근거\` — each part \`<종류>:<인용>\`"; return "$GATE_EXIT_RULE"; }
+  interview="$(dirname "$MANIFEST")/${RUN_ID}.interview.md"
+  root=$(target_field "$alias" '메인 워크트리' 2>/dev/null || true)
+  rest="$grounds"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *' / '*) part=${rest%%' / '*}; rest=${rest#*' / '} ;;
+      *) part=$rest; rest='' ;;
+    esac
+    case "$part" in
+      *:*) kind=${part%%:*}; quote=${part#*:} ;;
+      *) kind=''; quote='' ;;
+    esac
+    kind="${kind#"${kind%%[![:space:]]*}"}"; kind="${kind%"${kind##*[![:space:]]}"}"
+    quote="${quote#"${quote%%[![:space:]]*}"}"; quote="${quote%"${quote##*[![:space:]]}"}"
+    case "$kind" in
+      '인터뷰 기록') file=$interview ;;
+      '매니페스트 인가') file=$MANIFEST ;;
+      '상시 지침') file="${root:-/nonexistent}/CLAUDE.md" ;;
+      *) warn "a shift's recommendation rests on \`인터뷰 기록\`, \`매니페스트 인가\` or \`상시 지침\` only — \`${kind:-미상}\` is not one the gate can check: $part"
+         return "$GATE_EXIT_RULE" ;;
+    esac
+    [ -n "$quote" ] || { warn "a part of \`추천 근거\` quotes nothing: $part"; return "$GATE_EXIT_RULE"; }
+    if [ ! -f "$file" ] || ! grep -qF -- "$quote" "$file"; then
+      warn "the quote of \`$kind\` does not stand verbatim in $file: $quote"
+      return "$GATE_EXIT_RULE"
+    fi
+  done
 }
 
 gate_cycle_dismissed() {
@@ -18384,6 +18715,9 @@ gate_record_cone() {
   # on trust.
   local alias="$1"; shift
   local anchor declared derived d missing="" cause dstep
+  # The four fields of a shift's halt record ride only when `shift-halt` is the
+  # caller, which sets GATE_SHIFT_HALT_WRITING around this one call.
+  gate_shift_halt_fields_refused "$@" && return "$GATE_EXIT_VOCAB"
   cause=$(gate_field_of '원인' "$@")
   # `거절 소진` is a `막힘` with its own name: the stage a model refusal ended
   # twice. Readers treat every cause but `무효화` alike, so it resolves the same
@@ -23675,6 +24009,7 @@ EOF
       # about a newly required field invalidating runs already in flight. The
       # vocabulary check still runs; it just runs on a value that is filled in.
       [ -n "$scope" ] || scope=run
+      gate_shift_halt_fields_refused "$@" && return "$GATE_EXIT_VOCAB"
       why=$(gate_field_of '사유' "$@")
       cause=$(gate_field_of '원인' "$@")
       gate_check_scope "$scope" || return "$GATE_EXIT_VOCAB"
@@ -23920,7 +24255,15 @@ EOF
         fi
         hby=교대
       else
-        case "${hby:=사람}" in
+        # REQUIRED FROM THE SEAT. Left to default, a seat that ran a record's
+        # recipe itself and forgot the field wrote a row the morning report
+        # read as a person's answer. A row written before the field existed
+        # still reads `사람` (`gate_halt_answered_by`); a new call names it.
+        if [ -z "$hby" ]; then
+          warn "the seat names \`답한 주체\` on every \`중단 답\` row — \`사람\` for a person's answer, \`좌석\` for one the seat gave itself"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        case "$hby" in
           사람|좌석) ;;
           교대) warn "\`답한 주체=교대\` is the gate's stamp on a shift's row — the seat writes \`사람\` or \`좌석\`"
                 return "$GATE_EXIT_RULE" ;;
@@ -23931,20 +24274,67 @@ EOF
       [ -n "$hrec" ] && [ -n "$hwhy" ] && { [ -n "$hopt" ] || [ "$hby" = "좌석" ]; } || {
         warn "a \`중단 답\` row needs \`중단 기록\` (the halt record's absolute path), \`선택지\` (one option of that record, verbatim — a seat answer may leave it out and take the record's \`**추천**\`) and \`근거\` (a summary of what the person said, or of what the seat read)"
         return "$GATE_EXIT_VOCAB"; }
+      # THE SEAT RUNNING A RECORD IS NOT THE SEAT ANSWERING ONE. The two
+      # `좌석 실행` halts hand the seat a recipe or a command list to run on this
+      # host, and `좌석 실행` is the option the seat took by running it — so the
+      # row says `좌석`, whatever the switch below says, and its `근거 종류` says
+      # what was done rather than what a recommendation rested on. Only those
+      # two halts, with that option line, take this branch.
+      local hseatrun='' hrstep
+      if [ "$hby" = "좌석" ] && [ "$hopt" = "좌석 실행" ]; then
+        hrstep=$(sed -n 's/^\*\*스텝\*\*: //p' "$hrec" 2>/dev/null | sed -n '1p')
+        case "$hrstep" in
+          'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*) ;;
+          *) warn "\`선택지=좌석 실행\` answers only a \`Step 3 잔여 검증 좌석 실행\` or \`Step 3 게이트 도달 좌석 실행\` halt — this record's step is \`${hrstep:-(none)}\`: $hrec"
+             return "$GATE_EXIT_RULE" ;;
+        esac
+        if ! grep -q '^- `좌석 실행`' "$hrec" 2>/dev/null; then
+          warn "this halt record offers no \`좌석 실행\` option line, so the seat has nothing it was asked to run: $hrec"
+          return "$GATE_EXIT_RULE"
+        fi
+        case "$hrstep" in
+          'Step 3 게이트 도달 좌석 실행'*)
+            [ -n "$(gate_field_of '첨부' "$@")" ] || {
+              warn "a seat run of a command halt carries \`첨부\` — each listed command's exit status and the tail of its output"
+              return "$GATE_EXIT_VOCAB"; } ;;
+        esac
+        hseatrun=1
+        hkinds='좌석 실행'
+      fi
       # THE SWITCH THAT TURNS OFF EVERY ANSWER NO PERSON GAVE turns this one off
       # too: a recommendation on a halt record is the same thing as a
       # recommendation on an approval, which the switch already stops waiting
       # for. Off, the seat asks the person.
-      if [ "$hby" = "좌석" ] && ! gate_auto_resolve_enabled; then
+      if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && ! gate_auto_resolve_enabled; then
         warn "CC_CMDS_AUTOPILOT_AUTO_RESOLVE is off, so the seat does not answer a halt record without a person"
         return "$GATE_EXIT_RULE"
       fi
+      # A SHIFT'S RECORD IS ONE ITS ROW VOUCHES FOR. A file under `halt/shift/`
+      # with no gate row naming it is not a question this run asked.
+      local hsrow=''
+      hsrow=$(gate_shift_halt_row_of "$hrec")
+      case "$hrec" in
+        "$RUN_DIR"/halt/shift/*)
+          [ -n "$hsrow" ] || {
+            warn "no \`shift-halt\` row of this run wrote this record, so it is not a question this run asked: $hrec"
+            return "$GATE_EXIT_VOCAB"; } ;;
+      esac
       # THE KEY NAMES A STAGE THIS RUN DISPATCHED. The shift re-attaches or
       # re-dispatches that stage with the answer, so a key with no
-      # `stage-result` row is an answer nobody can hand on.
-      [ -n "$(gate_stage_result_rows_of "$seg")" ] || {
-        warn "no \`stage-result\` row names $seg — --segment has to be the segment id, or the step id for the design step, of the stage that halted"
-        return "$GATE_EXIT_VOCAB"; }
+      # `stage-result` row is an answer nobody can hand on. A shift's record
+      # needs only the segment row: the next shift carries its answer out, and
+      # a segment the shift stopped before any stage ran is still one it can
+      # act on.
+      if [ -n "$hsrow" ]; then
+        [ -n "$(gate_segment_field "$seg" '상태')" ] || {
+          warn "there is no segment row for $seg — --segment has to be the segment the shift stopped"
+          return "$GATE_EXIT_VOCAB"; }
+        gate_shift_halt_record_intact "$seg" "$hrec" "$hsrow" || return "$?"
+      else
+        [ -n "$(gate_stage_result_rows_of "$seg")" ] || {
+          warn "no \`stage-result\` row names $seg — --segment has to be the segment id, or the step id for the design step, of the stage that halted"
+          return "$GATE_EXIT_VOCAB"; }
+      fi
       # THE RECORD IS THIS RUN'S, AND IT IS A HALT RECORD. Only the run
       # directory's own `halt/` is accepted, by prefix and with no `..`, so a
       # file elsewhere cannot be passed off as a question this run asked.
@@ -23955,6 +24345,14 @@ EOF
       esac
       case "$hrec" in
         */../*|*/./*) warn "\`중단 기록\` cannot carry a relative segment: $hrec"; return "$GATE_EXIT_VOCAB" ;;
+      esac
+      # A doubled slash below the run directory is the same file under a
+      # spelling the `halt/shift/` prefix test does not match, so it would take
+      # a shift's record down the stage branch past the digest check. The run
+      # directory itself may carry one (a TMPDIR that ends in a slash), so only
+      # the part below it is read.
+      case "${hrec#"$RUN_DIR"/}" in
+        *//*) warn "\`중단 기록\` cannot carry a doubled slash below the run directory: $hrec"; return "$GATE_EXIT_VOCAB" ;;
       esac
       [ -f "$hrec" ] || { warn "the halt record does not exist: $hrec"; return "$GATE_EXIT_VOCAB"; }
       local hfirst=''
@@ -23971,7 +24369,7 @@ EOF
       # therefore required, and the kinds are stamped on the row as
       # `근거 종류` because the record lives in the volatile run directory and
       # the morning report reads the ledger.
-      if [ "$hby" = "좌석" ]; then
+      if [ "$hby" = "좌석" ] && [ -z "$hseatrun" ]; then
         gate_halt_recommendation "$hrec" || return "$?"
         if [ -z "$hopt" ]; then
           hopt=$GATE_HALT_REC_LABEL
@@ -24086,6 +24484,139 @@ EOF
         ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
         "레인=$hlane" "기록 시각=$hat"
       log "중단 답 기록 — $seg ← $hopt ($hby)"
+      ;;
+    shift-halt)
+      # THE SHIFT STOPS ONE SEGMENT, NOT THE RUN. A segment-scope stop used to
+      # end the shift with `handoff 사유=중단`, so one segment's question held
+      # every sibling until morning — measured: a run whose one segment met a
+      # merge refusal stopped the four segments that did not depend on it. This
+      # writes the question as a halt record the seat can answer and a cone row
+      # that holds only what stands on that segment, and the shift goes on.
+      #
+      # THE GATE WRITES THE RECORD, not the shift. The options are the site
+      # table's, the recommendation is checked against the files it quotes, and
+      # the row carries the digest of the exact bytes written — so the seat
+      # answers a record whose every line the gate vouches for.
+      if cc_caller_is_stage || { [ -z "$(gate_shift_self_ordinal)" ] && [ -z "${CC_PIPELINE_SHIFT_ID:-}" ]; }; then
+        warn "\`shift-halt\` is written by the routing shift only — a stage halts with its own record, and the seat asks a person directly"
+        return "$GATE_EXIT_RULE"
+      fi
+      local sf sk ssite sq sobs srec sgr srow sinfo sopts sdir sn sdst stmp sdig sord r
+      local sw=300 slen sline sexp
+      for sf in "$@"; do
+        sk="${sf%%=*}"
+        case "$sk" in 자리|질문|관측|추천|추천\ 근거) continue ;; esac
+        warn "\`shift-halt\` takes \`자리\`, \`질문\`, \`관측\`, an optional \`추천\` and an optional \`추천 근거\` from argv and nothing else: ${sk} — the rest is the gate's"
+        return "$GATE_EXIT_VOCAB"
+      done
+      ssite=$(gate_field_of '자리' "$@")
+      if [ -n "$GATE_SHIFT_HALT_SITE" ] && [ -n "$ssite" ] && [ "$ssite" != "$GATE_SHIFT_HALT_SITE" ]; then
+        warn "\`--site\` and \`자리\` name two different sites: $GATE_SHIFT_HALT_SITE / $ssite"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      [ -n "$ssite" ] || ssite=$GATE_SHIFT_HALT_SITE
+      srow=$(gate_shift_halt_site_row "$ssite") || {
+        warn "\`${ssite:-(none)}\` is not a site of the shift-halt table — a run-scope stop stays a \`handoff\` with \`사유=중단\`"
+        return "$GATE_EXIT_VOCAB"; }
+      sq=$(gate_field_of '질문' "$@")
+      sobs=$(gate_field_of '관측' "$@")
+      [ -n "$sq" ] && [ -n "$sobs" ] || {
+        warn "\`shift-halt\` needs \`질문\` (what a person is asked) and \`관측\` (what the shift saw)"
+        return "$GATE_EXIT_VOCAB"; }
+      [ -n "$(gate_segment_field "$seg" '상태')" ] || {
+        warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
+        return "$GATE_EXIT_VOCAB"; }
+      srec=$(gate_field_of '추천' "$@")
+      sgr=$(gate_field_of '추천 근거' "$@")
+      sinfo=$(printf '%s' "$srow" | cut -d'|' -f3)
+      if [ "$(printf '%s' "$srow" | cut -d'|' -f2)" = "없음" ]; then
+        # Dropped, not refused: the site settles that no record of the run
+        # answers it, so the shift's argument changes nothing it could change.
+        [ -z "$srec$sgr" ] || warn "$ssite 은 추천을 싣지 않는 자리입니다 — 넘어온 추천을 버리고 (없음) 으로 씁니다"
+        srec=''; sgr=''
+      elif [ -n "$srec" ]; then
+        case "$srec" in
+          재시도|'세그먼트 park') ;;
+          *) warn "\`추천\` has to be one of this site's option labels byte for byte (\`재시도\` · \`세그먼트 park\`): $srec"
+             return "$GATE_EXIT_RULE" ;;
+        esac
+        gate_shift_halt_grounds "$alias" "$sgr" || return "$?"
+      elif [ -n "$sgr" ]; then
+        warn "\`추천 근거\` without \`추천\` grounds nothing"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      sdir=$(gate_shift_halt_dir) || {
+        warn "this run's halt/shift is not a real directory at $RUN_DIR/halt/shift — the record is not written"
+        return "$GATE_EXIT_RULE"; }
+      sn=1
+      while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        [ "$(gate_row_field "$r" '스코프')" = "cone" ] || continue
+        [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$seg" ] || continue
+        [ -n "$(gate_row_field "$r" '중단 기록')" ] || continue
+        [ -n "$(gate_row_field "$r" '기록 다이제스트')" ] || continue
+        sn=$((sn + 1))
+      done <<EOF
+$(gate_rows 'blocked')
+EOF
+      sdst="$sdir/$seg#$sn.md"
+      sopts=$(gate_shift_halt_options "$ssite")
+      stmp=$(mktemp "$sdir/.shift-halt.XXXXXX") || {
+        warn "could not make a temporary file under $sdir"
+        return "$GATE_EXIT_RULE"; }
+      {
+        printf '<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=%s#%s; run=%s -->\n' "$seg" "$sn" "$RUN_ID"
+        printf '**중단 시각**: %s\n' "$(now_iso)"
+        printf '**스킬**: autopilot-router-shift\n'
+        printf '**스텝**: 교대 정지 — %s\n' "$ssite"
+        printf '**분류**: gate-unanswerable\n'
+        printf '**질문 문면**: %s\n' "$(printf '%s' "$sq" | tr '\n\r' '  ')"
+        printf '**선택지**:\n%s\n' "$sopts"
+        if [ -n "$srec" ]; then
+          printf '**추천**: `%s` — 추천 근거의 인용이 이 선택지를 정한다\n' "$srec"
+          printf '**추천 근거**: %s\n' "$(printf '%s' "$sgr" | tr '\n\r' '  ')"
+        else
+          printf '**추천**: (없음) — %s\n' "$sinfo"
+          printf '**추천 근거**: (없음)\n'
+        fi
+        printf '**하네스 오류**: (없음)\n'
+        printf '**관측 상세**: %s\n' "$(printf '%s' "$sobs" | tr '\n\r' '  ')"
+        printf '**재호출 명령**: (없음)\n'
+        printf '**후속**: 보류 큐\n'
+        printf '<!-- /cc-pipeline-halt v1 -->\n'
+      } > "$stmp" || { rm -f "$stmp"; warn "could not write the halt record"; return "$GATE_EXIT_RULE"; }
+      sdig=$(shasum -a 256 "$stmp" | cut -d' ' -f1)
+      # `mv -n` NEVER REPLACES. A file already at the name is either an earlier
+      # record this count missed or something placed there to be answered in
+      # this record's stead, and both are refused with no row written.
+      mv -n "$stmp" "$sdst" 2>/dev/null || true
+      if [ -e "$stmp" ]; then
+        rm -f "$stmp"
+        warn "a file is already at $sdst — the record is not written and no row is added"
+        return "$GATE_EXIT_RULE"
+      fi
+      sord=$(gate_shift_self_ordinal)
+      sexp=$(printf '%*s' "$GATE_CONE_LIST_MAX" '' | tr ' ' 'x')
+      while [ "$sw" -ge 40 ]; do
+        sline=$(gate_row_safe "$sobs" "$sw")
+        slen=$(gate_row_projected_bytes 'blocked' "대상=$alias" '스코프=cone' '원인=막힘' \
+          "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
+          "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} \
+          '의존 세그먼트 수=999' "의존 세그먼트=$sexp")
+        [ "$slen" -le "$GATE_ROW_MAX" ] && break
+        sw=$((sw - 40))
+      done
+      r=0
+      GATE_SHIFT_HALT_WRITING=1 gate_record_cone "$alias" '스코프=cone' '원인=막힘' \
+        "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
+        "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} || r=$?
+      if [ "$r" != "0" ]; then
+        # A record with no row is one nothing vouches for and every halt scan
+        # would still count, so it goes with the row that failed.
+        rm -f "$sdst"
+        return "$r"
+      fi
+      log "교대 정지 기록 — $seg ($ssite) → $sdst"
       ;;
     review-dismiss)
       # THE SEAT'S WAY TO CARRY A PERSON'S DISMISSAL OF REVIEW FINDINGS TO THE
@@ -25902,7 +26433,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry|shift-halt)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -26215,9 +26746,12 @@ gate_kind_is_bookkeeping() {
   # `review-dismiss` likewise: the merge it unblocks is graded on its own, and
   # `review-carry` on the same ground — the issues it records were opened by
   # acts graded on their own, and the merge after it is graded too.
+  # `shift-halt` writes one file under the run directory's `halt/shift/` and one
+  # row, and enters no tree.
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
     obligation-done|obligation-drop|limit-cleared|halt-answer|review-dismiss|review-carry) return 0 ;;
+    shift-halt) return 0 ;;
   esac
   return 1
 }
