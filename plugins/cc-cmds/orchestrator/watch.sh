@@ -137,10 +137,10 @@ WATCH_ARGV=("$@")
 # `SILENCE` IS THE GENERAL AND SETTLE-STALL ARMS' OWN THRESHOLD, and only theirs:
 # they fire at `min(STALL, SILENCE)` when the run is quiet on every signal — the
 # ledger, the gate's own entry, a relay's hand-back and a live shift's stream —
-# and at `STALL` while a seat turn follows a handoff or a halt record waits for a
-# person. Every other reader of `STALL` (the waiter refresh and its freshness,
-# `watch.stall`, the run state, the feed-silence arm, the `done` tail) keeps
-# reading `STALL`. It is a literal on this line rather than a value derived from
+# and at `STALL` while a seat turn follows a handoff, a halt record waits for a
+# person or a fixed-graph run's dispatch marker is alive. Every other reader of
+# `STALL` (the waiter refresh and its freshness, `watch.stall`, the run state,
+# the feed-silence arm, the `done` tail) keeps reading `STALL`. It is a literal on this line rather than a value derived from
 # another, so the pin lint can read it.
 RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300; SILENCE=300
 STAGE_AGE=7200
@@ -402,16 +402,49 @@ seat_turn_open() {
   ' "$LEDGER" 2>/dev/null
 }
 
+fleet_run_marker_live() {
+  # Is a fixed-graph run's dispatch job alive for THIS run? rc 0 when a fleet
+  # run marker under `busy/` carries this watcher's run id on its third line and
+  # its pid is still the process that wrote it (first line pid, second line the
+  # start fingerprint taken in UTC, the way the writer took it). rc 1 when the
+  # directory is absent, no marker names this run, or every one that does is
+  # dead.
+  #
+  # Only the pid half of fleet's own liveness test: the probe half is the run's
+  # live stages, and a stage that is alive already keeps the arms quiet on its
+  # own. The gate's `gate_fleet_busy_state` reads the same marker the same way.
+  # Read only — removing a dead marker is the dispatcher's job under its lock.
+  local d f pid fp run
+  d="${FLEET_PACE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace}/busy"
+  [ -d "$d" ] || return 1
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    run=$(sed -n '3p' "$f" 2>/dev/null | tr -d '[:space:]')
+    [ "$run" = "$RUN_ID" ] || continue
+    pid=$(sed -n '1p' "$f" 2>/dev/null | tr -d '[:space:]')
+    fp=$(sed -n '2p' "$f" 2>/dev/null || true)
+    if TZ=UTC0 cc_holder_is_live "$pid" "$fp"; then return 0; fi
+  done
+  return 1
+}
+
 stall_threshold() {
   # The threshold T of the general and settle-stall arms. `STALL` while a seat
   # turn is open or a halt record waits for a person's answer — neither is a
   # router that stopped, and both are as long as the measured seat-turn gaps or
   # longer — and `min(STALL, SILENCE)` otherwise, so a fixture passing a small
   # `--stall` keeps its meaning.
+  #
+  # `STALL` too while a fixed-graph run's marker is alive. That run has no
+  # router, no shift and no handoff row, and its driver polls CI inline outside
+  # the gate for up to an hour — no gate entry, no ledger row, no stage — so
+  # `SILENCE` would call a healthy merge wait a stall and leave a run-scope
+  # `blocked` row only a person can resolve.
   local h
   if seat_turn_open; then printf '%s' "$STALL"; return 0; fi
   h=$(cc_unanswered_halts "$RUN_DIR" "$LEDGER" 2>/dev/null || printf 0)
   if [ "${h:-0}" -ge 1 ] 2>/dev/null; then printf '%s' "$STALL"; return 0; fi
+  if fleet_run_marker_live; then printf '%s' "$STALL"; return 0; fi
   if [ "$SILENCE" -lt "$STALL" ]; then printf '%s' "$SILENCE"; else printf '%s' "$STALL"; fi
 }
 

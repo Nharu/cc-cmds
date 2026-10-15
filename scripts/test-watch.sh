@@ -103,6 +103,11 @@ export PATH CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND CC_TEST_NOTIFY_LOG
 # every banner below a click value nobody asked for. A case that wants a pane
 # passes one.
 unset TMUX TMUX_PANE
+# The threshold reads fleet's run markers under the pace root, and the real one
+# is this host's live fleet state. Every case reads an empty directory of the
+# suite's own; the fixed-graph cases below write their marker into it.
+FLEET_PACE_ROOT="$WORK/pace"
+export FLEET_PACE_ROOT
 
 # The host check is SEAMED, so every leg can drive the Darwin branch. Skipping
 # these on the other leg counted an unreachable path as a pass, which is how a
@@ -2640,7 +2645,8 @@ esac
 # ---------------------------------------------------------------------------
 # 기본 임계(플래그 없음)에서 일반 갈래가 기록하는 때.
 #
-# 임계 T 는 좌석 턴이 열려 있거나 답 없는 중단 기록이 있으면 STALL(1200), 아니면
+# 임계 T 는 좌석 턴이 열려 있거나 답 없는 중단 기록이 있거나 이 런의 살아 있는 fleet
+# 실행 표지가 있으면 STALL(1200), 아니면
 # min(STALL, SILENCE) = 300 이다. 조용함은 원장 성장·게이트 진입·릴레이 handback·
 # 살아 있는 교대의 스트림 로그 가운데 가장 늦은 것부터 잰다. 유효한 릴레이는 일반·
 # 정착 갈래를 따로 멈춘다. 모든 사례가 기본 임계로 돌므로 seed_idle 뒤의 측정
@@ -2761,6 +2767,44 @@ sil_halt 1200; sil_measure 1200
 check "기본 임계: 답 없는 중단 기록이 있어도 1200초에는 기록한다" "$(sil_fired)" "1"
 sil_halt 301 답; sil_measure 301
 check "기본 임계: 답한 중단 기록은 임계를 늘리지 않는다 (301초에 기록)" "$(sil_fired)" "1"
+
+# 고정 그래프 런 — 라우터·교대·handoff 행이 없고 드라이버가 CI 를 게이트 밖에서
+# 기다린다. 이 런 id 를 단 살아 있는 fleet 실행 표지가 있는 동안 T 는 STALL 이다.
+sil_fleet() {  # sil_fleet <유휴> [표지의 런 id] — busy/ 에 살아 있는 표지 하나, 런 id 를 안 주면 이 런
+  local run
+  sil_case "$1"
+  run="${2:-$(basename "$RD")}"
+  mkdir -p "$FLEET_PACE_ROOT/busy"
+  sleep 600 & SIL_FLEET_PID=$!; FX_PIDS="${FX_PIDS:-}$SIL_FLEET_PID "
+  printf '%s\n%s\n%s\n' "$SIL_FLEET_PID" "$(TZ=UTC0 cc_proc_fingerprint "$SIL_FLEET_PID")" "$run" \
+    > "$FLEET_PACE_ROOT/busy/u1.$SIL_FLEET_PID"
+}
+sil_fleet_clear() {
+  kill "$SIL_FLEET_PID" 2>/dev/null || true
+  wait "$SIL_FLEET_PID" 2>/dev/null || true
+  rm -f "$FLEET_PACE_ROOT/busy"/*
+}
+sil_fleet 301; sil_measure 301
+check "고정 그래프: 이 런의 살아 있는 표지가 있으면 301초에 기록하지 않는다" "$(sil_fired)" "0"
+sil_fleet_clear
+sil_fleet 1200; sil_measure 1200
+check "고정 그래프: 살아 있는 표지가 있어도 1200초에는 기록한다" "$(sil_fired)" "1"
+sil_fleet_clear
+sil_fleet 301
+kill "$SIL_FLEET_PID" 2>/dev/null || true; wait "$SIL_FLEET_PID" 2>/dev/null || true
+sil_measure 301
+check "고정 그래프: 표지의 pid 가 죽었으면 301초에 기록한다" "$(sil_fired)" "1"
+sil_fleet_clear
+sil_fleet 301 다른-런; sil_measure 301
+check "고정 그래프: 다른 런 id 의 표지는 임계를 늘리지 않는다 (301초에 기록)" "$(sil_fired)" "1"
+sil_fleet_clear
+sil_fleet 301
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf '1\n' > "$RD/ends-on-done"
+sil_measure 301
+check "고정 그래프: 정착 갈래도 살아 있는 표지 곁에서는 301초에 기록하지 않는다" \
+  "$( [ -z "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ] && printf 0 || printf 1)" "0"
+sil_fleet_clear
 
 # ---------------------------------------------------------------------------
 # 릴레이 — 유효한 릴레이는 일반·정착 갈래를 멈추고, 걸린 릴레이는 그러지 못한다.
