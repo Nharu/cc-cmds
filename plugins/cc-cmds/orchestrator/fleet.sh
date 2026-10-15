@@ -159,6 +159,8 @@ readonly FLEET_TARGET_CONCURRENCY_DEGRADED=1    # the lane rung's target while u
 readonly FLEET_LANE_OCCUPANCY_MAX=1             # K: a lane admits a launch below this occupancy
 readonly FLEET_SCAN_FILES_MAX=1000              # transcript scan caps, per home; over either -> that home is truncated
 readonly FLEET_SCAN_BYTES_MAX=2147483648
+readonly FLEET_REENTRY_CALLS_MAX=12             # router-shift calls one boot-time re-entry chain issues at most
+readonly FLEET_REENTRY_QUICK_SECONDS=60         # a `대기` call back sooner than this with no launch is a quick return
 # The burn calibration is a literal by decision, and it is not an integer, so the
 # threshold lint does not own it: 0.104 %p of weekly quota per million weighted
 # tokens over a 4h window.
@@ -1102,11 +1104,15 @@ fleet_start_watch() {
   # LAUNCH LINE in this file, which `lint-watch-threshold-pins.sh` holds to one.
   # The optional sixth argument is the re-entry marker for the snapshot, which
   # is a gate call of the re-entry like any other; the watcher and the poller
-  # do not carry it.
-  local home="$1" pdir="$2" manifest="$3" run_dir="$4" ledger="$5" mark="${6:-}"
-  CLAUDE_CONFIG_DIR="$home" CC_PIPELINE_REENTRY="$mark" bash "$pdir/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
-  mkdir -p "$run_dir"
-  bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
+  # do not carry it. A seventh argument `poller` starts the poller alone: a
+  # re-entry whose relay came back because the poller died restarts that one
+  # and not a second watcher beside the first.
+  local home="$1" pdir="$2" manifest="$3" run_dir="$4" ledger="$5" mark="${6:-}" only="${7:-}"
+  if [ "$only" != "poller" ]; then
+    CLAUDE_CONFIG_DIR="$home" CC_PIPELINE_REENTRY="$mark" bash "$pdir/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
+    mkdir -p "$run_dir"
+    bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
+  fi
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
   # merge refusal it feeds is the only thing standing between a red check and a
   # merged branch, and this timer-driven path is the one with no session and no
@@ -1172,15 +1178,52 @@ fleet_reentry_latest_handoff() {
   ' "$1" 2>/dev/null || true
 }
 
+fleet_reentry_launches() {
+  # fleet_reentry_launches <ledger> — how many `교대 기동` rows the ledger holds.
+  grep -c '^- `교대 기동` ' "$1" 2>/dev/null || true
+}
+
+fleet_reentry_poller_live() {
+  # fleet_reentry_poller_live <run dir> — the gate's test for the CI poller
+  # (`gate_relay_poller_live`): a bare pid in `checks.pid` that exists.
+  local p
+  p=$( { cat "$1/checks.pid" 2>/dev/null || true; } | tr -d '[:space:]')
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  cc_pid_exists "$p"
+}
+
+fleet_reentry_driven_since() {
+  # fleet_reentry_driven_since <run dir> <boot epoch> — succeeds when the seat,
+  # a relay or a shift wrote this run's `seat-call`, `relay.live` or
+  # `shift.live` at or after the boot. Those three are rewritten on every seat
+  # launch, every relay poll and hand-back, and every shift launch, so a run
+  # with any of them from this boot was being driven after the boot and the
+  # boot did not cut it: it sits in the gap between two seat calls — after a
+  # relay hand-back, a shift's return, a limit-shaped `무기록` — which is the
+  # seat's to fill. A run born this boot is the plainest case.
+  local f mt
+  for f in seat-call relay.live shift.live; do
+    mt=$(fleet_mtime "$1/$f")
+    [ -n "$mt" ] && [ "$mt" -ge "$2" ] && return 0
+  done
+  return 1
+}
+
 fleet_reentry_candidate() {
   # fleet_reentry_candidate <run dir> <boot epoch> — succeeds for a run this
   # boot cut: it ends on `done` and has not, the seat recorded how it calls,
-  # neither a shift nor a relay holds it, this boot value was not handled for
-  # it yet, and it is not waiting on a person's answer to an approval.
+  # neither a shift nor a relay holds it, nothing drove it since the boot, this
+  # boot value was not handled for it yet, and it is not waiting on a person's
+  # answer to an approval. THE BOOT MUST HAVE CUT IT: without the evidence that
+  # its last drive predates the boot, an unhandled boot value alone admits a
+  # run this boot started, and the re-entry would then trigger on "every
+  # process is dead" on an awake host — the trigger the design turned down as a
+  # second decider.
   local rd="$1" boot="$2" ledger
   [ -f "$rd/ends-on-done" ] && [ ! -e "$rd/done" ] || return 1
   [ -s "$rd/config-dir" ] && [ -s "$rd/ledger-path" ] && [ -s "$rd/seat-call" ] || return 1
   if cc_shift_is_live "$rd" || cc_relay_is_live "$rd"; then return 1; fi
+  if fleet_reentry_driven_since "$rd" "$boot"; then return 1; fi
   [ "$(sed -n '1p' "$(fleet_reentry_dir)/$(basename "$rd").boot" 2>/dev/null)" != "$boot" ] || return 1
   ledger=$(sed -n '1p' "$rd/ledger-path" 2>/dev/null)
   [ -f "$ledger" ] || return 1
@@ -1193,7 +1236,9 @@ fleet_reentry_settled_since() {
   # ending `외부 종료` whose settlement time is after the boot, or the dead-shift
   # `무기록` (exit code `-`) recorded after it. Not only this re-entry's own
   # snapshot: any gate call after the boot settles first, and an earlier
-  # re-entry may have died between its settlement and its launch.
+  # re-entry may have died between its settlement and its launch. Read only
+  # for a candidate, which nothing drove since the boot, so a row settled after
+  # the boot is of a dispatch from before it and not a plain cut of this boot.
   local ts e
   for ts in $(LC_ALL=C awk -F'|' '
       function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
@@ -1308,15 +1353,53 @@ fleet_reentry_run() {
   # as the seat would: `대기` on a hand-back or a limit-shaped `무기록`, `상한`
   # when the shift came back on its cap. Anything else ends the chain and
   # leaves the run to the ledger and the watcher.
+  #
+  # BOUNDED, BECAUSE A HAND-BACK WRITES NO ROW. The ledger stays in the `대기`
+  # state across a hand-back, so the re-issue test stays true whatever came
+  # back, and each call still appends its act rows. A relay that holds hands
+  # back after its hold; one that comes back sooner with no shift launched met
+  # a return condition that will stand on the next call too — the poller of a
+  # CI wait is dead, or the gate keeps failing. The first quick return restarts
+  # a dead poller and waits one quick period before the next call; a second in
+  # a row ends the chain. FLEET_REENTRY_CALLS_MAX caps the chain whatever the
+  # returns, above the calls a reset at the far end of the horizon needs.
+  local calls=0 quick=0 t0 launches pause
+  pause=$FLEET_REENTRY_QUICK_SECONDS
+  case "${FLEET_REENTRY_PAUSE_TEST_SECONDS:-}" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$FLEET_REENTRY_PAUSE_TEST_SECONDS" -lt "$pause" ] && pause=$FLEET_REENTRY_PAUSE_TEST_SECONDS ;;
+  esac
   while :; do
-    rc=0
+    rc=0; calls=$((calls + 1))
+    t0=$(date -u +%s); launches=$(fleet_reentry_launches "$ledger")
     fleet_reentry_act --kind router-shift --target "$R_TGT" --cutpoint "$R_CP" --surface "$R_SF" \
       -- "$reason" -p "/cc-cmds:autopilot-router-shift $R_MAN" || rc=$?
     # 3: another launcher holds the run, or a rule refused. 4: still stale
     # after three fresh digests. 5: an approval for a person.
     case "$rc" in 3|4|5) break ;; esac
     [ ! -e "$rd/done" ] || break
-    if fleet_reentry_reason_wait "$rd" "$ledger"; then reason=대기; continue; fi
+    if [ "$calls" -ge "$FLEET_REENTRY_CALLS_MAX" ]; then
+      fleet_log "재진입 $lane: $id — 호출 ${calls}번에 이르러 사슬을 멈춘다"
+      break
+    fi
+    if fleet_reentry_reason_wait "$rd" "$ledger"; then
+      if [ $(( $(date -u +%s) - t0 )) -lt "$FLEET_REENTRY_QUICK_SECONDS" ] \
+        && [ "$(fleet_reentry_launches "$ledger")" = "$launches" ]; then
+        quick=$((quick + 1))
+        if [ "$quick" -ge 2 ]; then
+          fleet_log "재진입 $lane: $id — 교대 없이 곧바로 돌아온 대기가 두 번 이어져 사슬을 멈춘다"
+          break
+        fi
+        if ! fleet_reentry_poller_live "$rd"; then
+          ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" poller )
+        fi
+        sleep "$pause"
+      else
+        quick=0
+      fi
+      reason=대기; continue
+    fi
+    quick=0
     latest=$(fleet_reentry_latest_handoff "$ledger")
     if [ "$rc" = "0" ] && [ "$latest" = "상한" ]; then reason=상한; continue; fi
     break
