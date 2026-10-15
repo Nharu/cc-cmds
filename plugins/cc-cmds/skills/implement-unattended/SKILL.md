@@ -154,7 +154,7 @@ Load via `ToolSearch("select:TaskCreate,TaskList,TaskUpdate,TaskGet")`.
 - **No such row → this is process A.** Steps 0 → 2, ending in a plan emission. Do not edit anything.
 - **Such a row exists → this is process B.** Its `plan_sha256` is the admission token for Step 3.
 
-**A plan older than a re-convergence is void.** Count only `plan_sha256` rows that come after this segment's last `stage-result` row reading `종류=reconverge`; when one exists and no plan row follows it, this is process A. The re-convergence edited the document the plan was derived from, and Step 3's mid-implementation failure branch is what sends a segment that already holds a plan there. Plan on top of the segment worktree as it stands: completed work stays, and the new plan says what it keeps.
+**A plan older than a re-convergence is void.** Count only `plan_sha256` rows that come after this segment's last `stage-result` row reading `종류=reconverge` or its last `재계획` row, whichever stands later in the ledger; when one exists and no plan row follows it, this is process A. A `재계획` row is a sibling re-plan: another segment's re-convergence moved the binding surface this plan was derived from. The re-convergence edited the document the plan was derived from, and Step 3's mid-implementation failure branch is what sends a segment that already holds a plan there. Plan on top of the segment worktree as it stands: completed work stays, and the new plan says what it keeps.
 
 The phase comes from durable state, not an input flag, so a re-dispatch lands in the same phase.
 
