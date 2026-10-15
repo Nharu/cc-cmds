@@ -12690,6 +12690,10 @@ gate_snapshot() {
   printf '  "answered_halts": [\n'
   gate_answered_halts_json
   printf '  ],\n'
+  # The shift stops no answer has reached yet — what a shift holds.
+  printf '  "shift_halts": [\n'
+  gate_shift_halts_json
+  printf '  ],\n'
 
   # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
   # to read every turn. The top-level keys carried the goal, the targets, the
@@ -15702,6 +15706,10 @@ gate_main() {
   GATE_EMIT_DIGEST_TO=""; export GATE_EMIT_DIGEST_TO
   # The site of a shift's halt record travels the same way, for the same reason.
   GATE_SHIFT_HALT_SITE=""
+  # The marker that lets `shift-halt` carry its four record fields onto a cone
+  # row is set by that act around its one call. A caller that could export it
+  # would write a row vouching for a record the gate never wrote.
+  GATE_SHIFT_HALT_WRITING=""
   MANIFEST=""
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
@@ -16515,6 +16523,60 @@ gate_answered_judgments_json() {
   [ "$first" = "1" ] || printf '\n'
 }
 
+gate_shift_halts_json() {
+  # One element per segment a routing shift stopped that no answer has reached
+  # yet: each cone row `shift-halt` wrote whose record no `중단 답` row names,
+  # and each cone row a shift wrote when the gate could not write the record
+  # (`사유=교대 정지 기록 불가 — <자리>`), which no answer can reach and which
+  # therefore holds for the rest of the run. `보류` is the cone's members now,
+  # the anchor left out. A segment that has ended is left out.
+  #
+  # THIS IS THE HOLD A LATER SHIFT READS. The gate does not refuse acts on such
+  # a cone, and the shift that wrote it hands over with no memory its successor
+  # shares. Without this array the next shift saw the segment as routable,
+  # sent the same merge again and wrote a second record of the same question.
+  #
+  # The answered test is one awk pass that reads to the end, not `grep -q` on
+  # the right of a pipe, for the SIGPIPE reason `gate_answered_halts_json`
+  # gives.
+  local first=1 r ln row seg rec site why held m
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    ln=${r%%:*}; row=${r#*:}
+    [ "$(gate_row_field "$row" '스코프')" = "cone" ] || continue
+    seg=$(gate_row_field "$row" '앵커 세그먼트')
+    [ -n "$seg" ] || continue
+    rec=$(gate_row_field "$row" '중단 기록')
+    if [ -n "$rec" ]; then
+      [ "$(gate_shift_halt_row_of "$rec" | cut -d: -f1)" = "$ln" ] || continue
+      site=$(gate_row_field "$row" '자리')
+      LC_ALL=C awk -v r="| 중단 기록=$rec |" '
+        index($0, "- `중단 답` ") == 1 && index($0, r) { f = 1 }
+        END { exit !f }' "$LEDGER" 2>/dev/null && continue
+    else
+      why=$(gate_row_field "$row" '사유')
+      case "$why" in
+        '교대 정지 기록 불가 — '*) site=${why#'교대 정지 기록 불가 — '} ;;
+        *) continue ;;
+      esac
+    fi
+    gate_segment_terminal "$seg" && continue
+    held=''
+    for m in $(gate_cone_members "$seg"); do
+      [ "$m" = "$seg" ] && continue
+      held="$held${held:+, }\"$(gate_json_escape "$m")\""
+    done
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"세그먼트": "%s", "자리": "%s", "기록": "%s", "줄": %s, "보류": [%s]}' \
+      "$(gate_json_escape "$seg")" "$(gate_json_escape "$site")" \
+      "$(gate_json_escape "$rec")" "$ln" "$held"
+  done <<EOF
+$( { grep -n "^- \`blocked\` " "${LEDGER:-/dev/null}" 2>/dev/null || true; } )
+EOF
+  [ "$first" = "1" ] || printf '\n'
+}
+
 gate_answered_halts_json() {
   # The halt records a person has ANSWERED at the seat (`중단 답` rows) that no
   # stage has yet taken up.
@@ -16947,25 +17009,26 @@ gate_shift_halt_site_table() {
   # can carry out, and no shift composes an option a person would then be
   # bound by.
   #
-  # `추천=없음` IS FIXED FOR THE IRREVERSIBLE SITES. An apply that failed before
-  # or part way, a push the remote disagrees with, a reach the gate refused and
-  # a base that could not be resolved each hang on the state of something
-  # outside this run, which no record of the run settles. Whatever the shift
-  # passes as a recommendation there is dropped and the record reads `(없음)`.
+  # `추천=없음` IS FIXED FOR THE IRREVERSIBLE SITES. A push the remote disagrees
+  # with, a reach the gate refused and a base that could not be resolved each
+  # hang on the state of something outside this run, which no record of the
+  # run settles. Whatever the shift passes as a recommendation there is dropped
+  # and the record reads `(없음)`.
   #
   # Run-scope stops are not here: the enforcement surface moving (exit 7), a
   # lane or limit wait, a design step's stop and a structural refusal stop the
-  # whole run, and stay a `handoff` with `사유=중단`.
+  # whole run, and stay a `handoff` with `사유=중단`. Neither are two stops a
+  # site could not carry out an answer to. A refused predecessor landing or
+  # adoption leaves the slice with no `segment` row, so there is nothing to
+  # anchor a cone on or to park. An apply that failed has already been parked
+  # by the apply act itself, with its own `blocked` row, and the apply's first
+  # precondition refuses every retry of a parked segment.
   cat <<'EOF'
-적용 사전 실패|없음|적용 대상이 지금 다시 적용해도 되는 상태인지는 그 대상을 본 사람만 안다|사람이 적용 대상을 확인한 뒤, 다음 교대가 이 세그먼트의 적용을 다시 시도한다
-적용 불명|없음|적용이 어디까지 일어났는지는 그 대상을 본 사람만 안다|사람이 적용 대상을 확인한 뒤, 다음 교대가 이 세그먼트의 적용을 다시 시도한다
 적용 전제 거부|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|사람이 적용 전제를 갖춘 뒤, 다음 교대가 이 세그먼트의 적용을 다시 시도한다
 병합 거절|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 거절 원인을 다시 읽고 이 세그먼트의 병합을 다시 시도한다
 push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남길지는 원격을 본 사람만 안다|사람이 원격 가지를 맞춘 뒤, 다음 교대가 이 세그먼트의 push 를 다시 시도한다
 도달 거부|없음|그 행위가 닿는 곳에 이 런이 닿아도 되는지는 사람만 정한다|사람이 그 도달을 정한 뒤, 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
 베이스 해소 한도|없음|어느 베이스 위에 다시 쌓을지는 사람만 정한다|사람이 베이스를 정한 뒤, 다음 교대가 이 세그먼트의 베이스 해소를 다시 시도한다
-선행 착지 거부|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 선행 세그먼트의 착지를 다시 읽고 이 세그먼트의 파견을 다시 시도한다
-입양 거부|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 입양 대상을 다시 읽고 이 세그먼트의 입양을 다시 시도한다
 워크트리 기록 없음|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 세그먼트 행의 워크트리를 다시 읽고 이 세그먼트를 다시 시도한다
 종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
 EOF
@@ -24282,6 +24345,14 @@ EOF
       esac
       case "$hrec" in
         */../*|*/./*) warn "\`중단 기록\` cannot carry a relative segment: $hrec"; return "$GATE_EXIT_VOCAB" ;;
+      esac
+      # A doubled slash below the run directory is the same file under a
+      # spelling the `halt/shift/` prefix test does not match, so it would take
+      # a shift's record down the stage branch past the digest check. The run
+      # directory itself may carry one (a TMPDIR that ends in a slash), so only
+      # the part below it is read.
+      case "${hrec#"$RUN_DIR"/}" in
+        *//*) warn "\`중단 기록\` cannot carry a doubled slash below the run directory: $hrec"; return "$GATE_EXIT_VOCAB" ;;
       esac
       [ -f "$hrec" ] || { warn "the halt record does not exist: $hrec"; return "$GATE_EXIT_VOCAB"; }
       local hfirst=''

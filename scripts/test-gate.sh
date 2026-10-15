@@ -27976,7 +27976,7 @@ rm -f "$CAP_DIR/done"
 CAP_STUB="$RL_CAP_STUB_SAVE"
 
 # --- 34f. 교대 정지 기록 — 한 세그먼트만 세우고 나머지는 계속 돈다 ----------
-# --- section: 34f | group: cone | covers: act, snapshot | anchors: 34f: 적용 사전 실패 기록은 추천 (없음) 이다, 34f: 다음 교대의 세그먼트 행이 그 답을 소비한다, 34f: 좌석 실행 답은 스위치가 꺼져도 통과한다 ---
+# --- section: 34f | group: cone | covers: act, snapshot | anchors: 34f: push원격불일치 기록은 추천 (없음) 이다, 34f: 다음 교대의 세그먼트 행이 그 답을 소비한다, 34f: 좌석 실행 답은 스위치가 꺼져도 통과한다 ---
 #
 # A SHIFT STOPS ONE SEGMENT, NOT THE RUN. A segment-scope question used to end
 # the shift with `handoff 사유=중단`, so siblings that did not depend on the
@@ -28046,16 +28046,15 @@ shh_answered() {  # shh_answered <기록> — that record's option in answered_h
 }
 SHH_GROUNDS='매니페스트 인가:## 인가'
 
-# c8587c41: an apply that failed before it started, in code no row of the run
-# answers for. The site is irreversible, so the recommendation the shift passed
-# is dropped and the record reads `(없음)`; the cone holds SH1 and what declares
-# it, and the shift goes on with the rest.
+# A push whose remote disagrees with the worktree. The site is irreversible, so
+# the recommendation the shift passed is dropped and the record reads `(없음)`;
+# the cone holds SH1 and what declares it, and the shift goes on with the rest.
 shh_b0=$(shh_blk)
 shh_hand() { { cap_rows 'handoff' | grep -c . || true; } | tr -d ' '; }
 shh_hand0=$(shh_hand)
-shh_shift SH1 '적용 사전 실패' '질문=적용 대상을 다시 적용해도 되는가?' \
-  '관측=적용 사전 검사가 코드 21 로 끝났다 — 대응 밖 코드' '추천=재시도' "추천 근거=$SHH_GROUNDS"
-check "34f: 적용 사전 실패의 shift-halt 가 통과한다" "$rc" "0"
+shh_shift SH1 'push원격불일치' '질문=원격 가지를 맞춘 뒤 다시 push 하는가?' \
+  '관측=원격 가지 끝이 워크트리 HEAD 와 다르다' '추천=재시도' "추천 근거=$SHH_GROUNDS"
+check "34f: push원격불일치의 shift-halt 가 통과한다" "$rc" "0"
 SHH_R1="$CAP_DIR/halt/shift/SH1#1.md"
 shh_row1=$(cap_rows 'blocked' | tail -1)
 check "34f: 기록이 halt/shift/<세그먼트>#1.md 에 선다" "$( [ -f "$SHH_R1" ] && printf yes || printf no)" "yes"
@@ -28064,8 +28063,8 @@ check "34f: 그 행은 기록의 경로를 싣는다" "$(row_field "$shh_row1" '
 check "34f: 그 행은 기록 바이트의 다이제스트를 싣는다" \
   "$(row_field "$shh_row1" '기록 다이제스트')" "$(shasum -a 256 "$SHH_R1" | cut -d' ' -f1)"
 check "34f: 그 행은 cone 스코프에 자리를 싣는다" \
-  "$(row_field "$shh_row1" '스코프')/$(row_field "$shh_row1" '자리')" "cone/적용 사전 실패"
-check "34f: 적용 사전 실패 기록은 추천 (없음) 이다" \
+  "$(row_field "$shh_row1" '스코프')/$(row_field "$shh_row1" '자리')" "cone/push원격불일치"
+check "34f: push원격불일치 기록은 추천 (없음) 이다" \
   "$(grep -c '^\*\*추천\*\*: (없음) — ' "$SHH_R1")" "1"
 check "34f: 넘어온 추천 근거는 버려진다" "$(grep -c '^\*\*추천 근거\*\*: (없음)$' "$SHH_R1")" "1"
 check "34f: 기록은 자리 표의 두 선택지를 싣는다" \
@@ -28081,6 +28080,16 @@ esac
 check "34f: 교대는 인계하지 않는다 — shift-halt 가 handoff 행을 더하지 않는다" "$(shh_hand)" "$shh_hand0"
 cap_gate "$SHH_SEAT" '' snapshot --manifest "$CAP_NM" >/dev/null
 check "34f: 기록 뒤에도 스냅숏이 선다" "$rc" "0"
+# The gate refuses no act on the cone, and the next shift shares no memory with
+# this one, so the snapshot is where the hold is read: the stop no answer has
+# reached, with the segments its cone holds.
+shh_held() {  # shh_held <세그먼트> — that segment's shift_halts element as 자리|기록|보류, or nothing
+  cap_snap "$SHH_SEAT" '' | jq -r --arg s "$1" \
+    '[.shift_halts[] | select(.["세그먼트"] == $s) | "\(.["자리"])|\(.["기록"])|\(.["보류"] | join(","))"] | last // ""'
+}
+check "34f: 스냅숏의 shift_halts 가 답 없는 정지를 자리·기록·보류와 함께 내놓는다" \
+  "$(shh_held SH1)" "push원격불일치|$SHH_R1|SH3"
+check "34f: 정지가 없는 세그먼트는 shift_halts 에 없다" "$(shh_held SH4)" ""
 
 # A recommendable site: the shift names `재시도` on grounds the gate finds in the
 # manifest, the seat answers with that label, and the next shift's act on the
@@ -28089,6 +28098,7 @@ shh_shift SH2 '병합 거절' '질문=병합 거절의 원인을 다시 읽고 �
   '관측=병합이 리뷰 차단으로 거절됐다' '추천=재시도' "추천 근거=$SHH_GROUNDS"
 check "34f: 형제 세그먼트도 따로 세울 수 있다 — 병합 거절의 shift-halt 가 통과한다" "$rc" "0"
 SHH_R2="$CAP_DIR/halt/shift/SH2#1.md"
+check "34f: 답이 오기 전의 병합 거절 정지는 shift_halts 에 있다" "$(shh_held SH2 | cut -d'|' -f1)" "병합 거절"
 check "34f: 추천 가능한 자리의 기록은 추천 한 줄을 싣는다" \
   "$(grep -c '^\*\*추천\*\*: `재시도` — ' "$SHH_R2")" "1"
 shh_h0=$(shh_ha)
@@ -28097,6 +28107,7 @@ check "34f: 교대 기록의 추천을 고른 좌석 답이 통과한다" "$rc" 
 check "34f: 그 행의 선택지는 기록의 추천이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '선택지')" "재시도"
 check "34f: 그 행은 답한 주체=좌석 이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "좌석"
 check "34f: 스냅숏이 그 답을 answered_halts 로 내놓는다" "$(shh_answered "$SHH_R2")" "재시도"
+check "34f: 답이 온 정지는 shift_halts 에서 빠진다" "$(shh_held SH2)" ""
 shh_seat SH2 "$SHH_R2"
 shh_refused "같은 교대 기록에 두 번째 자동 답" 3 '중단 답' "$((shh_h0 + 1))"
 cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind segment --target infra --segment SH2 \
@@ -28112,9 +28123,9 @@ shh_seat SH2 "$SHH_R2"
 shh_refused "소비된 교대 기록에 쓴 두 번째 자동 답" 3 '중단 답' "$shh_h0"
 
 # The bytes the seat answers from are the bytes the gate wrote.
-shh_shift SH4 '입양 거부' '질문=입양 대상을 다시 읽고 다시 시도하는가?' \
-  '관측=입양 대상의 가지가 사라졌다' '추천=세그먼트 park' "추천 근거=$SHH_GROUNDS"
-check "34f: 입양 거부의 shift-halt 가 통과한다" "$rc" "0"
+shh_shift SH4 '워크트리 기록 없음' '질문=세그먼트 행의 워크트리를 다시 읽고 다시 시도하는가?' \
+  '관측=세그먼트 행의 워크트리가 기록에 없다' '추천=세그먼트 park' "추천 근거=$SHH_GROUNDS"
+check "34f: 워크트리 기록 없음의 shift-halt 가 통과한다" "$rc" "0"
 SHH_R4="$CAP_DIR/halt/shift/SH4#1.md"
 printf '%s\n' '- `adopt` — 끼워 넣은 선택지' >> "$SHH_R4"
 shh_h0=$(shh_ha)
@@ -28128,13 +28139,23 @@ shh_refused "바뀐 교대 기록에 쓴 사람의 답" 3 '중단 답' "$shh_h0"
 
 # A `stage-result` of the key after the row means the segment ran again, so the
 # record no longer says where it stands.
-shh_shift SH4 '입양 거부' '질문=입양 대상을 다시 읽고 다시 시도하는가?' \
-  '관측=입양 대상의 가지가 다시 사라졌다' '추천=세그먼트 park' "추천 근거=$SHH_GROUNDS"
+shh_shift SH4 '워크트리 기록 없음' '질문=세그먼트 행의 워크트리를 다시 읽고 다시 시도하는가?' \
+  '관측=세그먼트 행의 워크트리가 다시 기록에 없다' '추천=세그먼트 park' "추천 근거=$SHH_GROUNDS"
 SHH_R4B="$CAP_DIR/halt/shift/SH4#2.md"
 check "34f: 같은 키의 두 번째 기록은 #2 로 선다" "$rc/$( [ -f "$SHH_R4B" ] && printf yes || printf no)" "0/yes"
 printf -- '- `stage-result` | 교대=0 | 세그먼트=SH4 | 스테이지=SH4 | 종류=implement | 실행 버전=1 | 세션 id=s-sh4-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 shh_seat SH4 "$SHH_R4B"
 shh_refused "행 뒤에 stage-result 가 선 키의 교대 기록에 쓴 좌석 답" 3 '중단 답' "$shh_h0"
+# The same record under a doubled slash is not under `halt/shift/` by spelling,
+# so it would go down the stage branch, where SH4 now has a `stage-result`, and
+# past the digest check.
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SH4 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — 슬래시를 겹친 교대 기록 경로" \
+         -- "중단 기록=$CAP_DIR/halt//shift/SH4#2.md" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 park 를 고름'
+shh_refused "슬래시를 겹친 교대 기록 경로의 사람 답" 2 '중단 답' "$shh_h0"
+check "34f: 그 거절은 겹친 슬래시를 이름으로 든다" \
+  "$(case "$msg" in *'doubled slash'*) printf yes ;; *) printf no ;; esac)" "yes"
 
 # Who may write it, and with which fields.
 shh_b0=$(shh_blk)
@@ -28152,6 +28173,16 @@ cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --tar
          -- 스코프=cone 원인=막힘 '앵커 세그먼트=SH2' '사유=손으로 쓴 정지' '근거=x' \
             "중단 기록=$CAP_DIR/halt/shift/SH2#9.md" '기록 다이제스트=0000'
 shh_refused "중단 기록·기록 다이제스트를 실은 blocked" 2 blocked "$shh_b0"
+# The marker `shift-halt` sets around its own row is cleared on entry, so a
+# caller that exports it is refused the same way.
+export GATE_SHIFT_HALT_WRITING=1
+cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
+         --rationale "픽스처 — 표지를 환경에 얹은 손 기록 행" \
+         -- 스코프=cone 원인=막힘 '앵커 세그먼트=SH2' '사유=손으로 쓴 정지' '근거=x' \
+            "중단 기록=$CAP_DIR/halt/shift/SH2#9.md" '기록 다이제스트=0000'
+unset GATE_SHIFT_HALT_WRITING
+shh_refused "환경에 shift-halt 표지를 얹고 중단 기록을 실은 blocked" 2 blocked "$shh_b0"
 cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
          --rationale "픽스처 — 자리를 실은 blocked" \
@@ -28194,11 +28225,12 @@ cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target inf
          -- "중단 기록=$SHH_R1" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 적용 대상을 보고 park 를 고름'
 check "34f: 추천 (없음) 교대 기록에 쓴 사람의 답이 선다" "$rc/$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "0/사람"
 check "34f: 스냅숏이 사람의 답을 answered_halts 로 내놓는다" "$(shh_answered "$SHH_R1")" "세그먼트 park"
+check "34f: 사람이 답한 정지도 shift_halts 에서 빠진다" "$(shh_held SH1)" ""
 
 # A file already at the record's name is never replaced, and no row is added.
 shh_b0=$(shh_blk)
 printf '%s\n' '먼저 놓인 파일' > "$CAP_DIR/halt/shift/SH3#1.md"
-shh_shift SH3 '선행 착지 거부' '질문=질문' '관측=관측'
+shh_shift SH3 '병합 거절' '질문=질문' '관측=관측'
 shh_refused "같은 이름의 파일이 먼저 놓인 shift-halt" 3 blocked "$shh_b0"
 check "34f: 먼저 놓인 파일은 그대로다" "$(cat "$CAP_DIR/halt/shift/SH3#1.md")" "먼저 놓인 파일"
 check "34f: 임시 파일이 남지 않는다" "$(find "$CAP_DIR/halt/shift" -name '.shift-halt.*' | grep -c . || true)" "0"
@@ -28210,7 +28242,7 @@ mv "$CAP_DIR/halt/shift" "$CAP_DIR/halt/shift.real"
 SHH_LINKED="$WORK/shh-linked"
 mkdir -p "$SHH_LINKED"
 ln -s "$SHH_LINKED" "$CAP_DIR/halt/shift"
-shh_shift SH3 '선행 착지 거부' '질문=질문' '관측=관측'
+shh_shift SH3 '병합 거절' '질문=질문' '관측=관측'
 shh_refused "심볼릭 링크인 halt/shift 의 shift-halt" 3 blocked "$shh_b0"
 check "34f: 링크 너머에 기록이 쓰이지 않는다" "$(find "$SHH_LINKED" -type f | grep -c . || true)" "0"
 rm -f "$CAP_DIR/halt/shift"
