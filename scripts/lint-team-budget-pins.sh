@@ -394,8 +394,11 @@ fi
 # literal carries one clause the ordering rests on: without (1) the new section
 # contradicts the happens-before gate's no-boundary-batching rule, without (6)
 # a send can leave before its nonce is on disk, without (7) a send-back
-# collides with the key it already published, and without (8) a re-entry
-# re-reads next-round rows against the previous round's witnesses.
+# collides with the key it already published, without (8) a re-entry
+# re-reads next-round rows against the previous round's witnesses, without (9)
+# peers handed a revision's path lose the member's original findings, and
+# without (10) a re-entry between the next round's nonce Edits and its sends
+# empty-passes the dispatch-completeness gate and skips that round.
 LATENCY_HEADING='### Resume latency'
 KINDS_HEADING='### Resume kinds and witness keys'
 if has_heading "$PROTOCOL" "$LATENCY_HEADING"; then
@@ -415,6 +418,8 @@ if has_heading "$PROTOCOL" "$LATENCY_HEADING"; then
     'No resume goes out in the response that writes its nonce'
     'the witness is the new file `{role-slug}.P-rev<k>.md`'
     'does not run 확인 for `P` again'
+    'A revision supersedes `P` whole'
+    "The gate's zero-running rule does not empty-pass that entry"
   )
   for lit in "${KINDS_PINS[@]}"; do
     assert_once_in_section "$lit" "$kinds_body" "agent-team-protocol.md ($KINDS_HEADING)"

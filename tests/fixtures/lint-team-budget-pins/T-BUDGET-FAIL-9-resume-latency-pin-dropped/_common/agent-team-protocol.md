@@ -44,7 +44,9 @@ Every resume the lead sends is one row of this table. An in-round resume uses a 
 
 **A nonce Edit's result is seen before its send.** No resume goes out in the response that writes its nonce.
 
-**Re-entry at a boundary.** A re-entry that finds a row tagged `Q` goes to the dispatch-completeness gate for `Q` and does not run 확인 for `P` again.
+**A revision supersedes `P` whole.** A revision witness is the member's complete product for `P`, never a supplement to it.
+
+**Re-entry at a boundary.** A re-entry that finds a row tagged `Q` goes to the dispatch-completeness gate for `Q` and does not run 확인 for `P` again. The gate's zero-running rule does not empty-pass that entry.
 
 ## Convergence
 
