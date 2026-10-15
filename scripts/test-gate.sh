@@ -10964,7 +10964,7 @@ au15_wait R15ER A1
 check "15e-2 픽스처의 감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15ER A1 audit)" "의도된 park"
 gateL act --manifest "$M15ER" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(au15_H R15ER)" --rationale x \
-      -- "중단 기록=$RD15ER/halt/A1#1.md" '선택지=adopt as a requirement' '근거=사람이 요구로 채택'
+      -- "중단 기록=$RD15ER/halt/A1#1.md" '선택지=adopt as a requirement' '답한 주체=사람' '근거=사람이 요구로 채택'
 check "15e-2 픽스처의 중단 답이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
 er15_halts() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15ER" 2>/dev/null ) | jq -c '[.answered_halts[] | .segment]'; }
 check "15e-2: 답이 스냅숏의 answered_halts 에 오른다" "$(er15_halts)" '["A1"]'
@@ -26450,7 +26450,7 @@ capc_ha0=$(capc_ha)
 cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
          --rationale "픽스처 — 기록에 없는 선택지" \
-         -- "중단 기록=$CAPC_HALT" '선택지=adopt' 근거=x
+         -- "중단 기록=$CAPC_HALT" '선택지=adopt' '답한 주체=사람' 근거=x
 check "34c A21: 기록이 원문으로 싣지 않은 선택지는 2 로 거절된다" "$rc" "2"
 check "34c A21: 목록 줄이 있는 기록의 오타 거절은 인라인 진단을 내지 않는다" \
   "$( { grep -qF 'no option line of the form' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "absent"
@@ -26463,7 +26463,7 @@ printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=
 cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
          --rationale "픽스처 — 선택지를 한 줄에 이어 적은 기록" \
-         -- "중단 기록=$CAPC_HALT_INL" '선택지=adopt as a requirement' 근거=x
+         -- "중단 기록=$CAPC_HALT_INL" '선택지=adopt as a requirement' '답한 주체=사람' 근거=x
 check "34c A21: 선택지를 한 줄에 이어 적은 기록은 원문 선택지로도 2 로 거절된다" "$rc" "2"
 check "34c A21: 그 거절은 기록에 목록 줄이 없다고 짚는다" \
   "$( { grep -qF 'no option line of the form' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
@@ -26471,17 +26471,17 @@ rm -f "$CAPC_HALT_INL"
 cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
          --rationale "픽스처 — 런 밖의 기록" \
-         -- "중단 기록=$WORK/elsewhere.md" '선택지=reject' 근거=x
+         -- "중단 기록=$WORK/elsewhere.md" '선택지=reject' '답한 주체=사람' 근거=x
 check "34c A21: 이 런의 halt 디렉터리 밖 기록은 2 로 거절된다" "$rc" "2"
 cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment ZZ9 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
          --rationale "픽스처 — 돈 적 없는 키" \
-         -- "중단 기록=$CAPC_HALT" '선택지=reject' 근거=x
+         -- "중단 기록=$CAPC_HALT" '선택지=reject' '답한 주체=사람' 근거=x
 check "34c A21: stage-result 가 없는 키는 2 로 거절된다" "$rc" "2"
 cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
          --rationale "픽스처 — 게이트 몫의 키" \
-         -- "중단 기록=$CAPC_HALT" '선택지=reject' 근거=x 레인=forged
+         -- "중단 기록=$CAPC_HALT" '선택지=reject' '답한 주체=사람' 근거=x 레인=forged
 check "34c A21: argv 에 게이트 몫 키를 실으면 2 로 거절된다" "$rc" "2"
 cap_gate "$capc_sid2" "$CAPC_RID#2" act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$capc_sid2" "$CAPC_RID#2")" \
@@ -26490,10 +26490,18 @@ cap_gate "$capc_sid2" "$CAPC_RID#2" act --manifest "$CAP_NM" --kind halt-answer 
 check "34c A21: 교대의 중단 답은 3 으로 거절된다" "$rc" "3"
 check "34c A21: 다섯 거절 모두 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
 check "34c A21: 답이 없으면 answered_halts 는 비어 있다" "$(capc_halts)" "[]"
+# THE SEAT NAMES `답한 주체` ON EVERY CALL. Left to default, a seat that ran a
+# record itself and forgot the field wrote a row the morning read as a person's.
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 답한 주체를 넘기지 않은 좌석의 답" \
+         -- "중단 기록=$CAPC_HALT" '선택지=adopt as a requirement' '근거=사람이 요구로 채택'
+check "34c A21: 답한 주체를 넘기지 않은 좌석의 중단 답은 2 로 거절된다" "$rc" "2"
+check "34c A21: 그 거절은 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
 cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
          --rationale "픽스처 — 좌석의 답" \
-         -- "중단 기록=$CAPC_HALT" '선택지=adopt as a requirement' '근거=사람이 요구로 채택'
+         -- "중단 기록=$CAPC_HALT" '선택지=adopt as a requirement' '답한 주체=사람' '근거=사람이 요구로 채택'
 check "34c A21: 기록의 선택지를 실은 좌석의 중단 답은 통과한다" "$rc" "0"
 check "34c A21: 중단 답 행이 하나 생긴다" "$(capc_ha)" "$((capc_ha0 + 1))"
 capc_harow=$(cap_rows '중단 답' | tail -1)
@@ -26501,7 +26509,7 @@ check "34c A21: 그 행은 기록의 스킬을 게이트가 읽어 찍는다" \
   "$(row_field "$capc_harow" '스킬')" "design-audit-unattended"
 check "34c A21: 그 행은 기록의 다이제스트를 찍는다" \
   "$(row_field "$capc_harow" '기록 다이제스트')" "$(shasum -a 256 "$CAPC_HALT" | cut -d' ' -f1)"
-check "34c A21: 답한 주체를 넘기지 않은 좌석의 행은 사람의 답으로 찍힌다" \
+check "34c A21: 답한 주체=사람 을 넘긴 좌석의 행은 사람의 답으로 찍힌다" \
   "$(row_field "$capc_harow" '답한 주체')" "사람"
 check "34c A21: 스냅숏이 그 답의 answered_by 를 사람으로 내놓는다" \
   "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '.answered_halts[] | select(.segment == "CC1") | .answered_by')" "사람"
@@ -26509,6 +26517,12 @@ check "34c A21: 스냅숏이 그 답을 answered_halts 로 내놓는다" \
   "$(capc_halts)" '[["CC1","adopt as a requirement"]]'
 printf -- '- `stage-result` | 교대=0 | 세그먼트=CC1 | 스테이지=CC1 | 종류=reconverge | 실행 버전=2 | 세션 id=s-rc-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 check "34c A21: 뒤에 그 키의 stage-result 가 서면 답은 소비되어 빠진다" "$(capc_halts)" "[]"
+# A ROW WRITTEN BEFORE THE FIELD EXISTED still reads as a person's answer: the
+# refusal binds new calls, not the ledger already written.
+printf -- '- `중단 답` | 교대=0 | 세그먼트=CC9 | 중단 기록=%s | 스킬=design-audit-unattended | 선택지=reject | 근거=옛 행 | 기록 다이제스트=x | prev=x\n' "$CAPC_HALT" >> "$CAP_LEDGER"
+check "34c A21: 답한 주체가 없는 옛 행은 스냅숏에서 사람으로 읽힌다" \
+  "$(cap_snap "$CAPC_SEAT_SID" '' | jq -r '[.answered_halts[] | select(.segment == "CC9") | .answered_by] | last // ""')" "사람"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=CC9 | 스테이지=CC9 | 종류=audit | 실행 버전=1 | 세션 id=s-cc9 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 # The option alone cannot carry measured values, so the seat attaches a file
 # under the same `halt/`. It must be this run's, non-empty, and not look like a
 # halt record, and the snapshot hands its path on with the answer.
@@ -26517,7 +26531,7 @@ capc_ha_att() {
   cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC1 \
            --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
            --rationale "픽스처 — 첨부를 단 답" \
-           -- "중단 기록=$CAPC_HALT" '선택지=reject' '근거=사람이 값을 건넴' "첨부=$1"
+           -- "중단 기록=$CAPC_HALT" '선택지=reject' '답한 주체=사람' '근거=사람이 값을 건넴' "첨부=$1"
 }
 capc_ha1=$(capc_ha)
 printf '%s\n' '측정값: 응답 200, 지연 41ms' > "$WORK/capc-att-outside.md"
@@ -26906,7 +26920,7 @@ sdh_rec "$SDH_HP" design-audit-unattended 'H1#1' "$SDH_NSTEP" '**추천**: `채�
 cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment H1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
          --rationale "픽스처 — 사람의 답" \
-         -- "중단 기록=$SDH_HP" '선택지=기각' '근거=사람이 기각을 고름'
+         -- "중단 기록=$SDH_HP" '선택지=기각' '답한 주체=사람' '근거=사람이 기각을 고름'
 check "34d: 사람의 기각 답이 선다" "$rc/$(row_field "$(sdh_last)" '답한 주체')" "0/사람"
 sdh_hn=$(sdh_ha)
 sdh_seat H1 "$SDH_HP"
@@ -27017,7 +27031,7 @@ sdh_bt T1 'T1#1'
 cap_gate "$SDH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment T1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SDH_SEAT" '')" \
          --rationale "픽스처 — 사람의 재수렴 답" \
-         -- "중단 기록=$sdh_f" '선택지=재수렴' '근거=사람이 재수렴을 고름'
+         -- "중단 기록=$sdh_f" '선택지=재수렴' '답한 주체=사람' '근거=사람이 재수렴을 고름'
 check "34d: 사람의 재수렴 답이 선다" "$rc/$(row_field "$(sdh_last)" '답한 주체')" "0/사람"
 sdh_sr T1 reconverge 2 '정상 완료'
 sdh_sr T1 implement 3 '의도된 park'
@@ -27034,6 +27048,308 @@ check "34d: 상한 거절은 행을 남기지 않는다" "$(sdh_ha)" "$sdh_hn"
 sdh_seat T1 "$sdh_f"
 sdh_refused "상한에 닿은 키의 좌석 재수렴 답" 3
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SDH_PREV_AR"
+
+# --- 34e. 교대 정지 기록 — 한 세그먼트만 세우고 나머지는 계속 돈다 ----------
+# --- section: 34e | group: cone | covers: act, snapshot | anchors: 34e: 적용 사전 실패 기록은 추천 (없음) 이다, 34e: 다음 교대의 세그먼트 행이 그 답을 소비한다, 34e: 좌석 실행 답은 스위치가 꺼져도 통과한다 ---
+#
+# A SHIFT STOPS ONE SEGMENT, NOT THE RUN. A segment-scope question used to end
+# the shift with `handoff 사유=중단`, so siblings that did not depend on the
+# stopped segment waited for the morning too. `act --kind shift-halt` writes a
+# halt record under `halt/shift/` and a cone row that vouches for it by path
+# and digest; the seat answers that record like a stage's, and the next shift
+# carries the answer out. Every refusal is asserted with the row count, because
+# a refusal that still wrote a row would vouch for a record nobody asked.
+#
+# THE SEAT-RUN ANSWER rides in the same section: the seat that ran a record's
+# recipe itself writes `답한 주체=좌석` with `근거 종류=좌석 실행`, whatever the
+# auto-resolve switch says, and every other seat answer is still bound by it.
+SHH_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+SHH_RID=RSHH1
+cap_fx_new "$SHH_RID"
+mkdir -p "$CAP_DIR/halt/shift"
+SHH_SEAT="6e6e6e6e-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SHH_SEAT.jsonl"
+shh_seg() {  # shh_seg <id> <worktree> [필드…] — a segment row the seat writes
+  local id="$1" wt="$2"; shift 2
+  cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$id" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+           --rationale x -- 워크트리="$wt" 상태=실행중 "$@"
+}
+# SH1 is the stopped segment, SH3 declares it as its predecessor and SH2 and
+# SH4 stand on nothing of it. B is stacked on A, so it is not used here.
+shh_seg SH1 "$CONE_A" 선행=없음; shh_s1=$rc
+shh_seg SH2 "$CONE_C" 선행=없음; shh_s2=$rc
+shh_seg SH3 "$CONE_D" 선행=SH1; shh_s3=$rc
+shh_seg SH4 "$CONE_E" 선행=없음; shh_s4=$rc
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34e: 픽스처의 세그먼트 넷과 교대 기동이 섰다" "$shh_s1/$shh_s2/$shh_s3/$shh_s4/$rc" "0/0/0/0/0"
+SHH_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SHH_SHIFT.jsonl"
+shh_blk() { { cap_rows 'blocked' | grep -c . || true; } | tr -d ' '; }
+shh_ha() { { cap_rows '중단 답' | grep -c . || true; } | tr -d ' '; }
+shh_halt() {  # shh_halt <세션 id> <교대 id> <키> <자리> [argv…] — one `shift-halt` act
+  local sid="$1" shid="$2" key="$3" site="$4"; shift 4
+  cap_gate "$sid" "$shid" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$sid" "$shid")" \
+           --rationale "픽스처 — 교대 정지" -- "자리=$site" "$@"
+}
+shh_shift() {  # shh_shift <키> <자리> [argv…] — the shift's own stop
+  shh_halt "$SHH_SHIFT" "$SHH_RID#1" "$@"
+}
+shh_seat() {  # shh_seat <키> <기록> [argv…] — the seat's automatic answer, attachment beside it
+  local key="$1" rec="$2" att; shift 2
+  att="$CAP_DIR/halt/${key}.answer.md"
+  printf '%s\n' '추천 근거 인용: 픽스처의 인용 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$att"
+  cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+           --rationale "픽스처 — 좌석의 자동 답" \
+           -- "중단 기록=$rec" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$att" "$@"
+}
+shh_refused() {  # shh_refused <이름> <기대 코드> <행 계열> <앞선 행 수> — the code, and no row
+  local n
+  if [ "$3" = "blocked" ]; then n=$(shh_blk); else n=$(shh_ha); fi
+  check "34e: $1 은 $2 로 거절된다" "$rc" "$2"
+  check "34e: $1 의 거절은 행을 남기지 않는다" "$n" "$4"
+}
+shh_answered() {  # shh_answered <기록> — that record's option in answered_halts, or nothing
+  cap_snap "$SHH_SEAT" '' | jq -r --arg r "$1" '[.answered_halts[] | select(.record == $r) | .option] | last // ""'
+}
+SHH_GROUNDS='매니페스트 인가:## 인가'
+
+# c8587c41: an apply that failed before it started, in code no row of the run
+# answers for. The site is irreversible, so the recommendation the shift passed
+# is dropped and the record reads `(없음)`; the cone holds SH1 and what declares
+# it, and the shift goes on with the rest.
+shh_b0=$(shh_blk)
+shh_hand() { { cap_rows 'handoff' | grep -c . || true; } | tr -d ' '; }
+shh_hand0=$(shh_hand)
+shh_shift SH1 '적용 사전 실패' '질문=적용 대상을 다시 적용해도 되는가?' \
+  '관측=적용 사전 검사가 코드 21 로 끝났다 — 대응 밖 코드' '추천=재시도' "추천 근거=$SHH_GROUNDS"
+check "34e: 적용 사전 실패의 shift-halt 가 통과한다" "$rc" "0"
+SHH_R1="$CAP_DIR/halt/shift/SH1#1.md"
+shh_row1=$(cap_rows 'blocked' | tail -1)
+check "34e: 기록이 halt/shift/<세그먼트>#1.md 에 선다" "$( [ -f "$SHH_R1" ] && printf yes || printf no)" "yes"
+check "34e: blocked 행이 하나 생긴다" "$(shh_blk)" "$((shh_b0 + 1))"
+check "34e: 그 행은 기록의 경로를 싣는다" "$(row_field "$shh_row1" '중단 기록')" "$SHH_R1"
+check "34e: 그 행은 기록 바이트의 다이제스트를 싣는다" \
+  "$(row_field "$shh_row1" '기록 다이제스트')" "$(shasum -a 256 "$SHH_R1" | cut -d' ' -f1)"
+check "34e: 그 행은 cone 스코프에 자리를 싣는다" \
+  "$(row_field "$shh_row1" '스코프')/$(row_field "$shh_row1" '자리')" "cone/적용 사전 실패"
+check "34e: 적용 사전 실패 기록은 추천 (없음) 이다" \
+  "$(grep -c '^\*\*추천\*\*: (없음) — ' "$SHH_R1")" "1"
+check "34e: 넘어온 추천 근거는 버려진다" "$(grep -c '^\*\*추천 근거\*\*: (없음)$' "$SHH_R1")" "1"
+check "34e: 기록은 자리 표의 두 선택지를 싣는다" \
+  "$(grep -c -e '^- `재시도` — ' -e '^- `세그먼트 park` — ' "$SHH_R1")" "2"
+check "34e: 기록의 머리는 게이트가 쓴 교대 기록이다" \
+  "$(sed -n '1p' "$SHH_R1")" "<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=SH1#1; run=$SHH_RID -->"
+shh_cone=",$(row_field "$shh_row1" '의존 세그먼트'),"
+case "$shh_cone" in
+  *,SH1,*) case "$shh_cone" in *,SH3,*) case "$shh_cone" in *,SH2,*|*,SH4,*) bad "34e: cone 은 SH1 과 그것을 선언한 SH3 만 담는다" "$shh_cone" ;; *) ok "34e: cone 은 SH1 과 그것을 선언한 SH3 만 담는다" ;; esac ;;
+                                 *) bad "34e: cone 은 SH1 과 그것을 선언한 SH3 만 담는다" "$shh_cone" ;; esac ;;
+  *) bad "34e: cone 은 SH1 과 그것을 선언한 SH3 만 담는다" "$shh_cone" ;;
+esac
+check "34e: 교대는 인계하지 않는다 — shift-halt 가 handoff 행을 더하지 않는다" "$(shh_hand)" "$shh_hand0"
+cap_gate "$SHH_SEAT" '' snapshot --manifest "$CAP_NM" >/dev/null
+check "34e: 기록 뒤에도 스냅숏이 선다" "$rc" "0"
+
+# A recommendable site: the shift names `재시도` on grounds the gate finds in the
+# manifest, the seat answers with that label, and the next shift's act on the
+# key spends the answer.
+shh_shift SH2 '병합 거절' '질문=병합 거절의 원인을 다시 읽고 다시 시도하는가?' \
+  '관측=병합이 리뷰 차단으로 거절됐다' '추천=재시도' "추천 근거=$SHH_GROUNDS"
+check "34e: 형제 세그먼트도 따로 세울 수 있다 — 병합 거절의 shift-halt 가 통과한다" "$rc" "0"
+SHH_R2="$CAP_DIR/halt/shift/SH2#1.md"
+check "34e: 추천 가능한 자리의 기록은 추천 한 줄을 싣는다" \
+  "$(grep -c '^\*\*추천\*\*: `재시도` — ' "$SHH_R2")" "1"
+shh_h0=$(shh_ha)
+shh_seat SH2 "$SHH_R2"
+check "34e: 교대 기록의 추천을 고른 좌석 답이 통과한다" "$rc" "0"
+check "34e: 그 행의 선택지는 기록의 추천이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '선택지')" "재시도"
+check "34e: 그 행은 답한 주체=좌석 이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "좌석"
+check "34e: 스냅숏이 그 답을 answered_halts 로 내놓는다" "$(shh_answered "$SHH_R2")" "재시도"
+shh_seat SH2 "$SHH_R2"
+shh_refused "같은 교대 기록에 두 번째 자동 답" 3 '중단 답' "$((shh_h0 + 1))"
+cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind segment --target infra --segment SH2 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
+         --rationale "픽스처 — 다음 교대의 재시도" -- 워크트리="$CONE_C" 상태=실행중 선행=없음
+check "34e: 다음 교대의 세그먼트 행이 선다" "$rc" "0"
+check "34e: 다음 교대의 세그먼트 행이 그 답을 소비한다" "$(shh_answered "$SHH_R2")" ""
+# The consumer was a segment row, not a `stage-result`, so it carries no
+# `종단 부류` that could excuse a second automatic answer — the record goes to
+# a person from here on.
+shh_h0=$(shh_ha)
+shh_seat SH2 "$SHH_R2"
+shh_refused "소비된 교대 기록에 쓴 두 번째 자동 답" 3 '중단 답' "$shh_h0"
+
+# The bytes the seat answers from are the bytes the gate wrote.
+shh_shift SH4 '입양 거부' '질문=입양 대상을 다시 읽고 다시 시도하는가?' \
+  '관측=입양 대상의 가지가 사라졌다' '추천=세그먼트 park' "추천 근거=$SHH_GROUNDS"
+check "34e: 입양 거부의 shift-halt 가 통과한다" "$rc" "0"
+SHH_R4="$CAP_DIR/halt/shift/SH4#1.md"
+printf '%s\n' '- `adopt` — 끼워 넣은 선택지' >> "$SHH_R4"
+shh_h0=$(shh_ha)
+shh_seat SH4 "$SHH_R4"
+shh_refused "바뀐 교대 기록에 쓴 좌석 답" 3 '중단 답' "$shh_h0"
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SH4 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — 바뀐 기록에 쓴 사람의 답" \
+         -- "중단 기록=$SHH_R4" '선택지=adopt' '답한 주체=사람' '근거=사람이 끼워 넣은 선택지를 고름'
+shh_refused "바뀐 교대 기록에 쓴 사람의 답" 3 '중단 답' "$shh_h0"
+
+# A `stage-result` of the key after the row means the segment ran again, so the
+# record no longer says where it stands.
+shh_shift SH4 '입양 거부' '질문=입양 대상을 다시 읽고 다시 시도하는가?' \
+  '관측=입양 대상의 가지가 다시 사라졌다' '추천=세그먼트 park' "추천 근거=$SHH_GROUNDS"
+SHH_R4B="$CAP_DIR/halt/shift/SH4#2.md"
+check "34e: 같은 키의 두 번째 기록은 #2 로 선다" "$rc/$( [ -f "$SHH_R4B" ] && printf yes || printf no)" "0/yes"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=SH4 | 스테이지=SH4 | 종류=implement | 실행 버전=1 | 세션 id=s-sh4-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+shh_seat SH4 "$SHH_R4B"
+shh_refused "행 뒤에 stage-result 가 선 키의 교대 기록에 쓴 좌석 답" 3 '중단 답' "$shh_h0"
+
+# Who may write it, and with which fields.
+shh_b0=$(shh_blk)
+shh_halt "$SHH_SEAT" '' SH2 '병합 거절' '질문=좌석이 쓴 질문' '관측=좌석이 본 것'
+shh_refused "교대가 아닌 호출자의 shift-halt" 3 blocked "$shh_b0"
+shh_shift SH2 '없는 자리' '질문=질문' '관측=관측'
+shh_refused "자리 표에 없는 자리의 shift-halt" 2 blocked "$shh_b0"
+shh_shift SH2 '병합 거절' '질문=질문' '관측=관측' '추천=재시도' '추천 근거=기기 사실:이 기기에서 잰 값'
+shh_refused "게이트가 확인할 수 없는 근거 종류의 추천" 3 blocked "$shh_b0"
+shh_shift SH2 '병합 거절' '질문=질문' '관측=관측' '추천=재시도' '추천 근거=매니페스트 인가:매니페스트에 없는 문장'
+shh_refused "매니페스트에 없는 인용을 근거로 든 추천" 3 blocked "$shh_b0"
+cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
+         --rationale "픽스처 — 손으로 쓴 교대 기록 행" \
+         -- 스코프=cone 원인=막힘 '앵커 세그먼트=SH2' '사유=손으로 쓴 정지' '근거=x' \
+            "중단 기록=$CAP_DIR/halt/shift/SH2#9.md" '기록 다이제스트=0000'
+shh_refused "중단 기록·기록 다이제스트를 실은 blocked" 2 blocked "$shh_b0"
+cap_gate "$SHH_SHIFT" "$SHH_RID#1" act --manifest "$CAP_NM" --kind blocked --target infra \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SHIFT" "$SHH_RID#1")" \
+         --rationale "픽스처 — 자리를 실은 blocked" \
+         -- 스코프=cone 원인=막힘 '앵커 세그먼트=SH2' '사유=손으로 쓴 정지' '근거=x' '자리=병합 거절' '교대=1'
+shh_refused "자리·교대를 실은 blocked" 2 blocked "$shh_b0"
+
+# A record is a shift's only when a gate row names it under `halt/shift/`. One
+# placed a level up with the same head, or one a row names outside that
+# directory, goes down the stage branch and finds no `stage-result` of the key.
+SHH_MIMIC="$CAP_DIR/halt/SH1#5.md"
+sed "s/stage=SH1#1;/stage=SH1#5;/" "$SHH_R1" > "$SHH_MIMIC"
+shh_h0=$(shh_ha)
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SH1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — halt/ 에 놓인 흉내 기록" \
+         -- "중단 기록=$SHH_MIMIC" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 park 를 고름'
+shh_refused "halt/ 한 단계에 놓은 교대 머리의 기록" 2 '중단 답' "$shh_h0"
+printf -- '- `blocked` | 교대=0 | 대상=infra | 스코프=cone | 원인=막힘 | 앵커 세그먼트=SH1 | 사유=x | 근거=x | 중단 기록=%s | 기록 다이제스트=%s | prev=x\n' \
+  "$SHH_MIMIC" "$(shasum -a 256 "$SHH_MIMIC" | cut -d' ' -f1)" >> "$CAP_LEDGER"
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SH1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — halt/shift 밖을 가리키는 행의 기록" \
+         -- "중단 기록=$SHH_MIMIC" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 park 를 고름'
+shh_refused "halt/shift 밖을 가리키는 행의 기록" 2 '중단 답' "$shh_h0"
+shh_stray="$CAP_DIR/halt/shift/SH1#7.md"
+cp "$SHH_R1" "$shh_stray"
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SH1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — 행 없는 halt/shift 파일" \
+         -- "중단 기록=$shh_stray" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 park 를 고름'
+shh_refused "행이 가리키지 않는 halt/shift 파일" 2 '중단 답' "$shh_h0"
+rm -f "$shh_stray"
+
+# A person answers the irreversible site's record; nothing automatic may.
+shh_seat SH1 "$SHH_R1"
+shh_refused "추천 (없음) 교대 기록에 쓴 좌석 답" 3 '중단 답' "$shh_h0"
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SH1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — 사람의 답" \
+         -- "중단 기록=$SHH_R1" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 적용 대상을 보고 park 를 고름'
+check "34e: 추천 (없음) 교대 기록에 쓴 사람의 답이 선다" "$rc/$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "0/사람"
+check "34e: 스냅숏이 사람의 답을 answered_halts 로 내놓는다" "$(shh_answered "$SHH_R1")" "세그먼트 park"
+
+# A file already at the record's name is never replaced, and no row is added.
+shh_b0=$(shh_blk)
+printf '%s\n' '먼저 놓인 파일' > "$CAP_DIR/halt/shift/SH3#1.md"
+shh_shift SH3 '선행 착지 거부' '질문=질문' '관측=관측'
+shh_refused "같은 이름의 파일이 먼저 놓인 shift-halt" 3 blocked "$shh_b0"
+check "34e: 먼저 놓인 파일은 그대로다" "$(cat "$CAP_DIR/halt/shift/SH3#1.md")" "먼저 놓인 파일"
+check "34e: 임시 파일이 남지 않는다" "$(find "$CAP_DIR/halt/shift" -name '.shift-halt.*' | grep -c . || true)" "0"
+rm -f "$CAP_DIR/halt/shift/SH3#1.md"
+
+# `halt/shift` made a symlink to a worktree directory, the way a stage write
+# could: the record is not written there and no row vouches for anything.
+mv "$CAP_DIR/halt/shift" "$CAP_DIR/halt/shift.real"
+SHH_LINKED="$WORK/shh-linked"
+mkdir -p "$SHH_LINKED"
+ln -s "$SHH_LINKED" "$CAP_DIR/halt/shift"
+shh_shift SH3 '선행 착지 거부' '질문=질문' '관측=관측'
+shh_refused "심볼릭 링크인 halt/shift 의 shift-halt" 3 blocked "$shh_b0"
+check "34e: 링크 너머에 기록이 쓰이지 않는다" "$(find "$SHH_LINKED" -type f | grep -c . || true)" "0"
+rm -f "$CAP_DIR/halt/shift"
+mv "$CAP_DIR/halt/shift.real" "$CAP_DIR/halt/shift"
+
+# 좌석 실행 답. c8587c41 A#5: the seat ran the residual recipe the record listed,
+# minutes after the stop, and the row read `사람`. The switch is off here, as
+# the suite runs, and the seat run still passes; every other seat answer does
+# not.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+shh_sr() {  # shh_sr <키> <실행 버전> — the key's settled implement attempt that halted
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=implement | 실행 버전=%s | 세션 id=s-%s-%s | 종단 부류=의도된 park | prev=x\n' \
+    "$1" "$1" "$2" "$1" "$2" >> "$CAP_LEDGER"
+}
+shh_runrec() {  # shh_runrec <파일> <stage> <스텝> [선택지 줄…]
+  local f="$1" st="$2" step="$3"; shift 3
+  { printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=%s; run=%s -->\n' "$st" "$SHH_RID"
+    printf '**중단 시각**: 2026-10-12T00:00:00Z\n**스킬**: implement-unattended\n**스텝**: %s\n' "$step"
+    printf '**분류**: gate-unanswerable\n**좌석 실행 항목**: R2, R5\n**질문 문면**: 잔여 검증 레시피를 좌석이 돌려 주십시오\n**선택지**:\n'
+    printf '%s\n' "$@"
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$f"
+}
+SHH_RUNOPT='- `좌석 실행` — 좌석이 이 호스트에서 항목의 레시피를 돌리고 결과를 설계 문서에 W1/W2 로 적은 뒤 이 세션을 다시 붙인다.'
+shh_run() {  # shh_run <키> <기록> [argv…] — the seat's answer that it ran the record
+  local key="$1" rec="$2"; shift 2
+  cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+           --rationale "픽스처 — 좌석 실행" -- "중단 기록=$rec" '선택지=좌석 실행' '근거=좌석이 R2·R5 레시피를 돌림' "$@"
+}
+shh_sr SR1 1
+SHH_A5="$CAP_DIR/halt/SR1#1.md"
+shh_runrec "$SHH_A5" 'SR1#1' 'Step 3 잔여 검증 좌석 실행 — R2·R5 의 레시피가 게이트에 막혔다' \
+  "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
+shh_h0=$(shh_ha)
+shh_run SR1 "$SHH_A5"
+shh_refused "답한 주체를 넘기지 않은 좌석 실행 답" 2 '중단 답' "$shh_h0"
+cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment SR1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SHH_SEAT" '')" \
+         --rationale "픽스처 — 갈래 밖의 좌석 답" \
+         -- "중단 기록=$SHH_A5" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$CAP_DIR/halt/SH2.answer.md"
+shh_refused "스위치가 꺼진 런에서 좌석 실행 갈래 밖의 좌석 답" 3 '중단 답' "$shh_h0"
+shh_run SR1 "$SHH_A5" '답한 주체=좌석'
+check "34e: 좌석 실행 답은 스위치가 꺼져도 통과한다" "$rc" "0"
+check "34e: 좌석 실행 답의 행은 답한 주체=좌석 이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '답한 주체')" "좌석"
+check "34e: 좌석 실행 답의 행은 근거 종류=좌석 실행 이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '근거 종류')" "좌석 실행"
+check "34e: 스냅숏이 좌석 실행 답의 answered_by 를 좌석으로 내놓는다" \
+  "$(cap_snap "$SHH_SEAT" '' | jq -r --arg r "$SHH_A5" '[.answered_halts[] | select(.record == $r) | .answered_by] | last // ""')" "좌석"
+shh_sr SR2 1
+SHH_SR2="$CAP_DIR/halt/SR2#1.md"
+shh_runrec "$SHH_SR2" 'SR2#1' 'Step 3 — 레시피가 게이트에 막혔다' "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
+shh_h0=$(shh_ha)
+shh_run SR2 "$SHH_SR2" '답한 주체=좌석'
+shh_refused "스텝이 좌석 실행 문면이 아닌 기록의 좌석 실행 답" 3 '중단 답' "$shh_h0"
+shh_sr SR3 1
+SHH_SR3="$CAP_DIR/halt/SR3#1.md"
+shh_runrec "$SHH_SR3" 'SR3#1' 'Step 3 잔여 검증 좌석 실행 — 선택지 줄이 없다' '- `보류` — 사람이 처분을 정한다.'
+shh_run SR3 "$SHH_SR3" '답한 주체=좌석'
+shh_refused "좌석 실행 선택지 줄이 없는 기록의 좌석 실행 답" 3 '중단 답' "$shh_h0"
+shh_sr SR4 1
+SHH_SR4="$CAP_DIR/halt/SR4#1.md"
+shh_runrec "$SHH_SR4" 'SR4#1' 'Step 3 게이트 도달 좌석 실행 — 도구 설치가 막혔다' "$SHH_RUNOPT" '- `보류` — 사람이 처분을 정한다.'
+shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
+shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
@@ -33767,7 +34083,7 @@ printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-audit-unattended; reader=
   '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$BSX_HALTREC"
 gateB act --manifest "$WORK/bsx-RB1F.md" --kind halt-answer --target infra --segment A1 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(bsx_H "$WORK/bsx-RB1F.md")" --rationale "픽스처 — 좌석의 답" \
-  -- "중단 기록=$BSX_HALTREC" '선택지=adopt as a requirement' '근거=사람이 요구로 채택'
+  -- "중단 기록=$BSX_HALTREC" '선택지=adopt as a requirement' '답한 주체=사람' '근거=사람이 요구로 채택'
 check "76:감사 단계 키의 중단 답을 좌석이 쓴다" "$rc" "0"
 check "76:스냅숏이 그 답을 감사 단계 키로 내놓는다" \
   "$(bsx_snap "$WORK/bsx-RB1F.md" | jq -c '[.answered_halts[]? | .segment]')" '["A1"]'

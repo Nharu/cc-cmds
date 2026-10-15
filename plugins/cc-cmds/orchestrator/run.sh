@@ -3363,7 +3363,10 @@ rundir_init() {
   # its own manifest on every read. Making the parent exist is the driver's
   # whole part — a publisher that had to `mkdir -p` its parent would be writing
   # one level above what the run directory guards allow it.
-  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
+  # `halt/shift/` holds the halt records the gate writes for a routing shift
+  # that stops one segment; the gate refuses to write one anywhere but a real
+  # directory at that place, so the driver makes it with the rest.
+  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/halt/shift" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
   LOG_FILE="$RUN_DIR/log/driver.log"
   spawn_drop_dead_waiters
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"

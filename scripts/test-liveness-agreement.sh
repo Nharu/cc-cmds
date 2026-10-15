@@ -971,6 +971,21 @@ fx_row '중단 답' "중단 기록=/elsewhere/20261012-0000000a/halt/S1.md" "답
 check "유휴 B — 다른 런의 같은 이름 기록을 가리키는 답은 이 기록의 답이 아니다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
 
+# A SHIFT'S STOP IS A QUESTION TOO. Its record sits one level down, under
+# `halt/shift/`, and a run whose only open question is one of those still waits
+# on a person.
+id_mkrun 20261012-00000010 90000
+mkdir -p "$FX_RUN_DIR/halt/shift"
+printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/shift/S1#1.md"
+check "유휴 G — 교대 정지 기록만 있어도 답이 없으면 유휴가 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_row '중단 답' "중단 기록=/elsewhere/20261012-00000010/halt/S1#1.md" "답=재시도"
+check "유휴 G — halt/ 의 같은 이름을 가리키는 답은 교대 기록의 답이 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/shift/S1#1.md" "답=재시도"
+check "유휴 G′ — 그 교대 기록을 원장의 중단 답 행이 가리키면 유휴다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기
 check "유휴 C — 대기 중인 승인이 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
