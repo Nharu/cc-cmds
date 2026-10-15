@@ -1,0 +1,171 @@
+{
+  "schema": "cc-lane-usage v1",
+  "written_at_epoch": 1800000000,
+  "publish_interval_s": 60,
+  "accounts": [
+    {
+      "id": "work",
+      "config_dir": "/fixture/work",
+      "org_hash": "1111111111111111",
+      "login": "ok",
+      "status": null,
+      "exhausted_until_epoch": null,
+      "windows": {
+        "five_hour": {
+          "utilization": 0.125,
+          "resets_at_epoch": 1800003600,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        },
+        "seven_day": {
+          "utilization": 0.35,
+          "resets_at_epoch": 1800086400,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        }
+      },
+      "reset_passes": {
+        "held": [
+          {
+            "id": "rp-0000000a",
+            "kind": "unknown",
+            "expires_at_epoch": 1800043200
+          },
+          {
+            "id": "rp-0000000b",
+            "kind": "seven_day",
+            "expires_at_epoch": 1802592000
+          }
+        ],
+        "reserve": {
+          "five_hour": 0,
+          "seven_day": 0.35
+        }
+      }
+    },
+    {
+      "id": "busy",
+      "config_dir": "/fixture/busy",
+      "org_hash": "2222222222222222",
+      "login": "ok",
+      "status": null,
+      "exhausted_until_epoch": null,
+      "windows": {
+        "five_hour": {
+          "utilization": 0.4,
+          "resets_at_epoch": 1800003600,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        },
+        "seven_day": {
+          "utilization": 0.3,
+          "resets_at_epoch": 1800007200,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        }
+      },
+      "reset_passes": {
+        "held": [
+          {
+            "id": "rp-0000000c",
+            "kind": "five_hour",
+            "expires_at_epoch": 1801209600
+          }
+        ],
+        "reserve": {
+          "five_hour": 0.4,
+          "seven_day": 0
+        }
+      }
+    },
+    {
+      "id": "late",
+      "config_dir": "/fixture/late",
+      "org_hash": "3333333333333333",
+      "login": "ok",
+      "status": null,
+      "exhausted_until_epoch": null,
+      "windows": {
+        "five_hour": {
+          "utilization": 0.1,
+          "resets_at_epoch": 1800003600,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        },
+        "seven_day": {
+          "utilization": 0.7,
+          "resets_at_epoch": 1800345600,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        }
+      },
+      "reset_passes": {
+        "held": [
+          {
+            "id": "rp-0000000d",
+            "kind": "seven_day",
+            "expires_at_epoch": 1800003600
+          }
+        ],
+        "reserve": {
+          "five_hour": 0,
+          "seven_day": 0.7
+        }
+      }
+    },
+    {
+      "id": "full",
+      "config_dir": "/fixture/full",
+      "org_hash": "4444444444444444",
+      "login": "ok",
+      "status": null,
+      "exhausted_until_epoch": null,
+      "windows": {
+        "five_hour": {
+          "utilization": 0.2,
+          "resets_at_epoch": 1800003600,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        },
+        "seven_day": {
+          "utilization": 0.99,
+          "resets_at_epoch": 1800432000,
+          "observed_at_epoch": 1799999940,
+          "source": "tracker"
+        }
+      },
+      "reset_passes": {
+        "held": [
+          {
+            "id": "rp-0000000e",
+            "kind": "seven_day",
+            "expires_at_epoch": 1800864000
+          }
+        ],
+        "reserve": {
+          "five_hour": 0,
+          "seven_day": 0.99
+        }
+      }
+    },
+    {
+      "id": "spare",
+      "config_dir": "/fixture/spare",
+      "org_hash": null,
+      "login": null,
+      "status": null,
+      "exhausted_until_epoch": null,
+      "windows": {
+        "five_hour": null,
+        "seven_day": null
+      },
+      "reset_passes": {
+        "held": [],
+        "reserve": {
+          "five_hour": 0,
+          "seven_day": 0
+        }
+      }
+    }
+  ]
+}

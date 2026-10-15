@@ -24,7 +24,9 @@
 #    6. The seven discipline phrases are in the convention and in no consumer.
 #    7. Outside its `## Consumers` section the convention names no consumer
 #       step: no `Step <digit>` and no standalone `5a`–`5r`.
-#    8. In autopilot, `**5j — ` comes before `**5a — `.
+#    8. In autopilot, `**5j — ` is in the resident body and `**5a — ` is not;
+#       `**5a — ` is in `references/boundaries.md`; and the resident body's
+#       first `Read` of that file comes after `**5j — `.
 #    9. The autopilot CFI block holds exactly one `**CFI-9 — ` line.
 #   10. The fixed trailer line is in autopilot exactly once, inside that block.
 #
@@ -51,9 +53,11 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 RI_REL="_common/requirements-interview.md"
 RI="$skills_root/$RI_REL"
 AP="$skills_root/autopilot/SKILL.md"
+APB="$skills_root/autopilot/references/boundaries.md"
 DDU="$skills_root/design-discuss-unattended/SKILL.md"
 
 READ_PHRASE='${CLAUDE_SKILL_DIR}/../_common/requirements-interview.md'
+BOUNDARIES_READ='Read `${CLAUDE_SKILL_DIR}/references/boundaries.md`'
 REQUIRED='design/SKILL.md
 autopilot/SKILL.md'
 FENCE_PHRASES='Ask deep, non-obvious questions
@@ -155,12 +159,23 @@ hits=$(printf '%s\n' "$outside" | grep -E 'Step [0-9]|(^|[^[:alnum:]])5[a-r]([^[
 if [[ ! -f "$AP" ]]; then
   flag 8 "$AP" "없다"
 else
+  # 5a and the other boundary questions live in the boundaries reference, so
+  # the order is held by where the resident body reads that file: after 5j.
   j=$({ grep -n '^\*\*5j — ' "$AP" || true; } | sed -n 1p | cut -d: -f1)
-  a=$({ grep -n '^\*\*5a — ' "$AP" || true; } | sed -n 1p | cut -d: -f1)
-  if [[ -z "$j" || -z "$a" ]]; then
-    flag 8 "$AP" "**5j — 또는 **5a — 문단이 없다"
-  elif (( j > a )); then
-    flag 8 "$AP" "**5j — (${j}행)가 **5a — (${a}행)보다 뒤다 ; 요구가 경계 질문보다 먼저 정해져야 한다"
+  a_ap=$({ grep -c '^\*\*5a — ' "$AP" || true; } | tr -d ' ')
+  a_b=0
+  [[ -f "$APB" ]] && a_b=$({ grep -c '^\*\*5a — ' "$APB" || true; } | tr -d ' ')
+  b=$({ grep -nF -- "$BOUNDARIES_READ" "$AP" || true; } | sed -n 1p | cut -d: -f1)
+  if [[ -z "$j" ]]; then
+    flag 8 "$AP" "**5j — 문단이 없다"
+  elif [[ "$a_ap" != "0" ]]; then
+    flag 8 "$AP" "**5a — 문단이 상주 본문에 ${a_ap}번 있다 ; 경계 질문은 boundaries 참조 파일에 있어야 한다"
+  elif [[ "$a_b" == "0" ]]; then
+    flag 8 "$APB" "**5a — 문단이 없다"
+  elif [[ -z "$b" ]]; then
+    flag 8 "$AP" "boundaries 참조 파일을 읽는 줄이 없다"
+  elif (( b < j )); then
+    flag 8 "$AP" "boundaries 참조 파일을 읽는 줄(${b}행)이 **5j — (${j}행)보다 앞이다 ; 요구가 경계 질문보다 먼저 정해져야 한다"
   fi
 
   cfi=$(awk '/^## Control-Flow Invariants$/ { f = 1; next } f && /^## / { exit } f { print }' "$AP")

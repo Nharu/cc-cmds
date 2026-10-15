@@ -1,5 +1,3 @@
-# Fixture consumer
+# Fixture resident body
 
-```
-bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> --stall 1200 --interval 60 --after-stage 120 --run-open 300 > <RUN_DIR>/watch.log 2>&1 < /dev/null &
-```
+The watcher launch line is in `references/act2-seat.md`.

@@ -1,3 +1,3 @@
 # 픽스처
 
-커밋 → 브랜치 → push → PR → 머지 → 배포 → 머지후착수
+상주 본문 — 사다리 문면은 references/boundaries.md 에 있다.

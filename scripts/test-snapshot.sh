@@ -663,9 +663,19 @@ check "델타 행의 모드가 실린다" \
 # "10" and offers a basis the gate refuses as stale on every re-dispatch. The
 # carried expression compares integers, and the two copies are held
 # byte-identical so a fix to one cannot leave the other behind.
+#
+# The autopilot skill keeps its resident body in SKILL.md and the rest in
+# references/: the lead's copy of the router loop in router-lead-copy.md, the
+# Act 2 seat's shift rules in act2-seat.md. A pin names the file its text lives
+# in, and an absence pin reads the resident body and every reference together,
+# so text moved between them can neither hide nor slip past it.
 AP_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+AP_REFS="$repo_root/plugins/cc-cmds/skills/autopilot/references"
+AP_ROUTER="$AP_REFS/router-lead-copy.md"
+AP_SEAT="$AP_REFS/act2-seat.md"
+ap_all() { cat "$AP_SKILL" "$AP_REFS"/*.md; }
 RS_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
-sel_ap=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$AP_SKILL" || true)
+sel_ap=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$AP_ROUTER" || true)
 sel_rs=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$RS_SKILL" || true)
 check "기반 라우터 문서에 기준 선택 식이 한 번 실린다" "$(printf '%s\n' "$sel_ap" | grep -c '^\[')" "1"
 check "라우터 두 사본의 기준 선택 식이 바이트 동일하다" "$sel_rs" "$sel_ap"
@@ -687,19 +697,22 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # The routers branch on `다음` and nothing else, so the snapshot hands it over
 # together with what a carry-over act names — the last cycle's number, review
 # HEAD and report path. A segment without a `segment` row is not in the run's
-# segment set and gets no element; `review_carry` carries the three constants
-# for display only.
+# segment set and gets no element; `review_carry` carries the re-implementation
+# cycle cap for display only. The element has no streak or trigger field: the
+# repeated-P0 guard is gone, and a field nothing writes is one a router reads.
 # ---------------------------------------------------------------------------
 printf -- '- `segment` | id=S8 | 상태=실행중 | 워크트리=/nonexistent/S8\n' >> "$LEDGER"
 SNAP_N="$WORK/review-next.json"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_N"
 check "review_next 가 세그먼트의 다음 과 마지막 사이클을 싣는다" \
-  "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [.["다음"], .["사이클"], .["리뷰 HEAD"], .["리포트 경로"], (.["연속"]|tostring), (.["발동"]|tostring)] | join("|")' "$SNAP_N")" \
-  "머지|11|aaa0011|/abs/s8-11.md|0|0"
+  "$(jq -r '.review_next[] | select(.["세그먼트"]=="S8") | [.["다음"], .["사이클"], .["리뷰 HEAD"], .["리포트 경로"]] | join("|")' "$SNAP_N")" \
+  "머지|11|aaa0011|/abs/s8-11.md"
+check "review_next 원소에 가드 필드가 없다" \
+  "$(jq -c '.review_next[] | select(.["세그먼트"]=="S8") | keys' "$SNAP_N")" '["다음","리뷰 HEAD","리포트 경로","사이클","세그먼트"]'
 check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다" \
   "$(jq -r '[.review_next[] | select(.["세그먼트"]=="S9")] | length' "$SNAP_N")" "0"
-check "review_carry 가 세 상수를 싣는다" \
-  "$(jq -c '.review_carry' "$SNAP_N")" '{"CYCLE_CARRY_FROM":2,"CYCLE_CARRY_MAX":3,"P0_GUARD_STREAK":3}'
+check "review_carry 가 재구현 사이클 상한 하나를 싣는다" \
+  "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2}'
 
 # ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
@@ -725,7 +738,7 @@ design_section() {
 }
 design_sel=""
 design_sel_rs=""
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}
   sec=$(design_section "${pair#*:}")
   if [ -n "$sec" ]; then
@@ -809,7 +822,7 @@ reattach_section() {
 }
 reattach_prompt=""
 reattach_prompt_rs=""
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}
   sec=$(reattach_section "${pair#*:}")
   if [ -n "$sec" ]; then
@@ -861,13 +874,13 @@ for pair in \
   "교대:$RS_SKILL:**A live stage holds back none of the four.**" \
   "교대:$RS_SKILL:CFI-S1 still holds: the snapshot and the gate-routed reads this skill prescribes are the input" \
   "교대:$RS_SKILL:CFI-S1 still holds: whether to dispatch was decided from the snapshot" \
-  "리드:$AP_SKILL:**Four reasons end a shift, and a live stage holds back none of them.**" \
-  "리드:$AP_SKILL:**\`무기록\` is the gate's alone**" \
-  "리드:$AP_SKILL:or from a gate-routed read of the ledger or the run directory that this skill prescribes" \
-  "리드:$AP_SKILL:read from the snapshot, not from a read of the plan" \
-  "리드:$AP_SKILL:start the next shift only when a person at this seat asked for it or the reset has passed" \
-  "리드:$AP_SKILL:**except when the person at this seat asks to continue or says the limit has cleared.**" \
-  "리드:$AP_SKILL:a \`handoff\` row with \`사유=무기록\`, its \`종료 코드\` and its \`행위 수\`"
+  "리드:$AP_SEAT:**Four reasons end a shift, and a live stage holds back none of them.**" \
+  "리드:$AP_SEAT:**\`무기록\` is the gate's alone**" \
+  "리드:$AP_ROUTER:or from a gate-routed read of the ledger or the run directory that this skill prescribes" \
+  "리드:$AP_ROUTER:read from the snapshot, not from a read of the plan" \
+  "리드:$AP_SEAT:start the next shift only when a person at this seat asked for it or the reset has passed" \
+  "리드:$AP_SEAT:**except when the person at this seat asks to continue or says the limit has cleared.**" \
+  "리드:$AP_SEAT:a \`handoff\` row with \`사유=무기록\`, its \`종료 코드\` and its \`행위 수\`"
 do
   who=${pair%%:*}; rest=${pair#*:}; file=${rest%%:*}; lit=${rest#*:}
   nlit=$(grep -cF -- "$lit" "$file" || true)
@@ -892,7 +905,7 @@ done
 router_section() {
   awk -v h="$2" '$0 == h { f = 1; next } f && /^#+ / { exit } f' "$1"
 }
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Dispatching the audit stage|.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty' \
@@ -938,33 +951,50 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
 done
 
 # ---------------------------------------------------------------------------
-# 6e-2b. The kickoff writes the freeze line into a lead-solo document
+# 6e-2b. The kickoff writes no design document on any tier
 #
-# The gate dispatches the audit and plans segments only from a document carrying
-# `**상태**: 동결됨`, while the kickoff's lead-solo contract froze by hash alone.
-# Every lead-solo run then stopped at its first dispatch with nobody at the seat.
-# The literals below are the contract's instruction to write the line, the 5m
-# paragraph's order (line first, hash second), and the Step 6 refusal that
-# catches a document frozen without it.
+# The tiers are `solo` and `team-4`, and on both the design is the run's first
+# stage — `design-solo-unattended` or `design-discuss-unattended`. The tier
+# under which the kickoff conversation wrote the document itself is gone, and
+# with it the reference that carried its contract. A copy of that contract left
+# behind anywhere in the kickoff would be a second document-production path the
+# router and the gate no longer know.
 # ---------------------------------------------------------------------------
+if [ -e "$AP_REFS/lead-solo-document.md" ]; then
+  bad "킥오프의 설계 문서 경로" "references/lead-solo-document.md 가 남아 있다"
+else
+  ok "킥오프에 대화가 설계 문서를 쓰는 계약 파일이 없다"
+fi
+# Counted, not `grep -q`: an early exit SIGPIPEs `cat` on the left, and under
+# pipefail the match then reads as a miss.
 for lit in \
   '(c) **Freeze line and `sha256`**' \
-  'a line reading exactly `**상태**: 동결됨`, once, below the H1' \
+  '(c) **Freeze and `sha256`**' \
+  'A `lead-solo` document is written after 5m' \
   'Write the freeze line of (c) into it, then take its path and whole-file `sha256`' \
-  "the tier is \`lead-solo\` and the document \`설계 문서\` names does not carry the line \`**상태**: 동결됨\` exactly once"
+  'the tier is `lead-solo` and the document `설계 문서` names does not carry the line `**상태**: 동결됨` exactly once' \
+  '| `lead-solo` | this conversation, after Step 5m'
+do
+  nlit=$(ap_all | grep -cF -- "$lit" || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "킥오프는 「${lit}」을 싣지 않는다"
+  else
+    bad "킥오프의 설계 문서 경로" "옛 lead-solo 계약 「${lit}」이 ${nlit}번 남아 있다"
+  fi
+done
+# The tier table names the stage each tier dispatches, once, in the resident
+# body the kickoff always reads.
+for lit in \
+  '| `solo` | the `design-solo-unattended` stage' \
+  '| `team-4` | the `design-discuss-unattended` stage'
 do
   nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
   if [ "${nlit:-0}" = "1" ]; then
-    ok "킥오프의 lead-solo 동결 계약이 「${lit}」을 한 번 싣는다"
+    ok "킥오프 상주 본문의 티어 표가 「${lit}」을 한 번 싣는다"
   else
-    bad "킥오프의 lead-solo 동결 계약" "「${lit}」이 ${nlit:-0}번 있다"
+    bad "킥오프의 티어 표" "「${lit}」이 SKILL.md 에 ${nlit:-0}번 있다"
   fi
 done
-if grep -qF '(c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment' "$AP_SKILL"; then
-  bad "킥오프의 lead-solo 동결 계약" "해시만으로 동결하는 옛 문면이 남아 있다"
-else
-  ok "킥오프의 lead-solo 동결 계약에 해시만으로 동결하는 옛 문면이 없다"
-fi
 
 # ---------------------------------------------------------------------------
 # 6e-2c. The kickoff's pre-authorization rows cover the REST merge
@@ -983,18 +1013,26 @@ for lit in \
   '사유: 워크트리 HEAD 에 결속된 REST 머지 — 머지 말고도 모든 대상의 PUT REST 호출을 승인 없이 엽니다' \
   '**When the plan predicts a merge under any review policy, the rows read back carry `gh api -X PUT`**'
 do
-  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  # The 5p paragraph lives in boundaries.md, and the resident body carries none
+  # of it.
+  nlit=$(grep -cF -- "$lit" "$AP_REFS/boundaries.md" || true)
   if [ "${nlit:-0}" = "1" ]; then
     ok "킥오프의 사전 인가 행 계약이 「${lit}」을 한 번 싣는다"
   else
     bad "킥오프의 사전 인가 행 계약" "「${lit}」이 ${nlit:-0}번 있다"
+  fi
+  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  if [ "${nlit:-0}" = "0" ]; then
+    ok "킥오프의 상주 본문은 「${lit}」을 싣지 않는다"
+  else
+    bad "킥오프의 상주 본문" "「${lit}」이 SKILL.md 에 ${nlit:-0}번 남아 있다"
   fi
 done
 for lit in \
   'when the plan predicts a merge under `선리뷰후머지`, see whether' \
   'When the plan predicts a merge under `선리뷰후머지`, the rows read back'
 do
-  nlit=$(grep -cF -- "$lit" "$AP_SKILL" || true)
+  nlit=$(ap_all | grep -cF -- "$lit" || true)
   if [ "${nlit:-0}" = "0" ]; then
     ok "킥오프의 사전 인가 행 계약이 「${lit}」로 정책을 좁히지 않는다"
   else
@@ -1019,16 +1057,16 @@ done
 # cause takes the park-and-cone disposition (a router has no halt record to
 # write, and without the `park` the next shift sends the same merge again),
 # the fetch before the apply, the apply act's fixed token,
-# the park-and-cone disposition of a precondition refusal, the cycle cap's
-# reason, and the `다음` branches that send a segment to the carry-over
-# procedure, the guard re-convergence and a sliced review. The fix prompt must
+# the park-and-cone disposition of a precondition refusal, the cycle cap, and
+# the `다음` branches that send a segment to the carry-over procedure, the lead
+# fix, the re-check, the residual park and a sliced review. The fix prompt must
 # be one string in both copies, and the fix section
 # does not restate the delta basis expression, which belongs to the delta
 # subsection.
 # ---------------------------------------------------------------------------
 fix_prompt=""
 fix_prompt_rs=""
-for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
@@ -1050,9 +1088,12 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '#### Merging and applying a segment|a `스코프=cone` block whose `사유` names the refused precondition number' \
     '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
     '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
-    '#### Branching on `다음` after a review|-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> <범위>"' \
+    '#### Branching on `다음` after a review|-- lead-fix -p "/cc-cmds:review-unattended <리뷰 파견 프롬프트와 같은 인자> --lead-fix <리포트 경로>"' \
+    '#### Branching on `다음` after a review|with `--recheck <리포트 경로>` added to the prompt' \
+    '#### Branching on `다음` after a review|`gate.sh residual-body --manifest <매니페스트> --segment <seg>`' \
+    "#### Branching on \`다음\` after a review|\`'사유=리뷰 잔여'\`" \
     '#### Branching on `다음` after a review|adds `--slice <seg>` to the prompt' \
-    "#### Re-dispatching the implementation after review findings|'사유=사이클 예산 소진'"
+    '#### Re-dispatching the implementation after review findings|once they reach `REIMPL_CYCLE_CAP` (2)'
   do
     head=${spec%%|*}; lit=${spec#*|}
     sec=$(router_section "$file" "$head")
@@ -1077,7 +1118,13 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   else
     bad "$who 사본의 「Merging and applying a segment」 절" "headRefOid 없는 옛 405 읽기·갈래 문면이 ${nold}줄 있다"
   fi
-  nhalt=$(grep -cF -- 'write a halt record' "$file" || true)
+  # The lead's absence is read across the whole skill, not only its router
+  # reference: the instruction must not reach the lead from any file it reads.
+  if [ "$who" = "리드" ]; then
+    nhalt=$(ap_all | grep -cF -- 'write a halt record' || true)
+  else
+    nhalt=$(grep -cF -- 'write a halt record' "$file" || true)
+  fi
   if [ "${nhalt:-0}" = "0" ]; then
     ok "$who 사본은 라우터에게 halt 기록을 쓰라고 지시하지 않는다"
   else
@@ -1096,6 +1143,61 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   fi
 done
 check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "$fix_prompt_rs" "$fix_prompt"
+
+# ---------------------------------------------------------------------------
+# 6e-4. The merge-order sentences are byte-identical in BOTH router copies
+#
+# The two copies are not compared whole — their paragraphs already differ in
+# parentheses and wording — so each sentence that carries the second kind of
+# ordering is pinned on its own: the dependency condition that reads `선행`
+# alone, the planning rule over both lists, the merge that waits for an empty
+# `머지 대기`, the 405 disposition that never brings the base into the branch,
+# and the clause that chooses which live stage to wait on. Each literal must
+# occur exactly once in each copy, which is what makes the two byte-identical
+# without comparing the paragraphs around them. A literal under a heading both
+# copies share is searched inside that section; the dependency sentence and the
+# waiting clause sit under different headings in the two copies and are counted
+# over the whole file. The full waiting sentence, with its `--timeout 540`
+# foreground wait, belongs to the shift's copy alone: the lead copy waits in the
+# background under `Monitor`.
+# ---------------------------------------------------------------------------
+mo_count() {  # mo_count <text> <literal> — occurrences, not lines
+  printf '%s\n' "$1" | grep -oF -- "$2" | wc -l | tr -d ' '
+}
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for spec in \
+    '|The **dependency** condition reads `선행` alone — implementation precedence, a predecessor that has not landed. A predecessor named only in `머지 순서` does not hold back the dispatch; it holds back the merge alone (see 「Merging and applying a segment」).' \
+    '|on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment.' \
+    '#### Planning the segments|**A slice is planned when two conditions hold together**: every `선행` token'"'"'s predecessor has its last `segment` row at `머지됨` or `완료`, and every `머지 순서` token of the slice — read from the snapshot'"'"'s `슬라이싱.세그먼트[]`, because a slice with no row yet is not in `segments[]` — already has a `segment` row.' \
+    '#### Planning the segments|A slice whose `선행` is `없음` and whose `머지 순서` tokens all have rows is planned and dispatched at once, cut from the current base.' \
+    '#### Planning the segments|A `머지 순서` token with no row yet (that slice still waits on its own `선행`) defers the slice until the row appears, and a slice carrying both lists follows the same product: with D `선행` A and D `머지 순서` C, D waits for C'"'"'s row even after A has landed.' \
+    '#### Planning the segments|Planned earlier, the slice is refused with exit 2 by the floor that requires every token to name a segment this ledger knows.' \
+    '#### Planning the segments|The two imports below — a predecessor an earlier run already merged, and one the manifest'"'"'s `선행 착지` row names — apply to a `머지 순서` token as well, and the planning act writes that predecessor'"'"'s row itself; without them the row would never appear and the slice would never be planned.' \
+    '#### Planning the segments|With C `머지 순서` B and B `선행` A, B is planned after A lands, and C is planned once B'"'"'s row exists and runs alongside B.' \
+    '#### Planning the segments|Pass no `머지 순서` on the planning row: the gate writes it from the declaration and carries it forward.' \
+    '#### Merging and applying a segment|**Whatever the review policy, merge a segment only when its snapshot `머지 대기` is empty.** A non-empty `머지 대기` names the predecessors, by `선행` or `머지 순서`, that have not landed yet: do other work, or wait as 「Waiting on a stage」 chooses.' \
+    '#### Merging and applying a segment|A refusal with exit 3 that names such a predecessor and its `상태` means the same — wait — whether the refused act was the merge or another act leaving the worktree whose grade the gate could not read; it is not **Any other cause** below, and nothing is written for it. A predecessor that was parked has already parked this segment through its cone.' \
+    '#### Merging and applying a segment|A `머지 순서` successor refused with 405 for a conflict takes this branch as it stands: never merge or rebase the moved base into its branch, which would make a HEAD no review read.'
+  do
+    head=${spec%%|*}; lit=${spec#*|}
+    if [ -n "$head" ]; then
+      text=$(router_section "$file" "$head"); where="「${head#'#### '}」 절"
+    else
+      text=$(cat "$file"); where="파일 전체"
+    fi
+    n=$(mo_count "$text" "$lit")
+    if [ "$n" = "1" ]; then
+      ok "$who 사본의 ${where}에 머지 순서 문장이 한 번 실린다 — 「${lit:0:60}…」"
+    else
+      bad "$who 사본의 ${where} — 머지 순서 문장" "「${lit:0:60}…」이 ${n}번 있다 (기대 1)"
+    fi
+  done
+done
+mo_wait='When nothing is dispatchable or mergeable and two or more segment stages are live, wait (`gate.sh wait --segment <id> --timeout 540`) on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment. On exit 13 or when that stage ends, take a fresh snapshot and route every stage that has left `live_stages[]` before waiting again.'
+check "교대 사본의 「Waiting on a stage」 절에 대기 문장 전체가 한 번 실린다" \
+  "$(mo_count "$(router_section "$RS_SKILL" '### Waiting on a stage')" "$mo_wait")" "1"
+check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
 
 # ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key

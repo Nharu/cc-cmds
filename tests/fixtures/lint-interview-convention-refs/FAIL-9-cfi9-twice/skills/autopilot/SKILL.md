@@ -24,4 +24,4 @@ The wiring of it continues in a second paragraph. **Read `${CLAUDE_SKILL_DIR}/..
 
 The tail goes on in a paragraph of its own.
 
-**5a — Termination point.** Propose it from the closing read-back.
+After 5j's last round, Read `${CLAUDE_SKILL_DIR}/references/boundaries.md` now; it holds 5a.

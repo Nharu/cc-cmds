@@ -49,7 +49,9 @@ fi
 
 # Consumer documents that render the ladder for a human. A document absent from
 # disk is skipped rather than failed, for the same incremental-rollout reason.
-CONSUMERS="autopilot/SKILL.md _common/pipeline-sidecar.md"
+# The kickoff renders the ladder in 5b, which lives in its boundary-question
+# reference file rather than in the resident skill body.
+CONSUMERS="autopilot/references/boundaries.md _common/pipeline-sidecar.md"
 
 fail=0
 

@@ -26,7 +26,8 @@
 #         of the ledger column. The fence keys on equals-shaped phrasing so
 #         the discarded form cannot come back in either file.
 #   (iii) THE RESOLUTION-ROUND DEFINITION LIVES IN EXACTLY ONE PLACE — once
-#         in the arm, never in the template. Two definitions is the defect a
+#         in the arm (`review-unattended/references/recovery-arm.md`), never
+#         in the template and never back in `review-unattended/SKILL.md`. Two definitions is the defect a
 #         previous cycle closed; a second copy drifts silently because both
 #         copies read plausibly on their own.
 #   (iv)  THE PLACES THAT STATE THE COMPARISON ALL STATE THE SAME ONE. The
@@ -41,7 +42,7 @@
 #         is the only place the hole is written down.
 #   (vi)  THE REAP-STAMP CLAIM STAYS RETRACTED (negative fence). "the size of
 #         the window is recoverable after the fact" must not reappear in the
-#         arm; the stamp carries no timestamp, so the claim is false and it
+#         arm's file or in the review arm's SKILL.md; the stamp carries no timestamp, so the claim is false and it
 #         sat directly in front of this arm's acceptance argument.
 #   (vii) THE PROVENANCE TABLE CARRIES BOTH ROUNDS. Resolution round and
 #         reached round in the arm's item 9 and in the template's skeleton,
@@ -124,7 +125,12 @@ while [[ "$skills_root" == */ && "$skills_root" != "/" ]]; do
   skills_root="${skills_root%/}"
 done
 
-ARM="$skills_root/review-unattended/SKILL.md"
+# The arm's body lives in the review arm's own references/ and is read only on
+# a `--recover` dispatch; SKILL.md keeps the pointer to it. The file-wide
+# negative fences run on both files, because a clause that comes back in
+# SKILL.md is published to every review dispatch, not only to recoveries.
+ARM="$skills_root/review-unattended/references/recovery-arm.md"
+ARM_SKILL="$skills_root/review-unattended/SKILL.md"
 TPL="$skills_root/review/references/02-review-report-template.md"
 
 ARM_HEADING='## Recovery arm (`--recover`)'
@@ -252,7 +258,7 @@ fi
 # above this is a floor on the assertion set rather than an assertion, so it
 # does not move `checked`.
 if (( present == 0 )); then
-  for pin_file in "$ARM" "$TPL"; do
+  for pin_file in "$ARM" "$ARM_SKILL" "$TPL"; do
     pin_body=$(fold_file "$pin_file")
     [[ -n "$pin_body" ]] || continue
     for pin_literal in \
@@ -275,7 +281,8 @@ fi
 if (( arm_present )); then
   arm_body=$(fold_text "$(extract_section "$ARM" "$ARM_HEADING")")
   arm_file=$(fold_file "$ARM")
-  arm_label="review-unattended/SKILL.md ($ARM_HEADING)"
+  arm_skill_file=$(fold_file "$ARM_SKILL")
+  arm_label="review-unattended/references/recovery-arm.md ($ARM_HEADING)"
 
   # (i) the pair, arm side
   assert_count \
@@ -302,6 +309,9 @@ if (( arm_present )); then
   assert_count \
     "The role's **resolution round** is" \
     "$arm_body" 1 "$arm_label — resolution-round definition"
+  assert_count \
+    "The role's **resolution round** is" \
+    "$arm_skill_file" 0 "review-unattended/SKILL.md — resolution-round definition must not come back"
 
   # (iv) totals across the section
   assert_count \
@@ -321,11 +331,15 @@ if (( arm_present )); then
     'role / tier / resolution round / **reached round** / file' \
     "$arm_body" 1 "$arm_label — provenance row carries both rounds"
 
-  # (vi) the retracted claim, file-wide: the sentence sat in this section, but
-  # a rewrite that moves it elsewhere in the file re-publishes it just as well.
+  # (vi) the retracted claim, file-wide in both files: the sentence sat in this
+  # section, but a rewrite that moves it elsewhere — back into SKILL.md
+  # included — re-publishes it just as well.
   assert_count \
     'the size of the window is recoverable after the fact' \
-    "$arm_file" 0 "review-unattended/SKILL.md — retracted reap-stamp claim"
+    "$arm_file" 0 "review-unattended/references/recovery-arm.md — retracted reap-stamp claim"
+  assert_count \
+    'the size of the window is recoverable after the fact' \
+    "$arm_skill_file" 0 "review-unattended/SKILL.md — retracted reap-stamp claim"
 
   # (ii)
   assert_absent_re "$EQUALS_FENCE" "$arm_body" "$arm_label"

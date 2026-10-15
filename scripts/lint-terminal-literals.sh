@@ -60,6 +60,7 @@ NAMES="LIT_DESIGN_TERMINAL LIT_AUDIT_TERMINAL LIT_RECONVERGE_TERMINAL LIT_SPLIT_
 EMITTERS="design/SKILL.md LIT_DESIGN_TERMINAL
 design-audit/SKILL.md LIT_AUDIT_TERMINAL
 design-discuss-unattended/SKILL.md LIT_DESIGN_TERMINAL
+design-solo-unattended/SKILL.md LIT_DESIGN_TERMINAL
 design-reconverge/SKILL.md LIT_RECONVERGE_TERMINAL
 design-audit-unattended/SKILL.md LIT_AUDIT_TERMINAL
 design-base-unattended/SKILL.md LIT_SPLIT_TERMINAL"
@@ -71,8 +72,8 @@ _common/pipeline-sidecar.md LIT_SPLIT_TERMINAL 1
 autopilot-router-shift/SKILL.md LIT_DESIGN_TERMINAL 2
 autopilot-router-shift/SKILL.md LIT_RECONVERGE_TERMINAL 1
 autopilot-router-shift/SKILL.md LIT_SPLIT_TERMINAL 1
-autopilot/SKILL.md LIT_DESIGN_TERMINAL 2
-autopilot/SKILL.md LIT_SPLIT_TERMINAL 1"
+autopilot/references/router-lead-copy.md LIT_DESIGN_TERMINAL 2
+autopilot/references/router-lead-copy.md LIT_SPLIT_TERMINAL 1"
 
 # --- Rule 1: extract the source ----------------------------------------------
 #

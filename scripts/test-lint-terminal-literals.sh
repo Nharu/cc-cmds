@@ -13,11 +13,15 @@
 # The fixture consumers copy the real placement: the sidecar quotes the design
 # literal twice and the audit literal once and does not quote the
 # re-convergence literal, the router shift carries two design copies on one
-# line and the re-convergence literal on another, and the autopilot skill
-# carries two design copies on one line. The sidecar and both routers also
+# line and the re-convergence literal on another, and the autopilot skill's
+# router reference carries two design copies on one line. The sidecar and both routers also
 # carry the base split literal once. `FAIL-consumer-second-copy-same-line`
 # is the case that earns the per-occurrence count its keep: a per-line count
 # stays green when only the second copy on a line changes.
+#
+# The fixture emitters are the lint's `EMITTERS` list, the light design stage
+# `design-solo-unattended` included: the lint fails on an emitter file that is
+# absent, so a list line with no fixture file turns every fixture case red.
 
 set -uo pipefail
 
@@ -78,6 +82,7 @@ write_emitters() {
   write_emitter "$1" design "$2"
   write_emitter "$1" design-audit "$3"
   write_emitter "$1" design-discuss-unattended "$2"
+  write_emitter "$1" design-solo-unattended "$2"
   write_emitter "$1" design-reconverge "$4"
   write_emitter "$1" design-audit-unattended "$3"
   write_emitter "$1" design-base-unattended "${5:-$S}"
@@ -106,11 +111,13 @@ write_router_shift() {
 
 write_autopilot() {
   # write_autopilot <root> <design-1> <design-2> [<split>]
-  mkdir -p "$1/skills/autopilot"
+  # The lead's copy of the router loop lives in a reference file, not in the
+  # skill's resident body.
+  mkdir -p "$1/skills/autopilot/references"
   {
     printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3"
     printf "7. the split literal \`%s\` in its stream\n" "${4:-$S}"
-  } > "$1/skills/autopilot/SKILL.md"
+  } > "$1/skills/autopilot/references/router-lead-copy.md"
 }
 
 write_consumers() {
@@ -187,6 +194,14 @@ rm -f "$WORK/emit-absent/skills/design-audit-unattended/SKILL.md"
 run_case "FAIL-emitter-absent" 1 "$WORK/emit-absent" \
   "design-audit-unattended/SKILL.md" "LIT_AUDIT_TERMINAL"
 
+# FAIL — the light design stage's emitter file is gone. It prints the same
+# freeze literal as the discuss arm, so the discuss arm's copy must not stand in
+# for it.
+mk_root "$WORK/emit-solo-absent"
+rm -f "$WORK/emit-solo-absent/skills/design-solo-unattended/SKILL.md"
+run_case "FAIL-solo-emitter-absent" 1 "$WORK/emit-solo-absent" \
+  "design-solo-unattended/SKILL.md" "LIT_DESIGN_TERMINAL"
+
 # FAIL — one consumer copy changed by one character.
 mk_root "$WORK/cons-char"
 write_sidecar "$WORK/cons-char" "$D" "$(one_char "$A")" "$D"
@@ -197,7 +212,7 @@ run_case "FAIL-consumer-one-char" 1 "$WORK/cons-char" \
 mk_root "$WORK/cons-second"
 write_autopilot "$WORK/cons-second" "$D" "$(one_char "$D")"
 run_case "FAIL-consumer-second-copy-same-line" 1 "$WORK/cons-second" \
-  "autopilot/SKILL.md" "LIT_DESIGN_TERMINAL"
+  "autopilot/references/router-lead-copy.md" "LIT_DESIGN_TERMINAL"
 
 # FAIL — a consumer file is gone.
 mk_root "$WORK/cons-absent"

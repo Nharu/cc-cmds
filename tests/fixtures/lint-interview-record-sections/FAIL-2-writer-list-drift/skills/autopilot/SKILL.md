@@ -13,10 +13,4 @@
 - The options each question offered go under that question's `**선택지**`.
 - The delivery-shape keys are asked by name — `**레포**`, `**적용 주체**`.
 
-**5a — Termination point.** Propose it from `완료 기준`.
-
-**5m — Freeze the interview record.** Its sections (`cc-run-interview v2`), in this order: `## 과제` · `## 요구사항 문답` · `## 배포 형상` · `## 로스터`.
-
-- every `### 문 n` has a `**선택지**`.
-
-**5n — Immediate or deferred kickoff.** Ask.
+After 5j's last round, read `references/boundaries.md`, which holds 5a, 5m and 5n.

@@ -44,7 +44,10 @@
 #         makes unproducible under the current contract. The rule stays —
 #         older corpora still present that shape and round 1 still needs it —
 #         but a rationale whose example cannot occur reads as dead text and
-#         invites deletion of the rule with it.
+#         invites deletion of the rule with it. The arm lives in
+#         `review-unattended/references/recovery-arm.md`; the same sentences
+#         are asserted absent from `review-unattended/SKILL.md`, so a copy
+#         restored there cannot pass beside the moved original.
 #
 # WHAT THIS LINT DOES NOT MEASURE — stated because a pin believed to check
 # more than it checks is worse than no pin.
@@ -79,7 +82,11 @@ while [[ "$skills_root" == */ && "$skills_root" != "/" ]]; do
 done
 
 PROTOCOL="$skills_root/_common/agent-team-protocol.md"
-ARM="$skills_root/review-unattended/SKILL.md"
+# The recovery arm's body lives in the review arm's own references/; SKILL.md
+# keeps only the pointer, and a copy of the pinned sentences back in SKILL.md
+# is a second statement that drifts, so it is asserted absent there.
+ARM="$skills_root/review-unattended/references/recovery-arm.md"
+ARM_SKILL="$skills_root/review-unattended/SKILL.md"
 
 SEAM_HEADING='### Parameter — progress checkpoint (opt-in)'
 
@@ -158,6 +165,7 @@ fi
 seam_body=$(fold_text "$(extract_section "$PROTOCOL" "$SEAM_HEADING")")
 proto_body=$(fold_file "$PROTOCOL")
 arm_body=$(fold_file "$ARM")
+arm_skill_body=$(fold_file "$ARM_SKILL")
 
 seam_label="_common/agent-team-protocol.md ($SEAM_HEADING)"
 
@@ -218,11 +226,21 @@ assert_count \
 if [[ -f "$ARM" ]]; then
   assert_count \
     '**That seat is no longer minted, and the rule is kept regardless.**' \
-    "$arm_body" 1 "review-unattended/SKILL.md — round-first example reachability"
+    "$arm_body" 1 "review-unattended/references/recovery-arm.md — round-first example reachability"
 
   assert_count \
     'count of independent suppressors' \
-    "$arm_body" 1 "review-unattended/SKILL.md — what the restriction changes"
+    "$arm_body" 1 "review-unattended/references/recovery-arm.md — what the restriction changes"
+fi
+
+if [[ -f "$ARM_SKILL" ]]; then
+  assert_count \
+    '**That seat is no longer minted, and the rule is kept regardless.**' \
+    "$arm_skill_body" 0 "review-unattended/SKILL.md — the arm's sentence must not come back"
+
+  assert_count \
+    'count of independent suppressors' \
+    "$arm_skill_body" 0 "review-unattended/SKILL.md — the arm's sentence must not come back"
 fi
 
 # ---------- verdict ------------------------------------------------------------

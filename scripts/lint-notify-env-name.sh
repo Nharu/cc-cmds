@@ -49,7 +49,7 @@
 #
 # Env overrides (fixture runner):
 #   ORCH_ROOT=<dir>     # directory holding notify-run.sh
-#   SKILLS_ROOT=<dir>   # skills root holding autopilot/SKILL.md
+#   SKILLS_ROOT=<dir>   # skills root holding autopilot/references/boundaries.md
 #   HOOKS_ROOT=<dir>    # hooks root holding README.md (the seat contract)
 #
 # THE THIRD ROOT IS NOT OPTIONAL SCAFFOLDING. Without it a fixture run resolves
@@ -73,7 +73,9 @@ orch_root="${ORCH_ROOT:-$repo_root/plugins/cc-cmds/orchestrator}"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 hooks_root="${HOOKS_ROOT:-$repo_root/plugins/cc-cmds/hooks}"
 EMITTER="$orch_root/notify-run.sh"
-KICKOFF="$skills_root/autopilot/SKILL.md"
+# The kickoff's kill-switch sentence sits in 5i, which the kickoff reads from its
+# boundary-question reference file rather than from the resident skill body.
+KICKOFF="$skills_root/autopilot/references/boundaries.md"
 SEATDOC="$hooks_root/README.md"
 
 # The registered set, sorted, one per line — the shape the extractions below
@@ -85,7 +87,7 @@ if [[ ! -f "$EMITTER" ]]; then
   exit 0
 fi
 if [[ ! -f "$KICKOFF" ]]; then
-  echo "SKIP: autopilot/SKILL.md not found under $skills_root"
+  echo "SKIP: autopilot/references/boundaries.md not found under $skills_root"
   exit 0
 fi
 if [[ ! -f "$SEATDOC" ]]; then
@@ -137,7 +139,7 @@ check_prose() {
   return 0
 }
 
-check_prose "autopilot/SKILL.md" "$KICKOFF" '전부 끄시려면'
+check_prose "autopilot/references/boundaries.md" "$KICKOFF" '전부 끄시려면'
 check_prose "hooks/README.md"    "$SEATDOC" '이 머신의 일반 세션 배너를 끄시려면'
 check_prose "hooks/README.md"    "$SEATDOC" '이 머신에서 귀환 때 배너 닫기를 끄시려면'
 
