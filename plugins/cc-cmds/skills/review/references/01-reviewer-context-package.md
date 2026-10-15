@@ -88,7 +88,7 @@ Item 18 below is conditional on delta mode and is not counted in the heading.
 
 ## Review Protocol (rounds per the shared Round budget)
 
-Each round is a resume of the reviewer task by its `agentId`; each round's result is the reviewer's **durable witness file**, confirmed via `witness_present` and read directly — the background completion notification and the resume tool result are only early-wake hints (the very drop-prone channel this model refuses to trust), not the result, and not a DM. On every resume the lead re-injects the load-bearing context, quoting peer findings **verbatim**.
+Each round is a resume of the reviewer task by its `agentId`; each round's result is the reviewer's **durable witness file**, confirmed via `witness_present` and read directly — the background completion notification and the resume tool result are only early-wake hints (the very drop-prone channel this model refuses to trust), not the result, and not a DM. On every resume the lead re-injects the load-bearing context **by path**, naming each peer witness for the reviewer to Read whole (`_common/agent-team-protocol.md` `## Multi-round`).
 
 1. **Round 1 — Independent Review**: Spawn each reviewer as a nameless background task with its context package. Each reviews independently from its own perspective and publishes its findings as its witness. Confirm every reviewer's round witness via `witness_present`, then read the witness — never the return — before moving on. A reviewer that publishes an empty or substanceless witness is re-scoped and resumed once (per the protocol's Escalation rules), not skipped.
 
@@ -99,9 +99,9 @@ Each round is a resume of the reviewer task by its `agentId`; each round's resul
     - Fix suggestions included where appropriate
     - **Checklist coverage check**: Judge by whether the reviewer actually checked checklist items, not by finding count. "Checked but no issues found" is normal (clean code). If findings are listed without any mention of checklist items, judge as insufficient and resume the reviewer to re-check. Re-request (by resume) until QG passes (within the round budget — see **Round budget** below).
 
-3. **Cross-validation**: Resume each reviewer by its `agentId`, re-injecting the other reviewers' findings verbatim. Explicitly request: validate severity assessments, identify missed issues in overlapping areas, flag false positives, and note findings that interact with their own. The reviewer publishes its cross-validation pass as its witness.
+3. **Cross-validation**: Resume each reviewer by its `agentId`, naming the other reviewers' witnesses **by path** (`_common/agent-team-protocol.md` `## Multi-round`). Explicitly request: validate severity assessments, identify missed issues in overlapping areas, flag false positives, and note findings that interact with their own. The reviewer publishes its cross-validation pass as its witness.
 
-4. **Round 2+ — Refinement**: Resume original authors with cross-validation feedback (quoted verbatim). Request severity revision, missed issue additions, and challenge responses. Each round's result is the reviewer's witness, confirmed via `witness_present`. Repeat until convergence.
+4. **Round 2+ — Refinement**: Resume original authors with the cross-validation witnesses named **by path** (`_common/agent-team-protocol.md` `## Multi-round`). Request severity revision, missed issue additions, and challenge responses. Each round's result is the reviewer's witness, confirmed via `witness_present`. Repeat until convergence.
 
 5. **Convergence**: Convergence is by **witness collection** — see the **Convergence** section of `_common/agent-team-protocol.md`. Resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts); when every reviewer's round witness is `witness_present` and its witness body says "no further input", the review has converged. Only then proceed to Step 5.
 

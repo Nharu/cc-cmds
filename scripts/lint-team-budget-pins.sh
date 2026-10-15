@@ -37,7 +37,9 @@
 #
 # Posture: every block is skip-if-absent. A lever whose `###` section is not
 # present is simply not checked, so reverting one lever leaves the tree green
-# instead of making the revert itself break `make check`.
+# instead of making the revert itself break `make check`. The exceptions say so
+# in their own headers: the leg-dispatch block, and the by-path relay checks,
+# whose protocol sentences, consumer lines and fence land and revert together.
 #
 # Usage:
 #   bash scripts/lint-team-budget-pins.sh
@@ -385,6 +387,86 @@ if (( round_present == 1 )); then
     } | sort
   )
 fi
+
+# ---------- resume latency — boundary ordering (skip-if-absent) ---------------
+
+# The two sections that keep resume sends ahead of the lead's other work. Each
+# literal carries one clause the ordering rests on: without (1) the new section
+# contradicts the happens-before gate's no-boundary-batching rule, without (6)
+# a send can leave before its nonce is on disk, without (7) a send-back
+# collides with the key it already published, without (8) a re-entry
+# re-reads next-round rows against the previous round's witnesses, without (9)
+# peers handed a revision's path lose the member's original findings, and
+# without (10) a re-entry between the next round's nonce Edits and its sends
+# empty-passes the dispatch-completeness gate and skips that round.
+LATENCY_HEADING='### Resume latency'
+KINDS_HEADING='### Resume kinds and witness keys'
+if has_heading "$PROTOCOL" "$LATENCY_HEADING"; then
+  latency_body=$(extract_section "$PROTOCOL" "$LATENCY_HEADING")
+  LATENCY_PINS=(
+    'no member is resumed into the next round or the convergence phase until every roster member has passed 확인 and 기록'
+    '기록 does not touch `witnessNonce`'
+    'repeated with the same nonce before any resume is sent'
+    "Each row's \`round/phase\` flip follows its resume"
+    'Synthesis, drafting and any other lead work come after the sends'
+  )
+  for lit in "${LATENCY_PINS[@]}"; do
+    assert_once_in_section "$lit" "$latency_body" "agent-team-protocol.md ($LATENCY_HEADING)"
+  done
+  kinds_body=$(extract_section "$PROTOCOL" "$KINDS_HEADING")
+  KINDS_PINS=(
+    'No resume goes out in the response that writes its nonce'
+    'the witness is the new file `{role-slug}.P-rev<k>.md`'
+    'does not run 확인 for `P` again'
+    'A revision supersedes `P` whole'
+    "The gate's zero-running rule does not empty-pass that entry"
+  )
+  for lit in "${KINDS_PINS[@]}"; do
+    assert_once_in_section "$lit" "$kinds_body" "agent-team-protocol.md ($KINDS_HEADING)"
+  done
+fi
+
+# ---------- by-path relay — protocol sentences (gated on FILE existence) ------
+
+# DELIBERATE DEPARTURE from this file's posture. These two checks are not keyed
+# on `### Resume latency`: they run whenever the protocol file exists, the same
+# condition as the relay fence below. The protocol sentences, the consumer
+# lines that point at them and the fence land in one slice and revert in one
+# slice, so there is no lever here whose partial revert should read green.
+# Keyed on the heading, an edit that deletes that one section would switch
+# these checks off too, and a protocol back on verbatim relay would pass beside
+# consumer lines the fence holds to the by-path wording. The fence does not
+# scan `_common/`, so without these the protocol could regress unnoticed.
+RELAY_PINS=(
+  're-injects the load-bearing context by path'
+  '`peer-read: <role-slug> <round/phase> <nonce>`'
+)
+for lit in "${RELAY_PINS[@]}"; do
+  assert_once_in_file "$lit" "$PROTOCOL" "agent-team-protocol.md (by-path relay)"
+done
+
+# ---------- by-path relay — negative fence (gated on FILE existence) ----------
+
+# DELIBERATE DEPARTURE from this file's posture, for the reason given above:
+# no heading gate, so it runs whenever the protocol file exists. It also runs
+# apart from the budget FENCE loop and takes NONE of that loop's review-lite
+# `#### Round structure` line-range exemption — the review-lite consumer line
+# that used to quote a peer verbatim sits inside that very section.
+RELAY_FENCE='quote the peer.{0,20}verbatim|peer findings .{0,20}verbatim|findings \*\*verbatim\*\*|re-?inject(ed|ing)? .{0,30}findings .{0,10}verbatim|feedback .{0,20}verbatim|Send each teammate.s proposal to the other teammates for review'
+while IFS= read -r target; do
+  [[ -f "$target" ]] || continue
+  rel=${target#"$skills_root/"}
+  while IFS= read -r hit; do
+    [[ -n "$hit" ]] || continue
+    echo "FAIL: $rel:${hit%%:*} — peer witness relayed verbatim instead of by path (_common/agent-team-protocol.md ## Multi-round): ${hit#*:}" >&2
+    fail=1
+  done < <(grep -nE "$RELAY_FENCE" "$target" || true)
+done < <(
+  {
+    find "$skills_root" -mindepth 2 -maxdepth 2 -name 'SKILL.md'
+    find "$skills_root" -mindepth 3 -maxdepth 3 -path '*/references/*.md'
+  } | sort
+)
 
 if (( fail == 0 )); then
   echo "OK:   team budget pins — $checked pinned literal(s) intact, fence clean"
