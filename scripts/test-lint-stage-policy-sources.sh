@@ -13,7 +13,8 @@
 # exist, a disposition outside the closed vocabulary, a duplicated user-scope
 # anchor, a four-column row, a memory row carrying a hash, a plugin anchor
 # without its `<path>:` part, a duplicated plugin anchor, a source outside the
-# closed set.
+# closed set. Two more cases are built at run time from the OK pair: the
+# policy padded to exactly the lint's size ceiling, and to one byte more.
 #
 # Source half — `plugins/cc-cmds/orchestrator/stage-policy-drift.sh`. Each
 # case under `drift/` carries the manifest and the fake sources it is compared
@@ -81,6 +82,40 @@ for fixture in "$fixtures"/T-POLICY-*/; do
     echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
   fi
 done
+
+# The size ceiling at its boundary: the OK pair padded to exactly the lint's
+# ceiling passes and one byte more fails. The ceiling is read from the lint,
+# not retyped, so raising it moves both cases with it.
+max_bytes=$(sed -n 's/^MAX_BYTES=\([0-9][0-9]*\)$/\1/p' "$script_dir/lint-stage-policy-sources.sh")
+if [[ -z "$max_bytes" ]]; then
+  failures=$((failures + 1))
+  echo "FAIL: size boundary — no 'MAX_BYTES=<n>' line in lint-stage-policy-sources.sh" >&2
+else
+  bound_scratch=$(mktemp -d)
+  for over in 0 1; do
+    case_dir="$bound_scratch/size-$over"
+    mkdir -p "$case_dir"
+    cp "$fixtures/T-POLICY-OK-1/stage-policy.md" "$fixtures/T-POLICY-OK-1/stage-policy.sources.tsv" "$case_dir/"
+    have=$(wc -c < "$case_dir/stage-policy.md" | tr -d ' ')
+    pad=$((max_bytes + over - have))
+    # One final line of `x`: no heading, no pin, no volatile token.
+    printf '%s\n' "$(printf '%*s' $((pad - 1)) '' | tr ' ' x)" >> "$case_dir/stage-policy.md"
+    size=$(wc -c < "$case_dir/stage-policy.md" | tr -d ' ')
+    want=$over
+    set +e
+    POLICY_ROOT="$case_dir" bash "$script_dir/lint-stage-policy-sources.sh" >/dev/null 2>&1
+    ec=$?
+    set -e
+    if [[ "$size" == "$((max_bytes + over))" && "$ec" == "$want" ]]; then
+      passed=$((passed + 1))
+      echo "PASS: size boundary — $size bytes against a $max_bytes-byte ceiling (exit=$ec, expected=$want)"
+    else
+      failures=$((failures + 1))
+      echo "FAIL: size boundary — $size bytes against a $max_bytes-byte ceiling (exit=$ec, expected=$want)" >&2
+    fi
+  done
+  rm -rf "$bound_scratch"
+fi
 
 # ---------- source half ------------------------------------------------------
 
@@ -530,6 +565,189 @@ ack_expect plugin-not-ackable 1 'mismatch 1' 'changed plugin skills/rule.md:- en
 no_plugin_row() { ! awk -F'\t' 'NR > 1 && $1 == "plugin"' "$ACK_STORE/acks.tsv" | grep -q .; }
 ack_assert plugin-not-ackable-no-row no_plugin_row
 rm -rf "$ACK_DIR"
+
+# ---------- workspace identity -----------------------------------------------
+#
+# `--identity <file>` is the gate's judgment for an ancestor file no map line
+# names, and `--workspace <file>` is how a person sees and acknowledges what
+# broke it without a map. Built here like the store cases: the manifest hashes
+# come from the base file through the checker's own extraction.
+
+WS_BASE='# Top
+local notes
+## Rules
+the citation rule
+'
+
+# ws_case — a fresh scratch: the checker beside a manifest of two workspace rows
+# (one excluded, one policy), the base file, and a store that does not exist.
+ws_case() {
+  WS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-policy-ws.XXXXXX")
+  WS_STORE="$WS_DIR/store"
+  WS_FILE="$WS_DIR/ws/CLAUDE.md"
+  cp "$checker" "$WS_DIR/stage-policy-drift.sh"
+  mkdir -p "$WS_DIR/ws" "$WS_DIR/cfg"
+  printf '%s' "$WS_BASE" > "$WS_FILE"
+  {
+    printf 'source\tanchor\tsha256\tdisposition\tnote\n'
+    printf 'workspace\t# Top\t%s\texcluded:workspace-local\t\n' "$(ws_hash '# Top')"
+    printf 'workspace\t## Rules\t%s\tpolicy:Citations in documents\t\n' "$(ws_hash '## Rules')"
+  } > "$WS_DIR/stage-policy.sources.tsv"
+}
+
+# ws_hash <heading> — the body hash of that section of the file now.
+ws_hash() {
+  ( . "$checker"; drift_entries workspace "$WS_FILE" ) \
+    | awk -F'\t' -v a="$1" '$1 == a { print $2 }'
+}
+
+# ws_identity — sets WS_EC and WS_ERR (stderr of the judgment).
+ws_identity() {
+  set +e
+  WS_ERR=$(env -u CC_PIPELINE_RUN_ID bash "$WS_DIR/stage-policy-drift.sh" \
+    --identity "${1:-$WS_FILE}" --ack-store "$WS_STORE" 2>&1 >/dev/null)
+  WS_EC=$?
+  set -e
+}
+
+# ws_run [<arg>...] — the drift form against the file without a map; sets ACK_OUT and ACK_EC.
+ws_run() {
+  set +e
+  ACK_OUT=$(env -u CC_PIPELINE_RUN_ID CLAUDE_CONFIG_DIR="$WS_DIR/cfg" \
+    bash "$WS_DIR/stage-policy-drift.sh" --sources-map "$WS_DIR/no-such-map" \
+    --ack-store "$WS_STORE" --workspace "$WS_FILE" "$@" 2>/dev/null)
+  ACK_EC=$?
+  set -e
+}
+
+ws_ok() { [[ "$WS_EC" == "$1" ]] && { [[ -z "$2" ]] || printf '%s\n' "$WS_ERR" | grep -Fq -- "$2"; }; }
+ws_silent() { [[ "$WS_EC" == 1 && -z "$WS_ERR" ]]; }
+
+ws_case
+ws_identity
+ack_assert identity-fresh ws_ok 0 ''
+printf '%s' '# Top
+local notes, edited
+## Rules
+the citation rule
+' > "$WS_FILE"
+ws_identity
+ack_assert identity-excluded-body-changed ws_ok 1 "identity broken: $WS_FILE: # Top: manifest "
+ws_run --explain
+ack_expect workspace-explain-excluded-changed 1 'mismatch 1' 'changed workspace # Top' \
+  '  disposition: excluded:workspace-local'
+set +e
+CC_PIPELINE_RUN_ID=x CLAUDE_CONFIG_DIR="$WS_DIR/cfg" bash "$WS_DIR/stage-policy-drift.sh" \
+  --sources-map "$WS_DIR/no-such-map" --ack-store "$WS_STORE" --workspace "$WS_FILE" --ack >/dev/null 2>&1
+ec_ack=$?
+set -e
+ack_assert workspace-ack-refused-unattended test "$ec_ack" = 2
+ws_run --ack
+ack_expect workspace-ack-excluded 0 match
+ws_identity
+ack_assert identity-after-workspace-ack ws_ok 0 ''
+rm -rf "$WS_DIR"
+
+# a policy row acknowledged through `--workspace` is fresh for the judgment too
+ws_case
+printf '%s' '# Top
+local notes
+## Rules
+the citation rule, edited
+' > "$WS_FILE"
+ws_identity
+ack_assert identity-policy-changed ws_ok 1 '## Rules: manifest '
+ws_run --ack
+ack_expect workspace-ack-policy 0 match
+ws_identity
+ack_assert identity-policy-acked ws_ok 0 ''
+rm -rf "$WS_DIR"
+
+# an added section breaks identity until it is given a host-local disposition,
+# which then holds only at a body hash this host recorded for it: an edit under
+# it brings the file back, and `--workspace` shows that edit as `changed`
+ws_case
+printf '%s' "$WS_BASE"'## Extra
+something new
+' > "$WS_FILE"
+ws_identity
+ack_assert identity-added-section ws_ok 1 '## Extra: added section'
+ws_run --ack-added '## Extra' excluded:workspace-local
+ack_expect workspace-ack-added 0 match
+ws_identity
+ack_assert identity-local-disposition ws_ok 0 ''
+printf '%s' "$WS_BASE"'## Extra
+something new, edited
+' > "$WS_FILE"
+ws_identity
+ack_assert identity-local-disposition-body-changed ws_ok 1 '## Extra: host-local acknowledged '
+ws_run --explain
+ack_expect workspace-explain-local-excluded-changed 1 'mismatch 1' 'changed workspace ## Extra' \
+  '  disposition: excluded:workspace-local'
+ws_run --ack
+ack_expect workspace-ack-local-excluded 0 match
+ws_identity
+ack_assert identity-local-disposition-acked ws_ok 0 ''
+# a later section sharing the host-local prefix leaves it resolving nothing
+printf '%s' "$WS_BASE"'## Extra
+something new, edited
+## Extra rules
+another section
+' > "$WS_FILE"
+ws_identity
+ack_assert identity-local-shared-prefix ws_ok 1 '## Extra: added section'
+rm -rf "$WS_DIR"
+
+# a host-local skill disposition keeps the file, as a manifest skill row does
+ws_case
+printf '%s' "$WS_BASE"'## Extra
+something new
+' > "$WS_FILE"
+ws_run --ack-added '## Extra' skill:autopilot
+ack_expect workspace-ack-added-skill 0 match
+ws_identity
+ack_assert identity-local-skill-kept ws_ok 1 '## Extra: host-local disposition skill:autopilot is not excluded'
+rm -rf "$WS_DIR"
+
+# text before the first heading is in no row's hash
+ws_case
+printf '%s' 'a preface line
+'"$WS_BASE" > "$WS_FILE"
+ws_identity
+ack_assert identity-text-before-heading ws_ok 1 'before the first heading'
+rm -rf "$WS_DIR"
+
+# a file no workspace anchor identifies is kept, and says nothing
+ws_case
+printf '# Another host file\nrules of another target\n' > "$WS_DIR/other.md"
+ws_identity "$WS_DIR/other.md"
+ack_assert identity-unidentified-silent ws_silent
+rm -rf "$WS_DIR"
+
+# the map-located workspace source still checks an excluded row by its anchor
+ws_case
+printf '%s' '# Top
+local notes, edited
+## Rules
+the citation rule
+' > "$WS_FILE"
+printf 'workspace\t%s\n' "$WS_FILE" > "$WS_DIR/map"
+set +e
+ACK_OUT=$(env -u CC_PIPELINE_RUN_ID CLAUDE_CONFIG_DIR="$WS_DIR/cfg" \
+  bash "$WS_DIR/stage-policy-drift.sh" --sources-map "$WS_DIR/map" --ack-store "$WS_STORE" 2>/dev/null)
+ACK_EC=$?
+set -e
+ack_expect workspace-map-excluded-anchor-only 0 match
+rm -rf "$WS_DIR"
+
+# `--identity` takes no other mode
+ws_case
+set +e
+env -u CC_PIPELINE_RUN_ID bash "$WS_DIR/stage-policy-drift.sh" --identity "$WS_FILE" --explain >/dev/null 2>&1
+ec_mix=$?
+set -e
+ack_assert identity-no-other-mode test "$ec_mix" = 2
+rm -rf "$WS_DIR"
 
 echo "test-lint-stage-policy-sources: $passed passed, $failures failed"
 

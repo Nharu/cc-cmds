@@ -1,5 +1,5 @@
 source	anchor	sha256	disposition	note
-user-scope	본 CLAUDE.md 는	1b1e574e2e8ce07127987b0eb7268a6e849d04a1dd8022b47c9bae85251cb068	policy:Conduct	only the re-read-at-citation half; the self-edit half is interactive and the CLAUDE.md apply gate handles it
+user-scope	본 CLAUDE.md 는	1b1e574e2e8ce07127987b0eb7268a6e849d04a1dd8022b47c9bae85251cb068	policy:Conduct	only the re-read half, narrowed to re-reading what may have changed and only the part used, since every re-Read rides the stage's own context; the self-edit half is interactive and the CLAUDE.md apply gate handles it
 user-scope	개발 문서를 보면서	71b2647195f7cd41a6078794454da4a9db64cec50520da6082dac85ccec5b584	policy:Conduct	
 user-scope	따로 지시가 있지 않으면	2929638a06dd9458d0b1cf70798b5aed93b9439dc5957f9f87b97e607f726ce5	policy:Artifacts	narrowed to human-facing prose in Korean; the conversation-language half has no reader
 user-scope	모든 산출물(코드 주석	3b76d9887e30ed0ab739835a832ce71907eaacd524994f04ca2ac3262b24eb94	policy:Artifacts	
@@ -9,7 +9,7 @@ user-scope	cli 명령어 사용중	a3c0ad96f392abee5ec76f8523edc161d09f86b04203b
 user-scope	AWS CLI 사용 시	818facde9e05b21e17fdb676afb50bd300b1b3bb4187a59602a2fd1433ba2707	policy:Code and tools	orderbook infra stages
 user-scope	playwright(-cli) 는 `-s=	6c0c0d75c139113fdf6ff2fab09cc77ba3823971da61d2dbc1e5de9185751931	skill:browser-policy	
 user-scope	playwright(-cli) `open`	0cfcf9046df1abf5fb93d651ff78c6925d9124e1d99acebffc78a0032e631356	policy:Code and tools	only the stay-headless clause is in the policy; the rest is the skill:browser-policy pointer
-user-scope	Maestro(Android) 는 세션마다	73b521dcf5cb88658246f52809a155c959f8fdf3678b70a8b422720b63cfdd2c	policy:Code and tools	compressed to own device, pgrep check first, never signal another run (shared netsimd); the 8000-byte policy ceiling leaves no room for the 2.6.0/2.11.0 port detail or README pointer
+user-scope	Maestro(Android) 는 세션마다	73b521dcf5cb88658246f52809a155c959f8fdf3678b70a8b422720b63cfdd2c	policy:Code and tools	compressed to own device, pgrep check first, never signal another run (shared netsimd); the 8192-byte policy ceiling leaves no room for the 2.6.0/2.11.0 port detail or README pointer
 user-scope	Android 에뮬레이터·iOS 시뮬레이터는	2a0e984d1b1f9a80b24331e46ae1bec469593ae432dc4a1d372f18df2f9063e8	policy:Code and tools	compressed to shut down when done unless handed off; shares one policy line with the Maestro row
 user-scope	terraform 의	c2e55dff5ca01f63357c052df54f3883b4721435887bff004610f54aac54b703	policy:Code and tools	
 user-scope	운영·고객 서버에서의	619ee9cfe9c227d14a3685a30ba685493e6003b9cac9a044a3496e36a1f592d7	policy:Code and tools	compressed; the stage judges from size, load, network policy and time of day and records its own grounds, since no orchestrator is present

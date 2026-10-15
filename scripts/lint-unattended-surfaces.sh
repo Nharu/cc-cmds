@@ -11,19 +11,25 @@
 #     PushNotification / notify.sh / terminal-notifier. Reaching a sleeping
 #     user is the driver's exclusive job; a stage that works AND notifies is
 #     forbidden without exception.
+#   Rules 1 and 2 read the arm's `SKILL.md` and every `<arm>/references/*.md`
+#     of the arm's own directory: a body moved out of `SKILL.md` into a file
+#     the arm Reads on a condition is still the arm's instruction.
 #   Rule 3 (forked-spine constant parity) — where an unattended arm forks a
 #     base skill that pins fixed constants under `### CFI-0`, the fork's
 #     fenced block must be byte-identical to the base's. A forked spine's one
 #     real drift risk is a budget that quietly diverges, so it is pinned
 #     rather than trusted.
 #   Rule 4 (inherited question points are dispositioned) — an arm does not
-#     copy its `references/`, it SHARES the base skill's tree, and the two
+#     copy the base skill's `references/`, it SHARES that tree, and the two
 #     shipped question points in this repo are in exactly that tree. The arm
 #     cannot delete them, because the interactive arm needs them, so what it
 #     owes is a statement of what it does instead, naming the file. Checked in
 #     both directions: an undispositioned question point is a surface the arm
 #     claims not to have, and a disposition for a file carrying none is a
-#     clause pointing at nothing.
+#     clause pointing at nothing. An arm may ALSO keep a `references/` of its
+#     own for text only it reads (the review arm's recovery body is one); that
+#     directory is not shared, nothing in it is inherited, and Rules 1 and 2
+#     cover it rather than this rule.
 #   Rule 5 (CFI-U0 sentence pin) — an arm that Reads its base skill's step
 #     bodies at runtime instead of carrying them applies one substitution
 #     sentence to every question terminus it meets there. That sentence is
@@ -75,6 +81,12 @@
 #     (an arm claiming a hook reads a constant that no hook reads) and fixed
 #     as an instance rather than fenced, because the device that catches a
 #     false claim is checking the claim, not comparing or forbidding text.
+#   Rule 9 (the light arm's parts resolve) — `design-solo-unattended` Reads
+#     only the parts of the discuss arm's SKILL.md it lists under a fixed
+#     marker line. Each listed heading must match exactly one whole line
+#     there, and each listed item text exactly one line, so a retitle or a
+#     duplicate on the discuss side fails here instead of leaving the light
+#     arm reading nothing. An empty list under a present light arm fails too.
 #
 # Why these are checkable here and not in general: each unattended arm lives
 # in its OWN file and carries exactly one arm, so a whole-file predicate is
@@ -84,10 +96,10 @@
 #
 # Rule 4 exists because Rules 1 and 2 could not reach those two points twice
 # over, and repairing either layer alone leaves them still passing. The scan
-# set opened one file per arm — `<skill>/SKILL.md` — and the shared tree is
-# not under the arm's directory at all. The pattern then required an opening
-# parenthesis, while both occurrences are a backticked bare name inside a
-# sentence. A contract that asserts an absence, measured by a device that
+# set opened the arm's own directory only — `<skill>/SKILL.md` and its own
+# `references/` — and the shared tree is not under the arm's directory at
+# all. The pattern then required an opening parenthesis, while both
+# occurrences are a backticked bare name inside a sentence. A contract that asserts an absence, measured by a device that
 # cannot reach the place the absence is claimed about, is green forever.
 #
 # What Rules 1 and 2 do NOT prove: that the model never asks. A model can ask
@@ -195,9 +207,9 @@ REFERENCE_TREES=(
   # turn Reads `design/SKILL.md`; neither carries a references/ tree, so this
   # entry is a SKIP for the same reason as the line above and Rule 5 covers it.
   "design-base-unattended|design"
-  # The light design arm Reads `design-discuss-unattended/SKILL.md` the same
-  # way and carries no references/ tree either, so this entry is a SKIP for the
-  # same reason and Rule 5 covers it.
+  # The light design arm Reads listed parts of `design-discuss-unattended/SKILL.md`
+  # and carries no references/ tree either, so this entry is a SKIP for the
+  # same reason; Rule 5 covers it, and Rule 9 checks that the parts resolve.
   "design-solo-unattended|design"
   # The visual arm reads `visual/references/` (the shared contract), which
   # holds no question point; the attended arm's questions live in its SKILL.md.
@@ -245,15 +257,23 @@ for skill in "${UNATTENDED_SKILLS[@]}"; do
   fi
   checked=$((checked + 1))
 
-  if grep -qE "$QUESTION_RE" "$file"; then
+  # The arm's own `references/*.md` are the arm's text too: a body moved out of
+  # SKILL.md into a file the arm Reads on a condition is still an instruction
+  # the arm follows, so the same call-form predicates cover it.
+  scan=("$file")
+  for ref in "$skills_root/$skill/references/"*.md; do
+    [[ -f "$ref" ]] && scan+=("$ref")
+  done
+
+  if grep -qE "$QUESTION_RE" "${scan[@]}"; then
     echo "FAIL: $skill — reaches a human-question surface" >&2
-    grep -nE "$QUESTION_RE" "$file" >&2
+    grep -HnE "$QUESTION_RE" "${scan[@]}" >&2
     fail=1
   fi
 
-  if grep -qE "$NOTIFY_RE" "$file"; then
+  if grep -qE "$NOTIFY_RE" "${scan[@]}"; then
     echo "FAIL: $skill — reaches a notification surface" >&2
-    grep -nE "$NOTIFY_RE" "$file" >&2
+    grep -HnE "$NOTIFY_RE" "${scan[@]}" >&2
     fail=1
   fi
 
@@ -534,10 +554,65 @@ EOF
   fi
 fi
 
+# --- Rule 9 — the parts the light design arm Reads resolve -------------------
+#
+# The light arm Reads only the listed parts of the discuss arm's SKILL.md, each
+# named by its verbatim heading or, for a list item, by its text. A part that
+# is retitled, deleted or duplicated there leaves the light arm reading nothing
+# or the wrong place while every rule above stays green, so each listed part
+# must name exactly one line of the discuss arm: a heading as a whole line, an
+# item's text as a substring of one line. The list is read from the light arm's
+# own marker line, never retyped here, and a present light arm with an empty
+# list fails: it would Read nothing and follow nothing.
+RANGED_ARM="design-solo-unattended"
+RANGED_SOURCE="design-discuss-unattended"
+RANGED_MARKER='Discuss-arm parts this arm reads:'
+
+extract_ranged_parts() {
+  # The `- `…`` items after the marker line, up to the first other line.
+  awk -v m="$RANGED_MARKER" '
+    $0 == m { on = 1; next }
+    on && /^[[:space:]]*$/ && !started { next }
+    on && /^- `.*`$/ { started = 1; s = $0; sub(/^- `/, "", s); sub(/`$/, "", s); print s; next }
+    on { exit }
+  ' "$1"
+}
+
+ranged_checked=0
+ranged_arm_file="$skills_root/$RANGED_ARM/SKILL.md"
+ranged_source_file="$skills_root/$RANGED_SOURCE/SKILL.md"
+if [[ -f "$ranged_arm_file" ]]; then
+  parts=$(extract_ranged_parts "$ranged_arm_file")
+  if [[ -z "$parts" ]]; then
+    echo "FAIL: $RANGED_ARM — '$RANGED_MARKER' 아래에 읽을 부분 목록이 없다" >&2
+    echo "       이 팔은 $RANGED_SOURCE 의 목록에 든 부분만 Read 하므로 빈 목록은 아무것도 따르지 않는다는 뜻이다" >&2
+    fail=1
+  elif [[ ! -f "$ranged_source_file" ]]; then
+    echo "FAIL: $RANGED_ARM — 부분을 읽을 $RANGED_SOURCE/SKILL.md 가 없다" >&2
+    fail=1
+  else
+    while IFS= read -r part; do
+      [[ -n "$part" ]] || continue
+      ranged_checked=$((ranged_checked + 1))
+      case "$part" in
+        '#'*) n_part=$(grep -cxF -- "$part" "$ranged_source_file" || true) ;;
+        *)    n_part=$(grep -cF -- "$part" "$ranged_source_file" || true) ;;
+      esac
+      if [[ "${n_part:-0}" != "1" ]]; then
+        echo "FAIL: $RANGED_ARM — 읽을 부분이 $RANGED_SOURCE/SKILL.md 에서 ${n_part:-0}줄에 맞는다(정확히 1줄이어야 한다): $part" >&2
+        fail=1
+      fi
+    done <<EOF
+$parts
+EOF
+    [[ "$fail" -ne 0 ]] || echo "OK:   $RANGED_ARM — ${ranged_checked} part(s) of $RANGED_SOURCE resolve to one line each"
+  fi
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "lint-unattended-surfaces: violations found" >&2
   exit 1
 fi
 
-echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked, ${pairs_checked} sibling pair(s) cross-checked, ${gloss_checked:-0} arm(s) checked against ${label_count:-0} extracted assertion label(s)"
+echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked, ${pairs_checked} sibling pair(s) cross-checked, ${gloss_checked:-0} arm(s) checked against ${label_count:-0} extracted assertion label(s), ${ranged_checked} ranged part(s) resolved"
 exit 0

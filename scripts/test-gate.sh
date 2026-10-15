@@ -123,7 +123,7 @@ unset TMUX TMUX_PANE
 # The launch switches go too: the effort, model and window on every launch argv
 # the suite measures would otherwise be a property of the caller's shell. The
 # sections that exercise a switch set it on the call.
-unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
+unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH_SHIFT_MODEL
 # VERSION PINNING IS OFF FOR THE WHOLE SUITE, and this seam only ever turns off
 # the taking of a NEW pin — it can never make the gate ignore one that exists.
 # Every fixture run below would otherwise copy the plugin root into its fixture
@@ -1216,6 +1216,9 @@ export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
 # what a launch injects and make a fixture pass or fail by host. The sections
 # that test the map name their own fixture map on the call, which wins over this.
 export CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map"
+# The identity judgment reads the host's acknowledgement store the same way, so
+# it is pointed at a store that does not exist.
+export CC_GATE_STAGE_POLICY_ACK="$WORK/no-such-ack-store"
 
 # THE METRICS ROUND IS INERT FOR THIS WHOLE PROCESS, for the same two reasons.
 # Every verb but `plan` runs the collector from the prelude once the stamp is
@@ -2150,7 +2153,8 @@ pre_base() {
   # THE CLI-SHAPED STUB IS A DEFINITION, so it lives here: 14h launches through
   # it and 14g resumes through it, and a cut of 14g alone died on `STUB: unbound
   # variable` while it sat in 14h's body. It records the argv it was handed and
-  # the two discovery switches in its environment, then emits one result line.
+  # the two discovery switches and the subagent-append switch in its
+  # environment, then emits one result line.
   # With `CC_STUB_ECHO_SID=1` the result's `session_id` is the `--session-id` or
   # `-r` value on the argv, which is what the real CLI answers — the resume
   # fixtures need the ledger's session id to be the one the gate recorded its
@@ -2165,7 +2169,8 @@ pre_base() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "${CC_STUB_ARGV_OUT:-/dev/null}"
 { printf 'MDS=%s\n' "${CLAUDE_CODE_DISABLE_CLAUDE_MDS-unset}"
-  printf 'MEM=%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
+  printf 'MEM=%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}"
+  printf 'SUB=%s\n' "${CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
 if [ -n "${CC_STUB_MODEL:-}" ]; then
   printf '{"type":"system","subtype":"init","model":"%s"}\n' "$CC_STUB_MODEL"
 fi
@@ -2333,6 +2338,41 @@ STUBEOF
   }
   au15_freeze() {  # au15_freeze <설계 문서> — a frozen document at the path
     printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n' > "$WT/$1"
+  }
+
+  # THE SEGMENT-PLANNING RUN HELPERS ARE DEFINITIONS. 15g built them in its body,
+  # and 15m plans runs of its own with them — a cut of 15m without 15g died on
+  # `g15_run: command not found`.
+  #
+  # g15_run <run id> <설계 문서> <plan json> <리뷰 정책 상한 | -> — a run of its
+  # own: manifest, grant, and the target row carrying a ceiling when one is given.
+  g15_run() {
+    local row="$row15c" td="$td15c"
+    if [ "$4" != "-" ]; then
+      row="$row15c | 리뷰 정책 상한=$4"
+      td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+    fi
+    row15c="$row" td15c="$td" write15c "$WORK/plan-$1.md" "$3" "$2" "$1"
+    grant15c "$1" "$2"
+    sed '/^\*\*구속 다이제스트\*\*/d' "$WORK/plan-$1.md" > "$WORK/plan-$1.md.tmp" && mv "$WORK/plan-$1.md.tmp" "$WORK/plan-$1.md"
+  }
+  g15_wt() { printf '%s/%s-run-%s-%s' "$(dirname "$WT")" "$(basename "$WT")" "$1" "$2"; }
+  g15_mkwt() {  # g15_mkwt <run id> <segment id> — the worktree the router adds before planning
+    ( cd "$WT" && git worktree add -q -b "seg/$1-$2" "$(g15_wt "$1" "$2")" HEAD ) >/dev/null 2>&1
+  }
+  g15_plan() {  # g15_plan <verb> <run id> <segment id> [fields...] — sets rc, msg
+    local v="$1" r="$2" s="$3"
+    shift 3
+    if [ "$v" = "act" ]; then
+      gateL act --manifest "$WORK/plan-$r.md" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(au15_H "$r")" --rationale x --from-declaration -- "$@"
+    else
+      gateL plan --manifest "$WORK/plan-$r.md" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
+        --surface 읽기 --from-declaration -- "$@"
+    fi
+  }
+  g15_row() {  # g15_row <run id> <segment id> — the last segment row of that id
+    { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | tail -1
   }
   au15_settle() {  # au15_settle <run id> — settle K1 as impossible
     gateL act --manifest "$WORK/plan-$1.md" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
@@ -6888,15 +6928,29 @@ check "끄기 스위치는 review 도 빈 값으로 만든다" "$(ac_kind AC_KIN
 # reached through the gate's source of `run.sh`: the gate holds no copy, so a
 # gate-side definition that drifts from the driver's is a failure here.
 lf_kind() {
-  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL "$@" \
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL "$@" \
     bash -c '. "'"$GATE"'"; stage_launch_flags "$LF_KIND"' _
 }
 for lf_k in design reconverge audit; do
   check "$lf_k 기동 플래그는 high 와 opus 다" "$(lf_kind LF_KIND=$lf_k)" "--effort high --model opus"
 done
-for lf_k in implement review shift generic; do
+for lf_k in implement review generic; do
   check "$lf_k 기동 플래그는 medium 과 opus 다" "$(lf_kind LF_KIND=$lf_k)" "--effort medium --model opus"
 done
+# The shift alone takes its model from `CC_ORCH_SHIFT_MODEL`, `sonnet` by
+# default and for any value outside `sonnet`/`opus`.
+check "shift 기동 플래그는 medium 과 sonnet 이다" "$(lf_kind LF_KIND=shift)" "--effort medium --model sonnet"
+check "CC_ORCH_SHIFT_MODEL=opus 는 교대를 opus 로 되돌린다" \
+  "$(lf_kind LF_KIND=shift CC_ORCH_SHIFT_MODEL=opus)" "--effort medium --model opus"
+check "CC_ORCH_SHIFT_MODEL 의 닫힌 집합 밖 값은 무시된다" \
+  "$(lf_kind LF_KIND=shift CC_ORCH_SHIFT_MODEL=haiku)" "--effort medium --model sonnet"
+for lf_k in implement review generic; do
+  check "$lf_k 는 CC_ORCH_SHIFT_MODEL 을 읽지 않는다" \
+    "$(lf_kind LF_KIND=$lf_k CC_ORCH_SHIFT_MODEL=sonnet)" "--effort medium --model opus"
+done
+check "model 끄기 스위치는 교대의 --model 도 뺀다" \
+  "$(lf_kind LF_KIND=shift CC_ORCH_STAGE_MODEL=off)|$(lf_kind LF_KIND=shift CC_ORCH_STAGE_MODEL=off CC_ORCH_SHIFT_MODEL=opus)" \
+  "--effort medium|--effort medium"
 check "review:low 재정의는 review 만 낮춘다" \
   "$(lf_kind LF_KIND=review CC_ORCH_STAGE_EFFORT=review:low)|$(lf_kind LF_KIND=implement CC_ORCH_STAGE_EFFORT=review:low)" \
   "--effort low --model opus|--effort medium --model opus"
@@ -7115,6 +7169,9 @@ esac
 # path with the stub CLI echoing the session id the gate handed it, so the
 # ledger's `세션 id` is the name the record was written under.
 printf '# resume fixture root\n\nSG-ROOT-CANARY-4T\n' > "$WT/CLAUDE.md"
+# The host shell may carry the subagent-append switch; cleared so the unset
+# branches below are asserted rather than inherited.
+unset CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SG --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
@@ -7142,8 +7199,13 @@ sg_launch "$WORK/sg-argv-1.txt" "$WORK/sg-env-1.txt" --resume "$sg_sid"
 check "기록 있는 세션의 재개가 끝까지 간다" "$rc" "0"
 check "재개 argv 가 -r 로 그 세션을 잇는다" "$(si_argv_value "$WORK/sg-argv-1.txt" -r)" "$sg_sid"
 check "기록 있는 세션의 재개는 append 플래그를 받는다 — 기록된 파일로" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-system-prompt-file)" "$sg_f0"
-check "서브에이전트 append 도 같은 파일이다" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-subagent-system-prompt-file)" "$sg_f0"
+# The members file is found through the pointer beside the recorded lead file,
+# so a resume cannot put the lead and its team on different syntheses.
+sg_m0=$(head -n 1 "${sg_f0%.md}.member" 2>/dev/null)
+check "첫 기동의 서브에이전트 append 는 리드 파일 옆 포인터가 가리키는 팀원 파일이다" "$(si_argv_value "$WORK/sg-argv-0.txt" --append-subagent-system-prompt-file)" "$sg_m0"
+check "서브에이전트 append 도 리드 파일의 포인터를 따른다" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-subagent-system-prompt-file)" "$sg_m0"
 check "재개 환경에도 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-1.txt")" "1"
+check "재개 환경에 서브에이전트 append 활성 변수가 서 있다" "$(sed -n 's/^SUB=//p' "$WORK/sg-env-1.txt")" "1"
 # The re-attachment passes through the same injection block as a fresh launch,
 # so a `review` resume carries the window beside `-r` — read anew, not copied.
 check "재개 argv 에 -r 와 --autocompact 300000 이 함께 있다" \
@@ -7179,6 +7241,7 @@ check "기록 없는 세션의 재개는 append 플래그를 받지 않는다" "
 check "서브에이전트 append 도 없다" "$(si_argv_has "$WORK/sg-argv-4.txt" --append-subagent-system-prompt-file)" "0"
 check "동적 절 제외도 없다" "$(si_argv_has "$WORK/sg-argv-4.txt" --exclude-dynamic-system-prompt-sections)" "0"
 check "그 환경에는 끄기 변수가 없다 — 옛 방식 그대로" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-4.txt")" "unset"
+check "그 환경에는 서브에이전트 append 활성 변수도 없다" "$(sed -n 's/^SUB=//p' "$WORK/sg-env-4.txt")" "unset"
 case "$out" in
   *"launching in legacy mode"*) ok "옛 방식 재개를 log 한다" ;;
   *) bad "옛 방식 log" "$(printf '%s' "$out" | grep -i 'legacy\|stage instructions' | tr '\n' ' ')" ;;
@@ -7192,11 +7255,12 @@ check "재개는 새 세션 기록을 만들지 않는다" "$( [ -e "$RD/instruc
 # dispatches. Argv alone cannot tell the two apart: both legacy launches expand
 # no `--append-...` flag, and only the environment says whether discovery is off.
 # Run the same legacy resume with the variable exported by the caller.
-export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1
 sg_launch "$WORK/sg-argv-5.txt" "$WORK/sg-env-5.txt" --resume "$sg_sid"
-unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+unset CLAUDE_CODE_DISABLE_CLAUDE_MDS CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT
 check "물려받은 끄기 변수가 서 있어도 옛 방식 재개가 끝까지 간다" "$rc" "0"
 check "옛 방식 재개는 물려받은 끄기 변수를 지운다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-5.txt")" "unset"
+check "옛 방식 재개는 물려받은 서브에이전트 append 활성 변수도 지운다" "$(sed -n 's/^SUB=//p' "$WORK/sg-env-5.txt")" "unset"
 check "그 재개도 append 플래그를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-system-prompt-file)" "0"
 check "그 재개도 서브에이전트 append 를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-subagent-system-prompt-file)" "0"
 rm -f "$WT/CLAUDE.md"
@@ -7425,7 +7489,13 @@ esac
 SI_POLICY="$repo_root/plugins/cc-cmds/orchestrator/stage-policy.md"
 SI_F=$(si_argv_value "$WORK/stub-argv.txt" --append-system-prompt-file)
 SI_SUB=$(si_argv_value "$WORK/stub-argv.txt" --append-subagent-system-prompt-file)
-check "기동 argv 의 메인·서브에이전트 append 플래그가 같은 파일을 가리킨다" "$SI_SUB" "$SI_F"
+# The members file is the one the pointer beside the lead file names: the lead
+# gets the repository's own files as text, the members get them as paths.
+SI_M=$(head -n 1 "${SI_F%.md}.member" 2>/dev/null)
+check "리드 파일 옆에 팀원 파일 포인터가 있다" "$( [ -n "$SI_M" ] && [ -s "$SI_M" ] && printf yes || printf no )" "yes"
+check "기동 argv 의 서브에이전트 append 플래그가 포인터의 팀원 파일을 가리킨다" "$SI_SUB" "$SI_M"
+check "팀원 파일은 리드 파일과 다른 파일이다" "$( [ "$SI_SUB" != "$SI_F" ] && printf differ || printf same )" "differ"
+check "스텁 환경에 서브에이전트 append 활성 변수가 서 있다" "$(sed -n 's/^SUB=//p' "$WORK/stub-env.txt")" "1"
 case "$SI_F" in
   "$RD_SL/instructions/"*.md)
     si_base=$(basename "$SI_F" .md)
@@ -7478,7 +7548,37 @@ check "직접 호출한 합성이 기동이 넘긴 것과 같은 파일이다 (�
 si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>/dev/null); si_rc=$?
 check "같은 별칭의 두 번째 합성도 같은 경로다" "$si_out" "$SI_F"
 check "두 번째 합성 뒤에도 임시 파일이 남지 않는다 (mv -n 이 건너뛴 사본을 지운다)" \
-  "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
+  "$( { ls "$RD_SL"/instructions/.stage.* "$RD_SL"/instructions/.member.* "$RD_SL"/instructions/.pointer.* 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# THE MEMBERS FILE: the same policy and ancestors, the repository's own files as
+# a path line each. Read through the pointer the synthesis left, never by name.
+si_mf=$(head -n 1 "${SI_F%.md}.member" 2>/dev/null)
+case "$si_mf" in
+  "$RD_SL/instructions/"*.md)
+    if [[ "$(basename "$si_mf" .md)" =~ ^[0-9a-f]{64}$ ]]; then
+      ok "팀원 파일도 instructions/ 아래 내용 주소(<sha256>.md)다"
+    else
+      bad "팀원 파일 이름" "$si_mf"
+    fi ;;
+  *) bad "팀원 파일 위치" "$si_mf — \$RUN_DIR/instructions/ 아래가 아니다" ;;
+esac
+check "팀원 파일 이름은 자기 바이트의 sha256 이다" \
+  "$(shasum -a 256 "$si_mf" 2>/dev/null | cut -d' ' -f1)" "$(basename "$si_mf" .md)"
+if [ -f "$si_mf" ] && head -c "$(wc -c < "$SI_POLICY" | tr -d ' ')" "$si_mf" | cmp -s - "$SI_POLICY"; then
+  ok "팀원 파일도 정책 바이트로 시작한다"
+else
+  bad "팀원 파일 머리" "정책 바이트로 시작하지 않는다: $si_mf"
+fi
+check "팀원 파일은 레포 밖 조상 CLAUDE.md 를 본문째 담는다" "$(grep -c 'SI-ANCESTOR-CANARY-3K' "$si_mf" 2>/dev/null || true)" "1"
+check "팀원 파일은 대상 루트 CLAUDE.md 의 본문을 담지 않는다" "$(grep -c 'SI-ROOT-CANARY-7Q' "$si_mf" 2>/dev/null || true)" "0"
+si_rootabs="$(cd "$WT" && pwd -P)/CLAUDE.md"
+check "대상 루트 파일은 라벨 아래 경로 한 줄로 온다" \
+  "$(awk -v l='# t/infra/CLAUDE.md' -v p="$si_rootabs" '$0 == l { getline; getline; if ($0 == p) print "path"; exit }' "$si_mf")" "path"
+check "그 경로 줄은 파일에 한 번만 있다" "$(grep -c -x -F "$si_rootabs" "$si_mf" 2>/dev/null || true)" "1"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>/dev/null)
+check "같은 바이트의 재합성은 같은 팀원 파일을 가리킨다" "$(head -n 1 "${si_out%.md}.member" 2>/dev/null)" "$si_mf"
+printf '  정보: 이 픽스처의 리드 파일 %s 바이트, 팀원 파일 %s 바이트\n' \
+  "$(wc -c < "$SI_F" | tr -d ' ')" "$(wc -c < "$si_mf" | tr -d ' ')"
 
 # Host map, guard by guard. `WORKP` spellings in the map, because the map is
 # compared physically; the chain-side normalization gets its own case below.
@@ -7533,6 +7633,122 @@ sed "s#별칭=infra | 메인 워크트리=$WT #별칭=infra | 메인 워크트�
 printf 'workspace\t%s/anc/real/CLAUDE.md\n' "$WORKP" > "$WORK/map-physanc"
 si_out=$(si_synth "$WORK/plan-symroot.md" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-physanc" 2>/dev/null); si_rc=$?
 check "심링크를 거친 메인 워크트리의 체인도 물리 철자의 맵 줄에 맞는다" "$(grep -c 'SI-SYMANC-CANARY-8R' "$si_out" 2>/dev/null || true)" "0"
+
+# IDENTITY WITHOUT A MAP: an ancestor no map line names is left out when every
+# section of it matches a workspace row of the stage policy manifest. A gate
+# copy of its own carries a manifest of two workspace rows for the ancestor
+# below, hashed through the checker's own extraction, so the real manifest's
+# rows are not what is measured. The ancestor file is restored afterwards.
+SI_IDG="$WORK/gate-ident"
+rm -rf "$SI_IDG"; cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$SI_IDG"
+cp "$WORK/CLAUDE.md" "$WORK/CLAUDE.md.keep"
+printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+si_idh() {
+  ( . "$SI_IDG/stage-policy-drift.sh"; drift_entries workspace "$WORK/CLAUDE.md" ) \
+    | awk -F'\t' -v a="$1" '$1 == a { print $2 }'
+}
+{
+  printf 'source\tanchor\tsha256\tdisposition\tnote\n'
+  printf 'workspace\t# Ident top\t%s\texcluded:workspace-local\t\n' "$(si_idh '# Ident top')"
+  printf 'workspace\t## Ident rules\t%s\tpolicy:Citations in documents\t\n' "$(si_idh '## Ident rules')"
+} > "$SI_IDG/stage-policy.sources.tsv"
+si_idsynth() {
+  si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra SI_GATE_DIR="$SI_IDG" "$@" 2>"$WORK/si-err.txt"); si_rc=$?
+}
+si_idsynth
+check "정체 판정: 모든 절이 매니페스트와 맞으면 합성이 성공한다" "$si_rc" "0"
+check "그 조상 파일이 리드 파일에서 빠진다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "0"
+check "팀원 파일에서도 빠진다" "$(grep -c 'SI-IDENT-CANARY-6W' "$(head -n 1 "${si_out%.md}.member")" 2>/dev/null || true)" "0"
+case "$(cat "$WORK/si-err.txt")" in
+  *"excluding $WORKP/CLAUDE.md — every section matches the stage policy manifest"*) ok "정체 판정의 제외가 log 한 줄로 남는다" ;;
+  *) bad "정체 판정 제외 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# The host map still wins: a map line names the same file and the log says so.
+si_idsynth CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-anc"
+case "$(cat "$WORK/si-err.txt")" in
+  *"excluding $WORKP/CLAUDE.md by the host map"*) ok "맵 줄이 있으면 정체 판정보다 맵이 먼저다" ;;
+  *) bad "맵 우선" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# A `keep` line includes the file whole, without asking the checker.
+printf 'keep\t%s/CLAUDE.md\n' "$WORKP" > "$WORK/map-keep"
+si_idsynth CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-keep"
+check "keep 줄이 지목한 조상은 판정이 맞아도 통째로 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"keeping $WORKP/CLAUDE.md by the host map"*) ok "keep 은 log 한 줄로 남는다" ;;
+  *) bad "keep log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# A body edit under an excluded row breaks identity: included, one log line
+# naming the section.
+printf '# Ident top\nSI-IDENT-CANARY-6W edited\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "본문이 바뀐 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+check "깨진 절마다 keeping log 한 줄이다" \
+  "$(grep -c -F "keeping $WORKP/CLAUDE.md — stage-policy-drift: identity broken: " "$WORK/si-err.txt" || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"identity broken: "*"# Ident top: manifest "*) ok "그 log 는 깨진 절의 표제를 지목한다" ;;
+  *) bad "깨짐 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# The same edit acknowledged in the store passes again: the checker reads
+# `CC_GATE_STAGE_POLICY_ACK` as the gate passes it.
+mkdir -p "$WORK/si-ackstore"
+{
+  printf 'source\tanchor\tsha256\tdisposition\tacked-at\n'
+  printf 'workspace\t# Ident top\t%s\texcluded:workspace-local\t2026-01-01T00:00:00Z\n' "$(si_idh '# Ident top')"
+} > "$WORK/si-ackstore/acks.tsv"
+si_ack_ok=$(cd "$WORK" && env -u CC_PIPELINE_RUN_ID bash "$SI_IDG/stage-policy-drift.sh" \
+  --identity "$WORK/CLAUDE.md" --ack-store "$WORK/si-ackstore" >/dev/null 2>&1 && printf 0 || printf 1)
+if [ "$si_ack_ok" = 0 ]; then
+  si_idsynth CC_GATE_STAGE_POLICY_ACK="$WORK/si-ackstore"
+  check "확인 저장소에 든 excluded 행의 새 해시는 다시 제외된다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "0"
+else
+  bad "확인 저장소 픽스처" "검사기가 손으로 쓴 저장소를 받지 않았다 — 저장소 형식을 다시 볼 것"
+fi
+# An added section breaks identity.
+printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n## Ident extra\nmore\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "절이 하나 늘어난 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"## Ident extra: added section"*) ok "늘어난 절이 log 에 지목된다" ;;
+  *) bad "추가 절 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# Text before the first heading belongs to no row.
+printf 'loose line\n# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "첫 표제 앞에 본문이 있는 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+case "$(cat "$WORK/si-err.txt")" in
+  *"(before the first heading)"*) ok "첫 표제 앞 본문이 log 에 지목된다" ;;
+  *) bad "첫 표제 앞 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# An ancestor no workspace row names is included silently.
+printf '# Unrelated\nSI-IDENT-CANARY-6W\n' > "$WORK/CLAUDE.md"
+si_idsynth
+check "어느 행에도 맞지 않는 조상은 들어간다" "$(grep -c 'SI-IDENT-CANARY-6W' "$si_out" 2>/dev/null || true)" "1"
+check "그때는 keeping log 가 없다" "$(grep -c -F "keeping $WORKP/CLAUDE.md" "$WORK/si-err.txt" || true)" "0"
+# The sizes after the change, on a chain shaped like this host's: this
+# repository's own CLAUDE.md as the root file and an identified ancestor that
+# the judgment leaves out. Printed, not asserted — the measurement is the output.
+# That file is not tracked: a linked worktree reads the main worktree's copy,
+# and a fresh checkout without one (CI) skips the measurement.
+si_host_claude="$repo_root/CLAUDE.md"
+if [[ ! -s "$si_host_claude" ]]; then
+  si_common=$(cd "$repo_root" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  [[ -n "$si_common" ]] && si_host_claude="$(dirname "$si_common")/CLAUDE.md"
+fi
+if [[ -s "$si_host_claude" ]]; then
+  cp "$WT/CLAUDE.md" "$WORK/root-claude.keep"; cp "$si_host_claude" "$WT/CLAUDE.md"
+  printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
+  si_idsynth
+  check "호스트 모양 픽스처의 합성도 성공한다" "$si_rc" "0"
+  printf '  정보: 호스트 모양 픽스처(레포 CLAUDE.md 루트, 식별된 조상 제외)의 리드 파일 %s 바이트, 팀원 파일 %s 바이트, 레포 CLAUDE.md %s 바이트\n' \
+    "$(wc -c < "$si_out" | tr -d ' ')" "$(wc -c < "$(head -n 1 "${si_out%.md}.member")" | tr -d ' ')" \
+    "$(wc -c < "$si_host_claude" | tr -d ' ')"
+  cp "$WORK/root-claude.keep" "$WT/CLAUDE.md"; rm -f "$WORK/root-claude.keep"
+else
+  printf '  정보: 레포 CLAUDE.md 가 없어 호스트 모양 측정을 건너뛴다 (추적되지 않는 파일)\n'
+fi
+unset si_host_claude si_common
+cp "$WORK/CLAUDE.md.keep" "$WORK/CLAUDE.md"; rm -f "$WORK/CLAUDE.md.keep"
+unset -f si_idh si_idsynth
 
 # Refusals, each restoring the fixture afterwards.
 mkdir -p "$WORK/.claude/rules"
@@ -7684,6 +7900,30 @@ check "--instructions 가 있으면 두 append 와 동적 절 제외가 --strict
 si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --instructions "$SI_F" -- -p a; si_rc=$?
 check "재개 분기도 같은 플래그를 받는다" "$(cat "$WORK/wrap-argv.txt")" \
   "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+# `--member-instructions` splits the two appends: the lead file to the main
+# session, the members file to the subagents, on both id branches.
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" --member-instructions "$SI_M" -- -p a; si_rc=$?
+check "--member-instructions 가 있으면 서브에이전트 append 만 팀원 파일로 바뀐다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_M --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --instructions "$SI_F" --member-instructions "$SI_M" -- -p a; si_rc=$?
+check "재개 분기도 팀원 파일을 서브에이전트 append 로 받는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_M --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" --member-instructions "$WORK/no-such-members" -- -p a; si_rc=$?
+check "없는 팀원 파일은 exit 2 다" "$si_rc" "2"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" --member-instructions "$WORK/empty-instructions" -- -p a; si_rc=$?
+check "빈 팀원 파일도 exit 2 다" "$si_rc" "2"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --member-instructions "$SI_M" -- -p a; si_rc=$?
+check "--instructions 없는 --member-instructions 는 exit 2 다" "$si_rc" "2"
+# The subagent-append switch is exported on the injecting branches and removed
+# on the others, whatever the caller's environment held.
+( cd "$WT" && env -u CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT CC_CLAUDE_BIN="$STUB" \
+    CC_STUB_ARGV_OUT="$WORK/wrap-argv.txt" CC_STUB_ENV_OUT="$WORK/wrap-env.txt" \
+    bash "$SI_WRAP" --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p a >/dev/null 2>&1 )
+check "주입 분기는 서브에이전트 append 활성 변수를 세운다" "$(sed -n 's/^SUB=//p' "$WORK/wrap-env.txt")" "1"
+( cd "$WT" && CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1 CC_CLAUDE_BIN="$STUB" \
+    CC_STUB_ARGV_OUT="$WORK/wrap-argv.txt" CC_STUB_ENV_OUT="$WORK/wrap-env.txt" \
+    bash "$SI_WRAP" --settings "$SI_SET" --plugin-dir "$WORK" --session-id x -- -p a >/dev/null 2>&1 )
+check "주입하지 않는 분기는 물려받은 활성 변수를 지운다" "$(sed -n 's/^SUB=//p' "$WORK/wrap-env.txt")" "unset"
 # The wrapper's own `--autocompact <n>` lands on the CLI argv after
 # `--strict-mcp-config`, on both id branches, and only when given.
 si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --autocompact 300000 --instructions "$SI_F" -- -p a; si_rc=$?
@@ -10926,36 +11166,8 @@ rm -f "$WT/$DOC15FB"
 # strict review policy in a plan that has no review step — and the act that
 # makes them leaves the run-scope block the router itself may not write.
 # ---------------------------------------------------------------------------
-# g15_run <run id> <설계 문서> <plan json> <리뷰 정책 상한 | -> — a run of its
-# own: manifest, grant, and the target row carrying a ceiling when one is given.
-g15_run() {
-  local row="$row15c" td="$td15c"
-  if [ "$4" != "-" ]; then
-    row="$row15c | 리뷰 정책 상한=$4"
-    td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
-  fi
-  row15c="$row" td15c="$td" write15c "$WORK/plan-$1.md" "$3" "$2" "$1"
-  grant15c "$1" "$2"
-  sed '/^\*\*구속 다이제스트\*\*/d' "$WORK/plan-$1.md" > "$WORK/plan-$1.md.tmp" && mv "$WORK/plan-$1.md.tmp" "$WORK/plan-$1.md"
-}
-g15_wt() { printf '%s/%s-run-%s-%s' "$(dirname "$WT")" "$(basename "$WT")" "$1" "$2"; }
-g15_mkwt() {  # g15_mkwt <run id> <segment id> — the worktree the router adds before planning
-  ( cd "$WT" && git worktree add -q -b "seg/$1-$2" "$(g15_wt "$1" "$2")" HEAD ) >/dev/null 2>&1
-}
-g15_plan() {  # g15_plan <verb> <run id> <segment id> [fields...] — sets rc, msg
-  local v="$1" r="$2" s="$3"
-  shift 3
-  if [ "$v" = "act" ]; then
-    gateL act --manifest "$WORK/plan-$r.md" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(au15_H "$r")" --rationale x --from-declaration -- "$@"
-  else
-    gateL plan --manifest "$WORK/plan-$r.md" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
-      --surface 읽기 --from-declaration -- "$@"
-  fi
-}
-g15_row() {  # g15_row <run id> <segment id> — the last segment row of that id
-  { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | tail -1
-}
+# `g15_run`, `g15_wt`, `g15_mkwt`, `g15_plan` and `g15_row` live in the base
+# prelude: the merge-order section plans its own runs with them.
 g15_blocks() {  # g15_blocks <run id> <fixed text> — run-scope blocked rows carrying it
   { grep -F '`blocked`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '스코프=run' || true; } \
     | { grep -F "$2" || true; } | grep -c . || true
@@ -11939,6 +12151,444 @@ rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" 
   "$WT/$DOC15GO" "$WT/$DOC15GM" "$WT/$DOC15GL" "$WT/$DOC15GI" "$WT/$DOC15GF" "$WT/$DOC15GY" "$WT/$DOC15GH" \
   "$WT/$DOC15GG" "$WT/$DOC15GS2" "$WT/$DOC15GX" "$WT/$DOC15GX3" "$WT/$DOC15GX5" \
   "$WT/$DOC15GMF" "$WT/$DOC15GML" "$WT/$DOC15GRW"
+
+# ---------------------------------------------------------------------------
+# 15m. A merge-order predecessor holds the merge, not the dispatch
+# --- section: 15m | group: base | covers: act, plan, snapshot | anchors: 15m: 계획 행이 머지 순서 를 싣는다, 15m: 머지 순서만 걸린 후행은 앞 슬라이스가 실행 중이어도 implement 로 파견된다, 15m: 구현 선행이 착지하지 않은 후행의 파견은 막힌다, 15m: 앞 슬라이스가 착지하지 않은 REST 머지는 act 와 plan 이 3 이고 원장이 그대로다, 15m: 앞 슬라이스가 머지됨 이면 같은 머지에 순서 문면이 없다, 15m: park 된 앞 슬라이스의 cone 에 머지 순서 후행과 구현 후행이 함께 든다, 15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다, 15m: 앞 슬라이스가 자기 선행 에 막혀 있으면 거부가 그 선행 을 이름 대고 미루라고 한다, 15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다, 15m: 겹치는 선언 파일은 그 슬라이스만 park 한다, 15m: 머지 순서 줄이 없는 블록과 없음 인 블록의 다이제스트가 변경 전 함수의 값과 같다, 15m: 두 목록에 여섯씩 실은 계획 행이 행 길이 상한 안에 든다 ---
+#
+# `머지 순서` names a slice that must reach the base first, while the two are
+# implemented at the same time. So the dispatch-time landing check reads `선행`
+# alone, and the merge — a remote merge argv, a push that updates the base, a
+# command the table cannot read that writes outside the worktree — waits for
+# every slice of `선행 ∪ 머지 순서`. The field is the gate's: only the planning
+# act that reads the frozen document writes it, and later rows carry it.
+# ---------------------------------------------------------------------------
+# m15_doc <문서> <id:선행:머지 순서:파일[:noreason]>... — a frozen document whose
+# slices are declared in that order. `-` is `없음`, `.` leaves the `머지 순서`
+# line off, and `+` joins ids. `noreason` leaves the reason lines off.
+m15_list() {
+  if [ "$1" = - ]; then printf '없음'; return 0; fi
+  printf '%s' "$1" | sed 's/+/, 슬라이스 /g; s/^/슬라이스 /'
+}
+m15_doc() {
+  local f="$1" s id pre mo file nr
+  shift
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: %s\n' "$#"
+    for s in "$@"; do
+      IFS=: read -r id pre mo file nr <<M15EOF
+$s
+M15EOF
+      printf '\n### 슬라이스 %s — 픽스처\n\n' "$id"
+      printf '**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `%s`\n' "$file"
+      printf '**선행**: %s\n' "$(m15_list "$pre")"
+      [ "$mo" = . ] || printf '**머지 순서**: %s\n' "$(m15_list "$mo")"
+      if [ "$nr" != noreason ] && [ "$mo" != . ]; then
+        [ "$pre" = - ] || printf '**선행 사유**: 픽스처\n'
+        [ "$mo" = - ] || printf '**머지 순서 사유**: 픽스처\n'
+      fi
+      printf '**절단점**: 머지\n**리뷰 정책**: 리뷰없음\n'
+    done
+  } > "$f"
+}
+m15_planned() {  # m15_planned <run id> <segment id>... — worktree, then the planning act; stops on a refusal
+  local r="$1" s
+  shift
+  for s in "$@"; do
+    g15_mkwt "$r" "$s"
+    g15_plan act "$r" "$s" 상태=계획됨 "워크트리=$(g15_wt "$r" "$s")"
+    [ "$rc" = 0 ] || { bad "15m 픽스처 $r 의 $s 계획" "rc=$rc $msg"; return 0; }
+  done
+}
+m15_seg() {  # m15_seg <run id> <segment id> <필드>... — one segment row through the gate
+  local r="$1" s="$2"
+  shift 2
+  gateL act --manifest "$WORK/plan-$r.md" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(au15_H "$r")" --rationale x -- "워크트리=$(g15_wt "$r" "$s")" "$@"
+}
+m15_x() {  # m15_x <act|plan> <run id> <segment id> <gate flags...> -- <argv> — one act of that segment
+  local v="$1" r="$2" s="$3"
+  shift 3
+  if [ "$v" = act ]; then
+    gateL act --manifest "$WORK/plan-$r.md" --kind x --target infra --segment "$s" \
+      --snapshot-digest "$(au15_H "$r")" --rationale x "$@"
+  else
+    gateL plan --manifest "$WORK/plan-$r.md" --kind x --target infra --segment "$s" --rationale x "$@"
+  fi
+}
+m15_ledger() { printf '%s/docs/pipeline-run/%s.md' "$WT" "$1"; }
+m15_sum() { shasum -a 256 "$(m15_ledger "$1")" | cut -d' ' -f1; }
+m15_held() {  # m15_held — 0 when the last call's message carries the merge-order refusal
+  case "$msg" in *"머지 순서 선행"*) return 0 ;; esac
+  return 1
+}
+m15_tip() { ( cd "$(g15_wt "$1" "$2")" && git rev-parse HEAD ); }
+m15_cone() {  # m15_cone <run id> <anchor> — the `의존 세그먼트` the gate derives for a cone on <anchor>
+  gateL act --manifest "$WORK/plan-$1.md" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(au15_H "$1")" --rationale x \
+    -- 스코프=cone 원인=막힘 "앵커 세그먼트=$2" "사유=$2 가 멈췄다" "근거=픽스처" "재개 명령=-"
+  if [ "$rc" != 0 ]; then printf '유도-실패(%s)' "$rc"; return 0; fi
+  { grep -F '`blocked`' "$(m15_ledger "$1")" || true; } | grep -F "앵커 세그먼트=$2 " | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *의존 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1
+}
+m15_slice_parks() {  # m15_slice_parks <run id> <segment id> — act-scope slicing parks naming it
+  { grep -F '`blocked`' "$(m15_ledger "$1")" 2>/dev/null || true; } | { grep -F '스코프=act' || true; } \
+    | { grep -F "세그먼트=$2 " || true; } | { grep -F '재킥 원인=슬라이싱' || true; } | grep -c . || true
+}
+
+# --- 계획 행위와 이월 --------------------------------------------------------
+DOC15MA='docs/fixture-design-15ma.md'
+m15_doc "$WT/$DOC15MA" 'MX:-:-:MX.txt' 'MY:-:MX:MY.txt' 'MZ:MX:-:MZ.txt' 'MW:-:-:MW.txt'
+g15_run R15MA "$DOC15MA" "$plan15c" 리뷰없음
+m15_planned R15MA MX MY MZ
+check "15m: 계획 행이 머지 순서 를 싣는다" "$(seg_field "$(g15_row R15MA MY)" '머지 순서')" "슬라이스 MX"
+check "15m: 머지 순서 가 없음 인 슬라이스의 계획 행은 그 필드를 쓰지 않는다" \
+  "$(g15_row R15MA MX | grep -c '머지 순서=' || true)/$(g15_row R15MA MZ | grep -c '머지 순서=' || true)" "0/0"
+g15_mkwt R15MA MW
+g15_plan act R15MA MW 상태=계획됨 "워크트리=$(g15_wt R15MA MW)" "머지 순서=슬라이스 MX"
+check "15m: 계획 행위에 호출자가 넘긴 머지 순서 는 거부된다" "$rc/$(g15_row R15MA MW | grep -c . || true)" "2/0"
+g15_plan act R15MA MW 상태=계획됨 "워크트리=$(g15_wt R15MA MW)"
+check "15m: 독립 슬라이스는 그대로 계획된다" "$rc" "0"
+snap15m=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15MA.md" 2>/dev/null )
+check "15m: 스냅숏 슬라이싱 이 두 목록을 정규화된 id 배열로 낸다" \
+  "$(printf '%s' "$snap15m" | jq -c '[.["슬라이싱"]["세그먼트"][] | [.id, .["선행"], .["머지 순서"]]]' 2>/dev/null)" \
+  '[["MX",[],[]],["MY",[],["MX"]],["MZ",["MX"],[]],["MW",[],[]]]'
+check "15m: 스냅숏 segments 가 머지 순서 와 착지하지 않은 앞 슬라이스를 머지 대기 로 낸다" \
+  "$(printf '%s' "$snap15m" | jq -c '[.segments[] | select(.id == "MY" or .id == "MW") | [.id, .["머지 순서"], .["머지 대기"]]] | sort' 2>/dev/null)" \
+  '[["MW","없음",[]],["MY","슬라이스 MX",["MX"]]]'
+# The vector half reads the ledger's states and the manifest, never the snapshot
+# JSON, so the new keys leave it where it was. The constant is the half the
+# gate of the commit before the keys existed gives at this point of this run,
+# taken once; the suite reads no history.
+check "15m: 스냅숏의 새 키가 다이제스트 벡터 반을 바꾸지 않는다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15MA.md" --fields H 2>/dev/null | cut -d- -f1)" \
+  "f4f47bfeb9ab38568a1a8d5c8bd5d49dc1d8a6b08fd54f526214d896bc29ed47"
+
+m15_seg R15MA MX 상태=실행중 선행=없음
+check "15m: 앞 슬라이스가 실행 중으로 옮겨진다" "$rc" "0"
+m15_seg R15MA MY 상태=실행중 선행=없음
+check "15m: 머지 순서 를 빠뜨린 뒤 행이 받힌다" "$rc" "0"
+check "15m: 그 행은 앞 행의 머지 순서 를 이월한다" "$(seg_field "$(g15_row R15MA MY)" '머지 순서')" "슬라이스 MX"
+m15_seg R15MA MY 상태=실행중 선행=없음 "머지 순서=슬라이스 MX"
+case "$rc/$msg" in
+  2/*"「머지 순서」는 게이트가 동결 문서에서 계획 행을 채울 때만"*) ok "15m: 뒤 행에 호출자가 넘긴 머지 순서 는 거부된다" ;;
+  *) bad "15m: 뒤 행에 호출자가 넘긴 머지 순서 는 거부된다" "rc=$rc $msg" ;;
+esac
+
+# --- 파견: 구현 선행만 착지를 기다린다 ---------------------------------------
+gateL act --manifest "$WORK/plan-R15MA.md" --kind skill --target infra --segment MY --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(au15_H R15MA)" --rationale x \
+  -- implement "/cc-cmds:implement-unattended x"
+check "15m: 머지 순서만 걸린 후행은 앞 슬라이스가 실행 중이어도 implement 로 파견된다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15m 동시 파견 문면" "$msg"
+au15_wait R15MA MY
+gateL act --manifest "$WORK/plan-R15MA.md" --kind skill --target infra --segment MZ --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(au15_H R15MA)" --rationale x \
+  -- implement "/cc-cmds:implement-unattended x"
+case "$rc/$msg" in
+  3/*"has not landed yet"*) ok "15m: 구현 선행이 착지하지 않은 후행의 파견은 막힌다" ;;
+  *) bad "15m: 구현 선행이 착지하지 않은 후행의 파견은 막힌다" "rc=$rc $msg" ;;
+esac
+
+# --- 머지: 착지하는 행위만 순서를 기다린다 -----------------------------------
+# MY's tree carries a commit of its own, so a push of it updates the base.
+( cd "$(g15_wt R15MA MY)" && echo my > MY.txt && git add -A && git commit -qm my ) >/dev/null 2>&1
+tip15m=$(m15_tip R15MA MY)
+sum15m=$(m15_sum R15MA)
+m15_x act R15MA MY --cutpoint 머지 --surface 외부상태변경 \
+  -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$tip15m" -f merge_method=merge
+r15m_act="$rc/$(m15_sum R15MA)"
+m15_held && r15m_act="$r15m_act/순서"
+case "$msg" in *"MX"*"「상태」=실행중"*) r15m_act="$r15m_act/MX 실행중" ;; esac
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 \
+  -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$tip15m" -f merge_method=merge
+r15m_plan="$rc/$(m15_sum R15MA)"
+check "15m: 앞 슬라이스가 착지하지 않은 REST 머지는 act 와 plan 이 3 이고 원장이 그대로다" \
+  "$r15m_act|$r15m_plan" "3/$sum15m/순서/MX 실행중|3/$sum15m"
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 -- gh pr merge 1 --merge
+check "15m: 앞 슬라이스가 착지하지 않은 gh pr merge 는 3 이다" "$rc/$(m15_held && echo 순서)" "3/순서"
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 -- git push -f origin HEAD:main
+check "15m: 베이스를 갱신하는 push 는 3 이다" "$rc/$(m15_held && echo 순서)" "3/순서"
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 -- git push -f origin "HEAD:refs/heads/seg/R15MA-MY"
+check "15m: 세그먼트 브랜치 push 는 머지 로 표시해도 순서 거부를 받지 않는다" "$(m15_held && echo 순서)" ""
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 -- gh pr create --base main --head seg/R15MA-MY --title t --body b
+check "15m: PR 생성은 머지 로 표시해도 순서 거부를 받지 않는다" "$(m15_held && echo 순서)" ""
+# THE `>=` IS ASSERTED WITH AN ACT THE TABLE CANNOT SEE INTO. A graded merge argv
+# is brought down to its derived rung, so a declaration above `머지` never stays
+# the effective one; a runner whose payload the table cannot read keeps what was
+# declared. `--reach` rides only `exec` and a `plan` without `--kind`, so these
+# go through `exec`; a refusal comes before the command runs and writes no row.
+m15_exec() {  # m15_exec <run id> <segment id> <gate flags...> -- <argv>
+  local r="$1" s="$2"
+  shift 2
+  gateL exec --manifest "$WORK/plan-$r.md" --target infra --segment "$s" \
+    --snapshot-digest "$(au15_H "$r")" --rationale x "$@"
+}
+m15_exec R15MA MY --cutpoint 배포 --surface 트리밖쓰기 --reach 런로컬 -- bash ./merge-seg-15m.sh MY
+check "15m: 등급표가 읽지 못하는 워크트리 밖 행위는 머지 보다 뒤 절단점에서도 3 이다" "$rc/$(m15_held && echo 순서)" "3/순서"
+[ "$rc" = 3 ] || bad "15m 불투명 배포 문면" "$msg"
+m15_exec R15MA MY --cutpoint 머지 --surface 트리밖쓰기 --reach 런로컬 -- bash ./merge-seg-15m.sh MY
+check "15m: 같은 행위를 머지 로 선언해도 3 이고 원장이 그대로다" "$rc/$(m15_held && echo 순서)/$(m15_sum R15MA)" "3/순서/$sum15m"
+m15_x plan R15MA MY --cutpoint 머지 --surface 워크트리쓰기 -- bash ./merge-seg-15m.sh MY
+check "15m: 같은 행위를 워크트리 표면으로 선언하면 순서 거부가 없다" "$rc/$(m15_held && echo 순서)" "0/"
+gateL plan --manifest "$WORK/plan-R15MA.md" --kind segment --target infra --segment MY --cutpoint 머지 \
+  --surface 읽기 --rationale x -- "워크트리=$(g15_wt R15MA MY)" 상태=실행중 선행=없음
+check "15m: 장부 종류의 행위는 순서 거부를 받지 않는다" "$(m15_held && echo 순서)" ""
+# The order is the declaration's, not a rule a manifest may switch off.
+cp "$WORK/plan-R15MA.md" "$WORK/plan-R15MA.md.keep"
+printf '\n## 룰 설정\n**리뷰-후-머지**: 끔\n' >> "$WORK/plan-R15MA.md"
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 \
+  -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$tip15m" -f merge_method=merge
+check "15m: 리뷰-후-머지 를 끈 매니페스트에서도 머지가 3 이다" "$rc/$(m15_held && echo 순서)" "3/순서"
+mv "$WORK/plan-R15MA.md.keep" "$WORK/plan-R15MA.md"
+
+( cd "$(g15_wt R15MA MX)" && git reset -q --hard refs/heads/main ) >/dev/null 2>&1
+m15_seg R15MA MX 상태=머지됨 "머지 커밋=$(cd "$WT" && git rev-parse refs/heads/main)" 선행=없음
+check "15m: 앞 슬라이스의 머지됨 행이 받힌다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15m 앞 슬라이스 머지됨 문면" "$msg"
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 \
+  -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$tip15m" -f merge_method=merge
+check "15m: 앞 슬라이스가 머지됨 이면 같은 머지에 순서 문면이 없다" "$(m15_held && echo 순서)" ""
+check "15m: 그때 스냅숏 머지 대기 가 빈다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R15MA.md" 2>/dev/null \
+      | jq -c '[.segments[] | select(.id == "MY") | .["머지 대기"]]' 2>/dev/null)" '[[]]'
+m15_seg R15MA MX 상태=park 선행=없음
+m15_x plan R15MA MY --cutpoint 머지 --surface 외부상태변경 \
+  -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$tip15m" -f merge_method=merge
+check "15m: 머지됨 뒤 park 행을 받은 앞 슬라이스도 착지한 것으로 읽힌다" "$(m15_held && echo 순서)" ""
+
+# 조임과 풀림: 머지 순서 의 토큰은 선행 으로 옮겨 갈 수 있고 두 목록에서 빠질 수 없다.
+m15_seg R15MA MY 상태=실행중 선행=MX
+check "15m: 머지 순서 토큰을 선행 으로 옮기는 행이 받힌다" "$rc" "0"
+check "15m: 그 행의 머지 순서 에서 이월이 그 토큰을 뺀다" "$(g15_row R15MA MY | grep -c '머지 순서=' || true)" "0"
+m15_seg R15MA MY 상태=실행중 선행=없음
+case "$rc/$msg" in
+  2/*monotone*) ok "15m: 그 뒤 선행 을 비우는 행은 단조 바닥이 거부한다" ;;
+  *) bad "15m: 그 뒤 선행 을 비우는 행은 단조 바닥이 거부한다" "rc=$rc $msg" ;;
+esac
+
+# --- cone: 머지 순서 는 선언 축의 간선이다 ------------------------------------
+DOC15MB='docs/fixture-design-15mb.md'
+m15_doc "$WT/$DOC15MB" 'NX:-:-:NX.txt' 'NY:-:NX:NY.txt' 'NZ:NX:-:NZ.txt' 'NW:-:-:NW.txt'
+g15_run R15MB "$DOC15MB" "$plan15c" 리뷰없음
+m15_planned R15MB NX NY NZ NW
+m15_seg R15MB NX 상태=park 선행=없음
+cone15m=$(m15_cone R15MB NX)
+case ",$cone15m," in
+  *,NY,*) case ",$cone15m," in *,NZ,*) cone15m_ok=1 ;; *) cone15m_ok=0 ;; esac ;;
+  *) cone15m_ok=0 ;;
+esac
+case "$cone15m_ok" in
+  1) ok "15m: park 된 앞 슬라이스의 cone 에 머지 순서 후행과 구현 후행이 함께 든다" ;;
+  *) bad "15m: park 된 앞 슬라이스의 cone 에 머지 순서 후행과 구현 후행이 함께 든다" "$cone15m" ;;
+esac
+case ",$cone15m," in
+  *,NW,*|*유도-실패*) bad "15m: 걸리지 않은 독립 슬라이스는 cone 밖이다" "$cone15m" ;;
+  *) ok "15m: 걸리지 않은 독립 슬라이스는 cone 밖이다" ;;
+esac
+
+# --- 섞인 사슬: C 머지 순서 B, B 선행 A ----------------------------------------
+DOC15MC='docs/fixture-design-15mc.md'
+m15_doc "$WT/$DOC15MC" 'CA:-:-:CA.txt' 'CB:CA:-:CB.txt' 'CC:-:CB:CC.txt'
+g15_run R15MC "$DOC15MC" "$plan15c" 리뷰없음
+m15_planned R15MC CA
+g15_mkwt R15MC CC
+g15_plan act R15MC CC 상태=계획됨 "워크트리=$(g15_wt R15MC CC)"
+# The refusal reads as an order of planning: a router maps the unknown-token
+# wording to "a new run with a `선행 착지` row", which is false for a slice the
+# document declares and nobody has planned yet. CB waits on its own `선행` CA,
+# which is planned and not landed, so "plan CB first" is not doable either:
+# the refusal names CA and says to defer.
+case "$rc/$msg" in
+  *"no earlier run ledger"*) bad "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" "rc=$rc $msg" ;;
+  2/*"declared in the frozen document and has no segment row on this ledger yet: 'CB'"*"no new run is needed"*) ok "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" ;;
+  *) bad "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" "rc=$rc $msg" ;;
+esac
+case "$msg" in
+  *"'CB' is held back by its own \`선행\` 'CA'"*"defer this slice until 'CB' has a row"*"a wait, not a stop"*) ok "15m: 앞 슬라이스가 자기 선행 에 막혀 있으면 거부가 그 선행 을 이름 대고 미루라고 한다" ;;
+  *) bad "15m: 앞 슬라이스가 자기 선행 에 막혀 있으면 거부가 그 선행 을 이름 대고 미루라고 한다" "$msg" ;;
+esac
+m15_planned R15MC CB
+g15_plan act R15MC CC 상태=계획됨 "워크트리=$(g15_wt R15MC CC)"
+check "15m: 앞 슬라이스를 계획한 뒤 같은 계획이 받힌다" "$rc" "0"
+m15_seg R15MC CA 상태=park 선행=없음
+cone15mc=$(m15_cone R15MC CA)
+case ",$cone15mc," in
+  *,CB,*) case ",$cone15mc," in *,CC,*) cone15m_ok=1 ;; *) cone15m_ok=0 ;; esac ;;
+  *) cone15m_ok=0 ;;
+esac
+case "$cone15m_ok" in
+  1) ok "15m: 섞인 사슬의 끝까지 cone 에 든다" ;;
+  *) bad "15m: 섞인 사슬의 끝까지 cone 에 든다" "$cone15mc" ;;
+esac
+
+# --- 계획 순서 거부의 처방: 막히지 않은 앞 슬라이스와 이 런의 대상이 아닌 앞 슬라이스 ---
+# EA 는 선행 이 없으니 먼저 계획하면 되고, 거부는 막는 선행 을 이름 대지 않는다.
+DOC15ME='docs/fixture-design-15me.md'
+m15_doc "$WT/$DOC15ME" 'EA:-:-:EA.txt' 'EB:-:EA:EB.txt'
+g15_run R15ME "$DOC15ME" "$plan15c" 리뷰없음
+g15_mkwt R15ME EB
+g15_plan act R15ME EB 상태=계획됨 "워크트리=$(g15_wt R15ME EB)"
+case "$rc/$msg" in
+  *"held back by its own"*|*"no earlier run ledger"*) bad "15m: 막히지 않은 앞 슬라이스면 거부가 그것을 먼저 계획하라고 한다" "rc=$rc $msg" ;;
+  2/*"defer this slice until 'EA' has a row: plan 'EA' first"*"no new run is needed"*) ok "15m: 막히지 않은 앞 슬라이스면 거부가 그것을 먼저 계획하라고 한다" ;;
+  *) bad "15m: 막히지 않은 앞 슬라이스면 거부가 그것을 먼저 계획하라고 한다" "rc=$rc $msg" ;;
+esac
+# FA 의 레포 는 이 런의 대상이 아니라 이 런에서 계획될 수 없다. 거부는 계획 순서가
+# 아니라 미지 토큰 문면이고, 그런 앞 슬라이스를 들이는 선행 착지 행을 이름 댄다.
+DOC15MF='docs/fixture-design-15mf.md'
+m15_doc "$WT/$DOC15MF" 'FA:-:-:FA.txt' 'FB:-:FA:FB.txt'
+awk '/^### 슬라이스 FA /{fa=1} /^### 슬라이스 FB /{fa=0} fa && /^\*\*레포\*\*: /{$0="**레포**: t/elsewhere"} {print}' \
+  "$WT/$DOC15MF" > "$WT/$DOC15MF.tmp" && mv "$WT/$DOC15MF.tmp" "$WT/$DOC15MF"
+g15_run R15MF "$DOC15MF" "$plan15c" 리뷰없음
+g15_mkwt R15MF FB
+g15_plan act R15MF FB 상태=계획됨 "워크트리=$(g15_wt R15MF FB)"
+case "$rc/$msg" in
+  *"defer this slice"*|*"no new run is needed"*) bad "15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다" "rc=$rc $msg" ;;
+  2/*"no earlier run ledger of the same document shows it landed: 'FA'"*"선행 착지"*) ok "15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다" ;;
+  *) bad "15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다" "rc=$rc $msg" ;;
+esac
+
+# --- 선언 결함: 그 슬라이스와 걸린 후행만 선다 --------------------------------
+# DB 는 머지 순서 앞 슬라이스 DA 와 파일이 겹치고, DE 는 뒤에 선언된 DF 를
+# 가리키고, DG 는 DA 를 두 목록에 함께 싣고, DH 는 사유가 없다. DC 는 아무 것에도
+# 걸리지 않는다.
+DOC15MD='docs/fixture-design-15md.md'
+m15_doc "$WT/$DOC15MD" 'DA:-:-:shared/' 'DB:-:DA:shared/b.txt' 'DC:-:-:DC.txt' \
+  'DE:-:DF:DE.txt' 'DF:-:-:DF.txt' 'DG:DA:DA:DG.txt' 'DH:-:DA:DH.txt:noreason'
+g15_run R15MD "$DOC15MD" "$plan15c" 리뷰없음
+m15_planned R15MD DA
+for s15m in DB DE DG DH; do
+  g15_mkwt R15MD "$s15m"
+  g15_plan act R15MD "$s15m" 상태=계획됨 "워크트리=$(g15_wt R15MD "$s15m")"
+  eval "r15md_$s15m=\"\$rc/\$(m15_slice_parks R15MD $s15m)/\$(g15_row R15MD $s15m | grep -c . || true)\""
+  eval "m15md_$s15m=\$msg"
+done
+check "15m: 겹치는 선언 파일은 그 슬라이스만 park 한다" "$r15md_DB" "3/1/0"
+case "$m15md_DB" in
+  *"슬라이스 DB: 머지 순서 선언 파일 겹침 「shared/」 — 슬라이스 DA"*) ok "15m: 그 거부는 겹친 접두와 상대 슬라이스를 든다" ;;
+  *) bad "15m 겹침 문면" "$m15md_DB" ;;
+esac
+check "15m: 뒤에 선언된 슬라이스를 가리키는 머지 순서 는 그 슬라이스만 park 한다" "$r15md_DE" "3/1/0"
+check "15m: 두 목록에 함께 든 토큰은 그 슬라이스만 park 한다" "$r15md_DG" "3/1/0"
+check "15m: 머지 순서 사유 가 없는 슬라이스는 그 슬라이스만 park 한다" "$r15md_DH" "3/1/0"
+m15_planned R15MD DC DF
+check "15m: 걸리지 않은 슬라이스는 같은 런에서 계획된다" \
+  "$(g15_row R15MD DC | grep -c '상태=계획됨' || true)/$(g15_row R15MD DF | grep -c '상태=계획됨' || true)" "1/1"
+
+# 폐포 서로소: 지금 정의대로의 세 사슬.
+m15_defects() {  # m15_defects <문서> — the gate's slice-owned defect lines for that document
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; slicing_order_defects "$2"' _ "$GATE" "$1" )
+}
+m15_doc "$WORK/m15-chain1.md" 'PA:-:-:p/' 'PB:-:PA:PB.txt' 'PC:-:PB:p/c.txt'
+check "15m: 머지 순서 사슬 끝의 겹침은 결함이다" "$(m15_defects "$WORK/m15-chain1.md" | grep -c '^슬라이스 PC: 머지 순서 선언 파일 겹침' || true)" "1"
+m15_doc "$WORK/m15-chain2.md" 'PA:-:-:p/' 'PB:PA:-:PB.txt' 'PC:-:PB:p/c.txt'
+check "15m: 머지 순서 뒤 선행 으로 닿는 겹침도 결함이다" "$(m15_defects "$WORK/m15-chain2.md" | grep -c '^슬라이스 PC: 머지 순서 선언 파일 겹침' || true)" "1"
+m15_doc "$WORK/m15-chain3.md" 'PA:-:-:p/' 'PB:-:PA:PB.txt' 'PC:PB:-:p/c.txt'
+check "15m: 선행 으로 시작하는 경로가 덮는 겹침은 결함이 아니다" "$(m15_defects "$WORK/m15-chain3.md" | grep -c . || true)" "0"
+
+# --- 다이제스트: 옛 블록은 바이트 같은 값을 낸다 -----------------------------
+# The constant is the five-line function's value for this block, taken once from
+# the run.sh of the commit before the field existed; the suite reads no history,
+# because the CI checkout is shallow.
+m15_doc "$WORK/m15-digest-a.md" 'MX:-:.:MX.txt'
+m15_doc "$WORK/m15-digest-b.md" 'MX:-:-:MX.txt'
+m15_digest() {
+  bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null 2>&1; set +eu; slice_decl_digest "$2" MX' _ \
+    "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$1"
+}
+check "15m: 머지 순서 줄이 없는 블록과 없음 인 블록의 다이제스트가 변경 전 함수의 값과 같다" \
+  "$(m15_digest "$WORK/m15-digest-a.md")/$(m15_digest "$WORK/m15-digest-b.md")" \
+  "05ef64bfd5ac95e861a6e32b158d53e579588f3f73a83a9d2941d83c828f4597/05ef64bfd5ac95e861a6e32b158d53e579588f3f73a83a9d2941d83c828f4597"
+m15_doc "$WORK/m15-digest-c.md" 'MX:-:MW:MX.txt'
+check "15m: 머지 순서 를 선언한 블록만 다이제스트가 움직인다" \
+  "$( [ "$(m15_digest "$WORK/m15-digest-c.md")" != "$(m15_digest "$WORK/m15-digest-a.md")" ] && echo 다름)" "다름"
+
+# --- 행 길이: 두 목록에 여섯씩 ------------------------------------------------
+DOC15ME='docs/fixture-design-15me.md'
+m15_doc "$WT/$DOC15ME" 'L01:-:-:L01.txt' 'L02:-:-:L02.txt' 'L03:-:-:L03.txt' 'L04:-:-:L04.txt' \
+  'L05:-:-:L05.txt' 'L06:-:-:L06.txt' 'L07:-:-:L07.txt' 'L08:-:-:L08.txt' 'L09:-:-:L09.txt' \
+  'L10:-:-:L10.txt' 'L11:-:-:L11.txt' 'L12:-:-:L12.txt' \
+  'L13:L01+L02+L03+L04+L05+L06:L07+L08+L09+L10+L11+L12:L13.txt'
+g15_run R15ME "$DOC15ME" "$plan15c" 리뷰없음
+m15_planned R15ME L01 L02 L03 L04 L05 L06 L07 L08 L09 L10 L11 L12 L13
+n15me=$( { grep '^- `segment` .*id=L13' "$(m15_ledger R15ME)" || true; } | awk 'NR==1' | wc -c | tr -d ' ')
+if [ "${n15me:-0}" -gt 0 ] && [ "${n15me:-0}" -le 1024 ]; then
+  ok "15m: 두 목록에 여섯씩 실은 계획 행이 행 길이 상한 안에 든다 (${n15me} 바이트)"
+else
+  bad "15m: 두 목록에 여섯씩 실은 계획 행이 행 길이 상한 안에 든다" "${n15me:-0} 바이트"
+fi
+
+# --- 가져오기: 앞 런과 매니페스트가 착지시킨 머지 순서 앞 슬라이스 ----------
+DOC15MF='docs/fixture-design-15mf.md'
+m15_doc "$WT/$DOC15MF" 'FX:-:-:FX.txt' 'FY:-:FX:FY.txt'
+m15mf=$(cd "$WT" && git rev-parse refs/heads/main)
+g15_run R15MF1 "$DOC15MF" "$plan15c" 리뷰없음
+( cd "$WT" && git worktree add -q -b "seg/R15MF1-FX" "$(g15_wt R15MF1 FX)" refs/heads/main ) >/dev/null 2>&1
+g15_plan act R15MF1 FX 상태=계획됨 "워크트리=$(g15_wt R15MF1 FX)"
+m15_seg R15MF1 FX 상태=머지됨 PR=7 "머지 커밋=$m15mf" 선행=없음
+g15_run R15MF2 "$DOC15MF" "$plan15c" 리뷰없음
+m15_planned R15MF2 FY
+check "15m: 앞 런이 착지시킨 머지 순서 앞 슬라이스를 들여온다" \
+  "$(seg_field "$(g15_row R15MF2 FX)" '상태')/$(seg_field "$(g15_row R15MF2 FX)" '출처')" "머지됨/R15MF1"
+m15_x plan R15MF2 FY --cutpoint 머지 --surface 외부상태변경 \
+  -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$(m15_tip R15MF2 FY)" -f merge_method=merge
+check "15m: 들여온 앞 슬라이스 때문에 머지가 순서 거부를 받지 않는다" "$(m15_held && echo 순서)" ""
+# A document no earlier run read, so only the manifest row can bring FX in.
+DOC15MF3='docs/fixture-design-15mf3.md'
+cp "$WT/$DOC15MF" "$WT/$DOC15MF3"
+g15_run R15MF3 "$DOC15MF3" "$plan15c" 리뷰없음
+printf -- '- `선행 착지` | 슬라이스=FX | 원격 슬러그=t/infra | 머지 커밋=%s\n' "$m15mf" >> "$WORK/plan-R15MF3.md"
+m15_planned R15MF3 FY
+check "15m: 선행 착지 행이 머지 순서 앞 슬라이스를 들여온다" \
+  "$(seg_field "$(g15_row R15MF3 FX)" '출처')" "매니페스트"
+m15_x plan R15MF3 FY --cutpoint 머지 --surface 외부상태변경 \
+  -- gh api -X PUT repos/t/infra/pulls/1/merge -f "sha=$(m15_tip R15MF3 FY)" -f merge_method=merge
+check "15m: 매니페스트로 들인 앞 슬라이스 때문에도 순서 거부가 없다" "$(m15_held && echo 순서)" ""
+
+# --- 앞 원장 선언 대조 -----------------------------------------------------------
+# GY landed in an earlier run under `머지 순서: 슬라이스 GX`; a document that
+# changed only that list does not take the landing in. A document that spells
+# the old block's missing line as `없음` does.
+DOC15MG='docs/fixture-design-15mg.md'
+m15_doc "$WT/$DOC15MG" 'GX:-:-:GX.txt' 'GY:-:GX:GY.txt'
+g15_run R15MG1 "$DOC15MG" "$plan15c" 리뷰없음
+( cd "$WT" && git worktree add -q -b "seg/R15MG1-GX" "$(g15_wt R15MG1 GX)" refs/heads/main \
+    && git worktree add -q -b "seg/R15MG1-GY" "$(g15_wt R15MG1 GY)" refs/heads/main ) >/dev/null 2>&1
+g15_plan act R15MG1 GX 상태=계획됨 "워크트리=$(g15_wt R15MG1 GX)"
+g15_plan act R15MG1 GY 상태=계획됨 "워크트리=$(g15_wt R15MG1 GY)"
+m15_seg R15MG1 GX 상태=머지됨 PR=8 "머지 커밋=$m15mf" 선행=없음
+m15_seg R15MG1 GY 상태=머지됨 PR=9 "머지 커밋=$m15mf" 선행=없음
+m15_doc "$WT/$DOC15MG" 'GX:-:-:GX.txt' 'GY:-:-:GY.txt'
+g15_run R15MG2 "$DOC15MG" "$plan15c" 리뷰없음
+m15_planned R15MG2 GY
+case "$(seg_field "$(g15_row R15MG2 GY)" '상태')/$msg" in
+  계획됨/*"슬라이스 선언 불일치"*) ok "15m: 머지 순서 만 다른 선언은 앞 런의 착지를 들이지 않는다" ;;
+  *) bad "15m: 머지 순서 만 다른 선언은 앞 런의 착지를 들이지 않는다" "$(g15_row R15MG2 GY) — $msg" ;;
+esac
+m15_doc "$WT/$DOC15MG" 'GX:-:.:GX.txt' 'GY:-:.:GY.txt'
+g15_run R15MG3 "$DOC15MG" "$plan15c" 리뷰없음
+g15_plan act R15MG3 GX 상태=계획됨 "워크트리=$(g15_wt R15MG3 GX)"
+m15_seg R15MG3 GX 상태=머지됨 PR=10 "머지 커밋=$m15mf" 선행=없음
+( cd "$WT" && git worktree add -q -b "seg/R15MG3-GX" "$(g15_wt R15MG3 GX)" refs/heads/main ) >/dev/null 2>&1
+g15_plan act R15MG3 GX 상태=계획됨 "워크트리=$(g15_wt R15MG3 GX)"
+m15_seg R15MG3 GX 상태=머지됨 PR=10 "머지 커밋=$m15mf" 선행=없음
+m15_doc "$WT/$DOC15MG" 'GX:-:-:GX.txt' 'GY:-:-:GY.txt'
+g15_run R15MG4 "$DOC15MG" "$plan15c" 리뷰없음
+g15_mkwt R15MG4 GX
+g15_plan act R15MG4 GX 상태=계획됨 "워크트리=$(g15_wt R15MG4 GX)"
+check "15m: 머지 순서 가 없음 인 새 선언은 그 줄이 없던 옛 선언의 착지를 들인다" \
+  "$rc/$(seg_field "$(g15_row R15MG4 GX)" '상태')/$(seg_field "$(g15_row R15MG4 GX)" '출처')" "0/머지됨/R15MG3"
+
+for r15m in R15MA:MX R15MA:MY R15MA:MZ R15MA:MW R15MB:NX R15MB:NY R15MB:NZ R15MB:NW \
+            R15MC:CA R15MC:CB R15MC:CC R15MD:DA R15MD:DB R15MD:DC R15MD:DE R15MD:DF R15MD:DG R15MD:DH \
+            R15ME:L01 R15ME:L02 R15ME:L03 R15ME:L04 R15ME:L05 R15ME:L06 R15ME:L07 R15ME:L08 \
+            R15ME:L09 R15ME:L10 R15ME:L11 R15ME:L12 R15ME:L13 R15MF1:FX R15MF2:FY R15MF3:FY \
+            R15MG1:GX R15MG1:GY R15MG2:GY R15MG3:GX R15MG4:GX; do
+  ( cd "$WT" && git worktree remove --force "$(g15_wt "${r15m%%:*}" "${r15m#*:}")" \
+      && git branch -D "seg/${r15m%%:*}-${r15m#*:}" ) >/dev/null 2>&1 || true
+done
+rm -f "$WT/$DOC15MA" "$WT/$DOC15MB" "$WT/$DOC15MC" "$WT/$DOC15MD" "$WT/$DOC15ME" "$WT/$DOC15MF" "$WT/$DOC15MF3" "$WT/$DOC15MG"
 
 # ---------------------------------------------------------------------------
 # 15h. A router dispatch carries the driver's document argument and spends the driver's cycle budget
@@ -23183,7 +23833,7 @@ ld29() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv
 sf29() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; surface_of_argv0 "$@"' _ "$GATE" "$@"; }
 cs29() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
-           if gate_collaboration_surface "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
+           if gate_collaboration_surface "" "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
 }
 check "29: 동사 앞 -b 를 지나 결속을 읽는다 (양성 대조)"      "$(mb gh pr -b x merge 1 --admin --match-head-commit "$H40")" "$H40"
 check "29: 동사 앞 결속 옵션도 gh 처럼 읽는다"                "$(mb gh pr --match-head-commit "$H40" merge 1 --admin)" "$H40"
@@ -24117,7 +24767,7 @@ done
 sp_ld() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; ladder_of_argv0 "$@"' _ "$GATE" "$@"; }
 sp_cs() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; GATE_GRADE_SOURCE=표
-           if gate_collaboration_surface "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
+           if gate_collaboration_surface "" "$@"; then echo 예; else echo 아니오; fi' _ "$GATE" "$@"
 }
 X32="0123456789abcdef0123456789abcdef01234567"
 q32m='mutation{mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}'
@@ -25179,6 +25829,11 @@ case "$a_shift_row" in
   *" | effort=medium | "*) ok "(a) 기동 행이 교대의 effort 를 싣는다" ;;
   *) bad "(a) 교대 기동 effort" "$a_shift_row" ;;
 esac
+# The model the argv requested rides on the row too — `sonnet` by default.
+case "$a_shift_row" in
+  *" | 모델=sonnet | "*) ok "(a) 기동 행이 교대의 모델을 싣는다" ;;
+  *) bad "(a) 교대 기동 모델" "$a_shift_row" ;;
+esac
 # THE LIVE STAGE IS STILL THERE AFTERWARDS. The launch did not touch it — the
 # stage's liveness is the supervisor's business, not the shift launcher's.
 check "(a) 기동이 살아 있는 스테이지를 건드리지 않는다" \
@@ -25404,14 +26059,16 @@ out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
       -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5" 2>&1); rc=$?
 check "(f) 지침 주입 픽스처의 교대가 기동한다" "$rc" "0"
 f_shift_f=$(si_argv_value "$WORK/shift-argv.txt" --append-system-prompt-file)
-check "(f) 교대 argv 의 두 append 플래그가 같은 파일을 가리킨다" "$(si_argv_value "$WORK/shift-argv.txt" --append-subagent-system-prompt-file)" "$f_shift_f"
+check "(f) 교대 argv 의 서브에이전트 append 는 리드 파일 옆 포인터의 팀원 파일이다" \
+  "$(si_argv_value "$WORK/shift-argv.txt" --append-subagent-system-prompt-file)" "$(head -n 1 "${f_shift_f%.md}.member" 2>/dev/null)"
+check "(f) 교대 환경에 서브에이전트 append 활성 변수가 서 있다" "$(sed -n 's/^SUB=//p' "$WORK/shift-env.txt")" "1"
 case "$f_shift_f" in
   "$SHIFT_DIR/instructions/"*.md) ok "(f) 교대의 합성 파일도 런 디렉터리 instructions/ 아래다" ;;
   *) bad "(f) 교대 합성 파일 위치" "$f_shift_f" ;;
 esac
 check "(f) 교대 argv 에 동적 절 제외가 있다" "$(si_argv_has "$WORK/shift-argv.txt" --exclude-dynamic-system-prompt-sections)" "1"
-check "(f) 교대 argv 가 shift 종류의 effort 와 opus 를 싣는다" \
-  "$(si_argv_value "$WORK/shift-argv.txt" --effort):$(si_argv_value "$WORK/shift-argv.txt" --model)" "medium:opus"
+check "(f) 교대 argv 가 shift 종류의 effort 와 sonnet 을 싣는다" \
+  "$(si_argv_value "$WORK/shift-argv.txt" --effort):$(si_argv_value "$WORK/shift-argv.txt" --model)" "medium:sonnet"
 check "(f) 교대 환경에 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/shift-env.txt")" "1"
 check "(f) 교대도 자동 메모리는 끄지 않는다" "$(sed -n 's/^MEM=//p' "$WORK/shift-env.txt")" "unset"
 f_shift_sid=$(si_argv_value "$WORK/shift-argv.txt" --session-id)
@@ -28385,6 +29042,15 @@ n=$(grep -c '스코프=act' "$FX_LEDGER" 2>/dev/null || true)
 # 텍스트 셋은 고정부를 실제로 재고 남는 바이트로 자른다.
 n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
 [ "${n:-0}" -le 1024 ] && ok "park blocked 행이 원장 행 상한 안이다 (최장 ${n}B)" || bad "park blocked 행 길이" "최장 ${n}B > 1024"
+# 표지는 git 이 읽는 자리의 하위 명령에서 읽는다. 전역 플래그가 앞서면 `push`·
+# `credential` 이 둘째 낱말이 아니어서, `git -C <x> push --force` 와 `git -c a=b
+# credential fill` 은 맨 철자가 받는 표지를 받지 못했다. 맨 철자가 짝으로 든다.
+m54() { ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_act_mark "$@" | tr "\t" "/"' _ "$GATE" "$@" ); }
+check "맨 철자 대조군 — git push --force 는 파괴 표지를 받는다" "$(m54 git push --force origin b)" "파괴/--force"
+check "전역 플래그 뒤의 git push --force 도 파괴 표지를 받는다" "$(m54 git -C /x push --force origin b)" "파괴/--force"
+check "등호 위치 플래그 뒤의 git push +refspec 도 파괴 표지를 받는다" "$(m54 git --git-dir=/x/.git push origin +b)" "파괴/+b"
+check "맨 철자 대조군 — git credential fill 은 비밀출력 표지를 받는다" "$(m54 git credential fill)" "비밀출력/fill"
+check "-c 뒤의 git credential fill 도 비밀출력 표지를 받는다" "$(m54 git -c a=b credential fill)" "비밀출력/fill"
 # 켠 스위치는 절 안에서 되돌린다 — 되돌리지 않으면 같은 샤드에서 이 절 뒤에 도는
 # 절이 자동 해소 모드로 돌아, 표 등급 행위마다 --reach 를 요구받고 rc 2 로 끝난다.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
@@ -28445,6 +29111,266 @@ case "$msg" in
   *) bad "그 거부가 리뷰 룰의 것이다" "$msg" ;;
 esac
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
+
+# ---------------------------------------------------------------------------
+# 55b. git 전역 플래그 철자 — 같은 행위의 두 철자가 같은 처분을 받는다
+# --- section: 55b | group: reach | covers: plan, exec | anchors: -C 대상 워크트리 push 가 통과 예상이다 ---
+# ---------------------------------------------------------------------------
+#
+# 게이트가 git argv 를 둘째 낱말로 읽던 자리는 `git -C <워크트리> push` 와
+# `git --git-dir=<g> --work-tree=<w> push` 를 push 로 보지 못했다. 그래서 대상
+# 워크트리로 가는 두 철자가 도달모순으로 park 되고, 사전 인가 대조기는 `-…=` 낱말을
+# 버려 다른 저장소를 가리키는 등호 철자를 `git push` 행에 맞췄다. 이 절은 그 두
+# 방향을 함께 못박는다: 대상 안을 가리키는 철자는 맨 철자와 같은 처분을 받고, 대상
+# 밖이거나 못 읽는 플래그를 실은 철자는 협업도 사전 인가도 받지 않는다.
+#
+# 원격 슬러그를 맞춰야 하므로 공유 픽스처(원격이 로컬 베어 경로)를 쓰지 않고 자기
+# 저장소를 만든다. 원격 URL 이 https 라도 `plan` 은 베이스 갱신을 재려고 게이트의
+# `git push --dry-run` 을 그 원격으로 보낸다 — dry-run 도 전송을 열고 자격 증명
+# 도우미를 부른다. 그래서 이 절 동안 `GIT_ALLOW_PROTOCOL=file` 로 전송이 기기를
+# 떠나지 못하게 하고, `HOME` 을 픽스처로 돌려 개발자 전역 git 설정(도우미·
+# `insteadOf`·`push.default`)이 판정에 스며들지 않게 한다. `GIT_CONFIG_*` 는 포함
+# 술어가 그 변수의 존재만으로 거짓이 되므로 쓰지 않는다. `GIT_TRACE` 기록으로
+# 원격 헬퍼가 한 번도 뜨지 않았음을 절 끝에서 단언한다.
+CC_GATE_PREV_AR55B="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+S55B="$(cd -P "$WORK" && pwd)/s55b"
+S55B_R="$S55B/repo"; S55B_W="$S55B/wt"; S55B_O="$S55B/other"
+mkdir -p "$S55B/home"
+CC_GATE_PREV_HOME55B="$HOME"
+CC_GATE_PREV_GAP55B="${GIT_ALLOW_PROTOCOL-__unset__}"
+CC_GATE_PREV_GTR55B="${GIT_TRACE-__unset__}"
+export HOME="$S55B/home" GIT_ALLOW_PROTOCOL=file GIT_TRACE="$S55B/git-trace.log"
+( git init -q "$S55B_R" && cd "$S55B_R" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && mkdir -p docs/pipeline-run docs/pipeline-grant \
+  && echo a > a.txt && git add -A && git commit -qm a && git branch -M main \
+  && git remote add origin https://github.com/t/s55b.git \
+  && git remote add fork https://github.com/me/fork.git \
+  && git config branch.main.remote origin && git config branch.main.merge refs/heads/main \
+  && git branch up-fork && git config branch.up-fork.remote fork \
+  && git config branch.up-fork.merge refs/heads/up-fork \
+  && git worktree add -q -b seg/x "$S55B_W" ) >/dev/null 2>&1
+( git init -q "$S55B_O" && cd "$S55B_O" \
+  && git config user.email t@example.invalid && git config user.name T \
+  && echo o > o.txt && git add -A && git commit -qm o && git branch -M main \
+  && git remote add origin https://github.com/o/other.git ) >/dev/null 2>&1
+S55B_CG=$(cd "$S55B_R" && git rev-parse --path-format=absolute --git-common-dir)
+S55B_WG=$(cd "$S55B_W" && git rev-parse --absolute-git-dir)
+S55B_M="$S55B_R/plan55b.md"
+S55B_RULE="$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh"
+row55b="- \`target\` | 별칭=s55b | 메인 워크트리=$S55B_R | 공통 git 디렉터리=$S55B_CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/s55b | 절단점=배포 | 말단 행위 상한=없음"
+td55b=$(printf '%s\n' "$row55b" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+s55b_manifest() {
+  # s55b_manifest [<구속 다이제스트>] — the fixture manifest, with the digest line
+  # inside `## 인가` when one is given.
+  printf '# 파이프라인 런 매니페스트 — R55B\n'
+  printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=R55B;\n'
+  printf '     anchor-kind=repo; anchor-key=t/s55b;\n'
+  printf '     owner-doc=(없음); origin-worktree=%s;\n' "$S55B_R"
+  printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+  printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: R55B\n'
+  printf '**앵커 종류**: repo\n**앵커 키**: t/s55b\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+  printf '## 의도\n```text\n테스트\n```\n\n'
+  printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td55b" "$row55b"
+  printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+  printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n{ "steps": [] }\n```\n\n'
+  printf '## 인가\n'
+  [ -z "${1:-}" ] || printf '**구속 다이제스트**: %s\n' "$1"
+  printf '**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
+  printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+  printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+  printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
+  printf -- '- `사전 인가` | 형태=terraform apply | 사유=테스트\n'
+}
+s55b_manifest > "$S55B_M"
+bd55b=$(cd "$S55B_R" && bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1"; MANIFEST="$2"; binding_set_bytes | shasum -a 256 | cut -d" " -f1' \
+  _ "$RUNSH" "$S55B_M" 2>/dev/null)
+s55b_manifest "$bd55b" > "$S55B_M"
+{
+  printf '# 파이프라인 인가 기록 — R55B\n'
+  printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$S55B_R"
+  printf '## 인가 R55B\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n'
+  printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+  printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+  printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/R55B.md\n' "$S55B_R"
+} > "$S55B_R/docs/pipeline-grant/R55B.md"
+
+# `s55b_plan <cutpoint> <argv…>` 은 공유 `gate` 와 같은 모양으로 `rc`·`msg` 를 남기되,
+# 이 절의 저장소에서 돈다 — 매니페스트 검사는 cwd 의 작업 트리를 origin-worktree 와
+# 대조한다. stderr 는 `s55b_err` 에 따로 남겨 `dirname` 소음을 잰다.
+s55b_err=""
+s55b_plan() {
+  local cut="$1" out; shift
+  out=$(cd "$S55B_R" && gate_inproc plan --manifest "$S55B_M" --target s55b --cutpoint "$cut" \
+          --surface 외부상태변경 --reach 협업 -- "$@" 2>"$S55B/plan.err"); rc=$?
+  s55b_err=$(cat "$S55B/plan.err")
+  msg=$(printf '%s\n%s' "$out" "$s55b_err" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+# 소싱한 게이트의 한 함수를 이 절의 매니페스트로 부른다. 첫 인자는 함수 뒤에 붙일
+# 셸 조각이다 — 참·거짓을 값으로 바꾸거나 출력을 그대로 둔다.
+s55b_fn() {
+  local tail="$1"; shift
+  ( cd "$S55B_R" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; t="$3"; shift 3
+      eval "\"\$@\" $t"' _ "$GATE" "$S55B_M" "$tail" "$@" 2>/dev/null )
+}
+# 게이트 처분 경로가 대조기에 넘기는 그 문자열로 사전 인가를 묻는다(gate.sh 의
+# 처분 7단계 앞과 같은 세 줄). 규칙 파일을 직접 부르는 탐침이 아니다.
+s55b_p() {
+  ( cd "$S55B_R" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; r="$3"; a="$4"; shift 4
+      GATE_PREAUTH_PROBE=1 GATE_MARK= GATE_MARK_TRIGGER= GATE_ARGV="$(gate_preauth_argv "$a" "$@")" \
+        GATE_MANIFEST="$MANIFEST" /bin/sh "$r" 2>/dev/null' _ "$GATE" "$S55B_M" "$S55B_RULE" "$@" \
+    | sed -n 's/^\(P=[01]\).*/\1/p' )
+}
+s55b_rm() { s55b_fn '&& printf 일치 || printf 불일치' gate_push_remote_match s55b "$@"; }
+
+# 1 — 대상 안을 가리키는 두 철자(351e739d 의 `-C`, 513e903b 의 `--git-dir=`·
+# `--work-tree=`)는 도달모순 없이 통과하고 `git push` 행에 맞는다.
+s55b_plan push git -C "$S55B_W" push origin seg/x
+check "-C 대상 워크트리 push 가 통과 예상이다" "$rc" "0"
+s55b_plan push git --git-dir="$S55B_WG" --work-tree="$S55B_W" push origin seg/x
+check "--git-dir=·--work-tree= 대상 워크트리 push 가 통과 예상이다" "$rc" "0"
+case "$s55b_err" in
+  *"illegal option"*|*"unrecognized option"*) bad "-- 로 시작하는 낱말이 dirname 소음을 내지 않는다" "$s55b_err" ;;
+  *) ok "-- 로 시작하는 낱말이 dirname 소음을 내지 않는다" ;;
+esac
+check "-C 대상 워크트리 push 가 git push 행에 맞는다" "$(s55b_p s55b git -C "$S55B_W" push origin seg/x)" "P=1"
+check "등호 위치 플래그 대상 워크트리 push 가 git push 행에 맞는다" \
+  "$(s55b_p s55b git --git-dir="$S55B_WG" --work-tree="$S55B_W" push origin seg/x)" "P=1"
+check "공백 위치 플래그 대상 워크트리 push 도 같다" \
+  "$(s55b_p s55b git --git-dir "$S55B_WG" --work-tree "$S55B_W" push origin seg/x)" "P=1"
+check "다시 쓴 사전 인가 문자열은 git <서브커맨드 이후> 다" \
+  "$(s55b_fn '' gate_preauth_argv s55b git -C "$S55B_W" push origin seg/x)" "git push origin seg/x"
+
+# 2 — 대상 밖이거나 못 읽는 플래그를 실은 철자는 사전 인가에 맞지 않는다(R1).
+s55b_n=0
+for s55b_a in "-C|$S55B_O|push|origin|main" \
+              "--git-dir=$S55B_CG|--work-tree=$S55B_O|push|origin|seg/x" \
+              "-C|$S55B/nope|push|origin|seg/x" \
+              "-C|$S55B_W|-c|remote.origin.pushurl=https://github.com/o/x.git|push|origin|seg/x" \
+              "--git-dir=$S55B_O/.git|--work-tree=$S55B_O|push|origin|x" \
+              "--git-dir|$S55B_O/.git|--work-tree|$S55B_O|push|origin|x" \
+              "--namespace=n|push|origin|seg/x"; do
+  s55b_n=$((s55b_n + 1))
+  IFS='|' read -r -a s55b_w <<< "$s55b_a"
+  check "대상 밖·못 읽는 철자 $s55b_n (git ${s55b_w[*]}) 은 git push 행에 맞지 않는다" \
+    "$(s55b_p s55b git "${s55b_w[@]}")" "P=0"
+  s55b_plan push git "${s55b_w[@]}"
+  case "$rc" in
+    0) bad "대상 밖·못 읽는 철자 $s55b_n 은 통과 예상이 아니다" "$msg" ;;
+    *) ok "대상 밖·못 읽는 철자 $s55b_n 은 통과 예상이 아니다 (rc=$rc)" ;;
+  esac
+done
+# 도착지가 베이스 이름이면 머지 칸 상향(8)이 먼저 서므로, 원격 대조만 재려고 베이스
+# 아닌 도착지를 쓴다.
+s55b_plan push git -C "$S55B_O" push origin seg/x
+check "-C 다른 저장소 push 는 원격 불일치 승인 대상이다" "$rc" "5"
+case "$msg" in *push원격불일치*) ok "그 거절이 push원격불일치다" ;; *) bad "그 거절이 push원격불일치다" "$msg" ;; esac
+s55b_plan push git --git-dir="$S55B_CG" --work-tree="$S55B_O" push origin seg/x
+case "$msg" in *도달모순*|*"it was not issued"*) ok "대상 밖 작업 트리 push 는 협업이 아니다" ;; *) bad "대상 밖 작업 트리 push 는 협업이 아니다" "rc=$rc $msg" ;; esac
+# 대상 메인 워크트리도 대상 안이다. 그곳에서 베이스로 가는 push 는 전역 플래그를
+# 실은 채 현재 가지·도착지를 읽어 머지 칸으로 오른다.
+s55b_plan push git -C "$S55B_R" push origin main
+check "메인 워크트리에서 베이스로 가는 -C push 는 머지 칸 상향이다" "$rc" "8"
+s55b_plan push git -C "$S55B_R" push
+check "refspec 없는 -C push 도 그 워크트리의 가지(베이스)로 머지 칸에 오른다" "$rc" "8"
+
+# 3 — 다시 쓰지 않는 git argv 는 서브커맨드 앞의 `-…=<값>` 만 갈라 넘긴다.
+check "대상 밖 등호 플래그는 두 낱말로 갈려 넘겨진다" \
+  "$(s55b_fn '' gate_preauth_argv s55b git --git-dir="$S55B_O/.git" push origin x)" "git --git-dir $S55B_O/.git push origin x"
+check "별칭 없는 호출처도 같은 가르기를 받는다" \
+  "$(s55b_fn '' gate_preauth_argv '' git --work-tree=/w push origin x)" "git --work-tree /w push origin x"
+check "서브커맨드 뒤의 -…= 낱말은 가르지 않는다" \
+  "$(s55b_fn '' gate_preauth_argv s55b git push --push-option=x origin seg/x)" "git push --push-option=x origin seg/x"
+check "서브커맨드 뒤 -…= 낱말을 실은 push 의 대조가 오늘과 같다" \
+  "$(s55b_p s55b git push --push-option=x origin seg/x)" "P=1"
+check "git 밖의 도구는 그대로 넘겨진다" \
+  "$(s55b_fn '' gate_preauth_argv s55b terraform -chdir=infra apply)" "terraform -chdir=infra apply"
+# 대조기는 행 범위 안에 떨어진 = 단어를 일치로 보지 않으므로(83c 와 같은 판정)
+# `terraform apply` 행은 `-chdir=infra` 를 실은 행위를 열지 않는다.
+check "terraform -chdir= 의 대조가 오늘과 같다" "$(s55b_p s55b terraform -chdir=infra apply)" "P=0"
+
+# 4 — 못 읽는 플래그는 처분 경로 맨 앞에서 형태 미상으로 선다(R3).
+for s55b_a in "--exec-path=/x|push|origin|seg/x" \
+              "--config-env=remote.origin.pushurl=X|push|origin|seg/x" \
+              "-c|core.sshCommand=x|push|origin|seg/x"; do
+  IFS='|' read -r -a s55b_w <<< "$s55b_a"
+  s55b_plan push git "${s55b_w[@]}"
+  check "못 읽는 플래그 철자 (git ${s55b_w[*]}) 는 형태 미상 exit 2 다" "$rc" "2"
+  case "$msg" in
+    *"형태 미상"*) ok "그 거절이 형태 미상을 이름으로 말한다 (git ${s55b_w[*]})" ;;
+    *) bad "그 거절이 형태 미상을 이름으로 말한다 (git ${s55b_w[*]})" "$msg" ;;
+  esac
+  case "$msg" in
+    *"사전 인가"*) bad "그 거절에 사전 인가 문면이 없다 (git ${s55b_w[*]})" "$msg" ;;
+    *) ok "그 거절에 사전 인가 문면이 없다 (git ${s55b_w[*]})" ;;
+  esac
+done
+
+# 5 — 원격 대조는 git 이 실제로 쓸 목적지로 하고, 풀리지 않으면 불일치다.
+check "맨 철자 대조군 — origin push 는 일치다" "$(s55b_rm git push origin seg/x)" "일치"
+check "-C 대상 워크트리 push 도 일치다" "$(s55b_rm git -C "$S55B_W" push origin seg/x)" "일치"
+check "푸시 옵션 값은 원격으로 읽히지 않는다" "$(s55b_rm git push --push-option ci.skip origin seg/x)" "일치"
+s55b_n=0
+for s55b_a in "--repo=https://github.com/o/x.git" \
+              "--repo|https://github.com/o/x.git" \
+              "$S55B_O|main" \
+              "./rel|main" \
+              "file://$S55B_O|main" \
+              "nosuch|main" \
+              "-o|https://github.com/t/s55b.git|$S55B_O|main"; do
+  s55b_n=$((s55b_n + 1))
+  IFS='|' read -r -a s55b_w <<< "$s55b_a"
+  check "원격 대조 구멍 $s55b_n (git push ${s55b_w[*]}) 은 불일치다" "$(s55b_rm git push "${s55b_w[@]}")" "불일치"
+done
+check "-C 다른 저장소 push 는 불일치다" "$(s55b_rm git -C "$S55B_O" push origin main)" "불일치"
+check "-c remote.origin.pushurl= 은 실제 목적지로 반영돼 불일치다" \
+  "$(s55b_rm git -c remote.origin.pushurl=https://github.com/o/x.git push origin seg/x)" "불일치"
+# 원격을 생략한 push 는 현재 가지의 푸시 원격으로 푼다(R4).
+check "(가) 상류가 매니페스트 원격인 가지의 원격 생략 push 는 일치다" \
+  "$(cd "$S55B_R" && git checkout -q main && s55b_rm git push)" "일치"
+check "(가) 상류가 다른 원격인 가지의 원격 생략 push 는 불일치다" \
+  "$(cd "$S55B_R" && git checkout -q up-fork && s55b_rm git push; git checkout -q main)" "불일치"
+check "(나) -c remote.pushDefault=<다른 원격> 은 원격 이름을 바꿔 불일치다" \
+  "$(cd "$S55B_R" && s55b_rm git -c remote.pushDefault=fork push)" "불일치"
+check "(다) 상류도 푸시 원격도 없는 가지의 푸시 원격은 빈 값이다" \
+  "$(cd "$S55B_W" && git for-each-ref --format='%(push:remotename)' refs/heads/seg/x)" ""
+check "(다) 그 빈 값은 불일치다" "$(s55b_rm git -C "$S55B_W" push)" "불일치"
+
+# 6 — 행위 환경의 git 위치 변수는 플래그 판독을 넘어서므로, 그 아래에서는 포함
+# 술어가 거짓이고 원격 질의도 그 변수가 가리키는 저장소를 본다.
+check "GIT_DIR 아래의 -C 대상 워크트리 push 는 포함 술어가 거짓이다" \
+  "$(GIT_DIR="$S55B_O/.git" s55b_fn '&& printf 참 || printf 거짓' gate_git_argv_in_target s55b git -C "$S55B_W" push origin seg/x)" "거짓"
+check "GIT_DIR 아래의 -C 대상 워크트리 push 는 협업이 아니다" \
+  "$(GIT_DIR="$S55B_O/.git" GATE_GRADE_SOURCE=표 s55b_fn '&& printf 협업 || printf 아님' gate_collaboration_surface s55b - git -C "$S55B_W" push origin seg/x)" "아님"
+check "GIT_DIR 아래의 -C 대상 워크트리 push 는 다시 쓰이지 않는다" \
+  "$(GIT_DIR="$S55B_O/.git" s55b_p s55b git -C "$S55B_W" push origin seg/x)" "P=0"
+check "GIT_DIR 아래의 맨 철자 push 는 원격 불일치다" \
+  "$(GIT_DIR="$S55B_O/.git" s55b_rm git push origin seg/x)" "불일치"
+check "대조군 — 변수 없는 같은 포함 술어는 참이다" \
+  "$(s55b_fn '&& printf 참 || printf 거짓' gate_git_argv_in_target s55b git -C "$S55B_W" push origin seg/x)" "참"
+
+# 7 — 위치 플래그의 값은 두 철자 모두 경로 낱말로 훑는다.
+check "git --work-tree=\$HOME/.claude status 의 유도 도달은 기기전역이다" \
+  "$(s55b_fn '' gate_reach_derived s55b git --work-tree="$HOME/.claude" status)" "기기전역"
+check "git --work-tree \$HOME/.claude status 의 유도 도달도 기기전역이다" \
+  "$(s55b_fn '' gate_reach_derived s55b git --work-tree "$HOME/.claude" status)" "기기전역"
+check "git -C <x> stash 는 stash 로 읽혀 기기전역이다" \
+  "$(s55b_fn '' gate_reach_derived s55b git -C "$S55B_W" stash)" "기기전역"
+
+# 8 — 이 절의 어떤 git 호출도 기기 밖 전송을 열지 않았다. 대조군으로 dry-run 이
+# 실제로 돌았는지(기록에 `--dry-run` 이 있는지)를 먼저 본다 — 그것이 없으면
+# 헬퍼 부재는 아무것도 배제하지 못한다.
+case "$(cat "$S55B/git-trace.log" 2>/dev/null)" in
+  *"--dry-run"*) ok "대조군 — 이 절의 계획이 게이트의 push dry-run 을 실제로 불렀다" ;;
+  *) bad "대조군 — 이 절의 계획이 게이트의 push dry-run 을 실제로 불렀다" "추적 기록에 --dry-run 없음" ;;
+esac
+check "이 절의 git 호출은 원격 전송 헬퍼를 한 번도 띄우지 않는다" \
+  "$(grep -cE 'remote-(https?|ftps?)|git-remote-http|credential' "$S55B/git-trace.log" 2>/dev/null)" "0"
+export HOME="$CC_GATE_PREV_HOME55B"
+if [ "$CC_GATE_PREV_GAP55B" = __unset__ ]; then unset GIT_ALLOW_PROTOCOL; else export GIT_ALLOW_PROTOCOL="$CC_GATE_PREV_GAP55B"; fi
+if [ "$CC_GATE_PREV_GTR55B" = __unset__ ]; then unset GIT_TRACE; else export GIT_TRACE="$CC_GATE_PREV_GTR55B"; fi
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55B"
 
 # ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질
@@ -33780,7 +34706,7 @@ p83g() {
   bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; m="$2"; r="$3"; shift 3
     mk=$(gate_act_mark "$@")
     GATE_PREAUTH_PROBE=1 GATE_MARK="${mk%%	*}" GATE_MARK_TRIGGER="${mk#*	}" \
-      GATE_ARGV="$(gate_preauth_argv "$@")" GATE_MANIFEST="$m" /bin/sh "$r" 2>/dev/null' \
+      GATE_ARGV="$(gate_preauth_argv "" "$@")" GATE_MANIFEST="$m" /bin/sh "$r" 2>/dev/null' \
     _ "$GATE" "$m83" "$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh" "$@"
 }
 p83m() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; mk=$(gate_act_mark "$@"); printf "%s" "${mk%%	*}"' _ "$GATE" "$@"; }

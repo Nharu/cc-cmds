@@ -26,8 +26,10 @@
 # Usage:
 #   bash stage-policy-drift.sh [--sources-map <file>] [--plugin-root <dir>]
 #                              [--config-dir <dir>]... [--ack-store <dir>]
+#                              [--workspace <file>]
 #                              [--explain] [--ack]
 #                              [--ack-added <anchor prefix> <disposition>]
+#   bash stage-policy-drift.sh --identity <file> [--ack-store <dir>]
 #
 #   The manifest is `stage-policy.sources.tsv` next to this script. The
 #   user-scope source is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md` — the
@@ -36,14 +38,51 @@
 #   each, compared in turn under a `config-dir <dir>` line, and a named
 #   directory with no CLAUDE.md is a `missing` finding rather than a `SKIP`.
 #   The last line is the verdict over every directory. The
-#   workspace source is the path the host map's `workspace` line names; the
-#   map defaults to `~/.config/cc-cmds/stage-policy-sources` and holds
-#   `<source-id><TAB><absolute path>` lines. One map line therefore does two
-#   jobs: it excludes the file from stage synthesis and it tells this checker
-#   where the source is. A host that keeps the workspace file in the chain has
-#   no such line, so its `workspace` rows are always `SKIP` — accepted, because
-#   that host injects the source verbatim and loses nothing when the
-#   distillation goes stale.
+#   workspace source is the file `--workspace` names, else the path the host
+#   map's `workspace` line names; the map defaults to
+#   `~/.config/cc-cmds/stage-policy-sources` and holds
+#   `<source-id><TAB><absolute path>` lines. A map line with any source id but
+#   `keep` excludes the file from stage synthesis outright, and its `workspace`
+#   line also tells this checker where the source is. A `keep` line puts the
+#   file into every stage's chain verbatim and switches the identity judgment
+#   below off for it. With neither a `workspace` line nor `--workspace`, the
+#   `workspace` rows are `SKIP`.
+#
+#   --workspace <file>
+#                 compare the workspace rows against <file> without a map. In
+#                 this form only, an `excluded:*` row's body is compared too,
+#                 a host-local one recorded with `--ack-added` as well as a
+#                 manifest row: the gate leaves such a file out of a stage by
+#                 the identity judgment below, which hashes every body, so a
+#                 body edit is reported `changed` under `--explain` and
+#                 recorded by `--ack` at its new hash. A source found through the map, and the
+#                 user-scope source, still check an `excluded:*` row by its
+#                 anchor alone: a mapped file is excluded whatever it says.
+#
+#   --identity <file>
+#                 the gate's judgment for an ancestor instruction file outside
+#                 the target repository that no map line names: exit 0 means
+#                 the file may be left out of a stage's chain, because the
+#                 policy and the manifest already account for every section of
+#                 it. All three must hold — (a) no line that is not blank
+#                 stands before the first `# ` or `## ` heading, since such
+#                 text is in no row's hash; (b) every section, split as the
+#                 `workspace` source is split, matches one `workspace` row by
+#                 its verbatim heading and is fresh: its body hashes to the
+#                 manifest hash, or the store holds (workspace, anchor,
+#                 sha256) — for `excluded:*` rows as for `policy:*` rows — or
+#                 it resolves to a host-local disposition recorded with
+#                 `--ack-added`, whose prefix matches that section alone of
+#                 the file and whose body hashes to a sha256 the store holds
+#                 for it (the one `--ack-added` recorded, or a later `--ack`);
+#                 (c) the row's disposition is `policy:*` or `excluded:*`, or a
+#                 host-local `excluded:*`. A file with at least
+#                 one heading equal to a `workspace` anchor is identified as
+#                 the workspace source; when an identified file fails, one line
+#                 per breaking section (the heading, both hashes, or `added
+#                 section`) goes to stderr. A file that is not identified
+#                 fails silently with exit 1. Never a drift verdict and never
+#                 a store write.
 #
 #   A `plugin` row locates its source in the manifest itself: the anchor is
 #   `<path>:<line prefix>`, split at the first `:`, and <path> is relative to
@@ -60,7 +99,9 @@
 #                 the current body. Every such line is indented by two spaces;
 #                 it is not a finding and is not counted in the verdict.
 #   --ack         record every finding a person can acknowledge — `changed` on a
-#                 `policy:*` or `skill:*` row at its current hash, `removed` on
+#                 `policy:*` or `skill:*` row at its current hash (and, under
+#                 `--workspace`, on an `excluded:*` workspace row too, host-local
+#                 or not), `removed` on
 #                 an `excluded:*` row at hash `-` — then store the current body of
 #                 every resolved row, then compare again and print as usual. It
 #                 records every pending finding at once; there is no per-row
@@ -100,7 +141,11 @@
 # manifest hash or the store holds the same (source, anchor, sha256). An
 # `excluded:*` row's body reaches no stage, so only its anchor is checked: it
 # is fresh when the anchor resolves to exactly one item, or when it resolves to
-# none and the store holds (source, anchor, `-`). A store row whose disposition
+# none and the store holds (source, anchor, `-`). Under `--workspace` a
+# workspace `excluded:*` row, a host-local one included, is compared like a
+# `policy:*` row as well, because
+# there the gate's identity judgment is what keeps the body out of a stage, and
+# that judgment hashes it. A store row whose disposition
 # is `excluded:*` or `skill:*` and whose anchor is no manifest anchor is a
 # host-local disposition: it is compared by the same rules and the item it
 # resolves to is not `added`. When it resolves to nothing it is ignored,
@@ -139,7 +184,8 @@
 #
 # Exit codes: 0 — `match` or `skipped`; 1 — `mismatch`; 2 — the manifest, the
 # map or the store is malformed, or an acknowledgement was refused (the check
-# or the record could not be carried out; never a drift verdict).
+# or the record could not be carried out; never a drift verdict). Under
+# `--identity`: 0 — leave the file out; 1 — keep it; 2 — as above.
 #
 # Compatibility: bash 3.2, no python, no perl. Hashes use the gate's idiom
 # `shasum -a 256 | cut -d' ' -f1`. `LC_ALL=C` so that `${#s}` and `${s:0:n}`
@@ -298,6 +344,8 @@ ADDED_ITEMS=""
 ALL_ITEMS=""
 # the directories `--config-dir` named, in order; empty means the derivation
 CONFIG_DIRS=()
+# the file `--workspace` named; empty means the host map locates the source
+WORKSPACE_FILE=""
 
 # load_store — reads acks.tsv into ACKS; an absent store reads as empty.
 load_store() {
@@ -403,8 +451,13 @@ compare_source() {
         printf 'non-unique %s %s\n' "$source" "$anchor"; findings=$((findings + 1))
       else
         RESOLVED="$RESOLVED$found_hash"$'\n'
-        # an excluded row's body reaches no stage: its anchor is all that is checked
-        case "$adisp" in excluded:*) continue ;; esac
+        # an excluded row's body reaches no stage: its anchor is all that is
+        # checked — except a workspace row under `--workspace`, table or
+        # host-local, whose body the gate's identity judgment hashes
+        case "$adisp" in
+          excluded:*)
+            [ -n "$WORKSPACE_FILE" ] && [ "$source" = workspace ] || continue ;;
+        esac
         [ "$akind" = table ] && [ "$found_hash" = "$asha" ] && continue
         acked "$source" "$anchor" "$found_hash" && continue
         ACK_PENDING="${ACK_PENDING}${source}	${anchor}	${found_hash}	${adisp}"$'\n'
@@ -499,9 +552,15 @@ compare_all() {
     fi
   fi
 
-  # workspace — located only through the host map
+  # workspace — the file `--workspace` names, else through the host map
   if awk -F'\t' 'NR > 1 && $1 == "workspace" { f = 1 } END { exit !f }' "$manifest"; then
-    if [ ! -f "$map" ]; then
+    if [ -n "$WORKSPACE_FILE" ]; then
+      if [ -f "$WORKSPACE_FILE" ]; then
+        compare_source workspace "$WORKSPACE_FILE" "$manifest"
+      else
+        printf 'SKIP workspace source file not found: %s\n' "$WORKSPACE_FILE"
+      fi
+    elif [ ! -f "$map" ]; then
       printf 'SKIP workspace host map not found: %s\n' "$map"
     else
       ws_file=$(map_lookup "$map" workspace)
@@ -596,8 +655,105 @@ ack_added() {
   store_bodies "$hit_hash"$'\n'
 }
 
+# identity <manifest> <file> — the `--identity` judgment; returns 0 when <file>
+# may be left out of a stage's chain. It reads the store and writes nothing.
+identity() {
+  local manifest="$1" file="$2" anchors local_rows cand text hash
+  local hits row anchor asha adisp akind line pre="" identified=0 broken=""
+  [ -f "$file" ] || return 1
+  anchors=$(awk -F'\t' 'NR > 1 && $1 == "workspace" { print $2 "\t" $3 "\t" $4 }' "$manifest")
+  [ -n "$anchors" ] || return 1
+  local_rows=""
+  if [ -f "$ACK_FILE" ]; then
+    local_rows=$(awk -F'\t' '
+      FNR == NR { if (FNR > 1 && $1 == "workspace") t[$2] = 1; next }
+      FNR > 1 && $1 == "workspace" && !($2 in t) && $4 ~ /^(excluded|skill):/ { d[$2] = $4; h[$2] = $3 }
+      END { for (a in d) print a "\t" (h[a] == "" ? "-" : h[a]) "\t" d[a] }' "$manifest" "$ACK_FILE")
+  fi
+  # (a) text before the first heading is in no row's hash
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "# "*|"## "*) break ;;
+    esac
+    [ -z "${line//[[:space:]]/}" ] || { pre=1; break; }
+  done < "$file"
+  local candidates live_local="" n c
+  candidates=$(drift_entries workspace "$file")
+  [ -n "$candidates" ] || return 1
+  # a host-local disposition resolves as the checker resolves it: its prefix is
+  # counted over every section, and one that matches none or several resolves
+  # nothing, so the sections it would match read as added
+  if [ -n "$local_rows" ]; then
+    while IFS=$'\t' read -r anchor asha adisp; do
+      [ -n "$anchor" ] || continue
+      n=0
+      while IFS= read -r c; do
+        c="${c%	*}"
+        [ "${c:0:${#anchor}}" = "$anchor" ] && n=$((n + 1))
+      done < <(printf '%s\n' "$candidates")
+      [ "$n" -eq 1 ] && live_local="${live_local}${anchor}	${asha}	${adisp}"$'\n'
+    done < <(printf '%s\n' "$local_rows")
+  fi
+  while IFS= read -r cand; do
+    text="${cand%	*}"
+    hash="${cand##*	}"
+    # a manifest row matches by its verbatim heading
+    row=""; hits=0
+    while IFS=$'\t' read -r anchor asha adisp; do
+      [ -n "$anchor" ] || continue
+      if [ "$text" = "$anchor" ]; then hits=$((hits + 1)); row="${anchor}	${asha}	${adisp}	table"; fi
+    done < <(printf '%s\n' "$anchors")
+    if [ "$hits" -ge 1 ]; then
+      identified=1
+    elif [ -n "$live_local" ]; then
+      while IFS=$'\t' read -r anchor asha adisp; do
+        [ -n "$anchor" ] || continue
+        if [ "${text:0:${#anchor}}" = "$anchor" ]; then hits=$((hits + 1)); row="${anchor}	${asha}	${adisp}	local"; fi
+      done < <(printf '%s' "$live_local")
+    fi
+    if [ "$hits" -eq 0 ]; then
+      broken="${broken}${text}: added section"$'\n'
+      continue
+    fi
+    if [ "$hits" -gt 1 ]; then
+      broken="${broken}${text}: matches $hits rows"$'\n'
+      continue
+    fi
+    IFS=$'\t' read -r anchor asha adisp akind <<< "$row"
+    # a host-local row is fresh only at a hash this host recorded for it, and
+    # only an excluded one leaves the file out: a skill's body reaches a stage
+    # through that skill, not through this judgment
+    if [ "$akind" = local ]; then
+      case "$adisp" in
+        excluded:*) : ;;
+        *) broken="${broken}${text}: host-local disposition $adisp is not excluded"$'\n'; continue ;;
+      esac
+      acked workspace "$anchor" "$hash" && continue
+      broken="${broken}${text}: host-local acknowledged $asha, current $hash"$'\n'
+      continue
+    fi
+    case "$adisp" in
+      policy:*|excluded:*) : ;;
+      *) broken="${broken}${text}: disposition $adisp is not policy or excluded"$'\n'; continue ;;
+    esac
+    [ "$hash" = "$asha" ] && continue
+    acked workspace "$anchor" "$hash" && continue
+    broken="${broken}${text}: manifest $asha, current $hash"$'\n'
+  done < <(printf '%s\n' "$candidates")
+  [ "$identified" = 1 ] || return 1
+  if [ -n "$pre" ]; then
+    broken="(before the first heading): text no row hashes"$'\n'"$broken"
+  fi
+  [ -n "$broken" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf 'stage-policy-drift: identity broken: %s: %s\n' "$file" "$line" >&2
+  done < <(printf '%s' "$broken")
+  return 1
+}
+
 main() {
-  local script_dir manifest map plugin_root do_ack=0 add_prefix="" add_disp="" do_add=0 explain=0
+  local script_dir manifest map plugin_root do_ack=0 identity_file="" add_prefix="" add_disp="" do_add=0 explain=0
   script_dir=$(cd "$(dirname "$0")" && pwd)
   manifest="$script_dir/stage-policy.sources.tsv"
   map="${HOME:-}/.config/cc-cmds/stage-policy-sources"
@@ -609,6 +765,8 @@ main() {
       --plugin-root) [ $# -ge 2 ] || die_format "--plugin-root needs a directory"; plugin_root="$2"; shift 2 ;;
       --config-dir) [ $# -ge 2 ] && [ -n "$2" ] || die_format "--config-dir needs a directory"; CONFIG_DIRS+=("$2"); shift 2 ;;
       --ack-store) [ $# -ge 2 ] || die_format "--ack-store needs a directory"; STORE="$2"; shift 2 ;;
+      --workspace) [ $# -ge 2 ] && [ -n "$2" ] || die_format "--workspace needs a file"; WORKSPACE_FILE="$2"; shift 2 ;;
+      --identity) [ $# -ge 2 ] && [ -n "$2" ] || die_format "--identity needs a file"; identity_file="$2"; shift 2 ;;
       --explain) explain=1; shift ;;
       --ack) do_ack=1; shift ;;
       --ack-added)
@@ -630,6 +788,14 @@ main() {
     esac
     [[ "$add_disp" =~ $LOCAL_DISPOSITION_RE ]] \
       || die_format "--ack-added: disposition must be excluded:<closed reason> or skill:<name>: '$add_disp'"
+  fi
+  if [ -n "$identity_file" ]; then
+    { [ "$explain" = 0 ] && [ "$do_ack" = 0 ] && [ "$do_add" = 0 ] && [ -z "$WORKSPACE_FILE" ]; } \
+      || die_format "--identity takes no other mode"
+    validate_manifest "$manifest"
+    load_store
+    identity "$manifest" "$identity_file" && exit 0
+    exit 1
   fi
   validate_manifest "$manifest"
   load_store
