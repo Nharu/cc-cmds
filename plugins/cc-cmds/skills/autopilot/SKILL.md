@@ -106,11 +106,14 @@ Load deferred tools via ToolSearch before any other step:
 1. **Detect.** `rekick.sh detect --arg '<$ARGUMENTS, verbatim, possibly empty>'`. The helper reads this session's id from its own environment; never pass it, never print it. The first `판정` line decides:
    - `새 런 <id>` — show the `고지` line (「이 세션이 연 런(<id>)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요」), then go to Step 1 as a first kickoff.
    - `없음` — show the `고지` line (「이 세션이 연 런을 찾지 못했습니다 — 처음 킥오프처럼 묻습니다」), then go to Step 1. With an empty argument, show the frontmatter's `usage` line instead and stop: there is no intent to judge.
-   - `열림 <id>` — show the `고지` lines and stop. No run id is minted and no trace is created: that run is still going or still waiting for an answer, and answering it is how it continues (「Resuming after a break」 in `${CLAUDE_SKILL_DIR}/references/act2-seat.md` — Read it now, before handling the person's answer).
+   - `진행 중 <id>` — show the `고지` lines and stop. No run id is minted and no trace is created: something is still alive in that run (a stage, a waiting stage, a shift or a relay), or the gate could not say whether it ended, and resuming it is how it continues (「Resuming after a break」 in `${CLAUDE_SKILL_DIR}/references/act2-seat.md` — Read it now, before handling the person's answer).
    - `완료 <id>` — show its two `고지` lines and stop, the same way.
+   - `대기 <id> <원천 base>` — the run did not end and nothing in it is alive: it waits on an approval, a halt record or a usage limit, or on nothing. Go on exactly as for `재킥오프`; the new run adopts it, and item 7.8 closes the source `이어받음`. Its `굵게` lines name what it waited on and list the open approvals and unanswered halt records, which stay with the source and are not carried.
    - `재킥오프 <id> <원천 base>` — go on. The `<원천 base>` is what every mode below takes as `--base`.
 
-**On `재킥오프`, Read `${CLAUDE_SKILL_DIR}/references/rekickoff.md` now** — items 2 through 8 of this path and its stop rule are there, and the path does not go on without them.
+Adoption is reached only here, from a person's interactive kickoff: the successor chain does not call `rekick.sh`, so a run waiting on a person is never re-opened at night.
+
+**On `재킥오프` or `대기`, Read `${CLAUDE_SKILL_DIR}/references/rekickoff.md` now** — items 2 through 8 of this path and its stop rule are there, and the path does not go on without them.
 
 ### Step 1: Read the contracts, then judge the entry
 
