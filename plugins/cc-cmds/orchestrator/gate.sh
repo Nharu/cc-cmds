@@ -20694,6 +20694,24 @@ gate_leaf_spelling() {
   gate_path_spelling "$p"
 }
 
+gate_halt_name_ok() {
+  # gate_halt_name_ok <leaf under halt/> — true when a stage may write that name.
+  # A caller with no stage id keeps the one-level allowance; a stage may write
+  # its own `<stage-id>.md` and any dot-led temp name of the atomic write.
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] || return 0
+  case "$1" in
+    .*) return 0 ;;
+  esac
+  [ "$1" = "${CC_PIPELINE_STAGE_ID}.md" ]
+}
+
+gate_halt_name_refusal() {
+  # gate_halt_name_refusal — the refusal text both write guards print for a halt
+  # record under another name. `hooks/gate-pretool.sh` builds the same sentence
+  # byte for byte and `scripts/test-gate.sh` pins that they agree.
+  printf '%s' "the halt record of this stage is halt/${CC_PIPELINE_STAGE_ID}.md and no other name under halt/ — both readers look up that one name, attempt number included, so a record written under another name is never read; write it there"
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -20993,7 +21011,19 @@ gate_rundir_write_guard() {
       # pass quietly on the day that normalization changes.
       case "$rel" in
         halt/*/*) ;;
-        halt/*) continue ;;
+        # A STAGE WRITES ONE HALT RECORD NAME, the one its own id spells. Both
+        # readers look the record up by the id the launcher handed down, attempt
+        # number included, so a record a stage named by its segment alone was
+        # never read: measured, a stage of attempt 4 wrote `halt/S2.md`, both
+        # readers classified the turn `정상 완료`, and the question it carried
+        # waited for a person. The guard names the one allowed path, so the stage
+        # writes it next. A name that begins with a dot is the same-directory temp
+        # file of the atomic write and passes. A caller with no stage id — the
+        # seat, a shift — keeps the old one-level allowance.
+        halt/*)
+          gate_halt_name_ok "${rel#halt/}" && continue
+          warn "rule refused: $(gate_halt_name_refusal)"
+          return "$GATE_EXIT_RULE" ;;
         cc-team-witness-*/*) continue ;;
         # THE WITNESS DIRECTORY ITSELF, for its teardown. The shared team-cleanup
         # procedure ends a finished workflow with `rm -rf` on the recorded

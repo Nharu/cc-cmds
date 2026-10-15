@@ -17585,6 +17585,79 @@ else
   bad "가드·훅 불일치" "설계 문서 락 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 
+# 정지 기록 이름은 쓰는 쪽에서 막는다. 시도 4 의 스테이지가 세그먼트 이름만으로
+# `halt/S2.md` 를 썼고, 두 독자는 시도 번호를 단 이름만 찾으므로 그 턴을 `정상 완료` 로
+# 읽어 질문이 사람을 기다렸다. 스테이지 id 가 있으면 두 가드가 `halt/<id>.md` 하나와
+# 원자 쓰기의 점 접두 임시 이름만 받고, 거절 문면은 맞는 경로를 적는다.
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/S2.md"
+check "스테이지 S2#4 의 halt/S2.md 쓰기는 거절된다" "$rc" "3"
+gate_halt_text=$(CC_PIPELINE_STAGE_ID='S2#4' bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_name_refusal' _ "$GATE" 2>/dev/null)
+case "$gate_halt_text" in
+  *'halt/S2#4.md'*) ok "게이트의 정지 기록 거절 문면이 허용되는 경로 halt/S2#4.md 를 적는다" ;;
+  *) bad "정지 기록 거절 문면" "'$gate_halt_text'" ;;
+esac
+case "$msg" in
+  *"rule refused: $gate_halt_text"*) ok "Bash 가드의 거절이 그 문면을 그대로 싣는다" ;;
+  *) bad "Bash 가드 정지 기록 거절" "$msg" ;;
+esac
+check "거절된 이름의 파일이 만들어지지 않았다" "$( [ -e "$RD3/halt/S2.md" ] && printf yes || printf no )" "no"
+# 훅도 같은 바이트를 낸다 — 두 파일에 같은 문장을 적고, 한쪽만 고치면 여기서 빨개진다.
+hook_halt_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$RD3/halt/S2.md" \
+  | CC_PIPELINE_STAGE_ID='S2#4' bash "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" --run-dir "$RD3" \
+      --gate "$GATE" --ledger "$LEDGER2" --grant "$CONE_GRANT" --manifest "$NM" 2>/dev/null)
+check "훅의 정지 기록 거부 문면이 게이트의 문면과 바이트가 같다" \
+  "$(printf '%s' "$hook_halt_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" "gate: $gate_halt_text"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/S2#4.md"
+check "스테이지 S2#4 의 halt/S2#4.md 쓰기는 통과한다" "$rc" "0"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/.S2#4.md.AbC123"
+check "원자 쓰기의 점 접두 임시 이름은 통과한다" "$rc" "0"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir -p "$RD3/halt"
+check "스테이지의 mkdir halt 는 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/S2.md"
+check "스테이지 id 가 없는 호출자의 halt/S2.md 는 예전처럼 통과한다" "$rc" "0"
+rm -f "$RD3/halt/S2.md" "$RD3/halt/S2#4.md" "$RD3/halt/.S2#4.md.AbC123"
+# 읽는 쪽은 그대로다. 시도 핀 2 아래에서 시도 2 의 자기 기록은 드라이버와 게이트의
+# 분류기 모두 `의도된 park` 로 읽고 자동 답이 그 기록을 받으며, 시도 1 의 기록만
+# 있으면 둘 다 `정상 완료` 로 읽고 자동 답은 그 낡은 기록을 받지 않는다.
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sid-r7","result":"done"}' \
+  > "$WORK/r7-ok.json"
+r7_probe() {
+  # r7_probe <segment> <record attempt> — prints driver path / driver class /
+  # gate row class / automatic-answer rc, with the attempt pin at 2.
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_GATE_SOURCE_ONLY=1 bash -c '
+      . "$1"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      MANIFEST="$2"; LEDGER="$3"; RUN_ID="$4"; RUN_DIR="$5"; seg="$6"
+      set +e
+      mkdir -p "$RUN_DIR/log" "$RUN_DIR/halt"
+      printf "2\n" > "$RUN_DIR/$seg.attempt"
+      cp "$7" "$RUN_DIR/log/$seg#2.json"
+      printf "%s\n" "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=$seg#$8; run=$RUN_ID -->" \
+        "**분류**: gate-unanswerable" "<!-- /cc-pipeline-halt v1 -->" > "$RUN_DIR/halt/$seg#$8.md"
+      p=$(halt_record_path "$seg"); c=$(classify_termination "$seg" 0 0)
+      # The attempt wrote a row of its own, as a stage that worked does; without
+      # one the gate files a clean exit as `공허한 성공`.
+      printf -- "- \`자율 승인\` | kind=skill | 결정=act | 대상=infra | 세그먼트=%s | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=정지 기록 픽스처 | prev=x\n" "$seg" >> "$LEDGER"
+      gate_record_stage_outcome infra "$seg" implement 2 0 "" "$RUN_DIR/log/$seg#2.json" >/dev/null 2>&1
+      g=$(grep "^- \`stage-result\` .*| 세그먼트=$seg " "$LEDGER" | tail -1 | sed -n "s/.*종단 부류=\([^|]*\) |.*/\1/p")
+      gate_halt_auto_answer_current "$seg" "$RUN_DIR/halt/$seg#$8.md" >/dev/null 2>&1; a=$?
+      printf "%s|%s|%s|%s" "${p#"$RUN_DIR"/}" "$c" "$g" "$a"
+    ' _ "$GATE" "$NM" "$LEDGER2" "$CONE_RUN_ID" "$RD3" "$1" "$WORK/r7-ok.json" "$2" ) 2>/dev/null
+}
+check "시도 2 의 자기 기록: 드라이버 경로·분류, 게이트 분류, 자동 답이 모두 그 기록을 읽는다" \
+  "$(r7_probe R7A 2)" "halt/R7A#2.md|의도된 park|의도된 park|0"
+check "시도 1 의 기록만 있는 시도 2: 두 분류기 모두 정상 완료이고 자동 답은 그 기록을 받지 않는다" \
+  "$(r7_probe R7B 1)" "halt/R7B#2.md|정상 완료|정상 완료|3"
+
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
 # --- section: 31ad | group: cone | covers: act | needs: 31e | anchors: 워크트리가 사라진 멤버를 선행으로 적은 세그먼트 행이 기록된다 ---
 #
