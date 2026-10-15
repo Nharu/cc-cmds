@@ -1154,17 +1154,18 @@ check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "
 # ordering is pinned on its own: the dependency condition that reads `선행`
 # alone, the planning rule over both lists, the merge that waits for an empty
 # `머지 대기`, the 405 disposition that never brings the base into the branch,
-# the clause that chooses which live stage to wait on, and the disposition of
-# the gate's planning-order refusal — a deferred slice cuts no branch, that
-# refusal is a wait rather than an ending, and a slice planned again reuses the
-# branch and worktree an earlier pass made. Each literal must
-# occur exactly once in each copy, which is what makes the two byte-identical
-# without comparing the paragraphs around them. A literal under a heading both
-# copies share is searched inside that section; the dependency sentence and the
-# waiting clause sit under different headings in the two copies and are counted
-# over the whole file. The full waiting sentence, with its `--timeout 540`
-# foreground wait, belongs to the shift's copy alone: the lead copy waits in the
-# background under `Monitor`.
+# and the disposition of the gate's planning-order refusal — a deferred slice
+# cuts no branch, that refusal is a wait rather than an ending, and a slice
+# planned again reuses the branch and worktree an earlier pass made. Each
+# literal must occur exactly once in each copy, which is what makes the two
+# byte-identical without comparing the paragraphs around them. A literal under a
+# heading both copies share is searched inside that section; the dependency
+# sentence sits under different headings in the two copies and is counted over
+# the whole file. The clause that chooses which live stage to wait on belongs
+# to the lead copy alone, which holds its wait itself: a shift waits in no
+# turn, ends with one `대기`, and the gate wakes its successor on whichever
+# live stage leaves first, so the shift's copy says it picks none and carries
+# no foreground stage wait.
 # ---------------------------------------------------------------------------
 mo_count() {  # mo_count <text> <literal> — occurrences, not lines
   printf '%s\n' "$1" | grep -oF -- "$2" | wc -l | tr -d ' '
@@ -1173,7 +1174,6 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
     '|The **dependency** condition reads `선행` alone — implementation precedence, a predecessor that has not landed. A predecessor named only in `머지 순서` does not hold back the dispatch; it holds back the merge alone (see 「Merging and applying a segment」).' \
-    '|on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment.' \
     '#### Planning the segments|**A slice is planned when two conditions hold together**: every `선행` token'"'"'s predecessor has its last `segment` row at `머지됨` or `완료`, and every `머지 순서` token of the slice — read from the snapshot'"'"'s `슬라이싱.세그먼트[]`, because a slice with no row yet is not in `segments[]` — already has a `segment` row.' \
     '#### Planning the segments|A slice whose `선행` is `없음` and whose `머지 순서` tokens all have rows is planned and dispatched at once, cut from the current base.' \
     '#### Planning the segments|A `머지 순서` token with no row yet (that slice still waits on its own `선행`) defers the slice until the row appears, and a slice carrying both lists follows the same product: with D `선행` A and D `머지 순서` C, D waits for C'"'"'s row even after A has landed.' \
@@ -1204,8 +1204,13 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   done
 done
 mo_wait='When nothing is dispatchable or mergeable and two or more segment stages are live, wait (`gate.sh wait --segment <id> --timeout 540`) on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment. On exit 13 or when that stage ends, take a fresh snapshot and route every stage that has left `live_stages[]` before waiting again.'
-check "교대 사본의 「Waiting on a stage」 절에 대기 문장 전체가 한 번 실린다" \
-  "$(mo_count "$(router_section "$RS_SKILL" '### Waiting on a stage')" "$mo_wait")" "1"
+mo_pick='on the earliest-declared live segment among those named in some segment'"'"'s `머지 대기`; if none is named, on the earliest-declared live segment.'
+mo_none='When nothing is dispatchable or mergeable and two or more segment stages are live, end with the same single `대기`: you do not pick a segment to wait on.'
+check "리드 사본에 대기할 세그먼트를 고르는 문장이 한 번 실린다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_pick")" "1"
+check "교대 사본에는 대기할 세그먼트를 고르는 문장이 없다" "$(mo_count "$(cat "$RS_SKILL")" "$mo_pick")" "0"
+check "교대 사본의 「Waiting on a stage」 절에 고르지 않고 대기로 끝낸다는 문장이 한 번 실린다" \
+  "$(mo_count "$(router_section "$RS_SKILL" '### Waiting on a stage')" "$mo_none")" "1"
+check "교대 사본에는 포그라운드 스테이지 대기 문장 전체가 없다" "$(mo_count "$(cat "$RS_SKILL")" "$mo_wait")" "0"
 check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
 # The planning-order refusal is consumed by the router, not only written by the
 # gate: the copies quote the gate's own words, so a gate rewording that leaves

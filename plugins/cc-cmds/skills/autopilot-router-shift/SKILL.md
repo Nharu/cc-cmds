@@ -146,7 +146,7 @@ gate.sh wait --manifest <매니페스트> --segment <id> --timeout 540
 
 in the FOREGROUND. **`--timeout` must stay under the harness's own foreground ceiling of 600 seconds.** Use `540`. The timeout ends the WAIT and never the stage (exit `13`). Any other exit is the stage's own rc, one of 11–14 from the table above, or `15` — the gate evaluates the hard limit when a shift enters `wait`, so a `wait` issued past it returns at once instead of blocking. Tell that 15 from a stage's own by the `gate:` line on stderr and the absence of the final `[wait]` line. `wait` prints one heartbeat line every 300 seconds (`--interval` changes that) and one final line; in the foreground you read them in the call's own output, and no `Monitor` is involved.
 
-When nothing is dispatchable or mergeable and two or more segment stages are live, wait (`gate.sh wait --segment <id> --timeout 540`) on the earliest-declared live segment among those named in some segment's `머지 대기`; if none is named, on the earliest-declared live segment. On exit 13 or when that stage ends, take a fresh snapshot and route every stage that has left `live_stages[]` before waiting again.
+When nothing is dispatchable or mergeable and two or more segment stages are live, end with the same single `대기`: you do not pick a segment to wait on. The gate wakes your successor when the first of them leaves `live_stages[]`, whichever it is, and that successor routes every stage that has left before it ends with `대기` again.
 
 Three conditions must **all** hold before a segment is dispatchable: **dependency** (no predecessor unfinished), **capacity** (concurrent streams within the cap), and **exclusion** (no live stage already holding an exclusive resource).
 
