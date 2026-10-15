@@ -22237,7 +22237,18 @@ gate_record_row() {
       # the order readable — but it must not read like the unknown-token one:
       # a router maps that one to "a new run with a `선행 착지` row", which is
       # false here, since planning the predecessor first is the whole remedy.
-      local decl_ids=""
+      #
+      # THE REMEDY IS TO DEFER, AND THE TEXT SAYS SO IN THE SHAPE THE ROUTER
+      # CAN DO. "Plan the predecessor first" is not always doable: a predecessor
+      # still held back by its own `선행` may not be planned yet either, and
+      # then the only thing that works is to leave this slice for a later pass
+      # until the predecessor's row appears. So the refusal names the unlanded
+      # `선행` of the predecessor when there is one, and in both cases says
+      # "defer" rather than "stop". A declared slice whose `레포` names no
+      # target of this run cannot be planned here at all, so it is not given
+      # this remedy: it falls through to the unknown-token refusal, whose
+      # remedy — a `선행 착지` row in a new run — is the true one for it.
+      local decl_ids="" d_pre p
       if [ -n "${DOC:-}" ] && grep -qxF '**상태**: 동결됨' "$DOC" 2>/dev/null; then
         decl_ids=" $(slice_ids "$DOC" 2>/dev/null | tr '\n' ' ') "
       fi
@@ -22247,11 +22258,22 @@ gate_record_row() {
           *" $d "*) ;;
           *) case "$decl_ids" in
                *" $d "*)
-                 warn "the slice \`머지 순서\` names is declared in the frozen document and has no segment row on this ledger yet: '$d' — this is the order of planning, not a missing landing"
-                 warn "plan '$d' first and then plan this slice again; nothing else is needed, and no new run is"
-                 return "$GATE_EXIT_VOCAB" ;;
+                 if gate_slice_alias "$d" >/dev/null 2>&1; then
+                   d_pre=""
+                   for p in $(gate_dep_tokens "$(slice_field "$DOC" "$d" '선행' 2>/dev/null)"); do
+                     gate_segment_ever_landed "$p" || d_pre="${d_pre:+$d_pre, }'$p'"
+                   done
+                   warn "the slice \`머지 순서\` names is declared in the frozen document and has no segment row on this ledger yet: '$d' — this is the order of planning, not a missing landing"
+                   if [ -n "$d_pre" ]; then
+                     warn "'$d' is held back by its own \`선행\` $d_pre and cannot be planned yet: defer this slice until '$d' has a row, which it gets once that \`선행\` lands — this is a wait, not a stop, and no new run is needed"
+                   else
+                     warn "defer this slice until '$d' has a row: plan '$d' first and then this slice again — this is a wait, not a stop, and no new run is needed"
+                   fi
+                   return "$GATE_EXIT_VOCAB"
+                 fi ;;
              esac
              warn "the segment \`머지 순서\` names is not in the ledger, and no earlier run ledger of the same document shows it landed: '$d' — such a segment cannot land, so this segment could never merge"
+             warn "a predecessor that landed outside every run ledger is brought in only from a \`선행 착지\` row the kickoff froze into the manifest — a new run with that row"
              return "$GATE_EXIT_VOCAB" ;;
         esac
       done

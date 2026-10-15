@@ -11949,7 +11949,7 @@ rm -f "$WT/$DOC15G" "$WT/$DOC15GB" "$WT/$DOC15GD" "$WT/$DOC15GE" "$WT/$DOC15GP" 
 
 # ---------------------------------------------------------------------------
 # 15m. A merge-order predecessor holds the merge, not the dispatch
-# --- section: 15m | group: base | covers: act, plan, snapshot | anchors: 15m: 계획 행이 머지 순서 를 싣는다, 15m: 머지 순서만 걸린 후행은 앞 슬라이스가 실행 중이어도 implement 로 파견된다, 15m: 구현 선행이 착지하지 않은 후행의 파견은 막힌다, 15m: 앞 슬라이스가 착지하지 않은 REST 머지는 act 와 plan 이 3 이고 원장이 그대로다, 15m: 앞 슬라이스가 머지됨 이면 같은 머지에 순서 문면이 없다, 15m: park 된 앞 슬라이스의 cone 에 머지 순서 후행과 구현 후행이 함께 든다, 15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다, 15m: 겹치는 선언 파일은 그 슬라이스만 park 한다, 15m: 머지 순서 줄이 없는 블록과 없음 인 블록의 다이제스트가 변경 전 함수의 값과 같다, 15m: 두 목록에 여섯씩 실은 계획 행이 행 길이 상한 안에 든다 ---
+# --- section: 15m | group: base | covers: act, plan, snapshot | anchors: 15m: 계획 행이 머지 순서 를 싣는다, 15m: 머지 순서만 걸린 후행은 앞 슬라이스가 실행 중이어도 implement 로 파견된다, 15m: 구현 선행이 착지하지 않은 후행의 파견은 막힌다, 15m: 앞 슬라이스가 착지하지 않은 REST 머지는 act 와 plan 이 3 이고 원장이 그대로다, 15m: 앞 슬라이스가 머지됨 이면 같은 머지에 순서 문면이 없다, 15m: park 된 앞 슬라이스의 cone 에 머지 순서 후행과 구현 후행이 함께 든다, 15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다, 15m: 앞 슬라이스가 자기 선행 에 막혀 있으면 거부가 그 선행 을 이름 대고 미루라고 한다, 15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다, 15m: 겹치는 선언 파일은 그 슬라이스만 park 한다, 15m: 머지 순서 줄이 없는 블록과 없음 인 블록의 다이제스트가 변경 전 함수의 값과 같다, 15m: 두 목록에 여섯씩 실은 계획 행이 행 길이 상한 안에 든다 ---
 #
 # `머지 순서` names a slice that must reach the base first, while the two are
 # implemented at the same time. So the dispatch-time landing check reads `선행`
@@ -12191,11 +12191,17 @@ g15_mkwt R15MC CC
 g15_plan act R15MC CC 상태=계획됨 "워크트리=$(g15_wt R15MC CC)"
 # The refusal reads as an order of planning: a router maps the unknown-token
 # wording to "a new run with a `선행 착지` row", which is false for a slice the
-# document declares and nobody has planned yet.
+# document declares and nobody has planned yet. CB waits on its own `선행` CA,
+# which is planned and not landed, so "plan CB first" is not doable either:
+# the refusal names CA and says to defer.
 case "$rc/$msg" in
-  *"no earlier run ledger"*|*"new run with"*) bad "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" "rc=$rc $msg" ;;
-  2/*"declared in the frozen document and has no segment row on this ledger yet: 'CB'"*"no new run is"*) ok "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" ;;
+  *"no earlier run ledger"*) bad "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" "rc=$rc $msg" ;;
+  2/*"declared in the frozen document and has no segment row on this ledger yet: 'CB'"*"no new run is needed"*) ok "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" ;;
   *) bad "15m: 머지 순서 앞 슬라이스의 행이 없으면 계획이 바닥에서 거부된다" "rc=$rc $msg" ;;
+esac
+case "$msg" in
+  *"'CB' is held back by its own \`선행\` 'CA'"*"defer this slice until 'CB' has a row"*"a wait, not a stop"*) ok "15m: 앞 슬라이스가 자기 선행 에 막혀 있으면 거부가 그 선행 을 이름 대고 미루라고 한다" ;;
+  *) bad "15m: 앞 슬라이스가 자기 선행 에 막혀 있으면 거부가 그 선행 을 이름 대고 미루라고 한다" "$msg" ;;
 esac
 m15_planned R15MC CB
 g15_plan act R15MC CC 상태=계획됨 "워크트리=$(g15_wt R15MC CC)"
@@ -12209,6 +12215,33 @@ esac
 case "$cone15m_ok" in
   1) ok "15m: 섞인 사슬의 끝까지 cone 에 든다" ;;
   *) bad "15m: 섞인 사슬의 끝까지 cone 에 든다" "$cone15mc" ;;
+esac
+
+# --- 계획 순서 거부의 처방: 막히지 않은 앞 슬라이스와 이 런의 대상이 아닌 앞 슬라이스 ---
+# EA 는 선행 이 없으니 먼저 계획하면 되고, 거부는 막는 선행 을 이름 대지 않는다.
+DOC15ME='docs/fixture-design-15me.md'
+m15_doc "$WT/$DOC15ME" 'EA:-:-:EA.txt' 'EB:-:EA:EB.txt'
+g15_run R15ME "$DOC15ME" "$plan15c" 리뷰없음
+g15_mkwt R15ME EB
+g15_plan act R15ME EB 상태=계획됨 "워크트리=$(g15_wt R15ME EB)"
+case "$rc/$msg" in
+  *"held back by its own"*|*"no earlier run ledger"*) bad "15m: 막히지 않은 앞 슬라이스면 거부가 그것을 먼저 계획하라고 한다" "rc=$rc $msg" ;;
+  2/*"defer this slice until 'EA' has a row: plan 'EA' first"*"no new run is needed"*) ok "15m: 막히지 않은 앞 슬라이스면 거부가 그것을 먼저 계획하라고 한다" ;;
+  *) bad "15m: 막히지 않은 앞 슬라이스면 거부가 그것을 먼저 계획하라고 한다" "rc=$rc $msg" ;;
+esac
+# FA 의 레포 는 이 런의 대상이 아니라 이 런에서 계획될 수 없다. 거부는 계획 순서가
+# 아니라 미지 토큰 문면이고, 그런 앞 슬라이스를 들이는 선행 착지 행을 이름 댄다.
+DOC15MF='docs/fixture-design-15mf.md'
+m15_doc "$WT/$DOC15MF" 'FA:-:-:FA.txt' 'FB:-:FA:FB.txt'
+awk '/^### 슬라이스 FA /{fa=1} /^### 슬라이스 FB /{fa=0} fa && /^\*\*레포\*\*: /{$0="**레포**: t/elsewhere"} {print}' \
+  "$WT/$DOC15MF" > "$WT/$DOC15MF.tmp" && mv "$WT/$DOC15MF.tmp" "$WT/$DOC15MF"
+g15_run R15MF "$DOC15MF" "$plan15c" 리뷰없음
+g15_mkwt R15MF FB
+g15_plan act R15MF FB 상태=계획됨 "워크트리=$(g15_wt R15MF FB)"
+case "$rc/$msg" in
+  *"defer this slice"*|*"no new run is needed"*) bad "15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다" "rc=$rc $msg" ;;
+  2/*"no earlier run ledger of the same document shows it landed: 'FA'"*"선행 착지"*) ok "15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다" ;;
+  *) bad "15m: 대상이 아닌 레포의 앞 슬라이스에는 계획 순서 처방이 나가지 않는다" "rc=$rc $msg" ;;
 esac
 
 # --- 선언 결함: 그 슬라이스와 걸린 후행만 선다 --------------------------------
