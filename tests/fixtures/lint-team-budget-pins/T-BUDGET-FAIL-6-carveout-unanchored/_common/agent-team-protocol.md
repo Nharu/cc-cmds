@@ -16,6 +16,10 @@ Spawn prose.
 
 Multi-round prose.
 
+On every resume that hands a member its peers' work the lead **re-injects the load-bearing context by path**.
+
+Round 2+ names your peers' witnesses by path below; above your sentinel put one line `peer-read: <role-slug> <round/phase> <nonce>` per named witness.
+
 ### Round budget
 
 - **Default = 2 rounds.**
