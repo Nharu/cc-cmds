@@ -25677,8 +25677,9 @@ gate_plan_unchecked_axes() {
 # token `적용`; the command and its probe are the frozen ones the driver's S9
 # reads (`apply_field`, `apply_probe_cmd`), the commit is the merge commit the
 # router recorded on the `머지됨` row and the gate proves, and the verdict is the
-# driver's own `apply_disposition`. A router that could pass the command would
-# be an apply nobody authorized, and a second copy of the verdict table is a
+# driver's own `apply_disposition`, fed the exit-code mapping the driver's own
+# `apply_probe_codes` reads from the manifest. A router that could pass the
+# command would be an apply nobody authorized, and a second copy of the verdict table is a
 # second answer to what an exit code means.
 #
 # FIVE PRECONDITIONS, AHEAD OF THE RULE CATALOG AND OUTSIDE IT. `리뷰-후-머지` is
@@ -25865,8 +25866,16 @@ gate_perform_apply() {
   # passed. Zero retries: a second apply after an unknown outcome is a second
   # apply, and the act that follows is refused at precondition 1 anyway because
   # the last row is no longer `머지됨`.
-  local alias="$1" seg="$2" root wt m cmd probe pre rc=0 post disp out err
+  local alias="$1" seg="$2" root wt m cmd probe pre rc=0 post disp out err codes nu ne map
   m="$GATE_APPLY_MERGE"; cmd="$GATE_APPLY_COMMAND"; probe="$GATE_APPLY_PROBE"
+  # The exit-code mapping is read once, from the manifest alone and against the
+  # probe this act runs, and both verdicts below take it — the driver's S9 does
+  # the same, so the two cannot read one code two ways.
+  codes=$(apply_probe_codes "$probe") || {
+    warn "적용 프로브 코드 행을 읽을 수 없습니다 — 적용 워크트리도 원장 행도 남기지 않았습니다"
+    return "$GATE_EXIT_RULE"
+  }
+  nu="${codes% *}"; ne="${codes#* }"; map="대응 불필요=${nu}·필요=${ne}"
   root=$(alias_root "$alias") || return 1
   wt="$(dirname "$root")/$(basename "$root")${WORKTREE_INFIX}${RUN_ID}-${seg}-apply"
   if [ -e "$wt" ]; then
@@ -25885,22 +25894,22 @@ gate_perform_apply() {
   }
 
   apply_probe "$wt" "$probe"; pre=$?
-  disp=$(apply_disposition "$pre")
+  disp=$(apply_disposition "$nu" "$ne" "$pre")
   case "$disp" in
     건너뜀)
       gate_apply_segment_row "$alias" "$seg" "상태=완료" "워크트리=$wt" "고정 커밋=$m" "적용=건너뜀" || return $?
       ( cd "$root" && git worktree remove --force "$wt" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 ) || true
-      log "적용 건너뜀 — $seg (사전 프로브 0)"
+      log "적용 건너뜀 — $seg (사전 프로브 $pre, $map)"
       return 0 ;;
     '사전 실패')
       # Refused before anything is touched, the way the driver refuses: the
       # apply whose need could not be established has no evidence behind it.
       gate_apply_segment_row "$alias" "$seg" "상태=park" "워크트리=$wt" "고정 커밋=$m" "적용=사전 실패" || return $?
       gate_append 'blocked' "대상=$seg" "스코프=act" "원인=막힘" "사유=적용 사전 실패(exit $pre)" \
-        "관측=사전 프로브 실패 — 아무것도 건드리기 전에 거부했다" \
+        "관측=사전 프로브 실패(exit $pre, $map) — 아무것도 건드리기 전에 거부했다" \
         "재개 명령=$(gate_row_safe "$cmd" 240)"
       ( cd "$root" && git worktree remove --force "$wt" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 ) || true
-      warn "적용 사전 실패 — 사전 프로브 exit $pre, 명령을 실행하지 않았습니다"
+      warn "적용 사전 실패 — 사전 프로브 exit $pre ($map), 명령을 실행하지 않았습니다"
       return "$GATE_EXIT_PARK" ;;
   esac
 
@@ -25909,20 +25918,20 @@ gate_perform_apply() {
   log "$seg: 적용 실행 (재시도 없음)"
   ( cd "$wt" && sh -c "$cmd" ) >"$out" 2>"$err" || rc=$?
   apply_probe "$wt" "$probe"; post=$?
-  disp=$(apply_disposition "$pre" "$rc" "$post")
+  disp=$(apply_disposition "$nu" "$ne" "$pre" "$rc" "$post")
   if [ "$disp" = "수렴" ]; then
     gate_apply_segment_row "$alias" "$seg" "상태=완료" "워크트리=$wt" "고정 커밋=$m" "적용=수렴" || return $?
     ( cd "$root" && git worktree remove --force "$wt" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 ) || true
-    log "적용 수렴 — $seg (사전 2 → 사후 0)"
+    log "적용 수렴 — $seg (사전 $pre → 사후 $post, $map)"
     return 0
   fi
   # 적용 불명. The worktree stays: it is the only reproduction of a state that
   # may be half-applied, which is what a person needs in the morning.
   gate_apply_segment_row "$alias" "$seg" "상태=park" "워크트리=$wt" "고정 커밋=$m" "적용=불명" || return $?
   gate_append 'blocked' "대상=-" "스코프=run" "원인=막힘" "사유=적용 불명 $seg" \
-    "관측=명령 exit $rc · 사후 프로브 exit $post — 워크트리 보존: $wt" \
+    "관측=사전 프로브 exit $pre · 명령 exit $rc · 사후 프로브 exit $post ($map) — 워크트리 보존: $wt" \
     "재개 명령=$(gate_row_safe "$cmd" 240)"
-  warn "적용 불명 — 명령 exit $rc, 사후 프로브 exit $post. 워크트리를 남겼습니다: $wt"
+  warn "적용 불명 — 명령 exit $rc, 사후 프로브 exit $post ($map). 워크트리를 남겼습니다: $wt"
   return "$GATE_EXIT_PARK"
 }
 

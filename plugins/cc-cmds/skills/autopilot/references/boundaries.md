@@ -26,6 +26,7 @@ On a run without 5j, call it after Step 4, before the first boundary question, w
 | `deploy-triggers` | 레포 | 5b's second tail |
 | `act-allow` | 레포 | 5p, one manifest row tail per line |
 | `apply-probe` | 레포 | 5c, as a proposal |
+| `apply-probe-codes` | 레포 | 5c, as a proposal — `<불필요>/<필요>` |
 | `apply-actor` | 레포 | 5c, as a proposal |
 
 `termination`, `launch`, `defer`, `notify`, `apply-command` and `apply-radius` are refused by name, and the screen says why: the termination point, the launch timing, the banner switch and the apply command and radius are never taken from a default.
@@ -98,7 +99,15 @@ At or below the chosen point the run acts on its own; the first act above it sen
 
 **5c — Apply, if any target's cutpoint is `배포`.** Take the apply command verbatim, the read-only probe that decides whether an apply is needed, the actor (`파이프라인` or `사람` — start from 5j's `적용 주체`; once 5c has taken an answer, that answer is the one in force), and — when the actor is the pipeline — the blast radius that parks if the apply's outcome cannot be judged. The default radius is the repository and it may only be **narrowed**. State plainly that the driver executes an apply itself, with zero retries, and that an outcome it cannot judge stops the declared radius and preserves the worktree for the morning.
 
-**A confirmed `apply-probe` or `apply-actor` from 5o is a prefilled proposal, not an answer.** Ask 5c as above with those values filled in, and ask the apply command and the blast radius fresh; the answer the person accepts here is the one in force.
+**With the probe taken, ask which of its exit codes means 「적용 불필요」 and which means 「적용 필요」** — default `0/2`, two different integers. Any other exit of the pre-probe refuses the apply before anything is touched, so the mapping is the whole of what the probe can say. Say these with the question, not after it:
+
+- `1`, `126`, `127` and anything from `128` up cannot be used: `1` is what most tools return on any failure, `126`/`127` are the shell's "not executable"/"not found", and `128` and up are deaths by signal — none of them says anything about the target.
+- The default `2` is not unique to a probe that found a change: `sh -c` returns it on a syntax error, `grep`, `diff` and `cmp` return it on an I/O error, and on a host whose `/bin/sh` is dash a misused builtin returns it too. With `필요=2` such an error is read as "an apply is needed", and the apply runs and is then judged by the post-probe.
+- Putting `2` on 「불필요」 turns those same errors into a silent skip: the apply is never run and the ledger says nothing needed doing.
+
+**Keeping `0/2` writes no row; any other answer becomes one more `## 인가` row of Step 6**, beside the rows Step 6 already writes from Act 1's answers, and it is inside the `구속 다이제스트` like them: exactly one `- \`적용 프로브 코드\` | 불필요=<n> | 필요=<n> | 프로브 sha256=<hex>` row. `<hex>` is the sha256 of the `**적용 프로브**` value with its enclosing backticks removed and no trailing newline — `printf '%s' '<벗긴 프로브>' | shasum -a 256` — which is the string the driver runs and measures again at run start and at every apply; a hash taken over the backticked value or with a newline matches nothing, and the manifest check stops the run on it rather than falling back to `0/2`.
+
+**A confirmed `apply-probe`, `apply-probe-codes` or `apply-actor` from 5o is a prefilled proposal, not an answer.** Ask 5c as above with those values filled in, and ask the apply command and the blast radius fresh; the answer the person accepts here is the one in force.
 
 **5d — Terminal-act cap, per target.** Default is `없음`, and say why the question is being asked at all: at this moment nobody knows how many merges the cutpoint authorizes, because segmentation happens later and a re-design can re-split it. Offer `없음` (recommended) or an integer. A number latches against the measured segment count and routes the excess to the blocked queue.
 

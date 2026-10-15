@@ -2884,6 +2884,11 @@ SAGEOF
       # 매니페스트는 바이트 그대로다.
       [ -z "${SA_APPLY_CMD:-}" ]   || printf '**적용 지점**: `%s`\n' "$SA_APPLY_CMD"
       [ -z "${SA_APPLY_PROBE:-}" ] || printf '**적용 프로브**: `%s`\n' "$SA_APPLY_PROBE"
+      # 종료 코드 대응 행도 고른 집합만 싣는다. 값은 `<불필요> <필요>` 이고 sha 는
+      # 백틱을 벗긴 프로브 바이트에 묶인다.
+      [ -z "${SA_APPLY_CODES:-}" ] || printf -- '- `적용 프로브 코드` | 불필요=%s | 필요=%s | 프로브 sha256=%s\n' \
+        "${SA_APPLY_CODES% *}" "${SA_APPLY_CODES#* }" \
+        "$(printf '%s' "$SA_APPLY_PROBE" | shasum -a 256 | cut -d' ' -f1)"
       printf '\n'
       printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$pd" "$plan"
       printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
@@ -2929,7 +2934,7 @@ SAPEOF
     SA_REMOTE="$SA_ROOT/remote.git"
     SA_SEGWT="$SA_ROOT/seg"
     SA_SEGBR="seg-$SA_ID"
-    SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""
+    SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""; SA_APPLY_CODES=""
     SA_PREAUTH_EXTRA=""
     mkdir -p "$SA_REPO"
     ( cd "$SA_REPO" \
@@ -3282,11 +3287,12 @@ pre_sb() {
     # sb_apply_new <라벨> <프로브> <명령> [적용 주체] [상한] [룰설정 줄...] —
     # 파이프라인 적용을 선언한 픽스처. 상한의 기본은 선리뷰후머지 다: 적용
     # 행위는 그 정책의 세그먼트만 받고, 파이프라인 적용과 리뷰없음 상한의 조합은
-    # 매니페스트 검사가 거부한다.
+    # 매니페스트 검사가 거부한다. `SB_CODES='<불필요> <필요>'` 를 앞에 붙여 부르면
+    # 종료 코드 대응 행을 싣는다.
     local label="$1" probe="$2" cmd="$3" actor="${4:-파이프라인}" ceil="${5:-선리뷰후머지}"
     shift 3; shift $(( $# < 2 ? $# : 2 ))
     sb_new "$label" "$ceil"
-    SA_APPLY="$actor"; SA_APPLY_PROBE="$probe"; SA_APPLY_CMD="$cmd"
+    SA_APPLY="$actor"; SA_APPLY_PROBE="$probe"; SA_APPLY_CMD="$cmd"; SA_APPLY_CODES="${SB_CODES:-}"
     sa_manifest "$ceil" "$@"
     rm -rf "$SA_RUN"
     SB_STATE="$SA_ROOT/apply-state"; mkdir -p "$SB_STATE"
@@ -27734,7 +27740,7 @@ sb_silent 'terraform plan 은 침묵한다' -- terraform plan
 sb_silent 'gh api 의 GET 은 침묵한다'  -- gh api repos/o/r/pulls/1/merge
 
 # --- 38-12. 적용 행위의 다섯 전제 ------------------------------------------------
-# --- section: 38-12 | group: sb | covers: act, apply | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다 ---
+# --- section: 38-12 | group: sb | covers: act, apply | anchors: 12: 착지 헬퍼의 머지 커밋은 부모가 둘이다, 12: 머지됨 이 아닌 세그먼트의 적용은 전제 1 에서 거부된다, 12: fetch 뒤에는 같은 적용이 통과한다, 12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다 ---
 #
 # 다섯 전제는 규칙 카탈로그 앞에 있고 끌 수 없다. 거부마다 원장 행 수와 적용
 # 워크트리 부재를 함께 잰다 — 코드만 재면 행을 쓰고 거부하는 구현도 초록이다.
@@ -27795,6 +27801,10 @@ case "$(sb_seg_last SB12)" in
   *) bad "12: 건너뜀 행" "$(sb_seg_last SB12)" ;;
 esac
 [ -e "$WORK/sb12-should-not" ] && bad "12: 건너뜀" "명령이 실행됐다"
+case "$raw" in
+  *"적용 건너뜀 — SB12 (사전 프로브 0, 대응 불필요=0·필요=2)"*) ok "12: 대응 행이 없으면 기본 대응 0/2 로 읽고 문면에 싣는다" ;;
+  *) bad "12: 기본 대응 문면" "$raw" ;;
+esac
 # R12 의 다른 절반 — 같은 명령 문자열을 exec 으로 내면 여전히 거부된다.
 sag exec --manifest "$SA_MANIFEST" --target main --segment SB12 --cutpoint 배포 \
     --surface 외부상태변경 --reach 미상 --snapshot-digest "$(SAH)" --rationale x \
@@ -27879,7 +27889,7 @@ case "$(sb_seg_last SB12S)" in
 esac
 
 # --- 38-13. 적용의 처분과 종료 조건 ----------------------------------------------
-# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 2 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다 ---
+# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 2 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다 ---
 #
 # 수렴: 사전 프로브는 표지 파일이 없으면 2, 있으면 0 이고 명령이 표지를 만든다.
 sb_apply_new '13 수렴' "if [ -f $WORK/sb13-applied ]; then exit 0; else exit 2; fi" "touch $WORK/sb13-applied"
@@ -27969,6 +27979,59 @@ sb_apply SB13U
 case "$msg" in
   *"적용 행위 전제 1 불충족"*) ok "13: 불명 뒤 두 번째 적용은 전제 1 에서 거부된다" ;;
   *) bad "13: 불명 뒤 두 번째 적용" "rc=$rc $msg" ;;
+esac
+
+# 종료 코드 대응 행 — 필요=21 이면 사전 21 이 적용 필요이고, 2 는 더 이상 필요가 아니다.
+SB_CODES='0 21' sb_apply_new '13 대응 수렴' "if [ -f $WORK/sb13-map ]; then exit 0; else exit 21; fi" "touch $WORK/sb13-map"
+sb_reviewed_landing SB13M
+sb_apply SB13M
+check "13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다" "$rc" "0"
+[ -e "$WORK/sb13-map" ] || bad "13: 대응 수렴" "사전 21 에서 명령이 실행되지 않았다"
+case "$(sb_seg_last SB13M)" in
+  *"상태=완료"*"적용=수렴"*) ok "13: 필요=21 대응의 완료 행은 수렴 이다" ;;
+  *) bad "13: 대응 수렴 행" "$(sb_seg_last SB13M)" ;;
+esac
+case "$raw" in
+  *"적용 수렴 — SB13M (사전 21 → 사후 0, 대응 불필요=0·필요=21)"*) ok "13: 수렴 문면이 실제 코드와 대응을 싣는다" ;;
+  *) bad "13: 대응 수렴 문면" "$raw" ;;
+esac
+
+SB_CODES='0 21' sb_apply_new '13 대응 사전 실패' 'exit 3' "touch $WORK/sb13-map3"
+sb_reviewed_landing SB13X
+sb_apply SB13X
+check "13: 필요=21 대응에서 사전 3 은 park 코드로 끝난다" "$rc" "11"
+[ -e "$WORK/sb13-map3" ] && bad "13: 대응 사전 실패" "명령이 실행됐다"
+case "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" in
+  *"사유=적용 사전 실패(exit 3)"*"대응 불필요=0·필요=21"*) ok "13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다" ;;
+  *) bad "13: 대응 사전 실패 막힘" "$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1 )" ;;
+esac
+case "$raw" in
+  *"사전 프로브 exit 3 (대응 불필요=0·필요=21)"*) ok "13: 사전 실패 문면이 실제 코드와 대응을 싣는다" ;;
+  *) bad "13: 대응 사전 실패 문면" "$raw" ;;
+esac
+
+SB_CODES='0 21' sb_apply_new '13 대응 사전 2' 'exit 2' "touch $WORK/sb13-map2"
+sb_reviewed_landing SB13W
+sb_apply SB13W
+check "13: 필요=21 대응에서 사전 2 는 사전 실패 다" "$rc" "11"
+[ -e "$WORK/sb13-map2" ] && bad "13: 대응 사전 2" "명령이 실행됐다"
+case "$(sb_seg_last SB13W)" in
+  *"상태=park"*"적용=사전 실패"*) ok "13: 필요=21 대응의 사전 2 는 세그먼트를 park 한다" ;;
+  *) bad "13: 대응 사전 2 park" "$(sb_seg_last SB13W)" ;;
+esac
+
+SB_CODES='3 21' sb_apply_new '13 대응 건너뜀' 'exit 3' "touch $WORK/sb13-map-skip"
+sb_reviewed_landing SB13K
+sb_apply SB13K
+check "13: 불필요=3 대응에서 사전 3 은 rc 0 이다" "$rc" "0"
+[ -e "$WORK/sb13-map-skip" ] && bad "13: 대응 건너뜀" "명령이 실행됐다"
+case "$(sb_seg_last SB13K)" in
+  *"상태=완료"*"적용=건너뜀"*) ok "13: 불필요=3 대응의 사전 3 은 완료(건너뜀)로 끝난다" ;;
+  *) bad "13: 대응 건너뜀 행" "$(sb_seg_last SB13K)" ;;
+esac
+case "$raw" in
+  *"적용 건너뜀 — SB13K (사전 프로브 3, 대응 불필요=3·필요=21)"*) ok "13: 적용 건너뜀 문면이 실제 코드를 싣는다" ;;
+  *) bad "13: 대응 건너뜀 문면" "$raw" ;;
 esac
 
 # R21 — 슬라이스가 둘인 레포에서 적용 팔의 행이 계획 행의 선행 을 다시 싣는다.

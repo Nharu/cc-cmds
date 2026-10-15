@@ -131,7 +131,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 **설계 문서 전체 sha256**: <hex> | (해당 없음)
 **리뷰 대상**: <pr/branch 토큰> | (없음)
 **적용 지점**: <설계 문서에서 축자 복사한 선언> | (없음)
-**적용 프로브**: <apply가 필요한지 판정하는 읽기 전용 명령> | (없음)
+**적용 프로브**: <apply가 필요한지 판정하는 읽기 전용 명령> | (없음)     ← 종료 코드의 뜻은 `## 인가` 의 `적용 프로브 코드` 행, 없으면 0=불필요·2=필요
 **적용 주체**: 파이프라인 | 사람 | (해당 없음)
 
 ## 실행 계획
@@ -165,6 +165,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `베이스 설계` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>     ← 베이스 티켓을 설계하는 하위 런일 때만, 많아야 한 행
 - `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
+- `적용 프로브 코드` | 불필요=<0–125> | 필요=<0–125> | 프로브 sha256=<64자 소문자 hex>     ← 킥오프 5c 가 기본 0/2 가 아닌 대응을 받았을 때만, 많아야 한 행
 - `재킥오프` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>     ← 킥오프가 묻지 않고 토글 없이 쓰는 한 행
 - `연쇄` | 뿌리 런=<id> | 선행 런=<id> | 순번=<k> | 선행 구속 다이제스트=<hex> | 재킥오프 시각=<ISO Z> | 원인=<토큰> [| 재인가 승인=<run>#<승인 id> | 답변 다이제스트=<hex>]     ← 파생된 후속 런에만, 파생기가 쓰는 한 행
 
@@ -192,8 +193,9 @@ point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
 irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
 `베이스 발행` and `베이스 설계` rows**, **the `세그먼트 입양` rows**, **the `선행
-착지` rows**, the cost ceiling and the stagnation bound when declared, and the
-deadline. The gate compares that digest at entry.
+착지` rows**, **the `적용 프로브 코드` row when written**, the cost ceiling and
+the stagnation bound when declared, and the deadline. The gate compares that
+digest at entry.
 
 **The `베이스 발행` row is a base run's publication decision**, taken at kickoff
 and the only input the split stage publishes from: exactly one row when the
@@ -401,6 +403,22 @@ the design stage then instantiates the default roster frozen in its own skill
 file. Nothing is chosen at runtime on either path, which is what keeps `팀-구성`
 — a class the gate never adopts on its own — out of the stage's hands.
 
+**The `적용 프로브 코드` row says which exit codes of `**적용 프로브**` mean
+「적용 불필요」 and 「적용 필요」**, and it is a row for the same reason the roster
+is: as a `## 요소` field the mapping a person froze at kickoff would enter no
+digest. `프로브 sha256` binds the mapping to one probe — the sha256 of the
+`**적용 프로브**` value with its enclosing backticks removed and no trailing
+newline, the string the driver runs — and the mapping is read from the manifest
+only, never from a slice declaration in the design document, which a stage
+writes during the run. When the probe that actually runs hashes differently the
+mapping does not apply and the default `0/2` stands. Without the row the
+default is `0/2` and the row contributes zero bytes, so no existing manifest's
+digest moves. The pre-probe's other exit codes refuse the apply before anything
+is touched, the post-probe is read with the same mapping, and every log and
+ledger text of a skip, a refusal or a convergence carries the codes and the
+mapping. A re-kickoff copies the row byte for byte and offers no way to add,
+drop or change it.
+
 **The interview-record row is spelled as a `사전 인가` row, and it authorizes
 nothing.** It carries no `형태=`, and the pre-authorization rule skips a row
 without one, so no act matches it. What the spelling buys is that the row is
@@ -452,7 +470,7 @@ approval silently.
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양`, `선행 착지`, `재킥오프` and `연쇄` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `세그먼트 입양`, `선행 착지`, `적용 프로브 코드`, `재킥오프` and `연쇄` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -502,7 +520,8 @@ never compared.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
    target rows, rule settings, pre-authorization rows, auto-adoption rows, design
-   roster rows, base publication and base design rows, segment adoption rows, the cost ceiling and
+   roster rows, base publication and base design rows, segment adoption rows, the
+   apply probe code row when written (zero bytes without it), the cost ceiling and
    stagnation bound when declared, deadline. The PLAN is not
    in it: the router decides the step graph one act at a time, so a frozen plan
    would be recorded and never compared.
@@ -513,7 +532,14 @@ never compared.
    value, so the outermost bound holds here or nowhere.
 9. **`적용 주체: 파이프라인` requires `적용 지점` and `적용 프로브`.** An apply
    with no probe is refused at kickoff. (`적용 명령` is a *slice* field, not a
-   manifest field, so it cannot be checked here.)
+   manifest field, so it cannot be checked here.) **The `적용 프로브 코드` row
+   is at most one**, and when present `불필요` and `필요` are each one integer
+   from 0 to 125 with no leading zero, neither is 1, and the two differ;
+   `프로브 sha256` is 64 lowercase hex characters equal to the sha256 of the
+   `**적용 프로브**` value with its backticks removed and no trailing newline.
+   A second row or any mismatch is a **hard stop**, never a fall back to the
+   default — a mapping a person froze and the run did not honour would decide
+   an apply silently. Without the row the mapping is `0/2`.
 10. **`run-id=` and `anchor-key=` headers exist and match the body.** These are
     **fail-closed**: `origin-worktree=`'s fail-open tie-break is only sound
     *between* files that have already proven ownership, so removing the proof
