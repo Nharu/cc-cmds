@@ -3592,6 +3592,13 @@ if deps_satisfied 'SA'; then ok "착지한 선행 하나는 충족이다"; else 
 if deps_satisfied 'SZ'; then bad "선행 충족" "착지하지 않은 원소 하나짜리 목록이 공허하게 통과했다"; else ok "착지하지 않은 원소 하나짜리 목록은 미충족이다"; fi
 if deps_satisfied 'SA,SZ'; then bad "선행 충족" "뒤쪽 원소를 건너뛰었다"; else ok "목록의 뒤쪽 원소도 검사된다"; fi
 if deps_satisfied '슬라이스 SA'; then ok "슬라이스 접두사를 쓴 선행도 충족으로 해소된다"; else bad "선행 충족" "접두사가 붙으면 미충족이 된다"; fi
+# 둘째 인자는 plan.tsv 다섯째 열의 `머지 순서` 다. 주 루프는 두 목록의 합집합을 읽고,
+# 다섯째 열이 없던 계획은 인자 하나로 불려 전과 같이 읽힌다.
+if deps_satisfied 'SA' 'SZ'; then bad "선행 충족" "머지 순서 목록을 읽지 않았다"; else ok "머지 순서 의 착지하지 않은 토큰도 미충족이다"; fi
+if deps_satisfied '-' '슬라이스 SA'; then ok "착지한 머지 순서 앞 슬라이스는 충족이다"; else bad "선행 충족" "머지 순서 SA 가 done 에 있는데 미충족이다"; fi
+if deps_satisfied 'SA' '-'; then ok "대시인 다섯째 열은 널이다"; else bad "선행 충족" "다섯째 열의 - 가 토큰으로 읽혔다"; fi
+check "park 문면은 두 종류를 나눠 적는다" "$(deps_unmet_desc 'SA, SB' '슬라이스 SC')" "구현 선행 SA, SB · 머지 순서 SC"
+check "머지 순서 만 있는 park 문면" "$(deps_unmet_desc '-' 'SC')" "머지 순서 SC"
 RUN_DIR="$DONE_SAVE"
 
 # ---------------------------------------------------------------------------
@@ -10906,6 +10913,189 @@ r34_sc=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
 check "34: segment_cycle 은 마감 경과와 머지 게이트 2 의 반환 4 앞에서만 종단 행을 쓴다" \
   "$(printf '%s\n' "$r34_sc" | grep -c 'pr_cutpoint_terminal_row "\$seg" "\$branch"' || true)/$(printf '%s\n' "$r34_sc" | grep -A1 'pr_cutpoint_terminal_row "\$seg"' | grep -c 'return 4' || true)/$(printf '%s\n' "$r34_sc" | grep -B4 'pr_cutpoint_terminal_row "\$seg"' | grep -cE 'if past_deadline; then|if \[ "\$mrc" = "2" \]; then' || true)/$(printf '%s\n' "$r34_sc" | grep -c '\[ "\$arc" = "2" \] && return 4' || true)" \
   "2/2/2/1"
+
+# ---------------------------------------------------------------------------
+# 34m. 머지 순서 — 두 번째 의존 종류는 드라이버에서 선언 순서 머지로 읽힌다
+#
+# `머지 순서` 는 구현은 함께 하되 머지만 앞 슬라이스의 착지 뒤로 미루는 의존이다.
+# 드라이버는 세그먼트를 하나씩 돌리므로 두 종류를 함께 읽어 후행을 앞 슬라이스의
+# 착지 뒤에 돌리고, 한 슬라이스가 가진 선언 결함은 그 슬라이스와 거기 걸린 것만
+# 세운다. 계획은 34절의 고리처럼 실제 plan_from_declaration 과 실제 게이트 들여오기로
+# 돈다.
+# ---------------------------------------------------------------------------
+R34MO="$WORK/r34m"; mkdir -p "$R34MO/ledgers" "$R34MO/doc"
+m34_doc() {  # m34_doc <경로> <id:선행:머지 순서:파일[:noreason]>... — `-` 는 없음, `.` 은 머지 순서 줄 없음, `+` 는 목록 구분
+  local f="$1" s id pre mo file nr l
+  shift
+  m34_list() { if [ "$1" = - ]; then printf '없음'; else printf '%s' "$1" | sed 's/+/, 슬라이스 /g; s/^/슬라이스 /'; fi; }
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: %s\n' "$#"
+    for s in "$@"; do
+      IFS=: read -r id pre mo file nr <<M34EOF
+$s
+M34EOF
+      printf '\n### 슬라이스 %s — 픽스처\n\n**스킬**: implement\n**레포**: Nharu/cc-cmds\n' "$id"
+      printf '**선언 파일**: `%s`\n**선행**: %s\n' "$file" "$(m34_list "$pre")"
+      [ "$mo" = . ] || printf '**머지 순서**: %s\n' "$(m34_list "$mo")"
+      if [ "$nr" != noreason ] && [ "$mo" != . ]; then
+        [ "$pre" = - ] || printf '**선행 사유**: 픽스처\n'
+        [ "$mo" = - ] || printf '**머지 순서 사유**: 픽스처\n'
+      fi
+      printf '**절단점**: 머지\n**리뷰 정책**: 선리뷰후머지\n'
+    done
+  } > "$f"
+}
+m34_ring() {  # m34_ring <런 id> <문서> [이월] — one run's real plan; `이월` then writes two later rows of MY
+  local rid="$1" doc="$2" key="${2#/}"
+  mkdir -p "$R34MO/$rid"
+  write_manifest "$R34MO/$rid.manifest.md" "" "" main "$key"
+  (
+    MANIFEST="$R34MO/$rid.manifest.md"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    RUN_ID="$rid"; RUN_DIR="$R34MO/$rid"; LEDGER="$R34MO/ledgers/$rid.md"; LEDGER_SCOPE=파일
+    GRANT="$R34MO/grant.md"; DOC="$doc"; DOC_KEY="$key"
+    : > "$LEDGER"
+    ledger_row 'run' "run-id=$rid" "시작=$(now_iso)" "설계 문서=$DOC_KEY"
+    park() { printf '%s\n' "$*" >> "$RUN_DIR/parked"; }
+    binding_digest() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+    wt_path() { printf 'WT-%s' "$1"; }
+    plan_from_declaration "$DOC"
+    printf '%s\n' "$?" > "$RUN_DIR/plan.rc"
+    if [ "${3:-}" = "이월" ]; then
+      ledger_row 'segment' "id=MY" "상태=실행중" "선행=없음"
+      ledger_row 'segment' "id=MY" "상태=실행중" "선행=MX"
+    fi
+  ) >/dev/null 2>"$R34MO/$rid.err"
+}
+m34_col5() { awk -F'\t' -v s="$2" '$1 == s { print NF ":" $5 }' "$R34MO/$1/plan.tsv" 2>/dev/null; }
+
+M34A="$R34MO/doc/a.md"
+m34_doc "$M34A" 'MX:-:-:MX.txt' 'MY:-:MX:MY.txt' 'MZ:MX:-:MZ.txt' 'MD:-:MX:MX.txt' 'MW:-:-:MW.txt'
+m34_ring m34a "$M34A" 이월
+m34al="$R34MO/ledgers/m34a.md"
+check "34m: plan.tsv 다섯째 열이 머지 순서 이고 선언하지 않은 슬라이스는 - 다" \
+  "$(m34_col5 m34a MX)|$(m34_col5 m34a MY)|$(m34_col5 m34a MZ)" "5:-|5:슬라이스 MX|5:-"
+check "34m: 머지 순서 를 선언하지 않은 옛 문서의 계획도 다섯 열이고 다섯째가 - 다" \
+  "$(awk -F'\t' '{ print NF ":" $5 }' "$R34/ring2/plan.tsv" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//')" "5:-"
+check "34m: 계획 행이 머지 순서 를 싣고 없음 인 슬라이스는 그 필드를 쓰지 않는다" \
+  "$(r34_field "$( { grep -F '| 상태=계획됨 ' "$m34al" || true; } | grep -F '| id=MY ' | tail -1)" '머지 순서')/$( { grep -F '| id=MX ' "$m34al" || true; } | grep -c '머지 순서=' || true)" \
+  "슬라이스 MX/0"
+check "34m: 결함 하나를 가진 슬라이스만 decl-defects.tsv 에 든다" \
+  "$(tr '\t' '|' < "$R34MO/m34a/decl-defects.tsv" 2>/dev/null)" "MD|머지 순서 선언 파일 겹침 「MX.txt」 — 슬라이스 MX"
+check "34m: 결함 슬라이스가 있어도 계획은 끝나고 런을 세우지 않는다" \
+  "$(cat "$R34MO/m34a/plan.rc")/$( { grep -F ' run ' "$R34MO/m34a/parked" 2>/dev/null || true; } | grep -c . || true)" "0/0"
+# ledger_row 이월: 빠뜨린 뒤 행은 앞 행의 머지 순서 를 싣고, 같은 토큰을 선행 으로
+# 옮긴 행은 그 토큰을 이월에서 뺀다.
+m34my=$( { grep -E '^- `segment` ' "$m34al" || true; } | { grep -F '| id=MY ' || true; } | { grep -F '| 상태=실행중 ' || true; })
+check "34m: ledger_row 는 머지 순서 를 빠뜨린 뒤 행에 앞 행의 값을 이월한다" \
+  "$(r34_field "$(printf '%s\n' "$m34my" | sed -n 1p)" '머지 순서')" "슬라이스 MX"
+check "34m: 그 토큰을 선행 에 실은 행은 이월에서 그것을 뺀다" \
+  "$(printf '%s\n' "$m34my" | sed -n 2p | grep -c '머지 순서=' || true)/$(r34_field "$(printf '%s\n' "$m34my" | sed -n 2p)" '선행')" "0/MX"
+
+# plan_dep_floor: 슬라이스가 가진 거부는 decl-defects.tsv 로 가서 그 슬라이스만
+# 세우고, 아무 슬라이스도 가리키지 않는 토큰은 지금처럼 런을 세운다.
+m34_floor() {  # m34_floor <plan.tsv 본문> — the floor's lines on a scratch run directory
+  (
+    RUN_DIR="$R34MO/floor"; mkdir -p "$RUN_DIR"; : > "$RUN_DIR/decl-defects.tsv"
+    printf '%b' "$1" > "$RUN_DIR/plan.tsv"
+    run_segment_ids() { :; }; run_segment_field() { :; }
+    plan_dep_floor
+  ) 2>/dev/null
+}
+check "34m: 뒤에 선언된 슬라이스를 가리키는 머지 순서 는 그 슬라이스 소유의 바닥 줄이다" \
+  "$(m34_floor 'PA\t-\t-\t-\tPB\nPB\t-\t-\t-\t-\n')" "슬라이스 PA: 머지 순서 토큰이 뒤에 선언된 슬라이스를 가리킴 — 슬라이스 PB"
+check "34m: 아무 슬라이스도 가리키지 않는 머지 순서 토큰은 소유자가 없는 줄이다" \
+  "$(m34_floor 'PA\t-\t-\t-\tPQ\n')" "PA: 「머지 순서」가 지목한 세그먼트가 이 계획에 없습니다: PQ"
+check "34m: 앞 슬라이스를 가리키는 머지 순서 는 바닥을 지난다" \
+  "$(m34_floor 'PA\t-\t-\t-\t-\nPB\t-\t-\t-\tPA\n' | grep -c . || true)" "0"
+
+# 결함 문면: 이 변경이 더한 세 형식은 드라이버의 검증기와 게이트의 열거가 바이트
+# 같다. 결함이 하나인 픽스처마다 잰다. 사유 누락은 각자의 기존 문면이라 비교하지
+# 않고, 둘 다 그 슬라이스를 결함으로 내는지만 본다.
+m34_drv() { slicing_fields_ok "$1" 2>&1 >/dev/null | sed -n 's/^.*\[run\]\[warn\] //p' | sed -n 1p; }
+m34_gate() {  # the gate's enumeration; `DOC` is set after the source, which resets it
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; DOC=$2; gate_slicing_defects' _ \
+    "$(dirname "$DRIVER")/gate.sh" "$1" 2>/dev/null
+}
+m34_doc "$R34MO/doc/ov.md" 'QA:-:-:q/' 'QB:-:QA:q/b.txt'
+m34_doc "$R34MO/doc/late.md" 'QA:-:QB:QA.txt' 'QB:-:-:QB.txt'
+m34_doc "$R34MO/doc/both.md" 'QA:-:-:QA.txt' 'QB:QA:QA:QB.txt'
+m34_doc "$R34MO/doc/nr.md" 'QA:-:-:QA.txt' 'QB:-:QA:QB.txt:noreason'
+for m34f in ov late both; do
+  m34d=$(m34_drv "$R34MO/doc/$m34f.md"); m34g=$(m34_gate "$R34MO/doc/$m34f.md")
+  if [ -n "$m34d" ] && [ "$m34d" = "$m34g" ]; then
+    ok "34m: $m34f 결함의 문면이 드라이버와 게이트에서 바이트 같다"
+  else
+    bad "34m: $m34f 결함 문면" "드라이버 「${m34d}」 · 게이트 「${m34g}」"
+  fi
+done
+check "34m: 사유 누락은 두 검증기가 모두 그 슬라이스의 결함으로 낸다" \
+  "$(m34_drv "$R34MO/doc/nr.md" | grep -c "^슬라이스 QB: 필수 필드 '머지 순서 사유' 없음$" || true)/$(m34_gate "$R34MO/doc/nr.md" | grep -c '^슬라이스 QB: 필수 필드 「머지 순서 사유」 없음$' || true)" "1/1"
+check "34m: 슬라이스 소유 결함만 있는 선언은 계획자 경로로 가지 않는다" \
+  "$(slicing_branch "$R34MO/doc/nr.md" 2>/dev/null)/$(slicing_branch "$R34MO/doc/ov.md" 2>/dev/null)" "선언통치/선언통치"
+
+# 주 루프 — 머지 순서 후행은 앞 슬라이스가 done.txt 에 든 뒤에만 돌고, 앞 슬라이스가
+# 서면 종류를 적은 문면으로 park 된다. 결함 슬라이스는 그것만 park 된다. 다섯째 열이
+# 없는 옛 계획은 전과 같은 순서로 돈다.
+m34_main() {  # m34_main <이름> <plan.tsv 본문> [실패할 세그먼트] [결함 줄] — the real main_loop on that plan
+  local d="$R34MO/$1"
+  mkdir -p "$d/run/log" "$d/docs/design-audit"
+  write_manifest "$d/manifest.md" "" "" main "$R34KEY"
+  : > "$d/docs/design-audit/$1.reader-1.md"
+  printf -- '- `run` | run-id=%s-prior | 설계 문서=%s\n- `stage-result` | 세그먼트=- | 스테이지=S2 | 종단 부류=정상 완료\n' \
+    "$1" "$R34KEY" > "$d/$1-prior.md"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/$1.md"; LEDGER_SCOPE=파일; RUN_ID="$1"; GRANT="$R34/grant.md"
+    MANIFEST="$d/manifest.md"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    DOC="$R34DOC"; DOC_KEY="$R34KEY"; DOC_SLUG="$1"; DOC_BASE="$d"
+    ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds; SLUG="$1"; BASE="$d"
+    M34FAIL="${3:-}"; M34DEF="${4:-}"
+    : > "$LEDGER"
+    design_arm() { return 0; }
+    dispatch_stage() { printf '0' > "$RUN_DIR/$1.rc"; }
+    slicing_branch() { printf '선언통치'; }
+    plan_from_declaration() {
+      printf '%b' "$M34PLAN" > "$RUN_DIR/plan.tsv"
+      : > "$RUN_DIR/done.txt"
+      printf '%b' "$M34DEF" > "$RUN_DIR/decl-defects.tsv"
+    }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    segment_cycle() { printf '%s\n' "$1" >> "$d/cycled"; [ "$1" != "$M34FAIL" ] || return 1; return 0; }
+    past_deadline() { return 1; }
+    in_halted_radius() { return 1; }
+    cross_repo_deps() { :; }
+    report_append() { :; }; report_path() { printf '%s' "$d/report"; }
+    grant_field() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
+    run_cycle_budget() { printf 10; }
+    spawn_lease_release_run() { :; }; report_run_residual() { :; }
+    quiet_window_begin() { :; }; quiet_window_end() { :; }
+    main_loop; printf 'rc=%s\n' "$?"
+  ) > "$d/out" 2>/dev/null
+}
+m34_seq() { tr '\n' ' ' < "$R34MO/$1/$2" 2>/dev/null | sed 's/ $//'; }
+M34PLAN='MX\t-\t-\t-\t-\nMY\t-\t-\t-\t슬라이스 MX\nMZ\t-\t-\tMX\t-\nMW\t-\t-\t-\t-\n'
+m34_main m34ok "$M34PLAN"
+check "34m: 머지 순서 후행은 앞 슬라이스 뒤에 돌고 done.txt 순서가 선언 순서다" \
+  "$(m34_seq m34ok cycled)/$(m34_seq m34ok run/done.txt)" "MX MY MZ MW/MX MY MZ MW"
+m34_main m34fail "$M34PLAN" MX
+check "34m: 앞 슬라이스가 서면 두 종류의 후행이 각자의 종류를 적고 park 되고 독립 슬라이스는 돈다" \
+  "$(m34_seq m34fail cycled)|$( { grep -F 'MY cone' "$R34MO/m34fail/parked" 2>/dev/null || true; } | grep -cF '선행 슬라이스가 완료되지 않음: 머지 순서 MX' || true)|$( { grep -F 'MZ cone' "$R34MO/m34fail/parked" 2>/dev/null || true; } | grep -cF '선행 슬라이스가 완료되지 않음: 구현 선행 MX' || true)" \
+  "MX MW|1|1"
+m34_main m34def "$M34PLAN" "" 'MY\t머지 순서 선언 파일 겹침 「MX.txt」 — 슬라이스 MX\n'
+check "34m: 결함 슬라이스는 그것만 park 되고 나머지는 돈다" \
+  "$(m34_seq m34def cycled)|$( { grep -F 'MY cone' "$R34MO/m34def/parked" 2>/dev/null || true; } | grep -cF '슬라이스 선언 결함: 머지 순서 선언 파일 겹침' || true)" \
+  "MX MZ MW|1"
+M34PLAN='SA\t-\t-\t-\nSB\t-\t-\tSA\nSC\t-\t-\t-\n'
+m34_main m34old "$M34PLAN" SA
+check "34m: 다섯째 열이 없는 계획은 선행 만으로 전과 같이 돈다" \
+  "$(m34_seq m34old cycled)|$( { grep -F 'SB cone' "$R34MO/m34old/parked" 2>/dev/null || true; } | grep -cF '선행 슬라이스가 완료되지 않음: 구현 선행 SA' || true)" \
+  "SA SC|1"
+
+# cross_repo_deps 는 머지 순서 간선으로만 걸린 후행도 레포 간 의존으로 적는다.
+m34_xr=$(sed -n '/^cross_repo_deps()/,/^}/p' "$DRIVER")
+check "34m: cross_repo_deps 가 셋째 인자의 머지 순서 를 읽는다" \
+  "$(printf '%s\n' "$m34_xr" | grep -c 'dep_tokens "\${3:-}"' || true)" "1"
+check "34m: 주 루프가 cross_repo_deps 에 머지 순서 를 넘긴다" \
+  "$(sed -n '/^main_loop_body()/,/^}/p' "$DRIVER" | grep -c 'cross_repo_deps "\$seg" "\$deps" "\$morder"' || true)" "1"
 
 # ---------------------------------------------------------------------------
 # 35. 리뷰 사이클의 다음 처분 — 드라이버는 게이트의 `다음` 으로만 가른다

@@ -1152,7 +1152,10 @@ check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "
 # ordering is pinned on its own: the dependency condition that reads `선행`
 # alone, the planning rule over both lists, the merge that waits for an empty
 # `머지 대기`, the 405 disposition that never brings the base into the branch,
-# and the clause that chooses which live stage to wait on. Each literal must
+# the clause that chooses which live stage to wait on, and the disposition of
+# the gate's planning-order refusal — a deferred slice cuts no branch, that
+# refusal is a wait rather than an ending, and a slice planned again reuses the
+# branch and worktree an earlier pass made. Each literal must
 # occur exactly once in each copy, which is what makes the two byte-identical
 # without comparing the paragraphs around them. A literal under a heading both
 # copies share is searched inside that section; the dependency sentence and the
@@ -1176,6 +1179,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Planning the segments|The two imports below — a predecessor an earlier run already merged, and one the manifest'"'"'s `선행 착지` row names — apply to a `머지 순서` token as well, and the planning act writes that predecessor'"'"'s row itself; without them the row would never appear and the slice would never be planned.' \
     '#### Planning the segments|With C `머지 순서` B and B `선행` A, B is planned after A lands, and C is planned once B'"'"'s row exists and runs alongside B.' \
     '#### Planning the segments|Pass no `머지 순서` on the planning row: the gate writes it from the declaration and carries it forward.' \
+    '#### Planning the segments|A slice the planning rule below defers gets none of the three calls — no `git fetch` and no `git worktree add -b` either — until that rule plans it.' \
+    '#### Planning the segments|**A refusal with exit 2 saying a token 「is declared in the frozen document and has no segment row on this ledger yet」 is a deferral, not an ending**: write nothing, make no `사유=중단` handoff, say nothing of a new run, and plan the same slice again once that token has a row.' \
+    '#### Planning the segments|Any other refusal with exit 2 naming a predecessor that no ledger shows landed — a slice the document does not declare, or one whose `레포` is not a target of this run — is the same ending: a run cannot gain a `선행 착지` row after its kickoff, so say in the handoff that a new run with that row is what plans the slice.' \
+    '#### Planning the segments|When an earlier pass already made the slice'"'"'s derived branch and worktree (the `슬라이싱` entry'"'"'s branch and worktree), planning it again does not cut them a second time: skip calls 1 and 2 and issue call 3 alone.' \
     '#### Merging and applying a segment|**Whatever the review policy, merge a segment only when its snapshot `머지 대기` is empty.** A non-empty `머지 대기` names the predecessors, by `선행` or `머지 순서`, that have not landed yet: do other work, or wait as 「Waiting on a stage」 chooses.' \
     '#### Merging and applying a segment|A refusal with exit 3 that names such a predecessor and its `상태` means the same — wait — whether the refused act was the merge or another act leaving the worktree whose grade the gate could not read; it is not **Any other cause** below, and nothing is written for it. A predecessor that was parked has already parked this segment through its cone.' \
     '#### Merging and applying a segment|A `머지 순서` successor refused with 405 for a conflict takes this branch as it stands: never merge or rebase the moved base into its branch, which would make a HEAD no review read.'
@@ -1198,6 +1205,20 @@ mo_wait='When nothing is dispatchable or mergeable and two or more segment stage
 check "교대 사본의 「Waiting on a stage」 절에 대기 문장 전체가 한 번 실린다" \
   "$(mo_count "$(router_section "$RS_SKILL" '### Waiting on a stage')" "$mo_wait")" "1"
 check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
+# The planning-order refusal is consumed by the router, not only written by the
+# gate: the copies quote the gate's own words, so a gate rewording that leaves
+# the router text behind fails here, and the broad sentence that sent this
+# refusal to `사유=중단` and a new run must not come back in either copy.
+mo_defer='is declared in the frozen document and has no segment row on this ledger yet'
+check "게이트가 계획 순서 거부 문면을 낸다" "$(mo_count "$(cat "$GATE")" "$mo_defer")" "1"
+mo_old='A refusal with exit 2 naming a predecessor that no ledger shows landed is the same ending: a run cannot gain a `선행 착지` row after its kickoff, so say in the handoff that a new run with that row is what plans the slice.'
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  check "$who 사본의 계획 절이 게이트의 계획 순서 거부 문면을 인용한다" \
+    "$(mo_count "$(router_section "$file" '#### Planning the segments')" "$mo_defer")" "1"
+  check "$who 사본에 계획 순서 거부를 새 런으로 보내던 옛 문장이 없다" \
+    "$(mo_count "$(cat "$file")" "$mo_old")" "0"
+done
 
 # ---------------------------------------------------------------------------
 # 6f. The stall classifier — `stall-class.awk` and the `stalls` key
