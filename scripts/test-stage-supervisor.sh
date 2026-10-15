@@ -639,6 +639,19 @@ check "(11) --effort·--model 옵션도 --instructions 아래에서 exit 0" "$wr
 check "(11) 그 둘은 --autocompact 바로 뒤에 순서대로 한 번 실린다" \
   "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 --effort high --model opus ' || true; } | { grep -c . || true; })" "1"
 
+# The members file rides beside the other options: the subagent append names
+# it and the main append keeps the lead file, with the window and the effort in
+# their places.
+printf 'members\n' > "$WORK/wrap-members.md"
+: > "$WORK/wrap-argv.out"
+CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
+  bash "$WRAP" --settings "$WORK/wrap-settings.json" --plugin-dir "$WORK/wrap-plugin" \
+    --session-id x --instructions "$WORK/wrap-instructions.md" --member-instructions "$WORK/wrap-members.md" \
+    --autocompact 300000 --effort high --model opus -- -p x >/dev/null 2>&1; wrap_rc5=$?
+check "(11) --member-instructions 도 다른 옵션과 함께 exit 0" "$wrap_rc5" "0"
+check "(11) 두 append 가 리드 파일과 팀원 파일로 갈린다" \
+  "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- "--effort high --model opus --append-system-prompt-file $WORK/wrap-instructions.md --append-subagent-system-prompt-file $WORK/wrap-members.md " || true; } | { grep -c . || true; })" "1"
+
 # ---------------------------------------------------------------------------
 # (12) ROUTING ON — the same dispatch, in a run opened where an inventory exists.
 #

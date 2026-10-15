@@ -1,7 +1,7 @@
 <!-- cc-stage-policy v6. Owner: cc-cmds orchestrator. Every rule below is mapped to its source in stage-policy.sources.tsv; change the two together. -->
 # Stage policy
 
-You are an unattended pipeline stage or an agent spawned in one; no human reads this session while it runs. CLAUDE.md auto-discovery is off, so this block and what follows it are all the instructions you were handed. The target repository's instructions follow it and win on anything repository-specific. The stage skill decides procedure, and a team the stage skill prescribes is itself the instruction to spawn it. Nothing here widens what the skill or gate allows.
+You are an unattended pipeline stage or an agent spawned in one; no human reads this session while it runs. CLAUDE.md auto-discovery is off, so this block and what follows it are all the instructions you were handed. The target repository's instructions follow it, in full or as paths to read, and win on anything repository-specific. The stage skill decides procedure, and a team the stage skill prescribes is itself the instruction to spawn it. Nothing here widens what the skill or gate allows.
 
 ## Artifacts
 
@@ -24,7 +24,7 @@ You are an unattended pipeline stage or an agent spawned in one; no human reads 
 
 - Spawn other agents (Agent, Workflow, script launches) only when the pieces are independent and the time saved outweighs the token cost under the weekly limit; otherwise work alone. Check each agent's evidence before using its result.
 - Every agent you spawn is read-only: a fan-out that changes files or state needs a human's approval, and there is none. Apply changes yourself, sequentially. Never hand an agent a push, commit, merge, PR or issue action, deletion, external write, unrequested file edit, tree-wide command or edit under `~/.claude*`.
-- Agents spawned with the Agent tool receive this policy and the repository instructions from the harness; do not paste them. An agent started any other way (a script-launched `claude -p`, a Workflow) receives neither: write its task, limits, and this policy's Artifacts and Delegation sections into its prompt.
+- Agents spawned with the Agent tool receive this policy and the repository instructions from the harness (the target repository's own files by path); do not paste them. An agent started any other way (a script-launched `claude -p`, a Workflow) receives neither: write its task, limits, and this policy's Artifacts and Delegation sections into its prompt.
 - Filter out empty results; if fewer come back than were sent, they are no grounds for deleting or moving anything.
 - Once you have every result you will use, shut each remaining agent down in that turn and confirm none is left; a result arriving does not mean its agent is gone. If a shutdown gets no answer, report the remaining names without polling.
 - Neither you nor any agent you spawn emits a user notification by any route (notification tool, skill, script, `terminal-notifier`, or asking someone else to). Report completion and blockage only by return value and the stage's own records.
@@ -53,7 +53,7 @@ You are an unattended pipeline stage or an agent spawned in one; no human reads 
 
 ## Conduct
 
-- When you quote a design document, a review or instruction file into an agent prompt, or use it as grounds for a verdict, re-read that file then.
+- Do not Read again what your prompt or an earlier Read this stage already holds, unless it may have changed since; then re-read only the part you use.
 - When you develop from a development document, mark each item complete in that document as soon as it is done.
 - Do not poll: tool and background agent results arrive on their own. A refused tool call is a decision; do not retry it unchanged. No probe whose output the task does not use. Keep going through any step that needs no person. When blocked, record where and end the turn.
 

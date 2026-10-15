@@ -5,6 +5,35 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.77.0] - 2026-10-15
+
+무인 스테이지와 그 팀원이 매 요청 앞에 싣는 지시를 줄인다. 팀원은 리드와 따로 합성한 지시 파일을 받아 대상 레포의 지시 파일을 본문 대신 경로로 받고, 작업 공간 지시 파일은 맵 줄이 없어도 내용이 정책에 이미 반영된 것으로 확인되면 빠진다. 한 갈래에서만 쓰는 스킬 본문은 그 갈래에서만 읽는다.
+
+### Added
+
+- **팀원용 지시 파일** — 게이트가 리드 파일과 함께 팀원 파일(정책 전문, 레포 밖 조상 원문, 레포 지시 파일은 절대 경로 한 줄)을 내용 주소 이름으로 합성하고, 리드 파일 옆 `<리드 sha256>.member` 포인터로 잇는다. 감독자와 라우터 교대 기동은 포인터가 있으면 래퍼에 `--member-instructions` 를 넘긴다.
+- **`stage-wrapper.sh --member-instructions <file>`** — 서브에이전트 append 프롬프트를 그 파일로 한다. `--instructions` 없이 쓰거나 없는·빈 파일이면 거부한다. 주입하는 분기에서 `CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT=1` 을 켠다.
+- **`stage-policy-drift.sh --identity <file>`** — 작업 공간 지시 파일의 모든 절이 TSV `workspace` 행과 축자 표제로 맞고 본문이 신선하면 0 을 낸다. `--ack-added` 로 기록한 호스트 로컬 처분은 그 접두가 파일에서 한 절에만 맞고, `excluded:*` 이며, 본문이 이 호스트가 그 처분에 기록한 해시와 같을 때만 그 절을 덮는다. 그 아래 본문을 고치면 파일이 다시 실리고 `--explain --workspace` 가 `changed` 로 보인다. 식별된 파일이 깨지면 어느 절인지 한 줄로 말한다. `--ack-store` 로 확인 저장소를 바꿀 수 있고, `--explain`·`--ack` 는 `--workspace <file>` 로 맵 없이 원천을 찾으며 그 형태에서는 `excluded:*` 행 본문도 비교한다.
+- **맵의 `keep` 줄** — 그 파일은 동일성 판정 없이 원문 전체로 싣는다.
+- **무인 표면 린트 규칙 9** — 가벼운 설계 팔이 목록에 적은 discuss 팔 부분이 정확히 한 줄에 맞는지 단언한다.
+
+### Changed
+
+- **작업 공간 지시 파일 제외** — 맵 줄이 없는 레포 루트 밖 조상도 `--identity` 가 0 이면 빠진다. 편집 훅과 `make policy-drift` 가 맵 없이 식별되는 작업 공간 파일을 `--workspace` 로 다룬다.
+- **정책 문면** — 레포 지시가 「본문 또는 읽을 경로로」 뒤따른다고 적고, 하네스가 레포 지시 파일을 경로로 준다고 적는다. 재독 문장은 이미 가진 것을 다시 Read 하지 말고, 바뀌었을 수 있을 때만 쓰는 부분을 다시 읽으라고 좁힌다. 정책 크기 상한을 8000 B 에서 8192 B 로 올리고 경계 사례를 더한다.
+- **`review-unattended`** — 복구 팔 본문을 `references/recovery-arm.md` 로 옮기고 `--recover` 일 때만 읽는다. 무인 표면 린트가 팔 자신의 `references/*.md` 도 검사하고, 복구 연동·체크포인트 범위 린트가 옮긴 파일과 SKILL.md 둘 다를 본다.
+- **`design-solo-unattended`** — discuss 팔 SKILL.md 전체 대신 목록에 적은 부분만 읽는다.
+- **`implement-unattended`** — 계획 단계의 문서 해시 대조 서술을 두 경로의 코드 사실에 맞춘다.
+
+### Why
+
+정책, 작업 공간 지시 파일, 대상 레포 지시 파일, 스킬 본문이 스테이지와 팀원의 모든 요청 앞에 실렸고, 팀원은 리드와 같은 파일을 받아 쓰지 않는 레포 지시 본문까지 실었다. 맵 줄이 없는 호스트에서는 정책에 이미 옮긴 작업 공간 지시가 그대로 한 번 더 실렸다.
+
+### Post-install notes
+
+- 런마다 플러그인 사본이 고정되므로, 업그레이드 전에 시작한 런은 끝날 때까지 이전 합성으로 돈다.
+- 작업 공간 지시 파일을 고친 뒤에는 `stage-policy-drift.sh --explain --workspace <file>` 로 바뀐 절을 보고, 맞으면 `--ack --workspace <file>` 로 확인해야 다음 런부터 다시 빠진다.
+
 ## [2.76.1] - 2026-10-15
 
 리셋권 예비 공급 대기 중 사람이 리셋권을 사용 표시해 보유 목록에서 빠지면, 판독이 아직 리셋 전이어도 대기가 다음 재질의에서 예비 공급 근거를 잃고 마감 PARK 로 끊기던 결함을 고친다. 소진 계정과 여유 없는 계정이 섞인 대기 후보에서 지명된 그룹의 사유가 그 그룹의 상태와 어긋나던 결함도 함께 고친다.

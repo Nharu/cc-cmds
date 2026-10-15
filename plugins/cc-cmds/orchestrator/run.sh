@@ -5805,15 +5805,19 @@ stage_kind_of() {
 # stages, the shift successor and the driver's own spawns all come through these
 # functions; a copy in the gate would let one kind run at two efforts depending
 # on who launched it. Design, reconverge and audit get `high`; every other kind,
-# the three judgment calls among them, gets `medium`. The model is always
-# `opus` — the family alias, so the harness resolves it to the current Opus.
+# the three judgment calls among them, gets `medium`. The model is `opus` for
+# every kind but the shift — the family alias, so the harness resolves it to the
+# current Opus. The shift gets `sonnet` unless `CC_ORCH_SHIFT_MODEL` names
+# `sonnet` or `opus`; any other value of that switch is ignored, and no other
+# kind reads it.
 #
 # Two switches, each dropping only its own half. `CC_ORCH_STAGE_EFFORT=off`
 # drops `--effort`; `CC_ORCH_STAGE_EFFORT=<kind>:<level>[,…]` overrides the
 # listed kinds, with the level taken only from the closed set the CLI accepts
 # (anything else is ignored, not passed through). `CC_ORCH_STAGE_MODEL=off`
-# drops `--model`; any other value is ignored, because a per-kind model is not a
-# setting this table offers.
+# drops `--model` for every kind, the shift included; any other value is
+# ignored, because a per-kind model for the stages is not a setting this table
+# offers.
 stage_effort_of() {
   # stage_effort_of <kind> — the level, or nothing when the switch is off.
   local kind="$1" sw="${CC_ORCH_STAGE_EFFORT:-}" v rest item
@@ -5839,20 +5843,28 @@ stage_effort_of() {
 }
 
 stage_model_of() {
-  # stage_model_of — `opus`, or nothing when the switch is off.
+  # stage_model_of <kind> — `sonnet` or `opus` for the shift, `opus` for every
+  # other kind, or nothing when the switch is off.
   if [ "${CC_ORCH_STAGE_MODEL:-}" = "off" ]; then
+    return 0
+  fi
+  if [ "${1:-}" = "shift" ]; then
+    case "${CC_ORCH_SHIFT_MODEL:-}" in
+      sonnet|opus) printf '%s' "$CC_ORCH_SHIFT_MODEL" ;;
+      *)           printf 'sonnet' ;;
+    esac
     return 0
   fi
   printf 'opus'
 }
 
 stage_launch_flags() {
-  # stage_launch_flags <kind> — `--effort <level> --model opus`, each half
+  # stage_launch_flags <kind> — `--effort <level> --model <model>`, each half
   # dropped by its own switch. Spliced unquoted: both values are closed-set
   # tokens, never read off disk.
   local e m out=""
   e=$(stage_effort_of "$1")
-  m=$(stage_model_of)
+  m=$(stage_model_of "$1")
   [ -z "$e" ] || out="--effort $e"
   [ -z "$m" ] || out="${out:+$out }--model $m"
   printf '%s' "$out"
