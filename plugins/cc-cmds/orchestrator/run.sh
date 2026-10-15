@@ -2076,6 +2076,157 @@ slicing_pr_count() {
   printf '%s' "$n"
 }
 
+# ---------------------------------------------------------------------------
+# THE TWO DEPENDENCY KINDS OF A SLICE. `**선행**` is the implementation
+# predecessor: the slice is cut from a base its predecessor has already landed
+# on. `**머지 순서**` is the second kind: the slice may be built and reviewed
+# while its predecessor still runs, and only its merge waits for the
+# predecessor's landing. A block that carries a `**머지 순서**` line, `없음`
+# included, is a block of the new grammar; a frozen document has none and reads
+# exactly as before, every `선행` meaning what it always meant.
+#
+# THE DEFECTS BELOW ARE SHARED WITH THE GATE CHARACTER FOR CHARACTER. The gate
+# sources this file and prints `slicing_order_defects`' lines itself, so the
+# driver's validator and the gate's name the same defect in the same bytes
+# without a second copy of the wording.
+# ---------------------------------------------------------------------------
+slice_decl_files() {
+  # slice_decl_files <doc> <id> — the declared files, one per line, backticks
+  # and the outer whitespace gone.
+  slice_field "$1" "$2" '선언 파일' | tr ',' '\n' | tr -d '`' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | { grep -v '^$' || true; }
+}
+
+slice_reason_keys() {
+  # slice_reason_keys <doc> <id> — the reason fields a new-grammar block has to
+  # carry, one per line: `선행 사유` for a `선행` that is not `없음`, `머지 순서
+  # 사유` for a `머지 순서` that is not `없음`. Nothing for an old-grammar block,
+  # which a frozen document must still pass.
+  local mo
+  mo=$(slice_field "$1" "$2" '머지 순서')
+  [ -n "$mo" ] || return 0
+  [ -z "$(dep_tokens "$(slice_field "$1" "$2" '선행')")" ] || printf '%s\n' '선행 사유'
+  [ -z "$(dep_tokens "$mo")" ] || printf '%s\n' '머지 순서 사유'
+}
+
+slice_chain_tokens() {
+  # slice_chain_tokens <doc> <id> — `선행 ∪ 머지 순서` of the slice, without
+  # repeats, `선행` first.
+  local t out=" "
+  for t in $(dep_tokens "$(slice_field "$1" "$2" '선행')") $(dep_tokens "$(slice_field "$1" "$2" '머지 순서')"); do
+    case "$out" in *" $t "*) : ;; *) out="$out$t " ;; esac
+  done
+  out=${out# }
+  printf '%s' "${out% }"
+}
+
+slice_chain_reach() {
+  # slice_chain_reach <doc> <ids...> — every declared slice reachable from the
+  # given ids through `선행 ∪ 머지 순서`, the given ids included, space-separated.
+  # A token naming no declared slice is not followed: it has no edges.
+  local doc="$1" todo seen=" " d all
+  shift
+  all=" $(slice_ids "$doc" | tr '\n' ' ') "
+  todo="$*"
+  while [ -n "$todo" ]; do
+    d=${todo%% *}
+    case "$todo" in *" "*) todo=${todo#* } ;; *) todo="" ;; esac
+    [ -n "$d" ] || continue
+    case "$all" in *" $d "*) : ;; *) continue ;; esac
+    case "$seen" in *" $d "*) continue ;; esac
+    seen="$seen$d "
+    todo="${todo:+$todo }$(slice_chain_tokens "$doc" "$d")"
+  done
+  seen=${seen# }
+  printf '%s' "${seen% }"
+}
+
+slice_files_overlap() {
+  # slice_files_overlap <doc> <S> <T> — the first declared path of S that
+  # shares a prefix with one of T's, the shorter of the two printed; nothing
+  # when the two sets are prefix-disjoint. The same prefix match
+  # `gate_fileset_escape` uses to judge whether a path is covered.
+  local p q
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    while IFS= read -r q; do
+      [ -n "$q" ] || continue
+      case "$q" in "$p"|"$p"*) printf '%s' "$p"; return 0 ;; esac
+      case "$p" in "$q"*) printf '%s' "$q"; return 0 ;; esac
+    done <<EOF
+$(slice_decl_files "$1" "$3")
+EOF
+  done <<EOF
+$(slice_decl_files "$1" "$2")
+EOF
+  return 0
+}
+
+slicing_order_defects() {
+  # slicing_order_defects <doc> — the slice-owned defects of the merge-order
+  # kind, one line per defect, every slice to the end: a token in both lists,
+  # a `머지 순서` token naming a slice declared at or after its own block, and
+  # a declared file shared with a slice the closure puts out of reach.
+  #
+  # THE CLOSURE, NOT THE PAIR. M(S) is every slice reachable from S through
+  # `선행 ∪ 머지 순서`; P(S) is every slice reachable along a path whose first hop
+  # is `선행`. A slice in P(S) lands before S is cut, so S's base already holds
+  # it; a slice in M(S) \ P(S) lands after S is cut and before S merges, which
+  # is a change S never saw. S's declared files have to be prefix-disjoint from
+  # all of those, and nothing is exempt: a generated index or a version file
+  # merged from two bases conflicts, or merges a combination nobody read.
+  #
+  # A `선행` token naming a later slice is not a defect: no such ordering rule
+  # was ever written for `선행`, and adding one now would park frozen documents.
+  # A token naming no declared slice is not a slice-owned defect either; it has
+  # no owner, and the run-scope check that already refuses one for `선행`
+  # refuses it for both lists.
+  local doc="$1" ids id t pre mo before=" " all m p d o
+  ids=$(slice_ids "$doc")
+  all=" $(printf '%s' "$ids" | tr '\n' ' ') "
+  for id in $ids; do
+    pre=$(dep_tokens "$(slice_field "$doc" "$id" '선행')")
+    mo=$(dep_tokens "$(slice_field "$doc" "$id" '머지 순서')")
+    for t in $mo; do
+      case " $pre " in
+        *" $t "*) printf '슬라이스 %s: 머지 순서 토큰이 선행에도 있음 — 슬라이스 %s\n' "$id" "$t" ;;
+      esac
+      case "$all" in *" $t "*) : ;; *) continue ;; esac
+      case "$before" in
+        *" $t "*) : ;;
+        *) printf '슬라이스 %s: 머지 순서 토큰이 뒤에 선언된 슬라이스를 가리킴 — 슬라이스 %s\n' "$id" "$t" ;;
+      esac
+    done
+    before="$before$id "
+    m=" $(slice_chain_reach "$doc" $pre $mo) "
+    p=" $(slice_chain_reach "$doc" $pre) "
+    for d in $ids; do
+      [ "$d" != "$id" ] || continue
+      case "$m" in *" $d "*) : ;; *) continue ;; esac
+      case "$p" in *" $d "*) continue ;; esac
+      o=$(slice_files_overlap "$doc" "$id" "$d")
+      [ -z "$o" ] || printf '슬라이스 %s: 머지 순서 선언 파일 겹침 「%s」 — 슬라이스 %s\n' "$id" "$o" "$d"
+    done
+  done
+  return 0
+}
+
+slicing_slice_defects() {
+  # slicing_slice_defects <doc> — every defect a single slice owns, in the
+  # driver's wording: a missing reason field, then the merge-order defects.
+  # The driver parks the owner and what reaches it, and plans the rest.
+  local doc="$1" id f
+  for id in $(slice_ids "$doc"); do
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      [ -n "$(slice_field "$doc" "$id" "$f")" ] || printf "슬라이스 %s: 필수 필드 '%s' 없음\n" "$id" "$f"
+    done <<EOF
+$(slice_reason_keys "$doc" "$id")
+EOF
+  done
+  slicing_order_defects "$doc"
+}
+
 # Field completeness. Six are required of every block; three more are required
 # only when the block declares an apply.
 #
@@ -2086,12 +2237,25 @@ slicing_pr_count() {
 # inexpressible. The two axes answer different questions: the cutpoint says how
 # far the PIPELINE may go, the apply command says whether this slice HAS an
 # apply at all.
+#
+# `slicing_fields_ok <doc> base` leaves out what a single slice owns — the
+# reason fields of a new-grammar block and the merge-order defects — so the
+# driver can tell a declaration it cannot read from one with a defective slice
+# it can park on its own.
 slicing_fields_ok() {
-  local doc="$1" id v f
+  local doc="$1" mode="${2:-}" id v f
   for id in $(slice_ids "$doc"); do
     for f in 스킬 레포 '선언 파일' 선행 절단점; do
       [ -n "$(slice_field "$doc" "$id" "$f")" ] || { warn "슬라이스 $id: 필수 필드 '$f' 없음"; return 1; }
     done
+    if [ "$mode" != "base" ]; then
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        [ -n "$(slice_field "$doc" "$id" "$f")" ] || { warn "슬라이스 $id: 필수 필드 '$f' 없음"; return 1; }
+      done <<EOF
+$(slice_reason_keys "$doc" "$id")
+EOF
+    fi
     cutpoint_index "$(slice_field "$doc" "$id" '절단점')" >/dev/null \
       || { warn "슬라이스 $id: 절단점 토큰이 어휘에 없음"; return 1; }
     # `리뷰 정책` is OPTIONAL and defaults to `선리뷰후머지`. The cutpoint says
@@ -2176,6 +2340,10 @@ EOF
                   esac ;;
     esac
   done
+  if [ "$mode" != "base" ]; then
+    v=$(slicing_order_defects "$doc" | sed -n 1p)
+    [ -z "$v" ] || { warn "$v"; return 1; }
+  fi
   return 0
 }
 
@@ -2193,7 +2361,14 @@ slicing_branch() {
     2) die "선언 파스: 펜스 밖 「## 구현 슬라이싱」 매치가 둘 이상 — 모호한 문서를 조용히 하나로 고르지 않는다" ;;
     1) printf '미통치'; return 0 ;;
   esac
-  if slicing_fields_ok "$doc"; then printf '선언통치'; else printf '선언불완전'; fi
+  # A DEFECT ONE SLICE OWNS DOES NOT SEND THE WHOLE DOCUMENT TO THE PLANNER. The
+  # planner path writes every dependency as `선행` and drops the merge-order
+  # kind, so a single slice's missing reason would have rewritten every other
+  # slice's plan. The declaration is planned as written and `plan_from_declaration`
+  # parks the owner and what reaches it.
+  if slicing_fields_ok "$doc"; then printf '선언통치'
+  elif slicing_fields_ok "$doc" base 2>/dev/null; then printf '선언통치'
+  else printf '선언불완전'; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2557,12 +2732,22 @@ slice_decl_digest() {
   # first ~289 bytes of a long `선언 파일`, so a later run comparing that clip
   # with the document saw a list grown at its END as unchanged. The digest is
   # whole whatever the length and needs no sidecar to have survived.
-  local doc="$1" id="$2" k dk
-  for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
-    dk=$k
-    [ "$k" = '선언 파일 집합' ] && dk='선언 파일'
-    printf '%s=%s\n' "$k" "$(decl_norm "$(slice_field "$doc" "$id" "$dk" 2>/dev/null || true)")"
-  done | shasum -a 256 | cut -d' ' -f1
+  #
+  # `머지 순서` IS A SIXTH LINE ONLY WHEN IT IS NOT `없음`. A block without the
+  # line and a block reading `**머지 순서**: 없음` hash to what the five-line
+  # function gave the same block, so a frozen document's planned rows still
+  # match a later run's import, and only a slice that declares a merge-order
+  # predecessor moves its digest.
+  local doc="$1" id="$2" k dk mo
+  mo=$(slice_field "$doc" "$id" '머지 순서' 2>/dev/null || true)
+  {
+    for k in '선언 파일 집합' '레포' '선행' '절단점' '리뷰 정책'; do
+      dk=$k
+      [ "$k" = '선언 파일 집합' ] && dk='선언 파일'
+      printf '%s=%s\n' "$k" "$(decl_norm "$(slice_field "$doc" "$id" "$dk" 2>/dev/null || true)")"
+    done
+    [ -z "$(dep_tokens "$mo")" ] || printf '%s=%s\n' '머지 순서' "$(decl_norm "$mo")"
+  } | shasum -a 256 | cut -d' ' -f1
 }
 
 # --- the chained row frame, shared by both writers ---------------------------
@@ -3052,18 +3237,39 @@ ledger_row() {
   # merge row, the PR-cutpoint terminal row — is written here. A row that drops
   # the field here sends that run's merge to the strict default with no surface
   # saying why, exactly as the gate's arm would.
+  #
+  # `머지 순서` IS CARRIED THE SAME WAY, LESS THIS ROW'S `선행`. A token the row
+  # names in `선행` has moved from the merge-order kind to the implementation
+  # kind, so it is taken out of the carried value: one row never names a token
+  # in both lists, and the union of the two only ever grows. The gate's segment
+  # arm carries it with the same subtraction; this writer has none of the
+  # gate's floors, so the carry's shape and `plan_dep_floor` are what keep the
+  # two properties on a fixed-graph ledger. An empty remainder is not written.
   if [ "$series" = "segment" ]; then
-    local _rid="" _has=0 _prev _pv _a
+    local _rid="" _has=0 _hasmo=0 _pre="" _prev="" _pv _a _t _mo
     for _a in "$@"; do
       case "$_a" in
         id=*) _rid="${_a#id=}" ;;
         '리뷰 정책='*) _has=1 ;;
+        '머지 순서='*) _hasmo=1 ;;
+        '선행='*) _pre=$(dep_tokens "${_a#선행=}") ;;
       esac
     done
-    if [ "$_has" = "0" ] && [ -n "$_rid" ] && [ -n "${LEDGER:-}" ]; then
+    if [ -n "$_rid" ] && [ -n "${LEDGER:-}" ] && { [ "$_has" = "0" ] || [ "$_hasmo" = "0" ]; }; then
       _prev=$( { grep -E '^- `segment`' "$LEDGER" 2>/dev/null | grep -F "id=$_rid " || true; } | tail -1)
+    fi
+    if [ "$_has" = "0" ] && [ -n "$_prev" ]; then
       _pv=$(printf '%s' "$_prev" | tr '|' '\n' | sed -n 's/^ *리뷰 정책=//p' | sed 's/[[:space:]]*$//' | tail -1)
       [ -n "$_pv" ] && set -- "$@" "리뷰 정책=$_pv"
+    fi
+    if [ "$_hasmo" = "0" ] && [ -n "$_prev" ]; then
+      _pv=$(printf '%s' "$_prev" | tr '|' '\n' | sed -n 's/^ *머지 순서=//p' | sed 's/[[:space:]]*$//' | tail -1)
+      _mo=""
+      for _t in $(dep_tokens "$_pv"); do
+        case " $_pre " in *" $_t "*) continue ;; esac
+        _mo="${_mo:+$_mo, }슬라이스 $_t"
+      done
+      [ -n "$_mo" ] && set -- "$@" "머지 순서=$_mo"
     fi
   fi
   # EVERY ROW THIS WRITER APPENDS IS ON THE CHAIN: `run_chained_append` takes
@@ -5757,7 +5963,11 @@ stage_spawn() {
   # `.window` goes with `.rc`, not with `.pid`: the `stage-result` row is written
   # after `stage_collect` has removed the pid record, so the window record must
   # outlive collection and is replaced here, at the next spawn of the same stage.
-  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window" "$RUN_DIR/$stage.reap-cause" "$RUN_DIR/$stage.backoff"
+  #
+  # `.org-reattach` is the previous attempt's re-attachment comparison; a fresh
+  # session must not carry it onto its own row.
+  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window" "$RUN_DIR/$stage.reap-cause" "$RUN_DIR/$stage.backoff" \
+        "$RUN_DIR/$stage.org-reattach"
   # Pin this dispatch's attempt number before anything derives a path from it,
   # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
   # it per derivation is how the session uuid and the stream path came from two
@@ -5874,6 +6084,10 @@ stage_spawn() {
     id_flag=(--resume "$STAGE_RESUME")
     printf '%s\n' "$STAGE_RESUME" > "$RUN_DIR/$stage.session"
     log "$stage: 세션 $STAGE_RESUME 재부착"
+    # The router has already bound this re-attachment to its account; what is
+    # left to see is whether that directory has since been logged into another
+    # organization. Recorded, never refused.
+    reattach_org_note "$stage" "$cfg" "$STAGE_RESUME"
   else
     rm -f "$RUN_DIR/$stage.session"
     id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
@@ -6494,6 +6708,129 @@ transcript_of_session() {
   p=$(find "$cfg/projects" -name "$sid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s' "$p"
+}
+
+transcript_orgs() {
+  # transcript_orgs <transcript> — the `organizationUuid` of every
+  # `credential_org` attachment in the transcript, one per line, in order.
+  # Nothing when the file is absent or carries no such attachment.
+  #
+  # THE LINES ARE FILTERED BY A FIXED STRING BEFORE ANY OF THEM IS PARSED. A
+  # stage transcript runs to hundreds of megabytes, and the attachment is a few
+  # dozen of its lines; `jq` over the whole file would cost the terminal row
+  # seconds. Each surviving line is parsed on its own and a broken one is
+  # skipped, because a transcript the CLI is still appending to can end mid-line.
+  local f="$1"
+  [ -f "$f" ] || return 0
+  { grep -F '"credential_org"' "$f" 2>/dev/null || true; } \
+    | { jq -R -r 'try fromjson catch empty
+                  | select(type == "object" and .type == "attachment"
+                           and (.attachment.type // "") == "credential_org")
+                  | .attachment.organizationUuid // empty' 2>/dev/null || true; }
+}
+
+transcript_org_moves() {
+  # transcript_org_moves <transcript> — how many times the requesting
+  # organization changed between consecutive `credential_org` attachments. 0
+  # when the file is absent or carries fewer than two of them. A→B→A is 2: the
+  # count is of moves, and every move cost the cache once.
+  transcript_orgs "$1" | awk 'NR > 1 && $0 != prev { n++ } { prev = $0 } END { print n + 0 }'
+}
+
+transcript_last_org() {
+  # transcript_last_org <transcript> — the organization of the last
+  # `credential_org` attachment, empty when there is none.
+  transcript_orgs "$1" | tail -1
+}
+
+transcript_last_ctx() {
+  # transcript_last_ctx <transcript> — the context of the last assistant reply,
+  # `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, which
+  # is what a re-attachment under another organization writes again cold. Empty
+  # when there is no reply with usage. Filtered and parsed per line like
+  # `transcript_orgs`, for the same two reasons.
+  local f="$1" v
+  [ -f "$f" ] || return 0
+  v=$( { grep -F '"usage"' "$f" 2>/dev/null || true; } \
+       | { jq -R -r 'try fromjson catch empty
+                     | select(type == "object" and .type == "assistant"
+                              and (.message.usage // null) != null)
+                     | .message.usage
+                     | ((.input_tokens // 0) + (.cache_read_input_tokens // 0)
+                        + (.cache_creation_input_tokens // 0))' 2>/dev/null || true; } \
+       | tail -1)
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
+stage_org_moves_of() {
+  # stage_org_moves_of <stage-id> — the `조직 이동` of this attempt's
+  # `stage-result` row: the moves its session's transcript recorded, counted
+  # over the whole session, so a re-attached attempt reports what the session
+  # has been through rather than a per-attempt difference.
+  #
+  # SILENCE IS THE ORDINARY ANSWER, as for `stage_account_of`. No harness session
+  # id, no transcript, or no move prints nothing and the caller puts no field on
+  # the row, so a run with no move writes the rows it wrote before. A move is
+  # logged once as a warning; nothing is notified.
+  local stage="$1" sid f n
+  sid=$(stage_session_id_strict "$stage")
+  [ -n "$sid" ] || return 0
+  f=$(transcript_of_session "$sid" "$stage") || return 0
+  n=$(transcript_org_moves "$f")
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  warn "$stage: 세션 $sid 이 실행 중 조직을 ${n}번 옮겼다"
+  printf '%s' "$n"
+}
+
+reattach_org_note() {
+  # reattach_org_note <stage-id> <config dir> <session id> — compare, just before
+  # a re-attachment, the organization the session last requested with the one the
+  # config directory will request now, and record the pair when they differ.
+  #
+  # THE LAUNCH GOES AHEAD EITHER WAY; this returns 0 always. A re-attachment is
+  # already bound to the account it started on, so a differing organization means
+  # the same directory was logged into another one in between, and only a person's
+  # login can turn it back. Waiting has no end and a fresh session throws the
+  # context away on top of the cold write, so continuing is the cheapest answer —
+  # the record is what makes it a choice someone can see.
+  #
+  # TWO SOURCES, AND EITHER ONE MISSING IS SILENCE: what cannot be compared is
+  # not written down as a move. Line 1 of `<stage>.org-reattach` is
+  # `<first 8>→<first 8>`, line 2 the last reply's context (empty when unknown).
+  local stage="$1" cfg="$2" sid="$3" f old new ctx
+  [ -n "$cfg" ] && [ -n "$sid" ] && [ -n "${RUN_DIR:-}" ] || return 0
+  f=$( { find "$cfg/projects" -name "$sid.jsonl" 2>/dev/null || true; } | sed -n '1p')
+  [ -n "$f" ] || return 0
+  old=$(transcript_last_org "$f")
+  [ -n "$old" ] || return 0
+  [ -f "$cfg/.claude.json" ] || return 0
+  new=$(jq -r '.oauthAccount.organizationUuid // empty' "$cfg/.claude.json" 2>/dev/null || true)
+  [ -n "$new" ] || return 0
+  [ "$old" != "$new" ] || return 0
+  ctx=$(transcript_last_ctx "$f")
+  write_run_record "$RUN_DIR/$stage.org-reattach" "$(printf '%s→%s\n%s' "${old:0:8}" "${new:0:8}" "$ctx")" \
+    || { warn "$stage: 재부착 조직 기록을 쓰지 못했다"; return 0; }
+  log "$stage: 세션 $sid 을 다른 조직으로 재부착한다 (${old:0:8}→${new:0:8}, 재기록 추정 ${ctx:-미상})"
+  return 0
+}
+
+stage_reattach_org_of() {
+  # stage_reattach_org_of <stage-id> — line 1 of `<stage>.org-reattach`, the
+  # `재부착 조직` of the row; empty when this attempt left no record.
+  local f="${RUN_DIR:-}/$1.org-reattach"
+  [ -f "$f" ] || return 0
+  sed -n '1p' "$f" 2>/dev/null || true
+}
+
+stage_reattach_ctx_of() {
+  # stage_reattach_ctx_of <stage-id> — line 2 of the same record, the
+  # `재기록 추정`; empty when there is no record or no number on it.
+  local f="${RUN_DIR:-}/$1.org-reattach" v=""
+  [ -f "$f" ] || return 0
+  v=$(sed -n '2p' "$f" 2>/dev/null || true)
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
 }
 
 stage_open_judgment() {
@@ -7947,8 +8284,8 @@ segment_cap() { printf '%s' "$REIMPL_CYCLE_CAP"; }
 # iteration that runs the lead fix and the re-check review. A budget of only the
 # cap would park the last segment's lead fix on the run budget.
 run_cycle_budget() {
-  local total=0 seg repo files deps
-  while IFS="$(printf '\t')" read -r seg repo files deps; do
+  local total=0 seg repo files deps morder
+  while IFS="$(printf '\t')" read -r seg repo files deps morder; do
     [ -n "$seg" ] || continue
     total=$(( total + $(segment_cap) + 1 ))
   done < "$RUN_DIR/plan.tsv"
@@ -8855,9 +9192,12 @@ review_recover() {
   if predicate_review "$rp"; then pred=0; else pred=1; fi
   rclass=$(classify_termination "$rsid" "$rc" "$pred")
   acct=$(stage_account_of "$rsid")
+  local om ro re
+  om=$(stage_org_moves_of "$rsid"); ro=$(stage_reattach_org_of "$rsid"); re=$(stage_reattach_ctx_of "$rsid")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" ${acct:+"계정=$acct"} \
+    ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$rsid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$rsid")")" \
     "종단 부류=$rclass" "실패 서명=$(row_signature "$rsid" review "$rclass" - "$rp")" \
     "복구 scratch=$dirs" "원회수=$reaped"
@@ -8902,10 +9242,13 @@ lead_fix_stage() {
   if predicate_lead_fix "$crp"; then pred=0; else pred=1; fi
   class=$(classify_termination "$sid" "$rc" "$pred")
   acct=$(stage_account_of "$sid")
+  local om ro re
+  om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5F" "종류=lead-fix" "파견 id=$sid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
     "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
+    ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
     "종단 부류=$class" "실패 서명=$(row_signature "$sid" lead-fix "$class" "$wt" -)"
   absorb_stage_judgment "$sid" "$sid" "$(seg_alias "$seg")"
@@ -9159,6 +9502,8 @@ segment_cycle() {
       if [ "$class" = "공허한 성공" ]; then sclue="$missing"; else sclue="$aj_id"; fi
       acct=$(stage_account_of "$sid")
       local psha; psha=$(stage_plan_sha256 "$(stage_log_path "$sid")" "$seg")
+      local om ro re
+      om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
       # `파견 id=` carries the FULL dispatch id beside the kind. `스테이지=`
       # stays the kind because the gate's readers group on it; the attempt
       # counter needs the id it actually dispatched, and nothing else in the
@@ -9166,7 +9511,8 @@ segment_cycle() {
       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
         "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
         "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
+        ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
         "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
         ${psha:+"plan_sha256=$psha"} "종단 부류=$class" \
         "실패 서명=$(row_signature "$sid" implement "$class" "$wt" - "$sclue")"
@@ -9356,6 +9702,8 @@ segment_cycle() {
       rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
       class=$(classify_termination "$sid" "$rc" "$pred")
       acct=$(stage_account_of "$sid")
+      local om ro re
+      om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
       # The session lineage is on THIS row too. The separation rule reads `세션 id`
       # and `부모` from both sides and treats an unrecorded one as a refusal rather
       # than a pass, so a review row without them refused every merge on the fixed
@@ -9364,7 +9712,8 @@ segment_cycle() {
       # re-attached and had to be paid for again.
       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
         "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
+        ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
         "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
         "종단 부류=$class" "실패 서명=$(row_signature "$sid" review "$class" - "$rp")"
       absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
@@ -9823,10 +10172,13 @@ continue_attempt() {
   case "$skind" in implement|lead-fix) wtp=$cwd ;; esac
   [ "$CONTINUE_CLASS" != "공허한 성공" ] || [ "$rkind" != "S4" ] \
     || clue=$(residual_share_missing "${DOC:-}" "$rseg" "$RUN_DIR/halt" "$RUN_DIR/$rseg.plan.md" 2>/dev/null || true)
+  local om ro re
+  om=$(stage_org_moves_of "$did"); ro=$(stage_reattach_org_of "$did"); re=$(stage_reattach_ctx_of "$did")
   ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$did")" \
     "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} \
+    ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$did")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$did")")" \
     ${psha:+"plan_sha256=$psha"} "종단 부류=$CONTINUE_CLASS" \
     "실패 서명=$(row_signature "$did" "$skind" "$CONTINUE_CLASS" "$wtp" - "$clue")"
@@ -10151,10 +10503,13 @@ design_arm() {
   if predicate_design S1design; then pred1=0; else pred1=1; fi
   class1=$(classify_termination S1design "$rc1" "$pred1")
   acct1=$(stage_account_of S1design)
+  local om1 ro1 re1
+  om1=$(stage_org_moves_of S1design); ro1=$(stage_reattach_org_of S1design); re1=$(stage_reattach_ctx_of S1design)
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
     "아티팩트 술어 결과=$pred1" "실행 버전=$(stage_attempt_pinned S1design)" \
     "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" ${acct1:+"계정=$acct1"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" ${acct1:+"계정=$acct1"} \
+    ${om1:+"조직 이동=$om1"} ${ro1:+"재부착 조직=$ro1"} ${re1:+"재기록 추정=$re1"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of S1design)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S1design)")" \
     "종단 부류=$class1" "실패 서명=$(row_signature S1design design "$class1" - -)"
   absorb_stage_judgment S1design S1design "$(home_alias)"
@@ -10281,10 +10636,13 @@ split_arm() {
     if predicate_split S2split; then pred=0; else pred=1; fi
     class=$(classify_termination S2split "$rc" "$pred")
     acct=$(stage_account_of S2split)
+    local om ro re
+    om=$(stage_org_moves_of S2split); ro=$(stage_reattach_org_of S2split); re=$(stage_reattach_ctx_of S2split)
     ledger_row 'stage-result' "세그먼트=-" "스테이지=S2split" "파견 id=S2split" "종류=split" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2split)" \
       "세션 id=$(stage_session_id "S2split")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} "기록자=드라이버" \
+      "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} \
+      ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of S2split)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2split)")" \
       "종단 부류=$class" "실패 서명=$(row_signature S2split split "$class" - -)"
     absorb_stage_judgment S2split S2split "$(home_alias)"
@@ -10445,10 +10803,13 @@ main_loop_body() {
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
   acct2=$(stage_account_of S2)
+  local om2 ro2 re2
+  om2=$(stage_org_moves_of S2); ro2=$(stage_reattach_org_of S2); re2=$(stage_reattach_ctx_of S2)
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} "기록자=드라이버" \
+      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} \
+      ${om2:+"조직 이동=$om2"} ${ro2:+"재부착 조직=$ro2"} ${re2:+"재기록 추정=$re2"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of S2)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2)")" \
       "종단 부류=$class2" "실패 서명=$(row_signature S2 audit "$class2" - -)"
   absorb_stage_judgment S2 S2 "$(home_alias)"
@@ -10524,7 +10885,8 @@ main_loop_body() {
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "런 사이클 예산=$RUN_CYCLE_BUDGET" "세대 상한=$GENERATION_MAX" \
     "벽시계 마감=$( [ -n "$MANIFEST" ] && manifest_field '인가' '벽시계 마감' || printf '(없음)' )"
-  while IFS="$(printf '\t')" read -r seg repo files deps; do
+  local morder
+  while IFS="$(printf '\t')" read -r seg repo files deps morder; do
     [ -n "$seg" ] || continue
     # A SLICE AN EARLIER RUN LANDED IS ALREADY DONE. `plan_from_declaration`
     # brought its terminal row in and put the id in `done.txt`; dispatching it
@@ -10553,13 +10915,25 @@ main_loop_body() {
       park "$seg" cone 무효화 "게이트 park" "앞선 적용 불명의 폭발 반경 안 — 디스패치하지 않는다"
       parked=$((parked + 1)); continue
     fi
-    # Dependency guard on a serial traversal. A serial walk of a topological
-    # order IS a complete DAG implementation — layers are not parallelism.
-    if ! deps_satisfied "$deps"; then
-      park "$seg" cone 무효화 "게이트 park" "선행 슬라이스가 완료되지 않음: $deps"
+    # A SLICE THAT OWNS A DECLARATION DEFECT is parked on its own; what depends
+    # on it, by either kind, parks below because it never reaches `done.txt`.
+    local _ddef
+    if _ddef=$(decl_defect_of "$seg"); then
+      park "$seg" cone 무효화 "게이트 park" "슬라이스 선언 결함: $_ddef"
       parked=$((parked + 1)); continue
     fi
-    cross_repo_deps "$seg" "$deps"
+    # Dependency guard on a serial traversal. A serial walk of a topological
+    # order IS a complete DAG implementation — layers are not parallelism.
+    #
+    # BOTH KINDS ARE READ HERE. The driver runs one segment at a time, so a
+    # merge-order successor starts only after its predecessor has landed: the
+    # stricter reading of the second kind, and the one that keeps its merge in
+    # declaration order without a second check at the merge.
+    if ! deps_satisfied "$deps" "$morder"; then
+      park "$seg" cone 무효화 "게이트 park" "선행 슬라이스가 완료되지 않음: $(deps_unmet_desc "$deps" "$morder")"
+      parked=$((parked + 1)); continue
+    fi
+    cross_repo_deps "$seg" "$deps" "$morder"
     rc=0
     segment_cycle "$seg" "$files" || rc=$?
     case "$rc" in
@@ -10800,8 +11174,12 @@ in_halted_radius() {
 # likely place a first multi-repo run diverges from what the author pictured, so
 # it is recorded rather than assumed understood.
 cross_repo_deps() {
+  # cross_repo_deps <segment> <선행> [<머지 순서>] — both kinds order the walk,
+  # so a merge-order edge across repositories is recorded the same way.
   local seg="$1" deps mine d other
   deps=$(dep_tokens "$2")
+  deps="${deps:+$deps }$(dep_tokens "${3:-}")"
+  deps=${deps% }
   [ -n "$deps" ] || return 0
   mine=$(seg_alias "$seg") || return 0
   for d in $deps; do
@@ -10847,16 +11225,43 @@ dep_tokens() {
 }
 
 deps_satisfied() {
+  # deps_satisfied <선행> [<머지 순서>] — every token of either list is in this
+  # run's done list. A plan written before the fifth column existed passes no
+  # second argument and reads exactly as it did.
+  #
   # A `for` over tokens rather than a `while read` down a pipe, and the shape is
   # load-bearing twice over: the old loop ran in a SUBSHELL, so it signalled
   # failure with `exit 1` and any other state it touched was lost; and `read`
   # returns non-zero on a final line with no newline, which silently skipped the
   # LAST dependency and made a one-element list satisfied vacuously.
   local d
-  for d in $(dep_tokens "$1"); do
+  for d in $(dep_tokens "$1") $(dep_tokens "${2:-}"); do
     grep -qxF "$d" "$RUN_DIR/done.txt" 2>/dev/null || return 1
   done
   return 0
+}
+
+deps_unmet_desc() {
+  # deps_unmet_desc <선행> <머지 순서> — the dependencies a park names, each
+  # list under its kind, so the morning reader sees which kind held the slice.
+  local p m out=""
+  p=$(dep_tokens "$1"); m=$(dep_tokens "${2:-}")
+  [ -z "$p" ] || out="구현 선행 $(printf '%s' "$p" | sed 's/ /, /g')"
+  [ -z "$m" ] || out="${out:+$out · }머지 순서 $(printf '%s' "$m" | sed 's/ /, /g')"
+  printf '%s' "${out:-없음}"
+}
+
+# THE SLICES THAT OWN A DECLARATION DEFECT, one `<id>\t<defect>` line each in
+# `decl-defects.tsv`, written by `plan_from_declaration` before any row. A
+# defect one slice owns parks that slice and what reaches it, and the rest of
+# the declaration is planned; the gate does the same with
+# `gate_decl_defect_slices` and `gate_slice_reaches_any`.
+decl_defect_of() {
+  # decl_defect_of <segment> — the slice's first defect, or 1 when it has none.
+  local v
+  v=$(awk -F'\t' -v s="$1" '$1 == s { print $2; exit }' "$RUN_DIR/decl-defects.tsv" 2>/dev/null)
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
 }
 
 # THE KICKOFF'S COPY OF THE GATE'S TWO `선행` FLOORS, and the copy carries the
@@ -10875,21 +11280,40 @@ deps_satisfied() {
 # un-landable — and it surfaces much later as "the predecessor has not landed
 # (상태=없음)", which sends the reader to look for a segment instead of at the
 # spelling. A row that narrows an earlier one cannot be widened back at all.
+#
+# `머지 순서` TAKES THE SAME KNOWN-TOKEN FLOOR, and two more the gate applies:
+# a token names a slice declared before its own block, and `선행 ∪ 머지 순서`
+# only grows per segment — a token may move from the merge-order kind to the
+# implementation kind and never back. A refusal one slice owns is printed with
+# a leading `슬라이스 ` and parks that slice alone; a token naming nothing has
+# no owner and parks the run, as it does for `선행`.
 plan_dep_floor() {
   # plan_dep_floor — one line per refusal, nothing at all when the plan passes.
   # The universe is the plan's own ids PLUS the ids this run's ledger already
   # knows, which is what the gate's `known` set comes to on its side.
-  local ids seg repo files deps cur prev d
+  local ids seg repo files deps morder cur prev d mo before=" " union pu
   ids=" $(cut -f1 "$RUN_DIR/plan.tsv" 2>/dev/null | tr '\n' ' ')$(run_segment_ids | tr '\n' ' ') "
-  while IFS="$(printf '\t')" read -r seg repo files deps; do
+  while IFS="$(printf '\t')" read -r seg repo files deps morder; do
     [ -n "$seg" ] || continue
     cur=$(dep_tokens "$(plan_uncell "$deps")")
+    mo=$(dep_tokens "$(plan_uncell "${morder:-}")")
     for d in $cur; do
       case "$ids" in
         *" $d "*) : ;;
         *) printf '%s: 「선행」이 지목한 세그먼트가 이 계획에 없습니다: %s\n' "$seg" "$d" ;;
       esac
     done
+    for d in $mo; do
+      case "$ids" in
+        *" $d "*) : ;;
+        *) printf '%s: 「머지 순서」가 지목한 세그먼트가 이 계획에 없습니다: %s\n' "$seg" "$d"; continue ;;
+      esac
+      case "$before" in
+        *" $d "*) : ;;
+        *) printf '슬라이스 %s: 머지 순서 토큰이 뒤에 선언된 슬라이스를 가리킴 — 슬라이스 %s\n' "$seg" "$d" ;;
+      esac
+    done
+    before="$before$seg "
     prev=$(dep_tokens "$(run_segment_field "$seg" '선행')")
     for d in $prev; do
       case " $cur " in
@@ -10897,20 +11321,55 @@ plan_dep_floor() {
         *) printf '%s: 「선행」은 세그먼트마다 단조롭습니다 — 앞선 행의 %s 가 이번 계획에 없습니다\n' "$seg" "$d" ;;
       esac
     done
+    union=" $cur $mo "
+    pu=$(dep_tokens "$(run_segment_field "$seg" '머지 순서')")
+    for d in $pu; do
+      case "$union" in
+        *" $d "*) : ;;
+        *) printf '슬라이스 %s: 「선행 ∪ 머지 순서」는 세그먼트마다 단조롭습니다 — 앞선 행의 %s 가 이번 계획에 없습니다\n' "$seg" "$d" ;;
+      esac
+    done
   done < "$RUN_DIR/plan.tsv"
 }
 
 plan_dep_floor_or_park() {
   # Called after `plan.tsv` is built and BEFORE the first `segment` row is
-  # written, because writing is the harm the floors exist to prevent.
-  local msgs n
+  # written, because writing is the harm the floors exist to prevent. A line one
+  # slice owns goes to `decl-defects.tsv` and parks that slice in the walk; any
+  # other line parks the run.
+  local msgs own n line id
   msgs=$(plan_dep_floor)
+  own=$(printf '%s\n' "$msgs" | { grep '^슬라이스 ' || true; })
+  msgs=$(printf '%s\n' "$msgs" | { grep -v '^슬라이스 ' || true; })
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    id=${line#슬라이스 }; id=${id%%:*}
+    decl_defect_of "$id" >/dev/null || printf '%s\t%s\n' "$id" "${line#슬라이스 $id: }" >> "$RUN_DIR/decl-defects.tsv"
+  done <<EOF
+$own
+EOF
   n=$(printf '%s\n' "$msgs" | grep -c . || true)
   if [ "${n:-0}" = "0" ]; then return 0; fi
   warn "$msgs"
   park "S3" run 무효화 "게이트 park" \
     "계획의 「선행」이 바닥을 넘지 못했다 (${n}건): $(printf '%s' "$msgs" | tr '\n' ' ')"
   return 1
+}
+
+decl_defects_record() {
+  # decl_defects_record <doc> — the defects single slices own, into
+  # `decl-defects.tsv`, one line per owning slice (its first defect).
+  local line id
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    id=${line#슬라이스 }; id=${id%%:*}
+    decl_defect_of "$id" >/dev/null && continue
+    printf '%s\t%s\n' "$id" "${line#슬라이스 $id: }" >> "$RUN_DIR/decl-defects.tsv"
+    warn "$line — 이 슬라이스와 그것에 걸린 슬라이스만 park 한다"
+  done <<EOF
+$(slicing_slice_defects "$1")
+EOF
+  return 0
 }
 
 # Shell-built plan from the declaration. No model in this path at all.
@@ -10928,17 +11387,28 @@ plan_from_declaration() {
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(slice_ids "$doc" | tr '\n' ',' | sed 's/,$//')" "segmentation=선언"
   : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
+  : > "$RUN_DIR/decl-defects.tsv"
+  local _mo
   for id in $(slice_ids "$doc"); do
+    _mo=$(slice_field "$doc" "$id" '머지 순서')
+    [ -n "$(dep_tokens "$_mo")" ] || _mo=""
     # `-` for an absent value, never an empty column. Tab is an IFS WHITESPACE
     # character, so `IFS=tab read a b c d` collapses a run of tabs and every
     # field after an empty one shifts left by one — the declared files would be
     # read as the repo and the dependencies as the files. Measured: a two-file
     # segment came back with F=1 and its budget silently halved.
-    printf '%s\t%s\t%s\t%s\n' "$id" \
+    #
+    # THE FIFTH COLUMN IS `머지 순서`, `-` when the slice declares none — which
+    # is every slice of a document written before the field existed. Every
+    # `read` of this file names a fifth variable, so the column never joins the
+    # dependency list.
+    printf '%s\t%s\t%s\t%s\t%s\n' "$id" \
       "$(plan_cell "$(slice_field "$doc" "$id" '레포')")" \
       "$(plan_cell "$(slice_field "$doc" "$id" '선언 파일')")" \
-      "$(plan_cell "$(slice_field "$doc" "$id" '선행')")" >> "$RUN_DIR/plan.tsv"
+      "$(plan_cell "$(slice_field "$doc" "$id" '선행')")" \
+      "$(plan_cell "$_mo")" >> "$RUN_DIR/plan.tsv"
   done
+  decl_defects_record "$doc"
   plan_dep_floor_or_park || return 1
   for id in $(slice_ids "$doc"); do
     # A SLICE AN EARLIER RUN OF THIS DOCUMENT LANDED IS BROUGHT IN, NOT PLANNED.
@@ -10985,6 +11455,10 @@ plan_from_declaration() {
       "선행=$(slice_field "$doc" "$id" '선행')" \
       "절단점=$(slice_field "$doc" "$id" '절단점')" )
     local _rp
+    # `머지 순서` the same way: omitted when it is `없음` or absent, which a
+    # reader reads as `없음`, so a frozen document's planned rows are unchanged.
+    _mo=$(slice_field "$doc" "$id" '머지 순서')
+    [ -z "$(dep_tokens "$_mo")" ] || _segargs+=( "머지 순서=$_mo" )
     _rp=$(slice_field "$doc" "$id" '리뷰 정책')
     [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
     _segargs+=( "선언 다이제스트=$(slice_decl_digest "$doc" "$id")" )
@@ -11023,10 +11497,15 @@ plan_via_planner() {
   ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(printf '%s' "$plan" | jq -c '.segments | map(.id)')" "segmentation=$seg_mode"
   : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"; : > "$RUN_DIR/skipped.txt"
+  : > "$RUN_DIR/decl-defects.tsv"
+  # THE PLANNER'S `depends_on` HAS NO KIND, so every edge is the implementation
+  # kind and the merge-order column is `-`: guessing a kind would lower an edge
+  # nobody declared lowerable.
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
-    printf '%s\t%s\t%s\t%s\n' "$seg" "-" \
+    printf '%s\t%s\t%s\t%s\t%s\n' "$seg" "-" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
-      "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')")" >> "$RUN_DIR/plan.tsv"
+      "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')")" \
+      "-" >> "$RUN_DIR/plan.tsv"
   done
   plan_dep_floor_or_park || return 1
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do

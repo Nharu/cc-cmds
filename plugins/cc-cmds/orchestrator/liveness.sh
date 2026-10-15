@@ -328,6 +328,236 @@ cc_shift_is_live() {
   [ "$rec" = "$now" ]
 }
 
+cc_relay_is_live() {
+  # cc_relay_is_live <run-dir> — succeeds when `relay.live` names a relay that
+  # is still the process that wrote it: the seat call's gate process, waiting
+  # out of turn for a shift that ended `handoff 사유=대기`.
+  #
+  # PID AND FINGERPRINT ONLY, the same pair `shift.live` carries on its first
+  # two lines. Freshness is not asked here: a relay that stopped refreshing still
+  # holds the run, so the run-end verbs read this and the watcher reads
+  # `cc_relay_is_effective` below. The file outlives its relay on purpose, so
+  # its mere existence says nothing.
+  local run_dir="$1" pid rec
+  [ -f "$run_dir/relay.live" ] || return 1
+  pid=$(sed -n '1p' "$run_dir/relay.live" 2>/dev/null | tr -d '[:space:]')
+  rec=$(sed -n '2p' "$run_dir/relay.live" 2>/dev/null || true)
+  cc_holder_is_live "$pid" "$rec"
+}
+
+cc_relay_field() {
+  # cc_relay_field <run-dir> <name> — the value of the `<name>=` line of
+  # `relay.live`, or empty. Names are this file's own literals.
+  [ -f "$1/relay.live" ] || return 0
+  { sed -n "s/^$2=//p" "$1/relay.live" 2>/dev/null || true; } | tail -1
+}
+
+cc_relay_wait_stages() {
+  # cc_relay_wait_stages <run-dir> — the keys of the stages and supervisors that
+  # are live now, comma-joined, or empty: the stage half of a relay's wait set.
+  #
+  # THE SAME LIVENESS `gate.sh wait` POLLS — `cc_stage_is_live ||
+  # cc_supervisor_is_live` — so a stage the foreground wait would have waited on
+  # is one the relay waits on, including a supervisor still waiting for an
+  # account with no stage pid yet. The poller's and the watcher's own pid files
+  # are not stages.
+  local run_dir="$1" f k keys="" seen=" "
+  [ -n "$run_dir" ] || return 0
+  for f in "$run_dir"/*.pid "$run_dir"/*.sup; do
+    [ -f "$f" ] || continue
+    k=${f##*/}
+    case "$k" in *.pid) k=${k%.pid} ;; *.sup) k=${k%.sup} ;; esac
+    case "$k" in ''|watch|checks) continue ;; esac
+    case "$seen" in *" $k "*) continue ;; esac
+    seen="$seen$k "
+    if cc_stage_is_live "$run_dir" "$k" || cc_supervisor_is_live "$run_dir" "$k"; then
+      keys="${keys:+$keys,}$k"
+    fi
+  done
+  printf '%s' "$keys"
+}
+
+cc_ci_latest_verdict() {
+  # cc_ci_latest_verdict <run-dir> <ledger> <segment> — `<상태>\t<관측>` of the
+  # newest `checks` verdict for that segment, or nothing when there is none.
+  #
+  # THE THREE SOURCES IN THE POLLER'S OWN ORDER: the ledger's `checks` rows, then
+  # every `checks.observed.draining.*` oldest first, then `checks.observed`. A
+  # later source holds a later observation, so the last verdict found is the
+  # newest. READ ONLY: no drain, no row, no `gh` — the relay and the watcher both
+  # read through here, and the drain keeps its single caller on the act path.
+  local run_dir="$1" ledger="$2" seg="$3" out="" v f
+  [ -n "$seg" ] || return 0
+  if [ -n "$ledger" ] && [ -f "$ledger" ]; then
+    out=$(LC_ALL=C awk -F'|' -v seg="$seg" '
+      function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+      /^- `checks` / {
+        hit = 0; st = ""; ob = ""
+        for (i = 2; i <= NF; i++) {
+          f = trim($i)
+          if (f == "세그먼트=" seg) hit = 1
+          else if (index(f, "상태=") == 1) st = substr(f, length("상태=") + 1)
+          else if (index(f, "관측=") == 1) ob = substr(f, length("관측=") + 1)
+        }
+        if (hit && st != "") last = st "\t" ob
+      }
+      END { printf "%s", last }
+    ' "$ledger" 2>/dev/null || true)
+  fi
+  [ -n "$run_dir" ] || { printf '%s' "$out"; return 0; }
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    v=$(cc_ci_observed_verdict "$f" "$seg")
+    [ -z "$v" ] || out=$v
+  done <<EOF
+$( { ls -tr "$run_dir"/checks.observed.draining.* 2>/dev/null || true; } )
+EOF
+  v=$(cc_ci_observed_verdict "$run_dir/checks.observed" "$seg")
+  [ -z "$v" ] || out=$v
+  printf '%s' "$out"
+}
+
+cc_ci_observed_verdict() {
+  # cc_ci_observed_verdict <file> <segment> — the last verdict for that segment
+  # in one poller file (tab-separated: time, segment, PR, sha, 상태, …), as
+  # `<상태>\t<관측>`, or nothing. A status outside the poller's vocabulary is
+  # skipped, the way the drain skips it.
+  [ -f "$1" ] || return 0
+  LC_ALL=C awk -F'\t' -v seg="$2" '
+    $2 == seg && ($5 == "대기" || $5 == "통과" || $5 == "실패" || $5 == "미등록" || $5 == "판정 불가") { last = $5 "\t" $1 }
+    END { printf "%s", last }
+  ' "$1" 2>/dev/null || true
+}
+
+cc_relay_result_after_ref() {
+  # cc_relay_result_after_ref <ledger> — succeeds when a `stage-result` row
+  # follows the reference row, the ledger's latest `handoff 사유=대기`.
+  #
+  # THE STAGE WAKE IS ALSO READ FROM THE LEDGER, NOT FROM LIVENESS ALONE. The
+  # wait set is derived again at three moments — the handoff, the relay's start,
+  # a seat re-entry — and a stage that ended between two of them has left the
+  # live set without ever being seen to end. Its `stage-result` row is still
+  # there, after the reference row.
+  [ -n "$1" ] && [ -f "$1" ] || return 1
+  LC_ALL=C awk '
+    /^- `handoff` / { if (index($0, " | 사유=대기 | ") > 0) { ref = 1; after = 0 } }
+    /^- `stage-result` / { if (ref) after = 1 }
+    END { exit(after ? 0 : 1) }
+  ' "$1"
+}
+
+cc_relay_wake_keys() {
+  # cc_relay_wake_keys <run-dir> <ledger> — one line per wake condition standing
+  # now for the relay `relay.live` records: `<key>\t<epoch of its own clock>`,
+  # the clock empty where the evidence carries none.
+  #
+  #   sr\t            a `stage-result` row after the reference row
+  #   st:<key>\t      a stage or supervisor of the wait set is no longer live
+  #   ci:<seg>\t<ep>  the segment's newest verdict is not `대기` (clock: `관측`)
+  #
+  # ONE READER FOR THE RELAY AND THE WATCHER. The relay wakes when this prints
+  # anything; the watcher asks how long each line has stood. A segment with no
+  # verdict yet does not wake.
+  local run_dir="$1" ledger="$2" k v st ob tab
+  [ -f "$run_dir/relay.live" ] || return 0
+  tab=$(printf '\t')
+  if cc_relay_result_after_ref "$ledger"; then printf 'sr\t\n'; fi
+  for k in $(cc_relay_field "$run_dir" stages | tr ',' ' '); do
+    [ "$k" != "-" ] || continue
+    if ! cc_stage_is_live "$run_dir" "$k" && ! cc_supervisor_is_live "$run_dir" "$k"; then
+      printf 'st:%s\t\n' "$k"
+    fi
+  done
+  for k in $(cc_relay_field "$run_dir" ci | tr ',' ' '); do
+    [ "$k" != "-" ] || continue
+    v=$(cc_ci_latest_verdict "$run_dir" "$ledger" "$k")
+    st=${v%%"$tab"*}; ob=${v#*"$tab"}
+    case "$st" in ''|대기) continue ;; esac
+    printf 'ci:%s\t%s\n' "$k" "$(cc_iso_to_epoch "$ob")"
+  done
+  return 0
+}
+
+cc_relay_seen_at() {
+  # cc_relay_seen_at <run-dir> <relay-start> <key> — the epoch the watcher
+  # first saw that wake key stand for that relay, from `watch.relay-seen`, or
+  # empty. The watcher writes the file; nothing here does.
+  [ -f "$1/watch.relay-seen" ] || return 0
+  LC_ALL=C awk -F'\t' -v s="$2" -v k="$3" '$1 == s && $2 == k { print $3; exit }' \
+    "$1/watch.relay-seen" 2>/dev/null || true
+}
+
+cc_relay_is_effective() {
+  # cc_relay_is_effective <run-dir> <ledger> <silence> <after-stage> — succeeds
+  # when a relay is live AND doing its job: pid and fingerprint, a `refreshed`
+  # younger than <silence>, and no wake condition that has stood longer than
+  # <after-stage> without a successor.
+  #
+  # THE WAKE CLOCK COMES FROM EVIDENCE THE RELAY DOES NOT WRITE. A relay that
+  # stamped its own wake time would, hung, never stamp it, and this would never
+  # turn false. A CI wake is timed by the verdict's `관측`; a stage wake by the
+  # watcher pass that first saw it, kept per key in `watch.relay-seen` so the
+  # clock survives `--once` and a restarted watcher. A key not yet seen cannot
+  # be overdue.
+  local run_dir="$1" ledger="$2" silence="$3" after="$4" now ref started k c
+  cc_relay_is_live "$run_dir" || return 1
+  now=$(date -u +%s)
+  ref=$(cc_relay_field "$run_dir" refreshed)
+  case "$ref" in ''|*[!0-9]*) return 1 ;; esac
+  [ $((now - ref)) -lt "$silence" ] || return 1
+  started=$(cc_relay_field "$run_dir" started)
+  while IFS="$(printf '\t')" read -r k c; do
+    [ -n "$k" ] || continue
+    [ -n "$c" ] || c=$(cc_relay_seen_at "$run_dir" "$started" "$k")
+    case "$c" in ''|*[!0-9]*) continue ;; esac
+    [ $((now - c)) -le "$after" ] || return 1
+  done <<EOF
+$(cc_relay_wake_keys "$run_dir" "$ledger")
+EOF
+  return 0
+}
+
+cc_iso_to_epoch() {
+  # `YYYY-MM-DDTHH:MM:SSZ` → epoch seconds, or empty when it does not parse.
+  #
+  # NEITHER `date -d` NOR `date -j -f` MAY BE USED. The first is GNU, the second
+  # BSD, and the portability lint denies both — the same wall the gate's deadline
+  # check hit, which it got around by comparing digit strings because it only
+  # needed an ordering. This caller needs a DIFFERENCE against a threshold in
+  # seconds, and no digit-string compare yields one, so the conversion is done in
+  # the shell.
+  #
+  # The arithmetic is the standard civil-to-days one. Every intermediate stays
+  # non-negative for years at or after 1970, which is what lets `$(( ))`'s
+  # truncating division stand in for floor. `10#` on every field because `08` and
+  # `09` are invalid octal and would abort the expansion.
+  local s="$1" digits y m d hh mm ss era yoe doy doe days
+  digits=$(printf '%s' "$s" | tr -cd '0-9')
+  [ ${#digits} -ge 14 ] || return 0
+  y=$((10#$(printf '%s' "$digits" | cut -c1-4)))
+  m=$((10#$(printf '%s' "$digits" | cut -c5-6)))
+  d=$((10#$(printf '%s' "$digits" | cut -c7-8)))
+  hh=$((10#$(printf '%s' "$digits" | cut -c9-10)))
+  mm=$((10#$(printf '%s' "$digits" | cut -c11-12)))
+  ss=$((10#$(printf '%s' "$digits" | cut -c13-14)))
+  [ "$y" -ge 1970 ] || return 0
+  [ "$m" -ge 1 ] && [ "$m" -le 12 ] || return 0
+  [ "$d" -ge 1 ] && [ "$d" -le 31 ] || return 0
+  # March-based year: January and February belong to the preceding one, which is
+  # what removes the leap day from the middle of the count.
+  if [ "$m" -le 2 ]; then y=$((y - 1)); fi
+  era=$((y / 400))
+  yoe=$((y - era * 400))
+  if [ "$m" -gt 2 ]; then
+    doy=$(( (153 * (m - 3) + 2) / 5 + d - 1 ))
+  else
+    doy=$(( (153 * (m + 9) + 2) / 5 + d - 1 ))
+  fi
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  days=$(( era * 146097 + doe - 719468 ))
+  printf '%s' $(( days * 86400 + hh * 3600 + mm * 60 + ss ))
+}
+
 cc_pid_exists() {
   # cc_pid_exists <pid> — succeeds when some process holds that pid, and says
   # nothing about WHICH process that is.
