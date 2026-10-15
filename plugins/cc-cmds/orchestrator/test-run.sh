@@ -1314,7 +1314,9 @@ else
   bad "조건 9" "올바른 대응 행이 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
 fi
 check "대응 행은 같은 바이트의 프로브에 대응을 준다" "$(apply_probe_codes 'make probe')" "0 21"
-check "대응 행은 다른 프로브에는 0/2 를 준다" "$(apply_probe_codes 'make other')" "0 2"
+ac_rc=0; ac_out=$(apply_probe_codes 'make other') || ac_rc=$?
+check "대응 행은 다른 프로브에 0/2 를 주지 않고 상태 2 와 두 해시를 낸다" "$ac_rc/$ac_out" \
+  "2/$AC_SHA $(printf '%s' 'make other' | shasum -a 256 | cut -d' ' -f1)"
 ac_mf
 check "대응 행이 없으면 0/2 다" "$(apply_probe_codes 'make probe')" "0 2"
 if ( check_manifest ) >/dev/null 2>&1; then
@@ -1943,6 +1945,52 @@ fi
 apply_stage segA
 check "건너뜀 문면이 실제 코드와 대응을 싣는다" \
   "$( { grep -c '관측=사전 프로브 0 (대응 불필요=0·필요=21) — 적용할 변경 없음' "$LEDGER" || true; } )" "1"
+
+# (5d) 해시 불일치 — 매니페스트 프로브 A 에 얼린 뒤집힌 대응(불필요=2·필요=0)이 있고
+# 설계 문서 슬라이스가 프로브 B 를 선언하면, 0/2 로 떨어지지 않고 사전 프로브 전에
+# park 한다. 0/2 로 읽으면 사전 0 이 「필요」 가 아니라 건너뜀이 되고, 사전 2 에서는
+# 「불필요」 코드에 명령이 돈다. 같은 행에 프로브 A 가 돌면 대응대로 처분된다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT; echo 2 > $AP_ST'" 2 0
+AP_SHA_A=$(apply_probe_sha "$(apply_probe_cmd segA)")
+AP_PROBE_B="touch $AP_DIR/probe-b-ran; exit 0"
+AP_SHA_B=$(apply_probe_sha "$AP_PROBE_B")
+AP_SLICE_DOC="$AP_DIR/slice-doc.md"
+printf '# 픽스처\n\n## 구현 슬라이싱\n\n### 슬라이스 segA — 적용\n\n**스킬**: implement\n**레포**: o/repo\n**선언 파일**: `a.txt`\n**선행**: 없음\n**적용 프로브**: `%s`\n' \
+  "$AP_PROBE_B" > "$AP_SLICE_DOC"
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+DOC="$AP_SLICE_DOC"
+check "슬라이스 선언이 실행 프로브를 B 로 바꾼다 (아래가 공허하지 않다)" "$(apply_probe_cmd segA)" "$AP_PROBE_B"
+apc_rc=0; apc_out=$(apply_probe_codes "$(apply_probe_cmd segA)") || apc_rc=$?
+check "해시 불일치에서 판독기는 상태 2 와 두 해시를 낸다" "$apc_rc/$apc_out" "2/$AP_SHA_A $AP_SHA_B"
+: > "$LEDGER"; : > "$AP_CNT"; rm -f "$AP_DIR/probe-b-ran"; printf '0\n' > "$AP_ST"
+if apply_stage segA; then
+  bad "해시 불일치" "얼린 행과 다른 프로브인데 처분이 났다"
+else
+  ok "해시 불일치: 구동기가 적용을 거부한다"
+fi
+case "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 )" in
+  *"$AP_SHA_A"*"$AP_SHA_B"*"사전 프로브도 apply 도 실행하지 않는다"*) ok "해시 불일치 park 사유가 두 해시를 싣는다" ;;
+  *) bad "해시 불일치 park" "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 )" ;;
+esac
+check "해시 불일치: 사전 프로브가 돌지 않는다" "$( [ -e "$AP_DIR/probe-b-ran" ] && echo 돌았다 || echo 안돌았다 )" "안돌았다"
+check "해시 불일치: 적용 명령이 돌지 않는다" "$(grep -c . "$AP_CNT")" "0"
+check "해시 불일치: 적용 준비 행이 없다" "$( { grep -c '상태=적용 준비' "$LEDGER" || true; } )" "0"
+check "해시 불일치: 적용 워크트리를 만들지 않는다" "$( [ -e "$AP_WT" ] && echo 있다 || echo 없다 )" "없다"
+check "해시 불일치: 건너뜀·정상 완료 행이 없다" "$( { grep -c '종단 부류=정상 완료' "$LEDGER" || true; } )" "0"
+DOC=""
+: > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
+if apply_stage segA && [ ! -s "$AP_CNT" ]; then
+  ok "불필요=2·필요=0: 프로브 A 의 사전 2 는 건너뜀이고 명령이 돌지 않는다"
+else
+  bad "뒤집힌 대응 건너뜀" "사전 2 가 「불필요」 로 읽히지 않았다"
+fi
+: > "$LEDGER"; : > "$AP_CNT"; printf '0\n' > "$AP_ST"
+if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
+  ok "불필요=2·필요=0: 프로브 A 의 사전 0 은 적용 필요이고 명령이 1회 돈다"
+else
+  bad "뒤집힌 대응 수렴" "사전 0 이 「필요」 로 읽히지 않았다"
+fi
 
 # (6) 반경 판정 — 런은 전부 멈추고, 레포는 같은 레포만, 슬라이스 목록은 그 셋만.
 RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"

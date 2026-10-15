@@ -7,9 +7,9 @@
 Two digests are computed here and **compared at entry**, so they are not decoration:
 
 - `대상 맵 다이제스트` — sha256 over the canonical serialization of every `target` row (whitespace runs collapsed to one space, then sorted).
-- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, the `자동 채택` rows, the `설계 로스터` rows, the `베이스 발행` and `베이스 설계` rows, the `세그먼트 입양` rows, the `선행 착지` rows, the `재킥오프` row, the `연쇄` row on a derived successor, the cost ceiling and the stagnation bound when declared, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
+- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, the `자동 채택` rows, the `설계 로스터` rows, the `베이스 발행` and `베이스 설계` rows, the `세그먼트 입양` rows, the `선행 착지` rows, the `적용 프로브 코드` row when written, the `재킥오프` row, the `연쇄` row on a derived successor, the cost ceiling and the stagnation bound when declared, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
 
-**Eight row kinds exist only when Act 1 took their input**, and all eight go under `## 인가`:
+**Nine row kinds exist only when Act 1 took their input**, and all nine go under `## 인가`:
 
 - when 5m ran, one `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>` row. It carries no `형태=`, so it authorizes no act — the pre-authorization rule skips a row without one — and what it buys is that the record's hash is inside the frozen set;
 - when 5k ran, the approved `설계 로스터` rows, one per member, in the order the person approved them;
@@ -18,9 +18,10 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 - when 5r ran, exactly one `- \`베이스 발행\` | 트래커=<github|clickup|없음> | 대상=<값>` row, and its `사전 인가` form rows when the tracker is not `없음`;
 - when Step 4 resolved a base ticket for a child run, exactly one `- \`베이스 설계\` | 문서=docs/<slug>.md | sha256=<hex> | 티켓=T<n>` row. The gate checks its form and count only and never re-hashes the file — the design stage does that before it spawns anyone;
 - when Step 2 settled an adoption, one `- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id> | PR=<번호>` row per adopted segment, with the values Step 2 verified (`출처 런=-` for a branch a person made outside any run). The manifest check holds the row to its form only; the gate checks the worktree, the branch and the earlier run when the segment is planned;
-- when 5s took rows, one `- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>` row per confirmed predecessor, exactly as read back. The manifest check refuses a malformed row and a second row for one slice; the planning act checks the slug against the slice's `레포` and the commit against that repository's base branch.
+- when 5s took rows, one `- \`선행 착지\` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>` row per confirmed predecessor, exactly as read back. The manifest check refuses a malformed row and a second row for one slice; the planning act checks the slug against the slice's `레포` and the commit against that repository's base branch;
+- when 5c took a mapping other than the default `0/2`, exactly one `- \`적용 프로브 코드\` | 불필요=<n> | 필요=<n> | 프로브 sha256=<hex>` row, with `<hex>` measured by 5c's rule — the `**적용 프로브**` value with its backticks removed and no trailing newline. Keeping `0/2` writes no row. Just before writing, measure the hash once more with 5c's command on the probe exactly as it goes into `## 요소` and compare it with the row's value; on a difference, take the new measurement and say so. The manifest check stops the run on a hash that does not match, so this is the last moment a person is present to see it.
 
-**Two more row kinds go under `## 인가`, and neither is asked**, so ten kinds in all can stand there:
+**Two more row kinds go under `## 인가`, and neither is asked**, so eleven kinds in all can stand there:
 
 - on every kickoff, exactly one `- \`재킥오프\` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>` row, written without a toggle. `길이` is the length 5e captured, `사유` says in one line why the run may be continued by a successor. It is the person's consent to an automatic re-kickoff, and the limits they consented to are the ones 5j's read-back showed them; the manifest check refuses a second row, a `연쇄 상한` that is not a positive integer and a `길이` that is not an ISO 8601 duration;
 - never from this skill, a `- \`연쇄\`` row. Only the successor deriver writes it, into a successor's manifest, and the gate admits that manifest only when the row's lineage checks out against the predecessor.

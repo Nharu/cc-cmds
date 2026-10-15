@@ -2850,7 +2850,7 @@ pre_sa() {
     local row td plan pd extra
     cat > "$SA_GRANT" <<SAGEOF
 # 파이프라인 인가 기록 — $SA_ID
-<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$SA_WT; NOT a design doc; mechanism-local, never staged by a skill -->
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=${SA_OWNER_DOC:-(없음)}; origin-worktree=$SA_WT; NOT a design doc; mechanism-local, never staged by a skill -->
 
 ## 인가 $SA_ID
 **인가 일시**: 2026-08-30T00:00:00Z
@@ -2872,14 +2872,14 @@ SAGEOF
       printf '# 파이프라인 런 매니페스트 — %s\n' "$SA_ID"
       printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$SA_ID"
       printf '     anchor-kind=repo; anchor-key=t/%s;\n' "$SA_ID"
-      printf '     owner-doc=(없음); origin-worktree=%s;\n' "$SA_WT"
+      printf '     owner-doc=%s; origin-worktree=%s;\n' "${SA_OWNER_DOC:-(없음)}" "$SA_WT"
       printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
       printf '## 런 정체\n'
       printf '**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$SA_ID"
       printf '**앵커 종류**: repo\n**앵커 키**: t/%s\n**사용자 확인 문면**: 테스트 픽스처\n\n' "$SA_ID"
       printf '## 의도\n```text\n테스트\n```\n\n'
       printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td" "$row"
-      printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: %s\n' "${SA_APPLY:-(해당 없음)}"
+      printf '## 요소\n**설계 문서**: %s\n**적용 주체**: %s\n' "${SA_OWNER_DOC:-(없음)}" "${SA_APPLY:-(해당 없음)}"
       # 적용 지점·프로브는 고른 집합만 싣는다. 기본이 빈 문자열이라 다른 집합의
       # 매니페스트는 바이트 그대로다.
       [ -z "${SA_APPLY_CMD:-}" ]   || printf '**적용 지점**: `%s`\n' "$SA_APPLY_CMD"
@@ -2935,7 +2935,7 @@ SAPEOF
     SA_SEGWT="$SA_ROOT/seg"
     SA_SEGBR="seg-$SA_ID"
     SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""; SA_APPLY_CODES=""
-    SA_PREAUTH_EXTRA=""
+    SA_PREAUTH_EXTRA=""; SA_OWNER_DOC=""
     mkdir -p "$SA_REPO"
     ( cd "$SA_REPO" \
       && git init -q . \
@@ -3288,11 +3288,18 @@ pre_sb() {
     # 파이프라인 적용을 선언한 픽스처. 상한의 기본은 선리뷰후머지 다: 적용
     # 행위는 그 정책의 세그먼트만 받고, 파이프라인 적용과 리뷰없음 상한의 조합은
     # 매니페스트 검사가 거부한다. `SB_CODES='<불필요> <필요>'` 를 앞에 붙여 부르면
-    # 종료 코드 대응 행을 싣는다.
+    # 종료 코드 대응 행을 싣는다. `SB_SLICE='<세그먼트> <프로브>'` 를 앞에 붙이면
+    # 그 세그먼트의 슬라이스가 `**적용 프로브**` 를 선언한 설계 문서를 매니페스트의
+    # 설계 문서로 둔다 — 대응 행은 여전히 매니페스트 프로브에 묶인다.
     local label="$1" probe="$2" cmd="$3" actor="${4:-파이프라인}" ceil="${5:-선리뷰후머지}"
     shift 3; shift $(( $# < 2 ? $# : 2 ))
     sb_new "$label" "$ceil"
     SA_APPLY="$actor"; SA_APPLY_PROBE="$probe"; SA_APPLY_CMD="$cmd"; SA_APPLY_CODES="${SB_CODES:-}"
+    if [ -n "${SB_SLICE:-}" ]; then
+      printf '# 픽스처\n\n## 구현 슬라이싱\n\n### 슬라이스 %s — 적용\n\n**스킬**: implement\n**레포**: t/%s\n**선언 파일**: `a.txt`\n**선행**: 없음\n**적용 프로브**: `%s`\n' \
+        "${SB_SLICE%% *}" "$SA_ID" "${SB_SLICE#* }" > "$SA_ROOT/slice-doc.md"
+      SA_OWNER_DOC="${SA_ROOT#/}/slice-doc.md"
+    fi
     sa_manifest "$ceil" "$@"
     rm -rf "$SA_RUN"
     SB_STATE="$SA_ROOT/apply-state"; mkdir -p "$SB_STATE"
@@ -27889,7 +27896,7 @@ case "$(sb_seg_last SB12S)" in
 esac
 
 # --- 38-13. 적용의 처분과 종료 조건 ----------------------------------------------
-# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 2 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다 ---
+# --- section: 38-13 | group: sb | covers: act, apply, segment, done | anchors: 13: 사전 2 → 사후 0 은 완료 로 끝난다, 13: 적용 불명 은 런 범위 막힘을 남기고 워크트리를 보존한다, 13: 호출자가 쓴 완료 는 적용이 남은 세그먼트에서 거부된다, 13: 적용이 남은 머지됨 에는 적용=대기 가 붙는다, 13: 필요=21 대응에서 사전 21 · 명령 0 · 사후 0 은 완료 로 끝난다, 13: 대응 사전 실패의 막힘이 코드와 대응을 싣는다, 13: 적용 건너뜀 문면이 실제 코드를 싣는다, 13: 해시 불일치 거부 문면이 두 해시를 싣는다, 13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다, 13: 불필요=2·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 2 는 완료 로 끝난다 ---
 #
 # 수렴: 사전 프로브는 표지 파일이 없으면 2, 있으면 0 이고 명령이 표지를 만든다.
 sb_apply_new '13 수렴' "if [ -f $WORK/sb13-applied ]; then exit 0; else exit 2; fi" "touch $WORK/sb13-applied"
@@ -28032,6 +28039,44 @@ esac
 case "$raw" in
   *"적용 건너뜀 — SB13K (사전 프로브 3, 대응 불필요=3·필요=21)"*) ok "13: 적용 건너뜀 문면이 실제 코드를 싣는다" ;;
   *) bad "13: 대응 건너뜀 문면" "$raw" ;;
+esac
+
+# 해시 불일치 — 매니페스트 프로브 A 에 얼린 뒤집힌 대응(불필요=2·필요=0)이 있고 설계
+# 문서 슬라이스가 프로브 B 를 선언하면, 0/2 로 떨어지지 않고 사전 프로브 전에 거부한다.
+sb13z_a="touch $WORK/sb13z-probe-a; exit 0"
+sb13z_b="touch $WORK/sb13z-probe-b; exit 0"
+SB_CODES='2 0' SB_SLICE="SB13Z $sb13z_b" sb_apply_new '13 해시 불일치' "$sb13z_a" "touch $WORK/sb13z-cmd"
+sb_reviewed_landing SB13Z
+rm -f "$WORK/sb13z-probe-a" "$WORK/sb13z-probe-b" "$WORK/sb13z-cmd"
+sb13z_base=$(sb_count 'id=SB13Z | 상태=')
+sb_apply SB13Z
+check "13: 해시 불일치는 규칙 거부로 끝난다" "$rc" "3"
+sb13z_sha_a=$(printf '%s' "$sb13z_a" | shasum -a 256 | cut -d' ' -f1)
+sb13z_sha_b=$(printf '%s' "$sb13z_b" | shasum -a 256 | cut -d' ' -f1)
+case "$msg" in
+  *"프로브 sha256(${sb13z_sha_a})"*"적용 프로브의 sha256(${sb13z_sha_b})"*) ok "13: 해시 불일치 거부 문면이 두 해시를 싣는다" ;;
+  *) bad "13: 해시 불일치 문면" "$msg" ;;
+esac
+if [ -e "$WORK/sb13z-probe-a" ] || [ -e "$WORK/sb13z-probe-b" ] || [ -e "$WORK/sb13z-cmd" ]; then
+  bad "13: 해시 불일치" "사전 프로브나 적용 명령이 돌았다"
+else
+  ok "13: 해시 불일치에서 사전 프로브도 적용 명령도 돌지 않는다"
+fi
+check "13: 해시 불일치는 세그먼트 상태 행을 남기지 않는다" "$(sb_count 'id=SB13Z | 상태=')" "$sb13z_base"
+check "13: 해시 불일치에 적용 준비 행이 없다" "$(sb_count 'id=SB13Z | 상태=적용 준비')" "0"
+if [ -e "$(sb_apply_wt SB13Z)" ]; then bad "13: 해시 불일치 워크트리" "남았다: $(sb_apply_wt SB13Z)"
+else ok "13: 해시 불일치는 적용 워크트리를 만들지 않는다"; fi
+
+# 같은 뒤집힌 대응에 프로브 A 가 돌면 대응대로 처분된다 — 사전 0 은 「필요」 이고
+# 명령 뒤 사후 2 는 「불필요」 라 수렴이다.
+SB_CODES='2 0' sb_apply_new '13 뒤집힌 대응' "if [ -f $WORK/sb13v-applied ]; then exit 2; else exit 0; fi" "touch $WORK/sb13v-applied"
+sb_reviewed_landing SB13V
+sb_apply SB13V
+check "13: 불필요=2·필요=0 대응에서 프로브 A 의 사전 0 · 명령 0 · 사후 2 는 완료 로 끝난다" "$rc" "0"
+[ -e "$WORK/sb13v-applied" ] || bad "13: 뒤집힌 대응 수렴" "사전 0 에서 명령이 실행되지 않았다"
+case "$(sb_seg_last SB13V)" in
+  *"상태=완료"*"적용=수렴"*) ok "13: 뒤집힌 대응의 완료 행은 수렴 이다" ;;
+  *) bad "13: 뒤집힌 대응 수렴 행" "$(sb_seg_last SB13V)" ;;
 esac
 
 # R21 — 슬라이스가 둘인 레포에서 적용 팔의 행이 계획 행의 선행 을 다시 싣는다.

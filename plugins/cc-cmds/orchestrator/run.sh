@@ -8061,10 +8061,13 @@ EOF
 # beforehand, "changes still pending" afterwards. So BOTH sides are probed and
 # the four outcomes map one-to-one onto four dispositions:
 #
-#   pre = 0            nothing to do; skip the apply entirely
-#   pre = 1            the probe itself failed; refuse before touching anything
-#   pre = 2 → post = 0 converged; this is the only success
-#   pre = 2 → post = 2 changes still pending after an apply ran — 적용 불명
+#   pre = 불필요              nothing to do; skip the apply entirely
+#   pre = 필요 → post = 불필요  converged, with a command 0; the only success
+#   pre = 필요 → anything else  changes still pending after an apply ran — 적용 불명
+#   any other pre              the probe itself failed; refuse before touching anything
+#
+# 불필요 and 필요 are the mapping `apply_probe_codes` reads: 0 and 2 by default,
+# the values of the manifest's `적용 프로브 코드` row when one is frozen.
 #
 # The pre-probe is also the "did it even start" discriminator the retry rules
 # needed. There are no retries here: an apply is a terminal act, and a second
@@ -8180,15 +8183,21 @@ apply_code_row_check() {
 # will actually run. Read from the manifest only, never through `apply_field`:
 # the design document's slice declaration is written mid-run by a stage, and
 # the mapping is what a person froze at kickoff. The row applies only to the
-# probe whose bytes it was frozen against, so a slice declaration that names a
-# different probe reads 0/2. No row is 0/2 as well; a broken row is status 1,
-# which the manifest check has already turned into a stop.
+# probe whose bytes it was frozen against. A probe that hashes differently — a
+# slice declaration naming another probe — is status 2 with
+# `<행 해시> <프로브 해시>` printed, and the caller refuses before the pre-probe:
+# reading it as 0/2 would flip the verdict of a mapping like 불필요=2·필요=0,
+# skipping an apply that is needed or running one that is not. Only no row
+# reads 0/2. A broken row is status 1, which the manifest check has already
+# turned into a stop.
 apply_probe_codes() {
-  local probe="$1" f nu ne hx
+  local probe="$1" f nu ne hx want
   if [ -z "${MANIFEST:-}" ] || [ -z "$(manifest_apply_code_rows)" ]; then printf '0 2'; return 0; fi
   f=$(apply_code_row_fields) || return 1
   nu="${f%% *}"; f="${f#* }"; ne="${f%% *}"; hx="${f#* }"
-  if [ "$hx" = "$(apply_probe_sha "$probe")" ]; then printf '%s %s' "$nu" "$ne"; else printf '0 2'; fi
+  want=$(apply_probe_sha "$probe")
+  [ "$hx" = "$want" ] || { printf '%s %s' "$hx" "$want"; return 2; }
+  printf '%s %s' "$nu" "$ne"
 }
 
 # apply_disposition <불필요> <필요> <사전 프로브 rc> [<명령 rc> <사후 프로브 rc>]
@@ -8241,14 +8250,10 @@ apply_stage() {
   fi
 
   [ -n "$MERGE_COMMIT" ] || { park "$seg" act 막힘 "게이트 park" "머지 커밋을 고정할 수 없어 apply 를 시작하지 않는다"; return 2; }
-  root=$(seg_root "$seg") || return 1
-  wt=$(apply_worktree "$seg") || return 1
-  if [ ! -d "$wt" ]; then
-    ( cd "$root" && git worktree add --detach "$wt" "$MERGE_COMMIT" >/dev/null 2>&1 ) \
-      || { park "$seg" act 막힘 "게이트 park" "apply 워크트리를 머지 커밋에 고정하지 못했다: $MERGE_COMMIT"; return 2; }
-  fi
-  ledger_row 'segment' "id=$seg" "상태=적용 준비" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT" "적용 명령=$cmd"
 
+  # The probe and its mapping are settled before the apply worktree and the
+  # `적용 준비` row exist, the order the gate's apply act reads them in, so a
+  # refusal here leaves neither behind.
   local probe; probe=$(apply_probe_cmd "$seg")
   if [ -z "$probe" ]; then
     park "$seg" act 막힘 "게이트 park" "적용 프로브가 없어 필요 여부를 판정할 수 없다 — apply 를 실행하지 않는다"
@@ -8257,12 +8262,24 @@ apply_stage() {
 
   # The mapping is read once and handed to both verdicts, so the pre- and
   # post-probe are read against the same meaning.
-  local codes nu ne map
-  codes=$(apply_probe_codes "$probe") || {
-    park "$seg" act 막힘 "게이트 park" "적용 프로브 코드 행을 읽을 수 없다 — apply 를 실행하지 않는다" "$cmd"
-    return 2
-  }
+  local codes nu ne map crc=0
+  codes=$(apply_probe_codes "$probe") || crc=$?
+  case "$crc" in
+    0) ;;
+    2) park "$seg" act 막힘 "게이트 park" "적용 프로브 코드 행의 프로브 sha256(${codes% *})이 실행할 적용 프로브의 sha256(${codes#* })과 맞지 않는다 — 사전 프로브도 apply 도 실행하지 않는다" "$cmd"
+       return 2 ;;
+    *) park "$seg" act 막힘 "게이트 park" "적용 프로브 코드 행을 읽을 수 없다 — apply 를 실행하지 않는다" "$cmd"
+       return 2 ;;
+  esac
   nu="${codes% *}"; ne="${codes#* }"; map="대응 불필요=${nu}·필요=${ne}"
+
+  root=$(seg_root "$seg") || return 1
+  wt=$(apply_worktree "$seg") || return 1
+  if [ ! -d "$wt" ]; then
+    ( cd "$root" && git worktree add --detach "$wt" "$MERGE_COMMIT" >/dev/null 2>&1 ) \
+      || { park "$seg" act 막힘 "게이트 park" "apply 워크트리를 머지 커밋에 고정하지 못했다: $MERGE_COMMIT"; return 2; }
+  fi
+  ledger_row 'segment' "id=$seg" "상태=적용 준비" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT" "적용 명령=$cmd"
 
   apply_probe "$wt" "$probe"; pre=$?
   acct=$(stage_account_of "S9-$seg")

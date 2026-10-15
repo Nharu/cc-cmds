@@ -25680,7 +25680,8 @@ gate_plan_unchecked_axes() {
 # driver's own `apply_disposition`, fed the exit-code mapping the driver's own
 # `apply_probe_codes` reads from the manifest. A router that could pass the
 # command would be an apply nobody authorized, and a second copy of the verdict table is a
-# second answer to what an exit code means.
+# second answer to what an exit code means. A mapping row frozen against other
+# probe bytes than the probe this act runs is a refusal, not the default 0/2.
 #
 # FIVE PRECONDITIONS, AHEAD OF THE RULE CATALOG AND OUTSIDE IT. `리뷰-후-머지` is
 # a rule a manifest may switch off; the facts below are what make this act an
@@ -25871,10 +25872,18 @@ gate_perform_apply() {
   # The exit-code mapping is read once, from the manifest alone and against the
   # probe this act runs, and both verdicts below take it — the driver's S9 does
   # the same, so the two cannot read one code two ways.
-  codes=$(apply_probe_codes "$probe") || {
-    warn "적용 프로브 코드 행을 읽을 수 없습니다 — 적용 워크트리도 원장 행도 남기지 않았습니다"
-    return "$GATE_EXIT_RULE"
-  }
+  # A row frozen against another probe's bytes is refused here, never read as
+  # 0/2: the default would flip the verdict of a mapping that put 0 and 2 the
+  # other way round.
+  local crc=0
+  codes=$(apply_probe_codes "$probe") || crc=$?
+  case "$crc" in
+    0) ;;
+    2) warn "적용 프로브 코드 행의 프로브 sha256(${codes% *})이 실행할 적용 프로브의 sha256(${codes#* })과 맞지 않습니다 — 적용 워크트리도 원장 행도 남기지 않았습니다"
+       return "$GATE_EXIT_RULE" ;;
+    *) warn "적용 프로브 코드 행을 읽을 수 없습니다 — 적용 워크트리도 원장 행도 남기지 않았습니다"
+       return "$GATE_EXIT_RULE" ;;
+  esac
   nu="${codes% *}"; ne="${codes#* }"; map="대응 불필요=${nu}·필요=${ne}"
   root=$(alias_root "$alias") || return 1
   wt="$(dirname "$root")/$(basename "$root")${WORKTREE_INFIX}${RUN_ID}-${seg}-apply"

@@ -410,9 +410,13 @@ digest. `프로브 sha256` binds the mapping to one probe — the sha256 of the
 `**적용 프로브**` value with its enclosing backticks removed and no trailing
 newline, the string the driver runs — and the mapping is read from the manifest
 only, never from a slice declaration in the design document, which a stage
-writes during the run. When the probe that actually runs hashes differently the
-mapping does not apply and the default `0/2` stands. Without the row the
-default is `0/2` and the row contributes zero bytes, so no existing manifest's
+writes during the run. When the probe that actually runs hashes differently —
+a slice declaration naming another probe — the apply is refused before the
+pre-probe runs: the driver parks with both hashes in the reason and the gate's
+apply act ends with `GATE_EXIT_RULE`, and neither the probe nor the command
+runs. It never falls back to `0/2`, which would flip the verdict of a mapping
+that put 0 and 2 the other way round. Only without the row is the mapping
+`0/2`, and then the row contributes zero bytes, so no existing manifest's
 digest moves. The pre-probe's other exit codes refuse the apply before anything
 is touched, the post-probe is read with the same mapping, and every log and
 ledger text of a skip, a refusal or a convergence carries the codes and the
@@ -539,7 +543,9 @@ never compared.
    `**적용 프로브**` value with its backticks removed and no trailing newline.
    A second row or any mismatch is a **hard stop**, never a fall back to the
    default — a mapping a person froze and the run did not honour would decide
-   an apply silently. Without the row the mapping is `0/2`.
+   an apply silently. Without the row the mapping is `0/2`. A probe that a
+   slice declaration changes at apply time is not checked here; the apply
+   refuses it then, by the same rule.
 10. **`run-id=` and `anchor-key=` headers exist and match the body.** These are
     **fail-closed**: `origin-worktree=`'s fail-open tie-break is only sound
     *between* files that have already proven ownership, so removing the proof
