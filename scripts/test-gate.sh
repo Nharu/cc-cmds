@@ -26537,7 +26537,13 @@ check "34b A5: 나가는 교대가 없는 킥오프 기동은 컨텍스트=- 를
 # that the expression equals itself. The transcript is planted under that id, so
 # the next launch has a predecessor with a context of its own.
 capb_sid1=$(row_field "$capb_row1" '세션 id')
-{ cap_usage_line 20000 10000 1000
+# The outgoing shift also moved organization once between its two turns — a
+# person's `/login` on the seat it inherited — so the launch row owes
+# `조직 이동=1` beside the context. Attachment lines carry no usage, so the
+# context stays the same number.
+{ printf '{"type":"attachment","attachment":{"type":"credential_org","organizationUuid":"aaaaaaaa-0000-0000-0000-000000000001"}}\n'
+  cap_usage_line 20000 10000 1000
+  printf '{"type":"attachment","attachment":{"type":"credential_org","organizationUuid":"bbbbbbbb-0000-0000-0000-000000000002"}}\n'
   cap_usage_line 200000 30000 7000; } > "$NTX/$capb_sid1.jsonl"
 cap_gate "$CAPB_SID" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
          --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CAPB_SID" '')" \
@@ -26547,6 +26553,10 @@ check "34b A5: 둘째 기동도 돈다" "$rc" "0"
 capb_row2=$(cap_rows '교대 기동' | tail -1)
 check "34b A5: 둘째 기동은 나가는 교대의 컨텍스트를 싣는다" \
   "$(row_field "$capb_row2" '컨텍스트')" "237000"
+check "34b A6: 킥오프 기동 행에는 조직 이동 필드가 없다" \
+  "$(printf '%s\n' "$capb_row1" | { grep -cF '| 조직 이동=' || true; })" "0"
+check "34b A6: 조직을 한 번 옮긴 나가는 교대의 기동 행이 조직 이동=1 을 싣는다" \
+  "$(row_field "$capb_row2" '조직 이동')" "1"
 check "34b A5: 그 값은 기동자(좌석)의 컨텍스트가 아니다" \
   "$( [ "$(row_field "$capb_row2" '컨텍스트')" != "$(cap_snap "$CAPB_SID" '' | jq -r .shift.context)" ] \
      && printf 'different' || printf 'same' )" "different"
@@ -26575,6 +26585,8 @@ check "34b: 셋째 기동 행이 새로 쓰였다" \
      && printf 'new' || printf 'stale' )" "new"
 check "34b: 점수 매길 사용량 줄이 없는 나가는 교대는 컨텍스트=- 로 기록된다" \
   "$(row_field "$capb_row3" '컨텍스트')" "-"
+check "34b A6: 조직을 옮기지 않은 나가는 교대의 기동 행에는 조직 이동 필드가 없다" \
+  "$(printf '%s\n' "$capb_row3" | { grep -cF '| 조직 이동=' || true; })" "0"
 
 # --- 34c. 강제 — 하드 상한에서 교대가 넘어간다 -------------------------------
 # --- section: 34c | group: cone | covers: snapshot | needs: 31al,34 | anchors: 34c: 하드 상한에서 교대가 강제로 넘어간다 ---
@@ -37394,6 +37406,124 @@ check "89: solo 런의 동결 뒤 다음 스텝은 구현이다" \
 check "89: team-4 대조군의 설계 뒤 다음 스텝은 감사다" \
   "$(bsx_snap "$WORK/bsx-RTT.md" | jq -c '[.steps[] | select(.depends_on == ["D1"]) | .skill]')" '["design-audit"]'
 check "89: 진입이 거듭돼도 solo 런의 설계 티어 행은 하나다" "$(tier_rows RTS | grep -c . || true)" "1"
+
+# ---------------------------------------------------------------------------
+# 90. 세션 기록의 조직 이동과 재부착 조직 대조
+# --- section: 90 | group: ledger_series | covers: gate_record_stage_outcome, transcript, reattach | anchors: 90: A→B→A 는 이동 2 다, 90: 깨진 줄이 섞여도 이동 2 다, 90: 이동이 있는 시도는 그 수를 낸다, 90: 다른 조직으로 재부착하면 두 줄을 남긴다, 90: 이동이 있는 시도의 게이트 행이 조직 이동=2 를 싣는다, 90: 이동이 없는 시도의 게이트 행에는 세 필드가 없다, 90: 재부착 기록이 있으면 재부착 조직과 재기록 추정이 붙는다 ---
+#
+# 무인 세션이 실행 도중 다른 조직으로 요청하게 되면 그 세션의 기록에 조직이 다른
+# `credential_org` 첨부가 남는다. 드라이버의 도우미가 그 수를 세고, 재부착 직전에는
+# 기록의 마지막 조직과 설정 디렉터리 `.claude.json` 의 조직을 견준다. 두 값 모두
+# 원장의 `stage-result` 행에 필드로 실리며, 이동이 없으면 필드가 없어 행이 그대로다.
+# 픽스처는 이 절이 스스로 만들고(원장·런 디렉터리·설정 디렉터리), 함수는 게이트를
+# 올린 서브셸에서 직접 부른다. 라우팅 기록이 없는 원장이므로 기록 탐색은 리졸버의
+# 첫 층, `CLAUDE_CONFIG_DIR` 로 간다.
+# ---------------------------------------------------------------------------
+l90=$(lsr_ledger w90)
+r90="${l90%/*}"
+cfg90="$r90/cfg"
+mkdir -p "$cfg90/projects/p90" "$r90/log"
+o90_att() { printf '{"type":"attachment","attachment":{"type":"credential_org","organizationUuid":"%s"}}\n' "$1"; }
+o90_turn() {
+  printf '{"type":"assistant","message":{"id":"%s","model":"m","usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s}}}\n' \
+    "$1" "$2" "$3" "$4"
+}
+ORG90_A="aaaaaaaa-1111-1111-1111-111111111111"
+ORG90_B="bbbbbbbb-2222-2222-2222-222222222222"
+f90_none="$r90/none.jsonl"; f90_same="$r90/same.jsonl"; f90_aba="$r90/aba.jsonl"; f90_broken="$r90/broken.jsonl"
+o90_turn m1 10 100 5 > "$f90_none"
+{ o90_att "$ORG90_A"; o90_turn m1 10 100 5; o90_att "$ORG90_A"; } > "$f90_same"
+{ o90_att "$ORG90_A"; o90_turn m1 10 100 5; o90_att "$ORG90_B"; o90_turn m2 20 3000 400; o90_att "$ORG90_A"; } > "$f90_aba"
+{ o90_att "$ORG90_A"; printf '{"type":"attachment","attachment":{"type":"credential_org","organiz\n'
+  o90_att "$ORG90_B"; printf 'not json "credential_org"\n'; o90_att "$ORG90_A"; } > "$f90_broken"
+x90() { lsr_in Linux "$l90" - "$@" 2>/dev/null; }
+
+check "90: 첨부가 없거나 같은 조직만 되풀이되면 이동 0 이다" \
+  "$(x90 transcript_org_moves "$f90_none")/$(x90 transcript_org_moves "$f90_same")" "0/0"
+check "90: A→B→A 는 이동 2 다" "$(x90 transcript_org_moves "$f90_aba")" "2"
+check "90: 깨진 줄이 섞여도 이동 2 다" "$(x90 transcript_org_moves "$f90_broken")" "2"
+check "90: 기록 파일이 없으면 이동 0 이다" "$(x90 transcript_org_moves "$r90/absent.jsonl")" "0"
+check "90: 마지막 조직과 마지막 응답 컨텍스트를 읽는다" \
+  "$(x90 transcript_last_org "$f90_aba")/$(x90 transcript_last_ctx "$f90_aba")" "$ORG90_A/3420"
+check "90: 첨부나 응답이 없으면 빈 값이다" \
+  "[$(x90 transcript_last_org "$f90_none")]/[$(x90 transcript_last_ctx "$f90_same.absent")]" "[]/[]"
+
+# 시도 하나 = 고정 시도 번호 + 세션 id 를 실은 스트림 + 설정 디렉터리 아래의 기록.
+o90_stage() {
+  # o90_stage <스테이지> <세션 id> <기록 파일|-> — 시도의 스트림과 기록을 깐다.
+  printf '1\n' > "$r90/$1.attempt"
+  { printf '{"type":"system","subtype":"init","session_id":"%s","model":"m"}\n' "$2"
+    printf '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.01,"session_id":"%s"}\n' "$2"
+  } > "$r90/log/$1#1.json"
+  [ "$3" = "-" ] || cp "$3" "$cfg90/projects/p90/$2.jsonl"
+}
+SID90_MOVE="90000000-0000-4000-8000-000000000001"
+SID90_STILL="90000000-0000-4000-8000-000000000002"
+SID90_GONE="90000000-0000-4000-8000-000000000003"
+SID90_RE="90000000-0000-4000-8000-000000000004"
+o90_stage S90M "$SID90_MOVE" "$f90_aba"
+o90_stage S90S "$SID90_STILL" "$f90_same"
+o90_stage S90G "$SID90_GONE" -
+o90_stage S90R "$SID90_RE" "$f90_same"
+c90() { CLAUDE_CONFIG_DIR="$cfg90"; export CLAUDE_CONFIG_DIR; "$@"; }
+check "90: 이동이 있는 시도는 그 수를 낸다" "$(x90 c90 stage_org_moves_of S90M)" "2"
+check "90: 이동 0·기록 없음·스트림 없음이면 출력이 비어 있다" \
+  "[$(x90 c90 stage_org_moves_of S90S)]/[$(x90 c90 stage_org_moves_of S90G)]/[$(x90 c90 stage_org_moves_of S90X)]" "[]/[]/[]"
+
+# 재부착 대조. `.claude.json` 의 조직이 기록의 마지막 조직과 다를 때만 두 줄을 쓴다.
+printf '{"oauthAccount":{"organizationUuid":"%s"}}\n' "$ORG90_A" > "$cfg90/.claude.json"
+x90 reattach_org_note S90S "$cfg90" "$SID90_STILL" >/dev/null
+check "90: 같은 조직으로 재부착하면 기록이 없다" "$( [ -e "$r90/S90S.org-reattach" ] && printf 'has' || printf 'none' )" "none"
+printf '{"oauthAccount":{"organizationUuid":"%s"}}\n' "$ORG90_B" > "$cfg90/.claude.json"
+x90 reattach_org_note S90R "$cfg90" "$SID90_RE" >/dev/null
+check "90: 다른 조직으로 재부착하면 두 줄을 남긴다" \
+  "$(tr '\n' '/' < "$r90/S90R.org-reattach" 2>/dev/null)" "aaaaaaaa→bbbbbbbb/115/"
+check "90: 그 두 줄을 행 필드 판독기가 읽는다" \
+  "$(x90 stage_reattach_org_of S90R)/$(x90 stage_reattach_ctx_of S90R)" "aaaaaaaa→bbbbbbbb/115"
+printf '{"oauthAccount":{"accountUuid":"x"}}\n' > "$cfg90/.claude.json"
+x90 reattach_org_note S90S "$cfg90" "$SID90_STILL" >/dev/null
+o90_keyless=$( [ -e "$r90/S90S.org-reattach" ] && printf 'has' || printf 'none' )
+rm -f "$cfg90/.claude.json"
+x90 reattach_org_note S90S "$cfg90" "$SID90_STILL" >/dev/null
+check "90: 조직 키가 없거나 .claude.json 이 없으면 기록이 없다" \
+  "$o90_keyless/$( [ -e "$r90/S90S.org-reattach" ] && printf 'has' || printf 'none' )" "none/none"
+
+# 새 세션 기동이 앞 시도의 기록을 지우는 자리는 두 기동기 모두 재부착 갈래 바깥,
+# 그 갈래보다 앞이다. 기동 자체는 이 절이 띄우지 않으므로 함수 본문의 순서로 잰다.
+o90_order() {
+  # o90_order <파일> <함수> <지우는 줄 고정 문자열> <대조 호출 고정 문자열> — 두 줄의 줄 번호.
+  awk -v fn="$2" -v del="$3" -v call="$4" '
+    $0 ~ "^" fn "\\(\\) \\{" { in_fn = 1 }
+    in_fn && index($0, del) && !d { d = NR }
+    in_fn && index($0, call) && !c { c = NR }
+    in_fn && /^}/ { exit }
+    END { printf "%s/%s", (d ? "del" : "nodel"), ((d && c && d < c) ? "before" : "after") }' "$1"
+}
+check "90: 드라이버 기동은 재부착 대조보다 앞에서 앞 시도의 기록을 지운다" \
+  "$(o90_order "$RUNSH" stage_spawn '"$RUN_DIR/$stage.org-reattach"' 'reattach_org_note "$stage"')" "del/before"
+check "90: 게이트 감독자도 재부착 대조보다 앞에서 앞 시도의 기록을 지운다" \
+  "$(o90_order "$GATE" gate_verb_supervise_stage 'rm -f "$RUN_DIR/$seg.org-reattach"' 'reattach_org_note "$seg"')" "del/before"
+
+# 원장 행. 게이트의 종료 기록자를 직접 부른다(73 과 같은 모양).
+o90_rec() { DOC=""; CLAUDE_CONFIG_DIR="$cfg90"; export CLAUDE_CONFIG_DIR
+  gate_record_stage_outcome cc-cmds "$1" review 1 0 '' "$r90/log/$1#1.json"; }
+x90 o90_rec S90M >/dev/null || true
+x90 o90_rec S90S >/dev/null || true
+x90 o90_rec S90R >/dev/null || true
+o90_row() { { grep '^- `stage-result`' "$l90" || true; } | { grep -F "| 스테이지=$1 |" || true; } | tail -1; }
+# 행 필드 판독기. `row_field` 는 다른 그룹의 프리앰블에 있으므로 이 절이 따로 둔다.
+o90_field() { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+check "90: 세 시도의 게이트 행이 쓰였다 (아래 단언이 공허하지 않다)" \
+  "$( { grep -c '^- `stage-result`' "$l90" || true; } )" "3"
+check "90: 이동이 있는 시도의 게이트 행이 조직 이동=2 를 싣는다" \
+  "$(o90_field "$(o90_row S90M)" '조직 이동')" "2"
+check "90: 이동이 없는 시도의 게이트 행에는 세 필드가 없다" \
+  "$(o90_row S90S | { grep -cE '\| (조직 이동|재부착 조직|재기록 추정)=' || true; })" "0"
+check "90: 재부착 기록이 있으면 재부착 조직과 재기록 추정이 붙는다" \
+  "$(o90_field "$(o90_row S90R)" '재부착 조직')/$(o90_field "$(o90_row S90R)" '재기록 추정')/[$(o90_field "$(o90_row S90R)" '조직 이동')]" \
+  "aaaaaaaa→bbbbbbbb/115/[]"
+check "90: 새 필드는 계정 자리와 기록자 사이에 온다" \
+  "$(o90_row S90M | sed -n 's/.*| \(레인=[^|]*\) | \(조직 이동=[^|]*\) | \(기록자=[^|]*\) |.*/ok/p')" "ok"
 
 # --- epilogue-begin ---
 #

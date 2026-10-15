@@ -5960,7 +5960,11 @@ stage_spawn() {
   # `.window` goes with `.rc`, not with `.pid`: the `stage-result` row is written
   # after `stage_collect` has removed the pid record, so the window record must
   # outlive collection and is replaced here, at the next spawn of the same stage.
-  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window" "$RUN_DIR/$stage.reap-cause" "$RUN_DIR/$stage.backoff"
+  #
+  # `.org-reattach` is the previous attempt's re-attachment comparison; a fresh
+  # session must not carry it onto its own row.
+  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window" "$RUN_DIR/$stage.reap-cause" "$RUN_DIR/$stage.backoff" \
+        "$RUN_DIR/$stage.org-reattach"
   # Pin this dispatch's attempt number before anything derives a path from it,
   # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
   # it per derivation is how the session uuid and the stream path came from two
@@ -6077,6 +6081,10 @@ stage_spawn() {
     id_flag=(--resume "$STAGE_RESUME")
     printf '%s\n' "$STAGE_RESUME" > "$RUN_DIR/$stage.session"
     log "$stage: 세션 $STAGE_RESUME 재부착"
+    # The router has already bound this re-attachment to its account; what is
+    # left to see is whether that directory has since been logged into another
+    # organization. Recorded, never refused.
+    reattach_org_note "$stage" "$cfg" "$STAGE_RESUME"
   else
     rm -f "$RUN_DIR/$stage.session"
     id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
@@ -6697,6 +6705,129 @@ transcript_of_session() {
   p=$(find "$cfg/projects" -name "$sid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s' "$p"
+}
+
+transcript_orgs() {
+  # transcript_orgs <transcript> — the `organizationUuid` of every
+  # `credential_org` attachment in the transcript, one per line, in order.
+  # Nothing when the file is absent or carries no such attachment.
+  #
+  # THE LINES ARE FILTERED BY A FIXED STRING BEFORE ANY OF THEM IS PARSED. A
+  # stage transcript runs to hundreds of megabytes, and the attachment is a few
+  # dozen of its lines; `jq` over the whole file would cost the terminal row
+  # seconds. Each surviving line is parsed on its own and a broken one is
+  # skipped, because a transcript the CLI is still appending to can end mid-line.
+  local f="$1"
+  [ -f "$f" ] || return 0
+  { grep -F '"credential_org"' "$f" 2>/dev/null || true; } \
+    | { jq -R -r 'try fromjson catch empty
+                  | select(type == "object" and .type == "attachment"
+                           and (.attachment.type // "") == "credential_org")
+                  | .attachment.organizationUuid // empty' 2>/dev/null || true; }
+}
+
+transcript_org_moves() {
+  # transcript_org_moves <transcript> — how many times the requesting
+  # organization changed between consecutive `credential_org` attachments. 0
+  # when the file is absent or carries fewer than two of them. A→B→A is 2: the
+  # count is of moves, and every move cost the cache once.
+  transcript_orgs "$1" | awk 'NR > 1 && $0 != prev { n++ } { prev = $0 } END { print n + 0 }'
+}
+
+transcript_last_org() {
+  # transcript_last_org <transcript> — the organization of the last
+  # `credential_org` attachment, empty when there is none.
+  transcript_orgs "$1" | tail -1
+}
+
+transcript_last_ctx() {
+  # transcript_last_ctx <transcript> — the context of the last assistant reply,
+  # `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, which
+  # is what a re-attachment under another organization writes again cold. Empty
+  # when there is no reply with usage. Filtered and parsed per line like
+  # `transcript_orgs`, for the same two reasons.
+  local f="$1" v
+  [ -f "$f" ] || return 0
+  v=$( { grep -F '"usage"' "$f" 2>/dev/null || true; } \
+       | { jq -R -r 'try fromjson catch empty
+                     | select(type == "object" and .type == "assistant"
+                              and (.message.usage // null) != null)
+                     | .message.usage
+                     | ((.input_tokens // 0) + (.cache_read_input_tokens // 0)
+                        + (.cache_creation_input_tokens // 0))' 2>/dev/null || true; } \
+       | tail -1)
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
+stage_org_moves_of() {
+  # stage_org_moves_of <stage-id> — the `조직 이동` of this attempt's
+  # `stage-result` row: the moves its session's transcript recorded, counted
+  # over the whole session, so a re-attached attempt reports what the session
+  # has been through rather than a per-attempt difference.
+  #
+  # SILENCE IS THE ORDINARY ANSWER, as for `stage_account_of`. No harness session
+  # id, no transcript, or no move prints nothing and the caller puts no field on
+  # the row, so a run with no move writes the rows it wrote before. A move is
+  # logged once as a warning; nothing is notified.
+  local stage="$1" sid f n
+  sid=$(stage_session_id_strict "$stage")
+  [ -n "$sid" ] || return 0
+  f=$(transcript_of_session "$sid" "$stage") || return 0
+  n=$(transcript_org_moves "$f")
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  warn "$stage: 세션 $sid 이 실행 중 조직을 ${n}번 옮겼다"
+  printf '%s' "$n"
+}
+
+reattach_org_note() {
+  # reattach_org_note <stage-id> <config dir> <session id> — compare, just before
+  # a re-attachment, the organization the session last requested with the one the
+  # config directory will request now, and record the pair when they differ.
+  #
+  # THE LAUNCH GOES AHEAD EITHER WAY; this returns 0 always. A re-attachment is
+  # already bound to the account it started on, so a differing organization means
+  # the same directory was logged into another one in between, and only a person's
+  # login can turn it back. Waiting has no end and a fresh session throws the
+  # context away on top of the cold write, so continuing is the cheapest answer —
+  # the record is what makes it a choice someone can see.
+  #
+  # TWO SOURCES, AND EITHER ONE MISSING IS SILENCE: what cannot be compared is
+  # not written down as a move. Line 1 of `<stage>.org-reattach` is
+  # `<first 8>→<first 8>`, line 2 the last reply's context (empty when unknown).
+  local stage="$1" cfg="$2" sid="$3" f old new ctx
+  [ -n "$cfg" ] && [ -n "$sid" ] && [ -n "${RUN_DIR:-}" ] || return 0
+  f=$( { find "$cfg/projects" -name "$sid.jsonl" 2>/dev/null || true; } | sed -n '1p')
+  [ -n "$f" ] || return 0
+  old=$(transcript_last_org "$f")
+  [ -n "$old" ] || return 0
+  [ -f "$cfg/.claude.json" ] || return 0
+  new=$(jq -r '.oauthAccount.organizationUuid // empty' "$cfg/.claude.json" 2>/dev/null || true)
+  [ -n "$new" ] || return 0
+  [ "$old" != "$new" ] || return 0
+  ctx=$(transcript_last_ctx "$f")
+  write_run_record "$RUN_DIR/$stage.org-reattach" "$(printf '%s→%s\n%s' "${old:0:8}" "${new:0:8}" "$ctx")" \
+    || { warn "$stage: 재부착 조직 기록을 쓰지 못했다"; return 0; }
+  log "$stage: 세션 $sid 을 다른 조직으로 재부착한다 (${old:0:8}→${new:0:8}, 재기록 추정 ${ctx:-미상})"
+  return 0
+}
+
+stage_reattach_org_of() {
+  # stage_reattach_org_of <stage-id> — line 1 of `<stage>.org-reattach`, the
+  # `재부착 조직` of the row; empty when this attempt left no record.
+  local f="${RUN_DIR:-}/$1.org-reattach"
+  [ -f "$f" ] || return 0
+  sed -n '1p' "$f" 2>/dev/null || true
+}
+
+stage_reattach_ctx_of() {
+  # stage_reattach_ctx_of <stage-id> — line 2 of the same record, the
+  # `재기록 추정`; empty when there is no record or no number on it.
+  local f="${RUN_DIR:-}/$1.org-reattach" v=""
+  [ -f "$f" ] || return 0
+  v=$(sed -n '2p' "$f" 2>/dev/null || true)
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
 }
 
 stage_open_judgment() {
@@ -9058,9 +9189,12 @@ review_recover() {
   if predicate_review "$rp"; then pred=0; else pred=1; fi
   rclass=$(classify_termination "$rsid" "$rc" "$pred")
   acct=$(stage_account_of "$rsid")
+  local om ro re
+  om=$(stage_org_moves_of "$rsid"); ro=$(stage_reattach_org_of "$rsid"); re=$(stage_reattach_ctx_of "$rsid")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" ${acct:+"계정=$acct"} \
+    ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$rsid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$rsid")")" \
     "종단 부류=$rclass" "실패 서명=$(row_signature "$rsid" review "$rclass" - "$rp")" \
     "복구 scratch=$dirs" "원회수=$reaped"
@@ -9105,10 +9239,13 @@ lead_fix_stage() {
   if predicate_lead_fix "$crp"; then pred=0; else pred=1; fi
   class=$(classify_termination "$sid" "$rc" "$pred")
   acct=$(stage_account_of "$sid")
+  local om ro re
+  om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5F" "종류=lead-fix" "파견 id=$sid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
     "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
+    ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
     "종단 부류=$class" "실패 서명=$(row_signature "$sid" lead-fix "$class" "$wt" -)"
   absorb_stage_judgment "$sid" "$sid" "$(seg_alias "$seg")"
@@ -9362,6 +9499,8 @@ segment_cycle() {
       if [ "$class" = "공허한 성공" ]; then sclue="$missing"; else sclue="$aj_id"; fi
       acct=$(stage_account_of "$sid")
       local psha; psha=$(stage_plan_sha256 "$(stage_log_path "$sid")" "$seg")
+      local om ro re
+      om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
       # `파견 id=` carries the FULL dispatch id beside the kind. `스테이지=`
       # stays the kind because the gate's readers group on it; the attempt
       # counter needs the id it actually dispatched, and nothing else in the
@@ -9369,7 +9508,8 @@ segment_cycle() {
       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
         "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
         "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
+        ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
         "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
         ${psha:+"plan_sha256=$psha"} "종단 부류=$class" \
         "실패 서명=$(row_signature "$sid" implement "$class" "$wt" - "$sclue")"
@@ -9559,6 +9699,8 @@ segment_cycle() {
       rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
       class=$(classify_termination "$sid" "$rc" "$pred")
       acct=$(stage_account_of "$sid")
+      local om ro re
+      om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
       # The session lineage is on THIS row too. The separation rule reads `세션 id`
       # and `부모` from both sides and treats an unrecorded one as a refusal rather
       # than a pass, so a review row without them refused every merge on the fixed
@@ -9567,7 +9709,8 @@ segment_cycle() {
       # re-attached and had to be paid for again.
       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
         "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
-        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+        "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
+        ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
         "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
         "종단 부류=$class" "실패 서명=$(row_signature "$sid" review "$class" - "$rp")"
       absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
@@ -10026,10 +10169,13 @@ continue_attempt() {
   case "$skind" in implement|lead-fix) wtp=$cwd ;; esac
   [ "$CONTINUE_CLASS" != "공허한 성공" ] || [ "$rkind" != "S4" ] \
     || clue=$(residual_share_missing "${DOC:-}" "$rseg" "$RUN_DIR/halt" "$RUN_DIR/$rseg.plan.md" 2>/dev/null || true)
+  local om ro re
+  om=$(stage_org_moves_of "$did"); ro=$(stage_reattach_org_of "$did"); re=$(stage_reattach_ctx_of "$did")
   ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$did")" \
     "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} \
+    ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$did")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$did")")" \
     ${psha:+"plan_sha256=$psha"} "종단 부류=$CONTINUE_CLASS" \
     "실패 서명=$(row_signature "$did" "$skind" "$CONTINUE_CLASS" "$wtp" - "$clue")"
@@ -10354,10 +10500,13 @@ design_arm() {
   if predicate_design S1design; then pred1=0; else pred1=1; fi
   class1=$(classify_termination S1design "$rc1" "$pred1")
   acct1=$(stage_account_of S1design)
+  local om1 ro1 re1
+  om1=$(stage_org_moves_of S1design); ro1=$(stage_reattach_org_of S1design); re1=$(stage_reattach_ctx_of S1design)
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
     "아티팩트 술어 결과=$pred1" "실행 버전=$(stage_attempt_pinned S1design)" \
     "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" \
-    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" ${acct1:+"계정=$acct1"} "기록자=드라이버" \
+    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" ${acct1:+"계정=$acct1"} \
+    ${om1:+"조직 이동=$om1"} ${ro1:+"재부착 조직=$ro1"} ${re1:+"재기록 추정=$re1"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of S1design)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S1design)")" \
     "종단 부류=$class1" "실패 서명=$(row_signature S1design design "$class1" - -)"
   absorb_stage_judgment S1design S1design "$(home_alias)"
@@ -10484,10 +10633,13 @@ split_arm() {
     if predicate_split S2split; then pred=0; else pred=1; fi
     class=$(classify_termination S2split "$rc" "$pred")
     acct=$(stage_account_of S2split)
+    local om ro re
+    om=$(stage_org_moves_of S2split); ro=$(stage_reattach_org_of S2split); re=$(stage_reattach_ctx_of S2split)
     ledger_row 'stage-result' "세그먼트=-" "스테이지=S2split" "파견 id=S2split" "종류=split" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2split)" \
       "세션 id=$(stage_session_id "S2split")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} "기록자=드라이버" \
+      "압축 창=$(stage_window_of S2split)" "레인=$(stage_lane_of S2split)" ${acct:+"계정=$acct"} \
+      ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of S2split)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2split)")" \
       "종단 부류=$class" "실패 서명=$(row_signature S2split split "$class" - -)"
     absorb_stage_judgment S2split S2split "$(home_alias)"
@@ -10648,10 +10800,13 @@ main_loop_body() {
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
   acct2=$(stage_account_of S2)
+  local om2 ro2 re2
+  om2=$(stage_org_moves_of S2); ro2=$(stage_reattach_org_of S2); re2=$(stage_reattach_ctx_of S2)
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
-      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} "기록자=드라이버" \
+      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} \
+      ${om2:+"조직 이동=$om2"} ${ro2:+"재부착 조직=$ro2"} ${re2:+"재기록 추정=$re2"} "기록자=드라이버" \
       "effort=$(stage_effort_rec_of S2)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2)")" \
       "종단 부류=$class2" "실패 서명=$(row_signature S2 audit "$class2" - -)"
   absorb_stage_judgment S2 S2 "$(home_alias)"
