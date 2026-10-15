@@ -1216,7 +1216,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `자율 승인.표지` | `-` \| `비밀출력` \| `파괴` |
 | `자율 승인.파괴 출처` | `-` \| `유도` \| `신고` \| `유도·신고` |
 | `자율 승인.도달` | a `REACHES` token \| `-` |
-| `자율 승인.유도 도달` | `-` \| `기기전역` \| `배포트리거` |
+| `자율 승인.유도 도달` | `-` \| `기기전역` \| `배포트리거` \| `런로컬` (the last only where the first three answer `-` and argv proves the act run-local: a `mktemp`·`mkdir`·`rm`·`mv`·`cp`·`touch`·`ln`·`chmod` whose every path operand resolves physically under the run directory or under `${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id, # as ->.*`; it replaces the declared reach in the disposition, and `도달` still records the declaration) |
 | `자율 승인.식별자 대조` | `-` \| `미선언` \| `일치` \| `대조불가` (`불일치`·`부재` park rather than land on a row) |
 | `blocked.도달 판정` | `비밀출력` \| `신고등급한도` \| `도달미상` \| `기기전역` \| `push원격불일치` \| `도달모순` \| `dev파괴` \| `dev식별자불일치` \| `dev식별자부재` \| `dev대조불가` \| `파괴형태미명시` \| `prod인가없음` \| `배포트리거인가없음` \| `CI실패` \| `등급회귀` \| `등급회귀판정불가` |
 | `target.dev 식별자` | optional; `<종류>:<값>` elements separated by `,` — `aws-profile` \| `aws-account`(12 digits) \| `kube-context` \| `host` \| `domain` \| `dir`(absolute) |
