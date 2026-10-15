@@ -9929,9 +9929,15 @@ gate_slicing_branch() {
 
 gate_slicing_defects() {
   # gate_slicing_defects — one line per defect of an incomplete declaration:
-  # every missing required field of every slice, then the driver's own first
-  # complaint when the fields are all there and something else is wrong.
-  local doc="${DOC:-}" rc=0 id="" f="" n=0 msg=""
+  # every missing required field of every slice — the reason fields a
+  # new-grammar block owes included — and every merge-order defect of every
+  # slice, then the driver's own first complaint when something else is wrong.
+  #
+  # EVERY SLICE TO THE END, NOT THE FIRST DEFECT. The defect set decides which
+  # slices park, so a second defective slice left out of it would be judged
+  # clean and planned. The merge-order lines are `slicing_order_defects`' own,
+  # which the driver's validator warns with, so the two speak the same bytes.
+  local doc="${DOC:-}" rc=0 id="" f="" n=0 msg="" ord=""
   slicing_present "$doc" || rc=$?
   case "$rc" in
     2) printf '「## 구현 슬라이싱」이 펜스 밖에 둘 이상 있습니다\n'; return 0 ;;
@@ -9944,9 +9950,21 @@ gate_slicing_defects() {
         n=$((n + 1))
       fi
     done
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if [ -z "$(slice_field "$doc" "$id" "$f" 2>/dev/null || true)" ]; then
+        printf '슬라이스 %s: 필수 필드 「%s」 없음\n' "$id" "$f"
+        n=$((n + 1))
+      fi
+    done <<EOF
+$(slice_reason_keys "$doc" "$id" 2>/dev/null || true)
+EOF
   done
+  ord=$(slicing_order_defects "$doc" 2>/dev/null || true)
+  [ -z "$ord" ] || printf '%s\n' "$ord"
   [ "$n" = "0" ] || return 0
-  msg=$( { slicing_fields_ok "$doc" 2>&1 >/dev/null || true; } | sed -E 's/^[^]]*\] *(\[warn\] *)?//' | sed -n 1p)
+  msg=$( { slicing_fields_ok "$doc" base 2>&1 >/dev/null || true; } | sed -E 's/^[^]]*\] *(\[warn\] *)?//' | sed -n 1p)
+  [ -z "$msg" ] && [ -n "$ord" ] && return 0
   printf '%s\n' "${msg:-선언을 읽을 수 없습니다}"
 }
 
@@ -10324,12 +10342,24 @@ gate_adoption_halt_carry() {
   log "중단 답 이월 — $seg ← 출처 런 $GATE_CARRY_SRC ($(gate_row_field "$GATE_CARRY_ROW" '선택지'))"
 }
 
+gate_json_id_array() {
+  # gate_json_id_array <id>... — a JSON array of strings; none gives `[]`.
+  local t first=1
+  printf '['
+  for t in "$@"; do
+    [ "$first" = "1" ] || printf ', '
+    first=0
+    printf '"%s"' "$(gate_json_escape "$t")"
+  done
+  printf ']'
+}
+
 gate_snapshot_slicing_json() {
   # The segment plan the frozen document declares, for the shift that has to
   # write it: the branch, and per segment its id, branch name and worktree path
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
-  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects=""
+  local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo=""
   br=$(gate_slicing_branch)
   case "$br" in
     미통치) ids=$(gate_plan_implement_step) ;;
@@ -10350,11 +10380,20 @@ gate_snapshot_slicing_json() {
         "$(gate_json_escape "$(manifest_row_fields "$ad" '출처 런')")" \
         "$(gate_json_escape "$(manifest_row_fields "$ad" 'PR')")")
     fi
+    # THE TWO PREDECESSOR LISTS, as normalized ids. The router dispatches a
+    # `머지 순서` predecessor beside this slice and holds only its merge, so it
+    # has to see the two kinds apart; the planner path declares neither.
+    dpre=""; dmo=""
+    if [ "$br" != "미통치" ]; then
+      dpre=$(gate_dep_tokens "$(slice_field "$DOC" "$id" '선행' 2>/dev/null || true)")
+      dmo=$(gate_dep_tokens "$(slice_field "$DOC" "$id" '머지 순서' 2>/dev/null || true)")
+    fi
     [ "$first" = "1" ] || printf ', '
     first=0
-    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s"%s}' \
+    printf '{"id": "%s", "대상": "%s", "브랜치": "%s", "워크트리": "%s", "선행": %s, "머지 순서": %s%s}' \
       "$(gate_json_escape "$id")" "$(gate_json_escape "$al")" \
-      "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" "$adx"
+      "$(gate_json_escape "$bn")" "$(gate_json_escape "$wt")" \
+      "$(gate_json_id_array $dpre)" "$(gate_json_id_array $dmo)" "$adx"
   done
   printf ']'
   if [ "$br" = "선언불완전" ]; then
@@ -10471,7 +10510,7 @@ gate_decl_defect_slices() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in
-      "슬라이스 "*": 필수 필드 「"*"」 없음")
+      "슬라이스 "*": 필수 필드 「"*"」 없음"|"슬라이스 "*": 머지 순서 "*)
         id=${line#슬라이스 }; id=${id%%:*}
         case " $ids " in *" $id "*) : ;; *) ids="$ids $id" ;; esac ;;
       *) return 0 ;;
@@ -10484,8 +10523,9 @@ EOF
 
 gate_slice_reaches_any() {
   # gate_slice_reaches_any <slice id> <id>... — true when the slice is one of
-  # the ids or depends on one through `선행`, transitively. A dependent of a
-  # parked slice cannot land on it, so it parks with it.
+  # the ids or depends on one through `선행 ∪ 머지 순서`, transitively. A
+  # dependent of a parked slice cannot land on it, and a merge-order successor
+  # cannot merge after it, so either parks with it.
   local todo="$1" ids d want seen=""
   shift
   ids=" $* "
@@ -10495,7 +10535,7 @@ gate_slice_reaches_any() {
     case " $seen " in *" $d "*) continue ;; esac
     seen="$seen $d"
     case "$ids" in *" $d "*) return 0 ;; esac
-    for want in $(gate_dep_tokens "$(slice_field "$DOC" "$d" '선행' 2>/dev/null || true)"); do
+    for want in $(slice_chain_tokens "$DOC" "$d" 2>/dev/null || true); do
       todo="${todo:+$todo }$want"
     done
   done
@@ -10626,6 +10666,17 @@ gate_prior_decl_diff() {
       return 0
     fi
   done
+  # `머지 순서` on the condition the digest uses: `없음` and an absent field are
+  # one value, so a new document reading `없음` matches an old one without the
+  # line, and only a declared merge-order predecessor can differ.
+  pv=$(gate_row_field "$pr" '머지 순서')
+  cv=$(slice_field "$DOC" "$seg" '머지 순서' 2>/dev/null || true)
+  [ -n "$(gate_dep_tokens "$pv")" ] || pv=""
+  [ -n "$(gate_dep_tokens "$cv")" ] || cv=""
+  if [ "$(gate_decl_norm "$pv")" != "$(gate_decl_norm "$cv")" ]; then
+    printf '%s' "슬라이스 선언 불일치(머지 순서) — 그 런의 계획 「$(gate_row_safe "$(gate_decl_norm "$pv")" 120)」, 지금 문서 「$(gate_row_safe "$(gate_decl_norm "$cv")" 120)」"
+    return 0
+  fi
   if [ -n "$pd" ]; then
     printf '%s' "슬라이스 선언 불일치(선언 다이제스트) — 그 런의 계획과 지금 문서의 선언 전체가 다릅니다"
   fi
@@ -11023,7 +11074,7 @@ gate_from_declaration() {
   for f in "$@"; do
     k=${f%%=*}
     case "$k" in
-      레포|'선언 파일 집합'|선행|절단점|'리뷰 정책'|'선언 다이제스트'|plan-binding-digest)
+      레포|'선언 파일 집합'|선행|'머지 순서'|절단점|'리뷰 정책'|'선언 다이제스트'|plan-binding-digest)
         warn "--from-declaration 은 「${k}」 를 동결 문서에서 채웁니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB" ;;
     esac
@@ -11104,6 +11155,10 @@ gate_from_declaration() {
         "레포=$(slice_field "$DOC" "$seg" '레포')" \
         "선행=$(slice_field "$DOC" "$seg" '선행')" \
         "절단점=$(slice_field "$DOC" "$seg" '절단점')" )
+      # `머지 순서` only when it is not `없음`, the condition the declaration
+      # digest uses for its sixth line: an absent field reads as `없음`.
+      k=$(slice_field "$DOC" "$seg" '머지 순서')
+      [ -z "$(gate_dep_tokens "$k")" ] || GATE_DECL_FIELDS+=( "머지 순서=$k" )
       k=$(slice_field "$DOC" "$seg" '리뷰 정책')
       [ -z "$k" ] || GATE_DECL_FIELDS+=( "리뷰 정책=$k" )
       GATE_DECL_FIELDS+=( "선언 다이제스트=$(slice_decl_digest "$DOC" "$seg")" )
@@ -11191,15 +11246,19 @@ gate_from_declaration() {
       gate_decl_block "$verb" "$why"
       return "$GATE_EXIT_RULE"
     fi
+    # A `머지 순서` token naming no declared slice has no owner either, so it
+    # joins the same run-scope check.
     for f in $(slice_ids "$DOC" 2>/dev/null || true); do
-      for d in $(gate_dep_tokens "$(slice_field "$DOC" "$f" '선행')"); do
-        case "$ids" in
-          *" $d "*) : ;;
-          *) why="구현 슬라이싱 선언 불완전 — 슬라이스 $f: 「선행」이 지목한 슬라이스가 선언에 없습니다: $d"
-             warn "세그먼트 계획 거부: $why"
-             gate_decl_block "$verb" "$why"
-             return "$GATE_EXIT_RULE" ;;
-        esac
+      for k in 선행 '머지 순서'; do
+        for d in $(gate_dep_tokens "$(slice_field "$DOC" "$f" "$k")"); do
+          case "$ids" in
+            *" $d "*) : ;;
+            *) why="구현 슬라이싱 선언 불완전 — 슬라이스 $f: 「${k}」이 지목한 슬라이스가 선언에 없습니다: $d"
+               warn "세그먼트 계획 거부: $why"
+               gate_decl_block "$verb" "$why"
+               return "$GATE_EXIT_RULE" ;;
+          esac
+        done
       done
     done
   fi
@@ -11240,9 +11299,13 @@ gate_from_declaration() {
   # repository's base branch: through the target's anchor when the repository
   # is a target, through the remote's own comparison when it is not. The row
   # written is `머지됨` with `출처=매니페스트` and no worktree.
+  #
+  # BOTH KINDS ARE BROUGHT IN. A `머지 순서` token is held by the same
+  # known-token floor as a `선행` token, so a merge-order predecessor an earlier
+  # run landed would otherwise leave its successor unplannable for good.
   if [ "$br" = "선언통치" ]; then
     known=" $(gate_segment_ids | tr '\n' ' ') "
-    for d in $(gate_dep_tokens "$(slice_field "$DOC" "$seg" '선행')"); do
+    for d in $(slice_chain_tokens "$DOC" "$seg"); do
       case "$known" in *" $d "*) continue ;; esac
       dal=$(gate_slice_alias "$d" 2>/dev/null) || dal=""
       if [ -n "$dal" ]; then
@@ -17721,6 +17784,54 @@ gate_deps_of() {
   gate_dep_tokens "$(gate_segment_field "$1" '선행')"
 }
 
+gate_chain_deps_of() {
+  # gate_chain_deps_of <segment> — `선행 ∪ 머지 순서` of that segment's last
+  # row, without duplicates. The cone's declared axis reads this union: a
+  # merge-order predecessor that parks holds this segment's merge forever, so
+  # it is an edge of the same kind an implementation predecessor is.
+  local t out=" "
+  for t in $(gate_deps_of "$1") $(gate_dep_tokens "$(gate_segment_field "$1" '머지 순서')"); do
+    case "$out" in *" $t "*) continue ;; esac
+    out="$out$t "
+  done
+  out=${out# }
+  printf '%s' "${out% }"
+}
+
+gate_segment_row_landed() {
+  # gate_segment_row_landed <row> — 0 when that one `segment` row records a
+  # landing: `머지됨`, or `완료` — except a `완료` brought in from an earlier
+  # run (`출처`) without a hex `머지 커밋`, which an open pull request left and
+  # which put nothing on the base. The dispatch floor and the merge-order
+  # check read landing through this one predicate.
+  local row="$1"
+  case "$(gate_row_field "$row" '상태')" in
+    머지됨) return 0 ;;
+    완료)
+      [ -n "$(gate_row_field "$row" '출처')" ] || return 0
+      case "$(gate_row_field "$row" '머지 커밋')" in
+        ''|*[!0-9a-f]*) return 1 ;;
+      esac
+      return 0 ;;
+  esac
+  return 1
+}
+
+gate_segment_ever_landed() {
+  # gate_segment_ever_landed <segment> — 0 when ANY `segment` row of that id
+  # records a landing. The merge-order check asks "has the predecessor's work
+  # reached the base", and a landing stays on the base whatever a later row
+  # says, so a re-planned row after `머지됨` does not take it back.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    gate_segment_row_landed "$row" && return 0
+  done <<ROWS
+$(gate_rows 'segment' | gate_rows_field_eq 'id' "$1")
+ROWS
+  return 1
+}
+
 gate_ancestor_of() {
   # gate_ancestor_of <A> <B> — 0 A's tip is an ancestor of B's tip, 1 it is not,
   # 2 the question could not be answered.
@@ -17840,7 +17951,10 @@ gate_cone_edge() {
   #
   # Nothing below is weakened by the move: the arms it precedes all answer "does
   # git place these two", and a declaration is not a claim about git.
-  for d in $(gate_deps_of "$s"); do
+  #
+  # The axis reads `선행 ∪ 머지 순서`: a candidate whose merge waits on a parked
+  # member is held by that member just as a dependent is.
+  for d in $(gate_chain_deps_of "$s"); do
     if [ "$d" = "$m" ]; then return 0; fi
   done
 
@@ -17902,7 +18016,8 @@ gate_cone_members() {
   #                   declared — seeding rather than anchoring can only WIDEN
   #                   the cone, and widening is the direction already declared
   #                   safe
-  #   declared axis   non-terminal segments whose `선행` names a member
+  #   declared axis   non-terminal segments whose `선행` or `머지 순서` names a
+  #                   member
   #   ancestor axis   non-terminal segments whose tip has a member's tip as an
   #                   ancestor
   #
@@ -21936,6 +22051,14 @@ gate_record_row() {
         warn "segment 행의 「선언 다이제스트」는 게이트가 동결 문서에서 계획 행을 채울 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
         return "$GATE_EXIT_VOCAB"
       fi
+      # `머지 순서` is the gate's for the same reason: it holds a merge until
+      # the slices it names have landed, so a caller who could write it could
+      # also leave it off a row the declaration orders. The declaration-filled
+      # act writes it, and later rows carry it forward below.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ -n "$(gate_field_of '머지 순서' "$@")" ]; then
+        warn "segment 행의 「머지 순서」는 게이트가 동결 문서에서 계획 행을 채울 때만 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
+        return "$GATE_EXIT_VOCAB"
+      fi
 
       # THE APPLY STATES BELONG TO THE APPLY ARM. This arm carries a caller's
       # fields with no allow-list and lets a terminal row skip the worktree
@@ -22088,6 +22211,48 @@ gate_record_row() {
              return "$GATE_EXIT_VOCAB" ;;
         esac
       done
+
+      # `머지 순서` — the merge-order predecessors, CARRIED FORWARD AT WRITE
+      # TIME like `리뷰 정책` below, and for the same reason: the router's row
+      # template does not carry it, so an ordinary state transition would drop
+      # the order and the merge check would read nothing. A token this row
+      # names in `선행` leaves the carried value — an implementation
+      # predecessor is also landed before the merge, so the stronger list
+      # absorbs it. The same known-token floor holds, since the field reads a
+      # landing just as `선행` does.
+      local mo cur_mo prev_mo prev_union cur_union mo_out
+      mo=$(gate_field_of '머지 순서' "$@")
+      if [ -z "$mo" ] && [ -n "$prior" ]; then
+        prev_mo=$(gate_dep_tokens "$(gate_row_field "$prior" '머지 순서')")
+        mo_out=""
+        for d in $prev_mo; do
+          case " $cur_deps " in *" $d "*) continue ;; esac
+          mo_out="${mo_out:+$mo_out, }슬라이스 $d"
+        done
+        [ -z "$mo_out" ] || { mo="$mo_out"; set -- "$@" "머지 순서=$mo"; }
+      fi
+      cur_mo=$(gate_dep_tokens "$mo")
+      for d in $cur_mo; do
+        case "$known" in
+          *" $d "*) ;;
+          *) warn "the segment \`머지 순서\` names is not in the ledger, and no earlier run ledger of the same document shows it landed: '$d' — such a segment cannot land, so this segment could never merge"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+      done
+      # THE UNION IS MONOTONE. A token may move from `머지 순서` to `선행` and
+      # never leave both: narrowing the union after the predecessor parks would
+      # let this segment merge ahead of a slice the declaration ordered first.
+      if [ -n "$prior" ]; then
+        prev_union="$(gate_dep_tokens "$(gate_row_field "$prior" '선행')") $(gate_dep_tokens "$(gate_row_field "$prior" '머지 순서')")"
+        cur_union=" $cur_deps $cur_mo "
+        for d in $prev_union; do
+          case "$cur_union" in
+            *" $d "*) ;;
+            *) warn "「선행 ∪ 머지 순서」는 세그먼트마다 단조롭습니다 — 앞선 행의 '$d' 가 이 행에 없습니다(더할 수는 있고 뺄 수는 없습니다)"
+               return "$GATE_EXIT_VOCAB" ;;
+          esac
+        done
+      fi
 
       # `리뷰 정책` — OPTIONAL on this row, and its absence in a LATER row is
       # INHERITANCE and not a reset. The router's row template carries the
@@ -24022,8 +24187,10 @@ gate_drain_checks() {
   # it cares about moved. The two rules above bound it: rows are written only on
   # transitions, and one `(PR, head sha)` lifecycle transitions a handful of
   # times. A single-segment run cannot reach the window; THREE OR MORE SEGMENTS
-  # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with the
-  # concurrent-stage cap rather than with anything here.
+  # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with how many
+  # segments run at once rather than with anything here. There is no numeric
+  # cap on concurrent stages: what bounds it is the route's usage admission,
+  # which dispatches a stage only while the lane's weekly allowance admits it.
   #
   # THE SWEEP, THE RENAME AND THE TRANSCRIPTION RUN UNDER ONE LOCK, and without it
   # the sweep undid the ordering it was written to keep. `gate_verb_act` holds no
@@ -26940,6 +27107,50 @@ gate_verb_act() {
   # still saw it would reopen a slot the segment already fulfilled.
   gate_check_merge_anchor "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$kind" || exit $?
 
+  # THE MERGE WAITS FOR ITS ORDER. A segment whose `선행 ∪ 머지 순서` names a
+  # slice that has not landed may be implemented beside it, but may not put its
+  # work on the base first — that order is what the declaration's `머지 순서`
+  # promised. Only an act that lands is held: a remote merge argv, a `git push`
+  # git says updates the base, or a command the table cannot read that writes
+  # outside the worktree. A commit or a push to the segment branch is not.
+  #
+  # NO ROW AND NO PARK CELL. The refusal is a wait, not a defect: the router
+  # retries once the predecessor lands, and a parked predecessor holds this
+  # segment through the cone instead. And it is outside `gate_rule_enabled` and
+  # the review policy, because the order is the declaration's, not a rule a
+  # manifest may switch off.
+  local _moi _mom _mo_land=0 _mo_dep _mo_st
+  _moi=$(cutpoint_index "$GATE_ACT_EFFECTIVE" 2>/dev/null) || _moi=-1
+  _mom=$(cutpoint_index '머지' 2>/dev/null) || _mom=0
+  if [ "$_moi" -ge "$_mom" ] && ! gate_kind_is_bookkeeping "$kind" \
+     && [ -n "$segment" ] && [ "$segment" != '-' ] \
+     && [ -n "$(gate_segment_field "$segment" '상태')" ]; then
+    case "$kind" in
+      propose-done|skill|router-shift|apply) : ;;
+      *)
+        [ "$(gate_merge_binding_of_argv0 "$@")" = '해당없음' ] || _mo_land=1
+        if [ "$_mo_land" = 0 ]; then
+          [ "${GATE_PUSH_DONE:-0}" = 1 ] || gate_push_base_updates "$alias" "$@"
+          case "${GATE_PUSH_KIND:-}" in 갱신|여럿) _mo_land=1 ;; esac
+        fi
+        if [ "$_mo_land" = 0 ]; then
+          case "$GATE_GRADE_SOURCE" in
+            미상|불투명)
+              case "$GATE_SURFACE" in 읽기|워크트리쓰기) : ;; *) _mo_land=1 ;; esac ;;
+          esac
+        fi ;;
+    esac
+    if [ "$_mo_land" = 1 ]; then
+      for _mo_dep in $(gate_chain_deps_of "$segment"); do
+        gate_segment_ever_landed "$_mo_dep" && continue
+        _mo_st=$(gate_segment_field "$_mo_dep" '상태')
+        warn "세그먼트 ${segment} 의 머지 순서 선행 ${_mo_dep} 가 아직 착지하지 않았습니다(「상태」=${_mo_st:-(없음)}) — 그 세그먼트가 머지된 뒤에 이 세그먼트를 머지합니다"
+        warn "구현은 함께 진행할 수 있지만 베이스에 올리는 순서는 선언의 「선행 ∪ 머지 순서」를 따릅니다 — 선행이 머지되면 같은 argv 로 다시 부릅니다"
+        exit "$GATE_EXIT_RULE"
+      done
+    fi
+  fi
+
   # THE MERGE ARGV IS BOUND TO THE HEAD THE RULE READS. The review rule compares
   # the review against the segment worktree's HEAD; a remote merge merges the
   # pull request's head as the server holds it. An argv that does not pin the
@@ -27315,20 +27526,21 @@ EOF
     # with its `출처` and without a `머지 커밋`, so that this run does not do the
     # slice again — and its work is on no base this segment could branch from.
     # That row is not a landing here.
-    local dep dst
+    #
+    # Only `선행` is read here: a `머지 순서` predecessor orders the merge, not
+    # the dispatch, and is checked at the merge below.
+    local dep dst dep_row
     for dep in $(gate_deps_of "$segment"); do
       [ -n "$dep" ] || continue
-      dst=$(gate_segment_field "$dep" '상태')
-      if [ "$dst" = "완료" ] && [ -n "$(gate_segment_field "$dep" '출처')" ]; then
-        case "$(gate_segment_field "$dep" '머지 커밋')" in
-          ''|*[!0-9a-f]*)
-            warn "the preceding segment ${dep} was brought in from an earlier run at a pull request that is not merged — its work is not on the base this segment branches from"
-            warn "dispatch again once that pull request is merged and a run brings the merge in, or if there is no dependency rewrite the \`선행\` of the segment row"
-            exit "$GATE_EXIT_RULE" ;;
-        esac
+      dep_row=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$dep" | tail -1)
+      dst=$(gate_row_field "$dep_row" '상태')
+      gate_segment_row_landed "$dep_row" && continue
+      if [ "$dst" = "완료" ]; then
+        warn "the preceding segment ${dep} was brought in from an earlier run at a pull request that is not merged — its work is not on the base this segment branches from"
+        warn "dispatch again once that pull request is merged and a run brings the merge in, or if there is no dependency rewrite the \`선행\` of the segment row"
+        exit "$GATE_EXIT_RULE"
       fi
       case "$dst" in
-        머지됨|완료) : ;;
         *) warn "the preceding segment ${dep} has not landed yet (\`상태\`=${dst:-(none)}) — this segment has to branch on top of it"
            warn "dispatch again once the predecessor reaches \`머지됨\` or \`완료\`, or if there is no dependency rewrite the \`선행\` of the segment row"
            exit "$GATE_EXIT_RULE" ;;
@@ -33505,14 +33717,23 @@ gate_cap_directive() {
 }
 
 gate_snapshot_segments_json() {
+  # `머지 대기` is the part of `선행 ∪ 머지 순서` that has not landed — what
+  # the merge-order check would hold this segment's merge on right now.
   local out sid
   out=$( gate_segment_ids | while IFS= read -r sid; do
            [ -n "$sid" ] || continue
-           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "커밋": "%s", "마지막 스테이지": "%s"},\n' \
+           mo=$(gate_segment_field "$sid" '머지 순서')
+           mw=""
+           for d in $(gate_chain_deps_of "$sid"); do
+             gate_segment_ever_landed "$d" || mw="$mw $d"
+           done
+           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s"},\n' \
              "$(gate_json_escape "$sid")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '상태')")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '워크트리')")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '선행')")" \
+             "$(gate_json_escape "${mo:-없음}")" \
+             "$(gate_json_id_array $mw)" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '커밋')")" \
              "$(gate_json_escape "$(gate_row_field "$( { gate_rows 'stage-result' | grep -F "세그먼트=$sid " || true; } | tail -1)" '스테이지')")"
          done )
