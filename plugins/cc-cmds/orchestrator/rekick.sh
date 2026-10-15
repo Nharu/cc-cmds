@@ -41,6 +41,13 @@
 # adopts it and closes it `이어받음`. Only the person's interactive re-kickoff
 # reaches that; the chain does not call this program.
 #
+# ONLY A RE-KICKOFF WORD ADOPTS AN UN-ENDED RUN. The close that follows an
+# adoption cannot be undone, and an empty argument or a resume word (`이어서`,
+# `재개`, `계속`, `resume`) is how a person comes back to a run that was cut. So
+# those, and the intent verbatim, report such a run `진행 중` with what it waits
+# on, and only `다시`, `재킥오프`, `다시 킥오프`, `rekick`, `again` or `retry`
+# report it `대기`. A run the gate ended is a re-kickoff whatever the argument.
+#
 # Usage
 #
 #   rekick.sh detect --arg <인자>
@@ -454,7 +461,7 @@ EOF
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_detect_none
 
   # The argument.
-  local raw n t intent
+  local raw n t intent rekick_word=0
   raw=$(rk_trim "$RK_ARG")
   n=$(printf '%s' "$raw" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -d '[:punct:]')
   for t in '해 주세요' '해줘' '하자' 'please'; do
@@ -463,7 +470,8 @@ EOF
   n=$(rk_trim "$n")
   intent=$(rk_trim "$(rk_intent)")
   case "$n" in
-    ''|다시|재킥오프|'다시 킥오프'|이어서|재개|계속|rekick|resume|again|retry) ;;
+    다시|재킥오프|'다시 킥오프'|rekick|again|retry) rekick_word=1 ;;
+    ''|이어서|재개|계속|resume) ;;
     *)
       if [ -z "$intent" ] || [ "$raw" != "$intent" ]; then
         printf '판정\t새 런\t%s\n' "$RK_PREV"
@@ -511,11 +519,15 @@ EOF
     gate_tok=$(rk_gate ended "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err")
     case "$gate_tok" in
       끝남) ;;
-      # Not ended and nothing alive: adopted, provided the ledger the causes are
-      # read from is a regular file. Any other ledger, or a gate that could not
+      # Not ended and nothing alive: adopted on a re-kickoff word, and held for
+      # resuming on any other argument, provided the ledger the causes are read
+      # from is a regular file. Any other ledger, or a gate that could not
       # answer, is not a run this program can show to be idle.
       안끝남)
-        if [ -f "$RK_PL" ] && [ -r "$RK_PL" ]; then rk_detect_wait "$states"; fi
+        if [ -f "$RK_PL" ] && [ -r "$RK_PL" ]; then
+          if [ "$rekick_word" = "1" ]; then rk_detect_wait "$states"; fi
+          rk_detect_held
+        fi
         rk_detect_open stopped ;;
       *) rk_detect_open stopped ;;
     esac
@@ -623,6 +635,25 @@ rk_detect_open() {
   exit 0
 }
 
+# rk_detect_held — the `진행 중` verdict for a run `rk_detect_wait` would adopt,
+# called with an argument that is not a re-kickoff word: what it waits on is
+# named, nothing is adopted, and the way to adopt it is said.
+rk_detect_held() {
+  local cause
+  rk_open_approvals "$RK_PL"
+  rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
+  cause=$(rk_wait_cause "$RK_PL")
+  printf '판정\t진행 중\t%s\n' "$RK_PREV"
+  printf '대기 원인\t%s\n' "$cause"
+  printf '고지\t이전 런 %s 은 끝나지 않은 채 멈춰 있습니다(%s) — 이 호출은 재개로 보고 이어받지 않습니다. 그 런을 재개해 끝내거나, 새 런이 이어받고 원천을 이어받음으로 닫게 하려면 인자 「다시」 로 부르세요\n' "$RK_PREV" "$cause"
+  [ "$RK_AP_N" -eq 0 ] || printf '고지\t이전 런 %s 의 열린 승인 %s건(%s)에 답하면 그 런이 이어집니다\n' \
+    "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
+  [ "$RK_HALT_N" -eq 0 ] || printf '고지\t이전 런 %s 의 답 없는 정지 기록 %s건(%s)에 답하면 그 런이 이어집니다\n' \
+    "$RK_PREV" "$RK_HALT_N" "$RK_HALT_LIST"
+  rk_resume_quotes
+  exit 0
+}
+
 # rk_detect_wait <states> — the `대기` verdict: a run the gate has not ended,
 # with nothing alive in it. The re-kickoff adopts it and closes it `이어받음`;
 # nothing of it is carried, so what it waits on is named and left where it is.
@@ -642,7 +673,11 @@ rk_detect_wait() {
     무기록)
       printf '굵게\t이전 런 %s 의 마지막 교대가 인계 없이 끝났습니다 — 그 교대가 하던 일은 이 새 런이 처음부터 다시 만납니다\n' "$RK_PREV" ;;
     멈춤)
-      printf '굵게\t이전 런 %s 은 기다리는 것 없이 멈췄습니다 — 남은 단계는 이 새 런이 이어 갑니다\n' "$RK_PREV" ;;
+      if rk_last_handoff_waited "$RK_PL"; then
+        printf '굵게\t이전 런 %s 의 마지막 교대는 스테이지·CI 결과를 기다리며 끝났고, 그 대기를 이어 갈 중계가 없습니다 — 남은 단계는 이 새 런이 이어 갑니다\n' "$RK_PREV"
+      else
+        printf '굵게\t이전 런 %s 은 기다리는 것 없이 멈췄습니다 — 남은 단계는 이 새 런이 이어 갑니다\n' "$RK_PREV"
+      fi ;;
   esac
   [ "$RK_AP_N" -eq 0 ] || printf '굵게\t이전 런 %s 의 열린 승인 %s건(%s)은 옮기지 않습니다 — 그 답은 원천 런에 남고, 이 새 런이 같은 자리에 이르면 다시 묻습니다\n' \
     "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
@@ -732,6 +767,12 @@ rk_unanswered_halt_names() {
 # holds: an open approval, an unanswered halt record (RK_AP_N and RK_HALT_N are
 # set before), a usage limit, a shift lost without a handoff, nothing. Rows are
 # compared on whole fields between ` | ` separators, never as substrings.
+#
+# A usage limit is read only off a stage cut by it — the last `stage-result`
+# whose `종단 부류` is `한도 종료` or `한도-형상 회수` with no `한도 해제` or
+# `교대 기동` row after it. A `handoff 사유=대기` is not one: a shift writes it
+# when all that is left is a live stage's result or a CI verdict, so a run idle
+# after it waited on those, never on a limit.
 rk_wait_cause() {
   if [ "$RK_AP_N" -gt 0 ]; then printf '승인 대기'; return 0; fi
   if [ "$RK_HALT_N" -gt 0 ]; then printf '사람 대기'; return 0; fi
@@ -748,13 +789,21 @@ rk_wait_cause() {
     index($0, "- `stage-result` | ") == 1 { ls = NR; lsk = fld("종단 부류") }
     index($0, "- `한도 해제` | ") == 1 || index($0, "- `교대 기동` | ") == 1 { lr = NR }
     END {
-      at = 0
-      if (lh && lhw == "대기") at = lh
-      if (ls && (lsk == "한도 종료" || lsk == "한도-형상 회수") && ls > at) at = ls
-      if (at && lr < at) { printf "한도 대기"; exit }
+      if (ls && (lsk == "한도 종료" || lsk == "한도-형상 회수") && lr < ls) { printf "한도 대기"; exit }
       if (lh && lhw == "무기록") { printf "무기록"; exit }
       printf "멈춤"
     }' "$1" 2>/dev/null || printf '멈춤'
+}
+
+# rk_last_handoff_waited <ledger> — succeeds when the ledger's last `handoff`
+# carries `사유=대기` as a whole field.
+rk_last_handoff_waited() {
+  awk '
+    index($0, "- `handoff` | ") == 1 {
+      w = 0; n = split($0, f, / \| /)
+      for (i = 2; i <= n; i++) { s = f[i]; sub(/[[:space:]]+$/, "", s); if (s == "사유=대기") w = 1 }
+    }
+    END { exit !w }' "$1" 2>/dev/null
 }
 
 # rk_end_token <ledger> — the end token the gate reads: `재킥 원인` of the first
