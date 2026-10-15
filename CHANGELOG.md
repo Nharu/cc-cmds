@@ -12,14 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`### Resume latency`** — 라운드 진행·수렴 경계에서 리드는 완료 알림마다 그 팀원만 확인·기록하고, 기록은 `witnessNonce` 를 건드리지 않으며, 다음 라운드 nonce Edit 만 담은 응답이 오류 없이 돌아온 뒤 재개를 보낸다. 종합·초안 같은 리드 작업은 전송 뒤로 간다. 모든 팀원이 확인·기록을 지나기 전에는 누구도 다음 라운드로 재개하지 않는다는 기존 순서는 그대로다.
-- **`### Resume kinds and witness keys`** — 재개 종류(라운드 진행, 수렴, 라운드 안 되돌려 보내기, 재진입 복구, witness 재촉)마다 nonce 발급·기록 시점과 게시 키를 한 표로 정한다. 라운드 안 재개는 수정 키 `P-rev<k>` 의 새 파일로 게시해 이미 게시한 키와 부딪치지 않는다.
+- **`### Resume kinds and witness keys`** — 재개 종류(라운드 진행, 수렴, 라운드 안 되돌려 보내기, 재진입 복구, witness 재촉)마다 nonce 발급·기록 시점과 게시 키를 한 표로 정한다. 라운드 안 재개는 수정 키 `P-rev<k>` 의 새 파일로 게시해 이미 게시한 키와 부딪치지 않는다. 수정본은 그 라운드 산출물 전체를 대체하므로, 다음 라운드 피어는 수정본 경로 하나로 원래 발견까지 읽는다. 다음 라운드 nonce 기록과 재개 전송 사이에서 재진입하면 디스패치 완결성 게이트의 무실행 규칙이 빈 로스터로 통과하지 않고, 아직 열이 넘어가지 않은 팀원을 기록된 nonce 로 다시 보낸다.
 - 시험 — 린트 픽스처 OK-5(경로 전달 트리), FAIL-8(review-lite 라운드 구조 절 안의 축자 인용), FAIL-9(`### Resume latency` 의 경계 일괄 금지 리터럴 누락).
 
 ### Changed
 
 - `## Multi-round` 의 재주입이 피어 witness 를 키 경로로 넘기고 팀원이 각 witness 를 통째로 읽게 한다. 과제 배정 머리글은 읽은 witness 마다 `peer-read: <role-slug> <round/phase> <nonce>` 수령 줄을 요구하고, 읽지 못한 witness 는 Case 3 재배정에서 한 번만 인용한다.
 - design, design-lite, design-analyze 분석가 패키지, review, review-lite, 리뷰어 패키지에서 피어 결과를 축자 인용하던 9줄을 경로 전달 문면으로 바꾼다. 리드가 합의와 남은 충돌을 다시 주입하는 수렴 줄은 바뀌지 않는다.
-- `lint-team-budget-pins.sh` 가 새 두 절의 리터럴 여덟 개를 고정하고, 경로 전달 두 문면과 축자 중계 음성 울타리를 프로토콜 파일이 있으면 늘 검사한다.
+- `lint-team-budget-pins.sh` 가 새 두 절의 리터럴 열 개를 고정하고, 경로 전달 두 문면과 축자 중계 음성 울타리를 프로토콜 파일이 있으면 늘 검사한다.
 
 ### Why
 
