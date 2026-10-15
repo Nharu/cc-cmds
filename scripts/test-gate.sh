@@ -31281,7 +31281,7 @@ check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b
 
 # ---------------------------------------------------------------------------
 # 57. 판본 고정 — 새 런은 사본으로 hop 한다
-# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다, 57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다 ---
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다, 57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다, 57D: 체크아웃의 드라이버가 고정 사본의 run.sh 로 넘어간다 ---
 #
 # 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
 # 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
@@ -31813,6 +31813,36 @@ check "57V: 스킬의 재킥오프가 한국어 문면도 옛 사본 신호로 �
 check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 않았다" \
   "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
 
+# (16) 드라이버도 고정 사본으로 hop 한다 --------------------------------------------
+# 타이머 디스패치는 먼저 고정하고 그다음에 체크아웃의 run.sh 를 띄운다. 고정이 원격
+# 끝이면 체크아웃과 사본의 판본이 다르고, 드라이버가 체크아웃에 남으면 단계마다 띄우는
+# stage-wrapper.sh 도 체크아웃의 것이다. 사본의 run.sh 를 받은 인자를 적고 끝나는 스텁으로
+# 바꿔, 체크아웃의 run.sh 가 그 스텁으로 넘어가는지 잰다.
+#
+# 매니페스트 본문의 런 id 를 머리와 어긋나게 둔다. hop 은 매니페스트 검사보다 먼저 일어나
+# 머리만 읽으므로 영향이 없고, hop 하지 않은 드라이버는 그 검사에서 멈춰 파이프라인을
+# 실제로 돌리지 않는다.
+p57_fixture R57D
+p57_gate snapshot --manifest "$P57_MAN"
+check "57D: 고정이 섰다" "$rc" "0"
+P57D_LOG="$WORK/hop57d.log"
+rm -f "$P57D_LOG"
+cat > "$P57_RD/plugin/cc-cmds/orchestrator/run.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > '$P57D_LOG'
+EOF
+sed -i.bak 's/^\*\*런 id\*\*: R57D$/**런 id**: R57D-hop/' "$P57_MAN" && rm -f "$P57_MAN.bak"
+check "57D: 매니페스트 본문의 런 id 가 머리와 어긋났다 (hop 없는 드라이버가 검사에서 멈춘다)" \
+  "$(grep -c '^\*\*런 id\*\*: R57D-hop$' "$P57_MAN" || true)" "1"
+# 스위트가 내보낸 `CC_ORCH_SOURCE_ONLY` 를 물려받으면 드라이버는 정의만 읽고 hop 앞에서
+# 끝난다.
+p57d_out=$( cd "$WT" || exit 1
+            unset CC_ORCH_SOURCE_ONLY
+            XDG_STATE_HOME="$P57_STATE" CC_CMDS_ORCH_HOST_OS=Darwin \
+              bash "$repo_root/plugins/cc-cmds/orchestrator/run.sh" --manifest "$P57_MAN" 2>&1 ); rc=$?
+check "57D: 체크아웃의 드라이버가 고정 사본의 run.sh 로 넘어간다" \
+  "$rc:$(tr '\n' ' ' < "$P57D_LOG" 2>/dev/null)" "0:--manifest $P57_MAN "
+[ "$rc" = 0 ] || printf '%s\n' "$p57d_out" > "$WORK/last-output.txt"
 # ---------------------------------------------------------------------------
 # 57p. 고정 전 fetch 와 빨리감기 — 원천이 원격보다 뒤처지면 앞당기거나 원격 끝을 고정한다
 # --- section: 57p | group: base | covers: pin | anchors: 57p: 뒤처진 깨끗한 클론은 ff 뒤 원격 끝 하위 트리를 고정한다, 57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다, 57p: 상류가 추적을 시작한 경로의 무시 파일은 덮어쓰이지 않는다, 57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다, 57p: 봉합이 서면 fetch 없이 클론 자신의 HEAD 를 고정한다 ---
