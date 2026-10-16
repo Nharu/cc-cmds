@@ -10049,23 +10049,41 @@ gate_stage_result_rows_of() {
 
 gate_reconverge_verdict() {
   # gate_reconverge_verdict <stream> — `재설계 필요`, `불필요` or `없음`, read
-  # from the text of the stream's LAST `result` object and nothing else.
+  # from the text of the stream's last `result` object that ran a turn, and
+  # nothing else.
   #
   # THE TERMINAL TEXT ONLY, AND WHOLE LINES ONLY. The transcript quotes the
   # skill's own grammar — `판정: 재설계 필요|불필요` sits on one line in its
   # template — so a substring match over the stream reads a normal
   # re-convergence as both verdicts, or as one it did not give. A verdict is a
-  # line that IS `판정: 재설계 필요` or `판정: 불필요` (trailing whitespace
-  # aside), in a text that also carries the closing literal; a text with
-  # neither line, with both, or without the literal is `없음`, and `없음` cites
-  # nothing for a re-plan.
+  # line that IS `판정: 재설계 필요` or `판정: 불필요`, in a text that also
+  # carries the closing literal; a text with neither line, with both, or
+  # without the literal is `없음`, and `없음` cites nothing for a re-plan.
+  #
+  # ZERO-TURN ENVELOPES ARE SKIPPED, as `stage_refusal_exit` skips them: a
+  # resumed session can end in an empty envelope after the one that carried
+  # the verdict, and reading that one turned every such re-convergence into
+  # `없음` whatever the stage wrote. The line's own spelling is loosened only
+  # where it cannot change the words — leading and trailing whitespace, one
+  # list marker, and a bold key (`**판정**:` or `**판정:**`); a verdict in the
+  # middle of a sentence is still no verdict.
   local out="${1:-}" txt need=0 unneeded=0 line
   [ -n "$out" ] && [ -s "$out" ] && command -v jq >/dev/null 2>&1 || { printf '없음'; return 0; }
-  txt=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1 \
-         | { jq -r '.result // empty' 2>/dev/null || true; })
+  txt=$(jq -R -n -r '
+    reduce (inputs | select(test("\\S")) | (try fromjson catch null)
+            | select(type == "object" and .type == "result"
+                     and ((.num_turns | if type == "number" then . else 0 end) > 0))) as $r
+      (null; $r)
+    | if . == null then empty else (.result // empty) end' "$out" 2>/dev/null || true)
   case "$txt" in *"$LIT_RECONVERGE_TERMINAL"*) ;; *) printf '없음'; return 0 ;; esac
   while IFS= read -r line; do
     line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in '- '*|'* '*) line="${line#??}" ;; esac
+    case "$line" in
+      '**판정**: '*) line="판정: ${line#'**판정**: '}" ;;
+      '**판정:** '*) line="판정: ${line#'**판정:** '}" ;;
+    esac
     case "$line" in
       '판정: 재설계 필요') need=$((need + 1)) ;;
       '판정: 불필요') unneeded=$((unneeded + 1)) ;;
@@ -10097,7 +10115,8 @@ gate_replan_eval() {
   #   with `재수렴 판정=재설계 필요` whose `세그먼트` is not the sibling;
   # 5 no earlier `재계획` row pairs the sibling with this cite;
   # 6 the sibling's round is at most two in this run;
-  # 7 no open `사람-결정` holds the sibling, directly or through `선행`.
+  # 7 no `사람-결정` holds the sibling, directly or through `선행` — an open
+  #   one, or a refusal not yet consumed (`gate_person_hold_ids`).
   local sib="$1" cite="$2" st at out n4 ok4 plan3 dup5 nrep held
   GATE_REPLAN_C1=0 GATE_REPLAN_C2=0 GATE_REPLAN_C3=0 GATE_REPLAN_C4=0
   GATE_REPLAN_C5=0 GATE_REPLAN_C6=0 GATE_REPLAN_C7=0
@@ -10138,7 +10157,7 @@ EOF
   [ "${dup5:-0}" = "1" ] || GATE_REPLAN_C5=1
   GATE_REPLAN_ROUND=$(( ${nrep:-0} + 1 ))
   [ "$GATE_REPLAN_ROUND" -le 2 ] && GATE_REPLAN_C6=1
-  held=$(for id in $(gate_pending_approval_ids 사람); do gate_approval_field "$id" '막는 세그먼트'; printf ' '; done)
+  held=$(for id in $(gate_person_hold_ids); do gate_approval_field "$id" '막는 세그먼트'; printf ' '; done)
   # shellcheck disable=SC2086
   if [ -z "${held// /}" ] || ! gate_slice_reaches_any "$sib" $held; then GATE_REPLAN_C7=1; fi
   export GATE_REPLAN_C1 GATE_REPLAN_C2 GATE_REPLAN_C3 GATE_REPLAN_C4 GATE_REPLAN_C5 \
@@ -16740,7 +16759,7 @@ gate_answered_judgments_json() {
   # close an approval carry the question and the answer and no segment, so a
   # `tail -1` — which is right for state — yields an empty segment here. The
   # narrowing to `절단점=판단` picks the issuing row for both duties at once.
-  local ids id row st iss seg first=1
+  local ids id row st iss seg disp first=1
   # Pinned for the same reason as `gate_pending_approvals_json` above, and the
   # note there about `sort -u` applies here unchanged: the order is decided by
   # `LC_COLLATE`, which the driver has already fixed to C, and `LC_CTYPE` does
@@ -16780,6 +16799,12 @@ gate_answered_judgments_json() {
     fi
     if gate_has_row '자율 승인' "| 해소 승인=$id |"; then continue; fi
     seg=$(gate_row_field "$iss" '막는 세그먼트')
+    # `disposition` IS THE LAST ROW'S `처분 사유`, `-` when it has none. It is
+    # what tells a `사람-결정` answered by a menu label (`-`: carry out the
+    # recommendation) from one answered in the person's own words
+    # (`자유 입력`: carry out what the answer file says) — both close `승인`,
+    # so `state` alone sent the router to the recommendation either way.
+    disp=$(gate_row_field "$row" '처분 사유')
     [ "$first" = "1" ] || printf ',\n'
     first=0
     # A MISSING SIDECAR IS REPORTED AS `null`, NOT AS A MISSING ELEMENT. The
@@ -16791,16 +16816,18 @@ gate_answered_judgments_json() {
     # and says the bytes are gone, and the ledger's `답변 문면` still holds the
     # clipped copy.
     if [ -f "$RUN_DIR/answer/$id.md" ]; then
-      printf '    {"id": "%s", "segment": "%s", "state": "%s", "answer": "%s"}' \
+      printf '    {"id": "%s", "segment": "%s", "state": "%s", "disposition": "%s", "answer": "%s"}' \
         "$(gate_json_escape "$id")" \
         "$(gate_json_escape "${seg:--}")" \
         "$(gate_json_escape "$st")" \
+        "$(gate_json_escape "${disp:--}")" \
         "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
     else
-      printf '    {"id": "%s", "segment": "%s", "state": "%s", "answer": null}' \
+      printf '    {"id": "%s", "segment": "%s", "state": "%s", "disposition": "%s", "answer": null}' \
         "$(gate_json_escape "$id")" \
         "$(gate_json_escape "${seg:--}")" \
-        "$(gate_json_escape "$st")"
+        "$(gate_json_escape "$st")" \
+        "$(gate_json_escape "${disp:--}")"
     fi
   done
   [ "$first" = "1" ] || printf '\n'
@@ -20041,7 +20068,7 @@ gate_segment_person_hold() {
   # that names this segment in `막는 세그먼트`, or nothing. The first such id is
   # enough: the caller asks whether the segment is held, not by how many.
   local seg="$1" id
-  for id in $(gate_pending_approval_ids 사람); do
+  for id in $(gate_person_hold_ids); do
     if [ "$(gate_approval_field "$id" '막는 세그먼트')" = "$seg" ]; then
       printf '%s' "$id"
       return 0
@@ -20050,21 +20077,96 @@ gate_segment_person_hold() {
   return 0
 }
 
+gate_person_hold_ids() {
+  # gate_person_hold_ids — the `사람-결정` approvals that hold their segment:
+  # every open one, and every one a person closed `거부` or `무효` that no
+  # `자율 승인` row has consumed yet.
+  #
+  # A REFUSAL HOLDS UNTIL THE PARK IS RECORDED. Read from the open ones alone,
+  # the hold lifted the moment the person said no, and in that same snapshot
+  # the sibling came out `가능` in `replan_due[]` beside its own `거부` in
+  # `answered_judgments[]` — so a router reading the first key re-planned the
+  # segment the person had just refused. The consumption that ends the hold is
+  # admitted only once the segment is parked (`gate_person_refusal_consumable`),
+  # so the hold and the park meet with nothing open between them. Termination
+  # condition 2 and the boundaries still count the open ones alone: a refusal
+  # is answered, and what it waits for is the router, not a person.
+  local id
+  gate_pending_approval_ids 사람
+  for id in $( { gate_rows '승인' || true; } | { grep -F '| 판단 부류=사람-결정 |' || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    case "$(gate_approval_state "$id")" in 거부|무효) ;; *) continue ;; esac
+    gate_has_row '자율 승인' "| 해소 승인=$id |" || printf '%s\n' "$id"
+  done
+}
+
 gate_person_refusal_consumable() {
-  # gate_person_refusal_consumable <승인 id> — true when the approval is a
-  # `사람-결정` question a person closed `거부` or `무효` and no `자율 승인` row
-  # has named it yet.
+  # gate_person_refusal_consumable <승인 id> — 0 when the approval is a
+  # `사람-결정` question a person closed `거부` or `무효`, no `자율 승인` row
+  # has named it yet, and its segment is parked; 2 when only the park is
+  # missing; 1 otherwise.
   #
   # A PERSON'S NO TO THIS CLASS IS AN ANSWER THE ROUTER ACTS ON, so it is spent
   # once, the way a `승인` is. The router parks the segment on it and resubmits
-  # the same judgment to say so; the row that resubmission writes carries
+  # the judgment to say so; the row that resubmission writes carries
   # `해소 승인=<id>` and `결정=거절 소비`, and that row is what takes the answer
   # out of `answered_judgments[]`. Every other class keeps its refusal as a
   # closed question: nobody acts on it, so there is nothing to consume.
-  local id="$1"
+  #
+  # THE PARK COMES FIRST, AND IT IS A `segment` ROW. The consumption is what
+  # lifts the hold (`gate_person_hold_ids`), so a consumption admitted before
+  # the park left a refused segment unheld and unparked; and a cone `blocked`
+  # row is no park, because the segment's state is what every reader of
+  # "ended" reads.
+  local id="$1" seg
   case "$(gate_approval_state "$id")" in 거부|무효) ;; *) return 1 ;; esac
   [ "$(gate_approval_field "$id" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ] || return 1
-  ! gate_has_row '자율 승인' "| 해소 승인=$id |"
+  ! gate_has_row '자율 승인' "| 해소 승인=$id |" || return 1
+  seg=$(gate_approval_field "$id" '막는 세그먼트')
+  [ "$(gate_segment_field "$seg" '상태')" = "park" ] || return 2
+  return 0
+}
+
+gate_judgment_target_id() {
+  # gate_judgment_target_id <segment> <키=값>... — the approval id a grade-2
+  # judgment resolves to: the hash of its `기준 — 근거`, or, when the row
+  # carries `답한 승인=<id>`, that id once it is shown to be an answered
+  # `사람-결정` question on this segment that no row has consumed. Status 1,
+  # with the reason warned, when the cited id is none of that.
+  #
+  # THE CITATION IS WHAT LETS `근거` SAY WHAT WAS DONE. The row that consumes a
+  # person's answer has to carry what the router did with it, and the id is a
+  # hash of `근거` — so a consuming row that wrote its action into `근거` hashed
+  # to a new question, issued it, held the segment again and left the real
+  # answer unspent. Naming the answered id lets the row keep its own `근거`.
+  # The checks are the ones a cited id has to meet to stand for the hash: the
+  # class, a closed state, the segment and the spent test.
+  local seg="$1" cited; shift
+  cited=$(gate_field_of '답한 승인' "$@")
+  if [ -z "$cited" ]; then
+    gate_judgment_approval_id "$seg" \
+      "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")"
+    return 0
+  fi
+  if [ "$(gate_approval_field "$cited" '판단 부류')" != "$JUDGMENT_CLASSES_PERSON" ] \
+     || [ "$(gate_approval_field "$cited" '절단점')" != "판단" ]; then
+    warn "답한 승인=$cited 은 사람-결정 판단 승인이 아닙니다 — 이 키는 사람-결정의 답을 소비하는 행에만 씁니다"
+    return 1
+  fi
+  case "$(gate_approval_state "$cited")" in
+    승인|거부|무효) ;;
+    *) warn "답한 승인=$cited 은 아직 답이 오지 않았습니다 (상태 $(gate_approval_state "$cited"))"; return 1 ;;
+  esac
+  if [ "$(gate_approval_field "$cited" '막는 세그먼트')" != "$seg" ]; then
+    warn "답한 승인=$cited 이 세운 세그먼트는 $(gate_approval_field "$cited" '막는 세그먼트') 이고 이 판단의 세그먼트는 ${seg:--} 입니다"
+    return 1
+  fi
+  if gate_has_row '자율 승인' "| 해소 승인=$cited |"; then
+    warn "답한 승인=$cited 은 이미 소비되었습니다 — 한 답은 한 번만 소비합니다"
+    return 1
+  fi
+  printf '%s' "$cited"
 }
 
 gate_auto_resolve_judgment() {
@@ -24898,14 +25000,17 @@ EOF
           # alone), so once the person answered there was no arm that noticed.
           # Every re-submission came back here and asked again. Reading the
           # state BEFORE issuing is what turns an answer into an adoption.
-          local jq_id jq_st jq_rc=0
-          jq_id=$(gate_judgment_approval_id "$seg" \
-                  "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")")
+          local jq_id jq_st jq_rc=0 jq_cons=0
+          jq_id=$(gate_judgment_target_id "$seg" "$@") || return "$GATE_EXIT_RULE"
           jq_st=$(gate_approval_state "$jq_id")
-          if gate_person_refusal_consumable "$jq_id"; then
-            log "승인 $jq_id 의 거절을 이 판단이 소비합니다 (세그먼트를 park 합니다)"
+          gate_person_refusal_consumable "$jq_id" || jq_cons=$?
+          if [ "$jq_cons" = "0" ]; then
+            log "승인 $jq_id 의 거절을 이 판단이 소비합니다 (세그먼트는 park 되어 있습니다)"
             GATE_RESOLVED_APPROVAL="$jq_id"
             GATE_JUDGMENT_DECISION="거절 소비"
+          elif [ "$jq_cons" = "2" ]; then
+            warn "승인 $jq_id 의 거절은 그 세그먼트가 park 된 뒤에만 소비됩니다 — 먼저 act --kind segment 로 상태=park 행을 쓰세요"
+            return "$GATE_EXIT_RULE"
           elif [ "$jq_st" = "승인" ]; then
             # ONE ANSWER OPENS ONE JUDGMENT, the same floor the acting path
             # applies. A judgment approval carries no binding tuple, so nothing
@@ -24966,8 +25071,18 @@ EOF
       # whether an answer has already been spent, and a judgment approval has no
       # binding tuple to expire — so one answered question opened every later
       # judgment that hashed to the same id.
-      # `결정=거절 소비` is the one other decision: a person's refusal of a
+      # `결정=거절 소비` is one other decision: a person's refusal of a
       # `사람-결정` question, spent by the resubmission that parks on it.
+      # `결정=자유 입력 소비` is the last: a `사람-결정` answered in the person's
+      # own words. That answer closes `승인` like the label does, and the row
+      # spending it used to read `채택` — the ledger then said the question's
+      # recommendation was carried out when the person had written something
+      # else, a "no, park it" included.
+      if [ -z "${GATE_JUDGMENT_DECISION:-}" ] && [ -n "${GATE_RESOLVED_APPROVAL:-}" ] \
+         && [ "$(gate_approval_field "$GATE_RESOLVED_APPROVAL" '판단 부류')" = "$JUDGMENT_CLASSES_PERSON" ] \
+         && [ "$(gate_row_field "$(gate_approval_last_row "$GATE_RESOLVED_APPROVAL")" '처분 사유')" = "자유 입력" ]; then
+        GATE_JUDGMENT_DECISION="자유 입력 소비"
+      fi
       gate_append '자율 승인' "kind=judgment" "결정=${GATE_JUDGMENT_DECISION:-채택}" "세그먼트=${seg:--}" \
         "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
       # The grade is read from the row rather than hard-coded: a grade-2 judgment
@@ -29437,19 +29552,26 @@ EOF
       # tuple describing a tree the question has nothing to do with — and the
       # same judgment resubmitted would then produce a second approval instead
       # of finding the first.
-      ap_id=$(gate_judgment_approval_id "$segment" \
-              "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")")
+      # A `답한 승인=<id>` citation names the id directly, so the consuming row's
+      # `근거` can say what was done (`gate_judgment_target_id`).
+      ap_id=$(gate_judgment_target_id "$segment" "$@") || exit "$GATE_EXIT_RULE"
     else
       # THE SAME RESOLUTION THE ISSUER USES. Asking for the id with a tree the
       # issuer did not key it on looks up an approval that was never written.
       ap_id=$(gate_act_approval_id "$alias" "$argv" "$(gate_act_worktree "$alias" "$segment")")
     fi
     ap_st=$(gate_approval_state "$ap_id")
-    if [ "$kind" = "judgment" ] && gate_person_refusal_consumable "$ap_id"; then
+    local ap_cons=1
+    [ "$kind" = "judgment" ] && { gate_person_refusal_consumable "$ap_id" && ap_cons=0 || ap_cons=$?; }
+    if [ "$ap_cons" = "2" ]; then
+      warn "승인 $ap_id 의 거절은 그 세그먼트가 park 된 뒤에만 소비됩니다 — 먼저 act --kind segment 로 상태=park 행을 쓰세요"
+      exit "$GATE_EXIT_RULE"
+    fi
+    if [ "$ap_cons" = "0" ]; then
       # A PERSON'S REFUSAL OF A `사람-결정` QUESTION IS SPENT HERE, not refused
       # again: the resubmission is the router saying it parked on that answer,
       # and the row it writes is what retires the answer.
-      log "승인 $ap_id 의 거절을 이 판단이 소비합니다 (세그먼트를 park 합니다)"
+      log "승인 $ap_id 의 거절을 이 판단이 소비합니다 (세그먼트는 park 되어 있습니다)"
       GATE_RESOLVED_APPROVAL="$ap_id"
       GATE_JUDGMENT_DECISION="거절 소비"
       rules_rc=0

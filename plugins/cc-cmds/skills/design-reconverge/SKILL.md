@@ -180,7 +180,7 @@ and stop with the literal statement:
 
 *"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."*
 
-That literal is the driver's confirming terminal predicate and must be emitted byte for byte. The `판정:` line is what the gate records as the row's `재수렴 판정`: it reads only the terminal message, and only a whole line equal to one of the two forms, so a message with neither line, with both, or with the line only earlier in the transcript records `없음`, and a sibling segment's re-plan cannot cite it. **A terminal verdict returns the run to segment planning unconditionally** (CFI-4) — this skill does not decide that, and does not act on it.
+That literal is the driver's confirming terminal predicate and must be emitted byte for byte. The `판정:` line is what the gate records as the row's `재수렴 판정`: it reads only the terminal message, and only a whole line equal to one of the two forms — it forgives surrounding whitespace, a list marker and a bold key, but write the plain form above — so a message with neither line, with both, or with the line only earlier in the transcript records `없음`, and a sibling segment's re-plan cannot cite it. **A terminal verdict returns the run to segment planning unconditionally** (CFI-4) — this skill does not decide that, and does not act on it.
 
 ### (There is no Step 6.)
 

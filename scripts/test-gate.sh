@@ -19995,6 +19995,25 @@ check "31aw: 판정 줄이 없으면 없음이다 (대화록의 판정 줄은 �
 check "31aw: 줄 가운데의 판정 문구는 판정이 아니다" "$(hw_in gate_reconverge_verdict "$HWS/inline")" "없음"
 check "31aw: 두 판정 줄이 함께 있으면 없음이다" "$(hw_in gate_reconverge_verdict "$HWS/both")" "없음"
 check "31aw: 종단 리터럴이 없으면 없음이다" "$(hw_in gate_reconverge_verdict "$HWS/nolit")" "없음"
+# The spellings that change no word are forgiven — a bold key, an indent, a
+# list marker — and the empty zero-turn envelope a resumed session ends in is
+# skipped, so the verdict before it is the one read. `없음` there sent a
+# re-design re-convergence's siblings on with their old plans.
+hw_stream "$HWS/bold"   "$(printf '재수렴 요약\n**판정**: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/bold2"  "$(printf '재수렴 요약\n**판정:** 불필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/indent" "$(printf '재수렴 요약\n  - 판정: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/tail"   "$(printf '재수렴 요약\n판정: 재설계 필요\n%s' "$HW_LIT")"
+jq -nc '{type: "result", subtype: "success", is_error: false, total_cost_usd: 0, session_id: "hw-s", num_turns: 0, result: ""}' >> "$HWS/tail"
+hw_stream "$HWS/tailboth" "$(printf '판정: 불필요\n%s' "$HW_LIT")"
+jq -nc --arg t "$(printf '판정: 재설계 필요\n%s' "$HW_LIT")" \
+  '{type: "result", subtype: "success", is_error: false, total_cost_usd: 0.1, session_id: "hw-s", num_turns: 2, result: $t}' >> "$HWS/tailboth"
+hw_stream "$HWS/boldmid" "$(printf '이 글은 **판정**: 재설계 필요 라고 줄 가운데에 적는다\n%s' "$HW_LIT")"
+check "31aw: 굵은 키의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/bold")" "재설계 필요"
+check "31aw: 콜론까지 굵은 키의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/bold2")" "불필요"
+check "31aw: 들여쓰고 글머리표를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/indent")" "재설계 필요"
+check "31aw: 0턴 꼬리 봉투는 건너뛰고 그 앞 결과의 판정을 읽는다" "$(hw_in gate_reconverge_verdict "$HWS/tail")" "재설계 필요"
+check "31aw: 턴을 돈 결과가 여럿이면 마지막 것을 읽는다" "$(hw_in gate_reconverge_verdict "$HWS/tailboth")" "재설계 필요"
+check "31aw: 줄 가운데의 굵은 판정 문구도 판정이 아니다" "$(hw_in gate_reconverge_verdict "$HWS/boldmid")" "없음"
 
 # The row, through the gate's own stage-result writer. S2's attempt 2 is the
 # re-convergence the siblings cite; S5's two attempts are the `불필요` and
@@ -20116,9 +20135,20 @@ case "$msg" in
   *"사람-결정 판단 승인"*) ok "31aw: 그 거부는 S3 를 세운 사람-결정을 든다" ;;
   *) bad "31aw 보류 재계획 문면" "$msg" ;;
 esac
+# A person's no keeps S3 held until the park consumes it: read from the open
+# questions alone, the same snapshot listed S3 `상한` beside its own `거부`.
+hw_aw_q=$(hw_last_person)
+hw_aw_qq=$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_aw_q |" | tail -1)" '질문 문면')
+HW_SID="31aw0000-1111-2222-3333-444455556666"
+: > "$NTX/$HW_SID.jsonl"
+auq_frame "$NTX/$HW_SID.jsonl" "$hw_aw_q" "$hw_aw_qq" "거부" >/dev/null
+hwg close --manifest "$CAP_NM" --approval "$hw_aw_q"
+check "31aw 픽스처: S3 를 세운 사람-결정이 거부로 닫힌다" "$rc" "0"
+check "31aw: 거부로 닫힌 뒤에도 소비 전에는 replan_due 가 보류다" "$(hw_due S3)" '[{"reconverge":"S2#4","state":"보류"}]'
+HW_SID=""
 
 # --- 31ax. A person-only question holds its segment, not the run -----------
-# --- section: 31ax | group: cone | covers: act, snapshot, close, exec | anchors: 31ax: 스위치가 켜져도 사람-결정은 exit 5 다, 31ax: 사람-결정을 자동 채택으로 선언하면 매니페스트 검사가 하드 스톱한다, 31ax: 라우터가 친 답으로는 사람-결정이 닫히지 않는다, 31ax: 한 세그먼트의 셋째 사람-결정은 exit 3 이다, 31ax: 세워진 세그먼트로의 스테이지 파견은 거부된다, 31ax: 세워지지 않은 세그먼트의 파견은 통과한다, 31ax: 열린 사람-결정이 종료 조건 2 를 막는다, 31ax: 교대가 살아 있으면 사람-결정이 열린 채로도 B1 이 발동한다, 31ax: 자유 입력 답은 state 승인으로 answered_judgments 에 오른다, 31ax: 거부 답은 state 거부로 오른다, 31ax: 거부 답을 다시 낸 판단은 소비 행 하나로 끝난다 ---
+# --- section: 31ax | group: cone | covers: act, snapshot, close, exec | anchors: 31ax: 스위치가 켜져도 사람-결정은 exit 5 다, 31ax: 사람-결정을 자동 채택으로 선언하면 매니페스트 검사가 하드 스톱한다, 31ax: 라우터가 친 답으로는 사람-결정이 닫히지 않는다, 31ax: 한 세그먼트의 셋째 사람-결정은 exit 3 이다, 31ax: 세워진 세그먼트로의 스테이지 파견은 거부된다, 31ax: 세워지지 않은 세그먼트의 파견은 통과한다, 31ax: 열린 사람-결정이 종료 조건 2 를 막는다, 31ax: 교대가 살아 있으면 사람-결정이 열린 채로도 B1 이 발동한다, 31ax: 자유 입력 답은 state 승인으로 answered_judgments 에 오른다, 31ax: 거부 답은 state 거부로 오른다, 31ax: 소비되지 않은 거부 답은 세그먼트를 계속 세운다, 31ax: 자유 입력 답의 소비 행은 자유 입력 소비를 싣는다, 31ax: park 전의 거절 소비는 거부된다, 31ax: 거부 답을 다시 낸 판단은 소비 행 하나로 끝난다 ---
 #
 # Issue #1114: the shift ended a night on a question only a person could
 # answer, and wrote it as a cone row plus a stop — so the run stopped for every
@@ -20240,18 +20270,54 @@ else
 fi
 hwg answers --manifest "$CAP_NM" --approval "$hw_q1"
 check "31ax: 승인된 물음의 답 바이트는 내준다" "$rc" "0"
+# A label and free input both close `승인`; `disposition` is what tells them
+# apart, and the router carries out the recommendation only on the label.
+check "31ax: 자유 입력 답의 disposition 은 자유 입력이다" \
+  "$(hw_snap | jq -r --arg i "$hw_q1" '.answered_judgments[] | select(.id == $i) | .disposition')" "자유 입력"
+check "31ax: 거부 답의 disposition 은 - 다" \
+  "$(hw_snap | jq -r --arg i "$hw_q2" '.answered_judgments[] | select(.id == $i) | .disposition')" "-"
+# A refusal not yet consumed still holds the segment: lifting the hold at the
+# close let a router dispatch to, or re-plan, the segment the person refused.
+hwg plan --manifest "$CAP_NM" --kind skill --target infra --segment S3 --cutpoint 커밋 -- review
+check "31ax: 소비되지 않은 거부 답은 세그먼트를 계속 세운다" "$rc" "3"
+case "$msg" in
+  *"$hw_q2"*) ok "31ax: 그 거부는 거부로 닫힌 물음을 든다" ;;
+  *) bad "31ax 거부 보류 문면" "$msg" ;;
+esac
 
-# Consuming. The same judgment resubmitted after a refusal writes one row and
-# does nothing else; after the free input it is adopted. Either way the element
-# leaves the key, so the next shift does not act on it again.
-hw_n_ap=$(cap_rows '승인' | grep -c . || true)
+# Consuming. A consuming row may cite the answered id, so its `근거` says what
+# was done — the id is otherwise a hash of `기준 — 근거`, and a changed `근거`
+# would raise a new question. Free input is consumed as `자유 입력 소비`, never
+# as the recommendation's `채택`; a refusal is consumed only after the park.
+# Judgment approvals only: a progress-stall approval opened or withdrawn by the
+# same calls writes `승인` rows that say nothing about the consumption.
+hw_n_ap=$(cap_rows '승인' | grep -c '| 승인 id=J-' || true)
+hw_cite() {  # hw_cite <세그먼트> <기준> <답한 승인> — the consuming resubmission, `근거` saying what was done
+  hwg act --manifest "$CAP_NM" --kind judgment --target infra --segment "$1" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x \
+      -- 등급=2 '판단 부류=사람-결정' "기준=$2" "근거=31ax — 답에 따라 한 일" "답한 승인=$3"
+}
+hw_cite S4 "31ax — 첫 물음 (스위치 켬)" "$hw_q1"
+check "31ax: 다른 세그먼트로 인용한 답은 거부된다" "$rc" "3"
+hw_cite S3 "31ax — 첫 물음 (스위치 켬)" "$hw_q1"
+check "31ax: 답을 인용한 판단은 근거가 달라도 그 답을 소비한다" "$rc" "0"
+check "31ax: 자유 입력 답의 소비 행은 자유 입력 소비를 싣는다" \
+  "$(row_field "$(cap_rows '자율 승인' | grep -F "| 해소 승인=$hw_q1 |" | tail -1)" '결정')" "자유 입력 소비"
+check "31ax: 인용한 소비는 승인 행을 새로 쓰지 않는다" "$(cap_rows '승인' | grep -c '| 승인 id=J-' || true)" "$hw_n_ap"
+hw_cite S3 "31ax — 첫 물음 (스위치 켬)" "$hw_q1"
+check "31ax: 소비된 답의 재인용은 거부된다" "$rc" "3"
+hw_person S3 "31ax — 둘째 물음 (스위치 끔)"
+check "31ax: park 전의 거절 소비는 거부된다" "$rc" "3"
+check "31ax: 그 거부는 소비 행을 쓰지 않는다" \
+  "$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$hw_q2 |" || true; } | tr -d ' ')" "0"
+hwg act --manifest "$CAP_NM" --kind segment --target infra --segment S3 --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x -- 상태=park "워크트리=$CONE_D" 선행=없음
+check "31ax 픽스처: S3 의 park 행이 기록된다" "$rc" "0"
 hw_person S3 "31ax — 둘째 물음 (스위치 끔)"
 check "31ax: 거부 답을 다시 낸 판단은 소비 행 하나로 끝난다" "$rc" "0"
 check "31ax: 그 소비 행은 해소 승인과 거절 소비를 싣는다" \
   "$(row_field "$(cap_rows '자율 승인' | grep -F "| 해소 승인=$hw_q2 |" | tail -1)" '결정')" "거절 소비"
-check "31ax: 소비는 승인 행을 새로 쓰지 않는다" "$(cap_rows '승인' | grep -c . || true)" "$hw_n_ap"
-hw_person S3 "31ax — 첫 물음 (스위치 켬)"
-check "31ax: 자유 입력 답을 다시 낸 판단은 채택된다" "$rc" "0"
+check "31ax: 소비는 승인 행을 새로 쓰지 않는다" "$(cap_rows '승인' | grep -c '| 승인 id=J-' || true)" "$hw_n_ap"
 check "31ax: 소비된 두 답은 answered_judgments 에서 빠진다" \
   "$(hw_snap | jq -c --arg a "$hw_q1" --arg b "$hw_q2" '[.answered_judgments[] | select(.id == $a or .id == $b)]')" '[]'
 
