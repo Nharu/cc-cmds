@@ -36031,10 +36031,37 @@ gate_launch_shift() {
   # seat waits for a person as it did before this path existed. The bound is
   # three consecutive such launches: the trailing `교대 기동` rows that carry
   # `연결 확인=`, counted back from the end until one that does not.
+  #
+  # A PERSON'S TURN SKIPS BOTH. After a refusal the seat waits for a person and
+  # issues the same launch again only on a person's word — a "continue", or the
+  # launch that follows an answered stop record. The gate cannot hear that word,
+  # so it reads the turn off the ledger: no `교대 기동` row after the last
+  # handoff, and besides this act's own `자율 승인` row at least one more
+  # `kind=router-shift` `결정=act` row after that handoff — an earlier attempt
+  # that turned back having started nothing. Only `결정=act`: the launch that
+  # wrote the handoff appends its own `결정=결과` row after it, and counting that
+  # one made every first relaunch a person's turn. Why it turned back is not on
+  # the row, and it does not matter: the seat re-issues only after a person
+  # either way. Without
+  # this, the refusals above were permanent — the bound is broken only by a
+  # launch row without `연결 확인=` or a new handoff, and the bound refused the
+  # launch that would write either. This launch's row carries no `연결 확인=`,
+  # so it ends the streak; a shift it starts that dies the same way again meets
+  # the probe and the bound from the start.
   local probe_note=""
-  local lh
+  local lh after_lh human_turn=""
   lh=$( { gate_rows 'handoff' || true; } | tail -1)
   if [ "$(gate_row_field "$lh" '사유')" = '무기록' ] && [ "$(gate_row_field "$lh" '일시 원인')" = '예' ]; then
+    after_lh=$(gate_ledger_rows_after "$lh")
+    if [ "$(printf '%s\n' "$after_lh" | { grep -E '^- `교대 기동`' || true; } | gate_count)" = "0" ] \
+      && [ "$(printf '%s\n' "$after_lh" | { grep -E '^- `자율 승인`' || true; } \
+              | gate_rows_field_eq 'kind' 'router-shift' | gate_rows_field_eq '결정' 'act' | gate_count)" -ge 2 ]; then
+      human_turn=1
+      log "전송 단절 재기동 — 같은 인계 뒤 앞선 시도가 돌아선 다음의 사람 차례 기동이므로 탐침과 연속 상한을 건너뛴다"
+    fi
+  fi
+  if [ -z "$human_turn" ] && [ "$(gate_row_field "$lh" '사유')" = '무기록' ] \
+    && [ "$(gate_row_field "$lh" '일시 원인')" = '예' ]; then
     local streak k=0 s
     streak=$( { gate_rows '교대 기동' || true; } | awk '
       { n = split($0, f, "|"); has = 0

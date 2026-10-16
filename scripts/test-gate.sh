@@ -28488,13 +28488,14 @@ check "34g: 다른 원인의 크래시 뒤 --recovery 는 rc 3 이고 행이 없
 CAP_STUB="$RV_CAP_STUB_SAVE"
 
 # --- 34h. 전송 단절 교대 — 무기록 교대를 연결 확인 뒤에 다시 띄운다 ---------------
-# --- section: 34h | group: cone | covers: act, snapshot | anchors: 34h: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다, 34h: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다, 34h: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다 ---
+# --- section: 34h | group: cone | covers: act, snapshot | anchors: 34h: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다, 34h: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다, 34h: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다, 34h: 연속 상한 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다 ---
 #
 # A SHIFT LOST TO A DROPPED CONNECTION is relaunched by the seat without a
 # person, and the launcher is where the wait happens: after a `무기록` handoff
 # with `일시 원인=예` it probes up to three times before the launch, and a probe
 # that never answers, or a fourth such launch in a row, is refused with exit 3
-# and no `교대 기동` row. The probe and its waits are replaced through the test
+# and no `교대 기동` row. A person's turn after a refusal skips both and its row
+# restarts the count. The probe and its waits are replaced through the test
 # hooks, so three tries cost nothing and the answer is the fixture's.
 TR_RID=R34T
 cap_fx_new "$TR_RID"
@@ -28566,16 +28567,27 @@ case "$msg" in
   *) bad "34h 탐침 실패 문면" "$msg" ;;
 esac
 
-# The probe answers on its second try, then on its first, twice more.
+# A PERSON'S TURN. The seat issues the same launch again after a refusal only
+# on a person's word, and the gate reads that turn off the ledger: a second
+# `router-shift` attempt after the same handoff with no launch between. It goes
+# without the probe — the probe here never answers, so a probed launch would be
+# refused — and its row carries no `연결 확인=`.
+tr_launch conn /usr/bin/false
+check "34h: 탐침 실패 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다" \
+  "$rc/$(tr_launches)/[$(row_field "$(tr_last_launch)" '연결 확인')]" "1/$((tr_n0 + 1))/[]"
+
+# That shift died of the connection again, so the next launch is the first after
+# a new handoff: probed again. It answers on its second try, then on its first,
+# twice more.
 rm -f "$TR_COUNT"
 tr_launch conn "$TR_PROBE2"
 check "34h: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다" \
-  "$(tr_launches)/$(row_field "$(tr_last_launch)" '연결 확인')" "$((tr_n0 + 1))/2/성공"
+  "$(tr_launches)/$(row_field "$(tr_last_launch)" '연결 확인')" "$((tr_n0 + 2))/2/성공"
 tr_launch conn /usr/bin/true
 tr_c2=$(row_field "$(tr_last_launch)" '연결 확인')
 tr_launch conn /usr/bin/true
 check "34h: 둘째·셋째 연속 재기동도 연결 확인=1/성공 을 싣는다" \
-  "$tr_c2/$(row_field "$(tr_last_launch)" '연결 확인')/$(tr_launches)" "1/성공/1/성공/$((tr_n0 + 3))"
+  "$tr_c2/$(row_field "$(tr_last_launch)" '연결 확인')/$(tr_launches)" "1/성공/1/성공/$((tr_n0 + 4))"
 tr_n1=$(tr_launches)
 tr_launch plain /usr/bin/true
 check "34h: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다" "$rc/$(tr_launches)" "3/$tr_n1"
@@ -28583,6 +28595,17 @@ case "$msg" in
   *"연속 3번"*) ok "34h: 그 거절은 연속 횟수를 든다" ;;
   *) bad "34h 연속 상한 문면" "$msg" ;;
 esac
+
+# The bound is not permanent: a person's turn after it goes, unprobed (the probe
+# here never answers), and its row without `연결 확인=` restarts the count.
+tr_launch conn /usr/bin/false
+check "34h: 연속 상한 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다" \
+  "$rc/$(tr_launches)/[$(row_field "$(tr_last_launch)" '연결 확인')]" "1/$((tr_n1 + 1))/[]"
+# Its shift died of the connection too: the next launch meets the probe again,
+# and the count restarts from one, so the bound does not refuse it.
+tr_launch conn /usr/bin/true
+check "34h: 사람 차례 기동 뒤의 일시 원인 재기동은 다시 탐침되어 연결 확인=1/성공 을 싣는다" \
+  "$rc/$(tr_launches)/$(row_field "$(tr_last_launch)" '연결 확인')" "1/$((tr_n1 + 2))/1/성공"
 CAP_STUB="$TR_CAP_STUB_SAVE"
 
 # ---------------------------------------------------------------------------
