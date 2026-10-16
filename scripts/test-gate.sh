@@ -38323,7 +38323,7 @@ check "87: 머지됨 조립 함수는 호출자의 상태 필드를 거절한다
 
 # ---------------------------------------------------------------------------
 # 87b. 리뷰 사이클의 수렴 — cycle 팔의 거절, 파견 거절 셋, review-carry act
-# --- section: 87b | group: base | covers: act, plan, snapshot | anchors: 87b: 리포트 요약과 숫자가 다른 cycle 행은 rc 2 다, 87b: 몫 줄과 몫 항목 수가 다른 cycle 행은 rc 2 다, 87b: 자기·머지된·없는 세그먼트에 배정한 몫은 rc 2 다, 87b: 상한에 닿은 세그먼트의 구현 파견은 rc 3 이다, 87b: 상한의 리드 수정 파견은 상한 구현 거절에 걸리지 않고 통과한다, 87b: 리드 수정 행이 선 세그먼트의 둘째 리드 수정 파견은 rc 3 이다, 87b: 세그먼트와 다른 --slice 의 리뷰 파견은 rc 3 이다, 87b: 부적격 사이클의 review-carry act 는 rc 3 이다, 87b: 표류 걸음은 머지 에 닿는다, 87b: 마지막 행 뒤 HEAD 그대로의 재리뷰는 rc 3 이다, 87b: 세그먼트 S7 의 행위는 그 세그먼트 워크트리에서 돈다, 87b: 리드 수정 세그먼트의 git push 는 자동 해소를 비우면 통과하고 0 이면 승인 대기다, 87b: 사전 인가 없는 이슈 생성은 자동 해소를 비우면 통과하고 0 이면 승인 대기다 ---
+# --- section: 87b | group: base | covers: act, plan, snapshot | anchors: 87b: 리포트 요약과 숫자가 다른 cycle 행은 rc 2 다, 87b: 몫 줄과 몫 항목 수가 다른 cycle 행은 rc 2 다, 87b: 자기·머지된·없는 세그먼트에 배정한 몫은 rc 2 다, 87b: 상한에 닿은 세그먼트의 구현 파견은 rc 3 이다, 87b: 상한의 리드 수정 파견은 상한 구현 거절에 걸리지 않고 통과한다, 87b: 리드 수정 행이 선 세그먼트의 둘째 리드 수정 파견은 rc 3 이다, 87b: 세그먼트와 다른 --slice 의 리뷰 파견은 rc 3 이다, 87b: 부적격 사이클의 review-carry act 는 rc 3 이다, 87b: 빈 argv 의 base-check act 는 행 빌더에 닿는다 (rc 3), 87b: 표류 걸음은 머지 에 닿는다, 87b: 마지막 행 뒤 HEAD 그대로의 재리뷰는 rc 3 이다, 87b: 세그먼트 S7 의 행위는 그 세그먼트 워크트리에서 돈다, 87b: 리드 수정 세그먼트의 git push 는 자동 해소를 비우면 통과하고 0 이면 승인 대기다, 87b: 사전 인가 없는 이슈 생성은 자동 해소를 비우면 통과하고 0 이면 승인 대기다 ---
 #
 # 87 의 판정이 실제 act·plan 경로에 꽂혀 있는지를 픽스처 런 하나로 잰다. 런은
 # 세그먼트 S2·S3 을 계획하고, 머지된 S4 의 행은 원장에 그대로 심는다 — 머지된
@@ -38470,6 +38470,22 @@ check "87b: 부적격 사이클의 review-carry act 는 rc 3 이다" "$rc" "3"
 case "$msg" in
   *"not eligible for carry-over"*) ok "87b: 그 거절은 부적격 번호를 든다" ;;
   *) bad "87b review-carry 부적격 문면" "$msg" ;;
+esac
+# base-check 는 -- 뒤를 비워 부른다. act 의 공통 인자 검사가 빈 argv 를 막으면 행
+# 빌더까지 가지 못해 어떤 형태로도 베이스 판정을 쓸 수 없었다. 빌더를 직접 부르는
+# 88b 는 그 검사를 지나지 않으므로 여기서 act 경로로 잰다. S2 의 리뷰는 머지를
+# 읽지 않으므로 빌더의 리뷰 거절(rc 3)이 곧 빌더에 닿았다는 증거다.
+h87_act S2 base-check
+check "87b: 빈 argv 의 base-check act 는 행 빌더에 닿는다 (rc 3)" "$rc" "3"
+case "$msg" in
+  *"does not let a merge through"*) ok "87b: 그 거절은 base-check 행 빌더에서 온다" ;;
+  *) bad "87b 빈 argv base-check 문면" "$msg" ;;
+esac
+h87_act S2 base-check 판정=일치
+check "87b: argv 를 단 base-check act 는 rc 2 다" "$rc" "2"
+case "$msg" in
+  *"takes nothing after --"*) ok "87b: 그 거절은 base-check 행 빌더의 인자 거절이다" ;;
+  *) bad "87b argv base-check 문면" "$msg" ;;
 esac
 gateL carry-body --manifest "$WORK/plan-R87.md" --segment S2
 check "87b: 다음이 이월이 아닌 세그먼트의 carry-body 동사는 rc 3 이다" "$rc" "3"
