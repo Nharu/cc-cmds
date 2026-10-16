@@ -169,11 +169,18 @@ A block that already carries a `처리 기록` is **not** a member of the close 
 
 ### Step 5: HARD STOP
 
-Write the verdict, the residual out-of-scope defects CFI-1 declined, `사전 sha256`, `사후 sha256`, and the adopted-decision records into the structured output. Then stop with the literal statement:
+Write the verdict, the residual out-of-scope defects CFI-1 declined, `사전 sha256`, `사후 sha256`, and the adopted-decision records into the structured output. Then, on the line immediately before the literal, emit the verdict as a line of its own — exactly one of these two, and nothing else on that line:
+
+```
+판정: 재설계 필요
+판정: 불필요
+```
+
+and stop with the literal statement:
 
 *"재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."*
 
-That literal is the driver's confirming terminal predicate and must be emitted byte for byte. **A terminal verdict returns the run to segment planning unconditionally** (CFI-4) — this skill does not decide that, and does not act on it.
+That literal is the driver's confirming terminal predicate and must be emitted byte for byte. The `판정:` line is what the gate records as the row's `재수렴 판정`: it reads only the terminal message, and only a whole line equal to one of the two forms — it forgives surrounding whitespace, one list marker (`- `, `* `, `1. `, `1) `), bold or backticks around the whole line or the value, a bold key, a full-width colon and one closing period, but write the plain form above — so a message with neither line, with both, or with the line only earlier in the transcript records `없음`, and a sibling segment's re-plan cannot cite it. **A terminal verdict returns the run to segment planning unconditionally** (CFI-4) — this skill does not decide that, and does not act on it.
 
 ### (There is no Step 6.)
 

@@ -2839,6 +2839,81 @@ pre_cone() {
     { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
   }
 
+  # THE HUMAN-WAIT FIXTURES (31aw 형제 재계획 · 31ax 사람-결정 · 31ay cone 가시성)
+  # stand on one isolated run each, made by `cap_fx_new`, and on the shape of
+  # run 20261015-f482437e: S2 re-converges with `재설계 필요`, S3 is a sibling
+  # that already holds a plan, S4 is a segment no question touches. The helpers
+  # are here rather than in the first section that calls them so that each of
+  # the three cuts alone stands.
+  hwg() {
+    # hwg <argv…> — the gate in process on the cap run, leaving `rc` and `msg`.
+    # `HW_AR` is the auto-resolve switch for this one call (off by default, as
+    # the suite runs), and `HW_SID` the session id a `close` reads its
+    # transcript under.
+    local out
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+          CLAUDE_CODE_SESSION_ID="${HW_SID:-}" CC_CMDS_AUTOPILOT_AUTO_RESOLVE="${HW_AR:-0}" \
+          gate_inproc "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  hw_snap() {  # hw_snap [argv…] — the cap run's snapshot, read the way `hwg` acts
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="${HW_SID:-}" CC_CMDS_AUTOPILOT_AUTO_RESOLVE="${HW_AR:-0}" \
+      gate_inproc snapshot --manifest "$CAP_NM" "$@" 2>/dev/null )
+  }
+  hw_H() { hw_snap | jq -r .H; }
+  hw_row() {
+    # hw_row <계열> <필드…> — one row written past the gate, `prev=x` as the
+    # other planted rows of this family. Only for what a run's own writers
+    # left behind and this fixture cannot produce through a verb.
+    local s="$1" f fields=""; shift
+    for f in "$@"; do fields="$fields | $f"; done
+    printf -- '- `%s`%s | prev=x\n' "$s" "$fields" >> "$CAP_LEDGER"
+  }
+  hw_in() {
+    # hw_in <명령…> — one call into the gate's own functions against the cap
+    # run, in a subshell, the way `lsr_in` calls a writer.
+    ( gate_seam_enter
+      MANIFEST="$CAP_NM"; LEDGER="$CAP_LEDGER"; RUN_DIR="$CAP_DIR"; RUN_ID="${CAP_DIR##*/}"
+      "$@" )
+  }
+  hw_stream() {
+    # hw_stream <파일> <종단 글> — a stage stream whose last `result` object
+    # carries that text, behind an assistant line that quotes the skill's own
+    # grammar, so a reader that scans the whole stream finds both verdicts.
+    jq -nc '{type: "assistant", message: {content: [{type: "text", text: "판정: 재설계 필요\n판정: 불필요"}]}}' > "$1"
+    jq -nc --arg t "$2" \
+      '{type: "result", subtype: "success", is_error: false, total_cost_usd: 0.1, session_id: "hw-s", num_turns: 1, result: $t}' >> "$1"
+  }
+  hw_fx_new() {
+    # hw_fx_new <run-id> — the cap run with the three segments and S3's plan:
+    # its gate-written implement row with `plan_sha256` and the plan file.
+    cap_fx_new "$1"
+    hw_row segment 교대=0 id=S2 "워크트리=$CONE_C" 상태=실행중 선행=없음
+    hw_row segment 교대=0 id=S3 "워크트리=$CONE_D" 상태=실행중 선행=없음
+    hw_row segment 교대=0 id=S4 "워크트리=$CONE_E" 상태=실행중 선행=없음
+    hw_row stage-result 세그먼트=S3 스테이지=S3 종류=implement '종료 코드=0' '실행 버전=1' \
+      '세션 id=hw-s3' 기록자=게이트 plan_sha256=3333 '종단 부류=정상 완료' '실패 서명=-'
+    printf '# S3 계획\n' > "$CAP_DIR/S3.plan.md"
+  }
+  hw_due() {  # hw_due <세그먼트> — that segment's `replan_due[]` elements, compact
+    hw_snap | jq -c --arg s "$1" '[.replan_due[] | select(.segment == $s) | {reconverge, state}]'
+  }
+  hw_replan() {  # hw_replan <세그먼트> <argv…> — `act --kind replan`, declared as the read it grades
+    local s="$1"; shift
+    hwg act --manifest "$CAP_NM" --kind replan --target infra --segment "$s" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x -- "$@"
+  }
+  hw_person() {
+    # hw_person <세그먼트> <기준> — raise one `사람-결정` question on that segment.
+    hwg act --manifest "$CAP_NM" --kind judgment --target infra --segment "$1" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x \
+        -- 등급=2 '판단 부류=사람-결정' "기준=$2" "근거=$1 을 어떻게 할지 사람만 정한다 — 대안: park"
+  }
+  hw_last_person() {  # hw_last_person — the id of the last `사람-결정` approval issued
+    row_field "$( { cap_rows '승인' | grep -F '| 판단 부류=사람-결정 |' | grep -F '| 절단점=판단 |' || true; } | tail -1)" '승인 id'
+  }
+
   # THE RELAY FIXTURE (34e) SHARES THE CAP LEDGER HELPERS AND ADDS ITS OWN
   # SUCCESSOR. The stub is every shift the seat's `router-shift` launches; a plan
   # file holds one mode per launch and the counter in the case's out directory
@@ -16044,7 +16119,7 @@ else
 fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 열한 값 안의 판단 부류는 통과한다"
+  ok "린트 — 열두 값 안의 판단 부류는 통과한다"
 else
   bad "린트" "어휘 안의 값을 위반으로 잡았다"
 fi
@@ -16052,7 +16127,7 @@ printf -- '- `자동 채택` | 판단 부류=없는-부류 | 사유=x\n' > "$LR/
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
-  ok "린트 — 열한 값 밖의 판단 부류는 실패한다"
+  ok "린트 — 열두 값 밖의 판단 부류는 실패한다"
 fi
 # THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
 # The gate parses five markers out of a stage's terminal message and absorbs the
@@ -16075,7 +16150,7 @@ rm -f "$LR/plugins/sentinel.md"
 # 모양으로 건너뛰므로 그 안의 수를 보지 못한다. 그런데 그 수는 라우터에게 향한
 # 진술이라, 어휘가 여덟이라고 읽은 라우터는 아홉 번째를 방출하지 않는다. 손으로
 # 고쳐야 했고 고치지 않아도 아무것도 실패하지 않았던 자리다.
-printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열한 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열두 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   ok "린트 — 어휘 크기와 맞는 자리표시자 수사는 통과한다"
 else
@@ -19940,6 +20015,447 @@ else
   check "31ab: 그 철회 행이 B1 의 사유를 싣는다" "$(row_field "$(b31ab_last)" '사유')" "진전 재개"
 fi
 
+# --- 31aw. A stale sibling is re-planned inside the run ---------------------
+# --- section: 31aw | group: cone | covers: act, snapshot, plan, grade | anchors: 31aw: 종단 글의 판정 줄이 재설계 필요를 준다, 31aw: 재수렴 행이 재수렴 판정=재설계 필요 를 싣는다, 31aw: 재계획 전 S3 는 replan_due 에서 가능이다, 31aw: 재계획이 통과한다, 31aw: 재계획 뒤 S3 의 다음 구현은 과정 A 다, 31aw: 같은 재수렴을 인용한 둘째 재계획은 거부된다, 31aw: 셋째 재계획은 거부된다, 31aw: 런이 끝난 뒤의 재계획은 거부된다 ---
+#
+# Run 20261015-f482437e: S2 re-converged its design with `재설계 필요` while S3
+# held a plan made before it, and nothing in the run could void that plan — the
+# router parked S3 and the night ended on a person. The re-convergence's
+# verdict is now a field the gate writes from the stream's terminal text, the
+# siblings it leaves stale are listed in `replan_due[]`, and `act --kind replan`
+# voids one of them through the same evaluation.
+hw_fx_new R1280
+hw_lit() { printf '%s' "$LIT_RECONVERGE_TERMINAL"; }
+HW_LIT=$(hw_in hw_lit)
+if [ -n "$HW_LIT" ]; then
+  ok "31aw: 재수렴 종단 리터럴을 게이트에서 읽는다"
+else
+  bad "31aw 픽스처" "LIT_RECONVERGE_TERMINAL 을 읽지 못했다 — 아래 판정 단언이 공허하다"
+fi
+HWS="$WORK/hw-streams"; mkdir -p "$HWS"
+hw_stream "$HWS/need"   "$(printf '재수렴 요약\n판정: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/unneed" "$(printf '재수렴 요약\n판정: 불필요  \n%s' "$HW_LIT")"
+hw_stream "$HWS/none"   "$(printf '재수렴 요약\n%s' "$HW_LIT")"
+hw_stream "$HWS/inline" "$(printf '이 글은 판정: 재설계 필요 라고 줄 가운데에만 적는다\n%s' "$HW_LIT")"
+hw_stream "$HWS/both"   "$(printf '판정: 재설계 필요\n판정: 불필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/nolit"  '판정: 재설계 필요'
+check "31aw: 종단 글의 판정 줄이 재설계 필요를 준다" "$(hw_in gate_reconverge_verdict "$HWS/need")" "재설계 필요"
+check "31aw: 끝 공백이 붙은 판정: 불필요 줄은 불필요다" "$(hw_in gate_reconverge_verdict "$HWS/unneed")" "불필요"
+check "31aw: 판정 줄이 없으면 없음이다 (대화록의 판정 줄은 읽지 않는다)" "$(hw_in gate_reconverge_verdict "$HWS/none")" "없음"
+check "31aw: 줄 가운데의 판정 문구는 판정이 아니다" "$(hw_in gate_reconverge_verdict "$HWS/inline")" "없음"
+check "31aw: 두 판정 줄이 함께 있으면 없음이다" "$(hw_in gate_reconverge_verdict "$HWS/both")" "없음"
+check "31aw: 종단 리터럴이 없으면 없음이다" "$(hw_in gate_reconverge_verdict "$HWS/nolit")" "없음"
+# The spellings that change no word are forgiven — a bold key, an indent, a
+# list marker — and the empty zero-turn envelope a resumed session ends in is
+# skipped, so the verdict before it is the one read. `없음` there sent a
+# re-design re-convergence's siblings on with their old plans.
+hw_stream "$HWS/bold"   "$(printf '재수렴 요약\n**판정**: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/bold2"  "$(printf '재수렴 요약\n**판정:** 불필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/indent" "$(printf '재수렴 요약\n  - 판정: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/tail"   "$(printf '재수렴 요약\n판정: 재설계 필요\n%s' "$HW_LIT")"
+jq -nc '{type: "result", subtype: "success", is_error: false, total_cost_usd: 0, session_id: "hw-s", num_turns: 0, result: ""}' >> "$HWS/tail"
+hw_stream "$HWS/tailboth" "$(printf '판정: 불필요\n%s' "$HW_LIT")"
+jq -nc --arg t "$(printf '판정: 재설계 필요\n%s' "$HW_LIT")" \
+  '{type: "result", subtype: "success", is_error: false, total_cost_usd: 0.1, session_id: "hw-s", num_turns: 2, result: $t}' >> "$HWS/tailboth"
+hw_stream "$HWS/boldmid" "$(printf '이 글은 **판정**: 재설계 필요 라고 줄 가운데에 적는다\n%s' "$HW_LIT")"
+check "31aw: 굵은 키의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/bold")" "재설계 필요"
+check "31aw: 콜론까지 굵은 키의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/bold2")" "불필요"
+check "31aw: 들여쓰고 글머리표를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/indent")" "재설계 필요"
+check "31aw: 0턴 꼬리 봉투는 건너뛰고 그 앞 결과의 판정을 읽는다" "$(hw_in gate_reconverge_verdict "$HWS/tail")" "재설계 필요"
+check "31aw: 턴을 돈 결과가 여럿이면 마지막 것을 읽는다" "$(hw_in gate_reconverge_verdict "$HWS/tailboth")" "재설계 필요"
+check "31aw: 줄 가운데의 굵은 판정 문구도 판정이 아니다" "$(hw_in gate_reconverge_verdict "$HWS/boldmid")" "없음"
+# The router's re-plan items have no carried block to fall back on, so every
+# spelling that changes no word must still read as the verdict: whole-line
+# bold, backticks on the line or the value, one closing period, a numbered or
+# `* ` marker, a full-width colon. A changed word is still no verdict.
+hw_stream "$HWS/wbold"  "$(printf '재수렴 요약\n**판정: 재설계 필요**\n%s' "$HW_LIT")"
+hw_stream "$HWS/wtick"  "$(printf '재수렴 요약\n`판정: 불필요`\n%s' "$HW_LIT")"
+hw_stream "$HWS/vtick"  "$(printf '재수렴 요약\n판정: `재설계 필요`.\n%s' "$HW_LIT")"
+hw_stream "$HWS/dot"    "$(printf '재수렴 요약\n판정: 재설계 필요.\n%s' "$HW_LIT")"
+hw_stream "$HWS/num"    "$(printf '재수렴 요약\n1. 판정: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/star"   "$(printf '재수렴 요약\n* **판정**: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/fwcol"  "$(printf '재수렴 요약\n판정： 불필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/word"   "$(printf '재수렴 요약\n판정: 재설계 필요함\n%s' "$HW_LIT")"
+check "31aw: 줄 전체를 굵게 한 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/wbold")" "재설계 필요"
+check "31aw: 줄 전체를 백틱으로 감싼 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/wtick")" "불필요"
+check "31aw: 값을 백틱으로 감싸고 마침표를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/vtick")" "재설계 필요"
+check "31aw: 끝 마침표 하나를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/dot")" "재설계 필요"
+check "31aw: 번호 목록 표시를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/num")" "재설계 필요"
+check "31aw: 별표 목록 표시와 굵은 키의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/star")" "재설계 필요"
+check "31aw: 전각 콜론의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/fwcol")" "불필요"
+check "31aw: 낱말이 달라진 판정 줄은 판정이 아니다" "$(hw_in gate_reconverge_verdict "$HWS/word")" "없음"
+
+# The row, through the gate's own stage-result writer. S2's attempt 2 is the
+# re-convergence the siblings cite; S5's two attempts are the `불필요` and
+# `없음` rows a re-plan must not cite.
+hw_in gate_record_stage_outcome infra S2 reconverge 2 0 0 "$HWS/need" >/dev/null 2>&1
+hw_in gate_record_stage_outcome infra S5 reconverge 1 0 0 "$HWS/unneed" >/dev/null 2>&1
+hw_in gate_record_stage_outcome infra S5 reconverge 2 0 0 "$HWS/none" >/dev/null 2>&1
+hw_rc_row() {  # hw_rc_row <세그먼트> <실행 버전> — that re-convergence's stage-result row
+  { cap_rows 'stage-result' | grep -F "| 세그먼트=$1 |" | grep -F '| 종류=reconverge |' \
+      | grep -F "| 실행 버전=$2 |" || true; } | tail -1
+}
+check "31aw: 재수렴 행이 재수렴 판정=재설계 필요 를 싣는다" "$(row_field "$(hw_rc_row S2 2)" '재수렴 판정')" "재설계 필요"
+check "31aw: 그 행은 게이트가 쓴 행이다" "$(row_field "$(hw_rc_row S2 2)" '기록자')" "게이트"
+check "31aw: 불필요 재수렴의 행은 불필요를 싣는다" "$(row_field "$(hw_rc_row S5 1)" '재수렴 판정')" "불필요"
+check "31aw: 판정 줄 없는 재수렴의 행은 없음을 싣는다" "$(row_field "$(hw_rc_row S5 2)" '재수렴 판정')" "없음"
+check "31aw: 구현 행에는 재수렴 판정이 없다" \
+  "$( { cap_rows 'stage-result' | grep -F '| 종류=implement |' | grep -cF '재수렴 판정=' || true; } | tr -d ' ')" "0"
+
+hw_proc() {  # hw_proc <세그먼트> — B when the next implement dispatch is process B, A otherwise
+  if gate_plan_rows_of "$1" | implement_process_b; then printf B; else printf A; fi
+}
+check "31aw 픽스처: 재계획 전 S3 의 다음 구현은 과정 B 다 (아래 과정 A 가 공허하지 않다)" "$(hw_in hw_proc S3)" "B"
+check "31aw: 재계획 전 S3 는 replan_due 에서 가능이다" "$(hw_due S3)" '[{"reconverge":"S2#2","state":"가능"}]'
+check "31aw: 계획이 없는 S4 와 재수렴한 S2 자신은 replan_due 에 없다" \
+  "$(hw_snap | jq -c '[.replan_due[] | select(.segment == "S4" or .segment == "S2")]')" '[]'
+
+# A live stage of the sibling is read again after it ends, not re-planned.
+FX_RUN_DIR_SAVE="${FX_RUN_DIR:-}"; FX_RUN_DIR="$CAP_DIR"; fx_stage_live S3; FX_RUN_DIR="$FX_RUN_DIR_SAVE"
+hw_live_pid="$FX_LAST_PID"
+check "31aw: S3 의 스테이지가 살아 있으면 replan_due 는 살아 있음이다" "$(hw_due S3)" '[{"reconverge":"S2#2","state":"살아 있음"}]'
+hw_replan S3 재수렴=S2#2
+check "31aw: 살아 있는 형제의 재계획은 거부된다" "$rc" "3"
+kill "$hw_live_pid" 2>/dev/null || true; wait "$hw_live_pid" 2>/dev/null || true
+rm -f "$CAP_DIR/S3.pid" "$CAP_DIR/S3.start"
+
+# The refusals. Every one writes no `재계획` row.
+hw_replan S3 재수렴=S2#2 회차=1
+check "31aw: 재수렴 밖의 argv 키는 exit 2 다" "$rc" "2"
+hw_replan S3 이유=x
+check "31aw: 재수렴 키 없는 argv 도 exit 2 다" "$rc" "2"
+hw_replan S3 재수렴=S5#1
+check "31aw: 불필요 행을 인용한 재계획은 거부된다" "$rc" "3"
+case "$msg" in
+  *"clause 4"*) ok "31aw: 그 거부는 절 4 를 든다" ;;
+  *) bad "31aw 불필요 인용 문면" "$msg" ;;
+esac
+hw_replan S3 재수렴=S5#2
+check "31aw: 없음 행을 인용한 재계획은 거부된다" "$rc" "3"
+hw_replan S3 재수렴=S9#9
+check "31aw: 아무 행도 이름 대지 않는 키의 재계획은 거부된다" "$rc" "3"
+hw_row stage-result 세그먼트=S6 스테이지=S6 종류=reconverge '종료 코드=0' '실행 버전=1' \
+  '세션 id=hw-s6' 기록자=드라이버 '재수렴 판정=재설계 필요' '종단 부류=정상 완료' '실패 서명=-'
+hw_replan S3 재수렴=S6#1
+check "31aw: 드라이버가 쓴 행을 인용한 재계획은 거부된다" "$rc" "3"
+hw_replan S4 재수렴=S2#2
+check "31aw: 계획이 없는 형제의 재계획은 거부된다 (절 3)" "$rc" "3"
+case "$msg" in
+  *"clause 3"*) ok "31aw: 그 거부는 절 3 을 든다" ;;
+  *) bad "31aw 절 3 문면" "$msg" ;;
+esac
+hw_replan S7 재수렴=S2#2
+check "31aw: segment 행이 없는 세그먼트의 재계획은 거부된다 (절 1)" "$rc" "3"
+check "31aw: 거부된 재계획은 재계획 행을 쓰지 않는다" "$(cap_rows '재계획' | grep -c . || true)" "0"
+check "31aw: 거부된 재계획은 계획 파일을 옮기지 않는다" "$( [ -f "$CAP_DIR/S3.plan.md" ] && printf 있음 )" "있음"
+
+# The plan preview names the kind among those whose fields are checked at record time.
+hwg plan --manifest "$CAP_NM" --kind replan --target infra --segment S3 --cutpoint 커밋 --surface 읽기 \
+    -- 재수렴=S2#2
+case "$msg" in
+  *"record row field validity (replan)"*) ok "31aw: plan 이 replan 을 기록 시점 검사 종류로 든다" ;;
+  *) bad "31aw plan 드라이런 문면" "$msg" ;;
+esac
+
+hw_replan S3 재수렴=S2#2
+check "31aw: 재계획이 통과한다" "$rc" "0"
+hw_rp_row=$(cap_rows '재계획' | tail -1)
+check "31aw: 재계획 행이 세그먼트·재수렴·회차를 싣는다" \
+  "$(row_field "$hw_rp_row" '세그먼트')|$(row_field "$hw_rp_row" '재수렴')|$(row_field "$hw_rp_row" '회차')" "S3|S2#2|1"
+check "31aw: 계획 파일이 .void-<epoch> 로 옮겨진다" \
+  "$( [ ! -e "$CAP_DIR/S3.plan.md" ] && ls "$CAP_DIR" | grep -c '^S3\.plan\.md\.void-[0-9][0-9]*$' )" "1"
+check "31aw: 재계획 뒤 S3 의 다음 구현은 과정 A 다" "$(hw_in hw_proc S3)" "A"
+check "31aw: 그 재수렴으로 재계획된 S3 는 replan_due 에서 빠진다" "$(hw_due S3)" '[]'
+hw_replan S3 재수렴=S2#2
+check "31aw: 같은 재수렴을 인용한 둘째 재계획은 거부된다" "$rc" "3"
+
+# Two re-plans per sibling in a run, and the third is a question for a person.
+hw_in gate_record_stage_outcome infra S2 reconverge 3 0 0 "$HWS/need" >/dev/null 2>&1
+hw_replan S3 재수렴=S2#3
+check "31aw: 다른 재수렴을 인용한 둘째 재계획은 통과한다" "$rc" "0"
+check "31aw: 그 행의 회차는 2 다" "$(row_field "$(cap_rows '재계획' | tail -1)" '회차')" "2"
+hw_in gate_record_stage_outcome infra S2 reconverge 4 0 0 "$HWS/need" >/dev/null 2>&1
+check "31aw: 두 번 재계획된 S3 는 replan_due 에서 상한이다" "$(hw_due S3)" '[{"reconverge":"S2#4","state":"상한"}]'
+hw_replan S3 재수렴=S2#4
+check "31aw: 셋째 재계획은 거부된다" "$rc" "3"
+case "$msg" in
+  *"clause 6"*) ok "31aw: 그 거부는 절 6 을 든다" ;;
+  *) bad "31aw 절 6 문면" "$msg" ;;
+esac
+# The end is read before the clauses, so the refusal names the end and not
+# clause 6 — which is what keeps this assertion from passing on the cap alone.
+printf 'done\n' > "$CAP_DIR/done"
+hw_replan S3 재수렴=S2#4
+check "31aw: 런이 끝난 뒤의 재계획은 거부된다" "$rc" "3"
+case "$msg" in
+  *"already ended"*) ok "31aw: 그 거부는 런의 끝을 든다" ;;
+  *) bad "31aw 끝난 런 문면" "$msg" ;;
+esac
+rm -f "$CAP_DIR/done"
+
+# The question `상한` asks for, answered and spent, answers the key. A re-dispatch
+# writes no `재계획` row and clause 3 reads the first plan row, so before this
+# the element came back `상한` once the answer was consumed — and the router asked
+# the person again, or met the cap and parked the segment they had told it to run.
+hw_person S3 "31aw — 상한의 S3 를 지금 계획으로 재파견할지"
+check "31aw 픽스처: 상한의 S3 에 사람-결정이 열린다" "$rc" "5"
+hw_aw_c=$(hw_last_person)
+hw_aw_cq=$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_aw_c |" | tail -1)" '질문 문면')
+HW_SID="31aw1111-2222-3333-4444-555566667777"
+: > "$NTX/$HW_SID.jsonl"
+auq_frame "$NTX/$HW_SID.jsonl" "$hw_aw_c" "$hw_aw_cq" "승인" >/dev/null
+hwg close --manifest "$CAP_NM" --approval "$hw_aw_c"
+check "31aw 픽스처: 그 사람-결정이 레이블 승인으로 닫힌다" "$rc" "0"
+HW_SID=""
+check "31aw: 답이 소비되기 전에는 상한의 S3 가 replan_due 에 남는다" "$(hw_due S3)" '[{"reconverge":"S2#4","state":"상한"}]'
+hwg act --manifest "$CAP_NM" --kind judgment --target infra --segment S3 --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x \
+    -- 등급=2 '판단 부류=사람-결정' "기준=31aw — 상한의 S3 를 지금 계획으로 재파견할지" \
+       "근거=31aw — S3 를 지금 계획으로 재파견했다" "답한 승인=$hw_aw_c"
+check "31aw: 상한의 S3 에 대한 답이 채택으로 소비된다" \
+  "$rc|$(row_field "$(cap_rows '자율 승인' | grep -F "| 해소 승인=$hw_aw_c |" | tail -1)" '결정')" "0|채택"
+check "31aw: 사람이 정한 상한의 S3 는 replan_due 에서 빠진다" "$(hw_due S3)" '[]'
+
+# A `사람-결정` question that holds S3 comes before every other state.
+hw_person S3 "31aw — S3 를 지금 계획으로 재파견할지"
+check "31aw 픽스처: S3 를 세우는 사람-결정이 열린다" "$rc" "5"
+# Three `재설계 필요` rows stand above, and the held state belongs to the last:
+# the evaluation of the earlier two must not consume the rows after them.
+check "31aw: 사람-결정이 S3 를 세우면 replan_due 는 보류다" "$(hw_due S3)" '[{"reconverge":"S2#4","state":"보류"}]'
+hw_replan S3 재수렴=S2#4
+check "31aw: 세워진 S3 의 재계획은 거부된다" "$rc" "3"
+case "$msg" in
+  *"사람-결정 판단 승인"*) ok "31aw: 그 거부는 S3 를 세운 사람-결정을 든다" ;;
+  *) bad "31aw 보류 재계획 문면" "$msg" ;;
+esac
+# A person's no keeps S3 held until the park consumes it: read from the open
+# questions alone, the same snapshot listed S3 `상한` beside its own `거부`.
+hw_aw_q=$(hw_last_person)
+hw_aw_qq=$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_aw_q |" | tail -1)" '질문 문면')
+HW_SID="31aw0000-1111-2222-3333-444455556666"
+: > "$NTX/$HW_SID.jsonl"
+auq_frame "$NTX/$HW_SID.jsonl" "$hw_aw_q" "$hw_aw_qq" "거부" >/dev/null
+hwg close --manifest "$CAP_NM" --approval "$hw_aw_q"
+check "31aw 픽스처: S3 를 세운 사람-결정이 거부로 닫힌다" "$rc" "0"
+check "31aw: 거부로 닫힌 뒤에도 소비 전에는 replan_due 가 보류다" "$(hw_due S3)" '[{"reconverge":"S2#4","state":"보류"}]'
+HW_SID=""
+
+# --- 31ax. A person-only question holds its segment, not the run -----------
+# --- section: 31ax | group: cone | covers: act, snapshot, close, exec | anchors: 31ax: 스위치가 켜져도 사람-결정은 exit 5 다, 31ax: 사람-결정을 자동 채택으로 선언하면 매니페스트 검사가 하드 스톱한다, 31ax: 라우터가 친 답으로는 사람-결정이 닫히지 않는다, 31ax: 한 세그먼트의 셋째 사람-결정은 exit 3 이다, 31ax: 세워진 세그먼트로의 스테이지 파견은 거부된다, 31ax: 세워지지 않은 세그먼트의 파견은 통과한다, 31ax: 열린 사람-결정이 종료 조건 2 를 막는다, 31ax: 교대가 살아 있으면 사람-결정이 열린 채로도 B1 이 발동한다, 31ax: 자유 입력 답은 state 승인으로 answered_judgments 에 오른다, 31ax: 거부 답은 state 거부로 오른다, 31ax: 소비되지 않은 거부 답은 세그먼트를 계속 세운다, 31ax: 자유 입력 답의 소비 행은 자유 입력 소비를 싣는다, 31ax: park 전의 거절 소비는 거부된다, 31ax: 거부 답을 다시 낸 판단은 소비 행 하나로 끝난다 ---
+#
+# Issue #1114: the shift ended a night on a question only a person could
+# answer, and wrote it as a cone row plus a stop — so the run stopped for every
+# segment, the person's answer had nowhere to arrive, and nothing told the next
+# shift what to do with it. A `사람-결정` approval now holds the one segment it
+# names, keeps the run from ending, and comes back through
+# `answered_judgments[]` with the answer's `state`.
+hw_fx_new R1114
+FM_P="$WORK/person-autoadopt-plan.md"
+sed 's/판단 부류=문서-신선도/판단 부류=사람-결정/' "$NM" > "$FM_P"
+gateN snapshot --manifest "$FM_P"
+if [ "$rc" != "0" ] && case "$msg" in *"선언할 수 없는 판단 부류"*) true ;; *) false ;; esac; then
+  ok "31ax: 사람-결정을 자동 채택으로 선언하면 매니페스트 검사가 하드 스톱한다"
+else
+  bad "31ax: 사람-결정을 자동 채택으로 선언하면 매니페스트 검사가 하드 스톱한다" "rc=$rc — $msg"
+fi
+if hw_in gate_judgment_class_adoptable 사람-결정 >/dev/null 2>&1; then
+  bad "31ax: 사람-결정은 채택 가능한 부류가 아니다" "gate_judgment_class_adoptable 이 참을 돌렸다"
+else
+  ok "31ax: 사람-결정은 채택 가능한 부류가 아니다"
+fi
+
+HW_AR=1 hw_person S3 "31ax — 첫 물음 (스위치 켬)"
+check "31ax: 스위치가 켜져도 사람-결정은 exit 5 다" "$rc" "5"
+hw_q1=$(hw_last_person)
+HW_AR=0 hw_person S3 "31ax — 둘째 물음 (스위치 끔)"
+check "31ax: 스위치가 꺼져도 사람-결정은 exit 5 다" "$rc" "5"
+hw_q2=$(hw_last_person)
+if [ -n "$hw_q1" ] && [ -n "$hw_q2" ] && [ "$hw_q1" != "$hw_q2" ]; then
+  ok "31ax 픽스처: 두 물음이 서로 다른 승인 id 다 ($hw_q1, $hw_q2)"
+else
+  bad "31ax 픽스처" "두 사람-결정 승인 id 를 얻지 못했다 ('$hw_q1', '$hw_q2')"
+fi
+check "31ax: 두 물음 모두 대기다" \
+  "$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_q1 |" | tail -1)" '상태')|$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_q2 |" | tail -1)" '상태')" "대기|대기"
+check "31ax: 사람-결정은 자동 해소 행을 남기지 않는다" \
+  "$( { cap_rows '승인' | grep -F -e "| 승인 id=$hw_q1 |" -e "| 승인 id=$hw_q2 |" | grep -cF '자동 해소' || true; } | tr -d ' ')" "0"
+check "31ax: 사람-결정은 채택 행을 남기지 않는다" \
+  "$( { cap_rows '자율 승인' | grep -F -e "해소 승인=$hw_q1 " -e "해소 승인=$hw_q2 " | grep -c . || true; } | tr -d ' ')" "0"
+hw_n_issue=$(cap_rows '승인' | grep -c . || true)
+hw_person S3 "31ax — 셋째 물음"
+check "31ax: 한 세그먼트의 셋째 사람-결정은 exit 3 이다" "$rc" "3"
+check "31ax: 셋째 물음은 승인 행을 쓰지 않는다" "$(cap_rows '승인' | grep -c . || true)" "$hw_n_issue"
+
+# Only the two questions are open, and another segment has work to do.
+check "31ax: pending_approvals 가 부류와 세운 세그먼트를 싣는다" \
+  "$(hw_snap | jq -c '[.pending_approvals[] | {class, blocks}] | unique')" '[{"class":"사람-결정","blocks":"S3"}]'
+hwg plan --manifest "$CAP_NM" --kind skill --target infra --segment S3 --cutpoint 커밋 -- review
+check "31ax: 세워진 세그먼트로의 스테이지 파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"사람-결정 판단 승인"*) ok "31ax: 그 거부는 세운 물음을 든다" ;;
+  *) bad "31ax 보류 파견 문면" "$msg" ;;
+esac
+hwg plan --manifest "$CAP_NM" --kind replan --target infra --segment S3 --cutpoint 커밋 --surface 읽기 -- 재수렴=S2#1
+check "31ax: 세워진 세그먼트의 재계획은 거부된다" "$rc" "3"
+hwg plan --manifest "$CAP_NM" --kind skill --target infra --segment S2 --cutpoint 커밋 -- review
+check "31ax: 세워지지 않은 세그먼트의 파견은 통과한다" "$rc" "0"
+hw_done2() { gate_done_conditions 2>/dev/null | grep '^2 ' || true; }
+check "31ax: 열린 사람-결정이 종료 조건 2 를 막는다" "$(hw_in hw_done2)" "2 대기 중인 사람-결정 판단 승인이 2건 있습니다"
+
+# B1 while a shift is live. The progress vector is seeded at its threshold the
+# way 31aa seeds it, with no read in the stretch, so one above-read act is the
+# evaluation; the live shift is this shell, with its fingerprint.
+hw_PN() { hw_snap --render | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
+hw_b1_seed() {
+  printf '%s\n' "$(hw_PN)" > "$CAP_DIR/progress-digest"
+  printf '9\n' > "$CAP_DIR/progress-repeat"
+  printf '%s\n' "$( { grep -c '^- `' "$CAP_LEDGER" || true; } | tr -d ' ')" > "$CAP_DIR/progress-origin"
+}
+hw_b1() { { cap_rows '승인' | grep -cF '구속 튜플=B1' || true; } | tr -d ' '; }
+hw_b1_seed
+hw_b1_0=$(hw_b1)
+hwg exec --manifest "$CAP_NM" --target infra --segment S2 --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(hw_H)" --rationale "31ax — 교대가 없을 때의 정체 판정" -- touch "$WORK/t31ax"
+check "31ax: 교대가 없으면 열린 사람-결정이 B1 을 유예한다" "$(hw_b1)" "$hw_b1_0"
+printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$CAP_DIR/shift.live"
+hw_b1_seed
+hwg exec --manifest "$CAP_NM" --target infra --segment S2 --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(hw_H)" --rationale "31ax — 교대가 살아 있을 때의 정체 판정" -- touch "$WORK/t31ax"
+if [ "$(hw_b1)" -gt "$hw_b1_0" ]; then
+  ok "31ax: 교대가 살아 있으면 사람-결정이 열린 채로도 B1 이 발동한다"
+else
+  bad "31ax: 교대가 살아 있으면 사람-결정이 열린 채로도 B1 이 발동한다" "B1 승인 ${hw_b1_0} → $(hw_b1), rc=$rc — $msg"
+fi
+rm -f "$CAP_DIR/shift.live"
+
+# The answers. A router typing one closes nothing; a person's free input closes
+# the question as `승인` with the bytes stored, and a refusal closes it as `거부`.
+HW_SID="31ax0000-1111-2222-3333-444455556666"
+printf '{"role":"user","content":"%s 에 대한 답: 승인"}\n' "$hw_q1" > "$NTX/$HW_SID.jsonl"
+hwg close --manifest "$CAP_NM" --approval "$hw_q1"
+if [ "$rc" = "0" ]; then
+  bad "31ax: 라우터가 친 답으로는 사람-결정이 닫히지 않는다" "닫혔다 — $msg"
+else
+  ok "31ax: 라우터가 친 답으로는 사람-결정이 닫히지 않는다"
+fi
+: > "$NTX/$HW_SID.jsonl"
+hw_q1q=$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_q1 |" | tail -1)" '질문 문면')
+auq_frame "$NTX/$HW_SID.jsonl" "$hw_q1" "$hw_q1q" "S3 는 범위를 줄여 다시 계획한다" >/dev/null
+hwg close --manifest "$CAP_NM" --approval "$hw_q1"
+check "31ax: 자유 입력 답이 사람-결정을 닫는다" "$rc" "0"
+check "31ax: 그 승인의 상태는 승인이다" "$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_q1 |" | tail -1)" '상태')" "승인"
+check "31ax: 답 바이트가 answer/<id>.md 에 남는다" \
+  "$(grep -c 'S3 는 범위를 줄여 다시 계획한다' "$CAP_DIR/answer/$hw_q1.md" 2>/dev/null || true)" "1"
+check "31ax: 자유 입력 답은 state 승인으로 answered_judgments 에 오른다" \
+  "$(hw_snap | jq -c --arg i "$hw_q1" '[.answered_judgments[] | select(.id == $i) | {segment, state}]')" '[{"segment":"S3","state":"승인"}]'
+: > "$NTX/$HW_SID.jsonl"
+hw_q2q=$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_q2 |" | tail -1)" '질문 문면')
+auq_frame "$NTX/$HW_SID.jsonl" "$hw_q2" "$hw_q2q" "거부" >/dev/null
+hwg close --manifest "$CAP_NM" --approval "$hw_q2"
+check "31ax: 거부 답이 사람-결정을 닫는다" "$rc" "0"
+check "31ax: 거부 답은 state 거부로 오른다" \
+  "$(hw_snap | jq -c --arg i "$hw_q2" '[.answered_judgments[] | select(.id == $i) | {segment, state}]')" '[{"segment":"S3","state":"거부"}]'
+hwg answers --manifest "$CAP_NM" --approval "$hw_q2"
+if [ "$rc" = "0" ]; then
+  bad "31ax: 거부된 물음의 답 바이트는 내주지 않는다" "answers 가 통과했다 — $msg"
+else
+  ok "31ax: 거부된 물음의 답 바이트는 내주지 않는다"
+fi
+hwg answers --manifest "$CAP_NM" --approval "$hw_q1"
+check "31ax: 승인된 물음의 답 바이트는 내준다" "$rc" "0"
+# A label and free input both close `승인`; `disposition` is what tells them
+# apart, and the router carries out the recommendation only on the label.
+check "31ax: 자유 입력 답의 disposition 은 자유 입력이다" \
+  "$(hw_snap | jq -r --arg i "$hw_q1" '.answered_judgments[] | select(.id == $i) | .disposition')" "자유 입력"
+check "31ax: 거부 답의 disposition 은 - 다" \
+  "$(hw_snap | jq -r --arg i "$hw_q2" '.answered_judgments[] | select(.id == $i) | .disposition')" "-"
+# A refusal not yet consumed still holds the segment: lifting the hold at the
+# close let a router dispatch to, or re-plan, the segment the person refused.
+hwg plan --manifest "$CAP_NM" --kind skill --target infra --segment S3 --cutpoint 커밋 -- review
+check "31ax: 소비되지 않은 거부 답은 세그먼트를 계속 세운다" "$rc" "3"
+case "$msg" in
+  *"$hw_q2"*) ok "31ax: 그 거부는 거부로 닫힌 물음을 든다" ;;
+  *) bad "31ax 거부 보류 문면" "$msg" ;;
+esac
+
+# Consuming. A consuming row may cite the answered id, so its `근거` says what
+# was done — the id is otherwise a hash of `기준 — 근거`, and a changed `근거`
+# would raise a new question. Free input is consumed as `자유 입력 소비`, never
+# as the recommendation's `채택`; a refusal is consumed only after the park.
+# Judgment approvals only: a progress-stall approval opened or withdrawn by the
+# same calls writes `승인` rows that say nothing about the consumption.
+hw_n_ap=$(cap_rows '승인' | grep -c '| 승인 id=J-' || true)
+hw_cite() {  # hw_cite <세그먼트> <기준> <답한 승인> — the consuming resubmission, `근거` saying what was done
+  hwg act --manifest "$CAP_NM" --kind judgment --target infra --segment "$1" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x \
+      -- 등급=2 '판단 부류=사람-결정' "기준=$2" "근거=31ax — 답에 따라 한 일" "답한 승인=$3"
+}
+hw_cite S4 "31ax — 첫 물음 (스위치 켬)" "$hw_q1"
+check "31ax: 다른 세그먼트로 인용한 답은 거부된다" "$rc" "3"
+hw_cite S3 "31ax — 첫 물음 (스위치 켬)" "$hw_q1"
+check "31ax: 답을 인용한 판단은 근거가 달라도 그 답을 소비한다" "$rc" "0"
+check "31ax: 자유 입력 답의 소비 행은 자유 입력 소비를 싣는다" \
+  "$(row_field "$(cap_rows '자율 승인' | grep -F "| 해소 승인=$hw_q1 |" | tail -1)" '결정')" "자유 입력 소비"
+check "31ax: 인용한 소비는 승인 행을 새로 쓰지 않는다" "$(cap_rows '승인' | grep -c '| 승인 id=J-' || true)" "$hw_n_ap"
+hw_cite S3 "31ax — 첫 물음 (스위치 켬)" "$hw_q1"
+check "31ax: 소비된 답의 재인용은 거부된다" "$rc" "3"
+hw_person S3 "31ax — 둘째 물음 (스위치 끔)"
+check "31ax: park 전의 거절 소비는 거부된다" "$rc" "3"
+check "31ax: 그 거부는 소비 행을 쓰지 않는다" \
+  "$( { cap_rows '자율 승인' | grep -cF "| 해소 승인=$hw_q2 |" || true; } | tr -d ' ')" "0"
+hwg act --manifest "$CAP_NM" --kind segment --target infra --segment S3 --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x -- 상태=park "워크트리=$CONE_D" 선행=없음
+check "31ax 픽스처: S3 의 park 행이 기록된다" "$rc" "0"
+hw_person S3 "31ax — 둘째 물음 (스위치 끔)"
+check "31ax: 거부 답을 다시 낸 판단은 소비 행 하나로 끝난다" "$rc" "0"
+check "31ax: 그 소비 행은 해소 승인과 거절 소비를 싣는다" \
+  "$(row_field "$(cap_rows '자율 승인' | grep -F "| 해소 승인=$hw_q2 |" | tail -1)" '결정')" "거절 소비"
+check "31ax: 소비는 승인 행을 새로 쓰지 않는다" "$(cap_rows '승인' | grep -c '| 승인 id=J-' || true)" "$hw_n_ap"
+check "31ax: 소비된 두 답은 answered_judgments 에서 빠진다" \
+  "$(hw_snap | jq -c --arg a "$hw_q1" --arg b "$hw_q2" '[.answered_judgments[] | select(.id == $a or .id == $b)]')" '[]'
+
+# Free input on any other class is not a decision, and stays `대기`.
+hwg act --manifest "$CAP_NM" --kind judgment --target infra --segment S4 --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x \
+    -- 등급=2 "기준=31ax — 부류 없는 물음" "근거=자유 입력이 결정이 되지 않는 부류"
+check "31ax 픽스처: 부류 없는 판단 승인이 열린다" "$rc" "5"
+hw_q3=$(row_field "$( { cap_rows '승인' | grep -F '| 절단점=판단 |' | grep -F '| 막는 세그먼트=S4 |' || true; } | tail -1)" '승인 id')
+hw_q3q=$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_q3 |" | tail -1)" '질문 문면')
+: > "$NTX/$HW_SID.jsonl"
+auq_frame "$NTX/$HW_SID.jsonl" "$hw_q3" "$hw_q3q" "그냥 알아서 해" >/dev/null
+hwg close --manifest "$CAP_NM" --approval "$hw_q3"
+check "31ax: 다른 부류의 자유 입력은 대기로 남는다" \
+  "$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_q3 |" | tail -1)" '상태')" "대기"
+check "31ax: 그 대기 원소의 class 는 - 다" \
+  "$(hw_snap | jq -r --arg i "$hw_q3" '.pending_approvals[] | select(.id == $i) | .class')" "-"
+HW_SID=""
+
+# --- 31ay. A cone block is in the snapshot, under its own key ---------------
+# --- section: 31ay | group: cone | covers: snapshot, act | anchors: 31ay: S3 의 cone 행이 cone_blocks 에 있다, 31ay: 그 cone 행은 blocked 에 없다, 31ay: park 행 뒤에도 cone 행은 남는다, 31ay: park 아닌 segment 행 뒤 cone 행은 cone_blocks 에서 빠진다 ---
+#
+# Issue #899: a cone row anchored on a segment holds that segment and what
+# stands on it, so `blocked[]` leaves it out — and with no other key carrying
+# it, a shift read a run where S3 was held as one where nothing was. The run
+# pane already showed it; `cone_blocks[]` is the same fold in the snapshot.
+hw_fx_new R899
+hwg act --manifest "$CAP_NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(hw_H)" --rationale x \
+    -- 스코프=cone 원인=막힘 "앵커 세그먼트=S3" "사유=31ay — S3 가 낡은 계획을 들고 있다" \
+       "근거=S2 의 재수렴이 설계를 옮겼다" "재개 명령=S3 를 다시 계획한 뒤 파견"
+check "31ay 픽스처: S3 에 앵커한 cone 행이 기록된다" "$rc" "0"
+check "31ay: S3 의 cone 행이 cone_blocks 에 있다" \
+  "$(hw_snap | jq -c '[.cone_blocks[] | select(.subject == "S3") | {state, cause, observed}]')" \
+  '[{"state":"held","cause":"막힘","observed":null}]'
+# The run has no other block, so an empty `blocked[]` is the claim itself.
+check "31ay: 그 cone 행은 blocked 에 없다" "$(hw_snap | jq -c '.blocked | length')" "0"
+check "31ay: cone_blocks 는 기본 투영에 없다" "$(hw_snap --fields | jq -c 'has("cone_blocks")')" "false"
+hw_row segment 교대=0 id=S3 "워크트리=$CONE_D" 상태=park 선행=없음
+check "31ay: park 행 뒤에도 cone 행은 남는다" \
+  "$(hw_snap | jq -c '[.cone_blocks[] | select(.subject == "S3") | .state]')" '["held"]'
+hw_row segment 교대=0 id=S3 "워크트리=$CONE_D" 상태=실행중 선행=없음
+check "31ay: park 아닌 segment 행 뒤 cone 행은 cone_blocks 에서 빠진다" \
+  "$(hw_snap | jq -c '[.cone_blocks[] | select(.subject == "S3")]')" '[]'
+
 # ---------------------------------------------------------------------------
 # 12b. B3's budget is a WINDOW, and the two halves are asserted separately
 # --- section: 12b | group: base | covers: snapshot, act | needs: 33 | anchors: B3 이 한 창 안에서 예산을 넘기면 발동한다 ---
@@ -21141,13 +21657,17 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 # close. Pinning five here after that terminal landed would say the helper is
 # wired at exactly the places it was wired before the withdrawal existed, so the
 # one call the new state depends on would be the one call the count forbids.
+#
+# THE SEVENTH IS THE `사람-결정` FREE-INPUT CLOSE. That class's free text is the
+# decision, so `gate_close` closes it `승인` instead of leaving it `대기`, and an
+# approval closed there is done being waited on like any other terminal.
 check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
   "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
 check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
   "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
       | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
-check "닫기 함수의 네 종단과 자동 해소 닫기와 철회 종단이 전부 그 도우미를 부른다" \
-  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "6"
+check "닫기 함수의 다섯 종단과 자동 해소 닫기와 철회 종단이 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "7"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #

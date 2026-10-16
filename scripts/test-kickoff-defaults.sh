@@ -274,6 +274,9 @@ expect repo act-allow 적용 '형태=gh pr | 사유=리뷰'
 expect repo act-allow '형식 오류' '형태=gh pr | 사유=a | 인터뷰 기록=x' '형태=bash | 사유=a' '형태=a|b | 사유=c' '사유=a | 형태=gh pr' '형태=gh pr | 사유='
 expect run auto-adopt 적용 '판단 부류=감사-발견 | 상한=없음 | 심각도 상한=major | 사유=a'
 expect run auto-adopt '금지 부류' '판단 부류=팀-구성 | 상한=1 | 심각도 상한=minor | 사유=a'
+# 사람만 답하는 부류도 금지 목록 소속이라 같은 사유로 무시된다 — 어휘 루프가 아니라
+# 이 줄이 그 이름을 직접 부른다(부류가 목록에서 빠지면 루프는 조용히 적용으로 바뀐다).
+expect run auto-adopt '금지 부류' '판단 부류=사람-결정 | 상한=1 | 심각도 상한=minor | 사유=a'
 expect run auto-adopt '어휘 밖' '판단 부류=없는부류 | 상한=1 | 심각도 상한=minor | 사유=a' '판단 부류=감사-발견 | 상한=1 | 심각도 상한=huge | 사유=a'
 expect run auto-adopt '형식 오류' '상한=1 | 판단 부류=감사-발견 | 심각도 상한=minor | 사유=a' '판단 부류=감사-발견 | 상한=1 | 심각도 상한=minor'
 
