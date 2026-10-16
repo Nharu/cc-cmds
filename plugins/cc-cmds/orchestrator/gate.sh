@@ -10207,13 +10207,57 @@ EOF
   [ "$first" = "1" ] || printf '\n'
 }
 
+gate_replan_person_decided() {
+  # gate_replan_person_decided <sibling> <스테이지>#<실행 버전> — 0 when a
+  # `사람-결정` question on the sibling, first issued after the cited
+  # re-convergence row, has been answered `승인` and spent by a `자율 승인` row
+  # that reads `결정=채택` or `결정=자유 입력 소비`.
+  #
+  # A PERSON WHO DECIDED THE CAPPED SIBLING HAS ANSWERED THE KEY. The `상한`
+  # element asks the router for that question, and nothing the approved answer
+  # leads to clears the element: a re-dispatch writes no `재계획` row (clause 5)
+  # and clause 3 compares the sibling's first plan row. So once the answer was
+  # spent the hold lifted and the element came back `상한` after every stage —
+  # the router asked the person again, or met the cap and parked the segment
+  # the person had just told it to run. A refusal needs no such reading: its
+  # consumption follows the park, and a parked sibling fails clause 1.
+  local sib="$1" cite="$2" st at
+  st="${cite%#*}"; at="${cite##*#}"
+  awk -v sib="$sib" -v st="$st" -v at="$at" -v cls="$JUDGMENT_CLASSES_PERSON" '
+    function fld(r, key,   k, i, s, j) {
+      k = " | " key "="; i = index(r, k); if (!i) return ""
+      s = substr(r, i + length(k)); j = index(s, " | ")
+      s = (j ? substr(s, 1, j - 1) : s); sub(/[ \t]+$/, "", s); return s
+    }
+    BEGIN { cl = 0; hit = 0 }
+    { r = $0 " | " }
+    index($0, "- `stage-result`") == 1 && index(r, " | 스테이지=" st " | ") \
+      && index(r, " | 실행 버전=" at " | ") && index(r, " | 종류=reconverge | ") { cl = NR }
+    index($0, "- `승인`") == 1 && index(r, " | 판단 부류=" cls " | ") \
+      && index(r, " | 막는 세그먼트=" sib " | ") {
+      id = fld(r, "승인 id"); if (id != "" && !(id in first)) first[id] = NR
+    }
+    index($0, "- `자율 승인`") == 1 \
+      && (index(r, " | 결정=채택 | ") || index(r, " | 결정=자유 입력 소비 | ")) {
+      id = fld(r, "해소 승인"); if (id != "" && id != "-") spent[id] = 1
+    }
+    END {
+      if (cl == 0) exit 1
+      for (id in first) if (first[id] > cl && (id in spent)) hit = 1
+      exit (hit ? 0 : 1)
+    }
+  ' "$LEDGER" 2>/dev/null
+}
+
 gate_replan_due_json() {
   # One element per sibling a gate-written `재설계 필요` re-convergence leaves
   # with a void plan: clauses 1, 3 and 4 hold and clause 5 finds no earlier row.
   # `state` names the first of the remaining clauses that is false, in the
   # order the router acts on — `보류` (7), `살아 있음` (2), `상한` (6) — and
   # `가능` when none is. Same evaluation as the `replan` act, so an element
-  # whose state is `가능` is an act the gate admits.
+  # whose state is `가능` is an act the gate admits. A capped sibling a person
+  # has decided since the re-convergence (`gate_replan_person_decided`) is left
+  # out: the question its `상한` asked for has been answered and carried out.
   local LC_CTYPE=C; export LC_CTYPE
   local row rs st at cite sib state first=1
   while IFS= read -r row; do
@@ -10231,6 +10275,10 @@ gate_replan_due_json() {
       # re-convergence after the first went missing from the key.
       gate_replan_eval "$sib" "$cite" </dev/null || true
       [ "$GATE_REPLAN_C1$GATE_REPLAN_C3$GATE_REPLAN_C4$GATE_REPLAN_C5" = "1111" ] || continue
+      if [ "$GATE_REPLAN_C7" = 1 ] && [ "$GATE_REPLAN_C6" != 1 ] \
+         && gate_replan_person_decided "$sib" "$cite" </dev/null; then
+        continue
+      fi
       if [ "$GATE_REPLAN_C7" != 1 ]; then state='보류'
       elif [ "$GATE_REPLAN_C2" != 1 ]; then state='살아 있음'
       elif [ "$GATE_REPLAN_C6" != 1 ]; then state='상한'

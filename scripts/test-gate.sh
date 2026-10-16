@@ -16069,7 +16069,7 @@ else
 fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 열한 값 안의 판단 부류는 통과한다"
+  ok "린트 — 열두 값 안의 판단 부류는 통과한다"
 else
   bad "린트" "어휘 안의 값을 위반으로 잡았다"
 fi
@@ -16077,7 +16077,7 @@ printf -- '- `자동 채택` | 판단 부류=없는-부류 | 사유=x\n' > "$LR/
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
-  ok "린트 — 열한 값 밖의 판단 부류는 실패한다"
+  ok "린트 — 열두 값 밖의 판단 부류는 실패한다"
 fi
 # THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
 # The gate parses five markers out of a stage's terminal message and absorbs the
@@ -16100,7 +16100,7 @@ rm -f "$LR/plugins/sentinel.md"
 # 모양으로 건너뛰므로 그 안의 수를 보지 못한다. 그런데 그 수는 라우터에게 향한
 # 진술이라, 어휘가 여덟이라고 읽은 라우터는 아홉 번째를 방출하지 않는다. 손으로
 # 고쳐야 했고 고치지 않아도 아무것도 실패하지 않았던 자리다.
-printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열한 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열두 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   ok "린트 — 어휘 크기와 맞는 자리표시자 수사는 통과한다"
 else
@@ -20122,6 +20122,29 @@ case "$msg" in
   *) bad "31aw 끝난 런 문면" "$msg" ;;
 esac
 rm -f "$CAP_DIR/done"
+
+# The question `상한` asks for, answered and spent, answers the key. A re-dispatch
+# writes no `재계획` row and clause 3 reads the first plan row, so before this
+# the element came back `상한` once the answer was consumed — and the router asked
+# the person again, or met the cap and parked the segment they had told it to run.
+hw_person S3 "31aw — 상한의 S3 를 지금 계획으로 재파견할지"
+check "31aw 픽스처: 상한의 S3 에 사람-결정이 열린다" "$rc" "5"
+hw_aw_c=$(hw_last_person)
+hw_aw_cq=$(row_field "$(cap_rows '승인' | grep -F "| 승인 id=$hw_aw_c |" | tail -1)" '질문 문면')
+HW_SID="31aw1111-2222-3333-4444-555566667777"
+: > "$NTX/$HW_SID.jsonl"
+auq_frame "$NTX/$HW_SID.jsonl" "$hw_aw_c" "$hw_aw_cq" "승인" >/dev/null
+hwg close --manifest "$CAP_NM" --approval "$hw_aw_c"
+check "31aw 픽스처: 그 사람-결정이 레이블 승인으로 닫힌다" "$rc" "0"
+HW_SID=""
+check "31aw: 답이 소비되기 전에는 상한의 S3 가 replan_due 에 남는다" "$(hw_due S3)" '[{"reconverge":"S2#4","state":"상한"}]'
+hwg act --manifest "$CAP_NM" --kind judgment --target infra --segment S3 --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(hw_H)" --rationale x \
+    -- 등급=2 '판단 부류=사람-결정' "기준=31aw — 상한의 S3 를 지금 계획으로 재파견할지" \
+       "근거=31aw — S3 를 지금 계획으로 재파견했다" "답한 승인=$hw_aw_c"
+check "31aw: 상한의 S3 에 대한 답이 채택으로 소비된다" \
+  "$rc|$(row_field "$(cap_rows '자율 승인' | grep -F "| 해소 승인=$hw_aw_c |" | tail -1)" '결정')" "0|채택"
+check "31aw: 사람이 정한 상한의 S3 는 replan_due 에서 빠진다" "$(hw_due S3)" '[]'
 
 # A `사람-결정` question that holds S3 comes before every other state.
 hw_person S3 "31aw — S3 를 지금 계획으로 재파견할지"

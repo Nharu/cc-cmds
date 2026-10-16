@@ -3463,10 +3463,15 @@ run_section_rows() {
   # `LEDGER_SCOPE` decides whether there is a block to find at all. Under `파일`
   # the whole file is this run's and the headings — if a fresh `ledger_init`
   # wrote any — carry no scoping meaning, so they are not consulted.
+  #
+  # The series prefixes are joined with the unit separator (\037), not a
+  # newline: BSD awk refuses a `-v` value holding a newline ("newline in
+  # string") and the `2>/dev/null` below would turn that refusal into "no rows"
+  # on every call on macOS.
   local ps="" s
-  for s in "$@"; do ps="${ps}- \`$s\`"$'\n'; done
+  for s in "$@"; do ps="${ps}- \`$s\`"$'\037'; done
   awk -v h="## 실행 $RUN_ID" -v ps="$ps" -v scope="${LEDGER_SCOPE:-블록}" '
-    BEGIN { whole = (scope == "파일"); inblk = whole; np = split(ps, p, "\n") - 1 }
+    BEGIN { whole = (scope == "파일"); inblk = whole; np = split(ps, p, "\037") - 1 }
     !whole && $0 == h { inblk = 1; next }
     !whole && substr($0, 1, 3) == "## " { inblk = 0 }
     inblk { for (i = 1; i <= np; i++) if (index($0, p[i]) == 1) { print; break } }
