@@ -38585,6 +38585,40 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR87"
 check "87b: 리드 수정 세그먼트의 git push 는 자동 해소를 비우면 통과하고 0 이면 승인 대기다" "$r87p1/$r87p0" "0/5"
 check "87b: 사전 인가 없는 이슈 생성은 자동 해소를 비우면 통과하고 0 이면 승인 대기다" "$r87i1/$r87i0" "0/5"
 
+# review-line — 라우터가 리뷰를 다시 파견할 때 쓸 프롬프트를 게이트가 행에서 조립한다.
+# 교대는 이전 파견의 프롬프트를 기억하지 못하고 원장도 그것을 남기지 않는다. 그래서
+# 브랜치·선언 파일 집합은 그것을 실은 마지막 행에서 읽어야 한다(뒤의 상태 행은 그 둘을
+# 되풀이하지 않는다). 잘려서 곁파일로 간 집합은 그 파일에서 전체를 읽는다.
+snap87=$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null ) )
+doc87=$(printf '%s' "$snap87" | jq -r '.["문서 인자"]')
+sl87=""; [ "$(printf '%s' "$snap87" | jq -r '.["슬라이싱"]["분기"]')" != "선언통치" ] || sl87=" --slice S8"
+base87=$(cd "$WORK/../.." && pwd)
+rl87() { gateL review-line --manifest "$WORK/plan-R87.md" --segment "$@"; }
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=계획됨 | 선언 파일 집합=`a.txt`, `b c.txt` | 선행=없음 | 워크트리=%s | 브랜치=seg/R87-S8 | prev=x\n' "$WT" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$WT" >> "$L87A"
+rl87 S8 -- --recheck /x/c1.md
+check "87b: review-line 은 마지막으로 실린 브랜치·선언 집합과 다음 사이클 리포트로 프롬프트를 낸다" "$rc|$msg" \
+  "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md$sl87 --declared-files \"a.txt, b c.txt\" --recheck /x/c1.md \"설계는 $doc87\""
+rl87 S8 -- --no-slice
+check "87b: review-line 의 --no-slice 는 --slice 를 빼고 프롬프트에 남지 않는다" "$rc|$msg" \
+  "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md --declared-files \"a.txt, b c.txt\" \"설계는 $doc87\""
+printf -- '- `cycle` | 교대=1 | 세그먼트=S8 | 사이클=1 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/seg-R87-S8-cycle1.md | prev=x\n' "$head87" >> "$L87A"
+printf 'a.txt, b c.txt, d.txt\n' > "$WORK/declared87.S8"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 선언 파일 집합=a.txt, b c.txt (전체: %s) | 워크트리=%s | prev=x\n' "$WORK/declared87.S8" "$WT" >> "$L87A"
+rl87 S8
+check "87b: review-line 은 사이클 행 뒤의 리포트 번호를 올리고 잘린 집합을 곁파일에서 읽는다" "$rc|$msg" \
+  "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle2.md$sl87 --declared-files \"a.txt, b c.txt, d.txt\" \"설계는 $doc87\""
+( cd "$WT" && printf 'S8\n' >> a.txt && git commit -qam s8 ) >/dev/null 2>&1
+rl87 S8; line87=$msg
+h87_plan S8 review "$line87"
+check "87b: review-line 이 낸 프롬프트의 리뷰 파견은 게이트를 지난다" "$rc" "0"
+rl87 S2
+check "87b: 브랜치를 실은 행이 없는 세그먼트의 review-line 은 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"names a branch"*) ok "87b: 그 거절은 브랜치가 없다는 것을 든다" ;;
+  *) bad "87b review-line 브랜치 없음 문면" "$msg" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # 88. K2 트립와이어 — 이월 머지가 머지 대조와 종료 조건 11 을 지나는가
 # --- section: 88 | group: ledger_series | covers: gate_segment_review_count_verdict, gate_segment_cycle_verdict, gate_merge_check_value, gate_segment_merged_row, gate_done_conditions | anchors: 88: 이월된 사이클의 카운트 판정은 이월 이다, 88: 이월 없는 P1>0 의 카운트 판정은 위반 이다 ---
