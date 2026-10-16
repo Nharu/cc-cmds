@@ -27478,8 +27478,11 @@ gate_verb_act() {
   [ -n "$cutpoint" ] || { printf 'gate: --cutpoint is required\n' >&2; exit 2; }
   # `propose-done` is the one kind with no act behind it — it asks whether the
   # run may stop, and demanding an argv would force the router to invent a
-  # command whose only purpose is to satisfy a parser.
-  if [ "$kind" != "propose-done" ]; then
+  # command whose only purpose is to satisfy a parser. `base-check` is the other
+  # kind that takes nothing after `--`: every field of its row is the gate's, and
+  # its arm refuses any argv. Demanding one here left no spelling that passed
+  # both, so a segment whose review read `머지` stopped short of the merge.
+  if [ "$kind" != "propose-done" ] && [ "$kind" != "base-check" ]; then
     [ $# -ge 1 ] || { printf 'gate: an argv is required after --\n' >&2; exit 2; }
   fi
   # `exec` DOES NOT TAKE `--kind`, AND THE USAGE HEADER ALREADY SAID SO. A kind
