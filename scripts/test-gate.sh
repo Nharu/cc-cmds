@@ -2847,12 +2847,14 @@ mkdir -p "$o"
 k=$(( $(cat "$o/k" 2>/dev/null || printf 0) + 1 )); printf '%s\n' "$k" > "$o/k"
 printf '%s\n' "$$" > "$o/pid.$k"
 date +%s > "$o/start.$k"
+# The boot-time re-entry marker as this shift sees it: `unset`, or its value.
+printf '%s\n' "${CC_PIPELINE_REENTRY-unset}" > "$o/reentry.$k"
 hh() { bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null; }
-handoff() {  # handoff <사유> <CI 대기> — the shift's own handoff; its code lands in handoff.<k>.rc
+handoff() {  # handoff <사유> <CI 대기> [<리셋 대기>] — the shift's own handoff; its code lands in handoff.<k>.rc
   bash "$g" act --manifest "$m" --kind handoff --target infra --cutpoint 커밋 --surface 읽기 \
     --snapshot-digest "$(hh)" --rationale "픽스처 — 릴레이 교대의 인계" \
     -- "교대=$n" 대상=infra "사유=$1" '버린 선택지=-' '막힌 지점=기다릴 것만 남았다' '다음 후보=-' \
-       "CI 대기=$2" > /dev/null 2>&1
+       "CI 대기=$2" ${3:+"리셋 대기=$3"} > /dev/null 2>&1
   printf '%s\n' "$?" > "$o/handoff.$k.rc"
 }
 rcv=0
@@ -2860,9 +2862,20 @@ case "$(sed -n "${k}p" "$CC_TEST_RL_PLAN")" in
   wait)      handoff 대기 "${CC_TEST_RL_CI:--}" ;;
   wait-fail) handoff 대기 "${CC_TEST_RL_CI:--}"; rcv=1 ;;
   wait-kill) handoff 대기 "${CC_TEST_RL_CI:--}"; kill "$CC_TEST_RL_KILL" 2>/dev/null ;;
+  wait-reset) handoff 대기 - "$CC_TEST_RL_RESET" ;;
   cap)       handoff 상한 - ;;
   fgwait)    bash "$g" wait --manifest "$m" --segment "$CC_TEST_RL_SEG" --interval 1 --timeout 60 \
                > /dev/null 2>&1 ;;
+  # Held until the test drops `release`, so a second launcher meets a live shift.
+  hold)      printf '{"type":"stub","pid":%s}\n' "$$"
+             i=0; while [ ! -e "$o/release" ] && [ "$i" -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done
+             handoff 상한 - ;;
+  # A shift the usage limit killed: a binding `rejected` frame, a 429 result, no handoff.
+  limitdie)  printf '%s\n' '{"type":"system","subtype":"init","session_id":"sid-rl"}' \
+               "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$CC_TEST_RL_RESETAT,\"rateLimitType\":\"five_hour\"}}" \
+               '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"sid-rl","result":"limit"}'
+             rcv=1 ;;
+  plaindie)  rcv=1 ;;
 esac
 date +%s > "$o/end.$k"
 exit "$rcv"
@@ -2881,7 +2894,9 @@ STUB
     # stub and the gate through the environment.
     ( CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" CC_TEST_RL_CI="${RL_CI:-}" \
       CC_TEST_RL_KILL="${RL_KILL:-}" CC_TEST_RL_SEG="${RL_SEG:-}" \
+      CC_TEST_RL_RESET="${RL_RESET:-}" CC_TEST_RL_RESETAT="${RL_RESETAT:-0}" \
       CC_GATE_RELAY_HOLD_TEST_SECONDS="${RL_HOLD:-}" \
+      CC_GATE_RESET_GRACE_TEST_SECONDS="${RL_GRACE:-}" \
         cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" \
           --rationale "픽스처 — 릴레이 (${RL_O##*/})" \
@@ -2951,6 +2966,34 @@ STUB
   rl_observe() {  # rl_observe <세그먼트> <상태> — one line as the `checks` poller writes it
     printf '%s\t%s\t7\tabc1234\t%s\t-\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
       >> "$CAP_DIR/checks.observed"
+  }
+  # THE CUT AND RE-ATTACHMENT SECTIONS (34g · 34i · 34j) SHARE THESE, so a cut
+  # of any one of them stands without another's body.
+  rl_iso_ep() { bash -c '. "$1"; cc_iso_to_epoch "$2"' _ "$LIVENESS" "$1"; }
+  rl_ep_iso() { bash -c '. "$1"; cc_epoch_to_iso "$2"' _ "$LIVENESS" "$1"; }
+  rl_plant_cut() {
+    # rl_plant_cut <스테이지> <실행 버전> <resetsAt|-> [종단 부류] — that stage's
+    # `stage-result` row in the cap ledger and, unless `-`, the attempt's own
+    # stream with one binding `rejected` frame whose clock is the given epoch.
+    local s="$1" a="$2" r="$3" k="${4:-한도 종료}"
+    mkdir -p "$CAP_DIR/log"
+    if [ "$r" != "-" ]; then
+      printf '%s\n' '{"type":"system","subtype":"init","session_id":"sid-cut"}' \
+        "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$r,\"rateLimitType\":\"five_hour\"}}" \
+        '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"sid-cut","result":"limit"}' \
+        > "$CAP_DIR/log/$s#$a.json"
+    fi
+    printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=implement | 실행 버전=%s | 종단 부류=%s | prev=x\n' \
+      "$s" "$s" "$a" "$k" >> "$CAP_LEDGER"
+  }
+  rl_gate_fn() {
+    # rl_gate_fn <함수> <인자…> — one gate function, sourced, on the cap run's
+    # directory and ledger. Its code is the call's code.
+    ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; shift 3; "$@"' \
+        _ "$GATE" "$CAP_DIR" "$CAP_LEDGER" "$@" )
+  }
+  rl_dead_pid() {  # rl_dead_pid — a pid that has been reaped
+    local p; sleep 0 & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
   }
 }
 
@@ -20566,11 +20609,13 @@ check "F4 — 교대 복귀 자리의 앵커가 파일에서 유일하다" \
 # with F1 below, the window measures nothing about the property.
 check "F2 — 세그먼트 행 기록 자리가 발사한다" \
   "$(fires_at "gate_append 'segment' \"id=\$seg\" \"\$@\"" 10)" "fires"
-# The window is 80 rather than 60. Removing the class that fired on no evidence
+# The window is 90 rather than 60. Removing the class that fired on no evidence
 # meant rewriting the rationale beside it — the reasoning for staying silent is
 # longer than the reasoning for firing was — so the surviving firing arms moved
 # two lines past the old window and this assertion read `silent` while both arms
-# were still there. The window measures nothing about the property; it is the
+# were still there. It went from 80 to 90 when the re-attachment fields were
+# spelled out at both recorder appends, which put the first arm 81 lines below
+# the anchor. The window measures nothing about the property; it is the
 # helper's reach.
 #
 # THE ANCHOR IS THE RECORDER'S ROW, NOT THE FIRST `stage-result` APPEND. The
@@ -20581,7 +20626,7 @@ check "F2 — 세그먼트 행 기록 자리가 발사한다" \
 # owned. `plan_sha256` is written only by the recorder, so it names that site
 # and no other.
 check "F1 — 스테이지 결과 행 자리가 발사한다" \
-  "$( [ "$(site_fires '"plan_sha256=$psha" "종단 부류=$klass"' 80)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$( [ "$(site_fires '"plan_sha256=$psha" "종단 부류=$klass"' 90)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
 check "금지 — 라우터의 해소 쓰기는 발사하지 않는다" \
   "$(site_fires "gate_append 'blocked' \"대상=-\" \"스코프=run\" \"\$@\"" 12)" "0"
 check "금지 — 감시자 정체 파일의 전사는 발사하지 않는다" \
@@ -28179,7 +28224,7 @@ cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target inf
          -- "중단 기록=$CAP_DIR/halt//shift/SH4#2.md" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 park 를 고름'
 shh_refused "슬래시를 겹친 교대 기록 경로의 사람 답" 2 '중단 답' "$shh_h0"
 check "34f: 그 거절은 겹친 슬래시를 이름으로 든다" \
-  "$(case "$msg" in *'doubled slash'*) printf yes ;; *) printf no ;; esac)" "yes"
+  "$(case "$msg" in (*'doubled slash'*) printf yes ;; (*) printf no ;; esac)" "yes"
 
 # Who may write it, and with which fields.
 shh_b0=$(shh_blk)
@@ -28331,6 +28376,515 @@ shh_runrec "$SHH_SR4" 'SR4#1' 'Step 3 게이트 도달 좌석 실행 — 도구 
 shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
+
+# --- 34h. 죽은 교대 정산 — 교대와 실행기가 함께 죽으면 서두가 무기록을 쓴다 -------
+# --- section: 34h | group: cone | covers: act, snapshot | needs: 34e | anchors: 34h: 죽은 교대 정산이 무기록 행을 정확히 하나 쓴다, 34h: 실행기가 살아 있으면 정산하지 않는다 ---
+#
+# A HOST THAT STOPS TAKES THE LAUNCHER WITH THE SHIFT. The launcher writes the
+# `무기록` row after its `wait`, so when it dies too the ledger ends on a
+# `교대 기동` with no answer. The prelude settles that: a `shift.live` whose
+# lines 1–2 (the shift) and 3–4 (the launcher) both name dead processes is
+# taken by a rename, traced once through `gate_shift_trace_unrecorded` with
+# `종료 코드=-`, and removed with `shift.in-progress`. A launcher still alive is
+# the launcher's to trace, so that fixture is left exactly as it was.
+# ---------------------------------------------------------------------------
+cap_fx_new RDS1
+DS_SEAT="e4e4e4e4-5555-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$DS_SEAT.jsonl"
+cap_gate "$DS_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment DS1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$DS_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34h: 정산 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+ds_fp() {  # ds_fp <pid> — the fingerprint `cc_proc_fingerprint` records
+  { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+}
+ds_dead() {  # ds_dead — a pid that has been reaped
+  local p; sleep 0 & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
+}
+ds_unrec() { { cap_rows handoff | grep -cF '| 사유=무기록 |' || true; } | tr -d ' '; }
+mkdir -p "$CAP_DIR/log"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sid-ds"}' \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790390000}}' \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"sid-ds","result":"limit"}' \
+  > "$CAP_DIR/log/shift-1.json"
+printf -- '- `교대 기동` | 교대=0 | 서수=1 | 사유=상한 | 대상=infra | 기록 시각=2026-10-15T00:00:00Z | prev=x\n' >> "$CAP_LEDGER"
+printf '%s\n%s\n%s\n%s\n' "$(ds_dead)" 'Thu Jan  1 00:00:00 2026' "$(ds_dead)" 'Thu Jan  1 00:00:01 2026' \
+  > "$CAP_DIR/shift.live"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$CAP_DIR/shift.in-progress"
+ds_u0=$(ds_unrec)
+cap_snap "$DS_SEAT" '' > /dev/null
+cap_snap "$DS_SEAT" '' > /dev/null
+check "34h: 죽은 교대 정산이 무기록 행을 정확히 하나 쓴다" "$(ds_unrec)" "$((ds_u0 + 1))"
+ds_row=$(cap_rows handoff | grep -F '| 사유=무기록 |' | tail -1)
+check "34h: 그 행은 서수 1 의 교대와 종료 코드 - 를 싣는다" \
+  "$(row_field "$ds_row" '교대'):$(row_field "$ds_row" '종료 코드'):$(row_field "$ds_row" '대상')" "1:-:infra"
+check "34h: 한도 모양 스트림이면 한도 종료 형상 문구가 붙는다" \
+  "$(row_field "$ds_row" '막힌 지점' | grep -cF '한도 종료 형상' || true)" "1"
+check "34h: shift.live 와 shift.in-progress 가 지워진다" \
+  "$( [ -e "$CAP_DIR/shift.live" ] && printf live || printf none):$( [ -e "$CAP_DIR/shift.in-progress" ] && printf ip || printf none):$(ls "$CAP_DIR" | grep -c 'shift.live.settling' || true)" \
+  "none:none:0"
+
+# THE LAUNCHER LIVES. A second launch with no handoff, its shift dead and its
+# launcher a live process: nothing is written and the file stays as it was.
+printf -- '- `교대 기동` | 교대=0 | 서수=2 | 사유=상한 | 대상=infra | 기록 시각=2026-10-15T00:10:00Z | prev=x\n' >> "$CAP_LEDGER"
+sleep 300 & DS_LIVE=$!; FX_PIDS="${FX_PIDS:-}$DS_LIVE "
+printf '%s\n%s\n%s\n%s\n' "$(ds_dead)" 'Thu Jan  1 00:00:00 2026' "$DS_LIVE" "$(ds_fp "$DS_LIVE")" \
+  > "$CAP_DIR/shift.live"
+ds_before=$(cat "$CAP_DIR/shift.live")
+ds_u0=$(ds_unrec)
+cap_snap "$DS_SEAT" '' > /dev/null
+check "34h: 실행기가 살아 있으면 정산하지 않는다" \
+  "$(ds_unrec):$( [ "$(cat "$CAP_DIR/shift.live" 2>/dev/null)" = "$ds_before" ] && printf same || printf moved)" "$ds_u0:same"
+kill "$DS_LIVE" 2>/dev/null || true; wait "$DS_LIVE" 2>/dev/null || true
+
+# A FILE WITHOUT LINES 3–4 predates the launcher record and cannot be judged.
+printf '%s\n%s\n' "$(ds_dead)" 'Thu Jan  1 00:00:00 2026' > "$CAP_DIR/shift.live"
+cap_snap "$DS_SEAT" '' > /dev/null
+check "34h: 실행기 줄이 없는 옛 파일은 건드리지 않는다" \
+  "$(ds_unrec):$( [ -e "$CAP_DIR/shift.live" ] && printf kept || printf gone)" "$ds_u0:kept"
+rm -f "$CAP_DIR/shift.live"
+
+# --- 34g. 실행기 잠금 — 겹친 기동 둘 중 하나만 교대를 띄운다 -------------------
+# --- section: 34g | group: cone | covers: act, snapshot | needs: 34e | anchors: 34g: (1) 뒤에 든 호출은 3 이고 교대를 띄우지 않는다, 34g: (5) 재진입 표지를 단 호출이 띄운 교대의 CC_PIPELINE_REENTRY 는 빈 값이다 ---
+#
+# ONE LAUNCHER PER RUN. A seat call and a boot-time re-entry can reach the
+# same run at once, and before the launch lock both passed the reason check,
+# counted the same ordinal and ran two shifts on one ledger. Here the first
+# call's shift is held by the stub while the second call comes in: the second
+# is refused with 3 and leaves no `교대 기동` row, and `log/shift-1.json` holds
+# the one shift's output. The lock itself — the millisecond section — and the
+# claim's early-return cleanup are measured on the sourced functions.
+# ---------------------------------------------------------------------------
+cap_fx_new RRG1
+RG_SEAT="e4e4e4e4-7777-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RG_SEAT.jsonl"
+RL_OUT="${RL_OUT:-$WORK/rl-out}"; mkdir -p "$RL_OUT"
+RG_CAP_STUB_SAVE="$CAP_STUB"; CAP_STUB="$RL_STUB"
+RG_RL_SEAT_SAVE="${RL_SEAT:-}"; RL_SEAT="$RG_SEAT"
+RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''; RL_RESET=''; RL_RESETAT=''; RL_GRACE=''
+cap_gate "$RG_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RG1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RG_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34g: 동시 기동 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+rg_call() {
+  # rg_call <tag> <사유> — one seat `router-shift` in the background with its
+  # own output files, so two calls can overlap; its code lands in call.<tag>.rc.
+  local tag="$1" why="$2"
+  ( CAP_OUT="$RL_O/out.$tag"; CAP_ERR="$RL_O/err.$tag"
+    CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" \
+      cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+        --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" \
+        --rationale "픽스처 — 겹친 기동 ($tag)" -- "$why" -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+    printf '%s\n' "$rc" > "$RL_O/call.$tag.rc" ) &
+  RG_BG=$!
+}
+
+# (1) TWO OVERLAPPING `router-shift -- 중단`. A's shift is live and held when B
+# comes in.
+rl_case race hold
+rg_n0=$(rl_launches)
+rg_call A 중단; RG_A=$RG_BG
+rl_until 60 rl_has start.1 || bad "34g 겹친 기동" "첫 교대가 뜨지 않았다"
+rg_call B 중단; RG_B=$RG_BG
+wait "$RG_B" 2>/dev/null || true
+check "34g: (1) 뒤에 든 호출은 3 이고 교대를 띄우지 않는다" \
+  "$(cat "$RL_O/call.B.rc" 2>/dev/null):$(rl_calls):$(rl_launches)" "3:1:$((rg_n0 + 1))"
+check "34g: (1) 그 거절은 다른 실행기가 런을 쥐었다고 말한다" \
+  "$( { grep -cF 'another launcher holds this run' "$RL_O/err.B" "$RL_O/out.B" || true; } | awk -F: '{ s += $NF } END { print (s > 0) ? "yes" : "no" }')" "yes"
+: > "$RL_O/release"
+wait "$RG_A" 2>/dev/null || true
+check "34g: (1) 앞의 호출은 0 이고 교대 기동 행은 하나다" \
+  "$(cat "$RL_O/call.A.rc" 2>/dev/null):$(rl_calls):$(rl_launches)" "0:1:$((rg_n0 + 1))"
+check "34g: (1) log/shift-1.json 은 한 교대의 출력만 담는다" \
+  "$( { grep -c '"type":"stub"' "$CAP_DIR/log/shift-1.json" || true; } | tr -d ' ')" "1"
+
+# (2) THE LOCK. A live owner younger than sixty seconds keeps it; a dead owner
+# or an old one is taken over.
+RG_U="$WORK/rg-unit"; rm -rf "$RG_U"; mkdir -p "$RG_U"
+rg_fn() { ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; shift 2; "$@"' _ "$GATE" "$RG_U" "$@" ); }
+rg_lock() {  # rg_lock <owner line> — got or refused
+  rm -rf "$RG_U/shift-launch.lock"; mkdir "$RG_U/shift-launch.lock"
+  printf '%s\n' "$1" > "$RG_U/shift-launch.lock/owner"
+  rg_fn gate_shift_launch_lock > /dev/null 2>&1 && printf got || printf refused
+}
+check "34g: (2) 살아 있는 최근 소유자의 잠금은 넘어가지 않는다" "$(rg_lock "$$ $(date -u +%s)")" "refused"
+check "34g: (2) 죽은 소유자의 잠금은 넘겨받는다" "$(rg_lock "$(rl_dead_pid) $(date -u +%s)")" "got"
+check "34g: (2) 60초보다 오래된 소유자의 잠금은 넘겨받는다" "$(rg_lock "$$ $(( $(date -u +%s) - 120 ))")" "got"
+rm -rf "$RG_U/shift-launch.lock"
+
+# (3) THE CLAIM AND ITS EARLY-RETURN CLEANUP. The claim is four lines naming
+# this launcher, the lock is gone after it, and the cleanup an early return
+# runs removes this launcher's `shift.live` and no one else's.
+check "34g: (3) 점유는 네 줄 모두 이 실행기를 적고 잠금을 풀며, 이른 반환의 정리가 그것을 지운다" \
+  "$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"
+      gate_shift_launch_claim 중단 > /dev/null 2>&1 || { printf refused; exit 0; }
+      [ "$(sed -n 1p "$RUN_DIR/shift.live")" = "$$" ] && [ "$(sed -n 3p "$RUN_DIR/shift.live")" = "$$" ] \
+        && printf mine || printf other
+      [ -d "$RUN_DIR/shift-launch.lock" ] && printf :locked || printf :unlocked
+      gate_shift_launch_drop_claim
+      [ -e "$RUN_DIR/shift.live" ] && printf :kept || printf :dropped' _ "$GATE" "$RG_U")" \
+  "mine:unlocked:dropped"
+printf '1\nx\n1\nx\n' > "$RG_U/shift.live"
+rg_fn gate_shift_launch_drop_claim > /dev/null 2>&1 || true
+check "34g: (3) 다른 프로세스의 shift.live 는 정리가 건드리지 않는다" \
+  "$( [ -e "$RG_U/shift.live" ] && printf kept || printf dropped)" "kept"
+rm -rf "$RG_U"
+
+# (4) A `대기` HAND-BACK LEAVES `relay.live` WITH ITS `handback=` LINE: the
+# claim wrote the file inside the lock, and the hold returns through it.
+sleep 300 & RG_POLL=$!; FX_PIDS="${FX_PIDS:-}$RG_POLL "
+printf '%s\n' "$RG_POLL" > "$CAP_DIR/checks.pid"
+printf -- '- `handoff` | 교대=0 | 사유=대기 | 버린 선택지=- | 막힌 지점=- | 다음 후보=- | CI 대기=RGC1 | 대상=infra | prev=x\n' >> "$CAP_LEDGER"
+rl_case handback
+RL_HOLD=2 rl_call 대기
+rl_join
+check "34g: (4) 대기 재진입의 상한 반환은 0 이고 handback 줄이 있는 relay.live 를 남긴다" \
+  "$rc:$(rl_calls):$(grep -c '^handback=' "$CAP_DIR/relay.live" 2>/dev/null || true)" "0:0:1"
+rl_stage_end "$RG_POLL"
+
+# (5) THE BOOT-TIME RE-ENTRY MARKER STOPS AT THE LAUNCHER. The call carries it;
+# the shift it launches sees it blank.
+rl_case reentry cap
+CC_PIPELINE_REENTRY="RRG1@1790000000" rl_call 상한
+rl_join
+check "34g: (5) 재진입 표지를 단 호출이 띄운 교대의 CC_PIPELINE_REENTRY 는 빈 값이다" \
+  "$rc:$(rl_calls):$(cat "$RL_O/reentry.1" 2>/dev/null || printf none)" "0:1:"
+CAP_STUB="$RG_CAP_STUB_SAVE"; RL_SEAT="$RG_RL_SEAT_SAVE"
+
+# --- 34i. 재부착 측정 — 기준 기록, 행의 네 필드, seat-call, 재진입 행 ------------
+# --- section: 34i | group: cone | covers: act, snapshot | needs: 34e | anchors: 34i: 한도 부류 재부착 행이 네 필드를 그 철자로 싣는다, 34i: 좌석 모양 router-shift 가 seat-call 을 쓴다, 34i: 표지 없는 재진입 행은 상한을 넘은 좌석에서도 써진다 ---
+#
+# WHAT THE FIELD MEASUREMENT READS. A re-attachment's base goes into
+# `<seg>.anchor` at dispatch, and the attempt's `stage-result` row carries four
+# fields from it — `재부착 기준`, `재부착 지연`, `창 종류`, `마지막 절전` — which
+# the measurement greps by their spelling. The kernel values come from the test
+# hook, and the host is declared Darwin so the hook is read on any runner. The
+# rows are written by the lost-dispatch settlement, the one writer a fixture
+# can drive without a live stage; it appends the same field array the
+# supervisor's recorder does.
+# ---------------------------------------------------------------------------
+cap_fx_new RRI1
+RI_SEAT="e4e4e4e4-8888-2222-3333-444444444444"
+RI_BIG="e4e4e4e4-8888-2222-3333-44444444444b"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RI_SEAT.jsonl"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 40000 20000; } > "$NTX/$RI_BIG.jsonl"
+RL_OUT="${RL_OUT:-$WORK/rl-out}"; mkdir -p "$RL_OUT"
+RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''; RL_RESET=''; RL_RESETAT=''; RL_GRACE=''
+cap_gate "$RI_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RI0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RI_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34i: 측정 필드 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+ri_anchor() {  # ri_anchor <커널 값> <seg> — the dispatch's base record under those kernel values
+  ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="$1" rl_gate_fn gate_reattach_anchor_write "$2" > /dev/null 2>&1 || true
+}
+ri_head() { sed -n '1p;2p' "$CAP_DIR/$1.anchor" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+ri_orphan() {  # ri_orphan <seg> <attempt> — the gate-dispatched record of a stage that is gone
+  printf '%s\n' "$(rl_dead_pid)" > "$CAP_DIR/$1.pid"
+  printf 'Fri Sep 4 00:00:00 2026\n' > "$CAP_DIR/$1.start"
+  printf '%s\n' "$2" > "$CAP_DIR/$1.attempt"
+  printf 'implement\n' > "$CAP_DIR/$1.kind"
+}
+ri_row() { cap_rows stage-result | grep -F "| 스테이지=$1 |" | grep -F "실행 버전=$2 " | tail -1; }
+
+# (1) THE LIMIT CLASS. The reset is the base; the stream ends before it, so the
+# base is not raised; the sleep began long after it, so the base stays.
+ri_r1=$(( $(date +%s) + 1 ))
+rl_plant_cut RI1 1 "$ri_r1"
+sleep 2
+ri_sys1="kern.sleeptime=$((ri_r1 + 5000)),kern.waketime=$((ri_r1 + 6000))"
+ri_anchor "$ri_sys1" RI1
+check "34i: (1) 한도 부류의 기록은 리셋 종류·리셋 시각·창 종류를 싣는다" \
+  "$(ri_head RI1) $(sed -n '6p' "$CAP_DIR/RI1.anchor" 2>/dev/null)" "리셋 $ri_r1 five_hour"
+ri_orphan RI1 2
+ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="$ri_sys1" cap_snap "$RI_SEAT" '' > /dev/null
+ri1=$(ri_row RI1 2)
+check "34i: 한도 부류 재부착 행이 네 필드를 그 철자로 싣는다" \
+  "$(row_field "$ri1" '재부착 기준')|$(row_field "$ri1" '창 종류')|$(row_field "$ri1" '마지막 절전')" \
+  "리셋@$ri_r1|five_hour|$((ri_r1 + 5000))-$((ri_r1 + 6000))"
+check "34i: (1) 재부착 지연은 dispatch 에서 기준까지의 초다" \
+  "$(row_field "$ri1" '재부착 지연' | sed 's/^[0-9][0-9]*$/int/')" "int"
+# (4) THE TWO REMOVAL LISTS. The settlement removed it with the rest; the
+# supervisor's list is the same line, read from the source.
+check "34i: (4) 정산은 .anchor 를 형제 기록과 함께 지운다" \
+  "$( [ -e "$CAP_DIR/RI1.anchor" ] && printf left || printf gone):$(row_field "$ri1" '종단 부류')" "gone:외부 종료"
+check "34i: (4) 형제 기록을 지우는 두 목록이 모두 .anchor 를 싣는다" \
+  "$( { grep -cF '"$RUN_DIR/$seg.window" "$RUN_DIR/$seg.anchor"' "$GATE" || true; } | tr -d ' ')" "2"
+
+# (2) THE SLEEP CLASS. A sleep that began within grace + two polls of the base
+# and ended after it moves the base to the wake; one that began long after it
+# does not.
+ri_r2=$(( $(date +%s) + 1 ))
+rl_plant_cut RI2 1 "$ri_r2"
+sleep 2
+ri_anchor "kern.sleeptime=$((ri_r2 - 5)),kern.waketime=$((ri_r2 + 40))" RI2
+check "34i: (2) 기준 무렵에 든 절전은 기준을 깨어난 시각으로 옮긴다" "$(ri_head RI2)" "깨어남 $((ri_r2 + 40))"
+ri_anchor "kern.sleeptime=$((ri_r2 + 1000)),kern.waketime=$((ri_r2 + 2000))" RI2
+check "34i: (2) 기준보다 한참 뒤에 든 절전은 기준을 옮기지 않는다" "$(ri_head RI2)" "리셋 $ri_r2"
+
+# (3) NO BASE. A dispatch whose stage was not cut removes an earlier record,
+# and the row then carries none of the four fields.
+rl_plant_cut RI3 1 - '정상 완료'
+printf '리셋\n1\n2\n-\n-\n-\n' > "$CAP_DIR/RI3.anchor"
+ri_anchor "kern.sleeptime=1,kern.waketime=2" RI3
+check "34i: (3) 기준 없는 dispatch 는 앞 시도의 .anchor 를 지운다" \
+  "$( [ -e "$CAP_DIR/RI3.anchor" ] && printf left || printf gone)" "gone"
+ri_orphan RI3 2
+cap_snap "$RI_SEAT" '' > /dev/null
+ri3=$(ri_row RI3 2)
+check "34i: (3) 기록 없는 행은 네 필드가 없다" \
+  "$(row_field "$ri3" '종단 부류'):$(printf '%s' "$ri3" | grep -cE '재부착 기준=|재부착 지연=|창 종류=|마지막 절전=' || true)" \
+  "외부 종료:0"
+
+# (5) `seat-call`. A seat-shaped `router-shift` writes it with the manifest's
+# absolute path, the alias, the gate's own path and the act's `--cutpoint` and
+# `--surface`; a call carrying a stage marker or the re-entry marker does not.
+RI_CAP_STUB_SAVE="$CAP_STUB"; CAP_STUB="$RL_STUB"
+RI_RL_SEAT_SAVE="${RL_SEAT:-}"; RL_SEAT="$RI_SEAT"
+rm -f "$CAP_DIR/seat-call"
+rl_case seatcall cap
+rl_call 상한
+rl_join
+ri_sc() { sed -n "s/^$1=//p" "$CAP_DIR/seat-call" 2>/dev/null; }
+check "34i: 좌석 모양 router-shift 가 seat-call 을 쓴다" \
+  "$rc|$(ri_sc manifest)|$(ri_sc target)|$(ri_sc cutpoint)|$(ri_sc surface)" \
+  "0|$(cd "$(dirname "$CAP_NM")" && pwd)/$(basename "$CAP_NM")|infra|커밋|워크트리쓰기"
+check "34i: (5) seat-call 의 gate 는 실제 gate.sh 의 절대 경로다" \
+  "$(ri_sc gate | sed -n 's|^/.*/gate\.sh$|abs|p'):$( [ -f "$(ri_sc gate)" ] && printf file || printf none)" "abs:file"
+rm -f "$CAP_DIR/seat-call"
+rl_case reentrycall cap
+CC_PIPELINE_REENTRY="RRI1@1790000000" rl_call 상한
+rl_join
+check "34i: (5) 재진입 표지를 단 호출은 교대를 띄우되 seat-call 을 쓰지 않는다" \
+  "$rc:$(rl_calls):$( [ -e "$CAP_DIR/seat-call" ] && printf written || printf none)" "0:1:none"
+rl_case stagecall cap
+# The stub CLI is named on each call, not inside the wrapper, so the seam
+# census reads both calls as the forks they are.
+ri_stage_env() {
+  env XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$RI_SEAT" \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='RRI1:RI0#1' CC_PIPELINE_SEGMENT='' \
+    CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" "$@"
+}
+ri_sh=$(cd "$WT" && ri_stage_env CC_CLAUDE_BIN="$RL_STUB" bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null | jq -r .H)
+( cd "$WT" && ri_stage_env CC_CLAUDE_BIN="$RL_STUB" bash "$GATE" act --manifest "$CAP_NM" --kind router-shift --target infra \
+    --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$ri_sh" --rationale "픽스처 — 스테이지 표지" \
+    -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM" ) > "$RL_O/call.out" 2> "$RL_O/call.err"; rc=$?
+check "34i: (5) 스테이지 표지가 있는 호출은 교대를 띄우되 seat-call 을 쓰지 않는다" \
+  "$rc:$(rl_calls):$( [ -e "$CAP_DIR/seat-call" ] && printf written || printf none)" "0:1:none"
+CAP_STUB="$RI_CAP_STUB_SAVE"; RL_SEAT="$RI_RL_SEAT_SAVE"
+
+# (7) THE LATER OF TWO CLASSES, part one: the cut is planted before the
+# re-entry row (6) writes, and its reset is later than that row.
+ri_r7=$(( $(date +%s) + 300 ))
+rl_plant_cut RI7 1 "$ri_r7"
+
+# (6) `재진입` IS BOOKKEEPING. A seat past its context cap is refused an
+# ordinary act, and still writes this row; the boot time is the kernel's.
+cap_gate "$RI_BIG" '' exec --manifest "$CAP_NM" --target infra --segment RI0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RI_BIG" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 평범한 읽기" -- ls "$CONE_A"
+check "34i: (6) 대조 — 상한을 넘긴 좌석의 일반 행위는 3 이다" "$rc" "3"
+ri_boot=1790000000
+ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="kern.boottime=$ri_boot" \
+  cap_gate "$RI_BIG" '' act --manifest "$CAP_NM" --kind reentry --target infra --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(cap_H "$RI_BIG" '')" --rationale "픽스처 — 부팅 재진입" \
+    -- 사유=대기 레이블=com.example.cc-cmds.reentry
+ri6=$(cap_rows '재진입' | tail -1)
+check "34i: 표지 없는 재진입 행은 상한을 넘은 좌석에서도 써진다" \
+  "$rc|$(row_field "$ri6" '대상')|$(row_field "$ri6" '부팅 시각')|$(row_field "$ri6" '사유')|$(row_field "$ri6" '레이블')" \
+  "0|infra|$(rl_ep_iso "$ri_boot")|대기|com.example.cc-cmds.reentry"
+
+# (7) part two: the reset is later than the re-entry row, so the reset is the
+# base; a re-entry row later than the reset takes it.
+ri_anchor "kern.sleeptime=1,kern.waketime=2" RI7
+check "34i: (7) 리셋이 재진입 행보다 늦으면 기준은 리셋이다" "$(ri_head RI7)" "리셋 $ri_r7"
+printf -- '- `재진입` | 대상=infra | 부팅 시각=- | 기록 시각=%s | 사유=대기 | 레이블=x | prev=x\n' \
+  "$(rl_ep_iso "$((ri_r7 + 100))")" >> "$CAP_LEDGER"
+ri_anchor "kern.sleeptime=1,kern.waketime=2" RI7
+check "34i: (7) 재진입 행이 리셋보다 늦으면 기준은 그 행이다" "$(ri_head RI7)" "재진입 $((ri_r7 + 100))"
+
+# --- 34j. 리셋 대기 — 끊긴 시도의 시계를 기다려 후속 교대를 띄운다 ---------------
+# --- section: 34j | group: cone | covers: act, snapshot | needs: 34e | anchors: 34j: 끊긴 시도의 시계는 마지막 프레임 규칙으로 찍힌다, 34j: 리셋+G 에서 후속 교대가 뜬다, 34j: T1′ 의 대기가 리셋까지 기다린다 ---
+#
+# A CUT WHOSE LIMIT HAS NOT RESET IS SOMETHING TO WAIT ON. The clock is the
+# last `rate_limit_event` frame's `resetsAt`, read only when that frame binds;
+# a `대기` handoff names the cut stages in `리셋 대기` and is refused for a key
+# with no clock or one past the horizon; the relay wakes at the reset plus the
+# grace, or at an earlier `한도 해제` row; and a shift the limit killed — the
+# gate's own `무기록` — is waited out the same way when the seat re-issues
+# `대기`. The grace is shortened by its test hook.
+# ---------------------------------------------------------------------------
+cap_fx_new RRJ1
+RJ_SEAT="e4e4e4e4-6666-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RJ_SEAT.jsonl"
+RL_OUT="${RL_OUT:-$WORK/rl-out}"; mkdir -p "$RL_OUT"
+RJ_CAP_STUB_SAVE="$CAP_STUB"; CAP_STUB="$RL_STUB"
+RJ_RL_SEAT_SAVE="${RL_SEAT:-}"; RL_SEAT="$RJ_SEAT"
+RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''; RL_RESET=''; RL_RESETAT=''; RL_GRACE=''
+cap_gate "$RJ_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RJ0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RJ_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34j: 리셋 대기 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+RJ_G=2; RJ_POLL=5
+
+# (1) THE LAST-FRAME RULE, on five streams and one that is not a limit death.
+RJ_F="$WORK/rj-frames"; rm -rf "$RJ_F"; mkdir -p "$RJ_F"
+rj_r=$(( $(date +%s) + 600 ))
+rj_init='{"type":"system","subtype":"init","session_id":"s"}'
+rj_429='{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s","result":"limit"}'
+rj_ev() { printf '{"type":"rate_limit_event","rate_limit_info":{"status":"%s","resetsAt":%s}}' "$1" "$2"; }
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" "$rj_429" > "$RJ_F/ok.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" "$rj_429" '{"type":"assis' > "$RJ_F/T.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" "$rj_429" "$rj_init" > "$RJ_F/P.json"
+printf '%s\n' "$rj_init" "$(rj_ev allowed "$rj_r")" "$rj_429" > "$RJ_F/F.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected '"soon"')" "$rj_429" > "$RJ_F/R.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" \
+  '{"type":"result","subtype":"success","is_error":false,"session_id":"s"}' > "$RJ_F/none.json"
+rj_sle() { local o r=0; o=$(rl_gate_fn stage_limit_exit "$RJ_F/$1.json" 2>/dev/null) || r=$?; printf '%s:%s' "$r" "$o"; }
+check "34j: (1) 픽스처 스트림이 그 판정을 낸다 (0 · T · P · F · R · 1)" \
+  "$(rj_sle ok) $(rj_sle T) $(rj_sle P) $(rj_sle F) $(rj_sle R) $(rj_sle none)" "0: 3:T 3:P 3:F 3:R 1:"
+rj_at() { rl_gate_fn gate_cut_reset_at "$RJ_F/$1.json" 2>/dev/null || true; }
+check "34j: 끊긴 시도의 시계는 마지막 프레임 규칙으로 찍힌다" \
+  "$(rj_at ok)|$(rj_at T)|$(rj_at P)|$(rj_at F)|$(rj_at R)|$(rj_at none)" "$rj_r|$rj_r|$rj_r|||"
+
+# (2) THE `리셋 대기` REFUSALS: no clock, a stage that was not cut, a clock past
+# the horizon — 3 with no row; the field under another reason — 2; nothing at
+# all to wait on — 3. A key with a near clock is taken.
+rj_handoff() {  # rj_handoff <사유> <리셋 대기> — the seat writes one handoff; leaves rc
+  cap_gate "$RJ_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(cap_H "$RJ_SEAT" '')" --rationale "픽스처 — 리셋 대기 인계" \
+    -- 교대=0 대상=infra "사유=$1" '버린 선택지=-' '막힌 지점=-' '다음 후보=-' 'CI 대기=-' "리셋 대기=$2"
+}
+rj_hrows() { { cap_rows handoff | grep -c . || true; } | tr -d ' '; }
+rl_plant_cut RJD 1 "$rj_r" '정상 완료'
+rl_plant_cut RJF 1 $(( $(date +%s) + 20000 ))
+rl_plant_cut RJK 1 "$rj_r"
+rj_h0=$(rj_hrows)
+rj_handoff 대기 RJN; rj_c1=$rc
+rj_handoff 대기 RJD; rj_c2=$rc
+rj_handoff 대기 RJF; rj_c3=$rc
+rj_handoff 중단 RJK; rj_c4=$rc
+rj_handoff 대기 -;   rj_c5=$rc
+check "34j: (2) 시계 없음 · 끊기지 않은 스테이지 · 먼 시계 · 다른 사유 · 빈 집합은 3·3·3·2·3 이고 행이 없다" \
+  "$rj_c1 $rj_c2 $rj_c3 $rj_c4 $rj_c5:$(rj_hrows)" "3 3 3 2 3:$rj_h0"
+rj_handoff 대기 RJK
+check "34j: (2) 가까운 시계의 키는 받아 그 철자로 적는다" \
+  "$rc:$(row_field "$(cap_rows handoff | tail -1)" '리셋 대기')" "0:RJK"
+
+# (3) T1 — THE RESET PLUS THE GRACE. The shift hands off `대기` on a cut whose
+# reset is ahead; the relay holds past the reset and launches the successor
+# within two polls of reset + G.
+rj_r1=$(( $(date +%s) + 20 ))
+rl_plant_cut RJ1 1 "$rj_r1"
+rl_case reset wait-reset cap
+RL_RESET=RJ1 RL_GRACE=$RJ_G rl_call 상한
+rl_until 60 rl_has end.1 || bad "34j 리셋 대기" "첫 교대가 끝나지 않았다"
+rl_until 15 rl_relay_waiting || bad "34j 리셋 대기" "릴레이가 대기에 들지 않았다"
+check "34j: (3) relay.live 의 reset= 줄이 끊긴 스테이지와 그 시계를 싣는다" \
+  "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")" "RJ1:$rj_r1"
+rl_sample 2
+check "34j: (3) 리셋+G 전에는 후속 교대가 뜨지 않는다" \
+  "$(rl_has start.2 && printf woke || printf held):$( [ "$(date +%s)" -lt $((rj_r1 + RJ_G)) ] && printf early || printf late)" "held:early"
+rl_until 60 rl_has start.2
+rl_join
+rj_at1=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: 리셋+G 에서 후속 교대가 뜬다" \
+  "$rc:$(rl_calls):$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')" "0:2:대기"
+check "34j: (3) C2 — 리셋에서 후속 교대 기동의 기록 시각까지가 G 이상, G + 2·poll 이하다" \
+  "$( [ "${rj_at1:-0}" -ge $((rj_r1 + RJ_G)) ] && [ "${rj_at1:-0}" -le $((rj_r1 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at1:-}-$rj_r1")" "in"
+
+# (4) AN EARLIER `한도 해제` ROW below the cut row wakes the relay within a poll,
+# long before the reset.
+rj_r2=$(( $(date +%s) + 900 ))
+rl_plant_cut RJ2 1 "$rj_r2"
+rl_case cleared wait-reset cap
+RL_RESET=RJ2 RL_GRACE=$RJ_G rl_call 상한
+rl_until 60 rl_has end.1 || bad "34j 한도 해제" "첫 교대가 끝나지 않았다"
+rl_until 15 rl_relay_waiting || bad "34j 한도 해제" "릴레이가 대기에 들지 않았다"
+rl_sample 3
+check "34j: (4) 한도 해제 행이 서기 전에는 깨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
+rj_t=$(date +%s)
+printf -- '- `한도 해제` | 교대=0 | 근거=픽스처 | 레인=~/.claude | 기록 시각=%s | prev=x\n' "$(rl_ep_iso "$rj_t")" >> "$CAP_LEDGER"
+rl_until 30 rl_has start.2
+rl_join
+rj_at2=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: (4) C2 — 더 이른 한도 해제 행에서 후속 교대 기동까지가 G + 2·poll 이하다" \
+  "$rc:$( [ "${rj_at2:-0}" -le $((rj_t + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at2:-}-$rj_t")" "0:in"
+
+# (5) T1′ REFUSED: a shift the limit killed with a clock past the horizon, and
+# one that died with no clock at all. The seat's `대기` is 3 and launches
+# nothing; the `무기록` row is the gate's.
+rl_case die-far limitdie
+RL_RESETAT=$(( $(date +%s) + 20000 )) rl_call 상한
+rl_join
+check "34j: (5) 한도로 죽은 교대의 호출은 그 rc 를 돌려주고 무기록 행이 선다" \
+  "$rc:$(row_field "$(cap_rows handoff | tail -1)" '사유')" "1:무기록"
+rj_n0=$(rl_launches)
+rl_case die-far-reissue cap
+rl_call 대기
+rl_join
+check "34j: (5) 18060초보다 먼 시계의 T1′ 대기는 3 이고 띄우지 않는다" "$rc:$(rl_calls):$(rl_launches)" "3:0:$rj_n0"
+rl_case die-plain plaindie
+rl_call 상한
+rl_join
+rl_case die-plain-reissue cap
+rl_call 대기
+rl_join
+check "34j: (5) 시계 없는 무기록 뒤의 대기는 3 이고 띄우지 않는다" "$rc:$(rl_calls):$(rl_launches)" "3:0:$((rj_n0 + 1))"
+
+# (6) T1′ ADMITTED, ON A LEDGER WITH A STALE REFERENCE. An older shift's `대기`
+# with a `CI 대기` and a `stage-result` after it stand before the shift the
+# limit killed: read from that `대기`, the relay would wake at once on the
+# result or hand back on a dead poller. It waits for the dead shift's reset.
+printf -- '- `handoff` | 교대=0 | 사유=대기 | 버린 선택지=- | 막힌 지점=- | 다음 후보=- | CI 대기=RJC9 | 대상=infra | prev=x\n' >> "$CAP_LEDGER"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=RJX | 스테이지=RJX | 실행 버전=1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+rj_r3=$(( $(date +%s) + 25 ))
+rl_case die-near limitdie
+RL_RESETAT=$rj_r3 rl_call 상한
+rl_join
+rj_n=$(row_field "$(cap_rows '교대 기동' | tail -1)" '서수')
+check "34j: (6) 가까운 시계로 죽은 교대도 무기록으로 끝난다" "$rc:$(row_field "$(cap_rows handoff | tail -1)" '사유')" "1:무기록"
+rl_case near-reissue cap
+RL_GRACE=$RJ_G rl_call 대기
+rl_until 30 rl_relay_waiting || bad "34j T1′" "릴레이가 대기에 들지 않았다"
+rl_sample 3
+check "34j: T1′ 의 대기가 리셋까지 기다린다" \
+  "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")|$(sed -n 's/^ci=//p' "$CAP_DIR/relay.live")|$(rl_has start.1 && printf woke || printf held)" \
+  "교대#$rj_n:$rj_r3|-|held"
+rl_until 60 rl_has start.1
+rl_join
+rj_at3=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: (6) C2 — T1′ 의 후속은 리셋+G 이후, G + 2·poll 안에 뜬다" \
+  "$rc:$( [ "${rj_at3:-0}" -ge $((rj_r3 + RJ_G)) ] && [ "${rj_at3:-0}" -le $((rj_r3 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at3:-}-$rj_r3")" "0:in"
+
+# (7) THE SLEEP CLASS. The host slept across the reset: the reset is already
+# past when the relay runs, so it wakes at its first poll. The base of such a
+# re-attachment is the wake — the hook's `kern.waketime`, set to the moment the
+# relay starts, which is the first moment a relay that slept with the host runs
+# again — and the record says so.
+rj_r4=$(( $(date +%s) - 30 ))
+rl_plant_cut RJ4 1 "$rj_r4"
+sleep 1
+rl_case sleep wait-reset cap
+RL_RESET=RJ4 RL_GRACE=$RJ_G rl_call 상한
+rl_until 60 rl_has start.2
+rl_join
+rj_wk=$(cat "$RL_O/end.1" 2>/dev/null || printf 0)
+rj_at4=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: (7) C2 — 깨어난 시각에서 후속 교대 기동까지가 G + 2·poll 이하다" \
+  "$rc:$( [ "${rj_at4:-0}" -le $((rj_wk + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at4:-}-$rj_wk")" "0:in"
+ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="kern.sleeptime=$((rj_r4 - 10)),kern.waketime=$rj_wk" \
+  CC_GATE_RESET_GRACE_TEST_SECONDS=$RJ_G rl_gate_fn gate_reattach_anchor_write RJ4 > /dev/null 2>&1 || true
+check "34j: (7) 그 재부착의 기준은 깨어난 시각이다" \
+  "$(sed -n '1p;2p' "$CAP_DIR/RJ4.anchor" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')" "깨어남 $rj_wk"
+
+# (8) THE CONSTANTS, from the declaration lines: G + 2·poll is at most 180.
+rj_g=$(sed -n 's/^CC_RESET_GRACE_SECONDS=\([0-9][0-9]*\)$/\1/p' "$LIVENESS")
+rj_p=$(sed -n 's/^readonly GATE_WAIT_POLL_SECONDS=\([0-9][0-9]*\)$/\1/p' "$GATE")
+check "34j: (8) 선언된 G + 2·poll 은 180초 이하다" \
+  "$rj_g+2*$rj_p:$( [ -n "$rj_g" ] && [ -n "$rj_p" ] && [ $((rj_g + 2 * rj_p)) -le 180 ] && printf ok || printf no)" "60+2*5:ok"
+CAP_STUB="$RJ_CAP_STUB_SAVE"; RL_SEAT="$RJ_RL_SEAT_SAVE"
+rm -rf "$RJ_F"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조

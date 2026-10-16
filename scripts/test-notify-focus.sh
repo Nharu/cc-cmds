@@ -1129,7 +1129,8 @@ check "L26 느린 경로: find 한 번" "$(logn find)" "1"
 # starts no prime; a session seat switched off starts none either.
 L28_ENV=("${PRIME_ON[@]}" CC_CMDS_NOTIFY_HOST_OS=Darwin NOTIFIER_LOG="$NLOG"
   TMUX="$SOCK,4242,0" TMUX_PANE=%48 CC_NOTIFY_SESSION_ID=s28
-  CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= CC_PIPELINE_SHIFT_ID=)
+  CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= CC_PIPELINE_SHIFT_ID=
+  CC_PIPELINE_REENTRY=)
 seat28() {
   mkdir -p "$1"
   env "${L28_ENV[@]}" RUN_DIR="$1" "${@:2}" bash -c \
@@ -1152,6 +1153,28 @@ check "L28 (나) 꺼진 세션: prime 없음" "$(primes)" "0"
 rm -f "$TR"
 fire28 CC_CMDS_SESSION_NOTIFY=
 check "L28 (나) 켜진 세션: prime 정확히 하나" "$(primes)" "1"
+
+# L28 (다). A session the sleep re-attach starts carries none of the three
+# stage markers but carries the re-entry marker; it is not the router, so it
+# writes no seat record, starts no prime and clears no banner.
+clear28() {
+  env "${L28_ENV[@]}" CC_CMDS_AUTOPILOT_NOTIFY= "$@" bash -c \
+    '. "$0" && cc_notify_clear answer-run' "$ORCH/notify-run.sh" >/dev/null 2>&1
+}
+check "L28 (다) 재진입 표지: 라우터가 아니다" "$(env "${L28_ENV[@]}" CC_PIPELINE_REENTRY=RUN28@1790000000 bash -c \
+  '. "$0" && if cc_caller_is_router; then echo 라우터; else echo 아님; fi' "$ORCH/notify-run.sh" 2>/dev/null)" "아님"
+rm -f "$TR"
+seat28 "$WORK/rd28c" CC_CMDS_AUTOPILOT_NOTIFY= CC_PIPELINE_REENTRY=RUN28@1790000000
+check "L28 (다) 재진입 표지: notify.seat 을 쓰지 않는다" "$([ -f "$WORK/rd28c/notify.seat" ] && echo 있음 || echo 없음)" "없음"
+check "L28 (다) 재진입 표지: prime 없음" "$(primes)" "0"
+rm -f "$NLOG"
+clear28 CC_PIPELINE_REENTRY=RUN28@1790000000
+sleep 1
+check "L28 (다) 재진입 표지: 배너를 지우지 않는다" "$(cat "$NLOG" 2>/dev/null | grep -c -- '^-remove$' || true)" "0"
+rm -f "$NLOG"
+clear28
+wait_for "$NLOG" '^-remove$' || true
+check "L28 (다) 대조: 표지가 없으면 지운다" "$(grep -c -- '^-remove$' "$NLOG" 2>/dev/null || true)" "1"
 
 # --- K1–K10. the key-window watch after arrival on the trusted path -----------
 # Window 9 is the target and 25 the window the person left. A mouse-press
