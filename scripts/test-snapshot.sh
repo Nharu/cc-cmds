@@ -1099,7 +1099,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '교대=#### Merging and applying a segment|so write no `shift-halt` for it: a `park` segment is terminal and no answer could retry its apply' \
     '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
     '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
-    '#### Branching on `다음` after a review|-- lead-fix -p "/cc-cmds:review-unattended <리뷰 파견 프롬프트와 같은 인자> --lead-fix <리포트 경로>"' \
+    "#### Branching on \`다음\` after a review|-- lead-fix -p '/cc-cmds:review-unattended <브랜치> --lead-fix <리포트 경로> \"설계는 <문서 인자>\"'" \
+    '#### Spelling a review dispatch|`gate.sh review-line --manifest <매니페스트> --segment <seg> [-- <flag>…]`' \
+    '#### Spelling a review dispatch|Do not rebuild these arguments from an earlier stage'"'"'s stream log or from memory' \
     '#### Branching on `다음` after a review|with `--recheck <리포트 경로>` added to the prompt' \
     '#### Branching on `다음` after a review|`gate.sh residual-body --manifest <매니페스트> --segment <seg>`' \
     "#### Branching on \`다음\` after a review|\`'사유=리뷰 잔여'\`" \

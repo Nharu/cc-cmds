@@ -132,6 +132,13 @@
 #                    `잔여 제목=…`, `잔여 본문 파일=…` and `잔여 부류=…`;
 #                    refused (3) unless the segment's `다음` is `잔여 보류`, or
 #                    `이월` on the re-check, and its row names a pull request
+#   gate.sh review-line --manifest <path> --segment <id> [-- <flag>...]
+#                    prints the prompt of the segment's next review dispatch —
+#                    branch, next cycle's report path, `--slice`, `--base-sha`
+#                    and `--declared-files` from its rows, the flags after
+#                    `--` (`--no-slice` drops `--slice` instead), then the
+#                    `설계는 <문서>` directive; writes nothing.
+#                    Refused (3) when the segment has no row naming a branch
 #
 # `close` reads the answer from the harness-written transcript by FRAME, not by
 # text: the line must be the `tool_result` of an `AskUserQuestion` whose
@@ -16465,6 +16472,11 @@ GATE_DRIFT_DIRS
       # The same shape for the one issue of a segment parked `리뷰 잔여`.
       gate_residual_body "$segment"
       ;;
+    review-line)
+      # Reading, not acting: the prompt of the segment's next review dispatch,
+      # with the flags after `--` in it. No ledger row — the dispatch is the act.
+      gate_review_line "$segment" "$@"
+      ;;
     meta-merge)
       # Writing into the segment's repository and nowhere else: the merge
       # commit of a release-metadata resolution. No ledger row — the push and
@@ -18291,6 +18303,74 @@ gate_residual_body() {
   printf '잔여 제목=[잔여] %s %s 사이클 %s — %s\n' "$RUN_ID" "$seg" "$c" "$cls"
   printf '잔여 본문 파일=%s\n' "$f"
   printf '잔여 부류=%s\n' "$cls"
+}
+
+gate_review_line() {
+  # gate_review_line <segment> [<flag>…] — prints the prompt of a review
+  # dispatch of the segment, built the way the fixed-graph driver builds its
+  # own: `/cc-cmds:review-unattended <브랜치> --report-path <경로>[ --slice
+  # <id>][ --base-sha <sha>][ --declared-files "<집합>"][ <flag>…] "설계는
+  # <문서>"`. Refused with GATE_EXIT_RULE when the segment has no row or no
+  # branch to review.
+  #
+  # THE ROUTER HAD NOTHING TO SPELL THIS FROM. The lead fix, the re-check, the
+  # resolution review and the delta review are each written as "the segment's
+  # review prompt plus a flag", and neither the snapshot nor the ledger keeps
+  # that prompt. Shifts rebuilt it by grepping earlier stage streams; when the
+  # grep found nothing they ended on `사유=중단` with no stage alive, one shift
+  # after another. Built here from the rows, the prompt is the same on every
+  # shift and needs no memory of an earlier one.
+  #
+  # The report path is the next cycle's: the `cycle` rows counted the way the
+  # cycle cap counts them, plus one, under `docs/reviews/` of the run's base. A
+  # review that crashed and is sent again therefore names the same report.
+  #
+  # The declared set is the last value any of the segment's rows carried — a
+  # later state row does not repeat it — and a value the row writer clipped is
+  # read back whole from the file the row names.
+  #
+  # The caller's flags go in before the directive, because the review reads its
+  # document argument from `설계는 ` to the end of the prompt. `--no-slice` is
+  # the gate's own and never reaches the prompt: it drops `--slice` for the one
+  # review that answers a `cycle` row refused for its other-slice section.
+  local seg=$1 rows br n rp base decl side doc line a slice=1
+  local -a extra=()
+  shift
+  for a in "$@"; do
+    if [ "$a" = "--no-slice" ]; then slice=0; else extra+=("$a"); fi
+  done
+  case "$seg" in
+    ''|-|*/*|.*) warn "review-line needs --segment naming one segment"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+  rows=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg")
+  if [ -z "$rows" ]; then
+    warn "segment $seg has no segment row — there is no branch to review"
+    return "$GATE_EXIT_RULE"
+  fi
+  br=$(printf '%s\n' "$rows" | gate_rows_field_values '브랜치' | awk 'NF { v = $0 } END { print v }')
+  if [ -z "$br" ]; then
+    warn "no segment row of $seg names a branch — there is no branch to review"
+    return "$GATE_EXIT_RULE"
+  fi
+  n=$(gate_segment_cycle_count "$seg")
+  n=$(( ${n:-0} + 1 ))
+  rp=$(gate_report_abs "docs/reviews/seg-$RUN_ID-$seg-cycle$n.md")
+  line="/cc-cmds:review-unattended $br --report-path $rp"
+  if [ "$slice" = "1" ] && [ "$(gate_slicing_branch)" = "선언통치" ]; then line="$line --slice $seg"; fi
+  base=$(printf '%s\n' "$rows" | gate_rows_field_values '베이스 sha' | awk 'NF { v = $0 } END { print v }')
+  [ -z "$base" ] || line="$line --base-sha $base"
+  decl=$(printf '%s\n' "$rows" | gate_rows_field_values '선언 파일 집합' | awk 'NF { v = $0 } END { print v }')
+  case "$decl" in
+    *"(전체: "*")")
+      side=${decl##*"(전체: "}; side=${side%)}
+      decl=$(gate_prior_decl_whole "$side") || decl='' ;;
+  esac
+  decl=$(gate_decl_norm "$decl")
+  case "$decl" in ''|'없음'|'(없음)') : ;; *) line="$line --declared-files \"$decl\"" ;; esac
+  [ "${#extra[@]}" -eq 0 ] || line="$line ${extra[*]}"
+  doc=$(gate_doc_arg_path)
+  [ -z "$doc" ] || line="$line \"설계는 $doc\""
+  printf '%s\n' "$line"
 }
 
 gate_carry_issue_view() {
