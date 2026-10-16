@@ -28332,6 +28332,259 @@ shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
 
+# --- 34g. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
+# --- section: 34g | group: cone | covers: act, snapshot | anchors: 34g: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34g: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34g: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
+#
+# A REVIEW THAT DIED OF A DROPPED CONNECTION BEFORE SAVING ANYTHING is sent
+# again by the shift with `--recovery '전송 단절'`, and the gate admits it only
+# on the ledger's word: the last gate `review` row is a crash with `일시 원인=예`,
+# the last review dispatch row recorded this report path and nothing is there, no
+# witness directory carries the attempt, no recovery follows the crash, and fewer
+# than two follow the last `cycle` row. The stage is a stub CLI whose stream ends
+# on the result text a dropped connection leaves, so the crash rows are the
+# gate's own, written by the supervisor the real dispatch starts.
+RV_RID=R34G
+cap_fx_new "$RV_RID"
+RV_SEAT="34343434-7777-2222-3333-444444444444"
+cap_usage_line 10000 5000 1000 > "$NTX/$RV_SEAT.jsonl"
+RV_STUB="$WORK/bin/claude-rvstub"
+cat > "$RV_STUB" <<'STUB'
+#!/usr/bin/env bash
+sid=rv-session; prev=""
+for a in "$@"; do case "$prev" in --session-id|-r) sid="$a" ;; esac; prev="$a"; done
+case "${CC_TEST_RV_MODE:-}" in
+  conn)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    printf '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"%s","result":"API Error: getaddrinfo ENOTFOUND api.anthropic.com"}\n' "$sid"
+    exit 1 ;;
+  other)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    printf '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"%s","result":"tool loop aborted"}\n' "$sid"
+    exit 1 ;;
+esac
+exit 0
+STUB
+chmod +x "$RV_STUB"
+RV_CAP_STUB_SAVE="$CAP_STUB"
+cap_gate "$RV_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RV1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RV_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+rv_s1=$rc
+cap_gate "$RV_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RV2 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RV_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_C" 상태=실행중 선행=없음
+rv_s2=$rc
+cap_gate "$RV_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RV_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34g: 픽스처의 세그먼트 둘과 교대 기동이 섰다" "$rv_s1/$rv_s2/$rc" "0/0/0"
+RV_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+cap_usage_line 10000 5000 1000 > "$NTX/$RV_SHIFT.jsonl"
+RV_DOC=$(cap_snap "$RV_SEAT" '' | jq -r '.["문서 인자"]')
+CAP_STUB="$RV_STUB"
+rv_prompt() {  # rv_prompt <세그먼트> <리포트 경로>
+  printf '/cc-cmds:review-unattended seg/%s --report-path %s "설계는 %s"' "$1" "$2" "$RV_DOC"
+}
+rv_act() {  # rv_act <스텁 모드> <세그먼트> <스테이지 종류> <프롬프트> [옵션…] — 교대가 파견하고 끝날 때까지 기다린다
+  local mode="$1" seg="$2" sk="$3" p="$4" r; shift 4
+  CC_TEST_RV_MODE="$mode" cap_gate "$RV_SHIFT" "$RV_RID#1" act --manifest "$CAP_NM" --kind skill --target infra \
+    --segment "$seg" --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RV_SHIFT" "$RV_RID#1")" \
+    --rationale "픽스처 — 리뷰 파견" "$@" -- "$sk" -p "$p"
+  r=$rc
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+    CLAUDE_CODE_SESSION_ID="$RV_SHIFT" CC_CLAUDE_BIN="$CAP_STUB" \
+    CC_PIPELINE_SHIFT_ID="$RV_RID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+    bash "$GATE" wait --manifest "$CAP_NM" --segment "$seg" --interval 1 --timeout 60 ) >/dev/null 2>&1
+  rc=$r
+}
+rv_skill_rows() {  # rv_skill_rows <세그먼트> — 그 세그먼트의 skill 파견 행 수
+  { cap_rows '자율 승인' | grep -F '| kind=skill |' | grep -cF "| 세그먼트=$1 |" || true; } | tr -d ' '
+}
+rv_crash() {  # rv_crash <세그먼트> — 그 세그먼트의 마지막 게이트 review 행
+  cap_rows 'stage-result' | grep -F "| 세그먼트=$1 |" | grep -F '| 기록자=게이트 |' | grep -F '| 종류=review |' | tail -1
+}
+rv_last_skill() { cap_rows '자율 승인' | grep -F '| kind=skill |' | grep -F "| 세그먼트=$1 |" | tail -1; }
+RV_RP="$WORK/rv34g-c1.md"; rm -f "$RV_RP"
+
+# Refusals that need no crash: the over-long path, `--recovery` on another
+# stage kind, and a recovery with no crash row at all.
+rv_n0=$(rv_skill_rows RV1)
+rv_long="$WORK/$(printf 'p%.0s' $(seq 1 1000)).md"
+rv_act conn RV1 review "$(rv_prompt RV1 "$rv_long")"
+check "34g: 행 예산을 넘는 리포트 경로의 리뷰 파견은 rc 2 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n0"
+rv_act conn RV1 implement '/cc-cmds:implement-unattended "세그먼트 RV1"' --recovery '전송 단절'
+check "34g: 구현 파견의 --recovery 는 rc 2 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n0"
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
+check "34g: 크래시 행이 없는 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n0"
+
+# The review that dies of the dropped connection.
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")"
+check "34g: 첫 리뷰 파견이 통과한다" "$rc" "0"
+rv_row=$(rv_crash RV1)
+check "34g: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다" \
+  "$(row_field "$rv_row" '종단 부류')/$(row_field "$rv_row" '일시 원인')" "크래시/예"
+check "34g: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다" "$(row_field "$(rv_last_skill RV1)" '리포트 경로')" "$RV_RP"
+rv_sig1=$(row_field "$rv_row" '실패 서명')
+
+# Each premise, failed once, against the same crash.
+rv_n1=$(rv_skill_rows RV1)
+rv_act conn RV1 review "$(rv_prompt RV1 "$WORK/rv34g-other.md")" --recovery '전송 단절'
+check "34g: 기록된 경로와 다른 경로의 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
+rv_att=$(row_field "$rv_row" '실행 버전')
+mkdir -p "$CAP_DIR/cc-team-witness-rv34g"
+printf 'RV1#%s\n' "$rv_att" > "$CAP_DIR/cc-team-witness-rv34g/.attempt"
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
+check "34g: 그 시도의 위트니스 디렉터리가 있으면 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
+case "$msg" in
+  *"--recover 복구 파견"*) ok "34g: 그 거절은 기존 복구 파견을 가리킨다" ;;
+  *) bad "34g 위트니스 거절 문면" "$msg" ;;
+esac
+rm -rf "$CAP_DIR/cc-team-witness-rv34g"
+: > "$RV_RP"
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
+check "34g: 그 경로에 리포트가 있으면 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
+rm -f "$RV_RP"
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절스러운'
+check "34g: 어휘 밖의 --recovery 값은 rc 2 다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n1"
+
+# Two recoveries pass on the same path, and the two crashes they end in carry
+# the same signature without stopping them.
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
+rv_r1=$rc; rv_k1=$(rv_last_skill RV1)
+rv_sig2=$(row_field "$(rv_crash RV1)" '실패 서명')
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
+rv_r2=$rc; rv_k2=$(rv_last_skill RV1)
+rv_sig3=$(row_field "$(rv_crash RV1)" '실패 서명')
+check "34g: 첫 두 전송 단절 재파견이 통과한다" "$rv_r1/$rv_r2" "0/0"
+check "34g: 두 재파견 행이 같은 리포트 경로와 복구=전송 단절 을 싣는다" \
+  "$(row_field "$rv_k1" '리포트 경로')|$(row_field "$rv_k1" '복구')|$(row_field "$rv_k2" '리포트 경로')|$(row_field "$rv_k2" '복구')" \
+  "$RV_RP|전송 단절|$RV_RP|전송 단절"
+check "34g: 세 크래시의 실패 서명이 같아도 재파견은 멈추지 않았다" \
+  "$( [ -n "$rv_sig1" ] && [ "$rv_sig1" = "$rv_sig2" ] && [ "$rv_sig2" = "$rv_sig3" ] && printf 'same' || printf '%s/%s/%s' "$rv_sig1" "$rv_sig2" "$rv_sig3")" "same"
+rv_n2=$(rv_skill_rows RV1)
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
+check "34g: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n2"
+case "$msg" in
+  *"두 번이 상한"*"park 문면"*) ok "34g: 그 거절은 상한을 들고 기존 park 문면으로 보낸다" ;;
+  *) bad "34g 상한 거절 문면" "$msg" ;;
+esac
+# A recovery row after the last crash row, as a recovery whose stage left no row
+# would leave it: one crash buys one re-dispatch.
+printf -- '- `자율 승인` | 교대=1 | kind=skill | 결정=act | 세그먼트=RV1 | 리포트 경로=%s | 복구=전송 단절 | prev=x\n' "$RV_RP" >> "$CAP_LEDGER"
+rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
+case "$rc|$msg" in
+  "3|"*"새 크래시 행 없이"*) ok "34g: 크래시 행 뒤에 이미 재파견이 있으면 rc 3 이다" ;;
+  *) bad "34g 크래시당 한 번" "$rc|$msg" ;;
+esac
+
+# A crash on another cause is not this path's.
+RV_RP2="$WORK/rv34g-c2.md"; rm -f "$RV_RP2"
+rv_act other RV2 review "$(rv_prompt RV2 "$RV_RP2")"
+check "34g: 다른 원인의 크래시 행은 일시 원인=아니오 다" \
+  "$rc/$(row_field "$(rv_crash RV2)" '종단 부류')/$(row_field "$(rv_crash RV2)" '일시 원인')" "0/크래시/아니오"
+rv_n3=$(rv_skill_rows RV2)
+rv_act other RV2 review "$(rv_prompt RV2 "$RV_RP2")" --recovery '전송 단절'
+check "34g: 다른 원인의 크래시 뒤 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV2)" "3/$rv_n3"
+CAP_STUB="$RV_CAP_STUB_SAVE"
+
+# --- 34h. 전송 단절 교대 — 무기록 교대를 연결 확인 뒤에 다시 띄운다 ---------------
+# --- section: 34h | group: cone | covers: act, snapshot | anchors: 34h: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다, 34h: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다, 34h: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다 ---
+#
+# A SHIFT LOST TO A DROPPED CONNECTION is relaunched by the seat without a
+# person, and the launcher is where the wait happens: after a `무기록` handoff
+# with `일시 원인=예` it probes up to three times before the launch, and a probe
+# that never answers, or a fourth such launch in a row, is refused with exit 3
+# and no `교대 기동` row. The probe and its waits are replaced through the test
+# hooks, so three tries cost nothing and the answer is the fixture's.
+TR_RID=R34T
+cap_fx_new "$TR_RID"
+TR_SEAT="34343434-8888-2222-3333-444444444444"
+cap_usage_line 10000 5000 1000 > "$NTX/$TR_SEAT.jsonl"
+TR_STUB="$WORK/bin/claude-trstub"
+cat > "$TR_STUB" <<'STUB'
+#!/usr/bin/env bash
+case "${CC_TEST_TR_MODE:-}" in
+  conn)
+    printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: getaddrinfo ENOTFOUND api.anthropic.com"}'
+    exit 1 ;;
+  other)
+    printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"tool loop aborted"}'
+    exit 1 ;;
+esac
+exit 0
+STUB
+chmod +x "$TR_STUB"
+TR_PROBE2="$WORK/bin/probe-second"
+cat > "$TR_PROBE2" <<'STUB'
+#!/bin/sh
+n=$(( $(cat "$CC_TEST_PROBE_COUNT" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$CC_TEST_PROBE_COUNT"
+[ "$n" -ge 2 ]
+STUB
+chmod +x "$TR_PROBE2"
+TR_COUNT="$WORK/probe-count"
+TR_CAP_STUB_SAVE="$CAP_STUB"
+CAP_STUB="$TR_STUB"
+tr_launch() {  # tr_launch <교대 스텁 모드> <탐침 명령> — 좌석이 사유=중단 으로 교대를 띄운다
+  CC_TEST_TR_MODE="$1" CC_ORCH_NET_PROBE_CMD="$2" CC_ORCH_NET_PROBE_SLEEPS='0 0 0' \
+  CC_TEST_PROBE_COUNT="$TR_COUNT" \
+    cap_gate "$TR_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$TR_SEAT" '')" \
+      --rationale "픽스처 — 전송 단절 뒤의 교대 기동" \
+      -- 중단 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+}
+tr_launches() { { cap_rows '교대 기동' | grep -c . || true; } | tr -d ' '; }
+tr_last_launch() { cap_rows '교대 기동' | tail -1; }
+tr_last_handoff() { cap_rows 'handoff' | tail -1; }
+tr_snap_tr() { cap_snap "$TR_SEAT" '' | jq -r '.handoff | last | .["일시 원인"]'; }
+
+cap_gate "$TR_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment TR1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$TR_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34h: 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+
+# A shift dead of another error: `아니오`, and the next launch does not probe —
+# the probe that would refuse it is never asked.
+tr_launch other /usr/bin/true
+check "34h: 다른 오류로 죽은 교대의 무기록 행이 일시 원인=아니오 를 싣는다" \
+  "$rc/$(row_field "$(tr_last_handoff)" '사유')/$(row_field "$(tr_last_handoff)" '일시 원인')/$(tr_snap_tr)" "1/무기록/아니오/아니오"
+tr_launch conn /usr/bin/false
+check "34h: 일시 원인=아니오 뒤의 기동은 탐침 없이 간다 (연결 확인 없음)" \
+  "$rc/[$(row_field "$(tr_last_launch)" '연결 확인')]" "1/[]"
+check "34h: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다" \
+  "$(row_field "$(tr_last_handoff)" '사유')/$(row_field "$(tr_last_handoff)" '일시 원인')" "무기록/예"
+check "34h: 스냅숏 handoff[] 의 마지막 항목이 일시 원인=예 를 싣는다" "$(tr_snap_tr)" "예"
+
+# The probe never answers: refused, no launch row, the ordinal does not move.
+tr_n0=$(tr_launches)
+tr_launch plain /usr/bin/false
+check "34h: 탐침이 세 번 모두 닿지 않으면 rc 3 이고 기동 행이 없다" "$rc/$(tr_launches)" "3/$tr_n0"
+check "34h: 다음 서수의 교대 스트림도 생기지 않았다" \
+  "$( [ -e "$CAP_DIR/log/shift-$((tr_n0 + 1)).json" ] && printf 'made' || printf 'none')" "none"
+case "$msg" in
+  *"연결 탐침이 3번 모두"*) ok "34h: 그 거절은 경고 줄로 시도 수를 든다" ;;
+  *) bad "34h 탐침 실패 문면" "$msg" ;;
+esac
+
+# The probe answers on its second try, then on its first, twice more.
+rm -f "$TR_COUNT"
+tr_launch conn "$TR_PROBE2"
+check "34h: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다" \
+  "$(tr_launches)/$(row_field "$(tr_last_launch)" '연결 확인')" "$((tr_n0 + 1))/2/성공"
+tr_launch conn /usr/bin/true
+tr_c2=$(row_field "$(tr_last_launch)" '연결 확인')
+tr_launch conn /usr/bin/true
+check "34h: 둘째·셋째 연속 재기동도 연결 확인=1/성공 을 싣는다" \
+  "$tr_c2/$(row_field "$(tr_last_launch)" '연결 확인')/$(tr_launches)" "1/성공/1/성공/$((tr_n0 + 3))"
+tr_n1=$(tr_launches)
+tr_launch plain /usr/bin/true
+check "34h: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다" "$rc/$(tr_launches)" "3/$tr_n1"
+case "$msg" in
+  *"연속 3번"*) ok "34h: 그 거절은 연속 횟수를 든다" ;;
+  *) bad "34h 연속 상한 문면" "$msg" ;;
+esac
+CAP_STUB="$TR_CAP_STUB_SAVE"
+
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
 #
