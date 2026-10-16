@@ -837,6 +837,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '`종단 부류=한도 종료`' \
     '"session_id":"<세션 id>"' \
     'Four or more means the original and three re-attachments all ended cut' \
+    'and only a cut adds to this count' \
     'A limit must have cleared first.' \
     '--resume <세션 id>' \
     'never the slash command again' \
@@ -872,7 +873,10 @@ for pair in \
   "교대:$RS_SKILL:**A \`handoff\` entry is what that shift observed at its own \`기록 시각\`, not what holds now.**" \
   "교대:$RS_SKILL:or you are ending on \`중단\` (the gate answered exit 7, or no act is left to dispatch)" \
   "교대:$RS_SKILL:**A live stage holds back none of the other four.**" \
-  "교대:$RS_SKILL:or you are ending on \`대기\` (all that is left is a live stage's result or a pending CI verdict)" \
+  "교대:$RS_SKILL:or you are ending on \`대기\` (all that is left is a live stage's result, a pending CI verdict or the reset of a cut stage's limit)" \
+  "교대:$RS_SKILL:end the shift with \`사유=대기\` and \`'리셋 대기=<key>[,<key>…]'\` naming the cut keys" \
+  "리드:$AP_SEAT:issue the same call again at once with \`대기\` as its reason" \
+  "리드:$AP_SEAT:**The same holds when the latest \`handoff\` is the gate's \`무기록\` for a shift that died of the limit and the gate took your \`대기\` on it**" \
   "교대:$RS_SKILL:CFI-S1 still holds: the snapshot and the gate-routed reads this skill prescribes are the input" \
   "교대:$RS_SKILL:CFI-S1 still holds: whether to dispatch was decided from the snapshot" \
   "리드:$AP_SEAT:**Five reasons end a shift, and a live stage holds back none of them but \`대기\`.**" \
@@ -1095,7 +1099,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '교대=#### Merging and applying a segment|so write no `shift-halt` for it: a `park` segment is terminal and no answer could retry its apply' \
     '#### Re-dispatching the implementation after review findings|element reads `다음` `수정`' \
     '#### Branching on `다음` after a review|`_common/carryover-issue.md`' \
-    '#### Branching on `다음` after a review|-- lead-fix -p "/cc-cmds:review-unattended <리뷰 파견 프롬프트와 같은 인자> --lead-fix <리포트 경로>"' \
+    "#### Branching on \`다음\` after a review|-- lead-fix -p '/cc-cmds:review-unattended <브랜치> --lead-fix <리포트 경로> \"설계는 <문서 인자>\"'" \
+    '#### Spelling a review dispatch|`gate.sh review-line --manifest <매니페스트> --segment <seg> [-- <flag>…]`' \
+    '#### Spelling a review dispatch|Do not rebuild these arguments from an earlier stage'"'"'s stream log or from memory' \
     '#### Branching on `다음` after a review|with `--recheck <리포트 경로>` added to the prompt' \
     '#### Branching on `다음` after a review|`gate.sh residual-body --manifest <매니페스트> --segment <seg>`' \
     "#### Branching on \`다음\` after a review|\`'사유=리뷰 잔여'\`" \

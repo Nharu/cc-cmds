@@ -139,6 +139,21 @@ case "${ROUTE_COST_SCHEMA:-}" in
   'cc-cmds-cost-sample v1') ;;
   *) readonly ROUTE_COST_SCHEMA='cc-cmds-cost-sample v1' ;;
 esac
+# 관측 로그. 거래가 GRANT·WAIT 봉투를 낼 때마다 한 줄을 남긴다. 크기 문턱을 넘으면
+# 스키마가 다르거나 깨진 줄과 보존 나이를 넘은 줄을 지우고, 그래도 넘으면 최신 줄부터
+# 문턱 안에 드는 만큼 남긴다. 시험은 소싱 전에 같은 이름을 작은 값으로 미리 정한다.
+case "${ROUTE_OBSERVE_SCHEMA:-}" in
+  'cc-cmds-route-observe v1') ;;
+  *) readonly ROUTE_OBSERVE_SCHEMA='cc-cmds-route-observe v1' ;;
+esac
+case "${ROUTE_OBSERVE_MAX_BYTES:-}" in
+  16777216) ;;
+  *) readonly ROUTE_OBSERVE_MAX_BYTES=16777216 ;;
+esac
+case "${ROUTE_OBSERVE_KEEP_S:-}" in
+  10368000) ;;
+  *) readonly ROUTE_OBSERVE_KEEP_S=10368000 ;;
+esac
 
 route__dir() { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; }
 
@@ -915,6 +930,35 @@ def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $sc
           seq: (if $own != null and ($own.seq | rt_isint) then $own.seq
                 else ((([$leases.items[] | .seq | select(type == "number")] | max) // 0) + 1) end),
           account: $acct, config_dir: $dir, granted_at_epoch: $now, holders: $holders} end;
+
+# 관측 줄의 그룹 항목. 결정과 같은 문맥(잠금 아래 다시 읽은 표를 끼운 것)에서 모든
+# 그룹의 W7 과 주간 창 값을 그룹 순으로 늘어놓는다. 비용은 그 그룹에 대한 입장
+# 판정이 쓰는 값이다.
+def rt_observe($schema):
+  rt_need_cap | rt_cost_apply | rt_prep($schema) as $p
+  | [$p.groups[]] | sort_by(.group)
+  | map((.) as $G | $G.windows.seven_day as $x
+        | {group: $G.group,
+           w7_bp: rt_w7($p.c; $G; rt_admit_core($p.c; $G; null).cost),
+           u7_bp: (if $x.state == "known" then $x.u_bp else null end),
+           sigma7_bp: $G.sigma.seven_day,
+           resets_at: ($x.resets_at // null)});
+def rt_observe_line($schema; $oschema; $env; $op):
+  (.request // {}) as $r
+  | {schema: $oschema, at: .now, run_id: ($r.run_id // null), lineage: ($r.lineage // null),
+     event: ($r.event // null), kind: ($r.kind // null), verdict: $env.verdict,
+     basis: (if $env.verdict == "GRANT" then ($env.basis // null) else null end), op: $op,
+     account: ($env.account // null), group: ($env.group // null), groups: rt_observe($schema)};
+# 정리. 입력은 로그의 원문 줄이다. 스키마가 다르거나 깨진 줄과 `$cut` 보다 오래된 줄을
+# 지우고, 남은 줄을 끝(최신)부터 개행을 포함한 바이트 합이 `$max` 안에 드는 만큼 남긴다.
+def rt_observe_prune($oschema; $cut; $max):
+  [inputs | (.) as $raw | (fromjson? // null) as $o
+    | select((($o | type) == "object") and ($o.schema == $oschema) and (($o.at | type) == "number") and ($o.at >= $cut))
+    | $raw]
+  | (map(utf8bytelength + 1)) as $ls
+  | (reduce range(($ls | length) - 1; -1; -1) as $i ({s: 0, k: ($ls | length)};
+       if (.k == $i + 1) and (.s + $ls[$i] <= $max) then {s: (.s + $ls[$i]), k: $i} else . end)) as $r
+  | .[$r.k:][];
 JQ
 }
 
@@ -1548,6 +1592,77 @@ route__txn_fallback() {
 
 route__emit() { printf '%s' "$1" | jq -c 'del(.txn)'; }
 
+route__observe() {
+  # route__observe <table> <ctx-json> <leases-json|null> <op> <envelope-json> — 관측 로그에
+  # 한 줄. 위치는 표의 형제 `observe/route.jsonl` 이라 경로를 환경에서 따로 해석하지
+  # 않는다. GRANT·WAIT 만 남기고 PARK·휴면은 남기지 않는다. 락은 표 락과 따로 잡는다 —
+  # 부르는 자리는 모두 표 락을 놓은 뒤다. 어디서 실패하든 경고 한 줄만 내고 줄을
+  # 버리며 rc 0 이다. 표준 출력에는 쓰지 않는다.
+  local table="$1" ctx="$2" leases="$3" op="$4" env="$5" od f line size now tmp rc=0
+  case "$(printf '%s' "$env" | jq -r '(.verdict == "GRANT" or .verdict == "WAIT") and (.dormant != true)' 2>/dev/null)" in
+    true) ;;
+    *) return 0 ;;
+  esac
+  od="$(dirname "$table")/observe"
+  f="$od/route.jsonl"
+  line=$(printf '%s' "$ctx" | jq -c --argjson leases "$leases" --argjson env "$env" --arg op "$op" \
+         --arg schema "$ROUTE_LEASE_SCHEMA" --arg oschema "$ROUTE_OBSERVE_SCHEMA" \
+         "$(route__jq_lib)"' (if $leases == null then . else .leases = $leases end)
+           | rt_observe_line($schema; $oschema; $env; $op)' 2>/dev/null) || line=""
+  if [ -z "$line" ]; then
+    route__warn "관측 줄을 만들지 못해 버린다 ($f)"
+    return 0
+  fi
+  if [ ! -d "$od" ]; then
+    mkdir -p "$od" 2>/dev/null || [ -d "$od" ] || {
+      route__warn "관측 로그 디렉터리를 만들지 못해 줄을 버린다 ($od)"
+      return 0
+    }
+  fi
+  route__lock_acquire "$od" || {
+    rc=$?
+    route__warn "관측 로그 락을 잡지 못해 줄을 버린다 ($od, rc=$rc)"
+    return 0
+  }
+  if ! printf '%s\n' "$line" >> "$f" 2>/dev/null; then
+    route__lock_release
+    route__warn "관측 로그에 덧붙이지 못해 줄을 버린다 ($f)"
+    return 0
+  fi
+  size=$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  if [ "$size" -gt "$ROUTE_OBSERVE_MAX_BYTES" ]; then
+    now=$(printf '%s' "$ctx" | jq -r '.now')
+    tmp="$od/.route.jsonl.tmp.$$"
+    if jq -n -R -r --arg oschema "$ROUTE_OBSERVE_SCHEMA" --argjson cut "$((now - ROUTE_OBSERVE_KEEP_S))" \
+         --argjson max "$ROUTE_OBSERVE_MAX_BYTES" "$(route__jq_lib)"' rt_observe_prune($oschema; $cut; $max)' \
+         "$f" > "$tmp" 2>/dev/null \
+       && mv -f "$tmp" "$f" 2>/dev/null; then
+      :
+    else
+      rm -f "$tmp" 2>/dev/null
+      route__warn "관측 로그를 정리하지 못했다 ($f)"
+    fi
+  fi
+  route__lock_release
+  return 0
+}
+
+route__txn_say() {
+  # route__txn_say <table> <ctx-json> <leases-json|null> <op> <명령…> — 명령이 낸 봉투
+  # 한 줄을 그대로 내고 그 rc 를 돌려준다. 명령이 성공했을 때만 내기 직전에 관측
+  # 줄을 쓴다. 봉투·표준 출력·rc 는 관측 로그가 없을 때와 같다.
+  local t="$1" c="$2" l="$3" o="$4" out rc=0
+  shift 4
+  out=$("$@") || rc=$?
+  [ -n "$out" ] || return "$rc"
+  [ "$rc" != "0" ] || route__observe "$t" "$c" "$l" "$o" "$out"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
 route__txn_undo() {
   # route__txn_undo <table> <key> <prior-json|''> <record-json> — 차용 때문에 방금 쓴
   # 임대를 되돌린다. 잠금 아래 판독에서 그 키에 살아 있던 자기 기록이 있으면 그것을
@@ -1574,8 +1689,9 @@ route__txn_main() {
   # 어기면 자기 항목을 nonce 로 지운 뒤 WAIT 를 낸다. 타이브레이크는 두지 않는다 —
   # 어긴 집합을 본 재검증자가 자기를 철회하는 규칙만이 이중 보유에서도 안전하다.
   # 표 디렉터리가 없으면 락 없이 빈 표로 결정하고, 쓰기가 필요할 때만 만든 뒤 락
-  # 아래에서 다시 결정한다.
-  local table="" now="" boot="" ctx holders nonce out op rec key rc leases absent bpath prior bnew bv ctx2 urc
+  # 아래에서 다시 결정한다. GRANT·WAIT 봉투를 내는 출구는 모두 내기 직전에 그 결정이
+  # 쓴 표로 관측 줄 하나를 남기고, 그 실패는 경고뿐이라 봉투와 rc 를 바꾸지 않는다.
+  local table="" now="" boot="" ctx holders nonce out op rec key rc leases dl absent bpath prior bnew bv ctx2 urc
   local hs=()
   absent='{"state":"absent","items":[],"corrupt":[],"stale_corrupt":[]}'
   while [ $# -gt 0 ]; do
@@ -1612,7 +1728,7 @@ route__txn_main() {
     out=$(route__decide_with "$ctx" "$absent") || return 2
     op=$(printf '%s' "$out" | jq -r '.txn.op')
     if [ "$op" = "none" ]; then
-      route__emit "$out"
+      route__txn_say "$table" "$ctx" "$absent" none route__emit "$out"
       return 0
     fi
     mkdir -p "$table" 2>/dev/null || return 4
@@ -1622,11 +1738,12 @@ route__txn_main() {
   route__lock_acquire "$table" || rc=$?
   if [ "$rc" != "0" ]; then
     [ "$rc" = "3" ] || return "$rc"
-    route__txn_fallback "$ctx" "lease-lock-busy" null
+    route__txn_say "$table" "$ctx" null none route__txn_fallback "$ctx" "lease-lock-busy" null
     return 0
   fi
   route__hook_locked "$table"
   leases=$(route__table_read "$table" "$boot") || { route__lock_release; return 2; }
+  dl="$leases"
   out=$(route__decide_with "$ctx" "$leases") || { route__lock_release; return 2; }
   route__hook_decided "$table"
   op=$(printf '%s' "$out" | jq -r '.txn.op') || { route__lock_release; return 2; }
@@ -1671,8 +1788,8 @@ route__txn_main() {
         route__lock_release
         [ "$urc" = "0" ] || return 4
         case "$bv" in
-          corrupt) route__txn_fallback "$ctx2" "borrow-record-corrupt" "$rec" ;;
-          hit) route__txn_fallback "$ctx2" "lease-contention" "$rec" ;;
+          corrupt) route__txn_say "$table" "$ctx2" "$dl" none route__txn_fallback "$ctx2" "borrow-record-corrupt" "$rec" ;;
+          hit) route__txn_say "$table" "$ctx2" "$dl" none route__txn_fallback "$ctx2" "lease-contention" "$rec" ;;
           *) return 2 ;;
         esac
         return
@@ -1688,7 +1805,7 @@ route__txn_main() {
           route__lease_cmp_delete "$table/$key.lease" "$(printf '%s' "$rec" | jq -r '.nonce')"
           route__lock_release
           [ "$rc" = "1" ] || return 2
-          route__txn_fallback "$ctx2" "lease-contention" "$rec"
+          route__txn_say "$table" "$ctx2" "$dl" none route__txn_fallback "$ctx2" "lease-contention" "$rec"
           return 0
         fi
       fi ;;
@@ -1697,7 +1814,7 @@ route__txn_main() {
       return 2 ;;
   esac
   route__lock_release
-  route__emit "$out"
+  route__txn_say "$table" "$ctx" "$dl" "$op" route__emit "$out"
 }
 
 route__hold_main() {

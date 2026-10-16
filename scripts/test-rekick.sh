@@ -273,6 +273,10 @@ detect_case() {
     g=$(gate_direct "$id")
     check "$label: 게이트를 직접 물은 결과와 같다 (끝남)" "$g" "끝남"
   fi
+  if [ "$(col "$OUT" 갈래)" = "대기 이어받기" ]; then
+    g=$(gate_direct "$id")
+    check "$label: 게이트를 직접 물은 결과와 같다 (안끝남)" "$g" "안끝남"
+  fi
   : "$verdict"
 }
 
@@ -346,7 +350,7 @@ P_KAT='2026-10-06T00:00:00Z' mk_prev RKLIVE2; fx_stage_live I1
 printf '%s\n' s-RKOLD >> "$FX_RUN_DIR/session-lineage"
 fx_session_index s-RKOLD RKLIVE2
 out=$(rk_as s-RKOLD detect --arg '')
-check "2: 최신 후보가 자격이 없으면 더 오래된 후보로 물러서지 않는다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "열림/RKLIVE2"
+check "2: 최신 후보가 자격이 없으면 더 오래된 후보로 물러서지 않는다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "진행 중/RKLIVE2"
 
 # The newest candidate's ledger-path is missing or of another shape.
 P_KAT='2026-09-01T00:00:00Z' mk_prev RKLP1; fx_done
@@ -373,8 +377,9 @@ has "3: 무효화 굵은 줄" "$OUT" "집행 표면이 옮겨져 무효화됐습
 
 mk_prev RKINVSUB
 fx_blocked '강제 표면 이동 비슷한 것' 무효화
-detect_case "3 부분 문자열" RKINVSUB
-check "3: 사유가 강제 표면 이동을 부분 문자열로만 가지면 열림이다" "$(col "$OUT" 판정)" "열림"
+detect_case "3 부분 문자열" RKINVSUB 다시
+check "3: 사유가 강제 표면 이동을 부분 문자열로만 가지면 무효화 갈래가 아니고 멈춤 대기다" \
+  "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/멈춤"
 
 mk_prev RKDONEPARK; fx_done
 fx_blocked '세그먼트 정박' 막힘
@@ -395,16 +400,20 @@ detect_case "3 마감 경과" RKDL
 check "3: 진척 축 미선언 + 지난 ±HH:MM 마감은 재킥오프다" "$(col "$OUT" 판정)" "재킥오프"
 has "3: 그 표시는 벽시계 마감 경과 (<값>) 이다" "$(col "$OUT" '종료 표시')" "벽시계 마감 경과 (2026-01-01T00:00:00+09:00)"
 has "3: 마감 경과 원천의 정박 굵은 줄" "$OUT" "남은 정박 1건"
+has "3: 종료 행 없이 마감 경과 표시로 끝난 원천은 끝 토큰이 마감이라 한도 문장을 싣는다" "$OUT" "같은 한도가 다시 바닥날 수 있습니다"
 
 P_DL='2026-01-01T00:00:00+0900' mk_prev RKDLC
-detect_case "3 마감 ±HHMM" RKDLC
-check "3: 같으나 마감이 ±HHMM 이면 열림이다" "$(col "$OUT" 판정)" "열림"
+detect_case "3 마감 ±HHMM" RKDLC 다시
+check "3: 같으나 마감이 ±HHMM 이면 끝나지 않은 멈춤 대기다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/멈춤"
 check "3: 게이트도 그 런을 끝내지 않았다" "$(gate_direct RKDLC)" "안끝남"
 
 mk_prev RKQUIET
-detect_case "3 조용한 종단" RKQUIET
-check "3: done 없는 조용한 종단은 열림이다" "$(col "$OUT" 판정)" "열림"
-has "3: 그 문면은 게이트에 종료가 기록되지 않았다고 한다" "$OUT" "게이트에 종료가 기록되지 않았습니다"
+detect_case "3 조용한 종단" RKQUIET 다시
+check "3: done 없는 조용한 종단은 멈춤 대기다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/멈춤"
+check "3: 대기 판정 행이 원천 id 와 원천 base 를 싣는다" "$(col "$OUT" 판정 3)/$(col "$OUT" 판정 4)" "RKQUIET/$BASE"
+check "3: 대기의 갈래는 대기 이어받기다" "$(col "$OUT" 갈래)" "대기 이어받기"
+has "3: 그 문면은 끝나지 않은 채 멈춰 있고 이어받는다고 한다" "$OUT" "이전 런 RKQUIET 은 끝나지 않은 채 멈춰 있습니다(멈춤) — 이 새 런이 이어받고, 원천 런은 이어받음으로 닫습니다"
+hasnt "3: 멈춤 원인에는 한도 문장이 없다" "$OUT" "같은 한도"
 check "3: 게이트도 그 런을 끝내지 않았다 (조용한 종단)" "$(gate_direct RKQUIET)" "안끝남"
 fx_row '종료 절' "id=C1" "상태=충족" "근거=픽스처"
 detect_case "3 조용한 종단 + 충족" RKQUIET
@@ -413,40 +422,44 @@ check "3: 같으나 모든 절의 마지막 행이 충족이면 완료다" "$(co
 mk_prev RKSLICE
 fx_row 'blocked' "대상=-" "스코프=run" "원인=무효화" "사유=슬라이스 선언이 레포 밖을 가리킵니다" "관측=-" \
   "재개 명령=설계 문서의 ## 구현 슬라이싱 을 고쳐 새 런으로 다시 킥오프 — 이 런의 동결 문서는 바뀌지 않습니다"
-detect_case "3 슬라이싱 거절" RKSLICE
-check "3: 슬라이싱 거절 모양의 무효화는 열림이다" "$(col "$OUT" 판정)" "열림"
-has "3: 그 문장은 멈춰 있지만 게이트에 종료가 기록되지 않았다고 한다" "$OUT" "멈춰 있지만 게이트에 종료가 기록되지 않았습니다"
+detect_case "3 슬라이싱 거절" RKSLICE 다시
+check "3: 슬라이싱 거절 모양의 무효화는 멈춤 대기다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/멈춤"
+has "3: 그 문장은 끝나지 않은 채 멈춰 있다고 한다" "$OUT" "끝나지 않은 채 멈춰 있습니다(멈춤)"
 has "3: 그 뒤에 재개 명령을 축자로 인용한다" "$OUT" "(이전 런이 남긴 재개 명령: 설계 문서의 ## 구현 슬라이싱 을 고쳐 새 런으로 다시 킥오프 — 이 런의 동결 문서는 바뀌지 않습니다)"
 hasnt "3: 슬라이싱 거절은 승인 대기 문형이 아니다" "$OUT" "승인 대기"
-check "3: 멈춤 문장이 인용보다 먼저 나온다" \
-  "$(printf '%s\n' "$OUT" | grep -n -e '멈춰 있지만' -e '재개 명령:' | cut -d: -f1 | tr '\n' ' ')" \
-  "$(printf '%s\n' "$OUT" | grep -n -e '멈춰 있지만' -e '재개 명령:' | cut -d: -f1 | sort -n | tr '\n' ' ')"
+check "3: 머리 문장이 인용보다 먼저 나온다" \
+  "$(printf '%s\n' "$OUT" | grep -n -e '끝나지 않은 채' -e '재개 명령:' | cut -d: -f1 | tr '\n' ' ')" \
+  "$(printf '%s\n' "$OUT" | grep -n -e '끝나지 않은 채' -e '재개 명령:' | cut -d: -f1 | sort -n | tr '\n' ' ')"
+check "3: 머리 문장과 인용이 둘 다 있다 (순서 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$OUT" | grep -c -e '끝나지 않은 채' -e '재개 명령:')" "2"
 
 mk_prev RKAPPR
 fx_approval AP-7 대기
-detect_case "3 승인 대기" RKAPPR
-check "3: done 없는 승인 대기 정박은 열림이다" "$(col "$OUT" 판정)" "열림"
-has "3: 승인 대기 문면이 건수와 질문 문면을 싣는다" "$OUT" "승인 대기 1건(픽스처)"
-hasnt "3: 인용할 재개 명령이 없으면 처음부터 줄을 덧붙이지 않는다" "$OUT" "지금 처음부터 시작하려면 의도를 적어 부르세요"
+detect_case "3 승인 대기" RKAPPR 다시
+check "3: done 없는 승인 대기 정박은 승인 대기로 이어받는다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/승인 대기"
+has "3: 열린 승인 줄이 건수와 질문 문면을 싣고 옮기지 않는다고 한다" "$OUT" "이전 런 RKAPPR 의 열린 승인 1건(픽스처)은 옮기지 않습니다"
+hasnt "3: 새 런을 열 이유가 아니라는 거절 문장은 없다" "$OUT" "새 런을 열 이유가 아닙니다"
 fx_row 'blocked' "대상=-" "스코프=run" "원인=무효화" "사유=다른 무효화" "관측=-" "재개 명령=새 런으로 다시 킥오프"
-detect_case "3 승인 대기 + 재개 명령" RKAPPR
-has "3: 승인 대기 문형 뒤에 인용하면 처음부터 줄을 붙인다" "$OUT" "지금 처음부터 시작하려면 의도를 적어 부르세요"
+detect_case "3 승인 대기 + 재개 명령" RKAPPR 다시
+has "3: 승인 대기 이어받기도 남은 재개 명령을 인용한다" "$OUT" "(이전 런이 남긴 재개 명령: 새 런으로 다시 킥오프)"
+check "3: 이어받기의 마지막 줄은 처음부터 묻는 길이다" "$(printf '%s\n' "$OUT" | tail -n 1)" \
+  "고지${TAB}이어받지 않고 처음부터 묻게 하려면 의도를 적어 다시 부르세요"
 
 mk_prev RKLIVE; fx_stage_live I1; fx_done
 detect_case "3 살아 있는 스테이지" RKLIVE
-check "3: 살아 있는 스테이지가 있으면 done 이 있어도 열림이다" "$(col "$OUT" 판정)" "열림"
+check "3: 살아 있는 스테이지가 있으면 done 이 있어도 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
 has "3: 그 문면은 아직 돌고 있다고 한다" "$OUT" "아직 돌고 있습니다"
 
 mk_prev RKSHIFT; fx_done
 sleep 120 & spid=$!; FX_PIDS="$FX_PIDS$spid "
 printf '%s\n%s\n' "$spid" "$(LC_ALL=C ps -o lstart= -p "$spid" | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" > "$FX_RUN_DIR/shift.live"
 detect_case "3 살아 있는 교대" RKSHIFT
-check "3: 살아 있는 교대가 있으면 열림이다" "$(col "$OUT" 판정)" "열림"
+check "3: 살아 있는 교대가 있으면 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
 
 mk_prev RKBROKEN
 rm -f "$FX_LEDGER"; mkdir -p "$FX_LEDGER"
 detect_case "3 깨진 원장" RKBROKEN
-check "3: 원장 경로를 깨 둔 런은 열림이다" "$(col "$OUT" 판정)" "열림"
+check "3: 원장 경로를 깨 둔 런은 이어받지 않고 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
 rmdir "$FX_LEDGER"; : > "$FX_LEDGER"
 
 # A gate whose answer is neither 0 nor its own refusal, a gate that cannot be
@@ -457,9 +470,11 @@ cp -R "$ORCH" "$STUBORCH"
 mk_prev RKSTUB; fx_done
 rk_stub() { ( cd "$WORK" && CLAUDE_CODE_SESSION_ID=s-RKSTUB "$BASH" "$STUBORCH/rekick.sh" detect --arg '' 2>/dev/null ); }
 printf 'GATE_EXIT_RULE=3\ngate_run_ended_ok() { return 5; }\ngate_check_grant() { return 0; }\n' > "$STUBORCH/gate.sh"
-check "3: 게이트 함수가 GATE_EXIT_RULE 밖의 비영을 내면 열림이다" "$(col "$(rk_stub)" 판정)" "열림"
+out=$(rk_stub)
+check "3: 게이트 함수가 GATE_EXIT_RULE 밖의 비영을 내면 진행 중이다" "$(col "$out" 판정)" "진행 중"
+has "3: 그 문면은 게이트에서 종료 여부를 판정하지 못했다고 한다" "$out" "게이트에서 종료 여부를 판정하지 못했습니다"
 printf 'return 1\n' > "$STUBORCH/gate.sh"
-check "3: 게이트 들여오기가 실패하면 열림이다" "$(col "$(rk_stub)" 판정)" "열림"
+check "3: 게이트 들여오기가 실패하면 진행 중이다" "$(col "$(rk_stub)" 판정)" "진행 중"
 cat > "$STUBORCH/gate.sh" <<'GATESTUB'
 GATE_EXIT_RULE=3
 gate_run_ended_ok() {
@@ -470,6 +485,223 @@ GATESTUB
 out=$(rk_stub)
 check "3: 스텁 게이트가 끝냈다고 하면 재킥오프다 (사본의 게이트를 묻는다)" "$(col "$out" 판정)" "재킥오프"
 check "3: 표시는 고정 접두·접미 사이 전체다" "$(col "$out" '종료 표시')" "스텁 (괄호) 표시"
+
+# ---------------------------------------------------------------------------
+# 3b. 이어받기 — 끝나지 않았고 살아 있는 것이 없는 런, 원인별 고지, 닫기
+# ---------------------------------------------------------------------------
+# rekick.sh writes nothing, so the close the re-kickoff makes after it is called
+# here directly, the way rekickoff.md item 7.8 calls it: the gate's own verb on
+# the source manifest. What a close must leave is read off the source ledger.
+end_rows() { { grep -F '`자율 승인`' "$BASE/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F '| 결정=종료 |' || true; }; }
+close_src() {  # close_src <id> <successor> — sets rc
+  ( cd "$WT" && bash "$GATE_SH" end-abandoned --manifest "$BASE/docs/pipeline-run/$1.plan.md" \
+      --cause 이어받음 --successor "$2" ) >"$WORK/close.out" 2>&1; rc=$?
+}
+# unanswered <id> — the driver's own count of that run's unanswered halt records.
+unanswered() {
+  ( cd "$WT" && CC_ORCH_SOURCE_ONLY=1 bash -c 'd="$1"; r="$2"; l="$3"; set --; . "$d" >/dev/null 2>&1; set +e; cc_unanswered_halts "$r" "$l"' \
+      _ "$DRIVER" "$XDG_STATE_HOME/cc-cmds/run/$1" "$BASE/docs/pipeline-run/$1.md" 2>/dev/null )
+}
+# adopt_case <label> <id> <원인> — the source is adopted with that cause, then
+# closed `이어받음`, after which detect reads it as gate-ended.
+adopt_case() {
+  local label="$1" id="$2" cause="$3" ends
+  detect_case "$label" "$id" 다시
+  check "$label: 판정은 대기이고 원인은 $cause 다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(col "$OUT" '대기 원인')" "대기/$id/$cause"
+  has "$label: 머리 굵은 줄이 원인을 싣는다" "$OUT" "이전 런 $id 은 끝나지 않은 채 멈춰 있습니다($cause)"
+  close_src "$id" "RKSUCC-$id"
+  ends=$(end_rows "$id")
+  check "$label: 닫기는 0 으로 끝나고 종료 행 하나를 쓴다" "$rc/$(printf '%s' "$ends" | grep -c .)" "0/1"
+  case "$ends" in
+    *'| 재킥 원인=해당없음 | 종료 부류=이어받음 |'*"후계 런 RKSUCC-$id "*) ok "$label: 종료 행은 이어받음과 후계 런 id 를 싣는다" ;;
+    *) bad "$label: 종료 행은 이어받음과 후계 런 id 를 싣는다" "$ends $(tail -2 "$WORK/close.out")" ;;
+  esac
+  OUT2=$(rk_as "s-$id" detect --arg '')
+  check "$label: 닫은 뒤의 판별은 게이트 종료 재킥오프다" "$(col "$OUT2" 판정)/$(col "$OUT2" 갈래)" "재킥오프/게이트 종료"
+  hasnt "$label: 이어받음으로 끝난 원천에는 한도 문장이 없다" "$OUT2" "같은 한도"
+  check "$label: 원천 원장에 세그먼트 입양 행이 없다" \
+    "$(grep -c '세그먼트 입양' "$BASE/docs/pipeline-run/$id.md" 2>/dev/null || true)" "0"
+}
+# arg_table <label> <id> <원인> — the argument decides adoption of an un-ended
+# quiet run: an empty argument, a resume word or the intent verbatim holds it
+# `진행 중` with its cause, a re-kickoff word adopts it `대기`. Nothing is closed
+# either way, since detect writes nothing and no close follows a hold.
+arg_table() {
+  local label="$1" id="$2" cause="$3" a
+  for a in '' '이어서' '재개' '계속' 'resume' 'Resume.' '재개해줘' "$INTENT"; do
+    detect_case "$label 인자 '$a'" "$id" "$a"
+    check "$label: 인자 '$a' 는 이어받지 않고 진행 중이며 원인을 싣는다" \
+      "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(col "$OUT" '대기 원인')" "진행 중/$id/$cause"
+    has "$label: 인자 '$a' 의 고지는 재개로 보고 다시 로 이어받는 길을 든다" "$OUT" \
+      "이전 런 $id 은 끝나지 않은 채 멈춰 있습니다($cause) — 이 호출은 재개로 보고 이어받지 않습니다"
+    hasnt "$label: 인자 '$a' 에는 이어받는 머리 줄이 없다" "$OUT" "원천 런은 이어받음으로 닫습니다"
+    hasnt "$label: 인자 '$a' 에는 한도 문장이 없다" "$OUT" "같은 한도"
+  done
+  for a in '다시' '재킥오프' '다시 킥오프' 'rekick' 'again' 'retry' 'Retry!' '다시 해줘'; do
+    detect_case "$label 인자 '$a'" "$id" "$a"
+    check "$label: 인자 '$a' 는 대기로 이어받는다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/$cause"
+  done
+  check "$label: 인자 표를 다 돈 뒤에도 원천에 종료 행이 없다" "$(end_rows "$id" | grep -c . || true)" "0"
+  check "$label: 인자 표를 다 돈 뒤에도 게이트는 원천을 끝내지 않았다" "$(gate_direct "$id")" "안끝남"
+}
+
+# The #1281 shape: the shift handed off on a stop and a halt record waits.
+mk_prev RKW1281
+fx_row 'handoff' "교대=1" "사유=중단" "버린 선택지=-"
+mkdir -p "$FX_RUN_DIR/halt/shift"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/I1#2.md"
+printf '# 답\n' > "$FX_RUN_DIR/halt/I1#2.answer.md"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/I1#1.md"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/I1#1.md" "답=재수렴"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/shift/S1.md"
+arg_table "3b 사람 대기" RKW1281 '사람 대기'
+detect_case "3b 사람 대기 재개" RKW1281
+has "3b 사람 대기 재개: 재개 고지가 답 없는 정지 기록을 나열한다" "$OUT" \
+  "이전 런 RKW1281 의 답 없는 정지 기록 2건(I1#2.md, shift/S1.md)에 답하면 그 런이 이어집니다"
+detect_case "3b 사람 대기" RKW1281 다시
+has "3b 사람 대기: 답 없는 정지 기록을 이름으로 나열한다" "$OUT" \
+  "이전 런 RKW1281 의 답 없는 정지 기록 2건(I1#2.md, shift/S1.md)은 옮기지 않습니다"
+check "3b 사람 대기: 나열한 수가 cc_unanswered_halts 와 같다" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/.*답 없는 정지 기록 \([0-9][0-9]*\)건.*/\1/p')" "$(unanswered RKW1281)"
+check "3b 사람 대기: 대조하는 수가 비어 있지 않다" "$(unanswered RKW1281)" "2"
+hasnt "3b 사람 대기: 사람 대기에는 한도 문장이 없다" "$OUT" "같은 한도"
+adopt_case "3b 사람 대기" RKW1281 '사람 대기'
+
+mk_prev RKWAP
+fx_row '승인' "승인 id=AP-9" "상태=대기" "대상=-" "절단점=경계" "질문 문면=배포 창을 열까" "답변 문면=-" "해소 시각=-"
+fx_row '승인' "승인 id=AP-8" "상태=대기" "대상=-" "절단점=경계" "답변 문면=-" "해소 시각=-"
+arg_table "3b 승인 대기" RKWAP '승인 대기'
+detect_case "3b 승인 대기 재개" RKWAP 재개
+has "3b 승인 대기 재개: 재개 고지가 답하면 이어지는 열린 승인을 나열한다" "$OUT" \
+  "이전 런 RKWAP 의 열린 승인 2건(AP-8, 배포 창을 열까)에 답하면 그 런이 이어집니다"
+detect_case "3b 승인 대기" RKWAP 다시
+has "3b 승인 대기: 열린 승인을 질문 문면으로, 없으면 id 로 나열한다" "$OUT" "열린 승인 2건(AP-8, 배포 창을 열까)은 옮기지 않습니다"
+adopt_case "3b 승인 대기" RKWAP '승인 대기'
+check "3b 승인 대기: 닫은 뒤에도 승인 행은 대기다" \
+  "$( ( cd "$WT" && CC_ORCH_SOURCE_ONLY=1 bash -c 'd="$1"; l="$2"; set --; . "$d" >/dev/null 2>&1; cc_open_approval_rows "$l"' _ "$DRIVER" "$BASE/docs/pipeline-run/RKWAP.md" 2>/dev/null ) | grep -c .)" "2"
+
+# A shift that had nothing left but waiting on a stage or a CI verdict hands off
+# `사유=대기`; once that relay is gone the run is idle on nothing a limit holds,
+# with or without the stage's result arriving after.
+mk_prev RKWCI
+fx_row 'handoff' "교대=1" "사유=대기" "버린 선택지=-" "CI 대기=S1"
+detect_case "3b 스테이지·CI 대기 인계" RKWCI 다시
+check "3b 스테이지·CI 대기 인계: 사유=대기 는 한도 대기가 아니라 멈춤이다" "$(col "$OUT" 판정)/$(col "$OUT" '대기 원인')" "대기/멈춤"
+has "3b 스테이지·CI 대기 인계: 스테이지·CI 결과를 기다리며 끝났다고 한다" "$OUT" "마지막 교대는 스테이지·CI 결과를 기다리며 끝났고"
+hasnt "3b 스테이지·CI 대기 인계: 한도 문장이 없다" "$OUT" "같은 한도"
+hasnt "3b 스테이지·CI 대기 인계: 사용 한도를 기다렸다고 하지 않는다" "$OUT" "사용 한도"
+fx_row 'stage-result' "세그먼트=S1" "스테이지=S1" "종류=implement" "종료 코드=0" "실행 버전=1" "종단 부류=정상 완료"
+detect_case "3b 스테이지·CI 대기 인계 + 정상 완료" RKWCI 다시
+check "3b 스테이지·CI 대기 인계 + 정상 완료: 여전히 멈춤이다" "$(col "$OUT" '대기 원인')" "멈춤"
+hasnt "3b 스테이지·CI 대기 인계 + 정상 완료: 한도 문장이 없다" "$OUT" "같은 한도"
+adopt_case "3b 스테이지·CI 대기 인계" RKWCI 멈춤
+
+# A usage limit is read off a stage it cut, and released by either row.
+mk_prev RKWLIM
+fx_row 'stage-result' "세그먼트=I1" "스테이지=I1" "종류=implement" "종료 코드=1" "실행 버전=1" "종단 부류=한도 종료"
+detect_case "3b 한도 대기" RKWLIM 다시
+has "3b 한도 대기: 한도 원인은 같은 한도 문장을 싣는다" "$OUT" "사용 한도를 기다리며 멈췄습니다 — 같은 한도가 다시 바닥날 수 있습니다"
+adopt_case "3b 한도 대기" RKWLIM '한도 대기'
+
+for rel in '한도 해제' '교대 기동'; do
+  for kind in '한도 종료' '한도-형상 회수'; do
+    id="RKWREL$(printf '%s%s' "$rel" "$kind" | shasum | cut -c1-6)"
+    mk_prev "$id"
+    fx_row 'stage-result' "세그먼트=I1" "스테이지=I1" "종류=implement" "종료 코드=1" "실행 버전=1" "종단 부류=$kind"
+    detect_case "3b $kind" "$id" 다시
+    check "3b $kind: 마지막 스테이지 결과가 $kind 이면 한도 대기다" "$(col "$OUT" '대기 원인')" "한도 대기"
+    fx_row "$rel" "근거=픽스처" "기록 시각=2026-10-01T01:00:00Z"
+    detect_case "3b $kind 뒤 $rel" "$id" 다시
+    check "3b $kind 뒤 $rel: 풀린 한도는 멈춤이다" "$(col "$OUT" '대기 원인')" "멈춤"
+    hasnt "3b $kind 뒤 $rel: 한도 문장이 없다" "$OUT" "같은 한도"
+  done
+done
+
+# A limit-cut stage followed by a shift lost without a handoff: still the limit.
+mk_prev RKWLNR
+fx_row 'stage-result' "세그먼트=I1" "스테이지=I1" "종류=implement" "종료 코드=1" "실행 버전=1" "종단 부류=한도 종료"
+fx_row 'handoff' "교대=1" "사유=무기록" "버린 선택지=-"
+detect_case "3b 한도 종료 뒤 무기록" RKWLNR 다시
+check "3b 한도 종료 뒤 무기록: 한도가 무기록보다 앞선다" "$(col "$OUT" '대기 원인')" "한도 대기"
+
+# An approval and a halt record together: the approval decides the cause, and
+# both are listed.
+mk_prev RKWBOTH
+fx_row '승인' "승인 id=AP-3" "상태=대기" "대상=-" "절단점=경계" "질문 문면=둘 다 있다" "답변 문면=-" "해소 시각=-"
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 정지\n' > "$FX_RUN_DIR/halt/I1#1.md"
+detect_case "3b 승인 + 정지 기록" RKWBOTH 다시
+check "3b 승인 + 정지 기록: 원인은 승인 대기다" "$(col "$OUT" '대기 원인')" "승인 대기"
+has "3b 승인 + 정지 기록: 열린 승인을 나열한다" "$OUT" "열린 승인 1건(둘 다 있다)은 옮기지 않습니다"
+has "3b 승인 + 정지 기록: 답 없는 정지 기록도 나열한다" "$OUT" "답 없는 정지 기록 1건(I1#1.md)은 옮기지 않습니다"
+
+mk_prev RKWSR2
+fx_row 'stage-result' "세그먼트=I1" "스테이지=I1" "종류=implement" "종료 코드=1" "실행 버전=1" "종단 부류=한도 종료 아님"
+detect_case "3b 부분 문자열 종단 부류" RKWSR2 다시
+check "3b 부분 문자열 종단 부류: 통 필드가 아니면 한도 대기가 아니다" "$(col "$OUT" '대기 원인')" "멈춤"
+
+mk_prev RKWNR
+fx_row 'handoff' "교대=1" "사유=무기록" "버린 선택지=-"
+detect_case "3b 무기록" RKWNR 다시
+has "3b 무기록: 인계 없이 끝났다고 한다" "$OUT" "마지막 교대가 인계 없이 끝났습니다"
+hasnt "3b 무기록: 한도 문장이 없다" "$OUT" "같은 한도"
+adopt_case "3b 무기록" RKWNR 무기록
+
+mk_prev RKWQ
+arg_table "3b 멈춤" RKWQ 멈춤
+detect_case "3b 멈춤" RKWQ 다시
+has "3b 멈춤: 기다리는 것 없이 멈췄다고 한다" "$OUT" "기다리는 것 없이 멈췄습니다"
+adopt_case "3b 멈춤" RKWQ 멈춤
+
+# A stage or CI wait whose relay is still alive is not adopted, even on a
+# re-kickoff word, and the close the re-kickoff would make is refused for the
+# same reason.
+mk_prev RKWRELAY
+fx_row 'handoff' "교대=1" "사유=대기" "버린 선택지=-" "CI 대기=S1"
+sleep 120 & rpid=$!; FX_PIDS="$FX_PIDS$rpid "
+printf '%s\n%s\nrefreshed=%s\n' "$rpid" "$(LC_ALL=C ps -o lstart= -p "$rpid" | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" "$(date -u +%s)" > "$FX_RUN_DIR/relay.live"
+detect_case "3b 산 중계" RKWRELAY 다시
+check "3b 산 중계: 살아 있는 중계가 있는 대기는 재킥 낱말에도 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
+has "3b 산 중계: 그 문면은 아직 돌고 있다고 한다" "$OUT" "아직 돌고 있습니다"
+close_src RKWRELAY RKSUCC-RKWRELAY
+check "3b 산 중계: 같은 런의 닫기도 거절되고 종료 행이 없다" "$rc/$(end_rows RKWRELAY | grep -c .)" "3/0"
+
+mk_prev RKWWAIT
+sleep 120 & wpid=$!; FX_PIDS="$FX_PIDS$wpid "
+printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=B:I1#1\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n시도=1\n' \
+  "$wpid" "$(LC_ALL=C ps -o lstart= -p "$wpid" | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" "$(date -u +%s)" > "$FX_RUN_DIR/I1.waiting"
+detect_case "3b 신선한 대기 스테이지" RKWWAIT 다시
+check "3b 신선한 대기 스테이지: 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
+
+# An ended source that still holds an open person-decision approval and an
+# unlanded segment: the approval is listed and left waiting, and the unlanded
+# notice is today's, byte for byte.
+mk_prev RKWEND; fx_done
+fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=벽시계 마감" "재킥 원인=마감" "근거=마감 도달"
+fx_row '승인' "승인 id=AP-H1" "상태=대기" "대상=-" "절단점=경계" "판단 부류=사람-결정" "질문 문면=스키마를 둘로 나눌까" "답변 문면=-" "해소 시각=-"
+fx_row 'segment' "id=I1" "상태=리뷰" "워크트리=$FX_RUN_DIR" "PR=12"
+detect_case "3b 끝난 원천의 열린 승인" RKWEND
+check "3b 끝난 원천의 열린 승인: 게이트 종료 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 갈래)" "재킥오프/게이트 종료"
+has "3b 끝난 원천의 열린 승인: 굵은 줄이 승인의 질문 문면을 싣는다" "$OUT" \
+  "굵게${TAB}이전 런 RKWEND 의 열린 승인 1건(스키마를 둘로 나눌까)은 닫거나 옮기지 않습니다"
+has "3b 끝난 원천의 열린 승인: 마감으로 끝난 원천은 한도 문장을 싣는다" "$OUT" "같은 한도가 다시 바닥날 수 있습니다"
+check "3b 끝난 원천의 열린 승인: 머지되지 않은 작업 고지가 지금 문면과 바이트로 같다" \
+  "$(printf '%s\n' "$OUT" | grep -c -x -F "고지${TAB}이전 런의 머지되지 않은 작업(I1 PR 12)은 이어받지 않습니다 — 새 런이 그 세그먼트를 다시 합니다")" "1"
+check "3b 끝난 원천의 열린 승인: 승인 행은 판별 뒤에도 대기다" \
+  "$( { grep -F '| 승인 id=AP-H1 |' "$BASE/docs/pipeline-run/RKWEND.md" || true; } | tail -n 1 | grep -c '| 상태=대기 |')" "1"
+check "3b 끝난 원천의 열린 승인: 세그먼트 입양 행이 없다" "$(grep -c '세그먼트 입양' "$BASE/docs/pipeline-run/RKWEND.md" || true)" "0"
+
+# An ended source whose end token is not a budget: the boundary sentence only.
+mk_prev RKWDEF; fx_done
+fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=결함" "재킥 원인=결함" "근거=픽스처"
+detect_case "3b 결함 종료" RKWDEF
+has "3b 결함 종료: 경계 문장은 있다" "$OUT" "이전 런 RKWDEF 을 끝낸 경계는 같은 값으로 다시 주어집니다"
+hasnt "3b 결함 종료: 예산 토큰이 아닌 끝에는 한도 문장이 없다" "$OUT" "같은 한도"
+# The earliest ending row is the token, as the gate reads it: a later row does
+# not turn a budget end into another.
+fx_row '자율 승인' "kind=boundary" "결정=종료" "대상=-" "기준=마감" "재킥 원인=마감" "근거=나중 행"
+detect_case "3b 결함 종료 + 나중 마감 행" RKWDEF
+hasnt "3b 결함 종료 + 나중 마감 행: 끝 토큰은 첫 종료 행의 것이다" "$OUT" "같은 한도"
 
 # ---------------------------------------------------------------------------
 # 4. 완료와 종료 절

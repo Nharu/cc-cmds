@@ -537,6 +537,18 @@ check "그 shift.live 는 살아 있는 교대로 읽힌다 (검사가 공허하
 printf '%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/shift.live"
 check "지문이 어긋난 shift.live 는 살아 있는 교대가 아니다" \
   "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
+# LINES 3–4 ARE THE LAUNCHER, and the shift's own answer reads lines 1–2 only:
+# a four-line file answers exactly as the two-line file with the same head, both
+# ways round — a dead launcher does not kill a live shift, and a live launcher
+# does not revive a dead one.
+printf '%s\n%s\n%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" "999999" "Mon Jan  1 00:00:00 2001" \
+  > "$FX_RUN_DIR/shift.live"
+check "실행기 줄이 붙은 shift.live 도 앞 두 줄로 살아 있는 교대다" \
+  "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "live"
+printf '%s\n%s\n%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" "$$" "$(cc_proc_fingerprint "$$")" \
+  > "$FX_RUN_DIR/shift.live"
+check "산 실행기 줄이 지문이 어긋난 교대를 살리지 않는다" \
+  "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
 rm -f "$FX_RUN_DIR/shift.live"
 RD_R="$FX_RUN_DIR"
 

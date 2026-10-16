@@ -138,6 +138,13 @@ unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL CC_ORCH
 # does, a test says so rather than the suite vanishing mid-run.
 CC_GATE_PIN_DISABLE=1
 export CC_GATE_PIN_DISABLE
+# THE FETCH AND FAST-FORWARD BEFORE A PIN ARE OFF TOO, separately: a pin taken
+# with them on would fetch the checkout's real `origin` and could pin the remote
+# tip instead of the tree under test. Section 57 lifts only the pin seam above
+# and keeps this one; the one place that lifts this seam is the helper of
+# section 57p, whose sources are clones of a bare remote it makes itself.
+CC_GATE_PIN_SYNC_DISABLE=1
+export CC_GATE_PIN_SYNC_DISABLE
 # AUTO-RESOLUTION IS OFF FOR THIS WHOLE PROCESS. Most assertions here pin the
 # approval lifecycle a person drives — issue, wait, close — and that lifecycle
 # is still what the gate does with the switch off. The auto-resolving path is
@@ -2847,12 +2854,14 @@ mkdir -p "$o"
 k=$(( $(cat "$o/k" 2>/dev/null || printf 0) + 1 )); printf '%s\n' "$k" > "$o/k"
 printf '%s\n' "$$" > "$o/pid.$k"
 date +%s > "$o/start.$k"
+# The boot-time re-entry marker as this shift sees it: `unset`, or its value.
+printf '%s\n' "${CC_PIPELINE_REENTRY-unset}" > "$o/reentry.$k"
 hh() { bash "$g" snapshot --manifest "$m" --fields H 2>/dev/null; }
-handoff() {  # handoff <사유> <CI 대기> — the shift's own handoff; its code lands in handoff.<k>.rc
+handoff() {  # handoff <사유> <CI 대기> [<리셋 대기>] — the shift's own handoff; its code lands in handoff.<k>.rc
   bash "$g" act --manifest "$m" --kind handoff --target infra --cutpoint 커밋 --surface 읽기 \
     --snapshot-digest "$(hh)" --rationale "픽스처 — 릴레이 교대의 인계" \
     -- "교대=$n" 대상=infra "사유=$1" '버린 선택지=-' '막힌 지점=기다릴 것만 남았다' '다음 후보=-' \
-       "CI 대기=$2" > /dev/null 2>&1
+       "CI 대기=$2" ${3:+"리셋 대기=$3"} > /dev/null 2>&1
   printf '%s\n' "$?" > "$o/handoff.$k.rc"
 }
 rcv=0
@@ -2860,9 +2869,20 @@ case "$(sed -n "${k}p" "$CC_TEST_RL_PLAN")" in
   wait)      handoff 대기 "${CC_TEST_RL_CI:--}" ;;
   wait-fail) handoff 대기 "${CC_TEST_RL_CI:--}"; rcv=1 ;;
   wait-kill) handoff 대기 "${CC_TEST_RL_CI:--}"; kill "$CC_TEST_RL_KILL" 2>/dev/null ;;
+  wait-reset) handoff 대기 - "$CC_TEST_RL_RESET" ;;
   cap)       handoff 상한 - ;;
   fgwait)    bash "$g" wait --manifest "$m" --segment "$CC_TEST_RL_SEG" --interval 1 --timeout 60 \
                > /dev/null 2>&1 ;;
+  # Held until the test drops `release`, so a second launcher meets a live shift.
+  hold)      printf '{"type":"stub","pid":%s}\n' "$$"
+             i=0; while [ ! -e "$o/release" ] && [ "$i" -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done
+             handoff 상한 - ;;
+  # A shift the usage limit killed: a binding `rejected` frame, a 429 result, no handoff.
+  limitdie)  printf '%s\n' '{"type":"system","subtype":"init","session_id":"sid-rl"}' \
+               "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$CC_TEST_RL_RESETAT,\"rateLimitType\":\"five_hour\"}}" \
+               '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"sid-rl","result":"limit"}'
+             rcv=1 ;;
+  plaindie)  rcv=1 ;;
 esac
 date +%s > "$o/end.$k"
 exit "$rcv"
@@ -2881,7 +2901,9 @@ STUB
     # stub and the gate through the environment.
     ( CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" CC_TEST_RL_CI="${RL_CI:-}" \
       CC_TEST_RL_KILL="${RL_KILL:-}" CC_TEST_RL_SEG="${RL_SEG:-}" \
+      CC_TEST_RL_RESET="${RL_RESET:-}" CC_TEST_RL_RESETAT="${RL_RESETAT:-0}" \
       CC_GATE_RELAY_HOLD_TEST_SECONDS="${RL_HOLD:-}" \
+      CC_GATE_RESET_GRACE_TEST_SECONDS="${RL_GRACE:-}" \
         cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" \
           --rationale "픽스처 — 릴레이 (${RL_O##*/})" \
@@ -2951,6 +2973,34 @@ STUB
   rl_observe() {  # rl_observe <세그먼트> <상태> — one line as the `checks` poller writes it
     printf '%s\t%s\t7\tabc1234\t%s\t-\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
       >> "$CAP_DIR/checks.observed"
+  }
+  # THE CUT AND RE-ATTACHMENT SECTIONS (34g · 34i · 34j) SHARE THESE, so a cut
+  # of any one of them stands without another's body.
+  rl_iso_ep() { bash -c '. "$1"; cc_iso_to_epoch "$2"' _ "$LIVENESS" "$1"; }
+  rl_ep_iso() { bash -c '. "$1"; cc_epoch_to_iso "$2"' _ "$LIVENESS" "$1"; }
+  rl_plant_cut() {
+    # rl_plant_cut <스테이지> <실행 버전> <resetsAt|-> [종단 부류] — that stage's
+    # `stage-result` row in the cap ledger and, unless `-`, the attempt's own
+    # stream with one binding `rejected` frame whose clock is the given epoch.
+    local s="$1" a="$2" r="$3" k="${4:-한도 종료}"
+    mkdir -p "$CAP_DIR/log"
+    if [ "$r" != "-" ]; then
+      printf '%s\n' '{"type":"system","subtype":"init","session_id":"sid-cut"}' \
+        "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$r,\"rateLimitType\":\"five_hour\"}}" \
+        '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"sid-cut","result":"limit"}' \
+        > "$CAP_DIR/log/$s#$a.json"
+    fi
+    printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=implement | 실행 버전=%s | 종단 부류=%s | prev=x\n' \
+      "$s" "$s" "$a" "$k" >> "$CAP_LEDGER"
+  }
+  rl_gate_fn() {
+    # rl_gate_fn <함수> <인자…> — one gate function, sourced, on the cap run's
+    # directory and ledger. Its code is the call's code.
+    ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; shift 3; "$@"' \
+        _ "$GATE" "$CAP_DIR" "$CAP_LEDGER" "$@" )
+  }
+  rl_dead_pid() {  # rl_dead_pid — a pid that has been reaped
+    local p; sleep 0 & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
   }
 }
 
@@ -20566,11 +20616,13 @@ check "F4 — 교대 복귀 자리의 앵커가 파일에서 유일하다" \
 # with F1 below, the window measures nothing about the property.
 check "F2 — 세그먼트 행 기록 자리가 발사한다" \
   "$(fires_at "gate_append 'segment' \"id=\$seg\" \"\$@\"" 10)" "fires"
-# The window is 80 rather than 60. Removing the class that fired on no evidence
+# The window is 90 rather than 60. Removing the class that fired on no evidence
 # meant rewriting the rationale beside it — the reasoning for staying silent is
 # longer than the reasoning for firing was — so the surviving firing arms moved
 # two lines past the old window and this assertion read `silent` while both arms
-# were still there. The window measures nothing about the property; it is the
+# were still there. It went from 80 to 90 when the re-attachment fields were
+# spelled out at both recorder appends, which put the first arm 81 lines below
+# the anchor. The window measures nothing about the property; it is the
 # helper's reach.
 #
 # THE ANCHOR IS THE RECORDER'S ROW, NOT THE FIRST `stage-result` APPEND. The
@@ -20581,7 +20633,7 @@ check "F2 — 세그먼트 행 기록 자리가 발사한다" \
 # owned. `plan_sha256` is written only by the recorder, so it names that site
 # and no other.
 check "F1 — 스테이지 결과 행 자리가 발사한다" \
-  "$( [ "$(site_fires '"plan_sha256=$psha" "종단 부류=$klass"' 80)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$( [ "$(site_fires '"plan_sha256=$psha" "종단 부류=$klass"' 90)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
 check "금지 — 라우터의 해소 쓰기는 발사하지 않는다" \
   "$(site_fires "gate_append 'blocked' \"대상=-\" \"스코프=run\" \"\$@\"" 12)" "0"
 check "금지 — 감시자 정체 파일의 전사는 발사하지 않는다" \
@@ -28179,7 +28231,7 @@ cap_gate "$SHH_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target inf
          -- "중단 기록=$CAP_DIR/halt//shift/SH4#2.md" '선택지=세그먼트 park' '답한 주체=사람' '근거=사람이 park 를 고름'
 shh_refused "슬래시를 겹친 교대 기록 경로의 사람 답" 2 '중단 답' "$shh_h0"
 check "34f: 그 거절은 겹친 슬래시를 이름으로 든다" \
-  "$(case "$msg" in *'doubled slash'*) printf yes ;; *) printf no ;; esac)" "yes"
+  "$(case "$msg" in (*'doubled slash'*) printf yes ;; (*) printf no ;; esac)" "yes"
 
 # Who may write it, and with which fields.
 shh_b0=$(shh_blk)
@@ -28332,8 +28384,8 @@ shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
 
-# --- 34g. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
-# --- section: 34g | group: cone | covers: act, snapshot | anchors: 34g: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34g: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34g: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
+# --- 34k. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
+# --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
 #
 # A REVIEW THAT DIED OF A DROPPED CONNECTION BEFORE SAVING ANYTHING is sent
 # again by the shift with `--recovery '전송 단절'`, and the gate admits it only
@@ -28377,7 +28429,7 @@ rv_s2=$rc
 cap_gate "$RV_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
          --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RV_SEAT" '')" \
          --rationale "픽스처 — 교대 기동" -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
-check "34g: 픽스처의 세그먼트 둘과 교대 기동이 섰다" "$rv_s1/$rv_s2/$rc" "0/0/0"
+check "34k: 픽스처의 세그먼트 둘과 교대 기동이 섰다" "$rv_s1/$rv_s2/$rc" "0/0/0"
 RV_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
 cap_usage_line 10000 5000 1000 > "$NTX/$RV_SHIFT.jsonl"
 RV_DOC=$(cap_snap "$RV_SEAT" '' | jq -r '.["문서 인자"]')
@@ -28404,48 +28456,48 @@ rv_crash() {  # rv_crash <세그먼트> — 그 세그먼트의 마지막 게이
   cap_rows 'stage-result' | grep -F "| 세그먼트=$1 |" | grep -F '| 기록자=게이트 |' | grep -F '| 종류=review |' | tail -1
 }
 rv_last_skill() { cap_rows '자율 승인' | grep -F '| kind=skill |' | grep -F "| 세그먼트=$1 |" | tail -1; }
-RV_RP="$WORK/rv34g-c1.md"; rm -f "$RV_RP"
+RV_RP="$WORK/rv34k-c1.md"; rm -f "$RV_RP"
 
 # Refusals that need no crash: the over-long path, `--recovery` on another
 # stage kind, and a recovery with no crash row at all.
 rv_n0=$(rv_skill_rows RV1)
 rv_long="$WORK/$(printf 'p%.0s' $(seq 1 1000)).md"
 rv_act conn RV1 review "$(rv_prompt RV1 "$rv_long")"
-check "34g: 행 예산을 넘는 리포트 경로의 리뷰 파견은 rc 2 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n0"
+check "34k: 행 예산을 넘는 리포트 경로의 리뷰 파견은 rc 2 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n0"
 rv_act conn RV1 implement '/cc-cmds:implement-unattended "세그먼트 RV1"' --recovery '전송 단절'
-check "34g: 구현 파견의 --recovery 는 rc 2 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n0"
+check "34k: 구현 파견의 --recovery 는 rc 2 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n0"
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
-check "34g: 크래시 행이 없는 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n0"
+check "34k: 크래시 행이 없는 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n0"
 
 # The review that dies of the dropped connection.
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")"
-check "34g: 첫 리뷰 파견이 통과한다" "$rc" "0"
+check "34k: 첫 리뷰 파견이 통과한다" "$rc" "0"
 rv_row=$(rv_crash RV1)
-check "34g: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다" \
+check "34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다" \
   "$(row_field "$rv_row" '종단 부류')/$(row_field "$rv_row" '일시 원인')" "크래시/예"
-check "34g: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다" "$(row_field "$(rv_last_skill RV1)" '리포트 경로')" "$RV_RP"
+check "34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다" "$(row_field "$(rv_last_skill RV1)" '리포트 경로')" "$RV_RP"
 rv_sig1=$(row_field "$rv_row" '실패 서명')
 
 # Each premise, failed once, against the same crash.
 rv_n1=$(rv_skill_rows RV1)
-rv_act conn RV1 review "$(rv_prompt RV1 "$WORK/rv34g-other.md")" --recovery '전송 단절'
-check "34g: 기록된 경로와 다른 경로의 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
+rv_act conn RV1 review "$(rv_prompt RV1 "$WORK/rv34k-other.md")" --recovery '전송 단절'
+check "34k: 기록된 경로와 다른 경로의 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
 rv_att=$(row_field "$rv_row" '실행 버전')
-mkdir -p "$CAP_DIR/cc-team-witness-rv34g"
-printf 'RV1#%s\n' "$rv_att" > "$CAP_DIR/cc-team-witness-rv34g/.attempt"
+mkdir -p "$CAP_DIR/cc-team-witness-rv34k"
+printf 'RV1#%s\n' "$rv_att" > "$CAP_DIR/cc-team-witness-rv34k/.attempt"
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
-check "34g: 그 시도의 위트니스 디렉터리가 있으면 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
+check "34k: 그 시도의 위트니스 디렉터리가 있으면 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
 case "$msg" in
-  *"--recover 복구 파견"*) ok "34g: 그 거절은 기존 복구 파견을 가리킨다" ;;
-  *) bad "34g 위트니스 거절 문면" "$msg" ;;
+  *"--recover 복구 파견"*) ok "34k: 그 거절은 기존 복구 파견을 가리킨다" ;;
+  *) bad "34k 위트니스 거절 문면" "$msg" ;;
 esac
-rm -rf "$CAP_DIR/cc-team-witness-rv34g"
+rm -rf "$CAP_DIR/cc-team-witness-rv34k"
 : > "$RV_RP"
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
-check "34g: 그 경로에 리포트가 있으면 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
+check "34k: 그 경로에 리포트가 있으면 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n1"
 rm -f "$RV_RP"
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절스러운'
-check "34g: 어휘 밖의 --recovery 값은 rc 2 다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n1"
+check "34k: 어휘 밖의 --recovery 값은 rc 2 다" "$rc/$(rv_skill_rows RV1)" "2/$rv_n1"
 
 # Two recoveries pass on the same path, and the two crashes they end in carry
 # the same signature without stopping them.
@@ -28455,40 +28507,40 @@ rv_sig2=$(row_field "$(rv_crash RV1)" '실패 서명')
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
 rv_r2=$rc; rv_k2=$(rv_last_skill RV1)
 rv_sig3=$(row_field "$(rv_crash RV1)" '실패 서명')
-check "34g: 첫 두 전송 단절 재파견이 통과한다" "$rv_r1/$rv_r2" "0/0"
-check "34g: 두 재파견 행이 같은 리포트 경로와 복구=전송 단절 을 싣는다" \
+check "34k: 첫 두 전송 단절 재파견이 통과한다" "$rv_r1/$rv_r2" "0/0"
+check "34k: 두 재파견 행이 같은 리포트 경로와 복구=전송 단절 을 싣는다" \
   "$(row_field "$rv_k1" '리포트 경로')|$(row_field "$rv_k1" '복구')|$(row_field "$rv_k2" '리포트 경로')|$(row_field "$rv_k2" '복구')" \
   "$RV_RP|전송 단절|$RV_RP|전송 단절"
-check "34g: 세 크래시의 실패 서명이 같아도 재파견은 멈추지 않았다" \
+check "34k: 세 크래시의 실패 서명이 같아도 재파견은 멈추지 않았다" \
   "$( [ -n "$rv_sig1" ] && [ "$rv_sig1" = "$rv_sig2" ] && [ "$rv_sig2" = "$rv_sig3" ] && printf 'same' || printf '%s/%s/%s' "$rv_sig1" "$rv_sig2" "$rv_sig3")" "same"
 rv_n2=$(rv_skill_rows RV1)
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
-check "34g: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n2"
+check "34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV1)" "3/$rv_n2"
 case "$msg" in
-  *"두 번이 상한"*"park 문면"*) ok "34g: 그 거절은 상한을 들고 기존 park 문면으로 보낸다" ;;
-  *) bad "34g 상한 거절 문면" "$msg" ;;
+  *"두 번이 상한"*"park 문면"*) ok "34k: 그 거절은 상한을 들고 기존 park 문면으로 보낸다" ;;
+  *) bad "34k 상한 거절 문면" "$msg" ;;
 esac
 # A recovery row after the last crash row, as a recovery whose stage left no row
 # would leave it: one crash buys one re-dispatch.
 printf -- '- `자율 승인` | 교대=1 | kind=skill | 결정=act | 세그먼트=RV1 | 리포트 경로=%s | 복구=전송 단절 | prev=x\n' "$RV_RP" >> "$CAP_LEDGER"
 rv_act conn RV1 review "$(rv_prompt RV1 "$RV_RP")" --recovery '전송 단절'
 case "$rc|$msg" in
-  "3|"*"새 크래시 행 없이"*) ok "34g: 크래시 행 뒤에 이미 재파견이 있으면 rc 3 이다" ;;
-  *) bad "34g 크래시당 한 번" "$rc|$msg" ;;
+  "3|"*"새 크래시 행 없이"*) ok "34k: 크래시 행 뒤에 이미 재파견이 있으면 rc 3 이다" ;;
+  *) bad "34k 크래시당 한 번" "$rc|$msg" ;;
 esac
 
 # A crash on another cause is not this path's.
-RV_RP2="$WORK/rv34g-c2.md"; rm -f "$RV_RP2"
+RV_RP2="$WORK/rv34k-c2.md"; rm -f "$RV_RP2"
 rv_act other RV2 review "$(rv_prompt RV2 "$RV_RP2")"
-check "34g: 다른 원인의 크래시 행은 일시 원인=아니오 다" \
+check "34k: 다른 원인의 크래시 행은 일시 원인=아니오 다" \
   "$rc/$(row_field "$(rv_crash RV2)" '종단 부류')/$(row_field "$(rv_crash RV2)" '일시 원인')" "0/크래시/아니오"
 rv_n3=$(rv_skill_rows RV2)
 rv_act other RV2 review "$(rv_prompt RV2 "$RV_RP2")" --recovery '전송 단절'
-check "34g: 다른 원인의 크래시 뒤 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV2)" "3/$rv_n3"
+check "34k: 다른 원인의 크래시 뒤 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV2)" "3/$rv_n3"
 CAP_STUB="$RV_CAP_STUB_SAVE"
 
-# --- 34h. 전송 단절 교대 — 무기록 교대를 연결 확인 뒤에 다시 띄운다 ---------------
-# --- section: 34h | group: cone | covers: act, snapshot | anchors: 34h: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다, 34h: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다, 34h: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다, 34h: 연속 상한 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다 ---
+# --- 34l. 전송 단절 교대 — 무기록 교대를 연결 확인 뒤에 다시 띄운다 ---------------
+# --- section: 34l | group: cone | covers: act, snapshot | anchors: 34l: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다, 34l: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다, 34l: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다, 34l: 연속 상한 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다 ---
 #
 # A SHIFT LOST TO A DROPPED CONNECTION is relaunched by the seat without a
 # person, and the launcher is where the wait happens: after a `무기록` handoff
@@ -28542,29 +28594,29 @@ tr_snap_tr() { cap_snap "$TR_SEAT" '' | jq -r '.handoff | last | .["일시 원�
 cap_gate "$TR_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment TR1 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$TR_SEAT" '')" \
          --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
-check "34h: 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+check "34l: 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
 
 # A shift dead of another error: `아니오`, and the next launch does not probe —
 # the probe that would refuse it is never asked.
 tr_launch other /usr/bin/true
-check "34h: 다른 오류로 죽은 교대의 무기록 행이 일시 원인=아니오 를 싣는다" \
+check "34l: 다른 오류로 죽은 교대의 무기록 행이 일시 원인=아니오 를 싣는다" \
   "$rc/$(row_field "$(tr_last_handoff)" '사유')/$(row_field "$(tr_last_handoff)" '일시 원인')/$(tr_snap_tr)" "1/무기록/아니오/아니오"
 tr_launch conn /usr/bin/false
-check "34h: 일시 원인=아니오 뒤의 기동은 탐침 없이 간다 (연결 확인 없음)" \
+check "34l: 일시 원인=아니오 뒤의 기동은 탐침 없이 간다 (연결 확인 없음)" \
   "$rc/[$(row_field "$(tr_last_launch)" '연결 확인')]" "1/[]"
-check "34h: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다" \
+check "34l: 연결 오류로 죽은 교대의 무기록 행이 일시 원인=예 를 싣는다" \
   "$(row_field "$(tr_last_handoff)" '사유')/$(row_field "$(tr_last_handoff)" '일시 원인')" "무기록/예"
-check "34h: 스냅숏 handoff[] 의 마지막 항목이 일시 원인=예 를 싣는다" "$(tr_snap_tr)" "예"
+check "34l: 스냅숏 handoff[] 의 마지막 항목이 일시 원인=예 를 싣는다" "$(tr_snap_tr)" "예"
 
 # The probe never answers: refused, no launch row, the ordinal does not move.
 tr_n0=$(tr_launches)
 tr_launch plain /usr/bin/false
-check "34h: 탐침이 세 번 모두 닿지 않으면 rc 3 이고 기동 행이 없다" "$rc/$(tr_launches)" "3/$tr_n0"
-check "34h: 다음 서수의 교대 스트림도 생기지 않았다" \
+check "34l: 탐침이 세 번 모두 닿지 않으면 rc 3 이고 기동 행이 없다" "$rc/$(tr_launches)" "3/$tr_n0"
+check "34l: 다음 서수의 교대 스트림도 생기지 않았다" \
   "$( [ -e "$CAP_DIR/log/shift-$((tr_n0 + 1)).json" ] && printf 'made' || printf 'none')" "none"
 case "$msg" in
-  *"연결 탐침이 3번 모두"*) ok "34h: 그 거절은 경고 줄로 시도 수를 든다" ;;
-  *) bad "34h 탐침 실패 문면" "$msg" ;;
+  *"연결 탐침이 3번 모두"*) ok "34l: 그 거절은 경고 줄로 시도 수를 든다" ;;
+  *) bad "34l 탐침 실패 문면" "$msg" ;;
 esac
 
 # A PERSON'S TURN. The seat issues the same launch again after a refusal only
@@ -28573,7 +28625,7 @@ esac
 # without the probe — the probe here never answers, so a probed launch would be
 # refused — and its row carries no `연결 확인=`.
 tr_launch conn /usr/bin/false
-check "34h: 탐침 실패 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다" \
+check "34l: 탐침 실패 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다" \
   "$rc/$(tr_launches)/[$(row_field "$(tr_last_launch)" '연결 확인')]" "1/$((tr_n0 + 1))/[]"
 
 # That shift died of the connection again, so the next launch is the first after
@@ -28581,32 +28633,540 @@ check "34h: 탐침 실패 거절 뒤 사람 차례 기동은 탐침 없이 가�
 # twice more.
 rm -f "$TR_COUNT"
 tr_launch conn "$TR_PROBE2"
-check "34h: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다" \
+check "34l: 탐침이 둘째에 닿으면 기동 행이 연결 확인=2/성공 을 싣는다" \
   "$(tr_launches)/$(row_field "$(tr_last_launch)" '연결 확인')" "$((tr_n0 + 2))/2/성공"
 tr_launch conn /usr/bin/true
 tr_c2=$(row_field "$(tr_last_launch)" '연결 확인')
 tr_launch conn /usr/bin/true
-check "34h: 둘째·셋째 연속 재기동도 연결 확인=1/성공 을 싣는다" \
+check "34l: 둘째·셋째 연속 재기동도 연결 확인=1/성공 을 싣는다" \
   "$tr_c2/$(row_field "$(tr_last_launch)" '연결 확인')/$(tr_launches)" "1/성공/1/성공/$((tr_n0 + 4))"
 tr_n1=$(tr_launches)
 tr_launch plain /usr/bin/true
-check "34h: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다" "$rc/$(tr_launches)" "3/$tr_n1"
+check "34l: 넷째 연속 재기동은 rc 3 이고 기동 행이 없다" "$rc/$(tr_launches)" "3/$tr_n1"
 case "$msg" in
-  *"연속 3번"*) ok "34h: 그 거절은 연속 횟수를 든다" ;;
-  *) bad "34h 연속 상한 문면" "$msg" ;;
+  *"연속 3번"*) ok "34l: 그 거절은 연속 횟수를 든다" ;;
+  *) bad "34l 연속 상한 문면" "$msg" ;;
 esac
 
 # The bound is not permanent: a person's turn after it goes, unprobed (the probe
 # here never answers), and its row without `연결 확인=` restarts the count.
 tr_launch conn /usr/bin/false
-check "34h: 연속 상한 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다" \
+check "34l: 연속 상한 거절 뒤 사람 차례 기동은 탐침 없이 가고 연결 확인이 없다" \
   "$rc/$(tr_launches)/[$(row_field "$(tr_last_launch)" '연결 확인')]" "1/$((tr_n1 + 1))/[]"
 # Its shift died of the connection too: the next launch meets the probe again,
 # and the count restarts from one, so the bound does not refuse it.
 tr_launch conn /usr/bin/true
-check "34h: 사람 차례 기동 뒤의 일시 원인 재기동은 다시 탐침되어 연결 확인=1/성공 을 싣는다" \
+check "34l: 사람 차례 기동 뒤의 일시 원인 재기동은 다시 탐침되어 연결 확인=1/성공 을 싣는다" \
   "$rc/$(tr_launches)/$(row_field "$(tr_last_launch)" '연결 확인')" "1/$((tr_n1 + 2))/1/성공"
 CAP_STUB="$TR_CAP_STUB_SAVE"
+# --- 34h. 죽은 교대 정산 — 교대와 실행기가 함께 죽으면 서두가 무기록을 쓴다 -------
+# --- section: 34h | group: cone | covers: act, snapshot | needs: 34e | anchors: 34h: 죽은 교대 정산이 무기록 행을 정확히 하나 쓴다, 34h: 실행기가 살아 있으면 정산하지 않는다 ---
+#
+# A HOST THAT STOPS TAKES THE LAUNCHER WITH THE SHIFT. The launcher writes the
+# `무기록` row after its `wait`, so when it dies too the ledger ends on a
+# `교대 기동` with no answer. The prelude settles that: a `shift.live` whose
+# lines 1–2 (the shift) and 3–4 (the launcher) both name dead processes is
+# taken by a rename, traced once through `gate_shift_trace_unrecorded` with
+# `종료 코드=-`, and removed with `shift.in-progress`. A launcher still alive is
+# the launcher's to trace, so that fixture is left exactly as it was.
+# ---------------------------------------------------------------------------
+cap_fx_new RDS1
+DS_SEAT="e4e4e4e4-5555-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$DS_SEAT.jsonl"
+cap_gate "$DS_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment DS1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$DS_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34h: 정산 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+ds_fp() {  # ds_fp <pid> — the fingerprint `cc_proc_fingerprint` records
+  { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+}
+ds_dead() {  # ds_dead — a pid that has been reaped
+  local p; sleep 0 & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
+}
+ds_unrec() { { cap_rows handoff | grep -cF '| 사유=무기록 |' || true; } | tr -d ' '; }
+mkdir -p "$CAP_DIR/log"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sid-ds"}' \
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790390000}}' \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"sid-ds","result":"limit"}' \
+  > "$CAP_DIR/log/shift-1.json"
+printf -- '- `교대 기동` | 교대=0 | 서수=1 | 사유=상한 | 대상=infra | 기록 시각=2026-10-15T00:00:00Z | prev=x\n' >> "$CAP_LEDGER"
+printf '%s\n%s\n%s\n%s\n' "$(ds_dead)" 'Thu Jan  1 00:00:00 2026' "$(ds_dead)" 'Thu Jan  1 00:00:01 2026' \
+  > "$CAP_DIR/shift.live"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$CAP_DIR/shift.in-progress"
+ds_u0=$(ds_unrec)
+cap_snap "$DS_SEAT" '' > /dev/null
+cap_snap "$DS_SEAT" '' > /dev/null
+check "34h: 죽은 교대 정산이 무기록 행을 정확히 하나 쓴다" "$(ds_unrec)" "$((ds_u0 + 1))"
+ds_row=$(cap_rows handoff | grep -F '| 사유=무기록 |' | tail -1)
+check "34h: 그 행은 서수 1 의 교대와 종료 코드 - 를 싣는다" \
+  "$(row_field "$ds_row" '교대'):$(row_field "$ds_row" '종료 코드'):$(row_field "$ds_row" '대상')" "1:-:infra"
+check "34h: 한도 모양 스트림이면 한도 종료 형상 문구가 붙는다" \
+  "$(row_field "$ds_row" '막힌 지점' | grep -cF '한도 종료 형상' || true)" "1"
+check "34h: shift.live 와 shift.in-progress 가 지워진다" \
+  "$( [ -e "$CAP_DIR/shift.live" ] && printf live || printf none):$( [ -e "$CAP_DIR/shift.in-progress" ] && printf ip || printf none):$(ls "$CAP_DIR" | grep -c 'shift.live.settling' || true)" \
+  "none:none:0"
+
+# THE LAUNCHER LIVES. A second launch with no handoff, its shift dead and its
+# launcher a live process: nothing is written and the file stays as it was.
+printf -- '- `교대 기동` | 교대=0 | 서수=2 | 사유=상한 | 대상=infra | 기록 시각=2026-10-15T00:10:00Z | prev=x\n' >> "$CAP_LEDGER"
+sleep 300 & DS_LIVE=$!; FX_PIDS="${FX_PIDS:-}$DS_LIVE "
+printf '%s\n%s\n%s\n%s\n' "$(ds_dead)" 'Thu Jan  1 00:00:00 2026' "$DS_LIVE" "$(ds_fp "$DS_LIVE")" \
+  > "$CAP_DIR/shift.live"
+ds_before=$(cat "$CAP_DIR/shift.live")
+ds_u0=$(ds_unrec)
+cap_snap "$DS_SEAT" '' > /dev/null
+check "34h: 실행기가 살아 있으면 정산하지 않는다" \
+  "$(ds_unrec):$( [ "$(cat "$CAP_DIR/shift.live" 2>/dev/null)" = "$ds_before" ] && printf same || printf moved)" "$ds_u0:same"
+kill "$DS_LIVE" 2>/dev/null || true; wait "$DS_LIVE" 2>/dev/null || true
+
+# A FILE WITHOUT LINES 3–4 predates the launcher record and cannot be judged.
+printf '%s\n%s\n' "$(ds_dead)" 'Thu Jan  1 00:00:00 2026' > "$CAP_DIR/shift.live"
+cap_snap "$DS_SEAT" '' > /dev/null
+check "34h: 실행기 줄이 없는 옛 파일은 건드리지 않는다" \
+  "$(ds_unrec):$( [ -e "$CAP_DIR/shift.live" ] && printf kept || printf gone)" "$ds_u0:kept"
+rm -f "$CAP_DIR/shift.live"
+
+# --- 34g. 실행기 잠금 — 겹친 기동 둘 중 하나만 교대를 띄운다 -------------------
+# --- section: 34g | group: cone | covers: act, snapshot | needs: 34e | anchors: 34g: (1) 뒤에 든 호출은 3 이고 교대를 띄우지 않는다, 34g: (5) 재진입 표지를 단 호출이 띄운 교대의 CC_PIPELINE_REENTRY 는 빈 값이다 ---
+#
+# ONE LAUNCHER PER RUN. A seat call and a boot-time re-entry can reach the
+# same run at once, and before the launch lock both passed the reason check,
+# counted the same ordinal and ran two shifts on one ledger. Here the first
+# call's shift is held by the stub while the second call comes in: the second
+# is refused with 3 and leaves no `교대 기동` row, and `log/shift-1.json` holds
+# the one shift's output. The lock itself — the millisecond section — and the
+# claim's early-return cleanup are measured on the sourced functions.
+# ---------------------------------------------------------------------------
+cap_fx_new RRG1
+RG_SEAT="e4e4e4e4-7777-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RG_SEAT.jsonl"
+RL_OUT="${RL_OUT:-$WORK/rl-out}"; mkdir -p "$RL_OUT"
+RG_CAP_STUB_SAVE="$CAP_STUB"; CAP_STUB="$RL_STUB"
+RG_RL_SEAT_SAVE="${RL_SEAT:-}"; RL_SEAT="$RG_SEAT"
+RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''; RL_RESET=''; RL_RESETAT=''; RL_GRACE=''
+cap_gate "$RG_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RG1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RG_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34g: 동시 기동 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+rg_call() {
+  # rg_call <tag> <사유> — one seat `router-shift` in the background with its
+  # own output files, so two calls can overlap; its code lands in call.<tag>.rc.
+  local tag="$1" why="$2"
+  ( CAP_OUT="$RL_O/out.$tag"; CAP_ERR="$RL_O/err.$tag"
+    CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" \
+      cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+        --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$RL_SEAT" '')" \
+        --rationale "픽스처 — 겹친 기동 ($tag)" -- "$why" -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+    printf '%s\n' "$rc" > "$RL_O/call.$tag.rc" ) &
+  RG_BG=$!
+}
+
+# (1) TWO OVERLAPPING `router-shift -- 중단`. A's shift is live and held when B
+# comes in.
+rl_case race hold
+rg_n0=$(rl_launches)
+rg_call A 중단; RG_A=$RG_BG
+rl_until 60 rl_has start.1 || bad "34g 겹친 기동" "첫 교대가 뜨지 않았다"
+rg_call B 중단; RG_B=$RG_BG
+wait "$RG_B" 2>/dev/null || true
+check "34g: (1) 뒤에 든 호출은 3 이고 교대를 띄우지 않는다" \
+  "$(cat "$RL_O/call.B.rc" 2>/dev/null):$(rl_calls):$(rl_launches)" "3:1:$((rg_n0 + 1))"
+check "34g: (1) 그 거절은 다른 실행기가 런을 쥐었다고 말한다" \
+  "$( { grep -cF 'another launcher holds this run' "$RL_O/err.B" "$RL_O/out.B" || true; } | awk -F: '{ s += $NF } END { print (s > 0) ? "yes" : "no" }')" "yes"
+: > "$RL_O/release"
+wait "$RG_A" 2>/dev/null || true
+check "34g: (1) 앞의 호출은 0 이고 교대 기동 행은 하나다" \
+  "$(cat "$RL_O/call.A.rc" 2>/dev/null):$(rl_calls):$(rl_launches)" "0:1:$((rg_n0 + 1))"
+check "34g: (1) log/shift-1.json 은 한 교대의 출력만 담는다" \
+  "$( { grep -c '"type":"stub"' "$CAP_DIR/log/shift-1.json" || true; } | tr -d ' ')" "1"
+
+# (2) THE LOCK. A live owner younger than sixty seconds keeps it; a dead owner
+# or an old one is taken over.
+RG_U="$WORK/rg-unit"; rm -rf "$RG_U"; mkdir -p "$RG_U"
+rg_fn() { ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; shift 2; "$@"' _ "$GATE" "$RG_U" "$@" ); }
+rg_lock() {  # rg_lock <owner line> — got or refused
+  rm -rf "$RG_U/shift-launch.lock"; mkdir "$RG_U/shift-launch.lock"
+  printf '%s\n' "$1" > "$RG_U/shift-launch.lock/owner"
+  rg_fn gate_shift_launch_lock > /dev/null 2>&1 && printf got || printf refused
+}
+check "34g: (2) 살아 있는 최근 소유자의 잠금은 넘어가지 않는다" "$(rg_lock "$$ $(date -u +%s)")" "refused"
+check "34g: (2) 죽은 소유자의 잠금은 넘겨받는다" "$(rg_lock "$(rl_dead_pid) $(date -u +%s)")" "got"
+check "34g: (2) 60초보다 오래된 소유자의 잠금은 넘겨받는다" "$(rg_lock "$$ $(( $(date -u +%s) - 120 ))")" "got"
+rm -rf "$RG_U/shift-launch.lock"
+
+# (3) THE CLAIM AND ITS EARLY-RETURN CLEANUP. The claim is four lines naming
+# this launcher, the lock is gone after it, and the cleanup an early return
+# runs removes this launcher's `shift.live` and no one else's.
+check "34g: (3) 점유는 네 줄 모두 이 실행기를 적고 잠금을 풀며, 이른 반환의 정리가 그것을 지운다" \
+  "$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"
+      gate_shift_launch_claim 중단 > /dev/null 2>&1 || { printf refused; exit 0; }
+      [ "$(sed -n 1p "$RUN_DIR/shift.live")" = "$$" ] && [ "$(sed -n 3p "$RUN_DIR/shift.live")" = "$$" ] \
+        && printf mine || printf other
+      [ -d "$RUN_DIR/shift-launch.lock" ] && printf :locked || printf :unlocked
+      gate_shift_launch_drop_claim
+      [ -e "$RUN_DIR/shift.live" ] && printf :kept || printf :dropped' _ "$GATE" "$RG_U")" \
+  "mine:unlocked:dropped"
+printf '1\nx\n1\nx\n' > "$RG_U/shift.live"
+rg_fn gate_shift_launch_drop_claim > /dev/null 2>&1 || true
+check "34g: (3) 다른 프로세스의 shift.live 는 정리가 건드리지 않는다" \
+  "$( [ -e "$RG_U/shift.live" ] && printf kept || printf dropped)" "kept"
+rm -rf "$RG_U"
+
+# (4) A `대기` HAND-BACK LEAVES `relay.live` WITH ITS `handback=` LINE: the
+# claim wrote the file inside the lock, and the hold returns through it.
+sleep 300 & RG_POLL=$!; FX_PIDS="${FX_PIDS:-}$RG_POLL "
+printf '%s\n' "$RG_POLL" > "$CAP_DIR/checks.pid"
+printf -- '- `handoff` | 교대=0 | 사유=대기 | 버린 선택지=- | 막힌 지점=- | 다음 후보=- | CI 대기=RGC1 | 대상=infra | prev=x\n' >> "$CAP_LEDGER"
+rl_case handback
+RL_HOLD=2 rl_call 대기
+rl_join
+check "34g: (4) 대기 재진입의 상한 반환은 0 이고 handback 줄이 있는 relay.live 를 남긴다" \
+  "$rc:$(rl_calls):$(grep -c '^handback=' "$CAP_DIR/relay.live" 2>/dev/null || true)" "0:0:1"
+rl_stage_end "$RG_POLL"
+
+# (5) THE BOOT-TIME RE-ENTRY MARKER STOPS AT THE LAUNCHER. The call carries it;
+# the shift it launches sees it blank.
+rl_case reentry cap
+CC_PIPELINE_REENTRY="RRG1@1790000000" rl_call 상한
+rl_join
+check "34g: (5) 재진입 표지를 단 호출이 띄운 교대의 CC_PIPELINE_REENTRY 는 빈 값이다" \
+  "$rc:$(rl_calls):$(cat "$RL_O/reentry.1" 2>/dev/null || printf none)" "0:1:"
+CAP_STUB="$RG_CAP_STUB_SAVE"; RL_SEAT="$RG_RL_SEAT_SAVE"
+
+# --- 34i. 재부착 측정 — 기준 기록, 행의 네 필드, seat-call, 재진입 행 ------------
+# --- section: 34i | group: cone | covers: act, snapshot | needs: 34e | anchors: 34i: 한도 부류 재부착 행이 네 필드를 그 철자로 싣는다, 34i: 좌석 모양 router-shift 가 seat-call 을 쓴다, 34i: 표지 없는 재진입 행은 상한을 넘은 좌석에서도 써진다 ---
+#
+# WHAT THE FIELD MEASUREMENT READS. A re-attachment's base goes into
+# `<seg>.anchor` at dispatch, and the attempt's `stage-result` row carries four
+# fields from it — `재부착 기준`, `재부착 지연`, `창 종류`, `마지막 절전` — which
+# the measurement greps by their spelling. The kernel values come from the test
+# hook, and the host is declared Darwin so the hook is read on any runner. The
+# rows are written by the lost-dispatch settlement, the one writer a fixture
+# can drive without a live stage; it appends the same field array the
+# supervisor's recorder does.
+# ---------------------------------------------------------------------------
+cap_fx_new RRI1
+RI_SEAT="e4e4e4e4-8888-2222-3333-444444444444"
+RI_BIG="e4e4e4e4-8888-2222-3333-44444444444b"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RI_SEAT.jsonl"
+{ cap_usage_line 20000 10000 1000
+  cap_usage_line 400000 40000 20000; } > "$NTX/$RI_BIG.jsonl"
+RL_OUT="${RL_OUT:-$WORK/rl-out}"; mkdir -p "$RL_OUT"
+RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''; RL_RESET=''; RL_RESETAT=''; RL_GRACE=''
+cap_gate "$RI_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RI0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RI_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34i: 측정 필드 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+ri_anchor() {  # ri_anchor <커널 값> <seg> — the dispatch's base record under those kernel values
+  ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="$1" rl_gate_fn gate_reattach_anchor_write "$2" > /dev/null 2>&1 || true
+}
+ri_head() { sed -n '1p;2p' "$CAP_DIR/$1.anchor" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+ri_orphan() {  # ri_orphan <seg> <attempt> — the gate-dispatched record of a stage that is gone
+  printf '%s\n' "$(rl_dead_pid)" > "$CAP_DIR/$1.pid"
+  printf 'Fri Sep 4 00:00:00 2026\n' > "$CAP_DIR/$1.start"
+  printf '%s\n' "$2" > "$CAP_DIR/$1.attempt"
+  printf 'implement\n' > "$CAP_DIR/$1.kind"
+}
+ri_row() { cap_rows stage-result | grep -F "| 스테이지=$1 |" | grep -F "실행 버전=$2 " | tail -1; }
+
+# (1) THE LIMIT CLASS. The reset is the base; the stream ends before it, so the
+# base is not raised; the sleep began long after it, so the base stays.
+ri_r1=$(( $(date +%s) + 1 ))
+rl_plant_cut RI1 1 "$ri_r1"
+sleep 2
+ri_sys1="kern.sleeptime=$((ri_r1 + 5000)),kern.waketime=$((ri_r1 + 6000))"
+ri_anchor "$ri_sys1" RI1
+check "34i: (1) 한도 부류의 기록은 리셋 종류·리셋 시각·창 종류를 싣는다" \
+  "$(ri_head RI1) $(sed -n '6p' "$CAP_DIR/RI1.anchor" 2>/dev/null)" "리셋 $ri_r1 five_hour"
+ri_orphan RI1 2
+ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="$ri_sys1" cap_snap "$RI_SEAT" '' > /dev/null
+ri1=$(ri_row RI1 2)
+check "34i: 한도 부류 재부착 행이 네 필드를 그 철자로 싣는다" \
+  "$(row_field "$ri1" '재부착 기준')|$(row_field "$ri1" '창 종류')|$(row_field "$ri1" '마지막 절전')" \
+  "리셋@$ri_r1|five_hour|$((ri_r1 + 5000))-$((ri_r1 + 6000))"
+check "34i: (1) 재부착 지연은 dispatch 에서 기준까지의 초다" \
+  "$(row_field "$ri1" '재부착 지연' | sed 's/^[0-9][0-9]*$/int/')" "int"
+# (4) THE TWO REMOVAL LISTS. The settlement removed it with the rest; the
+# supervisor's list is the same line, read from the source.
+check "34i: (4) 정산은 .anchor 를 형제 기록과 함께 지운다" \
+  "$( [ -e "$CAP_DIR/RI1.anchor" ] && printf left || printf gone):$(row_field "$ri1" '종단 부류')" "gone:외부 종료"
+check "34i: (4) 형제 기록을 지우는 두 목록이 모두 .anchor 를 싣는다" \
+  "$( { grep -cF '"$RUN_DIR/$seg.window" "$RUN_DIR/$seg.anchor"' "$GATE" || true; } | tr -d ' ')" "2"
+
+# (2) THE SLEEP CLASS. A sleep that began within grace + two polls of the base
+# and ended after it moves the base to the wake; one that began long after it
+# does not.
+ri_r2=$(( $(date +%s) + 1 ))
+rl_plant_cut RI2 1 "$ri_r2"
+sleep 2
+ri_anchor "kern.sleeptime=$((ri_r2 - 5)),kern.waketime=$((ri_r2 + 40))" RI2
+check "34i: (2) 기준 무렵에 든 절전은 기준을 깨어난 시각으로 옮긴다" "$(ri_head RI2)" "깨어남 $((ri_r2 + 40))"
+ri_anchor "kern.sleeptime=$((ri_r2 + 1000)),kern.waketime=$((ri_r2 + 2000))" RI2
+check "34i: (2) 기준보다 한참 뒤에 든 절전은 기준을 옮기지 않는다" "$(ri_head RI2)" "리셋 $ri_r2"
+
+# (3) NO BASE. A dispatch whose stage was not cut removes an earlier record,
+# and the row then carries none of the four fields.
+rl_plant_cut RI3 1 - '정상 완료'
+printf '리셋\n1\n2\n-\n-\n-\n' > "$CAP_DIR/RI3.anchor"
+ri_anchor "kern.sleeptime=1,kern.waketime=2" RI3
+check "34i: (3) 기준 없는 dispatch 는 앞 시도의 .anchor 를 지운다" \
+  "$( [ -e "$CAP_DIR/RI3.anchor" ] && printf left || printf gone)" "gone"
+ri_orphan RI3 2
+cap_snap "$RI_SEAT" '' > /dev/null
+ri3=$(ri_row RI3 2)
+check "34i: (3) 기록 없는 행은 네 필드가 없다" \
+  "$(row_field "$ri3" '종단 부류'):$(printf '%s' "$ri3" | grep -cE '재부착 기준=|재부착 지연=|창 종류=|마지막 절전=' || true)" \
+  "외부 종료:0"
+
+# (5) `seat-call`. A seat-shaped `router-shift` writes it with the manifest's
+# absolute path, the alias, the gate's own path and the act's `--cutpoint` and
+# `--surface`; a call carrying a stage marker or the re-entry marker does not.
+RI_CAP_STUB_SAVE="$CAP_STUB"; CAP_STUB="$RL_STUB"
+RI_RL_SEAT_SAVE="${RL_SEAT:-}"; RL_SEAT="$RI_SEAT"
+rm -f "$CAP_DIR/seat-call"
+rl_case seatcall cap
+rl_call 상한
+rl_join
+ri_sc() { sed -n "s/^$1=//p" "$CAP_DIR/seat-call" 2>/dev/null; }
+check "34i: 좌석 모양 router-shift 가 seat-call 을 쓴다" \
+  "$rc|$(ri_sc manifest)|$(ri_sc target)|$(ri_sc cutpoint)|$(ri_sc surface)" \
+  "0|$(cd "$(dirname "$CAP_NM")" && pwd)/$(basename "$CAP_NM")|infra|커밋|워크트리쓰기"
+check "34i: (5) seat-call 의 gate 는 실제 gate.sh 의 절대 경로다" \
+  "$(ri_sc gate | sed -n 's|^/.*/gate\.sh$|abs|p'):$( [ -f "$(ri_sc gate)" ] && printf file || printf none)" "abs:file"
+rm -f "$CAP_DIR/seat-call"
+rl_case reentrycall cap
+CC_PIPELINE_REENTRY="RRI1@1790000000" rl_call 상한
+rl_join
+check "34i: (5) 재진입 표지를 단 호출은 교대를 띄우되 seat-call 을 쓰지 않는다" \
+  "$rc:$(rl_calls):$( [ -e "$CAP_DIR/seat-call" ] && printf written || printf none)" "0:1:none"
+rl_case stagecall cap
+# The stub CLI is named on each call, not inside the wrapper, so the seam
+# census reads both calls as the forks they are.
+ri_stage_env() {
+  env XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$RI_SEAT" \
+    CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='RRI1:RI0#1' CC_PIPELINE_SEGMENT='' \
+    CC_TEST_RL_OUT="$RL_O" CC_TEST_RL_PLAN="$RL_O/plan" "$@"
+}
+ri_sh=$(cd "$WT" && ri_stage_env CC_CLAUDE_BIN="$RL_STUB" bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null | jq -r .H)
+( cd "$WT" && ri_stage_env CC_CLAUDE_BIN="$RL_STUB" bash "$GATE" act --manifest "$CAP_NM" --kind router-shift --target infra \
+    --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$ri_sh" --rationale "픽스처 — 스테이지 표지" \
+    -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM" ) > "$RL_O/call.out" 2> "$RL_O/call.err"; rc=$?
+check "34i: (5) 스테이지 표지가 있는 호출은 교대를 띄우되 seat-call 을 쓰지 않는다" \
+  "$rc:$(rl_calls):$( [ -e "$CAP_DIR/seat-call" ] && printf written || printf none)" "0:1:none"
+CAP_STUB="$RI_CAP_STUB_SAVE"; RL_SEAT="$RI_RL_SEAT_SAVE"
+
+# (7) THE LATER OF TWO CLASSES, part one: the cut is planted before the
+# re-entry row (6) writes, and its reset is later than that row.
+ri_r7=$(( $(date +%s) + 300 ))
+rl_plant_cut RI7 1 "$ri_r7"
+
+# (6) `재진입` IS BOOKKEEPING. A seat past its context cap is refused an
+# ordinary act, and still writes this row; the boot time is the kernel's.
+cap_gate "$RI_BIG" '' exec --manifest "$CAP_NM" --target infra --segment RI0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RI_BIG" '')" \
+         --rationale "픽스처 — 상한을 넘긴 좌석의 평범한 읽기" -- ls "$CONE_A"
+check "34i: (6) 대조 — 상한을 넘긴 좌석의 일반 행위는 3 이다" "$rc" "3"
+ri_boot=1790000000
+ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="kern.boottime=$ri_boot" \
+  cap_gate "$RI_BIG" '' act --manifest "$CAP_NM" --kind reentry --target infra --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(cap_H "$RI_BIG" '')" --rationale "픽스처 — 부팅 재진입" \
+    -- 사유=대기 레이블=com.example.cc-cmds.reentry
+ri6=$(cap_rows '재진입' | tail -1)
+check "34i: 표지 없는 재진입 행은 상한을 넘은 좌석에서도 써진다" \
+  "$rc|$(row_field "$ri6" '대상')|$(row_field "$ri6" '부팅 시각')|$(row_field "$ri6" '사유')|$(row_field "$ri6" '레이블')" \
+  "0|infra|$(rl_ep_iso "$ri_boot")|대기|com.example.cc-cmds.reentry"
+
+# (7) part two: the reset is later than the re-entry row, so the reset is the
+# base; a re-entry row later than the reset takes it.
+ri_anchor "kern.sleeptime=1,kern.waketime=2" RI7
+check "34i: (7) 리셋이 재진입 행보다 늦으면 기준은 리셋이다" "$(ri_head RI7)" "리셋 $ri_r7"
+printf -- '- `재진입` | 대상=infra | 부팅 시각=- | 기록 시각=%s | 사유=대기 | 레이블=x | prev=x\n' \
+  "$(rl_ep_iso "$((ri_r7 + 100))")" >> "$CAP_LEDGER"
+ri_anchor "kern.sleeptime=1,kern.waketime=2" RI7
+check "34i: (7) 재진입 행이 리셋보다 늦으면 기준은 그 행이다" "$(ri_head RI7)" "재진입 $((ri_r7 + 100))"
+
+# --- 34j. 리셋 대기 — 끊긴 시도의 시계를 기다려 후속 교대를 띄운다 ---------------
+# --- section: 34j | group: cone | covers: act, snapshot | needs: 34e | anchors: 34j: 끊긴 시도의 시계는 마지막 프레임 규칙으로 찍힌다, 34j: 리셋+G 에서 후속 교대가 뜬다, 34j: T1′ 의 대기가 리셋까지 기다린다 ---
+#
+# A CUT WHOSE LIMIT HAS NOT RESET IS SOMETHING TO WAIT ON. The clock is the
+# last `rate_limit_event` frame's `resetsAt`, read only when that frame binds;
+# a `대기` handoff names the cut stages in `리셋 대기` and is refused for a key
+# with no clock or one past the horizon; the relay wakes at the reset plus the
+# grace, or at an earlier `한도 해제` row; and a shift the limit killed — the
+# gate's own `무기록` — is waited out the same way when the seat re-issues
+# `대기`. The grace is shortened by its test hook.
+# ---------------------------------------------------------------------------
+cap_fx_new RRJ1
+RJ_SEAT="e4e4e4e4-6666-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$RJ_SEAT.jsonl"
+RL_OUT="${RL_OUT:-$WORK/rl-out}"; mkdir -p "$RL_OUT"
+RJ_CAP_STUB_SAVE="$CAP_STUB"; CAP_STUB="$RL_STUB"
+RJ_RL_SEAT_SAVE="${RL_SEAT:-}"; RL_SEAT="$RJ_SEAT"
+RL_CI=''; RL_KILL=''; RL_SEG=''; RL_HOLD=''; RL_RESET=''; RL_RESETAT=''; RL_GRACE=''
+cap_gate "$RJ_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RJ0 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RJ_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "34j: 리셋 대기 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+RJ_G=2; RJ_POLL=5
+
+# (1) THE LAST-FRAME RULE, on five streams and one that is not a limit death.
+RJ_F="$WORK/rj-frames"; rm -rf "$RJ_F"; mkdir -p "$RJ_F"
+rj_r=$(( $(date +%s) + 600 ))
+rj_init='{"type":"system","subtype":"init","session_id":"s"}'
+rj_429='{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s","result":"limit"}'
+rj_ev() { printf '{"type":"rate_limit_event","rate_limit_info":{"status":"%s","resetsAt":%s}}' "$1" "$2"; }
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" "$rj_429" > "$RJ_F/ok.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" "$rj_429" '{"type":"assis' > "$RJ_F/T.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" "$rj_429" "$rj_init" > "$RJ_F/P.json"
+printf '%s\n' "$rj_init" "$(rj_ev allowed "$rj_r")" "$rj_429" > "$RJ_F/F.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected '"soon"')" "$rj_429" > "$RJ_F/R.json"
+printf '%s\n' "$rj_init" "$(rj_ev rejected "$rj_r")" \
+  '{"type":"result","subtype":"success","is_error":false,"session_id":"s"}' > "$RJ_F/none.json"
+rj_sle() { local o r=0; o=$(rl_gate_fn stage_limit_exit "$RJ_F/$1.json" 2>/dev/null) || r=$?; printf '%s:%s' "$r" "$o"; }
+check "34j: (1) 픽스처 스트림이 그 판정을 낸다 (0 · T · P · F · R · 1)" \
+  "$(rj_sle ok) $(rj_sle T) $(rj_sle P) $(rj_sle F) $(rj_sle R) $(rj_sle none)" "0: 3:T 3:P 3:F 3:R 1:"
+rj_at() { rl_gate_fn gate_cut_reset_at "$RJ_F/$1.json" 2>/dev/null || true; }
+check "34j: 끊긴 시도의 시계는 마지막 프레임 규칙으로 찍힌다" \
+  "$(rj_at ok)|$(rj_at T)|$(rj_at P)|$(rj_at F)|$(rj_at R)|$(rj_at none)" "$rj_r|$rj_r|$rj_r|||"
+
+# (2) THE `리셋 대기` REFUSALS: no clock, a stage that was not cut, a clock past
+# the horizon — 3 with no row; the field under another reason — 2; nothing at
+# all to wait on — 3. A key with a near clock is taken.
+rj_handoff() {  # rj_handoff <사유> <리셋 대기> — the seat writes one handoff; leaves rc
+  cap_gate "$RJ_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(cap_H "$RJ_SEAT" '')" --rationale "픽스처 — 리셋 대기 인계" \
+    -- 교대=0 대상=infra "사유=$1" '버린 선택지=-' '막힌 지점=-' '다음 후보=-' 'CI 대기=-' "리셋 대기=$2"
+}
+rj_hrows() { { cap_rows handoff | grep -c . || true; } | tr -d ' '; }
+rl_plant_cut RJD 1 "$rj_r" '정상 완료'
+rl_plant_cut RJF 1 $(( $(date +%s) + 20000 ))
+rl_plant_cut RJK 1 "$rj_r"
+rj_h0=$(rj_hrows)
+rj_handoff 대기 RJN; rj_c1=$rc
+rj_handoff 대기 RJD; rj_c2=$rc
+rj_handoff 대기 RJF; rj_c3=$rc
+rj_handoff 중단 RJK; rj_c4=$rc
+rj_handoff 대기 -;   rj_c5=$rc
+check "34j: (2) 시계 없음 · 끊기지 않은 스테이지 · 먼 시계 · 다른 사유 · 빈 집합은 3·3·3·2·3 이고 행이 없다" \
+  "$rj_c1 $rj_c2 $rj_c3 $rj_c4 $rj_c5:$(rj_hrows)" "3 3 3 2 3:$rj_h0"
+rj_handoff 대기 RJK
+check "34j: (2) 가까운 시계의 키는 받아 그 철자로 적는다" \
+  "$rc:$(row_field "$(cap_rows handoff | tail -1)" '리셋 대기')" "0:RJK"
+
+# (3) T1 — THE RESET PLUS THE GRACE. The shift hands off `대기` on a cut whose
+# reset is ahead; the relay holds past the reset and launches the successor
+# within two polls of reset + G.
+rj_r1=$(( $(date +%s) + 20 ))
+rl_plant_cut RJ1 1 "$rj_r1"
+rl_case reset wait-reset cap
+RL_RESET=RJ1 RL_GRACE=$RJ_G rl_call 상한
+rl_until 60 rl_has end.1 || bad "34j 리셋 대기" "첫 교대가 끝나지 않았다"
+rl_until 15 rl_relay_waiting || bad "34j 리셋 대기" "릴레이가 대기에 들지 않았다"
+check "34j: (3) relay.live 의 reset= 줄이 끊긴 스테이지와 그 시계를 싣는다" \
+  "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")" "RJ1:$rj_r1"
+rl_sample 2
+check "34j: (3) 리셋+G 전에는 후속 교대가 뜨지 않는다" \
+  "$(rl_has start.2 && printf woke || printf held):$( [ "$(date +%s)" -lt $((rj_r1 + RJ_G)) ] && printf early || printf late)" "held:early"
+rl_until 60 rl_has start.2
+rl_join
+rj_at1=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: 리셋+G 에서 후속 교대가 뜬다" \
+  "$rc:$(rl_calls):$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')" "0:2:대기"
+check "34j: (3) C2 — 리셋에서 후속 교대 기동의 기록 시각까지가 G 이상, G + 2·poll 이하다" \
+  "$( [ "${rj_at1:-0}" -ge $((rj_r1 + RJ_G)) ] && [ "${rj_at1:-0}" -le $((rj_r1 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at1:-}-$rj_r1")" "in"
+
+# (4) AN EARLIER `한도 해제` ROW below the cut row wakes the relay within a poll,
+# long before the reset.
+rj_r2=$(( $(date +%s) + 900 ))
+rl_plant_cut RJ2 1 "$rj_r2"
+rl_case cleared wait-reset cap
+RL_RESET=RJ2 RL_GRACE=$RJ_G rl_call 상한
+rl_until 60 rl_has end.1 || bad "34j 한도 해제" "첫 교대가 끝나지 않았다"
+rl_until 15 rl_relay_waiting || bad "34j 한도 해제" "릴레이가 대기에 들지 않았다"
+rl_sample 3
+check "34j: (4) 한도 해제 행이 서기 전에는 깨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
+rj_t=$(date +%s)
+printf -- '- `한도 해제` | 교대=0 | 근거=픽스처 | 레인=~/.claude | 기록 시각=%s | prev=x\n' "$(rl_ep_iso "$rj_t")" >> "$CAP_LEDGER"
+rl_until 30 rl_has start.2
+rl_join
+rj_at2=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: (4) C2 — 더 이른 한도 해제 행에서 후속 교대 기동까지가 G + 2·poll 이하다" \
+  "$rc:$( [ "${rj_at2:-0}" -le $((rj_t + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at2:-}-$rj_t")" "0:in"
+
+# (5) T1′ REFUSED: a shift the limit killed with a clock past the horizon, and
+# one that died with no clock at all. The seat's `대기` is 3 and launches
+# nothing; the `무기록` row is the gate's.
+rl_case die-far limitdie
+RL_RESETAT=$(( $(date +%s) + 20000 )) rl_call 상한
+rl_join
+check "34j: (5) 한도로 죽은 교대의 호출은 그 rc 를 돌려주고 무기록 행이 선다" \
+  "$rc:$(row_field "$(cap_rows handoff | tail -1)" '사유')" "1:무기록"
+rj_n0=$(rl_launches)
+rl_case die-far-reissue cap
+rl_call 대기
+rl_join
+check "34j: (5) 18060초보다 먼 시계의 T1′ 대기는 3 이고 띄우지 않는다" "$rc:$(rl_calls):$(rl_launches)" "3:0:$rj_n0"
+rl_case die-plain plaindie
+rl_call 상한
+rl_join
+rl_case die-plain-reissue cap
+rl_call 대기
+rl_join
+check "34j: (5) 시계 없는 무기록 뒤의 대기는 3 이고 띄우지 않는다" "$rc:$(rl_calls):$(rl_launches)" "3:0:$((rj_n0 + 1))"
+
+# (6) T1′ ADMITTED, ON A LEDGER WITH A STALE REFERENCE. An older shift's `대기`
+# with a `CI 대기` and a `stage-result` after it stand before the shift the
+# limit killed: read from that `대기`, the relay would wake at once on the
+# result or hand back on a dead poller. It waits for the dead shift's reset.
+printf -- '- `handoff` | 교대=0 | 사유=대기 | 버린 선택지=- | 막힌 지점=- | 다음 후보=- | CI 대기=RJC9 | 대상=infra | prev=x\n' >> "$CAP_LEDGER"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=RJX | 스테이지=RJX | 실행 버전=1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+rj_r3=$(( $(date +%s) + 25 ))
+rl_case die-near limitdie
+RL_RESETAT=$rj_r3 rl_call 상한
+rl_join
+rj_n=$(row_field "$(cap_rows '교대 기동' | tail -1)" '서수')
+check "34j: (6) 가까운 시계로 죽은 교대도 무기록으로 끝난다" "$rc:$(row_field "$(cap_rows handoff | tail -1)" '사유')" "1:무기록"
+rl_case near-reissue cap
+RL_GRACE=$RJ_G rl_call 대기
+rl_until 30 rl_relay_waiting || bad "34j T1′" "릴레이가 대기에 들지 않았다"
+rl_sample 3
+check "34j: T1′ 의 대기가 리셋까지 기다린다" \
+  "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")|$(sed -n 's/^ci=//p' "$CAP_DIR/relay.live")|$(rl_has start.1 && printf woke || printf held)" \
+  "교대#$rj_n:$rj_r3|-|held"
+rl_until 60 rl_has start.1
+rl_join
+rj_at3=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: (6) C2 — T1′ 의 후속은 리셋+G 이후, G + 2·poll 안에 뜬다" \
+  "$rc:$( [ "${rj_at3:-0}" -ge $((rj_r3 + RJ_G)) ] && [ "${rj_at3:-0}" -le $((rj_r3 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at3:-}-$rj_r3")" "0:in"
+
+# (7) THE SLEEP CLASS. The host slept across the reset: the reset is already
+# past when the relay runs, so it wakes at its first poll. The base of such a
+# re-attachment is the wake — the hook's `kern.waketime`, set to the moment the
+# relay starts, which is the first moment a relay that slept with the host runs
+# again — and the record says so.
+rj_r4=$(( $(date +%s) - 30 ))
+rl_plant_cut RJ4 1 "$rj_r4"
+sleep 1
+rl_case sleep wait-reset cap
+RL_RESET=RJ4 RL_GRACE=$RJ_G rl_call 상한
+rl_until 60 rl_has start.2
+rl_join
+rj_wk=$(cat "$RL_O/end.1" 2>/dev/null || printf 0)
+rj_at4=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+check "34j: (7) C2 — 깨어난 시각에서 후속 교대 기동까지가 G + 2·poll 이하다" \
+  "$rc:$( [ "${rj_at4:-0}" -le $((rj_wk + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at4:-}-$rj_wk")" "0:in"
+ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="kern.sleeptime=$((rj_r4 - 10)),kern.waketime=$rj_wk" \
+  CC_GATE_RESET_GRACE_TEST_SECONDS=$RJ_G rl_gate_fn gate_reattach_anchor_write RJ4 > /dev/null 2>&1 || true
+check "34j: (7) 그 재부착의 기준은 깨어난 시각이다" \
+  "$(sed -n '1p;2p' "$CAP_DIR/RJ4.anchor" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')" "깨어남 $rj_wk"
+
+# (8) THE CONSTANTS, from the declaration lines: G + 2·poll is at most 180.
+rj_g=$(sed -n 's/^CC_RESET_GRACE_SECONDS=\([0-9][0-9]*\)$/\1/p' "$LIVENESS")
+rj_p=$(sed -n 's/^readonly GATE_WAIT_POLL_SECONDS=\([0-9][0-9]*\)$/\1/p' "$GATE")
+check "34j: (8) 선언된 G + 2·poll 은 180초 이하다" \
+  "$rj_g+2*$rj_p:$( [ -n "$rj_g" ] && [ -n "$rj_p" ] && [ $((rj_g + 2 * rj_p)) -le 180 ] && printf ok || printf no)" "60+2*5:ok"
+CAP_STUB="$RJ_CAP_STUB_SAVE"; RL_SEAT="$RJ_RL_SEAT_SAVE"
+rm -rf "$RJ_F"
 
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
@@ -31550,7 +32110,7 @@ check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b
 
 # ---------------------------------------------------------------------------
 # 57. 판본 고정 — 새 런은 사본으로 hop 한다
-# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다, 57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다 ---
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다, 57V: 옛 사본에 고정된 런의 end-abandoned 는 exit 2 다, 57D: 체크아웃의 드라이버가 고정 사본의 run.sh 로 넘어간다 ---
 #
 # 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
 # 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
@@ -32081,6 +32641,265 @@ check "57V: 스킬의 재킥오프가 한국어 문면도 옛 사본 신호로 �
   "$(grep -cF '`gate: 알 수 없는 인자: --cause`' "$repo_root/plugins/cc-cmds/skills/autopilot/references/rekickoff.md" || true)" "1"
 check "57V: 한국어 사본에 고정된 원천 런에도 done 이 쓰이지 않았다" \
   "$( [ -e "$P57_RD/done" ] && printf 있음 || printf 없음 )" "없음"
+
+# (16) 드라이버도 고정 사본으로 hop 한다 --------------------------------------------
+# 타이머 디스패치는 먼저 고정하고 그다음에 체크아웃의 run.sh 를 띄운다. 고정이 원격
+# 끝이면 체크아웃과 사본의 판본이 다르고, 드라이버가 체크아웃에 남으면 단계마다 띄우는
+# stage-wrapper.sh 도 체크아웃의 것이다. 사본의 run.sh 를 받은 인자를 적고 끝나는 스텁으로
+# 바꿔, 체크아웃의 run.sh 가 그 스텁으로 넘어가는지 잰다.
+#
+# 매니페스트 본문의 런 id 를 머리와 어긋나게 둔다. hop 은 매니페스트 검사보다 먼저 일어나
+# 머리만 읽으므로 영향이 없고, hop 하지 않은 드라이버는 그 검사에서 멈춰 파이프라인을
+# 실제로 돌리지 않는다.
+p57_fixture R57D
+p57_gate snapshot --manifest "$P57_MAN"
+check "57D: 고정이 섰다" "$rc" "0"
+P57D_LOG="$WORK/hop57d.log"
+rm -f "$P57D_LOG"
+cat > "$P57_RD/plugin/cc-cmds/orchestrator/run.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > '$P57D_LOG'
+EOF
+sed -i.bak 's/^\*\*런 id\*\*: R57D$/**런 id**: R57D-hop/' "$P57_MAN" && rm -f "$P57_MAN.bak"
+check "57D: 매니페스트 본문의 런 id 가 머리와 어긋났다 (hop 없는 드라이버가 검사에서 멈춘다)" \
+  "$(grep -c '^\*\*런 id\*\*: R57D-hop$' "$P57_MAN" || true)" "1"
+# 스위트가 내보낸 `CC_ORCH_SOURCE_ONLY` 를 물려받으면 드라이버는 정의만 읽고 hop 앞에서
+# 끝난다.
+p57d_out=$( cd "$WT" || exit 1
+            unset CC_ORCH_SOURCE_ONLY
+            XDG_STATE_HOME="$P57_STATE" CC_CMDS_ORCH_HOST_OS=Darwin \
+              bash "$repo_root/plugins/cc-cmds/orchestrator/run.sh" --manifest "$P57_MAN" 2>&1 ); rc=$?
+check "57D: 체크아웃의 드라이버가 고정 사본의 run.sh 로 넘어간다" \
+  "$rc:$(tr '\n' ' ' < "$P57D_LOG" 2>/dev/null)" "0:--manifest $P57_MAN "
+[ "$rc" = 0 ] || printf '%s\n' "$p57d_out" > "$WORK/last-output.txt"
+# ---------------------------------------------------------------------------
+# 57p. 고정 전 fetch 와 빨리감기 — 원천이 원격보다 뒤처지면 앞당기거나 원격 끝을 고정한다
+# --- section: 57p | group: base | covers: pin | anchors: 57p: 뒤처진 깨끗한 클론은 ff 뒤 원격 끝 하위 트리를 고정한다, 57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다, 57p: 상류가 추적을 시작한 경로의 무시 파일은 덮어쓰이지 않는다, 57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다, 57p: 봉합이 서면 fetch 없이 클론 자신의 HEAD 를 고정한다 ---
+#
+# 원천은 저장소 체크아웃이 아니라 이 절이 만든 bare 원격의 클론들이다. 실제
+# origin 을 fetch 하는 고정은 이 절 밖에서 일어나면 안 되므로, 프리앰블의 동기화
+# 봉합 `CC_GATE_PIN_SYNC_DISABLE=1` 을 벗기는 곳은 아래 헬퍼 `p57p_take` 하나다.
+# 게이트 런 픽스처를 쓰지 않고 pin.sh 를 소싱해 `pin_take` 를 직접 구동하므로
+# `--sections 57p` 로 홀로 돌 수 있다.
+#
+# 원격의 역사: C1(첫 플러그인 트리) → C2(플러그인 하위 트리를 바꿈) → C3(빈 커밋).
+# 대부분의 클론은 C1 에 서 있고, 빈 커밋만 앞선 경우를 재는 클론 하나는 C2 에 선다.
+# ---------------------------------------------------------------------------
+P57P=$(mktemp -d "$WORK/pin57p.XXXXXX")
+P57P_SLEEP=4517
+p57p_g() {  # p57p_g <dir> <git 인자…> — 사용자 설정의 서명·훅에 기대지 않는 git
+  local d="$1"; shift
+  ( cd "$d" && GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@example.invalid \
+      GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@example.invalid \
+      git -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@" )
+}
+p57p_take() {  # p57p_take <run-dir> <src> [<targets>] — 동기화 봉합을 벗기는 유일한 자리
+  ( unset CC_GATE_PIN_SYNC_DISABLE
+    if [ -n "${P57P_SSH:-}" ]; then
+      GIT_SSH_COMMAND="$P57P_SSH"; GIT_SSH_VARIANT=ssh
+      export GIT_SSH_COMMAND GIT_SSH_VARIANT
+    fi
+    . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"
+    pin_take "$@" ) >/dev/null 2>&1
+}
+p57p_seam_take() {  # p57p_seam_take <run-dir> <src> — 봉합을 세운 채 고정한다
+  ( CC_GATE_PIN_SYNC_DISABLE=1; export CC_GATE_PIN_SYNC_DISABLE
+    . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"
+    pin_take "$@" ) >/dev/null 2>&1
+}
+p57p_pin() {  # p57p_pin <run-dir> <키>
+  awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1/plugin-pin" 2>/dev/null
+}
+p57p_state() {  # p57p_state <클론> — 체크아웃의 상태·HEAD·원격 추적 참조
+  printf '%s|%s|%s' \
+    "$(p57p_g "$1" --no-optional-locks status --porcelain 2>/dev/null)" \
+    "$(p57p_g "$1" rev-parse HEAD 2>/dev/null)" \
+    "$(p57p_g "$1" rev-parse --verify --quiet refs/remotes/origin/master 2>/dev/null)"
+}
+p57p_head() { p57p_g "$1" rev-parse HEAD 2>/dev/null; }
+p57p_rtree() {  # p57p_rtree <클론> — 원격 끝의 플러그인 하위 트리
+  p57p_g "$1" rev-parse refs/remotes/origin/master:plugins/cc-cmds 2>/dev/null
+}
+
+# 원격과 작성 클론. 작성 클론이 원격을 앞당긴다.
+P57P_REMOTE="$P57P/remote.git"
+git init -q --bare "$P57P_REMOTE" >/dev/null 2>&1
+p57p_g "$P57P_REMOTE" symbolic-ref HEAD refs/heads/master
+P57P_AUTH="$P57P/author"
+mkdir -p "$P57P_AUTH/plugins/cc-cmds/orchestrator" "$P57P_AUTH/plugins/cc-cmds/.claude-plugin"
+printf 'gate one\n' > "$P57P_AUTH/plugins/cc-cmds/orchestrator/gate.sh"
+printf '{ "version": "1.0.0" }\n' > "$P57P_AUTH/plugins/cc-cmds/.claude-plugin/plugin.json"
+printf 'top\n' > "$P57P_AUTH/README.md"
+{ p57p_g "$P57P_AUTH" init -q . \
+  && p57p_g "$P57P_AUTH" symbolic-ref HEAD refs/heads/master \
+  && p57p_g "$P57P_AUTH" add -A && p57p_g "$P57P_AUTH" commit -qm C1 \
+  && p57p_g "$P57P_AUTH" remote add origin "$P57P_REMOTE" \
+  && p57p_g "$P57P_AUTH" push -q origin master master:rel; } >/dev/null 2>&1
+P57P_C1=$(p57p_head "$P57P_AUTH")
+
+p57p_clone() {  # p57p_clone <이름> — 지금의 원격 끝에 선 클론
+  git clone -q "$P57P_REMOTE" "$P57P/$1" >/dev/null 2>&1
+  printf '%s' "$P57P/$1"
+}
+P57P_BEHIND=$(p57p_clone behind)
+P57P_DIRTY=$(p57p_clone dirty)
+printf 'mine\n' > "$P57P_DIRTY/plugins/cc-cmds/orchestrator/local.txt"
+P57P_OVER=$(p57p_clone overlap)
+printf 'my edit\n' >> "$P57P_OVER/plugins/cc-cmds/orchestrator/gate.sh"
+P57P_DIV=$(p57p_clone diverged)
+printf 'local\n' >> "$P57P_DIV/README.md"
+p57p_g "$P57P_DIV" commit -qam local >/dev/null 2>&1
+P57P_FEATC=$(p57p_clone featbase)
+P57P_FEAT="$P57P/feat-wt"
+p57p_g "$P57P_FEATC" worktree add -q -b feat "$P57P_FEAT" >/dev/null 2>&1
+P57P_LOCK=$(p57p_clone locked)
+P57P_NOGIT="$P57P/nogit"
+mkdir -p "$P57P_NOGIT"
+cp -R "$P57P_BEHIND/plugins" "$P57P_NOGIT/"
+P57P_UNREACH=$(p57p_clone unreachable)
+p57p_g "$P57P_UNREACH" remote set-url origin "$P57P/does-not-exist.git"
+P57P_HANG=$(p57p_clone hanging)
+p57p_g "$P57P_HANG" remote set-url origin "ssh://hang.example.invalid/x.git"
+P57P_SEAM=$(p57p_clone seam)
+P57P_TGT=$(p57p_clone target)
+P57P_NOHEAD=$(p57p_clone nohead)
+p57p_g "$P57P_NOHEAD" remote set-head origin -d >/dev/null 2>&1
+# 무시 파일: C2 가 추적을 시작할 경로에 로컬에서 무시 중인 파일이 있다. `git status` 는
+# 아무것도 내지 않고, git 의 병합은 기본값으로 그 파일을 말없이 덮어쓴다.
+P57P_IGN=$(p57p_clone ignored)
+printf 'added.sh\n' >> "$(p57p_g "$P57P_IGN" rev-parse --absolute-git-dir)/info/exclude"
+printf 'my ignored\n' > "$P57P_IGN/plugins/cc-cmds/orchestrator/added.sh"
+
+# C2 — 플러그인 하위 트리를 바꾼다. 그 뒤에 C2 에 선 클론 하나를 뜨고 빈 커밋 C3 을 올린다.
+printf 'gate two\n' > "$P57P_AUTH/plugins/cc-cmds/orchestrator/gate.sh"
+printf 'new\n' > "$P57P_AUTH/plugins/cc-cmds/orchestrator/added.sh"
+{ p57p_g "$P57P_AUTH" add -A && p57p_g "$P57P_AUTH" commit -qm C2 \
+  && p57p_g "$P57P_AUTH" push -q origin master; } >/dev/null 2>&1
+P57P_EMPTY=$(p57p_clone emptyahead)
+{ p57p_g "$P57P_AUTH" commit -q --allow-empty -m C3 \
+  && p57p_g "$P57P_AUTH" push -q origin master; } >/dev/null 2>&1
+P57P_C3=$(p57p_head "$P57P_AUTH")
+check "57p: 픽스처 — 원격 끝이 C3 이고 C1 과 다르다 (아래 단언이 공허하지 않다)" \
+  "$( [ -n "$P57P_C3" ] && [ "$P57P_C3" != "$P57P_C1" ] && [ "$(p57p_head "$P57P_BEHIND")" = "$P57P_C1" ] \
+      && printf yes || printf no )" "yes"
+
+# (1) 뒤처진 깨끗한 클론 → ff, 원격 끝 하위 트리 ----------------------------------
+p57p_take "$P57P/rd-behind" "$P57P_BEHIND/plugins/cc-cmds"
+check "57p: 뒤처진 깨끗한 클론은 ff 뒤 원격 끝 하위 트리를 고정한다" \
+  "$(p57p_pin "$P57P/rd-behind" origin-sync)/$(p57p_pin "$P57P/rd-behind" method)/$(p57p_pin "$P57P/rd-behind" tree)" \
+  "ff/archive/$(p57p_rtree "$P57P_BEHIND")"
+check "57p: ff 뒤 HEAD 가 원격 끝이고 commit 이 그것이다" \
+  "$(p57p_head "$P57P_BEHIND")/$(p57p_pin "$P57P/rd-behind" commit)" "$P57P_C3/$P57P_C3"
+check "57p: ff 갈래의 나머지 키" \
+  "$(p57p_pin "$P57P/rd-behind" dirty)|$(p57p_pin "$P57P/rd-behind" commit-on-origin)|$(p57p_pin "$P57P/rd-behind" base-branch)|$(p57p_pin "$P57P/rd-behind" origin-commit)|$(p57p_pin "$P57P/rd-behind" ff-refused)|$(p57p_pin "$P57P/rd-behind" subtree-differs)" \
+  "아니오|예|master|$P57P_C3|-|예"
+check "57p: ff 갈래의 사본이 원격 끝의 바이트다" \
+  "$(cat "$P57P/rd-behind/plugin/cc-cmds/orchestrator/gate.sh" 2>/dev/null)" "gate two"
+
+# (2) 겹치지 않는 더러운 변경 → ff 뒤 dirty=예 ---------------------------------------
+p57p_dirty_before=$(p57p_g "$P57P_DIRTY" --no-optional-locks status --porcelain)
+p57p_take "$P57P/rd-dirty" "$P57P_DIRTY/plugins/cc-cmds"
+check "57p: 겹치지 않는 더러운 변경은 ff 뒤 copy 와 dirty=예 로 고정된다" \
+  "$(p57p_pin "$P57P/rd-dirty" origin-sync)/$(p57p_pin "$P57P/rd-dirty" method)/$(p57p_pin "$P57P/rd-dirty" dirty)/$(p57p_head "$P57P_DIRTY")" \
+  "ff/copy/예/$P57P_C3"
+check "57p: 그 로컬 변경은 그대로 남는다" \
+  "$(p57p_g "$P57P_DIRTY" --no-optional-locks status --porcelain)" "$p57p_dirty_before"
+
+# (3)–(6) 빨리감지 못하는 원천 → 체크아웃 불변, 원격 끝 고정 ------------------------
+p57p_remote_case() {  # p57p_remote_case <이름> <클론> <원천> <기대 ff-refused>
+  local name="$1" clone="$2" src="$3" want="$4" rd before after
+  rd="$P57P/rd-$name"
+  before=$(p57p_state "$clone")
+  p57p_take "$rd" "$src"
+  after=$(p57p_state "$clone")
+  check "57p: $name — 체크아웃의 상태와 HEAD 가 바이트 그대로다" \
+    "$(printf '%s' "$after" | cut -d'|' -f1,2)" "$(printf '%s' "$before" | cut -d'|' -f1,2)"
+  check "57p: $name — 원격 추적 참조만 원격 끝으로 왔다" \
+    "$(printf '%s' "$after" | cut -d'|' -f3)" "$P57P_C3"
+  check "57p: $name — 원격 끝을 archive-remote 로 고정한다" \
+    "$(p57p_pin "$rd" origin-sync)|$(p57p_pin "$rd" ff-refused)|$(p57p_pin "$rd" method)|$(p57p_pin "$rd" commit)|$(p57p_pin "$rd" tree)|$(p57p_pin "$rd" dirty)|$(p57p_pin "$rd" commit-on-origin)" \
+    "원격 끝|$want|archive-remote|$P57P_C3|$(p57p_rtree "$clone")|아니오|예"
+  check "57p: $name — 사본이 원격 끝의 바이트다" \
+    "$(cat "$rd/plugin/cc-cmds/orchestrator/gate.sh" 2>/dev/null)" "gate two"
+}
+p57p_remote_case overlap "$P57P_OVER" "$P57P_OVER/plugins/cc-cmds" "충돌 변경"
+check "57p: 덮어쓸 변경이 있는 클론은 그대로 두고 원격 끝을 고정한다" \
+  "$(p57p_pin "$P57P/rd-overlap" origin-sync)/$(tail -1 "$P57P_OVER/plugins/cc-cmds/orchestrator/gate.sh")" "원격 끝/my edit"
+check "57p: 픽스처 — 무시 파일이 있는 클론의 git status 는 비어 있다 (겹침이 status 밖에서 재졌다)" \
+  "$(p57p_g "$P57P_IGN" --no-optional-locks status --porcelain --untracked-files=all)" ""
+p57p_remote_case ignored "$P57P_IGN" "$P57P_IGN/plugins/cc-cmds" "충돌 변경"
+check "57p: 상류가 추적을 시작한 경로의 무시 파일은 덮어쓰이지 않는다" \
+  "$(cat "$P57P_IGN/plugins/cc-cmds/orchestrator/added.sh" 2>/dev/null)/$(p57p_head "$P57P_IGN")" "my ignored/$P57P_C1"
+p57p_remote_case diverged "$P57P_DIV" "$P57P_DIV/plugins/cc-cmds" "로컬 커밋"
+p57p_remote_case feature "$P57P_FEAT" "$P57P_FEAT/plugins/cc-cmds" "다른 브랜치"
+check "57p: feature — 기능 브랜치 워크트리는 feat 에 그대로 선다" \
+  "$(p57p_g "$P57P_FEAT" symbolic-ref --short HEAD)" "feat"
+# 잠금 경합: fetch 는 ref 잠금만 쓰므로 지나가고, index 를 잡는 병합만 실패한다.
+P57P_LOCKF=$(p57p_g "$P57P_LOCK" rev-parse --absolute-git-dir)/index.lock
+: > "$P57P_LOCKF"
+p57p_remote_case locked "$P57P_LOCK" "$P57P_LOCK/plugins/cc-cmds" "ff 실패"
+check "57p: locked — 고정이 섰다" \
+  "$( [ -f "$P57P/rd-locked/plugin-pin" ] && [ -f "$P57P/rd-locked/plugin/cc-cmds/orchestrator/gate.sh" ] && printf yes || printf no )" "yes"
+rm -f "$P57P_LOCKF"
+
+# (7) .git 없는 원천 → 비git, 지금처럼 copy ----------------------------------------
+p57p_take "$P57P/rd-nogit" "$P57P_NOGIT/plugins/cc-cmds"
+check "57p: .git 없는 원천은 비git 이고 copy·(미상) 으로 고정된다" \
+  "$(p57p_pin "$P57P/rd-nogit" origin-sync)/$(p57p_pin "$P57P/rd-nogit" method)/$(p57p_pin "$P57P/rd-nogit" commit)/$(p57p_pin "$P57P/rd-nogit" base-branch)" \
+  "비git/copy/(미상)/-"
+
+# (8) 닿지 않는 원격 → fetch 실패, 로컬 HEAD 고정 --------------------------------
+p57p_unreach_before=$(p57p_state "$P57P_UNREACH")
+p57p_take "$P57P/rd-unreach" "$P57P_UNREACH/plugins/cc-cmds"
+check "57p: 닿지 않는 원격은 fetch 실패 로 적고 로컬 HEAD 를 고정한다" \
+  "$(p57p_pin "$P57P/rd-unreach" origin-sync)/$(p57p_pin "$P57P/rd-unreach" method)/$(p57p_pin "$P57P/rd-unreach" commit)/$(p57p_pin "$P57P/rd-unreach" ff-refused)" \
+  "fetch 실패/archive/$P57P_C1/-"
+check "57p: 그 클론은 바이트 그대로다" "$(p57p_state "$P57P_UNREACH")" "$p57p_unreach_before"
+
+# (9) 매달리는 원격 → 20초 감시가 끊는다 -------------------------------------------
+# ssh 전송을 오래 자는 명령으로 갈아 끼워 네트워크 없이 매달린다. `#` 이 git 이 덧붙이는
+# 인자를 주석으로 만든다.
+p57p_t0=$(date +%s)
+P57P_SSH="sleep $P57P_SLEEP #" p57p_take "$P57P/rd-hang" "$P57P_HANG/plugins/cc-cmds"
+p57p_el=$(( $(date +%s) - p57p_t0 ))
+check "57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다" \
+  "$(p57p_pin "$P57P/rd-hang" origin-sync)/$( [ "$p57p_el" -ge 15 ] && [ "$p57p_el" -le 35 ] && printf 상한안 || printf "경과${p57p_el}s" )" \
+  "fetch 실패/상한안"
+check "57p: 그때도 런은 로컬 HEAD 로 고정된다" \
+  "$(p57p_pin "$P57P/rd-hang" method)/$(p57p_pin "$P57P/rd-hang" commit)" "archive/$P57P_C1"
+pkill -f "sleep $P57P_SLEEP" 2>/dev/null || true
+
+# (10) 빈 커밋만 앞선 원격 → 하위 트리는 같다 --------------------------------------
+p57p_take "$P57P/rd-empty" "$P57P_EMPTY/plugins/cc-cmds"
+check "57p: 빈 커밋만 앞선 원격은 subtree-differs=아니오 다" \
+  "$(p57p_pin "$P57P/rd-empty" origin-sync)/$(p57p_pin "$P57P/rd-empty" subtree-differs)" "ff/아니오"
+
+# (11) 베이스 브랜치 — 선언된 대상이면 그 베이스, 아니면 origin/HEAD ------------------
+P57P_TGT_CG="$(cd "$P57P_TGT" && pwd -P)/.git"
+p57p_take "$P57P/rd-tgt" "$P57P_TGT/plugins/cc-cmds" "$(printf '%s\trel' "$P57P_TGT_CG")"
+check "57p: 공통 git 디렉터리가 맞는 대상 줄의 베이스 브랜치를 쓴다" \
+  "$(p57p_pin "$P57P/rd-tgt" base-branch)/$(p57p_pin "$P57P/rd-tgt" ff-refused)/$(p57p_head "$P57P_TGT")" \
+  "rel/다른 브랜치/$P57P_C1"
+p57p_take "$P57P/rd-tgt2" "$P57P_TGT/plugins/cc-cmds" "$(printf '%s\trel' "$P57P/elsewhere/.git")"
+check "57p: 맞지 않는 대상 줄은 무시하고 origin/HEAD 의 브랜치를 쓴다" \
+  "$(p57p_pin "$P57P/rd-tgt2" base-branch)/$(p57p_pin "$P57P/rd-tgt2" origin-sync)" "master/ff"
+p57p_nohead_before=$(p57p_state "$P57P_NOHEAD")
+p57p_take "$P57P/rd-nohead" "$P57P_NOHEAD/plugins/cc-cmds"
+check "57p: 대상 줄도 origin/HEAD 도 없으면 베이스 미상 으로 지금처럼 고정한다" \
+  "$(p57p_pin "$P57P/rd-nohead" origin-sync)/$(p57p_pin "$P57P/rd-nohead" method)/$(p57p_pin "$P57P/rd-nohead" commit)" \
+  "베이스 미상/archive/$P57P_C1"
+check "57p: 그때 fetch 도 하지 않았다" "$(p57p_state "$P57P_NOHEAD")" "$p57p_nohead_before"
+
+# (12) 봉합 → fetch 없이 클론 자신의 HEAD -------------------------------------------
+p57p_seam_before=$(p57p_state "$P57P_SEAM")
+p57p_seam_take "$P57P/rd-seam" "$P57P_SEAM/plugins/cc-cmds"
+check "57p: 봉합이 서면 fetch 없이 클론 자신의 HEAD 를 고정한다" \
+  "$(p57p_pin "$P57P/rd-seam" origin-sync)/$(p57p_pin "$P57P/rd-seam" tree)/$(p57p_pin "$P57P/rd-seam" commit)" \
+  "시험 봉합/$(p57p_g "$P57P_SEAM" rev-parse HEAD:plugins/cc-cmds)/$P57P_C1"
+check "57p: 봉합 아래에서 HEAD 와 원격 추적 참조가 그대로다" "$(p57p_state "$P57P_SEAM")" "$p57p_seam_before"
+check "57p: 봉합 아래에서는 동기화 키가 비어 있다" \
+  "$(p57p_pin "$P57P/rd-seam" base-branch)|$(p57p_pin "$P57P/rd-seam" origin-commit)|$(p57p_pin "$P57P/rd-seam" ff-refused)|$(p57p_pin "$P57P/rd-seam" subtree-differs)" \
+  "-|-|-|-"
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
@@ -38045,7 +38864,7 @@ check "87: 머지됨 조립 함수는 호출자의 상태 필드를 거절한다
 
 # ---------------------------------------------------------------------------
 # 87b. 리뷰 사이클의 수렴 — cycle 팔의 거절, 파견 거절 셋, review-carry act
-# --- section: 87b | group: base | covers: act, plan, snapshot | anchors: 87b: 리포트 요약과 숫자가 다른 cycle 행은 rc 2 다, 87b: 몫 줄과 몫 항목 수가 다른 cycle 행은 rc 2 다, 87b: 자기·머지된·없는 세그먼트에 배정한 몫은 rc 2 다, 87b: 상한에 닿은 세그먼트의 구현 파견은 rc 3 이다, 87b: 상한의 리드 수정 파견은 상한 구현 거절에 걸리지 않고 통과한다, 87b: 리드 수정 행이 선 세그먼트의 둘째 리드 수정 파견은 rc 3 이다, 87b: 세그먼트와 다른 --slice 의 리뷰 파견은 rc 3 이다, 87b: 부적격 사이클의 review-carry act 는 rc 3 이다, 87b: 표류 걸음은 머지 에 닿는다, 87b: 마지막 행 뒤 HEAD 그대로의 재리뷰는 rc 3 이다, 87b: 세그먼트 S7 의 행위는 그 세그먼트 워크트리에서 돈다, 87b: 리드 수정 세그먼트의 git push 는 자동 해소를 비우면 통과하고 0 이면 승인 대기다, 87b: 사전 인가 없는 이슈 생성은 자동 해소를 비우면 통과하고 0 이면 승인 대기다 ---
+# --- section: 87b | group: base | covers: act, plan, snapshot | anchors: 87b: 리포트 요약과 숫자가 다른 cycle 행은 rc 2 다, 87b: 몫 줄과 몫 항목 수가 다른 cycle 행은 rc 2 다, 87b: 자기·머지된·없는 세그먼트에 배정한 몫은 rc 2 다, 87b: 상한에 닿은 세그먼트의 구현 파견은 rc 3 이다, 87b: 상한의 리드 수정 파견은 상한 구현 거절에 걸리지 않고 통과한다, 87b: 리드 수정 행이 선 세그먼트의 둘째 리드 수정 파견은 rc 3 이다, 87b: 세그먼트와 다른 --slice 의 리뷰 파견은 rc 3 이다, 87b: 부적격 사이클의 review-carry act 는 rc 3 이다, 87b: 빈 argv 의 base-check act 는 행 빌더에 닿는다 (rc 3), 87b: review-line 은 마지막으로 실린 브랜치·선언 집합과 다음 사이클 리포트로 프롬프트를 낸다, 87b: review-line 이 낸 프롬프트의 리뷰 파견은 게이트를 지난다, 87b: 표류 걸음은 머지 에 닿는다, 87b: 마지막 행 뒤 HEAD 그대로의 재리뷰는 rc 3 이다, 87b: 세그먼트 S7 의 행위는 그 세그먼트 워크트리에서 돈다, 87b: 리드 수정 세그먼트의 git push 는 자동 해소를 비우면 통과하고 0 이면 승인 대기다, 87b: 사전 인가 없는 이슈 생성은 자동 해소를 비우면 통과하고 0 이면 승인 대기다 ---
 #
 # 87 의 판정이 실제 act·plan 경로에 꽂혀 있는지를 픽스처 런 하나로 잰다. 런은
 # 세그먼트 S2·S3 을 계획하고, 머지된 S4 의 행은 원장에 그대로 심는다 — 머지된
@@ -38193,6 +39012,22 @@ case "$msg" in
   *"not eligible for carry-over"*) ok "87b: 그 거절은 부적격 번호를 든다" ;;
   *) bad "87b review-carry 부적격 문면" "$msg" ;;
 esac
+# base-check 는 -- 뒤를 비워 부른다. act 의 공통 인자 검사가 빈 argv 를 막으면 행
+# 빌더까지 가지 못해 어떤 형태로도 베이스 판정을 쓸 수 없었다. 빌더를 직접 부르는
+# 88b 는 그 검사를 지나지 않으므로 여기서 act 경로로 잰다. S2 의 리뷰는 머지를
+# 읽지 않으므로 빌더의 리뷰 거절(rc 3)이 곧 빌더에 닿았다는 증거다.
+h87_act S2 base-check
+check "87b: 빈 argv 의 base-check act 는 행 빌더에 닿는다 (rc 3)" "$rc" "3"
+case "$msg" in
+  *"does not let a merge through"*) ok "87b: 그 거절은 base-check 행 빌더에서 온다" ;;
+  *) bad "87b 빈 argv base-check 문면" "$msg" ;;
+esac
+h87_act S2 base-check 판정=일치
+check "87b: argv 를 단 base-check act 는 rc 2 다" "$rc" "2"
+case "$msg" in
+  *"takes nothing after --"*) ok "87b: 그 거절은 base-check 행 빌더의 인자 거절이다" ;;
+  *) bad "87b argv base-check 문면" "$msg" ;;
+esac
 gateL carry-body --manifest "$WORK/plan-R87.md" --segment S2
 check "87b: 다음이 이월이 아닌 세그먼트의 carry-body 동사는 rc 3 이다" "$rc" "3"
 case "$msg" in
@@ -38290,6 +39125,40 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR87"
 ( cd "$W87S7" && git remote remove o87 ) >/dev/null 2>&1
 check "87b: 리드 수정 세그먼트의 git push 는 자동 해소를 비우면 통과하고 0 이면 승인 대기다" "$r87p1/$r87p0" "0/5"
 check "87b: 사전 인가 없는 이슈 생성은 자동 해소를 비우면 통과하고 0 이면 승인 대기다" "$r87i1/$r87i0" "0/5"
+
+# review-line — 라우터가 리뷰를 다시 파견할 때 쓸 프롬프트를 게이트가 행에서 조립한다.
+# 교대는 이전 파견의 프롬프트를 기억하지 못하고 원장도 그것을 남기지 않는다. 그래서
+# 브랜치·선언 파일 집합은 그것을 실은 마지막 행에서 읽어야 한다(뒤의 상태 행은 그 둘을
+# 되풀이하지 않는다). 잘려서 곁파일로 간 집합은 그 파일에서 전체를 읽는다.
+snap87=$( ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null ) )
+doc87=$(printf '%s' "$snap87" | jq -r '.["문서 인자"]')
+sl87=""; [ "$(printf '%s' "$snap87" | jq -r '.["슬라이싱"]["분기"]')" != "선언통치" ] || sl87=" --slice S8"
+base87=$(cd "$WORK/../.." && pwd)
+rl87() { gateL review-line --manifest "$WORK/plan-R87.md" --segment "$@"; }
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=계획됨 | 선언 파일 집합=`a.txt`, `b c.txt` | 선행=없음 | 워크트리=%s | 브랜치=seg/R87-S8 | prev=x\n' "$WT" >> "$L87A"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 워크트리=%s | 선행=없음 | prev=x\n' "$WT" >> "$L87A"
+rl87 S8 -- --recheck /x/c1.md
+check "87b: review-line 은 마지막으로 실린 브랜치·선언 집합과 다음 사이클 리포트로 프롬프트를 낸다" "$rc|$msg" \
+  "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md$sl87 --declared-files \"a.txt, b c.txt\" --recheck /x/c1.md \"설계는 $doc87\""
+rl87 S8 -- --no-slice
+check "87b: review-line 의 --no-slice 는 --slice 를 빼고 프롬프트에 남지 않는다" "$rc|$msg" \
+  "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle1.md --declared-files \"a.txt, b c.txt\" \"설계는 $doc87\""
+printf -- '- `cycle` | 교대=1 | 세그먼트=S8 | 사이클=1 | P0=0 | P1=1 | 리뷰 HEAD=%s | 리포트 경로=docs/reviews/seg-R87-S8-cycle1.md | prev=x\n' "$head87" >> "$L87A"
+printf 'a.txt, b c.txt, d.txt\n' > "$WORK/declared87.S8"
+printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 선언 파일 집합=a.txt, b c.txt (전체: %s) | 워크트리=%s | prev=x\n' "$WORK/declared87.S8" "$WT" >> "$L87A"
+rl87 S8
+check "87b: review-line 은 사이클 행 뒤의 리포트 번호를 올리고 잘린 집합을 곁파일에서 읽는다" "$rc|$msg" \
+  "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle2.md$sl87 --declared-files \"a.txt, b c.txt, d.txt\" \"설계는 $doc87\""
+( cd "$WT" && printf 'S8\n' >> a.txt && git commit -qam s8 ) >/dev/null 2>&1
+rl87 S8; line87=$msg
+h87_plan S8 review "$line87"
+check "87b: review-line 이 낸 프롬프트의 리뷰 파견은 게이트를 지난다" "$rc" "0"
+rl87 S2
+check "87b: 브랜치를 실은 행이 없는 세그먼트의 review-line 은 rc 3 이다" "$rc" "3"
+case "$msg" in
+  *"names a branch"*) ok "87b: 그 거절은 브랜치가 없다는 것을 든다" ;;
+  *) bad "87b review-line 브랜치 없음 문면" "$msg" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 88. K2 트립와이어 — 이월 머지가 머지 대조와 종료 조건 11 을 지나는가
