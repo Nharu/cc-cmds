@@ -8,7 +8,7 @@ options:
     - name: "<의도 또는 대상>"
       kind: positional
       required: false
-      summary: "이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. 같은 세션이 연 런이 멈춘 뒤 비우거나 `다시`·`이어서`·`재개` 같은 재개 낱말, 또는 그 런의 의도 문면 그대로 부르면 그 런의 답을 이어받아 새 런을 바로 시작한다(재킥오프)."
+      summary: "이 런이 무엇에 관한 것인지 — 설계 문서 경로(`.md`), 레포 슬러그, PR·브랜치 참조, 또는 아직 산출물이 없는 자유 텍스트 의도. 앵커 종류는 1막의 진입 판정이 정한다. 같은 세션이 연 런이 멈춘 뒤 비우거나 `다시`·`이어서`·`재개` 같은 재개 낱말, 또는 그 런의 의도 문면 그대로 부르면 그 런의 답을 이어받아 새 런을 바로 시작한다(재킥오프). 끝나지 않은 채 멈춘 런은 `다시`·`재킥오프` 같은 재킥 낱말로 부를 때만 이어받아 닫고, 빈 인자·재개 낱말·의도 문면으로는 이어받지 않고 그 런의 재개를 안내한다."
       parse_note: "`$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다. 재킥오프인지는 1막 맨 앞의 판별이 닫힌 낱말 목록으로 정하고, 그 밖의 인자는 새 런이다."
     - name: "--report"
       kind: flag
@@ -108,11 +108,14 @@ Load deferred tools via ToolSearch before any other step:
 1. **Detect.** `rekick.sh detect --arg '<$ARGUMENTS, verbatim, possibly empty>'`. The helper reads this session's id from its own environment; never pass it, never print it. The first `판정` line decides:
    - `새 런 <id>` — show the `고지` line (「이 세션이 연 런(<id>)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요」), then go to Step 1 as a first kickoff.
    - `없음` — show the `고지` line (「이 세션이 연 런을 찾지 못했습니다 — 처음 킥오프처럼 묻습니다」), then go to Step 1. With an empty argument, show the frontmatter's `usage` line instead and stop: there is no intent to judge.
-   - `열림 <id>` — show the `고지` lines and stop. No run id is minted and no trace is created: that run is still going or still waiting for an answer, and answering it is how it continues (「Resuming after a break」 in `${CLAUDE_SKILL_DIR}/references/act2-seat.md` — Read it now, before handling the person's answer).
+   - `진행 중 <id>` — show the `고지` lines and stop. No run id is minted and no trace is created: something is still alive in that run (a stage, a waiting stage, a shift or a relay), the gate could not say whether it ended, or it is un-ended and idle but the argument was empty, a resume word (`이어서`, `재개`, `계속`, `resume`) or its intent verbatim — then a `대기 원인` line names what it waits on, and the `고지` lines list the open approvals and unanswered halt records whose answer continues it and say that the argument `다시` adopts it instead. Resuming it is how it continues (「Resuming after a break」 in `${CLAUDE_SKILL_DIR}/references/act2-seat.md` — Read it now, before handling the person's answer).
    - `완료 <id>` — show its two `고지` lines and stop, the same way.
+   - `대기 <id> <원천 base>` — the run did not end, nothing in it is alive, and the argument was a re-kickoff word (`다시`, `재킥오프`, `다시 킥오프`, `rekick`, `again`, `retry`): it waits on an approval, a halt record or a usage limit, or on nothing. Go on exactly as for `재킥오프`; the new run adopts it, and item 7.8 closes the source `이어받음`. Its `굵게` lines name what it waited on and list the open approvals and unanswered halt records, which stay with the source and are not carried.
    - `재킥오프 <id> <원천 base>` — go on. The `<원천 base>` is what every mode below takes as `--base`.
 
-**On `재킥오프`, Read `${CLAUDE_SKILL_DIR}/references/rekickoff.md` now** — items 2 through 8 of this path and its stop rule are there, and the path does not go on without them.
+Adoption is reached only here, from a person's interactive kickoff: the successor chain does not call `rekick.sh`, so a run waiting on a person is never re-opened at night.
+
+**On `재킥오프` or `대기`, Read `${CLAUDE_SKILL_DIR}/references/rekickoff.md` now** — items 2 through 8 of this path and its stop rule are there, and the path does not go on without them.
 
 ### Step 1: Read the contracts, then judge the entry
 
@@ -272,7 +275,7 @@ In an ordinary checkout that is the same string as `git rev-parse --show-topleve
 
 ### Step 7: Stub the report, start the watcher, enter the loop
 
-**Read `${CLAUDE_SKILL_DIR}/references/act2-seat.md` now** — on entering this step, on the immediate and the deferred path alike; again when Step 1.0 item 1 finds the run `열림`, before handling the person's answer; and again after a compaction in Act 2, before the next gate call. It holds this step's items and the four parts of the loop this seat runs itself: 「Reading the exit codes」, 「When an approval is pending」, 「Resuming after a break」 and 「Shifting the loop, and re-arming the channel on every return」.
+**Read `${CLAUDE_SKILL_DIR}/references/act2-seat.md` now** — on entering this step, on the immediate and the deferred path alike; again when Step 1.0 item 1 finds the run `진행 중`, before handling the person's answer; and again after a compaction in Act 2, before the next gate call. It holds this step's items and the four parts of the loop this seat runs itself: 「Reading the exit codes」, 「When an approval is pending」, 「Resuming after a break」 and 「Shifting the loop, and re-arming the channel on every return」.
 
 ## Act 2b — the router loop
 
