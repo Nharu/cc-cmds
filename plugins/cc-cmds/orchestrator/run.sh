@@ -844,7 +844,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — eleven values, closed, three of them named and
+# The judgment-class vocabulary — twelve values, closed, four of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -858,7 +858,7 @@ manifest_autoadopt_rows() {
 # legacy rows, which is what lets a lint assert the closed set without an
 # exception.
 #
-# THE THREE FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
+# THE FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
 # stop the decision from being made — it forces whoever records it to borrow a
 # permitted token, and that is the leak. Named and forbidden, the leak arrives
 # as a refusal instead.
@@ -878,8 +878,16 @@ manifest_autoadopt_rows() {
 # gate counts only the key's automatic `재수렴` answers against it (`없음` is
 # unbounded), and a second `재수렴` to the same halt record after the first one
 # was re-converged still goes to a person.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈"
-readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
+#
+# `사람-결정` is forbidden for a different reason than the other three. They
+# hand a risk to the user; this one is a question only a person answers. It sits
+# in the forbidden list so that every check that already refuses by membership —
+# `check_manifest` rule 11, `gate_autoadopt_ok`, kickoff-defaults — refuses a
+# `자동 채택` row of it unchanged, and `JUDGMENT_CLASSES_PERSON` names it apart
+# so the gate can HOLD such an approval at `대기` instead of refusing it at issue.
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격 구속-이탈 사람-결정"
+readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격 사람-결정"
+readonly JUDGMENT_CLASSES_PERSON="사람-결정"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
 # hole rather than narrowing it. Both used to be a space-padded substring test
@@ -2062,14 +2070,18 @@ residual_share_missing() {
 }
 
 implement_process_b() {
-  # implement_process_b — reads one key's `stage-result` rows on stdin, oldest
-  # first, and answers 0 when an implement row carrying `plan_sha256=` stands
-  # after the last `종류=reconverge` row: the dispatch these rows come BEFORE is
-  # process B. A plan older than a re-convergence is void, as the implement
-  # skill's phase resolution says, so the next dispatch is process A again.
+  # implement_process_b — reads one key's `stage-result` and `재계획` rows on
+  # stdin, interleaved in ledger order, and answers 0 when an implement row
+  # carrying `plan_sha256=` stands after the last `종류=reconverge` row and the
+  # last `재계획` row: the dispatch these rows come BEFORE is process B. A plan
+  # older than a re-convergence or a re-plan is void, as the implement skill's
+  # phase resolution says, so the next dispatch is process A again. A `재계획`
+  # row is a sibling's re-convergence carried onto this key: the document moved
+  # under a plan another segment's re-convergence did not touch.
   # The driver's own rows carry no `종류`; an `S4` row is its implement row.
   awk '
     /종류=reconverge( |$)/ { b = 0; next }
+    index($0, "- `재계획`") == 1 { b = 0; next }
     /plan_sha256=/ && (/종류=implement( |$)/ || /\| 스테이지=S4 \|/) { b = 1 }
     END { exit (b ? 0 : 1) }
   '
@@ -3439,7 +3451,9 @@ ledger_last() {
 # would refuse the second run of every document that ever completed a first.
 # ---------------------------------------------------------------------------
 run_section_rows() {
-  # run_section_rows <계열> — rows of that series inside this run's block.
+  # run_section_rows <계열>... — rows of those series inside this run's block,
+  # in ledger order. More than one series interleaves them as they were written,
+  # which is what a reader that resets on one series and counts another needs.
   #
   # `awk` with string equality and no regex, which is the form this repository
   # already established for Korean keys: a Korean heading handed to a regex
@@ -3449,11 +3463,18 @@ run_section_rows() {
   # `LEDGER_SCOPE` decides whether there is a block to find at all. Under `파일`
   # the whole file is this run's and the headings — if a fresh `ledger_init`
   # wrote any — carry no scoping meaning, so they are not consulted.
-  awk -v h="## 실행 $RUN_ID" -v p="- \`$1\`" -v scope="${LEDGER_SCOPE:-블록}" '
-    BEGIN { whole = (scope == "파일"); inblk = whole }
+  #
+  # The series prefixes are joined with the unit separator (\037), not a
+  # newline: BSD awk refuses a `-v` value holding a newline ("newline in
+  # string") and the `2>/dev/null` below would turn that refusal into "no rows"
+  # on every call on macOS.
+  local ps="" s
+  for s in "$@"; do ps="${ps}- \`$s\`"$'\037'; done
+  awk -v h="## 실행 $RUN_ID" -v ps="$ps" -v scope="${LEDGER_SCOPE:-블록}" '
+    BEGIN { whole = (scope == "파일"); inblk = whole; np = split(ps, p, "\037") - 1 }
     !whole && $0 == h { inblk = 1; next }
     !whole && substr($0, 1, 3) == "## " { inblk = 0 }
-    inblk && index($0, p) == 1 { print }
+    inblk { for (i = 1; i <= np; i++) if (index($0, p[i]) == 1) { print; break } }
   ' "$LEDGER" 2>/dev/null || true
 }
 
@@ -7151,7 +7172,7 @@ segment_process_b() {
   # written, so the rows it sees are the ones that stood when it was launched:
   # a continuation of the attempt that emitted the plan is process B, which a
   # value read once before the first dispatch of the cycle could not say.
-  { run_section_rows 'stage-result' || true; } | { grep -F "| 세그먼트=$1 |" || true; } \
+  { run_section_rows 'stage-result' '재계획' || true; } | { grep -F "| 세그먼트=$1 |" || true; } \
     | implement_process_b
 }
 
