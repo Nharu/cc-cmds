@@ -257,7 +257,8 @@ export const register: Register = (on, options) => {
     const runId = await $.env.get('CC_PIPELINE_RUN_ID')
     const stageId = await $.env.get('CC_PIPELINE_STAGE_ID')
     const shiftId = await $.env.get('CC_PIPELINE_SHIFT_ID')
-    if (segment || runId || stageId || shiftId) return next(e)
+    const reentry = await $.env.get('CC_PIPELINE_REENTRY')
+    if (segment || runId || stageId || shiftId || reentry) return next(e)
 
     await $.command.register({
       name: 'autopilot-status',
