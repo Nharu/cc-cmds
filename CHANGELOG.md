@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.82.0] - 2026-10-16
+
+임대는 놓을 때 지워지고 스테이지별 계정 기록은 런 디렉터리 안에 시각 없이 남아, 런을 넘어 남는 GRANT 기록이 없었다. 그래서 리셋권을 누른 뒤 라우터가 언제 그 계정에 다시 부여했는지, 주간 리셋 때 버려질 한도(W7) 추정이 실제 남은 양과 맞았는지를 몇 주 뒤에 대조할 원자료가 없었다. 이 릴리스부터 라우터가 판정마다 관측 로그에 한 줄을 남기고, cc-lane 이 그 로그를 읽어 대조한다.
+
+### Added
+
+- **라우터 관측 로그** — `lease-txn` 이 GRANT·WAIT 봉투를 내는 모든 출구(표 부재, 락 대기 초과, 차용 재판독 뒤 물러섬, 재검증 경합, 정상 끝)에서 내기 직전에 임대 표의 형제 `observe/route.jsonl` 에 한 줄을 덧붙인다. 설치본에서는 `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace/observe/route.jsonl` 이다. 줄은 요청 필드, 판정·근거·`op`·계정·그룹과, 결정과 같은 문맥에서 계산한 모든 그룹의 `w7_bp`·`u7_bp`·`sigma7_bp`·`resets_at` 을 싣는다. PARK 와 휴면 봉투는 남기지 않는다.
+- **실패 격리와 정리** — 관측 로그 락은 임대 표 락과 따로 잡는다. 줄을 만들거나 쓰다 실패하거나 락을 못 잡으면 경고 한 줄만 내고 줄을 버리며, 봉투·표준 출력·종료 코드는 로그가 없을 때와 같다. 파일이 16 MiB 를 넘으면 스키마가 다르거나 깨진 줄과 120일보다 오래된 줄을 지우고, 그래도 넘치면 최신 줄부터 한도 안만 남긴다.
+- **계약 픽스처** `tests/fixtures/route-usage-contract/route-observe.jsonl` — cc-lane 과 나눠 쓰는 줄 모양을 바이트로 고정한다.
+- 시험 — 실제 `lease-txn` 이 쓴 줄의 키 순서와 픽스처의 대조, 판정된 그룹의 W7, WAIT·PARK 처분, 쓸 수 없는 관측 디렉터리와 잡힌 락에서의 봉투 불변, 보존 나이·크기 정리, 새 상수 셋.
+
+### Post-install notes
+
+관측은 플러그인을 갱신한 뒤의 판정부터 쌓인다. 로그를 읽는 대조 명령은 cc-lane 쪽에 있다.
+
 ## [2.81.1] - 2026-10-15
 
 팀원·리뷰어는 서브에이전트라 캐시가 직전 요청 뒤 5분이면 만료된다. 그런데 리드가 라운드 경계에서 모든 팀원의 결과를 모은 뒤 피어 결과를 재개문에 옮겨 적고 초안·장부 작업까지 마치고서야 재개해, 다음 라운드 첫 요청이 팀원 컨텍스트 전량을 콜드로 다시 쓰는 일이 잦았다. 이 릴리스는 팀 프로토콜에서 재개 앞에 있을 필요가 없는 일을 재개 뒤로 미루고, 피어 witness 를 본문에 옮겨 적는 대신 경로로 넘긴다. 프로토콜을 쓰는 모든 다중 라운드 팀(설계·design-lite·design-analyze·리뷰 세 갈래)에 함께 적용된다.
