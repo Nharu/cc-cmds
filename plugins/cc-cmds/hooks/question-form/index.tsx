@@ -71,13 +71,14 @@ const needsStamp = (e: { text: string; origin: { kind: string; name?: unknown } 
 // 도구 호출이 상태를 쓰기 전의 기록. .catch 가 이 호출이 만든 것을 되돌릴 때 읽는다.
 const before = new Map<string, FormRecord | null>()
 
-// 표지 넷을 리터럴로 읽는다. 셸 쪽 라우터 술어(셋)의 엄격한 상위 집합이다.
+// 표지 다섯을 리터럴로 읽는다. 셸 쪽 라우터 술어(넷)의 엄격한 상위 집합이다.
 async function pipelineMarked($: Dollar): Promise<boolean> {
   return anyMarked([
     await $.env.get('CC_PIPELINE_SEGMENT'),
     await $.env.get('CC_PIPELINE_STAGE_ID'),
     await $.env.get('CC_PIPELINE_SHIFT_ID'),
     await $.env.get('CC_PIPELINE_RUN_ID'),
+    await $.env.get('CC_PIPELINE_REENTRY'),
   ])
 }
 
