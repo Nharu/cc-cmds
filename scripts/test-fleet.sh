@@ -733,6 +733,169 @@ jq -cn --argjson now "$NOW" '{schema: "cc-pace-state v2", tick_seq: 1, computed_
 fleet dispatch u1 >/dev/null 2>&1
 check "다른 스키마의 제동 상태는 부재로 읽혀 기동한다" "$(backlog_status f1)" "done"
 
+# --- boot-time re-entry: the branch at the top of the dispatch tick ----------------
+# Seven fixture runs under the fixture state home, each recorded by a seat on the
+# interactive lane, and a fake pinned gate beside its own watcher and poller
+# stubs. The kernel's boot time is the test value. The fake gate logs every call
+# into one file, in order: a snapshot settles a run that carries `needs-settle`
+# (it writes the dead shift's `무기록`), and a `router-shift` leaves `상한` on the
+# first call and `중단` on the second. The source-only seam answers the `대기`
+# state the way the real gate does for a hand-back.
+T2O="$WORK/t2orch"; mkdir -p "$T2O"
+cat > "$T2O/gate.sh" <<'EOF'
+#!/usr/bin/env bash
+if [ "${CC_GATE_SOURCE_ONLY:-0}" = "1" ]; then
+  gate_relay_reentry_allowed() {
+    [ "$(awk '/^- `handoff` /{w=(index($0," | 사유=대기 | ")>0)?"w":"x"} /^- `교대 기동` /{w="x"} END{printf "%s",w}' "$LEDGER" 2>/dev/null)" = w ]
+  }
+  return 0 2>/dev/null || exit 0
+fi
+verb=$1; shift
+man=""; kind=""; first=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --manifest) man=$2; shift 2 ;;
+    --kind) kind=$2; shift 2 ;;
+    --) shift; first=${1:-}; break ;;
+    *) shift ;;
+  esac
+done
+rid=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$man" | head -1)
+rd="$XDG_STATE_HOME/cc-cmds/run/$rid"
+led=$(cat "$rd/ledger-path")
+if [ "$kind" = "router-shift" ]; then
+  # The watcher's line must already be there; waiting for it keeps a watcher
+  # launched before this call from losing the race to it in the log, and a
+  # watcher launched after this call still lands after this line.
+  i=0; while [ "$i" -lt 30 ] && ! grep -q "^watch $rid\$" "$TEST_LOG_DIR/t2.log" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+fi
+printf '%s %s %s CLAUDE_CONFIG_DIR=%s REENTRY=%s\n' "${kind:-$verb}" "$rid" "${first:--}" "${CLAUDE_CONFIG_DIR:-}" "${CC_PIPELINE_REENTRY:-}" >> "$TEST_LOG_DIR/t2.log"
+case "$verb:$kind" in
+  snapshot:)
+    if [ -e "$rd/needs-settle" ]; then
+      rm -f "$rd/needs-settle"
+      printf -- '- `handoff` | 교대=1 | 사유=무기록 | 버린 선택지=- | 막힌 지점=- | 다음 후보=- | 대상=infra | 기록 시각=%s | 종료 코드=- | 행위 수=0\n' "$(date -u +%FT%TZ)" >> "$led"
+    fi
+    printf '{"H":"h-%s"}\n' "$rid" ;;
+  act:router-shift)
+    # A run carrying `handback` comes back as a relay that met a return
+    # condition at once: no shift, no row.
+    [ ! -e "$rd/handback" ] || exit 0
+    # `t2.caps` holds how many calls leave `상한` before the `중단`, one when absent.
+    n=$(cat "$rd/t2.calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$rd/t2.calls"
+    if [ "$n" -le "$(cat "$rd/t2.caps" 2>/dev/null || echo 1)" ]; then r=상한; else r=중단; fi
+    printf -- '- `교대 기동` | 서수=%s\n- `handoff` | 교대=%s | 사유=%s | 대상=infra\n' "$n" "$n" "$r" >> "$led" ;;
+esac
+exit 0
+EOF
+cat > "$T2O/watch.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch %s\n' "$(basename "$2")" >> "$TEST_LOG_DIR/t2.log"
+exit 0
+EOF
+cat > "$T2O/checks.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'checks %s\n' "$(basename "$2")" >> "$TEST_LOG_DIR/t2-checks.log"
+exit 0
+EOF
+chmod +x "$T2O"/*.sh
+T2BOOT=$(( NOW - 600 ))
+t2_run() {
+  # t2_run <run-id> <ledger rows…> — a run the seat opened on the interactive lane.
+  local rid="$1" rd="$WORK/xdg/cc-cmds/run/$1" led="$WORK/t2led/$1.md" man="$WORK/t2man/$1.plan.md"; shift
+  rm -rf "$rd"; mkdir -p "$rd" "$WORK/t2led" "$WORK/t2man"
+  printf '<!-- cc-run-manifest v1; run-id=%s; owner-doc=docs/x.md; origin-worktree=%s; -->\n' "$rid" "$WT" > "$man"
+  printf '# 파이프라인 런 %s\n\n' "$rid" > "$led"
+  for row in "$@"; do printf '%s\n' "$row" >> "$led"; done
+  printf '1\n' > "$rd/ends-on-done"
+  printf '%s\n' "$H_CC" > "$rd/config-dir"
+  printf '%s\n' "$led" > "$rd/ledger-path"
+  printf 'manifest=%s\ntarget=infra\ngate=%s\ncutpoint=머지\nsurface=워크트리쓰기\n' "$man" "$T2O/gate.sh" > "$rd/seat-call"
+  # The seat's last call was before the boot: the boot cut this run.
+  touch -t 202001010000 "$rd/seat-call"
+}
+T2_LAUNCH='- `교대 기동` | 서수=1'
+T2_SETTLED="- \`stage-result\` | 세그먼트=A | 스테이지=A | 종단 부류=외부 종료 | 관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(iso $(( NOW - 300 )))"
+T2_OLD="- \`stage-result\` | 세그먼트=A | 스테이지=A | 종단 부류=외부 종료 | 관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(iso $(( NOW - 3600 )))"
+d_fresh d-t2 t2h
+t2_run T2A "$T2_LAUNCH"; : > "$WORK/xdg/cc-cmds/run/T2A/needs-settle"
+t2_run T2B '- `handoff` | 교대=1 | 사유=중단 | 대상=infra' "$T2_SETTLED"
+t2_run T2C "$T2_LAUNCH"; : > "$WORK/xdg/cc-cmds/run/T2C/needs-settle"; : > "$WORK/xdg/cc-cmds/run/T2C/done"
+t2_run T2D "$T2_SETTLED" '- `handoff` | 교대=1 | 사유=승인 | 대상=infra'
+t2_run T2E "$T2_SETTLED"
+sleep 300 & t2_relay=$!; BG_PIDS="$BG_PIDS $t2_relay"
+printf '%s\n%s\n' "$t2_relay" "$(bash -c '. "$1" && cc_proc_fingerprint "$2"' _ "$ORCH/liveness.sh" "$t2_relay")" > "$WORK/xdg/cc-cmds/run/T2E/relay.live"
+t2_run T2F "$T2_SETTLED"
+mkdir -p "$PACE/reentry"; printf '%s\n' "$T2BOOT" > "$PACE/reentry/T2F.boot"
+t2_run T2G '- `handoff` | 교대=1 | 사유=중단 | 대상=infra' "$T2_OLD"
+# Runs this boot did not cut, each in a state every other condition admits —
+# dead relay and shift, latest handoff `대기`, no boot marker. T2H's seat called
+# after the boot (a run born this boot); T2J's seat-call is from before it, but
+# a relay of this boot handed the turn back and left `relay.live`.
+T2_WAIT='- `handoff` | 교대=1 | 사유=대기 | 대상=infra'
+( exit 0 ) & t2_dead=$!; wait "$t2_dead" 2>/dev/null || true
+t2_run T2H "$T2_LAUNCH" "$T2_WAIT"; touch "$WORK/xdg/cc-cmds/run/T2H/seat-call"
+t2_run T2J "$T2_LAUNCH" "$T2_WAIT"
+printf '%s\nx\nhandback=%s\n' "$t2_dead" "$NOW" > "$WORK/xdg/cc-cmds/run/T2J/relay.live"
+# A run the boot cut whose relay keeps coming back at once with no shift — the
+# poller of a CI wait is dead and stays dead.
+t2_run T2I "$T2_LAUNCH" "$T2_WAIT"; : > "$WORK/xdg/cc-cmds/run/T2I/handback"
+# A run the boot cut on another label's account (u2): this label leaves it.
+t2_run T2K "$T2_LAUNCH"; : > "$WORK/xdg/cc-cmds/run/T2K/needs-settle"
+printf '%s\n' "$H2" > "$WORK/xdg/cc-cmds/run/T2K/config-dir"
+# A run whose every call launches a shift and comes back on its cap, past the
+# twelve calls the chain allows a call that launched nothing.
+t2_run T2L "$T2_LAUNCH"; : > "$WORK/xdg/cc-cmds/run/T2L/needs-settle"
+printf '14\n' > "$WORK/xdg/cc-cmds/run/T2L/t2.caps"
+rm -f "$TEST_LOG_DIR/t2.log" "$TEST_LOG_DIR/t2-checks.log"
+FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T2BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t2-1.err"; rc=$?
+t2n() { grep -c "^$1 $2 " "$TEST_LOG_DIR/t2.log" 2>/dev/null || true; }
+t2line() { grep -n "^$1 $2\( \|\$\)" "$TEST_LOG_DIR/t2.log" 2>/dev/null | head -1 | cut -d: -f1; }
+check "재진입: 틱은 0 으로 끝난다" "$rc" "0"
+check "재진입: 두 대상 런에 재진입 행 호출이 한 번씩" "$(t2n reentry T2A):$(t2n reentry T2B)" "1:1"
+check "재진입: 재진입 행의 사유는 정산 뒤 원장에서 읽은 중단이다" \
+  "$(grep '^reentry T2A ' "$TEST_LOG_DIR/t2.log" | cut -d' ' -f3)" "사유=중단"
+check "재진입: 대상 런의 router-shift 는 두 번이고 둘째는 상한이다" \
+  "$(grep '^router-shift T2A ' "$TEST_LOG_DIR/t2.log" | cut -d' ' -f3 | tr '\n' ' ')" "중단 상한 "
+check "재진입: 정산 행이 이미 있는 런도 교대를 부른다" "$(t2n router-shift T2B)" "2"
+t2_c2() {
+  local r w s
+  r=$(t2line reentry "$1"); w=$(t2line watch "$1"); s=$(t2line router-shift "$1")
+  [ -n "$r" ] && [ -n "$w" ] && [ -n "$s" ] && [ "$r" -lt "$w" ] && [ "$w" -lt "$s" ] && printf 'ok' || printf '%s<%s<%s' "$r" "$w" "$s"
+}
+check "재진입 C2: 재진입 행 호출이 감시자와 router-shift 보다 같은 틱 안에서 먼저 (T2A)" "$(t2_c2 T2A)" "ok"
+check "재진입 C2: 재진입 행 호출이 감시자와 router-shift 보다 같은 틱 안에서 먼저 (T2B)" "$(t2_c2 T2B)" "ok"
+check "재진입: 감시자 기동은 대상 런마다 한 번" "$(grep -c '^watch T2A$' "$TEST_LOG_DIR/t2.log" || true):$(grep -c '^watch T2B$' "$TEST_LOG_DIR/t2.log" || true)" "1:1"
+check "재진입: 폴러도 대상 런마다 한 번" "$(grep -c '^checks T2A$' "$TEST_LOG_DIR/t2-checks.log" || true)" "1"
+check "재진입: router-shift 의 CLAUDE_CONFIG_DIR 는 런의 config-dir 이다" \
+  "$(grep '^router-shift T2A ' "$TEST_LOG_DIR/t2.log" | head -1 | sed -n 's/.* CLAUDE_CONFIG_DIR=\([^ ]*\) .*/\1/p')" "$H_CC"
+check "재진입: router-shift 의 CC_PIPELINE_REENTRY 는 <run-id>@<부팅 값> 이다" \
+  "$(grep '^router-shift T2A ' "$TEST_LOG_DIR/t2.log" | head -1 | sed -n 's/.* REENTRY=\(.*\)$/\1/p')" "T2A@$T2BOOT"
+check "재진입: done·승인·살아 있는 relay·처리한 부팅 값의 런에는 호출이 없다" \
+  "$(grep -c -E '^[a-z-]+ T2[CDEF] ' "$TEST_LOG_DIR/t2.log" || true)" "0"
+check "재진입: 정산할 것 없는 중단 런은 스냅숏 하나뿐이다" \
+  "$(grep -E '^[a-z-]+ T2G ' "$TEST_LOG_DIR/t2.log" | cut -d' ' -f1 | tr '\n' ' ')" "snapshot "
+check "재진입: 이번 부팅에 좌석이 부른 런과 이번 부팅에 hand-back 한 런에는 스냅숏도 호출도 감시자도 없다" \
+  "$(grep -c -E '^[a-z-]+ T2[HJ]( |$)' "$TEST_LOG_DIR/t2.log" || true):$(grep -c -E '^checks T2[HJ]$' "$TEST_LOG_DIR/t2-checks.log" || true)" "0:0"
+check "재진입: 이번 부팅이 끊지 않은 런에는 부팅 표지를 남기지 않는다" \
+  "$( { [ -e "$PACE/reentry/T2H.boot" ] || [ -e "$PACE/reentry/T2J.boot" ]; } && printf marked || printf none)" "none"
+check "재진입: 곧바로 돌아오는 대기는 두 번째에서 사슬을 멈춘다" \
+  "$(grep '^router-shift T2I ' "$TEST_LOG_DIR/t2.log" | cut -d' ' -f3 | tr '\n' ' ')" "대기 대기 "
+check "재진입: 첫 번째 곧바로 돌아온 대기 뒤 죽은 폴러만 다시 띄운다" \
+  "$(grep -c '^watch T2I$' "$TEST_LOG_DIR/t2.log" || true):$(grep -c '^checks T2I$' "$TEST_LOG_DIR/t2-checks.log" || true)" "1:2"
+check "재진입: 다른 레이블 계정의 런에는 스냅숏도 호출도 감시자도 부팅 표지도 없다" \
+  "$(grep -c -E '^[a-z-]+ T2K( |$)' "$TEST_LOG_DIR/t2.log" || true):$( [ -e "$PACE/reentry/T2K.boot" ] && printf marked || printf none)" "0:none"
+check "재진입: 교대를 띄운 상한 호출은 세지 않아 사슬이 열두 번에서 멈추지 않는다" \
+  "$(t2n router-shift T2L):$(grep '^router-shift T2L ' "$TEST_LOG_DIR/t2.log" | tail -1 | cut -d' ' -f3)" "15:상한"
+check "재진입: 재진입을 돌린 틱은 백로그를 집지 않는다" "$(backlog_status t2h)" "pending"
+check "재진입: 런마다의 점유는 풀려 있다" "$(ls -d "$PACE"/reentry/*.lock 2>/dev/null | count_lines /dev/stdin)" "0"
+t2_before=$(count_lines "$TEST_LOG_DIR/t2.log")
+FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T2BOOT" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t2-2.err"
+check "재진입: 같은 부팅의 두 번째 틱에서는 호출 0" "$(( $(count_lines "$TEST_LOG_DIR/t2.log") - t2_before ))" "0"
+check "재진입: 두 번째 틱은 백로그로 간다" "$(backlog_status t2h)" "done"
+kill "$t2_relay" 2>/dev/null || true
+rm -rf "$WORK"/xdg/cc-cmds/run/T2?
+
 # --- usage ----------------------------------------------------------------------
 fresh_pace d-usage
 fleet dispatch >/dev/null 2>&1; rc=$?

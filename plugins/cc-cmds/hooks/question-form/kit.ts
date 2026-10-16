@@ -1,10 +1,10 @@
 // 질문지 키트 시험의 공용 세계. 엔진 밑의 연산(세션·패널·상태 줄·프로세스·제출·보관·
-// 시계·환경)을 모두 스텁으로 세운다. 표지 변수 넷은 늘 명시적으로 모의해 호스트 환경을
+// 시계·환경)을 모두 스텁으로 세운다. 표지 변수 다섯은 늘 명시적으로 모의해 호스트 환경을
 // 읽지 않으며, 세계 연산의 스텁은 { value } 형식으로 답한다.
 import type { On } from 'claude-code'
 import { mock } from 'claude-code/testing'
 
-export const MARKS = ['CC_PIPELINE_SEGMENT', 'CC_PIPELINE_STAGE_ID', 'CC_PIPELINE_SHIFT_ID', 'CC_PIPELINE_RUN_ID'] as const
+export const MARKS = ['CC_PIPELINE_SEGMENT', 'CC_PIPELINE_STAGE_ID', 'CC_PIPELINE_SHIFT_ID', 'CC_PIPELINE_RUN_ID', 'CC_PIPELINE_REENTRY'] as const
 export const TOOL = 'mcp__cc-cmds__question_form'
 export const PANE = 'cc-cmds-question-form'
 
@@ -36,7 +36,7 @@ export function world(on: On, options: WorldOptions = {}) {
     // 훅들이 엔진 스크롤로 넘긴 입력. 순서대로 쌓는다.
     engineScrolls: [] as { by: number; origin?: { kind: string }; pointer?: unknown }[],
   }
-  mock.env(on, { CC_PIPELINE_SEGMENT: '', CC_PIPELINE_STAGE_ID: '', CC_PIPELINE_SHIFT_ID: '', CC_PIPELINE_RUN_ID: '', ...options.env })
+  mock.env(on, { CC_PIPELINE_SEGMENT: '', CC_PIPELINE_STAGE_ID: '', CC_PIPELINE_SHIFT_ID: '', CC_PIPELINE_RUN_ID: '', CC_PIPELINE_REENTRY: '', ...options.env })
   const clock = mock.clock(on, { now: options.now ?? 1_000_000 })
   mock.store(on, options.store ?? {})
   // 이벤트는 결과를 그대로 돌려준다.

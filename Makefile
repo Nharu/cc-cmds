@@ -3,6 +3,15 @@
 # off for itself; this default covers one that forgets.
 export CC_CMDS_DASHBOARD := off
 
+# A new run's pin fetches the plugin checkout's `origin` and may pin the remote
+# tip tree instead of the checkout. A harness that opens runs with pinning left
+# on would then test remote code rather than the tree under test, and such
+# harnesses cannot be listed by name, so every harness make starts inherits the
+# switch that turns the fetch and fast-forward off (the pin itself stays on).
+# Calling a harness other than test-gate.sh directly outside make, put
+# `CC_GATE_PIN_SYNC_DISABLE=1` in front of it.
+export CC_GATE_PIN_SYNC_DISABLE := 1
+
 .PHONY: lint readme check check-gate-suite policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest run-check-gate-selftest
 
 lint:

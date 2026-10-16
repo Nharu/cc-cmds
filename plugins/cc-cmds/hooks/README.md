@@ -523,6 +523,6 @@ needs fullscreen:
 **Nothing happens outside an interactive session.** The first statement of the
 `session.start` hook returns when the session is not interactive, and the next
 returns when any of `CC_PIPELINE_SEGMENT`, `CC_PIPELINE_RUN_ID`,
-`CC_PIPELINE_STAGE_ID` or `CC_PIPELINE_SHIFT_ID` is non-empty. Only after both does the module register the
+`CC_PIPELINE_STAGE_ID`, `CC_PIPELINE_SHIFT_ID` or `CC_PIPELINE_REENTRY` is non-empty. Only after both does the module register the
 command or start its clock, so a stage, a shift or a `-p` run gets no command,
 no process and no pane.
