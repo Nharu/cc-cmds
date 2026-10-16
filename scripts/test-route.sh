@@ -26,6 +26,8 @@
 #   임대 표          — 세 상태와 처분, 대기 프리미티브, 생존 네 갈래, 반납·보유자 규칙,
 #                      stale-깨짐, 모르는 kind, 키 인코더, 락과 거래 프로세스, 재검증과
 #                      경합, 임대 쓰기 뒤 차용 재판독과 복원, 실패 경로, 지문의 TZ 고정.
+#   관측 로그        — 계약 픽스처와 같은 키 순서, 판정된 그룹의 W7, WAIT·PARK 처분,
+#                      쓸 수 없을 때와 락이 잡혔을 때의 봉투 불변, 보존 나이·크기 정리.
 #   리셋권           — 계약 고정 입력의 바이트 해시, 버려질 한도(W7) 순서와 경계, 예비
 #                      공급 대기의 자리·봉투·지명, 낡은 파일과 비정형 기록, 그 대기 행의
 #                      원장 검사.
@@ -80,8 +82,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 752(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
-ASSERTION_FLOOR=731
+# 실측 783(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=762
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -1310,6 +1312,9 @@ tr_consts_case() {
   check "판독 상한 ROUTE_COST_READ_MAX_BYTES" "$ROUTE_COST_READ_MAX_BYTES" 8388608
   check "보존 나이 ROUTE_COST_KEEP_S" "$ROUTE_COST_KEEP_S" 1209600
   check "보존 줄 수 ROUTE_COST_KEEP_LINES" "$ROUTE_COST_KEEP_LINES" 4000
+  check "관측 로그 스키마 ROUTE_OBSERVE_SCHEMA" "$ROUTE_OBSERVE_SCHEMA" "cc-cmds-route-observe v1"
+  check "관측 로그 정리 문턱 ROUTE_OBSERVE_MAX_BYTES" "$ROUTE_OBSERVE_MAX_BYTES" 16777216
+  check "관측 로그 보존 나이 ROUTE_OBSERVE_KEEP_S" "$ROUTE_OBSERVE_KEEP_S" 10368000
   check "config 는 판독 상한과 보존 상수를 싣지 않는다" \
     "$(printf '%s' "$cfg" | jq -c '.cost | keys')" '["floor","hygiene","max_age_s","max_n","min_n"]'
   want=$(sed -n 's/^readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=\([0-9]*\).*$/\1/p' "$TR_RUN_SH")
@@ -2049,6 +2054,133 @@ tr_active_lock_case() {
   check "명령 치환 안의 활성 경로 뒤 락이 없다" "$([ -e "$RUN_PACE_ROOT/leases/.lock" ] && printf 있음 || printf 없음)" "없음"
 }
 tr_in_run "$TR_RUN_SH" tr_active_lock_case
+
+# ===========================================================================
+# 관측 로그. `lease-txn` 이 GRANT·WAIT 봉투를 낼 때 표의 형제 `observe/route.jsonl`
+# 에 남기는 한 줄. 모양은 cc-lane 과 나눠 쓰는 계약 픽스처와 키 순서까지 같아야
+# 한다. 단언은 `check` 로만 쓴다 — 관측 줄의 `verdict` 를 부류 포괄에 섞지 않는다.
+# ===========================================================================
+FXO="$repo_root/tests/fixtures/route-usage-contract/route-observe.jsonl"
+OB="$WORK/ob"
+# 한도와 락 대기를 작게 미리 정한 래퍼. 같은 이름을 먼저 readonly 로 두면 route.sh
+# 의 가드가 다시 선언하지 못하고 앞선 값이 남는다(그 오류는 소싱의 표준 오류로 버린다).
+WRAPO="$WORK/wrap-observe.sh"
+cat > "$WRAPO" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+readonly ROUTE_OBSERVE_MAX_BYTES="$TRO_MAX" ROUTE_OBSERVE_KEEP_S="$TRO_KEEP" ROUTE_LEASE_LOCK_WAIT_S=1
+. "$TRH_ORCH/liveness.sh"
+. "$TRH_ORCH/route.sh" 2>/dev/null
+route__main "$@"
+EOF
+# obn <부모> — 관측 로그의 줄 수. 파일이 없으면 0.
+obn() { if [ -f "$1/observe/route.jsonl" ]; then wc -l < "$1/observe/route.jsonl" | tr -d ' '; else printf 0; fi; }
+# obtxn <부모> <문맥 필터> [래퍼 환경…] — 그 부모 아래 `leases` 표로 거래 하나.
+obtxn() {
+  local p="$1" f="$2"
+  shift 2
+  ctx "$f" | env "$@" bash "${OBW:-$TR_ROUTE}" lease-txn --table "$p/leases" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER"
+}
+# 주간 리셋이 한 시간 뒤인 계정 a 는 W7 이 0 보다 크고, 그래서 a 가 먼저 뽑힌다.
+OBF='USE([UW("a"; W(0.1; $now + 3600); W(0.1; $now + 3600)), UA("b"; 0.1; 0.1)])'
+OBWAIT='USE([UA("a"; 0.1; 1.2), UA("b"; 0.1; 1.2)])'
+FXO1=$(sed -n 1p "$FXO")
+
+check "관측 픽스처는 두 줄이다" "$(wc -l < "$FXO" | tr -d ' ')" 2
+check "관측 픽스처 두 줄의 최상위 키 순서가 같다" "$(jq -c keys_unsorted "$FXO" | sort -u | wc -l | tr -d ' ')" 1
+check "관측 픽스처의 groups 항목 키 순서" "$(jq -c '.groups[] | keys_unsorted' "$FXO" | sort -u)" \
+  '["group","w7_bp","u7_bp","sigma7_bp","resets_at"]'
+
+P="$OB/grant"
+rc=0; out=$(obtxn "$P" "$OBF" 2>"$OB.grant.err") || rc=$?
+check "관측: GRANT 거래는 rc 0 으로 a 를 그룹 acct:a 로 준다" "$rc/$(printf '%s' "$out" | jq -r '.verdict + " " + .account + " " + .group')" "0/GRANT a acct:a"
+check "관측: GRANT 거래가 관측 줄 정확히 하나를 쓴다" "$(obn "$P")" 1
+check "관측: 쓸 수 있는 실행은 표준 오류가 비어 있다" "$(cat "$OB.grant.err")" ""
+line=$(cat "$P/observe/route.jsonl" 2>/dev/null)
+check "관측: 줄의 최상위 키 순서가 픽스처 1행과 같다" "$(printf '%s' "$line" | jq -c keys_unsorted)" "$(printf '%s' "$FXO1" | jq -c keys_unsorted)"
+check "관측: groups 항목 키 순서가 픽스처 1행과 같다" \
+  "$(printf '%s' "$line" | jq -c '[.groups[] | keys_unsorted] | unique')" "$(printf '%s' "$FXO1" | jq -c '[.groups[] | keys_unsorted] | unique')"
+check "관측: GRANT 줄의 요청·판정 필드" \
+  "$(printf '%s' "$line" | jq -c '[.schema, .at, .run_id, .lineage, .event, .kind, .verdict, .basis, .op, .account, .group]')" \
+  "[\"cc-cmds-route-observe v1\",$NOW,\"r1\",\"S1\",\"first\",\"implement\",\"GRANT\",\"first\",\"write\",\"a\",\"acct:a\"]"
+check "관측: groups 는 모든 그룹을 group 순으로 담는다" "$(printf '%s' "$line" | jq -c '[.groups[].group]')" '["acct:a","acct:b"]'
+check "관측: 판정된 그룹의 주간 값" "$(printf '%s' "$line" | jq -c '.groups[0] | [.u7_bp, .sigma7_bp, .resets_at]')" "[1000,0,$((NOW + 3600))]"
+c=$(ctx "$OBF")
+w7want=$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
+  | ( . "$TR_ROUTE"; jq -r --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:a") | rt_w7($c; .; rt_admit_core($c; .; null).cost)' ))
+check "관측: 판정된 그룹의 w7_bp 는 같은 문맥의 rt_w7" "$(printf '%s' "$line" | jq -r '.groups[0].w7_bp')" "$w7want"
+check "관측: 그 W7 은 0 보다 크다" "$( [ "${w7want:-0}" -gt 0 ] 2>/dev/null && printf 큼 || printf 아님)" "큼"
+
+P="$OB/wait"
+rc=0; out=$(obtxn "$P" "$OBWAIT") || rc=$?
+check "관측: WAIT 거래가 관측 줄 하나를 쓴다" "$rc/$(printf '%s' "$out" | jq -r .verdict)/$(obn "$P")" "0/WAIT/1"
+line=$(cat "$P/observe/route.jsonl" 2>/dev/null)
+check "관측: WAIT 줄은 계정·근거 null, op none" "$(printf '%s' "$line" | jq -c '[.verdict, .account, .basis, .op]')" '["WAIT",null,null,"none"]'
+check "관측: WAIT 줄의 group 은 봉투의 group" "$(printf '%s' "$line" | jq -c .group)" "$(printf '%s' "$out" | jq -c .group)"
+check "관측: 쓰지 않는 결정은 표 디렉터리를 만들지 않는다" "$([ -e "$P/leases" ] && printf 있음 || printf 없음)" "없음"
+
+P="$OB/park"
+out=$(obtxn "$P" '.inventory = {state: "corrupt"}')
+check "관측: PARK 봉투는 줄을 더하지 않는다" "$(printf '%s' "$out" | jq -r .verdict)/$(obn "$P")" "PARK/0"
+mkdir -p "$P/leases"
+printf '{' > "$P/leases/r9+x.lease"
+out=$(obtxn "$P" '.')
+check "관측: 깨진 표의 PARK 도 줄을 더하지 않는다" "$(printf '%s' "$out" | jq -r .reason)/$(obn "$P")" "lease-table-corrupt/0"
+
+# 관측 디렉터리 자리에 일반 파일이 있으면 쓸 수 없다. 봉투·rc 는 쓸 수 있는 실행과 같다.
+for v in WAIT GRANT; do
+  if [ "$v" = WAIT ]; then f="$OBWAIT"; else f="$OBF"; fi
+  rc1=0; o1=$(obtxn "$OB/ok-$v" "$f" 2>"$OB/ok-$v.err") || rc1=$?
+  mkdir -p "$OB/ro-$v"
+  printf 'x\n' > "$OB/ro-$v/observe"
+  rc2=0; o2=$(obtxn "$OB/ro-$v" "$f" 2>"$OB/ro-$v.err") || rc2=$?
+  if [ "$v" = GRANT ]; then
+    o1=$(printf '%s' "$o1" | jq -c 'del(.nonce)'); o2=$(printf '%s' "$o2" | jq -c 'del(.nonce)')
+  fi
+  check "관측: 쓸 수 없는 관측 디렉터리에서 $v 봉투·rc 가 같다" "$rc2/$o2" "$rc1/$o1"
+  check "관측: 쓸 수 없는 관측 디렉터리에서 $v 경고 한 줄" \
+    "$(wc -l < "$OB/ro-$v.err" | tr -d ' ')/$(grep -c '관측 로그' "$OB/ro-$v.err")/$(wc -c < "$OB/ok-$v.err" | tr -d ' ')" "1/1/0"
+done
+
+# 정리. 보존 나이를 작게 정해 오래된 줄·다른 스키마 줄·깨진 줄이 지워지고, 최근 줄과
+# 새 줄이 남는다. 문턱은 그 둘의 바이트 합과 같게 둔다.
+P="$OB/prune"
+newl=$(cat "$OB/wait/observe/route.jsonl")
+recent=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 10))" '.at = $t')
+old=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 2000))" '.at = $t')
+lim=$(( $(printf '%s\n%s\n' "$recent" "$newl" | wc -c | tr -d ' ') ))
+mkdir -p "$P/observe"
+{
+  printf '%s\n' "$old"
+  printf '%s\n' "$FXO1" | jq -c '.schema = "cc-cmds-route-observe v0" | .at = '"$NOW"
+  printf '{\n'
+  printf '%s\n' "$recent"
+} > "$P/observe/route.jsonl"
+OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX="$lim" TRO_KEEP=1000 >/dev/null
+check "관측 정리: 오래된·다른 스키마·깨진 줄이 지워지고 최근 줄과 새 줄이 남는다" \
+  "$(cat "$P/observe/route.jsonl")" "$recent
+$newl"
+P="$OB/prune-keep"
+mkdir -p "$P/observe"
+printf '%s\n' "$old" > "$P/observe/route.jsonl"
+OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=1000 >/dev/null
+check "관측 정리: 문턱 아래면 오래된 줄도 지우지 않는다" "$(obn "$P")/$(sed -n 1p "$P/observe/route.jsonl")" "2/$old"
+P="$OB/prune-tail"
+mkdir -p "$P/observe"
+r2=$(printf '%s' "$recent" | jq -c '.lineage = "I9"')
+printf '%s\n%s\n' "$recent" "$r2" > "$P/observe/route.jsonl"
+OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX="$lim" TRO_KEEP=1000 >/dev/null
+check "관측 정리: 그래도 넘치면 최신 줄부터 문턱 안만 남는다" "$(cat "$P/observe/route.jsonl")" "$r2
+$newl"
+
+# 관측 로그 락이 살아 있는 보유자에게 잡혀 있으면 봉투는 그대로이고 줄은 버려진다.
+P="$OB/locked"
+mkdir -p "$P/observe/.lock"
+printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$P/observe/.lock/owner"
+rc=0; out=$(OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=10368000 2>"$OB/locked.err") || rc=$?
+check "관측: 락이 잡혀 있으면 봉투·rc 가 같다" "$rc/$out" "0/$(obtxn "$OB/wait2" "$OBWAIT")"
+check "관측: 락이 잡혀 있으면 줄을 버리고 경고한다" \
+  "$(obn "$P")/$(grep -c '관측 로그 락을 잡지 못해' "$OB/locked.err")/$([ -d "$P/observe/.lock" ] && printf 남음)" "0/1/남음"
 
 # ===========================================================================
 # 리셋권. cc-lane 이 발행하는 계약 고정 입력을 `usage-read` 로 읽어 그대로 문맥에
