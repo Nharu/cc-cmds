@@ -3841,9 +3841,10 @@ routing_guard_check() {
 # ROOT THAT WAS JUDGED ABSENT. `/dev/null` is not a directory, so the target can
 # never exist and the router's reader sees the name as absent. The constant, the
 # two forms and the rule that the target begins with the constant and a `/` are
-# frozen across plugin versions: the driver does not hop to the pinned copy, so
-# one run's `rundir_init` and its stages' gate entries can run different
-# versions of this code.
+# frozen across plugin versions: the driver hops to the pinned copy only when a
+# pin exists at its start, so a run pinned later by its first gate entry has its
+# `rundir_init` and its stages' gate entries running different versions of this
+# code.
 readonly RUN_INVENTORY_ABSENT_MARK='/dev/null/cc-cmds-inventory-absent'
 # Out-values of the functions below, the way `LANE_RECORD` is for
 # `lane_record_read`: WHY and AT say why a judge or a take refused and where;
@@ -9094,6 +9095,9 @@ base_branch() {
 # Refresh the remote-tracking refs. This does NOT touch the working tree — it
 # reads the remote and moves `refs/remotes/origin/*` only — so it is compatible
 # with the decision never to fast-forward the tree a human is working in.
+# That decision has exactly one exception: right before a new run is pinned,
+# `pin_sync` in pin.sh fast-forwards the plugin's source checkout, `--ff-only`
+# and only when no local change is in the way.
 # The root is resolved into a variable rather than substituted into `cd`: an alias
 # the manifest does not declare makes `alias_root` fail and print nothing, and
 # `cd ""` is a successful no-op — so the fetch would have run in whatever directory
@@ -11651,6 +11655,38 @@ if [ "${CC_ORCH_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# The arguments as given, for `run_hop_or_die` to hand to the pinned copy
+# unchanged. The loop below consumes them.
+RUN_HOP_ARGV=("$@")
+
+run_hop_or_die() {
+  # run_hop_or_die <run-id> — `exec` into that run's pinned copy of this file if
+  # there is one. Returns only when there is nothing to hop into.
+  #
+  # THE DRIVER HOPS FOR THE SAME REASON THE GATE DOES. The pin may be taken from
+  # `origin/<base>` rather than from the checkout this file was started from,
+  # and the timer-driven dispatch pins first and starts the driver second. A
+  # driver left in the checkout then ran one version while the gate enforced
+  # another, and launched `$ORCH_DIR/stage-wrapper.sh` from the checkout at every
+  # stage — so a second run fast-forwarding that checkout mid-run handed this
+  # run's remaining stages a wrapper from neither version. Inside the copy
+  # `ORCH_DIR` is the copy, and every file the driver starts comes with it.
+  #
+  # The refusals are `pin_hop_target`'s and mean what they mean for the gate.
+  local rd t rc=0
+  rd=$(rundir_of_run_id "$1") || die "the run id carries a path component: $1"
+  # shellcheck source=/dev/null
+  . "$ORCH_DIR/pin.sh"
+  t=$(pin_hop_target "$rd" "$ORCH_DIR") || rc=$?
+  case "$rc" in
+    0) [ -f "$t/run.sh" ] || die "the pinned copy has no run.sh: $t"
+       exec "${BASH:-/bin/bash}" "$t/run.sh" ${RUN_HOP_ARGV[@]+"${RUN_HOP_ARGV[@]}"} ;;
+    2) die "plugin-pin is present but the copy is not: $rd/plugin-pin — recovery: rm \"$rd/plugin-pin\"" ;;
+    3) die "plugin-pin points at something that is not this run's copy: $rd/plugin-pin — it is not a pin this run published, so nothing is executed" ;;
+  esac
+  return 0
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest)   MANIFEST="$2"; shift 2 ;;
@@ -11686,6 +11722,10 @@ if [ -n "$MANIFEST" ]; then
     MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
   fi
   [ -f "$MANIFEST" ] || { echo "run.sh: manifest not found: $MANIFEST" >&2; exit 2; }
+  # Before anything else reads the manifest, as the gate's own hop is: the
+  # checks below are the copy's to run.
+  run_hop_rid=$(manifest_hdr_field 'run-id' 2>/dev/null) || run_hop_rid=""
+  [ -z "$run_hop_rid" ] || run_hop_or_die "$run_hop_rid"
   check_manifest
   # KICKOFF ONLY. The gate re-enters `check_manifest` on every act; this one runs
   # once, where a refusal can still be acted on.
@@ -11696,6 +11736,7 @@ elif [ -n "$DOC" ]; then
   derive_paths
   [ -n "$RUN_ID" ] || RUN_ID=$(grant_blocks | tail -1)
   [ -n "$RUN_ID" ] || { echo "run.sh: --run-id is required when the grant has no block" >&2; exit 2; }
+  run_hop_or_die "$RUN_ID"
 else
   echo "run.sh: --manifest <abs-path> (or --doc <abs-path> for the degenerate case) is required" >&2
   exit 2
