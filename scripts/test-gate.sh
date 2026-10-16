@@ -20014,6 +20014,26 @@ check "31aw: 들여쓰고 글머리표를 단 판정 줄도 판정이다" "$(hw_
 check "31aw: 0턴 꼬리 봉투는 건너뛰고 그 앞 결과의 판정을 읽는다" "$(hw_in gate_reconverge_verdict "$HWS/tail")" "재설계 필요"
 check "31aw: 턴을 돈 결과가 여럿이면 마지막 것을 읽는다" "$(hw_in gate_reconverge_verdict "$HWS/tailboth")" "재설계 필요"
 check "31aw: 줄 가운데의 굵은 판정 문구도 판정이 아니다" "$(hw_in gate_reconverge_verdict "$HWS/boldmid")" "없음"
+# The router's re-plan items have no carried block to fall back on, so every
+# spelling that changes no word must still read as the verdict: whole-line
+# bold, backticks on the line or the value, one closing period, a numbered or
+# `* ` marker, a full-width colon. A changed word is still no verdict.
+hw_stream "$HWS/wbold"  "$(printf '재수렴 요약\n**판정: 재설계 필요**\n%s' "$HW_LIT")"
+hw_stream "$HWS/wtick"  "$(printf '재수렴 요약\n`판정: 불필요`\n%s' "$HW_LIT")"
+hw_stream "$HWS/vtick"  "$(printf '재수렴 요약\n판정: `재설계 필요`.\n%s' "$HW_LIT")"
+hw_stream "$HWS/dot"    "$(printf '재수렴 요약\n판정: 재설계 필요.\n%s' "$HW_LIT")"
+hw_stream "$HWS/num"    "$(printf '재수렴 요약\n1. 판정: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/star"   "$(printf '재수렴 요약\n* **판정**: 재설계 필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/fwcol"  "$(printf '재수렴 요약\n판정： 불필요\n%s' "$HW_LIT")"
+hw_stream "$HWS/word"   "$(printf '재수렴 요약\n판정: 재설계 필요함\n%s' "$HW_LIT")"
+check "31aw: 줄 전체를 굵게 한 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/wbold")" "재설계 필요"
+check "31aw: 줄 전체를 백틱으로 감싼 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/wtick")" "불필요"
+check "31aw: 값을 백틱으로 감싸고 마침표를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/vtick")" "재설계 필요"
+check "31aw: 끝 마침표 하나를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/dot")" "재설계 필요"
+check "31aw: 번호 목록 표시를 단 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/num")" "재설계 필요"
+check "31aw: 별표 목록 표시와 굵은 키의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/star")" "재설계 필요"
+check "31aw: 전각 콜론의 판정 줄도 판정이다" "$(hw_in gate_reconverge_verdict "$HWS/fwcol")" "불필요"
+check "31aw: 낱말이 달라진 판정 줄은 판정이 아니다" "$(hw_in gate_reconverge_verdict "$HWS/word")" "없음"
 
 # The row, through the gate's own stage-result writer. S2's attempt 2 is the
 # re-convergence the siblings cite; S5's two attempts are the `불필요` and

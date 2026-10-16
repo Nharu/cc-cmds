@@ -10065,9 +10065,13 @@ gate_reconverge_verdict() {
   # the verdict, and reading that one turned every such re-convergence into
   # `없음` whatever the stage wrote. The line's own spelling is loosened only
   # where it cannot change the words — leading and trailing whitespace, one
-  # list marker, and a bold key (`**판정**:` or `**판정:**`); a verdict in the
-  # middle of a sentence is still no verdict.
-  local out="${1:-}" txt need=0 unneeded=0 line
+  # list marker (`- `, `* `, `1. `, `1) `), bold or backticks around the whole
+  # line, a bold key (`**판정**:` or `**판정:**`), a full-width colon,
+  # bold or backticks around the value and one closing period; a verdict in the middle
+  # of a sentence is still no verdict. The router's re-plan items read only
+  # the row this writes, so a spelling read as `없음` here leaves a stale plan
+  # standing with nothing else to catch it.
+  local out="${1:-}" txt need=0 unneeded=0 line w inner val dot
   [ -n "$out" ] && [ -s "$out" ] && command -v jq >/dev/null 2>&1 || { printf '없음'; return 0; }
   txt=$(jq -R -n -r '
     reduce (inputs | select(test("\\S")) | (try fromjson catch null)
@@ -10079,14 +10083,46 @@ gate_reconverge_verdict() {
   while IFS= read -r line; do
     line="${line%"${line##*[![:space:]]}"}"
     line="${line#"${line%%[![:space:]]*}"}"
-    case "$line" in '- '*|'* '*) line="${line#??}" ;; esac
     case "$line" in
-      '**판정**: '*) line="판정: ${line#'**판정**: '}" ;;
-      '**판정:** '*) line="판정: ${line#'**판정:** '}" ;;
+      '- '*|'* '*) line="${line#??}" ;;
+      [0-9]'. '*|[0-9]') '*) line="${line#???}" ;;
+      [0-9][0-9]'. '*|[0-9][0-9]') '*) line="${line#????}" ;;
     esac
+    for w in '**' '`'; do
+      case "$line" in
+        "$w"?*"$w")
+          inner="${line#"$w"}"; inner="${inner%"$w"}"
+          case "$inner" in *"$w"*) ;; *) line="$inner" ;; esac ;;
+      esac
+    done
     case "$line" in
-      '판정: 재설계 필요') need=$((need + 1)) ;;
-      '판정: 불필요') unneeded=$((unneeded + 1)) ;;
+      '**판정**:'*) line="판정:${line#'**판정**:'}" ;;
+      '**판정:**'*) line="판정:${line#'**판정:**'}" ;;
+      '**판정**：'*) line="판정:${line#'**판정**：'}" ;;
+      '**판정：**'*) line="판정:${line#'**판정：**'}" ;;
+      '판정：'*) line="판정:${line#'판정：'}" ;;
+    esac
+    case "$line" in '판정:'*) ;; *) continue ;; esac
+    val="${line#'판정:'}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    dot=0
+    case "$val" in
+      *.) val="${val%.}"; dot=1 ;;
+      *。) val="${val%。}"; dot=1 ;;
+    esac
+    for w in '**' '`'; do
+      case "$val" in "$w"?*"$w") val="${val#"$w"}"; val="${val%"$w"}" ;; esac
+    done
+    if [ "$dot" = 0 ]; then
+      case "$val" in
+        *.) val="${val%.}" ;;
+        *。) val="${val%。}" ;;
+      esac
+    fi
+    val="${val%"${val##*[![:space:]]}"}"
+    case "$val" in
+      '재설계 필요') need=$((need + 1)) ;;
+      '불필요') unneeded=$((unneeded + 1)) ;;
     esac
   done <<EOF
 $txt
