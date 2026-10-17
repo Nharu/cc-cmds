@@ -760,11 +760,13 @@ def rt_policy_ok($a):
   and (($a.borrowed // null) == null);
 # 대여 등록 행의 입장과 유지. 등록 행은 `rt_policy_ok` 를 통과하지 못하므로 그 계정의
 # 부여는 모두 대여다. 새 입장은 `rt_aview` 가 실어 둔 단단한 검사를 통과해야 하고,
-# 유지는 열림과 무관하다 — 살아 있는 대여는 닫힌 뒤에도 끝까지 간다.
+# 유지는 열림과 무관하다 — 살아 있는 대여는 닫힌 뒤에도 끝까지 간다. 다만 소진된 cc 는
+# u 계정처럼 유지를 거부하고 한도 뒤 재배정으로 보낸다. 감싸는 `rt_hold_ok` 의 소진
+# 조건에 기대지 않도록 이 술어가 그 조건을 스스로 갖는다.
 def rt_lend_new_ok($a):
   $a != null and ($a.lend_enrolled == true) and ($a.lend.ok == true) and ($a.login_bad | not) and ($a.mismatch | not);
 def rt_lend_hold_ok($a):
-  $a != null and ($a.lend_enrolled == true) and ($a.login_bad | not) and ($a.mismatch | not);
+  $a != null and ($a.lend_enrolled == true) and ($a.class != "X") and ($a.login_bad | not) and ($a.mismatch | not);
 def rt_new_ok($a): (rt_policy_ok($a) or rt_lend_new_ok($a)) and ($a.class != "X");
 def rt_hold_ok($a):
   $a != null

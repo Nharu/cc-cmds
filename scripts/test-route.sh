@@ -2654,6 +2654,26 @@ expect "대여-유지: 닫힘 + 죽은 cc 임대의 resume → PARK resume-bound
 expect "대여-유지: 열림 + 죽은 cc 임대의 resume → GRANT resume-bound" "$(decide "$LJ UBLK | LIVE(\"cc\"; false) | RSM(\"cc\")")" \
   '.verdict == "GRANT" and .account == "cc" and .basis == "resume-bound"'
 expect "대여-유지: 닫힘 + 죽은 cc 임대의 crash-retry 는 cc 재입장 아님" "$(decide "$LJ UBLK | CL | LIVE(\"cc\"; false) | REQ({event: \"crash-retry\"})")" "$NOTCC"
+# 소진된 cc 의 대여 유지 거부. 살아 있는 cc 대여 임대가 있어도 cc 의 주간 창이 소진되면
+# 네 유지 경로 모두 cc 를 잇지 않고, u 계정 여유가 있는 문맥이라 u 계정으로 재배정된다.
+# 문맥은 사례마다 여기서 모두 만들고, 소진 전제와 술어 자체도 이 자리에서 확인한다.
+XC='CCX(.windows.seven_day.utilization = 1.0)'
+check "대여-유지 소진: 전제 — cc 의 분류는 X" \
+  "$(classify "$LJ OPEN | LIVE(\"cc\"; true) | $XC" | jq -c '[.accounts[] | select(.id == "cc") | .class]')" '["X"]'
+for st in 'OPEN|열림' 'OPEN | CL|닫힘'; do
+  check "대여-유지 소진: ${st##*|} 의 rt_lend_hold_ok 는 거짓" \
+    "$(classify "$LJ ${st%|*} | LIVE(\"cc\"; true) | $XC" \
+       | ( . "$TR_ROUTE"; jq -c "$(route__jq_lib)"' [.accounts[] | select(.id == "cc") | rt_lend_hold_ok(.)]' ))" '[false]'
+  check "대여-유지 소진 대조: ${st##*|} 의 소진 아닌 cc 는 rt_lend_hold_ok 참" \
+    "$(classify "$LJ ${st%|*} | LIVE(\"cc\"; true)" \
+       | ( . "$TR_ROUTE"; jq -c "$(route__jq_lib)"' [.accounts[] | select(.id == "cc") | rt_lend_hold_ok(.)]' ))" '[true]'
+  for f in 'REQ({event: "crash-retry"})|sticky' 'REQ({event: "hollow-retry"})|sticky' 'REQ({nonce: "n-r1-S1"})|first' '.|first'; do
+    expect "대여-유지 소진: ${st##*|} + 살아 있는 cc 임대의 ${f%|*} → u 재배정" \
+      "$(decide "$LJ ${st%|*} | LIVE(\"cc\"; true) | $XC | ${f%|*}")" '.verdict == "GRANT" and .account == "a"'
+    expect "대여-유지 소진 대조: ${st##*|} + 소진 아닌 cc 임대의 ${f%|*} → GRANT cc" \
+      "$(decide "$LJ ${st%|*} | LIVE(\"cc\"; true) | ${f%|*}")" ".verdict == \"GRANT\" and .account == \"cc\" and .basis == \"${f#*|}\""
+  done
+done
 
 # 대여 좌석 고정.
 expect "대여-고정: 열림 → GRANT cc" "$(decide "$LJ UBLK | PIN")" '.verdict == "GRANT" and .account == "cc"'
