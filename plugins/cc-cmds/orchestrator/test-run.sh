@@ -2171,13 +2171,13 @@ case "$(tail -1 "$LEDGER")" in
   *) bad "설계 스텝 마감 파킹" "$(tail -1 "$LEDGER")" ;;
 esac
 check "마감 파킹은 이미 파킹함을 남긴다" "$(cat "$TI_DIR/already" 2>/dev/null)" "1"
-# 라우터 파킹은 모두 도우미를 지난다 — 열네 자리, 그리고 그 중 실패 id 자리는
+# 라우터 파킹은 모두 도우미를 지난다 — 열다섯 자리, 그리고 그 중 실패 id 자리는
 # 대상이 실패 id 이고 앵커가 세그먼트다. S4 의 계속·거절·크래시·한도-형상 회수
 # 갈래는 `s4_park_unfinished` 한 자리를 함께 쓴다. 리드 수정(S5F)이 기동 파킹과
-# 계속 경로 파킹 두 자리를 갖고, 설계 수준 잔여의 재수렴(S1R)이 기동 파킹 한
-# 자리를 갖는다.
-check "드라이버의 라우터 파킹 자리는 열네 곳이다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "14"
+# 계속 경로 파킹 두 자리를 갖고, 설계 수준 잔여의 재수렴(S1R)과 P0 잔존 후속
+# 런의 첫 단계 재수렴(S0R)이 기동 파킹 한 자리씩을 갖는다.
+check "드라이버의 라우터 파킹 자리는 열다섯 곳이다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "15"
 check "실패 id 자리는 대상과 앵커를 나눠 싣는다" \
   "$(grep -c 'park_router "\$fid" "\$seg" cone' "$DRIVER" || true)" "1"
 # 계속 경로의 여섯 자리(구현은 `s4_park_unfinished` 하나, 그 밖에 공허한 성공
@@ -3985,6 +3985,14 @@ check "precondition-failed 정지도 결함 과 재킥 지문을 쓴다" \
 check "gate-unanswerable 정지는 판단정지 이고 지문이 없다" \
   "$(re_end_rows "$RE24/h-gate")/$(re_end_field "$RE24/h-gate" '재킥 원인')/$(re_end_field "$RE24/h-gate" '재킥 지문')" \
   "1/판단정지/"
+# P0 잔존 후속 런의 첫 단계 재수렴이 멈추면 같은 분류로 끝난다. 지문의 스테이지 종류는
+# `stage_kind_of` 가 그 id 에서 읽은 `reconverge` 다.
+re_case h-s0r 'RUN_END_HALT_STAGE="S0R:A:reconverge"
+  printf "**분류**: precondition-failed\n" > "$RUN_DIR/halt/S0R:A:reconverge.md"; run_end_record'
+check "S0 재수렴의 precondition-failed 정지는 결함 과 reconverge 지문으로 끝난다" \
+  "$(re_end_field "$RE24/h-s0r" '재킥 원인')/$(re_end_field "$RE24/h-s0r" '재킥 지문')" "결함/reconverge/S0R:A:reconverge/pin0123"
+check "S0 재수렴의 비정상 종단 두 자리(이번 종단·재개 때 앞 종단)가 정지 스테이지를 그 id 로 둔다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'RUN_END_HALT_STAGE="\$sid"' || true)" "2"
 check "freeze-mismatch · 분류 없는 기록 · 기록 없음은 모두 해당없음 이다" \
   "$(re_end_field "$RE24/h-freeze" '재킥 원인')/$(re_end_field "$RE24/h-nofield" '재킥 원인')/$(re_end_field "$RE24/h-norecord" '재킥 원인')" \
   "해당없음/해당없음/해당없음"
@@ -4012,6 +4020,33 @@ check "그 밖의 주 루프 끝은 종료 부류 없는 해당없음 이다" \
   "$(re_end_field "$RE24/loop-plain" '재킥 원인')/$(re_end_field "$RE24/loop-plain" '종료 부류')" "해당없음/"
 re_case unarmed 'RUN_END_ARMED=""; run_end_record'
 check "주 루프가 시작하기 전(원장이 없는 거부)에는 아무것도 쓰지 않는다" "$(re_end_rows "$RE24/unarmed")" "0"
+
+# 스테이지 종단 뒤의 `문서 해시` 행. 같은 (스테이지, 값) 짝은 한 번만 쓰고, 문서가
+# 바뀌면 새 행을 쓴다. 후속 런의 유도는 시작 다이제스트가 아니라 마지막 행을 읽는다.
+re_case dochash 'DOC="$RUN_DIR/../docs/x.md"; printf "a\n" > "$DOC"
+  driver_doc_hash_row 세그먼트=A 스테이지=S4-A; driver_doc_hash_row 세그먼트=A 스테이지=S4-A
+  printf "b\n" > "$DOC"; driver_doc_hash_row 세그먼트=A 스테이지=S4-A
+  driver_doc_hash_row 세그먼트=- 스테이지=S1design'
+re_dh_a=$(printf 'a\n' | shasum -a 256 | cut -d' ' -f1)
+re_dh_b=$(printf 'b\n' | shasum -a 256 | cut -d' ' -f1)
+re_dh_rows=$( { grep -F -- '- `문서 해시` |' "$RE24/dochash/ledger.md" || true; } )
+check "구동기 문서 해시 행은 같은 짝을 한 번만 쓰고 바뀐 값과 런 범위 스테이지를 새로 쓴다" \
+  "$(printf '%s\n' "$re_dh_rows" | grep -c . || true)/$(printf '%s\n' "$re_dh_rows" | grep -cF "| 스테이지=A 이후 | sha256=$re_dh_a |" || true)/$(printf '%s\n' "$re_dh_rows" | grep -cF "| 스테이지=A 이후 | sha256=$re_dh_b |" || true)/$(printf '%s\n' "$re_dh_rows" | grep -cF "| 스테이지=S1design 이후 | sha256=$re_dh_b |" || true)" \
+  "3/1/1/1"
+check "구동기 문서 해시 행은 게이트 행과 같은 필드를 같은 순서로 싣는다" \
+  "$(printf '%s\n' "$re_dh_rows" | sed -n 1p | tr '|' '\n' | sed -n 's/^ *\([^=]*\)=.*/\1/p' | grep -vxE '교대|prev' | tr '\n' ',')" \
+  "스테이지,sha256,동결값,관측,"
+check "후속 런 유도는 고쳐 쓴 문서의 다이제스트를 기록된 값으로 읽는다" \
+  "$(bash -c '. "$1" && rekick_recorded_doc_sha "$2"' _ "$script_dir/successor.sh" "$RE24/dochash/ledger.md" 2>/dev/null || true)" \
+  "$re_dh_b"
+
+# 의존 park 는 세그먼트 자신을 앵커로 두고 아직 착지하지 않은 선행을 선언 순서로 싣는다.
+re_case deppark 'printf "A\n" > "$RUN_DIR/done.txt"
+  park S3 cone 무효화 "게이트 park" "선행 슬라이스가 완료되지 않음" "" S3 "" "" "$(deps_unmet_ids "슬라이스A,C,B" "C")"'
+check "의존 park 행이 앵커 세그먼트와 미완 선행(선언 순서, 중복 없음)을 싣는다" \
+  "$( { grep -F -- '- `blocked` |' "$RE24/deppark/ledger.md" || true; } | grep -cF '| 앵커 세그먼트=S3 | 미완 선행=C,B |' || true)" "1"
+check "미완 선행을 넘기는 park 호출은 의존 park 한 자리뿐이고 그 값은 선행 목록에서 만든다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c '"\$_unmet"' || true)/$(sed 's/#.*//' "$DRIVER" | grep -c 'deps_unmet_ids "\$deps"' || true)" "1/1"
 
 # 주 루프를 태운다. 슬라이스 루프에 닿기 전에 반환하는 감사 정지와 계획 실패도 반환
 # 직전의 한 자리를 지난다.
@@ -4275,8 +4310,8 @@ check "구현 스테이지 두 자리가 접근자를 쓴다" \
   "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "리뷰 스테이지 세 자리(리뷰·복구 리뷰·리드 수정)가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "3"
-check "재수렴 스테이지 두 자리(항목 사다리·설계 수준 잔여)가 접근자를 쓴다" \
-  "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "2"
+check "재수렴 스테이지 세 자리(항목 사다리·설계 수준 잔여·상한 P0 잔여)가 접근자를 쓴다" \
+  "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "3"
 check "리드 수정 스테이지가 접근자를 쓴다" \
   "$( { grep -cF -- '--lead-fix $crp \"설계는 $(doc_arg)\"' "$DRIVER" || true; } )" "1"
 # 설계·감사·계획, 세 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞
@@ -10636,6 +10671,7 @@ S5R:seg:1|review
 S5F:seg:3|lead-fix
 S1':seg:1:path|reconverge
 S1':seg:1:plugins-cc-cmds-skills-design-SKILL.md|reconverge
+S0R:seg:reconverge|reconverge
 S4:review-fix:1|implement
 S5:design-seg:2|review
 Sx|generic
@@ -11096,6 +11132,8 @@ r34_ring() {  # r34_ring <런 id> [머지|실패] — one run of the document: i
     binding_digest() { printf x; }; whole_digest() { printf x; }; generation_now() { printf 1; }
     wt_path() { printf 'WT-%s' "$1"; }
     if [ "${2:-}" = "실패" ]; then run_gate_call() { return 9; }; fi
+    # `R34_P0=1` makes the ring a `P0잔존` successor.
+    if [ -n "${R34_P0:-}" ]; then manifest_chain_field() { [ "$1" = 원인 ] && printf 'P0잔존'; }; fi
     plan_from_declaration "$DOC"
     printf '%s\n' "$?" > "$RUN_DIR/plan.rc"
     if [ "${2:-}" = "머지" ]; then
@@ -11133,6 +11171,23 @@ case "$(cat "$R34/ring4/plan.rc")/$(r34_done ring4)/$(r34_count "$R34/ledgers/ri
     ok "34: 선언 파일을 고친 문서로 다시 킥오프한 고리는 SA 를 들이지 않고 다시 계획한다" ;;
   *) bad "34: 개정 선언 재킥오프" "rc=$(cat "$R34/ring4/plan.rc") done=$(r34_done ring4) err=$(tr '\n' ' ' < "$R34/ring4.err")" ;;
 esac
+# 같은 개정 문서라도 P0 잔존 후속 런은 다시 계획하지 않고 멈춘다 — 머지된 일이 다르게
+# 선언된 슬라이스 아래 서 있다.
+R34_P0=1 r34_ring ring4p
+check "34: P0 잔존 후속 런은 선언이 바뀐 착지 슬라이스에서 S3 런 스코프로 park 하고 계획하지 않는다" \
+  "$(cat "$R34/ring4p/plan.rc")/$( { grep -F 'S3 run 무효화 게이트 park 앞 런이 착지시킨 슬라이스 SA 의 선언이 새 문서에서 바뀌었다' "$R34/ring4p/parked" 2>/dev/null || true; } | grep -c . || true)/$(r34_count "$R34/ledgers/ring4p.md" SA 계획됨)" \
+  "1/1/0"
+# 착지한 SA 를 새 문서가 SC 로 바꿔 부르면 들여오기는 어느 계획 id 와도 맞지 않는다.
+# P0 잔존 후속 런은 계획 전에 멈추고, 다른 런은 예전처럼 계획한다.
+r34_doc "$R34DOC" 머지
+sed 's/SA/SC/g' "$R34DOC" > "$R34DOC.tmp" && mv "$R34DOC.tmp" "$R34DOC"
+R34_P0=1 r34_ring ring5p
+check "34: P0 잔존 후속 런은 앞 런이 착지시킨 id 를 새 문서가 선언하지 않으면 계획 전에 park 한다" \
+  "$(cat "$R34/ring5p/plan.rc")/$( { grep -F '앞 런이 착지시킨 슬라이스를 새 문서가 선언하지 않는다: SA' "$R34/ring5p/parked" 2>/dev/null || true; } | grep -c . || true)/$( { grep -E '^- `segment` ' "$R34/ledgers/ring5p.md" 2>/dev/null || true; } | grep -c . || true)" \
+  "1/1/0"
+r34_ring ring5
+check "34: 연쇄 원인이 P0잔존 이 아닌 런은 id 가 바뀐 문서를 그대로 계획한다" \
+  "$(cat "$R34/ring5/plan.rc")/$(r34_count "$R34/ledgers/ring5.md" SC 계획됨)/$( { cat "$R34/ring5/parked" 2>/dev/null || true; } | grep -c . || true)" "0/1/0"
 r34_doc "$R34DOC" 머지
 
 r34_ring ringx 실패
@@ -12231,6 +12286,221 @@ check "35: 복구를 거치지 않은 리포트의 리뷰 HEAD 부재는 다시 
 
 check "35: 이 절의 어느 호출도 스텁 밖의 gh 에 닿지 않았다" \
   "$(cat "$R35/gh-unstubbed.log" 2>/dev/null | grep -c . || true)" "0"
+
+# ---------------------------------------------------------------------------
+# 36. P0 잔존 후속 런의 첫 단계(S0) — 앞 런의 끝을 읽고 갈래를 골라 실행한다
+#
+# `s0_arm` 을 드라이버를 새로 소싱한 자식 셸에서 부른다. 원장 쓰기·park·기동·게이트
+# 호출은 스텁이고, 갈래 판단은 진짜 `judgment_call` 이 스텁 CLI 를 부른다 — 그래서
+# CLI 가 받은 argv 와 판단 입력 파일을 그대로 단언할 수 있다. 픽스처마다 앞 런의 원장,
+# 상한 리포트 둘, 인터뷰 기록, 설계 문서, 감사 리포트 둘을 새로 깐다.
+# ---------------------------------------------------------------------------
+S0W="$WORK/s0"; rm -rf "$S0W"; mkdir -p "$S0W"
+S0STUBS="$S0W/stubs.sh"
+cat > "$S0STUBS" <<'S0EOF'
+ledger_row() {
+  local s="$1" l f; shift; l="- \`$s\`"
+  for f in "$@"; do l="$l | $f"; done
+  printf '%s\n' "$l" >> "$RUN_DIR/led.md"
+}
+run_section_rows() { awk -v p="- \`$1\` " 'index($0, p) == 1' "$RUN_DIR/led.md" 2>/dev/null; }
+park() { printf '%s\n' "$*" >> "$RUN_DIR/park.log"; }
+park_router() { printf 'router %s\n' "$*" >> "$RUN_DIR/park.log"; }
+stage_spawn() { printf '%s %s\n' "$1" "$3" >> "$RUN_DIR/spawn.log"; printf '0' > "$RUN_DIR/$1.rc"; }
+stage_wait_all() { :; }; spawn_lineage_release() { :; }
+predicate_reconverge() { return "${S0_PREDRC:-0}"; }
+classify_termination() { if [ "$3" = 0 ]; then printf '정상 완료'; else printf '크래시'; fi; }
+reconverge_row() { ledger_row 'stage-result' "세그먼트=$1" "파견 id=$2" "종류=reconverge" "종단 부류=${3:-정상 완료}"; }
+report_append() { :; }; log() { :; }
+halt_record_path() { printf '%s' "$RUN_DIR/halt/$1.md"; }
+home_alias() { printf h; }; alias_root() { printf '%s' "$S0_ROOT"; }; doc_arg() { printf '%s' "$DOC"; }
+manifest_chain_rows() { printf -- '- `연쇄` | 선행 런=PRED | 원인=%s | 재킥 지문=x\n' "$S0_CAUSE"; }
+manifest_plan_field() { printf '%s' "${S0_DESREQ:-true}"; }
+manifest_preauth_rows() {
+  [ "${S0_IROW:-1}" = 1 ] || return 0
+  printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/ROOT.interview.md | sha256=%s\n' "$S0_ISHA"
+}
+manifest_design_skill() { printf '%s' "${S0_SKILL:-design-discuss-unattended}"; }
+manifest_intent_line() { printf '의도'; }
+run_gate_call() {
+  case "$1" in
+    gate_chain_verify) printf 'verify %s %s\n' "$2" "$3" >> "$RUN_DIR/gate.log"; return "${S0_CV:-0}" ;;
+    gate_rekick_p0_residual)
+      printf 'select %s %s\n' "$2" "$3" >> "$RUN_DIR/gate.log"
+      [ -n "${S0_SEL:-}" ] || return 1
+      printf '%s' "$S0_SEL" ;;
+    *) return 9 ;;
+  esac
+}
+S0EOF
+cat > "$S0W/cli" <<'S0EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$S0_ARGV"
+printf 'x\n' >> "$S0_CALLS"
+case "$S0_ANS" in
+  FAIL) printf '%s\n' '{"subtype":"error_max_turns"}' ;;
+  *) printf '{"subtype":"success","structured_output":%s}\n' "$S0_ANS" ;;
+esac
+S0EOF
+chmod +x "$S0W/cli"
+s0_fix() {  # s0_fix <name> — a fresh fixture directory; S0_SEL and S0_ISHA follow it
+  local d="$S0W/$1"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/mf" "$d/doc" "$d/rep" "$d/base/docs/design-audit"
+  # A carries the review template's sub-line spelling; B carries an unbolded
+  # one, which the template does not write and the count must not read.
+  printf '# 리포트 A\n\n## 🔴 P0\n\n- 결함 하나\n    - **결함 수준**: 설계 — 구속 문면을 고친다\n\n## 🟠 P1\n\n- 덜한 것\n    - **결함 수준**: 구현 — 코드만 고친다\n' > "$d/rep/A.md"
+  printf '# 리포트 B\n\n## 🔴 P0\n\n- 결함 둘\n  - 결함 수준: 설계\n\n## 메모\n' > "$d/rep/B.md"
+  printf -- '- `run` | run-id=PRED\n- `stage-result` | 세그먼트=segB | 파견 id=S1R:segB:2 | 종류=reconverge | 종단 부류=정상 완료\n' > "$d/mf/PRED.md"
+  : > "$d/mf/PRED.plan.md"
+  printf '인터뷰 본문\n' > "$d/mf/ROOT.interview.md"
+  printf '# 설계\n\n설계 본문\n' > "$d/doc/design.md"
+  : > "$d/base/docs/design-audit/design.md"; : > "$d/base/docs/design-audit/design.reader-1.md"
+  S0D="$d"
+  S0_SEL="segA	$d/rep/A.md
+segB	$d/rep/B.md"
+  S0_ISHA=$(shasum -a 256 "$d/mf/ROOT.interview.md" | cut -d' ' -f1)
+}
+s0_run() {  # s0_run — one S0 entry in the fixture $S0D; stdout → $S0D/out
+  env -u CC_ORCH_STAGE_EFFORT -u CC_ORCH_STAGE_MODEL -u CC_ORCH_SHIFT_MODEL \
+    S0_ARGV="$S0D/argv.txt" S0_CALLS="$S0D/calls" S0_ROOT="$S0D" S0_CLI="$S0W/cli" \
+    S0_CAUSE="${S0_CAUSE:-P0잔존}" S0_ANS="${S0_ANS:-}" S0_SEL="$S0_SEL" S0_ISHA="$S0_ISHA" \
+    S0_DESREQ="${S0_DESREQ:-true}" S0_IROW="${S0_IROW:-1}" S0_SKILL="${S0_SKILL:-design-discuss-unattended}" \
+    S0_CV="${S0_CV:-0}" S0_PREDRC="${S0_PREDRC:-0}" \
+    bash -c 'drv="$1"; d="$2"; stubs="$3"; set --; . "$drv"; set +e; . "$stubs"
+             RUN_DIR="$d/run"; RUN_ID=RUN; MANIFEST="$d/mf/RUN.plan.md"; DOC="$d/doc/design.md"
+             DOC_BASE="$d/base"; DOC_SLUG=design; CLI_BIN="$S0_CLI"
+             s0_arm; printf "rc=%s\n" "$?"
+             printf "cmd=%s\n" "$(design_stage_cmd design-discuss-unattended)"
+             printf "halt=%s\n" "${RUN_END_HALT_STAGE:-}"' _ "$DRIVER" "$S0D" "$S0STUBS" > "$S0D/out" 2>"$S0D/err"
+}
+s0_out() { sed -n "s/^$1=//p" "$S0D/out"; }
+s0_n() {  # s0_n <file under the fixture> <fixed string> — matching lines, 0 for an absent file
+  { grep -F -- "$2" "$S0D/$1" 2>/dev/null || true; } | grep -c . || true
+}
+s0_lines() { { cat "$S0D/$1" 2>/dev/null || true; } | grep -c . || true; }
+S0RV='{"branch":"재수렴","rationale":"국소 결함이다","cited":[]}'
+S0RD='{"branch":"재설계","rationale":"구조가 낳는다","cited":["결함 하나"]}'
+
+# 원인이 다른 연쇄 런은 S0 을 지나치기만 한다.
+s0_fix plain; S0_CAUSE=결함 s0_run
+check "36: 연쇄 원인이 P0잔존 이 아니면 S0 은 게이트도 판단도 부르지 않고 행도 쓰지 않는다" \
+  "$(s0_out rc)/$(s0_lines run/gate.log)/$(s0_lines calls)/$(s0_lines run/led.md)" "0/0/0/0"
+
+# 재수렴 — 판단 한 번, 선택 행 하나, P0 세그먼트마다 재수렴 하나.
+s0_fix rv; S0_ANS="$S0RV" s0_run
+check "36: 재수렴 답은 판단 한 번에 선택 행 하나를 쓰고 세그먼트마다 S0R 재수렴을 띄운다" \
+  "$(s0_out rc)/$(s0_lines calls)/$(s0_n run/led.md '`자율 승인` | kind=rekick-branch | 갈래=재수렴 | 근거=국소 결함이다')/$(s0_lines run/spawn.log)" \
+  "0/1/1/2"
+check "36: 재수렴은 상한 리포트를 「상한 P0 잔여」 범위로 넘기고 원장 순서를 따른다" \
+  "$(sed -n 1p "$S0D/run/spawn.log")|$(sed -n 2p "$S0D/run/spawn.log" | cut -d' ' -f1)" \
+  "S0R:segA:reconverge /cc-cmds:design-reconverge $S0D/doc/design.md \"상한 P0 잔여 $S0D/rep/A.md\"|S0R:segB:reconverge"
+check "36: 선택 행이 판단 입력의 sha256 과 목적지를 싣는다" \
+  "$(s0_n run/led.md "입력 sha256=$(shasum -a 256 "$S0D/run/rekick-branch.input.md" | cut -d' ' -f1) | 목적지=S0R:segA:reconverge, S0R:segB:reconverge")" "1"
+check "36: 두 재수렴이 정상 완료 행을 남긴다" \
+  "$(s0_n run/led.md '| 종류=reconverge | 종단 부류=정상 완료')" "2"
+check "36: 앞 런 원장의 사슬을 검증하고 그 원장과 매니페스트로 선택자를 부른다" \
+  "$(s0_n run/gate.log "verify $S0D/mf/PRED.md PRED")/$(s0_n run/gate.log "select $S0D/mf/PRED.md $S0D/mf/PRED.plan.md")" "1/1"
+check "36: 선택자 출력이 rekick-p0.tsv 에 그대로 남는다" "$(cat "$S0D/run/rekick-p0.tsv" 2>/dev/null)" "$S0_SEL"
+check "36: 판단 입력은 P0 절만 원문으로 싣고 결함 수준별 수와 앞 런의 재수렴 여부를 센다" \
+  "$(s0_n run/rekick-branch.input.md '- 결함 하나')/$(s0_n run/rekick-branch.input.md '- 덜한 것')/$(s0_n run/rekick-branch.input.md '결함 수준별 수: 설계 1 · 구현 0')/$(s0_n run/rekick-branch.input.md '결함 수준별 수: 없음')/$(s0_n run/rekick-branch.input.md '앞 런의 재수렴: 있음')/$(s0_n run/rekick-branch.input.md '앞 런의 재수렴: 없음')" \
+  "1/0/1/1/1/1"
+check "36: 판단 입력은 인터뷰 기록과 설계 문서를 원문으로 싣는다" \
+  "$(s0_n run/rekick-branch.input.md '인터뷰 본문')/$(s0_n run/rekick-branch.input.md '설계 본문')" "1/1"
+check "36: 갈래 판단은 --tools 바로 뒤에 빈 값을 싣고 세션을 남기지 않는다" \
+  "$(awk 'p { print (length($0) == 0 ? "빈 값" : "값 " $0); exit } $0 == "--tools" { p = 1 }' "$S0D/argv.txt" 2>/dev/null)/$(grep -cx -- '--no-session-persistence' "$S0D/argv.txt" 2>/dev/null || true)" \
+  "빈 값/1"
+check "36: 갈래 판단의 답은 봉투와 답 파일로 런 디렉터리에 남는다" \
+  "$([ -s "$S0D/run/log/rekick-branch.envelope.json" ] && echo 있음 || echo 없음)/$(jq -r .branch "$S0D/run/rekick-branch.json" 2>/dev/null)" "있음/재수렴"
+check "36: 재수렴을 고른 런의 설계 명령은 재설계 입력을 싣지 않는다" \
+  "$(s0_out cmd)" "/cc-cmds:design-discuss-unattended $S0D/doc/design.md \"의도\""
+# 같은 런을 다시 부르면 선택 행이 판단을 대신하고, 정상 종단한 재수렴은 다시 뜨지 않는다.
+rm -f "$S0D/argv.txt"; S0_ANS=FAIL s0_run
+check "36: 재개한 런은 판단을 다시 부르지 않고 정상 종단한 재수렴을 다시 띄우지 않는다" \
+  "$(s0_out rc)/$(s0_lines calls)/$([ -e "$S0D/argv.txt" ] && echo 호출됨 || echo 호출안됨)/$(s0_lines run/spawn.log)/$(s0_n run/led.md 'kind=rekick-branch')" \
+  "0/1/호출안됨/2/1"
+
+# 쓸 수 없는 답과 사람 — 런 스코프 park, 선택 행도 재수렴도 없다.
+for s0c in "사람|{\"branch\":\"사람\",\"rationale\":\"요구가 막는다\",\"cited\":[]}|갈래 판단이 사람을 골랐다 — 요구가 막는다" \
+           "닫힌값밖|{\"branch\":\"보류\",\"rationale\":\"r\",\"cited\":[]}|갈래 판단 답이 닫힌 값 밖이다: 보류" \
+           "호출실패|FAIL|갈래 판단 호출이 쓸 수 있는 답을 내지 못했다"; do
+  s0_name=${s0c%%|*}; s0_rest=${s0c#*|}; s0_ans=${s0_rest%%|*}; s0_why=${s0_rest#*|}
+  s0_fix "bad-$s0_name"; S0_ANS="$s0_ans" s0_run
+  check "36: $s0_name — 런 스코프로 park 하고 선택 행도 재수렴도 남기지 않는다" \
+    "$(s0_out rc)/$(s0_n run/park.log "S0 run 무효화 게이트 park")/$(s0_n run/park.log "$s0_why")/$(s0_n run/led.md 'kind=rekick-branch')/$(s0_lines run/spawn.log)" \
+    "1/1/1/0/0"
+done
+s0_fix big; awk 'BEGIN { for (i = 0; i < 1300; i++) printf "%0100d\n", i }' > "$S0D/doc/design.md"
+S0_ANS="$S0RV" s0_run
+check "36: 판단 입력이 상한을 넘으면 판단을 부르지 않고 park 한다" \
+  "$(s0_out rc)/$(s0_lines calls)/$(s0_n run/park.log '판단 입력이 상한 112000 바이트를 넘는다')" "1/0/1"
+s0_fix nosel; S0_SEL="" S0_ANS="$S0RV" s0_run
+check "36: 앞 런 원장에서 P0 잔존을 찾지 못하면 park 한다" \
+  "$(s0_out rc)/$(s0_n run/park.log '확인 리뷰 상한의 P0 잔존 세그먼트를 찾지 못했다')/$(s0_lines calls)" "1/1/0"
+s0_fix brokechain; S0_CV=1 S0_ANS="$S0RV" s0_run
+check "36: 앞 런 원장이 사슬 검증을 지나지 않으면 선택자도 부르지 않고 park 한다" \
+  "$(s0_out rc)/$(s0_n run/park.log '사슬 검증을 지나지 않는다')/$(s0_n run/gate.log select)" "1/1/0"
+s0_fix norep; rm -f "$S0D/rep/B.md"; S0_ANS="$S0RV" s0_run
+check "36: 상한 리포트가 없는 세그먼트가 하나라도 있으면 park 한다" \
+  "$(s0_out rc)/$(s0_n run/park.log "세그먼트 segB 의 상한 리포트가 없다")/$(s0_lines calls)" "1/1/0"
+
+# 재설계가 허용되지 않으면 판단 없이 재수렴하고, 선택 행이 그 까닭을 싣는다.
+for s0c in "스킬|S0_SKILL=design-base|설계 스킬이 design-base 로 풀린다" \
+           "행없음|S0_IROW=0|매니페스트에 사전 인가 인터뷰 기록 행이 없다" \
+           "설계불요|S0_DESREQ=false|계획의 design_required 가 참이 아니다"; do
+  s0_name=${s0c%%|*}; s0_rest=${s0c#*|}; s0_env=${s0_rest%%|*}; s0_why=${s0_rest#*|}
+  s0_fix "noredo-$s0_name"
+  case "$s0_env" in
+    S0_SKILL=*) S0_SKILL=${s0_env#*=} S0_ANS="$S0RD" s0_run ;;
+    S0_IROW=*) S0_IROW=${s0_env#*=} S0_ANS="$S0RD" s0_run ;;
+    S0_DESREQ=*) S0_DESREQ=${s0_env#*=} S0_ANS="$S0RD" s0_run ;;
+  esac
+  check "36: 재설계 불가($s0_name) — 판단 없이 재수렴하고 선택 행이 까닭을 싣는다" \
+    "$(s0_out rc)/$(s0_lines calls)/$(s0_n run/led.md "갈래=재수렴 | 근거=재설계가 허용되지 않아 판단 없이 재수렴한다 — $s0_why")/$(s0_n run/led.md '입력 sha256=- |')/$(s0_lines run/spawn.log)" \
+    "0/0/1/1/2"
+done
+
+# 재설계 — 인터뷰 기록을 이 런 id 로 복사하고 문서와 감사 리포트를 옮긴다. 재수렴은 없다.
+s0_fix rd; S0_ANS="$S0RD" s0_run
+check "36: 재설계 답은 문서를 prior-design 으로, 감사 리포트를 prior-audit 으로 옮긴다" \
+  "$(s0_out rc)/$([ -e "$S0D/doc/design.md" ] && echo 남음 || echo 옮김)/$([ -f "$S0D/run/prior-design/design.md" ] && echo 있음 || echo 없음)/$(ls "$S0D/base/docs/design-audit" | grep -c . || true)/$(ls "$S0D/run/prior-audit" | grep -c . || true)" \
+  "0/옮김/있음/0/2"
+check "36: 재설계 답은 인터뷰 기록을 이 런 id 의 이름으로 복사한다" \
+  "$(cat "$S0D/mf/RUN.interview.md" 2>/dev/null)" "인터뷰 본문"
+check "36: 재설계 답은 재수렴을 띄우지 않고 목적지를 두 디렉터리로 적는다" \
+  "$(s0_lines run/spawn.log)/$(s0_n run/led.md "갈래=재설계 | 근거=구조가 낳는다")/$(s0_n run/led.md "목적지=$S0D/run/prior-design/ · $S0D/run/prior-audit/")" "0/1/1"
+check "36: 재설계를 고른 런의 설계 명령은 옮긴 문서·판단 답·상한 리포트를 재설계 입력으로 싣는다" \
+  "$(s0_out cmd)" \
+  "/cc-cmds:design-discuss-unattended $S0D/doc/design.md \"의도\" \"재설계 입력: $S0D/run/prior-design/design.md $S0D/run/rekick-branch.json $S0D/rep/A.md $S0D/rep/B.md\""
+# 재개 — 새 설계가 쓴 문서와 새 감사 리포트를 다시 옮기지 않는다.
+printf '# 새 설계\n' > "$S0D/doc/design.md"; : > "$S0D/base/docs/design-audit/design.reader-1.md"
+S0_ANS=FAIL s0_run
+check "36: 재설계를 고른 런을 재개하면 판단도 이동도 다시 하지 않는다" \
+  "$(s0_out rc)/$(s0_lines calls)/$(cat "$S0D/doc/design.md")/$(ls "$S0D/base/docs/design-audit" | grep -c . || true)" "0/1/# 새 설계/1"
+s0_fix rd-sha; S0_ISHA=$(printf '%064d' 0); S0_ANS="$S0RD" s0_run
+check "36: 인터뷰 기록의 sha256 이 매니페스트 행과 다르면 문서를 옮기지 않고 park 한다" \
+  "$(s0_out rc)/$(s0_n run/park.log '인터뷰 기록의 sha256 이 매니페스트 행과 다르다')/$([ -f "$S0D/doc/design.md" ] && echo 남음 || echo 옮김)" "1/1/남음"
+
+# 정상 종단하지 않은 S0 재수렴은 그 스테이지를 런 종단 중단 스테이지로 지명하고 park 하며,
+# 재개한 런은 같은 재수렴을 다시 띄우지 않는다.
+s0_fix rvfail; S0_PREDRC=1 S0_ANS="$S0RV" s0_run
+check "36: 정상 종단하지 않은 S0 재수렴은 행을 남기고 런을 park 하며 다음 세그먼트로 가지 않는다" \
+  "$(s0_out rc)/$(s0_out halt)/$(s0_n run/led.md '파견 id=S0R:segA:reconverge | 종류=reconverge | 종단 부류=크래시')/$(s0_n run/park.log 'S0R:segA:reconverge run 무효화 게이트 park S0 재수렴이 종단 부류 크래시 로 끝났다')/$(s0_lines run/spawn.log)" \
+  "1/S0R:segA:reconverge/1/1/1"
+S0_ANS=FAIL s0_run
+check "36: 그 런을 재개하면 같은 재수렴을 다시 띄우지 않고 park 한다" \
+  "$(s0_out rc)/$(s0_lines run/spawn.log)/$(s0_n run/park.log '이 런의 S0 재수렴이 이미 종단 부류 크래시 로 끝났다')" "1/1/1"
+
+# 판단 입력의 상한은 한 인자 상한(131072) 아래에 프롬프트와 구분 줄을 더한 자리를 남긴다.
+s0_max=$(sed -n 's/^readonly REKICK_BRANCH_INPUT_MAX=//p' "$DRIVER")
+s0_pb=$(wc -c < "$(dirname "$DRIVER")/prompts/rekick-branch.md" | tr -d ' ')
+check "36: 프롬프트 + 입력 상한 + 구분 줄이 리눅스 한 인자 상한 131072 바이트 아래다" \
+  "$([ $((s0_pb + s0_max + 64)) -lt 131072 ] && echo 아래 || echo "넘음 ($s0_pb + $s0_max)")" "아래"
+# 배선 — S0 은 설계 팔보다 먼저 불리고, 설계 명령 세 자리가 한 빌더를 지난다.
+s0_mlb=$(sed -n '/^main_loop_body()/,/^}/p' "$DRIVER")
+check "36: main_loop_body 가 s0_arm 을 design_arm 바로 앞에서 부른다" \
+  "$(printf '%s\n' "$s0_mlb" | grep -A1 -x '  s0_arm || return 0' | sed -n 2p)" "  design_arm || return 0"
+check "36: 설계 스테이지의 첫 파견·계속·거절 재부착 셋이 design_stage_cmd 를 지나고 직접 철자가 남지 않는다" \
+  "$(grep -c '"$(design_stage_cmd "$skill1")"' "$DRIVER" || true)/$(grep -c '"/cc-cmds:$skill1 $DOC ' "$DRIVER" || true)" "3/0"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
