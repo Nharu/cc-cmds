@@ -173,9 +173,11 @@ rekick_recorded_doc_sha() {
   # rekick_recorded_doc_sha <ledger> — the design document digest the run
   # RECORDED, never one measured now: a value measured at commit time would
   # make the dispatcher's comparison the same file hashed twice. The sources
-  # are the `run` row's `전체 sha256` and the gate's `문서 해시` rows (the
-  # latest). Either alone is enough; both present and different, or neither
-  # present, is no answer.
+  # are the `run` row's `전체 sha256` and the `문서 해시` rows the gate and the
+  # driver write (the latest). Either alone is enough, and the latest `문서
+  # 해시` wins over the `run` row: the document is meant to change within a
+  # run, so the two disagreeing is the normal case. Neither present is no
+  # answer.
   local led="$1" a b
   a=$(grep -E '^- `run` \| ' "$led" 2>/dev/null | head -1 | tr '|' '\n' \
         | sed -n 's/^ *전체 sha256=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -183,7 +185,6 @@ rekick_recorded_doc_sha() {
         | sed -n 's/^ *sha256=//p' | sed 's/[[:space:]]*$//' | tail -1)
   printf '%s' "$a" | grep -Eq "$REKICK_HEX_RE" || a=""
   printf '%s' "$b" | grep -Eq "$REKICK_HEX_RE" || b=""
-  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then return 1; fi
   [ -n "$a$b" ] || return 1
   printf '%s' "${b:-$a}"
 }
@@ -269,24 +270,40 @@ rekick_stop_reason() {
   if [ "$tok" = "무진전" ] && rekick_same_cause_stop "$m"; then
     printf '무진전이 연달아 두 번'; return 0
   fi
-  if [ "$tok" = "결함" ] && rekick_fingerprint_stop "$m"; then
+  if [ "$tok" = "결함" ] && rekick_fingerprint_stop "$m" 결함; then
     printf '같은 지문의 결함이 연쇄 안에서 두 번째'; return 0
+  fi
+  if [ "$tok" = "P0잔존" ] && rekick_fingerprint_stop "$m" P0잔존; then
+    printf '앞선 P0 잔존과 지문 성분이 겹치거나 지문을 알 수 없음'; return 0
   fi
   return 1
 }
 
 rekick_fingerprint_stop() {
-  # rekick_fingerprint_stop <predecessor manifest> — true (stop) when the
-  # predecessor's `결함` carries a fingerprint an earlier link of the chain
-  # already ended on, or carries none: a defect that cannot be told apart from
-  # the last one is treated as the same one.
-  local links last fp
+  # rekick_fingerprint_stop <predecessor manifest> <결함|P0잔존> — true (stop)
+  # when the predecessor's end of that cause carries a fingerprint an earlier
+  # link of the same cause already ended on, or carries none: a failure that
+  # cannot be told apart from the last one is treated as the same one. `결함`
+  # compares the whole value; `P0잔존` is one component per P0 segment, comma
+  # joined, and stops when any component recurs — the same unresolved P0 coming
+  # back in one segment is the same failure whatever the others did.
+  local links last fp tok="${2:-결함}"
   links=$(rekick_chain_links "$1") || return 0
   last=$(printf '%s\n' "$links" | tail -1)
   fp=$(printf '%s' "$last" | cut -f5)
   [ -n "$fp" ] && [ "$fp" != "-" ] || return 0
+  [ "$tok" = "P0잔존" ] && [ "$fp" = "(미상)" ] && return 0
   printf '%s\n' "$links" | sed '$d' | rekick_started_links \
-    | awk -F '\t' -v fp="$fp" '$4 == "결함" && $5 == fp { hit = 1 } END { exit hit ? 0 : 1 }'
+    | awk -F '\t' -v fp="$fp" -v tok="$tok" '
+        BEGIN { n = split(fp, mine, ",") }
+        $4 != tok { next }
+        tok != "P0잔존" { if ($5 == fp) hit = 1; next }
+        {
+          m = split($5, theirs, ",")
+          for (i = 1; i <= n; i++) for (j = 1; j <= m; j++)
+            if (mine[i] != "" && mine[i] == theirs[j]) hit = 1
+        }
+        END { exit hit ? 0 : 1 }'
 }
 
 # ---------------------------------------------------------------------------
@@ -515,10 +532,12 @@ cc_rekick_verdict() {
   pos=$(rekick_position "$m") || { out 사람 "$tok" "재킥오프 행을 읽지 못했습니다"; return 0; }
   seq=$(printf '%s' "$pos" | cut -f2); cap=$(printf '%s' "$pos" | cut -f3)
   [ "$seq" -le "$cap" ] || { out 상한 "$tok" "연쇄 상한 $cap 에 닿았습니다"; return 0; }
-  sv=$(rekick_stop_reason "$m" "$tok") && { out 상한 "$tok" "$sv"; return 0; }
+  # A stop predicate is a person's call, not the cap: the chain is not used
+  # up, the next link would only repeat the last one.
+  sv=$(rekick_stop_reason "$m" "$tok") && { out 사람 "$tok" "$sv"; return 0; }
   # 9. Per token.
   case "$tok" in
-    마감|연기마감|천장|무진전|사이클예산|결함) out 자동 "$tok" "자동 재킥 — $tok" ;;
+    마감|연기마감|천장|무진전|사이클예산|결함|P0잔존) out 자동 "$tok" "자동 재킥 — $tok" ;;
     판단정지) out 승인 "$tok" "판단 정지의 답변을 담은 재인가 승인" ;;
     말단상한) out 사람 "$tok" "새 인가 필요 — 말단 행위 상한 소진" ;;
     표면이동)

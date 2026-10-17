@@ -67,7 +67,7 @@ Follow `## Halt record (driver dispatch)` of the discuss arm as written: schema 
 **The sites are a closed set of four**, all first-failure sites:
 
 - `document-present` — a saved document already exists at the document path (Step 0);
-- `ledger-missing` — the interview record or the base-design row fails its check (Step 1);
+- `ledger-missing` — the interview record or the base-design row fails its check, or a file the redesign input names does not exist (Step 1);
 - `slicing-unknown` — the slicing self-check cannot be repaired without a decision nobody made (Step 7U);
 - `ladder-unsettled` — a residual item no rung of the ladder settles, escalated as a `설계-골격` judgment (Step 7U).
 

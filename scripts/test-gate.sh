@@ -16466,7 +16466,11 @@ bsq_form "길이가 빈 기간(PT)인 재킥오프 행은 거부된다" \
 bsq_form "재킥오프 행 둘은 거부된다" "$BSQ_RK
 ${BSQ_RK%=3*}=2 | 길이=PT8H0M0S | 사유=둘째" "「재킥오프」 행이 2개입니다"
 bsq_form "원인이 닫힌 토큰 밖인 연쇄 행은 거부된다" \
-  "${BSQ_CH%원인=마감}원인=피곤" "「연쇄」 행의 원인이 닫힌 토큰 열두 개 중 하나가 아닙니다"
+  "${BSQ_CH%원인=마감}원인=피곤" "「연쇄」 행의 원인이 닫힌 토큰 열세 개 중 하나가 아닙니다"
+# `P0잔존` is one of the thirteen: the row passes the token check and is refused
+# only further on, for the predecessor this fixture does not have.
+bsq_form "원인이 P0잔존 인 연쇄 행은 토큰 검사를 지나 lineage-invalid 로 거부된다" "$BSQ_RK
+${BSQ_CH%원인=마감}원인=P0잔존" "lineage-invalid — (나) 앞 런 매니페스트가 없습니다"
 bsq_form "재킥오프 시각이 Z 표기가 아닌 연쇄 행은 거부된다" \
   "${BSQ_CH/2026-09-21T14:13:20Z/2026-09-21T23:13:20+09:00}" "「연쇄」 행의 형식이 어긋났습니다"
 bsq_form "재인가 승인만 있고 답변 다이제스트가 없는 연쇄 행은 거부된다" \
@@ -40414,6 +40418,158 @@ lsr_rp_lead_fix "$L88QF" C
 o88qf="$o88qf/$(lsr_rp_state "$L88QF" "$M88Q" C)"
 check "88q: 갈래 F 의 정상 완료 아닌 재수렴은 리드 수정이고 그 뒤 확인 리뷰다" "$o88qf" \
   "리드 수정|3|거부|통과|0/확인 리뷰|3|거부|거부|1"
+
+# ---------------------------------------------------------------------------
+# 88s. P0 잔존 종료 — 선택자의 네 조건, 의존 park 의 전이, P0 지문, 한 자리 훅
+# --- section: 88s | group: ledger_series | covers: gate_rekick_p0_residual, gate_segment_p0_cap_park, gate_segment_dep_park_unmet, gate_segment_review_walk, gate_segment_recheck_cap, gate_cycle_p0_fingerprint, gate_p0_residual_fingerprint, gate_p0_residual_done_line, gate_end_row, gate_end_run | anchors: 88s: 상한을 넘긴 확인 리뷰의 P0 park 는 리포트 경로를 낸다, 88s: 나머지가 착지한 런에서 선택자는 P0 세그먼트와 리포트를 낸다, 88s: 설계 문서가 없는 런에서 선택자는 거짓이다, 88s: 의존 park 가 아닌 park 가 남으면 선택자는 거짓이다, 88s: 열린 행위 승인이 있으면 선택자는 거짓이다, 88s: 전이 의존 park 둘은 인정된다, 88s: P0 지문 성분은 P1 이 바뀌어도 같다, 88s: 해당없음 종료는 P0잔존 행이 되고 종료 부류를 뺀다, 88s: P0 지문 성분 여섯이 행에 실린다 ---
+#
+# 확인 리뷰 상한까지의 수열은 88q 갈래 B 와 같다(c1·c2, 리드 수정 뒤 확인 리뷰 셋). 세그먼트
+# 행의 상태와 의존 park 의 `blocked` 행은 픽스처가 직접 쓴다 — 선택자는 원장과 매니페스트만
+# 읽는다. 리포트의 식별자는 세그먼트마다 다르게 두어 지문 성분이 서로 갈리게 한다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+D88S="$lsr_root/s88s"; rm -rf "$D88S"; mkdir -p "$D88S"
+M88S=$(lsr_rp_manifest "$D88S/manifest.md")
+M88SN="$D88S/manifest-nodoc.md"
+printf '## 대상\n\n- `target` | 별칭=t | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: (없음)\n\n## 인가\n\n' > "$M88SN"
+rp88s_report() {  # rp88s_report <파일> <P0 식별자,…> <P1 식별자,…> — 식별자를 고른 정규 리포트 하나
+  local f=$1 id n0=0 n1=0
+  for id in $(printf '%s' "$2" | tr ',' ' '); do n0=$((n0 + 1)); done
+  for id in $(printf '%s' "$3" | tr ',' ' '); do n1=$((n1 + 1)); done
+  {
+    printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `abc1234`\n'
+    printf -- '- **발견 요약**: 🔴 P0 %s건 | 🟠 P1 %s건 | 🟡 P2 0건 | 🟢 P3 0건\n' "$n0" "$n1"
+    printf -- '- **P1 분류**: 차단 %s건 | 이월 가능 0건\n\n## 🔴 P0 (즉시 수정 필수)\n\n' "$n1"
+    for id in $(printf '%s' "$2" | tr ',' ' '); do printf -- '- **[c]** `%s` 결함 — r\n' "$id"; done
+    [ "$n0" != "0" ] || printf '없음\n'
+    printf '\n## 🟠 P1 (머지 전 수정 권장)\n\n'
+    for id in $(printf '%s' "$3" | tr ',' ' '); do printf -- '- **[c]** **[차단]** `%s` 덜한 것 — r\n' "$id"; done
+    [ "$n1" != "0" ] || printf '없음\n'
+  } > "$f"
+  printf '%s' "$f"
+}
+rp88s_cap() {  # rp88s_cap <원장> <세그먼트> <리포트> [<확인 리뷰 수>] — 상한 수열과 park 행
+  local l=$1 s=$2 r=$3 n=${4:-3} c=3 k=0
+  printf -- '- `segment` | 교대=1 | id=%s | 상태=계획됨 | prev=x\n' "$s" >> "$l"
+  lsr_rp_cycle "$l" "$s" 1 1 0 "$r"
+  lsr_rp_cycle "$l" "$s" 2 1 1 "$r"
+  while [ "$k" -lt "$n" ]; do
+    lsr_rp_lead_fix "$l" "$s"
+    lsr_rp_cycle "$l" "$s" "$c" 1 0 "$r"
+    c=$((c + 1)); k=$((k + 1))
+  done
+  printf -- '- `segment` | 교대=1 | id=%s | 상태=park | prev=x\n' "$s" >> "$l"
+}
+rp88s_seg() {  # rp88s_seg <원장> <세그먼트> <상태>
+  printf -- '- `segment` | 교대=1 | id=%s | 상태=%s | prev=x\n' "$2" "$3" >> "$1"
+}
+rp88s_dep() {  # rp88s_dep <원장> <세그먼트> <미완 선행|-> — 의존 park 의 blocked 행(`-` 면 필드 없이)
+  rp88s_seg "$1" "$2" park
+  printf -- '- `blocked` | 교대=1 | 대상=%s | 스코프=cone | 원인=무효화 | 사유=게이트 park%s | prev=x\n' \
+    "$2" "$( [ "$3" = "-" ] || printf ' | 미완 선행=%s' "$3")" >> "$1"
+}
+q88s() { local l=$1 m=$2; shift 2; lsr_in Linux "$l" - lsr_rp_in "$m" "$@" 2>/dev/null; }
+r88s() {  # r88s <원장> [<매니페스트>] — 선택자의 「rc:출력」
+  local rc=0 o
+  o=$(q88s "$1" "${2:-$M88S}" gate_rekick_p0_residual) || rc=$?
+  printf '%s:%s' "$rc" "$o"
+}
+T88S=$'\t'
+R88SA=$(rp88s_report "$D88S/a.md" "x/a.sh:1" "y/b.sh:1")
+R88SF=$(rp88s_report "$D88S/f.md" "x/f.sh:7" "")
+
+L88S1=$(lsr_ledger w88s-1)
+rp88s_cap "$L88S1" A "$R88SA"
+rp88s_seg "$L88S1" B 머지됨
+check "88s: 상한을 넘긴 확인 리뷰의 P0 park 는 리포트 경로를 낸다" \
+  "$(q88s "$L88S1" "$M88S" gate_segment_p0_cap_park A)" "$R88SA"
+check "88s: 나머지가 착지한 런에서 선택자는 P0 세그먼트와 리포트를 낸다" "$(r88s "$L88S1")" "0:A${T88S}$R88SA"
+check "88s: 설계 문서가 없는 런에서 선택자는 거짓이다" "$(r88s "$L88S1" "$M88SN")" "1:"
+L88S2=$(lsr_ledger w88s-2)
+rp88s_cap "$L88S2" A "$R88SA" 2
+rp88s_seg "$L88S2" B 머지됨
+check "88s: 확인 리뷰가 상한 안이면 P0 park 이어도 선택자는 거짓이다" \
+  "$(r88s "$L88S2")|$(q88s "$L88S2" "$M88S" gate_segment_p0_cap_park A || printf 'rc1')" "1:|rc1"
+L88S3=$(lsr_ledger w88s-3)
+rp88s_cap "$L88S3" A "$R88SA"
+rp88s_dep "$L88S3" C -
+check "88s: 의존 park 가 아닌 park 가 남으면 선택자는 거짓이다" "$(r88s "$L88S3")" "1:"
+L88S4=$(lsr_ledger w88s-4)
+cp "$L88S1" "$L88S4"
+printf -- '- `승인` | 교대=1 | 승인 id=ap-1 | 상태=대기 | 절단점=머지 | prev=x\n' >> "$L88S4"
+L88S4J=$(lsr_ledger w88s-4j)
+cp "$L88S1" "$L88S4J"
+printf -- '- `승인` | 교대=1 | 승인 id=ap-2 | 상태=대기 | 절단점=판단 | prev=x\n' >> "$L88S4J"
+check "88s: 열린 행위 승인이 있으면 선택자는 거짓이다" "$(r88s "$L88S4")" "1:"
+check "88s: 열린 판단 승인이 있어도 선택자는 거짓이다" "$(r88s "$L88S4J")" "1:"
+
+# --- 의존 park 의 네 원장: 전이, 미완 선행이 P0 밖, 필드 없는 의존, P0 세그먼트 둘 ---
+L88S5=$(lsr_ledger w88s-5)
+rp88s_cap "$L88S5" A "$R88SA"
+rp88s_dep "$L88S5" B A
+rp88s_dep "$L88S5" D B
+check "88s: 전이 의존 park 둘은 인정된다" "$(r88s "$L88S5")" "0:A${T88S}$R88SA"
+L88S6=$(lsr_ledger w88s-6)
+rp88s_cap "$L88S6" A "$R88SA"
+rp88s_dep "$L88S6" B A
+rp88s_seg "$L88S6" E 계획됨
+rp88s_dep "$L88S6" D B,E
+check "88s: 미완 선행 하나가 P0 세그먼트도 의존 park 도 아니면 선택자는 거짓이다" "$(r88s "$L88S6")" "1:"
+L88S7=$(lsr_ledger w88s-7)
+rp88s_cap "$L88S7" A "$R88SA"
+rp88s_dep "$L88S7" B -
+check "88s: 미완 선행 필드 없는 의존 park 는 인정되지 않는다" "$(r88s "$L88S7")" "1:"
+L88S8=$(lsr_ledger w88s-8)
+rp88s_cap "$L88S8" A "$R88SA"
+rp88s_cap "$L88S8" F "$R88SF"
+rp88s_dep "$L88S8" B A,F
+check "88s: P0 세그먼트 둘은 원장 순서로 둘 다 나온다" "$(r88s "$L88S8")" \
+  "0:A${T88S}$R88SA
+F${T88S}$R88SF"
+
+# --- P0 지문: 네 리포트 ---
+R88SA2=$(rp88s_report "$D88S/a2.md" "x/a.sh:1" "y/c.sh:9")
+R88SZ=$(rp88s_report "$D88S/z.md" "" "y/b.sh:1")
+c88s_a=$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SA")
+check "88s: P0 지문 성분은 P1 이 바뀌어도 같다" \
+  "$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SA2")" "$c88s_a"
+check "88s: P0 식별자가 다르면 성분이 다르고, P0 절이 비었거나 리포트가 없으면 (미상) 이다" \
+  "$( [ "$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SF")" != "$c88s_a" ] && echo 다름 || echo 같음)|$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SZ")|$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$D88S/none.md")" \
+  "다름|(미상)|(미상)"
+c88s_f=$(q88s "$L88S1" "$M88S" gate_cycle_p0_fingerprint "$R88SF")
+check "88s: 런의 P0 지문은 성분을 정렬해 쉼표로 잇고, 하나라도 (미상) 이면 전체가 (미상) 이다" \
+  "$(q88s "$L88S1" "$M88S" gate_p0_residual_fingerprint "F${T88S}$R88SF
+A${T88S}$R88SA")|$(q88s "$L88S1" "$M88S" gate_p0_residual_fingerprint "A${T88S}$R88SA
+Z${T88S}$R88SZ")" \
+  "$(printf '%s\n%s\n' "$c88s_a" "$c88s_f" | LC_ALL=C sort | paste -s -d, -)|(미상)"
+
+# --- 한 자리 훅: gate_end_run 이 부르는 gate_end_row ---
+e88s() {  # e88s <원본 원장> <이름> <원인> <종료 부류> — 사본 원장에서 종료하고 「원인|부류|지문|done 첫 줄」
+  local l
+  l=$(lsr_ledger "w88s-e-$2")
+  cp "$1" "$l"
+  q88s "$l" "$M88S" gate_end_run "주 루프 종료" "시험 종료" "$3" "$4" "" >/dev/null
+  printf '%s|%s' "$(lsr_last_fields "$l" '자율 승인' '재킥 원인' '종료 부류' '재킥 지문')" \
+    "$(sed -n 1p "${l%/*}/done" 2>/dev/null | sed 's/^[^ ]* //')"
+}
+check "88s: 해당없음 종료는 P0잔존 행이 되고 종료 부류를 뺀다" \
+  "$(e88s "$L88S1" none 해당없음 "")" \
+  "P0잔존||$c88s_a|종단 — P0 잔존 — 확인 리뷰 상한에서 P0 가 남은 세그먼트: A · 근거 시험 종료"
+check "88s: 종료 부류=완료 로 온 종료도 P0잔존 이 된다" \
+  "$(e88s "$L88S1" done 해당없음 완료 | cut -d'|' -f1-3)" "P0잔존||$c88s_a"
+check "88s: 다른 원인과 포기 는 훅이 건드리지 않는다" \
+  "$(e88s "$L88S1" dl 마감 "" | cut -d'|' -f1-3)/$(e88s "$L88S1" ab 해당없음 포기 | cut -d'|' -f1-3)" \
+  "마감||/해당없음|포기|"
+check "88s: 선택자가 거짓이면 해당없음 종료는 그대로이고 done 첫 줄이 P0 를 말하지 않는다" \
+  "$(e88s "$L88S2" neg 해당없음 "" | cut -d'|' -f1-3)/$(e88s "$L88S2" neg2 해당없음 "" | grep -c 'P0 잔존' || true)" \
+  "해당없음||/0"
+L88S9=$(lsr_ledger w88s-9)
+for s88s in S1 S2 S3 S4 S5 S6; do
+  rp88s_cap "$L88S9" "$s88s" "$(rp88s_report "$D88S/$s88s.md" "x/$s88s/a.sh:1" "")"
+done
+fp88s=$(e88s "$L88S9" six 해당없음 "" | cut -d'|' -f3)
+check "88s: P0 지문 성분 여섯이 행에 실린다" \
+  "$(printf '%s' "$fp88s" | tr ',' '\n' | grep -cE '^[0-9a-f]{12}$' || true)" "6"
 
 # ---------------------------------------------------------------------------
 # 88b. 베이스 판정과 해소 — base-check 의 세 판정, 다음 오버레이, 해소 사이클, 상한

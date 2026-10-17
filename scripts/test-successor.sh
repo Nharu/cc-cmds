@@ -348,11 +348,11 @@ vr "판단정지는 승인이다" "$RJ" "승인/판단정지"
 RM=20261001-0000aab8; mk_root "$RM"; led_open "$RM"; end_row "$RM" 말단상한
 vr "말단상한은 사람이다" "$RM" "사람/말단상한"
 RW=20261001-0000aab9; mk_root "$RW"; led_open "$RW"; end_row "$RW" 무진전
-vr "진전 없이 끝난 무진전 고리는 상한이다" "$RW" "상한/무진전"
+vr "진전 없이 끝난 무진전 고리는 사람이다" "$RW" "사람/무진전"
 RX=20261001-0000aaba; mk_root "$RX"; led_open "$RX"; progress "$RX"; end_row "$RX" 무진전
 vr "진전한 무진전 고리는 자동이다" "$RX" "자동/무진전"
 RY=20261001-0000aabb; mk_root "$RY"; led_open "$RY"; end_row "$RY" 사이클예산
-vr "진전 없는 사이클예산은 상한이다" "$RY" "상한/사이클예산"
+vr "진전 없는 사이클예산은 사람이다" "$RY" "사람/사이클예산"
 RZ=20261001-0000aabc; mk_root "$RZ"; led_open "$RZ"; end_row "$RZ" 결함 '' 'implement/S4/pin1'
 vr "연쇄 안의 첫 결함은 자동이다" "$RZ" "자동/결함"
 
@@ -360,7 +360,7 @@ vr "연쇄 안의 첫 결함은 자동이다" "$RZ" "자동/결함"
 RI=20261001-0000aabd; mk_root "$RI"; led_open "$RI"
 g "$RI" "gate_append 'cycle' '세그먼트=A' '사이클=1' 'P0=0' 'P1=0' '출처=$R0'"
 end_row "$RI" 천장
-vr "들여온 행만 있는 천장 고리는 진전이 아니다" "$RI" "상한/천장"
+vr "들여온 행만 있는 천장 고리는 진전이 아니다" "$RI" "사람/천장"
 
 RF=20261001-0000aabe; mk_root "$RF"
 sed -i.bak 's/^\*\*상태\*\*: 동결됨$/**상태**: 초안/' "$REPO/docs/x.md"
@@ -377,7 +377,7 @@ vr "인가 기록이 없으면 사람이다" "$RO" "사람/-"
 # A ledger whose chain does not verify answers on the stopping side.
 RB=20261001-0000aac0; mk_root "$RB"; led_open "$RB"; end_row "$RB" 마감
 sed -i.bak -E '2s/ [|] prev=[0-9a-f]{64}$//' "$PR/$RB.md"; rm -f "$PR/$RB.md.bak"
-vr "사슬 검증에 실패한 원장은 상한이다" "$RB" "상한/마감"
+vr "사슬 검증에 실패한 원장은 사람이다" "$RB" "사람/마감"
 
 # ---------------------------------------------------------------------------
 # 6. Along a chain: the second link, the chain cap, and the stop predicates.
@@ -411,14 +411,14 @@ vr "연쇄 상한에 닿은 고리는 상한이다" "$C1" "상한/마감"
 RD=20261001-0000aac2; mk_root "$RD"; led_open "$RD"; progress "$RD"; end_row "$RD" 무진전
 D1=$(chain_next "$RD" 2026-10-03T00:00:00Z)
 led_open "$D1"; progress "$D1"; end_row "$D1" 무진전
-vr "무진전이 연달아 두 번이면 상한이다" "$D1" "상한/무진전"
+vr "무진전이 연달아 두 번이면 사람이다" "$D1" "사람/무진전"
 check "같은 원인 정지 술어가 그 연쇄를 멈춘다" "$(hx "rekick_same_cause_stop '$PR/$D1.plan.md' && echo stop")" "stop"
 
 # The same defect fingerprint a second time in the chain.
 RE=20261001-0000aac3; mk_root "$RE"; led_open "$RE"; end_row "$RE" 결함 '' 'implement/S4/pin1'
 E1=$(chain_next "$RE" 2026-10-03T00:00:00Z)
 led_open "$E1"; end_row "$E1" 결함 '' 'implement/S4/pin1'
-vr "같은 지문의 결함이 연쇄 안에서 두 번째면 상한이다" "$E1" "상한/결함"
+vr "같은 지문의 결함이 연쇄 안에서 두 번째면 사람이다" "$E1" "사람/결함"
 RE2=20261001-0000aac4; mk_root "$RE2"; led_open "$RE2"; end_row "$RE2" 결함 '' 'implement/S4/pin1'
 E2=$(chain_next "$RE2" 2026-10-03T00:00:00Z)
 led_open "$E2"; end_row "$E2" 결함 '' 'audit/S2/pin1'
@@ -577,6 +577,98 @@ case "$(cm_driver_err "$SA" "$W/xdg2")" in
   *) bad "드라이버 셸에서도 후속 매니페스트가 지난다" "$(cm_driver_err "$SA" "$W/xdg2")" ;;
 esac
 check "연쇄 행이 없는 매니페스트는 기억 파일을 부탁하지 않는다" "$(cm_gate "$PR/$RA.plan.md" "$W/xdg2")" "pass:"
+
+# ---------------------------------------------------------------------------
+# 6c. `P0잔존`: automatic, derived, admitted, and stopped on a recurring
+# component of its fingerprint.
+# ---------------------------------------------------------------------------
+RP0=20261001-0000aae0; mk_root "$RP0"; led_open "$RP0"; end_row "$RP0" P0잔존 '' 'p0a,p0b'
+vr "연쇄 안의 첫 P0잔존 은 자동이다" "$RP0" "자동/P0잔존"
+mkdir -p "$W/claim-$RP0"; printf '2026-10-03T00:00:00Z\n' > "$W/claim-$RP0/at"
+out=$(rk derive --predecessor "$PR/$RP0.plan.md" --claim "$W/claim-$RP0" --verdict 자동)
+check "P0잔존 앞 런의 파생은 열림으로 끝난다" "$?/$(vcol "$out" 1)" "0/열림"
+P01=$(vcol "$out" 2); SP0="$PR/$P01.plan.md"
+check "P0잔존 후속의 연쇄 행은 원인=P0잔존 을 싣는다" \
+  "$(grep '^- `연쇄`' "$SP0" | sed -E 's/.* \| 원인=//')" "P0잔존"
+claim_commit "$RP0" 2026-10-03T00:00:00Z "$P01"
+check "P0잔존 후속 매니페스트는 입장 검사 (가)~(사) 를 지난다" "$(adm "$SP0")" "ok"
+mkdir -p "$W/xdg3"
+check "P0잔존 후속 매니페스트는 check_manifest 를 지난다" "$(cm_gate "$SP0" "$W/xdg3")" \
+  "pass:$(shasum -a 256 < "$SP0" | cut -d' ' -f1)"
+
+led_open "$P01"; end_row "$P01" P0잔존 '' 'p0b,p0c'
+vr "앞선 P0잔존 과 지문 성분 하나가 겹치면 사람이다" "$P01" "사람/P0잔존"
+RP1=20261001-0000aae1; mk_root "$RP1"; led_open "$RP1"; end_row "$RP1" P0잔존 '' 'p0a'
+P11=$(chain_next "$RP1" 2026-10-03T00:00:00Z)
+led_open "$P11"; end_row "$P11" P0잔존 '' 'p0x'
+vr "앞선 P0잔존 과 지문 성분이 겹치지 않으면 자동이다" "$P11" "자동/P0잔존"
+RP2=20261001-0000aae2; mk_root "$RP2"; led_open "$RP2"; end_row "$RP2" P0잔존 '' 'p0a'
+P21=$(chain_next "$RP2" 2026-10-03T00:00:00Z)
+led_open "$P21"; end_row "$P21" 결함 '' 'p0a'
+vr "원인이 다른 고리의 같은 지문은 겹침으로 세지 않는다" "$P21" "자동/결함"
+RP3=20261001-0000aae3; mk_root "$RP3"; led_open "$RP3"; end_row "$RP3" P0잔존 '' '(미상)'
+vr "지문이 (미상) 인 P0잔존 은 사람이다" "$RP3" "사람/P0잔존"
+RP4=20261001-0000aae4; mk_root "$RP4"; led_open "$RP4"; end_row "$RP4" P0잔존
+vr "지문이 빈 P0잔존 은 사람이다" "$RP4" "사람/P0잔존"
+
+# ---------------------------------------------------------------------------
+# 6d. The recorded document digest: the latest `문서 해시` wins.
+# ---------------------------------------------------------------------------
+SHA_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+SHA_C=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+SHA_D=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+# dl <id> <body> — the driver's writer against that run's ledger.
+dl() {
+  hx "MANIFEST='$PR/$1.plan.md'; MANIFEST_MEMO_PATH=''; MANIFEST_MEMO=''
+      RUN_DIR='$W/rd/$1'; LEDGER='$PR/$1.md'; LEDGER_SCOPE=파일; RUN_ID='$1'; GRANT='$PG/$1.md'
+      $2" >/dev/null 2>&1
+}
+# led_na <id> — a ledger whose `run` row recorded no starting digest.
+led_na() {
+  mkdir -p "$W/rd/$1"; printf '## 실행 %s\n' "$1" > "$PR/$1.md"
+  g "$1" "gate_append 'run' 'run-id=$1' '시작=2026-10-01T00:01:00Z' '설계 문서=docs/x.md' '전체 sha256=(해당 없음)' '구속면 다이제스트=s'"
+}
+ds() { hx "rekick_recorded_doc_sha '$PR/$1.md' || echo 없음"; }
+DH1=20261001-0000aaf1; mk_root "$DH1"; led_open "$DH1"
+g "$DH1" "gate_append '문서 해시' '스테이지=S2 이후' 'sha256=$DOC_SHA' '동결값=$DOC_SHA' '관측=같음'"
+check "run 행과 문서 해시가 같은 값이면 그 값이다" "$(ds "$DH1")" "$DOC_SHA"
+DH2=20261001-0000aaf2; mk_root "$DH2"; led_open "$DH2"
+g "$DH2" "gate_append '문서 해시' '스테이지=S2 이후' 'sha256=$SHA_B' '동결값=$DOC_SHA' '관측=다름'"
+check "run 행과 문서 해시가 다르면 최신 문서 해시가 이긴다" "$(ds "$DH2")" "$SHA_B"
+DH3=20261001-0000aaf3; mk_root "$DH3"; led_na "$DH3"
+g "$DH3" "gate_append '문서 해시' '스테이지=S2 이후' 'sha256=$SHA_B' '동결값=(해당 없음)' '관측=다름'"
+g "$DH3" "gate_append '문서 해시' '스테이지=A 이후' 'sha256=$SHA_C' '동결값=(해당 없음)' '관측=다름'"
+check "시작 다이제스트가 (해당 없음) 이고 문서 해시가 둘이면 뒤 값이다 (선례 모양)" "$(ds "$DH3")" "$SHA_C"
+DH4=20261001-0000aaf4; mk_root "$DH4"; mkdir -p "$W/rd/$DH4"; printf '## 실행 %s\n' "$DH4" > "$PR/$DH4.md"
+dl "$DH4" "ledger_row 'run' 'run-id=$DH4' '시작=2026-10-01T00:01:00Z' '설계 문서=docs/x.md' '전체 sha256=$DOC_SHA' 'RUN_DIR=$W/rd/$DH4' '보고서=$PR/$DH4.md'
+           ledger_row '문서 해시' '스테이지=A#1 이후' 'sha256=$SHA_D' '동결값=$DOC_SHA' '관측=2026-10-01T00:05:00Z'"
+check "구동기가 쓴 문서 해시가 시작 다이제스트를 이긴다 (구동기 모양)" "$(ds "$DH4")" "$SHA_D"
+DH5=20261001-0000aaf5; mk_root "$DH5"; led_na "$DH5"
+check "시작 다이제스트도 문서 해시도 없으면 답이 없다" "$(ds "$DH5")" "없음"
+
+# Four ledgers along one chain — the root, a link in the precedent's shape, a
+# link in the fixed driver's shape after a reconverge that found nothing to
+# change, and the last link — each derived on `자동` until the chain cap.
+R2R=20261001-0000aaf6; mk_root "$R2R" 3; led_open "$R2R"; end_row "$R2R" P0잔존 '' 'q1'
+o1=$(rk derive --predecessor "$PR/$R2R.plan.md" --claim "$(mkdir -p "$W/c2r" && printf '2026-10-03T00:00:00Z\n' > "$W/c2r/at" && echo "$W/c2r")" --verdict 자동)
+check "연쇄 1 — 뿌리의 파생은 열림, 뿌리가 기록한 다이제스트를 옮긴다" "$?/$(vcol "$o1" 1)/$(vcol "$o1" 4)" "0/열림/$DOC_SHA"
+L2=$(vcol "$o1" 2); led_na "$L2"
+g "$L2" "gate_append '문서 해시' '스테이지=S2 이후' 'sha256=$SHA_B' '동결값=(해당 없음)' '관측=다름'"
+g "$L2" "gate_append '문서 해시' '스테이지=A 이후' 'sha256=$SHA_C' '동결값=(해당 없음)' '관측=다름'"
+end_row "$L2" P0잔존 '' 'q2'
+o2=$(rk derive --predecessor "$PR/$L2.plan.md" --claim "$(mkdir -p "$W/c2a" && printf '2026-10-04T00:00:00Z\n' > "$W/c2a/at" && echo "$W/c2a")" --verdict 자동)
+check "연쇄 2 — 선례 모양 고리의 파생은 열림, 뒤의 문서 해시를 옮긴다" "$?/$(vcol "$o2" 1)/$(vcol "$o2" 4)" "0/열림/$SHA_C"
+L3=$(vcol "$o2" 2); mkdir -p "$W/rd/$L3"; printf '## 실행 %s\n' "$L3" > "$PR/$L3.md"
+dl "$L3" "ledger_row 'run' 'run-id=$L3' '시작=2026-10-04T00:01:00Z' '설계 문서=docs/x.md' '전체 sha256=$SHA_C' 'RUN_DIR=$W/rd/$L3' '보고서=$PR/$L3.md'
+          ledger_row 'stage-result' '세그먼트=A' '스테이지=S0R-A-reconverge' '종류=reconverge' '종단 부류=정상 완료' '판정=불필요'
+          ledger_row '문서 해시' '스테이지=S0R-A-reconverge 이후' 'sha256=$SHA_D' '동결값=$SHA_C' '관측=2026-10-04T00:05:00Z'"
+end_row "$L3" P0잔존 '' 'q3'
+o3=$(rk derive --predecessor "$PR/$L3.plan.md" --claim "$(mkdir -p "$W/c2b" && printf '2026-10-05T00:00:00Z\n' > "$W/c2b/at" && echo "$W/c2b")" --verdict 자동)
+check "연쇄 3 — 구동기 모양 고리의 파생은 열림, 구동기의 문서 해시를 옮긴다" "$?/$(vcol "$o3" 1)/$(vcol "$o3" 4)" "0/열림/$SHA_D"
+L4=$(vcol "$o3" 2); led_open "$L4"; end_row "$L4" P0잔존 '' 'q4'
+vr "연쇄 4 — 연쇄 상한에 닿은 P0잔존 고리는 상한이다" "$L4" "상한/P0잔존"
+rk derive --predecessor "$PR/$L4.plan.md" --claim "$(mkdir -p "$W/c2c" && printf '2026-10-06T00:00:00Z\n' > "$W/c2c/at" && echo "$W/c2c")" --verdict 자동 > "$W/c2c.out"
+check "연쇄 4 — 상한을 넘는 파생은 invalid 로 끝난다" "$?/$(cut -f1 "$W/c2c.out")" "3/invalid"
 
 # ---------------------------------------------------------------------------
 # 7. The driver's rows are on the chain (the run.sh ledger, measured).
