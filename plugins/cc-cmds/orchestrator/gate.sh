@@ -13363,6 +13363,15 @@ gate_snapshot() {
   printf '  "review_next": [\n'
   gate_snapshot_review_next_json
   printf '  ],\n'
+  # `다음` PER SEGMENT WHOSE IMPLEMENTATION JUST ENDED `정상 완료`, the one value
+  # the routers branch on there: whether that run only emitted a plan or left
+  # commits behind is nowhere else in the snapshot, and `종단 부류` reads the
+  # same for both. Always emitted, empty included; outside the default
+  # `--fields` projection and outside `H`. Its git reads are one ref check per
+  # base ref and one `rev-list` per element.
+  printf '  "implement_next": [\n'
+  gate_snapshot_implement_next_json
+  printf '  ],\n'
   printf '  "shift": %s,\n' "$(gate_shift_state)"
   # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
   # sensor's last published tick and never computed here. Absent, stale or of
@@ -17263,7 +17272,8 @@ gate_answered_halts_json() {
   # re-attach the same session with the same answer twice; an answer that
   # stayed visible after it was used would do exactly that. An answer to a
   # shift's halt record is spent by the next shift carrying its option out as
-  # well (`gate_halt_answer_consumer`).
+  # well (`gate_halt_answer_consumer`), and an answer `세그먼트 park` by the
+  # later `상태=park` row of that segment, since parking dispatches nothing.
   #
   # A ROW THAT SETTLES AN ATTEMPT WHICH NEVER SPAWNED does not spend the answer:
   # its `관측` starts `스폰 전 대기 중`, and no stage read the answer.
@@ -17343,7 +17353,14 @@ gate_halt_answer_consumer() {
   # `stage-result` of the key, a `segment` row of the key, an act a shift took
   # on the key, or a resolution of a block anchored on it. Whichever comes
   # first is the consumer.
-  local sr st
+  #
+  # AN ANSWER `세그먼트 park` TO A STAGE'S RECORD IS TAKEN UP BY THE PARK. The
+  # shift carries it out by writing the segment's `상태=park` row and dispatches
+  # nothing, so no `stage-result` would ever spend it; the first such `segment`
+  # row of the key on a later line is a candidate beside the `stage-result` one,
+  # and the earlier of the two is the consumer. Every other option is spent the
+  # way it was.
+  local sr st pk
   sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
@@ -17361,6 +17378,14 @@ gate_halt_answer_consumer() {
       }' "$1" 2>/dev/null)
     if [ -n "$st" ] && { [ -z "$sr" ] || [ "${st%%:*}" -lt "${sr%%:*}" ]; }; then
       sr=$st
+    fi
+  fi
+  if [ "$(gate_row_field "$(sed -n "${3}p" "$1" 2>/dev/null)" '선택지')" = '세그먼트 park' ]; then
+    pk=$(LC_ALL=C awk -v l="$3" -v k="$2" '
+      NR > l && !p && index($0, "- `segment` ") == 1 && index($0, "| id=" k " |") \
+        && index($0, "| 상태=park |") { print NR ":" $0; p = 1 }' "$1" 2>/dev/null)
+    if [ -n "$pk" ] && { [ -z "$sr" ] || [ "${pk%%:*}" -lt "${sr%%:*}" ]; }; then
+      sr=$pk
     fi
   fi
   [ -z "$sr" ] || printf '%s\n' "$sr"
@@ -30181,7 +30206,30 @@ gate_verb_act() {
       # implement dispatch the ladder sends past the cap, and only while `다음`
       # reads `재구현`: once its row stands, `다음` is the re-check, so the
       # exemption covers that one dispatch and nothing after it.
-      if [ "${cy_n:-0}" -ge "$cy_cap" ] && [ "$(gate_segment_review_next "$segment")" != "재구현" ]; then
+      # THE EXEMPTION REACHES THE SAME RE-IMPLEMENTATION'S LATER RUNS. That
+      # dispatch starts in process A, because the re-convergence voided the
+      # plan, and its plan-only row already turns `다음` to the re-check. Until
+      # a review of the re-implementation stands — `확인 리뷰`, a `정상 완료`
+      # re-convergence after the last cycle row and no lead-fix row after it —
+      # an implement dispatch passes while `implement_next[]` reads `구현`,
+      # which the `무커밋 구현` limit already bounds.
+      local cy_rn cy_ok cy_walk
+      cy_ok=0
+      if [ "${cy_n:-0}" -ge "$cy_cap" ]; then
+        cy_rn=$(gate_segment_review_next "$segment")
+        if [ "$cy_rn" = "재구현" ]; then
+          cy_ok=1
+        elif [ "$cy_rn" = "확인 리뷰" ]; then
+          cy_walk=$(gate_segment_review_walk "$segment")
+          if [ "$(gate_report_count "$cy_walk" '마지막 뒤 재수렴')" = "정상" ] \
+             && [ "$(gate_report_count "$cy_walk" '리드 수정 뒤')" = "0" ]; then
+            case "$(gate_implement_next_of "$segment" </dev/null)" in
+              *'"다음": "구현",'*) cy_ok=1 ;;
+            esac
+          fi
+        fi
+      fi
+      if [ "${cy_n:-0}" -ge "$cy_cap" ] && [ "$cy_ok" = "0" ]; then
         warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${cy_n}개, 상한 ${cy_cap}"
         warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
         exit "$GATE_EXIT_RULE"
@@ -38059,6 +38107,123 @@ gate_snapshot_review_next_json() {
                 "$(gate_json_escape "$(gate_row_field "$brow" '부류')")"
           fi
           printf '},\n'
+        done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_segment_ahead_count() {
+  # gate_segment_ahead_count <segment> — how many commits the segment
+  # worktree's HEAD carries that neither `refs/heads/<base>` nor
+  # `refs/remotes/origin/<base>` reaches, counting against every one of the two
+  # that resolves: a local base left behind the remote would otherwise read the
+  # difference as the segment's own work. The base is the `베이스 브랜치` of the
+  # target the segment row's `레포` names (the slice's, then the home target's,
+  # when the row names none). Prints an integer, or `미상` when the worktree is
+  # gone, no base ref resolves or the count fails.
+  local seg=$1 wt slug al br rn rems refs='' r n
+  wt=$(gate_segment_worktree "$seg")
+  [ -n "$wt" ] && [ -d "$wt" ] || { printf '미상'; return 0; }
+  slug=$(gate_segment_field "$seg" '레포' | tr -d '`')
+  al=''
+  [ -z "$slug" ] || al=$(alias_for_slug "$slug" 2>/dev/null) || al=''
+  [ -n "$al" ] || al=$(gate_slice_alias "$seg" 2>/dev/null) || al=''
+  [ -n "$al" ] || al=$(home_alias 2>/dev/null) || al=''
+  br=''
+  [ -z "$al" ] || br=$(base_branch "$al" 2>/dev/null) || br=''
+  [ -n "$br" ] || { printf '미상'; return 0; }
+  # A leading remote name the worktree knows is stripped, as
+  # `gate_push_base_branch` strips it.
+  case "$br" in
+    */*)
+      rn=${br%%/*}
+      rems=$( { cd "$wt" 2>/dev/null && git remote 2>/dev/null; } || true)
+      case "
+$rems
+" in
+        *"
+$rn
+"*) br=${br#*/} ;;
+      esac ;;
+  esac
+  for r in "refs/heads/$br" "refs/remotes/origin/$br"; do
+    if ( cd "$wt" 2>/dev/null && git rev-parse --verify -q "$r^{commit}" ) >/dev/null 2>&1; then
+      refs="$refs $r"
+    fi
+  done
+  [ -n "$refs" ] || { printf '미상'; return 0; }
+  # shellcheck disable=SC2086
+  n=$( { cd "$wt" 2>/dev/null && git rev-list --count HEAD --not $refs 2>/dev/null; } || true)
+  case "$n" in
+    ''|*[!0-9]*) printf '미상' ;;
+    *) printf '%s' "$n" ;;
+  esac
+}
+
+gate_implement_next_of() {
+  # gate_implement_next_of <segment> — the `implement_next[]` element of one
+  # segment, or nothing when its last `stage-result` row is not an implement
+  # stage that ended `정상 완료`. A digest is a plan EMISSION the first time it
+  # appears after the void boundary — the last `종류=reconverge` row or `재계획`
+  # row, the boundary `implement_process_b` resets on — and a plan EXECUTION
+  # when it repeats: process B carries process A's digest. `무커밋 구현` counts
+  # the `정상 완료` implement rows after the boundary that left no commit: every
+  # one of them when the branch is not ahead of its base, only the emissions
+  # when it is.
+  local seg=$1 rows last res ahead st cnt_all cnt_emit dg cnt nx
+  rows=$(gate_plan_rows_of "$seg")
+  last=$( { printf '%s\n' "$rows" | grep '^- `stage-result` ' || true; } | tail -1)
+  [ -n "$last" ] || return 0
+  [ "$(gate_row_field "$last" '종류')" = 'implement' ] || return 0
+  [ "$(gate_row_field "$last" '종단 부류')" = '정상 완료' ] || return 0
+  # One awk over the rows, `index` and field splits rather than a regex over
+  # Korean names. It consumes its whole input (no `exit`): an early-exiting
+  # reader kills the writer with SIGPIPE, and under `pipefail` the pipeline
+  # then fails though the answer was found.
+  res=$(printf '%s\n' "$rows" | LC_ALL=C awk '
+  function fld(line, key,   n, i, a) {
+    n = split(line, a, " [|] ")
+    for (i = 1; i <= n; i++) if (index(a[i], key "=") == 1) return substr(a[i], length(key) + 2)
+    return ""
+  }
+  index($0, "- `재계획`") == 1 { split("", seen); all = 0; emit = 0; next }
+  index($0, "- `stage-result`") == 1 {
+    k = fld($0, "종류")
+    if (k == "reconverge") { split("", seen); all = 0; emit = 0; next }
+    if (k != "implement") next
+    d = fld($0, "plan_sha256")
+    first = (d != "" && !(d in seen))
+    if (d != "") seen[d] = 1
+    if (fld($0, "종단 부류") == "정상 완료") { all++; if (first) emit++ }
+    ph = (d == "") ? "미상" : (first ? "A" : "B")
+    ld = d
+  }
+  END { printf "%s %d %d %s\n", (ph == "" ? "미상" : ph), all, emit, (ld == "" ? "-" : ld) }')
+  read -r st cnt_all cnt_emit dg <<<"$res"
+  [ "$dg" = '-' ] && dg=''
+  ahead=$(gate_segment_ahead_count "$seg")
+  if [ "$ahead" = '0' ]; then cnt=$cnt_all; else cnt=$cnt_emit; fi
+  if [ "$ahead" = '미상' ]; then nx='판정 불가'
+  elif [ "$st" = 'A' ] || [ "$ahead" = '0' ]; then
+    if [ "$cnt" -le 2 ]; then nx='구현'; else nx='사람'; fi
+  else nx='리뷰'
+  fi
+  if [ "$ahead" = '미상' ]; then ahead='"미상"'; fi
+  printf '    {"세그먼트": "%s", "다음": "%s", "단계": "%s", "plan_sha256": "%s", "앞선 커밋": %s, "무커밋 구현": %s},\n' \
+    "$(gate_json_escape "$seg")" "$nx" "$st" "$(gate_json_escape "$dg")" "$ahead" "$cnt"
+}
+
+gate_snapshot_implement_next_json() {
+  # One element per segment that is not `머지됨`, `완료` or `park` and whose
+  # last `stage-result` row is an implement stage that ended `정상 완료`
+  # (`gate_implement_next_of`). A segment whose last stage was a review, a
+  # crash or a park has no element: the rules that already read those decide it.
+  local out s sst
+  out=$(gate_segment_ids | while IFS= read -r s; do
+          [ -n "$s" ] || continue
+          sst=$(gate_segment_field "$s" '상태')
+          if [ "$sst" = '머지됨' ] || [ "$sst" = '완료' ] || [ "$sst" = 'park' ]; then continue; fi
+          gate_implement_next_of "$s"
         done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"

@@ -737,6 +737,72 @@ check "review_carry 가 재구현 사이클 상한과 확인 리뷰 회차 상�
   "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2,"RECHECK_ROUND_CAP":2}'
 
 # ---------------------------------------------------------------------------
+# 6c-3. `implement_next[]` tells a plan emission from a plan execution
+#
+# A process A that emits its plan and a process B that carries it out both end
+# `정상 완료`, so a router reading only the last stage sent a review onto a
+# branch with no commit in it. The element carries what tells them apart: the
+# phase (a digest's first appearance after the void boundary is an emission),
+# the commits the segment worktree's HEAD has over the base refs, and how many
+# implement runs after the boundary left no commit. The worktrees are real, so
+# `앞선 커밋` is measured the way the gate measures it on a run.
+# ---------------------------------------------------------------------------
+( cd "$REPO" \
+  && git worktree add -q -b in-zero "$WORK/in-zero" main \
+  && git worktree add -q -b in-one "$WORK/in-one" main \
+  && git worktree add -q -b in-base "$WORK/in-base" main ) >/dev/null 2>&1
+( cd "$WORK/in-one" && echo seg > seg.txt && git add -A && git commit -qm seg ) >/dev/null 2>&1
+# The base moves on after `in-base` was cut: that branch is behind, not ahead.
+( cd "$REPO" && echo two > b.txt && git add -A && git commit -qm two ) >/dev/null 2>&1
+ir() { # ir <segment> <kind> <digest or -> <class>
+  if [ "$3" = - ]; then
+    printf -- '- `stage-result` | 세그먼트=%s | 스테이지=%s | 종류=%s | 종료 코드=0 | 실행 버전=1 | 종단 부류=%s\n' "$1" "$1" "$2" "$4"
+  else
+    printf -- '- `stage-result` | 세그먼트=%s | 스테이지=%s | 종류=%s | 종료 코드=0 | 실행 버전=1 | plan_sha256=%s | 종단 부류=%s\n' "$1" "$1" "$2" "$3" "$4"
+  fi >> "$LEDGER"
+}
+iseg() { printf -- '- `segment` | id=%s | 상태=실행중 | 레포=t/t | 워크트리=%s\n' "$1" "$2" >> "$LEDGER"; }
+iseg I1 "$WORK/in-zero"; ir I1 implement d1 '정상 완료'
+iseg I2 "$WORK/in-zero"; ir I2 implement d2 '정상 완료'; ir I2 implement d2 '정상 완료'
+iseg I3 "$WORK/in-zero"; ir I3 implement d3 '정상 완료'; ir I3 implement d3 '정상 완료'; ir I3 implement d3 '정상 완료'
+iseg I4 "$WORK/in-one";  ir I4 implement d4 '정상 완료'; ir I4 implement d4 '정상 완료'
+iseg I5 "$WORK/in-zero"; ir I5 implement d5 '정상 완료'; ir I5 implement d5 '정상 완료'
+ir I5 reconverge - '정상 완료'; ir I5 implement d5b '정상 완료'
+iseg I6 "$WORK/in-one";  ir I6 implement d6 '정상 완료'; ir I6 implement d6 '정상 완료'
+ir I6 reconverge - '정상 완료'; ir I6 implement d6b '정상 완료'
+iseg I7 "$WORK/in-base"; ir I7 implement d7 '정상 완료'
+iseg I8 "$WORK/in-gone"; ir I8 implement d8 '정상 완료'
+iseg I9 "$WORK/in-zero"; ir I9 implement d9 '정상 완료'; ir I9 review - '정상 완료'
+iseg I10 "$WORK/in-zero"; ir I10 implement d10 '의도된 park'
+SNAP_I="$WORK/implement-next.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_I"
+inx() { jq -r --arg s "$1" '.implement_next[] | select(.["세그먼트"]==$s) | [.["다음"], .["단계"], (.["앞선 커밋"]|tostring), (.["무커밋 구현"]|tostring)] | join("|")' "$SNAP_I"; }
+check "계획 방출만 한 구현 뒤에는 구현을 다시 보낸다" "$(inx I1)" "구현|A|0|1"
+check "같은 다이제스트로 커밋 없이 끝난 B 뒤에도 구현이다" "$(inx I2)" "구현|B|0|2"
+check "커밋 없는 구현 셋째에서 사람에 닿는다" "$(inx I3)" "사람|B|0|3"
+check "B 가 커밋을 냈으면 리뷰다" "$(inx I4)" "리뷰|B|1|1"
+check "재수렴 행이 무효 경계가 되어 수를 되돌린다" "$(inx I5)" "구현|A|0|1"
+check "커밋이 있는 브랜치에서도 재수렴 뒤 새 계획 방출은 구현이다" "$(inx I6)" "구현|A|1|1"
+check "베이스만 앞으로 움직인 브랜치는 앞선 커밋 0 으로 읽힌다" "$(inx I7)" "구현|A|0|1"
+check "워크트리가 없으면 판정 불가다" "$(inx I8)" "판정 불가|A|미상|1"
+check "마지막 행이 리뷰이거나 의도된 park 인 세그먼트는 원소가 없다" \
+  "$(jq -r '[.implement_next[] | select(.["세그먼트"]=="I9" or .["세그먼트"]=="I10")] | length' "$SNAP_I")" "0"
+check "implement_next 원소가 여섯 필드를 싣는다" \
+  "$(jq -c '.implement_next[] | select(.["세그먼트"]=="I1") | keys' "$SNAP_I")" '["plan_sha256","다음","단계","무커밋 구현","세그먼트","앞선 커밋"]'
+check "implement_next 원소가 마지막 구현 행의 다이제스트를 싣는다" \
+  "$(jq -r '.implement_next[] | select(.["세그먼트"]=="I5") | .plan_sha256' "$SNAP_I")" "d5b"
+check "implement_next 는 기본 --fields 투영 밖이다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields "$GATE_SNAPSHOT_FIELDS_DEFAULT" 2>/dev/null ) | jq -r 'has("implement_next")')" "false"
+# THE ELEMENT MOVES, `H` DOES NOT: a commit in a segment worktree turns I1 from
+# `구현` into `리뷰` without a ledger row, and the digest stays where it was.
+hi0=$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )
+( cd "$WORK/in-zero" && echo more > more.txt && git add -A && git commit -qm more ) >/dev/null 2>&1
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_I"
+check "세그먼트 워크트리에 커밋이 생기면 원소가 움직인다" "$(inx I2)" "리뷰|B|1|1"
+check "implement_next 의 값이 움직여도 H 는 그대로다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )" "$hi0"
+
+# ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
 #
 # The lead's loop and the shift skill each carry their own prose for dispatching
@@ -1254,6 +1320,63 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   fi
 done
 check "두 사본의 수정 재파견 지시 문구가 바이트 동일하다" "$fix_prompt_rs" "$fix_prompt"
+
+# ---------------------------------------------------------------------------
+# 6e-3b. Routing after an implementation is carried by BOTH router copies
+#
+# A process A that only emitted its plan ends `정상 완료` exactly as a process B
+# does, and the routers used to send either straight to a review — so a branch
+# with no commit was reviewed, the review stopped, and the night waited on a
+# person. The literals below are the subsection that branches on
+# `implement_next[]`'s `다음` instead: the sentence that holds a review to
+# `리뷰`, the four values, and the three cone reasons. Only the lead's copy has
+# a snapshot key table, so its row is pinned there; only the shift answers a
+# halt record, so the empty-target branch and its item are pinned there.
+# ---------------------------------------------------------------------------
+in_head='#### Routing a segment after its implementation ends `정상 완료`'
+in_sec_ap=""; in_sec_rs=""
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  check "$who 사본에 구현 뒤 라우팅 절 표제가 한 줄 있다" \
+    "$(grep -cxF -- "$in_head" "$file" || true)" "1"
+  sec=$(router_section "$file" "$in_head")
+  for lit in \
+    '`implement_next[]`' \
+    '**Do not dispatch a review for a segment whose element reads a `다음` other than `리뷰`.**' \
+    '- **`리뷰`** →' \
+    '- **`구현`** →' \
+    '- **`사람`** →' \
+    '- **`판정 불가`** →' \
+    "\`'사유=구현 재파견 거절'\`" \
+    "\`'사유=무커밋 구현 한도'\`" \
+    "\`'사유=구현 산출 판정 불가'\`"
+  do
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 구현 뒤 라우팅 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 구현 뒤 라우팅 절" "「${lit}」이 없다"
+    fi
+  done
+  if [ -z "$in_sec_ap" ]; then in_sec_ap="$sec"; else in_sec_rs="$sec"; fi
+done
+check "두 사본의 구현 뒤 라우팅 절이 바이트 동일하다" "$in_sec_rs" "$in_sec_ap"
+check "리드 사본의 키 표가 implement_next[] 행을 싣는다" \
+  "$(grep -c -- '^| `implement_next\[\]` |' "$AP_ROUTER" || true)" "1"
+ha_sec=$(router_section "$RS_SKILL" "#### Handing on a person's answer to a halt")
+for lit in \
+  'When `skill` is `review-unattended` and the step begins with `Step 1b 빈 대상`, go to item 7.' \
+  '7. **A review that stopped on an empty target is answered by an implementation or a park — no session is re-attached.**' \
+  "- **\`구현 재파견\`** → dispatch the segment's implementation" \
+  "\`'사유=빈 대상 리뷰 정지'\`"
+do
+  nlit=$(printf '%s\n' "$ha_sec" | grep -cF -- "$lit" || true)
+  if [ "${nlit:-0}" != "0" ]; then
+    ok "교대 사본의 중단 답 넘김 절이 「${lit}」을 싣는다"
+  else
+    bad "교대 사본의 중단 답 넘김 절" "「${lit}」이 없다"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 6e-4. The merge-order sentences are byte-identical in BOTH router copies
