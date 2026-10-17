@@ -1078,7 +1078,8 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '교대=#### Pushing and opening a pull request|stop the segment at site `대상 훅 거절`' \
     '교대=#### Pushing and opening a pull request|never `settings.json` while the run is open' \
     '리드=#### Pushing and opening a pull request|there is no shift-halt site for this loop to use' \
-    '리드=#### Pushing and opening a pull request|a `스코프=cone` block whose `사유` names the refusal and quotes `거절 문면`'
+    '교대=#### Pushing and opening a pull request|Never copy `명령` or `거절 문면` into any gate argument' \
+    '리드=#### Pushing and opening a pull request|a `스코프=cone` block whose `사유` names the refusal by the element'"'"'s `행위 다이제스트` and `형태`, never quoting `명령` or `거절 문면`'
   do
     case "$spec" in
       리드=*|교대=*) [ "${spec%%=*}" = "$who" ] || continue; spec=${spec#*=} ;;
