@@ -17739,6 +17739,79 @@ else
   bad "가드·훅 불일치" "설계 문서 락 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 
+# 정지 기록 이름은 쓰는 쪽에서 막는다. 시도 4 의 스테이지가 세그먼트 이름만으로
+# `halt/S2.md` 를 썼고, 두 독자는 시도 번호를 단 이름만 찾으므로 그 턴을 `정상 완료` 로
+# 읽어 질문이 사람을 기다렸다. 스테이지 id 가 있으면 두 가드가 `halt/<id>.md` 하나와
+# 원자 쓰기의 점 접두 임시 이름만 받고, 거절 문면은 맞는 경로를 적는다.
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/S2.md"
+check "스테이지 S2#4 의 halt/S2.md 쓰기는 거절된다" "$rc" "3"
+gate_halt_text=$(CC_PIPELINE_STAGE_ID='S2#4' bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_name_refusal' _ "$GATE" 2>/dev/null)
+case "$gate_halt_text" in
+  *'halt/S2#4.md'*) ok "게이트의 정지 기록 거절 문면이 허용되는 경로 halt/S2#4.md 를 적는다" ;;
+  *) bad "정지 기록 거절 문면" "'$gate_halt_text'" ;;
+esac
+case "$msg" in
+  *"rule refused: $gate_halt_text"*) ok "Bash 가드의 거절이 그 문면을 그대로 싣는다" ;;
+  *) bad "Bash 가드 정지 기록 거절" "$msg" ;;
+esac
+check "거절된 이름의 파일이 만들어지지 않았다" "$( [ -e "$RD3/halt/S2.md" ] && printf yes || printf no )" "no"
+# 훅도 같은 바이트를 낸다 — 두 파일에 같은 문장을 적고, 한쪽만 고치면 여기서 빨개진다.
+hook_halt_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$RD3/halt/S2.md" \
+  | CC_PIPELINE_STAGE_ID='S2#4' bash "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" --run-dir "$RD3" \
+      --gate "$GATE" --ledger "$LEDGER2" --grant "$CONE_GRANT" --manifest "$NM" 2>/dev/null)
+check "훅의 정지 기록 거부 문면이 게이트의 문면과 바이트가 같다" \
+  "$(printf '%s' "$hook_halt_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" "gate: $gate_halt_text"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/S2#4.md"
+check "스테이지 S2#4 의 halt/S2#4.md 쓰기는 통과한다" "$rc" "0"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/.S2#4.md.AbC123"
+check "원자 쓰기의 점 접두 임시 이름은 통과한다" "$rc" "0"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir -p "$RD3/halt"
+check "스테이지의 mkdir halt 는 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/S2.md"
+check "스테이지 id 가 없는 호출자의 halt/S2.md 는 예전처럼 통과한다" "$rc" "0"
+rm -f "$RD3/halt/S2.md" "$RD3/halt/S2#4.md" "$RD3/halt/.S2#4.md.AbC123"
+# 읽는 쪽은 그대로다. 시도 핀 2 아래에서 시도 2 의 자기 기록은 드라이버와 게이트의
+# 분류기 모두 `의도된 park` 로 읽고 자동 답이 그 기록을 받으며, 시도 1 의 기록만
+# 있으면 둘 다 `정상 완료` 로 읽고 자동 답은 그 낡은 기록을 받지 않는다.
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sid-r7","result":"done"}' \
+  > "$WORK/r7-ok.json"
+r7_probe() {
+  # r7_probe <segment> <record attempt> — prints driver path / driver class /
+  # gate row class / automatic-answer rc, with the attempt pin at 2.
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_GATE_SOURCE_ONLY=1 bash -c '
+      . "$1"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      MANIFEST="$2"; LEDGER="$3"; RUN_ID="$4"; RUN_DIR="$5"; seg="$6"
+      set +e
+      mkdir -p "$RUN_DIR/log" "$RUN_DIR/halt"
+      printf "2\n" > "$RUN_DIR/$seg.attempt"
+      cp "$7" "$RUN_DIR/log/$seg#2.json"
+      printf "%s\n" "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=$seg#$8; run=$RUN_ID -->" \
+        "**분류**: gate-unanswerable" "<!-- /cc-pipeline-halt v1 -->" > "$RUN_DIR/halt/$seg#$8.md"
+      p=$(halt_record_path "$seg"); c=$(classify_termination "$seg" 0 0)
+      # The attempt wrote a row of its own, as a stage that worked does; without
+      # one the gate files a clean exit as `공허한 성공`.
+      printf -- "- \`자율 승인\` | kind=skill | 결정=act | 대상=infra | 세그먼트=%s | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=정지 기록 픽스처 | prev=x\n" "$seg" >> "$LEDGER"
+      gate_record_stage_outcome infra "$seg" implement 2 0 "" "$RUN_DIR/log/$seg#2.json" >/dev/null 2>&1
+      g=$(grep "^- \`stage-result\` .*| 세그먼트=$seg " "$LEDGER" | tail -1 | sed -n "s/.*종단 부류=\([^|]*\) |.*/\1/p")
+      gate_halt_auto_answer_current "$seg" "$RUN_DIR/halt/$seg#$8.md" >/dev/null 2>&1; a=$?
+      printf "%s|%s|%s|%s" "${p#"$RUN_DIR"/}" "$c" "$g" "$a"
+    ' _ "$GATE" "$NM" "$LEDGER2" "$CONE_RUN_ID" "$RD3" "$1" "$WORK/r7-ok.json" "$2" ) 2>/dev/null
+}
+check "시도 2 의 자기 기록: 드라이버 경로·분류, 게이트 분류, 자동 답이 모두 그 기록을 읽는다" \
+  "$(r7_probe R7A 2)" "halt/R7A#2.md|의도된 park|의도된 park|0"
+check "시도 1 의 기록만 있는 시도 2: 두 분류기 모두 정상 완료이고 자동 답은 그 기록을 받지 않는다" \
+  "$(r7_probe R7B 1)" "halt/R7B#2.md|정상 완료|정상 완료|3"
+
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
 # --- section: 31ad | group: cone | covers: act | needs: 31e | anchors: 워크트리가 사라진 멤버를 선행으로 적은 세그먼트 행이 기록된다 ---
 #
@@ -31364,6 +31437,113 @@ gate exec --manifest "$FX_MANIFEST" --target infra --segment S1 --cutpoint push 
   --rationale t -- xargs git push
 check "정직하게 올려 신고해도 xargs 는 park 된다" "$rc" "11"
 case "$msg" in *신고등급한도*) ok "그 park 가 신고등급한도로 기록된다" ;; *) bad "그 park 가 신고등급한도로 기록된다" "$msg" ;; esac
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+# ---------------------------------------------------------------------------
+# 53b. 증명된 런 로컬 — argv 가 증명하는 런 로컬은 신고를 대신하고, 밖은 그대로다
+# --- section: 53b | group: reach | covers: exec, reach | anchors: 53b: 런 디렉터리 아래 위트니스 경로는 증명된다, 53b: settings/ 쓰기는 증명과 상관없이 거절된다, 53b: 네임스페이스 밖 임시 경로의 rm -rf 는 도달미상으로 park 된다, 53b: 틀 없는 mktemp -d 는 증명이 없다 ---
+# 스테이지가 제 스크래치와 위트니스에 정직하게 `미상` 을 신고하면 `도달미상` 으로 park
+# 되고, 그걸 넘으려 `협업` 을 빌리면 `도달모순` 으로 park 되었다. 닫힌 도구 집합의 행위가
+# 이 런 디렉터리나 이 스테이지의 프로토타입 이름공간 아래만 이름 대면 argv 가 도달을
+# 증명하므로, 신고와 상관없이 런로컬로 판정되고 행의 `유도 도달` 이 그것을 적는다.
+# 이 절은 자동 해소가 켜진 모드를 단언한다 — park 인지 승인인지는 그 스위치
+# 하나가 정하므로, 절 밖에서 켜면 이 절을 단독으로 잘랐을 때 다른 모드로 돈다.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+# 런 id 와 런 디렉터리는 지금의 픽스처 매니페스트에서 읽는다 — 앞 절이 매니페스트를
+# 다른 런으로 바꿔 두었을 수 있으므로 상수로 적지 않는다.
+rid53b=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)
+RD53b="$XDG_STATE_HOME/cc-cmds/run/$rid53b"
+HH >/dev/null
+L53b=$(cat "$RD53b/ledger-path" 2>/dev/null || true)
+check "53b: 픽스처 런 디렉터리와 원장이 있다 (아래 단언이 공허하지 않다)" \
+  "$([ -d "$RD53b" ] && [ -f "$L53b" ] && echo yes)" "yes"
+# 프로토타입 이름공간은 `${TMPDIR:-/tmp}` 아래이므로, 이 절의 TMPDIR 을 작업 디렉터리
+# 안으로 돌려 실제 시스템 임시 디렉터리를 건드리지 않는다.
+TD53b="$WORK/tmp53b"; mkdir -p "$TD53b"
+P53b_PREV_TMPDIR="${TMPDIR-}"; P53b_PREV_TMPDIR_SET="${TMPDIR+set}"
+P53b_PREV_SID="${CC_PIPELINE_STAGE_ID-}"; P53b_PREV_SID_SET="${CC_PIPELINE_STAGE_ID+set}"
+export TMPDIR="$TD53b" CC_PIPELINE_STAGE_ID='S1#2'
+P53b="$TD53b/cc-proto-$rid53b-S1-2"
+W53b="$RD53b/cc-team-witness-t53b.S1-2.abc123"; mkdir -p "$W53b"
+# exec 한 번 — 통과면 그 `자율 승인` 행의 `유도 도달` 을 함께 단언한다.
+rl53b_exec() {
+  local reach="$1" label="$2"; shift 3
+  gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach "$reach" --snapshot-digest "$(HH)" \
+    --rationale t -- "$@"
+  check "$label" "$rc" "0"
+  check "$label — 행의 유도 도달은 런로컬이다" \
+    "$(grep '자율 승인' "$L53b" | tail -n 1 | grep -o '유도 도달=[^|]*' | sed 's/[[:space:]]*$//')" \
+    "유도 도달=런로컬"
+}
+# 소싱 시임으로 유도 하나를 잰다. 런 디렉터리는 소싱 뒤에 둔다.
+rl53b_derived() {
+  local want="$1" label="$2" got; shift 3
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    RUN_DIR="$1"; shift
+    gate_reach_derived front "$@"
+  ' _ "$RD53b" "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+for r53b in 미상 협업; do
+  rl53b_exec "$r53b" "53b: 프로토타입 틀의 mktemp -d 는 $r53b 신고로 통과한다" -- mktemp -d "$P53b.XXXXXX"
+  d53b=$(ls -d "$P53b".* 2>/dev/null | sed -n 1p)
+  check "53b: ($r53b) 프로토타입 디렉터리가 실제로 만들어졌다" "$([ -d "$d53b" ] && echo yes)" "yes"
+  rl53b_exec "$r53b" "53b: 프로토타입 디렉터리의 rm -rf 는 $r53b 신고로 통과한다" -- rm -rf "$d53b"
+  check "53b: ($r53b) 프로토타입 디렉터리가 지워졌다" "$([ -e "$d53b" ] || echo gone)" "gone"
+  rl53b_exec "$r53b" "53b: 위트니스 디렉터리 안 mktemp 는 $r53b 신고로 통과한다" -- mktemp "$W53b/.r.round-$r53b.XXXXXX"
+  t53b=$(ls -d "$W53b"/.r.round-"$r53b".* 2>/dev/null | sed -n 1p)
+  rl53b_exec "$r53b" "53b: 위트니스 mv -n 은 $r53b 신고로 통과한다" -- mv -n "$t53b" "$W53b/r.round-$r53b.md"
+  check "53b: ($r53b) 위트니스가 게시되었다" "$([ -f "$W53b/r.round-$r53b.md" ] && echo yes)" "yes"
+done
+# 네임스페이스 밖의 임시 경로는 증명이 없어 신고가 답한다 — 오늘의 칸 그대로다.
+mkdir -p "$TD53b/other53b"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" \
+  --rationale t -- rm -rf "$TD53b/other53b"
+check "53b: 네임스페이스 밖 임시 경로의 rm -rf 는 도달미상으로 park 된다" "$rc" "11"
+case "$msg" in *도달미상*) ok "53b: 그 park 의 칸이 도달미상이다" ;; *) bad "53b: 그 park 의 칸이 도달미상이다" "$msg" ;; esac
+check "53b: park 된 rm 은 아무것도 지우지 않았다" "$([ -d "$TD53b/other53b" ] && echo kept)" "kept"
+# 다른 런의 이름이나 다른 스테이지 키를 단 이름은 이 스테이지의 이름공간이 아니다.
+rl53b_derived '-' "53b: 다른 스테이지 키의 프로토타입 틀은 증명이 없다" -- mktemp -d "$TD53b/cc-proto-$rid53b-S1-3.XXXXXX"
+rl53b_derived '-' "53b: 틀 없는 mktemp -d 는 증명이 없다" -- mktemp -d
+rl53b_derived '-' "53b: 값을 받는 옵션이 붙은 mktemp 는 증명이 없다" -- mktemp -d -p "$TD53b" "cc-proto-$rid53b-S1-2.XXXXXX"
+rl53b_derived '-' "53b: 피연산자 뒤의 대시 낱말은 증명을 끝낸다" -- rm "$P53b.a" -rf
+rl53b_derived '-' "53b: 집합 밖 도구는 같은 경로여도 증명이 없다" -- dd "of=$P53b.a"
+rl53b_derived '런로컬' "53b: 런 디렉터리 아래 위트니스 경로는 증명된다" -- touch "$W53b/x"
+# 프로토타입 디렉터리 안에서 바깥을 가리키는 링크. 링크를 만드는 argv 가 설정 경로를
+# 이름 대면 올림 유도가 먼저 이기고, 링크를 거쳐 쓰는 argv 는 물리적으로 풀려 밖이므로
+# 증명이 없다 — 앞의 것은 그대로 오르고 뒤의 것은 신고가 답한다.
+k53b="$P53b.keep"; mkdir -p "$k53b" "$WORK/out53b"
+ln -s "$WORK/out53b" "$k53b/out"
+rl53b_derived '기기전역' "53b: 프로토타입 안에 \$HOME/.config 아래로의 링크를 만드는 argv 는 그대로 오른다" -- ln -s "$HOME/.config/cc-cmds" "$k53b/cfg"
+# `$HOME/.config` 자체는 오늘의 올림 유도가 잡는 철자(`.config/` 아래)가 아니어서 `-` 이고,
+# 증명이 그것을 런로컬로 내리지도 않는다 — 링크 대상이 이름공간 밖이기 때문이다.
+rl53b_derived '-' "53b: 프로토타입 안에 \$HOME/.config 로의 링크를 만드는 argv 는 런로컬로 내려가지 않는다" -- ln -s "$HOME/.config" "$k53b/cfg"
+rl53b_derived '-' "53b: 프로토타입 안의 바깥 링크를 거친 쓰기는 증명이 없다" -- touch "$k53b/out/x"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" \
+  --rationale t -- touch "$k53b/out/x"
+check "53b: 바깥 링크를 거친 쓰기는 도달미상으로 park 된다" "$rc" "11"
+check "53b: park 된 쓰기는 링크 너머에 아무것도 만들지 않았다" "$([ -e "$WORK/out53b/x" ] || echo none)" "none"
+# 파일 실행은 집합 밖이다 — 매니페스트가 이름 대지 않은 스크립트는 상한 칸에 남는다.
+printf '#!/bin/sh\n: > "%s"\n' "$P53b.s" > "$WORK/s53b.sh"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" \
+  --rationale t -- bash "$WORK/s53b.sh"
+check "53b: bash <script> 의 미상 신고는 park 된다" "$rc" "11"
+case "$msg" in *신고등급한도*) ok "53b: 그 park 는 오늘의 신고등급한도 칸이다" ;; *) bad "53b: 그 park 는 오늘의 신고등급한도 칸이다" "$msg" ;; esac
+# 증명은 가드를 우회하지 않는다 — 런 디렉터리의 강제 표면 쓰기는 여전히 거절이다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 미상 --snapshot-digest "$(HH)" \
+  --rationale t -- touch "$RD53b/settings/x53b"
+check "53b: settings/ 쓰기는 증명과 상관없이 거절된다" "$rc" "3"
+check "53b: 거절된 settings/ 쓰기는 파일을 만들지 않았다" "$([ -e "$RD53b/settings/x53b" ] || echo none)" "none"
+rm -rf "$W53b" "$k53b"
+if [ "$P53b_PREV_TMPDIR_SET" = set ]; then TMPDIR="$P53b_PREV_TMPDIR"; export TMPDIR; else unset TMPDIR; fi
+if [ "$P53b_PREV_SID_SET" = set ]; then CC_PIPELINE_STAGE_ID="$P53b_PREV_SID"; export CC_PIPELINE_STAGE_ID; else unset CC_PIPELINE_STAGE_ID; fi
 
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
 # ---------------------------------------------------------------------------

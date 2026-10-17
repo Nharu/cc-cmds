@@ -996,15 +996,107 @@ gate_reach_required() {
 }
 
 gate_reach_derived() {
-  # gate_reach_derived <alias> <argv...> — the floor argv itself proves, which RAISES a
-  # declaration and never lowers one. Three values only: `-`, `기기전역` and
-  # `배포트리거`. Everything finer than that is a claim about an environment,
-  # and argv cannot prove one. The first field of `gate_reach_derived_full`, so
-  # the ledger's `유도 도달` and the disposition read one derivation.
+  # gate_reach_derived <alias> <argv...> — the floor argv itself proves. Four
+  # values: `-`, `기기전역`, `배포트리거` and `런로컬`. The first three RAISE a
+  # declaration and never lower one, and everything finer than them is a claim
+  # about an environment that argv cannot prove. `런로컬` is the one exception,
+  # and it is a value argv CAN prove: an act of `gate_reach_runlocal_proof`'s
+  # closed tool set whose every path operand resolves, physically, under this
+  # run's directory or this stage's prototype namespace lands nowhere else. It
+  # LOWERS the declaration — that is its point, an honest `미상` on scratch
+  # parked as `도달미상` and the stage stopped on its own witness write — and so
+  # it applies only where the raising derivation answered `-`: an argv naming a
+  # configuration path or a deploy identifier is not run-local. The first field
+  # of `gate_reach_derived_full`, so the ledger's `유도 도달` and the
+  # disposition read one derivation.
   local _f; _f=$(gate_reach_derived_full "$@")
   _f=${_f%%
 *}
-  printf '%s' "${_f%%	*}"
+  _f=${_f%%	*}
+  if [ "$_f" = "-" ]; then
+    shift
+    gate_reach_runlocal_proof "$@" && _f=런로컬
+  fi
+  printf '%s' "$_f"
+}
+
+gate_reach_runlocal_proof() {
+  # gate_reach_runlocal_proof <argv...> — rc 0 when argv itself proves the act
+  # lands run-local. All of these hold:
+  #   - the tool is one of `mktemp mkdir rm mv cp touch ln chmod`, called by its
+  #     bare name or from `/bin`/`/usr/bin` (a path argv0 elsewhere is a script);
+  #   - every option is a bundle of that tool's value-less flags read before the
+  #     first operand — an option taking a value can carry a path this does not
+  #     resolve, and a dash word after an operand is an option on GNU and a file
+  #     name on BSD, so either ends the proof;
+  #   - there is at least one path operand (`chmod`'s mode is not one, and
+  #     `mktemp`'s template is), so a bare `mktemp -d` proves nothing;
+  #   - every path operand resolves — `..` taken from the physical parent, a
+  #     symlinked ancestor and a symlinked final component followed — strictly
+  #     under this run's directory, or under
+  #     `${TMPDIR:-/tmp}/cc-proto-<run id>-<stage key>.*`, the stage key being
+  #     `CC_PIPELINE_STAGE_ID` with `#` spelled `-`. `ln` takes absolute operands
+  #     only: a relative link target resolves from the link's directory.
+  #
+  # THIS DOES NOT OPEN THE RUN DIRECTORY. `gate_rundir_write_guard` runs before
+  # the disposition reads this and still refuses every name its allow-list does
+  # not carry; the proof only says where an act the guard already let through
+  # lands. Resolved against the state before the act, as the row is written.
+  [ "$#" -ge 1 ] || return 1
+  [ -n "${RUN_DIR:-}" ] || return 1
+  local tool="${1##*/}" flags a ph lf n=0 opts=1 ddash=0 skip_mode=0 rid key tdir rdir
+  case "$1" in
+    */*) case "$1" in /bin/"$tool"|/usr/bin/"$tool") ;; *) return 1 ;; esac ;;
+  esac
+  case "$tool" in
+    mktemp) flags=dqu ;;
+    mkdir)  flags=pv ;;
+    rm)     flags=rRfvd ;;
+    mv)     flags=fnv ;;
+    cp)     flags=RrpfnvaP ;;
+    touch)  flags=acm ;;
+    ln)     flags=sfnhv ;;
+    chmod)  flags=Rvfh; skip_mode=1 ;;
+    *) return 1 ;;
+  esac
+  rdir=$(gate_path_spelling "$(gate_real_prefix "$(gate_lexical_abs "${RUN_DIR%/}" /)")")
+  tdir=$(gate_path_spelling "$(gate_real_prefix "$(gate_lexical_abs "${TMPDIR:-/tmp}" /)")")
+  tdir=${tdir%/}
+  rid=${RUN_DIR%/}; rid=${rid##*/}
+  key=''
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] && key=${CC_PIPELINE_STAGE_ID//#/-}
+  shift
+  for a in "$@"; do
+    if [ "$opts" = 1 ]; then
+      case "$a" in
+        --) opts=0; ddash=1; continue ;;
+        --*) return 1 ;;
+        -?*)
+          case "${a#-}" in *[!$flags]*) return 1 ;; esac
+          continue ;;
+      esac
+      opts=0
+    elif [ "$ddash" = 0 ]; then
+      case "$a" in -?*) return 1 ;; esac
+    fi
+    if [ "$skip_mode" = 1 ]; then skip_mode=0; continue; fi
+    [ -n "$a" ] || return 1
+    case "$tool" in ln) case "$a" in /*) ;; *) return 1 ;; esac ;; esac
+    ph=$(gate_path_spelling "$(gate_real_prefix "$(gate_physical_dotdot "$a")")")
+    lf=$(gate_leaf_spelling "$ph") || return 1
+    [ -n "$lf" ] && ph="$lf"
+    case "$ph" in
+      "$rdir"/?*) ;;
+      *)
+        [ -n "$key" ] || return 1
+        case "$ph" in
+          "$tdir/cc-proto-$rid-$key".?*) ;;
+          *) return 1 ;;
+        esac ;;
+    esac
+    n=$((n + 1))
+  done
+  [ "$n" -ge 1 ]
 }
 
 gate_reach_derived_full() {
@@ -2503,6 +2595,16 @@ gate_reach_disposition() {
     기기전역) if [ "$_rd" = "배포트리거" ]; then Reff=배포트리거; else Reff=기기전역; fi ;;
     *) if [ "$_rd" != "-" ]; then Reff="$_rd"; else Reff="$R"; fi ;;
   esac
+  # A RUN-LOCAL PROOF REPLACES THE DECLARATION, whatever it said. The raising
+  # derivation answered `-` above, so nothing in argv raises the act, and its
+  # every path operand resolves under this run's directory or this stage's
+  # prototype namespace — the honest `미상` a stage puts on its own scratch and
+  # witness writes would otherwise park as `도달미상`, and a `협업` borrowed to
+  # get past that would park as `도달모순`. An act that owes a reach and
+  # declared none is refused upstream for the missing token and never gets here.
+  if [ "$_rd" = "-" ] && gate_reach_runlocal_proof "$@"; then
+    Reff=런로컬
+  fi
   GATE_RF_REFF="$Reff"
   [ -n "$_rt" ] && GATE_RF_TRIG=$(printf '%s' "$_rt" | tr '\n' ' ' | sed 's/ *$//')
 
@@ -21573,6 +21675,24 @@ gate_leaf_spelling() {
   gate_path_spelling "$p"
 }
 
+gate_halt_name_ok() {
+  # gate_halt_name_ok <leaf under halt/> — true when a stage may write that name.
+  # A caller with no stage id keeps the one-level allowance; a stage may write
+  # its own `<stage-id>.md` and any dot-led temp name of the atomic write.
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] || return 0
+  case "$1" in
+    .*) return 0 ;;
+  esac
+  [ "$1" = "${CC_PIPELINE_STAGE_ID}.md" ]
+}
+
+gate_halt_name_refusal() {
+  # gate_halt_name_refusal — the refusal text both write guards print for a halt
+  # record under another name. `hooks/gate-pretool.sh` builds the same sentence
+  # byte for byte and `scripts/test-gate.sh` pins that they agree.
+  printf '%s' "the halt record of this stage is halt/${CC_PIPELINE_STAGE_ID}.md and no other name under halt/ — both readers look up that one name, attempt number included, so a record written under another name is never read; write it there"
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -21872,7 +21992,19 @@ gate_rundir_write_guard() {
       # pass quietly on the day that normalization changes.
       case "$rel" in
         halt/*/*) ;;
-        halt/*) continue ;;
+        # A STAGE WRITES ONE HALT RECORD NAME, the one its own id spells. Both
+        # readers look the record up by the id the launcher handed down, attempt
+        # number included, so a record a stage named by its segment alone was
+        # never read: measured, a stage of attempt 4 wrote `halt/S2.md`, both
+        # readers classified the turn `정상 완료`, and the question it carried
+        # waited for a person. The guard names the one allowed path, so the stage
+        # writes it next. A name that begins with a dot is the same-directory temp
+        # file of the atomic write and passes. A caller with no stage id — the
+        # seat, a shift — keeps the old one-level allowance.
+        halt/*)
+          gate_halt_name_ok "${rel#halt/}" && continue
+          warn "rule refused: $(gate_halt_name_refusal)"
+          return "$GATE_EXIT_RULE" ;;
         cc-team-witness-*/*) continue ;;
         # THE WITNESS DIRECTORY ITSELF, for its teardown. The shared team-cleanup
         # procedure ends a finished workflow with `rm -rf` on the recorded
