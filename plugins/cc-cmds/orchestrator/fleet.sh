@@ -815,7 +815,10 @@ readonly FLEET_LADDER_JQ='
   | (if $burn == null then null else ([$scanned[] | .last_usage_epoch | select(. != null)] | max) end) as $last
   | ($rows | map(. as $r | $r + {burn_4h: (if any($scan[]; . == $r.home) and ($bh[$r.home] != null) and ($bh[$r.home].truncated != true)
                                          then $bh[$r.home].burn_4h else null end)})) as $rows
-  | ($rows | map(select(.eligible)) | group_by(.group)
+  # A lending row stays out of the capacity as it stays out of the burn: its
+  # home is reserved, so the burn scan never reads it, and an allowance with no
+  # burn beside it would only push the brake back.
+  | ($rows | map(select(.eligible and (.lend | not))) | group_by(.group)
      | map(.[0].w5.rep as $rep
            | (([$rows[] | select(.id == $rep) | .allow] | .[0]) // ([.[] | .allow | select(. != null)] | .[0])))
      | map(select(. != null))) as $contrib

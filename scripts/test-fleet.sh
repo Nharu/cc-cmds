@@ -1082,6 +1082,19 @@ fleet sensor >/dev/null 2>&1
 check "사다리: u 런 둘이면 목표에 닿는다 (대조)" "$(state_field '.verdict_reason')" "default"
 : > "$TEST_PROBE_OUT"; burn_none
 
+# --- the ladder: a lending row adds nothing to the capacity -------------------------
+#   The brake fixture of the u-only ladder above, with cc enrolled and open: cc's
+#   home is reserved, so its burn is never scanned, and its 100/168 must not be
+#   counted against the u burn either.
+fresh_pace l-brake; inv_write "$LEND_INV | .accounts[2].unattended = \"draining\""
+usage_write ".accounts[0].lending = $LEND_DEC | $LADDER_USAGE"; borrow_none
+burn_heavy "$H1" 1000000
+fleet sensor >/dev/null 2>&1
+check "용량: 대여 행이 적격이어도 (공허 방지)" "$(seat cc '"\(.eligible) \(.allow * 1000 | floor)"')" "true 595"
+check "용량: 열린 대여 행의 허용치는 fleet 용량에 더해지지 않는다" "$(state_field '.fleet_capacity | . * 1000 | floor')" "41"
+check "용량: u 소진이 u 용량을 넘으면 대여가 열려 있어도 제동이다" "$(state_field '.verdict + " " + .verdict_reason')" "제동 brake"
+burn_none
+
 # --- dispatch: the lending lane starts, and carries its pin --------------------------
 l_fresh d-l-open lo1
 fleet dispatch cc >/dev/null 2>"$WORK/l-open.err"
