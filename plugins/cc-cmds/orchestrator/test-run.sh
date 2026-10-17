@@ -387,6 +387,41 @@ check "한도 판정 l: 봉투 뒤 객체가 아닌 JSON 줄은 건너뛴다" "$
 printf '%s\n' "$LIM_INIT" "$LIM_ENV429" '{"torn' > "$LIMD/m.json"
 check "한도 판정: 거짓 글자는 F,R,P,T 순서로 이어진다" "$(sle "$LIMD/m.json")" "3:F,R,T"
 
+# 일시 원인 판정. 연결 단절로 죽었는지는 그 시도 자신의 스트림에서 **종단 객체**
+# (마지막 최상위 result 나 error) 의 문면으로만 읽는다. 아래 변형은 「연결 오류
+# 문구가 어디에 있느냐」와 「한도·429 인가」만 바꾼다.
+ste() { if stage_transient_exit "$@"; then printf '0'; else printf '1'; fi; }
+TR_CONN='{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-tr","result":"API Error: Connection error."}'
+printf '%s\n' "$LIM_INIT" "$TR_CONN" > "$LIMD/t1.json"
+check "일시 원인 판정 1: 종단 result 의 Connection error 는 참" "$(ste "$LIMD/t1.json")" "0"
+printf '%s\n' "$LIM_INIT" '{"type":"error","error":{"message":"getaddrinfo ENOTFOUND api.anthropic.com"}}' > "$LIMD/t2.json"
+check "일시 원인 판정 2: 종단 error 객체의 ENOTFOUND 는 참" "$(ste "$LIMD/t2.json")" "0"
+printf '%s\n' "$LIM_INIT" "$TR_CONN" '{"type":"result","subt' > "$LIMD/t3.json"
+check "일시 원인 판정 3: 종단 객체 뒤의 찢긴 줄은 종단 객체가 아니다" "$(ste "$LIMD/t3.json")" "0"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"curl: (6) getaddrinfo ENOTFOUND example.invalid"}]}}' \
+  "$LIM_OK" > "$LIMD/t4.json"
+check "일시 원인 판정 4: 도구 출력 안의 ENOTFOUND 는 거짓 (종단은 성공)" "$(ste "$LIMD/t4.json")" "1"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"socket hang up"}]}}' \
+  '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"tool loop aborted"}' > "$LIMD/t5.json"
+check "일시 원인 판정 5: 도구 출력에만 단절 문구가 있는 크래시는 거짓" "$(ste "$LIMD/t5.json")" "1"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"API Error: Connection error."}' > "$LIMD/t6.json"
+check "일시 원인 판정 6: 429 봉투는 문구가 맞아도 거짓" "$(ste "$LIMD/t6.json")" "1"
+# a 의 실제 사망 모양에서 봉투 문면만 연결 오류 문구로 바꾼다.
+{ for i in 1 2 3 4 5; do printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK"; done
+  printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" "$LIM_INIT" "$LIM_INIT" "$LIM_OK" "$LIM_OK" "$LIM_OK" \
+    '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s-lim","result":"Connection error · resets 3pm"}'
+} > "$LIMD/t7.json"
+check "일시 원인 판정 7: 한도 사망 모양은 거짓 (한도 경로가 기다린다)" "$(ste "$LIMD/t7.json")" "1"
+check "일시 원인 판정 7 대조: 같은 스트림은 한도 판정에서 참" "$(sle "$LIMD/t7.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$TR_CONN" "$LIM_OK" > "$LIMD/t8.json"
+check "일시 원인 판정 8: 단절 뒤 성공 봉투가 종단이면 거짓" "$(ste "$LIMD/t8.json")" "1"
+printf '%s\n' "$LIM_INIT" '{"type":"result","is_error":true,"result":"Can'"'"'t reach the API"}' > "$LIMD/t9.json"
+check "일시 원인 판정 9: Can't reach 문구도 참 (따옴표가 든 문구)" "$(ste "$LIMD/t9.json")" "0"
+check "일시 원인 판정 10: 없는 파일과 빈 인자는 거짓" "$(ste "$LIMD/none.json")$(ste '')" "11"
+
 check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
 for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \
                 '적용 불명' '외부 종료' '한도-형상 회수' '거절 종료'; do
@@ -10416,6 +10451,79 @@ if kill_permitted "S9:segR:0"; then
 else
   ok "대조군: 목록 밖 접두는 여전히 거부된다"
 fi
+
+# --- (3d) 전송 단절 — 리포트도 위트니스도 없이 죽은 리뷰의 재파견 ----------------
+# 이 갈래는 원장의 S5 행(`일시 원인`)을 세고 탐침 하나를 부른다. 원장은 이 절의
+# 빈 파일이므로 행을 직접 깔고, 탐침은 `CC_ORCH_NET_PROBE_CMD` 로 갈아 끼운다.
+# 단언은 반환값(2 = 같은 사이클 재파견)과 「park 도 파견도 없었다」 둘이다.
+REC_TR_RP="$REC_DIR/never-written.md"; rm -f "$REC_TR_RP"
+rtr_rows() {  # rtr_rows <일시 원인 값>... — 이 런 블록에 segR 의 S5 드라이버 행을 순서대로 깐다
+  printf '## 실행 %s\n' "$RUN_ID" > "$LEDGER"
+  local v
+  for v in "$@"; do
+    case "$v" in
+      cycle) printf '%s\n' '- `cycle` | 세그먼트=segR | 사이클=0 | P0=0 | P1=0' >> "$LEDGER" ;;
+      *) printf '%s\n' "- \`stage-result\` | 세그먼트=segR | 스테이지=S5 | 기록자=드라이버 | 종단 부류=크래시 | 일시 원인=$v" >> "$LEDGER" ;;
+    esac
+  done
+}
+rtr_call() {  # rtr_call <탐침 명령> — 위트니스 0개, 리포트 없음, 크래시
+  local save="$ATTR"; ATTR=99
+  rec_reset
+  CC_ORCH_NET_PROBE_CMD="$1" review_recover segR 0 "$SIDR" "$REC_TR_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+  REC_RC=$?
+  ATTR="$save"
+}
+rtr_rows 예
+rtr_call /usr/bin/true
+check "전송 단절 1: 탐침이 답하면 반환 2, park·파견 없음" "$REC_RC|$REC_PARK|$REC_SPAWN" "2||"
+rtr_call /usr/bin/false
+check "전송 단절 2: 탐침이 답하지 않으면 반환 1" "$REC_RC" "1"
+if printf '%s' "$REC_PARK" | grep_all_q 'Step 4 미도달'; then
+  ok "전송 단절 2: 탐침 실패는 종전의 Step 4 미도달 park 으로 간다"
+else
+  bad "전송 단절 2 park 사유" "$REC_PARK"
+fi
+rtr_rows 예 예
+rtr_call /usr/bin/true
+check "전송 단절 3: 둘째 단절 행까지는 다시 파견한다" "$REC_RC" "2"
+rtr_rows 예 예 예
+rtr_call /usr/bin/true
+check "전송 단절 4: 셋째 단절 행은 탐침이 답해도 park (상한 둘)" "$REC_RC|$REC_SPAWN" "1|"
+rtr_rows 예 예 예 cycle 예
+rtr_call /usr/bin/true
+check "전송 단절 5: cycle 행 뒤로 수가 새로 시작한다" "$REC_RC" "2"
+rtr_rows 예 아니오
+rtr_call /usr/bin/true
+check "전송 단절 6: 마지막 S5 행이 일시 원인=아니오 면 park" "$REC_RC" "1"
+printf '## 실행 %s\n%s\n' "$RUN_ID" \
+  '- `stage-result` | 세그먼트=segR | 스테이지=S5 | 기록자=교대 | 종단 부류=크래시 | 일시 원인=예' > "$LEDGER"
+rtr_call /usr/bin/true
+check "전송 단절 7: 드라이버가 쓰지 않은 S5 행은 근거가 아니다" "$REC_RC" "1"
+printf '## 실행 %s\n%s\n' "$RUN_ID" \
+  '- `stage-result` | 세그먼트=segQ | 스테이지=S5 | 기록자=드라이버 | 종단 부류=크래시 | 일시 원인=예' > "$LEDGER"
+rtr_call /usr/bin/true
+check "전송 단절 8: 다른 세그먼트의 행은 근거가 아니다" "$REC_RC" "1"
+rtr_rows 예
+: > "$REC_TR_RP"
+rtr_call /usr/bin/true
+check "전송 단절 9: 리포트 파일이 있으면 재파견하지 않는다" "$REC_RC" "1"
+rm -f "$REC_TR_RP"
+rtr_rows 예
+rec_reset
+CC_ORCH_NET_PROBE_CMD=/usr/bin/true review_recover segR 0 "$SIDR" "$REC_TR_RP" "$REC_DIR" segbranch "정상 완료" >/dev/null; REC_RC=$?
+check "전송 단절 10: 크래시가 아닌 종단 부류는 이 갈래에 들지 않는다" "$REC_RC" "1"
+: > "$LEDGER"
+# 호출부: 반환 2 는 같은 루프를 다시 돌고(같은 sid·리포트 경로), S5 행은 크래시에만
+# 일시 원인을 싣는다.
+REC_SC_BODY=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
+if printf '%s\n' "$REC_SC_BODY" | grep_all_q -F 'if [ "$rrc" = "2" ]; then' \
+   && printf '%s\n' "$REC_SC_BODY" | grep_all_q -F '"종단 부류=$class" ${transient:+"일시 원인=$transient"}'; then
+  ok "segment_cycle 이 반환 2 를 재파견으로 받고 S5 행에 일시 원인을 싣는다"
+else
+  bad "segment_cycle" "반환 2 갈래나 S5 행의 일시 원인이 없다"
+fi
+unset -f rtr_rows rtr_call
 
 # 20절과 같은 이유로 `unset -f` 는 복원이 아니라 제거다. 이 절이 마지막이라
 # 이후에 이 이름들을 부르는 단언이 없고, 아래 요약 출력만 남는다.
