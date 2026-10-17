@@ -40186,6 +40186,38 @@ tg_world c guard_b0.py
 check "87c: 픽스처 세계의 세그먼트 행이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
 head87c=$(cd "$TG_WT" && git rev-parse HEAD)
 
+# 정산과 가드 수정의 단언은 이 호스트에서 통과하고 Linux 러너에서만 실패했다. 실패할
+# 때 그 자리의 상태를 FAIL 상세에 싣는다: 마지막 원격 판독의 rc 와 게이트 문면, 게이트
+# 함수가 이 세계의 환경에서 읽는 원격 팁과 PR, 그 아래의 맨 명령 출력, 마지막
+# `원격 판독` 행, 소비된 표와 판독 표식의 mtime, 가드 다이제스트. 읽는 것은 이 절의
+# 픽스처가 만든 상태뿐이다.
+d87c_rc=""; d87c_msg=""; d87c_dig0=""; d87c_dig1=""
+tg87c_remote_check() {
+  tg_remote_check
+  d87c_rc=$rc; d87c_msg=$(printf '%s' "$msg" | tail -n 4 | tr '\n' ' ')
+}
+tg87c_diag() {
+  local f
+  printf ' [진단] remote-check rc=%s msg=%s' "$d87c_rc" "$d87c_msg"
+  printf ' | 게이트 판독=%s' "$( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash -c \
+      'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_remote_tip_of t/a "$2" "$3"; printf " / "; gate_remote_pr_of t/a "$2" "$3" x | tr "\t" ,' \
+      _ "$GATE" "$TG_BR" "$TG_WT" 2>&1 | tr '\n' ' ' )"
+  printf ' | ls-remote=%s' "$( cd "$TG_WT" && env "${TG_ENV[@]}" GIT_TERMINAL_PROMPT=0 \
+      git ls-remote https://github.com/t/a.git "refs/heads/$TG_BR" 2>&1 | tr '\n' ' '; printf 'rc=%s' "${PIPESTATUS[0]}" )"
+  printf ' | gh=%s' "$( cd "$TG_WT" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" sh -c 'command -v gh; gh pr list -R t/a --head "$1" --state all --json number,state,headRefOid; printf "rc=%s" "$?"' _ "$TG_BR" 2>&1 | tr '\n' ' ' )"
+  printf ' | 원격 판독 행=%s' "$(tg_last_row '원격 판독' | cut -c1-400)"
+  printf ' | now=%s used=' "$(date -u +%s)"
+  for f in "$TG_RD"/admit/used/*; do [ -f "$f" ] && printf '%s@%s ' "${f##*/}" "$(date -u -r "$f" +%s)"; done
+  printf '| read='
+  for f in "$TG_RD"/admit/read/*; do [ -f "$f" ] && printf '%s@%s ' "${f##*/}" "$(date -u -r "$f" +%s)"; done
+  printf '| 가드 다이제스트 %s → %s, thp_bash_hooks rc=%s' "$d87c_dig0" "$d87c_dig1" \
+    "$(thp_bash_hooks "$TG_A" >/dev/null 2>&1; printf '%s' "$?")"
+}
+# check87c <name> <got> <want> — `check` 와 같은 PASS·FAIL 문면에 실패 때만 진단을 덧붙인다.
+check87c() {
+  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'$(tg87c_diag)"; fi
+}
+
 # 감싼 push — 게이트 줄이 git 낱말을 실으므로 B0 가 거절한다. 런 훅(H1)이 먼저 그
 # 판정을 보고 거절 기록을 남기며, 게이트는 다음 호출에서 그것을 행으로 옮긴다.
 tg_issue "$GATE exec --manifest $TG_M --target a --segment SA --cutpoint push --surface 외부상태변경 --reach 협업 --snapshot-digest x --rationale x -- git push origin $TG_BR" "$TG_A"
@@ -40214,8 +40246,8 @@ check "87c: 표를 쓴 재발행은 두 훅을 지나 원격에 닿는다" \
 
 # 정산 — 소비된 표가 30 초보다 오래되면 다음 원격 판독이 원격의 변화를 보고 닫는다.
 tg_age "$TG_RD"/admit/used/*
-tg_remote_check
-check "87c: 원격 판독 뒤 소비된 push 표는 판정=관측 으로 닫힌다" \
+tg87c_remote_check
+check87c "87c: 원격 판독 뒤 소비된 push 표는 판정=관측 으로 닫힌다" \
   "$(tg_last_row '맨 명령 결과' | grep -c '판정=관측')|$(ls "$TG_RD/admit/used" | wc -l | tr -d ' ')" "1|0"
 
 # 맨 PR 생성 — 같은 순서. 판독이 열린 PR 을 읽으면 생성 표도 관측으로 닫힌다.
@@ -40226,8 +40258,8 @@ tg_issue "gh pr create --head $TG_BR --base master --title t --body b"
 r87c_pi="$idec|$irc"
 printf '[{"number":1,"state":"OPEN","headRefOid":"%s"}]\n' "$head87c" > "$TG/prs.json"
 tg_age "$TG_RD"/admit/used/*
-tg_remote_check
-check "87c: 맨 gh pr create 도 같은 순서를 지난다" \
+tg87c_remote_check
+check87c "87c: 맨 gh pr create 도 같은 순서를 지난다" \
   "$r87c_pa|$r87c_pi|$(grep -c 'pr create' "$TG/gh.log")|$(tg_rows '맨 명령 결과')" "0|ran|0|1|2"
 
 # 맨 `env gh pr view` — 머리가 git 도 gh 도 아닌 마디에 gh 가 있어 B0 가 맨 형태로도
@@ -40257,10 +40289,13 @@ check "87c: 커밋 뒤 같은 행위는 막히지 않고 다시 예측된다" "$
 
 # 가드 파일 — 다이제스트가 움직이면 대상 훅 행이 하나 더 남고 막힘이 풀린다.
 n87c_hook=$(tg_rows '대상 훅')
+d87c_dig0=$(thp_hook_digest "$TG_A" 2>&1)
 printf '# 사람이 고친 줄\n' >> "$TG_A/.claude/hooks/guard_b0.py"
+d87c_dig1=$(thp_hook_digest "$TG_A" 2>&1)
 tg_issue "env gh pr view 1"
 tg_admit 읽기
-check "87c: 가드 파일을 고치면 대상 훅 행이 남고 막힘이 풀린다" \
+d87c_msg=$(printf '%s' "$msg" | tail -n 4 | tr '\n' ' ')
+check87c "87c: 가드 파일을 고치면 대상 훅 행이 남고 막힘이 풀린다" \
   "$rc|$(tg_rows '대상 훅')|$(tg_rows '대상 거절')" "3|$((n87c_hook + 1))|$((n87c_ref + 2))"
 
 # 효과 없는 push — 이미 원격에 있는 팁을 다시 민다. 원격은 움직이지 않으므로 정산은
@@ -40274,10 +40309,10 @@ r87c_noop="$idec|$irc"
 tg_age "$TG_RD"/admit/used/*
 # 원격에 닿지 못한 판독은 아무것도 관측하지 않았다 — 표는 정산되지 않고 기다린다.
 ( TG_ENV=("${TG_ENV_BASE[@]}"); tg_remote_check )
-check "87c: 원격에 닿지 못한 판독 뒤에는 소비된 표가 기다린다" \
+check87c "87c: 원격에 닿지 못한 판독 뒤에는 소비된 표가 기다린다" \
   "$(tg_last_row '원격 판독' | grep -c '원격 팁=미상')|$(ls "$TG_RD/admit/used" | wc -l | tr -d ' ')" "1|1"
-tg_remote_check
-check "87c: 효과 없이 소비된 push 표는 판정=추정 이 된다" \
+tg87c_remote_check
+check87c "87c: 효과 없이 소비된 push 표는 판정=추정 이 된다" \
   "$r87c_noop|$(tg_last_row '대상 거절' | grep -c '형태=맨 | 근거=추정 | 판정=추정')" "ran|0|1"
 
 # settings.json 은 게이트의 강제 표면이다 — 고치면 막힘이 풀리는 대신 런이 멈춘다.
