@@ -11975,11 +11975,16 @@ gate_route_bp_jq() {
   # The jq definitions both builders share: a null as `-`, basis points as
   # `I.FFFF`, and the envelope's `cost` as two cells — `비용` and `비용 출처`,
   # each `<five_hour>/<seven_day>`, or both `-` when the envelope carries none.
+  # `bp_open` is the threshold's form: `I.FFFF` with no 10000 ceiling, and `-`
+  # for anything that is not a non-negative integer. It never fails — a
+  # threshold `bp` refuses would refuse the row and stop the stage.
   cat <<'JQ'
 def s: if . == null then "-" else tostring end;
 def four: tostring | ("0000" + .) | .[-4:];
 def bp: if (type == "number") and (. == floor) and (. >= 0) and (. <= 10000)
         then "\(. / 10000 | floor).\(. % 10000 | four)" else error("reservation_bp") end;
+def bp_open: if (type == "number") and (. == floor) and (. >= 0)
+             then "\(. / 10000 | floor).\(. % 10000 | four)" else "-" end;
 def cost_cells:
   if ((.cost | type) == "object") and ((.cost.five_hour | type) == "object") and ((.cost.seven_day | type) == "object")
   then ((.cost.five_hour.bp | bp) + "/" + (.cost.seven_day.bp | bp)),
@@ -11998,6 +12003,8 @@ gate_stage_lease_row() {
   # FIELDS ARE READ BY NAME and the envelope is never serialized onto the row. A
   # null renders as `-`, never as jq's `null`, which would pass the identity rule
   # as an account called "null". `계보` is derived, not taken from the caller.
+  # `단계`, `단계 출처` and `문턱` come from the envelope's `order`; a grant
+  # without one (a held lease, a seat grant) renders all three as `-`.
   #
   # THE VALUES ARE CAPTURED BEFORE THEY ARE READ: under bash 3.2 a builder's
   # status inside a heredoc's command substitution is lost, and the row would be
@@ -12007,6 +12014,7 @@ gate_stage_lease_row() {
   # and with routing on both launch sites write the row for every grant, a
   # dormant or seat grant included.
   local did="${1:-}" env="${2:-}" bind="${3:-}" verdict vals lineage acct cdir lane bp cost csrc basis obs
+  local phase psrc thr
   verdict=$(printf '%s' "$env" | jq -r 'if type == "object" then (.verdict // "") else "" end' 2>/dev/null) || return 2
   [ "$verdict" = "GRANT" ] || return 2
   vals=$(printf '%s' "$env" | jq -r "$(gate_route_bp_jq)"'
@@ -12016,11 +12024,15 @@ gate_stage_lease_row() {
        else (.reservation_bp.five_hour | bp) + "/" + (.reservation_bp.seven_day | bp) end),
       cost_cells,
       (.basis | s),
-      (.observed | s) ]
+      (.observed | s),
+      ((if (.order | type) == "object" then .order else {} end) as $o
+       | (if ($o.phase | type) == "string" and ($o.phase_source | type) == "string"
+          then ($o.phase | s), ($o.phase_source | s) else "-", "-" end),
+         ($o.threshold_bp | bp_open)) ]
     | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 2
   [ -n "$vals" ] || return 2
   { IFS= read -r acct; IFS= read -r cdir; IFS= read -r bp; IFS= read -r cost; IFS= read -r csrc
-    IFS= read -r basis; IFS= read -r obs; } <<EOF
+    IFS= read -r basis; IFS= read -r obs; IFS= read -r phase; IFS= read -r psrc; IFS= read -r thr; } <<EOF
 $vals
 EOF
   lineage=$(route_lineage_of "$did")
@@ -12030,7 +12042,8 @@ EOF
     gate_resume_grant_ok "$bind" "$env" || return 2
   fi
   gate_append 'stage-lease' "파견 id=$did" "계보=$lineage" "계정=$acct" "레인=$lane" \
-    "예약=$bp" "비용=$cost" "비용 출처=$csrc" "근거=$basis" "관측=$obs"
+    "예약=$bp" "비용=$cost" "비용 출처=$csrc" "근거=$basis" "관측=$obs" \
+    "단계=$phase" "단계 출처=$psrc" "문턱=$thr"
 }
 
 gate_stage_wait_row() {
