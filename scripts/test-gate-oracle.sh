@@ -4,7 +4,8 @@
 # The oracle exists because the suite's exit status is not an honest report of
 # whether it ran, so this file's whole job is to hold the oracle to the six
 # shapes it was built against — and to do it WITHOUT running the suite, which
-# takes forty minutes and could not produce four of the six on demand anyway.
+# takes about three hours serially and could not produce four of the six on
+# demand anyway.
 #
 # Three kinds of case, and each kind is here because the other two cannot cover
 # it:
