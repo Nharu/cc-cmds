@@ -27,15 +27,22 @@ rows=$(grep -E '^- `stage-result`' "$GATE_LEDGER" 2>/dev/null | grep -F "세그�
 #
 # 둘째 인자는 고를 행들이다. 주지 않으면 세그먼트의 행 전부이고, 빈 값을 주면 빈
 # 집합이다 — 리드 수정 행 앞의 행만 볼 때 그 앞에 아무것도 없으면 아무것도 고르지 않는다.
-pick() { printf '%s\n' "${2-$rows}" | grep -F "종류=$1" | tail -1; }
-pick_fixed() {
+#
+# `_all` 은 맞는 행을 원장 순서대로 전부, 이름 없는 쪽은 그 마지막 행 하나를 낸다.
+pick_all() { printf '%s\n' "${2-$rows}" | grep -F "종류=$1"; }
+pick() { pick_all "$@" | tail -1; }
+pick_fixed_all() {
   printf '%s\n' "${2-$rows}" | while IFS= read -r r; do
     [ -z "$(field "$r" '종류')" ] && [ "$(field "$r" '스테이지')" = "$1" ] && printf '%s\n' "$r"
-  done | tail -1
+  done
 }
+pick_fixed() { pick_fixed_all "$@" | tail -1; }
 impl_row=$(pick implement); [ -n "$impl_row" ] || impl_row=$(pick_fixed S4)
 rev_row=$(pick review);     [ -n "$rev_row" ]  || rev_row=$(pick_fixed S5)
-lf_row=$(pick lead-fix);    [ -n "$lf_row" ]   || lf_row=$(pick_fixed S5F)
+# 리드 수정은 한 세그먼트에 여럿일 수 있다 — 확인 리뷰 뒤 런 안 추가 처리가 리드 수정을
+# 다시 낸다. 그래서 하나가 아니라 전부를 모으고, lf_row 는 그 첫 행이다.
+lf_rows=$(pick_all lead-fix); [ -n "$lf_rows" ] || lf_rows=$(pick_fixed_all S5F)
+lf_row=$(printf '%s\n' "$lf_rows" | sed -n '1p')
 
 # judge <저작 행> <리뷰 행> <저작 쪽 이름> [쌍 표지] — 두 행의 조상 폐포가 서로소이면
 # 0, 아니면 사유를 stderr 에 쓰고 1.
@@ -104,20 +111,30 @@ if [ -z "$lf_row" ]; then
 fi
 
 # A LEAD FIX ADDS AN AUTHOR, SO THREE PAIRS ARE JUDGED, not one. The re-check
-# review is judged against the lead fix that wrote the last code (b) and against
-# the last implementation it also reads (c). The cap review stays paired with
-# that implementation too (a): before the lead fix existed, merging after the cap
+# review is judged against every lead fix that wrote code (b) and against the
+# last implementation it also reads (c). The cap review stays paired with that
+# implementation too (a): before the lead fix existed, merging after the cap
 # review checked exactly that pair, and the re-check judges the implementation
 # only through the cap review's items — dropping the pair would take a check the
-# merge used to make. "Before the lead fix" is ledger order, on both the `종류`
-# rows and the fixed-graph rows.
+# merge used to make. "Before the lead fix" is ledger order before the FIRST lead
+# fix, on both the `종류` rows and the fixed-graph rows.
+#
+# (b) runs over every lead fix, not only one. A segment that gets a second lead
+# fix after its re-check carries code from both into the last review, so judging
+# one of them alone passes a last review that descends from the other.
 before=$(printf '%s\n' "$rows" | LF_ROW="$lf_row" awk '$0 == ENVIRON["LF_ROW"] { exit } { print }')
 cap_row=$(pick review "$before"); [ -n "$cap_row" ] || cap_row=$(pick_fixed S5 "$before")
 if [ -n "$impl_row" ] && [ -n "$cap_row" ]; then
   judge "$impl_row" "$cap_row" implement "쌍 a: 마지막 구현 × 리드 수정 앞의 마지막 리뷰" || exit 1
 fi
 if [ -n "$rev_row" ]; then
-  judge "$lf_row" "$rev_row" lead-fix "쌍 b: 리드 수정 × 마지막 리뷰" || exit 1
+  k=0
+  while IFS= read -r lf; do
+    k=$((k + 1))
+    judge "$lf" "$rev_row" lead-fix "쌍 b: 리드 수정 $k × 마지막 리뷰" || exit 1
+  done <<EOF
+$lf_rows
+EOF
 fi
 if [ -n "$impl_row" ] && [ -n "$rev_row" ]; then
   judge "$impl_row" "$rev_row" implement "쌍 c: 마지막 구현 × 마지막 리뷰" || exit 1
