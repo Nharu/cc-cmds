@@ -6048,7 +6048,7 @@ if [ -f "$FEED_SH" ]; then
   feed_pid=$!
   feed_child=""
   for _ in $(seq 1 100); do
-    feed_child=$( { pgrep -P "$feed_pid" sleep || true; } | head -n 1)
+    feed_child=$( { pgrep -P "$feed_pid" sleep || true; } | sed -n 1p)
     [ -n "$feed_child" ] && break
     sleep 0.1
   done

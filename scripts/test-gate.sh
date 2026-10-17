@@ -30067,7 +30067,7 @@ CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 # 런 id 와 런 디렉터리는 지금의 픽스처 매니페스트에서 읽는다 — 앞 절이 매니페스트를
 # 다른 런으로 바꿔 두었을 수 있으므로 상수로 적지 않는다.
-rid53b=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | head -n 1)
+rid53b=$(sed -n 's/.*run-id=\([^;]*\);.*/\1/p' "$FX_MANIFEST" | sed -n 1p)
 RD53b="$XDG_STATE_HOME/cc-cmds/run/$rid53b"
 HH >/dev/null
 L53b=$(cat "$RD53b/ledger-path" 2>/dev/null || true)
@@ -30104,12 +30104,12 @@ rl53b_derived() {
 }
 for r53b in 미상 협업; do
   rl53b_exec "$r53b" "53b: 프로토타입 틀의 mktemp -d 는 $r53b 신고로 통과한다" -- mktemp -d "$P53b.XXXXXX"
-  d53b=$(ls -d "$P53b".* 2>/dev/null | head -n 1)
+  d53b=$(ls -d "$P53b".* 2>/dev/null | sed -n 1p)
   check "53b: ($r53b) 프로토타입 디렉터리가 실제로 만들어졌다" "$([ -d "$d53b" ] && echo yes)" "yes"
   rl53b_exec "$r53b" "53b: 프로토타입 디렉터리의 rm -rf 는 $r53b 신고로 통과한다" -- rm -rf "$d53b"
   check "53b: ($r53b) 프로토타입 디렉터리가 지워졌다" "$([ -e "$d53b" ] || echo gone)" "gone"
   rl53b_exec "$r53b" "53b: 위트니스 디렉터리 안 mktemp 는 $r53b 신고로 통과한다" -- mktemp "$W53b/.r.round-$r53b.XXXXXX"
-  t53b=$(ls -d "$W53b"/.r.round-"$r53b".* 2>/dev/null | head -n 1)
+  t53b=$(ls -d "$W53b"/.r.round-"$r53b".* 2>/dev/null | sed -n 1p)
   rl53b_exec "$r53b" "53b: 위트니스 mv -n 은 $r53b 신고로 통과한다" -- mv -n "$t53b" "$W53b/r.round-$r53b.md"
   check "53b: ($r53b) 위트니스가 게시되었다" "$([ -f "$W53b/r.round-$r53b.md" ] && echo yes)" "yes"
 done
