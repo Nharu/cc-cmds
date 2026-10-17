@@ -40212,6 +40212,13 @@ tg87c_diag() {
   for f in "$TG_RD"/admit/read/*; do [ -f "$f" ] && printf '%s@%s ' "${f##*/}" "$(date -u -r "$f" +%s)"; done
   printf '| 가드 다이제스트 %s → %s, thp_bash_hooks rc=%s' "$d87c_dig0" "$d87c_dig1" \
     "$(thp_bash_hooks "$TG_A" >/dev/null 2>&1; printf '%s' "$?")"
+  # 두 함수를 한 줄씩 추적한다 — 어느 단계가 미상·빈 값을 내는지는 bash 판본마다
+  # 갈릴 수 있으므로 판본도 함께 싣는다.
+  printf ' | bash=%s' "$BASH_VERSION"
+  printf ' | PR 판독 추적=%s' "$( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash -c \
+      'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set -x; gate_remote_pr_of t/a "$2" "$3" x' \
+      _ "$GATE" "$TG_BR" "$TG_WT" 2>&1 | tail -n 25 | tr '\n' ' ' )"
+  printf ' | 훅 파일 추적=%s' "$( ( set -x; thp_hook_files "$TG_A" "$(thp_bash_hooks "$TG_A" 2>/dev/null)" ) 2>&1 | tail -n 30 | tr '\n' ' ' )"
 }
 # check87c <name> <got> <want> — `check` 와 같은 PASS·FAIL 문면에 실패 때만 진단을 덧붙인다.
 check87c() {
