@@ -31,6 +31,9 @@
 #   리셋권           — 계약 고정 입력의 바이트 해시, 버려질 한도(W7) 순서와 경계, 예비
 #                      공급 대기의 자리·봉투·지명, 낡은 파일과 비정형 기록, 그 대기 행의
 #                      원장 검사.
+#   운용 단계        — cc-lane 과 나눠 쓰는 단계 계약 픽스처의 바이트 해시와 판독 사례,
+#                      phase-read 의 경로·실패 모양, 봉투의 `order`, 쉼 정렬의 층·경계·
+#                      σ7·unknown·붙든 계정, 문턱 비율의 측정·기본 갈래, 수집.
 #   전역 충돌 린트   — 소스 줄 파생의 네 스크래치 트리와 case 갈래 머리 이름 추출.
 #
 # 격리: HOME·XDG_CONFIG_HOME·XDG_STATE_HOME·RUN_PACE_ROOT 를 $WORK 아래로 두고
@@ -82,8 +85,8 @@ export RUN_PACE_ROOT="$WORK/state/cc-cmds/pace"
 unset CLAUDE_CONFIG_DIR RUN_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# 실측 783(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
-ASSERTION_FLOOR=762
+# 실측 862(root 가 아닐 때). root 는 권한 사례를 건너뛴다.
+ASSERTION_FLOOR=841
 RESULTS="$WORK/results"
 SEEN="$WORK/seen"
 : > "$RESULTS"
@@ -155,7 +158,8 @@ def base:
    config: {k: {default: {five_hour: $k5, seven_day: $k7}, shift: {five_hour: $ks, seven_day: $ks}},
             c: {five_hour: {default: $c5, by_kind: {}, by_group: {}}, seven_day: {default: $c7, by_kind: {}, by_group: {}}},
             cap_bp: $cap, ttl_s: {"stage-log": 1800, tracker: 1800}, file_stale_factor: 3},
-   borrow_path: $bp};
+   borrow_path: $bp,
+   phase: {state: "valid", phase: "burst", until_epoch: ($now + 3600), burst_length_s: 28800}};
 def ONLY($ids): .inventory.accounts = [$ids[] | A(.)];
 def REQ($o): .request += $o;
 def ITEMS($xs): .leases.items = $xs;
@@ -1304,7 +1308,8 @@ tr_consts_case() {
               TTL_STAGE_LOG_S:'.ttl_s["stage-log"]' TTL_TRACKER_S:.ttl_s.tracker FILE_STALE_FACTOR:.file_stale_factor \
               COST_MAX_AGE_S:.cost.max_age_s COST_MAX_N:.cost.max_n COST_MIN_N:.cost.min_n \
               COST_FLOOR_FIVE_HOUR:.cost.floor.five_hour COST_FLOOR_SEVEN_DAY:.cost.floor.seven_day \
-              COST_HYG_MIN_FRAMES:.cost.hygiene.min_frames COST_HYG_MIN_COVER:.cost.hygiene.min_cover; do
+              COST_HYG_MIN_FRAMES:.cost.hygiene.min_frames COST_HYG_MIN_COVER:.cost.hygiene.min_cover \
+              REST_MIN_MASS:.rest_min_mass; do
     want=$(sed -n "s/^  \*) readonly ROUTE_${pair%%:*}=\(.*\) ;;\$/\1/p" "$TR_ROUTE")
     check "config 가 상수 ROUTE_${pair%%:*} 를 그대로 옮긴다" "$(printf '%s' "$cfg" | jq -r "${pair#*:}")" "$want"
   done
@@ -1315,6 +1320,7 @@ tr_consts_case() {
   check "관측 로그 스키마 ROUTE_OBSERVE_SCHEMA" "$ROUTE_OBSERVE_SCHEMA" "cc-cmds-route-observe v1"
   check "관측 로그 정리 문턱 ROUTE_OBSERVE_MAX_BYTES" "$ROUTE_OBSERVE_MAX_BYTES" 16777216
   check "관측 로그 보존 나이 ROUTE_OBSERVE_KEEP_S" "$ROUTE_OBSERVE_KEEP_S" 10368000
+  check "단계 기록 스키마 ROUTE_PHASE_SCHEMA" "$ROUTE_PHASE_SCHEMA" "cc-lane-phase v1"
   check "config 는 판독 상한과 보존 상수를 싣지 않는다" \
     "$(printf '%s' "$cfg" | jq -c '.cost | keys')" '["floor","hygiene","max_age_s","max_n","min_n"]'
   want=$(sed -n 's/^readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=\([0-9]*\).*$/\1/p' "$TR_RUN_SH")
@@ -1326,6 +1332,8 @@ tr_consts_case() {
   check "gather 는 좌석을 인자로 받는다" "$(printf '%s' "$cfg" | jq -r '.seat.config_dir')" "$HOME/.claude"
   check "gather 는 표를 만들지 않는다(costs/ 포함)" "$([ -e "$RUN_PACE_ROOT" ] && printf 있음 || printf 없음)" "없음"
   check "저장소가 없으면 표본 원문은 빈 문자열" "$(printf '%s' "$cfg" | jq -r '.cost_samples == ""')" "true"
+  check "단계 기록이 없으면 gather 의 phase 는 absent" "$(printf '%s' "$cfg" | jq -c '.phase')" \
+    '{"state":"absent","phase":null,"until_epoch":null,"burst_length_s":null}'
 }
 tr_in_run "$TR_RUN_SH" tr_consts_case
 
@@ -2183,6 +2191,213 @@ check "관측: 락이 잡혀 있으면 줄을 버리고 경고한다" \
   "$(obn "$P")/$(grep -c '관측 로그 락을 잡지 못해' "$OB/locked.err")/$([ -d "$P/observe/.lock" ] && printf 남음)" "0/1/남음"
 
 # ===========================================================================
+# 운용 단계와 쉼 정렬. cc-lane 이 쓰는 `phase.json` 을 읽어 단계를 정하고, 쉼이면
+# 주간 여유 r7 이 문턱 T 아래인 계정부터 쓴다. 공유 문맥 `base` 는 유효한 몰아 쓰기를
+# 선언하므로, 단계를 지운 문맥이 쉼이다. 비용은 위 주입값이라 기본 비율 ρ 는
+# 0.08/0.3 이고, 몰아 쓰기 8시간의 T 는 round(ρ × 8000 × 28800 / 18000) = 3413 이다.
+# ===========================================================================
+tr_sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
+PH_FX="$repo_root/tests/fixtures/route-phase-contract"
+PH_BURST_SHA=ef7b156975cf5ec88a846b98f05b61b1fa6b506a1e4a6eb1d080ad03a04333d5
+PH_CASES_SHA=da977d094925ddaa6bc444ebfc9a7c6963ebfa4e7853506922b797a6737338af
+PH="$WORK/ph"
+mkdir -p "$PH"
+check "단계 계약: 쓰는 쪽 바이트의 SHA-256 이 cc-lane 리터럴과 같다" "$(tr_sha256 "$PH_FX/phase-burst.json")" "$PH_BURST_SHA"
+check "단계 계약: 판독 사례 파일의 SHA-256 이 cc-lane 리터럴과 같다" "$(tr_sha256 "$PH_FX/phase-reader-cases.jsonl")" "$PH_CASES_SHA"
+check "단계 계약: 판독 사례는 21줄이다" "$(wc -l < "$PH_FX/phase-reader-cases.jsonl" | tr -d ' ')" 21
+check "단계 계약: 쓰는 쪽 바이트가 유효한 몰아 쓰기로 읽힌다" \
+  "$(bash "$TR_ROUTE" phase-read "$PH_FX/phase-burst.json" | jq -c .phase)" \
+  '{"state":"valid","phase":"burst","until_epoch":1792197402,"burst_length_s":28800}'
+# 사례마다 바이트를 파일로 쓰고(입력이 null 이면 쓰지 않는다) 판독기와 `rt_phase` 를
+# 거친 결과를 기대값과 견준다.
+while IFS= read -r ph_line; do
+  ph_name=$(printf '%s' "$ph_line" | jq -r .name)
+  mkdir -p "$PH/case/$ph_name"
+  ph_f="$PH/case/$ph_name/phase.json"
+  if [ "$(printf '%s' "$ph_line" | jq -r '.input != null')" = true ]; then
+    printf '%s' "$ph_line" | jq -j .input > "$ph_f"
+  fi
+  ph_norm=$(bash "$TR_ROUTE" phase-read "$ph_f" | jq -c .phase)
+  ph_got=$( . "$TR_ROUTE"; jq -cn --argjson n "$ph_norm" --argjson now "$(printf '%s' "$ph_line" | jq .now)" \
+    "$(route__jq_lib)"' rt_phase({now: $now, phase: $n}) | {phase, source: .phase_source, burst_length_s, burst_length_source}' )
+  check "단계 계약: 판독 사례 $ph_name" "$ph_got" \
+    "$(printf '%s' "$ph_line" | jq -c '{phase, source, burst_length_s, burst_length_source}')"
+done < "$PH_FX/phase-reader-cases.jsonl"
+
+# phase-read 의 경로와 실패 모양. 판독기는 언제나 rc 0 이다.
+phr() { bash "$TR_ROUTE" phase-read "$@"; }
+PH_ABS='{"state":"absent","phase":null,"until_epoch":null,"burst_length_s":null}'
+PH_COR='{"state":"corrupt","phase":null,"until_epoch":null,"burst_length_s":null}'
+mkdir -p "$PH/xdg/cc-lane" "$PH/dir.json"
+cp "$PH_FX/phase-burst.json" "$PH/xdg/cc-lane/phase.json"
+ln -s "$PH/xdg/cc-lane/phase.json" "$PH/link.json"
+: > "$PH/empty.json"
+printf '%s\n%s\n' '{"schema":"cc-lane-phase v1","phase":"rest","set_at_epoch":1,"until_epoch":null,"burst_length_s":60}' \
+  '{"schema":"cc-lane-phase v1","phase":"rest","set_at_epoch":1,"until_epoch":null,"burst_length_s":60}' > "$PH/two.json"
+check "phase-read 기본 경로는 XDG_STATE_HOME 아래" "$(env XDG_STATE_HOME="$PH/xdg" bash "$TR_ROUTE" phase-read | jq -c '[.path, .phase.state]')" \
+  "[\"$PH/xdg/cc-lane/phase.json\",\"valid\"]"
+check "phase-read 기본 경로는 XDG_STATE_HOME 이 비면 HOME 의 .local/state 아래" \
+  "$(env XDG_STATE_HOME= HOME="$PH/h" bash "$TR_ROUTE" phase-read)" "{\"path\":\"$PH/h/.local/state/cc-lane/phase.json\",\"phase\":$PH_ABS}"
+check "phase-read 기본 경로를 유도할 수 없으면 경로 null 과 absent" "$(env XDG_STATE_HOME= HOME= bash "$TR_ROUTE" phase-read)" \
+  "{\"path\":null,\"phase\":$PH_ABS}"
+check "phase-read 상대 경로 기준은 경로 null 과 absent" "$(env XDG_STATE_HOME=rel bash "$TR_ROUTE" phase-read | jq -c .path)" null
+check "phase-read 상대 경로 인자는 손상" "$(phr rel/phase.json | jq -c .phase)" "$PH_COR"
+check "phase-read 심링크는 손상" "$(phr "$PH/link.json" | jq -c .phase)" "$PH_COR"
+check "phase-read 디렉터리는 손상" "$(phr "$PH/dir.json" | jq -c .phase)" "$PH_COR"
+check "phase-read 빈 파일은 손상" "$(phr "$PH/empty.json" | jq -c .phase)" "$PH_COR"
+check "phase-read 값이 둘인 파일은 손상" "$(phr "$PH/two.json" | jq -c .phase)" "$PH_COR"
+check "phase-read 없는 하위 경로는 absent" "$(phr "$PH/no/such/phase.json" | jq -c .phase)" "$PH_ABS"
+if [ "$(id -u)" != "0" ]; then
+  mkdir -p "$PH/locked/cc-lane"
+  chmod 000 "$PH/locked"
+  check "phase-read 검색할 수 없는 상위 아래는 손상" "$(phr "$PH/locked/cc-lane/phase.json" | jq -c .phase)" "$PH_COR"
+  chmod 700 "$PH/locked"
+fi
+rc=0; out=$(phr a b 2>"$PH/usage.err") || rc=$?
+check "phase-read 인자 초과 → rc 2, 사용법은 표준 오류" "$rc|$out|$(grep -c '^usage: route.sh phase-read' "$PH/usage.err")" "2||1"
+check "phase-read 는 판독만 한다(파일·디렉터리를 만들지 않는다)" \
+  "$( [ -e "$PH/no" ] && printf 있음 || printf 없음)/$( [ -e "$PH/h" ] && printf 있음 || printf 없음)" "없음/없음"
+
+# 봉투의 `order`. 몰아 쓰기는 단계 칸만 채우고 문턱 칸은 null 이다.
+expect "몰아 쓰기 GRANT 의 order 는 단계 칸만 채운다" "$(decide '.')" \
+  ".verdict == \"GRANT\" and .order == {phase: \"burst\", phase_source: \"declared\", until_epoch: ($NOW + 3600),
+    burst_length_s: 28800, burst_length_source: \"declared\", threshold_bp: null, ratio_source: null, tier: null,
+    r7_bp: null, admitted: null}"
+expect "단계 기록이 없으면 쉼/absent 이고 문턱을 싣는다" "$(decide 'del(.phase)')" \
+  '.order | .phase == "rest" and .phase_source == "absent" and .until_epoch == null and .burst_length_s == 28800
+   and .burst_length_source == "default" and .threshold_bp == 3413 and .ratio_source == "default"'
+expect "손상 기록은 쉼/corrupt" "$(decide '.phase = {state: "corrupt", phase: null, until_epoch: null, burst_length_s: null}')" \
+  '.order.phase == "rest" and .order.phase_source == "corrupt" and .order.threshold_bp == 3413'
+expect "기한에 닿은 몰아 쓰기는 쉼/expired" "$(decide '.phase.until_epoch = $now')" \
+  ".order.phase == \"rest\" and .order.phase_source == \"expired\" and .order.until_epoch == $NOW"
+expect "기한이 읽는 쪽 상한을 넘는 몰아 쓰기는 쉼/corrupt" "$(decide '.phase.until_epoch = ($now + 86701)')" \
+  '.order.phase == "rest" and .order.phase_source == "corrupt"'
+expect "기한이 읽는 쪽 상한과 같으면 몰아 쓰기다" "$(decide '.phase.until_epoch = ($now + 86700)')" \
+  '.order.phase == "burst" and .order.phase_source == "declared"'
+expect "쉼 선언은 쉼/declared" "$(decide '.phase.phase = "rest" | .phase.until_epoch = null')" \
+  '.order.phase == "rest" and .order.phase_source == "declared"'
+expect "몰아 쓰기 시간이 범위 밖이면 28800 과 default 로 문턱을 센다" \
+  "$(decide '.phase.phase = "rest" | .phase.burst_length_s = 59')" \
+  '.order.burst_length_s == 28800 and .order.burst_length_source == "default" and .order.threshold_bp == 3413'
+expect "쉼의 문턱은 선언한 몰아 쓰기 시간으로 센다" "$(decide '.phase.phase = "rest" | .phase.burst_length_s = 14400')" \
+  '.order.burst_length_s == 14400 and .order.burst_length_source == "declared" and .order.threshold_bp == 1707'
+expect "붙든 임대의 재부여는 order 를 싣지 않는다" \
+  "$(decide 'del(.phase) | ITEMS([LG("r1"; "S1"; "a"; true)]) | REQ({nonce: "n-r1-S1"})')" \
+  '.verdict == "GRANT" and .account == "a" and (has("order") | not)'
+expect "죽은 임대의 재개 부여는 쉼에서도 단계 칸만 채운다" \
+  "$(decide 'del(.phase) | REQ({event: "resume", bound_account: "a"})')" \
+  '.verdict == "GRANT" and .basis == "resume-bound" and .order.phase == "rest" and .order.phase_source == "absent"
+   and .order.threshold_bp == null and .order.tier == null and .order.admitted == null'
+
+# 쉼 정렬. 주간 리셋이 하루 뒤라 W7 은 모두 0 이고, 5시간 사용은 같다. r7 은
+# b 2500·a 3000(문턱 아래), d 9000·c 8000(문턱 위)이다.
+RS='ONLY(["a","b","c","d"]) | USE([UA("a"; 0.1; 0.7), UA("b"; 0.1; 0.75), UA("c"; 0.1; 0.2), UA("d"; 0.1; 0.1)])'
+RS_REST="del(.phase) | $RS"
+# rs_order <필터> — 고른 계정을 인벤토리에서 빼 가며 GRANT 가 끊길 때까지의 순서.
+rs_order() {
+  local ex='[]' a out="" i=0
+  while [ "$i" -lt 8 ]; do
+    a=$(decide "$1 | .inventory.accounts |= map(select(.id as \$x | $ex | any(.[]; . == \$x) | not))" \
+          | jq -r 'if .verdict == "GRANT" then (.account // "") else "" end')
+    [ -n "$a" ] || break
+    out="${out:+$out }$a"
+    ex=$(jq -cn --argjson e "$ex" --arg a "$a" '$e + [$a]')
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+check "몰아 쓰기 순서는 남은 양이 큰 순이다" "$(rs_order "$RS")" "d c a b"
+check "쉼 순서는 문턱 아래 작은 순, 그다음 문턱 위 큰 순이다" "$(rs_order "$RS_REST")" "b a d c"
+expect "쉼 GRANT 는 문턱·출처·층·r7·층별 후보 수를 싣는다" "$(decide "$RS_REST")" \
+  '.account == "b" and .order.threshold_bp == 3413 and .order.ratio_source == "default" and .order.tier == "below"
+   and .order.r7_bp == 2500 and .order.admitted == {below: 2, above: 2, unknown: 0}'
+expect "문턱 아래가 없으면 문턱 위에서 r7 큰 쪽을 쓴다" "$(decide "$RS_REST | ONLY([\"c\",\"d\"])")" \
+  '.account == "d" and .order.tier == "above" and .order.r7_bp == 9000 and .order.admitted == {below: 0, above: 2, unknown: 0}'
+# 중괄호가 든 필터는 작은따옴표 변수로 둔다 — 명령 치환 안에서는 중괄호 확장이 일어난다.
+RS_SIG='ITEMS([LR("r2"; "S9"; "c"; "grant"; {five_hour: 0, seven_day: 5200}; true; 1)])'
+expect "다른 런의 주간 예약 σ7 도 r7 에서 뺀다" "$(decide "$RS_REST | $RS_SIG")" \
+  '.account == "b" and .order.admitted == {below: 3, above: 1, unknown: 0}'
+check "σ7 을 뺀 c(2800) 는 문턱 아래 b 와 a 사이에 든다" "$(rs_order "$RS_REST | $RS_SIG")" "b c a d"
+expect "r7 이 문턱과 같으면 문턱 위다" \
+  "$(decide "del(.phase) | ONLY([\"e\"]) | USE([UB(\"e\"; 1000; 6587)])")" \
+  '.order.r7_bp == 3413 and .order.threshold_bp == 3413 and .order.tier == "above"'
+expect "r7 이 문턱보다 1 작으면 문턱 아래다" \
+  "$(decide "del(.phase) | ONLY([\"e\"]) | USE([UB(\"e\"; 1000; 6588)])")" \
+  '.order.r7_bp == 3412 and .order.tier == "below"'
+expect "주간 리셋이 지난 계정의 r7 은 10000 − σ7 이다" \
+  "$(decide "del(.phase) | ONLY([\"r\"]) | USE([UW(\"r\"; W(0.1; \$now + 3600); W(0.9; \$now - 10))])")" \
+  '.account == "r" and .order.r7_bp == 10000 and .order.tier == "above"'
+expect "주간 창을 모르는 계정은 층 unknown 이고 r7 을 세지 않는다" \
+  "$(decide "del(.phase) | ONLY([\"u\"]) | USE([UW(\"u\"; W(0.1; \$now + 3600); null)])")" \
+  '.verdict == "GRANT" and .account == "u" and .order.tier == "unknown" and .order.r7_bp == null
+   and .order.admitted == {below: 0, above: 0, unknown: 1}'
+expect "주간 창을 모르는 계정은 쉼에서도 K 계정 뒤다" \
+  "$(decide "del(.phase) | ONLY([\"u\",\"c\"]) | USE([UW(\"u\"; W(0.1; \$now + 3600); null), UA(\"c\"; 0.1; 0.2)])")" \
+  '.account == "c" and .order.admitted == {below: 0, above: 1, unknown: 1}'
+expect "같은 r7 이면 이 런이 붙든 계정이 먼저다" \
+  "$(decide "$RS_REST | ONLY([\"c\",\"c2\"]) | USE([UA(\"c\"; 0.1; 0.2), UA(\"c2\"; 0.1; 0.2)]) | .sticky = [\"c2\"]")" '.account == "c2"'
+expect "같은 r7 에 붙든 계정이 없으면 id 순이다" \
+  "$(decide "$RS_REST | ONLY([\"c\",\"c2\"]) | USE([UA(\"c\"; 0.1; 0.2), UA(\"c2\"; 0.1; 0.2)])")" '.account == "c"'
+
+# 문턱 비율. 두 창이 모두 위생을 통과한 표본의 Σd7/Σd5 이고, Σd5 가 최소 질량
+# 2.0 에 못 미치면 기본 비율이다. 세 표본 d5 0.9·d7 0.09 면 ρ 0.1, T 1280 이다.
+# 표본은 review 부류라 implement 요청의 입장 비용 칸에는 닿지 않고, 비율은 부류를
+# 가리지 않고 기기 전체를 더한다.
+RHO_JQ='
+def RCFG: {max_age_s: 604800, max_n: 40, min_n: 3, floor: {five_hour: 0.01, seven_day: 0.005}, hygiene: {min_frames: 3, min_cover: 0.5}};
+def RWIN($u0; $d; $te): {u0: $u0, u1: ($u0 + $d), r0: ($now + 3600), r1: ($now + 3600), n: 5, t0: ($te - 100), t1: $te};
+def RSMP($i; $d5; $d7):
+  ($now - 1000 * ($i + 1)) as $te
+  | {schema: "cc-cmds-cost-sample v1", run_id: "rr", lineage: ("l" + ($i | tostring)), log: ("r-\($i).json"),
+     kind: "review", account: "a", t_start: ($te - 100), t_end: $te, duration_ms: 100000, usd: 1, cli: "x",
+     windows: ({} + (if $d5 == null then {} else {five_hour: RWIN(0.05; $d5; $te)} end)
+                  + (if $d7 == null then {} else {seven_day: RWIN(0.5; $d7; $te)} end))};
+def RHO($xs): .config.cost = RCFG | .config.rest_min_mass = 2.0 | .cost_samples = ([$xs[] | tojson] | join("\n"));
+'
+rho_order() { decide "$RHO_JQ $RS_REST | $1" | jq -c '[.order.ratio_source, .order.threshold_bp]'; }
+check "Σd5 가 최소 질량 이상이면 측정 비율로 문턱을 센다" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.9; 0.09)])')" '["measured",1280]'
+check "Σd5 가 최소 질량에 못 미치면 기본 비율" "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.6; 0.09)])')" '["default",3413]'
+check "최소 질량이 문맥에 없으면 기본 비율" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.9; 0.09)]) | del(.config.rest_min_mass)')" '["default",3413]'
+check "최소 질량이 수가 아니면 기본 비율" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.9; 0.09)]) | .config.rest_min_mass = "2"')" '["default",3413]'
+check "한 창만 있는 표본은 비율에 들지 않는다" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.9; null)] + [range(3; 6) | RSMP(.; null; 0.09)])')" '["default",3413]'
+check "한 창이라도 위생을 통과하지 못한 표본은 비율에 들지 않는다" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.9; 0.09) | .windows.seven_day.n = 2])')" '["default",3413]'
+check "비용 설정이 결함이면 오류 없이 기본 비율" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.9; 0.09)]) | .config.cost.max_n = "40"')" '["default",3413]'
+check "표본 원문이 문자열이 아니면 오류 없이 기본 비율" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0.9; 0.09)]) | .cost_samples = null')" '["default",3413]'
+check "5시간 증가가 모두 0 이면 오류 없이 기본 비율" \
+  "$(rho_order 'RHO([range(0; 3) | RSMP(.; 0; 0.09)]) | .config.rest_min_mass = 0')" '["default",3413]'
+check "측정 비율은 몰아 쓰기 순서를 바꾸지 않는다" \
+  "$(rs_order "$RHO_JQ $RS | RHO([range(0; 3) | RSMP(.; 0.9; 0.09)])")" "d c a b"
+
+# 수집. 상태 루트의 기록이 문맥 `.phase` 로 실린다.
+tr_phase_gather_case() {
+  local cfg rc req='{"run_id":"r1","lineage":"S1","event":"first","kind":"implement"}'
+  export RUN_DIR="$WORK/pg/run" RUN_PACE_ROOT="$WORK/pg/pace"
+  mkdir -p "$RUN_DIR" "$XDG_STATE_HOME/cc-lane"
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  cp "$PH_FX/phase-burst.json" "$XDG_STATE_HOME/cc-lane/phase.json"
+  cfg=$(route_gather_context "$req" /seat)
+  check "gather 는 단계 기록의 정규형을 phase 에 싣는다" "$(printf '%s' "$cfg" | jq -c '.phase')" \
+    '{"state":"valid","phase":"burst","until_epoch":1792197402,"burst_length_s":28800}'
+  check "gather 의 config 는 최소 질량을 싣는다" "$(printf '%s' "$cfg" | jq -r '.config.rest_min_mass | type')" "number"
+  printf '{' > "$XDG_STATE_HOME/cc-lane/phase.json"
+  rc=0; cfg=$(route_gather_context "$req" /seat 2>"$WORK/pg/err") || rc=$?
+  check "깨진 단계 기록에도 gather 는 rc 0 이고 corrupt 를 싣는다" \
+    "$rc/$(printf '%s' "$cfg" | jq -r '.phase.state')/$(wc -c < "$WORK/pg/err" | tr -d ' ')" "0/corrupt/0"
+  rm -f "$XDG_STATE_HOME/cc-lane/phase.json"
+  rc=0; cfg=$(XDG_STATE_HOME=rel route_gather_context "$req" /seat 2>/dev/null) || rc=$?
+  check "단계 경로를 유도할 수 없어도 gather 는 단계 때문에 닫지 않는다" \
+    "$(printf '%s' "$cfg" | jq -r '.phase.state // "닫힘"')" "absent"
+}
+tr_in_run "$TR_RUN_SH" tr_phase_gather_case
+
+# ===========================================================================
 # 리셋권. cc-lane 이 발행하는 계약 고정 입력을 `usage-read` 로 읽어 그대로 문맥에
 # 넣는다. 인벤토리는 고정 입력의 계정으로 통째로 바꾸고 `config_dir` 를 고정 입력
 # 값과 맞춘다 — `A($id)` 의 디렉터리를 그대로 두면 `mismatch` 가 켜진다. 비용은 위
@@ -2228,7 +2443,6 @@ fx_order() {
   done
   printf '%s' "$out"
 }
-tr_sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
 
 check "라우터-9: 고정 입력 바이트의 SHA-256 이 cc-lane 리터럴과 같다" "$(tr_sha256 "$FX")" "$FX_SHA"
 FXU=$(bash "$TR_ROUTE" usage-read "$FX" "$FX_NOW")
