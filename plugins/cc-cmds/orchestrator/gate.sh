@@ -29186,14 +29186,24 @@ gate_remote_tip_of() {
   esac
 }
 
+gate_remote_gh() {
+  # The `gh` program the pull-request read runs, resolved at call time. A stub
+  # ahead on the caller's PATH cannot stand in for it, for the reason
+  # `gate_metrics_gh` gives: run.sh puts the system prefixes first, so on the
+  # Ubuntu CI runner /usr/bin/gh wins, its read of a fixture slug fails, and
+  # every pull-request field reads `미상`. A test names the stub here instead.
+  printf '%s' "${CC_REMOTE_GH:-gh}"
+}
+
 gate_remote_pr_of() {
   # gate_remote_pr_of <slug> <branch> <dir> <head> — `<번호>\t<상태>\t<HEAD>`
   # for the segment's pull request: the open one; when there is none, the
   # merged one whose head is <head>; `없음` fields when neither exists;
   # `불일치` when two are open; `미상` when the read fails. A closed,
   # unmerged pull request is never the segment's.
-  local slug="$1" br="$2" dir="$3" head="$4" json
-  if ! json=$(cd "$dir" 2>/dev/null && GH_PROMPT_DISABLED=1 gh pr list -R "$slug" --head "$br" --state all \
+  local slug="$1" br="$2" dir="$3" head="$4" json gh
+  gh=$(gate_remote_gh)
+  if ! json=$(cd "$dir" 2>/dev/null && GH_PROMPT_DISABLED=1 "$gh" pr list -R "$slug" --head "$br" --state all \
                 --json number,state,headRefOid 2>/dev/null); then
     printf '미상\t미상\t미상'; return 0
   fi

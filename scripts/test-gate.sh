@@ -4356,9 +4356,11 @@ TGGH
     chmod +x "$TG/bin/gh"
     # The URL rewrite that sends the slug's URL to the bare origin is left out of
     # `TG_ENV_BASE`: admit compares the worktree's push URL with the slug, and a
-    # rewritten URL is a path that names no slug.
+    # rewritten URL is a path that names no slug. The gate's pull-request read
+    # is pointed at the stub by name: the gate puts the system prefixes ahead of
+    # this PATH, and on a host whose `gh` is /usr/bin/gh that one would answer.
     TG_ENV_BASE=(XDG_STATE_HOME="$TG_STATE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE= GIT_ALLOW_PROTOCOL=file
-                 PATH="$TG/bin:$PATH")
+                 CC_REMOTE_GH="$TG/bin/gh" PATH="$TG/bin:$PATH")
     TG_ENV=("${TG_ENV_BASE[@]}" GIT_CONFIG_COUNT=1 "GIT_CONFIG_KEY_0=url.$TG_ORIGIN.insteadOf"
             GIT_CONFIG_VALUE_0=https://github.com/t/a.git)
     ( cd "$TG_A" && git remote add origin https://github.com/t/a.git \
@@ -40344,7 +40346,7 @@ check "87c: 낱말 가드 아래에서도 맨 push 는 admit 을 거쳐 원격�
 
 # ---------------------------------------------------------------------------
 # 87d. 원격 단계 — 원격 판독 행과 살아 있는 HEAD 로 스냅샷이 세그먼트의 다음 원격 행위를 말한다
-# --- section: 87d | group: tguard | covers: snapshot, act | anchors: 87d: 원격 단계는 push 필요 에서 PR 필요 를 거쳐 PR 있음 이 된다, 87d: PR 있음 의 번호와 리뷰 줄을 스냅샷이 싣는다, 87d: 판독 뒤의 커밋은 원격 단계를 미상 으로 만든다, 87d: 원격 팁이 HEAD 의 조상이 아니면 불일치 다, 87d: 닫힌 PR 과 열린 PR 이 있으면 열린 쪽을 고른다, 87d: 열린 PR 이 둘이면 불일치 다 ---
+# --- section: 87d | group: tguard | covers: snapshot, act | anchors: 87d: 원격 단계는 push 필요 에서 PR 필요 를 거쳐 PR 있음 이 된다, 87d: PR 있음 의 번호와 리뷰 줄을 스냅샷이 싣는다, 87d: 판독 뒤의 커밋은 원격 단계를 미상 으로 만든다, 87d: 원격 팁이 HEAD 의 조상이 아니면 불일치 다, 87d: 닫힌 PR 과 열린 PR 이 있으면 열린 쪽을 고른다, 87d: 열린 PR 이 둘이면 불일치 다, 87d: PR 판독은 PATH 앞의 gh 가 아니라 CC_REMOTE_GH 의 gh 를 부른다 ---
 #
 # 스냅샷은 원격을 읽지 않는다 — remote-check 가 쓴 행만 읽는다. 그래서 각 단계는
 # 원격을 바꾸고, 판독하고, 스냅샷을 보는 세 걸음이다.
@@ -40379,6 +40381,17 @@ check "87d: 닫힌 PR 과 열린 PR 이 있으면 열린 쪽을 고른다" "$(st
 printf '[{"number":8,"state":"OPEN","headRefOid":"%s"},{"number":9,"state":"OPEN","headRefOid":"%s"}]\n' "$head87d" "$head87d" > "$TG/prs.json"
 tg_remote_check
 check "87d: 열린 PR 이 둘이면 불일치 다" "$(st87d '원격 단계')" "불일치"
+
+# 게이트는 시스템 접두를 PATH 앞에 두므로 /usr/bin/gh 가 있는 호스트에서는 그것이 스텁보다
+# 먼저 잡힌다. 실패하는 gh 를 스텁 앞에 두어 그 호스트를 흉내 낸다 — PR 판독은 CC_REMOTE_GH 가
+# 가리키는 gh 를 쓰고, 그것이 비면 앞의 gh 가 답해 미상 이 된다.
+mkdir -p "$TG/decoy" && printf '#!/bin/sh\nexit 1\n' > "$TG/decoy/gh" && chmod +x "$TG/decoy/gh"
+pr87d() {
+  ( cd "$TG_A" && env "${TG_ENV[@]}" "$@" PATH="$TG/decoy:$TG/bin:$PATH" bash -c \
+      'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_remote_pr_of t/a "$2" "$3" x' \
+      _ "$GATE" "$TG_BR" "$TG_WT" 2>/dev/null | cut -f1 )
+}
+check "87d: PR 판독은 PATH 앞의 gh 가 아니라 CC_REMOTE_GH 의 gh 를 부른다" "$(pr87d)|$(pr87d CC_REMOTE_GH=)" "불일치|미상"
 
 # ---------------------------------------------------------------------------
 # 87e. 요청과 표의 안전 — 표는 바이트·디렉터리·호출자·루트가 모두 맞는 한 번에만 열린다

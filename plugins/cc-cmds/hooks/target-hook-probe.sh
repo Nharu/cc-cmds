@@ -171,6 +171,34 @@ thp_hook_files() {
   set +f
 }
 
+thp_raw_settings_stream() {
+  # thp_raw_settings_stream <root> — the bytes `thp_hook_digest` hashes when the
+  # settings could not be read: each settings file's path and raw content.
+  local f
+  while IFS= read -r f; do [ -n "$f" ] && { printf '%s\n' "$f"; cat "$f"; }; done <<EOF
+$(thp_settings_files "$1")
+EOF
+}
+
+thp_hook_stream() {
+  # thp_hook_stream <root> <commands> — the bytes `thp_hook_digest` hashes: each
+  # settings file's path and matching blocks, then each named file's path and
+  # bytes.
+  local root="$1" cmds="$2" f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf 'settings %s\n' "$f"
+    jq -c "$THP_JQ_BLOCKS" "$f" 2>/dev/null
+  done <<EOF
+$(thp_settings_files "$root")
+EOF
+  printf '%s\n' "$cmds" | while IFS= read -r c; do
+    thp_hook_files "$root" "$c"
+  done | sort -u | while IFS= read -r f; do
+    printf 'file %s\n' "$f"; cat "$f"
+  done
+}
+
 thp_hook_digest() {
   # thp_hook_digest <root> — prints `<digest> <count>`: the sha256 over the
   # matching blocks of every settings file and the bytes of every file their
@@ -178,38 +206,25 @@ thp_hook_digest() {
   # `- 0`; a root whose settings could not be read prints the digest of the raw
   # settings bytes and `판정불가`, so the value still moves when a person edits
   # the file.
-  local root f cmds n rc
+  #
+  # The hashed bytes come from the two functions above, not from a here-document
+  # written inside the command substitution. With it inline, the Ubuntu runner's
+  # bash 5.2 gave the same digest before and after a guard file changed, while
+  # `thp_hook_files` named that file and nothing reached stderr; bash 3.2 moved
+  # it. A function body is not re-read as the substitution's text.
+  local root cmds n rc
   root=$(thp_phys "$1")
   [ -n "$root" ] || { printf -- '- 0\n'; return 0; }
   # `|| rc=$?`, not `; rc=$?`: the gate sources this file under `set -e`.
   rc=0; cmds=$(thp_bash_hooks "$root") || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf '%s 판정불가\n' "$(
-      while IFS= read -r f; do [ -n "$f" ] && { printf '%s\n' "$f"; cat "$f"; }; done <<EOF | shasum -a 256 | awk '{print $1}'
-$(thp_settings_files "$root")
-EOF
-    )"
+    printf '%s 판정불가\n' "$(thp_raw_settings_stream "$root" | shasum -a 256 | awk '{print $1}')"
     return 0
   fi
   n=0
   [ -n "$cmds" ] && n=$(printf '%s\n' "$cmds" | grep -c '')
   [ "$n" -gt 0 ] || { printf -- '- 0\n'; return 0; }
-  printf '%s %s\n' "$(
-    {
-      while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        printf 'settings %s\n' "$f"
-        jq -c "$THP_JQ_BLOCKS" "$f" 2>/dev/null
-      done <<EOF
-$(thp_settings_files "$root")
-EOF
-      printf '%s\n' "$cmds" | while IFS= read -r c; do
-        thp_hook_files "$root" "$c"
-      done | sort -u | while IFS= read -r f; do
-        printf 'file %s\n' "$f"; cat "$f"
-      done
-    } | shasum -a 256 | awk '{print $1}'
-  )" "$n"
+  printf '%s %s\n' "$(thp_hook_stream "$root" "$cmds" | shasum -a 256 | awk '{print $1}')" "$n"
 }
 
 # ---------------------------------------------------------------------------
