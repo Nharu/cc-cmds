@@ -29409,7 +29409,30 @@ gate_verb_act() {
       # implement dispatch the ladder sends past the cap, and only while `다음`
       # reads `재구현`: once its row stands, `다음` is the re-check, so the
       # exemption covers that one dispatch and nothing after it.
-      if [ "${cy_n:-0}" -ge "$cy_cap" ] && [ "$(gate_segment_review_next "$segment")" != "재구현" ]; then
+      # THE EXEMPTION REACHES THE SAME RE-IMPLEMENTATION'S LATER RUNS. That
+      # dispatch starts in process A, because the re-convergence voided the
+      # plan, and its plan-only row already turns `다음` to the re-check. Until
+      # a review of the re-implementation stands — `확인 리뷰`, a `정상 완료`
+      # re-convergence after the last cycle row and no lead-fix row after it —
+      # an implement dispatch passes while `implement_next[]` reads `구현`,
+      # which the `무커밋 구현` limit already bounds.
+      local cy_rn cy_ok cy_walk
+      cy_ok=0
+      if [ "${cy_n:-0}" -ge "$cy_cap" ]; then
+        cy_rn=$(gate_segment_review_next "$segment")
+        if [ "$cy_rn" = "재구현" ]; then
+          cy_ok=1
+        elif [ "$cy_rn" = "확인 리뷰" ]; then
+          cy_walk=$(gate_segment_review_walk "$segment")
+          if [ "$(gate_report_count "$cy_walk" '마지막 뒤 재수렴')" = "정상" ] \
+             && [ "$(gate_report_count "$cy_walk" '리드 수정 뒤')" = "0" ]; then
+            case "$(gate_implement_next_of "$segment" </dev/null)" in
+              *'"다음": "구현",'*) cy_ok=1 ;;
+            esac
+          fi
+        fi
+      fi
+      if [ "${cy_n:-0}" -ge "$cy_cap" ] && [ "$cy_ok" = "0" ]; then
         warn "세그먼트 ${segment} 의 사이클 예산이 소진됐습니다 — cycle 행 ${cy_n}개, 상한 ${cy_cap}"
         warn "구현을 다시 파견하지 말고 스냅숏의 review_next[] 의 「다음」 을 읽으세요 — 상한에서는 「리드 수정」 이나 끝내는 값입니다"
         exit "$GATE_EXIT_RULE"

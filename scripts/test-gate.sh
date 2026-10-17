@@ -39972,7 +39972,8 @@ h87_plan S3 review "$(rv87p '--slice S3')"
 check "87b: 대조 — 세그먼트와 같은 --slice 의 리뷰 파견은 통과한다" "$rc" "0"
 
 # S3 의 사다리 — 확인 리뷰가 P0 을 남기면 다음 리드 수정, 설계 수준 잔여면 재수렴, 정상
-# 재수렴 뒤에는 재구현이고, 재구현의 구현 파견만 상한 거절에서 면제된다. 이 리포트들은
+# 재수렴 뒤에는 재구현이고, 재구현과 그 뒤 implement_next 가 구현 인 동안의 구현 파견만
+# 상한 거절에서 면제된다. 이 리포트들은
 # 결함 수준 줄을 첫째 것만 빼고 싣는다.
 snap87s3() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null | jq -r '.review_next[] | select(.["세그먼트"] == "S3") | .["다음"]' ); }
 rp87 "$WORK/rv87-g3.md" 1 0 -
@@ -40003,9 +40004,20 @@ ri87p="/cc-cmds:implement-unattended $doc87 \"세그먼트 S3 (사이클 5) · �
 h87_plan S3 implement "$ri87p"
 check "87b: 다음 이 재구현이면 상한에 닿은 세그먼트의 구현 파견도 통과한다" "$rc" "0"
 [ "$rc" = "0" ] || bad "87b 재구현 파견 거절 문면" "$msg"
+# 재구현은 재수렴이 계획을 무효로 했으므로 과정 A 로 계획만 내고 끝날 수 있다. 그 행이
+# 서면 다음 은 확인 리뷰지만, 브랜치에 커밋이 없는 동안 implement_next 는 구현 이고
+# 그 재파견도 상한 거절에서 면제된다 — 면제를 묶는 것은 무커밋 구현 한도다. 이
+# 픽스처의 세그먼트 트리는 베이스보다 앞서지 않으므로 앞선 커밋 은 0 이다.
+in87s3() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R87.md" 2>/dev/null | jq -r '.implement_next[] | select(.["세그먼트"] == "S3") | .["다음"] + "|" + (.["무커밋 구현"] | tostring)' ); }
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$L87A"
+check "87b: 커밋 없이 끝난 재구현 행 뒤 다음 은 확인 리뷰이고 implement_next 는 구현 이다" "$(snap87s3)|$(in87s3)" "확인 리뷰|구현|1"
+h87_plan S3 implement "$ri87p"
+check "87b: implement_next 가 구현 인 재구현 뒤의 구현 파견은 상한에서도 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || bad "87b 재구현 과정 B 파견 거절 문면" "$msg"
+printf -- '- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$L87A"
 printf -- '- `stage-result` | 교대=1 | 세그먼트=S3 | 스테이지=S3 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$L87A"
 h87_plan S3 implement "$ri87p"
-check "87b: 재구현 행이 선 뒤의 둘째 구현 파견은 rc 3 이고 다음 은 확인 리뷰다" "$rc|$(snap87s3)" "3|확인 리뷰"
+check "87b: 무커밋 구현 한도에 닿은 재구현 뒤의 구현 파견은 rc 3 이고 implement_next 는 사람 이다" "$rc|$(in87s3)" "3|사람|3"
 case "$msg" in
   *"사이클 예산이 소진됐습니다"*) ok "87b: 그 거부는 사이클 상한의 거부다" ;;
   *) bad "87b 재구현 뒤 구현 거부 문면" "$msg" ;;
