@@ -5997,18 +5997,100 @@ if [ -f "$FEED_SH" ]; then
   # — so the line lookup failed on exactly the files where the pattern matched
   # more than once. Stopping the search at the first match asks for the same
   # value without anyone closing a pipe early.
-  feed_trap_ln=$( { grep -n -m1 "^trap 'release_lock'" "$FEED_SH" || true; } | cut -d: -f1)
+  # The first trap line is the EXIT trap, so the ordering is read off the first
+  # `trap` at the start of a line whatever its handler says.
+  feed_trap_ln=$( { grep -n -m1 '^trap ' "$FEED_SH" || true; } | cut -d: -f1)
   feed_take_ln=$( { grep -n -m1 '^take_lock$' "$FEED_SH" || true; } | cut -d: -f1)
   if [ -n "$feed_trap_ln" ] && [ -n "$feed_take_ln" ] && [ "$feed_trap_ln" -lt "$feed_take_ln" ]; then
     ok "트랩이 락 획득보다 먼저 설치된다"
   else
     bad "피드 락" "트랩이 락 획득 뒤에 설치된다 (trap=$feed_trap_ln take=$feed_take_ln)"
   fi
-  if { grep -q "^trap 'release_lock' EXIT HUP INT TERM" "$FEED_SH"; }; then
-    ok "그 트랩이 HUP 도 덮는다"
+  # RELEASE IS THE EXIT TRAP'S ALONE, AND A SIGNAL TRAP ONLY EXITS. A handler
+  # that released and returned gave control back to the loop: a feed sent TERM
+  # kept polling with its lock gone, and the next start found no holder.
+  if grep -qxF "trap '[ -z \"\$sp\" ] || kill \"\$sp\" 2>/dev/null; release_lock' EXIT" "$FEED_SH"; then
+    ok "해제는 EXIT 트랩 하나가 하고, 그 트랩이 잠자는 자식을 거둔다"
   else
-    bad "피드 락" "HUP 이 트랩 목록에 없다 — 터미널이 사라지는 흔한 종료가 락을 남긴다"
+    bad "피드 락" "EXIT 트랩 줄이 해제와 sleep 자식 정리를 함께 싣지 않는다"
   fi
+  if grep -qxF "trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM" "$FEED_SH"; then
+    ok "신호 트랩은 HUP·INT·TERM 을 덮고 끝내기만 한다"
+  else
+    bad "피드 락" "신호 트랩이 끝내기만 하는 세 갈래가 아니다 — 처리 뒤 루프로 돌아가면 락 없는 피드가 남는다"
+  fi
+  feed_sp_ln=$( { grep -n -m1 '^sp=""$' "$FEED_SH" || true; } | cut -d: -f1)
+  if [ -n "$feed_sp_ln" ] && [ -n "$feed_trap_ln" ] && [ "$feed_sp_ln" -lt "$feed_trap_ln" ]; then
+    ok "자식 pid 변수가 트랩보다 먼저 비워진다 (set -u 아래 --once 의 EXIT 트랩이 끊기지 않는다)"
+  else
+    bad "피드 락" "sp 초기화가 트랩 앞에 없다 (sp=$feed_sp_ln trap=$feed_trap_ln)"
+  fi
+
+  # --- THE REAL PROCESS ENDS ON TERM, MID-SLEEP, AND RELEASES ONCE ----------
+  #
+  # The source lines above say what the traps are; this runs the script. A
+  # feed is started with a short interval, TERM goes to the pid this test
+  # started while it sleeps between passes, and the process has to be gone
+  # within one interval with status 143, no lock and no `sleep` left behind.
+  # After each way of ending, a second start must not find a holder.
+  feed_second_clean() {  # feed_second_clean <label>
+    feed_once "_2nd$1"
+    if grep -q '이미 돌고 있습니다' "$FEED_RD/out_2nd$1" "$FEED_RD/err_2nd$1" 2>/dev/null; then
+      bad "피드 종료" "$1 뒤의 두 번째 기동이 살아 있는 주인을 보았다"
+    else
+      ok "$1 뒤의 두 번째 기동은 주인을 보지 않는다"
+    fi
+  }
+  rm -rf "$FEED_LD" "$FEED_RD/done"
+  FEED_IV=3
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --interval "$FEED_IV" \
+    > "$FEED_RD/out_term" 2> "$FEED_RD/err_term" &
+  feed_pid=$!
+  feed_child=""
+  for _ in $(seq 1 100); do
+    feed_child=$( { pgrep -P "$feed_pid" sleep || true; } | head -n 1)
+    [ -n "$feed_child" ] && break
+    sleep 0.1
+  done
+  if [ -n "$feed_child" ]; then
+    ok "피드가 패스 사이의 sleep 에 들어갔다 (아래 TERM 이 잠든 중에 닿는다)"
+  else
+    bad "피드 종료" "피드의 sleep 자식을 찾지 못했다 — 아래 단언이 잠든 중의 신호를 재지 않는다"
+  fi
+  feed_t0=$(date +%s)
+  kill -TERM "$feed_pid" 2>/dev/null
+  feed_rc=0; wait "$feed_pid" 2>/dev/null || feed_rc=$?
+  feed_t1=$(date +%s)
+  check "TERM 을 받은 피드는 상태 143 으로 끝난다" "$feed_rc" "143"
+  if [ $((feed_t1 - feed_t0)) -le "$FEED_IV" ]; then
+    ok "TERM 뒤 한 간격 안에 끝난다"
+  else
+    bad "피드 종료" "TERM 뒤 $((feed_t1 - feed_t0))초가 걸렸다 (간격 ${FEED_IV}초)"
+  fi
+  check "TERM 으로 끝난 피드는 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_orphan=alive
+  for _ in $(seq 1 20); do
+    if [ -z "$feed_child" ] || ! kill -0 "$feed_child" 2>/dev/null; then feed_orphan=gone; break; fi
+    sleep 0.1
+  done
+  check "TERM 으로 끝난 피드의 sleep 자식이 남지 않는다" "$feed_orphan" "gone"
+  feed_second_clean "TERM 종료"
+  # `--once`: no sleep is ever started, and the EXIT trap still releases.
+  rm -rf "$FEED_LD"
+  feed_once _once
+  check "--once 실행은 0 으로 끝난다" "$feed_rc" "0"
+  check "--once 실행은 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_second_clean "--once 종료"
+  # The run-over exit: the loop leaves through `done` and the EXIT trap releases.
+  rm -rf "$FEED_LD"
+  : > "$FEED_RD/done"
+  feed_rc=0
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --interval 1 \
+    > "$FEED_RD/out_done" 2> "$FEED_RD/err_done" || feed_rc=$?
+  check "런이 끝난 것을 본 피드는 0 으로 끝난다" "$feed_rc" "0"
+  check "런 종료로 끝난 피드는 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_second_clean "런 종료"
+  rm -f "$FEED_RD/done"
   rm -rf "$FEED_RD"
 fi
 
