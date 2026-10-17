@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.88.1] - 2026-10-18
+
+2.88.0 의 후속 런 sweep 을 통째로 되돌린다. 레인 디스패처가 틱마다 끝난 런을 판정해 후속 런을 여는 구조를 내리고, 디스패처·게이트·감시자·autopilot 문면을 2.87.1 의 동작으로 되돌린다.
+
+### Removed
+
+- **후속 런 sweep 과 그에 딸린 것 전부** — `orchestrator/successor.sh sweep`, 게이트 `rekick-approval` 동사와 `종류=W` 재인가 승인, 디스패처의 sweep 호출과 `lineage-invalid` park, 감시자의 sweep 결과 대기와 「cc-cmds · 재킥오프」 고지 제목, 아침 보고의 sweep 결과 줄. 감시자를 디스패치 작업 밖 프로세스 그룹에서 띄우던 변경도 함께 되돌린다.
+
+### Why
+
+- 후속 런은 디스패처가 아니라 오케스트레이터 세션이 재킥오프를 알리고 autopilot 을 불러 여는 구조로 다시 설계한다.
+- 실제 호스트에서 sweep 이 launchd 의 작업 디렉터리(`/`)에서 게이트를 불러, 마감이 지난 런을 닫는 호출이 모두 런의 레포 밖이라는 이유로 거부됐다. 세그먼트가 하나도 착수되지 않은 채 끝난 런은 베이스 커밋을 읽지 못해 자동 판정이 나도 후속 런을 열지 못했다.
+
+### Post-install notes
+
+- sweep 이 남긴 `~/.local/state/cc-cmds/pace/rekick/` 의 판정 기록은 더 읽히지 않는다. 지워도 된다.
+
 ## [2.88.0] - 2026-10-18
 
 끝난 무인 런의 후속 런을 사람의 재호출 없이 연다. 레인 디스패처가 틱마다 후속 런 sweep 을 돌려, `재킥오프` 행이 있는 매니페스트로 끝난 런을 판정하고 후속 매니페스트를 파생해 백로그에 넣는다. 권한을 넓혀야 하는 원인은 끝난 런 위에 재인가 승인을 올려 사람이 닫을 때까지 기다리고, 답할 사람이 없던 정지는 사람에게 넘긴다.
