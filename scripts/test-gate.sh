@@ -215,7 +215,7 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # less, so a wrong mapping costs time and never coverage. `--run-one` is the
 # one caller for which that escape is itself the wrong direction: a worker
 # dispatched with an id runs that id and nothing else, and a worker that fell
-# back to the full run would report forty minutes of green under a name the
+# back to the full run would report hours of green under a name the
 # dispatch-return reconciliation then counts as that section. So `--run-one`
 # takes exactly one id and treats an unknown one as a hard error.
 #
@@ -595,7 +595,7 @@ oracle_judge() {
 # Run a script through the wrapper and judge what it produced.
 #
 # The child's streams are teed through FIFOs rather than collected into files and
-# printed at the end: a full run is forty minutes and a wrapper that shows
+# printed at the end: a full run is about three hours and a wrapper that shows
 # nothing until it finishes is a wrapper people work around. The explicit `wait`
 # on each tee is what makes the capture complete before it is read — process
 # substitution has no such handle, and reading a half-flushed capture would
@@ -977,7 +977,7 @@ FRONTEOF
   if [ -n "$sec_miss" ] && [ "$sections_strict" = "1" ]; then
     # `--run-one` NEVER FALLS BACK. The full run is the safe escape for a
     # human typing `--sections`; for a dispatched worker it is the forbidden
-    # direction — forty minutes of green returned under the name of the one
+    # direction — hours of green returned under the name of the one
     # section the reconciliation then marks as run. An unknown id reached
     # through `needs:` is the same pick failing one step later.
     if [ -n "$sec_need_by" ]; then

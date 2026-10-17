@@ -5,6 +5,26 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.83.2] - 2026-10-17
+
+무인 스테이지가 test-gate 전량을 로컬에서 백그라운드로 띄웠다가 2시간 제한에 잘려 판정 없이 끝났다. 스테이지가 본 시험 범위 문면인 `make check` 의 무인 거절 문구가 전량 소요를 약 40분으로 적고, 절 인자 없는 전량 명령을 좁힌 실행과 나란히 내밀었기 때문이다. 이 릴리스는 그 문면을 실측에 맞추고, 대상과 무관한 같은 원칙을 스테이지 정책에 싣는다. 기계적 거절은 새로 두지 않는다.
+
+### Changed
+
+- 스테이지 정책 `Code and tools` 에 불릿 하나를 더한다 — 바꾼 것이 닿는 시험만 돌리고 전량 회귀는 CI 의 몫이며, 도구 제한 시간 안에 끝날 수 없는 실행은 나누거나 띄우지 않는다. 대조표에 그 출처(`레포의 검사·시험 타깃`)를 `policy:Code and tools` 로 싣는다.
+- implement-unattended 의 process B 종료 메시지가 `**시험 범위**:` 한 줄로 돌린 시험과 돌리지 않았거나 잘린 범위를 적는다.
+- `run-check-gate-selftest` 경우 H 가 거절 문구에 `--sections` 안내가 있고, 절 인자 없는 전량 명령과 `40분` 이 없음을 단언한다.
+
+### Fixed
+
+- `check-gate-suite` 의 무인 거절 문구가 전량을 직렬 약 3시간(CI 13샤드 합 약 177분)으로 적고, 백그라운드 도구 상한 2시간 안에도 끝나지 않으니 `--sections` 로 좁히라고만 안내한다. 전량 회귀는 PR CI 가 지고, PR 이 없는 런에서는 미판정으로 남겨 스테이지 보고에 적는다. 거절 조건(기본값일 때만 거절)은 그대로다.
+- 대화형 안내도 같은 수치와 두 상한을 적고, 백그라운드 실행 권유를 뺀다.
+- 전량 소요를 「forty minutes」로 적은 Makefile·`lint.yml`·`gate.yml`·`test-gate.sh`·`test-gate-oracle.sh` 주석을 실측에 맞춘다.
+
+### Post-install notes
+
+- 전역 CLAUDE.md 의 「레포의 검사·시험 타깃」 불릿을 고치면 `make policy-drift` 가 그 행을 `changed` 로 낸다. 차이를 보고 `stage-policy-drift.sh --ack` 로 새 해시를 승인하면 닫힌다.
+
 ## [2.83.1] - 2026-10-17
 
 라우터 교대가 운영하는 무인 런이 두 자리에서 사람 없이 나아갈 수 없었다. 리뷰가 머지를 읽은 세그먼트는 베이스 판정 행을 쓸 수 없어 머지 앞에서 멈췄다. 확인 리뷰나 첫 리뷰를 다시 파견해야 하는 세그먼트는 교대가 리뷰 프롬프트의 인자를 어디서도 얻지 못해, 교대가 연달아 `사유=중단` 으로 헛돌았다. 이 릴리스는 두 자리를 모두 연다.

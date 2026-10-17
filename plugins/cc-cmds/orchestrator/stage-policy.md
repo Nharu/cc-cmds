@@ -45,6 +45,7 @@ You are an unattended pipeline stage or an agent spawned in one; no human reads 
 - Before writing new code, find similar code in the repository and follow its conventions. Judge comment style only by these rules and that neighbouring code.
 - Edit files with Edit/Write, not `sed -i`; `sed` for inline string processing is fine.
 - Run long commands as harness-tracked background tasks, never with `nohup` or a bare `&`: a detached process that dies leaves no trace.
+- Test only what your change reaches; full regression is CI's. Split or skip any run that cannot end within its tool timeout.
 - AWS CLI: pass `--profile <name>`, never `AWS_PROFILE=`.
 - terraform `init`, `plan`, `validate`, `fmt -check` and other commands that change no infrastructure or remote state are reads; `apply`, `destroy`, `state rm`/`mv`, `import`, `taint`/`untaint` are writes.
 - Bulk reads or transfers on production or customer servers (DB dump, `docker save`, large copy, full table scan) can stall the service or get the IP blocked though nothing changes. Judge them yourself from data size, host and DB load, network policy and time of day (must the other side agree?), and record why. Build the file remotely, then pull it rate-limited (`rsync --bwlimit`, `pv -L`), never at full speed. On lag or a dropped connection, stop without retrying and record it. Small status reads are exempt.

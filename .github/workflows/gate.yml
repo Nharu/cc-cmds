@@ -3,8 +3,8 @@ name: gate
 # The gate suite, cut into shards that run at once. It lives in its own
 # workflow rather than as another job in `lint` because its path filter is
 # narrower: the lint leg has to run on skill and README edits that cannot
-# possibly move a gate section, and pulling forty minutes of suite along with
-# them is what this split removes.
+# possibly move a gate section, and pulling the suite along with them (about
+# 177 shard-minutes, 10 to 22 per shard) is what this split removes.
 #
 # THE FILTER NAMES THIS FILE. Without that line the workflow is absent from the
 # pull request that introduces it, so its check names never render and there is

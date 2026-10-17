@@ -104,8 +104,8 @@ check: lint readme
 # procedure every commit goes through was `lint readme` alone, so a change to
 # gate.sh that followed the procedure to the letter had no local step that ever
 # ran it. Running it unconditionally would be worse than not running it: the
-# suite alone takes some forty minutes, and a procedure that costs that on
-# every commit is one people skip, which puts back the very state this closes.
+# full suite takes about three hours serially, and a procedure that costs that
+# on every commit is one people skip, which puts back the very state this closes.
 # PR CI already runs the suite on the merge ref, so this adds no new duty; it
 # runs the same suite earlier, on the machine that made the change.
 #
@@ -126,16 +126,20 @@ check: lint readme
 # and skip the suite. An explicit GATE_SUITE_BASE that does not resolve, or no
 # candidate left at all, is the no-base case and runs the suite.
 #
-# The full suite takes some forty minutes, longer than a foreground tool call
-# is allowed to run, and the full regression is PR CI's job. A change whose
-# gate.sh edit crosses only some sections narrows the run with
+# The full suite takes about three hours serially — the thirteen CI shards add
+# up to about 177 minutes — so it ends within neither the foreground tool limit
+# nor the two-hour background one, and the full regression is PR CI's job
+# (thirteen shards, about 10 to 22 minutes each). A change whose gate.sh edit
+# crosses only some sections narrows the run with
 # GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' — the same
 # section choice the repository's test rules ask for. Interactively the default
-# stays the full suite, and the message before the run says what it costs: run
-# it as a harness-tracked background task, or narrow it. An unattended run
-# (CC_PIPELINE_RUN_ID set) has no such task to come back to, so there the
-# default is refused rather than started — `check` fails and names the choice,
-# and the stage passes GATE_SUITE_CMD, the full command included, to proceed.
+# stays the full suite, and the message before the run says what it costs and
+# how to narrow it. An unattended run (CC_PIPELINE_RUN_ID set) refuses the
+# default rather than starting it: `check` fails and names the narrowing, and a
+# run with no PR leaves the full regression unjudged and says so in the stage
+# report. The refusal reads where GATE_SUITE_CMD came from, not what it says, so
+# a command passed on the command line runs as given; that is how a person runs
+# the whole suite on purpose, not a way out for a stage.
 # The refusal is not a skip: nothing passes until a suite command has run.
 GATE_SUITE_TRIGGER := plugins/cc-cmds/orchestrator/gate.sh
 GATE_SUITE_CMD ?= bash scripts/test-gate.sh
@@ -144,7 +148,7 @@ GATE_SUITE_BASE ?=
 check-gate-suite:
 	@run_suite() { \
 	  if [ -n "$${CC_PIPELINE_RUN_ID:-}" ] && [ '$(origin GATE_SUITE_CMD)' = file ]; then \
-	    echo "check-gate-suite: 무인 런에서는 약 40분 전량을 기본값으로 시작하지 않는다 — GATE_SUITE_CMD 를 지명해 다시 돌린다: 바꾼 축의 절만이면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>', 전량이면 GATE_SUITE_CMD='bash scripts/test-gate.sh'" >&2; \
+	    echo "check-gate-suite: 무인 런에서는 기본값 전량을 시작하지 않는다 — 전량은 직렬 약 3시간(CI 13샤드 소요 합 약 177분)이라 백그라운드 도구 상한 2시간 안에도 끝나지 않는다. GATE_SUITE_CMD 를 지명해 바꾼 축의 절만 돌린다: GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>'. 전량 회귀는 PR CI(13샤드, 샤드당 약 10~22분)가 진다 — PR 이 없는 런에서는 미판정으로 남기고 스테이지 보고에 적는다" >&2; \
 	    return 1; \
 	  fi; \
 	  $(GATE_SUITE_CMD); \
@@ -172,7 +176,7 @@ check-gate-suite:
 	  exit 0; \
 	fi; \
 	echo "check-gate-suite: $(GATE_SUITE_TRIGGER) 가 $$base 대비 바뀌어 게이트 스위트를 돌린다"; \
-	echo "check-gate-suite: 전량은 약 40분 걸려 포그라운드 도구 상한을 넘는다 — 하니스가 추적하는 백그라운드 작업으로 돌리거나, 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 진다)"; \
+	echo "check-gate-suite: 전량은 직렬 약 3시간(CI 13샤드 소요 합 약 177분)이라 포그라운드 도구 상한도, 백그라운드 도구 상한 2시간도 넘는다 — 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 13샤드로 진다)"; \
 	run_suite
 
 # Whether check-gate-suite decides anything. `make -n check | grep test-gate`
@@ -190,8 +194,9 @@ check-gate-suite:
 # seventh is the same commit with local master checked out: master is not its
 # own base, so the committed change counts and the suite runs — F and G are each
 # other's control. The eighth is a pair under CC_PIPELINE_RUN_ID: the default
-# command is refused with a message naming GATE_SUITE_CMD, and a named command
-# runs.
+# command is refused with a message naming GATE_SUITE_CMD and the --sections
+# narrowing, offering no full command beside it and no forty-minute figure, and
+# a named command runs.
 # The make binary is taken through a second variable on purpose: a recipe line
 # that names $(MAKE) directly is executed even under `make -n`.
 CHECK_GATE_SELFTEST_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
@@ -233,6 +238,9 @@ run-check-gate-selftest:
 	  '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check-gate-suite >"$$t/out" 2>&1 ) \
 	  && fail "경우 H: 무인 런이 기본 전량 스위트를 거절하지 않았다: $$(cat "$$t/out")"; \
 	grep -q 'GATE_SUITE_CMD 를 지명' "$$t/out" || fail "경우 H: 거절이 아닌 이유로 실패했다: $$(cat "$$t/out")"; \
+	grep -qF -- '--sections' "$$t/out" || fail "경우 H: 거절이 --sections 로 좁히는 법을 적지 않는다: $$(cat "$$t/out")"; \
+	if grep -qF "GATE_SUITE_CMD='bash scripts/test-gate.sh'" "$$t/out"; then fail "경우 H: 거절이 절 인자 없는 전량 명령을 선택지로 내민다: $$(cat "$$t/out")"; fi; \
+	if grep -qF '40분' "$$t/out"; then fail "경우 H: 거절이 전량 소요를 40분으로 적는다: $$(cat "$$t/out")"; fi; \
 	( export CC_PIPELINE_RUN_ID=selftest; suite "touch '$$t/ran'" ) || fail "경우 H: 지명한 스위트 명령이 무인 런에서 거절됐다: $$(cat "$$t/out")"; \
 	[ -e "$$t/ran" ] || fail "경우 H: 무인 런에서 지명한 스위트 명령이 돌지 않았다"; \
 	echo "run-check-gate-selftest: 여덟 경우 통과"
@@ -266,10 +274,10 @@ policy-drift:
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe
 # lines they were strictly serial no matter what -j said, and that is the whole
-# of the suite's wall clock: measured on this repository, the run takes about
-# half an hour while the twenty-three smallest scripts together account for
-# thirty-five seconds of it. Serially every one of them waits behind the two
-# large ones for nothing.
+# of the suite's wall clock: measured on this repository, the twenty-three
+# smallest scripts together account for thirty-five seconds of a run whose
+# length the large ones set, the gate suite alone taking about three hours.
+# Serially every one of them waits behind the two large ones for nothing.
 #
 # Concurrency is safe without further isolation and the tests already say so:
 # every one of them builds its own workspace with `mktemp -d`, the single
@@ -388,7 +396,7 @@ print-gate-shards:
 
 # `test` minus the gate suite. CI runs this in the always-on leg because the
 # gate suite runs sharded in its own workflow, and running it in both places
-# would put the forty minutes back that the sharding removes. Locally `test`
+# would put back the three serial hours that the sharding removes. Locally `test`
 # is still the whole thing.
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
