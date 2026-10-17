@@ -387,6 +387,41 @@ check "한도 판정 l: 봉투 뒤 객체가 아닌 JSON 줄은 건너뛴다" "$
 printf '%s\n' "$LIM_INIT" "$LIM_ENV429" '{"torn' > "$LIMD/m.json"
 check "한도 판정: 거짓 글자는 F,R,P,T 순서로 이어진다" "$(sle "$LIMD/m.json")" "3:F,R,T"
 
+# 일시 원인 판정. 연결 단절로 죽었는지는 그 시도 자신의 스트림에서 **종단 객체**
+# (마지막 최상위 result 나 error) 의 문면으로만 읽는다. 아래 변형은 「연결 오류
+# 문구가 어디에 있느냐」와 「한도·429 인가」만 바꾼다.
+ste() { if stage_transient_exit "$@"; then printf '0'; else printf '1'; fi; }
+TR_CONN='{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-tr","result":"API Error: Connection error."}'
+printf '%s\n' "$LIM_INIT" "$TR_CONN" > "$LIMD/t1.json"
+check "일시 원인 판정 1: 종단 result 의 Connection error 는 참" "$(ste "$LIMD/t1.json")" "0"
+printf '%s\n' "$LIM_INIT" '{"type":"error","error":{"message":"getaddrinfo ENOTFOUND api.anthropic.com"}}' > "$LIMD/t2.json"
+check "일시 원인 판정 2: 종단 error 객체의 ENOTFOUND 는 참" "$(ste "$LIMD/t2.json")" "0"
+printf '%s\n' "$LIM_INIT" "$TR_CONN" '{"type":"result","subt' > "$LIMD/t3.json"
+check "일시 원인 판정 3: 종단 객체 뒤의 찢긴 줄은 종단 객체가 아니다" "$(ste "$LIMD/t3.json")" "0"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"curl: (6) getaddrinfo ENOTFOUND example.invalid"}]}}' \
+  "$LIM_OK" > "$LIMD/t4.json"
+check "일시 원인 판정 4: 도구 출력 안의 ENOTFOUND 는 거짓 (종단은 성공)" "$(ste "$LIMD/t4.json")" "1"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"socket hang up"}]}}' \
+  '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"tool loop aborted"}' > "$LIMD/t5.json"
+check "일시 원인 판정 5: 도구 출력에만 단절 문구가 있는 크래시는 거짓" "$(ste "$LIMD/t5.json")" "1"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"API Error: Connection error."}' > "$LIMD/t6.json"
+check "일시 원인 판정 6: 429 봉투는 문구가 맞아도 거짓" "$(ste "$LIMD/t6.json")" "1"
+# a 의 실제 사망 모양에서 봉투 문면만 연결 오류 문구로 바꾼다.
+{ for i in 1 2 3 4 5; do printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK"; done
+  printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" "$LIM_INIT" "$LIM_INIT" "$LIM_OK" "$LIM_OK" "$LIM_OK" \
+    '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s-lim","result":"Connection error · resets 3pm"}'
+} > "$LIMD/t7.json"
+check "일시 원인 판정 7: 한도 사망 모양은 거짓 (한도 경로가 기다린다)" "$(ste "$LIMD/t7.json")" "1"
+check "일시 원인 판정 7 대조: 같은 스트림은 한도 판정에서 참" "$(sle "$LIMD/t7.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$TR_CONN" "$LIM_OK" > "$LIMD/t8.json"
+check "일시 원인 판정 8: 단절 뒤 성공 봉투가 종단이면 거짓" "$(ste "$LIMD/t8.json")" "1"
+printf '%s\n' "$LIM_INIT" '{"type":"result","is_error":true,"result":"Can'"'"'t reach the API"}' > "$LIMD/t9.json"
+check "일시 원인 판정 9: Can't reach 문구도 참 (따옴표가 든 문구)" "$(ste "$LIMD/t9.json")" "0"
+check "일시 원인 판정 10: 없는 파일과 빈 인자는 거짓" "$(ste "$LIMD/none.json")$(ste '')" "11"
+
 check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
 for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \
                 '적용 불명' '외부 종료' '한도-형상 회수' '거절 종료'; do
@@ -5997,18 +6032,100 @@ if [ -f "$FEED_SH" ]; then
   # — so the line lookup failed on exactly the files where the pattern matched
   # more than once. Stopping the search at the first match asks for the same
   # value without anyone closing a pipe early.
-  feed_trap_ln=$( { grep -n -m1 "^trap 'release_lock'" "$FEED_SH" || true; } | cut -d: -f1)
+  # The first trap line is the EXIT trap, so the ordering is read off the first
+  # `trap` at the start of a line whatever its handler says.
+  feed_trap_ln=$( { grep -n -m1 '^trap ' "$FEED_SH" || true; } | cut -d: -f1)
   feed_take_ln=$( { grep -n -m1 '^take_lock$' "$FEED_SH" || true; } | cut -d: -f1)
   if [ -n "$feed_trap_ln" ] && [ -n "$feed_take_ln" ] && [ "$feed_trap_ln" -lt "$feed_take_ln" ]; then
     ok "트랩이 락 획득보다 먼저 설치된다"
   else
     bad "피드 락" "트랩이 락 획득 뒤에 설치된다 (trap=$feed_trap_ln take=$feed_take_ln)"
   fi
-  if { grep -q "^trap 'release_lock' EXIT HUP INT TERM" "$FEED_SH"; }; then
-    ok "그 트랩이 HUP 도 덮는다"
+  # RELEASE IS THE EXIT TRAP'S ALONE, AND A SIGNAL TRAP ONLY EXITS. A handler
+  # that released and returned gave control back to the loop: a feed sent TERM
+  # kept polling with its lock gone, and the next start found no holder.
+  if grep -qxF "trap '[ -z \"\$sp\" ] || kill \"\$sp\" 2>/dev/null; release_lock' EXIT" "$FEED_SH"; then
+    ok "해제는 EXIT 트랩 하나가 하고, 그 트랩이 잠자는 자식을 거둔다"
   else
-    bad "피드 락" "HUP 이 트랩 목록에 없다 — 터미널이 사라지는 흔한 종료가 락을 남긴다"
+    bad "피드 락" "EXIT 트랩 줄이 해제와 sleep 자식 정리를 함께 싣지 않는다"
   fi
+  if grep -qxF "trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM" "$FEED_SH"; then
+    ok "신호 트랩은 HUP·INT·TERM 을 덮고 끝내기만 한다"
+  else
+    bad "피드 락" "신호 트랩이 끝내기만 하는 세 갈래가 아니다 — 처리 뒤 루프로 돌아가면 락 없는 피드가 남는다"
+  fi
+  feed_sp_ln=$( { grep -n -m1 '^sp=""$' "$FEED_SH" || true; } | cut -d: -f1)
+  if [ -n "$feed_sp_ln" ] && [ -n "$feed_trap_ln" ] && [ "$feed_sp_ln" -lt "$feed_trap_ln" ]; then
+    ok "자식 pid 변수가 트랩보다 먼저 비워진다 (set -u 아래 --once 의 EXIT 트랩이 끊기지 않는다)"
+  else
+    bad "피드 락" "sp 초기화가 트랩 앞에 없다 (sp=$feed_sp_ln trap=$feed_trap_ln)"
+  fi
+
+  # --- THE REAL PROCESS ENDS ON TERM, MID-SLEEP, AND RELEASES ONCE ----------
+  #
+  # The source lines above say what the traps are; this runs the script. A
+  # feed is started with a short interval, TERM goes to the pid this test
+  # started while it sleeps between passes, and the process has to be gone
+  # within one interval with status 143, no lock and no `sleep` left behind.
+  # After each way of ending, a second start must not find a holder.
+  feed_second_clean() {  # feed_second_clean <label>
+    feed_once "_2nd$1"
+    if grep -q '이미 돌고 있습니다' "$FEED_RD/out_2nd$1" "$FEED_RD/err_2nd$1" 2>/dev/null; then
+      bad "피드 종료" "$1 뒤의 두 번째 기동이 살아 있는 주인을 보았다"
+    else
+      ok "$1 뒤의 두 번째 기동은 주인을 보지 않는다"
+    fi
+  }
+  rm -rf "$FEED_LD" "$FEED_RD/done"
+  FEED_IV=3
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --interval "$FEED_IV" \
+    > "$FEED_RD/out_term" 2> "$FEED_RD/err_term" &
+  feed_pid=$!
+  feed_child=""
+  for _ in $(seq 1 100); do
+    feed_child=$( { pgrep -P "$feed_pid" sleep || true; } | sed -n 1p)
+    [ -n "$feed_child" ] && break
+    sleep 0.1
+  done
+  if [ -n "$feed_child" ]; then
+    ok "피드가 패스 사이의 sleep 에 들어갔다 (아래 TERM 이 잠든 중에 닿는다)"
+  else
+    bad "피드 종료" "피드의 sleep 자식을 찾지 못했다 — 아래 단언이 잠든 중의 신호를 재지 않는다"
+  fi
+  feed_t0=$(date +%s)
+  kill -TERM "$feed_pid" 2>/dev/null
+  feed_rc=0; wait "$feed_pid" 2>/dev/null || feed_rc=$?
+  feed_t1=$(date +%s)
+  check "TERM 을 받은 피드는 상태 143 으로 끝난다" "$feed_rc" "143"
+  if [ $((feed_t1 - feed_t0)) -le "$FEED_IV" ]; then
+    ok "TERM 뒤 한 간격 안에 끝난다"
+  else
+    bad "피드 종료" "TERM 뒤 $((feed_t1 - feed_t0))초가 걸렸다 (간격 ${FEED_IV}초)"
+  fi
+  check "TERM 으로 끝난 피드는 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_orphan=alive
+  for _ in $(seq 1 20); do
+    if [ -z "$feed_child" ] || ! kill -0 "$feed_child" 2>/dev/null; then feed_orphan=gone; break; fi
+    sleep 0.1
+  done
+  check "TERM 으로 끝난 피드의 sleep 자식이 남지 않는다" "$feed_orphan" "gone"
+  feed_second_clean "TERM 종료"
+  # `--once`: no sleep is ever started, and the EXIT trap still releases.
+  rm -rf "$FEED_LD"
+  feed_once _once
+  check "--once 실행은 0 으로 끝난다" "$feed_rc" "0"
+  check "--once 실행은 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_second_clean "--once 종료"
+  # The run-over exit: the loop leaves through `done` and the EXIT trap releases.
+  rm -rf "$FEED_LD"
+  : > "$FEED_RD/done"
+  feed_rc=0
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --interval 1 \
+    > "$FEED_RD/out_done" 2> "$FEED_RD/err_done" || feed_rc=$?
+  check "런이 끝난 것을 본 피드는 0 으로 끝난다" "$feed_rc" "0"
+  check "런 종료로 끝난 피드는 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_second_clean "런 종료"
+  rm -f "$FEED_RD/done"
   rm -rf "$FEED_RD"
 fi
 
@@ -10416,6 +10533,79 @@ if kill_permitted "S9:segR:0"; then
 else
   ok "대조군: 목록 밖 접두는 여전히 거부된다"
 fi
+
+# --- (3d) 전송 단절 — 리포트도 위트니스도 없이 죽은 리뷰의 재파견 ----------------
+# 이 갈래는 원장의 S5 행(`일시 원인`)을 세고 탐침 하나를 부른다. 원장은 이 절의
+# 빈 파일이므로 행을 직접 깔고, 탐침은 `CC_ORCH_NET_PROBE_CMD` 로 갈아 끼운다.
+# 단언은 반환값(2 = 같은 사이클 재파견)과 「park 도 파견도 없었다」 둘이다.
+REC_TR_RP="$REC_DIR/never-written.md"; rm -f "$REC_TR_RP"
+rtr_rows() {  # rtr_rows <일시 원인 값>... — 이 런 블록에 segR 의 S5 드라이버 행을 순서대로 깐다
+  printf '## 실행 %s\n' "$RUN_ID" > "$LEDGER"
+  local v
+  for v in "$@"; do
+    case "$v" in
+      cycle) printf '%s\n' '- `cycle` | 세그먼트=segR | 사이클=0 | P0=0 | P1=0' >> "$LEDGER" ;;
+      *) printf '%s\n' "- \`stage-result\` | 세그먼트=segR | 스테이지=S5 | 기록자=드라이버 | 종단 부류=크래시 | 일시 원인=$v" >> "$LEDGER" ;;
+    esac
+  done
+}
+rtr_call() {  # rtr_call <탐침 명령> — 위트니스 0개, 리포트 없음, 크래시
+  local save="$ATTR"; ATTR=99
+  rec_reset
+  CC_ORCH_NET_PROBE_CMD="$1" review_recover segR 0 "$SIDR" "$REC_TR_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+  REC_RC=$?
+  ATTR="$save"
+}
+rtr_rows 예
+rtr_call /usr/bin/true
+check "전송 단절 1: 탐침이 답하면 반환 2, park·파견 없음" "$REC_RC|$REC_PARK|$REC_SPAWN" "2||"
+rtr_call /usr/bin/false
+check "전송 단절 2: 탐침이 답하지 않으면 반환 1" "$REC_RC" "1"
+if printf '%s' "$REC_PARK" | grep_all_q 'Step 4 미도달'; then
+  ok "전송 단절 2: 탐침 실패는 종전의 Step 4 미도달 park 으로 간다"
+else
+  bad "전송 단절 2 park 사유" "$REC_PARK"
+fi
+rtr_rows 예 예
+rtr_call /usr/bin/true
+check "전송 단절 3: 둘째 단절 행까지는 다시 파견한다" "$REC_RC" "2"
+rtr_rows 예 예 예
+rtr_call /usr/bin/true
+check "전송 단절 4: 셋째 단절 행은 탐침이 답해도 park (상한 둘)" "$REC_RC|$REC_SPAWN" "1|"
+rtr_rows 예 예 예 cycle 예
+rtr_call /usr/bin/true
+check "전송 단절 5: cycle 행 뒤로 수가 새로 시작한다" "$REC_RC" "2"
+rtr_rows 예 아니오
+rtr_call /usr/bin/true
+check "전송 단절 6: 마지막 S5 행이 일시 원인=아니오 면 park" "$REC_RC" "1"
+printf '## 실행 %s\n%s\n' "$RUN_ID" \
+  '- `stage-result` | 세그먼트=segR | 스테이지=S5 | 기록자=교대 | 종단 부류=크래시 | 일시 원인=예' > "$LEDGER"
+rtr_call /usr/bin/true
+check "전송 단절 7: 드라이버가 쓰지 않은 S5 행은 근거가 아니다" "$REC_RC" "1"
+printf '## 실행 %s\n%s\n' "$RUN_ID" \
+  '- `stage-result` | 세그먼트=segQ | 스테이지=S5 | 기록자=드라이버 | 종단 부류=크래시 | 일시 원인=예' > "$LEDGER"
+rtr_call /usr/bin/true
+check "전송 단절 8: 다른 세그먼트의 행은 근거가 아니다" "$REC_RC" "1"
+rtr_rows 예
+: > "$REC_TR_RP"
+rtr_call /usr/bin/true
+check "전송 단절 9: 리포트 파일이 있으면 재파견하지 않는다" "$REC_RC" "1"
+rm -f "$REC_TR_RP"
+rtr_rows 예
+rec_reset
+CC_ORCH_NET_PROBE_CMD=/usr/bin/true review_recover segR 0 "$SIDR" "$REC_TR_RP" "$REC_DIR" segbranch "정상 완료" >/dev/null; REC_RC=$?
+check "전송 단절 10: 크래시가 아닌 종단 부류는 이 갈래에 들지 않는다" "$REC_RC" "1"
+: > "$LEDGER"
+# 호출부: 반환 2 는 같은 루프를 다시 돌고(같은 sid·리포트 경로), S5 행은 크래시에만
+# 일시 원인을 싣는다.
+REC_SC_BODY=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
+if printf '%s\n' "$REC_SC_BODY" | grep_all_q -F 'if [ "$rrc" = "2" ]; then' \
+   && printf '%s\n' "$REC_SC_BODY" | grep_all_q -F '"종단 부류=$class" ${transient:+"일시 원인=$transient"}'; then
+  ok "segment_cycle 이 반환 2 를 재파견으로 받고 S5 행에 일시 원인을 싣는다"
+else
+  bad "segment_cycle" "반환 2 갈래나 S5 행의 일시 원인이 없다"
+fi
+unset -f rtr_rows rtr_call
 
 # 20절과 같은 이유로 `unset -f` 는 복원이 아니라 제거다. 이 절이 마지막이라
 # 이후에 이 이름들을 부르는 단언이 없고, 아래 요약 출력만 남는다.

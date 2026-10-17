@@ -3857,11 +3857,17 @@ routing_guard_check() {
   # run is unrouted); a record of `1` passes only with a regular-file baseline;
   # every other pair refuses the launch. The caller writes the reason to the
   # ledger and parks the stage — a silent failure would be read as a crashed
-  # stage and retried into the same refusal.
+  # stage and retried into the same refusal. A run that fleet launched on a lent
+  # seat (`fleet-lane` present) is refused unless it is routed: an unrouted run
+  # never asks the router and would take the seat without the lending checks.
   local rec="없음" snap="없음"
   if [ -e "${RUN_DIR:-}/routing-guard" ]; then
     rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
     rec=${rec:-빈 값}
+  fi
+  if [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ] && [ "$rec" != "1" ]; then
+    printf '대여 좌석 미라우팅 — 런 기록 %s, fleet-lane 기록 있음' "$rec"
+    return 1
   fi
   if [ -f "${RUN_DIR:-}/inventory.json" ] && [ ! -L "${RUN_DIR:-}/inventory.json" ]; then
     snap="정규 파일"
@@ -7073,6 +7079,70 @@ stage_limit_exit() {
   esac
 }
 
+stage_transient_exit() {
+  # stage_transient_exit <stream>
+  # Whether one attempt's own stream shows it died of a dropped connection.
+  #   exit 0  the terminal object's text names a connection error, the stream is
+  #           not a limit death, and that object's api_error_status is not 429
+  #   exit 1  anything else, and every failure (no argument, no or empty file,
+  #           no jq, a jq error)
+  # THE TERMINAL OBJECT ONLY: the last top-level `result` (its `.result`) or
+  # `error` object (its message) in file order. A connection error text inside a
+  # `tool_result`, an assistant frame or a compaction summary is not read — a
+  # stage that fetched a page saying ENOTFOUND did not die of it, and reading it
+  # as transient re-dispatches a deterministic crash. A non-blank line that does
+  # not parse is torn and is never taken as the terminal object.
+  #
+  # A LIMIT DEATH IS NOT TRANSIENT. It has a reset time to wait for, and the
+  # limit path is the one that waits for it; a 429 is the same, whatever the
+  # rest of its shape.
+  #
+  # THE DRIVER AND THE GATE ARE ITS ONLY CALLERS. Each writes the verdict as the
+  # row field `일시 원인=예|아니오`, and the router and the seat read that field.
+  local stream="${1:-}" verdict
+  [ -n "$stream" ] && [ -s "$stream" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  if stage_limit_exit "$stream" >/dev/null; then return 1; fi
+  verdict=$(jq -R -n -r '
+    def txt: if type == "string" then . elif type == "object" then (.message // "" | tostring) else "" end;
+    reduce (inputs | select(test("\\S"))) as $l (null;
+      ($l | try fromjson catch null) as $p
+      | if ($p | type) == "object" and ($p.type == "result" or $p.type == "error") then $p else . end)
+    | if . == null then "-"
+      elif (.api_error_status | tostring) == "429" then "-"
+      else
+        ([.result, .error, .message] | map(txt) | join(" ")) as $t
+        | if any(["ENOTFOUND", "EAI_AGAIN", "ECONNRESET", "ETIMEDOUT", "ECONNREFUSED",
+                  ("Can" + ([39] | implode) + "t reach"), "Connection error","fetch failed", "socket hang up"][]; . as $w | $t | contains($w))
+          then "=" else "-" end
+      end' "$stream" 2>/dev/null) || return 1
+  [ "$verdict" = "=" ]
+}
+
+net_probe_once() {
+  # net_probe_once — one connectivity check against the API host; 0 when it
+  # answered. No `--fail`: any HTTP status means the host was reached, which is
+  # all a dropped-connection retry needs to know. No header and no credential is
+  # sent. The driver's review recovery and the gate's shift launcher call it;
+  # the launcher runs inside the gate process, so it is not a graded act.
+  #
+  # `CC_ORCH_NET_PROBE_CMD` replaces the curl with one executable, run with no
+  # arguments, so a test can answer down or up without a network.
+  if [ -n "${CC_ORCH_NET_PROBE_CMD:-}" ]; then
+    "$CC_ORCH_NET_PROBE_CMD" >/dev/null 2>&1
+    return
+  fi
+  curl --silent --max-time 10 --output /dev/null \
+    "${ANTHROPIC_BASE_URL:-https://api.anthropic.com}/" >/dev/null 2>&1
+}
+
+net_probe_sleeps() {
+  # net_probe_sleeps — the shift launcher's waits before each of its probes, in
+  # seconds, one per try. `CC_ORCH_NET_PROBE_SLEEPS` replaces them, so a test
+  # can set `0 0 0` and the three tries cost no time.
+  printf '%s' "${CC_ORCH_NET_PROBE_SLEEPS:-30 60 120}"
+}
+
 stage_refusal_exit() {
   # stage_refusal_exit <stream>
   # 0 when the last `result` envelope whose `num_turns` is above zero carries
@@ -9277,6 +9347,45 @@ review_slice_flag() {
   printf ' --slice %s' "$1"
 }
 
+review_transient_tally() {
+  # review_transient_tally <segment> — two words: how many of this run's own
+  # S5 `stage-result` rows of the segment carry `일시 원인=예` after its last
+  # `cycle` row, and the `일시 원인` of the last such S5 row (`-` when it has
+  # none or there is no row). File order, so "after" is where the row sits.
+  # The block scoping is `run_section_rows`'s, and the field split is exact.
+  RTT_SEG="$1" awk -v h="## 실행 $RUN_ID" -v scope="${LEDGER_SCOPE:-블록}" '
+    function fld(row, key,   n, f, i, s, p, v) {
+      v = ""; n = split(row, f, "|")
+      for (i = 2; i <= n; i++) {
+        s = f[i]; sub(/^ +/, "", s); sub(/[ \t]+$/, "", s); p = index(s, "=")
+        if (p > 0 && substr(s, 1, p - 1) == key) v = substr(s, p + 1)
+      }
+      return v
+    }
+    BEGIN { whole = (scope == "파일"); inblk = whole; n = 0; last = "-" }
+    !whole && $0 == h { inblk = 1; next }
+    !whole && substr($0, 1, 3) == "## " { inblk = 0 }
+    !inblk { next }
+    index($0, "- `cycle`") == 1 && fld($0, "세그먼트") == ENVIRON["RTT_SEG"] { n = 0; last = "-"; next }
+    index($0, "- `stage-result`") == 1 && fld($0, "세그먼트") == ENVIRON["RTT_SEG"] \
+      && fld($0, "스테이지") == "S5" && fld($0, "기록자") == "드라이버" {
+        last = fld($0, "일시 원인"); if (last == "") last = "-"
+        if (last == "예") n++
+      }
+    END { printf "%d %s\n", n, last }' "$LEDGER" 2>/dev/null || printf '0 -\n'
+}
+
+review_transient_count() {
+  # review_transient_count <segment> — the first word of the tally.
+  review_transient_tally "$1" | cut -d' ' -f1
+}
+
+review_last_s5_transient() {
+  # review_last_s5_transient <segment> — 0 when the segment's last S5 row of
+  # this run, after its last `cycle` row, reads `일시 원인=예`.
+  [ "$(review_transient_tally "$1" | cut -d' ' -f2)" = "예" ]
+}
+
 review_recover() {
   local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7" recheck="${8:-}"
   # A RECOVERED RE-CHECK IS STILL A RE-CHECK. `recheck` is the cap report the
@@ -9312,6 +9421,19 @@ review_recover() {
   # below — the no-directory case would take the cannot-name park carrying the
   # wrong reason, and the Step-4 verdict would be unreachable.
   [ -z "$dirs" ] || n=$(printf '%s\n' "$dirs" | grep -c .)
+  # A REVIEW THAT DIED OF A DROPPED CONNECTION BEFORE SAVING ANYTHING is sent
+  # again rather than parked: a crash whose S5 row reads `일시 원인=예`, no
+  # report at `rp` and no witness directory for the attempt. The bound is this
+  # driver's own S5 rows with that field after the segment's last `cycle` row —
+  # two re-dispatches per cycle, the third crash parks with the text below. The
+  # driver has no model turn to prove the connection is back, so one probe has
+  # to answer first; a probe that fails parks without spending the bound.
+  if [ "$n" = "0" ] && [ "$(terminal_route_class "$class")" = "크래시" ] && [ ! -e "$rp" ] \
+     && [ "$(review_transient_count "$seg")" -le 2 ] && review_last_s5_transient "$seg" \
+     && net_probe_once; then
+    log "$seg: 리뷰 $class — 전송 단절, 연결 확인 뒤 같은 사이클·같은 리포트 경로로 다시 파견한다 ($rp)"
+    return 2
+  fi
   if [ "$n" = "0" ]; then
     park "$seg" cone 무효화 "게이트 park" \
       "리뷰 $class — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
@@ -9869,8 +9991,14 @@ segment_cycle() {
       rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
       class=$(classify_termination "$sid" "$rc" "$pred")
       acct=$(stage_account_of "$sid")
-      local om ro re
+      local om ro re transient=""
       om=$(stage_org_moves_of "$sid"); ro=$(stage_reattach_org_of "$sid"); re=$(stage_reattach_ctx_of "$sid")
+      # `일시 원인` on a crash row only, by the same reader the gate's row uses.
+      # `review_recover` counts these rows for its own re-dispatch bound.
+      if [ "$class" = "크래시" ]; then
+        transient='아니오'
+        if stage_transient_exit "$(stage_log_path "$sid")"; then transient='예'; fi
+      fi
       # The session lineage is on THIS row too. The separation rule reads `세션 id`
       # and `부모` from both sides and treats an unrecorded one as a refusal rather
       # than a pass, so a review row without them refused every merge on the fixed
@@ -9882,7 +10010,8 @@ segment_cycle() {
         "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
         ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
         "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \
-        "종단 부류=$class" "실패 서명=$(row_signature "$sid" review "$class" - "$rp")"
+        "종단 부류=$class" ${transient:+"일시 원인=$transient"} \
+        "실패 서명=$(row_signature "$sid" review "$class" - "$rp")"
       absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
       if [ "$class" = "거절 종료" ]; then
         # A REFUSED REVIEW TAKES THE REFUSAL'S OWN DISPOSITION, the same one the
@@ -9899,7 +10028,17 @@ segment_cycle() {
           park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi
       elif [ "$class" != "정상 완료" ]; then
-        review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" "$cap_rp" || return 1
+        # 2 is the dropped-connection re-dispatch: the same cycle, the same
+        # report path and the same line, as a fresh dispatch rather than a
+        # `--resume`. It is not `redo` — that one moves to a report path of its
+        # own — and the same-signature stop is not on this path at all.
+        local rrc=0
+        review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" "$cap_rp" || rrc=$?
+        if [ "$rrc" = "2" ]; then
+          spawn_lineage_release "$sid"
+          continue
+        fi
+        [ "$rrc" = "0" ] || return 1
         recovered=1
       fi
       spawn_lineage_release "$sid"

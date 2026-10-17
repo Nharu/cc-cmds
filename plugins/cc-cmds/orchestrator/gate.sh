@@ -994,15 +994,107 @@ gate_reach_required() {
 }
 
 gate_reach_derived() {
-  # gate_reach_derived <alias> <argv...> — the floor argv itself proves, which RAISES a
-  # declaration and never lowers one. Three values only: `-`, `기기전역` and
-  # `배포트리거`. Everything finer than that is a claim about an environment,
-  # and argv cannot prove one. The first field of `gate_reach_derived_full`, so
-  # the ledger's `유도 도달` and the disposition read one derivation.
+  # gate_reach_derived <alias> <argv...> — the floor argv itself proves. Four
+  # values: `-`, `기기전역`, `배포트리거` and `런로컬`. The first three RAISE a
+  # declaration and never lower one, and everything finer than them is a claim
+  # about an environment that argv cannot prove. `런로컬` is the one exception,
+  # and it is a value argv CAN prove: an act of `gate_reach_runlocal_proof`'s
+  # closed tool set whose every path operand resolves, physically, under this
+  # run's directory or this stage's prototype namespace lands nowhere else. It
+  # LOWERS the declaration — that is its point, an honest `미상` on scratch
+  # parked as `도달미상` and the stage stopped on its own witness write — and so
+  # it applies only where the raising derivation answered `-`: an argv naming a
+  # configuration path or a deploy identifier is not run-local. The first field
+  # of `gate_reach_derived_full`, so the ledger's `유도 도달` and the
+  # disposition read one derivation.
   local _f; _f=$(gate_reach_derived_full "$@")
   _f=${_f%%
 *}
-  printf '%s' "${_f%%	*}"
+  _f=${_f%%	*}
+  if [ "$_f" = "-" ]; then
+    shift
+    gate_reach_runlocal_proof "$@" && _f=런로컬
+  fi
+  printf '%s' "$_f"
+}
+
+gate_reach_runlocal_proof() {
+  # gate_reach_runlocal_proof <argv...> — rc 0 when argv itself proves the act
+  # lands run-local. All of these hold:
+  #   - the tool is one of `mktemp mkdir rm mv cp touch ln chmod`, called by its
+  #     bare name or from `/bin`/`/usr/bin` (a path argv0 elsewhere is a script);
+  #   - every option is a bundle of that tool's value-less flags read before the
+  #     first operand — an option taking a value can carry a path this does not
+  #     resolve, and a dash word after an operand is an option on GNU and a file
+  #     name on BSD, so either ends the proof;
+  #   - there is at least one path operand (`chmod`'s mode is not one, and
+  #     `mktemp`'s template is), so a bare `mktemp -d` proves nothing;
+  #   - every path operand resolves — `..` taken from the physical parent, a
+  #     symlinked ancestor and a symlinked final component followed — strictly
+  #     under this run's directory, or under
+  #     `${TMPDIR:-/tmp}/cc-proto-<run id>-<stage key>.*`, the stage key being
+  #     `CC_PIPELINE_STAGE_ID` with `#` spelled `-`. `ln` takes absolute operands
+  #     only: a relative link target resolves from the link's directory.
+  #
+  # THIS DOES NOT OPEN THE RUN DIRECTORY. `gate_rundir_write_guard` runs before
+  # the disposition reads this and still refuses every name its allow-list does
+  # not carry; the proof only says where an act the guard already let through
+  # lands. Resolved against the state before the act, as the row is written.
+  [ "$#" -ge 1 ] || return 1
+  [ -n "${RUN_DIR:-}" ] || return 1
+  local tool="${1##*/}" flags a ph lf n=0 opts=1 ddash=0 skip_mode=0 rid key tdir rdir
+  case "$1" in
+    */*) case "$1" in /bin/"$tool"|/usr/bin/"$tool") ;; *) return 1 ;; esac ;;
+  esac
+  case "$tool" in
+    mktemp) flags=dqu ;;
+    mkdir)  flags=pv ;;
+    rm)     flags=rRfvd ;;
+    mv)     flags=fnv ;;
+    cp)     flags=RrpfnvaP ;;
+    touch)  flags=acm ;;
+    ln)     flags=sfnhv ;;
+    chmod)  flags=Rvfh; skip_mode=1 ;;
+    *) return 1 ;;
+  esac
+  rdir=$(gate_path_spelling "$(gate_real_prefix "$(gate_lexical_abs "${RUN_DIR%/}" /)")")
+  tdir=$(gate_path_spelling "$(gate_real_prefix "$(gate_lexical_abs "${TMPDIR:-/tmp}" /)")")
+  tdir=${tdir%/}
+  rid=${RUN_DIR%/}; rid=${rid##*/}
+  key=''
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] && key=${CC_PIPELINE_STAGE_ID//#/-}
+  shift
+  for a in "$@"; do
+    if [ "$opts" = 1 ]; then
+      case "$a" in
+        --) opts=0; ddash=1; continue ;;
+        --*) return 1 ;;
+        -?*)
+          case "${a#-}" in *[!$flags]*) return 1 ;; esac
+          continue ;;
+      esac
+      opts=0
+    elif [ "$ddash" = 0 ]; then
+      case "$a" in -?*) return 1 ;; esac
+    fi
+    if [ "$skip_mode" = 1 ]; then skip_mode=0; continue; fi
+    [ -n "$a" ] || return 1
+    case "$tool" in ln) case "$a" in /*) ;; *) return 1 ;; esac ;; esac
+    ph=$(gate_path_spelling "$(gate_real_prefix "$(gate_physical_dotdot "$a")")")
+    lf=$(gate_leaf_spelling "$ph") || return 1
+    [ -n "$lf" ] && ph="$lf"
+    case "$ph" in
+      "$rdir"/?*) ;;
+      *)
+        [ -n "$key" ] || return 1
+        case "$ph" in
+          "$tdir/cc-proto-$rid-$key".?*) ;;
+          *) return 1 ;;
+        esac ;;
+    esac
+    n=$((n + 1))
+  done
+  [ "$n" -ge 1 ]
 }
 
 gate_reach_derived_full() {
@@ -2501,6 +2593,16 @@ gate_reach_disposition() {
     기기전역) if [ "$_rd" = "배포트리거" ]; then Reff=배포트리거; else Reff=기기전역; fi ;;
     *) if [ "$_rd" != "-" ]; then Reff="$_rd"; else Reff="$R"; fi ;;
   esac
+  # A RUN-LOCAL PROOF REPLACES THE DECLARATION, whatever it said. The raising
+  # derivation answered `-` above, so nothing in argv raises the act, and its
+  # every path operand resolves under this run's directory or this stage's
+  # prototype namespace — the honest `미상` a stage puts on its own scratch and
+  # witness writes would otherwise park as `도달미상`, and a `협업` borrowed to
+  # get past that would park as `도달모순`. An act that owes a reach and
+  # declared none is refused upstream for the missing token and never gets here.
+  if [ "$_rd" = "-" ] && gate_reach_runlocal_proof "$@"; then
+    Reff=런로컬
+  fi
   GATE_RF_REFF="$Reff"
   [ -n "$_rt" ] && GATE_RF_TRIG=$(printf '%s' "$_rt" | tr '\n' ' ' | sed 's/ *$//')
 
@@ -10982,6 +11084,16 @@ gate_prompt_doc_arg() {
   esac
 }
 
+gate_prompt_report_path() {
+  # gate_prompt_report_path <prompt> — the word after the first `--report-path`
+  # in a dispatch prompt, split the way `gate_prompt_doc_arg` splits it; empty
+  # when the prompt carries none. A review dispatch row records it so a
+  # recovery can be held to the same path, and the review stream does not
+  # carry it.
+  printf '%s' "$1" | tr -s ' \t' '\n\n' | tr -d "\"'" \
+    | awk 'prev == "--report-path" { print; exit } { prev = $0 }'
+}
+
 gate_segment_cycle_cap() {
   # gate_segment_cycle_cap <segment> — the re-implementation cycle cap, the
   # driver's REIMPL_CYCLE_CAP sourced from run.sh. The segment's declared file
@@ -16084,6 +16196,9 @@ gate_main() {
   # A plain global, reset here, so a value the caller's environment carries
   # never reaches the arm that reads it — only the argv flag below sets it.
   GATE_FROM_DECLARATION=""
+  # The recovery marker of a review re-dispatch, the same way: only the argv
+  # flag sets it, and only `act --kind skill` of a review takes it.
+  GATE_RECOVERY=""
   # THE APPLY ACT'S THREE VALUES ARE CLEARED ON ENTRY, AND NO FLAG SETS THEM.
   # `GATE_SUBJECT_HEAD` is the head the merge rule judges an apply against, and
   # the act sets it only after its own preconditions proved `M^2` equal to the
@@ -16138,6 +16253,7 @@ gate_main() {
       --resume)          GATE_RESUME="$2"; shift 2 ;;
       --site)            GATE_SHIFT_HALT_SITE="$2"; shift 2 ;;
       --from-declaration) GATE_FROM_DECLARATION=1; shift ;;
+      --recovery)        GATE_RECOVERY="$2"; shift 2 ;;
       --interval)        wait_interval="$2"; shift 2 ;;
       --timeout)         wait_timeout="$2"; shift 2 ;;
       --nonce)           nonce="$2"; shift 2 ;;
@@ -16167,6 +16283,19 @@ gate_main() {
       *) printf 'gate: --from-declaration is used only with act/plan --kind segment (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
          exit 2 ;;
     esac
+  fi
+  # `--recovery` marks a review re-dispatch after a dropped connection; on any
+  # other verb or kind it would be a marker the caller believes is recorded.
+  # The stage kind is checked where the dispatch argv is known.
+  if [ -n "$GATE_RECOVERY" ]; then
+    if [ "$verb:$kind" != "act:skill" ]; then
+      printf 'gate: --recovery is used only with act --kind skill (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
+      exit 2
+    fi
+    if [ "$GATE_RECOVERY" != "전송 단절" ]; then
+      printf 'gate: --recovery takes one value, 전송 단절 (received: %s)\n' "$GATE_RECOVERY" >&2
+      exit 2
+    fi
   fi
   # `--site` names a row of the shift-halt site table and nothing else.
   if [ -n "$GATE_SHIFT_HALT_SITE" ] && [ "$verb:$kind" != "act:shift-halt" ]; then
@@ -17643,6 +17772,80 @@ gate_segment_last_cycle_row() {
   # segment `A2`, or one carrying `선행 세그먼트=<segment>`, is never read as it.
   [ -n "$1" ] || return 0
   gate_rows 'cycle' | gate_rows_field_eq '세그먼트' "$1" | tail -1
+}
+
+gate_ledger_rows_after() {
+  # gate_ledger_rows_after <row-text> — every ledger row written after the line
+  # that is byte-identical to <row-text>; the whole ledger's rows when it is
+  # empty. Rows carry their chain hash, so the line names one place in the file.
+  GATE_RA_ROW="$1" awk '
+    BEGIN { on = (ENVIRON["GATE_RA_ROW"] == "") }
+    on && index($0, "- `") == 1 { print; next }
+    !on && $0 == ENVIRON["GATE_RA_ROW"] { on = 1 }' "$LEDGER" 2>/dev/null || true
+}
+
+gate_review_recovery_refusal() {
+  # gate_review_recovery_refusal <segment> <report path> — why a review
+  # re-dispatch marked `--recovery '전송 단절'` may not go, one sentence; nothing
+  # when every premise holds. The marker only repeats an authorized dispatch
+  # with the same arguments, so what it needs is proof the review died of a
+  # dropped connection before saving anything, and a count:
+  #   (가) the segment's last gate `review` stage-result row is a `크래시` with
+  #        `일시 원인=예`;
+  #   (나) the segment's last review dispatch row that recorded `리포트 경로`
+  #        names this path, and nothing is saved there;
+  #   (다) no witness directory carries `<segment>#<실행 버전>` of that row in
+  #        its `.attempt` stamp — a review that reached its team recovers by the
+  #        `--recover` dispatch instead;
+  #   (라) no `복구=전송 단절` row follows that crash row, so one crash buys one
+  #        re-dispatch;
+  #   (마) fewer than two `복구=전송 단절` rows follow the segment's last `cycle`
+  #        row — two per cycle, the bound, and the third goes to a person.
+  # The bound is its own count of rows and not the same-signature stop, which
+  # belongs to the hollow-success continuation and never meets this path.
+  local seg="$1" rp="$2" crow att prow ppath d stamp n
+  crow=$(gate_rows 'stage-result' | gate_rows_field_eq '세그먼트' "$seg" \
+           | gate_rows_field_eq '기록자' '게이트' | gate_rows_field_eq '종류' 'review' | tail -1)
+  if [ -z "$crow" ] || [ "$(gate_row_field "$crow" '종단 부류')" != "크래시" ] \
+     || [ "$(gate_row_field "$crow" '일시 원인')" != "예" ]; then
+    printf '세그먼트 %s 의 마지막 review stage-result 행이 「종단 부류=크래시」·「일시 원인=예」 가 아닙니다' "$seg"
+    return 0
+  fi
+  prow=$(gate_rows '자율 승인' | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq 'kind' 'skill' \
+           | gate_rows_having_field '리포트 경로' | tail -1)
+  ppath=$(gate_row_field "$prow" '리포트 경로')
+  if [ -z "$ppath" ] || [ "$ppath" != "$rp" ]; then
+    printf '이번 --report-path (%s) 가 세그먼트 %s 의 마지막 리뷰 파견 행의 리포트 경로 (%s) 와 다릅니다' \
+      "${rp:-없음}" "$seg" "${ppath:-없음}"
+    return 0
+  fi
+  if [ -e "$(gate_report_abs "$ppath")" ]; then
+    printf '리포트 %s 가 이미 있습니다 — 저장물이 있는 리뷰는 전송 단절 재파견 대상이 아닙니다' "$ppath"
+    return 0
+  fi
+  att=$(gate_row_field "$crow" '실행 버전')
+  for d in "$RUN_DIR"/cc-team-witness-*/; do
+    [ -f "$d.attempt" ] || continue
+    stamp=$( { cat "$d.attempt" 2>/dev/null || true; } | tr -d '\n')
+    if [ "$stamp" = "$seg#$att" ]; then
+      printf '시도 %s#%s 의 위트니스 디렉터리 %s 가 있습니다 — 팀까지 간 리뷰는 --recover 복구 파견으로 갑니다' \
+        "$seg" "$att" "${d%/}"
+      return 0
+    fi
+  done
+  n=$(gate_ledger_rows_after "$crow" | { grep -E '^- `자율 승인`' || true; } \
+        | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq '복구' '전송 단절' | gate_count)
+  if [ "${n:-0}" -ge 1 ]; then
+    printf '세그먼트 %s 의 마지막 크래시 행 뒤에 이미 「복구=전송 단절」 파견이 있습니다 — 새 크래시 행 없이 다시 파견하지 않습니다' "$seg"
+    return 0
+  fi
+  n=$(gate_ledger_rows_after "$(gate_segment_last_cycle_row "$seg")" | { grep -E '^- `자율 승인`' || true; } \
+        | gate_rows_field_eq '세그먼트' "$seg" | gate_rows_field_eq '복구' '전송 단절' | gate_count)
+  if [ "${n:-0}" -ge 2 ]; then
+    printf '세그먼트 %s 의 마지막 cycle 행 뒤 「복구=전송 단절」 파견이 이미 %s번입니다 — 사이클마다 두 번이 상한입니다' "$seg" "$n"
+    return 0
+  fi
+  return 0
 }
 
 gate_segment_last_segment_row() {
@@ -21311,6 +21514,24 @@ gate_leaf_spelling() {
   gate_path_spelling "$p"
 }
 
+gate_halt_name_ok() {
+  # gate_halt_name_ok <leaf under halt/> — true when a stage may write that name.
+  # A caller with no stage id keeps the one-level allowance; a stage may write
+  # its own `<stage-id>.md` and any dot-led temp name of the atomic write.
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] || return 0
+  case "$1" in
+    .*) return 0 ;;
+  esac
+  [ "$1" = "${CC_PIPELINE_STAGE_ID}.md" ]
+}
+
+gate_halt_name_refusal() {
+  # gate_halt_name_refusal — the refusal text both write guards print for a halt
+  # record under another name. `hooks/gate-pretool.sh` builds the same sentence
+  # byte for byte and `scripts/test-gate.sh` pins that they agree.
+  printf '%s' "the halt record of this stage is halt/${CC_PIPELINE_STAGE_ID}.md and no other name under halt/ — both readers look up that one name, attempt number included, so a record written under another name is never read; write it there"
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -21610,7 +21831,19 @@ gate_rundir_write_guard() {
       # pass quietly on the day that normalization changes.
       case "$rel" in
         halt/*/*) ;;
-        halt/*) continue ;;
+        # A STAGE WRITES ONE HALT RECORD NAME, the one its own id spells. Both
+        # readers look the record up by the id the launcher handed down, attempt
+        # number included, so a record a stage named by its segment alone was
+        # never read: measured, a stage of attempt 4 wrote `halt/S2.md`, both
+        # readers classified the turn `정상 완료`, and the question it carried
+        # waited for a person. The guard names the one allowed path, so the stage
+        # writes it next. A name that begins with a dot is the same-directory temp
+        # file of the atomic write and passes. A caller with no stage id — the
+        # seat, a shift — keeps the old one-level allowance.
+        halt/*)
+          gate_halt_name_ok "${rel#halt/}" && continue
+          warn "rule refused: $(gate_halt_name_refusal)"
+          return "$GATE_EXIT_RULE" ;;
         cc-team-witness-*/*) continue ;;
         # THE WITNESS DIRECTORY ITSELF, for its teardown. The shared team-cleanup
         # procedure ends a finished workflow with `rm -rf` on the recorded
@@ -29018,6 +29251,47 @@ gate_verb_act() {
     esac
   fi
 
+  # A REVIEW DISPATCH RECORDS ITS REPORT PATH, AND A RECOVERY IS HELD TO IT.
+  # Both are refusals about this act, so they sit here, ahead of the boundaries
+  # and the approval row. `--recovery` is a review's marker only — on any other
+  # dispatch it is out of range, exit 2. Its premises are the ledger's, and one
+  # that fails is exit 3 with no row: the re-dispatch repeats an authorized
+  # dispatch, and only a review that died of a dropped connection with nothing
+  # saved may repeat it.
+  #
+  # The path rides on the row as a fixed field and is never clipped: a clipped
+  # path would make the recovery's comparison silently wrong. So the fixed
+  # fields are measured here with the widest values the row can take, and a
+  # path they cannot hold refuses the dispatch, exit 2, the way the `중단 답`
+  # writer refuses a record that does not fit.
+  local rv_rp=""
+  if [ "$kind" = "skill" ] && [ "${1:-}" = "review" ]; then
+    rv_rp=$(gate_prompt_report_path "$(gate_skill_prompt_of "$@")")
+  fi
+  if [ -n "$GATE_RECOVERY" ]; then
+    if [ "${1:-}" != "review" ]; then
+      printf 'gate: --recovery is used only on a review dispatch (stage kind received: %s)\n' "${1:-(none)}" >&2
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    local rv_why
+    rv_why=$(gate_review_recovery_refusal "$segment" "$rv_rp")
+    if [ -n "$rv_why" ]; then
+      warn "전송 단절 재파견 거절 — $rv_why"
+      warn "이 리뷰는 전송 단절 재파견 대상이 아닙니다 — 리뷰 복구의 다른 갈래나 그 자리의 park 문면으로 가세요"
+      exit "$GATE_EXIT_RULE"
+    fi
+  fi
+  if [ -n "$rv_rp" ]; then
+    local rv_len
+    rv_len=$(gate_row_projected_bytes '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
+      "절단점=$cutpoint" "유도 절단점=$cutpoint" "축2=외부상태변경" "자격=주변" "행위자=스테이지" \
+      "리포트 경로=$rv_rp" ${GATE_RECOVERY:+"복구=$GATE_RECOVERY"} "근거=")
+    if [ "$rv_len" -gt "$GATE_ROW_MAX" ]; then
+      warn "리포트 경로가 길어 리뷰 파견 행이 행 상한 (${GATE_ROW_MAX}바이트) 을 넘습니다 — 경로는 자르지 않으므로 이 파견을 거절합니다: $rv_rp"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+  fi
+
   # ONE DISPATCH PER KEY ON A ROUTED RUN, refused before any row about this act.
   # The authorization row comes later and the attempt derivation counts it, so a
   # refusal any later would leave a row that moves a waiting dispatch's attempt.
@@ -30477,13 +30751,19 @@ EOF
     gate_append '자율 승인' "${_ex[@]}" ${_jx2[@]+"${_jx2[@]}"} \
       "근거=$(gate_row_safe "$rationale" 240)"
   else
-    local _act_free
+    # A review dispatch carries its report path and, on a re-dispatch after a
+    # dropped connection, the recovery marker, both as fixed fields: `근거`
+    # takes what they leave, and the path is never clipped (its fit was
+    # measured before any row).
+    local _act_free _act_fx=()
+    [ -z "$rv_rp" ] || _act_fx+=("리포트 경로=$rv_rp")
+    [ -z "$GATE_RECOVERY" ] || _act_fx+=("복구=$GATE_RECOVERY")
     _act_free=$(gate_free_budget "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor")
+      "축2=$graded" "자격=$credmode" "행위자=$actor" ${_act_fx[@]+"${_act_fx[@]}"})
     gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor" \
+      "축2=$graded" "자격=$credmode" "행위자=$actor" ${_act_fx[@]+"${_act_fx[@]}"} \
       "근거=$(gate_row_safe "$rationale" "$_act_free")"
   fi
   log "게이트 통과 — $verb $GATE_ACT_EFFECTIVE ($alias)"
@@ -34349,6 +34629,17 @@ gate_record_stage_outcome() {
     denials=$( { grep -c 'permission_denials' "$out" 2>/dev/null || true; } | tail -1)
     if [ "${denials:-0}" != "0" ]; then klass='산출물 없는 정지'; else klass='공허한 성공'; fi
   fi
+  # `일시 원인` ON A CRASH ROW AND ON NO OTHER. Whether the crash was a dropped
+  # connection is the premise the router's `--recovery '전송 단절'` dispatch is
+  # admitted on, and the router cannot call the driver's reader; the row is
+  # where it reads it. Judged only on a stream handed down by the caller, the
+  # same rule the limit carve-out above keeps: only that one is the pinned
+  # attempt's own, so a crash without one is `아니오`.
+  local transient=""
+  if [ "$klass" = "크래시" ]; then
+    transient='아니오'
+    if [ -n "$given" ] && stage_transient_exit "$out"; then transient='예'; fi
+  fi
 
   # `plan_sha256`, and only for the implement arm. That arm is split into two
   # processes and process B enters ONLY when this field is on the row — its
@@ -34471,7 +34762,7 @@ gate_record_stage_outcome() {
       "effort=$effort" "서빙 모델=$served" \
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
-      "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" "실패 서명=$fsig"
+      "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -34481,7 +34772,7 @@ gate_record_stage_outcome() {
       "effort=$effort" "서빙 모델=$served" \
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
-      ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" "실패 서명=$fsig"
+      ${rv:+"재수렴 판정=$rv"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig"
   fi
   # A re-convergence row voids the segment's plan; the file goes too, or the
   # plan-file fallback above would put the void digest back on the next row.
@@ -36659,7 +36950,7 @@ gate_snapshot_handoff_json() {
   # the series' final row when that row is `무기록`: the successor still learns
   # that its predecessor ended without a word, and the payload stays bounded at
   # one entry over the cap however long the run of them is.
-  local out row all last
+  local out row all last tr_v
   all=$( { gate_rows 'handoff' || true; } )
   last=$(printf '%s\n' "$all" | tail -1)
   [ "$(gate_row_field "$last" '사유')" = '무기록' ] || last=''
@@ -36670,13 +36961,17 @@ gate_snapshot_handoff_json() {
            [ -z "$last" ] || printf '%s\n' "$last"
          } | while IFS= read -r row; do
            [ -n "$row" ] || continue
-           printf '    {"교대": "%s", "사유": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s", "기록 시각": "%s"},\n' \
+           # `일시 원인` is the gate's own field on a `무기록` row and `-` on every
+           # other: the seat relaunches on it without reading the stream.
+           tr_v=$(gate_row_field "$row" '일시 원인')
+           printf '    {"교대": "%s", "사유": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s", "기록 시각": "%s", "일시 원인": "%s"},\n' \
              "$(gate_json_escape "$(gate_row_field "$row" '교대')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '사유')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '버린 선택지')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '막힌 지점')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '다음 후보')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" '기록 시각')")"
+             "$(gate_json_escape "$(gate_row_field "$row" '기록 시각')")" \
+             "$(gate_json_escape "${tr_v:--}")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
@@ -36724,15 +37019,21 @@ gate_shift_trace_unrecorded() {
   if [ "$rc" != "0" ] && stage_limit_exit "$RUN_DIR/log/shift-$n.json" >/dev/null 2>&1; then
     why="${why}; 교대 자신의 스트림이 한도 종료 형상이다"
   fi
+  # `일시 원인` — whether the lost shift's own stream ended on a dropped
+  # connection, by the driver's one reader. The launcher reads this field to
+  # decide on its probe, and the seat reads it on the snapshot's `handoff[]`;
+  # neither re-reads the stream.
+  local transient='아니오'
+  if stage_transient_exit "$RUN_DIR/log/shift-$n.json"; then transient='예'; fi
   at=$(now_iso)
   if [ "$(gate_row_projected_bytes 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
           "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
-          "종료 코드=$rc" "행위 수=$acts")" -gt "$GATE_ROW_MAX" ]; then
+          "종료 코드=$rc" "행위 수=$acts" "일시 원인=$transient")" -gt "$GATE_ROW_MAX" ]; then
     why='-'
   fi
   gate_append 'handoff' "교대=$n" "사유=무기록" "버린 선택지=-" \
     "막힌 지점=$why" "다음 후보=-" "대상=$alias" "기록 시각=$at" \
-    "종료 코드=$rc" "행위 수=$acts"
+    "종료 코드=$rc" "행위 수=$acts" "일시 원인=$transient"
   log "교대 $n 무기록 — 게이트가 인계 행을 대신 남김 (rc=$rc, 행위 ${acts}회)"
 }
 
@@ -36975,6 +37276,79 @@ gate_launch_shift() {
     return "$GATE_EXIT_APPROVAL"
   fi
 
+  # A SHIFT LOST TO A DROPPED CONNECTION IS RELAUNCHED ONCE THE CONNECTION
+  # ANSWERS. When the last handoff is the gate's `무기록` row with
+  # `일시 원인=예`, the launch waits and probes first, up to three times; the
+  # verdict is read from that row and the stream is not matched again. The
+  # probe sits here, inside the launcher, because the launcher is already
+  # blocked in `wait` for a shift's whole life and the seat cannot poll — there
+  # is no other place to wait for the connection to come back. It sits before
+  # the instructions, the launch row and `shift.in-progress`, so its worst case
+  # (210 seconds) does not eat the marker's 300-second window.
+  #
+  # BOTH REFUSALS WRITE NO `교대 기동` ROW. That row exists only for a shift
+  # that started, and `gate_shift_launches` counts it into the next ordinal and
+  # the `log/shift-<n>.json` name; a refusal is a warn line and exit 3, and the
+  # seat waits for a person as it did before this path existed. Both drop the
+  # launcher's claim like every other early return here, or the person's launch
+  # that follows reads the run as held by another launcher. The bound is
+  # three consecutive such launches: the trailing `교대 기동` rows that carry
+  # `연결 확인=`, counted back from the end until one that does not.
+  #
+  # A PERSON'S TURN SKIPS BOTH. After a refusal the seat waits for a person and
+  # issues the same launch again only on a person's word — a "continue", or the
+  # launch that follows an answered stop record. The gate cannot hear that word,
+  # so it reads the turn off the ledger: no `교대 기동` row after the last
+  # handoff, and besides this act's own `자율 승인` row at least one more
+  # `kind=router-shift` `결정=act` row after that handoff — an earlier attempt
+  # that turned back having started nothing. Only `결정=act`: the launch that
+  # wrote the handoff appends its own `결정=결과` row after it, and counting that
+  # one made every first relaunch a person's turn. Why it turned back is not on
+  # the row, and it does not matter: the seat re-issues only after a person
+  # either way. Without
+  # this, the refusals above were permanent — the bound is broken only by a
+  # launch row without `연결 확인=` or a new handoff, and the bound refused the
+  # launch that would write either. This launch's row carries no `연결 확인=`,
+  # so it ends the streak; a shift it starts that dies the same way again meets
+  # the probe and the bound from the start.
+  local probe_note=""
+  local lh after_lh human_turn=""
+  lh=$( { gate_rows 'handoff' || true; } | tail -1)
+  if [ "$(gate_row_field "$lh" '사유')" = '무기록' ] && [ "$(gate_row_field "$lh" '일시 원인')" = '예' ]; then
+    after_lh=$(gate_ledger_rows_after "$lh")
+    if [ "$(printf '%s\n' "$after_lh" | { grep -E '^- `교대 기동`' || true; } | gate_count)" = "0" ] \
+      && [ "$(printf '%s\n' "$after_lh" | { grep -E '^- `자율 승인`' || true; } \
+              | gate_rows_field_eq 'kind' 'router-shift' | gate_rows_field_eq '결정' 'act' | gate_count)" -ge 2 ]; then
+      human_turn=1
+      log "전송 단절 재기동 — 같은 인계 뒤 앞선 시도가 돌아선 다음의 사람 차례 기동이므로 탐침과 연속 상한을 건너뛴다"
+    fi
+  fi
+  if [ -z "$human_turn" ] && [ "$(gate_row_field "$lh" '사유')" = '무기록' ] \
+    && [ "$(gate_row_field "$lh" '일시 원인')" = '예' ]; then
+    local streak k=0 s
+    streak=$( { gate_rows '교대 기동' || true; } | awk '
+      { n = split($0, f, "|"); has = 0
+        for (i = 2; i <= n; i++) { s = f[i]; sub(/^ +/, "", s); if (index(s, "연결 확인=") == 1) has = 1 }
+        c = has ? c + 1 : 0 }
+      END { print c + 0 }')
+    if [ "${streak:-0}" -ge 3 ]; then
+      warn "전송 단절 재기동 거절 — 연결 확인을 거친 교대 기동이 연속 ${streak}번입니다; 상한은 세 번입니다"
+      gate_shift_launch_drop_claim
+      return "$GATE_EXIT_RULE"
+    fi
+    for s in $(net_probe_sleeps); do
+      k=$((k + 1))
+      sleep "$s"
+      if net_probe_once; then probe_note="$k/성공"; break; fi
+    done
+    if [ -z "$probe_note" ]; then
+      warn "전송 단절 재기동 거절 — 연결 탐침이 ${k}번 모두 닿지 않았습니다"
+      gate_shift_launch_drop_claim
+      return "$GATE_EXIT_RULE"
+    fi
+    log "전송 단절 뒤 연결 확인 ${probe_note} — 교대를 기동한다"
+  fi
+
   # THE SHIFT'S INSTRUCTIONS — the same policy file and the same synthesis as a
   # stage of the home target, never a narrower variant (that would be a second
   # drift surface and a second cache head). Synthesized BEFORE the `교대 기동`
@@ -37066,7 +37440,7 @@ gate_launch_shift() {
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
     "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window" \
     "컨텍스트=${prev_ctx:--}" "effort=${effort:--}" "모델=${model:--}" \
-    ${som:+"조직 이동=$som"}
+    ${som:+"조직 이동=$som"} ${probe_note:+"연결 확인=$probe_note"}
   # THE RUN NOW ENDS ON `done`, AND ONLY THE SEAT SAYS SO. A seat that hands its
   # turn to a shift settles the exit clauses after the last segment, so from here
   # the ledger-derived terminal conjunction opens a settlement window instead of
