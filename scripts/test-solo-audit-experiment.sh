@@ -29,6 +29,13 @@ fail() { failures=$((failures + 1)); echo "FAIL: $1" >&2; }
 
 for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 
+# The real gate snapshot and run.sh below would reach the user's screen and
+# leave a dashboard server behind; this suite asserts neither, so both are off.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-solo-audit-exp.XXXXXX")
 tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
