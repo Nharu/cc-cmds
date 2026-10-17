@@ -135,6 +135,17 @@ case "${ROUTE_BORROW_SCHEMA:-}" in
   'cc-lane-borrow v1') ;;
   *) readonly ROUTE_BORROW_SCHEMA='cc-lane-borrow v1' ;;
 esac
+# 운용 단계 기록. cc-lane 이 쓰고 라우터는 읽기만 한다. 쉼의 문턱은 비용 표본에서
+# 모은 주간/5시간 비율로 세는데, 두 창을 다 통과한 표본의 5시간 증가량 합이 최소
+# 질량보다 작으면 출하 기본 비율로 대신한다.
+case "${ROUTE_PHASE_SCHEMA:-}" in
+  'cc-lane-phase v1') ;;
+  *) readonly ROUTE_PHASE_SCHEMA='cc-lane-phase v1' ;;
+esac
+case "${ROUTE_REST_MIN_MASS:-}" in
+  2.0) ;;
+  *) readonly ROUTE_REST_MIN_MASS=2.0 ;;
+esac
 case "${ROUTE_COST_SCHEMA:-}" in
   'cc-cmds-cost-sample v1') ;;
   *) readonly ROUTE_COST_SCHEMA='cc-cmds-cost-sample v1' ;;
@@ -298,6 +309,41 @@ def rt_borrow_mark($cfg; $b):
   elif ($b | rt_borrowing) and ($cfg == $b.lane_config_dir) then {borrow: {state: $b.state, donor: ($b.donor.id? // null)}}
   elif $b.state == "corrupt" then {borrow: {state: "corrupt", donor: null}}
   else {} end;
+
+# 운용 단계 기록의 정규형. 입력은 `-s` 로 읽은 문서 배열이다. 유효 조건은 스키마,
+# 다섯 키의 존재와 형(`phase` 문자열, `set_at_epoch` 정수, `until_epoch` 정수나 null,
+# `burst_length_s` 정수)뿐이고 모르는 키는 손상이 아니다. 단계 값, burst 와 기한의 짝,
+# 기한 상한, 길이 범위는 `rt_phase` 가 본다.
+def rt_phase_nil($s): {state: $s, phase: null, until_epoch: null, burst_length_s: null};
+def rt_phase_norm($schema):
+  if length != 1 then rt_phase_nil("corrupt")
+  else first(.[])
+    | if type != "object" or .schema != $schema
+         or ((["schema", "phase", "set_at_epoch", "until_epoch", "burst_length_s"] - keys) != [])
+         or ((.phase | type) != "string") or (.set_at_epoch | rt_isint | not)
+         or (((.until_epoch == null) or (.until_epoch | rt_isint)) | not) or (.burst_length_s | rt_isint | not)
+      then rt_phase_nil("corrupt")
+      else {state: "valid", phase, until_epoch, burst_length_s} end
+  end;
+
+# 운용 단계와 그 출처. `$c.now` 하나로 첫 일치가 이긴다. 읽을 수 없는 상태는 모두
+# 쉼이다. 몰아 쓰기 시간은 따로 본다 — 60..86400 정수가 아니면 28800 과 `default`
+# 이고, 단계는 나머지 필드로 그대로 정한다.
+def rt_phase($c):
+  (if ($c.phase | type) == "object" then $c.phase else rt_phase_nil("absent") end) as $x
+  | ($x.state == "valid") as $v
+  | (if $v and ($x.burst_length_s | rt_isint) and $x.burst_length_s >= 60 and $x.burst_length_s <= 86400
+     then {burst_length_s: $x.burst_length_s, burst_length_source: "declared"}
+     else {burst_length_s: 28800, burst_length_source: "default"} end) as $len
+  | (if $x.state == "absent" then {phase: "rest", phase_source: "absent"}
+     elif ($v | not) then {phase: "rest", phase_source: "corrupt"}
+     elif $x.phase == "burst" and (($x.until_epoch | rt_isint | not) or $x.until_epoch > ($c.now + 86400 + 300))
+       then {phase: "rest", phase_source: "corrupt"}
+     elif $x.phase == "burst" and $c.now < $x.until_epoch then {phase: "burst", phase_source: "declared"}
+     elif $x.phase == "burst" then {phase: "rest", phase_source: "expired"}
+     elif $x.phase == "rest" then {phase: "rest", phase_source: "declared"}
+     else {phase: "rest", phase_source: "corrupt"} end)
+  + {until_epoch: (if $v then $x.until_epoch else null end)} + $len;
 
 def rt_frames_of_file:
   reduce (inputs | (fromjson? // null)) as $f ({ts: null, five_hour: null, seven_day: null};
@@ -600,15 +646,21 @@ def rt_cost_cell($k; $w):
       | (if $n % 2 == 1 then $v[($n - 1) / 2] else ($v[$n / 2 - 1] + $v[$n / 2]) / 2 end) as $med
       | {value: ([$k.floor[$w], $med] | max), n: $n, oldest: ($xs | map(.t_end) | min)} end;
 
+# 칸과 문턱 비율이 함께 쓰는 살아 있는 표본. 같은 키는 마지막 줄이 이기고, 겹침
+# 분모 m 을 붙인 뒤 `max_age_s` 안에 끝난 것만 남긴다. 호출자가 `$k` 의 설정과
+# 표본 원문·`now` 의 형을 먼저 확인한다.
+def rt_cost_live($c; $k):
+  rt_orgs($c) as $orgs
+  | [$c.cost_samples | split("\n")[] | (fromjson? // null) | select(rt_cost_sample_ok($c.now))]
+  | (reduce .[] as $s ({}; .[[$s.run_id, $s.log] | tojson] = $s)) | [.[]]
+  | map(. + {g: rt_group_of($orgs; .account), len: (.t_end - .t_start)})
+  | [group_by(.g)[] | rt_cost_m[]]
+  | map(select(.t_end >= ($c.now - $k.max_age_s)));
+
 def rt_cost_table($c):
   ($c.config.cost // null) as $k
   | if (($k | rt_cost_cfg_ok) | not) or (($c.cost_samples | type) != "string") or (($c.now | type) != "number") then rt_cost_empty
-    else rt_orgs($c) as $orgs
-      | [$c.cost_samples | split("\n")[] | (fromjson? // null) | select(rt_cost_sample_ok($c.now))]
-      | (reduce .[] as $s ({}; .[[$s.run_id, $s.log] | tojson] = $s)) | [.[]]
-      | map(. + {g: rt_group_of($orgs; .account), len: (.t_end - .t_start)})
-      | [group_by(.g)[] | rt_cost_m[]]
-      | map(select(.t_end >= ($c.now - $k.max_age_s))) as $live
+    else rt_cost_live($c; $k) as $live
       | reduce rt_wins[] as $w (rt_cost_empty;
           [$live[] | (.) as $s | ($s.windows[$w] // null) as $x
             | select($x != null) | select($s | rt_cost_hyg($k.hygiene; $x))
@@ -619,6 +671,25 @@ def rt_cost_table($c):
           | reduce ($vs | group_by([.g, .kind]))[] as $gv (.;
               ($gv | rt_cost_cell($k; $w)) as $cell
               | if $cell == null then . else .[$w].by_group[$gv[0].g][$gv[0].kind] = $cell end))
+    end;
+
+# 쉼 문턱의 비율 ρ = Σd7 / Σd5. 두 창이 모두 위생을 통과한 살아 있는 표본만 더한다.
+# 설정이나 표본이 쓸 수 없거나 Σd5 가 최소 질량에 못 미치면 출하 기본 비율로 대신한다.
+# 어느 경우에도 오류를 내지 않는다 — 비율이 판정을 멈추게 하지 않도록.
+def rt_rest_rho($c):
+  {v: ($c.config.c.seven_day.default / $c.config.c.five_hour.default), source: "default"} as $dflt
+  | ($c.config.cost // null) as $k
+  | ($c.config.rest_min_mass // null) as $mm
+  | if (($k | rt_cost_cfg_ok) | not) or (($c.cost_samples | type) != "string") or (($c.now | type) != "number")
+       or (($mm | type) != "number") then $dflt
+    else [rt_cost_live($c; $k)[] | (.) as $s
+           | ($s.windows.five_hour // null) as $x5 | ($s.windows.seven_day // null) as $x7
+           | select($x5 != null and $x7 != null)
+           | select(($s | rt_cost_hyg($k.hygiene; $x5)) and ($s | rt_cost_hyg($k.hygiene; $x7)))
+           | {d5: (($x5.u1 - $x5.u0) / $s.m), d7: (($x7.u1 - $x7.u0) / $s.m)}] as $ds
+      | ($ds | map(.d5) | add) as $s5
+      | if $s5 == null or $s5 < $mm or $s5 <= 0 then $dflt
+        else {v: (($ds | map(.d7) | add) / $s5), source: "measured"} end
     end;
 
 # 표를 문맥의 `config.c` 위에 얹는다. 표의 칸이 주입된 같은 칸을 이긴다. 빈 창은
@@ -830,7 +901,9 @@ def rt_grant_lease($p; $o; $basis):
 def rt_grant_new($p; $a; $adm; $basis):
   {verdict: "GRANT", basis: $basis, account: $a.id, config_dir: $a.config_dir, group: $a.group,
    reservation_bp: $adm.reservation_bp, admitted_as: $adm.admitted_as, observed: rt_observed($p.groups[$a.group]),
-   lease_key: $p.okey, nonce: ($p.c.fresh_nonce // null), dormant: false, cost: $adm.cost};
+   lease_key: $p.okey, nonce: ($p.c.fresh_nonce // null), dormant: false, cost: $adm.cost,
+   order: (rt_phase($p.c) | {phase, phase_source, until_epoch, burst_length_s, burst_length_source}
+           + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null})};
 def rt_nextseq($p): ((([($p.c.leases.items // [])[] | .seq | select(type == "number")] | max) // 0) + 1);
 def rt_rec_new($p; $e):
   {schema: $p.schema, kind: "grant", run_id: $p.c.request.run_id, lineage: $p.c.request.lineage, nonce: $e.nonce,
@@ -958,15 +1031,42 @@ def rt_new($p; $basis0; $excl):
            w7: rt_w7($p.c; $p.groups[$a.group]; $adm.cost)}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
       | if ($cands | length) > 0 then
-          # 대여 층이 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
-          ($cands | sort_by([(if .a.lend_enrolled == true then 1 else 0 end),
-                             (if .a.class == "U" then 1 else 0 end), (0 - .w7),
-                             (0 - (if .a.lend_enrolled == true
-                                   then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
-                                   else .a.remaining_bp end)),
-                             (.a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end), .a.id])
-                  | .[0]) as $best
-          | rt_grant_new($p; $best.a; $best.adm; $basis) as $e
+          # 대여 층이 두 단계 모두에서 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
+          rt_phase($p.c) as $ph
+          | (if $ph.phase == "burst" then
+               {best: ($cands | sort_by([(if .a.lend_enrolled == true then 1 else 0 end),
+                                         (if .a.class == "U" then 1 else 0 end), (0 - .w7),
+                                         (0 - (if .a.lend_enrolled == true
+                                               then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
+                                               else .a.remaining_bp end)),
+                                         (.a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end), .a.id])
+                              | .[0]),
+                order: null}
+             else
+               # 쉼: 주간 여유 r7 이 문턱 T 아래인 계정을 작은 순으로 먼저 쓰고, 문턱 위는 큰
+               # 순으로 그 뒤에 둔다. 주간 창을 모르는 계정은 층 2 이고 r7 을 세지 않는다.
+               # r7 은 여기서만 쓰는 지역값이다 — `rt_aview` 는 fleet.sh 도 보는 보기다.
+               # 대여 행의 7일 창 끝은 10000 이 아니라 그 행의 대여 상한이다 — 상한 위는 사람 몫이다.
+               rt_rest_rho($p.c) as $rho
+               | (($rho.v * $p.c.config.cap_bp * $ph.burst_length_s / 18000) | round) as $T
+               | [$cands[] | $p.groups[.a.group] as $G | $G.windows.seven_day as $x
+                   | (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end) as $top
+                   | (if $x.state == "unknown" then null else $top - rt_ueff($x) - $G.sigma.seven_day end) as $r7
+                   | . + {r7: $r7, tier: (if $r7 == null then 2 elif $r7 < $T then 0 else 1 end)}] as $rc
+               | ($rc | sort_by([(if .a.lend_enrolled == true then 1 else 0 end),
+                                 (if .a.class == "U" then 1 else 0 end), (0 - .w7), .tier,
+                                 (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end),
+                                 (.a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end), .a.id])
+                      | .[0]) as $b
+               | {best: $b,
+                  order: {threshold_bp: $T, ratio_source: $rho.source, tier: (["below", "above", "unknown"][$b.tier]),
+                          r7_bp: $b.r7,
+                          admitted: {below: ([$rc[] | select(.tier == 0)] | length),
+                                     above: ([$rc[] | select(.tier == 1)] | length),
+                                     unknown: ([$rc[] | select(.tier == 2)] | length)}}}
+             end) as $pick
+          | (rt_grant_new($p; $pick.best.a; $pick.best.adm; $basis)
+             | if $pick.order != null then .order += $pick.order else . end) as $e
           | rt_env($e; "write"; rt_rec_new($p; $e))
         elif $p.shift and $p.pin == null then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null)
         elif $p.pin != null then rt_nocand($p; $pool)
@@ -1265,6 +1365,105 @@ route__borrow_read_main() {
   printf '%s' "$r" | jq -c "$(route__jq_lib)"' {state: .state, donor: (if rt_borrowing then .donor.id else null end)}'
 }
 
+route__phase_path() {
+  # route__phase_path — cc-lane 운용 단계 기록의 절대 경로. 기준을 고르는 규칙은
+  # `route__borrow_path` 와 같다. 기준이 절대 경로가 아니거나 둘 다 비면 출력 없이
+  # rc 1 이다.
+  local base
+  if [ -n "${XDG_STATE_HOME:-}" ]; then
+    base="$XDG_STATE_HOME"
+  elif [ -n "${HOME:-}" ]; then
+    base="$HOME"
+  else
+    return 1
+  fi
+  case "$base" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  if [ -z "${XDG_STATE_HOME:-}" ]; then base="$base/.local/state"; fi
+  printf '%s\n' "$base/cc-lane/phase.json"
+}
+
+route_phase_read() {
+  # route_phase_read [<file>] — 단계 기록의 정규형 한 줄
+  # `{state, phase, until_epoch, burst_length_s}`. `state` 는 absent·valid·corrupt 이고
+  # valid 가 아니면 나머지는 null 이다. 언제나 rc 0 이고 아무것도 만들지 않으며 표준
+  # 오류에 쓰지 않는다 — 단계를 못 읽어도 판정은 쉼으로 계속된다. 인자가 없으면
+  # absent 다. 심링크·일반 파일이 아닌 것과 상대 경로는 손상이다. 부재를 가르는 규칙은
+  # `route_borrow_read` 와 같다.
+  local f p out
+  local absent='{"state":"absent","phase":null,"until_epoch":null,"burst_length_s":null}'
+  local corrupt='{"state":"corrupt","phase":null,"until_epoch":null,"burst_length_s":null}'
+  if [ $# -lt 1 ]; then
+    printf '%s\n' "$absent"
+    return 0
+  fi
+  f="$1"
+  case "$f" in
+    /*) ;;
+    *) printf '%s\n' "$corrupt"; return 0 ;;
+  esac
+  if [ -L "$f" ]; then
+    printf '%s\n' "$corrupt"
+    return 0
+  fi
+  if [ -e "$f" ]; then
+    if [ ! -f "$f" ]; then
+      printf '%s\n' "$corrupt"
+      return 0
+    fi
+  else
+    p="$f"
+    while :; do
+      p="${p%/*}"
+      [ -n "$p" ] || p=/
+      if [ -e "$p" ] || [ -L "$p" ] || [ "$p" = / ]; then break; fi
+    done
+    if [ -d "$p" ] && [ -x "$p" ]; then
+      printf '%s\n' "$absent"
+    else
+      printf '%s\n' "$corrupt"
+    fi
+    return 0
+  fi
+  out=$(jq -c -s --arg schema "$ROUTE_PHASE_SCHEMA" "$(route__jq_lib)"' rt_phase_norm($schema)' "$f" 2>/dev/null) \
+    || out="$corrupt"
+  [ -n "$out" ] || out="$corrupt"
+  printf '%s\n' "$out"
+}
+
+route__phase_now() {
+  # route__phase_now — 지금 이 셸의 상태 루트에서 읽은 단계 기록. 경로를 유도할 수
+  # 없으면 absent 다 — 차용과 달리 단계를 모르는 것은 쉼으로 읽히는 정상 상태다.
+  local f
+  if f=$(route__phase_path); then
+    route_phase_read "$f"
+  else
+    route_phase_read
+  fi
+}
+
+route__phase_read_main() {
+  # phase-read [<file>] — `{"path":P,"phase":<정규형>}` 한 줄과 rc 0. 인자가 없으면
+  # `route__phase_path` 의 경로를 읽고, 경로를 유도할 수 없으면 `path` 는 null 이다.
+  local f r
+  if [ $# -gt 1 ]; then
+    printf '%s\n' 'usage: route.sh phase-read [<file>]' >&2
+    return 2
+  fi
+  if [ $# -eq 1 ]; then
+    f="$1"
+    r=$(route_phase_read "$f")
+  elif f=$(route__phase_path); then
+    r=$(route_phase_read "$f")
+  else
+    f=''
+    r=$(route_phase_read)
+  fi
+  jq -n -c --arg path "$f" --argjson phase "$r" '{path: (if $path == "" then null else $path end), phase: $phase}'
+}
+
 route__frames_of_file() {
   # route__frames_of_file <log> — 로그 한 파일의 창별 마지막 판독. 최상위
   # `utilization`·`rateLimitType` 은 읽지 않는다. 관측 시각은 그 프레임 앞의 마지막
@@ -1333,11 +1532,12 @@ route__config_json() {
     --argjson ca "$ROUTE_COST_MAX_AGE_S" --argjson cn "$ROUTE_COST_MAX_N" --argjson cm "$ROUTE_COST_MIN_N" \
     --argjson f5 "$ROUTE_COST_FLOOR_FIVE_HOUR" --argjson f7 "$ROUTE_COST_FLOOR_SEVEN_DAY" \
     --argjson hf "$ROUTE_COST_HYG_MIN_FRAMES" --argjson hc "$ROUTE_COST_HYG_MIN_COVER" \
+    --argjson rm "$ROUTE_REST_MIN_MASS" \
     '{k: {default: {five_hour: $k5, seven_day: $k7}, shift: {five_hour: $ks, seven_day: $ks}},
       c: {five_hour: {default: $c5, by_kind: {}, by_group: {}}, seven_day: {default: $c7, by_kind: {}, by_group: {}}},
       cost: {max_age_s: $ca, max_n: $cn, min_n: $cm, floor: {five_hour: $f5, seven_day: $f7},
              hygiene: {min_frames: $hf, min_cover: $hc}},
-      cap_bp: $cap, ttl_s: {"stage-log": $tl, tracker: $tt}, file_stale_factor: $ff}'
+      cap_bp: $cap, ttl_s: {"stage-log": $tl, tracker: $tt}, file_stale_factor: $ff, rest_min_mass: $rm}'
 }
 
 route_cost_samples_read() {
@@ -1383,7 +1583,7 @@ route_gather_context() {
   # 에서 bp 로 옮긴다. 그 변수가 없는 셸에서는 null 이 되고 결정은 rc 2 로 닫힌다.
   # 비용 표본은 원문 그대로 `cost_samples` 에 싣고, 저장소 때문에 rc 2 로 닫지 않는다.
   local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg bpath borrow bpj
-  local costs prog out lane
+  local costs prog out phase lane
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
   inv="${RUN_DIR:-}/inventory.json"
@@ -1407,6 +1607,9 @@ route_gather_context() {
     borrow='{"state":"corrupt"}'
     bpj=null
   fi
+  # 운용 단계 기록. 판독기는 언제나 rc 0 이라 `|| return 2` 로 부르지 않는다 — 단계를
+  # 못 읽은 판정은 쉼으로 계속된다.
+  phase=$(route__phase_now)
   table="$(run_pace_root)/leases"
   leases=$(route__table_read "$table" "$(boot_epoch 2>/dev/null || true)") || return 2
   run_id=$(printf '%s' "$req" | jq -r '.run_id // ""') || return 2
@@ -1428,10 +1631,10 @@ route_gather_context() {
   prog='{now: $now, request: $req, inventory: $inv, usage: $usage, frames: $frames, leases: $leases,
       sticky: ([$leases.items[] | select(.run_id == $req.run_id and .kind == "grant" and .live == true) | .account] | unique),
       seat: ({config_dir: $seat} + (if $lane == "" then {} else {lane: $lane} end)), config: $cfg, deadline: ($req.deadline // null),
-      borrow: $borrow, borrow_path: $bp, cost_samples: $cost_samples}'
+      borrow: $borrow, borrow_path: $bp, phase: $phase, cost_samples: $cost_samples}'
   set -- --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
     --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
-    --argjson borrow "$borrow" --argjson bp "$bpj" --arg lane "$lane"
+    --argjson borrow "$borrow" --argjson bp "$bpj" --argjson phase "$phase" --arg lane "$lane"
   # 판독 사이에 파일이 사라지거나 바뀌어 읽기가 실패하면 표본 없이 한 번 더 조립한다.
   if ! out=$(jq -cn "$@" --rawfile cost_samples "$costs" "$prog" 2>/dev/null); then
     [ "$costs" = /dev/null ] && return 2
@@ -2266,7 +2469,7 @@ route_resolve() {
 }
 
 route__usage() {
-  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|borrow-read|cost-sample-put|cost-table> [args]' >&2
+  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-release|lease-release-run|lease-of|lease-wait-put|lease-wait-drop|borrow-read|phase-read|cost-sample-put|cost-table> [args]' >&2
 }
 
 route__main() {
@@ -2291,6 +2494,7 @@ route__main() {
     lease-wait-put) route__wait_put_main "$@" ;;
     lease-wait-drop) route__wait_drop_main "$@" ;;
     borrow-read) route__borrow_read_main "$@" ;;
+    phase-read) route__phase_read_main "$@" ;;
     cost-sample-put) route__cost_put_main "$@" ;;
     cost-table) route_cost_table ;;
     *)

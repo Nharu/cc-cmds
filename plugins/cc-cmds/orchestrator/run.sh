@@ -3008,10 +3008,10 @@ run_ledger_series_check() {
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat '
   local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention '
-  local acct="" basis="" cost="" csrc="" worst n
+  local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
-    stage-lease) want='파견 id|계보|계정|레인|예약|비용|비용 출처|근거|관측' ;;
+    stage-lease) want='파견 id|계보|계정|레인|예약|비용|비용 출처|근거|관측|단계|단계 출처|문턱' ;;
     stage-wait)  want='계보|그룹|계정|까지|비용|비용 출처|근거' ;;
     *) printf '%s [run][거부] 원장 계열 검사: 이 검사가 모르는 계열이다 (%s)\n' "$(now_iso)" "$series" >&2; return 2 ;;
   esac
@@ -3064,6 +3064,18 @@ run_ledger_series_check() {
         case "$lease_basis" in *" $v "*) ;; *) run_ledger_refuse "$series" "$k" '닫힌 어휘'; return 2 ;; esac ;;
       stage-lease:관측)
         run_ledger_observed_ok "$v" || { run_ledger_refuse "$series" "$k" '관측 모양'; return 2; } ;;
+      stage-lease:단계)
+        phase="$v"
+        case "$v" in rest|burst|-) ;; *) run_ledger_refuse "$series" "$k" '닫힌 어휘'; return 2 ;; esac ;;
+      'stage-lease:단계 출처')
+        psrc="$v"
+        case "$v" in declared|absent|expired|corrupt|-) ;; *) run_ledger_refuse "$series" "$k" '닫힌 어휘'; return 2 ;; esac ;;
+      stage-lease:문턱)
+        # Not `RUN_LEDGER_BP_RE`: that stops at 1.0000 and a threshold need not.
+        thr="$v"
+        if [ "$v" != "-" ] && ! [[ $v =~ ^[0-9]+\.[0-9]{4}$ ]]; then
+          run_ledger_refuse "$series" "$k" '「-」 또는 I.FFFF 모양'; return 2
+        fi ;;
       stage-wait:그룹)
         case "$v" in
           -) ;;
@@ -3100,6 +3112,16 @@ run_ledger_series_check() {
   # neither.
   if { [ "$cost" = "-" ] && [ "$csrc" != "-" ]; } || { [ "$cost" != "-" ] && [ "$csrc" = "-" ]; }; then
     run_ledger_refuse "$series" '비용 출처' '「비용」 과 함께만 「-」'; return 2
+  fi
+  # The phase and its source come from one `order` or from none, and only a
+  # rest ordering carries a threshold.
+  if [ "$series" = "stage-lease" ]; then
+    if { [ "$phase" = "-" ] && [ "$psrc" != "-" ]; } || { [ "$phase" != "-" ] && [ "$psrc" = "-" ]; }; then
+      run_ledger_refuse "$series" '단계 출처' '「단계」 와 함께만 「-」'; return 2
+    fi
+    if [ "$thr" != "-" ] && [ "$phase" != "rest" ]; then
+      run_ledger_refuse "$series" '문턱' '「단계=rest」 일 때만 값'; return 2
+    fi
   fi
   # THE LENGTH, MEASURED ON THE WORST FRAME. `교대=999` in front, the 64-hex
   # `prev=` behind, the newline — and eight bytes more, because the shift number
