@@ -77,7 +77,7 @@ A shift's cost grows with the square of its length, so the cheapest thing a rout
 | `act` | check, record, perform a pipeline act |
 | `exec` | check, record, perform one bash line |
 | `wait` | block until a dispatched stage terminates; writes no row, evaluates no boundary and takes no `--snapshot-digest`. Its exit status is the stage's own rc, 11–14 below, or 15 when the waiting shift is already at the hard limit |
-| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no — on a judgment or re-authorization approval a flag may only agree with the label the person chose) |
+| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no — on a judgment approval a flag may only agree with the label the person chose) |
 | `prompt` | the canonical question and the gate's menu for one pending approval, as JSON — what you carry verbatim into `AskUserQuestion`; changes nothing |
 
 **Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
