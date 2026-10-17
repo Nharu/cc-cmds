@@ -8410,12 +8410,17 @@ run_cycle_budget() {
   printf '%s' "$total"
 }
 
-# Whether a segment other than $1 has not ended yet — the driver's reading of
-# the router's first re-plan clause (a sibling with a `segment` row that has not
-# ended). The walk is serial, so every segment before $1 in `plan.tsv` already
-# landed, parked or was skipped; an open sibling is one after it that an earlier
-# run did not land (`done.txt`) or leave at an open pull request
-# (`skipped.txt`). Only such a sibling holds a plan a `재설계 필요` voids.
+# Whether a segment other than $1 has not ended yet and holds a plan — the
+# driver's reading of the router's re-plan clauses 1 and 3 (a sibling that has
+# not ended, with an implement row carrying `plan_sha256` above the cited
+# re-convergence row). The walk is serial, so every segment before $1 in
+# `plan.tsv` already landed, parked or was skipped; a candidate is one after it
+# that an earlier run did not land (`done.txt`) or leave at an open pull request
+# (`skipped.txt`). A candidate not yet started has only its planned row and no
+# plan to void: it takes its baseline when its own S4 starts, so the router puts
+# it in no `replan_due[]` element and answers `재구현` for $1 on the same ledger.
+# Called right after this segment's re-convergence row is written, so every
+# implement row the ledger holds stands above that row.
 segment_open_sibling() {
   local s="$1" seen=0 seg repo files deps morder
   while IFS="$(printf '\t')" read -r seg repo files deps morder; do
@@ -8424,7 +8429,9 @@ segment_open_sibling() {
     [ "$seen" = 1 ] || continue
     grep -qxF "$seg" "$RUN_DIR/done.txt" 2>/dev/null && continue
     grep -qxF "$seg" "$RUN_DIR/skipped.txt" 2>/dev/null && continue
-    return 0
+    { run_section_rows 'stage-result' || true; } | { grep -F "| 세그먼트=$seg |" || true; } \
+      | awk '/plan_sha256=/ && (/종류=implement( |$)/ || /\| 스테이지=S4 \|/) { b = 1 } END { exit (b ? 0 : 1) }' \
+      && return 0
   done < "$RUN_DIR/plan.tsv"
   return 1
 }
@@ -9729,7 +9736,7 @@ segment_cycle() {
       judgment_call redesign-impact "$(stage_log_path "$sid")" >/dev/null || true
       # THE SAME SEGMENT GOES ON ONLY WHILE ITS SLICE STANDS. A moved slicing
       # declaration, or a `재설계 필요` verdict while a sibling segment has not
-      # ended and so holds a plan the verdict voids, is the generation path
+      # ended and holds a plan the verdict voids, is the generation path
       # every other re-convergence already takes. A re-convergence that fixed a
       # design-level finding moves the binding surface by definition, so its
       # verdict is almost always `재설계 필요`; with no open sibling that move
@@ -9742,7 +9749,7 @@ segment_cycle() {
         return 2
       fi
       if [ "$rv_verdict" = "재설계 필요" ] && segment_open_sibling "$seg"; then
-        log "$seg: 설계 수준 재수렴이 재설계 필요로 끝났고 끝나지 않은 다른 세그먼트가 있다 — 재계획 필요"
+        log "$seg: 설계 수준 재수렴이 재설계 필요로 끝났고 계획을 가진 끝나지 않은 다른 세그먼트가 있다 — 재계획 필요"
         return 2
       fi
       plan_digest=$(binding_digest)
