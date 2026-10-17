@@ -29011,6 +29011,109 @@ shh_run SR4 "$SHH_SR4" '답한 주체=좌석'
 shh_refused "첨부 없는 게이트 도달 좌석 실행 답" 2 '중단 답' "$shh_h0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SHH_PREV_AR"
 
+# --- 34m. 빈 대상 리뷰 정지 — 좌석은 구현 재파견으로 답하고, park 답은 park 행이 소비한다 ---
+# --- section: 34m | group: cone | covers: snapshot, act | anchors: 34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다, 34m: 뒤의 park 행이 세그먼트 park 답을 소비한다, 34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다 ---
+#
+# A REVIEW SENT TO A BRANCH WITH NO COMMIT STOPS, AND THE SEAT ANSWERS IT. The
+# record below keeps the shape review-unattended writes when the base and the
+# target head are the same commit: `gate-unanswerable`, the two options, and a
+# recommendation resting on the count of this machine. The routing shift answers
+# `구현 재파견` with an implementation, whose `stage-result` row spends the
+# answer; it answers `세그먼트 park` with a park row, which dispatches nothing,
+# so the gate counts that row as spending it — and only for that option, or an
+# answer to re-dispatch would vanish under a park written for another reason.
+SEB_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+SEB_RID=RSEB1
+cap_fx_new "$SEB_RID"
+mkdir -p "$CAP_DIR/halt"
+SEB_SEAT="7f7f7f7f-1111-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$SEB_SEAT.jsonl"
+seb_seg() {  # seb_seg <id> <상태> — a segment row the seat writes
+  cap_gate "$SEB_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$1" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SEB_SEAT" '')" \
+           --rationale x -- 워크트리="$CONE_A" "상태=$2" 선행=없음
+}
+seb_rec() {  # seb_rec <파일> <stage> — the empty-target halt as review-unattended writes it
+  { printf '<!-- cc-pipeline-halt v1; writer=review-unattended; reader=orchestrator; stage=%s; run=%s -->\n' "$2" "$SEB_RID"
+    printf '**중단 시각**: 2026-10-18T00:00:00Z\n**스킬**: review-unattended\n**스텝**: Step 1b 빈 대상\n'
+    printf '**분류**: gate-unanswerable\n'
+    printf '**질문 문면**: 대상 seg/x 가 베이스 abc1234 위에 커밋을 하나도 싣지 않아 리뷰할 것이 없습니다. 어떻게 할까요?\n'
+    printf '**관측 상세**: 대상 seg/x · 베이스 abc1234 · git rev-list --count abc1234..seg/x → 0\n'
+    printf '**선택지**:\n'
+    printf '%s\n' '- `구현 재파견` — 같은 계획으로 이 세그먼트의 구현 스테이지를 다시 보내 커밋을 만든 뒤 리뷰를 다시 받습니다' \
+      '- `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다' \
+      '**추천**: `구현 재파견` — 리뷰할 커밋이 없으므로 구현을 다시 보내야 리뷰할 대상이 생깁니다' \
+      '**추천 근거**: 기기 사실:git rev-list --count abc1234..seg/x → 0'
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$1"
+}
+seb_sr() {  # seb_sr <키> <종류> <실행 버전> <종단 부류>
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=%s | 실행 버전=%s | 세션 id=s-%s-%s | 종단 부류=%s | prev=x\n' \
+    "$1" "$1" "$2" "$3" "$1" "$3" "$4" >> "$CAP_LEDGER"
+}
+seb_answer() {  # seb_answer <키> <기록> <답한 주체> [argv…]
+  local key="$1" rec="$2" who="$3" att="${2%.md}.answer.md"; shift 3
+  if [ "$who" = "좌석" ]; then
+    printf '%s\n' '추천 근거 인용: 픽스처의 인용 (픽스처.md:1)' '되돌리는 법: 다른 선택지로 다시 답한다' > "$att"
+    cap_gate "$SEB_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SEB_SEAT" '')" \
+             --rationale "픽스처 — 좌석의 자동 답" \
+             -- "중단 기록=$rec" '답한 주체=좌석' '근거=기록의 추천을 고름' "첨부=$att" "$@"
+  else
+    cap_gate "$SEB_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$key" \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SEB_SEAT" '')" \
+             --rationale "픽스처 — 사람의 답" \
+             -- "중단 기록=$rec" '답한 주체=사람' '근거=사람이 고름' "$@"
+  fi
+}
+seb_held() {  # seb_held <기록> — that record's option in answered_halts, or nothing
+  cap_snap "$SEB_SEAT" '' | jq -r --arg r "$1" '[.answered_halts[] | select(.record == $r) | .option] | last // ""'
+}
+
+# E1: the seat answers with the recommendation, and nothing else is needed.
+seb_seg E1 실행중; seb_s1=$rc
+SEB_E1="$CAP_DIR/halt/E1#1.md"
+seb_rec "$SEB_E1" 'E1#1'
+seb_sr E1 review 1 '의도된 park'
+seb_answer E1 "$SEB_E1" 좌석
+check "34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다" \
+  "$seb_s1/$rc/$(row_field "$(cap_rows '중단 답' | tail -1)" '선택지')" "0/0/구현 재파견"
+check "34m: 그 행의 근거 종류는 기기 사실이다" "$(row_field "$(cap_rows '중단 답' | tail -1)" '근거 종류')" "기기 사실"
+check "34m: 스냅숏이 그 답을 answered_halts 로 내놓는다" "$(seb_held "$SEB_E1")" "구현 재파견"
+# A park row written for some other reason does not spend an answer to re-dispatch.
+seb_seg E1 park
+check "34m: 구현 재파견 답은 뒤의 park 행으로 소비되지 않는다" "$rc/$(seb_held "$SEB_E1")" "0/구현 재파견"
+seb_sr E1 implement 2 '정상 완료'
+check "34m: 구현 재파견 답은 뒤의 구현 stage-result 행이 소비한다" "$(seb_held "$SEB_E1")" ""
+
+# E2: a person answers `세그먼트 park`; a later segment row that is not a park
+# leaves the answer standing, and the park row spends it.
+seb_seg E2 실행중; seb_s2=$rc
+SEB_E2="$CAP_DIR/halt/E2#1.md"
+seb_rec "$SEB_E2" 'E2#1'
+seb_sr E2 review 1 '의도된 park'
+seb_answer E2 "$SEB_E2" 사람 '선택지=세그먼트 park'
+check "34m: 사람의 세그먼트 park 답이 선다" "$seb_s2/$rc/$(seb_held "$SEB_E2")" "0/0/세그먼트 park"
+seb_seg E2 실행중
+check "34m: park 아닌 세그먼트 행은 세그먼트 park 답을 소비하지 않는다" "$rc/$(seb_held "$SEB_E2")" "0/세그먼트 park"
+seb_seg E2 park
+check "34m: 뒤의 park 행이 세그먼트 park 답을 소비한다" "$rc/$(seb_held "$SEB_E2")" "0/"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SEB_PREV_AR"
+
+# The review skill writes that shape: the step, the class and the recommended
+# option are the literals the seat and the routing shift read.
+SEB_RU="$repo_root/plugins/cc-cmds/skills/review-unattended/SKILL.md"
+seb_lits=0
+for lit in '`**스텝**: Step 1b 빈 대상`' '`**분류**: gate-unanswerable`' \
+  '- `구현 재파견` — 같은 계획으로 이 세그먼트의 구현 스테이지를 다시 보내 커밋을 만든 뒤 리뷰를 다시 받습니다' \
+  '- `세그먼트 park` — 이 세그먼트를 이 런에서 내려놓고 아침 보고서에 남깁니다' \
+  '**추천**: `구현 재파견` — ' '**추천 근거**: 기기 사실:git rev-list --count <base>..<target head> → 0'
+do
+  grep -qF -- "$lit" "$SEB_RU" && seb_lits=$((seb_lits + 1))
+done
+check "34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다" "$seb_lits" "6"
+
 # --- 34k. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
 # --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
 #
