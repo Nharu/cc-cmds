@@ -45,12 +45,16 @@ It prints two lines per item, in the order the report's tag lines come:
 
 The title carries the run id because segment ids (`1`, `S2`) repeat from run
 to run. The body file holds the item's `이월 본문` lines with their six-space
-indent removed, then one line, `PR #<n> 의 리뷰 사이클 <사이클> 에서 넘어온
-항목입니다.`, where `<n>` is the segment's pull request. Nothing else is added —
-the review wrote the body once, and every path files the bytes the gate wrote.
-The number of items is the cycle's `P1`. Exit 3 means the segment's `다음` is
-not `이월` or its segment row names no pull request: read `다음` again, and
-treat anything else as the failure in step 6.
+indent removed, then one line naming where the item came from. When a segment
+row names the segment's pull request, the line is `PR #<n> 의 리뷰 사이클
+<사이클> 에서 넘어온 항목입니다.`; a segment reviewed before its pull request
+opens has none, and the line is `브랜치 <branch> 의 리뷰 사이클 <사이클>(리뷰
+HEAD <sha>) 에서 넘어온 항목입니다.`, with the branch from the segment rows and
+the reviewed HEAD from the cycle's row. Nothing else is added — the review
+wrote the body once, and every path files the bytes the gate wrote. The number
+of items is the cycle's `P1`. Exit 3 means the segment's `다음` is not `이월`
+or its segment rows name neither a pull request nor a branch: read `다음`
+again, and treat anything else as the failure in step 6.
 
 ## 3. One issue per item
 

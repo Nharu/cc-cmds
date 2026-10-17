@@ -709,7 +709,7 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # together with what a carry-over act names — the last cycle's number, review
 # HEAD and report path. A segment without a `segment` row is not in the run's
 # segment set and gets no element; `review_carry` carries the re-implementation
-# cycle cap for display only. The element has no streak or trigger field: the
+# cycle cap and the re-check round cap for display only. The element has no streak or trigger field: the
 # repeated-P0 guard is gone, and a field nothing writes is one a router reads.
 # ---------------------------------------------------------------------------
 printf -- '- `segment` | id=S8 | 상태=실행중 | 워크트리=/nonexistent/S8\n' >> "$LEDGER"
@@ -722,8 +722,8 @@ check "review_next 원소에 가드 필드가 없다" \
   "$(jq -c '.review_next[] | select(.["세그먼트"]=="S8") | keys' "$SNAP_N")" '["다음","리뷰 HEAD","리포트 경로","사이클","세그먼트"]'
 check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다" \
   "$(jq -r '[.review_next[] | select(.["세그먼트"]=="S9")] | length' "$SNAP_N")" "0"
-check "review_carry 가 재구현 사이클 상한 하나를 싣는다" \
-  "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2}'
+check "review_carry 가 재구현 사이클 상한과 확인 리뷰 회차 상한을 싣는다" \
+  "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2,"RECHECK_ROUND_CAP":2}'
 
 # ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
