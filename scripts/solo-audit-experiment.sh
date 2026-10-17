@@ -37,7 +37,8 @@
 #                 required by `status` and `--rerun-pair`
 #   --budget-usd  required by every call that may start billed work, with no
 #                 default: before each billed run, spent + 150 must not exceed
-#                 it, and before each classification call spent + 3
+#                 it, before resuming an opened run spent must be below it,
+#                 and before each classification call spent + 3
 #   --dry-run     select, prepare and check the manifests, then stop; never
 #                 calls the gate's act or the CLI
 #   --rerun-pair  discard one pair's state and records and run it again
@@ -271,6 +272,17 @@ guard() {
   fi
 }
 
+# guard_resume <what> — exit 4 before resuming an opened run once the spent
+# amount has reached the budget. Its reserve was taken when it was opened.
+guard_resume() {
+  local s
+  s=$(spent)
+  if awk -v s="$s" -v b="$budget" 'BEGIN { exit !(s >= b) }'; then
+    echo "solo-audit-experiment: budget guard — spent ${s} ≥ budget ${budget}; not resuming $1" >&2
+    exit 4
+  fi
+}
+
 # ---------- stage 1: select --------------------------------------------------
 
 select_pairs() {
@@ -297,20 +309,30 @@ select_pairs() {
     printf '%s\t%s\t%s\t%s\n' "$id" "$ow" "${ke:-}" "$ok" >> "$idx"
   done
 
-  local rows="$EXP/.rows.tsv" r name owner fa fe u why run base plan tier scope prow ipath isha tdoc tree pre
+  local rows="$EXP/.rows.tsv" r name owner first fa fe u why run base plan tier scope prow ipath isha tdoc tree pre
   : > "$rows"
   while IFS= read -r r; do
     name=$(basename "$r")
     case "$name" in *reader-*) continue ;; esac
-    has_fence "$r" || continue
     owner=$(hdr_field "$r" owner-doc)
+    # A report without the block stays on record: when it is a first audit
+    # that parked, it is what makes the later re-audit not the first one.
+    if ! has_fence "$r"; then
+      printf '%s\t%s\t-\t-\t-\t-\t%s\t%s\n' "$name" "${owner:--}" "공시 블록이 없다" "$r" >> "$rows"
+      continue
+    fi
     fa=$(fence_get "$r" '동결 시각'); fe=$(iso_epoch "$fa")
     u=$(fence_get "$r" '고유 결함 수')
-    why=""; run="-"; base="-"
+    why=""; run="-"; base="-"; first=""
+    [[ -z "$owner" ]] || first=$(report_name "$owner")
     if [[ -z "$fe" ]]; then why="동결 시각을 읽을 수 없다"
     elif (( fe < fep || fe >= tep )); then why="창 밖 (UTC $(epoch_date "$fe"))"
     elif [[ ! "$u" =~ ^[0-9]+$ ]]; then why="고유 결함 수를 읽을 수 없다"
     elif [[ -z "$owner" ]]; then why="owner-doc= 이 없다"
+    # The first audit of a document writes <report_name>; a later audit of the
+    # same document gets a suffixed name. With or without its block, that
+    # first report makes this one a re-audit.
+    elif [[ "$name" != "$first" && -f "$ar/$first" ]]; then why="같은 owner-doc 의 첫 감사 보고서 ${first} 가 따로 있다 (재감사)"
     fi
     if [[ -z "$why" ]]; then
       run=$(awk -F'\t' -v o="$owner" -v f="$fe" '$2 == o && $4 == 1 && $3 != "" && $3 < f && $3 > best { best = $3; id = $1 } END { print id }' "$idx")
@@ -542,6 +564,16 @@ prepare_pair() {
   git clone --quiet --no-hardlinks "$repo" "$ps/clone" || die "pair ${n}: clone failed"
   clone=$(cd "$ps/clone" && pwd -P)
   ( cd "$clone" && git checkout --quiet -b exp-base "$base" ) || die "pair ${n}: checkout of $base failed"
+  # Nothing past the base commit stays in the clone: the stages' worktrees
+  # share its refs, and git history is a leak the contamination check cannot
+  # see. Only exp-base is left, with no remote, and the rest is pruned.
+  ( cd "$clone" \
+    && git remote remove origin \
+    && git for-each-ref --format='%(refname)' | while IFS= read -r r; do
+         [[ "$r" == "refs/heads/exp-base" ]] || git update-ref -d "$r" || exit 1
+       done \
+    && git reflog expire --expire=now --all \
+    && git gc --quiet --prune=now ) || die "pair ${n}: removing history past $base from the clone failed"
   local drid arid
   drid=$(gen_run_id); arid=$(gen_run_id)
   while [[ "$arid" == "$drid" ]]; do arid=$(gen_run_id); done
@@ -614,7 +646,9 @@ run_seat_or_stop() {
   # A run not yet opened gets fresh manifest times, so a dry run's deadline is
   # never inherited.
   if [[ ! -d "$RUN_ROOT/$rid" ]]; then write_run_files "$kind" "$n"; m=$(kv "$ps/pair.state" "${kind}_manifest"); fi
-  [[ -d "$RUN_ROOT/$rid" ]] || guard "$RESERVE_RUN" "the ${kind} run of pair ${n}"
+  # Every seat entry is guarded: a resumed run starts new billed shifts too.
+  if [[ -d "$RUN_ROOT/$rid" ]]; then guard_resume "the ${kind} run of pair ${n}"
+  else guard "$RESERVE_RUN" "the ${kind} run of pair ${n}"; fi
   seat "$m" "$clone" "$rid" "$ps/seat-$kind.log" || rc=$?
   case "$rc" in
     0) return 0 ;;

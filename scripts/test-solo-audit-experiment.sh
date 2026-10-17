@@ -272,6 +272,13 @@ mk_teamdoc docs/c1.md "$base"; mk_run 20261011-00000c11 docs/c1.md 2026-10-11T00
 mk_report "$dar/docs-c1.md" docs/c1.md 2026-10-12T10:00:00+09:00 2000 0 2 1
 # A re-audit of c1, frozen later: the first audit is the one kept.
 mk_report "$dar/docs-c1.A1-3.md" docs/c1.md 2026-10-14T00:00:00Z 1000 0 1 0
+# n1's first audit parked without the block; its re-audit is still not the
+# first audit and must not become a candidate.
+mk_teamdoc docs/n1.md "$base"; mk_run 20261011-00000f11 docs/n1.md 2026-10-11T00:00:00Z team-4 single "$base"
+mk_report "$dar/docs-n1.md" docs/n1.md 2026-10-12T00:00:00Z 1000 0 3 1
+awk -v b="$FB" -v e="$FE" 'index($0, b) == 1 { s = 1; next } index($0, e) == 1 { s = 0; next } !s' "$dar/docs-n1.md" > "$dar/docs-n1.md.t"
+mv "$dar/docs-n1.md.t" "$dar/docs-n1.md"
+mk_report "$dar/docs-n1.A1-3.md" docs/n1.md 2026-10-14T00:00:00Z 3000 0 3 1
 
 mk_teamdoc docs/c2.md "$base"
 # Three runs on c2: the latest kickoff before the freeze is the team-4 one.
@@ -362,7 +369,9 @@ case "$(disp docs-w2.md)" in "제외|창 밖 (UTC 2026-10-17)") pass "window: 10
 [[ "$(disp docs-c6.md)" == "선정 5|-" ]] && pass "window: +09:00 freeze on 10-17 is 10-16 UTC → in" || fail "window: c6 is '$(disp docs-c6.md)'"
 case "$(disp docs-t1.md)" in "제외|팀 티어가 아니다"*) pass "selection: solo-tier original run excluded" ;; *) fail "selection: t1 is '$(disp docs-t1.md)'" ;; esac
 case "$(disp docs-b1.md)" in "제외|design_scope 가 base 다") pass "selection: base scope excluded" ;; *) fail "selection: b1 is '$(disp docs-b1.md)'" ;; esac
-case "$(disp docs-c1.A1-3.md)" in "제외|같은 owner-doc 의 더 이른 감사가 있다") pass "selection: the earliest audit per owner-doc is kept" ;; *) fail "selection: re-audit is '$(disp docs-c1.A1-3.md)'" ;; esac
+case "$(disp docs-c1.A1-3.md)" in "제외|같은 owner-doc 의 첫 감사 보고서 docs-c1.md 가 따로 있다 (재감사)") pass "selection: the first audit per owner-doc is kept" ;; *) fail "selection: re-audit is '$(disp docs-c1.A1-3.md)'" ;; esac
+case "$(disp docs-n1.A1-3.md)" in "제외|같은 owner-doc 의 첫 감사 보고서 docs-n1.md 가 따로 있다 (재감사)") pass "selection: a re-audit is excluded when the first audit has no block" ;; *) fail "selection: n1 re-audit is '$(disp docs-n1.A1-3.md)'" ;; esac
+[[ "$(disp docs-n1.md)" == "제외|공시 블록이 없다" ]] && pass "selection: a report without the block is recorded as 제외" || fail "selection: n1 is '$(disp docs-n1.md)'"
 case "$(disp docs-g1.md)" in "제외|기준 트리"*) pass "selection: 기준 트리 ≠ 판본= excluded" ;; *) fail "selection: g1 is '$(disp docs-g1.md)'" ;; esac
 case "$(disp docs-h1.md)" in "제외|인터뷰 기록 해시"*) pass "selection: interview hash mismatch excluded" ;; *) fail "selection: h1 is '$(disp docs-h1.md)'" ;; esac
 [[ -z "$(disp docs-reader-c1.md)" ]] && pass "selection: reader- files are not in the population" || fail "selection: reader file listed"
@@ -386,6 +395,14 @@ SOLO_EXP_STATE_ROOT="$ST1"
 c1clone=$(pstate "$E1" 1 clone)
 [[ "$(cd "$c1clone" && git rev-parse HEAD)" == "$base" ]] && pass "prepare: the clone's HEAD is the base commit" || fail "prepare: clone HEAD is not the base commit"
 [[ "$(cd "$c1clone" && git rev-parse --abbrev-ref HEAD)" == "exp-base" ]] && pass "prepare: branch exp-base" || fail "prepare: not on exp-base"
+[[ "$(cd "$c1clone" && git for-each-ref --format='%(refname)')" == "refs/heads/exp-base" && -z "$(cd "$c1clone" && git remote)" ]] \
+  && pass "prepare: the clone keeps only exp-base and no remote" || fail "prepare: the clone keeps other refs or a remote"
+( cd "$main" && git cat-file -e "${head_}^{commit}" ) || fail "prepare: the commit past the base is missing from the main repository"
+if ( cd "$c1clone" && git cat-file -e "${head_}^{commit}" ) 2>/dev/null; then
+  fail "prepare: a commit past the base is still readable in the clone"
+else
+  pass "prepare: no commit past the base is readable in the clone"
+fi
 drid=$(pstate "$E1" 1 design_run)
 if cmp -s "$main/docs/pipeline-run/20261011-00000c11.interview.md" "$c1clone/docs/pipeline-run/$drid.interview.md"; then
   pass "prepare: the interview copy is byte-identical"
@@ -484,6 +501,17 @@ scenario budget2
 rc=0; xp run --exp-id 20261017-000000b2 --budget-usd 153 >/dev/null 2>&1 || rc=$?
 nm=$(sed -n 's/.*--manifest \([^ ]*\) .*/\1/p' "$STUB_GATE_LOG" | sort -u | wc -l | tr -d ' ')
 [[ "$rc" == "4" && "$nm" == "2" ]] && pass "budget: spent 4 + 150 > 153 stops before the third run" || fail "budget: gave exit $rc after $nm runs"
+# An opened run that stopped is resumed only while spent is below the budget.
+scenario budget3
+export STUB_GATE_MODE=failopen STUB_RUN_COST=200
+rc=0; xp run --exp-id 20261017-000000b3 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
+unset STUB_GATE_MODE
+[[ "$rc" == "1" && "$(acts)" == "1" ]] || fail "budget: the opened run's first call gave exit $rc with $(acts) acts"
+rc=0; xp run --exp-id 20261017-000000b3 --budget-usd 200 >/dev/null 2>&1 || rc=$?
+[[ "$rc" == "4" && "$(acts)" == "1" ]] && pass "budget: spent 200 ≥ 200 → exit 4 before resuming an opened run" || fail "budget: resume gave exit $rc with $(acts) acts"
+rc=0; xp run --exp-id 20261017-000000b3 --budget-usd 201 >/dev/null 2>&1 || rc=$?
+[[ "$rc" == "4" && "$(acts)" == "3" ]] && pass "budget: spent 200 < 201 resumes the opened run, then stops before the next" || fail "budget: resume under budget gave exit $rc with $(acts) acts"
+unset STUB_RUN_COST
 
 # ---- the seat loop's stops --------------------------------------------------
 

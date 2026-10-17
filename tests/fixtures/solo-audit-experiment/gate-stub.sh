@@ -12,6 +12,8 @@
 #           the clone's docs/design-audit/
 #     wait  exits 5 (an approval for a person)
 #     fail  exits 7
+#     failopen  opens the run, writes a result line costing $STUB_RUN_COST,
+#           and exits 7
 #
 # Every run writes plugin-pin and a result line costing $STUB_RUN_COST
 # (default 2) under ${XDG_STATE_HOME}/cc-cmds/run/<run id>/.
@@ -47,6 +49,10 @@ rid=$(hdr run-id); kind=$(hdr anchor-kind); doc=$(hdr owner-doc)
 clone=$(grep -m 1 -E '^- `target` ' "$m" | tr '|' '\n' | sed -n 's/^ *메인 워크트리=//p' | sed 's/[[:space:]]*$//')
 rd="${XDG_STATE_HOME:?}/cc-cmds/run/$rid"
 mkdir -p "$rd/log"
+if [[ "${STUB_GATE_MODE:-ok}" == "failopen" ]]; then
+  printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "${STUB_RUN_COST:-2}" > "$rd/log/open.json"
+  exit 7
+fi
 n=$(( $(cat "$rd/stub-calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$rd/stub-calls"
 (( n >= 2 )) || exit 0
