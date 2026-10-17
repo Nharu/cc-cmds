@@ -122,7 +122,7 @@ CFI-2 and CFI-3 of the base skill (Step 5 → 6 → 7 and the freeze) are the se
 
 What this lead Reads of other files, and when: a row names a file under `plugins/cc-cmds/skills/` (or a run input `입력:<이름>`), a part of it — a verbatim heading, or the verbatim start of a line — and how far the part reaches: `절` to the next heading of the same or a higher level, `본문만` to the next heading of any level, `항목` the list item with its indented continuation (a paragraph: to the next blank line), `` 끝:`<line start>` `` to the line before that one, `전체` the whole file. `파견전` rows are Read before the first spawn, by the dispatcher in `디스패치` (`공통` is both); each later phase's rows are Read on entering that phase, never before. `팀원:` rows are the parts a member prompt names, not the lead's reads.
 
-**파견전 상한**: 138000 바이트
+**파견전 상한**: 155000 바이트
 
 | 단계 | 디스패치 | 파일 | 부분 | 범위 |
 |---|---|---|---|---|
@@ -139,6 +139,10 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Witness vs ledger (two artifacts, clean separation)` | 절 |
 | 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Task-assignment header (embed verbatim)` | 절 |
 | 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Per-skill parameter seam` | 본문만 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Reconcile ladder (witness-absent re-entry)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Escalation (failure phenotypes)` | 절 |
+| 파견전 | 공통 | `_common/verification.md` | `## 1. Claim taxonomy (5 categories)` | 절 |
+| 파견전 | 공통 | `_common/verification.md` | `## 2. The two tests: severity pre-filter, then filter test` | 절 |
 | 파견전 | 공통 | `_common/base-linkage.md` | `` ## 2. 무인 하위 런 — `베이스 설계` 행 `` | 절 |
 | 파견전 | 드라이버 | `_common/sidecar.md` | `### 1.1 Path and slug derivation` | 절 |
 | 파견전 | 시트 | `_common/sidecar.md` | `### 1.1 Path and slug derivation` | 절 |
@@ -165,6 +169,7 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 라운드2+ | 공통 | `_common/agent-team-protocol.md` | `## Task-assignment header (embed verbatim)` | 절 |
 | 재진입 | 공통 | `_common/agent-team-protocol.md` | `# Agent Team Protocol (Shared Rules)` | 본문만 |
 | 재진입 | 공통 | `_common/agent-team-protocol.md` | `## Reconcile ladder (witness-absent re-entry)` | 절 |
+| 재진입 | 공통 | `_common/agent-team-protocol.md` | `## Escalation (failure phenotypes)` | 절 |
 | 재진입 | 공통 | `_common/agent-team-protocol.md` | `## Dispatch-completeness gate (roster-vs-round, pre-wait)` | 절 |
 | 합성 | 공통 | `design/SKILL.md` | `### Step 4: Result Synthesis & Documentation (Korean)` | `` 끝:`- **Document location, plan derivation, and post-implementation update**` `` |
 | 합성 | 공통 | `_common/verification.md` | `## 3. Frozen vocabulary (the verdict/residual token table)` | 절 |
@@ -217,7 +222,6 @@ What this lead Reads of other files, and when: a row names a file under `plugins
 | 정합 | 공통 | `_common/agent-team-protocol.md` | `## Role↔agentId ledger v3` | 절 |
 | 정합 | 공통 | `_common/agent-team-protocol.md` | `## Witness vs ledger (two artifacts, clean separation)` | 절 |
 | 정합 | 공통 | `_common/agent-team-protocol.md` | `## Task-assignment header (embed verbatim)` | 절 |
-| 트리거:결손 | 공통 | `_common/agent-team-protocol.md` | `## Escalation (failure phenotypes)` | 절 |
 | 트리거:중단 | 공통 | `_common/agent-team-protocol.md` | `## Teardown & abort` | 절 |
 | 트리거:정지기록 | 공통 | `_common/pipeline-sidecar.md` | `` ## 4. `cc-pipeline-halt v1` — the halt record (not a sidecar) `` | 절 |
 | 트리거:정지기록 | 공통 | `_common/sidecar.md` | `### 1.3 Atomic write` | 절 |
