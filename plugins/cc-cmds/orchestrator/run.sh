@@ -3835,11 +3835,17 @@ routing_guard_check() {
   # run is unrouted); a record of `1` passes only with a regular-file baseline;
   # every other pair refuses the launch. The caller writes the reason to the
   # ledger and parks the stage — a silent failure would be read as a crashed
-  # stage and retried into the same refusal.
+  # stage and retried into the same refusal. A run that fleet launched on a lent
+  # seat (`fleet-lane` present) is refused unless it is routed: an unrouted run
+  # never asks the router and would take the seat without the lending checks.
   local rec="없음" snap="없음"
   if [ -e "${RUN_DIR:-}/routing-guard" ]; then
     rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
     rec=${rec:-빈 값}
+  fi
+  if [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ] && [ "$rec" != "1" ]; then
+    printf '대여 좌석 미라우팅 — 런 기록 %s, fleet-lane 기록 있음' "$rec"
+    return 1
   fi
   if [ -f "${RUN_DIR:-}/inventory.json" ] && [ ! -L "${RUN_DIR:-}/inventory.json" ]; then
     snap="정규 파일"
