@@ -39932,7 +39932,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 88r. 실측 리뷰 수열 재생 — 두 수열의 처분을 행 위치로 다시 읽는다
-# --- section: 88r | group: ledger_series | covers: gate_segment_review_next, gate_segment_review_walk, gate_segment_cycle_count, gate_segment_cycle_cap, gate_segment_recheck_cap, gate_recheck_ladder_next, gate_segment_authored_after_last_cycle, gate_carry_eligibility, gate_cycle_review_closure | anchors: 88r: 351e739d C 의 첫 두 행은 수정 뒤 리드 수정이다, 88r: 351e739d C 갈래 A 는 이월 뒤 이월 머지로 끝난다, 88r: 351e739d C 갈래 B 는 셋째 확인 리뷰에서 잔여 보류로 끝난다, 88r: a639461d 1 의 첫 행은 사이클 9 여도 행 위치 1 로 읽혀 수정이다, 88r: a639461d 1 은 리드 수정 뒤 대리 2/1 로 다시 리드 수정이다, 88r: 상한에서 구현은 거부되고 같은 회차의 둘째 리드 수정도 거부된다, 88r: 확인 리뷰가 끝내는 값을 내면 다음 행을 부를 파견이 없다, 88r: 리뷰 종결 필드가 있어도 같은 처분이다 ---
+# --- section: 88r | group: ledger_series | covers: gate_segment_review_next, gate_segment_review_walk, gate_segment_cycle_count, gate_segment_cycle_cap, gate_segment_recheck_cap, gate_recheck_ladder_next, gate_segment_authored_after_last_cycle, gate_carry_eligibility, gate_cycle_review_closure | anchors: 88r: 351e739d C 의 첫 두 행은 수정 뒤 리드 수정이다, 88r: 351e739d C 갈래 A 는 이월 뒤 이월 머지로 끝난다, 88r: 이월 머지 뒤 베이스 해소 구현 행은 확인 리뷰를 부르지 않고 이월 머지가 선다,88r: 351e739d C 갈래 B 는 셋째 확인 리뷰에서 잔여 보류로 끝난다, 88r: a639461d 1 의 첫 행은 사이클 9 여도 행 위치 1 로 읽혀 수정이다, 88r: a639461d 1 은 리드 수정 뒤 대리 2/1 로 다시 리드 수정이다, 88r: 상한에서 구현은 거부되고 같은 회차의 둘째 리드 수정도 거부된다, 88r: 확인 리뷰가 끝내는 값을 내면 다음 행을 부를 파견이 없다, 88r: 리뷰 종결 필드가 있어도 같은 처분이다 ---
 #
 # 런 20261011-351e739d 의 세그먼트 `C` 와 런 20261011-a639461d 의 세그먼트 `1` 의 cycle 행
 # 수열을 첫 두 행까지 다시 놓는다. 이 두 원장에는 리드 수정 행이 하나도 없다. 그래서 셋째
@@ -39972,6 +39972,14 @@ check "88r: 351e739d C 갈래 A 의 대리 0/1 은 이월이다" \
 lsr_rp_carry "$L88RA" C 3 1
 check "88r: 351e739d C 갈래 A 는 이월 뒤 이월 머지로 끝난다" \
   "$(lsr_rp_state "$L88RA" "$M88R" C)" "이월 머지|3|거부|거부|0"
+# 이월 머지 뒤 베이스 충돌의 해소는 구현 파견이라 정산 행이 `종류=implement` 다. 그 행은
+# 재구현이 아니므로(정상 완료 재수렴 행 뒤가 아님) 5행의 확인 리뷰를 부르지 않고 이월 머지가
+# 선다 — 베이스 오버레이가 그 위에 해소 리뷰를 얹을 수 있다. 저작 뒤(다섯째 칸)는 서서 같은
+# HEAD 재리뷰 거절은 풀린다.
+printf -- '- `stage-result` | 교대=1 | 세그먼트=C | 스테이지=C | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$L88RA"
+check "88r: 이월 머지 뒤 베이스 해소 구현 행은 확인 리뷰를 부르지 않고 이월 머지가 선다" \
+  "$(lsr_rp_state "$L88RA" "$M88R" C)/$(lsr_in Linux "$L88RA" - lsr_rp_in "$M88R" gate_segment_review_walk C 2>/dev/null | grep -E '^(재저작|저작) 뒤=' | tr '\n' ' ')" \
+  "이월 머지|3|거부|거부|1/저작 뒤=1 재저작 뒤=0 "
 L88RB=$(rp88r_c cb 차단)
 check "88r: 351e739d C 갈래 B 의 대리 0/1 차단은 상한 안의 확인 리뷰라 다시 리드 수정이다" \
   "$(cut -d/ -f4 < "$D88R/cb.out")" "리드 수정|3|거부|통과|0"

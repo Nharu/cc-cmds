@@ -11907,11 +11907,20 @@ r35_loop_in() {
   # 리드 수정(S5F)의 스텁은 상한 리포트(P0 1·P1 1)를 두고, R35_LFREC 대로 수정 기록을
   # 쓴다 — full 은 두 항목, part 는 한 항목, none 은 쓰지 않는다. R35_LFDIRT 면 끝난 뒤
   # 선언 밖 파일이 남은 것으로 친다.
+  # S1R 의 스트림은 R35_RVV 가 있으면 그 판정 줄과 종단 리터럴을 실은 result 객체 하나로,
+  # 드라이버가 진짜 판정 파서(gate_reconverge_verdict)로 읽는다. plan.tsv 는 S2 와,
+  # R35_SIB 가 있으면 그 뒤의 끝나지 않은 형제 S3 을 싣는다. 레포·선행 칸은 비워 두어
+  # plan.tsv 가 없던 때와 같은 값을 읽힌다.
+  printf 'S2\t\ta.txt\t\t\n' > "$RUN_DIR/plan.tsv"
+  [ -z "${R35_SIB:-}" ] || printf 'S3\t\tb.txt\t\t\n' >> "$RUN_DIR/plan.tsv"
   stage_spawn() {
     printf '%s %s\n' "$1" "$3" >> "$R35/spawn.log"
     printf '%s %s\n' "$1" "$2" >> "$R35/cwd.log"
     printf '0' > "$RUN_DIR/$1.rc"
     case "$1" in
+      S1R:*)
+        [ -z "${R35_RVV:-}" ] || jq -cn --arg t "$(printf '판정: %s\n%s' "$R35_RVV" "$LIT_RECONVERGE_TERMINAL")" \
+          '{type: "result", num_turns: 1, result: $t}' > "$(stage_log_path "$1")" ;;
       S5F:*)
         local crp; crp=$(printf '%s' "$3" | sed -n 's/.*--lead-fix \([^ ]*\) .*/\1/p')
         mkdir -p "$(dirname "$crp")"; [ -f "$crp" ] || r35_rep "$crp" 1 1
@@ -11963,7 +11972,8 @@ r35_loop_in() {
   }
   stage_account_of() { :; }; stage_plan_sha256() { :; }; stage_session_id() { printf -- '-'; }
   stage_parent_id() { printf -- '-'; }; stage_effort_rec_of() { printf -- '-'; }
-  stage_served_model_of() { printf -- '-'; }; stage_attempt_pinned() { printf '1'; }; stage_log_path() { printf '/dev/null'; }
+  stage_served_model_of() { printf -- '-'; }; stage_attempt_pinned() { printf '1'; }
+  stage_log_path() { case "$1" in S1R:*) printf '%s/s1r.json' "$RUN_DIR" ;; *) printf '/dev/null' ;; esac; }
   fileset_escape() {
     [ -f "$R35/lf-dirty" ] || return 0
     park "$1" cone 무효화 "게이트 park" "선언 밖 파일 편집"; return 1
@@ -12072,6 +12082,18 @@ check "35: 슬라이스 선언이 그대로인 재수렴 뒤에는 같은 회차
 r35_lrc=$(R35_DECLMOVE=1 R35_NX="리뷰_없음 재수렴" r35_loop rcv-moved 1 11 0 -- "$R35BOK" "$R35BOK")
 check "35: 재수렴이 슬라이스 선언을 옮기면 재계획(2)으로 가고 구현을 띄우지 않는다" \
   "$r35_lrc/$(r35_n '^S1R:S2:2 ')/$(r35_n '^S4:S2:2 ')/$(r35_n '^merge S2')" "2/1/0/0"
+# 결함을 고친 재수렴은 구속면을 움직이므로 거의 항상 `재설계 필요` 를 낸다. 그 판정은 끝나지
+# 않은 다른 세그먼트가 있을 때만 재계획(2)이고, 혼자인 세그먼트는 같은 회차에서 재구현한다 —
+# 같은 원장에서 라우터의 판정표가 `재구현` 을 내는 것과 같은 결말이다.
+r35_lrc=$(R35_RVV="재설계 필요" R35_NX="리뷰_없음 재수렴" r35_loop rcv-redesign 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 형제가 없는 세그먼트의 재수렴이 재설계 필요로 끝나면 같은 회차가 재구현·확인 리뷰를 띄우고 머지로 간다" \
+  "$r35_lrc/$(r35_n '^S1R:S2:2 ')/$(r35_n '^S4:S2:2 ')/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')/$(r35_n '^park')" "0/1/1/1/1/0"
+r35_lrc=$(R35_SIB=1 R35_RVV="재설계 필요" R35_NX="리뷰_없음 재수렴" r35_loop rcv-redesign-sib 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 끝나지 않은 형제가 있으면 재설계 필요는 재계획(2)으로 가고 구현을 띄우지 않는다" \
+  "$r35_lrc/$(r35_n '^S1R:S2:2 ')/$(r35_n '^S4:S2:2 ')/$(r35_n '^merge S2')" "2/1/0/0"
+r35_lrc=$(R35_SIB=1 R35_RVV="불필요" R35_NX="리뷰_없음 재수렴" r35_loop rcv-unneeded-sib 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 형제가 있어도 불필요로 끝난 재수렴은 같은 세그먼트를 재구현한다" \
+  "$r35_lrc/$(r35_n '^S4:S2:2 ')/$(r35_n '^merge S2')" "0/1/1"
 r35_lrc=$(R35_RCFAIL=1 R35_NX="리뷰_없음 재수렴 리드_수정" r35_loop rcv-fail 1 11 0 -- "$R35BOK" "$R35BOK")
 check "35: 종단 리터럴 없이 끝난 재수렴은 공허한 성공 행을 남기고 같은 번호의 리드 수정으로 이어진다" \
   "$r35_lrc/$(r35_n '^reconverge_row S2 S1R:S2:2 공허한 성공$')/$(r35_n '^S4:S2:2 ')/$(r35_n '^S5F:S2:2 ')/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')" \

@@ -18017,7 +18017,7 @@ gate_segment_review_count_verdict() {
 }
 
 gate_segment_review_walk() {
-  # gate_segment_review_walk <segment> — seven facts of the segment's review
+  # gate_segment_review_walk <segment> — eight facts of the segment's review
   # loop, one walk over its `cycle` and `stage-result` rows in ledger order,
   # both chosen by field equality on `세그먼트`:
   #   리드 수정 있음=<0|1>   a lead-fix row of the segment exists
@@ -18025,6 +18025,10 @@ gate_segment_review_walk() {
   #   확인 리뷰=<0|1>        the segment's first lead-fix row precedes the last
   #                          cycle row, so that cycle is a re-check review
   #   저작 뒤=<0|1>          an authoring row follows the last cycle row
+  #   재저작 뒤=<0|1>        a lead-fix row follows the last cycle row, or a
+  #                          re-implementation does — an implement row after a
+  #                          `정상 완료` re-convergence row that itself follows
+  #                          the last cycle row
   #   확인 리뷰 수=<K>       the cycle rows after the first lead-fix row
   #   재수렴 뒤=<0|1>        a re-convergence row follows the first lead-fix row
   #   마지막 뒤 재수렴=<없음|정상|실패>
@@ -18035,6 +18039,10 @@ gate_segment_review_walk() {
   # `종류`; an AUTHORING ROW is that, `종류=implement`, or the driver's
   # `스테이지=S4` with no `종류`. A RE-CONVERGENCE ROW is `종류=reconverge`,
   # which the gate's settlement and the driver's `reconverge_row` both write.
+  # Only a re-implementation makes an implement row re-author the re-check: the
+  # base resolution after a carried-over re-check is an implement dispatch too,
+  # and read as a re-implementation it would turn `이월 머지` — and the base
+  # overlay's `해소 리뷰` on top of it — into a re-check.
   # Every attempt counts whatever it ended as: a crashed implementation may
   # still have committed, and a failed re-convergence still spent the
   # segment's one re-convergence.
@@ -18057,7 +18065,7 @@ gate_segment_review_walk() {
       { nf = split($0, f, "|")
         if (fld("세그먼트") != ENVIRON["GATE_FEQ_V"]) next
         if (index($0, "- `cycle` ") == 1) {
-          recheck = lf; lfa = 0; aa = 0; rl = ""
+          recheck = lf; lfa = 0; aa = 0; ra = 0; rl = ""
           if (lf) kr++
           next
         }
@@ -18068,12 +18076,15 @@ gate_segment_review_walk() {
           next
         }
         islf = (k == "lead-fix" || (k == "" && st == "S5F"))
-        if (islf) { lf = 1; lfa = 1 }
-        if (islf || k == "implement" || (k == "" && st == "S4")) aa = 1
+        isim = (k == "implement" || (k == "" && st == "S4"))
+        if (islf) { lf = 1; lfa = 1; ra = 1 }
+        if (islf || isim) aa = 1
+        if (isim && rl == "정상") ra = 1
       }
       END {
         print "리드 수정 있음=" lf + 0; print "리드 수정 뒤=" lfa + 0
         print "확인 리뷰=" recheck + 0; print "저작 뒤=" aa + 0
+        print "재저작 뒤=" ra + 0
         print "확인 리뷰 수=" kr + 0; print "재수렴 뒤=" rcv + 0
         print "마지막 뒤 재수렴=" (rl == "" ? "없음" : rl)
       }'
@@ -18151,13 +18162,14 @@ gate_segment_review_next_table() {
   # gate_segment_review_next_table <segment> — `다음` as the review alone reads
   # it; `gate_segment_review_next` lays the base overlay on top. "Re-check" is a
   # last cycle row after the segment's first lead-fix row, K the number of such
-  # cycle rows, and an authoring row a lead-fix or implement row.
+  # cycle rows, and a re-authoring row a lead-fix row or an implement row after
+  # a `정상 완료` re-convergence row — both after the last cycle row.
   # The first row of this table that holds wins:
   #    1 no cycle row                                        리뷰 없음
   #    2 the last cycle was dismissed by a person            머지
   #    3 its P0 or P1 is empty or not canonical              판정 불가
   #    4 P0 = 0, P1 = 0                                      머지
-  #    5 a lead-fix row exists, an authoring row follows
+  #    5 a lead-fix row exists, a re-authoring row follows
   #      the last cycle row                                  확인 리뷰
   #    6 a lead-fix row exists, a re-convergence row after
   #      the last cycle row did not end `정상 완료`          리드 수정
@@ -18188,7 +18200,7 @@ gate_segment_review_next_table() {
   if [ "$p0" = "0" ] && [ "$p1" = "0" ]; then printf '머지'; return 0; fi
   walk=$(gate_segment_review_walk "$seg")
   if [ "$(gate_report_count "$walk" '리드 수정 있음')" = "1" ]; then
-    [ "$(gate_report_count "$walk" '저작 뒤')" = "1" ] && { printf '확인 리뷰'; return 0; }
+    [ "$(gate_report_count "$walk" '재저작 뒤')" = "1" ] && { printf '확인 리뷰'; return 0; }
     case "$(gate_report_count "$walk" '마지막 뒤 재수렴')" in
       실패) printf '리드 수정'; return 0 ;;
       정상) printf '재구현'; return 0 ;;
