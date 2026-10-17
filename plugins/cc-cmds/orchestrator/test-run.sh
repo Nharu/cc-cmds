@@ -10811,6 +10811,23 @@ case "$sp_lf" in
   *"settings/generic.json"*) ok "리드 수정 기동은 generic 설정을 싣는다" ;;
   *) bad "리드 수정 설정" "S5F 기동 argv 에 generic 설정이 없다: ${sp_lf:-(기동 안 됨)}" ;;
 esac
+# 대상 훅 문단 — 기동 디렉터리에 Bash 훅이 있을 때만 프롬프트 뒤에 붙는다. 세션의
+# 훅은 그 세션이 시작한 루트의 것이므로, 대상이 아니라 기동 디렉터리가 정한다.
+case "$sp_fresh" in
+  *"Remote commands under this repository's own Bash hook"*) bad "대상 훅 문단" "훅이 없는 기동 디렉터리에 문단이 실렸다" ;;
+  *) ok "훅이 없는 기동 디렉터리의 프롬프트에는 대상 훅 문단이 없다" ;;
+esac
+# 드라이버는 문단을 `$ORCH_DIR/../hooks` 의 엔진에서 읽는다 — 이 픽스처의 ORCH_DIR 옆에 둔다.
+mkdir -p "$SPD/.claude" "$SPD/hooks"
+cp "$(dirname "$DRIVER")/../hooks/target-hook-probe.sh" "$SPD/hooks/"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"true"}]}]}}' > "$SPD/.claude/settings.json"
+sp_hooked=$(sp_spawn "S5:segH:1" "$SPD/hooked.txt")
+rm -rf "$SPD/.claude"
+case "$sp_hooked" in
+  *" -- -p prompt"*"## Remote commands under this repository's own Bash hook"*"admit --request last"*)
+    ok "훅이 있는 기동 디렉터리의 프롬프트 뒤에 대상 훅 문단이 붙는다" ;;
+  *) bad "대상 훅 문단" "훅이 있는 기동 디렉터리의 argv 에 문단이 없다: ${sp_hooked:-(기동 안 됨)}" ;;
+esac
 
 # 판단 호출 — CLI argv 에 플래그가 실리고, 종류·effort·서빙 모델이 log 한 줄로 남는다.
 JCD="$WORK/judge-flags"; rm -rf "$JCD"; mkdir -p "$JCD/run/log"

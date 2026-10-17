@@ -947,5 +947,94 @@ XC="$HH/.config
 /tmp"
 router_row "라우터 입력: 앵커 변수의 제어 문자는 판정 불가로 거부" Write "$WORK/src/main.ts" deny 'carries a control character'
 
+# ---------------------------------------------------------------------------
+# 대상 저장소의 훅 곁 — 맨 명령의 요청 기록, 감싼 호출의 거절 기록(H1), 표 소비
+#
+# 세션의 루트가 제 Bash 훅을 단 저장소일 때, 이 훅은 맨 명령을 거절하되 그 바이트를
+# 요청으로 적고, 게이트 호출을 그 저장소의 훅이 거절할 것이면 거절 기록을 남기고,
+# 게이트가 남긴 표와 바이트·디렉터리·호출자·루트가 맞는 한 번은 허용한다. 어느
+# 경우에도 사람에게 묻는 답(ask·defer)을 내지 않는다.
+# ---------------------------------------------------------------------------
+# shellcheck source=/dev/null
+. "$repo_root/scripts/target-guard-fixtures.sh"
+# shellcheck source=/dev/null
+. "$repo_root/plugins/cc-cmds/hooks/target-hook-probe.sh"
+TP="$WORK/tguard"; tgf_repo "$TP" guard_b0.py; TP=$(cd -P "$TP" && pwd)
+TRD="$WORK/tguard-run"; mkdir -p "$TRD"
+decide_tg() {  # decide_tg <caller env…> -- <command>
+  local -a e=()
+  while [ "$1" != "--" ]; do e+=("$1"); shift; done; shift
+  out=$(jq -nc --arg c "$1" --arg cwd "$TP" '{tool_name:"Bash", tool_use_id:"tu-1", cwd:$cwd, tool_input:{command:$c}}' \
+        | ( cd "$TP" && env -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID "${e[@]}" CLAUDE_PROJECT_DIR="$TP" \
+              bash "$HOOK" --run-dir "$TRD" --gate "$GATE" --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" 2>/dev/null ))
+  dec=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
+  reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null)
+}
+tk1=$(thp_key_norm 'S1#1')
+
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'
+check "대상 훅 곁: 맨 push 는 거절된다" "$dec" "deny"
+check "대상 훅 곁: 그 바이트가 호출자의 요청으로 기록된다" \
+  "$(jq -r '[.caller, (.command_b64 | @base64d), .cwd, .project_dir] | join("|")' "$TRD/admit/req/$tk1" 2>/dev/null)" \
+  "S1#1|git push origin seg/x|$TP|$TP"
+case "$reason" in
+  *"recorded as request R-"*"admit --request last"*"issue the very same command again, byte for byte"*)
+    ok "대상 훅 곁: 거절 문면이 요청 번호와 admit 줄, 같은 바이트의 재발행을 든다" ;;
+  *) bad "대상 훅 곁: 요청 문면" "$reason" ;;
+esac
+
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- "$GATE exec --manifest /m.md --target a --segment S1 -- git push origin seg/x"
+check "대상 훅 곁: 그 저장소의 훅이 거절할 게이트 호출은 거절된다" "$dec" "deny"
+h1f=""; for h1f in "$TRD"/admit/refused/*/*; do break; done
+check "대상 훅 곁: 거절 기록이 호출자 종류와 판정을 싣는다" \
+  "$(jq -r '[.caller_kind, .verdict, .project_dir] | join("|")' "$h1f" 2>/dev/null)" "stage|거절|$TP"
+case "$reason" in
+  *"repository's own Bash hook refuses this spelling"*"issue the command bare"*) ok "대상 훅 곁: H1 문면이 맨 형태로 안내한다" ;;
+  *) bad "대상 훅 곁: H1 문면" "$reason" ;;
+esac
+rm -rf "$TRD/admit/refused"
+decide_tg CC_PIPELINE_SHIFT_ID='R2' -- "$GATE exec --manifest /m.md --target a --segment S1 -- git push origin seg/x"
+h1f=""; for h1f in "$TRD"/admit/refused/*/*; do break; done
+check "대상 훅 곁: 교대의 감싼 호출은 caller_kind=shift 로 기록된다" \
+  "$(jq -r .caller_kind "$h1f" 2>/dev/null)" "shift"
+
+# 표 — 게이트가 쓰는 모양 그대로 손으로 놓는다: 봉인된 번호와 그 번호를 실은 원장 행.
+mkdir -p "$TRD/admit/ticket"
+tk_body=$(jq -nc --arg b 'git push origin seg/x' --arg cwd "$TP" --arg cd "$(thp_common_dir "$TP")" \
+   --argjson exp "$(( $(date +%s) + 300 ))" \
+   '{command_b64:($b|@base64), cwd:$cwd, common_dir:$cd, caller:"S1#1", expires:$exp}')
+tk_id="T-1-1-$(printf '%s' "$tk_body" | thp_ticket_seal)"
+plant_ticket() {  # <id>
+  printf '%s' "$tk_body" | jq -c --arg id "$1" '. + {id:$id, line:1}' > "$TRD/admit/ticket/$tk1"
+}
+plant_ticket "$tk_id"
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'
+check "대상 훅 곁: 원장 행이 없는 표는 지켜지지 않고 치워지되 used 로 가지 않는다" \
+  "$dec|$(test -f "$TRD/admit/ticket/$tk1" && echo 표 || echo 치움)|$(ls "$TRD/admit/used" 2>/dev/null | wc -l | tr -d ' ')" \
+  "deny|치움|0"
+case "$reason" in
+  *"ticket for this command is not honoured"*) ok "대상 훅 곁: 지켜지지 않는 표의 문면이 다시 admit 하라고 든다" ;;
+  *) bad "대상 훅 곁: 지켜지지 않는 표의 문면" "$reason" ;;
+esac
+printf '| 자율 승인 | 티켓=%s | 형태=맨 |\n' "$tk_id" >> "$LEDGER"
+plant_ticket "T-1-1-000000000000000000000000"
+printf '| 자율 승인 | 티켓=%s | 형태=맨 |\n' "T-1-1-000000000000000000000000" >> "$LEDGER"
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'
+check "대상 훅 곁: 봉인이 본문과 맞지 않는 표는 원장 행이 있어도 지켜지지 않는다" "$dec" "deny"
+plant_ticket "$tk_id"
+decide_tg CC_PIPELINE_STAGE_ID='S1#2' -- 'git push origin seg/x'
+check "대상 훅 곁: 다른 호출자는 표를 쓰지 못한다" "$dec|$(test -f "$TRD/admit/ticket/$tk1" && echo 표)" "deny|표"
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'
+check "대상 훅 곁: 표와 맞는 한 번은 허용되고 표는 used 로 옮겨진다" \
+  "$dec|$(test -f "$TRD/admit/ticket/$tk1" && echo 남음 || echo 소비)|$(ls "$TRD/admit/used" 2>/dev/null | wc -l | tr -d ' ')" "allow|소비|1"
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'
+check "대상 훅 곁: 같은 바이트의 두 번째 발행은 다시 거절된다" "$dec" "deny"
+n_ask=0
+for c in 'git push origin seg/x' 'gh pr create --title t --body b' "$GATE exec --manifest /m.md -- gh pr view 1"; do
+  decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- "$c"
+  case "$dec" in ask|defer) n_ask=$((n_ask + 1)) ;; esac
+done
+check "대상 훅 곁: 어느 갈래도 ask 나 defer 로 답하지 않는다" "$n_ask" "0"
+
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

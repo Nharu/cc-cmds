@@ -4,16 +4,24 @@
 #
 # A PreToolUse hook that matches DANGEROUS command strings is a misuse detector,
 # not a boundary: a script file, an alias, `git -c`, `env`, or a here-doc defeats
-# it without ingenuity. So this one is inverted — it recognizes exactly one
-# command shape (`gate.sh`) and denies everything else. An allow-list has the
-# property a deny-list cannot: the "write it to a file and run the file" evasion
-# works against a deny-list and does nothing against this.
+# it without ingenuity. So this one is inverted — it recognizes the gate call
+# (`gate.sh`) and one more thing, the exact bytes the gate graded and recorded a
+# moment ago for this same caller, once (a ticket, below), and denies everything
+# else. A ticket keeps the allow-list's property rather than widening it: no
+# string passes that the gate did not grade first and leave a row for, and the
+# hook checks that row on the ledger rather than trusting the file. An
+# allow-list has the property a deny-list cannot: the "write it to a file and
+# run the file" evasion works against a deny-list and does nothing against this.
 #
 # AND ITS PURPOSE IS NOT BLOCKING ACTS. It is LEDGER COMPLETENESS. A denial here
 # is an escalation rather than a refusal — the reason text routes the model to
 # `gate.sh exec -- <argv>`, which performs the very same command after checking
-# and recording it. Nothing a stage legitimately needs becomes impossible; what
-# becomes impossible is doing it without a row.
+# and recording it, or, where the target repository's own Bash hook judges the
+# command string, to issuing it bare and having the gate admit it. Nothing a
+# stage legitimately needs becomes impossible; what becomes impossible is doing
+# it without a row. Where the target has such a hook, this one also runs it
+# ahead of the harness on a wrapped gate call and adds the target's own refusal
+# first, recorded and with the way round it named — it never adds a pass.
 #
 # WHY THIS SHIPS IN THE RUN SETTINGS AND NOT IN `hooks.json`. The plugin's hook
 # file loads for every session that loads the plugin, the user's own interactive
@@ -81,6 +89,16 @@ done
 # which never meets this hook. The gate owns the derivation; this asks for it.
 DIGEST_FILE=$(bash "$GATE" digest-path --manifest "${CC_PIPELINE_MANIFEST:-}" 2>/dev/null || true)
 [ -n "$DIGEST_FILE" ] || DIGEST_FILE="${RUN_DIR}/digest/gate-digest-router.json"
+
+# THE TARGET-HOOK ENGINE IS SOURCED, NOT STARTED. The file names under `admit/`
+# take the caller key through the same normalization the gate's digest file
+# takes, and the gate sources this same file for it — so the two cannot spell
+# one key two ways, and this hook does not start the whole gate on every call to
+# learn it. A missing engine leaves the gate call and the default deny exactly
+# as they were; only the request, the ticket and the prediction need it.
+THP_OK=0
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/target-hook-probe.sh" 2>/dev/null && THP_OK=1
 
 deny() {
   # A denial carries the escalation, not just the refusal. The verb name must
@@ -1460,6 +1478,29 @@ esac
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
 [ -n "$cmd" ] || deny "$(jstr 'gate: the command string could not be read — cannot judge is not allow')"
 
+# THE BYTES, NOT THE SHELL'S COPY OF THEM. `$( )` drops trailing newlines, and a
+# ticket or a prediction compares the string the harness hands every hook — so
+# the exact value is kept beside the convenient one, and every comparison that
+# decides an allow is made inside jq against the payload itself.
+cmd_exact=$(printf '%s' "$input" | jq -r '.tool_input.command // empty'; printf x)
+cmd_exact="${cmd_exact%x}"; cmd_exact="${cmd_exact%"$NL"}"
+tuid=$(printf '%s' "$input" | jq -r '.tool_use_id // empty')
+pcwd=$(printf '%s' "$input" | jq -r '.cwd // empty')
+if [ -n "$pcwd" ] && [ -d "$pcwd" ]; then pcwd=$(cd "$pcwd" && pwd -P); else pcwd=$(pwd -P); fi
+caller=""; caller_key=""
+if [ "$THP_OK" = 1 ]; then
+  caller=$(thp_caller_key)
+  [ -n "$caller" ] && caller_key=$(thp_key_norm "$caller")
+fi
+
+# The one admit line every message below prescribes. It carries no unquoted
+# program name and no verb of the act — a target guard that refuses a line
+# naming `git` or `push` beside another program sees only gate vocabulary here —
+# and it carries no `--cutpoint`, because the gate derives the cell from the
+# recorded bytes and the cell's own word would be one of those verbs.
+ADMIT_LINE="${GATE} admit --request last --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --surface 'one of 읽기·워크트리쓰기·트리밖쓰기·외부상태변경' --reach 'one of 런로컬·기기전역·dev·prod·협업·배포트리거·미상' --snapshot-digest 'the H value from the emitted file' --emit-digest --rationale 'why, in plain words'"
+ADMIT_HOWTO="Run 『 ${ADMIT_LINE} 』 and then issue the very same command again, byte for byte — the ticket the gate writes lets that one issue through, once. Leave --cutpoint out (the gate derives the cell), and keep the program's name and the act's verbs out of the --rationale text: the repository's hook reads the gate line too. A bare command runs in this session's own directory, so a push names the remote and the segment's branch rather than HEAD, @ or nothing, and starts with git itself, with no wrapper before it."
+
 hook_unquoted_shell_op() {
   # hook_unquoted_shell_op <명령 문자열> — 인용되지 않은 셸 제어 연산자가 있으면 참.
   #
@@ -1533,7 +1574,13 @@ hook_unquoted_shell_op() {
 }
 
 # ---------------------------------------------------------------------------
-# The allow-list is ONE shape, AND IT ENDS WHERE THE SHAPE ENDS.
+# The allow-list is the gate call plus the gate's own tickets, AND EACH ENDS
+# WHERE ITS SHAPE ENDS. A ticket (the branch after this one) is not a second
+# shape a stage can spell: it admits only the bytes the gate graded and wrote a
+# row for first, only to the caller that asked, only once, and for a push only
+# while the refs it pushes from are the ones the gate saw — so what passes
+# through it is exactly what the gate shape would have recorded, and nothing
+# the gate did not see.
 #
 # Anchored at the start of the command and matched against the gate's absolute
 # path, so a same-named script elsewhere on PATH does not satisfy it. What
@@ -1589,9 +1636,129 @@ if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
     esac
   done
   if hook_unquoted_shell_op "$scan"; then
-    deny "$(jstr "gate: the first token is the gate path, but what follows it carries an unquoted shell control operator (\`;\` \`&\` \`|\` a newline, a backtick, \$( ), \`>\`, \`<\`), or a quoting this hook cannot judge such as ANSI-C quoting (\$'…'). A command riding on the right of the gate runs without leaving a row in the ledger, which voids the one property this hook guarantees. No pipe is allowed after the gate — if only H is needed, use ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H, which prints the value alone on one line. The first choice is to split the commands and run each one through the gate. If the pipeline itself has to be passed, use the ${GATE} exec … -- bash -c '<pipeline>' form, and only when every command in that pipeline has a row in the grading table — the gate does not look inside the -c string, so an unlisted argv0 in there launders the \`등급 미상\` refusal the gate would have raised into the grade of bash, and the surface axis of the ledger keeps a value that differs from the act. Refused command: ${cmd}")"
+    deny "$(jstr "gate: the first token is the gate path, but what follows it carries an unquoted shell control operator (\`;\` \`&\` \`|\` a newline, a backtick, \$( ), \`>\`, \`<\`), or a quoting this hook cannot judge such as ANSI-C quoting (\$'…'). A command riding on the right of the gate runs without leaving a row in the ledger, which voids the one property this hook guarantees. No pipe is allowed after the gate — if only H is needed, use ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H, which prints the value alone on one line. The first choice is to split the commands and run each one through the gate. If the pipeline itself has to be passed, use the ${GATE} exec … -- bash -c '<pipeline>' form, and only when every command in that pipeline has a row in the grading table — the gate does not look inside the -c string, so an unlisted argv0 in there launders the \`등급 미상\` refusal the gate would have raised into the grade of bash, and the surface axis of the ledger keeps a value that differs from the act. A remote command never goes inside such a wrapper — the gate refuses that form. Refused command: ${cmd}")"
+  fi
+  # H1 — THE TARGET'S OWN REFUSAL, ADDED FIRST. When the session's root carries
+  # its own PreToolUse Bash hook, that hook judges this same string after this
+  # one allows it, and a guard that reads the act's words inside a gate call
+  # refuses it there — silently, as far as the ledger knows, and the next shift
+  # issues the same call again. So the root's hooks run here on the exact bytes
+  # first. A refusal, `ask`, `defer`, the failure of an entry that blocks on
+  # failure, or a settings file that cannot be read is written under
+  # `admit/refused/` for the gate to turn into a row on its next call, and
+  # refused with the bare form named. A pass adds nothing: the harness still
+  # runs the real hook. So does a non-blocking failure, which the harness runs
+  # the tool after, and a probe timeout, whose verdict only the real hook knows.
+  if [ "$THP_OK" = 1 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -d "${CLAUDE_PROJECT_DIR:-}" ]; then
+    h1_inner=$(thp_after_dashdash "$cmd_exact" 2>/dev/null) || h1_inner=""
+    if [ -n "$(printf '%s' "$h1_inner" | tr -d ' \t')" ]; then
+      h1_hooks=$(thp_bash_hooks "$CLAUDE_PROJECT_DIR" 2>/dev/null); h1_rc=$?
+      if [ -n "$h1_hooks" ] || [ "$h1_rc" -ne 0 ]; then
+        h1_out=$(thp_probe "$CLAUDE_PROJECT_DIR" "$cmd_exact" "$pcwd" "$tuid")
+        h1_v=$(printf '%s\n' "$h1_out" | sed -n '1p')
+        h1_t=$(printf '%s\n' "$h1_out" | sed -n '2p')
+        case "$h1_v" in 통과|'비차단 오류'|'시간 초과') h1_pass=1 ;; *) h1_pass=0 ;; esac
+        if [ "$h1_pass" = 0 ]; then
+          h1_note="it could not be recorded (this call has no caller key)"
+          if [ -n "$caller_key" ]; then
+            h1_dir="$RUN_DIR/admit/refused/$caller_key"
+            h1_name=$(thp_key_norm "${tuid:-n$(date +%s)-$$}")
+            h1_dig=$(thp_hook_digest "$CLAUDE_PROJECT_DIR" | awk '{print $1}')
+            if mkdir -p "$h1_dir" 2>/dev/null && h1_tmp=$(mktemp "$h1_dir/.tmp.XXXXXX" 2>/dev/null) \
+              && printf '%s' "$input" | jq -c --arg cwd "$pcwd" --arg pd "$CLAUDE_PROJECT_DIR" \
+                   --arg v "$h1_v" --arg t "$h1_t" --arg hd "$h1_dig" \
+                   --arg tg "${CC_PIPELINE_TARGET:-}" --arg sg "${CC_PIPELINE_SEGMENT:-}" \
+                   --arg caller "$caller" --argjson now "$(date +%s)" \
+                   --arg ck "$( [ -n "${CC_PIPELINE_STAGE_ID:-}" ] && printf stage || printf shift )" \
+                   '{command_b64: (.tool_input.command | @base64), cwd: $cwd, project_dir: $pd,
+                     verdict: $v, text: $t, hook_digest: $hd, target: $tg, segment: $sg,
+                     caller: $caller, caller_kind: $ck, tool_use_id: (.tool_use_id // ""),
+                     recorded: $now}' >"$h1_tmp" 2>/dev/null \
+              && mv -f "$h1_tmp" "$h1_dir/$h1_name" 2>/dev/null; then
+              h1_note="the gate records it as a row on its next call"
+            else
+              rm -f "${h1_tmp:-}" 2>/dev/null
+              h1_note="it could not be recorded (the refusal file could not be written)"
+            fi
+          fi
+          deny "$(jstr "gate: this repository's own Bash hook refuses this spelling (${h1_v}: ${h1_t:-no text}); ${h1_note}. The hook judges the command string, and a gate call carries the act's words, so issue the command bare, as the plain command itself — this hook refuses that first issue and records it as a request. Then: ${ADMIT_HOWTO}")"
+        fi
+      fi
+    fi
   fi
   allow "$(jstr 'gate: a gate call')"
+fi
+
+# THE TICKET. The gate's `admit` graded a recorded request, wrote its row and
+# left this file; the bytes it graded may now run once, for the caller that
+# asked, from the directory it was asked from, under a root that shares the
+# ticket's repository, before it expires. Consumed by an atomic rename — of two
+# calls racing for it, the one whose rename fails is refused. Everything is
+# compared against the payload inside jq, so no shell copy of the bytes decides.
+#
+# A FILE IN THAT PLACE IS NOT YET A TICKET. The write guards of this hook and of
+# the gate read a path where it is spelled, and a path assembled inside a
+# wrapper is not spelled anywhere, so the file alone proves nothing. A ticket
+# is honoured only when its id has the shape the gate issues and ends in the
+# seal of its contents, and exactly one admit row of the ledger (`형태=맨`)
+# names that id — the gate writes the row before the file, and rows are the
+# gate's. And a push is honoured only while the repository it runs in still has
+# the HEAD, refs and push settings it had when the gate graded it: a push
+# resolves its source when it runs, so a commit made in between would otherwise
+# go out ungraded.
+if [ -n "$caller_key" ]; then
+  tk="$RUN_DIR/admit/ticket/$caller_key"
+  if [ -f "$tk" ] && [ ! -L "$tk" ]; then
+    tk_now=$(date +%s)
+    tk_cd=$(thp_common_dir "${CLAUDE_PROJECT_DIR:-}")
+    tk_id=$(printf '%s' "$input" | jq -r --slurpfile t "$tk" --arg caller "$caller" --arg cwd "$pcwd" \
+      --arg cd "$tk_cd" --argjson now "$tk_now" '
+      ($t[0] // {}) as $k
+      | if ($k.caller == $caller) and ($k.cwd == $cwd) and (($k.common_dir // "") != "")
+           and ($k.common_dir == $cd) and (($k.expires // 0) > $now)
+           and ((.tool_input.command | @base64) == $k.command_b64)
+        then ($k.id // empty) else empty end' 2>/dev/null)
+    if [ -n "$tk_id" ]; then
+      tk_bad=""
+      tk_seal=$(thp_ticket_seal <"$tk" 2>/dev/null) || tk_seal=""
+      # The id is read from a file any hand may have written, so its shape is
+      # checked before it is used at all: an id holding a newline or a further
+      # `-` would compare only its last line's tail against the seal, and would
+      # match the ledger by its first line alone.
+      if ! [[ "$tk_id" =~ ^T-[0-9]+-[0-9]+-[0-9a-f]{24}$ ]]; then
+        tk_bad="its id is not the shape the gate issues"
+      elif [ -z "$tk_seal" ] || [ "${tk_id##*-}" != "$tk_seal" ]; then
+        tk_bad="its id does not seal its contents, so the gate did not write it"
+      elif [ -z "${LEDGER:-}" ] || [ ! -f "$LEDGER" ] \
+           || [ "$( { grep -F "| 티켓=${tk_id} |" "$LEDGER" 2>/dev/null || true; } | grep -cF '| 형태=맨 |' )" != "1" ]; then
+        tk_bad="no admit row of the ledger names it"
+      else
+        tk_rd=$(jq -r '.refs_dir // empty' "$tk" 2>/dev/null) || tk_rd=""
+        tk_rg=$(jq -r '.refs_digest // empty' "$tk" 2>/dev/null) || tk_rg=""
+        if [ -n "$tk_rg" ] && [ "$(thp_refs_digest "$tk_rd")" != "$tk_rg" ]; then
+          tk_bad="the HEAD, a ref or a push setting of '${tk_rd}' moved after the gate graded the push, so what it would push is not what was graded"
+        fi
+      fi
+      if [ -n "$tk_bad" ]; then
+        # Removed, never moved into `used/`: left in its place it would meet
+        # the next bare issue of the same bytes and refuse it again before a
+        # request is recorded, and in `used/` the settlement would read it as
+        # consumed.
+        rm -f "$tk" 2>/dev/null || true
+        deny "$(jstr "gate: the ticket for this command is not honoured: ${tk_bad}. Issue the command bare again and admit it again. ${ADMIT_HOWTO}")"
+      fi
+      tk_used="$RUN_DIR/admit/used"
+      tk_dest="$tk_used/$(thp_key_norm "$tk_id").$(thp_key_norm "${tuid:-n$tk_now-$$}")"
+      if mkdir -p "$tk_used" 2>/dev/null && mv "$tk" "$tk_dest" 2>/dev/null \
+        && [ "$(jq -r '.id // empty' "$tk_dest" 2>/dev/null)" = "$tk_id" ]; then
+        # The rename keeps the admit time; the gate's settlement of a remote
+        # write counts from the consumption, so the file is stamped now.
+        touch "$tk_dest" 2>/dev/null || true
+        allow "$(jstr "gate: a command the gate admitted (ticket ${tk_id})")"
+      fi
+      deny "$(jstr "gate: the ticket for this command was taken or replaced while this call read it — run the admit line again and issue the command once. ${ADMIT_HOWTO}")"
+    fi
+  fi
 fi
 
 # The re-invocation line must be one the stage can actually TYPE — and one this
@@ -1648,4 +1815,42 @@ fi
 # like — the exemption would be a real hole opened to make prose typecheck.
 # Quoting closes it with no hole at all, and it is the spelling the hardlink
 # refusal above already hands out.
-deny "$(jstr "gate: bash in this run reaches the ledger only by going through the gate. Take the --snapshot-digest value from the file the previous gate call emitted — open ${DIGEST_FILE} with the Read tool and copy the H field verbatim (Read is not bash and this hook does not see it). If the actor field of that file differs from \$CC_PIPELINE_STAGE_ID you have read the emission of another actor, so do not use it; take the value from the snapshot command below instead. There is exactly one form to run: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 'one of 읽기·워크트리쓰기·트리밖쓰기·외부상태변경' --reach 'one of 런로컬·기기전역·dev·prod·협업·배포트리거·미상' [--destructive] --snapshot-digest 'the H value from the emitted file' --emit-digest --rationale 'why this command is needed' -- ${cmd} 』 --reach is required for a write and for a remote-capable tool call, and may be omitted for a local read and for a worktree write that is not opaque. Add --destructive for a deletion or destruction that cannot be undone. Declare git push with --cutpoint push (\`머지\` when the destination is the base branch of the target) and --reach 협업. If the emitted file is absent (the first call of this run, or an emission that failed), run this command on its own first to get the value (only what is inside 『 』 is the command) — joining it onto one line or wrapping it in \$( ) makes the first token something other than the gate path, and this hook refuses again: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H 』 And if --emit-digest comes back refused as 'unknown argument', the gate copy is older than this flag: drop just that flag, run it again, and keep taking the value from the snapshot command from then on")"
+#
+# THE REQUEST. A bare command is refused here like any other, but where the
+# session's root carries its own Bash hook the bare form is the one that hook
+# can judge — so before refusing, the bytes are written down for the gate to
+# grade: under `admit/req/<caller key>`, one live request per caller, the newest
+# replacing the last, through a temporary file and a rename. Only a command the
+# gate could read as one plain line is written (no unquoted operator, at most
+# 8192 bytes), and only for a caller with a key. This hook writes no ledger row
+# and parses no shell: the row, and the authority, are the gate's `admit`.
+req_note=""
+if [ -n "$caller_key" ]; then
+  req_scan="$cmd_exact"
+  while :; do case "$req_scan" in *[[:space:]]) req_scan="${req_scan%?}" ;; *) break ;; esac; done
+  req_len=$(printf '%s' "$cmd_exact" | wc -c | tr -d ' ')
+  if hook_unquoted_shell_op "$req_scan"; then
+    req_note="This command was not recorded as a request: it carries an unquoted shell operator, and the gate admits only one plain command line."
+  elif [ "$req_len" -gt 8192 ]; then
+    req_note="This command was not recorded as a request: it is longer than 8192 bytes."
+  else
+    req_dir="$RUN_DIR/admit/req"
+    req_id="R-$(date +%s)-$$"
+    if mkdir -p "$req_dir" 2>/dev/null && req_tmp=$(mktemp "$req_dir/.tmp.XXXXXX" 2>/dev/null) \
+      && printf '%s' "$input" | jq -c --arg id "$req_id" --arg cwd "$pcwd" \
+           --arg pd "${CLAUDE_PROJECT_DIR:-}" --arg caller "$caller" --argjson now "$(date +%s)" \
+           '{id: $id, command_b64: (.tool_input.command | @base64), cwd: $cwd, project_dir: $pd,
+             caller: $caller, tool_use_id: (.tool_use_id // ""), recorded: $now}' >"$req_tmp" 2>/dev/null \
+      && mv -f "$req_tmp" "$req_dir/$caller_key" 2>/dev/null; then
+      req_note="This command was recorded as request ${req_id}. If it is a remote act of this run in a repository whose own Bash hook judges the command string, the bare form is the one to use: ${ADMIT_HOWTO} Where the repository has no such hook, use the exec form below instead."
+    else
+      rm -f "${req_tmp:-}" 2>/dev/null
+      req_note="This command could not be recorded as a request (the request file could not be written), so the admit route is not open for it; use the exec form below."
+    fi
+  fi
+fi
+default_text="gate: bash in this run reaches the ledger only by going through the gate. Take the --snapshot-digest value from the file the previous gate call emitted — open ${DIGEST_FILE} with the Read tool and copy the H field verbatim (Read is not bash and this hook does not see it). If the actor field of that file differs from \$CC_PIPELINE_STAGE_ID you have read the emission of another actor, so do not use it; take the value from the snapshot command below instead. There is exactly one form to run: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 'one of 읽기·워크트리쓰기·트리밖쓰기·외부상태변경' --reach 'one of 런로컬·기기전역·dev·prod·협업·배포트리거·미상' [--destructive] --snapshot-digest 'the H value from the emitted file' --emit-digest --rationale 'why this command is needed' -- ${cmd} 』 --reach is required for a write and for a remote-capable tool call, and may be omitted for a local read and for a worktree write that is not opaque. Add --destructive for a deletion or destruction that cannot be undone. Declare git push with --cutpoint push (\`머지\` when the destination is the base branch of the target) and --reach 협업. If the emitted file is absent (the first call of this run, or an emission that failed), run this command on its own first to get the value (only what is inside 『 』 is the command) — joining it onto one line or wrapping it in \$( ) makes the first token something other than the gate path, and this hook refuses again: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H 』 And if --emit-digest comes back refused as 'unknown argument', the gate copy is older than this flag: drop just that flag, run it again, and keep taking the value from the snapshot command from then on. A remote command (a push, a pull request, checks, a merge) in a repository whose own Bash hook refuses it inside a gate call goes the other way: issue it bare, then the gate's admit line, then the same command again."
+if [ -n "$req_note" ]; then
+  deny "$(jstr "${req_note} ${default_text}")"
+fi
+deny "$(jstr "$default_text")"
