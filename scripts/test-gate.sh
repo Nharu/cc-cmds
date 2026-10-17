@@ -2202,6 +2202,12 @@ STUBEOF
   si_argv_has() {
     tr ' ' '\n' < "$1" | grep -cx -F -- "$2" || true
   }
+  # si_gate_hooks — the plugin's `hooks/` beside the orchestrator copies under
+  # $WORK. The gate reads the target-hook engine from `../hooks/` of its own
+  # directory, as it sits in the plugin, so a copy without it cannot synthesize.
+  si_gate_hooks() {
+    [ -f "$WORK/hooks/target-hook-probe.sh" ] || cp -R "$repo_root/plugins/cc-cmds/hooks" "$WORK/hooks"
+  }
   # si_gate_nopolicy — a copy of the orchestrator directory WITHOUT
   # `stage-policy.md`, printed. A launcher that reaches the wrapper without the
   # policy is the failure both 14h and 34 refuse, and the only way to reach it
@@ -2212,6 +2218,7 @@ STUBEOF
       cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/gate-nopolicy"
       rm -f "$WORK/gate-nopolicy/stage-policy.md"
     fi
+    si_gate_hooks
     printf '%s/gate.sh' "$WORK/gate-nopolicy"
   }
   # si_synth <manifest> <run-dir> <alias> [VAR=value ...] — call the gate's
@@ -4180,6 +4187,159 @@ PJEOF
       if [ "$e" -lt "$cut" ]; then docker image rm -f "$id" >/dev/null 2>&1 || true; fi
     done
   }
+}
+
+# `tguard` — targets that carry a PreToolUse Bash hook of their own. Every
+# section of the family builds its own world with `tg_world` — a repository with
+# a fixture guard, a bare origin the remote's URL is rewritten to on each call, a
+# segment worktree, a manifest and a grant under a state home of its own — so no
+# section reads a ledger another one wrote. What the four share is these
+# helpers: the gate and the run hook called the way a session calls them, and
+# the target's own hook run on the same bytes, which is what the harness does
+# after the run hook allows.
+pre_tguard() {
+  [ -n "${PRE_TGUARD_DONE:-}" ] && return 0
+  PRE_TGUARD_DONE=1
+  # shellcheck source=/dev/null
+  . "$repo_root/scripts/target-guard-fixtures.sh"
+  # shellcheck source=/dev/null
+  . "$repo_root/plugins/cc-cmds/hooks/target-hook-probe.sh"
+  TG_HOOK="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"
+  TG_RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
+  # tg_manifest <run id> <cutpoint> <home main worktree> <target row…> — the
+  # manifest on stdout, binding digest included.
+  tg_manifest_body() {
+    local run="$1" cut="$2" home="$3" bd="$4" td r; shift 4
+    td=$(printf '%s\n' "$@" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+    printf '# 파이프라인 런 매니페스트 — %s\n' "$run"
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$run"
+    printf '     anchor-kind=repo; anchor-key=t/a;\n     owner-doc=(없음); origin-worktree=%s;\n' "$home"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$run"
+    printf '**앵커 종류**: repo\n**앵커 키**: t/a\n**사용자 확인 문면**: 픽스처\n\n'
+    printf '## 의도\n```text\n테스트\n```\n\n'
+    printf '## 대상\n**대상 맵 다이제스트**: %s\n' "$td"
+    for r in "$@"; do printf '%s\n' "$r"; done
+    printf '\n## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+    printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n{ "steps": [] }\n```\n\n'
+    printf '## 인가\n'; [ -z "$bd" ] || printf '**구속 다이제스트**: %s\n' "$bd"
+    printf '**런 최대 절단점**: %s\n**종료 지점**: 픽스처가 끝나면\n' "$cut"
+    printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+    printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+  }
+  tg_manifest() {  # tg_manifest <file> <run id> <cutpoint> <home> <target row…>
+    local f="$1" run="$2" cut="$3" home="$4" bd; shift 4
+    tg_manifest_body "$run" "$cut" "$home" "" "$@" > "$f"
+    bd=$(cd "$home" && bash -c 'CC_ORCH_SOURCE_ONLY=1 . "$1"; MANIFEST="$2"; binding_set_bytes | shasum -a 256 | cut -d" " -f1' _ "$TG_RUNSH" "$f")
+    tg_manifest_body "$run" "$cut" "$home" "$bd" "$@" > "$f"
+    mkdir -p "$home/docs/pipeline-grant" "$home/docs/pipeline-run"
+    { printf '# 파이프라인 인가 기록 — %s\n' "$run"
+      printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$home"
+      printf '## 인가 %s\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n' "$run"
+      printf '**권한 절단점**: %s\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n' "$cut"
+      printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+      printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/%s.md\n' "$home" "$run"
+    } > "$home/docs/pipeline-grant/$run.md"
+  }
+  tg_target_row() {  # tg_target_row <alias> <main worktree> <home 예|아니오> <cutpoint>
+    local cg
+    cg=$(cd "$2" && git rev-parse --path-format=absolute --git-common-dir)
+    printf -- '- `target` | 별칭=%s | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=master | 홈=%s | 원격 슬러그=t/%s | 절단점=%s | 말단 행위 상한=없음' \
+      "$1" "$2" "$cg" "$3" "$1" "$4"
+  }
+  # Every gate call here names the stub `gh` on its own `PATH="…` as well as
+  # through `TG_ENV`: the call has to stay a process, and the in-process census
+  # recognises a stub call by that spelling in the statement.
+  tg_H() { ( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H; }
+  tg_snap() { ( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ); }
+  # tg_g <dir> <gate argv…> — `rc` and `msg` as `gate` leaves them, called with
+  # the world's environment and the caller `TG_CALLER`.
+  tg_g() {
+    local d="$1"; shift
+    msg=$( cd "$d" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} PATH="$TG/bin:$PATH" \
+             bash "$GATE" "$@" 2>&1 ); rc=$?
+  }
+  # tg_world <name> <guard|-> — one target `a` with segment `SA` on branch
+  # `seg/<name>`, its worktree one commit ahead of an origin that has master.
+  # Sets the TG_* names every helper reads.
+  tg_world() {
+    local name="$1" guard="$2"
+    TG="$WORK/tg-$name"; mkdir -p "$TG/bin"
+    TG=$(cd -P "$TG" && pwd)
+    TG_A="$TG/A"; TG_WT="$TG/A-wt"; TG_ORIGIN="$TG/origin.git"; TG_BR="seg/$name"
+    TG_RUN="RT$name"; TG_STATE="$TG/state"; TG_RD="$TG_STATE/cc-cmds/run/$TG_RUN"
+    TG_M="$TG_A/plan.md"; TG_L="$TG_A/docs/pipeline-run/$TG_RUN.md"; TG_GR="$TG_A/docs/pipeline-grant/$TG_RUN.md"
+    TG_CALLER='SA#1'; TG_PD="$TG_A"
+    git init -q --bare "$TG_ORIGIN"
+    if [ "$guard" = - ]; then tgf_repo "$TG_A"; else tgf_repo "$TG_A" "$guard"; fi
+    # A gh that answers `pr list` from a file and records every argv.
+    cat > "$TG/bin/gh" <<TGGH
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TG/gh.log"
+case "\$*" in *"pr list"*) cat "$TG/prs.json" 2>/dev/null || echo "[]" ;; *"pr create"*) echo "https://github.com/t/a/pull/1" ;; *) exit 0 ;; esac
+TGGH
+    chmod +x "$TG/bin/gh"
+    # The URL rewrite that sends the slug's URL to the bare origin is left out of
+    # `TG_ENV_BASE`: admit compares the worktree's push URL with the slug, and a
+    # rewritten URL is a path that names no slug.
+    TG_ENV_BASE=(XDG_STATE_HOME="$TG_STATE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE= GIT_ALLOW_PROTOCOL=file
+                 PATH="$TG/bin:$PATH")
+    TG_ENV=("${TG_ENV_BASE[@]}" GIT_CONFIG_COUNT=1 "GIT_CONFIG_KEY_0=url.$TG_ORIGIN.insteadOf"
+            GIT_CONFIG_VALUE_0=https://github.com/t/a.git)
+    ( cd "$TG_A" && git remote add origin https://github.com/t/a.git \
+        && env "${TG_ENV[@]}" git push -q origin master \
+        && git worktree add -q -b "$TG_BR" "$TG_WT" ) || return 1
+    ( cd "$TG_WT" && printf 'y\n' > y && git add y && git commit -qm y ) || return 1
+    tg_manifest "$TG_M" "$TG_RUN" PR "$TG_A" "$(tg_target_row a "$TG_A" 예 PR)"
+    tg_g "$TG_A" act --manifest "$TG_M" --kind segment --target a --segment SA --cutpoint 커밋 \
+      --snapshot-digest "$(tg_H)" --rationale x -- 상태=실행중 "워크트리=$TG_WT" "브랜치=$TG_BR" 선행=없음
+  }
+  # The digest is taken with the rewrite in place: a snapshot reads the remote,
+  # and a read that cannot reach it records `원격 팁=미상` as a change.
+  tg_admit() {  # tg_admit <surface> [<extra gate flag>…]
+    local h; h=$(tg_H)
+    tg_admit_base "$h" "$@"
+  }
+  tg_admit_base() {
+    local h="$1" s="$2" TG_ENV; shift 2
+    TG_ENV=("${TG_ENV_BASE[@]}")
+    tg_g "$TG_WT" admit --request last --manifest "$TG_M" --target a --segment SA --surface "$s" \
+      --reach 협업 --snapshot-digest "$h" --rationale '세그먼트의 원격 행위' "$@"
+  }
+  tg_remote_check() {
+    tg_g "$TG_A" act --manifest "$TG_M" --kind remote-check --target a --segment SA --cutpoint 커밋 \
+      --surface 읽기 --reach 협업 --snapshot-digest "$(tg_H)" --rationale '원격 판독'
+  }
+  # tg_hook <command> [<cwd>] — the run hook on one Bash payload; `hdec` is its
+  # decision and `hout` the whole answer.
+  tg_hook() {
+    local c="$1" cwd="${2:-$TG_WT}"
+    hout=$(jq -nc --arg c "$c" --arg cwd "$cwd" --arg t "tu-$RANDOM-$RANDOM" \
+             '{tool_name:"Bash", tool_use_id:$t, cwd:$cwd, tool_input:{command:$c}}' \
+           | ( cd "$cwd" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} \
+                 CLAUDE_PROJECT_DIR="$TG_PD" bash "$TG_HOOK" --run-dir "$TG_RD" --gate "$GATE" \
+                 --ledger "$TG_L" --grant "$TG_GR" --manifest "$TG_M" 2>/dev/null ))
+    hdec=$(printf '%s' "$hout" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
+  }
+  # tg_issue <command> [<cwd>] — what a session's Bash call does: the run hook,
+  # then the target's own hooks on the same bytes, then the command itself.
+  # `idec` is `run-deny`, `target-<verdict>` or `ran`, `irc` the command's exit.
+  tg_issue() {
+    local c="$1" cwd="${2:-$TG_WT}" v
+    irc=""
+    tg_hook "$c" "$cwd"
+    if [ "$hdec" != allow ]; then idec=run-deny; return 0; fi
+    v=$(cd "$cwd" && for kv in "${TG_ENV[@]}"; do export "$kv"; done \
+          && thp_probe "$TG_PD" "$c" "$cwd" t 2>/dev/null | sed -n 1p)
+    if [ "$v" != 통과 ]; then idec="target-$v"; return 0; fi
+    idec=ran
+    ( cd "$cwd" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} bash -c "$c" ) >/dev/null 2>&1
+    irc=$?
+  }
+  tg_rows() { grep -c -- "^- \`$1\`" "$TG_L" 2>/dev/null || true; }
+  tg_last_row() { grep -- "^- \`$1\`" "$TG_L" 2>/dev/null | tail -1; }
+  # tg_age <file…> — move the mtime two minutes back, the settlement's wait.
+  tg_age() { perl -e '$t = time - 120; utime $t, $t, @ARGV' "$@"; }
 }
 
 # THE SHARED RUN FIXTURE IS SOURCED IN THE HEAD, not only in the section that
@@ -7836,6 +7996,7 @@ check "심링크를 거친 메인 워크트리의 체인도 물리 철자의 맵
 # rows are not what is measured. The ancestor file is restored afterwards.
 SI_IDG="$WORK/gate-ident"
 rm -rf "$SI_IDG"; cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$SI_IDG"
+si_gate_hooks
 cp "$WORK/CLAUDE.md" "$WORK/CLAUDE.md.keep"
 printf '# Ident top\nSI-IDENT-CANARY-6W\n## Ident rules\nthe citation rule\n' > "$WORK/CLAUDE.md"
 si_idh() {
@@ -38884,6 +39045,267 @@ case "$msg" in
   *"names a branch"*) ok "87b: 그 거절은 브랜치가 없다는 것을 든다" ;;
   *) bad "87b review-line 브랜치 없음 문면" "$msg" ;;
 esac
+
+# The `tguard` family's helpers are `pre_tguard` in the head, called here so a
+# full run defines them at the family's own position.
+pre_tguard
+
+# ---------------------------------------------------------------------------
+# 87c. 대상 훅 아래의 원격 행위 — 감싼 호출의 거절 기록, 맨 명령의 admit, 반복 차단
+# --- section: 87c | group: tguard | covers: admit, exec, act, snapshot | anchors: 87c: 감싼 push 는 런 훅이 거절하고 대상 거절 형태=감쌈 행이 남는다, 87c: 맨 push 는 요청으로 기록되고 admit 이 표를 낸다, 87c: 표를 쓴 재발행은 두 훅을 지나 원격에 닿는다, 87c: 원격 판독 뒤 소비된 push 표는 판정=관측 으로 닫힌다, 87c: 맨 gh pr create 도 같은 순서를 지난다, 87c: 맨 env gh pr view 는 예측 거절이고 표가 없다, 87c: 같은 조건의 같은 행위는 admit 에서 막힌다, 87c: guard_refusals 는 같음 에서 바뀜 으로 바뀐다, 87c: 가드 파일을 고치면 대상 훅 행이 남고 막힘이 풀린다, 87c: 원격에 닿지 못한 판독 뒤에는 소비된 표가 기다린다, 87c: 효과 없이 소비된 push 표는 판정=추정 이 된다, 87c: settings.json 을 고치면 표면 이동이다, 87c: defer 로 답하는 가드 아래의 admit 은 rc 3 이고 표가 없다, 87c: 낱말 가드 아래에서도 맨 push 는 admit 을 거쳐 원격에 닿는다 ---
+#
+# 이슈 #1291 의 B0 가드(guard_b0.py)를 단 대상 하나에서, 세션이 하는 그대로 — 런
+# 훅, 그다음 대상 훅, 그다음 명령 — 를 `tg_issue` 로 밟는다. 원격은 베어 레포이고
+# gh 는 argv 를 남기는 스텁이다.
+# ---------------------------------------------------------------------------
+tg_world c guard_b0.py
+check "87c: 픽스처 세계의 세그먼트 행이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
+head87c=$(cd "$TG_WT" && git rev-parse HEAD)
+
+# 감싼 push — 게이트 줄이 git 낱말을 실으므로 B0 가 거절한다. 런 훅(H1)이 먼저 그
+# 판정을 보고 거절 기록을 남기며, 게이트는 다음 호출에서 그것을 행으로 옮긴다.
+tg_issue "$GATE exec --manifest $TG_M --target a --segment SA --cutpoint push --surface 외부상태변경 --reach 협업 --snapshot-digest x --rationale x -- git push origin $TG_BR" "$TG_A"
+r87c_wrap=$idec
+tg_remote_check
+check "87c: 감싼 push 는 런 훅이 거절하고 대상 거절 형태=감쌈 행이 남는다" \
+  "$r87c_wrap|$(tg_last_row '대상 거절' | grep -c '행위자=스테이지 | 형태=감쌈 | 근거=예측')|$(find "$TG_RD/admit/refused" -type f | wc -l | tr -d ' ')" "run-deny|1|0"
+case "$hout" in
+  *"repository's own Bash hook refuses this spelling"*"issue the command bare"*) ok "87c: 그 거절은 맨 형태와 admit 줄을 안내한다" ;;
+  *) bad "87c H1 거절 문면" "$hout" ;;
+esac
+
+# 맨 push — 런 훅이 요청으로 적고 거절한다. admit 은 B0 를 같은 바이트로 돌려 통과를
+# 보고 표를 낸다.
+tg_issue "git push origin $TG_BR"
+r87c_bare=$idec
+r87c_req=$(test -f "$TG_RD/admit/req/$(thp_key_norm "$TG_CALLER")" && echo 있음 || echo 없음)
+tg_admit 외부상태변경
+check "87c: 맨 push 는 요청으로 기록되고 admit 이 표를 낸다" \
+  "$r87c_bare|$r87c_req|$rc|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)" "run-deny|있음|0|표"
+check "87c: admit 행은 실행 전에 형태=맨 과 예측=통과 를 싣는다" \
+  "$(tg_last_row '자율 승인' | grep -c "절단점=push | 유도 절단점=push .*형태=맨 | 요청=R-.* | 티켓=T-.* | 예측=통과 | argv=git push origin $TG_BR")" "1"
+tg_issue "git push origin $TG_BR"
+check "87c: 표를 쓴 재발행은 두 훅을 지나 원격에 닿는다" \
+  "$idec|$irc|$(git --git-dir="$TG_ORIGIN" rev-parse "$TG_BR" 2>/dev/null)" "ran|0|$head87c"
+
+# 정산 — 소비된 표가 30 초보다 오래되면 다음 원격 판독이 원격의 변화를 보고 닫는다.
+tg_age "$TG_RD"/admit/used/*
+tg_remote_check
+check "87c: 원격 판독 뒤 소비된 push 표는 판정=관측 으로 닫힌다" \
+  "$(tg_last_row '맨 명령 결과' | grep -c '판정=관측')|$(ls "$TG_RD/admit/used" | wc -l | tr -d ' ')" "1|0"
+
+# 맨 PR 생성 — 같은 순서. 판독이 열린 PR 을 읽으면 생성 표도 관측으로 닫힌다.
+tg_issue "gh pr create --head $TG_BR --base master --title t --body b"
+tg_admit 외부상태변경
+r87c_pa=$rc
+tg_issue "gh pr create --head $TG_BR --base master --title t --body b"
+r87c_pi="$idec|$irc"
+printf '[{"number":1,"state":"OPEN","headRefOid":"%s"}]\n' "$head87c" > "$TG/prs.json"
+tg_age "$TG_RD"/admit/used/*
+tg_remote_check
+check "87c: 맨 gh pr create 도 같은 순서를 지난다" \
+  "$r87c_pa|$r87c_pi|$(grep -c 'pr create' "$TG/gh.log")|$(tg_rows '맨 명령 결과')" "0|ran|0|1|2"
+
+# 맨 `env gh pr view` — 머리가 git 도 gh 도 아닌 마디에 gh 가 있어 B0 가 맨 형태로도
+# 거절한다. admit 은 거절을 예측하고, 행만 남기고 표를 내지 않는다. (gh pr merge
+# --admin 은 B0 보다 게이트의 머지 결속 규칙이 먼저 막으므로 이 예로 쓰지 않는다.)
+tg_issue "env gh pr view 1"
+tg_admit 읽기
+check "87c: 맨 env gh pr view 는 예측 거절이고 표가 없다" \
+  "$rc|$(tg_last_row '대상 거절' | grep -c '형태=맨 | 근거=예측')|$(ls "$TG_RD/admit/ticket" 2>/dev/null | wc -l | tr -d ' ')" "3|1|0"
+n87c_ref=$(tg_rows '대상 거절')
+tg_issue "env gh pr view 1"
+tg_admit 읽기
+check "87c: 같은 조건의 같은 행위는 admit 에서 막힌다" "$rc|$(tg_rows '대상 거절')" "3|$n87c_ref"
+case "$msg" in
+  *"refused this act before"*"it opens again when"*) ok "87c: 그 막힘은 막은 행과 풀리는 조건을 든다" ;;
+  *) bad "87c 반복 차단 문면" "$msg" ;;
+esac
+g87c_same=$(tg_snap | jq -r '[.guard_refusals[] | select(.["형태"] == "맨") | .["조건"]] | first')
+
+# 커밋 하나가 조건 요소 (ii) 를 움직인다 — 같은 행위가 다시 판정에 닿는다.
+( cd "$TG_WT" && printf 'z\n' >> y && git commit -qam z ) >/dev/null 2>&1
+g87c_moved=$(tg_snap | jq -r '[.guard_refusals[] | select(.["형태"] == "맨") | .["조건"]] | first')
+check "87c: guard_refusals 는 같음 에서 바뀜 으로 바뀐다" "$g87c_same|$g87c_moved" "같음|바뀜"
+tg_issue "env gh pr view 1"
+tg_admit 읽기
+check "87c: 커밋 뒤 같은 행위는 막히지 않고 다시 예측된다" "$rc|$(tg_rows '대상 거절')" "3|$((n87c_ref + 1))"
+
+# 가드 파일 — 다이제스트가 움직이면 대상 훅 행이 하나 더 남고 막힘이 풀린다.
+n87c_hook=$(tg_rows '대상 훅')
+printf '# 사람이 고친 줄\n' >> "$TG_A/.claude/hooks/guard_b0.py"
+tg_issue "env gh pr view 1"
+tg_admit 읽기
+check "87c: 가드 파일을 고치면 대상 훅 행이 남고 막힘이 풀린다" \
+  "$rc|$(tg_rows '대상 훅')|$(tg_rows '대상 거절')" "3|$((n87c_hook + 1))|$((n87c_ref + 2))"
+
+# 효과 없는 push — 이미 원격에 있는 팁을 다시 민다. 원격은 움직이지 않으므로 정산은
+# 추정 거절을 쓴다.
+( cd "$TG_WT" && env "${TG_ENV[@]}" git push -q origin "$TG_BR" ) >/dev/null 2>&1
+tg_remote_check
+tg_issue "git push origin $TG_BR"
+tg_admit 외부상태변경
+tg_issue "git push origin $TG_BR"
+r87c_noop="$idec|$irc"
+tg_age "$TG_RD"/admit/used/*
+# 원격에 닿지 못한 판독은 아무것도 관측하지 않았다 — 표는 정산되지 않고 기다린다.
+( TG_ENV=("${TG_ENV_BASE[@]}"); tg_remote_check )
+check "87c: 원격에 닿지 못한 판독 뒤에는 소비된 표가 기다린다" \
+  "$(tg_last_row '원격 판독' | grep -c '원격 팁=미상')|$(ls "$TG_RD/admit/used" | wc -l | tr -d ' ')" "1|1"
+tg_remote_check
+check "87c: 효과 없이 소비된 push 표는 판정=추정 이 된다" \
+  "$r87c_noop|$(tg_last_row '대상 거절' | grep -c '형태=맨 | 근거=추정 | 판정=추정')" "ran|0|1"
+
+# settings.json 은 게이트의 강제 표면이다 — 고치면 막힘이 풀리는 대신 런이 멈춘다.
+printf '{}\n' > "$TG_A/.claude/settings.json"
+tg_remote_check
+check "87c: settings.json 을 고치면 표면 이동이다" "$rc" "7"
+
+# 사람에게 묻는 답(defer)은 무인 런에서 통과가 아니다 — admit 은 그것을 거절로 예측한다.
+tg_world c2 guard_defer.sh
+tg_issue "git push origin $TG_BR"
+tg_admit 외부상태변경
+check "87c: defer 로 답하는 가드 아래의 admit 은 rc 3 이고 표가 없다" \
+  "$rc|$(ls "$TG_RD/admit/ticket" 2>/dev/null | wc -l | tr -d ' ')" "3|0"
+# B0 가 아닌 가드 — 머리가 git 도 gh 도 아닌 마디의 낱말을 막는다. 맨 형태는 지나간다.
+tg_world c3 guard_words.sh
+tg_issue "git push origin $TG_BR"
+tg_admit 외부상태변경
+r87c_w=$rc
+tg_issue "git push origin $TG_BR"
+check "87c: 낱말 가드 아래에서도 맨 push 는 admit 을 거쳐 원격에 닿는다" \
+  "$r87c_w|$idec|$irc|$(git --git-dir="$TG_ORIGIN" rev-parse --verify -q "$TG_BR" >/dev/null && echo 있음)" "0|ran|0|있음"
+
+# ---------------------------------------------------------------------------
+# 87d. 원격 단계 — 원격 판독 행과 살아 있는 HEAD 로 스냅샷이 세그먼트의 다음 원격 행위를 말한다
+# --- section: 87d | group: tguard | covers: snapshot, act | anchors: 87d: 원격 단계는 push 필요 에서 PR 필요 를 거쳐 PR 있음 이 된다, 87d: PR 있음 의 번호와 리뷰 줄을 스냅샷이 싣는다, 87d: 판독 뒤의 커밋은 원격 단계를 미상 으로 만든다, 87d: 원격 팁이 HEAD 의 조상이 아니면 불일치 다, 87d: 닫힌 PR 과 열린 PR 이 있으면 열린 쪽을 고른다, 87d: 열린 PR 이 둘이면 불일치 다 ---
+#
+# 스냅샷은 원격을 읽지 않는다 — remote-check 가 쓴 행만 읽는다. 그래서 각 단계는
+# 원격을 바꾸고, 판독하고, 스냅샷을 보는 세 걸음이다.
+# ---------------------------------------------------------------------------
+tg_world d -
+st87d() { tg_snap | jq -r --arg k "$1" '.segments[] | select(.id == "SA") | .[$k] | if type == "object" then (.["번호"] // "null") else . end'; }
+tg_remote_check
+s87d_1=$(st87d '원격 단계')
+( cd "$TG_WT" && env "${TG_ENV[@]}" git push -q origin "$TG_BR" ) >/dev/null 2>&1
+tg_remote_check
+s87d_2=$(st87d '원격 단계')
+head87d=$(cd "$TG_WT" && git rev-parse HEAD)
+printf '[{"number":7,"state":"OPEN","headRefOid":"%s"}]\n' "$head87d" > "$TG/prs.json"
+tg_remote_check
+s87d_3=$(st87d '원격 단계')
+check "87d: 원격 단계는 push 필요 에서 PR 필요 를 거쳐 PR 있음 이 된다" "$s87d_1|$s87d_2|$s87d_3" "push 필요|PR 필요|PR 있음"
+rl87d=$(cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" review-line --manifest "$TG_M" --segment SA 2>/dev/null)
+check "87d: PR 있음 의 번호와 리뷰 줄을 스냅샷이 싣는다" \
+  "$(st87d PR)|$([ -n "$rl87d" ] && [ "$(st87d '리뷰 줄')" = "$rl87d" ] && echo 같음)" "7|같음"
+
+( cd "$TG_WT" && printf 'w\n' > w && git add w && git commit -qm w ) >/dev/null 2>&1
+check "87d: 판독 뒤의 커밋은 원격 단계를 미상 으로 만든다" "$(st87d '원격 단계')" "미상"
+( cd "$TG_WT" && git reset -q --hard HEAD~2 && printf 'v\n' > v && git add v && git commit -qm v ) >/dev/null 2>&1
+tg_remote_check
+check "87d: 원격 팁이 HEAD 의 조상이 아니면 불일치 다" "$(st87d '원격 단계')" "불일치"
+
+( cd "$TG_WT" && env "${TG_ENV[@]}" git push -qf origin "$TG_BR" ) >/dev/null 2>&1
+head87d=$(cd "$TG_WT" && git rev-parse HEAD)
+printf '[{"number":7,"state":"CLOSED","headRefOid":"x"},{"number":8,"state":"OPEN","headRefOid":"%s"}]\n' "$head87d" > "$TG/prs.json"
+tg_remote_check
+check "87d: 닫힌 PR 과 열린 PR 이 있으면 열린 쪽을 고른다" "$(st87d '원격 단계')|$(st87d PR)" "PR 있음|8"
+printf '[{"number":8,"state":"OPEN","headRefOid":"%s"},{"number":9,"state":"OPEN","headRefOid":"%s"}]\n' "$head87d" "$head87d" > "$TG/prs.json"
+tg_remote_check
+check "87d: 열린 PR 이 둘이면 불일치 다" "$(st87d '원격 단계')" "불일치"
+
+# ---------------------------------------------------------------------------
+# 87e. 요청과 표의 안전 — 표는 바이트·디렉터리·호출자·루트가 모두 맞는 한 번에만 열린다
+# --- section: 87e | group: tguard | covers: hook, admit | anchors: 87e: 바이트가 다른 명령은 표를 쓰지 못한다, 87e: 다른 디렉터리에서는 표를 쓰지 못한다, 87e: 다른 호출자는 표를 쓰지 못한다, 87e: 표는 한 번 쓰면 끝난다, 87e: 만료된 표는 쓰지 못한다, 87e: 새 admit 이 앞 표를 갈아 끼운다, 87e: 런 디렉터리의 admit 아래로 쓰는 Write 는 거절된다, 87e: 따옴표 밖 연산자가 있는 명령은 요청으로 기록되지 않는다, 87e: 닫힌 문법 밖의 요청은 admit 이 rc 2 로 거절한다, 87e: 세그먼트 워크트리 밖에서 HEAD 를 미는 push 는 rc 2 다, 87e: 훅을 단 대상에는 다른 루트에서 낸 요청이 rc 3 이다, 87e: 훅이 없는 대상에는 같은 요청이 통과한다, 87e: 콜론이 든 호출자 키도 요청과 표를 오간다, 87e: 스테이지와 교대 id 가 함께 있으면 스테이지 키를 쓴다 ---
+#
+# 런 훅과 admit 사이의 계약을 하나씩 깬다. 표는 `admit/ticket/<호출자 키>` 한 장이고,
+# 런 훅은 그것을 원자적 이름 바꾸기로 소비한다.
+# ---------------------------------------------------------------------------
+tg_world e guard_b0.py
+k87e=$(thp_key_norm "$TG_CALLER")
+p87e="git push origin $TG_BR"
+tg_hook "$p87e"; tg_admit 외부상태변경
+check "87e: 픽스처의 admit 이 표를 낸다 (아래가 공허하지 않다)" "$rc|$(test -f "$TG_RD/admit/ticket/$k87e" && echo 표)" "0|표"
+tg_hook "git push origin  $TG_BR"
+check "87e: 바이트가 다른 명령은 표를 쓰지 못한다" "$hdec|$(test -f "$TG_RD/admit/ticket/$k87e" && echo 표)" "deny|표"
+tg_hook "$p87e" "$TG_A"
+check "87e: 다른 디렉터리에서는 표를 쓰지 못한다" "$hdec|$(test -f "$TG_RD/admit/ticket/$k87e" && echo 표)" "deny|표"
+r87e_other=$(TG_CALLER='SB#1'; tg_hook "$p87e"; printf '%s' "$hdec")
+check "87e: 다른 호출자는 표를 쓰지 못한다" "$r87e_other|$(test -f "$TG_RD/admit/ticket/$k87e" && echo 표)" "deny|표"
+tg_hook "$p87e"; r87e_once=$hdec
+tg_hook "$p87e"
+check "87e: 표는 한 번 쓰면 끝난다" "$r87e_once|$hdec" "allow|deny"
+
+tg_admit 외부상태변경
+jq '.expires = 1' "$TG_RD/admit/ticket/$k87e" > "$TG/t.json" && mv "$TG/t.json" "$TG_RD/admit/ticket/$k87e"
+tg_hook "$p87e"
+check "87e: 만료된 표는 쓰지 못한다" "$hdec" "deny"
+
+tg_hook "$p87e"; tg_admit 외부상태변경
+tg_hook "gh pr view 1"; tg_admit 읽기
+tg_hook "$p87e"; r87e_old=$hdec
+tg_hook "gh pr view 1"
+check "87e: 새 admit 이 앞 표를 갈아 끼운다" "$r87e_old|$hdec" "deny|allow"
+
+hout=$(jq -nc --arg f "$TG_RD/admit/ticket/$k87e" --arg cwd "$TG_WT" \
+         '{tool_name:"Write", tool_use_id:"tu-w", cwd:$cwd, tool_input:{file_path:$f, content:"{}"}}' \
+       | ( cd "$TG_WT" && env "${TG_ENV[@]}" "CC_PIPELINE_STAGE_ID=$TG_CALLER" CLAUDE_PROJECT_DIR="$TG_PD" \
+             bash "$TG_HOOK" --run-dir "$TG_RD" --gate "$GATE" --ledger "$TG_L" --grant "$TG_GR" --manifest "$TG_M" 2>/dev/null ))
+check "87e: 런 디렉터리의 admit 아래로 쓰는 Write 는 거절된다" \
+  "$(printf '%s' "$hout" | jq -r '.hookSpecificOutput.permissionDecision // "none"')" "deny"
+
+rm -f "$TG_RD/admit/req/$k87e"
+tg_hook "$p87e && echo x"
+check "87e: 따옴표 밖 연산자가 있는 명령은 요청으로 기록되지 않는다" \
+  "$hdec|$(test -f "$TG_RD/admit/req/$k87e" && echo 있음 || echo 없음)" "deny|없음"
+tg_hook 'git push origin "seg/$X"'; tg_admit 외부상태변경
+check "87e: 닫힌 문법 밖의 요청은 admit 이 rc 2 로 거절한다" "$rc" "2"
+tg_hook "git push origin HEAD:$TG_BR" "$TG_A"; tg_admit 외부상태변경
+check "87e: 세그먼트 워크트리 밖에서 HEAD 를 미는 push 는 rc 2 다" "$rc" "2"
+
+# 발행 루트 규칙 — 대상 바깥의 루트에서 시작한 세션이 낸 요청은 대상의 훅이 판정한
+# 적이 없다.
+tgf_repo "$TG/other"
+r87e_root=$(TG_PD="$TG/other"; tg_hook "$p87e"; tg_admit 외부상태변경; printf '%s' "$rc")
+check "87e: 훅을 단 대상에는 다른 루트에서 낸 요청이 rc 3 이다" "$r87e_root" "3"
+tg_world e2 -
+tgf_repo "$TG/other"
+r87e_root2=$(TG_PD="$TG/other"; tg_hook "$p87e" "$TG_WT"; tg_admit 외부상태변경; printf '%s' "$rc")
+check "87e: 훅이 없는 대상에는 같은 요청이 통과한다" "$r87e_root2" "0"
+
+r87e_colon=$(TG_CALLER='S4:B:1#2'; tg_hook "git push origin $TG_BR"; tg_admit 외부상태변경
+             printf '%s|' "$rc"; tg_hook "git push origin $TG_BR"; printf '%s' "$hdec")
+check "87e: 콜론이 든 호출자 키도 요청과 표를 오간다" "$r87e_colon" "0|allow"
+r87e_both=$(TG_ENV=("${TG_ENV[@]}" CC_PIPELINE_SHIFT_ID=R9); tg_hook "gh pr view 3"
+            for f in "$TG_RD"/admit/req/*; do
+              [ "$(jq -r '.command_b64 | @base64d' "$f")" != "gh pr view 3" ] || printf '%s' "${f##*/}"
+            done)
+check "87e: 스테이지와 교대 id 가 함께 있으면 스테이지 키를 쓴다" "$r87e_both" "$(thp_key_norm "$TG_CALLER")"
+
+# ---------------------------------------------------------------------------
+# 87f. 지시 문단 — 훅을 단 루트에서 시작하는 세션만 맨 형태와 admit 을 지시받는다
+# --- section: 87f | group: tguard | covers: launch | anchors: 87f: 훅을 단 루트에서 합성한 지시 파일은 문단을 한 번 싣는다, 87f: 훅이 없는 루트에서 합성한 지시 파일은 문단을 싣지 않는다, 87f: 문단은 엔진의 문단과 바이트가 같다 ---
+#
+# 지시 파일은 내용 주소로 이름 붙고 런 하나에서 공유된다 — 문단을 실을지는 대상이
+# 아니라 실행 디렉터리가 정한다. 세션의 훅은 시작한 루트의 것이기 때문이다.
+# ---------------------------------------------------------------------------
+synth87f() {  # synth87f <cwd> — the instruction file a launch from <cwd> gets
+  ( cd "$1" && env "${TG_ENV[@]}" bash -c '
+      CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+      MANIFEST="$2"; RUN_DIR="$3"; mkdir -p "$RUN_DIR"
+      gate_stage_instructions a' _ "$GATE" "$TG_M" "$TG_RD" 2>/dev/null )
+}
+tg_world f guard_b0.py
+f87f_on=$(synth87f "$TG_A")
+tg_world f2 -
+f87f_off=$(synth87f "$TG_A")
+check "87f: 훅을 단 루트에서 합성한 지시 파일은 문단을 한 번 싣는다" \
+  "$(grep -c "^## Remote commands under this repository's own Bash hook" "$f87f_on" 2>/dev/null)" "1"
+check "87f: 훅이 없는 루트에서 합성한 지시 파일은 문단을 싣지 않는다" \
+  "$(test -f "$f87f_off" && grep -c 'Remote commands under this repository' "$f87f_off")" "0"
+check "87f: 문단은 엔진의 문단과 바이트가 같다" \
+  "$(tail -n "$(thp_instruction_paragraph | wc -l | tr -d ' ')" "$f87f_on" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" \
+  "$(thp_instruction_paragraph | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 88. K2 트립와이어 — 이월 머지가 머지 대조와 종료 조건 11 을 지나는가
