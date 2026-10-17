@@ -243,6 +243,13 @@
 # `베이스 판정` row: `일치`, `이동` or `충돌` with the conflicted files and
 # whether only the release files conflict. Refused (3) unless the segment's
 # review lets a merge through, and when the base tip is not fetched yet.
+#   gate.sh act --kind remote-check --target <alias> [--segment <id>] \\
+#               --cutpoint 커밋 --surface 읽기 --reach 협업 ...
+# `remote-check` takes nothing after `--`. It reads the remote tip of the
+# segment's branch (`git ls-remote`) and its pull request (`gh pr list`) — of
+# every non-terminal segment of the target when `--segment` is not given — and
+# writes a `원격 판독` row where a value changed, then settles the bare acts
+# whose tickets were used. A failed read is `미상`, never a refusal.
 #   gate.sh act --kind replan --target <alias> --segment <형제> ... \\
 #               -- 재수렴=<스테이지>#<실행 버전>
 # `replan` voids a sibling's plan after another segment's re-convergence read
@@ -320,6 +327,20 @@ export CC_ORCH_SOURCE_ONLY
 # the watcher ends up running different code from the gate that started it.
 # shellcheck source=/dev/null
 . "$GATE_DIR/pin.sh"
+# The target-hook engine: the caller key and its file-name form, the target's
+# own Bash hooks, their digest and a run of them on given bytes. The run hook
+# sources the same file, which is the point — a file under `admit/` is named by
+# the hook and read here, and two spellings of one key were a defect once.
+# Every call goes through `gate_thp`, which sources the engine in a child shell:
+# this file is sourced into the test harness's shell, and a top-level name of
+# the engine must not land there.
+gate_thp() {  # gate_thp <engine function> [<arg>…]
+  (
+    # shellcheck source=/dev/null
+    . "$GATE_DIR/../hooks/target-hook-probe.sh"  # lint-harness-global-collisions: child-shell
+    "$@"
+  )
+}
 
 # ---------------------------------------------------------------------------
 # THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
@@ -13211,6 +13232,12 @@ gate_snapshot() {
   printf '  "shift_halts": [\n'
   gate_shift_halts_json
   printf '  ],\n'
+  # The refusals of a target's own hook, the last row of each key, each with
+  # whether its condition still holds — `같음` means the same act meets the
+  # same refusal, so a shift does not issue it again.
+  printf '  "guard_refusals": [\n'
+  gate_guard_refusals_json
+  printf '  ],\n'
 
   # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
   # to read every turn. The top-level keys carried the goal, the targets, the
@@ -13612,9 +13639,10 @@ gate_digest_path() {
   # the round trip the flag exists to remove — with the run green throughout.
   #
   # Anything that needs the path asks for it now. `gate.sh digest-path` prints
-  # this same value, so a second copy of the rule cannot exist.
+  # this same value, so a second copy of the rule cannot exist; the character
+  # rule itself is `thp_key_norm`, which names every file under `admit/` too.
   printf '%s/digest/gate-digest-%s.json' "$RUN_DIR" \
-    "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -c 'A-Za-z0-9._-' '-')"
+    "$(gate_thp thp_key_norm "${CC_PIPELINE_STAGE_ID:-router}")"
 }
 
 gate_on_exit() {
@@ -16267,6 +16295,10 @@ gate_main() {
   # row is set by that act around its one call. A caller that could export it
   # would write a row vouching for a record the gate never wrote.
   GATE_SHIFT_HALT_WRITING=""
+  # The admit marker turns the exec pipeline into the bare form's; only the
+  # `admit` arm sets it, after it has read the request.
+  GATE_ADMIT=""
+  local request=""
   MANIFEST=""
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
@@ -16301,6 +16333,7 @@ gate_main() {
       --interval)        wait_interval="$2"; shift 2 ;;
       --timeout)         wait_timeout="$2"; shift 2 ;;
       --nonce)           nonce="$2"; shift 2 ;;
+      --request)         request="$2"; shift 2 ;;
       --cause)           end_cause="$2"; shift 2 ;;
       --successor)       end_successor="$2"; shift 2 ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
@@ -16413,10 +16446,20 @@ gate_main() {
   # parent directory created on every verb — so `snapshot`, `grade` and `plan`
   # took a value they would never use and made a directory for it. A flag that
   # is silently inert is a flag a caller believes is working.
+  # `--request` names the bare request `admit` grades, and nothing else reads it.
+  if [ -n "$request" ] && [ "$verb" != "admit" ]; then
+    printf 'gate: --request is used only with admit (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
+  if [ "$verb" = "admit" ]; then
+    [ -n "$request" ] || { printf 'gate: admit needs --request <id|last>\n' >&2; exit 2; }
+    [ -z "$kind" ] || { printf 'gate: admit takes no --kind — it grades the request'"'"'s own words\n' >&2; exit 2; }
+    [ $# -eq 0 ] || { printf 'gate: admit takes no command after -- — the command is the request the run hook recorded\n' >&2; exit 2; }
+  fi
   if [ "$emit_digest_seen" = "1" ]; then
     case "$verb" in
-      act|exec) ;;
-      *) printf 'gate: --emit-digest is used only with act and exec (verb received: %s)\n' "$verb" >&2
+      act|exec|admit) ;;
+      *) printf 'gate: --emit-digest is used only with act, exec and admit (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
     esac
   fi
@@ -16430,7 +16473,11 @@ gate_main() {
   # working.
   if [ -n "$reach" ] || [ "$destructive" = "1" ]; then
     case "$verb" in
-      exec) ;;
+      exec|admit) ;;
+      # The remote read names where it reaches; it changes nothing there.
+      act) [ "$kind" = "remote-check" ] && [ "$destructive" = "0" ] || {
+              printf 'gate: --reach is used with act only on --kind remote-check, and --destructive never\n' >&2
+              exit 2; } ;;
       plan) [ -z "$kind" ] || {
               printf 'gate: --reach and --destructive are used only with a plan that has no --kind\n' >&2
               exit 2; } ;;
@@ -16611,7 +16658,7 @@ gate_main() {
   # would time out on it. `gate_on_exit` releases the lock first and emits the
   # digest only when `GATE_EMIT_DIGEST_TO` was set above.
   case "$verb" in
-    act|exec) trap 'gate_on_exit' EXIT ;;
+    act|exec|admit) trap 'gate_on_exit' EXIT ;;
   esac
 
   # THE HANDLES A LATER READER NEEDS, written on EVERY entry rather than at run
@@ -16959,6 +17006,30 @@ GATE_DRIFT_DIRS
     plan|act|exec)
       gate_verb_act "$verb" "$kind" "$alias" "$segment" "$cutpoint" "$surface" \
                     "$snapdig" "$rationale" "$worktree" "$@"
+      ;;
+    admit)
+      # THE BARE FORM. The bytes are the request the run hook recorded, never
+      # an argument of this call, so what is graded is what will be issued.
+      [ -n "$alias" ] || { printf 'gate: admit requires --target\n' >&2; exit 2; }
+      gate_admit_load "$request"
+      gate_admit_words
+      gate_admit_wrapped_push_refuse
+      # THE CELL IS DERIVED, not asked for: the table's rung, and `push` at
+      # least for a git push, whose rung the table leaves to the act's own
+      # destination check — which raises a base update to `머지` with exit 8.
+      if [ -z "$cutpoint" ]; then
+        cutpoint=$(ladder_of_argv0 "${GATE_ADMIT_WORDS[@]}" 2>/dev/null || true)
+        [ -n "$cutpoint" ] || cutpoint="커밋"
+        if gate_admit_words_push; then
+          local _ci _pi
+          _ci=$(cutpoint_index "$cutpoint" 2>/dev/null || printf 0)
+          _pi=$(cutpoint_index push)
+          [ "$_ci" -ge "$_pi" ] || cutpoint=push
+        fi
+      fi
+      GATE_ADMIT=1
+      gate_verb_act exec "" "$alias" "$segment" "$cutpoint" "$surface" \
+                    "$snapdig" "$rationale" "" "${GATE_ADMIT_WORDS[@]}"
       ;;
     wait)
       [ "$segment" != "-" ] && [ -n "$segment" ] \
@@ -17639,9 +17710,9 @@ gate_shift_halt_site_table() {
   # bound by.
   #
   # `추천=없음` IS FIXED FOR THE IRREVERSIBLE SITES. A push the remote disagrees
-  # with, a reach the gate refused and a base that could not be resolved each
-  # hang on the state of something outside this run, which no record of the
-  # run settles. Whatever the shift passes as a recommendation there is dropped
+  # with, a reach the gate refused, a base that could not be resolved and a
+  # target repository's own hook refusing an act each hang on the state of
+  # something outside this run, which no record of the run settles. Whatever the shift passes as a recommendation there is dropped
   # and the record reads `(없음)`.
   #
   # Run-scope stops are not here: the enforcement surface moving (exit 7), a
@@ -17660,6 +17731,7 @@ push원격불일치|없음|원격 가지가 왜 어긋났고 어느 쪽을 남�
 베이스 해소 한도|없음|어느 베이스 위에 다시 쌓을지는 사람만 정한다|사람이 베이스를 정해 이 세그먼트의 가지에 해소를 올린 뒤, 다음 교대가 그 해소를 리뷰에 보낸다 — 충돌 수는 세그먼트마다 쌓이므로 교대의 해소 파견은 다시 열리지 않는다
 워크트리 기록 없음|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 세그먼트 행의 워크트리를 다시 읽고 이 세그먼트를 다시 시도한다
 종료 조건 11 판독 불가|가능|교대가 기록에서 고를 근거를 찾지 못했다 — 어느 선택지인지는 사람이 고른다|다음 교대가 이 세그먼트의 가지 끝을 다시 읽고 종료 조건 11 판정을 다시 시도한다
+대상 훅 거절|없음|대상 저장소의 훅 규칙이 그 행위를 왜 막는지, 규칙과 행위 중 어느 쪽을 바꿀지는 그 저장소를 맡은 사람만 정한다|사람이 대상 저장소의 훅이나 그 행위를 고친 뒤, 이 답이 거절 조건을 옮기므로 다음 교대가 이 세그먼트의 막힌 행위를 다시 시도한다
 EOF
 }
 
@@ -24167,7 +24239,8 @@ gate_record_row() {
     return "$GATE_EXIT_VOCAB"
   fi
   # `base-check` takes nothing after `--`: every field of its row is the gate's.
-  [ $# -ge 1 ] || [ "$kind" = "base-check" ] || { warn "a $kind row carries no fields at all"; return "$GATE_EXIT_VOCAB"; }
+  [ $# -ge 1 ] || [ "$kind" = "base-check" ] || [ "$kind" = "remote-check" ] \
+    || { warn "a $kind row carries no fields at all"; return "$GATE_EXIT_VOCAB"; }
 
   # THE KEY IS CHECKED HERE AND NOT ONLY NORMALIZED IN `gate_append`. The two are
   # not redundant. Normalization rewrites the field silently; this path is the one
@@ -26550,6 +26623,15 @@ EOF
       # shift calls it before a merge; every check lives in the row builder.
       gate_base_check_row "$seg" "$alias" "$@" || return $?
       ;;
+    remote-check)
+      # A read of the remote, written as `원격 판독` rows only where a value
+      # moved; the act row beside it records that the read was made.
+      if [ $# -gt 0 ]; then
+        warn "\`remote-check\` takes nothing after -- — what it reads is the gate's: $*"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      gate_remote_state_refresh "$alias" "$seg"
+      ;;
     review-carry)
       # The carry-over twin of `review-dismiss`, without its seat-only refusal:
       # the routing shift writes this row after opening one issue per
@@ -28008,6 +28090,14 @@ gate_stage_instructions() {
     done
   done < <(gate_ancestor_dirs "$rootp")
 
+  # THE TARGET-HOOK PARAGRAPH, decided at the root the launched session starts
+  # at. The launch does not move the directory, so that root is this process's
+  # own; when it carries a Bash hook of its own, the session is told how a
+  # remote command gets past both hooks. Members do not issue remote commands
+  # and their file goes without it.
+  local hooked=0
+  gate_target_has_bash_hook "$(pwd -P)" && hooked=1
+
   (
     umask 077
     mkdir -p "$RUN_DIR/instructions" || exit 1
@@ -28021,6 +28111,10 @@ gate_stage_instructions() {
         cat "${chain_files[$i]}"
         i=$((i + 1))
       done
+      if [ "$hooked" = 1 ]; then
+        printf '\n---\n'
+        gate_thp thp_instruction_paragraph
+      fi
     } > "$tmp" || { rm -f "$tmp"; exit 1; }
     sha=$(shasum -a 256 "$tmp" | cut -d' ' -f1)
     dst="$RUN_DIR/instructions/$sha.md"
@@ -28310,7 +28404,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - snapshot digest — act checks --snapshot-digest against the current value and returns 4 when they differ"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry|shift-halt|base-check|replan)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry|shift-halt|base-check|remote-check|replan)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. The record-time checks are
       # defined by `gate_record_row` and this note does not enumerate them — a
@@ -28625,9 +28719,9 @@ gate_kind_is_bookkeeping() {
   # acts graded on their own, and the merge after it is graded too.
   # `shift-halt` writes one file under the run directory's `halt/shift/` and one
   # row, and enters no tree. `base-check` reads the remote's ref and merges in
-  # an object directory it removes again, and writes one row. `replan` moves one
-  # plan file under the run directory aside and writes one row, and enters no
-  # tree.
+  # an object directory it removes again, and writes one row. `remote-check`
+  # reads the remote and writes rows only. `replan` moves one plan file under
+  # the run directory aside and writes one row, and enters no tree.
   # `reentry` is here for the seat cap's sake: a boot-time re-entry carries no
   # session id under launchd, so the context reading falls back to the lane's
   # newest transcript, and a large one would refuse the row the reboot-class
@@ -28635,7 +28729,7 @@ gate_kind_is_bookkeeping() {
   case "$1" in
     segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
     obligation-done|obligation-drop|limit-cleared|reentry|halt-answer|review-dismiss|review-carry) return 0 ;;
-    shift-halt|base-check|replan) return 0 ;;
+    shift-halt|base-check|remote-check|replan) return 0 ;;
   esac
   return 1
 }
@@ -28672,6 +28766,706 @@ gate_act_enters_resolved_tree() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# A target's own Bash hook — `admit`, the refusal rows, the repeat block and
+# the remote state.
+#
+# A target repository may carry a PreToolUse Bash hook of its own. The harness
+# runs it beside this run's hook on every Bash call and a deny from either one
+# wins, so a guard that reads the act's words refuses a gate call carrying them,
+# while this run's hook refuses everything that is not a gate call. The two
+# allowed sets are disjoint and the run cannot push at all. The second allowed
+# shape is the way through: the session issues the command bare, the run hook
+# records the bytes as a request and refuses them, `admit` grades those bytes
+# exactly as `exec` would, writes the row and leaves a one-use ticket, and the
+# same bytes issued again pass the run hook on the ticket while the target's
+# hook judges them for real. Nothing here runs the act.
+#
+# THE SERIES. `대상 거절` is a refusal the target's hook made or is predicted to
+# make, keyed on target, segment, act digest and form (`감쌈` for a gate call,
+# `맨` for a bare command) and carrying the condition it was recorded under.
+# `대상 훅` is a root's hook digest, written when the root is first seen with a
+# hook and whenever the digest moves. `원격 판독` is what the remote says about
+# a segment's branch and pull request, written when a value changes. `맨 명령
+# 결과` closes an admitted remote act once the remote shows its effect.
+#
+# THE CONDITION is the sha256 of five things a refusal can depend on: the
+# issuing root's hook digest, the segment worktree's HEAD, the remote tip and
+# the pull request as the last `원격 판독` row of the segment reads them, and
+# the segment's last `중단 답` row. Time and the number of shifts do not move
+# it, so the same refusal is not met again until one of the five moves.
+# ---------------------------------------------------------------------------
+GATE_ADMIT_TTL=300
+GATE_ADMIT_SETTLE_AFTER=30
+
+gate_admit_load() {
+  # gate_admit_load <id|last> — reads the calling stage's or shift's live
+  # request into the GATE_ADMIT_* globals and prints its bytes. Exit 3 when the
+  # call has no caller key, there is no request, it expired (it is removed) or
+  # it is not the one named; exit 2 when its directory is gone.
+  local want="$1" f now rec rid rcaller
+  GATE_ADMIT_CALLER=$(gate_thp thp_caller_key)
+  if [ -z "$GATE_ADMIT_CALLER" ]; then
+    warn "admit reads the request of the calling stage or shift, and this call carries neither CC_PIPELINE_STAGE_ID nor CC_PIPELINE_SHIFT_ID"
+    exit "$GATE_EXIT_RULE"
+  fi
+  GATE_ADMIT_KEY=$(gate_thp thp_key_norm "$GATE_ADMIT_CALLER")
+  f="$RUN_DIR/admit/req/$GATE_ADMIT_KEY"
+  if [ ! -f "$f" ] || [ -L "$f" ]; then
+    warn "there is no live request for $GATE_ADMIT_CALLER — issue the command bare first: the run hook refuses it and records it as the request this verb reads"
+    exit "$GATE_EXIT_RULE"
+  fi
+  now=$(date -u +%s)
+  rec=$(jq -r '.recorded // 0' "$f" 2>/dev/null || true)
+  case "$rec" in ''|*[!0-9]*) rec=0 ;; esac
+  if [ $((rec + GATE_ADMIT_TTL)) -le "$now" ]; then
+    rm -f "$f"
+    warn "the request of $GATE_ADMIT_CALLER expired ${GATE_ADMIT_TTL} seconds after it was recorded and is removed — issue the command bare again, then admit"
+    exit "$GATE_EXIT_RULE"
+  fi
+  rid=$(jq -r '.id // empty' "$f" 2>/dev/null || true)
+  rcaller=$(jq -r '.caller // empty' "$f" 2>/dev/null || true)
+  if [ -z "$rid" ] || [ "$rcaller" != "$GATE_ADMIT_CALLER" ]; then
+    warn "the request file of $GATE_ADMIT_CALLER does not read as this caller's request — issue the command bare again"
+    exit "$GATE_EXIT_RULE"
+  fi
+  if [ "$want" != "last" ] && [ "$want" != "$rid" ]; then
+    warn "the live request of $GATE_ADMIT_CALLER is $rid, not $want — a newer bare command replaced it; admit $rid or issue the command again"
+    exit "$GATE_EXIT_RULE"
+  fi
+  GATE_ADMIT_FILE="$f"
+  GATE_ADMIT_REQ_ID="$rid"
+  # The bytes through a sentinel, so a trailing newline is not lost to `$( )`.
+  GATE_ADMIT_BYTES=$(jq -j '.command_b64 | @base64d' "$f" 2>/dev/null; printf x)
+  GATE_ADMIT_BYTES=${GATE_ADMIT_BYTES%x}
+  GATE_ADMIT_CWD=$(jq -r '.cwd // empty' "$f" 2>/dev/null || true)
+  GATE_ADMIT_PDIR=$(jq -r '.project_dir // empty' "$f" 2>/dev/null || true)
+  printf '요청 %s: %s\n' "$rid" "$GATE_ADMIT_BYTES"
+  if [ -z "$GATE_ADMIT_CWD" ] || [ ! -d "$GATE_ADMIT_CWD" ]; then
+    warn "the directory the request was issued from is gone: '${GATE_ADMIT_CWD:-(none)}'"
+    exit "$GATE_EXIT_VOCAB"
+  fi
+  if [ -z "$GATE_ADMIT_PDIR" ] || [ ! -d "$GATE_ADMIT_PDIR" ]; then
+    warn "the request carries no session root (CLAUDE_PROJECT_DIR was not in the hook's environment), so no ticket could be tied to the repository whose hook judges the command — use the exec form"
+    exit "$GATE_EXIT_RULE"
+  fi
+}
+
+gate_admit_pred_passes() {
+  # gate_admit_pred_passes <prediction> — whether admit issues a ticket on what
+  # the issuing root's hooks are predicted to answer: a pass, or a hook failure
+  # the harness does not block on. A probe timeout, a refusal, a defer and
+  # `판정 불가` are recorded as a refusal instead.
+  case "$1" in
+    통과|'비차단 오류') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_admit_words() {
+  # gate_admit_words — splits the request's bytes with the closed grammar into
+  # GATE_ADMIT_WORDS. Exit 2 when the line is not one the grammar reads: the
+  # gate grades words, and a line whose words depend on a shell's expansion
+  # would be graded as one act and run as another.
+  local tf w
+  GATE_ADMIT_WORDS=()
+  tf=$(mktemp "${TMPDIR:-/tmp}/gate-admit.XXXXXX") || die "could not create a temporary file for the request's words"
+  if ! gate_thp thp_closed_words "$GATE_ADMIT_BYTES" >"$tf"; then
+    rm -f "$tf"
+    warn "the request is not one plain command line — admit reads words split on blanks, '…' verbatim, \"…\" holding no \$ \` \\ or !, and outside quotes only letters, digits, non-ASCII and _@%+=:,./- with no leading NAME=, no word starting with an unquoted =, no leading ~ and no * ? [ { #"
+    warn "issue such an act through exec instead"
+    exit "$GATE_EXIT_VOCAB"
+  fi
+  while IFS= read -r -d '' w; do GATE_ADMIT_WORDS+=("$w"); done <"$tf"
+  rm -f "$tf"
+  if [ "${#GATE_ADMIT_WORDS[@]}" -eq 0 ]; then
+    warn "the request holds no command"
+    exit "$GATE_EXIT_VOCAB"
+  fi
+}
+
+gate_admit_words_push() {
+  # gate_admit_words_push — true when the request's words are a git command
+  # with `push` among them. A push behind a wrapper never reaches here:
+  # `gate_admit_wrapped_push_refuse` refuses it first.
+  local w
+  [ "${GATE_ADMIT_WORDS[0]##*/}" = "git" ] || return 1
+  for w in "${GATE_ADMIT_WORDS[@]}"; do
+    [ "$w" != "push" ] || return 0
+  done
+  return 1
+}
+
+gate_admit_wrapped_push_refuse() {
+  # gate_admit_wrapped_push_refuse — exits 2 when the request is a push behind
+  # a wrapper. The grader strips `env`, `command`, `nice` and the rest and
+  # grades the push inside, but the refspec check and the ticket's binding to
+  # the repository's state read the git command's own words, which a wrapper
+  # moves — so a wrapped push would leave with neither. Refused before it is
+  # graded, so no row and no ticket is written for it.
+  [ "${GATE_ADMIT_WORDS[0]##*/}" != "git" ] || return 0
+  case "$(gate_push_unwrap_of_argv0 "${GATE_ADMIT_WORDS[@]}" 2>/dev/null)" in
+    ''|해당없음) return 0 ;;
+  esac
+  warn "this push runs behind '${GATE_ADMIT_WORDS[0]##*/}', and a ticket binds a push to the repository state the gate graded only when the command starts with git itself"
+  warn "issue the push as the plain git command (git push origin <branch>), with nothing before git, then admit it again"
+  exit "$GATE_EXIT_VOCAB"
+}
+
+gate_admit_git_dir() {
+  # gate_admit_git_dir <argv…> — the directory a git command runs in: the
+  # request's directory, moved by every `-C <dir>` before the subcommand, and
+  # the repository `--git-dir` names when it names one — that is the repository
+  # whose HEAD and refs the push reads, wherever the command runs. A relative
+  # `--git-dir` is git's own: read from the directory every `-C` led to.
+  local w prev="" dir="$GATE_ADMIT_CWD" gd=""
+  shift
+  for w in "$@"; do
+    case "$prev" in
+      -C) case "$w" in /*) dir="$w" ;; *) dir="$dir/$w" ;; esac ;;
+      --git-dir) gd="$w" ;;
+      -c|--work-tree|--namespace) ;;
+      *)
+        case "$w" in
+          --git-dir=*) gd="${w#--git-dir=}" ;;
+          -*) ;;
+          *) break ;;
+        esac ;;
+    esac
+    prev="$w"
+  done
+  if [ -n "$gd" ]; then
+    case "$gd" in /*) dir="$gd" ;; *) dir="$dir/$gd" ;; esac
+  fi
+  printf '%s' "$dir"
+}
+
+gate_admit_head_refspec_ok() {
+  # gate_admit_head_refspec_ok <segment> <argv…> — status 2 for a bare push
+  # that takes its source from the checked-out branch, from a directory that is
+  # not the segment's worktree. A bare command runs in the session's own
+  # directory — on the router path the target's main worktree — and there
+  # `HEAD`, `@`, and a push naming no refspec at all (`--all` and `--mirror`
+  # too) all push that tree's branches, not the segment's. `git -C <dir>` moves
+  # the directory; a remote named by `--repo` makes the first operand a refspec.
+  local seg="$1" w pushed=0 head=0 refspec=0 pos=0 repo=0 skip=0 dir wt top
+  shift
+  [ "${1##*/}" = "git" ] || return 0
+  dir=$(gate_admit_git_dir "$@")
+  shift
+  for w in "$@"; do
+    if [ "$pushed" = "0" ]; then
+      [ "$w" != "push" ] || pushed=1
+      continue
+    fi
+    if [ "$skip" = "1" ]; then skip=0; continue; fi
+    case "$w" in
+      -o|--push-option|--receive-pack|--exec) skip=1 ;;
+      --repo) skip=1; repo=1 ;;
+      --repo=*) repo=1 ;;
+      --all|--mirror|--branches) head=1 ;;
+      --tags) refspec=1 ;;
+      -*) ;;
+      *)
+        pos=$((pos + 1))
+        if [ "$pos" -gt 1 ] || [ "$repo" = "1" ]; then
+          refspec=1
+          case "$w" in HEAD|HEAD:*|+HEAD|+HEAD:*|@|@:*|+@|+@:*) head=1 ;; esac
+        fi ;;
+    esac
+  done
+  [ "$pushed" = "1" ] || return 0
+  [ "$refspec" = "1" ] || head=1
+  [ "$head" = "1" ] || return 0
+  wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
+  top=$( { cd "$dir" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null; } || true)
+  if [ -n "$wt" ] && [ -n "$top" ] && [ "$(gate_thp thp_phys "$top")" = "$(gate_thp thp_phys "$wt")" ]; then
+    return 0
+  fi
+  warn "this push takes its source from the branch checked out where it runs ('${top:-$dir}'), which is not the worktree of segment $seg — it names HEAD or @, or names no branch at all"
+  warn "name the remote and the branch (git push origin <branch>) or point git at the segment's worktree with -C, then issue it bare again"
+  return "$GATE_EXIT_VOCAB"
+}
+
+gate_target_has_bash_hook() {
+  # gate_target_has_bash_hook <root> — true when a session started at <root>
+  # gets a PreToolUse Bash hook from the project settings, or when those
+  # settings cannot be read (an unreadable guard is not an absent one).
+  local root="$1" hooks rc=0
+  [ -n "$root" ] && [ -d "$root" ] || return 1
+  hooks=$(gate_thp thp_bash_hooks "$root" 2>/dev/null) || rc=$?
+  [ -n "$hooks" ] || [ "$rc" -ne 0 ]
+}
+
+gate_admit_root_rule() {
+  # gate_admit_root_rule <alias> — the issuing-root rule. The hook that judges a
+  # session's Bash is the one under the root that session started at; when the
+  # target carries a Bash hook and the request's root does not share the
+  # target's common git directory, that hook never saw the command, so the
+  # bare form would pass a guard that did not judge it. Exit 3 then. A target
+  # with no hook needs no such check: the root's own guard judged the command.
+  local al="$1" mw tcd rcd
+  mw=$(target_field "$al" '메인 워크트리' 2>/dev/null || true)
+  gate_target_has_bash_hook "$mw" || return 0
+  tcd=$(gate_thp thp_common_dir "$mw")
+  rcd=$(gate_thp thp_common_dir "$GATE_ADMIT_PDIR")
+  if [ -n "$rcd" ] && [ "$rcd" = "$tcd" ]; then return 0; fi
+  warn "target '$al' carries its own Bash hook, and the session that issued this request started at '$GATE_ADMIT_PDIR', which is not a checkout of that repository — that hook never judged the command"
+  warn "issue the act from a session started in the target's repository; a session started elsewhere cannot reach this target above 커밋 through the bare form"
+  exit "$GATE_EXIT_RULE"
+}
+
+gate_target_hook_row() {
+  # gate_target_hook_row <alias> <root> — writes a `대상 훅` row the first
+  # time a root is seen with a hook and whenever its hook digest moves. A root
+  # that never had a hook writes nothing.
+  local al="$1" root="$2" dc d c last
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  root=$(gate_thp thp_phys "$root")
+  dc=$(gate_thp thp_hook_digest "$root")
+  d=${dc%% *}; c=${dc#* }
+  last=$(gate_rows '대상 훅' | gate_rows_field_eq '루트' "$root" | tail -1)
+  if [ -z "$last" ]; then
+    [ "$d" != "-" ] || return 0
+  elif [ "$(gate_row_field "$last" '다이제스트')" = "$d" ]; then
+    return 0
+  fi
+  gate_append '대상 훅' "대상=$al" "루트=$root" "다이제스트=$d" "훅 수=$c" "기록 시각=$(now_iso)"
+}
+
+gate_segment_branch() {
+  # gate_segment_branch <segment> — the branch the segment row names, else the
+  # branch its worktree is on; empty when neither answers.
+  local seg="$1" br wt
+  # The last value any of the segment's rows carried — a later state row does
+  # not repeat it — read the way `gate_review_line` reads it.
+  br=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values '브랜치' \
+       | awk 'NF { v = $0 } END { print v }')
+  if [ -z "$br" ] || [ "$br" = "-" ]; then
+    wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
+    # Only an absolute directory: a row may carry `-` or `(없음)`, and `cd -`
+    # goes to OLDPWD and prints it, which put a path into the snapshot's JSON.
+    case "$wt" in /*) ;; *) wt="" ;; esac
+    br=$( { [ -n "$wt" ] && [ -d "$wt" ] && cd "$wt" 2>/dev/null && git branch --show-current 2>/dev/null; } || true)
+  fi
+  printf '%s' "$br"
+}
+
+gate_json_str_or_null() {
+  # gate_json_str_or_null <value> — a JSON string, or `null` when the value is
+  # empty or `-`.
+  case "$1" in ''|-) printf 'null' ;; *) printf '"%s"' "$(gate_json_escape "$1")" ;; esac
+}
+
+gate_remote_last_row() {
+  # gate_remote_last_row <segment> — the segment's last `원격 판독` row.
+  gate_rows '원격 판독' | gate_rows_field_eq '세그먼트' "$1" | tail -1
+}
+
+gate_remote_last_known_row() {
+  # gate_remote_last_known_row <segment> — the segment's last `원격 판독` row
+  # whose `원격 팁` is not `미상`. A read that could not reach the remote is
+  # written as a change, but it observed nothing, so a ticket's before and
+  # after are both taken from the reads that did.
+  gate_rows '원격 판독' | gate_rows_field_eq '세그먼트' "$1" \
+    | awk -F' [|] ' '{ k = 1; for (i = 1; i <= NF; i++) if ($i == "원격 팁=미상") k = 0; if (k) r = $0 } END { if (r != "") print r }'
+}
+
+gate_refusal_condition() {
+  # gate_refusal_condition <alias> <segment> <root> — computes the condition
+  # into GATE_COND and its five elements into GATE_COND_HOOK, GATE_COND_HEAD,
+  # GATE_COND_TIP, GATE_COND_PR and GATE_COND_ANSWER.
+  local al="$1" seg="$2" root="$3" wt rr ar
+  GATE_COND_HOOK='-'; GATE_COND_ROOT='-'
+  if [ -n "$root" ] && [ "$root" != "-" ] && [ -d "$root" ]; then
+    GATE_COND_ROOT=$(gate_thp thp_phys "$root")
+    GATE_COND_HOOK=$(gate_thp thp_hook_digest "$GATE_COND_ROOT" | awk '{print $1}')
+  fi
+  GATE_COND_HEAD='-'; GATE_COND_TIP='-'; GATE_COND_PR='-'; GATE_COND_ANSWER='-'
+  if [ -n "$seg" ] && [ "$seg" != "-" ]; then
+    wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
+    GATE_COND_HEAD=$(gate_worktree_tip "$wt" 2>/dev/null || printf -- '-')
+    rr=$(gate_remote_last_row "$seg")
+    if [ -n "$rr" ]; then
+      GATE_COND_TIP=$(gate_row_field "$rr" '원격 팁')
+      GATE_COND_PR="$(gate_row_field "$rr" 'PR')/$(gate_row_field "$rr" 'PR 상태')/$(gate_row_field "$rr" 'PR HEAD')"
+    fi
+    ar=$(gate_rows '중단 답' | gate_rows_field_eq '세그먼트' "$seg" | tail -1)
+    [ -z "$ar" ] || GATE_COND_ANSWER=$(printf '%s' "$ar" | shasum -a 256 | cut -c1-16)
+  fi
+  GATE_COND=$(printf '%s\n%s\n%s\n%s\n%s\n' "$GATE_COND_HOOK" "$GATE_COND_HEAD" "$GATE_COND_TIP" \
+    "$GATE_COND_PR" "${GATE_COND_ANSWER:--}" | shasum -a 256 | cut -d' ' -f1)
+}
+
+gate_refusal_row() {
+  # gate_refusal_row <alias> <segment> <actor> <form> <basis> <act digest>
+  #   <bytes> <text> [<판정>] — writes one `대상 거절` row under the condition
+  # GATE_COND holds, once per (target, segment, digest, form, condition); the
+  # whole command goes to the `refused.<n>` file beside the ledger rows.
+  local al="$1" seg="$2" actor="$3" form="$4" basis="$5" dig="$6" bytes="$7" text="$8" verdict="${9:-}"
+  local n side
+  if gate_has_row '대상 거절' "대상=$al" "세그먼트=$seg" "행위 다이제스트=$dig" "형태=$form" "조건=$GATE_COND"; then
+    return 0
+  fi
+  n=$(gate_rows '대상 거절' | gate_count)
+  n=$((n + 1))
+  side="refused.$n"
+  printf '%s' "$bytes" > "$RUN_DIR/$side" 2>/dev/null || side='-'
+  gate_append '대상 거절' "대상=$al" "세그먼트=$seg" "행위자=$actor" "형태=$form" "근거=$basis" \
+    ${verdict:+"판정=$verdict"} "행위 다이제스트=$dig" "명령=$(gate_row_safe "$bytes" 120)" "곁파일=$side" \
+    "거절 문면=$(gate_row_safe "${text:-미상}" 160)" "조건=$GATE_COND" "루트=$GATE_COND_ROOT" "훅 다이제스트=$GATE_COND_HOOK" \
+    "HEAD=$GATE_COND_HEAD" "원격 팁=$GATE_COND_TIP" "PR=$GATE_COND_PR" "중단 답=$GATE_COND_ANSWER" \
+    "기록 시각=$(now_iso)"
+}
+
+gate_refusal_block() {
+  # gate_refusal_block <alias> <segment> <act digest> <form> — exit 3 when the
+  # last refusal row of this key was recorded under the condition that holds
+  # now. Nothing the refusal could depend on has moved, so the same call meets
+  # the same refusal; the message names what would move it. The hook element is
+  # read again at the root the row names, which is the root whose hook refused.
+  local al="$1" seg="$2" dig="$3" form="$4" row
+  row=$(gate_rows '대상 거절' | gate_rows_field_eq '대상' "$al" | gate_rows_field_eq '세그먼트' "$seg" \
+        | gate_rows_field_eq '행위 다이제스트' "$dig" | gate_rows_field_eq '형태' "$form" | tail -1)
+  [ -n "$row" ] || return 0
+  gate_refusal_condition "$al" "$seg" "$(gate_row_field "$row" '루트')"
+  [ "$(gate_row_field "$row" '조건')" = "$GATE_COND" ] || return 0
+  warn "the target's own Bash hook refused this act before, and nothing it could depend on has moved since: $(gate_row_safe "$row" 400)"
+  warn "it opens again when one of these moves: the issuing root's hook digest (the guard script or settings.local.json — not settings.json while the run is open), the segment worktree's HEAD (a commit), the remote tip or the pull request (remote-check reads them), or a 재시도 answer to the 대상 훅 거절 halt"
+  exit "$GATE_EXIT_RULE"
+}
+
+gate_guard_refusals_json() {
+  # The snapshot's `guard_refusals[]`: one element per (target, segment, act
+  # digest, form), from its last `대상 거절` row, newest first, at most 20 —
+  # `대상`, `세그먼트`, `형태`, `근거`, `행위 다이제스트`, `명령`, `거절 문면`
+  # and `조건` (`같음` while the recorded condition still holds, else `바뀜`).
+  local out
+  out=$( { gate_rows '대상 거절' || true; } | awk '{ r[NR] = $0 } END { for (i = NR; i >= 1; i--) print r[i] }' \
+         | { gseen=""; gn=0
+           # `continue` past the cap rather than `break`: a reader that stops
+           # early leaves the writer a broken pipe, and under pipefail that
+           # fails the substitution.
+           while IFS= read -r row; do
+             [ -n "$row" ] || continue
+             [ "$gn" -lt 20 ] || continue
+             gt=$(gate_row_field "$row" '대상'); gs=$(gate_row_field "$row" '세그먼트')
+             gd=$(gate_row_field "$row" '행위 다이제스트'); gf=$(gate_row_field "$row" '형태')
+             gk="$gt|$gs|$gd|$gf"
+             # An if, not a case: bash 3.2 closes `$( … )` at a pattern's `)`.
+             if [ "${gseen#*"<$gk>"}" != "$gseen" ]; then continue; fi
+             gseen="$gseen<$gk>"
+             gn=$((gn + 1))
+             gate_refusal_condition "$gt" "$gs" "$(gate_row_field "$row" '루트')"
+             gc='바뀜'; [ "$(gate_row_field "$row" '조건')" != "$GATE_COND" ] || gc='같음'
+             printf '    {"대상": "%s", "세그먼트": "%s", "형태": "%s", "근거": "%s", "행위 다이제스트": "%s", "명령": "%s", "거절 문면": "%s", "조건": "%s"},\n' \
+               "$(gate_json_escape "$gt")" "$(gate_json_escape "$gs")" "$(gate_json_escape "$gf")" \
+               "$(gate_json_escape "$(gate_row_field "$row" '근거')")" "$(gate_json_escape "$gd")" \
+               "$(gate_json_escape "$(gate_row_field "$row" '명령')")" \
+               "$(gate_json_escape "$(gate_row_field "$row" '거절 문면')")" "$gc"
+           done; } )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_refused_flag() {
+  # gate_refused_flag <bytes> <flag> — the word after <flag> in the part of a
+  # recorded gate call before its first `--`, quotes stripped; empty when the
+  # flag is not there or names a variable rather than a value.
+  local s="$1" want="$2" w prev="" out=""
+  s=${s%% -- *}
+  set -f
+  # shellcheck disable=SC2086
+  for w in $s; do
+    w=$(printf '%s' "$w" | tr -d "\"'")
+    if [ "$prev" = "$want" ]; then out="$w"; break; fi
+    prev="$w"
+  done
+  set +f
+  case "$out" in *'$'*) out="" ;; esac
+  printf '%s' "$out"
+}
+
+gate_refused_drain() {
+  # gate_refused_drain — turns the run hook's records under `admit/refused/`
+  # into `대상 거절 형태=감쌈 근거=예측` rows, the way `checks.observed` is
+  # drained: the hook writes no row, and this is the writer. The act digest is
+  # read from the words after the record's first unquoted `--`.
+  local d="$RUN_DIR/admit/refused" f tg sg bytes inner dig v t pd kind actor
+  [ -d "$d" ] || return 0
+  for f in "$d"/*/*; do
+    [ -f "$f" ] || continue
+    case "${f##*/}" in .tmp.*) continue ;; esac
+    tg=$(jq -r '.target // empty' "$f" 2>/dev/null || true)
+    sg=$(jq -r '.segment // empty' "$f" 2>/dev/null || true)
+    pd=$(jq -r '.project_dir // empty' "$f" 2>/dev/null || true)
+    v=$(jq -r '.verdict // empty' "$f" 2>/dev/null || true)
+    t=$(jq -r '.text // empty' "$f" 2>/dev/null || true)
+    kind=$(jq -r '.caller_kind // empty' "$f" 2>/dev/null || true)
+    bytes=$(jq -j '.command_b64 // "" | @base64d' "$f" 2>/dev/null; printf x)
+    bytes=${bytes%x}
+    inner=$(gate_thp thp_after_dashdash "$bytes" 2>/dev/null) || inner="$bytes"
+    dig=$(gate_thp thp_act_digest "$inner")
+    case "$kind" in stage) actor='스테이지' ;; shift) actor='교대' ;; *) actor='미상' ;; esac
+    # A shift carries no target or segment in its environment; the call's own
+    # `--target` and `--segment` name them.
+    [ -n "$tg" ] || tg=$(gate_refused_flag "$bytes" --target)
+    [ -n "$sg" ] || sg=$(gate_refused_flag "$bytes" --segment)
+    [ -n "$tg" ] || tg='-'
+    [ -n "$sg" ] || sg='-'
+    gate_target_hook_row "$tg" "$pd"
+    gate_refusal_condition "$tg" "$sg" "$pd"
+    gate_refusal_row "$tg" "$sg" "$actor" 감쌈 예측 "$dig" "$bytes" "${v:-거절}: ${t:-미상}"
+    rm -f "$f"
+  done
+}
+
+gate_remote_tip_of() {
+  # gate_remote_tip_of <slug> <branch> <dir> — the tip the remote reports for
+  # the branch, `없음` when it has none, `미상` when the read fails. The same
+  # read `gate_base_remote_tip` makes, from <dir> so a repository's own URL
+  # rewriting applies.
+  local slug="$1" br="$2" dir="$3" out sha
+  if ! out=$(cd "$dir" 2>/dev/null && GIT_TERMINAL_PROMPT=0 git ls-remote "https://github.com/$slug.git" "refs/heads/$br" 2>/dev/null); then
+    printf '미상'; return 0
+  fi
+  sha=$(printf '%s\n' "$out" | GATE_FEQ_V="refs/heads/$br" awk '$2 == ENVIRON["GATE_FEQ_V"] { n++; s = $1 } END { if (n == 1) print s }')
+  case "$sha" in
+    '') printf '없음' ;;
+    *[!0-9a-f]*) printf '미상' ;;
+    *) printf '%s' "$sha" ;;
+  esac
+}
+
+gate_remote_gh() {
+  # The `gh` program the pull-request read runs, resolved at call time. A stub
+  # ahead on the caller's PATH cannot stand in for it, for the reason
+  # `gate_metrics_gh` gives: run.sh puts the system prefixes first, so on the
+  # Ubuntu CI runner /usr/bin/gh wins, its read of a fixture slug fails, and
+  # every pull-request field reads `미상`. A test names the stub here instead.
+  printf '%s' "${CC_REMOTE_GH:-gh}"
+}
+
+gate_remote_pr_of() {
+  # gate_remote_pr_of <slug> <branch> <dir> <head> — `<번호>\t<상태>\t<HEAD>`
+  # for the segment's pull request: the open one; when there is none, the
+  # merged one whose head is <head>; `없음` fields when neither exists;
+  # `불일치` when two are open; `미상` when the read fails. A closed,
+  # unmerged pull request is never the segment's.
+  local slug="$1" br="$2" dir="$3" head="$4" json gh
+  gh=$(gate_remote_gh)
+  if ! json=$(cd "$dir" 2>/dev/null && GH_PROMPT_DISABLED=1 "$gh" pr list -R "$slug" --head "$br" --state all \
+                --json number,state,headRefOid 2>/dev/null); then
+    printf '미상\t미상\t미상'; return 0
+  fi
+  printf '%s' "$json" | jq -r --arg h "$head" '
+    if type != "array" then "미상\t미상\t미상"
+    else ([ .[] | select(.state == "OPEN") ]) as $o
+      | if ($o | length) > 1 then "불일치\t불일치\t불일치"
+        elif ($o | length) == 1 then "\($o[0].number)\tOPEN\t\($o[0].headRefOid)"
+        else ([ .[] | select(.state == "MERGED" and .headRefOid == $h) ]) as $m
+          | if ($m | length) > 0 then "\($m[0].number)\tMERGED\t\($m[0].headRefOid)"
+            else "없음\t없음\t없음" end
+        end
+    end' 2>/dev/null || printf '미상\t미상\t미상'
+}
+
+gate_remote_state_one() {
+  # gate_remote_state_one <alias> <segment> — reads the segment's branch tip
+  # and pull request and writes a `원격 판독` row when a value changed, then
+  # settles the segment's used tickets. A failed read is `미상`, not a refusal.
+  local al="$1" seg="$2" slug br wt dir head tip prl prn prs prh last
+  slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+  br=$(gate_segment_branch "$seg")
+  [ -n "$slug" ] && [ -n "$br" ] || return 0
+  wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
+  dir="$wt"
+  [ -n "$dir" ] && [ -d "$dir" ] || dir=$(target_field "$al" '메인 워크트리' 2>/dev/null || true)
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  head=$(gate_worktree_tip "$wt" 2>/dev/null || printf '미상')
+  tip=$(gate_remote_tip_of "$slug" "$br" "$dir")
+  prl=$(gate_remote_pr_of "$slug" "$br" "$dir" "$head")
+  prn=$(printf '%s' "$prl" | cut -f1); prs=$(printf '%s' "$prl" | cut -f2); prh=$(printf '%s' "$prl" | cut -f3)
+  last=$(gate_remote_last_row "$seg")
+  if [ -z "$last" ] || [ "$(gate_row_field "$last" '워크트리 HEAD')" != "$head" ] \
+     || [ "$(gate_row_field "$last" '원격 팁')" != "$tip" ] || [ "$(gate_row_field "$last" 'PR')" != "$prn" ] \
+     || [ "$(gate_row_field "$last" 'PR 상태')" != "$prs" ] || [ "$(gate_row_field "$last" 'PR HEAD')" != "$prh" ] \
+     || [ "$(gate_row_field "$last" '브랜치')" != "$br" ]; then
+    gate_append '원격 판독' "세그먼트=$seg" "브랜치=$br" "워크트리 HEAD=$head" "원격 팁=$tip" \
+      "PR=$prn" "PR 상태=$prs" "PR HEAD=$prh" "판독 시각=$(now_iso)"
+  fi
+  # A read both halves answered is stamped, so settlement can tell a remote
+  # that did not move from one nobody read.
+  if [ "$tip" != "미상" ] && [ "$prn" != "미상" ]; then
+    mkdir -p "$RUN_DIR/admit/read" 2>/dev/null && touch "$RUN_DIR/admit/read/$(gate_thp thp_key_norm "$seg")" 2>/dev/null || true
+  fi
+  gate_admit_settle "$seg"
+}
+
+gate_remote_state_refresh() {
+  # gate_remote_state_refresh <alias> [<segment>] — the remote state of one
+  # segment, or of every non-terminal segment of the target, read inside this
+  # process and written as `원격 판독` rows; the checks file is drained too, so
+  # the poller's last observation of the same pull request is on the ledger.
+  local al="$1" seg="${2:-}" s
+  if [ -n "$seg" ] && [ "$seg" != "-" ]; then
+    gate_remote_state_one "$al" "$seg"
+  else
+    for s in $(gate_segment_ids); do
+      gate_segment_terminal "$s" && continue
+      gate_segment_worktree_of_target "$s" "$al" >/dev/null 2>&1 || continue
+      gate_remote_state_one "$al" "$s"
+    done
+  fi
+  gate_drain_checks
+}
+
+gate_remote_stage() {
+  # gate_remote_stage <segment> — `push 필요 | PR 필요 | PR 있음 | 머지됨 |
+  # 불일치 | 미상`, from the last `원격 판독` row against the live HEAD. A row
+  # whose worktree HEAD is not the live one is stale, and stale reads `미상`.
+  local seg="$1" row wt head tip prn prs prh
+  row=$(gate_remote_last_row "$seg")
+  [ -n "$row" ] || { printf '미상'; return 0; }
+  wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
+  head=$(gate_worktree_tip "$wt" 2>/dev/null || true)
+  tip=$(gate_row_field "$row" '원격 팁')
+  prn=$(gate_row_field "$row" 'PR'); prs=$(gate_row_field "$row" 'PR 상태'); prh=$(gate_row_field "$row" 'PR HEAD')
+  if [ -z "$head" ] || [ "$(gate_row_field "$row" '워크트리 HEAD')" != "$head" ] \
+     || [ "$tip" = "미상" ] || [ "$prn" = "미상" ]; then
+    printf '미상'; return 0
+  fi
+  [ "$prn" != "불일치" ] || { printf '불일치'; return 0; }
+  [ "$prs" != "MERGED" ] || { printf '머지됨'; return 0; }
+  if [ "$tip" = "없음" ]; then printf 'push 필요'; return 0; fi
+  if [ "$tip" != "$head" ]; then
+    if ( cd "$wt" 2>/dev/null && git merge-base --is-ancestor "$tip" "$head" 2>/dev/null ); then
+      printf 'push 필요'
+    else
+      printf '불일치'
+    fi
+    return 0
+  fi
+  if [ "$prn" = "없음" ]; then printf 'PR 필요'; return 0; fi
+  if [ "$prh" = "$head" ]; then printf 'PR 있음'; else printf '불일치'; fi
+}
+
+gate_admit_settle() {
+  # gate_admit_settle <segment> — L3: the segment's tickets consumed more than
+  # GATE_ADMIT_SETTLE_AFTER seconds ago are settled against the remote state.
+  # A remote write whose effect shows writes `맨 명령 결과 판정=관측`; one whose
+  # effect does not writes `대상 거절 형태=맨 근거=추정 판정=추정`; a read
+  # writes `맨 명령 결과 판정=미상`. Settled tickets move to `admit/settled/`.
+  local seg="$1" f now mt kind row before after al dig bytes rid tid actor pd rd
+  [ -d "$RUN_DIR/admit/used" ] || return 0
+  now=$(date -u +%s)
+  for f in "$RUN_DIR"/admit/used/*; do
+    [ -f "$f" ] || continue
+    [ "$(jq -r '.segment // empty' "$f" 2>/dev/null || true)" = "$seg" ] || continue
+    mt=$(gate_mtime "$f"); [ -n "$mt" ] || continue
+    [ $((now - mt)) -gt "$GATE_ADMIT_SETTLE_AFTER" ] || continue
+    kind=$(jq -r '.remote // "-"' "$f" 2>/dev/null || printf -- '-')
+    al=$(jq -r '.target // "-"' "$f" 2>/dev/null || printf -- '-')
+    dig=$(jq -r '.digest // "-"' "$f" 2>/dev/null || printf -- '-')
+    rid=$(jq -r '.request // "-"' "$f" 2>/dev/null || printf -- '-')
+    tid=$(jq -r '.id // "-"' "$f" 2>/dev/null || printf -- '-')
+    actor=$(jq -r '.actor // "미상"' "$f" 2>/dev/null || printf '미상')
+    pd=$(jq -r '.project_dir // empty' "$f" 2>/dev/null || true)
+    case "$kind" in
+      쓰기)
+        before=$(jq -r '.remote_before // ""' "$f" 2>/dev/null || true)
+        # Only a read made after the consumption can show the effect; until one
+        # exists the ticket waits, or an unread push would read as refused.
+        # The row is written only on a change, so the read's own stamp is the
+        # marker file every successful read touches. A last read that could
+        # not reach the remote shows nothing either, so the ticket waits too.
+        row=$(gate_remote_last_row "$seg")
+        rd=$(gate_mtime "$RUN_DIR/admit/read/$(gate_thp thp_key_norm "$seg")")
+        if [ -z "$row" ] || [ -z "$rd" ] || [ "$rd" -le "$mt" ] \
+           || [ "$(gate_row_field "$row" '원격 팁')" = "미상" ]; then
+          continue
+        fi
+        row=$(gate_remote_last_known_row "$seg")
+        after="$(gate_row_field "$row" '원격 팁')/$(gate_row_field "$row" 'PR')/$(gate_row_field "$row" 'PR 상태')/$(gate_row_field "$row" 'PR HEAD')"
+        if [ -n "$row" ] && [ "$after" != "$before" ]; then
+          gate_append '맨 명령 결과' "대상=$al" "세그먼트=$seg" "행위자=$actor" "요청=$rid" "티켓=$tid" \
+            "행위 다이제스트=$dig" "판정=관측" "기록 시각=$(now_iso)"
+        else
+          bytes=$(jq -j '.command_b64 // "" | @base64d' "$f" 2>/dev/null; printf x); bytes=${bytes%x}
+          gate_refusal_condition "$al" "$seg" "$pd"
+          gate_refusal_row "$al" "$seg" "$actor" 맨 추정 "$dig" "$bytes" 미상 추정
+        fi ;;
+      읽기)
+        gate_append '맨 명령 결과' "대상=$al" "세그먼트=$seg" "행위자=$actor" "요청=$rid" "티켓=$tid" \
+          "행위 다이제스트=$dig" "판정=미상" "기록 시각=$(now_iso)" ;;
+    esac
+    mkdir -p "$RUN_DIR/admit/settled" 2>/dev/null && mv -f "$f" "$RUN_DIR/admit/settled/" 2>/dev/null || rm -f "$f"
+  done
+}
+
+gate_admit_prepare() {
+  # gate_admit_prepare <alias> <segment> <actor> <graded> — before the row: the
+  # ticket's content into GATE_ADMIT_TJSON and its id into GATE_ADMIT_TID. The
+  # content is the bytes, the request directory, the common git directory of
+  # the request's root, the caller, the expiry and, for a push, the directory
+  # it runs in with the digest of that repository's HEAD, refs and push
+  # settings (`thp_refs_digest`). The id ends in the
+  # seal of that content, and the row carries the id — so the run hook can tell
+  # a ticket this gate graded from a file another hand put in its place, and a
+  # push from one whose source moved after it was graded.
+  local al="$1" seg="$2" actor="$3" graded="$4" now remote before row rdir="" rdig=""
+  now=$(date -u +%s)
+  remote='-'
+  if [ "$graded" = "읽기" ]; then
+    case "${GATE_ACT_DERIVED:-}" in push|PR|머지) remote='읽기' ;; esac
+  else
+    case "${GATE_ACT_DERIVED:-}" in push|PR|머지) remote='쓰기' ;; esac
+  fi
+  before=""
+  if [ "$seg" != "-" ]; then
+    row=$(gate_remote_last_known_row "$seg")
+    [ -z "$row" ] || before="$(gate_row_field "$row" '원격 팁')/$(gate_row_field "$row" 'PR')/$(gate_row_field "$row" 'PR 상태')/$(gate_row_field "$row" 'PR HEAD')"
+  fi
+  if gate_admit_words_push; then
+    rdir=$(gate_thp thp_phys "$(gate_admit_git_dir "${GATE_ADMIT_WORDS[@]}")")
+    rdig=$(gate_thp thp_refs_digest "$rdir")
+    if [ -z "$rdig" ]; then
+      warn "the directory this push runs in ('${rdir:-$GATE_ADMIT_CWD}') is not a checkout whose HEAD and branches could be read, so no ticket could be bound to what it pushes"
+      exit "$GATE_EXIT_RULE"
+    fi
+  fi
+  GATE_ADMIT_TJSON=$(jq -nc --arg b "$GATE_ADMIT_BYTES" --arg cwd "$GATE_ADMIT_CWD" \
+     --arg cd "$(gate_thp thp_common_dir "$GATE_ADMIT_PDIR")" --arg caller "$GATE_ADMIT_CALLER" \
+     --argjson exp "$((now + GATE_ADMIT_TTL))" --arg req "$GATE_ADMIT_REQ_ID" \
+     --arg tg "$al" --arg sg "$seg" --arg dig "$GATE_ADMIT_DIGEST" --arg remote "$remote" \
+     --arg before "$before" --arg actor "$actor" --arg pd "$GATE_ADMIT_PDIR" \
+     --arg rd "$rdir" --arg rg "$rdig" \
+     '{command_b64: ($b | @base64), cwd: $cwd, common_dir: $cd, caller: $caller,
+       expires: $exp, request: $req, target: $tg, segment: $sg, digest: $dig,
+       remote: $remote, remote_before: $before, actor: $actor, project_dir: $pd,
+       refs_dir: $rd, refs_digest: $rg}') || die "could not compose the ticket"
+  GATE_ADMIT_TID="T-${now}-$$-$(printf '%s' "$GATE_ADMIT_TJSON" | gate_thp thp_ticket_seal)"
+}
+
+gate_admit_issue() {
+  # gate_admit_issue — after the row: the ticket `admit/ticket/<caller key>`,
+  # the content gate_admit_prepare composed with its id and the row's line. A
+  # newer ticket replaces an older one, and the request is consumed. Prints the
+  # bytes to issue again and the ticket id.
+  local line tdir tmp
+  line=$( { grep -nF "| 티켓=$GATE_ADMIT_TID |" "$LEDGER" 2>/dev/null || true; } | tail -1 | cut -d: -f1)
+  tdir="$RUN_DIR/admit/ticket"
+  mkdir -p "$tdir" || die "could not create the ticket directory: $tdir"
+  tmp=$(mktemp "$tdir/.tmp.XXXXXX") || die "could not create the ticket file in $tdir"
+  printf '%s' "$GATE_ADMIT_TJSON" | jq -c --arg id "$GATE_ADMIT_TID" --arg line "${line:--}" \
+     '. + {id: $id, line: $line}' > "$tmp" \
+    || { rm -f "$tmp"; die "could not write the ticket"; }
+  mv -f "$tmp" "$tdir/$GATE_ADMIT_KEY" || { rm -f "$tmp"; die "could not publish the ticket"; }
+  rm -f "$GATE_ADMIT_FILE"
+  printf '티켓 %s — 다음 명령을 바이트 그대로 한 번 다시 내십시오 (%s초 안, 같은 디렉터리):\n%s\n' \
+    "$GATE_ADMIT_TID" "$GATE_ADMIT_TTL" "$GATE_ADMIT_BYTES"
+}
+
 gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
@@ -28686,7 +29480,7 @@ gate_verb_act() {
   # kind that takes nothing after `--`: every field of its row is the gate's, and
   # its arm refuses any argv. Demanding one here left no spelling that passed
   # both, so a segment whose review read `머지` stopped short of the merge.
-  if [ "$kind" != "propose-done" ] && [ "$kind" != "base-check" ]; then
+  if [ "$kind" != "propose-done" ] && [ "$kind" != "base-check" ] && [ "$kind" != "remote-check" ]; then
     [ $# -ge 1 ] || { printf 'gate: an argv is required after --\n' >&2; exit 2; }
   fi
   # `exec` DOES NOT TAKE `--kind`, AND THE USAGE HEADER ALREADY SAID SO. A kind
@@ -28982,6 +29776,9 @@ gate_verb_act() {
   # now records that worktree beside the undeclared flag and the resolver
   # returns it, so all four readers and this assignment take one value.
   GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
+  # A bare command runs where the session issued it, not where the segment's
+  # worktree is, so the bare form grades and roots it there.
+  [ "${GATE_ADMIT:-}" != "1" ] || GATE_ACT_CWD="$GATE_ADMIT_CWD"
   export GATE_ACT_CWD
 
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
@@ -29690,6 +30487,7 @@ gate_verb_act() {
   if [ "$verb" != "grade" ]; then
     local actwt
     actwt=$(gate_act_worktree "$alias" "$segment")
+    [ "${GATE_ADMIT:-}" != "1" ] || actwt="$GATE_ADMIT_CWD"
     if [ -n "$actwt" ]; then
       GATE_GRADE_CWD=$(gate_real_prefix "$actwt")
     fi
@@ -29876,6 +30674,9 @@ gate_verb_act() {
   # "Simplifying" this up into the prelude brings the #592 ordering defect back to
   # life in a new series, which is why the reason is written down beside the call.
   gate_drain_checks
+  # The run hook's records of a target hook refusing a gate call, on the same
+  # seat for the same reason: the hook writes no row, and this is the writer.
+  gate_refused_drain
   # This seat's own state, then the watcher's — both go through the same file, so
   # whichever wrote it first is the one line the report carries and the two seats
   # cannot leave two lines for one fact.
@@ -30680,6 +31481,8 @@ EOF
       case "$unmet" in
         *"1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 "*)
           warn "the design is blocked, so this run can never produce a segment — settle the termination clauses that lean on the document as \`불가능\` (a clause held by a judgment approval the design stage opened: as \`보류\` naming that approval id), and this proposal is recorded as an invalidated termination" ;;
+        *"1 세그먼트가 하나도 없고 감사 단계가 더는 파견되지 않습니다 "*)
+          warn "the audit this plan opens on will not be dispatched again, so this run can never produce a segment — settle the termination clauses that lean on the audit or the segments as \`불가능\`, and this proposal is recorded as an invalidated termination" ;;
         *"1 베이스 분할이 더는 파견되지 않습니다 "*)
           warn "the base audit or split will not be dispatched again, so this run can never complete its split — settle the termination clauses that lean on the split as \`불가능\`, and this proposal is recorded as an invalidated termination" ;;
       esac
@@ -30936,6 +31739,55 @@ EOF
     actor='교대'
   fi
 
+  # A TARGET'S OWN BASH HOOK. The bare form first meets what only it has: the
+  # refspec check, the issuing-root rule and the credential rule; then the remote
+  # state its settlement will compare against. Both forms then meet the repeat
+  # block, and the bare form asks the issuing root's hooks what they will say.
+  # All of it sits here, past every read-only axis and the boundaries, because
+  # the remote read and the hook row are writes.
+  local _admit_pred="" _admit_text="" _admit_tid="없음" _form='감쌈' _adig=""
+  if [ "${GATE_ADMIT:-}" = "1" ]; then
+    _form='맨'
+    gate_admit_head_refspec_ok "$segment" "$@" || exit "$GATE_EXIT_VOCAB"
+    gate_admit_root_rule "$alias"
+    # The bare command runs under the session's own credential, not the
+    # read-scoped set the gate hands an exec; where the run separates the two,
+    # anything above a read would leave that separation behind.
+    if [ "$credmode" = "분리" ] && [ "$graded" != "읽기" ]; then
+      warn "this run separates the pipeline credential, and the bare form runs under the session's own — an act graded '$graded' cannot be admitted bare here"
+      warn "issue it through exec, which runs it under the separated credential"
+      exit "$GATE_EXIT_RULE"
+    fi
+    case "${GATE_ACT_DERIVED:-}" in
+      push|PR|머지) [ "$segment" = "-" ] || gate_remote_state_refresh "$alias" "$segment" ;;
+    esac
+  fi
+  if [ "$verb" = "exec" ] || { [ "$verb" = "act" ] && ! gate_kind_is_bookkeeping "$kind"; }; then
+    _adig=$(printf '%s' "$*" | shasum -a 256 | cut -d' ' -f1)
+    # The segment's own old tickets settle first, so a remote write whose
+    # effect never showed is a refusal row before the block reads the rows.
+    [ "$segment" = "-" ] || gate_admit_settle "$segment"
+    gate_refusal_block "$alias" "$segment" "$_adig" "$_form"
+  fi
+  if [ "${GATE_ADMIT:-}" = "1" ]; then
+    GATE_ADMIT_DIGEST="$_adig"
+    gate_target_hook_row "$alias" "$GATE_ADMIT_PDIR"
+    local _pr_out
+    _pr_out=$(gate_thp thp_probe "$GATE_ADMIT_PDIR" "$GATE_ADMIT_BYTES" "$GATE_ADMIT_CWD" "admit-$GATE_ADMIT_REQ_ID")
+    _admit_pred=$(printf '%s\n' "$_pr_out" | sed -n 1p)
+    _admit_text=$(printf '%s\n' "$_pr_out" | sed -n 2p)
+    [ -n "$_admit_pred" ] || _admit_pred='판정 불가'
+    # The ticket's content and sealed id are fixed before the row, which
+    # carries the id; the file itself is written after the row. A non-blocking
+    # failure is a pass, since the harness runs the tool after it; a probe
+    # timeout is not, since a ticket would let the real guard's late refusal
+    # go unrecorded.
+    if gate_admit_pred_passes "$_admit_pred"; then
+      gate_admit_prepare "$alias" "$segment" "$actor" "$graded"
+      _admit_tid="$GATE_ADMIT_TID"
+    fi
+  fi
+
   # A BOOKKEEPING KIND IS DECIDED BEFORE THE APPROVAL ROW IS WRITTEN, and every
   # other kind after it. The two orderings look inconsistent and are not: what
   # the early row buys is a record surviving a crash PART WAY THROUGH AN ACT,
@@ -30984,9 +31836,15 @@ EOF
   # explicitly — `${#actor}` is in `_row_fixed` and the constant carries the key,
   # so the argv excerpt shrinks rather than the row growing.
   if [ "$verb" = "exec" ]; then
-    local _row_fixed _argv_budget _ad2
+    local _row_fixed _argv_budget _ad2 _adm=()
     _ad2=$(printf '%s' "$*" | shasum -a 256 | cut -d' ' -f1)
+    # The bare form's four fields say which request was graded, whether a ticket
+    # was left and what the issuing root's hooks were predicted to answer.
+    if [ "${GATE_ADMIT:-}" = "1" ]; then
+      _adm=("형태=맨" "요청=$GATE_ADMIT_REQ_ID" "티켓=$_admit_tid" "예측=$_admit_pred")
+    fi
     _row_fixed=$(( ${#alias} + ${#segment} + ${#GATE_ACT_EFFECTIVE} + ${#graded} + ${#actor} + 336 ))
+    [ "${#_adm[@]}" -eq 0 ] || _row_fixed=$(( _row_fixed + ${#_adm[0]} + ${#_adm[1]} + ${#_adm[2]} + ${#_adm[3]} + 12 ))
     _argv_budget=$(( 1024 - 16 - _row_fixed ))
     [ "$_argv_budget" -gt 128 ] && _argv_budget=128
     [ "$_argv_budget" -lt 0 ] && _argv_budget=0
@@ -30998,7 +31856,7 @@ EOF
       "표지=${GATE_MARK:--}" "파괴 출처=$(gate_destructive_source)" \
       "도달=${GATE_REACH:--}" "유도 도달=$(gate_reach_derived "$alias" "$@")" \
       "식별자 대조=$(gate_dev_identifier_check "$alias" "$@")" \
-      "행위 다이제스트=$_ad2" \
+      "행위 다이제스트=$_ad2" ${_adm[@]+"${_adm[@]}"} \
       "argv=$(gate_row_safe "$*" "$_argv_budget")")
     # A machine-global act a judgment opened carries the verdict and its reason,
     # the reason taking only what the row has left once everything else is in.
@@ -31047,6 +31905,23 @@ EOF
   gate_issue_review_obligation "$segment" "$GATE_ACT_EFFECTIVE" "$graded" "$GATE_REVIEW_POLICY" "$alias" "$kind"
 
   [ -n "$bookkeeping" ] && return 0
+
+  # THE BARE FORM PERFORMS NOTHING. The row above is its record; what is left is
+  # either the refusal its root's hooks predicted — a `대상 거절` row, and the
+  # request stays for a corrected retry to replace — or the ticket the run hook
+  # lets the same bytes through on once.
+  if [ "${GATE_ADMIT:-}" = "1" ]; then
+    if ! gate_admit_pred_passes "$_admit_pred"; then
+      gate_refusal_condition "$alias" "$segment" "$GATE_ADMIT_PDIR"
+      gate_refusal_row "$alias" "$segment" "$actor" 맨 예측 "$_ad2" "$GATE_ADMIT_BYTES" \
+        "$_admit_pred: ${_admit_text:-미상}"
+      warn "the hooks of the issuing root '$GATE_ADMIT_PDIR' are predicted to answer '$_admit_pred' for this command: ${_admit_text:-(no text)}"
+      warn "no ticket is left; the refusal is on the ledger and the same act stays closed until its condition moves"
+      exit "$GATE_EXIT_RULE"
+    fi
+    gate_admit_issue
+    return 0
+  fi
 
   # ---- and now PERFORM it -------------------------------------------------
   #
@@ -33521,7 +34396,9 @@ gate_verb_supervise_stage() {
   # happens only when the reading itself says `(argv)`; `(꺼짐)` and `(미상)`
   # inject nothing — the window is an optimisation, and an uncertain reading
   # must not stop a launch. The project layer is read from this process's cwd,
-  # which the act put at the segment worktree before starting the supervisor.
+  # which is its caller's: the act does not move it, so a stage starts in the
+  # directory the session that dispatched it was in, not in the segment's
+  # worktree.
   # A `--resume` re-attachment passes through here too, so the same flag rides
   # beside `-r`. The flag goes to the WRAPPER, before `--`: the wrapper refuses
   # a caller's `--autocompact` after `--` as a reserved flag, and it puts the
@@ -35916,9 +36793,14 @@ gate_done_disposition() {
   # A base run's closed-split line is dropped on the same footing: its audit or
   # split will not be dispatched again, so the split can never complete. Its
   # unfinished-split line is not dropped.
+  #
+  # So is the closed-audit line of a single run whose plan opens on the audit:
+  # with no design step, an audit that will not be dispatched again leaves the
+  # run no road to a segment. Its unfinished-audit lines are not dropped.
   other=$(printf '%s' "$unmet" \
     | grep -v -e '^5 런 스코프 blocked 가 해소 불가입니다 ' \
               -e '^1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 ' \
+              -e '^1 세그먼트가 하나도 없고 감사 단계가 더는 파견되지 않습니다 ' \
               -e '^1 베이스 분할이 더는 파견되지 않습니다 ' \
               -e '^10 종료 절 [^ ]* 불가능 정산$' || true)
   [ -n "$other" ] || { printf '무효화'; return 0; }
@@ -35951,7 +36833,8 @@ gate_unmet_numbers() {
 
 gate_base_step_closed() {
   # gate_base_step_closed <step id> <row kind> — prints why a base run's audit or
-  # split step will not be dispatched again and returns 0, or returns 1.
+  # split step will not be dispatched again and returns 0, or returns 1. The
+  # audit arm of a single run with no design step reads its audit by this too.
   #
   # The depth is the design step's, by the same counter: `공허한 성공` or a crash
   # buys one fresh attempt and two close the step; `외부 종료` and a usage-limit
@@ -35977,6 +36860,49 @@ gate_base_step_closed() {
     return 0
   fi
   printf '종단 부류 %s' "${last:-미상}"
+}
+
+gate_audit_first_unmet() {
+  # gate_audit_first_unmet <audit step id> — condition 1's arm for a single run
+  # whose plan has no design step and opens on the audit (see the caller).
+  # Prints at most one line.
+  #
+  # An audit that ended `정상 완료` is the run's work done when the plan has no
+  # step after it, so the condition holds and condition 10 is left to measure
+  # the clauses the person authorized. When an implement step follows, the
+  # line names it, and its head is not one `gate_done_disposition` drops: the
+  # run is unfinished, not void. An audit that will not be dispatched again —
+  # by `gate_base_step_closed`, the same depth the base arm reads — prints the
+  # line with its own fixed head that the disposition drops, so the run may
+  # record its end as invalidated. A re-convergence on the audit's key that
+  # came after its last audit row is waiting on a fresh audit, so that state
+  # is not read as closed.
+  local astep="$1" arows alast lastrow istep why
+  arows=$(gate_audit_result_rows_of "$astep")
+  if [ -z "$arows" ]; then
+    printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 아직 끝나지 않았습니다\n' "$astep"
+    return 0
+  fi
+  lastrow=$( { gate_stage_result_rows_of "$astep" || true; } \
+             | { grep -F -- '- `stage-result`' || true; } | tail -1)
+  case "$lastrow" in
+    *'| 종류=reconverge '*)
+      printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 재수렴 뒤 새 감사를 기다립니다\n' "$astep"
+      return 0 ;;
+  esac
+  alast=$(gate_row_field "$(printf '%s\n' "$arows" | tail -1)" '종단 부류')
+  if [ "$alast" = '정상 완료' ]; then
+    istep=$(manifest_plan_json 2>/dev/null \
+              | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id // empty | select(. != "")][0] // empty' 2>/dev/null \
+              || true)
+    [ -z "$istep" ] || printf '1 감사가 끝났으나 다음 단계(%s)가 아직 파견되지 않았습니다\n' "$istep"
+    return 0
+  fi
+  if why=$(gate_base_step_closed "$astep" audit); then
+    printf '1 세그먼트가 하나도 없고 감사 단계가 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$astep" "$why"
+  else
+    printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 아직 끝나지 않았습니다 (종단 부류 %s)\n' "$astep" "${alast:-미상}"
+  fi
 }
 
 gate_base_split_unmet() {
@@ -36094,7 +37020,7 @@ gate_done_conditions() {
   # its head is not one `gate_done_disposition` drops: the run is unfinished,
   # not void. An audit that ran and ended any other way is not named here; the
   # router stops on it, and the old line then lets the run record its end.
-  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
     dwhy=""; dnext=""
@@ -36187,6 +37113,14 @@ gate_done_conditions() {
       # for the current document, closed when the audit or the split will not be
       # dispatched again, and otherwise not finished yet.
       gate_base_split_unmet
+    elif [ -z "$dstep" ] && astep=$(gate_run_scope_step audit); then
+      # A SINGLE RUN WHOSE PLAN OPENS ON THE AUDIT. Its document was frozen
+      # before the run, so there is no design step for the arm above to read,
+      # and the audit is the step that decides whether anything can follow.
+      # Without this arm the plain line below stood whatever the audit did: an
+      # audit-only plan could not end after its audit finished, and a plan whose
+      # audit parked before any segment could not even end as invalidated.
+      gate_audit_first_unmet "$astep"
     else
       printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
     fi
@@ -37050,7 +37984,16 @@ gate_snapshot_segments_json() {
            for d in $(gate_chain_deps_of "$sid"); do
              gate_segment_ever_landed "$d" || mw="$mw $d"
            done
-           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s"},\n' \
+           # THE REMOTE STATE, from the last `원격 판독` row and the live HEAD,
+           # and the review prompt — what a shift needs to push, open a pull
+           # request or dispatch the review without spelling any of it. The
+           # snapshot reads no remote; `remote-check` writes the row it reads.
+           sbr=$(gate_segment_branch "$sid")
+           shead=$(gate_worktree_tip "$(gate_segment_worktree "$sid" 2>/dev/null || true)" 2>/dev/null || true)
+           srr=$(gate_remote_last_row "$sid")
+           srl=""
+           [ -z "$sbr" ] || srl=$(gate_review_line "$sid" 2>/dev/null || true)
+           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "머지 순서": "%s", "머지 대기": %s, "커밋": "%s", "마지막 스테이지": "%s", "브랜치": %s, "HEAD": %s, "원격 팁": %s, "PR": {"번호": %s, "상태": %s, "HEAD": %s}, "원격 단계": "%s", "리뷰 줄": %s},\n' \
              "$(gate_json_escape "$sid")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '상태')")" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '워크트리')")" \
@@ -37058,7 +38001,14 @@ gate_snapshot_segments_json() {
              "$(gate_json_escape "${mo:-없음}")" \
              "$(gate_json_id_array $mw)" \
              "$(gate_json_escape "$(gate_segment_field "$sid" '커밋')")" \
-             "$(gate_json_escape "$(gate_row_field "$( { gate_rows 'stage-result' | grep -F "세그먼트=$sid " || true; } | tail -1)" '스테이지')")"
+             "$(gate_json_escape "$(gate_row_field "$( { gate_rows 'stage-result' | grep -F "세그먼트=$sid " || true; } | tail -1)" '스테이지')")" \
+             "$(gate_json_str_or_null "$sbr")" "$(gate_json_str_or_null "$shead")" \
+             "$(gate_json_str_or_null "$(gate_row_field "$srr" '원격 팁')")" \
+             "$(gate_json_str_or_null "$(gate_row_field "$srr" 'PR')")" \
+             "$(gate_json_str_or_null "$(gate_row_field "$srr" 'PR 상태')")" \
+             "$(gate_json_str_or_null "$(gate_row_field "$srr" 'PR HEAD')")" \
+             "$(gate_json_escape "$(gate_remote_stage "$sid")")" \
+             "$(gate_json_str_or_null "$srl")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
@@ -37570,6 +38520,17 @@ gate_launch_shift() {
   # The hand-back leaves `relay.live` in place: its `handback=` line is what the
   # watcher measures the next seat turn from, and a dead relay reads as dead.
   gate_relay_before_launch "$reason" || return 0
+
+  # THE REMOTE STATE OF EVERY OPEN SEGMENT, read before the successor starts so
+  # its first snapshot already says which segment needs a push, a pull request
+  # or nothing — a shift that has to find that out by trying is a shift that
+  # meets a target hook's refusal it could have read. A failed read is `미상`
+  # and never holds the launch. A launch from inside the relay loop skips it:
+  # the relay is read-only on the ledger and calls no `gh`, so its successor
+  # reads the rows the last read left, and a stale one reads `미상`.
+  if [ -z "$GATE_RELAY_INNER" ]; then
+    gate_remote_state_refresh "$alias" || true
+  fi
 
   # NO LIVE-STAGE SUPPRESSOR ANY MORE. It held a `상한` shift back while a stage
   # ran, on the stated premise that a live stage is the router's child and would

@@ -183,7 +183,9 @@ fi
 # --- test-gate.sh, the run-open and stage-launch sections --------------------
 # Judged on its own rows: when the run above already failed, the file exists
 # and a bare existence check would blame this suite for the other one's rows.
-GATE_SECTIONS=1b,14h,14o
+# 87e drives the run hook's request and ticket files, which land under a run
+# directory: the fixture's own, never the one this session inherited.
+GATE_SECTIONS=1b,14h,14o,87e
 before=0
 [ -f "$LEDGER" ] && before=$(grep -c '^- `' "$LEDGER")
 ( cd "$MIRROR" && bash "$MIRROR/scripts/test-gate.sh" --sections "$GATE_SECTIONS" ) \
@@ -197,6 +199,12 @@ if [ "$after" != "$before" ] || { [ "$before" = 0 ] && [ -f "$LEDGER" ]; }; then
       "$((after - before)) 행이 붙었다"
 else
   ok "test-gate.sh --sections $GATE_SECTIONS 가 물려받은 런의 원장을 만들지 않는다"
+fi
+if [ -e "$CC_PIPELINE_RUN_DIR/admit" ]; then
+  bad "test-gate.sh --sections $GATE_SECTIONS 가 물려받은 런 디렉터리에 요청·표를 남기지 않는다" \
+      "$(find "$CC_PIPELINE_RUN_DIR/admit" -type f | wc -l | tr -d ' ') 개 파일이 생겼다"
+else
+  ok "test-gate.sh --sections $GATE_SECTIONS 가 물려받은 런 디렉터리에 요청·표를 남기지 않는다"
 fi
 
 echo "test-suite-isolation: $passed passed, $failures failed"

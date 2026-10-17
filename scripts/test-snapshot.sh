@@ -418,6 +418,11 @@ check "--fields 의 기본 목록은 라우터가 읽는 여덟 필드를 그 �
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
   "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,shift,pace"
 check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이다" "$(jq -c .waiting_stages "$WORK/s1.json")" "[]"
+# The target-hook refusals the router reads before a remote act: an array even
+# when no target hook ever refused, so `length` never meets a null.
+check "대상 훅 거절이 없으면 guard_refusals 는 빈 배열이다" "$(jq -c .guard_refusals "$WORK/s1.json")" "[]"
+check "segments[] 의 원소는 원격 상태 필드를 싣는다" \
+  "$(jq -r '[.segments[] | has("브랜치") and has("HEAD") and has("원격 팁") and has("PR") and has("원격 단계") and has("리뷰 줄")] | if length == 0 then "원소 없음" else all | tostring end' "$WORK/s1.json")" "true"
 # THE CONE AND REPLAN ARRAYS ARE ALWAYS PRESENT, right after `blocked`, and stay
 # out of the default projection: the router asks for them by name, and a key that
 # appeared only when it had elements would read as absent on the ordinary night.
@@ -1130,6 +1135,74 @@ do
 done
 
 # ---------------------------------------------------------------------------
+# 6e-2b. Push and pull request from the snapshot, in BOTH router copies
+#
+# No run skill opens a new segment's pull request, so the router takes it from
+# the snapshot's `원격 단계`: the remote-check act that refreshes it, the bare
+# issue and `admit --request last` with no `--cutpoint` where the session's
+# root is hooked, and `guard_refusals[]` read before a remote act. A target-hook
+# refusal stops one segment at site `대상 훅 거절` in the shift's copy; the lead
+# has no such site and parks the segment with a cone block. Both copies also
+# say where a stage session starts — the dispatcher's directory, not the
+# segment worktree — because the hook that judges its Bash is that root's.
+# ---------------------------------------------------------------------------
+for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for spec in \
+    '#### Pushing and opening a pull request|`원격 단계`' \
+    '#### Pushing and opening a pull request|--kind remote-check --target <alias> --segment <id>' \
+    '#### Pushing and opening a pull request|gate.sh admit --request last' \
+    '#### Pushing and opening a pull request|`guard_refusals[]`' \
+    "#### Pushing and opening a pull request|The target's cutpoint comes first, because \`원격 단계\` does not read it" \
+    '#### Pushing and opening a pull request|open none — dispatch the review with `리뷰 줄`' \
+    '#### Pushing and opening a pull request|git push origin <브랜치>' \
+    '#### Pushing and opening a pull request|push with anything before `git`' \
+    '#### Pushing and opening a pull request|carry `PR.번호` as `PR=`' \
+    '교대=#### Pushing and opening a pull request|stop the segment at site `대상 훅 거절`' \
+    '교대=#### Pushing and opening a pull request|never `settings.json` while the run is open' \
+    '리드=#### Pushing and opening a pull request|there is no shift-halt site for this loop to use' \
+    '교대=#### Pushing and opening a pull request|Never copy `명령` or `거절 문면` into any gate argument' \
+    '리드=#### Pushing and opening a pull request|a `스코프=cone` block whose `사유` names the refusal by the element'"'"'s `행위 다이제스트` and `형태`, never quoting `명령` or `거절 문면`'
+  do
+    case "$spec" in
+      리드=*|교대=*) [ "${spec%%=*}" = "$who" ] || continue; spec=${spec#*=} ;;
+    esac
+    head=${spec%%|*}; lit=${spec#*|}
+    sec=$(router_section "$file" "$head")
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 「${head#'#### '}」 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 「${head#'#### '}」 절" "「${lit}」이 없다"
+    fi
+  done
+  case "$who" in
+    리드) lit='The stage session itself starts in the directory this loop is in, not in that worktree' ;;
+    *)    lit='The stage session itself starts in the directory this shift is in, not in that worktree' ;;
+  esac
+  if grep -qF -- "$lit" "$file"; then
+    ok "$who 사본이 리드 수정 스테이지의 세션이 시작하는 디렉터리를 적는다"
+  else
+    bad "$who 사본의 리드 수정 기동" "「${lit}」이 없다"
+  fi
+done
+if grep -qF -- '| `대상 훅 거절` |' "$RS_SKILL"; then
+  ok "교대 사본의 정지 자리 표가 「대상 훅 거절」을 싣는다"
+else
+  bad "교대 사본의 정지 자리 표" "「대상 훅 거절」 행이 없다"
+fi
+if grep -qF -- 'the refused act for `대상 훅 거절`' "$RS_SKILL"; then
+  ok "교대 사본의 재시도 목록이 「대상 훅 거절」의 거절된 행위를 싣는다"
+else
+  bad "교대 사본의 재시도 목록" "「대상 훅 거절」이 없다"
+fi
+if grep -qF -- 'so the project hooks it loads are that directory'"'"'s repository'"'"'s' "$RS_SKILL"; then
+  ok "교대 사본이 스테이지가 디스패처의 디렉터리에서 시작한다고 적는다"
+else
+  bad "교대 사본의 스테이지 시작 디렉터리" "문장이 없다"
+fi
+
+# ---------------------------------------------------------------------------
 # 6e-3. Merge, apply and the fix re-dispatch are carried by BOTH router copies
 #
 # After a review passed, no router text merged with a pinned head, recorded the
@@ -1159,6 +1232,8 @@ fix_prompt_rs=""
 for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
+    '#### Merging and applying a segment|**Below the `머지` cutpoint nothing is merged.**' \
+    '#### Merging and applying a segment|-- 상태=완료 커밋=<구현 워크트리 HEAD> 브랜치=<브랜치> 워크트리=<구현 워크트리> 선행=<계획 행의 선행>' \
     '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
     '#### Merging and applying a segment|A `gh pr merge` without `--admin` is refused as unbound even with `--match-head-commit`' \
     '#### Merging and applying a segment|gh pr view <n> --json state,headRefOid,mergeCommit,mergeStateStatus' \
