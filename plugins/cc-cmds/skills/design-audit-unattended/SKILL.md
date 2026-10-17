@@ -80,7 +80,7 @@ deserved it.
 
 ## Control-Flow Invariants
 
-These rules govern termination and the freeze contract, and MUST stay near the top of this file: post-compaction reattaches only the first ~5K tokens with priority, and losing CFI-2 or CFI-3 **resurrects, inside this command, the unbounded loop this command exists to delete.**
+These rules govern termination and the freeze contract, and MUST stay near the top of this file: post-compaction reattaches only the first ~5K tokens with priority, and losing CFI-2 or CFI-3 **resurrects, inside this command, the unbounded loop this command exists to delete.** After any compaction, re-Read `## Lead read set`, then its `재진입` rows, then the rows of the phase you are in.
 
 ### CFI-0 — Fixed constants (single source of truth)
 
@@ -145,6 +145,55 @@ Step 7 cannot complete without a disclosure block that passes all four anti-vacu
 
 None of the following may appear anywhere under this skill: `consecutive_no_major`, `COUNT_APPLIED`, `escalate_applied`, `INNER_EXIT_REASON`, `inner_round`, `outer_iter`, `outer_log.md`, `ack_items.md`, `pending_applies.md`, `INNER_TEMP_DIR`, a severity max-aggregation ratchet, and any auto-approve or auto-reject predicate used as a **termination input**. This command still triages, but no counter anywhere depends on the triage outcome.
 
+## Lead read set
+
+What this lead Reads of other files, and when: a row names a file under `plugins/cc-cmds/skills/` (or a run input `입력:<이름>`), a part of it — a verbatim heading, or the verbatim start of a line — and how far the part reaches: `절` to the next heading of the same or a higher level, `본문만` to the next heading of any level, `전체` the whole file. `파견전` rows are Read before the spawn; each later phase's rows are Read on entering that phase, never before.
+
+**파견전 상한**: 143000 바이트
+
+| 단계 | 디스패치 | 파일 | 부분 | 범위 |
+|---|---|---|---|---|
+| 파견전 | 공통 | `입력:문서` | — | 전체 |
+| 파견전 | 공통 | `_common/sidecar.md` | `### 1.1 Path and slug derivation` | 절 |
+| 파견전 | 공통 | `_common/sidecar.md` | `` ### 1.2 Header grammar and the `owner-doc=` provenance guard `` | 절 |
+| 파견전 | 공통 | `design-audit/references/02-deterministic-checks.md` | — | 전체 |
+| 파견전 | 공통 | `_common/verification.md` | `## 1. Claim taxonomy (5 categories)` | 절 |
+| 파견전 | 공통 | `_common/verification.md` | `## 3. Frozen vocabulary (the verdict/residual token table)` | 절 |
+| 파견전 | 공통 | `_common/verification.md` | `` ## 4. Verification ledger schema — `## 검증 기록` `` | 절 |
+| 파견전 | 공통 | `_common/verification.md` | `` ## 5. Residual-item contract — `## 구현 시 검증 항목` `` | 절 |
+| 파견전 | 공통 | `_common/verification.md` | `## 6. Observation & verification carve-out (running + experimenting ≠ modifying)` | 본문만 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Spawn` | 본문만 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Witness file (member-written, durable, atomic publish)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `` ## Completion predicate `witness_present(member, round/phase)` `` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Completion signal (hints only)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Turn economy (batch independent calls, reuse one read digest, absolute paths)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Dispatch-completeness gate (roster-vs-round, pre-wait)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Anti-fabrication (disk is the SOT)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Role↔agentId ledger v3` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Witness vs ledger (two artifacts, clean separation)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Task-assignment header (embed verbatim)` | 절 |
+| 파견전 | 공통 | `_common/agent-team-protocol.md` | `## Per-skill parameter seam` | 본문만 |
+| 파견전 | 공통 | `_common/team-model-tier.md` | — | 전체 |
+| 파견전 | 공통 | `design-audit/references/01-reader-prompt.md` | — | 전체 |
+| 재진입 | 공통 | `_common/agent-team-protocol.md` | `# Agent Team Protocol (Shared Rules)` | 본문만 |
+| 재진입 | 공통 | `_common/agent-team-protocol.md` | `## Dispatch-completeness gate (roster-vs-round, pre-wait)` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Witness file (member-written, durable, atomic publish)` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `` ## Completion predicate `witness_present(member, round/phase)` `` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Completion signal (hints only)` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Dispatch-completeness gate (roster-vs-round, pre-wait)` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Anti-fabrication (disk is the SOT)` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Role↔agentId ledger v3` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Witness vs ledger (two artifacts, clean separation)` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Reconcile ladder (witness-absent re-entry)` | 절 |
+| 감사:Step4 | 공통 | `_common/agent-team-protocol.md` | `## Escalation (failure phenotypes)` | 절 |
+| 감사:Step5 | 공통 | `_common/verification.md` | `### 6.0 Assertion 1's declared measurement surface` | 절 |
+| 감사:Step6 | 공통 | `design-audit/references/03-adjustment-pass.md` | — | 전체 |
+| 감사:Step7 | 공통 | `design-audit/references/04-disclosure-block.md` | — | 전체 |
+| 감사:Step7 | 공통 | `_common/team-cleanup.md` | — | 전체 |
+| 트리거:중단 | 공통 | `_common/agent-team-protocol.md` | `## Teardown & abort` | 절 |
+| 트리거:정지기록 | 공통 | `_common/pipeline-sidecar.md` | `` ## 4. `cc-pipeline-halt v1` — the halt record (not a sidecar) `` | 절 |
+| 트리거:정지기록 | 공통 | `_common/sidecar.md` | `### 1.3 Atomic write` | 절 |
+
 ## Workflow
 
 ### Step 0: Tool Loading
@@ -161,13 +210,13 @@ Load deferred tools via ToolSearch before any other step:
 
 1. **Parse** `$ARGUMENTS` per `## Input`. A missing or non-`.md` target is a **halt** with `분류: precondition-failed`.
 2. **Read the whole document.** An unparseable or empty document is a **halt** (nothing to freeze).
-3. **Read `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1`** and derive, from the **document's own directory** and never the cwd, the **document key** and `{slug}`. **`CODE_ROOT` is the cwd's worktree** (`git rev-parse --show-toplevel` in the cwd — the directory this stage's `gate.sh exec` acts run in) when that worktree belongs to the document's repository — `git rev-parse --path-format=absolute --git-common-dir` prints the same path from both directories — and otherwise the document's own (`git rev-parse --show-toplevel` from the document's directory, falling back to the document's directory). The gate runs this stage's acts in a linked worktree of its own, detached at the base and named `<main worktree>-run-<run id>-<audit step id>`, because the main worktree the document lives in is the one other runs and sessions fast-forward after every merge; taking `CODE_ROOT` from the document would put the audit back on that moving tree. Take the boundary observations in `CODE_ROOT`. **Record `CODE_ROOT` and the cwd the boundary observations will be taken in as a pair, in the report.** That pair is a diagnostic record; the caller-checks-it duty of `${CLAUDE_SKILL_DIR}/../_common/verification.md` §6.0 is discharged by Step 5's first sub-step, which runs the four checks on the derivation itself.
+3. **Read `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `### 1.1 Path and slug derivation` and ``### 1.2 Header grammar and the `owner-doc=` provenance guard``** and derive, from the **document's own directory** and never the cwd, the **document key** and `{slug}`. **`CODE_ROOT` is the cwd's worktree** (`git rev-parse --show-toplevel` in the cwd — the directory this stage's `gate.sh exec` acts run in) when that worktree belongs to the document's repository — `git rev-parse --path-format=absolute --git-common-dir` prints the same path from both directories — and otherwise the document's own (`git rev-parse --show-toplevel` from the document's directory, falling back to the document's directory). The gate runs this stage's acts in a linked worktree of its own, detached at the base and named `<main worktree>-run-<run id>-<audit step id>`, because the main worktree the document lives in is the one other runs and sessions fast-forward after every merge; taking `CODE_ROOT` from the document would put the audit back on that moving tree. Take the boundary observations in `CODE_ROOT`. **Record `CODE_ROOT` and the cwd the boundary observations will be taken in as a pair, in the report.** That pair is a diagnostic record; the caller-checks-it duty of `${CLAUDE_SKILL_DIR}/../_common/verification.md` §6.0 is discharged by Step 5's first sub-step, which runs the four checks on the derivation itself.
 4. **FREEZE.** Record `FROZEN_SHA256` (`shasum -a 256`) and, **from that same read**, `FROZEN_BYTES` (`wc -c`), with no write between them — Step 6 edits the document, so a size measured later is a different measurement. The two boundary baselines are **not** captured here; Step 2 captures them after its report write, the single window opening CFI-1 names. Create `<base>/docs/design-audit/` and early-stub the report at `<base>/docs/design-audit/{slug}.md`: an H1 title, the machine header `<!-- cc-design-audit v1; writer=design-audit; reader=design-audit; owner-doc=<document key>; NOT a design doc; mechanism-local, never staged by a skill -->`, the `<!-- cc-design-ledger v3 … -->` block, and a `## 감사 개시` block carrying `frozen-sha256`, `frozen-bytes`, `frozen-at`, `reader-count`, `reader-model`, `round-token`, `pass-token`. The `frozen-sha256` and `frozen-bytes` recorded here are never rewritten — the hash is the second hash that anti-vacuity check (i) compares against, and the byte count is the only surviving record of the frozen size, which Step 7 copies into the disclosure block instead of re-measuring. **The `writer=`/`reader=` fields keep the base skill's name** — the carrier is the same mechanism whichever arm produced it.
 5. **Write the opening notice into the report rather than emitting it as a user-facing line** — the report is where the morning reader looks: the target, the hash prefix, *"리더 팬아웃 1라운드 후 정지 — 추가 라운드 없음"*, and the post-stop `**미리뷰(스톱 이후 추가)**` convention.
 
 ### Step 2: Deterministic checks (ONCE, outside the replication channel)
 
-**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/02-deterministic-checks.md`** and run it once.
+**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/02-deterministic-checks.md`** and run it once. `02-deterministic-checks.md`'s instruction to Read `_common/verification.md` is served by the rows of `## Lead read set`; that file is not Read whole. Its parts are `## 1. Claim taxonomy (5 categories)`, `## 3. Frozen vocabulary (the verdict/residual token table)`, ``## 4. Verification ledger schema — `## 검증 기록` ``, ``## 5. Residual-item contract — `## 구현 시 검증 항목` `` and the body of `## 6. Observation & verification carve-out (running + experimenting ≠ modifying)` above its first subsection.
 
 A check with detection probability near 1 gains nothing from replication, so it runs once here and the readers' budget goes to the semantic measurement only they can do.
 
@@ -181,7 +230,7 @@ Write the output into the report as `## 결정론적 검사` and hand its path t
 
 ### Step 3: Fan-out spawn
 
-**Before spawning, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / witness / ledger v3 / reconcile-ladder contract and the task-assignment header, **Read `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md`** for the reader model, and **Read `${CLAUDE_SKILL_DIR}/../design-audit/references/01-reader-prompt.md`** for the reader prompt.
+**Before spawning, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** — the parts listed in `## Lead read set` — for the spawn / witness / ledger v3 / reconcile-ladder contract and the task-assignment header, **Read `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md`** for the reader model, and **Read `${CLAUDE_SKILL_DIR}/../design-audit/references/01-reader-prompt.md`** for the reader prompt.
 
 Readers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), self-terminating on return; each reader's result is delivered by its **witness file**. The `Agent()` call passes the model on the tier file's `audit-reader` row, and every reader of one audit gets the same one — stated rather than inherited, so a later change to stage launch does not move the readers silently.
 
@@ -210,7 +259,7 @@ Apply the protocol's `witness_present` completion predicate, its reconcile ladde
 
 ### Step 6: Reconciliation pass (single, non-recursive)
 
-**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/03-adjustment-pass.md`.**
+**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/03-adjustment-pass.md`.** Read each target section by range immediately before its Edit; when the Edit refuses a non-unique `old_string`, widen it from that same ranged Read.
 
 Record the `조정 시작` timestamp as the **first** act of this step. In one non-recursive pass: re-assign severity as a single labeller; route every unique defect to exactly one named owner; apply the accepted set; write the routed items into their carriers; ask the synthesis question of CFI-3b and answer it in writing; record `조정 종료`.
 
