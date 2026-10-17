@@ -115,6 +115,8 @@ Load deferred tools via ToolSearch before any other step:
 
 Adoption is reached only here, from a person's interactive kickoff: the successor chain does not call `rekick.sh`, so a run waiting on a person is never re-opened at night.
 
+**The hook check runs on this path too.** Where item 6 asks 5o or 5b again, call `<plugin root>/orchestrator/kickoff-hook-probe.sh` in the same order as a first kickoff, right after each target's cutpoint is settled; for a cutpoint carried without being asked again, call it on the carried value before item 7 writes. When it prints a `질문` row, ask the same question (`references/boundaries.md`, 「5b (hook check)」) — the carried rung is frozen only if the person keeps it. The check reads the target's hooks on disk now, never a file of the previous run.
+
 **On `재킥오프` or `대기`, Read `${CLAUDE_SKILL_DIR}/references/rekickoff.md` now** — items 2 through 8 of this path and its stop rule are there, and the path does not go on without them.
 
 ### Step 1: Read the contracts, then judge the entry
@@ -239,6 +241,7 @@ None of these has a safe default this skill may pick for the user. 킥오프 기
 4. **5l and 5n** — each is a lone question asked after an earlier answer, so `AskUserQuestion`. 5l stays the approval the gate binds.
 5. **`status=취소`** — apply the answers given, and ask the unanswered questions again on the `AskUserQuestion` path.
 6. **Trace lines** — before calling the form, append in step order the trace line of every boundary the form carries (`경계 질문`, `로스터` and so on), then `단계=문답(질문지) | 질문=<n>`, and only then call it. The line has no form id: the form mints its id inside the call, and the turn that receives `QUESTION_FORM_OPEN` ends without another tool call, so there is no moment at which the kickoff could write it.
+7. **The hook check's cutpoint question** (`references/boundaries.md`, 「5b (hook check)」) — a lone question that hangs on 5b's or 5o's answer, so it never rides on the boundary form: once that form's answers are in, ask it with `AskUserQuestion`. Step 3 does not call the check: no cutpoint is settled there, and the home target it judges from can still move with an answer to Step 4.
 
 **5j — The requirements interview, when `design_required` is true.** This is the interview `design` would have held, taken here because the stage that writes the document cannot hold one (CFI-8), and taken before any boundary question because the boundaries are set against a settled requirement. **Read `${CLAUDE_SKILL_DIR}/../_common/requirements-interview.md`** and follow it for the whole interview — how deep to go, the discipline and the closing read-back are defined there; what follows is this kickoff's wiring of it. Ask on the surface the paragraph above gives 5j. **Keep every question, every offered option and every answer verbatim.** The interview record's whole value is that it is not a summary: a paraphrase is this conversation's reading of the person, and the record exists so that their own words survive on disk after this session has been compacted.
 
