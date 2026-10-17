@@ -1484,7 +1484,7 @@ fi
 # and it carries no `--cutpoint`, because the gate derives the cell from the
 # recorded bytes and the cell's own word would be one of those verbs.
 ADMIT_LINE="${GATE} admit --request last --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --surface 'one of 읽기·워크트리쓰기·트리밖쓰기·외부상태변경' --reach 'one of 런로컬·기기전역·dev·prod·협업·배포트리거·미상' --snapshot-digest 'the H value from the emitted file' --emit-digest --rationale 'why, in plain words'"
-ADMIT_HOWTO="Run 『 ${ADMIT_LINE} 』 and then issue the very same command again, byte for byte — the ticket the gate writes lets that one issue through, once. Leave --cutpoint out (the gate derives the cell), and keep the program's name and the act's verbs out of the --rationale text: the repository's hook reads the gate line too. A bare command runs in this session's own directory, so a push names the remote and the segment's branch rather than HEAD, @ or nothing."
+ADMIT_HOWTO="Run 『 ${ADMIT_LINE} 』 and then issue the very same command again, byte for byte — the ticket the gate writes lets that one issue through, once. Leave --cutpoint out (the gate derives the cell), and keep the program's name and the act's verbs out of the --rationale text: the repository's hook reads the gate line too. A bare command runs in this session's own directory, so a push names the remote and the segment's branch rather than HEAD, @ or nothing, and starts with git itself, with no wrapper before it."
 
 hook_unquoted_shell_op() {
   # hook_unquoted_shell_op <명령 문자열> — 인용되지 않은 셸 제어 연산자가 있으면 참.
@@ -1681,12 +1681,13 @@ fi
 # A FILE IN THAT PLACE IS NOT YET A TICKET. The write guards of this hook and of
 # the gate read a path where it is spelled, and a path assembled inside a
 # wrapper is not spelled anywhere, so the file alone proves nothing. A ticket
-# is honoured only when its id ends in the seal of its contents and exactly one
-# admit row of the ledger (`형태=맨`) names that id — the gate writes the row
-# before the file, and rows are the gate's. And a push is honoured only while
-# the repository it runs in still has the HEAD and branch tips it had when the
-# gate graded it: a push resolves its source when it runs, so a commit made in
-# between would otherwise go out ungraded.
+# is honoured only when its id has the shape the gate issues and ends in the
+# seal of its contents, and exactly one admit row of the ledger (`형태=맨`)
+# names that id — the gate writes the row before the file, and rows are the
+# gate's. And a push is honoured only while the repository it runs in still has
+# the HEAD, refs and push settings it had when the gate graded it: a push
+# resolves its source when it runs, so a commit made in between would otherwise
+# go out ungraded.
 if [ -n "$caller_key" ]; then
   tk="$RUN_DIR/admit/ticket/$caller_key"
   if [ -f "$tk" ] && [ ! -L "$tk" ]; then
@@ -1702,7 +1703,13 @@ if [ -n "$caller_key" ]; then
     if [ -n "$tk_id" ]; then
       tk_bad=""
       tk_seal=$(thp_ticket_seal <"$tk" 2>/dev/null) || tk_seal=""
-      if [ -z "$tk_seal" ] || [ "${tk_id##*-}" != "$tk_seal" ]; then
+      # The id is read from a file any hand may have written, so its shape is
+      # checked before it is used at all: an id holding a newline or a further
+      # `-` would compare only its last line's tail against the seal, and would
+      # match the ledger by its first line alone.
+      if ! [[ "$tk_id" =~ ^T-[0-9]+-[0-9]+-[0-9a-f]{24}$ ]]; then
+        tk_bad="its id is not the shape the gate issues"
+      elif [ -z "$tk_seal" ] || [ "${tk_id##*-}" != "$tk_seal" ]; then
         tk_bad="its id does not seal its contents, so the gate did not write it"
       elif [ -z "${LEDGER:-}" ] || [ ! -f "$LEDGER" ] \
            || [ "$( { grep -F "| 티켓=${tk_id} |" "$LEDGER" 2>/dev/null || true; } | grep -cF '| 형태=맨 |' )" != "1" ]; then
@@ -1711,7 +1718,7 @@ if [ -n "$caller_key" ]; then
         tk_rd=$(jq -r '.refs_dir // empty' "$tk" 2>/dev/null) || tk_rd=""
         tk_rg=$(jq -r '.refs_digest // empty' "$tk" 2>/dev/null) || tk_rg=""
         if [ -n "$tk_rg" ] && [ "$(thp_refs_digest "$tk_rd")" != "$tk_rg" ]; then
-          tk_bad="the HEAD or a branch of '${tk_rd}' moved after the gate graded the push, so what it would push is not what was graded"
+          tk_bad="the HEAD, a ref or a push setting of '${tk_rd}' moved after the gate graded the push, so what it would push is not what was graded"
         fi
       fi
       if [ -n "$tk_bad" ]; then

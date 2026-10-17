@@ -1073,6 +1073,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     "#### Pushing and opening a pull request|The target's cutpoint comes first, because \`원격 단계\` does not read it" \
     '#### Pushing and opening a pull request|open none — dispatch the review with `리뷰 줄`' \
     '#### Pushing and opening a pull request|git push origin <브랜치>' \
+    '#### Pushing and opening a pull request|push with anything before `git`' \
     '#### Pushing and opening a pull request|carry `PR.번호` as `PR=`' \
     '교대=#### Pushing and opening a pull request|stop the segment at site `대상 훅 거절`' \
     '교대=#### Pushing and opening a pull request|never `settings.json` while the run is open' \
@@ -1147,6 +1148,8 @@ fix_prompt_rs=""
 for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
   who=${pair%%:*}; file=${pair#*:}
   for spec in \
+    '#### Merging and applying a segment|**Below the `머지` cutpoint nothing is merged.**' \
+    '#### Merging and applying a segment|-- 상태=완료 커밋=<구현 워크트리 HEAD> 브랜치=<브랜치> 워크트리=<구현 워크트리> 선행=<계획 행의 선행>' \
     '#### Merging and applying a segment|gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f sha=<구현 워크트리 HEAD> -f merge_method=merge' \
     '#### Merging and applying a segment|A `gh pr merge` without `--admin` is refused as unbound even with `--match-head-commit`' \
     '#### Merging and applying a segment|gh pr view <n> --json state,headRefOid,mergeCommit,mergeStateStatus' \

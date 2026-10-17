@@ -16492,6 +16492,7 @@ GATE_DRIFT_DIRS
       [ -n "$alias" ] || { printf 'gate: admit requires --target\n' >&2; exit 2; }
       gate_admit_load "$request"
       gate_admit_words
+      gate_admit_wrapped_push_refuse
       # THE CELL IS DERIVED, not asked for: the table's rung, and `push` at
       # least for a git push, whose rung the table leaves to the act's own
       # destination check — which raises a base update to `머지` with exit 8.
@@ -27852,7 +27853,8 @@ gate_admit_words() {
 
 gate_admit_words_push() {
   # gate_admit_words_push — true when the request's words are a git command
-  # with `push` among them.
+  # with `push` among them. A push behind a wrapper never reaches here:
+  # `gate_admit_wrapped_push_refuse` refuses it first.
   local w
   [ "${GATE_ADMIT_WORDS[0]##*/}" = "git" ] || return 1
   for w in "${GATE_ADMIT_WORDS[@]}"; do
@@ -27861,19 +27863,47 @@ gate_admit_words_push() {
   return 1
 }
 
+gate_admit_wrapped_push_refuse() {
+  # gate_admit_wrapped_push_refuse — exits 2 when the request is a push behind
+  # a wrapper. The grader strips `env`, `command`, `nice` and the rest and
+  # grades the push inside, but the refspec check and the ticket's binding to
+  # the repository's state read the git command's own words, which a wrapper
+  # moves — so a wrapped push would leave with neither. Refused before it is
+  # graded, so no row and no ticket is written for it.
+  [ "${GATE_ADMIT_WORDS[0]##*/}" != "git" ] || return 0
+  case "$(gate_push_unwrap_of_argv0 "${GATE_ADMIT_WORDS[@]}" 2>/dev/null)" in
+    ''|해당없음) return 0 ;;
+  esac
+  warn "this push runs behind '${GATE_ADMIT_WORDS[0]##*/}', and a ticket binds a push to the repository state the gate graded only when the command starts with git itself"
+  warn "issue the push as the plain git command (git push origin <branch>), with nothing before git, then admit it again"
+  exit "$GATE_EXIT_VOCAB"
+}
+
 gate_admit_git_dir() {
   # gate_admit_git_dir <argv…> — the directory a git command runs in: the
-  # request's directory, moved by every `-C <dir>` before the subcommand.
-  local w prev="" dir="$GATE_ADMIT_CWD"
+  # request's directory, moved by every `-C <dir>` before the subcommand, and
+  # the repository `--git-dir` names when it names one — that is the repository
+  # whose HEAD and refs the push reads, wherever the command runs. A relative
+  # `--git-dir` is git's own: read from the directory every `-C` led to.
+  local w prev="" dir="$GATE_ADMIT_CWD" gd=""
   shift
   for w in "$@"; do
-    if [ "$prev" = "-C" ]; then
-      case "$w" in /*) dir="$w" ;; *) dir="$dir/$w" ;; esac
-    elif [ "$prev" != "-c" ]; then
-      case "$w" in -*) ;; *) break ;; esac
-    fi
+    case "$prev" in
+      -C) case "$w" in /*) dir="$w" ;; *) dir="$dir/$w" ;; esac ;;
+      --git-dir) gd="$w" ;;
+      -c|--work-tree|--namespace) ;;
+      *)
+        case "$w" in
+          --git-dir=*) gd="${w#--git-dir=}" ;;
+          -*) ;;
+          *) break ;;
+        esac ;;
+    esac
     prev="$w"
   done
+  if [ -n "$gd" ]; then
+    case "$gd" in /*) dir="$gd" ;; *) dir="$dir/$gd" ;; esac
+  fi
   printf '%s' "$dir"
 }
 
@@ -28335,7 +28365,8 @@ gate_admit_prepare() {
   # ticket's content into GATE_ADMIT_TJSON and its id into GATE_ADMIT_TID. The
   # content is the bytes, the request directory, the common git directory of
   # the request's root, the caller, the expiry and, for a push, the directory
-  # it runs in with that repository's HEAD and branch tips. The id ends in the
+  # it runs in with the digest of that repository's HEAD, refs and push
+  # settings (`thp_refs_digest`). The id ends in the
   # seal of that content, and the row carries the id — so the run hook can tell
   # a ticket this gate graded from a file another hand put in its place, and a
   # push from one whose source moved after it was graded.
