@@ -1628,10 +1628,12 @@ if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
   # one allows it, and a guard that reads the act's words inside a gate call
   # refuses it there — silently, as far as the ledger knows, and the next shift
   # issues the same call again. So the root's hooks run here on the exact bytes
-  # first. Anything but a pass (a refusal, `ask`, `defer`, a timeout, or a
-  # settings file that cannot be read) is written under `admit/refused/` for the
-  # gate to turn into a row on its next call, and refused with the bare form
-  # named. A pass adds nothing: the harness still runs the real hook.
+  # first. A refusal, `ask`, `defer`, the failure of an entry that blocks on
+  # failure, or a settings file that cannot be read is written under
+  # `admit/refused/` for the gate to turn into a row on its next call, and
+  # refused with the bare form named. A pass adds nothing: the harness still
+  # runs the real hook. So does a non-blocking failure, which the harness runs
+  # the tool after, and a probe timeout, whose verdict only the real hook knows.
   if [ "$THP_OK" = 1 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -d "${CLAUDE_PROJECT_DIR:-}" ]; then
     h1_inner=$(thp_after_dashdash "$cmd_exact" 2>/dev/null) || h1_inner=""
     if [ -n "$(printf '%s' "$h1_inner" | tr -d ' \t')" ]; then
@@ -1640,7 +1642,8 @@ if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
         h1_out=$(thp_probe "$CLAUDE_PROJECT_DIR" "$cmd_exact" "$pcwd" "$tuid")
         h1_v=$(printf '%s\n' "$h1_out" | sed -n '1p')
         h1_t=$(printf '%s\n' "$h1_out" | sed -n '2p')
-        if [ "$h1_v" != 통과 ]; then
+        case "$h1_v" in 통과|'비차단 오류'|'시간 초과') h1_pass=1 ;; *) h1_pass=0 ;; esac
+        if [ "$h1_pass" = 0 ]; then
           h1_note="it could not be recorded (this call has no caller key)"
           if [ -n "$caller_key" ]; then
             h1_dir="$RUN_DIR/admit/refused/$caller_key"

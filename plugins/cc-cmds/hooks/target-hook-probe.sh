@@ -14,10 +14,15 @@
 # harness gets when it hands the command to the target's hook itself; the deny
 # of any loaded hook wins over the run hook's allow. So a prediction here can
 # only ADD a refusal — record it before the real guard refuses, and say what to
-# do instead — and never grants anything. That is why every failure to predict
-# is read as closed: a hook that times out, exits with anything but 0 or 2, or
-# answers `ask` counts as a refusal, and a root whose settings cannot be read is
-# `판정 불가`, which no caller reads as a pass.
+# do instead — and never grants anything. So it adds only the refusals the real
+# guard will make: a hook that answers `ask` counts as a refusal, and a hook
+# that fails the way the harness counts a failure (exits with anything but 0 or
+# 2, cannot start, prints JSON that does not parse) is a refusal only when its
+# entry carries `onFailure: "block"`. Any other failure is `비차단 오류` — the
+# harness runs the tool — and a hook that outlives the probe's bound is
+# `시간 초과`, whose meaning each caller decides. What is read as closed is the
+# probe's own failure: a root whose settings cannot be read is `판정 불가`,
+# which no caller reads as a pass.
 #
 # NOTHING HERE EVER ANSWERS `ask` OR `defer`. An unattended run has no person to
 # ask, and in `-p` a `defer` ends the session without running the tool. The
@@ -26,8 +31,10 @@
 # Compatibility: bash 3.2 + jq — no associative arrays, no mapfile.
 
 # THE SECONDS ONE HOOK MAY RUN. Short on purpose: the run hook waits on it in
-# every gate call of a hooked root, and a guard slower than this is read as a
-# refusal rather than waited on.
+# every gate call of a hooked root, and a guard slower than this is not waited
+# on. It is far shorter than the harness's own bound, so what such a guard
+# would answer is unknown: the run hook lets the call through to the real
+# guard, and admit records a refusal rather than issue a ticket.
 THP_TIMEOUT="${THP_TIMEOUT:-10}"
 
 # ---------------------------------------------------------------------------
@@ -106,12 +113,14 @@ THP_JQ_BLOCKS='
     | ($m == "" or $m == "*" or ("Bash" | test("^(?:" + $m + ")$")));
   [ (.hooks.PreToolUse // [])[] | select(type == "object") | select(bashy) ]'
 
-thp_bash_hooks() {
-  # thp_bash_hooks <root> — the hook commands that judge a Bash call of a
-  # session started at <root>, one per line (a newline inside a command becomes
-  # a space). Status 0 when every settings file was read, 2 when one could not
-  # be — not JSON, a block that is not a list, or a hook entry with no command
-  # string — and the caller then says `판정 불가`, never "no hooks".
+thp_bash_hook_entries() {
+  # thp_bash_hook_entries <root> — the hook entries that judge a Bash call of a
+  # session started at <root>, one per line as `<failure>\t<command>`:
+  # `<failure>` is `block` when the entry carries `onFailure: "block"` and `-`
+  # otherwise, and a newline inside a command becomes a space. Status 0 when
+  # every settings file was read, 2 when one could not be — not JSON, a block
+  # that is not a list, or a hook entry with no command string — and the caller
+  # then says `판정 불가`, never "no hooks".
   local root f out rc=0
   root=$(thp_phys "$1"); [ -n "$root" ] || return 0
   while IFS= read -r f; do
@@ -120,12 +129,21 @@ thp_bash_hooks() {
       | .[] | (.hooks // error("no hooks")) | if type == "array" then . else error("hooks") end
       | .[] | if (.type // "command") != "command" then error("type")
               elif ((.command // "") | type) != "string" or (.command // "") == "" then error("command")
-              else .command end
-      | gsub("[\r\n]"; " ")' "$f" 2>/dev/null) || { rc=2; continue; }
+              else (if .onFailure == "block" then "block" else "-" end)
+                   + "\t" + (.command | gsub("[\r\n]"; " ")) end' "$f" 2>/dev/null) || { rc=2; continue; }
     [ -n "$out" ] && printf '%s\n' "$out"
   done <<EOF
 $(thp_settings_files "$root")
 EOF
+  return "$rc"
+}
+
+thp_bash_hooks() {
+  # thp_bash_hooks <root> — the commands of `thp_bash_hook_entries`, one per
+  # line, with its status.
+  local out rc=0
+  out=$(thp_bash_hook_entries "$1") || rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out" | cut -f2-
   return "$rc"
 }
 
@@ -204,10 +222,27 @@ thp_payload() {
     '{hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:$c}, cwd:$d, tool_use_id:$t}'
 }
 
+thp_hook_failure() {
+  # thp_hook_failure <failure> <what> <stderr file> — the verdict of a hook that
+  # failed the way the harness counts a failure: `거절` when its entry blocks on
+  # failure (`block`), else `비차단 오류` with the failure and the first line of
+  # its standard error, since the harness runs the tool then.
+  local why
+  if [ "$1" = block ]; then
+    why=$(tr '\n\r\t' '   ' <"$3" | cut -c1-600)
+    printf '거절\n%s %s\n' "$2" "$why"
+  else
+    why=$(sed -n '1p' "$3" | tr '\r\t' '  ' | cut -c1-600)
+    printf '비차단 오류\n비차단 오류 %s %s\n' "$2" "$why"
+  fi
+}
+
 thp_run_hook() {
-  # thp_run_hook <root> <hook command> <payload file> — runs one hook under the
-  # time bound and prints `<verdict>` then the guard's text on one line.
-  local root="$1" hc="$2" pf="$3" td of ef tf pid wpid rc dec why
+  # thp_run_hook <root> <hook command> <payload file> [<failure>] — runs one
+  # hook under the time bound and prints `<verdict>` then the guard's text on
+  # one line. <failure> is the entry's `block` or `-`, as
+  # `thp_bash_hook_entries` prints it.
+  local root="$1" hc="$2" pf="$3" fl="${4:--}" td of ef tf pid wpid rc dec why lead
   td=$(mktemp -d "${TMPDIR:-/tmp}/thp.XXXXXX") || { printf '판정 불가\n임시 디렉터리를 만들지 못했다\n'; return 0; }
   of="$td/out"; ef="$td/err"; tf="$td/timeout"
   ( cd "$root" 2>/dev/null || exit 126
@@ -218,14 +253,18 @@ thp_run_hook() {
   rc=0; wait "$pid" || rc=$?
   kill "$wpid" 2>/dev/null || true
   wait "$wpid" 2>/dev/null || true
+  # The first non-blank byte of the output: a `{` is JSON the harness parses,
+  # and JSON it cannot parse is a failure; plain text is not.
+  lead=$(sed -n '/[^[:space:]]/{s/^[[:space:]]*//;p;q;}' "$of" 2>/dev/null | cut -c1)
   if [ -e "$tf" ]; then
-    printf '거절\n시간 초과(%s초)\n' "$THP_TIMEOUT"
+    printf '시간 초과\n시간 초과(%s초)\n' "$THP_TIMEOUT"
   elif [ "$rc" -eq 2 ]; then
     why=$(tr '\n\r\t' '   ' <"$ef" | cut -c1-600)
     printf '거절\n%s\n' "${why:-exit 2}"
   elif [ "$rc" -ne 0 ]; then
-    why=$(tr '\n\r\t' '   ' <"$ef" | cut -c1-600)
-    printf '거절\nexit %s %s\n' "$rc" "$why"
+    thp_hook_failure "$fl" "exit $rc" "$ef"
+  elif [ "$lead" = '{' ] && ! jq -e 'type == "object"' "$of" >/dev/null 2>&1; then
+    thp_hook_failure "$fl" "읽히지 않는 JSON 출력" "$ef"
   else
     dec=""; why=""
     if jq -e 'type == "object"' "$of" >/dev/null 2>&1; then
@@ -250,14 +289,16 @@ thp_run_hook() {
 thp_probe() {
   # thp_probe <root> <command> <cwd> <tool_use_id> — what the Bash hooks of a
   # session started at <root> would say about <command>. Prints the merged
-  # verdict on the first line — `통과`, `거절`, `종단` or `판정 불가` — and the
-  # winning guard's text on the second. Several hooks merge as the harness
-  # merges them, a refusal over a defer; an unreadable settings file is
-  # `판정 불가` unless some hook that could run already refuses.
-  local root cmds rc pf hc out v t best="통과" btxt="" undec=0
+  # verdict on the first line — `통과`, `비차단 오류`, `시간 초과`, `거절`,
+  # `종단` or `판정 불가` — and the winning guard's text on the second. Several
+  # hooks merge as the harness merges them, a refusal over a defer, and either
+  # over a timeout or a non-blocking failure; an unreadable settings file is
+  # `판정 불가` unless some hook that could run already refuses or defers.
+  local root cmds rc pf fl hc out v t r best="통과" btxt="" brank=0 undec=0 tab
+  tab=$(printf '\t')
   root=$(thp_phys "$1")
   [ -n "$root" ] || { printf '판정 불가\n발행 루트가 디렉터리가 아니다\n'; return 0; }
-  rc=0; cmds=$(thp_bash_hooks "$root") || rc=$?
+  rc=0; cmds=$(thp_bash_hook_entries "$root") || rc=$?
   [ "$rc" -eq 0 ] || undec=1
   if [ -z "$cmds" ]; then
     if [ "$undec" -eq 1 ]; then printf '판정 불가\n설정 파일을 읽지 못했다\n'; else printf '통과\n\n'; fi
@@ -265,20 +306,24 @@ thp_probe() {
   fi
   pf=$(mktemp "${TMPDIR:-/tmp}/thp-payload.XXXXXX") || { printf '판정 불가\n페이로드를 만들지 못했다\n'; return 0; }
   thp_payload "$2" "$3" "$4" >"$pf" 2>/dev/null || { rm -f "$pf"; printf '판정 불가\n페이로드를 만들지 못했다\n'; return 0; }
-  while IFS= read -r hc; do
+  while IFS="$tab" read -r fl hc; do
     [ -n "$hc" ] || continue
-    out=$(thp_run_hook "$root" "$hc" "$pf")
+    out=$(thp_run_hook "$root" "$hc" "$pf" "$fl")
     v=$(printf '%s\n' "$out" | sed -n '1p'); t=$(printf '%s\n' "$out" | sed -n '2p')
     case "$v" in
-      거절) [ "$best" = 거절 ] || { best=거절; btxt="$t"; } ;;
-      종단) case "$best" in 거절|종단) ;; *) best=종단; btxt="$t" ;; esac ;;
-      '판정 불가') undec=1 ;;
+      거절) r=4 ;;
+      종단) r=3 ;;
+      '시간 초과') r=2 ;;
+      '비차단 오류') r=1 ;;
+      '판정 불가') undec=1; r=0 ;;
+      *) r=0 ;;
     esac
+    if [ "$r" -gt "$brank" ]; then best="$v"; btxt="$t"; brank=$r; fi
   done <<EOF
 $cmds
 EOF
   rm -f "$pf"
-  if [ "$best" = 통과 ] && [ "$undec" -eq 1 ]; then
+  if [ "$brank" -le 2 ] && [ "$undec" -eq 1 ]; then
     best='판정 불가'; btxt='설정 파일을 읽지 못했다'
   fi
   printf '%s\n%s\n' "$best" "$btxt"
@@ -293,10 +338,12 @@ thp_closed_words() {
   #
   # Words split on blanks; `'…'` is read verbatim; `"…"` only when it holds no
   # `$`, backtick, `\` or `!`; outside quotes a byte is one of
-  # `[A-Za-z0-9_@%+=:,./-]` or not ASCII; the first word is no `NAME=`. Every
-  # line it accepts splits the way bash splits it — the suite holds the two
-  # side by side — and every line it refuses is one whose meaning would need a
-  # shell to know.
+  # `[A-Za-z0-9_@%+=:,./-]` or not ASCII; an unquoted `=` never stands where
+  # the word has no byte yet, empty quotes before it included;
+  # the first word is no `NAME=`. Every line it accepts splits the way bash and
+  # zsh split it — the session's shell may be either, the suite holds them side
+  # by side, and zsh turns a leading unquoted `=name` into the path of `name` —
+  # and every line it refuses is one whose meaning would need a shell to know.
   local s="$1" n i c st=u w="" have=0 first=1 LC_ALL=C tab
   local -a out=()
   tab=$(printf '\t')
@@ -317,7 +364,11 @@ thp_closed_words() {
             fi ;;
           "'") st=s; have=1 ;;
           '"') st=d; have=1 ;;
-          [A-Za-z0-9_@%+=:,./-]) w="$w$c"; have=1 ;;
+          # zsh reads an empty quoted pair before it as nothing: `''=ls`
+          # expands as `=ls` does.
+          '=') [ -n "$w" ] || return 2
+               w="$w$c"; have=1 ;;
+          [A-Za-z0-9_@%+:,./-]) w="$w$c"; have=1 ;;
           *)
             case "$c" in
               [[:print:]]|[[:cntrl:]]|[[:space:]]) return 2 ;;

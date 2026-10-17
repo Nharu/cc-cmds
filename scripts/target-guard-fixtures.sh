@@ -10,7 +10,7 @@
 # `.claude/settings.json` with the Write tool, so the fixture repositories are
 # made by the suite at run time, never checked in.
 #
-# The six guards:
+# The nine guards:
 #   guard_b0.py        the B0 rule quoted in issue #1291 (`mentions_git_surface`)
 #                      with a quote-aware split, plus the sentence rules quoted
 #                      with it — `gh pr merge` with `--admin`, `--auto` or
@@ -24,6 +24,14 @@
 #   guard_outside.sh   refuses any word naming a path outside
 #                      `$CLAUDE_PROJECT_DIR` — the gate's own path included
 #   guard_defer.sh     answers a bare `git push` with a JSON `defer`
+#   guard_exit1.sh     refuses a bare `git push --force` with exit 2, and ends
+#                      every other command with exit 1 — its last line is
+#                      `[ <condition> ] && { …; exit 2; }` — which the harness
+#                      reads as a non-blocking failure
+#   guard_exit1_block.sh  the same guard on an entry with `onFailure: "block"`,
+#                      under which that failure refuses
+#   guard_slow.sh      refuses nothing, and sleeps past a small `THP_TIMEOUT`
+#                      before it exits 0
 #
 # This file is sourced, not executed. It defines functions and touches nothing
 # until one is called.
@@ -156,6 +164,23 @@ esac
 exit 0
 EOF
       ;;
+    guard_exit1.sh|guard_exit1_block.sh)
+      cat >"$d/$g" <<'EOF'
+#!/usr/bin/env bash
+cmd=$(jq -r '.tool_input.command // empty')
+force=0
+case "$cmd" in 'git push --force'|'git push --force '*) force=1 ;; esac
+[ "$force" = 1 ] && { echo "force pushing is not allowed in this repository" >&2; exit 2; }
+EOF
+      ;;
+    guard_slow.sh)
+      cat >"$d/$g" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+sleep 3
+exit 0
+EOF
+      ;;
     *) echo "tgf_write_guard: unknown guard $g" >&2; return 2 ;;
   esac
 }
@@ -171,12 +196,15 @@ tgf_hook_command() {
 tgf_install() {
   # tgf_install <dir> <guard name> [settings.json|settings.local.json] — writes
   # the guard and a settings file whose PreToolUse block (matcher `Bash`) runs
-  # it. The default is the tracked `settings.json`.
-  local dir="$1" g="$2" which="${3:-settings.json}"
+  # it. The default is the tracked `settings.json`. `guard_exit1_block.sh` is
+  # the one guard whose entry carries `onFailure: "block"`.
+  local dir="$1" g="$2" which="${3:-settings.json}" fl=""
   tgf_write_guard "$dir" "$g" || return
   mkdir -p "$dir/.claude"
-  jq -n --arg c "$(tgf_hook_command "$g")" \
-    '{hooks:{PreToolUse:[{matcher:"Bash", hooks:[{type:"command", command:$c}]}]}}' \
+  [ "$g" = guard_exit1_block.sh ] && fl=block
+  jq -n --arg c "$(tgf_hook_command "$g")" --arg f "$fl" \
+    '{hooks:{PreToolUse:[{matcher:"Bash", hooks:[{type:"command", command:$c}
+                                                 + (if $f == "" then {} else {onFailure:$f} end)]}]}}' \
     >"$dir/.claude/$which"
 }
 

@@ -4324,6 +4324,8 @@ TGGH
   # tg_issue <command> [<cwd>] — what a session's Bash call does: the run hook,
   # then the target's own hooks on the same bytes, then the command itself.
   # `idec` is `run-deny`, `target-<verdict>` or `ran`, `irc` the command's exit.
+  # A non-blocking failure and a probe timeout run the command, as the harness
+  # does after a failed hook and after a slow one that refuses nothing.
   tg_issue() {
     local c="$1" cwd="${2:-$TG_WT}" v
     irc=""
@@ -4331,7 +4333,7 @@ TGGH
     if [ "$hdec" != allow ]; then idec=run-deny; return 0; fi
     v=$(cd "$cwd" && for kv in "${TG_ENV[@]}"; do export "$kv"; done \
           && thp_probe "$TG_PD" "$c" "$cwd" t 2>/dev/null | sed -n 1p)
-    if [ "$v" != 통과 ]; then idec="target-$v"; return 0; fi
+    case "$v" in 통과|'비차단 오류'|'시간 초과') ;; *) idec="target-$v"; return 0 ;; esac
     idec=ran
     ( cd "$cwd" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} bash -c "$c" ) >/dev/null 2>&1
     irc=$?
@@ -39363,6 +39365,82 @@ check "87f: 훅이 없는 루트에서 합성한 지시 파일은 문단을 싣�
 check "87f: 문단은 엔진의 문단과 바이트가 같다" \
   "$(tail -n "$(thp_instruction_paragraph | wc -l | tr -d ' ')" "$f87f_on" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" \
   "$(thp_instruction_paragraph | shasum -a 256 | cut -d' ' -f1)"
+
+# ---------------------------------------------------------------------------
+# 87g. 훅 실패·시간 초과의 읽기와 = 로 시작하는 낱말 — 예측은 실제 가드가 할 거절만 더하고, 문법은 셸마다 같은 낱말만 받는다
+# --- section: 87g | group: tguard | covers: hook, admit, exec | anchors: 87g: 허용 갈래가 1 로 끝나는 가드 아래에서 감싼 exec 은 H1 을 지나고 거절 기록이 없다, 87g: 그 가드 아래의 맨 push 는 admit 이 비차단 오류 로 읽어 표를 낸다, 87g: 표를 쓴 재발행은 원격에 닿는다, 87g: 같은 가드 아래의 맨 git push --force 는 admit 이 거절로 예측한다, 87g: onFailure block 항목 아래에서는 같은 감싼 exec 을 H1 이 거절로 기록한다, 87g: 그 항목 아래의 맨 push 는 admit 이 거절로 예측하고 표가 없다, 87g: 프로브 상한보다 느린 가드 아래에서 감싼 exec 은 H1 을 지난다, 87g: 그 가드 아래의 맨 push 는 시간 초과 거절 행을 쓰고 rc 3 이며 표가 없다, 87g: 닫힌 문법은 따옴표 밖에서 = 로 시작하는 낱말을 첫 낱말이든 인자든 거절한다, 87g: 닫힌 문법이 받는 줄은 bash 와 같게 나뉜다, 87g: 닫힌 문법이 받는 줄은 zsh 와 같게 나뉜다, 87g: = 로 시작하는 첫 낱말의 맨 머지 요청은 admit 이 rc 2 로 거절한다 ---
+#
+# 하네스는 0·2 가 아닌 종료를 비차단 오류로 보고 도구를 실행하며, 훅 항목이
+# `onFailure: "block"` 일 때만 막는다. 프로브 상한보다 느린 가드의 판정은 알 수 없어
+# H1 은 실제 가드에 넘기고 admit 은 표를 내지 않는다. 세션 셸이 zsh 이면 따옴표 밖의
+# `=name` 은 PATH 의 `name` 경로로 펼쳐지므로, 문법은 그런 낱말을 받지 않는다.
+# ---------------------------------------------------------------------------
+w87g() {  # w87g <inner argv> — a wrapped gate call; the hook alone sees it, not the gate
+  printf '%s exec --manifest %s --target a --segment SA --cutpoint 커밋 --surface 읽기 --snapshot-digest x --rationale x -- %s' \
+    "$GATE" "$TG_M" "$1"
+}
+ref87g() { find "$TG_RD/admit/refused" -type f 2>/dev/null | wc -l | tr -d ' '; }
+tk87g() { ls "$TG_RD/admit/ticket" 2>/dev/null | wc -l | tr -d ' '; }
+
+tg_world g guard_exit1.sh
+tg_hook "$(w87g ls)"; r87g_ls="$hdec|$(ref87g)"
+tg_hook "$(w87g 'git status')"; r87g_st="$hdec|$(ref87g)"
+check "87g: 허용 갈래가 1 로 끝나는 가드 아래에서 감싼 exec 은 H1 을 지나고 거절 기록이 없다" \
+  "$r87g_ls|$r87g_st" "allow|0|allow|0"
+tg_issue "git push origin $TG_BR"
+tg_admit 외부상태변경
+check "87g: 그 가드 아래의 맨 push 는 admit 이 비차단 오류 로 읽어 표를 낸다" \
+  "$rc|$(tg_last_row '자율 승인' | grep -c '예측=비차단 오류')|$(tk87g)" "0|1|1"
+tg_issue "git push origin $TG_BR"
+check "87g: 표를 쓴 재발행은 원격에 닿는다" \
+  "$idec|$irc|$(git --git-dir="$TG_ORIGIN" rev-parse --verify -q "$TG_BR" >/dev/null && echo 있음)" "ran|0|있음"
+tg_issue "git push --force origin $TG_BR"
+tg_admit 외부상태변경
+check "87g: 같은 가드 아래의 맨 git push --force 는 admit 이 거절로 예측한다" \
+  "$rc|$(tg_last_row '대상 거절' | grep -c '형태=맨 | 근거=예측')|$(tk87g)" "3|1|0"
+
+tg_world g2 guard_exit1_block.sh
+tg_hook "$(w87g ls)"
+check "87g: onFailure block 항목 아래에서는 같은 감싼 exec 을 H1 이 거절로 기록한다" "$hdec|$(ref87g)" "deny|1"
+tg_issue "git push origin $TG_BR"
+tg_admit 외부상태변경
+check "87g: 그 항목 아래의 맨 push 는 admit 이 거절로 예측하고 표가 없다" "$rc|$(tk87g)" "3|0"
+
+tg_world g3 guard_slow.sh
+TG_ENV_BASE+=(THP_TIMEOUT=1); TG_ENV+=(THP_TIMEOUT=1)
+tg_hook "$(w87g ls)"
+check "87g: 프로브 상한보다 느린 가드 아래에서 감싼 exec 은 H1 을 지난다" "$hdec|$(ref87g)" "allow|0"
+tg_issue "git push origin $TG_BR"
+tg_admit 외부상태변경
+check "87g: 그 가드 아래의 맨 push 는 시간 초과 거절 행을 쓰고 rc 3 이며 표가 없다" \
+  "$rc|$(tg_last_row '대상 거절' | grep -c '형태=맨 | 근거=예측.*시간 초과(1초)')|$(tk87g)" "3|1|0"
+
+# 문법 — 거절하는 줄과, 받는 줄이 셸마다 같은 낱말로 나뉘는지.
+r87g_eq=""
+for l87g in 'cp a =x' '=gh pr merge 1' 'ls =ls' 'gh pr view =gh' "ls ''=ls"; do
+  c87g=0; thp_closed_words "$l87g" >/dev/null || c87g=$?
+  r87g_eq="$r87g_eq$c87g|"
+done
+check "87g: 닫힌 문법은 따옴표 밖에서 = 로 시작하는 낱말을 첫 낱말이든 인자든 거절한다" "$r87g_eq" "2|2|2|2|2|"
+a87g=("git push origin seg/x-A" "cp a b=c" "ls a''=ls" "ls '='ls" "gh pr view 1 --json 'a,b'" 'git commit -m "a b"')
+r87g_b="" r87g_z=""
+for l87g in "${a87g[@]}"; do
+  w87g_g=$(thp_closed_words "$l87g" | tr '\0' '|')
+  [ "$(bash -c "printf '%s|' $l87g")" = "$w87g_g" ] || r87g_b="$r87g_b[$l87g]"
+  if command -v zsh >/dev/null 2>&1; then
+    [ "$(zsh -fc "printf '%s|' $l87g")" = "$w87g_g" ] || r87g_z="$r87g_z[$l87g]"
+  fi
+done
+check "87g: 닫힌 문법이 받는 줄은 bash 와 같게 나뉜다" "${r87g_b:-같음}" "같음"
+if command -v zsh >/dev/null 2>&1; then
+  check "87g: 닫힌 문법이 받는 줄은 zsh 와 같게 나뉜다" "${r87g_z:-같음}" "같음"
+else
+  skip "87g: 닫힌 문법이 받는 줄은 zsh 와 같게 나뉜다 — 이 머신에 zsh 가 없다"
+fi
+tg_world g4 -
+tg_hook "=gh pr merge 1"
+tg_admit 외부상태변경
+check "87g: = 로 시작하는 첫 낱말의 맨 머지 요청은 admit 이 rc 2 로 거절한다" "$rc|$(tk87g)" "2|0"
 
 # ---------------------------------------------------------------------------
 # 88. K2 트립와이어 — 이월 머지가 머지 대조와 종료 조건 11 을 지나는가

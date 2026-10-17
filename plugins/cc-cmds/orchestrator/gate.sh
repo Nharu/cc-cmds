@@ -27829,6 +27829,17 @@ gate_admit_load() {
   fi
 }
 
+gate_admit_pred_passes() {
+  # gate_admit_pred_passes <prediction> — whether admit issues a ticket on what
+  # the issuing root's hooks are predicted to answer: a pass, or a hook failure
+  # the harness does not block on. A probe timeout, a refusal, a defer and
+  # `판정 불가` are recorded as a refusal instead.
+  case "$1" in
+    통과|'비차단 오류') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 gate_admit_words() {
   # gate_admit_words — splits the request's bytes with the closed grammar into
   # GATE_ADMIT_WORDS. Exit 2 when the line is not one the grammar reads: the
@@ -27839,7 +27850,7 @@ gate_admit_words() {
   tf=$(mktemp "${TMPDIR:-/tmp}/gate-admit.XXXXXX") || die "could not create a temporary file for the request's words"
   if ! gate_thp thp_closed_words "$GATE_ADMIT_BYTES" >"$tf"; then
     rm -f "$tf"
-    warn "the request is not one plain command line — admit reads words split on blanks, '…' verbatim, \"…\" holding no \$ \` \\ or !, and outside quotes only letters, digits, non-ASCII and _@%+=:,./- with no leading NAME=, no leading ~ and no * ? [ { #"
+    warn "the request is not one plain command line — admit reads words split on blanks, '…' verbatim, \"…\" holding no \$ \` \\ or !, and outside quotes only letters, digits, non-ASCII and _@%+=:,./- with no leading NAME=, no word starting with an unquoted =, no leading ~ and no * ? [ { #"
     warn "issue such an act through exec instead"
     exit "$GATE_EXIT_VOCAB"
   fi
@@ -30607,8 +30618,11 @@ EOF
     _admit_text=$(printf '%s\n' "$_pr_out" | sed -n 2p)
     [ -n "$_admit_pred" ] || _admit_pred='판정 불가'
     # The ticket's content and sealed id are fixed before the row, which
-    # carries the id; the file itself is written after the row.
-    if [ "$_admit_pred" = "통과" ]; then
+    # carries the id; the file itself is written after the row. A non-blocking
+    # failure is a pass, since the harness runs the tool after it; a probe
+    # timeout is not, since a ticket would let the real guard's late refusal
+    # go unrecorded.
+    if gate_admit_pred_passes "$_admit_pred"; then
       gate_admit_prepare "$alias" "$segment" "$actor" "$graded"
       _admit_tid="$GATE_ADMIT_TID"
     fi
@@ -30731,7 +30745,7 @@ EOF
   # request stays for a corrected retry to replace — or the ticket the run hook
   # lets the same bytes through on once.
   if [ "${GATE_ADMIT:-}" = "1" ]; then
-    if [ "$_admit_pred" != "통과" ]; then
+    if ! gate_admit_pred_passes "$_admit_pred"; then
       gate_refusal_condition "$alias" "$segment" "$GATE_ADMIT_PDIR"
       gate_refusal_row "$alias" "$segment" "$actor" 맨 예측 "$_ad2" "$GATE_ADMIT_BYTES" \
         "$_admit_pred: ${_admit_text:-미상}"
