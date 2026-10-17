@@ -26,6 +26,7 @@ lint:
 	bash scripts/lint-team-budget-pins.sh
 	bash scripts/lint-team-model-tier-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
+	bash scripts/lint-lead-read-set.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
 	bash scripts/lint-ledger-row-length.sh
@@ -300,6 +301,7 @@ LINT_TESTS := \
 	scripts/test-lint-team-budget-pins.sh \
 	scripts/test-lint-team-model-tier-pins.sh \
 	scripts/test-lint-unattended-surfaces.sh \
+	scripts/test-lint-lead-read-set.sh \
 	scripts/test-lint-cutpoint-vocabulary.sh \
 	scripts/test-lint-autoadopt-vocabulary.sh \
 	scripts/test-lint-ledger-row-length.sh \
