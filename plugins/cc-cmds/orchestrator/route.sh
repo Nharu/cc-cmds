@@ -255,6 +255,20 @@ def rt_inventory_why($schema; $pfx):
       else "ok" end
   end;
 
+# 대여 등록 키의 연성 판정. 치명 판정과 따로 돌고 인벤토리의 유효성을 바꾸지 않는다 —
+# 결함 있는 행은 등록 아님으로 읽힐 뿐이다. 문서 모양이 치명 판정의 몫이면 `ok` 다.
+def rt_lending_why:
+  if length != 1 then "ok"
+  else first(.[])
+    | if type != "object" or ((.accounts | type) != "array") or any(.accounts[]; type != "object") then "ok"
+      elif any(.accounts[]; has("interactive_lending") and ((.interactive_lending == "auto" or .interactive_lending == "off") | not))
+        then "interactive-lending"
+      elif any(.accounts[]; .interactive_lending == "auto" and .interactive_reserved != true) then "lending-not-reserved"
+      else "ok" end
+  end;
+# 인벤토리 행 하나의 대여 등록. 예약이면서 무인 꺼짐인 행에 `auto` 일 때만이다.
+def rt_enrolled: .interactive_lending == "auto" and .interactive_reserved == true and .unattended == "disabled";
+
 def rt_usage_read($now; $factor; $schema):
   if length != 1 then {state: "corrupt"}
   else first(.[])
@@ -262,7 +276,7 @@ def rt_usage_read($now; $factor; $schema):
       else (((.written_at_epoch | type) == "number") and ((.publish_interval_s | type) == "number")
             and (($now - .written_at_epoch) <= ($factor * .publish_interval_s))) as $fresh
         | {state: "valid", written_at_epoch, publish_interval_s, fresh: $fresh,
-           accounts: [.accounts[] | select(type == "object") | if $fresh then . else del(.windows) end]}
+           accounts: [.accounts[] | select(type == "object") | if $fresh then . else del(.windows, .lending) end]}
       end
   end;
 
@@ -432,6 +446,48 @@ def rt_rem($G):
     | 10000 - (if $x.state == "reset_elapsed" then 0 elif $x.state == "unknown" then 10000 else $x.u_bp end) - $G.sigma[$w]]
   | min;
 
+def rt_kv($c; $kind; $w):
+  ($c.config.k[$kind][$w] // $c.config.k.default[$w]) | if rt_isint then . else error("config.k") end;
+# 단계 비용 조회. 그룹·부류 칸 → 부류 칸 → 기본값의 첫 숫자와 그 출처다. 그룹 칸은
+# 부류마다 따로이므로 한 그룹에 다른 부류 표본만 있으면 그 값이 새지 않는다.
+def rt_cost($c; $w; $kind; $g):
+  ($c.config.c[$w]) as $cw
+  | (if (($cw.by_group // null) | type) == "object" and (($cw.by_group[$g] // null) | type) == "object"
+        and ($cw.by_group[$g][$kind] // null) != null
+     then {v: $cw.by_group[$g][$kind], source: "group-kind"}
+     elif ($cw.by_kind[$kind] // null) != null then {v: $cw.by_kind[$kind], source: "kind"}
+     else {v: $cw.default, source: "default"} end)
+  | if (.v | type) == "number" then {bp: (.v | rt_bp), source: .source} else error("config.c") end;
+# 이번 요청 하나가 그룹 `$g` 에 얹을 창별 예약. `rt_admit_core` 와 같은 계산이다.
+def rt_res($c; $g):
+  (($c.request.kind // "") | tostring) as $kind
+  | reduce rt_wins[] as $w ({}; .[$w] = (rt_kv($c; $kind; $w) * rt_cost($c; $w; $kind; $g).bp));
+
+# 대여 입장의 단단한 검사. 첫 실패의 사유, 모두 통과면 null 이다. `$d` 는 발행된 결정,
+# `$uw` 는 사용량 행의 두 창, `$res` 는 이번 입장 하나의 예약이다. 결정의 신선도(H1),
+# 차용 기록 `none`(H2), 7일 상한(H3), 5시간 5000(H4), 그룹 창 미상 없음(H5) 과 차용
+# 안전망 두 칸을 본다. 미상 그룹을 한 번 들이는 `count == 0` 허용은 쓰지 않는다.
+# 숫자가 아닌 칸은 모두 실패다.
+def rt_lend_why($c; $d; $uw; $G; $res):
+  def num: type == "number";
+  def win_ok($w): (($uw[$w]? // null) | type) == "object" and ($uw[$w].observed_at_epoch | num)
+                  and ($c.now - $uw[$w].observed_at_epoch <= 300);
+  if ($d | type) != "object" then "no-decision"
+  elif $d.state != "open" then "closed"
+  elif ($d.evaluated_at_epoch | num | not) or ($c.now - $d.evaluated_at_epoch > 180) then "decision-stale"
+  elif $d.net_armed != true then "net-disarmed"
+  elif $d.donor_ready != true then "no-donor"
+  elif (($uw | type) != "object") or (all(rt_wins[]; . as $w | win_ok($w)) | not) then "window-stale"
+  elif ($d.resets_at_epoch | num | not) or ($uw.seven_day.resets_at_epoch | num | not)
+       or ($d.resets_at_epoch - $uw.seven_day.resets_at_epoch > 120) or ($uw.seven_day.resets_at_epoch - $d.resets_at_epoch > 120)
+       or ($c.now >= $uw.seven_day.resets_at_epoch) or ($c.now >= $d.resets_at_epoch) then "resets-drift"
+  elif (($c.borrow // {}).state // "absent") != "none" then "borrow"
+  elif any($G.windows[]; .state == "unknown") then "window-unknown"
+  elif ($d.ceiling_bp | num | not) or ($res | type) != "object"
+       or (rt_ueff($G.windows.seven_day) + $G.sigma.seven_day + $res.seven_day > $d.ceiling_bp) then "ceiling"
+  elif rt_ueff($G.windows.five_hour) + $G.sigma.five_hour + $res.five_hour > 5000 then "five-hour-cap"
+  else null end;
+
 def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
   (.) as $a
   | ([rt_uaccts($c)[] | select(.id == $a.id)] | .[0]) as $ua
@@ -447,6 +503,15 @@ def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
      remaining_bp: rt_rem($G)}
   + (if any($donors[]; . == $a.id) then {borrowed: "donor"}
      elif any($bgroups[]; . == $g) then {borrowed: "group"}
+     else {} end)
+  # 대여 등록 행에만 붙는다 — 등록 아닌 행의 보기는 바이트가 그대로다. 결정은 신선한
+  # 사용량 파일의 것만 읽고, 예약을 셀 수 없는 설정이면 닫힘이다.
+  + (if ($a | rt_enrolled) then
+       (if $fresh and $ua != null and (($ua.lending | type) == "object") then $ua.lending else null end) as $d
+       | (if $ua != null and (($ua.windows | type) == "object") then $ua.windows else null end) as $uw
+       | (try rt_res($c; $g) catch null) as $res
+       | (if $res == null then "reservation" else rt_lend_why($c; $d; $uw; $G; $res) end) as $why
+       | {lend_enrolled: true, lend: {ok: ($why == null), why: $why, dec: $d, win: $uw, res: $res}}
      else {} end);
 
 def rt_prep($schema):
@@ -470,6 +535,8 @@ def rt_prep($schema):
      then ([$donors[] | rt_group_of($orgs; .)] + [rt_group_of($orgs; $b.donor.id)] | unique)
      else [] end) as $bgroups
   | {c: $c, schema: $schema, fresh: $fresh, orgs: $orgs, items: $items, groups: $gv,
+     lend_groups: ([$inv[] | select(rt_enrolled) | rt_group_of($orgs; .id)] | unique),
+     pin: (if (($c.seat.lane? // null) | type) == "string" and $c.seat.lane != "" then $c.seat.lane else null end),
      accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups)] | sort_by(.id)),
      okey: (if (($c.request.run_id | type) == "string") and (($c.request.lineage | type) == "string")
             then rt_key($c.request.run_id; $c.request.lineage) else null end),
@@ -483,18 +550,6 @@ def rt_prep($schema):
      shift: ($c.request.kind == "shift")};
 
 def rt_need_cap: if (.config.cap_bp | rt_isint | not) then error("config.cap_bp") else . end;
-def rt_kv($c; $kind; $w):
-  ($c.config.k[$kind][$w] // $c.config.k.default[$w]) | if rt_isint then . else error("config.k") end;
-# 단계 비용 조회. 그룹·부류 칸 → 부류 칸 → 기본값의 첫 숫자와 그 출처다. 그룹 칸은
-# 부류마다 따로이므로 한 그룹에 다른 부류 표본만 있으면 그 값이 새지 않는다.
-def rt_cost($c; $w; $kind; $g):
-  ($c.config.c[$w]) as $cw
-  | (if (($cw.by_group // null) | type) == "object" and (($cw.by_group[$g] // null) | type) == "object"
-        and ($cw.by_group[$g][$kind] // null) != null
-     then {v: $cw.by_group[$g][$kind], source: "group-kind"}
-     elif ($cw.by_kind[$kind] // null) != null then {v: $cw.by_kind[$kind], source: "kind"}
-     else {v: $cw.default, source: "default"} end)
-  | if (.v | type) == "number" then {bp: (.v | rt_bp), source: .source} else error("config.c") end;
 
 # 비용 표 — 저장소의 표본에서 창마다 부류 칸과 그룹·부류 칸의 값. 순수하다. 설정이
 # 없거나 숫자가 아니거나 표본 원문이 문자열이 아니면 빈 표이고, 그러면 조회는 모두
@@ -703,10 +758,27 @@ def rt_av($p; $id): [$p.accounts[] | select(.id == $id)] | .[0];
 def rt_policy_ok($a):
   $a != null and ($a.unattended == "enabled") and ($a.group_reserved | not) and ($a.login_bad | not) and ($a.mismatch | not)
   and (($a.borrowed // null) == null);
-def rt_new_ok($a): rt_policy_ok($a) and ($a.class != "X");
+# 대여 등록 행의 입장과 유지. 등록 행은 `rt_policy_ok` 를 통과하지 못하므로 그 계정의
+# 부여는 모두 대여다. 새 입장은 `rt_aview` 가 실어 둔 단단한 검사를 통과해야 하고,
+# 유지는 열림과 무관하다 — 살아 있는 대여는 닫힌 뒤에도 끝까지 간다.
+def rt_lend_new_ok($a):
+  $a != null and ($a.lend_enrolled == true) and ($a.lend.ok == true) and ($a.login_bad | not) and ($a.mismatch | not);
+def rt_lend_hold_ok($a):
+  $a != null and ($a.lend_enrolled == true) and ($a.login_bad | not) and ($a.mismatch | not);
+def rt_new_ok($a): (rt_policy_ok($a) or rt_lend_new_ok($a)) and ($a.class != "X");
 def rt_hold_ok($a):
-  $a != null and ($a.unattended == "enabled" or $a.unattended == "draining")
-  and ($a.group_reserved | not) and ($a.class != "X") and ($a.login_bad | not);
+  $a != null
+  and ((($a.unattended == "enabled" or $a.unattended == "draining") and ($a.group_reserved | not)) or rt_lend_hold_ok($a))
+  and ($a.class != "X") and ($a.login_bad | not);
+# 대여 그룹. 그 그룹의 리셋권은 사람의 것이라 리셋권 대기가 지명하지 않는다.
+def rt_lend_g($p; $g): any(($p.lend_groups // [])[]; . == $g);
+# 계정에 부여하는 입장 판정. 등록 행은 대여 검사를 함께 통과해야 들고, 대여 검사에서만
+# 떨어졌으면 기다릴 시각이 없다.
+def rt_lend_fail($adm):
+  if $adm.admitted then $adm + {admitted: false, failed: ["lend"], ready_at: null} else $adm end;
+def rt_admit($p; $a):
+  rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
+  | if ($a.lend_enrolled == true) and (rt_lend_new_ok($a) | not) then rt_lend_fail($adm) else $adm end;
 def rt_fifo_blocked($p; $g):
   ($p.own | if . != null and .kind == "wait" and .live == true then .seq else null end) as $mine
   | any($p.items[]; (.kind == "wait") and (rt_group_of($p.orgs; .account) == $g) and ($mine == null or .seq < $mine));
@@ -724,6 +796,10 @@ def rt_env($e; $op; $rec): $e + {txn: {op: $op, record: $rec}};
 def rt_park($reason; $recovery): {verdict: "PARK", reason: $reason, recovery: $recovery};
 def rt_park_borrow_corrupt:
   rt_park("borrow-record-corrupt"; "cc-lane 차용 기록을 읽을 수 없다 — 파일을 지우거나 옮기지 말고 cc-lane 이 기록을 다시 쓰기를 기다리거나 cc-lane borrow status 로 확인한다");
+# 대여 좌석에 고정된 런이 좌석으로 떨어질 자리. 고정된 런은 대여 검사 없이 좌석을
+# 쓰지 않는다.
+def rt_park_unrouted:
+  rt_park("lent-seat-unrouted"; "대여 좌석에 고정된 런을 라우팅할 수 없다(인벤토리 무효 또는 고정 계정 없음) — cc-lane account check 로 인벤토리를 확인한다");
 def rt_park_deadline($until):
   {verdict: "PARK", reason: "deadline", ready_at: $until, recovery: "마감 안에 끝낼 수 없다 — 마감을 늘리거나 ready_at 뒤에 다시 시작한다"};
 # 대기 봉투의 `cost` 는 그 대기를 정한 입장 판정의 창별 비용이고, 그런 판정이 없는
@@ -768,7 +844,9 @@ def rt_resume($p):
       rt_av($p; $o.account) as $a
       | $p.groups[rt_group_of($p.orgs; $o.account)] as $G
       | (if $a != null then $a.class else rt_class_of($G; null) end) as $cls
-      | if $cls == "X" then
+      | if $p.pin != null and $o.account != $p.pin then
+          rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
+        elif $cls == "X" then
           rt_admit_core($p.c; $G; ($a.exhausted_until? // null)) as $adm
           | rt_env(rt_wait_c($G.group; $o.account; $adm.ready_at; "resume-bound-exhausted"; $adm.cost); "none"; null)
         elif $a != null and $a.login_bad then
@@ -781,22 +859,28 @@ def rt_resume($p):
         else rt_av($p; $b) as $a
           | if $a == null then
               rt_env(rt_park("resume-bound-unknown-account"; "묶인 계정이 인벤토리에 없다 — cc-lane account check"); "none"; null)
-            elif ($a.unattended != "enabled") or $a.group_reserved or $a.mismatch or (($a.borrowed // null) != null) then
+            elif $p.pin != null and $b != $p.pin then
+              rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
+            elif ($a.lend_enrolled == true) and ($a.lend.ok != true) then
+              rt_env(rt_park("resume-bound-ineligible"; "묶인 계정의 대여 닫힘(\($a.lend.why)) — 대여가 다시 열린 뒤 같은 세그먼트를 다시 파견하거나 계보를 새로 시작한다"); "none"; null)
+            elif (($a.lend_enrolled != true)
+                  and (($a.unattended != "enabled") or $a.group_reserved or (($a.borrowed // null) != null)))
+                 or $a.mismatch then
               rt_env(rt_park("resume-bound-ineligible"; "묶인 계정이 무인 사용 대상이 아니다 — 계정 정책을 확인하거나 계보를 새로 시작한다"); "none"; null)
             elif $a.login_bad then
               rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
             elif $p.table_corrupt then
               rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
             elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
-            else rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
+            else rt_admit($p; $a) as $adm
               | (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end) as $why
               | if $adm.admitted then
                   rt_grant_new($p; $a; $adm; "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
                 elif rt_past_deadline($p.c; $adm.ready_at) then
                   [$a.group] as $gs
                   | rt_pressed($p; $gs; rt_seen_in($p.c)) as $mem
-                  | rt_pass_pick($p.c; $p.groups[$a.group]) as $pass
-                  | (if rt_past_deadline($p.c; $p.c.now) then null
+                  | (if rt_lend_g($p; $a.group) then null else rt_pass_pick($p.c; $p.groups[$a.group]) end) as $pass
+                  | (if rt_past_deadline($p.c; $p.c.now) or rt_lend_g($p; $a.group) then null
                      elif $pass != null then rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $pass)
                      else rt_press_pick_pressed($p; $a.group; $mem) as $q
                        | if $q == null then null
@@ -818,12 +902,12 @@ def rt_waitpick($p; $b):
       # 지명은 `$m` 과 다른 그룹일 수 있으므로 그룹과 비용을 지명된 항목에서 꺼낸다.
       ([$b[].g] | unique) as $gs
       | rt_pressed($p; $gs; rt_seen_in($p.c)) as $mem
-      | ([$b[] | (.) as $e | rt_pass_pick($p.c; $p.groups[$e.g]) as $pass | select($pass != null) | {e: $e, pass: $pass}]
+      | ([$b[] | select(rt_lend_g($p; .g) | not) | (.) as $e | rt_pass_pick($p.c; $p.groups[$e.g]) as $pass | select($pass != null) | {e: $e, pass: $pass}]
          | sort_by([.pass.expires_at_epoch, .e.g]) | .[0]) as $n
       # 보유 리셋권이 없을 때만 눌린 리셋권을 같은 짝짓기로 지명한다.
       | (if rt_past_deadline($p.c; $p.c.now) then null
          elif $n != null then rt_wait_reserve($n.e.g; null; rt_wait_why($b; $n.e.g); $n.e.cost; $n.pass)
-         else ([$b[] | (.) as $e | rt_press_pick_pressed($p; $e.g; $mem) as $pass | select($pass != null) | {e: $e, pass: $pass}]
+         else ([$b[] | select(rt_lend_g($p; .g) | not) | (.) as $e | rt_press_pick_pressed($p; $e.g; $mem) as $pass | select($pass != null) | {e: $e, pass: $pass}]
                | sort_by([.pass.expires_at_epoch, .e.g]) | .[0]) as $q
            | if $q == null then null
              else rt_wait_reserve($q.e.g; null; rt_wait_why($b; $q.e.g); $q.e.cost; $q.pass)
@@ -851,37 +935,50 @@ def rt_new($p; $basis0; $excl):
   $p.own as $o
   | (if $p.c.request.after_wait == true then "after-wait" else $basis0 end) as $basis
   | (($p.c.request.event == "first") and $o != null and ($o.kind == "grant") and ($o.live == true)
-     and rt_hold_ok(rt_av($p; $o.account))) as $idem
+     and rt_hold_ok(rt_av($p; $o.account)) and ($p.pin == null or $o.account == $p.pin)) as $idem
   | if $idem and ($p.c.request.nonce == $o.nonce) then
       rt_env(rt_grant_lease($p; $o; $o.basis); "hold"; rt_rec_hold($p))
     elif $p.table_corrupt then rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
     elif $idem then rt_env(rt_grant_lease($p; $o; $o.basis); "write"; rt_rec_hold($p))
     elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
+    elif $p.pin != null and (any($p.accounts[]; .id == $p.pin) | not) then rt_env(rt_park_unrouted; "none"; null)
     else
-      [$p.accounts[] | select(rt_policy_ok(.)) | select(.id != $excl) | (.) as $a
-        | rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
+      # 대여 좌석에 고정된 런은 고정 계정 하나만, 대여 검사로만 입장한다. u 계정으로
+      # 대체되지 않고, 후보가 없으면 그 행의 입장 판정으로 기다리거나 PARK 한다.
+      [$p.accounts[]
+        | select(if $p.pin != null then .id == $p.pin else rt_policy_ok(.) or rt_lend_new_ok(.) end)
+        | select(.id != $excl) | (.) as $a
+        | (if $p.pin != null and (rt_lend_new_ok($a) | not) then rt_lend_fail(rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until))
+           else rt_admit($p; $a) end) as $adm
         | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group),
            w7: rt_w7($p.c; $p.groups[$a.group]; $adm.cost)}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
       | if ($cands | length) > 0 then
-          ($cands | sort_by([(if .a.class == "U" then 1 else 0 end), (0 - .w7), (0 - .a.remaining_bp),
+          # 대여 층이 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
+          ($cands | sort_by([(if .a.lend_enrolled == true then 1 else 0 end),
+                             (if .a.class == "U" then 1 else 0 end), (0 - .w7),
+                             (0 - (if .a.lend_enrolled == true
+                                   then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
+                                   else .a.remaining_bp end)),
                              (.a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end), .a.id])
                   | .[0]) as $best
           | rt_grant_new($p; $best.a; $best.adm; $basis) as $e
           | rt_env($e; "write"; rt_rec_new($p; $e))
-        elif $p.shift then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null)
-        else rt_nocand($p; $pool) end
+        elif $p.shift and $p.pin == null then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null)
+        elif $p.pin != null then rt_nocand($p; $pool)
+        else rt_nocand($p; [$pool[] | select(.a.lend_enrolled != true)]) end
     end;
 
 def rt_retry($p):
   $p.own as $o
   | (if $o != null and $o.kind == "grant" then rt_av($p; $o.account) else null end) as $a
-  | if $o != null and $o.kind == "grant" and $o.live == true and rt_hold_ok($a) then
+  | ($p.pin == null or ($o != null and $o.account == $p.pin)) as $onpin
+  | if $o != null and $o.kind == "grant" and $o.live == true and rt_hold_ok($a) and $onpin then
       rt_env(rt_grant_lease($p; $o; "sticky"); "hold"; rt_rec_hold($p))
-    elif $o != null and $o.kind == "grant" and ($o.live != true) and rt_new_ok($a) and ($p.table_corrupt | not)
+    elif $o != null and $o.kind == "grant" and ($o.live != true) and rt_new_ok($a) and $onpin and ($p.table_corrupt | not)
          and ($p.borrow_corrupt | not)
-         and (rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) | .admitted) then
-      rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
+         and (rt_admit($p; $a) | .admitted) then
+      rt_admit($p; $a) as $adm
       | rt_grant_new($p; $a; $adm; "sticky") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
     else rt_new($p; "reassigned-no-room"; null) end;
 
@@ -895,10 +992,12 @@ def rt_decide($schema):
   | rt_cost_apply
   | rt_prep($schema) as $p
   | $p.c as $c
-  | (if $c.inventory.state == "corrupt" then rt_env(rt_park("inventory-corrupt"; "cc-lane account check"); "none"; null)
+  # 대여 좌석에 고정된 런(`pin`)은 좌석 대체를 쓰지 않는다 — 그 자리는 밑의 WAIT·PARK 다.
+  | (if $p.pin != null and $c.inventory.state != "valid" then rt_env(rt_park_unrouted; "none"; null)
+     elif $c.inventory.state == "corrupt" then rt_env(rt_park("inventory-corrupt"; "cc-lane account check"); "none"; null)
      elif $c.inventory.state != "valid" then rt_env(rt_seat($p; "single-seat"); "none"; null)
      elif $p.own_corrupt != null then
-       (if $p.shift then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null)
+       (if $p.shift and $p.pin == null then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null)
         else rt_env(rt_park("own-lease-corrupt"; rt_mv($p.own_corrupt)); "none"; null) end)
      elif $c.request.event == "resume" then rt_resume($p)
      elif $c.request.event == "crash-retry" or $c.request.event == "hollow-retry" then rt_retry($p)
@@ -906,7 +1005,7 @@ def rt_decide($schema):
      elif $c.request.event == "limit-reclaim" or $c.request.event == "first-reject" then
        rt_new($p; "reassigned-after-limit"; rt_prev($p))
      else error("request.event") end)
-  | (if $p.shift and ((.verdict == "WAIT") or ((.verdict == "PARK") and (.reason != "inventory-corrupt")))
+  | (if $p.shift and $p.pin == null and ((.verdict == "WAIT") or ((.verdict == "PARK") and (.reason != "inventory-corrupt")))
      then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null) else . end)
   | (if (($c.leases.stale_corrupt // []) | length) > 0 then . + {stale_corrupt: $c.leases.stale_corrupt} else . end);
 
@@ -914,11 +1013,17 @@ def rt_revalidate($schema; $rec):
   (.request = ((.request // {}) + {run_id: $rec.run_id, lineage: $rec.lineage, bound_account: $rec.account}))
   | rt_prep($schema) as $p
   | $p.groups[rt_group_of($p.orgs; $rec.account)] as $G
-  | if any($G.windows[]; .state == "unknown") then $G.count == 0
-    else all(rt_wins[]; (.) as $w | (rt_ueff($G.windows[$w]) + $G.sigma[$w] + ($rec.reservation_bp[$w] // 0)) <= 10000) end;
+  | rt_av($p; $rec.account) as $a
+  | (if any($G.windows[]; .state == "unknown") then $G.count == 0
+     else all(rt_wins[]; (.) as $w | (rt_ueff($G.windows[$w]) + $G.sigma[$w] + ($rec.reservation_bp[$w] // 0)) <= 10000) end)
+  # 새로 놓는 대여 쓰기는 다시 읽은 σ 와 그 기록의 예약으로 H3·H4 를, 지금 시각으로
+  # H1 을 다시 본다. 사용량 문서는 다시 읽지 않는다. 이어 가는 쓰기는 보지 않는다.
+  and (if ($a.lend_enrolled? == true) and ($rec.nonce == $p.c.fresh_nonce)
+       then rt_lend_why($p.c; $a.lend.dec; $a.lend.win; $G; ($rec.reservation_bp // null)) == null
+       else true end);
 
 def rt_txn_fallback($reason; $rec):
-  if .request.kind == "shift" then rt_seat_of(.seat.config_dir; "shift-seat-fallback"; .borrow)
+  if .request.kind == "shift" and ((.seat.lane? // null) == null) then rt_seat_of(.seat.config_dir; "shift-seat-fallback"; .borrow)
   elif $reason == "borrow-record-corrupt" then rt_park_borrow_corrupt
   else rt_orgs(.) as $o
     | rt_wait((if $rec != null then rt_group_of($o; $rec.account) else null end); null; null; $reason) end;
@@ -1023,11 +1128,18 @@ route_inventory_check() {
   # route_inventory_check <file> — rc 0 유효 / 1 깨짐(사유는 표준 오류) / 2 부재.
   # `lane_record_read` 의 세 값과 같은 순서다. `config_dir` 는 정규화하지 않는다 —
   # 끝 슬래시도 깨짐이다. 다시 쓰면 같은 디렉터리를 두 문자열로 부르게 된다.
-  local f="${1:-}" why
+  # 대여 등록 키의 결함은 연성이다 — rc 0 그대로 표준 오류에 한 줄만 쓴다.
+  local f="${1:-}" why soft
   if [ -z "$f" ] || [ ! -e "$f" ]; then return 2; fi
   why=$(jq -r -s --arg schema "$ROUTE_INVENTORY_SCHEMA" --arg pfx "${HOME:-}/.claude-" \
         "$(route__jq_lib)"' rt_inventory_why($schema; $pfx)' "$f" 2>/dev/null) || why="parse"
-  [ "$why" = "ok" ] && return 0
+  if [ "$why" = "ok" ]; then
+    soft=$(jq -r -s "$(route__jq_lib)"' rt_lending_why' "$f" 2>/dev/null) || soft="ok"
+    if [ -n "$soft" ] && [ "$soft" != "ok" ]; then
+      printf '[route] 인벤토리 연성 결함: %s (%s)\n' "$f" "$soft" >&2
+    fi
+    return 0
+  fi
   printf '[route] 인벤토리가 깨졌다: %s (%s)\n' "$f" "${why:-parse}" >&2
   return 1
 }
@@ -1267,7 +1379,7 @@ route_gather_context() {
   # 에서 bp 로 옮긴다. 그 변수가 없는 셸에서는 null 이 되고 결정은 rc 2 로 닫힌다.
   # 비용 표본은 원문 그대로 `cost_samples` 에 싣고, 저장소 때문에 rc 2 로 닫지 않는다.
   local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg bpath borrow bpj
-  local costs prog out
+  local costs prog out lane
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
   inv="${RUN_DIR:-}/inventory.json"
@@ -1301,13 +1413,21 @@ route_gather_context() {
   esac
   cfg=$(route__config_json "$cap") || return 2
   costs=$(route_cost_samples_read "$(run_pace_root)/costs")
+  # 대여 좌석 고정. fleet 이 대여 레인으로 띄운 런의 런 디렉터리에만 있는 기록이고, 첫
+  # 줄이 고정 계정이다. 기록이 있는데 비었으면 어느 계정과도 맞지 않는 값으로 고정해
+  # 고정 없는 런으로 열리지 않게 한다. 기록이 없으면 `seat` 의 바이트는 그대로다.
+  lane=""
+  if [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ]; then
+    lane=$( { head -n 1 "$RUN_DIR/fleet-lane" 2>/dev/null || true; } | tr -d '[:space:]')
+    lane=${lane:--}
+  fi
   prog='{now: $now, request: $req, inventory: $inv, usage: $usage, frames: $frames, leases: $leases,
       sticky: ([$leases.items[] | select(.run_id == $req.run_id and .kind == "grant" and .live == true) | .account] | unique),
-      seat: {config_dir: $seat}, config: $cfg, deadline: ($req.deadline // null),
+      seat: ({config_dir: $seat} + (if $lane == "" then {} else {lane: $lane} end)), config: $cfg, deadline: ($req.deadline // null),
       borrow: $borrow, borrow_path: $bp, cost_samples: $cost_samples}'
   set -- --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
     --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
-    --argjson borrow "$borrow" --argjson bp "$bpj"
+    --argjson borrow "$borrow" --argjson bp "$bpj" --arg lane "$lane"
   # 판독 사이에 파일이 사라지거나 바뀌어 읽기가 실패하면 표본 없이 한 번 더 조립한다.
   if ! out=$(jq -cn "$@" --rawfile cost_samples "$costs" "$prog" 2>/dev/null); then
     [ "$costs" = /dev/null ] && return 2
@@ -1764,8 +1884,10 @@ route__txn_main() {
         return 4
       fi
       route__hook_written "$table"
-      # 차용 재판독. 판정은 위에서부터: 새로 놓는 쓰기의 손상 > 기증자 적중 > 진행.
-      # 이어 가는 쓰기(보유, 멱등 재부여)는 손상에서도 진행한다.
+      # 차용 재판독. 판정은 위에서부터: 새로 놓는 쓰기의 손상 > 기증자 적중 > 새로 놓는
+      # 대여 쓰기의 차용 기록 `none` 아님 > 진행. 이어 가는 쓰기(보유, 멱등 재부여)는
+      # 손상과 차용 중에도 진행한다. 대여 등록은 문맥의 인벤토리 행으로 판정한다 —
+      # 이 jq 는 `rt_prep` 을 돌리지 않는다.
       bv=""
       if [ -n "$bpath" ]; then
         bnew=$(route_borrow_read "$bpath") || bv=fail
@@ -1780,6 +1902,8 @@ route__txn_main() {
               .borrow as $b
               | if $b.state == "corrupt" then (if $rec.nonce == .fresh_nonce then "corrupt" else "go" end)
                 elif ($b | rt_borrowing) and (($rec.account == $b.donor.id) or ($rec.config_dir == $b.donor.config_dir)) then "hit"
+                elif ($rec.nonce == .fresh_nonce) and ($b.state != "none") and (.inventory.state == "valid")
+                     and any((.inventory.accounts // [])[]; (type == "object") and (.id == $rec.account) and rt_enrolled) then "lend"
                 else "go" end') || bv=fail
       fi
       if [ "$bv" != "go" ]; then
@@ -1789,7 +1913,7 @@ route__txn_main() {
         [ "$urc" = "0" ] || return 4
         case "$bv" in
           corrupt) route__txn_say "$table" "$ctx2" "$dl" none route__txn_fallback "$ctx2" "borrow-record-corrupt" "$rec" ;;
-          hit) route__txn_say "$table" "$ctx2" "$dl" none route__txn_fallback "$ctx2" "lease-contention" "$rec" ;;
+          hit|lend) route__txn_say "$table" "$ctx2" "$dl" none route__txn_fallback "$ctx2" "lease-contention" "$rec" ;;
           *) return 2 ;;
         esac
         return
@@ -2053,6 +2177,13 @@ route__dormant() {
   printf '%s\n' "$env"
 }
 
+route__lent_unrouted() {
+  # route__lent_unrouted — 런 디렉터리에 `fleet-lane` 기록이 있으면 PARK
+  # lent-seat-unrouted 봉투 한 줄을 내고 rc 0, 없으면 아무것도 내지 않고 rc 1.
+  [ -n "${RUN_DIR:-}" ] && [ -e "$RUN_DIR/fleet-lane" ] || return 1
+  jq -cn "$(route__jq_lib)"' rt_park_unrouted'
+}
+
 route__resolve_as() {
   # route__resolve_as <guard> <request-json> — 진입의 전부. `resolve_account` 를 가장
   # 먼저, 호출마다 정확히 한 번 부른다. 실패하면 표준 출력을 비우고 그 rc 다.
@@ -2063,16 +2194,21 @@ route__resolve_as() {
   #   가드 1, 인벤토리 깨짐   → PARK inventory-corrupt. 좌석으로 떨어지면 뒷문이다.
   #   가드 1, 유효·enabled 0 → PARK no-enabled-account.
   #   가드 1, 유효            → 문맥을 모아 `lease-txn` 프로세스에 넘긴다.
+  #
+  # 휴면 봉투를 낼 자리에서 런 디렉터리에 `fleet-lane` 기록이 있으면 PARK
+  # lent-seat-unrouted 다 — 대여 좌석에 고정된 런은 대여 검사 없이 좌석을 쓰지 않는다.
   local guard="${1:-0}" req="${2:-}" ans rc=0 irc=0 inv ctx now table boot pids p
   local hs=()
   ans=$(resolve_account) || rc=$?
   if [ "$rc" != "0" ]; then return "$rc"; fi
   if [ "$guard" != "1" ]; then
+    route__lent_unrouted && return 0
     route__dormant "$ans" "$(route__borrow_now)" || return 1
     return 0
   fi
   inv="${RUN_DIR:-}/inventory.json"
   if [ -z "${RUN_DIR:-}" ] || [ ! -e "$inv" ]; then
+    route__lent_unrouted && return 0
     route__dormant "$ans" "$(route__borrow_now)" || return 1
     return 0
   fi
@@ -2083,6 +2219,7 @@ route__resolve_as() {
       printf '%s\n' '{"verdict":"PARK","reason":"inventory-corrupt","recovery":"cc-lane account check"}'
       return 0 ;;
     *)
+      route__lent_unrouted && return 0
       route__dormant "$ans" "$(route__borrow_now)" || return 1
       return 0 ;;
   esac
