@@ -39394,7 +39394,10 @@ printf -- '- `segment` | 교대=1 | id=S8 | 상태=실행중 | 선언 파일 집
 rl87 S8
 check "87b: review-line 은 사이클 행 뒤의 리포트 번호를 올리고 잘린 집합을 곁파일에서 읽는다" "$rc|$msg" \
   "0|/cc-cmds:review-unattended seg/R87-S8 --report-path $base87/docs/reviews/seg-R87-S8-cycle2.md$sl87 --declared-files \"a.txt, b c.txt, d.txt\" \"설계는 $doc87\""
-( cd "$WT" && printf 'S8\n' >> a.txt && git commit -qam s8 ) >/dev/null 2>&1
+# `-a` 가 아니라 명시적으로 담는다 — 8 절이 이 저장소를 a.txt 를 추적하지 않는 고아
+# 브랜치에 두고 끝나므로, 둘이 한 실행에 묶이면 `-a` 로는 커밋이 생기지 않아 HEAD 가
+# 사이클 행의 리뷰 HEAD 에 머물고 아래 파견이 「같은 HEAD 재리뷰」로 거절된다.
+( cd "$WT" && printf 'S8\n' >> a.txt && git add a.txt && git commit -qm s8 ) >/dev/null 2>&1
 rl87 S8; line87=$msg
 h87_plan S8 review "$line87"
 check "87b: review-line 이 낸 프롬프트의 리뷰 파견은 게이트를 지난다" "$rc" "0"
