@@ -8,7 +8,8 @@
 # (`gate.sh`) and one more thing, the exact bytes the gate graded and recorded a
 # moment ago for this same caller, once (a ticket, below), and denies everything
 # else. A ticket keeps the allow-list's property rather than widening it: no
-# string passes that the gate did not grade first and leave a row for. An
+# string passes that the gate did not grade first and leave a row for, and the
+# hook checks that row on the ledger rather than trusting the file. An
 # allow-list has the property a deny-list cannot: the "write it to a file and
 # run the file" evasion works against a deny-list and does nothing against this.
 #
@@ -1483,7 +1484,7 @@ fi
 # and it carries no `--cutpoint`, because the gate derives the cell from the
 # recorded bytes and the cell's own word would be one of those verbs.
 ADMIT_LINE="${GATE} admit --request last --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --surface 'one of 읽기·워크트리쓰기·트리밖쓰기·외부상태변경' --reach 'one of 런로컬·기기전역·dev·prod·협업·배포트리거·미상' --snapshot-digest 'the H value from the emitted file' --emit-digest --rationale 'why, in plain words'"
-ADMIT_HOWTO="Run 『 ${ADMIT_LINE} 』 and then issue the very same command again, byte for byte — the ticket the gate writes lets that one issue through, once. Leave --cutpoint out (the gate derives the cell), and keep the program's name and the act's verbs out of the --rationale text: the repository's hook reads the gate line too."
+ADMIT_HOWTO="Run 『 ${ADMIT_LINE} 』 and then issue the very same command again, byte for byte — the ticket the gate writes lets that one issue through, once. Leave --cutpoint out (the gate derives the cell), and keep the program's name and the act's verbs out of the --rationale text: the repository's hook reads the gate line too. A bare command runs in this session's own directory, so a push names the remote and the segment's branch rather than HEAD, @ or nothing."
 
 hook_unquoted_shell_op() {
   # hook_unquoted_shell_op <명령 문자열> — 인용되지 않은 셸 제어 연산자가 있으면 참.
@@ -1561,7 +1562,8 @@ hook_unquoted_shell_op() {
 # The allow-list is the gate call plus the gate's own tickets, AND EACH ENDS
 # WHERE ITS SHAPE ENDS. A ticket (the branch after this one) is not a second
 # shape a stage can spell: it admits only the bytes the gate graded and wrote a
-# row for first, only to the caller that asked, only once — so what passes
+# row for first, only to the caller that asked, only once, and for a push only
+# while the refs it pushes from are the ones the gate saw — so what passes
 # through it is exactly what the gate shape would have recorded, and nothing
 # the gate did not see.
 #
@@ -1675,6 +1677,16 @@ fi
 # ticket's repository, before it expires. Consumed by an atomic rename — of two
 # calls racing for it, the one whose rename fails is refused. Everything is
 # compared against the payload inside jq, so no shell copy of the bytes decides.
+#
+# A FILE IN THAT PLACE IS NOT YET A TICKET. The write guards of this hook and of
+# the gate read a path where it is spelled, and a path assembled inside a
+# wrapper is not spelled anywhere, so the file alone proves nothing. A ticket
+# is honoured only when its id ends in the seal of its contents and exactly one
+# admit row of the ledger (`형태=맨`) names that id — the gate writes the row
+# before the file, and rows are the gate's. And a push is honoured only while
+# the repository it runs in still has the HEAD and branch tips it had when the
+# gate graded it: a push resolves its source when it runs, so a commit made in
+# between would otherwise go out ungraded.
 if [ -n "$caller_key" ]; then
   tk="$RUN_DIR/admit/ticket/$caller_key"
   if [ -f "$tk" ] && [ ! -L "$tk" ]; then
@@ -1688,6 +1700,28 @@ if [ -n "$caller_key" ]; then
            and ((.tool_input.command | @base64) == $k.command_b64)
         then ($k.id // empty) else empty end' 2>/dev/null)
     if [ -n "$tk_id" ]; then
+      tk_bad=""
+      tk_seal=$(thp_ticket_seal <"$tk" 2>/dev/null) || tk_seal=""
+      if [ -z "$tk_seal" ] || [ "${tk_id##*-}" != "$tk_seal" ]; then
+        tk_bad="its id does not seal its contents, so the gate did not write it"
+      elif [ -z "${LEDGER:-}" ] || [ ! -f "$LEDGER" ] \
+           || [ "$( { grep -F "| 티켓=${tk_id} |" "$LEDGER" 2>/dev/null || true; } | grep -cF '| 형태=맨 |' )" != "1" ]; then
+        tk_bad="no admit row of the ledger names it"
+      else
+        tk_rd=$(jq -r '.refs_dir // empty' "$tk" 2>/dev/null) || tk_rd=""
+        tk_rg=$(jq -r '.refs_digest // empty' "$tk" 2>/dev/null) || tk_rg=""
+        if [ -n "$tk_rg" ] && [ "$(thp_refs_digest "$tk_rd")" != "$tk_rg" ]; then
+          tk_bad="the HEAD or a branch of '${tk_rd}' moved after the gate graded the push, so what it would push is not what was graded"
+        fi
+      fi
+      if [ -n "$tk_bad" ]; then
+        # Removed, never moved into `used/`: left in its place it would meet
+        # the next bare issue of the same bytes and refuse it again before a
+        # request is recorded, and in `used/` the settlement would read it as
+        # consumed.
+        rm -f "$tk" 2>/dev/null || true
+        deny "$(jstr "gate: the ticket for this command is not honoured: ${tk_bad}. Issue the command bare again and admit it again. ${ADMIT_HOWTO}")"
+      fi
       tk_used="$RUN_DIR/admit/used"
       tk_dest="$tk_used/$(thp_key_norm "$tk_id").$(thp_key_norm "${tuid:-n$tk_now-$$}")"
       if mkdir -p "$tk_used" 2>/dev/null && mv "$tk" "$tk_dest" 2>/dev/null \

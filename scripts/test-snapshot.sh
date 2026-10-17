@@ -1070,6 +1070,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_SKILL"; do
     '#### Pushing and opening a pull request|--kind remote-check --target <alias> --segment <id>' \
     '#### Pushing and opening a pull request|gate.sh admit --request last' \
     '#### Pushing and opening a pull request|`guard_refusals[]`' \
+    "#### Pushing and opening a pull request|The target's cutpoint comes first, because \`원격 단계\` does not read it" \
+    '#### Pushing and opening a pull request|open none — dispatch the review with `리뷰 줄`' \
+    '#### Pushing and opening a pull request|git push origin <브랜치>' \
     '#### Pushing and opening a pull request|carry `PR.번호` as `PR=`' \
     '교대=#### Pushing and opening a pull request|stop the segment at site `대상 훅 거절`' \
     '교대=#### Pushing and opening a pull request|never `settings.json` while the run is open' \

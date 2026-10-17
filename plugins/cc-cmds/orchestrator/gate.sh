@@ -27861,35 +27861,66 @@ gate_admit_words_push() {
   return 1
 }
 
-gate_admit_head_refspec_ok() {
-  # gate_admit_head_refspec_ok <segment> <argv…> — status 2 for a bare push
-  # whose refspec names `HEAD` from a directory that is not the segment's
-  # worktree. A bare command runs in the session's own directory — on the
-  # router path the target's main worktree — and `HEAD` there names that
-  # tree's branch, not the segment's. `git -C <dir>` moves the directory.
-  local seg="$1" w prev="" pushed=0 head=0 dir="$GATE_ADMIT_CWD" wt top
-  shift
-  [ "${1:-}" = "git" ] || return 0
+gate_admit_git_dir() {
+  # gate_admit_git_dir <argv…> — the directory a git command runs in: the
+  # request's directory, moved by every `-C <dir>` before the subcommand.
+  local w prev="" dir="$GATE_ADMIT_CWD"
   shift
   for w in "$@"; do
-    if [ "$pushed" = "1" ]; then
-      case "$w" in HEAD|HEAD:*|+HEAD|+HEAD:*) head=1 ;; esac
-    else
-      if [ "$prev" = "-C" ]; then
-        case "$w" in /*) dir="$w" ;; *) dir="$dir/$w" ;; esac
-      fi
-      [ "$w" = "push" ] && pushed=1
+    if [ "$prev" = "-C" ]; then
+      case "$w" in /*) dir="$w" ;; *) dir="$dir/$w" ;; esac
+    elif [ "$prev" != "-c" ]; then
+      case "$w" in -*) ;; *) break ;; esac
     fi
     prev="$w"
   done
+  printf '%s' "$dir"
+}
+
+gate_admit_head_refspec_ok() {
+  # gate_admit_head_refspec_ok <segment> <argv…> — status 2 for a bare push
+  # that takes its source from the checked-out branch, from a directory that is
+  # not the segment's worktree. A bare command runs in the session's own
+  # directory — on the router path the target's main worktree — and there
+  # `HEAD`, `@`, and a push naming no refspec at all (`--all` and `--mirror`
+  # too) all push that tree's branches, not the segment's. `git -C <dir>` moves
+  # the directory; a remote named by `--repo` makes the first operand a refspec.
+  local seg="$1" w pushed=0 head=0 refspec=0 pos=0 repo=0 skip=0 dir wt top
+  shift
+  [ "${1##*/}" = "git" ] || return 0
+  dir=$(gate_admit_git_dir "$@")
+  shift
+  for w in "$@"; do
+    if [ "$pushed" = "0" ]; then
+      [ "$w" != "push" ] || pushed=1
+      continue
+    fi
+    if [ "$skip" = "1" ]; then skip=0; continue; fi
+    case "$w" in
+      -o|--push-option|--receive-pack|--exec) skip=1 ;;
+      --repo) skip=1; repo=1 ;;
+      --repo=*) repo=1 ;;
+      --all|--mirror|--branches) head=1 ;;
+      --tags) refspec=1 ;;
+      -*) ;;
+      *)
+        pos=$((pos + 1))
+        if [ "$pos" -gt 1 ] || [ "$repo" = "1" ]; then
+          refspec=1
+          case "$w" in HEAD|HEAD:*|+HEAD|+HEAD:*|@|@:*|+@|+@:*) head=1 ;; esac
+        fi ;;
+    esac
+  done
+  [ "$pushed" = "1" ] || return 0
+  [ "$refspec" = "1" ] || head=1
   [ "$head" = "1" ] || return 0
   wt=$(gate_segment_worktree "$seg" 2>/dev/null || true)
   top=$( { cd "$dir" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null; } || true)
   if [ -n "$wt" ] && [ -n "$top" ] && [ "$(gate_thp thp_phys "$top")" = "$(gate_thp thp_phys "$wt")" ]; then
     return 0
   fi
-  warn "this push names HEAD, and it runs in '${top:-$dir}', which is not the worktree of segment $seg — HEAD there is that tree's branch"
-  warn "name the branch (git push origin <branch>) or point git at the segment's worktree with -C, then issue it bare again"
+  warn "this push takes its source from the branch checked out where it runs ('${top:-$dir}'), which is not the worktree of segment $seg — it names HEAD or @, or names no branch at all"
+  warn "name the remote and the branch (git push origin <branch>) or point git at the segment's worktree with -C, then issue it bare again"
   return "$GATE_EXIT_VOCAB"
 }
 
@@ -28299,15 +28330,17 @@ gate_admit_settle() {
   done
 }
 
-gate_admit_issue() {
-  # gate_admit_issue <alias> <segment> <actor> <graded> <ticket id> — after the
-  # row: the ticket `admit/ticket/<caller key>` holding the bytes, the request
-  # directory, the common git directory of the request's root, the caller, the
-  # expiry and the row's line. A newer ticket replaces an older one, and the
-  # request is consumed. Prints the bytes to issue again and the ticket id.
-  local al="$1" seg="$2" actor="$3" graded="$4" tid="$5" now line remote before row tdir tmp
+gate_admit_prepare() {
+  # gate_admit_prepare <alias> <segment> <actor> <graded> — before the row: the
+  # ticket's content into GATE_ADMIT_TJSON and its id into GATE_ADMIT_TID. The
+  # content is the bytes, the request directory, the common git directory of
+  # the request's root, the caller, the expiry and, for a push, the directory
+  # it runs in with that repository's HEAD and branch tips. The id ends in the
+  # seal of that content, and the row carries the id — so the run hook can tell
+  # a ticket this gate graded from a file another hand put in its place, and a
+  # push from one whose source moved after it was graded.
+  local al="$1" seg="$2" actor="$3" graded="$4" now remote before row rdir="" rdig=""
   now=$(date -u +%s)
-  line=$( { grep -nF "요청=$GATE_ADMIT_REQ_ID " "$LEDGER" 2>/dev/null || true; } | tail -1 | cut -d: -f1)
   remote='-'
   if [ "$graded" = "읽기" ]; then
     case "${GATE_ACT_DERIVED:-}" in push|PR|머지) remote='읽기' ;; esac
@@ -28319,22 +28352,44 @@ gate_admit_issue() {
     row=$(gate_remote_last_known_row "$seg")
     [ -z "$row" ] || before="$(gate_row_field "$row" '원격 팁')/$(gate_row_field "$row" 'PR')/$(gate_row_field "$row" 'PR 상태')/$(gate_row_field "$row" 'PR HEAD')"
   fi
+  if gate_admit_words_push; then
+    rdir=$(gate_thp thp_phys "$(gate_admit_git_dir "${GATE_ADMIT_WORDS[@]}")")
+    rdig=$(gate_thp thp_refs_digest "$rdir")
+    if [ -z "$rdig" ]; then
+      warn "the directory this push runs in ('${rdir:-$GATE_ADMIT_CWD}') is not a checkout whose HEAD and branches could be read, so no ticket could be bound to what it pushes"
+      exit "$GATE_EXIT_RULE"
+    fi
+  fi
+  GATE_ADMIT_TJSON=$(jq -nc --arg b "$GATE_ADMIT_BYTES" --arg cwd "$GATE_ADMIT_CWD" \
+     --arg cd "$(gate_thp thp_common_dir "$GATE_ADMIT_PDIR")" --arg caller "$GATE_ADMIT_CALLER" \
+     --argjson exp "$((now + GATE_ADMIT_TTL))" --arg req "$GATE_ADMIT_REQ_ID" \
+     --arg tg "$al" --arg sg "$seg" --arg dig "$GATE_ADMIT_DIGEST" --arg remote "$remote" \
+     --arg before "$before" --arg actor "$actor" --arg pd "$GATE_ADMIT_PDIR" \
+     --arg rd "$rdir" --arg rg "$rdig" \
+     '{command_b64: ($b | @base64), cwd: $cwd, common_dir: $cd, caller: $caller,
+       expires: $exp, request: $req, target: $tg, segment: $sg, digest: $dig,
+       remote: $remote, remote_before: $before, actor: $actor, project_dir: $pd,
+       refs_dir: $rd, refs_digest: $rg}') || die "could not compose the ticket"
+  GATE_ADMIT_TID="T-${now}-$$-$(printf '%s' "$GATE_ADMIT_TJSON" | gate_thp thp_ticket_seal)"
+}
+
+gate_admit_issue() {
+  # gate_admit_issue — after the row: the ticket `admit/ticket/<caller key>`,
+  # the content gate_admit_prepare composed with its id and the row's line. A
+  # newer ticket replaces an older one, and the request is consumed. Prints the
+  # bytes to issue again and the ticket id.
+  local line tdir tmp
+  line=$( { grep -nF "| 티켓=$GATE_ADMIT_TID |" "$LEDGER" 2>/dev/null || true; } | tail -1 | cut -d: -f1)
   tdir="$RUN_DIR/admit/ticket"
   mkdir -p "$tdir" || die "could not create the ticket directory: $tdir"
   tmp=$(mktemp "$tdir/.tmp.XXXXXX") || die "could not create the ticket file in $tdir"
-  jq -nc --arg id "$tid" --arg b "$GATE_ADMIT_BYTES" --arg cwd "$GATE_ADMIT_CWD" \
-     --arg cd "$(gate_thp thp_common_dir "$GATE_ADMIT_PDIR")" --arg caller "$GATE_ADMIT_CALLER" \
-     --argjson exp "$((now + GATE_ADMIT_TTL))" --arg line "${line:--}" --arg req "$GATE_ADMIT_REQ_ID" \
-     --arg tg "$al" --arg sg "$seg" --arg dig "$GATE_ADMIT_DIGEST" --arg remote "$remote" \
-     --arg before "$before" --arg actor "$actor" --arg pd "$GATE_ADMIT_PDIR" \
-     '{id: $id, command_b64: ($b | @base64), cwd: $cwd, common_dir: $cd, caller: $caller,
-       expires: $exp, line: $line, request: $req, target: $tg, segment: $sg, digest: $dig,
-       remote: $remote, remote_before: $before, actor: $actor, project_dir: $pd}' > "$tmp" \
+  printf '%s' "$GATE_ADMIT_TJSON" | jq -c --arg id "$GATE_ADMIT_TID" --arg line "${line:--}" \
+     '. + {id: $id, line: $line}' > "$tmp" \
     || { rm -f "$tmp"; die "could not write the ticket"; }
   mv -f "$tmp" "$tdir/$GATE_ADMIT_KEY" || { rm -f "$tmp"; die "could not publish the ticket"; }
   rm -f "$GATE_ADMIT_FILE"
   printf '티켓 %s — 다음 명령을 바이트 그대로 한 번 다시 내십시오 (%s초 안, 같은 디렉터리):\n%s\n' \
-    "$tid" "$GATE_ADMIT_TTL" "$GATE_ADMIT_BYTES"
+    "$GATE_ADMIT_TID" "$GATE_ADMIT_TTL" "$GATE_ADMIT_BYTES"
 }
 
 gate_verb_act() {
@@ -30520,7 +30575,12 @@ EOF
     _admit_pred=$(printf '%s\n' "$_pr_out" | sed -n 1p)
     _admit_text=$(printf '%s\n' "$_pr_out" | sed -n 2p)
     [ -n "$_admit_pred" ] || _admit_pred='판정 불가'
-    [ "$_admit_pred" != "통과" ] || _admit_tid="T-$(date -u +%s)-$$"
+    # The ticket's content and sealed id are fixed before the row, which
+    # carries the id; the file itself is written after the row.
+    if [ "$_admit_pred" = "통과" ]; then
+      gate_admit_prepare "$alias" "$segment" "$actor" "$graded"
+      _admit_tid="$GATE_ADMIT_TID"
+    fi
   fi
 
   # A BOOKKEEPING KIND IS DECIDED BEFORE THE APPROVAL ROW IS WRITTEN, and every
@@ -30648,7 +30708,7 @@ EOF
       warn "no ticket is left; the refusal is on the ledger and the same act stays closed until its condition moves"
       exit "$GATE_EXIT_RULE"
     fi
-    gate_admit_issue "$alias" "$segment" "$actor" "$graded" "$_admit_tid"
+    gate_admit_issue
     return 0
   fi
 

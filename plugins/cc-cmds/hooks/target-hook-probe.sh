@@ -400,6 +400,34 @@ thp_act_digest() {
 }
 
 # ---------------------------------------------------------------------------
+# The ticket's seal and the repository state it is bound to.
+# ---------------------------------------------------------------------------
+thp_ticket_seal() {
+  # thp_ticket_seal — reads a ticket's JSON on standard input and prints the
+  # 24 hex digits that end its id: the sha256 of every field but `id` and
+  # `line`, keys sorted. The gate writes the id with this seal into the admit
+  # row before the ticket exists, and the run hook honours a ticket only when
+  # its id seals its contents and that row names the id. A file written under
+  # `admit/ticket/` by any other hand either carries an id no row names, or an
+  # id whose seal its contents do not match.
+  jq -cS 'del(.id, .line)' 2>/dev/null | shasum -a 256 | cut -c1-24
+}
+
+thp_refs_digest() {
+  # thp_refs_digest <dir> — the sha256 over the HEAD of the checkout holding
+  # <dir> and every local branch tip of its repository; empty when <dir> is no
+  # checkout. A push resolves its source from these refs when it runs, not when
+  # the gate graded it, so a ticket for a push carries this value and the run
+  # hook reads it again before letting the push through: a commit made between
+  # the admit and the issue changes it.
+  local d out
+  d=$(thp_phys "$1"); [ -n "$d" ] || return 0
+  out=$( cd "$d" && git rev-parse HEAD 2>/dev/null \
+         && git for-each-ref --format='%(objectname) %(refname)' refs/heads 2>/dev/null ) || return 0
+  printf '%s\n' "$out" | shasum -a 256 | awk '{print $1}'
+}
+
+# ---------------------------------------------------------------------------
 # The per-target paragraph both launchers append.
 # ---------------------------------------------------------------------------
 thp_instruction_paragraph() {
@@ -408,6 +436,6 @@ thp_instruction_paragraph() {
   cat <<'EOF'
 ## Remote commands under this repository's own Bash hook
 
-The repository this session starts in has its own PreToolUse Bash hook, and that hook judges the command string you run — a remote command wrapped in a gate call may be refused by it. So issue a remote command (pushing a branch, opening or reading a pull request, checks, a merge) bare, as the plain command itself. The run's hook refuses that first issue and records it as a request; then call the gate's `admit --request last` with `--manifest`, `--target`, `--segment`, `--surface`, `--reach`, `--snapshot-digest` and `--rationale`, and without `--cutpoint` — the gate derives the cell. When it answers with a ticket, issue the very same command again, byte for byte; that issue runs. Keep command words out of the gate's free-text arguments: the `--rationale` text says why in plain words and does not name the program or its verbs.
+The repository this session starts in has its own PreToolUse Bash hook, and that hook judges the command string you run — a remote command wrapped in a gate call may be refused by it. So issue a remote command (pushing a branch, opening or reading a pull request, checks, a merge) bare, as the plain command itself. The run's hook refuses that first issue and records it as a request; then call the gate's `admit --request last` with `--manifest`, `--target`, `--segment`, `--surface`, `--reach`, `--snapshot-digest` and `--rationale`, and without `--cutpoint` — the gate derives the cell. When it answers with a ticket, issue the very same command again, byte for byte; that issue runs. A bare command runs in this session's own directory, which may not be the segment's worktree, so a push names the remote and the segment's branch; the gate refuses a push that names no branch, or names `HEAD` or `@`, from outside that worktree. Keep command words out of the gate's free-text arguments: the `--rationale` text says why in plain words and does not name the program or its verbs.
 EOF
 }

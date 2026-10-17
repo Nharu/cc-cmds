@@ -968,11 +968,30 @@ h1f=""; for h1f in "$TRD"/admit/refused/*/*; do break; done
 check "대상 훅 곁: 교대의 감싼 호출은 caller_kind=shift 로 기록된다" \
   "$(jq -r .caller_kind "$h1f" 2>/dev/null)" "shift"
 
-# 표 — 게이트가 쓰는 모양 그대로 손으로 놓는다.
+# 표 — 게이트가 쓰는 모양 그대로 손으로 놓는다: 봉인된 번호와 그 번호를 실은 원장 행.
 mkdir -p "$TRD/admit/ticket"
-jq -nc --arg b 'git push origin seg/x' --arg cwd "$TP" --arg cd "$(thp_common_dir "$TP")" \
+tk_body=$(jq -nc --arg b 'git push origin seg/x' --arg cwd "$TP" --arg cd "$(thp_common_dir "$TP")" \
    --argjson exp "$(( $(date +%s) + 300 ))" \
-   '{id:"T-1", command_b64:($b|@base64), cwd:$cwd, common_dir:$cd, caller:"S1#1", expires:$exp}' > "$TRD/admit/ticket/$tk1"
+   '{command_b64:($b|@base64), cwd:$cwd, common_dir:$cd, caller:"S1#1", expires:$exp}')
+tk_id="T-1-1-$(printf '%s' "$tk_body" | thp_ticket_seal)"
+plant_ticket() {  # <id>
+  printf '%s' "$tk_body" | jq -c --arg id "$1" '. + {id:$id, line:1}' > "$TRD/admit/ticket/$tk1"
+}
+plant_ticket "$tk_id"
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'
+check "대상 훅 곁: 원장 행이 없는 표는 지켜지지 않고 치워지되 used 로 가지 않는다" \
+  "$dec|$(test -f "$TRD/admit/ticket/$tk1" && echo 표 || echo 치움)|$(ls "$TRD/admit/used" 2>/dev/null | wc -l | tr -d ' ')" \
+  "deny|치움|0"
+case "$reason" in
+  *"ticket for this command is not honoured"*) ok "대상 훅 곁: 지켜지지 않는 표의 문면이 다시 admit 하라고 든다" ;;
+  *) bad "대상 훅 곁: 지켜지지 않는 표의 문면" "$reason" ;;
+esac
+printf '| 자율 승인 | 티켓=%s | 형태=맨 |\n' "$tk_id" >> "$LEDGER"
+plant_ticket "T-1-1-000000000000000000000000"
+printf '| 자율 승인 | 티켓=%s | 형태=맨 |\n' "T-1-1-000000000000000000000000" >> "$LEDGER"
+decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'
+check "대상 훅 곁: 봉인이 본문과 맞지 않는 표는 원장 행이 있어도 지켜지지 않는다" "$dec" "deny"
+plant_ticket "$tk_id"
 decide_tg CC_PIPELINE_STAGE_ID='S1#2' -- 'git push origin seg/x'
 check "대상 훅 곁: 다른 호출자는 표를 쓰지 못한다" "$dec|$(test -f "$TRD/admit/ticket/$tk1" && echo 표)" "deny|표"
 decide_tg CC_PIPELINE_STAGE_ID='S1#1' -- 'git push origin seg/x'

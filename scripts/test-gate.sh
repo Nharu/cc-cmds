@@ -39216,7 +39216,7 @@ check "87d: 열린 PR 이 둘이면 불일치 다" "$(st87d '원격 단계')" "�
 
 # ---------------------------------------------------------------------------
 # 87e. 요청과 표의 안전 — 표는 바이트·디렉터리·호출자·루트가 모두 맞는 한 번에만 열린다
-# --- section: 87e | group: tguard | covers: hook, admit | anchors: 87e: 바이트가 다른 명령은 표를 쓰지 못한다, 87e: 다른 디렉터리에서는 표를 쓰지 못한다, 87e: 다른 호출자는 표를 쓰지 못한다, 87e: 표는 한 번 쓰면 끝난다, 87e: 만료된 표는 쓰지 못한다, 87e: 새 admit 이 앞 표를 갈아 끼운다, 87e: 런 디렉터리의 admit 아래로 쓰는 Write 는 거절된다, 87e: 따옴표 밖 연산자가 있는 명령은 요청으로 기록되지 않는다, 87e: 닫힌 문법 밖의 요청은 admit 이 rc 2 로 거절한다, 87e: 세그먼트 워크트리 밖에서 HEAD 를 미는 push 는 rc 2 다, 87e: 훅을 단 대상에는 다른 루트에서 낸 요청이 rc 3 이다, 87e: 훅이 없는 대상에는 같은 요청이 통과한다, 87e: 콜론이 든 호출자 키도 요청과 표를 오간다, 87e: 스테이지와 교대 id 가 함께 있으면 스테이지 키를 쓴다 ---
+# --- section: 87e | group: tguard | covers: hook, admit | anchors: 87e: 바이트가 다른 명령은 표를 쓰지 못한다, 87e: 다른 디렉터리에서는 표를 쓰지 못한다, 87e: 다른 호출자는 표를 쓰지 못한다, 87e: 표는 한 번 쓰면 끝난다, 87e: 만료된 표는 쓰지 못한다, 87e: 새 admit 이 앞 표를 갈아 끼운다, 87e: 런 디렉터리의 admit 아래로 쓰는 Write 는 거절된다, 87e: 따옴표 밖 연산자가 있는 명령은 요청으로 기록되지 않는다, 87e: 닫힌 문법 밖의 요청은 admit 이 rc 2 로 거절한다, 87e: 세그먼트 워크트리 밖에서 HEAD 를 미는 push 는 rc 2 다, 87e: 세그먼트 워크트리 밖에서 @ 를 밀거나 refspec 을 대지 않는 push 는 rc 2 다, 87e: 세그먼트 워크트리 안에서는 refspec 없는 push 가 admit 된다, 87e: 원장 행이 없는 표는 봉인이 맞아도 지켜지지 않는다, 87e: admit 뒤에 브랜치가 움직이면 표는 지켜지지 않는다, 87e: 다시 admit 하면 움직인 브랜치의 push 가 열린다, 87e: 훅을 단 대상에는 다른 루트에서 낸 요청이 rc 3 이다, 87e: 훅이 없는 대상에는 같은 요청이 통과한다, 87e: 콜론이 든 호출자 키도 요청과 표를 오간다, 87e: 스테이지와 교대 id 가 함께 있으면 스테이지 키를 쓴다 ---
 #
 # 런 훅과 admit 사이의 계약을 하나씩 깬다. 표는 `admit/ticket/<호출자 키>` 한 장이고,
 # 런 훅은 그것을 원자적 이름 바꾸기로 소비한다.
@@ -39262,6 +39262,38 @@ tg_hook 'git push origin "seg/$X"'; tg_admit 외부상태변경
 check "87e: 닫힌 문법 밖의 요청은 admit 이 rc 2 로 거절한다" "$rc" "2"
 tg_hook "git push origin HEAD:$TG_BR" "$TG_A"; tg_admit 외부상태변경
 check "87e: 세그먼트 워크트리 밖에서 HEAD 를 미는 push 는 rc 2 다" "$rc" "2"
+# 기본 브랜치가 아닌 곳에서 낸다 — 기본 브랜치의 맨 push 는 그보다 앞의 사다리가 막는다.
+( cd "$TG_A" && git worktree add -q -b side87e "$TG/A-side" )
+tg_hook "git push origin @" "$TG/A-side"; tg_admit 외부상태변경
+r87e_at=$rc
+tg_hook "git push origin" "$TG/A-side"; tg_admit 외부상태변경
+r87e_none=$rc
+tg_hook "git push --repo origin" "$TG/A-side"; tg_admit 외부상태변경
+check "87e: 세그먼트 워크트리 밖에서 @ 를 밀거나 refspec 을 대지 않는 push 는 rc 2 다" \
+  "$r87e_at|$r87e_none|$rc" "2|2|2"
+tg_hook "git push origin"; tg_admit 외부상태변경
+check "87e: 세그먼트 워크트리 안에서는 refspec 없는 push 가 admit 된다" "$rc" "0"
+
+# 표는 게이트가 쓴 것이어야 한다 — 봉인을 다시 계산해 놓은 표도 원장 행이 없으면 지켜지지 않는다.
+tg_hook "$p87e"; tg_admit 외부상태변경
+f87e_tk="$TG_RD/admit/ticket/$k87e"
+b87e=$(jq -c '.expires += 1 | del(.id, .line)' "$f87e_tk")
+id87e="T-1-1-$(printf '%s' "$b87e" | thp_ticket_seal)"
+printf '%s' "$b87e" | jq -c --arg id "$id87e" '. + {id:$id, line:1}' > "$TG/t.json" && mv "$TG/t.json" "$f87e_tk"
+tg_hook "$p87e"
+check "87e: 원장 행이 없는 표는 봉인이 맞아도 지켜지지 않는다" \
+  "$hdec|$(printf '%s' "$hout" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -c 'no admit row of the ledger names it')" "deny|1"
+rm -f "$f87e_tk"
+
+# 표는 admit 이 판정한 저장소 상태에 묶인다 — 그 뒤의 커밋은 미는 것을 바꾼다.
+tg_hook "$p87e"; tg_admit 외부상태변경
+( cd "$TG_WT" && printf 'z\n' > z && git add z && git commit -qm z )
+tg_hook "$p87e"
+check "87e: admit 뒤에 브랜치가 움직이면 표는 지켜지지 않는다" \
+  "$hdec|$(printf '%s' "$hout" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -c 'moved after the gate graded the push')" "deny|1"
+tg_hook "$p87e"; tg_admit 외부상태변경
+tg_hook "$p87e"
+check "87e: 다시 admit 하면 움직인 브랜치의 push 가 열린다" "$hdec" "allow"
 
 # 발행 루트 규칙 — 대상 바깥의 루트에서 시작한 세션이 낸 요청은 대상의 훅이 판정한
 # 적이 없다.

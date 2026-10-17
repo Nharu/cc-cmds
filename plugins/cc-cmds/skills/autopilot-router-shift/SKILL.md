@@ -277,7 +277,9 @@ Segment planning starts only after the audit has ended as above, or straight aft
 
 #### Pushing and opening a pull request
 
-**No run skill opens a new segment's pull request; you do, from the snapshot.** Every `segments[]` element carries `브랜치`, `HEAD`, `원격 팁`, `PR` (`번호`, `상태`, `HEAD`), `원격 단계` and `리뷰 줄`. Branch on `원격 단계`:
+**No run skill opens a new segment's pull request; you do, from the snapshot.** Every `segments[]` element carries `브랜치`, `HEAD`, `원격 팁`, `PR` (`번호`, `상태`, `HEAD`), `원격 단계` and `리뷰 줄`.
+
+**The target's cutpoint comes first, because `원격 단계` does not read it.** It says what the remote lacks, not what this target may do. Below `push` (`커밋`, `브랜치`) nothing is pushed and no pull request is opened: the commit is the product, so dispatch the segment's review with `리뷰 줄` straight away, whatever `원격 단계` reads, and issue no `remote-check`. At `push`, push on `push 필요` as below, and where it then reads `PR 필요` open none — dispatch the review with `리뷰 줄`. From `PR` up, branch on `원격 단계`:
 
 - **`push 필요`** → push the segment branch: `git push origin <브랜치>`, at `--cutpoint push --reach 협업`.
 - **`PR 필요`** → open the pull request: `gh pr create -R <원격 슬러그> --head <브랜치> --base <베이스 브랜치> --title '<제목>' --body '<본문>'`, at `--cutpoint PR --reach 협업`.
@@ -300,7 +302,7 @@ gate.sh admit --request last --manifest <매니페스트> --target <alias> --seg
   --surface 외부상태변경 --reach 협업 --snapshot-digest <H> --rationale '<왜>'
 ```
 
-with no `--cutpoint` (the gate derives it from the recorded words) and nothing after it, and issue the same bytes once more, verbatim, from the same directory, within the three hundred seconds the gate prints. Do not put the command's words into `--rationale`. Exit 3 from `admit` names why: the target's hook refuses the command (a `대상 거절` row is written), the request expired or is another caller's, or the root is not the target's own checkout while the target is hooked. A `HEAD` refspec outside the segment worktree is refused too — spell the branch.
+with no `--cutpoint` (the gate derives it from the recorded words) and nothing after it, and issue the same bytes once more, verbatim, from the same directory, within the three hundred seconds the gate prints. Do not put the command's words into `--rationale`. Exit 3 from `admit` names why: the target's hook refuses the command (a `대상 거절` row is written), the request expired or is another caller's, or the root is not the target's own checkout while the target is hooked. A push that takes its source from the checked-out branch — a `HEAD` or `@` refspec, or no refspec at all — outside the segment worktree is refused too with exit 2: the bare command runs in this session's directory, so spell the remote and the branch (`git push origin <브랜치>`). A ticket for a push is honoured only while that repository's HEAD and branch tips are the ones the gate graded; after a commit in between, issue the push bare and admit it again.
 
 **Read `guard_refusals[]` before you issue a remote act.** Each element is a refusal by a target's own hook: `형태` (`감쌈` a gate call, `맨` a bare command), `명령`, `거절 문면` and `조건`. While `조건` reads `같음` the gate refuses the same act in the same form with exit 3 — do not issue it again. It reads `바뀜` once one of the five elements moved — a commit on the segment worktree, an edit to the guard script or `settings.local.json` (never `settings.json` while the run is open — that file is part of the gate's enforcement surface and moving it voids the run), a remote tip or pull request a `remote-check` read, or a `재시도` answer to the segment's `대상 훅 거절` record — and then the act may be issued once more. When the refusal blocks an act the segment cannot do without and nothing you can do moves the condition, stop the segment at site `대상 훅 거절`, quoting `거절 문면` in `관측` and asking the person, in `질문`, to change the guard file or `settings.local.json`, or the act, and never `settings.json` while the run is open.
 
