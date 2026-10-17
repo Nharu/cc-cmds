@@ -5422,6 +5422,18 @@ for sh3 in r d; do
   esac
   sep3_ledger $sh3 "$SEP3/ok" R x1 R
   check "8b-R6 ($sh3): 세 쌍이 모두 서로소면 통과한다" "$(sep3_run "$SEP3/ok")" "|0"
+  # Every lead fix is an author, not only the last: a segment whose re-check
+  # left findings gets a second lead fix, and the final review must be disjoint
+  # from both. A rule that paired only one lead-fix row passes the first case.
+  { sep3_row $sh3 impl i1 R; sep3_row $sh3 rev c1 R; sep3_row $sh3 lf l1 R
+    sep3_row $sh3 rev c2 R; sep3_row $sh3 lf l2 R; sep3_row $sh3 rev x2 l1; } > "$SEP3/b2"
+  case "$(sep3_run "$SEP3/b2")" in
+    *"share an ancestor"*"쌍 b: 리드 수정 1"*"|1") ok "8b-R6 ($sh3): 리드 수정이 둘이면 첫째가 마지막 리뷰의 조상이어도 거부된다 (쌍 b)" ;;
+    *) bad "8b-R6 쌍 b 리드 수정 둘 ($sh3)" "$(sep3_run "$SEP3/b2")" ;;
+  esac
+  { sep3_row $sh3 impl i1 R; sep3_row $sh3 rev c1 R; sep3_row $sh3 lf l1 R
+    sep3_row $sh3 rev c2 R; sep3_row $sh3 lf l2 R; sep3_row $sh3 rev x2 R; } > "$SEP3/b2ok"
+  check "8b-R6 ($sh3): 리드 수정 둘이 모두 마지막 리뷰와 서로소면 통과한다" "$(sep3_run "$SEP3/b2ok")" "|0"
   # With no lead-fix row the rule is the one pair it always was.
   { sep3_row $sh3 impl i1 R; sep3_row $sh3 rev c1 R; } > "$SEP3/n0"
   check "8b-R6 ($sh3): 리드 수정이 없으면 디스패처 공유는 통과한다" "$(sep3_run "$SEP3/n0")" "|0"
