@@ -73,7 +73,9 @@
 # single-writer rule above. One process does outlive this job all the same: the
 # first `snapshot` of a new run passes the gate's run-open branch, which starts
 # the run dashboard's server in its own session, and that server keeps serving
-# after the dispatch job has exited. The start lives in the gate, not here.
+# after the dispatch job has exited. The start lives in the gate, not here. The
+# run's watcher is the other: it is started in a process group of its own, so
+# the teardown of this job's group when the job returns does not take it.
 #
 # THE PACING SENSOR CAN NEVER STOP DISPATCH BY BEING ABSENT. `state.json` that
 # is missing, stale, or of an unknown schema is read as no verdict at all, which
@@ -1194,12 +1196,20 @@ fleet_start_watch() {
   # is a gate call of the re-entry like any other; the watcher and the poller
   # do not carry it. A seventh argument `poller` starts the poller alone: a
   # re-entry whose relay came back because the poller died restarts that one
-  # and not a second watcher beside the first.
+  # and not a second watcher beside the first. A seventh argument `snapped`
+  # skips the snapshot: the backlog dispatch takes it itself, because it reads
+  # the snapshot's refusal to decide whether the run starts at all.
   local home="$1" pdir="$2" manifest="$3" run_dir="$4" ledger="$5" mark="${6:-}" only="${7:-}"
   if [ "$only" != "poller" ]; then
-    CLAUDE_CONFIG_DIR="$home" CC_PIPELINE_REENTRY="$mark" bash "$pdir/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
+    [ "$only" = "snapped" ] \
+      || CLAUDE_CONFIG_DIR="$home" CC_PIPELINE_REENTRY="$mark" bash "$pdir/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
     mkdir -p "$run_dir"
-    bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
+    # THE WATCHER LEADS A PROCESS GROUP OF ITS OWN. launchd tears down the
+    # job's group when the job exits, and the watcher's whole purpose is to
+    # speak after the run stopped — the moment the job returns. Job control in
+    # a subshell puts it in a new group; it is still started here, not detached
+    # by a helper.
+    ( set -m; bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null & )
   fi
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
   # merge refusal it feeds is the only thing standing between a red check and a
@@ -1548,6 +1558,16 @@ fleet_dispatch() {
   mkdir -p "$PACE_ROOT"
   now=$(fleet_now); iso=$(fleet_iso "$now")
 
+  # THE SUCCESSOR SWEEP, BEFORE RE-ENTRY AND ELIGIBILITY. Ended runs whose
+  # manifest carries a `재킥오프` row are judged here and their successors
+  # enqueued, so a lane that may not work now, or that re-enters a run this
+  # tick, still sweeps — a successor waits in the backlog for whichever lane is
+  # eligible next. It runs in the foreground and takes the same `backlog.lock`
+  # for its own claims, released before the re-entry below; its failure is a
+  # log line, never a reason not to dispatch.
+  bash "$FLEET_DIR/successor.sh" sweep --pace-root "$PACE_ROOT" --lane present \
+    || fleet_log "dispatch $lane: 후속 런 sweep 이 실패했다 (rc=$?) — 디스패치는 그대로 간다"
+
   # (1b) BOOT-TIME RE-ENTRY, BEFORE ELIGIBILITY AND THE BACKLOG LOCK. The
   #      eligibility below is for a new run on this label's account, and a run
   #      this boot cut is re-entered on its own recorded lane whatever this
@@ -1785,7 +1805,22 @@ EOF
     mkdir -p "$(dirname "$ledger")"
     printf '# 파이프라인 런 %s\n\n런 id: %s · 파견 레인: %s · 파견 시각: %s\n' "$run_id" "$run_id" "$lane" "$iso" > "$ledger"
   fi
-  fleet_start_watch "$home" "$FLEET_DIR" "$manifest" "$run_dir" "$ledger"
+  # A SUCCESSOR THE ADMISSION CHECK REFUSES IS PARKED, NOT STARTED. The
+  # snapshot runs the same manifest check `run.sh` would, and a `lineage-invalid`
+  # stop there means the successor's chain does not hold: starting the run
+  # would only stop at its first gate entry. Any other failure goes on as it
+  # always did, because the run reports it itself.
+  local snap_rc=0 snap_err
+  snap_err=$( { CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/gate.sh" snapshot --manifest "$manifest" >/dev/null; } 2>&1 ) || snap_rc=$?
+  [ -z "$snap_err" ] || printf '%s\n' "$snap_err" >&2
+  if [ "$snap_rc" != "0" ] && printf '%s\n' "$snap_err" | grep -qF '[run][stop] lineage-invalid — '; then
+    line2=$(printf '%s' "$line" | jq -c '.status = "parked" | .park_reason = "lineage-invalid"')
+    fleet_backlog_rewrite_locked "$line" "$line2" || fleet_log "dispatch $lane: $id 의 park 재작성이 실패했다 (rc=$?)"
+    fleet_busy_drop
+    fleet_log "dispatch $lane: $id park — lineage-invalid (연쇄 입장 검사가 거부했다; 기동하지 않는다)"
+    return 0
+  fi
+  fleet_start_watch "$home" "$FLEET_DIR" "$manifest" "$run_dir" "$ledger" "" snapped
   # THE LENDING PIN, ON THIS PATH ONLY. The router reads it as the run's seat
   # and admits the run on the lending account alone. It is written here and
   # not in `fleet_start_watch`, which a boot-time re-entry also calls on a run
@@ -1801,6 +1836,11 @@ EOF
   line2=$(printf '%s' "$line" | jq -c '.status = "done"')
   fleet_backlog_rewrite_locked "$line" "$line2" || fleet_log "dispatch $lane: $id 의 done 재작성이 실패했다 (rc=$?) — 레코드는 dispatched 로 남는다"
   fleet_log "dispatch $lane: $id 종료 rc=$rc"
+  # The fast path: deadline closes and parked successors, now that this run is
+  # over. Candidates themselves wait for the next tick's full sweep, because a
+  # run that just ended is not yet quiet.
+  bash "$FLEET_DIR/successor.sh" sweep --pace-root "$PACE_ROOT" --lane present --fast \
+    || fleet_log "dispatch $lane: 빠른 sweep 이 실패했다 (rc=$?)"
   return 0
 }
 

@@ -318,7 +318,7 @@ cc_notify_title() {
     overflow)   printf 'cc-cmds · 답할 것이 더 있습니다' ;;
     hands)      printf 'cc-cmds · 직접 손대세요' ;;
     resume)     printf 'cc-cmds · 세션으로 돌아가세요' ;;
-    rekick)     printf 'cc-cmds · 새 런을 여세요' ;;
+    rekick)     printf 'cc-cmds · 재킥오프' ;;
     ended)      printf 'cc-cmds · 결과를 확인하세요' ;;
     session-ask)  printf 'cc-cmds · 답하세요' ;;
     session-turn) printf 'cc-cmds · 차례가 넘어왔습니다' ;;

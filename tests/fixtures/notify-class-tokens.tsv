@@ -18,7 +18,7 @@ answer-run	cc-cmds · 답할 것이 생겼습니다	cc-cmds-autopilot-<RUN>-답	
 overflow	cc-cmds · 답할 것이 더 있습니다	cc-cmds-autopilot-<RUN>-대기	replace
 hands	cc-cmds · 직접 손대세요	cc-cmds-autopilot-<RUN>-<KEY>	stack
 resume	cc-cmds · 세션으로 돌아가세요	cc-cmds-autopilot-<RUN>	replace
-rekick	cc-cmds · 새 런을 여세요	cc-cmds-autopilot-<RUN>	replace
+rekick	cc-cmds · 재킥오프	cc-cmds-autopilot-<RUN>	replace
 ended	cc-cmds · 결과를 확인하세요	cc-cmds-autopilot-<RUN>	replace
 session-ask	cc-cmds · 답하세요	cc-cmds-session-<SESSION>	replace
 session-turn	cc-cmds · 차례가 넘어왔습니다	cc-cmds-session-<SESSION>	replace

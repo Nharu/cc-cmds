@@ -161,6 +161,62 @@ done
 [ -n "$RUN_DIR" ] || { printf 'watch: --run-dir 는 필수입니다\n' >&2; exit 2; }
 [ -n "$LEDGER" ]  || { printf 'watch: --ledger 는 필수입니다\n' >&2; exit 2; }
 
+# THE SUCCESSOR VERDICT IS WAITED FOR, ONCE, AT THE END. A run whose manifest
+# carries a `재킥오프` row is judged by the successor sweep after it ends, so the
+# notice that used to tell a person to open a new run would now tell them to do
+# what the machine is about to do. This many seconds is how long the terminal
+# arm waits for the sweep's outcome before it says the verdict is not in yet.
+# The environment variable is a test seam.
+readonly WATCH_REKICK_WAIT="${WATCH_REKICK_WAIT_SECONDS:-1800}"
+WATCH_PACE_ROOT="${RUN_PACE_ROOT:-${FLEET_PACE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace}}"
+
+watch_rekick_manifest() {
+  # The run's manifest: the one the end site's candidate marker names, else the
+  # one beside the ledger under the run id.
+  local m
+  m=$(sed -n 's/^매니페스트=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null | sed -n '1p')
+  [ -n "$m" ] || m="$(dirname "$LEDGER")/$(basename "$RUN_DIR").plan.md"
+  printf '%s' "$m"
+}
+watch_has_rekick_row() { grep -qE '^- `재킥오프`' "$(watch_rekick_manifest)" 2>/dev/null; }
+watch_completed_normally() {
+  # A normal completion opens no successor, so there is no outcome to wait for.
+  [ "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null | sed -n '1p')" = "해당없음" ] \
+    && [ -n "$( { grep -E '^- `자율 승인` \| ' "$LEDGER" 2>/dev/null || true; } | grep -F ' 결정=종료 ' | grep -F ' 종료 부류=완료 ' || true)" ]
+}
+watch_rekick_text() {
+  # watch_rekick_text <outcome line> — the sentence for one sweep outcome.
+  local tab res why
+  tab=$(printf '\t'); res="${1%%"$tab"*}"; why="${1#*"$tab"}"
+  case "$res" in
+    열림)        printf '후속 런 %s 를 열었습니다' "$why" ;;
+    '승인 대기') printf '재인가 승인을 기다립니다 — 좌석에서 닫으세요' ;;
+    '커밋 대기') printf '이력에 없는 설정 변경 — 커밋하거나 되돌리세요' ;;
+    *)           printf '재킥오프하지 않았습니다 — %s' "$why" ;;
+  esac
+}
+watch_rekick_outcome_notice() {
+  # Wait for this run's outcome up to WATCH_REKICK_WAIT seconds and raise one
+  # notice with it, or one saying it has not come. Its own marker, so a watcher
+  # restarted on the same run does not say it twice.
+  local f oc="" waited=0 step
+  [ ! -f "$RUN_DIR/watch.announced-rekick" ] || return 0
+  : > "$RUN_DIR/watch.announced-rekick" 2>/dev/null || true
+  f="$WATCH_PACE_ROOT/rekick/$(basename "$RUN_DIR")/outcome"
+  step="${INTERVAL%.*}"; [ "${step:-0}" -ge 1 ] 2>/dev/null || step=1
+  while :; do
+    oc=$(sed -n '1p' "$f" 2>/dev/null || true)
+    [ -z "$oc" ] || break
+    [ "$waited" -lt "$WATCH_REKICK_WAIT" ] || break
+    sleep "$step"; waited=$((waited + step))
+  done
+  if [ -n "$oc" ]; then
+    cc_notify_fire rekick "$(watch_rekick_text "$oc")" || true
+  else
+    cc_notify_fire rekick "재킥오프 판정이 아직 없습니다 — 아침 보고에서 결과를 확인하세요" || true
+  fi
+}
+
 # THE HOP, AND IT IS AHEAD OF EVERY WRITE. `watch.pid`, `watch.state`,
 # `watch.heartbeat` and the single-holder record all land below this line: `exec`
 # preserves the pid and the start-time fingerprint but drops EXIT traps, so a
@@ -1063,9 +1119,15 @@ pass() {
       # The gate refuses to resolve this one, so it is not a thing a person can
       # put their hands on — it takes the per-run replace slot, and the title
       # names the only action that is actually available, which is to open a new
-      # run rather than to touch this one.
-      cc_notify_fire rekick \
-        "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
+      # run rather than to touch this one. With a `재킥오프` row that action is
+      # the successor sweep's, so the notice says the run ended and waits on
+      # nothing: this arm runs inside a pass.
+      if watch_has_rekick_row; then
+        cc_notify_fire rekick "이 런은 끝났습니다 — 재킥오프 판정을 기다립니다" || true
+      else
+        cc_notify_fire rekick \
+          "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
+      fi
     else
       cc_notify_fire hands \
         "런이 정박했습니다 — 아침 보고서의 보류 큐를 보세요 ($reason)" "run-$slug" || true
@@ -1252,7 +1314,16 @@ while :; do
       # ITS OWN MARKER, never the terminal claim. Sharing would let whichever
       # fired first silence the other, and a silenced arm cannot be told apart in
       # the log from one that fired exactly once.
-      if [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" != "0" ] \
+      #
+      # A RUN WITH A `재킥오프` ROW GETS THE SWEEP'S OUTCOME INSTEAD, whether or
+      # not a block is left: what comes next is the successor verdict, not a
+      # person's new run. A normal completion has no verdict to wait for.
+      if watch_has_rekick_row; then
+        if ! watch_completed_normally; then
+          wait_ended_fired
+          watch_rekick_outcome_notice
+        fi
+      elif [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" != "0" ] \
          && [ ! -f "$RUN_DIR/watch.announced-loop-exit" ]; then
         : > "$RUN_DIR/watch.announced-loop-exit"
         wait_ended_fired
