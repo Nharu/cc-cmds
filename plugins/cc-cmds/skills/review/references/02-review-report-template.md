@@ -251,12 +251,12 @@ Written only by `review-unattended --recheck`. After `핵심 요약` and before 
 ## 상한 사이클 재확인
 
 - **[category]** `파일:라인` (상한 사이클 N, P1-2) — 원 서술 한 문장
-    - **수정 기록**: 수정됨 | 수정 불가 — <사유> | 없음
+    - **수정 기록**: 수정됨 | 수정 불가 — <사유> | 재구현 | 없음
     - **판정**: 해결됨 | 미해결
     - **근거**: <수정 위치와 내용, 또는 결함이 남아 있음을 확인한 근거>
 ```
 
-`수정 기록` copies the item's fix record value, or `없음` when the record or its line is missing — an item with no line is judged from the code like any other. The entries number exactly the cap report's P0 + P1. A verdict left unsettled after reassignment, or contested with no `## 자율 승인 기록` row settling it, is `미해결` with `**근거**: 이번 사이클에서 판정이 확정되지 않았습니다 (누락)` or `(충돌)`.
+`수정 기록` copies the item's fix record value, or `없음` when the record or its line is missing — an item with no line is judged from the code like any other. A re-check after a re-implementation has no fix record — the implementation stage writes none — and every entry there reads `재구현`; the items are judged from the code the same way. The entries number exactly the cap report's P0 + P1. A verdict left unsettled after reassignment, or contested with no `## 자율 승인 기록` row settling it, is `미해결` with `**근거**: 이번 사이클에서 판정이 확정되지 않았습니다 (누락)` or `(충돌)`.
 
 **One finding, one entry.** When the delta basis report is the cap report itself, an item here has no `## 기준 사이클 재판정` entry of its own; that section then holds only basis items that are not cap items, or its single `없음` line. A new finding that is the same defect as an unresolved cap item is folded into that item.
 
@@ -266,6 +266,27 @@ Written only by `review-unattended --recheck`. After `핵심 요약` and before 
 P0 = 미해결 상한 P0 + 그 밖의 P0(기준 재판정·신규, 중복 제거 뒤)
 P1 = 미해결 상한 P1 + 그 밖의 P1(기준 재판정·신규, 중복 제거 뒤)
 ```
+
+### Defect level — `--recheck` reports only
+
+A re-check classes every finding it leaves standing — every P0, and every `**[차단]**` P1 (every P1 when the `P1 분류` line reads `미상`) — by where its fix lies, because the gate sends a design-level remainder to a re-convergence instead of another lead fix. One summary line directly after the `P1 분류` line, and one sub-bullet under each such item:
+
+```
+- **결함 수준**: 설계 N건 | 구현 N건
+```
+
+```
+    - **결함 수준**: 설계 — <구속 문면 중 바꿔야 하는 곳 한 문장>
+    - **결함 수준**: 구현 — <코드만 고치면 되는 이유 한 문장>
+```
+
+`설계` means the fix needs the design document's binding text to change; `구현` means the code can be fixed within it. 설계 + 구현 equals the number of items classed, and the sub-bullets number the same. The gate parses the summary line exactly:
+
+```
+^- \*\*결함 수준\*\*: 설계 (0|[1-9][0-9]*)건 \| 구현 (0|[1-9][0-9]*)건$
+```
+
+A missing line, a line off this form, a sum that differs from the items classed, or sub-bullets that do not match is read as `미상` — no design-level item — so the segment goes round the cheaper lead fix and the `cycle` row is never refused for it. A review that is not a re-check writes neither line.
 
 ## Recovery report — the termination-predicate interlock
 

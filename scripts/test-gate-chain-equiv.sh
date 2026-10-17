@@ -789,11 +789,12 @@ series_rows() {
       case "$c" in
         1) set -- stage-lease '파견 id=S1-impl-1.retry' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' \
                   '예약=0.2500/0.1000' '비용=0.0300/0.0080' '비용 출처=group-kind/kind' '근거=first' \
-                  '관측=usage-cache@1790000000' ;;
+                  '관측=usage-cache@1790000000' '단계=rest' '단계 출처=declared' '문턱=1.2000' ;;
         2) set -- stage-lease '파견 id=S1-impl-2' '계보=S1-impl-2' '계정=-' '레인=~' '예약=-' \
-                  '비용=-' '비용 출처=-' '근거=single-seat' '관측=-' ;;
+                  '비용=-' '비용 출처=-' '근거=single-seat' '관측=-' '단계=-' '단계 출처=-' '문턱=-' ;;
         3) set -- stage-lease '파견 id=S1-impl-3' '계보=S1-impl-3' '계정=acct-b' '레인=/lanes/b' \
-                  '예약=1.0000/0.0000' '비용=-' '비용 출처=-' '근거=resume-bound' '관측=none' ;;
+                  '예약=1.0000/0.0000' '비용=-' '비용 출처=-' '근거=resume-bound' '관측=none' \
+                  '단계=burst' '단계 출처=declared' '문턱=-' ;;
         4) set -- stage-wait '계보=S2-impl-1' '그룹=org:0123456789abcdef' '계정=-' \
                   '까지=2026-09-27T01:02:03Z' '비용=1.0000/0.0000' '비용 출처=default/default' '근거=no-room' ;;
         5) set -- stage-wait '계보=S2-impl-2' '그룹=acct:acct-a' '계정=acct-a' '까지=-' \

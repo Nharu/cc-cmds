@@ -291,10 +291,13 @@ fleet_dirs_json() {
 }
 fleet_label_ids() {
   # fleet_label_ids <inventory-json> <dirs-json> — the install-time label set,
-  # one id per line in inventory order: unattended enabled, not interactive
-  # reserved, a well-formed id, a config dir that renders safely and exists.
+  # one id per line in inventory order: unattended enabled and not interactive
+  # reserved, or enrolled for interactive-seat lending (the lending lane, for as
+  # long as the enrolment stands), and a well-formed id, a config dir that
+  # renders safely and exists.
   printf '%s' "$1" | jq -r --argjson dirs "$2" --arg re "$FLEET_ID_RE" '
-    .accounts[] | select(.unattended == "enabled" and .interactive_reserved == false
+    .accounts[] | select(((.unattended == "enabled" and .interactive_reserved == false)
+        or (.interactive_lending == "auto" and .interactive_reserved == true and .unattended == "disabled"))
       and (.id | test($re)) and .id != "sensor" and ((.config_dir | test("[|&\\\\<>]")) | not)
       and (.id as $i | any($dirs[]; . == $i))) | .id'
 }
@@ -303,10 +306,37 @@ fleet_label_violations() {
   # labelled but cannot be: a malformed id, or a config dir carrying a character
   # the plist render would read as syntax. One `id: why` line each.
   printf '%s' "$1" | jq -r --arg re "$FLEET_ID_RE" '
-    .accounts[] | select(.unattended == "enabled" and .interactive_reserved == false)
+    .accounts[] | select((.unattended == "enabled" and .interactive_reserved == false)
+        or (.interactive_lending == "auto" and .interactive_reserved == true and .unattended == "disabled"))
     | if ((.id | test($re)) | not) or .id == "sensor" then "\(.id): id 형식"
       elif (.config_dir | test("[|&\\\\<>]")) then "\(.id): config_dir 금지 문자"
       else empty end'
+}
+fleet_lend_ids() {
+  # fleet_lend_ids <inventory-json> — the ids enrolled for interactive-seat
+  # lending, as a JSON array in inventory order, by the router's own row
+  # predicate. An absent or broken inventory carries no accounts and so none.
+  printf '%s' "$1" | jq -c "$(route__jq_lib)"'
+    [(.accounts // [])[] | select(type == "object" and rt_enrolled) | .id]'
+}
+fleet_lend_lane_raw() {
+  # fleet_lend_lane_raw <lane> — rc 0 when the inventory FILE, read as it is
+  # whatever the router's check says of it, enrols <lane> for lending. It tells
+  # a lending lane under a broken inventory from any other lane, which cannot
+  # be told from `fleet_inventory_json` once it has dropped every account. A
+  # file that does not parse enrols nobody.
+  local f
+  f=$(fleet_inventory_path) || return 1
+  [ -r "$f" ] || return 1
+  jq -e --arg i "$1" "$(route__jq_lib)"'
+    any((.accounts? // [])[]?; type == "object" and .id == $i and rt_enrolled)' "$f" >/dev/null 2>&1
+}
+fleet_lend_home() {
+  # fleet_lend_home <inventory-json> <dir> — rc 0 when <dir>, one trailing `/`
+  # aside, is the config dir of a row enrolled for lending.
+  printf '%s' "$1" | jq -e --arg d "$2" "$(route__jq_lib)"'
+    any((.accounts // [])[]; type == "object" and rt_enrolled
+        and ((.config_dir | tostring | if endswith("/") then .[0:-1] else . end) == $d))' >/dev/null 2>&1
 }
 fleet_state_read() {
   # fleet_state_read [<max-age>] — the published state, printed only when it
@@ -392,31 +422,45 @@ def fl_win($c; $file; $id; $w; $skew; $pct):
 # interactive reserved, a config dir that renders — so an account that left
 # `enabled` after install reads `not-enabled`, not `not-labelled`. The router
 # part is `rt_new_ok` spelled out reason by reason.
+#
+# A row enrolled for lending is reserved and disabled for unattended work by
+# definition, so neither of those reads `not-labelled`, `not-enabled` or
+# `group-reserved` on it. What closes it is the router's lending admission,
+# named by its cause: the 7-day ceiling, the 5h cap, or anything else that
+# keeps lending shut.
+def fl_lend_reason($why):
+  if $why == "ceiling" then "lend-ceiling"
+  elif $why == "five-hour-cap" then "lend-cap"
+  else "lending-closed" end;
 def fl_reason($p; $a; $dirs; $re):
   rt_av($p; $a.id) as $av
-  | if (($a.id | test($re)) | not) or $a.id == "sensor" or $a.interactive_reserved != false
+  | ($a | rt_enrolled) as $lend
+  | if (($a.id | test($re)) | not) or $a.id == "sensor" or (($lend | not) and $a.interactive_reserved != false)
        or ($a.config_dir | test("[|&\\\\<>]")) then "not-labelled"
-    elif $a.unattended != "enabled" then "not-enabled"
+    elif ($lend | not) and $a.unattended != "enabled" then "not-enabled"
     elif (any($dirs[]; . == $a.id) | not) then "no-config-dir"
     elif $av == null then "inventory-broken"
-    elif $av.group_reserved then "group-reserved"
+    elif ($lend | not) and $av.group_reserved then "group-reserved"
     elif $av.mismatch then "mismatch"
     elif $av.login_bad then "login"
-    elif ($av.borrowed // null) != null then "borrowed"
+    elif ($lend | not) and ($av.borrowed // null) != null then "borrowed"
     elif $av.class == "X" then "exhausted"
-    elif (rt_new_ok($av) | not) then "exhausted"
+    elif (rt_new_ok($av) | not) then (if $lend then fl_lend_reason($av.lend.why) else "exhausted" end)
     else null end;
 
 # The allocation fields say what this account's usage is, not whether the fleet
 # may launch on it: they are carried whenever the usage row is confirmed to be
 # this account's, eligible or not, and null otherwise — a reader that gets null
 # reads "unknown" and closes. `session_pct` is the reset-adjusted basis point
-# over 100, never a second rounding of it.
-def fl_alloc($c; $file; $w5; $w7; $why):
+# over 100, never a second rounding of it. `$ceil` is the published lending
+# ceiling of a row enrolled for lending and null on every other row: what such
+# a row has left this week is what remains under the ceiling, the same figure
+# the router ranks its lending tier by.
+def fl_alloc($c; $file; $w5; $w7; $why; $ceil):
   if $file == "ok" and ($w5.result | IN("pass", "over")) and ((($why // "") | IN("mismatch", "login", "inventory-broken")) | not)
   then
     (if ($w7.result | IN("pass", "over")) then
-       ([100 - ($w7.ueff / 100), 0] | max) as $rem
+       (if $ceil != null then [($ceil - $w7.ueff) / 100, 0] else [100 - ($w7.ueff / 100), 0] end | max) as $rem
        | if $w7.reset then {allow: (100 / 168), ttr: null}
          elif (($w7.resets_at | type) == "number") and ($w7.resets_at > $c.now) then
            (($w7.resets_at - $c.now) / 3600) as $ttr | {allow: ([$rem / $ttr, 100 / 168] | min), ttr: $ttr}
@@ -428,28 +472,38 @@ def fl_alloc($c; $file; $w5; $w7; $why):
   else {allow: null, session_pct: null, ttr: null, horizon_h: null} end;
 
 # One seat row per inventory account, with the internal fields the ladder needs
-# (`w5`, `group`, `horizon_h`) dropped before publishing.
+# (`w5`, `group`, `horizon_h`, `lend`) dropped before publishing. A lending row
+# with no numeric ceiling in its decision has nothing to lend, so its ceiling
+# reads as zero rather than as the whole week.
 def fl_seat_row($c; $p; $file; $a; $dirs; $re; $skew; $pct):
   fl_win($c; $file; $a.id; "five_hour"; $skew; $pct) as $w5
   | fl_win($c; $file; $a.id; "seven_day"; $skew; $pct) as $w7
+  | ($a | rt_enrolled) as $lend
   | (if $c.inventory.state == "valid" then fl_reason($p; $a; $dirs; $re) else "inventory-broken" end) as $why
-  | fl_alloc($c; $file; $w5; $w7; $why) as $al
+  | (if $lend then ((rt_av($p; $a.id).lend.dec.ceiling_bp? // null) | if type == "number" then . else 0 end)
+     else null end) as $ceil
+  | fl_alloc($c; $file; $w5; $w7; $why; $ceil) as $al
   | {id: $a.id, home: $a.config_dir,
      org: ([rt_uaccts($c)[] | select(.id == $a.id)] | .[0].org_hash // null),
      eligible: ($why == null), reason: $why,
      allow: $al.allow, session_pct: $al.session_pct, ttr: $al.ttr, horizon_h: $al.horizon_h,
-     w5: $w5, group: rt_group_of(rt_orgs($c); $a.id)};
+     w5: $w5, group: rt_group_of(rt_orgs($c); $a.id), lend: $lend};
 JQ
 }
 fleet__lib() { route__jq_lib; fleet__jq_defs; }
 
 fleet_context() {
-  # fleet_context <now> <inventory-json> — the router context this file builds
-  # for itself: the inventory, the usage file in the router's normal form, the
-  # borrow record, an empty lease table, the router's own config (cap = the 5h
-  # ceiling in basis points) and an integer now. `route_gather_context` is not
-  # used: it leans on the driver's globals.
-  local now="$1" inv="$2" usage borrow bpath cfg
+  # fleet_context <now> <inventory-json> [<lease-table-json>] — the router
+  # context this file builds for itself: the inventory, the usage file in the
+  # router's normal form, the borrow record, a lease table, the router's own
+  # config (cap = the 5h ceiling in basis points) and an integer now.
+  # `route_gather_context` is not used: it leans on the driver's globals. The
+  # lease table is empty unless the caller passes the router's reading of the
+  # real one — only a lending lane's dispatch does, since lending admission
+  # counts the reservations of live leases and every other judgement here keeps
+  # the empty table it always had.
+  local now="$1" inv="$2" leases="${3:-}" usage borrow bpath cfg
+  [ -n "$leases" ] || leases='{"state":"valid","items":[],"corrupt":[]}'
   usage=$(route_usage_read "$USAGE_FILE" "$now" 2>/dev/null) || usage='{"state":"corrupt"}'
   [ -n "$usage" ] || usage='{"state":"corrupt"}'
   if bpath=$(route__borrow_path); then
@@ -458,9 +512,10 @@ fleet_context() {
     borrow='{"state":"corrupt"}'
   fi
   cfg=$(route__config_json "$(( FLEET_SESSION_WINDOW_PCT_MAX * 100 ))")
-  jq -cn --argjson now "$now" --argjson inv "$inv" --argjson usage "$usage" --argjson borrow "$borrow" --argjson cfg "$cfg" '
+  jq -cn --argjson now "$now" --argjson inv "$inv" --argjson usage "$usage" --argjson borrow "$borrow" --argjson cfg "$cfg" \
+     --argjson leases "$leases" '
     {now: $now, request: {}, inventory: $inv, usage: $usage, frames: [],
-     leases: {state: "valid", items: [], corrupt: []}, borrow: $borrow, config: $cfg, seat: {config_dir: null}}'
+     leases: $leases, borrow: $borrow, config: $cfg, seat: {config_dir: null}}'
 }
 fleet_jq() {
   # fleet_jq <ctx> <dirs> <program> [jq args...] — run <program> against the
@@ -488,6 +543,28 @@ fleet_reason_of() {
       | if $a == null then "not-labelled"
         else ($c | rt_prep($lschema)) as $p | fl_reason($p; $a; $dirs; $re) end
     end | . // ""' --arg id "$3" | jq -r '.'
+}
+fleet_lend_leases() {
+  # fleet_lend_leases — the router's reading of the real lease table, the same
+  # call `route_gather_context` makes. rc 1 when it cannot be read or reads as
+  # corrupt: lending admission counts what live leases reserve, and a table it
+  # cannot count is not an empty one.
+  local t
+  t=$(route__table_read "$PACE_ROOT/leases" "$(boot_epoch 2>/dev/null || true)" 2>/dev/null) || return 1
+  printf '%s' "$t" | jq -e '.state == "absent" or .state == "valid"' >/dev/null 2>&1 || return 1
+  printf '%s' "$t"
+}
+fleet_lend_driver_ctx() {
+  # fleet_lend_driver_ctx <ctx> <dirs> <lane> — <ctx> with one more live grant
+  # on <lane>: the reservation of the run's driver and shift sessions, which
+  # spend on the lane's account outside every stage lease. It is added to the
+  # table as the router has finished reading it, so liveness is not recomputed
+  # over it, and it never passes the lease-file check it would fail. Its size
+  # is one stage's default reservation from the router's own config.
+  fleet_jq "$1" "$2" '
+    $c | .leases.items = ((.leases.items // []) + [{kind: "grant", account: $id, live: true,
+      run_id: "fleet-driver", lineage: "fleet-driver", reservation_bp: rt_res($c; rt_group_of(rt_orgs($c); $id))}])' \
+    --arg id "$3"
 }
 
 fleet_scan_homes_json() {
@@ -725,6 +802,11 @@ readonly FLEET_LADDER_JQ='
   | ($tracker == "ok") as $tok
   | ($c | rt_prep($lschema)) as $p
   | [($c.inventory.accounts // [])[] | fl_seat_row($c; $p; $file; .; $dirs; $re; $skew; $pct)] as $rows
+  # A lending row goes last, the order the router ranks its lending tier in;
+  # with no row enrolled the order is the inventory order as before. Its lane is
+  # not an active lane either: the lending lane runs beside the ceiling, and a
+  # run on it must not hold the unattended lanes off 가속.
+  | ([$rows[] | select(.lend | not)] + [$rows[] | select(.lend)]) as $rows
   | (if $burn == null then {} else ($burn.homes // {}) end) as $bh
   | [$scan[] | . as $h | ($bh[$h] // null) | select(. != null)] as $scanned
   | (if $burn == null then null
@@ -735,7 +817,10 @@ readonly FLEET_LADDER_JQ='
   | (if $burn == null then null else ([$scanned[] | .last_usage_epoch | select(. != null)] | max) end) as $last
   | ($rows | map(. as $r | $r + {burn_4h: (if any($scan[]; . == $r.home) and ($bh[$r.home] != null) and ($bh[$r.home].truncated != true)
                                          then $bh[$r.home].burn_4h else null end)})) as $rows
-  | ($rows | map(select(.eligible)) | group_by(.group)
+  # A lending row stays out of the capacity as it stays out of the burn: its
+  # home is reserved, so the burn scan never reads it, and an allowance with no
+  # burn beside it would only push the brake back.
+  | ($rows | map(select(.eligible and (.lend | not))) | group_by(.group)
      | map(.[0].w5.rep as $rep
            | (([$rows[] | select(.id == $rep) | .allow] | .[0]) // ([.[] | .allow | select(. != null)] | .[0])))
      | map(select(. != null))) as $contrib
@@ -744,7 +829,7 @@ readonly FLEET_LADDER_JQ='
   | (if $tok and $bps != null
      then ([rt_uaccts($c)[] | . as $u | select(all($rows[]; .id != $u.id))
             | fl_alloc($c; $file; fl_win($c; $file; $u.id; "five_hour"; $skew; $pct);
-                       fl_win($c; $file; $u.id; "seven_day"; $skew; $pct); null) as $al
+                       fl_win($c; $file; $u.id; "seven_day"; $skew; $pct); null; null) as $al
             | select($al.allow != null and $al.allow >= $bps and ($al.session_pct // 100) < $pct)
             | {org: ($u.org_hash // null), allow: $al.allow, horizon_h: ($al.horizon_h // 0)}]
            | sort_by(-.horizon_h)
@@ -753,7 +838,7 @@ readonly FLEET_LADDER_JQ='
      else [] end) as $cands
   | ($cands | length == 0) as $cempty
   | ($census | map(select(.status == "도는중" or .status == "판정 불가"))) as $occ
-  | ([$rows[] | select(.eligible) | .id]
+  | ([$rows[] | select(.eligible and (.lend | not)) | .id]
      | map(. as $l | select(any($occ[]; .lane == $l or .lane == "unknown")))
      | length) as $active
   | (if $tok then $target else $target_degraded end) as $tgt
@@ -1058,21 +1143,24 @@ fleet_busy_live() {
     'any(.[]; .run_id == $r and (.status == "도는중" or .status == "판정 불가"))' >/dev/null 2>&1
 }
 fleet_busy_count() {
-  # fleet_busy_count <lane> <census-json> — `<all> <same-lane>` live markers.
-  # Called under the claim lock, so a dead marker (dead or reused pid, and no
-  # live row for its run) is removed here.
-  local lane="$1" census="$2" f base all=0 same=0
+  # fleet_busy_count <lane> <census-json> [<lend-ids-json>] — `<all> <same-lane>
+  # <not-lending>` live markers, the third leaving out the markers of the lanes
+  # the JSON array names. With no array it equals the first. Called under the
+  # claim lock, so a dead marker (dead or reused pid, and no live row for its
+  # run) is removed here.
+  local lane="$1" census="$2" lend="${3:-[]}" f base all=0 same=0 non=0
   for f in "$PACE_ROOT/busy"/*; do
     [ -f "$f" ] || continue
     base=${f##*/}
     if fleet_busy_live "$f" "$census"; then
       all=$(( all + 1 ))
       [ "${base%.*}" = "$lane" ] && same=$(( same + 1 ))
+      printf '%s' "$lend" | jq -e --arg l "${base%.*}" 'any(.[]; . == $l)' >/dev/null 2>&1 || non=$(( non + 1 ))
     else
       rm -f "$f"
     fi
   done
-  printf '%s %s' "$all" "$same"
+  printf '%s %s %s' "$all" "$same" "$non"
 }
 fleet_busy_write() {
   # fleet_busy_write <lane> <run-id> — this process's marker, by temp file and
@@ -1460,6 +1548,7 @@ fleet_reentry_tick() {
 fleet_dispatch() {
   local lane="$1" home state verdict head rec id line line2 clause="" detail="-" park probe rc=0 occ
   local manifest run_id run_dir wt ledger now iso inv dirs ctx why rec_dir other census busy res
+  local lend_ids lend leases b_same b_non
   command -v jq >/dev/null 2>&1 || fleet_die "jq 가 없습니다"
   # (1) THE ID. A malformed id is a usage error, not a lane: it can never have
   #     been rendered into a label.
@@ -1494,11 +1583,22 @@ fleet_dispatch() {
   #     log line and no refusal row: that is "this lane is idle", not a verdict
   #     on the head record, and a row per tick would bury every real refusal.
   #     The router part is the router's own new-run predicate over a context
-  #     this file builds.
+  #     this file builds. A lane enrolled for lending is judged over the real
+  #     lease table, and does not start when that table cannot be read or the
+  #     inventory cannot be routed: either way the router's lending checks
+  #     cannot be made.
   inv=$(fleet_inventory_json)
   dirs=$(fleet_dirs_json "$inv")
-  ctx=$(fleet_context "$now" "$inv")
-  why=$(fleet_reason_of "$ctx" "$dirs" "$lane")
+  lend_ids=$(fleet_lend_ids "$inv")
+  lend=0
+  printf '%s' "$lend_ids" | jq -e --arg l "$lane" 'any(.[]; . == $l)' >/dev/null 2>&1 && lend=1
+  leases=""; why=""
+  if [ "$lend" = 1 ]; then leases=$(fleet_lend_leases) || why=lending-unrouted; fi
+  if [ -z "$why" ]; then
+    ctx=$(fleet_context "$now" "$inv" "$leases")
+    why=$(fleet_reason_of "$ctx" "$dirs" "$lane")
+    if [ "$why" = inventory-broken ] && fleet_lend_lane_raw "$lane"; then why=lending-unrouted; fi
+  fi
   if [ -n "$why" ]; then
     fleet_log "dispatch $lane: 부적격 — $why (아무것도 띄우지 않는다)"
     return 0
@@ -1555,9 +1655,17 @@ fleet_dispatch() {
     #     no label holds, including an account that has left the label set since
     #     install (draining, disabled, config dir gone): park, because no lane
     #     would ever take it. The record is never rewritten here.
+    #     A RUN RECORDED ON A LENDING HOME WITHOUT A LENDING PIN is a run a
+    #     person supervised on that seat. It does not carry on as a lent run,
+    #     so it parks on every lane, the lending lane included; a run this file
+    #     started on the lending lane carries the pin and goes by the rule
+    #     above. A head with neither record is a new run any lane may take.
     rec_dir=$(sed -n '1p' "$run_dir/config-dir" 2>/dev/null || true)
     rec_dir=${rec_dir%/}
-    if [ -n "$rec_dir" ] && [ "$rec_dir" != "${home%/}" ]; then
+    if [ -n "$rec_dir" ] && [ -z "$(sed -n '1p' "$run_dir/fleet-lane" 2>/dev/null || true)" ] \
+       && fleet_lend_home "$inv" "$rec_dir"; then
+      park=lane-record
+    elif [ -n "$rec_dir" ] && [ "$rec_dir" != "${home%/}" ]; then
       other=$(fleet_label_homes_json "$inv" "$dirs" | jq -r --arg d "$rec_dir" '[.[] | select(.home == $d) | .id] | .[0] // empty')
       if [ -n "$other" ]; then clause=lane; detail=lane-mismatch
       else park=lane-record; fi
@@ -1579,17 +1687,23 @@ fleet_dispatch() {
   if [ -z "$clause" ]; then
     # (6) ONE probe for this dispatch; an enumeration failure closes the lane.
     #     Then the markers: a live marker of this lane, or as many live markers
-    #     as the fleet ceiling, refuses.
+    #     as the fleet ceiling, refuses. The ceiling counts the markers of the
+    #     lanes not enrolled for lending, and a lending lane is not held to it:
+    #     its own marker and its occupancy below still hold it to one run, and
+    #     what it may spend is bounded by the router's lending checks.
     probe=$(LANE_PROBE_HORIZON_SECONDS="$FLEET_LANE_HORIZON_SECONDS" bash "$LANE_PROBE" 2>/dev/null) || rc=$?
     if [ "$rc" != "0" ]; then
       clause=lane; detail=probe-failed
     else
       census=$(printf '%s\n' "$probe" | fleet_census_parse "$inv")
       [ -n "$census" ] || census='[]'
-      busy=$(fleet_busy_count "$lane" "$census")
-      if [ "${busy#* }" -gt 0 ]; then
+      busy=$(fleet_busy_count "$lane" "$census" "$lend_ids")
+      read -r _ b_same b_non <<EOF
+$busy
+EOF
+      if [ "$b_same" -gt 0 ]; then
         clause=lane; detail=occupied
-      elif [ "${busy%% *}" -ge "$FLEET_TARGET_CONCURRENCY" ]; then
+      elif [ "$lend" != 1 ] && [ "$b_non" -ge "$FLEET_TARGET_CONCURRENCY" ]; then
         clause=lane; detail=ceiling
       else
         # (7) the same probe output: this lane's own rows, plus every row no
@@ -1604,8 +1718,16 @@ fleet_dispatch() {
     # (8) the 5h window of this account's group, judged now from usage.json.
     #     Absent, stale or unreadable input blocks. A mismatch or a bad login
     #     here means the file was republished since step 2: the same answer as
-    #     an ineligible lane, reached inside the lock.
-    ctx=$(fleet_context "$(fleet_now)" "$inv")
+    #     an ineligible lane, reached inside the lock. A lending lane reads the
+    #     lease table again here, and then asks the router's lending admission
+    #     once more with the run's driver reservation counted: a refusal there
+    #     is the same answer as an ineligible lane too.
+    if [ "$lend" = 1 ] && ! leases=$(fleet_lend_leases); then
+      fleet_backlog_unlock
+      fleet_log "dispatch $lane: 부적격 — lending-unrouted (임대 표를 읽을 수 없다; 아무것도 띄우지 않는다)"
+      return 0
+    fi
+    ctx=$(fleet_context "$(fleet_now)" "$inv" "$leases")
     res=$(fleet_cap_eval "$ctx" "$dirs" "$lane" | jq -r '.result')
     case "$res" in
       pass) ;;
@@ -1615,6 +1737,17 @@ fleet_dispatch() {
         return 0 ;;
       *) clause=window; detail="$res" ;;
     esac
+    if [ -z "$clause" ] && [ "$lend" = 1 ]; then
+      why=lending-closed
+      if ctx=$(fleet_lend_driver_ctx "$ctx" "$dirs" "$lane"); then
+        why=$(fleet_reason_of "$ctx" "$dirs" "$lane") || why=lending-closed
+      fi
+      if [ -n "$why" ]; then
+        fleet_backlog_unlock
+        fleet_log "dispatch $lane: 부적격 — $why (드라이버 예약을 센 대여 입장; 아무것도 띄우지 않는다)"
+        return 0
+      fi
+    fi
   fi
   if [ -z "$clause" ]; then
     # (9) the fleet arm is not braking: capacity >= burn OR candidates exist;
@@ -1688,6 +1821,16 @@ fleet_dispatch() {
     return 0
   fi
   fleet_start_watch "$home" "$FLEET_DIR" "$manifest" "$run_dir" "$ledger" "" snapped
+  # THE LENDING PIN, ON THIS PATH ONLY. The router reads it as the run's seat
+  # and admits the run on the lending account alone. It is written here and
+  # not in `fleet_start_watch`, which a boot-time re-entry also calls on a run
+  # a person supervised. A run that cannot carry the pin is not started: the
+  # head goes back to pending for a later tick.
+  if [ "$lend" = 1 ] && ! printf '%s\n' "$lane" | fleet_write_atomic "$run_dir/fleet-lane"; then
+    fleet_backlog_rewrite_locked "$line" "$rec" || fleet_log "dispatch $lane: $id 의 pending 되돌림이 원본 줄을 찾지 못했다 (rc=$?)"
+    fleet_log "dispatch $lane: $id 의 대여 좌석 고정 기록을 쓰지 못했다 — 기동하지 않는다"
+    return 0
+  fi
   fleet_log "dispatch $lane: $id 기동 — run $run_id (매니페스트 $manifest)"
   CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/run.sh" --manifest "$manifest" || rc=$?
   line2=$(printf '%s' "$line" | jq -c '.status = "done"')
@@ -1838,7 +1981,7 @@ fleet_agent_uninstall() {
   done
 }
 fleet_agent_status() {
-  local label now hb st age inv orphans f n_live=0 id
+  local label now hb st age inv orphans f n_live=0 id lend_ids n_lend
   now=$(fleet_now)
   hb=$(fleet_iso_epoch "$(sed -n '1p' "$PACE_ROOT/sensor.heartbeat" 2>/dev/null || true)")
   if [ -n "$hb" ]; then printf '하트비트  : %s초 전\n' "$(( now - hb ))"; else printf '하트비트  : 없음\n'; fi
@@ -1879,14 +2022,26 @@ fleet_agent_status() {
   if [ -n "$st" ] && [ "$(printf '%s' "$st" | jq -r '[(.seats // [])[] | select(.eligible == true)] | length')" = "0" ]; then
     printf '경고: 적격 레인이 없다 — 이 틱에는 아무 레인도 띄우지 않는다\n'
   fi
+  # The ceiling line counts the lanes it binds. A lane enrolled for lending
+  # runs beside it, bounded by its occupancy instead, and gets its own line.
+  lend_ids=$(fleet_lend_ids "$inv")
   for f in "$PACE_ROOT/busy"/*; do
     [ -f "$f" ] || continue
     if fleet_busy_live "$f" '[]'; then
-      n_live=$(( n_live + 1 ))
+      id=${f##*/}; id=${id%.*}
+      printf '%s' "$lend_ids" | jq -e --arg l "$id" 'any(.[]; . == $l)' >/dev/null 2>&1 || n_live=$(( n_live + 1 ))
       printf '실행 표지: %s (런 %s)\n' "${f##*/}" "$(sed -n '3p' "$f")"
     fi
   done
   printf '살아 있는 실행 표지: %s / 상한 %s\n' "$n_live" "$FLEET_TARGET_CONCURRENCY"
+  for id in $(printf '%s' "$lend_ids" | jq -r '.[]'); do
+    n_lend=0
+    for f in "$PACE_ROOT/busy/$id".*; do
+      [ -f "$f" ] || continue
+      fleet_busy_live "$f" '[]' && n_lend=$(( n_lend + 1 ))
+    done
+    printf '%s 레인 살아 있는 실행 표지: %s / 점유 상한 %s\n' "$id" "$n_lend" "$FLEET_LANE_OCCUPANCY_MAX"
+  done
 }
 
 main() {
