@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.84.0] - 2026-10-17
+## [2.86.0] - 2026-10-17
 
 라우터는 언제나 남은 양이 큰 계정부터 부여해, 사람이 쓰지 않는 쉼 시간에도 무인 런이 다음 몰아 쓰기 때 쓸 주간 한도를 고르게 깎았다. 이 릴리스부터 라우터가 cc-lane 이 쓰는 운용 단계 기록을 읽고, 쉼일 때는 다음 몰아 쓰기에 필요한 주간 여유(문턱)보다 이미 덜 남은 계정부터 써서 여유가 큰 계정을 남긴다. 몰아 쓰기 중의 순서는 그대로다.
 
