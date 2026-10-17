@@ -44,6 +44,12 @@ export CC_CMDS_DASHBOARD
 # fixtures above it stay pending the way they are written.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+# The fixture runs open with this repository's gate and take a version pin.
+# Without the sync seam that pin fetches the real `origin` and, on any branch
+# but the base, pins the remote tip — so every snapshot assertion would test
+# the base branch's gate instead of the checkout under test.
+CC_GATE_PIN_SYNC_DISABLE=1
+export CC_GATE_PIN_SYNC_DISABLE
 
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
