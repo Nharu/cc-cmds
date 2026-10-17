@@ -30632,6 +30632,8 @@ EOF
       case "$unmet" in
         *"1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 "*)
           warn "the design is blocked, so this run can never produce a segment — settle the termination clauses that lean on the document as \`불가능\` (a clause held by a judgment approval the design stage opened: as \`보류\` naming that approval id), and this proposal is recorded as an invalidated termination" ;;
+        *"1 세그먼트가 하나도 없고 감사 단계가 더는 파견되지 않습니다 "*)
+          warn "the audit this plan opens on will not be dispatched again, so this run can never produce a segment — settle the termination clauses that lean on the audit or the segments as \`불가능\`, and this proposal is recorded as an invalidated termination" ;;
         *"1 베이스 분할이 더는 파견되지 않습니다 "*)
           warn "the base audit or split will not be dispatched again, so this run can never complete its split — settle the termination clauses that lean on the split as \`불가능\`, and this proposal is recorded as an invalidated termination" ;;
       esac
@@ -35868,9 +35870,14 @@ gate_done_disposition() {
   # A base run's closed-split line is dropped on the same footing: its audit or
   # split will not be dispatched again, so the split can never complete. Its
   # unfinished-split line is not dropped.
+  #
+  # So is the closed-audit line of a single run whose plan opens on the audit:
+  # with no design step, an audit that will not be dispatched again leaves the
+  # run no road to a segment. Its unfinished-audit lines are not dropped.
   other=$(printf '%s' "$unmet" \
     | grep -v -e '^5 런 스코프 blocked 가 해소 불가입니다 ' \
               -e '^1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 ' \
+              -e '^1 세그먼트가 하나도 없고 감사 단계가 더는 파견되지 않습니다 ' \
               -e '^1 베이스 분할이 더는 파견되지 않습니다 ' \
               -e '^10 종료 절 [^ ]* 불가능 정산$' || true)
   [ -n "$other" ] || { printf '무효화'; return 0; }
@@ -35903,7 +35910,8 @@ gate_unmet_numbers() {
 
 gate_base_step_closed() {
   # gate_base_step_closed <step id> <row kind> — prints why a base run's audit or
-  # split step will not be dispatched again and returns 0, or returns 1.
+  # split step will not be dispatched again and returns 0, or returns 1. The
+  # audit arm of a single run with no design step reads its audit by this too.
   #
   # The depth is the design step's, by the same counter: `공허한 성공` or a crash
   # buys one fresh attempt and two close the step; `외부 종료` and a usage-limit
@@ -35929,6 +35937,49 @@ gate_base_step_closed() {
     return 0
   fi
   printf '종단 부류 %s' "${last:-미상}"
+}
+
+gate_audit_first_unmet() {
+  # gate_audit_first_unmet <audit step id> — condition 1's arm for a single run
+  # whose plan has no design step and opens on the audit (see the caller).
+  # Prints at most one line.
+  #
+  # An audit that ended `정상 완료` is the run's work done when the plan has no
+  # step after it, so the condition holds and condition 10 is left to measure
+  # the clauses the person authorized. When an implement step follows, the
+  # line names it, and its head is not one `gate_done_disposition` drops: the
+  # run is unfinished, not void. An audit that will not be dispatched again —
+  # by `gate_base_step_closed`, the same depth the base arm reads — prints the
+  # line with its own fixed head that the disposition drops, so the run may
+  # record its end as invalidated. A re-convergence on the audit's key that
+  # came after its last audit row is waiting on a fresh audit, so that state
+  # is not read as closed.
+  local astep="$1" arows alast lastrow istep why
+  arows=$(gate_audit_result_rows_of "$astep")
+  if [ -z "$arows" ]; then
+    printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 아직 끝나지 않았습니다\n' "$astep"
+    return 0
+  fi
+  lastrow=$( { gate_stage_result_rows_of "$astep" || true; } \
+             | { grep -F -- '- `stage-result`' || true; } | tail -1)
+  case "$lastrow" in
+    *'| 종류=reconverge '*)
+      printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 재수렴 뒤 새 감사를 기다립니다\n' "$astep"
+      return 0 ;;
+  esac
+  alast=$(gate_row_field "$(printf '%s\n' "$arows" | tail -1)" '종단 부류')
+  if [ "$alast" = '정상 완료' ]; then
+    istep=$(manifest_plan_json 2>/dev/null \
+              | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id // empty | select(. != "")][0] // empty' 2>/dev/null \
+              || true)
+    [ -z "$istep" ] || printf '1 감사가 끝났으나 다음 단계(%s)가 아직 파견되지 않았습니다\n' "$istep"
+    return 0
+  fi
+  if why=$(gate_base_step_closed "$astep" audit); then
+    printf '1 세그먼트가 하나도 없고 감사 단계가 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$astep" "$why"
+  else
+    printf '1 세그먼트가 하나도 없습니다 — 감사 단계(%s)가 아직 끝나지 않았습니다 (종단 부류 %s)\n' "$astep" "${alast:-미상}"
+  fi
 }
 
 gate_base_split_unmet() {
@@ -36046,7 +36097,7 @@ gate_done_conditions() {
   # its head is not one `gate_done_disposition` drops: the run is unfinished,
   # not void. An audit that ran and ended any other way is not named here; the
   # router stops on it, and the old line then lets the run record its end.
-  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext
+  local n_seg dstep dwhy dname drows dlast dlastrow dfresh dnext astep
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
     dwhy=""; dnext=""
@@ -36139,6 +36190,14 @@ gate_done_conditions() {
       # for the current document, closed when the audit or the split will not be
       # dispatched again, and otherwise not finished yet.
       gate_base_split_unmet
+    elif [ -z "$dstep" ] && astep=$(gate_run_scope_step audit); then
+      # A SINGLE RUN WHOSE PLAN OPENS ON THE AUDIT. Its document was frozen
+      # before the run, so there is no design step for the arm above to read,
+      # and the audit is the step that decides whether anything can follow.
+      # Without this arm the plain line below stood whatever the audit did: an
+      # audit-only plan could not end after its audit finished, and a plan whose
+      # audit parked before any segment could not even end as invalidated.
+      gate_audit_first_unmet "$astep"
     else
       printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
     fi

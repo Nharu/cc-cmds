@@ -2343,6 +2343,12 @@ STUBEOF
     au15_rows "$1" "| 세그먼트=- | 스테이지=$2 | 종류=$3 |" | tail -1 \
       | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//'
   }
+  au15_snap() {  # au15_snap <manifest> — that manifest's snapshot JSON
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$1" 2>/dev/null )
+  }
+  au15_c1() {  # au15_c1 <manifest> — condition 1's unmet line, or nothing when it holds
+    au15_snap "$1" | jq -r '.unmet_conditions[]? | select(startswith("1 "))'
+  }
   au15_freeze() {  # au15_freeze <설계 문서> — a frozen document at the path
     printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n' > "$WT/$1"
   }
@@ -11003,7 +11009,7 @@ check "15d-2: 빠진 표제가 달라진 공허한 성공은 새 사유라 계�
 
 # ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
-# --- section: 15e | group: base | covers: act, plan, wait, supervise | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다 ---
+# --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
 # The audit is the second run-scope step. It reads the frozen document rather
 # than building a segment, so the router dispatches it with `--segment -` as it
@@ -11201,6 +11207,8 @@ esac
 au15_freeze "$DOC15EN"
 plan15en_audit "$M15EN"
 check "15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다" "$rc" "0"
+check "15e: 감사 전의 설계 단계 없는 계획은 조건 1 이 감사 단계를 기다린다" \
+  "$(au15_c1 "$M15EN")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 아직 끝나지 않았습니다"
 au15_dispatch R15EN "$STUB_AU_AUDIT" audit "$audit15en"
 check "15e: 설계 단계가 없는 계획의 감사 파견이 기동한다" "$rc" "0"
 au15_wait R15EN A1
@@ -11208,6 +11216,15 @@ check "15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · �
   "$(au15_rows R15EN '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | grep -c . || true)/$(au15_class R15EN A1 audit)" "1/정상 완료"
 check "15e: 설계 단계가 없는 계획의 감사 파견 뒤에도 segment 행이 생기지 않는다" \
   "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15EN.md" 2>/dev/null || true; } | grep -c . || true)" "0"
+# Condition 1 reads that audit. With an implement step after it the run is
+# unfinished and the line names the step; the same ledger under a plan that
+# stops at the audit has done its work, so the condition holds.
+check "15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다" \
+  "$(au15_c1 "$M15EN")" "1 감사가 끝났으나 다음 단계(S2)가 아직 파견되지 않았습니다"
+check "15e: 그 줄은 처분이 떨구지 않는다" "$(au15_snap "$M15EN" | jq -r .disposition)" "미충족"
+M15EO="$WORK/plan15e-auditonly.md"
+write15c "$M15EO" '{ "design_required": false, "steps": [ { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": [] } ] }' "$DOC15EN" R15EN
+check "15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다" "$(au15_c1 "$M15EO")" ""
 ( cd "$WT" && git worktree remove --force "$WT-run-R15EN-A1" ) >/dev/null 2>&1 || true
 ( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 
@@ -11227,7 +11244,7 @@ rm -f "$WT/$DOC15EN"
 
 # ---------------------------------------------------------------------------
 # 15e-2. An adopted composed requirement re-converges on the run-scope audit's key
-# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다 ---
+# --- section: 15e-2 | group: base | covers: act, plan, snapshot, supervise, done-conditions | anchors: 15e-2: 감사 행 전의 - reconverge 는 여전히 거부된다, 15e-2: 의도된 park 감사 뒤 - reconverge 파견의 plan 이 통과한다, 15e-2: 다른 문서 인자를 단 - reconverge 는 거부된다, 15e-2: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 15e-2: 재수렴 행이 중단 답을 소비한다, 15e-2: 재수렴 뒤 계획은 새 감사 전까지 거부된다, 15e-2: 재수렴 직후의 두 번째 - reconverge 는 거부된다, 15e-2: 재수렴 뒤 새 감사 파견의 plan 이 통과한다, 15e-2: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다, 15e-2: 설계 단계 없는 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다, 15e-2: 그 줄만 남으면 처분은 무효화다, 15e-2: 재수렴 뒤의 감사 단계는 닫힌 것으로 읽히지 않는다 ---
 #
 # An audit with no segment asks a person whether to adopt the requirement its
 # findings compose, and parks on purpose. When the person adopts it, the router
@@ -11284,6 +11301,19 @@ esac
 au15_dispatch R15ER "$STUB_AU_PARK" audit "$audit15er"
 au15_wait R15ER A1
 check "15e-2 픽스처의 감사가 의도된 park 다 (아래가 공허하지 않다)" "$(au15_class R15ER A1 audit)" "의도된 park"
+case "$(au15_c1 "$M15ER")" in
+  "1 세그먼트가 하나도 없고 감사 단계가 더는 파견되지 않습니다 — A1 · 종단 부류 의도된 park · "*"무효로 끝납니다")
+    ok "15e-2: 설계 단계 없는 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다" ;;
+  *) bad "15e-2: 설계 단계 없는 계획의 멈춘 감사는 조건 1 이 무효 종료 문면을 낸다" "$(au15_c1 "$M15ER")" ;;
+esac
+# The gate's own token function, entered the way 16b's `disp_of` enters it. The
+# line is read first: inside the entered seam the snapshot no longer runs under
+# this section's state home.
+er15_c1=$(au15_c1 "$M15ER")
+check "15e-2: 그 줄만 남으면 처분은 무효화다" \
+  "$( ( gate_seam_init >/dev/null 2>&1 || exit 1
+        gate_seam_enter
+        gate_done_disposition "$er15_c1" ) )" "무효화"
 gateL act --manifest "$M15ER" --kind halt-answer --target infra --segment A1 --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(au15_H R15ER)" --rationale x \
       -- "중단 기록=$RD15ER/halt/A1#1.md" '선택지=adopt as a requirement' '답한 주체=사람' '근거=사람이 요구로 채택'
@@ -11311,6 +11341,8 @@ check "15e-2: 단계 id 를 세그먼트로 쓴 재수렴 행은 없다" \
 check "15e-2: 재수렴이 감사 단계의 둘째 시도 번호를 쓴다" \
   "$( [ -s "$RD15ER/log/A1#2.json" ] && printf A1#2 )" "A1#2"
 check "15e-2: 재수렴 행이 중단 답을 소비한다" "$(er15_halts)" '[]'
+check "15e-2: 재수렴 뒤의 감사 단계는 닫힌 것으로 읽히지 않는다" \
+  "$(au15_c1 "$M15ER")" "1 세그먼트가 하나도 없습니다 — 감사 단계(A1)가 재수렴 뒤 새 감사를 기다립니다"
 check "15e-2: 재수렴 뒤에도 원장에 segment 행이 생기지 않는다" \
   "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15ER.md" 2>/dev/null || true; } | grep -c . || true)" "0"
 
