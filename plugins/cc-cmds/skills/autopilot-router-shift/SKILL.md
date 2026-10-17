@@ -320,12 +320,12 @@ The argv is the fixed token `적용`; the gate runs the frozen apply command its
 
 #### Branching on `다음` after a review
 
-Once a segment has a `cycle` row and has not merged, the snapshot's `review_next[]` carries one element for it: `세그먼트`, `다음`, and the last cycle's `사이클`, `리뷰 HEAD` and `리포트 경로` (absolute). **`다음` is the only value you branch on after a review** — not the counts in `cycles[]`, not `review_carry`, which carries the gate's cycle cap `REIMPL_CYCLE_CAP` for display only. The gate derives it from the ledger and the report by the table in `_common/pipeline-sidecar.md` §3.2, and the merge rule reads the same facts in the same order, so a branch taken on anything else meets a refusal. Take it only when that review's `stage-result` row is `정상 완료` and the segment has no live stage:
+Once a segment has a `cycle` row and has not merged, the snapshot's `review_next[]` carries one element for it: `세그먼트`, `다음`, and the last cycle's `사이클`, `리뷰 HEAD` and `리포트 경로` (absolute). **`다음` is the only value you branch on after a review** — not the counts in `cycles[]`, not `review_carry`, which carries the gate's cycle cap `REIMPL_CYCLE_CAP` and re-check round cap `RECHECK_ROUND_CAP` for display only. The gate derives it from the ledger and the report by the table in `_common/pipeline-sidecar.md` §3.2, and the merge rule reads the same facts in the same order, so a branch taken on anything else meets a refusal. Take it only when that review's `stage-result` row is `정상 완료` and the segment has no live stage:
 
 - **`머지`, `이월 머지`** → 「Merging and applying a segment」.
 - **`이월`** → carry the findings over by `_common/carryover-issue.md`: one issue per finding, then the `리뷰 이월` row (`act --kind review-carry`), then read `다음` again and merge on `이월 머지`. `이월` comes only after the lead fix's re-check.
 - **`수정`** → 「Re-dispatching the implementation after review findings」.
-- **`리드 수정`** → the segment reached the cycle cap and has had no lead fix. Dispatch it once, with the branch and the `설계는` directive of the segment's review line (「Spelling a review dispatch」) and `--lead-fix` naming the element's `리포트 경로` — no `--report-path` or other review flag, as the fixed-graph driver sends it. `--segment` is required: the gate runs the stage in that segment's worktree, where it commits to the segment branch and pushes it when the target's cutpoint is `push` or above. Write no `segment` row for it:
+- **`리드 수정`** → the segment reached the cycle cap and has had no lead fix, or a re-check left findings and the segment's re-checks are still within `RECHECK_ROUND_CAP` (2) rounds after the first. Dispatch it once, with the branch and the `설계는` directive of the segment's review line (「Spelling a review dispatch」) and `--lead-fix` naming the element's `리포트 경로` — no `--report-path` or other review flag, as the fixed-graph driver sends it. `--segment` is required: the gate runs the stage in that segment's worktree, where it commits to the segment branch and pushes it when the target's cutpoint is `push` or above. Write no `segment` row for it:
 
   ```
   gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <seg> \
@@ -334,10 +334,21 @@ Once a segment has a `cycle` row and has not merged, the snapshot's `review_next
     -- lead-fix -p '/cc-cmds:review-unattended <브랜치> --lead-fix <리포트 경로> "설계는 <문서 인자>"'
   ```
 
-  The gate refuses (exit 3) a lead fix unless `다음` is `리드 수정` and the segment has no lead-fix row yet. **Do not dispatch it a second time**, whatever it ended as — a crash, a usage limit or a continuation that ran out included. Once its row lands, `다음` reads `확인 리뷰`.
-- **`확인 리뷰`** → a lead fix follows the last cycle. Dispatch the segment's review as you would any review, with `--recheck <리포트 경로>` added to the prompt, `<리포트 경로>` being the element's — the cap report the lead fix answered. Its `cycle` row is the re-check, and `다음` after it is `머지`, `이월`, `이월 머지` or `잔여 보류`.
-- **`잔여 보류`** → the re-check left a P0, a blocking P1 or a P1 classification that does not parse. File one issue and park:
-  1. `gate.sh residual-body --manifest <매니페스트> --segment <seg>` prints `잔여 제목=`, `잔여 본문 파일=` and `잔여 부류=`; the gate writes the body file.
+  The gate refuses (exit 3) a lead fix unless `다음` is `리드 수정`. Each time `다음` reads `리드 수정`, dispatch one lead fix: **do not dispatch it a second time in the same round**, whatever it ended as — a crash, a usage limit or a continuation that ran out included. Once its row lands, `다음` reads `확인 리뷰`.
+- **`확인 리뷰`** → a lead fix, or a re-implementation, follows the last cycle. Dispatch the segment's review as you would any review, with `--recheck <리포트 경로>` added to the prompt, `<리포트 경로>` being the element's — the report the step answered. Its `cycle` row is a re-check, and `다음` after it is `머지`, `이월`, `이월 머지`, `리드 수정`, `재수렴` or `잔여 보류`.
+- **`재수렴`** → the re-check's report classes at least one remaining finding `설계` in its `결함 수준` lines, the manifest names a design document, and the segment has not re-converged since its first lead fix. Dispatch the re-convergence once, on that report, with the document as its main-worktree absolute path (the snapshot's `design_doc`), as 「Routing a pre-implementation refutation to re-convergence」 item 5 spells it. Write no `segment` row for it:
+
+  ```
+  gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment <seg> \
+    --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> \
+    --rationale '재수렴 — 설계 수준 잔여 사이클 <사이클>' \
+    -- reconverge -p '/cc-cmds:design-reconverge <스냅숏 design_doc> "설계 수준 잔여 <리포트 경로>"'
+  ```
+
+  The gate refuses (exit 3) this scope unless `다음` is `재수렴` and `<리포트 경로>` is the element's. Once its row lands, `다음` reads `재구현` when it ended `정상 완료` and `리드 수정` otherwise — a failed re-convergence is not a park, and the segment has no second one. Under `판정: 재설계 필요` re-plan the **other** segments through `replan_due[]` exactly as that subsection's item 6 says; this segment's own plan is voided by its `종류=reconverge` row.
+- **`재구현`** → a re-convergence ended `정상 완료` after the last cycle. Dispatch the implementation once as 「Re-dispatching the implementation after review findings」 spells it, with the element's `리포트 경로` as the fix target and `<n>` the element's `사이클`. The gate lifts its cycle-cap refusal for this one dispatch only while `다음` reads `재구현`; once its row lands, `다음` reads `확인 리뷰`.
+- **`잔여 보류`** → the segment's re-checks passed `RECHECK_ROUND_CAP` (2) rounds after the first and the last left a P0, a blocking P1 or a P1 classification that does not parse. File one issue and park:
+  1. `gate.sh residual-body --manifest <매니페스트> --segment <seg>` prints `잔여 제목=`, `잔여 본문 파일=` and `잔여 부류=`; the gate writes the body file. A segment with no pull request yet — a review-before-merge segment has none until its review passes — gets a body that names its branch and the last re-check's `리뷰 HEAD` instead.
   2. Create the issue through the gate: `gate.sh exec … --cutpoint 커밋 --surface 외부상태변경 --reach 협업 --rationale '리뷰 잔여 — <seg>' -- gh issue create --repo <slug> --title '<잔여 제목>' --body-file <잔여 본문 파일>`. The URL is the last output line; try a failed create once more. **Do not add `--assignee`.**
   3. Write a segment `park` row (with the plan row's `선행`) and a `스코프=cone` `blocked` row with `원인=막힘`, `'사유=리뷰 잔여'`, `이슈=<url>` and a `근거` that starts with the `잔여 부류` value. Write no `재킥 원인`. When `residual-body` exits 3 or the create fails twice, write the same rows without `이슈=` and put the failure in `근거`.
 
@@ -363,7 +374,7 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
   -- implement -p "/cc-cmds:implement-unattended <문서 인자> \"세그먼트 <seg> (사이클 <n>) · 선언 파일: <files> · 수정 대상: <리포트 절대 경로> 의 P0·P1\""
 ```
 
-`<n>` is that cycle row's `사이클` and the report path is made absolute as 「Dispatching a review cycle in delta mode」 item 2 says. The gate refuses a prompt whose document argument differs from the snapshot's `문서 인자`. Once the fix ends, the next review is that subsection's to dispatch. The gate refuses (exit 3) a review while no implementation or lead fix followed the last `cycle` row and the segment's worktree HEAD is still that row's `리뷰 HEAD` — the same HEAD is not reviewed twice. **The gate caps the cycles**: it counts the segment's `cycle` rows at every implementation dispatch and refuses with exit 3 once they reach `REIMPL_CYCLE_CAP` (2). On that refusal dispatch no implementation and read the segment's `다음` instead: at the cap it is `리드 수정`, or a value that ends the review loop — 「Branching on `다음` after a review」 routes each.
+`<n>` is that cycle row's `사이클` and the report path is made absolute as 「Dispatching a review cycle in delta mode」 item 2 says. The gate refuses a prompt whose document argument differs from the snapshot's `문서 인자`. Once the fix ends, the next review is that subsection's to dispatch. The gate refuses (exit 3) a review while no implementation or lead fix followed the last `cycle` row and the segment's worktree HEAD is still that row's `리뷰 HEAD` — the same HEAD is not reviewed twice. **The gate caps the cycles**: it counts the segment's `cycle` rows at every implementation dispatch and refuses with exit 3 once they reach `REIMPL_CYCLE_CAP` (2), unless `다음` reads `재구현`. On that refusal dispatch no implementation and read the segment's `다음` instead: past the cap it is a step of the segment's ladder — `리드 수정`, `확인 리뷰`, `재수렴`, `재구현` — or a value that ends the review loop — 「Branching on `다음` after a review」 routes each.
 
 #### Routing a pre-implementation refutation to re-convergence
 
