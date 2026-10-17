@@ -267,6 +267,9 @@ release_lock() {
   # record gone — that a concurrent arrival reads as its own acquisition window.
   [ "$LOCK_OWNED" = "1" ] || return 0
   rm -rf "$LOCKD"
+  # A second call does nothing. The EXIT trap is the only caller today, and the
+  # flag keeps that true of any caller added later.
+  LOCK_OWNED=0
 }
 
 # ---------------------------------------------------------------------------
@@ -481,13 +484,28 @@ run_is_over() {
 # ordinary ways this process ends. Neither closes the SIGKILL window — nothing in
 # a shell can — which is why the reclaim above is the load-bearing half and this
 # ordering is only the half that is free.
-trap 'release_lock' EXIT HUP INT TERM
+#
+# A SIGNAL TRAP ONLY EXITS, AND THE EXIT TRAP ALONE RELEASES. A handler that
+# released and returned handed control back to the loop: measured, a feed sent
+# TERM kept running with its lock gone, so the next start found no holder and
+# two feeds wrote one channel. `exit` from the handler runs the EXIT trap once,
+# with the status the signal implies. The sleep runs as a child the shell waits
+# on, because bash defers a trap until a foreground child returns — a signal in
+# the middle of the interval would otherwise wait the interval out — and the
+# EXIT trap kills that child so no `sleep` outlives the feed.
+#
+# `sp` IS SET BEFORE THE TRAPS. Under `set -u` an EXIT trap that reads an unset
+# `sp` fails before `release_lock`, and `--once` never enters the sleep that
+# assigns it — so that path left its lock behind.
+sp=""
+trap '[ -z "$sp" ] || kill "$sp" 2>/dev/null; release_lock' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 take_lock
 
 while :; do
   pass
   [ "$ONCE" = "1" ] && break
   run_is_over && break
-  sleep "$INTERVAL"
+  sleep "$INTERVAL" & sp=$!; wait "$sp"; sp=""
 done
 exit 0
