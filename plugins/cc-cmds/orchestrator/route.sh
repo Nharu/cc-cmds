@@ -944,10 +944,12 @@ def rt_new($p; $basis0; $excl):
     elif $p.pin != null and (any($p.accounts[]; .id == $p.pin) | not) then rt_env(rt_park_unrouted; "none"; null)
     else
       # 대여 좌석에 고정된 런은 고정 계정 하나만, 대여 검사로만 입장한다. u 계정으로
-      # 대체되지 않고, 후보가 없으면 그 행의 입장 판정으로 기다리거나 PARK 한다.
+      # 대체되지 않고, 후보가 없으면 그 행의 입장 판정으로 기다리거나 PARK 한다. 한도 뒤
+      # 재배정의 제외 계정은 고정 계정에 적용하지 않는다 — 옮겨 갈 다른 계정이 없으므로
+      # 제외하면 후보가 비어 기한 없는 대기가 된다.
       [$p.accounts[]
         | select(if $p.pin != null then .id == $p.pin else rt_policy_ok(.) or rt_lend_new_ok(.) end)
-        | select(.id != $excl) | (.) as $a
+        | select($p.pin != null or .id != $excl) | (.) as $a
         | (if $p.pin != null and (rt_lend_new_ok($a) | not) then rt_lend_fail(rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until))
            else rt_admit($p; $a) end) as $adm
         | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group),

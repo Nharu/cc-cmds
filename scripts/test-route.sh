@@ -2670,6 +2670,23 @@ expect "대여-고정: u 의 살아 있는 임대는 sticky 로 잇지 않는다
   '.verdict == "GRANT" and .account == "cc"'
 expect "대여-고정: u 의 살아 있는 임대는 첫 요청 멱등으로 잇지 않는다" "$(decide "$LJ OPEN | PIN | LIVE(\"a\"; true) | REQ({nonce: \"n-r1-S1\"})")" \
   '.verdict == "GRANT" and .account == "cc"'
+# 한도 뒤 재배정은 고정 계정을 제외하지 않는다. 회수된 스테이지의 죽은 자기 임대가 남아
+# 제외 계정이 고정 계정이어도, 고정 행 자신의 입장 판정으로 부여하거나 기다린다.
+for ev in limit-reclaim first-reject; do
+  expect "대여-고정: 죽은 cc 임대가 남은 $ev → GRANT cc" \
+    "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | REQ({event: \"$ev\"}) | REQ({after_wait: true})")" \
+    '.verdict == "GRANT" and .account == "cc" and .basis == "after-wait"'
+  expect "대여-고정: 묶인 계정이 cc 인 $ev → GRANT cc" "$(decide "$LJ OPEN | PIN | REQ({event: \"$ev\"}) | REQ({bound_account: \"cc\"})")" \
+    '.verdict == "GRANT" and .account == "cc" and .basis == "reassigned-after-limit"'
+  check "대여-고정: 닫힘 + 죽은 cc 임대의 $ev 는 첫 요청과 같은 대기" \
+    "$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false) | REQ({event: \"$ev\"})" | jq -c '[.verdict, .reason, .group, .until_epoch]')" \
+    "$(decide "$LJ OPEN | PIN | CL | LIVE(\"cc\"; false)" | jq -c '[.verdict, .reason, .group, .until_epoch]')"
+  expect "대여-고정: 소진 창 + 죽은 cc 임대의 $ev → 리셋 시각의 WAIT" \
+    "$(decide "$LJ OPEN | PIN | LIVE(\"cc\"; false) | CCD(.mode = \"open\") | CCX(.windows.seven_day.utilization = 1.0) | REQ({event: \"$ev\"})")" \
+    '.verdict == "WAIT" and (.until_epoch | type) == "number"'
+done
+expect "대여-고정 대조: 고정 없는 limit-reclaim 은 제외 계정을 건너뛴다" \
+  "$(decide "$LJ OPEN | LIVE(\"a\"; false) | REQ({event: \"limit-reclaim\"})")" '(.verdict == "GRANT" and .account == "a") | not'
 for st in absent corrupt; do
   f="OPEN | PIN | .inventory = {state: \"$st\", accounts: []}"
   expect "대여-고정: 인벤토리 $st → PARK lent-seat-unrouted" "$(decide "$LJ $f")" '.verdict == "PARK" and .reason == "lent-seat-unrouted"'
