@@ -6191,6 +6191,22 @@ stage_spawn() {
     printf '%s\n%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
       "${effort:--}" > "$RUN_DIR/$stage.window"
   fi
+  # THE TARGET-HOOK PARAGRAPH, decided at the directory the stage starts in —
+  # the one the subshell below enters. The driver passes no instruction file,
+  # so the paragraph rides on the prompt; it is the gate launch's text. The
+  # engine is sourced in the child shell of the substitution only: this file is
+  # sourced into the test harness's shell, and a top-level name of the engine
+  # must not land there.
+  local thp_par=""
+  thp_par=$(
+    . "$ORCH_DIR/../hooks/target-hook-probe.sh" 2>/dev/null || exit 0  # lint-harness-global-collisions: child-shell
+    thp_rc=0
+    thp_hooks=$(thp_bash_hooks "$cwd" 2>/dev/null) || thp_rc=$?
+    if [ -n "$thp_hooks" ] || [ "$thp_rc" -ne 0 ]; then thp_instruction_paragraph; fi
+  ) || thp_par=""
+  [ -z "$thp_par" ] || prompt="$prompt
+
+$thp_par"
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
