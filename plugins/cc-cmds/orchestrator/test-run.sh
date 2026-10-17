@@ -387,6 +387,41 @@ check "한도 판정 l: 봉투 뒤 객체가 아닌 JSON 줄은 건너뛴다" "$
 printf '%s\n' "$LIM_INIT" "$LIM_ENV429" '{"torn' > "$LIMD/m.json"
 check "한도 판정: 거짓 글자는 F,R,P,T 순서로 이어진다" "$(sle "$LIMD/m.json")" "3:F,R,T"
 
+# 일시 원인 판정. 연결 단절로 죽었는지는 그 시도 자신의 스트림에서 **종단 객체**
+# (마지막 최상위 result 나 error) 의 문면으로만 읽는다. 아래 변형은 「연결 오류
+# 문구가 어디에 있느냐」와 「한도·429 인가」만 바꾼다.
+ste() { if stage_transient_exit "$@"; then printf '0'; else printf '1'; fi; }
+TR_CONN='{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-tr","result":"API Error: Connection error."}'
+printf '%s\n' "$LIM_INIT" "$TR_CONN" > "$LIMD/t1.json"
+check "일시 원인 판정 1: 종단 result 의 Connection error 는 참" "$(ste "$LIMD/t1.json")" "0"
+printf '%s\n' "$LIM_INIT" '{"type":"error","error":{"message":"getaddrinfo ENOTFOUND api.anthropic.com"}}' > "$LIMD/t2.json"
+check "일시 원인 판정 2: 종단 error 객체의 ENOTFOUND 는 참" "$(ste "$LIMD/t2.json")" "0"
+printf '%s\n' "$LIM_INIT" "$TR_CONN" '{"type":"result","subt' > "$LIMD/t3.json"
+check "일시 원인 판정 3: 종단 객체 뒤의 찢긴 줄은 종단 객체가 아니다" "$(ste "$LIMD/t3.json")" "0"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"curl: (6) getaddrinfo ENOTFOUND example.invalid"}]}}' \
+  "$LIM_OK" > "$LIMD/t4.json"
+check "일시 원인 판정 4: 도구 출력 안의 ENOTFOUND 는 거짓 (종단은 성공)" "$(ste "$LIMD/t4.json")" "1"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"socket hang up"}]}}' \
+  '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"tool loop aborted"}' > "$LIMD/t5.json"
+check "일시 원인 판정 5: 도구 출력에만 단절 문구가 있는 크래시는 거짓" "$(ste "$LIMD/t5.json")" "1"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"API Error: Connection error."}' > "$LIMD/t6.json"
+check "일시 원인 판정 6: 429 봉투는 문구가 맞아도 거짓" "$(ste "$LIMD/t6.json")" "1"
+# a 의 실제 사망 모양에서 봉투 문면만 연결 오류 문구로 바꾼다.
+{ for i in 1 2 3 4 5; do printf '%s\n' "$LIM_INIT" "$LIM_ALLOWED" "$LIM_OK"; done
+  printf '%s\n' "$LIM_INIT" "$LIM_REJECTED" "$LIM_INIT" "$LIM_INIT" "$LIM_OK" "$LIM_OK" "$LIM_OK" \
+    '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"s-lim","result":"Connection error · resets 3pm"}'
+} > "$LIMD/t7.json"
+check "일시 원인 판정 7: 한도 사망 모양은 거짓 (한도 경로가 기다린다)" "$(ste "$LIMD/t7.json")" "1"
+check "일시 원인 판정 7 대조: 같은 스트림은 한도 판정에서 참" "$(sle "$LIMD/t7.json")" "0:"
+printf '%s\n' "$LIM_INIT" "$TR_CONN" "$LIM_OK" > "$LIMD/t8.json"
+check "일시 원인 판정 8: 단절 뒤 성공 봉투가 종단이면 거짓" "$(ste "$LIMD/t8.json")" "1"
+printf '%s\n' "$LIM_INIT" '{"type":"result","is_error":true,"result":"Can'"'"'t reach the API"}' > "$LIMD/t9.json"
+check "일시 원인 판정 9: Can't reach 문구도 참 (따옴표가 든 문구)" "$(ste "$LIMD/t9.json")" "0"
+check "일시 원인 판정 10: 없는 파일과 빈 인자는 거짓" "$(ste "$LIMD/none.json")$(ste '')" "11"
+
 check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
 for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \
                 '적용 불명' '외부 종료' '한도-형상 회수' '거절 종료'; do
@@ -2136,12 +2171,13 @@ case "$(tail -1 "$LEDGER")" in
   *) bad "설계 스텝 마감 파킹" "$(tail -1 "$LEDGER")" ;;
 esac
 check "마감 파킹은 이미 파킹함을 남긴다" "$(cat "$TI_DIR/already" 2>/dev/null)" "1"
-# 라우터 파킹은 모두 도우미를 지난다 — 열세 자리, 그리고 그 중 실패 id 자리는
+# 라우터 파킹은 모두 도우미를 지난다 — 열네 자리, 그리고 그 중 실패 id 자리는
 # 대상이 실패 id 이고 앵커가 세그먼트다. S4 의 계속·거절·크래시·한도-형상 회수
 # 갈래는 `s4_park_unfinished` 한 자리를 함께 쓴다. 리드 수정(S5F)이 기동 파킹과
-# 계속 경로 파킹 두 자리를 갖는다.
-check "드라이버의 라우터 파킹 자리는 열세 곳이다" \
-  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "13"
+# 계속 경로 파킹 두 자리를 갖고, 설계 수준 잔여의 재수렴(S1R)이 기동 파킹 한
+# 자리를 갖는다.
+check "드라이버의 라우터 파킹 자리는 열네 곳이다" \
+  "$(sed 's/#.*//' "$DRIVER" | grep -c 'park_router "' || true)" "14"
 check "실패 id 자리는 대상과 앵커를 나눠 싣는다" \
   "$(grep -c 'park_router "\$fid" "\$seg" cone' "$DRIVER" || true)" "1"
 # 계속 경로의 여섯 자리(구현은 `s4_park_unfinished` 하나, 그 밖에 공허한 성공
@@ -2194,10 +2230,11 @@ if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q -E 'cap=\$\(\( *[0-9
 else
   ok "세그먼트 상한이 상수를 참조한다"
 fi
-# 세그먼트마다 상한만큼의 구현 사이클과 리드 수정·확인 리뷰 한 회차를 센다 —
-# 상한만 세면 마지막 세그먼트의 리드 수정이 런 예산에 걸려 park 된다.
+# 세그먼트마다 상한만큼의 구현 사이클과 리드 수정·확인 리뷰 한 회차, 그리고 바깥 상한
+# 까지의 사다리 회차를 센다 — 상한만 세면 마지막 세그먼트의 사다리가 런 예산에 걸려
+# park 된다.
 printf 'a\t-\tx.txt,y.txt\t없음\nb\t-\tz.txt\t없음\n' > "$RUN_DIR/plan.tsv"
-check "런 사이클 예산은 세그먼트마다 (상한+1) 의 합" "$(run_cycle_budget)" "6"
+check "런 사이클 예산은 세그먼트마다 (상한+1+RECHECK_ROUND_CAP) 의 합" "$(run_cycle_budget)" "10"
 if sed -n '/^plan_from_declaration()/,/^}/p' "$DRIVER" | grep_all_q 'plan_cell' \
    && sed -n '/^plan_via_planner()/,/^}/p' "$DRIVER" | grep_all_q 'plan_cell'; then
   ok "두 계획 생성기가 모두 빈 칸을 - 로 쓴다"
@@ -4238,8 +4275,8 @@ check "구현 스테이지 두 자리가 접근자를 쓴다" \
   "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "리뷰 스테이지 세 자리(리뷰·복구 리뷰·리드 수정)가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "3"
-check "재수렴 스테이지(항목 사다리)가 접근자를 쓴다" \
-  "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "1"
+check "재수렴 스테이지 두 자리(항목 사다리·설계 수준 잔여)가 접근자를 쓴다" \
+  "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "리드 수정 스테이지가 접근자를 쓴다" \
   "$( { grep -cF -- '--lead-fix $crp \"설계는 $(doc_arg)\"' "$DRIVER" || true; } )" "1"
 # 설계·감사·계획, 세 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞
@@ -5997,18 +6034,100 @@ if [ -f "$FEED_SH" ]; then
   # — so the line lookup failed on exactly the files where the pattern matched
   # more than once. Stopping the search at the first match asks for the same
   # value without anyone closing a pipe early.
-  feed_trap_ln=$( { grep -n -m1 "^trap 'release_lock'" "$FEED_SH" || true; } | cut -d: -f1)
+  # The first trap line is the EXIT trap, so the ordering is read off the first
+  # `trap` at the start of a line whatever its handler says.
+  feed_trap_ln=$( { grep -n -m1 '^trap ' "$FEED_SH" || true; } | cut -d: -f1)
   feed_take_ln=$( { grep -n -m1 '^take_lock$' "$FEED_SH" || true; } | cut -d: -f1)
   if [ -n "$feed_trap_ln" ] && [ -n "$feed_take_ln" ] && [ "$feed_trap_ln" -lt "$feed_take_ln" ]; then
     ok "트랩이 락 획득보다 먼저 설치된다"
   else
     bad "피드 락" "트랩이 락 획득 뒤에 설치된다 (trap=$feed_trap_ln take=$feed_take_ln)"
   fi
-  if { grep -q "^trap 'release_lock' EXIT HUP INT TERM" "$FEED_SH"; }; then
-    ok "그 트랩이 HUP 도 덮는다"
+  # RELEASE IS THE EXIT TRAP'S ALONE, AND A SIGNAL TRAP ONLY EXITS. A handler
+  # that released and returned gave control back to the loop: a feed sent TERM
+  # kept polling with its lock gone, and the next start found no holder.
+  if grep -qxF "trap '[ -z \"\$sp\" ] || kill \"\$sp\" 2>/dev/null; release_lock' EXIT" "$FEED_SH"; then
+    ok "해제는 EXIT 트랩 하나가 하고, 그 트랩이 잠자는 자식을 거둔다"
   else
-    bad "피드 락" "HUP 이 트랩 목록에 없다 — 터미널이 사라지는 흔한 종료가 락을 남긴다"
+    bad "피드 락" "EXIT 트랩 줄이 해제와 sleep 자식 정리를 함께 싣지 않는다"
   fi
+  if grep -qxF "trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM" "$FEED_SH"; then
+    ok "신호 트랩은 HUP·INT·TERM 을 덮고 끝내기만 한다"
+  else
+    bad "피드 락" "신호 트랩이 끝내기만 하는 세 갈래가 아니다 — 처리 뒤 루프로 돌아가면 락 없는 피드가 남는다"
+  fi
+  feed_sp_ln=$( { grep -n -m1 '^sp=""$' "$FEED_SH" || true; } | cut -d: -f1)
+  if [ -n "$feed_sp_ln" ] && [ -n "$feed_trap_ln" ] && [ "$feed_sp_ln" -lt "$feed_trap_ln" ]; then
+    ok "자식 pid 변수가 트랩보다 먼저 비워진다 (set -u 아래 --once 의 EXIT 트랩이 끊기지 않는다)"
+  else
+    bad "피드 락" "sp 초기화가 트랩 앞에 없다 (sp=$feed_sp_ln trap=$feed_trap_ln)"
+  fi
+
+  # --- THE REAL PROCESS ENDS ON TERM, MID-SLEEP, AND RELEASES ONCE ----------
+  #
+  # The source lines above say what the traps are; this runs the script. A
+  # feed is started with a short interval, TERM goes to the pid this test
+  # started while it sleeps between passes, and the process has to be gone
+  # within one interval with status 143, no lock and no `sleep` left behind.
+  # After each way of ending, a second start must not find a holder.
+  feed_second_clean() {  # feed_second_clean <label>
+    feed_once "_2nd$1"
+    if grep -q '이미 돌고 있습니다' "$FEED_RD/out_2nd$1" "$FEED_RD/err_2nd$1" 2>/dev/null; then
+      bad "피드 종료" "$1 뒤의 두 번째 기동이 살아 있는 주인을 보았다"
+    else
+      ok "$1 뒤의 두 번째 기동은 주인을 보지 않는다"
+    fi
+  }
+  rm -rf "$FEED_LD" "$FEED_RD/done"
+  FEED_IV=3
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --interval "$FEED_IV" \
+    > "$FEED_RD/out_term" 2> "$FEED_RD/err_term" &
+  feed_pid=$!
+  feed_child=""
+  for _ in $(seq 1 100); do
+    feed_child=$( { pgrep -P "$feed_pid" sleep || true; } | sed -n 1p)
+    [ -n "$feed_child" ] && break
+    sleep 0.1
+  done
+  if [ -n "$feed_child" ]; then
+    ok "피드가 패스 사이의 sleep 에 들어갔다 (아래 TERM 이 잠든 중에 닿는다)"
+  else
+    bad "피드 종료" "피드의 sleep 자식을 찾지 못했다 — 아래 단언이 잠든 중의 신호를 재지 않는다"
+  fi
+  feed_t0=$(date +%s)
+  kill -TERM "$feed_pid" 2>/dev/null
+  feed_rc=0; wait "$feed_pid" 2>/dev/null || feed_rc=$?
+  feed_t1=$(date +%s)
+  check "TERM 을 받은 피드는 상태 143 으로 끝난다" "$feed_rc" "143"
+  if [ $((feed_t1 - feed_t0)) -le "$FEED_IV" ]; then
+    ok "TERM 뒤 한 간격 안에 끝난다"
+  else
+    bad "피드 종료" "TERM 뒤 $((feed_t1 - feed_t0))초가 걸렸다 (간격 ${FEED_IV}초)"
+  fi
+  check "TERM 으로 끝난 피드는 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_orphan=alive
+  for _ in $(seq 1 20); do
+    if [ -z "$feed_child" ] || ! kill -0 "$feed_child" 2>/dev/null; then feed_orphan=gone; break; fi
+    sleep 0.1
+  done
+  check "TERM 으로 끝난 피드의 sleep 자식이 남지 않는다" "$feed_orphan" "gone"
+  feed_second_clean "TERM 종료"
+  # `--once`: no sleep is ever started, and the EXIT trap still releases.
+  rm -rf "$FEED_LD"
+  feed_once _once
+  check "--once 실행은 0 으로 끝난다" "$feed_rc" "0"
+  check "--once 실행은 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_second_clean "--once 종료"
+  # The run-over exit: the loop leaves through `done` and the EXIT trap releases.
+  rm -rf "$FEED_LD"
+  : > "$FEED_RD/done"
+  feed_rc=0
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --interval 1 \
+    > "$FEED_RD/out_done" 2> "$FEED_RD/err_done" || feed_rc=$?
+  check "런이 끝난 것을 본 피드는 0 으로 끝난다" "$feed_rc" "0"
+  check "런 종료로 끝난 피드는 락을 남기지 않는다" "$( [ -d "$FEED_LD" ] && printf left || printf gone )" "gone"
+  feed_second_clean "런 종료"
+  rm -f "$FEED_RD/done"
   rm -rf "$FEED_RD"
 fi
 
@@ -10417,6 +10536,79 @@ else
   ok "대조군: 목록 밖 접두는 여전히 거부된다"
 fi
 
+# --- (3d) 전송 단절 — 리포트도 위트니스도 없이 죽은 리뷰의 재파견 ----------------
+# 이 갈래는 원장의 S5 행(`일시 원인`)을 세고 탐침 하나를 부른다. 원장은 이 절의
+# 빈 파일이므로 행을 직접 깔고, 탐침은 `CC_ORCH_NET_PROBE_CMD` 로 갈아 끼운다.
+# 단언은 반환값(2 = 같은 사이클 재파견)과 「park 도 파견도 없었다」 둘이다.
+REC_TR_RP="$REC_DIR/never-written.md"; rm -f "$REC_TR_RP"
+rtr_rows() {  # rtr_rows <일시 원인 값>... — 이 런 블록에 segR 의 S5 드라이버 행을 순서대로 깐다
+  printf '## 실행 %s\n' "$RUN_ID" > "$LEDGER"
+  local v
+  for v in "$@"; do
+    case "$v" in
+      cycle) printf '%s\n' '- `cycle` | 세그먼트=segR | 사이클=0 | P0=0 | P1=0' >> "$LEDGER" ;;
+      *) printf '%s\n' "- \`stage-result\` | 세그먼트=segR | 스테이지=S5 | 기록자=드라이버 | 종단 부류=크래시 | 일시 원인=$v" >> "$LEDGER" ;;
+    esac
+  done
+}
+rtr_call() {  # rtr_call <탐침 명령> — 위트니스 0개, 리포트 없음, 크래시
+  local save="$ATTR"; ATTR=99
+  rec_reset
+  CC_ORCH_NET_PROBE_CMD="$1" review_recover segR 0 "$SIDR" "$REC_TR_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+  REC_RC=$?
+  ATTR="$save"
+}
+rtr_rows 예
+rtr_call /usr/bin/true
+check "전송 단절 1: 탐침이 답하면 반환 2, park·파견 없음" "$REC_RC|$REC_PARK|$REC_SPAWN" "2||"
+rtr_call /usr/bin/false
+check "전송 단절 2: 탐침이 답하지 않으면 반환 1" "$REC_RC" "1"
+if printf '%s' "$REC_PARK" | grep_all_q 'Step 4 미도달'; then
+  ok "전송 단절 2: 탐침 실패는 종전의 Step 4 미도달 park 으로 간다"
+else
+  bad "전송 단절 2 park 사유" "$REC_PARK"
+fi
+rtr_rows 예 예
+rtr_call /usr/bin/true
+check "전송 단절 3: 둘째 단절 행까지는 다시 파견한다" "$REC_RC" "2"
+rtr_rows 예 예 예
+rtr_call /usr/bin/true
+check "전송 단절 4: 셋째 단절 행은 탐침이 답해도 park (상한 둘)" "$REC_RC|$REC_SPAWN" "1|"
+rtr_rows 예 예 예 cycle 예
+rtr_call /usr/bin/true
+check "전송 단절 5: cycle 행 뒤로 수가 새로 시작한다" "$REC_RC" "2"
+rtr_rows 예 아니오
+rtr_call /usr/bin/true
+check "전송 단절 6: 마지막 S5 행이 일시 원인=아니오 면 park" "$REC_RC" "1"
+printf '## 실행 %s\n%s\n' "$RUN_ID" \
+  '- `stage-result` | 세그먼트=segR | 스테이지=S5 | 기록자=교대 | 종단 부류=크래시 | 일시 원인=예' > "$LEDGER"
+rtr_call /usr/bin/true
+check "전송 단절 7: 드라이버가 쓰지 않은 S5 행은 근거가 아니다" "$REC_RC" "1"
+printf '## 실행 %s\n%s\n' "$RUN_ID" \
+  '- `stage-result` | 세그먼트=segQ | 스테이지=S5 | 기록자=드라이버 | 종단 부류=크래시 | 일시 원인=예' > "$LEDGER"
+rtr_call /usr/bin/true
+check "전송 단절 8: 다른 세그먼트의 행은 근거가 아니다" "$REC_RC" "1"
+rtr_rows 예
+: > "$REC_TR_RP"
+rtr_call /usr/bin/true
+check "전송 단절 9: 리포트 파일이 있으면 재파견하지 않는다" "$REC_RC" "1"
+rm -f "$REC_TR_RP"
+rtr_rows 예
+rec_reset
+CC_ORCH_NET_PROBE_CMD=/usr/bin/true review_recover segR 0 "$SIDR" "$REC_TR_RP" "$REC_DIR" segbranch "정상 완료" >/dev/null; REC_RC=$?
+check "전송 단절 10: 크래시가 아닌 종단 부류는 이 갈래에 들지 않는다" "$REC_RC" "1"
+: > "$LEDGER"
+# 호출부: 반환 2 는 같은 루프를 다시 돌고(같은 sid·리포트 경로), S5 행은 크래시에만
+# 일시 원인을 싣는다.
+REC_SC_BODY=$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER")
+if printf '%s\n' "$REC_SC_BODY" | grep_all_q -F 'if [ "$rrc" = "2" ]; then' \
+   && printf '%s\n' "$REC_SC_BODY" | grep_all_q -F '"종단 부류=$class" ${transient:+"일시 원인=$transient"}'; then
+  ok "segment_cycle 이 반환 2 를 재파견으로 받고 S5 행에 일시 원인을 싣는다"
+else
+  bad "segment_cycle" "반환 2 갈래나 S5 행의 일시 원인이 없다"
+fi
+unset -f rtr_rows rtr_call
+
 # 20절과 같은 이유로 `unset -f` 는 복원이 아니라 제거다. 이 절이 마지막이라
 # 이후에 이 이름들을 부르는 단언이 없고, 아래 요약 출력만 남는다.
 unset -f park predicate_review stage_attempt_pinned stage_spawn stage_wait_all \
@@ -11354,6 +11546,25 @@ REPORT
 R35P0="$R35/review-p0.md"; r35_rep "$R35P0" 1 0
 R35CL="$R35/review-clean.md"; r35_rep "$R35CL" 0 0
 R35P1="$R35/review-p1.md"; r35_rep "$R35P1" 0 1
+# 설계 수준 잔여 하나를 실은 리포트 — P0 하나의 결함 수준이 설계다.
+R35DL="$R35/review-design.md"
+cat > "$R35DL" <<REPORT
+# 코드 리뷰 리포트
+
+- **리뷰 HEAD**: \`$H35\`
+- **발견 요약**: 🔴 P0 1건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건
+- **P1 분류**: 차단 0건 | 이월 가능 0건
+- **결함 수준**: 설계 1건 | 구현 0건
+
+## 🔴 P0 (즉시 수정 필수)
+
+- **[correctness]** \`a/b.sh:10\` 영 — r0
+    - **결함 수준**: 설계 — 구속 문면이 이 동작을 금한다
+
+## 🟠 P1 (머지 전 수정 권장)
+
+없음
+REPORT
 
 # r35_led <이름> <명세…> — 원장을 새로 떠 경로를 낸다. 명세 `<사이클>:<P0>:<P1>[:<리포트>]`
 # 는 S2 의 cycle 행이고, `- \`` 로 시작하는 것은 그대로 붙는다. 세그먼트 행은 워크트리가
@@ -11394,10 +11605,15 @@ r35_elem_next() {  # r35_elem_next <원장> <매니페스트> — 스냅숏 원�
   printf '%s' "${v:-리뷰 없음}"
 }
 
-# 열 갈래의 원장 — 게이트 시험 87절 「다음 표」의 픽스처와 같은 꼴. 상한(2) 뒤의
-# 갈래는 리드 수정 행(`종류=lead-fix`)이 마지막 cycle 행 앞이냐 뒤냐로 갈린다.
+# 갈래의 원장 — 게이트 시험 87절 「다음 표」의 픽스처와 같은 꼴. 상한(2) 뒤의
+# 갈래는 리드 수정 행(`종류=lead-fix`)이 마지막 cycle 행 앞이냐 뒤냐로, 확인 리뷰의
+# 수(바깥 상한 RECHECK_ROUND_CAP)로, 그리고 재수렴 행으로 갈린다.
 R35DISM="- \`리뷰 기각\` | 세그먼트=S2 | 사이클=1 | 리뷰 HEAD=$H35 | 근거=x"
 R35LF="- \`stage-result\` | 세그먼트=S2 | 스테이지=S5F | 종류=lead-fix | 종료 코드=0 | 종단 부류=정상 완료"
+R35RCV="- \`stage-result\` | 세그먼트=S2 | 스테이지=S1R | 종류=reconverge | 종료 코드=0 | 종단 부류=정상 완료"
+r35_k3() {  # r35_k3 <이름> — 셋째 확인 리뷰까지 P0 가 남은 원장. 마지막 cycle 행이 사이클 5 다.
+  r35_led "$1" "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF" "3:1:0:$R35P0" "$R35LF" "4:1:0:$R35P0" "$R35LF" "5:1:0:$R35P0"
+}
 R35CARR="- \`리뷰 이월\` | 세그먼트=S2 | 사이클=3 | 리뷰 HEAD=$H35 | 건수=2 | 이슈=https://github.com/Nharu/cc-cmds/issues/11,https://github.com/Nharu/cc-cmds/issues/12"
 r35_fx() {  # r35_fx <갈래> — 그 갈래의 원장 경로와 매니페스트를 탭으로
   case "$1" in
@@ -11406,14 +11622,16 @@ r35_fx() {  # r35_fx <갈래> — 그 갈래의 원장 경로와 매니페스트
     판정불가) printf '%s\t%s' "$(r35_led n2 '1:0:')" "$M35" ;;
     리드수정) printf '%s\t%s' "$(r35_led n3 "1:1:0:$R35P0" "2:1:0:$R35P0")" "$M35" ;;
     확인리뷰) printf '%s\t%s' "$(r35_led n9 "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF")" "$M35" ;;
-    잔여보류) printf '%s\t%s' "$(r35_led n4 "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF" "3:1:0:$R35P0")" "$M35" ;;
+    잔여보류) printf '%s\t%s' "$(r35_k3 n4)" "$M35" ;;
+    재수렴)   printf '%s\t%s' "$(r35_led n10 "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF" "3:1:0:$R35DL")" "$M35" ;;
+    재구현)   printf '%s\t%s' "$(r35_led n11 "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF" "3:1:0:$R35DL" "$R35RCV")" "$M35" ;;
     머지)     printf '%s\t%s' "$(r35_led n1 1:0:0)" "$M35" ;;
     이월머지) printf '%s\t%s' "$(r35_led n6 "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF" "3:0:2:$R35C" "$R35CARR")" "$M35" ;;
     이월)     printf '%s\t%s' "$(r35_led n5 "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF" "3:0:2:$R35C")" "$M35" ;;
     수정)     printf '%s\t%s' "$(r35_led n7 "1:0:1:$R35P1")" "$M35" ;;
   esac
 }
-R35BR="리뷰없음 기각 판정불가 리드수정 확인리뷰 잔여보류 머지 이월머지 이월 수정"
+R35BR="리뷰없음 기각 판정불가 리드수정 확인리뷰 잔여보류 머지 이월머지 이월 수정 재수렴 재구현"
 
 # --- R2: 드라이버가 읽는 다음과 스냅숏 원소의 다음이 같다 ---
 r35_sym=""
@@ -11424,7 +11642,7 @@ EOF35
   r35_sym="$r35_sym$(r35_in "$l35" "$m35" review_next_of S2)=$(r35_elem_next "$l35" "$m35")/"
 done
 check "35: 열 갈래에서 드라이버의 다음과 스냅숏 원소의 다음이 같다 (R2)" "$r35_sym" \
-  "리뷰 없음=리뷰 없음/머지=머지/판정 불가=판정 불가/리드 수정=리드 수정/확인 리뷰=확인 리뷰/잔여 보류=잔여 보류/머지=머지/이월 머지=이월 머지/이월=이월/수정=수정/"
+  "리뷰 없음=리뷰 없음/머지=머지/판정 불가=판정 불가/리드 수정=리드 수정/확인 리뷰=확인 리뷰/잔여 보류=잔여 보류/머지=머지/이월 머지=이월 머지/이월=이월/수정=수정/재수렴=재수렴/재구현=재구현/"
 
 # 룰은 게이트가 S2 의 머지에 넘길 환경으로 직접 부른다(test-gate.sh 38-14 의 꼴).
 # 네 행은 게이트의 같은 선택 함수로 골라 넘긴다 — 룰은 원장을 스스로 읽지 않는다.
@@ -11447,11 +11665,12 @@ EOF35
   if r35_rule "$l35" "$m35"; then r35_rules="$r35_rules$b35:통과 "; else r35_rules="$r35_rules$b35:거부 "; fi
 done
 check "35: 리뷰-후-머지 는 다음 이 머지·이월 머지 인 갈래에서만, 그리고 반드시 통과한다 (R2)" "$r35_rules" \
-  "리뷰없음:거부 기각:통과 판정불가:거부 리드수정:거부 확인리뷰:거부 잔여보류:거부 머지:통과 이월머지:통과 이월:거부 수정:거부 "
+  "리뷰없음:거부 기각:통과 판정불가:거부 리드수정:거부 확인리뷰:거부 잔여보류:거부 머지:통과 이월머지:통과 이월:거부 수정:거부 재수렴:거부 재구현:거부 "
 
 # 스텁 — 서브셸 안에서만 부른다. 스테이지 기동은 기록만 하고, R35_LIT 가 있으면
 # 재수렴 종단 리터럴을 그 로그에 쓴다. gh 는 argv 를 남기고 R35GH 에 따라 답한다:
-# fail 은 전부 실패, ok 는 PR 7 과 새 이슈 URL, nocreate 는 이슈 생성만 실패.
+# fail 은 전부 실패, ok 는 PR 7 과 새 이슈 URL, nocreate 는 이슈 생성만 실패, nopr 는
+# PR 이 없을 뿐 나머지는 ok 와 같다.
 r35_stubs() {
   stage_spawn() {
     printf '%s\n' "$1" >> "$R35/spawn.log"
@@ -11471,7 +11690,7 @@ r35_stubs() {
     printf '%s\n' "$a" >> "$R35/gh.log"
     [ "$R35GH" != fail ] || return 1
     case "$a" in
-      *"pr list"*) printf '7\n' ;;
+      *"pr list"*) [ "$R35GH" = nopr ] || printf '7\n' ;;
       *"pr view"*) printf '%s\n' "${R35PRHEAD:-$H35}" ;;
       *"issue list"*) printf '[]\n' ;;
       *"issue create"*)
@@ -11526,17 +11745,20 @@ EOF35
   r35_sp="$r35_sp$(grep -c . "$R35/spawn.log" || true)"
   [ "$b35" != 리드수정 ] || r35_lfgrow=$(( $(grep -c '' "$l35" || true) - r35_n0 ))
 done
-check "35: 드라이버의 처분 — 머지 0 · 수정 10 · 리드 수정 11 · 멈춤 1 (R2)" "$r35_rcs" \
-  "리뷰없음=1 기각=0 판정불가=1 리드수정=11 확인리뷰=1 잔여보류=1 머지=0 이월머지=0 이월=1 수정=10 "
-check "35: 처분은 스테이지를 기동하지 않는다 — 리드 수정은 루프의 다음 회차가 띄운다 (R2)" "$r35_sp" "0000000000"
+check "35: 드라이버의 처분 — 머지 0 · 수정 10 · 리드 수정·재수렴·재구현 11 · 멈춤 1 (R2)" "$r35_rcs" \
+  "리뷰없음=1 기각=0 판정불가=1 리드수정=11 확인리뷰=1 잔여보류=1 머지=0 이월머지=0 이월=1 수정=10 재수렴=11 재구현=11 "
+check "35: 처분은 스테이지를 기동하지 않는다 — 사다리의 단은 루프의 다음 회차가 띄운다 (R2)" "$r35_sp" "000000000000"
 check "35: 리드 수정 갈래의 처분은 원장에 행을 더하지 않는다" "$r35_lfgrow" "0"
 
 # --- 잔여 보류: 이슈 하나를 만들고 cone park 한다, 이슈가 없어도 park 한다 ---
 r35_res() {  # r35_res <이름> <R35GH> — 잔여 보류 원장으로 처분을 돌린다. 종료 코드|원장
   local l
-  l=$(r35_led "$1" "1:1:0:$R35P0" "2:1:0:$R35P0" "$R35LF" "3:1:0:$R35P0")
+  l=$(r35_k3 "$1")
   : > "$R35/gh.log"
-  printf '%s|%s' "$(R35GH="$2" r35_disp "$l" "$M35" "run-$1")" "$l"
+  printf '%s|%s' "$(R35GH="$2" r35_disp "$l" "$M35" "run-$1" "" 5)" "$l"
+}
+r35_bodyfile() {  # r35_bodyfile — gh.log 의 마지막 issue create 가 넘긴 본문 파일
+  grep 'issue create' "$R35/gh.log" | tail -1 | sed -n 's/.*--body-file \([^ ]*\).*/\1/p'
 }
 r35_resrow() { { grep -F '`blocked`' "$1" 2>/dev/null || true; } | { grep -F '사유=리뷰 잔여' || true; }; }
 r35_resck() {  # r35_resck <원장> — 리뷰 잔여 행 수/스코프 cone/이슈 있음/재킥 원인 있음
@@ -11546,8 +11768,11 @@ r35_resck() {  # r35_resck <원장> — 리뷰 잔여 행 수/스코프 cone/이
 }
 r35_o=$(r35_res res-ok ok); L35RO=${r35_o#*|}
 check "35: 잔여 보류는 [잔여] 제목의 이슈 하나를 담당자 없이 만든다" \
-  "${r35_o%%|*}/$(grep -c 'issue create' "$R35/gh.log" || true)/$(grep 'issue create' "$R35/gh.log" | grep -cF -- '--title [잔여] r35 S2 사이클 3 — P0 잔존' || true)/$(grep -c -- '--assignee' "$R35/gh.log" || true)" \
+  "${r35_o%%|*}/$(grep -c 'issue create' "$R35/gh.log" || true)/$(grep 'issue create' "$R35/gh.log" | grep -cF -- '--title [잔여] r35 S2 사이클 5 — P0 잔존' || true)/$(grep -c -- '--assignee' "$R35/gh.log" || true)" \
   "1/1/1/0"
+check "35: 잔여 본문은 PR 과 확인 리뷰 회차를 싣는다" \
+  "$(sed -n '1p' "$(r35_bodyfile)" 2>/dev/null)|$(sed -n '2p' "$(r35_bodyfile)" 2>/dev/null)" \
+  "PR #7 의 확인 리뷰(사이클 5) 뒤에 남은 발견입니다. 사유 부류: P0 잔존|확인 리뷰 3 회 · 재수렴 없음"
 check "35: 잔여 보류의 cone park 은 리뷰 잔여 사유로 이슈 URL 을 싣고 재킥 원인이 없다" \
   "$(r35_resck "$L35RO")/$(r35_resrow "$L35RO" | grep -cF '이슈=https://github.com/Nharu/cc-cmds/issues/41' || true)/$(r35_resrow "$L35RO" | grep -cF '근거=P0 잔존' || true)" \
   "1/1/1/0/1/1"
@@ -11555,10 +11780,10 @@ r35_o=$(r35_res res-nocreate nocreate); L35RN=${r35_o#*|}
 check "35: 이슈 생성이 재시도까지 실패해도 같은 사유로 이슈 없이 park 하고 실패를 근거에 적는다" \
   "${r35_o%%|*}/$(grep -c 'issue create' "$R35/gh.log" || true)/$(r35_resck "$L35RN")/$(r35_resrow "$L35RN" | grep -cF '잔여 이슈 생성 실패' || true)" \
   "1/2/1/1/0/0/1"
-r35_o=$(r35_res res-nopr fail); L35RP=${r35_o#*|}
-check "35: PR 없는 세그먼트도 같은 사유로 이슈 없이 park 하고 본문 거절을 근거에 적는다" \
-  "${r35_o%%|*}/$(grep -c 'issue create' "$R35/gh.log" || true)/$(r35_resck "$L35RP")/$(r35_resrow "$L35RP" | grep -cF '잔여 본문 생성 거절' || true)" \
-  "1/0/1/1/0/0/1"
+r35_o=$(r35_res res-nopr nopr); L35RP=${r35_o#*|}
+check "35: PR 없는 세그먼트도 브랜치를 든 본문으로 이슈 하나를 만들고 같은 사유로 park 한다" \
+  "${r35_o%%|*}/$(grep -c 'issue create' "$R35/gh.log" || true)/$(r35_resck "$L35RP")/$(r35_resrow "$L35RP" | grep -cF '잔여 본문 생성 거절' || true)/$(sed -n '1p' "$(r35_bodyfile)" 2>/dev/null)" \
+  "1/1/1/1/1/0/0/브랜치 seg/r35-S2 의 확인 리뷰(사이클 5, 리뷰 HEAD $H35) 뒤에 남은 발견입니다. 사유 부류: P0 잔존"
 
 # --- R6: 드라이버 재수렴 행의 계약 필드와 기존 독자 ---
 # 재수렴 행은 이제 사다리의 재수렴만 쓴다. 행 기록 함수를 그대로 불러 그 행을 세운다.
@@ -11605,6 +11830,10 @@ check "35: 이월 등록이 끝나면 리뷰 이월 행이 서고 처분은 이�
 check "35: 이슈는 항목마다 하나, 런·세그먼트 머리의 제목으로, 담당자 없이 만든다" \
   "$(grep -c 'issue create' "$R35/gh.log" || true)/$(grep 'issue create' "$R35/gh.log" | grep -c -- '--title \[이월\] r35 S2 ' || true)/$(grep -c -- '--assignee' "$R35/gh.log" || true)" \
   "2/2/0"
+r35_o=$(r35_carry carrynopr nopr); L35CN=${r35_o#*|}
+check "35: PR 없는 세그먼트의 이월도 브랜치와 리뷰 HEAD 를 든 본문으로 등록되고 이월 머지(0)다" \
+  "${r35_o%%|*}/$(grep -c 'issue create' "$R35/gh.log" || true)/$(tail -1 "$(r35_bodyfile)" 2>/dev/null)/$(r35_in "$L35CN" "$M35" review_next_of S2)" \
+  "0/2/브랜치 seg/r35-S2 의 리뷰 사이클 3(리뷰 HEAD $H35) 에서 넘어온 항목입니다./이월 머지"
 r35_o=$(r35_carry carryfail nocreate); r35_frc=${r35_o%%|*}; L35F=${r35_o#*|}
 # 실패한 이월은 수정 사이클이 아니라 잔여다 — 확인 리뷰 뒤에는 구현을 다시 띄우지
 # 않는다. 이월 이슈 생성 두 번과 잔여 이슈 생성 두 번이 모두 실패한다.
@@ -11777,11 +12006,20 @@ r35_loop_in() {
   # 리드 수정(S5F)의 스텁은 상한 리포트(P0 1·P1 1)를 두고, R35_LFREC 대로 수정 기록을
   # 쓴다 — full 은 두 항목, part 는 한 항목, none 은 쓰지 않는다. R35_LFDIRT 면 끝난 뒤
   # 선언 밖 파일이 남은 것으로 친다.
+  # S1R 의 스트림은 R35_RVV 가 있으면 그 판정 줄과 종단 리터럴을 실은 result 객체 하나로,
+  # 드라이버가 진짜 판정 파서(gate_reconverge_verdict)로 읽는다. plan.tsv 는 S2 와,
+  # R35_SIB 가 있으면 그 뒤의 끝나지 않은 형제 S3 을 싣는다. 레포·선행 칸은 비워 두어
+  # plan.tsv 가 없던 때와 같은 값을 읽힌다.
+  printf 'S2\t\ta.txt\t\t\n' > "$RUN_DIR/plan.tsv"
+  [ -z "${R35_SIB:-}" ] || printf 'S3\t\tb.txt\t\t\n' >> "$RUN_DIR/plan.tsv"
   stage_spawn() {
     printf '%s %s\n' "$1" "$3" >> "$R35/spawn.log"
     printf '%s %s\n' "$1" "$2" >> "$R35/cwd.log"
     printf '0' > "$RUN_DIR/$1.rc"
     case "$1" in
+      S1R:*)
+        [ -z "${R35_RVV:-}" ] || jq -cn --arg t "$(printf '판정: %s\n%s' "$R35_RVV" "$LIT_RECONVERGE_TERMINAL")" \
+          '{type: "result", num_turns: 1, result: $t}' > "$(stage_log_path "$1")" ;;
       S5F:*)
         local crp; crp=$(printf '%s' "$3" | sed -n 's/.*--lead-fix \([^ ]*\) .*/\1/p')
         mkdir -p "$(dirname "$crp")"; [ -f "$crp" ] || r35_rep "$crp" 1 1
@@ -11811,6 +12049,13 @@ r35_loop_in() {
   quiet_window_begin() { :; }; quiet_window_end() { :; }; with_doc_lock() { return 0; }
   answered_judgment_stage() { :; }; segment_process_b() { return 1; }; s4_attempt_base() { printf '%s' "$H35"; }
   predicate_implement() { return 0; }; predicate_review() { return 0; }
+  # 설계 수준 재수렴(S1R) — R35_RCFAIL 이면 종단 리터럴 없이 끝나고, R35_DECLMOVE 면 재수렴
+  # 뒤에 읽는 슬라이스 선언 다이제스트가 앞의 것과 다르다.
+  predicate_reconverge() { [ -z "${R35_RCFAIL:-}" ]; }
+  reconverge_row() { printf 'reconverge_row %s\n' "$*" >> "$R35/spawn.log"; }
+  slice_decl_digest() {
+    if [ -n "${R35_DECLMOVE:-}" ] && [ -f "$R35/decl-n" ]; then printf 'moved'; else : > "$R35/decl-n"; printf 'same'; fi
+  }
   classify_termination() {
     # 리드 수정은 R35_LFCLASS 가 있으면 그 부류, 없으면 술어대로 정상 완료·공허한 성공이다.
     if [ "${1%%:*}" = S5F ]; then
@@ -11826,7 +12071,8 @@ r35_loop_in() {
   }
   stage_account_of() { :; }; stage_plan_sha256() { :; }; stage_session_id() { printf -- '-'; }
   stage_parent_id() { printf -- '-'; }; stage_effort_rec_of() { printf -- '-'; }
-  stage_served_model_of() { printf -- '-'; }; stage_attempt_pinned() { printf '1'; }; stage_log_path() { printf '/dev/null'; }
+  stage_served_model_of() { printf -- '-'; }; stage_attempt_pinned() { printf '1'; }
+  stage_log_path() { case "$1" in S1R:*) printf '%s/s1r.json' "$RUN_DIR" ;; *) printf '/dev/null' ;; esac; }
   fileset_escape() {
     [ -f "$R35/lf-dirty" ] || return 0
     park "$1" cone 무효화 "게이트 park" "선언 밖 파일 편집"; return 1
@@ -11853,7 +12099,7 @@ r35_loop_in() {
 r35_loop() {
   local name=$1 cap=$2 dispo="" i=0 b; shift 2
   while [ "$1" != -- ]; do dispo="$dispo $1"; shift; done; shift
-  rm -f "$R35"/bq-* "$R35/crashed" "$R35/nx-n" "$R35/lf-dirty" "$R35"/*.lead-fix.md "$R35"/loop/docs/reviews/*.lead-fix.md
+  rm -f "$R35"/bq-* "$R35/crashed" "$R35/nx-n" "$R35/lf-dirty" "$R35/decl-n" "$R35"/*.lead-fix.md "$R35"/loop/docs/reviews/*.lead-fix.md
   : > "$R35/spawn.log"; : > "$R35/cwd.log"; : > "$R35/lf-rows.log"
   for b in "$@"; do i=$((i + 1)); printf '%b' "$b" > "$R35/bq-$i"; done
   R35RUN="$R35/run-loop-$name"; mkdir -p "$R35RUN/log" "$R35RUN/halt"
@@ -11918,6 +12164,48 @@ r35_lrc=$(R35_NX="리뷰_없음 리드_수정" r35_loop lf-fresh 1 11 0 -- "$R35
 check "35: 상한 회차 뒤 같은 프로세스의 다음 회차가 S5F 와 확인 리뷰를 띄우고 머지로 간다" \
   "$r35_lrc/$(r35_n '^S4:S2:1 ')/$(r35_n '^S5:S2:1 ')/$(r35_n '^S5F:S2:2 ')/$(r35_n '^S4:S2:2')/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')/$(r35_n '^park')" \
   "0/1/1/1/0/1/1/0"
+
+# --- 사다리의 재수렴·재구현 회차 ---
+# 재수렴 회차는 마지막 리포트를 「설계 수준 잔여」 범위로 S1R 에 넘기고, 슬라이스 선언이
+# 그대로면 같은 세그먼트를 그 회차 번호로 재구현·확인 리뷰한다. 선언이 옮겨졌으면 재계획
+# 경로(반환 2)로 가고 구현을 띄우지 않는다. 종단 리터럴 없이 끝난 재수렴은 행만 남기고
+# 다음 회차가 같은 번호로 리드 수정을 띄운다. 재구현 회차는 S4 를 마지막 리포트와 함께 띄운다.
+r35_lrc=$(R35_NX="리뷰_없음 재수렴" r35_loop rcv-same 1 11 0 -- "$R35BOK" "$R35BOK")
+r35_s1r=$(grep '^S1R:S2:2 ' "$R35/spawn.log" | sed -n 1p)
+check "35: 재수렴 회차는 마지막 리포트를 설계 수준 잔여 범위로 S1R 에 넘긴다" \
+  "$(r35_n '^S1R:S2:2 ')/$(printf '%s' "$r35_s1r" | grep -c '/cc-cmds:design-reconverge .*"설계 수준 잔여 /.*-c1\.md"' || true)/$(r35_n '^reconverge_row S2 S1R:S2:2$')" \
+  "1/1/1"
+check "35: 슬라이스 선언이 그대로인 재수렴 뒤에는 같은 회차가 재구현·확인 리뷰를 띄우고 머지로 간다" \
+  "$r35_lrc/$(r35_n '^S4:S2:2 ')/$(grep '^S4:S2:2 ' "$R35/spawn.log" | grep -c '수정 대상: /.*-c1\.md 의 P0·P1' || true)/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')/$(r35_n '^park')" \
+  "0/1/1/1/1/0"
+r35_lrc=$(R35_DECLMOVE=1 R35_NX="리뷰_없음 재수렴" r35_loop rcv-moved 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 재수렴이 슬라이스 선언을 옮기면 재계획(2)으로 가고 구현을 띄우지 않는다" \
+  "$r35_lrc/$(r35_n '^S1R:S2:2 ')/$(r35_n '^S4:S2:2 ')/$(r35_n '^merge S2')" "2/1/0/0"
+# 결함을 고친 재수렴은 구속면을 움직이므로 거의 항상 `재설계 필요` 를 낸다. 그 판정은 이미
+# 계획을 세운(plan_sha256 구현 행이 있는) 끝나지 않은 다른 세그먼트가 있을 때만 재계획(2)이고,
+# 혼자이거나 뒤 세그먼트가 계획만 된 세그먼트는 같은 회차에서 재구현한다 — 같은 원장에서
+# 라우터의 replan_due[] 가 그 형제를 담지 않아 판정표가 `재구현` 을 내는 것과 같은 결말이다.
+r35_lrc=$(R35_RVV="재설계 필요" R35_NX="리뷰_없음 재수렴" r35_loop rcv-redesign 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 형제가 없는 세그먼트의 재수렴이 재설계 필요로 끝나면 같은 회차가 재구현·확인 리뷰를 띄우고 머지로 간다" \
+  "$r35_lrc/$(r35_n '^S1R:S2:2 ')/$(r35_n '^S4:S2:2 ')/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')/$(r35_n '^park')" "0/1/1/1/1/0"
+r35_lrc=$(R35_SIB=1 R35_RVV="재설계 필요" R35_NX="리뷰_없음 재수렴" r35_loop rcv-redesign-sib 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 뒤 형제가 계획만 된 세그먼트의 재수렴이 재설계 필요로 끝나면 같은 회차가 재구현·확인 리뷰를 띄우고 머지로 간다" \
+  "$r35_lrc/$(r35_n '^S1R:S2:2 ')/$(r35_n '^S4:S2:2 ')/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')/$(r35_n '^park')" "0/1/1/1/1/0"
+L35SIBP=$(r35_led loop-rcv-redesign-sibplan "- \`stage-result\` | 세그먼트=S3 | 스테이지=S4 | plan_sha256=$(printf '%064d' 0) | 종단 부류=정상 완료")
+r35_lrc=$(R35_LOOPLEDGER="$L35SIBP" R35_SIB=1 R35_RVV="재설계 필요" R35_NX="리뷰_없음 재수렴" r35_loop rcv-redesign-sibplan 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 계획을 가진 끝나지 않은 형제가 있으면 재설계 필요는 재계획(2)으로 가고 구현을 띄우지 않는다" \
+  "$r35_lrc/$(r35_n '^S1R:S2:2 ')/$(r35_n '^S4:S2:2 ')/$(r35_n '^merge S2')" "2/1/0/0"
+r35_lrc=$(R35_SIB=1 R35_RVV="불필요" R35_NX="리뷰_없음 재수렴" r35_loop rcv-unneeded-sib 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 형제가 있어도 불필요로 끝난 재수렴은 같은 세그먼트를 재구현한다" \
+  "$r35_lrc/$(r35_n '^S4:S2:2 ')/$(r35_n '^merge S2')" "0/1/1"
+r35_lrc=$(R35_RCFAIL=1 R35_NX="리뷰_없음 재수렴 리드_수정" r35_loop rcv-fail 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 종단 리터럴 없이 끝난 재수렴은 공허한 성공 행을 남기고 같은 번호의 리드 수정으로 이어진다" \
+  "$r35_lrc/$(r35_n '^reconverge_row S2 S1R:S2:2 공허한 성공$')/$(r35_n '^S4:S2:2 ')/$(r35_n '^S5F:S2:2 ')/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')" \
+  "0/1/0/1/1/1"
+r35_lrc=$(R35_NX="리뷰_없음 재구현" r35_loop reimpl 1 11 0 -- "$R35BOK" "$R35BOK")
+check "35: 재구현 회차는 S1R·S5F 없이 S4 를 마지막 리포트와 함께 띄우고 확인 리뷰로 간다" \
+  "$r35_lrc/$(r35_n '^S1R:')/$(r35_n '^S5F:')/$(grep '^S4:S2:2 ' "$R35/spawn.log" | grep -c '수정 대상: /.*-c1\.md 의 P0·P1' || true)/$(r35_n '^S5:S2:2 ')/$(r35_n '^merge S2')" \
+  "0/0/0/1/1/1"
 
 r35_lrc=$(R35DOC="$R35SLI" r35_loop slice 1 0 -- "$R35BSL" "$R35BOK")
 check "35: 다른 슬라이스 몫 거절은 --slice 없는 리뷰 한 번으로 받고, 그 리포트로 머지까지 간다" \

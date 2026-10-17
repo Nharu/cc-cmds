@@ -44,6 +44,12 @@ export CC_CMDS_DASHBOARD
 # fixtures above it stay pending the way they are written.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
+# The fixture runs open with this repository's gate and take a version pin.
+# Without the sync seam that pin fetches the real `origin` and, on any branch
+# but the base, pins the remote tip — so every snapshot assertion would test
+# the base branch's gate instead of the checkout under test.
+CC_GATE_PIN_SYNC_DISABLE=1
+export CC_GATE_PIN_SYNC_DISABLE
 
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -417,6 +423,13 @@ check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이�
 check "대상 훅 거절이 없으면 guard_refusals 는 빈 배열이다" "$(jq -c .guard_refusals "$WORK/s1.json")" "[]"
 check "segments[] 의 원소는 원격 상태 필드를 싣는다" \
   "$(jq -r '[.segments[] | has("브랜치") and has("HEAD") and has("원격 팁") and has("PR") and has("원격 단계") and has("리뷰 줄")] | if length == 0 then "원소 없음" else all | tostring end' "$WORK/s1.json")" "true"
+# THE CONE AND REPLAN ARRAYS ARE ALWAYS PRESENT, right after `blocked`, and stay
+# out of the default projection: the router asks for them by name, and a key that
+# appeared only when it had elements would read as absent on the ordinary night.
+check "cone_blocks 와 replan_due 가 blocked 바로 뒤에 그 순서로 온다" \
+  "$(jq -r 'keys_unsorted | "\(index("cone_blocks") - index("blocked")),\(index("replan_due") - index("blocked"))"' "$WORK/s1.json")" "1,2"
+check "막힘·재계획이 없으면 둘 다 빈 배열이다" \
+  "$(jq -c '[.cone_blocks, .replan_due]' "$WORK/s1.json")" "[[],[]]"
 check "--fields H 는 스냅숏의 H 를 날값 한 줄로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null)" \
   "$(jq -r .H "$WORK/s1.json")"
@@ -584,6 +597,10 @@ check "대기 승인 항목이 절단점을 싣는다" \
   "$(jq -r '.pending_approvals[0].cutpoint' "$SNAP_U")" "판단"
 check "대기 승인 항목이 질문 문면을 싣는다" \
   "$(jq -r '.pending_approvals[0].question' "$SNAP_U")" "q"
+# The class is what tells the router a 사람-결정 wait from an ordinary one, and a
+# question raised without one still carries the key, as `-`.
+check "대기 승인 항목이 판단 부류를 싣고, 부류 없는 질문은 - 다" \
+  "$(jq -r '.pending_approvals[0].class' "$SNAP_U")" "-"
 
 RENDER_U="$WORK/render.txt"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null ) > "$RENDER_U"
@@ -703,7 +720,7 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # together with what a carry-over act names — the last cycle's number, review
 # HEAD and report path. A segment without a `segment` row is not in the run's
 # segment set and gets no element; `review_carry` carries the re-implementation
-# cycle cap for display only. The element has no streak or trigger field: the
+# cycle cap and the re-check round cap for display only. The element has no streak or trigger field: the
 # repeated-P0 guard is gone, and a field nothing writes is one a router reads.
 # ---------------------------------------------------------------------------
 printf -- '- `segment` | id=S8 | 상태=실행중 | 워크트리=/nonexistent/S8\n' >> "$LEDGER"
@@ -716,8 +733,8 @@ check "review_next 원소에 가드 필드가 없다" \
   "$(jq -c '.review_next[] | select(.["세그먼트"]=="S8") | keys' "$SNAP_N")" '["다음","리뷰 HEAD","리포트 경로","사이클","세그먼트"]'
 check "segment 행이 없는 세그먼트는 review_next 에 오르지 않는다" \
   "$(jq -r '[.review_next[] | select(.["세그먼트"]=="S9")] | length' "$SNAP_N")" "0"
-check "review_carry 가 재구현 사이클 상한 하나를 싣는다" \
-  "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2}'
+check "review_carry 가 재구현 사이클 상한과 확인 리뷰 회차 상한을 싣는다" \
+  "$(jq -c '.review_carry' "$SNAP_N")" '{"REIMPL_CYCLE_CAP":2,"RECHECK_ROUND_CAP":2}'
 
 # ---------------------------------------------------------------------------
 # 6d. The design dispatch is carried by BOTH router copies
@@ -2955,6 +2972,22 @@ check "드라이버도 답한 판단을 그 스테이지에 다시 붙인다" \
 # Spent-ness is still read — the whole-field pin did not turn the test off.
 check "실제로 소진된 판단은 여전히 배열에 오르지 않는다" \
   "$(qj_ids | { grep -xF QJ-CITING || true; } | gate_count)" "0"
+
+# A 사람-결정 refusal IS listed, with its state beside it, because the router
+# parks the segment on it; the driver's re-dispatch pick still takes only `승인`,
+# so the refusal is never handed back to the stage as an answer to carry out.
+gate_append '승인' "승인 id=QJ-PERSON" "상태=대기" "대상=repo" "절단점=판단" "막는 세그먼트=S4:QW:1" \
+  "질문 문면=사람이 정할 물음" "판단 부류=사람-결정"
+qj_close QJ-PERSON 거부 "사람이 정할 물음" "하지 않는다"
+: > "$RUN_DIR/log/S4:QW:1.json"
+check "사람-결정 판단의 거부는 답이 온 판단 배열에 state 거부로 오른다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-PERSON") | .state' 2>/dev/null)" "거부"
+check "답한 판단의 원소는 state 승인을 싣는다" \
+  "$(printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[] | select(.id == "QJ-ANSWERED") | .state' 2>/dev/null)" "승인"
+check "부류 없는 판단의 거부는 여전히 배열에 오르지 않는다" \
+  "$(qj_ids | { grep -xF QJ-REFUSED || true; } | gate_count)" "0"
+check "드라이버는 사람-결정 거부를 그 스테이지에 답으로 다시 붙이지 않는다" \
+  "$(answered_judgment_stage QW S4 2>/dev/null)" ""
 
 LEDGER="$LEDGER_SAVE"
 RUN_DIR="$RUN_DIR_SAVE"
