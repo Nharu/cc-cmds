@@ -15993,7 +15993,7 @@ gate_surface_check() {
     # the next run is then the successor sweep's to decide, so telling a person
     # to do it would be the wrong instruction; the watcher's invalidation arm
     # says the run ended and that the verdict is pending.
-    if [ -z "$(manifest_rekick_rows | head -1)" ] \
+    if [ -z "$(manifest_rekick_rows | sed -n '1p')" ] \
        && gate_may_raise_banner && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
       : > "$RUN_DIR/notify.announced-void" 2>/dev/null || true
       cc_notify_fire rekick \
@@ -27735,7 +27735,7 @@ gate_verb_rekick_approval() {
       case "$delta" in
         ''|*[!0-9]*|0*) warn "--delta with 상한 is the new chain cap, a positive integer (received: ${delta:-(none)})"; return "$GATE_EXIT_VOCAB" ;;
       esac
-      cur=$(manifest_row_fields "$(manifest_rekick_rows | head -1)" '연쇄 상한' 2>/dev/null || true)
+      cur=$(manifest_row_fields "$(manifest_rekick_rows | sed -n '1p')" '연쇄 상한' 2>/dev/null || true)
       case "$cur" in
         ''|*[!0-9]*) ;;
         *) [ "$delta" -gt "$cur" ] || { warn "--delta $delta does not raise the chain cap $cur"; return "$GATE_EXIT_VOCAB"; } ;;

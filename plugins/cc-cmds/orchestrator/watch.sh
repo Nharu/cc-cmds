@@ -182,7 +182,7 @@ watch_has_rekick_row() { grep -qE '^- `재킥오프`' "$(watch_rekick_manifest)"
 watch_completed_normally() {
   # A normal completion opens no successor, so there is no outcome to wait for.
   [ "$(sed -n 's/^토큰=//p' "$RUN_DIR/rekick-candidate" 2>/dev/null | sed -n '1p')" = "해당없음" ] \
-    && grep -E '^- `자율 승인` \| ' "$LEDGER" 2>/dev/null | grep -F ' 결정=종료 ' | grep -qF ' 종료 부류=완료 '
+    && [ -n "$( { grep -E '^- `자율 승인` \| ' "$LEDGER" 2>/dev/null || true; } | grep -F ' 결정=종료 ' | grep -F ' 종료 부류=완료 ' || true)" ]
 }
 watch_rekick_text() {
   # watch_rekick_text <outcome line> — the sentence for one sweep outcome.
