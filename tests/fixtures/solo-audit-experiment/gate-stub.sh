@@ -8,8 +8,11 @@
 #           the second writes what the stage would have written and `done`:
 #           a design run writes the frozen document (no 상태 line when
 #           STUB_NO_FREEZE=1) and log/D1#1.json, carrying $STUB_CONTAM when
-#           set; an audit run copies $STUB_SOLO_REPORTS/<report name> into
-#           the clone's docs/design-audit/
+#           set; an audit run copies $STUB_SOLO_REPORTS/<report name> and
+#           every $STUB_SOLO_REPORTS/<report name without .md>.*.md into the
+#           clone's docs/design-audit/
+#     handoff  appends a handoff row with 사유=$STUB_HANDOFF to the run's
+#           ledger in the clone and exits 0 without done
 #     wait  exits 5 (an approval for a person)
 #     fail  exits 7
 #     failopen  opens the run, writes a result line costing $STUB_RUN_COST,
@@ -49,6 +52,11 @@ rid=$(hdr run-id); kind=$(hdr anchor-kind); doc=$(hdr owner-doc)
 clone=$(grep -m 1 -E '^- `target` ' "$m" | tr '|' '\n' | sed -n 's/^ *메인 워크트리=//p' | sed 's/[[:space:]]*$//')
 rd="${XDG_STATE_HOME:?}/cc-cmds/run/$rid"
 mkdir -p "$rd/log"
+if [[ "${STUB_GATE_MODE:-ok}" == "handoff" ]]; then
+  mkdir -p "$clone/docs/pipeline-run"
+  printf -- '- `handoff` | 교대=1 | 사유=%s | prev=0\n' "${STUB_HANDOFF:?}" >> "$clone/docs/pipeline-run/$rid.md"
+  exit 0
+fi
 if [[ "${STUB_GATE_MODE:-ok}" == "failopen" ]]; then
   printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "${STUB_RUN_COST:-2}" > "$rd/log/open.json"
   exit 7
@@ -72,7 +80,9 @@ if [[ "$kind" == "intent" ]]; then
 else
   name="$(printf '%s' "${doc%.md}" | tr '/' '-').md"
   mkdir -p "$clone/docs/design-audit"
-  cp "${STUB_SOLO_REPORTS:?}/$name" "$clone/docs/design-audit/$name"
+  for f in "${STUB_SOLO_REPORTS:?}/$name" "$STUB_SOLO_REPORTS/${name%.md}".*.md; do
+    if [[ -f "$f" ]]; then cp "$f" "$clone/docs/design-audit/$(basename "$f")"; fi
+  done
   printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "${STUB_RUN_COST:-2}" > "$rd/log/A1#1.json"
 fi
 touch "$rd/done"

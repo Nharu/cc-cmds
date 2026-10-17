@@ -234,8 +234,47 @@ sha_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
 gen_run_id() { printf '%s-%s' "$(date -u +%Y%m%d)" "$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; }
 
 doc_slug() { local b; b=$(basename "$1"); printf '%s' "${b%.md}"; }
-# report_name <document key> — the first audit's report file name.
+# report_name <document key> — the name the audit skill gives a document's
+# report. Later audits of the same document follow no fixed naming: a suffix
+# inside the name, a run id, a date, or the earlier report moved aside to
+# `<name>.prior-<hash>.md` while the re-audit takes this name. So the name
+# alone does not tell the first audit.
 report_name() { local k="${1%.md}"; printf '%s.md' "$(printf '%s' "$k" | tr '/' '-')"; }
+
+# freeze_at <report> — when the audited document was frozen: the disclosure
+# block's 동결 시각, else the `frozen-at` line of the report's opening, which a
+# report without the block carries too, spelled `frozen-at: v`, `- frozen-at:
+# v`, `**frozen-at**: v` or `- **frozen-at**: v`.
+freeze_at() {
+  local v=""
+  if has_fence "$1"; then v=$(fence_get "$1" '동결 시각'); fi
+  [[ -n "$v" ]] || v=$(grep -m 1 -E '^(- )?(\*\*)?frozen-at(\*\*)?: ' "$1" | sed -E 's/^(- )?(\*\*)?frozen-at(\*\*)?: *//' || true)
+  printf '%s' "$v" | sed 's/[[:space:]]*$//'
+}
+
+# audit_index <reports dir> — one line per report, reader copies left out:
+# name, owner-doc, freeze epoch (empty when unreadable).
+audit_index() {
+  local r name
+  find "$1" -maxdepth 1 -name '*.md' 2>/dev/null | LC_ALL=C sort | while IFS= read -r r; do
+    name=$(basename "$r")
+    case "$name" in *reader-*) continue ;; esac
+    printf '%s\t%s\t%s\n' "$name" "$(hdr_field "$r" owner-doc)" "$(iso_epoch "$(freeze_at "$r")")"
+  done
+}
+
+# first_audit <index> <owner-doc> — the name of the document's first audit:
+# the report frozen earliest, with or without its block, ties broken by name.
+# The name decides only when the report under report_name has no readable
+# freeze time, because then the times cannot be compared. Empty when the
+# document has no report.
+first_audit() {
+  awk -F'\t' -v o="$2" -v nm="$(report_name "$2")" '
+    $2 != o { next }
+    $1 == nm && $3 == "" { fallback = 1 }
+    $3 != "" && (bn == "" || $3 + 0 < best || ($3 + 0 == best && $1 < bn)) { best = $3 + 0; bn = $1 }
+    END { print (fallback ? nm : bn) }' "$1"
+}
 
 # ---------- cost guard -------------------------------------------------------
 
@@ -309,6 +348,9 @@ select_pairs() {
     printf '%s\t%s\t%s\t%s\n' "$id" "$ow" "${ke:-}" "$ok" >> "$idx"
   done
 
+  local aidx="$EXP/.audits.tsv"
+  audit_index "$ar" > "$aidx"
+
   local rows="$EXP/.rows.tsv" r name owner first fa fe u why run base plan tier scope prow ipath isha tdoc tree pre
   : > "$rows"
   while IFS= read -r r; do
@@ -324,15 +366,14 @@ select_pairs() {
     fa=$(fence_get "$r" '동결 시각'); fe=$(iso_epoch "$fa")
     u=$(fence_get "$r" '고유 결함 수')
     why=""; run="-"; base="-"; first=""
-    [[ -z "$owner" ]] || first=$(report_name "$owner")
+    [[ -z "$owner" ]] || first=$(first_audit "$aidx" "$owner")
     if [[ -z "$fe" ]]; then why="동결 시각을 읽을 수 없다"
     elif (( fe < fep || fe >= tep )); then why="창 밖 (UTC $(epoch_date "$fe"))"
     elif [[ ! "$u" =~ ^[0-9]+$ ]]; then why="고유 결함 수를 읽을 수 없다"
     elif [[ -z "$owner" ]]; then why="owner-doc= 이 없다"
-    # The first audit of a document writes <report_name>; a later audit of the
-    # same document gets a suffixed name. With or without its block, that
-    # first report makes this one a re-audit.
-    elif [[ "$name" != "$first" && -f "$ar/$first" ]]; then why="같은 owner-doc 의 첫 감사 보고서 ${first} 가 따로 있다 (재감사)"
+    # Any report of the same document frozen earlier, with or without its
+    # block and whatever its name, makes this one a re-audit.
+    elif [[ -n "$first" && "$name" != "$first" ]]; then why="같은 owner-doc 의 첫 감사 보고서 ${first} 가 따로 있다 (재감사)"
     fi
     if [[ -z "$why" ]]; then
       run=$(awk -F'\t' -v o="$owner" -v f="$fe" '$2 == o && $4 == 1 && $3 != "" && $3 < f && $3 > best { best = $3; id = $1 } END { print id }' "$idx")
@@ -407,7 +448,7 @@ select_pairs() {
   } > "$sel"
   rm -f "$sel.tmp"
   awk -F'\t' '{ print $1 "\t" $8 }' "$rows" > "$EXP/.paths.tsv"
-  rm -f "$rows" "$keep" "$idx"
+  rm -f "$rows" "$keep" "$idx" "$aidx"
 
   if (( m_ < PAIRS )); then
     write_short_report "후보가 ${m_}건이다 — 선정 규칙은 ${PAIRS}건을 요구한다 (후보 부족)"
@@ -604,7 +645,9 @@ latest_handoff_reason() {
 
 # seat <manifest> <clone> <run id> <log> — issue `router-shift` as the seat does
 # until the run's done file exists. Returns 0 on done, 5 on an approval for a
-# person, any other status on a failure.
+# person, 6 on a shift that handed off with 중단, any other status on a
+# failure. After a 승인 or 중단 handoff the next call waits on a person, so the
+# seat does not send 대기 — the gate would refuse it.
 seat() {
   local m="$1" clone="$2" rid="$3" log="$4" rd="$RUN_ROOT/$3" reason="상한" i=0 rc k h
   while :; do
@@ -624,7 +667,12 @@ seat() {
       *) return "$rc" ;;
     esac
     [[ -e "$rd/done" ]] && return 0
-    if [[ "$(latest_handoff_reason "$clone/docs/pipeline-run/$rid.md")" == "상한" ]]; then reason="상한"; else reason="대기"; fi
+    case "$(latest_handoff_reason "$clone/docs/pipeline-run/$rid.md")" in
+      상한) reason="상한" ;;
+      승인) return 5 ;;
+      중단) return 6 ;;
+      *) reason="대기" ;;
+    esac
   done
 }
 
@@ -654,7 +702,11 @@ run_seat_or_stop() {
     0) return 0 ;;
     5)
       kv_set "$ps/pair.state" status "사람 대기"
-      echo "solo-audit-experiment: pair ${n}: the ${kind} run is waiting on an approval for a person (exit 5 from the gate). Answer it at the run's seat, then call the same command again." >&2
+      echo "solo-audit-experiment: pair ${n}: the ${kind} run is waiting on an approval for a person. Answer it at the run's seat, then call the same command again." >&2
+      exit 3 ;;
+    6)
+      kv_set "$ps/pair.state" status "사람 대기"
+      echo "solo-audit-experiment: pair ${n}: the ${kind} run's shift handed off with 중단. Read the latest handoff row in $clone/docs/pipeline-run/$rid.md, settle it at the run's seat, then call the same command again." >&2
       exit 3 ;;
     *)
       kv_set "$ps/pair.state" status "실패"
@@ -706,9 +758,18 @@ audit_pair() {
   run_seat_or_stop "$n" audit
   clone=$(kv "$ps/pair.state" clone); doc=$(kv "$ps/pair.state" doc)
   kv_set "$ps/pair.state" audit_done 1
-  local rep="$clone/docs/design-audit/$(report_name "$doc")"
-  if [[ ! -f "$rep" ]] || ! has_fence "$rep"; then
-    mark_invalid "$n" "감사 보고서 없음 (공시 블록 있는 보고서)"
+  # The solo side's report is picked by the same first-audit rule as the
+  # team side's.
+  local first rep
+  audit_index "$clone/docs/design-audit" > "$ps/audits.tsv"
+  first=$(first_audit "$ps/audits.tsv" "$doc")
+  rep="$clone/docs/design-audit/$first"
+  if [[ -z "$first" || ! -f "$rep" ]]; then
+    mark_invalid "$n" "감사 보고서 없음"
+    return 0
+  fi
+  if ! has_fence "$rep"; then
+    mark_invalid "$n" "첫 감사가 공시 블록 없이 멈춤 (${first})"
     return 0
   fi
   kv_set "$ps/pair.state" solo_report "$rep"

@@ -188,6 +188,7 @@ mk_report() {
 
 ## 감사 개시
 - 대상: ${main}/${owner}
+- frozen-at: ${at}
 **고유 결함 수**: 99
 
 ## 결정론적 검사
@@ -279,6 +280,12 @@ mk_report "$dar/docs-n1.md" docs/n1.md 2026-10-12T00:00:00Z 1000 0 3 1
 awk -v b="$FB" -v e="$FE" 'index($0, b) == 1 { s = 1; next } index($0, e) == 1 { s = 0; next } !s' "$dar/docs-n1.md" > "$dar/docs-n1.md.t"
 mv "$dar/docs-n1.md.t" "$dar/docs-n1.md"
 mk_report "$dar/docs-n1.A1-3.md" docs/n1.md 2026-10-14T00:00:00Z 3000 0 3 1
+# n2's first report has neither the block nor a frozen-at line: with no time
+# to compare, its plain name still marks it as the first audit.
+mk_report "$dar/docs-n2.md" docs/n2.md 2026-10-12T00:00:00Z 1000 0 3 1
+awk -v b="$FB" -v e="$FE" 'index($0, b) == 1 { s = 1; next } index($0, e) == 1 { s = 0; next } !s && index($0, "- frozen-at: ") != 1' "$dar/docs-n2.md" > "$dar/docs-n2.md.t"
+mv "$dar/docs-n2.md.t" "$dar/docs-n2.md"
+mk_report "$dar/docs-n2.A1-3.md" docs/n2.md 2026-10-14T00:00:00Z 3000 0 3 1
 
 mk_teamdoc docs/c2.md "$base"
 # Three runs on c2: the latest kickoff before the freeze is the team-4 one.
@@ -290,7 +297,10 @@ mk_report "$dar/docs-c2.md" docs/c2.md 2026-10-13T00:00:00Z 4000 0 4 1
 for s in 3 4 5; do
   mk_teamdoc "docs/c$s.md" "$base"; mk_run "20261011-00000c${s}1" "docs/c$s.md" 2026-10-11T00:00:00Z team-2 single "$base"
 done
-mk_report "$dar/docs-c3.md" docs/c3.md 2026-10-13T00:00:00Z 6000 0 6 1
+# c3's first audit was moved aside to .prior-<hash> and its re-audit took the
+# plain name: the earlier freeze, not the name, makes the first audit.
+mk_report "$dar/docs-c3.prior-0000c3c3.md" docs/c3.md 2026-10-13T00:00:00Z 6000 0 6 1
+mk_report "$dar/docs-c3.md" docs/c3.md 2026-10-15T00:00:00Z 6000 0 7 1
 mk_report "$dar/docs-c4.md" docs/c4.md 2026-10-13T00:00:00Z 8000 0 8 1
 mk_report "$dar/docs-c5.md" docs/c5.md 2026-10-13T00:00:00Z 10000 0 10 1
 # Frozen 2026-10-17 08:00 +09:00 is 2026-10-16 23:00 UTC: inside the window.
@@ -333,7 +343,7 @@ scenario() {
   export XDG_STATE_HOME="$sc/xdg" SOLO_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg"
   export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log"
   : > "$STUB_GATE_LOG"; : > "$STUB_CLI_LOG"
-  unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP
+  unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF
 }
 xp() { bash "$exp_sh" --repo "$main" "$@"; }
 acts() { grep -c '^act ' "$STUB_GATE_LOG" || true; }
@@ -363,7 +373,8 @@ disp() { awk -F'\t' -v r="$1" '$1 == r { print $7 "|" $8 }' "$sel"; }
 got=$(awk -F'\t' '$7 ~ /^선정 / { print $7 "=" $1 }' "$sel" | LC_ALL=C sort | tr '\n' ' ')
 [[ "$got" == "선정 1=docs-c1.md 선정 2=docs-c2.md 선정 3=docs-c4.md 선정 4=docs-c5.md 선정 5=docs-c6.md " ]] \
   && pass "selection: quantile ranks 0 1 3 4 5 of six candidates" || fail "selection: picked '$got'"
-[[ "$(disp docs-c3.md)" == "후보|-" ]] && pass "selection: the unpicked candidate stays a 후보" || fail "selection: c3 is '$(disp docs-c3.md)'"
+[[ "$(disp docs-c3.prior-0000c3c3.md)" == "후보|-" ]] && pass "selection: the unpicked candidate stays a 후보" || fail "selection: c3 prior is '$(disp docs-c3.prior-0000c3c3.md)'"
+case "$(disp docs-c3.md)" in "제외|같은 owner-doc 의 첫 감사 보고서 docs-c3.prior-0000c3c3.md 가 따로 있다 (재감사)") pass "selection: a re-audit under the plain name is excluded when the first audit was moved to .prior" ;; *) fail "selection: c3 re-audit is '$(disp docs-c3.md)'" ;; esac
 case "$(disp docs-w1.md)" in "제외|창 밖 (UTC 2026-10-09)") pass "window: +09:00 freeze on 10-10 is 10-09 UTC → out" ;; *) fail "window: w1 is '$(disp docs-w1.md)'" ;; esac
 case "$(disp docs-w2.md)" in "제외|창 밖 (UTC 2026-10-17)") pass "window: 10-17 00:30 UTC → out" ;; *) fail "window: w2 is '$(disp docs-w2.md)'" ;; esac
 [[ "$(disp docs-c6.md)" == "선정 5|-" ]] && pass "window: +09:00 freeze on 10-17 is 10-16 UTC → in" || fail "window: c6 is '$(disp docs-c6.md)'"
@@ -371,6 +382,7 @@ case "$(disp docs-t1.md)" in "제외|팀 티어가 아니다"*) pass "selection:
 case "$(disp docs-b1.md)" in "제외|design_scope 가 base 다") pass "selection: base scope excluded" ;; *) fail "selection: b1 is '$(disp docs-b1.md)'" ;; esac
 case "$(disp docs-c1.A1-3.md)" in "제외|같은 owner-doc 의 첫 감사 보고서 docs-c1.md 가 따로 있다 (재감사)") pass "selection: the first audit per owner-doc is kept" ;; *) fail "selection: re-audit is '$(disp docs-c1.A1-3.md)'" ;; esac
 case "$(disp docs-n1.A1-3.md)" in "제외|같은 owner-doc 의 첫 감사 보고서 docs-n1.md 가 따로 있다 (재감사)") pass "selection: a re-audit is excluded when the first audit has no block" ;; *) fail "selection: n1 re-audit is '$(disp docs-n1.A1-3.md)'" ;; esac
+case "$(disp docs-n2.A1-3.md)" in "제외|같은 owner-doc 의 첫 감사 보고서 docs-n2.md 가 따로 있다 (재감사)") pass "selection: with no readable freeze time on the plain-named report, the name marks the first audit" ;; *) fail "selection: n2 re-audit is '$(disp docs-n2.A1-3.md)'" ;; esac
 [[ "$(disp docs-n1.md)" == "제외|공시 블록이 없다" ]] && pass "selection: a report without the block is recorded as 제외" || fail "selection: n1 is '$(disp docs-n1.md)'"
 case "$(disp docs-g1.md)" in "제외|기준 트리"*) pass "selection: 기준 트리 ≠ 판본= excluded" ;; *) fail "selection: g1 is '$(disp docs-g1.md)'" ;; esac
 case "$(disp docs-h1.md)" in "제외|인터뷰 기록 해시"*) pass "selection: interview hash mismatch excluded" ;; *) fail "selection: h1 is '$(disp docs-h1.md)'" ;; esac
@@ -524,6 +536,15 @@ scenario failgate
 export STUB_GATE_MODE=fail
 rc=0; xp run --exp-id 20261017-000000a2 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
 [[ "$rc" == "1" && "$(pstate 20261017-000000a2 1 status)" == "실패" ]] && pass "seat: other gate exit → pair 실패, exit 1" || fail "seat: exit 7 gave exit $rc"
+# A shift that handed off with 승인 or 중단 waits on a person: the seat sends no
+# 대기 after it.
+for h in 승인 중단; do
+  scenario "handoff-$h"
+  export STUB_GATE_MODE=handoff STUB_HANDOFF="$h"
+  rc=0; xp run --exp-id 20261017-000000a4 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == "3" && "$(pstate 20261017-000000a4 1 status)" == "사람 대기" && "$(acts)" == "1" ]] \
+    && pass "seat: a ${h} handoff → pair 사람 대기, exit 3, no 대기 call" || fail "seat: ${h} handoff gave exit $rc with $(acts) acts"
+done
 
 scenario nofreeze
 export STUB_NO_FREEZE=1
@@ -570,6 +591,31 @@ case "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$main/docs/solo-audit-
   "분류 교차 검사 실패 (solo "*"라우팅 조정 패스 적용: 1 ≠ 공시 0)") pass "classify: routing count ≠ fence → pair invalid" ;;
   *) fail "classify: routing mismatch not caught" ;;
 esac
+
+# ---- the solo side's first audit -------------------------------------------
+
+# The audit run's first report parked without the block and a re-audit was
+# written under another name: the pair is invalid for that reason.
+scenario soloparked
+alt="$tmp/solo-parked"; rm -rf "$alt"; cp -R "$solo_src" "$alt"
+awk -v b="$FB" -v e="$FE" 'index($0, b) == 1 { s = 1; next } index($0, e) == 1 { s = 0; next } !s' "$solo_src/docs-c1.md" > "$alt/docs-c1.md"
+mk_report "$alt/docs-c1.R2.md" docs/c1.md 2026-10-17T02:00:00Z 2000 0 2 1
+export STUB_SOLO_REPORTS="$alt"
+xp run --exp-id 20261017-000000e4 --budget-usd 1000 >/dev/null 2>&1 || true
+export STUB_SOLO_REPORTS="$solo_src"
+[[ "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$main/docs/solo-audit-experiment/20261017-000000e4/pairs/1/pair.tsv")" == "첫 감사가 공시 블록 없이 멈춤 (docs-c1.md)" ]] \
+  && pass "solo audit: a first report without the block → pair invalid for that reason" || fail "solo audit: parked first report not reported"
+# The audit run moved its first report to .prior and a re-audit took the plain
+# name: the earlier report is the one compared.
+scenario soloprior
+alt="$tmp/solo-prior"; rm -rf "$alt"; cp -R "$solo_src" "$alt"
+cp "$solo_src/docs-c1.md" "$alt/docs-c1.prior-0000c1c1.md"
+mk_report "$alt/docs-c1.md" docs/c1.md 2026-10-17T02:00:00Z 2000 0 3 1
+export STUB_SOLO_REPORTS="$alt"
+xp run --exp-id 20261017-000000e5 --budget-usd 1000 >/dev/null 2>&1 || true
+export STUB_SOLO_REPORTS="$solo_src"
+[[ "$(basename "$(pstate 20261017-000000e5 1 solo_report)")" == "docs-c1.prior-0000c1c1.md" ]] \
+  && pass "solo audit: the earlier-frozen .prior report is the solo first audit" || fail "solo audit: solo report is '$(pstate 20261017-000000e5 1 solo_report)'"
 
 # ---- rerun one pair ---------------------------------------------------------
 
