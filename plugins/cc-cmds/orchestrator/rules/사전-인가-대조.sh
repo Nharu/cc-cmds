@@ -19,6 +19,111 @@ if [ "$probe" != "1" ]; then
   # 적용 행위 — 적용 명령은 매니페스트의 적용 지점이 정하고 게이트가 전제를
   # 확인한 뒤에만 이 값을 싣는다. 같은 명령을 exec 으로 내면 여기를 지나지 않는다.
   [ "${GATE_KIND:-}" = "apply" ] && [ "$GATE_ARGV" = "적용" ] && [ -n "${GATE_APPLY_COMMAND:-}" ] && exit 0
+  # 재실행 행위 — `act --kind ci-rerun --cutpoint PR -- 재실행 <head sha>` 만 연다.
+  # 적격성은 여기서 보지 않는다: 이 행위에 대한 규칙 거부는 park 가 아니라 승인
+  # 요청으로 끝나므로, 게이트의 전제 함수가 철자·라우팅·tip 을 먼저 확인하고 지났을
+  # 때 `GATE_CI_RERUN_PRE=1` 을 싣는다. 표지가 없으면 열지 않는다.
+  if [ "${GATE_KIND:-}" = "ci-rerun" ] && [ "${GATE_ACT:-}" = "PR" ] && [ "${GATE_CI_RERUN_PRE:-}" = "1" ]; then
+    case "$GATE_ARGV" in
+      "재실행 "*)
+        rerun_sha="${GATE_ARGV#재실행 }"
+        case "$rerun_sha" in
+          ''|*[!0-9a-f]*) ;;
+          *) [ "${#rerun_sha}" -eq 40 ] && exit 0 ;;
+        esac ;;
+    esac
+  fi
+  # 재실행의 다른 철자는 행이 일치해도 열지 않는다 — 재실행은 위 행위로만 나간다.
+  # 등급 판정이 벗기는 투명 래퍼(env·genv 와 그 옵션·대입 낱말, command, nice, nohup,
+  # timeout 과 시간 인자, stdbuf, time, lockf 와 파일 인자, g 접두 꼴)를 같은 순서로
+  # 벗긴 뒤 argv0 을 basename 으로 읽는다. 감싼 철자를 지나쳐 보내면 등급이 외부 상태
+  # 변경으로 매기는 같은 행위가 사전 인가 행으로 열린다. 대상은 `gh run rerun`
+  # (-R·--repo·--hostname 과 그 값을 먼저 뗀다), 메서드와 무관한 REST 재실행·재요청
+  # 경로 다섯, `rerequestCheckSuite` 를 담거나 질의를 argv 밖(`query=@`, `--input`)에서
+  # 받는 `gh api graphql` 이다. 취소 철자는 여기서 보지 않는다.
+  rerun_hit=$(printf '%s' "$GATE_ARGV" | tr '\r\n' '  ' | awk '
+    function base(s,   n, p) { n = split(s, p, "/"); return p[n] }
+    {
+      n = NF; i = 1
+      while (i <= n) {
+        b = base($i)
+        if (b == "env" || b == "genv") {
+          i++
+          while (i <= n) {
+            if ($i == "--") { i++; break }
+            # `-S` 의 값은 펼쳐진 argv 에서 명령 낱말들 자신이므로 건너뛰지 않는다.
+            if ($i ~ /^(-u|-C|-P|--unset|--chdir)$/) { i += 2; continue }
+            if ($i ~ /^-/ || $i ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { i++; continue }
+            break
+          }
+        } else if (b == "command") {
+          i++
+          while (i <= n && $i ~ /^-/) { if ($i == "--") { i++; break } i++ }
+        } else if (b == "nice" || b == "gnice") {
+          i++
+          while (i <= n && $i ~ /^-/) {
+            if ($i == "--") { i++; break }
+            if ($i == "-n" || $i == "--adjustment") { i += 2; continue }
+            i++
+          }
+        } else if (b == "nohup" || b == "gnohup") {
+          i++
+        } else if (b == "timeout" || b == "gtimeout") {
+          i++
+          while (i <= n && $i ~ /^-/) {
+            if ($i == "--") { i++; break }
+            if ($i ~ /^(-s|-k|--signal|--kill-after)$/) { i += 2; continue }
+            i++
+          }
+          i++
+        } else if (b == "stdbuf" || b == "gstdbuf") {
+          i++
+          while (i <= n && $i ~ /^-/) {
+            if ($i == "--") { i++; break }
+            if ($i ~ /^-[ioe]$/ || $i ~ /^--(input|output|error)$/) { i += 2; continue }
+            i++
+          }
+        } else if (b == "time" || b == "gtime") {
+          i++
+          while (i <= n && $i ~ /^-/) {
+            if ($i == "--") { i++; break }
+            if ($i ~ /^(-o|-f|--output|--format)$/) { i += 2; continue }
+            i++
+          }
+        } else if (b == "lockf") {
+          i++
+          while (i <= n && $i ~ /^-/) {
+            if ($i == "--") { i++; break }
+            if ($i == "-t") { i += 2; continue }
+            i++
+          }
+          i++
+        } else break
+      }
+      if (i > n || base($i) != "gh") exit
+      m = 0
+      for (j = i + 1; j <= n; j++) {
+        if ($j ~ /^(-R|--repo|--hostname)$/) { j++; continue }
+        if ($j ~ /^(-R.|--repo=|--hostname=)/) continue
+        r[++m] = $j
+      }
+      if (m >= 2 && r[1] == "run" && r[2] == "rerun") { print "run rerun"; exit }
+      gql = 0; outside = 0
+      for (k = 1; k <= m; k++) {
+        w = r[k]; sub(/\?.*$/, "", w)
+        if (w ~ /(^|\/)actions\/runs\/[^\/]+\/rerun(-failed-jobs)?$/ ||
+            w ~ /(^|\/)actions\/jobs\/[^\/]+\/rerun$/ ||
+            w ~ /(^|\/)check-(suites|runs)\/[^\/]+\/rerequest$/) { print "rest " w; exit }
+        if (r[k] == "graphql") gql = 1
+        if (index(r[k], "query=@") || r[k] == "--input" || r[k] ~ /^--input=/) outside = 1
+      }
+      if (gql && (index(tolower($0), "rerequestchecksuite") || outside)) print "graphql"
+    }')
+  if [ -n "$rerun_hit" ]; then
+    echo "사전-인가-대조: a CI rerun ($rerun_hit) is not opened by a preauthorization row — issue it as \`act --kind ci-rerun --cutpoint PR -- 재실행 <head sha>\`" >&2
+    [ "${GATE_AUTO_RESOLVE:-}" = "1" ] && exit 1
+    exit 5
+  fi
   case "$GATE_SURFACE" in
     읽기|워크트리쓰기)
       exit 0 ;;

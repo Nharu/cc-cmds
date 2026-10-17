@@ -5790,13 +5790,13 @@ GHSTUB
   else
     bad "폴러 패스" "전이가 새 줄을 만들지 않았다: $(cat "$CK_OB")"
   fi
-  ck_cols=$(LC_ALL=C awk -F'\t' '{ if (NF != 7) c++ } END { print c + 0 }' "$CK_OB")
+  ck_cols=$(LC_ALL=C awk -F'\t' '{ if (NF != 9) c++ } END { print c + 0 }' "$CK_OB")
   if [ "$ck_cols" = "0" ]; then
-    ok "관측 파일의 모든 줄이 정확히 일곱 열이다 (탭이 열을 밀지 않는다)"
+    ok "관측 파일의 모든 줄이 정확히 아홉 열이다 (탭이 열을 밀지 않는다)"
   else
-    bad "폴러 패스" "열 수가 일곱이 아닌 줄이 ${ck_cols}개다 — 원장 행의 상태 자리에 엉뚱한 값이 앉는다"
+    bad "폴러 패스" "열 수가 아홉이 아닌 줄이 ${ck_cols}개다 — 원장 행의 상태 자리에 엉뚱한 값이 앉는다"
   fi
-  ck_fail_bytes=$(LC_ALL=C awk -F'\t' 'END { print length($7) }' "$CK_OB")
+  ck_fail_bytes=$(LC_ALL=C awk -F'\t' 'END { print length($9) }' "$CK_OB")
   if [ "${ck_fail_bytes:-0}" -le 300 ]; then
     ok "실패 체크 필드가 300 바이트 이하로 클립된다 (${ck_fail_bytes} 바이트)"
   else
@@ -5837,7 +5837,7 @@ GHSTUB
   fi
   ck_run fail
   if [ "$(ck_lines)" = "$((ck_before + 1))" ] \
-     && [ "$(tail -1 "$CK_OB" | LC_ALL=C awk -F'\t' '{ print $5 "|" $6 }')" = "실패|없음" ]; then
+     && [ "$(tail -1 "$CK_OB" | LC_ALL=C awk -F'\t' '{ print $5 "|" $8 }')" = "실패|없음" ]; then
     ok "필수 집합이 정착한 다음 패스가 실패를 정착된 값으로 기록한다"
   else
     bad "폴러 패스" "미뤄진 실패가 정착된 쌍으로 기록되지 않았다: $(cat "$CK_OB" 2>/dev/null)"
@@ -5856,6 +5856,212 @@ GHSTUB
   fi
 
   rm -rf "$CK_RD"
+fi
+
+# ---------------------------------------------------------------------------
+# 28e. The poller keys the rerun round, and the relay reads the current round.
+#
+# The table is seeded once a process and judged on `(PR, sha)` alone, so a
+# `실패` after a rerun was the same state as the `실패` before it and was never
+# written — the re-failure that sends a segment back to implementation stayed
+# invisible. The round comes from the ledger's `CI 처분` rows through
+# `cc_ci_round` and rises on `수락` only: a `요청` with no `수락` yet, and a round
+# closed `실패`, keep the earlier key. Every `--once` pass below is its own
+# process, so each one also seeds from the observation file the pass before it
+# wrote — the seeding of the two new columns is exercised on every step.
+# ---------------------------------------------------------------------------
+if [ -f "$CHECKS_SH" ] && command -v git >/dev/null 2>&1; then
+  CR_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-checks-round.XXXXXX")
+  CR_BIN="$CR_RD/bin"; mkdir -p "$CR_BIN"
+  CR_WT="$CR_RD/wt"; mkdir -p "$CR_WT"
+  CR_LG="$CR_RD/ledger.md"
+  CR_MF="$CR_RD/manifest.md"
+  CR_OB="$CR_RD/checks.observed"
+  CR_SHA=0123456789abcdef0123456789abcdef01234567
+
+  cat > "$CR_BIN/gh" <<'GHSTUB'
+#!/bin/sh
+mode=$(cat "$GH_STUB_DIR/mode" 2>/dev/null || printf 'pending')
+[ "$1" = "-R" ] || exit 2
+shift 2
+[ "$1" = "pr" ] || exit 2
+verb="$2"; shift 2
+case "$verb" in
+  list)
+    printf '[{"number":7,"headRefOid":"0123456789abcdef0123456789abcdef01234567"}]\n'
+    exit 0 ;;
+  checks)
+    for a in "$@"; do
+      [ "$a" = "--required" ] && { printf 'no required checks reported on the branch\n' >&2; exit 1; }
+    done
+    case "$mode" in
+      pending)  exit 8 ;;
+      pass)     printf 'lint\tpass\t1s\thttp://x\n'; exit 0 ;;
+      fail)     printf 'lint\tfail\t1s\thttp://x\n'; exit 1 ;;
+      failpend) printf 'lint\tfail\t1s\thttp://x\nshard\tpending\t0\thttp://y\n'; exit 1 ;;
+      cancel)   printf 'lint\tcancel\t1s\thttp://x\n'; exit 1 ;;
+    esac
+    exit 1 ;;
+esac
+exit 2
+GHSTUB
+  chmod +x "$CR_BIN/gh"
+
+  ( cd "$CR_WT" \
+    && git init -q . >/dev/null 2>&1 \
+    && git config user.email 't@example.invalid' \
+    && git config user.name 'checks test' \
+    && git config remote.origin.url 'https://github.com/Nharu/cc-cmds.git' \
+    && git commit -q --allow-empty -m 'x' \
+    && git checkout -q -b 'seg/cr' ) >/dev/null 2>&1
+
+  cr_reset() {
+    printf -- '- `run` | 교대=0 | run-id=cr | prev=aaaa\n' > "$CR_LG"
+    printf -- '- `segment` | 교대=0 | id=S1 | 상태=실행중 | 워크트리=%s | prev=bbbb\n' "$CR_WT" >> "$CR_LG"
+    printf -- '- `target` | 별칭=home | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 베이스 브랜치=master\n' > "$CR_MF"
+    rm -f "$CR_OB"
+  }
+  cr_run() {
+    printf '%s' "$1" > "$CR_RD/mode"
+    GH_STUB_DIR="$CR_RD" PATH="$CR_BIN:$PATH" \
+      bash "$CHECKS_SH" --run-dir "$CR_RD" --ledger "$CR_LG" --manifest "$CR_MF" --once \
+      > "$CR_RD/out" 2> "$CR_RD/err"
+  }
+  cr_lines() {
+    if [ -f "$CR_OB" ]; then { grep -c '' < "$CR_OB" || true; } | tr -d ' '; else printf '0'; fi
+  }
+  # The `상태`, round and running count of the last line, as `상태|g|pend`.
+  cr_last() {
+    [ -f "$CR_OB" ] || return 0
+    tail -1 "$CR_OB" | LC_ALL=C awk -F'\t' '{ print $5 "|" $6 "|" $7 }'
+  }
+  cr_round_row() {
+    # cr_round_row <상태> <회차> — one `CI 처분 처분=재실행` row of S1 on the stub's head.
+    printf -- '- `CI 처분` | 교대=0 | 세그먼트=S1 | PR=Nharu/cc-cmds#7 | head sha=%s | 처분=재실행 | 상태=%s | 회차=%s | prev=dddd\n' \
+      "$CR_SHA" "$1" "$2" >> "$CR_LG"
+  }
+
+  # (T-P1) fail → pending → pass on one sha: three transitions, three lines.
+  cr_reset
+  cr_run fail; cr_run pending; cr_run pass
+  if [ "$(cr_lines)" = "3" ] && [ "$(cr_last)" = "통과|0|0" ]; then
+    ok "T-P1: 한 sha 의 실패 → 대기 → 통과가 세 줄이다"
+  else
+    bad "폴러 회차" "T-P1: 세 전이가 세 줄로 기록되지 않았다: $(cat "$CR_OB" 2>/dev/null)"
+  fi
+
+  # (T-P2) A `요청` row alone keeps round 0; `수락` makes the g=1 key, whose first
+  # observation is a line even though the state did not change; a round closed
+  # `실패` does not move the key again.
+  cr_reset
+  cr_run fail
+  cr_round_row 요청 1
+  cr_run fail
+  if [ "$(cr_lines)" = "1" ]; then
+    ok "T-P2: 요청 행만 있는 동안의 실패는 새 줄을 쓰지 않는다 (키가 회차 0 그대로)"
+  else
+    bad "폴러 회차" "T-P2: 요청 뒤 수락 전의 패스가 옛 실패를 새 줄로 썼다 — 살아 있는 재실행이 재실패로 읽힌다: $(cat "$CR_OB")"
+  fi
+  cr_round_row 수락 1
+  cr_run fail
+  if [ "$(cr_lines)" = "2" ] && [ "$(cr_last)" = "실패|1|0" ]; then
+    ok "T-P2: 수락 행 뒤의 실패가 g=1 의 둘째 실패 줄이다 (prev 를 회차 0 에서 물려받지 않는다)"
+  else
+    bad "폴러 회차" "T-P2: 수락 뒤의 재실패가 g=1 줄로 기록되지 않았다: $(cat "$CR_OB")"
+  fi
+  cr_round_row 요청 2
+  cr_round_row 실패 2
+  cr_run fail
+  if [ "$(cr_lines)" = "2" ]; then
+    ok "T-P2: 닫는 실패 행 뒤의 실패는 새 줄을 쓰지 않는다 (g 는 수락에서만 오른다)"
+  else
+    bad "폴러 회차" "T-P2: 받아들여지지 않은 회차가 키를 옮겼다: $(cat "$CR_OB")"
+  fi
+
+  # (T-P3) The new columns are read back by the seeding: a fresh process on the
+  # same state writes nothing, and a line of the earlier seven-column shape seeds
+  # round 0.
+  cr_run fail
+  if [ "$(cr_lines)" = "2" ]; then
+    ok "T-P3: 새 프로세스가 관측 줄의 g·pend 열로 씨 뿌려 같은 상태를 다시 쓰지 않는다"
+  else
+    bad "폴러 회차" "T-P3: seed_table 이 g 열을 읽지 않아 같은 상태를 다시 썼다: $(cat "$CR_OB")"
+  fi
+  cr_reset
+  printf '2026-10-17T00:00:00Z\tS1\tNharu/cc-cmds#7\t%s\t실패\t없음\tlint\n' "$CR_SHA" > "$CR_OB"
+  cr_run fail
+  if [ "$(cr_lines)" = "1" ]; then
+    ok "T-P3: 일곱 열의 옛 관측 줄은 회차 0·진행 0 으로 씨 뿌려진다"
+  else
+    bad "폴러 회차" "T-P3: 옛 일곱 열 줄을 씨로 읽지 못해 같은 실패를 다시 썼다: $(cat "$CR_OB")"
+  fi
+
+  # (T-N2) A failed check beside a pending one is `실패 pend=1`; the settled
+  # failure that follows it is a second line.
+  cr_reset
+  cr_run failpend
+  if [ "$(cr_last)" = "실패|0|1" ]; then
+    ok "T-N2: 실패와 대기가 섞인 답은 실패·pend=1 을 쓴다"
+  else
+    bad "폴러 회차" "T-N2: 섞인 답의 진행 중이 세어지지 않았다: $(cat "$CR_OB" 2>/dev/null)"
+  fi
+  cr_run fail
+  if [ "$(cr_lines)" = "2" ] && [ "$(cr_last)" = "실패|0|0" ]; then
+    ok "T-N2: 뒤의 실패만의 답이 둘째 줄을 쓴다 (가라앉은 실패)"
+  else
+    bad "폴러 회차" "T-N2: 가라앉은 실패가 새 줄로 기록되지 않았다: $(cat "$CR_OB")"
+  fi
+
+  # The cancel-only answer: what the poller records today for a tip whose only
+  # non-passing checks were cancelled. Recorded, not prescribed — it must not be
+  # `실패`, because the poller writes `실패` from `fail` rows only.
+  cr_reset
+  cr_run cancel
+  cr_cancel=$(cr_last)
+  case "$cr_cancel" in
+    실패\|*) bad "폴러 회차" "취소 버킷만 낸 답이 실패로 기록됐다: $cr_cancel" ;;
+    *) ok "취소 버킷만 낸 답(rc=1)의 오늘 판정: ${cr_cancel:-줄 없음} — 실패가 아니다" ;;
+  esac
+
+  # (T-L1) The relay's verdict reader counts the current round only.
+  # shellcheck source=/dev/null
+  . "$(dirname "$DRIVER")/liveness.sh"
+  cr_reset
+  printf '%s\n%s\nci=S1\n' "$$" "rec" > "$CR_RD/relay.live"
+  printf '2026-10-17T00:00:00Z\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t0\t없음\tlint\n' "$CR_SHA" > "$CR_OB"
+  cr_v=$(cc_ci_latest_verdict "$CR_RD" "$CR_LG" S1)
+  if [ "${cr_v%%"$(printf '\t')"*}" = "실패" ]; then
+    ok "T-L1: 재실행이 없으면 회차 0 의 실패가 그대로 판정이다 (양성 대조)"
+  else
+    bad "폴러 회차" "T-L1: 회차 0 의 실패를 판정으로 읽지 못했다: $cr_v"
+  fi
+  cr_round_row 요청 1
+  cr_round_row 수락 1
+  cr_v=$(cc_ci_latest_verdict "$CR_RD" "$CR_LG" S1)
+  cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
+  if [ "${cr_v%%"$(printf '\t')"*}" = "대기" ] && [ "$cr_keys" = "0" ]; then
+    ok "T-L1: 수락 행 뒤의 회차 0 실패는 CI 대기=<id> 의 깨우기 키가 아니다"
+  else
+    bad "폴러 회차" "T-L1: 옛 회차의 실패가 릴레이를 깨운다 (판정=$cr_v, 키 수=$cr_keys)"
+  fi
+  printf '2026-10-17T00:01:00Z\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t0\t없음\tlint\n' \
+    fedcba9876543210fedcba9876543210fedcba98 >> "$CR_OB"
+  cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
+  if [ "$cr_keys" = "1" ]; then
+    ok "T-L1: head 가 바뀌면 옛 head 의 수락 회차가 새 head 의 회차 0 관측을 거르지 않는다"
+  else
+    bad "폴러 회차" "T-L1: 새 head 의 회차 0 실패가 깨우기 키가 아니다 — 옛 head 의 회차가 새 head 를 걸렀다"
+  fi
+  printf '2026-10-17T00:02:00Z\tS1\tNharu/cc-cmds#7\t%s\t실패\t0\t2\t없음\tlint\n' \
+    fedcba9876543210fedcba9876543210fedcba98 >> "$CR_OB"
+  cr_keys=$( { cc_relay_wake_keys "$CR_RD" "$CR_LG" | grep -c '^ci:S1' || true; } | tr -d ' ')
+  if [ "$cr_keys" = "0" ]; then
+    ok "T-L1: 체크가 아직 도는 실패(진행 중=2)는 대기로 읽혀 깨우지 않는다"
+  else
+    bad "폴러 회차" "T-L1: 진행 중인 실패가 릴레이를 깨운다"
+  fi
+
+  rm -rf "$CR_RD"
 fi
 
 # ---------------------------------------------------------------------------
