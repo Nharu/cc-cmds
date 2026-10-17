@@ -1004,6 +1004,223 @@ refused_install broken-inventory '.accounts[1].config_dir += "/"'
 inv_write
 
 # ===========================================================================
+# LENDING
+# ===========================================================================
+# cc 가 대여에 등록되면(interactive_lending auto · 예약 · 무인 꺼짐) 그 레인이 라벨을
+# 얻고, 열린 대여 결정과 라우터의 대여 검사를 모두 통과할 때만 무인 런을 띄운다.
+# 픽스처의 cc 는 5시간 10%·7일 50% 이고, 결정은 열림·상한 9000·리셋은 사용량 행과 같다.
+LEND_INV='.accounts[0].interactive_lending = "auto"'
+LEND_DEC='{state: "open", mode: "auto", evaluated_at_epoch: ($now - 30), net_armed: true, donor_ready: true, resets_at_epoch: ($now + 86400), ceiling_bp: 9000}'
+lend_use() { usage_write ".accounts[0].lending = $LEND_DEC${1:+ | $1}"; }
+borrow_none() { mkdir -p "$(dirname "$BORROW")"; jq -n '{schema: "cc-lane-borrow v1", state: "none"}' > "$BORROW"; }
+l_fresh() {
+  # l_fresh <name> <head-id> [<usage-filter>] — d_fresh 에 대여 등록 인벤토리, 열린 결정, 차용 없음.
+  d_fresh "$1" "$2"; inv_write "$LEND_INV"; lend_use "${3:-}"; borrow_none
+}
+mark() { mkdir -p "$PACE/busy"; printf '%s\n%s\n%s\n' "$2" "$(fp_of "$2")" "$3" > "$PACE/busy/$1.$2"; }
+
+# --- labels: install and the end of enrolment -----------------------------------
+fresh_pace l-agent; agent_reset
+fleet agent install >/dev/null 2>&1
+u_plists_before=$(cd "$WORK/agents" && cat "$L.dispatch.u1.plist" "$L.dispatch.u2.plist" "$L.sensor.plist" | cksum)
+u_status() { fleet sensor >/dev/null 2>&1; fleet agent status 2>/dev/null | grep -E "^$L\\.dispatch\\.u[12]:|^살아 있는 실행 표지:|^경고:"; }
+u_status_before=$(u_status)
+fleet agent uninstall >/dev/null 2>&1; agent_reset
+inv_write "$LEND_INV"; lend_use; borrow_none
+fleet agent install >/dev/null 2>&1; rc=$?
+check "대여 등록: u 레인의 상태 출력 줄은 등록 전과 같다" "$(u_status)" "$u_status_before"
+check "대여 등록: 그 비교는 공허하지 않다 (u 레인 두 줄과 상한 줄)" "$(printf '%s\n' "$u_status_before" | count_lines /dev/stdin)" "3"
+check "대여 등록: install 은 성공한다" "$rc" "0"
+check "대여 등록: 레이블 집합에 cc 가 든다" "$(sort "$TEST_LAUNCHD_STATE" | tr '\n' ' ')" "$L.dispatch.cc $L.dispatch.u1 $L.dispatch.u2 $L.sensor "
+check "대여 등록: cc plist 는 cc 홈을 CLAUDE_CONFIG_DIR 로 싣는다" "$(grep -c "<string>$H_CC</string>" "$WORK/agents/$L.dispatch.cc.plist" || true)" "1"
+check "대여 등록: u 레인과 센서의 plist 바이트는 그대로다" \
+  "$(cd "$WORK/agents" && cat "$L.dispatch.u1.plist" "$L.dispatch.u2.plist" "$L.sensor.plist" | cksum)" "$u_plists_before"
+inv_write
+check "등록 해제: cc 는 고아로 찍힌다" "$(fleet agent status 2>/dev/null | grep -c "^$L.dispatch.cc: 등록됨 — 고아" || true)" "1"
+check "등록 해제: u 레인은 고아가 아니다" "$(fleet agent status 2>/dev/null | grep -c "^$L.dispatch.u[12]: 등록됨 — 고아" || true)" "0"
+: > "$TEST_LAUNCHD_LOG"
+fleet agent uninstall >/dev/null 2>&1
+check "등록 해제: uninstall 은 cc 를 제거 대상으로 bootout 한다" "$(grep -c "^bootout .*$L.dispatch.cc$" "$TEST_LAUNCHD_LOG" || true)" "1"
+fleet agent install >/dev/null 2>&1
+check "등록 해제 뒤 install 은 u 레인과 센서만 깐다" "$(sort "$TEST_LAUNCHD_STATE" | tr '\n' ' ')" "$L.dispatch.u1 $L.dispatch.u2 $L.sensor "
+fleet agent uninstall >/dev/null 2>&1; agent_reset
+
+# --- sensor: eligibility, the lending reasons, allocation -------------------------
+fresh_pace l-sensor; inv_write "$LEND_INV"; lend_use; borrow_none
+fleet sensor >/dev/null 2>&1
+check "센서: 열린 대여의 cc 는 적격이다" "$(seat cc '"\(.eligible) \(.reason)"')" "true null"
+check "센서: 대여 행은 좌석 목록의 맨 뒤다" "$(state_field '[.seats[].id] | join(",")')" "u1,u2,cc"
+check "센서: 게시 좌석의 칸 집합은 그대로다" "$(state_field '.seats[-1] | keys_unsorted | join(",")')" "id,home,org,eligible,reason,allow,session_pct,ttr,burn_4h"
+lend_use '.accounts[0].lending.ceiling_bp = 5500'
+fleet sensor >/dev/null 2>&1
+check "센서: 대여 행의 남은 양은 ceiling_bp − ueff7 이다 ((5500−5000)/100/24)" "$(seat cc '.allow | . * 1000 | floor')" "208"
+check "센서: 다른 행의 남은 양은 그대로다" "$(seat u1 '.allow | . * 1000 | floor')" "595"
+lend_use '.accounts[0].lending.state = "closed"'
+fleet sensor >/dev/null 2>&1
+check "센서: 닫힌 결정은 lending-closed" "$(seat cc .reason)" "lending-closed"
+lend_use '.accounts[0].lending.ceiling_bp = 5300'
+fleet sensor >/dev/null 2>&1
+check "센서: 7일 상한을 넘는 입장은 lend-ceiling" "$(seat cc .reason)" "lend-ceiling"
+lend_use '.accounts[0].windows.five_hour.utilization = 0.40'
+fleet sensor >/dev/null 2>&1
+check "센서: 5시간 5000 을 넘는 입장은 lend-cap" "$(seat cc .reason)" "lend-cap"
+rm -f "$BORROW"; lend_use
+fleet sensor >/dev/null 2>&1
+check "센서: 차용 기록이 none 이 아니면 lending-closed" "$(seat cc .reason)" "lending-closed"
+inv_write '.accounts[0].interactive_lending = "off"'; borrow_none
+fleet sensor >/dev/null 2>&1
+check "센서: 대여 off 의 cc 는 오늘처럼 not-labelled 이고 맨 앞이다" "$(seat cc .reason) $(state_field '.seats[0].id')" "not-labelled cc"
+
+# --- the ladder: a run on the lending lane is not an active lane --------------------
+fresh_pace l-ladder; inv_write "$LEND_INV"; lend_use; borrow_none
+burn_heavy "$H1" 1000
+printf 'R1\t도는중\t1\t%s\nR6\t도는중\t1\t%s\n' "$H1" "$H_CC" > "$TEST_PROBE_OUT"
+fleet sensor >/dev/null 2>&1
+check "사다리: cc 런 하나와 u 런 하나면 활성 레인은 하나라 목표 아래다" "$(state_field '.verdict + " " + .verdict_reason')" "가속 lanes-below-target"
+printf 'R1\t도는중\t1\t%s\nR2\t도는중\t1\t%s\n' "$H1" "$H2" > "$TEST_PROBE_OUT"
+fleet sensor >/dev/null 2>&1
+check "사다리: u 런 둘이면 목표에 닿는다 (대조)" "$(state_field '.verdict_reason')" "default"
+: > "$TEST_PROBE_OUT"; burn_none
+
+# --- the ladder: a lending row adds nothing to the capacity -------------------------
+#   The brake fixture of the u-only ladder above, with cc enrolled and open: cc's
+#   home is reserved, so its burn is never scanned, and its 100/168 must not be
+#   counted against the u burn either.
+fresh_pace l-brake; inv_write "$LEND_INV | .accounts[2].unattended = \"draining\""
+usage_write ".accounts[0].lending = $LEND_DEC | $LADDER_USAGE"; borrow_none
+burn_heavy "$H1" 1000000
+fleet sensor >/dev/null 2>&1
+check "용량: 대여 행이 적격이어도 (공허 방지)" "$(seat cc '"\(.eligible) \(.allow * 1000 | floor)"')" "true 595"
+check "용량: 열린 대여 행의 허용치는 fleet 용량에 더해지지 않는다" "$(state_field '.fleet_capacity | . * 1000 | floor')" "41"
+check "용량: u 소진이 u 용량을 넘으면 대여가 열려 있어도 제동이다" "$(state_field '.verdict + " " + .verdict_reason')" "제동 brake"
+burn_none
+
+# --- dispatch: the lending lane starts, and carries its pin --------------------------
+l_fresh d-l-open lo1
+fleet dispatch cc >/dev/null 2>"$WORK/l-open.err"
+check "대여 디스패치: 열린 cc 레인은 기동한다" "$(backlog_status lo1)" "done"
+check "대여 디스패치: run.sh 는 cc 홈으로 돈다" "$(sed -n '1p' "$TEST_LOG_DIR/run.log")" "run --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H_CC"
+check "대여 디스패치: 런 디렉터리에 fleet-lane=cc 가 쓰인다" "$(cat "$RUNDIR/fleet-lane" 2>/dev/null)" "cc"
+check "대여 디스패치: 집은 레인은 cc 다" "$(backlog_field lo1 .dispatched_lane)" "cc"
+l_fresh d-l-u lu1
+fleet dispatch u1 >/dev/null 2>&1
+check "대여 등록 인벤토리의 u 레인도 기동한다" "$(backlog_status lu1)" "done"
+[ ! -e "$RUNDIR/fleet-lane" ] && ok "u 레인 디스패치에는 fleet-lane 이 없다" || bad "u 레인 디스패치에는 fleet-lane 이 없다" "$(cat "$RUNDIR/fleet-lane")"
+l_fresh d-l-pinfail lp1
+mkdir -p "$RUNDIR"; chmod 555 "$RUNDIR"
+fleet dispatch cc >/dev/null 2>"$WORK/l-pinfail.err"
+chmod 755 "$RUNDIR"
+check "고정 기록을 못 쓰면 기동하지 않는다" "$(count_lines "$TEST_LOG_DIR/run.log")" "0"
+check "고정 기록을 못 쓰면 레코드는 pending 으로 돌아간다" "$(backlog_status lp1)" "pending"
+check "고정 기록 실패는 로그에 남는다" "$(grep -c '대여 좌석 고정 기록을 쓰지 못했다' "$WORK/l-pinfail.err" || true)" "1"
+
+# --- dispatch: the lending reasons, before the lock -----------------------------------
+l_case() {
+  # l_case <name> <usage-filter> <reason> — 잠금 전 적격에서 그 사유로 끝나고 아무것도 띄우지 않는다.
+  l_fresh "d-l-$1" "l$1" "$2"
+  fleet dispatch cc >/dev/null 2>"$WORK/l-$1.err"
+  check "대여 부적격: $1 → $3" "$(grep -c "부적격 — $3 " "$WORK/l-$1.err" || true)/$(count_lines "$TEST_LOG_DIR/run.log")/$(backlog_status "l$1")" "1/0/pending"
+}
+l_case closed '.accounts[0].lending.state = "closed"' lending-closed
+l_case stale '.accounts[0].lending.evaluated_at_epoch = ($now - 181)' lending-closed
+l_case ceiling '.accounts[0].lending.ceiling_bp = 5300' lend-ceiling
+l_case cap '.accounts[0].windows.five_hour.utilization = 0.40' lend-cap
+l_fresh d-l-broken lb1; inv_write "$LEND_INV | .accounts[1].config_dir += \"/\""
+fleet dispatch cc >/dev/null 2>"$WORK/l-broken.err"
+check "무효 인벤토리의 대여 레인은 lending-unrouted" "$(grep -c '부적격 — lending-unrouted' "$WORK/l-broken.err" || true)" "1"
+fleet dispatch u2 >/dev/null 2>"$WORK/l-broken-u.err"
+check "무효 인벤토리의 u 레인은 오늘처럼 inventory-broken" "$(grep -c '부적격 — inventory-broken' "$WORK/l-broken-u.err" || true)" "1"
+
+# --- (i) the real lease table, for the lending lane only --------------------------------
+l_fresh d-l-table lt1
+printf 'not a table\n' > "$PACE/leases"
+fleet dispatch cc >/dev/null 2>"$WORK/l-table.err"
+check "(i) 임대 표를 읽을 수 없으면 lending-unrouted 이고 띄우지 않는다" \
+  "$(grep -c '부적격 — lending-unrouted' "$WORK/l-table.err" || true)/$(count_lines "$TEST_LOG_DIR/run.log")" "1/0"
+fleet dispatch u1 >/dev/null 2>&1
+check "(i) u 레인은 임대 표를 읽지 않는다 — 같은 표에서 기동한다" "$(backlog_status lt1)" "done"
+l_fresh d-l-lease ll1
+sleep 60 & LHP=$!; BG_PIDS="$BG_PIDS $LHP"
+LHFP=$( . "$FX/liveness.sh"; TZ=UTC0 cc_proc_fingerprint "$LHP" )
+mkdir -p "$PACE/leases"
+jq -cn --argjson pid "$LHP" --arg fp "$LHFP" --arg h "$H_CC" --argjson now "$NOW" \
+  '{schema: "cc-cmds-lease v1", kind: "grant", run_id: "rl", lineage: "s1", nonce: "n-rl", seq: 1, account: "cc",
+    config_dir: $h, holders: [{pid: $pid, fp: $fp}], granted_at_epoch: $now,
+    reservation_bp: {five_hour: 100, seven_day: 4000}, admitted_as: "known", basis: "first", observed: "tracker@1"}' \
+  > "$PACE/leases/rl+s1.lease"
+fleet dispatch cc >/dev/null 2>"$WORK/l-lease.err"
+check "(i) 실제 표의 살아 있는 cc 임대가 7일 상한을 채우면 lend-ceiling" "$(grep -c '부적격 — lend-ceiling' "$WORK/l-lease.err" || true)" "1"
+kill "$LHP" 2>/dev/null; wait "$LHP" 2>/dev/null
+fleet dispatch cc >/dev/null 2>&1
+check "(i) 그 보유자가 죽으면 같은 표에서 기동한다" "$(backlog_status ll1)" "done"
+
+# --- (ii) the driver's reservation, counted at step 8 -----------------------------------
+l_fresh d-l-driver ld1 '.accounts[0].windows.five_hour.utilization = 0.25'
+fleet dispatch cc >/dev/null 2>"$WORK/l-driver.err"
+check "(ii) 빈 표 + 드라이버 예약이면 5시간 5000 을 넘어 lend-cap" \
+  "$(grep -c '부적격 — lend-cap (드라이버 예약을 센' "$WORK/l-driver.err" || true)/$(count_lines "$TEST_LOG_DIR/run.log")/$(backlog_status ld1)" "1/0/pending"
+check "(ii) 드라이버 예약 거부는 거부 행을 남기지 않는다" "$(count_lines "$PACE/refusals.tsv")" "0"
+l_fresh d-l-driver2 ld2 '.accounts[0].windows.five_hour.utilization = 0.19'
+fleet dispatch cc >/dev/null 2>&1
+check "(ii) 드라이버 예약을 세고도 5000 아래면 기동한다" "$(backlog_status ld2)" "done"
+
+# --- markers: the ceiling is the u lanes', the lending lane holds one run ----------------
+l_fresh d-l-ceil lc1
+sleep 30 & MP1=$!; sleep 30 & MP2=$!; BG_PIDS="$BG_PIDS $MP1 $MP2"
+mark u1 "$MP1" RA; mark u2 "$MP2" RB
+fleet dispatch cc >/dev/null 2>&1
+check "상한 면제: u 레인 둘이 살아 있어도 열린 cc 레인은 기동한다" "$(backlog_status lc1)" "done"
+inv_write "$LEND_INV | $(acct_add_u3)"; lend_use "$(usage_u3)"
+set_backlog "$(backlog_record lc2)"
+fleet dispatch u3 >/dev/null 2>&1
+check "상한 면제: 같은 때 u 셋째는 lane/ceiling" "$(cut -f3,6 "$PACE/refusals.tsv")" "$(printf 'lane\tceiling')"
+rm -f "$PACE/busy/u2.$MP2"; mark cc "$MP2" RC
+: > "$PACE/refusals.tsv"
+fleet dispatch u3 >/dev/null 2>&1
+check "E1: cc 표지는 u 레인의 상한에 세지 않는다 (u 하나 + cc 하나 → 기동)" "$(backlog_status lc2)" "done"
+set_backlog "$(backlog_record lc3)"; rm -rf "$RUNDIR"
+fleet dispatch cc >/dev/null 2>&1
+check "E1: 자기 표지만 있는 cc 레인은 같은 레인 둘째 런을 lane/occupied 로 거부한다" "$(cut -f3,6 "$PACE/refusals.tsv")" "$(printf 'lane\toccupied')"
+
+# --- E4: status splits the lending lane's markers ------------------------------------------
+fleet agent status > "$WORK/l-status.out" 2>/dev/null
+check "E4: 상한 줄은 대여 레인을 뺀 수다" "$(grep -c '^살아 있는 실행 표지: 1 / 상한 2$' "$WORK/l-status.out" || true)" "1"
+check "E4: cc 레인 줄이 따로 찍힌다" "$(grep -c '^cc 레인 살아 있는 실행 표지: 1 / 점유 상한 1$' "$WORK/l-status.out" || true)" "1"
+check "E4: 실행 표지 줄은 cc 표지도 찍는다" "$(grep -c "^실행 표지: cc.$MP2 (런 RC)$" "$WORK/l-status.out" || true)" "1"
+check "E4: 등록이 없으면 레인 줄이 없다" "$(grep -c '레인 살아 있는 실행 표지' "$WORK/status.out" || true)" "0"
+kill "$MP1" "$MP2" 2>/dev/null; wait "$MP1" "$MP2" 2>/dev/null; rm -rf "$PACE/busy"
+
+# --- the backlog head: a cc-seat record, and a lending pin ------------------------------
+d_fresh d-l-rec0 lr0
+mkdir -p "$RUNDIR"; printf '%s\n' "$H_CC" > "$RUNDIR/config-dir"
+fleet dispatch u1 >/dev/null 2>&1
+check "등록 전: cc 좌석 기록 머리는 park lane-record" "$(backlog_field lr0 '.status + " " + .park_reason')" "parked lane-record"
+for l in cc u1; do
+  l_fresh "d-l-rec-$l" "lr-$l"
+  mkdir -p "$RUNDIR"; printf '%s\n' "$H_CC" > "$RUNDIR/config-dir"
+  fleet dispatch "$l" >/dev/null 2>&1
+  check "등록 후: fleet-lane 없는 cc 좌석 기록 머리는 $l 레인에서 park lane-record" "$(backlog_field "lr-$l" '.status + " " + .park_reason')" "parked lane-record"
+done
+l_fresh d-l-pin-u lpu
+mkdir -p "$RUNDIR"; printf '%s\n' "$H_CC" > "$RUNDIR/config-dir"; printf 'cc\n' > "$RUNDIR/fleet-lane"
+fleet dispatch u1 >/dev/null 2>&1
+check "fleet-lane=cc 머리는 u 레인에서 lane/lane-mismatch" "$(cut -f3,6 "$PACE/refusals.tsv")/$(backlog_status lpu)" "$(printf 'lane\tlane-mismatch')/pending"
+fleet dispatch cc >/dev/null 2>&1
+check "fleet-lane=cc 머리는 cc 레인이 받는다" "$(backlog_status lpu)" "done"
+l_fresh d-l-new ln1
+fleet dispatch cc >/dev/null 2>&1
+check "기록 없는 새 머리는 cc 레인이 받고 fleet-lane 을 남긴다" "$(backlog_status ln1)/$(cat "$RUNDIR/fleet-lane" 2>/dev/null)" "done/cc"
+rm -rf "$RUNDIR"
+
+# --- (iii) the pin is written on the dispatch path only -------------------------------------
+fn_body() { awk -v fn="$2" '$0 ~ "^" fn "\\(\\) *\\{" { on = 1 } on { print } on && /^}/ { exit }' "$1"; }
+check "(iii) fleet-lane 을 쓰는 자리는 하나다" "$(grep -c 'fleet_write_atomic "\$run_dir/fleet-lane"' "$ORCH/fleet.sh" || true)" "1"
+check "(iii) 그 자리는 fleet_dispatch 안이다" "$(fn_body "$ORCH/fleet.sh" fleet_dispatch | grep -c 'fleet_write_atomic "\$run_dir/fleet-lane"' || true)" "1"
+check "(iii) fleet_start_watch 는 fleet-lane 을 쓰지 않는다" "$(fn_body "$ORCH/fleet.sh" fleet_start_watch | grep -c 'fleet-lane' || true)" "0"
+check "(iii) 부팅 재진입 경로는 fleet-lane 을 쓰지 않는다" \
+  "$(for f in $(grep -oE '^fleet_reentry_[a-z_]+' "$ORCH/fleet.sh" | sort -u); do fn_body "$ORCH/fleet.sh" "$f"; done | grep -c 'fleet-lane' || true)" "0"
+
+# ===========================================================================
 # SOURCE GREPS
 # ===========================================================================
 check "fleet.sh 는 드라이버의 분리 실행 헬퍼를 부르지 않는다" "$(grep -c 'cc_detach_exec' "$ORCH/fleet.sh" || true)" "0"

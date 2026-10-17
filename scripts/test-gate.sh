@@ -40858,6 +40858,44 @@ check "90: 재부착 기록이 있으면 재부착 조직과 재기록 추정이
 check "90: 새 필드는 계정 자리와 기록자 사이에 온다" \
   "$(o90_row S90M | sed -n 's/.*| \(레인=[^|]*\) | \(조직 이동=[^|]*\) | \(기록자=[^|]*\) |.*/ok/p')" "ok"
 
+# ---------------------------------------------------------------------------
+# 91. 이탈 점검의 디렉터리 집합에 대여 등록 행이 든다
+# --- section: 91 | covers: gate_stage_policy_inventory_dirs, stage-policy-drift | anchors: 91: 대여 등록된 cc 행의 홈이 집합에 든다, 91: 등록 아닌 cc 행은 집합에 들지 않는다, 91: enabled·draining 선택은 그대로다 ---
+#
+# 런 개시의 이탈 점검은 인벤토리에서 좌석으로 쓰일 수 있는 행의 설정 디렉터리를
+# 모아 그 홈의 CLAUDE.md 를 본다. 대여에 등록된 cc 행(대여 auto·예약·무인 꺼짐)은
+# 무인 행이 아니어도 그 홈에서 빌려 준 스테이지가 돌므로 집합에 든다. 대여 꺼짐,
+# 대여 칸 없음, 예약 아닌 auto 행은 들지 않는다. 좌석이 cc 홈이 아닌 문맥에서도
+# 같다는 것을 보이려고 픽스처 홈은 모두 이 절이 만든 경로다.
+# ---------------------------------------------------------------------------
+d91="$WORK/d91"
+mkdir -p "$d91"
+i91() {
+  # i91 <파일> <cc 행 추가 칸 JSON> — u1 enabled, u2 draining, u3 disabled 와 cc 행 하나.
+  jq -n --argjson cc "$2" --arg h "$d91" '{accounts: [
+    ({id: "cc", config_dir: ($h + "/claude-cc"), unattended: "disabled", interactive_reserved: true} + $cc),
+    {id: "u1", config_dir: ($h + "/claude-u1"), unattended: "enabled", interactive_reserved: false},
+    {id: "u2", config_dir: ($h + "/claude-u2"), unattended: "draining", interactive_reserved: false},
+    {id: "u3", config_dir: ($h + "/claude-u3"), unattended: "disabled", interactive_reserved: false}]}' > "$1"
+}
+s91() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_stage_policy_inventory_dirs "$@"' _ "$GATE" "$@"; }
+x91() { s91 "$1" 2>/dev/null | sed "s|^$d91/||" | tr '\n' ' '; }
+i91 "$d91/auto.json" '{"interactive_lending": "auto"}'
+i91 "$d91/off.json" '{"interactive_lending": "off"}'
+i91 "$d91/none.json" '{}'
+i91 "$d91/unres.json" '{"interactive_lending": "auto", "interactive_reserved": false}'
+i91 "$d91/drain.json" '{"interactive_lending": "auto", "unattended": "draining"}'
+check "91: 대여 등록된 cc 행의 홈이 집합에 든다" "$(x91 "$d91/auto.json")" "claude-cc claude-u1 claude-u2 "
+check "91: 등록 아닌 cc 행은 집합에 들지 않는다" \
+  "$(x91 "$d91/off.json")/$(x91 "$d91/none.json")/$(x91 "$d91/unres.json")" \
+  "claude-u1 claude-u2 /claude-u1 claude-u2 /claude-u1 claude-u2 "
+check "91: enabled·draining 선택은 그대로다" "$(x91 "$d91/drain.json")" "claude-cc claude-u1 claude-u2 "
+check "91: 읽을 수 없는 인벤토리는 빈 집합이고 실패하지 않는다" \
+  "[$(x91 "$d91/absent.json")]/$(s91 "$d91/absent.json" >/dev/null 2>&1; echo $?)" "[]/0"
+# 런 개시가 실제로 이 도우미로 집합을 만든다(옛 인라인 선택이 남아 있지 않다).
+check "91: 런 개시의 이탈 점검이 도우미를 부른다" \
+  "$(grep -cF 'gate_stage_policy_inventory_dirs "$RUN_DIR/inventory.json"' "$GATE")/$(grep -cF "'.accounts[]? | select(.unattended == \"enabled\" or .unattended == \"draining\") | .config_dir" "$GATE")" "1/0"
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its

@@ -16824,14 +16824,15 @@ gate_main() {
     [ -z "$seat_dir" ] || pd_dirs+=(--config-dir "$seat_dir")
     # The eligible set is the router's own: `unattended` is one of the strings
     # `enabled`/`draining`/`disabled`, a new grant goes to `enabled` and a held
-    # one keeps `draining`, so those two are the directories a stage can read.
+    # one keeps `draining`, so those two are the directories a stage can read —
+    # and a row enrolled for lending, whose grants are lent stages.
     if run_routed && [ -f "$RUN_DIR/inventory.json" ] \
        && route_inventory_check "$RUN_DIR/inventory.json" >/dev/null 2>&1; then
       while IFS= read -r d; do
         [ -n "$d" ] && [ "$d" != "$seat_dir" ] || continue
         pd_dirs+=(--config-dir "$d")
       done <<GATE_DRIFT_DIRS
-$(jq -r '.accounts[]? | select(.unattended == "enabled" or .unattended == "draining") | .config_dir // empty' "$RUN_DIR/inventory.json" 2>/dev/null || true)
+$(gate_stage_policy_inventory_dirs "$RUN_DIR/inventory.json")
 GATE_DRIFT_DIRS
     fi
     pd=$( { bash "$GATE_DIR/stage-policy-drift.sh" --sources-map "$(gate_stage_policy_sources_map)" ${pd_dirs[@]+"${pd_dirs[@]}"} 2>/dev/null || true; } | tail -1)
@@ -27744,6 +27745,18 @@ gate_stage_policy_sources_map() {
   # `CC_GATE_SETTINGS_OVERRIDE` — the suite does not isolate `HOME`, so every
   # test that touches the map points this at a fixture (or at nothing).
   printf '%s' "${CC_GATE_STAGE_POLICY_SOURCES:-${HOME:-}/.config/cc-cmds/stage-policy-sources}"
+}
+
+gate_stage_policy_inventory_dirs() {
+  # gate_stage_policy_inventory_dirs <inventory> — the config dirs of the
+  # inventory a routed stage can be granted, one per line: the router's own
+  # set, `unattended` `enabled` (a new grant) or `draining` (a held one), and a
+  # row enrolled for interactive-seat lending, whose seat a lent stage reads
+  # though it is disabled for unattended work. Nothing when the file does not
+  # parse; the caller has already run the router's inventory check.
+  jq -r '.accounts[]? | select(.unattended == "enabled" or .unattended == "draining"
+      or (.interactive_lending == "auto" and .interactive_reserved == true and .unattended == "disabled"))
+    | .config_dir // empty' "$1" 2>/dev/null || true
 }
 
 gate_stage_instructions() {
