@@ -643,11 +643,95 @@ latest_handoff_reason() {
   grep -E '^- `handoff` ' "$1" | tail -n 1 | tr '|' '\n' | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//' || true
 }
 
+# snapshot_h <manifest> <clone> <log> — the digest an acting call is bound to.
+snapshot_h() {
+  (cd "$2" && bash "$GATE" snapshot --manifest "$1" 2>>"$3" | jq -r '.H // empty' 2>/dev/null) || true
+}
+
+# unanswered_halts <run dir> <ledger> — the run's halt records that no
+# `중단 답` row names yet, one absolute path per line.
+unanswered_halts() {
+  local f
+  for f in "$1"/halt/*.md "$1"/halt/shift/*.md; do
+    [[ -f "$f" ]] || continue
+    case "$f" in *.answer.md) continue ;; esac
+    if [[ -f "$2" ]] && grep -E '^- `중단 답` ' "$2" | grep -qF "중단 기록=${f} |"; then continue; fi
+    printf '%s\n' "$f"
+  done
+}
+
+# halt_key <record> — the key a halt record answers for: its header's stage=
+# up to the `#`.
+halt_key() {
+  local s
+  s=$(head -n 1 "$1" | sed -n 's/.*[; ]stage=\([^;]*\);.*/\1/p')
+  printf '%s' "${s%%#*}"
+}
+
+# seat_answer_halts <manifest> <clone> <run id> <log> — what the production
+# seat does on a 중단 handoff before asking anyone: each unanswered halt record
+# whose **추천** names an option is answered with that option, as
+# `답한 주체=좌석`, with the record's grounds attached. Whether a record admits
+# a seat answer is the gate's call — the auto-resolve switch, the record's
+# shape, a risk-accepting recommendation, a record that is not its key's latest
+# settled halt — and a refusal leaves the record for a person. Returns 0 when
+# at least one answer was written.
+seat_answer_halts() {
+  local m="$1" clone="$2" rid="$3" log="$4" f key gl parts part kinds ans h rc k got=1
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    grep -qE '^\*\*추천\*\*: `' "$f" || continue
+    key=$(halt_key "$f")
+    [[ -n "$key" ]] || continue
+    gl=$(grep -nE '^\*\*추천 근거\*\*: ' "$f" | head -n 1 || true)
+    ans="${f%.md}.answer.md"
+    parts="${gl#*: }"; kinds=""
+    {
+      printf '# 좌석 답 — %s\n\n' "$(basename "$f")"
+      printf '중단 기록의 추천을 받았다. 추천 근거 (%s:%s):\n\n' "$f" "${gl%%:*}"
+      while [[ -n "$parts" ]]; do
+        part="${parts%% / *}"
+        printf -- '- %s\n' "$part"
+        kinds="${kinds:+${kinds},}${part%%:*}"
+        [[ "$parts" == *" / "* ]] && parts="${parts#* / }" || parts=""
+      done
+      printf '\n되돌리는 법: 같은 기록에 다른 선택지로 다시 답하거나, 스테이지가 이 답으로 만든 커밋을 되돌린다.\n'
+    } > "$ans"
+    rc=4; k=0
+    while [[ "$rc" == "4" ]] && (( k < 4 )); do
+      k=$((k + 1)); rc=0
+      h=$(snapshot_h "$m" "$clone" "$log")
+      ( cd "$clone" && bash "$GATE" act --manifest "$m" --kind halt-answer --target "$TARGET_ALIAS" --segment "$key" \
+          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+          -- "중단 기록=${f}" "답한 주체=좌석" "근거=중단 기록의 추천을 받았다 — 근거 종류 ${kinds:-미상}" "첨부=${ans}" ) < /dev/null >> "$log" 2>&1 || rc=$?
+    done
+    if [[ "$rc" == "0" ]]; then
+      got=0; echo "seat: answered $f with its recommendation" >> "$log"
+    else
+      rm -f "$ans"; echo "seat: halt-answer for $f ended with status $rc; left for a person" >> "$log"
+    fi
+  done < <(unanswered_halts "$RUN_ROOT/$rid" "$clone/docs/pipeline-run/$rid.md")
+  return "$got"
+}
+
+# closed_by_deadline <run dir> — the run's done names the wall-clock deadline
+# as the boundary that ended it.
+closed_by_deadline() {
+  [[ -s "$1/done" ]] && head -n 1 "$1/done" | grep -q '종단 — 경계 마감 '
+}
+
+# run_deadline <manifest> — the run's frozen wall-clock deadline.
+run_deadline() {
+  sed -n 's/^\*\*벽시계 마감\*\*: //p' "$1" | head -n 1
+}
+
 # seat <manifest> <clone> <run id> <log> — issue `router-shift` as the seat does
 # until the run's done file exists. Returns 0 on done, 5 on an approval for a
-# person, 6 on a shift that handed off with 중단, any other status on a
-# failure. After a 승인 or 중단 handoff the next call waits on a person, so the
-# seat does not send 대기 — the gate would refuse it.
+# person, 6 on a shift that handed off with 중단 and left a halt record no seat
+# answer settles, any other status on a failure. After a 승인 or 중단 handoff
+# the seat does not send 대기 — the gate would refuse it: a 중단 handoff whose
+# records the seat answered relaunches with 중단, anything else waits on a
+# person.
 seat() {
   local m="$1" clone="$2" rid="$3" log="$4" rd="$RUN_ROOT/$3" reason="상한" i=0 rc k h
   while :; do
@@ -657,7 +741,7 @@ seat() {
     rc=4; k=0
     while [[ "$rc" == "4" ]] && (( k < 4 )); do
       k=$((k + 1)); rc=0
-      h=$( (cd "$clone" && bash "$GATE" snapshot --manifest "$m" 2>>"$log" | jq -r '.H // empty' 2>/dev/null) || true)
+      h=$(snapshot_h "$m" "$clone" "$log")
       ( cd "$clone" && bash "$GATE" act --manifest "$m" --kind router-shift --target "$TARGET_ALIAS" \
           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$h" \
           -- "$reason" -p "/cc-cmds:autopilot-router-shift $m" ) < /dev/null >> "$log" 2>&1 || rc=$?
@@ -670,7 +754,8 @@ seat() {
     case "$(latest_handoff_reason "$clone/docs/pipeline-run/$rid.md")" in
       상한) reason="상한" ;;
       승인) return 5 ;;
-      중단) return 6 ;;
+      중단)
+        if seat_answer_halts "$m" "$clone" "$rid" "$log"; then reason="중단"; else return 6; fi ;;
       *) reason="대기" ;;
     esac
   done
@@ -702,11 +787,30 @@ run_seat_or_stop() {
     0) return 0 ;;
     5)
       kv_set "$ps/pair.state" status "사람 대기"
-      echo "solo-audit-experiment: pair ${n}: the ${kind} run is waiting on an approval for a person. Answer it at the run's seat, then call the same command again." >&2
+      {
+        echo "solo-audit-experiment: pair ${n}: the ${kind} run is waiting on an approval for a person."
+        echo "  This script is the run's seat, and a shell seat cannot close an approval: it closes only from the"
+        echo "  answer frame of an AskUserQuestion in a Claude session seat. To start the pair over instead, call"
+        echo "  the same command with --rerun-pair ${n}."
+        echo "  The run closes at its wall-clock deadline $(run_deadline "$m"); a pair resumed after it is invalid."
+      } >&2
       exit 3 ;;
     6)
       kv_set "$ps/pair.state" status "사람 대기"
-      echo "solo-audit-experiment: pair ${n}: the ${kind} run's shift handed off with 중단. Read the latest handoff row in $clone/docs/pipeline-run/$rid.md, settle it at the run's seat, then call the same command again." >&2
+      {
+        echo "solo-audit-experiment: pair ${n}: the ${kind} run's shift handed off with 중단, and no halt record it left was settled by a seat answer."
+        echo "  Latest handoff: $clone/docs/pipeline-run/$rid.md"
+        local f
+        while IFS= read -r f; do
+          [[ -n "$f" ]] || continue
+          echo "  Halt record: $f"
+          echo "    answer it with one of its 선택지 labels, verbatim:"
+          printf "    (cd %q && bash %q act --manifest %q --kind halt-answer --target %s --segment %s --cutpoint 커밋 --surface 읽기 --snapshot-digest \"\$(bash %q snapshot --manifest %q | jq -r .H)\" -- '중단 기록=%s' '선택지=<label>' '답한 주체=사람' '근거=<why>')\n" \
+            "$clone" "$GATE" "$m" "$TARGET_ALIAS" "$(halt_key "$f")" "$GATE" "$m" "$f"
+        done < <(unanswered_halts "$RUN_ROOT/$rid" "$clone/docs/pipeline-run/$rid.md")
+        echo "  Then call the same command again."
+        echo "  The run closes at its wall-clock deadline $(run_deadline "$m"); a pair resumed after it is invalid."
+      } >&2
       exit 3 ;;
     *)
       kv_set "$ps/pair.state" status "실패"
@@ -724,6 +828,10 @@ design_pair() {
   rid=$(kv "$ps/pair.state" design_run); orig=$(kv "$ps/pair.state" orig_run)
   rd="$RUN_ROOT/$rid"
   kv_set "$ps/pair.state" design_done 1
+  if closed_by_deadline "$rd"; then
+    mark_invalid "$n" "벽시계 마감으로 닫힘"
+    return 0
+  fi
   if [[ ! -f "$clone/$doc" ]] || [[ "$(grep -cx '\*\*상태\*\*: 동결됨' "$clone/$doc" || true)" != "1" ]]; then
     mark_invalid "$n" "동결 문서 없음"
     return 0
@@ -758,6 +866,10 @@ audit_pair() {
   run_seat_or_stop "$n" audit
   clone=$(kv "$ps/pair.state" clone); doc=$(kv "$ps/pair.state" doc)
   kv_set "$ps/pair.state" audit_done 1
+  if closed_by_deadline "$RUN_ROOT/$(kv "$ps/pair.state" audit_run)"; then
+    mark_invalid "$n" "벽시계 마감으로 닫힘"
+    return 0
+  fi
   # The solo side's report is picked by the same first-audit rule as the
   # team side's.
   local first rep

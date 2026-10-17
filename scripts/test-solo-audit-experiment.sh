@@ -350,7 +350,7 @@ scenario() {
   export XDG_STATE_HOME="$sc/xdg" SOLO_EXP_STATE_ROOT="$sc/state" CLAUDE_CONFIG_DIR="$sc/cfg"
   export STUB_GATE_LOG="$sc/gate.log" STUB_CLI_LOG="$sc/cli.log"
   : > "$STUB_GATE_LOG"; : > "$STUB_CLI_LOG"
-  unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF
+  unset STUB_GATE_MODE STUB_NO_FREEZE STUB_CONTAM STUB_CLI_DROP STUB_HANDOFF STUB_HALT STUB_HALT_ANSWER_RC
 }
 xp() { bash "$exp_sh" --repo "$main" "$@"; }
 acts() { grep -c '^act ' "$STUB_GATE_LOG" || true; }
@@ -548,10 +548,56 @@ rc=0; xp run --exp-id 20261017-000000a2 --budget-usd 1000 >/dev/null 2>&1 || rc=
 for h in 승인 중단; do
   scenario "handoff-$h"
   export STUB_GATE_MODE=handoff STUB_HANDOFF="$h"
-  rc=0; xp run --exp-id 20261017-000000a4 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
+  rc=0; xp run --exp-id 20261017-000000a4 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
   [[ "$rc" == "3" && "$(pstate 20261017-000000a4 1 status)" == "사람 대기" && "$(acts)" == "1" ]] \
     && pass "seat: a ${h} handoff → pair 사람 대기, exit 3, no 대기 call" || fail "seat: ${h} handoff gave exit $rc with $(acts) acts"
+  grep -q 'wall-clock deadline 20' "$sc/out" \
+    && pass "seat: the ${h} stop prints the run's deadline" || fail "seat: the ${h} stop does not print the deadline"
 done
+grep -q 'a shell seat cannot close an approval' "$tmp/sc-handoff-승인/out" \
+  && pass "seat: the 승인 stop says a shell seat cannot close the approval" || fail "seat: the 승인 stop does not say the shell seat cannot close it"
+
+# A 중단 handoff whose halt record carries a recommendation is answered by the
+# seat, which then relaunches with 중단 and carries the run on.
+scenario halt-rec
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=rec
+rc=0; xp run --exp-id 20261017-000000a5 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
+ha=$(grep -c -- '--kind halt-answer' "$STUB_GATE_LOG" || true)
+first_ha=$(grep -n -- '--kind halt-answer' "$STUB_GATE_LOG" | head -n 1 | cut -d: -f1)
+after=$(sed -n "$((first_ha + 1))p" "$STUB_GATE_LOG")
+# Every run finishes, so the call goes on to classification and stops on its
+# ambiguous defect, as the full scenario's first call does.
+[[ "$rc" == "3" && "$ha" == "10" ]] && grep -q 'ambiguous defect(s) wait on a person' "$sc/out" \
+  && pass "seat: a recommended halt is answered on every run and the experiment reaches classification" || { fail "seat: recommended halt gave exit $rc with $ha answers"; cat "$sc/out" >&2; }
+grep -- '--kind halt-answer' "$STUB_GATE_LOG" | head -n 1 | grep -q '답한 주체=좌석 근거=중단 기록의 추천을 받았다 — 근거 종류 인터뷰 기록,상시 지침 첨부=' \
+  && pass "seat: the answer is a seat answer naming the grounds' kinds" || fail "seat: the answer argv is $(grep -- '--kind halt-answer' "$STUB_GATE_LOG" | head -n 1)"
+[[ "$after" == *"--kind router-shift"*" -- 중단 -p "* ]] \
+  && pass "seat: after the answer the seat relaunches with 중단" || fail "seat: the call after the answer is $after"
+ans=$(ls "$sc"/xdg/cc-cmds/run/*/halt/D1#1.answer.md 2>/dev/null | head -n 1)
+[[ -n "$ans" ]] && grep -q '^- 인터뷰 기록:첫째로 한다$' "$ans" && grep -q '^되돌리는 법: ' "$ans" \
+  && pass "seat: the attachment carries each ground and how to take the answer back" || fail "seat: the attachment is missing or incomplete"
+
+# A record with no recommendation, or one the gate refuses a seat answer for,
+# stops on a person with the record and a halt-answer command to run.
+scenario halt-norec
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=norec
+rc=0; xp run --exp-id 20261017-000000a6 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
+[[ "$rc" == "3" && "$(acts)" == "1" ]] && grep -q 'Halt record: .*/halt/D1#1.md$' "$sc/out" && grep -q -- "--kind halt-answer --target exp --segment D1 .* '답한 주체=사람'" "$sc/out" \
+  && pass "seat: a halt with no recommendation stops with the record and a halt-answer command" || { fail "seat: a halt with no recommendation gave exit $rc with $(acts) acts"; cat "$sc/out" >&2; }
+scenario halt-refused
+export STUB_GATE_MODE=handoff STUB_HANDOFF=중단 STUB_HALT=rec STUB_HALT_ANSWER_RC=3
+rc=0; xp run --exp-id 20261017-000000a7 --budget-usd 1000 > "$sc/out" 2>&1 || rc=$?
+ls "$sc"/xdg/cc-cmds/run/*/halt/D1#1.answer.md >/dev/null 2>&1 && left=1 || left=0
+[[ "$rc" == "3" && "$(pstate 20261017-000000a7 1 status)" == "사람 대기" && "$left" == "0" ]] && grep -q 'Halt record: .*/halt/D1#1.md$' "$sc/out" \
+  && pass "seat: a refused seat answer leaves the record for a person and no attachment" || fail "seat: a refused seat answer gave exit $rc (attachment left: $left)"
+
+# A run the wall-clock deadline closed is not a finished run.
+scenario deadline
+export STUB_GATE_MODE=deadline
+rc=0; xp run --exp-id 20261017-000000a8 --budget-usd 1000 >/dev/null 2>&1 || rc=$?
+r8="$main/docs/solo-audit-experiment/20261017-000000a8"
+[[ "$rc" == "0" && "$(awk -F'\t' '$1 == "invalid_reason" { print $2 }' "$r8/pairs/1/pair.tsv")" == "벽시계 마감으로 닫힘" ]] \
+  && pass "seat: a run closed by the deadline makes the pair invalid under that reason" || fail "seat: a deadline-closed run gave exit $rc"
 
 scenario nofreeze
 export STUB_NO_FREEZE=1
